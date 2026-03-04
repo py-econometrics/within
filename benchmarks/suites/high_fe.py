@@ -1,0 +1,127 @@
+"""High fixed-effects suites (4-6 FE).
+
+Tests solver behaviour as the number of fixed effects grows beyond 3,
+which multiplies the number of factor-pair subdomains and stresses
+domain decomposition.
+"""
+
+from __future__ import annotations
+
+from within import (
+    ApproxCholConfig,
+    CG,
+    GMRES,
+    LSMR,
+    MultiplicativeOneLevelSchwarz,
+    OneLevelSchwarz,
+)
+
+from .._problems import get_generator
+from .._registry import SuiteOptions, suite
+from .._solvers import run_solve
+from .._table import print_pivot, print_table
+from .._types import BenchmarkResult, ProblemSpec, SolverConfig
+
+
+def _make_configs(opts: SuiteOptions) -> list[SolverConfig]:
+    """Standard solver configs shared across high-FE suites."""
+    return [
+        SolverConfig("LSMR(diag)", LSMR(tol=opts.tol, maxiter=opts.maxiter)),
+        SolverConfig("CG(Schwarz)", CG(tol=opts.tol, maxiter=opts.maxiter, preconditioner=OneLevelSchwarz(smoother=ApproxCholConfig(seed=opts.seed)))),
+        SolverConfig("GMRES(Mult-Schwarz)", GMRES(tol=opts.tol, maxiter=opts.maxiter, preconditioner=MultiplicativeOneLevelSchwarz(smoother=ApproxCholConfig(seed=opts.seed)))),
+        SolverConfig("CG(Mult-Schwarz)", CG(tol=opts.tol, maxiter=opts.maxiter, preconditioner=MultiplicativeOneLevelSchwarz(smoother=ApproxCholConfig(seed=opts.seed)))),
+    ]
+
+
+def _run_problems(
+    problems: list[ProblemSpec],
+    configs: list[SolverConfig],
+) -> list[BenchmarkResult]:
+    all_results: list[BenchmarkResult] = []
+    for prob in problems:
+        gen = get_generator(prob.generator)
+        cats, n_levels, y = gen(**prob.params, seed=prob.seed)
+        n_fe = len(n_levels)
+        n_pairs = n_fe * (n_fe - 1) // 2
+        print(f"\nProblem: {prob.name}  ({n_fe}-FE, {n_pairs} pairs, DOFs={sum(n_levels)}, Rows={len(cats[0])})")
+
+        for cfg in configs:
+            try:
+                result = run_solve(cats, n_levels, y, cfg)
+                result.problem = prob.name
+                all_results.append(result)
+            except BaseException as e:
+                if isinstance(e, (KeyboardInterrupt, SystemExit)):
+                    raise
+                print(f"  WARNING: {cfg.label} failed: {e}")
+    return all_results
+
+
+@suite(
+    "high_fe",
+    description="4-6 FE: random, sparse, chain, imbalanced problems",
+    tags=("4fe", "5fe", "6fe", "high_fe"),
+)
+def run_high_fe(opts: SuiteOptions) -> list[BenchmarkResult]:
+    if opts.quick:
+        problems = [
+            ProblemSpec("random 4fe 30^4", "random_kfe", {"k": 4, "n_levels_per_factor": [30, 30, 30, 30], "n_rows": 5000}, opts.seed),
+            ProblemSpec("sparse 4fe 30^4", "sparse_kfe", {"k": 4, "n_levels": 30, "edges_per_level": 3}, opts.seed),
+            ProblemSpec("random 5fe 20^5", "random_kfe", {"k": 5, "n_levels_per_factor": [20, 20, 20, 20, 20], "n_rows": 5000}, opts.seed),
+            ProblemSpec("random 6fe 15^6", "random_kfe", {"k": 6, "n_levels_per_factor": [15, 15, 15, 15, 15, 15], "n_rows": 5000}, opts.seed),
+        ]
+    else:
+        problems = [
+            # 4-FE
+            ProblemSpec("random 4fe 50^4", "random_kfe", {"k": 4, "n_levels_per_factor": [50, 50, 50, 50], "n_rows": 20000}, opts.seed),
+            ProblemSpec("random 4fe asym", "random_kfe", {"k": 4, "n_levels_per_factor": [200, 100, 50, 20], "n_rows": 20000}, opts.seed),
+            ProblemSpec("sparse 4fe 50^4", "sparse_kfe", {"k": 4, "n_levels": 50, "edges_per_level": 3}, opts.seed),
+            ProblemSpec("chain 4fe 50^4", "chain_kfe", {"k": 4, "n_levels": 50}, opts.seed),
+            ProblemSpec("imbal 4fe 50^4", "imbalanced_kfe", {"k": 4, "n_levels_per_factor": [50, 50, 50, 50], "n_rows": 20000}, opts.seed),
+            # 5-FE
+            ProblemSpec("random 5fe 30^5", "random_kfe", {"k": 5, "n_levels_per_factor": [30, 30, 30, 30, 30], "n_rows": 20000}, opts.seed),
+            ProblemSpec("random 5fe asym", "random_kfe", {"k": 5, "n_levels_per_factor": [100, 50, 30, 20, 10], "n_rows": 20000}, opts.seed),
+            ProblemSpec("sparse 5fe 30^5", "sparse_kfe", {"k": 5, "n_levels": 30, "edges_per_level": 3}, opts.seed),
+            ProblemSpec("chain 5fe 30^5", "chain_kfe", {"k": 5, "n_levels": 30}, opts.seed),
+            # 6-FE
+            ProblemSpec("random 6fe 20^6", "random_kfe", {"k": 6, "n_levels_per_factor": [20, 20, 20, 20, 20, 20], "n_rows": 20000}, opts.seed),
+            ProblemSpec("random 6fe asym", "random_kfe", {"k": 6, "n_levels_per_factor": [80, 40, 30, 20, 15, 10], "n_rows": 20000}, opts.seed),
+            ProblemSpec("sparse 6fe 20^6", "sparse_kfe", {"k": 6, "n_levels": 20, "edges_per_level": 3}, opts.seed),
+        ]
+
+    configs = _make_configs(opts)
+    results = _run_problems(problems, configs)
+    print_table(results)
+    print("\n")
+    print_pivot(results)
+    return results
+
+
+@suite(
+    "high_fe_scaling",
+    description="Scaling behaviour as k (number of FE) grows from 2 to 6",
+    tags=("scaling", "high_fe"),
+)
+def run_high_fe_scaling(opts: SuiteOptions) -> list[BenchmarkResult]:
+    """Fix total DOFs ~ 200 and rows ~ 10K, vary k from 2 to 6."""
+    if opts.quick:
+        problems = [
+            ProblemSpec("2-FE 50x50", "random_kfe", {"k": 2, "n_levels_per_factor": [50, 50], "n_rows": 5000}, opts.seed),
+            ProblemSpec("4-FE 25^4", "random_kfe", {"k": 4, "n_levels_per_factor": [25, 25, 25, 25], "n_rows": 5000}, opts.seed),
+            ProblemSpec("6-FE 18^6", "random_kfe", {"k": 6, "n_levels_per_factor": [18, 18, 18, 18, 18, 18], "n_rows": 5000}, opts.seed),
+        ]
+    else:
+        problems = [
+            ProblemSpec("2-FE 100x100", "random_kfe", {"k": 2, "n_levels_per_factor": [100, 100], "n_rows": 10000}, opts.seed),
+            ProblemSpec("3-FE 65^3", "random_kfe", {"k": 3, "n_levels_per_factor": [65, 65, 65], "n_rows": 10000}, opts.seed),
+            ProblemSpec("4-FE 50^4", "random_kfe", {"k": 4, "n_levels_per_factor": [50, 50, 50, 50], "n_rows": 10000}, opts.seed),
+            ProblemSpec("5-FE 40^5", "random_kfe", {"k": 5, "n_levels_per_factor": [40, 40, 40, 40, 40], "n_rows": 10000}, opts.seed),
+            ProblemSpec("6-FE 33^6", "random_kfe", {"k": 6, "n_levels_per_factor": [33, 33, 33, 33, 33, 33], "n_rows": 10000}, opts.seed),
+        ]
+
+    configs = _make_configs(opts)
+    results = _run_problems(problems, configs)
+    print_table(results)
+    print("\n")
+    print_pivot(results)
+    return results
