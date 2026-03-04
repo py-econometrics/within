@@ -1,0 +1,15 @@
+[workspace]
+members = [
+    "crates/schwarz-precond",
+    "crates/within",
+    "crates/within-py",
+]
+resolver = "2"
+
+[workspace.dependencies]
+approx-chol = { git = "https://github.com/aai-institute/approx-chol.git" }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1

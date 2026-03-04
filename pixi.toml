@@ -1,0 +1,28 @@
+[workspace]
+channels = ["conda-forge"]
+platforms = ["linux-64", "win-64", "osx-arm64", "osx-64"]
+
+[dependencies]
+python = ">=3.11"
+pixi-pycharm = ">=0.0.10,<0.0.11"
+cargo-audit = ">=0.22.1,<0.23"
+
+[pypi-dependencies]
+within = { path = ".", editable = true }
+
+[feature.build.dependencies]
+rust = ">=1.75"
+maturin = ">=1.7"
+
+[feature.dev.dependencies]
+pytest = ">=7.0"
+pytest-cov = "*"
+cargo-llvm-cov = ">=0.8.4,<0.9"
+
+[environments]
+default = { features = ["build", "dev"], solve-group = "default" }
+
+[tasks]
+test = "maturin develop --uv && pytest tests/ -v"
+develop = "maturin develop --uv --release"
+coverage-rust = "cargo llvm-cov --workspace --all-features --summary-only"

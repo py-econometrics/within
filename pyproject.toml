@@ -1,0 +1,23 @@
+[project]
+authors = [{name = "Kristof Schröder", email = "k.schroeder@appliedai-institute.de"}]
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+]
+name = "within"
+requires-python = ">= 3.11"
+version = "0.1.0"
+license = "MIT"
+license-files = [
+    "LICENSE",
+]
+
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[tool.maturin]
+python-source = "python"
+module-name = "within._within"
+manifest-path = "crates/within-py/Cargo.toml"
+features = ["pyo3/extension-module"]
