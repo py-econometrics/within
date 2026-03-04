@@ -1,0 +1,34 @@
+[package]
+name = "within"
+version = "0.1.0"
+edition = "2021"
+description = "Fixed-effects normal equation solver with Schwarz preconditioning"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/py-econometrics/within"
+keywords = ["fixed-effects", "least-squares", "preconditioner", "schwarz", "econometrics"]
+categories = ["mathematics", "science", "algorithms"]
+
+[dependencies]
+schwarz-precond = { path = "../schwarz-precond" }
+approx-chol = { workspace = true }
+ndarray = { version = "0.16", optional = true }
+portable-atomic = { version = "1", features = ["float"] }
+rayon = "1.10"
+faer = "0.22"
+
+[features]
+default = ["ndarray"]
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+rand = { version = "0.9", features = ["small_rng"] }
+
+[[bench]]
+name = "fixest_smoke"
+harness = false
+
+[[bench]]
+name = "fixest_mini"
+harness = false
+

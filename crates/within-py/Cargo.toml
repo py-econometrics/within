@@ -1,0 +1,15 @@
+[package]
+name = "within-py"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "_within"
+crate-type = ["cdylib"]
+
+[dependencies]
+within = { path = "../within" }
+approx-chol = { workspace = true }
+pyo3 = { version = "0.25", features = ["extension-module"] }
+numpy = "0.25"
+rand = { version = "0.9", features = ["small_rng"] }

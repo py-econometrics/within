@@ -1,0 +1,16 @@
+[package]
+name = "schwarz-precond"
+version = "0.1.0"
+edition = "2021"
+description = "Schwarz domain decomposition preconditioner"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/py-econometrics/within"
+keywords = ["schwarz", "preconditioner", "domain-decomposition", "sparse", "iterative-solver"]
+categories = ["mathematics", "science", "algorithms"]
+
+[dependencies]
+rayon = "1.10"
+thread_local = "1.1"
+rand = { version = "0.9", features = ["small_rng"] }
+faer = "0.22"
