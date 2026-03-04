@@ -50,8 +50,9 @@ struct DiagSolver(usize, f64);
 impl LocalSolver for DiagSolver {
     fn n_local(&self) -> usize    { self.0 }
     fn scratch_size(&self) -> usize { self.0 }
-    fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) {
+    fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), schwarz_precond::LocalSolveError> {
         for i in 0..self.0 { sol[i] = rhs[i] / self.1; }
+        Ok(())
     }
 }
 
@@ -70,8 +71,8 @@ fn main() {
         })
         .collect();
 
-    let precond = SchwarzPreconditioner::new(entries, n);
-    let result = cg_solve_preconditioned(&a, &precond, &b, 1e-10, 500);
+    let precond = SchwarzPreconditioner::new(entries, n).expect("valid preconditioner");
+    let result = cg_solve_preconditioned(&a, &precond, &b, 1e-10, 500).expect("cg should converge");
 
     println!("converged={} iters={} res={:.3e}",
         result.converged, result.iterations, result.residual_norm);

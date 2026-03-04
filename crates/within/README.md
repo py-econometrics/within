@@ -30,7 +30,7 @@ let result = solve(
     &y,
     &SolverParams::default(),
     None,
-);
+).expect("solve should succeed");
 assert!(result.converged);
 println!("LSMR converged in {} iterations", result.iterations);
 
@@ -48,7 +48,7 @@ let result = solve(
     &y,
     &params,
     None,
-);
+).expect("solve should succeed");
 assert!(result.converged);
 println!("CG converged in {} iterations", result.iterations);
 ```
