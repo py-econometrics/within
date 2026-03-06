@@ -6,7 +6,7 @@ Intuitively, `within`'s solvers are fast because they are tailored to the struct
 
 More concretely, `within` solves problems of the form **y = D x**,  where D is a sparse one-hot encoded design matrix of fixed effects, and uses iterative methods (preconditioned CG, right-preconditioned GMRES, LSMR) with domain decomposition (Schwarz) preconditioners backed by approximate Cholesky local solvers.
 
-Obtaining very fast solvers for this problem is useful in econometric applications as it allows to efficiently fit regression problems with high-dimensional fixed effects via the Frisch-Waugh-Lovell theorem. By the FWL theorem, estimating a regression `y = Xβ + Dα + ε` reduces to projecting out the fixed effects from both y and each column of X, and then to running OLS on the residuals. Each projection requires solving the least-squares problem `D'Dx = D'z`, which is exactly the problem `within` is designed to solve fast.
+Obtaining very fast solvers for this problem is useful in econometric applications as it allows to efficiently fit regression problems with high-dimensional fixed effects via the Frisch-Waugh-Lovell theorem. 
 
 ## Installation
 
