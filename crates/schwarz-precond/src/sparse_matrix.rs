@@ -1,3 +1,5 @@
+use rayon::prelude::*;
+
 /// Square sparse matrix in Compressed Sparse Row (CSR) format.
 ///
 /// Used internally for explicit Gramian submatrices, Laplacian representations,
@@ -64,19 +66,47 @@ impl SparseMatrix {
     /// Sparse matrix-vector multiply: y += A @ x.
     ///
     /// Does NOT zero y first -- caller controls initialization.
+    /// For large matrices (> 10 000 rows), rows are processed in parallel
+    /// via Rayon `par_chunks_mut`. Each row's dot product reads from shared
+    /// `x` and writes to its own `y[row]` — no conflicts.
     pub fn matvec_add(&self, x: &[f64], y: &mut [f64]) {
+        const PAR_THRESHOLD: usize = 10_000;
+        const CHUNK_SIZE: usize = 4096;
+
         debug_assert_eq!(x.len(), self.n);
         debug_assert_eq!(y.len(), self.n);
-        for (row, yi) in y[..self.n].iter_mut().enumerate() {
-            let start = self.indptr[row] as usize;
-            let end = self.indptr[row + 1] as usize;
-            let row_data = &self.data[start..end];
-            let row_idx = &self.indices[start..end];
-            let mut acc = 0.0;
-            for (&val, &col) in row_data.iter().zip(row_idx) {
-                acc += val * x[col as usize];
+
+        if self.n > PAR_THRESHOLD {
+            y[..self.n]
+                .par_chunks_mut(CHUNK_SIZE)
+                .enumerate()
+                .for_each(|(chunk_idx, chunk)| {
+                    let row_start = chunk_idx * CHUNK_SIZE;
+                    for (local, yi) in chunk.iter_mut().enumerate() {
+                        let row = row_start + local;
+                        let start = self.indptr[row] as usize;
+                        let end = self.indptr[row + 1] as usize;
+                        let row_data = &self.data[start..end];
+                        let row_idx = &self.indices[start..end];
+                        let mut acc = 0.0;
+                        for (&val, &col) in row_data.iter().zip(row_idx) {
+                            acc += val * x[col as usize];
+                        }
+                        *yi += acc;
+                    }
+                });
+        } else {
+            for (row, yi) in y[..self.n].iter_mut().enumerate() {
+                let start = self.indptr[row] as usize;
+                let end = self.indptr[row + 1] as usize;
+                let row_data = &self.data[start..end];
+                let row_idx = &self.indices[start..end];
+                let mut acc = 0.0;
+                for (&val, &col) in row_data.iter().zip(row_idx) {
+                    acc += val * x[col as usize];
+                }
+                *yi += acc;
             }
-            *yi += acc;
         }
     }
 
