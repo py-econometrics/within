@@ -18,52 +18,52 @@ pip install within
 
 ## Python Quickstart
 
-In this section, we show how to run a fixed effects regression via `within` and the *Frisch-Waugh-Lovell* theorem. 
-We project out the fixed effects from y and each column of X, and then run ordinary least squares on the demeand residuals. 
+`within`'s main user facing function is `solve`. To it, you provide an integer 2D array of fixed effects `x` and a 1D array `y` to solve the linear system **y = D x**, where D is a large sparse matrix. 
 
 ```python
-from within import solve
+from within import solve, CG, LSMR
 import numpy as np
 
+# set up a dgp
 np.random.seed(42)
 n = 100_000
 
 beta_true = np.array([1.0, -2.0, 0.5])
 X = np.random.randn(n, 3)
-D = [np.random.randint(0, 500, size=n), np.random.randint(0, 200, size=n)]
-alpha = np.random.randn(500)[D[0]]
-gamma = np.random.randn(200)[D[1]]
+fixed_effects = [np.random.randint(0, 500, size=n), np.random.randint(0, 200, size=n)]
+alpha = np.random.randn(500)[fixed_effects[0]]
+gamma = np.random.randn(200)[fixed_effects[1]]
 y = X @ beta_true + alpha + gamma + 0.1 * np.random.randn(n)
+weights = np.random.exponential(1.0, size=n)
 
-# FWL step 1: solve for fixed-effect coefficients
-cols = np.column_stack([y, X])
-result = solve(D, cols)
-print(f"converged={result.converged}  iters={result.iterations}")
+# Schwarz-preconditioned CG (default)
+result = solve(fixed_effects, y, CG())
+print(result.x)
+# LSMR (avoids preconditioner computation for simple problems)
+result = solve(fixed_effects, y, LSMR())
+print(result.x)
+# Weighted solve
+result = solve(fixed_effects, y, weights=weights)
+print(result.x)
+```
 
-# FWL step 2: compute residuals (project out fixed effects)
-fitted = result.x[D[0]] + result.x[500:][D[1]]
-y_tilde, X_tilde = (cols - fitted)[:, 0], (cols - fitted)[:, 1:]
+Next, we show how to run a fixed effects regression via `within` and the *Frisch-Waugh-Lovell* theorem. 
+We project out the fixed effects from y and each column of X, and then run ordinary least squares on the demeand residuals. 
+
+```python
+# FWL step 1 and 2: solve for fixed-effect coefficients and compute residuals
+all_cols = np.column_stack([y, X])
+residuals = np.empty_like(all_cols)
+for j in range(all_cols.shape[1]):
+    result = solve(fixed_effects, all_cols[:, j])
+    fitted = result.x[fixed_effects[0]] + result.x[500:][fixed_effects[1]]
+    residuals[:, j] = all_cols[:, j] - fitted
+y_tilde, X_tilde = residuals[:, 0], residuals[:, 1:]
 
 # FWL step 3: OLS on demeaned data
 beta_hat = np.linalg.lstsq(X_tilde, y_tilde, rcond=None)[0]
 print(f"True β:      {beta_true}")
 print(f"Estimated β: {np.round(beta_hat, 4)}")
-```
-
-### API reference
-
-```python
-from within import CG, LSMR
-
-# Schwarz-preconditioned CG (default)
-result = solve(categories, cols, CG())
-
-# LSMR (avoids preconditioner computation for simple problems)
-result = solve(categories, cols, LSMR())
-
-# Weighted solve
-weights = np.random.exponential(1.0, size=n)
-result = solve(categories, cols, weights=weights)
 ```
 
 ### Solver methods
