@@ -2,9 +2,9 @@
 
 Solves linear fixed-effects models **y = D x + e** where D is a sparse
 categorical design matrix. The normal equations **G x = D^T W y** (with
-G = D^T W D) are solved via LSMR, preconditioned CG, or right-preconditioned
-GMRES with additive or multiplicative Schwarz preconditioners backed by
-approximate Cholesky local solvers. Designed for econometric panel data with
+G = D^T W D) are solved via preconditioned CG or right-preconditioned GMRES
+with additive or multiplicative Schwarz preconditioners backed by approximate
+Cholesky local solvers. Designed for econometric panel data with
 millions of observations and multiple high-dimensional fixed effects.
 
 ## Install
@@ -16,29 +16,31 @@ cargo add within
 ## Quick example
 
 ```rust
-use within::{solve, SolverParams, SolverMethod, OperatorRepr, Preconditioner, SchwarzConfig};
+use within::{
+    solve, GmresPrecond, LocalSolverConfig, OperatorRepr, SolverMethod, SolverParams,
+};
 
 // Two factors: 100 levels each, 10 000 observations
 let factor_0: Vec<u32> = (0..10_000).map(|i| (i % 100) as u32).collect();
 let factor_1: Vec<u32> = (0..10_000).map(|i| (i / 100) as u32).collect();
 let y: Vec<f64> = (0..10_000).map(|i| i as f64 * 0.01).collect();
 
-// Solve with default LSMR (handles singular Gramians natively)
+// Solve with the default solver: CG + additive Schwarz + implicit operator
 let result = solve(
     &[factor_0.clone(), factor_1.clone()],
     &[100, 100],
     &y,
     &SolverParams::default(),
-    None,
 ).expect("solve should succeed");
 assert!(result.converged);
-println!("LSMR converged in {} iterations", result.iterations);
+println!("default CG converged in {} iterations", result.iterations);
 
-// Solve with preconditioned CG (one-level additive Schwarz)
+// Solve with GMRES + multiplicative Schwarz on the implicit operator
 let params = SolverParams {
-    method: SolverMethod::Cg {
-        preconditioner: Preconditioner::Additive(SchwarzConfig::default()),
+    method: SolverMethod::Gmres {
+        preconditioner: Some(GmresPrecond::Multiplicative(LocalSolverConfig::gmres_default())),
         operator: OperatorRepr::Implicit,
+        restart: 30,
     },
     tol: 1e-8,
     maxiter: 1000,
@@ -48,10 +50,9 @@ let result = solve(
     &[100, 100],
     &y,
     &params,
-    None,
 ).expect("solve should succeed");
 assert!(result.converged);
-println!("CG converged in {} iterations", result.iterations);
+println!("GMRES converged in {} iterations", result.iterations);
 ```
 
 ## Feature flags
@@ -86,7 +87,7 @@ The crate is organized in four layers:
 
 4. **`orchestrate`** -- End-to-end solve entry points (`solve`,
    `solve_weighted`, `solve_least_squares`, `solve_normal_equations`) with
-   typed configuration (`SolverParams`, `SolverMethod`, `Preconditioner`,
+   typed configuration (`SolverParams`, `SolverMethod`, `GmresPrecond`,
    `OperatorRepr`).
 
 ## License

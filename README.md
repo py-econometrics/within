@@ -2,7 +2,7 @@
 
 High-performance fixed-effects solver for econometric panel data. Solves
 **y = D x** where D is a sparse categorical design matrix, using
-iterative methods (preconditioned CG, right-preconditioned GMRES, LSMR) with
+iterative methods (preconditioned CG and right-preconditioned GMRES) with
 domain decomposition (Schwarz) preconditioners backed by approximate Cholesky
 local solvers.
 
@@ -18,7 +18,7 @@ pip install within
 ```
 
 ```python
-from within import solve, CG, LSMR
+from within import solve, CG, GMRES, MultiplicativeSchwarz
 import numpy as np
 
 # Two factors with 500 levels each, 100k observations
@@ -32,8 +32,12 @@ y = np.random.randn(100_000)
 result = solve(categories, y)
 print(f"converged={result.converged}  iters={result.iterations}  residual={result.residual:.2e}")
 
-# Solve with LSMR (avoids preconditioner computation for simple problems)
-result = solve(categories, y, LSMR())
+# Solve with unpreconditioned CG
+result = solve(categories, y, CG(preconditioner=None))
+print(f"converged={result.converged}  iters={result.iterations}")
+
+# Solve with GMRES + multiplicative Schwarz
+result = solve(categories, y, GMRES(preconditioner=MultiplicativeSchwarz()))
 print(f"converged={result.converged}  iters={result.iterations}")
 
 # Weighted solve
@@ -46,16 +50,15 @@ print(f"converged={result.converged}  iters={result.iterations}")
 
 | Class | Description |
 |---|---|
-| `CG(tol, maxiter, preconditioner, operator)` | Preconditioned conjugate gradient. Default with Schwarz preconditioner. |
-| `LSMR(tol, maxiter, conlim)` | Handles singular Gramians natively. |
-| `GMRES(tol, maxiter, restart, preconditioner, operator)` | Right-preconditioned GMRES. Preconditioner is optional. |
+| `CG(tol, maxiter, preconditioner, operator)` | Conjugate gradient on the normal equations. Default is additive Schwarz with the implicit operator. |
+| `GMRES(tol, maxiter, restart, preconditioner, operator)` | Right-preconditioned GMRES on the normal equations. |
 
 ### Preconditioners
 
 | Class | Description |
 |---|---|
 | `AdditiveSchwarz(...)` | Additive one-level Schwarz. Use with `CG` or `GMRES`. |
-| `MultiplicativeSchwarz(...)` | Multiplicative one-level Schwarz. Use with `CG` or `GMRES`. |
+| `MultiplicativeSchwarz(...)` | Multiplicative one-level Schwarz. Use with `GMRES` only. |
 
 ## Rust quickstart
 
