@@ -3,7 +3,7 @@ channels = ["conda-forge"]
 platforms = ["linux-64", "win-64", "osx-arm64", "osx-64"]
 
 [dependencies]
-python = ">=3.11"
+python = ">=3.9"
 pixi-pycharm = ">=0.0.10,<0.0.11"
 cargo-audit = ">=0.22.1,<0.23"
 

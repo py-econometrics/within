@@ -11,7 +11,7 @@ effects.
 
 ## Python quickstart
 
-Requires Python >= 3.11.
+Requires Python >= 3.9.
 
 ```bash
 pip install within
