@@ -37,7 +37,7 @@ impl Default for LocalSolverConfig {
     fn default() -> Self {
         Self::SchurComplement {
             approx_chol: approx_chol::Config {
-                split_merge: Some(8),
+                split_merge: Some(2),
                 ..Default::default()
             },
             approx_schur: Some(ApproxSchurConfig::default()),

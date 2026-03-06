@@ -56,7 +56,10 @@ pub mod orchestrate;
 // High-level API
 // ---------------------------------------------------------------------------
 
-pub use orchestrate::{solve, solve_least_squares, solve_normal_equations, solve_weighted};
+pub use orchestrate::{
+    demean_batch, demean_batch_default, solve, solve_least_squares, solve_normal_equations,
+    solve_weighted, BatchDemeanResult,
+};
 
 // ---------------------------------------------------------------------------
 // Configuration
