@@ -51,7 +51,11 @@ pub fn demean_batch<S: ObservationStore + Sync>(
             // demeaned = y - D·x
             let mut fitted = vec![0.0; y_col.len()];
             design.matvec_d(&result.x, &mut fitted);
-            y_col.iter().zip(fitted.iter()).map(|(y, f)| y - f).collect()
+            y_col
+                .iter()
+                .zip(fitted.iter())
+                .map(|(y, f)| y - f)
+                .collect()
         })
         .collect();
 
