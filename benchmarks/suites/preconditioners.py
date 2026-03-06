@@ -1,29 +1,18 @@
-"""Preconditioner comparison suites.
-
-Compares LSMR(diag) vs CG(Schwarz), and a broader None/Schwarz
-comparison across CG.
-"""
+"""Preconditioner comparison suites."""
 
 from __future__ import annotations
 
-from within import (
-    ApproxCholConfig,
-    CG,
-    GMRES,
-    LSMR,
-    AdditiveSchwarz,
-    MultiplicativeSchwarz,
-)
 from .._problems import get_generator
 from .._registry import SuiteOptions, suite
+from .._solver_presets import standard_solver_configs
 from .._solvers import run_solve
 from .._table import print_pivot, print_table
-from .._types import BenchmarkResult, ProblemSpec, SolverConfig
+from .._types import BenchmarkResult, ProblemSpec
 
 
 @suite(
     "preconditioners_3fe",
-    description="LSMR(diag) vs CG(Schwarz) on 3-FE problems",
+    description="CG(additive Schwarz) vs GMRES(multiplicative Schwarz) on 3-FE problems",
     tags=("3fe", "precond"),
 )
 def run_preconditioners_3fe(opts: SuiteOptions) -> list[BenchmarkResult]:
@@ -99,39 +88,7 @@ def run_preconditioners_3fe(opts: SuiteOptions) -> list[BenchmarkResult]:
             ),
         ]
 
-    configs = [
-        SolverConfig("LSMR(diag)", LSMR(tol=opts.tol, maxiter=opts.maxiter)),
-        SolverConfig(
-            "CG(Schwarz)",
-            CG(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=AdditiveSchwarz(
-                    smoother=ApproxCholConfig(seed=opts.seed)
-                ),
-            ),
-        ),
-        SolverConfig(
-            "GMRES(Mult-Schwarz)",
-            GMRES(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=MultiplicativeSchwarz(
-                    smoother=ApproxCholConfig(seed=opts.seed)
-                ),
-            ),
-        ),
-        SolverConfig(
-            "CG(Mult-Schwarz)",
-            CG(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=MultiplicativeSchwarz(
-                    smoother=ApproxCholConfig(seed=opts.seed)
-                ),
-            ),
-        ),
-    ]
+    configs = standard_solver_configs(opts)
 
     all_results: list[BenchmarkResult] = []
     for prob in problems:
@@ -155,7 +112,7 @@ def run_preconditioners_3fe(opts: SuiteOptions) -> list[BenchmarkResult]:
 
 @suite(
     "preconditioner_comparison",
-    description="None vs Schwarz (LSMR + CG)",
+    description="Unpreconditioned CG vs Schwarz-preconditioned CG/GMRES",
     tags=("2fe", "3fe", "precond"),
 )
 def run_preconditioner_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
@@ -189,40 +146,7 @@ def run_preconditioner_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
             ProblemSpec("chain 100 3fe", "chain_3fe", {"n_levels": 100}, opts.seed),
         ]
 
-    configs = [
-        SolverConfig("LSMR(diag)", LSMR(tol=opts.tol, maxiter=opts.maxiter)),
-        SolverConfig("CG(none)", CG(tol=opts.tol, maxiter=opts.maxiter)),
-        SolverConfig(
-            "CG(Schwarz)",
-            CG(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=AdditiveSchwarz(
-                    smoother=ApproxCholConfig(seed=opts.seed)
-                ),
-            ),
-        ),
-        SolverConfig(
-            "GMRES(Mult-Schwarz)",
-            GMRES(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=MultiplicativeSchwarz(
-                    smoother=ApproxCholConfig(seed=opts.seed)
-                ),
-            ),
-        ),
-        SolverConfig(
-            "CG(Mult-Schwarz)",
-            CG(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=MultiplicativeSchwarz(
-                    smoother=ApproxCholConfig(seed=opts.seed)
-                ),
-            ),
-        ),
-    ]
+    configs = standard_solver_configs(opts, include_cg_none=True)
 
     all_results: list[BenchmarkResult] = []
     for prob in problems:

@@ -2,17 +2,12 @@
 
 from __future__ import annotations
 
-from within import (
-    ApproxCholConfig,
-    CG,
-    AdditiveSchwarz,
-)
-
 from .._problems import get_generator
 from .._registry import SuiteOptions, suite
+from .._solver_presets import cg_solver_config
 from .._solvers import run_solve
 from .._table import print_pivot, print_table
-from .._types import BenchmarkResult, ProblemSpec, SolverConfig
+from .._types import BenchmarkResult, ProblemSpec
 
 
 @suite(
@@ -109,18 +104,7 @@ def run_one_level_baseline(opts: SuiteOptions) -> list[BenchmarkResult]:
             ),
         ]
 
-    smoother = ApproxCholConfig(seed=opts.seed)
-
-    configs = [
-        SolverConfig(
-            "1L Schwarz",
-            CG(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=AdditiveSchwarz(smoother=smoother),
-            ),
-        ),
-    ]
+    configs = [cg_solver_config(opts, "1L Schwarz")]
 
     all_results: list[BenchmarkResult] = []
     for prob in problems:

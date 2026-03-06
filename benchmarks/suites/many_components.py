@@ -7,56 +7,16 @@ employer-employee data with regional labour markets and low mobility.
 
 from __future__ import annotations
 
-from within import (
-    ApproxCholConfig,
-    CG,
-    GMRES,
-    LSMR,
-    MultiplicativeSchwarz,
-    AdditiveSchwarz,
-)
-
 from .._problems import get_generator
 from .._registry import SuiteOptions, suite
+from .._solver_presets import standard_solver_configs
 from .._solvers import run_solve
 from .._table import print_pivot, print_table
 from .._types import BenchmarkResult, ProblemSpec, SolverConfig
 
 
 def _make_configs(opts: SuiteOptions) -> list[SolverConfig]:
-    return [
-        SolverConfig("LSMR(diag)", LSMR(tol=opts.tol, maxiter=opts.maxiter)),
-        SolverConfig(
-            "CG(Schwarz)",
-            CG(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=AdditiveSchwarz(
-                    smoother=ApproxCholConfig(seed=opts.seed)
-                ),
-            ),
-        ),
-        SolverConfig(
-            "GMRES(Mult-Schwarz)",
-            GMRES(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=MultiplicativeSchwarz(
-                    smoother=ApproxCholConfig(seed=opts.seed)
-                ),
-            ),
-        ),
-        SolverConfig(
-            "CG(Mult-Schwarz)",
-            CG(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=MultiplicativeSchwarz(
-                    smoother=ApproxCholConfig(seed=opts.seed)
-                ),
-            ),
-        ),
-    ]
+    return standard_solver_configs(opts)
 
 
 def _run_problems(

@@ -5,12 +5,12 @@ Compares AC vs AC2 smoothing across topologies.
 
 from __future__ import annotations
 
-from within import ApproxCholConfig, CG, AdditiveSchwarz
 from .._problems import get_generator
 from .._registry import SuiteOptions, suite
+from .._solver_presets import cg_solver_config
 from .._solvers import run_solve
 from .._table import print_pivot, print_table
-from .._types import BenchmarkResult, ProblemSpec, SolverConfig
+from .._types import BenchmarkResult, ProblemSpec
 
 
 @suite(
@@ -85,26 +85,8 @@ def run_graph_backend_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
         ]
 
     configs = [
-        SolverConfig(
-            "ac",
-            CG(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=AdditiveSchwarz(
-                    smoother=ApproxCholConfig(seed=opts.seed),
-                ),
-            ),
-        ),
-        SolverConfig(
-            "ac2",
-            CG(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=AdditiveSchwarz(
-                    smoother=ApproxCholConfig(seed=opts.seed, split=2),
-                ),
-            ),
-        ),
+        cg_solver_config(opts, "ac", split=1),
+        cg_solver_config(opts, "ac2", split=2),
     ]
 
     if opts.quick:

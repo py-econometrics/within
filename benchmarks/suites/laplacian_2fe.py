@@ -1,28 +1,18 @@
-"""2-FE Laplacian benchmark suite.
-
-Compares LSMR(diag) vs CG(Schwarz) on 2-FE problems.
-"""
+"""2-FE Laplacian benchmark suite."""
 
 from __future__ import annotations
 
-from within import (
-    ApproxCholConfig,
-    CG,
-    GMRES,
-    LSMR,
-    AdditiveSchwarz,
-    MultiplicativeSchwarz,
-)
 from .._problems import get_generator
 from .._registry import SuiteOptions, suite
+from .._solver_presets import standard_solver_configs
 from .._solvers import run_solve
 from .._table import print_table
-from .._types import BenchmarkResult, ProblemSpec, SolverConfig
+from .._types import BenchmarkResult, ProblemSpec
 
 
 @suite(
     "laplacian_2fe",
-    description="LSMR(diag) vs CG(Schwarz) on 2-FE Laplacian problems",
+    description="CG(additive Schwarz) vs GMRES(multiplicative Schwarz) on 2-FE Laplacian problems",
     tags=("2fe", "laplacian"),
 )
 def run_laplacian_2fe(opts: SuiteOptions) -> list[BenchmarkResult]:
@@ -91,39 +81,7 @@ def run_laplacian_2fe(opts: SuiteOptions) -> list[BenchmarkResult]:
             ),
         ]
 
-    configs = [
-        SolverConfig("LSMR(diag)", LSMR(tol=opts.tol, maxiter=opts.maxiter)),
-        SolverConfig(
-            "CG(Schwarz)",
-            CG(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=AdditiveSchwarz(
-                    smoother=ApproxCholConfig(seed=opts.seed)
-                ),
-            ),
-        ),
-        SolverConfig(
-            "GMRES(Mult-Schwarz)",
-            GMRES(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=MultiplicativeSchwarz(
-                    smoother=ApproxCholConfig(seed=opts.seed)
-                ),
-            ),
-        ),
-        SolverConfig(
-            "CG(Mult-Schwarz)",
-            CG(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=MultiplicativeSchwarz(
-                    smoother=ApproxCholConfig(seed=opts.seed)
-                ),
-            ),
-        ),
-    ]
+    configs = standard_solver_configs(opts)
 
     all_results: list[BenchmarkResult] = []
     for prob in problems:
@@ -137,31 +95,5 @@ def run_laplacian_2fe(opts: SuiteOptions) -> list[BenchmarkResult]:
             all_results.append(result)
 
     print_table(all_results)
-
-    # Summary ratio table
-    print(f"\n{'Problem':<30} {'LSMR':>7} {'CG':>7} {'Ratio':>7}")
-    print("-" * 55)
-    for prob in problems:
-        d = next(
-            (
-                r
-                for r in all_results
-                if r.problem == prob.name and r.config == "LSMR(diag)"
-            ),
-            None,
-        )
-        a = next(
-            (
-                r
-                for r in all_results
-                if r.problem == prob.name and r.config == "CG(Schwarz)"
-            ),
-            None,
-        )
-        if d and a and a.iterations > 0:
-            ratio = d.iterations / a.iterations
-            d_str = f"{d.iterations}{'*' if not d.converged else ''}"
-            a_str = f"{a.iterations}{'*' if not a.converged else ''}"
-            print(f"{prob.name:<30} {d_str:>7} {a_str:>7} {ratio:>7.1f}x")
 
     return all_results

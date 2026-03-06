@@ -1,8 +1,8 @@
 """AKM panel-data benchmark suites.
 
-Stress-tests LSMR(diagonal) vs CG(Schwarz) on realistic matched
-employer-employee panel structures with the four pathologies that make
-real AKM data hard:
+Stress-tests Schwarz-preconditioned normal-equation solvers on realistic
+matched employer-employee panel structures with the four pathologies that
+make real AKM data hard:
 
 1. Power-law (Zipf) firm-size distributions
 2. Low worker mobility (sparse bipartite graph)
@@ -12,55 +12,16 @@ real AKM data hard:
 
 from __future__ import annotations
 
-from within import (
-    ApproxCholConfig,
-    CG,
-    GMRES,
-    LSMR,
-    AdditiveSchwarz,
-    MultiplicativeSchwarz,
-)
 from .._problems import get_generator
 from .._registry import SuiteOptions, suite
+from .._solver_presets import cg_solver_config, standard_solver_configs
 from .._solvers import run_solve
 from .._table import print_pivot, print_table
 from .._types import BenchmarkResult, SolverConfig
 
 
 def _solver_configs(opts: SuiteOptions) -> list[SolverConfig]:
-    return [
-        SolverConfig("LSMR(diag)", LSMR(tol=opts.tol, maxiter=opts.maxiter)),
-        SolverConfig(
-            "CG(Schwarz)",
-            CG(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=AdditiveSchwarz(
-                    smoother=ApproxCholConfig(seed=opts.seed)
-                ),
-            ),
-        ),
-        SolverConfig(
-            "GMRES(Mult-Schwarz)",
-            GMRES(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=MultiplicativeSchwarz(
-                    smoother=ApproxCholConfig(seed=opts.seed)
-                ),
-            ),
-        ),
-        SolverConfig(
-            "CG(Mult-Schwarz)",
-            CG(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=MultiplicativeSchwarz(
-                    smoother=ApproxCholConfig(seed=opts.seed)
-                ),
-            ),
-        ),
-    ]
+    return standard_solver_configs(opts)
 
 
 # -----------------------------------------------------------------------
@@ -207,18 +168,7 @@ def run_akm_scaling(opts: SuiteOptions) -> list[BenchmarkResult]:
             ("1M", {"n_workers": 1_000_000, "n_firms": 50_000, "n_years": 20}),
         ]
 
-    scaling_configs = [
-        SolverConfig(
-            "CG(Schwarz)",
-            CG(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=AdditiveSchwarz(
-                    smoother=ApproxCholConfig(seed=opts.seed)
-                ),
-            ),
-        ),
-    ]
+    scaling_configs = [cg_solver_config(opts)]
 
     all_results: list[BenchmarkResult] = []
     for label, params in sizes:

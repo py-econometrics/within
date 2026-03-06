@@ -1,24 +1,13 @@
-"""Preconditioner correctness verification suite.
-
-Runs LSMR(diag) / CG(Schwarz) on 2-FE and 3-FE problems and checks that
-converged residual is below a threshold.
-"""
+"""Preconditioner correctness verification suite."""
 
 from __future__ import annotations
 
-from within import (
-    ApproxCholConfig,
-    CG,
-    GMRES,
-    LSMR,
-    AdditiveSchwarz,
-    MultiplicativeSchwarz,
-)
 from .._problems import get_generator
 from .._registry import SuiteOptions, suite
+from .._solver_presets import standard_solver_configs
 from .._solvers import run_solve
 from .._table import print_table
-from .._types import BenchmarkResult, ProblemSpec, SolverConfig
+from .._types import BenchmarkResult, ProblemSpec
 
 RESIDUAL_THRESHOLD = 1e-6
 
@@ -109,39 +98,7 @@ def _problems(quick: bool, seed: int) -> list[ProblemSpec]:
 )
 def run_verify(opts: SuiteOptions) -> list[BenchmarkResult]:
     problems = _problems(opts.quick, opts.seed)
-    configs = [
-        SolverConfig("LSMR(diag)", LSMR(tol=opts.tol, maxiter=opts.maxiter)),
-        SolverConfig(
-            "CG(Schwarz)",
-            CG(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=AdditiveSchwarz(
-                    smoother=ApproxCholConfig(seed=opts.seed)
-                ),
-            ),
-        ),
-        SolverConfig(
-            "GMRES(Mult-Schwarz)",
-            GMRES(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=MultiplicativeSchwarz(
-                    smoother=ApproxCholConfig(seed=opts.seed)
-                ),
-            ),
-        ),
-        SolverConfig(
-            "CG(Mult-Schwarz)",
-            CG(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=MultiplicativeSchwarz(
-                    smoother=ApproxCholConfig(seed=opts.seed)
-                ),
-            ),
-        ),
-    ]
+    configs = standard_solver_configs(opts)
 
     all_results: list[BenchmarkResult] = []
     for prob in problems:

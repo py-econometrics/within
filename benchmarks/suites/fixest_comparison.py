@@ -7,17 +7,13 @@ observations.
 
 from __future__ import annotations
 
-from within import (
-    ApproxCholConfig,
-    CG,
-    AdditiveSchwarz,
-    OperatorRepr,
-)
+from within import OperatorRepr
 from .._problems import get_generator
 from .._registry import SuiteOptions, suite
+from .._solver_presets import cg_solver_config, gmres_solver_config
 from .._solvers import run_solve
 from .._table import print_pivot, print_table
-from .._types import BenchmarkResult, SolverConfig
+from .._types import BenchmarkResult
 
 
 @suite(
@@ -40,44 +36,19 @@ def run_fixest_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
             10_000_000,
             20_000_000,
             40_000_000,
-            80_000_000,
-            160_000_000,
+            # 80_000_000,
+            # 160_000_000,
             # 320_000_000,
         ]
 
     solver_configs = [
-        # SolverConfig("LSMR(diag)", LSMR(tol=opts.tol, maxiter=opts.maxiter)),
-        SolverConfig(
-            "CG(Schwarz)",
-            CG(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=AdditiveSchwarz(
-                    smoother=ApproxCholConfig(seed=opts.seed)
-                ),
-            ),
-        ),
-        SolverConfig(
+        cg_solver_config(opts),
+        cg_solver_config(
+            opts,
             "CG(Schwarz-explicit)",
-            CG(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=AdditiveSchwarz(
-                    smoother=ApproxCholConfig(seed=opts.seed)
-                ),
-                operator=OperatorRepr.Explicit,
-            ),
+            operator=OperatorRepr.Explicit,
         ),
-        # SolverConfig(
-        #    "GMRES(Mult-Schwarz)",
-        #    GMRES(
-        #        tol=opts.tol,
-        #        maxiter=opts.maxiter,
-        #        preconditioner=MultiplicativeSchwarz(
-        #            smoother=ApproxCholConfig(seed=opts.seed)
-        #        ),
-        #    ),
-        # ),
+        gmres_solver_config(opts),
     ]
 
     gen = get_generator("fixest_dgp")

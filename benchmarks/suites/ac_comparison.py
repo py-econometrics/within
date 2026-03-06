@@ -1,38 +1,19 @@
-"""AC vs AC2 smoother comparison.
-
-Compares standard approximate Cholesky (split=1) against the
-multi-edge AC2 variant (split=2) as local smoothers across
-preconditioner types and problem topologies.
-"""
+"""AC vs AC2 local-solver comparison."""
 
 from __future__ import annotations
 
-from within import (
-    ApproxCholConfig,
-    CG,
-    MultiplicativeSchwarz,
-    AdditiveSchwarz,
-)
-
 from .._problems import get_generator
 from .._registry import SuiteOptions, suite
+from .._solver_presets import cg_solver_config, gmres_solver_config
 from .._solvers import run_solve
 from .._table import print_pivot, print_table
 from .._types import BenchmarkResult, ProblemSpec, SolverConfig
 
 
-def _ac(seed: int) -> ApproxCholConfig:
-    return ApproxCholConfig(seed=seed)
-
-
-def _ac2(seed: int) -> ApproxCholConfig:
-    return ApproxCholConfig(split=2, seed=seed)
-
-
 @suite(
     "ac_comparison",
-    description="AC vs AC2 smoother across preconditioner types",
-    tags=("smoother", "precond"),
+    description="AC vs AC2 local solver across preconditioner types",
+    tags=("local_solver", "precond"),
 )
 def run_ac_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
     if opts.quick:
@@ -90,36 +71,19 @@ def run_ac_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
         # One-level additive
         SolverConfig(
             "CG(1L, AC)",
-            CG(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=AdditiveSchwarz(smoother=_ac(opts.seed)),
-            ),
+            cg_solver_config(opts, split=1).config,
         ),
         SolverConfig(
             "CG(1L, AC2)",
-            CG(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=AdditiveSchwarz(smoother=_ac2(opts.seed)),
-            ),
-        ),
-        # Multiplicative one-level (symmetric for CG)
-        SolverConfig(
-            "CG(M1L, AC)",
-            CG(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=MultiplicativeSchwarz(smoother=_ac(opts.seed)),
-            ),
+            cg_solver_config(opts, split=2).config,
         ),
         SolverConfig(
-            "CG(M1L, AC2)",
-            CG(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=MultiplicativeSchwarz(smoother=_ac2(opts.seed)),
-            ),
+            "GMRES(M1L, AC)",
+            gmres_solver_config(opts, split=1).config,
+        ),
+        SolverConfig(
+            "GMRES(M1L, AC2)",
+            gmres_solver_config(opts, split=2).config,
         ),
     ]
 

@@ -1,26 +1,14 @@
-"""Scaling benchmark suites.
-
-Uses generate_synthetic_data for uniform problems at various scales, testing
-LSMR(diag) vs CG(Schwarz).
-"""
+"""Scaling benchmark suites."""
 
 from __future__ import annotations
 
 import numpy as np
 
-from within import (
-    ApproxCholConfig,
-    CG,
-    GMRES,
-    LSMR,
-    AdditiveSchwarz,
-    MultiplicativeSchwarz,
-)
-
 from .._registry import SuiteOptions, suite
+from .._solver_presets import standard_solver_configs
 from .._solvers import run_solve
 from .._table import print_pivot, print_table
-from .._types import BenchmarkResult, SolverConfig
+from .._types import BenchmarkResult
 
 
 def _run_scaling_problems(
@@ -28,39 +16,7 @@ def _run_scaling_problems(
     opts: SuiteOptions,
 ) -> list[BenchmarkResult]:
     """Run a list of (name, n_levels, n_rows) configs through the standard solve paths."""
-    solver_configs = [
-        SolverConfig("LSMR(diag)", LSMR(tol=opts.tol, maxiter=opts.maxiter)),
-        SolverConfig(
-            "CG(Schwarz)",
-            CG(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=AdditiveSchwarz(
-                    smoother=ApproxCholConfig(seed=opts.seed)
-                ),
-            ),
-        ),
-        SolverConfig(
-            "GMRES(Mult-Schwarz)",
-            GMRES(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=MultiplicativeSchwarz(
-                    smoother=ApproxCholConfig(seed=opts.seed)
-                ),
-            ),
-        ),
-        SolverConfig(
-            "CG(Mult-Schwarz)",
-            CG(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=MultiplicativeSchwarz(
-                    smoother=ApproxCholConfig(seed=opts.seed)
-                ),
-            ),
-        ),
-    ]
+    solver_configs = standard_solver_configs(opts)
 
     all_results: list[BenchmarkResult] = []
     for name, n_levels, n_rows in configs_list:
@@ -143,39 +99,7 @@ def run_scaling_2fe(opts: SuiteOptions) -> list[BenchmarkResult]:
             ("grid 20x20", "grid_2fe", {"n_side": 20}),
         ]
 
-    solver_configs = [
-        SolverConfig("LSMR(diag)", LSMR(tol=opts.tol, maxiter=opts.maxiter)),
-        SolverConfig(
-            "CG(Schwarz)",
-            CG(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=AdditiveSchwarz(
-                    smoother=ApproxCholConfig(seed=opts.seed)
-                ),
-            ),
-        ),
-        SolverConfig(
-            "GMRES(Mult-Schwarz)",
-            GMRES(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=MultiplicativeSchwarz(
-                    smoother=ApproxCholConfig(seed=opts.seed)
-                ),
-            ),
-        ),
-        SolverConfig(
-            "CG(Mult-Schwarz)",
-            CG(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=MultiplicativeSchwarz(
-                    smoother=ApproxCholConfig(seed=opts.seed)
-                ),
-            ),
-        ),
-    ]
+    solver_configs = standard_solver_configs(opts)
 
     all_results: list[BenchmarkResult] = []
     for name, gen_key, params in problems:

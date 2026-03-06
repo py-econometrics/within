@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from within import CG, LSMR, GMRES
+from within import CG, GMRES
 
 
 @dataclass(frozen=True)
@@ -23,7 +23,7 @@ class SolverConfig:
     """Configuration for a solve via the Rust-backed API."""
 
     label: str
-    config: LSMR | CG | GMRES
+    config: CG | GMRES
 
 
 @dataclass

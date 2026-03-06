@@ -1,23 +1,13 @@
-"""Iteration reduction suite.
-
-Compares unpreconditioned vs preconditioned CG, and LSMR(diag) across 2-FE and 3-FE.
-"""
+"""Iteration reduction suite."""
 
 from __future__ import annotations
 
-from within import (
-    ApproxCholConfig,
-    CG,
-    GMRES,
-    LSMR,
-    AdditiveSchwarz,
-    MultiplicativeSchwarz,
-)
 from .._problems import get_generator
 from .._registry import SuiteOptions, suite
+from .._solver_presets import standard_solver_configs
 from .._solvers import run_solve
 from .._table import print_table
-from .._types import BenchmarkResult, ProblemSpec, SolverConfig
+from .._types import BenchmarkResult, ProblemSpec
 
 
 @suite(
@@ -71,42 +61,7 @@ def run_iteration_reduction(opts: SuiteOptions) -> list[BenchmarkResult]:
             ),
         ]
 
-    configs_lsmr = [
-        SolverConfig("LSMR(diag)", LSMR(tol=opts.tol, maxiter=maxiter)),
-    ]
-    configs_cg = [
-        SolverConfig("CG(none)", CG(tol=opts.tol, maxiter=maxiter)),
-        SolverConfig(
-            "CG(Schwarz)",
-            CG(
-                tol=opts.tol,
-                maxiter=maxiter,
-                preconditioner=AdditiveSchwarz(
-                    smoother=ApproxCholConfig(seed=opts.seed)
-                ),
-            ),
-        ),
-        SolverConfig(
-            "GMRES(Mult-Schwarz)",
-            GMRES(
-                tol=opts.tol,
-                maxiter=maxiter,
-                preconditioner=MultiplicativeSchwarz(
-                    smoother=ApproxCholConfig(seed=opts.seed)
-                ),
-            ),
-        ),
-        SolverConfig(
-            "CG(Mult-Schwarz)",
-            CG(
-                tol=opts.tol,
-                maxiter=maxiter,
-                preconditioner=MultiplicativeSchwarz(
-                    smoother=ApproxCholConfig(seed=opts.seed)
-                ),
-            ),
-        ),
-    ]
+    configs = standard_solver_configs(opts, include_cg_none=True, maxiter=maxiter)
 
     all_results: list[BenchmarkResult] = []
     for prob in problems:
@@ -114,7 +69,7 @@ def run_iteration_reduction(opts: SuiteOptions) -> list[BenchmarkResult]:
         cats, n_levels, y = gen(**prob.params, seed=prob.seed)
         print(f"\nProblem: {prob.name}  (DOFs={sum(n_levels)}, Rows={len(cats[0])})")
 
-        for cfg in configs_lsmr + configs_cg:
+        for cfg in configs:
             try:
                 result = run_solve(cats, n_levels, y, cfg)
                 result.problem = prob.name
