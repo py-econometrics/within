@@ -35,6 +35,11 @@ print(f"converged={result.converged}  iters={result.iterations}  residual={resul
 # Solve with LSMR (avoids preconditioner computation for simple problems)
 result = solve(categories, y, LSMR())
 print(f"converged={result.converged}  iters={result.iterations}")
+
+# Weighted solve
+weights = np.random.exponential(1.0, size=100_000)
+result = solve(categories, y, weights=weights)
+print(f"converged={result.converged}  iters={result.iterations}")
 ```
 
 ### Solver methods
