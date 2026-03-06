@@ -18,6 +18,8 @@ maturin = ">=1.7"
 pytest = ">=7.0"
 pytest-cov = "*"
 cargo-llvm-cov = ">=0.8.4,<0.9"
+pre-commit = ">=4.0"
+ruff = ">=0.9"
 
 [environments]
 default = { features = ["build", "dev"], solve-group = "default" }
