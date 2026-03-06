@@ -16,7 +16,7 @@ pip install within
 
 ## Python Quickstart
 
-`within`'s main user facing function is `solve`. To use it, you provide an integer 2D array of fixed effects `x` and a 1D array `y` to solve the linear system **y = D x**, where D is a large sparse matrix. For fixed effects problems, `x` is a matrix of integer encodings of fixed effects, and y any regression column. 
+`within`'s main user facing function is `solve`. To use it, you provide an integer 2D array of fixed effects `x` and a 1D array `y` to solve the linear system **y = D x**, where D is a large sparse matrix. For fixed effects problems, `x` is a matrix of integer encodings of fixed effects. `y` can be the dependend variable or any regression column. 
 
 ```python
 from within import solve, CG, LSMR
@@ -36,13 +36,18 @@ weights = np.random.exponential(1.0, size=n)
 
 # Schwarz-preconditioned CG (default)
 result = solve(fixed_effects, y, CG())
-print(result.x)
-# LSMR (avoids preconditioner computation for simple problems)
+print(f"result = {result.x[0:5]} converged={result.converged} iters={result.iterations}")   
+# result = [-0.43189902 -0.56396992  1.16898836  1.07033464  1.69765007] converged=True iters=10                          
+
+# LSMR
 result = solve(fixed_effects, y, LSMR())
-print(result.x)
-# Weighted solve
+print(f"result = {result.x[0:5]} converged={result.converged} iters={result.iterations}") 
+# result = [-0.45431377 -0.58638465  1.14657361  1.04791987  1.67523531] converged=True iters=13                      
+
+# with weights
 result = solve(fixed_effects, y, weights=weights)
-print(result.x)
+print(f"result = {result.x[0:5]} converged={result.converged} iters={result.iterations}")  
+# result = [-0.26850687 -0.73454348  0.97659364  0.84229924  1.64282705] converged=True iters=10                        
 ```
 
 Next, we show how to run a fixed effects regression via `within` and the *Frisch-Waugh-Lovell* theorem. 
@@ -62,6 +67,8 @@ y_tilde, X_tilde = residuals[:, 0], residuals[:, 1:]
 beta_hat = np.linalg.lstsq(X_tilde, y_tilde, rcond=None)[0]
 print(f"True β:      {beta_true}")
 print(f"Estimated β: {np.round(beta_hat, 4)}")
+# True β:      [ 1.  -2.   0.5]
+# Estimated β: [ 1.0003 -2.0001  0.4998]
 ```
 
 ### Solver methods
