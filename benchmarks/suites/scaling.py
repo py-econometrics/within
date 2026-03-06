@@ -6,7 +6,9 @@ LSMR(diag) vs CG(Schwarz).
 
 from __future__ import annotations
 
-from within import ApproxCholConfig, CG, GMRES, LSMR, OneLevelSchwarz, MultiplicativeOneLevelSchwarz, generate_synthetic_data
+import numpy as np
+
+from within import ApproxCholConfig, CG, GMRES, LSMR, OneLevelSchwarz, MultiplicativeOneLevelSchwarz
 
 from .._registry import SuiteOptions, suite
 from .._solvers import run_solve
@@ -28,8 +30,15 @@ def _run_scaling_problems(
 
     all_results: list[BenchmarkResult] = []
     for name, n_levels, n_rows in configs_list:
-        cats, _true_coeffs, y = generate_synthetic_data(n_levels, n_rows, seed=opts.seed)
-        print(f"\n  {name}: DOFs={sum(n_levels)}, Rows={len(cats[0])}")
+        rng = np.random.default_rng(opts.seed)
+        cats = [rng.integers(0, nl, size=n_rows) for nl in n_levels]
+        x_true = rng.standard_normal(sum(n_levels))
+        y = np.zeros(n_rows)
+        offset = 0
+        for f, nl in enumerate(n_levels):
+            y += x_true[offset + cats[f]]
+            offset += nl
+        print(f"\n  {name}: DOFs={sum(n_levels)}, Rows={n_rows}")
 
         for cfg in solver_configs:
             try:

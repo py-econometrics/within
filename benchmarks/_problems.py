@@ -640,12 +640,15 @@ def uniform_kfe(
     n_rows: int = 10000,
     seed: int = 42,
 ) -> tuple[list[NDArray[np.int64]], list[int], NDArray[np.float64]]:
-    """Uniform random categories via ``generate_synthetic_data``."""
-    from within import generate_synthetic_data
-
+    """Uniform random categories with synthetic y = D @ x_true."""
     if n_levels_per_factor is None:
         n_levels_per_factor = [50, 80, 30]
-    cats, _true_coeffs, y = generate_synthetic_data(
-        n_levels_per_factor, n_rows, seed=seed,
-    )
+    rng = np.random.default_rng(seed)
+    cats = [rng.integers(0, nl, size=n_rows) for nl in n_levels_per_factor]
+    x_true = rng.standard_normal(sum(n_levels_per_factor))
+    y = np.zeros(n_rows)
+    offset = 0
+    for f, nl in enumerate(n_levels_per_factor):
+        y += x_true[offset + cats[f]]
+        offset += nl
     return cats, n_levels_per_factor, y
