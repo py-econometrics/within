@@ -30,19 +30,21 @@ n = 100_000
 
 beta_true = np.array([1.0, -2.0, 0.5])
 X = np.random.randn(n, 3)
-categories = [np.random.randint(0, 500, size=n), np.random.randint(0, 200, size=n)]
-alpha = np.random.randn(500)[categories[0]]
-gamma = np.random.randn(200)[categories[1]]
+D = [np.random.randint(0, 500, size=n), np.random.randint(0, 200, size=n)]
+alpha = np.random.randn(500)[D[0]]
+gamma = np.random.randn(200)[D[1]]
 y = X @ beta_true + alpha + gamma + 0.1 * np.random.randn(n)
 
-# FWL step 1: project out fixed effects from y and X
+# FWL step 1: solve for fixed-effect coefficients
 cols = np.column_stack([y, X])
-result = solve(categories, cols)
+result = solve(D, cols)
 print(f"converged={result.converged}  iters={result.iterations}")
-fe = result.x[categories[0]] + result.x[500:][categories[1]]
-y_tilde, X_tilde = (cols - fe)[:, 0], (cols - fe)[:, 1:]
 
-# FWL step 2: OLS on demeaned data
+# FWL step 2: compute residuals (project out fixed effects)
+fitted = result.x[D[0]] + result.x[500:][D[1]]
+y_tilde, X_tilde = (cols - fitted)[:, 0], (cols - fitted)[:, 1:]
+
+# FWL step 3: OLS on demeaned data
 beta_hat = np.linalg.lstsq(X_tilde, y_tilde, rcond=None)[0]
 print(f"True β:      {beta_true}")
 print(f"Estimated β: {np.round(beta_hat, 4)}")
