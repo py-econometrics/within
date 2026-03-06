@@ -63,7 +63,7 @@ enum SchwarzBuffers {
     /// Shared atomic accumulator; scratch is per-task via Rayon init.
     Atomic { accum: Vec<AtomicU64> },
     /// Per-thread full buffers (same as old `AdditiveSweepBuffers`).
-    PerThread(ThreadLocal<Mutex<AdditiveSweepBuffers>>),
+    PerThread(Box<ThreadLocal<Mutex<AdditiveSweepBuffers>>>),
 }
 
 // SAFETY: Vec<AtomicU64> is Send+Sync.
@@ -165,7 +165,7 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
                     accum: (0..n).map(|_| AtomicU64::new(0)).collect(),
                 },
                 ReductionStrategy::ParallelReduction => {
-                    SchwarzBuffers::PerThread(ThreadLocal::new())
+                    SchwarzBuffers::PerThread(Box::new(ThreadLocal::new()))
                 }
             });
 

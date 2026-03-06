@@ -152,12 +152,12 @@ pub(crate) fn build_entry(
                 *approx_schur,
                 *dense_threshold,
             )?;
-            FeLocalSolver::SchurComplement(BlockElimSolver::new(
+            FeLocalSolver::SchurComplement(Box::new(BlockElimSolver::new(
                 cross_tab,
                 reduced.elimination.inv_diag_elim,
                 reduced.factor,
                 reduced.elimination.eliminate_q,
-            ))
+            )))
         }
     };
     Ok(SubdomainEntry::new(domain.core, solver))

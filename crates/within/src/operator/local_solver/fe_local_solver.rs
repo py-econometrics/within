@@ -10,7 +10,7 @@ pub enum FeLocalSolver {
     FullSddm { solver: ApproxCholSolver },
     /// Schur complement reduction + reduced-system factor solve
     /// (dense anchored for tiny Schur when enabled, otherwise sparse ApproxChol).
-    SchurComplement(BlockElimSolver),
+    SchurComplement(Box<BlockElimSolver>),
 }
 
 impl LocalSolver for FeLocalSolver {

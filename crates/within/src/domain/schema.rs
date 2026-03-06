@@ -57,8 +57,7 @@ impl<S: ObservationStore> WeightedDesign<S> {
             }
         }
 
-        for factor in 0..store.n_factors() {
-            let n_levels_factor = n_levels[factor];
+        for (factor, &n_levels_factor) in n_levels.iter().enumerate().take(store.n_factors()) {
             for uid in 0..store.n_unique() {
                 let level = store.unique_level(uid, factor);
                 if (level as usize) >= n_levels_factor {
