@@ -48,7 +48,7 @@ print(f"converged={result.converged}  iters={result.iterations}")
 |---|---|
 | `CG(tol, maxiter, preconditioner)` | Preconditioned conjugate gradient. Default with Schwarz preconditioner. |
 | `LSMR(tol, maxiter, conlim)` | Handles singular Gramians natively. |
-| `GMRES(preconditioner, tol, maxiter, restart)` | Right-preconditioned GMRES. Requires a multiplicative Schwarz preconditioner. |
+| `GMRES(tol, maxiter, restart, preconditioner)` | Right-preconditioned GMRES. Requires a multiplicative Schwarz preconditioner. |
 
 ### Preconditioners
 
@@ -96,18 +96,12 @@ MIT
 
 ## References
 
-- Correia, S. (2017). Linear Models with High-Dimensional Fixed Effects: An
-  Efficient and Feasible Estimator.
-  https://hdl.handle.net/10.2139/ssrn.3129010
-
-- Gaure, S. (2013). OLS with Multiple High Dimensional Category Variables.
-  *Computational Statistics & Data Analysis*, 66, 2--17.
-
+- Correia, Sergio. "A feasible estimator for linear models with multi-way fixed effects." *Preprint* at http://scorreia.com/research/hdfe.pdf (2016).
 - Gao, Y., Kyng, R. & Spielman, D. A. (2025). AC(k): Robust Solution of
   Laplacian Equations by Randomized Approximate Cholesky Factorization.
   *SIAM Journal on Scientific Computing*.
-
+- Gaure, Simen. "OLS with multiple high dimensional category variables." *Computational Statistics & Data Analysis* 66 (2013): 8-18.
+- Guimaraes, Paulo, and Pedro Portugal. "A simple feasible procedure to fit models with high-dimensional fixed effects." *The Stata Journal* 10.4 (2010): 628-649.
+- Toselli & Widlund (2005). *Domain Decomposition Methods — Algorithms and Theory*. Springer.
 - Xu, J. (1992). Iterative Methods by Space Decomposition and Subspace
   Correction. *SIAM Review*, 34(4), 581--613.
-
-- Toselli & Widlund (2005). *Domain Decomposition Methods — Algorithms and Theory*. Springer.
