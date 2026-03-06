@@ -8,6 +8,7 @@ const PAR_SPMV_CHUNK: usize = 4096;
 ///
 /// Stores C (n_q × n_r) or C^T (n_r × n_q). All column indices within each
 /// row are sorted in ascending order.
+#[derive(Clone)]
 pub(crate) struct CsrBlock {
     pub(crate) indptr: Vec<u32>,
     pub(crate) indices: Vec<u32>,

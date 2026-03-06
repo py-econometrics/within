@@ -111,6 +111,31 @@ pub fn build_multiplicative_schwarz<'a, S: ObservationStore>(
     )?)
 }
 
+/// Build a one-level multiplicative Schwarz from pre-built domains and Gramian.
+///
+/// The caller has already built `domain_pairs` (via parallel observation scan)
+/// and composed the explicit Gramian from the pair blocks. This builder only
+/// constructs local solvers and wires the `SparseGramianUpdater`.
+pub(crate) fn build_multiplicative_schwarz_from_parts<'a>(
+    domain_pairs: Vec<(Subdomain, CrossTab)>,
+    gramian: &'a super::gramian::Gramian,
+    n_dofs: usize,
+    config: &Config,
+    local_solver: &LocalSolverConfig,
+    symmetric: bool,
+) -> WithinResult<FeMultSchwarzSparse<'a>> {
+    let builder = Builder::new(*config);
+    let local_solver = local_solver.clone();
+    let entries: WithinResult<Vec<SubdomainEntry<FeLocalSolver>>> = domain_pairs
+        .into_par_iter()
+        .map(|(domain, cross_tab)| build_entry(domain, cross_tab, &builder, &local_solver))
+        .collect();
+    let updater = SparseGramianUpdater::new(&gramian.matrix);
+    Ok(MultiplicativeSchwarzPreconditioner::new(
+        entries?, updater, n_dofs, symmetric,
+    )?)
+}
+
 /// Build a one-level multiplicative Schwarz preconditioner using an explicit
 /// Gramian for both domain construction and residual updates.
 ///

@@ -4,6 +4,7 @@ use schwarz_precond::SparseMatrix;
 
 use super::{PartitionWeights, Subdomain, WeightedDesign};
 use crate::observation::{FactorMeta, ObservationStore};
+use crate::operator::csr_block::CsrBlock;
 use crate::operator::gramian::CrossTab;
 
 /// Build local subdomains (with pre-built CrossTabs) for pairs of factors.
@@ -62,6 +63,115 @@ pub(crate) fn build_local_domains_from_gramian(
     compute_partition_weights(&mut domain_pairs, n_dofs);
 
     domain_pairs
+}
+
+/// Per-pair block data sufficient to compose the full Gramian CSR.
+///
+/// Produced alongside subdomain construction so that the same observation scan
+/// serves both domain decomposition and Gramian assembly.
+pub(crate) struct PairBlockData {
+    pub q: usize,
+    pub r: usize,
+    pub diag_q: Vec<f64>,
+    pub diag_r: Vec<f64>,
+    /// Off-diagonal block C_qr (compact indices).
+    pub c: CsrBlock,
+    /// Transpose C_qr^T (compact indices).
+    pub ct: CsrBlock,
+    /// Global DOF indices of active q-levels (length = c.nrows).
+    pub q_global: Vec<u32>,
+    /// Global DOF indices of active r-levels (length = c.ncols).
+    pub r_global: Vec<u32>,
+}
+
+/// Build local subdomains AND collect per-pair block data for Gramian composition.
+///
+/// Combines the parallel observation scan (for domain construction) with block
+/// extraction (for Gramian assembly) in a single pass per pair. This avoids the
+/// sequential `Gramian::build()` bottleneck while still producing the explicit
+/// Gramian CSR needed for operator apply and residual updates.
+pub(crate) fn build_domains_and_gramian_blocks<S: ObservationStore>(
+    design: &WeightedDesign<S>,
+    star_ref: Option<usize>,
+) -> (Vec<(Subdomain, CrossTab)>, Vec<PairBlockData>) {
+    use rayon::prelude::*;
+
+    let n_factors = design.n_factors();
+    let pairs = build_pairs(n_factors, star_ref);
+
+    type PairResult = (Vec<(Subdomain, CrossTab)>, Option<PairBlockData>);
+    let results: Vec<PairResult> = pairs
+        .par_iter()
+        .map(|&(q, r)| domains_and_block_for_pair(design, q, r))
+        .collect();
+
+    let mut domain_pairs = Vec::new();
+    let mut blocks = Vec::new();
+    for (domains, block) in results {
+        domain_pairs.extend(domains);
+        if let Some(b) = block {
+            blocks.push(b);
+        }
+    }
+
+    compute_partition_weights(&mut domain_pairs, design.n_dofs);
+    (domain_pairs, blocks)
+}
+
+fn domains_and_block_for_pair<S: ObservationStore>(
+    design: &WeightedDesign<S>,
+    q: usize,
+    r: usize,
+) -> (Vec<(Subdomain, CrossTab)>, Option<PairBlockData>) {
+    let (full_ct, l2g) = match CrossTab::build_for_pair(design, q, r) {
+        Some(pair) => pair,
+        None => return (Vec::new(), None),
+    };
+
+    let n_q_full = full_ct.n_q();
+
+    // Extract block data for Gramian composition before component splitting
+    let block_data = PairBlockData {
+        q,
+        r,
+        diag_q: full_ct.diag_q.clone(),
+        diag_r: full_ct.diag_r.clone(),
+        c: full_ct.c.clone(),
+        ct: full_ct.ct.clone(),
+        q_global: l2g[..n_q_full].to_vec(),
+        r_global: l2g[n_q_full..].to_vec(),
+    };
+
+    let factor_pair = (q, r);
+    let components = full_ct.bipartite_connected_components();
+
+    let cross_tabs: Vec<CrossTab> = if components.len() == 1 {
+        vec![full_ct]
+    } else {
+        components
+            .iter()
+            .map(|comp| full_ct.extract_component(comp))
+            .collect()
+    };
+
+    let domains = components
+        .iter()
+        .zip(cross_tabs)
+        .map(|(comp, comp_ct)| {
+            let comp_l2g: Vec<usize> = comp
+                .q_indices
+                .iter()
+                .map(|&i| l2g[i] as usize)
+                .chain(comp.r_indices.iter().map(|&i| l2g[n_q_full + i] as usize))
+                .collect();
+
+            let core =
+                super::SubdomainCore::uniform(comp_l2g.into_iter().map(|g| g as u32).collect());
+            (Subdomain { factor_pair, core }, comp_ct)
+        })
+        .collect();
+
+    (domains, Some(block_data))
 }
 
 fn domains_for_pair_from_gramian(
@@ -352,5 +462,54 @@ mod tests {
             }
         }
         assert!(covered.iter().all(|&c| c), "Not all DOFs covered");
+    }
+
+    // -----------------------------------------------------------------------
+    // build_domains_and_gramian_blocks + from_pair_blocks tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_composed_gramian_matches_observation_gramian() {
+        use schwarz_precond::Operator;
+
+        for design in [
+            make_test_design(),
+            FixedEffectsDesign::new(
+                vec![vec![0, 1, 2, 0, 1], vec![0, 1, 2, 3, 0]],
+                vec![3, 4],
+                5,
+            )
+            .unwrap(),
+        ] {
+            let obs_gramian = Gramian::build(&design);
+            let (_domains, blocks) = build_domains_and_gramian_blocks(&design, None);
+            let composed = Gramian::from_pair_blocks(&blocks, &design.factors, design.n_dofs);
+
+            // Compare matvec output for several test vectors
+            let n = design.n_dofs;
+            for seed in 0..3 {
+                let x: Vec<f64> = (0..n).map(|i| (i * 7 + seed) as f64 * 0.1).collect();
+                let mut y_obs = vec![0.0; n];
+                let mut y_composed = vec![0.0; n];
+                obs_gramian.apply(&x, &mut y_obs);
+                composed.apply(&x, &mut y_composed);
+                for i in 0..n {
+                    assert!(
+                        (y_obs[i] - y_composed[i]).abs() < 1e-12,
+                        "matvec mismatch at DOF {i}: obs={}, composed={}",
+                        y_obs[i],
+                        y_composed[i],
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_composed_gramian_domains_match() {
+        let design = make_test_design();
+        let obs_domains = build_local_domains(&design, None);
+        let (composed_domains, _blocks) = build_domains_and_gramian_blocks(&design, None);
+        assert_domain_sets_equal(&obs_domains, &composed_domains);
     }
 }

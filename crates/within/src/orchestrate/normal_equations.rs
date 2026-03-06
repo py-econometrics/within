@@ -8,11 +8,11 @@ use schwarz_precond::Operator;
 use crate::config::{
     CgPreconditioner, GmresPreconditioner, SchwarzConfig, SolverMethod, SolverParams,
 };
-use crate::domain::WeightedDesign;
+use crate::domain::{build_domains_and_gramian_blocks, WeightedDesign};
 use crate::observation::ObservationStore;
 use crate::operator::gramian::{Gramian, GramianOperator};
 use crate::operator::schwarz::{
-    build_multiplicative_schwarz, build_multiplicative_schwarz_with_gramian, build_schwarz_default,
+    build_multiplicative_schwarz, build_multiplicative_schwarz_from_parts, build_schwarz_default,
     FeSchwarz,
 };
 use crate::WithinResult;
@@ -179,7 +179,7 @@ fn dispatch_cg<S: ObservationStore>(
 
 fn dispatch_gmres<S: ObservationStore>(
     design: &WeightedDesign<S>,
-    gramian_op: &GramianOperator<'_, S>,
+    _gramian_op: &GramianOperator<'_, S>,
     rhs: &[f64],
     params: &SolverParams,
     preconditioner: &GmresPreconditioner,
@@ -187,15 +187,19 @@ fn dispatch_gmres<S: ObservationStore>(
 ) -> WithinResult<TimedMethodSolve> {
     match preconditioner {
         GmresPreconditioner::MultiplicativeOneLevel(cfg) => {
-            let gramian = Gramian::build(design);
-            let schwarz = build_multiplicative_schwarz_with_gramian(
-                design,
+            // Build domains (parallel observation scan) and compose Gramian from blocks.
+            // This replaces the sequential Gramian::build() + extract-from-gramian path.
+            let (domain_pairs, blocks) = build_domains_and_gramian_blocks(design, None);
+            let gramian = Gramian::from_pair_blocks(&blocks, &design.factors, design.n_dofs);
+            let schwarz = build_multiplicative_schwarz_from_parts(
+                domain_pairs,
                 &gramian,
+                design.n_dofs,
                 &cfg.approx_chol,
                 &cfg.local_solver,
                 false,
             )?;
-            run_gmres_preconditioned(gramian_op, &schwarz, rhs, params, restart)
+            run_gmres_preconditioned(&gramian, &schwarz, rhs, params, restart)
         }
     }
 }
