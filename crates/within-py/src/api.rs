@@ -1,11 +1,9 @@
-//! Python API: typed config classes, solve entrypoint, and synthetic data generation.
+//! Python API: typed config classes and solve entrypoint.
 
 use approx_chol::Config;
 use numpy::ndarray::{Array1, Array2, ArrayView2};
-use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
+use numpy::{IntoPyArray, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
-use rand::rngs::SmallRng;
-use rand::{Rng, SeedableRng};
 
 use within::config::{
     ApproxSchurConfig, CgPreconditioner, GmresPreconditioner, LocalSolverConfig, SchwarzConfig,
@@ -15,7 +13,6 @@ use within::domain::WeightedDesign;
 use within::observation::{
     CompressedStore, FactorMajorStore, ObservationStore, ObservationWeights, RowMajorStore,
 };
-use within::operator::design::DesignOperator;
 use within::orchestrate::{solve_least_squares, SolveResult};
 use within::WithinResult;
 
@@ -440,57 +437,4 @@ fn into_py_result(py: Python<'_>, result: SolveResult) -> PySolveResult {
         time_setup: result.time_setup,
         time_solve: result.time_solve,
     }
-}
-
-fn randn(rng: &mut SmallRng) -> f64 {
-    let u1: f64 = 1.0 - rng.random::<f64>();
-    let u2: f64 = rng.random::<f64>();
-    (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
-}
-
-#[pyfunction]
-#[allow(clippy::type_complexity)]
-#[pyo3(signature = (n_levels, n_rows, seed=None))]
-pub fn py_generate_synthetic_data<'py>(
-    py: Python<'py>,
-    n_levels: Vec<usize>,
-    n_rows: usize,
-    seed: Option<u64>,
-) -> PyResult<(
-    Bound<'py, PyArray2<usize>>,
-    Bound<'py, PyArray1<f64>>,
-    Bound<'py, PyArray1<f64>>,
-)> {
-    let mut rng = match seed {
-        Some(s) => SmallRng::seed_from_u64(s),
-        None => SmallRng::from_os_rng(),
-    };
-
-    let q_count = n_levels.len();
-    let mut cats = Array2::<usize>::zeros((n_rows, q_count));
-    for (q, &nl) in n_levels.iter().enumerate() {
-        for i in 0..n_rows {
-            cats[(i, q)] = rng.random_range(0..nl);
-        }
-    }
-
-    let store = FactorMajorStore::from_array(cats.view(), ObservationWeights::Unit);
-    let design = WeightedDesign::from_store(store, &n_levels)
-        .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
-    let op = DesignOperator::new(&design);
-
-    let n_dofs = design.n_dofs;
-    let true_coeffs: Vec<f64> = (0..n_dofs).map(|_| randn(&mut rng)).collect();
-
-    let mut y = vec![0.0f64; n_rows];
-    op.matvec_d(&true_coeffs, &mut y);
-    for yi in &mut y {
-        *yi += 0.1 * randn(&mut rng);
-    }
-
-    let cats_py = cats.into_pyarray(py);
-    let coeffs_py = Array1::from_vec(true_coeffs).into_pyarray(py);
-    let y_py = Array1::from_vec(y).into_pyarray(py);
-
-    Ok((cats_py, coeffs_py, y_py))
 }

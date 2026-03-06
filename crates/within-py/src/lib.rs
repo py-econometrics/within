@@ -14,6 +14,5 @@ fn _within(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<api::PyApproxCholConfig>()?;
     m.add_class::<api::PyApproxSchurConfig>()?;
     m.add_function(wrap_pyfunction!(api::py_solve, m)?)?;
-    m.add_function(wrap_pyfunction!(api::py_generate_synthetic_data, m)?)?;
     Ok(())
 }

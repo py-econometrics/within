@@ -8,7 +8,6 @@ from within._within import (
     OneLevelSchwarz,
     MultiplicativeOneLevelSchwarz,
     py_solve as _py_solve,
-    py_generate_synthetic_data as _py_generate_synthetic_data,
 )
 
 
@@ -28,10 +27,6 @@ def solve(categories, y, config=None, *, n_levels=None, weights=None, layout=Non
     return _py_solve(categories, y, config, n_levels=n_levels, weights=weights, layout=layout)
 
 
-def generate_synthetic_data(n_levels_per_factor, n_rows, *, seed=42):
-    """Generate synthetic fixed-effects data."""
-    return _py_generate_synthetic_data(n_levels_per_factor, n_rows, seed=seed)
-
 
 __all__ = [
     "ApproxCholConfig",
@@ -43,5 +38,4 @@ __all__ = [
     "OneLevelSchwarz",
     "MultiplicativeOneLevelSchwarz",
     "solve",
-    "generate_synthetic_data",
 ]

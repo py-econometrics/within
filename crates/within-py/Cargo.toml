@@ -12,4 +12,3 @@ within = { path = "../within" }
 approx-chol = { workspace = true }
 pyo3 = { version = "0.25", features = ["extension-module"] }
 numpy = "0.25"
-rand = { version = "0.9", features = ["small_rng"] }

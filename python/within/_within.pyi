@@ -98,9 +98,3 @@ def py_solve(
     weights: NDArray[np.float64] | None = None,
     layout: str | None = None,
 ) -> SolveResult: ...
-
-def py_generate_synthetic_data(
-    n_levels: list[int],
-    n_rows: int,
-    seed: int | None = None,
-) -> tuple[NDArray[np.uintp], NDArray[np.float64], NDArray[np.float64]]: ...
