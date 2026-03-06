@@ -6,9 +6,11 @@ use schwarz_precond::solve::vec_norm;
 use schwarz_precond::{IdentityOperator, Operator};
 
 use crate::config::{GmresPrecond, LocalSolverConfig, OperatorRepr, SolverMethod, SolverParams};
-use crate::domain::{build_domains_and_gramian_blocks, build_local_domains, WeightedDesign};
+use crate::domain::{
+    build_domains_and_gramian_blocks, build_local_domains, Subdomain, WeightedDesign,
+};
 use crate::observation::ObservationStore;
-use crate::operator::gramian::{Gramian, GramianOperator};
+use crate::operator::gramian::{CrossTab, Gramian, GramianOperator};
 use crate::operator::schwarz::{
     build_additive, build_multiplicative_obs, build_multiplicative_sparse, DomainSource,
 };
@@ -140,6 +142,154 @@ pub(super) struct NormalEquationSolver<'a> {
 
 type BoxedOperator<'a> = Box<dyn Operator + 'a>;
 type AssembledSystem<'a> = (BoxedOperator<'a>, Option<BoxedOperator<'a>>);
+type DomainPairs = Vec<(Subdomain, CrossTab)>;
+
+trait AssemblyMode<'a>: Sized {
+    type Prepared;
+
+    fn unpreconditioned(self) -> AssembledSystem<'a>;
+    fn prepare(self) -> Self::Prepared;
+    fn additive(
+        prepared: Self::Prepared,
+        config: &LocalSolverConfig,
+    ) -> WithinResult<AssembledSystem<'a>>;
+    fn multiplicative(
+        prepared: Self::Prepared,
+        config: &LocalSolverConfig,
+    ) -> WithinResult<AssembledSystem<'a>>;
+}
+
+struct ExplicitAssembly<'a, S: ObservationStore> {
+    design: &'a WeightedDesign<S>,
+}
+
+struct ExplicitPrepared {
+    domains: DomainPairs,
+    gramian: Gramian,
+    n_dofs: usize,
+}
+
+impl<'a, S: ObservationStore> ExplicitAssembly<'a, S> {
+    fn new(design: &'a WeightedDesign<S>) -> Self {
+        Self { design }
+    }
+}
+
+impl<'a, S: ObservationStore> AssemblyMode<'a> for ExplicitAssembly<'a, S> {
+    type Prepared = ExplicitPrepared;
+
+    fn unpreconditioned(self) -> AssembledSystem<'a> {
+        (Box::new(Gramian::build(self.design)), None)
+    }
+
+    fn prepare(self) -> Self::Prepared {
+        let (domains, blocks) = build_domains_and_gramian_blocks(self.design, None);
+        let gramian = Gramian::from_pair_blocks(&blocks, &self.design.factors, self.design.n_dofs);
+        ExplicitPrepared {
+            domains,
+            gramian,
+            n_dofs: self.design.n_dofs,
+        }
+    }
+
+    fn additive(
+        prepared: Self::Prepared,
+        config: &LocalSolverConfig,
+    ) -> WithinResult<AssembledSystem<'a>> {
+        let preconditioner = build_additive(
+            DomainSource::<S>::FromParts(prepared.domains),
+            prepared.n_dofs,
+            config,
+        )?;
+        Ok((Box::new(prepared.gramian), Some(Box::new(preconditioner))))
+    }
+
+    fn multiplicative(
+        prepared: Self::Prepared,
+        config: &LocalSolverConfig,
+    ) -> WithinResult<AssembledSystem<'a>> {
+        let preconditioner = build_multiplicative_sparse(
+            DomainSource::<S>::FromParts(prepared.domains),
+            &prepared.gramian,
+            prepared.n_dofs,
+            config,
+        )?;
+        Ok((Box::new(prepared.gramian), Some(Box::new(preconditioner))))
+    }
+}
+
+struct ImplicitAssembly<'a, S: ObservationStore> {
+    design: &'a WeightedDesign<S>,
+}
+
+struct ImplicitPrepared<'a, S: ObservationStore> {
+    design: &'a WeightedDesign<S>,
+    domains: DomainPairs,
+}
+
+impl<'a, S: ObservationStore> ImplicitAssembly<'a, S> {
+    fn new(design: &'a WeightedDesign<S>) -> Self {
+        Self { design }
+    }
+}
+
+impl<'a, S: ObservationStore> AssemblyMode<'a> for ImplicitAssembly<'a, S> {
+    type Prepared = ImplicitPrepared<'a, S>;
+
+    fn unpreconditioned(self) -> AssembledSystem<'a> {
+        (Box::new(GramianOperator::new(self.design)), None)
+    }
+
+    fn prepare(self) -> Self::Prepared {
+        ImplicitPrepared {
+            design: self.design,
+            domains: build_local_domains(self.design, None),
+        }
+    }
+
+    fn additive(
+        prepared: Self::Prepared,
+        config: &LocalSolverConfig,
+    ) -> WithinResult<AssembledSystem<'a>> {
+        let preconditioner = build_additive(
+            DomainSource::<S>::FromParts(prepared.domains),
+            prepared.design.n_dofs,
+            config,
+        )?;
+        Ok((
+            Box::new(GramianOperator::new(prepared.design)),
+            Some(Box::new(preconditioner)),
+        ))
+    }
+
+    fn multiplicative(
+        prepared: Self::Prepared,
+        config: &LocalSolverConfig,
+    ) -> WithinResult<AssembledSystem<'a>> {
+        let preconditioner = build_multiplicative_obs(
+            DomainSource::<S>::FromParts(prepared.domains),
+            prepared.design,
+            config,
+        )?;
+        Ok((
+            Box::new(GramianOperator::new(prepared.design)),
+            Some(Box::new(preconditioner)),
+        ))
+    }
+}
+
+fn assemble_system<'a, A: AssemblyMode<'a>>(
+    assembly: A,
+    preconditioner: PreconditionerBuild<'_>,
+) -> WithinResult<AssembledSystem<'a>> {
+    match preconditioner {
+        PreconditionerBuild::None => Ok(assembly.unpreconditioned()),
+        PreconditionerBuild::Additive(config) => A::additive(assembly.prepare(), config),
+        PreconditionerBuild::Multiplicative(config) => {
+            A::multiplicative(assembly.prepare(), config)
+        }
+    }
+}
 
 impl<'a> NormalEquationSolver<'a> {
     pub(super) fn operator(&self) -> &dyn Operator {
@@ -190,61 +340,9 @@ fn build_operator_and_preconditioner<'a, S: ObservationStore>(
     preconditioner: PreconditionerBuild<'_>,
 ) -> WithinResult<AssembledSystem<'a>> {
     match operator {
-        OperatorRepr::Explicit => build_explicit_system(design, preconditioner),
-        OperatorRepr::Implicit => build_implicit_system(design, preconditioner),
+        OperatorRepr::Explicit => assemble_system(ExplicitAssembly::new(design), preconditioner),
+        OperatorRepr::Implicit => assemble_system(ImplicitAssembly::new(design), preconditioner),
     }
-}
-
-fn build_explicit_system<'a, S: ObservationStore>(
-    design: &'a WeightedDesign<S>,
-    preconditioner: PreconditionerBuild<'_>,
-) -> WithinResult<AssembledSystem<'a>> {
-    if matches!(preconditioner, PreconditionerBuild::None) {
-        return Ok((Box::new(Gramian::build(design)), None));
-    }
-
-    let (domains, blocks) = build_domains_and_gramian_blocks(design, None);
-    let gramian = Gramian::from_pair_blocks(&blocks, &design.factors, design.n_dofs);
-    let preconditioner = match preconditioner {
-        PreconditionerBuild::None => None,
-        PreconditionerBuild::Additive(cfg) => Some(Box::new(build_additive(
-            DomainSource::<S>::FromParts(domains),
-            design.n_dofs,
-            cfg,
-        )?) as Box<dyn Operator>),
-        PreconditionerBuild::Multiplicative(cfg) => Some(Box::new(build_multiplicative_sparse(
-            DomainSource::<S>::FromParts(domains),
-            &gramian,
-            design.n_dofs,
-            cfg,
-        )?) as Box<dyn Operator>),
-    };
-    Ok((Box::new(gramian), preconditioner))
-}
-
-fn build_implicit_system<'a, S: ObservationStore>(
-    design: &'a WeightedDesign<S>,
-    preconditioner: PreconditionerBuild<'_>,
-) -> WithinResult<AssembledSystem<'a>> {
-    if matches!(preconditioner, PreconditionerBuild::None) {
-        return Ok((Box::new(GramianOperator::new(design)), None));
-    }
-
-    let domains = build_local_domains(design, None);
-    let preconditioner = match preconditioner {
-        PreconditionerBuild::None => None,
-        PreconditionerBuild::Additive(cfg) => Some(Box::new(build_additive(
-            DomainSource::<S>::FromParts(domains),
-            design.n_dofs,
-            cfg,
-        )?) as Box<dyn Operator>),
-        PreconditionerBuild::Multiplicative(cfg) => Some(Box::new(build_multiplicative_obs(
-            DomainSource::<S>::FromParts(domains),
-            design,
-            cfg,
-        )?) as Box<dyn Operator>),
-    };
-    Ok((Box::new(GramianOperator::new(design)), preconditioner))
 }
 
 /// Solve normal equations `G x = rhs` where `G = D^T W D`.

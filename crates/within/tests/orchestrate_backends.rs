@@ -1,5 +1,5 @@
 use within::{
-    solve_least_squares, LocalSolverConfig, OperatorRepr, SolverMethod, SolverParams,
+    solve_normal_equations, LocalSolverConfig, OperatorRepr, SolverMethod, SolverParams,
     WeightedDesign,
 };
 
@@ -16,11 +16,11 @@ fn test_solve_row_major_matches_factor_major() {
     let fm = FactorMajorStore::new(fl.clone(), ObservationWeights::Unit, 5)
         .expect("valid factor-major store");
     let dm_fm = WeightedDesign::from_store(fm, &n_levels).expect("valid factor-major design");
-    let r_fm = solve_least_squares(&dm_fm, &y, &params).expect("fm solve");
+    let r_fm = solve_response(&dm_fm, &y, &params).expect("fm solve");
 
     let rm = RowMajorStore::from_factor_major(fl, ObservationWeights::Unit, 5);
     let dm_rm = WeightedDesign::from_store(rm, &n_levels).expect("valid row-major design");
-    let r_rm = solve_least_squares(&dm_rm, &y, &params).expect("rm solve");
+    let r_rm = solve_response(&dm_rm, &y, &params).expect("rm solve");
 
     assert!(r_fm.converged && r_rm.converged, "Both must converge");
     for (a, b) in r_fm.x.iter().zip(r_rm.x.iter()) {
@@ -41,11 +41,11 @@ fn test_solve_compressed_matches_factor_major() {
     let fm = FactorMajorStore::new(fl.clone(), ObservationWeights::Unit, 5)
         .expect("valid factor-major store");
     let dm_fm = WeightedDesign::from_store(fm, &n_levels).expect("valid factor-major design");
-    let r_fm = solve_least_squares(&dm_fm, &y, &params).expect("fm solve");
+    let r_fm = solve_response(&dm_fm, &y, &params).expect("fm solve");
 
     let cs = CompressedStore::from_factor_major(fl, ObservationWeights::Unit, 5);
     let dm_cs = WeightedDesign::from_store(cs, &n_levels).expect("valid compressed design");
-    let r_cs = solve_least_squares(&dm_cs, &y, &params).expect("compressed solve");
+    let r_cs = solve_response(&dm_cs, &y, &params).expect("compressed solve");
 
     assert!(r_fm.converged && r_cs.converged, "Both must converge");
     for (a, b) in r_fm.x.iter().zip(r_cs.x.iter()) {
@@ -75,15 +75,15 @@ fn test_solve_cg_preconditioned_all_backends() {
     let fm = FactorMajorStore::new(fl.clone(), ObservationWeights::Unit, 5)
         .expect("valid factor-major store");
     let dm_fm = WeightedDesign::from_store(fm, &n_levels).expect("valid factor-major design");
-    let r_fm = solve_least_squares(&dm_fm, &y, &params).expect("fm solve");
+    let r_fm = solve_response(&dm_fm, &y, &params).expect("fm solve");
 
     let rm = RowMajorStore::from_factor_major(fl.clone(), ObservationWeights::Unit, 5);
     let dm_rm = WeightedDesign::from_store(rm, &n_levels).expect("valid row-major design");
-    let r_rm = solve_least_squares(&dm_rm, &y, &params).expect("rm solve");
+    let r_rm = solve_response(&dm_rm, &y, &params).expect("rm solve");
 
     let cs = CompressedStore::from_factor_major(fl, ObservationWeights::Unit, 5);
     let dm_cs = WeightedDesign::from_store(cs, &n_levels).expect("valid compressed design");
-    let r_cs = solve_least_squares(&dm_cs, &y, &params).expect("compressed solve");
+    let r_cs = solve_response(&dm_cs, &y, &params).expect("compressed solve");
 
     assert!(r_fm.converged, "FM must converge");
     assert!(r_rm.converged, "RM must converge");
@@ -101,4 +101,14 @@ fn test_solve_cg_preconditioned_all_backends() {
             "FM vs CS solution mismatch: {a} vs {b}"
         );
     }
+}
+
+fn solve_response<S: within::ObservationStore>(
+    design: &WeightedDesign<S>,
+    y: &[f64],
+    params: &SolverParams,
+) -> within::WithinResult<within::SolveResult> {
+    let mut rhs = vec![0.0; design.n_dofs];
+    design.rmatvec_wdt(y, &mut rhs);
+    solve_normal_equations(design, &rhs, params)
 }

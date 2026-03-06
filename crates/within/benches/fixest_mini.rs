@@ -9,7 +9,7 @@ use within::config::{LocalSolverConfig, OperatorRepr, SolverMethod, SolverParams
 use within::domain::WeightedDesign;
 use within::observation::{FactorMajorStore, ObservationWeights};
 use within::operator::gramian::{Gramian, GramianOperator};
-use within::orchestrate::solve_least_squares;
+use within::orchestrate::solve_normal_equations;
 
 const MINI_MAXITER: usize = 20;
 const MINI_TOL: f64 = 1e-6;
@@ -129,12 +129,11 @@ fn run_cg_1l(design: &WeightedDesign<FactorMajorStore>, y: &[f64], ac2: bool) {
         Config {
             seed: 42,
             split_merge: Some(2),
-            ..Default::default()
         }
     } else {
         Config {
             seed: 42,
-            ..Default::default()
+            split_merge: None,
         }
     };
 
@@ -151,7 +150,9 @@ fn run_cg_1l(design: &WeightedDesign<FactorMajorStore>, y: &[f64], ac2: bool) {
         maxiter: MINI_MAXITER,
     };
 
-    let result = solve_least_squares(design, y, &params).expect("least-squares solve");
+    let mut rhs = vec![0.0; design.n_dofs];
+    design.rmatvec_wdt(y, &mut rhs);
+    let result = solve_normal_equations(design, &rhs, &params).expect("normal-equation solve");
     assert!(result.converged, "solver did not converge");
     assert!(result.final_residual.is_finite(), "non-finite residual");
     assert!(

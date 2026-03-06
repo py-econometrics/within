@@ -29,7 +29,8 @@ pub fn demean_batch<S: ObservationStore + Sync>(
     let solves: WithinResult<Vec<(Vec<f64>, bool)>> = columns
         .par_iter()
         .map(|y_col| {
-            let rhs = design.normal_equation_rhs(y_col);
+            let mut rhs = vec![0.0; design.n_dofs];
+            design.rmatvec_wdt(y_col, &mut rhs);
             let solve = solver.solve(&rhs)?;
             let mut fitted = vec![0.0; y_col.len()];
             design.matvec_d(&solve.x, &mut fitted);

@@ -10,7 +10,7 @@ use rand::{Rng, SeedableRng};
 use within::config::{GmresPrecond, LocalSolverConfig, OperatorRepr, SolverMethod, SolverParams};
 use within::domain::WeightedDesign;
 use within::observation::{FactorMajorStore, ObservationWeights};
-use within::orchestrate::solve_least_squares;
+use within::orchestrate::solve_normal_equations;
 
 const SMOKE_MAXITER: usize = 20;
 const SMOKE_TOL: f64 = 1e-6;
@@ -98,12 +98,11 @@ fn one_level_local_solver(ac2: bool) -> LocalSolverConfig {
         Config {
             seed: 42,
             split_merge: Some(2),
-            ..Default::default()
         }
     } else {
         Config {
             seed: 42,
-            ..Default::default()
+            split_merge: None,
         }
     };
     LocalSolverConfig::SchurComplement {
@@ -119,7 +118,9 @@ fn run_smoke(
     params: &SolverParams,
     label: &str,
 ) {
-    let result = solve_least_squares(design, y, params).expect("least-squares solve");
+    let mut rhs = vec![0.0; design.n_dofs];
+    design.rmatvec_wdt(y, &mut rhs);
+    let result = solve_normal_equations(design, &rhs, params).expect("normal-equation solve");
     assert!(result.converged, "{label}: solver did not converge");
     assert!(
         result.final_residual.is_finite(),

@@ -209,13 +209,6 @@ impl<S: ObservationStore> WeightedDesign<S> {
         self.scatter_add(x, |i| self.store.weight(i) * r[i]);
     }
 
-    /// Form the normal-equation RHS `D^T W y`.
-    pub(crate) fn normal_equation_rhs(&self, y: &[f64]) -> Vec<f64> {
-        let mut rhs = vec![0.0; self.n_dofs];
-        self.rmatvec_wdt(y, &mut rhs);
-        rhs
-    }
-
     /// Diagonal of D^T·W·D (weighted level counts).
     ///
     /// Uses compressed iteration for backends that deduplicate observations.

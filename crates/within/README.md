@@ -86,7 +86,7 @@ The crate is organized in four layers:
    the generic `schwarz-precond` framework.
 
 4. **`orchestrate`** -- End-to-end solve entry points (`solve`,
-   `solve_weighted`, `solve_least_squares`, `solve_normal_equations`) with
+   `solve_weighted`, `solve_normal_equations`) with
    typed configuration (`SolverParams`, `SolverMethod`, `GmresPrecond`,
    `OperatorRepr`).
 

@@ -2,7 +2,7 @@ use crate::domain::WeightedDesign;
 use crate::observation::{FactorMajorStore, ObservationWeights};
 use crate::WithinResult;
 
-use super::least_squares::solve_least_squares;
+use super::normal_equations::solve_normal_equations;
 use super::SolveResult;
 use crate::config::SolverParams;
 
@@ -22,8 +22,8 @@ fn design_from_categories(
 /// `n_levels[q]` is the number of distinct levels in factor `q`.
 /// `y` is the response vector (length = n_obs).
 ///
-/// Constructs a `FactorMajorStore` and `WeightedDesign` internally, then delegates
-/// to [`solve_least_squares`].
+/// Constructs a `FactorMajorStore` and `WeightedDesign` internally, forms
+/// `D^T W y`, and solves the normal equations.
 pub fn solve(
     categories: &[Vec<u32>],
     n_levels: &[usize],
@@ -31,7 +31,7 @@ pub fn solve(
     params: &SolverParams,
 ) -> WithinResult<SolveResult> {
     let design = design_from_categories(categories, n_levels, y.len(), ObservationWeights::Unit)?;
-    solve_least_squares(&design, y, params)
+    solve_response(&design, y, params)
 }
 
 /// Solve weighted fixed-effects least squares from raw category data.
@@ -50,5 +50,15 @@ pub fn solve_weighted(
         y.len(),
         ObservationWeights::Dense(weights.to_vec()),
     )?;
-    solve_least_squares(&design, y, params)
+    solve_response(&design, y, params)
+}
+
+fn solve_response<S: crate::observation::ObservationStore>(
+    design: &WeightedDesign<S>,
+    y: &[f64],
+    params: &SolverParams,
+) -> WithinResult<SolveResult> {
+    let mut rhs = vec![0.0; design.n_dofs];
+    design.rmatvec_wdt(y, &mut rhs);
+    solve_normal_equations(design, &rhs, params)
 }

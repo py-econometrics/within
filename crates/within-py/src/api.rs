@@ -11,7 +11,7 @@ use within::domain::WeightedDesign;
 use within::observation::{
     CompressedStore, FactorMajorStore, ObservationStore, ObservationWeights, RowMajorStore,
 };
-use within::orchestrate::{solve_least_squares, SolveResult};
+use within::orchestrate::{solve_normal_equations, SolveResult};
 use within::WithinResult;
 
 #[pyclass(frozen)]
@@ -477,7 +477,9 @@ fn solve_with_design<S: ObservationStore>(
     y: &[f64],
     params: &SolverParams,
 ) -> WithinResult<SolveResult> {
-    solve_least_squares(design, y, params)
+    let mut rhs = vec![0.0; design.n_dofs];
+    design.rmatvec_wdt(y, &mut rhs);
+    solve_normal_equations(design, &rhs, params)
 }
 
 fn into_py_result(py: Python<'_>, result: SolveResult) -> PySolveResult {

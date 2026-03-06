@@ -1,5 +1,5 @@
 use within::{
-    solve_least_squares, FixedEffectsDesign, LocalSolverConfig, OperatorRepr, SolverMethod,
+    solve_normal_equations, FixedEffectsDesign, LocalSolverConfig, OperatorRepr, SolverMethod,
     SolverParams,
 };
 
@@ -25,7 +25,9 @@ fn test_least_squares_weighted_cg_preconditioned() {
         tol: 1e-8,
         maxiter: 1000,
     };
-    let result = solve_least_squares(&design, &y, &params).expect("weighted cg solve");
+    let mut rhs = vec![0.0; design.n_dofs];
+    design.rmatvec_wdt(&y, &mut rhs);
+    let result = solve_normal_equations(&design, &rhs, &params).expect("weighted cg solve");
     common::assert_converged_with_small_residual(&result, 1e-6);
     common::assert_solution_finite(&result);
 }

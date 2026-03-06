@@ -1,7 +1,4 @@
-use within::{
-    solve_least_squares, solve_normal_equations, LocalSolverConfig, OperatorRepr, SolverMethod,
-    SolverParams,
-};
+use within::{solve_normal_equations, LocalSolverConfig, OperatorRepr, SolverMethod, SolverParams};
 
 #[path = "common/orchestrate_helpers.rs"]
 mod common;
@@ -55,7 +52,9 @@ fn test_least_squares_cg() {
         tol: 1e-8,
         maxiter: 1000,
     };
-    let result = solve_least_squares(&design, &y, &params).expect("least squares cg");
+    let mut rhs = vec![0.0; design.n_dofs];
+    design.rmatvec_wdt(&y, &mut rhs);
+    let result = solve_normal_equations(&design, &rhs, &params).expect("least squares cg");
     assert!(result.converged, "CG LS did not converge");
     common::assert_solution_finite(&result);
 }
