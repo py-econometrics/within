@@ -362,7 +362,6 @@ mod tests {
         let approx_chol = Config {
             split_merge: Some(8),
             seed: 42,
-            ..Default::default()
         };
         let mut samples = Vec::with_capacity(iters);
         for _ in 0..iters {
@@ -386,7 +385,6 @@ mod tests {
         let approx_chol = Config {
             split_merge: Some(8),
             seed: 42,
-            ..Default::default()
         };
         let reduced =
             build_reduced_schur_factor(&cross_tab, approx_chol, approx_schur, dense_threshold)

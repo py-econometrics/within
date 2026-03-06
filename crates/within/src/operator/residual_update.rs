@@ -47,11 +47,6 @@ impl<'a, S: ObservationStore> ObservationSpaceUpdater<'a, S> {
 }
 
 impl<S: ObservationStore> ResidualUpdater for ObservationSpaceUpdater<'_, S> {
-    fn reset(&mut self, _r_original: &[f64]) {
-        // No-op: the observation-space updater is stateless — each update()
-        // is a pure incremental r -= D^T W D delta, with no accumulator.
-    }
-
     fn update(&mut self, global_indices: &[u32], weighted_correction: &[f64], r_work: &mut [f64]) {
         let store = &self.design.store;
         let factors = &self.design.factors;
@@ -112,6 +107,11 @@ impl<S: ObservationStore> ResidualUpdater for ObservationSpaceUpdater<'_, S> {
             dof_to_pos[gi as usize] = SENTINEL;
         }
     }
+
+    fn reset(&mut self, _r_original: &[f64]) {
+        // No-op: the observation-space updater is stateless — each update()
+        // is a pure incremental r -= D^T W D delta, with no accumulator.
+    }
 }
 
 /// Sparse Gramian residual updater for multiplicative Schwarz.
@@ -133,10 +133,6 @@ impl SparseGramianUpdater {
 }
 
 impl ResidualUpdater for SparseGramianUpdater {
-    fn reset(&mut self, _r_original: &[f64]) {
-        // No-op: each update is a pure incremental r -= G * delta.
-    }
-
     fn update(&mut self, global_indices: &[u32], weighted_correction: &[f64], r_work: &mut [f64]) {
         let indptr = self.gramian.indptr();
         let indices = self.gramian.indices();
@@ -154,6 +150,10 @@ impl ResidualUpdater for SparseGramianUpdater {
                 r_work[indices[idx] as usize] -= c * data[idx];
             }
         }
+    }
+
+    fn reset(&mut self, _r_original: &[f64]) {
+        // No-op: each update is a pure incremental r -= G * delta.
     }
 }
 

@@ -88,7 +88,6 @@ fn test_compare_factorization_strategies() {
             Config {
                 seed: 42,
                 split_merge: Some(2),
-                ..Default::default()
             },
             "AC2(2,2)",
         ),

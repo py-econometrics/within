@@ -12,7 +12,6 @@ pub fn solve_least_squares<S: ObservationStore>(
     y: &[f64],
     params: &SolverParams,
 ) -> WithinResult<SolveResult> {
-    let mut rhs = vec![0.0; design.n_dofs];
-    design.rmatvec_wdt(y, &mut rhs);
+    let rhs = design.normal_equation_rhs(y);
     solve_normal_equations(design, &rhs, params)
 }

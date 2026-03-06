@@ -370,21 +370,20 @@ mod tests {
         assert_eq!(a.matrix.data(), b.matrix.data());
 
         let dense = sparse_to_dense(&a.matrix);
-        let n = dense.len();
-        for i in 0..n {
+        for (i, row) in dense.iter().enumerate() {
             let mut row_sum = 0.0;
-            for j in 0..n {
-                row_sum += dense[i][j];
+            for (j, &value) in row.iter().enumerate() {
+                row_sum += value;
                 assert!(
-                    (dense[i][j] - dense[j][i]).abs() <= 1e-12,
+                    (value - dense[j][i]).abs() <= 1e-12,
                     "matrix not symmetric at ({i}, {j})"
                 );
                 if i != j {
-                    assert!(dense[i][j] <= 1e-12, "off-diagonal should be non-positive");
+                    assert!(value <= 1e-12, "off-diagonal should be non-positive");
                 }
             }
             assert!(row_sum.abs() <= 1e-10, "row {i} sum is not near zero");
-            assert!(dense[i][i] >= -1e-12, "diagonal should be non-negative");
+            assert!(row[i] >= -1e-12, "diagonal should be non-negative");
         }
     }
 }

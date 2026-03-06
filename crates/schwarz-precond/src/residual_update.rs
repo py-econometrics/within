@@ -49,11 +49,6 @@ impl<'a, A: Operator> OperatorResidualUpdater<'a, A> {
 }
 
 impl<A: Operator> ResidualUpdater for OperatorResidualUpdater<'_, A> {
-    fn reset(&mut self, r_original: &[f64]) {
-        self.r_original.copy_from_slice(r_original);
-        self.y_accum.iter_mut().for_each(|v| *v = 0.0);
-    }
-
     fn update(&mut self, global_indices: &[u32], weighted_correction: &[f64], r_work: &mut [f64]) {
         // 1. Scatter correction into accumulator
         for (k, &gi) in global_indices.iter().enumerate() {
@@ -68,6 +63,11 @@ impl<A: Operator> ResidualUpdater for OperatorResidualUpdater<'_, A> {
         {
             *r = ro - ay;
         }
+    }
+
+    fn reset(&mut self, r_original: &[f64]) {
+        self.r_original.copy_from_slice(r_original);
+        self.y_accum.iter_mut().for_each(|v| *v = 0.0);
     }
 }
 

@@ -1,12 +1,11 @@
 use rayon::prelude::*;
-use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::config::{LocalSolverConfig, OperatorRepr, SolverMethod, SolverParams};
+use crate::config::SolverParams;
 use crate::domain::WeightedDesign;
 use crate::observation::ObservationStore;
 use crate::WithinResult;
 
-use super::normal_equations::{build_normal_equation_system, solve_with_normal_equation_system};
+use super::normal_equations::NormalEquationSolver;
 
 /// Result of a batch demean operation (multiple RHS columns).
 #[derive(Debug, Clone)]
@@ -19,38 +18,38 @@ pub struct BatchDemeanResult {
 
 /// Demean multiple RHS columns in parallel, building Schwarz once.
 ///
-/// The Schwarz preconditioner is built once, then shared across rayon threads
-/// for parallel per-column CG solves. Same algorithm as `within::solve`.
+/// The normal-equation solver is built once, then shared across rayon threads
+/// for parallel per-column solves. Same algorithm as `within::solve`.
 pub fn demean_batch<S: ObservationStore + Sync>(
     design: &WeightedDesign<S>,
     columns: &[Vec<f64>],
     params: &SolverParams,
 ) -> WithinResult<BatchDemeanResult> {
-    let all_converged = AtomicBool::new(true);
-    let system = build_normal_equation_system(design, params)?;
-    let results: Vec<Vec<f64>> = columns
+    let solver = NormalEquationSolver::build(design, params)?;
+    let solves: WithinResult<Vec<(Vec<f64>, bool)>> = columns
         .par_iter()
         .map(|y_col| {
-            let mut rhs = vec![0.0; design.n_dofs];
-            design.rmatvec_wdt(y_col, &mut rhs);
-            let solve = solve_with_normal_equation_system(&system, &rhs, params)
-                .expect("normal-equation solve failed");
-            if !solve.converged {
-                all_converged.store(false, Ordering::Relaxed);
-            }
+            let rhs = design.normal_equation_rhs(y_col);
+            let solve = solver.solve(&rhs)?;
             let mut fitted = vec![0.0; y_col.len()];
             design.matvec_d(&solve.x, &mut fitted);
-            y_col
+            let demeaned = y_col
                 .iter()
                 .zip(fitted.iter())
                 .map(|(y, f)| y - f)
-                .collect()
+                .collect();
+            Ok((demeaned, solve.converged))
         })
+        .collect::<Vec<_>>()
+        .into_iter()
         .collect();
+    let solves = solves?;
+    let all_converged = solves.iter().all(|(_, converged)| *converged);
+    let columns = solves.into_iter().map(|(column, _)| column).collect();
 
     Ok(BatchDemeanResult {
-        columns: results,
-        all_converged: all_converged.load(Ordering::Relaxed),
+        columns,
+        all_converged,
     })
 }
 
@@ -69,12 +68,9 @@ pub fn demean_batch_default(
     let design = FixedEffectsDesign::new_weighted(categories, n_levels, n_obs, weights)?;
 
     let params = SolverParams {
-        method: SolverMethod::Cg {
-            preconditioner: Some(LocalSolverConfig::cg_default()),
-            operator: OperatorRepr::Implicit,
-        },
         tol,
         maxiter,
+        ..Default::default()
     };
 
     demean_batch(&design, columns, &params)
