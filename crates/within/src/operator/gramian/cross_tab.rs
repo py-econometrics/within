@@ -5,7 +5,7 @@ use schwarz_precond::SparseMatrix;
 use super::super::csr_block::CsrBlock;
 use super::csr_assembly::{accumulate_cross_block, CompactIndexMaps};
 use crate::domain::WeightedDesign;
-use crate::observation::ObservationStore;
+use crate::observation::{FactorMeta, ObservationStore};
 
 // ---------------------------------------------------------------------------
 // BipartiteComponent / SchurData — supporting types for CrossTab
@@ -257,6 +257,156 @@ impl CrossTab {
         Some((cross_tab, active.local_to_global))
     }
 
+    /// Build a CrossTab for a factor pair by extracting blocks from an explicit Gramian.
+    ///
+    /// For factor pair (q, r), the Gramian encodes:
+    /// - `G[fq.offset+j, fq.offset+j]` → `diag_q[j]`
+    /// - `G[fr.offset+k, fr.offset+k]` → `diag_r[k]`
+    /// - `G[fq.offset+j, fr.offset+k]` → `C[j, k]` (off-diagonal block)
+    ///
+    /// Extracts `C` as a `CsrBlock`, computes `C^T` via transpose, and builds
+    /// the compact `local_to_global` mapping (skipping levels with zero diagonal).
+    /// Returns `None` if no active levels in either factor.
+    pub fn from_gramian_block(
+        gramian: &SparseMatrix,
+        fq: &FactorMeta,
+        fr: &FactorMeta,
+    ) -> Option<(Self, Vec<u32>)> {
+        let indptr = gramian.indptr();
+        let indices = gramian.indices();
+        let data = gramian.data();
+
+        let r_lo = fr.offset as u32;
+        let r_hi = (fr.offset + fr.n_levels) as u32;
+
+        // Extract diagonals and detect active levels
+        let mut full_diag_q = vec![0.0; fq.n_levels];
+        let mut full_diag_r = vec![0.0; fr.n_levels];
+        let mut active_q = vec![false; fq.n_levels];
+        let mut active_r = vec![false; fr.n_levels];
+
+        for j in 0..fq.n_levels {
+            let row = fq.offset + j;
+            let start = indptr[row] as usize;
+            let end = indptr[row + 1] as usize;
+            for idx in start..end {
+                let col = indices[idx] as usize;
+                if col == row {
+                    full_diag_q[j] = data[idx];
+                    if data[idx] != 0.0 {
+                        active_q[j] = true;
+                    }
+                }
+            }
+        }
+
+        for k in 0..fr.n_levels {
+            let row = fr.offset + k;
+            let start = indptr[row] as usize;
+            let end = indptr[row + 1] as usize;
+            for idx in start..end {
+                let col = indices[idx] as usize;
+                if col == row {
+                    full_diag_r[k] = data[idx];
+                    if data[idx] != 0.0 {
+                        active_r[k] = true;
+                    }
+                }
+            }
+        }
+
+        // Build compact index maps
+        let mut q_map = vec![u32::MAX; fq.n_levels];
+        let mut n_q = 0usize;
+        for (j, &a) in active_q.iter().enumerate() {
+            if a {
+                q_map[j] = n_q as u32;
+                n_q += 1;
+            }
+        }
+
+        let mut r_map = vec![u32::MAX; fr.n_levels];
+        let mut n_r = 0usize;
+        for (k, &a) in active_r.iter().enumerate() {
+            if a {
+                r_map[k] = n_r as u32;
+                n_r += 1;
+            }
+        }
+
+        if n_q == 0 || n_r == 0 {
+            return None;
+        }
+
+        // Build local_to_global: q-levels first, then r-levels
+        let mut local_to_global = Vec::with_capacity(n_q + n_r);
+        for (j, &a) in active_q.iter().enumerate() {
+            if a {
+                local_to_global.push((fq.offset + j) as u32);
+            }
+        }
+        for (k, &a) in active_r.iter().enumerate() {
+            if a {
+                local_to_global.push((fr.offset + k) as u32);
+            }
+        }
+
+        // Extract compact diagonals
+        let diag_q: Vec<f64> = (0..fq.n_levels)
+            .filter(|&j| active_q[j])
+            .map(|j| full_diag_q[j])
+            .collect();
+        let diag_r: Vec<f64> = (0..fr.n_levels)
+            .filter(|&k| active_r[k])
+            .map(|k| full_diag_r[k])
+            .collect();
+
+        // Extract C block: iterate q-rows, filter columns in r-range, remap both
+        let mut c_indptr = vec![0u32; n_q + 1];
+        let mut c_indices = Vec::new();
+        let mut c_data = Vec::new();
+
+        for j in 0..fq.n_levels {
+            if !active_q[j] {
+                continue;
+            }
+            let compact_q = q_map[j] as usize;
+            let row = fq.offset + j;
+            let start = indptr[row] as usize;
+            let end = indptr[row + 1] as usize;
+            for idx in start..end {
+                let col = indices[idx];
+                if col >= r_lo && col < r_hi {
+                    let k = (col - r_lo) as usize;
+                    if r_map[k] != u32::MAX {
+                        c_indices.push(r_map[k]);
+                        c_data.push(data[idx]);
+                    }
+                }
+            }
+            c_indptr[compact_q + 1] = c_indices.len() as u32;
+        }
+
+        let c = CsrBlock {
+            indptr: c_indptr,
+            indices: c_indices,
+            data: c_data,
+            nrows: n_q,
+            ncols: n_r,
+        };
+        let ct = c.transpose();
+
+        Some((
+            CrossTab {
+                c,
+                ct,
+                diag_q,
+                diag_r,
+            },
+            local_to_global,
+        ))
+    }
+
     /// Find connected components in the bipartite graph defined by C.
     ///
     /// Uses DFS on CSR(C) (q->r edges) and CSR(C^T) (r->q edges).
@@ -382,5 +532,160 @@ impl CrossTab {
             diag_q,
             diag_r,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::{FixedEffectsDesign, WeightedDesign};
+    use crate::observation::{FactorMajorStore, ObservationWeights};
+    use crate::operator::gramian::Gramian;
+
+    fn assert_cross_tabs_equal(a: &CrossTab, b: &CrossTab) {
+        assert_eq!(a.n_q(), b.n_q(), "n_q mismatch");
+        assert_eq!(a.n_r(), b.n_r(), "n_r mismatch");
+        for (i, (av, bv)) in a.diag_q.iter().zip(&b.diag_q).enumerate() {
+            assert!(
+                (av - bv).abs() < 1e-12,
+                "diag_q[{i}] mismatch: {av} vs {bv}"
+            );
+        }
+        for (i, (av, bv)) in a.diag_r.iter().zip(&b.diag_r).enumerate() {
+            assert!(
+                (av - bv).abs() < 1e-12,
+                "diag_r[{i}] mismatch: {av} vs {bv}"
+            );
+        }
+        assert_eq!(a.c.indptr, b.c.indptr, "C indptr mismatch");
+        assert_eq!(a.c.indices, b.c.indices, "C indices mismatch");
+        for (i, (av, bv)) in a.c.data.iter().zip(&b.c.data).enumerate() {
+            assert!(
+                (av - bv).abs() < 1e-12,
+                "C data[{i}] mismatch: {av} vs {bv}"
+            );
+        }
+    }
+
+    fn make_2fe_design() -> FixedEffectsDesign {
+        FixedEffectsDesign::new(
+            vec![vec![0, 1, 2, 0, 1], vec![0, 1, 2, 3, 0]],
+            vec![3, 4],
+            5,
+        )
+        .expect("valid 2FE design")
+    }
+
+    fn make_3fe_design() -> FixedEffectsDesign {
+        FixedEffectsDesign::new(
+            vec![
+                vec![0, 1, 2, 0, 1, 2],
+                vec![0, 1, 0, 1, 0, 1],
+                vec![0, 0, 1, 1, 0, 1],
+            ],
+            vec![3, 2, 2],
+            6,
+        )
+        .expect("valid 3FE design")
+    }
+
+    #[test]
+    fn test_from_gramian_block_matches_build_for_pair_2fe() {
+        let design = make_2fe_design();
+        let gramian = Gramian::build(&design);
+
+        let (ct_obs, l2g_obs) = CrossTab::build_for_pair(&design, 0, 1).unwrap();
+        let (ct_gram, l2g_gram) =
+            CrossTab::from_gramian_block(&gramian.matrix, &design.factors[0], &design.factors[1])
+                .unwrap();
+
+        assert_eq!(l2g_obs, l2g_gram, "local_to_global mismatch");
+        assert_cross_tabs_equal(&ct_obs, &ct_gram);
+    }
+
+    #[test]
+    fn test_from_gramian_block_matches_build_for_pair_3fe() {
+        let design = make_3fe_design();
+        let gramian = Gramian::build(&design);
+
+        for q in 0..3 {
+            for r in (q + 1)..3 {
+                let obs_result = CrossTab::build_for_pair(&design, q, r);
+                let gram_result = CrossTab::from_gramian_block(
+                    &gramian.matrix,
+                    &design.factors[q],
+                    &design.factors[r],
+                );
+
+                match (obs_result, gram_result) {
+                    (Some((ct_obs, l2g_obs)), Some((ct_gram, l2g_gram))) => {
+                        assert_eq!(l2g_obs, l2g_gram, "l2g mismatch for pair ({q},{r})");
+                        assert_cross_tabs_equal(&ct_obs, &ct_gram);
+                    }
+                    (None, None) => {}
+                    _ => panic!("one returned None and the other Some for pair ({q},{r})"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_from_gramian_block_single_component() {
+        // Fully connected 2FE design: single component
+        let design =
+            FixedEffectsDesign::new(vec![vec![0, 1, 0, 1], vec![0, 0, 1, 1]], vec![2, 2], 4)
+                .expect("valid design");
+        let gramian = Gramian::build(&design);
+
+        let (ct_gram, _) =
+            CrossTab::from_gramian_block(&gramian.matrix, &design.factors[0], &design.factors[1])
+                .unwrap();
+
+        let components = ct_gram.bipartite_connected_components();
+        assert_eq!(components.len(), 1, "expected single component");
+    }
+
+    #[test]
+    fn test_from_gramian_block_multiple_components() {
+        // Design with two disconnected components:
+        // factor 0: [0, 0, 1, 1]   factor 1: [0, 1, 2, 3]
+        // levels (0,0), (0,1) form one component; (1,2), (1,3) form another
+        let design =
+            FixedEffectsDesign::new(vec![vec![0, 0, 1, 1], vec![0, 1, 2, 3]], vec![2, 4], 4)
+                .expect("valid design");
+        let gramian = Gramian::build(&design);
+
+        let (ct_obs, _) = CrossTab::build_for_pair(&design, 0, 1).unwrap();
+        let (ct_gram, _) =
+            CrossTab::from_gramian_block(&gramian.matrix, &design.factors[0], &design.factors[1])
+                .unwrap();
+
+        let comps_obs = ct_obs.bipartite_connected_components();
+        let comps_gram = ct_gram.bipartite_connected_components();
+        assert_eq!(comps_obs.len(), comps_gram.len());
+        for (co, cg) in comps_obs.iter().zip(&comps_gram) {
+            assert_eq!(co.q_indices, cg.q_indices);
+            assert_eq!(co.r_indices, cg.r_indices);
+        }
+    }
+
+    #[test]
+    fn test_from_gramian_block_weighted() {
+        let fl = vec![vec![0u32, 1, 0, 1], vec![0, 0, 1, 1]];
+        let weights = vec![1.0, 2.0, 3.0, 4.0];
+        let n_levels = vec![2, 2];
+
+        let store = FactorMajorStore::new(fl, ObservationWeights::Dense(weights), 4)
+            .expect("valid weighted store");
+        let design = WeightedDesign::from_store(store, &n_levels).expect("valid weighted design");
+        let gramian = Gramian::build(&design);
+
+        let (ct_obs, l2g_obs) = CrossTab::build_for_pair(&design, 0, 1).unwrap();
+        let (ct_gram, l2g_gram) =
+            CrossTab::from_gramian_block(&gramian.matrix, &design.factors[0], &design.factors[1])
+                .unwrap();
+
+        assert_eq!(l2g_obs, l2g_gram);
+        assert_cross_tabs_equal(&ct_obs, &ct_gram);
     }
 }

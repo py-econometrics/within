@@ -10,8 +10,11 @@ use crate::config::{
 };
 use crate::domain::WeightedDesign;
 use crate::observation::ObservationStore;
-use crate::operator::gramian::GramianOperator;
-use crate::operator::schwarz::{build_multiplicative_schwarz, build_schwarz_default, FeSchwarz};
+use crate::operator::gramian::{Gramian, GramianOperator};
+use crate::operator::schwarz::{
+    build_multiplicative_schwarz, build_multiplicative_schwarz_with_gramian, build_schwarz_default,
+    FeSchwarz,
+};
 use crate::WithinResult;
 
 use super::common::{interpret_lsmr_istop, solve_and_assemble, TimingContext};
@@ -184,8 +187,14 @@ fn dispatch_gmres<S: ObservationStore>(
 ) -> WithinResult<TimedMethodSolve> {
     match preconditioner {
         GmresPreconditioner::MultiplicativeOneLevel(cfg) => {
-            let schwarz =
-                build_multiplicative_schwarz(design, &cfg.approx_chol, &cfg.local_solver, false)?;
+            let gramian = Gramian::build(design);
+            let schwarz = build_multiplicative_schwarz_with_gramian(
+                design,
+                &gramian,
+                &cfg.approx_chol,
+                &cfg.local_solver,
+                false,
+            )?;
             run_gmres_preconditioned(gramian_op, &schwarz, rhs, params, restart)
         }
     }

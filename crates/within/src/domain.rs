@@ -2,6 +2,7 @@ pub(crate) mod factor_pairs;
 mod schema;
 
 pub(crate) use factor_pairs::build_local_domains;
+pub(crate) use factor_pairs::build_local_domains_from_gramian;
 pub use schema::FixedEffectsDesign;
 pub use schema::WeightedDesign;
 

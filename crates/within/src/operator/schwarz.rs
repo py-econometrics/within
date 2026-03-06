@@ -16,12 +16,14 @@ use super::gramian::CrossTab;
 use super::local_solver::{
     ApproxCholSolver, BlockElimSolver, FeLocalSolver, LocalSolveStrategy, ReducedFactor,
 };
-use super::residual_update::ObservationSpaceUpdater;
+use super::residual_update::{ObservationSpaceUpdater, SparseGramianUpdater};
 use super::schur_complement::{
     ApproxSchurComplement, EliminationInfo, ExactSchurComplement, SchurComplement, SchurResult,
 };
 use crate::config::{ApproxSchurConfig, LocalSolverConfig};
-use crate::domain::{build_local_domains, Subdomain, WeightedDesign};
+use crate::domain::{
+    build_local_domains, build_local_domains_from_gramian, Subdomain, WeightedDesign,
+};
 use crate::observation::ObservationStore;
 use crate::{WithinError, WithinResult};
 
@@ -31,6 +33,10 @@ pub type FeSchwarz = SchwarzPreconditioner<FeLocalSolver>;
 /// Concrete multiplicative Schwarz type: one-level with observation-space residual updates.
 pub type FeMultSchwarz<'a, S> =
     MultiplicativeSchwarzPreconditioner<FeLocalSolver, ObservationSpaceUpdater<'a, S>>;
+
+/// Concrete multiplicative Schwarz type: one-level with explicit Gramian CSR residual updates.
+pub type FeMultSchwarzSparse<'a> =
+    MultiplicativeSchwarzPreconditioner<FeLocalSolver, SparseGramianUpdater<'a>>;
 
 // ---------------------------------------------------------------------------
 // FE-specific builders
@@ -99,6 +105,37 @@ pub fn build_multiplicative_schwarz<'a, S: ObservationStore>(
     let updater = ObservationSpaceUpdater::new(design);
     Ok(MultiplicativeSchwarzPreconditioner::new(
         entries,
+        updater,
+        design.n_dofs,
+        symmetric,
+    )?)
+}
+
+/// Build a one-level multiplicative Schwarz preconditioner using an explicit
+/// Gramian for both domain construction and residual updates.
+///
+/// Trades O(nnz) memory for faster setup (no observation re-scan) and faster
+/// per-iteration residual updates (CSR row scatter vs observation-space).
+/// Only suitable when the Gramian is sparse — dense Gramians will consume
+/// excessive memory.
+pub fn build_multiplicative_schwarz_with_gramian<'a, S: ObservationStore>(
+    design: &WeightedDesign<S>,
+    gramian: &'a super::gramian::Gramian,
+    config: &Config,
+    local_solver: &LocalSolverConfig,
+    symmetric: bool,
+) -> WithinResult<FeMultSchwarzSparse<'a>> {
+    let domain_pairs =
+        build_local_domains_from_gramian(&gramian.matrix, &design.factors, design.n_dofs, None);
+    let builder = Builder::new(*config);
+    let local_solver = local_solver.clone();
+    let entries: WithinResult<Vec<SubdomainEntry<FeLocalSolver>>> = domain_pairs
+        .into_par_iter()
+        .map(|(domain, cross_tab)| build_entry(domain, cross_tab, &builder, &local_solver))
+        .collect();
+    let updater = SparseGramianUpdater::new(&gramian.matrix);
+    Ok(MultiplicativeSchwarzPreconditioner::new(
+        entries?,
         updater,
         design.n_dofs,
         symmetric,
@@ -568,5 +605,46 @@ mod tests {
             "\nDefault dense threshold currently: {}",
             DEFAULT_DENSE_SCHUR_THRESHOLD
         );
+    }
+
+    #[test]
+    fn test_gramian_multiplicative_schwarz_matches_obs_schwarz() {
+        let design = FixedEffectsDesign::new(
+            vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]],
+            vec![3, 2],
+            5,
+        )
+        .expect("valid design");
+
+        let config = Config::default();
+        let local_solver = LocalSolverConfig::default();
+        let gramian = crate::operator::gramian::Gramian::build(&design);
+
+        let obs_schwarz =
+            build_multiplicative_schwarz(&design, &config, &local_solver, false).unwrap();
+        let gram_schwarz = build_multiplicative_schwarz_with_gramian(
+            &design,
+            &gramian,
+            &config,
+            &local_solver,
+            false,
+        )
+        .unwrap();
+
+        let r = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let mut z_obs = vec![0.0; 5];
+        let mut z_gram = vec![0.0; 5];
+
+        obs_schwarz.apply(&r, &mut z_obs);
+        gram_schwarz.apply(&r, &mut z_gram);
+
+        for i in 0..5 {
+            assert!(
+                (z_obs[i] - z_gram[i]).abs() < 1e-12,
+                "mismatch at DOF {i}: obs={}, gram={}",
+                z_obs[i],
+                z_gram[i],
+            );
+        }
     }
 }

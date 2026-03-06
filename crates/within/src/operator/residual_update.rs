@@ -1,4 +1,4 @@
-use schwarz_precond::ResidualUpdater;
+use schwarz_precond::{ResidualUpdater, SparseMatrix};
 
 use super::dof_obs_index::DofObservationIndex;
 use crate::domain::WeightedDesign;
@@ -108,6 +108,49 @@ impl<S: ObservationStore> ResidualUpdater for ObservationSpaceUpdater<'_, S> {
         }
         for &gi in global_indices {
             dof_to_pos[gi as usize] = SENTINEL;
+        }
+    }
+}
+
+/// Sparse Gramian residual updater for multiplicative Schwarz.
+///
+/// Uses the explicit Gramian CSR to perform residual updates via row scatter:
+/// `r -= G * delta` restricted to the touched rows.
+///
+/// Cost: O(nnz_touched) with contiguous CSR reads. No buffers, no bookkeeping.
+/// Trades O(nnz) memory (the Gramian) for faster per-iteration updates compared
+/// to the observation-space path.
+pub struct SparseGramianUpdater<'a> {
+    gramian: &'a SparseMatrix,
+}
+
+impl<'a> SparseGramianUpdater<'a> {
+    pub fn new(gramian: &'a SparseMatrix) -> Self {
+        Self { gramian }
+    }
+}
+
+impl ResidualUpdater for SparseGramianUpdater<'_> {
+    fn reset(&mut self, _r_original: &[f64]) {
+        // No-op: each update is a pure incremental r -= G * delta.
+    }
+
+    fn update(&mut self, global_indices: &[u32], weighted_correction: &[f64], r_work: &mut [f64]) {
+        let indptr = self.gramian.indptr();
+        let indices = self.gramian.indices();
+        let data = self.gramian.data();
+
+        for (k, &gi) in global_indices.iter().enumerate() {
+            let c = weighted_correction[k];
+            if c == 0.0 {
+                continue;
+            }
+            let row = gi as usize;
+            let start = indptr[row] as usize;
+            let end = indptr[row + 1] as usize;
+            for idx in start..end {
+                r_work[indices[idx] as usize] -= c * data[idx];
+            }
         }
     }
 }
@@ -292,6 +335,159 @@ mod tests {
                 "weighted mismatch at {i}: obs={}, op={}",
                 r_obs[i],
                 r_op[i],
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // SparseGramianUpdater tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sparse_gramian_updater_matches_obs_updater_single_step() {
+        let (design, gramian) = make_test_setup();
+        let n_dofs = design.n_dofs;
+
+        let mut obs_updater = ObservationSpaceUpdater::new(&design);
+        let mut sparse_updater = SparseGramianUpdater::new(&gramian.matrix);
+
+        let r_original = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
+        let mut r_obs = r_original.clone();
+        let mut r_sparse = r_original.clone();
+
+        let global_indices: Vec<u32> = vec![0, 1, 3, 4];
+        let correction = vec![0.5, -0.3, 0.2, 0.1];
+
+        obs_updater.update(&global_indices, &correction, &mut r_obs);
+        sparse_updater.update(&global_indices, &correction, &mut r_sparse);
+
+        for i in 0..n_dofs {
+            assert!(
+                (r_obs[i] - r_sparse[i]).abs() < 1e-12,
+                "mismatch at DOF {i}: obs={}, sparse={}",
+                r_obs[i],
+                r_sparse[i],
+            );
+        }
+    }
+
+    #[test]
+    fn test_sparse_gramian_updater_matches_obs_updater_two_steps() {
+        let (design, gramian) = make_test_setup();
+        let n_dofs = design.n_dofs;
+
+        let mut obs_updater = ObservationSpaceUpdater::new(&design);
+        let mut sparse_updater = SparseGramianUpdater::new(&gramian.matrix);
+
+        let r_original = vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0];
+        let mut r_obs = r_original.clone();
+        let mut r_sparse = r_original.clone();
+
+        // First subdomain correction
+        let gi1: Vec<u32> = vec![0, 1, 3, 4];
+        let c1 = vec![0.5, -0.3, 0.2, 0.1];
+        obs_updater.update(&gi1, &c1, &mut r_obs);
+        sparse_updater.update(&gi1, &c1, &mut r_sparse);
+
+        for i in 0..n_dofs {
+            assert!(
+                (r_obs[i] - r_sparse[i]).abs() < 1e-12,
+                "step 1 mismatch at DOF {i}: obs={}, sparse={}",
+                r_obs[i],
+                r_sparse[i],
+            );
+        }
+
+        // Second subdomain correction
+        let gi2: Vec<u32> = vec![2, 5, 6];
+        let c2 = vec![1.0, -0.5, 0.8];
+        obs_updater.update(&gi2, &c2, &mut r_obs);
+        sparse_updater.update(&gi2, &c2, &mut r_sparse);
+
+        for i in 0..n_dofs {
+            assert!(
+                (r_obs[i] - r_sparse[i]).abs() < 1e-12,
+                "step 2 mismatch at DOF {i}: obs={}, sparse={}",
+                r_obs[i],
+                r_sparse[i],
+            );
+        }
+    }
+
+    #[test]
+    fn test_sparse_gramian_updater_zero_correction_is_noop() {
+        let (_, gramian) = make_test_setup();
+        let mut updater = SparseGramianUpdater::new(&gramian.matrix);
+
+        let r_original = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
+        let mut r_work = r_original.clone();
+
+        let gi: Vec<u32> = vec![0, 1, 3];
+        let correction = vec![0.0, 0.0, 0.0];
+        updater.update(&gi, &correction, &mut r_work);
+
+        assert_eq!(r_work, r_original);
+    }
+
+    #[test]
+    fn test_sparse_gramian_updater_single_dof_correction() {
+        let (design, gramian) = make_test_setup();
+        let n_dofs = design.n_dofs;
+
+        let mut obs_updater = ObservationSpaceUpdater::new(&design);
+        let mut sparse_updater = SparseGramianUpdater::new(&gramian.matrix);
+
+        let r_original = vec![1.0; n_dofs];
+        let mut r_obs = r_original.clone();
+        let mut r_sparse = r_original.clone();
+
+        let gi: Vec<u32> = vec![0];
+        let correction = vec![1.0];
+        obs_updater.update(&gi, &correction, &mut r_obs);
+        sparse_updater.update(&gi, &correction, &mut r_sparse);
+
+        for i in 0..n_dofs {
+            assert!(
+                (r_obs[i] - r_sparse[i]).abs() < 1e-12,
+                "single-DOF mismatch at {i}: obs={}, sparse={}",
+                r_obs[i],
+                r_sparse[i],
+            );
+        }
+    }
+
+    #[test]
+    fn test_sparse_gramian_updater_weighted_design() {
+        use crate::observation::{FactorMajorStore, ObservationWeights};
+
+        let fl = vec![vec![0u32, 1, 0, 1], vec![0, 0, 1, 1]];
+        let weights = vec![1.0, 2.0, 3.0, 4.0];
+        let n_levels = vec![2, 2];
+
+        let store = FactorMajorStore::new(fl, ObservationWeights::Dense(weights), 4)
+            .expect("valid weighted store");
+        let design = WeightedDesign::from_store(store, &n_levels).expect("valid weighted design");
+        let gramian = Gramian::build(&design);
+        let n_dofs = design.n_dofs;
+
+        let mut obs_updater = ObservationSpaceUpdater::new(&design);
+        let mut sparse_updater = SparseGramianUpdater::new(&gramian.matrix);
+
+        let r_original = vec![5.0, 3.0, 7.0, 1.0];
+        let mut r_obs = r_original.clone();
+        let mut r_sparse = r_original.clone();
+
+        let gi: Vec<u32> = vec![0, 2];
+        let correction = vec![0.5, -0.3];
+        obs_updater.update(&gi, &correction, &mut r_obs);
+        sparse_updater.update(&gi, &correction, &mut r_sparse);
+
+        for i in 0..n_dofs {
+            assert!(
+                (r_obs[i] - r_sparse[i]).abs() < 1e-12,
+                "weighted mismatch at {i}: obs={}, sparse={}",
+                r_obs[i],
+                r_sparse[i],
             );
         }
     }
