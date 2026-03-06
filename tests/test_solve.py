@@ -6,9 +6,9 @@ import pytest
 from within import (
     CG,
     GMRES,
-    LSMR,
     AdditiveSchwarz,
     MultiplicativeSchwarz,
+    OperatorRepr,
     solve,
 )
 
@@ -37,18 +37,20 @@ class TestSolveDefaults:
 
     def test_explicit_cg(self, problem):
         cats, y = problem
-        result = solve(cats, y, CG())
-        assert result.converged
-
-    def test_lsmr(self, problem):
-        cats, y = problem
-        result = solve(cats, y, LSMR())
+        result = solve(cats, y, CG(operator=OperatorRepr.Explicit))
         assert result.converged
 
     def test_gmres(self, problem):
         cats, y = problem
         result = solve(cats, y, GMRES(preconditioner=MultiplicativeSchwarz()))
         assert result.converged
+
+    def test_rejects_multiplicative_cg(self, problem):
+        cats, y = problem
+        with pytest.raises(
+            TypeError, match="CG preconditioner must be AdditiveSchwarz or None"
+        ):
+            solve(cats, y, CG(preconditioner=MultiplicativeSchwarz()))
 
 
 class TestSolveWeighted:
@@ -57,13 +59,6 @@ class TestSolveWeighted:
         weights = np.random.exponential(1.0, size=len(y))
         result = solve(cats, y, weights=weights)
         assert result.converged
-
-    def test_weighted_lsmr(self, problem):
-        cats, y = problem
-        weights = np.ones(len(y))
-        result_w = solve(cats, y, LSMR(), weights=weights)
-        result_u = solve(cats, y, LSMR())
-        np.testing.assert_allclose(result_w.x, result_u.x, atol=1e-6)
 
 
 class TestNLevelsInference:
@@ -87,7 +82,7 @@ class TestPreconditioners:
 
     def test_multiplicative_schwarz(self, problem):
         cats, y = problem
-        result = solve(cats, y, CG(preconditioner=MultiplicativeSchwarz()))
+        result = solve(cats, y, GMRES(preconditioner=MultiplicativeSchwarz()))
         assert result.converged
 
 

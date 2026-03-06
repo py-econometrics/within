@@ -7,11 +7,10 @@
 use std::env;
 use std::time::Instant;
 
-use approx_chol::Config;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use schwarz_precond::solve::cg::cg_solve_preconditioned;
-use within::config::SchwarzConfig;
+use within::config::LocalSolverConfig;
 use within::domain::WeightedDesign;
 use within::observation::{FactorMajorStore, ObservationWeights};
 use within::{build_schwarz, GramianOperator};
@@ -105,17 +104,8 @@ fn main() {
 
     // Phase 2: Build Schwarz preconditioner
     let t = Instant::now();
-    let schwarz = build_schwarz(
-        &design,
-        &SchwarzConfig {
-            smoother: Config {
-                seed: 42,
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-    )
-    .expect("build schwarz preconditioner");
+    let schwarz = build_schwarz(&design, &LocalSolverConfig::cg_default())
+        .expect("build schwarz preconditioner");
     let rss_schwarz = rss_mb();
     let dt_schwarz = t.elapsed().as_secs_f64();
     println!("\n[2] Build Schwarz Preconditioner ({dt_schwarz:.3}s)");

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use schwarz_precond::{Operator, SparseMatrix};
 
 use super::accumulator::PairAccumulator;
@@ -9,7 +11,7 @@ use crate::observation::{FactorMeta, ObservationStore};
 impl Gramian {
     pub fn build<S: ObservationStore>(design: &WeightedDesign<S>) -> Self {
         Self {
-            matrix: build_full_matrix(design),
+            matrix: Arc::new(build_full_matrix(design)),
         }
     }
 
@@ -20,7 +22,7 @@ impl Gramian {
         r: usize,
     ) -> Self {
         Self {
-            matrix: build_pair_matrix(design, q, r),
+            matrix: Arc::new(build_pair_matrix(design, q, r)),
         }
     }
 
@@ -33,7 +35,12 @@ impl Gramian {
         component_global_indices: &[u32],
     ) -> Self {
         Self {
-            matrix: build_component_matrix(design, q, r, component_global_indices),
+            matrix: Arc::new(build_component_matrix(
+                design,
+                q,
+                r,
+                component_global_indices,
+            )),
         }
     }
 
@@ -49,7 +56,7 @@ impl Gramian {
         n_dofs: usize,
     ) -> Self {
         Self {
-            matrix: compose_gramian_from_blocks(blocks, factors, n_dofs),
+            matrix: Arc::new(compose_gramian_from_blocks(blocks, factors, n_dofs)),
         }
     }
 

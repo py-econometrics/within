@@ -1,7 +1,7 @@
 //! Simplest usage of the `within` crate.
 //!
 //! Generates synthetic fixed-effects data with two factors (100 levels each,
-//! 10 000 observations), then solves with the default solver (LSMR).
+//! 10 000 observations), then solves with the default solver.
 //!
 //! Run with: `cargo run --example solve_demo -p within`
 
@@ -36,11 +36,11 @@ fn main() {
         *yi += 0.01 * ((i * 7 + 3) % 13) as f64 - 0.06;
     }
 
-    // Solve with default parameters (LSMR, tol=1e-8, maxiter=1000).
+    // Solve with default parameters (CG + additive Schwarz, implicit operator).
     let params = SolverParams::default();
-    let result = solve(&categories, &n_levels, &y, &params, None).expect("solve");
+    let result = solve(&categories, &n_levels, &y, &params).expect("solve");
 
-    println!("=== Basic solve (LSMR, default params) ===");
+    println!("=== Basic solve (default params) ===");
     println!("  converged:  {}", result.converged);
     println!("  iterations: {}", result.iterations);
     println!("  residual:   {:.3e}", result.final_residual);

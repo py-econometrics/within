@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use schwarz_precond::solve::lsmr::vec_norm;
+use schwarz_precond::solve::vec_norm;
 use schwarz_precond::Operator;
 
 use super::SolveResult;
@@ -12,22 +12,8 @@ pub(super) struct TimingContext {
     pub(super) t_solve_start: Instant,
 }
 
-/// Interpret LSMR's `istop` convergence flag.
-///
-/// * 0 — initial x is exact solution
-/// * 1 — Ax - b is small enough (atol)
-/// * 2 — least-squares condition satisfied (atol)
-/// * 3 — condition number limit reached (conlim)
-/// * 4 — Ax - b small relative to b (atol)
-/// * 5 — least-squares small relative to norms (atol)
-/// * 6 — condition number exceeds conlim
-/// * 7 — iteration limit reached
-pub(super) fn interpret_lsmr_istop(istop: i32) -> bool {
-    matches!(istop, 0 | 1 | 2 | 4)
-}
-
 /// Finalize a solve: compute residual, assemble timings, and return `SolveResult`.
-pub(super) fn solve_and_assemble<A: Operator>(
+pub(super) fn solve_and_assemble<A: Operator + ?Sized>(
     op: &A,
     x: Vec<f64>,
     converged: bool,
@@ -51,7 +37,7 @@ pub(super) fn solve_and_assemble<A: Operator>(
 }
 
 /// Compute `||A x - b|| / ||b||` using caller-provided scratch.
-fn compute_relative_residual<A: Operator>(
+fn compute_relative_residual<A: Operator + ?Sized>(
     op: &A,
     x: &[f64],
     b: &[f64],

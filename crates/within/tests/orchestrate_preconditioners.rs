@@ -1,6 +1,6 @@
 use within::{
-    solve_normal_equations, LocalSolverConfig, OperatorRepr, Preconditioner, SchwarzConfig,
-    SolverMethod, SolverParams,
+    solve_normal_equations, GmresPrecond, LocalSolverConfig, OperatorRepr, SolverMethod,
+    SolverParams,
 };
 
 #[path = "common/orchestrate_helpers.rs"]
@@ -10,7 +10,7 @@ mod common;
 fn test_schwarz_builder_schur_complement_modes_end_to_end() {
     use approx_chol::Config;
     use schwarz_precond::solve::cg::cg_solve_preconditioned;
-    use schwarz_precond::solve::lsmr::vec_norm;
+    use schwarz_precond::solve::vec_norm;
     use schwarz_precond::Operator;
     use within::operator::gramian::GramianOperator;
     use within::operator::schwarz::build_schwarz;
@@ -19,10 +19,6 @@ fn test_schwarz_builder_schur_complement_modes_end_to_end() {
     let design = common::make_test_design();
     let rhs = common::make_rhs_from_unit_solution(&design);
     let gramian = GramianOperator::new(&design);
-    let smoother = Config {
-        seed: 7,
-        ..Default::default()
-    };
 
     let local_solvers = [
         LocalSolverConfig::SchurComplement {
@@ -44,11 +40,7 @@ fn test_schwarz_builder_schur_complement_modes_end_to_end() {
     ];
 
     for local_solver in local_solvers {
-        let config = SchwarzConfig {
-            smoother,
-            local_solver,
-        };
-        let schwarz = build_schwarz(&design, &config).expect("build schwarz preconditioner");
+        let schwarz = build_schwarz(&design, &local_solver).expect("build schwarz preconditioner");
         let result =
             cg_solve_preconditioned(&gramian, &schwarz, &rhs, 1e-8, 500).expect("cg solve");
         assert!(
@@ -76,7 +68,7 @@ fn test_compare_factorization_strategies() {
     use rand::rngs::SmallRng;
     use rand::{Rng, SeedableRng};
     use schwarz_precond::solve::cg::cg_solve_preconditioned;
-    use schwarz_precond::solve::lsmr::vec_norm;
+    use schwarz_precond::solve::vec_norm;
     use schwarz_precond::Operator;
     use std::time::Instant;
     use within::operator::design::DesignOperator;
@@ -84,8 +76,6 @@ fn test_compare_factorization_strategies() {
     use within::operator::schwarz::build_schwarz;
     use within::FixedEffectsDesign;
 
-    // Compare AC (standard) vs AC2 (multi-edge split).
-    // Ordering control is available via `low_level::Builder::ordering()`.
     let configs: Vec<(Config, &str)> = vec![
         (
             Config {
@@ -135,13 +125,15 @@ fn test_compare_factorization_strategies() {
         design_op.apply_adjoint(&y, &mut rhs);
         let gramian_op = GramianOperator::new(&design);
 
-        for (smoother, label) in &configs {
-            let config = SchwarzConfig {
-                smoother: *smoother,
-                local_solver: LocalSolverConfig::default(),
+        for (ac_config, label) in &configs {
+            let local_solver = LocalSolverConfig::SchurComplement {
+                approx_chol: *ac_config,
+                approx_schur: Some(within::ApproxSchurConfig::default()),
+                dense_threshold: within::DEFAULT_DENSE_SCHUR_THRESHOLD,
             };
             let t0 = Instant::now();
-            let schwarz = build_schwarz(&design, &config).expect("build schwarz preconditioner");
+            let schwarz =
+                build_schwarz(&design, &local_solver).expect("build schwarz preconditioner");
             let _setup_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
             let t1 = Instant::now();
@@ -173,20 +165,21 @@ fn test_compare_factorization_strategies() {
 }
 
 #[test]
-fn test_normal_equations_cg_multiplicative_one_level() {
+fn test_normal_equations_gmres_multiplicative_implicit() {
     let design = common::make_test_design();
     let rhs = common::make_rhs_from_unit_solution(&design);
 
     let params = SolverParams {
-        method: SolverMethod::Cg {
-            preconditioner: Preconditioner::Multiplicative(SchwarzConfig::default()),
+        method: SolverMethod::Gmres {
+            preconditioner: Some(GmresPrecond::Multiplicative(LocalSolverConfig::default())),
             operator: OperatorRepr::Implicit,
+            restart: 30,
         },
         tol: 1e-8,
         maxiter: 1000,
     };
-    let result = solve_normal_equations(&design, &rhs, None, &params)
-        .expect("cg multiplicative normal equations");
+    let result = solve_normal_equations(&design, &rhs, &params)
+        .expect("gmres multiplicative implicit normal equations");
     common::assert_converged_with_small_residual(&result, 1e-6);
     common::assert_solution_finite(&result);
 }
@@ -198,14 +191,14 @@ fn test_normal_equations_gmres_multiplicative_one_level() {
 
     let params = SolverParams {
         method: SolverMethod::Gmres {
-            preconditioner: Preconditioner::Multiplicative(SchwarzConfig::default()),
+            preconditioner: Some(GmresPrecond::Multiplicative(LocalSolverConfig::default())),
             operator: OperatorRepr::Explicit,
             restart: 30,
         },
         tol: 1e-8,
         maxiter: 1000,
     };
-    let result = solve_normal_equations(&design, &rhs, None, &params)
+    let result = solve_normal_equations(&design, &rhs, &params)
         .expect("gmres multiplicative normal equations");
     common::assert_converged_with_small_residual(&result, 1e-6);
     common::assert_solution_finite(&result);

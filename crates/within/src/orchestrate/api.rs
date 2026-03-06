@@ -1,6 +1,5 @@
 use crate::domain::WeightedDesign;
 use crate::observation::{FactorMajorStore, ObservationWeights};
-use crate::operator::schwarz::FeSchwarz;
 use crate::WithinResult;
 
 use super::least_squares::solve_least_squares;
@@ -30,10 +29,9 @@ pub fn solve(
     n_levels: &[usize],
     y: &[f64],
     params: &SolverParams,
-    prebuilt_schwarz: Option<&FeSchwarz>,
 ) -> WithinResult<SolveResult> {
     let design = design_from_categories(categories, n_levels, y.len(), ObservationWeights::Unit)?;
-    solve_least_squares(&design, y, prebuilt_schwarz, params)
+    solve_least_squares(&design, y, params)
 }
 
 /// Solve weighted fixed-effects least squares from raw category data.
@@ -45,7 +43,6 @@ pub fn solve_weighted(
     y: &[f64],
     weights: &[f64],
     params: &SolverParams,
-    prebuilt_schwarz: Option<&FeSchwarz>,
 ) -> WithinResult<SolveResult> {
     let design = design_from_categories(
         categories,
@@ -53,5 +50,5 @@ pub fn solve_weighted(
         y.len(),
         ObservationWeights::Dense(weights.to_vec()),
     )?;
-    solve_least_squares(&design, y, prebuilt_schwarz, params)
+    solve_least_squares(&design, y, params)
 }

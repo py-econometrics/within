@@ -24,7 +24,7 @@ pub struct CgResult {
 /// Unpreconditioned conjugate gradient: solve A x = b.
 ///
 /// `tol`: relative tolerance (||r|| / ||b|| < tol -> converged)
-pub fn cg_solve<A: Operator>(
+pub fn cg_solve<A: Operator + ?Sized>(
     operator: &A,
     b: &[f64],
     tol: f64,
@@ -42,7 +42,7 @@ pub fn cg_solve<A: Operator>(
 /// Left-preconditioned conjugate gradient: solve A x = b with preconditioner M.
 ///
 /// Applies M^{-1} (via `preconditioner.apply()`) to the residual each iteration.
-pub fn cg_solve_preconditioned<A: Operator, M: Operator>(
+pub fn cg_solve_preconditioned<A: Operator + ?Sized, M: Operator + ?Sized>(
     operator: &A,
     preconditioner: &M,
     b: &[f64],

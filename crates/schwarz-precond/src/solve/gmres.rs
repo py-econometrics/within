@@ -82,7 +82,7 @@ enum ArnoldiOutcome {
 /// Returns `(outcome, j)` where `j` is the number of Arnoldi steps completed
 /// in this cycle.  The caller is responsible for solving the upper-triangular
 /// system and updating `x` once, regardless of the outcome.
-fn arnoldi_cycle<A: Operator, M: Operator>(
+fn arnoldi_cycle<A: Operator + ?Sized, M: Operator + ?Sized>(
     operator: &A,
     preconditioner: &M,
     state: &mut ArnoldiState,
@@ -189,7 +189,7 @@ fn arnoldi_cycle<A: Operator, M: Operator>(
 /// and Givens rotations to solve the Hessenberg least-squares problem.
 ///
 /// `restart`: Krylov subspace dimension before restart (m in GMRES(m)).
-pub fn gmres_solve<A: Operator, M: Operator>(
+pub fn gmres_solve<A: Operator + ?Sized, M: Operator + ?Sized>(
     operator: &A,
     preconditioner: &M,
     b: &[f64],

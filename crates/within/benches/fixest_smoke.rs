@@ -7,9 +7,7 @@ use criterion::{
 };
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
-use within::config::{
-    LocalSolverConfig, OperatorRepr, Preconditioner, SchwarzConfig, SolverMethod, SolverParams,
-};
+use within::config::{GmresPrecond, LocalSolverConfig, OperatorRepr, SolverMethod, SolverParams};
 use within::domain::WeightedDesign;
 use within::observation::{FactorMajorStore, ObservationWeights};
 use within::orchestrate::solve_least_squares;
@@ -95,8 +93,8 @@ fn configure_smoke_group<'a>(c: &'a mut Criterion, name: &str) -> BenchmarkGroup
     group
 }
 
-fn approx_chol(ac2: bool) -> Config {
-    if ac2 {
+fn one_level_local_solver(ac2: bool) -> LocalSolverConfig {
+    let approx_chol = if ac2 {
         Config {
             seed: 42,
             split_merge: Some(2),
@@ -107,6 +105,11 @@ fn approx_chol(ac2: bool) -> Config {
             seed: 42,
             ..Default::default()
         }
+    };
+    LocalSolverConfig::SchurComplement {
+        approx_chol,
+        approx_schur: Some(within::ApproxSchurConfig::default()),
+        dense_threshold: within::DEFAULT_DENSE_SCHUR_THRESHOLD,
     }
 }
 
@@ -116,7 +119,7 @@ fn run_smoke(
     params: &SolverParams,
     label: &str,
 ) {
-    let result = solve_least_squares(design, y, None, params).expect("least-squares solve");
+    let result = solve_least_squares(design, y, params).expect("least-squares solve");
     assert!(result.converged, "{label}: solver did not converge");
     assert!(
         result.final_residual.is_finite(),
@@ -128,51 +131,17 @@ fn run_smoke(
     );
 }
 
-fn cg_params(preconditioner: Preconditioner) -> SolverParams {
-    SolverParams {
+fn run_cg_one_level(design: &WeightedDesign<FactorMajorStore>, y: &[f64], ac2: bool) {
+    let cfg = one_level_local_solver(ac2);
+    let params = SolverParams {
         method: SolverMethod::Cg {
-            preconditioner,
+            preconditioner: Some(cfg),
             operator: OperatorRepr::Implicit,
         },
         tol: SMOKE_TOL,
         maxiter: SMOKE_MAXITER,
-    }
-}
-
-fn gmres_params(preconditioner: Preconditioner) -> SolverParams {
-    SolverParams {
-        method: SolverMethod::Gmres {
-            preconditioner,
-            operator: OperatorRepr::Explicit,
-            restart: SMOKE_GMRES_RESTART,
-        },
-        tol: SMOKE_TOL,
-        maxiter: SMOKE_MAXITER,
-    }
-}
-
-fn one_level_schwarz(ac2: bool) -> SchwarzConfig {
-    SchwarzConfig {
-        smoother: approx_chol(ac2),
-        local_solver: LocalSolverConfig::default(),
-    }
-}
-
-fn run_cg_one_level(design: &WeightedDesign<FactorMajorStore>, y: &[f64], ac2: bool) {
-    let cfg = one_level_schwarz(ac2);
-    let params = cg_params(Preconditioner::Additive(cfg));
+    };
     let label = if ac2 { "CG(1L,AC2)" } else { "CG(1L,AC)" };
-    run_smoke(design, y, &params, label);
-}
-
-fn run_cg_multiplicative_one_level(
-    design: &WeightedDesign<FactorMajorStore>,
-    y: &[f64],
-    ac2: bool,
-) {
-    let cfg = one_level_schwarz(ac2);
-    let params = cg_params(Preconditioner::Multiplicative(cfg));
-    let label = if ac2 { "CG(M1L,AC2)" } else { "CG(M1L,AC)" };
     run_smoke(design, y, &params, label);
 }
 
@@ -180,9 +149,18 @@ fn run_gmres_multiplicative_one_level(
     design: &WeightedDesign<FactorMajorStore>,
     y: &[f64],
     ac2: bool,
+    operator: OperatorRepr,
 ) {
-    let cfg = one_level_schwarz(ac2);
-    let params = gmres_params(Preconditioner::Multiplicative(cfg));
+    let cfg = one_level_local_solver(ac2);
+    let params = SolverParams {
+        method: SolverMethod::Gmres {
+            preconditioner: Some(GmresPrecond::Multiplicative(cfg)),
+            operator,
+            restart: SMOKE_GMRES_RESTART,
+        },
+        tol: SMOKE_TOL,
+        maxiter: SMOKE_MAXITER,
+    };
     let label = if ac2 {
         "GMRES(M1L,AC2)"
     } else {
@@ -268,17 +246,25 @@ fn bench_fixest_smoke_other_1l(c: &mut Criterion) {
         let label = case.label();
         let (design, y) = generate_fixest_like_case(case, 42);
 
-        group.bench_function(BenchmarkId::new("CG-M1L-AC", &label), |b| {
-            b.iter(|| run_cg_multiplicative_one_level(&design, &y, false));
+        group.bench_function(BenchmarkId::new("GMRES-M1L-AC-impl", &label), |b| {
+            b.iter(|| {
+                run_gmres_multiplicative_one_level(&design, &y, false, OperatorRepr::Implicit)
+            });
         });
-        group.bench_function(BenchmarkId::new("CG-M1L-AC2", &label), |b| {
-            b.iter(|| run_cg_multiplicative_one_level(&design, &y, true));
+        group.bench_function(BenchmarkId::new("GMRES-M1L-AC2-impl", &label), |b| {
+            b.iter(|| {
+                run_gmres_multiplicative_one_level(&design, &y, true, OperatorRepr::Implicit)
+            });
         });
         group.bench_function(BenchmarkId::new("GMRES-M1L-AC", &label), |b| {
-            b.iter(|| run_gmres_multiplicative_one_level(&design, &y, false));
+            b.iter(|| {
+                run_gmres_multiplicative_one_level(&design, &y, false, OperatorRepr::Explicit)
+            });
         });
         group.bench_function(BenchmarkId::new("GMRES-M1L-AC2", &label), |b| {
-            b.iter(|| run_gmres_multiplicative_one_level(&design, &y, true));
+            b.iter(|| {
+                run_gmres_multiplicative_one_level(&design, &y, true, OperatorRepr::Explicit)
+            });
         });
     }
 

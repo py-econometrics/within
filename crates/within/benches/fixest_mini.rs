@@ -5,9 +5,7 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Samplin
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use schwarz_precond::Operator;
-use within::config::{
-    LocalSolverConfig, OperatorRepr, Preconditioner, SchwarzConfig, SolverMethod, SolverParams,
-};
+use within::config::{LocalSolverConfig, OperatorRepr, SolverMethod, SolverParams};
 use within::domain::WeightedDesign;
 use within::observation::{FactorMajorStore, ObservationWeights};
 use within::operator::gramian::{Gramian, GramianOperator};
@@ -127,7 +125,7 @@ fn generate_fixest_like_case(
 }
 
 fn run_cg_1l(design: &WeightedDesign<FactorMajorStore>, y: &[f64], ac2: bool) {
-    let smoother = if ac2 {
+    let approx_chol = if ac2 {
         Config {
             seed: 42,
             split_merge: Some(2),
@@ -142,9 +140,10 @@ fn run_cg_1l(design: &WeightedDesign<FactorMajorStore>, y: &[f64], ac2: bool) {
 
     let params = SolverParams {
         method: SolverMethod::Cg {
-            preconditioner: Preconditioner::Additive(SchwarzConfig {
-                smoother,
-                local_solver: LocalSolverConfig::default(),
+            preconditioner: Some(LocalSolverConfig::SchurComplement {
+                approx_chol,
+                approx_schur: Some(within::ApproxSchurConfig::default()),
+                dense_threshold: within::DEFAULT_DENSE_SCHUR_THRESHOLD,
             }),
             operator: OperatorRepr::Implicit,
         },
@@ -152,7 +151,7 @@ fn run_cg_1l(design: &WeightedDesign<FactorMajorStore>, y: &[f64], ac2: bool) {
         maxiter: MINI_MAXITER,
     };
 
-    let result = solve_least_squares(design, y, None, &params).expect("least-squares solve");
+    let result = solve_least_squares(design, y, &params).expect("least-squares solve");
     assert!(result.converged, "solver did not converge");
     assert!(result.final_residual.is_finite(), "non-finite residual");
     assert!(

@@ -1,13 +1,12 @@
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::config::{OperatorRepr, Preconditioner, SchwarzConfig, SolverMethod, SolverParams};
+use crate::config::{LocalSolverConfig, OperatorRepr, SolverMethod, SolverParams};
 use crate::domain::WeightedDesign;
 use crate::observation::ObservationStore;
-use crate::operator::schwarz::{build_schwarz, FeSchwarz};
 use crate::WithinResult;
 
-use super::least_squares::solve_least_squares;
+use super::normal_equations::{build_normal_equation_system, solve_with_normal_equation_system};
 
 /// Result of a batch demean operation (multiple RHS columns).
 #[derive(Debug, Clone)]
@@ -27,27 +26,20 @@ pub fn demean_batch<S: ObservationStore + Sync>(
     columns: &[Vec<f64>],
     params: &SolverParams,
 ) -> WithinResult<BatchDemeanResult> {
-    let schwarz: Option<FeSchwarz> = match &params.method {
-        SolverMethod::Cg {
-            preconditioner: Preconditioner::Additive(cfg),
-            ..
-        } => Some(build_schwarz(design, cfg)?),
-        _ => None,
-    };
-
     let all_converged = AtomicBool::new(true);
-
+    let system = build_normal_equation_system(design, params)?;
     let results: Vec<Vec<f64>> = columns
         .par_iter()
         .map(|y_col| {
-            let result = solve_least_squares(design, y_col, schwarz.as_ref(), params)
-                .expect("solve_least_squares failed");
-            if !result.converged {
+            let mut rhs = vec![0.0; design.n_dofs];
+            design.rmatvec_wdt(y_col, &mut rhs);
+            let solve = solve_with_normal_equation_system(&system, &rhs, params)
+                .expect("normal-equation solve failed");
+            if !solve.converged {
                 all_converged.store(false, Ordering::Relaxed);
             }
-            // demeaned = y - D·x
             let mut fitted = vec![0.0; y_col.len()];
-            design.matvec_d(&result.x, &mut fitted);
+            design.matvec_d(&solve.x, &mut fitted);
             y_col
                 .iter()
                 .zip(fitted.iter())
@@ -78,7 +70,7 @@ pub fn demean_batch_default(
 
     let params = SolverParams {
         method: SolverMethod::Cg {
-            preconditioner: Preconditioner::Additive(SchwarzConfig::default()),
+            preconditioner: Some(LocalSolverConfig::cg_default()),
             operator: OperatorRepr::Implicit,
         },
         tol,

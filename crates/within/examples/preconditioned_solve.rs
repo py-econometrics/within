@@ -1,4 +1,5 @@
-//! CG with one-level additive Schwarz preconditioning, compared to unpreconditioned LSMR.
+//! Compare the default CG + additive Schwarz configuration to a GMRES +
+//! multiplicative Schwarz variant.
 //!
 //! Generates the same synthetic data as `basic_solve` (two factors, 100 levels
 //! each, 10 000 observations), then solves with both methods and prints the
@@ -7,7 +8,7 @@
 //! Run with: `cargo run --example preconditioned_solve`
 
 use within::{
-    solve, OperatorRepr, Preconditioner, SchwarzConfig, SolveResult, SolverMethod, SolverParams,
+    solve, GmresPrecond, LocalSolverConfig, OperatorRepr, SolveResult, SolverMethod, SolverParams,
 };
 
 fn main() {
@@ -37,33 +38,29 @@ fn main() {
         *yi += 0.01 * ((i * 7 + 3) % 13) as f64 - 0.06;
     }
 
-    // -----------------------------------------------------------------------
-    // 1. Unpreconditioned LSMR (default)
-    // -----------------------------------------------------------------------
-    let lsmr_params = SolverParams::default();
-    let lsmr_result = solve(&categories, &n_levels, &y, &lsmr_params, None).expect("lsmr solve");
-
-    // -----------------------------------------------------------------------
-    // 2. CG with one-level additive Schwarz
-    // -----------------------------------------------------------------------
-    let cg_params = SolverParams {
-        method: SolverMethod::Cg {
-            preconditioner: Preconditioner::Additive(SchwarzConfig::default()),
+    let cg_params = SolverParams::default();
+    let cg_result = solve(&categories, &n_levels, &y, &cg_params).expect("cg solve");
+    let gmres_params = SolverParams {
+        method: SolverMethod::Gmres {
+            preconditioner: Some(GmresPrecond::Multiplicative(
+                LocalSolverConfig::gmres_default(),
+            )),
             operator: OperatorRepr::Implicit,
+            restart: 30,
         },
         tol: 1e-8,
         maxiter: 1000,
     };
-    let cg_result = solve(&categories, &n_levels, &y, &cg_params, None).expect("cg solve");
+    let gmres_result = solve(&categories, &n_levels, &y, &gmres_params).expect("gmres solve");
 
     // -----------------------------------------------------------------------
     // Print comparison
     // -----------------------------------------------------------------------
     print_comparison(
-        "LSMR (default)",
-        &lsmr_result,
-        "CG + 1-level Schwarz",
+        "CG + additive Schwarz",
         &cg_result,
+        "GMRES + mult. Schwarz",
+        &gmres_result,
     );
 }
 

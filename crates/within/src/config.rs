@@ -19,43 +19,20 @@ pub enum OperatorRepr {
 }
 
 // ---------------------------------------------------------------------------
-// Preconditioner configuration
-// ---------------------------------------------------------------------------
-
-/// Unified preconditioner for CG and GMRES.
-///
-/// `symmetric` (CG=true, GMRES=false) is derived at dispatch time.
-#[derive(Debug, Clone, Default)]
-pub enum Preconditioner {
-    #[default]
-    None,
-    Additive(SchwarzConfig),
-    Multiplicative(SchwarzConfig),
-}
-
-/// Common configuration for all Schwarz-based preconditioners.
-#[derive(Debug, Clone, Default)]
-pub struct SchwarzConfig {
-    /// AC config for the top-level smoother (used by FullSddm path).
-    pub smoother: approx_chol::Config,
-    pub local_solver: LocalSolverConfig,
-}
-
-// ---------------------------------------------------------------------------
 // Local solver configuration
 // ---------------------------------------------------------------------------
 
 /// Selects the local solver used inside each Schwarz subdomain.
+///
+/// Each variant is self-contained: it carries its own `approx_chol::Config`.
 #[derive(Debug, Clone)]
 pub enum LocalSolverConfig {
     /// Full bipartite SDDM factorized via approximate Cholesky.
-    ///
-    /// Uses `smoother` from the parent `SchwarzConfig`.
-    FullSddm,
+    FullSddm { approx_chol: approx_chol::Config },
     /// Schur complement reduction: eliminate the larger diagonal block
     /// exactly, then factorize the smaller reduced system.
     SchurComplement {
-        /// ApproxChol config for the reduced system (independent from smoother).
+        /// ApproxChol config for the reduced system.
         approx_chol: approx_chol::Config,
         /// Approximate Schur complement configuration.
         /// `None` = exact (default). `Some` = approximate with sampling.
@@ -71,6 +48,17 @@ pub enum LocalSolverConfig {
 impl Default for LocalSolverConfig {
     fn default() -> Self {
         Self::SchurComplement {
+            approx_chol: approx_chol::Config::default(),
+            approx_schur: Some(ApproxSchurConfig::default()),
+            dense_threshold: DEFAULT_DENSE_SCHUR_THRESHOLD,
+        }
+    }
+}
+
+impl LocalSolverConfig {
+    /// CG-specific default: uses split_merge=2 for the reduced Schur system.
+    pub fn cg_default() -> Self {
+        Self::SchurComplement {
             approx_chol: approx_chol::Config {
                 split_merge: Some(2),
                 ..Default::default()
@@ -78,6 +66,11 @@ impl Default for LocalSolverConfig {
             approx_schur: Some(ApproxSchurConfig::default()),
             dense_threshold: DEFAULT_DENSE_SCHUR_THRESHOLD,
         }
+    }
+
+    /// GMRES-specific default: uses split_merge=2 for the reduced Schur system.
+    pub fn gmres_default() -> Self {
+        Self::cg_default()
     }
 }
 
@@ -97,20 +90,34 @@ pub struct ApproxSchurConfig {
 }
 
 // ---------------------------------------------------------------------------
+// GMRES preconditioner choice
+// ---------------------------------------------------------------------------
+
+/// Preconditioner choice for GMRES (supports both additive and multiplicative).
+#[derive(Debug, Clone)]
+pub enum GmresPrecond {
+    Additive(LocalSolverConfig),
+    Multiplicative(LocalSolverConfig),
+}
+
+// ---------------------------------------------------------------------------
 // Solver configuration types
 // ---------------------------------------------------------------------------
 
+/// Solver method with embedded preconditioner choice.
+///
+/// CG can only use additive Schwarz (or none) — multiplicative is impossible
+/// at the type level since it produces a non-symmetric preconditioner.
 #[derive(Debug, Clone)]
 pub enum SolverMethod {
-    Lsmr {
-        conlim: f64,
-    },
     Cg {
-        preconditioner: Preconditioner,
+        /// `None` = unpreconditioned, `Some` = additive Schwarz.
+        preconditioner: Option<LocalSolverConfig>,
         operator: OperatorRepr,
     },
     Gmres {
-        preconditioner: Preconditioner,
+        /// `None` = unpreconditioned, `Some` = additive or multiplicative.
+        preconditioner: Option<GmresPrecond>,
         operator: OperatorRepr,
         restart: usize,
     },
@@ -118,7 +125,26 @@ pub enum SolverMethod {
 
 impl Default for SolverMethod {
     fn default() -> Self {
-        Self::Lsmr { conlim: 1e8 }
+        Self::cg_default()
+    }
+}
+
+impl SolverMethod {
+    /// CG with additive Schwarz, implicit operator.
+    pub fn cg_default() -> Self {
+        Self::Cg {
+            preconditioner: Some(LocalSolverConfig::cg_default()),
+            operator: OperatorRepr::Implicit,
+        }
+    }
+
+    /// GMRES with additive Schwarz, implicit operator, restart=30.
+    pub fn gmres_default() -> Self {
+        Self::Gmres {
+            preconditioner: Some(GmresPrecond::Additive(LocalSolverConfig::gmres_default())),
+            operator: OperatorRepr::Implicit,
+            restart: 30,
+        }
     }
 }
 

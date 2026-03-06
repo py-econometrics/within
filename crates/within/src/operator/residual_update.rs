@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use schwarz_precond::{ResidualUpdater, SparseMatrix};
 
 use super::dof_obs_index::DofObservationIndex;
@@ -120,17 +122,17 @@ impl<S: ObservationStore> ResidualUpdater for ObservationSpaceUpdater<'_, S> {
 /// Cost: O(nnz_touched) with contiguous CSR reads. No buffers, no bookkeeping.
 /// Trades O(nnz) memory (the Gramian) for faster per-iteration updates compared
 /// to the observation-space path.
-pub struct SparseGramianUpdater<'a> {
-    gramian: &'a SparseMatrix,
+pub struct SparseGramianUpdater {
+    gramian: Arc<SparseMatrix>,
 }
 
-impl<'a> SparseGramianUpdater<'a> {
-    pub fn new(gramian: &'a SparseMatrix) -> Self {
+impl SparseGramianUpdater {
+    pub fn new(gramian: Arc<SparseMatrix>) -> Self {
         Self { gramian }
     }
 }
 
-impl ResidualUpdater for SparseGramianUpdater<'_> {
+impl ResidualUpdater for SparseGramianUpdater {
     fn reset(&mut self, _r_original: &[f64]) {
         // No-op: each update is a pure incremental r -= G * delta.
     }
@@ -349,7 +351,7 @@ mod tests {
         let n_dofs = design.n_dofs;
 
         let mut obs_updater = ObservationSpaceUpdater::new(&design);
-        let mut sparse_updater = SparseGramianUpdater::new(&gramian.matrix);
+        let mut sparse_updater = SparseGramianUpdater::new(gramian.matrix.clone());
 
         let r_original = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
         let mut r_obs = r_original.clone();
@@ -377,7 +379,7 @@ mod tests {
         let n_dofs = design.n_dofs;
 
         let mut obs_updater = ObservationSpaceUpdater::new(&design);
-        let mut sparse_updater = SparseGramianUpdater::new(&gramian.matrix);
+        let mut sparse_updater = SparseGramianUpdater::new(gramian.matrix.clone());
 
         let r_original = vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0];
         let mut r_obs = r_original.clone();
@@ -417,7 +419,7 @@ mod tests {
     #[test]
     fn test_sparse_gramian_updater_zero_correction_is_noop() {
         let (_, gramian) = make_test_setup();
-        let mut updater = SparseGramianUpdater::new(&gramian.matrix);
+        let mut updater = SparseGramianUpdater::new(gramian.matrix.clone());
 
         let r_original = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
         let mut r_work = r_original.clone();
@@ -435,7 +437,7 @@ mod tests {
         let n_dofs = design.n_dofs;
 
         let mut obs_updater = ObservationSpaceUpdater::new(&design);
-        let mut sparse_updater = SparseGramianUpdater::new(&gramian.matrix);
+        let mut sparse_updater = SparseGramianUpdater::new(gramian.matrix.clone());
 
         let r_original = vec![1.0; n_dofs];
         let mut r_obs = r_original.clone();
@@ -471,7 +473,7 @@ mod tests {
         let n_dofs = design.n_dofs;
 
         let mut obs_updater = ObservationSpaceUpdater::new(&design);
-        let mut sparse_updater = SparseGramianUpdater::new(&gramian.matrix);
+        let mut sparse_updater = SparseGramianUpdater::new(gramian.matrix.clone());
 
         let r_original = vec![5.0, 3.0, 7.0, 1.0];
         let mut r_obs = r_original.clone();

@@ -21,52 +21,47 @@ class OperatorRepr(IntEnum):
     Implicit = 0
     Explicit = 1
 
-class AdditiveSchwarz:
-    smoother: ApproxCholConfig | None
-    local_solver: str | None
+class SchurComplement:
+    approx_chol: ApproxCholConfig | None
     approx_schur: ApproxSchurConfig | None
-    dense_schur_threshold: int | None
+    dense_threshold: int
     def __init__(
         self,
-        smoother: ApproxCholConfig | None = None,
-        local_solver: str | None = None,
+        approx_chol: ApproxCholConfig | None = None,
         approx_schur: ApproxSchurConfig | None = None,
-        dense_schur_threshold: int | None = None,
+        dense_threshold: int = 24,
+    ) -> None: ...
+
+class FullSddm:
+    approx_chol: ApproxCholConfig | None
+    def __init__(self, approx_chol: ApproxCholConfig | None = None) -> None: ...
+
+class AdditiveSchwarz:
+    local_solver: SchurComplement | FullSddm | None
+    def __init__(
+        self,
+        local_solver: SchurComplement | FullSddm | None = None,
     ) -> None: ...
 
 class MultiplicativeSchwarz:
     """One-level multiplicative Schwarz with sequential subdomain sweeps."""
 
-    smoother: ApproxCholConfig | None
-    local_solver: str | None
-    approx_schur: ApproxSchurConfig | None
-    dense_schur_threshold: int | None
+    local_solver: SchurComplement | FullSddm | None
     def __init__(
         self,
-        smoother: ApproxCholConfig | None = None,
-        local_solver: str | None = None,
-        approx_schur: ApproxSchurConfig | None = None,
-        dense_schur_threshold: int | None = None,
-    ) -> None: ...
-
-class LSMR:
-    tol: float
-    maxiter: int
-    conlim: float
-    def __init__(
-        self, tol: float = 1e-8, maxiter: int = 1000, conlim: float = 1e8
+        local_solver: SchurComplement | FullSddm | None = None,
     ) -> None: ...
 
 class CG:
     tol: float
     maxiter: int
-    preconditioner: AdditiveSchwarz | MultiplicativeSchwarz | None
+    preconditioner: AdditiveSchwarz | None
     operator: OperatorRepr
     def __init__(
         self,
         tol: float = 1e-8,
         maxiter: int = 1000,
-        preconditioner: AdditiveSchwarz | MultiplicativeSchwarz | None = None,
+        preconditioner: AdditiveSchwarz | None = None,
         operator: OperatorRepr = OperatorRepr.Implicit,
     ) -> None: ...
 
@@ -79,10 +74,10 @@ class GMRES:
     def __init__(
         self,
         tol: float = 1e-8,
-        maxiter: int = 10000,
+        maxiter: int = 1000,
         restart: int = 30,
         preconditioner: AdditiveSchwarz | MultiplicativeSchwarz | None = None,
-        operator: OperatorRepr = OperatorRepr.Explicit,
+        operator: OperatorRepr = OperatorRepr.Implicit,
     ) -> None: ...
 
 class SolveResult:
@@ -106,7 +101,7 @@ class SolveResult:
 def py_solve(
     categories: NDArray[np.uintp],
     y: NDArray[np.float64],
-    config: LSMR | CG | GMRES,
+    config: CG | GMRES,
     n_levels: list[int] | None = None,
     weights: NDArray[np.float64] | None = None,
     layout: str | None = None,

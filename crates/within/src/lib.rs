@@ -2,9 +2,10 @@
 //!
 //! `within` solves the linear fixed-effects problem **y = D x + e** where D is a
 //! sparse categorical design matrix (each row has exactly Q ones, one per factor).
-//! The normal equations **G x = D^T W y** (G = D^T W D) are solved via LSMR,
-//! preconditioned CG, or right-preconditioned GMRES with additive or multiplicative
-//! Schwarz preconditioners backed by approximate Cholesky local solvers.
+//! The normal equations **G x = D^T W y** (G = D^T W D) are solved via
+//! preconditioned CG or right-preconditioned GMRES with additive or
+//! multiplicative Schwarz preconditioners backed by approximate Cholesky
+//! local solvers.
 //!
 //! # Quick start
 //!
@@ -21,7 +22,6 @@
 //!     &[100, 100],
 //!     &y,
 //!     &SolverParams::default(),
-//!     None,
 //! )
 //! .expect("solve should succeed");
 //! assert!(result.converged);
@@ -66,8 +66,8 @@ pub use orchestrate::{
 // ---------------------------------------------------------------------------
 
 pub use config::{
-    ApproxSchurConfig, LocalSolverConfig, OperatorRepr, Preconditioner, SchwarzConfig,
-    SolverMethod, SolverParams, DEFAULT_DENSE_SCHUR_THRESHOLD,
+    ApproxSchurConfig, GmresPrecond, LocalSolverConfig, OperatorRepr, SolverMethod, SolverParams,
+    DEFAULT_DENSE_SCHUR_THRESHOLD,
 };
 pub use error::{WithinError, WithinResult};
 pub use orchestrate::SolveResult;
@@ -86,6 +86,6 @@ pub use observation::{
 // Operators & builders
 // ---------------------------------------------------------------------------
 
-pub use operator::design::{DesignOperator, PreconditionedDesign};
+pub use operator::design::DesignOperator;
 pub use operator::gramian::{Gramian, GramianOperator};
 pub use operator::schwarz::{build_schwarz, FeSchwarz};

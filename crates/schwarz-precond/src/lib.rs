@@ -2,7 +2,7 @@
 //!
 //! Provides one-level additive and multiplicative Schwarz preconditioners,
 //! generic over local solvers and residual update strategies. Includes
-//! iterative solvers (CG, GMRES, LSMR) and spectral tools.
+//! iterative solvers (CG, GMRES) and spectral tools.
 //!
 //! # Quick start
 //!

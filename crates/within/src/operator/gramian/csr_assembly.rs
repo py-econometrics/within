@@ -170,8 +170,8 @@ pub(super) const DENSE_TABLE_MAX_ENTRIES: usize = 5_000_000;
 
 /// Accumulate observation weights into a cross-tabulation block C plus diagonals.
 ///
-/// Shared by `CrossTab::build` (component-scoped) and `CrossTab::build_for_pair`
-/// (full pair). Observations whose compact index is `u32::MAX` are skipped.
+/// Used by `CrossTab::build_for_pair`. Observations whose compact index is
+/// `u32::MAX` are skipped.
 ///
 /// - Dense path (n_q * n_r <= 5M): flat table with O(1) accumulation per observation.
 /// - Sparse path: two-pass bucket + workspace-based dedup per row.

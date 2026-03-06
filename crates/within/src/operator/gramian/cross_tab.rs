@@ -143,41 +143,6 @@ impl CrossTab {
         self.c.nrows
     }
 
-    /// Build a CrossTab for a single connected component of a factor pair.
-    ///
-    /// Same observation-filtering logic as `Gramian::build_for_component`, but
-    /// produces a bipartite representation instead of a full symmetric CSR.
-    #[cfg(test)]
-    pub fn build<S: ObservationStore>(
-        design: &WeightedDesign<S>,
-        q: usize,
-        r: usize,
-        component_global_indices: &[u32],
-    ) -> Self {
-        let maps = super::csr_assembly::CompactIndexMaps::build(
-            &design.factors,
-            q,
-            r,
-            component_global_indices,
-        );
-        let (c, diag_q, diag_r) = accumulate_cross_block(
-            design,
-            q,
-            r,
-            &maps.q_compact,
-            &maps.r_compact,
-            maps.n_active_q,
-            maps.n_active_r,
-        );
-        let ct = c.transpose();
-        CrossTab {
-            c,
-            ct,
-            diag_q,
-            diag_r,
-        }
-    }
-
     /// Build the SDDM matrix L = [D_q, -C; -C^T, D_r] directly in CSR format.
     ///
     /// Rows are already sorted: for q-block rows the diagonal (index i) comes

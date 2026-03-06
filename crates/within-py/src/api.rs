@@ -1,13 +1,11 @@
 //! Python API: typed config classes and solve entrypoint.
 
-use approx_chol::Config;
 use numpy::ndarray::{Array1, Array2, ArrayView2};
 use numpy::{IntoPyArray, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
 
 use within::config::{
-    ApproxSchurConfig, LocalSolverConfig, OperatorRepr, Preconditioner, SchwarzConfig,
-    SolverMethod, SolverParams,
+    ApproxSchurConfig, GmresPrecond, LocalSolverConfig, OperatorRepr, SolverMethod, SolverParams,
 };
 use within::domain::WeightedDesign;
 use within::observation::{
@@ -40,13 +38,13 @@ impl PyApproxCholConfig {
 }
 
 impl PyApproxCholConfig {
-    fn to_native(&self) -> Config {
+    fn to_native(&self) -> approx_chol::Config {
         let split_merge = if self.split > 1 {
             Some(self.split)
         } else {
             None
         };
-        Config {
+        approx_chol::Config {
             seed: self.seed,
             split_merge,
         }
@@ -97,6 +95,54 @@ impl PyOperatorRepr {
 }
 
 // ---------------------------------------------------------------------------
+// Local solver config classes
+// ---------------------------------------------------------------------------
+
+#[pyclass(frozen)]
+#[pyo3(name = "SchurComplement")]
+pub struct PySchurComplement {
+    #[pyo3(get)]
+    pub approx_chol: Option<Py<PyApproxCholConfig>>,
+    #[pyo3(get)]
+    pub approx_schur: Option<Py<PyApproxSchurConfig>>,
+    #[pyo3(get)]
+    pub dense_threshold: usize,
+}
+
+#[pymethods]
+impl PySchurComplement {
+    #[new]
+    #[pyo3(signature = (approx_chol=None, approx_schur=None, dense_threshold=24))]
+    fn new(
+        approx_chol: Option<Py<PyApproxCholConfig>>,
+        approx_schur: Option<Py<PyApproxSchurConfig>>,
+        dense_threshold: usize,
+    ) -> Self {
+        Self {
+            approx_chol,
+            approx_schur,
+            dense_threshold,
+        }
+    }
+}
+
+#[pyclass(frozen)]
+#[pyo3(name = "FullSddm")]
+pub struct PyFullSddm {
+    #[pyo3(get)]
+    pub approx_chol: Option<Py<PyApproxCholConfig>>,
+}
+
+#[pymethods]
+impl PyFullSddm {
+    #[new]
+    #[pyo3(signature = (approx_chol=None))]
+    fn new(approx_chol: Option<Py<PyApproxCholConfig>>) -> Self {
+        Self { approx_chol }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Schwarz preconditioner classes
 // ---------------------------------------------------------------------------
 
@@ -104,31 +150,15 @@ impl PyOperatorRepr {
 #[pyo3(name = "AdditiveSchwarz")]
 pub struct PyAdditiveSchwarz {
     #[pyo3(get)]
-    pub smoother: Option<Py<PyApproxCholConfig>>,
-    #[pyo3(get)]
-    pub local_solver: Option<String>,
-    #[pyo3(get)]
-    pub approx_schur: Option<Py<PyApproxSchurConfig>>,
-    #[pyo3(get)]
-    pub dense_schur_threshold: Option<usize>,
+    pub local_solver: Option<PyObject>,
 }
 
 #[pymethods]
 impl PyAdditiveSchwarz {
     #[new]
-    #[pyo3(signature = (smoother=None, local_solver=None, approx_schur=None, dense_schur_threshold=None))]
-    fn new(
-        smoother: Option<Py<PyApproxCholConfig>>,
-        local_solver: Option<String>,
-        approx_schur: Option<Py<PyApproxSchurConfig>>,
-        dense_schur_threshold: Option<usize>,
-    ) -> Self {
-        Self {
-            smoother,
-            local_solver,
-            approx_schur,
-            dense_schur_threshold,
-        }
+    #[pyo3(signature = (local_solver=None))]
+    fn new(local_solver: Option<PyObject>) -> Self {
+        Self { local_solver }
     }
 }
 
@@ -136,61 +166,21 @@ impl PyAdditiveSchwarz {
 #[pyo3(name = "MultiplicativeSchwarz")]
 pub struct PyMultiplicativeSchwarz {
     #[pyo3(get)]
-    pub smoother: Option<Py<PyApproxCholConfig>>,
-    #[pyo3(get)]
-    pub local_solver: Option<String>,
-    #[pyo3(get)]
-    pub approx_schur: Option<Py<PyApproxSchurConfig>>,
-    #[pyo3(get)]
-    pub dense_schur_threshold: Option<usize>,
+    pub local_solver: Option<PyObject>,
 }
 
 #[pymethods]
 impl PyMultiplicativeSchwarz {
     #[new]
-    #[pyo3(signature = (smoother=None, local_solver=None, approx_schur=None, dense_schur_threshold=None))]
-    fn new(
-        smoother: Option<Py<PyApproxCholConfig>>,
-        local_solver: Option<String>,
-        approx_schur: Option<Py<PyApproxSchurConfig>>,
-        dense_schur_threshold: Option<usize>,
-    ) -> Self {
-        Self {
-            smoother,
-            local_solver,
-            approx_schur,
-            dense_schur_threshold,
-        }
+    #[pyo3(signature = (local_solver=None))]
+    fn new(local_solver: Option<PyObject>) -> Self {
+        Self { local_solver }
     }
 }
 
 // ---------------------------------------------------------------------------
 // Solver config classes
 // ---------------------------------------------------------------------------
-
-#[pyclass(frozen)]
-#[pyo3(name = "LSMR")]
-pub struct PyLSMR {
-    #[pyo3(get)]
-    pub tol: f64,
-    #[pyo3(get)]
-    pub maxiter: usize,
-    #[pyo3(get)]
-    pub conlim: f64,
-}
-
-#[pymethods]
-impl PyLSMR {
-    #[new]
-    #[pyo3(signature = (tol=1e-8, maxiter=1000, conlim=1e8))]
-    fn new(tol: f64, maxiter: usize, conlim: f64) -> Self {
-        Self {
-            tol,
-            maxiter,
-            conlim,
-        }
-    }
-}
 
 #[pyclass(frozen)]
 #[pyo3(name = "CG")]
@@ -242,7 +232,7 @@ pub struct PyGMRES {
 #[pymethods]
 impl PyGMRES {
     #[new]
-    #[pyo3(signature = (tol=1e-8, maxiter=10000, restart=30, preconditioner=None, operator=PyOperatorRepr::Explicit))]
+    #[pyo3(signature = (tol=1e-8, maxiter=1000, restart=30, preconditioner=None, operator=PyOperatorRepr::Implicit))]
     fn new(
         tol: f64,
         maxiter: usize,
@@ -279,101 +269,81 @@ pub struct PySolveResult {
     pub time_solve: f64,
 }
 
-/// Extract SchwarzConfig from the fields common to all Schwarz pyclasses.
-fn extract_schwarz_config(
-    py: Python<'_>,
-    smoother: &Option<Py<PyApproxCholConfig>>,
-    local_solver_str: &Option<String>,
-    approx_schur: &Option<Py<PyApproxSchurConfig>>,
-    dense_schur_threshold: &Option<usize>,
-) -> PyResult<SchwarzConfig> {
-    let smoother_ac = match smoother {
-        Some(config) => config.bind(py).get().to_native(),
-        None => Config::default(),
-    };
-    let approx_schur_native = approx_schur
-        .as_ref()
-        .map(|cfg| cfg.bind(py).get().to_native());
-    let local_solver = match local_solver_str.as_deref() {
-        None | Some("schur_complement") => {
-            let default = LocalSolverConfig::default();
-            match default {
-                LocalSolverConfig::SchurComplement {
-                    approx_chol: default_ac,
-                    dense_threshold: default_threshold,
-                    ..
-                } => LocalSolverConfig::SchurComplement {
-                    approx_chol: default_ac,
-                    approx_schur: approx_schur_native,
-                    dense_threshold: dense_schur_threshold.unwrap_or(default_threshold),
-                },
-                other => other,
-            }
-        }
-        Some("full_sddm") => LocalSolverConfig::FullSddm,
-        Some(other) => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "Unknown local_solver '{}'. Expected 'schur_complement' or 'full_sddm'.",
-                other
-            )));
-        }
-    };
-    Ok(SchwarzConfig {
-        smoother: smoother_ac,
-        local_solver,
-    })
-}
+// ---------------------------------------------------------------------------
+// Extraction helpers
+// ---------------------------------------------------------------------------
 
-/// Extract a unified Preconditioner from a Python object.
-fn extract_preconditioner(
+/// Extract a `LocalSolverConfig` from a Python `SchurComplement` or `FullSddm` object.
+fn extract_local_solver_config(
     py: Python<'_>,
-    preconditioner: Option<&PyObject>,
-) -> PyResult<Preconditioner> {
-    let Some(preconditioner) = preconditioner else {
-        return Ok(Preconditioner::None);
-    };
-    let preconditioner = preconditioner.bind(py);
-    if let Ok(s) = preconditioner.downcast::<PyAdditiveSchwarz>() {
-        let s = s.get();
-        Ok(Preconditioner::Additive(extract_schwarz_config(
-            py,
-            &s.smoother,
-            &s.local_solver,
-            &s.approx_schur,
-            &s.dense_schur_threshold,
-        )?))
-    } else if let Ok(s) = preconditioner.downcast::<PyMultiplicativeSchwarz>() {
-        let s = s.get();
-        Ok(Preconditioner::Multiplicative(extract_schwarz_config(
-            py,
-            &s.smoother,
-            &s.local_solver,
-            &s.approx_schur,
-            &s.dense_schur_threshold,
-        )?))
+    obj: &Bound<'_, PyAny>,
+) -> PyResult<LocalSolverConfig> {
+    if let Ok(sc) = obj.downcast::<PySchurComplement>() {
+        let sc = sc.get();
+        let approx_chol = sc
+            .approx_chol
+            .as_ref()
+            .map(|c| c.bind(py).get().to_native())
+            .unwrap_or_default();
+        let approx_schur = sc
+            .approx_schur
+            .as_ref()
+            .map(|c| c.bind(py).get().to_native());
+        Ok(LocalSolverConfig::SchurComplement {
+            approx_chol,
+            approx_schur,
+            dense_threshold: sc.dense_threshold,
+        })
+    } else if let Ok(fd) = obj.downcast::<PyFullSddm>() {
+        let fd = fd.get();
+        let approx_chol = fd
+            .approx_chol
+            .as_ref()
+            .map(|c| c.bind(py).get().to_native())
+            .unwrap_or_default();
+        Ok(LocalSolverConfig::FullSddm { approx_chol })
     } else {
         Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-            "preconditioner must be AdditiveSchwarz, MultiplicativeSchwarz, or None",
+            "local_solver must be SchurComplement, FullSddm, or None",
         ))
     }
 }
 
-/// Extract solver parameters from a Python config object (LSMR, CG, or GMRES).
-fn extract_solver_params(py: Python<'_>, config: &Bound<'_, PyAny>) -> PyResult<SolverParams> {
-    if let Ok(lsmr) = config.downcast::<PyLSMR>() {
-        let lsmr = lsmr.get();
-        return Ok(SolverParams {
-            method: SolverMethod::Lsmr {
-                conlim: lsmr.conlim,
-            },
-            tol: lsmr.tol,
-            maxiter: lsmr.maxiter,
-        });
+/// Extract `LocalSolverConfig` from the `local_solver` field of a Schwarz class,
+/// falling back to the given default when the field is `None`.
+fn extract_local_solver_or_default(
+    py: Python<'_>,
+    local_solver: &Option<PyObject>,
+    default: LocalSolverConfig,
+) -> PyResult<LocalSolverConfig> {
+    match local_solver {
+        None => Ok(default),
+        Some(obj) => extract_local_solver_config(py, obj.bind(py)),
     }
+}
 
+/// Extract solver parameters from a Python config object (CG or GMRES).
+fn extract_solver_params(py: Python<'_>, config: &Bound<'_, PyAny>) -> PyResult<SolverParams> {
     if let Ok(cg) = config.downcast::<PyCG>() {
         let cg = cg.get();
-        let preconditioner = extract_preconditioner(py, cg.preconditioner.as_ref())?;
+        let preconditioner = match cg.preconditioner.as_ref() {
+            None => None,
+            Some(obj) => {
+                let bound = obj.bind(py);
+                if let Ok(s) = bound.downcast::<PyAdditiveSchwarz>() {
+                    let cfg = extract_local_solver_or_default(
+                        py,
+                        &s.get().local_solver,
+                        LocalSolverConfig::cg_default(),
+                    )?;
+                    Some(cfg)
+                } else {
+                    return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                        "CG preconditioner must be AdditiveSchwarz or None",
+                    ));
+                }
+            }
+        };
         return Ok(SolverParams {
             method: SolverMethod::Cg {
                 preconditioner,
@@ -386,7 +356,31 @@ fn extract_solver_params(py: Python<'_>, config: &Bound<'_, PyAny>) -> PyResult<
 
     if let Ok(gmres) = config.downcast::<PyGMRES>() {
         let gmres = gmres.get();
-        let preconditioner = extract_preconditioner(py, gmres.preconditioner.as_ref())?;
+        let preconditioner = match gmres.preconditioner.as_ref() {
+            None => None,
+            Some(obj) => {
+                let bound = obj.bind(py);
+                if let Ok(s) = bound.downcast::<PyAdditiveSchwarz>() {
+                    let cfg = extract_local_solver_or_default(
+                        py,
+                        &s.get().local_solver,
+                        LocalSolverConfig::gmres_default(),
+                    )?;
+                    Some(GmresPrecond::Additive(cfg))
+                } else if let Ok(s) = bound.downcast::<PyMultiplicativeSchwarz>() {
+                    let cfg = extract_local_solver_or_default(
+                        py,
+                        &s.get().local_solver,
+                        LocalSolverConfig::gmres_default(),
+                    )?;
+                    Some(GmresPrecond::Multiplicative(cfg))
+                } else {
+                    return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                        "GMRES preconditioner must be AdditiveSchwarz, MultiplicativeSchwarz, or None",
+                    ));
+                }
+            }
+        };
         return Ok(SolverParams {
             method: SolverMethod::Gmres {
                 preconditioner,
@@ -399,7 +393,7 @@ fn extract_solver_params(py: Python<'_>, config: &Bound<'_, PyAny>) -> PyResult<
     }
 
     Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-        "config must be LSMR, CG, or GMRES",
+        "config must be CG or GMRES",
     ))
 }
 
@@ -483,7 +477,7 @@ fn solve_with_design<S: ObservationStore>(
     y: &[f64],
     params: &SolverParams,
 ) -> WithinResult<SolveResult> {
-    solve_least_squares(design, y, None, params)
+    solve_least_squares(design, y, params)
 }
 
 fn into_py_result(py: Python<'_>, result: SolveResult) -> PySolveResult {
