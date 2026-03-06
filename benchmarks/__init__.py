@@ -28,8 +28,11 @@ def run_suite(
     """Run a named benchmark suite and return results."""
     info = get_suite(name)
     opts = SuiteOptions(
-        seed=seed, tol=tol, maxiter=maxiter,
-        quick=quick, filter_problems=filter_problems,
+        seed=seed,
+        tol=tol,
+        maxiter=maxiter,
+        quick=quick,
+        filter_problems=filter_problems,
     )
     return info.run_fn(opts)
 

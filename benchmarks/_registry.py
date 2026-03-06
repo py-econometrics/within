@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable
 
 from ._types import BenchmarkResult
@@ -49,7 +49,10 @@ def suite(
         if name in _SUITES:
             raise ValueError(f"Duplicate suite name: {name!r}")
         _SUITES[name] = SuiteInfo(
-            name=name, description=description, tags=tag_set, run_fn=fn,
+            name=name,
+            description=description,
+            tags=tag_set,
+            run_fn=fn,
         )
         return fn
 

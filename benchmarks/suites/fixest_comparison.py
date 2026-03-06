@@ -7,7 +7,13 @@ observations.
 
 from __future__ import annotations
 
-from within import ApproxCholConfig, CG, GMRES, LSMR, OneLevelSchwarz, MultiplicativeOneLevelSchwarz
+from within import (
+    ApproxCholConfig,
+    CG,
+    OneLevelSchwarz,
+    GMRES,
+    MultiplicativeOneLevelSchwarz,
+)
 from .._problems import get_generator
 from .._registry import SuiteOptions, suite
 from .._solvers import run_solve
@@ -24,13 +30,44 @@ def run_fixest_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
     if opts.quick:
         n_obs_list = [100_000, 500_000]
     else:
-        n_obs_list = [100_000, 500_000, 1_000_000, 2_000_000, 3_000_000, 4_000_000, 5_000_000, 10_000_000, 20_000_000, 40_000_000, 80_000_000, 160_000_000, 320_000_000]
+        n_obs_list = [
+            100_000,
+            500_000,
+            1_000_000,
+            2_000_000,
+            3_000_000,
+            4_000_000,
+            5_000_000,
+            10_000_000,
+            20_000_000,
+            40_000_000,
+            80_000_000,
+            160_000_000,
+            320_000_000,
+        ]
 
     solver_configs = [
-        #SolverConfig("LSMR(diag)", LSMR(tol=opts.tol, maxiter=opts.maxiter)),
-        SolverConfig("CG(Schwarz)", CG(tol=opts.tol, maxiter=opts.maxiter, preconditioner=OneLevelSchwarz(smoother=ApproxCholConfig(seed=opts.seed)))),
-        #SolverConfig("GMRES(Mult-Schwarz)", GMRES(tol=opts.tol, maxiter=opts.maxiter, preconditioner=MultiplicativeOneLevelSchwarz(smoother=ApproxCholConfig(seed=opts.seed)))),
-        #SolverConfig("CG(Mult-Schwarz)", CG(tol=opts.tol, maxiter=opts.maxiter, preconditioner=MultiplicativeOneLevelSchwarz(smoother=ApproxCholConfig(seed=opts.seed)))),
+        # SolverConfig("LSMR(diag)", LSMR(tol=opts.tol, maxiter=opts.maxiter)),
+        SolverConfig(
+            "CG(Schwarz)",
+            CG(
+                tol=opts.tol,
+                maxiter=opts.maxiter,
+                preconditioner=OneLevelSchwarz(
+                    smoother=ApproxCholConfig(seed=opts.seed)
+                ),
+            ),
+        ),
+        SolverConfig(
+            "GMRES(Mult-Schwarz)",
+            GMRES(
+                tol=opts.tol,
+                maxiter=opts.maxiter,
+                preconditioner=MultiplicativeOneLevelSchwarz(
+                    smoother=ApproxCholConfig(seed=opts.seed)
+                ),
+            ),
+        ),
     ]
 
     gen = get_generator("fixest_dgp")
@@ -38,7 +75,9 @@ def run_fixest_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
 
     for n_obs in n_obs_list:
         name = f"n={n_obs:,} difficult 3FE"
-        cats, n_levels, y = gen(n_obs=n_obs, dgp_type="difficult", n_fe=3, seed=opts.seed)
+        cats, n_levels, y = gen(
+            n_obs=n_obs, dgp_type="difficult", n_fe=3, seed=opts.seed
+        )
         print(f"\n  {name}: DOFs={sum(n_levels)}, Rows={len(cats[0])}")
 
         for cfg in solver_configs:

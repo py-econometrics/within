@@ -18,7 +18,8 @@ from ._problems import _make_response
 
 
 def zipf_firm_sizes(
-    n_firms: int, exponent: float,
+    n_firms: int,
+    exponent: float,
 ) -> NDArray[np.float64]:
     """Return Zipf-distributed firm probability weights.
 
@@ -108,7 +109,9 @@ def simulate_mobility(
             if n_cross > 0:
                 cross_idx = mover_idx[cross]
                 new_firms[cross_idx] = rng.choice(
-                    n_firms, size=n_cross, p=firm_weights,
+                    n_firms,
+                    size=n_cross,
+                    p=firm_weights,
                 ).astype(np.intp)
 
             # Within-cluster moves
@@ -121,13 +124,17 @@ def simulate_mobility(
                     continue
                 idx_c = within_idx[mask_c]
                 new_firms[idx_c] = rng.choice(
-                    cluster_firms[c], size=n_c, p=cluster_weights[c],
+                    cluster_firms[c],
+                    size=n_c,
+                    p=cluster_weights[c],
                 )
         else:
             # Unclustered: sample from all firms weighted by size
             mover_idx = np.where(moves)[0]
             new_firms[mover_idx] = rng.choice(
-                n_firms, size=n_movers, p=firm_weights,
+                n_firms,
+                size=n_movers,
+                p=firm_weights,
             ).astype(np.intp)
 
         assignments[:, t] = new_firms
@@ -136,7 +143,8 @@ def simulate_mobility(
 
 
 def find_largest_component(
-    worker_ids: NDArray[np.intp], firm_ids: NDArray[np.intp],
+    worker_ids: NDArray[np.intp],
+    firm_ids: NDArray[np.intp],
 ) -> NDArray[np.bool_]:
     """Return boolean mask for observations in the largest connected component.
 
@@ -235,7 +243,11 @@ def panel_to_design(
         categories = [worker_ids.astype(np.int64), firm_ids.astype(np.int64)]
         n_levels = [n_workers_final, n_firms_final]
     else:
-        categories = [worker_ids.astype(np.int64), firm_ids.astype(np.int64), year_ids.astype(np.int64)]
+        categories = [
+            worker_ids.astype(np.int64),
+            firm_ids.astype(np.int64),
+            year_ids.astype(np.int64),
+        ]
         n_levels = [n_workers_final, n_firms_final, n_years_final]
 
     y = _make_response(categories, n_levels, rng)

@@ -12,7 +12,9 @@ from typing import Callable
 import numpy as np
 from numpy.typing import NDArray
 
-GeneratorFn = Callable[..., tuple[list[NDArray[np.int64]], list[int], NDArray[np.float64]]]
+GeneratorFn = Callable[
+    ..., tuple[list[NDArray[np.int64]], list[int], NDArray[np.float64]]
+]
 
 _REGISTRY: dict[str, GeneratorFn] = {}
 
@@ -32,9 +34,7 @@ def register_generator(key: str) -> Callable[[GeneratorFn], GeneratorFn]:
 def get_generator(key: str) -> GeneratorFn:
     """Look up a registered generator by key."""
     if key not in _REGISTRY:
-        raise KeyError(
-            f"Unknown generator {key!r}. Available: {sorted(_REGISTRY)}"
-        )
+        raise KeyError(f"Unknown generator {key!r}. Available: {sorted(_REGISTRY)}")
     return _REGISTRY[key]
 
 
@@ -46,6 +46,7 @@ def list_generators() -> list[str]:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _matvec_d(
     categories: list[NDArray[np.int64]],
@@ -70,7 +71,9 @@ def _make_response(
     n_dofs = sum(n_levels)
     n_rows = len(categories[0])
     true_coeffs = rng.standard_normal(n_dofs)
-    return _matvec_d(categories, n_levels, true_coeffs) + 0.1 * rng.standard_normal(n_rows)
+    return _matvec_d(categories, n_levels, true_coeffs) + 0.1 * rng.standard_normal(
+        n_rows
+    )
 
 
 # ===================================================================
@@ -90,9 +93,15 @@ def sparse_3fe(
     for factor in range(3):
         for level in range(n_levels[factor]):
             for _ in range(edges_per_level):
-                cat_lists[0].append(level if factor == 0 else rng.integers(0, n_levels[0]))
-                cat_lists[1].append(level if factor == 1 else rng.integers(0, n_levels[1]))
-                cat_lists[2].append(level if factor == 2 else rng.integers(0, n_levels[2]))
+                cat_lists[0].append(
+                    level if factor == 0 else rng.integers(0, n_levels[0])
+                )
+                cat_lists[1].append(
+                    level if factor == 1 else rng.integers(0, n_levels[1])
+                )
+                cat_lists[2].append(
+                    level if factor == 2 else rng.integers(0, n_levels[2])
+                )
     cats = [np.array(c, dtype=np.int64) for c in cat_lists]
     n_levels_list = list(n_levels)
     return cats, n_levels_list, _make_response(cats, n_levels_list, rng)
@@ -109,11 +118,19 @@ def chain_3fe(
     cat_b: list[int] = []
     cat_c: list[int] = []
     for i in range(n_levels):
-        cat_a.append(i); cat_b.append(i); cat_c.append(i)
+        cat_a.append(i)
+        cat_b.append(i)
+        cat_c.append(i)
         if i + 1 < n_levels:
-            cat_a.append(i + 1); cat_b.append(i); cat_c.append(i)
-            cat_a.append(i); cat_b.append(i + 1); cat_c.append(i)
-            cat_a.append(i); cat_b.append(i); cat_c.append(i + 1)
+            cat_a.append(i + 1)
+            cat_b.append(i)
+            cat_c.append(i)
+            cat_a.append(i)
+            cat_b.append(i + 1)
+            cat_c.append(i)
+            cat_a.append(i)
+            cat_b.append(i)
+            cat_c.append(i + 1)
     cats = [np.array(c, dtype=np.int64) for c in [cat_a, cat_b, cat_c]]
     n_levels_list = [n_levels] * 3
     return cats, n_levels_list, _make_response(cats, n_levels_list, rng)
@@ -137,18 +154,36 @@ def barbell_3fe(
         b_nb = rng.choice(half, size=min(cluster_degree, half), replace=False)
         c_nb = rng.choice(half, size=min(cluster_degree, half), replace=False)
         for j_b, j_c in zip(b_nb, c_nb):
-            cat_a.append(i); cat_b.append(int(j_b)); cat_c.append(int(j_c))
+            cat_a.append(i)
+            cat_b.append(int(j_b))
+            cat_c.append(int(j_c))
 
     for i in range(half, n_levels):
-        b_nb = rng.choice(range(half, n_levels), size=min(cluster_degree, n_levels - half), replace=False)
-        c_nb = rng.choice(range(half, n_levels), size=min(cluster_degree, n_levels - half), replace=False)
+        b_nb = rng.choice(
+            range(half, n_levels),
+            size=min(cluster_degree, n_levels - half),
+            replace=False,
+        )
+        c_nb = rng.choice(
+            range(half, n_levels),
+            size=min(cluster_degree, n_levels - half),
+            replace=False,
+        )
         for j_b, j_c in zip(b_nb, c_nb):
-            cat_a.append(i); cat_b.append(int(j_b)); cat_c.append(int(j_c))
+            cat_a.append(i)
+            cat_b.append(int(j_b))
+            cat_c.append(int(j_c))
 
     for w in range(bridge_width):
-        cat_a.append(half - 1 - w); cat_b.append(half + w); cat_c.append(half - 1 - w)
-        cat_a.append(half - 1 - w); cat_b.append(half - 1 - w); cat_c.append(half + w)
-        cat_a.append(half + w); cat_b.append(half - 1 - w); cat_c.append(half - 1 - w)
+        cat_a.append(half - 1 - w)
+        cat_b.append(half + w)
+        cat_c.append(half - 1 - w)
+        cat_a.append(half - 1 - w)
+        cat_b.append(half - 1 - w)
+        cat_c.append(half + w)
+        cat_a.append(half + w)
+        cat_b.append(half - 1 - w)
+        cat_c.append(half - 1 - w)
 
     cats = [np.array(c, dtype=np.int64) for c in [cat_a, cat_b, cat_c]]
     n_levels_list = [n_levels] * 3
@@ -216,9 +251,7 @@ def random_3fe(
 ) -> tuple[list[NDArray[np.int64]], list[int], NDArray[np.float64]]:
     """Random 3-FE problem with uniform level distribution."""
     rng = np.random.default_rng(seed)
-    cats = [
-        rng.integers(0, n_levels[i], size=n_rows, dtype=np.int64) for i in range(3)
-    ]
+    cats = [rng.integers(0, n_levels[i], size=n_rows, dtype=np.int64) for i in range(3)]
     n_levels_list = list(n_levels)
     return cats, n_levels_list, _make_response(cats, n_levels_list, rng)
 
@@ -461,7 +494,11 @@ def akm_power_law(
     firm_weights = zipf_firm_sizes(n_firms, zipf_exponent)
     initial_firm = rng.choice(n_firms, size=n_workers, p=firm_weights).astype(np.intp)
     assignments = simulate_mobility(
-        initial_firm, n_years, mobility_rate, firm_weights, rng,
+        initial_firm,
+        n_years,
+        mobility_rate,
+        firm_weights,
+        rng,
     )
     return panel_to_design(assignments, n_fe, rng)
 
@@ -483,7 +520,11 @@ def akm_low_mobility(
     firm_weights = np.ones(n_firms, dtype=np.float64) / n_firms
     initial_firm = rng.integers(0, n_firms, size=n_workers, dtype=np.intp)
     assignments = simulate_mobility(
-        initial_firm, n_years, annual_mobility_rate, firm_weights, rng,
+        initial_firm,
+        n_years,
+        annual_mobility_rate,
+        firm_weights,
+        rng,
     )
     return panel_to_design(assignments, n_fe, rng)
 
@@ -513,11 +554,19 @@ def akm_disconnected(
     # Workers start in a random firm within a random cluster
     initial_firm = rng.integers(0, n_firms, size=n_workers, dtype=np.intp)
     assignments = simulate_mobility(
-        initial_firm, n_years, within_mobility, firm_weights, rng,
-        cluster_map=cluster_map, cross_cluster_rate=cross_cluster_rate,
+        initial_firm,
+        n_years,
+        within_mobility,
+        firm_weights,
+        rng,
+        cluster_map=cluster_map,
+        cross_cluster_rate=cross_cluster_rate,
     )
     return panel_to_design(
-        assignments, n_fe, rng, prune_components=prune_components,
+        assignments,
+        n_fe,
+        rng,
+        prune_components=prune_components,
     )
 
 
@@ -545,11 +594,19 @@ def akm_realistic(
     )[:n_firms]
     initial_firm = rng.choice(n_firms, size=n_workers, p=firm_weights).astype(np.intp)
     assignments = simulate_mobility(
-        initial_firm, n_years, annual_mobility_rate, firm_weights, rng,
-        cluster_map=cluster_map, cross_cluster_rate=cross_cluster_rate,
+        initial_firm,
+        n_years,
+        annual_mobility_rate,
+        firm_weights,
+        rng,
+        cluster_map=cluster_map,
+        cross_cluster_rate=cross_cluster_rate,
     )
     return panel_to_design(
-        assignments, n_fe, rng, prune_components=prune_components,
+        assignments,
+        n_fe,
+        rng,
+        prune_components=prune_components,
     )
 
 
@@ -566,10 +623,13 @@ def random_kfe(
         n_levels_per_factor = [50] * k
     assert len(n_levels_per_factor) == k
     cats = [
-        rng.integers(0, nl, size=n_rows, dtype=np.int64)
-        for nl in n_levels_per_factor
+        rng.integers(0, nl, size=n_rows, dtype=np.int64) for nl in n_levels_per_factor
     ]
-    return cats, list(n_levels_per_factor), _make_response(cats, n_levels_per_factor, rng)
+    return (
+        cats,
+        list(n_levels_per_factor),
+        _make_response(cats, n_levels_per_factor, rng),
+    )
 
 
 @register_generator("imbalanced_kfe")
@@ -589,7 +649,11 @@ def imbalanced_kfe(
         probs = np.arange(1, nl + 1, dtype=np.float64) ** (-1.5)
         probs /= probs.sum()
         cats.append(rng.choice(nl, size=n_rows, p=probs).astype(np.int64))
-    return cats, list(n_levels_per_factor), _make_response(cats, n_levels_per_factor, rng)
+    return (
+        cats,
+        list(n_levels_per_factor),
+        _make_response(cats, n_levels_per_factor, rng),
+    )
 
 
 @register_generator("disconnected_kfe")
@@ -627,7 +691,9 @@ def disconnected_kfe(
                     start = cluster * levels_per_cluster
                 else:
                     start = (cluster + 1) * levels_per_cluster
-                cat_lists[q].append(int(rng.integers(start, start + levels_per_cluster)))
+                cat_lists[q].append(
+                    int(rng.integers(start, start + levels_per_cluster))
+                )
 
     cats = [np.array(c, dtype=np.int64) for c in cat_lists]
     n_levels_list = [n_levels] * k

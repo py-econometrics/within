@@ -31,6 +31,7 @@ class OneLevelSchwarz:
 
 class MultiplicativeOneLevelSchwarz:
     """One-level multiplicative Schwarz with sequential subdomain sweeps."""
+
     smoother: ApproxCholConfig | None
     local_solver: str | None
     approx_schur: ApproxSchurConfig | None
@@ -47,7 +48,9 @@ class LSMR:
     tol: float
     maxiter: int
     conlim: float
-    def __init__(self, tol: float = 1e-8, maxiter: int = 1000, conlim: float = 1e8) -> None: ...
+    def __init__(
+        self, tol: float = 1e-8, maxiter: int = 1000, conlim: float = 1e8
+    ) -> None: ...
 
 class CG:
     tol: float
@@ -66,7 +69,8 @@ class GMRES:
     restart: int
     preconditioner: MultiplicativeOneLevelSchwarz
     def __init__(
-        self, preconditioner: MultiplicativeOneLevelSchwarz,
+        self,
+        preconditioner: MultiplicativeOneLevelSchwarz,
         tol: float = 1e-8,
         maxiter: int = 10000,
         restart: int = 30,

@@ -6,7 +6,14 @@ comparison across CG.
 
 from __future__ import annotations
 
-from within import ApproxCholConfig, CG, GMRES, LSMR, OneLevelSchwarz, MultiplicativeOneLevelSchwarz
+from within import (
+    ApproxCholConfig,
+    CG,
+    GMRES,
+    LSMR,
+    OneLevelSchwarz,
+    MultiplicativeOneLevelSchwarz,
+)
 from .._problems import get_generator
 from .._registry import SuiteOptions, suite
 from .._solvers import run_solve
@@ -22,26 +29,108 @@ from .._types import BenchmarkResult, ProblemSpec, SolverConfig
 def run_preconditioners_3fe(opts: SuiteOptions) -> list[BenchmarkResult]:
     if opts.quick:
         problems = [
-            ProblemSpec("Sparse (50^3, 3e)", "sparse_3fe", {"n_levels": (50, 50, 50), "edges_per_level": 3}, opts.seed),
-            ProblemSpec("Imbalanced (50^3)", "imbalanced_3fe", {"n_levels": (50, 50, 50), "n_rows": 5000}, opts.seed),
+            ProblemSpec(
+                "Sparse (50^3, 3e)",
+                "sparse_3fe",
+                {"n_levels": (50, 50, 50), "edges_per_level": 3},
+                opts.seed,
+            ),
+            ProblemSpec(
+                "Imbalanced (50^3)",
+                "imbalanced_3fe",
+                {"n_levels": (50, 50, 50), "n_rows": 5000},
+                opts.seed,
+            ),
         ]
     else:
         problems = [
-            ProblemSpec("Sparse (50^3, 3e)", "sparse_3fe", {"n_levels": (50, 50, 50), "edges_per_level": 3}, opts.seed),
-            ProblemSpec("Sparse (50^3, 5e)", "sparse_3fe", {"n_levels": (50, 50, 50), "edges_per_level": 5}, opts.seed),
-            ProblemSpec("Sparse (100^3, 3e)", "sparse_3fe", {"n_levels": (100, 100, 100), "edges_per_level": 3}, opts.seed),
-            ProblemSpec("Sparse (100^3, 5e)", "sparse_3fe", {"n_levels": (100, 100, 100), "edges_per_level": 5}, opts.seed),
-            ProblemSpec("V.Sparse (200^3, 2e)", "sparse_3fe", {"n_levels": (200, 200, 200), "edges_per_level": 2}, opts.seed),
-            ProblemSpec("V.Sparse (200^3, 3e)", "sparse_3fe", {"n_levels": (200, 200, 200), "edges_per_level": 3}, opts.seed),
-            ProblemSpec("Clustered (100^3)", "clustered_3fe", {"n_levels": (100, 100, 100), "n_clusters": 10, "obs_per_cluster": 200, "bridge_obs": 3}, opts.seed),
-            ProblemSpec("Imbalanced (100^3)", "imbalanced_3fe", {"n_levels": (100, 100, 100), "n_rows": 10000}, opts.seed),
+            ProblemSpec(
+                "Sparse (50^3, 3e)",
+                "sparse_3fe",
+                {"n_levels": (50, 50, 50), "edges_per_level": 3},
+                opts.seed,
+            ),
+            ProblemSpec(
+                "Sparse (50^3, 5e)",
+                "sparse_3fe",
+                {"n_levels": (50, 50, 50), "edges_per_level": 5},
+                opts.seed,
+            ),
+            ProblemSpec(
+                "Sparse (100^3, 3e)",
+                "sparse_3fe",
+                {"n_levels": (100, 100, 100), "edges_per_level": 3},
+                opts.seed,
+            ),
+            ProblemSpec(
+                "Sparse (100^3, 5e)",
+                "sparse_3fe",
+                {"n_levels": (100, 100, 100), "edges_per_level": 5},
+                opts.seed,
+            ),
+            ProblemSpec(
+                "V.Sparse (200^3, 2e)",
+                "sparse_3fe",
+                {"n_levels": (200, 200, 200), "edges_per_level": 2},
+                opts.seed,
+            ),
+            ProblemSpec(
+                "V.Sparse (200^3, 3e)",
+                "sparse_3fe",
+                {"n_levels": (200, 200, 200), "edges_per_level": 3},
+                opts.seed,
+            ),
+            ProblemSpec(
+                "Clustered (100^3)",
+                "clustered_3fe",
+                {
+                    "n_levels": (100, 100, 100),
+                    "n_clusters": 10,
+                    "obs_per_cluster": 200,
+                    "bridge_obs": 3,
+                },
+                opts.seed,
+            ),
+            ProblemSpec(
+                "Imbalanced (100^3)",
+                "imbalanced_3fe",
+                {"n_levels": (100, 100, 100), "n_rows": 10000},
+                opts.seed,
+            ),
         ]
 
     configs = [
         SolverConfig("LSMR(diag)", LSMR(tol=opts.tol, maxiter=opts.maxiter)),
-        SolverConfig("CG(Schwarz)", CG(tol=opts.tol, maxiter=opts.maxiter, preconditioner=OneLevelSchwarz(smoother=ApproxCholConfig(seed=opts.seed)))),
-        SolverConfig("GMRES(Mult-Schwarz)", GMRES(tol=opts.tol, maxiter=opts.maxiter, preconditioner=MultiplicativeOneLevelSchwarz(smoother=ApproxCholConfig(seed=opts.seed)))),
-        SolverConfig("CG(Mult-Schwarz)", CG(tol=opts.tol, maxiter=opts.maxiter, preconditioner=MultiplicativeOneLevelSchwarz(smoother=ApproxCholConfig(seed=opts.seed)))),
+        SolverConfig(
+            "CG(Schwarz)",
+            CG(
+                tol=opts.tol,
+                maxiter=opts.maxiter,
+                preconditioner=OneLevelSchwarz(
+                    smoother=ApproxCholConfig(seed=opts.seed)
+                ),
+            ),
+        ),
+        SolverConfig(
+            "GMRES(Mult-Schwarz)",
+            GMRES(
+                tol=opts.tol,
+                maxiter=opts.maxiter,
+                preconditioner=MultiplicativeOneLevelSchwarz(
+                    smoother=ApproxCholConfig(seed=opts.seed)
+                ),
+            ),
+        ),
+        SolverConfig(
+            "CG(Mult-Schwarz)",
+            CG(
+                tol=opts.tol,
+                maxiter=opts.maxiter,
+                preconditioner=MultiplicativeOneLevelSchwarz(
+                    smoother=ApproxCholConfig(seed=opts.seed)
+                ),
+            ),
+        ),
     ]
 
     all_results: list[BenchmarkResult] = []
@@ -73,24 +162,66 @@ def run_preconditioner_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
     if opts.quick:
         problems = [
             ProblemSpec("chain 50 2fe", "chain_2fe", {"n_levels": 50}, opts.seed),
-            ProblemSpec("sparse 50^3 3fe", "sparse_3fe", {"n_levels": (50, 50, 50), "edges_per_level": 3}, opts.seed),
+            ProblemSpec(
+                "sparse 50^3 3fe",
+                "sparse_3fe",
+                {"n_levels": (50, 50, 50), "edges_per_level": 3},
+                opts.seed,
+            ),
         ]
     else:
         problems = [
             ProblemSpec("chain 100 2fe", "chain_2fe", {"n_levels": 100}, opts.seed),
             ProblemSpec("chain 200 2fe", "chain_2fe", {"n_levels": 200}, opts.seed),
-            ProblemSpec("expander 100 2fe", "expander_2fe", {"n_levels": 100, "degree": 3}, opts.seed),
+            ProblemSpec(
+                "expander 100 2fe",
+                "expander_2fe",
+                {"n_levels": 100, "degree": 3},
+                opts.seed,
+            ),
             ProblemSpec("barbell 100 2fe", "barbell_2fe", {"n_levels": 100}, opts.seed),
-            ProblemSpec("sparse 100^3 3fe", "sparse_3fe", {"n_levels": (100, 100, 100), "edges_per_level": 3}, opts.seed),
+            ProblemSpec(
+                "sparse 100^3 3fe",
+                "sparse_3fe",
+                {"n_levels": (100, 100, 100), "edges_per_level": 3},
+                opts.seed,
+            ),
             ProblemSpec("chain 100 3fe", "chain_3fe", {"n_levels": 100}, opts.seed),
         ]
 
     configs = [
         SolverConfig("LSMR(diag)", LSMR(tol=opts.tol, maxiter=opts.maxiter)),
         SolverConfig("CG(none)", CG(tol=opts.tol, maxiter=opts.maxiter)),
-        SolverConfig("CG(Schwarz)", CG(tol=opts.tol, maxiter=opts.maxiter, preconditioner=OneLevelSchwarz(smoother=ApproxCholConfig(seed=opts.seed)))),
-        SolverConfig("GMRES(Mult-Schwarz)", GMRES(tol=opts.tol, maxiter=opts.maxiter, preconditioner=MultiplicativeOneLevelSchwarz(smoother=ApproxCholConfig(seed=opts.seed)))),
-        SolverConfig("CG(Mult-Schwarz)", CG(tol=opts.tol, maxiter=opts.maxiter, preconditioner=MultiplicativeOneLevelSchwarz(smoother=ApproxCholConfig(seed=opts.seed)))),
+        SolverConfig(
+            "CG(Schwarz)",
+            CG(
+                tol=opts.tol,
+                maxiter=opts.maxiter,
+                preconditioner=OneLevelSchwarz(
+                    smoother=ApproxCholConfig(seed=opts.seed)
+                ),
+            ),
+        ),
+        SolverConfig(
+            "GMRES(Mult-Schwarz)",
+            GMRES(
+                tol=opts.tol,
+                maxiter=opts.maxiter,
+                preconditioner=MultiplicativeOneLevelSchwarz(
+                    smoother=ApproxCholConfig(seed=opts.seed)
+                ),
+            ),
+        ),
+        SolverConfig(
+            "CG(Mult-Schwarz)",
+            CG(
+                tol=opts.tol,
+                maxiter=opts.maxiter,
+                preconditioner=MultiplicativeOneLevelSchwarz(
+                    smoother=ApproxCholConfig(seed=opts.seed)
+                ),
+            ),
+        ),
     ]
 
     all_results: list[BenchmarkResult] = []

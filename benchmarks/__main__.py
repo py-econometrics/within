@@ -6,7 +6,7 @@ import argparse
 import sys
 
 from ._registry import SuiteOptions, get_suite, list_suites
-from ._table import print_pivot, print_table
+from ._table import print_pivot
 
 
 def _cmd_list(args: argparse.Namespace) -> None:

@@ -12,7 +12,14 @@ real AKM data hard:
 
 from __future__ import annotations
 
-from within import ApproxCholConfig, CG, GMRES, LSMR, OneLevelSchwarz, MultiplicativeOneLevelSchwarz
+from within import (
+    ApproxCholConfig,
+    CG,
+    GMRES,
+    LSMR,
+    OneLevelSchwarz,
+    MultiplicativeOneLevelSchwarz,
+)
 from .._problems import get_generator
 from .._registry import SuiteOptions, suite
 from .._solvers import run_solve
@@ -23,15 +30,43 @@ from .._types import BenchmarkResult, SolverConfig
 def _solver_configs(opts: SuiteOptions) -> list[SolverConfig]:
     return [
         SolverConfig("LSMR(diag)", LSMR(tol=opts.tol, maxiter=opts.maxiter)),
-        SolverConfig("CG(Schwarz)", CG(tol=opts.tol, maxiter=opts.maxiter, preconditioner=OneLevelSchwarz(smoother=ApproxCholConfig(seed=opts.seed)))),
-        SolverConfig("GMRES(Mult-Schwarz)", GMRES(tol=opts.tol, maxiter=opts.maxiter, preconditioner=MultiplicativeOneLevelSchwarz(smoother=ApproxCholConfig(seed=opts.seed)))),
-        SolverConfig("CG(Mult-Schwarz)", CG(tol=opts.tol, maxiter=opts.maxiter, preconditioner=MultiplicativeOneLevelSchwarz(smoother=ApproxCholConfig(seed=opts.seed)))),
+        SolverConfig(
+            "CG(Schwarz)",
+            CG(
+                tol=opts.tol,
+                maxiter=opts.maxiter,
+                preconditioner=OneLevelSchwarz(
+                    smoother=ApproxCholConfig(seed=opts.seed)
+                ),
+            ),
+        ),
+        SolverConfig(
+            "GMRES(Mult-Schwarz)",
+            GMRES(
+                tol=opts.tol,
+                maxiter=opts.maxiter,
+                preconditioner=MultiplicativeOneLevelSchwarz(
+                    smoother=ApproxCholConfig(seed=opts.seed)
+                ),
+            ),
+        ),
+        SolverConfig(
+            "CG(Mult-Schwarz)",
+            CG(
+                tol=opts.tol,
+                maxiter=opts.maxiter,
+                preconditioner=MultiplicativeOneLevelSchwarz(
+                    smoother=ApproxCholConfig(seed=opts.seed)
+                ),
+            ),
+        ),
     ]
 
 
 # -----------------------------------------------------------------------
 # Suite: akm_panel — main comparison across all 4 generators
 # -----------------------------------------------------------------------
+
 
 @suite(
     "akm_panel",
@@ -56,28 +91,72 @@ def run_akm_panel(opts: SuiteOptions) -> list[BenchmarkResult]:
             ("realistic 10K", "akm_realistic", {}),
             ("realistic 10K 2FE", "akm_realistic", {"n_fe": 2}),
             # --- 100K workers ---
-            ("power_law 100K", "akm_power_law", {
-                "n_workers": 100_000, "n_firms": 5_000, "n_years": 15,
-            }),
-            ("low_mobility 100K", "akm_low_mobility", {
-                "n_workers": 100_000, "n_firms": 5_000, "n_years": 15,
-            }),
-            ("disconnected 100K", "akm_disconnected", {
-                "n_workers": 100_000, "n_firms": 5_000, "n_years": 15,
-            }),
-            ("realistic 100K", "akm_realistic", {
-                "n_workers": 100_000, "n_firms": 5_000, "n_years": 15,
-            }),
-            ("realistic 100K 2FE", "akm_realistic", {
-                "n_workers": 100_000, "n_firms": 5_000, "n_years": 15, "n_fe": 2,
-            }),
+            (
+                "power_law 100K",
+                "akm_power_law",
+                {
+                    "n_workers": 100_000,
+                    "n_firms": 5_000,
+                    "n_years": 15,
+                },
+            ),
+            (
+                "low_mobility 100K",
+                "akm_low_mobility",
+                {
+                    "n_workers": 100_000,
+                    "n_firms": 5_000,
+                    "n_years": 15,
+                },
+            ),
+            (
+                "disconnected 100K",
+                "akm_disconnected",
+                {
+                    "n_workers": 100_000,
+                    "n_firms": 5_000,
+                    "n_years": 15,
+                },
+            ),
+            (
+                "realistic 100K",
+                "akm_realistic",
+                {
+                    "n_workers": 100_000,
+                    "n_firms": 5_000,
+                    "n_years": 15,
+                },
+            ),
+            (
+                "realistic 100K 2FE",
+                "akm_realistic",
+                {
+                    "n_workers": 100_000,
+                    "n_firms": 5_000,
+                    "n_years": 15,
+                    "n_fe": 2,
+                },
+            ),
             # --- 1M workers ---
-            ("realistic 1M", "akm_realistic", {
-                "n_workers": 1_000_000, "n_firms": 50_000, "n_years": 20,
-            }),
-            ("realistic 1M 2FE", "akm_realistic", {
-                "n_workers": 1_000_000, "n_firms": 50_000, "n_years": 20, "n_fe": 2,
-            }),
+            (
+                "realistic 1M",
+                "akm_realistic",
+                {
+                    "n_workers": 1_000_000,
+                    "n_firms": 50_000,
+                    "n_years": 20,
+                },
+            ),
+            (
+                "realistic 1M 2FE",
+                "akm_realistic",
+                {
+                    "n_workers": 1_000_000,
+                    "n_firms": 50_000,
+                    "n_years": 20,
+                    "n_fe": 2,
+                },
+            ),
         ]
         solver_sets = [_solver_configs(opts)] * len(problems)
 
@@ -105,6 +184,7 @@ def run_akm_panel(opts: SuiteOptions) -> list[BenchmarkResult]:
 # Suite: akm_scaling — scaling behavior of akm_realistic
 # -----------------------------------------------------------------------
 
+
 @suite(
     "akm_scaling",
     description="AKM realistic scaling: wall-clock vs problem size",
@@ -128,7 +208,16 @@ def run_akm_scaling(opts: SuiteOptions) -> list[BenchmarkResult]:
         ]
 
     scaling_configs = [
-        SolverConfig("CG(Schwarz)", CG(tol=opts.tol, maxiter=opts.maxiter, preconditioner=OneLevelSchwarz(smoother=ApproxCholConfig(seed=opts.seed)))),
+        SolverConfig(
+            "CG(Schwarz)",
+            CG(
+                tol=opts.tol,
+                maxiter=opts.maxiter,
+                preconditioner=OneLevelSchwarz(
+                    smoother=ApproxCholConfig(seed=opts.seed)
+                ),
+            ),
+        ),
     ]
 
     all_results: list[BenchmarkResult] = []

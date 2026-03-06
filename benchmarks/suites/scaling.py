@@ -8,7 +8,14 @@ from __future__ import annotations
 
 import numpy as np
 
-from within import ApproxCholConfig, CG, GMRES, LSMR, OneLevelSchwarz, MultiplicativeOneLevelSchwarz
+from within import (
+    ApproxCholConfig,
+    CG,
+    GMRES,
+    LSMR,
+    OneLevelSchwarz,
+    MultiplicativeOneLevelSchwarz,
+)
 
 from .._registry import SuiteOptions, suite
 from .._solvers import run_solve
@@ -23,9 +30,36 @@ def _run_scaling_problems(
     """Run a list of (name, n_levels, n_rows) configs through the standard solve paths."""
     solver_configs = [
         SolverConfig("LSMR(diag)", LSMR(tol=opts.tol, maxiter=opts.maxiter)),
-        SolverConfig("CG(Schwarz)", CG(tol=opts.tol, maxiter=opts.maxiter, preconditioner=OneLevelSchwarz(smoother=ApproxCholConfig(seed=opts.seed)))),
-        SolverConfig("GMRES(Mult-Schwarz)", GMRES(tol=opts.tol, maxiter=opts.maxiter, preconditioner=MultiplicativeOneLevelSchwarz(smoother=ApproxCholConfig(seed=opts.seed)))),
-        SolverConfig("CG(Mult-Schwarz)", CG(tol=opts.tol, maxiter=opts.maxiter, preconditioner=MultiplicativeOneLevelSchwarz(smoother=ApproxCholConfig(seed=opts.seed)))),
+        SolverConfig(
+            "CG(Schwarz)",
+            CG(
+                tol=opts.tol,
+                maxiter=opts.maxiter,
+                preconditioner=OneLevelSchwarz(
+                    smoother=ApproxCholConfig(seed=opts.seed)
+                ),
+            ),
+        ),
+        SolverConfig(
+            "GMRES(Mult-Schwarz)",
+            GMRES(
+                tol=opts.tol,
+                maxiter=opts.maxiter,
+                preconditioner=MultiplicativeOneLevelSchwarz(
+                    smoother=ApproxCholConfig(seed=opts.seed)
+                ),
+            ),
+        ),
+        SolverConfig(
+            "CG(Mult-Schwarz)",
+            CG(
+                tol=opts.tol,
+                maxiter=opts.maxiter,
+                preconditioner=MultiplicativeOneLevelSchwarz(
+                    smoother=ApproxCholConfig(seed=opts.seed)
+                ),
+            ),
+        ),
     ]
 
     all_results: list[BenchmarkResult] = []
@@ -111,9 +145,36 @@ def run_scaling_2fe(opts: SuiteOptions) -> list[BenchmarkResult]:
 
     solver_configs = [
         SolverConfig("LSMR(diag)", LSMR(tol=opts.tol, maxiter=opts.maxiter)),
-        SolverConfig("CG(Schwarz)", CG(tol=opts.tol, maxiter=opts.maxiter, preconditioner=OneLevelSchwarz(smoother=ApproxCholConfig(seed=opts.seed)))),
-        SolverConfig("GMRES(Mult-Schwarz)", GMRES(tol=opts.tol, maxiter=opts.maxiter, preconditioner=MultiplicativeOneLevelSchwarz(smoother=ApproxCholConfig(seed=opts.seed)))),
-        SolverConfig("CG(Mult-Schwarz)", CG(tol=opts.tol, maxiter=opts.maxiter, preconditioner=MultiplicativeOneLevelSchwarz(smoother=ApproxCholConfig(seed=opts.seed)))),
+        SolverConfig(
+            "CG(Schwarz)",
+            CG(
+                tol=opts.tol,
+                maxiter=opts.maxiter,
+                preconditioner=OneLevelSchwarz(
+                    smoother=ApproxCholConfig(seed=opts.seed)
+                ),
+            ),
+        ),
+        SolverConfig(
+            "GMRES(Mult-Schwarz)",
+            GMRES(
+                tol=opts.tol,
+                maxiter=opts.maxiter,
+                preconditioner=MultiplicativeOneLevelSchwarz(
+                    smoother=ApproxCholConfig(seed=opts.seed)
+                ),
+            ),
+        ),
+        SolverConfig(
+            "CG(Mult-Schwarz)",
+            CG(
+                tol=opts.tol,
+                maxiter=opts.maxiter,
+                preconditioner=MultiplicativeOneLevelSchwarz(
+                    smoother=ApproxCholConfig(seed=opts.seed)
+                ),
+            ),
+        ),
     ]
 
     all_results: list[BenchmarkResult] = []

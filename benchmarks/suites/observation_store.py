@@ -6,7 +6,14 @@ with varying duplication rates.
 
 from __future__ import annotations
 
-from within import ApproxCholConfig, CG, GMRES, LSMR, OneLevelSchwarz, MultiplicativeOneLevelSchwarz
+from within import (
+    ApproxCholConfig,
+    CG,
+    GMRES,
+    LSMR,
+    OneLevelSchwarz,
+    MultiplicativeOneLevelSchwarz,
+)
 from .._problems import get_generator
 from .._registry import SuiteOptions, suite
 from .._solvers import run_solve
@@ -22,8 +29,18 @@ def _problems(quick: bool, seed: int) -> list[ProblemSpec]:
         return [
             ProblemSpec("chain-50 2fe", "chain_2fe", {"n_levels": 50}, seed),
             ProblemSpec("grid-10 2fe", "grid_2fe", {"n_side": 10}, seed),
-            ProblemSpec("sparse-3fe-30^3", "sparse_3fe", {"n_levels": (30, 30, 30), "edges_per_level": 3}, seed),
-            ProblemSpec("akm-power-1K", "akm_power_law", {"n_workers": 1000, "n_firms": 50, "n_years": 5}, seed),
+            ProblemSpec(
+                "sparse-3fe-30^3",
+                "sparse_3fe",
+                {"n_levels": (30, 30, 30), "edges_per_level": 3},
+                seed,
+            ),
+            ProblemSpec(
+                "akm-power-1K",
+                "akm_power_law",
+                {"n_workers": 1000, "n_firms": 50, "n_years": 5},
+                seed,
+            ),
         ]
     return [
         # 2-FE — low duplication baseline
@@ -31,12 +48,32 @@ def _problems(quick: bool, seed: int) -> list[ProblemSpec]:
         ProblemSpec("star-100 2fe", "star_2fe", {"n_levels": 100}, seed),
         ProblemSpec("grid-20 2fe", "grid_2fe", {"n_side": 20}, seed),
         # 3-FE — moderate duplication
-        ProblemSpec("sparse-3fe-50^3", "sparse_3fe", {"n_levels": (50, 50, 50), "edges_per_level": 3}, seed),
+        ProblemSpec(
+            "sparse-3fe-50^3",
+            "sparse_3fe",
+            {"n_levels": (50, 50, 50), "edges_per_level": 3},
+            seed,
+        ),
         # AKM — high duplication (compressed sweet spot)
-        ProblemSpec("akm-power-5K", "akm_power_law", {"n_workers": 5000, "n_firms": 200, "n_years": 10}, seed),
-        ProblemSpec("akm-realistic-5K", "akm_realistic", {"n_workers": 5000, "n_firms": 200, "n_years": 10}, seed),
+        ProblemSpec(
+            "akm-power-5K",
+            "akm_power_law",
+            {"n_workers": 5000, "n_firms": 200, "n_years": 10},
+            seed,
+        ),
+        ProblemSpec(
+            "akm-realistic-5K",
+            "akm_realistic",
+            {"n_workers": 5000, "n_firms": 200, "n_years": 10},
+            seed,
+        ),
         # Uniform large — stress test
-        ProblemSpec("uniform-500x500-50K", "uniform_kfe", {"n_levels_per_factor": [500, 500], "n_rows": 50000}, seed),
+        ProblemSpec(
+            "uniform-500x500-50K",
+            "uniform_kfe",
+            {"n_levels_per_factor": [500, 500], "n_rows": 50000},
+            seed,
+        ),
     ]
 
 
@@ -48,11 +85,31 @@ def _configs(opts: SuiteOptions) -> list[SolverConfig]:
             CG(
                 tol=opts.tol,
                 maxiter=opts.maxiter,
-                preconditioner=OneLevelSchwarz(smoother=ApproxCholConfig(seed=opts.seed)),
+                preconditioner=OneLevelSchwarz(
+                    smoother=ApproxCholConfig(seed=opts.seed)
+                ),
             ),
         ),
-        SolverConfig("GMRES(Mult-Schwarz)", GMRES(tol=opts.tol, maxiter=opts.maxiter, preconditioner=MultiplicativeOneLevelSchwarz(smoother=ApproxCholConfig(seed=opts.seed)))),
-        SolverConfig("CG(Mult-Schwarz)", CG(tol=opts.tol, maxiter=opts.maxiter, preconditioner=MultiplicativeOneLevelSchwarz(smoother=ApproxCholConfig(seed=opts.seed)))),
+        SolverConfig(
+            "GMRES(Mult-Schwarz)",
+            GMRES(
+                tol=opts.tol,
+                maxiter=opts.maxiter,
+                preconditioner=MultiplicativeOneLevelSchwarz(
+                    smoother=ApproxCholConfig(seed=opts.seed)
+                ),
+            ),
+        ),
+        SolverConfig(
+            "CG(Mult-Schwarz)",
+            CG(
+                tol=opts.tol,
+                maxiter=opts.maxiter,
+                preconditioner=MultiplicativeOneLevelSchwarz(
+                    smoother=ApproxCholConfig(seed=opts.seed)
+                ),
+            ),
+        ),
     ]
 
 
@@ -76,12 +133,22 @@ def run_observation_store(opts: SuiteOptions) -> list[BenchmarkResult]:
                 result = run_solve(cats, n_levels, y, cfg, layout=layout)
                 result.problem = prob.name
                 result.config = f"{cfg.label}/{layout}"
-                result.passed = result.converged and result.final_residual < RESIDUAL_THRESHOLD
+                result.passed = (
+                    result.converged and result.final_residual < RESIDUAL_THRESHOLD
+                )
                 all_results.append(result)
 
     print_table(
         all_results,
-        columns=["problem", "config", "setup_time", "solve_time", "iterations", "final_residual", "converged"],
+        columns=[
+            "problem",
+            "config",
+            "setup_time",
+            "solve_time",
+            "iterations",
+            "final_residual",
+            "converged",
+        ],
     )
 
     # Correctness summary
@@ -92,6 +159,8 @@ def run_observation_store(opts: SuiteOptions) -> list[BenchmarkResult]:
     if n_fail:
         for r in all_results:
             if not r.passed:
-                print(f"  FAIL: {r.problem} / {r.config}: residual={r.final_residual:.2e}")
+                print(
+                    f"  FAIL: {r.problem} / {r.config}: residual={r.final_residual:.2e}"
+                )
 
     return all_results

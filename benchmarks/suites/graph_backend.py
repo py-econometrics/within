@@ -34,17 +34,54 @@ def run_graph_backend_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
             ProblemSpec("star 500 2fe", "star_2fe", {"n_levels": 500}, opts.seed),
             ProblemSpec("star 2000 2fe", "star_2fe", {"n_levels": 2000}, opts.seed),
             ProblemSpec("star 5000 2fe", "star_2fe", {"n_levels": 5000}, opts.seed),
-            ProblemSpec("expander 500 d=3", "expander_2fe", {"n_levels": 500, "degree": 3}, opts.seed),
-            ProblemSpec("expander 2000 d=3", "expander_2fe", {"n_levels": 2000, "degree": 3}, opts.seed),
-            ProblemSpec("expander 5000 d=3", "expander_2fe", {"n_levels": 5000, "degree": 3}, opts.seed),
-            ProblemSpec("expander 500 d=10", "expander_2fe", {"n_levels": 500, "degree": 10}, opts.seed),
-            ProblemSpec("expander 2000 d=10", "expander_2fe", {"n_levels": 2000, "degree": 10}, opts.seed),
+            ProblemSpec(
+                "expander 500 d=3",
+                "expander_2fe",
+                {"n_levels": 500, "degree": 3},
+                opts.seed,
+            ),
+            ProblemSpec(
+                "expander 2000 d=3",
+                "expander_2fe",
+                {"n_levels": 2000, "degree": 3},
+                opts.seed,
+            ),
+            ProblemSpec(
+                "expander 5000 d=3",
+                "expander_2fe",
+                {"n_levels": 5000, "degree": 3},
+                opts.seed,
+            ),
+            ProblemSpec(
+                "expander 500 d=10",
+                "expander_2fe",
+                {"n_levels": 500, "degree": 10},
+                opts.seed,
+            ),
+            ProblemSpec(
+                "expander 2000 d=10",
+                "expander_2fe",
+                {"n_levels": 2000, "degree": 10},
+                opts.seed,
+            ),
             ProblemSpec("barbell 500 2fe", "barbell_2fe", {"n_levels": 500}, opts.seed),
-            ProblemSpec("barbell 2000 2fe", "barbell_2fe", {"n_levels": 2000}, opts.seed),
+            ProblemSpec(
+                "barbell 2000 2fe", "barbell_2fe", {"n_levels": 2000}, opts.seed
+            ),
             ProblemSpec("grid 50x50 2fe", "grid_2fe", {"n_side": 50}, opts.seed),
             ProblemSpec("grid 100x100 2fe", "grid_2fe", {"n_side": 100}, opts.seed),
-            ProblemSpec("sparse 200^3 3fe", "sparse_3fe", {"n_levels": (200, 200, 200), "edges_per_level": 3}, opts.seed),
-            ProblemSpec("sparse 500^3 3fe", "sparse_3fe", {"n_levels": (500, 500, 500), "edges_per_level": 3}, opts.seed),
+            ProblemSpec(
+                "sparse 200^3 3fe",
+                "sparse_3fe",
+                {"n_levels": (200, 200, 200), "edges_per_level": 3},
+                opts.seed,
+            ),
+            ProblemSpec(
+                "sparse 500^3 3fe",
+                "sparse_3fe",
+                {"n_levels": (500, 500, 500), "edges_per_level": 3},
+                opts.seed,
+            ),
         ]
 
     configs = [

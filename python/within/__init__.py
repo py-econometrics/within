@@ -24,8 +24,9 @@ def solve(categories, y, config=None, *, n_levels=None, weights=None, layout=Non
 
     if isinstance(categories, list):
         categories = np.column_stack(categories).astype(np.uintp)
-    return _py_solve(categories, y, config, n_levels=n_levels, weights=weights, layout=layout)
-
+    return _py_solve(
+        categories, y, config, n_levels=n_levels, weights=weights, layout=layout
+    )
 
 
 __all__ = [
