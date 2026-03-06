@@ -53,26 +53,3 @@ pub fn demean_batch<S: ObservationStore + Sync>(
         all_converged,
     })
 }
-
-/// Convenience: build a weighted design and demean a batch of columns.
-pub fn demean_batch_default(
-    categories: Vec<Vec<i64>>,
-    n_levels: Vec<usize>,
-    n_obs: usize,
-    weights: Vec<f64>,
-    columns: &[Vec<f64>],
-    tol: f64,
-    maxiter: usize,
-) -> WithinResult<BatchDemeanResult> {
-    use crate::FixedEffectsDesign;
-
-    let design = FixedEffectsDesign::new_weighted(categories, n_levels, n_obs, weights)?;
-
-    let params = SolverParams {
-        tol,
-        maxiter,
-        ..Default::default()
-    };
-
-    demean_batch(&design, columns, &params)
-}
