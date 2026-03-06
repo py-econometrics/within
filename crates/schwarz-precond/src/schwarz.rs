@@ -4,7 +4,6 @@
 //!
 //! Parallel per-domain apply with Rayon.
 
-use std::cell::RefCell;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -49,19 +48,25 @@ struct AtomicScratch {
     z_scratch: Vec<f64>,
 }
 
+impl AtomicScratch {
+    #[inline]
+    fn new(max_scratch_size: usize) -> Self {
+        Self {
+            r_scratch: vec![0.0f64; max_scratch_size],
+            z_scratch: vec![0.0f64; max_scratch_size],
+        }
+    }
+}
+
 /// Pooled buffers that vary by reduction strategy.
 enum SchwarzBuffers {
-    /// Shared atomic accumulator + thread-local scratch.
-    Atomic {
-        accum: Vec<AtomicU64>,
-        scratch: ThreadLocal<RefCell<AtomicScratch>>,
-    },
+    /// Shared atomic accumulator; scratch is per-task via Rayon init.
+    Atomic { accum: Vec<AtomicU64> },
     /// Per-thread full buffers (same as old `AdditiveSweepBuffers`).
     PerThread(ThreadLocal<Mutex<AdditiveSweepBuffers>>),
 }
 
-// SAFETY: Vec<AtomicU64> is Send+Sync. ThreadLocal<RefCell<T>> is Send+Sync for
-// the thread-local atomic-scratch path (T: Send, no cross-thread aliasing).
+// SAFETY: Vec<AtomicU64> is Send+Sync.
 // ThreadLocal<Mutex<T>> is Send+Sync in the per-thread reduction path (T: Send).
 // AtomicScratch and AdditiveSweepBuffers contain only Vec<f64>, which is Send.
 unsafe impl Send for SchwarzBuffers {}
@@ -158,7 +163,6 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
             .unwrap_or_else(|| match self.reduction_strategy {
                 ReductionStrategy::AtomicScatter => SchwarzBuffers::Atomic {
                     accum: (0..n).map(|_| AtomicU64::new(0)).collect(),
-                    scratch: ThreadLocal::new(),
                 },
                 ReductionStrategy::ParallelReduction => {
                     SchwarzBuffers::PerThread(ThreadLocal::new())
@@ -166,26 +170,20 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
             });
 
         let apply_result = match &bufs {
-            SchwarzBuffers::Atomic { accum, scratch } => {
-                self.subdomains
-                    .par_iter()
-                    .enumerate()
-                    .try_for_each(|(subdomain, entry)| {
-                        let cell = scratch.get_or(|| {
-                            RefCell::new(AtomicScratch {
-                                r_scratch: vec![0.0f64; max_ss],
-                                z_scratch: vec![0.0f64; max_ss],
-                            })
-                        });
-                        let mut s = cell.borrow_mut();
-                        let AtomicScratch {
-                            ref mut r_scratch,
-                            ref mut z_scratch,
-                        } = *s;
+            SchwarzBuffers::Atomic { accum } => {
+                self.subdomains.par_iter().enumerate().try_for_each_init(
+                    || AtomicScratch::new(max_ss),
+                    |local, (subdomain, entry)| {
                         entry
-                            .apply_weighted_into_atomic(r, accum, r_scratch, z_scratch)
+                            .apply_weighted_into_atomic(
+                                r,
+                                accum,
+                                &mut local.r_scratch,
+                                &mut local.z_scratch,
+                            )
                             .map_err(|source| ApplyError::LocalSolveFailed { subdomain, source })
-                    })?;
+                    },
+                )?;
 
                 const READOUT_CHUNK: usize = 4096;
                 z.par_chunks_mut(READOUT_CHUNK)

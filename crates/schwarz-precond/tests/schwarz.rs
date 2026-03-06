@@ -1,5 +1,6 @@
 mod common;
 
+use rayon::prelude::*;
 use schwarz_precond::solve::cg::{cg_solve, cg_solve_preconditioned};
 use schwarz_precond::{Operator, SchwarzPreconditioner};
 
@@ -95,4 +96,36 @@ fn test_additive_schwarz_operator_dimensions() {
             z2[i]
         );
     }
+}
+
+#[test]
+fn test_additive_schwarz_parallel_apply_stress_no_panics() {
+    let n = 64;
+    let schwarz = SchwarzPreconditioner::new(make_schwarz_entries(n), n)
+        .expect("valid additive schwarz preconditioner");
+
+    let rhs_columns: Vec<Vec<f64>> = (0..128)
+        .map(|k| {
+            (0..n)
+                .map(|i| ((i + k) % 19) as f64 - 9.0)
+                .collect::<Vec<_>>()
+        })
+        .collect();
+
+    let outputs: Vec<Vec<f64>> = rhs_columns
+        .par_iter()
+        .map(|rhs| {
+            let mut z = vec![0.0; n];
+            for _ in 0..16 {
+                schwarz.apply(rhs, &mut z);
+            }
+            z
+        })
+        .collect();
+
+    assert_eq!(outputs.len(), rhs_columns.len());
+    assert!(
+        outputs.iter().flatten().all(|v| v.is_finite()),
+        "all outputs should remain finite under concurrent apply stress",
+    );
 }
