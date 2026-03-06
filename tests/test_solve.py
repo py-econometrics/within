@@ -15,6 +15,10 @@ from within import (
 from conftest import generate_synthetic_data
 
 
+def as_solver_categories(cats):
+    return np.column_stack(cats).astype(np.uintp)
+
+
 @pytest.fixture()
 def problem():
     """Two-factor problem with 50 levels each, 10k observations."""
@@ -30,19 +34,23 @@ def problem():
 class TestSolveDefaults:
     def test_default_config(self, problem):
         cats, y = problem
-        result = solve(cats, y)
+        result = solve(as_solver_categories(cats), y)
         assert result.converged
         assert result.iterations > 0
         assert result.residual < 1e-6
 
     def test_explicit_cg(self, problem):
         cats, y = problem
-        result = solve(cats, y, CG(operator=OperatorRepr.Explicit))
+        result = solve(
+            as_solver_categories(cats), y, CG(operator=OperatorRepr.Explicit)
+        )
         assert result.converged
 
     def test_gmres(self, problem):
         cats, y = problem
-        result = solve(cats, y, GMRES(preconditioner=MultiplicativeSchwarz()))
+        result = solve(
+            as_solver_categories(cats), y, GMRES(preconditioner=MultiplicativeSchwarz())
+        )
         assert result.converged
 
     def test_rejects_multiplicative_cg(self, problem):
@@ -50,39 +58,48 @@ class TestSolveDefaults:
         with pytest.raises(
             TypeError, match="CG preconditioner must be AdditiveSchwarz or None"
         ):
-            solve(cats, y, CG(preconditioner=MultiplicativeSchwarz()))
+            solve(
+                as_solver_categories(cats),
+                y,
+                CG(preconditioner=MultiplicativeSchwarz()),
+            )
 
 
 class TestSolveWeighted:
     def test_weighted(self, problem):
         cats, y = problem
         weights = np.random.exponential(1.0, size=len(y))
-        result = solve(cats, y, weights=weights)
+        result = solve(as_solver_categories(cats), y, weights=weights)
         assert result.converged
 
 
 class TestNLevelsInference:
     def test_inferred_matches_explicit(self, problem):
         cats, y = problem
-        result_inferred = solve(cats, y)
-        result_explicit = solve(cats, y, n_levels=[50, 50])
+        categories = as_solver_categories(cats)
+        result_inferred = solve(categories, y)
+        result_explicit = solve(categories, y, n_levels=[50, 50])
         np.testing.assert_allclose(result_inferred.x, result_explicit.x, atol=1e-10)
 
     def test_explicit_n_levels(self, problem):
         cats, y = problem
-        result = solve(cats, y, n_levels=[50, 50])
+        result = solve(as_solver_categories(cats), y, n_levels=[50, 50])
         assert result.converged
 
 
 class TestPreconditioners:
     def test_additive_schwarz(self, problem):
         cats, y = problem
-        result = solve(cats, y, CG(preconditioner=AdditiveSchwarz()))
+        result = solve(
+            as_solver_categories(cats), y, CG(preconditioner=AdditiveSchwarz())
+        )
         assert result.converged
 
     def test_multiplicative_schwarz(self, problem):
         cats, y = problem
-        result = solve(cats, y, GMRES(preconditioner=MultiplicativeSchwarz()))
+        result = solve(
+            as_solver_categories(cats), y, GMRES(preconditioner=MultiplicativeSchwarz())
+        )
         assert result.converged
 
 
@@ -91,7 +108,7 @@ class TestDemean:
         """Solve D x = y where y = D x_true, and check we recover x_true."""
         n_levels = [50, 50]
         cats, x_true, y = generate_synthetic_data(n_levels, 10_000, seed=7)
-        result = solve(cats, y)
+        result = solve(as_solver_categories(cats), y)
         assert result.converged
         # x is identified only up to a global constant per factor; compare demeaned vectors
         x_hat = result.x
@@ -112,7 +129,7 @@ class TestDemean:
         n_obs, n_levels = 5_000, [30, 40]
         cats = [np.random.randint(0, nl, size=n_obs) for nl in n_levels]
         y = np.random.randn(n_obs)
-        result = solve(cats, y)
+        result = solve(as_solver_categories(cats), y)
         residual = y.copy()
         offset = 0
         for f, nl in enumerate(n_levels):
@@ -131,7 +148,7 @@ class TestDemean:
 class TestSolveResult:
     def test_result_fields(self, problem):
         cats, y = problem
-        result = solve(cats, y)
+        result = solve(as_solver_categories(cats), y)
         assert isinstance(result.x, np.ndarray)
         assert result.x.dtype == np.float64
         assert len(result.x) == 100  # 50 + 50 levels
@@ -154,16 +171,3 @@ class TestGenerateSyntheticData:
         np.testing.assert_array_equal(c1, c2)
         np.testing.assert_array_equal(x1, x2)
         np.testing.assert_array_equal(y1, y2)
-
-
-class TestLayout:
-    @pytest.mark.parametrize("layout", ["factor_major", "row_major", "compressed"])
-    def test_layouts_agree(self, problem, layout):
-        cats, y = problem
-        result = solve(cats, y, layout=layout)
-        assert result.converged
-
-    def test_invalid_layout(self, problem):
-        cats, y = problem
-        with pytest.raises(ValueError, match="Unknown layout"):
-            solve(cats, y, layout="bogus")

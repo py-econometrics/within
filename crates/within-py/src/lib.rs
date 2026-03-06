@@ -14,6 +14,6 @@ fn _within(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<api::PyApproxSchurConfig>()?;
     m.add_class::<api::PySchurComplement>()?;
     m.add_class::<api::PyFullSddm>()?;
-    m.add_function(wrap_pyfunction!(api::py_solve, m)?)?;
+    m.add_function(wrap_pyfunction!(api::solve, m)?)?;
     Ok(())
 }

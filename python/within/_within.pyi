@@ -98,11 +98,10 @@ class SolveResult:
     @property
     def time_solve(self) -> float: ...
 
-def py_solve(
+def solve(
     categories: NDArray[np.uintp],
     y: NDArray[np.float64],
-    config: CG | GMRES,
+    config: CG | GMRES | None = None,
     n_levels: list[int] | None = None,
     weights: NDArray[np.float64] | None = None,
-    layout: str | None = None,
 ) -> SolveResult: ...

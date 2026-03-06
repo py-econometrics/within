@@ -18,10 +18,14 @@ def run_solve(
     n_levels: list[int],
     y: NDArray[np.float64],
     config: SolverConfig,
-    layout: str | None = None,
 ) -> BenchmarkResult:
     """Solve using *config* and return a timed result."""
-    result = solve(categories, y, config.config, n_levels=n_levels, layout=layout)
+    result = solve(
+        np.column_stack(categories).astype(np.uintp),
+        y,
+        config.config,
+        n_levels=n_levels,
+    )
 
     return BenchmarkResult(
         problem="",  # Caller fills this in

@@ -7,12 +7,7 @@ use pyo3::prelude::*;
 use within::config::{
     ApproxSchurConfig, GmresPrecond, LocalSolverConfig, OperatorRepr, SolverMethod, SolverParams,
 };
-use within::domain::WeightedDesign;
-use within::observation::{
-    CompressedStore, FactorMajorStore, ObservationStore, ObservationWeights, RowMajorStore,
-};
-use within::orchestrate::{solve_normal_equations, SolveResult};
-use within::WithinResult;
+use within::{solve as solve_unweighted, solve_weighted, SolveResult};
 
 #[pyclass(frozen)]
 #[pyo3(name = "ApproxCholConfig")]
@@ -397,20 +392,39 @@ fn extract_solver_params(py: Python<'_>, config: &Bound<'_, PyAny>) -> PyResult<
     ))
 }
 
+fn categories_to_factor_major(categories: ArrayView2<'_, usize>) -> PyResult<Vec<Vec<u32>>> {
+    let n_rows = categories.nrows();
+    let mut factor_major = Vec::with_capacity(categories.ncols());
+    for factor in 0..categories.ncols() {
+        let mut levels = Vec::with_capacity(n_rows);
+        for (observation, &level) in categories.column(factor).iter().enumerate() {
+            let level = u32::try_from(level).map_err(|_| {
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                    "category out of range for u32 at factor {} observation {}",
+                    factor, observation
+                ))
+            })?;
+            levels.push(level);
+        }
+        factor_major.push(levels);
+    }
+    Ok(factor_major)
+}
+
 #[pyfunction]
-#[pyo3(signature = (categories, y, config, n_levels=None, weights=None, layout=None))]
-pub fn py_solve<'py>(
+#[pyo3(signature = (categories, y, config=None, n_levels=None, weights=None))]
+pub fn solve<'py>(
     py: Python<'py>,
     categories: PyReadonlyArray2<'py, usize>,
     y: PyReadonlyArray1<'py, f64>,
-    config: &Bound<'py, PyAny>,
+    config: Option<&Bound<'py, PyAny>>,
     n_levels: Option<Vec<usize>>,
     weights: Option<PyReadonlyArray1<'py, f64>>,
-    layout: Option<&str>,
 ) -> PyResult<PySolveResult> {
     let cats: Array2<usize> = categories.as_array().to_owned();
     let y_vec: Vec<f64> = y.as_array().to_vec();
     let w_vec: Option<Vec<f64>> = weights.map(|w| w.as_array().to_vec());
+    let factor_levels = categories_to_factor_major(cats.view())?;
 
     let n_levels = match n_levels {
         Some(nl) => nl,
@@ -422,64 +436,19 @@ pub fn py_solve<'py>(
         }
     };
 
-    let layout_str = layout.unwrap_or("factor_major");
-    match layout_str {
-        "factor_major" | "row_major" | "compressed" => {}
-        _ => {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-                "Unknown layout: '{}'. Expected 'factor_major', 'row_major', or 'compressed'",
-                layout_str
-            )));
-        }
-    }
-
-    let params = extract_solver_params(py, config)?;
+    let params = match config {
+        Some(config) => extract_solver_params(py, config)?,
+        None => SolverParams::default(),
+    };
 
     let result = py
-        .allow_threads(|| {
-            dispatch_solve(cats.view(), &n_levels, w_vec, layout_str, &y_vec, &params)
+        .allow_threads(|| match w_vec {
+            Some(weights) => solve_weighted(&factor_levels, &n_levels, &y_vec, &weights, &params),
+            None => solve_unweighted(&factor_levels, &n_levels, &y_vec, &params),
         })
         .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
 
     Ok(into_py_result(py, result))
-}
-
-fn dispatch_solve(
-    categories: ArrayView2<usize>,
-    n_levels: &[usize],
-    weights: Option<Vec<f64>>,
-    layout: &str,
-    y: &[f64],
-    params: &SolverParams,
-) -> WithinResult<SolveResult> {
-    let obs_weights = match weights {
-        Some(w) => ObservationWeights::Dense(w),
-        None => ObservationWeights::Unit,
-    };
-
-    macro_rules! dispatch_on_layout {
-        ($Store:ty) => {{
-            let store = <$Store>::from_array(categories, obs_weights);
-            let design = WeightedDesign::from_store(store, n_levels)?;
-            solve_with_design(&design, y, params)
-        }};
-    }
-
-    match layout {
-        "row_major" => dispatch_on_layout!(RowMajorStore),
-        "compressed" => dispatch_on_layout!(CompressedStore),
-        _ => dispatch_on_layout!(FactorMajorStore),
-    }
-}
-
-fn solve_with_design<S: ObservationStore>(
-    design: &WeightedDesign<S>,
-    y: &[f64],
-    params: &SolverParams,
-) -> WithinResult<SolveResult> {
-    let mut rhs = vec![0.0; design.n_dofs];
-    design.rmatvec_wdt(y, &mut rhs);
-    solve_normal_equations(design, &rhs, params)
 }
 
 fn into_py_result(py: Python<'_>, result: SolveResult) -> PySolveResult {
