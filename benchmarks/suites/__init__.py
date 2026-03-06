@@ -9,7 +9,6 @@ from . import (  # noqa: F401
     iteration_reduction,
     laplacian_2fe,
     many_components,
-    observation_store,
     preconditioners,
     scaling,
     one_level_baseline,

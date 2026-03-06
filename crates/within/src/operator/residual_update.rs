@@ -351,11 +351,11 @@ mod tests {
         let n_dofs = design.n_dofs;
 
         let mut obs_updater = ObservationSpaceUpdater::new(&design);
-        let mut sparse_updater = SparseGramianUpdater::new(gramian.matrix.clone());
+        let mut sparse_updater = SparseGramianUpdater::new(gramian.matrix);
 
         let r_original = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
         let mut r_obs = r_original.clone();
-        let mut r_sparse = r_original.clone();
+        let mut r_sparse = r_original;
 
         let global_indices: Vec<u32> = vec![0, 1, 3, 4];
         let correction = vec![0.5, -0.3, 0.2, 0.1];
@@ -379,11 +379,11 @@ mod tests {
         let n_dofs = design.n_dofs;
 
         let mut obs_updater = ObservationSpaceUpdater::new(&design);
-        let mut sparse_updater = SparseGramianUpdater::new(gramian.matrix.clone());
+        let mut sparse_updater = SparseGramianUpdater::new(gramian.matrix);
 
         let r_original = vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0];
         let mut r_obs = r_original.clone();
-        let mut r_sparse = r_original.clone();
+        let mut r_sparse = r_original;
 
         // First subdomain correction
         let gi1: Vec<u32> = vec![0, 1, 3, 4];
@@ -419,7 +419,7 @@ mod tests {
     #[test]
     fn test_sparse_gramian_updater_zero_correction_is_noop() {
         let (_, gramian) = make_test_setup();
-        let mut updater = SparseGramianUpdater::new(gramian.matrix.clone());
+        let mut updater = SparseGramianUpdater::new(gramian.matrix);
 
         let r_original = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
         let mut r_work = r_original.clone();
@@ -437,11 +437,11 @@ mod tests {
         let n_dofs = design.n_dofs;
 
         let mut obs_updater = ObservationSpaceUpdater::new(&design);
-        let mut sparse_updater = SparseGramianUpdater::new(gramian.matrix.clone());
+        let mut sparse_updater = SparseGramianUpdater::new(gramian.matrix);
 
         let r_original = vec![1.0; n_dofs];
         let mut r_obs = r_original.clone();
-        let mut r_sparse = r_original.clone();
+        let mut r_sparse = r_original;
 
         let gi: Vec<u32> = vec![0];
         let correction = vec![1.0];
@@ -473,11 +473,11 @@ mod tests {
         let n_dofs = design.n_dofs;
 
         let mut obs_updater = ObservationSpaceUpdater::new(&design);
-        let mut sparse_updater = SparseGramianUpdater::new(gramian.matrix.clone());
+        let mut sparse_updater = SparseGramianUpdater::new(gramian.matrix);
 
         let r_original = vec![5.0, 3.0, 7.0, 1.0];
         let mut r_obs = r_original.clone();
-        let mut r_sparse = r_original.clone();
+        let mut r_sparse = r_original;
 
         let gi: Vec<u32> = vec![0, 2];
         let correction = vec![0.5, -0.3];

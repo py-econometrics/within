@@ -121,8 +121,7 @@ mod tests {
 
     #[test]
     fn test_tridiagonal_2x2() {
-        let (vals, vecs) = tridiagonal_eigen(&[2.0, 3.0], &[1.0]);
-        let mut sorted: Vec<f64> = vals.clone();
+        let (mut sorted, vecs) = tridiagonal_eigen(&[2.0, 3.0], &[1.0]);
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
         // Eigenvalues of [[2,1],[1,3]] are (5 ± sqrt(5))/2
         let expected_min = (5.0 - 5.0f64.sqrt()) / 2.0;

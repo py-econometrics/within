@@ -3,7 +3,9 @@
 use schwarz_precond::Operator;
 
 use within::operator::gramian::GramianOperator;
-use within::{FixedEffectsDesign, SolveResult};
+use within::{
+    solve_normal_equations, FixedEffectsDesign, ObservationStore, SolveResult, SolverParams,
+};
 
 pub fn make_test_design() -> FixedEffectsDesign {
     FixedEffectsDesign::new(
@@ -36,4 +38,14 @@ pub fn assert_solution_finite(result: &SolveResult) {
         result.x.iter().all(|v| v.is_finite()),
         "Non-finite solution"
     );
+}
+
+pub fn solve_response<S: ObservationStore>(
+    design: &within::WeightedDesign<S>,
+    y: &[f64],
+    params: &SolverParams,
+) -> within::WithinResult<SolveResult> {
+    let mut rhs = vec![0.0; design.n_dofs];
+    design.rmatvec_wdt(y, &mut rhs);
+    solve_normal_equations(design, &rhs, params)
 }

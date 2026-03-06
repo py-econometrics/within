@@ -17,11 +17,7 @@ from .._registry import SuiteOptions, suite
 from .._solver_presets import cg_solver_config, standard_solver_configs
 from .._solvers import run_solve
 from .._table import print_pivot, print_table
-from .._types import BenchmarkResult, SolverConfig
-
-
-def _solver_configs(opts: SuiteOptions) -> list[SolverConfig]:
-    return standard_solver_configs(opts)
+from .._types import BenchmarkResult
 
 
 # -----------------------------------------------------------------------
@@ -42,7 +38,7 @@ def run_akm_panel(opts: SuiteOptions) -> list[BenchmarkResult]:
             ("disconnected 10K", "akm_disconnected", {}),
             ("realistic 10K", "akm_realistic", {}),
         ]
-        solver_sets = [_solver_configs(opts)] * len(problems)
+        solver_sets = [standard_solver_configs(opts)] * len(problems)
     else:
         problems = [
             # --- 10K workers (quick-tier) ---
@@ -119,7 +115,7 @@ def run_akm_panel(opts: SuiteOptions) -> list[BenchmarkResult]:
                 },
             ),
         ]
-        solver_sets = [_solver_configs(opts)] * len(problems)
+        solver_sets = [standard_solver_configs(opts)] * len(problems)
 
     all_results: list[BenchmarkResult] = []
     for (name, gen_key, params), solvers in zip(problems, solver_sets):

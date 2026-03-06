@@ -15,11 +15,6 @@ from .._table import print_pivot, print_table
 from .._types import BenchmarkResult, ProblemSpec, SolverConfig
 
 
-def _make_configs(opts: SuiteOptions) -> list[SolverConfig]:
-    """Standard solver configs shared across high-FE suites."""
-    return standard_solver_configs(opts)
-
-
 def _run_problems(
     problems: list[ProblemSpec],
     configs: list[SolverConfig],
@@ -164,7 +159,7 @@ def run_high_fe(opts: SuiteOptions) -> list[BenchmarkResult]:
             ),
         ]
 
-    configs = _make_configs(opts)
+    configs = standard_solver_configs(opts)
     results = _run_problems(problems, configs)
     print_table(results)
     print("\n")
@@ -242,7 +237,7 @@ def run_high_fe_scaling(opts: SuiteOptions) -> list[BenchmarkResult]:
             ),
         ]
 
-    configs = _make_configs(opts)
+    configs = standard_solver_configs(opts)
     results = _run_problems(problems, configs)
     print_table(results)
     print("\n")
