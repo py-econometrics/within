@@ -1,12 +1,10 @@
 # within
 
-`within `provides high-performance solvers for regression problems with high-dimensional fixed effects. 
+`within` provides high-performance solvers for projecting out high-dimensional fixed effects from regression problems.
 
-Intuitively, `within`'s solvers are fast because they are tailored to the structure of fixed effects problems, which can be represented as a graph (as first noted by Correia, 2016), and make use of innovations in solvers for graph-structured linear systems (Gao et al, 2025).
+ By the Frisch-Waugh-Lovell theorem, estimating a regression of the form *y = Xβ + Dα + ε* reduces to a sequence of least-squares projections, one for y and one for each column of X, followed by a cheap regression fit on the resulting residuals. The projection step of solving the normal equations *D'Dx = D'z* is the computational bottleneck, which is the problem `within` is designed to solve.
 
-More concretely, `within` solves problems of the form **y = D x**,  where D is a sparse one-hot encoded design matrix of fixed effects, and uses iterative methods (preconditioned CG, right-preconditioned GMRES, LSMR) with domain decomposition (Schwarz) preconditioners backed by approximate Cholesky local solvers.
-
-Obtaining very fast solvers for this problem is useful in econometric applications as it allows to efficiently fit regression problems with high-dimensional fixed effects via the Frisch-Waugh-Lovell theorem. 
+`within`'s solvers are tailored to the structure of fixed effects problems, which can be represented as a graph (as first noted by Correia, 2016), and make use of innovations in solvers for graph-structured linear systems (Gao et al, 2025). Concretely, `within` uses iterative methods (preconditioned CG, right-preconditioned GMRES, LSMR) with domain decomposition (Schwarz) preconditioners, backed by approximate Cholesky local solvers.
 
 ## Installation
 
@@ -18,7 +16,7 @@ pip install within
 
 ## Python Quickstart
 
-`within`'s main user facing function is `solve`. To it, you provide an integer 2D array of fixed effects `x` and a 1D array `y` to solve the linear system **y = D x**, where D is a large sparse matrix. 
+`within`'s main user facing function is `solve`. To use it, you provide an integer 2D array of fixed effects `x` and a 1D array `y` to solve the linear system **y = D x**, where D is a large sparse matrix. For fixed effects problems, `x` is a matrix of integer encodings of fixed effects, and y any regression column. 
 
 ```python
 from within import solve, CG, LSMR
