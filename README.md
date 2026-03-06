@@ -8,8 +8,6 @@ More concretely, `within` solves problems of the form **y = D x**,  where D is a
 
 Obtaining very fast solvers for this problem is useful in econometric applications as it allows to efficiently fit regression problems with high-dimensional fixed effects via the Frisch-Waugh-Lovell theorem. By the FWL theorem, estimating a regression `y = Xβ + Dα + ε` reduces to projecting out the fixed effects from both y and each column of X, and then to running OLS on the residuals. Each projection requires solving the least-squares problem `D'Dx = D'z`, which is exactly the problem `within` is designed to solve fast.
 
-
-
 ## Installation
 
 Requires Python >= 3.11.
@@ -95,9 +93,9 @@ See [`crates/within/README.md`](crates/within/README.md) for Rust API usage and 
 crates/
   schwarz-precond/   Generic domain decomposition library (traits, solvers, Schwarz preconditioners)
   within/            Core fixed-effects solver (observation stores, domains, operators, orchestration)
-  within-py/         PyO3 bridge (cdylib → within._within)
+  within-py/         PyO3 bridge 
 python/within/       Python package re-exporting the Rust extension
-benchmarks/          Python benchmark framework (18 suites)
+benchmarks/          Python benchmark framework
 ```
 
 ## Development
@@ -121,9 +119,6 @@ MIT
 ## References
 
 - Correia, Sergio. "A feasible estimator for linear models with multi-way fixed effects." *Preprint* at http://scorreia.com/research/hdfe.pdf (2016).
-- Gao, Y., Kyng, R. & Spielman, D. A. (2025). AC(k): Robust Solution of
-  Laplacian Equations by Randomized Approximate Cholesky Factorization.
-  *SIAM Journal on Scientific Computing*.
+- Gao, Y., Kyng, R. & Spielman, D. A. (2025). AC(k): Robust Solution of Laplacian Equations by Randomized Approximate Cholesky Factorization. *SIAM Journal on Scientific Computing*.
 - Toselli & Widlund (2005). *Domain Decomposition Methods — Algorithms and Theory*. Springer.
-- Xu, J. (1992). Iterative Methods by Space Decomposition and Subspace
-  Correction. *SIAM Review*, 34(4), 581--613.
+- Xu, J. (1992). Iterative Methods by Space Decomposition and Subspace Correction. *SIAM Review*, 34(4), 581--613.
