@@ -2,6 +2,7 @@
 .pixi/*
 !.pixi/config.toml
 
+.serena/
 target
 *.so
 *.dSYM
