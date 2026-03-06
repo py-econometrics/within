@@ -11,8 +11,8 @@ from within import (
     CG,
     GMRES,
     LSMR,
-    OneLevelSchwarz,
-    MultiplicativeOneLevelSchwarz,
+    AdditiveSchwarz,
+    MultiplicativeSchwarz,
 )
 from .._problems import get_generator
 from .._registry import SuiteOptions, suite
@@ -106,7 +106,7 @@ def run_preconditioners_3fe(opts: SuiteOptions) -> list[BenchmarkResult]:
             CG(
                 tol=opts.tol,
                 maxiter=opts.maxiter,
-                preconditioner=OneLevelSchwarz(
+                preconditioner=AdditiveSchwarz(
                     smoother=ApproxCholConfig(seed=opts.seed)
                 ),
             ),
@@ -116,7 +116,7 @@ def run_preconditioners_3fe(opts: SuiteOptions) -> list[BenchmarkResult]:
             GMRES(
                 tol=opts.tol,
                 maxiter=opts.maxiter,
-                preconditioner=MultiplicativeOneLevelSchwarz(
+                preconditioner=MultiplicativeSchwarz(
                     smoother=ApproxCholConfig(seed=opts.seed)
                 ),
             ),
@@ -126,7 +126,7 @@ def run_preconditioners_3fe(opts: SuiteOptions) -> list[BenchmarkResult]:
             CG(
                 tol=opts.tol,
                 maxiter=opts.maxiter,
-                preconditioner=MultiplicativeOneLevelSchwarz(
+                preconditioner=MultiplicativeSchwarz(
                     smoother=ApproxCholConfig(seed=opts.seed)
                 ),
             ),
@@ -197,7 +197,7 @@ def run_preconditioner_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
             CG(
                 tol=opts.tol,
                 maxiter=opts.maxiter,
-                preconditioner=OneLevelSchwarz(
+                preconditioner=AdditiveSchwarz(
                     smoother=ApproxCholConfig(seed=opts.seed)
                 ),
             ),
@@ -207,7 +207,7 @@ def run_preconditioner_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
             GMRES(
                 tol=opts.tol,
                 maxiter=opts.maxiter,
-                preconditioner=MultiplicativeOneLevelSchwarz(
+                preconditioner=MultiplicativeSchwarz(
                     smoother=ApproxCholConfig(seed=opts.seed)
                 ),
             ),
@@ -217,7 +217,7 @@ def run_preconditioner_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
             CG(
                 tol=opts.tol,
                 maxiter=opts.maxiter,
-                preconditioner=MultiplicativeOneLevelSchwarz(
+                preconditioner=MultiplicativeSchwarz(
                     smoother=ApproxCholConfig(seed=opts.seed)
                 ),
             ),

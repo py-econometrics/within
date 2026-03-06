@@ -5,7 +5,7 @@ Compares AC vs AC2 smoothing across topologies.
 
 from __future__ import annotations
 
-from within import ApproxCholConfig, CG, OneLevelSchwarz
+from within import ApproxCholConfig, CG, AdditiveSchwarz
 from .._problems import get_generator
 from .._registry import SuiteOptions, suite
 from .._solvers import run_solve
@@ -90,7 +90,7 @@ def run_graph_backend_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
             CG(
                 tol=opts.tol,
                 maxiter=opts.maxiter,
-                preconditioner=OneLevelSchwarz(
+                preconditioner=AdditiveSchwarz(
                     smoother=ApproxCholConfig(seed=opts.seed),
                 ),
             ),
@@ -100,7 +100,7 @@ def run_graph_backend_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
             CG(
                 tol=opts.tol,
                 maxiter=opts.maxiter,
-                preconditioner=OneLevelSchwarz(
+                preconditioner=AdditiveSchwarz(
                     smoother=ApproxCholConfig(seed=opts.seed, split=2),
                 ),
             ),

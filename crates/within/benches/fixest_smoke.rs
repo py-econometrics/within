@@ -8,8 +8,7 @@ use criterion::{
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use within::config::{
-    CgPreconditioner, GmresPreconditioner, LocalSolverConfig, SchwarzConfig, SolverMethod,
-    SolverParams,
+    LocalSolverConfig, OperatorRepr, Preconditioner, SchwarzConfig, SolverMethod, SolverParams,
 };
 use within::domain::WeightedDesign;
 use within::observation::{FactorMajorStore, ObservationWeights};
@@ -129,18 +128,22 @@ fn run_smoke(
     );
 }
 
-fn cg_params(preconditioner: CgPreconditioner) -> SolverParams {
+fn cg_params(preconditioner: Preconditioner) -> SolverParams {
     SolverParams {
-        method: SolverMethod::Cg { preconditioner },
+        method: SolverMethod::Cg {
+            preconditioner,
+            operator: OperatorRepr::Implicit,
+        },
         tol: SMOKE_TOL,
         maxiter: SMOKE_MAXITER,
     }
 }
 
-fn gmres_params(preconditioner: GmresPreconditioner) -> SolverParams {
+fn gmres_params(preconditioner: Preconditioner) -> SolverParams {
     SolverParams {
         method: SolverMethod::Gmres {
             preconditioner,
+            operator: OperatorRepr::Explicit,
             restart: SMOKE_GMRES_RESTART,
         },
         tol: SMOKE_TOL,
@@ -150,14 +153,14 @@ fn gmres_params(preconditioner: GmresPreconditioner) -> SolverParams {
 
 fn one_level_schwarz(ac2: bool) -> SchwarzConfig {
     SchwarzConfig {
-        approx_chol: approx_chol(ac2),
+        smoother: approx_chol(ac2),
         local_solver: LocalSolverConfig::default(),
     }
 }
 
 fn run_cg_one_level(design: &WeightedDesign<FactorMajorStore>, y: &[f64], ac2: bool) {
     let cfg = one_level_schwarz(ac2);
-    let params = cg_params(CgPreconditioner::OneLevel(cfg));
+    let params = cg_params(Preconditioner::Additive(cfg));
     let label = if ac2 { "CG(1L,AC2)" } else { "CG(1L,AC)" };
     run_smoke(design, y, &params, label);
 }
@@ -168,7 +171,7 @@ fn run_cg_multiplicative_one_level(
     ac2: bool,
 ) {
     let cfg = one_level_schwarz(ac2);
-    let params = cg_params(CgPreconditioner::MultiplicativeOneLevel(cfg));
+    let params = cg_params(Preconditioner::Multiplicative(cfg));
     let label = if ac2 { "CG(M1L,AC2)" } else { "CG(M1L,AC)" };
     run_smoke(design, y, &params, label);
 }
@@ -179,7 +182,7 @@ fn run_gmres_multiplicative_one_level(
     ac2: bool,
 ) {
     let cfg = one_level_schwarz(ac2);
-    let params = gmres_params(GmresPreconditioner::MultiplicativeOneLevel(cfg));
+    let params = gmres_params(Preconditioner::Multiplicative(cfg));
     let label = if ac2 {
         "GMRES(M1L,AC2)"
     } else {

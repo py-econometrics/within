@@ -13,8 +13,8 @@ from within import (
     CG,
     GMRES,
     LSMR,
-    OneLevelSchwarz,
-    MultiplicativeOneLevelSchwarz,
+    AdditiveSchwarz,
+    MultiplicativeSchwarz,
 )
 
 from .._registry import SuiteOptions, suite
@@ -35,7 +35,7 @@ def _run_scaling_problems(
             CG(
                 tol=opts.tol,
                 maxiter=opts.maxiter,
-                preconditioner=OneLevelSchwarz(
+                preconditioner=AdditiveSchwarz(
                     smoother=ApproxCholConfig(seed=opts.seed)
                 ),
             ),
@@ -45,7 +45,7 @@ def _run_scaling_problems(
             GMRES(
                 tol=opts.tol,
                 maxiter=opts.maxiter,
-                preconditioner=MultiplicativeOneLevelSchwarz(
+                preconditioner=MultiplicativeSchwarz(
                     smoother=ApproxCholConfig(seed=opts.seed)
                 ),
             ),
@@ -55,7 +55,7 @@ def _run_scaling_problems(
             CG(
                 tol=opts.tol,
                 maxiter=opts.maxiter,
-                preconditioner=MultiplicativeOneLevelSchwarz(
+                preconditioner=MultiplicativeSchwarz(
                     smoother=ApproxCholConfig(seed=opts.seed)
                 ),
             ),
@@ -150,7 +150,7 @@ def run_scaling_2fe(opts: SuiteOptions) -> list[BenchmarkResult]:
             CG(
                 tol=opts.tol,
                 maxiter=opts.maxiter,
-                preconditioner=OneLevelSchwarz(
+                preconditioner=AdditiveSchwarz(
                     smoother=ApproxCholConfig(seed=opts.seed)
                 ),
             ),
@@ -160,7 +160,7 @@ def run_scaling_2fe(opts: SuiteOptions) -> list[BenchmarkResult]:
             GMRES(
                 tol=opts.tol,
                 maxiter=opts.maxiter,
-                preconditioner=MultiplicativeOneLevelSchwarz(
+                preconditioner=MultiplicativeSchwarz(
                     smoother=ApproxCholConfig(seed=opts.seed)
                 ),
             ),
@@ -170,7 +170,7 @@ def run_scaling_2fe(opts: SuiteOptions) -> list[BenchmarkResult]:
             CG(
                 tol=opts.tol,
                 maxiter=opts.maxiter,
-                preconditioner=MultiplicativeOneLevelSchwarz(
+                preconditioner=MultiplicativeSchwarz(
                     smoother=ApproxCholConfig(seed=opts.seed)
                 ),
             ),

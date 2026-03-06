@@ -10,8 +10,8 @@ from __future__ import annotations
 from within import (
     ApproxCholConfig,
     CG,
-    MultiplicativeOneLevelSchwarz,
-    OneLevelSchwarz,
+    MultiplicativeSchwarz,
+    AdditiveSchwarz,
 )
 
 from .._problems import get_generator
@@ -93,7 +93,7 @@ def run_ac_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
             CG(
                 tol=opts.tol,
                 maxiter=opts.maxiter,
-                preconditioner=OneLevelSchwarz(smoother=_ac(opts.seed)),
+                preconditioner=AdditiveSchwarz(smoother=_ac(opts.seed)),
             ),
         ),
         SolverConfig(
@@ -101,7 +101,7 @@ def run_ac_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
             CG(
                 tol=opts.tol,
                 maxiter=opts.maxiter,
-                preconditioner=OneLevelSchwarz(smoother=_ac2(opts.seed)),
+                preconditioner=AdditiveSchwarz(smoother=_ac2(opts.seed)),
             ),
         ),
         # Multiplicative one-level (symmetric for CG)
@@ -110,7 +110,7 @@ def run_ac_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
             CG(
                 tol=opts.tol,
                 maxiter=opts.maxiter,
-                preconditioner=MultiplicativeOneLevelSchwarz(smoother=_ac(opts.seed)),
+                preconditioner=MultiplicativeSchwarz(smoother=_ac(opts.seed)),
             ),
         ),
         SolverConfig(
@@ -118,7 +118,7 @@ def run_ac_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
             CG(
                 tol=opts.tol,
                 maxiter=opts.maxiter,
-                preconditioner=MultiplicativeOneLevelSchwarz(smoother=_ac2(opts.seed)),
+                preconditioner=MultiplicativeSchwarz(smoother=_ac2(opts.seed)),
             ),
         ),
     ]

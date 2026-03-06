@@ -10,8 +10,8 @@ from within import (
     CG,
     GMRES,
     LSMR,
-    OneLevelSchwarz,
-    MultiplicativeOneLevelSchwarz,
+    AdditiveSchwarz,
+    MultiplicativeSchwarz,
 )
 from .._problems import get_generator
 from .._registry import SuiteOptions, suite
@@ -81,7 +81,7 @@ def run_iteration_reduction(opts: SuiteOptions) -> list[BenchmarkResult]:
             CG(
                 tol=opts.tol,
                 maxiter=maxiter,
-                preconditioner=OneLevelSchwarz(
+                preconditioner=AdditiveSchwarz(
                     smoother=ApproxCholConfig(seed=opts.seed)
                 ),
             ),
@@ -91,7 +91,7 @@ def run_iteration_reduction(opts: SuiteOptions) -> list[BenchmarkResult]:
             GMRES(
                 tol=opts.tol,
                 maxiter=maxiter,
-                preconditioner=MultiplicativeOneLevelSchwarz(
+                preconditioner=MultiplicativeSchwarz(
                     smoother=ApproxCholConfig(seed=opts.seed)
                 ),
             ),
@@ -101,7 +101,7 @@ def run_iteration_reduction(opts: SuiteOptions) -> list[BenchmarkResult]:
             CG(
                 tol=opts.tol,
                 maxiter=maxiter,
-                preconditioner=MultiplicativeOneLevelSchwarz(
+                preconditioner=MultiplicativeSchwarz(
                     smoother=ApproxCholConfig(seed=opts.seed)
                 ),
             ),

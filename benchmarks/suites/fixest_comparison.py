@@ -10,9 +10,8 @@ from __future__ import annotations
 from within import (
     ApproxCholConfig,
     CG,
-    OneLevelSchwarz,
-    GMRES,
-    MultiplicativeOneLevelSchwarz,
+    AdditiveSchwarz,
+    OperatorRepr,
 )
 from .._problems import get_generator
 from .._registry import SuiteOptions, suite
@@ -43,7 +42,7 @@ def run_fixest_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
             40_000_000,
             80_000_000,
             160_000_000,
-            320_000_000,
+            # 320_000_000,
         ]
 
     solver_configs = [
@@ -53,21 +52,32 @@ def run_fixest_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
             CG(
                 tol=opts.tol,
                 maxiter=opts.maxiter,
-                preconditioner=OneLevelSchwarz(
+                preconditioner=AdditiveSchwarz(
                     smoother=ApproxCholConfig(seed=opts.seed)
                 ),
             ),
         ),
         SolverConfig(
-            "GMRES(Mult-Schwarz)",
-            GMRES(
+            "CG(Schwarz-explicit)",
+            CG(
                 tol=opts.tol,
                 maxiter=opts.maxiter,
-                preconditioner=MultiplicativeOneLevelSchwarz(
+                preconditioner=AdditiveSchwarz(
                     smoother=ApproxCholConfig(seed=opts.seed)
                 ),
+                operator=OperatorRepr.Explicit,
             ),
         ),
+        # SolverConfig(
+        #    "GMRES(Mult-Schwarz)",
+        #    GMRES(
+        #        tol=opts.tol,
+        #        maxiter=opts.maxiter,
+        #        preconditioner=MultiplicativeSchwarz(
+        #            smoother=ApproxCholConfig(seed=opts.seed)
+        #        ),
+        #    ),
+        # ),
     ]
 
     gen = get_generator("fixest_dgp")

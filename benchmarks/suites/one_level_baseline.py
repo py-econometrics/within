@@ -5,7 +5,7 @@ from __future__ import annotations
 from within import (
     ApproxCholConfig,
     CG,
-    OneLevelSchwarz,
+    AdditiveSchwarz,
 )
 
 from .._problems import get_generator
@@ -117,7 +117,7 @@ def run_one_level_baseline(opts: SuiteOptions) -> list[BenchmarkResult]:
             CG(
                 tol=opts.tol,
                 maxiter=opts.maxiter,
-                preconditioner=OneLevelSchwarz(smoother=smoother),
+                preconditioner=AdditiveSchwarz(smoother=smoother),
             ),
         ),
     ]

@@ -4,11 +4,13 @@ use approx_chol::Config;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, SamplingMode};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
+use schwarz_precond::Operator;
 use within::config::{
-    CgPreconditioner, LocalSolverConfig, SchwarzConfig, SolverMethod, SolverParams,
+    LocalSolverConfig, OperatorRepr, Preconditioner, SchwarzConfig, SolverMethod, SolverParams,
 };
 use within::domain::WeightedDesign;
 use within::observation::{FactorMajorStore, ObservationWeights};
+use within::operator::gramian::{Gramian, GramianOperator};
 use within::orchestrate::solve_least_squares;
 
 const MINI_MAXITER: usize = 20;
@@ -125,7 +127,7 @@ fn generate_fixest_like_case(
 }
 
 fn run_cg_1l(design: &WeightedDesign<FactorMajorStore>, y: &[f64], ac2: bool) {
-    let approx_chol = if ac2 {
+    let smoother = if ac2 {
         Config {
             seed: 42,
             split_merge: Some(2),
@@ -140,10 +142,11 @@ fn run_cg_1l(design: &WeightedDesign<FactorMajorStore>, y: &[f64], ac2: bool) {
 
     let params = SolverParams {
         method: SolverMethod::Cg {
-            preconditioner: CgPreconditioner::OneLevel(SchwarzConfig {
-                approx_chol,
+            preconditioner: Preconditioner::Additive(SchwarzConfig {
+                smoother,
                 local_solver: LocalSolverConfig::default(),
             }),
+            operator: OperatorRepr::Implicit,
         },
         tol: MINI_TOL,
         maxiter: MINI_MAXITER,
@@ -180,5 +183,74 @@ fn bench_fixest_mini(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_fixest_mini);
+fn matvec_cases() -> [Case; 4] {
+    [
+        Case {
+            n_obs: 500_000,
+            dgp_type: FixestType::Difficult,
+            n_fe: 2,
+        },
+        Case {
+            n_obs: 500_000,
+            dgp_type: FixestType::Difficult,
+            n_fe: 3,
+        },
+        Case {
+            n_obs: 2_000_000,
+            dgp_type: FixestType::Difficult,
+            n_fe: 2,
+        },
+        Case {
+            n_obs: 2_000_000,
+            dgp_type: FixestType::Difficult,
+            n_fe: 3,
+        },
+    ]
+}
+
+fn bench_matvec(c: &mut Criterion) {
+    let mut group = c.benchmark_group("matvec_explicit_vs_implicit");
+    group.sample_size(20);
+    group.sampling_mode(SamplingMode::Flat);
+    group.warm_up_time(Duration::from_millis(100));
+    group.measurement_time(Duration::from_millis(500));
+
+    for case in matvec_cases() {
+        let label = case.label();
+        let (design, _y) = generate_fixest_like_case(case, 42);
+        let n_dofs = design.n_dofs;
+
+        let mut rng = SmallRng::seed_from_u64(123);
+        let x: Vec<f64> = (0..n_dofs).map(|_| rng.random_range(-1.0..1.0)).collect();
+
+        // Implicit: D^T W D through observation space
+        let implicit_op = GramianOperator::new(&design);
+
+        // Explicit: CSR SpMV
+        let explicit_g = Gramian::build(&design);
+
+        // Sanity check: both produce the same result
+        let mut y_impl = vec![0.0; n_dofs];
+        let mut y_expl = vec![0.0; n_dofs];
+        implicit_op.apply(&x, &mut y_impl);
+        explicit_g.apply(&x, &mut y_expl);
+        for (a, b) in y_impl.iter().zip(y_expl.iter()) {
+            assert!((a - b).abs() < 1e-10 * a.abs().max(1.0));
+        }
+
+        group.bench_function(BenchmarkId::new("implicit", &label), |b| {
+            let mut y = vec![0.0; n_dofs];
+            b.iter(|| implicit_op.apply(&x, &mut y));
+        });
+
+        group.bench_function(BenchmarkId::new("explicit", &label), |b| {
+            let mut y = vec![0.0; n_dofs];
+            b.iter(|| explicit_g.apply(&x, &mut y));
+        });
+    }
+
+    group.finish();
+}
+
+criterion_group!(benches, bench_fixest_mini, bench_matvec);
 criterion_main!(benches);

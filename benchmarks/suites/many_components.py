@@ -12,8 +12,8 @@ from within import (
     CG,
     GMRES,
     LSMR,
-    MultiplicativeOneLevelSchwarz,
-    OneLevelSchwarz,
+    MultiplicativeSchwarz,
+    AdditiveSchwarz,
 )
 
 from .._problems import get_generator
@@ -31,7 +31,7 @@ def _make_configs(opts: SuiteOptions) -> list[SolverConfig]:
             CG(
                 tol=opts.tol,
                 maxiter=opts.maxiter,
-                preconditioner=OneLevelSchwarz(
+                preconditioner=AdditiveSchwarz(
                     smoother=ApproxCholConfig(seed=opts.seed)
                 ),
             ),
@@ -41,7 +41,7 @@ def _make_configs(opts: SuiteOptions) -> list[SolverConfig]:
             GMRES(
                 tol=opts.tol,
                 maxiter=opts.maxiter,
-                preconditioner=MultiplicativeOneLevelSchwarz(
+                preconditioner=MultiplicativeSchwarz(
                     smoother=ApproxCholConfig(seed=opts.seed)
                 ),
             ),
@@ -51,7 +51,7 @@ def _make_configs(opts: SuiteOptions) -> list[SolverConfig]:
             CG(
                 tol=opts.tol,
                 maxiter=opts.maxiter,
-                preconditioner=MultiplicativeOneLevelSchwarz(
+                preconditioner=MultiplicativeSchwarz(
                     smoother=ApproxCholConfig(seed=opts.seed)
                 ),
             ),
