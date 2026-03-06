@@ -1,4 +1,6 @@
-use within::{solve, solve_weighted, CgPreconditioner, SchwarzConfig, SolverMethod, SolverParams};
+use within::{
+    solve, solve_weighted, OperatorRepr, Preconditioner, SchwarzConfig, SolverMethod, SolverParams,
+};
 
 #[path = "common/orchestrate_helpers.rs"]
 mod common;
@@ -37,7 +39,8 @@ fn test_high_level_solve_preconditioned() {
 
     let params = SolverParams {
         method: SolverMethod::Cg {
-            preconditioner: CgPreconditioner::OneLevel(SchwarzConfig::default()),
+            preconditioner: Preconditioner::Additive(SchwarzConfig::default()),
+            operator: OperatorRepr::Implicit,
         },
         tol: 1e-8,
         maxiter: 1000,

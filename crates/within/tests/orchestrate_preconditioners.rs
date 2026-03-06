@@ -1,6 +1,6 @@
 use within::{
-    solve_normal_equations, CgPreconditioner, GmresPreconditioner, LocalSolverConfig,
-    SchwarzConfig, SolverMethod, SolverParams,
+    solve_normal_equations, LocalSolverConfig, OperatorRepr, Preconditioner, SchwarzConfig,
+    SolverMethod, SolverParams,
 };
 
 #[path = "common/orchestrate_helpers.rs"]
@@ -13,13 +13,13 @@ fn test_schwarz_builder_schur_complement_modes_end_to_end() {
     use schwarz_precond::solve::lsmr::vec_norm;
     use schwarz_precond::Operator;
     use within::operator::gramian::GramianOperator;
-    use within::operator::schwarz::build_schwarz_default;
+    use within::operator::schwarz::build_schwarz;
     use within::ApproxSchurConfig;
 
     let design = common::make_test_design();
     let rhs = common::make_rhs_from_unit_solution(&design);
     let gramian = GramianOperator::new(&design);
-    let ac = Config {
+    let smoother = Config {
         seed: 7,
         ..Default::default()
     };
@@ -44,8 +44,11 @@ fn test_schwarz_builder_schur_complement_modes_end_to_end() {
     ];
 
     for local_solver in local_solvers {
-        let schwarz = build_schwarz_default(&design, &ac, &local_solver)
-            .expect("build schwarz preconditioner");
+        let config = SchwarzConfig {
+            smoother,
+            local_solver,
+        };
+        let schwarz = build_schwarz(&design, &config).expect("build schwarz preconditioner");
         let result =
             cg_solve_preconditioned(&gramian, &schwarz, &rhs, 1e-8, 500).expect("cg solve");
         assert!(
@@ -78,7 +81,7 @@ fn test_compare_factorization_strategies() {
     use std::time::Instant;
     use within::operator::design::DesignOperator;
     use within::operator::gramian::GramianOperator;
-    use within::operator::schwarz::build_schwarz_default;
+    use within::operator::schwarz::build_schwarz;
     use within::FixedEffectsDesign;
 
     // Compare AC (standard) vs AC2 (multi-edge split).
@@ -132,10 +135,13 @@ fn test_compare_factorization_strategies() {
         design_op.apply_adjoint(&y, &mut rhs);
         let gramian_op = GramianOperator::new(&design);
 
-        for (config, label) in &configs {
+        for (smoother, label) in &configs {
+            let config = SchwarzConfig {
+                smoother: *smoother,
+                local_solver: LocalSolverConfig::default(),
+            };
             let t0 = Instant::now();
-            let schwarz = build_schwarz_default(&design, config, &LocalSolverConfig::default())
-                .expect("build schwarz preconditioner");
+            let schwarz = build_schwarz(&design, &config).expect("build schwarz preconditioner");
             let _setup_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
             let t1 = Instant::now();
@@ -173,7 +179,8 @@ fn test_normal_equations_cg_multiplicative_one_level() {
 
     let params = SolverParams {
         method: SolverMethod::Cg {
-            preconditioner: CgPreconditioner::MultiplicativeOneLevel(SchwarzConfig::default()),
+            preconditioner: Preconditioner::Multiplicative(SchwarzConfig::default()),
+            operator: OperatorRepr::Implicit,
         },
         tol: 1e-8,
         maxiter: 1000,
@@ -191,7 +198,8 @@ fn test_normal_equations_gmres_multiplicative_one_level() {
 
     let params = SolverParams {
         method: SolverMethod::Gmres {
-            preconditioner: GmresPreconditioner::MultiplicativeOneLevel(SchwarzConfig::default()),
+            preconditioner: Preconditioner::Multiplicative(SchwarzConfig::default()),
+            operator: OperatorRepr::Explicit,
             restart: 30,
         },
         tol: 1e-8,

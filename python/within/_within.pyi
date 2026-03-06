@@ -2,6 +2,7 @@
 
 import numpy as np
 from numpy.typing import NDArray
+from enum import IntEnum
 
 class ApproxCholConfig:
     seed: int
@@ -16,7 +17,11 @@ class ApproxSchurConfig:
     seed: int
     def __init__(self, seed: int = 0) -> None: ...
 
-class OneLevelSchwarz:
+class OperatorRepr(IntEnum):
+    Implicit = 0
+    Explicit = 1
+
+class AdditiveSchwarz:
     smoother: ApproxCholConfig | None
     local_solver: str | None
     approx_schur: ApproxSchurConfig | None
@@ -29,7 +34,7 @@ class OneLevelSchwarz:
         dense_schur_threshold: int | None = None,
     ) -> None: ...
 
-class MultiplicativeOneLevelSchwarz:
+class MultiplicativeSchwarz:
     """One-level multiplicative Schwarz with sequential subdomain sweeps."""
 
     smoother: ApproxCholConfig | None
@@ -55,25 +60,29 @@ class LSMR:
 class CG:
     tol: float
     maxiter: int
-    preconditioner: OneLevelSchwarz | MultiplicativeOneLevelSchwarz | None
+    preconditioner: AdditiveSchwarz | MultiplicativeSchwarz | None
+    operator: OperatorRepr
     def __init__(
         self,
         tol: float = 1e-8,
         maxiter: int = 1000,
-        preconditioner: OneLevelSchwarz | MultiplicativeOneLevelSchwarz | None = None,
+        preconditioner: AdditiveSchwarz | MultiplicativeSchwarz | None = None,
+        operator: OperatorRepr = OperatorRepr.Implicit,
     ) -> None: ...
 
 class GMRES:
     tol: float
     maxiter: int
     restart: int
-    preconditioner: MultiplicativeOneLevelSchwarz
+    preconditioner: AdditiveSchwarz | MultiplicativeSchwarz | None
+    operator: OperatorRepr
     def __init__(
         self,
-        preconditioner: MultiplicativeOneLevelSchwarz,
         tol: float = 1e-8,
         maxiter: int = 10000,
         restart: int = 30,
+        preconditioner: AdditiveSchwarz | MultiplicativeSchwarz | None = None,
+        operator: OperatorRepr = OperatorRepr.Explicit,
     ) -> None: ...
 
 class SolveResult:

@@ -66,7 +66,7 @@ pub use orchestrate::{
 // ---------------------------------------------------------------------------
 
 pub use config::{
-    ApproxSchurConfig, CgPreconditioner, GmresPreconditioner, LocalSolverConfig, SchwarzConfig,
+    ApproxSchurConfig, LocalSolverConfig, OperatorRepr, Preconditioner, SchwarzConfig,
     SolverMethod, SolverParams, DEFAULT_DENSE_SCHUR_THRESHOLD,
 };
 pub use error::{WithinError, WithinResult};
@@ -88,4 +88,4 @@ pub use observation::{
 
 pub use operator::design::{DesignOperator, PreconditionedDesign};
 pub use operator::gramian::{Gramian, GramianOperator};
-pub use operator::schwarz::{build_schwarz_default, FeSchwarz};
+pub use operator::schwarz::{build_schwarz, FeSchwarz};

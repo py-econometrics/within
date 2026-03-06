@@ -1,9 +1,7 @@
 //! Factor-pair domain construction and partition-of-unity weights.
 
-use schwarz_precond::SparseMatrix;
-
 use super::{PartitionWeights, Subdomain, WeightedDesign};
-use crate::observation::{FactorMeta, ObservationStore};
+use crate::observation::ObservationStore;
 use crate::operator::csr_block::CsrBlock;
 use crate::operator::gramian::CrossTab;
 
@@ -44,9 +42,10 @@ pub(crate) fn build_local_domains<S: ObservationStore>(
 /// Same output as `build_local_domains` but uses `CrossTab::from_gramian_block()`
 /// to extract factor-pair blocks from the Gramian CSR. No `ObservationStore`
 /// access needed — only the Gramian and factor metadata.
+#[cfg(test)]
 pub(crate) fn build_local_domains_from_gramian(
-    gramian: &SparseMatrix,
-    factors: &[FactorMeta],
+    gramian: &schwarz_precond::SparseMatrix,
+    factors: &[crate::observation::FactorMeta],
     n_dofs: usize,
     star_ref: Option<usize>,
 ) -> Vec<(Subdomain, CrossTab)> {
@@ -174,9 +173,10 @@ fn domains_and_block_for_pair<S: ObservationStore>(
     (domains, Some(block_data))
 }
 
+#[cfg(test)]
 fn domains_for_pair_from_gramian(
-    gramian: &SparseMatrix,
-    factors: &[FactorMeta],
+    gramian: &schwarz_precond::SparseMatrix,
+    factors: &[crate::observation::FactorMeta],
     q: usize,
     r: usize,
 ) -> Vec<(Subdomain, CrossTab)> {

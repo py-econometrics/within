@@ -6,7 +6,9 @@
 //!
 //! Run with: `cargo run --example preconditioned_solve`
 
-use within::{solve, CgPreconditioner, SchwarzConfig, SolveResult, SolverMethod, SolverParams};
+use within::{
+    solve, OperatorRepr, Preconditioner, SchwarzConfig, SolveResult, SolverMethod, SolverParams,
+};
 
 fn main() {
     // Two factors, each with 100 levels, 10 000 observations.
@@ -46,7 +48,8 @@ fn main() {
     // -----------------------------------------------------------------------
     let cg_params = SolverParams {
         method: SolverMethod::Cg {
-            preconditioner: CgPreconditioner::OneLevel(SchwarzConfig::default()),
+            preconditioner: Preconditioner::Additive(SchwarzConfig::default()),
+            operator: OperatorRepr::Implicit,
         },
         tol: 1e-8,
         maxiter: 1000,

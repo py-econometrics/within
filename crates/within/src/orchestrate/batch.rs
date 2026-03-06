@@ -1,10 +1,10 @@
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::config::{CgPreconditioner, SchwarzConfig, SolverMethod, SolverParams};
+use crate::config::{OperatorRepr, Preconditioner, SchwarzConfig, SolverMethod, SolverParams};
 use crate::domain::WeightedDesign;
 use crate::observation::ObservationStore;
-use crate::operator::schwarz::{build_schwarz_default, FeSchwarz};
+use crate::operator::schwarz::{build_schwarz, FeSchwarz};
 use crate::WithinResult;
 
 use super::least_squares::solve_least_squares;
@@ -29,12 +29,9 @@ pub fn demean_batch<S: ObservationStore + Sync>(
 ) -> WithinResult<BatchDemeanResult> {
     let schwarz: Option<FeSchwarz> = match &params.method {
         SolverMethod::Cg {
-            preconditioner: CgPreconditioner::OneLevel(cfg),
-        } => Some(build_schwarz_default(
-            design,
-            &cfg.approx_chol,
-            &cfg.local_solver,
-        )?),
+            preconditioner: Preconditioner::Additive(cfg),
+            ..
+        } => Some(build_schwarz(design, cfg)?),
         _ => None,
     };
 
@@ -81,7 +78,8 @@ pub fn demean_batch_default(
 
     let params = SolverParams {
         method: SolverMethod::Cg {
-            preconditioner: CgPreconditioner::OneLevel(SchwarzConfig::default()),
+            preconditioner: Preconditioner::Additive(SchwarzConfig::default()),
+            operator: OperatorRepr::Implicit,
         },
         tol,
         maxiter,

@@ -3,9 +3,9 @@
 use schwarz_precond::SparseMatrix;
 
 use super::super::csr_block::CsrBlock;
-use super::csr_assembly::{accumulate_cross_block, CompactIndexMaps};
+use super::csr_assembly::accumulate_cross_block;
 use crate::domain::WeightedDesign;
-use crate::observation::{FactorMeta, ObservationStore};
+use crate::observation::ObservationStore;
 
 // ---------------------------------------------------------------------------
 // BipartiteComponent / SchurData — supporting types for CrossTab
@@ -147,13 +147,19 @@ impl CrossTab {
     ///
     /// Same observation-filtering logic as `Gramian::build_for_component`, but
     /// produces a bipartite representation instead of a full symmetric CSR.
+    #[cfg(test)]
     pub fn build<S: ObservationStore>(
         design: &WeightedDesign<S>,
         q: usize,
         r: usize,
         component_global_indices: &[u32],
     ) -> Self {
-        let maps = CompactIndexMaps::build(&design.factors, q, r, component_global_indices);
+        let maps = super::csr_assembly::CompactIndexMaps::build(
+            &design.factors,
+            q,
+            r,
+            component_global_indices,
+        );
         let (c, diag_q, diag_r) = accumulate_cross_block(
             design,
             q,
@@ -267,10 +273,11 @@ impl CrossTab {
     /// Extracts `C` as a `CsrBlock`, computes `C^T` via transpose, and builds
     /// the compact `local_to_global` mapping (skipping levels with zero diagonal).
     /// Returns `None` if no active levels in either factor.
+    #[cfg(test)]
     pub fn from_gramian_block(
         gramian: &SparseMatrix,
-        fq: &FactorMeta,
-        fr: &FactorMeta,
+        fq: &crate::observation::FactorMeta,
+        fr: &crate::observation::FactorMeta,
     ) -> Option<(Self, Vec<u32>)> {
         let indptr = gramian.indptr();
         let indices = gramian.indices();

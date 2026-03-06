@@ -11,10 +11,10 @@ use approx_chol::Config;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use schwarz_precond::solve::cg::cg_solve_preconditioned;
-use within::config::LocalSolverConfig;
+use within::config::SchwarzConfig;
 use within::domain::WeightedDesign;
 use within::observation::{FactorMajorStore, ObservationWeights};
-use within::{build_schwarz_default, GramianOperator};
+use within::{build_schwarz, GramianOperator};
 
 fn rss_mb() -> f64 {
     let pid = std::process::id();
@@ -105,13 +105,15 @@ fn main() {
 
     // Phase 2: Build Schwarz preconditioner
     let t = Instant::now();
-    let schwarz = build_schwarz_default(
+    let schwarz = build_schwarz(
         &design,
-        &Config {
-            seed: 42,
+        &SchwarzConfig {
+            smoother: Config {
+                seed: 42,
+                ..Default::default()
+            },
             ..Default::default()
         },
-        &LocalSolverConfig::default(),
     )
     .expect("build schwarz preconditioner");
     let rss_schwarz = rss_mb();

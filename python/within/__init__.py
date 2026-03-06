@@ -1,12 +1,13 @@
 from within._within import (
     ApproxCholConfig,
     ApproxSchurConfig,
+    OperatorRepr,
     SolveResult,
     LSMR,
     CG,
     GMRES,
-    OneLevelSchwarz,
-    MultiplicativeOneLevelSchwarz,
+    AdditiveSchwarz,
+    MultiplicativeSchwarz,
     py_solve as _py_solve,
 )
 
@@ -20,7 +21,7 @@ def solve(categories, y, config=None, *, n_levels=None, weights=None, layout=Non
     import numpy as np
 
     if config is None:
-        config = CG()
+        config = CG(preconditioner=AdditiveSchwarz())
 
     if isinstance(categories, list):
         categories = np.column_stack(categories).astype(np.uintp)
@@ -32,11 +33,12 @@ def solve(categories, y, config=None, *, n_levels=None, weights=None, layout=Non
 __all__ = [
     "ApproxCholConfig",
     "ApproxSchurConfig",
+    "OperatorRepr",
     "SolveResult",
     "LSMR",
     "CG",
     "GMRES",
-    "OneLevelSchwarz",
-    "MultiplicativeOneLevelSchwarz",
+    "AdditiveSchwarz",
+    "MultiplicativeSchwarz",
     "solve",
 ]

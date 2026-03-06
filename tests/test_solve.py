@@ -7,8 +7,8 @@ from within import (
     CG,
     GMRES,
     LSMR,
-    MultiplicativeOneLevelSchwarz,
-    OneLevelSchwarz,
+    AdditiveSchwarz,
+    MultiplicativeSchwarz,
     solve,
 )
 
@@ -47,7 +47,7 @@ class TestSolveDefaults:
 
     def test_gmres(self, problem):
         cats, y = problem
-        result = solve(cats, y, GMRES(MultiplicativeOneLevelSchwarz()))
+        result = solve(cats, y, GMRES(preconditioner=MultiplicativeSchwarz()))
         assert result.converged
 
 
@@ -82,12 +82,12 @@ class TestNLevelsInference:
 class TestPreconditioners:
     def test_additive_schwarz(self, problem):
         cats, y = problem
-        result = solve(cats, y, CG(preconditioner=OneLevelSchwarz()))
+        result = solve(cats, y, CG(preconditioner=AdditiveSchwarz()))
         assert result.converged
 
     def test_multiplicative_schwarz(self, problem):
         cats, y = problem
-        result = solve(cats, y, CG(preconditioner=MultiplicativeOneLevelSchwarz()))
+        result = solve(cats, y, CG(preconditioner=MultiplicativeSchwarz()))
         assert result.converged
 
 

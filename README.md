@@ -46,16 +46,16 @@ print(f"converged={result.converged}  iters={result.iterations}")
 
 | Class | Description |
 |---|---|
-| `CG(tol, maxiter, preconditioner)` | Preconditioned conjugate gradient. Default with Schwarz preconditioner. |
+| `CG(tol, maxiter, preconditioner, operator)` | Preconditioned conjugate gradient. Default with Schwarz preconditioner. |
 | `LSMR(tol, maxiter, conlim)` | Handles singular Gramians natively. |
-| `GMRES(preconditioner, tol, maxiter, restart)` | Right-preconditioned GMRES. Requires a multiplicative Schwarz preconditioner. |
+| `GMRES(tol, maxiter, restart, preconditioner, operator)` | Right-preconditioned GMRES. Preconditioner is optional. |
 
 ### Preconditioners
 
 | Class | Description |
 |---|---|
-| `OneLevelSchwarz(...)` | Additive one-level Schwarz. Use with `CG`. |
-| `MultiplicativeOneLevelSchwarz(...)` | Multiplicative one-level Schwarz. Use with `CG` or `GMRES`. |
+| `AdditiveSchwarz(...)` | Additive one-level Schwarz. Use with `CG` or `GMRES`. |
+| `MultiplicativeSchwarz(...)` | Multiplicative one-level Schwarz. Use with `CG` or `GMRES`. |
 
 ## Rust quickstart
 

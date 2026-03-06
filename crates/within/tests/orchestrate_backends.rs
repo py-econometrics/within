@@ -1,5 +1,5 @@
 use within::{
-    solve_least_squares, CgPreconditioner, SchwarzConfig, SolverMethod, SolverParams,
+    solve_least_squares, OperatorRepr, Preconditioner, SchwarzConfig, SolverMethod, SolverParams,
     WeightedDesign,
 };
 
@@ -73,7 +73,8 @@ fn test_solve_cg_preconditioned_all_backends() {
 
     let params = SolverParams {
         method: SolverMethod::Cg {
-            preconditioner: CgPreconditioner::OneLevel(SchwarzConfig::default()),
+            preconditioner: Preconditioner::Additive(SchwarzConfig::default()),
+            operator: OperatorRepr::Implicit,
         },
         tol: 1e-8,
         maxiter: 1000,

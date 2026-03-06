@@ -20,10 +20,8 @@ use super::residual_update::{ObservationSpaceUpdater, SparseGramianUpdater};
 use super::schur_complement::{
     ApproxSchurComplement, EliminationInfo, ExactSchurComplement, SchurComplement, SchurResult,
 };
-use crate::config::{ApproxSchurConfig, LocalSolverConfig};
-use crate::domain::{
-    build_local_domains, build_local_domains_from_gramian, Subdomain, WeightedDesign,
-};
+use crate::config::{ApproxSchurConfig, LocalSolverConfig, SchwarzConfig};
+use crate::domain::{build_local_domains, Subdomain, WeightedDesign};
 use crate::observation::ObservationStore;
 use crate::{WithinError, WithinResult};
 
@@ -39,69 +37,51 @@ pub type FeMultSchwarzSparse<'a> =
     MultiplicativeSchwarzPreconditioner<FeLocalSolver, SparseGramianUpdater<'a>>;
 
 // ---------------------------------------------------------------------------
-// FE-specific builders
+// Domain source abstraction
 // ---------------------------------------------------------------------------
 
-/// Build all subdomain entries from design, config, and domain strategy.
-pub(crate) fn build_all_entries<S: ObservationStore>(
-    design: &WeightedDesign<S>,
-    config: &Config,
-    local_solver: &LocalSolverConfig,
-) -> WithinResult<Vec<SubdomainEntry<FeLocalSolver>>> {
-    let domain_pairs = build_local_domains(design, None);
-    let builder = Builder::new(*config);
-    let local_solver = local_solver.clone();
-    domain_pairs
-        .into_par_iter()
-        .map(|(domain, cross_tab)| build_entry(domain, cross_tab, &builder, &local_solver))
-        .collect()
+/// Abstracts over how domain entries are acquired.
+pub(crate) enum DomainSource<'a, S: ObservationStore> {
+    /// Scan observations to build from scratch.
+    FromDesign(&'a WeightedDesign<S>),
+    /// Reuse pre-built pairs (from fused domain+gramian pass).
+    FromParts(Vec<(Subdomain, CrossTab)>),
 }
 
-/// Build a Schwarz preconditioner from FE design + pre-computed domains.
-///
-/// For each domain, constructs a compact component-scoped Gramian, factorizes
-/// via the configured local solver strategy, and assembles into
-/// `SchwarzPreconditioner`.
-pub fn build_schwarz_with_config<S: ObservationStore>(
+// ---------------------------------------------------------------------------
+// Public convenience builder
+// ---------------------------------------------------------------------------
+
+/// Build additive Schwarz from FE design with default domain decomposition.
+pub fn build_schwarz<S: ObservationStore>(
     design: &WeightedDesign<S>,
-    domains: Vec<Subdomain>,
-    config: &Config,
-    local_solver: &LocalSolverConfig,
+    config: &SchwarzConfig,
 ) -> WithinResult<FeSchwarz> {
-    let builder = Builder::new(*config);
-    let local_solver = local_solver.clone();
-    let entries: WithinResult<Vec<SubdomainEntry<FeLocalSolver>>> = domains
-        .into_par_iter()
-        .map(|domain| {
-            let (q, r) = domain.factor_pair;
-            let cross_tab = CrossTab::build(design, q, r, &domain.core.global_indices);
-            build_entry(domain, cross_tab, &builder, &local_solver)
-        })
-        .collect();
-    Ok(SchwarzPreconditioner::new(entries?, design.n_dofs)?)
+    build_additive(DomainSource::FromDesign(design), design.n_dofs, config)
 }
 
-/// Build a Schwarz preconditioner with default domain decomposition.
-pub fn build_schwarz_default<S: ObservationStore>(
-    design: &WeightedDesign<S>,
-    config: &Config,
-    local_solver: &LocalSolverConfig,
+// ---------------------------------------------------------------------------
+// Crate-internal consolidated builders
+// ---------------------------------------------------------------------------
+
+/// Build additive Schwarz from any domain source.
+pub(crate) fn build_additive<S: ObservationStore>(
+    source: DomainSource<'_, S>,
+    n_dofs: usize,
+    config: &SchwarzConfig,
 ) -> WithinResult<FeSchwarz> {
-    let entries = build_all_entries(design, config, local_solver)?;
-    Ok(SchwarzPreconditioner::new(entries, design.n_dofs)?)
+    let entries = build_entries_from_source(source, config)?;
+    Ok(SchwarzPreconditioner::new(entries, n_dofs)?)
 }
 
-/// Build a one-level multiplicative Schwarz preconditioner.
-///
-/// If `symmetric` is true, performs forward + backward sweeps (suitable for CG).
-/// If `symmetric` is false, performs forward-only sweep (suitable for GMRES).
-pub fn build_multiplicative_schwarz<'a, S: ObservationStore>(
+/// Build multiplicative Schwarz with observation-space updater.
+pub(crate) fn build_multiplicative_obs<'a, S: ObservationStore>(
+    source: DomainSource<'_, S>,
     design: &'a WeightedDesign<S>,
-    config: &Config,
-    local_solver: &LocalSolverConfig,
+    config: &SchwarzConfig,
     symmetric: bool,
 ) -> WithinResult<FeMultSchwarz<'a, S>> {
-    let entries = build_all_entries(design, config, local_solver)?;
+    let entries = build_entries_from_source(source, config)?;
     let updater = ObservationSpaceUpdater::new(design);
     Ok(MultiplicativeSchwarzPreconditioner::new(
         entries,
@@ -111,60 +91,46 @@ pub fn build_multiplicative_schwarz<'a, S: ObservationStore>(
     )?)
 }
 
-/// Build a one-level multiplicative Schwarz from pre-built domains and Gramian.
-///
-/// The caller has already built `domain_pairs` (via parallel observation scan)
-/// and composed the explicit Gramian from the pair blocks. This builder only
-/// constructs local solvers and wires the `SparseGramianUpdater`.
-pub(crate) fn build_multiplicative_schwarz_from_parts<'a>(
-    domain_pairs: Vec<(Subdomain, CrossTab)>,
+/// Build multiplicative Schwarz with sparse Gramian updater.
+pub(crate) fn build_multiplicative_sparse<'a, S: ObservationStore>(
+    source: DomainSource<'_, S>,
     gramian: &'a super::gramian::Gramian,
     n_dofs: usize,
-    config: &Config,
-    local_solver: &LocalSolverConfig,
+    config: &SchwarzConfig,
     symmetric: bool,
 ) -> WithinResult<FeMultSchwarzSparse<'a>> {
-    let builder = Builder::new(*config);
-    let local_solver = local_solver.clone();
-    let entries: WithinResult<Vec<SubdomainEntry<FeLocalSolver>>> = domain_pairs
-        .into_par_iter()
-        .map(|(domain, cross_tab)| build_entry(domain, cross_tab, &builder, &local_solver))
-        .collect();
+    let entries = build_entries_from_source(source, config)?;
     let updater = SparseGramianUpdater::new(&gramian.matrix);
     Ok(MultiplicativeSchwarzPreconditioner::new(
-        entries?, updater, n_dofs, symmetric,
+        entries, updater, n_dofs, symmetric,
     )?)
 }
 
-/// Build a one-level multiplicative Schwarz preconditioner using an explicit
-/// Gramian for both domain construction and residual updates.
-///
-/// Trades O(nnz) memory for faster setup (no observation re-scan) and faster
-/// per-iteration residual updates (CSR row scatter vs observation-space).
-/// Only suitable when the Gramian is sparse — dense Gramians will consume
-/// excessive memory.
-pub fn build_multiplicative_schwarz_with_gramian<'a, S: ObservationStore>(
-    design: &WeightedDesign<S>,
-    gramian: &'a super::gramian::Gramian,
-    config: &Config,
-    local_solver: &LocalSolverConfig,
-    symmetric: bool,
-) -> WithinResult<FeMultSchwarzSparse<'a>> {
-    let domain_pairs =
-        build_local_domains_from_gramian(&gramian.matrix, &design.factors, design.n_dofs, None);
-    let builder = Builder::new(*config);
-    let local_solver = local_solver.clone();
-    let entries: WithinResult<Vec<SubdomainEntry<FeLocalSolver>>> = domain_pairs
+// ---------------------------------------------------------------------------
+// Internal: build entries from source
+// ---------------------------------------------------------------------------
+
+fn build_entries_from_source<S: ObservationStore>(
+    source: DomainSource<'_, S>,
+    config: &SchwarzConfig,
+) -> WithinResult<Vec<SubdomainEntry<FeLocalSolver>>> {
+    match source {
+        DomainSource::FromDesign(design) => {
+            let domain_pairs = build_local_domains(design, None);
+            build_entries_from_pairs(domain_pairs, config)
+        }
+        DomainSource::FromParts(domain_pairs) => build_entries_from_pairs(domain_pairs, config),
+    }
+}
+
+fn build_entries_from_pairs(
+    domain_pairs: Vec<(Subdomain, CrossTab)>,
+    config: &SchwarzConfig,
+) -> WithinResult<Vec<SubdomainEntry<FeLocalSolver>>> {
+    domain_pairs
         .into_par_iter()
-        .map(|(domain, cross_tab)| build_entry(domain, cross_tab, &builder, &local_solver))
-        .collect();
-    let updater = SparseGramianUpdater::new(&gramian.matrix);
-    Ok(MultiplicativeSchwarzPreconditioner::new(
-        entries?,
-        updater,
-        design.n_dofs,
-        symmetric,
-    )?)
+        .map(|(domain, cross_tab)| build_entry(domain, cross_tab, config))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -177,10 +143,9 @@ pub fn build_multiplicative_schwarz_with_gramian<'a, S: ObservationStore>(
 pub(crate) fn build_entry(
     domain: Subdomain,
     cross_tab: CrossTab,
-    builder: &Builder,
-    local_solver_config: &LocalSolverConfig,
+    config: &SchwarzConfig,
 ) -> WithinResult<SubdomainEntry<FeLocalSolver>> {
-    let solver = match local_solver_config {
+    let solver = match &config.local_solver {
         LocalSolverConfig::FullSddm => {
             let first_block_size = cross_tab.first_block_size();
             let matrix = cross_tab.to_sddm();
@@ -194,6 +159,7 @@ pub(crate) fn build_entry(
             .map_err(|e| {
                 WithinError::LocalSolverBuild(format!("invalid local SDDM CSR structure: {e}"))
             })?;
+            let builder = Builder::new(config.smoother);
             let factor = builder.build(csr).map_err(|e| {
                 WithinError::LocalSolverBuild(format!("failed local SDDM factorization: {e}"))
             })?;
@@ -334,6 +300,7 @@ mod tests {
     use super::*;
     use crate::config::{ApproxSchurConfig, DEFAULT_DENSE_SCHUR_THRESHOLD};
     use crate::domain::{build_local_domains, FixedEffectsDesign};
+    use crate::observation::FactorMajorStore;
     use crate::operator::csr_block::CsrBlock;
     use schwarz_precond::{LocalSolver, Operator};
 
@@ -458,11 +425,13 @@ mod tests {
     #[test]
     fn test_build_schwarz() {
         let (design, domain_pairs) = make_test_data();
-        let domains: Vec<Subdomain> = domain_pairs.into_iter().map(|(d, _)| d).collect();
-        let config = Config::default();
-        let schwarz =
-            build_schwarz_with_config(&design, domains, &config, &LocalSolverConfig::default())
-                .expect("build schwarz with explicit domains");
+        let config = SchwarzConfig::default();
+        let schwarz = build_additive::<FactorMajorStore>(
+            DomainSource::FromParts(domain_pairs),
+            design.n_dofs,
+            &config,
+        )
+        .expect("build schwarz with explicit domains");
         assert!(!schwarz.subdomains().is_empty());
 
         let r = vec![1.0; design.n_dofs];
@@ -474,9 +443,8 @@ mod tests {
     #[test]
     fn test_build_default() {
         let (design, _) = make_test_data();
-        let config = Config::default();
-        let schwarz = build_schwarz_default(&design, &config, &LocalSolverConfig::default())
-            .expect("build default schwarz");
+        let config = SchwarzConfig::default();
+        let schwarz = build_schwarz(&design, &config).expect("build default schwarz");
         assert!(!schwarz.subdomains().is_empty());
     }
 
@@ -497,17 +465,16 @@ mod tests {
         let (_, mut domain_pairs) = make_test_data();
         let (domain, cross_tab) = domain_pairs.swap_remove(0);
 
-        let entry = build_entry(
-            domain,
-            cross_tab,
-            &Builder::new(Config::default()),
-            &LocalSolverConfig::SchurComplement {
+        let config = SchwarzConfig {
+            smoother: Config::default(),
+            local_solver: LocalSolverConfig::SchurComplement {
                 approx_chol: Config::default(),
                 approx_schur: None,
                 dense_threshold: crate::config::DEFAULT_DENSE_SCHUR_THRESHOLD,
             },
-        )
-        .expect("exact Schur entry build failed");
+        };
+        let entry =
+            build_entry(domain, cross_tab, &config).expect("exact Schur entry build failed");
 
         match entry.solver {
             FeLocalSolver::SchurComplement(solver) => {
@@ -522,17 +489,16 @@ mod tests {
         let (_, mut domain_pairs) = make_test_data();
         let (domain, cross_tab) = domain_pairs.swap_remove(0);
 
-        let entry = build_entry(
-            domain,
-            cross_tab,
-            &Builder::new(Config::default()),
-            &LocalSolverConfig::SchurComplement {
+        let config = SchwarzConfig {
+            smoother: Config::default(),
+            local_solver: LocalSolverConfig::SchurComplement {
                 approx_chol: Config::default(),
                 approx_schur: Some(crate::config::ApproxSchurConfig { seed: 7 }),
                 dense_threshold: crate::config::DEFAULT_DENSE_SCHUR_THRESHOLD,
             },
-        )
-        .expect("approximate Schur entry build failed");
+        };
+        let entry =
+            build_entry(domain, cross_tab, &config).expect("approximate Schur entry build failed");
 
         match entry.solver {
             FeLocalSolver::SchurComplement(solver) => {
@@ -547,17 +513,16 @@ mod tests {
         let (_, mut domain_pairs) = make_test_data();
         let (domain, cross_tab) = domain_pairs.swap_remove(0);
 
-        let entry = build_entry(
-            domain,
-            cross_tab,
-            &Builder::new(Config::default()),
-            &LocalSolverConfig::SchurComplement {
+        let config = SchwarzConfig {
+            smoother: Config::default(),
+            local_solver: LocalSolverConfig::SchurComplement {
                 approx_chol: Config::default(),
                 approx_schur: None,
                 dense_threshold: 0,
             },
-        )
-        .expect("exact Schur entry build failed");
+        };
+        let entry =
+            build_entry(domain, cross_tab, &config).expect("exact Schur entry build failed");
 
         match entry.solver {
             FeLocalSolver::SchurComplement(solver) => {
@@ -641,17 +606,19 @@ mod tests {
         )
         .expect("valid design");
 
-        let config = Config::default();
-        let local_solver = LocalSolverConfig::default();
+        let config = SchwarzConfig::default();
         let gramian = crate::operator::gramian::Gramian::build(&design);
 
+        let domain_pairs = build_local_domains(&design, None);
+
         let obs_schwarz =
-            build_multiplicative_schwarz(&design, &config, &local_solver, false).unwrap();
-        let gram_schwarz = build_multiplicative_schwarz_with_gramian(
-            &design,
+            build_multiplicative_obs(DomainSource::FromDesign(&design), &design, &config, false)
+                .unwrap();
+        let gram_schwarz = build_multiplicative_sparse(
+            DomainSource::<FactorMajorStore>::FromParts(domain_pairs),
             &gramian,
+            design.n_dofs,
             &config,
-            &local_solver,
             false,
         )
         .unwrap();

@@ -16,7 +16,7 @@ cargo add within
 ## Quick example
 
 ```rust
-use within::{solve, SolverParams, SolverMethod, CgPreconditioner, SchwarzConfig};
+use within::{solve, SolverParams, SolverMethod, OperatorRepr, Preconditioner, SchwarzConfig};
 
 // Two factors: 100 levels each, 10 000 observations
 let factor_0: Vec<u32> = (0..10_000).map(|i| (i % 100) as u32).collect();
@@ -37,7 +37,8 @@ println!("LSMR converged in {} iterations", result.iterations);
 // Solve with preconditioned CG (one-level additive Schwarz)
 let params = SolverParams {
     method: SolverMethod::Cg {
-        preconditioner: CgPreconditioner::OneLevel(SchwarzConfig::default()),
+        preconditioner: Preconditioner::Additive(SchwarzConfig::default()),
+        operator: OperatorRepr::Implicit,
     },
     tol: 1e-8,
     maxiter: 1000,
@@ -85,8 +86,8 @@ The crate is organized in four layers:
 
 4. **`orchestrate`** -- End-to-end solve entry points (`solve`,
    `solve_weighted`, `solve_least_squares`, `solve_normal_equations`) with
-   typed configuration (`SolverParams`, `SolverMethod`, `CgPreconditioner`,
-   `GmresPreconditioner`).
+   typed configuration (`SolverParams`, `SolverMethod`, `Preconditioner`,
+   `OperatorRepr`).
 
 ## License
 

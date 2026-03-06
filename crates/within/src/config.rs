@@ -7,7 +7,42 @@
 pub const DEFAULT_DENSE_SCHUR_THRESHOLD: usize = 24;
 
 // ---------------------------------------------------------------------------
-// Solver configuration types
+// Operator representation
+// ---------------------------------------------------------------------------
+
+/// Operator representation for normal equations.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OperatorRepr {
+    #[default]
+    Implicit,
+    Explicit,
+}
+
+// ---------------------------------------------------------------------------
+// Preconditioner configuration
+// ---------------------------------------------------------------------------
+
+/// Unified preconditioner for CG and GMRES.
+///
+/// `symmetric` (CG=true, GMRES=false) is derived at dispatch time.
+#[derive(Debug, Clone, Default)]
+pub enum Preconditioner {
+    #[default]
+    None,
+    Additive(SchwarzConfig),
+    Multiplicative(SchwarzConfig),
+}
+
+/// Common configuration for all Schwarz-based preconditioners.
+#[derive(Debug, Clone, Default)]
+pub struct SchwarzConfig {
+    /// AC config for the top-level smoother (used by FullSddm path).
+    pub smoother: approx_chol::Config,
+    pub local_solver: LocalSolverConfig,
+}
+
+// ---------------------------------------------------------------------------
+// Local solver configuration
 // ---------------------------------------------------------------------------
 
 /// Selects the local solver used inside each Schwarz subdomain.
@@ -15,12 +50,12 @@ pub const DEFAULT_DENSE_SCHUR_THRESHOLD: usize = 24;
 pub enum LocalSolverConfig {
     /// Full bipartite SDDM factorized via approximate Cholesky.
     ///
-    /// Uses `approx_chol` from the parent `SchwarzConfig`.
+    /// Uses `smoother` from the parent `SchwarzConfig`.
     FullSddm,
     /// Schur complement reduction: eliminate the larger diagonal block
     /// exactly, then factorize the smaller reduced system.
     SchurComplement {
-        /// ApproxChol config for the reduced system. Defaults to AC2(2,2).
+        /// ApproxChol config for the reduced system (independent from smoother).
         approx_chol: approx_chol::Config,
         /// Approximate Schur complement configuration.
         /// `None` = exact (default). `Some` = approximate with sampling.
@@ -61,31 +96,9 @@ pub struct ApproxSchurConfig {
     pub seed: u64,
 }
 
-/// Common configuration for all Schwarz-based preconditioners.
-#[derive(Debug, Clone, Default)]
-pub struct SchwarzConfig {
-    pub approx_chol: approx_chol::Config,
-    pub local_solver: LocalSolverConfig,
-}
-
-/// CG preconditioner configuration.
-#[derive(Debug, Clone, Default)]
-pub enum CgPreconditioner {
-    /// Unpreconditioned CG.
-    #[default]
-    None,
-    /// One-level additive Schwarz.
-    OneLevel(SchwarzConfig),
-    /// One-level multiplicative Schwarz (symmetric: forward + backward).
-    MultiplicativeOneLevel(SchwarzConfig),
-}
-
-/// GMRES preconditioner configuration (forward-only multiplicative Schwarz).
-#[derive(Debug, Clone)]
-pub enum GmresPreconditioner {
-    /// One-level multiplicative Schwarz (forward-only).
-    MultiplicativeOneLevel(SchwarzConfig),
-}
+// ---------------------------------------------------------------------------
+// Solver configuration types
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub enum SolverMethod {
@@ -93,10 +106,12 @@ pub enum SolverMethod {
         conlim: f64,
     },
     Cg {
-        preconditioner: CgPreconditioner,
+        preconditioner: Preconditioner,
+        operator: OperatorRepr,
     },
     Gmres {
-        preconditioner: GmresPreconditioner,
+        preconditioner: Preconditioner,
+        operator: OperatorRepr,
         restart: usize,
     },
 }

@@ -1,7 +1,7 @@
 use approx_chol::Config;
 
 use within::{
-    solve_least_squares, solve_normal_equations, CgPreconditioner, LocalSolverConfig,
+    solve_least_squares, solve_normal_equations, LocalSolverConfig, OperatorRepr, Preconditioner,
     SchwarzConfig, SolverMethod, SolverParams,
 };
 
@@ -30,7 +30,8 @@ fn test_normal_equations_cg_unpreconditioned() {
 
     let params = SolverParams {
         method: SolverMethod::Cg {
-            preconditioner: CgPreconditioner::None,
+            preconditioner: Preconditioner::None,
+            operator: OperatorRepr::Implicit,
         },
         tol: 1e-8,
         maxiter: 1000,
@@ -46,13 +47,14 @@ fn test_normal_equations_preconditioned() {
 
     let params = SolverParams {
         method: SolverMethod::Cg {
-            preconditioner: CgPreconditioner::OneLevel(SchwarzConfig {
-                approx_chol: Config {
+            preconditioner: Preconditioner::Additive(SchwarzConfig {
+                smoother: Config {
                     seed: 42,
                     ..Default::default()
                 },
                 local_solver: LocalSolverConfig::default(),
             }),
+            operator: OperatorRepr::Implicit,
         },
         tol: 1e-8,
         maxiter: 1000,
@@ -85,7 +87,8 @@ fn test_least_squares_cg() {
 
     let params = SolverParams {
         method: SolverMethod::Cg {
-            preconditioner: CgPreconditioner::None,
+            preconditioner: Preconditioner::None,
+            operator: OperatorRepr::Implicit,
         },
         tol: 1e-8,
         maxiter: 1000,
