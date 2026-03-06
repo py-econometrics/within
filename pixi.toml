@@ -23,6 +23,6 @@ cargo-llvm-cov = ">=0.8.4,<0.9"
 default = { features = ["build", "dev"], solve-group = "default" }
 
 [tasks]
-test = "maturin develop --uv && pytest tests/ -v"
+test = "maturin develop --uv && pytest tests/ -v --cov=within --cov-report=term-missing"
 develop = "maturin develop --uv --release"
 coverage-rust = "cargo llvm-cov --workspace --all-features --summary-only"
