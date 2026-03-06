@@ -12,7 +12,7 @@ from within._within import (
 )
 
 
-def solve(categories, n_levels, y, config, weights=None, layout=None):
+def solve(categories, y, config=None, *, n_levels=None, weights=None, layout=None):
     """Solve fixed-effects normal equations.
 
     categories can be a 2D uintp array (n_obs, n_factors) or a list of 1D
@@ -20,9 +20,12 @@ def solve(categories, n_levels, y, config, weights=None, layout=None):
     """
     import numpy as np
 
+    if config is None:
+        config = CG()
+
     if isinstance(categories, list):
         categories = np.column_stack(categories).astype(np.uintp)
-    return _py_solve(categories, n_levels, y, config, weights=weights, layout=layout)
+    return _py_solve(categories, y, config, n_levels=n_levels, weights=weights, layout=layout)
 
 
 def generate_synthetic_data(n_levels_per_factor, n_rows, *, seed=42):

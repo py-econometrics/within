@@ -301,7 +301,10 @@ fn extract_solver_params(py: Python<'_>, config: &Bound<'_, PyAny>) -> PyResult<
                     ));
                 }
             }
-            None => CgPreconditioner::None,
+            None => CgPreconditioner::OneLevel(SchwarzConfig {
+                approx_chol: Config::default(),
+                local_solver: LocalSolverConfig::default(),
+            }),
         };
         return Ok(SolverParams {
             method: SolverMethod::Cg { preconditioner },
@@ -345,19 +348,29 @@ fn extract_solver_params(py: Python<'_>, config: &Bound<'_, PyAny>) -> PyResult<
 }
 
 #[pyfunction]
-#[pyo3(signature = (categories, n_levels, y, config, weights=None, layout=None))]
+#[pyo3(signature = (categories, y, config, n_levels=None, weights=None, layout=None))]
 pub fn py_solve<'py>(
     py: Python<'py>,
     categories: PyReadonlyArray2<'py, usize>,
-    n_levels: Vec<usize>,
     y: PyReadonlyArray1<'py, f64>,
     config: &Bound<'py, PyAny>,
+    n_levels: Option<Vec<usize>>,
     weights: Option<PyReadonlyArray1<'py, f64>>,
     layout: Option<&str>,
 ) -> PyResult<PySolveResult> {
     let cats: Array2<usize> = categories.as_array().to_owned();
     let y_vec: Vec<f64> = y.as_array().to_vec();
     let w_vec: Option<Vec<f64>> = weights.map(|w| w.as_array().to_vec());
+
+    let n_levels = match n_levels {
+        Some(nl) => nl,
+        None => {
+            let n_factors = cats.ncols();
+            (0..n_factors)
+                .map(|col| cats.column(col).iter().copied().max().unwrap_or(0) + 1)
+                .collect()
+        }
+    };
 
     let layout_str = layout.unwrap_or("factor_major");
     match layout_str {

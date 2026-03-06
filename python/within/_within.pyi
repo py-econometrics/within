@@ -92,9 +92,9 @@ class SolveResult:
 
 def py_solve(
     categories: NDArray[np.uintp],
-    n_levels: list[int],
     y: NDArray[np.float64],
     config: LSMR | CG | GMRES,
+    n_levels: list[int] | None = None,
     weights: NDArray[np.float64] | None = None,
     layout: str | None = None,
 ) -> SolveResult: ...

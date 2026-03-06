@@ -21,7 +21,7 @@ def run_solve(
     layout: str | None = None,
 ) -> BenchmarkResult:
     """Solve using *config* and return a timed result."""
-    result = solve(categories, n_levels, y, config.config, layout=layout)
+    result = solve(categories, y, config.config, n_levels=n_levels, layout=layout)
 
     return BenchmarkResult(
         problem="",  # Caller fills this in

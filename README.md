@@ -1,8 +1,8 @@
 # within
 
 High-performance fixed-effects solver for econometric panel data. Solves
-**y = D x + e** where D is a sparse categorical design matrix, using
-iterative methods (LSMR, preconditioned CG, right-preconditioned GMRES) with
+**y = D x** where D is a sparse categorical design matrix, using
+iterative methods (preconditioned CG, right-preconditioned GMRES, LSMR) with
 domain decomposition (Schwarz) preconditioners backed by approximate Cholesky
 local solvers.
 
@@ -18,7 +18,7 @@ pip install within
 ```
 
 ```python
-import within
+from within import solve, CG, LSMR
 import numpy as np
 
 # Two factors with 500 levels each, 100k observations
@@ -28,12 +28,12 @@ categories = [
 ]
 y = np.random.randn(100_000)
 
-# Solve with default LSMR
-result = within.solve(categories, [500, 500], y, within.LSMR())
+# Solve with Schwarz-preconditioned CG (default)
+result = solve(categories, y)
 print(f"converged={result.converged}  iters={result.iterations}  residual={result.residual:.2e}")
 
-# Solve with preconditioned CG (additive Schwarz)
-result = within.solve(categories, [500, 500], y, within.CG(preconditioner=within.OneLevelSchwarz()))
+# Solve with LSMR (avoids preconditioner computation for simple problems)
+result = solve(categories, y, LSMR())
 print(f"converged={result.converged}  iters={result.iterations}")
 ```
 
@@ -41,8 +41,8 @@ print(f"converged={result.converged}  iters={result.iterations}")
 
 | Class | Description |
 |---|---|
-| `LSMR(tol, maxiter, conlim)` | Handles singular Gramians natively. Good default. |
-| `CG(tol, maxiter, preconditioner)` | Preconditioned conjugate gradient. |
+| `CG(tol, maxiter, preconditioner)` | Preconditioned conjugate gradient. Default with Schwarz preconditioner. |
+| `LSMR(tol, maxiter, conlim)` | Handles singular Gramians natively. |
 | `GMRES(preconditioner, tol, maxiter, restart)` | Right-preconditioned GMRES. Requires a multiplicative Schwarz preconditioner. |
 
 ### Preconditioners
@@ -98,8 +98,11 @@ MIT
 - Gaure, S. (2013). OLS with Multiple High Dimensional Category Variables.
   *Computational Statistics & Data Analysis*, 66, 2--17.
 
-- Spielman, D. A. & Teng, S.-H. (2014). Nearly Linear Time Algorithms for
-  Preconditioning and Solving Symmetric, Diagonally Dominant Linear Systems.
-  *SIAM Journal on Matrix Analysis and Applications*, 35(3), 835--885.
+- Gao, Y., Kyng, R. & Spielman, D. A. (2025). AC(k): Robust Solution of
+  Laplacian Equations by Randomized Approximate Cholesky Factorization.
+  *SIAM Journal on Scientific Computing*.
+
+- Xu, J. (1992). Iterative Methods by Space Decomposition and Subspace
+  Correction. *SIAM Review*, 34(4), 581--613.
 
 - Toselli & Widlund (2005). *Domain Decomposition Methods — Algorithms and Theory*. Springer.
