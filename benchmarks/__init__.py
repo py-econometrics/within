@@ -12,8 +12,21 @@ from __future__ import annotations
 from ._registry import SuiteInfo, SuiteOptions, get_suite, list_suites
 from ._types import BenchmarkResult, ProblemSpec, SolverConfig
 
-# Import all suite modules so their @suite decorators execute
-import benchmarks.suites  # noqa: F401
+# Import suite modules so their @suite decorators execute.
+from .suites import (  # noqa: F401
+    ac_comparison,
+    akm_panel,
+    fixest_comparison,
+    graph_backend,
+    high_fe,
+    iteration_reduction,
+    laplacian_2fe,
+    many_components,
+    one_level_baseline,
+    preconditioners,
+    scaling,
+    verify,
+)
 
 
 __all__ = [

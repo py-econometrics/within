@@ -1,8 +1,8 @@
 use approx_chol::Factor;
 use schwarz_precond::{LocalSolveError, LocalSolver};
 
-use super::strategy::LocalSolveStrategy;
 use super::transforms::{negate_block, subtract_mean};
+use super::LocalSolveStrategy;
 
 /// Local subdomain solver backed by approximate Cholesky factorization.
 pub struct ApproxCholSolver {
