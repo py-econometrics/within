@@ -24,12 +24,6 @@ pub enum WithinError {
     WeightCountMismatch { expected: usize, got: usize },
     /// A factor declares zero levels.
     EmptyLevelSet { factor: usize },
-    /// Category value is negative in i64-based constructors.
-    NegativeCategory {
-        factor: usize,
-        observation: usize,
-        level: i64,
-    },
     /// Category level is out of range for a factor.
     LevelOutOfRange {
         factor: usize,
@@ -69,14 +63,6 @@ impl Display for WithinError {
             Self::EmptyLevelSet { factor } => {
                 write!(f, "factor {factor} declares zero levels")
             }
-            Self::NegativeCategory {
-                factor,
-                observation,
-                level,
-            } => write!(
-                f,
-                "factor {factor}, observation {observation}: negative category level {level}",
-            ),
             Self::LevelOutOfRange {
                 factor,
                 observation,

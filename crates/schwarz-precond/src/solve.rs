@@ -6,7 +6,13 @@
 pub mod cg;
 /// Right-preconditioned GMRES(m) with restarts.
 pub mod gmres;
-/// Shared BLAS-like primitives for iterative solvers.
-pub(crate) mod util;
 
-pub use util::vec_norm;
+/// Euclidean norm of a vector.
+#[inline]
+pub fn vec_norm(v: &[f64]) -> f64 {
+    let mut s = 0.0f64;
+    for &x in v {
+        s += x * x;
+    }
+    s.sqrt()
+}

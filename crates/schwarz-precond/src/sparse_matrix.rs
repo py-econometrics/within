@@ -69,7 +69,7 @@ impl SparseMatrix {
     /// For large matrices (> 10 000 rows), rows are processed in parallel
     /// via Rayon `par_chunks_mut`. Each row's dot product reads from shared
     /// `x` and writes to its own `y[row]` — no conflicts.
-    pub fn matvec_add(&self, x: &[f64], y: &mut [f64]) {
+    fn matvec_add(&self, x: &[f64], y: &mut [f64]) {
         const PAR_THRESHOLD: usize = 10_000;
         const CHUNK_SIZE: usize = 4096;
 

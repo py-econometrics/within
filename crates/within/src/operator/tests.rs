@@ -902,7 +902,7 @@ mod schwarz_tests {
         .expect("valid factor-major store");
         let design =
             FixedEffectsDesign::from_store(store, &[3, 2]).expect("valid fixed-effects design");
-        let domain_pairs = build_local_domains(&design, None);
+        let domain_pairs = build_local_domains(&design);
         (design, domain_pairs)
     }
 
@@ -1044,7 +1044,7 @@ mod schwarz_tests {
         )
         .expect("valid factor-major store");
         let design = FixedEffectsDesign::from_store(store, &[2, 2]).expect("valid design");
-        let domain_pairs = build_local_domains(&design, None);
+        let domain_pairs = build_local_domains(&design);
 
         assert!(!domain_pairs.is_empty());
         let fbs = compute_first_block_size(&design, &domain_pairs[0].0);
@@ -1192,7 +1192,7 @@ mod schwarz_tests {
         let config = LocalSolverConfig::default();
         let gramian = crate::operator::gramian::Gramian::build(&design);
 
-        let domain_pairs = build_local_domains(&design, None);
+        let domain_pairs = build_local_domains(&design);
 
         let obs_schwarz =
             build_multiplicative_obs(DomainSource::FromDesign(&design), &design, &config).unwrap();

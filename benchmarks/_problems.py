@@ -38,11 +38,6 @@ def get_generator(key: str) -> GeneratorFn:
     return _REGISTRY[key]
 
 
-def list_generators() -> list[str]:
-    """Return sorted list of registered generator keys."""
-    return sorted(_REGISTRY)
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -239,19 +234,6 @@ def clustered_3fe(
                 )
 
     cats = [np.array(c, dtype=np.int64) for c in cat_lists]
-    n_levels_list = list(n_levels)
-    return cats, n_levels_list, _make_response(cats, n_levels_list, rng)
-
-
-@register_generator("random_3fe")
-def random_3fe(
-    n_levels: tuple[int, int, int] = (100, 100, 100),
-    n_rows: int = 10000,
-    seed: int = 42,
-) -> tuple[list[NDArray[np.int64]], list[int], NDArray[np.float64]]:
-    """Random 3-FE problem with uniform level distribution."""
-    rng = np.random.default_rng(seed)
-    cats = [rng.integers(0, n_levels[i], size=n_rows, dtype=np.int64) for i in range(3)]
     n_levels_list = list(n_levels)
     return cats, n_levels_list, _make_response(cats, n_levels_list, rng)
 
@@ -861,7 +843,7 @@ def random_kfe(
     n_rows: int = 10000,
     seed: int = 42,
 ) -> tuple[list[NDArray[np.int64]], list[int], NDArray[np.float64]]:
-    """Random k-FE with uniform level distribution (generalized random_3fe)."""
+    """Random k-FE with uniform level distribution."""
     rng = np.random.default_rng(seed)
     if n_levels_per_factor is None:
         n_levels_per_factor = [50] * k

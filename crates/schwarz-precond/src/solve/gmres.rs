@@ -1,5 +1,11 @@
-use super::util::{dot, vec_norm};
+use super::vec_norm;
 use crate::{Operator, SolveError};
+
+/// Inner product of two vectors.
+#[inline]
+fn dot(a: &[f64], b: &[f64]) -> f64 {
+    a.iter().zip(b.iter()).map(|(&x, &y)| x * y).sum()
+}
 
 // ---------------------------------------------------------------------------
 // Column basis storage
@@ -164,7 +170,6 @@ fn arnoldi_cycle<A: Operator + ?Sized, M: Operator + ?Sized>(
     total_iters: &mut usize,
     maxiter: usize,
 ) -> Result<(ArnoldiOutcome, usize), SolveError> {
-    let _n = operator.ncols();
     let mut j = 0;
 
     while j < iters_this_cycle {

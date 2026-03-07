@@ -67,8 +67,6 @@ class BenchmarkResult:
     final_residual: float = 0.0
     converged: bool = False
     passed: bool | None = None  # For correctness suites
-    phase_timings: dict[str, float] = field(default_factory=dict)  # For profiling
-    extra: dict[str, Any] = field(default_factory=dict)  # Suite-specific data
 
 
 def run_solve(
@@ -172,7 +170,6 @@ class SuiteOptions:
     tol: float = 1e-8
     maxiter: int = 2000
     quick: bool = False
-    filter_problems: list[str] | None = None
 
 
 @dataclass

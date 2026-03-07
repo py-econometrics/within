@@ -1,7 +1,4 @@
-use within::{
-    demean_batch, solve, KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner,
-    SolverParams,
-};
+use within::{solve, KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner, SolverParams};
 
 #[path = "common/orchestrate_helpers.rs"]
 mod common;
@@ -48,30 +45,4 @@ fn test_high_level_solve_preconditioned() {
     let result = solve(&categories, &n_levels, &y, None, &params).expect("solve preconditioned");
     common::assert_converged_with_small_residual(&result, 1e-6);
     common::assert_solution_finite(&result);
-}
-
-#[test]
-fn test_demean_batch_gmres_multiplicative() {
-    let design = common::make_test_design();
-    let columns = vec![vec![1.0, 2.0, 3.0, 4.0, 5.0], vec![5.0, 4.0, 3.0, 2.0, 1.0]];
-    let params = SolverParams {
-        krylov: KrylovMethod::Gmres { restart: 30 },
-        operator: OperatorRepr::Implicit,
-        preconditioner: Some(Preconditioner::Multiplicative(
-            LocalSolverConfig::solver_default(),
-        )),
-        tol: 1e-8,
-        maxiter: 1000,
-    };
-    let result = demean_batch(&design, &columns, &params).expect("demean batch");
-    assert!(result.all_converged, "batch solve must converge");
-    assert_eq!(result.columns.len(), columns.len(), "column count mismatch");
-    assert!(
-        result
-            .columns
-            .iter()
-            .flatten()
-            .all(|value| value.is_finite()),
-        "demeaned values must be finite"
-    );
 }

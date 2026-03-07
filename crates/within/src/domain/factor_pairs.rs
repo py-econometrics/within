@@ -15,17 +15,13 @@ use crate::operator::gramian::CrossTab;
 /// Factor pairs are processed in parallel via Rayon. The
 /// `compute_partition_weights` step remains sequential after the parallel
 /// collect.
-///
-/// `star_ref`: if Some(q), use star cover centered on factor q.
-/// Otherwise, use full cover (all C(Q,2) pairs).
 pub(crate) fn build_local_domains<S: ObservationStore>(
     design: &WeightedDesign<S>,
-    star_ref: Option<usize>,
 ) -> Vec<(Subdomain, CrossTab)> {
     use rayon::prelude::*;
 
     let n_factors = design.n_factors();
-    let pairs = build_pairs(n_factors, star_ref);
+    let pairs = build_pairs(n_factors);
 
     let mut domain_pairs: Vec<(Subdomain, CrossTab)> = pairs
         .par_iter()
@@ -47,12 +43,11 @@ pub(crate) fn build_local_domains_from_gramian(
     gramian: &schwarz_precond::SparseMatrix,
     factors: &[crate::observation::FactorMeta],
     n_dofs: usize,
-    star_ref: Option<usize>,
 ) -> Vec<(Subdomain, CrossTab)> {
     use rayon::prelude::*;
 
     let n_factors = factors.len();
-    let pairs = build_pairs(n_factors, star_ref);
+    let pairs = build_pairs(n_factors);
 
     let mut domain_pairs: Vec<(Subdomain, CrossTab)> = pairs
         .par_iter()
@@ -91,12 +86,11 @@ pub(crate) struct PairBlockData {
 /// Gramian CSR needed for operator apply and residual updates.
 pub(crate) fn build_domains_and_gramian_blocks<S: ObservationStore>(
     design: &WeightedDesign<S>,
-    star_ref: Option<usize>,
 ) -> (Vec<(Subdomain, CrossTab)>, Vec<PairBlockData>) {
     use rayon::prelude::*;
 
     let n_factors = design.n_factors();
-    let pairs = build_pairs(n_factors, star_ref);
+    let pairs = build_pairs(n_factors);
 
     type PairResult = (Vec<(Subdomain, CrossTab)>, Option<PairBlockData>);
     let results: Vec<PairResult> = pairs
@@ -259,22 +253,14 @@ fn domains_for_pair<S: ObservationStore>(
         .collect()
 }
 
-fn build_pairs(n_factors: usize, star_ref: Option<usize>) -> Vec<(usize, usize)> {
-    match star_ref {
-        Some(q_star) => (0..n_factors)
-            .filter(|&r| r != q_star)
-            .map(|r| (q_star.min(r), q_star.max(r)))
-            .collect(),
-        None => {
-            let mut pairs = Vec::new();
-            for q in 0..n_factors {
-                for r in (q + 1)..n_factors {
-                    pairs.push((q, r));
-                }
-            }
-            pairs
+fn build_pairs(n_factors: usize) -> Vec<(usize, usize)> {
+    let mut pairs = Vec::new();
+    for q in 0..n_factors {
+        for r in (q + 1)..n_factors {
+            pairs.push((q, r));
         }
     }
+    pairs
 }
 
 fn compute_partition_weights(domain_pairs: &mut [(Subdomain, CrossTab)], n_dofs: usize) {
@@ -332,22 +318,15 @@ mod tests {
     #[test]
     fn test_full_cover_domain_count() {
         let dm = make_test_design();
-        let domain_pairs = build_local_domains(&dm, None);
+        let domain_pairs = build_local_domains(&dm);
         // 3 factor pairs; each pair may produce multiple components
         assert!(domain_pairs.len() >= 3);
     }
 
     #[test]
-    fn test_star_cover_domain_count() {
-        let dm = make_test_design();
-        let domain_pairs = build_local_domains(&dm, Some(0));
-        assert!(domain_pairs.len() >= 2);
-    }
-
-    #[test]
     fn test_partition_of_unity() {
         let dm = make_test_design();
-        let domain_pairs = build_local_domains(&dm, None);
+        let domain_pairs = build_local_domains(&dm);
         let n_dofs = dm.n_dofs;
         let mut weight_sum = vec![0.0; n_dofs];
         for (d, _) in &domain_pairs {
@@ -365,7 +344,7 @@ mod tests {
     #[test]
     fn test_domains_cover_all_dofs() {
         let dm = make_test_design();
-        let domain_pairs = build_local_domains(&dm, None);
+        let domain_pairs = build_local_domains(&dm);
         let mut covered = vec![false; dm.n_dofs];
         for (d, _) in &domain_pairs {
             for &idx in &d.core.global_indices {
@@ -420,13 +399,9 @@ mod tests {
             FixedEffectsDesign::from_store(store, &[3, 4]).unwrap()
         }] {
             let gramian = Gramian::build(&design);
-            let obs_domains = build_local_domains(&design, None);
-            let gram_domains = build_local_domains_from_gramian(
-                &gramian.matrix,
-                &design.factors,
-                design.n_dofs,
-                None,
-            );
+            let obs_domains = build_local_domains(&design);
+            let gram_domains =
+                build_local_domains_from_gramian(&gramian.matrix, &design.factors, design.n_dofs);
             assert_domain_sets_equal(&obs_domains, &gram_domains);
         }
     }
@@ -436,7 +411,7 @@ mod tests {
         let design = make_test_design();
         let gramian = Gramian::build(&design);
         let domain_pairs =
-            build_local_domains_from_gramian(&gramian.matrix, &design.factors, design.n_dofs, None);
+            build_local_domains_from_gramian(&gramian.matrix, &design.factors, design.n_dofs);
         let n_dofs = design.n_dofs;
         let mut weight_sum = vec![0.0; n_dofs];
         for (d, _) in &domain_pairs {
@@ -456,7 +431,7 @@ mod tests {
         let design = make_test_design();
         let gramian = Gramian::build(&design);
         let domain_pairs =
-            build_local_domains_from_gramian(&gramian.matrix, &design.factors, design.n_dofs, None);
+            build_local_domains_from_gramian(&gramian.matrix, &design.factors, design.n_dofs);
         let mut covered = vec![false; design.n_dofs];
         for (d, _) in &domain_pairs {
             for &idx in &d.core.global_indices {
@@ -484,7 +459,7 @@ mod tests {
             FixedEffectsDesign::from_store(store, &[3, 4]).unwrap()
         }] {
             let obs_gramian = Gramian::build(&design);
-            let (_domains, blocks) = build_domains_and_gramian_blocks(&design, None);
+            let (_domains, blocks) = build_domains_and_gramian_blocks(&design);
             let composed = Gramian::from_pair_blocks(&blocks, &design.factors, design.n_dofs);
 
             // Compare matvec output for several test vectors
@@ -510,8 +485,8 @@ mod tests {
     #[test]
     fn test_composed_gramian_domains_match() {
         let design = make_test_design();
-        let obs_domains = build_local_domains(&design, None);
-        let (composed_domains, _blocks) = build_domains_and_gramian_blocks(&design, None);
+        let obs_domains = build_local_domains(&design);
+        let (composed_domains, _blocks) = build_domains_and_gramian_blocks(&design);
         assert_domain_sets_equal(&obs_domains, &composed_domains);
     }
 }

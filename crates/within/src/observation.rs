@@ -33,16 +33,6 @@ impl ObservationWeights {
         matches!(self, ObservationWeights::Unit)
     }
 
-    /// Debug-assert that this weight vector is compatible with `n_obs` observations.
-    ///
-    /// Unit weights are always valid; Dense weights must have exactly `n_obs` entries.
-    #[inline]
-    pub fn debug_assert_valid_for(&self, n_obs: usize) {
-        if let ObservationWeights::Dense(w) = self {
-            debug_assert_eq!(w.len(), n_obs, "weights must have n_obs entries");
-        }
-    }
-
     /// Validate that this weight vector is compatible with `n_obs` observations.
     pub fn validate_for(&self, n_obs: usize) -> WithinResult<()> {
         if let ObservationWeights::Dense(w) = self {

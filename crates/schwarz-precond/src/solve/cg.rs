@@ -4,8 +4,14 @@
 //! - `cg_solve`: unpreconditioned CG (delegates to preconditioned with IdentityOperator)
 //! - `cg_solve_preconditioned`: left-preconditioned CG
 
-use super::util::{dot, vec_norm};
+use super::vec_norm;
 use crate::{IdentityOperator, Operator, SolveError};
+
+/// Inner product of two vectors.
+#[inline]
+fn dot(a: &[f64], b: &[f64]) -> f64 {
+    a.iter().zip(b.iter()).map(|(&x, &y)| x * y).sum()
+}
 
 /// Result of a conjugate gradient solve.
 #[must_use]

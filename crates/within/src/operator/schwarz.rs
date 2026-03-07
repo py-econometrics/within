@@ -118,7 +118,7 @@ fn build_entries_from_source<S: ObservationStore>(
 ) -> WithinResult<Vec<SubdomainEntry<FeLocalSolver>>> {
     match source {
         DomainSource::FromDesign(design) => {
-            let domain_pairs = build_local_domains(design, None);
+            let domain_pairs = build_local_domains(design);
             build_entries_from_pairs(domain_pairs, config)
         }
         DomainSource::FromParts(domain_pairs) => build_entries_from_pairs(domain_pairs, config),
@@ -270,6 +270,7 @@ pub(crate) fn build_reduced_schur_factor(
 }
 
 /// Compute how many DOFs in a domain belong to the first factor of its factor pair.
+#[cfg(test)]
 pub fn compute_first_block_size<S: ObservationStore>(
     design: &WeightedDesign<S>,
     domain: &Subdomain,

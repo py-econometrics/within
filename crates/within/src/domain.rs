@@ -131,25 +131,6 @@ impl<S: ObservationStore> WeightedDesign<S> {
     pub fn n_factors(&self) -> usize {
         self.factors.len()
     }
-
-    /// Block offsets including the trailing total (length = n_factors + 1).
-    pub fn block_offsets(&self) -> Vec<usize> {
-        let mut bo: Vec<usize> = self.factors.iter().map(|f| f.offset).collect();
-        bo.push(self.n_dofs);
-        bo
-    }
-
-    /// Level index for observation `i` in factor `q`.
-    #[inline]
-    pub fn level(&self, i: usize, q: usize) -> u32 {
-        self.store.level(i, q)
-    }
-
-    /// Weight for observation `i`.
-    #[inline]
-    pub fn weight(&self, i: usize) -> f64 {
-        self.store.weight(i)
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -382,7 +363,13 @@ mod tests {
         assert_eq!(dm.n_rows, 5);
         assert_eq!(dm.factors[0].offset, 0);
         assert_eq!(dm.factors[1].offset, 3);
-        assert_eq!(dm.block_offsets(), vec![0, 3, 7]);
+        let block_offsets: Vec<usize> = dm
+            .factors
+            .iter()
+            .map(|f| f.offset)
+            .chain(std::iter::once(dm.n_dofs))
+            .collect();
+        assert_eq!(block_offsets, vec![0, 3, 7]);
     }
 
     #[test]
@@ -391,14 +378,14 @@ mod tests {
         assert_eq!(dm.factors[0].n_levels, 3);
         assert_eq!(dm.factors[1].n_levels, 4);
         // Categories are in the store, not in FactorMeta
-        assert_eq!(dm.level(0, 0), 0);
-        assert_eq!(dm.level(1, 0), 1);
-        assert_eq!(dm.level(2, 0), 2);
-        assert_eq!(dm.level(3, 0), 0);
-        assert_eq!(dm.level(4, 0), 1);
-        assert_eq!(dm.level(0, 1), 0);
-        assert_eq!(dm.level(1, 1), 1);
-        assert_eq!(dm.level(4, 1), 0);
+        assert_eq!(dm.store.level(0, 0), 0);
+        assert_eq!(dm.store.level(1, 0), 1);
+        assert_eq!(dm.store.level(2, 0), 2);
+        assert_eq!(dm.store.level(3, 0), 0);
+        assert_eq!(dm.store.level(4, 0), 1);
+        assert_eq!(dm.store.level(0, 1), 0);
+        assert_eq!(dm.store.level(1, 1), 1);
+        assert_eq!(dm.store.level(4, 1), 0);
     }
 
     #[test]

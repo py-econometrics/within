@@ -104,65 +104,6 @@ fn build_symmetric_csr(
 }
 
 // ===========================================================================
-// CompactIndexMaps — maps full-size level indices to compact 0-based indices
-// ===========================================================================
-
-/// Maps full-size factor level indices to compact 0-based indices for a
-/// connected component. Levels not present in the component map to `u32::MAX`.
-pub(crate) struct CompactIndexMaps {
-    /// Full-size -> compact index for factor q. `u32::MAX` = inactive.
-    pub(crate) q_compact: Vec<u32>,
-    /// Full-size -> compact index for factor r. `u32::MAX` = inactive.
-    pub(crate) r_compact: Vec<u32>,
-    pub(crate) n_active_q: usize,
-    pub(crate) n_active_r: usize,
-}
-
-impl CompactIndexMaps {
-    pub(crate) fn build(
-        factors: &[crate::observation::FactorMeta],
-        q: usize,
-        r: usize,
-        global_indices: &[u32],
-    ) -> Self {
-        let fq = &factors[q];
-        let fr = &factors[r];
-        let mut q_compact = vec![u32::MAX; fq.n_levels];
-        let mut r_compact = vec![u32::MAX; fr.n_levels];
-
-        let mut n_active_q = 0usize;
-        for &gi in global_indices {
-            let gi = gi as usize;
-            if gi >= fq.offset && gi < fq.offset + fq.n_levels {
-                let j = gi - fq.offset;
-                q_compact[j] = n_active_q as u32;
-                n_active_q += 1;
-            }
-        }
-        let mut n_active_r = 0usize;
-        for &gi in global_indices {
-            let gi = gi as usize;
-            if gi >= fr.offset && gi < fr.offset + fr.n_levels {
-                let k = gi - fr.offset;
-                r_compact[k] = n_active_r as u32;
-                n_active_r += 1;
-            }
-        }
-
-        CompactIndexMaps {
-            q_compact,
-            r_compact,
-            n_active_q,
-            n_active_r,
-        }
-    }
-
-    pub(crate) fn n_local(&self) -> usize {
-        self.n_active_q + self.n_active_r
-    }
-}
-
-// ===========================================================================
 // DENSE_TABLE_MAX_ENTRIES constant
 // ===========================================================================
 
@@ -255,24 +196,6 @@ impl Gramian {
     ) -> Self {
         Self {
             matrix: Arc::new(build_pair_matrix(design, q, r)),
-        }
-    }
-
-    /// Build a Gramian scoped to a single connected component in compact local
-    /// index space.
-    pub fn build_for_component<S: ObservationStore>(
-        design: &WeightedDesign<S>,
-        q: usize,
-        r: usize,
-        component_global_indices: &[u32],
-    ) -> Self {
-        Self {
-            matrix: Arc::new(build_component_matrix(
-                design,
-                q,
-                r,
-                component_global_indices,
-            )),
         }
     }
 
@@ -433,60 +356,6 @@ fn build_pair_matrix<S: ObservationStore>(
         table.for_each_nonzero(|j, k, cnt| {
             let gj = fq.offset + j;
             let gk = fr.offset + k;
-            emit(gj, gk, cnt);
-            emit(gk, gj, cnt);
-        });
-    })
-}
-
-fn build_component_matrix<S: ObservationStore>(
-    design: &WeightedDesign<S>,
-    q: usize,
-    r: usize,
-    component_global_indices: &[u32],
-) -> SparseMatrix {
-    let n_obs = design.store.n_obs();
-    let maps = CompactIndexMaps::build(&design.factors, q, r, component_global_indices);
-    let n_local = maps.n_local();
-
-    let mut diag_q = vec![0.0; maps.n_active_q];
-    let mut diag_r = vec![0.0; maps.n_active_r];
-    let mut table = PairAccumulator::new(maps.n_active_q, maps.n_active_r, n_obs);
-
-    for uid in 0..n_obs {
-        let j = design.store.level(uid, q) as usize;
-        let k = design.store.level(uid, r) as usize;
-        let cj = maps.q_compact[j];
-        let ck = maps.r_compact[k];
-        if cj == u32::MAX || ck == u32::MAX {
-            continue;
-        }
-
-        let w = design.uid_weight(uid);
-        let cj = cj as usize;
-        let ck = ck as usize;
-        diag_q[cj] += w;
-        diag_r[ck] += w;
-        table.add(cj, ck, w);
-    }
-
-    let first_block_size = maps.n_active_q;
-    build_symmetric_csr(n_local, |emit| {
-        for (j, &cnt) in diag_q.iter().enumerate() {
-            if cnt > 0.0 {
-                emit(j, j, cnt);
-            }
-        }
-        for (k, &cnt) in diag_r.iter().enumerate() {
-            if cnt > 0.0 {
-                let row = first_block_size + k;
-                emit(row, row, cnt);
-            }
-        }
-
-        table.for_each_nonzero(|j, k, cnt| {
-            let gj = j;
-            let gk = first_block_size + k;
             emit(gj, gk, cnt);
             emit(gk, gj, cnt);
         });
