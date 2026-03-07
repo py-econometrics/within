@@ -10,10 +10,8 @@ use within::config::{
     SolverMethod, SolverParams,
 };
 use within::domain::WeightedDesign;
-use within::observation::{
-    CompressedStore, FactorMajorStore, ObservationStore, ObservationWeights, RowMajorStore,
-};
-use within::orchestrate::{solve_least_squares, SolveResult};
+use within::observation::{CompressedStore, FactorMajorStore, ObservationWeights, RowMajorStore};
+use within::orchestrate::{demean_batch, solve_batch, BatchDemeanResult, BatchSolveResult};
 use within::WithinResult;
 
 #[pyclass(frozen)]
@@ -196,19 +194,38 @@ impl PyGMRES {
 #[pyo3(name = "SolveResult")]
 pub struct PySolveResult {
     #[pyo3(get)]
-    pub x: Py<numpy::PyArray1<f64>>,
+    pub x: Py<numpy::PyArray2<f64>>,
     #[pyo3(get)]
-    pub converged: bool,
+    pub converged: Py<numpy::PyArray1<bool>>,
     #[pyo3(get)]
-    pub iterations: usize,
+    pub iterations: Py<numpy::PyArray1<usize>>,
     #[pyo3(get)]
-    pub residual: f64,
+    pub residual: Py<numpy::PyArray1<f64>>,
     #[pyo3(get)]
     pub time_total: f64,
     #[pyo3(get)]
     pub time_setup: f64,
     #[pyo3(get)]
-    pub time_solve: f64,
+    pub time_solve: Py<numpy::PyArray1<f64>>,
+}
+
+#[pyclass]
+#[pyo3(name = "DemeanResult")]
+pub struct PyDemeanResult {
+    #[pyo3(get)]
+    pub y_demean: Py<numpy::PyArray2<f64>>,
+    #[pyo3(get)]
+    pub converged: Py<numpy::PyArray1<bool>>,
+    #[pyo3(get)]
+    pub iterations: Py<numpy::PyArray1<usize>>,
+    #[pyo3(get)]
+    pub residual: Py<numpy::PyArray1<f64>>,
+    #[pyo3(get)]
+    pub time_total: f64,
+    #[pyo3(get)]
+    pub time_setup: f64,
+    #[pyo3(get)]
+    pub time_solve: Py<numpy::PyArray1<f64>>,
 }
 
 /// Extract SchwarzConfig from the fields common to all Schwarz pyclasses.
@@ -344,21 +361,19 @@ fn extract_solver_params(py: Python<'_>, config: &Bound<'_, PyAny>) -> PyResult<
     ))
 }
 
-#[pyfunction]
-#[pyo3(signature = (categories, y, config, n_levels=None, weights=None, layout=None))]
-pub fn py_solve<'py>(
-    py: Python<'py>,
-    categories: PyReadonlyArray2<'py, usize>,
-    y: PyReadonlyArray1<'py, f64>,
-    config: &Bound<'py, PyAny>,
-    n_levels: Option<Vec<usize>>,
-    weights: Option<PyReadonlyArray1<'py, f64>>,
-    layout: Option<&str>,
-) -> PyResult<PySolveResult> {
-    let cats: Array2<usize> = categories.as_array().to_owned();
-    let y_vec: Vec<f64> = y.as_array().to_vec();
-    let w_vec: Option<Vec<f64>> = weights.map(|w| w.as_array().to_vec());
+struct ParsedSolveLikeArgs {
+    n_levels: Vec<usize>,
+    layout: String,
+    params: SolverParams,
+}
 
+fn parse_solve_like_args(
+    py: Python<'_>,
+    cats: &Array2<usize>,
+    config: &Bound<'_, PyAny>,
+    n_levels: Option<Vec<usize>>,
+    layout: Option<&str>,
+) -> PyResult<ParsedSolveLikeArgs> {
     let n_levels = match n_levels {
         Some(nl) => nl,
         None => {
@@ -380,15 +395,75 @@ pub fn py_solve<'py>(
         }
     }
 
-    let params = extract_solver_params(py, config)?;
+    Ok(ParsedSolveLikeArgs {
+        n_levels,
+        layout: layout_str.to_string(),
+        params: extract_solver_params(py, config)?,
+    })
+}
+
+#[pyfunction]
+#[pyo3(signature = (categories, y, config, n_levels=None, weights=None, layout=None))]
+pub fn py_solve<'py>(
+    py: Python<'py>,
+    categories: PyReadonlyArray2<'py, usize>,
+    y: PyReadonlyArray2<'py, f64>,
+    config: &Bound<'py, PyAny>,
+    n_levels: Option<Vec<usize>>,
+    weights: Option<PyReadonlyArray1<'py, f64>>,
+    layout: Option<&str>,
+) -> PyResult<PySolveResult> {
+    let cats: Array2<usize> = categories.as_array().to_owned();
+    let columns = y_columns(y);
+    let w_vec: Option<Vec<f64>> = weights.map(|w| w.as_array().to_vec());
+    let parsed = parse_solve_like_args(py, &cats, config, n_levels, layout)?;
 
     let result = py
         .allow_threads(|| {
-            dispatch_solve(cats.view(), &n_levels, w_vec, layout_str, &y_vec, &params)
+            dispatch_solve(
+                cats.view(),
+                &parsed.n_levels,
+                w_vec,
+                &parsed.layout,
+                &columns,
+                &parsed.params,
+            )
         })
         .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
 
-    Ok(into_py_result(py, result))
+    Ok(into_py_solve_result(py, result))
+}
+
+#[pyfunction]
+#[pyo3(signature = (categories, y, config, n_levels=None, weights=None, layout=None))]
+pub fn py_demean<'py>(
+    py: Python<'py>,
+    categories: PyReadonlyArray2<'py, usize>,
+    y: PyReadonlyArray2<'py, f64>,
+    config: &Bound<'py, PyAny>,
+    n_levels: Option<Vec<usize>>,
+    weights: Option<PyReadonlyArray1<'py, f64>>,
+    layout: Option<&str>,
+) -> PyResult<PyDemeanResult> {
+    let cats: Array2<usize> = categories.as_array().to_owned();
+    let columns = y_columns(y);
+    let w_vec: Option<Vec<f64>> = weights.map(|w| w.as_array().to_vec());
+    let parsed = parse_solve_like_args(py, &cats, config, n_levels, layout)?;
+
+    let result = py
+        .allow_threads(|| {
+            dispatch_demean_batch(
+                cats.view(),
+                &parsed.n_levels,
+                w_vec,
+                &parsed.layout,
+                &columns,
+                &parsed.params,
+            )
+        })
+        .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+
+    Ok(into_py_demean_result(py, result))
 }
 
 fn dispatch_solve(
@@ -396,9 +471,9 @@ fn dispatch_solve(
     n_levels: &[usize],
     weights: Option<Vec<f64>>,
     layout: &str,
-    y: &[f64],
+    columns: &[Vec<f64>],
     params: &SolverParams,
-) -> WithinResult<SolveResult> {
+) -> WithinResult<BatchSolveResult> {
     let obs_weights = match weights {
         Some(w) => ObservationWeights::Dense(w),
         None => ObservationWeights::Unit,
@@ -408,7 +483,7 @@ fn dispatch_solve(
         ($Store:ty) => {{
             let store = <$Store>::from_array(categories, obs_weights);
             let design = WeightedDesign::from_store(store, n_levels)?;
-            solve_with_design(&design, y, params)
+            solve_batch(&design, columns, params)
         }};
     }
 
@@ -419,22 +494,89 @@ fn dispatch_solve(
     }
 }
 
-fn solve_with_design<S: ObservationStore>(
-    design: &WeightedDesign<S>,
-    y: &[f64],
+fn dispatch_demean_batch(
+    categories: ArrayView2<usize>,
+    n_levels: &[usize],
+    weights: Option<Vec<f64>>,
+    layout: &str,
+    columns: &[Vec<f64>],
     params: &SolverParams,
-) -> WithinResult<SolveResult> {
-    solve_least_squares(design, y, None, params)
+) -> WithinResult<BatchDemeanResult> {
+    let obs_weights = match weights {
+        Some(w) => ObservationWeights::Dense(w),
+        None => ObservationWeights::Unit,
+    };
+
+    macro_rules! dispatch_on_layout {
+        ($Store:ty) => {{
+            let store = <$Store>::from_array(categories, obs_weights);
+            let design = WeightedDesign::from_store(store, n_levels)?;
+            demean_batch(&design, columns, params)
+        }};
+    }
+
+    match layout {
+        "row_major" => dispatch_on_layout!(RowMajorStore),
+        "compressed" => dispatch_on_layout!(CompressedStore),
+        _ => dispatch_on_layout!(FactorMajorStore),
+    }
 }
 
-fn into_py_result(py: Python<'_>, result: SolveResult) -> PySolveResult {
+fn y_columns(y: PyReadonlyArray2<'_, f64>) -> Vec<Vec<f64>> {
+    let y_mat = y.as_array();
+    let mut columns = Vec::with_capacity(y_mat.ncols());
+    for col in 0..y_mat.ncols() {
+        columns.push(y_mat.column(col).to_vec());
+    }
+    columns
+}
+
+fn columns_to_array2(columns: &[Vec<f64>]) -> Array2<f64> {
+    let n_cols = columns.len();
+    let n_rows = columns.first().map_or(0, Vec::len);
+    let mut out = Array2::<f64>::zeros((n_rows, n_cols));
+    for (col_idx, col) in columns.iter().enumerate() {
+        for (row_idx, &value) in col.iter().enumerate() {
+            out[(row_idx, col_idx)] = value;
+        }
+    }
+    out
+}
+
+fn into_py_solve_result(py: Python<'_>, result: BatchSolveResult) -> PySolveResult {
     PySolveResult {
-        x: Array1::from_vec(result.x).into_pyarray(py).unbind(),
-        converged: result.converged,
-        iterations: result.iterations,
-        residual: result.final_residual,
+        x: columns_to_array2(&result.x).into_pyarray(py).unbind(),
+        converged: Array1::from_vec(result.converged).into_pyarray(py).unbind(),
+        iterations: Array1::from_vec(result.iterations)
+            .into_pyarray(py)
+            .unbind(),
+        residual: Array1::from_vec(result.final_residual)
+            .into_pyarray(py)
+            .unbind(),
         time_total: result.time_total,
         time_setup: result.time_setup,
-        time_solve: result.time_solve,
+        time_solve: Array1::from_vec(result.time_solve)
+            .into_pyarray(py)
+            .unbind(),
+    }
+}
+
+fn into_py_demean_result(py: Python<'_>, result: BatchDemeanResult) -> PyDemeanResult {
+    PyDemeanResult {
+        y_demean: columns_to_array2(&result.y_demean)
+            .into_pyarray(py)
+            .unbind(),
+        converged: Array1::from_vec(result.converged).into_pyarray(py).unbind(),
+        iterations: Array1::from_vec(result.iterations)
+            .into_pyarray(py)
+            .unbind(),
+        residual: Array1::from_vec(result.final_residual)
+            .into_pyarray(py)
+            .unbind(),
+        time_total: result.time_total,
+        time_setup: result.time_setup,
+        time_solve: Array1::from_vec(result.time_solve)
+            .into_pyarray(py)
+            .unbind(),
     }
 }
