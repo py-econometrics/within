@@ -41,11 +41,11 @@ def run_fixest_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
             40_000_000,
             80_000_000,
             160_000_000,
-            # 320_000_000,
+            320_000_000,
         ]
 
     schur = SchurComplement(
-        approx_chol=ApproxCholConfig(seed=0, split=8),
+        approx_chol=ApproxCholConfig(seed=0, split=2),
         approx_schur=ApproxSchurConfig(split=2),
     )
     solver_configs = [

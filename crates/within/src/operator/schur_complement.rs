@@ -188,6 +188,9 @@ impl<'a> Elimination<'a> {
     }
 
     /// Parallel edge emission over all stars using the given [`CliqueEmitter`].
+    ///
+    /// Each rayon task sorts and deduplicates its local edges, then the reduce
+    /// tree merges sorted chunks — avoiding a single O(E log E) global sort.
     fn par_emit<E: CliqueEmitter + Sync>(&self, emitter: &E) -> Vec<Edge> {
         (0..self.n_elim)
             .into_par_iter()
@@ -201,11 +204,11 @@ impl<'a> Elimination<'a> {
                     (edges, scratch)
                 },
             )
-            .map(|(edges, _)| edges)
-            .reduce(Vec::new, |mut a, b| {
-                a.extend(b);
-                a
+            .map(|(mut edges, _)| {
+                sort_and_dedup(&mut edges);
+                edges
             })
+            .reduce(Vec::new, merge_dedup)
     }
 
     /// Package elimination metadata into [`EliminationInfo`] for the solver.
@@ -218,6 +221,66 @@ impl<'a> Elimination<'a> {
 }
 
 // ===========================================================================
+// Edge sort-merge helpers
+// ===========================================================================
+
+/// Sort edges by (lo, hi) and merge duplicates by summing weights.
+fn sort_and_dedup(edges: &mut Vec<Edge>) {
+    edges.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    if edges.len() <= 1 {
+        return;
+    }
+    let mut write = 0;
+    for read in 1..edges.len() {
+        if edges[write].0 == edges[read].0 && edges[write].1 == edges[read].1 {
+            edges[write].2 += edges[read].2;
+        } else {
+            write += 1;
+            edges[write] = edges[read];
+        }
+    }
+    edges.truncate(write + 1);
+}
+
+/// Merge two sorted, deduplicated edge lists, summing weights for duplicates.
+fn merge_dedup(a: Vec<Edge>, b: Vec<Edge>) -> Vec<Edge> {
+    if a.is_empty() {
+        return b;
+    }
+    if b.is_empty() {
+        return a;
+    }
+    let mut result = Vec::with_capacity(a.len() + b.len());
+    let (mut ia, mut ib) = (0, 0);
+    while ia < a.len() && ib < b.len() {
+        let ka = (a[ia].0, a[ia].1);
+        let kb = (b[ib].0, b[ib].1);
+        match ka.cmp(&kb) {
+            std::cmp::Ordering::Less => {
+                result.push(a[ia]);
+                ia += 1;
+            }
+            std::cmp::Ordering::Greater => {
+                result.push(b[ib]);
+                ib += 1;
+            }
+            std::cmp::Ordering::Equal => {
+                result.push((a[ia].0, a[ia].1, a[ia].2 + b[ib].2));
+                ia += 1;
+                ib += 1;
+            }
+        }
+    }
+    if ia < a.len() {
+        result.extend_from_slice(&a[ia..]);
+    }
+    if ib < b.len() {
+        result.extend_from_slice(&b[ib..]);
+    }
+    result
+}
+
+// ===========================================================================
 // SchurLaplacian — Laplacian assembly
 // ===========================================================================
 
@@ -227,30 +290,11 @@ struct SchurLaplacian {
 }
 
 impl SchurLaplacian {
-    /// Build a symmetric CSR Laplacian from fill edges (sort-merge pipeline).
-    ///
-    /// Edges may contain duplicates (same (lo, hi) from different stars).
-    /// Global parallel sort + sequential merge deduplicates before symmetric
-    /// expansion, keeping memory bounded.
+    /// Build a symmetric CSR Laplacian from pre-sorted, deduplicated fill edges.
     fn from_edges(mut edges: Vec<Edge>, n_keep: usize) -> Self {
-        // Sort by (lo, hi), merge duplicates.
-        edges.par_sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-
-        let mut merged: Vec<Edge> = Vec::with_capacity(edges.len());
-        for &(lo, hi, w) in &edges {
-            if let Some(last) = merged.last_mut() {
-                if last.0 == lo && last.1 == hi {
-                    last.2 += w;
-                    continue;
-                }
-            }
-            merged.push((lo, hi, w));
-        }
-        drop(edges);
-        merged.retain(|&(_, _, w)| w > f64::EPSILON);
-
+        edges.retain(|&(_, _, w)| w > f64::EPSILON);
         Self {
-            matrix: Self::build_laplacian_csr(&merged, n_keep),
+            matrix: Self::build_laplacian_csr(&edges, n_keep),
         }
     }
 
