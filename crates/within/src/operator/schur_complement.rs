@@ -291,8 +291,7 @@ struct SchurLaplacian {
 
 impl SchurLaplacian {
     /// Build a symmetric CSR Laplacian from pre-sorted, deduplicated fill edges.
-    fn from_edges(mut edges: Vec<Edge>, n_keep: usize) -> Self {
-        edges.retain(|&(_, _, w)| w > f64::EPSILON);
+    fn from_edges(edges: Vec<Edge>, n_keep: usize) -> Self {
         Self {
             matrix: Self::build_laplacian_csr(&edges, n_keep),
         }
@@ -446,63 +445,58 @@ impl SchurLaplacian {
         dense_minor
     }
 
-    /// Build symmetric CSR Laplacian from unique upper-triangular edges.
+    /// Build symmetric CSR Laplacian from sorted upper-triangular edges.
+    ///
+    /// Edges must be sorted by (lo, hi) with lo < hi. This lets us place
+    /// lower-triangle, diagonal, and upper-triangle entries in correct column
+    /// order without any per-row sorting.
     fn build_laplacian_csr(edges: &[Edge], n_keep: usize) -> SparseMatrix {
-        // Count off-diagonal entries per row, accumulate diagonal weights.
-        let mut offdiag_count = vec![0u32; n_keep];
+        // Count lower/upper entries per row and accumulate diagonal weights.
+        let mut lower_count = vec![0u32; n_keep];
+        let mut upper_count = vec![0u32; n_keep];
         let mut diag = vec![0.0f64; n_keep];
         for &(lo, hi, w) in edges {
-            offdiag_count[lo as usize] += 1;
-            offdiag_count[hi as usize] += 1;
+            upper_count[lo as usize] += 1; // row lo gets col hi (upper)
+            lower_count[hi as usize] += 1; // row hi gets col lo (lower)
             diag[lo as usize] += w;
             diag[hi as usize] += w;
         }
 
-        // Build row offsets (each row = 1 diagonal + off-diag entries).
+        // Row layout: [lower entries | diagonal | upper entries]
         let mut offsets = vec![0u32; n_keep + 1];
         for i in 0..n_keep {
-            offsets[i + 1] = offsets[i] + offdiag_count[i] + 1;
+            offsets[i + 1] = offsets[i] + lower_count[i] + 1 + upper_count[i];
         }
         let total_nnz = offsets[n_keep] as usize;
-        let mut buf: Vec<(u32, f64)> = vec![(0, 0.0); total_nnz];
+        let mut indices = vec![0u32; total_nnz];
+        let mut data = vec![0.0f64; total_nnz];
 
-        // Place diagonal at slot 0 of each row, fill off-diagonal via cursors.
-        let mut cursors: Vec<u32> = offsets[..n_keep].to_vec();
-        for (i, cur) in cursors.iter_mut().enumerate() {
-            buf[*cur as usize] = (i as u32, diag[i]);
-            *cur += 1;
-        }
-        for &(lo, hi, w) in edges {
-            let lo = lo as usize;
-            let hi = hi as usize;
-            buf[cursors[lo] as usize] = (hi as u32, -w);
-            cursors[lo] += 1;
-            buf[cursors[hi] as usize] = (lo as u32, -w);
-            cursors[hi] += 1;
-        }
-
-        // Sort each row by column, then rotate diagonal into its sorted position.
+        // Place diagonals and initialize cursors.
+        let mut lower_cursor: Vec<u32> = (0..n_keep).map(|i| offsets[i]).collect();
+        let mut upper_cursor: Vec<u32> = (0..n_keep)
+            .map(|i| offsets[i] + lower_count[i] + 1)
+            .collect();
         for i in 0..n_keep {
-            let start = offsets[i] as usize;
-            let end = offsets[i + 1] as usize;
-            if end - start <= 1 {
-                continue;
-            }
-            buf[start + 1..end].sort_unstable_by(|a, b| a.0.cmp(&b.0));
-            let diag_col = i as u32;
-            let diag_pos = buf[start + 1..end].partition_point(|e| e.0 < diag_col) + start + 1;
-            buf[start..end].rotate_left(1);
-            let target = diag_pos - 1;
-            if target < end - 1 {
-                buf[target..end].rotate_right(1);
-            }
+            let pos = (offsets[i] + lower_count[i]) as usize;
+            indices[pos] = i as u32;
+            data[pos] = diag[i];
         }
 
-        let mut indices = Vec::with_capacity(total_nnz);
-        let mut data = Vec::with_capacity(total_nnz);
-        for &(col, val) in &buf[..total_nnz] {
-            indices.push(col);
-            data.push(val);
+        // Single pass: edges sorted by (lo, hi) guarantees both lower and
+        // upper entries arrive in column-sorted order per row.
+        for &(lo, hi, w) in edges {
+            let lo_idx = lo as usize;
+            let hi_idx = hi as usize;
+            // Upper triangle: row lo, column hi
+            let pos = upper_cursor[lo_idx] as usize;
+            indices[pos] = hi;
+            data[pos] = -w;
+            upper_cursor[lo_idx] += 1;
+            // Lower triangle: row hi, column lo
+            let pos = lower_cursor[hi_idx] as usize;
+            indices[pos] = lo;
+            data[pos] = -w;
+            lower_cursor[hi_idx] += 1;
         }
 
         SparseMatrix::new(offsets, indices, data, n_keep)
