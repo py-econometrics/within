@@ -57,8 +57,8 @@ pub mod orchestrate;
 // ---------------------------------------------------------------------------
 
 pub use orchestrate::{
-    demean_batch, demean_batch_default, solve, solve_least_squares, solve_normal_equations,
-    solve_weighted, BatchDemeanResult,
+    demean_batch, solve, solve_batch, solve_least_squares, solve_normal_equations, solve_weighted,
+    BatchDemeanResult, BatchSolveResult,
 };
 
 // ---------------------------------------------------------------------------

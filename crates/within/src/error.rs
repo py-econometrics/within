@@ -22,6 +22,8 @@ pub enum WithinError {
     },
     /// Weight vector does not match the number of observations.
     WeightCountMismatch { expected: usize, got: usize },
+    /// RHS vector does not match the number of observations.
+    RhsCountMismatch { expected: usize, got: usize },
     /// A factor declares zero levels.
     EmptyLevelSet { factor: usize },
     /// Category value is negative in i64-based constructors.
@@ -65,6 +67,9 @@ impl Display for WithinError {
             ),
             Self::WeightCountMismatch { expected, got } => {
                 write!(f, "weights has length {got}, expected {expected}")
+            }
+            Self::RhsCountMismatch { expected, got } => {
+                write!(f, "rhs has length {got}, expected {expected}")
             }
             Self::EmptyLevelSet { factor } => {
                 write!(f, "factor {factor} declares zero levels")
