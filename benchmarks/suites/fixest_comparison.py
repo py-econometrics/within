@@ -11,7 +11,6 @@ from within import CG
 from within._within import (
     AdditiveSchwarz,
     ApproxCholConfig,
-    ApproxSchurConfig,
     SchurComplement,
 )
 from .._problems import get_generator
@@ -45,8 +44,8 @@ def run_fixest_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
         ]
 
     schur = SchurComplement(
-        approx_chol=ApproxCholConfig(seed=0, split=2),
-        approx_schur=ApproxSchurConfig(split=2),
+        approx_chol=ApproxCholConfig(seed=0, split=8),
+        approx_schur=None,
     )
     solver_configs = [
         SolverConfig(
