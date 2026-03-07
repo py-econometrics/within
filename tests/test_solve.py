@@ -5,10 +5,13 @@ import pytest
 
 from within import (
     CG,
+    DemeanResult,
     GMRES,
     LSMR,
     MultiplicativeOneLevelSchwarz,
     OneLevelSchwarz,
+    SolveResult,
+    demean,
     solve,
 )
 
@@ -25,7 +28,6 @@ def problem():
     ]
     y = np.random.randn(10_000)
     return cats, y
-
 
 class TestSolveDefaults:
     def test_default_config(self, problem):
@@ -133,16 +135,159 @@ class TestDemean:
             offset += nl
 
 
+class TestDemeanApi:
+    def test_matches_solve_residual(self, problem):
+        cats, y = problem
+        solve_result = solve(cats, y)
+        demean_result = demean(cats, y)
+
+        residual = y.copy()
+        offset = 0
+        for f, cat in enumerate(cats):
+            n_level = int(cat.max()) + 1
+            for lvl in range(n_level):
+                residual[cat == lvl] -= solve_result.x[offset + lvl]
+            offset += n_level
+
+        np.testing.assert_allclose(demean_result.y_demean, residual, atol=1e-10)
+        assert demean_result.converged == solve_result.converged
+        assert demean_result.iterations == solve_result.iterations
+        assert demean_result.residual == solve_result.residual
+
+    def test_inferred_matches_explicit_n_levels(self, problem):
+        cats, y = problem
+        result_inferred = demean(cats, y)
+        result_explicit = demean(cats, y, n_levels=[50, 50])
+        np.testing.assert_allclose(
+            result_inferred.y_demean, result_explicit.y_demean, atol=1e-10
+        )
+
+    def test_result_fields(self, problem):
+        cats, y = problem
+        result = demean(cats, y)
+        assert isinstance(result.y_demean, np.ndarray)
+        assert result.y_demean.dtype == np.float64
+        assert result.y_demean.shape == (len(y),)
+        assert isinstance(result.converged, bool)
+        assert isinstance(result.iterations, int)
+        assert isinstance(result.residual, float)
+        assert result.time_total >= 0
+        assert result.time_setup >= 0
+        assert isinstance(result.time_solve, float)
+        assert result.time_solve >= 0
+
+    def test_weighted_matches_solve_residual(self, problem):
+        cats, y = problem
+        weights = np.random.exponential(1.0, size=len(y))
+        solve_result = solve(cats, y, LSMR(), weights=weights)
+        demean_result = demean(cats, y, LSMR(), weights=weights)
+
+        residual = y.copy()
+        offset = 0
+        for cat in cats:
+            n_level = int(cat.max()) + 1
+            for lvl in range(n_level):
+                residual[cat == lvl] -= solve_result.x[offset + lvl]
+            offset += n_level
+
+        np.testing.assert_allclose(demean_result.y_demean, residual, atol=1e-10)
+
+    @pytest.mark.parametrize("layout", ["factor_major", "row_major", "compressed"])
+    def test_layouts_agree(self, problem, layout):
+        cats, y = problem
+        result = demean(cats, y, layout=layout)
+        assert result.converged
+
+    def test_invalid_layout(self, problem):
+        cats, y = problem
+        with pytest.raises(ValueError, match="Unknown layout"):
+            demean(cats, y, layout="bogus")
+
+
 class TestSolveResult:
     def test_result_fields(self, problem):
         cats, y = problem
         result = solve(cats, y)
+        assert isinstance(result, SolveResult)
         assert isinstance(result.x, np.ndarray)
         assert result.x.dtype == np.float64
-        assert len(result.x) == 100  # 50 + 50 levels
+        assert result.x.shape == (100,)  # 50 + 50 levels, single RHS
+        assert isinstance(result.converged, bool)
+        assert isinstance(result.iterations, int)
+        assert isinstance(result.residual, float)
         assert result.time_total >= 0
         assert result.time_setup >= 0
+        assert isinstance(result.time_solve, float)
         assert result.time_solve >= 0
+
+
+class TestBatchY2D:
+    def test_solve_2d_matches_columnwise(self, problem):
+        cats, y = problem
+        y2 = np.column_stack([y, 2.0 * y + 0.5])
+        result_2d = solve(cats, y2)
+
+        assert isinstance(result_2d, SolveResult)
+        assert result_2d.x.ndim == 2
+        assert result_2d.x.shape == (100, 2)
+        assert isinstance(result_2d.converged, np.ndarray)
+        assert result_2d.converged.shape == (2,)
+        assert isinstance(result_2d.iterations, np.ndarray)
+        assert result_2d.iterations.shape == (2,)
+        assert isinstance(result_2d.residual, np.ndarray)
+        assert result_2d.residual.shape == (2,)
+        assert isinstance(result_2d.time_solve, np.ndarray)
+        assert result_2d.time_solve.shape == (2,)
+        assert result_2d.time_total >= 0
+        assert result_2d.time_setup >= 0
+
+        for j in range(2):
+            result_1d = solve(cats, y2[:, j])
+            np.testing.assert_allclose(result_2d.x[:, j], result_1d.x, atol=1e-10)
+            assert bool(result_2d.converged[j]) == result_1d.converged
+            assert int(result_2d.iterations[j]) == result_1d.iterations
+            assert abs(float(result_2d.residual[j]) - result_1d.residual) < 1e-10
+
+    def test_demean_2d_matches_columnwise(self, problem):
+        cats, y = problem
+        y2 = np.column_stack([y, -0.5 * y + 1.0])
+        result_2d = demean(cats, y2)
+
+        assert isinstance(result_2d, DemeanResult)
+        assert result_2d.y_demean.ndim == 2
+        assert result_2d.y_demean.shape == y2.shape
+        assert isinstance(result_2d.converged, np.ndarray)
+        assert result_2d.converged.shape == (2,)
+        assert isinstance(result_2d.iterations, np.ndarray)
+        assert result_2d.iterations.shape == (2,)
+        assert isinstance(result_2d.residual, np.ndarray)
+        assert result_2d.residual.shape == (2,)
+        assert isinstance(result_2d.time_solve, np.ndarray)
+        assert result_2d.time_solve.shape == (2,)
+        assert result_2d.time_total >= 0
+        assert result_2d.time_setup >= 0
+
+        for j in range(2):
+            result_1d = demean(cats, y2[:, j])
+            np.testing.assert_allclose(
+                result_2d.y_demean[:, j], result_1d.y_demean, atol=1e-10
+            )
+            assert bool(result_2d.converged[j]) == result_1d.converged
+            assert int(result_2d.iterations[j]) == result_1d.iterations
+            assert abs(float(result_2d.residual[j]) - result_1d.residual) < 1e-10
+
+    def test_rejects_non_1d_or_2d_y(self, problem):
+        cats, _ = problem
+        y3 = np.zeros((2, 2, 2), dtype=np.float64)
+        with pytest.raises(ValueError, match="1D or 2D"):
+            solve(cats, y3)
+        with pytest.raises(ValueError, match="1D or 2D"):
+            demean(cats, y3)
+
+    def test_demean_1d_returns_scalar_result_type(self, problem):
+        cats, y = problem
+        result = demean(cats, y)
+        assert isinstance(result, DemeanResult)
 
 
 class TestGenerateSyntheticData:
