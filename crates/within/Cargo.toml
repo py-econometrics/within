@@ -12,13 +12,9 @@ categories = ["mathematics", "science", "algorithms"]
 [dependencies]
 schwarz-precond = { path = "../schwarz-precond" }
 approx-chol = { workspace = true }
-ndarray = { version = "0.16", optional = true }
 portable-atomic = { version = "1", features = ["float"] }
 rayon = "1.10"
 faer = "0.22"
-
-[features]
-default = ["ndarray"]
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
@@ -31,4 +27,3 @@ harness = false
 [[bench]]
 name = "fixest_mini"
 harness = false
-

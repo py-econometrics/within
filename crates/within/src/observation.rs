@@ -1,27 +1,11 @@
 //! Core observation data types: weights, factor metadata,
-//! the ObservationStore trait, and storage backends.
+//! the ObservationStore trait, and the default factor-major backend.
 
-mod compressed;
 mod factor_major;
-mod row_major;
 
 use crate::error::{WithinError, WithinResult};
 
-pub use compressed::CompressedStore;
 pub use factor_major::FactorMajorStore;
-pub use row_major::RowMajorStore;
-
-#[inline]
-pub(crate) fn flatten_factor_major_levels(factor_levels: &[Vec<u32>], n_obs: usize) -> Vec<u32> {
-    let n_factors = factor_levels.len();
-    let mut levels = vec![0u32; n_obs * n_factors];
-    for q in 0..n_factors {
-        for i in 0..n_obs {
-            levels[i * n_factors + q] = factor_levels[q][i];
-        }
-    }
-    levels
-}
 
 // ---------------------------------------------------------------------------
 // ObservationWeights — zero-cost unweighted path
@@ -147,7 +131,7 @@ pub trait ObservationStore: Send + Sync {
     /// observations, inner loop on factors). Defaults to `false`.
     ///
     /// Override to `true` when `level(obs, factor)` has stride-1 access across
-    /// factors for a fixed observation (e.g., `RowMajorStore`).
+    /// factors for a fixed observation.
     fn prefers_row_major_iteration(&self) -> bool {
         false
     }

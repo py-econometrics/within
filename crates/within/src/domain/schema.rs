@@ -9,7 +9,6 @@
 use crate::observation::{FactorMajorStore, FactorMeta, ObservationStore};
 use crate::{WithinError, WithinResult};
 
-mod factor_major;
 mod ops;
 
 #[cfg(test)]

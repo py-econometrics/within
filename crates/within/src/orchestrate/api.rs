@@ -10,8 +10,12 @@ fn design_from_categories(
     categories: &[Vec<u32>],
     n_levels: &[usize],
     y_len: usize,
-    weights: ObservationWeights,
+    weights: Option<&[f64]>,
 ) -> WithinResult<WeightedDesign<FactorMajorStore>> {
+    let weights = match weights {
+        Some(weights) => ObservationWeights::Dense(weights.to_vec()),
+        None => ObservationWeights::Unit,
+    };
     let store = FactorMajorStore::new(categories.to_vec(), weights, y_len)?;
     WeightedDesign::from_store(store, n_levels)
 }
@@ -28,28 +32,10 @@ pub fn solve(
     categories: &[Vec<u32>],
     n_levels: &[usize],
     y: &[f64],
+    weights: Option<&[f64]>,
     params: &SolverParams,
 ) -> WithinResult<SolveResult> {
-    let design = design_from_categories(categories, n_levels, y.len(), ObservationWeights::Unit)?;
-    solve_response(&design, y, params)
-}
-
-/// Solve weighted fixed-effects least squares from raw category data.
-///
-/// Same as [`solve`] but with per-observation weights.
-pub fn solve_weighted(
-    categories: &[Vec<u32>],
-    n_levels: &[usize],
-    y: &[f64],
-    weights: &[f64],
-    params: &SolverParams,
-) -> WithinResult<SolveResult> {
-    let design = design_from_categories(
-        categories,
-        n_levels,
-        y.len(),
-        ObservationWeights::Dense(weights.to_vec()),
-    )?;
+    let design = design_from_categories(categories, n_levels, y.len(), weights)?;
     solve_response(&design, y, params)
 }
 

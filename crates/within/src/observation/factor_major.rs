@@ -1,6 +1,3 @@
-#[cfg(feature = "ndarray")]
-use ndarray::ArrayView2;
-
 use crate::error::{WithinError, WithinResult};
 
 use super::{ObservationStore, ObservationWeights};
@@ -39,18 +36,6 @@ impl FactorMajorStore {
             weights,
             n_obs,
         })
-    }
-
-    /// Construct from a 2D array view (n_obs × n_factors, usize).
-    #[cfg(feature = "ndarray")]
-    pub fn from_array(categories: ArrayView2<usize>, weights: ObservationWeights) -> Self {
-        let n_obs = categories.nrows();
-        let n_factors = categories.ncols();
-        let factor_levels: Vec<Vec<u32>> = (0..n_factors)
-            .map(|q| categories.column(q).iter().map(|&v| v as u32).collect())
-            .collect();
-        Self::new(factor_levels, weights, n_obs)
-            .expect("invalid factor-major store from ndarray input")
     }
 
     /// Direct access to the level column for a factor (contiguous slice).

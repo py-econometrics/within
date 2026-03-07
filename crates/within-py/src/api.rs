@@ -1,13 +1,13 @@
 //! Python API: typed config classes and solve entrypoint.
 
-use numpy::ndarray::{Array1, Array2, ArrayView2};
+use numpy::ndarray::{Array1, ArrayView2};
 use numpy::{IntoPyArray, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
 
 use within::config::{
     ApproxSchurConfig, GmresPrecond, LocalSolverConfig, OperatorRepr, SolverMethod, SolverParams,
 };
-use within::{solve as solve_unweighted, solve_weighted, SolveResult};
+use within::{solve as solve_native, SolveResult};
 
 #[pyclass(frozen)]
 #[pyo3(name = "ApproxCholConfig")]
@@ -317,28 +317,68 @@ fn extract_local_solver_or_default(
     }
 }
 
+fn extract_additive_schwarz(
+    py: Python<'_>,
+    preconditioner: &Option<PyObject>,
+    default: LocalSolverConfig,
+    context: &str,
+) -> PyResult<Option<LocalSolverConfig>> {
+    match preconditioner {
+        None => Ok(None),
+        Some(obj) => {
+            let bound = obj.bind(py);
+            let schwarz = bound.downcast::<PyAdditiveSchwarz>().map_err(|_| {
+                PyErr::new::<pyo3::exceptions::PyTypeError, _>(format!(
+                    "{context} preconditioner must be AdditiveSchwarz or None"
+                ))
+            })?;
+            let cfg = extract_local_solver_or_default(py, &schwarz.get().local_solver, default)?;
+            Ok(Some(cfg))
+        }
+    }
+}
+
+fn extract_gmres_preconditioner(
+    py: Python<'_>,
+    preconditioner: &Option<PyObject>,
+) -> PyResult<Option<GmresPrecond>> {
+    match preconditioner {
+        None => Ok(None),
+        Some(obj) => {
+            let bound = obj.bind(py);
+            if let Ok(schwarz) = bound.downcast::<PyAdditiveSchwarz>() {
+                let cfg = extract_local_solver_or_default(
+                    py,
+                    &schwarz.get().local_solver,
+                    LocalSolverConfig::gmres_default(),
+                )?;
+                Ok(Some(GmresPrecond::Additive(cfg)))
+            } else if let Ok(schwarz) = bound.downcast::<PyMultiplicativeSchwarz>() {
+                let cfg = extract_local_solver_or_default(
+                    py,
+                    &schwarz.get().local_solver,
+                    LocalSolverConfig::gmres_default(),
+                )?;
+                Ok(Some(GmresPrecond::Multiplicative(cfg)))
+            } else {
+                Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                    "GMRES preconditioner must be AdditiveSchwarz, MultiplicativeSchwarz, or None",
+                ))
+            }
+        }
+    }
+}
+
 /// Extract solver parameters from a Python config object (CG or GMRES).
 fn extract_solver_params(py: Python<'_>, config: &Bound<'_, PyAny>) -> PyResult<SolverParams> {
     if let Ok(cg) = config.downcast::<PyCG>() {
         let cg = cg.get();
-        let preconditioner = match cg.preconditioner.as_ref() {
-            None => None,
-            Some(obj) => {
-                let bound = obj.bind(py);
-                if let Ok(s) = bound.downcast::<PyAdditiveSchwarz>() {
-                    let cfg = extract_local_solver_or_default(
-                        py,
-                        &s.get().local_solver,
-                        LocalSolverConfig::cg_default(),
-                    )?;
-                    Some(cfg)
-                } else {
-                    return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-                        "CG preconditioner must be AdditiveSchwarz or None",
-                    ));
-                }
-            }
-        };
+        let preconditioner = extract_additive_schwarz(
+            py,
+            &cg.preconditioner,
+            LocalSolverConfig::cg_default(),
+            "CG",
+        )?;
         return Ok(SolverParams {
             method: SolverMethod::Cg {
                 preconditioner,
@@ -351,31 +391,7 @@ fn extract_solver_params(py: Python<'_>, config: &Bound<'_, PyAny>) -> PyResult<
 
     if let Ok(gmres) = config.downcast::<PyGMRES>() {
         let gmres = gmres.get();
-        let preconditioner = match gmres.preconditioner.as_ref() {
-            None => None,
-            Some(obj) => {
-                let bound = obj.bind(py);
-                if let Ok(s) = bound.downcast::<PyAdditiveSchwarz>() {
-                    let cfg = extract_local_solver_or_default(
-                        py,
-                        &s.get().local_solver,
-                        LocalSolverConfig::gmres_default(),
-                    )?;
-                    Some(GmresPrecond::Additive(cfg))
-                } else if let Ok(s) = bound.downcast::<PyMultiplicativeSchwarz>() {
-                    let cfg = extract_local_solver_or_default(
-                        py,
-                        &s.get().local_solver,
-                        LocalSolverConfig::gmres_default(),
-                    )?;
-                    Some(GmresPrecond::Multiplicative(cfg))
-                } else {
-                    return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-                        "GMRES preconditioner must be AdditiveSchwarz, MultiplicativeSchwarz, or None",
-                    ));
-                }
-            }
-        };
+        let preconditioner = extract_gmres_preconditioner(py, &gmres.preconditioner)?;
         return Ok(SolverParams {
             method: SolverMethod::Gmres {
                 preconditioner,
@@ -421,10 +437,10 @@ pub fn solve<'py>(
     n_levels: Option<Vec<usize>>,
     weights: Option<PyReadonlyArray1<'py, f64>>,
 ) -> PyResult<PySolveResult> {
-    let cats: Array2<usize> = categories.as_array().to_owned();
+    let cats = categories.as_array();
     let y_vec: Vec<f64> = y.as_array().to_vec();
     let w_vec: Option<Vec<f64>> = weights.map(|w| w.as_array().to_vec());
-    let factor_levels = categories_to_factor_major(cats.view())?;
+    let factor_levels = categories_to_factor_major(cats)?;
 
     let n_levels = match n_levels {
         Some(nl) => nl,
@@ -442,9 +458,8 @@ pub fn solve<'py>(
     };
 
     let result = py
-        .allow_threads(|| match w_vec {
-            Some(weights) => solve_weighted(&factor_levels, &n_levels, &y_vec, &weights, &params),
-            None => solve_unweighted(&factor_levels, &n_levels, &y_vec, &params),
+        .allow_threads(|| {
+            solve_native(&factor_levels, &n_levels, &y_vec, w_vec.as_deref(), &params)
         })
         .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
 

@@ -23,16 +23,6 @@ impl<'a, S: ObservationStore> DesignOperator<'a, S> {
     pub fn new(design: &'a WeightedDesign<S>) -> Self {
         Self { design }
     }
-
-    /// y = D @ x  (gather-add)
-    pub fn matvec_d(&self, x: &[f64], y: &mut [f64]) {
-        self.design.matvec_d(x, y);
-    }
-
-    /// x = D^T @ r  (scatter-add)
-    pub fn rmatvec_dt(&self, r: &[f64], x: &mut [f64]) {
-        self.design.rmatvec_dt(r, x);
-    }
 }
 
 impl<S: ObservationStore> Operator for DesignOperator<'_, S> {
@@ -45,11 +35,11 @@ impl<S: ObservationStore> Operator for DesignOperator<'_, S> {
     }
 
     fn apply(&self, x: &[f64], y: &mut [f64]) {
-        self.matvec_d(x, y);
+        self.design.matvec_d(x, y);
     }
 
     fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) {
-        self.rmatvec_dt(x, y);
+        self.design.rmatvec_dt(x, y);
     }
 }
 
@@ -57,14 +47,16 @@ impl<S: ObservationStore> Operator for DesignOperator<'_, S> {
 mod tests {
     use super::*;
     use crate::domain::FixedEffectsDesign;
+    use crate::observation::{FactorMajorStore, ObservationWeights};
 
     fn make_test_design() -> FixedEffectsDesign {
-        FixedEffectsDesign::new(
+        let store = FactorMajorStore::new(
             vec![vec![0, 1, 2, 0, 1], vec![0, 1, 2, 3, 0]],
-            vec![3, 4],
+            ObservationWeights::Unit,
             5,
         )
-        .expect("valid test design")
+        .expect("valid factor-major store");
+        FixedEffectsDesign::from_store(store, &[3, 4]).expect("valid test design")
     }
 
     #[test]
@@ -100,7 +92,7 @@ mod tests {
         let op = DesignOperator::new(&schema);
         let x = vec![1.0, 2.0, 3.0, 10.0, 20.0, 30.0, 40.0];
         let mut y = vec![0.0; 5];
-        op.matvec_d(&x, &mut y);
+        op.apply(&x, &mut y);
         assert_eq!(y, vec![11.0, 22.0, 33.0, 41.0, 12.0]);
     }
 
@@ -110,7 +102,7 @@ mod tests {
         let op = DesignOperator::new(&schema);
         let r = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         let mut x = vec![0.0; 7];
-        op.rmatvec_dt(&r, &mut x);
+        op.apply_adjoint(&r, &mut x);
         assert_eq!(x, vec![5.0, 7.0, 3.0, 6.0, 2.0, 3.0, 4.0]);
     }
 }

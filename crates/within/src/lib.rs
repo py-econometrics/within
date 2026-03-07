@@ -21,6 +21,7 @@
 //!     &[factor_0, factor_1],
 //!     &[100, 100],
 //!     &y,
+//!     None,
 //!     &SolverParams::default(),
 //! )
 //! .expect("solve should succeed");
@@ -31,13 +32,13 @@
 //!
 //! The crate is organized in four layers:
 //!
-//! - **`observation`** — Storage backends for per-observation data: [`FactorMajorStore`],
-//!   [`RowMajorStore`], [`CompressedStore`]. All implement the [`ObservationStore`] trait.
+//! - **`observation`** — Per-observation data storage via [`FactorMajorStore`]
+//!   and the [`ObservationStore`] trait.
 //! - **`domain`** — Domain decomposition: [`WeightedDesign`] wraps a store with factor
 //!   metadata; factor-pair subdomains are built with partition-of-unity weights.
 //! - **`operator`** — Linear algebra primitives: [`Gramian`] (explicit CSR), [`GramianOperator`]
 //!   (implicit D^T W D), [`DesignOperator`] (D and D^T), Schwarz preconditioner builders.
-//! - **`orchestrate`** — End-to-end solve: [`solve`], [`solve_weighted`],
+//! - **`orchestrate`** — End-to-end solve: [`solve`] and
 //!   [`solve_normal_equations`] with typed configuration.
 //!
 //! # References
@@ -56,9 +57,7 @@ pub mod orchestrate;
 // High-level API
 // ---------------------------------------------------------------------------
 
-pub use orchestrate::{
-    demean_batch, solve, solve_normal_equations, solve_weighted, BatchDemeanResult,
-};
+pub use orchestrate::{demean_batch, solve, solve_normal_equations, BatchDemeanResult};
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -76,10 +75,7 @@ pub use orchestrate::SolveResult;
 // ---------------------------------------------------------------------------
 
 pub use domain::{FixedEffectsDesign, Subdomain, WeightedDesign};
-pub use observation::{
-    CompressedStore, FactorMajorStore, FactorMeta, ObservationStore, ObservationWeights,
-    RowMajorStore,
-};
+pub use observation::{FactorMajorStore, FactorMeta, ObservationStore, ObservationWeights};
 
 // ---------------------------------------------------------------------------
 // Operators & builders

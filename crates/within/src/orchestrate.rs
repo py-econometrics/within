@@ -9,7 +9,7 @@ mod common;
 mod normal_equations;
 mod result;
 
-pub use api::{solve, solve_weighted};
+pub use api::solve;
 pub use batch::{demean_batch, BatchDemeanResult};
 pub use normal_equations::solve_normal_equations;
 pub use result::SolveResult;
