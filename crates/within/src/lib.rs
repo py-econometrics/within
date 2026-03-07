@@ -81,6 +81,6 @@ pub use observation::{FactorMajorStore, FactorMeta, ObservationStore, Observatio
 // Operators & builders
 // ---------------------------------------------------------------------------
 
-pub use operator::design::DesignOperator;
 pub use operator::gramian::{Gramian, GramianOperator};
 pub use operator::schwarz::{build_schwarz, FeSchwarz};
+pub use operator::DesignOperator;

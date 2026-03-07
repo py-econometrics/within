@@ -15,9 +15,15 @@ from within._within import (
     MultiplicativeSchwarz,
     SchurComplement,
 )
-from .._registry import SuiteOptions, suite
+from .._framework import (
+    BenchmarkResult,
+    ProblemSpec,
+    SolverConfig,
+    SuiteOptions,
+    run_problem_set,
+    suite,
+)
 from .._table import print_pivot, print_table
-from .._types import BenchmarkResult, ProblemSpec, SolverConfig, run_problem_set
 
 
 @suite(

@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from ._registry import SuiteOptions, get_suite, list_suites
+from ._framework import SuiteOptions, get_suite, list_suites
 from ._table import print_pivot
 
 

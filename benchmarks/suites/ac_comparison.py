@@ -15,10 +15,15 @@ from within._within import (
     MultiplicativeSchwarz,
     SchurComplement,
 )
-from .._problems import get_generator
-from .._registry import SuiteOptions, suite
+from .._framework import (
+    BenchmarkResult,
+    ProblemSpec,
+    SolverConfig,
+    SuiteOptions,
+    run_problem_set,
+    suite,
+)
 from .._table import print_pivot, print_table
-from .._types import BenchmarkResult, ProblemSpec, SolverConfig, run_solve
 
 
 def _schur(seed: int, split: int) -> SchurComplement:
@@ -120,20 +125,7 @@ def run_ac_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
         ),
     ]
 
-    all_results: list[BenchmarkResult] = []
-    for prob in problems:
-        gen = get_generator(prob.generator)
-        cats, n_levels, y = gen(**prob.params, seed=prob.seed)
-        print(f"\nProblem: {prob.name}  (DOFs={sum(n_levels)}, Rows={len(cats[0])})")
-
-        for cfg in configs:
-            try:
-                result = run_solve(cats, n_levels, y, cfg)
-                result.problem = prob.name
-                all_results.append(result)
-            except Exception as e:
-                print(f"  WARNING: {cfg.label} failed: {e}")
-
+    all_results = run_problem_set(problems, configs)
     print_table(
         all_results,
         columns=[
@@ -245,20 +237,7 @@ def run_graph_backend_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
         ),
     ]
 
-    all_results: list[BenchmarkResult] = []
-    for prob in problems:
-        gen = get_generator(prob.generator)
-        cats, n_levels, y = gen(**prob.params, seed=prob.seed)
-        print(f"\nProblem: {prob.name}  (DOFs={sum(n_levels)}, Rows={len(cats[0])})")
-
-        for cfg in configs:
-            try:
-                result = run_solve(cats, n_levels, y, cfg)
-                result.problem = prob.name
-                all_results.append(result)
-            except Exception as e:
-                print(f"  WARNING: {cfg.label} failed: {e}")
-
+    all_results = run_problem_set(problems, configs)
     print_table(all_results)
     print("\nSetup time pivot:")
     print_pivot(all_results, value="setup_time")

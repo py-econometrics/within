@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ._types import BenchmarkResult
+from ._framework import BenchmarkResult
 
 
 def print_table(

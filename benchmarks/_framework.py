@@ -1,9 +1,22 @@
-"""Core data types and helpers for the benchmark framework."""
+"""Benchmark framework: types, solve helpers, and suite registry.
+
+Public API
+----------
+- ``BenchmarkResult`` — result dataclass
+- ``ProblemSpec`` — problem specification
+- ``SolverConfig`` — solver configuration wrapper
+- ``SuiteOptions`` — options for suite runs
+- ``SuiteInfo`` — metadata + callable for one benchmark suite
+- ``suite`` — decorator to register a suite
+- ``list_suites`` / ``get_suite`` — suite lookup
+- ``run_solve`` / ``run_problem_set`` — solve helpers
+- ``standard_solver_configs`` — default CG + GMRES configs
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 from numpy.typing import NDArray
@@ -16,6 +29,10 @@ from within._within import (
     MultiplicativeSchwarz,
     SchurComplement,
 )
+
+# ---------------------------------------------------------------------------
+# Core data types (formerly _types.py)
+# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -140,3 +157,71 @@ def run_problem_set(
                     raise
                 print(f"  WARNING: {cfg.label} failed: {e}")
     return all_results
+
+
+# ---------------------------------------------------------------------------
+# Suite registry (formerly _registry.py)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SuiteOptions:
+    """Options passed to every suite run function."""
+
+    seed: int = 42
+    tol: float = 1e-8
+    maxiter: int = 2000
+    quick: bool = False
+    filter_problems: list[str] | None = None
+
+
+@dataclass
+class SuiteInfo:
+    """Metadata + callable for one benchmark suite."""
+
+    name: str
+    description: str
+    tags: frozenset[str]
+    run_fn: Callable[[SuiteOptions], list[BenchmarkResult]]
+
+
+_SUITES: dict[str, SuiteInfo] = {}
+
+
+def suite(
+    name: str,
+    description: str = "",
+    tags: tuple[str, ...] | frozenset[str] = (),
+) -> Callable[
+    [Callable[[SuiteOptions], list[BenchmarkResult]]],
+    Callable[[SuiteOptions], list[BenchmarkResult]],
+]:
+    """Decorator that registers a function as a benchmark suite."""
+    tag_set = frozenset(tags)
+
+    def _decorator(
+        fn: Callable[[SuiteOptions], list[BenchmarkResult]],
+    ) -> Callable[[SuiteOptions], list[BenchmarkResult]]:
+        if name in _SUITES:
+            raise ValueError(f"Duplicate suite name: {name!r}")
+        _SUITES[name] = SuiteInfo(
+            name=name,
+            description=description,
+            tags=tag_set,
+            run_fn=fn,
+        )
+        return fn
+
+    return _decorator
+
+
+def list_suites() -> dict[str, SuiteInfo]:
+    """Return all registered suites."""
+    return dict(_SUITES)
+
+
+def get_suite(name: str) -> SuiteInfo:
+    """Look up a suite by name."""
+    if name not in _SUITES:
+        raise KeyError(f"Unknown suite {name!r}. Available: {sorted(_SUITES)}")
+    return _SUITES[name]

@@ -3,10 +3,171 @@ use std::sync::Arc;
 
 use schwarz_precond::{Operator, SparseMatrix};
 
-use super::csr_assembly::{build_symmetric_csr, CompactIndexMaps, DENSE_TABLE_MAX_ENTRIES};
 use super::Gramian;
 use crate::domain::{PairBlockData, WeightedDesign};
 use crate::observation::{FactorMeta, ObservationStore};
+
+// ===========================================================================
+// CSR assembly helper
+// ===========================================================================
+
+/// Build a symmetric CSR matrix from (row, col, value) entries.
+///
+/// `emit_entries` is called twice with a callback:
+///   1. Counting pass — the callback tallies row counts
+///   2. Fill pass — the callback writes (col, value) into CSR arrays
+///
+/// After filling, each row is sorted by column index (insertion sort).
+fn build_symmetric_csr(
+    n: usize,
+    mut emit_entries: impl FnMut(&mut dyn FnMut(usize, usize, f64)),
+) -> SparseMatrix {
+    // Pass 1: count NNZ per row
+    let mut row_counts = vec![0u32; n];
+    emit_entries(&mut |row, _col, _val| {
+        row_counts[row] += 1;
+    });
+
+    // Build indptr via prefix sum
+    let mut indptr = vec![0u32; n + 1];
+    for i in 0..n {
+        indptr[i + 1] = indptr[i] + row_counts[i];
+    }
+    let nnz = indptr[n] as usize;
+
+    // Pass 2: fill indices + data using indptr copy as write cursors
+    let mut cursor = indptr[..n].to_vec();
+    let mut indices = vec![0u32; nnz];
+    let mut data = vec![0.0f64; nnz];
+    emit_entries(&mut |row, col, val| {
+        let pos = cursor[row] as usize;
+        indices[pos] = col as u32;
+        data[pos] = val;
+        cursor[row] += 1;
+    });
+
+    // Sort indices within each row by column index.
+    // Use indirect permutation sort for large rows to avoid O(n^2) insertion sort.
+    for row in 0..n {
+        let start = indptr[row] as usize;
+        let end = indptr[row + 1] as usize;
+        let len = end - start;
+        if len <= 1 {
+            continue;
+        }
+        let row_idx = &mut indices[start..end];
+        let row_data = &mut data[start..end];
+        if len <= 64 {
+            // Insertion sort for small rows (cache-friendly, low overhead)
+            for i in 1..len {
+                let key_col = row_idx[i];
+                let key_val = row_data[i];
+                let mut j = i;
+                while j > 0 && row_idx[j - 1] > key_col {
+                    row_idx[j] = row_idx[j - 1];
+                    row_data[j] = row_data[j - 1];
+                    j -= 1;
+                }
+                row_idx[j] = key_col;
+                row_data[j] = key_val;
+            }
+        } else {
+            // Build permutation, sort it, then apply in-place
+            let mut perm: Vec<u32> = (0..len as u32).collect();
+            perm.sort_unstable_by_key(|&i| row_idx[i as usize]);
+            // Apply permutation to both arrays via cycle-following
+            let mut visited = vec![false; len];
+            for i in 0..len {
+                if visited[i] || perm[i] as usize == i {
+                    continue;
+                }
+                let saved_idx = row_idx[i];
+                let saved_data = row_data[i];
+                let mut j = i;
+                loop {
+                    visited[j] = true;
+                    let src = perm[j] as usize;
+                    if src == i {
+                        row_idx[j] = saved_idx;
+                        row_data[j] = saved_data;
+                        break;
+                    }
+                    row_idx[j] = row_idx[src];
+                    row_data[j] = row_data[src];
+                    j = src;
+                }
+            }
+        }
+    }
+
+    SparseMatrix::new(indptr, indices, data, n)
+}
+
+// ===========================================================================
+// CompactIndexMaps — maps full-size level indices to compact 0-based indices
+// ===========================================================================
+
+/// Maps full-size factor level indices to compact 0-based indices for a
+/// connected component. Levels not present in the component map to `u32::MAX`.
+pub(crate) struct CompactIndexMaps {
+    /// Full-size -> compact index for factor q. `u32::MAX` = inactive.
+    pub(crate) q_compact: Vec<u32>,
+    /// Full-size -> compact index for factor r. `u32::MAX` = inactive.
+    pub(crate) r_compact: Vec<u32>,
+    pub(crate) n_active_q: usize,
+    pub(crate) n_active_r: usize,
+}
+
+impl CompactIndexMaps {
+    pub(crate) fn build(
+        factors: &[crate::observation::FactorMeta],
+        q: usize,
+        r: usize,
+        global_indices: &[u32],
+    ) -> Self {
+        let fq = &factors[q];
+        let fr = &factors[r];
+        let mut q_compact = vec![u32::MAX; fq.n_levels];
+        let mut r_compact = vec![u32::MAX; fr.n_levels];
+
+        let mut n_active_q = 0usize;
+        for &gi in global_indices {
+            let gi = gi as usize;
+            if gi >= fq.offset && gi < fq.offset + fq.n_levels {
+                let j = gi - fq.offset;
+                q_compact[j] = n_active_q as u32;
+                n_active_q += 1;
+            }
+        }
+        let mut n_active_r = 0usize;
+        for &gi in global_indices {
+            let gi = gi as usize;
+            if gi >= fr.offset && gi < fr.offset + fr.n_levels {
+                let k = gi - fr.offset;
+                r_compact[k] = n_active_r as u32;
+                n_active_r += 1;
+            }
+        }
+
+        CompactIndexMaps {
+            q_compact,
+            r_compact,
+            n_active_q,
+            n_active_r,
+        }
+    }
+
+    pub(crate) fn n_local(&self) -> usize {
+        self.n_active_q + self.n_active_r
+    }
+}
+
+// ===========================================================================
+// DENSE_TABLE_MAX_ENTRIES constant
+// ===========================================================================
+
+/// Max entries in a flat dense table (~40 MB at 8 bytes each).
+pub(super) const DENSE_TABLE_MAX_ENTRIES: usize = 5_000_000;
 
 // ===========================================================================
 // PairAccumulator — weighted count accumulator for factor-pair cross tables

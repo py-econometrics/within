@@ -9,8 +9,15 @@ Public API
 
 from __future__ import annotations
 
-from ._registry import SuiteInfo, SuiteOptions, get_suite, list_suites
-from ._types import BenchmarkResult, ProblemSpec, SolverConfig
+from ._framework import (
+    BenchmarkResult,
+    ProblemSpec,
+    SolverConfig,
+    SuiteInfo,
+    SuiteOptions,
+    get_suite,
+    list_suites,
+)
 
 # Import suite modules so their @suite decorators execute.
 from .suites import (  # noqa: F401

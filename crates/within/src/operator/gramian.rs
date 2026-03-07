@@ -1,8 +1,9 @@
 //! Gramian `G = D^T W D` construction, operations, and operator wrappers.
 
 mod cross_tab;
-mod csr_assembly;
 mod explicit;
+#[cfg(test)]
+mod tests;
 
 pub(crate) use cross_tab::CrossTab;
 

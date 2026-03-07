@@ -6,6 +6,91 @@ use within::{
 #[path = "common/orchestrate_helpers.rs"]
 mod common;
 
+// ===========================================================================
+// Normal equations tests (formerly orchestrate_normal_eq.rs)
+// ===========================================================================
+
+#[test]
+fn test_normal_equations_cg_unpreconditioned() {
+    let design = common::make_test_design();
+    let rhs = common::make_rhs_from_unit_solution(&design);
+
+    let params = SolverParams {
+        krylov: KrylovMethod::Cg,
+        operator: OperatorRepr::Implicit,
+        preconditioner: None,
+        tol: 1e-8,
+        maxiter: 1000,
+    };
+    let result = solve_normal_equations(&design, &rhs, &params).expect("normal equations cg");
+    common::assert_converged_with_small_residual(&result, 1e-6);
+}
+
+#[test]
+fn test_normal_equations_preconditioned() {
+    let design = common::make_test_design();
+    let rhs = common::make_rhs_from_unit_solution(&design);
+
+    let params = SolverParams {
+        krylov: KrylovMethod::Cg,
+        operator: OperatorRepr::Implicit,
+        preconditioner: Some(Preconditioner::Additive(LocalSolverConfig::default())),
+        tol: 1e-8,
+        maxiter: 1000,
+    };
+    let result =
+        solve_normal_equations(&design, &rhs, &params).expect("normal equations preconditioned");
+    common::assert_converged_with_small_residual(&result, 1e-6);
+    assert!(result.time_setup > 0.0, "Setup time should be positive");
+}
+
+#[test]
+fn test_least_squares_cg() {
+    let design = common::make_test_design();
+    let y = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+
+    let params = SolverParams {
+        krylov: KrylovMethod::Cg,
+        operator: OperatorRepr::Implicit,
+        preconditioner: None,
+        tol: 1e-8,
+        maxiter: 1000,
+    };
+    let mut rhs = vec![0.0; design.n_dofs];
+    design.rmatvec_wdt(&y, &mut rhs);
+    let result = solve_normal_equations(&design, &rhs, &params).expect("least squares cg");
+    assert!(result.converged, "CG LS did not converge");
+    common::assert_solution_finite(&result);
+}
+
+#[test]
+fn test_least_squares_weighted_cg_preconditioned() {
+    let design = common::make_weighted_design(
+        vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]],
+        vec![3, 2],
+        within::ObservationWeights::Dense(vec![1.0, 2.0, 1.5, 0.5, 3.0]),
+    )
+    .expect("valid weighted design");
+    let y = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+
+    let params = SolverParams {
+        krylov: KrylovMethod::Cg,
+        operator: OperatorRepr::Implicit,
+        preconditioner: Some(Preconditioner::Additive(LocalSolverConfig::solver_default())),
+        tol: 1e-8,
+        maxiter: 1000,
+    };
+    let mut rhs = vec![0.0; design.n_dofs];
+    design.rmatvec_wdt(&y, &mut rhs);
+    let result = solve_normal_equations(&design, &rhs, &params).expect("weighted cg solve");
+    common::assert_converged_with_small_residual(&result, 1e-6);
+    common::assert_solution_finite(&result);
+}
+
+// ===========================================================================
+// Preconditioner tests (formerly orchestrate_preconditioners.rs)
+// ===========================================================================
+
 #[test]
 fn test_schwarz_builder_schur_complement_modes_end_to_end() {
     use approx_chol::Config;
@@ -71,9 +156,9 @@ fn test_compare_factorization_strategies() {
     use schwarz_precond::solve::vec_norm;
     use schwarz_precond::Operator;
     use std::time::Instant;
-    use within::operator::design::DesignOperator;
     use within::operator::gramian::GramianOperator;
     use within::operator::schwarz::build_schwarz;
+    use within::operator::DesignOperator;
     use within::FixedEffectsDesign;
 
     let configs: Vec<(Config, &str)> = vec![

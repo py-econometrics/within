@@ -3,7 +3,7 @@
 use schwarz_precond::SparseMatrix;
 
 use super::super::csr_block::CsrBlock;
-use super::csr_assembly::accumulate_cross_block;
+use super::explicit::DENSE_TABLE_MAX_ENTRIES;
 use crate::domain::WeightedDesign;
 use crate::observation::ObservationStore;
 
@@ -507,167 +507,139 @@ impl CrossTab {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::domain::{FixedEffectsDesign, WeightedDesign};
-    use crate::observation::{FactorMajorStore, ObservationWeights};
-    use crate::operator::gramian::Gramian;
+// ---------------------------------------------------------------------------
+// accumulate_cross_block — shared observation accumulation for CrossTab
+// ---------------------------------------------------------------------------
 
-    fn assert_cross_tabs_equal(a: &CrossTab, b: &CrossTab) {
-        assert_eq!(a.n_q(), b.n_q(), "n_q mismatch");
-        assert_eq!(a.n_r(), b.n_r(), "n_r mismatch");
-        for (i, (av, bv)) in a.diag_q.iter().zip(&b.diag_q).enumerate() {
-            assert!(
-                (av - bv).abs() < 1e-12,
-                "diag_q[{i}] mismatch: {av} vs {bv}"
-            );
-        }
-        for (i, (av, bv)) in a.diag_r.iter().zip(&b.diag_r).enumerate() {
-            assert!(
-                (av - bv).abs() < 1e-12,
-                "diag_r[{i}] mismatch: {av} vs {bv}"
-            );
-        }
-        assert_eq!(a.c.indptr, b.c.indptr, "C indptr mismatch");
-        assert_eq!(a.c.indices, b.c.indices, "C indices mismatch");
-        for (i, (av, bv)) in a.c.data.iter().zip(&b.c.data).enumerate() {
-            assert!(
-                (av - bv).abs() < 1e-12,
-                "C data[{i}] mismatch: {av} vs {bv}"
-            );
-        }
-    }
+/// Accumulate observation weights into a cross-tabulation block C plus diagonals.
+///
+/// Used by `CrossTab::build_for_pair`. Observations whose compact index is
+/// `u32::MAX` are skipped.
+///
+/// - Dense path (n_q * n_r <= 5M): flat table with O(1) accumulation per observation.
+/// - Sparse path: two-pass bucket + workspace-based dedup per row.
+fn accumulate_cross_block<S: ObservationStore>(
+    design: &WeightedDesign<S>,
+    q: usize,
+    r: usize,
+    q_compact: &[u32],
+    r_compact: &[u32],
+    n_q: usize,
+    n_r: usize,
+) -> (CsrBlock, Vec<f64>, Vec<f64>) {
+    let n_obs = design.store.n_obs();
+    let mut diag_q = vec![0.0f64; n_q];
+    let mut diag_r = vec![0.0f64; n_r];
+    let table_size = n_q * n_r;
 
-    fn make_2fe_design() -> FixedEffectsDesign {
-        let store = FactorMajorStore::new(
-            vec![vec![0, 1, 2, 0, 1], vec![0, 1, 2, 3, 0]],
-            ObservationWeights::Unit,
-            5,
-        )
-        .expect("valid factor-major store");
-        FixedEffectsDesign::from_store(store, &[3, 4]).expect("valid 2FE design")
-    }
+    let c = if table_size <= DENSE_TABLE_MAX_ENTRIES {
+        // Dense path: flat table with O(1) accumulation per observation.
+        let mut table = vec![0.0f64; table_size];
 
-    fn make_3fe_design() -> FixedEffectsDesign {
-        let store = FactorMajorStore::new(
-            vec![
-                vec![0, 1, 2, 0, 1, 2],
-                vec![0, 1, 0, 1, 0, 1],
-                vec![0, 0, 1, 1, 0, 1],
-            ],
-            ObservationWeights::Unit,
-            6,
-        )
-        .expect("valid factor-major store");
-        FixedEffectsDesign::from_store(store, &[3, 2, 2]).expect("valid 3FE design")
-    }
-
-    #[test]
-    fn test_from_gramian_block_matches_build_for_pair_2fe() {
-        let design = make_2fe_design();
-        let gramian = Gramian::build(&design);
-
-        let (ct_obs, l2g_obs) = CrossTab::build_for_pair(&design, 0, 1).unwrap();
-        let (ct_gram, l2g_gram) =
-            CrossTab::from_gramian_block(&gramian.matrix, &design.factors[0], &design.factors[1])
-                .unwrap();
-
-        assert_eq!(l2g_obs, l2g_gram, "local_to_global mismatch");
-        assert_cross_tabs_equal(&ct_obs, &ct_gram);
-    }
-
-    #[test]
-    fn test_from_gramian_block_matches_build_for_pair_3fe() {
-        let design = make_3fe_design();
-        let gramian = Gramian::build(&design);
-
-        for q in 0..3 {
-            for r in (q + 1)..3 {
-                let obs_result = CrossTab::build_for_pair(&design, q, r);
-                let gram_result = CrossTab::from_gramian_block(
-                    &gramian.matrix,
-                    &design.factors[q],
-                    &design.factors[r],
-                );
-
-                match (obs_result, gram_result) {
-                    (Some((ct_obs, l2g_obs)), Some((ct_gram, l2g_gram))) => {
-                        assert_eq!(l2g_obs, l2g_gram, "l2g mismatch for pair ({q},{r})");
-                        assert_cross_tabs_equal(&ct_obs, &ct_gram);
-                    }
-                    (None, None) => {}
-                    _ => panic!("one returned None and the other Some for pair ({q},{r})"),
-                }
+        for uid in 0..n_obs {
+            let j = design.store.level(uid, q) as usize;
+            let k = design.store.level(uid, r) as usize;
+            let cj = q_compact[j];
+            let ck = r_compact[k];
+            if cj == u32::MAX || ck == u32::MAX {
+                continue;
             }
+            let w = design.uid_weight(uid);
+            diag_q[cj as usize] += w;
+            diag_r[ck as usize] += w;
+            table[cj as usize * n_r + ck as usize] += w;
         }
-    }
 
-    #[test]
-    fn test_from_gramian_block_single_component() {
-        // Fully connected 2FE design: single component
-        let store = FactorMajorStore::new(
-            vec![vec![0, 1, 0, 1], vec![0, 0, 1, 1]],
-            ObservationWeights::Unit,
-            4,
-        )
-        .expect("valid factor-major store");
-        let design = FixedEffectsDesign::from_store(store, &[2, 2]).expect("valid design");
-        let gramian = Gramian::build(&design);
+        CsrBlock::from_dense_table(&table, n_q, n_r)
+    } else {
+        // Sparse path: two-pass bucket + workspace-dedup.
+        //
+        // Bucket observations by row in two passes (count + fill), then use
+        // a dense workspace of size n_r to accumulate and deduplicate each
+        // row. The workspace sort is on unique columns only (n_r_active << len).
 
-        let (ct_gram, _) =
-            CrossTab::from_gramian_block(&gramian.matrix, &design.factors[0], &design.factors[1])
-                .unwrap();
-
-        let components = ct_gram.bipartite_connected_components();
-        assert_eq!(components.len(), 1, "expected single component");
-    }
-
-    #[test]
-    fn test_from_gramian_block_multiple_components() {
-        // Design with two disconnected components:
-        // factor 0: [0, 0, 1, 1]   factor 1: [0, 1, 2, 3]
-        // levels (0,0), (0,1) form one component; (1,2), (1,3) form another
-        let store = FactorMajorStore::new(
-            vec![vec![0, 0, 1, 1], vec![0, 1, 2, 3]],
-            ObservationWeights::Unit,
-            4,
-        )
-        .expect("valid factor-major store");
-        let design = FixedEffectsDesign::from_store(store, &[2, 4]).expect("valid design");
-        let gramian = Gramian::build(&design);
-
-        let (ct_obs, _) = CrossTab::build_for_pair(&design, 0, 1).unwrap();
-        let (ct_gram, _) =
-            CrossTab::from_gramian_block(&gramian.matrix, &design.factors[0], &design.factors[1])
-                .unwrap();
-
-        let comps_obs = ct_obs.bipartite_connected_components();
-        let comps_gram = ct_gram.bipartite_connected_components();
-        assert_eq!(comps_obs.len(), comps_gram.len());
-        for (co, cg) in comps_obs.iter().zip(&comps_gram) {
-            assert_eq!(co.q_indices, cg.q_indices);
-            assert_eq!(co.r_indices, cg.r_indices);
+        // Pass 1: accumulate diags + count entries per row
+        let mut row_counts = vec![0u32; n_q];
+        for uid in 0..n_obs {
+            let j = design.store.level(uid, q) as usize;
+            let k = design.store.level(uid, r) as usize;
+            let cj = q_compact[j];
+            let ck = r_compact[k];
+            if cj == u32::MAX || ck == u32::MAX {
+                continue;
+            }
+            let w = design.uid_weight(uid);
+            diag_q[cj as usize] += w;
+            diag_r[ck as usize] += w;
+            row_counts[cj as usize] += 1;
         }
-    }
 
-    #[test]
-    fn test_from_gramian_block_weighted() {
-        let fl = vec![vec![0u32, 1, 0, 1], vec![0, 0, 1, 1]];
-        let weights = vec![1.0, 2.0, 3.0, 4.0];
-        let n_levels = vec![2, 2];
+        // Build row-pointer array for the unsorted bucket CSR
+        let mut bucket_indptr = vec![0u32; n_q + 1];
+        for i in 0..n_q {
+            bucket_indptr[i + 1] = bucket_indptr[i] + row_counts[i];
+        }
+        let total_entries = bucket_indptr[n_q] as usize;
 
-        let store = FactorMajorStore::new(fl, ObservationWeights::Dense(weights), 4)
-            .expect("valid weighted store");
-        let design = WeightedDesign::from_store(store, &n_levels).expect("valid weighted design");
-        let gramian = Gramian::build(&design);
+        // Pass 2: fill per-row buckets (col + weight only, no row index)
+        let mut bucket_cols = vec![0u32; total_entries];
+        let mut bucket_vals = vec![0.0f64; total_entries];
+        let mut cursor = bucket_indptr[..n_q].to_vec();
+        for uid in 0..n_obs {
+            let j = design.store.level(uid, q) as usize;
+            let k = design.store.level(uid, r) as usize;
+            let cj = q_compact[j];
+            let ck = r_compact[k];
+            if cj == u32::MAX || ck == u32::MAX {
+                continue;
+            }
+            let w = design.uid_weight(uid);
+            let pos = cursor[cj as usize] as usize;
+            bucket_cols[pos] = ck;
+            bucket_vals[pos] = w;
+            cursor[cj as usize] += 1;
+        }
 
-        let (ct_obs, l2g_obs) = CrossTab::build_for_pair(&design, 0, 1).unwrap();
-        let (ct_gram, l2g_gram) =
-            CrossTab::from_gramian_block(&gramian.matrix, &design.factors[0], &design.factors[1])
-                .unwrap();
+        // Pass 3: workspace-based dedup per row.
+        // Accumulate into work[col], track touched columns, sort only the
+        // unique set, then emit into final CSR.
+        let mut work = vec![0.0f64; n_r];
+        let mut touched: Vec<u32> = Vec::new();
+        let mut c_indptr = vec![0u32; n_q + 1];
+        let mut c_indices = Vec::new();
+        let mut c_data = Vec::new();
 
-        assert_eq!(l2g_obs, l2g_gram);
-        assert_cross_tabs_equal(&ct_obs, &ct_gram);
-    }
+        for row in 0..n_q {
+            let start = bucket_indptr[row] as usize;
+            let end = bucket_indptr[row + 1] as usize;
+            for idx in start..end {
+                let col = bucket_cols[idx] as usize;
+                if work[col] == 0.0 {
+                    touched.push(col as u32);
+                }
+                work[col] += bucket_vals[idx];
+            }
+            touched.sort_unstable();
+            for &col in &touched {
+                let v = work[col as usize];
+                if v != 0.0 {
+                    c_indices.push(col);
+                    c_data.push(v);
+                }
+                work[col as usize] = 0.0;
+            }
+            c_indptr[row + 1] = c_indices.len() as u32;
+            touched.clear();
+        }
+
+        CsrBlock {
+            indptr: c_indptr,
+            indices: c_indices,
+            data: c_data,
+            nrows: n_q,
+            ncols: n_r,
+        }
+    };
+
+    (c, diag_q, diag_r)
 }

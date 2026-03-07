@@ -5,8 +5,7 @@
 //! - `cg_solve_preconditioned`: left-preconditioned CG
 
 use super::util::{dot, vec_norm};
-use crate::operator::IdentityOperator;
-use crate::{Operator, SolveError};
+use crate::{IdentityOperator, Operator, SolveError};
 
 /// Result of a conjugate gradient solve.
 #[must_use]

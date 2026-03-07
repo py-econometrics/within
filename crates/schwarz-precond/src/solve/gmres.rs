@@ -1,5 +1,78 @@
-use super::util::{dot, vec_norm, ColumnBasis};
+use super::util::{dot, vec_norm};
 use crate::{Operator, SolveError};
+
+// ---------------------------------------------------------------------------
+// Column basis storage
+// ---------------------------------------------------------------------------
+
+/// Column-major flat storage for basis vectors.
+///
+/// Stores up to `capacity` vectors of dimension `n` in a single contiguous
+/// allocation. Avoids per-restart/per-iteration heap allocation.
+struct ColumnBasis {
+    data: Vec<f64>,
+    /// Dimension of each vector.
+    n: usize,
+    len: usize,
+}
+
+impl ColumnBasis {
+    /// Create with room for `capacity` vectors of length `n`.
+    fn new(capacity: usize, n: usize) -> Self {
+        Self {
+            data: vec![0.0; capacity * n],
+            n,
+            len: 0,
+        }
+    }
+
+    /// Return column `j` as a shared slice.
+    #[inline]
+    fn col(&self, j: usize) -> &[f64] {
+        debug_assert!(j < self.len);
+        let start = j * self.n;
+        &self.data[start..start + self.n]
+    }
+
+    /// Return column `j` as a mutable slice.
+    ///
+    /// # Safety
+    /// Caller must ensure no aliasing mutable references to the same column.
+    #[inline]
+    #[allow(clippy::mut_from_ref)]
+    fn col_mut(&self, j: usize) -> &mut [f64] {
+        debug_assert!(j < self.len);
+        let start = j * self.n;
+        unsafe {
+            let ptr = self.data.as_ptr().add(start) as *mut f64;
+            std::slice::from_raw_parts_mut(ptr, self.n)
+        }
+    }
+
+    /// Append `src` as the next column, incrementing `len`.
+    fn push_from(&mut self, src: &[f64]) {
+        debug_assert_eq!(src.len(), self.n);
+        let start = self.len * self.n;
+        self.data[start..start + self.n].copy_from_slice(src);
+        self.len += 1;
+    }
+
+    /// Append a zero-filled column, incrementing `len`.
+    fn push_zeroed(&mut self) {
+        let start = self.len * self.n;
+        self.data[start..start + self.n].fill(0.0);
+        self.len += 1;
+    }
+
+    /// Reset the number of stored vectors to zero (does not deallocate).
+    fn clear(&mut self) {
+        self.len = 0;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GMRES result
+// ---------------------------------------------------------------------------
 
 /// Result of a GMRES solve.
 #[must_use]

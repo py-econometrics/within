@@ -16,9 +16,8 @@ from within._within import (
     SchurComplement,
 )
 from .._problems import get_generator
-from .._registry import SuiteOptions, suite
+from .._framework import BenchmarkResult, SolverConfig, SuiteOptions, run_solve, suite
 from .._table import print_pivot, print_table
-from .._types import BenchmarkResult, SolverConfig, run_solve
 
 
 @suite(

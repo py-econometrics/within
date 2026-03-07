@@ -6,6 +6,7 @@ use pyo3::prelude::*;
 
 use within::config::{
     ApproxSchurConfig, KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner, SolverParams,
+    DEFAULT_DENSE_SCHUR_THRESHOLD,
 };
 use within::{solve as solve_native, SolveResult};
 
@@ -129,16 +130,16 @@ pub struct PySchurComplement {
 #[pymethods]
 impl PySchurComplement {
     #[new]
-    #[pyo3(signature = (approx_chol=None, approx_schur=None, dense_threshold=24))]
+    #[pyo3(signature = (approx_chol=None, approx_schur=None, dense_threshold=None))]
     fn new(
         approx_chol: Option<Py<PyApproxCholConfig>>,
         approx_schur: Option<Py<PyApproxSchurConfig>>,
-        dense_threshold: usize,
+        dense_threshold: Option<usize>,
     ) -> Self {
         Self {
             approx_chol,
             approx_schur,
-            dense_threshold,
+            dense_threshold: dense_threshold.unwrap_or(DEFAULT_DENSE_SCHUR_THRESHOLD),
         }
     }
 }

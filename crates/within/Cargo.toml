@@ -21,9 +21,5 @@ criterion = { version = "0.5", features = ["html_reports"] }
 rand = { version = "0.9", features = ["small_rng"] }
 
 [[bench]]
-name = "fixest_smoke"
-harness = false
-
-[[bench]]
-name = "fixest_mini"
+name = "fixest"
 harness = false

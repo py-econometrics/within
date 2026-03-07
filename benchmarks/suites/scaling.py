@@ -2,42 +2,15 @@
 
 from __future__ import annotations
 
-import numpy as np
-
-from .._problems import get_generator
-from .._registry import SuiteOptions, suite
+from .._framework import (
+    BenchmarkResult,
+    ProblemSpec,
+    SuiteOptions,
+    run_problem_set,
+    standard_solver_configs,
+    suite,
+)
 from .._table import print_pivot, print_table
-from .._types import BenchmarkResult, run_solve, standard_solver_configs
-
-
-def _run_scaling_problems(
-    configs_list: list[tuple[str, list[int], int]],
-    opts: SuiteOptions,
-) -> list[BenchmarkResult]:
-    """Run a list of (name, n_levels, n_rows) configs through the standard solve paths."""
-    solver_configs = standard_solver_configs(opts)
-
-    all_results: list[BenchmarkResult] = []
-    for name, n_levels, n_rows in configs_list:
-        rng = np.random.default_rng(opts.seed)
-        cats = [rng.integers(0, nl, size=n_rows) for nl in n_levels]
-        x_true = rng.standard_normal(sum(n_levels))
-        y = np.zeros(n_rows)
-        offset = 0
-        for f, nl in enumerate(n_levels):
-            y += x_true[offset + cats[f]]
-            offset += nl
-        print(f"\n  {name}: DOFs={sum(n_levels)}, Rows={n_rows}")
-
-        for cfg in solver_configs:
-            try:
-                result = run_solve(cats, n_levels, y, cfg)
-                result.problem = name
-                all_results.append(result)
-            except Exception as e:
-                print(f"    WARNING: {cfg.label} failed: {e}")
-
-    return all_results
 
 
 @suite(
@@ -47,23 +20,64 @@ def _run_scaling_problems(
 )
 def run_scaling(opts: SuiteOptions) -> list[BenchmarkResult]:
     if opts.quick:
-        configs = [
-            ("2f quick", [1000, 1000], 100_000),
-            ("3f quick", [800, 800, 400], 100_000),
+        problems = [
+            ProblemSpec(
+                "2f quick",
+                "uniform_kfe",
+                {"n_levels_per_factor": [1000, 1000], "n_rows": 100_000},
+                opts.seed,
+            ),
+            ProblemSpec(
+                "3f quick",
+                "uniform_kfe",
+                {"n_levels_per_factor": [800, 800, 400], "n_rows": 100_000},
+                opts.seed,
+            ),
         ]
     else:
-        configs = [
+        problems = [
             # 2-FE
-            ("2f balanced 5K", [2500, 2500], 200_000),
-            ("2f asymmetric 5K", [4000, 1000], 200_000),
-            ("2f balanced 20K", [10000, 10000], 500_000),
+            ProblemSpec(
+                "2f balanced 5K",
+                "uniform_kfe",
+                {"n_levels_per_factor": [2500, 2500], "n_rows": 200_000},
+                opts.seed,
+            ),
+            ProblemSpec(
+                "2f asymmetric 5K",
+                "uniform_kfe",
+                {"n_levels_per_factor": [4000, 1000], "n_rows": 200_000},
+                opts.seed,
+            ),
+            ProblemSpec(
+                "2f balanced 20K",
+                "uniform_kfe",
+                {"n_levels_per_factor": [10000, 10000], "n_rows": 500_000},
+                opts.seed,
+            ),
             # 3-FE
-            ("3f balanced 5K", [2000, 2000, 1000], 200_000),
-            ("3f pyramid 5K", [3000, 1500, 500], 200_000),
-            ("3f balanced 20K", [8000, 8000, 4000], 500_000),
+            ProblemSpec(
+                "3f balanced 5K",
+                "uniform_kfe",
+                {"n_levels_per_factor": [2000, 2000, 1000], "n_rows": 200_000},
+                opts.seed,
+            ),
+            ProblemSpec(
+                "3f pyramid 5K",
+                "uniform_kfe",
+                {"n_levels_per_factor": [3000, 1500, 500], "n_rows": 200_000},
+                opts.seed,
+            ),
+            ProblemSpec(
+                "3f balanced 20K",
+                "uniform_kfe",
+                {"n_levels_per_factor": [8000, 8000, 4000], "n_rows": 500_000},
+                opts.seed,
+            ),
         ]
 
-    results = _run_scaling_problems(configs, opts)
+    configs = standard_solver_configs(opts)
+    results = run_problem_set(problems, configs)
     print_table(results)
     print("\n")
     print_pivot(results)
@@ -78,50 +92,76 @@ def run_scaling(opts: SuiteOptions) -> list[BenchmarkResult]:
 def run_scaling_2fe(opts: SuiteOptions) -> list[BenchmarkResult]:
     if opts.quick:
         problems = [
-            ("chain 50", "chain_2fe", {"n_levels": 50}),
-            ("chain 100", "chain_2fe", {"n_levels": 100}),
-            ("expander 100 d=3", "expander_2fe", {"n_levels": 100, "degree": 3}),
+            ProblemSpec("chain 50", "chain_2fe", {"n_levels": 50}, opts.seed),
+            ProblemSpec("chain 100", "chain_2fe", {"n_levels": 100}, opts.seed),
+            ProblemSpec(
+                "expander 100 d=3",
+                "expander_2fe",
+                {"n_levels": 100, "degree": 3},
+                opts.seed,
+            ),
         ]
     else:
         problems = [
-            ("chain 50", "chain_2fe", {"n_levels": 50}),
-            ("chain 100", "chain_2fe", {"n_levels": 100}),
-            ("chain 200", "chain_2fe", {"n_levels": 200}),
-            ("chain 500", "chain_2fe", {"n_levels": 500}),
-            ("chain 1000", "chain_2fe", {"n_levels": 1000}),
-            ("chain 2000", "chain_2fe", {"n_levels": 2000}),
-            ("chain 50 (dense)", "chain_2fe", {"n_levels": 50, "obs_per_edge": 10}),
-            ("star 100", "star_2fe", {"n_levels": 100}),
-            ("star 200", "star_2fe", {"n_levels": 200}),
-            ("barbell 100", "barbell_2fe", {"n_levels": 100}),
-            ("barbell 500", "barbell_2fe", {"n_levels": 500}),
-            ("barbell 1000", "barbell_2fe", {"n_levels": 1000}),
-            ("expander 100 d=3", "expander_2fe", {"n_levels": 100, "degree": 3}),
-            ("expander 200 d=3", "expander_2fe", {"n_levels": 200, "degree": 3}),
-            ("expander 500 d=3", "expander_2fe", {"n_levels": 500, "degree": 3}),
-            ("expander 1000 d=3", "expander_2fe", {"n_levels": 1000, "degree": 3}),
-            ("expander 2000 d=3", "expander_2fe", {"n_levels": 2000, "degree": 3}),
-            ("expander 100 d=10", "expander_2fe", {"n_levels": 100, "degree": 10}),
-            ("grid 20x20", "grid_2fe", {"n_side": 20}),
+            ProblemSpec("chain 50", "chain_2fe", {"n_levels": 50}, opts.seed),
+            ProblemSpec("chain 100", "chain_2fe", {"n_levels": 100}, opts.seed),
+            ProblemSpec("chain 200", "chain_2fe", {"n_levels": 200}, opts.seed),
+            ProblemSpec("chain 500", "chain_2fe", {"n_levels": 500}, opts.seed),
+            ProblemSpec("chain 1000", "chain_2fe", {"n_levels": 1000}, opts.seed),
+            ProblemSpec("chain 2000", "chain_2fe", {"n_levels": 2000}, opts.seed),
+            ProblemSpec(
+                "chain 50 (dense)",
+                "chain_2fe",
+                {"n_levels": 50, "obs_per_edge": 10},
+                opts.seed,
+            ),
+            ProblemSpec("star 100", "star_2fe", {"n_levels": 100}, opts.seed),
+            ProblemSpec("star 200", "star_2fe", {"n_levels": 200}, opts.seed),
+            ProblemSpec("barbell 100", "barbell_2fe", {"n_levels": 100}, opts.seed),
+            ProblemSpec("barbell 500", "barbell_2fe", {"n_levels": 500}, opts.seed),
+            ProblemSpec("barbell 1000", "barbell_2fe", {"n_levels": 1000}, opts.seed),
+            ProblemSpec(
+                "expander 100 d=3",
+                "expander_2fe",
+                {"n_levels": 100, "degree": 3},
+                opts.seed,
+            ),
+            ProblemSpec(
+                "expander 200 d=3",
+                "expander_2fe",
+                {"n_levels": 200, "degree": 3},
+                opts.seed,
+            ),
+            ProblemSpec(
+                "expander 500 d=3",
+                "expander_2fe",
+                {"n_levels": 500, "degree": 3},
+                opts.seed,
+            ),
+            ProblemSpec(
+                "expander 1000 d=3",
+                "expander_2fe",
+                {"n_levels": 1000, "degree": 3},
+                opts.seed,
+            ),
+            ProblemSpec(
+                "expander 2000 d=3",
+                "expander_2fe",
+                {"n_levels": 2000, "degree": 3},
+                opts.seed,
+            ),
+            ProblemSpec(
+                "expander 100 d=10",
+                "expander_2fe",
+                {"n_levels": 100, "degree": 10},
+                opts.seed,
+            ),
+            ProblemSpec("grid 20x20", "grid_2fe", {"n_side": 20}, opts.seed),
         ]
 
-    solver_configs = standard_solver_configs(opts)
-
-    all_results: list[BenchmarkResult] = []
-    for name, gen_key, params in problems:
-        gen = get_generator(gen_key)
-        cats, n_levels, y = gen(**params, seed=opts.seed)
-        print(f"\n  {name}: DOFs={sum(n_levels)}, Rows={len(cats[0])}")
-
-        for cfg in solver_configs:
-            try:
-                result = run_solve(cats, n_levels, y, cfg)
-                result.problem = name
-                all_results.append(result)
-            except Exception as e:
-                print(f"    WARNING: {cfg.label} failed: {e}")
-
-    print_table(all_results)
+    configs = standard_solver_configs(opts)
+    results = run_problem_set(problems, configs)
+    print_table(results)
     print("\n")
-    print_pivot(all_results)
-    return all_results
+    print_pivot(results)
+    return results

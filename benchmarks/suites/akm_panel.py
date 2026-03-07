@@ -19,10 +19,16 @@ from within._within import (
     ApproxSchurConfig,
     SchurComplement,
 )
-from .._problems import get_generator
-from .._registry import SuiteOptions, suite
+from .._framework import (
+    BenchmarkResult,
+    ProblemSpec,
+    SolverConfig,
+    SuiteOptions,
+    run_problem_set,
+    standard_solver_configs,
+    suite,
+)
 from .._table import print_pivot, print_table
-from .._types import BenchmarkResult, SolverConfig, run_solve, standard_solver_configs
 
 
 # -----------------------------------------------------------------------
@@ -38,104 +44,67 @@ from .._types import BenchmarkResult, SolverConfig, run_solve, standard_solver_c
 def run_akm_panel(opts: SuiteOptions) -> list[BenchmarkResult]:
     if opts.quick:
         problems = [
-            ("power_law 10K", "akm_power_law", {}),
-            ("low_mobility 10K", "akm_low_mobility", {}),
-            ("disconnected 10K", "akm_disconnected", {}),
-            ("realistic 10K", "akm_realistic", {}),
+            ProblemSpec("power_law 10K", "akm_power_law", {}, opts.seed),
+            ProblemSpec("low_mobility 10K", "akm_low_mobility", {}, opts.seed),
+            ProblemSpec("disconnected 10K", "akm_disconnected", {}, opts.seed),
+            ProblemSpec("realistic 10K", "akm_realistic", {}, opts.seed),
         ]
-        solver_sets = [standard_solver_configs(opts)] * len(problems)
     else:
         problems = [
             # --- 10K workers (quick-tier) ---
-            ("power_law 10K", "akm_power_law", {}),
-            ("low_mobility 10K", "akm_low_mobility", {}),
-            ("disconnected 10K", "akm_disconnected", {}),
-            ("realistic 10K", "akm_realistic", {}),
-            ("realistic 10K 2FE", "akm_realistic", {"n_fe": 2}),
+            ProblemSpec("power_law 10K", "akm_power_law", {}, opts.seed),
+            ProblemSpec("low_mobility 10K", "akm_low_mobility", {}, opts.seed),
+            ProblemSpec("disconnected 10K", "akm_disconnected", {}, opts.seed),
+            ProblemSpec("realistic 10K", "akm_realistic", {}, opts.seed),
+            ProblemSpec("realistic 10K 2FE", "akm_realistic", {"n_fe": 2}, opts.seed),
             # --- 100K workers ---
-            (
+            ProblemSpec(
                 "power_law 100K",
                 "akm_power_law",
-                {
-                    "n_workers": 100_000,
-                    "n_firms": 5_000,
-                    "n_years": 15,
-                },
+                {"n_workers": 100_000, "n_firms": 5_000, "n_years": 15},
+                opts.seed,
             ),
-            (
+            ProblemSpec(
                 "low_mobility 100K",
                 "akm_low_mobility",
-                {
-                    "n_workers": 100_000,
-                    "n_firms": 5_000,
-                    "n_years": 15,
-                },
+                {"n_workers": 100_000, "n_firms": 5_000, "n_years": 15},
+                opts.seed,
             ),
-            (
+            ProblemSpec(
                 "disconnected 100K",
                 "akm_disconnected",
-                {
-                    "n_workers": 100_000,
-                    "n_firms": 5_000,
-                    "n_years": 15,
-                },
+                {"n_workers": 100_000, "n_firms": 5_000, "n_years": 15},
+                opts.seed,
             ),
-            (
+            ProblemSpec(
                 "realistic 100K",
                 "akm_realistic",
-                {
-                    "n_workers": 100_000,
-                    "n_firms": 5_000,
-                    "n_years": 15,
-                },
+                {"n_workers": 100_000, "n_firms": 5_000, "n_years": 15},
+                opts.seed,
             ),
-            (
+            ProblemSpec(
                 "realistic 100K 2FE",
                 "akm_realistic",
-                {
-                    "n_workers": 100_000,
-                    "n_firms": 5_000,
-                    "n_years": 15,
-                    "n_fe": 2,
-                },
+                {"n_workers": 100_000, "n_firms": 5_000, "n_years": 15, "n_fe": 2},
+                opts.seed,
             ),
             # --- 1M workers ---
-            (
+            ProblemSpec(
                 "realistic 1M",
                 "akm_realistic",
-                {
-                    "n_workers": 1_000_000,
-                    "n_firms": 50_000,
-                    "n_years": 20,
-                },
+                {"n_workers": 1_000_000, "n_firms": 50_000, "n_years": 20},
+                opts.seed,
             ),
-            (
+            ProblemSpec(
                 "realistic 1M 2FE",
                 "akm_realistic",
-                {
-                    "n_workers": 1_000_000,
-                    "n_firms": 50_000,
-                    "n_years": 20,
-                    "n_fe": 2,
-                },
+                {"n_workers": 1_000_000, "n_firms": 50_000, "n_years": 20, "n_fe": 2},
+                opts.seed,
             ),
         ]
-        solver_sets = [standard_solver_configs(opts)] * len(problems)
 
-    all_results: list[BenchmarkResult] = []
-    for (name, gen_key, params), solvers in zip(problems, solver_sets):
-        gen = get_generator(gen_key)
-        cats, n_levels, y = gen(**params, seed=opts.seed)
-        print(f"\n  {name}: DOFs={sum(n_levels):,}, Rows={len(cats[0]):,}")
-
-        for cfg in solvers:
-            try:
-                result = run_solve(cats, n_levels, y, cfg)
-                result.problem = name
-                all_results.append(result)
-            except Exception as e:
-                print(f"    WARNING: {cfg.label} failed: {e}")
-
+    configs = standard_solver_configs(opts)
+    all_results = run_problem_set(problems, configs)
     print_table(all_results)
     print("\n")
     print_pivot(all_results)
@@ -153,20 +122,53 @@ def run_akm_panel(opts: SuiteOptions) -> list[BenchmarkResult]:
     tags=("akm", "scaling"),
 )
 def run_akm_scaling(opts: SuiteOptions) -> list[BenchmarkResult]:
-    gen = get_generator("akm_realistic")
-
     if opts.quick:
-        sizes = [
-            ("10K", {"n_workers": 10_000, "n_firms": 500, "n_years": 10}),
-            ("50K", {"n_workers": 50_000, "n_firms": 2_500, "n_years": 12}),
+        problems = [
+            ProblemSpec(
+                "realistic 10K",
+                "akm_realistic",
+                {"n_workers": 10_000, "n_firms": 500, "n_years": 10},
+                opts.seed,
+            ),
+            ProblemSpec(
+                "realistic 50K",
+                "akm_realistic",
+                {"n_workers": 50_000, "n_firms": 2_500, "n_years": 12},
+                opts.seed,
+            ),
         ]
     else:
-        sizes = [
-            ("10K", {"n_workers": 10_000, "n_firms": 500, "n_years": 10}),
-            ("50K", {"n_workers": 50_000, "n_firms": 2_500, "n_years": 12}),
-            ("100K", {"n_workers": 100_000, "n_firms": 5_000, "n_years": 15}),
-            ("500K", {"n_workers": 500_000, "n_firms": 25_000, "n_years": 18}),
-            ("1M", {"n_workers": 1_000_000, "n_firms": 50_000, "n_years": 20}),
+        problems = [
+            ProblemSpec(
+                "realistic 10K",
+                "akm_realistic",
+                {"n_workers": 10_000, "n_firms": 500, "n_years": 10},
+                opts.seed,
+            ),
+            ProblemSpec(
+                "realistic 50K",
+                "akm_realistic",
+                {"n_workers": 50_000, "n_firms": 2_500, "n_years": 12},
+                opts.seed,
+            ),
+            ProblemSpec(
+                "realistic 100K",
+                "akm_realistic",
+                {"n_workers": 100_000, "n_firms": 5_000, "n_years": 15},
+                opts.seed,
+            ),
+            ProblemSpec(
+                "realistic 500K",
+                "akm_realistic",
+                {"n_workers": 500_000, "n_firms": 25_000, "n_years": 18},
+                opts.seed,
+            ),
+            ProblemSpec(
+                "realistic 1M",
+                "akm_realistic",
+                {"n_workers": 1_000_000, "n_firms": 50_000, "n_years": 20},
+                opts.seed,
+            ),
         ]
 
     schur = SchurComplement(
@@ -184,19 +186,7 @@ def run_akm_scaling(opts: SuiteOptions) -> list[BenchmarkResult]:
         ),
     ]
 
-    all_results: list[BenchmarkResult] = []
-    for label, params in sizes:
-        cats, n_levels, y = gen(**params, seed=opts.seed)
-        print(f"\n  realistic {label}: DOFs={sum(n_levels):,}, Rows={len(cats[0]):,}")
-
-        for cfg in scaling_configs:
-            try:
-                result = run_solve(cats, n_levels, y, cfg)
-                result.problem = f"realistic {label}"
-                all_results.append(result)
-            except Exception as e:
-                print(f"    WARNING: {cfg.label} failed: {e}")
-
+    all_results = run_problem_set(problems, scaling_configs)
     print_table(all_results)
     print("\n")
     print_pivot(all_results)

@@ -63,6 +63,7 @@ impl<S: LocalSolver> SubdomainEntry<S> {
     ///
     /// - `r_scratch` must have length >= `self.scratch_size()`
     /// - `z_scratch` must have length >= `self.scratch_size()`
+    #[cfg(test)]
     pub fn apply_weighted_into_with_scratch(
         &self,
         r: &[f64],

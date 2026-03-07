@@ -7,14 +7,15 @@ employer-employee data with regional labour markets and low mobility.
 
 from __future__ import annotations
 
-from .._registry import SuiteOptions, suite
-from .._table import print_pivot, print_table
-from .._types import (
+from .._framework import (
     BenchmarkResult,
     ProblemSpec,
+    SuiteOptions,
     run_problem_set,
     standard_solver_configs,
+    suite,
 )
+from .._table import print_pivot, print_table
 
 
 @suite(

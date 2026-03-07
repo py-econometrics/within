@@ -10,10 +10,15 @@ from within._within import (
     MultiplicativeSchwarz,
     SchurComplement,
 )
-from .._problems import get_generator
-from .._registry import SuiteOptions, suite
+from .._framework import (
+    BenchmarkResult,
+    ProblemSpec,
+    SolverConfig,
+    SuiteOptions,
+    run_problem_set,
+    suite,
+)
 from .._table import print_table
-from .._types import BenchmarkResult, ProblemSpec, SolverConfig, run_solve
 
 RESIDUAL_THRESHOLD = 1e-6
 
@@ -128,19 +133,9 @@ def run_verify(opts: SuiteOptions) -> list[BenchmarkResult]:
         ),
     ]
 
-    all_results: list[BenchmarkResult] = []
-    for prob in problems:
-        gen = get_generator(prob.generator)
-        cats, n_levels, y = gen(**prob.params, seed=prob.seed)
-        print(f"\nProblem: {prob.name}  (DOFs={sum(n_levels)}, Rows={len(cats[0])})")
-
-        for cfg in configs:
-            result = run_solve(cats, n_levels, y, cfg)
-            result.problem = prob.name
-            result.passed = (
-                result.converged and result.final_residual < RESIDUAL_THRESHOLD
-            )
-            all_results.append(result)
+    all_results = run_problem_set(problems, configs)
+    for r in all_results:
+        r.passed = r.converged and r.final_residual < RESIDUAL_THRESHOLD
 
     print_table(
         all_results,

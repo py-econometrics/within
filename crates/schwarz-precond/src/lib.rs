@@ -29,13 +29,81 @@
 #![deny(missing_docs)]
 #![warn(clippy::all)]
 
+// ============================================================================
+// Operator trait + IdentityOperator
+// ============================================================================
+
+/// A linear operator A: R^ncols -> R^nrows with its adjoint A^T.
+///
+/// Preconditioners are operators too (M^{-1} is a linear map).
+/// All implementors must be Send + Sync to enable Rayon parallelism.
+pub trait Operator: Send + Sync {
+    /// Number of rows in the operator.
+    fn nrows(&self) -> usize;
+    /// Number of columns in the operator.
+    fn ncols(&self) -> usize;
+    /// y = A*x
+    fn apply(&self, x: &[f64], y: &mut [f64]);
+    /// Computes y = A^T * x. For symmetric operators, this should delegate to `apply`.
+    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]);
+
+    /// Fallible version of [`Operator::apply`].
+    ///
+    /// Implementors with runtime failure modes should override this.
+    fn try_apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), error::ApplyError> {
+        self.apply(x, y);
+        Ok(())
+    }
+
+    /// Fallible version of [`Operator::apply_adjoint`].
+    ///
+    /// Implementors with runtime failure modes should override this.
+    fn try_apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), error::ApplyError> {
+        self.apply_adjoint(x, y);
+        Ok(())
+    }
+}
+
+/// Identity operator: applies the identity map (y = x).
+///
+/// Used to deduplicate CG: unpreconditioned CG delegates to preconditioned CG
+/// with this as the preconditioner. The monomorphizer fully inlines the copies.
+pub struct IdentityOperator {
+    n: usize,
+}
+
+impl IdentityOperator {
+    /// Create an identity operator of dimension `n`.
+    pub fn new(n: usize) -> Self {
+        Self { n }
+    }
+}
+
+impl Operator for IdentityOperator {
+    fn nrows(&self) -> usize {
+        self.n
+    }
+    fn ncols(&self) -> usize {
+        self.n
+    }
+    #[inline(always)]
+    fn apply(&self, x: &[f64], y: &mut [f64]) {
+        y.copy_from_slice(x);
+    }
+    #[inline(always)]
+    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) {
+        y.copy_from_slice(x);
+    }
+}
+
+// ============================================================================
+// Modules
+// ============================================================================
+
 /// Domain decomposition primitives: subdomain cores and partition weights.
 pub mod domain;
 mod error;
 mod local_solve;
-mod multiplicative_schwarz;
-mod operator;
-mod residual_update;
 mod schwarz;
 /// Iterative solvers.
 pub mod solve;
@@ -44,8 +112,8 @@ mod sparse_matrix;
 pub use domain::{PartitionWeights, SubdomainCore};
 pub use error::{ApplyError, LocalSolveError, PreconditionerBuildError, SolveError};
 pub use local_solve::{LocalSolver, SubdomainEntry};
-pub use multiplicative_schwarz::MultiplicativeSchwarzPreconditioner;
-pub use operator::{IdentityOperator, Operator};
-pub use residual_update::{OperatorResidualUpdater, ResidualUpdater};
-pub use schwarz::SchwarzPreconditioner;
+pub use schwarz::{
+    MultiplicativeSchwarzPreconditioner, OperatorResidualUpdater, ResidualUpdater,
+    SchwarzPreconditioner,
+};
 pub use sparse_matrix::SparseMatrix;
