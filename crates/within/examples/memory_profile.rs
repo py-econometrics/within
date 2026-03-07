@@ -10,9 +10,9 @@ use std::time::Instant;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use schwarz_precond::solve::cg::cg_solve_preconditioned;
-use within::config::LocalSolverConfig;
 use within::domain::WeightedDesign;
 use within::observation::{FactorMajorStore, ObservationWeights};
+use within::LocalSolverConfig;
 use within::{build_schwarz, GramianOperator};
 
 fn rss_mb() -> f64 {
@@ -104,7 +104,7 @@ fn main() {
 
     // Phase 2: Build Schwarz preconditioner
     let t = Instant::now();
-    let schwarz = build_schwarz(&design, &LocalSolverConfig::cg_default())
+    let schwarz = build_schwarz(&design, &LocalSolverConfig::solver_default())
         .expect("build schwarz preconditioner");
     let rss_schwarz = rss_mb();
     let dt_schwarz = t.elapsed().as_secs_f64();

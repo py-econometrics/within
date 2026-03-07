@@ -1,5 +1,6 @@
 use within::{
-    demean_batch, solve, GmresPrecond, LocalSolverConfig, OperatorRepr, SolverMethod, SolverParams,
+    demean_batch, solve, KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner,
+    SolverParams,
 };
 
 #[path = "common/orchestrate_helpers.rs"]
@@ -38,10 +39,9 @@ fn test_high_level_solve_preconditioned() {
     let y = vec![1.0, 2.0, 3.0, 4.0, 5.0];
 
     let params = SolverParams {
-        method: SolverMethod::Cg {
-            preconditioner: Some(LocalSolverConfig::cg_default()),
-            operator: OperatorRepr::Implicit,
-        },
+        krylov: KrylovMethod::Cg,
+        operator: OperatorRepr::Implicit,
+        preconditioner: Some(Preconditioner::Additive(LocalSolverConfig::solver_default())),
         tol: 1e-8,
         maxiter: 1000,
     };
@@ -55,13 +55,11 @@ fn test_demean_batch_gmres_multiplicative() {
     let design = common::make_test_design();
     let columns = vec![vec![1.0, 2.0, 3.0, 4.0, 5.0], vec![5.0, 4.0, 3.0, 2.0, 1.0]];
     let params = SolverParams {
-        method: SolverMethod::Gmres {
-            preconditioner: Some(GmresPrecond::Multiplicative(
-                LocalSolverConfig::gmres_default(),
-            )),
-            operator: OperatorRepr::Implicit,
-            restart: 30,
-        },
+        krylov: KrylovMethod::Gmres { restart: 30 },
+        operator: OperatorRepr::Implicit,
+        preconditioner: Some(Preconditioner::Multiplicative(
+            LocalSolverConfig::solver_default(),
+        )),
         tol: 1e-8,
         maxiter: 1000,
     };

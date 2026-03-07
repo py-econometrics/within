@@ -8,7 +8,7 @@
 //! Run with: `cargo run --example preconditioned_solve`
 
 use within::{
-    solve, GmresPrecond, LocalSolverConfig, OperatorRepr, SolveResult, SolverMethod, SolverParams,
+    solve, KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner, SolveResult, SolverParams,
 };
 
 fn main() {
@@ -41,13 +41,11 @@ fn main() {
     let cg_params = SolverParams::default();
     let cg_result = solve(&categories, &n_levels, &y, None, &cg_params).expect("cg solve");
     let gmres_params = SolverParams {
-        method: SolverMethod::Gmres {
-            preconditioner: Some(GmresPrecond::Multiplicative(
-                LocalSolverConfig::gmres_default(),
-            )),
-            operator: OperatorRepr::Implicit,
-            restart: 30,
-        },
+        krylov: KrylovMethod::Gmres { restart: 30 },
+        operator: OperatorRepr::Implicit,
+        preconditioner: Some(Preconditioner::Multiplicative(
+            LocalSolverConfig::solver_default(),
+        )),
         tol: 1e-8,
         maxiter: 1000,
     };

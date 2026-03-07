@@ -6,9 +6,8 @@ import pytest
 from within import (
     CG,
     GMRES,
-    AdditiveSchwarz,
-    MultiplicativeSchwarz,
     OperatorRepr,
+    Preconditioner,
     solve,
 )
 
@@ -46,23 +45,40 @@ class TestSolveDefaults:
         )
         assert result.converged
 
-    def test_gmres(self, problem):
+    def test_gmres_multiplicative(self, problem):
         cats, y = problem
         result = solve(
-            as_solver_categories(cats), y, GMRES(preconditioner=MultiplicativeSchwarz())
+            as_solver_categories(cats),
+            y,
+            GMRES(preconditioner=Preconditioner.Multiplicative),
         )
         assert result.converged
 
     def test_rejects_multiplicative_cg(self, problem):
         cats, y = problem
         with pytest.raises(
-            TypeError, match="CG preconditioner must be AdditiveSchwarz or None"
+            ValueError,
+            match="CG requires a symmetric preconditioner",
         ):
             solve(
                 as_solver_categories(cats),
                 y,
-                CG(preconditioner=MultiplicativeSchwarz()),
+                CG(preconditioner=Preconditioner.Multiplicative),
             )
+
+    def test_unpreconditioned_cg(self, problem):
+        cats, y = problem
+        result = solve(
+            as_solver_categories(cats), y, CG(preconditioner=Preconditioner.Off)
+        )
+        assert result.converged
+
+    def test_unpreconditioned_gmres(self, problem):
+        cats, y = problem
+        result = solve(
+            as_solver_categories(cats), y, GMRES(preconditioner=Preconditioner.Off)
+        )
+        assert result.converged
 
 
 class TestSolveWeighted:
@@ -91,14 +107,40 @@ class TestPreconditioners:
     def test_additive_schwarz(self, problem):
         cats, y = problem
         result = solve(
-            as_solver_categories(cats), y, CG(preconditioner=AdditiveSchwarz())
+            as_solver_categories(cats),
+            y,
+            CG(preconditioner=Preconditioner.Additive),
         )
         assert result.converged
 
     def test_multiplicative_schwarz(self, problem):
         cats, y = problem
         result = solve(
-            as_solver_categories(cats), y, GMRES(preconditioner=MultiplicativeSchwarz())
+            as_solver_categories(cats),
+            y,
+            GMRES(preconditioner=Preconditioner.Multiplicative),
+        )
+        assert result.converged
+
+    def test_advanced_additive_schwarz(self, problem):
+        """Test backward compat with advanced config imported from _within."""
+        from within._within import AdditiveSchwarz
+
+        cats, y = problem
+        result = solve(
+            as_solver_categories(cats), y, CG(preconditioner=AdditiveSchwarz())
+        )
+        assert result.converged
+
+    def test_advanced_multiplicative_schwarz(self, problem):
+        """Test backward compat with advanced config imported from _within."""
+        from within._within import MultiplicativeSchwarz
+
+        cats, y = problem
+        result = solve(
+            as_solver_categories(cats),
+            y,
+            GMRES(preconditioner=MultiplicativeSchwarz()),
         )
         assert result.converged
 

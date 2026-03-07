@@ -12,12 +12,11 @@ make real AKM data hard:
 
 from __future__ import annotations
 
-from within import (
+from within import CG, GMRES
+from within._within import (
     AdditiveSchwarz,
     ApproxCholConfig,
     ApproxSchurConfig,
-    CG,
-    GMRES,
     MultiplicativeSchwarz,
     SchurComplement,
 )

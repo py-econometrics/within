@@ -1,28 +1,18 @@
 from within._within import (
-    ApproxCholConfig,
-    ApproxSchurConfig,
     OperatorRepr,
-    SchurComplement,
-    FullSddm,
+    Preconditioner,
     SolveResult,
     CG,
     GMRES,
-    AdditiveSchwarz,
-    MultiplicativeSchwarz,
     solve,
 )
 
 
 __all__ = [
-    "ApproxCholConfig",
-    "ApproxSchurConfig",
     "OperatorRepr",
-    "SchurComplement",
-    "FullSddm",
+    "Preconditioner",
     "SolveResult",
     "CG",
     "GMRES",
-    "AdditiveSchwarz",
-    "MultiplicativeSchwarz",
     "solve",
 ]

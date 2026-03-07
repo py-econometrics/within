@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from within import (
+from within import CG
+from within._within import (
     AdditiveSchwarz,
     ApproxCholConfig,
     ApproxSchurConfig,
-    CG,
     SchurComplement,
 )
 from .._problems import get_generator

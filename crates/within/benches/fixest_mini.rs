@@ -5,7 +5,7 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Samplin
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use schwarz_precond::Operator;
-use within::config::{LocalSolverConfig, OperatorRepr, SolverMethod, SolverParams};
+use within::config::{KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner, SolverParams};
 use within::domain::WeightedDesign;
 use within::observation::{FactorMajorStore, ObservationWeights};
 use within::operator::gramian::{Gramian, GramianOperator};
@@ -138,14 +138,15 @@ fn run_cg_1l(design: &WeightedDesign<FactorMajorStore>, y: &[f64], ac2: bool) {
     };
 
     let params = SolverParams {
-        method: SolverMethod::Cg {
-            preconditioner: Some(LocalSolverConfig::SchurComplement {
+        krylov: KrylovMethod::Cg,
+        operator: OperatorRepr::Implicit,
+        preconditioner: Some(Preconditioner::Additive(
+            LocalSolverConfig::SchurComplement {
                 approx_chol,
                 approx_schur: Some(within::ApproxSchurConfig::default()),
                 dense_threshold: within::DEFAULT_DENSE_SCHUR_THRESHOLD,
-            }),
-            operator: OperatorRepr::Implicit,
-        },
+            },
+        )),
         tol: MINI_TOL,
         maxiter: MINI_MAXITER,
     };

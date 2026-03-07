@@ -7,14 +7,12 @@ observations.
 
 from __future__ import annotations
 
-from within import (
+from within import CG, GMRES, OperatorRepr
+from within._within import (
     AdditiveSchwarz,
     ApproxCholConfig,
     ApproxSchurConfig,
-    CG,
-    GMRES,
     MultiplicativeSchwarz,
-    OperatorRepr,
     SchurComplement,
 )
 from .._problems import get_generator

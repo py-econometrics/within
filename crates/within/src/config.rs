@@ -56,8 +56,8 @@ impl Default for LocalSolverConfig {
 }
 
 impl LocalSolverConfig {
-    /// CG-specific default: uses split_merge=2 for the reduced Schur system.
-    pub fn cg_default() -> Self {
+    /// Default for iterative solvers: uses split_merge=2 for the reduced Schur system.
+    pub fn solver_default() -> Self {
         Self::SchurComplement {
             approx_chol: approx_chol::Config {
                 split_merge: Some(2),
@@ -66,11 +66,6 @@ impl LocalSolverConfig {
             approx_schur: Some(ApproxSchurConfig::default()),
             dense_threshold: DEFAULT_DENSE_SCHUR_THRESHOLD,
         }
-    }
-
-    /// GMRES-specific default: uses split_merge=2 for the reduced Schur system.
-    pub fn gmres_default() -> Self {
-        Self::cg_default()
     }
 }
 
@@ -90,67 +85,44 @@ pub struct ApproxSchurConfig {
 }
 
 // ---------------------------------------------------------------------------
-// GMRES preconditioner choice
+// Krylov method
 // ---------------------------------------------------------------------------
 
-/// Preconditioner choice for GMRES (supports both additive and multiplicative).
-#[derive(Debug, Clone)]
-pub enum GmresPrecond {
-    Additive(LocalSolverConfig),
-    Multiplicative(LocalSolverConfig),
-}
-
-// ---------------------------------------------------------------------------
-// Solver configuration types
-// ---------------------------------------------------------------------------
-
-/// Solver method with embedded preconditioner choice.
-///
-/// CG can only use additive Schwarz (or none) — multiplicative is impossible
-/// at the type level since it produces a non-symmetric preconditioner.
-#[derive(Debug, Clone)]
-pub enum SolverMethod {
-    Cg {
-        /// `None` = unpreconditioned, `Some` = additive Schwarz.
-        preconditioner: Option<LocalSolverConfig>,
-        operator: OperatorRepr,
-    },
+/// Outer Krylov method.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum KrylovMethod {
+    #[default]
+    Cg,
     Gmres {
-        /// `None` = unpreconditioned, `Some` = additive or multiplicative.
-        preconditioner: Option<GmresPrecond>,
-        operator: OperatorRepr,
         restart: usize,
     },
 }
 
-impl Default for SolverMethod {
-    fn default() -> Self {
-        Self::cg_default()
-    }
+// ---------------------------------------------------------------------------
+// Preconditioner
+// ---------------------------------------------------------------------------
+
+/// Schwarz preconditioner variant with embedded local solver configuration.
+///
+/// CG requires a symmetric preconditioner so only `Additive` is valid.
+/// GMRES supports both.
+#[derive(Debug, Clone)]
+pub enum Preconditioner {
+    /// Additive Schwarz (symmetric — valid for CG and GMRES).
+    Additive(LocalSolverConfig),
+    /// Multiplicative Schwarz (non-symmetric — GMRES only).
+    Multiplicative(LocalSolverConfig),
 }
 
-impl SolverMethod {
-    /// CG with additive Schwarz, implicit operator.
-    pub fn cg_default() -> Self {
-        Self::Cg {
-            preconditioner: Some(LocalSolverConfig::cg_default()),
-            operator: OperatorRepr::Implicit,
-        }
-    }
-
-    /// GMRES with additive Schwarz, implicit operator, restart=30.
-    pub fn gmres_default() -> Self {
-        Self::Gmres {
-            preconditioner: Some(GmresPrecond::Additive(LocalSolverConfig::gmres_default())),
-            operator: OperatorRepr::Implicit,
-            restart: 30,
-        }
-    }
-}
+// ---------------------------------------------------------------------------
+// Solver configuration
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub struct SolverParams {
-    pub method: SolverMethod,
+    pub krylov: KrylovMethod,
+    pub operator: OperatorRepr,
+    pub preconditioner: Option<Preconditioner>,
     pub tol: f64,
     pub maxiter: usize,
 }
@@ -158,7 +130,9 @@ pub struct SolverParams {
 impl Default for SolverParams {
     fn default() -> Self {
         Self {
-            method: SolverMethod::default(),
+            krylov: KrylovMethod::Cg,
+            operator: OperatorRepr::Implicit,
+            preconditioner: Some(Preconditioner::Additive(LocalSolverConfig::solver_default())),
             tol: 1e-8,
             maxiter: 1000,
         }

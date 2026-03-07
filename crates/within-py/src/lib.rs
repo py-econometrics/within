@@ -10,6 +10,7 @@ fn _within(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<api::PyAdditiveSchwarz>()?;
     m.add_class::<api::PyMultiplicativeSchwarz>()?;
     m.add_class::<api::PyOperatorRepr>()?;
+    m.add_class::<api::PyPreconditioner>()?;
     m.add_class::<api::PyApproxCholConfig>()?;
     m.add_class::<api::PyApproxSchurConfig>()?;
     m.add_class::<api::PySchurComplement>()?;

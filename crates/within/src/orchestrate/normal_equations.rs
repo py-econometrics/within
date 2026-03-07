@@ -5,7 +5,7 @@ use schwarz_precond::solve::gmres::gmres_solve;
 use schwarz_precond::solve::vec_norm;
 use schwarz_precond::{IdentityOperator, Operator};
 
-use crate::config::{GmresPrecond, LocalSolverConfig, OperatorRepr, SolverMethod, SolverParams};
+use crate::config::{KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner, SolverParams};
 use crate::domain::{
     build_domains_and_gramian_blocks, build_local_domains, Subdomain, WeightedDesign,
 };
@@ -23,68 +23,6 @@ pub(super) struct MethodSolve {
     pub(super) x: Vec<f64>,
     pub(super) converged: bool,
     pub(super) iterations: usize,
-}
-
-#[derive(Clone, Copy)]
-enum KrylovMethod {
-    Cg,
-    Gmres { restart: usize },
-}
-
-#[derive(Clone, Copy)]
-enum PreconditionerBuild<'a> {
-    None,
-    Additive(&'a LocalSolverConfig),
-    Multiplicative(&'a LocalSolverConfig),
-}
-
-#[derive(Clone, Copy)]
-struct SolverBuildSpec<'a> {
-    operator: OperatorRepr,
-    preconditioner: PreconditionerBuild<'a>,
-    krylov: KrylovMethod,
-    tol: f64,
-    maxiter: usize,
-}
-
-impl<'a> SolverBuildSpec<'a> {
-    fn from_params(params: &'a SolverParams) -> Self {
-        let (operator, preconditioner, krylov) = match &params.method {
-            SolverMethod::Cg {
-                preconditioner,
-                operator,
-            } => (
-                *operator,
-                match preconditioner {
-                    Some(cfg) => PreconditionerBuild::Additive(cfg),
-                    None => PreconditionerBuild::None,
-                },
-                KrylovMethod::Cg,
-            ),
-            SolverMethod::Gmres {
-                preconditioner,
-                operator,
-                restart,
-            } => (
-                *operator,
-                match preconditioner {
-                    Some(GmresPrecond::Additive(cfg)) => PreconditionerBuild::Additive(cfg),
-                    Some(GmresPrecond::Multiplicative(cfg)) => {
-                        PreconditionerBuild::Multiplicative(cfg)
-                    }
-                    None => PreconditionerBuild::None,
-                },
-                KrylovMethod::Gmres { restart: *restart },
-            ),
-        };
-        Self {
-            operator,
-            preconditioner,
-            krylov,
-            tol: params.tol,
-            maxiter: params.maxiter,
-        }
-    }
 }
 
 fn run_cg_unpreconditioned<A: Operator + ?Sized>(
@@ -280,12 +218,12 @@ impl<'a, S: ObservationStore> AssemblyMode<'a> for ImplicitAssembly<'a, S> {
 
 fn assemble_system<'a, A: AssemblyMode<'a>>(
     assembly: A,
-    preconditioner: PreconditionerBuild<'_>,
+    preconditioner: Option<&Preconditioner>,
 ) -> WithinResult<AssembledSystem<'a>> {
     match preconditioner {
-        PreconditionerBuild::None => Ok(assembly.unpreconditioned()),
-        PreconditionerBuild::Additive(config) => A::additive(assembly.prepare(), config),
-        PreconditionerBuild::Multiplicative(config) => {
+        None => Ok(assembly.unpreconditioned()),
+        Some(Preconditioner::Additive(config)) => A::additive(assembly.prepare(), config),
+        Some(Preconditioner::Multiplicative(config)) => {
             A::multiplicative(assembly.prepare(), config)
         }
     }
@@ -299,19 +237,27 @@ impl<'a> NormalEquationSolver<'a> {
     fn preconditioner(&self) -> Option<&dyn Operator> {
         self.preconditioner.as_deref()
     }
+
     pub(super) fn build<S: ObservationStore>(
         design: &'a WeightedDesign<S>,
         params: &SolverParams,
     ) -> WithinResult<Self> {
-        let spec = SolverBuildSpec::from_params(params);
-        let (operator, preconditioner) =
-            build_operator_and_preconditioner(design, spec.operator, spec.preconditioner)?;
+        let (operator, preconditioner) = match params.operator {
+            OperatorRepr::Explicit => assemble_system(
+                ExplicitAssembly::new(design),
+                params.preconditioner.as_ref(),
+            )?,
+            OperatorRepr::Implicit => assemble_system(
+                ImplicitAssembly::new(design),
+                params.preconditioner.as_ref(),
+            )?,
+        };
         Ok(Self {
             operator,
             preconditioner,
-            krylov: spec.krylov,
-            tol: spec.tol,
-            maxiter: spec.maxiter,
+            krylov: params.krylov,
+            tol: params.tol,
+            maxiter: params.maxiter,
         })
     }
 
@@ -331,17 +277,6 @@ impl<'a> NormalEquationSolver<'a> {
                 run_gmres(self.operator(), p, rhs, self.tol, self.maxiter, restart)
             }
         }
-    }
-}
-
-fn build_operator_and_preconditioner<'a, S: ObservationStore>(
-    design: &'a WeightedDesign<S>,
-    operator: OperatorRepr,
-    preconditioner: PreconditionerBuild<'_>,
-) -> WithinResult<AssembledSystem<'a>> {
-    match operator {
-        OperatorRepr::Explicit => assemble_system(ExplicitAssembly::new(design), preconditioner),
-        OperatorRepr::Implicit => assemble_system(ImplicitAssembly::new(design), preconditioner),
     }
 }
 

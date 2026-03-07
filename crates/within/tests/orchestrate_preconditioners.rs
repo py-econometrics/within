@@ -1,5 +1,5 @@
 use within::{
-    solve_normal_equations, GmresPrecond, LocalSolverConfig, OperatorRepr, SolverMethod,
+    solve_normal_equations, KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner,
     SolverParams,
 };
 
@@ -170,11 +170,9 @@ fn test_normal_equations_gmres_multiplicative_implicit() {
     let rhs = common::make_rhs_from_unit_solution(&design);
 
     let params = SolverParams {
-        method: SolverMethod::Gmres {
-            preconditioner: Some(GmresPrecond::Multiplicative(LocalSolverConfig::default())),
-            operator: OperatorRepr::Implicit,
-            restart: 30,
-        },
+        krylov: KrylovMethod::Gmres { restart: 30 },
+        operator: OperatorRepr::Implicit,
+        preconditioner: Some(Preconditioner::Multiplicative(LocalSolverConfig::default())),
         tol: 1e-8,
         maxiter: 1000,
     };
@@ -190,11 +188,9 @@ fn test_normal_equations_gmres_multiplicative_one_level() {
     let rhs = common::make_rhs_from_unit_solution(&design);
 
     let params = SolverParams {
-        method: SolverMethod::Gmres {
-            preconditioner: Some(GmresPrecond::Multiplicative(LocalSolverConfig::default())),
-            operator: OperatorRepr::Explicit,
-            restart: 30,
-        },
+        krylov: KrylovMethod::Gmres { restart: 30 },
+        operator: OperatorRepr::Explicit,
+        preconditioner: Some(Preconditioner::Multiplicative(LocalSolverConfig::default())),
         tol: 1e-8,
         maxiter: 1000,
     };

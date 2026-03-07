@@ -1,4 +1,7 @@
-use within::{solve_normal_equations, LocalSolverConfig, OperatorRepr, SolverMethod, SolverParams};
+use within::{
+    solve_normal_equations, KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner,
+    SolverParams,
+};
 
 #[path = "common/orchestrate_helpers.rs"]
 mod common;
@@ -9,10 +12,9 @@ fn test_normal_equations_cg_unpreconditioned() {
     let rhs = common::make_rhs_from_unit_solution(&design);
 
     let params = SolverParams {
-        method: SolverMethod::Cg {
-            preconditioner: None,
-            operator: OperatorRepr::Implicit,
-        },
+        krylov: KrylovMethod::Cg,
+        operator: OperatorRepr::Implicit,
+        preconditioner: None,
         tol: 1e-8,
         maxiter: 1000,
     };
@@ -26,10 +28,9 @@ fn test_normal_equations_preconditioned() {
     let rhs = common::make_rhs_from_unit_solution(&design);
 
     let params = SolverParams {
-        method: SolverMethod::Cg {
-            preconditioner: Some(LocalSolverConfig::default()),
-            operator: OperatorRepr::Implicit,
-        },
+        krylov: KrylovMethod::Cg,
+        operator: OperatorRepr::Implicit,
+        preconditioner: Some(Preconditioner::Additive(LocalSolverConfig::default())),
         tol: 1e-8,
         maxiter: 1000,
     };
@@ -45,10 +46,9 @@ fn test_least_squares_cg() {
     let y = vec![1.0, 2.0, 3.0, 4.0, 5.0];
 
     let params = SolverParams {
-        method: SolverMethod::Cg {
-            preconditioner: None,
-            operator: OperatorRepr::Implicit,
-        },
+        krylov: KrylovMethod::Cg,
+        operator: OperatorRepr::Implicit,
+        preconditioner: None,
         tol: 1e-8,
         maxiter: 1000,
     };
@@ -70,10 +70,9 @@ fn test_least_squares_weighted_cg_preconditioned() {
     let y = vec![1.0, 2.0, 3.0, 4.0, 5.0];
 
     let params = SolverParams {
-        method: SolverMethod::Cg {
-            preconditioner: Some(LocalSolverConfig::cg_default()),
-            operator: OperatorRepr::Implicit,
-        },
+        krylov: KrylovMethod::Cg,
+        operator: OperatorRepr::Implicit,
+        preconditioner: Some(Preconditioner::Additive(LocalSolverConfig::solver_default())),
         tol: 1e-8,
         maxiter: 1000,
     };

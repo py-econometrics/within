@@ -7,7 +7,7 @@ use criterion::{
 };
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
-use within::config::{GmresPrecond, LocalSolverConfig, OperatorRepr, SolverMethod, SolverParams};
+use within::config::{KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner, SolverParams};
 use within::domain::WeightedDesign;
 use within::observation::{FactorMajorStore, ObservationWeights};
 use within::orchestrate::solve_normal_equations;
@@ -135,10 +135,9 @@ fn run_smoke(
 fn run_cg_one_level(design: &WeightedDesign<FactorMajorStore>, y: &[f64], ac2: bool) {
     let cfg = one_level_local_solver(ac2);
     let params = SolverParams {
-        method: SolverMethod::Cg {
-            preconditioner: Some(cfg),
-            operator: OperatorRepr::Implicit,
-        },
+        krylov: KrylovMethod::Cg,
+        operator: OperatorRepr::Implicit,
+        preconditioner: Some(Preconditioner::Additive(cfg)),
         tol: SMOKE_TOL,
         maxiter: SMOKE_MAXITER,
     };
@@ -154,11 +153,11 @@ fn run_gmres_multiplicative_one_level(
 ) {
     let cfg = one_level_local_solver(ac2);
     let params = SolverParams {
-        method: SolverMethod::Gmres {
-            preconditioner: Some(GmresPrecond::Multiplicative(cfg)),
-            operator,
+        krylov: KrylovMethod::Gmres {
             restart: SMOKE_GMRES_RESTART,
         },
+        operator,
+        preconditioner: Some(Preconditioner::Multiplicative(cfg)),
         tol: SMOKE_TOL,
         maxiter: SMOKE_MAXITER,
     };

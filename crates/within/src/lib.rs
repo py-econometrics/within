@@ -64,7 +64,7 @@ pub use orchestrate::{demean_batch, solve, solve_normal_equations, BatchDemeanRe
 // ---------------------------------------------------------------------------
 
 pub use config::{
-    ApproxSchurConfig, GmresPrecond, LocalSolverConfig, OperatorRepr, SolverMethod, SolverParams,
+    ApproxSchurConfig, KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner, SolverParams,
     DEFAULT_DENSE_SCHUR_THRESHOLD,
 };
 pub use error::{WithinError, WithinResult};

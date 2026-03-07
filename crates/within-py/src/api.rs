@@ -5,9 +5,13 @@ use numpy::{IntoPyArray, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
 
 use within::config::{
-    ApproxSchurConfig, GmresPrecond, LocalSolverConfig, OperatorRepr, SolverMethod, SolverParams,
+    ApproxSchurConfig, KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner, SolverParams,
 };
 use within::{solve as solve_native, SolveResult};
+
+// ---------------------------------------------------------------------------
+// Low-level config classes (available via `_within` for benchmarks)
+// ---------------------------------------------------------------------------
 
 #[pyclass(frozen)]
 #[pyo3(name = "ApproxCholConfig")]
@@ -90,7 +94,25 @@ impl PyOperatorRepr {
 }
 
 // ---------------------------------------------------------------------------
-// Local solver config classes
+// Preconditioner enum (public API)
+// ---------------------------------------------------------------------------
+
+/// Preconditioner selection for CG / GMRES solvers.
+///
+/// - ``Preconditioner.Additive`` — additive Schwarz (default, symmetric)
+/// - ``Preconditioner.Multiplicative`` — multiplicative Schwarz (GMRES only)
+/// - ``Preconditioner.Off`` — no preconditioner
+#[pyclass(frozen, eq, eq_int)]
+#[pyo3(name = "Preconditioner")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PyPreconditioner {
+    Additive = 0,
+    Multiplicative = 1,
+    Off = 2,
+}
+
+// ---------------------------------------------------------------------------
+// Local solver config classes (available via `_within` for benchmarks)
 // ---------------------------------------------------------------------------
 
 #[pyclass(frozen)]
@@ -138,7 +160,7 @@ impl PyFullSddm {
 }
 
 // ---------------------------------------------------------------------------
-// Schwarz preconditioner classes
+// Schwarz preconditioner classes (available via `_within` for benchmarks)
 // ---------------------------------------------------------------------------
 
 #[pyclass(frozen)]
@@ -192,6 +214,13 @@ pub struct PyCG {
 
 #[pymethods]
 impl PyCG {
+    /// Create a CG solver configuration.
+    ///
+    /// `preconditioner` accepts:
+    /// - `None` (default) — additive Schwarz with default local solver
+    /// - `Preconditioner.Additive` — same as None (explicit)
+    /// - `Preconditioner.Off` — unpreconditioned CG
+    /// - `AdditiveSchwarz(...)` — advanced: fine-grained local solver config
     #[new]
     #[pyo3(signature = (tol=1e-8, maxiter=1000, preconditioner=None, operator=PyOperatorRepr::Implicit))]
     fn new(
@@ -226,6 +255,14 @@ pub struct PyGMRES {
 
 #[pymethods]
 impl PyGMRES {
+    /// Create a GMRES solver configuration.
+    ///
+    /// `preconditioner` accepts:
+    /// - `None` (default) — additive Schwarz with default local solver
+    /// - `Preconditioner.Additive` — same as None (explicit)
+    /// - `Preconditioner.Multiplicative` — multiplicative Schwarz with default local solver
+    /// - `Preconditioner.Off` — unpreconditioned GMRES
+    /// - `AdditiveSchwarz(...)` / `MultiplicativeSchwarz(...)` — advanced config
     #[new]
     #[pyo3(signature = (tol=1e-8, maxiter=1000, restart=30, preconditioner=None, operator=PyOperatorRepr::Implicit))]
     fn new(
@@ -317,54 +354,76 @@ fn extract_local_solver_or_default(
     }
 }
 
-fn extract_additive_schwarz(
-    py: Python<'_>,
-    preconditioner: &Option<PyObject>,
-    default: LocalSolverConfig,
-    context: &str,
-) -> PyResult<Option<LocalSolverConfig>> {
-    match preconditioner {
-        None => Ok(None),
-        Some(obj) => {
-            let bound = obj.bind(py);
-            let schwarz = bound.downcast::<PyAdditiveSchwarz>().map_err(|_| {
-                PyErr::new::<pyo3::exceptions::PyTypeError, _>(format!(
-                    "{context} preconditioner must be AdditiveSchwarz or None"
-                ))
-            })?;
-            let cfg = extract_local_solver_or_default(py, &schwarz.get().local_solver, default)?;
-            Ok(Some(cfg))
-        }
+/// Extract a `Preconditioner` from a Python object.
+///
+/// Accepts:
+/// - `PyPreconditioner` enum variant (Additive / Multiplicative)
+/// - `AdditiveSchwarz(...)` / `MultiplicativeSchwarz(...)` — advanced config
+fn extract_preconditioner(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Preconditioner> {
+    // Enum shorthand
+    if let Ok(p) = obj.extract::<PyPreconditioner>() {
+        return match p {
+            PyPreconditioner::Additive => {
+                Ok(Preconditioner::Additive(LocalSolverConfig::solver_default()))
+            }
+            PyPreconditioner::Multiplicative => Ok(Preconditioner::Multiplicative(
+                LocalSolverConfig::solver_default(),
+            )),
+            PyPreconditioner::Off => {
+                // Shouldn't reach here (handled by caller), but be safe
+                Ok(Preconditioner::Additive(LocalSolverConfig::solver_default()))
+            }
+        };
     }
+    // Advanced: AdditiveSchwarz / MultiplicativeSchwarz objects
+    if let Ok(schwarz) = obj.downcast::<PyAdditiveSchwarz>() {
+        let cfg = extract_local_solver_or_default(
+            py,
+            &schwarz.get().local_solver,
+            LocalSolverConfig::solver_default(),
+        )?;
+        return Ok(Preconditioner::Additive(cfg));
+    }
+    if let Ok(schwarz) = obj.downcast::<PyMultiplicativeSchwarz>() {
+        let cfg = extract_local_solver_or_default(
+            py,
+            &schwarz.get().local_solver,
+            LocalSolverConfig::solver_default(),
+        )?;
+        return Ok(Preconditioner::Multiplicative(cfg));
+    }
+    Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+        "preconditioner must be Preconditioner.Additive, Preconditioner.Multiplicative, \
+         Preconditioner.Off, AdditiveSchwarz(...), MultiplicativeSchwarz(...), or None",
+    ))
 }
 
-fn extract_gmres_preconditioner(
+/// Extract `Option<Preconditioner>` from the `preconditioner` field of CG/GMRES.
+///
+/// - `None` → additive Schwarz with default local solver
+/// - `Preconditioner.Off` → unpreconditioned (returns `Ok(None)`)
+/// - `Preconditioner.Additive` → additive Schwarz with default local solver
+/// - `Preconditioner.Multiplicative` → multiplicative Schwarz with default local solver
+/// - `AdditiveSchwarz(...)` / `MultiplicativeSchwarz(...)` → advanced config
+fn extract_optional_preconditioner(
     py: Python<'_>,
-    preconditioner: &Option<PyObject>,
-) -> PyResult<Option<GmresPrecond>> {
-    match preconditioner {
-        None => Ok(None),
+    field: &Option<PyObject>,
+) -> PyResult<Option<Preconditioner>> {
+    match field {
+        // None → default: additive Schwarz
+        None => Ok(Some(Preconditioner::Additive(
+            LocalSolverConfig::solver_default(),
+        ))),
         Some(obj) => {
             let bound = obj.bind(py);
-            if let Ok(schwarz) = bound.downcast::<PyAdditiveSchwarz>() {
-                let cfg = extract_local_solver_or_default(
-                    py,
-                    &schwarz.get().local_solver,
-                    LocalSolverConfig::gmres_default(),
-                )?;
-                Ok(Some(GmresPrecond::Additive(cfg)))
-            } else if let Ok(schwarz) = bound.downcast::<PyMultiplicativeSchwarz>() {
-                let cfg = extract_local_solver_or_default(
-                    py,
-                    &schwarz.get().local_solver,
-                    LocalSolverConfig::gmres_default(),
-                )?;
-                Ok(Some(GmresPrecond::Multiplicative(cfg)))
-            } else {
-                Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-                    "GMRES preconditioner must be AdditiveSchwarz, MultiplicativeSchwarz, or None",
-                ))
+            // Preconditioner.Off → unpreconditioned
+            if matches!(
+                bound.extract::<PyPreconditioner>(),
+                Ok(PyPreconditioner::Off)
+            ) {
+                return Ok(None);
             }
+            extract_preconditioner(py, bound).map(Some)
         }
     }
 }
@@ -373,17 +432,16 @@ fn extract_gmres_preconditioner(
 fn extract_solver_params(py: Python<'_>, config: &Bound<'_, PyAny>) -> PyResult<SolverParams> {
     if let Ok(cg) = config.downcast::<PyCG>() {
         let cg = cg.get();
-        let preconditioner = extract_additive_schwarz(
-            py,
-            &cg.preconditioner,
-            LocalSolverConfig::cg_default(),
-            "CG",
-        )?;
+        let preconditioner = extract_optional_preconditioner(py, &cg.preconditioner)?;
+        if matches!(preconditioner, Some(Preconditioner::Multiplicative(_))) {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "CG requires a symmetric preconditioner; use 'additive' or switch to GMRES",
+            ));
+        }
         return Ok(SolverParams {
-            method: SolverMethod::Cg {
-                preconditioner,
-                operator: cg.operator.to_native(),
-            },
+            krylov: KrylovMethod::Cg,
+            operator: cg.operator.to_native(),
+            preconditioner,
             tol: cg.tol,
             maxiter: cg.maxiter,
         });
@@ -391,13 +449,13 @@ fn extract_solver_params(py: Python<'_>, config: &Bound<'_, PyAny>) -> PyResult<
 
     if let Ok(gmres) = config.downcast::<PyGMRES>() {
         let gmres = gmres.get();
-        let preconditioner = extract_gmres_preconditioner(py, &gmres.preconditioner)?;
+        let preconditioner = extract_optional_preconditioner(py, &gmres.preconditioner)?;
         return Ok(SolverParams {
-            method: SolverMethod::Gmres {
-                preconditioner,
-                operator: gmres.operator.to_native(),
+            krylov: KrylovMethod::Gmres {
                 restart: gmres.restart,
             },
+            operator: gmres.operator.to_native(),
+            preconditioner,
             tol: gmres.tol,
             maxiter: gmres.maxiter,
         });
