@@ -46,13 +46,11 @@ impl ColumnBasis {
     /// Caller must ensure no aliasing mutable references to the same column.
     #[inline]
     #[allow(clippy::mut_from_ref)]
-    fn col_mut(&self, j: usize) -> &mut [f64] {
+    unsafe fn col_mut(&self, j: usize) -> &mut [f64] {
         debug_assert!(j < self.len);
         let start = j * self.n;
-        unsafe {
-            let ptr = self.data.as_ptr().add(start) as *mut f64;
-            std::slice::from_raw_parts_mut(ptr, self.n)
-        }
+        let ptr = self.data.as_ptr().add(start) as *mut f64;
+        std::slice::from_raw_parts_mut(ptr, self.n)
     }
 
     /// Append `src` as the next column, incrementing `len`.
@@ -171,13 +169,15 @@ fn arnoldi_cycle<A: Operator + ?Sized, M: Operator + ?Sized>(
     maxiter: usize,
 ) -> Result<(ArnoldiOutcome, usize), SolveError> {
     let mut j = 0;
+    let mut h_norms_max: f64 = 0.0;
 
     while j < iters_this_cycle {
         // z_j = M^{-1} v_j
         {
             let v_j = state.v_basis.col(j);
             state.z_basis.push_zeroed();
-            let z_j = state.z_basis.col_mut(j);
+            // SAFETY: `j` was just pushed and no other reference to column `j` exists.
+            let z_j = unsafe { state.z_basis.col_mut(j) };
             preconditioner.try_apply(v_j, z_j)?;
         }
 
@@ -191,6 +191,7 @@ fn arnoldi_cycle<A: Operator + ?Sized, M: Operator + ?Sized>(
         for i in 0..=j {
             let hij = dot(state.w, state.v_basis.col(i));
             state.h.set(i, j, hij);
+            h_norms_max = h_norms_max.max(hij.abs());
             let v_i = state.v_basis.col(i);
             for (wk, &vi) in state.w.iter_mut().zip(v_i) {
                 *wk -= hij * vi;
@@ -198,6 +199,7 @@ fn arnoldi_cycle<A: Operator + ?Sized, M: Operator + ?Sized>(
         }
         let h_jp1_j = vec_norm(state.w);
         state.h.set(j + 1, j, h_jp1_j);
+        h_norms_max = h_norms_max.max(h_jp1_j);
 
         // Apply previous Givens rotations to the new column
         for i in 0..j {
@@ -240,7 +242,7 @@ fn arnoldi_cycle<A: Operator + ?Sized, M: Operator + ?Sized>(
         }
 
         // Extend basis if not at last iteration
-        if h_jp1_j > 1e-300 {
+        if h_jp1_j > 1e-14 * h_norms_max {
             // Normalise w into next basis vector
             let inv = 1.0 / h_jp1_j;
             for val in state.w.iter_mut() {

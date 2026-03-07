@@ -164,6 +164,8 @@ impl SparseMatrix {
         let mut new_data = Vec::new();
         new_indptr.push(0u32);
 
+        debug_assert!(m <= u32::MAX as usize);
+
         if max_idx + 1 > 4 * m {
             // Sparse subset relative to index range: use HashMap.
             let global_to_local: std::collections::HashMap<usize, usize> = subset
@@ -187,7 +189,9 @@ impl SparseMatrix {
 
             for &global_row in subset {
                 collect_row(global_row, &mut new_indices, &mut new_data);
-                new_indptr.push(new_indices.len() as u32);
+                new_indptr.push(
+                    u32::try_from(new_indices.len()).expect("submatrix nnz exceeds u32::MAX"),
+                );
             }
         } else {
             // Dense subset relative to index range: use Vec for O(1) lookup.
@@ -214,7 +218,9 @@ impl SparseMatrix {
 
             for &global_row in subset {
                 collect_row(global_row, &mut new_indices, &mut new_data);
-                new_indptr.push(new_indices.len() as u32);
+                new_indptr.push(
+                    u32::try_from(new_indices.len()).expect("submatrix nnz exceeds u32::MAX"),
+                );
             }
         }
 
