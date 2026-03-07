@@ -38,7 +38,7 @@ fn main() {
 
     // Solve with default parameters (CG + additive Schwarz, implicit operator).
     let params = SolverParams::default();
-    let result = solve(&categories, &n_levels, &y, &params).expect("solve");
+    let result = solve(&categories, &n_levels, &y, None, &params).expect("solve");
 
     println!("=== Basic solve (default params) ===");
     println!("  converged:  {}", result.converged);

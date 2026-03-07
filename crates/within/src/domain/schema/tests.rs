@@ -1,9 +1,20 @@
 use super::*;
+use crate::observation::{FactorMajorStore, ObservationWeights};
 
 fn make_test_design() -> FixedEffectsDesign {
     let categories = vec![vec![0, 1, 2, 0, 1], vec![0, 1, 2, 3, 0]];
     let n_levels = vec![3, 4];
-    FixedEffectsDesign::new(categories, n_levels, 5).expect("valid test design")
+    let store = FactorMajorStore::new(categories, ObservationWeights::Unit, 5)
+        .expect("valid factor-major store");
+    FixedEffectsDesign::from_store(store, &n_levels).expect("valid test design")
+}
+
+fn make_weighted_design(weights: Vec<f64>) -> FixedEffectsDesign {
+    let categories = vec![vec![0, 1, 0, 1], vec![0, 0, 1, 1]];
+    let n_levels = vec![2, 2];
+    let store = FactorMajorStore::new(categories, ObservationWeights::Dense(weights), 4)
+        .expect("valid weighted factor-major store");
+    FixedEffectsDesign::from_store(store, &n_levels).expect("valid weighted design")
 }
 
 #[test]
@@ -64,13 +75,7 @@ fn test_rmatvec_wdt_unweighted() {
 
 #[test]
 fn test_rmatvec_wdt_weighted() {
-    let dm = FixedEffectsDesign::new_weighted(
-        vec![vec![0, 1, 0, 1], vec![0, 0, 1, 1]],
-        vec![2, 2],
-        4,
-        vec![1.0, 2.0, 3.0, 4.0],
-    )
-    .expect("valid weighted design");
+    let dm = make_weighted_design(vec![1.0, 2.0, 3.0, 4.0]);
     let r = vec![1.0, 1.0, 1.0, 1.0];
     let mut x = vec![0.0; 4];
     dm.rmatvec_wdt(&r, &mut x);
@@ -90,13 +95,7 @@ fn test_gramian_diagonal_unweighted() {
 
 #[test]
 fn test_gramian_diagonal_weighted() {
-    let dm = FixedEffectsDesign::new_weighted(
-        vec![vec![0, 1, 0, 1], vec![0, 0, 1, 1]],
-        vec![2, 2],
-        4,
-        vec![1.0, 2.0, 3.0, 4.0],
-    )
-    .expect("valid weighted design");
+    let dm = make_weighted_design(vec![1.0, 2.0, 3.0, 4.0]);
     let diag = dm.gramian_diagonal();
     // factor 0: level 0 -> w=1+3=4, level 1 -> w=2+4=6
     // factor 1: level 0 -> w=1+2=3, level 1 -> w=3+4=7

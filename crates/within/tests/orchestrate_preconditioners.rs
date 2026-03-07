@@ -107,16 +107,17 @@ fn test_compare_factorization_strategies() {
 
     for (prob_label, n_lev, n_rows, seed) in &problems {
         let mut rng = SmallRng::seed_from_u64(*seed);
-        let cats: Vec<Vec<i64>> = n_lev
+        let cats: Vec<Vec<u32>> = n_lev
             .iter()
             .map(|&nl| {
                 (0..(*n_rows))
-                    .map(|_| rng.random_range(0..nl as i64))
+                    .map(|_| rng.random_range(0..nl as u32))
                     .collect()
             })
             .collect();
-        let design =
-            FixedEffectsDesign::new(cats, n_lev.clone(), *n_rows).expect("valid synthetic design");
+        let store = within::FactorMajorStore::new(cats, within::ObservationWeights::Unit, *n_rows)
+            .expect("valid factor-major store");
+        let design = FixedEffectsDesign::from_store(store, n_lev).expect("valid synthetic design");
 
         let y: Vec<f64> = (0..*n_rows).map(|_| rng.random::<f64>()).collect();
         let design_op = DesignOperator::new(&design);

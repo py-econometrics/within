@@ -540,25 +540,27 @@ mod tests {
     }
 
     fn make_2fe_design() -> FixedEffectsDesign {
-        FixedEffectsDesign::new(
+        let store = FactorMajorStore::new(
             vec![vec![0, 1, 2, 0, 1], vec![0, 1, 2, 3, 0]],
-            vec![3, 4],
+            ObservationWeights::Unit,
             5,
         )
-        .expect("valid 2FE design")
+        .expect("valid factor-major store");
+        FixedEffectsDesign::from_store(store, &[3, 4]).expect("valid 2FE design")
     }
 
     fn make_3fe_design() -> FixedEffectsDesign {
-        FixedEffectsDesign::new(
+        let store = FactorMajorStore::new(
             vec![
                 vec![0, 1, 2, 0, 1, 2],
                 vec![0, 1, 0, 1, 0, 1],
                 vec![0, 0, 1, 1, 0, 1],
             ],
-            vec![3, 2, 2],
+            ObservationWeights::Unit,
             6,
         )
-        .expect("valid 3FE design")
+        .expect("valid factor-major store");
+        FixedEffectsDesign::from_store(store, &[3, 2, 2]).expect("valid 3FE design")
     }
 
     #[test]
@@ -604,9 +606,13 @@ mod tests {
     #[test]
     fn test_from_gramian_block_single_component() {
         // Fully connected 2FE design: single component
-        let design =
-            FixedEffectsDesign::new(vec![vec![0, 1, 0, 1], vec![0, 0, 1, 1]], vec![2, 2], 4)
-                .expect("valid design");
+        let store = FactorMajorStore::new(
+            vec![vec![0, 1, 0, 1], vec![0, 0, 1, 1]],
+            ObservationWeights::Unit,
+            4,
+        )
+        .expect("valid factor-major store");
+        let design = FixedEffectsDesign::from_store(store, &[2, 2]).expect("valid design");
         let gramian = Gramian::build(&design);
 
         let (ct_gram, _) =
@@ -622,9 +628,13 @@ mod tests {
         // Design with two disconnected components:
         // factor 0: [0, 0, 1, 1]   factor 1: [0, 1, 2, 3]
         // levels (0,0), (0,1) form one component; (1,2), (1,3) form another
-        let design =
-            FixedEffectsDesign::new(vec![vec![0, 0, 1, 1], vec![0, 1, 2, 3]], vec![2, 4], 4)
-                .expect("valid design");
+        let store = FactorMajorStore::new(
+            vec![vec![0, 0, 1, 1], vec![0, 1, 2, 3]],
+            ObservationWeights::Unit,
+            4,
+        )
+        .expect("valid factor-major store");
+        let design = FixedEffectsDesign::from_store(store, &[2, 4]).expect("valid design");
         let gramian = Gramian::build(&design);
 
         let (ct_obs, _) = CrossTab::build_for_pair(&design, 0, 1).unwrap();

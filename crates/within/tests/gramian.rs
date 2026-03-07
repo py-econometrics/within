@@ -1,27 +1,27 @@
 use schwarz_precond::Operator;
 
-use within::domain::{FixedEffectsDesign, WeightedDesign};
-use within::observation::{CompressedStore, FactorMajorStore, ObservationWeights, RowMajorStore};
+use within::domain::FixedEffectsDesign;
+use within::observation::{FactorMajorStore, ObservationWeights};
 use within::operator::gramian::{Gramian, GramianOperator};
 
 fn make_test_design() -> FixedEffectsDesign {
-    FixedEffectsDesign::new(vec![vec![0, 1, 2, 0], vec![0, 1, 0, 1]], vec![3, 2], 4)
-        .expect("valid test design")
+    let store = FactorMajorStore::new(
+        vec![vec![0, 1, 2, 0], vec![0, 1, 0, 1]],
+        ObservationWeights::Unit,
+        4,
+    )
+    .expect("valid factor-major store");
+    FixedEffectsDesign::from_store(store, &[3, 2]).expect("valid test design")
 }
 
-fn gramian_to_dense(g: &Gramian) -> Vec<Vec<f64>> {
-    let n = g.n_dofs();
-    let mut dense = vec![vec![0.0; n]; n];
-    for i in 0..n {
-        let mut ei = vec![0.0; n];
-        ei[i] = 1.0;
-        let mut col = vec![0.0; n];
-        g.matvec(&ei, &mut col);
-        for j in 0..n {
-            dense[j][i] = col[j];
-        }
-    }
-    dense
+fn make_weighted_design(weights: Vec<f64>) -> FixedEffectsDesign {
+    let store = FactorMajorStore::new(
+        vec![vec![0, 1, 0, 1], vec![0, 0, 1, 1]],
+        ObservationWeights::Dense(weights),
+        4,
+    )
+    .expect("valid weighted factor-major store");
+    FixedEffectsDesign::from_store(store, &[2, 2]).expect("valid weighted design")
 }
 
 #[test]
@@ -107,26 +107,14 @@ fn test_gramian_diagonal_matches_explicit() {
 
 #[test]
 fn test_weighted_gramian_diagonal() {
-    let dm = FixedEffectsDesign::new_weighted(
-        vec![vec![0, 1, 0, 1], vec![0, 0, 1, 1]],
-        vec![2, 2],
-        4,
-        vec![1.0, 2.0, 3.0, 4.0],
-    )
-    .expect("valid weighted design");
+    let dm = make_weighted_design(vec![1.0, 2.0, 3.0, 4.0]);
     let g = Gramian::build(&dm);
     assert_eq!(g.diagonal(), dm.gramian_diagonal());
 }
 
 #[test]
 fn test_weighted_gramian_matches_operator() {
-    let dm = FixedEffectsDesign::new_weighted(
-        vec![vec![0, 1, 0, 1], vec![0, 0, 1, 1]],
-        vec![2, 2],
-        4,
-        vec![1.0, 2.0, 3.0, 4.0],
-    )
-    .expect("valid weighted design");
+    let dm = make_weighted_design(vec![1.0, 2.0, 3.0, 4.0]);
     let g = Gramian::build(&dm);
     let gop = GramianOperator::new(&dm);
     let n = g.n_dofs();
@@ -141,40 +129,6 @@ fn test_weighted_gramian_matches_operator() {
 }
 
 #[test]
-fn test_gramian_row_major_matches_factor_major() {
-    let fl = vec![vec![0u32, 1, 2, 0], vec![0, 1, 0, 1]];
-    let n_levels = vec![3, 2];
-
-    let fm = FactorMajorStore::new(fl.clone(), ObservationWeights::Unit, 4)
-        .expect("valid factor-major store");
-    let dm_fm = WeightedDesign::from_store(fm, &n_levels).expect("valid factor-major design");
-    let g_fm = Gramian::build(&dm_fm);
-
-    let rm = RowMajorStore::from_factor_major(fl, ObservationWeights::Unit, 4);
-    let dm_rm = WeightedDesign::from_store(rm, &n_levels).expect("valid row-major design");
-    let g_rm = Gramian::build(&dm_rm);
-
-    assert_eq!(gramian_to_dense(&g_fm), gramian_to_dense(&g_rm));
-}
-
-#[test]
-fn test_gramian_compressed_matches_factor_major() {
-    let fl = vec![vec![0u32, 1, 2, 0], vec![0, 1, 0, 1]];
-    let n_levels = vec![3, 2];
-
-    let fm = FactorMajorStore::new(fl.clone(), ObservationWeights::Unit, 4)
-        .expect("valid factor-major store");
-    let dm_fm = WeightedDesign::from_store(fm, &n_levels).expect("valid factor-major design");
-    let g_fm = Gramian::build(&dm_fm);
-
-    let cs = CompressedStore::from_factor_major(fl, ObservationWeights::Unit, 4);
-    let dm_cs = WeightedDesign::from_store(cs, &n_levels).expect("valid compressed design");
-    let g_cs = Gramian::build(&dm_cs);
-
-    assert_eq!(gramian_to_dense(&g_fm), gramian_to_dense(&g_cs));
-}
-
-#[test]
 fn test_gramian_sparse_accumulation_path() {
     let n_obs = 200;
     let n_lev_a = 2001;
@@ -182,10 +136,12 @@ fn test_gramian_sparse_accumulation_path() {
     let mut fa = Vec::with_capacity(n_obs);
     let mut fb = Vec::with_capacity(n_obs);
     for i in 0..n_obs {
-        fa.push((i % n_lev_a) as i64);
-        fb.push(((i * 7) % n_lev_b) as i64);
+        fa.push((i % n_lev_a) as u32);
+        fb.push(((i * 7) % n_lev_b) as u32);
     }
-    let dm = FixedEffectsDesign::new(vec![fa, fb], vec![n_lev_a, n_lev_b], n_obs)
+    let store = FactorMajorStore::new(vec![fa, fb], ObservationWeights::Unit, n_obs)
+        .expect("valid factor-major store");
+    let dm = FixedEffectsDesign::from_store(store, &[n_lev_a, n_lev_b])
         .expect("valid sparse accumulation design");
     let g = Gramian::build(&dm);
     let gop = GramianOperator::new(&dm);
@@ -206,16 +162,17 @@ fn test_gramian_sparse_accumulation_path() {
 
 #[test]
 fn test_build_for_pair_matches_full_gramian() {
-    let dm = FixedEffectsDesign::new(
+    let store = FactorMajorStore::new(
         vec![
             vec![0, 1, 2, 0, 1, 2, 0, 1],
             vec![0, 0, 1, 1, 0, 0, 1, 1],
             vec![0, 1, 0, 1, 0, 1, 0, 1],
         ],
-        vec![3, 2, 2],
+        ObservationWeights::Unit,
         8,
     )
-    .expect("valid pairwise design");
+    .expect("valid factor-major store");
+    let dm = FixedEffectsDesign::from_store(store, &[3, 2, 2]).expect("valid pairwise design");
     let full = Gramian::build(&dm);
     let n = full.n_dofs();
 

@@ -30,6 +30,7 @@ let result = solve(
     &[factor_0.clone(), factor_1.clone()],
     &[100, 100],
     &y,
+    None,
     &SolverParams::default(),
 ).expect("solve should succeed");
 assert!(result.converged);
@@ -49,32 +50,19 @@ let result = solve(
     &[factor_0, factor_1],
     &[100, 100],
     &y,
+    None,
     &params,
 ).expect("solve should succeed");
 assert!(result.converged);
 println!("GMRES converged in {} iterations", result.iterations);
 ```
 
-## Feature flags
-
-| Feature   | Default | Effect                                                                 |
-|-----------|---------|------------------------------------------------------------------------|
-| `ndarray` | yes     | Enables `from_array` constructors on observation stores for interop with `ndarray::ArrayView2`. |
-
-To build without `ndarray`:
-
-```
-cargo add within --no-default-features
-```
-
 ## Architecture
 
 The crate is organized in four layers:
 
-1. **`observation`** -- Storage backends for per-observation factor levels and
-   weights. Three implementations (`FactorMajorStore`, `RowMajorStore`,
-   `CompressedStore`) all satisfy the `ObservationStore` trait, allowing
-   zero-cost generic dispatch.
+1. **`observation`** -- Per-observation factor levels and weights via
+   `FactorMajorStore` and the `ObservationStore` trait.
 
 2. **`domain`** -- Domain decomposition. `WeightedDesign` wraps a store with
    factor metadata; `build_local_domains` constructs factor-pair subdomains
@@ -86,7 +74,7 @@ The crate is organized in four layers:
    the generic `schwarz-precond` framework.
 
 4. **`orchestrate`** -- End-to-end solve entry points (`solve`,
-   `solve_weighted`, `solve_normal_equations`) with
+   `solve_normal_equations`) with
    typed configuration (`SolverParams`, `SolverMethod`, `GmresPrecond`,
    `OperatorRepr`).
 

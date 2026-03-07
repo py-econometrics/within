@@ -302,17 +302,19 @@ mod tests {
     use super::*;
     use crate::config::{ApproxSchurConfig, DEFAULT_DENSE_SCHUR_THRESHOLD};
     use crate::domain::{build_local_domains, FixedEffectsDesign};
-    use crate::observation::FactorMajorStore;
+    use crate::observation::{FactorMajorStore, ObservationWeights};
     use crate::operator::csr_block::CsrBlock;
     use schwarz_precond::{LocalSolver, Operator};
 
     fn make_test_data() -> (FixedEffectsDesign, Vec<(Subdomain, CrossTab)>) {
-        let design = FixedEffectsDesign::new(
+        let store = FactorMajorStore::new(
             vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]],
-            vec![3, 2],
+            ObservationWeights::Unit,
             5,
         )
-        .expect("valid fixed-effects design");
+        .expect("valid factor-major store");
+        let design =
+            FixedEffectsDesign::from_store(store, &[3, 2]).expect("valid fixed-effects design");
         let domain_pairs = build_local_domains(&design, None);
         (design, domain_pairs)
     }
@@ -448,9 +450,13 @@ mod tests {
 
     #[test]
     fn test_first_block_size_computation() {
-        let design =
-            FixedEffectsDesign::new(vec![vec![0, 1, 0, 1], vec![0, 0, 1, 1]], vec![2, 2], 4)
-                .expect("valid design");
+        let store = FactorMajorStore::new(
+            vec![vec![0, 1, 0, 1], vec![0, 0, 1, 1]],
+            ObservationWeights::Unit,
+            4,
+        )
+        .expect("valid factor-major store");
+        let design = FixedEffectsDesign::from_store(store, &[2, 2]).expect("valid design");
         let domain_pairs = build_local_domains(&design, None);
 
         assert!(!domain_pairs.is_empty());
@@ -588,12 +594,13 @@ mod tests {
 
     #[test]
     fn test_gramian_multiplicative_schwarz_matches_obs_schwarz() {
-        let design = FixedEffectsDesign::new(
+        let store = FactorMajorStore::new(
             vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]],
-            vec![3, 2],
+            ObservationWeights::Unit,
             5,
         )
-        .expect("valid design");
+        .expect("valid factor-major store");
+        let design = FixedEffectsDesign::from_store(store, &[3, 2]).expect("valid design");
 
         let config = LocalSolverConfig::default();
         let gramian = crate::operator::gramian::Gramian::build(&design);

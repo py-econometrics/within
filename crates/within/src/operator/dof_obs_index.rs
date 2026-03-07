@@ -73,18 +73,20 @@ impl DofObservationIndex {
 mod tests {
     use super::*;
     use crate::domain::FixedEffectsDesign;
+    use crate::observation::{FactorMajorStore, ObservationWeights};
 
     // 2 factors, 5 observations:
     //   factor 0: levels [0, 1, 2, 0, 1]  (3 levels, offset 0)
     //   factor 1: levels [0, 1, 2, 3, 0]  (4 levels, offset 3)
     // DOFs: 0..3 for factor 0, 3..7 for factor 1
     fn make_test_design() -> FixedEffectsDesign {
-        FixedEffectsDesign::new(
+        let store = FactorMajorStore::new(
             vec![vec![0, 1, 2, 0, 1], vec![0, 1, 2, 3, 0]],
-            vec![3, 4],
+            ObservationWeights::Unit,
             5,
         )
-        .expect("valid test design")
+        .expect("valid factor-major store");
+        FixedEffectsDesign::from_store(store, &[3, 4]).expect("valid test design")
     }
 
     #[test]
@@ -137,8 +139,10 @@ mod tests {
     #[test]
     fn test_single_factor_single_level() {
         // 1 factor, 3 observations, all same level
-        let design = FixedEffectsDesign::new(vec![vec![0, 0, 0]], vec![1], 3)
-            .expect("valid single-factor design");
+        let store = FactorMajorStore::new(vec![vec![0, 0, 0]], ObservationWeights::Unit, 3)
+            .expect("valid factor-major store");
+        let design =
+            FixedEffectsDesign::from_store(store, &[1]).expect("valid single-factor design");
         let idx = DofObservationIndex::build(&design);
 
         assert_eq!(idx.n_dofs(), 1);
@@ -150,8 +154,10 @@ mod tests {
     #[test]
     fn test_dof_with_zero_observations() {
         // 1 factor, 2 observations using levels 0 and 2 — level 1 has no observations
-        let design = FixedEffectsDesign::new(vec![vec![0, 2]], vec![3], 2)
-            .expect("valid sparse-level design");
+        let store = FactorMajorStore::new(vec![vec![0, 2]], ObservationWeights::Unit, 2)
+            .expect("valid factor-major store");
+        let design =
+            FixedEffectsDesign::from_store(store, &[3]).expect("valid sparse-level design");
         let idx = DofObservationIndex::build(&design);
 
         assert_eq!(idx.n_dofs(), 3);

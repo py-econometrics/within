@@ -161,6 +161,7 @@ impl ResidualUpdater for SparseGramianUpdater {
 mod tests {
     use super::*;
     use crate::domain::FixedEffectsDesign;
+    use crate::observation::{FactorMajorStore, ObservationWeights};
     use crate::operator::gramian::Gramian;
     use schwarz_precond::OperatorResidualUpdater;
 
@@ -171,12 +172,14 @@ mod tests {
         // factor 0: [0, 1, 2, 0, 1] (3 levels)
         // factor 1: [0, 1, 2, 3, 0] (4 levels)
         // n_dofs = 7
-        let design = FixedEffectsDesign::new(
+        let store = FactorMajorStore::new(
             vec![vec![0, 1, 2, 0, 1], vec![0, 1, 2, 3, 0]],
-            vec![3, 4],
+            ObservationWeights::Unit,
             5,
         )
-        .expect("valid fixed-effects design");
+        .expect("valid factor-major store");
+        let design =
+            FixedEffectsDesign::from_store(store, &[3, 4]).expect("valid fixed-effects design");
         let gramian = Gramian::build(&design);
         (design, gramian)
     }

@@ -39,7 +39,7 @@ fn main() {
     }
 
     let cg_params = SolverParams::default();
-    let cg_result = solve(&categories, &n_levels, &y, &cg_params).expect("cg solve");
+    let cg_result = solve(&categories, &n_levels, &y, None, &cg_params).expect("cg solve");
     let gmres_params = SolverParams {
         method: SolverMethod::Gmres {
             preconditioner: Some(GmresPrecond::Multiplicative(
@@ -51,7 +51,7 @@ fn main() {
         tol: 1e-8,
         maxiter: 1000,
     };
-    let gmres_result = solve(&categories, &n_levels, &y, &gmres_params).expect("gmres solve");
+    let gmres_result = solve(&categories, &n_levels, &y, None, &gmres_params).expect("gmres solve");
 
     // -----------------------------------------------------------------------
     // Print comparison

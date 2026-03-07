@@ -313,18 +313,20 @@ fn compute_partition_weights(domain_pairs: &mut [(Subdomain, CrossTab)], n_dofs:
 mod tests {
     use super::*;
     use crate::domain::FixedEffectsDesign;
+    use crate::observation::{FactorMajorStore, ObservationWeights};
 
     fn make_test_design() -> FixedEffectsDesign {
-        FixedEffectsDesign::new(
+        let store = FactorMajorStore::new(
             vec![
                 vec![0, 1, 2, 0, 1, 2],
                 vec![0, 1, 0, 1, 0, 1],
                 vec![0, 0, 1, 1, 0, 1],
             ],
-            vec![3, 2, 2],
+            ObservationWeights::Unit,
             6,
         )
-        .expect("valid test design")
+        .expect("valid factor-major store");
+        FixedEffectsDesign::from_store(store, &[3, 2, 2]).expect("valid test design")
     }
 
     #[test]
@@ -408,15 +410,15 @@ mod tests {
 
     #[test]
     fn test_gramian_domains_match_obs_domains() {
-        for design in [
-            make_test_design(),
-            FixedEffectsDesign::new(
+        for design in [make_test_design(), {
+            let store = FactorMajorStore::new(
                 vec![vec![0, 1, 2, 0, 1], vec![0, 1, 2, 3, 0]],
-                vec![3, 4],
+                ObservationWeights::Unit,
                 5,
             )
-            .unwrap(),
-        ] {
+            .unwrap();
+            FixedEffectsDesign::from_store(store, &[3, 4]).unwrap()
+        }] {
             let gramian = Gramian::build(&design);
             let obs_domains = build_local_domains(&design, None);
             let gram_domains = build_local_domains_from_gramian(
@@ -472,15 +474,15 @@ mod tests {
     fn test_composed_gramian_matches_observation_gramian() {
         use schwarz_precond::Operator;
 
-        for design in [
-            make_test_design(),
-            FixedEffectsDesign::new(
+        for design in [make_test_design(), {
+            let store = FactorMajorStore::new(
                 vec![vec![0, 1, 2, 0, 1], vec![0, 1, 2, 3, 0]],
-                vec![3, 4],
+                ObservationWeights::Unit,
                 5,
             )
-            .unwrap(),
-        ] {
+            .unwrap();
+            FixedEffectsDesign::from_store(store, &[3, 4]).unwrap()
+        }] {
             let obs_gramian = Gramian::build(&design);
             let (_domains, blocks) = build_domains_and_gramian_blocks(&design, None);
             let composed = Gramian::from_pair_blocks(&blocks, &design.factors, design.n_dofs);

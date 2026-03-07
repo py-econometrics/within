@@ -4,16 +4,27 @@ use schwarz_precond::Operator;
 
 use within::operator::gramian::GramianOperator;
 use within::{
-    solve_normal_equations, FixedEffectsDesign, ObservationStore, SolveResult, SolverParams,
+    solve_normal_equations, FactorMajorStore, FixedEffectsDesign, ObservationStore,
+    ObservationWeights, SolveResult, SolverParams, WeightedDesign,
 };
 
 pub fn make_test_design() -> FixedEffectsDesign {
-    FixedEffectsDesign::new(
+    make_weighted_design(
         vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]],
         vec![3, 2],
-        5,
+        ObservationWeights::Unit,
     )
     .expect("valid test design")
+}
+
+pub fn make_weighted_design(
+    categories: Vec<Vec<u32>>,
+    n_levels: Vec<usize>,
+    weights: ObservationWeights,
+) -> within::WithinResult<WeightedDesign<FactorMajorStore>> {
+    let n_rows = categories.first().map_or(0, Vec::len);
+    let store = FactorMajorStore::new(categories, weights, n_rows)?;
+    WeightedDesign::from_store(store, &n_levels)
 }
 
 pub fn make_rhs_from_unit_solution(design: &FixedEffectsDesign) -> Vec<f64> {

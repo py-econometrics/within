@@ -1,5 +1,5 @@
 use within::{
-    solve_normal_equations, FixedEffectsDesign, LocalSolverConfig, OperatorRepr, SolverMethod,
+    solve_normal_equations, LocalSolverConfig, ObservationWeights, OperatorRepr, SolverMethod,
     SolverParams,
 };
 
@@ -8,11 +8,10 @@ mod common;
 
 #[test]
 fn test_least_squares_weighted_cg_preconditioned() {
-    let design = FixedEffectsDesign::new_weighted(
+    let design = common::make_weighted_design(
         vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]],
         vec![3, 2],
-        5,
-        vec![1.0, 2.0, 1.5, 0.5, 3.0],
+        ObservationWeights::Dense(vec![1.0, 2.0, 1.5, 0.5, 3.0]),
     )
     .expect("valid weighted design");
     let y = vec![1.0, 2.0, 3.0, 4.0, 5.0];
