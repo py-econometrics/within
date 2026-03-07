@@ -7,13 +7,21 @@ observations.
 
 from __future__ import annotations
 
-from within import OperatorRepr
+from within import (
+    AdditiveSchwarz,
+    ApproxCholConfig,
+    ApproxSchurConfig,
+    CG,
+    GMRES,
+    MultiplicativeSchwarz,
+    OperatorRepr,
+    SchurComplement,
+)
 from .._problems import get_generator
 from .._registry import SuiteOptions, suite
-from .._solver_presets import cg_solver_config, gmres_solver_config
 from .._solvers import run_solve
 from .._table import print_pivot, print_table
-from .._types import BenchmarkResult
+from .._types import BenchmarkResult, SolverConfig
 
 
 @suite(
@@ -41,14 +49,36 @@ def run_fixest_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
             # 320_000_000,
         ]
 
+    schur = SchurComplement(
+        approx_chol=ApproxCholConfig(seed=opts.seed),
+        approx_schur=ApproxSchurConfig(seed=opts.seed),
+    )
     solver_configs = [
-        cg_solver_config(opts),
-        cg_solver_config(
-            opts,
-            "CG(Schwarz-explicit)",
-            operator=OperatorRepr.Explicit,
+        SolverConfig(
+            "CG(Schwarz)",
+            CG(
+                tol=opts.tol,
+                maxiter=opts.maxiter,
+                preconditioner=AdditiveSchwarz(local_solver=schur),
+            ),
         ),
-        gmres_solver_config(opts),
+        SolverConfig(
+            "CG(Schwarz-explicit)",
+            CG(
+                tol=opts.tol,
+                maxiter=opts.maxiter,
+                preconditioner=AdditiveSchwarz(local_solver=schur),
+                operator=OperatorRepr.Explicit,
+            ),
+        ),
+        SolverConfig(
+            "GMRES(Mult-Schwarz)",
+            GMRES(
+                tol=opts.tol,
+                maxiter=opts.maxiter,
+                preconditioner=MultiplicativeSchwarz(local_solver=schur),
+            ),
+        ),
     ]
 
     gen = get_generator("fixest_dgp")

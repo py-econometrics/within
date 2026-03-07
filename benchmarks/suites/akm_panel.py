@@ -12,12 +12,45 @@ make real AKM data hard:
 
 from __future__ import annotations
 
+from within import (
+    AdditiveSchwarz,
+    ApproxCholConfig,
+    ApproxSchurConfig,
+    CG,
+    GMRES,
+    MultiplicativeSchwarz,
+    SchurComplement,
+)
 from .._problems import get_generator
 from .._registry import SuiteOptions, suite
-from .._solver_presets import cg_solver_config, standard_solver_configs
 from .._solvers import run_solve
 from .._table import print_pivot, print_table
-from .._types import BenchmarkResult
+from .._types import BenchmarkResult, SolverConfig
+
+
+def _solver_configs(opts: SuiteOptions) -> list[SolverConfig]:
+    schur = SchurComplement(
+        approx_chol=ApproxCholConfig(seed=opts.seed),
+        approx_schur=ApproxSchurConfig(seed=opts.seed),
+    )
+    return [
+        SolverConfig(
+            "CG(Schwarz)",
+            CG(
+                tol=opts.tol,
+                maxiter=opts.maxiter,
+                preconditioner=AdditiveSchwarz(local_solver=schur),
+            ),
+        ),
+        SolverConfig(
+            "GMRES(Mult-Schwarz)",
+            GMRES(
+                tol=opts.tol,
+                maxiter=opts.maxiter,
+                preconditioner=MultiplicativeSchwarz(local_solver=schur),
+            ),
+        ),
+    ]
 
 
 # -----------------------------------------------------------------------
@@ -38,7 +71,7 @@ def run_akm_panel(opts: SuiteOptions) -> list[BenchmarkResult]:
             ("disconnected 10K", "akm_disconnected", {}),
             ("realistic 10K", "akm_realistic", {}),
         ]
-        solver_sets = [standard_solver_configs(opts)] * len(problems)
+        solver_sets = [_solver_configs(opts)] * len(problems)
     else:
         problems = [
             # --- 10K workers (quick-tier) ---
@@ -115,7 +148,7 @@ def run_akm_panel(opts: SuiteOptions) -> list[BenchmarkResult]:
                 },
             ),
         ]
-        solver_sets = [standard_solver_configs(opts)] * len(problems)
+        solver_sets = [_solver_configs(opts)] * len(problems)
 
     all_results: list[BenchmarkResult] = []
     for (name, gen_key, params), solvers in zip(problems, solver_sets):
@@ -164,7 +197,20 @@ def run_akm_scaling(opts: SuiteOptions) -> list[BenchmarkResult]:
             ("1M", {"n_workers": 1_000_000, "n_firms": 50_000, "n_years": 20}),
         ]
 
-    scaling_configs = [cg_solver_config(opts)]
+    schur = SchurComplement(
+        approx_chol=ApproxCholConfig(seed=opts.seed),
+        approx_schur=ApproxSchurConfig(seed=opts.seed),
+    )
+    scaling_configs = [
+        SolverConfig(
+            "CG(Schwarz)",
+            CG(
+                tol=opts.tol,
+                maxiter=opts.maxiter,
+                preconditioner=AdditiveSchwarz(local_solver=schur),
+            ),
+        ),
+    ]
 
     all_results: list[BenchmarkResult] = []
     for label, params in sizes:

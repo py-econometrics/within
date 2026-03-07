@@ -2,12 +2,27 @@
 
 from __future__ import annotations
 
+from within import (
+    AdditiveSchwarz,
+    ApproxCholConfig,
+    ApproxSchurConfig,
+    CG,
+    GMRES,
+    MultiplicativeSchwarz,
+    SchurComplement,
+)
 from .._problems import get_generator
 from .._registry import SuiteOptions, suite
-from .._solver_presets import cg_solver_config, gmres_solver_config
 from .._solvers import run_solve
 from .._table import print_pivot, print_table
 from .._types import BenchmarkResult, ProblemSpec, SolverConfig
+
+
+def _schur(seed: int, split: int) -> SchurComplement:
+    return SchurComplement(
+        approx_chol=ApproxCholConfig(seed=seed, split=split),
+        approx_schur=ApproxSchurConfig(seed=seed),
+    )
 
 
 @suite(
@@ -68,22 +83,37 @@ def run_ac_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
         ]
 
     configs = [
-        # One-level additive
         SolverConfig(
             "CG(1L, AC)",
-            cg_solver_config(opts, split=1).config,
+            CG(
+                tol=opts.tol,
+                maxiter=opts.maxiter,
+                preconditioner=AdditiveSchwarz(local_solver=_schur(opts.seed, 1)),
+            ),
         ),
         SolverConfig(
             "CG(1L, AC2)",
-            cg_solver_config(opts, split=2).config,
+            CG(
+                tol=opts.tol,
+                maxiter=opts.maxiter,
+                preconditioner=AdditiveSchwarz(local_solver=_schur(opts.seed, 2)),
+            ),
         ),
         SolverConfig(
             "GMRES(M1L, AC)",
-            gmres_solver_config(opts, split=1).config,
+            GMRES(
+                tol=opts.tol,
+                maxiter=opts.maxiter,
+                preconditioner=MultiplicativeSchwarz(local_solver=_schur(opts.seed, 1)),
+            ),
         ),
         SolverConfig(
             "GMRES(M1L, AC2)",
-            gmres_solver_config(opts, split=2).config,
+            GMRES(
+                tol=opts.tol,
+                maxiter=opts.maxiter,
+                preconditioner=MultiplicativeSchwarz(local_solver=_schur(opts.seed, 2)),
+            ),
         ),
     ]
 

@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+from within import (
+    AdditiveSchwarz,
+    ApproxCholConfig,
+    ApproxSchurConfig,
+    CG,
+    GMRES,
+    MultiplicativeSchwarz,
+    SchurComplement,
+)
 from .._problems import get_generator
 from .._registry import SuiteOptions, suite
-from .._solver_presets import standard_solver_configs
 from .._solvers import run_solve
 from .._table import print_table
-from .._types import BenchmarkResult, ProblemSpec
+from .._types import BenchmarkResult, ProblemSpec, SolverConfig
 
 
 @suite(
@@ -81,7 +89,28 @@ def run_laplacian_2fe(opts: SuiteOptions) -> list[BenchmarkResult]:
             ),
         ]
 
-    configs = standard_solver_configs(opts)
+    schur = SchurComplement(
+        approx_chol=ApproxCholConfig(seed=opts.seed),
+        approx_schur=ApproxSchurConfig(seed=opts.seed),
+    )
+    configs = [
+        SolverConfig(
+            "CG(Schwarz)",
+            CG(
+                tol=opts.tol,
+                maxiter=opts.maxiter,
+                preconditioner=AdditiveSchwarz(local_solver=schur),
+            ),
+        ),
+        SolverConfig(
+            "GMRES(Mult-Schwarz)",
+            GMRES(
+                tol=opts.tol,
+                maxiter=opts.maxiter,
+                preconditioner=MultiplicativeSchwarz(local_solver=schur),
+            ),
+        ),
+    ]
 
     all_results: list[BenchmarkResult] = []
     for prob in problems:

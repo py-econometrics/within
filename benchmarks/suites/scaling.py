@@ -4,11 +4,45 @@ from __future__ import annotations
 
 import numpy as np
 
+from within import (
+    AdditiveSchwarz,
+    ApproxCholConfig,
+    ApproxSchurConfig,
+    CG,
+    GMRES,
+    MultiplicativeSchwarz,
+    SchurComplement,
+)
+from .._problems import get_generator
 from .._registry import SuiteOptions, suite
-from .._solver_presets import standard_solver_configs
 from .._solvers import run_solve
 from .._table import print_pivot, print_table
-from .._types import BenchmarkResult
+from .._types import BenchmarkResult, SolverConfig
+
+
+def _solver_configs(opts: SuiteOptions) -> list[SolverConfig]:
+    schur = SchurComplement(
+        approx_chol=ApproxCholConfig(seed=opts.seed),
+        approx_schur=ApproxSchurConfig(seed=opts.seed),
+    )
+    return [
+        SolverConfig(
+            "CG(Schwarz)",
+            CG(
+                tol=opts.tol,
+                maxiter=opts.maxiter,
+                preconditioner=AdditiveSchwarz(local_solver=schur),
+            ),
+        ),
+        SolverConfig(
+            "GMRES(Mult-Schwarz)",
+            GMRES(
+                tol=opts.tol,
+                maxiter=opts.maxiter,
+                preconditioner=MultiplicativeSchwarz(local_solver=schur),
+            ),
+        ),
+    ]
 
 
 def _run_scaling_problems(
@@ -16,7 +50,7 @@ def _run_scaling_problems(
     opts: SuiteOptions,
 ) -> list[BenchmarkResult]:
     """Run a list of (name, n_levels, n_rows) configs through the standard solve paths."""
-    solver_configs = standard_solver_configs(opts)
+    solver_configs = _solver_configs(opts)
 
     all_results: list[BenchmarkResult] = []
     for name, n_levels, n_rows in configs_list:
@@ -77,8 +111,6 @@ def run_scaling(opts: SuiteOptions) -> list[BenchmarkResult]:
     tags=("2fe", "scaling"),
 )
 def run_scaling_2fe(opts: SuiteOptions) -> list[BenchmarkResult]:
-    from .._problems import get_generator
-
     if opts.quick:
         problems = [
             ("chain 100", "chain_2fe", {"n_levels": 100}),
@@ -99,7 +131,7 @@ def run_scaling_2fe(opts: SuiteOptions) -> list[BenchmarkResult]:
             ("grid 20x20", "grid_2fe", {"n_side": 20}),
         ]
 
-    solver_configs = standard_solver_configs(opts)
+    solver_configs = _solver_configs(opts)
 
     all_results: list[BenchmarkResult] = []
     for name, gen_key, params in problems:

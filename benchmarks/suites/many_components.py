@@ -7,9 +7,17 @@ employer-employee data with regional labour markets and low mobility.
 
 from __future__ import annotations
 
+from within import (
+    AdditiveSchwarz,
+    ApproxCholConfig,
+    ApproxSchurConfig,
+    CG,
+    GMRES,
+    MultiplicativeSchwarz,
+    SchurComplement,
+)
 from .._problems import get_generator
 from .._registry import SuiteOptions, suite
-from .._solver_presets import standard_solver_configs
 from .._solvers import run_solve
 from .._table import print_pivot, print_table
 from .._types import BenchmarkResult, ProblemSpec, SolverConfig
@@ -38,6 +46,31 @@ def _run_problems(
                     raise
                 print(f"  WARNING: {cfg.label} failed: {e}")
     return all_results
+
+
+def _solver_configs(opts: SuiteOptions) -> list[SolverConfig]:
+    schur = SchurComplement(
+        approx_chol=ApproxCholConfig(seed=opts.seed),
+        approx_schur=ApproxSchurConfig(seed=opts.seed),
+    )
+    return [
+        SolverConfig(
+            "CG(Schwarz)",
+            CG(
+                tol=opts.tol,
+                maxiter=opts.maxiter,
+                preconditioner=AdditiveSchwarz(local_solver=schur),
+            ),
+        ),
+        SolverConfig(
+            "GMRES(Mult-Schwarz)",
+            GMRES(
+                tol=opts.tol,
+                maxiter=opts.maxiter,
+                preconditioner=MultiplicativeSchwarz(local_solver=schur),
+            ),
+        ),
+    ]
 
 
 @suite(
@@ -258,7 +291,7 @@ def run_many_components(opts: SuiteOptions) -> list[BenchmarkResult]:
             ),
         ]
 
-    configs = standard_solver_configs(opts)
+    configs = _solver_configs(opts)
     results = _run_problems(problems, configs)
     print_table(results)
     print("\n")
@@ -376,7 +409,7 @@ def run_component_scaling(opts: SuiteOptions) -> list[BenchmarkResult]:
             ),
         ]
 
-    configs = standard_solver_configs(opts)
+    configs = _solver_configs(opts)
     results = _run_problems(problems, configs)
     print_table(results)
     print("\n")
