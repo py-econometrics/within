@@ -2,7 +2,7 @@
 //!
 //! Provides one-level additive and multiplicative Schwarz preconditioners,
 //! generic over local solvers and residual update strategies. Includes
-//! iterative solvers (CG, GMRES) and spectral tools.
+//! iterative solvers (CG, GMRES).
 //!
 //! # Quick start
 //!
@@ -25,7 +25,6 @@
 //!
 //! - Toselli & Widlund (2005). *Domain Decomposition Methods — Algorithms and Theory*. Springer.
 //! - Smith, Bjørstad & Gropp (1996). *Domain Decomposition: Parallel Multilevel Methods for Elliptic PDEs*. Cambridge University Press.
-//! - Nicolaides (1987). *Deflation of Conjugate Gradients with Applications to Boundary Value Problems*. SIAM J. Numer. Anal. 24(2).
 
 #![deny(missing_docs)]
 #![warn(clippy::all)]
@@ -38,7 +37,7 @@ mod multiplicative_schwarz;
 mod operator;
 mod residual_update;
 mod schwarz;
-/// Iterative solvers and spectral tools.
+/// Iterative solvers.
 pub mod solve;
 mod sparse_matrix;
 
@@ -48,6 +47,5 @@ pub use local_solve::{LocalSolver, SubdomainEntry};
 pub use multiplicative_schwarz::MultiplicativeSchwarzPreconditioner;
 pub use operator::{IdentityOperator, Operator};
 pub use residual_update::{OperatorResidualUpdater, ResidualUpdater};
-pub use schwarz::ReductionStrategy;
 pub use schwarz::SchwarzPreconditioner;
 pub use sparse_matrix::SparseMatrix;

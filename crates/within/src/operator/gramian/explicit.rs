@@ -1,12 +1,83 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use schwarz_precond::{Operator, SparseMatrix};
 
-use super::accumulator::PairAccumulator;
-use super::csr_assembly::{build_symmetric_csr, CompactIndexMaps};
+use super::csr_assembly::{build_symmetric_csr, CompactIndexMaps, DENSE_TABLE_MAX_ENTRIES};
 use super::Gramian;
 use crate::domain::{PairBlockData, WeightedDesign};
 use crate::observation::{FactorMeta, ObservationStore};
+
+// ===========================================================================
+// PairAccumulator — weighted count accumulator for factor-pair cross tables
+// ===========================================================================
+
+enum PairStorage {
+    Dense(Vec<f64>),
+    Sparse(HashMap<usize, f64>),
+}
+
+/// Accumulates weighted counts for a factor-pair cross table.
+pub(super) struct PairAccumulator {
+    n_rows: usize,
+    n_cols: usize,
+    storage: PairStorage,
+}
+
+impl PairAccumulator {
+    pub(super) fn new(n_rows: usize, n_cols: usize, n_unique: usize) -> Self {
+        let table_size = n_rows * n_cols;
+        let storage = if table_size <= DENSE_TABLE_MAX_ENTRIES {
+            PairStorage::Dense(vec![0.0; table_size])
+        } else {
+            PairStorage::Sparse(HashMap::with_capacity(n_unique.min(table_size)))
+        };
+        Self {
+            n_rows,
+            n_cols,
+            storage,
+        }
+    }
+
+    #[inline]
+    pub(super) fn add(&mut self, row: usize, col: usize, weight: f64) {
+        let key = row * self.n_cols + col;
+        match &mut self.storage {
+            PairStorage::Dense(table) => {
+                table[key] += weight;
+            }
+            PairStorage::Sparse(table) => {
+                *table.entry(key).or_insert(0.0) += weight;
+            }
+        }
+    }
+
+    pub(super) fn for_each_nonzero(&self, mut f: impl FnMut(usize, usize, f64)) {
+        match &self.storage {
+            PairStorage::Dense(table) => {
+                for row in 0..self.n_rows {
+                    for col in 0..self.n_cols {
+                        let v = table[row * self.n_cols + col];
+                        if v > 0.0 {
+                            f(row, col, v);
+                        }
+                    }
+                }
+            }
+            PairStorage::Sparse(table) => {
+                for (&key, &v) in table {
+                    if v > 0.0 {
+                        f(key / self.n_cols, key % self.n_cols, v);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ===========================================================================
+// Gramian — explicit CSR construction
+// ===========================================================================
 
 impl Gramian {
     pub fn build<S: ObservationStore>(design: &WeightedDesign<S>) -> Self {
@@ -101,7 +172,7 @@ impl Operator for Gramian {
 
 fn build_full_matrix<S: ObservationStore>(design: &WeightedDesign<S>) -> SparseMatrix {
     let n_dofs = design.n_dofs;
-    let n_unique = design.store.n_unique();
+    let n_obs = design.store.n_obs();
     let n_factors = design.n_factors();
 
     let mut diag_counts: Vec<Vec<f64>> = design
@@ -119,20 +190,20 @@ fn build_full_matrix<S: ObservationStore>(design: &WeightedDesign<S>) -> SparseM
             let fq = &design.factors[q];
             let fr = &design.factors[r];
             pair_info.push((q, r));
-            pair_tables.push(PairAccumulator::new(fq.n_levels, fr.n_levels, n_unique));
+            pair_tables.push(PairAccumulator::new(fq.n_levels, fr.n_levels, n_obs));
         }
     }
 
-    for uid in 0..n_unique {
+    for uid in 0..n_obs {
         let w = design.uid_weight(uid);
         for (q, diag_q) in diag_counts.iter_mut().enumerate() {
-            let j = design.store.unique_level(uid, q) as usize;
+            let j = design.store.level(uid, q) as usize;
             diag_q[j] += w;
         }
 
         for (pi, &(q, r)) in pair_info.iter().enumerate() {
-            let j = design.store.unique_level(uid, q) as usize;
-            let k = design.store.unique_level(uid, r) as usize;
+            let j = design.store.level(uid, q) as usize;
+            let k = design.store.level(uid, r) as usize;
             pair_tables[pi].add(j, k, w);
         }
     }
@@ -167,18 +238,18 @@ fn build_pair_matrix<S: ObservationStore>(
     r: usize,
 ) -> SparseMatrix {
     let n_dofs = design.n_dofs;
-    let n_unique = design.store.n_unique();
+    let n_obs = design.store.n_obs();
     let fq = &design.factors[q];
     let fr = &design.factors[r];
 
     let mut diag_q = vec![0.0; fq.n_levels];
     let mut diag_r = vec![0.0; fr.n_levels];
-    let mut table = PairAccumulator::new(fq.n_levels, fr.n_levels, n_unique);
+    let mut table = PairAccumulator::new(fq.n_levels, fr.n_levels, n_obs);
 
-    for uid in 0..n_unique {
+    for uid in 0..n_obs {
         let w = design.uid_weight(uid);
-        let j = design.store.unique_level(uid, q) as usize;
-        let k = design.store.unique_level(uid, r) as usize;
+        let j = design.store.level(uid, q) as usize;
+        let k = design.store.level(uid, r) as usize;
         diag_q[j] += w;
         diag_r[k] += w;
         table.add(j, k, w);
@@ -213,17 +284,17 @@ fn build_component_matrix<S: ObservationStore>(
     r: usize,
     component_global_indices: &[u32],
 ) -> SparseMatrix {
-    let n_unique = design.store.n_unique();
+    let n_obs = design.store.n_obs();
     let maps = CompactIndexMaps::build(&design.factors, q, r, component_global_indices);
     let n_local = maps.n_local();
 
     let mut diag_q = vec![0.0; maps.n_active_q];
     let mut diag_r = vec![0.0; maps.n_active_r];
-    let mut table = PairAccumulator::new(maps.n_active_q, maps.n_active_r, n_unique);
+    let mut table = PairAccumulator::new(maps.n_active_q, maps.n_active_r, n_obs);
 
-    for uid in 0..n_unique {
-        let j = design.store.unique_level(uid, q) as usize;
-        let k = design.store.unique_level(uid, r) as usize;
+    for uid in 0..n_obs {
+        let j = design.store.level(uid, q) as usize;
+        let k = design.store.level(uid, r) as usize;
         let cj = maps.q_compact[j];
         let ck = maps.r_compact[k];
         if cj == u32::MAX || ck == u32::MAX {

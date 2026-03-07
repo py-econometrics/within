@@ -134,59 +134,9 @@ impl SparseMatrix {
         diag
     }
 
-    /// Number of rows (and columns -- the matrix is square).
-    pub fn n_rows(&self) -> usize {
-        self.n
-    }
-
     /// Number of stored non-zero entries.
     pub fn nnz(&self) -> usize {
         self.data.len()
-    }
-
-    /// Validate CSR invariants in debug builds. No-op in release.
-    ///
-    /// Checks: `indptr` length and monotonicity, `indices`/`data` length consistency,
-    /// column bounds, and per-row sorted-unique column indices.
-    pub fn debug_assert_valid(&self) {
-        if !cfg!(debug_assertions) {
-            return;
-        }
-        assert_eq!(
-            self.indptr.len(),
-            self.n + 1,
-            "indptr length {} != n+1 = {}",
-            self.indptr.len(),
-            self.n + 1
-        );
-        assert_eq!(self.indptr[0], 0, "indptr[0] must be 0");
-        for i in 0..self.n {
-            assert!(
-                self.indptr[i] <= self.indptr[i + 1],
-                "indptr not non-decreasing at row {i}"
-            );
-        }
-        let nnz = self.indptr[self.n] as usize;
-        assert_eq!(self.indices.len(), nnz, "indices length mismatch");
-        assert_eq!(self.data.len(), nnz, "data length mismatch");
-        for row in 0..self.n {
-            let start = self.indptr[row] as usize;
-            let end = self.indptr[row + 1] as usize;
-            for idx in start..end {
-                let col = self.indices[idx];
-                assert!(
-                    (col as usize) < self.n,
-                    "column index {col} out of bounds for n={}",
-                    self.n
-                );
-                if idx > start {
-                    assert!(
-                        self.indices[idx - 1] < col,
-                        "column indices not sorted/unique in row {row}"
-                    );
-                }
-            }
-        }
     }
 
     /// Extract principal submatrix G[subset, subset] with global->local index remapping.
@@ -304,74 +254,6 @@ impl From<faer::sparse::SparseRowMatRef<'_, u32, f64>> for SparseMatrix {
 }
 
 // ---------------------------------------------------------------------------
-// Connected components (Union-Find)
-// ---------------------------------------------------------------------------
-
-impl SparseMatrix {
-    /// Detect connected components using Union-Find on CSR adjacency.
-    ///
-    /// Returns a list of components, each containing the node indices in that component.
-    pub fn connected_components(&self) -> Vec<Vec<usize>> {
-        let n = self.n;
-        if n == 0 {
-            return Vec::new();
-        }
-
-        let mut parent: Vec<usize> = (0..n).collect();
-        let mut rank = vec![0u8; n];
-
-        fn find(parent: &mut [usize], mut x: usize) -> usize {
-            while parent[x] != x {
-                parent[x] = parent[parent[x]];
-                x = parent[x];
-            }
-            x
-        }
-
-        fn union(parent: &mut [usize], rank: &mut [u8], a: usize, b: usize) {
-            let ra = find(parent, a);
-            let rb = find(parent, b);
-            if ra == rb {
-                return;
-            }
-            if rank[ra] < rank[rb] {
-                parent[ra] = rb;
-            } else if rank[ra] > rank[rb] {
-                parent[rb] = ra;
-            } else {
-                parent[rb] = ra;
-                rank[ra] += 1;
-            }
-        }
-
-        for row in 0..n {
-            let start = self.indptr[row] as usize;
-            let end = self.indptr[row + 1] as usize;
-            for idx in start..end {
-                let col = self.indices[idx] as usize;
-                if col != row && self.data[idx].abs() > 0.0 {
-                    union(&mut parent, &mut rank, row, col);
-                }
-            }
-        }
-
-        let mut component_map: Vec<Vec<usize>> = Vec::new();
-        let mut root_to_idx = vec![usize::MAX; n];
-
-        for i in 0..n {
-            let root = find(&mut parent, i);
-            if root_to_idx[root] == usize::MAX {
-                root_to_idx[root] = component_map.len();
-                component_map.push(Vec::new());
-            }
-            component_map[root_to_idx[root]].push(i);
-        }
-
-        component_map
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -387,8 +269,6 @@ mod tests {
             n: 3,
         }
     }
-
-    // --- SparseMatrix basics ---
 
     #[test]
     fn test_extract_submatrix_full() {
@@ -412,32 +292,5 @@ mod tests {
         let sub = m.extract_submatrix(&[]);
         assert_eq!(sub.n, 0);
         assert_eq!(sub.indptr, vec![0]);
-    }
-
-    // --- Connected components ---
-
-    #[test]
-    fn test_connected_components_single() {
-        let m = SparseMatrix {
-            indptr: vec![0, 3, 5, 7],
-            indices: vec![0, 1, 2, 0, 1, 0, 2],
-            data: vec![2.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0],
-            n: 3,
-        };
-        let comps = m.connected_components();
-        assert_eq!(comps.len(), 1);
-        assert_eq!(comps[0].len(), 3);
-    }
-
-    #[test]
-    fn test_connected_components_disconnected() {
-        let m = SparseMatrix {
-            indptr: vec![0, 1, 2],
-            indices: vec![0, 1],
-            data: vec![1.0, 1.0],
-            n: 2,
-        };
-        let comps = m.connected_components();
-        assert_eq!(comps.len(), 2);
     }
 }

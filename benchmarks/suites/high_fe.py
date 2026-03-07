@@ -15,37 +15,9 @@ from within._within import (
     MultiplicativeSchwarz,
     SchurComplement,
 )
-from .._problems import get_generator
 from .._registry import SuiteOptions, suite
-from .._solvers import run_solve
 from .._table import print_pivot, print_table
-from .._types import BenchmarkResult, ProblemSpec, SolverConfig
-
-
-def _run_problems(
-    problems: list[ProblemSpec],
-    configs: list[SolverConfig],
-) -> list[BenchmarkResult]:
-    all_results: list[BenchmarkResult] = []
-    for prob in problems:
-        gen = get_generator(prob.generator)
-        cats, n_levels, y = gen(**prob.params, seed=prob.seed)
-        n_fe = len(n_levels)
-        n_pairs = n_fe * (n_fe - 1) // 2
-        print(
-            f"\nProblem: {prob.name}  ({n_fe}-FE, {n_pairs} pairs, DOFs={sum(n_levels)}, Rows={len(cats[0])})"
-        )
-
-        for cfg in configs:
-            try:
-                result = run_solve(cats, n_levels, y, cfg)
-                result.problem = prob.name
-                all_results.append(result)
-            except BaseException as e:
-                if isinstance(e, (KeyboardInterrupt, SystemExit)):
-                    raise
-                print(f"  WARNING: {cfg.label} failed: {e}")
-    return all_results
+from .._types import BenchmarkResult, ProblemSpec, SolverConfig, run_problem_set
 
 
 @suite(
@@ -188,7 +160,7 @@ def run_high_fe(opts: SuiteOptions) -> list[BenchmarkResult]:
             ),
         ),
     ]
-    results = _run_problems(problems, configs)
+    results = run_problem_set(problems, configs)
     print_table(results)
     print("\n")
     print_pivot(results)
@@ -287,7 +259,7 @@ def run_high_fe_scaling(opts: SuiteOptions) -> list[BenchmarkResult]:
             ),
         ),
     ]
-    results = _run_problems(problems, configs)
+    results = run_problem_set(problems, configs)
     print_table(results)
     print("\n")
     print_pivot(results)

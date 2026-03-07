@@ -11,6 +11,5 @@ categories = ["mathematics", "science", "algorithms"]
 
 [dependencies]
 rayon = "1.10"
-thread_local = "1.1"
 rand = { version = "0.9", features = ["small_rng"] }
 faer = "0.22"

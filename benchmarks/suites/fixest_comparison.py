@@ -17,9 +17,8 @@ from within._within import (
 )
 from .._problems import get_generator
 from .._registry import SuiteOptions, suite
-from .._solvers import run_solve
 from .._table import print_pivot, print_table
-from .._types import BenchmarkResult, SolverConfig
+from .._types import BenchmarkResult, SolverConfig, run_solve
 
 
 @suite(
@@ -42,9 +41,6 @@ def run_fixest_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
             10_000_000,
             20_000_000,
             40_000_000,
-            # 80_000_000,
-            # 160_000_000,
-            # 320_000_000,
         ]
 
     schur = SchurComplement(

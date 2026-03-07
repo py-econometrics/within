@@ -37,12 +37,6 @@ impl ColumnBasis {
         }
     }
 
-    /// Number of vectors currently stored.
-    #[inline]
-    pub(crate) fn len(&self) -> usize {
-        self.len
-    }
-
     /// Return column `j` as a shared slice.
     #[inline]
     pub(crate) fn col(&self, j: usize) -> &[f64] {
@@ -71,16 +65,6 @@ impl ColumnBasis {
         debug_assert_eq!(src.len(), self.n);
         let start = self.len * self.n;
         self.data[start..start + self.n].copy_from_slice(src);
-        self.len += 1;
-    }
-
-    /// Append `src * scale` as the next column, incrementing `len`.
-    pub(crate) fn push_scaled(&mut self, src: &[f64], scale: f64) {
-        debug_assert_eq!(src.len(), self.n);
-        let start = self.len * self.n;
-        for (dst, &s) in self.data[start..start + self.n].iter_mut().zip(src) {
-            *dst = s * scale;
-        }
         self.len += 1;
     }
 

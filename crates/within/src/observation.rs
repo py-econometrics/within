@@ -1,11 +1,7 @@
 //! Core observation data types: weights, factor metadata,
 //! the ObservationStore trait, and the default factor-major backend.
 
-mod factor_major;
-
 use crate::error::{WithinError, WithinResult};
-
-pub use factor_major::FactorMajorStore;
 
 // ---------------------------------------------------------------------------
 // ObservationWeights — zero-cost unweighted path
@@ -84,11 +80,6 @@ pub struct FactorMeta {
 ///
 /// Each backend optimizes for different data characteristics.
 /// All implementors must be `Send + Sync` for Rayon parallelism.
-///
-/// The `n_unique` / `unique_level` / `unique_total_weight` methods support
-/// compressed backends that deduplicate identical observation tuples. The
-/// defaults provide identity behavior (n_unique == n_obs) so uncompressed
-/// backends inherit them for free.
 pub trait ObservationStore: Send + Sync {
     /// Number of observations.
     fn n_obs(&self) -> usize;
@@ -105,37 +96,6 @@ pub trait ObservationStore: Send + Sync {
     /// Whether all weights are 1.0 (enables optimized unweighted code paths).
     fn is_unweighted(&self) -> bool;
 
-    // -- Compressed-aware defaults (identity for uncompressed stores) --------
-
-    /// Number of unique observation tuples. Defaults to `n_obs()`.
-    fn n_unique(&self) -> usize {
-        self.n_obs()
-    }
-
-    /// Level for unique tuple `uid` in factor `factor`. Defaults to `level(uid, factor)`.
-    fn unique_level(&self, uid: usize, factor: usize) -> u32 {
-        self.level(uid, factor)
-    }
-
-    /// Total aggregated weight for unique tuple `uid`. Defaults to `weight(uid)`.
-    fn unique_total_weight(&self, uid: usize) -> f64 {
-        self.weight(uid)
-    }
-
-    /// Whether all unique weights are 1.0 (for uncompressed unweighted stores).
-    fn is_unique_unweighted(&self) -> bool {
-        self.is_unweighted()
-    }
-
-    /// Whether this store benefits from row-major iteration (outer loop on
-    /// observations, inner loop on factors). Defaults to `false`.
-    ///
-    /// Override to `true` when `level(obs, factor)` has stride-1 access across
-    /// factors for a fixed observation.
-    fn prefers_row_major_iteration(&self) -> bool {
-        false
-    }
-
     /// Optional fast-path access to a factor-major column of levels.
     ///
     /// Stores that naturally keep `level(obs, factor)` as contiguous
@@ -147,10 +107,132 @@ pub trait ObservationStore: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
+// FactorMajorStore
+// ---------------------------------------------------------------------------
+
+/// Factor-major observation storage: `factor_levels[q][i]` is the level
+/// for observation `i` in factor `q`.
+///
+/// Construction is nearly free — just convert i64 to usize from Python input.
+/// Factor-column access is sequential, making it optimal for Gramian build
+/// and domain decomposition (which iterate per-factor).
+#[derive(Debug, Clone)]
+pub struct FactorMajorStore {
+    factor_levels: Vec<Vec<u32>>,
+    weights: ObservationWeights,
+    n_obs: usize,
+}
+
+impl FactorMajorStore {
+    pub fn new(
+        factor_levels: Vec<Vec<u32>>,
+        weights: ObservationWeights,
+        n_obs: usize,
+    ) -> WithinResult<Self> {
+        for (factor, col) in factor_levels.iter().enumerate() {
+            if col.len() != n_obs {
+                return Err(WithinError::ObservationCountMismatch {
+                    factor,
+                    expected: n_obs,
+                    got: col.len(),
+                });
+            }
+        }
+        weights.validate_for(n_obs)?;
+        Ok(Self {
+            factor_levels,
+            weights,
+            n_obs,
+        })
+    }
+
+    /// Direct access to the level column for a factor (contiguous slice).
+    #[inline]
+    pub fn factor_column(&self, factor: usize) -> &[u32] {
+        &self.factor_levels[factor]
+    }
+}
+
+impl ObservationStore for FactorMajorStore {
+    #[inline]
+    fn n_obs(&self) -> usize {
+        self.n_obs
+    }
+
+    #[inline]
+    fn n_factors(&self) -> usize {
+        self.factor_levels.len()
+    }
+
+    #[inline]
+    fn level(&self, obs: usize, factor: usize) -> u32 {
+        self.factor_levels[factor][obs]
+    }
+
+    #[inline]
+    fn weight(&self, obs: usize) -> f64 {
+        self.weights.get(obs)
+    }
+
+    #[inline]
+    fn is_unweighted(&self) -> bool {
+        self.weights.is_unit()
+    }
+
+    #[inline]
+    fn factor_column(&self, factor: usize) -> Option<&[u32]> {
+        Some(self.factor_column(factor))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 pub fn sample_factor_levels() -> Vec<Vec<u32>> {
     vec![vec![0, 1, 2, 0], vec![0, 1, 0, 1]]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_factor_major_store_basic() {
+        let store = FactorMajorStore::new(sample_factor_levels(), ObservationWeights::Unit, 4)
+            .expect("valid factor-major store");
+        assert_eq!(store.n_obs(), 4);
+        assert_eq!(store.n_factors(), 2);
+        assert_eq!(store.level(0, 0), 0);
+        assert_eq!(store.level(1, 0), 1);
+        assert_eq!(store.level(2, 1), 0);
+        assert_eq!(store.weight(0), 1.0);
+        assert!(store.is_unweighted());
+    }
+
+    #[test]
+    fn test_factor_major_store_weighted() {
+        let store = FactorMajorStore::new(
+            vec![vec![0u32, 1, 2]],
+            ObservationWeights::Dense(vec![0.5, 1.0, 2.0]),
+            3,
+        )
+        .expect("valid weighted factor-major store");
+        assert!(!store.is_unweighted());
+        assert_eq!(store.weight(0), 0.5);
+        assert_eq!(store.weight(2), 2.0);
+    }
+
+    #[test]
+    fn test_factor_column() {
+        let store = FactorMajorStore::new(
+            vec![vec![0u32, 1, 2, 0], vec![3, 2, 1, 0]],
+            ObservationWeights::Unit,
+            4,
+        )
+        .expect("valid factor-major store");
+        assert_eq!(store.factor_column(0), &[0u32, 1, 2, 0]);
+        assert_eq!(store.factor_column(1), &[3u32, 2, 1, 0]);
+    }
 }

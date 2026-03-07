@@ -34,13 +34,13 @@ fn find_active_levels<S: ObservationStore>(
 ) -> Option<ActiveLevels> {
     let fq = &design.factors[q];
     let fr = &design.factors[r];
-    let n_unique = design.store.n_unique();
+    let n_obs = design.store.n_obs();
 
     let mut active_q = vec![false; fq.n_levels];
     let mut active_r = vec![false; fr.n_levels];
-    for uid in 0..n_unique {
-        active_q[design.store.unique_level(uid, q) as usize] = true;
-        active_r[design.store.unique_level(uid, r) as usize] = true;
+    for uid in 0..n_obs {
+        active_q[design.store.level(uid, q) as usize] = true;
+        active_r[design.store.level(uid, r) as usize] = true;
     }
 
     let mut q_map = vec![u32::MAX; fq.n_levels];

@@ -12,9 +12,8 @@ from within._within import (
 )
 from .._problems import get_generator
 from .._registry import SuiteOptions, suite
-from .._solvers import run_solve
 from .._table import print_table
-from .._types import BenchmarkResult, ProblemSpec, SolverConfig
+from .._types import BenchmarkResult, ProblemSpec, SolverConfig, run_solve
 
 RESIDUAL_THRESHOLD = 1e-6
 

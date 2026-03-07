@@ -7,69 +7,14 @@ employer-employee data with regional labour markets and low mobility.
 
 from __future__ import annotations
 
-from within import CG, GMRES
-from within._within import (
-    AdditiveSchwarz,
-    ApproxCholConfig,
-    ApproxSchurConfig,
-    MultiplicativeSchwarz,
-    SchurComplement,
-)
-from .._problems import get_generator
 from .._registry import SuiteOptions, suite
-from .._solvers import run_solve
 from .._table import print_pivot, print_table
-from .._types import BenchmarkResult, ProblemSpec, SolverConfig
-
-
-def _run_problems(
-    problems: list[ProblemSpec],
-    configs: list[SolverConfig],
-) -> list[BenchmarkResult]:
-    all_results: list[BenchmarkResult] = []
-    for prob in problems:
-        gen = get_generator(prob.generator)
-        cats, n_levels, y = gen(**prob.params, seed=prob.seed)
-        n_fe = len(n_levels)
-        print(
-            f"\nProblem: {prob.name}  ({n_fe}-FE, DOFs={sum(n_levels)}, Rows={len(cats[0])})"
-        )
-
-        for cfg in configs:
-            try:
-                result = run_solve(cats, n_levels, y, cfg)
-                result.problem = prob.name
-                all_results.append(result)
-            except BaseException as e:
-                if isinstance(e, (KeyboardInterrupt, SystemExit)):
-                    raise
-                print(f"  WARNING: {cfg.label} failed: {e}")
-    return all_results
-
-
-def _solver_configs(opts: SuiteOptions) -> list[SolverConfig]:
-    schur = SchurComplement(
-        approx_chol=ApproxCholConfig(seed=opts.seed),
-        approx_schur=ApproxSchurConfig(seed=opts.seed),
-    )
-    return [
-        SolverConfig(
-            "CG(Schwarz)",
-            CG(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=AdditiveSchwarz(local_solver=schur),
-            ),
-        ),
-        SolverConfig(
-            "GMRES(Mult-Schwarz)",
-            GMRES(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=MultiplicativeSchwarz(local_solver=schur),
-            ),
-        ),
-    ]
+from .._types import (
+    BenchmarkResult,
+    ProblemSpec,
+    run_problem_set,
+    standard_solver_configs,
+)
 
 
 @suite(
@@ -290,8 +235,8 @@ def run_many_components(opts: SuiteOptions) -> list[BenchmarkResult]:
             ),
         ]
 
-    configs = _solver_configs(opts)
-    results = _run_problems(problems, configs)
+    configs = standard_solver_configs(opts)
+    results = run_problem_set(problems, configs)
     print_table(results)
     print("\n")
     print_pivot(results)
@@ -408,8 +353,8 @@ def run_component_scaling(opts: SuiteOptions) -> list[BenchmarkResult]:
             ),
         ]
 
-    configs = _solver_configs(opts)
-    results = _run_problems(problems, configs)
+    configs = standard_solver_configs(opts)
+    results = run_problem_set(problems, configs)
     print_table(results)
     print("\n")
     print_pivot(results)

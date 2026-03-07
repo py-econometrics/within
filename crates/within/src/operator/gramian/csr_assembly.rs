@@ -184,7 +184,7 @@ pub(crate) fn accumulate_cross_block<S: ObservationStore>(
     n_q: usize,
     n_r: usize,
 ) -> (CsrBlock, Vec<f64>, Vec<f64>) {
-    let n_unique = design.store.n_unique();
+    let n_obs = design.store.n_obs();
     let mut diag_q = vec![0.0f64; n_q];
     let mut diag_r = vec![0.0f64; n_r];
     let table_size = n_q * n_r;
@@ -193,9 +193,9 @@ pub(crate) fn accumulate_cross_block<S: ObservationStore>(
         // Dense path: flat table with O(1) accumulation per observation.
         let mut table = vec![0.0f64; table_size];
 
-        for uid in 0..n_unique {
-            let j = design.store.unique_level(uid, q) as usize;
-            let k = design.store.unique_level(uid, r) as usize;
+        for uid in 0..n_obs {
+            let j = design.store.level(uid, q) as usize;
+            let k = design.store.level(uid, r) as usize;
             let cj = q_compact[j];
             let ck = r_compact[k];
             if cj == u32::MAX || ck == u32::MAX {
@@ -217,9 +217,9 @@ pub(crate) fn accumulate_cross_block<S: ObservationStore>(
 
         // Pass 1: accumulate diags + count entries per row
         let mut row_counts = vec![0u32; n_q];
-        for uid in 0..n_unique {
-            let j = design.store.unique_level(uid, q) as usize;
-            let k = design.store.unique_level(uid, r) as usize;
+        for uid in 0..n_obs {
+            let j = design.store.level(uid, q) as usize;
+            let k = design.store.level(uid, r) as usize;
             let cj = q_compact[j];
             let ck = r_compact[k];
             if cj == u32::MAX || ck == u32::MAX {
@@ -242,9 +242,9 @@ pub(crate) fn accumulate_cross_block<S: ObservationStore>(
         let mut bucket_cols = vec![0u32; total_entries];
         let mut bucket_vals = vec![0.0f64; total_entries];
         let mut cursor = bucket_indptr[..n_q].to_vec();
-        for uid in 0..n_unique {
-            let j = design.store.unique_level(uid, q) as usize;
-            let k = design.store.unique_level(uid, r) as usize;
+        for uid in 0..n_obs {
+            let j = design.store.level(uid, q) as usize;
+            let k = design.store.level(uid, r) as usize;
             let cj = q_compact[j];
             let ck = r_compact[k];
             if cj == u32::MAX || ck == u32::MAX {

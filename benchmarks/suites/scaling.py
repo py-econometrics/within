@@ -4,44 +4,10 @@ from __future__ import annotations
 
 import numpy as np
 
-from within import CG, GMRES
-from within._within import (
-    AdditiveSchwarz,
-    ApproxCholConfig,
-    ApproxSchurConfig,
-    MultiplicativeSchwarz,
-    SchurComplement,
-)
 from .._problems import get_generator
 from .._registry import SuiteOptions, suite
-from .._solvers import run_solve
 from .._table import print_pivot, print_table
-from .._types import BenchmarkResult, SolverConfig
-
-
-def _solver_configs(opts: SuiteOptions) -> list[SolverConfig]:
-    schur = SchurComplement(
-        approx_chol=ApproxCholConfig(seed=opts.seed),
-        approx_schur=ApproxSchurConfig(seed=opts.seed),
-    )
-    return [
-        SolverConfig(
-            "CG(Schwarz)",
-            CG(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=AdditiveSchwarz(local_solver=schur),
-            ),
-        ),
-        SolverConfig(
-            "GMRES(Mult-Schwarz)",
-            GMRES(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=MultiplicativeSchwarz(local_solver=schur),
-            ),
-        ),
-    ]
+from .._types import BenchmarkResult, run_solve, standard_solver_configs
 
 
 def _run_scaling_problems(
@@ -49,7 +15,7 @@ def _run_scaling_problems(
     opts: SuiteOptions,
 ) -> list[BenchmarkResult]:
     """Run a list of (name, n_levels, n_rows) configs through the standard solve paths."""
-    solver_configs = _solver_configs(opts)
+    solver_configs = standard_solver_configs(opts)
 
     all_results: list[BenchmarkResult] = []
     for name, n_levels, n_rows in configs_list:
@@ -106,31 +72,40 @@ def run_scaling(opts: SuiteOptions) -> list[BenchmarkResult]:
 
 @suite(
     "scaling_2fe",
-    description="Specialized 2-FE scaling (chain, star, barbell, expander)",
-    tags=("2fe", "scaling"),
+    description="2-FE scaling across topologies (chain, star, barbell, expander, grid)",
+    tags=("2fe", "scaling", "laplacian"),
 )
 def run_scaling_2fe(opts: SuiteOptions) -> list[BenchmarkResult]:
     if opts.quick:
         problems = [
+            ("chain 50", "chain_2fe", {"n_levels": 50}),
             ("chain 100", "chain_2fe", {"n_levels": 100}),
             ("expander 100 d=3", "expander_2fe", {"n_levels": 100, "degree": 3}),
         ]
     else:
         problems = [
+            ("chain 50", "chain_2fe", {"n_levels": 50}),
             ("chain 100", "chain_2fe", {"n_levels": 100}),
+            ("chain 200", "chain_2fe", {"n_levels": 200}),
             ("chain 500", "chain_2fe", {"n_levels": 500}),
             ("chain 1000", "chain_2fe", {"n_levels": 1000}),
+            ("chain 2000", "chain_2fe", {"n_levels": 2000}),
+            ("chain 50 (dense)", "chain_2fe", {"n_levels": 50, "obs_per_edge": 10}),
+            ("star 100", "star_2fe", {"n_levels": 100}),
             ("star 200", "star_2fe", {"n_levels": 200}),
             ("barbell 100", "barbell_2fe", {"n_levels": 100}),
             ("barbell 500", "barbell_2fe", {"n_levels": 500}),
             ("barbell 1000", "barbell_2fe", {"n_levels": 1000}),
+            ("expander 100 d=3", "expander_2fe", {"n_levels": 100, "degree": 3}),
             ("expander 200 d=3", "expander_2fe", {"n_levels": 200, "degree": 3}),
             ("expander 500 d=3", "expander_2fe", {"n_levels": 500, "degree": 3}),
             ("expander 1000 d=3", "expander_2fe", {"n_levels": 1000, "degree": 3}),
+            ("expander 2000 d=3", "expander_2fe", {"n_levels": 2000, "degree": 3}),
+            ("expander 100 d=10", "expander_2fe", {"n_levels": 100, "degree": 10}),
             ("grid 20x20", "grid_2fe", {"n_side": 20}),
         ]
 
-    solver_configs = _solver_configs(opts)
+    solver_configs = standard_solver_configs(opts)
 
     all_results: list[BenchmarkResult] = []
     for name, gen_key, params in problems:

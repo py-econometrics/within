@@ -33,7 +33,7 @@ fn faer_to_sparse_matrix_conversion() {
     let mat = path_laplacian_faer();
     let sparse: SparseMatrix = mat.as_ref().into();
 
-    assert_eq!(sparse.n_rows(), 4);
+    assert_eq!(sparse.n(), 4);
     assert_eq!(sparse.indptr().len(), 5);
     assert_eq!(sparse.nnz(), 10);
 }

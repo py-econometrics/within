@@ -1,6 +1,5 @@
 pub(crate) mod csr_block;
 pub mod design;
-pub(crate) mod dof_obs_index;
 pub mod gramian;
 pub(crate) mod local_solver;
 pub(crate) mod residual_update;

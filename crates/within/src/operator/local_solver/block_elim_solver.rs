@@ -4,7 +4,7 @@ use schwarz_precond::{LocalSolveError, LocalSolver, SparseMatrix};
 
 use crate::operator::gramian::CrossTab;
 
-use super::transforms::{backsub_block, negate_block, subtract_mean};
+use super::{backsub_block, negate_block, subtract_mean};
 
 /// Reduced-system factor backend for Schur-complement local solves.
 pub(crate) enum ReducedFactor {

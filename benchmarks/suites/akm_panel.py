@@ -12,44 +12,17 @@ make real AKM data hard:
 
 from __future__ import annotations
 
-from within import CG, GMRES
+from within import CG
 from within._within import (
     AdditiveSchwarz,
     ApproxCholConfig,
     ApproxSchurConfig,
-    MultiplicativeSchwarz,
     SchurComplement,
 )
 from .._problems import get_generator
 from .._registry import SuiteOptions, suite
-from .._solvers import run_solve
 from .._table import print_pivot, print_table
-from .._types import BenchmarkResult, SolverConfig
-
-
-def _solver_configs(opts: SuiteOptions) -> list[SolverConfig]:
-    schur = SchurComplement(
-        approx_chol=ApproxCholConfig(seed=opts.seed),
-        approx_schur=ApproxSchurConfig(seed=opts.seed),
-    )
-    return [
-        SolverConfig(
-            "CG(Schwarz)",
-            CG(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=AdditiveSchwarz(local_solver=schur),
-            ),
-        ),
-        SolverConfig(
-            "GMRES(Mult-Schwarz)",
-            GMRES(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=MultiplicativeSchwarz(local_solver=schur),
-            ),
-        ),
-    ]
+from .._types import BenchmarkResult, SolverConfig, run_solve, standard_solver_configs
 
 
 # -----------------------------------------------------------------------
@@ -70,7 +43,7 @@ def run_akm_panel(opts: SuiteOptions) -> list[BenchmarkResult]:
             ("disconnected 10K", "akm_disconnected", {}),
             ("realistic 10K", "akm_realistic", {}),
         ]
-        solver_sets = [_solver_configs(opts)] * len(problems)
+        solver_sets = [standard_solver_configs(opts)] * len(problems)
     else:
         problems = [
             # --- 10K workers (quick-tier) ---
@@ -147,7 +120,7 @@ def run_akm_panel(opts: SuiteOptions) -> list[BenchmarkResult]:
                 },
             ),
         ]
-        solver_sets = [_solver_configs(opts)] * len(problems)
+        solver_sets = [standard_solver_configs(opts)] * len(problems)
 
     all_results: list[BenchmarkResult] = []
     for (name, gen_key, params), solvers in zip(problems, solver_sets):
