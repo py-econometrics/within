@@ -376,6 +376,7 @@ impl AnchoredDenseCholesky {
 
         let m = self.n - 1;
         let l = &self.l_row_major;
+        debug_assert_eq!(l.len(), m * m);
 
         // Forward solve on anchored block: L y = b.
         for i in 0..m {

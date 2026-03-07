@@ -150,6 +150,70 @@ fn level_from_column_or_store<S: ObservationStore>(
     }
 }
 
+/// Thread-local fold/reduce scatter-add for small factors.
+///
+/// Each Rayon task folds into its own accumulator, then reduce merges.
+/// Avoids CAS contention at the cost of O(n_levels × n_threads) memory.
+fn scatter_add_fold<S: ObservationStore>(
+    slice: &mut [f64],
+    n_rows: usize,
+    n_levels: usize,
+    store: &S,
+    levels: Option<&[u32]>,
+    q: usize,
+    value_fn: &(impl Fn(usize) -> f64 + Sync),
+) {
+    let min_len = (n_rows / rayon::current_num_threads().max(1)).max(1024);
+    let result: Vec<f64> = (0..n_rows)
+        .into_par_iter()
+        .with_min_len(min_len)
+        .fold(
+            || vec![0.0f64; n_levels],
+            |mut acc, i| {
+                let level = level_from_column_or_store(store, levels, i, q);
+                acc[level] += value_fn(i);
+                acc
+            },
+        )
+        .reduce(
+            || vec![0.0f64; n_levels],
+            |mut a, b| {
+                for (ai, bi) in a.iter_mut().zip(b.iter()) {
+                    *ai += *bi;
+                }
+                a
+            },
+        );
+    for (d, r) in slice.iter_mut().zip(result.iter()) {
+        *d += *r;
+    }
+}
+
+/// Atomic CAS scatter-add for large factors.
+///
+/// Low contention when factor dimensions are large relative to observation count
+/// (e.g. 32M individuals with ~10 obs each). Uses native atomic float ops where
+/// available (e.g. AArch64 ldadd).
+fn scatter_add_atomic<S: ObservationStore>(
+    slice: &mut [f64],
+    n_rows: usize,
+    store: &S,
+    levels: Option<&[u32]>,
+    q: usize,
+    value_fn: &(impl Fn(usize) -> f64 + Sync),
+    atomic_buf: &mut Vec<AtomicF64>,
+) {
+    atomic_buf.clear();
+    atomic_buf.extend(slice.iter().map(|&v| AtomicF64::new(v)));
+    (0..n_rows).into_par_iter().for_each(|i| {
+        let level = level_from_column_or_store(store, levels, i, q);
+        atomic_buf[level].fetch_add(value_fn(i), Ordering::Relaxed);
+    });
+    for (d, a) in slice.iter_mut().zip(atomic_buf.iter()) {
+        *d = a.load(Ordering::Relaxed);
+    }
+}
+
 impl<S: ObservationStore> WeightedDesign<S> {
     /// Gather-add: `dst[i] += src[offset_q + level(i, q)]` for each factor `q` and row `i`.
     ///
@@ -221,9 +285,6 @@ impl<S: ObservationStore> WeightedDesign<S> {
             .collect();
 
         if self.n_rows > PAR_THRESHOLD {
-            // Factor-major with row-level parallelism.
-            // Process factors sequentially so each gets the full thread pool
-            // (12 threads vs 3 with the old factor-only parallelism).
             let n_rows = self.n_rows;
             let store = &self.store;
             let max_levels = self.factors.iter().map(|f| f.n_levels).max().unwrap_or(0);
@@ -234,46 +295,9 @@ impl<S: ObservationStore> WeightedDesign<S> {
                 let levels = factor_columns[q];
 
                 if n_levels < SCATTER_LOCAL_THRESHOLD {
-                    // Thread-local accumulators: each Rayon task folds into
-                    // its own Vec, then reduce merges. Safe for small n_levels.
-                    // Limit splitting so we create ~num_threads accumulators, not thousands.
-                    let min_len = (n_rows / rayon::current_num_threads().max(1)).max(1024);
-                    let result: Vec<f64> = (0..n_rows)
-                        .into_par_iter()
-                        .with_min_len(min_len)
-                        .fold(
-                            || vec![0.0f64; n_levels],
-                            |mut acc, i| {
-                                let level = level_from_column_or_store(store, levels, i, q);
-                                acc[level] += value_fn(i);
-                                acc
-                            },
-                        )
-                        .reduce(
-                            || vec![0.0f64; n_levels],
-                            |mut a, b| {
-                                for (ai, bi) in a.iter_mut().zip(b.iter()) {
-                                    *ai += *bi;
-                                }
-                                a
-                            },
-                        );
-                    for (d, r) in slice.iter_mut().zip(result.iter()) {
-                        *d += *r;
-                    }
+                    scatter_add_fold(slice, n_rows, n_levels, store, levels, q, &value_fn);
                 } else {
-                    // Atomic scatter: low contention for large factor dimensions
-                    // (e.g. 32M individuals with ~10 obs each → <0.001% collision rate).
-                    // Uses native atomic float ops where available (e.g. AArch64 ldadd).
-                    atomic_buf.clear();
-                    atomic_buf.extend(slice.iter().map(|&v| AtomicF64::new(v)));
-                    (0..n_rows).into_par_iter().for_each(|i| {
-                        let level = level_from_column_or_store(store, levels, i, q);
-                        atomic_buf[level].fetch_add(value_fn(i), Ordering::Relaxed);
-                    });
-                    for (d, a) in slice.iter_mut().zip(atomic_buf.iter()) {
-                        *d = a.load(Ordering::Relaxed);
-                    }
+                    scatter_add_atomic(slice, n_rows, store, levels, q, &value_fn, &mut atomic_buf);
                 }
             }
         } else {

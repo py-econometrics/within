@@ -5,7 +5,7 @@ mod explicit;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use cross_tab::CrossTab;
+pub(crate) use cross_tab::{BipartiteComponent, CrossTab};
 
 use std::sync::Arc;
 use std::sync::Mutex;

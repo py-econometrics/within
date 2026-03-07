@@ -11,6 +11,17 @@ use crate::observation::ObservationStore;
 // BipartiteComponent / SchurData — supporting types for CrossTab
 // ---------------------------------------------------------------------------
 
+/// Borrowed view of compact mapping parameters for a factor pair.
+///
+/// Bundles the global-to-compact index maps and compact dimensions,
+/// reducing the parameter count of `accumulate_cross_block`.
+struct CompactPair<'a> {
+    q_map: &'a [u32],
+    r_map: &'a [u32],
+    n_q: usize,
+    n_r: usize,
+}
+
 /// Compact mapping of active levels for a factor pair.
 ///
 /// Maps global level indices to local (compact) indices for factors q and r,
@@ -23,10 +34,25 @@ struct ActiveLevels {
     local_to_global: Vec<u32>,
 }
 
+impl ActiveLevels {
+    fn as_compact_pair(&self) -> CompactPair<'_> {
+        CompactPair {
+            q_map: &self.q_map,
+            r_map: &self.r_map,
+            n_q: self.n_q,
+            n_r: self.n_r,
+        }
+    }
+}
+
 /// Identify which levels in factors q and r are actually used, build compact
 /// local→global mappings, and return the local-to-global index vector.
 ///
 /// Returns `None` if either factor has no active levels.
+// TODO: single-pass active level scan would reduce O(n_pairs * n_obs) to O(n_obs)
+// by scanning observations once for ALL factors. Requires an API change to
+// `build_for_pair` (accept pre-computed active flags) or a new `build_all_pairs`
+// entry point. Deferred due to invasiveness.
 fn find_active_levels<S: ObservationStore>(
     design: &WeightedDesign<S>,
     q: usize,
@@ -191,6 +217,7 @@ impl CrossTab {
             indptr[n_q + i + 1] = indices.len() as u32;
         }
 
+        debug_assert!(indptr.windows(2).all(|w| w[0] <= w[1]));
         debug_assert_eq!(indices.len(), total_nnz);
 
         SparseMatrix::new(indptr, indices, data, n)
@@ -209,15 +236,7 @@ impl CrossTab {
     ) -> Option<(Self, Vec<u32>)> {
         let active = find_active_levels(design, q, r)?;
 
-        let (c, diag_q, diag_r) = accumulate_cross_block(
-            design,
-            q,
-            r,
-            &active.q_map,
-            &active.r_map,
-            active.n_q,
-            active.n_r,
-        );
+        let (c, diag_q, diag_r) = accumulate_cross_block(design, q, r, &active.as_compact_pair());
         let ct = c.transpose();
         let cross_tab = CrossTab {
             c,
@@ -252,40 +271,10 @@ impl CrossTab {
         let r_hi = (fr.offset + fr.n_levels) as u32;
 
         // Extract diagonals and detect active levels
-        let mut full_diag_q = vec![0.0; fq.n_levels];
-        let mut full_diag_r = vec![0.0; fr.n_levels];
-        let mut active_q = vec![false; fq.n_levels];
-        let mut active_r = vec![false; fr.n_levels];
-
-        for j in 0..fq.n_levels {
-            let row = fq.offset + j;
-            let start = indptr[row] as usize;
-            let end = indptr[row + 1] as usize;
-            for idx in start..end {
-                let col = indices[idx] as usize;
-                if col == row {
-                    full_diag_q[j] = data[idx];
-                    if data[idx] != 0.0 {
-                        active_q[j] = true;
-                    }
-                }
-            }
-        }
-
-        for k in 0..fr.n_levels {
-            let row = fr.offset + k;
-            let start = indptr[row] as usize;
-            let end = indptr[row + 1] as usize;
-            for idx in start..end {
-                let col = indices[idx] as usize;
-                if col == row {
-                    full_diag_r[k] = data[idx];
-                    if data[idx] != 0.0 {
-                        active_r[k] = true;
-                    }
-                }
-            }
-        }
+        let (full_diag_q, active_q) =
+            extract_factor_diagonal(indptr, indices, data, fq.offset, fq.n_levels);
+        let (full_diag_r, active_r) =
+            extract_factor_diagonal(indptr, indices, data, fr.offset, fr.n_levels);
 
         // Build compact index maps
         let mut q_map = vec![u32::MAX; fq.n_levels];
@@ -333,31 +322,10 @@ impl CrossTab {
             .map(|k| full_diag_r[k])
             .collect();
 
-        // Extract C block: iterate q-rows, filter columns in r-range, remap both
-        let mut c_indptr = vec![0u32; n_q + 1];
-        let mut c_indices = Vec::new();
-        let mut c_data = Vec::new();
-
-        for j in 0..fq.n_levels {
-            if !active_q[j] {
-                continue;
-            }
-            let compact_q = q_map[j] as usize;
-            let row = fq.offset + j;
-            let start = indptr[row] as usize;
-            let end = indptr[row + 1] as usize;
-            for idx in start..end {
-                let col = indices[idx];
-                if col >= r_lo && col < r_hi {
-                    let k = (col - r_lo) as usize;
-                    if r_map[k] != u32::MAX {
-                        c_indices.push(r_map[k]);
-                        c_data.push(data[idx]);
-                    }
-                }
-            }
-            c_indptr[compact_q + 1] = c_indices.len() as u32;
-        }
+        // Extract off-diagonal C block
+        let (c_indptr, c_indices, c_data) = extract_offdiag_block(
+            indptr, indices, data, fq, &active_q, &q_map, &r_map, r_lo, r_hi, n_q,
+        );
 
         let c = CsrBlock {
             indptr: c_indptr,
@@ -522,12 +490,13 @@ fn accumulate_cross_block<S: ObservationStore>(
     design: &WeightedDesign<S>,
     q: usize,
     r: usize,
-    q_compact: &[u32],
-    r_compact: &[u32],
-    n_q: usize,
-    n_r: usize,
+    compact: &CompactPair<'_>,
 ) -> (CsrBlock, Vec<f64>, Vec<f64>) {
     let n_obs = design.store.n_obs();
+    let n_q = compact.n_q;
+    let n_r = compact.n_r;
+    let q_compact = compact.q_map;
+    let r_compact = compact.r_map;
     let mut diag_q = vec![0.0f64; n_q];
     let mut diag_r = vec![0.0f64; n_r];
     let table_size = n_q * n_r;
@@ -545,6 +514,7 @@ fn accumulate_cross_block<S: ObservationStore>(
                 continue;
             }
             let w = design.uid_weight(uid);
+            debug_assert!((cj as usize) < n_q && (ck as usize) < n_r);
             diag_q[cj as usize] += w;
             diag_r[ck as usize] += w;
             table[cj as usize * n_r + ck as usize] += w;
@@ -642,4 +612,87 @@ fn accumulate_cross_block<S: ObservationStore>(
     };
 
     (c, diag_q, diag_r)
+}
+
+// ---------------------------------------------------------------------------
+// from_gramian_block helpers (test-only)
+// ---------------------------------------------------------------------------
+
+/// Extract full diagonals and active-level flags from a Gramian for one factor.
+///
+/// Returns `(full_diag, active)` where `full_diag[j]` is the Gramian diagonal
+/// at the factor's j-th level, and `active[j]` is true if that diagonal is
+/// non-zero.
+#[cfg(test)]
+fn extract_factor_diagonal(
+    indptr: &[u32],
+    indices: &[u32],
+    data: &[f64],
+    offset: usize,
+    n_levels: usize,
+) -> (Vec<f64>, Vec<bool>) {
+    let mut full_diag = vec![0.0; n_levels];
+    let mut active = vec![false; n_levels];
+    for j in 0..n_levels {
+        let row = offset + j;
+        let start = indptr[row] as usize;
+        let end = indptr[row + 1] as usize;
+        for idx in start..end {
+            let col = indices[idx] as usize;
+            if col == row {
+                full_diag[j] = data[idx];
+                if data[idx] != 0.0 {
+                    active[j] = true;
+                }
+            }
+        }
+    }
+    (full_diag, active)
+}
+
+/// Extract the off-diagonal C block from a Gramian for a factor pair.
+///
+/// Iterates active q-rows, filters columns in the r-factor range, and remaps
+/// both row/column indices using the compact maps. Returns CSR components
+/// `(indptr, indices, data)`.
+#[cfg(test)]
+fn extract_offdiag_block(
+    indptr: &[u32],
+    indices: &[u32],
+    data: &[f64],
+    fq: &crate::observation::FactorMeta,
+    active_q: &[bool],
+    q_map: &[u32],
+    r_map: &[u32],
+    r_lo: u32,
+    r_hi: u32,
+    n_q: usize,
+) -> (Vec<u32>, Vec<u32>, Vec<f64>) {
+    let mut c_indptr = vec![0u32; n_q + 1];
+    let mut c_indices = Vec::new();
+    let mut c_data = Vec::new();
+
+    for j in 0..fq.n_levels {
+        if !active_q[j] {
+            continue;
+        }
+        let compact_q = q_map[j] as usize;
+        let row = fq.offset + j;
+        let start = indptr[row] as usize;
+        let end = indptr[row + 1] as usize;
+        for idx in start..end {
+            let col = indices[idx];
+            if col >= r_lo && col < r_hi {
+                let k = (col - r_lo) as usize;
+                if r_map[k] != u32::MAX {
+                    c_indices.push(r_map[k]);
+                    c_data.push(data[idx]);
+                }
+            }
+        }
+        c_indptr[compact_q + 1] = c_indices.len() as u32;
+    }
+    debug_assert!(c_indptr.windows(2).all(|w| w[0] <= w[1]));
+
+    (c_indptr, c_indices, c_data)
 }

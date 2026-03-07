@@ -21,7 +21,7 @@ use crate::observation::{FactorMeta, ObservationStore};
 /// After filling, each row is sorted by column index (insertion sort).
 fn build_symmetric_csr(
     n: usize,
-    mut emit_entries: impl FnMut(&mut dyn FnMut(usize, usize, f64)),
+    emit_entries: impl Fn(&mut dyn FnMut(usize, usize, f64)),
 ) -> SparseMatrix {
     // Pass 1: count NNZ per row
     let mut row_counts = vec![0u32; n];
@@ -288,22 +288,18 @@ fn build_full_matrix<S: ObservationStore>(design: &WeightedDesign<S>) -> SparseM
 
     const PAR_THRESHOLD: usize = 100_000;
 
-    let (diag_counts, pair_tables) = if n_obs > PAR_THRESHOLD {
+    let (diag_flat, pair_tables) = if n_obs > PAR_THRESHOLD {
         let n_threads = rayon::current_num_threads().max(1);
         let chunk_size = n_obs.div_ceil(n_threads);
 
-        let partials: Vec<(Vec<Vec<f64>>, Vec<PairAccumulator>)> = (0..n_threads)
+        let partials: Vec<(Vec<f64>, Vec<PairAccumulator>)> = (0..n_threads)
             .into_par_iter()
             .map(|tid| {
                 let start = tid * chunk_size;
                 let end = (start + chunk_size).min(n_obs);
                 let chunk_len = end.saturating_sub(start);
 
-                let mut diag: Vec<Vec<f64>> = design
-                    .factors
-                    .iter()
-                    .map(|f| vec![0.0; f.n_levels])
-                    .collect();
+                let mut diag = vec![0.0f64; n_dofs];
                 let mut pairs: Vec<PairAccumulator> = pair_info
                     .iter()
                     .map(|&(q, r)| {
@@ -317,8 +313,8 @@ fn build_full_matrix<S: ObservationStore>(design: &WeightedDesign<S>) -> SparseM
 
                 for uid in start..end {
                     let w = design.uid_weight(uid);
-                    for (q, diag_q) in diag.iter_mut().enumerate() {
-                        diag_q[design.store.level(uid, q) as usize] += w;
+                    for q in 0..n_factors {
+                        diag[design.factors[q].offset + design.store.level(uid, q) as usize] += w;
                     }
                     for (pi, &(q, r)) in pair_info.iter().enumerate() {
                         pairs[pi].add(
@@ -335,24 +331,18 @@ fn build_full_matrix<S: ObservationStore>(design: &WeightedDesign<S>) -> SparseM
 
         // Merge thread-local results
         let mut iter = partials.into_iter();
-        let (mut diag_counts, mut pair_tables) = iter.next().unwrap();
+        let (mut diag_flat, mut pair_tables) = iter.next().unwrap();
         for (d, p) in iter {
-            for (q, diag_q) in diag_counts.iter_mut().enumerate() {
-                for (a, b) in diag_q.iter_mut().zip(d[q].iter()) {
-                    *a += *b;
-                }
+            for (a, b) in diag_flat.iter_mut().zip(d.iter()) {
+                *a += *b;
             }
             for (pi, pair_table) in pair_tables.iter_mut().enumerate() {
                 pair_table.merge_from(&p[pi]);
             }
         }
-        (diag_counts, pair_tables)
+        (diag_flat, pair_tables)
     } else {
-        let mut diag_counts: Vec<Vec<f64>> = design
-            .factors
-            .iter()
-            .map(|f| vec![0.0; f.n_levels])
-            .collect();
+        let mut diag_flat = vec![0.0f64; n_dofs];
         let mut pair_tables: Vec<PairAccumulator> = pair_info
             .iter()
             .map(|&(q, r)| {
@@ -366,8 +356,8 @@ fn build_full_matrix<S: ObservationStore>(design: &WeightedDesign<S>) -> SparseM
 
         for uid in 0..n_obs {
             let w = design.uid_weight(uid);
-            for (q, diag_q) in diag_counts.iter_mut().enumerate() {
-                diag_q[design.store.level(uid, q) as usize] += w;
+            for q in 0..n_factors {
+                diag_flat[design.factors[q].offset + design.store.level(uid, q) as usize] += w;
             }
             for (pi, &(q, r)) in pair_info.iter().enumerate() {
                 pair_tables[pi].add(
@@ -377,17 +367,13 @@ fn build_full_matrix<S: ObservationStore>(design: &WeightedDesign<S>) -> SparseM
                 );
             }
         }
-        (diag_counts, pair_tables)
+        (diag_flat, pair_tables)
     };
 
     build_symmetric_csr(n_dofs, |emit| {
-        for (q, counts) in diag_counts.iter().enumerate() {
-            let fq = &design.factors[q];
-            for (j, &cnt) in counts.iter().enumerate() {
-                if cnt > 0.0 {
-                    let row = fq.offset + j;
-                    emit(row, row, cnt);
-                }
+        for (row, &cnt) in diag_flat.iter().enumerate() {
+            if cnt > 0.0 {
+                emit(row, row, cnt);
             }
         }
 

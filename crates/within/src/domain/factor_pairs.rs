@@ -3,7 +3,7 @@
 use super::{PartitionWeights, Subdomain, WeightedDesign};
 use crate::observation::ObservationStore;
 use crate::operator::csr_block::CsrBlock;
-use crate::operator::gramian::CrossTab;
+use crate::operator::gramian::{BipartiteComponent, CrossTab};
 
 /// Build local subdomains (with pre-built CrossTabs) for pairs of factors.
 ///
@@ -151,13 +151,7 @@ fn domains_and_block_for_pair<S: ObservationStore>(
         .iter()
         .zip(cross_tabs)
         .map(|(comp, comp_ct)| {
-            let comp_l2g: Vec<usize> = comp
-                .q_indices
-                .iter()
-                .map(|&i| l2g[i] as usize)
-                .chain(comp.r_indices.iter().map(|&i| l2g[n_q_full + i] as usize))
-                .collect();
-
+            let comp_l2g = component_global_indices(comp, &l2g, n_q_full);
             let core =
                 super::SubdomainCore::uniform(comp_l2g.into_iter().map(|g| g as u32).collect());
             (Subdomain { factor_pair, core }, comp_ct)
@@ -196,13 +190,7 @@ fn domains_for_pair_from_gramian(
         .iter()
         .zip(cross_tabs)
         .map(|(comp, comp_ct)| {
-            let comp_l2g: Vec<usize> = comp
-                .q_indices
-                .iter()
-                .map(|&i| l2g[i] as usize)
-                .chain(comp.r_indices.iter().map(|&i| l2g[n_q_full + i] as usize))
-                .collect();
-
+            let comp_l2g = component_global_indices(comp, &l2g, n_q_full);
             let core =
                 super::SubdomainCore::uniform(comp_l2g.into_iter().map(|g| g as u32).collect());
             (Subdomain { factor_pair, core }, comp_ct)
@@ -238,18 +226,23 @@ fn domains_for_pair<S: ObservationStore>(
         .iter()
         .zip(cross_tabs)
         .map(|(comp, comp_ct)| {
-            // Build local_to_global for this component: q-levels first, then r-levels
-            let comp_l2g: Vec<usize> = comp
-                .q_indices
-                .iter()
-                .map(|&i| l2g[i] as usize)
-                .chain(comp.r_indices.iter().map(|&i| l2g[n_q_full + i] as usize))
-                .collect();
-
+            let comp_l2g = component_global_indices(comp, &l2g, n_q_full);
             let core =
                 super::SubdomainCore::uniform(comp_l2g.into_iter().map(|g| g as u32).collect());
             (Subdomain { factor_pair, core }, comp_ct)
         })
+        .collect()
+}
+
+/// Compute global DOF indices for a bipartite component.
+///
+/// Maps the component's compact q/r indices through the local-to-global vector,
+/// returning global indices with q-levels first, then r-levels.
+fn component_global_indices(comp: &BipartiteComponent, l2g: &[u32], n_q_full: usize) -> Vec<usize> {
+    comp.q_indices
+        .iter()
+        .map(|&i| l2g[i] as usize)
+        .chain(comp.r_indices.iter().map(|&i| l2g[n_q_full + i] as usize))
         .collect()
 }
 

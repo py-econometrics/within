@@ -309,6 +309,8 @@ impl SchurLaplacian {
         let keep_to_elim = elim.keep_to_elim;
         let elim_to_keep = elim.elim_to_keep;
 
+        // map_init allocates one (work, touched) pair per rayon thread and
+        // reuses it across iterations — no per-row allocation.
         let rows: Vec<(Vec<u32>, Vec<f64>)> = (0..n_keep)
             .into_par_iter()
             .map_init(
@@ -451,6 +453,8 @@ impl SchurLaplacian {
     /// lower-triangle, diagonal, and upper-triangle entries in correct column
     /// order without any per-row sorting.
     fn build_laplacian_csr(edges: &[Edge], n_keep: usize) -> SparseMatrix {
+        debug_assert!(edges.iter().all(|&(lo, hi, _)| lo < hi));
+
         // Count lower/upper entries per row and accumulate diagonal weights.
         let mut lower_count = vec![0u32; n_keep];
         let mut upper_count = vec![0u32; n_keep];
