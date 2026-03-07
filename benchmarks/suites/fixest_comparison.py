@@ -7,12 +7,10 @@ observations.
 
 from __future__ import annotations
 
-from within import CG, GMRES, OperatorRepr
+from within import CG
 from within._within import (
     AdditiveSchwarz,
     ApproxCholConfig,
-    ApproxSchurConfig,
-    MultiplicativeSchwarz,
     SchurComplement,
 )
 from .._problems import get_generator
@@ -40,11 +38,14 @@ def run_fixest_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
             10_000_000,
             20_000_000,
             40_000_000,
+            80_000_000,
+            160_000_000,
+            320_000_000,
         ]
 
     schur = SchurComplement(
-        approx_chol=ApproxCholConfig(seed=opts.seed),
-        approx_schur=ApproxSchurConfig(seed=opts.seed),
+        approx_chol=ApproxCholConfig(seed=opts.seed, split=8),
+        approx_schur=None,
     )
     solver_configs = [
         SolverConfig(
@@ -53,23 +54,6 @@ def run_fixest_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
                 tol=opts.tol,
                 maxiter=opts.maxiter,
                 preconditioner=AdditiveSchwarz(local_solver=schur),
-            ),
-        ),
-        SolverConfig(
-            "CG(Schwarz-explicit)",
-            CG(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=AdditiveSchwarz(local_solver=schur),
-                operator=OperatorRepr.Explicit,
-            ),
-        ),
-        SolverConfig(
-            "GMRES(Mult-Schwarz)",
-            GMRES(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=MultiplicativeSchwarz(local_solver=schur),
             ),
         ),
     ]

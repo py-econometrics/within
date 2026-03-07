@@ -236,8 +236,11 @@ impl<S: ObservationStore> WeightedDesign<S> {
                 if n_levels < SCATTER_LOCAL_THRESHOLD {
                     // Thread-local accumulators: each Rayon task folds into
                     // its own Vec, then reduce merges. Safe for small n_levels.
+                    // Limit splitting so we create ~num_threads accumulators, not thousands.
+                    let min_len = (n_rows / rayon::current_num_threads().max(1)).max(1024);
                     let result: Vec<f64> = (0..n_rows)
                         .into_par_iter()
+                        .with_min_len(min_len)
                         .fold(
                             || vec![0.0f64; n_levels],
                             |mut acc, i| {

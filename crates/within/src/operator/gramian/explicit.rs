@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use rayon::prelude::*;
 use schwarz_precond::{Operator, SparseMatrix};
 
 use super::Gramian;
@@ -154,6 +155,22 @@ impl PairAccumulator {
         }
     }
 
+    fn merge_from(&mut self, other: &PairAccumulator) {
+        match (&mut self.storage, &other.storage) {
+            (PairStorage::Dense(a), PairStorage::Dense(b)) => {
+                for (ai, bi) in a.iter_mut().zip(b.iter()) {
+                    *ai += *bi;
+                }
+            }
+            (PairStorage::Sparse(a), PairStorage::Sparse(b)) => {
+                for (&k, &v) in b {
+                    *a.entry(k).or_insert(0.0) += v;
+                }
+            }
+            _ => unreachable!("storage type determined by factor dimensions, same for all threads"),
+        }
+    }
+
     pub(super) fn for_each_nonzero(&self, mut f: impl FnMut(usize, usize, f64)) {
         match &self.storage {
             PairStorage::Dense(table) => {
@@ -259,38 +276,109 @@ fn build_full_matrix<S: ObservationStore>(design: &WeightedDesign<S>) -> SparseM
     let n_obs = design.store.n_obs();
     let n_factors = design.n_factors();
 
-    let mut diag_counts: Vec<Vec<f64>> = design
-        .factors
-        .iter()
-        .map(|f| vec![0.0; f.n_levels])
-        .collect();
-
-    let n_pairs = n_factors * (n_factors - 1) / 2;
-    let mut pair_info: Vec<(usize, usize)> = Vec::with_capacity(n_pairs);
-    let mut pair_tables: Vec<PairAccumulator> = Vec::with_capacity(n_pairs);
-
-    for q in 0..n_factors {
-        for r in (q + 1)..n_factors {
-            let fq = &design.factors[q];
-            let fr = &design.factors[r];
-            pair_info.push((q, r));
-            pair_tables.push(PairAccumulator::new(fq.n_levels, fr.n_levels, n_obs));
+    let pair_info: Vec<(usize, usize)> = {
+        let mut v = Vec::with_capacity(n_factors * (n_factors - 1) / 2);
+        for q in 0..n_factors {
+            for r in (q + 1)..n_factors {
+                v.push((q, r));
+            }
         }
-    }
+        v
+    };
 
-    for uid in 0..n_obs {
-        let w = design.uid_weight(uid);
-        for (q, diag_q) in diag_counts.iter_mut().enumerate() {
-            let j = design.store.level(uid, q) as usize;
-            diag_q[j] += w;
-        }
+    const PAR_THRESHOLD: usize = 100_000;
 
-        for (pi, &(q, r)) in pair_info.iter().enumerate() {
-            let j = design.store.level(uid, q) as usize;
-            let k = design.store.level(uid, r) as usize;
-            pair_tables[pi].add(j, k, w);
+    let (diag_counts, pair_tables) = if n_obs > PAR_THRESHOLD {
+        let n_threads = rayon::current_num_threads().max(1);
+        let chunk_size = n_obs.div_ceil(n_threads);
+
+        let partials: Vec<(Vec<Vec<f64>>, Vec<PairAccumulator>)> = (0..n_threads)
+            .into_par_iter()
+            .map(|tid| {
+                let start = tid * chunk_size;
+                let end = (start + chunk_size).min(n_obs);
+                let chunk_len = end.saturating_sub(start);
+
+                let mut diag: Vec<Vec<f64>> = design
+                    .factors
+                    .iter()
+                    .map(|f| vec![0.0; f.n_levels])
+                    .collect();
+                let mut pairs: Vec<PairAccumulator> = pair_info
+                    .iter()
+                    .map(|&(q, r)| {
+                        PairAccumulator::new(
+                            design.factors[q].n_levels,
+                            design.factors[r].n_levels,
+                            chunk_len,
+                        )
+                    })
+                    .collect();
+
+                for uid in start..end {
+                    let w = design.uid_weight(uid);
+                    for (q, diag_q) in diag.iter_mut().enumerate() {
+                        diag_q[design.store.level(uid, q) as usize] += w;
+                    }
+                    for (pi, &(q, r)) in pair_info.iter().enumerate() {
+                        pairs[pi].add(
+                            design.store.level(uid, q) as usize,
+                            design.store.level(uid, r) as usize,
+                            w,
+                        );
+                    }
+                }
+
+                (diag, pairs)
+            })
+            .collect();
+
+        // Merge thread-local results
+        let mut iter = partials.into_iter();
+        let (mut diag_counts, mut pair_tables) = iter.next().unwrap();
+        for (d, p) in iter {
+            for (q, diag_q) in diag_counts.iter_mut().enumerate() {
+                for (a, b) in diag_q.iter_mut().zip(d[q].iter()) {
+                    *a += *b;
+                }
+            }
+            for (pi, pair_table) in pair_tables.iter_mut().enumerate() {
+                pair_table.merge_from(&p[pi]);
+            }
         }
-    }
+        (diag_counts, pair_tables)
+    } else {
+        let mut diag_counts: Vec<Vec<f64>> = design
+            .factors
+            .iter()
+            .map(|f| vec![0.0; f.n_levels])
+            .collect();
+        let mut pair_tables: Vec<PairAccumulator> = pair_info
+            .iter()
+            .map(|&(q, r)| {
+                PairAccumulator::new(
+                    design.factors[q].n_levels,
+                    design.factors[r].n_levels,
+                    n_obs,
+                )
+            })
+            .collect();
+
+        for uid in 0..n_obs {
+            let w = design.uid_weight(uid);
+            for (q, diag_q) in diag_counts.iter_mut().enumerate() {
+                diag_q[design.store.level(uid, q) as usize] += w;
+            }
+            for (pi, &(q, r)) in pair_info.iter().enumerate() {
+                pair_tables[pi].add(
+                    design.store.level(uid, q) as usize,
+                    design.store.level(uid, r) as usize,
+                    w,
+                );
+            }
+        }
+        (diag_counts, pair_tables)
+    };
 
     build_symmetric_csr(n_dofs, |emit| {
         for (q, counts) in diag_counts.iter().enumerate() {
