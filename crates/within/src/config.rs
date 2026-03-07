@@ -78,10 +78,25 @@ impl LocalSolverConfig {
 /// Every eliminated vertex uses a sampled spanning tree (at most deg-1 fill
 /// edges) via the GKS 2023 Algorithm 5 clique-tree. This preserves spectral
 /// quality (unbiased edge weights) while reducing fill-in to O(deg).
-#[derive(Debug, Clone, Copy, Default)]
+///
+/// When `split > 1`, uses AC2-style multi-edge sampling (Algorithm 6 in
+/// GKS 2023): each star samples `split` independent trees, producing up to
+/// `split * (deg-1)` fill edges. More samples → denser (better) Schur
+/// approximation at the cost of more fill-in.
+#[derive(Debug, Clone, Copy)]
 pub struct ApproxSchurConfig {
     /// Random seed for the clique-tree sampler.
     pub seed: u64,
+    /// Number of independent clique-tree samples per star.
+    ///
+    /// `1` = single sample (AC1), `k > 1` = multi-sample (AC2-style).
+    pub split: u32,
+}
+
+impl Default for ApproxSchurConfig {
+    fn default() -> Self {
+        Self { seed: 0, split: 1 }
+    }
 }
 
 // ---------------------------------------------------------------------------

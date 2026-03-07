@@ -56,20 +56,30 @@ impl PyApproxCholConfig {
 pub struct PyApproxSchurConfig {
     #[pyo3(get)]
     pub seed: u64,
+    #[pyo3(get)]
+    pub split: u32,
 }
 
 #[pymethods]
 impl PyApproxSchurConfig {
     #[new]
-    #[pyo3(signature = (seed=0))]
-    fn new(seed: u64) -> Self {
-        Self { seed }
+    #[pyo3(signature = (seed=0, split=1))]
+    fn new(seed: u64, split: u32) -> PyResult<Self> {
+        if split == 0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "split must be >= 1",
+            ));
+        }
+        Ok(Self { seed, split })
     }
 }
 
 impl PyApproxSchurConfig {
     fn to_native(&self) -> ApproxSchurConfig {
-        ApproxSchurConfig { seed: self.seed }
+        ApproxSchurConfig {
+            seed: self.seed,
+            split: self.split,
+        }
     }
 }
 

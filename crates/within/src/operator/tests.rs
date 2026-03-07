@@ -839,7 +839,10 @@ mod schur_complement_tests {
         // Degree-3 star in eliminated block gives nontrivial sampled edges.
         let c_dense = vec![1.0, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
         let cross_tab = make_cross_tab(&c_dense, 3, 3, vec![10.0, 4.0, 5.0], vec![2.0, 3.0, 4.0]);
-        let approx = ApproxSchurComplement::new(crate::config::ApproxSchurConfig { seed: 12345 });
+        let approx = ApproxSchurComplement::new(crate::config::ApproxSchurConfig {
+            seed: 12345,
+            ..Default::default()
+        });
 
         let a = approx.compute(&cross_tab);
         let b = approx.compute(&cross_tab);
@@ -1079,7 +1082,10 @@ mod schwarz_tests {
 
         let config = LocalSolverConfig::SchurComplement {
             approx_chol: Config::default(),
-            approx_schur: Some(ApproxSchurConfig { seed: 7 }),
+            approx_schur: Some(ApproxSchurConfig {
+                seed: 7,
+                ..Default::default()
+            }),
             dense_threshold: DEFAULT_DENSE_SCHUR_THRESHOLD,
         };
         let entry =
@@ -1141,13 +1147,19 @@ mod schwarz_tests {
             let exact_sparse = benchmark_build_path(&cross_tab, None, 0, build_iters);
             let approx_dense = benchmark_build_path(
                 &cross_tab,
-                Some(ApproxSchurConfig { seed: 42 }),
+                Some(ApproxSchurConfig {
+                    seed: 42,
+                    ..Default::default()
+                }),
                 usize::MAX,
                 build_iters,
             );
             let approx_sparse = benchmark_build_path(
                 &cross_tab,
-                Some(ApproxSchurConfig { seed: 42 }),
+                Some(ApproxSchurConfig {
+                    seed: 42,
+                    ..Default::default()
+                }),
                 0,
                 build_iters,
             );

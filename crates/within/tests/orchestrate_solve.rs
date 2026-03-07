@@ -119,7 +119,10 @@ fn test_schwarz_builder_schur_complement_modes_end_to_end() {
                 seed: 13,
                 ..Default::default()
             },
-            approx_schur: Some(ApproxSchurConfig { seed: 42 }),
+            approx_schur: Some(ApproxSchurConfig {
+                seed: 42,
+                ..Default::default()
+            }),
             dense_threshold: within::DEFAULT_DENSE_SCHUR_THRESHOLD,
         },
     ];

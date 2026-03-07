@@ -14,7 +14,7 @@
 //! - **Approximate**: star-based edge emission via [`CliqueEmitter`],
 //!   then sort-merge assembly ([`SchurLaplacian::from_edges`])
 
-use approx_chol::low_level::clique_tree_sample;
+use approx_chol::low_level::{clique_tree_sample, clique_tree_sample_multi};
 use rayon::prelude::*;
 use schwarz_precond::SparseMatrix;
 
@@ -77,11 +77,15 @@ trait CliqueEmitter {
 /// Emits sampled clique-tree fill edges for every star.
 struct SampledCliqueEmitter {
     seed: u64,
+    split: u32,
 }
 
 impl SampledCliqueEmitter {
-    fn new(seed: u64) -> Self {
-        Self { seed }
+    fn new(config: &ApproxSchurConfig) -> Self {
+        Self {
+            seed: config.seed,
+            split: config.split,
+        }
     }
 }
 
@@ -101,7 +105,11 @@ impl CliqueEmitter for SampledCliqueEmitter {
             scratch.buf.push((col, w));
         }
         let seed = self.seed.wrapping_add(star.index as u64);
-        clique_tree_sample(&mut scratch.buf, star.diag, seed, edges);
+        if self.split <= 1 {
+            clique_tree_sample(&mut scratch.buf, star.diag, seed, edges);
+        } else {
+            clique_tree_sample_multi(&mut scratch.buf, self.split, seed, edges);
+        }
     }
 }
 
@@ -221,8 +229,9 @@ struct SchurLaplacian {
 impl SchurLaplacian {
     /// Build a symmetric CSR Laplacian from fill edges (sort-merge pipeline).
     ///
-    /// Used by the approximate path: edges are par-sorted, duplicates merged,
-    /// negligible entries dropped, then assembled into CSR with row-sum diagonal.
+    /// Edges may contain duplicates (same (lo, hi) from different stars).
+    /// Global parallel sort + sequential merge deduplicates before symmetric
+    /// expansion, keeping memory bounded.
     fn from_edges(mut edges: Vec<Edge>, n_keep: usize) -> Self {
         // Sort by (lo, hi), merge duplicates.
         edges.par_sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
@@ -237,10 +246,11 @@ impl SchurLaplacian {
             }
             merged.push((lo, hi, w));
         }
+        drop(edges);
         merged.retain(|&(_, _, w)| w > f64::EPSILON);
 
         Self {
-            matrix: Self::edges_to_laplacian_csr(&merged, n_keep),
+            matrix: Self::build_laplacian_csr(&merged, n_keep),
         }
     }
 
@@ -392,12 +402,8 @@ impl SchurLaplacian {
         dense_minor
     }
 
-    /// Convert merged upper-triangular edge list to symmetric CSR Laplacian.
-    ///
-    /// Uses a single flat buffer instead of per-row `Vec`s. Each row gets its
-    /// diagonal at slot 0, off-diagonal entries via cursors, then a
-    /// sort-and-rotate pass places the diagonal in its sorted position.
-    fn edges_to_laplacian_csr(edges: &[Edge], n_keep: usize) -> SparseMatrix {
+    /// Build symmetric CSR Laplacian from unique upper-triangular edges.
+    fn build_laplacian_csr(edges: &[Edge], n_keep: usize) -> SparseMatrix {
         // Count off-diagonal entries per row, accumulate diagonal weights.
         let mut offdiag_count = vec![0u32; n_keep];
         let mut diag = vec![0.0f64; n_keep];
@@ -431,7 +437,7 @@ impl SchurLaplacian {
             cursors[hi] += 1;
         }
 
-        // Sort each row's off-diagonal portion, merge duplicates, place diagonal.
+        // Sort each row by column, then rotate diagonal into its sorted position.
         for i in 0..n_keep {
             let start = offsets[i] as usize;
             let end = offsets[i + 1] as usize;
@@ -440,39 +446,17 @@ impl SchurLaplacian {
             }
             buf[start + 1..end].sort_unstable_by(|a, b| a.0.cmp(&b.0));
             let diag_col = i as u32;
-            let mut write = start + 1;
-            let mut read = start + 1;
-            while read < end {
-                let col = buf[read].0;
-                let mut w = buf[read].1;
-                read += 1;
-                while read < end && buf[read].0 == col {
-                    w += buf[read].1;
-                    read += 1;
-                }
-                if w.abs() > f64::EPSILON {
-                    buf[write] = (col, w);
-                    write += 1;
-                }
-            }
-            let offdiag_end = write;
-            let diag_pos =
-                buf[start + 1..offdiag_end].partition_point(|e| e.0 < diag_col) + start + 1;
-            buf[start..offdiag_end].rotate_left(1);
+            let diag_pos = buf[start + 1..end].partition_point(|e| e.0 < diag_col) + start + 1;
+            buf[start..end].rotate_left(1);
             let target = diag_pos - 1;
-            if target < offdiag_end - 1 {
-                buf[target..offdiag_end].rotate_right(1);
+            if target < end - 1 {
+                buf[target..end].rotate_right(1);
             }
-            offsets[i + 1] = offdiag_end as u32;
-        }
-        for i in 1..=n_keep {
-            offsets[i] = offsets[i].max(offsets[i - 1]);
         }
 
-        let final_nnz = offsets[n_keep] as usize;
-        let mut indices = Vec::with_capacity(final_nnz);
-        let mut data = Vec::with_capacity(final_nnz);
-        for &(col, val) in &buf[..final_nnz] {
+        let mut indices = Vec::with_capacity(total_nnz);
+        let mut data = Vec::with_capacity(total_nnz);
+        for &(col, val) in &buf[..total_nnz] {
             indices.push(col);
             data.push(val);
         }
@@ -593,7 +577,7 @@ impl SchurComplement for ApproxSchurComplement {
     /// GKS 2023 Algorithm 5 clique-tree approximation.
     fn compute(&self, cross_tab: &CrossTab) -> SchurResult {
         let elim = Elimination::new(cross_tab);
-        let emitter = SampledCliqueEmitter::new(self.config.seed);
+        let emitter = SampledCliqueEmitter::new(&self.config);
         let edges = elim.par_emit(&emitter);
         let laplacian = SchurLaplacian::from_edges(edges, elim.n_keep);
         SchurResult {

@@ -100,7 +100,8 @@ class ApproxCholConfig:
 
 class ApproxSchurConfig:
     seed: int
-    def __init__(self, seed: int = 0) -> None: ...
+    split: int
+    def __init__(self, seed: int = 0, split: int = 1) -> None: ...
 
 class SchurComplement:
     approx_chol: ApproxCholConfig | None
