@@ -57,7 +57,7 @@ pub fn cg_solve_preconditioned<A: Operator + ?Sized, M: Operator + ?Sized>(
     let n = operator.ncols();
     debug_assert_eq!(b.len(), n);
     let b_norm = vec_norm(b);
-    if b_norm == 0.0 {
+    if b_norm < f64::EPSILON {
         return Ok(CgResult {
             x: vec![0.0; n],
             converged: true,
@@ -74,6 +74,7 @@ pub fn cg_solve_preconditioned<A: Operator + ?Sized, M: Operator + ?Sized>(
     preconditioner.try_apply(&r, &mut z)?;
     let mut p = z.clone();
     let mut rz = dot(&r, &z);
+    let rz_init = rz;
     let mut r_norm = b_norm;
 
     for itn in 1..=maxiter {
@@ -106,7 +107,7 @@ pub fn cg_solve_preconditioned<A: Operator + ?Sized, M: Operator + ?Sized>(
 
         preconditioner.try_apply(&r, &mut z)?;
         let rz_new = dot(&r, &z);
-        if rz_new.abs() < 1e-14 * rz.abs().max(1e-300) {
+        if rz_new.abs() < f64::EPSILON * rz_init.abs().max(f64::MIN_POSITIVE) {
             return Ok(CgResult {
                 x,
                 converged: false,

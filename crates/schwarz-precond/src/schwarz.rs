@@ -196,8 +196,8 @@ struct SweepBuffers {
     r_scratch: Vec<f64>,
     /// Local solution scratch (length = max_scratch_size).
     z_scratch: Vec<f64>,
-    /// Weighted correction for residual update (length = max local DOFs).
-    correction: Vec<f64>,
+    /// Partition-of-unity-weighted local solution (length = max local DOFs).
+    weighted_local_sol: Vec<f64>,
 }
 
 impl SweepBuffers {
@@ -206,7 +206,7 @@ impl SweepBuffers {
             r_work: vec![0.0; n_dofs],
             r_scratch: vec![0.0; max_scratch_size],
             z_scratch: vec![0.0; max_scratch_size],
-            correction: vec![0.0; max_local_dofs],
+            weighted_local_sol: vec![0.0; max_local_dofs],
         }
     }
 }
@@ -214,11 +214,8 @@ impl SweepBuffers {
 /// Process a single subdomain: restrict, local solve, prolongate, update residual.
 fn apply_subdomain<S: LocalSolver, U: ResidualUpdater>(
     entry: &SubdomainEntry<S>,
-    r_work: &mut [f64],
+    bufs: &mut SweepBuffers,
     z: &mut [f64],
-    r_scratch: &mut [f64],
-    z_scratch: &mut [f64],
-    correction: &mut [f64],
     updater: &mut U,
 ) -> Result<(), LocalSolveError> {
     if entry.core.global_indices.is_empty() {
@@ -227,19 +224,31 @@ fn apply_subdomain<S: LocalSolver, U: ResidualUpdater>(
 
     let n_local = entry.core.global_indices.len();
 
-    entry.core.restrict_weighted(r_work, r_scratch);
-    entry.solver.solve_local(r_scratch, z_scratch)?;
-    entry.core.prolongate_weighted_add(z_scratch, z);
+    entry
+        .core
+        .restrict_weighted(&bufs.r_work, &mut bufs.r_scratch);
+    entry
+        .solver
+        .solve_local(&mut bufs.r_scratch, &mut bufs.z_scratch)?;
+    entry.core.prolongate_weighted_add(&bufs.z_scratch, z);
 
     match &entry.core.partition_weights {
         PartitionWeights::Uniform(_) => {
-            updater.update(&entry.core.global_indices, &z_scratch[..n_local], r_work);
+            updater.update(
+                &entry.core.global_indices,
+                &bufs.z_scratch[..n_local],
+                &mut bufs.r_work,
+            );
         }
         PartitionWeights::NonUniform(w) => {
-            for k in 0..n_local {
-                correction[k] = w[k] * z_scratch[k];
+            for (k, wk) in w.iter().enumerate().take(n_local) {
+                bufs.weighted_local_sol[k] = wk * bufs.z_scratch[k];
             }
-            updater.update(&entry.core.global_indices, &correction[..n_local], r_work);
+            updater.update(
+                &entry.core.global_indices,
+                &bufs.weighted_local_sol[..n_local],
+                &mut bufs.r_work,
+            );
         }
     }
     Ok(())
@@ -303,44 +312,21 @@ impl<S: LocalSolver, U: ResidualUpdater> MultiplicativeSchwarzPreconditioner<S, 
             .map_err(|_| ApplyError::Synchronization {
                 context: "multiplicative.updater.lock",
             })?;
-        let SweepBuffers {
-            ref mut r_work,
-            ref mut r_scratch,
-            ref mut z_scratch,
-            ref mut correction,
-        } = *bufs;
-
         z.fill(0.0);
 
-        r_work.copy_from_slice(r);
+        bufs.r_work.copy_from_slice(r);
         updater.reset(r);
         for (subdomain, entry) in self.subdomains.iter().enumerate() {
-            apply_subdomain(
-                entry,
-                r_work,
-                z,
-                r_scratch,
-                z_scratch,
-                correction,
-                &mut *updater,
-            )
-            .map_err(|source| ApplyError::LocalSolveFailed { subdomain, source })?;
+            apply_subdomain(entry, &mut bufs, z, &mut *updater)
+                .map_err(|source| ApplyError::LocalSolveFailed { subdomain, source })?;
         }
 
         if self.symmetric {
-            updater.reset(r_work);
+            updater.reset(&bufs.r_work);
             for (rev_idx, entry) in self.subdomains.iter().rev().enumerate() {
                 let subdomain = self.subdomains.len().saturating_sub(1) - rev_idx;
-                apply_subdomain(
-                    entry,
-                    r_work,
-                    z,
-                    r_scratch,
-                    z_scratch,
-                    correction,
-                    &mut *updater,
-                )
-                .map_err(|source| ApplyError::LocalSolveFailed { subdomain, source })?;
+                apply_subdomain(entry, &mut bufs, z, &mut *updater)
+                    .map_err(|source| ApplyError::LocalSolveFailed { subdomain, source })?;
             }
         }
         Ok(())

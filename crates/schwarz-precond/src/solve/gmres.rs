@@ -440,20 +440,17 @@ pub fn gmres_solve<A: Operator + ?Sized, M: Operator + ?Sized>(
 /// Compute Givens rotation coefficients (c, s) such that
 /// [c  s] [a]   [r]
 /// [-s c] [b] = [0]
+///
+/// Uses `f64::hypot` for numerically stable computation of
+/// `r = sqrt(a² + b²)`, avoiding overflow/underflow for extreme ratios.
 #[inline]
 fn givens_rotation(a: f64, b: f64) -> (f64, f64) {
-    if b == 0.0 {
+    let r = f64::hypot(a, b);
+    if r == 0.0 {
+        // Identity rotation
         (1.0, 0.0)
-    } else if a == 0.0 {
-        (0.0, 1.0)
-    } else if a.abs() > b.abs() {
-        let t = b / a;
-        let c = 1.0 / (1.0 + t * t).sqrt();
-        (c, c * t)
     } else {
-        let t = a / b;
-        let s = 1.0 / (1.0 + t * t).sqrt();
-        (s * t, s)
+        (a / r, b / r)
     }
 }
 
@@ -469,7 +466,12 @@ fn solve_upper_triangular(h: &HessenbergMatrix, g: &[f64], k: usize) -> Vec<f64>
         }
         let diag = h.get(i, i);
         if diag.abs() < 1e-14 * (1.0 + sum.abs()) {
-            y[i] = 0.0; // Near-singular: best-effort
+            // Near-singular diagonal: intentional best-effort recovery.
+            // In a preconditioned system this can occur when the Krylov
+            // subspace nearly stagnates. Setting y[i] = 0 keeps the
+            // update bounded; the GMRES outer loop will detect lack of
+            // convergence via the residual norm check.
+            y[i] = 0.0;
         } else {
             y[i] = sum / diag;
         }
