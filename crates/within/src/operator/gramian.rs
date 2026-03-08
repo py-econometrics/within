@@ -5,7 +5,7 @@ mod explicit;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use cross_tab::{BipartiteComponent, CrossTab};
+pub(crate) use cross_tab::{find_all_active_levels, BipartiteComponent, CrossTab};
 
 use std::sync::Arc;
 use std::sync::Mutex;

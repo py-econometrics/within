@@ -309,8 +309,9 @@ impl SchurLaplacian {
         let keep_to_elim = elim.keep_to_elim;
         let elim_to_keep = elim.elim_to_keep;
 
-        // map_init allocates one (work, touched) pair per rayon thread and
-        // reuses it across iterations — no per-row allocation.
+        // Phase 1: Per-row Schur complement accumulation
+        // Each keep-block row scatters into a thread-local dense workspace,
+        // accumulating S[i,j] = D_keep[i] - Σ_k (keep_to_elim[i,k] / D_elim[k]) * elim_to_keep[k,j].
         let rows: Vec<(Vec<u32>, Vec<f64>)> = (0..n_keep)
             .into_par_iter()
             .map_init(
@@ -335,6 +336,9 @@ impl SchurLaplacian {
                         }
                     }
 
+                    // Phase 2: Extract non-zeros from workspace
+                    // Sort touched columns and emit only non-zero entries, preserving
+                    // the diagonal even if numerically zero (required for SDDM structure).
                     touched.sort_unstable();
                     let mut row_indices = Vec::new();
                     let mut row_data = Vec::new();
@@ -353,6 +357,7 @@ impl SchurLaplacian {
             )
             .collect();
 
+        // Phase 3: Assemble CSR from per-row results
         let mut s_indptr = vec![0u32; n_keep + 1];
         let mut s_indices = Vec::new();
         let mut s_data = Vec::new();

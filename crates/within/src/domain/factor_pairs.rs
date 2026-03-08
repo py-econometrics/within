@@ -3,7 +3,7 @@
 use super::{PartitionWeights, Subdomain, WeightedDesign};
 use crate::observation::ObservationStore;
 use crate::operator::csr_block::CsrBlock;
-use crate::operator::gramian::{BipartiteComponent, CrossTab};
+use crate::operator::gramian::{find_all_active_levels, BipartiteComponent, CrossTab};
 
 /// Build local subdomains (with pre-built CrossTabs) for pairs of factors.
 ///
@@ -22,10 +22,11 @@ pub(crate) fn build_local_domains<S: ObservationStore>(
 
     let n_factors = design.n_factors();
     let pairs = build_pairs(n_factors);
+    let all_active = find_all_active_levels(design);
 
     let mut domain_pairs: Vec<(Subdomain, CrossTab)> = pairs
         .par_iter()
-        .flat_map(|&(q, r)| domains_for_pair(design, q, r))
+        .flat_map(|&(q, r)| domains_for_pair(design, q, r, &all_active))
         .collect();
 
     compute_partition_weights(&mut domain_pairs, design.n_dofs);
@@ -91,11 +92,12 @@ pub(crate) fn build_domains_and_gramian_blocks<S: ObservationStore>(
 
     let n_factors = design.n_factors();
     let pairs = build_pairs(n_factors);
+    let all_active = find_all_active_levels(design);
 
     type PairResult = (Vec<(Subdomain, CrossTab)>, Option<PairBlockData>);
     let results: Vec<PairResult> = pairs
         .par_iter()
-        .map(|&(q, r)| domains_and_block_for_pair(design, q, r))
+        .map(|&(q, r)| domains_and_block_for_pair(design, q, r, &all_active))
         .collect();
 
     let mut domain_pairs = Vec::new();
@@ -115,8 +117,9 @@ fn domains_and_block_for_pair<S: ObservationStore>(
     design: &WeightedDesign<S>,
     q: usize,
     r: usize,
+    all_active: &[Vec<bool>],
 ) -> (Vec<(Subdomain, CrossTab)>, Option<PairBlockData>) {
-    let (full_ct, l2g) = match CrossTab::build_for_pair(design, q, r) {
+    let (full_ct, l2g) = match CrossTab::build_for_pair_with_active(design, q, r, all_active) {
         Some(pair) => pair,
         None => return (Vec::new(), None),
     };
@@ -135,28 +138,7 @@ fn domains_and_block_for_pair<S: ObservationStore>(
         r_global: l2g[n_q_full..].to_vec(),
     };
 
-    let factor_pair = (q, r);
-    let components = full_ct.bipartite_connected_components();
-
-    let cross_tabs: Vec<CrossTab> = if components.len() == 1 {
-        vec![full_ct]
-    } else {
-        components
-            .iter()
-            .map(|comp| full_ct.extract_component(comp))
-            .collect()
-    };
-
-    let domains = components
-        .iter()
-        .zip(cross_tabs)
-        .map(|(comp, comp_ct)| {
-            let comp_l2g = component_global_indices(comp, &l2g, n_q_full);
-            let core =
-                super::SubdomainCore::uniform(comp_l2g.into_iter().map(|g| g as u32).collect());
-            (Subdomain { factor_pair, core }, comp_ct)
-        })
-        .collect();
+    let domains = split_into_subdomains(full_ct, &l2g, n_q_full, (q, r));
 
     (domains, Some(block_data))
 }
@@ -174,45 +156,36 @@ fn domains_for_pair_from_gramian(
     };
 
     let n_q_full = full_ct.n_q();
-    let factor_pair = (q, r);
-    let components = full_ct.bipartite_connected_components();
-
-    let cross_tabs: Vec<CrossTab> = if components.len() == 1 {
-        vec![full_ct]
-    } else {
-        components
-            .iter()
-            .map(|comp| full_ct.extract_component(comp))
-            .collect()
-    };
-
-    components
-        .iter()
-        .zip(cross_tabs)
-        .map(|(comp, comp_ct)| {
-            let comp_l2g = component_global_indices(comp, &l2g, n_q_full);
-            let core =
-                super::SubdomainCore::uniform(comp_l2g.into_iter().map(|g| g as u32).collect());
-            (Subdomain { factor_pair, core }, comp_ct)
-        })
-        .collect()
+    split_into_subdomains(full_ct, &l2g, n_q_full, (q, r))
 }
 
 fn domains_for_pair<S: ObservationStore>(
     design: &WeightedDesign<S>,
     q: usize,
     r: usize,
+    all_active: &[Vec<bool>],
 ) -> Vec<(Subdomain, CrossTab)> {
-    let (full_ct, l2g) = match CrossTab::build_for_pair(design, q, r) {
+    let (full_ct, l2g) = match CrossTab::build_for_pair_with_active(design, q, r, all_active) {
         Some(pair) => pair,
         None => return Vec::new(),
     };
 
     let n_q_full = full_ct.n_q();
-    let factor_pair = (q, r);
+    split_into_subdomains(full_ct, &l2g, n_q_full, (q, r))
+}
+
+/// Split a full CrossTab into per-component subdomains.
+///
+/// Finds bipartite connected components, extracts a sub-CrossTab for each,
+/// and builds a `Subdomain` with uniform partition-of-unity weights.
+fn split_into_subdomains(
+    full_ct: CrossTab,
+    l2g: &[u32],
+    n_q_full: usize,
+    factor_pair: (usize, usize),
+) -> Vec<(Subdomain, CrossTab)> {
     let components = full_ct.bipartite_connected_components();
 
-    // Build per-component CrossTabs (avoid cloning full_ct for single-component case)
     let cross_tabs: Vec<CrossTab> = if components.len() == 1 {
         vec![full_ct]
     } else {
@@ -226,7 +199,7 @@ fn domains_for_pair<S: ObservationStore>(
         .iter()
         .zip(cross_tabs)
         .map(|(comp, comp_ct)| {
-            let comp_l2g = component_global_indices(comp, &l2g, n_q_full);
+            let comp_l2g = component_global_indices(comp, l2g, n_q_full);
             let core =
                 super::SubdomainCore::uniform(comp_l2g.into_iter().map(|g| g as u32).collect());
             (Subdomain { factor_pair, core }, comp_ct)
