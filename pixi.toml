@@ -20,6 +20,7 @@ pytest-cov = "*"
 cargo-llvm-cov = ">=0.8.4,<0.9"
 pre-commit = ">=4.0"
 ruff = ">=0.9"
+hypothesis = ">=6.0"
 
 [environments]
 default = { features = ["build", "dev"], solve-group = "default" }

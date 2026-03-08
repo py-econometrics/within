@@ -381,6 +381,63 @@ class TestAliases:
         assert result.converged
 
 
+class TestSolveBatchFreeFunction:
+    """Tests for the free-function solve_batch()."""
+
+    def test_solve_batch_basic(self, problem):
+        cats, y = problem
+        categories = as_solver_categories(cats)
+        Y = np.column_stack([y, np.random.randn(len(y))])
+        from within import solve_batch
+
+        result = solve_batch(categories, Y)
+        assert all(result.converged)
+
+    def test_solve_batch_matches_individual(self, problem):
+        cats, y = problem
+        categories = as_solver_categories(cats)
+        y2 = np.random.randn(len(y))
+        Y = np.column_stack([y, y2])
+        from within import solve_batch
+
+        batch = solve_batch(categories, Y)
+        r1 = solve(categories, y)
+        r2 = solve(categories, y2)
+        np.testing.assert_allclose(batch.x[:, 0], r1.x, atol=1e-10)
+        np.testing.assert_allclose(batch.x[:, 1], r2.x, atol=1e-10)
+
+    def test_solve_batch_result_shapes(self, problem):
+        cats, y = problem
+        categories = as_solver_categories(cats)
+        k = 3
+        Y = np.column_stack([np.random.randn(len(y)) for _ in range(k)])
+        from within import solve_batch
+
+        result = solve_batch(categories, Y)
+        assert result.x.shape == (100, k)  # 50+50 dofs, k columns
+        assert result.demeaned.shape == (len(y), k)
+
+    def test_solve_batch_weighted(self, problem):
+        cats, y = problem
+        categories = as_solver_categories(cats)
+        weights = np.random.exponential(1.0, size=len(y))
+        Y = np.column_stack([y, np.random.randn(len(y))])
+        from within import solve_batch
+
+        result = solve_batch(categories, Y, weights=weights)
+        assert all(result.converged)
+
+    def test_solve_batch_single_column(self, problem):
+        cats, y = problem
+        categories = as_solver_categories(cats)
+        Y = y.reshape(-1, 1)
+        from within import solve_batch
+
+        result = solve_batch(categories, Y)
+        assert result.x.shape[1] == 1
+        assert all(result.converged)
+
+
 class TestGenerateSyntheticData:
     def test_basic(self):
         cats, x_true, y = generate_synthetic_data([100, 100], 10_000)
