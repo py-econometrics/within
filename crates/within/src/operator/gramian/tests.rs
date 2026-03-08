@@ -365,6 +365,7 @@ fn test_to_sddm_structure() {
             dense[row][indices[idx] as usize] = data[idx];
         }
     }
+    #[allow(clippy::needless_range_loop)]
     for i in 0..n {
         for j in 0..n {
             assert!(

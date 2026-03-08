@@ -673,7 +673,7 @@ mod tests {
         assert_eq!(x[2], 0.0);
         // Verify: anchored minor * x[0..2] approx [1, 0]
         let check0 = 2.0 * x[0] - 1.0 * x[1];
-        let check1 = -1.0 * x[0] + 2.0 * x[1];
+        let check1 = -x[0] + 2.0 * x[1];
         assert!((check0 - 1.0).abs() < 1e-10, "check0 = {}", check0);
         assert!((check1 - 0.0).abs() < 1e-10, "check1 = {}", check1);
     }

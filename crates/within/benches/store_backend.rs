@@ -43,10 +43,7 @@ fn generate_problem(n_obs: usize, n_lev: &[usize], seed: u64) -> Problem {
         f.assign(&categories_c);
         f
     };
-    assert!(
-        categories_f.is_standard_layout() == false,
-        "should be F-order"
-    );
+    assert!(!categories_f.is_standard_layout(), "should be F-order");
 
     let y: Vec<f64> = (0..n_obs).map(|_| rng.random::<f64>()).collect();
 
@@ -95,7 +92,7 @@ fn bench_store_backends(c: &mut Criterion) {
     ];
 
     for (n_obs, n_lev, seed) in &cases {
-        let p = generate_problem(*n_obs, &n_lev, *seed);
+        let p = generate_problem(*n_obs, n_lev, *seed);
         let precond_ref = p.preconditioner.as_ref();
 
         // FactorMajorStore: copy columns from C-order array, contiguous factor_column.

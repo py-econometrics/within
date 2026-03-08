@@ -339,13 +339,13 @@ fn test_gramian_large_row_permutation_sort() {
         fb.push((i % n_b) as u32);
     }
     // Add some variety to factor A
-    for i in 0..n_obs {
+    for (i, val) in fa.iter_mut().enumerate() {
         if i < 50 {
-            fa[i] = 0;
+            *val = 0;
         } else if i < 100 {
-            fa[i] = 1;
+            *val = 1;
         } else {
-            fa[i] = (i % 3) as u32;
+            *val = (i % 3) as u32;
         }
     }
     let store =
@@ -437,19 +437,19 @@ fn test_gramian_single_factor() {
         ei[i] = 1.0;
         let mut gi = vec![0.0; n];
         g.matvec(&ei, &mut gi);
-        for j in 0..n {
+        for (j, &gij) in gi.iter().enumerate() {
             if i == j {
                 assert!(
-                    (gi[j] - diag[i]).abs() < 1e-12,
+                    (gij - diag[i]).abs() < 1e-12,
                     "diagonal entry ({i},{j}) should equal diag[{i}]={}: got {}",
                     diag[i],
-                    gi[j]
+                    gij
                 );
             } else {
                 assert!(
-                    gi[j].abs() < 1e-12,
+                    gij.abs() < 1e-12,
                     "off-diagonal entry ({i},{j}) should be 0: got {}",
-                    gi[j]
+                    gij
                 );
             }
         }

@@ -733,6 +733,7 @@ pub(crate) mod test_helpers {
     /// Iterates active q-rows, filters columns in the r-factor range, and remaps
     /// both row/column indices using the compact maps. Returns CSR components
     /// `(indptr, indices, data)`.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn extract_offdiag_block(
         indptr: &[u32],
         indices: &[u32],

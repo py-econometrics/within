@@ -9,7 +9,7 @@ mod common;
 #[test]
 fn test_high_level_solve() {
     let categories = array![[0u32, 0], [1, 0], [0, 1], [1, 1], [2, 0]];
-    let y = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+    let y = [1.0, 2.0, 3.0, 4.0, 5.0];
 
     let params = SolverParams::default();
     let precond = Preconditioner::Additive(LocalSolverConfig::solver_default());
@@ -21,7 +21,7 @@ fn test_high_level_solve() {
 #[test]
 fn test_high_level_solve_weighted() {
     let categories = array![[0u32, 0], [1, 0], [0, 1], [1, 1], [2, 0]];
-    let y = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+    let y = [1.0, 2.0, 3.0, 4.0, 5.0];
     let weights = vec![1.0, 2.0, 1.5, 0.5, 3.0];
 
     let params = SolverParams::default();
@@ -41,7 +41,7 @@ fn test_high_level_solve_weighted() {
 #[test]
 fn test_high_level_solve_preconditioned() {
     let categories = array![[0u32, 0], [1, 0], [0, 1], [1, 1], [2, 0]];
-    let y = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+    let y = [1.0, 2.0, 3.0, 4.0, 5.0];
 
     let params = SolverParams {
         krylov: KrylovMethod::Cg,
@@ -89,7 +89,7 @@ fn test_solve_batch_matches_individual() {
 #[test]
 fn test_solve_batch_single_rhs() {
     let categories = array![[0u32, 0], [1, 0], [0, 1], [1, 1], [2, 0]];
-    let y = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+    let y = [1.0, 2.0, 3.0, 4.0, 5.0];
 
     let params = SolverParams::default();
     let precond = Preconditioner::Additive(LocalSolverConfig::solver_default());
