@@ -178,11 +178,8 @@ def run_akm_scaling(opts: SuiteOptions) -> list[BenchmarkResult]:
     scaling_configs = [
         SolverConfig(
             "CG(Schwarz)",
-            CG(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=AdditiveSchwarz(local_solver=schur),
-            ),
+            CG(tol=opts.tol, maxiter=opts.maxiter),
+            preconditioner=AdditiveSchwarz(local_solver=schur),
         ),
     ]
 

@@ -10,7 +10,7 @@ use rand::{Rng, SeedableRng};
 use within::config::{KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner, SolverParams};
 use within::domain::WeightedDesign;
 use within::observation::{ArrayStore, FactorMajorStore, ObservationWeights};
-use within::orchestrate::solve_normal_equations;
+use within::Solver;
 
 const TOL: f64 = 1e-6;
 const MAXITER: usize = 20;
@@ -20,8 +20,9 @@ struct Problem {
     categories_c: Array2<u32>,
     /// F-contiguous (n_obs, n_factors) category array (same data).
     categories_f: Array2<u32>,
-    rhs: Vec<f64>,
+    y: Vec<f64>,
     params: SolverParams,
+    preconditioner: Option<Preconditioner>,
     label: String,
 }
 
@@ -47,24 +48,15 @@ fn generate_problem(n_obs: usize, n_lev: &[usize], seed: u64) -> Problem {
         "should be F-order"
     );
 
-    // Build RHS using FactorMajorStore (reference).
-    let factor_levels: Vec<Vec<u32>> = (0..n_factors)
-        .map(|q| categories_c.column(q).to_vec())
-        .collect();
-    let store =
-        FactorMajorStore::new(factor_levels, ObservationWeights::Unit, n_obs).expect("valid store");
-    let design = WeightedDesign::from_store(store).expect("valid design");
     let y: Vec<f64> = (0..n_obs).map(|_| rng.random::<f64>()).collect();
-    let mut rhs = vec![0.0; design.n_dofs];
-    design.rmatvec_wdt(&y, &mut rhs);
 
     let params = SolverParams {
         krylov: KrylovMethod::Cg,
         operator: OperatorRepr::Implicit,
-        preconditioner: Some(Preconditioner::Additive(LocalSolverConfig::solver_default())),
         tol: TOL,
         maxiter: MAXITER,
     };
+    let preconditioner = Some(Preconditioner::Additive(LocalSolverConfig::solver_default()));
 
     let label = format!(
         "{}FE {} n={}",
@@ -80,8 +72,9 @@ fn generate_problem(n_obs: usize, n_lev: &[usize], seed: u64) -> Problem {
     Problem {
         categories_c,
         categories_f,
-        rhs,
+        y,
         params,
+        preconditioner,
         label,
     }
 }
@@ -103,6 +96,7 @@ fn bench_store_backends(c: &mut Criterion) {
 
     for (n_obs, n_lev, seed) in &cases {
         let p = generate_problem(*n_obs, &n_lev, *seed);
+        let precond_ref = p.preconditioner.as_ref();
 
         // FactorMajorStore: copy columns from C-order array, contiguous factor_column.
         group.bench_function(BenchmarkId::new("FactorMajor", &p.label), |b| {
@@ -113,7 +107,8 @@ fn bench_store_backends(c: &mut Criterion) {
                 let store =
                     FactorMajorStore::new(factor_levels, ObservationWeights::Unit, *n_obs).unwrap();
                 let design = WeightedDesign::from_store(store).unwrap();
-                let r = solve_normal_equations(&design, &p.rhs, &p.params).unwrap();
+                let solver = Solver::from_design(design, &p.params, precond_ref).unwrap();
+                let r = solver.solve(&p.y).unwrap();
                 assert!(r.converged);
             });
         });
@@ -124,7 +119,8 @@ fn bench_store_backends(c: &mut Criterion) {
                 let store =
                     ArrayStore::new(p.categories_c.view(), ObservationWeights::Unit).unwrap();
                 let design = WeightedDesign::from_store(store).unwrap();
-                let r = solve_normal_equations(&design, &p.rhs, &p.params).unwrap();
+                let solver = Solver::from_design(design, &p.params, precond_ref).unwrap();
+                let r = solver.solve(&p.y).unwrap();
                 assert!(r.converged);
             });
         });
@@ -135,7 +131,8 @@ fn bench_store_backends(c: &mut Criterion) {
                 let store =
                     ArrayStore::new(p.categories_f.view(), ObservationWeights::Unit).unwrap();
                 let design = WeightedDesign::from_store(store).unwrap();
-                let r = solve_normal_equations(&design, &p.rhs, &p.params).unwrap();
+                let solver = Solver::from_design(design, &p.params, precond_ref).unwrap();
+                let r = solver.solve(&p.y).unwrap();
                 assert!(r.converged);
             });
         });

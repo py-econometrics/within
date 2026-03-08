@@ -1,7 +1,8 @@
 pub(crate) mod factor_pairs;
 
-pub(crate) use factor_pairs::build_local_domains;
-pub(crate) use factor_pairs::{build_domains_and_gramian_blocks, PairBlockData};
+pub(crate) use factor_pairs::{
+    build_domains_and_gramian_blocks, build_local_domains, PairBlockData,
+};
 
 // Re-exports from schwarz-precond
 pub use schwarz_precond::PartitionWeights;
@@ -53,6 +54,17 @@ pub struct WeightedDesign<S: ObservationStore> {
     pub factors: Vec<FactorMeta>,
     pub n_rows: usize,
     pub n_dofs: usize,
+}
+
+impl<S: ObservationStore + Clone> Clone for WeightedDesign<S> {
+    fn clone(&self) -> Self {
+        Self {
+            store: self.store.clone(),
+            factors: self.factors.clone(),
+            n_rows: self.n_rows,
+            n_dofs: self.n_dofs,
+        }
+    }
 }
 
 impl<S: ObservationStore + std::fmt::Debug> std::fmt::Debug for WeightedDesign<S> {

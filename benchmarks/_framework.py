@@ -51,6 +51,7 @@ class SolverConfig:
 
     label: str
     config: CG | GMRES
+    preconditioner: Any = None
 
 
 @dataclass
@@ -80,6 +81,7 @@ def run_solve(
         np.asfortranarray(np.column_stack(categories).astype(np.uint32)),
         y,
         config.config,
+        preconditioner=config.preconditioner,
     )
 
     return BenchmarkResult(
@@ -108,19 +110,13 @@ def standard_solver_configs(opts: Any) -> list[SolverConfig]:
     return [
         SolverConfig(
             "CG(Schwarz)",
-            CG(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=AdditiveSchwarz(local_solver=schur),
-            ),
+            CG(tol=opts.tol, maxiter=opts.maxiter),
+            preconditioner=AdditiveSchwarz(local_solver=schur),
         ),
         SolverConfig(
             "GMRES(Mult-Schwarz)",
-            GMRES(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=MultiplicativeSchwarz(local_solver=schur),
-            ),
+            GMRES(tol=opts.tol, maxiter=opts.maxiter),
+            preconditioner=MultiplicativeSchwarz(local_solver=schur),
         ),
     ]
 

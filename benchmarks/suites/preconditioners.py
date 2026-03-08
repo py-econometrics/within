@@ -161,19 +161,13 @@ def run_preconditioners_3fe(opts: SuiteOptions) -> list[BenchmarkResult]:
     configs = [
         SolverConfig(
             "CG(Schwarz)",
-            CG(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=AdditiveSchwarz(local_solver=schur),
-            ),
+            CG(tol=opts.tol, maxiter=opts.maxiter),
+            preconditioner=AdditiveSchwarz(local_solver=schur),
         ),
         SolverConfig(
             "GMRES(Mult-Schwarz)",
-            GMRES(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=MultiplicativeSchwarz(local_solver=schur),
-            ),
+            GMRES(tol=opts.tol, maxiter=opts.maxiter),
+            preconditioner=MultiplicativeSchwarz(local_solver=schur),
         ),
     ]
 
@@ -275,19 +269,13 @@ def run_preconditioner_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
         ),
         SolverConfig(
             "CG(Schwarz)",
-            CG(
-                tol=opts.tol,
-                maxiter=maxiter,
-                preconditioner=AdditiveSchwarz(local_solver=schur),
-            ),
+            CG(tol=opts.tol, maxiter=maxiter),
+            preconditioner=AdditiveSchwarz(local_solver=schur),
         ),
         SolverConfig(
             "GMRES(Mult-Schwarz)",
-            GMRES(
-                tol=opts.tol,
-                maxiter=maxiter,
-                preconditioner=MultiplicativeSchwarz(local_solver=schur),
-            ),
+            GMRES(tol=opts.tol, maxiter=maxiter),
+            preconditioner=MultiplicativeSchwarz(local_solver=schur),
         ),
     ]
 

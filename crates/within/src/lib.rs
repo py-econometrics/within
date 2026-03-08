@@ -22,7 +22,7 @@
 //! }
 //! let y: Vec<f64> = (0..n_obs).map(|i| i as f64 * 0.01).collect();
 //!
-//! let result = solve(categories.view(), &y, None, &SolverParams::default())
+//! let result = solve(categories.view(), &y, None, &SolverParams::default(), None)
 //!     .expect("solve should succeed");
 //! assert!(result.converged);
 //! ```
@@ -37,8 +37,7 @@
 //!   metadata; factor-pair subdomains are built with partition-of-unity weights.
 //! - **`operator`** — Linear algebra primitives: [`Gramian`] (explicit CSR), [`GramianOperator`]
 //!   (implicit D^T W D), [`DesignOperator`] (D and D^T), Schwarz preconditioner builders.
-//! - **`orchestrate`** — End-to-end solve: [`solve`] and
-//!   [`solve_normal_equations`] with typed configuration.
+//! - **`orchestrate`** — End-to-end solve: [`solve`] with typed configuration.
 //!
 //! # References
 //!
@@ -52,11 +51,17 @@ pub mod error;
 pub mod observation;
 pub mod operator;
 pub mod orchestrate;
+pub mod preconditioner;
+pub mod solver;
 // ---------------------------------------------------------------------------
 // High-level API
 // ---------------------------------------------------------------------------
 
-pub use orchestrate::{solve, solve_normal_equations};
+pub use orchestrate::solve;
+pub use orchestrate::solve_batch;
+pub use orchestrate::BatchSolveResult;
+pub use preconditioner::FePreconditioner;
+pub use solver::Solver;
 
 // ---------------------------------------------------------------------------
 // Configuration

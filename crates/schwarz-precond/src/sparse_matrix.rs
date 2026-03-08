@@ -13,6 +13,7 @@ use rayon::prelude::*;
 /// - `indices.len() == data.len() == indptr[n] as usize` (the number of non-zeros)
 /// - All column indices in `indices` are in `0..n`
 /// - Within each row, column indices are sorted ascending with no duplicates
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone)]
 pub struct SparseMatrix {
     indptr: Vec<u32>,

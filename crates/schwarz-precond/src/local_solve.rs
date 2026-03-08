@@ -38,6 +38,14 @@ pub trait LocalSolver: Send + Sync {
 /// A subdomain entry: wraps a `SubdomainCore` (restriction indices + partition-of-unity
 /// weights) together with a generic local solver. Delegates gather/scatter/PoU
 /// weighting to `SubdomainCore`.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    serde(bound(
+        serialize = "S: serde::Serialize",
+        deserialize = "S: serde::de::DeserializeOwned"
+    ))
+)]
 pub struct SubdomainEntry<S: LocalSolver> {
     /// Subdomain core with restriction indices and partition-of-unity weights.
     pub core: SubdomainCore,

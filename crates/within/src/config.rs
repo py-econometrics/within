@@ -137,7 +137,6 @@ pub enum Preconditioner {
 pub struct SolverParams {
     pub krylov: KrylovMethod,
     pub operator: OperatorRepr,
-    pub preconditioner: Option<Preconditioner>,
     pub tol: f64,
     pub maxiter: usize,
 }
@@ -147,7 +146,6 @@ impl Default for SolverParams {
         Self {
             krylov: KrylovMethod::Cg,
             operator: OperatorRepr::Implicit,
-            preconditioner: Some(Preconditioner::Additive(LocalSolverConfig::solver_default())),
             tol: 1e-8,
             maxiter: 1000,
         }

@@ -41,17 +41,25 @@ fn main() {
     }
 
     let cg_params = SolverParams::default();
-    let cg_result = solve(categories.view(), &y, None, &cg_params).expect("cg solve");
+    let cg_precond = Preconditioner::Additive(LocalSolverConfig::solver_default());
+    let cg_result =
+        solve(categories.view(), &y, None, &cg_params, Some(&cg_precond)).expect("cg solve");
+
     let gmres_params = SolverParams {
         krylov: KrylovMethod::Gmres { restart: 30 },
         operator: OperatorRepr::Implicit,
-        preconditioner: Some(Preconditioner::Multiplicative(
-            LocalSolverConfig::solver_default(),
-        )),
         tol: 1e-8,
         maxiter: 1000,
     };
-    let gmres_result = solve(categories.view(), &y, None, &gmres_params).expect("gmres solve");
+    let gmres_precond = Preconditioner::Multiplicative(LocalSolverConfig::solver_default());
+    let gmres_result = solve(
+        categories.view(),
+        &y,
+        None,
+        &gmres_params,
+        Some(&gmres_precond),
+    )
+    .expect("gmres solve");
 
     // -----------------------------------------------------------------------
     // Print comparison

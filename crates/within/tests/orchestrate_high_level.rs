@@ -10,7 +10,8 @@ fn test_high_level_solve() {
     let y = vec![1.0, 2.0, 3.0, 4.0, 5.0];
 
     let params = SolverParams::default();
-    let result = solve(categories.view(), &y, None, &params).expect("solve");
+    let precond = Preconditioner::Additive(LocalSolverConfig::solver_default());
+    let result = solve(categories.view(), &y, None, &params, Some(&precond)).expect("solve");
     common::assert_converged_with_small_residual(&result, 1e-6);
     common::assert_solution_finite(&result);
 }
@@ -22,7 +23,15 @@ fn test_high_level_solve_weighted() {
     let weights = vec![1.0, 2.0, 1.5, 0.5, 3.0];
 
     let params = SolverParams::default();
-    let result = solve(categories.view(), &y, Some(&weights), &params).expect("solve weighted");
+    let precond = Preconditioner::Additive(LocalSolverConfig::solver_default());
+    let result = solve(
+        categories.view(),
+        &y,
+        Some(&weights),
+        &params,
+        Some(&precond),
+    )
+    .expect("solve weighted");
     common::assert_converged_with_small_residual(&result, 1e-6);
     common::assert_solution_finite(&result);
 }
@@ -35,11 +44,12 @@ fn test_high_level_solve_preconditioned() {
     let params = SolverParams {
         krylov: KrylovMethod::Cg,
         operator: OperatorRepr::Implicit,
-        preconditioner: Some(Preconditioner::Additive(LocalSolverConfig::solver_default())),
         tol: 1e-8,
         maxiter: 1000,
     };
-    let result = solve(categories.view(), &y, None, &params).expect("solve preconditioned");
+    let precond = Preconditioner::Additive(LocalSolverConfig::solver_default());
+    let result =
+        solve(categories.view(), &y, None, &params, Some(&precond)).expect("solve preconditioned");
     common::assert_converged_with_small_residual(&result, 1e-6);
     common::assert_solution_finite(&result);
 }

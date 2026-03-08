@@ -1,8 +1,9 @@
 //! Conjugate gradient solver, generic over Operator.
 //!
-//! Two entry points avoid `Option` type inference issues:
+//! Three entry points:
 //! - `cg_solve`: unpreconditioned CG (delegates to preconditioned with IdentityOperator)
 //! - `cg_solve_preconditioned`: left-preconditioned CG
+//! - `pcg`: unified entry point dispatching on `Option<&M>`
 
 use super::{dot, vec_norm};
 use crate::{IdentityOperator, Operator, SolveError};
@@ -122,6 +123,23 @@ pub fn cg_solve_preconditioned<A: Operator + ?Sized, M: Operator + ?Sized>(
         iterations: maxiter,
         residual_norm: r_norm,
     })
+}
+
+/// Conjugate gradient with optional preconditioner.
+///
+/// Dispatches to unpreconditioned CG when `preconditioner` is `None`,
+/// or left-preconditioned CG when `Some(m)`.
+pub fn pcg<A: Operator + ?Sized, M: Operator + ?Sized>(
+    operator: &A,
+    b: &[f64],
+    preconditioner: Option<&M>,
+    tol: f64,
+    maxiter: usize,
+) -> Result<CgResult, SolveError> {
+    match preconditioner {
+        None => cg_solve(operator, b, tol, maxiter),
+        Some(m) => cg_solve_preconditioned(operator, m, b, tol, maxiter),
+    }
 }
 
 // ---------------------------------------------------------------------------

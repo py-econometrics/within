@@ -81,9 +81,8 @@ pub(crate) struct PairBlockData {
 /// Build local subdomains AND collect per-pair block data for Gramian composition.
 ///
 /// Combines the parallel observation scan (for domain construction) with block
-/// extraction (for Gramian assembly) in a single pass per pair. This avoids the
-/// sequential `Gramian::build()` bottleneck while still producing the explicit
-/// Gramian CSR needed for operator apply and residual updates.
+/// extraction (for Gramian assembly) in a single pass per pair. This avoids a
+/// double observation scan when both domains and an explicit Gramian are needed.
 pub(crate) fn build_domains_and_gramian_blocks<S: ObservationStore>(
     design: &WeightedDesign<S>,
 ) -> (Vec<(Subdomain, CrossTab)>, Vec<PairBlockData>) {

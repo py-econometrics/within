@@ -1,47 +1,43 @@
-use within::{
-    solve_normal_equations, KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner,
-    SolverParams,
-};
+use within::{KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner, Solver, SolverParams};
 
 #[path = "common/orchestrate_helpers.rs"]
 mod common;
 
 // ===========================================================================
-// Normal equations tests (formerly orchestrate_normal_eq.rs)
+// Solver-based tests (replacing former solve_normal_equations tests)
 // ===========================================================================
 
 #[test]
-fn test_normal_equations_cg_unpreconditioned() {
+fn test_cg_unpreconditioned() {
     let design = common::make_test_design();
-    let rhs = common::make_rhs_from_unit_solution(&design);
+    let y = common::make_y_from_unit_solution(&design);
 
     let params = SolverParams {
         krylov: KrylovMethod::Cg,
         operator: OperatorRepr::Implicit,
-        preconditioner: None,
         tol: 1e-8,
         maxiter: 1000,
     };
-    let result = solve_normal_equations(&design, &rhs, &params).expect("normal equations cg");
+    let solver = Solver::from_design(design, &params, None).expect("build solver");
+    let result = solver.solve(&y).expect("solve");
     common::assert_converged_with_small_residual(&result, 1e-6);
 }
 
 #[test]
-fn test_normal_equations_preconditioned() {
+fn test_cg_preconditioned() {
     let design = common::make_test_design();
-    let rhs = common::make_rhs_from_unit_solution(&design);
+    let y = common::make_y_from_unit_solution(&design);
 
     let params = SolverParams {
         krylov: KrylovMethod::Cg,
         operator: OperatorRepr::Implicit,
-        preconditioner: Some(Preconditioner::Additive(LocalSolverConfig::default())),
         tol: 1e-8,
         maxiter: 1000,
     };
-    let result =
-        solve_normal_equations(&design, &rhs, &params).expect("normal equations preconditioned");
+    let precond = Preconditioner::Additive(LocalSolverConfig::default());
+    let solver = Solver::from_design(design, &params, Some(&precond)).expect("build solver");
+    let result = solver.solve(&y).expect("solve");
     common::assert_converged_with_small_residual(&result, 1e-6);
-    assert!(result.time_setup > 0.0, "Setup time should be positive");
 }
 
 #[test]
@@ -52,13 +48,11 @@ fn test_least_squares_cg() {
     let params = SolverParams {
         krylov: KrylovMethod::Cg,
         operator: OperatorRepr::Implicit,
-        preconditioner: None,
         tol: 1e-8,
         maxiter: 1000,
     };
-    let mut rhs = vec![0.0; design.n_dofs];
-    design.rmatvec_wdt(&y, &mut rhs);
-    let result = solve_normal_equations(&design, &rhs, &params).expect("least squares cg");
+    let solver = Solver::from_design(design, &params, None).expect("build solver");
+    let result = solver.solve(&y).expect("solve");
     assert!(result.converged, "CG LS did not converge");
     common::assert_solution_finite(&result);
 }
@@ -75,13 +69,12 @@ fn test_least_squares_weighted_cg_preconditioned() {
     let params = SolverParams {
         krylov: KrylovMethod::Cg,
         operator: OperatorRepr::Implicit,
-        preconditioner: Some(Preconditioner::Additive(LocalSolverConfig::solver_default())),
         tol: 1e-8,
         maxiter: 1000,
     };
-    let mut rhs = vec![0.0; design.n_dofs];
-    design.rmatvec_wdt(&y, &mut rhs);
-    let result = solve_normal_equations(&design, &rhs, &params).expect("weighted cg solve");
+    let precond = Preconditioner::Additive(LocalSolverConfig::solver_default());
+    let solver = Solver::from_design(design, &params, Some(&precond)).expect("build solver");
+    let result = solver.solve(&y).expect("solve");
     common::assert_converged_with_small_residual(&result, 1e-6);
     common::assert_solution_finite(&result);
 }
@@ -252,37 +245,37 @@ fn test_compare_factorization_strategies() {
 }
 
 #[test]
-fn test_normal_equations_gmres_multiplicative_implicit() {
+fn test_gmres_multiplicative_implicit() {
     let design = common::make_test_design();
-    let rhs = common::make_rhs_from_unit_solution(&design);
+    let y = common::make_y_from_unit_solution(&design);
 
     let params = SolverParams {
         krylov: KrylovMethod::Gmres { restart: 30 },
         operator: OperatorRepr::Implicit,
-        preconditioner: Some(Preconditioner::Multiplicative(LocalSolverConfig::default())),
         tol: 1e-8,
         maxiter: 1000,
     };
-    let result = solve_normal_equations(&design, &rhs, &params)
-        .expect("gmres multiplicative implicit normal equations");
+    let precond = Preconditioner::Multiplicative(LocalSolverConfig::default());
+    let solver = Solver::from_design(design, &params, Some(&precond)).expect("build solver");
+    let result = solver.solve(&y).expect("solve");
     common::assert_converged_with_small_residual(&result, 1e-6);
     common::assert_solution_finite(&result);
 }
 
 #[test]
-fn test_normal_equations_gmres_multiplicative_one_level() {
+fn test_gmres_multiplicative_explicit() {
     let design = common::make_test_design();
-    let rhs = common::make_rhs_from_unit_solution(&design);
+    let y = common::make_y_from_unit_solution(&design);
 
     let params = SolverParams {
         krylov: KrylovMethod::Gmres { restart: 30 },
         operator: OperatorRepr::Explicit,
-        preconditioner: Some(Preconditioner::Multiplicative(LocalSolverConfig::default())),
         tol: 1e-8,
         maxiter: 1000,
     };
-    let result = solve_normal_equations(&design, &rhs, &params)
-        .expect("gmres multiplicative normal equations");
+    let precond = Preconditioner::Multiplicative(LocalSolverConfig::default());
+    let solver = Solver::from_design(design, &params, Some(&precond)).expect("build solver");
+    let result = solver.solve(&y).expect("solve");
     common::assert_converged_with_small_residual(&result, 1e-6);
     common::assert_solution_finite(&result);
 }

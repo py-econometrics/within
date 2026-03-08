@@ -93,35 +93,23 @@ def run_ac_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
     configs = [
         SolverConfig(
             "CG(1L, AC)",
-            CG(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=AdditiveSchwarz(local_solver=_schur(opts.seed, 1)),
-            ),
+            CG(tol=opts.tol, maxiter=opts.maxiter),
+            preconditioner=AdditiveSchwarz(local_solver=_schur(opts.seed, 1)),
         ),
         SolverConfig(
             "CG(1L, AC2)",
-            CG(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=AdditiveSchwarz(local_solver=_schur(opts.seed, 2)),
-            ),
+            CG(tol=opts.tol, maxiter=opts.maxiter),
+            preconditioner=AdditiveSchwarz(local_solver=_schur(opts.seed, 2)),
         ),
         SolverConfig(
             "GMRES(M1L, AC)",
-            GMRES(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=MultiplicativeSchwarz(local_solver=_schur(opts.seed, 1)),
-            ),
+            GMRES(tol=opts.tol, maxiter=opts.maxiter),
+            preconditioner=MultiplicativeSchwarz(local_solver=_schur(opts.seed, 1)),
         ),
         SolverConfig(
             "GMRES(M1L, AC2)",
-            GMRES(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=MultiplicativeSchwarz(local_solver=_schur(opts.seed, 2)),
-            ),
+            GMRES(tol=opts.tol, maxiter=opts.maxiter),
+            preconditioner=MultiplicativeSchwarz(local_solver=_schur(opts.seed, 2)),
         ),
     ]
 
@@ -221,19 +209,13 @@ def run_graph_backend_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
     configs = [
         SolverConfig(
             "ac",
-            CG(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=AdditiveSchwarz(local_solver=_schur(opts.seed, 1)),
-            ),
+            CG(tol=opts.tol, maxiter=opts.maxiter),
+            preconditioner=AdditiveSchwarz(local_solver=_schur(opts.seed, 1)),
         ),
         SolverConfig(
             "ac2",
-            CG(
-                tol=opts.tol,
-                maxiter=opts.maxiter,
-                preconditioner=AdditiveSchwarz(local_solver=_schur(opts.seed, 2)),
-            ),
+            CG(tol=opts.tol, maxiter=opts.maxiter),
+            preconditioner=AdditiveSchwarz(local_solver=_schur(opts.seed, 2)),
         ),
     ]
 

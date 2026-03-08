@@ -8,8 +8,12 @@ import pytest
 from within import (
     CG,
     GMRES,
+    Additive,
+    Multiplicative,
     OperatorRepr,
     Preconditioner,
+    Solver,
+    BatchSolveResult,
     solve,
 )
 
@@ -52,7 +56,8 @@ class TestSolveDefaults:
         result = solve(
             as_solver_categories(cats),
             y,
-            GMRES(preconditioner=Preconditioner.Multiplicative),
+            GMRES(),
+            preconditioner=Preconditioner.Multiplicative,
         )
         assert result.converged
 
@@ -65,20 +70,21 @@ class TestSolveDefaults:
             solve(
                 as_solver_categories(cats),
                 y,
-                CG(preconditioner=Preconditioner.Multiplicative),
+                CG(),
+                preconditioner=Preconditioner.Multiplicative,
             )
 
     def test_unpreconditioned_cg(self, problem):
         cats, y = problem
         result = solve(
-            as_solver_categories(cats), y, CG(preconditioner=Preconditioner.Off)
+            as_solver_categories(cats), y, CG(), preconditioner=Preconditioner.Off
         )
         assert result.converged
 
     def test_unpreconditioned_gmres(self, problem):
         cats, y = problem
         result = solve(
-            as_solver_categories(cats), y, GMRES(preconditioner=Preconditioner.Off)
+            as_solver_categories(cats), y, GMRES(), preconditioner=Preconditioner.Off
         )
         assert result.converged
 
@@ -97,7 +103,8 @@ class TestPreconditioners:
         result = solve(
             as_solver_categories(cats),
             y,
-            CG(preconditioner=Preconditioner.Additive),
+            CG(),
+            preconditioner=Preconditioner.Additive,
         )
         assert result.converged
 
@@ -106,29 +113,34 @@ class TestPreconditioners:
         result = solve(
             as_solver_categories(cats),
             y,
-            GMRES(preconditioner=Preconditioner.Multiplicative),
+            GMRES(),
+            preconditioner=Preconditioner.Multiplicative,
         )
         assert result.converged
 
     def test_advanced_additive_schwarz(self, problem):
-        """Test backward compat with advanced config imported from _within."""
+        """Test advanced config via AdditiveSchwarz."""
         from within._within import AdditiveSchwarz
 
         cats, y = problem
         result = solve(
-            as_solver_categories(cats), y, CG(preconditioner=AdditiveSchwarz())
+            as_solver_categories(cats),
+            y,
+            CG(),
+            preconditioner=AdditiveSchwarz(),
         )
         assert result.converged
 
     def test_advanced_multiplicative_schwarz(self, problem):
-        """Test backward compat with advanced config imported from _within."""
+        """Test advanced config via MultiplicativeSchwarz."""
         from within._within import MultiplicativeSchwarz
 
         cats, y = problem
         result = solve(
             as_solver_categories(cats),
             y,
-            GMRES(preconditioner=MultiplicativeSchwarz()),
+            GMRES(),
+            preconditioner=MultiplicativeSchwarz(),
         )
         assert result.converged
 
@@ -174,6 +186,20 @@ class TestDemean:
                 assert abs(dot) < 1e-4, f"factor {f}, level {lvl}: D^T r = {dot}"
             offset += nl
 
+    def test_demeaned_field(self, problem):
+        """The demeaned field should equal y - D*x."""
+        cats, y = problem
+        result = solve(as_solver_categories(cats), y)
+        assert result.demeaned.shape == y.shape
+        # Recompute y - D*x manually
+        expected = y.copy()
+        offset = 0
+        for f in range(2):
+            for lvl in range(50):
+                expected[cats[f] == lvl] -= result.x[offset + lvl]
+            offset += 50
+        np.testing.assert_allclose(result.demeaned, expected, atol=1e-10)
+
 
 class TestSolveResult:
     def test_result_fields(self, problem):
@@ -202,6 +228,139 @@ class TestContiguityWarning:
         with warnings.catch_warnings():
             warnings.simplefilter("error")
             solve(cats_f, y)
+
+
+# ---------------------------------------------------------------------------
+# Solver class tests
+# ---------------------------------------------------------------------------
+
+
+class TestSolver:
+    def test_solver_matches_oneshot(self, problem):
+        """Solver.solve() matches one-shot solve()."""
+        cats, y = problem
+        categories = as_solver_categories(cats)
+        oneshot = solve(categories, y)
+
+        solver = Solver(categories)
+        result = solver.solve(y)
+        assert result.converged
+        np.testing.assert_allclose(result.x, oneshot.x, atol=1e-10)
+        np.testing.assert_allclose(result.demeaned, oneshot.demeaned, atol=1e-10)
+
+    def test_solver_reuse(self, problem):
+        """Multiple solves with same Solver give consistent results."""
+        cats, y = problem
+        categories = as_solver_categories(cats)
+        solver = Solver(categories)
+        r1 = solver.solve(y)
+        r2 = solver.solve(y)
+        np.testing.assert_array_equal(r1.x, r2.x)
+
+    def test_solver_no_preconditioner(self, problem):
+        """Solver with Preconditioner.Off works."""
+        cats, y = problem
+        solver = Solver(as_solver_categories(cats), preconditioner=Preconditioner.Off)
+        result = solver.solve(y)
+        assert result.converged
+
+    def test_solver_multiplicative(self, problem):
+        """Solver with multiplicative Schwarz."""
+        cats, y = problem
+        solver = Solver(
+            as_solver_categories(cats),
+            GMRES(),
+            preconditioner=Preconditioner.Multiplicative,
+        )
+        result = solver.solve(y)
+        assert result.converged
+
+    def test_solver_properties(self, problem):
+        cats, y = problem
+        solver = Solver(as_solver_categories(cats))
+        assert solver.n_dofs == 100
+        assert solver.n_obs == 10_000
+
+
+class TestSolverBatch:
+    def test_batch_matches_individual(self, problem):
+        """Batch solve matches individual solves."""
+        cats, y = problem
+        categories = as_solver_categories(cats)
+        solver = Solver(categories)
+
+        y2 = np.random.randn(10_000)
+        Y = np.column_stack([y, y2])
+
+        batch = solver.solve_batch(Y)
+        r1 = solver.solve(y)
+        r2 = solver.solve(y2)
+
+        assert isinstance(batch, BatchSolveResult)
+        assert batch.x.shape == (100, 2)
+        assert batch.demeaned.shape == (10_000, 2)
+        np.testing.assert_allclose(batch.x[:, 0], r1.x, atol=1e-10)
+        np.testing.assert_allclose(batch.x[:, 1], r2.x, atol=1e-10)
+        np.testing.assert_allclose(batch.demeaned[:, 0], r1.demeaned, atol=1e-10)
+        np.testing.assert_allclose(batch.demeaned[:, 1], r2.demeaned, atol=1e-10)
+
+    def test_batch_result_fields(self, problem):
+        cats, y = problem
+        solver = Solver(as_solver_categories(cats))
+        Y = np.column_stack([y, y])
+        batch = solver.solve_batch(Y)
+        assert len(batch.converged) == 2
+        assert len(batch.iterations) == 2
+        assert len(batch.residual) == 2
+        assert len(batch.time_solve) == 2
+        assert batch.time_total >= 0
+
+
+class TestSolverSerde:
+    def test_preconditioner_roundtrip(self, problem):
+        """Serialize and deserialize preconditioner, verify same results."""
+        cats, y = problem
+        categories = as_solver_categories(cats)
+
+        solver1 = Solver(categories)
+        r1 = solver1.solve(y)
+
+        # Serialize
+        precond_bytes = solver1.preconditioner()
+        assert isinstance(precond_bytes, bytes)
+        assert len(precond_bytes) > 0
+
+        # Deserialize into new solver
+        solver2 = Solver(categories, preconditioner=precond_bytes)
+        r2 = solver2.solve(y)
+        np.testing.assert_allclose(r2.x, r1.x, atol=1e-10)
+
+    def test_no_preconditioner_returns_none(self, problem):
+        cats, y = problem
+        solver = Solver(as_solver_categories(cats), preconditioner=Preconditioner.Off)
+        assert solver.preconditioner() is None
+
+
+# ---------------------------------------------------------------------------
+# Convenience alias tests
+# ---------------------------------------------------------------------------
+
+
+class TestAliases:
+    def test_additive_alias(self, problem):
+        cats, y = problem
+        result = solve(as_solver_categories(cats), y, preconditioner=Additive())
+        assert result.converged
+
+    def test_multiplicative_alias(self, problem):
+        cats, y = problem
+        result = solve(
+            as_solver_categories(cats),
+            y,
+            GMRES(),
+            preconditioner=Multiplicative(),
+        )
+        assert result.converged
 
 
 class TestGenerateSyntheticData:

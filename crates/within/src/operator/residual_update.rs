@@ -197,6 +197,7 @@ impl<S: ObservationStore> ResidualUpdater for ObservationSpaceUpdater<'_, S> {
 /// Cost: O(nnz_touched) with contiguous CSR reads. No buffers, no bookkeeping.
 /// Trades O(nnz) memory (the Gramian) for faster per-iteration updates compared
 /// to the observation-space path.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct SparseGramianUpdater {
     gramian: Arc<SparseMatrix>,
 }

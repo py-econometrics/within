@@ -163,7 +163,7 @@ pub(crate) struct BipartiteComponent {
 /// diagonal.
 ///
 /// Used to build SDDM matrices directly (for ApproxChol).
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct CrossTab {
     /// CSR(C): q-block rows (n_q) x r-block cols (n_r).
     pub(crate) c: CsrBlock,

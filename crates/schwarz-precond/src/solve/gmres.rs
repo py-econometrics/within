@@ -457,6 +457,27 @@ pub fn gmres_solve<A: Operator + ?Sized, M: Operator + ?Sized>(
     }
 }
 
+/// Right-preconditioned GMRES(m) with optional preconditioner.
+///
+/// Dispatches to unpreconditioned GMRES (identity preconditioner) when
+/// `preconditioner` is `None`, or right-preconditioned GMRES when `Some(m)`.
+pub fn pgmres<A: Operator + ?Sized, M: Operator + ?Sized>(
+    operator: &A,
+    b: &[f64],
+    preconditioner: Option<&M>,
+    tol: f64,
+    maxiter: usize,
+    restart: usize,
+) -> Result<GmresResult, SolveError> {
+    match preconditioner {
+        None => {
+            let id = crate::IdentityOperator::new(operator.ncols());
+            gmres_solve(operator, &id, b, tol, maxiter, restart)
+        }
+        Some(m) => gmres_solve(operator, m, b, tol, maxiter, restart),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Helper functions
 // ---------------------------------------------------------------------------

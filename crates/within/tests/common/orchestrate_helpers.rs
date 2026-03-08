@@ -24,6 +24,15 @@ pub fn make_weighted_design(
     WeightedDesign::from_store(store)
 }
 
+/// Compute y = D * 1 so that the true solution of `min ||y - Dx||^2` is x = 1.
+pub fn make_y_from_unit_solution(design: &FixedEffectsDesign) -> Vec<f64> {
+    let x_true = vec![1.0; design.n_dofs];
+    let mut y = vec![0.0; design.n_rows];
+    design.matvec_d(&x_true, &mut y);
+    y
+}
+
+/// Compute rhs = G * 1 in normal-equation space (for low-level Schwarz tests).
 pub fn make_rhs_from_unit_solution(design: &FixedEffectsDesign) -> Vec<f64> {
     let gramian_op = GramianOperator::new(design);
     let x_true = vec![1.0; design.n_dofs];

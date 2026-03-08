@@ -436,6 +436,100 @@ impl<A: Operator> ResidualUpdater for OperatorResidualUpdater<'_, A> {
     }
 }
 
+// ============================================================================
+// Serde support
+// ============================================================================
+
+#[cfg(feature = "serde")]
+mod serde_impl {
+    use super::*;
+    use serde::ser::SerializeStruct;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    // --- SchwarzPreconditioner ---
+
+    impl<S: LocalSolver + Serialize> Serialize for SchwarzPreconditioner<S> {
+        fn serialize<Ser: Serializer>(&self, serializer: Ser) -> Result<Ser::Ok, Ser::Error> {
+            let mut state = serializer.serialize_struct("SchwarzPreconditioner", 3)?;
+            state.serialize_field("subdomains", &*self.subdomains)?;
+            state.serialize_field("n_dofs", &self.n_dofs)?;
+            state.serialize_field("max_scratch_size", &self.max_scratch_size)?;
+            state.end()
+        }
+    }
+
+    impl<'de, S: LocalSolver + serde::de::DeserializeOwned> Deserialize<'de>
+        for SchwarzPreconditioner<S>
+    {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            #[derive(Deserialize)]
+            #[serde(bound(deserialize = "S: serde::de::DeserializeOwned"))]
+            struct Helper<S: LocalSolver> {
+                subdomains: Vec<SubdomainEntry<S>>,
+                n_dofs: usize,
+                max_scratch_size: usize,
+            }
+            let h = Helper::deserialize(deserializer)?;
+            Ok(SchwarzPreconditioner {
+                subdomains: Arc::new(h.subdomains),
+                n_dofs: h.n_dofs,
+                max_scratch_size: h.max_scratch_size,
+                buf_pool: Arc::new(Mutex::new(Vec::new())),
+            })
+        }
+    }
+
+    // --- MultiplicativeSchwarzPreconditioner ---
+
+    impl<S: LocalSolver + Serialize, U: ResidualUpdater + Serialize> Serialize
+        for MultiplicativeSchwarzPreconditioner<S, U>
+    {
+        fn serialize<Ser: Serializer>(&self, serializer: Ser) -> Result<Ser::Ok, Ser::Error> {
+            let mut state =
+                serializer.serialize_struct("MultiplicativeSchwarzPreconditioner", 4)?;
+            state.serialize_field("subdomains", &self.subdomains)?;
+            let updater = self.updater.lock().map_err(serde::ser::Error::custom)?;
+            state.serialize_field("updater", &*updater)?;
+            state.serialize_field("n_dofs", &self.n_dofs)?;
+            state.serialize_field("symmetric", &self.symmetric)?;
+            state.end()
+        }
+    }
+
+    impl<
+            'de,
+            S: LocalSolver + serde::de::DeserializeOwned,
+            U: ResidualUpdater + serde::de::DeserializeOwned,
+        > Deserialize<'de> for MultiplicativeSchwarzPreconditioner<S, U>
+    {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            #[derive(Deserialize)]
+            #[serde(bound(
+                deserialize = "S: serde::de::DeserializeOwned, U: serde::de::DeserializeOwned"
+            ))]
+            struct Helper<S: LocalSolver, U: ResidualUpdater> {
+                subdomains: Vec<SubdomainEntry<S>>,
+                updater: U,
+                n_dofs: usize,
+                symmetric: bool,
+            }
+            let h = Helper::deserialize(deserializer)?;
+            let (max_scratch_size, max_local_dofs) = compute_sizes(&h.subdomains);
+            Ok(MultiplicativeSchwarzPreconditioner {
+                scratch: Mutex::new(SweepBuffers::new(
+                    h.n_dofs,
+                    max_scratch_size,
+                    max_local_dofs,
+                )),
+                subdomains: h.subdomains,
+                updater: Mutex::new(h.updater),
+                n_dofs: h.n_dofs,
+                symmetric: h.symmetric,
+            })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

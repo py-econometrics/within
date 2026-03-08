@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 ///
 /// Most subdomains have uniform weights (all 1.0), so we avoid allocating
 /// a full `Vec<f64>` for them.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug)]
 pub enum PartitionWeights {
     /// All weights are 1.0 (no shared DOFs).
@@ -57,6 +58,7 @@ fn atomic_f64_add(target: &AtomicU64, val: f64) {
 ///
 /// Downstream crates (e.g. `within`) may wrap this with application-specific
 /// metadata such as factor-pair information.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone)]
 pub struct SubdomainCore {
     /// Global DOF indices belonging to this subdomain.

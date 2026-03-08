@@ -14,52 +14,30 @@ class Preconditioner(IntEnum):
     Off = 2
 
 class CG:
-    """Conjugate Gradient solver configuration.
-
-    ``preconditioner`` accepts:
-    - ``None`` (default) — additive Schwarz with default local solver
-    - ``Preconditioner.Additive`` — same as ``None`` (explicit)
-    - ``Preconditioner.Off`` — unpreconditioned CG
-    - ``AdditiveSchwarz(...)`` — advanced fine-grained config (import from ``within._within``)
-    """
+    """Conjugate Gradient solver configuration."""
 
     tol: float
     maxiter: int
-    preconditioner: Preconditioner | AdditiveSchwarz | None
     operator: OperatorRepr
     def __init__(
         self,
         tol: float = 1e-8,
         maxiter: int = 1000,
-        preconditioner: Preconditioner | AdditiveSchwarz | None = None,
         operator: OperatorRepr = OperatorRepr.Implicit,
     ) -> None: ...
 
 class GMRES:
-    """GMRES solver configuration.
-
-    ``preconditioner`` accepts:
-    - ``None`` (default) — additive Schwarz with default local solver
-    - ``Preconditioner.Additive`` — same as ``None`` (explicit)
-    - ``Preconditioner.Multiplicative`` — multiplicative Schwarz with default local solver
-    - ``Preconditioner.Off`` — unpreconditioned GMRES
-    - ``AdditiveSchwarz(...)`` / ``MultiplicativeSchwarz(...)`` — advanced config
-    """
+    """GMRES solver configuration."""
 
     tol: float
     maxiter: int
     restart: int
-    preconditioner: Preconditioner | AdditiveSchwarz | MultiplicativeSchwarz | None
     operator: OperatorRepr
     def __init__(
         self,
         tol: float = 1e-8,
         maxiter: int = 1000,
         restart: int = 30,
-        preconditioner: Preconditioner
-        | AdditiveSchwarz
-        | MultiplicativeSchwarz
-        | None = None,
         operator: OperatorRepr = OperatorRepr.Implicit,
     ) -> None: ...
 
@@ -68,6 +46,8 @@ class SolveResult:
 
     @property
     def x(self) -> NDArray[np.float64]: ...
+    @property
+    def demeaned(self) -> NDArray[np.float64]: ...
     @property
     def converged(self) -> bool: ...
     @property
@@ -81,19 +61,94 @@ class SolveResult:
     @property
     def time_solve(self) -> float: ...
 
+class BatchSolveResult:
+    """Result of a batch solve across multiple RHS vectors."""
+
+    @property
+    def x(self) -> NDArray[np.float64]: ...
+    @property
+    def demeaned(self) -> NDArray[np.float64]: ...
+    @property
+    def converged(self) -> list[bool]: ...
+    @property
+    def iterations(self) -> list[int]: ...
+    @property
+    def residual(self) -> list[float]: ...
+    @property
+    def time_solve(self) -> list[float]: ...
+    @property
+    def time_total(self) -> float: ...
+
 def solve(
     categories: NDArray[np.uint32],
     y: NDArray[np.float64],
     config: CG | GMRES | None = None,
     weights: NDArray[np.float64] | None = None,
+    preconditioner: AdditiveSchwarz
+    | MultiplicativeSchwarz
+    | Preconditioner
+    | None = None,
 ) -> SolveResult:
     """Solve fixed-effects normal equations.
 
     ``categories`` should be F-contiguous (column-major) for best performance.
     Use ``np.asfortranarray(categories)`` to convert.  A ``UserWarning`` is
     emitted when a C-contiguous array is passed.
+
+    ``preconditioner`` controls the preconditioner:
+    - ``None`` (default) — additive Schwarz with default local solver
+    - ``Preconditioner.Off`` — unpreconditioned
+    - ``AdditiveSchwarz(...)`` / ``MultiplicativeSchwarz(...)`` — advanced config
     """
     ...
+
+def solve_batch(
+    categories: NDArray[np.uint32],
+    Y: NDArray[np.float64],
+    config: CG | GMRES | None = None,
+    weights: NDArray[np.float64] | None = None,
+    preconditioner: AdditiveSchwarz
+    | MultiplicativeSchwarz
+    | Preconditioner
+    | None = None,
+) -> BatchSolveResult:
+    """Solve fixed-effects normal equations for multiple RHS vectors.
+
+    ``Y`` is a 2-D array of shape ``(n_obs, k)`` where each column is a
+    separate response vector.  All solves share the same preconditioner
+    and run in parallel via rayon.
+
+    Same preconditioner options as :func:`solve`.
+    """
+    ...
+
+class Solver:
+    """Persistent solver that reuses preconditioners across multiple solves.
+
+    Build once, then call ``solve()`` or ``solve_batch()`` repeatedly.
+    The expensive preconditioner factorization happens only at construction.
+    """
+
+    def __init__(
+        self,
+        categories: NDArray[np.uint32],
+        config: CG | GMRES | None = None,
+        weights: NDArray[np.float64] | None = None,
+        preconditioner: AdditiveSchwarz
+        | MultiplicativeSchwarz
+        | Preconditioner
+        | bytes
+        | None = None,
+    ) -> None: ...
+    def solve(self, y: NDArray[np.float64]) -> SolveResult: ...
+    def solve_batch(self, Y: NDArray[np.float64]) -> BatchSolveResult: ...
+    def preconditioner(self) -> bytes | None:
+        """Serialize the preconditioner to bytes, or None if unconfigured."""
+        ...
+    @property
+    def n_dofs(self) -> int: ...
+    @property
+    def n_obs(self) -> int: ...
 
 # ---------------------------------------------------------------------------
 # Advanced config classes (for benchmarks / power users)

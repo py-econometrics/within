@@ -77,6 +77,8 @@ pub(crate) fn build_additive<S: ObservationStore>(
 /// Build multiplicative Schwarz with observation-space updater.
 ///
 /// Always non-symmetric (GMRES-only).
+#[cfg(test)]
+#[allow(dead_code)]
 pub(crate) fn build_multiplicative_obs<'a, S: ObservationStore>(
     source: DomainSource<'_, S>,
     design: &'a WeightedDesign<S>,

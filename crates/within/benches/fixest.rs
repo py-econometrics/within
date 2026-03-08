@@ -12,7 +12,7 @@ use within::config::{KrylovMethod, LocalSolverConfig, OperatorRepr, Precondition
 use within::domain::WeightedDesign;
 use within::observation::{FactorMajorStore, ObservationWeights};
 use within::operator::gramian::{Gramian, GramianOperator};
-use within::orchestrate::solve_normal_equations;
+use within::Solver;
 
 // ===========================================================================
 // Shared types and helpers
@@ -131,11 +131,11 @@ fn run_smoke(
     design: &WeightedDesign<FactorMajorStore>,
     y: &[f64],
     params: &SolverParams,
+    preconditioner: Option<&Preconditioner>,
     label: &str,
 ) {
-    let mut rhs = vec![0.0; design.n_dofs];
-    design.rmatvec_wdt(y, &mut rhs);
-    let result = solve_normal_equations(design, &rhs, params).expect("normal-equation solve");
+    let solver = Solver::from_design(design.clone(), params, preconditioner).expect("build solver");
+    let result = solver.solve(y).expect("solve");
     assert!(result.converged, "{label}: solver did not converge");
     assert!(
         result.final_residual.is_finite(),
@@ -152,12 +152,12 @@ fn run_cg_one_level(design: &WeightedDesign<FactorMajorStore>, y: &[f64], ac2: b
     let params = SolverParams {
         krylov: KrylovMethod::Cg,
         operator: OperatorRepr::Implicit,
-        preconditioner: Some(Preconditioner::Additive(cfg)),
         tol: TOL,
         maxiter: MAXITER,
     };
+    let precond = Preconditioner::Additive(cfg);
     let label = if ac2 { "CG(1L,AC2)" } else { "CG(1L,AC)" };
-    run_smoke(design, y, &params, label);
+    run_smoke(design, y, &params, Some(&precond), label);
 }
 
 fn run_gmres_multiplicative_one_level(
@@ -172,16 +172,16 @@ fn run_gmres_multiplicative_one_level(
             restart: GMRES_RESTART,
         },
         operator,
-        preconditioner: Some(Preconditioner::Multiplicative(cfg)),
         tol: TOL,
         maxiter: MAXITER,
     };
+    let precond = Preconditioner::Multiplicative(cfg);
     let label = if ac2 {
         "GMRES(M1L,AC2)"
     } else {
         "GMRES(M1L,AC)"
     };
-    run_smoke(design, y, &params, label);
+    run_smoke(design, y, &params, Some(&precond), label);
 }
 
 // ===========================================================================
