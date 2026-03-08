@@ -1,6 +1,7 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+
+use portable_atomic::{AtomicF64, Ordering};
 
 use rayon::prelude::*;
 use schwarz_precond::{Operator, SparseMatrix};
@@ -9,28 +10,6 @@ use super::Gramian;
 use crate::domain::{PairBlockData, WeightedDesign};
 use crate::observation::{FactorMeta, ObservationStore};
 use crate::{WithinError, WithinResult};
-
-// ===========================================================================
-// Atomic float add helper
-// ===========================================================================
-
-/// Atomic add for f64 using CAS loop on `AtomicU64` bit representation.
-#[inline(always)]
-fn atomic_f64_add(target: &AtomicU64, val: f64) {
-    let mut old_bits = target.load(Ordering::Relaxed);
-    loop {
-        let new_val = f64::from_bits(old_bits) + val;
-        match target.compare_exchange_weak(
-            old_bits,
-            new_val.to_bits(),
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-        ) {
-            Ok(_) => break,
-            Err(x) => old_bits = x,
-        }
-    }
-}
 
 // ===========================================================================
 // CSR assembly helper
@@ -318,7 +297,7 @@ fn build_full_matrix<S: ObservationStore>(design: &WeightedDesign<S>) -> SparseM
         let chunk_size = n_obs.div_ceil(n_threads);
 
         // Shared atomic diagonal — avoids N per-thread Vec<f64> allocations.
-        let shared_diag: Vec<AtomicU64> = (0..n_dofs).map(|_| AtomicU64::new(0)).collect();
+        let shared_diag: Vec<AtomicF64> = (0..n_dofs).map(|_| AtomicF64::new(0.0)).collect();
 
         let partial_pairs: Vec<Vec<PairAccumulator>> = (0..n_threads)
             .into_par_iter()
@@ -342,7 +321,7 @@ fn build_full_matrix<S: ObservationStore>(design: &WeightedDesign<S>) -> SparseM
                     let w = design.uid_weight(uid);
                     for q in 0..n_factors {
                         let idx = design.factors[q].offset + design.store.level(uid, q) as usize;
-                        atomic_f64_add(&shared_diag[idx], w);
+                        shared_diag[idx].fetch_add(w, Ordering::Relaxed);
                     }
                     for (pi, &(q, r)) in pair_info.iter().enumerate() {
                         pairs[pi].add(
@@ -360,7 +339,7 @@ fn build_full_matrix<S: ObservationStore>(design: &WeightedDesign<S>) -> SparseM
         // Read out atomic diagonal into Vec<f64>.
         let diag_flat: Vec<f64> = shared_diag
             .iter()
-            .map(|a| f64::from_bits(a.load(Ordering::Relaxed)))
+            .map(|a| a.load(Ordering::Relaxed))
             .collect();
 
         // Merge per-thread pair tables.

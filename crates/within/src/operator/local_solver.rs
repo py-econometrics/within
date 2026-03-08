@@ -29,6 +29,9 @@ fn negate_block(slice: &mut [f64], from: usize) {
 /// Subtract the mean of `slice[..n]` from those `n` elements.
 #[inline]
 fn subtract_mean(slice: &mut [f64], n: usize) {
+    if n == 0 {
+        return;
+    }
     let mean: f64 = slice[..n].iter().sum::<f64>() / n as f64;
     for val in slice[..n].iter_mut() {
         *val -= mean;

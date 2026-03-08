@@ -258,6 +258,16 @@ fn build_pairs(n_factors: usize) -> Vec<(usize, usize)> {
     pairs
 }
 
+/// Compute partition-of-unity weights for overlapping Schwarz subdomains.
+///
+/// Additive Schwarz requires that subdomain weights form a partition of unity:
+/// at every DOF, the weights across all subdomains that touch it must sum to
+/// exactly 1.0. For overlapping subdomains the weight at each DOF is set to
+/// `1 / (number of subdomains touching that DOF)`.
+///
+/// In the common (non-overlapping) case where every DOF belongs to exactly one
+/// subdomain, all weights are 1.0 and the compact `PartitionWeights::Uniform`
+/// representation is used to avoid per-DOF storage.
 fn compute_partition_weights(domain_pairs: &mut [(Subdomain, CrossTab)], n_dofs: usize) {
     let mut counts = vec![0u32; n_dofs];
     for (d, _) in domain_pairs.iter() {

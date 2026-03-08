@@ -485,8 +485,8 @@ fn categories_to_factor_major(categories: ArrayView2<'_, usize>) -> PyResult<Vec
         for (observation, &level) in categories.column(factor).iter().enumerate() {
             let level = u32::try_from(level).map_err(|_| {
                 PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-                    "category out of range for u32 at factor {} observation {}",
-                    factor, observation
+                    "category value {} out of range for u32 at factor {} observation {}",
+                    level, factor, observation
                 ))
             })?;
             levels.push(level);

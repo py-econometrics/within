@@ -131,11 +131,44 @@ impl<S: ObservationStore> WeightedDesign<S> {
     pub fn n_factors(&self) -> usize {
         self.factors.len()
     }
+
+    /// Pre-compute factor column slices for all factors.
+    ///
+    /// Returns a vec where entry `q` is the store's contiguous column for factor `q`,
+    /// or `None` if the store doesn't support direct column access.
+    fn factor_columns(&self) -> Vec<Option<&[u32]>> {
+        self.factors
+            .iter()
+            .enumerate()
+            .map(|(q, _)| self.store.factor_column(q))
+            .collect()
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Design matrix operations (D·x, D^T·r, D^T·W·r, gramian diagonal)
 // ---------------------------------------------------------------------------
+
+/// Minimum number of rows before scatter/gather loops are parallelized.
+const PAR_THRESHOLD: usize = 10_000;
+
+/// Factor-level threshold for choosing between fold and atomic scatter-add.
+///
+/// Factors with fewer than this many levels use thread-local fold/reduce
+/// (O(n_levels * n_threads) memory). Larger factors use atomic CAS instead,
+/// which has low contention when bins vastly outnumber threads.
+/// 100K levels * 8 bytes * ~24 Rayon tasks ~ 19 MB — fits comfortably.
+const SCATTER_LOCAL_THRESHOLD: usize = 100_000;
+
+/// Strategy for a single factor's scatter-add loop.
+enum ScatterStrategy {
+    /// Plain sequential loop — used when n_rows is below `PAR_THRESHOLD`.
+    Sequential,
+    /// Parallel fold/reduce with thread-local accumulators — for small factors.
+    Fold,
+    /// Parallel atomic CAS — for large factors with low contention.
+    Atomic,
+}
 
 #[inline]
 fn level_from_column_or_store<S: ObservationStore>(
@@ -150,11 +183,13 @@ fn level_from_column_or_store<S: ObservationStore>(
     }
 }
 
-/// Thread-local fold/reduce scatter-add for small factors.
+/// Scatter-add for a single factor, dispatched by strategy.
 ///
-/// Each Rayon task folds into its own accumulator, then reduce merges.
-/// Avoids CAS contention at the cost of O(n_levels × n_threads) memory.
-fn scatter_add_fold<S: ObservationStore>(
+/// Accumulates `value_fn(i)` into `slice[level(i, q)]` for all rows, using the
+/// requested parallelization strategy. The `atomic_buf` is reused across calls
+/// to avoid repeated allocation in the `Atomic` path.
+#[allow(clippy::too_many_arguments)]
+fn scatter_add_single_factor<S: ObservationStore>(
     slice: &mut [f64],
     n_rows: usize,
     n_levels: usize,
@@ -162,100 +197,52 @@ fn scatter_add_fold<S: ObservationStore>(
     levels: Option<&[u32]>,
     q: usize,
     value_fn: &(impl Fn(usize) -> f64 + Sync),
-) {
-    let min_len = (n_rows / rayon::current_num_threads().max(1)).max(1024);
-    let result: Vec<f64> = (0..n_rows)
-        .into_par_iter()
-        .with_min_len(min_len)
-        .fold(
-            || vec![0.0f64; n_levels],
-            |mut acc, i| {
-                let level = level_from_column_or_store(store, levels, i, q);
-                acc[level] += value_fn(i);
-                acc
-            },
-        )
-        .reduce(
-            || vec![0.0f64; n_levels],
-            |mut a, b| {
-                for (ai, bi) in a.iter_mut().zip(b.iter()) {
-                    *ai += *bi;
-                }
-                a
-            },
-        );
-    for (d, r) in slice.iter_mut().zip(result.iter()) {
-        *d += *r;
-    }
-}
-
-/// Atomic CAS scatter-add for large factors.
-///
-/// Low contention when factor dimensions are large relative to observation count
-/// (e.g. 32M individuals with ~10 obs each). Uses native atomic float ops where
-/// available (e.g. AArch64 ldadd).
-fn scatter_add_atomic<S: ObservationStore>(
-    slice: &mut [f64],
-    n_rows: usize,
-    store: &S,
-    levels: Option<&[u32]>,
-    q: usize,
-    value_fn: &(impl Fn(usize) -> f64 + Sync),
+    strategy: ScatterStrategy,
     atomic_buf: &mut Vec<AtomicF64>,
 ) {
-    atomic_buf.clear();
-    atomic_buf.extend(slice.iter().map(|&v| AtomicF64::new(v)));
-    (0..n_rows).into_par_iter().for_each(|i| {
-        let level = level_from_column_or_store(store, levels, i, q);
-        atomic_buf[level].fetch_add(value_fn(i), Ordering::Relaxed);
-    });
-    for (d, a) in slice.iter_mut().zip(atomic_buf.iter()) {
-        *d = a.load(Ordering::Relaxed);
-    }
-}
-
-/// Sequential scatter-add for small problems (below parallelization threshold).
-fn scatter_add_sequential<S: ObservationStore>(
-    dst: &mut [f64],
-    factors: &[FactorMeta],
-    n_rows: usize,
-    store: &S,
-    factor_columns: &[Option<&[u32]>],
-    value_fn: &impl Fn(usize) -> f64,
-) {
-    for (q, f) in factors.iter().enumerate() {
-        let levels = factor_columns[q];
-        for i in 0..n_rows {
-            let level = level_from_column_or_store(store, levels, i, q);
-            dst[f.offset + level] += value_fn(i);
+    match strategy {
+        ScatterStrategy::Sequential => {
+            for i in 0..n_rows {
+                let level = level_from_column_or_store(store, levels, i, q);
+                slice[level] += value_fn(i);
+            }
         }
-    }
-}
-
-/// Parallel scatter-add: dispatches each factor to fold or atomic path.
-///
-/// Factors below `SCATTER_LOCAL_THRESHOLD` levels use thread-local fold/reduce;
-/// larger factors use atomic CAS (low contention on millions of bins).
-/// Factors are processed sequentially so each gets the full thread pool.
-fn scatter_factor_parallel<S: ObservationStore>(
-    dst: &mut [f64],
-    factors: &[FactorMeta],
-    n_rows: usize,
-    store: &S,
-    factor_columns: &[Option<&[u32]>],
-    value_fn: &(impl Fn(usize) -> f64 + Sync),
-) {
-    /// 100K levels × 8 bytes × ~24 Rayon tasks ≈ 19 MB — fits comfortably.
-    const SCATTER_LOCAL_THRESHOLD: usize = 100_000;
-    let max_levels = factors.iter().map(|f| f.n_levels).max().unwrap_or(0);
-    let mut atomic_buf: Vec<AtomicF64> = Vec::with_capacity(max_levels);
-    for (q, f) in factors.iter().enumerate() {
-        let slice = &mut dst[f.offset..f.offset + f.n_levels];
-        let levels = factor_columns[q];
-        if f.n_levels < SCATTER_LOCAL_THRESHOLD {
-            scatter_add_fold(slice, n_rows, f.n_levels, store, levels, q, value_fn);
-        } else {
-            scatter_add_atomic(slice, n_rows, store, levels, q, value_fn, &mut atomic_buf);
+        ScatterStrategy::Fold => {
+            let min_len = (n_rows / rayon::current_num_threads().max(1)).max(1024);
+            let result: Vec<f64> = (0..n_rows)
+                .into_par_iter()
+                .with_min_len(min_len)
+                .fold(
+                    || vec![0.0f64; n_levels],
+                    |mut acc, i| {
+                        let level = level_from_column_or_store(store, levels, i, q);
+                        acc[level] += value_fn(i);
+                        acc
+                    },
+                )
+                .reduce(
+                    || vec![0.0f64; n_levels],
+                    |mut a, b| {
+                        for (ai, bi) in a.iter_mut().zip(b.iter()) {
+                            *ai += *bi;
+                        }
+                        a
+                    },
+                );
+            for (d, r) in slice.iter_mut().zip(result.iter()) {
+                *d += *r;
+            }
+        }
+        ScatterStrategy::Atomic => {
+            atomic_buf.clear();
+            atomic_buf.extend(slice.iter().map(|&v| AtomicF64::new(v)));
+            (0..n_rows).into_par_iter().for_each(|i| {
+                let level = level_from_column_or_store(store, levels, i, q);
+                atomic_buf[level].fetch_add(value_fn(i), Ordering::Relaxed);
+            });
+            for (d, a) in slice.iter_mut().zip(atomic_buf.iter()) {
+                *d = a.load(Ordering::Relaxed);
+            }
         }
     }
 }
@@ -270,14 +257,8 @@ impl<S: ObservationStore> WeightedDesign<S> {
     /// and processed in parallel via Rayon `par_chunks_mut`.
     #[inline]
     fn gather_add(&self, src: &[f64], dst: &mut [f64]) {
-        const PAR_THRESHOLD: usize = 10_000;
         const CHUNK_SIZE: usize = 4096;
-        let factor_columns: Vec<Option<&[u32]>> = self
-            .factors
-            .iter()
-            .enumerate()
-            .map(|(q, _)| self.store.factor_column(q))
-            .collect();
+        let factor_columns = self.factor_columns();
 
         if self.n_rows > PAR_THRESHOLD {
             // Parallel path: each chunk processes its own row range.
@@ -323,31 +304,31 @@ impl<S: ObservationStore> WeightedDesign<S> {
     ///   Factors are processed sequentially so each gets the full thread pool.
     #[inline]
     fn scatter_add(&self, dst: &mut [f64], value_fn: impl Fn(usize) -> f64 + Sync) {
-        const PAR_THRESHOLD: usize = 10_000;
-        let factor_columns: Vec<Option<&[u32]>> = self
-            .factors
-            .iter()
-            .enumerate()
-            .map(|(q, _)| self.store.factor_column(q))
-            .collect();
+        let factor_columns = self.factor_columns();
+        let parallel = self.n_rows > PAR_THRESHOLD;
+        let max_levels = self.factors.iter().map(|f| f.n_levels).max().unwrap_or(0);
+        let mut atomic_buf: Vec<AtomicF64> = Vec::with_capacity(max_levels);
 
-        if self.n_rows > PAR_THRESHOLD {
-            scatter_factor_parallel(
-                dst,
-                &self.factors,
+        for (q, f) in self.factors.iter().enumerate() {
+            let slice = &mut dst[f.offset..f.offset + f.n_levels];
+            let levels = factor_columns[q];
+            let strategy = if !parallel {
+                ScatterStrategy::Sequential
+            } else if f.n_levels < SCATTER_LOCAL_THRESHOLD {
+                ScatterStrategy::Fold
+            } else {
+                ScatterStrategy::Atomic
+            };
+            scatter_add_single_factor(
+                slice,
                 self.n_rows,
+                f.n_levels,
                 &self.store,
-                &factor_columns,
+                levels,
+                q,
                 &value_fn,
-            );
-        } else {
-            scatter_add_sequential(
-                dst,
-                &self.factors,
-                self.n_rows,
-                &self.store,
-                &factor_columns,
-                &value_fn,
+                strategy,
+                &mut atomic_buf,
             );
         }
     }
