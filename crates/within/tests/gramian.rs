@@ -373,3 +373,94 @@ fn test_gramian_operator_trait() {
     assert_eq!(g.nrows(), dm.n_dofs);
     assert_eq!(g.ncols(), dm.n_dofs);
 }
+
+#[test]
+fn test_gramian_parallel_build_path() {
+    // PAR_THRESHOLD = 100_000; use 100_001 observations to trigger the parallel branch.
+    let n_obs = 100_001usize;
+    let n_lev_a = 100usize;
+    let n_lev_b = 100usize;
+    let fa: Vec<u32> = (0..n_obs).map(|i| (i % n_lev_a) as u32).collect();
+    let fb: Vec<u32> = (0..n_obs).map(|i| ((i * 7) % n_lev_b) as u32).collect();
+
+    let store = FactorMajorStore::new(vec![fa, fb], ObservationWeights::Unit, n_obs)
+        .expect("valid parallel store");
+    let dm = within::domain::FixedEffectsDesign::from_store(store).expect("valid parallel design");
+
+    let g = Gramian::build(&dm);
+    let gop = GramianOperator::new(&dm);
+    let n = g.n_dofs();
+    assert_eq!(n, n_lev_a + n_lev_b);
+
+    let x: Vec<f64> = (0..n).map(|i| (i as f64 * 0.13).sin()).collect();
+    let mut y_explicit = vec![0.0; n];
+    let mut y_implicit = vec![0.0; n];
+    g.matvec(&x, &mut y_explicit);
+    gop.apply(&x, &mut y_implicit);
+
+    for (i, (a, b)) in y_explicit.iter().zip(y_implicit.iter()).enumerate() {
+        assert!(
+            (a - b).abs() < 1e-10,
+            "parallel vs serial mismatch at dof {i}: explicit={a}, implicit={b}"
+        );
+    }
+}
+
+#[test]
+fn test_gramian_single_factor() {
+    // A design with only one factor has a purely diagonal Gramian.
+    // Factor 0 has 4 levels; observations cycle through them.
+    let fa = vec![0u32, 1, 2, 3, 0, 1, 2, 0];
+    let n_obs = fa.len();
+    let store =
+        FactorMajorStore::new(vec![fa], ObservationWeights::Unit, n_obs).expect("valid store");
+    let dm =
+        within::domain::FixedEffectsDesign::from_store(store).expect("valid single-factor design");
+
+    let g = Gramian::build(&dm);
+    let n = g.n_dofs();
+
+    assert_eq!(n, 4, "single factor with 4 levels -> n_dofs=4");
+
+    // Diagonal: level 0 appears 3 times, level 1 appears 2 times,
+    //           level 2 appears 2 times, level 3 appears 1 time.
+    let diag = g.diagonal();
+    assert_eq!(diag.len(), 4);
+    assert!((diag[0] - 3.0).abs() < 1e-12, "level 0 count: {}", diag[0]);
+    assert!((diag[1] - 2.0).abs() < 1e-12, "level 1 count: {}", diag[1]);
+    assert!((diag[2] - 2.0).abs() < 1e-12, "level 2 count: {}", diag[2]);
+    assert!((diag[3] - 1.0).abs() < 1e-12, "level 3 count: {}", diag[3]);
+
+    // The Gramian should be purely diagonal: G[i,j] = 0 for i != j.
+    for i in 0..n {
+        let mut ei = vec![0.0; n];
+        ei[i] = 1.0;
+        let mut gi = vec![0.0; n];
+        g.matvec(&ei, &mut gi);
+        for j in 0..n {
+            if i == j {
+                assert!(
+                    (gi[j] - diag[i]).abs() < 1e-12,
+                    "diagonal entry ({i},{j}) should equal diag[{i}]={}: got {}",
+                    diag[i],
+                    gi[j]
+                );
+            } else {
+                assert!(
+                    gi[j].abs() < 1e-12,
+                    "off-diagonal entry ({i},{j}) should be 0: got {}",
+                    gi[j]
+                );
+            }
+        }
+    }
+
+    // matvec scales each DOF by its observation count.
+    let x = vec![1.0, 2.0, 3.0, 4.0];
+    let mut y = vec![0.0; n];
+    g.matvec(&x, &mut y);
+    assert!((y[0] - 3.0 * 1.0).abs() < 1e-12, "y[0] = diag[0]*x[0]");
+    assert!((y[1] - 2.0 * 2.0).abs() < 1e-12, "y[1] = diag[1]*x[1]");
+    assert!((y[2] - 2.0 * 3.0).abs() < 1e-12, "y[2] = diag[2]*x[2]");
+    assert!((y[3] - 1.0 * 4.0).abs() < 1e-12, "y[3] = diag[3]*x[3]");
+}
