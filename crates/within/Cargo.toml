@@ -13,7 +13,7 @@ categories = ["mathematics", "science", "algorithms"]
 schwarz-precond = { path = "../schwarz-precond", features = ["serde"] }
 approx-chol = { workspace = true }
 serde = { version = "1", features = ["derive", "rc"] }
-bincode = "1"
+postcard = { version = "1", features = ["use-std"] }
 ndarray = "0.16"
 portable-atomic = { version = "1", features = ["float"] }
 rayon = "1.10"

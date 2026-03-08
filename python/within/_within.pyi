@@ -122,6 +122,23 @@ def solve_batch(
     """
     ...
 
+class FePreconditioner:
+    """A pre-built preconditioner (picklable).
+
+    Obtained via ``Solver.preconditioner()``.  Pass it back to a new
+    ``Solver(..., preconditioner=p)`` to skip the expensive factorisation.
+    """
+
+    def apply(self, x: NDArray[np.float64]) -> NDArray[np.float64]:
+        """Apply the preconditioner: ``y = M⁻¹ x``."""
+        ...
+    @property
+    def nrows(self) -> int: ...
+    @property
+    def ncols(self) -> int: ...
+    @staticmethod
+    def from_bytes(data: bytes) -> FePreconditioner: ...
+
 class Solver:
     """Persistent solver that reuses preconditioners across multiple solves.
 
@@ -137,13 +154,13 @@ class Solver:
         preconditioner: AdditiveSchwarz
         | MultiplicativeSchwarz
         | Preconditioner
-        | bytes
+        | FePreconditioner
         | None = None,
     ) -> None: ...
     def solve(self, y: NDArray[np.float64]) -> SolveResult: ...
     def solve_batch(self, Y: NDArray[np.float64]) -> BatchSolveResult: ...
-    def preconditioner(self) -> bytes | None:
-        """Serialize the preconditioner to bytes, or None if unconfigured."""
+    def preconditioner(self) -> FePreconditioner | None:
+        """Return the built preconditioner, or None if unconfigured."""
         ...
     @property
     def n_dofs(self) -> int: ...

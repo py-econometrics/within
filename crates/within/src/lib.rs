@@ -89,3 +89,4 @@ pub use observation::{
 pub use operator::gramian::{Gramian, GramianOperator};
 pub use operator::schwarz::{build_schwarz, FeSchwarz};
 pub use operator::DesignOperator;
+pub use schwarz_precond::Operator;

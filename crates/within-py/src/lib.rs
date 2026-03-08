@@ -3,7 +3,6 @@
 use numpy::ndarray::{Array1, Array2, ShapeBuilder};
 use numpy::{IntoPyArray, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
-use pyo3::types::PyBytes;
 
 use within::config::{
     ApproxSchurConfig, KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner, SolverParams,
@@ -12,7 +11,8 @@ use within::config::{
 use within::domain::WeightedDesign;
 use within::observation::{FactorMajorStore, ObservationWeights};
 use within::{
-    solve as solve_native, solve_batch as solve_batch_native, FePreconditioner, SolveResult, Solver,
+    solve as solve_native, solve_batch as solve_batch_native, FePreconditioner, Operator,
+    SolveResult, Solver,
 };
 
 // ---------------------------------------------------------------------------
@@ -648,6 +648,88 @@ pub fn solve_batch<'py>(
 }
 
 // ---------------------------------------------------------------------------
+// Built preconditioner (returned by Solver, picklable)
+// ---------------------------------------------------------------------------
+
+/// A pre-built preconditioner that can be pickled and reused.
+///
+/// Obtained via ``Solver.preconditioner()``.  Pass it back to a new
+/// ``Solver(…, preconditioner=p)`` to skip the expensive factorisation.
+#[pyclass(frozen, module = "within._within")]
+#[pyo3(name = "FePreconditioner")]
+pub struct PyFePreconditioner {
+    inner: FePreconditioner,
+}
+
+#[pymethods]
+impl PyFePreconditioner {
+    /// Apply the preconditioner: ``y = M⁻¹ x``.
+    fn apply<'py>(
+        &self,
+        py: Python<'py>,
+        x: PyReadonlyArray1<'py, f64>,
+    ) -> PyResult<Bound<'py, numpy::PyArray1<f64>>> {
+        let x_slice = x
+            .as_slice()
+            .map_err(|_| pyo3::exceptions::PyValueError::new_err("x must be contiguous"))?;
+        if x_slice.len() != self.inner.ncols() {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "x has length {} but preconditioner expects {}",
+                x_slice.len(),
+                self.inner.ncols()
+            )));
+        }
+        let mut y = vec![0.0; self.inner.nrows()];
+        self.inner.apply(x_slice, &mut y);
+        Ok(numpy::PyArray1::from_vec(py, y))
+    }
+
+    /// Number of rows (DOFs).
+    #[getter]
+    fn nrows(&self) -> usize {
+        self.inner.nrows()
+    }
+
+    /// Number of columns (DOFs).
+    #[getter]
+    fn ncols(&self) -> usize {
+        self.inner.ncols()
+    }
+
+    fn __repr__(&self) -> String {
+        let variant = match &self.inner {
+            FePreconditioner::Additive(_) => "Additive",
+            FePreconditioner::Multiplicative(_) => "Multiplicative",
+        };
+        format!("FePreconditioner({}, n={})", variant, self.inner.nrows())
+    }
+
+    /// Pickle support: serialize to ``(bytes,)`` constructor arg.
+    fn __reduce__<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<(Bound<'py, PyAny>, (Bound<'py, pyo3::types::PyBytes>,))> {
+        let bytes = postcard::to_stdvec(&self.inner)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        let cls = py.get_type::<Self>();
+        let py_bytes = pyo3::types::PyBytes::new(py, &bytes);
+        Ok((cls.into_any(), (py_bytes,)))
+    }
+
+    /// Construct from serialised bytes (used by pickle and for manual persistence).
+    #[new]
+    fn new(data: &[u8]) -> PyResult<Self> {
+        let inner: FePreconditioner = postcard::from_bytes(data).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "failed to deserialize preconditioner: {}",
+                e
+            ))
+        })?;
+        Ok(Self { inner })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Persistent Solver
 // ---------------------------------------------------------------------------
 
@@ -704,15 +786,13 @@ impl PySolver {
                 py.allow_threads(|| Solver::from_design(design, &params, Some(&precond)))
             }
             Some(obj) => {
-                // Deserialized bytes → FePreconditioner
-                if let Ok(bytes) = obj.downcast::<PyBytes>() {
-                    let fe_precond: FePreconditioner = bincode::deserialize(bytes.as_bytes())
-                        .map_err(|e| {
-                            PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-                                "failed to deserialize preconditioner: {}",
-                                e
-                            ))
-                        })?;
+                // Pre-built FePreconditioner object
+                if let Ok(fe) = obj.downcast::<PyFePreconditioner>() {
+                    // Clone via serde roundtrip (inner types don't implement Clone)
+                    let bytes = postcard::to_stdvec(&fe.get().inner)
+                        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+                    let fe_precond: FePreconditioner = postcard::from_bytes(&bytes)
+                        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
                     py.allow_threads(|| {
                         Solver::from_design_with_preconditioner(design, &params, fe_precond)
                     })
@@ -783,18 +863,21 @@ impl PySolver {
         Ok(into_py_batch_result(py, result, n_dofs, n_obs))
     }
 
-    /// Serialize the preconditioner to bytes (for persistence).
+    /// Return the built preconditioner, or ``None`` if unconfigured.
     ///
-    /// Returns `None` if no preconditioner is configured.
+    /// The returned object is picklable and can be passed to a new
+    /// ``Solver(…, preconditioner=p)`` to skip the expensive build step.
     #[pyo3(name = "preconditioner")]
-    fn preconditioner_py<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyBytes>>> {
+    fn preconditioner_py(&self) -> PyResult<Option<PyFePreconditioner>> {
         match self.solver.preconditioner() {
             None => Ok(None),
             Some(p) => {
-                let bytes = bincode::serialize(p).map_err(|e| {
-                    PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string())
-                })?;
-                Ok(Some(PyBytes::new(py, &bytes)))
+                // Clone via serde roundtrip (inner types don't implement Clone)
+                let bytes = postcard::to_stdvec(p)
+                    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+                let inner: FePreconditioner = postcard::from_bytes(&bytes)
+                    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+                Ok(Some(PyFePreconditioner { inner }))
             }
         }
     }
@@ -830,6 +913,7 @@ fn _within(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyApproxSchurConfig>()?;
     m.add_class::<PySchurComplement>()?;
     m.add_class::<PyFullSddm>()?;
+    m.add_class::<PyFePreconditioner>()?;
     m.add_class::<PySolver>()?;
     m.add_function(wrap_pyfunction!(solve, m)?)?;
     m.add_function(wrap_pyfunction!(solve_batch, m)?)?;

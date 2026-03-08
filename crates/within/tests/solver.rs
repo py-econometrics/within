@@ -149,11 +149,11 @@ fn test_serde_roundtrip() {
     let precond_ref = solver1
         .preconditioner()
         .expect("should have preconditioner");
-    let bytes = bincode::serialize(precond_ref).expect("serialize");
+    let bytes = postcard::to_stdvec(precond_ref).expect("serialize");
     assert!(!bytes.is_empty());
 
     // Deserialize and build new solver
-    let precond2: FePreconditioner = bincode::deserialize(&bytes).expect("deserialize");
+    let precond2: FePreconditioner = postcard::from_bytes(&bytes).expect("deserialize");
     let solver2 = Solver::with_preconditioner(categories.view(), None, &params, precond2)
         .expect("solver from preconditioner");
     let r2 = solver2.solve(&y).expect("solve 2");

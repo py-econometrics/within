@@ -10,6 +10,7 @@ from within import (
     GMRES,
     Additive,
     Multiplicative,
+    FePreconditioner,
     OperatorRepr,
     Preconditioner,
     Solver,
@@ -318,20 +319,37 @@ class TestSolverBatch:
 
 class TestSolverSerde:
     def test_preconditioner_roundtrip(self, problem):
-        """Serialize and deserialize preconditioner, verify same results."""
+        """Extract preconditioner object, reuse in new solver."""
         cats, y = problem
         categories = as_solver_categories(cats)
 
         solver1 = Solver(categories)
         r1 = solver1.solve(y)
 
-        # Serialize
-        precond_bytes = solver1.preconditioner()
-        assert isinstance(precond_bytes, bytes)
-        assert len(precond_bytes) > 0
+        precond = solver1.preconditioner()
+        assert isinstance(precond, FePreconditioner)
+        assert precond.nrows > 0
 
-        # Deserialize into new solver
-        solver2 = Solver(categories, preconditioner=precond_bytes)
+        # Reuse in new solver
+        solver2 = Solver(categories, preconditioner=precond)
+        r2 = solver2.solve(y)
+        np.testing.assert_allclose(r2.x, r1.x, atol=1e-10)
+
+    def test_preconditioner_pickle(self, problem):
+        """Pickle roundtrip of FePreconditioner."""
+        import pickle
+
+        cats, y = problem
+        categories = as_solver_categories(cats)
+
+        solver1 = Solver(categories)
+        r1 = solver1.solve(y)
+
+        precond = solver1.preconditioner()
+        data = pickle.dumps(precond)
+        precond2 = pickle.loads(data)
+
+        solver2 = Solver(categories, preconditioner=precond2)
         r2 = solver2.solve(y)
         np.testing.assert_allclose(r2.x, r1.x, atol=1e-10)
 
