@@ -108,21 +108,31 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
                 },
             )?;
 
-            const READOUT_CHUNK: usize = 4096;
-            z.par_chunks_mut(READOUT_CHUNK)
-                .enumerate()
-                .for_each(|(ci, chunk)| {
-                    let offset = ci * READOUT_CHUNK;
-                    for (i, zi) in chunk.iter_mut().enumerate() {
-                        let ai = &accum[offset + i];
-                        *zi = f64::from_bits(ai.swap(0, Ordering::Relaxed));
-                    }
-                });
+            const PAR_READOUT_THRESHOLD: usize = 100_000;
+            if n <= PAR_READOUT_THRESHOLD {
+                for (i, zi) in z.iter_mut().enumerate() {
+                    *zi = f64::from_bits(accum[i].swap(0, Ordering::Relaxed));
+                }
+            } else {
+                const READOUT_CHUNK: usize = 4096;
+                z.par_chunks_mut(READOUT_CHUNK)
+                    .enumerate()
+                    .for_each(|(ci, chunk)| {
+                        let offset = ci * READOUT_CHUNK;
+                        for (i, zi) in chunk.iter_mut().enumerate() {
+                            let ai = &accum[offset + i];
+                            *zi = f64::from_bits(ai.swap(0, Ordering::Relaxed));
+                        }
+                    });
+            }
             Ok(())
         };
 
+        const MAX_POOL_SIZE: usize = 4;
         if let Ok(mut pool) = self.buf_pool.lock() {
-            pool.push(bufs);
+            if pool.len() < MAX_POOL_SIZE {
+                pool.push(bufs);
+            }
         } else if apply_result.is_ok() {
             return Err(ApplyError::Synchronization {
                 context: "additive.buf_pool.lock.push",

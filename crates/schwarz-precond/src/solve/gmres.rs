@@ -154,6 +154,45 @@ enum ArnoldiOutcome {
     RestartNeeded,
 }
 
+/// Modified Gram-Schmidt orthogonalisation of `w` against columns `0..=j` of `v_basis`.
+///
+/// Updates Hessenberg column `j` with the projection coefficients and sets
+/// `h[j+1, j]` to the resulting norm of `w`.
+///
+/// Returns `(h_jp1_j, local_h_max)` where `local_h_max` is the maximum
+/// absolute projection coefficient seen during the loop.
+fn modified_gram_schmidt(
+    w: &mut [f64],
+    v_basis: &ColumnBasis,
+    h: &mut HessenbergMatrix,
+    j: usize,
+) -> (f64, f64) {
+    let mut local_h_max: f64 = 0.0;
+    for i in 0..=j {
+        let hij = dot(w, v_basis.col(i));
+        h.set(i, j, hij);
+        local_h_max = local_h_max.max(hij.abs());
+        let v_i = v_basis.col(i);
+        for (wk, &vi) in w.iter_mut().zip(v_i) {
+            *wk -= hij * vi;
+        }
+    }
+    let h_jp1_j = vec_norm(w);
+    h.set(j + 1, j, h_jp1_j);
+    (h_jp1_j, local_h_max)
+}
+
+/// Apply previously computed Givens rotations `0..j` to Hessenberg column `j`.
+fn apply_previous_givens(h: &mut HessenbergMatrix, cs: &[f64], sn: &[f64], j: usize) {
+    for i in 0..j {
+        let h_ij = h.get(i, j);
+        let h_i1j = h.get(i + 1, j);
+        let temp = cs[i] * h_ij + sn[i] * h_i1j;
+        h.set(i + 1, j, -sn[i] * h_ij + cs[i] * h_i1j);
+        h.set(i, j, temp);
+    }
+}
+
 /// Run one Arnoldi cycle (inner GMRES loop).
 ///
 /// Returns `(outcome, j)` where `j` is the number of Arnoldi steps completed
@@ -188,29 +227,11 @@ fn arnoldi_cycle<A: Operator + ?Sized, M: Operator + ?Sized>(
         }
 
         // Modified Gram-Schmidt orthogonalisation
-        for i in 0..=j {
-            let hij = dot(state.w, state.v_basis.col(i));
-            state.h.set(i, j, hij);
-            h_norms_max = h_norms_max.max(hij.abs());
-            let v_i = state.v_basis.col(i);
-            for (wk, &vi) in state.w.iter_mut().zip(v_i) {
-                *wk -= hij * vi;
-            }
-        }
-        let h_jp1_j = vec_norm(state.w);
-        state.h.set(j + 1, j, h_jp1_j);
-        h_norms_max = h_norms_max.max(h_jp1_j);
+        let (h_jp1_j, local_h_max) = modified_gram_schmidt(state.w, state.v_basis, state.h, j);
+        h_norms_max = h_norms_max.max(local_h_max).max(h_jp1_j);
 
         // Apply previous Givens rotations to the new column
-        for i in 0..j {
-            let h_ij = state.h.get(i, j);
-            let h_i1j = state.h.get(i + 1, j);
-            let temp = state.cs[i] * h_ij + state.sn[i] * h_i1j;
-            state
-                .h
-                .set(i + 1, j, -state.sn[i] * h_ij + state.cs[i] * h_i1j);
-            state.h.set(i, j, temp);
-        }
+        apply_previous_givens(state.h, state.cs, state.sn, j);
 
         // Compute new Givens rotation for row (j, j+1)
         let (c, s) = givens_rotation(state.h.get(j, j), state.h.get(j + 1, j));
@@ -446,7 +467,12 @@ fn solve_upper_triangular(h: &HessenbergMatrix, g: &[f64], k: usize) -> Vec<f64>
         for (j, yj) in y.iter().enumerate().take(k).skip(i + 1) {
             sum -= h.get(i, j) * yj;
         }
-        y[i] = sum / h.get(i, i);
+        let diag = h.get(i, i);
+        if diag.abs() < 1e-14 * (1.0 + sum.abs()) {
+            y[i] = 0.0; // Near-singular: best-effort
+        } else {
+            y[i] = sum / diag;
+        }
     }
     y
 }
