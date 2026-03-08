@@ -51,16 +51,15 @@ pub mod error;
 pub mod observation;
 pub mod operator;
 pub mod orchestrate;
-pub mod preconditioner;
 pub mod solver;
 // ---------------------------------------------------------------------------
 // High-level API
 // ---------------------------------------------------------------------------
 
+pub use operator::preconditioner::FePreconditioner;
 pub use orchestrate::solve;
 pub use orchestrate::solve_batch;
 pub use orchestrate::BatchSolveResult;
-pub use preconditioner::FePreconditioner;
 pub use solver::Solver;
 
 // ---------------------------------------------------------------------------

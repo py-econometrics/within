@@ -13,8 +13,10 @@ use crate::config::{KrylovMethod, OperatorRepr, Preconditioner, SolverParams};
 use crate::domain::WeightedDesign;
 use crate::observation::{ArrayStore, ObservationStore, ObservationWeights};
 use crate::operator::gramian::{Gramian, GramianOperator};
+use crate::operator::preconditioner::{
+    build_preconditioner, build_preconditioner_fused, FePreconditioner,
+};
 use crate::orchestrate::{BatchSolveResult, SolveResult};
-use crate::preconditioner::{build_preconditioner, build_preconditioner_fused, FePreconditioner};
 use crate::WithinResult;
 
 /// Persistent solver that owns its preconditioner for reuse across multiple solves.
