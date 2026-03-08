@@ -8,7 +8,10 @@ use schwarz_precond::{
     SubdomainCore, SubdomainEntry,
 };
 
-use common::{make_schwarz_entries, DiagLocalSolver, DiagOperator, TridiagOperator};
+use common::{
+    make_schwarz_entries, DiagLocalSolver, DiagOperator, FailingLocalSolver, TridiagOperator,
+    UniformDiagLocalSolver,
+};
 
 #[test]
 fn test_additive_schwarz_reduces_iterations() {
@@ -663,5 +666,192 @@ fn test_validate_partition_weight_length_mismatch() {
         Err(PreconditionerBuildError::PartitionWeightLengthMismatch { .. }) => {}
         Ok(_) => panic!("expected PartitionWeightLengthMismatch, got Ok"),
         Err(other) => panic!("expected PartitionWeightLengthMismatch, got: {:?}", other),
+    }
+}
+
+// ============================================================================
+// Parallel readout path (n > PAR_READOUT_THRESHOLD = 100_000)
+// ============================================================================
+
+#[test]
+fn test_additive_schwarz_parallel_readout_large_n() {
+    // n > 100_000 triggers the par_chunks_mut readout path.
+    let n = 150_002usize;
+    // Build non-overlapping 2-DOF subdomains with diag_val = 2.0.
+    // UniformDiagLocalSolver computes sol = rhs / diag_val.
+    // With uniform weights (w=1 per DOF), each subdomain contributes
+    // w * (w * rhs[i] / diag_val) = rhs[i] / diag_val = rhs[i] * 0.5.
+    let mut entries: Vec<SubdomainEntry<UniformDiagLocalSolver>> = Vec::new();
+    let mut i = 0usize;
+    while i + 1 < n {
+        entries.push(SubdomainEntry::new(
+            SubdomainCore::uniform(vec![i as u32, (i + 1) as u32]),
+            UniformDiagLocalSolver::new(2, 2.0),
+        ));
+        i += 2;
+    }
+    if i < n {
+        entries.push(SubdomainEntry::new(
+            SubdomainCore::uniform(vec![i as u32]),
+            UniformDiagLocalSolver::new(1, 2.0),
+        ));
+    }
+
+    let schwarz = SchwarzPreconditioner::new(entries, n).expect("valid large additive schwarz");
+    assert_eq!(schwarz.nrows(), n);
+
+    let rhs = vec![4.0; n];
+    let mut z = vec![0.0; n];
+    let result = schwarz.try_apply(&rhs, &mut z);
+    assert!(result.is_ok(), "try_apply should succeed: {:?}", result);
+
+    // Each DOF: output = 1.0 * (1.0 * 4.0 / 2.0) = 2.0
+    for (i, &v) in z.iter().enumerate() {
+        assert!((v - 2.0).abs() < 1e-12, "z[{i}] = {v}, expected 2.0",);
+    }
+}
+
+// ============================================================================
+// NaN-fill on solver error (apply, not try_apply)
+// ============================================================================
+
+#[test]
+fn test_additive_schwarz_apply_fills_nan_on_solver_failure() {
+    // FailingLocalSolver always returns Err — apply must fill z with NAN.
+    let n = 4;
+    let solver = FailingLocalSolver {
+        n_local: 2,
+        scratch_size: 2,
+    };
+    let core = SubdomainCore::uniform(vec![0u32, 1]);
+    let entry = SubdomainEntry::new(core, solver);
+
+    let schwarz = SchwarzPreconditioner::new(vec![entry], n)
+        .expect("valid preconditioner with failing solver");
+
+    let rhs = vec![1.0; n];
+    let mut z = vec![0.0; n];
+    schwarz.apply(&rhs, &mut z);
+
+    assert!(
+        z.iter().all(|v| v.is_nan()),
+        "all outputs should be NaN when solver fails, got: {:?}",
+        z,
+    );
+}
+
+#[test]
+fn test_multiplicative_schwarz_apply_fills_nan_on_solver_failure() {
+    let n = 4;
+    let a = DiagOperator {
+        values: vec![2.0, 3.0, 4.0, 5.0],
+    };
+
+    let solver = FailingLocalSolver {
+        n_local: 2,
+        scratch_size: 2,
+    };
+    let core = SubdomainCore::uniform(vec![0u32, 1]);
+    let entry = SubdomainEntry::new(core, solver);
+
+    let updater = OperatorResidualUpdater::new(&a, n);
+    let prec = MultiplicativeSchwarzPreconditioner::new(vec![entry], updater, n, false)
+        .expect("valid multiplicative preconditioner with failing solver");
+
+    let rhs = vec![1.0; n];
+    let mut z = vec![0.0; n];
+    prec.apply(&rhs, &mut z);
+
+    assert!(
+        z.iter().all(|v| v.is_nan()),
+        "all outputs should be NaN when solver fails, got: {:?}",
+        z,
+    );
+}
+
+// ============================================================================
+// Multiplicative Schwarz with empty subdomain
+// ============================================================================
+
+#[test]
+fn test_multiplicative_schwarz_empty_subdomain_ignored() {
+    // First entry has empty global_indices (contributes nothing).
+    // Second entry covers [0, 1] with exact diagonal inverse.
+    let n = 3;
+    let a = DiagOperator {
+        values: vec![2.0, 3.0, 1.0],
+    };
+
+    // Empty subdomain: n_local=0, scratch_size=0.
+    // Use DiagLocalSolver with an empty slice so both entries share the same type.
+    let empty_solver = DiagLocalSolver::new(&[]);
+    let empty_core = SubdomainCore::uniform(vec![]);
+    let empty_entry = SubdomainEntry::new(empty_core, empty_solver);
+
+    // Real subdomain over DOFs [0, 1] with exact diagonal solver (diag = [2.0, 3.0]).
+    let real_solver = DiagLocalSolver::new(&[2.0, 3.0]);
+    let real_core = SubdomainCore::uniform(vec![0u32, 1]);
+    let real_entry = SubdomainEntry::new(real_core, real_solver);
+
+    let updater = OperatorResidualUpdater::new(&a, n);
+    let prec =
+        MultiplicativeSchwarzPreconditioner::new(vec![empty_entry, real_entry], updater, n, false)
+            .expect("valid multiplicative preconditioner with empty subdomain");
+
+    let rhs = vec![4.0, 9.0, 1.0];
+    let mut z = vec![0.0; n];
+    let result = prec.try_apply(&rhs, &mut z);
+    assert!(result.is_ok(), "try_apply should succeed: {:?}", result);
+
+    // DOFs [0, 1] are solved: z[0] = 4/2 = 2.0, z[1] = 9/3 = 3.0
+    // DOF [2] is not covered by any subdomain: z[2] = 0.0
+    assert!((z[0] - 2.0).abs() < 1e-12, "z[0] = {}, expected 2.0", z[0]);
+    assert!((z[1] - 3.0).abs() < 1e-12, "z[1] = {}, expected 3.0", z[1]);
+    assert!(
+        z[2].abs() < 1e-12,
+        "z[2] = {}, expected 0.0 (uncovered DOF)",
+        z[2]
+    );
+}
+
+// ============================================================================
+// try_apply / try_apply_adjoint direct calls match apply / apply_adjoint
+// ============================================================================
+
+#[test]
+fn test_additive_schwarz_try_apply_matches_apply() {
+    let n = 10;
+    let schwarz =
+        SchwarzPreconditioner::new(make_schwarz_entries(n), n).expect("valid additive schwarz");
+
+    let rhs: Vec<f64> = (0..n).map(|i| (i + 1) as f64).collect();
+
+    // apply path
+    let mut z_apply = vec![0.0; n];
+    schwarz.apply(&rhs, &mut z_apply);
+
+    // try_apply direct call
+    let mut z_try = vec![0.0; n];
+    let res = SchwarzPreconditioner::try_apply(&schwarz, &rhs, &mut z_try);
+    assert!(res.is_ok(), "try_apply should return Ok");
+
+    // try_apply_adjoint direct call (symmetric — same result)
+    let mut z_try_adj = vec![0.0; n];
+    let res_adj = Operator::try_apply_adjoint(&schwarz, &rhs, &mut z_try_adj);
+    assert!(res_adj.is_ok(), "try_apply_adjoint should return Ok");
+
+    for i in 0..n {
+        assert!(
+            (z_apply[i] - z_try[i]).abs() < 1e-14,
+            "try_apply mismatch at {i}: apply={}, try={}",
+            z_apply[i],
+            z_try[i],
+        );
+        assert!(
+            (z_apply[i] - z_try_adj[i]).abs() < 1e-14,
+            "try_apply_adjoint mismatch at {i}: apply={}, try_adj={}",
+            z_apply[i],
+            z_try_adj[i],
+        );
     }
 }

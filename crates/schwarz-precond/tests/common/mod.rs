@@ -283,6 +283,27 @@ pub fn make_schwarz_entries(n: usize) -> Vec<SubdomainEntry<UniformDiagLocalSolv
     entries
 }
 
+/// Local solver that always fails with `ApproxCholSolveFailed`.
+pub struct FailingLocalSolver {
+    pub n_local: usize,
+    pub scratch_size: usize,
+}
+
+impl LocalSolver for FailingLocalSolver {
+    fn n_local(&self) -> usize {
+        self.n_local
+    }
+    fn scratch_size(&self) -> usize {
+        self.scratch_size
+    }
+    fn solve_local(&self, _rhs: &mut [f64], _sol: &mut [f64]) -> Result<(), LocalSolveError> {
+        Err(LocalSolveError::ApproxCholSolveFailed {
+            context: "test.failing_local_solver",
+            message: format!("deliberate failure for n={}", self.n_local),
+        })
+    }
+}
+
 /// Check that ||Ax - b|| < tol.
 pub fn check_residual<A: Operator>(op: &A, x: &[f64], b: &[f64], tol: f64) {
     let n = b.len();

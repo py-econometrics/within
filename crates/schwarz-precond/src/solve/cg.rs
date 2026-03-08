@@ -233,4 +233,92 @@ mod tests {
         assert!(result.x.iter().all(|&v| v == 0.0));
         assert_eq!(result.residual_norm, 0.0);
     }
+
+    struct NegDiagOperator;
+
+    impl Operator for NegDiagOperator {
+        fn nrows(&self) -> usize {
+            3
+        }
+        fn ncols(&self) -> usize {
+            3
+        }
+        fn apply(&self, x: &[f64], y: &mut [f64]) {
+            y[0] = -1.0 * x[0];
+            y[1] = -2.0 * x[1];
+            y[2] = -3.0 * x[2];
+        }
+        fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) {
+            self.apply(x, y);
+        }
+    }
+
+    #[test]
+    fn test_cg_indefinite_operator_returns_not_converged() {
+        // NegDiagOperator has all negative eigenvalues, so pap <= 0 on the
+        // first iteration, triggering the early-exit branch.
+        let b = vec![1.0, 1.0, 1.0];
+        let result = cg_solve(&NegDiagOperator, &b, 1e-10, 100).expect("cg solve");
+        assert!(
+            !result.converged,
+            "expected non-convergence for indefinite operator"
+        );
+        assert_eq!(
+            result.iterations, 1,
+            "expected early exit on first iteration"
+        );
+    }
+
+    #[test]
+    fn test_cg_maxiter_exhaustion_returns_not_converged() {
+        // A single iteration cannot achieve 1e-15 relative tolerance on a
+        // non-trivial system, so maxiter=1 forces early termination.
+        let b = vec![1.0, 2.0, 3.0];
+        let result = cg_solve(&SpdMatrix3, &b, 1e-15, 1).expect("cg solve");
+        assert!(
+            !result.converged,
+            "expected non-convergence when maxiter exhausted"
+        );
+        assert_eq!(result.iterations, 1);
+        assert!(
+            result.residual_norm > 0.0,
+            "residual should be nonzero after 1 iteration"
+        );
+    }
+
+    #[test]
+    fn test_pcg_dispatch_none_matches_cg_solve() {
+        // pcg with None preconditioner must produce identical results to cg_solve.
+        let b = vec![1.0, 2.0, 3.0];
+        let expected = cg_solve(&SpdMatrix3, &b, 1e-10, 100).expect("cg_solve");
+        let actual =
+            pcg(&SpdMatrix3, &b, None::<&IdentityOperator>, 1e-10, 100).expect("pcg with None");
+        assert_eq!(actual.converged, expected.converged);
+        assert_eq!(actual.iterations, expected.iterations);
+        assert!(
+            (actual.residual_norm - expected.residual_norm).abs() < f64::EPSILON,
+            "residual_norm mismatch: {} vs {}",
+            actual.residual_norm,
+            expected.residual_norm,
+        );
+    }
+
+    #[test]
+    fn test_pcg_dispatch_some_matches_cg_solve_preconditioned() {
+        // pcg with Some(preconditioner) must produce identical results to
+        // cg_solve_preconditioned called directly.
+        let b = vec![1.0, 2.0, 3.0];
+        let expected = cg_solve_preconditioned(&SpdMatrix3, &JacobiPrecond3, &b, 1e-10, 100)
+            .expect("cg_solve_preconditioned");
+        let actual =
+            pcg(&SpdMatrix3, &b, Some(&JacobiPrecond3), 1e-10, 100).expect("pcg with Some");
+        assert_eq!(actual.converged, expected.converged);
+        assert_eq!(actual.iterations, expected.iterations);
+        assert!(
+            (actual.residual_norm - expected.residual_norm).abs() < f64::EPSILON,
+            "residual_norm mismatch: {} vs {}",
+            actual.residual_norm,
+            expected.residual_norm,
+        );
+    }
 }
