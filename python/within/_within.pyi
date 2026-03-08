@@ -86,7 +86,14 @@ def solve(
     y: NDArray[np.float64],
     config: CG | GMRES | None = None,
     weights: NDArray[np.float64] | None = None,
-) -> SolveResult: ...
+) -> SolveResult:
+    """Solve fixed-effects normal equations.
+
+    ``categories`` should be F-contiguous (column-major) for best performance.
+    Use ``np.asfortranarray(categories)`` to convert.  A ``UserWarning`` is
+    emitted when a C-contiguous array is passed.
+    """
+    ...
 
 # ---------------------------------------------------------------------------
 # Advanced config classes (for benchmarks / power users)

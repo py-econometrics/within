@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pytest
 
@@ -15,7 +17,7 @@ from conftest import generate_synthetic_data
 
 
 def as_solver_categories(cats):
-    return np.column_stack(cats).astype(np.uint32)
+    return np.asfortranarray(np.column_stack(cats).astype(np.uint32))
 
 
 @pytest.fixture()
@@ -183,6 +185,23 @@ class TestSolveResult:
         assert result.time_total >= 0
         assert result.time_setup >= 0
         assert result.time_solve >= 0
+
+
+class TestContiguityWarning:
+    def test_c_contiguous_warns(self, problem):
+        cats, y = problem
+        cats_c = np.column_stack(cats).astype(np.uint32)  # C-contiguous
+        assert not cats_c.flags["F_CONTIGUOUS"]
+        with pytest.warns(UserWarning, match="not F-contiguous"):
+            solve(cats_c, y)
+
+    def test_f_contiguous_no_warning(self, problem):
+        cats, y = problem
+        cats_f = as_solver_categories(cats)  # F-contiguous
+        assert cats_f.flags["F_CONTIGUOUS"]
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            solve(cats_f, y)
 
 
 class TestGenerateSyntheticData:

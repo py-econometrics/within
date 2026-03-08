@@ -487,6 +487,21 @@ pub fn solve<'py>(
     weights: Option<PyReadonlyArray1<'py, f64>>,
 ) -> PyResult<PySolveResult> {
     let cats = categories.as_array();
+
+    // Warn when the category array is not column-major (F-contiguous).
+    // F-order gives contiguous factor columns → faster matvec in the solver.
+    // C-order still works but falls back to strided per-element access.
+    let strides = cats.strides();
+    if strides.len() >= 2 && strides[0] != 1 {
+        PyErr::warn(
+            py,
+            &py.get_type::<pyo3::exceptions::PyUserWarning>(),
+            c"categories array is not F-contiguous (column-major). \
+             Use np.asfortranarray(categories) for faster solves.",
+            1,
+        )?;
+    }
+
     let y_slice = y.as_array();
     let y_vec;
     let y_ref: &[f64] = match y_slice.as_slice() {
