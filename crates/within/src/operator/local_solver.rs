@@ -1,5 +1,7 @@
 //! Approximate Cholesky-backed local solver for Schwarz subdomains.
 
+use std::sync::Arc;
+
 use approx_chol::Factor;
 use faer::{MatRef, Side};
 use rayon::prelude::*;
@@ -421,7 +423,7 @@ impl AnchoredDenseCholesky {
 /// Local subdomain solver using block elimination on the bipartite SDDM.
 pub struct BlockElimSolver {
     /// Bipartite Gramian structure: C, C^T, diag_q, diag_r.
-    cross_tab: CrossTab,
+    cross_tab: Arc<CrossTab>,
     /// `1 / D_elim[k]` for the eliminated (larger) diagonal block.
     inv_diag_elim: Vec<f64>,
     /// Reduced-system factor backend.
@@ -436,11 +438,12 @@ pub struct BlockElimSolver {
 
 impl BlockElimSolver {
     pub(crate) fn new(
-        cross_tab: CrossTab,
+        cross_tab: impl Into<Arc<CrossTab>>,
         inv_diag_elim: Vec<f64>,
         reduced_factor: ReducedFactor,
         eliminate_q: bool,
     ) -> Self {
+        let cross_tab = cross_tab.into();
         let n_local = cross_tab.n_local();
         let n_reduced = reduced_factor.n();
         Self {

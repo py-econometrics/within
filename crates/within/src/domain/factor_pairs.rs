@@ -1,8 +1,9 @@
 //! Factor-pair domain construction and partition-of-unity weights.
 
+use std::sync::Arc;
+
 use super::{PartitionWeights, Subdomain, WeightedDesign};
 use crate::observation::ObservationStore;
-use crate::operator::csr_block::CsrBlock;
 use crate::operator::gramian::{find_all_active_levels, BipartiteComponent, CrossTab};
 
 /// Build local subdomains (with pre-built CrossTabs) for pairs of factors.
@@ -64,15 +65,13 @@ pub(crate) fn build_local_domains_from_gramian(
 ///
 /// Produced alongside subdomain construction so that the same observation scan
 /// serves both domain decomposition and Gramian assembly.
+/// The `cross_tab` field is wrapped in `Arc` to avoid cloning the full CrossTab
+/// when the same data is shared with subdomain entries.
 pub(crate) struct PairBlockData {
     pub q: usize,
     pub r: usize,
-    pub diag_q: Vec<f64>,
-    pub diag_r: Vec<f64>,
-    /// Off-diagonal block C_qr (compact indices).
-    pub c: CsrBlock,
-    /// Transpose C_qr^T (compact indices).
-    pub ct: CsrBlock,
+    /// Shared reference to the full-pair CrossTab (diag_q, diag_r, C, C^T).
+    pub cross_tab: Arc<CrossTab>,
     /// Global DOF indices of active q-levels (length = c.nrows).
     pub q_global: Vec<u32>,
     /// Global DOF indices of active r-levels (length = c.ncols).
@@ -125,20 +124,17 @@ fn domains_and_block_for_pair<S: ObservationStore>(
     };
 
     let n_q_full = full_ct.n_q();
+    let ct_arc = Arc::new(full_ct);
 
-    // Extract block data for Gramian composition before component splitting
     let block_data = PairBlockData {
         q,
         r,
-        diag_q: full_ct.diag_q.clone(),
-        diag_r: full_ct.diag_r.clone(),
-        c: full_ct.c.clone(),
-        ct: full_ct.ct.clone(),
+        cross_tab: Arc::clone(&ct_arc),
         q_global: l2g[..n_q_full].to_vec(),
         r_global: l2g[n_q_full..].to_vec(),
     };
 
-    let domains = split_into_subdomains(full_ct, &l2g, n_q_full, (q, r));
+    let domains = split_into_subdomains_arc(ct_arc, &l2g, n_q_full, (q, r));
 
     (domains, Some(block_data))
 }
@@ -188,6 +184,39 @@ fn split_into_subdomains(
 
     let cross_tabs: Vec<CrossTab> = if components.len() == 1 {
         vec![full_ct]
+    } else {
+        components
+            .iter()
+            .map(|comp| full_ct.extract_component(comp))
+            .collect()
+    };
+
+    components
+        .iter()
+        .zip(cross_tabs)
+        .map(|(comp, comp_ct)| {
+            let comp_l2g = component_global_indices(comp, l2g, n_q_full);
+            let core =
+                super::SubdomainCore::uniform(comp_l2g.into_iter().map(|g| g as u32).collect());
+            (Subdomain { factor_pair, core }, comp_ct)
+        })
+        .collect()
+}
+
+/// Like `split_into_subdomains` but accepts an `Arc<CrossTab>`.
+///
+/// When there is a single component, unwraps or clones the Arc to avoid
+/// full CrossTab cloning. Multiple components extract sub-CrossTabs as usual.
+fn split_into_subdomains_arc(
+    full_ct: Arc<CrossTab>,
+    l2g: &[u32],
+    n_q_full: usize,
+    factor_pair: (usize, usize),
+) -> Vec<(Subdomain, CrossTab)> {
+    let components = full_ct.bipartite_connected_components();
+
+    let cross_tabs: Vec<CrossTab> = if components.len() == 1 {
+        vec![Arc::try_unwrap(full_ct).unwrap_or_else(|arc| (*arc).clone())]
     } else {
         components
             .iter()
@@ -426,7 +455,8 @@ mod tests {
         }] {
             let obs_gramian = Gramian::build(&design);
             let (_domains, blocks) = build_domains_and_gramian_blocks(&design);
-            let composed = Gramian::from_pair_blocks(&blocks, &design.factors, design.n_dofs);
+            let composed =
+                Gramian::from_pair_blocks(&blocks, &design.factors, design.n_dofs).unwrap();
 
             // Compare matvec output for several test vectors
             let n = design.n_dofs;

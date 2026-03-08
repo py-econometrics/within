@@ -2,7 +2,8 @@ use rayon::prelude::*;
 
 /// Minimum number of rows to trigger parallel SpMV.
 const PAR_SPMV_THRESHOLD: usize = 10_000;
-const PAR_SPMV_CHUNK: usize = 4096;
+/// Target number of non-zeros per parallel chunk.
+const TARGET_NNZ_PER_CHUNK: usize = 32_768;
 
 /// Rectangular CSR matrix used as the off-diagonal block in bipartite Gramians.
 ///
@@ -132,12 +133,16 @@ impl CsrBlock {
         let indptr = &self.indptr;
         let indices = &self.indices;
         let data = &self.data;
+        let nnz = self.nnz();
+        let nrows = self.nrows;
+        let avg_nnz_per_row = nnz / nrows.max(1);
+        let chunk = (TARGET_NNZ_PER_CHUNK / avg_nnz_per_row.max(1)).clamp(256, 8192);
 
         y[..self.nrows]
-            .par_chunks_mut(PAR_SPMV_CHUNK)
+            .par_chunks_mut(chunk)
             .enumerate()
             .for_each(|(chunk_idx, y_chunk)| {
-                let row_start = chunk_idx * PAR_SPMV_CHUNK;
+                let row_start = chunk_idx * chunk;
                 for (local_i, yi) in y_chunk.iter_mut().enumerate() {
                     let i = row_start + local_i;
                     let start = indptr[i] as usize;

@@ -120,8 +120,7 @@ fn build_compact_mapping(
     })
 }
 
-/// Identify which levels in factors q and r are actually used, build compact
-/// local-to-global mappings, and return the local-to-global index vector.
+/// Scan factors q and r to find active levels, then delegate to `build_compact_mapping`.
 ///
 /// Returns `None` if either factor has no active levels.
 #[cfg(test)]
@@ -141,51 +140,7 @@ fn find_active_levels<S: ObservationStore>(
         active_r[design.store.level(uid, r) as usize] = true;
     }
 
-    let mut q_map = vec![u32::MAX; fq.n_levels];
-    let mut n_q = 0u32;
-    for (j, &a) in active_q.iter().enumerate() {
-        if a {
-            q_map[j] = n_q;
-            n_q += 1;
-        }
-    }
-
-    let mut r_map = vec![u32::MAX; fr.n_levels];
-    let mut n_r = 0u32;
-    for (k, &a) in active_r.iter().enumerate() {
-        if a {
-            r_map[k] = n_r;
-            n_r += 1;
-        }
-    }
-
-    let n_q = n_q as usize;
-    let n_r = n_r as usize;
-
-    if n_q == 0 || n_r == 0 {
-        return None;
-    }
-
-    // Build local-to-global mapping: q levels first, then r levels
-    let mut local_to_global = Vec::with_capacity(n_q + n_r);
-    for (j, &a) in active_q.iter().enumerate() {
-        if a {
-            local_to_global.push((fq.offset + j) as u32);
-        }
-    }
-    for (k, &a) in active_r.iter().enumerate() {
-        if a {
-            local_to_global.push((fr.offset + k) as u32);
-        }
-    }
-
-    Some(ActiveLevels {
-        q_map,
-        n_q,
-        r_map,
-        n_r,
-        local_to_global,
-    })
+    build_compact_mapping(&active_q, &active_r, fq, fr)
 }
 
 /// A connected component in a bipartite factor-pair graph.
@@ -208,6 +163,7 @@ pub(crate) struct BipartiteComponent {
 /// diagonal.
 ///
 /// Used to build SDDM matrices directly (for ApproxChol).
+#[derive(Clone)]
 pub(crate) struct CrossTab {
     /// CSR(C): q-block rows (n_q) x r-block cols (n_r).
     pub(crate) c: CsrBlock,

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use rayon::prelude::*;
@@ -7,6 +8,29 @@ use schwarz_precond::{Operator, SparseMatrix};
 use super::Gramian;
 use crate::domain::{PairBlockData, WeightedDesign};
 use crate::observation::{FactorMeta, ObservationStore};
+use crate::{WithinError, WithinResult};
+
+// ===========================================================================
+// Atomic float add helper
+// ===========================================================================
+
+/// Atomic add for f64 using CAS loop on `AtomicU64` bit representation.
+#[inline(always)]
+fn atomic_f64_add(target: &AtomicU64, val: f64) {
+    let mut old_bits = target.load(Ordering::Relaxed);
+    loop {
+        let new_val = f64::from_bits(old_bits) + val;
+        match target.compare_exchange_weak(
+            old_bits,
+            new_val.to_bits(),
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => break,
+            Err(x) => old_bits = x,
+        }
+    }
+}
 
 // ===========================================================================
 // CSR assembly helper
@@ -177,6 +201,7 @@ impl PairAccumulator {
                 for row in 0..self.n_rows {
                     for col in 0..self.n_cols {
                         let v = table[row * self.n_cols + col];
+                        // Values are non-negative sums of weights; > 0.0 correctly filters true zeros.
                         if v > 0.0 {
                             f(row, col, v);
                         }
@@ -226,10 +251,10 @@ impl Gramian {
         blocks: &[PairBlockData],
         factors: &[FactorMeta],
         n_dofs: usize,
-    ) -> Self {
-        Self {
-            matrix: Arc::new(compose_gramian_from_blocks(blocks, factors, n_dofs)),
-        }
+    ) -> WithinResult<Self> {
+        Ok(Self {
+            matrix: Arc::new(compose_gramian_from_blocks(blocks, factors, n_dofs)?),
+        })
     }
 
     /// `G @ x`.
@@ -292,14 +317,16 @@ fn build_full_matrix<S: ObservationStore>(design: &WeightedDesign<S>) -> SparseM
         let n_threads = rayon::current_num_threads().max(1);
         let chunk_size = n_obs.div_ceil(n_threads);
 
-        let partials: Vec<(Vec<f64>, Vec<PairAccumulator>)> = (0..n_threads)
+        // Shared atomic diagonal — avoids N per-thread Vec<f64> allocations.
+        let shared_diag: Vec<AtomicU64> = (0..n_dofs).map(|_| AtomicU64::new(0)).collect();
+
+        let partial_pairs: Vec<Vec<PairAccumulator>> = (0..n_threads)
             .into_par_iter()
             .map(|tid| {
                 let start = tid * chunk_size;
                 let end = (start + chunk_size).min(n_obs);
                 let chunk_len = end.saturating_sub(start);
 
-                let mut diag = vec![0.0f64; n_dofs];
                 let mut pairs: Vec<PairAccumulator> = pair_info
                     .iter()
                     .map(|&(q, r)| {
@@ -314,7 +341,8 @@ fn build_full_matrix<S: ObservationStore>(design: &WeightedDesign<S>) -> SparseM
                 for uid in start..end {
                     let w = design.uid_weight(uid);
                     for q in 0..n_factors {
-                        diag[design.factors[q].offset + design.store.level(uid, q) as usize] += w;
+                        let idx = design.factors[q].offset + design.store.level(uid, q) as usize;
+                        atomic_f64_add(&shared_diag[idx], w);
                     }
                     for (pi, &(q, r)) in pair_info.iter().enumerate() {
                         pairs[pi].add(
@@ -325,17 +353,20 @@ fn build_full_matrix<S: ObservationStore>(design: &WeightedDesign<S>) -> SparseM
                     }
                 }
 
-                (diag, pairs)
+                pairs
             })
             .collect();
 
-        // Merge thread-local results
-        let mut iter = partials.into_iter();
-        let (mut diag_flat, mut pair_tables) = iter.next().unwrap();
-        for (d, p) in iter {
-            for (a, b) in diag_flat.iter_mut().zip(d.iter()) {
-                *a += *b;
-            }
+        // Read out atomic diagonal into Vec<f64>.
+        let diag_flat: Vec<f64> = shared_diag
+            .iter()
+            .map(|a| f64::from_bits(a.load(Ordering::Relaxed)))
+            .collect();
+
+        // Merge per-thread pair tables.
+        let mut iter = partial_pairs.into_iter();
+        let mut pair_tables = iter.next().unwrap();
+        for p in iter {
             for (pi, pair_table) in pair_tables.iter_mut().enumerate() {
                 pair_table.merge_from(&p[pi]);
             }
@@ -452,7 +483,7 @@ fn compose_gramian_from_blocks(
     blocks: &[PairBlockData],
     factors: &[FactorMeta],
     n_dofs: usize,
-) -> SparseMatrix {
+) -> WithinResult<SparseMatrix> {
     let n_factors = factors.len();
 
     // Collect canonical diagonal per factor (from any block involving that factor).
@@ -460,11 +491,11 @@ fn compose_gramian_from_blocks(
     let mut factor_global: Vec<Option<&[u32]>> = vec![None; n_factors];
     for b in blocks {
         if factor_diag[b.q].is_none() {
-            factor_diag[b.q] = Some(&b.diag_q);
+            factor_diag[b.q] = Some(&b.cross_tab.diag_q);
             factor_global[b.q] = Some(&b.q_global);
         }
         if factor_diag[b.r].is_none() {
-            factor_diag[b.r] = Some(&b.diag_r);
+            factor_diag[b.r] = Some(&b.cross_tab.diag_r);
             factor_global[b.r] = Some(&b.r_global);
         }
     }
@@ -480,7 +511,7 @@ fn compose_gramian_from_blocks(
     }
 
     // --- Pass 1: count NNZ per row ---
-    let mut row_nnz = vec![0u32; n_dofs];
+    let mut row_nnz = vec![0u64; n_dofs];
 
     // Diagonals: one entry per active level per factor
     for f_global in factor_global.iter().flatten() {
@@ -492,12 +523,12 @@ fn compose_gramian_from_blocks(
     // Off-diagonals from C blocks (placed in q-factor rows)
     for b in blocks {
         for (cj, &g) in b.q_global.iter().enumerate() {
-            let nnz_in_row = b.c.indptr[cj + 1] - b.c.indptr[cj];
+            let nnz_in_row = (b.cross_tab.c.indptr[cj + 1] - b.cross_tab.c.indptr[cj]) as u64;
             row_nnz[g as usize] += nnz_in_row;
         }
         // C^T entries placed in r-factor rows
         for (ck, &g) in b.r_global.iter().enumerate() {
-            let nnz_in_row = b.ct.indptr[ck + 1] - b.ct.indptr[ck];
+            let nnz_in_row = (b.cross_tab.ct.indptr[ck + 1] - b.cross_tab.ct.indptr[ck]) as u64;
             row_nnz[g as usize] += nnz_in_row;
         }
     }
@@ -505,7 +536,10 @@ fn compose_gramian_from_blocks(
     // --- Build indptr ---
     let mut indptr = vec![0u32; n_dofs + 1];
     for i in 0..n_dofs {
-        indptr[i + 1] = indptr[i] + row_nnz[i];
+        let nnz_u64 = row_nnz[i];
+        indptr[i + 1] = indptr[i]
+            + u32::try_from(nnz_u64)
+                .map_err(|_| WithinError::Overflow(format!("row nnz exceeds u32 at row {i}")))?;
     }
     let total_nnz = indptr[n_dofs] as usize;
 
@@ -534,13 +568,18 @@ fn compose_gramian_from_blocks(
             for &bi in &second_pairs[f] {
                 let b = &blocks[bi];
                 // f is the r-factor in this block; row compact_j of C^T
-                let start = b.ct.indptr[compact_j] as usize;
-                let end = b.ct.indptr[compact_j + 1] as usize;
+                let start = b.cross_tab.ct.indptr[compact_j] as usize;
+                let end = b.cross_tab.ct.indptr[compact_j + 1] as usize;
                 for idx in start..end {
-                    let compact_p = b.ct.indices[idx] as usize;
+                    let compact_p = b.cross_tab.ct.indices[idx] as usize;
+                    debug_assert!(
+                        compact_p < b.q_global.len(),
+                        "compact_p {compact_p} out of range for q_global len {}",
+                        b.q_global.len()
+                    );
                     let pos = cursor[g] as usize;
                     indices[pos] = b.q_global[compact_p];
-                    data[pos] = b.ct.data[idx];
+                    data[pos] = b.cross_tab.ct.data[idx];
                     cursor[g] += 1;
                 }
             }
@@ -555,18 +594,18 @@ fn compose_gramian_from_blocks(
             for &bi in &first_pairs[f] {
                 let b = &blocks[bi];
                 // f is the q-factor in this block; row compact_j of C
-                let start = b.c.indptr[compact_j] as usize;
-                let end = b.c.indptr[compact_j + 1] as usize;
+                let start = b.cross_tab.c.indptr[compact_j] as usize;
+                let end = b.cross_tab.c.indptr[compact_j + 1] as usize;
                 for idx in start..end {
-                    let compact_r = b.c.indices[idx] as usize;
+                    let compact_r = b.cross_tab.c.indices[idx] as usize;
                     let pos = cursor[g] as usize;
                     indices[pos] = b.r_global[compact_r];
-                    data[pos] = b.c.data[idx];
+                    data[pos] = b.cross_tab.c.data[idx];
                     cursor[g] += 1;
                 }
             }
         }
     }
 
-    SparseMatrix::new(indptr, indices, data, n_dofs)
+    Ok(SparseMatrix::new(indptr, indices, data, n_dofs))
 }
