@@ -1233,3 +1233,201 @@ mod schwarz_tests {
         }
     }
 }
+
+// ===========================================================================
+// BlockElimSolver eliminate_q=false tests
+// ===========================================================================
+
+mod block_elim_tests {
+    use approx_chol::Config;
+    use schwarz_precond::LocalSolver;
+
+    use crate::operator::csr_block::CsrBlock;
+    use crate::operator::gramian::CrossTab;
+    use crate::operator::local_solver::BlockElimSolver;
+    use crate::operator::schwarz::{build_reduced_schur_factor, ReducedSchurConfig};
+
+    /// Build a CrossTab with `n_q < n_r` so that `eliminate_q == false`.
+    ///
+    /// Using n_q=2, n_r=5 (so min = n_q, eliminate_q = false).
+    /// C is n_q x n_r = 2x5; each q-row has one or two non-zero entries.
+    fn make_cross_tab_q_lt_r() -> CrossTab {
+        // C (2 x 5): row 0 has entry (0,0)=1, row 1 has entry (1,1)=1.
+        // Diagonal: diag_q = [2.0, 3.0], diag_r = [1.0, 2.0, 1.0, 1.0, 1.0]
+        // These values satisfy D_q[i] >= sum_j C[i,j] etc.
+        let c_dense = vec![
+            // row 0
+            1.0, 0.0, 0.0, 0.0, 0.0, // row 1
+            0.0, 1.0, 0.0, 0.0, 0.0,
+        ];
+        let diag_q = vec![2.0, 3.0];
+        let diag_r = vec![2.0, 3.0, 1.0, 1.0, 1.0];
+        let c = CsrBlock::from_dense_table(&c_dense, 2, 5);
+        let ct = c.transpose();
+        CrossTab {
+            c,
+            ct,
+            diag_q,
+            diag_r,
+        }
+    }
+
+    #[test]
+    fn test_block_elim_solver_eliminate_q_false() {
+        // n_q=2 < n_r=5 → eliminate_q should be false.
+        let cross_tab = make_cross_tab_q_lt_r();
+
+        assert_eq!(cross_tab.n_q(), 2);
+        assert_eq!(cross_tab.n_r(), 5);
+
+        let schur_config = ReducedSchurConfig {
+            approx_chol: Config::default(),
+            approx_schur: None,
+            dense_threshold: 0, // disable dense fast path to ensure we cover the sparse path
+        };
+        let reduced =
+            build_reduced_schur_factor(&cross_tab, &schur_config).expect("Schur factor build");
+
+        // EliminationInfo carries eliminate_q: false when n_q < n_r.
+        assert!(
+            !reduced.elimination.eliminate_q,
+            "expected eliminate_q=false when n_q={} < n_r={}",
+            cross_tab.n_q(),
+            cross_tab.n_r(),
+        );
+
+        let solver = BlockElimSolver::new(
+            cross_tab,
+            reduced.elimination.inv_diag_elim,
+            reduced.factor,
+            reduced.elimination.eliminate_q,
+        );
+
+        // n_local = n_q + n_r = 2 + 5 = 7
+        assert_eq!(solver.n_local(), 7);
+    }
+
+    #[test]
+    fn test_block_elim_solver_eliminate_q_false_solve_residual() {
+        // Build solver with eliminate_q=false and verify solve gives finite, non-zero output.
+        let cross_tab = make_cross_tab_q_lt_r();
+        let n_q = cross_tab.n_q();
+        let n_r = cross_tab.n_r();
+        let n_local = n_q + n_r; // 7
+
+        let schur_config = ReducedSchurConfig {
+            approx_chol: Config::default(),
+            approx_schur: None,
+            dense_threshold: 0,
+        };
+        let reduced =
+            build_reduced_schur_factor(&cross_tab, &schur_config).expect("Schur factor build");
+
+        assert!(!reduced.elimination.eliminate_q);
+
+        let solver = BlockElimSolver::new(
+            cross_tab,
+            reduced.elimination.inv_diag_elim,
+            reduced.factor,
+            reduced.elimination.eliminate_q,
+        );
+
+        let scratch_sz = solver.scratch_size();
+
+        // Build a non-trivial rhs. The solver applies negate+subtract_mean internally,
+        // so provide a straightforward input.
+        let mut rhs = vec![0.0; scratch_sz];
+        for (i, v) in rhs[..n_local].iter_mut().enumerate() {
+            *v = (i as f64 + 1.0) * 0.5;
+        }
+        let mut sol = vec![0.0; scratch_sz];
+
+        solver
+            .solve_local(&mut rhs, &mut sol)
+            .expect("solve_local should succeed");
+
+        // Solution must be finite.
+        for (i, &v) in sol[..n_local].iter().enumerate() {
+            assert!(v.is_finite(), "sol[{i}] = {v} is not finite");
+        }
+
+        // Solution must be non-trivial (not all-zero).
+        let sol_norm: f64 = sol[..n_local].iter().map(|v| v * v).sum::<f64>().sqrt();
+        assert!(sol_norm > 1e-15, "solution is unexpectedly all-zero");
+    }
+}
+
+// ===========================================================================
+// build_preconditioner_fused direct test
+// ===========================================================================
+
+mod preconditioner_fused_tests {
+    use schwarz_precond::Operator;
+
+    use crate::config::{LocalSolverConfig, Preconditioner};
+    use crate::domain::FixedEffectsDesign;
+    use crate::observation::{FactorMajorStore, ObservationWeights};
+    use crate::operator::preconditioner::build_preconditioner_fused;
+
+    fn make_test_design() -> FixedEffectsDesign {
+        let store = FactorMajorStore::new(
+            vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]],
+            ObservationWeights::Unit,
+            5,
+        )
+        .expect("valid factor-major store");
+        FixedEffectsDesign::from_store(store).expect("valid fixed-effects design")
+    }
+
+    #[test]
+    fn test_build_preconditioner_fused_additive_dimensions_and_apply() {
+        let design = make_test_design();
+        let config = Preconditioner::Additive(LocalSolverConfig::default());
+
+        let (gramian, precond) =
+            build_preconditioner_fused(&design, &config).expect("fused build should succeed");
+
+        // Gramian dimensions must match n_dofs.
+        assert_eq!(gramian.matrix.n(), design.n_dofs);
+
+        // Preconditioner dimensions must match n_dofs.
+        assert_eq!(precond.nrows(), design.n_dofs);
+        assert_eq!(precond.ncols(), design.n_dofs);
+
+        // apply must produce finite output.
+        let r = vec![1.0; design.n_dofs];
+        let mut z = vec![0.0; design.n_dofs];
+        precond.apply(&r, &mut z);
+
+        for (i, &v) in z.iter().enumerate() {
+            assert!(
+                v.is_finite(),
+                "precond.apply output z[{i}] = {v} is not finite"
+            );
+        }
+    }
+
+    #[test]
+    fn test_build_preconditioner_fused_multiplicative_dimensions_and_apply() {
+        let design = make_test_design();
+        let config = Preconditioner::Multiplicative(LocalSolverConfig::default());
+
+        let (gramian, precond) =
+            build_preconditioner_fused(&design, &config).expect("fused build should succeed");
+
+        assert_eq!(gramian.matrix.n(), design.n_dofs);
+        assert_eq!(precond.nrows(), design.n_dofs);
+        assert_eq!(precond.ncols(), design.n_dofs);
+
+        let r = vec![1.0; design.n_dofs];
+        let mut z = vec![0.0; design.n_dofs];
+        precond.apply(&r, &mut z);
+
+        for (i, &v) in z.iter().enumerate() {
+            assert!(
+                v.is_finite(),
+                "precond.apply output z[{i}] = {v} is not finite"
+            );
+        }
+    }
+}
