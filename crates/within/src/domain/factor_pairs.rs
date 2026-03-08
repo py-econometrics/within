@@ -317,7 +317,7 @@ mod tests {
             6,
         )
         .expect("valid factor-major store");
-        FixedEffectsDesign::from_store(store, &[3, 2, 2]).expect("valid test design")
+        FixedEffectsDesign::from_store(store).expect("valid test design")
     }
 
     #[test]
@@ -401,7 +401,7 @@ mod tests {
                 5,
             )
             .unwrap();
-            FixedEffectsDesign::from_store(store, &[3, 4]).unwrap()
+            FixedEffectsDesign::from_store(store).unwrap()
         }] {
             let gramian = Gramian::build(&design);
             let obs_domains = build_local_domains(&design);
@@ -461,7 +461,7 @@ mod tests {
                 5,
             )
             .unwrap();
-            FixedEffectsDesign::from_store(store, &[3, 4]).unwrap()
+            FixedEffectsDesign::from_store(store).unwrap()
         }] {
             let obs_gramian = Gramian::build(&design);
             let (_domains, blocks) = build_domains_and_gramian_blocks(&design);

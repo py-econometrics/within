@@ -7,6 +7,7 @@
 //!
 //! Run with: `cargo run --example preconditioned_solve`
 
+use ndarray::Array2;
 use within::{
     solve, KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner, SolveResult, SolverParams,
 };
@@ -14,24 +15,25 @@ use within::{
 fn main() {
     // Two factors, each with 100 levels, 10 000 observations.
     let n_obs = 10_000;
-    let n_levels = [100, 100];
+    // Category array via modular arithmetic (deterministic, no randomness).
+    let mut categories = Array2::<u32>::zeros((n_obs, 2));
+    for i in 0..n_obs {
+        categories[[i, 0]] = (i % 100) as u32;
+        categories[[i, 1]] = (i / 100) as u32;
+    }
 
-    // Category vectors via modular arithmetic (deterministic, no randomness).
-    let factor_0: Vec<u32> = (0..n_obs).map(|i| (i % 100) as u32).collect();
-    let factor_1: Vec<u32> = (0..n_obs).map(|i| (i / 100) as u32).collect();
-    let categories = vec![factor_0, factor_1];
-
-    // True coefficient vector: x_true[j] = (j mod 7) - 3.
-    let total_dofs: usize = n_levels.iter().sum();
-    let x_true: Vec<f64> = (0..total_dofs).map(|j| (j % 7) as f64 - 3.0).collect();
-
-    // Build y = D * x_true + noise (deterministic perturbation).
+    // Build design to compute D * x_true.
     use within::observation::{FactorMajorStore, ObservationWeights};
     use within::WeightedDesign;
 
-    let store = FactorMajorStore::new(categories.clone(), ObservationWeights::Unit, n_obs)
+    let factor_levels = vec![categories.column(0).to_vec(), categories.column(1).to_vec()];
+    let store = FactorMajorStore::new(factor_levels, ObservationWeights::Unit, n_obs)
         .expect("valid factor-major store");
-    let design = WeightedDesign::from_store(store, &n_levels).expect("valid design");
+    let design = WeightedDesign::from_store(store).expect("valid design");
+
+    // True coefficient vector: x_true[j] = (j mod 7) - 3.
+    let total_dofs = design.n_dofs;
+    let x_true: Vec<f64> = (0..total_dofs).map(|j| (j % 7) as f64 - 3.0).collect();
     let mut y = vec![0.0; n_obs];
     design.matvec_d(&x_true, &mut y);
     for (i, yi) in y.iter_mut().enumerate() {
@@ -39,7 +41,7 @@ fn main() {
     }
 
     let cg_params = SolverParams::default();
-    let cg_result = solve(&categories, &n_levels, &y, None, &cg_params).expect("cg solve");
+    let cg_result = solve(categories.view(), &y, None, &cg_params).expect("cg solve");
     let gmres_params = SolverParams {
         krylov: KrylovMethod::Gmres { restart: 30 },
         operator: OperatorRepr::Implicit,
@@ -49,7 +51,7 @@ fn main() {
         tol: 1e-8,
         maxiter: 1000,
     };
-    let gmres_result = solve(&categories, &n_levels, &y, None, &gmres_params).expect("gmres solve");
+    let gmres_result = solve(categories.view(), &y, None, &gmres_params).expect("gmres solve");
 
     // -----------------------------------------------------------------------
     // Print comparison

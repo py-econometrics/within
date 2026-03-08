@@ -70,43 +70,22 @@ impl<S: ObservationStore + std::fmt::Debug> std::fmt::Debug for WeightedDesign<S
 pub type FixedEffectsDesign = WeightedDesign<FactorMajorStore>;
 
 impl<S: ObservationStore> WeightedDesign<S> {
-    /// Construct from a store and per-factor level counts.
-    pub fn from_store(store: S, n_levels: &[usize]) -> WithinResult<Self> {
-        if store.n_factors() != n_levels.len() {
-            return Err(WithinError::FactorCountMismatch {
-                category_factors: store.n_factors(),
-                level_factors: n_levels.len(),
-            });
+    /// Construct from a store, inferring the number of levels per factor
+    /// from the maximum observed level in each column (`max + 1`).
+    pub fn from_store(store: S) -> WithinResult<Self> {
+        if store.n_obs() == 0 {
+            return Err(WithinError::EmptyObservations);
         }
 
-        for (factor, &nl) in n_levels.iter().enumerate() {
-            if nl == 0 {
-                return Err(WithinError::EmptyLevelSet { factor });
-            }
-        }
-
-        for (factor, &n_levels_factor) in n_levels.iter().enumerate().take(store.n_factors()) {
-            for uid in 0..store.n_obs() {
-                let level = store.level(uid, factor);
-                if (level as usize) >= n_levels_factor {
-                    return Err(WithinError::LevelOutOfRange {
-                        factor,
-                        observation: uid,
-                        level,
-                        n_levels: n_levels_factor,
-                    });
-                }
-            }
-        }
-
-        let mut factors = Vec::with_capacity(n_levels.len());
+        let mut factors = Vec::with_capacity(store.n_factors());
         let mut offset = 0;
-        for &nl in n_levels {
-            factors.push(FactorMeta {
-                n_levels: nl,
-                offset,
-            });
-            offset += nl;
+        for q in 0..store.n_factors() {
+            let n_levels = (0..store.n_obs())
+                .map(|uid| store.level(uid, q) as usize + 1)
+                .max()
+                .unwrap(); // safe: n_obs > 0
+            factors.push(FactorMeta { n_levels, offset });
+            offset += n_levels;
         }
         let n_rows = store.n_obs();
         Ok(WeightedDesign {
@@ -389,18 +368,16 @@ mod tests {
 
     fn make_test_design() -> FixedEffectsDesign {
         let categories = vec![vec![0, 1, 2, 0, 1], vec![0, 1, 2, 3, 0]];
-        let n_levels = vec![3, 4];
         let store = FactorMajorStore::new(categories, ObservationWeights::Unit, 5)
             .expect("valid factor-major store");
-        FixedEffectsDesign::from_store(store, &n_levels).expect("valid test design")
+        FixedEffectsDesign::from_store(store).expect("valid test design")
     }
 
     fn make_weighted_design(weights: Vec<f64>) -> FixedEffectsDesign {
         let categories = vec![vec![0, 1, 0, 1], vec![0, 0, 1, 1]];
-        let n_levels = vec![2, 2];
         let store = FactorMajorStore::new(categories, ObservationWeights::Dense(weights), 4)
             .expect("valid weighted factor-major store");
-        FixedEffectsDesign::from_store(store, &n_levels).expect("valid weighted design")
+        FixedEffectsDesign::from_store(store).expect("valid weighted design")
     }
 
     #[test]

@@ -9,9 +9,11 @@ use schwarz_precond::solve::gmres::gmres_solve;
 use schwarz_precond::solve::vec_norm;
 use schwarz_precond::{IdentityOperator, Operator};
 
+use ndarray::ArrayView2;
+
 use crate::config::{KrylovMethod, OperatorRepr, Preconditioner, SolverParams};
 use crate::domain::{build_domains_and_gramian_blocks, build_local_domains, WeightedDesign};
-use crate::observation::{FactorMajorStore, ObservationStore, ObservationWeights};
+use crate::observation::{ArrayStore, ObservationStore, ObservationWeights};
 use crate::operator::gramian::{Gramian, GramianOperator};
 use crate::operator::schwarz::{
     build_additive, build_multiplicative_obs, build_multiplicative_sparse, DomainSource,
@@ -307,36 +309,26 @@ pub fn solve_normal_equations<S: ObservationStore>(
 // High-level API
 // ===========================================================================
 
-fn design_from_categories(
-    categories: &[Vec<u32>],
-    n_levels: &[usize],
-    y_len: usize,
-    weights: Option<&[f64]>,
-) -> WithinResult<WeightedDesign<FactorMajorStore>> {
-    let weights = match weights {
-        Some(weights) => ObservationWeights::Dense(weights.to_vec()),
-        None => ObservationWeights::Unit,
-    };
-    let store = FactorMajorStore::new(categories.to_vec(), weights, y_len)?;
-    WeightedDesign::from_store(store, n_levels)
-}
-
 /// Solve fixed-effects least squares from raw category data.
 ///
-/// Each element of `categories` is a factor's level assignments (length = n_obs).
-/// `n_levels[q]` is the number of distinct levels in factor `q`.
+/// `categories` is an observation-major `(n_obs, n_factors)` array where
+/// `categories[[i, q]]` is the level of observation `i` in factor `q`.
+/// Levels must be `0..max_level` per factor; the number of levels is inferred.
 /// `y` is the response vector (length = n_obs).
 ///
-/// Constructs a `FactorMajorStore` and `WeightedDesign` internally, forms
-/// `D^T W y`, and solves the normal equations.
+/// Zero-copy: the category array is borrowed, not copied.
 pub fn solve(
-    categories: &[Vec<u32>],
-    n_levels: &[usize],
+    categories: ArrayView2<u32>,
     y: &[f64],
     weights: Option<&[f64]>,
     params: &SolverParams,
 ) -> WithinResult<SolveResult> {
-    let design = design_from_categories(categories, n_levels, y.len(), weights)?;
+    let weights = match weights {
+        Some(w) => ObservationWeights::Dense(w.to_vec()),
+        None => ObservationWeights::Unit,
+    };
+    let store = ArrayStore::new(categories, weights)?;
+    let design = WeightedDesign::from_store(store)?;
     solve_response(&design, y, params)
 }
 

@@ -70,18 +70,15 @@ fn generate_fixest_like_case(
         firm_id.push(firm);
     }
 
-    let (factor_levels, n_levels): (Vec<Vec<u32>>, Vec<usize>) = if case.n_fe == 2 {
-        (vec![indiv_id, year], vec![n_indiv, n_years])
+    let factor_levels: Vec<Vec<u32>> = if case.n_fe == 2 {
+        vec![indiv_id, year]
     } else {
-        (
-            vec![indiv_id, year, firm_id],
-            vec![n_indiv, n_years, n_firm],
-        )
+        vec![indiv_id, year, firm_id]
     };
 
     let store = FactorMajorStore::new(factor_levels, ObservationWeights::Unit, case.n_obs)
         .expect("valid factor-major store");
-    let design = WeightedDesign::from_store(store, &n_levels).expect("valid design");
+    let design = WeightedDesign::from_store(store).expect("valid design");
 
     let mut x_true = vec![0.0; design.n_dofs];
     for x in &mut x_true {

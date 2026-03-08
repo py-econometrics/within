@@ -15,7 +15,7 @@ from conftest import generate_synthetic_data
 
 
 def as_solver_categories(cats):
-    return np.column_stack(cats).astype(np.uintp)
+    return np.column_stack(cats).astype(np.uint32)
 
 
 @pytest.fixture()
@@ -86,20 +86,6 @@ class TestSolveWeighted:
         cats, y = problem
         weights = np.random.exponential(1.0, size=len(y))
         result = solve(as_solver_categories(cats), y, weights=weights)
-        assert result.converged
-
-
-class TestNLevelsInference:
-    def test_inferred_matches_explicit(self, problem):
-        cats, y = problem
-        categories = as_solver_categories(cats)
-        result_inferred = solve(categories, y)
-        result_explicit = solve(categories, y, n_levels=[50, 50])
-        np.testing.assert_allclose(result_inferred.x, result_explicit.x, atol=1e-10)
-
-    def test_explicit_n_levels(self, problem):
-        cats, y = problem
-        result = solve(as_solver_categories(cats), y, n_levels=[50, 50])
         assert result.converged
 
 

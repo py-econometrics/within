@@ -10,21 +10,20 @@
 //! # Quick start
 //!
 //! ```no_run
+//! use ndarray::Array2;
 //! use within::{solve, SolverParams};
 //!
 //! // Two factors: 100 levels each, 10 000 observations
-//! let factor_0: Vec<u32> = (0..10_000).map(|i| (i % 100) as u32).collect();
-//! let factor_1: Vec<u32> = (0..10_000).map(|i| (i / 100) as u32).collect();
-//! let y: Vec<f64> = (0..10_000).map(|i| i as f64 * 0.01).collect();
+//! let n_obs = 10_000usize;
+//! let mut categories = Array2::<u32>::zeros((n_obs, 2));
+//! for i in 0..n_obs {
+//!     categories[[i, 0]] = (i % 100) as u32;
+//!     categories[[i, 1]] = (i / 100) as u32;
+//! }
+//! let y: Vec<f64> = (0..n_obs).map(|i| i as f64 * 0.01).collect();
 //!
-//! let result = solve(
-//!     &[factor_0, factor_1],
-//!     &[100, 100],
-//!     &y,
-//!     None,
-//!     &SolverParams::default(),
-//! )
-//! .expect("solve should succeed");
+//! let result = solve(categories.view(), &y, None, &SolverParams::default())
+//!     .expect("solve should succeed");
 //! assert!(result.converged);
 //! ```
 //!
@@ -75,7 +74,9 @@ pub use orchestrate::SolveResult;
 // ---------------------------------------------------------------------------
 
 pub use domain::{FixedEffectsDesign, Subdomain, WeightedDesign};
-pub use observation::{FactorMajorStore, FactorMeta, ObservationStore, ObservationWeights};
+pub use observation::{
+    ArrayStore, FactorMajorStore, FactorMeta, ObservationStore, ObservationWeights,
+};
 
 // ---------------------------------------------------------------------------
 // Operators & builders

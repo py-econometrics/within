@@ -49,11 +49,10 @@ fn generate_fixest_3fe(n_obs: usize, seed: u64) -> (WeightedDesign<FactorMajorSt
     }
 
     let factor_levels = vec![indiv_id, year, firm_id];
-    let n_levels = vec![n_indiv, n_years, n_firm];
 
     let store = FactorMajorStore::new(factor_levels, ObservationWeights::Unit, n_obs)
         .expect("valid factor-major store");
-    let design = WeightedDesign::from_store(store, &n_levels).expect("valid design");
+    let design = WeightedDesign::from_store(store).expect("valid design");
 
     let mut x_true = vec![0.0; design.n_dofs];
     for x in &mut x_true {

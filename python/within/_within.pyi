@@ -82,10 +82,9 @@ class SolveResult:
     def time_solve(self) -> float: ...
 
 def solve(
-    categories: NDArray[np.uintp],
+    categories: NDArray[np.uint32],
     y: NDArray[np.float64],
     config: CG | GMRES | None = None,
-    n_levels: list[int] | None = None,
     weights: NDArray[np.float64] | None = None,
 ) -> SolveResult: ...
 

@@ -15,7 +15,7 @@ mod design_tests {
             5,
         )
         .expect("valid factor-major store");
-        FixedEffectsDesign::from_store(store, &[3, 4]).expect("valid test design")
+        FixedEffectsDesign::from_store(store).expect("valid test design")
     }
 
     #[test]
@@ -204,7 +204,7 @@ mod residual_update_tests {
             5,
         )
         .expect("valid factor-major store");
-        FixedEffectsDesign::from_store(store, &[3, 4]).expect("valid test design")
+        FixedEffectsDesign::from_store(store).expect("valid test design")
     }
 
     #[test]
@@ -259,8 +259,7 @@ mod residual_update_tests {
         // 1 factor, 3 observations, all same level
         let store = FactorMajorStore::new(vec![vec![0, 0, 0]], ObservationWeights::Unit, 3)
             .expect("valid factor-major store");
-        let design =
-            FixedEffectsDesign::from_store(store, &[1]).expect("valid single-factor design");
+        let design = FixedEffectsDesign::from_store(store).expect("valid single-factor design");
         let idx = DofObservationIndex::build(&design);
 
         assert_eq!(idx.n_dofs(), 1);
@@ -274,8 +273,7 @@ mod residual_update_tests {
         // 1 factor, 2 observations using levels 0 and 2 — level 1 has no observations
         let store = FactorMajorStore::new(vec![vec![0, 2]], ObservationWeights::Unit, 2)
             .expect("valid factor-major store");
-        let design =
-            FixedEffectsDesign::from_store(store, &[3]).expect("valid sparse-level design");
+        let design = FixedEffectsDesign::from_store(store).expect("valid sparse-level design");
         let idx = DofObservationIndex::build(&design);
 
         assert_eq!(idx.n_dofs(), 3);
@@ -301,8 +299,7 @@ mod residual_update_tests {
             5,
         )
         .expect("valid factor-major store");
-        let design =
-            FixedEffectsDesign::from_store(store, &[3, 4]).expect("valid fixed-effects design");
+        let design = FixedEffectsDesign::from_store(store).expect("valid fixed-effects design");
         let gramian = Gramian::build(&design);
         (design, gramian)
     }
@@ -435,11 +432,10 @@ mod residual_update_tests {
 
         let fl = vec![vec![0u32, 1, 0, 1], vec![0, 0, 1, 1]];
         let weights = vec![1.0, 2.0, 3.0, 4.0];
-        let n_levels = vec![2, 2];
 
         let store = FactorMajorStore::new(fl, ObservationWeights::Dense(weights), 4)
             .expect("valid weighted store");
-        let design = WeightedDesign::from_store(store, &n_levels).expect("valid weighted design");
+        let design = WeightedDesign::from_store(store).expect("valid weighted design");
         let gramian = Gramian::build(&design);
         let n_dofs = design.n_dofs; // 4
 
@@ -590,11 +586,10 @@ mod residual_update_tests {
 
         let fl = vec![vec![0u32, 1, 0, 1], vec![0, 0, 1, 1]];
         let weights = vec![1.0, 2.0, 3.0, 4.0];
-        let n_levels = vec![2, 2];
 
         let store = FactorMajorStore::new(fl, ObservationWeights::Dense(weights), 4)
             .expect("valid weighted store");
-        let design = WeightedDesign::from_store(store, &n_levels).expect("valid weighted design");
+        let design = WeightedDesign::from_store(store).expect("valid weighted design");
         let gramian = Gramian::build(&design);
         let n_dofs = design.n_dofs;
 
@@ -901,8 +896,7 @@ mod schwarz_tests {
             5,
         )
         .expect("valid factor-major store");
-        let design =
-            FixedEffectsDesign::from_store(store, &[3, 2]).expect("valid fixed-effects design");
+        let design = FixedEffectsDesign::from_store(store).expect("valid fixed-effects design");
         let domain_pairs = build_local_domains(&design);
         (design, domain_pairs)
     }
@@ -1052,7 +1046,7 @@ mod schwarz_tests {
             4,
         )
         .expect("valid factor-major store");
-        let design = FixedEffectsDesign::from_store(store, &[2, 2]).expect("valid design");
+        let design = FixedEffectsDesign::from_store(store).expect("valid design");
         let domain_pairs = build_local_domains(&design);
 
         assert!(!domain_pairs.is_empty());
@@ -1205,7 +1199,7 @@ mod schwarz_tests {
             5,
         )
         .expect("valid factor-major store");
-        let design = FixedEffectsDesign::from_store(store, &[3, 2]).expect("valid design");
+        let design = FixedEffectsDesign::from_store(store).expect("valid design");
 
         let config = LocalSolverConfig::default();
         let gramian = crate::operator::gramian::Gramian::build(&design);

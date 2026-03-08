@@ -39,7 +39,7 @@ fn make_2fe_design() -> FixedEffectsDesign {
         5,
     )
     .expect("valid factor-major store");
-    FixedEffectsDesign::from_store(store, &[3, 4]).expect("valid 2FE design")
+    FixedEffectsDesign::from_store(store).expect("valid 2FE design")
 }
 
 fn make_3fe_design() -> FixedEffectsDesign {
@@ -53,7 +53,7 @@ fn make_3fe_design() -> FixedEffectsDesign {
         6,
     )
     .expect("valid factor-major store");
-    FixedEffectsDesign::from_store(store, &[3, 2, 2]).expect("valid 3FE design")
+    FixedEffectsDesign::from_store(store).expect("valid 3FE design")
 }
 
 #[test]
@@ -105,7 +105,7 @@ fn test_from_gramian_block_single_component() {
         4,
     )
     .expect("valid factor-major store");
-    let design = FixedEffectsDesign::from_store(store, &[2, 2]).expect("valid design");
+    let design = FixedEffectsDesign::from_store(store).expect("valid design");
     let gramian = Gramian::build(&design);
 
     let (ct_gram, _) =
@@ -127,7 +127,7 @@ fn test_from_gramian_block_multiple_components() {
         4,
     )
     .expect("valid factor-major store");
-    let design = FixedEffectsDesign::from_store(store, &[2, 4]).expect("valid design");
+    let design = FixedEffectsDesign::from_store(store).expect("valid design");
     let gramian = Gramian::build(&design);
 
     let (ct_obs, _) = CrossTab::build_for_pair(&design, 0, 1).unwrap();
@@ -148,11 +148,10 @@ fn test_from_gramian_block_multiple_components() {
 fn test_from_gramian_block_weighted() {
     let fl = vec![vec![0u32, 1, 0, 1], vec![0, 0, 1, 1]];
     let weights = vec![1.0, 2.0, 3.0, 4.0];
-    let n_levels = vec![2, 2];
 
     let store = FactorMajorStore::new(fl, ObservationWeights::Dense(weights), 4)
         .expect("valid weighted store");
-    let design = WeightedDesign::from_store(store, &n_levels).expect("valid weighted design");
+    let design = WeightedDesign::from_store(store).expect("valid weighted design");
     let gramian = Gramian::build(&design);
 
     let (ct_obs, l2g_obs) = CrossTab::build_for_pair(&design, 0, 1).unwrap();

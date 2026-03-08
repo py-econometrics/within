@@ -12,6 +12,7 @@ categories = ["mathematics", "science", "algorithms"]
 [dependencies]
 schwarz-precond = { path = "../schwarz-precond" }
 approx-chol = { workspace = true }
+ndarray = "0.16"
 portable-atomic = { version = "1", features = ["float"] }
 rayon = "1.10"
 faer = "0.22"
@@ -22,4 +23,8 @@ rand = { version = "0.9", features = ["small_rng"] }
 
 [[bench]]
 name = "fixest"
+harness = false
+
+[[bench]]
+name = "store_backend"
 harness = false

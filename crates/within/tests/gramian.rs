@@ -11,7 +11,7 @@ fn make_test_design() -> FixedEffectsDesign {
         4,
     )
     .expect("valid factor-major store");
-    FixedEffectsDesign::from_store(store, &[3, 2]).expect("valid test design")
+    FixedEffectsDesign::from_store(store).expect("valid test design")
 }
 
 fn make_weighted_design(weights: Vec<f64>) -> FixedEffectsDesign {
@@ -21,7 +21,7 @@ fn make_weighted_design(weights: Vec<f64>) -> FixedEffectsDesign {
         4,
     )
     .expect("valid weighted factor-major store");
-    FixedEffectsDesign::from_store(store, &[2, 2]).expect("valid weighted design")
+    FixedEffectsDesign::from_store(store).expect("valid weighted design")
 }
 
 #[test]
@@ -141,8 +141,7 @@ fn test_gramian_sparse_accumulation_path() {
     }
     let store = FactorMajorStore::new(vec![fa, fb], ObservationWeights::Unit, n_obs)
         .expect("valid factor-major store");
-    let dm = FixedEffectsDesign::from_store(store, &[n_lev_a, n_lev_b])
-        .expect("valid sparse accumulation design");
+    let dm = FixedEffectsDesign::from_store(store).expect("valid sparse accumulation design");
     let g = Gramian::build(&dm);
     let gop = GramianOperator::new(&dm);
     let n = g.n_dofs();
@@ -172,7 +171,7 @@ fn test_build_for_pair_matches_full_gramian() {
         8,
     )
     .expect("valid factor-major store");
-    let dm = FixedEffectsDesign::from_store(store, &[3, 2, 2]).expect("valid pairwise design");
+    let dm = FixedEffectsDesign::from_store(store).expect("valid pairwise design");
     let full = Gramian::build(&dm);
     let n = full.n_dofs();
 

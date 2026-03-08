@@ -1,6 +1,6 @@
 //! Python API: typed config classes and solve entrypoint.
 
-use numpy::ndarray::{Array1, ArrayView2};
+use numpy::ndarray::Array1;
 use numpy::{IntoPyArray, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
 
@@ -477,48 +477,37 @@ fn extract_solver_params(py: Python<'_>, config: &Bound<'_, PyAny>) -> PyResult<
     ))
 }
 
-fn categories_to_factor_major(categories: ArrayView2<'_, usize>) -> PyResult<Vec<Vec<u32>>> {
-    let n_rows = categories.nrows();
-    let mut factor_major = Vec::with_capacity(categories.ncols());
-    for factor in 0..categories.ncols() {
-        let mut levels = Vec::with_capacity(n_rows);
-        for (observation, &level) in categories.column(factor).iter().enumerate() {
-            let level = u32::try_from(level).map_err(|_| {
-                PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-                    "category value {} out of range for u32 at factor {} observation {}",
-                    level, factor, observation
-                ))
-            })?;
-            levels.push(level);
-        }
-        factor_major.push(levels);
-    }
-    Ok(factor_major)
-}
-
 #[pyfunction]
-#[pyo3(signature = (categories, y, config=None, n_levels=None, weights=None))]
+#[pyo3(signature = (categories, y, config=None, weights=None))]
 pub fn solve<'py>(
     py: Python<'py>,
-    categories: PyReadonlyArray2<'py, usize>,
+    categories: PyReadonlyArray2<'py, u32>,
     y: PyReadonlyArray1<'py, f64>,
     config: Option<&Bound<'py, PyAny>>,
-    n_levels: Option<Vec<usize>>,
     weights: Option<PyReadonlyArray1<'py, f64>>,
 ) -> PyResult<PySolveResult> {
     let cats = categories.as_array();
-    let y_vec: Vec<f64> = y.as_array().to_vec();
-    let w_vec: Option<Vec<f64>> = weights.map(|w| w.as_array().to_vec());
-    let factor_levels = categories_to_factor_major(cats)?;
-
-    let n_levels = match n_levels {
-        Some(nl) => nl,
+    let y_slice = y.as_array();
+    let y_vec;
+    let y_ref: &[f64] = match y_slice.as_slice() {
+        Some(s) => s,
         None => {
-            let n_factors = cats.ncols();
-            (0..n_factors)
-                .map(|col| cats.column(col).iter().copied().max().unwrap_or(0) + 1)
-                .collect()
+            y_vec = y_slice.to_vec();
+            &y_vec
         }
+    };
+    let w_arr = weights.as_ref().map(|w| w.as_array());
+    let w_vec = w_arr.as_ref().and_then(|a| {
+        if a.as_slice().is_some() {
+            None
+        } else {
+            Some(a.to_vec())
+        }
+    });
+    let w_ref: Option<&[f64]> = match (&w_arr, &w_vec) {
+        (Some(a), None) => Some(a.as_slice().unwrap()),
+        (Some(_), Some(v)) => Some(v),
+        _ => None,
     };
 
     let params = match config {
@@ -527,9 +516,7 @@ pub fn solve<'py>(
     };
 
     let result = py
-        .allow_threads(|| {
-            solve_native(&factor_levels, &n_levels, &y_vec, w_vec.as_deref(), &params)
-        })
+        .allow_threads(|| solve_native(cats, y_ref, w_ref, &params))
         .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
 
     Ok(into_py_result(py, result))

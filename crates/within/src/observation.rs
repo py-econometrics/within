@@ -1,6 +1,8 @@
 //! Core observation data types: weights, factor metadata,
 //! the ObservationStore trait, and the default factor-major backend.
 
+use ndarray::ArrayView2;
+
 use crate::error::{WithinError, WithinResult};
 
 // ---------------------------------------------------------------------------
@@ -172,6 +174,77 @@ impl ObservationStore for FactorMajorStore {
     #[inline]
     fn factor_column(&self, factor: usize) -> Option<&[u32]> {
         Some(self.factor_column(factor))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ArrayStore — zero-copy observation-major backend
+// ---------------------------------------------------------------------------
+
+/// Zero-copy store backed by a borrowed `ArrayView2<u32>`.
+///
+/// `categories[[obs, factor]]` is the level for observation `obs` in factor
+/// `factor`. No data is copied — the view points directly into the caller's
+/// buffer (e.g. a numpy array from Python).
+///
+/// For F-contiguous (column-major) arrays, `factor_column()` returns
+/// contiguous slices — matching `FactorMajorStore` performance.
+/// For C-contiguous arrays, columns are strided and the hot loops fall
+/// back to per-element `level()` indexing.
+#[derive(Debug)]
+pub struct ArrayStore<'a> {
+    categories: ArrayView2<'a, u32>,
+    weights: ObservationWeights,
+}
+
+impl<'a> ArrayStore<'a> {
+    pub fn new(categories: ArrayView2<'a, u32>, weights: ObservationWeights) -> WithinResult<Self> {
+        weights.validate_for(categories.nrows())?;
+        Ok(Self {
+            categories,
+            weights,
+        })
+    }
+}
+
+impl ObservationStore for ArrayStore<'_> {
+    #[inline]
+    fn n_obs(&self) -> usize {
+        self.categories.nrows()
+    }
+
+    #[inline]
+    fn n_factors(&self) -> usize {
+        self.categories.ncols()
+    }
+
+    #[inline]
+    fn level(&self, obs: usize, factor: usize) -> u32 {
+        self.categories[[obs, factor]]
+    }
+
+    #[inline]
+    fn weight(&self, obs: usize) -> f64 {
+        self.weights.get(obs)
+    }
+
+    #[inline]
+    fn is_unweighted(&self) -> bool {
+        self.weights.is_unit()
+    }
+
+    fn factor_column(&self, factor: usize) -> Option<&[u32]> {
+        let strides = self.categories.strides();
+        // Columns are contiguous only when the row stride is 1 (F-order).
+        if strides[0] != 1 {
+            return None;
+        }
+        let n_obs = self.categories.nrows();
+        let col_stride = strides[1] as usize;
+        let ptr = self.categories.as_ptr();
+        // Safety: F-contiguous layout guarantees n_obs elements at stride-1
+        // starting at ptr + factor * col_stride.
+        Some(unsafe { std::slice::from_raw_parts(ptr.add(factor * col_stride), n_obs) })
     }
 }
 

@@ -10,7 +10,6 @@ use within::{
 pub fn make_test_design() -> FixedEffectsDesign {
     make_weighted_design(
         vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]],
-        vec![3, 2],
         ObservationWeights::Unit,
     )
     .expect("valid test design")
@@ -18,12 +17,11 @@ pub fn make_test_design() -> FixedEffectsDesign {
 
 pub fn make_weighted_design(
     categories: Vec<Vec<u32>>,
-    n_levels: Vec<usize>,
     weights: ObservationWeights,
 ) -> within::WithinResult<WeightedDesign<FactorMajorStore>> {
     let n_rows = categories.first().map_or(0, Vec::len);
     let store = FactorMajorStore::new(categories, weights, n_rows)?;
-    WeightedDesign::from_store(store, &n_levels)
+    WeightedDesign::from_store(store)
 }
 
 pub fn make_rhs_from_unit_solution(design: &FixedEffectsDesign) -> Vec<f64> {

@@ -77,10 +77,9 @@ def run_solve(
 ) -> BenchmarkResult:
     """Solve using *config* and return a timed result."""
     result = solve(
-        np.column_stack(categories).astype(np.uintp),
+        np.column_stack(categories).astype(np.uint32),
         y,
         config.config,
-        n_levels=n_levels,
     )
 
     return BenchmarkResult(

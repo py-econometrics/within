@@ -67,7 +67,6 @@ fn test_least_squares_cg() {
 fn test_least_squares_weighted_cg_preconditioned() {
     let design = common::make_weighted_design(
         vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]],
-        vec![3, 2],
         within::ObservationWeights::Dense(vec![1.0, 2.0, 1.5, 0.5, 3.0]),
     )
     .expect("valid weighted design");
@@ -205,7 +204,7 @@ fn test_compare_factorization_strategies() {
             .collect();
         let store = within::FactorMajorStore::new(cats, within::ObservationWeights::Unit, *n_rows)
             .expect("valid factor-major store");
-        let design = FixedEffectsDesign::from_store(store, n_lev).expect("valid synthetic design");
+        let design = FixedEffectsDesign::from_store(store).expect("valid synthetic design");
 
         let y: Vec<f64> = (0..*n_rows).map(|_| rng.random::<f64>()).collect();
         let design_op = DesignOperator::new(&design);
