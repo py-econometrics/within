@@ -31,6 +31,10 @@ pub enum WithinError {
         level: u32,
         n_levels: usize,
     },
+    /// Numeric overflow during assembly.
+    Overflow(String),
+    /// A zero diagonal was encountered during block elimination.
+    SingularDiagonal { block: &'static str, index: usize },
     /// Local solver construction failed.
     LocalSolverBuild(String),
     /// Preconditioner structural validation failed.
@@ -72,6 +76,10 @@ impl Display for WithinError {
                 f,
                 "factor {factor}, observation {observation}: level {level} out of range for n_levels={n_levels}",
             ),
+            Self::Overflow(msg) => write!(f, "numeric overflow: {msg}"),
+            Self::SingularDiagonal { block, index } => {
+                write!(f, "zero diagonal in {block} block at index {index}")
+            }
             Self::LocalSolverBuild(msg) => write!(f, "local solver build failed: {msg}"),
             Self::PreconditionerBuild(err) => write!(f, "{err}"),
             Self::IterativeSolve(err) => write!(f, "{err}"),

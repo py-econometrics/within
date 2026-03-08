@@ -4,7 +4,7 @@
 
 use std::time::Instant;
 
-use schwarz_precond::solve::cg::{cg_solve, cg_solve_preconditioned};
+use schwarz_precond::solve::cg::cg_solve_preconditioned;
 use schwarz_precond::solve::gmres::gmres_solve;
 use schwarz_precond::solve::vec_norm;
 use schwarz_precond::{IdentityOperator, Operator};
@@ -114,32 +114,6 @@ fn krylov_dispatch<A: Operator, M: Operator>(
     }
 }
 
-fn krylov_dispatch_unpreconditioned<A: Operator>(
-    op: &A,
-    rhs: &[f64],
-    params: &SolverParams,
-) -> WithinResult<MethodSolve> {
-    match params.krylov {
-        KrylovMethod::Cg => {
-            let r = cg_solve(op, rhs, params.tol, params.maxiter)?;
-            Ok(MethodSolve {
-                x: r.x,
-                converged: r.converged,
-                iterations: r.iterations,
-            })
-        }
-        KrylovMethod::Gmres { restart } => {
-            let id = IdentityOperator::new(rhs.len());
-            let r = gmres_solve(op, &id, rhs, params.tol, params.maxiter, restart)?;
-            Ok(MethodSolve {
-                x: r.x,
-                converged: r.converged,
-                iterations: r.iterations,
-            })
-        }
-    }
-}
-
 // ===========================================================================
 // Concrete-type solve paths (no dynamic dispatch)
 // ===========================================================================
@@ -173,9 +147,10 @@ fn solve_implicit<S: ObservationStore>(
     match &params.preconditioner {
         None => {
             let op = GramianOperator::new(design);
+            let id = IdentityOperator::new(design.n_dofs);
             let t_solve_start = Instant::now();
             let time_setup = t_solve_start.duration_since(t_setup_start).as_secs_f64();
-            let solve = krylov_dispatch_unpreconditioned(&op, rhs, params)?;
+            let solve = krylov_dispatch(&op, &id, rhs, params)?;
             Ok(assemble_result(
                 &op,
                 solve,
@@ -242,9 +217,10 @@ fn solve_explicit<S: ObservationStore>(
     match &params.preconditioner {
         None => {
             let op = Gramian::build(design);
+            let id = IdentityOperator::new(design.n_dofs);
             let t_solve_start = Instant::now();
             let time_setup = t_solve_start.duration_since(t_setup_start).as_secs_f64();
-            let solve = krylov_dispatch_unpreconditioned(&op, rhs, params)?;
+            let solve = krylov_dispatch(&op, &id, rhs, params)?;
             Ok(assemble_result(
                 &op,
                 solve,
@@ -259,7 +235,7 @@ fn solve_explicit<S: ObservationStore>(
         }
         Some(Preconditioner::Additive(config)) => {
             let (domains, blocks) = build_domains_and_gramian_blocks(design);
-            let op = Gramian::from_pair_blocks(&blocks, &design.factors, design.n_dofs);
+            let op = Gramian::from_pair_blocks(&blocks, &design.factors, design.n_dofs)?;
             let precond =
                 build_additive(DomainSource::<S>::FromParts(domains), design.n_dofs, config)?;
             let t_solve_start = Instant::now();
@@ -279,7 +255,7 @@ fn solve_explicit<S: ObservationStore>(
         }
         Some(Preconditioner::Multiplicative(config)) => {
             let (domains, blocks) = build_domains_and_gramian_blocks(design);
-            let op = Gramian::from_pair_blocks(&blocks, &design.factors, design.n_dofs);
+            let op = Gramian::from_pair_blocks(&blocks, &design.factors, design.n_dofs)?;
             let precond = build_multiplicative_sparse(
                 DomainSource::<S>::FromParts(domains),
                 &op,

@@ -35,7 +35,7 @@ impl DofObservationIndex {
         for i in 0..n_obs {
             for q in 0..n_factors {
                 let dof = design.factors[q].offset + design.store.level(i, q) as usize;
-                debug_assert!(dof < n_dofs, "dof {dof} >= n_dofs {n_dofs}");
+                assert!(dof < n_dofs, "dof {dof} >= n_dofs {n_dofs}");
                 counts[dof] += 1;
             }
         }
@@ -53,7 +53,7 @@ impl DofObservationIndex {
         for i in 0..n_obs {
             for q in 0..n_factors {
                 let dof = design.factors[q].offset + design.store.level(i, q) as usize;
-                debug_assert!(dof < n_dofs, "dof {dof} >= n_dofs {n_dofs}");
+                assert!(dof < n_dofs, "dof {dof} >= n_dofs {n_dofs}");
                 indices[pos[dof] as usize] = i as u32;
                 pos[dof] += 1;
             }

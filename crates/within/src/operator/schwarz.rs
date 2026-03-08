@@ -176,12 +176,12 @@ pub(crate) fn build_entry(
             approx_schur,
             dense_threshold,
         } => {
-            let reduced = build_reduced_schur_factor(
-                &cross_tab,
-                *approx_chol,
-                *approx_schur,
-                *dense_threshold,
-            )?;
+            let schur_config = ReducedSchurConfig {
+                approx_chol: *approx_chol,
+                approx_schur: *approx_schur,
+                dense_threshold: *dense_threshold,
+            };
+            let reduced = build_reduced_schur_factor(&cross_tab, &schur_config)?;
             FeLocalSolver::SchurComplement(Box::new(BlockElimSolver::new(
                 cross_tab,
                 reduced.elimination.inv_diag_elim,
@@ -202,7 +202,10 @@ fn dense_fast_path_enabled(n_keep: usize, threshold: usize) -> bool {
     threshold > 0 && n_keep <= threshold
 }
 
-fn compute_schur(cross_tab: &CrossTab, approx_schur: Option<ApproxSchurConfig>) -> SchurResult {
+fn compute_schur(
+    cross_tab: &CrossTab,
+    approx_schur: Option<ApproxSchurConfig>,
+) -> WithinResult<SchurResult> {
     match approx_schur {
         None => ExactSchurComplement.compute(cross_tab),
         Some(cfg) => ApproxSchurComplement::new(cfg).compute(cross_tab),
@@ -229,18 +232,23 @@ fn build_sparse_reduced_factor(
         })
 }
 
+/// Configuration for building a reduced Schur factor.
+pub(crate) struct ReducedSchurConfig {
+    pub approx_chol: Config,
+    pub approx_schur: Option<ApproxSchurConfig>,
+    pub dense_threshold: usize,
+}
+
 pub(crate) fn build_reduced_schur_factor(
     cross_tab: &CrossTab,
-    approx_chol: Config,
-    approx_schur: Option<ApproxSchurConfig>,
-    dense_threshold: usize,
+    config: &ReducedSchurConfig,
 ) -> WithinResult<ReducedSchurBuild> {
     let n_keep = cross_tab.n_q().min(cross_tab.n_r());
-    let prefer_dense = dense_fast_path_enabled(n_keep, dense_threshold);
+    let prefer_dense = dense_fast_path_enabled(n_keep, config.dense_threshold);
 
     // Fastest path for tiny exact Schur: build dense directly and factor dense.
-    if prefer_dense && approx_schur.is_none() {
-        let dense = ExactSchurComplement.compute_dense_anchored(cross_tab);
+    if prefer_dense && config.approx_schur.is_none() {
+        let dense = ExactSchurComplement.compute_dense_anchored(cross_tab)?;
         if let Some(factor) =
             ReducedFactor::try_dense_laplacian_minor(dense.anchored_minor, dense.n)
         {
@@ -252,7 +260,7 @@ pub(crate) fn build_reduced_schur_factor(
     }
 
     // General path (exact or approximate): sparse Schur assembly once.
-    let schur = compute_schur(cross_tab, approx_schur);
+    let schur = compute_schur(cross_tab, config.approx_schur)?;
     if prefer_dense {
         if let Some(factor) = ReducedFactor::try_dense_laplacian(&schur.matrix) {
             return Ok(ReducedSchurBuild {
@@ -262,7 +270,7 @@ pub(crate) fn build_reduced_schur_factor(
         }
     }
 
-    let factor = build_sparse_reduced_factor(&schur.matrix, approx_chol)?;
+    let factor = build_sparse_reduced_factor(&schur.matrix, config.approx_chol)?;
     Ok(ReducedSchurBuild {
         factor,
         elimination: schur.elimination,

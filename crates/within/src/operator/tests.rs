@@ -738,7 +738,7 @@ mod schur_complement_tests {
         let diag_r = vec![7.0, 9.0];
         let cross_tab = make_cross_tab(&c_dense, 3, 2, diag_q.clone(), diag_r.clone());
 
-        let result = ExactSchurComplement.compute(&cross_tab);
+        let result = ExactSchurComplement.compute(&cross_tab).unwrap();
 
         assert!(result.elimination.eliminate_q);
         assert_eq!(result.elimination.inv_diag_elim.len(), 3);
@@ -757,25 +757,20 @@ mod schur_complement_tests {
     }
 
     #[test]
-    fn exact_schur_handles_zero_eliminated_diagonal_when_eliminating_r() {
+    fn exact_schur_rejects_zero_eliminated_diagonal() {
         // C is 2x3, so r-block is eliminated (n_q < n_r). Last eliminated
-        // diagonal is zero, so its inverse contribution should be 0.
+        // diagonal is zero — this should return a SingularDiagonal error.
         let c_dense = vec![2.0, 0.0, 1.0, 0.0, 3.0, 4.0];
         let diag_q = vec![8.0, 9.0];
         let diag_r = vec![5.0, 6.0, 0.0];
-        let cross_tab = make_cross_tab(&c_dense, 2, 3, diag_q.clone(), diag_r.clone());
+        let cross_tab = make_cross_tab(&c_dense, 2, 3, diag_q, diag_r);
 
         let result = ExactSchurComplement.compute(&cross_tab);
-
-        assert!(!result.elimination.eliminate_q);
-        assert_eq!(result.elimination.inv_diag_elim.len(), 3);
-        assert!((result.elimination.inv_diag_elim[0] - 1.0 / 5.0).abs() < 1e-12);
-        assert!((result.elimination.inv_diag_elim[1] - 1.0 / 6.0).abs() < 1e-12);
-        assert_eq!(result.elimination.inv_diag_elim[2], 0.0);
-
-        let expected = dense_exact_schur(&c_dense, 2, 3, &diag_q, &diag_r, false);
-        let got = sparse_to_dense(&result.matrix);
-        assert_dense_close(&got, &expected, 1e-12);
+        match result {
+            Err(crate::WithinError::SingularDiagonal { index: 2, .. }) => {}
+            Err(e) => panic!("expected SingularDiagonal at index 2, got: {e}"),
+            Ok(_) => panic!("expected SingularDiagonal error, got Ok"),
+        }
     }
 
     #[test]
@@ -783,8 +778,8 @@ mod schur_complement_tests {
         let c_dense = vec![1.0, 2.0, 3.0, 0.0, 0.0, 4.0];
         let cross_tab = make_cross_tab(&c_dense, 3, 2, vec![5.0, 6.0, 8.0], vec![7.0, 9.0]);
 
-        let sparse = ExactSchurComplement.compute(&cross_tab);
-        let dense = ExactSchurComplement.compute_dense(&cross_tab);
+        let sparse = ExactSchurComplement.compute(&cross_tab).unwrap();
+        let dense = ExactSchurComplement.compute_dense(&cross_tab).unwrap();
 
         assert_eq!(dense.n, sparse.matrix.n());
         assert_eq!(
@@ -816,8 +811,10 @@ mod schur_complement_tests {
         let c_dense = vec![1.0, 2.0, 3.0, 0.0, 0.0, 4.0];
         let cross_tab = make_cross_tab(&c_dense, 3, 2, vec![5.0, 6.0, 8.0], vec![7.0, 9.0]);
 
-        let full = ExactSchurComplement.compute_dense(&cross_tab);
-        let anchored = ExactSchurComplement.compute_dense_anchored(&cross_tab);
+        let full = ExactSchurComplement.compute_dense(&cross_tab).unwrap();
+        let anchored = ExactSchurComplement
+            .compute_dense_anchored(&cross_tab)
+            .unwrap();
         assert_eq!(full.n, anchored.n);
 
         let m = full.n.saturating_sub(1);
@@ -844,8 +841,8 @@ mod schur_complement_tests {
             ..Default::default()
         });
 
-        let a = approx.compute(&cross_tab);
-        let b = approx.compute(&cross_tab);
+        let a = approx.compute(&cross_tab).unwrap();
+        let b = approx.compute(&cross_tab).unwrap();
 
         assert_eq!(a.elimination.eliminate_q, b.elimination.eliminate_q);
         assert_eq!(a.elimination.inv_diag_elim, b.elimination.inv_diag_elim);
@@ -892,6 +889,7 @@ mod schwarz_tests {
     use crate::operator::schwarz::{
         build_additive, build_entry, build_multiplicative_obs, build_multiplicative_sparse,
         build_reduced_schur_factor, build_schwarz, compute_first_block_size, DomainSource,
+        ReducedSchurConfig,
     };
     use approx_chol::Config;
     use schwarz_precond::{LocalSolver, Operator};
@@ -958,9 +956,13 @@ mod schwarz_tests {
         let mut samples = Vec::with_capacity(iters);
         for _ in 0..iters {
             let t0 = Instant::now();
-            let reduced =
-                build_reduced_schur_factor(cross_tab, approx_chol, approx_schur, dense_threshold)
-                    .expect("reduced Schur build failed");
+            let schur_config = ReducedSchurConfig {
+                approx_chol,
+                approx_schur,
+                dense_threshold,
+            };
+            let reduced = build_reduced_schur_factor(cross_tab, &schur_config)
+                .expect("reduced Schur build failed");
             black_box(reduced.factor);
             samples.push(t0.elapsed().as_secs_f64() * 1e6);
         }
@@ -978,9 +980,13 @@ mod schwarz_tests {
             split_merge: Some(8),
             seed: 42,
         };
-        let reduced =
-            build_reduced_schur_factor(&cross_tab, approx_chol, approx_schur, dense_threshold)
-                .expect("reduced Schur build failed");
+        let schur_config = ReducedSchurConfig {
+            approx_chol,
+            approx_schur,
+            dense_threshold,
+        };
+        let reduced = build_reduced_schur_factor(&cross_tab, &schur_config)
+            .expect("reduced Schur build failed");
         BlockElimSolver::new(
             cross_tab,
             reduced.elimination.inv_diag_elim,

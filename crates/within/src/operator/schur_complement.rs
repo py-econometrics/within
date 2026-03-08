@@ -21,6 +21,7 @@ use schwarz_precond::SparseMatrix;
 use super::csr_block::CsrBlock;
 use super::gramian::CrossTab;
 use crate::config::ApproxSchurConfig;
+use crate::{WithinError, WithinResult};
 
 /// Undirected fill edge: `(lo_col, hi_col, weight)` with `lo_col < hi_col`.
 type Edge = (u32, u32, f64);
@@ -134,7 +135,7 @@ struct Elimination<'a> {
 
 impl<'a> Elimination<'a> {
     /// Select which block to eliminate and precompute inverse-diagonals.
-    fn new(cross_tab: &'a CrossTab) -> Self {
+    fn new(cross_tab: &'a CrossTab) -> WithinResult<Self> {
         let n_q = cross_tab.n_q();
         let n_r = cross_tab.n_r();
         // Eliminate the larger block to minimize the reduced system size.
@@ -146,10 +147,17 @@ impl<'a> Elimination<'a> {
         } else {
             &cross_tab.diag_r
         };
-        let inv_diag_elim: Vec<f64> = diag_elim
-            .iter()
-            .map(|&d| if d > 0.0 { 1.0 / d } else { 0.0 })
-            .collect();
+        let mut inv_diag_elim = Vec::with_capacity(diag_elim.len());
+        for (i, &d) in diag_elim.iter().enumerate() {
+            if d > 0.0 {
+                inv_diag_elim.push(1.0 / d);
+            } else {
+                return Err(WithinError::SingularDiagonal {
+                    block: if eliminate_q { "q (elim)" } else { "r (elim)" },
+                    index: i,
+                });
+            }
+        }
 
         let diag_keep = if eliminate_q {
             &cross_tab.diag_r
@@ -163,7 +171,7 @@ impl<'a> Elimination<'a> {
             (&cross_tab.c, &cross_tab.ct)
         };
 
-        Self {
+        Ok(Self {
             eliminate_q,
             n_keep,
             n_elim,
@@ -172,7 +180,7 @@ impl<'a> Elimination<'a> {
             diag_keep,
             keep_to_elim,
             elim_to_keep,
-        }
+        })
     }
 
     /// Create a zero-copy [`Star`] view for eliminated vertex `k`.
@@ -281,6 +289,75 @@ fn merge_dedup(a: Vec<Edge>, b: Vec<Edge>) -> Vec<Edge> {
 }
 
 // ===========================================================================
+// Schur row-workspace helpers
+// ===========================================================================
+
+/// Scatter the Schur row `i` into a dense workspace.
+///
+/// Computes `work[j] = D_keep[i] δ_{ij} - Σ_k (keep_to_elim[i,k] / D_elim[k]) * elim_to_keep[k,j]`
+/// and records touched column indices.
+fn compute_schur_row_dense(
+    i: usize,
+    diag_keep: &[f64],
+    keep_to_elim: &CsrBlock,
+    elim_to_keep: &CsrBlock,
+    inv_diag_elim: &[f64],
+    work: &mut [f64],
+    touched: &mut Vec<usize>,
+) {
+    work[i] = diag_keep[i];
+    touched.push(i);
+
+    let fwd_start = keep_to_elim.indptr[i] as usize;
+    let fwd_end = keep_to_elim.indptr[i + 1] as usize;
+    for fwd_idx in fwd_start..fwd_end {
+        let k = keep_to_elim.indices[fwd_idx] as usize;
+        let scale = keep_to_elim.data[fwd_idx] * inv_diag_elim[k];
+        let bwd_start = elim_to_keep.indptr[k] as usize;
+        let bwd_end = elim_to_keep.indptr[k + 1] as usize;
+        for bwd_idx in bwd_start..bwd_end {
+            let j = elim_to_keep.indices[bwd_idx] as usize;
+            if work[j] == 0.0 && j != i {
+                touched.push(j);
+            }
+            work[j] -= scale * elim_to_keep.data[bwd_idx];
+        }
+    }
+}
+
+/// Extract non-zero entries from the dense workspace into sparse row arrays.
+///
+/// Sorts touched columns, emits non-zero values (preserving the diagonal even
+/// if numerically zero for SDDM structure), and clears the workspace.
+fn extract_sparse_row(i: usize, work: &mut [f64], touched: &mut [usize]) -> (Vec<u32>, Vec<f64>) {
+    touched.sort_unstable();
+    let mut row_indices = Vec::new();
+    let mut row_data = Vec::new();
+    for &j in touched.iter() {
+        let v = work[j];
+        if v != 0.0 || j == i {
+            row_indices.push(j as u32);
+            row_data.push(v);
+        }
+        work[j] = 0.0;
+    }
+    (row_indices, row_data)
+}
+
+/// Assemble a CSR matrix from per-row sparse results.
+fn assemble_schur_csr(rows: Vec<(Vec<u32>, Vec<f64>)>, n_keep: usize) -> SparseMatrix {
+    let mut s_indptr = vec![0u32; n_keep + 1];
+    let mut s_indices = Vec::new();
+    let mut s_data = Vec::new();
+    for (i, (ri, rd)) in rows.into_iter().enumerate() {
+        s_indices.extend_from_slice(&ri);
+        s_data.extend_from_slice(&rd);
+        s_indptr[i + 1] = s_indices.len() as u32;
+    }
+    SparseMatrix::new(s_indptr, s_indices, s_data, n_keep)
+}
+
+// ===========================================================================
 // SchurLaplacian — Laplacian assembly
 // ===========================================================================
 
@@ -309,67 +386,32 @@ impl SchurLaplacian {
         let keep_to_elim = elim.keep_to_elim;
         let elim_to_keep = elim.elim_to_keep;
 
-        // Phase 1: Per-row Schur complement accumulation
-        // Each keep-block row scatters into a thread-local dense workspace,
-        // accumulating S[i,j] = D_keep[i] - Σ_k (keep_to_elim[i,k] / D_elim[k]) * elim_to_keep[k,j].
+        // Per-row Schur complement accumulation, parallelized via map_init.
+        // The (work, touched) pair is allocated once per rayon task and reused
+        // across rows assigned to that task.
         let rows: Vec<(Vec<u32>, Vec<f64>)> = (0..n_keep)
             .into_par_iter()
             .map_init(
                 || (vec![0.0f64; n_keep], Vec::new()),
                 |(work, touched), i| {
-                    work[i] = diag_keep[i];
-                    touched.push(i);
-
-                    let fwd_start = keep_to_elim.indptr[i] as usize;
-                    let fwd_end = keep_to_elim.indptr[i + 1] as usize;
-                    for fwd_idx in fwd_start..fwd_end {
-                        let k = keep_to_elim.indices[fwd_idx] as usize;
-                        let scale = keep_to_elim.data[fwd_idx] * inv_diag_elim[k];
-                        let bwd_start = elim_to_keep.indptr[k] as usize;
-                        let bwd_end = elim_to_keep.indptr[k + 1] as usize;
-                        for bwd_idx in bwd_start..bwd_end {
-                            let j = elim_to_keep.indices[bwd_idx] as usize;
-                            if work[j] == 0.0 && j != i {
-                                touched.push(j);
-                            }
-                            work[j] -= scale * elim_to_keep.data[bwd_idx];
-                        }
-                    }
-
-                    // Phase 2: Extract non-zeros from workspace
-                    // Sort touched columns and emit only non-zero entries, preserving
-                    // the diagonal even if numerically zero (required for SDDM structure).
-                    touched.sort_unstable();
-                    let mut row_indices = Vec::new();
-                    let mut row_data = Vec::new();
-                    for &j in touched.iter() {
-                        let v = work[j];
-                        if v != 0.0 || j == i {
-                            row_indices.push(j as u32);
-                            row_data.push(v);
-                        }
-                        work[j] = 0.0;
-                    }
+                    compute_schur_row_dense(
+                        i,
+                        diag_keep,
+                        keep_to_elim,
+                        elim_to_keep,
+                        inv_diag_elim,
+                        work,
+                        touched,
+                    );
+                    let result = extract_sparse_row(i, work, touched);
                     touched.clear();
-
-                    (row_indices, row_data)
+                    result
                 },
             )
             .collect();
 
-        // Phase 3: Assemble CSR from per-row results
-        let mut s_indptr = vec![0u32; n_keep + 1];
-        let mut s_indices = Vec::new();
-        let mut s_data = Vec::new();
-        for (i, (ri, rd)) in rows.into_iter().enumerate() {
-            s_indices.extend_from_slice(&ri);
-            s_data.extend_from_slice(&rd);
-            s_indptr[i + 1] = s_indices.len() as u32;
-        }
-
-        Self {
-            matrix: SparseMatrix::new(s_indptr, s_indices, s_data, n_keep),
-        }
+        let matrix = assemble_schur_csr(rows, n_keep);
+        Self { matrix }
     }
 
     /// Build a dense row-major Schur matrix from elimination data.
@@ -553,7 +595,7 @@ pub(crate) struct AnchoredDenseSchurResult {
 
 /// Strategy for computing the Schur complement of a [`CrossTab`].
 pub(crate) trait SchurComplement {
-    fn compute(&self, cross_tab: &CrossTab) -> SchurResult;
+    fn compute(&self, cross_tab: &CrossTab) -> WithinResult<SchurResult>;
 }
 
 /// Exact Schur complement via block elimination.
@@ -576,13 +618,13 @@ impl SchurComplement for ExactSchurComplement {
     /// For the bipartite SDDM `[D_q, -C; -C^T, D_r]`, eliminates the larger
     /// block (exact since it's diagonal) to get a reduced Laplacian on the
     /// smaller block.
-    fn compute(&self, cross_tab: &CrossTab) -> SchurResult {
-        let elim = Elimination::new(cross_tab);
+    fn compute(&self, cross_tab: &CrossTab) -> WithinResult<SchurResult> {
+        let elim = Elimination::new(cross_tab)?;
         let laplacian = SchurLaplacian::from_elimination(&elim);
-        SchurResult {
+        Ok(SchurResult {
             matrix: laplacian.matrix,
             elimination: elim.into_info(),
-        }
+        })
     }
 }
 
@@ -592,28 +634,31 @@ impl ExactSchurComplement {
     /// Used by the tiny-system fast path to avoid sparse Schur assembly and
     /// sparse ApproxChol builder overhead.
     #[cfg(test)]
-    pub(crate) fn compute_dense(&self, cross_tab: &CrossTab) -> DenseSchurResult {
-        let elim = Elimination::new(cross_tab);
+    pub(crate) fn compute_dense(&self, cross_tab: &CrossTab) -> WithinResult<DenseSchurResult> {
+        let elim = Elimination::new(cross_tab)?;
         let matrix = SchurLaplacian::dense_from_elimination(&elim);
-        DenseSchurResult {
+        Ok(DenseSchurResult {
             matrix,
             n: elim.n_keep,
             elimination: elim.into_info(),
-        }
+        })
     }
 
     /// Compute the exact Schur anchored dense minor directly.
     ///
     /// The anchored top-left principal minor is what dense Cholesky factors, so
     /// this avoids allocating the full dense Schur matrix.
-    pub(crate) fn compute_dense_anchored(&self, cross_tab: &CrossTab) -> AnchoredDenseSchurResult {
-        let elim = Elimination::new(cross_tab);
+    pub(crate) fn compute_dense_anchored(
+        &self,
+        cross_tab: &CrossTab,
+    ) -> WithinResult<AnchoredDenseSchurResult> {
+        let elim = Elimination::new(cross_tab)?;
         let anchored_minor = SchurLaplacian::anchored_minor_from_elimination(&elim);
-        AnchoredDenseSchurResult {
+        Ok(AnchoredDenseSchurResult {
             anchored_minor,
             n: elim.n_keep,
             elimination: elim.into_info(),
-        }
+        })
     }
 }
 
@@ -622,14 +667,14 @@ impl SchurComplement for ApproxSchurComplement {
     ///
     /// Each eliminated vertex produces at most deg-1 fill edges via the
     /// GKS 2023 Algorithm 5 clique-tree approximation.
-    fn compute(&self, cross_tab: &CrossTab) -> SchurResult {
-        let elim = Elimination::new(cross_tab);
+    fn compute(&self, cross_tab: &CrossTab) -> WithinResult<SchurResult> {
+        let elim = Elimination::new(cross_tab)?;
         let emitter = SampledCliqueEmitter::new(&self.config);
         let edges = elim.par_emit(&emitter);
         let laplacian = SchurLaplacian::from_edges(edges, elim.n_keep);
-        SchurResult {
+        Ok(SchurResult {
             matrix: laplacian.matrix,
             elimination: elim.into_info(),
-        }
+        })
     }
 }
