@@ -141,16 +141,14 @@ impl<S: ObservationStore> Solver<S> {
     pub fn solve_batch(&self, ys: &[&[f64]]) -> WithinResult<BatchSolveResult> {
         let t_start = Instant::now();
         let n_rhs = ys.len();
-        let n_dofs = self.design.n_dofs;
-        let n_obs = self.design.n_rows;
 
         // Solve each RHS in parallel
         let results: Vec<WithinResult<SolveResult>> =
             ys.par_iter().map(|y| self.solve(y)).collect();
 
         // Collect into BatchSolveResult
-        let mut x = Vec::with_capacity(n_dofs * n_rhs);
-        let mut demeaned = Vec::with_capacity(n_obs * n_rhs);
+        let mut x = Vec::with_capacity(self.design.n_dofs * n_rhs);
+        let mut demeaned = Vec::with_capacity(self.design.n_rows * n_rhs);
         let mut converged = Vec::with_capacity(n_rhs);
         let mut iterations = Vec::with_capacity(n_rhs);
         let mut final_residual = Vec::with_capacity(n_rhs);
@@ -174,9 +172,6 @@ impl<S: ObservationStore> Solver<S> {
             final_residual,
             time_solve,
             t_start.elapsed().as_secs_f64(),
-            n_dofs,
-            n_obs,
-            n_rhs,
         ))
     }
 

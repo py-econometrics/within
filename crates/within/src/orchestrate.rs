@@ -35,13 +35,9 @@ pub struct BatchSolveResult {
     final_residual: Vec<f64>,
     time_solve: Vec<f64>,
     time_total: f64,
-    n_dofs: usize,
-    n_obs: usize,
-    n_rhs: usize,
 }
 
 impl BatchSolveResult {
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         x: Vec<f64>,
         demeaned: Vec<f64>,
@@ -50,9 +46,6 @@ impl BatchSolveResult {
         final_residual: Vec<f64>,
         time_solve: Vec<f64>,
         time_total: f64,
-        n_dofs: usize,
-        n_obs: usize,
-        n_rhs: usize,
     ) -> Self {
         Self {
             x,
@@ -62,20 +55,19 @@ impl BatchSolveResult {
             final_residual,
             time_solve,
             time_total,
-            n_dofs,
-            n_obs,
-            n_rhs,
         }
     }
 
     pub fn n_rhs(&self) -> usize {
-        self.n_rhs
+        self.converged.len()
     }
     pub fn x(&self, i: usize) -> &[f64] {
-        &self.x[i * self.n_dofs..(i + 1) * self.n_dofs]
+        let n_dofs = self.x.len() / self.n_rhs();
+        &self.x[i * n_dofs..(i + 1) * n_dofs]
     }
     pub fn demeaned(&self, i: usize) -> &[f64] {
-        &self.demeaned[i * self.n_obs..(i + 1) * self.n_obs]
+        let n_obs = self.demeaned.len() / self.n_rhs();
+        &self.demeaned[i * n_obs..(i + 1) * n_obs]
     }
     pub fn x_all(&self) -> &[f64] {
         &self.x
