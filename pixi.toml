@@ -29,3 +29,4 @@ default = { features = ["build", "dev"], solve-group = "default" }
 test = "maturin develop --uv && pytest tests/ -v --cov=within --cov-report=term-missing"
 develop = "maturin develop --uv --release"
 coverage-rust = "cargo llvm-cov --workspace --all-features --summary-only"
+coverage = "./scripts/coverage-with-python.sh"
