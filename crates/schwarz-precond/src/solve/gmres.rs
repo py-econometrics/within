@@ -1,11 +1,5 @@
-use super::vec_norm;
+use super::{dot, vec_norm};
 use crate::{Operator, SolveError};
-
-/// Inner product of two vectors.
-#[inline]
-fn dot(a: &[f64], b: &[f64]) -> f64 {
-    a.iter().zip(b.iter()).map(|(&x, &y)| x * y).sum()
-}
 
 // ---------------------------------------------------------------------------
 // Column basis storage
@@ -40,17 +34,16 @@ impl ColumnBasis {
         &self.data[start..start + self.n]
     }
 
-    /// Return column `j` as a mutable slice.
+    /// Return the last column as a mutable slice.
     ///
-    /// # Safety
-    /// Caller must ensure no aliasing mutable references to the same column.
+    /// This is the safe alternative to `col_mut` for the common pattern of
+    /// accessing the column that was just pushed via `push_zeroed` or `push_from`.
     #[inline]
-    #[allow(clippy::mut_from_ref)]
-    unsafe fn col_mut(&self, j: usize) -> &mut [f64] {
-        debug_assert!(j < self.len);
+    fn last_col_mut(&mut self) -> &mut [f64] {
+        debug_assert!(self.len > 0);
+        let j = self.len - 1;
         let start = j * self.n;
-        let ptr = self.data.as_ptr().add(start) as *mut f64;
-        std::slice::from_raw_parts_mut(ptr, self.n)
+        &mut self.data[start..start + self.n]
     }
 
     /// Append `src` as the next column, incrementing `len`.
@@ -215,8 +208,7 @@ fn arnoldi_cycle<A: Operator + ?Sized, M: Operator + ?Sized>(
         {
             let v_j = state.v_basis.col(j);
             state.z_basis.push_zeroed();
-            // SAFETY: `j` was just pushed and no other reference to column `j` exists.
-            let z_j = unsafe { state.z_basis.col_mut(j) };
+            let z_j = state.z_basis.last_col_mut();
             preconditioner.try_apply(v_j, z_j)?;
         }
 
@@ -280,6 +272,52 @@ fn arnoldi_cycle<A: Operator + ?Sized, M: Operator + ?Sized>(
 }
 
 // ---------------------------------------------------------------------------
+// GMRES helpers
+// ---------------------------------------------------------------------------
+
+/// Compute the residual `r = b - A * x` and return its Euclidean norm.
+fn compute_residual<A: Operator + ?Sized>(
+    operator: &A,
+    x: &[f64],
+    b: &[f64],
+    r: &mut [f64],
+) -> Result<f64, SolveError> {
+    operator.try_apply(x, r)?;
+    for (ri, &bi) in r.iter_mut().zip(b) {
+        *ri = bi - *ri;
+    }
+    Ok(vec_norm(r))
+}
+
+/// Clear Krylov storage, set g[0] = beta, normalise the residual into v₀,
+/// and push it onto the V basis.
+#[allow(clippy::too_many_arguments)]
+fn init_restart_cycle(
+    r: &mut [f64],
+    beta: f64,
+    v_basis: &mut ColumnBasis,
+    z_basis: &mut ColumnBasis,
+    h: &mut HessenbergMatrix,
+    cs: &mut [f64],
+    sn: &mut [f64],
+    g: &mut [f64],
+) {
+    v_basis.clear();
+    z_basis.clear();
+    h.clear();
+    cs.fill(0.0);
+    sn.fill(0.0);
+    g.fill(0.0);
+    g[0] = beta;
+
+    let inv_beta = 1.0 / beta;
+    for val in r.iter_mut() {
+        *val *= inv_beta;
+    }
+    v_basis.push_from(r);
+}
+
+// ---------------------------------------------------------------------------
 // Main entry point
 // ---------------------------------------------------------------------------
 
@@ -302,7 +340,7 @@ pub fn gmres_solve<A: Operator + ?Sized, M: Operator + ?Sized>(
     debug_assert_eq!(b.len(), n);
 
     let b_norm = vec_norm(b);
-    if b_norm == 0.0 {
+    if b_norm < f64::EPSILON {
         return Ok(GmresResult {
             x: vec![0.0; n],
             converged: true,
@@ -330,12 +368,7 @@ pub fn gmres_solve<A: Operator + ?Sized, M: Operator + ?Sized>(
     let mut g = vec![0.0; m + 1];
 
     loop {
-        // r = b - A x
-        operator.try_apply(&x, &mut r)?;
-        for (ri, &bi) in r.iter_mut().zip(b) {
-            *ri = bi - *ri;
-        }
-        let beta = vec_norm(&r);
+        let beta = compute_residual(operator, &x, b, &mut r)?;
 
         if beta <= abs_tol {
             return Ok(GmresResult {
@@ -355,21 +388,16 @@ pub fn gmres_solve<A: Operator + ?Sized, M: Operator + ?Sized>(
             });
         }
 
-        // Reset storage for this restart cycle
-        v_basis.clear();
-        z_basis.clear();
-        h.clear();
-        cs.fill(0.0);
-        sn.fill(0.0);
-        g.fill(0.0);
-        g[0] = beta;
-
-        // v_0 = r / beta
-        let inv_beta = 1.0 / beta;
-        for val in r.iter_mut() {
-            *val *= inv_beta;
-        }
-        v_basis.push_from(&r);
+        init_restart_cycle(
+            &mut r,
+            beta,
+            &mut v_basis,
+            &mut z_basis,
+            &mut h,
+            &mut cs,
+            &mut sn,
+            &mut g,
+        );
 
         let iters_this_cycle = (maxiter - total_iters).min(m);
 
@@ -414,11 +442,7 @@ pub fn gmres_solve<A: Operator + ?Sized, M: Operator + ?Sized>(
             }
             ArnoldiOutcome::Breakdown => {
                 // Lucky breakdown: recompute actual residual
-                operator.try_apply(&x, &mut r)?;
-                for (ri, &bi) in r.iter_mut().zip(b) {
-                    *ri = bi - *ri;
-                }
-                let res = vec_norm(&r);
+                let res = compute_residual(operator, &x, b, &mut r)?;
                 return Ok(GmresResult {
                     x,
                     converged: res <= abs_tol,
