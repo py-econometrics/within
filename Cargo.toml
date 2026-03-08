@@ -7,7 +7,7 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
-approx-chol = { path = "../approx-chol/crates/approx-chol", features = ["serde"] }
+approx-chol = { git = "https://github.com/aai-institute/approx-chol.git", features = ["serde"] }
 
 [profile.release]
 opt-level = 3
