@@ -1,4 +1,7 @@
+use std::error::Error;
+
 use ndarray::Array2;
+use schwarz_precond::{ApplyError, PreconditionerBuildError, SolveError};
 use within::observation::{FactorMajorStore, ObservationWeights};
 use within::{solve, LocalSolverConfig, Preconditioner, SolverParams, WeightedDesign, WithinError};
 
@@ -49,4 +52,157 @@ fn test_empty_categories_via_solve() {
     let precond = Preconditioner::Additive(LocalSolverConfig::solver_default());
     let result = solve(cats.view(), &y, None, &params, Some(&precond));
     assert!(result.is_err());
+}
+
+// ---------------------------------------------------------------------------
+// Display tests for all WithinError variants
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_within_error_display_empty_observations() {
+    let e = WithinError::EmptyObservations;
+    assert_eq!(e.to_string(), "no observations provided");
+}
+
+#[test]
+fn test_within_error_display_observation_count_mismatch() {
+    let e = WithinError::ObservationCountMismatch {
+        factor: 1,
+        expected: 10,
+        got: 5,
+    };
+    let s = e.to_string();
+    assert!(s.contains("factor 1"));
+    assert!(s.contains("5"));
+    assert!(s.contains("10"));
+}
+
+#[test]
+fn test_within_error_display_weight_count_mismatch() {
+    let e = WithinError::WeightCountMismatch {
+        expected: 10,
+        got: 5,
+    };
+    let s = e.to_string();
+    assert!(s.contains("5"));
+    assert!(s.contains("10"));
+}
+
+#[test]
+fn test_within_error_display_overflow() {
+    let e = WithinError::Overflow("test overflow".to_string());
+    assert!(e.to_string().contains("test overflow"));
+}
+
+#[test]
+fn test_within_error_display_singular_diagonal() {
+    let e = WithinError::SingularDiagonal {
+        block: "test_block",
+        index: 42,
+    };
+    let s = e.to_string();
+    assert!(s.contains("test_block"));
+    assert!(s.contains("42"));
+}
+
+#[test]
+fn test_within_error_display_local_solver_build() {
+    let e = WithinError::LocalSolverBuild("factorization failed".to_string());
+    assert!(e.to_string().contains("factorization failed"));
+}
+
+#[test]
+fn test_within_error_display_preconditioner_build() {
+    let inner = PreconditionerBuildError::LocalDofCountMismatch {
+        subdomain: 0,
+        index_count: 5,
+        solver_n_local: 3,
+    };
+    let e = WithinError::PreconditionerBuild(inner);
+    let s = e.to_string();
+    assert!(s.contains("5"));
+    assert!(s.contains("3"));
+}
+
+#[test]
+fn test_within_error_display_iterative_solve() {
+    let inner = SolveError::Apply(ApplyError::Synchronization { context: "test" });
+    let e = WithinError::IterativeSolve(inner);
+    assert!(e.to_string().contains("test"));
+}
+
+// ---------------------------------------------------------------------------
+// Error::source() tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_within_error_source_none_variants() {
+    let variants: Vec<WithinError> = vec![
+        WithinError::EmptyObservations,
+        WithinError::ObservationCountMismatch {
+            factor: 0,
+            expected: 1,
+            got: 2,
+        },
+        WithinError::WeightCountMismatch {
+            expected: 1,
+            got: 2,
+        },
+        WithinError::Overflow("x".to_string()),
+        WithinError::SingularDiagonal {
+            block: "b",
+            index: 0,
+        },
+        WithinError::LocalSolverBuild("x".to_string()),
+    ];
+    for e in &variants {
+        assert!(e.source().is_none(), "expected None source for {:?}", e);
+    }
+}
+
+#[test]
+fn test_within_error_source_preconditioner_build() {
+    let inner = PreconditionerBuildError::LocalDofCountMismatch {
+        subdomain: 0,
+        index_count: 5,
+        solver_n_local: 3,
+    };
+    let e = WithinError::PreconditionerBuild(inner);
+    assert!(e.source().is_some());
+}
+
+#[test]
+fn test_within_error_source_iterative_solve() {
+    let inner = SolveError::Apply(ApplyError::Synchronization { context: "test" });
+    let e = WithinError::IterativeSolve(inner);
+    assert!(e.source().is_some());
+}
+
+// ---------------------------------------------------------------------------
+// From conversions
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_within_error_from_preconditioner_build_error() {
+    let inner = PreconditionerBuildError::GlobalIndexOutOfBounds {
+        subdomain: 0,
+        local_index: 0,
+        global_index: 100,
+        n_dofs: 50,
+    };
+    let e: WithinError = inner.into();
+    match e {
+        WithinError::PreconditionerBuild(_) => {}
+        other => panic!("expected PreconditionerBuild, got: {:?}", other),
+    }
+}
+
+#[test]
+fn test_within_error_from_solve_error() {
+    let inner = SolveError::Apply(ApplyError::Synchronization { context: "test" });
+    let e: WithinError = inner.into();
+    match e {
+        WithinError::IterativeSolve(_) => {}
+        other => panic!("expected IterativeSolve, got: {:?}", other),
+    }
 }
