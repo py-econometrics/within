@@ -92,6 +92,11 @@ def run_fixest_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
                 print(f"    WARNING: {cfg.label} failed: {e}")
 
     print_table(all_results)
+    print_table(
+        all_results,
+        columns=["config", "setup_time", "solve_time", "iterations", "ms_per_iter"],
+        title="Per-iteration cost",
+    )
     print("\n")
     print_pivot(all_results)
     return all_results

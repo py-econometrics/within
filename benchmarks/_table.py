@@ -34,6 +34,13 @@ def print_table(
         "solve_time": ("Solve(s)", 9, lambda r: f"{r.solve_time:.4f}"),
         "total_time": ("Total(s)", 9, lambda r: f"{r.setup_time + r.solve_time:.4f}"),
         "iterations": ("Iters", 6, lambda r: r.iterations),
+        "ms_per_iter": (
+            "ms/iter",
+            8,
+            lambda r: f"{r.solve_time / r.iterations * 1e3:.2f}"
+            if r.iterations > 0
+            else "--",
+        ),
         "final_residual": ("Residual", 12, lambda r: f"{r.final_residual:.2e}"),
         "converged": ("Conv", 5, lambda r: "OK" if r.converged else "FAIL"),
         "passed": (
