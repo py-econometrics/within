@@ -544,3 +544,166 @@ impl LocalSolver for BlockElimSolver {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use schwarz_precond::SparseMatrix;
+
+    #[test]
+    fn test_subtract_mean_empty() {
+        let mut data = vec![1.0, 2.0, 3.0];
+        subtract_mean(&mut data, 0);
+        // Should not modify anything
+        assert_eq!(data, vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn test_subtract_mean_basic() {
+        let mut data = vec![2.0, 4.0, 6.0];
+        subtract_mean(&mut data, 3);
+        // mean = 4.0
+        assert!((data[0] - (-2.0)).abs() < 1e-14);
+        assert!((data[1] - 0.0).abs() < 1e-14);
+        assert!((data[2] - 2.0).abs() < 1e-14);
+    }
+
+    #[test]
+    fn test_subtract_mean_partial() {
+        let mut data = vec![3.0, 5.0, 100.0];
+        subtract_mean(&mut data, 2);
+        // mean of first 2 = 4.0
+        assert!((data[0] - (-1.0)).abs() < 1e-14);
+        assert!((data[1] - 1.0).abs() < 1e-14);
+        assert_eq!(data[2], 100.0); // unchanged
+    }
+
+    #[test]
+    fn test_local_solve_strategy_from_flags_laplacian() {
+        let s = LocalSolveStrategy::from_flags(None, false);
+        assert!(matches!(s, LocalSolveStrategy::Laplacian));
+    }
+
+    #[test]
+    fn test_local_solve_strategy_from_flags_sddm() {
+        let s = LocalSolveStrategy::from_flags(None, true);
+        assert!(matches!(s, LocalSolveStrategy::Sddm));
+    }
+
+    #[test]
+    fn test_local_solve_strategy_from_flags_laplacian_gramian() {
+        let s = LocalSolveStrategy::from_flags(Some(5), false);
+        match s {
+            LocalSolveStrategy::LaplacianGramian { first_block_size } => {
+                assert_eq!(first_block_size, 5);
+            }
+            other => panic!("expected LaplacianGramian, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_local_solve_strategy_from_flags_gramian_augmented() {
+        let s = LocalSolveStrategy::from_flags(Some(3), true);
+        match s {
+            LocalSolveStrategy::GramianAugmented { first_block_size } => {
+                assert_eq!(first_block_size, 3);
+            }
+            other => panic!("expected GramianAugmented, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_anchored_dense_cholesky_n0() {
+        // n <= 1: should return Some with empty l_row_major
+        let m = SparseMatrix::new(vec![0u32], Vec::new(), Vec::new(), 0);
+        let result = AnchoredDenseCholesky::try_from_sparse_laplacian(&m);
+        assert!(result.is_some());
+        let chol = result.unwrap();
+        assert_eq!(chol.n(), 0);
+    }
+
+    #[test]
+    fn test_anchored_dense_cholesky_n1() {
+        // 1x1 matrix: n=1 -> n<=1 early return
+        let m = SparseMatrix::new(vec![0u32, 1], vec![0u32], vec![2.0], 1);
+        let result = AnchoredDenseCholesky::try_from_sparse_laplacian(&m);
+        assert!(result.is_some());
+        let chol = result.unwrap();
+        assert_eq!(chol.n(), 1);
+    }
+
+    #[test]
+    fn test_anchored_dense_cholesky_solve_n0() {
+        let chol = AnchoredDenseCholesky {
+            l_row_major: Vec::new(),
+            n: 0,
+        };
+        let mut x: Vec<f64> = Vec::new();
+        chol.solve_in_place(&mut x); // should be no-op
+    }
+
+    #[test]
+    fn test_anchored_dense_cholesky_solve_n1() {
+        let chol = AnchoredDenseCholesky {
+            l_row_major: Vec::new(),
+            n: 1,
+        };
+        let mut x = vec![42.0];
+        chol.solve_in_place(&mut x);
+        assert_eq!(x[0], 0.0); // n==1 -> x[0] = 0
+    }
+
+    #[test]
+    fn test_anchored_dense_cholesky_solve_3x3_laplacian() {
+        // 3-node path Laplacian: [[2,-1,0],[-1,2,-1],[0,-1,1]]
+        // Its 2x2 anchored minor = [[2,-1],[-1,2]] -> L = [[sqrt(2), 0], [-1/sqrt(2), sqrt(3/2)]]
+        let m = SparseMatrix::new(
+            vec![0u32, 2, 5, 7],
+            vec![0u32, 1, 0, 1, 2, 1, 2],
+            vec![2.0, -1.0, -1.0, 2.0, -1.0, -1.0, 1.0],
+            3,
+        );
+        let chol = AnchoredDenseCholesky::try_from_sparse_laplacian(&m).expect("should factor");
+        assert_eq!(chol.n(), 3);
+
+        // Solve L L^T x = [1, 0, ?] on anchored minor
+        let mut x = vec![1.0, 0.0, 0.0];
+        chol.solve_in_place(&mut x);
+        // x[2] should be 0 (anchored)
+        assert_eq!(x[2], 0.0);
+        // Verify: anchored minor * x[0..2] approx [1, 0]
+        let check0 = 2.0 * x[0] - 1.0 * x[1];
+        let check1 = -1.0 * x[0] + 2.0 * x[1];
+        assert!((check0 - 1.0).abs() < 1e-10, "check0 = {}", check0);
+        assert!((check1 - 0.0).abs() < 1e-10, "check1 = {}", check1);
+    }
+
+    #[test]
+    fn test_try_from_dense_anchored_minor_wrong_length() {
+        // n=3 -> m=2, expects 4 elements, give 3
+        let result = AnchoredDenseCholesky::try_from_dense_anchored_minor(vec![1.0, 2.0, 3.0], 3);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_try_from_dense_anchored_minor_n1() {
+        // n=1 -> m=0, should return Some with empty
+        let result = AnchoredDenseCholesky::try_from_dense_anchored_minor(Vec::new(), 1);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().n(), 1);
+    }
+
+    #[test]
+    fn test_factor_dense_minor_singular() {
+        // Singular 2x2 matrix (both rows identical)
+        let result = AnchoredDenseCholesky::factor_dense_minor(vec![1.0, 1.0, 1.0, 1.0], 3);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_negate_block() {
+        let mut data = vec![1.0, -2.0, 3.0, -4.0];
+        negate_block(&mut data, 2);
+        assert_eq!(data, vec![1.0, -2.0, -3.0, 4.0]);
+    }
+}

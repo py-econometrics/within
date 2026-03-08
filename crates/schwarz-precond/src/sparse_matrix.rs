@@ -300,4 +300,69 @@ mod tests {
         assert_eq!(sub.n, 0);
         assert_eq!(sub.indptr, vec![0]);
     }
+
+    #[test]
+    fn test_matvec_known_result() {
+        let m = make_3x3_laplacian();
+        let x = vec![1.0, 2.0, 3.0];
+        let mut y = vec![0.0; 3];
+        m.matvec(&x, &mut y);
+        // [2, -1, -1] * [1,2,3] = 2-2-3 = -3
+        // [-1, 1, 0]  * [1,2,3] = -1+2   = 1
+        // [-1, 0, 1]  * [1,2,3] = -1+3   = 2
+        assert!((y[0] - (-3.0)).abs() < 1e-14);
+        assert!((y[1] - 1.0).abs() < 1e-14);
+        assert!((y[2] - 2.0).abs() < 1e-14);
+    }
+
+    #[test]
+    fn test_matvec_add() {
+        let m = make_3x3_laplacian();
+        let x = vec![1.0, 0.0, 0.0];
+        let mut y = vec![10.0, 20.0, 30.0];
+        m.matvec_add(&x, &mut y);
+        // adds first column [2, -1, -1] to y
+        assert!((y[0] - 12.0).abs() < 1e-14);
+        assert!((y[1] - 19.0).abs() < 1e-14);
+        assert!((y[2] - 29.0).abs() < 1e-14);
+    }
+
+    #[test]
+    fn test_diagonal_missing_entry() {
+        // Matrix with no diagonal for any row
+        let m = SparseMatrix::new(vec![0, 1, 2, 3], vec![1, 0, 0], vec![5.0, 3.0, 7.0], 3);
+        let d = m.diagonal();
+        assert_eq!(d[0], 0.0); // no diagonal
+        assert_eq!(d[1], 0.0); // no diagonal
+        assert_eq!(d[2], 0.0); // no diagonal
+    }
+
+    #[test]
+    fn test_nnz() {
+        let m = make_3x3_laplacian();
+        assert_eq!(m.nnz(), 7);
+    }
+
+    #[test]
+    fn test_extract_submatrix_hashmap_path() {
+        // Create a matrix where max_idx+1 > 4*m to trigger the HashMap path
+        let n = 100;
+        let mut indptr = vec![0u32; n + 1];
+        let mut indices = Vec::new();
+        let mut data = Vec::new();
+        // Only put diagonal entries
+        for i in 0..n {
+            indices.push(i as u32);
+            data.push((i + 1) as f64);
+            indptr[i + 1] = (i + 1) as u32;
+        }
+        let m = SparseMatrix::new(indptr, indices, data, n);
+        // Extract subset [0, 50, 99] — max_idx=99, m=3, 100 > 4*3=12 → HashMap
+        let sub = m.extract_submatrix(&[0, 50, 99]);
+        assert_eq!(sub.n(), 3);
+        let d = sub.diagonal();
+        assert!((d[0] - 1.0).abs() < 1e-14);
+        assert!((d[1] - 51.0).abs() < 1e-14);
+        assert!((d[2] - 100.0).abs() < 1e-14);
+    }
 }
