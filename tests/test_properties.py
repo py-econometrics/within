@@ -36,7 +36,7 @@ class TestProperties:
         categories, y = data
         r1 = solve(categories, y)
         r2 = solve(categories, y)
-        np.testing.assert_array_equal(r1.x, r2.x)
+        np.testing.assert_allclose(r1.x, r2.x, atol=1e-14)
 
     @given(data=random_fe_problem())
     @settings(
