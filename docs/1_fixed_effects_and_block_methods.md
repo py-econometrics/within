@@ -98,22 +98,24 @@ The Gramian has $Q = 3$ diagonal blocks and $\binom{3}{2} = 3$ cross-tabulation 
 
 $$
 G = \begin{pmatrix}
-D_W & C_{WF} & C_{WY} \\
-C_{WF}^\top & D_F & C_{FY} \\
-C_{WY}^\top & C_{FY}^\top & D_Y
+{\color{royalblue}D_W} & {\color{gray}C_{WF}} & {\color{gray}C_{WY}} \\
+{\color{gray}C_{WF}^\top} & {\color{crimson}D_F} & {\color{gray}C_{FY}} \\
+{\color{gray}C_{WY}^\top} & {\color{gray}C_{FY}^\top} & {\color{forestgreen}D_Y}
 \end{pmatrix}
 = \left(\begin{array}{ccc|cc|cc}
-2 & 0 & 0 & 1 & 1 & 1 & 1 \\
-0 & 2 & 0 & 2 & 0 & 1 & 1 \\
-0 & 0 & 2 & 0 & 2 & 1 & 1 \\
+{\color{royalblue}2} & {\color{royalblue}0} & {\color{royalblue}0} & {\color{gray}1} & {\color{gray}1} & {\color{gray}1} & {\color{gray}1} \\
+{\color{royalblue}0} & {\color{royalblue}2} & {\color{royalblue}0} & {\color{gray}2} & {\color{gray}0} & {\color{gray}1} & {\color{gray}1} \\
+{\color{royalblue}0} & {\color{royalblue}0} & {\color{royalblue}2} & {\color{gray}0} & {\color{gray}2} & {\color{gray}1} & {\color{gray}1} \\
 \hline
-1 & 2 & 0 & 3 & 0 & 2 & 1 \\
-1 & 0 & 2 & 0 & 3 & 1 & 2 \\
+{\color{gray}1} & {\color{gray}2} & {\color{gray}0} & {\color{crimson}3} & {\color{crimson}0} & {\color{gray}2} & {\color{gray}1} \\
+{\color{gray}1} & {\color{gray}0} & {\color{gray}2} & {\color{crimson}0} & {\color{crimson}3} & {\color{gray}1} & {\color{gray}2} \\
 \hline
-1 & 1 & 1 & 2 & 1 & 3 & 0 \\
-1 & 1 & 1 & 1 & 2 & 0 & 3
+{\color{gray}1} & {\color{gray}1} & {\color{gray}1} & {\color{gray}2} & {\color{gray}1} & {\color{forestgreen}3} & {\color{forestgreen}0} \\
+{\color{gray}1} & {\color{gray}1} & {\color{gray}1} & {\color{gray}1} & {\color{gray}2} & {\color{forestgreen}0} & {\color{forestgreen}3}
 \end{array}\right)
 $$
+
+**Reading the blocks.** $D_W$ is $3 \times 3$ (one row/column per worker) with 2s on the diagonal because each worker appears in exactly 2 observations (e.g. W1 in obs 1, 2). Off-diagonals are zero because no observation belongs to two workers. $D_F$ is $2 \times 2$ with 3s on the diagonal because each firm appears in 3 observations (F1 in obs 1, 3, 4; F2 in obs 2, 5, 6). The cross-tabulation block $C_{WY}$ is $3 \times 2$ (workers $\times$ years); entry $[j,k]$ counts observations where worker $j$ is observed in year $k$. Here every worker appears once per year, so $C_{WY}$ is all ones.
 
 The Gramian's sparsity pattern defines an interaction graph on all $m = 7$ DOFs. Each node is a factor level, each edge a nonzero cross-tabulation entry $C_{qr}[j,k]$:
 
