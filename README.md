@@ -7,7 +7,7 @@ By the Frisch-Waugh-Lovell theorem, estimating a regression of the form *y = Xβ
 Fixed-effects problems have a natural graph structure: each observation is an edge linking the factor levels it belongs to. In a worker-firm panel, this gives a bipartite graph where edges are employment spells:
 
 <p align="center">
-  <img src="docs/bipartite.png" width="500" alt="A worker-firm panel viewed as a bipartite graph. Firms F1 and F2 are connected to workers W1–W5 by edges representing employment spells, with edge labels indicating periods of observation. W3 is a mover (edges to both firms); all others are stayers.">
+  <img src="docs/bipartite.svg" width="1000" alt="A worker-firm panel viewed as a bipartite graph. Firms F1 and F2 are connected to workers W1–W5 by edges representing employment spells, with edge labels indicating periods of observation. W3 is a mover (edges to both firms); all others are stayers.">
 </p>
 
 `within` exploits this structure using iterative solvers (preconditioned CG, right-preconditioned GMRES) with domain decomposition (Schwarz) preconditioners backed by approximate Cholesky local solvers (Correia 2016; Gao, Kyng & Spielman 2025).
@@ -25,7 +25,7 @@ pip install within
 `within`'s main estimation functions are `solve` and `solve_batch`. Below we show how to apply them to a worker-firm panel to estimate a wage regression via the Frisch-Waugh-Lovell theorem:
 
 ```python
-from within import solve, solve_batch, make_akm_panel
+from within import solve, solve_batch, make_akm_panel, CG, GMRES, Preconditioner, MultiplicativeSchwarz
 import numpy as np
 
 # Generate a synthetic employer-employee panel
