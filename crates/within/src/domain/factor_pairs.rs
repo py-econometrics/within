@@ -259,10 +259,10 @@ fn build_pairs(n_factors: usize) -> Vec<(usize, usize)> {
 
 /// Compute partition-of-unity weights for overlapping Schwarz subdomains.
 ///
-/// Additive Schwarz requires that subdomain weights form a partition of unity:
-/// at every DOF, the weights across all subdomains that touch it must sum to
-/// exactly 1.0. For overlapping subdomains the weight at each DOF is set to
-/// `1 / (number of subdomains touching that DOF)`.
+/// The two-sided additive Schwarz formula `M⁻¹ = Σ Rᵢᵀ D̃ᵢ Aᵢ⁻¹ D̃ᵢ Rᵢ`
+/// requires that the squared weights sum to identity at every DOF:
+/// `Σ Rᵢᵀ D̃ᵢ² Rᵢ = I`. For a DOF appearing in `c` subdomains, each weight
+/// is set to `1/√c`, so that `c × (1/√c)² = 1`.
 ///
 /// In the common (non-overlapping) case where every DOF belongs to exactly one
 /// subdomain, all weights are 1.0 and the compact `PartitionWeights::Uniform`
@@ -291,7 +291,7 @@ fn compute_partition_weights(domain_pairs: &mut [(Subdomain, CrossTab)], n_dofs:
                 .map(|&idx| {
                     let c = counts[idx as usize];
                     debug_assert!(c > 0);
-                    1.0 / c as f64
+                    1.0 / (c as f64).sqrt()
                 })
                 .collect();
             d.core.partition_weights = PartitionWeights::NonUniform(weights);
@@ -332,15 +332,17 @@ mod tests {
         let dm = make_test_design();
         let domain_pairs = build_local_domains(&dm);
         let n_dofs = dm.n_dofs;
-        let mut weight_sum = vec![0.0; n_dofs];
+        // Two-sided PoU: squared weights must sum to 1 at every DOF.
+        let mut weight_sq_sum = vec![0.0; n_dofs];
         for (d, _) in &domain_pairs {
             for (i, &idx) in d.core.global_indices.iter().enumerate() {
-                weight_sum[idx as usize] += d.core.partition_weights.get(i);
+                let w = d.core.partition_weights.get(i);
+                weight_sq_sum[idx as usize] += w * w;
             }
         }
-        for &ws in &weight_sum {
+        for &ws in &weight_sq_sum {
             if ws > 0.0 {
-                assert!((ws - 1.0).abs() < 1e-12, "Weight sum {ws} != 1.0");
+                assert!((ws - 1.0).abs() < 1e-12, "Weight² sum {ws} != 1.0");
             }
         }
     }
@@ -417,15 +419,17 @@ mod tests {
         let domain_pairs =
             build_local_domains_from_gramian(&gramian.matrix, &design.factors, design.n_dofs);
         let n_dofs = design.n_dofs;
-        let mut weight_sum = vec![0.0; n_dofs];
+        // Two-sided PoU: squared weights must sum to 1 at every DOF.
+        let mut weight_sq_sum = vec![0.0; n_dofs];
         for (d, _) in &domain_pairs {
             for (i, &idx) in d.core.global_indices.iter().enumerate() {
-                weight_sum[idx as usize] += d.core.partition_weights.get(i);
+                let w = d.core.partition_weights.get(i);
+                weight_sq_sum[idx as usize] += w * w;
             }
         }
-        for &ws in &weight_sum {
+        for &ws in &weight_sq_sum {
             if ws > 0.0 {
-                assert!((ws - 1.0).abs() < 1e-12, "Weight sum {ws} != 1.0");
+                assert!((ws - 1.0).abs() < 1e-12, "Weight² sum {ws} != 1.0");
             }
         }
     }
