@@ -17,11 +17,11 @@ The solver combines three algorithmic ideas in a layered architecture:
 
 ![Three-layer solver architecture](images/three_layer_architecture.svg)
 
-1. **Krylov solver** — conjugate gradient (CG) or restarted GMRES — iterates toward the solution, using the preconditioner to accelerate convergence.
+1. A **Krylov solver** - either conjugate gradient (CG) or restarted GMRES - iterates toward the solution, using the preconditioner to accelerate convergence.
 
-2. **Schwarz preconditioner** — decomposes the global system into overlapping subdomains derived from the Gramian's block structure, applies local solves independently (additive) or sequentially (multiplicative), and combines corrections using partition-of-unity weights.
+2. A **Schwarz preconditioner** decomposes the global system into overlapping subdomains derived from the Gramian's block structure, applies local solves independently (additive) or sequentially (multiplicative), and combines corrections using partition-of-unity weights.
 
-3. **Local solvers** — each subdomain system is a bipartite Gramian block that becomes a graph Laplacian after sign-flip, factored in nearly-linear time using approximate Cholesky (see [Part 3](3_local_solvers.md)).
+3. **Local solvers**. Each subdomain system is a bipartite Gramian block that becomes a graph Laplacian after a sign-flip, factored in nearly-linear time using approximate Cholesky (see [Part 3](3_local_solvers.md)).
 
 ### Why this combination
 
@@ -29,7 +29,7 @@ As discussed in [Part 1, Section 5.2](1_fixed_effects_and_block_methods.md#52-th
 
 - **Block-bipartite structure**: each factor pair $(q,r)$ induces a bipartite subgraph. Connected components of these subgraphs form natural subdomains with limited overlap.
 
-- **Laplacian connection**: after a sign-flip transformation (Section 2), each bipartite block becomes a graph Laplacian. This unlocks nearly-linear-time *approximate* solvers — exact factorization would be too expensive for large subdomains, but the approximate Cholesky factorization ([Part 3](3_local_solvers.md)) produces factors that are accurate enough to make the Krylov solver converge in very few iterations.
+- **Laplacian connection**: after a sign-flip transformation (Section 2), each bipartite block becomes a graph Laplacian. This unlocks nearly-linear-time *approximate* solvers - exact factorization would be too expensive for large subdomains, but the approximate Cholesky factorization ([Part 3](3_local_solvers.md)) produces factors that are accurate enough to make the Krylov solver converge in very few iterations.
 
 - **Spectral acceleration**: the Krylov outer solver compensates for the approximate nature of the local solves. Even though each preconditioner application is inexact, the Krylov iteration refines the solution globally. The preconditioner clusters the eigenvalues of $M^{-1}G$, reducing the iteration count from $O(\sqrt{\kappa})$ (unpreconditioned demeaning) to a count determined by the quality of the local solves rather than the global condition number.
 
@@ -77,15 +77,15 @@ The transform is an involution: solving $L_{qr} z = b$ and flipping the sign of 
 
 The outer solver is a Krylov method that iteratively solves $G\alpha = b$ where $b = D^\top W y$. At each step, the Krylov solver computes a residual $r = b - G\alpha$, applies the preconditioner to get a correction direction $z = M^{-1}r$, and updates the solution.
 
-The key idea: instead of solving $G\alpha = b$ directly (which may take thousands of demeaning iterations), we use the Schwarz preconditioner $M^{-1}$ to "pre-digest" the residual at each step, pointing the solver toward the answer much faster.
+The key idea is that instead of solving $G\alpha = b$ directly (which may take thousands of demeaning iterations), we use the Schwarz preconditioner $M^{-1}$ to "pre-digest" the residual at each step, pointing the solver toward the answer much faster.
 
 ![Preconditioned vs unpreconditioned convergence](images/preconditioned_convergence.svg)
 
 ### 3.1 Solver selection
 
-- **CG** (conjugate gradient) is used when the preconditioner is symmetric — this is the case with additive Schwarz. CG is optimal for symmetric positive-definite systems.
+- **CG** (conjugate gradient) is used when the preconditioner is symmetric - this is the case with additive Schwarz. CG is optimal for symmetric positive-definite systems.
 
-- **GMRES** (generalized minimal residual) is used when the preconditioner is non-symmetric — this is the case with multiplicative Schwarz, where the sequential processing breaks symmetry.
+- **GMRES** (generalized minimal residual) is used when the preconditioner is non-symmetric - this is the case with multiplicative Schwarz, where the sequential processing breaks symmetry.
 
 ### 3.2 Convergence criterion
 
@@ -103,9 +103,9 @@ The solver reports the independently verified residual $\|G\alpha - b\| / \|b\|$
 
 ### 4.1 How it works
 
-The Schwarz preconditioner decomposes the global system into overlapping subdomains — one per factor pair — and applies local solves to each. The local operator on subdomain $i$ is $A_i = R_i G R_i^\top$, the principal submatrix of $G$ restricted to that subdomain's DOFs.
+The Schwarz preconditioner decomposes the global system into overlapping subdomains - one per factor pair - and applies local solves to each. The local operator on subdomain $i$ is $A_i = R_i G R_i^\top$, the principal submatrix of $G$ restricted to that subdomain's DOFs.
 
-Two variants exist — additive and multiplicative — differing in how the local corrections are combined:
+Two variants exist - additive and multiplicative - differing in how the local corrections are combined:
 
 ![Additive vs multiplicative Schwarz](images/additive_vs_multiplicative.svg)
 
@@ -115,7 +115,7 @@ When subdomains overlap (a DOF belongs to multiple subdomains), corrections must
 
 ![Partition of unity](images/partition_of_unity.svg)
 
-Each DOF $j$ that appears in $c_j$ subdomains gets weight $1/\sqrt{c_j}$ in each subdomain. The weights are applied on both the restriction and prolongation sides, so they contribute $c_j \times (1/\sqrt{c_j})^2 = 1$ — correctly partitioning the correction. In the running example, every DOF appears in exactly 2 subdomains, so every weight is $1/\sqrt{2}$.
+Each DOF $j$ that appears in $c_j$ subdomains gets weight $1/\sqrt{c_j}$ in each subdomain. The weights are applied on both the restriction and prolongation sides, so they contribute $c_j \times (1/\sqrt{c_j})^2 = 1$ - correctly partitioning the correction. In the running example, every DOF appears in exactly 2 subdomains, so every weight is $1/\sqrt{2}$.
 
 ### 4.3 Additive Schwarz
 
@@ -200,4 +200,4 @@ Input: WeightedDesign, preconditioner M⁻¹, right-hand side y
 
 **Xu, J.** (1992). *Iterative Methods by Space Decomposition and Subspace Correction*. SIAM Review, 34(4), 581–613. Provides the abstract space decomposition framework for additive and multiplicative Schwarz methods.
 
-**Toselli, A. & Widlund, O. B.** (2005). *Domain Decomposition Methods — Algorithms and Theory*. Springer. Comprehensive reference for the theory and convergence analysis of Schwarz domain decomposition methods.
+**Toselli, A. & Widlund, O. B.** (2005). *Domain Decomposition Methods - Algorithms and Theory*. Springer. Comprehensive reference for the theory and convergence analysis of Schwarz domain decomposition methods.
