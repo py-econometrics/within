@@ -4,7 +4,7 @@
 
 By the Frisch-Waugh-Lovell theorem, estimating a regression of the form *y = Xβ + Dα + ε* reduces to a sequence of least-squares projections, one for y and one for each column of X, followed by a cheap regression fit on the resulting residuals. The projection step of solving the normal equations *D'Dx = D'z* is the computational bottleneck, which is the problem `within` is designed to solve.
 
-`within`'s solvers are tailored to the structure of fixed effects problems, which can be represented as a graph (as first noted by Correia, 2016), and make use of innovations in solvers for graph-structured linear systems (Gao et al, 2025). Concretely, `within` uses iterative methods (preconditioned CG, right-preconditioned GMRES) with domain decomposition (Schwarz) preconditioners, backed by approximate Cholesky local solvers.
+`within`'s solvers are tailored to the structure of fixed effects problems, which can be represented as a graph (as noted by Correia, 2016), and make use of innovations in solvers for graph-structured linear systems (Gao et al, 2025). Concretely, `within` uses iterative methods (preconditioned CG, right-preconditioned GMRES) with domain decomposition (Schwarz) preconditioners, backed by approximate Cholesky local solvers.
 
 Each observation links the factor levels it belongs to, forming a graph. Suppose we had a worker-firm panel at hand that maps workers to their employer. We get a bipartite graph where edges are employment spells of workers in firms:
 
