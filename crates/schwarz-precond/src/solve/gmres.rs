@@ -1,5 +1,75 @@
-use super::util::{dot, vec_norm, ColumnBasis};
+use super::{dot, vec_norm};
 use crate::{Operator, SolveError};
+
+// ---------------------------------------------------------------------------
+// Column basis storage
+// ---------------------------------------------------------------------------
+
+/// Column-major flat storage for basis vectors.
+///
+/// Stores up to `capacity` vectors of dimension `n` in a single contiguous
+/// allocation. Avoids per-restart/per-iteration heap allocation.
+struct ColumnBasis {
+    data: Vec<f64>,
+    /// Dimension of each vector.
+    n: usize,
+    len: usize,
+}
+
+impl ColumnBasis {
+    /// Create with room for `capacity` vectors of length `n`.
+    fn new(capacity: usize, n: usize) -> Self {
+        Self {
+            data: vec![0.0; capacity * n],
+            n,
+            len: 0,
+        }
+    }
+
+    /// Return column `j` as a shared slice.
+    #[inline]
+    fn col(&self, j: usize) -> &[f64] {
+        debug_assert!(j < self.len);
+        let start = j * self.n;
+        &self.data[start..start + self.n]
+    }
+
+    /// Return the last column as a mutable slice.
+    ///
+    /// This is the safe alternative to `col_mut` for the common pattern of
+    /// accessing the column that was just pushed via `push_zeroed` or `push_from`.
+    #[inline]
+    fn last_col_mut(&mut self) -> &mut [f64] {
+        debug_assert!(self.len > 0);
+        let j = self.len - 1;
+        let start = j * self.n;
+        &mut self.data[start..start + self.n]
+    }
+
+    /// Append `src` as the next column, incrementing `len`.
+    fn push_from(&mut self, src: &[f64]) {
+        debug_assert_eq!(src.len(), self.n);
+        let start = self.len * self.n;
+        self.data[start..start + self.n].copy_from_slice(src);
+        self.len += 1;
+    }
+
+    /// Append a zero-filled column, incrementing `len`.
+    fn push_zeroed(&mut self) {
+        let start = self.len * self.n;
+        self.data[start..start + self.n].fill(0.0);
+        self.len += 1;
+    }
+
+    /// Reset the number of stored vectors to zero (does not deallocate).
+    fn clear(&mut self) {
+        self.len = 0;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GMRES result
+// ---------------------------------------------------------------------------
 
 /// Result of a GMRES solve.
 #[must_use]
@@ -77,12 +147,51 @@ enum ArnoldiOutcome {
     RestartNeeded,
 }
 
+/// Modified Gram-Schmidt orthogonalisation of `w` against columns `0..=j` of `v_basis`.
+///
+/// Updates Hessenberg column `j` with the projection coefficients and sets
+/// `h[j+1, j]` to the resulting norm of `w`.
+///
+/// Returns `(h_jp1_j, local_h_max)` where `local_h_max` is the maximum
+/// absolute projection coefficient seen during the loop.
+fn modified_gram_schmidt(
+    w: &mut [f64],
+    v_basis: &ColumnBasis,
+    h: &mut HessenbergMatrix,
+    j: usize,
+) -> (f64, f64) {
+    let mut local_h_max: f64 = 0.0;
+    for i in 0..=j {
+        let hij = dot(w, v_basis.col(i));
+        h.set(i, j, hij);
+        local_h_max = local_h_max.max(hij.abs());
+        let v_i = v_basis.col(i);
+        for (wk, &vi) in w.iter_mut().zip(v_i) {
+            *wk -= hij * vi;
+        }
+    }
+    let h_jp1_j = vec_norm(w);
+    h.set(j + 1, j, h_jp1_j);
+    (h_jp1_j, local_h_max)
+}
+
+/// Apply previously computed Givens rotations `0..j` to Hessenberg column `j`.
+fn apply_previous_givens(h: &mut HessenbergMatrix, cs: &[f64], sn: &[f64], j: usize) {
+    for i in 0..j {
+        let h_ij = h.get(i, j);
+        let h_i1j = h.get(i + 1, j);
+        let temp = cs[i] * h_ij + sn[i] * h_i1j;
+        h.set(i + 1, j, -sn[i] * h_ij + cs[i] * h_i1j);
+        h.set(i, j, temp);
+    }
+}
+
 /// Run one Arnoldi cycle (inner GMRES loop).
 ///
 /// Returns `(outcome, j)` where `j` is the number of Arnoldi steps completed
 /// in this cycle.  The caller is responsible for solving the upper-triangular
 /// system and updating `x` once, regardless of the outcome.
-fn arnoldi_cycle<A: Operator, M: Operator>(
+fn arnoldi_cycle<A: Operator + ?Sized, M: Operator + ?Sized>(
     operator: &A,
     preconditioner: &M,
     state: &mut ArnoldiState,
@@ -91,15 +200,15 @@ fn arnoldi_cycle<A: Operator, M: Operator>(
     total_iters: &mut usize,
     maxiter: usize,
 ) -> Result<(ArnoldiOutcome, usize), SolveError> {
-    let _n = operator.ncols();
     let mut j = 0;
+    let mut h_norms_max: f64 = 0.0;
 
     while j < iters_this_cycle {
         // z_j = M^{-1} v_j
         {
             let v_j = state.v_basis.col(j);
             state.z_basis.push_zeroed();
-            let z_j = state.z_basis.col_mut(j);
+            let z_j = state.z_basis.last_col_mut();
             preconditioner.try_apply(v_j, z_j)?;
         }
 
@@ -110,27 +219,11 @@ fn arnoldi_cycle<A: Operator, M: Operator>(
         }
 
         // Modified Gram-Schmidt orthogonalisation
-        for i in 0..=j {
-            let hij = dot(state.w, state.v_basis.col(i));
-            state.h.set(i, j, hij);
-            let v_i = state.v_basis.col(i);
-            for (wk, &vi) in state.w.iter_mut().zip(v_i) {
-                *wk -= hij * vi;
-            }
-        }
-        let h_jp1_j = vec_norm(state.w);
-        state.h.set(j + 1, j, h_jp1_j);
+        let (h_jp1_j, local_h_max) = modified_gram_schmidt(state.w, state.v_basis, state.h, j);
+        h_norms_max = h_norms_max.max(local_h_max).max(h_jp1_j);
 
         // Apply previous Givens rotations to the new column
-        for i in 0..j {
-            let h_ij = state.h.get(i, j);
-            let h_i1j = state.h.get(i + 1, j);
-            let temp = state.cs[i] * h_ij + state.sn[i] * h_i1j;
-            state
-                .h
-                .set(i + 1, j, -state.sn[i] * h_ij + state.cs[i] * h_i1j);
-            state.h.set(i, j, temp);
-        }
+        apply_previous_givens(state.h, state.cs, state.sn, j);
 
         // Compute new Givens rotation for row (j, j+1)
         let (c, s) = givens_rotation(state.h.get(j, j), state.h.get(j + 1, j));
@@ -162,7 +255,7 @@ fn arnoldi_cycle<A: Operator, M: Operator>(
         }
 
         // Extend basis if not at last iteration
-        if h_jp1_j > 1e-300 {
+        if h_jp1_j > 1e-14 * h_norms_max {
             // Normalise w into next basis vector
             let inv = 1.0 / h_jp1_j;
             for val in state.w.iter_mut() {
@@ -179,6 +272,52 @@ fn arnoldi_cycle<A: Operator, M: Operator>(
 }
 
 // ---------------------------------------------------------------------------
+// GMRES helpers
+// ---------------------------------------------------------------------------
+
+/// Compute the residual `r = b - A * x` and return its Euclidean norm.
+fn compute_residual<A: Operator + ?Sized>(
+    operator: &A,
+    x: &[f64],
+    b: &[f64],
+    r: &mut [f64],
+) -> Result<f64, SolveError> {
+    operator.try_apply(x, r)?;
+    for (ri, &bi) in r.iter_mut().zip(b) {
+        *ri = bi - *ri;
+    }
+    Ok(vec_norm(r))
+}
+
+/// Clear Krylov storage, set g[0] = beta, normalise the residual into v₀,
+/// and push it onto the V basis.
+#[allow(clippy::too_many_arguments)]
+fn init_restart_cycle(
+    r: &mut [f64],
+    beta: f64,
+    v_basis: &mut ColumnBasis,
+    z_basis: &mut ColumnBasis,
+    h: &mut HessenbergMatrix,
+    cs: &mut [f64],
+    sn: &mut [f64],
+    g: &mut [f64],
+) {
+    v_basis.clear();
+    z_basis.clear();
+    h.clear();
+    cs.fill(0.0);
+    sn.fill(0.0);
+    g.fill(0.0);
+    g[0] = beta;
+
+    let inv_beta = 1.0 / beta;
+    for val in r.iter_mut() {
+        *val *= inv_beta;
+    }
+    v_basis.push_from(r);
+}
+
+// ---------------------------------------------------------------------------
 // Main entry point
 // ---------------------------------------------------------------------------
 
@@ -189,7 +328,7 @@ fn arnoldi_cycle<A: Operator, M: Operator>(
 /// and Givens rotations to solve the Hessenberg least-squares problem.
 ///
 /// `restart`: Krylov subspace dimension before restart (m in GMRES(m)).
-pub fn gmres_solve<A: Operator, M: Operator>(
+pub fn gmres_solve<A: Operator + ?Sized, M: Operator + ?Sized>(
     operator: &A,
     preconditioner: &M,
     b: &[f64],
@@ -201,7 +340,7 @@ pub fn gmres_solve<A: Operator, M: Operator>(
     debug_assert_eq!(b.len(), n);
 
     let b_norm = vec_norm(b);
-    if b_norm == 0.0 {
+    if b_norm < f64::EPSILON {
         return Ok(GmresResult {
             x: vec![0.0; n],
             converged: true,
@@ -229,12 +368,7 @@ pub fn gmres_solve<A: Operator, M: Operator>(
     let mut g = vec![0.0; m + 1];
 
     loop {
-        // r = b - A x
-        operator.try_apply(&x, &mut r)?;
-        for (ri, &bi) in r.iter_mut().zip(b) {
-            *ri = bi - *ri;
-        }
-        let beta = vec_norm(&r);
+        let beta = compute_residual(operator, &x, b, &mut r)?;
 
         if beta <= abs_tol {
             return Ok(GmresResult {
@@ -254,21 +388,16 @@ pub fn gmres_solve<A: Operator, M: Operator>(
             });
         }
 
-        // Reset storage for this restart cycle
-        v_basis.clear();
-        z_basis.clear();
-        h.clear();
-        cs.fill(0.0);
-        sn.fill(0.0);
-        g.fill(0.0);
-        g[0] = beta;
-
-        // v_0 = r / beta
-        let inv_beta = 1.0 / beta;
-        for val in r.iter_mut() {
-            *val *= inv_beta;
-        }
-        v_basis.push_from(&r);
+        init_restart_cycle(
+            &mut r,
+            beta,
+            &mut v_basis,
+            &mut z_basis,
+            &mut h,
+            &mut cs,
+            &mut sn,
+            &mut g,
+        );
 
         let iters_this_cycle = (maxiter - total_iters).min(m);
 
@@ -313,11 +442,7 @@ pub fn gmres_solve<A: Operator, M: Operator>(
             }
             ArnoldiOutcome::Breakdown => {
                 // Lucky breakdown: recompute actual residual
-                operator.try_apply(&x, &mut r)?;
-                for (ri, &bi) in r.iter_mut().zip(b) {
-                    *ri = bi - *ri;
-                }
-                let res = vec_norm(&r);
+                let res = compute_residual(operator, &x, b, &mut r)?;
                 return Ok(GmresResult {
                     x,
                     converged: res <= abs_tol,
@@ -332,6 +457,27 @@ pub fn gmres_solve<A: Operator, M: Operator>(
     }
 }
 
+/// Right-preconditioned GMRES(m) with optional preconditioner.
+///
+/// Dispatches to unpreconditioned GMRES (identity preconditioner) when
+/// `preconditioner` is `None`, or right-preconditioned GMRES when `Some(m)`.
+pub fn pgmres<A: Operator + ?Sized, M: Operator + ?Sized>(
+    operator: &A,
+    b: &[f64],
+    preconditioner: Option<&M>,
+    tol: f64,
+    maxiter: usize,
+    restart: usize,
+) -> Result<GmresResult, SolveError> {
+    match preconditioner {
+        None => {
+            let id = crate::IdentityOperator::new(operator.ncols());
+            gmres_solve(operator, &id, b, tol, maxiter, restart)
+        }
+        Some(m) => gmres_solve(operator, m, b, tol, maxiter, restart),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Helper functions
 // ---------------------------------------------------------------------------
@@ -339,20 +485,17 @@ pub fn gmres_solve<A: Operator, M: Operator>(
 /// Compute Givens rotation coefficients (c, s) such that
 /// [c  s] [a]   [r]
 /// [-s c] [b] = [0]
+///
+/// Uses `f64::hypot` for numerically stable computation of
+/// `r = sqrt(a² + b²)`, avoiding overflow/underflow for extreme ratios.
 #[inline]
 fn givens_rotation(a: f64, b: f64) -> (f64, f64) {
-    if b == 0.0 {
+    let r = f64::hypot(a, b);
+    if r == 0.0 {
+        // Identity rotation
         (1.0, 0.0)
-    } else if a == 0.0 {
-        (0.0, 1.0)
-    } else if a.abs() > b.abs() {
-        let t = b / a;
-        let c = 1.0 / (1.0 + t * t).sqrt();
-        (c, c * t)
     } else {
-        let t = a / b;
-        let s = 1.0 / (1.0 + t * t).sqrt();
-        (s * t, s)
+        (a / r, b / r)
     }
 }
 
@@ -366,7 +509,17 @@ fn solve_upper_triangular(h: &HessenbergMatrix, g: &[f64], k: usize) -> Vec<f64>
         for (j, yj) in y.iter().enumerate().take(k).skip(i + 1) {
             sum -= h.get(i, j) * yj;
         }
-        y[i] = sum / h.get(i, i);
+        let diag = h.get(i, i);
+        if diag.abs() < 1e-14 * (1.0 + sum.abs()) {
+            // Near-singular diagonal: intentional best-effort recovery.
+            // In a preconditioned system this can occur when the Krylov
+            // subspace nearly stagnates. Setting y[i] = 0 keeps the
+            // update bounded; the GMRES outer loop will detect lack of
+            // convergence via the residual norm check.
+            y[i] = 0.0;
+        } else {
+            y[i] = sum / diag;
+        }
     }
     y
 }

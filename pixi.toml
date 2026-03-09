@@ -3,7 +3,7 @@ channels = ["conda-forge"]
 platforms = ["linux-64", "win-64", "osx-arm64", "osx-64"]
 
 [dependencies]
-python = ">=3.11"
+python = ">=3.9"
 pixi-pycharm = ">=0.0.10,<0.0.11"
 cargo-audit = ">=0.22.1,<0.23"
 
@@ -18,11 +18,15 @@ maturin = ">=1.7"
 pytest = ">=7.0"
 pytest-cov = "*"
 cargo-llvm-cov = ">=0.8.4,<0.9"
+pre-commit = ">=4.0"
+ruff = ">=0.9"
+hypothesis = ">=6.0"
 
 [environments]
 default = { features = ["build", "dev"], solve-group = "default" }
 
 [tasks]
-test = "maturin develop --uv && pytest tests/ -v"
+test = "maturin develop --uv && pytest tests/ -v --cov=within --cov-report=term-missing"
 develop = "maturin develop --uv --release"
 coverage-rust = "cargo llvm-cov --workspace --all-features --summary-only"
+coverage = "./scripts/coverage-with-python.sh"

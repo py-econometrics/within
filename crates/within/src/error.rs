@@ -9,11 +9,8 @@ pub type WithinResult<T> = Result<T, WithinError>;
 /// Errors produced while validating inputs or building solver components.
 #[derive(Debug)]
 pub enum WithinError {
-    /// Number of factor columns differs from the number of factor level counts.
-    FactorCountMismatch {
-        category_factors: usize,
-        level_factors: usize,
-    },
+    /// No observations provided.
+    EmptyObservations,
     /// One factor column does not match the expected observation count.
     ObservationCountMismatch {
         factor: usize,
@@ -22,21 +19,10 @@ pub enum WithinError {
     },
     /// Weight vector does not match the number of observations.
     WeightCountMismatch { expected: usize, got: usize },
-    /// A factor declares zero levels.
-    EmptyLevelSet { factor: usize },
-    /// Category value is negative in i64-based constructors.
-    NegativeCategory {
-        factor: usize,
-        observation: usize,
-        level: i64,
-    },
-    /// Category level is out of range for a factor.
-    LevelOutOfRange {
-        factor: usize,
-        observation: usize,
-        level: u32,
-        n_levels: usize,
-    },
+    /// Numeric overflow during assembly.
+    Overflow(String),
+    /// A zero diagonal was encountered during block elimination.
+    SingularDiagonal { block: &'static str, index: usize },
     /// Local solver construction failed.
     LocalSolverBuild(String),
     /// Preconditioner structural validation failed.
@@ -48,13 +34,7 @@ pub enum WithinError {
 impl Display for WithinError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::FactorCountMismatch {
-                category_factors,
-                level_factors,
-            } => write!(
-                f,
-                "factor count mismatch: categories has {category_factors} factors, n_levels has {level_factors}",
-            ),
+            Self::EmptyObservations => write!(f, "no observations provided"),
             Self::ObservationCountMismatch {
                 factor,
                 expected,
@@ -66,26 +46,10 @@ impl Display for WithinError {
             Self::WeightCountMismatch { expected, got } => {
                 write!(f, "weights has length {got}, expected {expected}")
             }
-            Self::EmptyLevelSet { factor } => {
-                write!(f, "factor {factor} declares zero levels")
+            Self::Overflow(msg) => write!(f, "numeric overflow: {msg}"),
+            Self::SingularDiagonal { block, index } => {
+                write!(f, "zero diagonal in {block} block at index {index}")
             }
-            Self::NegativeCategory {
-                factor,
-                observation,
-                level,
-            } => write!(
-                f,
-                "factor {factor}, observation {observation}: negative category level {level}",
-            ),
-            Self::LevelOutOfRange {
-                factor,
-                observation,
-                level,
-                n_levels,
-            } => write!(
-                f,
-                "factor {factor}, observation {observation}: level {level} out of range for n_levels={n_levels}",
-            ),
             Self::LocalSolverBuild(msg) => write!(f, "local solver build failed: {msg}"),
             Self::PreconditionerBuild(err) => write!(f, "{err}"),
             Self::IterativeSolve(err) => write!(f, "{err}"),

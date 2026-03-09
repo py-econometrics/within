@@ -1,14 +1,20 @@
 # within
 
-`within` provides high-performance solvers for projecting out high-dimensional fixed effects from regression problems.
+`within` provides high-performance solvers for projecting out high-dimensional fixed effects in regression problems.
 
- By the Frisch-Waugh-Lovell theorem, estimating a regression of the form *y = Xβ + Dα + ε* reduces to a sequence of least-squares projections, one for y and one for each column of X, followed by a cheap regression fit on the resulting residuals. The projection step of solving the normal equations *D'Dx = D'z* is the computational bottleneck, which is the problem `within` is designed to solve.
+By the Frisch-Waugh-Lovell theorem, estimating a regression of the form *y = Xβ + Dα + ε* reduces to a sequence of least-squares projections, one for y and one for each column of X, followed by a cheap regression fit on the resulting residuals. The projection step of solving the normal equations *D'Dx = D'z* is the computational bottleneck, which is the problem `within` is designed to solve.
 
-`within`'s solvers are tailored to the structure of fixed effects problems, which can be represented as a graph (as first noted by Correia, 2016), and make use of innovations in solvers for graph-structured linear systems (Gao et al, 2025). Concretely, `within` uses iterative methods (preconditioned CG, right-preconditioned GMRES, LSMR) with domain decomposition (Schwarz) preconditioners, backed by approximate Cholesky local solvers.
+`within`'s solvers are tailored to the structure of fixed effects problems, which can be represented as a graph (as first noted by Correia, 2016), and make use of innovations in solvers for graph-structured linear systems (Gao et al, 2025). Concretely, `within` uses iterative methods (preconditioned CG, right-preconditioned GMRES) with domain decomposition (Schwarz) preconditioners, backed by approximate Cholesky local solvers.
+
+Each observation links the factor levels it belongs to, forming a graph. Suppose we had a worker-firm panel at hand that maps workers to their employer. We get a bipartite graph where edges are employment spells of workers in firms:
+
+<p align="center">
+  <img src="bipartite.png" width="500" alt="A worker-firm panel viewed as a bipartite graph. Firms F1 and F2 are connected to workers W1–W5 by edges representing employment spells, with edge labels indicating periods of observation. W3 is a mover (edges to both firms); all others are stayers.">
+</p>
 
 ## Installation
 
-Requires Python >= 3.11.
+Requires Python >= 3.9.
 
 ```bash
 pip install within
@@ -16,96 +22,82 @@ pip install within
 
 ## Python Quickstart
 
-`within`'s main user facing function is `solve`. To use it, you provide an integer 2D array of fixed effects `x` and a 1D array `y` to solve the linear system **y = D x**, where D is a large sparse matrix. For fixed effects problems, `x` is a matrix of integer encodings of fixed effects. `y` can be the dependend variable or any regression column. 
+`within`'s main estimation functions are `solve_batch` and `solve`. Below we show how to apply them to a worker-firm panel to estimate a wage regression via the Frisch-Waugh-Lovell theorem:
 
 ```python
-from within import solve, CG, LSMR
+from within import solve, solve_batch, make_akm_panel
 import numpy as np
 
-# set up a dgp
-np.random.seed(42)
-n = 100_000
+# Generate a synthetic employer-employee panel
+data = make_akm_panel(n_workers=20_000, n_firms=2_000, n_years=10)
+fe, y, X, beta_true = data["fe"], data["y"], data["X"], data["beta_true"]
 
-beta_true = np.array([1.0, -2.0, 0.5])
-X = np.random.randn(n, 3)
-fixed_effects = [np.random.randint(0, 500, size=n), np.random.randint(0, 200, size=n)]
-alpha = np.random.randn(500)[fixed_effects[0]]
-gamma = np.random.randn(200)[fixed_effects[1]]
-y = X @ beta_true + alpha + gamma + 0.1 * np.random.randn(n)
-weights = np.random.exponential(1.0, size=n)
+# Demean y and X jointly, then OLS on residuals
+result = solve_batch(fe, np.column_stack([y, X]))
+Y_dm, X_dm = result.demeaned[:, 0], result.demeaned[:, 1:]
+beta_hat = np.linalg.lstsq(X_dm, Y_dm, rcond=None)[0]
 
-# Schwarz-preconditioned CG (default)
-result = solve(fixed_effects, y, CG())
-print(f"result = {result.x[0:5]} converged={result.converged} iters={result.iterations}")   
-# result = [-0.43189902 -0.56396992  1.16898836  1.07033464  1.69765007] converged=True iters=10                          
-
-# LSMR
-result = solve(fixed_effects, y, LSMR())
-print(f"result = {result.x[0:5]} converged={result.converged} iters={result.iterations}") 
-# result = [-0.45431377 -0.58638465  1.14657361  1.04791987  1.67523531] converged=True iters=13                      
-
-# with weights
-result = solve(fixed_effects, y, weights=weights)
-print(f"result = {result.x[0:5]} converged={result.converged} iters={result.iterations}")  
-# result = [-0.26850687 -0.73454348  0.97659364  0.84229924  1.64282705] converged=True iters=10                        
-```
-
-Next, we show how to run a fixed effects regression via `within` and the *Frisch-Waugh-Lovell* theorem. 
-We project out the fixed effects from y and each column of X, and then run ordinary least squares on the demeand residuals. 
-
-```python
-# FWL step 1 and 2: solve for fixed-effect coefficients and compute residuals
-all_cols = np.column_stack([y, X])
-residuals = np.empty_like(all_cols)
-for j in range(all_cols.shape[1]):
-    result = solve(fixed_effects, all_cols[:, j])
-    fitted = result.x[fixed_effects[0]] + result.x[500:][fixed_effects[1]]
-    residuals[:, j] = all_cols[:, j] - fitted
-y_tilde, X_tilde = residuals[:, 0], residuals[:, 1:]
-
-# FWL step 3: OLS on demeaned data
-beta_hat = np.linalg.lstsq(X_tilde, y_tilde, rcond=None)[0]
 print(f"True β:      {beta_true}")
 print(f"Estimated β: {np.round(beta_hat, 4)}")
-# True β:      [ 1.  -2.   0.5]
-# Estimated β: [ 1.0003 -2.0001  0.4998]
+print(f"converged: {result.converged}  iters: {result.iterations}")
+# True β:      [0.05 0.02]
+# Estimated β: [0.05 0.02]
+# converged: [True, False, False]  iters: [10, 8, 8]
+```
+
+For a single column, use `solve`:
+
+```python
+result = solve(fe, y)
+print(f"converged={result.converged}  iters={result.iterations}  time={result.time_total:.3f}s")
 ```
 
 ### Solver methods
 
 | Class | Description |
 |---|---|
-| `CG(tol, maxiter, preconditioner)` | Preconditioned conjugate gradient. Default with Schwarz preconditioner. |
-| `LSMR(tol, maxiter, conlim)` | Handles singular Gramians natively. |
-| `GMRES(tol, maxiter, restart, preconditioner)` | Right-preconditioned GMRES. Requires a multiplicative Schwarz preconditioner. |
+| `CG(tol, maxiter, operator)` | Conjugate gradient on the normal equations. Default solver. |
+| `GMRES(tol, maxiter, restart, operator)` | Right-preconditioned GMRES on the normal equations. |
+
+```python
+# Tighter tolerance with CG
+result = solve(fe, y, config=CG(tol=1e-12, maxiter=2000))
+
+# GMRES with custom restart
+result = solve(fe, y, config=GMRES(tol=1e-10, restart=50))
+```
 
 ### Preconditioners
 
 | Class | Description |
 |---|---|
-| `OneLevelSchwarz(...)` | Additive one-level Schwarz. Use with `CG`. |
-| `MultiplicativeOneLevelSchwarz(...)` | Multiplicative one-level Schwarz. Use with `CG` or `GMRES`. |
+| `AdditiveSchwarz(...)` | Additive one-level Schwarz (default). Use with `CG` or `GMRES`. |
+| `MultiplicativeSchwarz(...)` | Multiplicative one-level Schwarz. Use with `GMRES` only. |
 
-## Rust quickstart
+```python
+# Unpreconditioned solve
+result = solve(fe, y, preconditioner=Preconditioner.Off)
 
-```bash
-cargo add within
+# Multiplicative Schwarz with GMRES
+result = solve(fe, y, config=GMRES(), preconditioner=MultiplicativeSchwarz())
 ```
 
-See [`crates/within/README.md`](crates/within/README.md) for Rust API usage and architecture details.
+## License
 
-## Project structure
+MIT
 
-```
-crates/
-  schwarz-precond/   Generic domain decomposition library (traits, solvers, Schwarz preconditioners)
-  within/            Core fixed-effects solver (observation stores, domains, operators, orchestration)
-  within-py/         PyO3 bridge 
-python/within/       Python package re-exporting the Rust extension
-benchmarks/          Python benchmark framework
-```
+## References
 
-## Development
+- Correia, Sergio. "A feasible estimator for linear models with multi-way fixed effects." *Preprint* at http://scorreia.com/research/hdfe.pdf (2016).
+- Gao, Y., Kyng, R. & Spielman, D. A. (2025). AC(k): Robust Solution of Laplacian Equations by Randomized Approximate Cholesky Factorization. *SIAM Journal on Scientific Computing*.
+- Toselli & Widlund (2005). *Domain Decomposition Methods — Algorithms and Theory*. Springer.
+- Xu, J. (1992). Iterative Methods by Space Decomposition and Subspace Correction. *SIAM Review*, 34(4), 581--613.
+
+
+
+## Development 
+
+### `pixi` tasks
 
 Uses [pixi](https://pixi.sh) as the task runner.
 
@@ -119,13 +111,21 @@ pixi run bench run all    # Python benchmarks
 
 Rust changes require rebuilding before running Python code (`pixi run develop`).
 
-## License
+### Rust quickstart
 
-MIT
+```bash
+cargo add within
+```
 
-## References
+See [`crates/within/README.md`](crates/within/README.md) for Rust API usage and architecture details.
 
-- Correia, Sergio. "A feasible estimator for linear models with multi-way fixed effects." *Preprint* at http://scorreia.com/research/hdfe.pdf (2016).
-- Gao, Y., Kyng, R. & Spielman, D. A. (2025). AC(k): Robust Solution of Laplacian Equations by Randomized Approximate Cholesky Factorization. *SIAM Journal on Scientific Computing*.
-- Toselli & Widlund (2005). *Domain Decomposition Methods — Algorithms and Theory*. Springer.
-- Xu, J. (1992). Iterative Methods by Space Decomposition and Subspace Correction. *SIAM Review*, 34(4), 581--613.
+### Project structure
+
+```
+crates/
+  schwarz-precond/   Generic domain decomposition library (traits, solvers, Schwarz preconditioners)
+  within/            Core fixed-effects solver (observation stores, domains, operators, orchestration)
+  within-py/         PyO3 bridge 
+python/within/       Python package re-exporting the Rust extension
+benchmarks/          Python benchmark framework
+```

@@ -1,4 +1,5 @@
-//! CG with one-level additive Schwarz preconditioning, compared to unpreconditioned LSMR.
+//! Compare the default CG + additive Schwarz configuration to a GMRES +
+//! multiplicative Schwarz variant.
 //!
 //! Generates the same synthetic data as `basic_solve` (two factors, 100 levels
 //! each, 10 000 observations), then solves with both methods and prints the
@@ -6,61 +7,68 @@
 //!
 //! Run with: `cargo run --example preconditioned_solve`
 
-use within::{solve, CgPreconditioner, SchwarzConfig, SolveResult, SolverMethod, SolverParams};
+use ndarray::Array2;
+use within::{
+    solve, KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner, SolveResult, SolverParams,
+};
 
 fn main() {
     // Two factors, each with 100 levels, 10 000 observations.
     let n_obs = 10_000;
-    let n_levels = [100, 100];
+    // Category array via modular arithmetic (deterministic, no randomness).
+    let mut categories = Array2::<u32>::zeros((n_obs, 2));
+    for i in 0..n_obs {
+        categories[[i, 0]] = (i % 100) as u32;
+        categories[[i, 1]] = (i / 100) as u32;
+    }
 
-    // Category vectors via modular arithmetic (deterministic, no randomness).
-    let factor_0: Vec<u32> = (0..n_obs).map(|i| (i % 100) as u32).collect();
-    let factor_1: Vec<u32> = (0..n_obs).map(|i| (i / 100) as u32).collect();
-    let categories = vec![factor_0, factor_1];
-
-    // True coefficient vector: x_true[j] = (j mod 7) - 3.
-    let total_dofs: usize = n_levels.iter().sum();
-    let x_true: Vec<f64> = (0..total_dofs).map(|j| (j % 7) as f64 - 3.0).collect();
-
-    // Build y = D * x_true + noise (deterministic perturbation).
+    // Build design to compute D * x_true.
     use within::observation::{FactorMajorStore, ObservationWeights};
     use within::WeightedDesign;
 
-    let store = FactorMajorStore::new(categories.clone(), ObservationWeights::Unit, n_obs)
+    let factor_levels = vec![categories.column(0).to_vec(), categories.column(1).to_vec()];
+    let store = FactorMajorStore::new(factor_levels, ObservationWeights::Unit, n_obs)
         .expect("valid factor-major store");
-    let design = WeightedDesign::from_store(store, &n_levels).expect("valid design");
+    let design = WeightedDesign::from_store(store).expect("valid design");
+
+    // True coefficient vector: x_true[j] = (j mod 7) - 3.
+    let total_dofs = design.n_dofs;
+    let x_true: Vec<f64> = (0..total_dofs).map(|j| (j % 7) as f64 - 3.0).collect();
     let mut y = vec![0.0; n_obs];
     design.matvec_d(&x_true, &mut y);
     for (i, yi) in y.iter_mut().enumerate() {
         *yi += 0.01 * ((i * 7 + 3) % 13) as f64 - 0.06;
     }
 
-    // -----------------------------------------------------------------------
-    // 1. Unpreconditioned LSMR (default)
-    // -----------------------------------------------------------------------
-    let lsmr_params = SolverParams::default();
-    let lsmr_result = solve(&categories, &n_levels, &y, &lsmr_params, None).expect("lsmr solve");
+    let cg_params = SolverParams::default();
+    let cg_precond = Preconditioner::Additive(LocalSolverConfig::solver_default());
+    let cg_result =
+        solve(categories.view(), &y, None, &cg_params, Some(&cg_precond)).expect("cg solve");
 
-    // -----------------------------------------------------------------------
-    // 2. CG with one-level additive Schwarz
-    // -----------------------------------------------------------------------
-    let cg_params = SolverParams {
-        method: SolverMethod::Cg {
-            preconditioner: CgPreconditioner::OneLevel(SchwarzConfig::default()),
-        },
+    let gmres_params = SolverParams {
+        krylov: KrylovMethod::Gmres { restart: 30 },
+        operator: OperatorRepr::Implicit,
         tol: 1e-8,
         maxiter: 1000,
     };
-    let cg_result = solve(&categories, &n_levels, &y, &cg_params, None).expect("cg solve");
+    let gmres_precond = Preconditioner::Multiplicative(LocalSolverConfig::solver_default());
+    let gmres_result = solve(
+        categories.view(),
+        &y,
+        None,
+        &gmres_params,
+        Some(&gmres_precond),
+    )
+    .expect("gmres solve");
 
     // -----------------------------------------------------------------------
     // Print comparison
     // -----------------------------------------------------------------------
     print_comparison(
-        "LSMR (default)",
-        &lsmr_result,
-        "CG + 1-level Schwarz",
+        "CG + additive Schwarz",
         &cg_result,
+        "GMRES + mult. Schwarz",
+        &gmres_result,
     );
 }
 

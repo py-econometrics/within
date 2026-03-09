@@ -10,6 +10,6 @@ crate-type = ["cdylib"]
 [dependencies]
 within = { path = "../within" }
 approx-chol = { workspace = true }
+postcard = { version = "1", features = ["use-std"] }
 pyo3 = { version = "0.25", features = ["extension-module"] }
 numpy = "0.25"
-rand = { version = "0.9", features = ["small_rng"] }

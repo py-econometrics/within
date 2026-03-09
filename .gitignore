@@ -6,3 +6,9 @@
 target
 *.so
 *.dSYM
+
+.coverage
+.hypothesis/
+.pytest_cache/
+.ruff_cache/
+*.proptest-regressions

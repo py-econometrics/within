@@ -2,12 +2,14 @@ use rayon::prelude::*;
 
 /// Minimum number of rows to trigger parallel SpMV.
 const PAR_SPMV_THRESHOLD: usize = 10_000;
-const PAR_SPMV_CHUNK: usize = 4096;
+/// Target number of non-zeros per parallel chunk.
+const TARGET_NNZ_PER_CHUNK: usize = 32_768;
 
 /// Rectangular CSR matrix used as the off-diagonal block in bipartite Gramians.
 ///
 /// Stores C (n_q × n_r) or C^T (n_r × n_q). All column indices within each
 /// row are sorted in ascending order.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct CsrBlock {
     pub(crate) indptr: Vec<u32>,
     pub(crate) indices: Vec<u32>,
@@ -131,12 +133,16 @@ impl CsrBlock {
         let indptr = &self.indptr;
         let indices = &self.indices;
         let data = &self.data;
+        let nnz = self.nnz();
+        let nrows = self.nrows;
+        let avg_nnz_per_row = nnz / nrows.max(1);
+        let chunk = (TARGET_NNZ_PER_CHUNK / avg_nnz_per_row.max(1)).clamp(256, 8192);
 
         y[..self.nrows]
-            .par_chunks_mut(PAR_SPMV_CHUNK)
+            .par_chunks_mut(chunk)
             .enumerate()
             .for_each(|(chunk_idx, y_chunk)| {
-                let row_start = chunk_idx * PAR_SPMV_CHUNK;
+                let row_start = chunk_idx * chunk;
                 for (local_i, yi) in y_chunk.iter_mut().enumerate() {
                     let i = row_start + local_i;
                     let start = indptr[i] as usize;
@@ -158,105 +164,172 @@ impl CsrBlock {
 mod tests {
     use super::*;
 
-    fn sample_block() -> CsrBlock {
+    fn make_3x4_block() -> CsrBlock {
         // 3x4 matrix:
-        //  [1 0 2 0]
-        //  [0 3 0 4]
-        //  [5 0 0 6]
-        CsrBlock {
-            indptr: vec![0, 2, 4, 6],
-            indices: vec![0, 2, 1, 3, 0, 3],
-            data: vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
-            nrows: 3,
-            ncols: 4,
+        // [1.0  0.0  2.0  0.0]
+        // [0.0  3.0  0.0  4.0]
+        // [5.0  0.0  6.0  0.0]
+        CsrBlock::from_dense_table(
+            &[1.0, 0.0, 2.0, 0.0, 0.0, 3.0, 0.0, 4.0, 5.0, 0.0, 6.0, 0.0],
+            3,
+            4,
+        )
+    }
+
+    #[test]
+    fn test_from_dense_table_structure() {
+        let b = make_3x4_block();
+        assert_eq!(b.nrows, 3);
+        assert_eq!(b.ncols, 4);
+        assert_eq!(b.nnz(), 6);
+
+        // Row 0: cols 0, 2
+        assert_eq!(b.indptr[0], 0);
+        assert_eq!(b.indptr[1], 2);
+        assert_eq!(b.indices[0], 0);
+        assert_eq!(b.indices[1], 2);
+        assert_eq!(b.data[0], 1.0);
+        assert_eq!(b.data[1], 2.0);
+
+        // Row 1: cols 1, 3
+        assert_eq!(b.indptr[2], 4);
+        assert_eq!(b.indices[2], 1);
+        assert_eq!(b.indices[3], 3);
+        assert_eq!(b.data[2], 3.0);
+        assert_eq!(b.data[3], 4.0);
+
+        // Row 2: cols 0, 2
+        assert_eq!(b.indptr[3], 6);
+        assert_eq!(b.indices[4], 0);
+        assert_eq!(b.indices[5], 2);
+        assert_eq!(b.data[4], 5.0);
+        assert_eq!(b.data[5], 6.0);
+    }
+
+    #[test]
+    fn test_from_dense_table_all_zeros() {
+        let b = CsrBlock::from_dense_table(&[0.0; 6], 2, 3);
+        assert_eq!(b.nrows, 2);
+        assert_eq!(b.ncols, 3);
+        assert_eq!(b.nnz(), 0);
+        assert_eq!(b.indptr, vec![0, 0, 0]);
+    }
+
+    #[test]
+    fn test_transpose_basic() {
+        let b = make_3x4_block();
+        let bt = b.transpose();
+
+        assert_eq!(bt.nrows, 4);
+        assert_eq!(bt.ncols, 3);
+        assert_eq!(bt.nnz(), 6);
+
+        // Verify A^T[j, i] == A[i, j] by checking specific values
+        // Original row 0: (0,0)=1, (0,2)=2
+        // Transposed: row 0 should have (0,0)=1, (0,2)=5
+        // row 2 should have (2,0)=2, (2,2)=6
+
+        // Row 0 of transpose: columns 0 and 2 (from original rows 0 and 2 having col 0)
+        let r0_start = bt.indptr[0] as usize;
+        let r0_end = bt.indptr[1] as usize;
+        let r0_cols: Vec<u32> = bt.indices[r0_start..r0_end].to_vec();
+        let r0_vals: Vec<f64> = bt.data[r0_start..r0_end].to_vec();
+        assert_eq!(r0_cols, vec![0, 2]); // rows 0, 2 of original
+        assert_eq!(r0_vals, vec![1.0, 5.0]); // values at (0,0) and (2,0) of original
+    }
+
+    #[test]
+    fn test_transpose_transpose_roundtrip() {
+        let b = make_3x4_block();
+        let btt = b.transpose().transpose();
+
+        assert_eq!(btt.nrows, b.nrows);
+        assert_eq!(btt.ncols, b.ncols);
+        assert_eq!(btt.nnz(), b.nnz());
+        assert_eq!(btt.indptr, b.indptr);
+        assert_eq!(btt.indices, b.indices);
+        // Values should match
+        for (a, e) in btt.data.iter().zip(b.data.iter()) {
+            assert!((a - e).abs() < 1e-14);
         }
     }
 
     #[test]
     fn test_nnz() {
-        assert_eq!(sample_block().nnz(), 6);
+        let b = make_3x4_block();
+        assert_eq!(b.nnz(), 6);
+
+        let empty = CsrBlock::from_dense_table(&[0.0; 4], 2, 2);
+        assert_eq!(empty.nnz(), 0);
     }
 
     #[test]
-    fn test_transpose_dimensions() {
-        let a = sample_block();
-        let at = a.transpose();
-        assert_eq!(at.nrows, 4);
-        assert_eq!(at.ncols, 3);
-        assert_eq!(at.nnz(), a.nnz());
+    fn test_spmv_diag_add_basic() {
+        // A = [[1, 0, 2],
+        //      [0, 3, 0]]
+        // d = [2, 1, 3]
+        // x = [1, 2, 1]
+        // y = [10, 20]
+        // A * diag(d) * x = A * [2, 2, 3] = [[1*2 + 2*3], [3*2]] = [8, 6]
+        // y += [8, 6] = [18, 26]
+        let b = CsrBlock::from_dense_table(&[1.0, 0.0, 2.0, 0.0, 3.0, 0.0], 2, 3);
+        let d = vec![2.0, 1.0, 3.0];
+        let x = vec![1.0, 2.0, 1.0];
+        let mut y = vec![10.0, 20.0];
+
+        b.spmv_diag_add(&d, &x, &mut y);
+
+        assert!((y[0] - 18.0).abs() < 1e-14, "y[0] = {}", y[0]);
+        assert!((y[1] - 26.0).abs() < 1e-14, "y[1] = {}", y[1]);
     }
 
     #[test]
-    fn test_transpose_roundtrip() {
-        let a = sample_block();
-        let att = a.transpose().transpose();
-        assert_eq!(att.nrows, a.nrows);
-        assert_eq!(att.ncols, a.ncols);
-        assert_eq!(att.indptr, a.indptr);
-        assert_eq!(att.indices, a.indices);
-        assert_eq!(att.data, a.data);
-    }
-
-    #[test]
-    fn test_transpose_values() {
-        let a = sample_block();
-        let at = a.transpose();
-        // A^T should be 4x3:
-        //  [1 0 5]
-        //  [0 3 0]
-        //  [2 0 0]
-        //  [0 4 6]
-        assert_eq!(at.indptr, vec![0, 2, 3, 4, 6]);
-        assert_eq!(at.indices, vec![0, 2, 1, 0, 1, 2]);
-        assert_eq!(at.data, vec![1.0, 5.0, 3.0, 2.0, 4.0, 6.0]);
-    }
-
-    #[test]
-    fn test_from_dense_table() {
-        let table = vec![1.0, 0.0, 2.0, 0.0, 0.0, 3.0, 0.0, 4.0, 5.0, 0.0, 0.0, 6.0];
-        let a = CsrBlock::from_dense_table(&table, 3, 4);
-        let expected = sample_block();
-        assert_eq!(a.indptr, expected.indptr);
-        assert_eq!(a.indices, expected.indices);
-        assert_eq!(a.data, expected.data);
-        assert_eq!(a.nrows, expected.nrows);
-        assert_eq!(a.ncols, expected.ncols);
-    }
-
-    #[test]
-    fn test_spmv_diag_add() {
-        let a = sample_block();
-        let d = vec![2.0, 3.0, 1.0, 0.5];
-        let x = vec![1.0, 2.0, 3.0, 4.0];
+    fn test_spmv_diag_add_identity_diag() {
+        // With d = [1, 1, ...], spmv_diag_add degenerates to y += A * x
+        let b = make_3x4_block();
+        let d = vec![1.0; 4];
+        let x = vec![1.0, 1.0, 1.0, 1.0];
         let mut y = vec![0.0; 3];
-        a.spmv_diag_add(&d, &x, &mut y);
-        // row 0: 1*(2*1) + 2*(1*3) = 2+6 = 8
-        // row 1: 3*(3*2) + 4*(0.5*4) = 18+8 = 26
-        // row 2: 5*(2*1) + 6*(0.5*4) = 10+12 = 22
-        assert_eq!(y, vec![8.0, 26.0, 22.0]);
+
+        b.spmv_diag_add(&d, &x, &mut y);
+
+        // Row 0: 1*1 + 2*1 = 3
+        // Row 1: 3*1 + 4*1 = 7
+        // Row 2: 5*1 + 6*1 = 11
+        assert!((y[0] - 3.0).abs() < 1e-14);
+        assert!((y[1] - 7.0).abs() < 1e-14);
+        assert!((y[2] - 11.0).abs() < 1e-14);
     }
 
     #[test]
-    fn test_empty_block() {
-        let a = CsrBlock {
-            indptr: vec![0, 0, 0],
-            indices: vec![],
-            data: vec![],
-            nrows: 2,
-            ncols: 3,
-        };
-        assert_eq!(a.nnz(), 0);
-        let at = a.transpose();
-        assert_eq!(at.nrows, 3);
-        assert_eq!(at.ncols, 2);
-        assert_eq!(at.nnz(), 0);
+    fn test_spmv_diag_add_zero_x() {
+        let b = make_3x4_block();
+        let d = vec![1.0; 4];
+        let x = vec![0.0; 4];
+        let mut y = vec![5.0; 3];
+
+        b.spmv_diag_add(&d, &x, &mut y);
+
+        // y should remain unchanged
+        assert_eq!(y, vec![5.0; 3]);
     }
 
     #[test]
-    fn test_from_dense_table_all_zeros() {
-        let table = vec![0.0; 6];
-        let a = CsrBlock::from_dense_table(&table, 2, 3);
-        assert_eq!(a.nnz(), 0);
-        assert_eq!(a.indptr, vec![0, 0, 0]);
+    fn test_from_dense_table_single_element() {
+        let b = CsrBlock::from_dense_table(&[42.0], 1, 1);
+        assert_eq!(b.nrows, 1);
+        assert_eq!(b.ncols, 1);
+        assert_eq!(b.nnz(), 1);
+        assert_eq!(b.data[0], 42.0);
+        assert_eq!(b.indices[0], 0);
+    }
+
+    #[test]
+    fn test_transpose_empty() {
+        let b = CsrBlock::from_dense_table(&[0.0; 6], 2, 3);
+        let bt = b.transpose();
+        assert_eq!(bt.nrows, 3);
+        assert_eq!(bt.ncols, 2);
+        assert_eq!(bt.nnz(), 0);
     }
 }

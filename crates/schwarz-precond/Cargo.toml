@@ -9,8 +9,10 @@ repository = "https://github.com/py-econometrics/within"
 keywords = ["schwarz", "preconditioner", "domain-decomposition", "sparse", "iterative-solver"]
 categories = ["mathematics", "science", "algorithms"]
 
+[features]
+serde = ["dep:serde"]
+
 [dependencies]
 rayon = "1.10"
-thread_local = "1.1"
-rand = { version = "0.9", features = ["small_rng"] }
 faer = "0.22"
+serde = { version = "1", features = ["derive"], optional = true }

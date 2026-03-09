@@ -5,7 +5,7 @@ dependencies = [
     "scipy>=1.10",
 ]
 name = "within"
-requires-python = ">= 3.11"
+requires-python = ">= 3.9"
 version = "0.1.0"
 license = "MIT"
 license-files = [

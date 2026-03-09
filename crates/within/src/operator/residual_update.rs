@@ -1,8 +1,85 @@
-use schwarz_precond::ResidualUpdater;
+use std::sync::Arc;
 
-use super::dof_obs_index::DofObservationIndex;
+use schwarz_precond::{ResidualUpdater, SparseMatrix};
+
 use crate::domain::WeightedDesign;
 use crate::observation::ObservationStore;
+
+// ===========================================================================
+// DofObservationIndex — inverted CSR index from DOFs to observations
+// ===========================================================================
+
+/// Inverted CSR index: for each DOF d, stores the observation indices that reference it.
+///
+/// Given a `WeightedDesign`, observation `i` references DOF `offset_q + level(i, q)` for
+/// each factor `q`. This structure lets you efficiently look up all observations that
+/// touch a given DOF — the key primitive for observation-space residual updates.
+pub struct DofObservationIndex {
+    offsets: Vec<u32>,
+    indices: Vec<u32>,
+}
+
+impl DofObservationIndex {
+    /// Build the inverted index from a `WeightedDesign`.
+    ///
+    /// Two-pass algorithm:
+    /// 1. Count observations per DOF.
+    /// 2. Prefix-sum to get offsets, then scatter observation indices.
+    pub fn build<S: ObservationStore>(design: &WeightedDesign<S>) -> Self {
+        let n_dofs = design.n_dofs;
+        let n_obs = design.store.n_obs();
+        let n_factors = design.store.n_factors();
+
+        // Pass 1: count
+        let mut counts = vec![0u32; n_dofs];
+        for i in 0..n_obs {
+            for q in 0..n_factors {
+                let dof = design.factors[q].offset + design.store.level(i, q) as usize;
+                assert!(dof < n_dofs, "dof {dof} >= n_dofs {n_dofs}");
+                counts[dof] += 1;
+            }
+        }
+
+        // Build offsets via prefix sum
+        let mut offsets = vec![0u32; n_dofs + 1];
+        for d in 0..n_dofs {
+            offsets[d + 1] = offsets[d] + counts[d];
+        }
+
+        // Pass 2: fill indices
+        let total = offsets[n_dofs] as usize;
+        let mut indices = vec![0u32; total];
+        let mut pos = offsets[..n_dofs].to_vec(); // write cursors
+        for i in 0..n_obs {
+            for q in 0..n_factors {
+                let dof = design.factors[q].offset + design.store.level(i, q) as usize;
+                assert!(dof < n_dofs, "dof {dof} >= n_dofs {n_dofs}");
+                indices[pos[dof] as usize] = i as u32;
+                pos[dof] += 1;
+            }
+        }
+
+        Self { offsets, indices }
+    }
+
+    /// Observation indices that reference the given DOF.
+    #[inline]
+    pub fn obs_for_dof(&self, dof: u32) -> &[u32] {
+        let start = self.offsets[dof as usize] as usize;
+        let end = self.offsets[dof as usize + 1] as usize;
+        &self.indices[start..end]
+    }
+
+    /// Total number of DOFs in the index.
+    #[cfg(test)]
+    pub(crate) fn n_dofs(&self) -> usize {
+        self.offsets.len() - 1
+    }
+}
+
+// ===========================================================================
+// Residual updaters
+// ===========================================================================
 
 /// Observation-space residual updater for multiplicative Schwarz.
 ///
@@ -45,11 +122,6 @@ impl<'a, S: ObservationStore> ObservationSpaceUpdater<'a, S> {
 }
 
 impl<S: ObservationStore> ResidualUpdater for ObservationSpaceUpdater<'_, S> {
-    fn reset(&mut self, _r_original: &[f64]) {
-        // No-op: the observation-space updater is stateless — each update()
-        // is a pure incremental r -= D^T W D delta, with no accumulator.
-    }
-
     fn update(&mut self, global_indices: &[u32], weighted_correction: &[f64], r_work: &mut [f64]) {
         let store = &self.design.store;
         let factors = &self.design.factors;
@@ -110,189 +182,53 @@ impl<S: ObservationStore> ResidualUpdater for ObservationSpaceUpdater<'_, S> {
             dof_to_pos[gi as usize] = SENTINEL;
         }
     }
+
+    fn reset(&mut self, _r_original: &[f64]) {
+        // No-op: the observation-space updater is stateless — each update()
+        // is a pure incremental r -= D^T W D delta, with no accumulator.
+    }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::domain::FixedEffectsDesign;
-    use crate::operator::gramian::Gramian;
-    use schwarz_precond::OperatorResidualUpdater;
+/// Sparse Gramian residual updater for multiplicative Schwarz.
+///
+/// Uses the explicit Gramian CSR to perform residual updates via row scatter:
+/// `r -= G * delta` restricted to the touched rows.
+///
+/// Cost: O(nnz_touched) with contiguous CSR reads. No buffers, no bookkeeping.
+/// Trades O(nnz) memory (the Gramian) for faster per-iteration updates compared
+/// to the observation-space path.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct SparseGramianUpdater {
+    gramian: Arc<SparseMatrix>,
+}
 
-    /// Helper: build a design, explicit Gramian, and both updaters.
-    /// Returns (design, gramian, obs_updater).
-    fn make_test_setup() -> (FixedEffectsDesign, Gramian) {
-        // 2 factors, 5 observations
-        // factor 0: [0, 1, 2, 0, 1] (3 levels)
-        // factor 1: [0, 1, 2, 3, 0] (4 levels)
-        // n_dofs = 7
-        let design = FixedEffectsDesign::new(
-            vec![vec![0, 1, 2, 0, 1], vec![0, 1, 2, 3, 0]],
-            vec![3, 4],
-            5,
-        )
-        .expect("valid fixed-effects design");
-        let gramian = Gramian::build(&design);
-        (design, gramian)
+impl SparseGramianUpdater {
+    pub fn new(gramian: Arc<SparseMatrix>) -> Self {
+        Self { gramian }
     }
+}
 
-    #[test]
-    fn test_obs_updater_matches_operator_updater_single_step() {
-        let (design, gramian) = make_test_setup();
-        let n_dofs = design.n_dofs;
+impl ResidualUpdater for SparseGramianUpdater {
+    fn update(&mut self, global_indices: &[u32], weighted_correction: &[f64], r_work: &mut [f64]) {
+        let indptr = self.gramian.indptr();
+        let indices = self.gramian.indices();
+        let data = self.gramian.data();
 
-        let mut obs_updater = ObservationSpaceUpdater::new(&design);
-        let mut op_updater = OperatorResidualUpdater::new(&gramian, n_dofs);
-
-        // Initial residual
-        let r_original = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
-        op_updater.reset(&r_original);
-
-        let mut r_obs = r_original.clone();
-        let mut r_op = r_original.clone();
-
-        // Correction on subdomain {0, 1, 3, 4} (factor0 levels 0,1 + factor1 levels 0,1)
-        let global_indices: Vec<u32> = vec![0, 1, 3, 4];
-        let correction = vec![0.5, -0.3, 0.2, 0.1];
-
-        obs_updater.update(&global_indices, &correction, &mut r_obs);
-        op_updater.update(&global_indices, &correction, &mut r_op);
-
-        for i in 0..n_dofs {
-            assert!(
-                (r_obs[i] - r_op[i]).abs() < 1e-12,
-                "mismatch at DOF {i}: obs={}, op={}",
-                r_obs[i],
-                r_op[i],
-            );
+        for (k, &gi) in global_indices.iter().enumerate() {
+            let c = weighted_correction[k];
+            if c == 0.0 {
+                continue;
+            }
+            let row = gi as usize;
+            let start = indptr[row] as usize;
+            let end = indptr[row + 1] as usize;
+            for idx in start..end {
+                r_work[indices[idx] as usize] -= c * data[idx];
+            }
         }
     }
 
-    #[test]
-    fn test_obs_updater_matches_operator_updater_two_steps() {
-        let (design, gramian) = make_test_setup();
-        let n_dofs = design.n_dofs;
-
-        let mut obs_updater = ObservationSpaceUpdater::new(&design);
-        let mut op_updater = OperatorResidualUpdater::new(&gramian, n_dofs);
-
-        let r_original = vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0];
-        op_updater.reset(&r_original);
-
-        let mut r_obs = r_original.clone();
-        let mut r_op = r_original.clone();
-
-        // First subdomain correction
-        let gi1: Vec<u32> = vec![0, 1, 3, 4];
-        let c1 = vec![0.5, -0.3, 0.2, 0.1];
-        obs_updater.update(&gi1, &c1, &mut r_obs);
-        op_updater.update(&gi1, &c1, &mut r_op);
-
-        for i in 0..n_dofs {
-            assert!(
-                (r_obs[i] - r_op[i]).abs() < 1e-12,
-                "step 1 mismatch at DOF {i}: obs={}, op={}",
-                r_obs[i],
-                r_op[i],
-            );
-        }
-
-        // Second subdomain correction
-        let gi2: Vec<u32> = vec![2, 5, 6];
-        let c2 = vec![1.0, -0.5, 0.8];
-        obs_updater.update(&gi2, &c2, &mut r_obs);
-        op_updater.update(&gi2, &c2, &mut r_op);
-
-        for i in 0..n_dofs {
-            assert!(
-                (r_obs[i] - r_op[i]).abs() < 1e-12,
-                "step 2 mismatch at DOF {i}: obs={}, op={}",
-                r_obs[i],
-                r_op[i],
-            );
-        }
-    }
-
-    #[test]
-    fn test_obs_updater_zero_correction_is_noop() {
-        let (design, _) = make_test_setup();
-        let mut updater = ObservationSpaceUpdater::new(&design);
-
-        let r_original = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
-        let mut r_work = r_original.clone();
-
-        let gi: Vec<u32> = vec![0, 1, 3];
-        let correction = vec![0.0, 0.0, 0.0];
-        updater.update(&gi, &correction, &mut r_work);
-
-        assert_eq!(r_work, r_original);
-    }
-
-    #[test]
-    fn test_obs_updater_single_dof_correction() {
-        let (design, gramian) = make_test_setup();
-        let n_dofs = design.n_dofs;
-
-        let mut obs_updater = ObservationSpaceUpdater::new(&design);
-        let mut op_updater = OperatorResidualUpdater::new(&gramian, n_dofs);
-
-        let r_original = vec![1.0; n_dofs];
-        op_updater.reset(&r_original);
-
-        let mut r_obs = r_original.clone();
-        let mut r_op = r_original.clone();
-
-        // Single DOF correction
-        let gi: Vec<u32> = vec![0];
-        let correction = vec![1.0];
-        obs_updater.update(&gi, &correction, &mut r_obs);
-        op_updater.update(&gi, &correction, &mut r_op);
-
-        for i in 0..n_dofs {
-            assert!(
-                (r_obs[i] - r_op[i]).abs() < 1e-12,
-                "single-DOF mismatch at {i}: obs={}, op={}",
-                r_obs[i],
-                r_op[i],
-            );
-        }
-    }
-
-    #[test]
-    fn test_obs_updater_weighted_design() {
-        use crate::observation::{FactorMajorStore, ObservationWeights};
-
-        let fl = vec![vec![0u32, 1, 0, 1], vec![0, 0, 1, 1]];
-        let weights = vec![1.0, 2.0, 3.0, 4.0];
-        let n_levels = vec![2, 2];
-
-        let store = FactorMajorStore::new(fl, ObservationWeights::Dense(weights), 4)
-            .expect("valid weighted store");
-        let design = WeightedDesign::from_store(store, &n_levels).expect("valid weighted design");
-        let gramian = Gramian::build(&design);
-        let n_dofs = design.n_dofs; // 4
-
-        let mut obs_updater = ObservationSpaceUpdater::new(&design);
-        let mut op_updater = OperatorResidualUpdater::new(&gramian, n_dofs);
-
-        let r_original = vec![5.0, 3.0, 7.0, 1.0];
-        op_updater.reset(&r_original);
-
-        let mut r_obs = r_original.clone();
-        let mut r_op = r_original.clone();
-
-        let gi: Vec<u32> = vec![0, 2];
-        let correction = vec![0.5, -0.3];
-        obs_updater.update(&gi, &correction, &mut r_obs);
-        op_updater.update(&gi, &correction, &mut r_op);
-
-        for i in 0..n_dofs {
-            assert!(
-                (r_obs[i] - r_op[i]).abs() < 1e-12,
-                "weighted mismatch at {i}: obs={}, op={}",
-                r_obs[i],
-                r_op[i],
-            );
-        }
+    fn reset(&mut self, _r_original: &[f64]) {
+        // No-op: each update is a pure incremental r -= G * delta.
     }
 }

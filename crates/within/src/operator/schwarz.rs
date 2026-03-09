@@ -16,7 +16,7 @@ use super::gramian::CrossTab;
 use super::local_solver::{
     ApproxCholSolver, BlockElimSolver, FeLocalSolver, LocalSolveStrategy, ReducedFactor,
 };
-use super::residual_update::ObservationSpaceUpdater;
+use super::residual_update::{ObservationSpaceUpdater, SparseGramianUpdater};
 use super::schur_complement::{
     ApproxSchurComplement, EliminationInfo, ExactSchurComplement, SchurComplement, SchurResult,
 };
@@ -32,77 +32,109 @@ pub type FeSchwarz = SchwarzPreconditioner<FeLocalSolver>;
 pub type FeMultSchwarz<'a, S> =
     MultiplicativeSchwarzPreconditioner<FeLocalSolver, ObservationSpaceUpdater<'a, S>>;
 
+/// Concrete multiplicative Schwarz type: one-level with explicit Gramian CSR residual updates.
+pub type FeMultSchwarzSparse =
+    MultiplicativeSchwarzPreconditioner<FeLocalSolver, SparseGramianUpdater>;
+
 // ---------------------------------------------------------------------------
-// FE-specific builders
+// Domain source abstraction
 // ---------------------------------------------------------------------------
 
-/// Build all subdomain entries from design, config, and domain strategy.
-pub(crate) fn build_all_entries<S: ObservationStore>(
-    design: &WeightedDesign<S>,
-    config: &Config,
-    local_solver: &LocalSolverConfig,
-) -> WithinResult<Vec<SubdomainEntry<FeLocalSolver>>> {
-    let domain_pairs = build_local_domains(design, None);
-    let builder = Builder::new(*config);
-    let local_solver = local_solver.clone();
-    domain_pairs
-        .into_par_iter()
-        .map(|(domain, cross_tab)| build_entry(domain, cross_tab, &builder, &local_solver))
-        .collect()
+/// Abstracts over how domain entries are acquired.
+pub(crate) enum DomainSource<'a, S: ObservationStore> {
+    /// Scan observations to build from scratch.
+    FromDesign(&'a WeightedDesign<S>),
+    /// Reuse pre-built pairs (from fused domain+gramian pass).
+    FromParts(Vec<(Subdomain, CrossTab)>),
 }
 
-/// Build a Schwarz preconditioner from FE design + pre-computed domains.
-///
-/// For each domain, constructs a compact component-scoped Gramian, factorizes
-/// via the configured local solver strategy, and assembles into
-/// `SchwarzPreconditioner`.
-pub fn build_schwarz_with_config<S: ObservationStore>(
+// ---------------------------------------------------------------------------
+// Public convenience builder
+// ---------------------------------------------------------------------------
+
+/// Build additive Schwarz from FE design with default domain decomposition.
+pub fn build_schwarz<S: ObservationStore>(
     design: &WeightedDesign<S>,
-    domains: Vec<Subdomain>,
-    config: &Config,
-    local_solver: &LocalSolverConfig,
+    config: &LocalSolverConfig,
 ) -> WithinResult<FeSchwarz> {
-    let builder = Builder::new(*config);
-    let local_solver = local_solver.clone();
-    let entries: WithinResult<Vec<SubdomainEntry<FeLocalSolver>>> = domains
-        .into_par_iter()
-        .map(|domain| {
-            let (q, r) = domain.factor_pair;
-            let cross_tab = CrossTab::build(design, q, r, &domain.core.global_indices);
-            build_entry(domain, cross_tab, &builder, &local_solver)
-        })
-        .collect();
-    Ok(SchwarzPreconditioner::new(entries?, design.n_dofs)?)
+    build_additive(DomainSource::FromDesign(design), design.n_dofs, config)
 }
 
-/// Build a Schwarz preconditioner with default domain decomposition.
-pub fn build_schwarz_default<S: ObservationStore>(
-    design: &WeightedDesign<S>,
-    config: &Config,
-    local_solver: &LocalSolverConfig,
+// ---------------------------------------------------------------------------
+// Crate-internal consolidated builders
+// ---------------------------------------------------------------------------
+
+/// Build additive Schwarz from any domain source.
+pub(crate) fn build_additive<S: ObservationStore>(
+    source: DomainSource<'_, S>,
+    n_dofs: usize,
+    config: &LocalSolverConfig,
 ) -> WithinResult<FeSchwarz> {
-    let entries = build_all_entries(design, config, local_solver)?;
-    Ok(SchwarzPreconditioner::new(entries, design.n_dofs)?)
+    let entries = build_entries_from_source(source, config)?;
+    Ok(SchwarzPreconditioner::new(entries, n_dofs)?)
 }
 
-/// Build a one-level multiplicative Schwarz preconditioner.
+/// Build multiplicative Schwarz with observation-space updater.
 ///
-/// If `symmetric` is true, performs forward + backward sweeps (suitable for CG).
-/// If `symmetric` is false, performs forward-only sweep (suitable for GMRES).
-pub fn build_multiplicative_schwarz<'a, S: ObservationStore>(
+/// Always non-symmetric (GMRES-only).
+#[cfg(test)]
+#[allow(dead_code)]
+pub(crate) fn build_multiplicative_obs<'a, S: ObservationStore>(
+    source: DomainSource<'_, S>,
     design: &'a WeightedDesign<S>,
-    config: &Config,
-    local_solver: &LocalSolverConfig,
-    symmetric: bool,
+    config: &LocalSolverConfig,
 ) -> WithinResult<FeMultSchwarz<'a, S>> {
-    let entries = build_all_entries(design, config, local_solver)?;
+    let entries = build_entries_from_source(source, config)?;
     let updater = ObservationSpaceUpdater::new(design);
     Ok(MultiplicativeSchwarzPreconditioner::new(
         entries,
         updater,
         design.n_dofs,
-        symmetric,
+        false,
     )?)
+}
+
+/// Build multiplicative Schwarz with sparse Gramian updater.
+///
+/// Always non-symmetric (GMRES-only).
+pub(crate) fn build_multiplicative_sparse<S: ObservationStore>(
+    source: DomainSource<'_, S>,
+    gramian: &super::gramian::Gramian,
+    n_dofs: usize,
+    config: &LocalSolverConfig,
+) -> WithinResult<FeMultSchwarzSparse> {
+    let entries = build_entries_from_source(source, config)?;
+    let updater = SparseGramianUpdater::new(gramian.matrix.clone());
+    Ok(MultiplicativeSchwarzPreconditioner::new(
+        entries, updater, n_dofs, false,
+    )?)
+}
+
+// ---------------------------------------------------------------------------
+// Internal: build entries from source
+// ---------------------------------------------------------------------------
+
+fn build_entries_from_source<S: ObservationStore>(
+    source: DomainSource<'_, S>,
+    config: &LocalSolverConfig,
+) -> WithinResult<Vec<SubdomainEntry<FeLocalSolver>>> {
+    match source {
+        DomainSource::FromDesign(design) => {
+            let domain_pairs = build_local_domains(design);
+            build_entries_from_pairs(domain_pairs, config)
+        }
+        DomainSource::FromParts(domain_pairs) => build_entries_from_pairs(domain_pairs, config),
+    }
+}
+
+fn build_entries_from_pairs(
+    domain_pairs: Vec<(Subdomain, CrossTab)>,
+    config: &LocalSolverConfig,
+) -> WithinResult<Vec<SubdomainEntry<FeLocalSolver>>> {
+    domain_pairs
+        .into_par_iter()
+        .map(|(domain, cross_tab)| build_entry(domain, cross_tab, config))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -115,11 +147,10 @@ pub fn build_multiplicative_schwarz<'a, S: ObservationStore>(
 pub(crate) fn build_entry(
     domain: Subdomain,
     cross_tab: CrossTab,
-    builder: &Builder,
-    local_solver_config: &LocalSolverConfig,
+    config: &LocalSolverConfig,
 ) -> WithinResult<SubdomainEntry<FeLocalSolver>> {
-    let solver = match local_solver_config {
-        LocalSolverConfig::FullSddm => {
+    let solver = match config {
+        LocalSolverConfig::FullSddm { approx_chol } => {
             let first_block_size = cross_tab.first_block_size();
             let matrix = cross_tab.to_sddm();
             let n_local = matrix.n();
@@ -132,6 +163,7 @@ pub(crate) fn build_entry(
             .map_err(|e| {
                 WithinError::LocalSolverBuild(format!("invalid local SDDM CSR structure: {e}"))
             })?;
+            let builder = Builder::new(*approx_chol);
             let factor = builder.build(csr).map_err(|e| {
                 WithinError::LocalSolverBuild(format!("failed local SDDM factorization: {e}"))
             })?;
@@ -146,33 +178,36 @@ pub(crate) fn build_entry(
             approx_schur,
             dense_threshold,
         } => {
-            let reduced = build_reduced_schur_factor(
-                &cross_tab,
-                *approx_chol,
-                *approx_schur,
-                *dense_threshold,
-            )?;
-            FeLocalSolver::SchurComplement(BlockElimSolver::new(
+            let schur_config = ReducedSchurConfig {
+                approx_chol: *approx_chol,
+                approx_schur: *approx_schur,
+                dense_threshold: *dense_threshold,
+            };
+            let reduced = build_reduced_schur_factor(&cross_tab, &schur_config)?;
+            FeLocalSolver::SchurComplement(Box::new(BlockElimSolver::new(
                 cross_tab,
                 reduced.elimination.inv_diag_elim,
                 reduced.factor,
                 reduced.elimination.eliminate_q,
-            ))
+            )))
         }
     };
     Ok(SubdomainEntry::new(domain.core, solver))
 }
 
-struct ReducedSchurBuild {
-    factor: ReducedFactor,
-    elimination: EliminationInfo,
+pub(crate) struct ReducedSchurBuild {
+    pub(crate) factor: ReducedFactor,
+    pub(crate) elimination: EliminationInfo,
 }
 
 fn dense_fast_path_enabled(n_keep: usize, threshold: usize) -> bool {
     threshold > 0 && n_keep <= threshold
 }
 
-fn compute_schur(cross_tab: &CrossTab, approx_schur: Option<ApproxSchurConfig>) -> SchurResult {
+fn compute_schur(
+    cross_tab: &CrossTab,
+    approx_schur: Option<ApproxSchurConfig>,
+) -> WithinResult<SchurResult> {
     match approx_schur {
         None => ExactSchurComplement.compute(cross_tab),
         Some(cfg) => ApproxSchurComplement::new(cfg).compute(cross_tab),
@@ -199,18 +234,23 @@ fn build_sparse_reduced_factor(
         })
 }
 
-fn build_reduced_schur_factor(
+/// Configuration for building a reduced Schur factor.
+pub(crate) struct ReducedSchurConfig {
+    pub approx_chol: Config,
+    pub approx_schur: Option<ApproxSchurConfig>,
+    pub dense_threshold: usize,
+}
+
+pub(crate) fn build_reduced_schur_factor(
     cross_tab: &CrossTab,
-    approx_chol: Config,
-    approx_schur: Option<ApproxSchurConfig>,
-    dense_threshold: usize,
+    config: &ReducedSchurConfig,
 ) -> WithinResult<ReducedSchurBuild> {
     let n_keep = cross_tab.n_q().min(cross_tab.n_r());
-    let prefer_dense = dense_fast_path_enabled(n_keep, dense_threshold);
+    let prefer_dense = dense_fast_path_enabled(n_keep, config.dense_threshold);
 
     // Fastest path for tiny exact Schur: build dense directly and factor dense.
-    if prefer_dense && approx_schur.is_none() {
-        let dense = ExactSchurComplement.compute_dense_anchored(cross_tab);
+    if prefer_dense && config.approx_schur.is_none() {
+        let dense = ExactSchurComplement.compute_dense_anchored(cross_tab)?;
         if let Some(factor) =
             ReducedFactor::try_dense_laplacian_minor(dense.anchored_minor, dense.n)
         {
@@ -222,7 +262,7 @@ fn build_reduced_schur_factor(
     }
 
     // General path (exact or approximate): sparse Schur assembly once.
-    let schur = compute_schur(cross_tab, approx_schur);
+    let schur = compute_schur(cross_tab, config.approx_schur)?;
     if prefer_dense {
         if let Some(factor) = ReducedFactor::try_dense_laplacian(&schur.matrix) {
             return Ok(ReducedSchurBuild {
@@ -232,7 +272,7 @@ fn build_reduced_schur_factor(
         }
     }
 
-    let factor = build_sparse_reduced_factor(&schur.matrix, approx_chol)?;
+    let factor = build_sparse_reduced_factor(&schur.matrix, config.approx_chol)?;
     Ok(ReducedSchurBuild {
         factor,
         elimination: schur.elimination,
@@ -240,6 +280,7 @@ fn build_reduced_schur_factor(
 }
 
 /// Compute how many DOFs in a domain belong to the first factor of its factor pair.
+#[cfg(test)]
 pub fn compute_first_block_size<S: ObservationStore>(
     design: &WeightedDesign<S>,
     domain: &Subdomain,
@@ -257,316 +298,4 @@ pub fn compute_first_block_size<S: ObservationStore>(
             idx >= lo && idx < hi
         })
         .count()
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use std::cmp::Ordering;
-    use std::hint::black_box;
-    use std::time::Instant;
-
-    use super::*;
-    use crate::config::{ApproxSchurConfig, DEFAULT_DENSE_SCHUR_THRESHOLD};
-    use crate::domain::{build_local_domains, FixedEffectsDesign};
-    use crate::operator::csr_block::CsrBlock;
-    use schwarz_precond::{LocalSolver, Operator};
-
-    fn make_test_data() -> (FixedEffectsDesign, Vec<(Subdomain, CrossTab)>) {
-        let design = FixedEffectsDesign::new(
-            vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]],
-            vec![3, 2],
-            5,
-        )
-        .expect("valid fixed-effects design");
-        let domain_pairs = build_local_domains(&design, None);
-        (design, domain_pairs)
-    }
-
-    fn synthetic_cross_tab(n_keep: usize, elim_ratio: usize) -> CrossTab {
-        let n_q = n_keep * elim_ratio;
-        let n_r = n_keep;
-        let mut table = vec![0.0; n_q * n_r];
-
-        // Deterministic 3-edge pattern per eliminated vertex:
-        // ring edges + hashed jump to keep graph connected and nontrivial.
-        for i in 0..n_q {
-            let j0 = i % n_r;
-            let j1 = (i + 1) % n_r;
-            let j2 = (i.wrapping_mul(7).wrapping_add(3)) % n_r;
-            table[i * n_r + j0] += 1.0;
-            table[i * n_r + j1] += 0.8;
-            table[i * n_r + j2] += 0.6;
-        }
-
-        let mut diag_q = vec![0.0; n_q];
-        let mut diag_r = vec![0.0; n_r];
-        for i in 0..n_q {
-            let row = &table[i * n_r..(i + 1) * n_r];
-            let mut s = 0.0;
-            for (j, &w) in row.iter().enumerate() {
-                s += w;
-                diag_r[j] += w;
-            }
-            diag_q[i] = s;
-        }
-
-        let c = CsrBlock::from_dense_table(&table, n_q, n_r);
-        let ct = c.transpose();
-        CrossTab {
-            c,
-            ct,
-            diag_q,
-            diag_r,
-        }
-    }
-
-    fn benchmark_build_path(
-        cross_tab: &CrossTab,
-        approx_schur: Option<ApproxSchurConfig>,
-        dense_threshold: usize,
-        iters: usize,
-    ) -> f64 {
-        let approx_chol = Config {
-            split_merge: Some(8),
-            seed: 42,
-            ..Default::default()
-        };
-        let mut samples = Vec::with_capacity(iters);
-        for _ in 0..iters {
-            let t0 = Instant::now();
-            let reduced =
-                build_reduced_schur_factor(cross_tab, approx_chol, approx_schur, dense_threshold)
-                    .expect("reduced Schur build failed");
-            black_box(reduced.factor);
-            samples.push(t0.elapsed().as_secs_f64() * 1e6);
-        }
-        samples.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
-        samples[samples.len() / 2]
-    }
-
-    fn build_local_solver_for_bench(
-        n_keep: usize,
-        approx_schur: Option<ApproxSchurConfig>,
-        dense_threshold: usize,
-    ) -> BlockElimSolver {
-        let cross_tab = synthetic_cross_tab(n_keep, 8);
-        let approx_chol = Config {
-            split_merge: Some(8),
-            seed: 42,
-            ..Default::default()
-        };
-        let reduced =
-            build_reduced_schur_factor(&cross_tab, approx_chol, approx_schur, dense_threshold)
-                .expect("reduced Schur build failed");
-        BlockElimSolver::new(
-            cross_tab,
-            reduced.elimination.inv_diag_elim,
-            reduced.factor,
-            reduced.elimination.eliminate_q,
-        )
-    }
-
-    fn benchmark_local_solve_path(solver: &BlockElimSolver, iters: usize) -> f64 {
-        let n_local = solver.n_local();
-        let scratch = solver.scratch_size();
-        let mut rhs_template = vec![0.0; n_local];
-        for (i, v) in rhs_template.iter_mut().enumerate() {
-            *v = ((i.wrapping_mul(13) % 31) as f64 - 15.0) * 0.1;
-        }
-
-        let mut rhs = vec![0.0; scratch];
-        let mut sol = vec![0.0; scratch];
-        let t0 = Instant::now();
-        let mut checksum = 0.0;
-        for _ in 0..iters {
-            rhs[..n_local].copy_from_slice(&rhs_template);
-            solver
-                .solve_local(&mut rhs, &mut sol)
-                .expect("benchmark local solve");
-            checksum += sol[0];
-        }
-        black_box(checksum);
-        (t0.elapsed().as_secs_f64() * 1e6) / iters as f64
-    }
-
-    #[test]
-    fn test_build_schwarz() {
-        let (design, domain_pairs) = make_test_data();
-        let domains: Vec<Subdomain> = domain_pairs.into_iter().map(|(d, _)| d).collect();
-        let config = Config::default();
-        let schwarz =
-            build_schwarz_with_config(&design, domains, &config, &LocalSolverConfig::default())
-                .expect("build schwarz with explicit domains");
-        assert!(!schwarz.subdomains().is_empty());
-
-        let r = vec![1.0; design.n_dofs];
-        let mut z = vec![0.0; design.n_dofs];
-        schwarz.apply(&r, &mut z);
-        assert!(z.iter().all(|&v| v.is_finite()));
-    }
-
-    #[test]
-    fn test_build_default() {
-        let (design, _) = make_test_data();
-        let config = Config::default();
-        let schwarz = build_schwarz_default(&design, &config, &LocalSolverConfig::default())
-            .expect("build default schwarz");
-        assert!(!schwarz.subdomains().is_empty());
-    }
-
-    #[test]
-    fn test_first_block_size_computation() {
-        let design =
-            FixedEffectsDesign::new(vec![vec![0, 1, 0, 1], vec![0, 0, 1, 1]], vec![2, 2], 4)
-                .expect("valid design");
-        let domain_pairs = build_local_domains(&design, None);
-
-        assert!(!domain_pairs.is_empty());
-        let fbs = compute_first_block_size(&design, &domain_pairs[0].0);
-        assert_eq!(fbs, 2);
-    }
-
-    #[test]
-    fn test_exact_schur_uses_dense_fast_path_for_tiny_reduced_system() {
-        let (_, mut domain_pairs) = make_test_data();
-        let (domain, cross_tab) = domain_pairs.swap_remove(0);
-
-        let entry = build_entry(
-            domain,
-            cross_tab,
-            &Builder::new(Config::default()),
-            &LocalSolverConfig::SchurComplement {
-                approx_chol: Config::default(),
-                approx_schur: None,
-                dense_threshold: crate::config::DEFAULT_DENSE_SCHUR_THRESHOLD,
-            },
-        )
-        .expect("exact Schur entry build failed");
-
-        match entry.solver {
-            FeLocalSolver::SchurComplement(solver) => {
-                assert!(solver.uses_dense_reduced_factor());
-            }
-            FeLocalSolver::FullSddm { .. } => panic!("expected SchurComplement solver"),
-        }
-    }
-
-    #[test]
-    fn test_approximate_schur_uses_dense_fast_path_for_tiny_reduced_system() {
-        let (_, mut domain_pairs) = make_test_data();
-        let (domain, cross_tab) = domain_pairs.swap_remove(0);
-
-        let entry = build_entry(
-            domain,
-            cross_tab,
-            &Builder::new(Config::default()),
-            &LocalSolverConfig::SchurComplement {
-                approx_chol: Config::default(),
-                approx_schur: Some(crate::config::ApproxSchurConfig { seed: 7 }),
-                dense_threshold: crate::config::DEFAULT_DENSE_SCHUR_THRESHOLD,
-            },
-        )
-        .expect("approximate Schur entry build failed");
-
-        match entry.solver {
-            FeLocalSolver::SchurComplement(solver) => {
-                assert!(solver.uses_dense_reduced_factor());
-            }
-            FeLocalSolver::FullSddm { .. } => panic!("expected SchurComplement solver"),
-        }
-    }
-
-    #[test]
-    fn test_dense_threshold_zero_disables_dense_fast_path() {
-        let (_, mut domain_pairs) = make_test_data();
-        let (domain, cross_tab) = domain_pairs.swap_remove(0);
-
-        let entry = build_entry(
-            domain,
-            cross_tab,
-            &Builder::new(Config::default()),
-            &LocalSolverConfig::SchurComplement {
-                approx_chol: Config::default(),
-                approx_schur: None,
-                dense_threshold: 0,
-            },
-        )
-        .expect("exact Schur entry build failed");
-
-        match entry.solver {
-            FeLocalSolver::SchurComplement(solver) => {
-                assert!(!solver.uses_dense_reduced_factor());
-            }
-            FeLocalSolver::FullSddm { .. } => panic!("expected SchurComplement solver"),
-        }
-    }
-
-    #[test]
-    #[ignore] // run with: cargo test -p within bench_isolated_schur_dense_vs_sparse_paths --lib -- --ignored --nocapture
-    fn bench_isolated_schur_dense_vs_sparse_paths() {
-        let sizes = [4usize, 8, 12, 16, 20, 24, 28, 32, 40, 48, 64];
-        println!(
-            "{:>5} | {:>11} {:>11} {:>7} | {:>11} {:>11} {:>7} | {:>10} {:>10} {:>7}",
-            "n_keep",
-            "exact_dense",
-            "exact_sparse",
-            "ratio",
-            "approx_dense",
-            "approx_sparse",
-            "ratio",
-            "solve_dense",
-            "solve_sparse",
-            "ratio"
-        );
-        println!("{}", "-".repeat(118));
-
-        for &n_keep in &sizes {
-            let cross_tab = synthetic_cross_tab(n_keep, 8);
-            let build_iters = if n_keep <= 32 { 100 } else { 40 };
-
-            let exact_dense = benchmark_build_path(&cross_tab, None, usize::MAX, build_iters);
-            let exact_sparse = benchmark_build_path(&cross_tab, None, 0, build_iters);
-            let approx_dense = benchmark_build_path(
-                &cross_tab,
-                Some(ApproxSchurConfig { seed: 42 }),
-                usize::MAX,
-                build_iters,
-            );
-            let approx_sparse = benchmark_build_path(
-                &cross_tab,
-                Some(ApproxSchurConfig { seed: 42 }),
-                0,
-                build_iters,
-            );
-
-            let solve_iters = if n_keep <= 32 { 8_000 } else { 3_000 };
-            let solver_dense = build_local_solver_for_bench(n_keep, None, usize::MAX);
-            let solver_sparse = build_local_solver_for_bench(n_keep, None, 0);
-            let solve_dense = benchmark_local_solve_path(&solver_dense, solve_iters);
-            let solve_sparse = benchmark_local_solve_path(&solver_sparse, solve_iters);
-
-            println!(
-                "{:>5} | {:>11.2} {:>11.2} {:>7.2} | {:>11.2} {:>11.2} {:>7.2} | {:>10.3} {:>10.3} {:>7.2}",
-                n_keep,
-                exact_dense,
-                exact_sparse,
-                exact_dense / exact_sparse,
-                approx_dense,
-                approx_sparse,
-                approx_dense / approx_sparse,
-                solve_dense,
-                solve_sparse,
-                solve_dense / solve_sparse
-            );
-        }
-
-        println!(
-            "\nDefault dense threshold currently: {}",
-            DEFAULT_DENSE_SCHUR_THRESHOLD
-        );
-    }
 }

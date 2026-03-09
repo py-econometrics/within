@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ._types import BenchmarkResult
+from ._framework import BenchmarkResult
 
 
 def print_table(
@@ -18,22 +18,38 @@ def print_table(
     if columns is None:
         columns = [
             "config",
-            "setup_time", "solve_time", "iterations",
-            "final_residual", "converged",
+            "setup_time",
+            "solve_time",
+            "iterations",
+            "final_residual",
+            "demeaning_error",
+            "converged",
         ]
 
     _COL_FMT: dict[str, tuple[str, int, object]] = {
-        "problem":        ("Problem",    28, lambda r: r.problem),
-        "config":         ("Config",     16, lambda r: r.config),
-        "n_dofs":         ("DOFs",        8, lambda r: r.n_dofs),
-        "n_rows":         ("Rows",        8, lambda r: r.n_rows),
-        "setup_time":     ("Setup(s)",    9, lambda r: f"{r.setup_time:.4f}"),
-        "solve_time":     ("Solve(s)",    9, lambda r: f"{r.solve_time:.4f}"),
-        "total_time":     ("Total(s)",    9, lambda r: f"{r.setup_time + r.solve_time:.4f}"),
-        "iterations":     ("Iters",       6, lambda r: r.iterations),
-        "final_residual": ("Residual",   12, lambda r: f"{r.final_residual:.2e}"),
-        "converged":      ("Conv",        5, lambda r: "OK" if r.converged else "FAIL"),
-        "passed":         ("Check",       6, lambda r: "PASS" if r.passed else "FAIL" if r.passed is not None else "--"),
+        "problem": ("Problem", 28, lambda r: r.problem),
+        "config": ("Config", 16, lambda r: r.config),
+        "n_dofs": ("DOFs", 8, lambda r: r.n_dofs),
+        "n_rows": ("Rows", 8, lambda r: r.n_rows),
+        "setup_time": ("Setup(s)", 9, lambda r: f"{r.setup_time:.4f}"),
+        "solve_time": ("Solve(s)", 9, lambda r: f"{r.solve_time:.4f}"),
+        "total_time": ("Total(s)", 9, lambda r: f"{r.setup_time + r.solve_time:.4f}"),
+        "iterations": ("Iters", 6, lambda r: r.iterations),
+        "ms_per_iter": (
+            "ms/iter",
+            8,
+            lambda r: f"{r.solve_time / r.iterations * 1e3:.2f}"
+            if r.iterations > 0
+            else "--",
+        ),
+        "final_residual": ("Residual", 12, lambda r: f"{r.final_residual:.2e}"),
+        "demeaning_error": ("Demean", 12, lambda r: f"{r.demeaning_error:.2e}"),
+        "converged": ("Conv", 5, lambda r: "OK" if r.converged else "FAIL"),
+        "passed": (
+            "Check",
+            6,
+            lambda r: "PASS" if r.passed else "FAIL" if r.passed is not None else "--",
+        ),
     }
 
     if title:

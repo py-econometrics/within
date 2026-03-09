@@ -2,7 +2,7 @@
 
 Generic domain decomposition library for additive and multiplicative Schwarz
 preconditioners. Provides one-level variants with pluggable local solvers and
-iterative solvers (CG, GMRES, LSMR). Suitable for symmetric positive
+iterative solvers (CG, GMRES). Suitable for symmetric positive
 (semi-)definite systems arising in finite elements, graph Laplacians, and
 fixed-effects models.
 

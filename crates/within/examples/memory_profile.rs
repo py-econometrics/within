@@ -7,14 +7,13 @@
 use std::env;
 use std::time::Instant;
 
-use approx_chol::Config;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use schwarz_precond::solve::cg::cg_solve_preconditioned;
-use within::config::LocalSolverConfig;
 use within::domain::WeightedDesign;
 use within::observation::{FactorMajorStore, ObservationWeights};
-use within::{build_schwarz_default, GramianOperator};
+use within::LocalSolverConfig;
+use within::{build_schwarz, GramianOperator};
 
 fn rss_mb() -> f64 {
     let pid = std::process::id();
@@ -50,11 +49,10 @@ fn generate_fixest_3fe(n_obs: usize, seed: u64) -> (WeightedDesign<FactorMajorSt
     }
 
     let factor_levels = vec![indiv_id, year, firm_id];
-    let n_levels = vec![n_indiv, n_years, n_firm];
 
     let store = FactorMajorStore::new(factor_levels, ObservationWeights::Unit, n_obs)
         .expect("valid factor-major store");
-    let design = WeightedDesign::from_store(store, &n_levels).expect("valid design");
+    let design = WeightedDesign::from_store(store).expect("valid design");
 
     let mut x_true = vec![0.0; design.n_dofs];
     for x in &mut x_true {
@@ -105,15 +103,8 @@ fn main() {
 
     // Phase 2: Build Schwarz preconditioner
     let t = Instant::now();
-    let schwarz = build_schwarz_default(
-        &design,
-        &Config {
-            seed: 42,
-            ..Default::default()
-        },
-        &LocalSolverConfig::default(),
-    )
-    .expect("build schwarz preconditioner");
+    let schwarz = build_schwarz(&design, &LocalSolverConfig::solver_default())
+        .expect("build schwarz preconditioner");
     let rss_schwarz = rss_mb();
     let dt_schwarz = t.elapsed().as_secs_f64();
     println!("\n[2] Build Schwarz Preconditioner ({dt_schwarz:.3}s)");

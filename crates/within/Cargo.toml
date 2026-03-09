@@ -10,25 +10,24 @@ keywords = ["fixed-effects", "least-squares", "preconditioner", "schwarz", "econ
 categories = ["mathematics", "science", "algorithms"]
 
 [dependencies]
-schwarz-precond = { path = "../schwarz-precond" }
+schwarz-precond = { path = "../schwarz-precond", features = ["serde"] }
 approx-chol = { workspace = true }
-ndarray = { version = "0.16", optional = true }
+serde = { version = "1", features = ["derive", "rc"] }
+postcard = { version = "1", features = ["use-std"] }
+ndarray = "0.16"
 portable-atomic = { version = "1", features = ["float"] }
 rayon = "1.10"
 faer = "0.22"
 
-[features]
-default = ["ndarray"]
-
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 rand = { version = "0.9", features = ["small_rng"] }
+proptest = "1"
 
 [[bench]]
-name = "fixest_smoke"
+name = "fixest"
 harness = false
 
 [[bench]]
-name = "fixest_mini"
+name = "store_backend"
 harness = false
-

@@ -7,20 +7,32 @@
 pub const DEFAULT_DENSE_SCHUR_THRESHOLD: usize = 24;
 
 // ---------------------------------------------------------------------------
-// Solver configuration types
+// Operator representation
+// ---------------------------------------------------------------------------
+
+/// Operator representation for normal equations.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OperatorRepr {
+    #[default]
+    Implicit,
+    Explicit,
+}
+
+// ---------------------------------------------------------------------------
+// Local solver configuration
 // ---------------------------------------------------------------------------
 
 /// Selects the local solver used inside each Schwarz subdomain.
+///
+/// Each variant is self-contained: it carries its own `approx_chol::Config`.
 #[derive(Debug, Clone)]
 pub enum LocalSolverConfig {
     /// Full bipartite SDDM factorized via approximate Cholesky.
-    ///
-    /// Uses `approx_chol` from the parent `SchwarzConfig`.
-    FullSddm,
+    FullSddm { approx_chol: approx_chol::Config },
     /// Schur complement reduction: eliminate the larger diagonal block
     /// exactly, then factorize the smaller reduced system.
     SchurComplement {
-        /// ApproxChol config for the reduced system. Defaults to AC2(2,2).
+        /// ApproxChol config for the reduced system.
         approx_chol: approx_chol::Config,
         /// Approximate Schur complement configuration.
         /// `None` = exact (default). `Some` = approximate with sampling.
@@ -35,6 +47,17 @@ pub enum LocalSolverConfig {
 
 impl Default for LocalSolverConfig {
     fn default() -> Self {
+        Self::SchurComplement {
+            approx_chol: approx_chol::Config::default(),
+            approx_schur: Some(ApproxSchurConfig::default()),
+            dense_threshold: DEFAULT_DENSE_SCHUR_THRESHOLD,
+        }
+    }
+}
+
+impl LocalSolverConfig {
+    /// Default for iterative solvers: uses split_merge=2 for the reduced Schur system.
+    pub fn solver_default() -> Self {
         Self::SchurComplement {
             approx_chol: approx_chol::Config {
                 split_merge: Some(2),
@@ -55,61 +78,65 @@ impl Default for LocalSolverConfig {
 /// Every eliminated vertex uses a sampled spanning tree (at most deg-1 fill
 /// edges) via the GKS 2023 Algorithm 5 clique-tree. This preserves spectral
 /// quality (unbiased edge weights) while reducing fill-in to O(deg).
-#[derive(Debug, Clone, Copy, Default)]
+///
+/// When `split > 1`, uses AC2-style multi-edge sampling (Algorithm 6 in
+/// GKS 2023): each star samples `split` independent trees, producing up to
+/// `split * (deg-1)` fill edges. More samples → denser (better) Schur
+/// approximation at the cost of more fill-in.
+#[derive(Debug, Clone, Copy)]
 pub struct ApproxSchurConfig {
     /// Random seed for the clique-tree sampler.
     pub seed: u64,
+    /// Number of independent clique-tree samples per star.
+    ///
+    /// `1` = single sample (AC1), `k > 1` = multi-sample (AC2-style).
+    pub split: u32,
 }
 
-/// Common configuration for all Schwarz-based preconditioners.
-#[derive(Debug, Clone, Default)]
-pub struct SchwarzConfig {
-    pub approx_chol: approx_chol::Config,
-    pub local_solver: LocalSolverConfig,
+impl Default for ApproxSchurConfig {
+    fn default() -> Self {
+        Self { seed: 0, split: 1 }
+    }
 }
 
-/// CG preconditioner configuration.
-#[derive(Debug, Clone, Default)]
-pub enum CgPreconditioner {
-    /// Unpreconditioned CG.
+// ---------------------------------------------------------------------------
+// Krylov method
+// ---------------------------------------------------------------------------
+
+/// Outer Krylov method.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum KrylovMethod {
     #[default]
-    None,
-    /// One-level additive Schwarz.
-    OneLevel(SchwarzConfig),
-    /// One-level multiplicative Schwarz (symmetric: forward + backward).
-    MultiplicativeOneLevel(SchwarzConfig),
-}
-
-/// GMRES preconditioner configuration (forward-only multiplicative Schwarz).
-#[derive(Debug, Clone)]
-pub enum GmresPreconditioner {
-    /// One-level multiplicative Schwarz (forward-only).
-    MultiplicativeOneLevel(SchwarzConfig),
-}
-
-#[derive(Debug, Clone)]
-pub enum SolverMethod {
-    Lsmr {
-        conlim: f64,
-    },
-    Cg {
-        preconditioner: CgPreconditioner,
-    },
+    Cg,
     Gmres {
-        preconditioner: GmresPreconditioner,
         restart: usize,
     },
 }
 
-impl Default for SolverMethod {
-    fn default() -> Self {
-        Self::Lsmr { conlim: 1e8 }
-    }
+// ---------------------------------------------------------------------------
+// Preconditioner
+// ---------------------------------------------------------------------------
+
+/// Schwarz preconditioner variant with embedded local solver configuration.
+///
+/// CG requires a symmetric preconditioner so only `Additive` is valid.
+/// GMRES supports both.
+#[derive(Debug, Clone)]
+pub enum Preconditioner {
+    /// Additive Schwarz (symmetric — valid for CG and GMRES).
+    Additive(LocalSolverConfig),
+    /// Multiplicative Schwarz (non-symmetric — GMRES only).
+    Multiplicative(LocalSolverConfig),
 }
+
+// ---------------------------------------------------------------------------
+// Solver configuration
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub struct SolverParams {
-    pub method: SolverMethod,
+    pub krylov: KrylovMethod,
+    pub operator: OperatorRepr,
     pub tol: f64,
     pub maxiter: usize,
 }
@@ -117,7 +144,8 @@ pub struct SolverParams {
 impl Default for SolverParams {
     fn default() -> Self {
         Self {
-            method: SolverMethod::default(),
+            krylov: KrylovMethod::Cg,
+            operator: OperatorRepr::Implicit,
             tol: 1e-8,
             maxiter: 1000,
         }
