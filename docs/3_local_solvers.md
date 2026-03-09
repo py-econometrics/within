@@ -13,7 +13,7 @@ This is Part 3 of the algorithm documentation for the `within` solver. It descri
 
 ## 1. The Local Solve Pipeline
 
-Each subdomain requires solving a system $A_i z_i = r_i$ where $A_i$ is the bipartite Gramian block for a factor pair. These systems are too large to solve exactly in practice — a Worker-Firm block in a real dataset may have millions of DOFs. Instead, the solver produces an **approximate** factorization that is cheap to build and cheap to apply, trading exactness for speed. The Krylov outer solver ([Part 2](2_solver_architecture.md)) compensates for this approximation by refining the global solution across iterations.
+Each subdomain requires solving a system $A_i z_i = r_i$ where $A_i$ is the bipartite Gramian block for a factor pair. These systems are too large to solve exactly in practice - a Worker-Firm block in a real dataset may have millions of DOFs. Instead, the solver produces an **approximate** factorization that is cheap to build and cheap to apply, trading exactness for speed. The Krylov outer solver ([Part 2](2_solver_architecture.md)) compensates for this approximation by refining the global solution across iterations.
 
 The local solve applies a pipeline of transformations that progressively simplify the problem:
 
@@ -21,8 +21,8 @@ The local solve applies a pipeline of transformations that progressively simplif
 
 The key stages are:
 1. **Sign-flip** the bipartite block into a graph Laplacian (zero row-sums)
-2. **Eliminate the larger factor** via Schur complement — reducing e.g. a (workers + firms) system to a firms-only system. This step can be exact or approximate (Section 3.3).
-3. **Factor** the reduced system with approximate Cholesky — the main source of approximation
+2. **Eliminate the larger factor** via Schur complement - which reduces e.g. a (workers + firms) system to a firms-only system. This step can be exact or approximate (Section 3.3).
+3. **Factor** the reduced system with approximate Cholesky - the main source of approximation
 4. **Solve** via cheap triangular substitution, then back-substitute to recover the full solution
 
 The approximation enters in steps 2 (optionally) and 3 (always): both use **clique-tree sampling** to avoid the quadratic fill that exact Gaussian elimination would produce.
@@ -43,7 +43,7 @@ $$
 L = \begin{pmatrix} D_q & -C \\ -C^\top & D_r \end{pmatrix}
 $$
 
-This works because every observation at level $j$ of factor $q$ has exactly one level in factor $r$, so $D_q[j,j] = \sum_k C[j,k]$ — the row sums are exactly zero.
+This works because every observation at level $j$ of factor $q$ has exactly one level in factor $r$, so $D_q[j,j] = \sum_k C[j,k]$ - the row sums are exactly zero.
 
 The local solve wrapper handles the sign convention: negate the second block of the RHS before solving, negate the second block of the solution after. Downstream transformations (approximate Schur complement, approximate Cholesky) may introduce small row-sum deficits; when this happens, **Gremban augmentation** adds one extra "ground" node connected to all others, absorbing the deficit and restoring a valid Laplacian.
 
@@ -51,7 +51,7 @@ The local solve wrapper handles the sign convention: negate the second block of 
 
 ## 3. Schur Complement Reduction
 
-The core idea: since workers share no edges in the bipartite graph, we can **eliminate all workers at once** to get a smaller system on firms only.
+Since workers share no edges in the bipartite graph, we can **eliminate all workers at once** to get a smaller system on firms only.
 
 ### 3.1 What elimination looks like on the graph
 
@@ -87,11 +87,13 @@ The Schur complement $S$ is a Laplacian on the smaller factor's levels (e.g. fir
 
 ### 3.3 Exact vs. approximate elimination
 
-Each eliminated worker with $d$ firm connections creates a dense **clique** of $\binom{d}{2}$ fill edges among its firms. A worker who worked at 100 firms creates $\binom{100}{2} = 4{,}950$ fill edges — this can be expensive.
+Each eliminated worker with $d$ firm connections creates a dense **clique** of $\binom{d}{2}$ fill edges among its firms. A worker who worked at 100 firms creates $\binom{100}{2} = 4{,}950$ fill edges - this can be expensive.
 
 ![Schur complement: clique vs. tree](images/schur_clique_vs_tree.svg)
 
-The **approximate** variant (Gao, Kyng, and Spielman, 2025) replaces each clique with a random **spanning tree** — only $d - 1$ edges instead of $\binom{d}{2}$. The tree weights are chosen so that the expected Laplacian matches the clique Laplacian (an **unbiased estimator**). For the worker with 100 firms: 99 edges instead of 4,950 — same quality in expectation, 50× less work.
+The **approximate** variant (Gao, Kyng, and Spielman, 2025) replaces each clique with a random **spanning tree** - only $d - 1$ edges instead of $\binom{d}{2}$. The tree weights are chosen so that the expected Laplacian matches the clique Laplacian (an **unbiased estimator**).  
+
+For a worker observed at 100 firms, this reduces the fill from 4,950 edges to just 99 - a 50× reduction - without introducing bias, since the tree weights are chosen so that the approximate Schur complement is unbiased.
 
 Exact elimination preserves the Laplacian property (zero row sums). The approximate variant produces an SDDM matrix (non-negative row sums), which is repaired via Gremban augmentation.
 
@@ -103,15 +105,15 @@ The approximate Cholesky algorithm (Gao, Kyng, and Spielman, 2025) factors the S
 
 ### 4.1 How it works
 
-The algorithm eliminates vertices one by one in random order. Each elimination produces fill edges (a clique on the vertex's neighbors). Instead of materializing all $O(d^2)$ clique edges, it samples a random spanning tree with only $d - 1$ edges — the same clique-tree trick used in Section 3.3:
+The algorithm eliminates vertices one by one in random order. Each elimination produces fill edges (a clique on the vertex's neighbors). Instead of materializing all $O(d^2)$ clique edges, it samples a random spanning tree with only $d - 1$ edges - the same clique-tree trick used in Section 3.3:
 
 ![Approximate Cholesky: clique vs. tree on the reduced graph](images/ac_clique_vs_tree.svg)
 
-The difference from the Schur complement step is that here, eliminations are **sequential** — each one modifies the graph for the next:
+The difference from the Schur complement step is that here, eliminations are **sequential** - each one modifies the graph for the next:
 
 ![Sequential elimination in approximate Cholesky](images/ac_sequential.svg)
 
-Eliminating F1 creates a fill edge F2–F4. When F2 is eliminated next, it now connects to F4 (via the fill from step 1), producing further fill F3–F4. This cascading fill is why the Schur complement reduction — which exploits the bipartite independence — is performed first, and approximate Cholesky is applied only to the smaller reduced system.
+Eliminating F1 creates a fill edge F2–F4. When F2 is eliminated next, it now connects to F4 (via the fill from step 1), producing further fill F3–F4. This cascading fill is why the Schur complement reduction - which exploits the bipartite independence - is performed first, and approximate Cholesky is applied only to the smaller reduced system.
 
 ### 4.2 Properties
 
