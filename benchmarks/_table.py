@@ -22,6 +22,7 @@ def print_table(
             "solve_time",
             "iterations",
             "final_residual",
+            "demeaning_error",
             "converged",
         ]
 
@@ -42,6 +43,7 @@ def print_table(
             else "--",
         ),
         "final_residual": ("Residual", 12, lambda r: f"{r.final_residual:.2e}"),
+        "demeaning_error": ("Demean", 12, lambda r: f"{r.demeaning_error:.2e}"),
         "converged": ("Conv", 5, lambda r: "OK" if r.converged else "FAIL"),
         "passed": (
             "Check",
