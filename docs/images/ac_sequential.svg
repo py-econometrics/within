@@ -1,0 +1,90 @@
+<svg viewBox="0 0 700 200" xmlns="http://www.w3.org/2000/svg" font-family="Arial, Helvetica, sans-serif">
+  <rect width="700" height="200" fill="white" rx="4"/>
+
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#888"/>
+    </marker>
+  </defs>
+
+  <!-- PANEL 1: Initial reduced graph (firms only) -->
+  <text x="105" y="16" text-anchor="middle" font-size="11" fill="#555" font-weight="600">Reduced graph</text>
+
+  <!-- Diamond: F1 top, F2 right, F3 bottom, F4 left -->
+  <!-- Edges: F1-F2, F1-F4, F2-F3 -->
+  <line x1="105" y1="42" x2="175" y2="95" stroke="#aaa" stroke-width="2"/>
+  <line x1="105" y1="42" x2="35"  y2="95" stroke="#aaa" stroke-width="2"/>
+  <line x1="175" y1="95" x2="105" y2="150" stroke="#aaa" stroke-width="2"/>
+
+  <!-- F1 (highlighted: next to eliminate) -->
+  <circle cx="105" cy="42" r="16" fill="#fda" stroke="#c44" stroke-width="2"/>
+  <text x="105" y="47" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">F1</text>
+  <!-- F2 -->
+  <circle cx="175" cy="95" r="16" fill="#bbf" stroke="#555" stroke-width="1.5"/>
+  <text x="175" y="100" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">F2</text>
+  <!-- F3 -->
+  <circle cx="105" cy="150" r="16" fill="#bbf" stroke="#555" stroke-width="1.5"/>
+  <text x="105" y="155" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">F3</text>
+  <!-- F4 -->
+  <circle cx="35" cy="95" r="16" fill="#bbf" stroke="#555" stroke-width="1.5"/>
+  <text x="35" y="100" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">F4</text>
+
+  <!-- Arrow 1 to 2 -->
+  <line x1="200" y1="95" x2="228" y2="95" stroke="#888" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- PANEL 2: After eliminating F1 -->
+  <text x="340" y="16" text-anchor="middle" font-size="11" fill="#555" font-weight="600">Eliminate F1</text>
+
+  <!-- F1 ghosted -->
+  <circle cx="340" cy="42" r="16" fill="#eee" stroke="#ccc" stroke-width="1.5" stroke-dasharray="3,2"/>
+  <text x="340" y="47" text-anchor="middle" font-size="10" fill="#bbb">F1</text>
+
+  <!-- Kept edge: F2-F3 -->
+  <line x1="410" y1="95" x2="340" y2="150" stroke="#aaa" stroke-width="2"/>
+
+  <!-- Fill edge: F2-F4 (from eliminating F1) -->
+  <line x1="410" y1="95" x2="270" y2="95" stroke="#c44" stroke-width="2.5"/>
+  <text x="340" y="85" text-anchor="middle" font-size="9" fill="#c44">fill</text>
+
+  <!-- F2 (highlighted: next to eliminate) -->
+  <circle cx="410" cy="95" r="16" fill="#fda" stroke="#c44" stroke-width="2"/>
+  <text x="410" y="100" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">F2</text>
+  <!-- F3 -->
+  <circle cx="340" cy="150" r="16" fill="#bbf" stroke="#555" stroke-width="1.5"/>
+  <text x="340" y="155" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">F3</text>
+  <!-- F4 -->
+  <circle cx="270" cy="95" r="16" fill="#bbf" stroke="#555" stroke-width="1.5"/>
+  <text x="270" y="100" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">F4</text>
+
+  <!-- Arrow 2 to 3 -->
+  <line x1="435" y1="95" x2="463" y2="95" stroke="#888" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- PANEL 3: After eliminating F2 -->
+  <text x="575" y="16" text-anchor="middle" font-size="11" fill="#555" font-weight="600">Eliminate F2</text>
+
+  <!-- F1 ghosted -->
+  <circle cx="575" cy="42" r="16" fill="#eee" stroke="#ccc" stroke-width="1.5" stroke-dasharray="3,2"/>
+  <text x="575" y="47" text-anchor="middle" font-size="10" fill="#bbb">F1</text>
+
+  <!-- F2 ghosted -->
+  <circle cx="645" cy="95" r="16" fill="#eee" stroke="#ccc" stroke-width="1.5" stroke-dasharray="3,2"/>
+  <text x="645" y="100" text-anchor="middle" font-size="10" fill="#bbb">F2</text>
+
+  <!-- Ghost edges showing F2's neighborhood at elimination time -->
+  <line x1="645" y1="95" x2="575" y2="150" stroke="#ddd" stroke-width="1" stroke-dasharray="3,2"/>
+  <line x1="645" y1="95" x2="505" y2="95" stroke="#fcc" stroke-width="1" stroke-dasharray="3,2"/>
+
+  <!-- Fill edge: F3-F4 (from eliminating F2) -->
+  <line x1="575" y1="150" x2="505" y2="95" stroke="#c44" stroke-width="2.5"/>
+  <text x="528" y="132" text-anchor="middle" font-size="9" fill="#c44">fill</text>
+
+  <!-- F3 -->
+  <circle cx="575" cy="150" r="16" fill="#bbf" stroke="#555" stroke-width="1.5"/>
+  <text x="575" y="155" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">F3</text>
+  <!-- F4 -->
+  <circle cx="505" cy="95" r="16" fill="#bbf" stroke="#555" stroke-width="1.5"/>
+  <text x="505" y="100" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">F4</text>
+
+  <!-- Annotation -->
+  <text x="575" y="186" text-anchor="middle" font-size="9" fill="#888">F2 sees F4 via step-1 fill</text>
+</svg>

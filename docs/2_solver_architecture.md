@@ -6,7 +6,6 @@ This is Part 2 of the algorithm documentation for the `within` solver. It descri
 - [Part 1: Fixed Effects and Block Iterative Methods](1_fixed_effects_and_block_methods.md)
 - **Part 2: Preconditioned Krylov Solvers and Schwarz Decomposition** (this document)
 - [Part 3: Local Solvers and Approximate Cholesky](3_local_solvers.md)
-- [Part 4: Implementation Notes](4_implementation.md)
 
 **Prerequisites**: Part 1 (problem formulation, Gramian block structure, Block Gauss-Seidel as multiplicative Schwarz).
 
@@ -48,7 +47,7 @@ The solver combines three algorithmic ideas in a layered architecture:
 
 2. **Schwarz preconditioner** — decomposes the global system into overlapping subdomains derived from the Gramian's block structure, applies local solves independently (additive) or sequentially (multiplicative), and combines corrections using partition-of-unity weights.
 
-3. **Local solvers** — each subdomain system is a small SDDM (symmetric diagonally dominant) matrix that can be factored in nearly-linear time using approximate Cholesky factorization (see [Part 3](3_local_solvers.md)).
+3. **Local solvers** — each subdomain system is a bipartite Gramian block that becomes a graph Laplacian after sign-flip, factored in nearly-linear time using approximate Cholesky (see [Part 3](3_local_solvers.md)).
 
 ### Why this combination
 
@@ -56,7 +55,7 @@ The Gramian $G$ for fixed-effects models is typically large and sparse, with blo
 
 - **Block-bipartite structure**: each factor pair $(q,r)$ induces a bipartite subgraph. Connected components of these subgraphs form natural subdomains with limited overlap.
 
-- **SDDM / Laplacian connection**: after a sign-flip transformation (Section 2), each bipartite block becomes an SDDM matrix (and a graph Laplacian when row sums vanish), enabling the use of nearly-linear-time Laplacian solvers via Gremban augmentation when needed.
+- **Laplacian connection**: after a sign-flip transformation (Section 2), each bipartite block becomes a graph Laplacian, enabling the use of nearly-linear-time Laplacian solvers.
 
 - **Spectral acceleration**: Schwarz preconditioning clusters the eigenvalues of $M^{-1}G$, reducing the Krylov iteration count from $O(\sqrt{\kappa})$ (unpreconditioned CG) to a count that depends on the quality of the local solves rather than the global condition number.
 
@@ -82,25 +81,27 @@ where $D_q$ and $D_r$ are the diagonal blocks restricted to the active levels in
 
 The bipartite graph of $C_{qr}$ may have multiple connected components. Each connected component defines an independent subproblem: the rows and columns of $G_{qr}$ can be permuted so that disconnected components are block-diagonal. These components become the subdomains of the Schwarz preconditioner.
 
-Continuing the example from [Part 1](1_fixed_effects_and_block_methods.md): the bipartite graph of $C_{12}$ has edges A–2020, A–2021, B–2020, B–2021, C–2021, C–2022. Running DFS from any node reaches all others, so there is a single connected component. The entire 6-DOF system forms one subdomain.
+| Full interaction graph | Worker–Firm subgraph |
+|:---:|:---:|
+| ![Full graph](images/graph_plain.svg) | ![Worker–Firm bipartite subgraph](images/graph_bipartite_wf.svg) |
 
-If firms A and B only traded in 2020 and firm C only traded in 2022, the graph would have two components: {A, B, 2020} and {C, 2022}, yielding two independent subdomains.
+Continuing the Worker/Firm/Year example from [Part 1](1_fixed_effects_and_block_methods.md): extracting just the Worker–Firm edges (right) from the full graph (left) gives the bipartite graph of $C_{WF}$ with edges W1–F1, W1–F2, W2–F1, W3–F2. Running DFS from any node reaches all others (W1 bridges both firms), so there is a single connected component containing all 5 DOFs {W1, W2, W3, F1, F2}. The same holds for the Worker–Year and Firm–Year pairs, giving 3 subdomains with one component each.
 
-### 2.3 SDDM connection via sign-flip
+Without W1's mobility (if W1 only worked at F1), the Worker–Firm graph would split into two components: {W1, W2, F1} and {W3, F2}, yielding two independent subdomains for this pair.
 
-The bipartite block $G_{qr}$ has non-negative off-diagonal entries (cross-tabulation counts), so it is not directly a graph Laplacian. However, negating the off-diagonal blocks produces an SDDM matrix:
+### 2.3 Laplacian connection via sign-flip
+
+The bipartite block $G_{qr}$ has non-negative off-diagonal entries (cross-tabulation counts), so it is not directly a graph Laplacian. However, negating the off-diagonal blocks produces one:
 
 $$
 L_{qr} = \begin{pmatrix} D_q & -C_{qr} \\ -C_{qr}^\top & D_r \end{pmatrix}
 $$
 
-This is a symmetric diagonally dominant (SDDM) matrix: symmetric, non-positive off-diagonal entries, and non-negative diagonal entries that satisfy $D_q[j,j] \geq \sum_k C_{qr}[j,k]$ (with equality when all observations at level $j$ of factor $q$ have an active partner in factor $r$). When the row sums are exactly zero, $L_{qr}$ is a graph Laplacian; in general it is SDDM. The transform is an involution: solving $L_{qr} z = b$ and flipping the sign of the second block of $z$ recovers the solution to $G_{qr} z' = b'$.
+This is a graph Laplacian: symmetric, non-positive off-diagonal entries, and row sums exactly zero. The zero row-sum property holds because every observation at level $j$ of factor $q$ has exactly one level in factor $r$, so $D_q[j,j] = \sum_k C_{qr}[j,k]$ (and symmetrically for the $r$-rows). This is true regardless of the number of factors $Q$ — the diagonal $D_q[j,j]$ counts total observation weight at level $j$, and every such observation contributes to exactly one entry of $C_{qr}$.
 
-When $L_{qr}$ is not exactly a Laplacian (nonzero row sums), **Gremban augmentation** adds a single "ground" node connected to every other node, absorbing the row-sum deficit. The augmented system is one dimension larger but is a proper Laplacian, compatible with the approximate Cholesky solver.
+The transform is an involution: solving $L_{qr} z = b$ and flipping the sign of the second block of $z$ recovers the solution to $G_{qr} z' = b'$.
 
-This connection is exploited by the local solvers ([Part 3](3_local_solvers.md)), which convert bipartite Gramian blocks to SDDM form and apply approximate Cholesky factorization — a nearly-linear-time algorithm designed for Laplacian and SDDM systems.
-
-**Reference**: Correia (2016) describes the fixed-effects normal equations and their block structure. Gremban (1996) introduces the augmentation technique for SDDM-to-Laplacian reduction.
+This Laplacian structure is exploited by the local solvers ([Part 3](3_local_solvers.md)), which convert bipartite Gramian blocks to Laplacian form and apply approximate Cholesky factorization — a nearly-linear-time algorithm designed for Laplacian systems.
 
 ---
 
@@ -165,25 +166,13 @@ $$
 
 The Givens rotations maintain an implicit QR factorization of the upper Hessenberg matrix, and $|g_{j+1}|$ tracks the residual norm without explicit computation. Lucky breakdown ($h_{j+1,j} \approx 0$) indicates the Krylov subspace is exhausted.
 
-### 3.3 Implicit vs. explicit operator
+### 3.3 Convergence tolerance vs. demean quality
 
-The Gramian-vector product $G x = D^\top W (D x)$ can be computed in two ways:
+The Krylov convergence criterion $\|r_k\|_2 / \|b\|_2 \leq \text{tol}$ controls the normal-equation residual, not the demeaning error directly. These are related but distinct quantities. The normal equations $G\alpha = D^\top W y$ are a means to an end — the goal is the demeaned outcome $\tilde{y} = y - D\alpha$, and its quality depends on how errors in $\alpha$ propagate through $D$.
 
-- **Implicit**: compute $t = Dx$ (gather), then $D^\top W t$ (weighted scatter). No matrix is ever formed; cost is $O(nQ)$ per product.
+An error $\delta\alpha$ in the coefficient vector produces a demeaning error $D\delta\alpha$. The ratio $\|D\delta\alpha\| / \|\delta\alpha\|$ depends on the spectrum of $D^\top D$ (i.e., the observation counts per level), so a normal-equation tolerance of $10^{-8}$ does not guarantee $10^{-8}$ accuracy in $\tilde{y}$ — it can be better or worse depending on the data geometry. In practice, the normal-equation residual is a reliable proxy: when it is small, the demeaned values are accurate enough for downstream inference.
 
-- **Explicit**: build $G$ once as a CSR sparse matrix. Cost is $O(\text{nnz}(G))$ per product, with an upfront $O(nQ)$ assembly cost.
-
-The implicit operator avoids the memory and construction cost of the explicit CSR matrix, which can be significant when $m$ is large. The explicit operator is required when multiplicative Schwarz is used with the sparse Gramian residual updater, which scatters Gramian rows directly into the residual after each subdomain correction.
-
-### 3.4 Post-solve residual
-
-After convergence, the solver independently verifies the residual in the normal-equation space:
-
-$$
-\text{final\_residual} = \frac{\|G\alpha - D^\top W y\|_2}{\max(\|D^\top W y\|_2,\; 10^{-15})}
-$$
-
-This is reported regardless of whether the Krylov method converged.
+**Iterative refinement.** When higher accuracy is needed (or when approximate local solvers introduce additional error), the solution can be improved by iterative refinement: solve $G\alpha_0 = b$ to moderate tolerance, compute the residual $r = b - G\alpha_0$, solve $G\delta = r$, and update $\alpha \leftarrow \alpha_0 + \delta$. Each refinement step reuses the existing preconditioner and reduces the error by roughly the same factor as the original solve. This is particularly relevant when the approximate Cholesky local solvers ([Part 3](3_local_solvers.md)) limit preconditioner quality — refinement recovers accuracy without rebuilding the factorization. The solver reports the independently verified residual $\|G\alpha - b\| / \|b\|$ after each solve regardless of convergence status.
 
 ---
 
@@ -193,7 +182,7 @@ This is reported regardless of whether the Krylov method converged.
 
 ### 4.1 Space decomposition framework
 
-The Schwarz method decomposes the global DOF space $V = \mathbb{R}^m$ into overlapping subspaces $V_i \subset V$, each defined by a set of global DOF indices. Let $R_i: V \to V_i$ be the restriction operator that extracts the subdomain DOFs, and $R_i^\top: V_i \to V$ the prolongation that scatters them back.
+The Schwarz method decomposes the global DOF space $\mathbb{R}^m$ into overlapping subspaces $S_i \subset \mathbb{R}^m$, each defined by a set of global DOF indices. Let $R_i: \mathbb{R}^m \to S_i$ be the restriction operator that extracts the subdomain DOFs, and $R_i^\top: S_i \to \mathbb{R}^m$ the prolongation that scatters them back.
 
 The local operator on subdomain $i$ is $A_i = R_i G R_i^\top$, the principal submatrix of $G$ restricted to subdomain $i$'s DOFs. Solving $A_i z_i = r_i$ is the local solve.
 
@@ -201,33 +190,33 @@ The local operator on subdomain $i$ is $A_i = R_i G R_i^\top$, the principal sub
 
 ### 4.2 Partition of unity
 
-When subdomains overlap (a DOF belongs to multiple subdomains), corrections must be weighted to avoid double-counting. The partition-of-unity assigns each DOF $j$ in subdomain $i$ a weight:
-
-$$
-\tilde{d}_{i,j} = \frac{1}{|\{k : j \in V_k\}|}
-$$
-
-where the denominator counts how many subdomains contain DOF $j$. By construction:
+When subdomains overlap (a DOF belongs to multiple subdomains), corrections must be weighted to avoid double-counting. The two-sided additive Schwarz formula applies weights on both the restriction and prolongation sides (Section 4.3), so the partition-of-unity must satisfy:
 
 $$
 \sum_{i} R_i^\top \tilde{D}_i^2 R_i = I
 $$
 
-where $\tilde{D}_i = \text{diag}(\tilde{d}_{i,1}, \dots, \tilde{d}_{i,|V_i|})$. This identity ensures that the preconditioner correctly partitions the global correction.
+For a DOF $j$ appearing in $c_j$ subdomains, each weight is set to:
 
-When a subdomain has no overlapping DOFs (all counts are 1), the weights are stored as a single integer count rather than a per-DOF vector, avoiding unnecessary allocation.
+$$
+\tilde{d}_{i,j} = \frac{1}{\sqrt{c_j}}, \qquad c_j = |\{k : j \in V_k\}|
+$$
+
+so that $c_j \times (1/\sqrt{c_j})^2 = 1$ at every DOF. This ensures that the preconditioner correctly partitions the global correction without under- or over-correcting at overlap regions.
+
+When a subdomain has no overlapping DOFs (all counts are 1, so all weights are 1), the weights are stored as a single integer count rather than a per-DOF vector, avoiding unnecessary allocation.
 
 ### 4.3 Additive Schwarz
 
 The additive Schwarz preconditioner applies all local solves independently and sums the weighted corrections:
 
 $$
-M^{-1}_{\text{add}} r = \sum_{i=1}^{N_s} R_i^\top \tilde{D}_i A_i^{-1} \tilde{D}_i R_i r
+M^{-1}_{\text{add}} r = \sum_{i=1}^{N_s} R_i^\top \tilde{D}_i A_i^+ \tilde{D}_i R_i r
 $$
 
 For each subdomain $i$:
 1. **Restrict**: $r_i = \tilde{D}_i R_i r$ (gather DOFs from global residual, apply PoU weights)
-2. **Local solve**: $z_i = A_i^{-1} r_i$
+2. **Local solve**: $z_i = A_i^+ r_i$
 3. **Prolongate**: scatter $\tilde{D}_i z_i$ back to global, accumulating across subdomains
 
 All subdomains are processed in parallel. The additive preconditioner is symmetric, making it compatible with CG.
@@ -242,7 +231,7 @@ $$
 &z = 0, \quad r_{\text{work}} = r \\
 &\textbf{for } i = 1, \dots, N_s: \\
 &\quad r_i = \tilde{D}_i R_i\, r_{\text{work}} \\
-&\quad z_i = A_i^{-1} r_i \\
+&\quad z_i = A_i^+ r_i \\
 &\quad z \leftarrow z + R_i^\top \tilde{D}_i z_i \\
 &\quad r_{\text{work}} \leftarrow r_{\text{work}} - G R_i^\top \tilde{D}_i z_i
 \end{aligned}
@@ -259,7 +248,7 @@ Subdomains are derived from the factor-pair structure of the Gramian:
 2. **Build cross-tabulation**: for each pair, scan observations to build the sparse bipartite block $C_{qr}$ and diagonal vectors $D_q$, $D_r$.
 3. **Find connected components**: run DFS on the bipartite graph of $C_{qr}$ to identify independent components.
 4. **Create subdomains**: each component becomes a subdomain. Its global DOF indices are the active levels of factors $q$ and $r$ within that component.
-5. **Compute partition-of-unity weights**: count how many subdomains each DOF belongs to, assign $w = 1/\text{count}$.
+5. **Compute partition-of-unity weights**: count how many subdomains each DOF belongs to, assign $w = 1/\sqrt{\text{count}}$.
 
 Factor pairs are processed in parallel. When there is only one connected component per pair (the common case), the full cross-tabulation is shared via reference counting rather than copied.
 
@@ -281,10 +270,10 @@ Input: categories[n][Q], y[n], weights[n], solver_params, precond_config
    b. Find connected components of the bipartite graph
    c. For each component: create subdomain with global DOF indices
 
-3. Compute partition-of-unity weights (1/count per DOF)
+3. Compute partition-of-unity weights (1/sqrt(count) per DOF)
 
 4. For each subdomain in parallel:
-   a. Build local SDDM or compute Schur complement
+   a. Build local Laplacian (sign-flip) or compute Schur complement
    b. Factor with approximate Cholesky (or dense Cholesky for small systems)
 
 5. Assemble Schwarz preconditioner from subdomain entries
@@ -333,8 +322,7 @@ The total cost per Krylov iteration is dominated by the operator application and
 
 **Correia, S.** (2016). *A Feasible Estimator for Linear Models with Multi-Way Fixed Effects*. Working paper. Describes the fixed-effects normal equations and their block structure.
 
-**Gremban, K. D.** (1996). *Combinatorial Preconditioners for Sparse, Symmetric, Diagonally Dominant Linear Systems*. PhD thesis, Carnegie Mellon University. Introduces the augmentation technique for SDDM-to-Laplacian reduction.
-
 **Xu, J.** (1992). *Iterative Methods by Space Decomposition and Subspace Correction*. SIAM Review, 34(4), 581–613. Provides the abstract space decomposition framework for additive and multiplicative Schwarz methods.
 
 **Toselli, A. & Widlund, O. B.** (2005). *Domain Decomposition Methods — Algorithms and Theory*. Springer. Comprehensive reference for the theory and convergence analysis of Schwarz domain decomposition methods.
+

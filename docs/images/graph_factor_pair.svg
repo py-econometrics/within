@@ -1,0 +1,61 @@
+<svg viewBox="0 0 600 440" xmlns="http://www.w3.org/2000/svg" font-family="Arial, Helvetica, sans-serif">
+  <rect width="600" height="440" fill="white" rx="4"/>
+
+  <!-- Worker–Firm: red rectangle -->
+  <rect x="62" y="30" width="476" height="240" rx="14"
+        fill="rgba(210,70,70,0.10)" stroke="#c44" stroke-width="2.5"/>
+
+  <!-- Firm–Year: blue rectangle -->
+  <rect x="142" y="170" width="316" height="240" rx="14"
+        fill="rgba(70,70,210,0.10)" stroke="#44c" stroke-width="2.5"/>
+
+  <!-- Worker–Year: green C-shape (one corridor on the left) -->
+  <path d="M 522,36 L 78,36 L 78,404 L 522,404 L 522,312
+           L 160,312 L 160,128 L 522,128 Z"
+        fill="rgba(70,170,70,0.15)" stroke="#4a4" stroke-width="2.5"/>
+
+  <!-- Edges colored by subdomain -->
+  <g stroke-linecap="round">
+    <!-- Worker–Firm edges (red-tinted) -->
+    <line x1="120" y1="80" x2="200" y2="220" stroke="#d99" stroke-width="1.5"/>
+    <line x1="120" y1="80" x2="400" y2="220" stroke="#d99" stroke-width="1.5"/>
+    <line x1="300" y1="80" x2="200" y2="220" stroke="#d99" stroke-width="1.5"/>
+    <line x1="480" y1="80" x2="400" y2="220" stroke="#d99" stroke-width="1.5"/>
+    <!-- Worker–Year edges (green-tinted) -->
+    <line x1="120" y1="80" x2="200" y2="360" stroke="#9b9" stroke-width="1.5"/>
+    <line x1="120" y1="80" x2="400" y2="360" stroke="#9b9" stroke-width="1.5"/>
+    <line x1="300" y1="80" x2="200" y2="360" stroke="#9b9" stroke-width="1.5"/>
+    <line x1="300" y1="80" x2="400" y2="360" stroke="#9b9" stroke-width="1.5"/>
+    <line x1="480" y1="80" x2="200" y2="360" stroke="#9b9" stroke-width="1.5"/>
+    <line x1="480" y1="80" x2="400" y2="360" stroke="#9b9" stroke-width="1.5"/>
+    <!-- Firm–Year edges (blue-tinted) -->
+    <line x1="200" y1="220" x2="200" y2="360" stroke="#99d" stroke-width="1.5"/>
+    <line x1="200" y1="220" x2="400" y2="360" stroke="#99d" stroke-width="1.5"/>
+    <line x1="400" y1="220" x2="200" y2="360" stroke="#99d" stroke-width="1.5"/>
+    <line x1="400" y1="220" x2="400" y2="360" stroke="#99d" stroke-width="1.5"/>
+  </g>
+
+  <!-- Nodes -->
+  <circle cx="120" cy="80" r="24" fill="#f9f" stroke="#555" stroke-width="2"/>
+  <text x="120" y="86" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">W1</text>
+  <circle cx="300" cy="80" r="24" fill="#f9f" stroke="#555" stroke-width="2"/>
+  <text x="300" y="86" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">W2</text>
+  <circle cx="480" cy="80" r="24" fill="#f9f" stroke="#555" stroke-width="2"/>
+  <text x="480" y="86" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">W3</text>
+
+  <circle cx="200" cy="220" r="24" fill="#bbf" stroke="#555" stroke-width="2"/>
+  <text x="200" y="226" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">F1</text>
+  <circle cx="400" cy="220" r="24" fill="#bbf" stroke="#555" stroke-width="2"/>
+  <text x="400" y="226" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">F2</text>
+
+  <circle cx="200" cy="360" r="24" fill="#ffa" stroke="#555" stroke-width="2"/>
+  <text x="200" y="366" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">Y1</text>
+  <circle cx="400" cy="360" r="24" fill="#ffa" stroke="#555" stroke-width="2"/>
+  <text x="400" y="366" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">Y2</text>
+
+  <!-- Subdomain labels -->
+  <text x="300" y="22" text-anchor="middle" font-size="12" fill="#c44" font-weight="600">Worker–Firm</text>
+  <text x="50" y="224" font-size="12" fill="#4a4" font-weight="600"
+        transform="rotate(-90,50,224)">Worker–Year</text>
+  <text x="300" y="425" text-anchor="middle" font-size="12" fill="#44c" font-weight="600">Firm–Year</text>
+</svg>
