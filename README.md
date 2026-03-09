@@ -9,7 +9,7 @@ By the Frisch-Waugh-Lovell theorem, estimating a regression of the form *y = Xβ
 Each observation links the factor levels it belongs to, forming a graph. Suppose we had a worker-firm panel at hand that maps workers to their employer. We get a bipartite graph where edges are employment spells of workers in firms:
 
 <p align="center">
-  <img src="bipartite.png" width="500" alt="A worker-firm panel viewed as a bipartite graph. Firms F1 and F2 are connected to workers W1–W5 by edges representing employment spells, with edge labels indicating periods of observation. W3 is a mover (edges to both firms); all others are stayers.">
+  <img src="docs/bipartite.png" width="500" alt="A worker-firm panel viewed as a bipartite graph. Firms F1 and F2 are connected to workers W1–W5 by edges representing employment spells, with edge labels indicating periods of observation. W3 is a mover (edges to both firms); all others are stayers.">
 </p>
 
 ## Installation
