@@ -2,7 +2,7 @@
 
 `within` provides high-performance solvers for projecting out high-dimensional fixed effects in regression problems.
 
-By the Frisch-Waugh-Lovell theorem, estimating a regression of the form *y = Xβ + Dα + ε* reduces to a sequence of least-squares projections, one for y and one for each column of X, followed by a cheap regression fit on the resulting residuals. The projection step - solving the normal equations *D'Dx = D'z* — is the computational bottleneck.
+By the Frisch-Waugh-Lovell theorem, estimating a regression of the form *y = Xβ + Dα + ε* reduces to a sequence of least-squares projections, one for y and one for each column of X, followed by a cheap regression fit on the resulting residuals. The projection step, solving the normal equations *D'Du = D'z*, is the computational bottleneck that `within` aims to speed up.
 
 Fixed-effects problems have a natural graph structure: each observation is an edge linking the factor levels it belongs to. In a worker-firm panel, this gives a bipartite graph where edges are employment spells:
 
