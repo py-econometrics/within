@@ -7,22 +7,7 @@ This is Part 2 of the algorithm documentation for the `within` solver. It descri
 - **Part 2: Preconditioned Krylov Solvers and Schwarz Decomposition** (this document)
 - [Part 3: Local Solvers and Approximate Cholesky](3_local_solvers.md)
 
-**Prerequisites**: Part 1 (problem formulation, Gramian block structure, Block Gauss-Seidel as multiplicative Schwarz).
-
----
-
-## Notation
-
-Symbols from [Part 1](1_fixed_effects_and_block_methods.md), plus:
-
-| Symbol | Meaning |
-|--------|---------|
-| $R_i$ | Restriction operator for subdomain $i$ |
-| $\tilde{D}_i$ | Partition-of-unity weight matrix for subdomain $i$ |
-| $A_i$ | Local operator $R_i G R_i^\top$ |
-| $M^{-1}$ | Preconditioner (approximate inverse of $G$) |
-| $N_s$ | Number of subdomains |
-| $\text{tol}$ | Convergence tolerance (default $10^{-8}$) |
+**Prerequisites**: Part 1 (problem formulation, Gramian block structure, demeaning as multiplicative Schwarz).
 
 ---
 
@@ -30,18 +15,7 @@ Symbols from [Part 1](1_fixed_effects_and_block_methods.md), plus:
 
 The solver combines three algorithmic ideas in a layered architecture:
 
-```
-┌─────────────────────────────────────────┐
-│  Krylov solver (CG or GMRES)            │  Outer iteration
-│    solves G α = D^T W y                 │
-├─────────────────────────────────────────┤
-│  Schwarz preconditioner                 │  Applied once per
-│    M⁻¹ = Σ Rᵢᵀ D̃ᵢ Aᵢ⁻¹ D̃ᵢ Rᵢ          │  Krylov iteration
-├─────────────────────────────────────────┤
-│  Local solvers (approx Cholesky)        │  One per subdomain,
-│    solve Aᵢ zᵢ = rᵢ                    │  independent & parallel
-└─────────────────────────────────────────┘
-```
+![Three-layer solver architecture](images/three_layer_architecture.svg)
 
 1. **Krylov solver** — conjugate gradient (CG) or restarted GMRES — iterates toward the solution, using the preconditioner to accelerate convergence.
 
@@ -51,13 +25,13 @@ The solver combines three algorithmic ideas in a layered architecture:
 
 ### Why this combination
 
-The Gramian $G$ for fixed-effects models is typically large and sparse, with block structure governed by the factor-pair interactions. Three properties motivate the design:
+As discussed in [Part 1, Section 5.2](1_fixed_effects_and_block_methods.md#52-the-key-idea-factor-pair-subdomains), the central trade-off is **exact solves on single factors** (demeaning) vs. **approximate solves on factor pairs** (`within`). The three layers exist to make this trade-off pay off:
 
 - **Block-bipartite structure**: each factor pair $(q,r)$ induces a bipartite subgraph. Connected components of these subgraphs form natural subdomains with limited overlap.
 
-- **Laplacian connection**: after a sign-flip transformation (Section 2), each bipartite block becomes a graph Laplacian, enabling the use of nearly-linear-time Laplacian solvers.
+- **Laplacian connection**: after a sign-flip transformation (Section 2), each bipartite block becomes a graph Laplacian. This unlocks nearly-linear-time *approximate* solvers — exact factorization would be too expensive for large subdomains, but the approximate Cholesky factorization ([Part 3](3_local_solvers.md)) produces factors that are accurate enough to make the Krylov solver converge in very few iterations.
 
-- **Spectral acceleration**: Schwarz preconditioning clusters the eigenvalues of $M^{-1}G$, reducing the Krylov iteration count from $O(\sqrt{\kappa})$ (unpreconditioned CG) to a count that depends on the quality of the local solves rather than the global condition number.
+- **Spectral acceleration**: the Krylov outer solver compensates for the approximate nature of the local solves. Even though each preconditioner application is inexact, the Krylov iteration refines the solution globally. The preconditioner clusters the eigenvalues of $M^{-1}G$, reducing the iteration count from $O(\sqrt{\kappa})$ (unpreconditioned demeaning) to a count determined by the quality of the local solves rather than the global condition number.
 
 ---
 
@@ -75,104 +49,51 @@ $$
 G_{qr} = \begin{pmatrix} D_q & C_{qr} \\ C_{qr}^\top & D_r \end{pmatrix}
 $$
 
-where $D_q$ and $D_r$ are the diagonal blocks restricted to the active levels in this pair.
-
 ### 2.2 Connected components as subdomains
 
-The bipartite graph of $C_{qr}$ may have multiple connected components. Each connected component defines an independent subproblem: the rows and columns of $G_{qr}$ can be permuted so that disconnected components are block-diagonal. These components become the subdomains of the Schwarz preconditioner.
+The bipartite graph of $C_{qr}$ may have multiple connected components. Each connected component defines an independent subproblem and becomes a subdomain of the Schwarz preconditioner.
 
 | Full interaction graph | Worker–Firm subgraph |
 |:---:|:---:|
 | ![Full graph](images/graph_plain.svg) | ![Worker–Firm bipartite subgraph](images/graph_bipartite_wf.svg) |
 
-Continuing the Worker/Firm/Year example from [Part 1](1_fixed_effects_and_block_methods.md): extracting just the Worker–Firm edges (right) from the full graph (left) gives the bipartite graph of $C_{WF}$ with edges W1–F1, W1–F2, W2–F1, W3–F2. Running DFS from any node reaches all others (W1 bridges both firms), so there is a single connected component containing all 5 DOFs {W1, W2, W3, F1, F2}. The same holds for the Worker–Year and Firm–Year pairs, giving 3 subdomains with one component each.
-
-Without W1's mobility (if W1 only worked at F1), the Worker–Firm graph would split into two components: {W1, W2, F1} and {W3, F2}, yielding two independent subdomains for this pair.
+Continuing the Worker/Firm/Year example from [Part 1](1_fixed_effects_and_block_methods.md): extracting just the Worker–Firm edges (right) gives the bipartite graph of $C_{WF}$. Running DFS from any node reaches all others (W1 bridges both firms), so there is a single connected component containing all 5 DOFs. Without W1's mobility, the graph would split into two components: {W1, W2, F1} and {W3, F2}, yielding two independent subdomains.
 
 ### 2.3 Laplacian connection via sign-flip
 
-The bipartite block $G_{qr}$ has non-negative off-diagonal entries (cross-tabulation counts), so it is not directly a graph Laplacian. However, negating the off-diagonal blocks produces one:
+The bipartite block $G_{qr}$ has non-negative off-diagonal entries, so it is not directly a graph Laplacian. Negating the off-diagonal blocks produces one:
 
 $$
 L_{qr} = \begin{pmatrix} D_q & -C_{qr} \\ -C_{qr}^\top & D_r \end{pmatrix}
 $$
 
-This is a graph Laplacian: symmetric, non-positive off-diagonal entries, and row sums exactly zero. The zero row-sum property holds because every observation at level $j$ of factor $q$ has exactly one level in factor $r$, so $D_q[j,j] = \sum_k C_{qr}[j,k]$ (and symmetrically for the $r$-rows). This is true regardless of the number of factors $Q$ — the diagonal $D_q[j,j]$ counts total observation weight at level $j$, and every such observation contributes to exactly one entry of $C_{qr}$.
+This is a valid graph Laplacian: symmetric, non-positive off-diagonal entries, and zero row sums. The zero row-sum property holds because every observation at level $j$ of factor $q$ has exactly one level in factor $r$, so $D_q[j,j] = \sum_k C_{qr}[j,k]$.
 
-The transform is an involution: solving $L_{qr} z = b$ and flipping the sign of the second block of $z$ recovers the solution to $G_{qr} z' = b'$.
-
-This Laplacian structure is exploited by the local solvers ([Part 3](3_local_solvers.md)), which convert bipartite Gramian blocks to Laplacian form and apply approximate Cholesky factorization — a nearly-linear-time algorithm designed for Laplacian systems.
+The transform is an involution: solving $L_{qr} z = b$ and flipping the sign of one block recovers the solution to the original system. This Laplacian structure is exploited by the local solvers ([Part 3](3_local_solvers.md)).
 
 ---
 
-## 3. Preconditioned Krylov Methods
+## 3. Krylov Outer Iteration
 
-The outer solver is a Krylov method that iteratively solves $G\alpha = b$ where $b = D^\top W y$.
+The outer solver is a Krylov method that iteratively solves $G\alpha = b$ where $b = D^\top W y$. At each step, the Krylov solver computes a residual $r = b - G\alpha$, applies the preconditioner to get a correction direction $z = M^{-1}r$, and updates the solution.
 
-### 3.1 Left-preconditioned Conjugate Gradient
+The key idea: instead of solving $G\alpha = b$ directly (which may take thousands of demeaning iterations), we use the Schwarz preconditioner $M^{-1}$ to "pre-digest" the residual at each step, pointing the solver toward the answer much faster.
 
-When the preconditioner $M^{-1}$ is symmetric positive-definite (as with additive Schwarz), CG is used. The left-preconditioned CG algorithm:
+![Preconditioned vs unpreconditioned convergence](images/preconditioned_convergence.svg)
 
-$$
-\boxed{
-\begin{aligned}
-&\textbf{Input: } G,\; M^{-1},\; b,\; \text{tol},\; \text{maxiter} \\
-&x_0 = 0, \quad r_0 = b, \quad z_0 = M^{-1} r_0, \quad p_0 = z_0 \\
-&\rho_0 = r_0^\top z_0, \quad \|b\| = \|r_0\|_2 \\[4pt]
-&\textbf{for } k = 0, 1, 2, \dots \\
-&\quad q_k = G p_k \\
-&\quad \gamma_k = p_k^\top q_k \\
-&\quad \textbf{if } \gamma_k \leq 0: \text{ exit (indefinite)} \\
-&\quad \alpha_k = \rho_k / \gamma_k \\
-&\quad x_{k+1} = x_k + \alpha_k p_k \\
-&\quad r_{k+1} = r_k - \alpha_k q_k \\
-&\quad \textbf{if } \|r_{k+1}\|_2 / \|b\| \leq \text{tol}: \text{ converged} \\
-&\quad z_{k+1} = M^{-1} r_{k+1} \\
-&\quad \rho_{k+1} = r_{k+1}^\top z_{k+1} \\
-&\quad \beta_k = \rho_{k+1} / \rho_k \\
-&\quad p_{k+1} = z_{k+1} + \beta_k p_k
-\end{aligned}
-}
-$$
+### 3.1 Solver selection
 
-**Convergence criterion**: $\|r_k\|_2 / \|b\|_2 \leq \text{tol}$, checked after each residual update. The algorithm also exits early on indefinite curvature ($p^\top G p \leq 0$) and stagnation ($|\rho_{k+1}| < \varepsilon \cdot |\rho_0|$).
+- **CG** (conjugate gradient) is used when the preconditioner is symmetric — this is the case with additive Schwarz. CG is optimal for symmetric positive-definite systems.
 
-### 3.2 Right-preconditioned GMRES(m)
+- **GMRES** (generalized minimal residual) is used when the preconditioner is non-symmetric — this is the case with multiplicative Schwarz, where the sequential processing breaks symmetry.
 
-When the preconditioner is non-symmetric (as with multiplicative Schwarz), GMRES with restarts is used. The right-preconditioned formulation solves $G M^{-1} (M\alpha) = b$, applying the preconditioner to the search direction rather than the residual.
+### 3.2 Convergence criterion
 
-The algorithm maintains an orthonormal Krylov basis $V = [v_1, \dots, v_k]$ via Arnoldi iteration with Modified Gram-Schmidt:
+The solver converges when $\|r_k\|_2 / \|b\|_2 \leq \text{tol}$ (default $10^{-8}$). This controls the normal-equation residual, not the demeaning error directly, but in practice it is a reliable proxy: when the normal-equation residual is small, the demeaned values are accurate enough for downstream inference.
 
-$$
-\boxed{
-\begin{aligned}
-&\textbf{Input: } G,\; M^{-1},\; b,\; \text{tol},\; m \text{ (restart)},\; \text{maxiter} \\
-&x_0 = 0, \quad \beta = \|b\|_2, \quad v_1 = b/\beta \\[4pt]
-&\textbf{repeat } \text{(restart cycles):} \\
-&\quad g = (\beta, 0, \dots, 0)^\top \in \mathbb{R}^{m+1} \\
-&\quad \textbf{for } j = 1, \dots, m: \\
-&\quad\quad z_j = M^{-1} v_j \\
-&\quad\quad w = G z_j \\
-&\quad\quad \textbf{for } i = 1, \dots, j: \quad h_{ij} = w^\top v_i, \quad w \leftarrow w - h_{ij} v_i \\
-&\quad\quad h_{j+1,j} = \|w\|_2 \\
-&\quad\quad \text{Apply Givens rotations to } h_{\cdot,j} \text{ and } g \\
-&\quad\quad \textbf{if } |g_{j+1}| \leq \text{tol} \cdot \|b\|: \text{ converged} \\
-&\quad\quad v_{j+1} = w / h_{j+1,j} \\
-&\quad \text{Solve upper-triangular } R y = g_{1:j} \\
-&\quad x \leftarrow x + Z_j y \quad \text{where } Z_j = [z_1, \dots, z_j]
-\end{aligned}
-}
-$$
+The solver reports the independently verified residual $\|G\alpha - b\| / \|b\|$ after each solve.
 
-The Givens rotations maintain an implicit QR factorization of the upper Hessenberg matrix, and $|g_{j+1}|$ tracks the residual norm without explicit computation. Lucky breakdown ($h_{j+1,j} \approx 0$) indicates the Krylov subspace is exhausted.
-
-### 3.3 Convergence tolerance vs. demean quality
-
-The Krylov convergence criterion $\|r_k\|_2 / \|b\|_2 \leq \text{tol}$ controls the normal-equation residual, not the demeaning error directly. These are related but distinct quantities. The normal equations $G\alpha = D^\top W y$ are a means to an end — the goal is the demeaned outcome $\tilde{y} = y - D\alpha$, and its quality depends on how errors in $\alpha$ propagate through $D$.
-
-An error $\delta\alpha$ in the coefficient vector produces a demeaning error $D\delta\alpha$. The ratio $\|D\delta\alpha\| / \|\delta\alpha\|$ depends on the spectrum of $D^\top D$ (i.e., the observation counts per level), so a normal-equation tolerance of $10^{-8}$ does not guarantee $10^{-8}$ accuracy in $\tilde{y}$ — it can be better or worse depending on the data geometry. In practice, the normal-equation residual is a reliable proxy: when it is small, the demeaned values are accurate enough for downstream inference.
-
-**Iterative refinement.** When higher accuracy is needed (or when approximate local solvers introduce additional error), the solution can be improved by iterative refinement: solve $G\alpha_0 = b$ to moderate tolerance, compute the residual $r = b - G\alpha_0$, solve $G\delta = r$, and update $\alpha \leftarrow \alpha_0 + \delta$. Each refinement step reuses the existing preconditioner and reduces the error by roughly the same factor as the original solve. This is particularly relevant when the approximate Cholesky local solvers ([Part 3](3_local_solvers.md)) limit preconditioner quality — refinement recovers accuracy without rebuilding the factorization. The solver reports the independently verified residual $\|G\alpha - b\| / \|b\|$ after each solve regardless of convergence status.
+**Iterative refinement.** When higher accuracy is needed, the solution can be improved by solving $G\delta = (b - G\alpha_0)$ and updating $\alpha \leftarrow \alpha_0 + \delta$. Each refinement step reuses the existing preconditioner and reduces the error by roughly the same factor as the original solve.
 
 ---
 
@@ -180,31 +101,21 @@ An error $\delta\alpha$ in the coefficient vector produces a demeaning error $D\
 
 [Part 1, Section 5](1_fixed_effects_and_block_methods.md#5-the-domain-decomposition-perspective) introduced the Schwarz perspective and contrasted factor-level with factor-pair decompositions. This section provides the full algorithmic details.
 
-### 4.1 Space decomposition framework
+### 4.1 How it works
 
-The Schwarz method decomposes the global DOF space $\mathbb{R}^m$ into overlapping subspaces $S_i \subset \mathbb{R}^m$, each defined by a set of global DOF indices. Let $R_i: \mathbb{R}^m \to S_i$ be the restriction operator that extracts the subdomain DOFs, and $R_i^\top: S_i \to \mathbb{R}^m$ the prolongation that scatters them back.
+The Schwarz preconditioner decomposes the global system into overlapping subdomains — one per factor pair — and applies local solves to each. The local operator on subdomain $i$ is $A_i = R_i G R_i^\top$, the principal submatrix of $G$ restricted to that subdomain's DOFs.
 
-The local operator on subdomain $i$ is $A_i = R_i G R_i^\top$, the principal submatrix of $G$ restricted to subdomain $i$'s DOFs. Solving $A_i z_i = r_i$ is the local solve.
+Two variants exist — additive and multiplicative — differing in how the local corrections are combined:
 
-**Reference**: Xu (1992) provides the abstract space decomposition framework underlying Schwarz methods.
+![Additive vs multiplicative Schwarz](images/additive_vs_multiplicative.svg)
 
 ### 4.2 Partition of unity
 
-When subdomains overlap (a DOF belongs to multiple subdomains), corrections must be weighted to avoid double-counting. The two-sided additive Schwarz formula applies weights on both the restriction and prolongation sides (Section 4.3), so the partition-of-unity must satisfy:
+When subdomains overlap (a DOF belongs to multiple subdomains), corrections must be weighted to avoid double-counting:
 
-$$
-\sum_{i} R_i^\top \tilde{D}_i^2 R_i = I
-$$
+![Partition of unity](images/partition_of_unity.svg)
 
-For a DOF $j$ appearing in $c_j$ subdomains, each weight is set to:
-
-$$
-\tilde{d}_{i,j} = \frac{1}{\sqrt{c_j}}, \qquad c_j = |\{k : j \in V_k\}|
-$$
-
-so that $c_j \times (1/\sqrt{c_j})^2 = 1$ at every DOF. This ensures that the preconditioner correctly partitions the global correction without under- or over-correcting at overlap regions.
-
-When a subdomain has no overlapping DOFs (all counts are 1, so all weights are 1), the weights are stored as a single integer count rather than a per-DOF vector, avoiding unnecessary allocation.
+Each DOF $j$ that appears in $c_j$ subdomains gets weight $1/\sqrt{c_j}$ in each subdomain. The weights are applied on both the restriction and prolongation sides, so they contribute $c_j \times (1/\sqrt{c_j})^2 = 1$ — correctly partitioning the correction. In the running example, every DOF appears in exactly 2 subdomains, so every weight is $1/\sqrt{2}$.
 
 ### 4.3 Additive Schwarz
 
@@ -214,43 +125,23 @@ $$
 M^{-1}_{\text{add}} r = \sum_{i=1}^{N_s} R_i^\top \tilde{D}_i A_i^+ \tilde{D}_i R_i r
 $$
 
-For each subdomain $i$:
-1. **Restrict**: $r_i = \tilde{D}_i R_i r$ (gather DOFs from global residual, apply PoU weights)
-2. **Local solve**: $z_i = A_i^+ r_i$
-3. **Prolongate**: scatter $\tilde{D}_i z_i$ back to global, accumulating across subdomains
-
-All subdomains are processed in parallel. The additive preconditioner is symmetric, making it compatible with CG.
+For each subdomain: gather DOFs from the global residual with weights → local solve → scatter back with weights. All subdomains are processed in parallel. The preconditioner is symmetric, making it compatible with CG.
 
 ### 4.4 Multiplicative Schwarz
 
-The multiplicative Schwarz preconditioner processes subdomains sequentially, updating the residual after each correction:
-
-$$
-\boxed{
-\begin{aligned}
-&z = 0, \quad r_{\text{work}} = r \\
-&\textbf{for } i = 1, \dots, N_s: \\
-&\quad r_i = \tilde{D}_i R_i\, r_{\text{work}} \\
-&\quad z_i = A_i^+ r_i \\
-&\quad z \leftarrow z + R_i^\top \tilde{D}_i z_i \\
-&\quad r_{\text{work}} \leftarrow r_{\text{work}} - G R_i^\top \tilde{D}_i z_i
-\end{aligned}
-}
-$$
-
-The sequential residual update $r_{\text{work}} \leftarrow r - G(R_i^\top \tilde{D}_i z_i)$ allows each subdomain to "see" corrections from earlier subdomains, generally improving convergence versus additive Schwarz. However, the preconditioner is non-symmetric, requiring GMRES instead of CG. An optional backward sweep (reverse subdomain order) can be appended for a symmetric variant.
+The multiplicative variant processes subdomains sequentially, updating the residual after each correction. Each subdomain "sees" corrections from earlier subdomains, generally improving convergence versus additive Schwarz. However, the sequential processing makes the preconditioner non-symmetric, requiring GMRES.
 
 ### 4.5 Subdomain construction
 
 Subdomains are derived from the factor-pair structure of the Gramian:
 
-1. **Enumerate factor pairs**: all $\binom{Q}{2}$ unordered pairs $(q, r)$ with $q < r$.
+1. **Enumerate factor pairs**: all $\binom{Q}{2}$ unordered pairs $(q, r)$.
 2. **Build cross-tabulation**: for each pair, scan observations to build the sparse bipartite block $C_{qr}$ and diagonal vectors $D_q$, $D_r$.
 3. **Find connected components**: run DFS on the bipartite graph of $C_{qr}$ to identify independent components.
-4. **Create subdomains**: each component becomes a subdomain. Its global DOF indices are the active levels of factors $q$ and $r$ within that component.
+4. **Create subdomains**: each component becomes a subdomain with its global DOF indices.
 5. **Compute partition-of-unity weights**: count how many subdomains each DOF belongs to, assign $w = 1/\sqrt{\text{count}}$.
 
-Factor pairs are processed in parallel. When there is only one connected component per pair (the common case), the full cross-tabulation is shared via reference counting rather than copied.
+Factor pairs are processed in parallel.
 
 ---
 
@@ -288,9 +179,9 @@ Input: WeightedDesign, preconditioner M⁻¹, right-hand side y
 
 1. Project to normal equations: b = Dᵀ W y
 
-2. Dispatch Krylov solver (configured independently):
-   - CG is used with additive Schwarz (symmetric preconditioner)
-   - GMRES is used with multiplicative Schwarz (non-symmetric)
+2. Dispatch Krylov solver:
+   - CG with additive Schwarz (symmetric preconditioner)
+   - GMRES with multiplicative Schwarz (non-symmetric)
 
 3. Solve G α = b with preconditioner M⁻¹
    - Each iteration: one G·x product + one M⁻¹·r application
@@ -301,21 +192,6 @@ Input: WeightedDesign, preconditioner M⁻¹, right-hand side y
 5. Verify final residual: ‖G α - b‖ / ‖b‖
 ```
 
-### 5.3 Complexity
-
-| Phase | Cost | Notes |
-|-------|------|-------|
-| Cross-tabulation build | $O(n Q^2)$ | One observation scan per factor pair |
-| Connected components | $O(m + \text{nnz})$ per pair | DFS on bipartite graph |
-| Schur complement (exact) | $O(m_{\text{keep}} \cdot \text{nnz}_{\text{local}})$ | Row-workspace, parallelized |
-| Schur complement (approx) | $O(\text{nnz}_{\text{local}})$ | One tree per star |
-| Approximate Cholesky | $O(m_{\text{local}} \log m_{\text{local}})$ | Per subdomain |
-| Gramian-vector product (implicit) | $O(nQ)$ | Per Krylov iteration |
-| Gramian-vector product (explicit) | $O(\text{nnz}(G))$ | Per Krylov iteration |
-| Preconditioner application | $\sum_i O(m_i)$ | Local triangular solves |
-
-The total cost per Krylov iteration is dominated by the operator application and preconditioner application. The setup cost is amortized if the preconditioner is reused across multiple right-hand sides (batch solve).
-
 ---
 
 ## References
@@ -325,4 +201,3 @@ The total cost per Krylov iteration is dominated by the operator application and
 **Xu, J.** (1992). *Iterative Methods by Space Decomposition and Subspace Correction*. SIAM Review, 34(4), 581–613. Provides the abstract space decomposition framework for additive and multiplicative Schwarz methods.
 
 **Toselli, A. & Widlund, O. B.** (2005). *Domain Decomposition Methods — Algorithms and Theory*. Springer. Comprehensive reference for the theory and convergence analysis of Schwarz domain decomposition methods.
-

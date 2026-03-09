@@ -1,0 +1,113 @@
+<svg viewBox="0 0 780 240" xmlns="http://www.w3.org/2000/svg" font-family="Arial, Helvetica, sans-serif">
+  <rect width="780" height="240" fill="white" rx="4"/>
+
+  <defs>
+    <marker id="earr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#888"/>
+    </marker>
+  </defs>
+
+  <!-- PANEL 1: Original bipartite graph -->
+  <text x="95" y="18" text-anchor="middle" font-size="11" fill="#555" font-weight="600">Worker-Firm bipartite</text>
+
+  <!-- Workers (left column) -->
+  <circle cx="40" cy="60" r="18" fill="#f9f" stroke="#555" stroke-width="1.5"/>
+  <text x="40" y="65" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">W1</text>
+  <circle cx="40" cy="120" r="18" fill="#f9f" stroke="#555" stroke-width="1.5"/>
+  <text x="40" y="125" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">W2</text>
+  <circle cx="40" cy="180" r="18" fill="#f9f" stroke="#555" stroke-width="1.5"/>
+  <text x="40" y="185" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">W3</text>
+
+  <!-- Firms (right column) -->
+  <circle cx="150" cy="90" r="18" fill="#bbf" stroke="#555" stroke-width="1.5"/>
+  <text x="150" y="95" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">F1</text>
+  <circle cx="150" cy="150" r="18" fill="#bbf" stroke="#555" stroke-width="1.5"/>
+  <text x="150" y="155" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">F2</text>
+
+  <!-- Bipartite edges -->
+  <line x1="58" y1="60" x2="132" y2="90" stroke="#ccc" stroke-width="2"/>
+  <line x1="58" y1="60" x2="132" y2="150" stroke="#ccc" stroke-width="2"/>
+  <line x1="58" y1="120" x2="132" y2="90" stroke="#ccc" stroke-width="2"/>
+  <line x1="58" y1="180" x2="132" y2="150" stroke="#ccc" stroke-width="2"/>
+
+  <!-- Arrow 1→2 -->
+  <line x1="185" y1="120" x2="213" y2="120" stroke="#888" stroke-width="1.5" marker-end="url(#earr)"/>
+  <text x="199" y="112" text-anchor="middle" font-size="8" fill="#888">elim W1</text>
+
+  <!-- PANEL 2: After eliminating W1 -->
+  <text x="315" y="18" text-anchor="middle" font-size="11" fill="#555" font-weight="600">Eliminate W1</text>
+
+  <!-- W1 ghosted -->
+  <circle cx="260" cy="60" r="18" fill="#eee" stroke="#ccc" stroke-width="1.5" stroke-dasharray="3,2"/>
+  <text x="260" y="65" text-anchor="middle" font-size="10" fill="#bbb">W1</text>
+
+  <!-- Ghost edges from W1 -->
+  <line x1="278" y1="60" x2="352" y2="90" stroke="#eee" stroke-width="1" stroke-dasharray="3,2"/>
+  <line x1="278" y1="60" x2="352" y2="150" stroke="#eee" stroke-width="1" stroke-dasharray="3,2"/>
+
+  <!-- Remaining workers -->
+  <circle cx="260" cy="120" r="18" fill="#f9f" stroke="#555" stroke-width="1.5"/>
+  <text x="260" y="125" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">W2</text>
+  <circle cx="260" cy="180" r="18" fill="#f9f" stroke="#555" stroke-width="1.5"/>
+  <text x="260" y="185" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">W3</text>
+
+  <!-- Firms -->
+  <circle cx="370" cy="90" r="18" fill="#bbf" stroke="#555" stroke-width="1.5"/>
+  <text x="370" y="95" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">F1</text>
+  <circle cx="370" cy="150" r="18" fill="#bbf" stroke="#555" stroke-width="1.5"/>
+  <text x="370" y="155" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">F2</text>
+
+  <!-- Remaining bipartite edges -->
+  <line x1="278" y1="120" x2="352" y2="90" stroke="#ccc" stroke-width="2"/>
+  <line x1="278" y1="180" x2="352" y2="150" stroke="#ccc" stroke-width="2"/>
+
+  <!-- Fill edge F1-F2 from W1 -->
+  <line x1="370" y1="108" x2="370" y2="132" stroke="#c44" stroke-width="2.5"/>
+  <text x="385" y="124" font-size="9" fill="#c44">fill</text>
+
+  <!-- Arrow 2→3 -->
+  <line x1="405" y1="120" x2="433" y2="120" stroke="#888" stroke-width="1.5" marker-end="url(#earr)"/>
+  <text x="419" y="112" text-anchor="middle" font-size="8" fill="#888">elim all</text>
+
+  <!-- PANEL 3: After eliminating all workers -->
+  <text x="545" y="18" text-anchor="middle" font-size="11" fill="#555" font-weight="600">All workers eliminated</text>
+
+  <!-- All workers ghosted -->
+  <circle cx="480" cy="60" r="18" fill="#eee" stroke="#ccc" stroke-width="1.5" stroke-dasharray="3,2"/>
+  <text x="480" y="65" text-anchor="middle" font-size="10" fill="#bbb">W1</text>
+  <circle cx="480" cy="120" r="18" fill="#eee" stroke="#ccc" stroke-width="1.5" stroke-dasharray="3,2"/>
+  <text x="480" y="125" text-anchor="middle" font-size="10" fill="#bbb">W2</text>
+  <circle cx="480" cy="180" r="18" fill="#eee" stroke="#ccc" stroke-width="1.5" stroke-dasharray="3,2"/>
+  <text x="480" y="185" text-anchor="middle" font-size="10" fill="#bbb">W3</text>
+
+  <!-- Ghost edges -->
+  <line x1="498" y1="60" x2="582" y2="90" stroke="#eee" stroke-width="1" stroke-dasharray="3,2"/>
+  <line x1="498" y1="60" x2="582" y2="150" stroke="#eee" stroke-width="1" stroke-dasharray="3,2"/>
+  <line x1="498" y1="120" x2="582" y2="90" stroke="#eee" stroke-width="1" stroke-dasharray="3,2"/>
+  <line x1="498" y1="180" x2="582" y2="150" stroke="#eee" stroke-width="1" stroke-dasharray="3,2"/>
+
+  <!-- Firms only -->
+  <circle cx="600" cy="90" r="18" fill="#bbf" stroke="#555" stroke-width="2"/>
+  <text x="600" y="95" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">F1</text>
+  <circle cx="600" cy="150" r="18" fill="#bbf" stroke="#555" stroke-width="2"/>
+  <text x="600" y="155" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">F2</text>
+
+  <!-- Fill edge F1-F2 (now the Schur complement graph) -->
+  <line x1="600" y1="108" x2="600" y2="132" stroke="#c44" stroke-width="2.5"/>
+
+  <!-- Arrow to result -->
+  <line x1="625" y1="120" x2="650" y2="120" stroke="#888" stroke-width="1.5" marker-end="url(#earr)"/>
+
+  <!-- Result box -->
+  <rect x="655" y="55" width="115" height="130" rx="8" fill="#fff8e0" stroke="#cc8" stroke-width="1.5"/>
+  <text x="712" y="78" text-anchor="middle" font-size="11" font-weight="bold" fill="#333">Schur</text>
+  <text x="712" y="94" text-anchor="middle" font-size="11" font-weight="bold" fill="#333">complement</text>
+  <text x="712" y="120" text-anchor="middle" font-size="10" fill="#555">Smaller system</text>
+  <text x="712" y="136" text-anchor="middle" font-size="10" fill="#555">on firms only.</text>
+  <text x="712" y="156" text-anchor="middle" font-size="10" fill="#555">Fill edges encode</text>
+  <text x="712" y="172" text-anchor="middle" font-size="10" fill="#555">indirect worker</text>
+  <text x="712" y="188" text-anchor="middle" font-size="10" fill="#555">connections.</text>
+
+  <!-- Bottom annotation -->
+  <text x="315" y="225" text-anchor="middle" font-size="10" fill="#888">Workers share no edges &#x2192; all worker eliminations are independent &#x2192; parallel</text>
+</svg>

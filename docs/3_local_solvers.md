@@ -1,6 +1,6 @@
 # Part 3: Local Solvers and Approximate Cholesky
 
-This is Part 3 of the algorithm documentation for the `within` solver. It describes the local solve strategies used within each Schwarz subdomain: bipartite-to-Laplacian transformation, Schur complement reduction, and approximate Cholesky factorization.
+This is Part 3 of the algorithm documentation for the `within` solver. It describes how each Schwarz subdomain is solved: the Schur complement reduction that shrinks the problem, and the approximate Cholesky factorization that solves it in nearly-linear time.
 
 **Series overview**:
 - [Part 1: Fixed Effects and Block Iterative Methods](1_fixed_effects_and_block_methods.md)
@@ -11,63 +11,59 @@ This is Part 3 of the algorithm documentation for the `within` solver. It descri
 
 ---
 
-## Notation
+## 1. The Local Solve Pipeline
 
-Symbols from Parts [1](1_fixed_effects_and_block_methods.md) and [2](2_solver_architecture.md), plus:
+Each subdomain requires solving a system $A_i z_i = r_i$ where $A_i$ is the bipartite Gramian block for a factor pair. These systems are too large to solve exactly in practice — a Worker-Firm block in a real dataset may have millions of DOFs. Instead, the solver produces an **approximate** factorization that is cheap to build and cheap to apply, trading exactness for speed. The Krylov outer solver ([Part 2](2_solver_architecture.md)) compensates for this approximation by refining the global solution across iterations.
 
-| Symbol | Meaning |
-|--------|---------|
-| $n_q, n_r$ | Number of active levels in the local subdomain for factors $q, r$ |
-| $C$ | Cross-tabulation block restricted to the subdomain (local) |
-| $L$ | Sign-flipped Laplacian matrix |
-| $S$ | Schur complement of the eliminated block |
-| $\tilde{L}$ | Approximate Cholesky factor |
+The local solve applies a pipeline of transformations that progressively simplify the problem:
 
----
+![Local solve pipeline](images/local_solve_pipeline.svg)
 
-## 1. The Local System
+The key stages are:
+1. **Sign-flip** the bipartite block into a graph Laplacian (zero row-sums)
+2. **Eliminate the larger factor** via Schur complement — reducing e.g. a (workers + firms) system to a firms-only system. This step can be exact or approximate (Section 3.3).
+3. **Factor** the reduced system with approximate Cholesky — the main source of approximation
+4. **Solve** via cheap triangular substitution, then back-substitute to recover the full solution
 
-Each subdomain requires solving a system $A_i z_i = r_i$ where $A_i$ is the bipartite Gramian block for a factor pair restricted to a connected component. The local operator is:
-
-$$
-A_i = G_{\text{local}} = \begin{pmatrix} D_q & C \\ C^\top & D_r \end{pmatrix}
-$$
-
-where $D_q$, $D_r$ are the (diagonal) weighted-count matrices and $C$ is the cross-tabulation, all restricted to the component's active levels. This is an $(n_q + n_r) \times (n_q + n_r)$ sparse matrix.
-
-Two solver strategies are available: full Laplacian factorization and Schur complement reduction.
+The approximation enters in steps 2 (optionally) and 3 (always): both use **clique-tree sampling** to avoid the quadratic fill that exact Gaussian elimination would produce.
 
 ---
 
 ## 2. Laplacian Connection
 
-To apply the approximate Cholesky factorization (which requires a Laplacian input), the bipartite Gramian is transformed via sign-flip (as described in [Part 2, Section 2.3](2_solver_architecture.md#23-laplacian-connection-via-sign-flip)):
+The local operator for a factor pair is:
+
+$$
+A_i = G_{\text{local}} = \begin{pmatrix} D_q & C \\ C^\top & D_r \end{pmatrix}
+$$
+
+Negating the off-diagonal blocks produces a graph Laplacian:
 
 $$
 L = \begin{pmatrix} D_q & -C \\ -C^\top & D_r \end{pmatrix}
 $$
 
-This is always a graph Laplacian: every observation at level $j$ of factor $q$ has exactly one level in factor $r$, so $D_q[j,j] = \sum_k C[j,k]$ and all row sums are exactly zero.
+This works because every observation at level $j$ of factor $q$ has exactly one level in factor $r$, so $D_q[j,j] = \sum_k C[j,k]$ — the row sums are exactly zero.
 
-The local solve wrapper handles the sign convention:
-
-1. **Before solve**: negate the second block of the RHS ($r[n_q \ldots] \leftarrow -r[n_q \ldots]$), subtract the mean
-2. **Solve**: $L z = r$ via approximate Cholesky
-3. **After solve**: negate the second block of the solution ($z[n_q \ldots] \leftarrow -z[n_q \ldots]$)
-
-While the original bipartite blocks are always exact Laplacians, downstream transformations (approximate Schur complement via clique-tree sampling, or approximate Cholesky intermediate systems) may introduce small row-sum deficits. When this happens, **Gremban augmentation** adds one extra "ground" node connected to all others, absorbing the deficit. The augmented system is one dimension larger ($n_q + n_r + 1$) but is guaranteed to be a valid Laplacian.
-
-Depending on the solve path, the local system may or may not need sign-flipping (bipartite blocks do, Schur complement outputs are already Laplacian) and may or may not need augmentation (exact operations preserve zero row-sums, approximate ones may not).
+The local solve wrapper handles the sign convention: negate the second block of the RHS before solving, negate the second block of the solution after. Downstream transformations (approximate Schur complement, approximate Cholesky) may introduce small row-sum deficits; when this happens, **Gremban augmentation** adds one extra "ground" node connected to all others, absorbing the deficit and restoring a valid Laplacian.
 
 ---
 
 ## 3. Schur Complement Reduction
 
-For the bipartite structure, block Gaussian elimination can reduce the system size before factorization.
+The core idea: since workers share no edges in the bipartite graph, we can **eliminate all workers at once** to get a smaller system on firms only.
 
-Note that applying approximate Cholesky directly to the full Laplacian is equivalent to Schur complement reduction with the same clique-tree sampling rule (up to vertex ordering). Because the graph is bipartite, vertices in the eliminated block have no edges to each other — their eliminations are independent regardless of order, producing the same reduced system on the kept block. Schur complement reduction is therefore always preferred: it makes this independence explicit, enables parallel elimination of the entire block, and yields a smaller system for the subsequent approximate Cholesky factorization.
+### 3.1 What elimination looks like on the graph
 
-Given:
+![Eliminating workers from the bipartite graph](images/schur_eliminate_workers.svg)
+
+Each worker elimination removes that worker and creates **fill edges** between the firms they worked at. Worker W1 worked at F1 and F2, so eliminating W1 creates a direct F1–F2 connection. These fill edges encode indirect connections mediated through workers.
+
+Since workers have no edges between themselves (the graph is bipartite), all worker eliminations are independent and can proceed in parallel.
+
+### 3.2 The reduced system
+
+Given the Laplacian:
 
 $$
 \begin{pmatrix} D_q & -C \\ -C^\top & D_r \end{pmatrix}
@@ -75,7 +71,7 @@ $$
 = \begin{pmatrix} b_q \\ b_r \end{pmatrix}
 $$
 
-Eliminate the larger block (say $D_q$ when $m_q \geq m_r$). Since $D_q$ is diagonal, elimination is exact and cheap:
+Eliminate the larger block (say workers, $D_q$). Since $D_q$ is diagonal, this is exact and cheap:
 
 $$
 S\, z_r = b_r + C^\top D_q^{-1} b_q
@@ -87,85 +83,39 @@ $$
 S = D_r - C^\top D_q^{-1} C
 $$
 
-The Schur complement $S$ is an $m_r \times m_r$ Laplacian on the smaller factor's levels, with edge weights that capture the indirect connections through the eliminated factor. After solving for $z_r$, back-substitution recovers:
+The Schur complement $S$ is a Laplacian on the smaller factor's levels (e.g. firms), with edge weights that capture indirect connections through the eliminated factor (e.g. workers). After solving for $z_r$, back-substitution recovers $z_q = D_q^{-1}(b_q + C\, z_r)$.
 
-$$
-z_q = D_q^{-1}(b_q + C\, z_r)
-$$
+### 3.3 Exact vs. approximate elimination
 
-The figure below illustrates the core operation for a single eliminated vertex. Worker W1, connected to firms F1, F2, and F3, forms a degree-3 star. Exact elimination replaces this star with the complete clique on its firm neighbors — $\binom{3}{2} = 3$ fill edges. The approximate variant instead samples a random spanning tree with only $d - 1 = 2$ edges, preserving the expected Laplacian (dashed: the edge not sampled).
+Each eliminated worker with $d$ firm connections creates a dense **clique** of $\binom{d}{2}$ fill edges among its firms. A worker who worked at 100 firms creates $\binom{100}{2} = 4{,}950$ fill edges — this can be expensive.
 
 ![Schur complement: clique vs. tree](images/schur_clique_vs_tree.svg)
 
-Since workers share no edges in the bipartite graph, all worker eliminations are independent and can proceed in parallel — each star's fill depends only on its own edges.
+The **approximate** variant (Gao, Kyng, and Spielman, 2025) replaces each clique with a random **spanning tree** — only $d - 1$ edges instead of $\binom{d}{2}$. The tree weights are chosen so that the expected Laplacian matches the clique Laplacian (an **unbiased estimator**). For the worker with 100 firms: 99 edges instead of 4,950 — same quality in expectation, 50× less work.
 
-### 3.1 Exact Schur complement
-
-For each row $i$ of the kept block, scatter into a dense workspace:
-
-$$
-S[i, j] = D_{\text{keep}}[i] \cdot \delta_{ij} - \sum_{k} \frac{C_{\text{keep} \to \text{elim}}[i,k] \cdot C_{\text{elim} \to \text{keep}}[k,j]}{D_{\text{elim}}[k]}
-$$
-
-The workspace is reset sparsely (only touched entries) after each row. Rows are computed in parallel.
-
-**Fill-in and structure.** Since this is exact elimination of the entire larger block, every eliminated vertex $k$ with $d$ neighbors in the keep-block contributes a dense clique of $\binom{d}{2}$ edges to $S$. In the worst case (a single high-degree vertex connected to all kept levels), the Schur complement is fully dense. In practice, the bipartite structure limits fill: most eliminated vertices connect to only a few kept levels, so $S$ remains sparse — but it can be substantially denser than the original bipartite block.
-
-Crucially, exact elimination preserves the Laplacian property: each row sum of $S$ is exactly zero because $\sum_j C[k,j] = D_q[k,k]$ in the parent Laplacian, so the clique contributions cancel perfectly. The result is a valid Laplacian that can be factored directly by approximate Cholesky. The approximate variant below (Section 4.2) replaces cliques with sampled trees for sparsity, but this trades the exact Laplacian property for SDDM (the row sums become non-negative rather than zero), requiring Gremban augmentation to restore a Laplacian.
-
-### 3.2 Approximate Schur complement (clique-tree sampling)
-
-The exact Schur complement $S = D_{\text{keep}} - C_{\text{k} \to \text{e}} \, D_{\text{elim}}^{-1} \, C_{\text{e} \to \text{k}}$ can be decomposed as a sum of rank-1 contributions, one per eliminated vertex:
-
-$$
-S = D_{\text{keep}} - \sum_{k=1}^{n_{\text{elim}}} \frac{1}{D_{\text{elim}}[k]} \, c_k \, c_k^\top
-$$
-
-where $c_k$ is the column of $C_{\text{k} \to \text{e}}$ corresponding to eliminated vertex $k$ (i.e., the edge weights from $k$ to its neighbors in the keep-block). Each rank-1 term $c_k c_k^\top / D_{\text{elim}}[k]$ is a weighted clique on the neighbors of $k$ — if vertex $k$ has $d$ neighbors, this clique has $\binom{d}{2}$ edges, which can be expensive to materialize.
-
-**The key insight** from Gao, Kyng, and Spielman (2025): each rank-1 clique can be approximated by a random spanning tree of the star graph centered at $k$. A spanning tree has only $d - 1$ edges (linear in degree, not quadratic), and its edge weights can be chosen so that the expected Laplacian of the tree equals the rank-1 clique's Laplacian. This makes clique-tree sampling an **unbiased estimator** of each eliminated vertex's Schur complement contribution.
-
-Concretely, for eliminated vertex $k$ with neighbors $u_1, \ldots, u_d$ having weights $w_1, \ldots, w_d$ and $s_k = D_{\text{elim}}[k]$:
-- The exact clique adds edge $(u_i, u_j)$ with weight $w_i w_j / s_k$
-- The sampled tree adds $d - 1$ edges whose expected Laplacian matches the clique Laplacian
-
-Edges from all eliminated vertices are sorted, deduplicated (summing weights for duplicate edges), and merged across threads via a parallel reduce tree. The result is assembled into a symmetric CSR Laplacian.
+Exact elimination preserves the Laplacian property (zero row sums). The approximate variant produces an SDDM matrix (non-negative row sums), which is repaired via Gremban augmentation.
 
 ---
 
 ## 4. Approximate Cholesky Factorization
 
-The approximate Cholesky algorithm (Gao, Kyng, and Spielman, 2025) factors a Laplacian $L$ into an approximate lower-triangular factor $\tilde{L}$ such that $\tilde{L}\tilde{L}^\top \approx L$. It is applied to the (exact or approximate) Schur complement from Section 3.
+The approximate Cholesky algorithm (Gao, Kyng, and Spielman, 2025) factors the Schur complement $S$ into an approximate lower-triangular factor $\tilde{L}$ such that $\tilde{L}\tilde{L}^\top \approx S$. It is the same core idea as the Schur complement step, but applied sequentially to a general (non-bipartite) graph.
 
-The algorithm is a modified Gaussian elimination that processes vertices in a random order. At each step, eliminating a vertex produces fill — but instead of materializing exact fill, it samples an approximation with far fewer edges.
+### 4.1 How it works
 
-### 4.1 Elimination as rank-1 update
-
-Eliminating vertex $v$ with edge weights $w_1, \ldots, w_d$ to neighbors $u_1, \ldots, u_d$ and diagonal $s_v = \sum_i w_i$ produces the rank-1 Schur complement contribution:
-
-$$
-\Delta S = \frac{1}{s_v} \begin{pmatrix} w_1 \\ \vdots \\ w_d \end{pmatrix} \begin{pmatrix} w_1 & \cdots & w_d \end{pmatrix}
-$$
-
-As a Laplacian, this is a complete graph (clique) on $N(v)$ with edge $(u_i, u_j)$ weighted $w_i w_j / s_v$.
-
-Standard Cholesky would materialize all $\binom{d}{2}$ clique edges as fill, potentially leading to dense factors.
-
-### 4.2 Clique-tree sampling
-
-Instead of materializing the $O(d^2)$ clique edges, sample a random spanning tree of the star graph $\{v\} \cup N(v)$. The tree has exactly $d - 1$ edges. Edge weights are set so that the expected Laplacian of the tree equals the clique Laplacian — an **unbiased estimator** with $O(d)$ fill instead of $O(d^2)$.
+The algorithm eliminates vertices one by one in random order. Each elimination produces fill edges (a clique on the vertex's neighbors). Instead of materializing all $O(d^2)$ clique edges, it samples a random spanning tree with only $d - 1$ edges — the same clique-tree trick used in Section 3.3:
 
 ![Approximate Cholesky: clique vs. tree on the reduced graph](images/ac_clique_vs_tree.svg)
 
-This is the same core operation used in Section 3.2 for the approximate Schur complement. The difference is that Schur complement reduction eliminates the entire larger block at once (all vertices independently, in parallel), while approximate Cholesky eliminates vertices one by one. Each elimination creates fill edges that become part of the graph for subsequent steps, so the order matters:
+The difference from the Schur complement step is that here, eliminations are **sequential** — each one modifies the graph for the next:
 
 ![Sequential elimination in approximate Cholesky](images/ac_sequential.svg)
 
 Eliminating F1 creates a fill edge F2–F4. When F2 is eliminated next, it now connects to F4 (via the fill from step 1), producing further fill F3–F4. This cascading fill is why the Schur complement reduction — which exploits the bipartite independence — is performed first, and approximate Cholesky is applied only to the smaller reduced system.
 
-### 4.3 Properties
+### 4.2 Properties
 
-The key property is that $\mathbb{E}[\tilde{L}\tilde{L}^\top] = L$ (unbiased). Gao, Kyng, and Spielman (2025) provide the full algorithm and analysis.
+The key property is that $\mathbb{E}[\tilde{L}\tilde{L}^\top] = S$ (unbiased). The resulting triangular factor is cheap to apply: the local solve becomes a forward substitution followed by a back substitution, costing $O(m_{\text{local}})$ per application.
 
 ---
 

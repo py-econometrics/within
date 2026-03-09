@@ -1,0 +1,122 @@
+<svg viewBox="0 0 720 320" xmlns="http://www.w3.org/2000/svg" font-family="Arial, Helvetica, sans-serif">
+  <rect width="720" height="320" fill="white" rx="4"/>
+
+  <!-- LEFT PANEL: Factor-level (diagonal only) -->
+  <text x="155" y="24" text-anchor="middle" font-size="13" fill="#333" font-weight="600">Factor-level solve</text>
+  <text x="155" y="42" text-anchor="middle" font-size="10" fill="#888">Local operator = diagonal block only</text>
+
+  <!-- 3x3 diagonal matrix for Worker block -->
+  <g transform="translate(55, 60)">
+    <!-- Grid cells -->
+    <rect x="0" y="0" width="60" height="60" fill="#f0e0f0" stroke="#ccc" stroke-width="1"/>
+    <rect x="60" y="0" width="60" height="60" fill="#fafafa" stroke="#ccc" stroke-width="1"/>
+    <rect x="120" y="0" width="60" height="60" fill="#fafafa" stroke="#ccc" stroke-width="1"/>
+    <rect x="0" y="60" width="60" height="60" fill="#fafafa" stroke="#ccc" stroke-width="1"/>
+    <rect x="60" y="60" width="60" height="60" fill="#f0e0f0" stroke="#ccc" stroke-width="1"/>
+    <rect x="120" y="60" width="60" height="60" fill="#fafafa" stroke="#ccc" stroke-width="1"/>
+    <rect x="0" y="120" width="60" height="60" fill="#fafafa" stroke="#ccc" stroke-width="1"/>
+    <rect x="60" y="120" width="60" height="60" fill="#fafafa" stroke="#ccc" stroke-width="1"/>
+    <rect x="120" y="120" width="60" height="60" fill="#f0e0f0" stroke="#ccc" stroke-width="1"/>
+
+    <!-- Values -->
+    <text x="30" y="36" text-anchor="middle" font-size="16" font-weight="bold" fill="#a06">2</text>
+    <text x="90" y="96" text-anchor="middle" font-size="16" font-weight="bold" fill="#a06">2</text>
+    <text x="150" y="156" text-anchor="middle" font-size="16" font-weight="bold" fill="#a06">2</text>
+
+    <!-- Labels -->
+    <text x="30" y="-8" text-anchor="middle" font-size="10" fill="#555">W1</text>
+    <text x="90" y="-8" text-anchor="middle" font-size="10" fill="#555">W2</text>
+    <text x="150" y="-8" text-anchor="middle" font-size="10" fill="#555">W3</text>
+    <text x="-8" y="36" text-anchor="end" font-size="10" fill="#555">W1</text>
+    <text x="-8" y="96" text-anchor="end" font-size="10" fill="#555">W2</text>
+    <text x="-8" y="156" text-anchor="end" font-size="10" fill="#555">W3</text>
+  </g>
+
+  <text x="155" y="260" text-anchor="middle" font-size="11" fill="#888">D<tspan font-size="8" dy="3">W</tspan><tspan dy="-3"> = diag(2, 2, 2)</tspan></text>
+  <text x="155" y="278" text-anchor="middle" font-size="10" fill="#c55">Trivial to invert, but ignores</text>
+  <text x="155" y="292" text-anchor="middle" font-size="10" fill="#c55">all cross-factor structure</text>
+
+  <!-- Divider -->
+  <line x1="340" y1="20" x2="340" y2="305" stroke="#ddd" stroke-width="1"/>
+  <text x="357" y="165" text-anchor="middle" font-size="13" fill="#aaa" font-weight="bold">vs</text>
+
+  <!-- RIGHT PANEL: Factor-pair (full bipartite block) -->
+  <text x="540" y="24" text-anchor="middle" font-size="13" fill="#333" font-weight="600">Factor-pair solve</text>
+  <text x="540" y="42" text-anchor="middle" font-size="10" fill="#888">Local operator = full bipartite block</text>
+
+  <!-- 5x5 matrix for Worker-Firm block -->
+  <g transform="translate(390, 60)">
+    <!-- Worker diagonal (3x3 top-left) -->
+    <rect x="0" y="0" width="50" height="50" fill="#f0e0f0" stroke="#ccc" stroke-width="1"/>
+    <rect x="50" y="0" width="50" height="50" fill="#fafafa" stroke="#ccc" stroke-width="1"/>
+    <rect x="100" y="0" width="50" height="50" fill="#fafafa" stroke="#ccc" stroke-width="1"/>
+    <rect x="0" y="50" width="50" height="50" fill="#fafafa" stroke="#ccc" stroke-width="1"/>
+    <rect x="50" y="50" width="50" height="50" fill="#f0e0f0" stroke="#ccc" stroke-width="1"/>
+    <rect x="100" y="50" width="50" height="50" fill="#fafafa" stroke="#ccc" stroke-width="1"/>
+    <rect x="0" y="100" width="50" height="50" fill="#fafafa" stroke="#ccc" stroke-width="1"/>
+    <rect x="50" y="100" width="50" height="50" fill="#fafafa" stroke="#ccc" stroke-width="1"/>
+    <rect x="100" y="100" width="50" height="50" fill="#f0e0f0" stroke="#ccc" stroke-width="1"/>
+
+    <!-- Cross-tabulation C_WF (3x2 top-right) -->
+    <rect x="150" y="0" width="50" height="50" fill="#e0e8f8" stroke="#ccc" stroke-width="1"/>
+    <rect x="200" y="0" width="50" height="50" fill="#e0e8f8" stroke="#ccc" stroke-width="1"/>
+    <rect x="150" y="50" width="50" height="50" fill="#e0e8f8" stroke="#ccc" stroke-width="1"/>
+    <rect x="200" y="50" width="50" height="50" fill="#fafafa" stroke="#ccc" stroke-width="1"/>
+    <rect x="150" y="100" width="50" height="50" fill="#fafafa" stroke="#ccc" stroke-width="1"/>
+    <rect x="200" y="100" width="50" height="50" fill="#e0e8f8" stroke="#ccc" stroke-width="1"/>
+
+    <!-- Cross-tabulation C_WF^T (2x3 bottom-left) -->
+    <rect x="0" y="150" width="50" height="50" fill="#e0e8f8" stroke="#ccc" stroke-width="1"/>
+    <rect x="50" y="150" width="50" height="50" fill="#e0e8f8" stroke="#ccc" stroke-width="1"/>
+    <rect x="100" y="150" width="50" height="50" fill="#fafafa" stroke="#ccc" stroke-width="1"/>
+    <rect x="0" y="200" width="50" height="50" fill="#e0e8f8" stroke="#ccc" stroke-width="1"/>
+    <rect x="50" y="200" width="50" height="50" fill="#fafafa" stroke="#ccc" stroke-width="1"/>
+    <rect x="100" y="200" width="50" height="50" fill="#e0e8f8" stroke="#ccc" stroke-width="1"/>
+
+    <!-- Firm diagonal (2x2 bottom-right) -->
+    <rect x="150" y="150" width="50" height="50" fill="#e0d8f0" stroke="#ccc" stroke-width="1"/>
+    <rect x="200" y="150" width="50" height="50" fill="#fafafa" stroke="#ccc" stroke-width="1"/>
+    <rect x="150" y="200" width="50" height="50" fill="#fafafa" stroke="#ccc" stroke-width="1"/>
+    <rect x="200" y="200" width="50" height="50" fill="#e0d8f0" stroke="#ccc" stroke-width="1"/>
+
+    <!-- Values: Worker diagonal -->
+    <text x="25" y="31" text-anchor="middle" font-size="14" font-weight="bold" fill="#a06">2</text>
+    <text x="75" y="81" text-anchor="middle" font-size="14" font-weight="bold" fill="#a06">2</text>
+    <text x="125" y="131" text-anchor="middle" font-size="14" font-weight="bold" fill="#a06">2</text>
+
+    <!-- Values: Cross-tab -->
+    <text x="175" y="31" text-anchor="middle" font-size="14" fill="#46a">1</text>
+    <text x="225" y="31" text-anchor="middle" font-size="14" fill="#46a">1</text>
+    <text x="175" y="81" text-anchor="middle" font-size="14" fill="#46a">2</text>
+    <text x="225" y="131" text-anchor="middle" font-size="14" fill="#46a">2</text>
+    <!-- C^T -->
+    <text x="25" y="181" text-anchor="middle" font-size="14" fill="#46a">1</text>
+    <text x="75" y="181" text-anchor="middle" font-size="14" fill="#46a">2</text>
+    <text x="25" y="231" text-anchor="middle" font-size="14" fill="#46a">1</text>
+    <text x="125" y="231" text-anchor="middle" font-size="14" fill="#46a">2</text>
+
+    <!-- Values: Firm diagonal -->
+    <text x="175" y="181" text-anchor="middle" font-size="14" font-weight="bold" fill="#63a">3</text>
+    <text x="225" y="231" text-anchor="middle" font-size="14" font-weight="bold" fill="#63a">3</text>
+
+    <!-- Labels -->
+    <text x="25" y="-8" text-anchor="middle" font-size="9" fill="#555">W1</text>
+    <text x="75" y="-8" text-anchor="middle" font-size="9" fill="#555">W2</text>
+    <text x="125" y="-8" text-anchor="middle" font-size="9" fill="#555">W3</text>
+    <text x="175" y="-8" text-anchor="middle" font-size="9" fill="#555">F1</text>
+    <text x="225" y="-8" text-anchor="middle" font-size="9" fill="#555">F2</text>
+    <text x="-8" y="31" text-anchor="end" font-size="9" fill="#555">W1</text>
+    <text x="-8" y="81" text-anchor="end" font-size="9" fill="#555">W2</text>
+    <text x="-8" y="131" text-anchor="end" font-size="9" fill="#555">W3</text>
+    <text x="-8" y="181" text-anchor="end" font-size="9" fill="#555">F1</text>
+    <text x="-8" y="231" text-anchor="end" font-size="9" fill="#555">F2</text>
+
+    <!-- Block labels -->
+    <rect x="0" y="0" width="150" height="150" fill="none" stroke="#a06" stroke-width="2" stroke-dasharray="4,3" rx="3"/>
+    <rect x="150" y="150" width="100" height="100" fill="none" stroke="#63a" stroke-width="2" stroke-dasharray="4,3" rx="3"/>
+    <rect x="150" y="0" width="100" height="150" fill="none" stroke="#46a" stroke-width="2" stroke-dasharray="4,3" rx="3"/>
+  </g>
+
+  <text x="540" y="278" text-anchor="middle" font-size="10" fill="#4a9">Captures how workers and firms</text>
+  <text x="540" y="292" text-anchor="middle" font-size="10" fill="#4a9">interact within each subdomain</text>
+</svg>

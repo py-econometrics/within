@@ -1,0 +1,99 @@
+<svg viewBox="0 0 820 200" xmlns="http://www.w3.org/2000/svg" font-family="Arial, Helvetica, sans-serif">
+  <rect width="820" height="200" fill="white" rx="4"/>
+
+  <defs>
+    <marker id="parr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#888"/>
+    </marker>
+  </defs>
+
+  <text x="410" y="20" text-anchor="middle" font-size="13" fill="#333" font-weight="600">Local solve pipeline (one subdomain, e.g. Worker-Firm)</text>
+
+  <!-- Stage 1: Bipartite block -->
+  <rect x="15" y="40" width="115" height="80" rx="6" fill="#f8e8e8" stroke="#a66" stroke-width="1.5"/>
+  <text x="72" y="62" text-anchor="middle" font-size="11" font-weight="bold" fill="#333">Bipartite block</text>
+  <!-- Mini matrix sketch -->
+  <rect x="30" y="70" width="20" height="20" fill="#f0e0f0" stroke="#ccc" stroke-width="0.5" rx="2"/>
+  <rect x="55" y="70" width="15" height="20" fill="#e0e8f8" stroke="#ccc" stroke-width="0.5" rx="2"/>
+  <rect x="30" y="92" width="20" height="15" fill="#e0e8f8" stroke="#ccc" stroke-width="0.5" rx="2"/>
+  <rect x="55" y="92" width="15" height="15" fill="#e0d8f0" stroke="#ccc" stroke-width="0.5" rx="2"/>
+  <text x="40" y="84" text-anchor="middle" font-size="8" fill="#a06">D</text>
+  <text x="62" y="84" text-anchor="middle" font-size="8" fill="#46a">C</text>
+  <text x="40" y="102" text-anchor="middle" font-size="7" fill="#46a">C&#x1D40;</text>
+  <text x="62" y="102" text-anchor="middle" font-size="8" fill="#63a">D</text>
+
+  <!-- Arrow -->
+  <line x1="130" y1="80" x2="150" y2="80" stroke="#888" stroke-width="1.5" marker-end="url(#parr)"/>
+  <text x="140" y="73" text-anchor="middle" font-size="8" fill="#888">flip</text>
+  <text x="140" y="93" text-anchor="middle" font-size="8" fill="#888">signs</text>
+
+  <!-- Stage 2: Laplacian -->
+  <rect x="155" y="40" width="115" height="80" rx="6" fill="#e8e8f8" stroke="#66a" stroke-width="1.5"/>
+  <text x="212" y="62" text-anchor="middle" font-size="11" font-weight="bold" fill="#333">Laplacian</text>
+  <!-- Mini matrix sketch -->
+  <rect x="170" y="70" width="20" height="20" fill="#f0e0f0" stroke="#ccc" stroke-width="0.5" rx="2"/>
+  <rect x="195" y="70" width="15" height="20" fill="#d8d8f0" stroke="#ccc" stroke-width="0.5" rx="2"/>
+  <rect x="170" y="92" width="20" height="15" fill="#d8d8f0" stroke="#ccc" stroke-width="0.5" rx="2"/>
+  <rect x="195" y="92" width="15" height="15" fill="#e0d8f0" stroke="#ccc" stroke-width="0.5" rx="2"/>
+  <text x="180" y="84" text-anchor="middle" font-size="8" fill="#a06">D</text>
+  <text x="202" y="84" text-anchor="middle" font-size="8" fill="#33a">&#x2212;C</text>
+  <text x="180" y="102" text-anchor="middle" font-size="7" fill="#33a">&#x2212;C&#x1D40;</text>
+  <text x="202" y="102" text-anchor="middle" font-size="8" fill="#63a">D</text>
+
+  <!-- Arrow -->
+  <line x1="270" y1="80" x2="290" y2="80" stroke="#888" stroke-width="1.5" marker-end="url(#parr)"/>
+  <text x="280" y="73" text-anchor="middle" font-size="8" fill="#888">elim.</text>
+  <text x="280" y="93" text-anchor="middle" font-size="8" fill="#888">workers</text>
+
+  <!-- Stage 3: Schur complement -->
+  <rect x="295" y="40" width="140" height="80" rx="6" fill="#f8f0e0" stroke="#a86" stroke-width="1.5"/>
+  <text x="365" y="58" text-anchor="middle" font-size="11" font-weight="bold" fill="#333">Schur complement</text>
+  <text x="365" y="74" text-anchor="middle" font-size="10" fill="#555">S = D&#x1D63; &#x2212; C&#x1D40;D&#x207B;&#xB9;C</text>
+  <!-- Mini graph: firms connected -->
+  <circle cx="335" cy="100" r="10" fill="#bbf" stroke="#555" stroke-width="1"/>
+  <text x="335" y="104" text-anchor="middle" font-size="8" font-weight="bold" fill="#333">F1</text>
+  <circle cx="395" cy="100" r="10" fill="#bbf" stroke="#555" stroke-width="1"/>
+  <text x="395" y="104" text-anchor="middle" font-size="8" font-weight="bold" fill="#333">F2</text>
+  <line x1="345" y1="100" x2="385" y2="100" stroke="#a86" stroke-width="1.5"/>
+
+  <!-- Arrow -->
+  <line x1="435" y1="80" x2="455" y2="80" stroke="#888" stroke-width="1.5" marker-end="url(#parr)"/>
+  <text x="445" y="73" text-anchor="middle" font-size="8" fill="#888">approx</text>
+  <text x="445" y="93" text-anchor="middle" font-size="8" fill="#888">Cholesky</text>
+
+  <!-- Stage 4: Triangular factor -->
+  <rect x="460" y="40" width="130" height="80" rx="6" fill="#e8f4e8" stroke="#6a6" stroke-width="1.5"/>
+  <text x="525" y="58" text-anchor="middle" font-size="11" font-weight="bold" fill="#333">Triangular factor</text>
+  <text x="525" y="78" text-anchor="middle" font-size="10" fill="#555">S &#x2248; &#x1E3C;&#x1E3C;&#x1D40;</text>
+  <text x="525" y="98" text-anchor="middle" font-size="10" fill="#888">cheap to solve:</text>
+  <text x="525" y="112" text-anchor="middle" font-size="10" fill="#6a6">forward + back sub.</text>
+
+  <!-- Arrow to final -->
+  <line x1="590" y1="80" x2="610" y2="80" stroke="#888" stroke-width="1.5" marker-end="url(#parr)"/>
+
+  <!-- Stage 5: Recover full solution -->
+  <rect x="615" y="40" width="130" height="80" rx="6" fill="#f0f8f0" stroke="#6a6" stroke-width="1.5"/>
+  <text x="680" y="58" text-anchor="middle" font-size="11" font-weight="bold" fill="#333">Back-substitute</text>
+  <text x="680" y="78" text-anchor="middle" font-size="10" fill="#555">Solve for firms,</text>
+  <text x="680" y="93" text-anchor="middle" font-size="10" fill="#555">then recover</text>
+  <text x="680" y="108" text-anchor="middle" font-size="10" fill="#555">worker coefficients</text>
+
+  <!-- Bottom annotation bar -->
+  <rect x="15" y="140" width="730" height="50" rx="6" fill="#f8f8ff" stroke="#ddd" stroke-width="1"/>
+
+  <!-- Size annotations -->
+  <text x="72" y="158" text-anchor="middle" font-size="9" fill="#888">size: m&#x2091; + m&#x1D63;</text>
+  <text x="72" y="172" text-anchor="middle" font-size="9" fill="#888">(workers + firms)</text>
+
+  <text x="212" y="158" text-anchor="middle" font-size="9" fill="#888">same size,</text>
+  <text x="212" y="172" text-anchor="middle" font-size="9" fill="#888">Laplacian form</text>
+
+  <text x="365" y="158" text-anchor="middle" font-size="9" fill="#888">size: m&#x1D63; only</text>
+  <text x="365" y="172" text-anchor="middle" font-size="9" fill="#c55">(much smaller!)</text>
+
+  <text x="525" y="158" text-anchor="middle" font-size="9" fill="#888">&#x2248;linear time</text>
+  <text x="525" y="172" text-anchor="middle" font-size="9" fill="#888">factorization</text>
+
+  <text x="680" y="158" text-anchor="middle" font-size="9" fill="#888">recover full</text>
+  <text x="680" y="172" text-anchor="middle" font-size="9" fill="#888">solution cheaply</text>
+</svg>

@@ -1,6 +1,6 @@
 # Part 1: Fixed Effects and Block Iterative Methods
 
-This is Part 1 of the algorithm documentation for the `within` solver. It introduces the fixed-effects estimation problem, derives the normal equations and their block structure, describes the classical alternating-projection algorithm, and reinterprets it through the lens of domain decomposition — motivating the more sophisticated solver described in [Part 2](2_solver_architecture.md).
+This is Part 1 of the algorithm documentation for the `within` solver. It introduces the fixed-effects estimation problem, derives the normal equations and their block structure, describes the classical demeaning algorithm and its limitations, and motivates the domain decomposition approach in [Part 2](2_solver_architecture.md).
 
 **Series overview**:
 - **Part 1: Fixed Effects and Block Iterative Methods** (this document)
@@ -51,9 +51,7 @@ $$
 
 where $W = \text{diag}(w_1, \dots, w_n)$ is a diagonal weight matrix. The unweighted case corresponds to $W = I$.
 
-The Gramian $G$ is symmetric positive semi-definite. It is always singular: within each connected component of the factor interaction graph, a constant can be shifted between factors without changing $D\alpha$, giving at least one null-space direction per component. The system is always consistent ($b = D^\top W y$ lies in the column space of $G$), and the solver (starting from zero) converges to the minimum-norm solution $\alpha^* = G^+ b$, where $G^+$ denotes the Moore–Penrose pseudo-inverse.
-
-The local operators $A_i$ arising in the domain decomposition (Section 5) are also singular — each connected bipartite block has a one-dimensional null space. We write $A_i^+$ for the pseudo-inverse throughout; all right-hand sides encountered are consistent, so $A_i^+ r$ is the unique minimum-norm solution.
+The Gramian $G$ is symmetric positive semi-definite and always singular: within each connected component of the factor interaction graph, a constant can be shifted between factors without changing $D\alpha$. The system is always consistent, and the solver (starting from zero) converges to the minimum-norm solution.
 
 ---
 
@@ -117,8 +115,6 @@ C_{WY}^\top & C_{FY}^\top & D_Y
 \end{array}\right)
 $$
 
-The three block types are visible: $D_W = \text{diag}(2,2,2)$ counts observations per worker, $C_{WF}[\text{W1}, \text{F1}] = 1$ records that W1 appears at F1 once, and $C_{FY}[\text{F1}, \text{Y1}] = 2$ records that F1 has two observations in Y1.
-
 The Gramian's sparsity pattern defines an interaction graph on all $m = 7$ DOFs. Each node is a factor level, each edge a nonzero cross-tabulation entry $C_{qr}[j,k]$:
 
 ![Gramian interaction graph](images/graph_plain.svg)
@@ -129,154 +125,75 @@ Workers (pink), Firms (blue), Years (yellow). Each edge is a nonzero cross-tabul
 
 Two properties of $G$ that drive the algorithmic design:
 
-1. **The diagonal blocks $D_q$ are diagonal matrices** — trivially invertible. This makes Block Gauss-Seidel (Section 4) cheap per iteration.
+1. **The diagonal blocks $D_q$ are diagonal matrices** — trivially invertible. This makes the classical demeaning algorithm (Section 4) cheap per iteration.
 
-2. **The cross-tabulation blocks $C_{qr}$ are typically low-rank or sparse** — an entry is nonzero only when at least one observation has that specific (level-of-$q$, level-of-$r$) combination. Some pairs (e.g., Worker–Year) may be nearly dense when both factors interact freely, but in that case one dimension is typically much smaller than the other ($m_{\text{Year}} \ll m_{\text{Worker}}$), keeping the block cheap to work with.
-
----
-
-## 4. Classical Solution: Alternating Projection
-
-### 4.1 Three views of one algorithm
-
-The classical method sweeps through factors one at a time, updating each factor's coefficients while holding the others fixed. This single operation has three equivalent descriptions that reveal different aspects of its structure.
+2. **The cross-tabulation blocks $C_{qr}$ are typically sparse** — an entry is nonzero only when at least one observation has that specific (level-of-$q$, level-of-$r$) combination.
 
 ---
 
-#### View 1: Observation-space demeaning
+## 4. Classical Solution: Iterative Demeaning
 
-Each factor $q$ has an $n \times m_q$ indicator matrix $D_q^{\text{obs}}$ (the $q$-th column block of $D$, with $D_q^{\text{obs}}[i,j] = 1$ iff $f_q(i) = j$). Given the current fitted values $\hat{y} = \sum_r D_r^{\text{obs}} \alpha_r$, the factor-$q$ update computes the partial residual $e = y - \sum_{r \neq q} D_r^{\text{obs}} \alpha_r$ and replaces $\alpha_q$ with the $W$-weighted mean of $e$ within each level:
+### 4.1 The demeaning algorithm
 
-$$
-\alpha_{q,j} \leftarrow \frac{\sum_{i:\, f_q(i)=j} w_i\, e_i}{\sum_{i:\, f_q(i)=j} w_i}
-$$
-
-This is **demeaning by factor $q$**: each coefficient becomes the weighted average of the residual at its level.
-
----
-
-#### View 2: Coefficient-space block Gauss-Seidel
-
-The demeaning formula can be rewritten purely in terms of the Gramian blocks, eliminating the observation-level sums. Split the numerator by expanding $e_i = y_i - \sum_{r \neq q} \alpha_{r,f_r(i)}$:
+The classical method sweeps through factors one at a time, updating each factor's coefficients while holding the others fixed. For factor $q$, each coefficient is set to the weighted average of the partial residual at its level:
 
 $$
-\sum_{i:\, f_q(i)=j} w_i\, e_i
-= \underbrace{\sum_{i:\, f_q(i)=j} w_i\, y_i}_{= \; b_{q,j}}
-\;-\; \sum_{r \neq q} \underbrace{\sum_{i:\, f_q(i)=j} w_i\, \alpha_{r,f_r(i)}}_{= \; \sum_\ell\, C_{qr}[j,\ell]\;\alpha_{r,\ell}}
+\alpha_{q,j} \leftarrow \frac{\sum_{i:\, f_q(i)=j} w_i\, (y_i - \sum_{r \neq q} \alpha_{r,f_r(i)})}{\sum_{i:\, f_q(i)=j} w_i}
 $$
 
-The first term is $b_{q,j} = (D_q^{\text{obs}\top} W y)_j$, the $q$-th block of the right-hand side. The second term groups observations by their level $\ell$ in factor $r$: each group contributes $C_{qr}[j,\ell] = \sum_{i:\, f_q(i)=j,\, f_r(i)=\ell} w_i$ times $\alpha_{r,\ell}$. The denominator is $D_q[j,j] = \sum_{i: f_q(i)=j} w_i$. So the weighted mean becomes:
+This is **demeaning by factor $q$**: compute the residual $y - \text{(all other factor effects)}$, then replace each coefficient with the weighted group mean of that residual.
 
-$$
-\alpha_{q,j} \leftarrow \frac{1}{D_q[j,j]} \left( b_{q,j} - \sum_{r \neq q} \sum_{\ell} C_{qr}[j,\ell]\;\alpha_{r,\ell}^{(\cdot)} \right)
-$$
-
-or in matrix form, for block $q$ processed in order $q = 1, 2, \ldots, Q$:
+One full sweep updates all $Q$ factors in order. The algorithm is equivalent to **block Gauss-Seidel** on the normal equations — each factor's update solves the diagonal block $D_q$ against the current residual restricted to that factor's DOFs:
 
 $$
 D_q\,\alpha_q^{(k+1)} = b_q - \sum_{r < q} C_{qr}\,\alpha_r^{(k+1)} - \sum_{r > q} C_{qr}\,\alpha_r^{(k)}
 $$
 
-Factors $r < q$ have already been updated in this sweep (use $\alpha_r^{(k+1)}$); factors $r > q$ have not (use $\alpha_r^{(k)}$). This is exactly **block Gauss-Seidel**. Decomposing $G = \mathcal{D} + \mathcal{L} + \mathcal{U}$ into the block diagonal $\mathcal{D} = \text{blkdiag}(D_1, \ldots, D_Q)$, the strictly lower block-triangular $\mathcal{L}$ (blocks $C_{qr}$ with $r < q$), and the strictly upper block-triangular $\mathcal{U}$ (blocks $C_{qr}$ with $r > q$), the full sweep is:
-
-$$
-(\mathcal{D} + \mathcal{L})\,\alpha^{(k+1)} = b - \mathcal{U}\,\alpha^{(k)}
-$$
-
-The left-hand side couples to the already-updated factors; the right-hand side uses the stale values. The observation-level sums have been absorbed into the Gramian blocks $D_q$ and $C_{qr}$ — the algorithm now operates entirely in coefficient space $\mathbb{R}^m$.
-
----
-
-#### View 3: Alternating projection
-
-The column space $V_q = \text{col}(D_q^{\text{obs}}) \subset \mathbb{R}^n$ consists of all observation-space vectors that are constant within each level of factor $q$:
-
-$$
-V_q = \bigl\{\, v \in \mathbb{R}^n : f_q(i) = f_q(j) \;\Longrightarrow\; v_i = v_j \bigr\}
-= \bigl\{\, D_q^{\text{obs}}\,\alpha_q : \alpha_q \in \mathbb{R}^{m_q} \bigr\}.
-$$
-
-Let $P_q$ denote the $W$-orthogonal projection onto $V_q$:
-
-$$
-P_q = D_q^{\text{obs}}\; D_q^{+}\; D_q^{\text{obs}\top} W
-$$
-
-The complementary projection $I - P_q$ maps onto the orthogonal complement $V_q^\perp$. This is precisely **demeaning**: subtracting weighted group means removes the component in $V_q$, leaving only what is $W$-orthogonal to factor $q$.
-
-After updating factor $q$ in the sweep, the overall residual $r = y - \sum_s D_s^{\text{obs}}\,\alpha_s$ satisfies $P_q\, r = 0$, i.e., $r \in V_q^\perp$. At convergence the residual lies in the orthogonal complement of every factor simultaneously:
-
-$$
-r^* \;\in\; V_1^\perp \cap V_2^\perp \cap \cdots \cap V_Q^\perp
-\;=\; \bigl(V_1 + V_2 + \cdots + V_Q\bigr)^\perp.
-$$
-
-Therefore the fitted value $\hat{y} = y - r^*$ equals $P_{V_1 + \cdots + V_Q}\, y$, the $W$-orthogonal projection of $y$ onto the sum of column spaces — exactly the least-squares solution of the fixed-effects model.
-
-Each full sweep applies the product of projections $(I - P_Q) \cdots (I - P_2)(I - P_1)$ to the residual. By the Halperin extension of von Neumann's theorem, iterating this product converges to $P_{\bigcap_q V_q^\perp}$, confirming the residual contracts toward $(V_1 + \cdots + V_Q)^\perp$.
-
----
-
-These are not three algorithms — they are three notations for the same computation:
+Factors $r < q$ have already been updated in this sweep; factors $r > q$ have not.
 
 | Viewpoint | Space | One factor-$q$ step | Key object |
 |---|---|---|---|
 | Demeaning | $\mathbb{R}^n$ (observations) | weighted mean of partial residual | raw data $(y, w)$ |
-| Block GS | $\mathbb{R}^m$ (coefficients) | $D_q^{-1}(b_q - \sum C_{qr}\alpha_r)$ | Gramian blocks $(D_q, C_{qr})$ |
-| Alternating proj. | $\mathbb{R}^n$ (observations) | project residual onto $V_q^\perp$ via $(I - P_q)$ | orthogonal complements $V_q^\perp$ |
+| Block Gauss-Seidel | $\mathbb{R}^m$ (coefficients) | $D_q^{-1}(b_q - \sum C_{qr}\alpha_r)$ | Gramian blocks $(D_q, C_{qr})$ |
 
+These are two notations for the same computation.
 
 ### 4.2 The running example
 
 Continuing the Worker/Firm/Year example, one full sweep processes $Q = 3$ factors in order:
 
-**Step 1** — Update Worker ($q = 1$), holding Firm and Year fixed at $\alpha_F^{(k)}$, $\alpha_Y^{(k)}$:
-
-$$
-\alpha_{\text{W1}}^{(k+1)} = \frac{1}{2}\bigl(b_{\text{W1}} - 1 \cdot \alpha_{\text{F1}}^{(k)} - 1 \cdot \alpha_{\text{F2}}^{(k)} - 1 \cdot \alpha_{\text{Y1}}^{(k)} - 1 \cdot \alpha_{\text{Y2}}^{(k)}\bigr)
-$$
-
+**Step 1** — Update Worker, holding Firm and Year fixed:
 Each worker's coefficient becomes the weighted average of $(y_i - \text{firm effect} - \text{year effect})$ for observations at that worker.
 
-**Step 2** — Update Firm ($q = 2$), using **updated** Worker values $\alpha_W^{(k+1)}$ but **stale** Year values $\alpha_Y^{(k)}$:
-
-$$
-\alpha_{\text{F1}}^{(k+1)} = \frac{1}{3}\bigl(b_{\text{F1}} - 1 \cdot \alpha_{\text{W1}}^{(k+1)} - 2 \cdot \alpha_{\text{W2}}^{(k+1)} - 2 \cdot \alpha_{\text{Y1}}^{(k)} - 1 \cdot \alpha_{\text{Y2}}^{(k)}\bigr)
-$$
-
+**Step 2** — Update Firm, using **updated** Worker values but **stale** Year values:
 Each firm's coefficient becomes the weighted average of $(y_i - \text{worker effect} - \text{year effect})$, but the year effects are still from the previous iteration.
 
-**Step 3** — Update Year ($q = 3$), using updated Worker $\alpha_W^{(k+1)}$ and updated Firm $\alpha_F^{(k+1)}$:
-
-$$
-\alpha_{\text{Y1}}^{(k+1)} = \frac{1}{3}\bigl(b_{\text{Y1}} - 1 \cdot \alpha_{\text{W1}}^{(k+1)} - 1 \cdot \alpha_{\text{W2}}^{(k+1)} - 1 \cdot \alpha_{\text{W3}}^{(k+1)} - 2 \cdot \alpha_{\text{F1}}^{(k+1)} - 1 \cdot \alpha_{\text{F2}}^{(k+1)}\bigr)
-$$
+**Step 3** — Update Year, using updated Worker and updated Firm values:
+Only the last factor in the sweep sees fully updated values from all other factors.
 
 Only the last factor in the sweep sees fully updated values from all other factors. Workers were updated with stale firm and year effects; firms were updated with stale year effects. With $Q = 3$, two out of three updates use partially stale information — illustrating the degradation described in Section 4.4.
 
 Repeat until convergence.
 
-### 4.3 Convergence rate and the Friedrichs angle
+### 4.3 Convergence rate
 
-Since each sweep is alternating projection between the orthogonal complements $V_1^\perp, \ldots, V_Q^\perp$ (Section 4.1), the convergence rate is governed by the **Friedrichs angle** $\theta_F$ between the column spaces. Informally, $\theta_F$ measures how close to collinear two factor subspaces are after removing their trivial intersection (constant shifts within connected components). For $Q = 2$, the error contracts by $\cos^2(\theta_F)$ per full sweep:
+The convergence rate is governed by how "entangled" the factor subspaces are. For two factors, the error contracts by $\cos^2(\theta_F)$ per sweep, where $\theta_F$ is the angle between the factor subspaces:
 
-$$
-\|r^{(k)}\|_W \leq \cos^{2k}(\theta_F)\;\|r^{(0)}\|_W
-$$
+![Convergence: high vs low mobility](images/convergence_zigzag.svg)
 
-- **High mobility** (workers move between many firms): $\cos(\theta_F)$ is small, convergence is fast.
-- **Low mobility** (workers stuck at one firm): $\cos(\theta_F) \to 1$, convergence degrades sharply.
+- **High mobility** (workers move between many firms): the factor subspaces are nearly orthogonal, $\cos(\theta_F)$ is small, convergence is fast.
+- **Low mobility** (workers stuck at one firm): the factor subspaces are nearly collinear, $\cos(\theta_F) \to 1$, convergence degrades sharply — the algorithm zigzags with little progress.
 
 For $Q > 2$, any near-collinear pair bottlenecks the entire iteration.
 
 
 ### 4.4 Limitations
 
-Three structural limitations of alternating projection follow from this analysis:
+Three structural limitations of iterative demeaning:
 
 1. **No way to improve the local solve** — each block solve is already exact ($D_q$ is diagonal), so there is no knob to turn within a subdomain. The only option is to iterate more.
 
-2. **Cross-factor structure is ignored** — the local solve for factor $q$ knows nothing about the coupling $C_{qr}$. When $\cos(\theta_F)$ is close to 1, the coupling is strong and the projections make little progress — yet the algorithm cannot exploit the cross-tabulation structure that causes the difficulty.
+2. **Cross-factor structure is ignored** — the local solve for factor $q$ knows nothing about the coupling $C_{qr}$. When convergence is slow, the coupling is strong — yet the algorithm cannot exploit the cross-tabulation structure that causes the difficulty.
 
 3. **Degradation with more factors** — for $Q > 2$, each factor's update uses stale values from factors not yet processed in the current sweep. The effective convergence rate worsens as the number of interacting pairs grows.
 
@@ -284,74 +201,42 @@ Three structural limitations of alternating projection follow from this analysis
 
 ## 5. The Domain Decomposition Perspective
 
-### 5.1 Block Gauss-Seidel is a domain decomposition method
+### 5.1 Demeaning as a domain decomposition method
 
-Block Gauss-Seidel partitions the coefficient vector $\alpha \in \mathbb{R}^m$ into $Q$ blocks — one per factor — and sweeps through them sequentially. Each step solves a small system (the diagonal block $D_q$) using the current residual restricted to that block's DOFs.
+Iterative demeaning partitions the coefficient vector $\alpha \in \mathbb{R}^m$ into $Q$ blocks — one per factor — and sweeps through them sequentially. Each step solves a small system (the diagonal block $D_q$) using the current residual restricted to that block's DOFs.
 
-This is exactly a **multiplicative Schwarz** method. The coefficient space $\mathbb{R}^m$ is decomposed into $Q$ non-overlapping subspaces $S_q \subset \mathbb{R}^m$, where $S_q$ contains the DOFs of factor $q$. The restriction operator $R_q: \mathbb{R}^m \to S_q$ extracts the factor-$q$ coefficients, and the local operator $A_q = R_q\, G\, R_q^\top = D_q$ is the corresponding diagonal block.
-
-Each multiplicative Schwarz correction computes a local solve and injects the result back:
-
-$$
-\alpha \;\leftarrow\; \alpha + R_q^\top\, A_q^+\, R_q\, r_{\text{current}}
-$$
-
-where $r_{\text{current}} = b - G\,\alpha$ is the residual at the time factor $q$ is processed. This is precisely the block GS update from Section 4.1 (View 2).
-
-**Notation.** The Schwarz subspaces $S_q \subset \mathbb{R}^m$ live in coefficient space. They are related to — but distinct from — the column spaces $V_q = \text{col}(D_q^{\text{obs}}) \subset \mathbb{R}^n$ from Section 4.1 (View 3), which live in observation space. The design matrix $D_q^{\text{obs}}$ maps $S_q \to V_q$ (coefficients to observations); its adjoint $D_q^{\text{obs}\top} W$ maps back $\mathbb{R}^n \to S_q$ (aggregating observations into levels). The alternating-projection view (cycling through $V_q^\perp$ in $\mathbb{R}^n$) and the Schwarz view (cycling through $S_q$ in $\mathbb{R}^m$) describe the same algorithm from different spaces.
-
-| Schwarz concept | Block GS instantiation |
-|---|---|
-| Number of subdomains | $Q$ (one per factor) |
-| Subdomain $S_q$ | DOFs of factor $q$: indices $\{m_1 + \cdots + m_{q-1} + 1, \;\dots,\; m_1 + \cdots + m_q\}$ |
-| Overlap | **None** — subdomains partition $\mathbb{R}^m$ |
-| Local operator $A_q$ | $D_q$ (diagonal) |
-| Local solve cost | $O(m_q)$ — just division |
-| Partition-of-unity weights | All 1 (no overlap) |
-
-The decomposition has $Q$ small, cheap subdomains that cover all DOFs exactly once:
+In domain decomposition terminology, this is a **multiplicative Schwarz** method with $Q$ non-overlapping subdomains, one per factor. The decomposition has cheap local solves but captures none of the cross-factor coupling:
 
 ![Factor-level decomposition](images/graph_factor_level.svg)
 
 The same interaction graph from Section 3.2, now grouped into factor-level subdomains. Every edge crosses a subdomain boundary — the local operators $D_q$ are trivially diagonal, with no internal edges. The local solves are trivial but they capture **none** of the cross-factor coupling.
 
-### 5.2 The general Schwarz framework
-
-The block GS / factor-level decomposition is the simplest instance of a broader family. A **Schwarz method** decomposes $\mathbb{R}^m$ into subspaces $S_1, \ldots, S_N$ (possibly overlapping), with restriction operators $R_i: \mathbb{R}^m \to S_i$ and local operators $A_i = R_i\, G\, R_i^\top$:
-
-- **Multiplicative Schwarz** (sequential): process subdomains one by one, updating the global residual after each correction $\alpha \leftarrow \alpha + R_i^\top A_i^+ R_i\, r_{\text{current}}$.
-
-- **Additive Schwarz** (parallel): apply all local solves to the same residual and sum the weighted corrections:
-$$
-M^{-1} r = \sum_i R_i^\top \tilde{D}_i\, A_i^+\, \tilde{D}_i\, R_i\, r
-$$
-where $\tilde{D}_i$ are partition-of-unity weights that prevent double-counting when subdomains overlap.
-
-The choice of subdomains determines both the cost per iteration and the quality of the preconditioner. Factor-level subdomains (§5.1) are cheap but weak. Richer subdomains can capture more of the Gramian's structure.
-
-### 5.3 Factor-pair decomposition
+### 5.2 The key idea: factor-pair subdomains
 
 `within` uses a fundamentally different decomposition: subdomains are **factor pairs**, not individual factors.
 
-For each pair $(q, r)$ with $q < r$, the subdomain contains all DOFs from both factors $q$ and $r$ that appear in the same connected component of the bipartite graph defined by $C_{qr}$. The local operator is the full bipartite block:
+For each pair $(q, r)$, the subdomain contains all DOFs from both factors. The local operator is the full bipartite block:
 
 $$
 A_{qr} = \begin{pmatrix} D_q & C_{qr} \\ C_{qr}^\top & D_r \end{pmatrix}
 $$
 
-This captures the complete interaction between the two factors — the diagonal counts **and** the cross-tabulation.
+This captures the complete interaction between the two factors — the diagonal counts **and** the cross-tabulation. The price: these bipartite systems are too large to solve exactly in practice, so the local solvers use **approximate** factorizations (Schur complement reduction + approximate Cholesky, see [Part 3](3_local_solvers.md)). This is the central trade-off in `within`:
 
-| Property | Factor-level (Block GS) | Factor-pair (`within`) |
+The difference in what each local solve "sees" is dramatic:
+
+![Factor-level vs factor-pair local solve](images/local_solve_comparison.svg)
+
+| Property | Factor-level (demeaning) | Factor-pair (`within`) |
 |---|---|---|
+| Local solve | **Exact** (diagonal inversion) | **Approximate** (sampled Cholesky) |
+| Coupling captured | None — ignores $C_{qr}$ entirely | Full pairwise interaction |
 | Number of subdomains | $Q$ | $\leq \binom{Q}{2} \times$ (components) |
 | Overlap | None | Yes — each DOF appears in $Q - 1$ pairs |
-| Local operator | $D_q$ (diagonal, trivial) | $G_{qr}$ (bipartite, Laplacian after sign-flip) |
-| Cross-factor coupling | Ignored | Fully captured per pair |
-| Local solve cost | $O(m_q)$ | $O(m_q + m_r)$ to $O((m_q + m_r) \log(m_q + m_r))$ |
 
-The local systems are now proper sparse linear systems — no longer trivially diagonal — but after a sign-flip transformation they become graph Laplacians, for which nearly-linear-time solvers exist. The trade-off: harder local solves in exchange for dramatically fewer outer iterations, because the preconditioner captures far more of the global Gramian's structure.
+Demeaning solves each factor *exactly* but learns nothing about cross-factor structure. Factor-pair subdomains solve each pair *approximately* but capture the coupling that makes convergence slow in the first place. The net win: the approximate pair-solves carry so much more information per iteration that far fewer outer iterations are needed — even though each individual local solve is not exact.
 
-### 5.4 Continuing the example
+### 5.3 Continuing the example
 
 The Worker/Firm/Year example ($Q = 3$) produces $\binom{3}{2} = 3$ factor-pair subdomains:
 
@@ -361,35 +246,19 @@ The Worker/Firm/Year example ($Q = 3$) produces $\binom{3}{2} = 3$ factor-pair s
 | 2 | (Worker, Year) | W1, W2, W3, Y1, Y2 | 5 |
 | 3 | (Firm, Year) | F1, F2, Y1, Y2 | 4 |
 
-Each DOF appears in $Q - 1 = 2$ subdomains, requiring partition-of-unity weights of $1/\sqrt{2}$ per side (see [Part 2, Section 4.2](2_solver_architecture.md#42-partition-of-unity)).
+Each DOF appears in $Q - 1 = 2$ subdomains, requiring partition-of-unity weights to prevent double-counting (see [Part 2, Section 4.2](2_solver_architecture.md#42-partition-of-unity)).
 
 The same interaction graph, now with three overlapping factor-pair subdomains drawn around it:
 
 ![Factor-pair decomposition](images/graph_factor_pair.svg)
 
-The Worker–Firm subdomain (red) covers the top two rows. The Firm–Year subdomain (blue) covers the bottom two. The Worker–Year subdomain (green) wraps around the Firms in a C-shape — it contains Workers and Years but not Firms. Every edge is now *inside* a subdomain. Each node sits in exactly 2 of the 3 boxes (e.g., Workers are in red and green), which is why partition-of-unity weights are needed.
+The Worker–Firm subdomain (red) covers the top two rows. The Firm–Year subdomain (blue) covers the bottom two. The Worker–Year subdomain (green) wraps around the Firms in a C-shape. Every edge is now *inside* a subdomain. Each node sits in exactly 2 of the 3 boxes, which is why partition-of-unity weights are needed.
 
-For instance, subdomain 1 (Worker–Firm) solves:
-
-$$
-A_{\text{WF}} = \begin{pmatrix} D_W & C_{WF} \\ C_{WF}^\top & D_F \end{pmatrix}
-= \left(\begin{array}{ccc|cc}
-2 & 0 & 0 & 1 & 1 \\
-0 & 2 & 0 & 2 & 0 \\
-0 & 0 & 2 & 0 & 2 \\
-\hline
-1 & 2 & 0 & 3 & 0 \\
-1 & 0 & 2 & 0 & 3
-\end{array}\right)
-$$
-
-This is a proper linear system (not just a diagonal), capturing how workers and firms interact. With a good approximate factorization, three such local solves cover all pairwise interactions — far more information per iteration than the factor-level decomposition's three diagonal solves.
-
-### 5.5 Where this leads
+### 5.4 Where this leads
 
 The factor-pair decomposition raises three algorithmic questions:
 
-1. **How to solve the local Laplacian systems efficiently?** → Approximate Cholesky factorization with Schur complement reduction ([Part 3](3_local_solvers.md))
+1. **How to solve the local systems efficiently?** → Approximate Cholesky factorization with Schur complement reduction ([Part 3](3_local_solvers.md))
 2. **How to combine the local corrections?** → Additive or multiplicative Schwarz with partition-of-unity weights ([Part 2](2_solver_architecture.md))
 3. **How to drive the global iteration?** → Preconditioned CG or GMRES ([Part 2](2_solver_architecture.md))
 
