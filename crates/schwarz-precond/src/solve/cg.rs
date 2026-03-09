@@ -105,7 +105,7 @@ pub fn cg_solve_preconditioned<A: Operator + ?Sized, M: Operator + ?Sized>(
         if rz_new.abs() < f64::EPSILON * rz_init.abs().max(f64::MIN_POSITIVE) {
             return Ok(CgResult {
                 x,
-                converged: false,
+                converged: r_norm / b_norm <= tol,
                 iterations: itn,
                 residual_norm: r_norm,
             });

@@ -301,3 +301,48 @@ fn test_refinement_batch_applies() {
         assert!((a - b).abs() < 1e-12, "batch/single x mismatch: {a} vs {b}");
     }
 }
+
+#[test]
+fn test_refinement_correction_tolerance_scaling() {
+    // Batch solve with a structured
+    // RHS (y = signal + noise, converges easily) alongside unstructured RHS columns
+    // (pure noise, harder to demean). Without scaled correction tolerance, the
+    // refinement solve overshoots by applying tol=1e-8 *relative to the small
+    // correction RHS*, wasting iterations. With scaling, the correction only needs
+    // to bring the total residual below the original tolerance.
+    let (design, y_structured) = make_chain_design(200, 42);
+    let n_obs = y_structured.len();
+
+    // Generate unstructured columns (pure random noise — harder for CG)
+    let mut rng = SmallRng::seed_from_u64(123);
+    let x0: Vec<f64> = (0..n_obs).map(|_| rng.random::<f64>() - 0.5).collect();
+    let x1: Vec<f64> = (0..n_obs).map(|_| rng.random::<f64>() - 0.5).collect();
+
+    let precond = Preconditioner::Additive(LocalSolverConfig::solver_default());
+    let params = params_with_refinement(KrylovMethod::Cg, 2);
+    let solver = Solver::from_design(design, &params, Some(&precond)).expect("build solver");
+
+    let batch = solver
+        .solve_batch(&[&y_structured, &x0, &x1])
+        .expect("batch solve");
+
+    // All columns must converge
+    for (i, &c) in batch.converged().iter().enumerate() {
+        assert!(c, "column {i} did not converge");
+    }
+
+    // All residuals must be within tolerance
+    for (i, &r) in batch.final_residual().iter().enumerate() {
+        assert!(r < 1e-6, "column {i} residual too large: {r:.2e}");
+    }
+
+    // Refinement should not waste iterations: the correction solve for harder
+    // columns should add only a few iterations, not double the count.
+    let base_iters = batch.iterations()[0];
+    for (i, &iters) in batch.iterations().iter().enumerate().skip(1) {
+        assert!(
+            iters <= base_iters * 2,
+            "column {i} took {iters} iters (base={base_iters}), correction tolerance may not be scaled"
+        );
+    }
+}
