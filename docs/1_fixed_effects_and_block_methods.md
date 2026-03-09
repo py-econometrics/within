@@ -185,21 +185,20 @@ The convergence rate of the MAP algorithm is governed by how "entangled" the fac
 
 ![Convergence: high vs low mobility](images/convergence_zigzag.svg)
 
-- **High mobility** (workers move between many firms): the factor subspaces are nearly orthogonal, $\cos(\theta_F)$ is small, convergence is fast.
-- **Low mobility** (workers stuck at one firm): the factor subspaces are nearly collinear, $\cos(\theta_F) \to 1$, convergence degrades sharply — the algorithm zigzags with little progress.
+- **High mobility, no sorting** (workers move freely across firms, independent of type): knowing a worker's identity tells you little about which firm they belong to, so the worker and firm subspaces are nearly orthogonal. $\cos(\theta_F)$ is small and convergence is fast.
+- **Low mobility or strong sorting** (workers rarely move, or similar workers cluster in similar firms): worker and firm effects become hard to disentangle — a high worker effect could equally be explained by a high firm effect. The subspaces are nearly collinear, and the algorithm zigzags with little progress as it struggles to attribute variation to one factor versus the other.
 
-For $Q > 2$, any near-collinear pair bottlenecks the entire iteration.
-
+For more than two fixed effects ($Q > 2$), any near-collinear pair of fixed effects bottlenecks the entire iteration.
 
 ### 4.4 Limitations
 
 Three structural limitations of iterative demeaning:
 
-1. **No way to improve the local solve** — each block solve is already exact ($D_q$ is diagonal), so there is no knob to turn within a subdomain. The only option is to iterate more.
+1. **There is no way to improve the local solve** — each block solve is already exact ($D_q$ is diagonal), so there is no knob to turn within a subdomain. The only option is to iterate more.
 
-2. **Cross-factor structure is ignored** — the local solve for factor $q$ knows nothing about the coupling $C_{qr}$. When convergence is slow, the coupling is strong — yet the algorithm cannot exploit the cross-tabulation structure that causes the difficulty.
+2. **The cross-factor structure is ignored** — the local solve for factor $q$ knows nothing about the coupling of two fixed effects $C_{qr}$. When convergence is slow, the coupling is strong — yet the algorithm cannot exploit the cross-tabulation structure that causes the difficulty.
 
-3. **Degradation with more factors** — for $Q > 2$, each factor's update uses stale values from factors not yet processed in the current sweep. The effective convergence rate worsens as the number of interacting pairs grows.
+3. **Degradation with more factors** — for more than two fixed effects with $Q > 2$, each factor's update uses stale values from factors not yet processed in the current sweep. The effective convergence rate worsens as the number of interacting pairs grows.
 
 ---
 
