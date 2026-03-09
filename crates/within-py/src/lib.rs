@@ -224,17 +224,20 @@ pub struct PyCG {
     pub maxiter: usize,
     #[pyo3(get)]
     pub operator: PyOperatorRepr,
+    #[pyo3(get)]
+    pub max_refinements: usize,
 }
 
 #[pymethods]
 impl PyCG {
     #[new]
-    #[pyo3(signature = (tol=1e-8, maxiter=1000, operator=PyOperatorRepr::Implicit))]
-    fn new(tol: f64, maxiter: usize, operator: PyOperatorRepr) -> Self {
+    #[pyo3(signature = (tol=1e-8, maxiter=1000, operator=PyOperatorRepr::Implicit, max_refinements=2))]
+    fn new(tol: f64, maxiter: usize, operator: PyOperatorRepr, max_refinements: usize) -> Self {
         Self {
             tol,
             maxiter,
             operator,
+            max_refinements,
         }
     }
 }
@@ -250,18 +253,27 @@ pub struct PyGMRES {
     pub restart: usize,
     #[pyo3(get)]
     pub operator: PyOperatorRepr,
+    #[pyo3(get)]
+    pub max_refinements: usize,
 }
 
 #[pymethods]
 impl PyGMRES {
     #[new]
-    #[pyo3(signature = (tol=1e-8, maxiter=1000, restart=30, operator=PyOperatorRepr::Implicit))]
-    fn new(tol: f64, maxiter: usize, restart: usize, operator: PyOperatorRepr) -> Self {
+    #[pyo3(signature = (tol=1e-8, maxiter=1000, restart=30, operator=PyOperatorRepr::Implicit, max_refinements=2))]
+    fn new(
+        tol: f64,
+        maxiter: usize,
+        restart: usize,
+        operator: PyOperatorRepr,
+        max_refinements: usize,
+    ) -> Self {
         Self {
             tol,
             maxiter,
             restart,
             operator,
+            max_refinements,
         }
     }
 }
@@ -442,6 +454,7 @@ fn extract_solver_params(config: &Bound<'_, PyAny>) -> PyResult<SolverParams> {
             operator: cg.operator.to_native(),
             tol: cg.tol,
             maxiter: cg.maxiter,
+            max_refinements: cg.max_refinements,
         });
     }
 
@@ -454,6 +467,7 @@ fn extract_solver_params(config: &Bound<'_, PyAny>) -> PyResult<SolverParams> {
             operator: gmres.operator.to_native(),
             tol: gmres.tol,
             maxiter: gmres.maxiter,
+            max_refinements: gmres.max_refinements,
         });
     }
 

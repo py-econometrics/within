@@ -154,6 +154,7 @@ fn run_cg_one_level(design: &WeightedDesign<FactorMajorStore>, y: &[f64], ac2: b
         operator: OperatorRepr::Implicit,
         tol: TOL,
         maxiter: MAXITER,
+        ..Default::default()
     };
     let precond = Preconditioner::Additive(cfg);
     let label = if ac2 { "CG(1L,AC2)" } else { "CG(1L,AC)" };
@@ -174,6 +175,7 @@ fn run_gmres_multiplicative_one_level(
         operator,
         tol: TOL,
         maxiter: MAXITER,
+        ..Default::default()
     };
     let precond = Preconditioner::Multiplicative(cfg);
     let label = if ac2 {

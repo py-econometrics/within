@@ -32,6 +32,7 @@ pub struct Solver<S: ObservationStore> {
     krylov: KrylovMethod,
     tol: f64,
     maxiter: usize,
+    max_refinements: usize,
 }
 
 impl<S: ObservationStore> Solver<S> {
@@ -72,6 +73,7 @@ impl<S: ObservationStore> Solver<S> {
             krylov: params.krylov,
             tol: params.tol,
             maxiter: params.maxiter,
+            max_refinements: params.max_refinements,
         })
     }
 
@@ -94,6 +96,7 @@ impl<S: ObservationStore> Solver<S> {
             krylov: params.krylov,
             tol: params.tol,
             maxiter: params.maxiter,
+            max_refinements: params.max_refinements,
         })
     }
 
@@ -106,30 +109,61 @@ impl<S: ObservationStore> Solver<S> {
         let mut rhs = vec![0.0; self.design.n_dofs];
         self.design.rmatvec_wdt(y, &mut rhs);
         let rhs_norm = vec_norm(&rhs).max(1e-15);
+        let abs_tol = self.tol * rhs_norm;
 
         let t_solve_start = Instant::now();
         let time_setup = t_solve_start.duration_since(t_setup_start).as_secs_f64();
 
-        // Dispatch Krylov solve
+        // Dispatch initial Krylov solve
         let solve = self.krylov_solve(&rhs)?;
+        let mut x = solve.x;
+        let mut total_iterations = solve.iterations;
+        let mut converged = solve.converged;
+
+        // Iterative refinement: recompute the normal-equation residual from
+        // observation space (D^T W (y - D x)) and solve for a correction.
+        // This closes the gap between normal-equation residual accuracy and
+        // observation-space demeaning quality caused by large κ(G).
+        let mut demeaned = vec![0.0; self.design.n_rows];
+        let mut rhs_corr = vec![0.0; self.design.n_dofs];
+        for _ in 0..self.max_refinements {
+            // Observation-space residual: demeaned = y - D·x
+            self.design.matvec_d(&x, &mut demeaned);
+            for (d, &yi) in demeaned.iter_mut().zip(y.iter()) {
+                *d = yi - *d;
+            }
+
+            // Correction RHS: D^T W (y - Dx) = b - Gx
+            self.design.rmatvec_wdt(&demeaned, &mut rhs_corr);
+
+            if vec_norm(&rhs_corr) <= abs_tol {
+                break; // Residual already meets tolerance
+            }
+
+            // Solve for correction and accumulate
+            let corr = self.krylov_solve(&rhs_corr)?;
+            for (xi, &di) in x.iter_mut().zip(corr.x.iter()) {
+                *xi += di;
+            }
+            total_iterations += corr.iterations;
+            converged = corr.converged;
+        }
 
         let time_solve = t_solve_start.elapsed().as_secs_f64();
 
-        // Compute relative residual in normal-equation space
-        let final_residual = self.compute_residual(&solve.x, &rhs, rhs_norm);
-
-        // Compute demeaned: y - D*x
-        let mut demeaned = vec![0.0; self.design.n_rows];
-        self.design.matvec_d(&solve.x, &mut demeaned);
+        // Final demeaned: y - D*x
+        self.design.matvec_d(&x, &mut demeaned);
         for (d, &yi) in demeaned.iter_mut().zip(y.iter()) {
             *d = yi - *d;
         }
 
+        let final_residual = self.compute_residual(&x, &rhs, rhs_norm);
+
         Ok(SolveResult {
-            x: solve.x,
+            x,
             demeaned,
-            converged: solve.converged,
-            iterations: solve.iterations,
+            converged,
+            iterations: total_iterations,
             final_residual,
             time_total: t_start.elapsed().as_secs_f64(),
             time_setup,

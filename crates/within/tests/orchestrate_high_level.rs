@@ -48,6 +48,7 @@ fn test_high_level_solve_preconditioned() {
         operator: OperatorRepr::Implicit,
         tol: 1e-8,
         maxiter: 1000,
+        ..Default::default()
     };
     let precond = Preconditioner::Additive(LocalSolverConfig::solver_default());
     let result =

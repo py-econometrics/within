@@ -50,6 +50,7 @@ fn main() {
         operator: OperatorRepr::Implicit,
         tol: 1e-8,
         maxiter: 1000,
+        ..Default::default()
     };
     let gmres_precond = Preconditioner::Multiplicative(LocalSolverConfig::solver_default());
     let gmres_result = solve(

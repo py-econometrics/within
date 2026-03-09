@@ -17,6 +17,7 @@ fn test_cg_unpreconditioned() {
         operator: OperatorRepr::Implicit,
         tol: 1e-8,
         maxiter: 1000,
+        ..Default::default()
     };
     let solver = Solver::from_design(design, &params, None).expect("build solver");
     let result = solver.solve(&y).expect("solve");
@@ -33,6 +34,7 @@ fn test_cg_preconditioned() {
         operator: OperatorRepr::Implicit,
         tol: 1e-8,
         maxiter: 1000,
+        ..Default::default()
     };
     let precond = Preconditioner::Additive(LocalSolverConfig::default());
     let solver = Solver::from_design(design, &params, Some(&precond)).expect("build solver");
@@ -50,6 +52,7 @@ fn test_least_squares_cg() {
         operator: OperatorRepr::Implicit,
         tol: 1e-8,
         maxiter: 1000,
+        ..Default::default()
     };
     let solver = Solver::from_design(design, &params, None).expect("build solver");
     let result = solver.solve(&y).expect("solve");
@@ -71,6 +74,7 @@ fn test_least_squares_weighted_cg_preconditioned() {
         operator: OperatorRepr::Implicit,
         tol: 1e-8,
         maxiter: 1000,
+        ..Default::default()
     };
     let precond = Preconditioner::Additive(LocalSolverConfig::solver_default());
     let solver = Solver::from_design(design, &params, Some(&precond)).expect("build solver");
@@ -254,6 +258,7 @@ fn test_gmres_multiplicative_implicit() {
         operator: OperatorRepr::Implicit,
         tol: 1e-8,
         maxiter: 1000,
+        ..Default::default()
     };
     let precond = Preconditioner::Multiplicative(LocalSolverConfig::default());
     let solver = Solver::from_design(design, &params, Some(&precond)).expect("build solver");
@@ -272,6 +277,7 @@ fn test_gmres_multiplicative_explicit() {
         operator: OperatorRepr::Explicit,
         tol: 1e-8,
         maxiter: 1000,
+        ..Default::default()
     };
     let precond = Preconditioner::Multiplicative(LocalSolverConfig::default());
     let solver = Solver::from_design(design, &params, Some(&precond)).expect("build solver");
