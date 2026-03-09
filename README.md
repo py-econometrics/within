@@ -1,10 +1,16 @@
 # within
 
-`within` provides high-performance solvers for projecting out high-dimensional fixed effects from regression problems.
+`within` provides high-performance solvers for projecting out high-dimensional fixed effects in regression problems.
 
-By the Frisch-Waugh-Lovell theorem, estimating a regression of the form *y = Xβ + Dα + ε* reduces to a sequence of least-squares projections, one for y and one for each column of X, followed by a cheap regression fit on the resulting residuals. The projection step of solving the normal equations *D'Dx = D'z* is the computational bottleneck, which is the problem `within` is designed to solve.
+By the Frisch-Waugh-Lovell theorem, estimating a regression of the form *y = Xβ + Dα + ε* reduces to a sequence of least-squares projections, one for y and one for each column of X, followed by a cheap regression fit on the resulting residuals. The projection step, solving the normal equations *D'Du = D'z*, is the computational bottleneck that `within` aims to speed up.
 
-`within`'s solvers are tailored to the structure of fixed effects problems, which can be represented as a graph (as first noted by Correia, 2016). Concretely, `within` uses iterative methods (preconditioned CG, right-preconditioned GMRES) with domain decomposition (Schwarz) preconditioners, backed by approximate Cholesky local solvers (Gao et al, 2025).
+Fixed-effects problems have a natural graph structure: each observation is an edge linking the factor levels it belongs to. In a worker-firm panel, this gives a bipartite graph where edges are employment spells:
+
+<p align="center">
+  <img src="docs/images/bipartite.svg" width="1000" alt="A worker-firm panel viewed as a bipartite graph. Firms F1 and F2 are connected to workers W1–W5 by edges representing employment spells, with edge labels indicating periods of observation. W3 is a mover (edges to both firms); all others are stayers.">
+</p>
+
+`within` exploits this structure using iterative solvers (preconditioned CG, right-preconditioned GMRES) with domain decomposition (Schwarz) preconditioners backed by approximate Cholesky local solvers (Correia 2016; Gao, Kyng & Spielman 2025).
 
 ## Installation
 
@@ -12,35 +18,35 @@ Requires Python >= 3.9.
 
 ## Python Quickstart
 
-`within`'s main user-facing function is `solve`. Provide a 2-D `uint32` array of category codes (one column per fixed-effect factor) and a response vector `y`. The solver finds x in the normal equations **D'D x = D'y**, where D is the sparse categorical design matrix.
+`within`'s main estimation functions are `solve` and `solve_batch`. Below we show how to apply them to a worker-firm panel to estimate a wage regression via the Frisch-Waugh-Lovell theorem:
 
 ```python
-from within import solve, solve_batch
+from within import solve, solve_batch, make_akm_panel, CG, GMRES, Preconditioner, MultiplicativeSchwarz
 import numpy as np
 
-np.random.seed(1)
-n = 100_000
-fe = np.asfortranarray(np.column_stack([
-    np.random.randint(0, 500, n).astype(np.uint32),
-    np.random.randint(0, 200, n).astype(np.uint32),
-]))
-y = np.random.randn(n)
+# Generate a synthetic employer-employee panel
+data = make_akm_panel(n_workers=20_000, n_firms=2_000, n_years=10)
+fe, y, X, beta_true = data["fe"], data["y"], data["X"], data["beta_true"]
+fe = np.asfortranarray(fe) # for best performance
 
-result = solve(fe, y)                          # Schwarz-preconditioned CG
-result = solve(fe, y, weights=np.ones(n))      # weighted solve
+# Demean y and X jointly, then OLS on residuals
+result = solve_batch(fe, np.column_stack([y, X]))
+Y_dm, X_dm = result.demeaned[:, 0], result.demeaned[:, 1:]
+beta_hat = np.linalg.lstsq(X_dm, Y_dm, rcond=None)[0]
+
+print(f"True β:      {beta_true}")
+print(f"Estimated β: {np.round(beta_hat, 4)}")
+print(f"converged: {result.converged}  iters: {result.iterations}")
+# True β:      [0.05 0.02]
+# Estimated β: [0.05 0.02]
+# converged: [True, False, False]  iters: [10, 8, 8]
 ```
 
-### FWL regression example
+For a single column, use `solve`:
 
 ```python
-beta_true = np.array([1.0, -2.0, 0.5])
-X = np.random.randn(n, 3)
-y = X @ beta_true + np.random.randn(n)
-
-result = solve_batch(fe, np.column_stack([y, X]))
-y_tilde, X_tilde = result.demeaned[:, 0], result.demeaned[:, 1:]
-beta_hat = np.linalg.lstsq(X_tilde, y_tilde, rcond=None)[0]
-print(np.round(beta_hat, 4))  # [ 0.9982 -2.006   0.5005]
+result = solve(fe, y)
+print(f"converged={result.converged}  iters={result.iterations}  time={result.time_total:.3f}s")
 ```
 
 ## Python API

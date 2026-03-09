@@ -17,6 +17,8 @@ from within._within import (
 Additive = AdditiveSchwarz
 Multiplicative = MultiplicativeSchwarz
 
+from within.utils import make_akm_panel
+
 __all__ = [
     "OperatorRepr",
     "Preconditioner",
@@ -32,4 +34,5 @@ __all__ = [
     "Multiplicative",
     "AdditiveSchwarz",
     "MultiplicativeSchwarz",
+    "make_akm_panel",
 ]
