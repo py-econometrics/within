@@ -117,19 +117,19 @@ $$
 
 **Reading the blocks.** $D_W$ is $3 \times 3$ (one row/column per worker) with 2s on the diagonal because each worker appears in exactly 2 observations (e.g. W1 in obs 1, 2). Off-diagonals are zero because no observation belongs to two workers. $D_F$ is $2 \times 2$ with 3s on the diagonal because each firm appears in 3 observations (F1 in obs 1, 3, 4; F2 in obs 2, 5, 6). The cross-tabulation block $C_{WY}$ is $3 \times 2$ (workers $\times$ years); entry $[j,k]$ counts observations where worker $j$ is observed in year $k$. Here every worker appears once per year, so $C_{WY}$ is all ones.
 
-The Gramian's sparsity pattern defines an interaction graph on all $m = 7$ DOFs. Each node is a factor level, each edge a nonzero cross-tabulation entry $C_{qr}[j,k]$:
+The Gramian's sparsity pattern defines an interaction graph on all $m = 7$ DOFs. Each node is a factor level, and each nonzero entry $C_{qr}[j,k]$ in a cross-tabulation block becomes an edge between level $j$ of factor $q$ and level $k$ of factor $r$. For example, $C_{WF}[\text{W1},\text{F1}] = 1$ (W1 is observed once at F1) creates the W1–F1 edge, while $C_{WF}[\text{W2},\text{F1}] = 2$ (W2 is observed twice at F1) creates the W2–F1 edge with weight 2:
 
 ![Gramian interaction graph](images/graph_plain.svg)
 
-Workers (pink), Firms (blue), Years (yellow). Each edge is a nonzero cross-tabulation entry; no edges connect DOFs within the same factor. The graph is connected because W1's mobility between F1 and F2 bridges the two firms; without it, the graph would split into disconnected components (independent sub-problems).
+Workers (pink), Firms (blue), Years (yellow). No edges connect DOFs within the same factor. The diagonal entries reflect the same structure: $D_Y[\text{Y1},\text{Y1}] = 3$ because Y1 is incident to 3 edges in the graph, one for each of the 3 observations in year Y1 (obs 1, 3, 5). The graph is connected because W1's mobility between F1 and F2 bridges the two firms; without it, the graph would split into disconnected components (independent sub-problems).
 
 ### 3.3 Key properties
 
 Two properties of $G$ that drive the algorithmic design:
 
-1. **The diagonal blocks $D_q$ are diagonal matrices** — trivially invertible. This makes the classical demeaning algorithm (Section 4) cheap per iteration.
-
-2. **The cross-tabulation blocks $C_{qr}$ are typically sparse** — an entry is nonzero only when at least one observation has that specific (level-of-$q$, level-of-$r$) combination.
+> 1. **The diagonal blocks $D_q$ are diagonal matrices**, which are trivially invertible. This makes the classical demeaning algorithm (Section 4) cheap per iteration.
+>
+> 2. **The cross-tabulation blocks $C_{qr}$ are typically sparse** — an entry is nonzero only when at least one observation has that specific (level-of-$q$, level-of-$r$) combination.
 
 ---
 
@@ -137,7 +137,9 @@ Two properties of $G$ that drive the algorithmic design:
 
 ### 4.1 The demeaning algorithm
 
-The classical method sweeps through factors one at a time, updating each factor's coefficients while holding the others fixed. For factor $q$, each coefficient is set to the weighted average of the partial residual at its level:
+The classical approach to solving the normal equations (Guimarães & Portugal, 2010; Gaure, 2013) sweeps through factors one at a time, updating each factor's coefficients while holding the others fixed. Guimaraes and Portugal called this the "Zig-Zag", but the method is commonly know as the "method of alternating projections" or MAP algorithm. 
+
+For factor $q$, each coefficient is set to the weighted average of the partial residual at its level:
 
 $$
 \alpha_{q,j} \leftarrow \frac{\sum_{i:\, f_q(i)=j} w_i\, (y_i - \sum_{r \neq q} \alpha_{r,f_r(i)})}{\sum_{i:\, f_q(i)=j} w_i}
@@ -145,7 +147,7 @@ $$
 
 This is **demeaning by factor $q$**: compute the residual $y - \text{(all other factor effects)}$, then replace each coefficient with the weighted group mean of that residual.
 
-One full sweep updates all $Q$ factors in order. The algorithm is equivalent to **block Gauss-Seidel** on the normal equations — each factor's update solves the diagonal block $D_q$ against the current residual restricted to that factor's DOFs:
+One full sweep updates all $Q$ factors in order. The algorithm is equivalent to **block Gauss-Seidel** on the normal equations - each factor's update solves the diagonal block $D_q$ against the current residual restricted to that factor's DOFs:
 
 $$
 D_q\,\alpha_q^{(k+1)} = b_q - \sum_{r < q} C_{qr}\,\alpha_r^{(k+1)} - \sum_{r > q} C_{qr}\,\alpha_r^{(k)}
@@ -164,22 +166,22 @@ These are two notations for the same computation.
 
 Continuing the Worker/Firm/Year example, one full sweep processes $Q = 3$ factors in order:
 
-**Step 1** — Update Worker, holding Firm and Year fixed:
+**Step 1** - Update Worker, holding Firm and Year fixed:
 Each worker's coefficient becomes the weighted average of $(y_i - \text{firm effect} - \text{year effect})$ for observations at that worker.
 
-**Step 2** — Update Firm, using **updated** Worker values but **stale** Year values:
+**Step 2** - Update Firm, using **updated** Worker values but **stale** Year values:
 Each firm's coefficient becomes the weighted average of $(y_i - \text{worker effect} - \text{year effect})$, but the year effects are still from the previous iteration.
 
-**Step 3** — Update Year, using updated Worker and updated Firm values:
+**Step 3** - Update Year, using updated Worker and updated Firm values:
 Only the last factor in the sweep sees fully updated values from all other factors.
 
 Only the last factor in the sweep sees fully updated values from all other factors. Workers were updated with stale firm and year effects; firms were updated with stale year effects. With $Q = 3$, two out of three updates use partially stale information — illustrating the degradation described in Section 4.4.
 
-Repeat until convergence.
+This process is repeated until convergence. 
 
 ### 4.3 Convergence rate
 
-The convergence rate is governed by how "entangled" the factor subspaces are. For two factors, the error contracts by $\cos^2(\theta_F)$ per sweep, where $\theta_F$ is the angle between the factor subspaces:
+The convergence rate of the MAP algorithm is governed by how "entangled" the factor subspaces are. For two factors, the error contracts by $\cos^2(\theta_F)$ per sweep, where $\theta_F$ is the angle between the factor subspaces:
 
 ![Convergence: high vs low mobility](images/convergence_zigzag.svg)
 
