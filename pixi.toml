@@ -13,6 +13,7 @@ within = { path = ".", editable = true }
 [feature.build.dependencies]
 rust = ">=1.75"
 maturin = ">=1.7"
+uv = ">=0.4"
 
 [feature.dev.dependencies]
 pytest = ">=7.0"
