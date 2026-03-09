@@ -2,15 +2,15 @@
 
 `within` provides high-performance solvers for projecting out high-dimensional fixed effects in regression problems.
 
-By the Frisch-Waugh-Lovell theorem, estimating a regression of the form *y = Xβ + Dα + ε* reduces to a sequence of least-squares projections, one for y and one for each column of X, followed by a cheap regression fit on the resulting residuals. The projection step of solving the normal equations *D'Dx = D'z* is the computational bottleneck, which is the problem `within` is designed to solve.
+By the Frisch-Waugh-Lovell theorem, estimating a regression of the form *y = Xβ + Dα + ε* reduces to a sequence of least-squares projections, one for y and one for each column of X, followed by a cheap regression fit on the resulting residuals. The projection step - solving the normal equations *D'Dx = D'z* — is the computational bottleneck.
 
-`within`'s solvers are tailored to the structure of fixed effects problems, which can be represented as a graph (as noted by Correia, 2016), and make use of innovations in solvers for graph-structured linear systems (Gao et al, 2025). Concretely, `within` uses iterative methods (preconditioned CG, right-preconditioned GMRES) with domain decomposition (Schwarz) preconditioners, backed by approximate Cholesky local solvers.
-
-Each observation links the factor levels it belongs to, forming a graph. Suppose we had a worker-firm panel at hand that maps workers to their employer. We get a bipartite graph where edges are employment spells of workers in firms:
+Fixed-effects problems have a natural graph structure: each observation is an edge linking the factor levels it belongs to. In a worker-firm panel, this gives a bipartite graph where edges are employment spells:
 
 <p align="center">
   <img src="docs/bipartite.png" width="500" alt="A worker-firm panel viewed as a bipartite graph. Firms F1 and F2 are connected to workers W1–W5 by edges representing employment spells, with edge labels indicating periods of observation. W3 is a mover (edges to both firms); all others are stayers.">
 </p>
+
+`within` exploits this structure using iterative solvers (preconditioned CG, right-preconditioned GMRES) with domain decomposition (Schwarz) preconditioners backed by approximate Cholesky local solvers (Correia 2016; Gao, Kyng & Spielman 2025).
 
 ## Installation
 
@@ -22,7 +22,7 @@ pip install within
 
 ## Python Quickstart
 
-`within`'s main estimation functions are `solve_batch` and `solve`. Below we show how to apply them to a worker-firm panel to estimate a wage regression via the Frisch-Waugh-Lovell theorem:
+`within`'s main estimation functions are `solve` and `solve_batch`. Below we show how to apply them to a worker-firm panel to estimate a wage regression via the Frisch-Waugh-Lovell theorem:
 
 ```python
 from within import solve, solve_batch, make_akm_panel
