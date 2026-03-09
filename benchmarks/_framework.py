@@ -66,8 +66,30 @@ class BenchmarkResult:
     solve_time: float = 0.0
     iterations: int = 0
     final_residual: float = 0.0
+    demeaning_error: float = 0.0
     converged: bool = False
     passed: bool | None = None  # For correctness suites
+
+
+def max_abs_group_mean(
+    categories: list[NDArray[np.int64]],
+    n_levels: list[int],
+    demeaned: NDArray[np.float64],
+) -> float:
+    """Max absolute group mean of demeaned values across all factor-levels.
+
+    If demeaning is perfect, the mean of demeaned values within every level
+    of every factor is zero.  This returns the worst-case violation.
+    """
+    worst = 0.0
+    for cats, nl in zip(categories, n_levels):
+        sums = np.zeros(nl)
+        counts = np.zeros(nl)
+        np.add.at(sums, cats, demeaned)
+        np.add.at(counts, cats, 1.0)
+        means = sums / np.maximum(counts, 1.0)
+        worst = max(worst, float(np.abs(means).max()))
+    return worst
 
 
 def run_solve(
@@ -84,6 +106,8 @@ def run_solve(
         preconditioner=config.preconditioner,
     )
 
+    demean_err = max_abs_group_mean(categories, n_levels, result.demeaned)
+
     return BenchmarkResult(
         problem="",  # Caller fills this in
         config=config.label,
@@ -93,6 +117,7 @@ def run_solve(
         solve_time=result.time_solve,
         iterations=result.iterations,
         final_residual=result.residual,
+        demeaning_error=demean_err,
         converged=result.converged,
     )
 
