@@ -206,13 +206,13 @@ Three structural limitations of iterative demeaning:
 
 ### 5.1 Demeaning as a domain decomposition method
 
-Iterative demeaning partitions the coefficient vector $\alpha \in \mathbb{R}^m$ into $Q$ blocks — one per factor — and sweeps through them sequentially. Each step solves a small system (the diagonal block $D_q$) using the current residual restricted to that block's DOFs.
+Iterative demeaning partitions the coefficient vector $\alpha \in \mathbb{R}^m$ into $Q$ blocks - one per factor - and sweeps through them sequentially. Each step solves a small system (the diagonal block $D_q$) using the current residual restricted to that block's DOFs.
 
 In domain decomposition terminology, this is a **multiplicative Schwarz** method with $Q$ non-overlapping subdomains, one per factor. The decomposition has cheap local solves but captures none of the cross-factor coupling:
 
 ![Factor-level decomposition](images/graph_factor_level.svg)
 
-The same interaction graph from Section 3.2, now grouped into factor-level subdomains. Every edge crosses a subdomain boundary — the local operators $D_q$ are trivially diagonal, with no internal edges. The local solves are trivial but they capture **none** of the cross-factor coupling.
+This is essentially the same interaction graph from Section 3.2, now grouped into factor-level subdomains. Every edge crosses a subdomain boundary — the local operators $D_q$ are trivially diagonal, with no internal edges. The local solves are trivial but they capture **none** of the cross-factor coupling.
 
 ### 5.2 The key idea: factor-pair subdomains
 
@@ -224,9 +224,9 @@ $$
 A_{qr} = \begin{pmatrix} D_q & C_{qr} \\ C_{qr}^\top & D_r \end{pmatrix}
 $$
 
-This captures the complete interaction between the two factors — the diagonal counts **and** the cross-tabulation. The price: these bipartite systems are too large to solve exactly in practice, so the local solvers use **approximate** factorizations (Schur complement reduction + approximate Cholesky, see [Part 3](3_local_solvers.md)). This is the central trade-off in `within`:
+This captures the complete interaction between the two factors — the diagonal counts **and** the cross-tabulation. But there is a price to be paid for capturing the interaction: these bipartite systems are too large to solve exactly in practice, so the local solvers use **approximate** factorizations (Schur complement reduction + approximate Cholesky, see [Part 3](3_local_solvers.md)). 
 
-The difference in what each local solve "sees" is dramatic:
+The figure illustrates the difference between what MAP and `within` "see". MAP only knows about the diagonal blocks $D_q$, which are trivial to invert, but ignores all cross-factor coupling — the off-diagonal blocks $C_{qr}$. `within`'s domain decomposition solver instead incorporates the cross-factor structure into each local solve, at the cost of solving a larger, coupled system per subdomain. This is the central tradeoff: cheaper iterations that ignore structure via the MAP algorithm vs. more expensive iterations that exploit it via `within`.
 
 ![Factor-level vs factor-pair local solve](images/local_solve_comparison.svg)
 
@@ -237,7 +237,7 @@ The difference in what each local solve "sees" is dramatic:
 | Number of subdomains | $Q$ | $\leq \binom{Q}{2} \times$ (components) |
 | Overlap | None | Yes — each DOF appears in $Q - 1$ pairs |
 
-Demeaning solves each factor *exactly* but learns nothing about cross-factor structure. Factor-pair subdomains solve each pair *approximately* but capture the coupling that makes convergence slow in the first place. The net win: the approximate pair-solves carry so much more information per iteration that far fewer outer iterations are needed — even though each individual local solve is not exact.
+Demeaning solves each factor *exactly* but learns nothing about cross-factor structure. Factor-pair subdomains solve each pair *approximately* but capture the coupling that makes convergence slow in the first place. As a result, the approximate pair-solves carry much more information per iteration, and fewer outer iterations are needed until convergence.
 
 ### 5.3 Continuing the example
 
