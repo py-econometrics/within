@@ -85,12 +85,13 @@ pub fn cg_solve_preconditioned<A: Operator + ?Sized, M: Operator + ?Sized>(
         }
         let alpha = rz / pap;
 
+        let mut r_norm_sq = 0.0;
         for ((xi, &pi), (ri, &api)) in x.iter_mut().zip(&p).zip(r.iter_mut().zip(&ap)) {
             *xi += alpha * pi;
             *ri -= alpha * api;
+            r_norm_sq += *ri * *ri;
         }
-
-        r_norm = vec_norm(&r);
+        r_norm = r_norm_sq.sqrt();
         if r_norm / b_norm <= tol {
             return Ok(CgResult {
                 x,
@@ -105,7 +106,7 @@ pub fn cg_solve_preconditioned<A: Operator + ?Sized, M: Operator + ?Sized>(
         if rz_new.abs() < f64::EPSILON * rz_init.abs().max(f64::MIN_POSITIVE) {
             return Ok(CgResult {
                 x,
-                converged: false,
+                converged: r_norm / b_norm <= tol,
                 iterations: itn,
                 residual_norm: r_norm,
             });

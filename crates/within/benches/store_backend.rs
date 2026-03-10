@@ -52,6 +52,7 @@ fn generate_problem(n_obs: usize, n_lev: &[usize], seed: u64) -> Problem {
         operator: OperatorRepr::Implicit,
         tol: TOL,
         maxiter: MAXITER,
+        ..Default::default()
     };
     let preconditioner = Some(Preconditioner::Additive(LocalSolverConfig::solver_default()));
 

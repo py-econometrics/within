@@ -79,6 +79,7 @@ fn test_solver_explicit_gramian() {
         operator: OperatorRepr::Explicit,
         tol: 1e-8,
         maxiter: 1000,
+        ..Default::default()
     };
     let precond = additive_precond();
 
@@ -187,6 +188,7 @@ fn test_solver_multiplicative_preconditioner() {
         operator: OperatorRepr::Explicit,
         tol: 1e-8,
         maxiter: 1000,
+        ..Default::default()
     };
     let precond = Preconditioner::Multiplicative(LocalSolverConfig::solver_default());
 
@@ -206,6 +208,7 @@ fn test_multiplicative_preconditioner_nrows_ncols() {
         operator: OperatorRepr::Explicit,
         tol: 1e-8,
         maxiter: 1000,
+        ..Default::default()
     };
     let precond = Preconditioner::Multiplicative(LocalSolverConfig::solver_default());
 
@@ -260,6 +263,7 @@ fn test_multiplicative_vs_additive_same_solution() {
         operator: OperatorRepr::Implicit,
         tol: 1e-10,
         maxiter: 2000,
+        ..Default::default()
     };
     let precond_add = Preconditioner::Additive(LocalSolverConfig::solver_default());
     let result_add = solve(categories.view(), &y, None, &params_add, Some(&precond_add))
@@ -270,6 +274,7 @@ fn test_multiplicative_vs_additive_same_solution() {
         operator: OperatorRepr::Explicit,
         tol: 1e-10,
         maxiter: 2000,
+        ..Default::default()
     };
     let precond_mult = Preconditioner::Multiplicative(LocalSolverConfig::solver_default());
     let result_mult = solve(
@@ -303,6 +308,7 @@ fn test_multiplicative_serde_roundtrip() {
         operator: OperatorRepr::Explicit,
         tol: 1e-8,
         maxiter: 1000,
+        ..Default::default()
     };
     let precond = Preconditioner::Multiplicative(LocalSolverConfig::solver_default());
 
@@ -334,6 +340,7 @@ fn test_solver_multiplicative_implicit_fused() {
         operator: OperatorRepr::Implicit,
         tol: 1e-8,
         maxiter: 1000,
+        ..Default::default()
     };
     let precond = Preconditioner::Multiplicative(LocalSolverConfig::solver_default());
 

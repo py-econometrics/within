@@ -19,11 +19,13 @@ class CG:
     tol: float
     maxiter: int
     operator: OperatorRepr
+    max_refinements: int
     def __init__(
         self,
         tol: float = 1e-8,
         maxiter: int = 1000,
         operator: OperatorRepr = OperatorRepr.Implicit,
+        max_refinements: int = 2,
     ) -> None: ...
 
 class GMRES:
@@ -33,12 +35,14 @@ class GMRES:
     maxiter: int
     restart: int
     operator: OperatorRepr
+    max_refinements: int
     def __init__(
         self,
         tol: float = 1e-8,
         maxiter: int = 1000,
         restart: int = 30,
         operator: OperatorRepr = OperatorRepr.Implicit,
+        max_refinements: int = 2,
     ) -> None: ...
 
 class SolveResult:
