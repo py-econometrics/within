@@ -1,0 +1,30 @@
+WORKSPACE_ROOT = $(CURDIR)/../../
+TARGET_DIR = $(WORKSPACE_ROOT)/target
+LIBDIR = $(TARGET_DIR)/release
+STATLIB = $(LIBDIR)/libwithin_r.a
+PKG_LIBS = -L$(LIBDIR) -lwithin_r
+
+all: C_clean
+
+$(SHLIB): $(STATLIB)
+
+CARGOTMP = $(CURDIR)/.cargo
+
+$(STATLIB):
+	# In some environments, ~/.cargo/bin might not be included in PATH, so we need
+	# to set it here to ensure cargo can be found
+	if [ "$(NOT_CRAN)" != "true" ]; then \
+		export CARGO_HOME=$(CARGOTMP); \
+	fi && \
+		export PATH="$(PATH):$(HOME)/.cargo/bin:$(WORKSPACE_ROOT)/.pixi/envs/default/bin" && \
+		cargo build -p within-r --lib --release --manifest-path=$(WORKSPACE_ROOT)/Cargo.toml --target-dir $(TARGET_DIR)
+	if [ "$(NOT_CRAN)" != "true" ]; then \
+		rm -Rf $(CARGOTMP) && \
+		rm -Rf $(LIBDIR)/build; \
+	fi
+
+C_clean:
+	rm -Rf $(SHLIB) $(STATLIB) $(OBJECTS)
+
+clean:
+	rm -Rf $(SHLIB) $(STATLIB) $(OBJECTS)

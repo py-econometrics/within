@@ -11,3 +11,14 @@ target
 .pytest_cache/
 .ruff_cache/
 *.proptest-regressions
+
+# R package build/session artifacts
+r/src/*.o
+r/src/*.dll
+r/src/*.dylib
+r/src/*.a
+r/*.Rcheck/
+r/*.tar.gz
+.Rhistory
+.RData
+.Rproj.user/

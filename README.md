@@ -46,6 +46,53 @@ result = solve(categories, y, weights=weights)
 print(f"converged={result.converged}  iters={result.iterations}")
 ```
 
+## R quickstart
+
+Requires R and a Rust toolchain (`cargo` on `PATH`).
+
+From the repository root, use `devtools` to install R dependencies and build the
+package:
+
+```r
+install.packages("devtools")
+devtools::install_deps("r/", dependencies = TRUE)
+devtools::install("r/", upgrade = "never")
+```
+
+For interactive development (without reinstalling each edit):
+
+```r
+devtools::load_all("r/")
+```
+
+Example (FWL with two-way fixed effects):
+
+```r
+set.seed(42)
+n <- 1000
+n_firms <- 50L
+n_years <- 20L
+
+# 0-based fixed-effect ids (required by within)
+firm <- rep(0:(n_firms - 1L), each = n_years)
+year <- rep(0:(n_years - 1L), times = n_firms)
+categories <- matrix(as.integer(c(firm, year)), nrow = n, ncol = 2)
+
+beta <- 1.5
+firm_fe <- rnorm(n_firms, sd = 3)[firm + 1L]
+year_fe <- rnorm(n_years, sd = 1)[year + 1L]
+x <- rnorm(n) + 0.3 * firm_fe
+y <- beta * x + firm_fe + year_fe + rnorm(n, sd = 0.5)
+
+res <- within_solve_batch(categories, cbind(y, x))
+y_tilde <- res$demeaned[, 1]
+x_tilde <- res$demeaned[, 2]
+beta_hat <- sum(x_tilde * y_tilde) / sum(x_tilde^2)
+
+print(beta_hat)
+print(res$converged)
+```
+
 ### Solver methods
 
 | Class | Description |

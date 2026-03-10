@@ -1,0 +1,12 @@
+[package]
+name = "within-r"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+within = { path = "../within" }
+extendr-api = "0.8"
+ndarray = "0.16"
