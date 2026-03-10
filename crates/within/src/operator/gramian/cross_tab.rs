@@ -377,9 +377,18 @@ impl CrossTab {
             .collect();
 
         // Extract off-diagonal C block
-        let (c_indptr, c_indices, c_data) = test_helpers::extract_offdiag_block(
-            indptr, indices, data, fq, &active_q, &q_map, &r_map, r_lo, r_hi, n_q,
-        );
+        let (c_indptr, c_indices, c_data) = test_helpers::OffdiagExtractor {
+            indptr,
+            indices,
+            data,
+            fq,
+            active_q: &active_q,
+            q_map: &q_map,
+            r_map: &r_map,
+            r_lo,
+            r_hi,
+        }
+        .extract(n_q);
 
         let c = CsrBlock {
             indptr: c_indptr,
@@ -728,50 +737,53 @@ pub(crate) mod test_helpers {
         (full_diag, active)
     }
 
-    /// Extract the off-diagonal C block from a Gramian for a factor pair.
+    /// Extracts the off-diagonal C block from a Gramian for a factor pair.
     ///
-    /// Iterates active q-rows, filters columns in the r-factor range, and remaps
-    /// both row/column indices using the compact maps. Returns CSR components
-    /// `(indptr, indices, data)`.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn extract_offdiag_block(
-        indptr: &[u32],
-        indices: &[u32],
-        data: &[f64],
-        fq: &crate::observation::FactorMeta,
-        active_q: &[bool],
-        q_map: &[u32],
-        r_map: &[u32],
-        r_lo: u32,
-        r_hi: u32,
-        n_q: usize,
-    ) -> (Vec<u32>, Vec<u32>, Vec<f64>) {
-        let mut c_indptr = vec![0u32; n_q + 1];
-        let mut c_indices = Vec::new();
-        let mut c_data = Vec::new();
+    /// Bundles the many parameters of the extraction into a single struct,
+    /// iterating active q-rows, filtering columns in the r-factor range,
+    /// and remapping indices via the compact maps.
+    pub(crate) struct OffdiagExtractor<'a> {
+        pub indptr: &'a [u32],
+        pub indices: &'a [u32],
+        pub data: &'a [f64],
+        pub fq: &'a crate::observation::FactorMeta,
+        pub active_q: &'a [bool],
+        pub q_map: &'a [u32],
+        pub r_map: &'a [u32],
+        pub r_lo: u32,
+        pub r_hi: u32,
+    }
 
-        for j in 0..fq.n_levels {
-            if !active_q[j] {
-                continue;
-            }
-            let compact_q = q_map[j] as usize;
-            let row = fq.offset + j;
-            let start = indptr[row] as usize;
-            let end = indptr[row + 1] as usize;
-            for idx in start..end {
-                let col = indices[idx];
-                if col >= r_lo && col < r_hi {
-                    let k = (col - r_lo) as usize;
-                    if r_map[k] != u32::MAX {
-                        c_indices.push(r_map[k]);
-                        c_data.push(data[idx]);
+    impl OffdiagExtractor<'_> {
+        /// Extract CSR components `(indptr, indices, data)` for the C block.
+        pub fn extract(&self, n_q: usize) -> (Vec<u32>, Vec<u32>, Vec<f64>) {
+            let mut c_indptr = vec![0u32; n_q + 1];
+            let mut c_indices = Vec::new();
+            let mut c_data = Vec::new();
+
+            for j in 0..self.fq.n_levels {
+                if !self.active_q[j] {
+                    continue;
+                }
+                let compact_q = self.q_map[j] as usize;
+                let row = self.fq.offset + j;
+                let start = self.indptr[row] as usize;
+                let end = self.indptr[row + 1] as usize;
+                for idx in start..end {
+                    let col = self.indices[idx];
+                    if col >= self.r_lo && col < self.r_hi {
+                        let k = (col - self.r_lo) as usize;
+                        if self.r_map[k] != u32::MAX {
+                            c_indices.push(self.r_map[k]);
+                            c_data.push(self.data[idx]);
+                        }
                     }
                 }
+                c_indptr[compact_q + 1] = c_indices.len() as u32;
             }
-            c_indptr[compact_q + 1] = c_indices.len() as u32;
-        }
-        debug_assert!(c_indptr.windows(2).all(|w| w[0] <= w[1]));
+            debug_assert!(c_indptr.windows(2).all(|w| w[0] <= w[1]));
 
-        (c_indptr, c_indices, c_data)
+            (c_indptr, c_indices, c_data)
+        }
     }
 }
