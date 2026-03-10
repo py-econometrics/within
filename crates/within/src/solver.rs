@@ -119,7 +119,14 @@ impl<S: ObservationStore> Solver<S> {
         let refined = self.iterative_refinement(y, abs_tol, solve)?;
 
         let time_solve = t_solve_start.elapsed().as_secs_f64();
-        let final_residual = self.compute_residual(&refined.x, &rhs, rhs_norm);
+
+        // Compute residual via observation space: ||D^T W (y - Dx)|| / ||rhs||.
+        // This is cheaper than a Gramian matvec and avoids the DOF-space
+        // cancellation that motivated iterative refinement.
+        let mut residual_dof = vec![0.0; self.design.n_dofs];
+        self.design
+            .rmatvec_wdt(&refined.demeaned, &mut residual_dof);
+        let final_residual = vec_norm(&residual_dof) / rhs_norm;
 
         Ok(SolveResult {
             x: refined.x,
@@ -296,21 +303,6 @@ impl<S: ObservationStore> Solver<S> {
                 })
             }
         }
-    }
-
-    fn compute_residual(&self, x: &[f64], rhs: &[f64], rhs_norm: f64) -> f64 {
-        let mut scratch = vec![0.0; self.design.n_dofs];
-        match &self.gramian {
-            Some(g) => g.apply(x, &mut scratch),
-            None => {
-                let op = GramianOperator::new(&self.design);
-                op.apply(x, &mut scratch);
-            }
-        }
-        for i in 0..rhs.len() {
-            scratch[i] -= rhs[i];
-        }
-        vec_norm(&scratch) / rhs_norm
     }
 }
 
