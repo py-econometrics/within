@@ -129,15 +129,47 @@ impl HessenbergMatrix {
 // Arnoldi cycle
 // ---------------------------------------------------------------------------
 
-/// Mutable scratch buffers used by the Arnoldi cycle.
-struct ArnoldiState<'a> {
-    v_basis: &'a mut ColumnBasis,
-    z_basis: &'a mut ColumnBasis,
-    h: &'a mut HessenbergMatrix,
-    cs: &'a mut [f64],
-    sn: &'a mut [f64],
-    g: &'a mut [f64],
-    w: &'a mut [f64],
+/// Owned restart-cycle buffers for GMRES, allocated once and reused across restarts.
+struct KrylovBuffers {
+    v_basis: ColumnBasis,
+    z_basis: ColumnBasis,
+    h: HessenbergMatrix,
+    cs: Vec<f64>,
+    sn: Vec<f64>,
+    g: Vec<f64>,
+    w: Vec<f64>,
+}
+
+impl KrylovBuffers {
+    fn new(restart: usize, n: usize) -> Self {
+        Self {
+            v_basis: ColumnBasis::new(restart + 1, n),
+            z_basis: ColumnBasis::new(restart, n),
+            h: HessenbergMatrix::new(restart),
+            cs: vec![0.0; restart],
+            sn: vec![0.0; restart],
+            g: vec![0.0; restart + 1],
+            w: vec![0.0; n],
+        }
+    }
+
+    /// Clear Krylov storage, set g[0] = beta, normalise the residual into v_0,
+    /// and push it onto the V basis.
+    fn clear_for_restart(&mut self, beta: f64, r: &mut [f64]) {
+        self.v_basis.clear();
+        self.z_basis.clear();
+        self.h.clear();
+        self.cs.fill(0.0);
+        self.sn.fill(0.0);
+        self.g.fill(0.0);
+        self.g[0] = beta;
+
+        let inv_beta = 1.0 / beta;
+        for val in r.iter_mut() {
+            *val *= inv_beta;
+        }
+        self.v_basis.push_from(r);
+    }
 }
 
 enum ArnoldiOutcome {
@@ -194,7 +226,7 @@ fn apply_previous_givens(h: &mut HessenbergMatrix, cs: &[f64], sn: &[f64], j: us
 fn arnoldi_cycle<A: Operator + ?Sized, M: Operator + ?Sized>(
     operator: &A,
     preconditioner: &M,
-    state: &mut ArnoldiState,
+    bufs: &mut KrylovBuffers,
     abs_tol: f64,
     iters_this_cycle: usize,
     total_iters: &mut usize,
@@ -206,45 +238,46 @@ fn arnoldi_cycle<A: Operator + ?Sized, M: Operator + ?Sized>(
     while j < iters_this_cycle {
         // z_j = M^{-1} v_j
         {
-            let v_j = state.v_basis.col(j);
-            state.z_basis.push_zeroed();
-            let z_j = state.z_basis.last_col_mut();
+            let v_j = bufs.v_basis.col(j);
+            bufs.z_basis.push_zeroed();
+            let z_j = bufs.z_basis.last_col_mut();
             preconditioner.try_apply(v_j, z_j)?;
         }
 
         // w = A z_j
         {
-            let z_j = state.z_basis.col(j);
-            operator.try_apply(z_j, state.w)?;
+            let z_j = bufs.z_basis.col(j);
+            operator.try_apply(z_j, &mut bufs.w)?;
         }
 
         // Modified Gram-Schmidt orthogonalisation
-        let (h_jp1_j, local_h_max) = modified_gram_schmidt(state.w, state.v_basis, state.h, j);
+        let (h_jp1_j, local_h_max) =
+            modified_gram_schmidt(&mut bufs.w, &bufs.v_basis, &mut bufs.h, j);
         h_norms_max = h_norms_max.max(local_h_max).max(h_jp1_j);
 
         // Apply previous Givens rotations to the new column
-        apply_previous_givens(state.h, state.cs, state.sn, j);
+        apply_previous_givens(&mut bufs.h, &bufs.cs, &bufs.sn, j);
 
         // Compute new Givens rotation for row (j, j+1)
-        let (c, s) = givens_rotation(state.h.get(j, j), state.h.get(j + 1, j));
-        state.cs[j] = c;
-        state.sn[j] = s;
+        let (c, s) = givens_rotation(bufs.h.get(j, j), bufs.h.get(j + 1, j));
+        bufs.cs[j] = c;
+        bufs.sn[j] = s;
 
         // Apply to h column j
-        let h_jj = state.h.get(j, j);
-        let h_j1j = state.h.get(j + 1, j);
-        state.h.set(j, j, c * h_jj + s * h_j1j);
-        state.h.set(j + 1, j, 0.0);
+        let h_jj = bufs.h.get(j, j);
+        let h_j1j = bufs.h.get(j + 1, j);
+        bufs.h.set(j, j, c * h_jj + s * h_j1j);
+        bufs.h.set(j + 1, j, 0.0);
 
         // Apply to g
-        let temp = c * state.g[j] + s * state.g[j + 1];
-        state.g[j + 1] = -s * state.g[j] + c * state.g[j + 1];
-        state.g[j] = temp;
+        let temp = c * bufs.g[j] + s * bufs.g[j + 1];
+        bufs.g[j + 1] = -s * bufs.g[j] + c * bufs.g[j + 1];
+        bufs.g[j] = temp;
 
         j += 1;
         *total_iters += 1;
 
-        let residual = state.g[j].abs();
+        let residual = bufs.g[j].abs();
 
         if residual <= abs_tol {
             return Ok((ArnoldiOutcome::Converged { residual }, j));
@@ -258,10 +291,10 @@ fn arnoldi_cycle<A: Operator + ?Sized, M: Operator + ?Sized>(
         if h_jp1_j > 1e-14 * h_norms_max {
             // Normalise w into next basis vector
             let inv = 1.0 / h_jp1_j;
-            for val in state.w.iter_mut() {
+            for val in bufs.w.iter_mut() {
                 *val *= inv;
             }
-            state.v_basis.push_from(state.w);
+            bufs.v_basis.push_from(&bufs.w);
         } else {
             // Lucky breakdown: Krylov subspace exhausted
             return Ok((ArnoldiOutcome::Breakdown, j));
@@ -287,34 +320,6 @@ fn compute_residual<A: Operator + ?Sized>(
         *ri = bi - *ri;
     }
     Ok(vec_norm(r))
-}
-
-/// Clear Krylov storage, set g[0] = beta, normalise the residual into v₀,
-/// and push it onto the V basis.
-#[allow(clippy::too_many_arguments)]
-fn init_restart_cycle(
-    r: &mut [f64],
-    beta: f64,
-    v_basis: &mut ColumnBasis,
-    z_basis: &mut ColumnBasis,
-    h: &mut HessenbergMatrix,
-    cs: &mut [f64],
-    sn: &mut [f64],
-    g: &mut [f64],
-) {
-    v_basis.clear();
-    z_basis.clear();
-    h.clear();
-    cs.fill(0.0);
-    sn.fill(0.0);
-    g.fill(0.0);
-    g[0] = beta;
-
-    let inv_beta = 1.0 / beta;
-    for val in r.iter_mut() {
-        *val *= inv_beta;
-    }
-    v_basis.push_from(r);
 }
 
 // ---------------------------------------------------------------------------
@@ -355,17 +360,11 @@ pub fn gmres_solve<A: Operator + ?Sized, M: Operator + ?Sized>(
     let mut x = vec![0.0; n];
     let mut total_iters = 0;
 
-    // Working vectors reused across restarts
+    // Working vector reused across restarts
     let mut r = vec![0.0; n];
-    let mut w = vec![0.0; n];
 
     // Pre-allocate Krylov storage once
-    let mut v_basis = ColumnBasis::new(m + 1, n);
-    let mut z_basis = ColumnBasis::new(m, n);
-    let mut h = HessenbergMatrix::new(m);
-    let mut cs = vec![0.0; m];
-    let mut sn = vec![0.0; m];
-    let mut g = vec![0.0; m + 1];
+    let mut bufs = KrylovBuffers::new(m, n);
 
     loop {
         let beta = compute_residual(operator, &x, b, &mut r)?;
@@ -388,31 +387,14 @@ pub fn gmres_solve<A: Operator + ?Sized, M: Operator + ?Sized>(
             });
         }
 
-        init_restart_cycle(
-            &mut r,
-            beta,
-            &mut v_basis,
-            &mut z_basis,
-            &mut h,
-            &mut cs,
-            &mut sn,
-            &mut g,
-        );
+        bufs.clear_for_restart(beta, &mut r);
 
         let iters_this_cycle = (maxiter - total_iters).min(m);
 
         let (outcome, j) = arnoldi_cycle(
             operator,
             preconditioner,
-            &mut ArnoldiState {
-                v_basis: &mut v_basis,
-                z_basis: &mut z_basis,
-                h: &mut h,
-                cs: &mut cs,
-                sn: &mut sn,
-                g: &mut g,
-                w: &mut w,
-            },
+            &mut bufs,
             abs_tol,
             iters_this_cycle,
             &mut total_iters,
@@ -420,8 +402,8 @@ pub fn gmres_solve<A: Operator + ?Sized, M: Operator + ?Sized>(
         )?;
 
         // Solve upper triangular system and update x -- done ONCE per cycle
-        let y = solve_upper_triangular(&h, &g, j);
-        update_solution(&mut x, &z_basis, &y, j);
+        let y = solve_upper_triangular(&bufs.h, &bufs.g, j);
+        update_solution(&mut x, &bufs.z_basis, &y, j);
 
         match outcome {
             ArnoldiOutcome::Converged { residual } => {

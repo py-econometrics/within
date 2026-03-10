@@ -378,10 +378,8 @@ fn extract_preconditioner(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Pr
             PyPreconditioner::Multiplicative => Ok(Preconditioner::Multiplicative(
                 LocalSolverConfig::solver_default(),
             )),
-            PyPreconditioner::Off => {
-                // Shouldn't reach here (handled by caller), but be safe
-                Ok(Preconditioner::Additive(LocalSolverConfig::solver_default()))
-            }
+            // Off is handled by the caller before reaching extract_preconditioner.
+            PyPreconditioner::Off => unreachable!(),
         };
     }
     // Advanced: AdditiveSchwarz / MultiplicativeSchwarz objects

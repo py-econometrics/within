@@ -67,7 +67,9 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
             n_dofs,
             subdomains: Arc::new(entries),
             max_scratch_size,
-            buf_pool: Arc::new(Mutex::new(Vec::new())),
+            buf_pool: Arc::new(Mutex::new(vec![SchwarzBuffers {
+                accum: (0..n_dofs).map(|_| AtomicU64::new(0)).collect(),
+            }])),
         })
     }
 
@@ -474,7 +476,9 @@ mod serde_impl {
                 subdomains: Arc::new(h.subdomains),
                 n_dofs: h.n_dofs,
                 max_scratch_size: h.max_scratch_size,
-                buf_pool: Arc::new(Mutex::new(Vec::new())),
+                buf_pool: Arc::new(Mutex::new(vec![SchwarzBuffers {
+                    accum: (0..h.n_dofs).map(|_| AtomicU64::new(0)).collect(),
+                }])),
             })
         }
     }

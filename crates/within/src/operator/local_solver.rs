@@ -485,6 +485,10 @@ impl LocalSolver for BlockElimSolver {
         let n_r = self.cross_tab.n_r();
         let ct = &self.cross_tab;
 
+        // Block elimination for the bipartite SDDM system [D_q, C; C^T, D_r]:
+        // Step 1: Negate the q-block of rhs to convert from SDDM form to the
+        //         signed Laplacian form where C carries a negative sign.
+        //         This is equivalent to solving [-D_q, C; C^T, D_r] x = rhs'.
         negate_block(&mut rhs[..n], n_q);
         subtract_mean(rhs, n);
 
