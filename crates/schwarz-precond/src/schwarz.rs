@@ -40,6 +40,15 @@ enum ResolvedReductionStrategy {
     ParallelReduction,
 }
 
+impl ResolvedReductionStrategy {
+    fn as_public(self) -> ReductionStrategy {
+        match self {
+            Self::AtomicScatter => ReductionStrategy::AtomicScatter,
+            Self::ParallelReduction => ReductionStrategy::ParallelReduction,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ReductionPlan {
     strategy: ResolvedReductionStrategy,
@@ -48,7 +57,7 @@ struct ReductionPlan {
 
 /// Build-time metrics that describe additive Schwarz scheduling pressure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct AdditiveSchwarzDiagnostics {
+pub struct AdditiveSchwarzDiagnostics {
     n_subdomains: usize,
     n_dofs: usize,
     total_inner_parallel_work: usize,
@@ -83,6 +92,31 @@ impl AdditiveSchwarzDiagnostics {
             max_inner_parallel_work,
             total_scatter_dofs,
         }
+    }
+
+    /// Number of additive Schwarz subdomains.
+    pub fn n_subdomains(&self) -> usize {
+        self.n_subdomains
+    }
+
+    /// Global number of degrees of freedom.
+    pub fn n_dofs(&self) -> usize {
+        self.n_dofs
+    }
+
+    /// Sum of per-subdomain work estimates that can benefit from nested Rayon.
+    pub fn total_inner_parallel_work(&self) -> usize {
+        self.total_inner_parallel_work
+    }
+
+    /// Largest single-subdomain inner-parallel work estimate.
+    pub fn max_inner_parallel_work(&self) -> usize {
+        self.max_inner_parallel_work
+    }
+
+    /// Sum of local scatter entries across all subdomains.
+    pub fn total_scatter_dofs(&self) -> usize {
+        self.total_scatter_dofs
     }
 
     fn reduction_plan(&self, configured: ReductionStrategy, threads: usize) -> ReductionPlan {
@@ -140,14 +174,16 @@ impl AdditiveSchwarzDiagnostics {
         ResolvedReductionStrategy::AtomicScatter
     }
 
-    fn outer_parallel_capacity(&self) -> f64 {
+    /// Estimated outer parallel capacity: roughly how many heavy subdomains exist.
+    pub fn outer_parallel_capacity(&self) -> f64 {
         if self.max_inner_parallel_work == 0 {
             return 0.0;
         }
         self.total_inner_parallel_work as f64 / self.max_inner_parallel_work as f64
     }
 
-    fn scatter_overlap(&self) -> f64 {
+    /// Average overlap multiplicity of the additive scatter.
+    pub fn scatter_overlap(&self) -> f64 {
         self.total_scatter_dofs as f64 / self.n_dofs.max(1) as f64
     }
 
@@ -294,6 +330,21 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
     /// Access the underlying subdomain entries.
     pub fn subdomains(&self) -> &[SubdomainEntry<S>] {
         &self.subdomains
+    }
+
+    /// Configured additive reduction strategy.
+    pub fn reduction_strategy(&self) -> ReductionStrategy {
+        self.reduction_strategy
+    }
+
+    /// Concrete backend selected for the current Rayon thread-pool width.
+    pub fn resolved_reduction_strategy(&self) -> ReductionStrategy {
+        self.reduction_plan().strategy.as_public()
+    }
+
+    /// Build-time metrics used by the additive scheduler.
+    pub fn diagnostics(&self) -> AdditiveSchwarzDiagnostics {
+        self.diagnostics
     }
 
     /// Return a copy that uses a different reduction strategy.

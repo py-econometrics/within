@@ -1,6 +1,6 @@
 //! Pre-built preconditioner for reuse across multiple solves.
 
-use schwarz_precond::Operator;
+use schwarz_precond::{AdditiveSchwarzDiagnostics, LocalSolver, Operator, ReductionStrategy};
 use serde::{Deserialize, Serialize};
 
 use crate::config::Preconditioner;
@@ -21,6 +21,56 @@ pub enum FePreconditioner {
     Additive(FeSchwarz),
     /// Multiplicative Schwarz with sparse Gramian updater (GMRES only).
     Multiplicative(FeMultSchwarzSparse),
+}
+
+impl FePreconditioner {
+    /// Number of Schwarz subdomains in the built preconditioner.
+    pub fn n_subdomains(&self) -> usize {
+        match self {
+            Self::Additive(p) => p.subdomains().len(),
+            Self::Multiplicative(p) => p.subdomains().len(),
+        }
+    }
+
+    /// Estimated nested-parallel work per subdomain.
+    pub fn subdomain_inner_parallel_work(&self) -> Vec<usize> {
+        match self {
+            Self::Additive(p) => p
+                .subdomains()
+                .iter()
+                .map(|entry| entry.solver.inner_parallelism_work_estimate())
+                .collect(),
+            Self::Multiplicative(p) => p
+                .subdomains()
+                .iter()
+                .map(|entry| entry.solver.inner_parallelism_work_estimate())
+                .collect(),
+        }
+    }
+
+    /// Configured additive reduction strategy, if this is an additive preconditioner.
+    pub fn reduction_strategy(&self) -> Option<ReductionStrategy> {
+        match self {
+            Self::Additive(p) => Some(p.reduction_strategy()),
+            Self::Multiplicative(_) => None,
+        }
+    }
+
+    /// Concrete additive backend selected for the current Rayon thread-pool width.
+    pub fn resolved_reduction_strategy(&self) -> Option<ReductionStrategy> {
+        match self {
+            Self::Additive(p) => Some(p.resolved_reduction_strategy()),
+            Self::Multiplicative(_) => None,
+        }
+    }
+
+    /// Build-time additive Schwarz scheduling diagnostics.
+    pub fn additive_schwarz_diagnostics(&self) -> Option<AdditiveSchwarzDiagnostics> {
+        match self {
+            Self::Additive(p) => Some(p.diagnostics()),
+            Self::Multiplicative(_) => None,
+        }
+    }
 }
 
 impl Operator for FePreconditioner {

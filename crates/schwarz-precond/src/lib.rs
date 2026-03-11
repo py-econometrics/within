@@ -114,7 +114,7 @@ pub use error::{ApplyError, LocalSolveError, PreconditionerBuildError, SolveErro
 pub use local_solve::{LocalSolver, SubdomainEntry};
 pub use schwarz::{
     local_solver_inner_parallelism_enabled, with_local_solver_inner_parallelism,
-    MultiplicativeSchwarzPreconditioner, OperatorResidualUpdater, ReductionStrategy,
-    ResidualUpdater, SchwarzPreconditioner,
+    AdditiveSchwarzDiagnostics, MultiplicativeSchwarzPreconditioner, OperatorResidualUpdater,
+    ReductionStrategy, ResidualUpdater, SchwarzPreconditioner,
 };
 pub use sparse_matrix::SparseMatrix;

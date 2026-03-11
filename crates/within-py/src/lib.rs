@@ -144,6 +144,14 @@ impl PyReductionStrategy {
             Self::ParallelReduction => ReductionStrategy::ParallelReduction,
         }
     }
+
+    fn from_native(strategy: ReductionStrategy) -> Self {
+        match strategy {
+            ReductionStrategy::Auto => Self::Auto,
+            ReductionStrategy::AtomicScatter => Self::AtomicScatter,
+            ReductionStrategy::ParallelReduction => Self::ParallelReduction,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -732,6 +740,74 @@ impl PyFePreconditioner {
     #[getter]
     fn ncols(&self) -> usize {
         self.inner.ncols()
+    }
+
+    /// Number of Schwarz subdomains in the built preconditioner.
+    #[getter]
+    fn n_subdomains(&self) -> usize {
+        self.inner.n_subdomains()
+    }
+
+    /// Estimated nested-parallel work per subdomain.
+    #[getter]
+    fn subdomain_inner_parallel_work(&self) -> Vec<usize> {
+        self.inner.subdomain_inner_parallel_work()
+    }
+
+    /// Configured additive reduction strategy, if this is an additive preconditioner.
+    #[getter]
+    fn reduction_strategy(&self) -> Option<PyReductionStrategy> {
+        self.inner
+            .reduction_strategy()
+            .map(PyReductionStrategy::from_native)
+    }
+
+    /// Concrete additive backend selected for the current Rayon width.
+    #[getter]
+    fn resolved_reduction_strategy(&self) -> Option<PyReductionStrategy> {
+        self.inner
+            .resolved_reduction_strategy()
+            .map(PyReductionStrategy::from_native)
+    }
+
+    /// Total additive inner-parallel work estimate.
+    #[getter]
+    fn total_inner_parallel_work(&self) -> Option<usize> {
+        self.inner
+            .additive_schwarz_diagnostics()
+            .map(|diag| diag.total_inner_parallel_work())
+    }
+
+    /// Largest single-subdomain inner-parallel work estimate.
+    #[getter]
+    fn max_inner_parallel_work(&self) -> Option<usize> {
+        self.inner
+            .additive_schwarz_diagnostics()
+            .map(|diag| diag.max_inner_parallel_work())
+    }
+
+    /// Total additive scatter entries across all subdomains.
+    #[getter]
+    fn total_scatter_dofs(&self) -> Option<usize> {
+        self.inner
+            .additive_schwarz_diagnostics()
+            .map(|diag| diag.total_scatter_dofs())
+    }
+
+    /// Estimated number of heavy subdomains available to outer parallelism.
+    #[getter]
+    fn outer_parallel_capacity(&self) -> Option<f64> {
+        self.inner
+            .additive_schwarz_diagnostics()
+            .map(|diag| diag.outer_parallel_capacity())
+    }
+
+    /// Average overlap multiplicity of the additive scatter.
+    #[getter]
+    fn scatter_overlap(&self) -> Option<f64> {
+        self.inner
+            .additive_schwarz_diagnostics()
+            .map(|diag| diag.scatter_overlap())
     }
 
     fn __repr__(&self) -> String {
