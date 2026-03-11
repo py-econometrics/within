@@ -86,7 +86,7 @@ The blocks are:
 
 - **Diagonal blocks** $D_q$ ($m_q \times m_q$, diagonal): $D_q[j,j] = \sum_{i:\, f_q(i) = j} w_i$ - the weighted count of observations at level $j$ of factor $q$.
 
-- **Cross-tabulation blocks** $C_{qr}$ ($m_q \times m_r$, sparse): $C_{qr}[j,k] = \sum_{i:\, f_q(i) = j,\; f_r(i) = k} w_i$ — the weighted count of observations simultaneously at level $j$ of factor $q$ and level $k$ of factor $r$.
+- **Cross-tabulation blocks** $C_{qr}$ ($m_q \times m_r$, sparse): $C_{qr}[j,k] = \sum_{i:\, f_q(i) = j,\; f_r(i) = k} w_i$ - the weighted count of observations simultaneously at level $j$ of factor $q$ and level $k$ of factor $r$.
 
 There are $Q$ diagonal blocks and $\binom{Q}{2}$ cross-tabulation blocks.
 
@@ -140,7 +140,7 @@ We note two properties of the Gramian $G$ that drive the algorithmic design of s
 
 > 1. **The diagonal blocks $D_q$ are diagonal matrices**, which are trivially invertible. This makes the classical demeaning algorithm (Section 4) cheap per iteration.
 >
-> 2. **The cross-tabulation blocks $C_{qr}$ are typically sparse** — an entry is nonzero only when at least one observation has that specific (level-of-$q$, level-of-$r$) combination.
+> 2. **The cross-tabulation blocks $C_{qr}$ are typically sparse** - an entry is nonzero only when at least one observation has that specific (level-of-$q$, level-of-$r$) combination.
 
 ---
 
@@ -158,7 +158,7 @@ $$
 
 This is **demeaning by factor $q$**: for each level $j$, compute the weighted average of $y_i - \sum_{r \neq q} \alpha_{r,f_r(i)}$ across all observations $i$ with $f_q(i) = j$, and set $\alpha_{q,j}$ to that average.
 
-One full sweep updates all $Q$ factors in order — the MAP algorithm is identical to block Gauss-Seidel on the normal equations. Note that each factor update only involves the diagonal block $D_q$; the cross-tabulation blocks $C_{qr}$ are never used.
+One full sweep updates all $Q$ factors in order - the MAP algorithm is identical to block Gauss-Seidel on the normal equations. Note that each factor update only involves the diagonal block $D_q$; the cross-tabulation blocks $C_{qr}$ are never used.
 
 ### 4.2 Solving a Worker-Firm-Year Regression via the MAP Algorithm
 
@@ -172,7 +172,7 @@ Continuing the Worker/Firm/Year example, one full sweep processes $Q = 3$ factor
 
 This process is repeated until convergence. 
 
-Only the last factor in a given sweep — years — sees fully updated values from all other factors. Workers were updated with stale firm and year effects; firms were updated with stale year effects. When factors are correlated (e.g. high-skill workers sort into high-paying firms), the correct worker effect depends on the firm effect and vice versa: updating workers with a stale firm estimate means the worker coefficients won't land in the right place, and the subsequent firm update has to compensate — partially undoing the worker correction. With $Q = 3$, two out of three updates use out-of-date information. As $Q$ grows, the problem worsens: more of each sweep is spent on corrections that the remaining updates will undo, and the method needs more sweeps to converge (see Section 4.4).
+Only the last factor in a given sweep - years - sees fully updated values from all other factors. Workers were updated with stale firm and year effects; firms were updated with stale year effects. When factors are correlated (e.g. high-skill workers sort into high-paying firms), the correct worker effect depends on the firm effect and vice versa: updating workers with a stale firm estimate means the worker coefficients won't land in the right place, and the subsequent firm update has to compensate - partially undoing the worker correction. With $Q = 3$, two out of three updates use out-of-date information. As $Q$ grows, the problem worsens: more of each sweep is spent on corrections that the remaining updates will undo, and the method needs more sweeps to converge (see Section 4.4).
 
 ### 4.3 Convergence rate
 
@@ -196,7 +196,7 @@ $$
 C_{WF} = \begin{pmatrix} 1 & 1 \\ 2 & 0 \\ 2 & 0 \\ 0 & 2 \\ 0 & 2 \\ 0 & 2 \end{pmatrix}
 $$
 
-The matrix is nearly block-diagonal. W2 and W3 are only observed at F1; W4–W6 only at F2. For these stayers, every observation of the worker is also an observation of their firm — the effects are confounded. The only information separating the two firms comes through W1, the single mover. The subspaces are nearly collinear, $\cos(\theta_F) \approx 1$, and the algorithm makes little progress per sweep — the information separating workers from firms lives in $C_{WF}$, which the algorithm never touches. In the limit where there are no movers at all, $C_{WF}$ becomes exactly block-diagonal, the system splits into disconnected components, and $\cos(\theta_F) = 1$.
+The matrix is nearly block-diagonal. W2 and W3 are only observed at F1; W4–W6 only at F2. For these stayers, every observation of the worker is also an observation of their firm - the effects are confounded. The only information separating the two firms comes through W1, the single mover. The subspaces are nearly collinear, $\cos(\theta_F) \approx 1$, and the algorithm makes little progress per sweep - the information separating workers from firms lives in $C_{WF}$, which the algorithm never touches. In the limit where there are no movers at all, $C_{WF}$ becomes exactly block-diagonal, the system splits into disconnected components, and $\cos(\theta_F) = 1$.
 
 For more than two fixed effects ($Q > 2$), any near-collinear pair bottlenecks the entire iteration.
 
@@ -204,11 +204,11 @@ For more than two fixed effects ($Q > 2$), any near-collinear pair bottlenecks t
 
 Based on the exposition above, there are three structural limitiations of the MAP algorithm: 
 
-1. **The local solve can't be improved** — each factor update already solves $D_q$ exactly (it's diagonal), so there's nothing to gain within a single factor. The only way to make progress is to do more sweeps.
+1. **The local solve can't be improved** - each factor update already solves $D_q$ exactly (it's diagonal), so there's nothing to gain within a single factor. The only way to make progress is to do more sweeps.
 
-2. **The cross-factor structure is ignored** — the algorithm only ever touches the diagonal blocks $D_q$ of the Gramian, which makes each sweep cheap but means it's entirely oblivious to the cross-tabulation blocks $C_{qr}$ that couple the factors.
+2. **The cross-factor structure is ignored** - the algorithm only ever touches the diagonal blocks $D_q$ of the Gramian, which makes each sweep cheap but means it's entirely oblivious to the cross-tabulation blocks $C_{qr}$ that couple the factors.
 
-3. **Degradation with more factors** — for more than two fixed effects with $Q > 2$, each factor's update uses stale values from factors not yet processed in the current sweep. The effective convergence rate worsens as the number of interacting pairs grows.
+3. **Degradation with more factors** - for more than two fixed effects with $Q > 2$, each factor's update uses stale values from factors not yet processed in the current sweep. The effective convergence rate worsens as the number of interacting pairs grows.
 
 All three motivate the algorithm used in `within`. 
 
@@ -218,52 +218,50 @@ All three motivate the algorithm used in `within`.
 
 ### 5.1 Demeaning as a domain decomposition method
 
-Iterative demeaning partitions the coefficient vector $\alpha \in \mathbb{R}^m$ into $Q$ blocks - one per factor - and sweeps through them sequentially. Each step solves a small system (the diagonal block $D_q$) using the current residual restricted to that block's DOFs.
-
-In domain decomposition terminology, this is a **multiplicative Schwarz** method with $Q$ non-overlapping subdomains, one per factor. The decomposition has cheap local solves but captures none of the cross-factor coupling:
+As we saw in Section 4, the MAP algorithm sweeps through one factor at a time, solving the diagonal block $D_q$ at each step. In domain decomposition terminology, this is a **multiplicative Schwarz** method with $Q$ non-overlapping subdomains, one per factor:
 
 ![Factor-level decomposition](images/graph_factor_level.svg)
 
-This is essentially the same interaction graph from Section 3.2, now grouped into factor-level subdomains. Every edge crosses a subdomain boundary — the local operators $D_q$ are trivially diagonal, with no internal edges. The local solves are trivial but they capture **none** of the cross-factor coupling.
+This is essentially the same interaction graph from Section 3.2, now grouped into factor-level subdomains. Every edge crosses a subdomain boundary - the local operators $D_q$ are trivially diagonal, with no internal edges. The local solves are trivial but they capture **none** of the cross-factor coupling.
 
 ### 5.2 The key idea: factor-pair subdomains
 
 `within` uses a fundamentally different decomposition: subdomains are **factor pairs**, not individual factors.
 
-For each pair $(q, r)$, the subdomain contains all DOFs from both factors. The local operator is the full bipartite block:
+For each pair $(q, r)$, the subdomain contains all levels from both factors. The local operator is the full bipartite block:
 
 $$
 A_{qr} = \begin{pmatrix} D_q & C_{qr} \\ C_{qr}^\top & D_r \end{pmatrix}
 $$
 
-This captures the complete interaction between the two factors — the diagonal counts **and** the cross-tabulation. But there is a price to be paid for capturing the interaction: these bipartite systems are too large to solve exactly in practice, so the local solvers use **approximate** factorizations (Schur complement reduction + approximate Cholesky, see [Part 3](3_local_solvers.md)). 
+This captures the complete interaction between the two factors — the diagonal counts **and** the cross-tabulation. In practical applications, these bipartite systems are often too large to solve exactly, but their structure — a bipartite graph that can be transformed into a graph Laplacian — admits nearly-linear-time approximate solvers (Schur complement reduction + approximate Cholesky, see [Part 3](3_local_solvers.md)). 
 
-The figure illustrates the difference between what MAP and `within` "see". MAP only knows about the diagonal blocks $D_q$, which are trivial to invert, but ignores all cross-factor coupling — the off-diagonal blocks $C_{qr}$. `within`'s domain decomposition solver instead incorporates the cross-factor structure into each local solve, at the cost of solving a larger, coupled system per subdomain. This is the central tradeoff: cheaper iterations that ignore structure via the MAP algorithm vs. more expensive iterations that exploit it via `within`.
+The figure below illustrates the difference between what MAP algorithm and `within` algo "see". The MAP algo is only aware of the diagonal blocks $D_q$, which are cheap to invert, but ignores all cross-factor coupling - the off-diagonal blocks $C_{qr}$. `within`'s domain decomposition solver instead incorporates the cross-factor structure into each local solve, at the cost of solving a larger, coupled system per subdomain. This is the central tradeoff: via the MAP algorithm, we get cheaper iterations that ignore part of the structure of the problem vs. more expensive iterations that exploit structure it via `within` algorithm.
 
 ![Factor-level vs factor-pair local solve](images/local_solve_comparison.svg)
 
 | Property | Factor-level (demeaning) | Factor-pair (`within`) |
 |---|---|---|
 | Local solve | **Exact** (diagonal inversion) | **Approximate** (sampled Cholesky) |
-| Coupling captured | None — ignores $C_{qr}$ entirely | Full pairwise interaction |
+| Coupling captured | None - ignores $C_{qr}$ entirely | Full pairwise interaction |
 | Number of subdomains | $Q$ | $\leq \binom{Q}{2} \times$ (components) |
-| Overlap | None | Yes — each DOF appears in $Q - 1$ pairs |
+| Overlap | None | Yes - each factor level appears in $Q - 1$ pairs |
 
 Demeaning solves each factor *exactly* but learns nothing about cross-factor structure. Factor-pair subdomains solve each pair *approximately* but capture the coupling that makes convergence slow in the first place. As a result, the approximate pair-solves carry much more information per iteration, and fewer outer iterations are needed until convergence.
 
-### 5.3 Continuing the example
+### 5.3 Continuing the Worker-Firm Example
 
 The Worker/Firm/Year example ($Q = 3$) produces $\binom{3}{2} = 3$ factor-pair subdomains:
 
-| Subdomain | Factor pair | DOFs | Size |
+| Subdomain | Factor pair | Factor Levels | Size |
 |-----------|-------------|------|------|
 | 1 | (Worker, Firm) | W1, W2, W3, F1, F2 | 5 |
 | 2 | (Worker, Year) | W1, W2, W3, Y1, Y2 | 5 |
 | 3 | (Firm, Year) | F1, F2, Y1, Y2 | 4 |
 
-Each DOF appears in $Q - 1 = 2$ subdomains, requiring partition-of-unity weights to prevent double-counting (see [Part 2, Section 4.2](2_solver_architecture.md#42-partition-of-unity)).
+Each factor level appears in $Q - 1 = 2$ subdomains, requiring partition-of-unity weights to prevent double-counting (see [Part 2, Section 4.2](2_solver_architecture.md#42-partition-of-unity)).
 
-The same interaction graph, now with three overlapping factor-pair subdomains drawn around it:
+To illustrate the process, we draw the same interaction graph from the beginning of this section, but now with three overlapping factor-pair subdomains drawn around it:
 
 ![Factor-pair decomposition](images/graph_factor_pair.svg)
 
@@ -273,9 +271,9 @@ The Worker–Firm subdomain (red) covers the top two rows. The Firm–Year subdo
 
 The factor-pair decomposition raises three algorithmic questions:
 
-1. **How to solve the local systems efficiently?** → Approximate Cholesky factorization with Schur complement reduction ([Part 3](3_local_solvers.md))
-2. **How to combine the local corrections?** → Additive or multiplicative Schwarz with partition-of-unity weights ([Part 2](2_solver_architecture.md))
-3. **How to drive the global iteration?** → Preconditioned CG or GMRES ([Part 2](2_solver_architecture.md))
+1. **How can we solve the local systems efficiently?** Here the answer is to use an approximate Cholesky factorization with Schur complement reduction ([Part 3](3_local_solvers.md))
+2. **How can we combine the local corrections?** Via additive or multiplicative Schwarz with partition-of-unity weights ([Part 2](2_solver_architecture.md))
+3. **How can we drive the global iteration?** → Preconditioned CG or GMRES ([Part 2](2_solver_architecture.md))
 
 ---
 
@@ -285,4 +283,4 @@ The factor-pair decomposition raises three algorithmic questions:
 
 **Xu, J.** (1992). *Iterative Methods by Space Decomposition and Subspace Correction*. SIAM Review, 34(4), 581–613. Provides the abstract space decomposition framework for additive and multiplicative Schwarz methods.
 
-**Toselli, A. & Widlund, O. B.** (2005). *Domain Decomposition Methods — Algorithms and Theory*. Springer. Comprehensive reference for the theory and convergence analysis of Schwarz methods.
+**Toselli, A. & Widlund, O. B.** (2005). *Domain Decomposition Methods - Algorithms and Theory*. Springer. Comprehensive reference for the theory and convergence analysis of Schwarz methods.
