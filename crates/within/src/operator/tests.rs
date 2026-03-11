@@ -1020,6 +1020,7 @@ mod schwarz_tests {
             DomainSource::FromParts(domain_pairs),
             design.n_dofs,
             &config,
+            schwarz_precond::ReductionStrategy::default(),
         )
         .expect("build schwarz with explicit domains");
         assert!(!schwarz.subdomains().is_empty());
@@ -1382,7 +1383,7 @@ mod preconditioner_fused_tests {
     #[test]
     fn test_build_preconditioner_fused_additive_dimensions_and_apply() {
         let design = make_test_design();
-        let config = Preconditioner::Additive(LocalSolverConfig::default());
+        let config = Preconditioner::additive(LocalSolverConfig::default());
 
         let (gramian, precond) =
             build_preconditioner_fused(&design, &config).expect("fused build should succeed");

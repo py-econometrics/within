@@ -29,6 +29,13 @@ pub trait LocalSolver: Send + Sync {
     /// Both `rhs` and `sol` have length >= `scratch_size()`.
     /// The solver may read/write up to `scratch_size()` elements.
     fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), LocalSolveError>;
+
+    /// Estimated amount of local work that can benefit from nested Rayon.
+    ///
+    /// Return zero when the solver has no nested-parallel region worth enabling.
+    fn inner_parallelism_work_estimate(&self) -> usize {
+        0
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -71,7 +78,6 @@ impl<S: LocalSolver> SubdomainEntry<S> {
     ///
     /// - `r_scratch` must have length >= `self.scratch_size()`
     /// - `z_scratch` must have length >= `self.scratch_size()`
-    #[cfg(test)]
     pub fn apply_weighted_into_with_scratch(
         &self,
         r: &[f64],

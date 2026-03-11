@@ -1,3 +1,5 @@
+from within.utils import make_akm_panel
+
 from within._within import (
     OperatorRepr,
     Preconditioner,
@@ -11,6 +13,7 @@ from within._within import (
     solve_batch,
     AdditiveSchwarz,
     MultiplicativeSchwarz,
+    ReductionStrategy,
 )
 
 # Convenience aliases
@@ -32,4 +35,6 @@ __all__ = [
     "Multiplicative",
     "AdditiveSchwarz",
     "MultiplicativeSchwarz",
+    "ReductionStrategy",
+    "make_akm_panel",
 ]

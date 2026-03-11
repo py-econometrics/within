@@ -7,7 +7,7 @@ use faer::{MatRef, Side};
 use rayon::prelude::*;
 use schwarz_precond::{LocalSolveError, LocalSolver, SparseMatrix};
 
-use crate::operator::csr_block::CsrBlock;
+use crate::operator::csr_block::{CsrBlock, PAR_SPMV_THRESHOLD};
 use crate::operator::gramian::CrossTab;
 
 // ===========================================================================
@@ -47,7 +47,7 @@ fn backsub_block(
     sol_source: &[f64],
 ) {
     let n = sol_output.len();
-    if n > PAR_BACKSUB_THRESHOLD {
+    if n > PAR_BACKSUB_THRESHOLD && schwarz_precond::local_solver_inner_parallelism_enabled() {
         sol_output
             .par_chunks_mut(PAR_BACKSUB_CHUNK)
             .enumerate()
@@ -156,6 +156,10 @@ impl LocalSolver for ApproxCholSolver {
         }
         Ok(())
     }
+
+    fn inner_parallelism_work_estimate(&self) -> usize {
+        0
+    }
 }
 
 // ===========================================================================
@@ -192,6 +196,13 @@ impl LocalSolver for FeLocalSolver {
         match self {
             Self::FullSddm { solver, .. } => solver.solve_local(rhs, sol),
             Self::SchurComplement(s) => s.solve_local(rhs, sol),
+        }
+    }
+
+    fn inner_parallelism_work_estimate(&self) -> usize {
+        match self {
+            Self::FullSddm { solver, .. } => solver.inner_parallelism_work_estimate(),
+            Self::SchurComplement(s) => s.inner_parallelism_work_estimate(),
         }
     }
 }
@@ -468,6 +479,16 @@ impl BlockElimSolver {
     pub(crate) fn uses_dense_reduced_factor(&self) -> bool {
         matches!(self.reduced_factor, ReducedFactor::Dense(_))
     }
+
+    fn estimated_inner_parallel_work(&self) -> usize {
+        let max_rows = self.cross_tab.n_q().max(self.cross_tab.n_r());
+        if max_rows <= PAR_BACKSUB_THRESHOLD.max(PAR_SPMV_THRESHOLD) {
+            return 0;
+        }
+
+        let cross_nnz = self.cross_tab.c.nnz();
+        (2 * cross_nnz) + self.n_local
+    }
 }
 
 impl LocalSolver for BlockElimSolver {
@@ -546,6 +567,10 @@ impl LocalSolver for BlockElimSolver {
         subtract_mean(sol, n);
         negate_block(&mut sol[..n], n_q);
         Ok(())
+    }
+
+    fn inner_parallelism_work_estimate(&self) -> usize {
+        self.estimated_inner_parallel_work()
     }
 }
 

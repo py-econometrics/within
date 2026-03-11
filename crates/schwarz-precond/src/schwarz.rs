@@ -4,6 +4,7 @@
 //!
 //! **Multiplicative:** Sequential forward/backward sweep with residual updates between subdomains.
 
+use std::cell::Cell;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -15,10 +16,190 @@ use crate::local_solve::{LocalSolver, SubdomainEntry};
 use crate::Operator;
 
 // ============================================================================
-// Additive Schwarz
+// Reduction strategy
 // ============================================================================
 
-/// Thread-local scratch for the atomic scatter path.
+/// Strategy for combining per-subdomain results in additive Schwarz apply.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ReductionStrategy {
+    /// Choose a backend from build-time metrics and the current Rayon width.
+    #[default]
+    Auto,
+    /// Each subdomain atomically scatters into a shared accumulator.
+    /// Memory: O(n_dofs) shared + O(P * max_scratch) thread-local.
+    AtomicScatter,
+    /// Each task accumulates into a private buffer, then a parallel
+    /// chunk-based reduction combines them.
+    /// Memory: O(P * n_dofs) for task buffers.
+    ParallelReduction,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResolvedReductionStrategy {
+    AtomicScatter,
+    ParallelReduction,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ReductionPlan {
+    strategy: ResolvedReductionStrategy,
+    allow_inner_parallelism: bool,
+}
+
+/// Build-time metrics that describe additive Schwarz scheduling pressure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AdditiveSchwarzDiagnostics {
+    n_subdomains: usize,
+    n_dofs: usize,
+    total_inner_parallel_work: usize,
+    max_inner_parallel_work: usize,
+    total_scatter_dofs: usize,
+}
+
+impl AdditiveSchwarzDiagnostics {
+    const MIN_INNER_PARALLEL_WORK: usize = 200_000;
+    const OUTER_CAPACITY_TARGET: f64 = 0.75;
+    const AUTO_REDUCTION_SWEEP_FACTOR: f64 = 1.1;
+    const AUTO_INNER_REDUCTION_SWEEP_FACTOR: f64 = 6.0;
+    const AUTO_OVERLAP_FOR_REDUCTION: f64 = 4.0;
+
+    fn from_entries<S: LocalSolver>(entries: &[SubdomainEntry<S>], n_dofs: usize) -> Self {
+        let (total_inner_parallel_work, max_inner_parallel_work, total_scatter_dofs) =
+            entries.iter().fold(
+                (0usize, 0usize, 0usize),
+                |(total_work, max_work, total_scatter), entry| {
+                    let work = entry.solver.inner_parallelism_work_estimate();
+                    (
+                        total_work.saturating_add(work),
+                        max_work.max(work),
+                        total_scatter.saturating_add(entry.core.global_indices.len()),
+                    )
+                },
+            );
+        Self {
+            n_subdomains: entries.len(),
+            n_dofs,
+            total_inner_parallel_work,
+            max_inner_parallel_work,
+            total_scatter_dofs,
+        }
+    }
+
+    fn reduction_plan(&self, configured: ReductionStrategy, threads: usize) -> ReductionPlan {
+        let allow_inner_parallelism = self.allow_inner_parallelism(threads);
+        let strategy = self.resolve_strategy(configured, threads, allow_inner_parallelism);
+        ReductionPlan {
+            strategy,
+            allow_inner_parallelism,
+        }
+    }
+
+    fn allow_inner_parallelism(&self, threads: usize) -> bool {
+        if self.max_inner_parallel_work < Self::MIN_INNER_PARALLEL_WORK {
+            return false;
+        }
+
+        self.outer_parallel_capacity() < (threads as f64 * Self::OUTER_CAPACITY_TARGET)
+    }
+
+    fn resolve_strategy(
+        &self,
+        configured: ReductionStrategy,
+        threads: usize,
+        allow_inner_parallelism: bool,
+    ) -> ResolvedReductionStrategy {
+        match configured {
+            ReductionStrategy::AtomicScatter => ResolvedReductionStrategy::AtomicScatter,
+            ReductionStrategy::ParallelReduction => ResolvedReductionStrategy::ParallelReduction,
+            ReductionStrategy::Auto => self.pick_auto_strategy(threads, allow_inner_parallelism),
+        }
+    }
+
+    fn pick_auto_strategy(
+        &self,
+        threads: usize,
+        allow_inner_parallelism: bool,
+    ) -> ResolvedReductionStrategy {
+        let overlap = self.scatter_overlap();
+        let reduction_to_scatter = self.reduction_sweep_to_scatter(threads);
+
+        if reduction_to_scatter <= Self::AUTO_REDUCTION_SWEEP_FACTOR {
+            return ResolvedReductionStrategy::ParallelReduction;
+        }
+
+        if allow_inner_parallelism
+            && reduction_to_scatter <= Self::AUTO_INNER_REDUCTION_SWEEP_FACTOR
+        {
+            return ResolvedReductionStrategy::ParallelReduction;
+        }
+
+        if overlap >= Self::AUTO_OVERLAP_FOR_REDUCTION {
+            return ResolvedReductionStrategy::ParallelReduction;
+        }
+
+        ResolvedReductionStrategy::AtomicScatter
+    }
+
+    fn outer_parallel_capacity(&self) -> f64 {
+        if self.max_inner_parallel_work == 0 {
+            return 0.0;
+        }
+        self.total_inner_parallel_work as f64 / self.max_inner_parallel_work as f64
+    }
+
+    fn scatter_overlap(&self) -> f64 {
+        self.total_scatter_dofs as f64 / self.n_dofs.max(1) as f64
+    }
+
+    fn reduction_sweep_to_scatter(&self, threads: usize) -> f64 {
+        let active_buffers = threads.min(self.n_subdomains).max(1);
+        let reduction_sweep = active_buffers.saturating_mul(self.n_dofs);
+        let scatter_work = self.total_scatter_dofs.max(1);
+        reduction_sweep as f64 / scatter_work as f64
+    }
+}
+
+std::thread_local! {
+    static LOCAL_SOLVER_INNER_PARALLELISM: Cell<bool> = const { Cell::new(true) };
+}
+
+/// Returns whether local solvers may spawn nested Rayon work on this thread.
+pub fn local_solver_inner_parallelism_enabled() -> bool {
+    LOCAL_SOLVER_INNER_PARALLELISM.with(Cell::get)
+}
+
+/// Runs `f` with the local-solver nested-parallelism flag set to `enabled`.
+pub fn with_local_solver_inner_parallelism<T>(enabled: bool, f: impl FnOnce() -> T) -> T {
+    LOCAL_SOLVER_INNER_PARALLELISM.with(|flag| {
+        let previous = flag.replace(enabled);
+        let result = f();
+        flag.set(previous);
+        result
+    })
+}
+
+// ============================================================================
+// Buffer types
+// ============================================================================
+
+/// Task-local scratch for the parallel-reduction path.
+struct AdditiveSweepBuffers {
+    global_accum: Vec<f64>,
+    r_scratch: Vec<f64>,
+    z_scratch: Vec<f64>,
+}
+
+impl AdditiveSweepBuffers {
+    fn new(n_dofs: usize, max_scratch_size: usize) -> Self {
+        Self {
+            global_accum: vec![0.0f64; n_dofs],
+            r_scratch: vec![0.0f64; max_scratch_size],
+            z_scratch: vec![0.0f64; max_scratch_size],
+        }
+    }
+}
+
+/// Thread-local scratch for the atomic scatter path (no per-thread accumulator).
 struct AtomicScratch {
     r_scratch: Vec<f64>,
     z_scratch: Vec<f64>,
@@ -34,10 +215,31 @@ impl AtomicScratch {
     }
 }
 
-/// Pooled buffers: shared atomic accumulator with per-task scratch via Rayon init.
-struct SchwarzBuffers {
-    accum: Vec<AtomicU64>,
+/// Pooled buffers that vary by reduction strategy.
+enum SchwarzBuffers {
+    /// Shared atomic accumulator.
+    Atomic { accum: Vec<AtomicU64> },
+    /// Reusable task-local buffers for parallel reduction.
+    Reduction { pool: Vec<AdditiveSweepBuffers> },
 }
+
+impl SchwarzBuffers {
+    fn strategy(&self) -> ResolvedReductionStrategy {
+        match self {
+            Self::Atomic { .. } => ResolvedReductionStrategy::AtomicScatter,
+            Self::Reduction { .. } => ResolvedReductionStrategy::ParallelReduction,
+        }
+    }
+}
+
+struct AdditiveFoldState {
+    buffers: AdditiveSweepBuffers,
+    error: Option<ApplyError>,
+}
+
+// ============================================================================
+// Additive Schwarz
+// ============================================================================
 
 /// One-level additive Schwarz preconditioner, generic over the local solver.
 ///
@@ -50,26 +252,42 @@ pub struct SchwarzPreconditioner<S: LocalSolver> {
     n_dofs: usize,
     /// Maximum scratch size across all subdomains, for buffer sizing.
     max_scratch_size: usize,
+    /// Strategy for combining per-subdomain results.
+    reduction_strategy: ReductionStrategy,
+    /// Build-time metrics used by the adaptive additive scheduler.
+    diagnostics: AdditiveSchwarzDiagnostics,
     /// Pool of reusable buffer sets.
     /// Each concurrent `apply()` call pops one; returns it when done.
     buf_pool: Arc<Mutex<Vec<SchwarzBuffers>>>,
 }
 
 impl<S: LocalSolver> SchwarzPreconditioner<S> {
-    /// Construct from pre-built subdomain entries.
+    const MAX_POOL_SIZE: usize = 4;
+
+    /// Construct from pre-built subdomain entries using the default strategy.
     pub fn new(
         entries: Vec<SubdomainEntry<S>>,
         n_dofs: usize,
     ) -> Result<Self, PreconditionerBuildError> {
+        Self::with_strategy(entries, n_dofs, ReductionStrategy::default())
+    }
+
+    /// Construct from pre-built subdomain entries with an explicit reduction strategy.
+    pub fn with_strategy(
+        entries: Vec<SubdomainEntry<S>>,
+        n_dofs: usize,
+        strategy: ReductionStrategy,
+    ) -> Result<Self, PreconditionerBuildError> {
         validate_entries(&entries, n_dofs)?;
         let max_scratch_size = entries.iter().map(|e| e.scratch_size()).max().unwrap_or(0);
+        let diagnostics = AdditiveSchwarzDiagnostics::from_entries(&entries, n_dofs);
         Ok(Self {
             n_dofs,
             subdomains: Arc::new(entries),
             max_scratch_size,
-            buf_pool: Arc::new(Mutex::new(vec![SchwarzBuffers {
-                accum: (0..n_dofs).map(|_| AtomicU64::new(0)).collect(),
-            }])),
+            reduction_strategy: strategy,
+            diagnostics,
+            buf_pool: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
@@ -78,71 +296,217 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
         &self.subdomains
     }
 
+    /// Return a copy that uses a different reduction strategy.
+    ///
+    /// Shares the subdomain data via `Arc` (O(1)), but creates a fresh
+    /// buffer pool since buffers are strategy-specific.
+    pub fn with_reduction_strategy(&self, strategy: ReductionStrategy) -> Self {
+        Self {
+            subdomains: Arc::clone(&self.subdomains),
+            n_dofs: self.n_dofs,
+            max_scratch_size: self.max_scratch_size,
+            reduction_strategy: strategy,
+            diagnostics: self.diagnostics,
+            buf_pool: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
     /// Fallible operator apply that propagates local-solver failures.
     pub fn try_apply(&self, r: &[f64], z: &mut [f64]) -> Result<(), ApplyError> {
         let n = self.n_dofs;
         let max_ss = self.max_scratch_size;
+        let plan = self.reduction_plan();
+        let mut bufs = self.take_buffers(plan.strategy, n, max_ss)?;
 
-        let bufs = self
+        let apply_result = match &mut bufs {
+            SchwarzBuffers::Atomic { accum } => {
+                self.apply_atomic(r, z, accum, max_ss, plan.allow_inner_parallelism)
+            }
+            SchwarzBuffers::Reduction { pool } => {
+                self.apply_parallel_reduction(r, z, pool, n, max_ss, plan.allow_inner_parallelism)
+            }
+        };
+
+        self.return_buffers(bufs, &apply_result)?;
+        apply_result
+    }
+
+    fn reduction_plan(&self) -> ReductionPlan {
+        let threads = rayon::current_num_threads().max(1);
+        self.diagnostics
+            .reduction_plan(self.reduction_strategy, threads)
+    }
+
+    fn take_buffers(
+        &self,
+        strategy: ResolvedReductionStrategy,
+        n: usize,
+        max_ss: usize,
+    ) -> Result<SchwarzBuffers, ApplyError> {
+        let mut pool = self
             .buf_pool
             .lock()
             .map_err(|_| ApplyError::Synchronization {
                 context: "additive.buf_pool.lock.pop",
-            })?
-            .pop()
-            .unwrap_or_else(|| SchwarzBuffers {
+            })?;
+        if let Some(idx) = pool.iter().position(|bufs| bufs.strategy() == strategy) {
+            return Ok(pool.swap_remove(idx));
+        }
+        Ok(match strategy {
+            ResolvedReductionStrategy::AtomicScatter => SchwarzBuffers::Atomic {
                 accum: (0..n).map(|_| AtomicU64::new(0)).collect(),
-            });
+            },
+            ResolvedReductionStrategy::ParallelReduction => SchwarzBuffers::Reduction {
+                pool: vec![AdditiveSweepBuffers::new(n, max_ss)],
+            },
+        })
+    }
 
-        let apply_result = {
-            let accum = &bufs.accum;
-            self.subdomains.par_iter().enumerate().try_for_each_init(
-                || AtomicScratch::new(max_ss),
-                |local, (subdomain, entry)| {
-                    entry
-                        .apply_weighted_into_atomic(
-                            r,
-                            accum,
-                            &mut local.r_scratch,
-                            &mut local.z_scratch,
-                        )
-                        .map_err(|source| ApplyError::LocalSolveFailed { subdomain, source })
-                },
-            )?;
-
-            const PAR_READOUT_THRESHOLD: usize = 100_000;
-            if n <= PAR_READOUT_THRESHOLD {
-                for (i, zi) in z.iter_mut().enumerate() {
-                    *zi = f64::from_bits(accum[i].swap(0, Ordering::Relaxed));
-                }
-            } else {
-                const READOUT_CHUNK: usize = 4096;
-                z.par_chunks_mut(READOUT_CHUNK)
-                    .enumerate()
-                    .for_each(|(ci, chunk)| {
-                        let offset = ci * READOUT_CHUNK;
-                        for (i, zi) in chunk.iter_mut().enumerate() {
-                            let ai = &accum[offset + i];
-                            *zi = f64::from_bits(ai.swap(0, Ordering::Relaxed));
-                        }
-                    });
-            }
-            Ok(())
-        };
-
-        const MAX_POOL_SIZE: usize = 4;
+    fn return_buffers(
+        &self,
+        bufs: SchwarzBuffers,
+        apply_result: &Result<(), ApplyError>,
+    ) -> Result<(), ApplyError> {
         if let Ok(mut pool) = self.buf_pool.lock() {
-            if pool.len() < MAX_POOL_SIZE {
+            if pool.len() < Self::MAX_POOL_SIZE {
                 pool.push(bufs);
             }
+            Ok(())
         } else if apply_result.is_ok() {
-            return Err(ApplyError::Synchronization {
+            Err(ApplyError::Synchronization {
                 context: "additive.buf_pool.lock.push",
+            })
+        } else {
+            Ok(())
+        }
+    }
+
+    fn apply_atomic(
+        &self,
+        r: &[f64],
+        z: &mut [f64],
+        accum: &[AtomicU64],
+        max_ss: usize,
+        allow_inner: bool,
+    ) -> Result<(), ApplyError> {
+        self.subdomains.par_iter().enumerate().try_for_each_init(
+            || AtomicScratch::new(max_ss),
+            |scratch, (subdomain, entry)| {
+                with_local_solver_inner_parallelism(allow_inner, || {
+                    entry.apply_weighted_into_atomic(
+                        r,
+                        accum,
+                        &mut scratch.r_scratch,
+                        &mut scratch.z_scratch,
+                    )
+                })
+                .map_err(|source| ApplyError::LocalSolveFailed { subdomain, source })
+            },
+        )?;
+
+        const READOUT_CHUNK: usize = 4096;
+        z.par_chunks_mut(READOUT_CHUNK)
+            .enumerate()
+            .for_each(|(ci, chunk)| {
+                let offset = ci * READOUT_CHUNK;
+                for (i, zi) in chunk.iter_mut().enumerate() {
+                    let ai = &accum[offset + i];
+                    *zi = f64::from_bits(ai.load(Ordering::Relaxed));
+                    ai.store(0, Ordering::Relaxed);
+                }
             });
+        Ok(())
+    }
+
+    fn apply_parallel_reduction(
+        &self,
+        r: &[f64],
+        z: &mut [f64],
+        pool: &mut Vec<AdditiveSweepBuffers>,
+        n: usize,
+        max_ss: usize,
+        allow_inner: bool,
+    ) -> Result<(), ApplyError> {
+        let available = Mutex::new(std::mem::take(pool));
+        let min_len = (self.subdomains.len() / rayon::current_num_threads().max(1)).max(1);
+        let mut states: Vec<AdditiveFoldState> = self
+            .subdomains
+            .par_iter()
+            .with_min_len(min_len)
+            .enumerate()
+            .fold(
+                || AdditiveFoldState {
+                    buffers: take_reduction_buffer(&available, n, max_ss),
+                    error: None,
+                },
+                |mut state, (subdomain, entry)| {
+                    if state.error.is_some() {
+                        return state;
+                    }
+
+                    let AdditiveSweepBuffers {
+                        ref mut global_accum,
+                        ref mut r_scratch,
+                        ref mut z_scratch,
+                    } = state.buffers;
+                    if let Err(source) = with_local_solver_inner_parallelism(allow_inner, || {
+                        entry.apply_weighted_into_with_scratch(
+                            r,
+                            global_accum,
+                            r_scratch,
+                            z_scratch,
+                        )
+                    }) {
+                        state.error = Some(ApplyError::LocalSolveFailed { subdomain, source });
+                    }
+                    state
+                },
+            )
+            .collect();
+
+        let error = states.iter_mut().find_map(|state| state.error.take());
+        if states.is_empty() {
+            z.fill(0.0);
+        } else if error.is_none() {
+            const REDUCE_CHUNK: usize = 4096;
+            z.par_chunks_mut(REDUCE_CHUNK)
+                .enumerate()
+                .for_each(|(ci, chunk)| {
+                    let offset = ci * REDUCE_CHUNK;
+                    chunk.fill(0.0);
+                    for state in &states {
+                        let accum = &state.buffers.global_accum[offset..offset + chunk.len()];
+                        for (zi, &ai) in chunk.iter_mut().zip(accum) {
+                            *zi += ai;
+                        }
+                    }
+                });
         }
 
-        apply_result
+        for state in &mut states {
+            state.buffers.global_accum.fill(0.0);
+        }
+
+        *pool = available
+            .into_inner()
+            .map_err(|_| ApplyError::Synchronization {
+                context: "additive.reduction.pool.into_inner",
+            })?;
+        pool.extend(states.into_iter().map(|state| state.buffers));
+
+        error.map_or(Ok(()), Err)
     }
+}
+
+fn take_reduction_buffer(
+    pool: &Mutex<Vec<AdditiveSweepBuffers>>,
+    n: usize,
+    max_ss: usize,
+) -> AdditiveSweepBuffers {
+    pool.lock()
+        .ok()
+        .and_then(|mut pool| pool.pop())
+        .unwrap_or_else(|| AdditiveSweepBuffers::new(n, max_ss))
 }
 
 impl<S: LocalSolver> Clone for SchwarzPreconditioner<S> {
@@ -153,6 +517,8 @@ impl<S: LocalSolver> Clone for SchwarzPreconditioner<S> {
             subdomains: Arc::clone(&self.subdomains),
             n_dofs: self.n_dofs,
             max_scratch_size: self.max_scratch_size,
+            reduction_strategy: self.reduction_strategy,
+            diagnostics: self.diagnostics,
             buf_pool: Arc::clone(&self.buf_pool),
         }
     }
@@ -471,14 +837,15 @@ mod serde_impl {
                 n_dofs: usize,
                 max_scratch_size: usize,
             }
-            let h = Helper::deserialize(deserializer)?;
+            let h: Helper<S> = Helper::deserialize(deserializer)?;
+            let diagnostics = AdditiveSchwarzDiagnostics::from_entries(&h.subdomains, h.n_dofs);
             Ok(SchwarzPreconditioner {
                 subdomains: Arc::new(h.subdomains),
                 n_dofs: h.n_dofs,
                 max_scratch_size: h.max_scratch_size,
-                buf_pool: Arc::new(Mutex::new(vec![SchwarzBuffers {
-                    accum: (0..h.n_dofs).map(|_| AtomicU64::new(0)).collect(),
-                }])),
+                reduction_strategy: ReductionStrategy::default(),
+                diagnostics,
+                buf_pool: Arc::new(Mutex::new(Vec::new())),
             })
         }
     }

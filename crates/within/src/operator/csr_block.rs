@@ -1,7 +1,7 @@
 use rayon::prelude::*;
 
 /// Minimum number of rows to trigger parallel SpMV.
-const PAR_SPMV_THRESHOLD: usize = 10_000;
+pub(crate) const PAR_SPMV_THRESHOLD: usize = 10_000;
 /// Target number of non-zeros per parallel chunk.
 const TARGET_NNZ_PER_CHUNK: usize = 32_768;
 
@@ -107,7 +107,9 @@ impl CsrBlock {
         debug_assert!(d.len() >= self.ncols);
         debug_assert!(x.len() >= self.ncols);
         debug_assert!(y.len() >= self.nrows);
-        if self.nrows > PAR_SPMV_THRESHOLD {
+        if self.nrows > PAR_SPMV_THRESHOLD
+            && schwarz_precond::local_solver_inner_parallelism_enabled()
+        {
             self.par_spmv_diag_add(d, x, y);
         } else {
             self.seq_spmv_diag_add(d, x, y);

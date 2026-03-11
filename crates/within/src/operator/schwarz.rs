@@ -57,7 +57,12 @@ pub fn build_schwarz<S: ObservationStore>(
     design: &WeightedDesign<S>,
     config: &LocalSolverConfig,
 ) -> WithinResult<FeSchwarz> {
-    build_additive(DomainSource::FromDesign(design), design.n_dofs, config)
+    build_additive(
+        DomainSource::FromDesign(design),
+        design.n_dofs,
+        config,
+        schwarz_precond::ReductionStrategy::default(),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -69,9 +74,12 @@ pub(crate) fn build_additive<S: ObservationStore>(
     source: DomainSource<'_, S>,
     n_dofs: usize,
     config: &LocalSolverConfig,
+    strategy: schwarz_precond::ReductionStrategy,
 ) -> WithinResult<FeSchwarz> {
     let entries = build_entries_from_source(source, config)?;
-    Ok(SchwarzPreconditioner::new(entries, n_dofs)?)
+    Ok(SchwarzPreconditioner::with_strategy(
+        entries, n_dofs, strategy,
+    )?)
 }
 
 /// Build multiplicative Schwarz with observation-space updater.

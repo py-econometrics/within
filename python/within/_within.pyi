@@ -13,6 +13,11 @@ class Preconditioner(IntEnum):
     Multiplicative = 1
     Off = 2
 
+class ReductionStrategy(IntEnum):
+    Auto = 0
+    AtomicScatter = 1
+    ParallelReduction = 2
+
 class CG:
     """Conjugate Gradient solver configuration."""
 
@@ -202,9 +207,11 @@ class FullSddm:
 
 class AdditiveSchwarz:
     local_solver: SchurComplement | FullSddm | None
+    reduction: ReductionStrategy
     def __init__(
         self,
         local_solver: SchurComplement | FullSddm | None = None,
+        reduction: ReductionStrategy = ReductionStrategy.Auto,
     ) -> None: ...
 
 class MultiplicativeSchwarz:

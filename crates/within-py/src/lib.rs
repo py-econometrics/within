@@ -5,8 +5,8 @@ use numpy::{IntoPyArray, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
 
 use within::config::{
-    ApproxSchurConfig, KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner, SolverParams,
-    DEFAULT_DENSE_SCHUR_THRESHOLD,
+    ApproxSchurConfig, KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner,
+    ReductionStrategy, SolverParams, DEFAULT_DENSE_SCHUR_THRESHOLD,
 };
 use within::domain::WeightedDesign;
 use within::observation::{FactorMajorStore, ObservationWeights};
@@ -127,6 +127,25 @@ pub enum PyPreconditioner {
     Off = 2,
 }
 
+#[pyclass(frozen, eq, eq_int)]
+#[pyo3(name = "ReductionStrategy")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PyReductionStrategy {
+    Auto = 0,
+    AtomicScatter = 1,
+    ParallelReduction = 2,
+}
+
+impl PyReductionStrategy {
+    fn to_native(self) -> ReductionStrategy {
+        match self {
+            Self::Auto => ReductionStrategy::Auto,
+            Self::AtomicScatter => ReductionStrategy::AtomicScatter,
+            Self::ParallelReduction => ReductionStrategy::ParallelReduction,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Local solver config classes (available via `_within` for benchmarks)
 // ---------------------------------------------------------------------------
@@ -184,14 +203,19 @@ impl PyFullSddm {
 pub struct PyAdditiveSchwarz {
     #[pyo3(get)]
     pub local_solver: Option<PyObject>,
+    #[pyo3(get)]
+    pub reduction: PyReductionStrategy,
 }
 
 #[pymethods]
 impl PyAdditiveSchwarz {
     #[new]
-    #[pyo3(signature = (local_solver=None))]
-    fn new(local_solver: Option<PyObject>) -> Self {
-        Self { local_solver }
+    #[pyo3(signature = (local_solver=None, reduction=PyReductionStrategy::Auto))]
+    fn new(local_solver: Option<PyObject>, reduction: PyReductionStrategy) -> Self {
+        Self {
+            local_solver,
+            reduction,
+        }
     }
 }
 
@@ -385,7 +409,7 @@ fn extract_preconditioner(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Pr
     if let Ok(p) = obj.extract::<PyPreconditioner>() {
         return match p {
             PyPreconditioner::Additive => {
-                Ok(Preconditioner::Additive(LocalSolverConfig::solver_default()))
+                Ok(Preconditioner::additive(LocalSolverConfig::solver_default()))
             }
             PyPreconditioner::Multiplicative => Ok(Preconditioner::Multiplicative(
                 LocalSolverConfig::solver_default(),
@@ -396,12 +420,14 @@ fn extract_preconditioner(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Pr
     }
     // Advanced: AdditiveSchwarz / MultiplicativeSchwarz objects
     if let Ok(schwarz) = obj.downcast::<PyAdditiveSchwarz>() {
+        let s = schwarz.get();
         let cfg = extract_local_solver_or_default(
             py,
-            &schwarz.get().local_solver,
+            &s.local_solver,
             LocalSolverConfig::solver_default(),
         )?;
-        return Ok(Preconditioner::Additive(cfg));
+        let strategy = s.reduction.to_native();
+        return Ok(Preconditioner::Additive(cfg, strategy));
     }
     if let Ok(schwarz) = obj.downcast::<PyMultiplicativeSchwarz>() {
         let cfg = extract_local_solver_or_default(
@@ -430,7 +456,7 @@ fn extract_optional_preconditioner(
 ) -> PyResult<Option<Preconditioner>> {
     match preconditioner {
         // None → default: additive Schwarz
-        None => Ok(Some(Preconditioner::Additive(
+        None => Ok(Some(Preconditioner::additive(
             LocalSolverConfig::solver_default(),
         ))),
         Some(obj) => {
@@ -793,7 +819,7 @@ impl PySolver {
         // Handle preconditioner argument
         let solver = match preconditioner {
             None => {
-                let precond = Preconditioner::Additive(LocalSolverConfig::solver_default());
+                let precond = Preconditioner::additive(LocalSolverConfig::solver_default());
                 validate_cg_preconditioner(&params, &Some(precond.clone()))?;
                 py.allow_threads(|| Solver::from_design(design, &params, Some(&precond)))
             }
@@ -919,6 +945,7 @@ fn _within(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyGMRES>()?;
     m.add_class::<PyAdditiveSchwarz>()?;
     m.add_class::<PyMultiplicativeSchwarz>()?;
+    m.add_class::<PyReductionStrategy>()?;
     m.add_class::<PyOperatorRepr>()?;
     m.add_class::<PyPreconditioner>()?;
     m.add_class::<PyApproxCholConfig>()?;

@@ -113,7 +113,8 @@ pub use domain::{PartitionWeights, SubdomainCore};
 pub use error::{ApplyError, LocalSolveError, PreconditionerBuildError, SolveError};
 pub use local_solve::{LocalSolver, SubdomainEntry};
 pub use schwarz::{
-    MultiplicativeSchwarzPreconditioner, OperatorResidualUpdater, ResidualUpdater,
-    SchwarzPreconditioner,
+    local_solver_inner_parallelism_enabled, with_local_solver_inner_parallelism,
+    MultiplicativeSchwarzPreconditioner, OperatorResidualUpdater, ReductionStrategy,
+    ResidualUpdater, SchwarzPreconditioner,
 };
 pub use sparse_matrix::SparseMatrix;

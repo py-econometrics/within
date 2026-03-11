@@ -83,10 +83,14 @@ pub fn build_preconditioner<S: ObservationStore>(
     use crate::domain::build_local_domains;
 
     match preconditioner_config {
-        Preconditioner::Additive(config) => {
+        Preconditioner::Additive(config, strategy) => {
             let domains = build_local_domains(design);
-            let precond =
-                build_additive(DomainSource::<S>::FromParts(domains), design.n_dofs, config)?;
+            let precond = build_additive(
+                DomainSource::<S>::FromParts(domains),
+                design.n_dofs,
+                config,
+                *strategy,
+            )?;
             Ok(FePreconditioner::Additive(precond))
         }
         Preconditioner::Multiplicative(config) => {
@@ -124,8 +128,13 @@ pub(crate) fn build_preconditioner_fused<S: ObservationStore>(
     let gramian = Gramian::from_pair_blocks(&blocks, &design.factors, design.n_dofs)?;
 
     let precond = match preconditioner_config {
-        Preconditioner::Additive(config) => {
-            let p = build_additive(DomainSource::<S>::FromParts(domains), design.n_dofs, config)?;
+        Preconditioner::Additive(config, strategy) => {
+            let p = build_additive(
+                DomainSource::<S>::FromParts(domains),
+                design.n_dofs,
+                config,
+                *strategy,
+            )?;
             FePreconditioner::Additive(p)
         }
         Preconditioner::Multiplicative(config) => {
