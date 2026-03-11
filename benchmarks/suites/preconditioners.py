@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from within import CG, GMRES
 from within._within import (
-    AdditiveSchwarz,
     ApproxCholConfig,
     ApproxSchurConfig,
     MultiplicativeSchwarz,
@@ -22,6 +21,7 @@ from .._framework import (
     ProblemSpec,
     SolverConfig,
     SuiteOptions,
+    make_additive_schwarz,
     run_problem_set,
     suite,
 )
@@ -34,8 +34,8 @@ from .._table import print_pivot, print_table
     tags=("3fe", "precond", "baseline"),
 )
 def run_preconditioners_3fe(opts: SuiteOptions) -> list[BenchmarkResult]:
-    if opts.quick:
-        problems = [
+    problems = opts.select(
+        smoke=[
             ProblemSpec(
                 "Sparse (50^3, 3e)",
                 "sparse_3fe",
@@ -62,9 +62,47 @@ def run_preconditioners_3fe(opts: SuiteOptions) -> list[BenchmarkResult]:
             ),
             ProblemSpec("Barbell 3fe 250", "barbell_3fe", {"n_levels": 250}, opts.seed),
             ProblemSpec("Chain 3fe 250", "chain_3fe", {"n_levels": 250}, opts.seed),
-        ]
-    else:
-        problems = [
+        ],
+        iterate=[
+            ProblemSpec(
+                "Sparse (100^3, 3e)",
+                "sparse_3fe",
+                {"n_levels": (100, 100, 100), "edges_per_level": 3},
+                opts.seed,
+            ),
+            ProblemSpec(
+                "V.Sparse (200^3, 2e)",
+                "sparse_3fe",
+                {"n_levels": (200, 200, 200), "edges_per_level": 2},
+                opts.seed,
+            ),
+            ProblemSpec(
+                "Clustered (200^3)",
+                "clustered_3fe",
+                {
+                    "n_levels": (200, 200, 200),
+                    "n_clusters": 10,
+                    "obs_per_cluster": 500,
+                    "bridge_obs": 3,
+                },
+                opts.seed,
+            ),
+            ProblemSpec("Barbell 3fe 500", "barbell_3fe", {"n_levels": 500}, opts.seed),
+            ProblemSpec("Chain 3fe 500", "chain_3fe", {"n_levels": 500}, opts.seed),
+            ProblemSpec(
+                "Imbalanced (200^3)",
+                "imbalanced_3fe",
+                {"n_levels": (200, 200, 200), "n_rows": 30000},
+                opts.seed,
+            ),
+            ProblemSpec(
+                "AKM disconnected",
+                "akm_disconnected",
+                {"n_workers": 5000, "n_firms": 300, "n_years": 10, "n_clusters": 5},
+                opts.seed,
+            ),
+        ],
+        full=[
             ProblemSpec(
                 "Sparse (50^3, 3e)",
                 "sparse_3fe",
@@ -152,7 +190,8 @@ def run_preconditioners_3fe(opts: SuiteOptions) -> list[BenchmarkResult]:
                 {"n_workers": 5000, "n_firms": 300, "n_years": 10, "n_clusters": 5},
                 opts.seed,
             ),
-        ]
+        ],
+    )
 
     schur = SchurComplement(
         approx_chol=ApproxCholConfig(seed=opts.seed),
@@ -162,7 +201,7 @@ def run_preconditioners_3fe(opts: SuiteOptions) -> list[BenchmarkResult]:
         SolverConfig(
             "CG(Schwarz)",
             CG(tol=opts.tol, maxiter=opts.maxiter),
-            preconditioner=AdditiveSchwarz(local_solver=schur),
+            preconditioner=make_additive_schwarz(local_solver=schur),
         ),
         SolverConfig(
             "GMRES(Mult-Schwarz)",
@@ -171,7 +210,7 @@ def run_preconditioners_3fe(opts: SuiteOptions) -> list[BenchmarkResult]:
         ),
     ]
 
-    all_results = run_problem_set(problems, configs)
+    all_results = run_problem_set(problems, configs, opts)
     print_table(all_results)
     print("\n")
     print_pivot(all_results)
@@ -190,8 +229,8 @@ def run_preconditioners_3fe(opts: SuiteOptions) -> list[BenchmarkResult]:
 def run_preconditioner_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
     maxiter = min(opts.maxiter, 1000)
 
-    if opts.quick:
-        problems = [
+    problems = opts.select(
+        smoke=[
             ProblemSpec("chain 50 2fe", "chain_2fe", {"n_levels": 50}, opts.seed),
             ProblemSpec(
                 "sparse 50^3 3fe",
@@ -212,9 +251,37 @@ def run_preconditioner_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
                 {"n_levels_per_factor": [30, 40, 25], "n_rows": 2000},
                 opts.seed,
             ),
-        ]
-    else:
-        problems = [
+        ],
+        iterate=[
+            ProblemSpec("chain 200 2fe", "chain_2fe", {"n_levels": 200}, opts.seed),
+            ProblemSpec(
+                "expander 100 2fe",
+                "expander_2fe",
+                {"n_levels": 100, "degree": 3},
+                opts.seed,
+            ),
+            ProblemSpec("barbell 100 2fe", "barbell_2fe", {"n_levels": 100}, opts.seed),
+            ProblemSpec(
+                "sparse 100^3 3fe",
+                "sparse_3fe",
+                {"n_levels": (100, 100, 100), "edges_per_level": 3},
+                opts.seed,
+            ),
+            ProblemSpec("chain 100 3fe", "chain_3fe", {"n_levels": 100}, opts.seed),
+            ProblemSpec(
+                "2-FE 50x80",
+                "uniform_kfe",
+                {"n_levels_per_factor": [50, 80], "n_rows": 5000},
+                opts.seed,
+            ),
+            ProblemSpec(
+                "3-FE 50x80x30",
+                "uniform_kfe",
+                {"n_levels_per_factor": [50, 80, 30], "n_rows": 5000},
+                opts.seed,
+            ),
+        ],
+        full=[
             ProblemSpec("chain 100 2fe", "chain_2fe", {"n_levels": 100}, opts.seed),
             ProblemSpec("chain 200 2fe", "chain_2fe", {"n_levels": 200}, opts.seed),
             ProblemSpec(
@@ -256,7 +323,8 @@ def run_preconditioner_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
                 {"n_levels_per_factor": [50, 80, 30], "n_rows": 5000},
                 opts.seed,
             ),
-        ]
+        ],
+    )
 
     schur = SchurComplement(
         approx_chol=ApproxCholConfig(seed=opts.seed),
@@ -270,7 +338,7 @@ def run_preconditioner_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
         SolverConfig(
             "CG(Schwarz)",
             CG(tol=opts.tol, maxiter=maxiter),
-            preconditioner=AdditiveSchwarz(local_solver=schur),
+            preconditioner=make_additive_schwarz(local_solver=schur),
         ),
         SolverConfig(
             "GMRES(Mult-Schwarz)",
@@ -279,7 +347,7 @@ def run_preconditioner_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
         ),
     ]
 
-    all_results = run_problem_set(problems, configs)
+    all_results = run_problem_set(problems, configs, opts)
     print_table(all_results)
     print("\n")
     print_pivot(all_results)

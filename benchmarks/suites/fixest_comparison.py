@@ -7,15 +7,24 @@ observations.
 
 from __future__ import annotations
 
-from within import CG
+import os
+
+from within import CG, GMRES
 from within._within import (
-    AdditiveSchwarz,
     ApproxCholConfig,
-    SchurComplement,
     ApproxSchurConfig,
+    MultiplicativeSchwarz,
+    SchurComplement,
 )
 from .._problems import get_generator
-from .._framework import BenchmarkResult, SolverConfig, SuiteOptions, run_solve, suite
+from .._framework import (
+    BenchmarkResult,
+    SolverConfig,
+    SuiteOptions,
+    make_additive_schwarz,
+    run_solve,
+    suite,
+)
 from .._table import print_pivot, print_table
 
 
@@ -25,10 +34,10 @@ from .._table import print_pivot, print_table
     tags=("3fe", "fixest", "scaling", "difficult"),
 )
 def run_fixest_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
-    if opts.quick:
-        n_obs_list = [100_000, 500_000]
-    else:
-        n_obs_list = [
+    n_obs_list = opts.select(
+        smoke=[100_000, 500_000],
+        iterate=[500_000, 2_000_000, 5_000_000, 20_000_000],
+        full=[
             100_000,
             500_000,
             1_000_000,
@@ -42,30 +51,63 @@ def run_fixest_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
             80_000_000,
             160_000_000,
             320_000_000,
-        ]
+        ],
+    )
+    max_obs = int(
+        os.environ.get("WITHIN_BENCH_FIXEST_MAX_OBS", str(max(n_obs_list, default=0)))
+    )
+    n_obs_list = [n_obs for n_obs in n_obs_list if n_obs <= max_obs]
+
+    fixest_variants = (
+        os.environ.get(
+            "WITHIN_BENCH_FIXEST_VARIANTS",
+            "both" if opts.profile == "full" else "dense",
+        )
+        .strip()
+        .lower()
+    )
 
     solver_configs = [
         SolverConfig(
             "CG(Schwarz)",
             CG(tol=opts.tol, maxiter=opts.maxiter),
-            preconditioner=AdditiveSchwarz(
+            preconditioner=make_additive_schwarz(
                 local_solver=SchurComplement(
                     approx_chol=ApproxCholConfig(seed=0, split=8),
                     approx_schur=None,
                 )
             ),
         ),
-        SolverConfig(
-            "CG(Schwarz)-sparse",
-            CG(tol=opts.tol, maxiter=opts.maxiter),
-            preconditioner=AdditiveSchwarz(
-                local_solver=SchurComplement(
-                    approx_chol=ApproxCholConfig(seed=0, split=2),
-                    approx_schur=ApproxSchurConfig(seed=0, split=2),
-                )
-            ),
-        ),
     ]
+    if fixest_variants == "both":
+        solver_configs.append(
+            SolverConfig(
+                "CG(Schwarz)-sparse",
+                CG(tol=opts.tol, maxiter=opts.maxiter),
+                preconditioner=make_additive_schwarz(
+                    local_solver=SchurComplement(
+                        approx_chol=ApproxCholConfig(seed=0, split=2),
+                        approx_schur=ApproxSchurConfig(seed=0, split=2),
+                    )
+                ),
+            )
+        )
+    elif fixest_variants != "dense":
+        raise ValueError("WITHIN_BENCH_FIXEST_VARIANTS must be one of: dense, both")
+
+    if opts.profile != "full":
+        solver_configs.append(
+            SolverConfig(
+                "GMRES(Mult-Schwarz)",
+                GMRES(tol=opts.tol, maxiter=opts.maxiter),
+                preconditioner=MultiplicativeSchwarz(
+                    local_solver=SchurComplement(
+                        approx_chol=ApproxCholConfig(seed=0, split=8),
+                        approx_schur=None,
+                    )
+                ),
+            )
+        )
 
     gen = get_generator("fixest_dgp")
     all_results: list[BenchmarkResult] = []
@@ -79,7 +121,7 @@ def run_fixest_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
 
         for cfg in solver_configs:
             try:
-                result = run_solve(cats, n_levels, y, cfg)
+                result = run_solve(cats, n_levels, y, cfg, opts)
                 result.problem = name
                 all_results.append(result)
             except Exception as e:
