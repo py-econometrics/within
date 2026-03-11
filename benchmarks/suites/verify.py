@@ -21,6 +21,7 @@ from .._framework import (
 from .._table import print_table
 
 RESIDUAL_THRESHOLD = 1e-6
+VERIFY_SOLVER_TOL = 1e-7
 
 
 def _problems(opts: SuiteOptions) -> list[ProblemSpec]:
@@ -137,6 +138,7 @@ def _problems(opts: SuiteOptions) -> list[ProblemSpec]:
 )
 def run_verify(opts: SuiteOptions) -> list[BenchmarkResult]:
     problems = _problems(opts)
+    solver_tol = max(opts.tol, VERIFY_SOLVER_TOL)
 
     schur = SchurComplement(
         approx_chol=ApproxCholConfig(seed=opts.seed),
@@ -145,12 +147,12 @@ def run_verify(opts: SuiteOptions) -> list[BenchmarkResult]:
     configs = [
         SolverConfig(
             "CG(Schwarz)",
-            CG(tol=opts.tol, maxiter=opts.maxiter),
+            CG(tol=solver_tol, maxiter=opts.maxiter),
             preconditioner=make_additive_schwarz(local_solver=schur),
         ),
         SolverConfig(
             "GMRES(Mult-Schwarz)",
-            GMRES(tol=opts.tol, maxiter=opts.maxiter),
+            GMRES(tol=solver_tol, maxiter=opts.maxiter),
             preconditioner=MultiplicativeSchwarz(local_solver=schur),
         ),
     ]
