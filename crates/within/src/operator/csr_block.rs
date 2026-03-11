@@ -103,6 +103,7 @@ impl CsrBlock {
     ///
     /// Equivalent to `y += A * (d .* x)` but without allocating the
     /// element-wise product. Automatically parallelizes for large matrices.
+    #[cfg(test)]
     pub(crate) fn spmv_diag_add(
         &self,
         d: &[f64],
@@ -120,6 +121,43 @@ impl CsrBlock {
         }
     }
 
+    /// y += A * x (sparse matrix-vector multiply, additive).
+    ///
+    /// Automatically parallelizes for large matrices using the same chunking
+    /// policy as [`Self::spmv_diag_add`].
+    #[cfg(test)]
+    pub(crate) fn spmv_add(&self, x: &[f64], y: &mut [f64], allow_inner_parallelism: bool) {
+        debug_assert!(x.len() >= self.ncols);
+        debug_assert!(y.len() >= self.nrows);
+        if self.nrows > PAR_SPMV_THRESHOLD && allow_inner_parallelism {
+            self.par_spmv_add(x, y);
+        } else {
+            self.seq_spmv_add(x, y);
+        }
+    }
+
+    /// y = base + A * x (sparse matrix-vector multiply with explicit base).
+    ///
+    /// This fuses a `copy_from_slice(base)` with `spmv_add(x, y)` to avoid an
+    /// extra pass over the output buffer in block-elimination solves.
+    pub(crate) fn spmv_assign_add(
+        &self,
+        x: &[f64],
+        base: &[f64],
+        y: &mut [f64],
+        allow_inner_parallelism: bool,
+    ) {
+        debug_assert!(x.len() >= self.ncols);
+        debug_assert!(base.len() >= self.nrows);
+        debug_assert!(y.len() >= self.nrows);
+        if self.nrows > PAR_SPMV_THRESHOLD && allow_inner_parallelism {
+            self.par_spmv_assign_add(x, base, y);
+        } else {
+            self.seq_spmv_assign_add(x, base, y);
+        }
+    }
+
+    #[cfg(test)]
     fn seq_spmv_diag_add(&self, d: &[f64], x: &[f64], y: &mut [f64]) {
         for (i, yi) in y[..self.nrows].iter_mut().enumerate() {
             let start = self.indptr[i] as usize;
@@ -135,6 +173,36 @@ impl CsrBlock {
         }
     }
 
+    #[cfg(test)]
+    fn seq_spmv_add(&self, x: &[f64], y: &mut [f64]) {
+        for (i, yi) in y[..self.nrows].iter_mut().enumerate() {
+            let start = self.indptr[i] as usize;
+            let end = self.indptr[i + 1] as usize;
+            let row_data = &self.data[start..end];
+            let row_idx = &self.indices[start..end];
+            let mut acc = 0.0;
+            for (&val, &col) in row_data.iter().zip(row_idx) {
+                acc += val * x[col as usize];
+            }
+            *yi += acc;
+        }
+    }
+
+    fn seq_spmv_assign_add(&self, x: &[f64], base: &[f64], y: &mut [f64]) {
+        for (i, yi) in y[..self.nrows].iter_mut().enumerate() {
+            let start = self.indptr[i] as usize;
+            let end = self.indptr[i + 1] as usize;
+            let row_data = &self.data[start..end];
+            let row_idx = &self.indices[start..end];
+            let mut acc = base[i];
+            for (&val, &col) in row_data.iter().zip(row_idx) {
+                acc += val * x[col as usize];
+            }
+            *yi = acc;
+        }
+    }
+
+    #[cfg(test)]
     fn par_spmv_diag_add(&self, d: &[f64], x: &[f64], y: &mut [f64]) {
         let indptr = &self.indptr;
         let indices = &self.indices;
@@ -161,6 +229,65 @@ impl CsrBlock {
                         acc += val * d[j] * x[j];
                     }
                     *yi += acc;
+                }
+            });
+    }
+
+    #[cfg(test)]
+    fn par_spmv_add(&self, x: &[f64], y: &mut [f64]) {
+        let indptr = &self.indptr;
+        let indices = &self.indices;
+        let data = &self.data;
+        let nnz = self.nnz();
+        let nrows = self.nrows;
+        let avg_nnz_per_row = nnz / nrows.max(1);
+        let chunk = (TARGET_NNZ_PER_CHUNK / avg_nnz_per_row.max(1)).clamp(256, 8192);
+
+        y[..self.nrows]
+            .par_chunks_mut(chunk)
+            .enumerate()
+            .for_each(|(chunk_idx, y_chunk)| {
+                let row_start = chunk_idx * chunk;
+                for (local_i, yi) in y_chunk.iter_mut().enumerate() {
+                    let i = row_start + local_i;
+                    let start = indptr[i] as usize;
+                    let end = indptr[i + 1] as usize;
+                    let row_data = &data[start..end];
+                    let row_idx = &indices[start..end];
+                    let mut acc = 0.0;
+                    for (&val, &col) in row_data.iter().zip(row_idx) {
+                        acc += val * x[col as usize];
+                    }
+                    *yi += acc;
+                }
+            });
+    }
+
+    fn par_spmv_assign_add(&self, x: &[f64], base: &[f64], y: &mut [f64]) {
+        let indptr = &self.indptr;
+        let indices = &self.indices;
+        let data = &self.data;
+        let nnz = self.nnz();
+        let nrows = self.nrows;
+        let avg_nnz_per_row = nnz / nrows.max(1);
+        let chunk = (TARGET_NNZ_PER_CHUNK / avg_nnz_per_row.max(1)).clamp(256, 8192);
+
+        y[..self.nrows]
+            .par_chunks_mut(chunk)
+            .enumerate()
+            .for_each(|(chunk_idx, y_chunk)| {
+                let row_start = chunk_idx * chunk;
+                for (local_i, yi) in y_chunk.iter_mut().enumerate() {
+                    let i = row_start + local_i;
+                    let start = indptr[i] as usize;
+                    let end = indptr[i + 1] as usize;
+                    let row_data = &data[start..end];
+                    let row_idx = &indices[start..end];
+                    let mut acc = base[i];
+                    for (&val, &col) in row_data.iter().zip(row_idx) {
+                        acc += val * x[col as usize];
+                    }
+                    *yi = acc;
                 }
             });
     }
@@ -305,6 +432,33 @@ mod tests {
         assert!((y[0] - 3.0).abs() < 1e-14);
         assert!((y[1] - 7.0).abs() < 1e-14);
         assert!((y[2] - 11.0).abs() < 1e-14);
+    }
+
+    #[test]
+    fn test_spmv_add_basic() {
+        let b = make_3x4_block();
+        let x = vec![1.0, 1.0, 1.0, 1.0];
+        let mut y = vec![0.0; 3];
+
+        b.spmv_add(&x, &mut y, true);
+
+        assert!((y[0] - 3.0).abs() < 1e-14);
+        assert!((y[1] - 7.0).abs() < 1e-14);
+        assert!((y[2] - 11.0).abs() < 1e-14);
+    }
+
+    #[test]
+    fn test_spmv_assign_add_basic() {
+        let b = make_3x4_block();
+        let x = vec![1.0, 1.0, 1.0, 1.0];
+        let base = vec![10.0, 20.0, 30.0];
+        let mut y = vec![0.0; 3];
+
+        b.spmv_assign_add(&x, &base, &mut y, true);
+
+        assert!((y[0] - 13.0).abs() < 1e-14);
+        assert!((y[1] - 27.0).abs() < 1e-14);
+        assert!((y[2] - 41.0).abs() < 1e-14);
     }
 
     #[test]

@@ -38,16 +38,26 @@ fn subtract_mean(slice: &mut [f64], n: usize) {
     }
 }
 
-/// Back-substitute for the eliminated block.
-fn backsub_block(
+/// Scale `slice[i] *= diag[i]` for the first `slice.len()` entries.
+#[inline]
+fn scale_by_diag_in_place(slice: &mut [f64], diag: &[f64]) {
+    debug_assert!(diag.len() >= slice.len());
+    for (val, &di) in slice.iter_mut().zip(diag.iter()) {
+        *val *= di;
+    }
+}
+
+/// Back-substitute for the eliminated block from a pre-scaled RHS.
+fn backsub_block_from_scaled_rhs(
     sol_output: &mut [f64],
-    rhs_slice: &[f64],
+    scaled_rhs: &[f64],
     cross_matrix: &CsrBlock,
     inv_diag: &[f64],
     sol_source: &[f64],
     allow_inner_parallelism: bool,
 ) {
     let n = sol_output.len();
+    debug_assert!(scaled_rhs.len() >= n);
     if n > PAR_BACKSUB_THRESHOLD && allow_inner_parallelism {
         sol_output
             .par_chunks_mut(PAR_BACKSUB_CHUNK)
@@ -63,7 +73,7 @@ fn backsub_block(
                         let j = cross_matrix.indices[idx] as usize;
                         sum += cross_matrix.data[idx] * sol_source[j];
                     }
-                    *si = inv_diag[i] * (rhs_slice[i] + sum);
+                    *si = scaled_rhs[i] + (inv_diag[i] * sum);
                 }
             });
     } else {
@@ -75,7 +85,7 @@ fn backsub_block(
                 let j = cross_matrix.indices[idx] as usize;
                 sum += cross_matrix.data[idx] * sol_source[j];
             }
-            sol_output[i] = inv_diag[i] * (rhs_slice[i] + sum);
+            sol_output[i] = scaled_rhs[i] + (inv_diag[i] * sum);
         }
     }
 }
@@ -541,13 +551,13 @@ impl BlockElimSolver {
 
         if self.eliminate_q {
             let n_keep = n_r;
+            scale_by_diag_in_place(&mut rhs[..n_q], &self.inv_diag_elim);
 
             {
                 let (main, scratch) = rhs.split_at_mut(n);
-                scratch[..n_keep].copy_from_slice(&main[n_q..]);
-                ct.ct.spmv_diag_add(
-                    &self.inv_diag_elim,
+                ct.ct.spmv_assign_add(
                     &main[..n_q],
+                    &main[n_q..n_q + n_keep],
                     &mut scratch[..n_keep],
                     allow_inner_parallelism,
                 );
@@ -563,7 +573,7 @@ impl BlockElimSolver {
 
             {
                 let (sol_q, sol_r) = sol.split_at_mut(n_q);
-                backsub_block(
+                backsub_block_from_scaled_rhs(
                     sol_q,
                     &rhs[..n_q],
                     &ct.c,
@@ -574,13 +584,13 @@ impl BlockElimSolver {
             }
         } else {
             let n_keep = n_q;
+            scale_by_diag_in_place(&mut rhs[n_q..n_q + n_r], &self.inv_diag_elim);
 
             {
                 let (main, scratch) = rhs.split_at_mut(n);
-                scratch[..n_keep].copy_from_slice(&main[..n_q]);
-                ct.c.spmv_diag_add(
-                    &self.inv_diag_elim,
-                    &main[n_q..],
+                ct.c.spmv_assign_add(
+                    &main[n_q..n_q + n_r],
+                    &main[..n_q],
                     &mut scratch[..n_keep],
                     allow_inner_parallelism,
                 );
@@ -596,7 +606,7 @@ impl BlockElimSolver {
 
             {
                 let (sol_q, sol_r) = sol.split_at_mut(n_q);
-                backsub_block(
+                backsub_block_from_scaled_rhs(
                     &mut sol_r[..n_r],
                     &rhs[n_q..n_q + n_r],
                     &ct.ct,
