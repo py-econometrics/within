@@ -4,11 +4,12 @@
 //!
 //! **Multiplicative:** Sequential forward/backward sweep with residual updates between subdomains.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use rayon::prelude::*;
+use thread_local::ThreadLocal;
 
 use crate::domain::PartitionWeights;
 use crate::error::{validate_entries, ApplyError, LocalSolveError, PreconditionerBuildError};
@@ -268,9 +269,57 @@ impl SchwarzBuffers {
     }
 }
 
-struct AdditiveFoldState {
-    buffers: AdditiveSweepBuffers,
-    error: Option<ApplyError>,
+/// Worker-local buffer stacks for additive parallel reduction.
+///
+/// Each Rayon worker reuses its own accumulator buffers across sequential outer
+/// tasks. Nested re-entry on the same worker allocates a second buffer only when
+/// needed, so the number of retained full-length accumulators tracks re-entry
+/// depth rather than Rayon task splitting.
+struct WorkerReductionBuffers {
+    shared_pool: Mutex<Vec<AdditiveSweepBuffers>>,
+    worker_stacks: ThreadLocal<RefCell<Vec<AdditiveSweepBuffers>>>,
+    n_dofs: usize,
+    max_scratch_size: usize,
+}
+
+impl WorkerReductionBuffers {
+    fn new(pool: Vec<AdditiveSweepBuffers>, n_dofs: usize, max_scratch_size: usize) -> Self {
+        Self {
+            shared_pool: Mutex::new(pool),
+            worker_stacks: ThreadLocal::with_capacity(rayon::current_num_threads().max(1)),
+            n_dofs,
+            max_scratch_size,
+        }
+    }
+
+    fn with_buffer<T>(&self, f: impl FnOnce(&mut AdditiveSweepBuffers) -> T) -> T {
+        let worker_stack = self.worker_stacks.get_or(|| RefCell::new(Vec::new()));
+        let mut buffers = if let Some(buffers) = worker_stack.borrow_mut().pop() {
+            buffers
+        } else {
+            take_reduction_buffer(&self.shared_pool, self.n_dofs, self.max_scratch_size)
+        };
+
+        let result = f(&mut buffers);
+        self.worker_stacks
+            .get_or(|| RefCell::new(Vec::new()))
+            .borrow_mut()
+            .push(buffers);
+        result
+    }
+
+    fn into_buffers(mut self) -> Result<Vec<AdditiveSweepBuffers>, ApplyError> {
+        let mut buffers =
+            self.shared_pool
+                .into_inner()
+                .map_err(|_| ApplyError::Synchronization {
+                    context: "additive.reduction.pool.into_inner",
+                })?;
+        for worker_stack in self.worker_stacks.iter_mut() {
+            buffers.append(worker_stack.get_mut());
+        }
+        Ok(buffers)
+    }
 }
 
 // ============================================================================
@@ -478,74 +527,65 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
         max_ss: usize,
         allow_inner: bool,
     ) -> Result<(), ApplyError> {
-        let available = Mutex::new(std::mem::take(pool));
-        let min_len = (self.subdomains.len() / rayon::current_num_threads().max(1)).max(1);
-        let mut states: Vec<AdditiveFoldState> = self
-            .subdomains
-            .par_iter()
-            .with_min_len(min_len)
-            .enumerate()
-            .fold(
-                || AdditiveFoldState {
-                    buffers: take_reduction_buffer(&available, n, max_ss),
-                    error: None,
-                },
-                |mut state, (subdomain, entry)| {
-                    if state.error.is_some() {
-                        return state;
-                    }
-
-                    let AdditiveSweepBuffers {
-                        ref mut global_accum,
-                        ref mut r_scratch,
-                        ref mut z_scratch,
-                    } = state.buffers;
-                    if let Err(source) = with_local_solver_inner_parallelism(allow_inner, || {
-                        entry.apply_weighted_into_with_scratch(
-                            r,
-                            global_accum,
-                            r_scratch,
-                            z_scratch,
-                        )
-                    }) {
-                        state.error = Some(ApplyError::LocalSolveFailed { subdomain, source });
-                    }
-                    state
-                },
-            )
-            .collect();
-
-        let error = states.iter_mut().find_map(|state| state.error.take());
-        if states.is_empty() {
-            z.fill(0.0);
-        } else if error.is_none() {
-            const REDUCE_CHUNK: usize = 4096;
-            z.par_chunks_mut(REDUCE_CHUNK)
+        let worker_buffers = WorkerReductionBuffers::new(std::mem::take(pool), n, max_ss);
+        let apply_result =
+            self.subdomains
+                .par_iter()
                 .enumerate()
-                .for_each(|(ci, chunk)| {
-                    let offset = ci * REDUCE_CHUNK;
-                    chunk.fill(0.0);
-                    for state in &states {
-                        let accum = &state.buffers.global_accum[offset..offset + chunk.len()];
-                        for (zi, &ai) in chunk.iter_mut().zip(accum) {
-                            *zi += ai;
-                        }
-                    }
+                .try_for_each(|(subdomain, entry)| {
+                    worker_buffers.with_buffer(|buffers| {
+                        let AdditiveSweepBuffers {
+                            ref mut global_accum,
+                            ref mut r_scratch,
+                            ref mut z_scratch,
+                        } = buffers;
+                        with_local_solver_inner_parallelism(allow_inner, || {
+                            entry.apply_weighted_into_with_scratch(
+                                r,
+                                global_accum,
+                                r_scratch,
+                                z_scratch,
+                            )
+                        })
+                        .map_err(|source| ApplyError::LocalSolveFailed { subdomain, source })
+                    })
                 });
+
+        let mut buffers = worker_buffers.into_buffers()?;
+        if apply_result.is_ok() {
+            reduce_additive_buffers_into(z, &buffers);
         }
+        clear_additive_buffers(&mut buffers);
+        *pool = buffers;
 
-        for state in &mut states {
-            state.buffers.global_accum.fill(0.0);
-        }
+        apply_result
+    }
+}
 
-        *pool = available
-            .into_inner()
-            .map_err(|_| ApplyError::Synchronization {
-                context: "additive.reduction.pool.into_inner",
-            })?;
-        pool.extend(states.into_iter().map(|state| state.buffers));
+fn reduce_additive_buffers_into(z: &mut [f64], buffers: &[AdditiveSweepBuffers]) {
+    if buffers.is_empty() {
+        z.fill(0.0);
+        return;
+    }
 
-        error.map_or(Ok(()), Err)
+    const REDUCE_CHUNK: usize = 4096;
+    z.par_chunks_mut(REDUCE_CHUNK)
+        .enumerate()
+        .for_each(|(ci, chunk)| {
+            let offset = ci * REDUCE_CHUNK;
+            chunk.fill(0.0);
+            for buffers in buffers {
+                let accum = &buffers.global_accum[offset..offset + chunk.len()];
+                for (zi, &ai) in chunk.iter_mut().zip(accum) {
+                    *zi += ai;
+                }
+            }
+        });
+}
+
+fn clear_additive_buffers(buffers: &mut [AdditiveSweepBuffers]) {
+    for buffers in buffers {
+        buffers.global_accum.fill(0.0);
     }
 }
 
