@@ -423,8 +423,9 @@ fn extract_preconditioner_config(
 ) -> PyResult<Option<Preconditioner>> {
     let obj = match preconditioner {
         None => {
-            return Ok(Some(Preconditioner::additive(
+            return Ok(Some(Preconditioner::Additive(
                 LocalSolverConfig::solver_default(),
+                ReductionStrategy::Auto,
             )));
         }
         Some(obj) => obj,
@@ -434,8 +435,9 @@ fn extract_preconditioner_config(
     if let Ok(p) = obj.extract::<PyPreconditioner>() {
         return match p {
             PyPreconditioner::Off => Ok(None),
-            PyPreconditioner::Additive => Ok(Some(Preconditioner::additive(
+            PyPreconditioner::Additive => Ok(Some(Preconditioner::Additive(
                 LocalSolverConfig::solver_default(),
+                ReductionStrategy::Auto,
             ))),
             PyPreconditioner::Multiplicative => Ok(Some(Preconditioner::Multiplicative(
                 LocalSolverConfig::solver_default(),

@@ -1,7 +1,7 @@
 use ndarray::array;
 use within::{
-    solve, FePreconditioner, KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner, Solver,
-    SolverParams,
+    solve, FePreconditioner, KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner,
+    ReductionStrategy, Solver, SolverParams,
 };
 
 #[path = "common/orchestrate_helpers.rs"]
@@ -12,7 +12,7 @@ fn default_params() -> SolverParams {
 }
 
 fn additive_precond() -> Preconditioner {
-    Preconditioner::additive(LocalSolverConfig::solver_default())
+    Preconditioner::Additive(LocalSolverConfig::solver_default(), ReductionStrategy::Auto)
 }
 
 fn categories_and_y() -> (ndarray::Array2<u32>, Vec<f64>) {
@@ -265,7 +265,8 @@ fn test_multiplicative_vs_additive_same_solution() {
         maxiter: 2000,
         ..Default::default()
     };
-    let precond_add = Preconditioner::additive(LocalSolverConfig::solver_default());
+    let precond_add =
+        Preconditioner::Additive(LocalSolverConfig::solver_default(), ReductionStrategy::Auto);
     let result_add = solve(categories.view(), &y, None, &params_add, Some(&precond_add))
         .expect("additive solve");
 

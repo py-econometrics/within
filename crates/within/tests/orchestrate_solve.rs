@@ -1,4 +1,7 @@
-use within::{KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner, Solver, SolverParams};
+use within::{
+    KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner, ReductionStrategy, Solver,
+    SolverParams,
+};
 
 #[path = "common/orchestrate_helpers.rs"]
 mod common;
@@ -36,7 +39,7 @@ fn test_cg_preconditioned() {
         maxiter: 1000,
         ..Default::default()
     };
-    let precond = Preconditioner::additive(LocalSolverConfig::default());
+    let precond = Preconditioner::Additive(LocalSolverConfig::default(), ReductionStrategy::Auto);
     let solver = Solver::from_design(design, &params, Some(&precond)).expect("build solver");
     let result = solver.solve(&y).expect("solve");
     common::assert_converged_with_small_residual(&result, 1e-6);
@@ -76,7 +79,8 @@ fn test_least_squares_weighted_cg_preconditioned() {
         maxiter: 1000,
         ..Default::default()
     };
-    let precond = Preconditioner::additive(LocalSolverConfig::solver_default());
+    let precond =
+        Preconditioner::Additive(LocalSolverConfig::solver_default(), ReductionStrategy::Auto);
     let solver = Solver::from_design(design, &params, Some(&precond)).expect("build solver");
     let result = solver.solve(&y).expect("solve");
     common::assert_converged_with_small_residual(&result, 1e-6);

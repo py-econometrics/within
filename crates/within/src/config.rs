@@ -131,13 +131,6 @@ pub enum Preconditioner {
     Multiplicative(LocalSolverConfig),
 }
 
-impl Preconditioner {
-    /// Construct additive Schwarz with default reduction strategy.
-    pub fn additive(config: LocalSolverConfig) -> Self {
-        Self::Additive(config, ReductionStrategy::default())
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Solver configuration
 // ---------------------------------------------------------------------------
