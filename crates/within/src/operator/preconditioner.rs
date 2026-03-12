@@ -48,29 +48,33 @@ impl FePreconditioner {
                 .collect(),
         }
     }
+}
 
-    /// Configured additive reduction strategy, if this is an additive preconditioner.
-    pub fn reduction_strategy(&self) -> Option<ReductionStrategy> {
-        match self {
-            Self::Additive(p) => Some(p.reduction_strategy()),
-            Self::Multiplicative(_) => None,
-        }
+/// Configured additive reduction strategy, if this is an additive preconditioner.
+pub fn additive_reduction_strategy(preconditioner: &FePreconditioner) -> Option<ReductionStrategy> {
+    match preconditioner {
+        FePreconditioner::Additive(p) => Some(p.reduction_strategy()),
+        FePreconditioner::Multiplicative(_) => None,
     }
+}
 
-    /// Concrete additive backend selected for the current Rayon thread-pool width.
-    pub fn resolved_reduction_strategy(&self) -> Option<ReductionStrategy> {
-        match self {
-            Self::Additive(p) => Some(p.resolved_reduction_strategy()),
-            Self::Multiplicative(_) => None,
-        }
+/// Concrete additive backend selected for the current Rayon thread-pool width.
+pub fn resolved_additive_reduction_strategy(
+    preconditioner: &FePreconditioner,
+) -> Option<ReductionStrategy> {
+    match preconditioner {
+        FePreconditioner::Additive(p) => Some(p.resolved_reduction_strategy()),
+        FePreconditioner::Multiplicative(_) => None,
     }
+}
 
-    /// Build-time additive Schwarz scheduling diagnostics.
-    pub fn additive_schwarz_diagnostics(&self) -> Option<AdditiveSchwarzDiagnostics> {
-        match self {
-            Self::Additive(p) => Some(p.diagnostics()),
-            Self::Multiplicative(_) => None,
-        }
+/// Build-time additive Schwarz scheduling diagnostics.
+pub fn additive_schwarz_diagnostics(
+    preconditioner: &FePreconditioner,
+) -> Option<AdditiveSchwarzDiagnostics> {
+    match preconditioner {
+        FePreconditioner::Additive(p) => Some(p.diagnostics()),
+        FePreconditioner::Multiplicative(_) => None,
     }
 }
 
