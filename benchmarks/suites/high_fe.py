@@ -7,7 +7,6 @@ domain decomposition.
 
 from __future__ import annotations
 
-from within import CG, GMRES
 from within._within import (
     ApproxCholConfig,
     ApproxSchurConfig,
@@ -19,6 +18,8 @@ from .._framework import (
     ProblemSpec,
     SolverConfig,
     SuiteOptions,
+    benchmark_cg,
+    benchmark_gmres,
     make_additive_schwarz,
     run_problem_set,
     suite,
@@ -196,12 +197,12 @@ def run_high_fe(opts: SuiteOptions) -> list[BenchmarkResult]:
     configs = [
         SolverConfig(
             "CG(Schwarz)",
-            CG(tol=opts.tol, maxiter=opts.maxiter),
+            benchmark_cg(opts),
             preconditioner=make_additive_schwarz(local_solver=schur),
         ),
         SolverConfig(
             "GMRES(Mult-Schwarz)",
-            GMRES(tol=opts.tol, maxiter=opts.maxiter),
+            benchmark_gmres(opts),
             preconditioner=MultiplicativeSchwarz(local_solver=schur),
         ),
     ]
@@ -319,12 +320,12 @@ def run_high_fe_scaling(opts: SuiteOptions) -> list[BenchmarkResult]:
     configs = [
         SolverConfig(
             "CG(Schwarz)",
-            CG(tol=opts.tol, maxiter=opts.maxiter),
+            benchmark_cg(opts),
             preconditioner=make_additive_schwarz(local_solver=schur),
         ),
         SolverConfig(
             "GMRES(Mult-Schwarz)",
-            GMRES(tol=opts.tol, maxiter=opts.maxiter),
+            benchmark_gmres(opts),
             preconditioner=MultiplicativeSchwarz(local_solver=schur),
         ),
     ]

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import os
 
-from within import CG, GMRES
 from within._within import (
     ApproxCholConfig,
     ApproxSchurConfig,
@@ -21,6 +20,8 @@ from .._framework import (
     BenchmarkResult,
     SolverConfig,
     SuiteOptions,
+    benchmark_cg,
+    benchmark_gmres,
     make_additive_schwarz,
     run_solve,
     suite,
@@ -70,7 +71,7 @@ def run_fixest_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
     solver_configs = [
         SolverConfig(
             "CG(Schwarz)",
-            CG(tol=opts.tol, maxiter=opts.maxiter),
+            benchmark_cg(opts),
             preconditioner=make_additive_schwarz(
                 local_solver=SchurComplement(
                     approx_chol=ApproxCholConfig(seed=0, split=8),
@@ -83,7 +84,7 @@ def run_fixest_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
         solver_configs.append(
             SolverConfig(
                 "CG(Schwarz)-sparse",
-                CG(tol=opts.tol, maxiter=opts.maxiter),
+                benchmark_cg(opts),
                 preconditioner=make_additive_schwarz(
                     local_solver=SchurComplement(
                         approx_chol=ApproxCholConfig(seed=0, split=2),
@@ -99,7 +100,7 @@ def run_fixest_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
         solver_configs.append(
             SolverConfig(
                 "GMRES(Mult-Schwarz)",
-                GMRES(tol=opts.tol, maxiter=opts.maxiter),
+                benchmark_gmres(opts),
                 preconditioner=MultiplicativeSchwarz(
                     local_solver=SchurComplement(
                         approx_chol=ApproxCholConfig(seed=0, split=8),

@@ -35,6 +35,7 @@ from within._within import (
 
 ScaleProfile = Literal["smoke", "iterate", "full"]
 _T = TypeVar("_T")
+BENCHMARK_SOLVER_TOL_MIN = 1e-7
 
 # ---------------------------------------------------------------------------
 # Core data types (formerly _types.py)
@@ -186,6 +187,27 @@ def benchmark_reduction_strategy() -> ReductionStrategy:
         ) from exc
 
 
+def benchmark_solver_tol(tol: float) -> float:
+    """Benchmark tolerance floor used to avoid borderline non-convergence noise."""
+    return max(tol, BENCHMARK_SOLVER_TOL_MIN)
+
+
+def benchmark_cg(opts: Any, *, maxiter: int | None = None) -> CG:
+    """Construct a CG config with benchmark-standard tolerance handling."""
+    return CG(
+        tol=benchmark_solver_tol(opts.tol),
+        maxiter=opts.maxiter if maxiter is None else maxiter,
+    )
+
+
+def benchmark_gmres(opts: Any, *, maxiter: int | None = None) -> GMRES:
+    """Construct a GMRES config with benchmark-standard tolerance handling."""
+    return GMRES(
+        tol=benchmark_solver_tol(opts.tol),
+        maxiter=opts.maxiter if maxiter is None else maxiter,
+    )
+
+
 def make_additive_schwarz(local_solver: Any) -> AdditiveSchwarz:
     """Construct additive Schwarz using the benchmark-selected reduction mode."""
     return AdditiveSchwarz(
@@ -207,12 +229,12 @@ def standard_solver_configs(opts: Any) -> list[SolverConfig]:
     return [
         SolverConfig(
             "CG(Schwarz)",
-            CG(tol=opts.tol, maxiter=opts.maxiter),
+            benchmark_cg(opts),
             preconditioner=make_additive_schwarz(local_solver=schur),
         ),
         SolverConfig(
             "GMRES(Mult-Schwarz)",
-            GMRES(tol=opts.tol, maxiter=opts.maxiter),
+            benchmark_gmres(opts),
             preconditioner=MultiplicativeSchwarz(local_solver=schur),
         ),
     ]

@@ -7,7 +7,6 @@ Two suites:
 
 from __future__ import annotations
 
-from within import CG, GMRES
 from within._within import (
     ApproxCholConfig,
     ApproxSchurConfig,
@@ -19,6 +18,8 @@ from .._framework import (
     ProblemSpec,
     SolverConfig,
     SuiteOptions,
+    benchmark_cg,
+    benchmark_gmres,
     make_additive_schwarz,
     run_problem_set,
     suite,
@@ -120,22 +121,22 @@ def run_ac_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
     configs = [
         SolverConfig(
             "CG(1L, AC)",
-            CG(tol=opts.tol, maxiter=opts.maxiter),
+            benchmark_cg(opts),
             preconditioner=make_additive_schwarz(local_solver=_schur(opts.seed, 1)),
         ),
         SolverConfig(
             "CG(1L, AC2)",
-            CG(tol=opts.tol, maxiter=opts.maxiter),
+            benchmark_cg(opts),
             preconditioner=make_additive_schwarz(local_solver=_schur(opts.seed, 2)),
         ),
         SolverConfig(
             "GMRES(M1L, AC)",
-            GMRES(tol=opts.tol, maxiter=opts.maxiter),
+            benchmark_gmres(opts),
             preconditioner=MultiplicativeSchwarz(local_solver=_schur(opts.seed, 1)),
         ),
         SolverConfig(
             "GMRES(M1L, AC2)",
-            GMRES(tol=opts.tol, maxiter=opts.maxiter),
+            benchmark_gmres(opts),
             preconditioner=MultiplicativeSchwarz(local_solver=_schur(opts.seed, 2)),
         ),
     ]
@@ -168,6 +169,7 @@ def run_ac_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
     tags=("2fe", "3fe", "ac"),
 )
 def run_graph_backend_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
+    maxiter = max(opts.maxiter, 6000)
     problems = opts.select(
         smoke=[
             ProblemSpec("chain 100 2fe", "chain_2fe", {"n_levels": 100}, opts.seed),
@@ -261,12 +263,12 @@ def run_graph_backend_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
     configs = [
         SolverConfig(
             "ac",
-            CG(tol=opts.tol, maxiter=opts.maxiter),
+            benchmark_cg(opts, maxiter=maxiter),
             preconditioner=make_additive_schwarz(local_solver=_schur(opts.seed, 1)),
         ),
         SolverConfig(
             "ac2",
-            CG(tol=opts.tol, maxiter=opts.maxiter),
+            benchmark_cg(opts, maxiter=maxiter),
             preconditioner=make_additive_schwarz(local_solver=_schur(opts.seed, 2)),
         ),
     ]

@@ -12,7 +12,6 @@ make real AKM data hard:
 
 from __future__ import annotations
 
-from within import CG
 from within._within import (
     ApproxCholConfig,
     ApproxSchurConfig,
@@ -23,6 +22,7 @@ from .._framework import (
     ProblemSpec,
     SolverConfig,
     SuiteOptions,
+    benchmark_cg,
     make_additive_schwarz,
     run_problem_set,
     standard_solver_configs,
@@ -232,7 +232,7 @@ def run_akm_scaling(opts: SuiteOptions) -> list[BenchmarkResult]:
     scaling_configs = [
         SolverConfig(
             "CG(Schwarz)",
-            CG(tol=opts.tol, maxiter=opts.maxiter),
+            benchmark_cg(opts),
             preconditioner=make_additive_schwarz(local_solver=schur),
         ),
     ]
