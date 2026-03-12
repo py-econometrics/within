@@ -16,7 +16,7 @@ This is Part 1 of the algorithm documentation for the `within` solver. It introd
 | $n$ | Number of observations |
 | $Q$ | Number of factors (fixed-effect grouping variables) |
 | $m_q$ | Number of levels (categories) in factor $q$ |
-| $m = \sum_q m_q$ | Total degrees of freedom |
+| $m = \sum_q m_q$ | Total degrees of freedom / total number of factor levels over all fixed effects|
 | $D$ | Design matrix ($n \times m$), with exactly $Q$ ones per row |
 | $W$ | Diagonal weight matrix ($n \times n$), $W = \text{diag}(w_1, \dots, w_n)$ |
 | $G$ | Gramian matrix, $G = D^\top W D$ ($m \times m$) |
@@ -132,7 +132,7 @@ The Gramian's sparsity pattern defines an interaction graph on all $m = 7$ facto
 
 ![Gramian interaction graph](images/graph_plain.svg)
 
-No edges connect degrees of freedom within the same factor.  No edges connect factor levels within the same factor. As edges only cross factor boundaries, we say that the graph is $Q$-partite. Each factor-pair subgraph is bipartite. The diagonal entries reflect the same structure: $D_Y[\text{Y1},\text{Y1}] = 3$ because Y1 is connected to 3 other nodes, one for each observation in year Y1 (obs 1, 3, 5). The graph is connected because W1's mobility between F1 and F2 bridges the two firms; without it, the graph would split into disconnected components.
+No edges connect degrees of freedom (factor levels) within the same factor. As edges only cross factor boundaries, we say that the graph is $Q$-partite. Each factor-pair subgraph is bipartite. The diagonal entries reflect the same structure: $D_Y[\text{Y1},\text{Y1}] = 3$ because Y1 is connected to 3 other nodes, one for each observation in year Y1 (obs 1, 3, 5). The graph is connected because W1's mobility between F1 and F2 bridges the two firms; without it, the graph would split into disconnected components.
 
 ### 3.3 Key properties of the Fixed Effects Problem
 
