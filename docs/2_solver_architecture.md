@@ -153,7 +153,6 @@ We conclude with a summary of the full algorithm:
 
 1. **Build weighted design** from `categories` and `weights`
    - Infer $m_q$ (number of levels) per factor by scanning observations
-   - Compute global offsets: $\text{offset}_q = \sum_{q' < q} m_{q'}$
 
 2. **For each factor pair $(q, r)$ in parallel:**
    - Build cross-tabulation $C_{qr}$ and diagonal blocks $D_q$, $D_r$
