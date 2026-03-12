@@ -156,7 +156,20 @@ impl WorkerReductionBuffers {
         result
     }
 
-    pub(super) fn into_buffers(mut self) -> Result<Vec<AdditiveSweepBuffers>, ApplyError> {
+    pub(super) fn finish_round(
+        self,
+        z: &mut [f64],
+        apply_result: &Result<(), ApplyError>,
+    ) -> Result<Vec<AdditiveSweepBuffers>, ApplyError> {
+        let mut buffers = self.into_buffers()?;
+        if apply_result.is_ok() {
+            reduce_into(z, &buffers);
+        }
+        clear(&mut buffers);
+        Ok(buffers)
+    }
+
+    fn into_buffers(mut self) -> Result<Vec<AdditiveSweepBuffers>, ApplyError> {
         let mut buffers =
             self.shared_pool
                 .into_inner()
@@ -170,7 +183,7 @@ impl WorkerReductionBuffers {
     }
 }
 
-pub(super) fn reduce_additive_buffers_into(z: &mut [f64], buffers: &[AdditiveSweepBuffers]) {
+fn reduce_into(z: &mut [f64], buffers: &[AdditiveSweepBuffers]) {
     if buffers.is_empty() {
         z.fill(0.0);
         return;
@@ -192,7 +205,7 @@ pub(super) fn reduce_additive_buffers_into(z: &mut [f64], buffers: &[AdditiveSwe
         });
 }
 
-pub(super) fn clear_additive_buffers(buffers: &mut [AdditiveSweepBuffers]) {
+fn clear(buffers: &mut [AdditiveSweepBuffers]) {
     for buffers in buffers {
         buffers.global_accum.fill(0.0);
     }

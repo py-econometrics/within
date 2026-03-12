@@ -7,8 +7,7 @@ use crate::error::ApplyError;
 use crate::local_solve::{LocalSolveOptions, LocalSolver, SubdomainEntry};
 
 use super::buffers::{
-    clear_additive_buffers, reduce_additive_buffers_into, AdditiveSweepBuffers, BufferPool,
-    LocalSolveScratch, SchwarzBuffers, WorkerReductionBuffers,
+    AdditiveSweepBuffers, BufferPool, LocalSolveScratch, SchwarzBuffers, WorkerReductionBuffers,
 };
 use super::planning::ReductionPlan;
 
@@ -132,12 +131,7 @@ impl<S: LocalSolver> AdditiveExecutor<S> {
                     })
                 });
 
-        let mut buffers = worker_buffers.into_buffers()?;
-        if apply_result.is_ok() {
-            reduce_additive_buffers_into(z, &buffers);
-        }
-        clear_additive_buffers(&mut buffers);
-        *pool = buffers;
+        *pool = worker_buffers.finish_round(z, &apply_result)?;
 
         apply_result
     }
