@@ -5,8 +5,7 @@
 
 use schwarz_precond::solve::cg::{cg_solve, cg_solve_preconditioned};
 use schwarz_precond::{
-    LocalSolveError, LocalSolveOptions, LocalSolver, Operator, SchwarzPreconditioner,
-    SubdomainCore, SubdomainEntry,
+    LocalSolveError, LocalSolver, Operator, SchwarzPreconditioner, SubdomainCore, SubdomainEntry,
 };
 
 // ---------------------------------------------------------------------------
@@ -60,7 +59,7 @@ impl LocalSolver for DiagLocalSolver {
         &self,
         rhs: &mut [f64],
         sol: &mut [f64],
-        _options: LocalSolveOptions,
+        _allow_inner_parallelism: bool,
     ) -> Result<(), LocalSolveError> {
         for i in 0..self.n_local {
             sol[i] = rhs[i] / self.diag_val;

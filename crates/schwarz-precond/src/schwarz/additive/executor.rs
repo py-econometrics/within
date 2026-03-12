@@ -4,7 +4,7 @@ use std::sync::Arc;
 use rayon::prelude::*;
 
 use crate::error::ApplyError;
-use crate::local_solve::{LocalSolveOptions, LocalSolver, SubdomainEntry};
+use crate::local_solve::{LocalSolver, SubdomainEntry};
 
 use super::buffers::{
     AdditiveSweepBuffers, BufferPool, LocalSolveScratch, SchwarzBuffers, WorkerReductionBuffers,
@@ -73,7 +73,6 @@ impl<S: LocalSolver> AdditiveExecutor<S> {
         z: &mut [f64],
         accum: &[AtomicU64],
     ) -> Result<(), ApplyError> {
-        let options = LocalSolveOptions::new(allow_inner_parallelism);
         self.subdomains.par_iter().enumerate().try_for_each_init(
             || LocalSolveScratch::new(self.max_scratch_size),
             |scratch, (subdomain, entry)| {
@@ -83,7 +82,7 @@ impl<S: LocalSolver> AdditiveExecutor<S> {
                         accum,
                         &mut scratch.r_scratch,
                         &mut scratch.z_scratch,
-                        options,
+                        allow_inner_parallelism,
                     )
                     .map_err(|source| ApplyError::LocalSolveFailed { subdomain, source })
             },
@@ -110,7 +109,6 @@ impl<S: LocalSolver> AdditiveExecutor<S> {
         z: &mut [f64],
         pool: &mut Vec<AdditiveSweepBuffers>,
     ) -> Result<(), ApplyError> {
-        let options = LocalSolveOptions::new(allow_inner_parallelism);
         let worker_buffers =
             WorkerReductionBuffers::new(std::mem::take(pool), self.n_dofs, self.max_scratch_size);
         let apply_result =
@@ -125,7 +123,7 @@ impl<S: LocalSolver> AdditiveExecutor<S> {
                                 &mut buffers.global_accum,
                                 &mut buffers.scratch.r_scratch,
                                 &mut buffers.scratch.z_scratch,
-                                options,
+                                allow_inner_parallelism,
                             )
                             .map_err(|source| ApplyError::LocalSolveFailed { subdomain, source })
                     })

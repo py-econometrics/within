@@ -3,8 +3,7 @@
 #![allow(dead_code)]
 
 use schwarz_precond::{
-    LocalSolveError, LocalSolveOptions, LocalSolver, Operator, SparseMatrix, SubdomainCore,
-    SubdomainEntry,
+    LocalSolveError, LocalSolver, Operator, SparseMatrix, SubdomainCore, SubdomainEntry,
 };
 
 // ---------------------------------------------------------------------------
@@ -180,7 +179,7 @@ impl LocalSolver for UniformDiagLocalSolver {
         &self,
         rhs: &mut [f64],
         sol: &mut [f64],
-        _options: LocalSolveOptions,
+        _allow_inner_parallelism: bool,
     ) -> Result<(), LocalSolveError> {
         for i in 0..self.n_local {
             sol[i] = rhs[i] * self.inv_diag;
@@ -213,7 +212,7 @@ impl LocalSolver for DiagLocalSolver {
         &self,
         rhs: &mut [f64],
         sol: &mut [f64],
-        _options: LocalSolveOptions,
+        _allow_inner_parallelism: bool,
     ) -> Result<(), LocalSolveError> {
         for i in 0..self.inv_diag.len() {
             sol[i] = self.inv_diag[i] * rhs[i];
@@ -317,7 +316,7 @@ impl LocalSolver for FailingLocalSolver {
         &self,
         _rhs: &mut [f64],
         _sol: &mut [f64],
-        _options: LocalSolveOptions,
+        _allow_inner_parallelism: bool,
     ) -> Result<(), LocalSolveError> {
         Err(LocalSolveError::ApproxCholSolveFailed {
             context: "test.failing_local_solver",

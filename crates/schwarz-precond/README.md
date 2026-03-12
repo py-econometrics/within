@@ -54,7 +54,7 @@ impl LocalSolver for DiagSolver {
         &self,
         rhs: &mut [f64],
         sol: &mut [f64],
-        _options: schwarz_precond::LocalSolveOptions,
+        _allow_inner_parallelism: bool,
     ) -> Result<(), schwarz_precond::LocalSolveError> {
         for i in 0..self.0 { sol[i] = rhs[i] / self.1; }
         Ok(())

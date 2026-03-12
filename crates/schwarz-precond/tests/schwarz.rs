@@ -9,7 +9,7 @@ use rayon::prelude::*;
 use schwarz_precond::domain::PartitionWeights;
 use schwarz_precond::solve::cg::{cg_solve, cg_solve_preconditioned};
 use schwarz_precond::{
-    LocalSolveError, LocalSolveOptions, LocalSolver, MultiplicativeSchwarzPreconditioner, Operator,
+    LocalSolveError, LocalSolver, MultiplicativeSchwarzPreconditioner, Operator,
     OperatorResidualUpdater, ReductionStrategy, SchwarzPreconditioner, SubdomainCore,
     SubdomainEntry,
 };
@@ -84,9 +84,9 @@ impl LocalSolver for NestedRayonIdentitySolver {
         &self,
         rhs: &mut [f64],
         sol: &mut [f64],
-        options: LocalSolveOptions,
+        allow_inner_parallelism: bool,
     ) -> Result<(), LocalSolveError> {
-        if options.allow_inner_parallelism() {
+        if allow_inner_parallelism {
             sol[..self.n]
                 .par_chunks_mut(Self::CHUNK_SIZE)
                 .enumerate()

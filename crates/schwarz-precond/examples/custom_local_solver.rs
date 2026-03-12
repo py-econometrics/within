@@ -6,8 +6,8 @@
 use faer::{MatRef, Side};
 use schwarz_precond::solve::cg::cg_solve_preconditioned;
 use schwarz_precond::{
-    LocalSolveError, LocalSolveOptions, LocalSolver, Operator, SchwarzPreconditioner, SparseMatrix,
-    SubdomainCore, SubdomainEntry,
+    LocalSolveError, LocalSolver, Operator, SchwarzPreconditioner, SparseMatrix, SubdomainCore,
+    SubdomainEntry,
 };
 
 // ---------------------------------------------------------------------------
@@ -151,7 +151,7 @@ impl LocalSolver for DenseCholeskyLocalSolver {
         &self,
         rhs: &mut [f64],
         sol: &mut [f64],
-        _options: LocalSolveOptions,
+        _allow_inner_parallelism: bool,
     ) -> Result<(), LocalSolveError> {
         self.solve(rhs, sol);
         Ok(())

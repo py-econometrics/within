@@ -5,7 +5,7 @@ use std::sync::Arc;
 use approx_chol::Factor;
 use faer::{MatRef, Side};
 use rayon::prelude::*;
-use schwarz_precond::{LocalSolveError, LocalSolveOptions, LocalSolver, SparseMatrix};
+use schwarz_precond::{LocalSolveError, LocalSolver, SparseMatrix};
 
 use crate::operator::csr_block::{CsrBlock, PAR_SPMV_THRESHOLD};
 use crate::operator::gramian::CrossTab;
@@ -45,10 +45,10 @@ fn backsub_block(
     cross_matrix: &CsrBlock,
     inv_diag: &[f64],
     sol_source: &[f64],
-    options: LocalSolveOptions,
+    allow_inner_parallelism: bool,
 ) {
     let n = sol_output.len();
-    if n > PAR_BACKSUB_THRESHOLD && options.allow_inner_parallelism() {
+    if n > PAR_BACKSUB_THRESHOLD && allow_inner_parallelism {
         sol_output
             .par_chunks_mut(PAR_BACKSUB_CHUNK)
             .enumerate()
@@ -115,7 +115,7 @@ impl LocalSolver for ApproxCholSolver {
         &self,
         rhs: &mut [f64],
         sol: &mut [f64],
-        _options: LocalSolveOptions,
+        _allow_inner_parallelism: bool,
     ) -> Result<(), LocalSolveError> {
         let n_local = self.n_local;
         let (solve_n, fbs) = match &self.strategy {
@@ -202,11 +202,11 @@ impl LocalSolver for FeLocalSolver {
         &self,
         rhs: &mut [f64],
         sol: &mut [f64],
-        options: LocalSolveOptions,
+        allow_inner_parallelism: bool,
     ) -> Result<(), LocalSolveError> {
         match self {
-            Self::FullSddm { solver, .. } => solver.solve_local(rhs, sol, options),
-            Self::SchurComplement(s) => s.solve_local(rhs, sol, options),
+            Self::FullSddm { solver, .. } => solver.solve_local(rhs, sol, allow_inner_parallelism),
+            Self::SchurComplement(s) => s.solve_local(rhs, sol, allow_inner_parallelism),
         }
     }
 
@@ -515,7 +515,7 @@ impl LocalSolver for BlockElimSolver {
         &self,
         rhs: &mut [f64],
         sol: &mut [f64],
-        options: LocalSolveOptions,
+        allow_inner_parallelism: bool,
     ) -> Result<(), LocalSolveError> {
         let n = self.n_local;
         let n_q = self.cross_tab.n_q();
@@ -539,7 +539,7 @@ impl LocalSolver for BlockElimSolver {
                     &self.inv_diag_elim,
                     &main[..n_q],
                     &mut scratch[..n_keep],
-                    options.allow_inner_parallelism(),
+                    allow_inner_parallelism,
                 );
             }
             if self.n_reduced > n_keep {
@@ -559,7 +559,7 @@ impl LocalSolver for BlockElimSolver {
                     &ct.c,
                     &self.inv_diag_elim,
                     sol_r,
-                    options,
+                    allow_inner_parallelism,
                 );
             }
         } else {
@@ -572,7 +572,7 @@ impl LocalSolver for BlockElimSolver {
                     &self.inv_diag_elim,
                     &main[n_q..],
                     &mut scratch[..n_keep],
-                    options.allow_inner_parallelism(),
+                    allow_inner_parallelism,
                 );
             }
             if self.n_reduced > n_keep {
@@ -592,7 +592,7 @@ impl LocalSolver for BlockElimSolver {
                     &ct.ct,
                     &self.inv_diag_elim,
                     sol_q,
-                    options,
+                    allow_inner_parallelism,
                 );
             }
         }

@@ -890,7 +890,7 @@ mod schwarz_tests {
         compute_first_block_size, DomainSource, ReducedSchurConfig,
     };
     use approx_chol::Config;
-    use schwarz_precond::{LocalSolveOptions, LocalSolver, Operator, ReductionStrategy};
+    use schwarz_precond::{LocalSolver, Operator, ReductionStrategy};
 
     const BLOCK_ELIM_NESTED_RAYON_CHILD_ENV: &str = "WITHIN_TEST_BLOCK_ELIM_NESTED_RAYON_CHILD";
 
@@ -1190,7 +1190,7 @@ mod schwarz_tests {
         for _ in 0..iters {
             rhs[..n_local].copy_from_slice(&rhs_template);
             solver
-                .solve_local(&mut rhs, &mut sol, LocalSolveOptions::default())
+                .solve_local(&mut rhs, &mut sol, true)
                 .expect("benchmark local solve");
             checksum += sol[0];
         }
@@ -1426,7 +1426,7 @@ mod schwarz_tests {
 
 mod block_elim_tests {
     use approx_chol::Config;
-    use schwarz_precond::{LocalSolveOptions, LocalSolver};
+    use schwarz_precond::LocalSolver;
 
     use crate::operator::csr_block::CsrBlock;
     use crate::operator::gramian::CrossTab;
@@ -1529,7 +1529,7 @@ mod block_elim_tests {
         let mut sol = vec![0.0; scratch_sz];
 
         solver
-            .solve_local(&mut rhs, &mut sol, LocalSolveOptions::default())
+            .solve_local(&mut rhs, &mut sol, true)
             .expect("solve_local should succeed");
 
         // Solution must be finite.

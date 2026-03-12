@@ -2,7 +2,7 @@ use std::sync::Mutex;
 
 use crate::domain::PartitionWeights;
 use crate::error::{validate_entries, ApplyError, LocalSolveError, PreconditionerBuildError};
-use crate::local_solve::{LocalSolveOptions, LocalSolver, SubdomainEntry};
+use crate::local_solve::{LocalSolver, SubdomainEntry};
 use crate::Operator;
 
 /// Trait for updating the global residual after a single subdomain correction
@@ -112,11 +112,9 @@ fn apply_subdomain<S: LocalSolver, U: ResidualUpdater>(
     entry
         .core()
         .restrict_weighted(&bufs.r_work, &mut bufs.r_scratch);
-    entry.solver().solve_local(
-        &mut bufs.r_scratch,
-        &mut bufs.z_scratch,
-        LocalSolveOptions::default(),
-    )?;
+    entry
+        .solver()
+        .solve_local(&mut bufs.r_scratch, &mut bufs.z_scratch, true)?;
     entry.core().prolongate_weighted_add(&bufs.z_scratch, z);
 
     match entry.partition_weights() {
