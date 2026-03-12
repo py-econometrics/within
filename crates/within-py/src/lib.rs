@@ -11,7 +11,9 @@ use within::config::{
 use within::domain::WeightedDesign;
 use within::observation::{FactorMajorStore, ObservationWeights};
 use within::operator::preconditioner::{
-    additive_reduction_strategy, additive_schwarz_diagnostics, resolved_additive_reduction_strategy,
+    additive_reduction_strategy as get_additive_reduction_strategy,
+    additive_schwarz_diagnostics as get_additive_schwarz_diagnostics,
+    resolved_additive_reduction_strategy as get_resolved_additive_reduction_strategy,
 };
 use within::{
     solve as solve_native, solve_batch as solve_batch_native, FePreconditioner, Operator,
@@ -132,7 +134,7 @@ pub enum PyPreconditioner {
 
 #[pyclass(frozen, eq, eq_int)]
 #[pyo3(name = "ReductionStrategy")]
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PyReductionStrategy {
     Auto = 0,
     AtomicScatter = 1,
@@ -154,6 +156,69 @@ impl PyReductionStrategy {
             ReductionStrategy::AtomicScatter => Self::AtomicScatter,
             ReductionStrategy::ParallelReduction => Self::ParallelReduction,
         }
+    }
+}
+
+#[pyclass(frozen)]
+#[pyo3(name = "AdditiveSchwarzDiagnostics")]
+pub struct PyAdditiveSchwarzDiagnostics {
+    #[pyo3(get)]
+    pub reduction_strategy: PyReductionStrategy,
+    #[pyo3(get)]
+    pub resolved_reduction_strategy: PyReductionStrategy,
+    #[pyo3(get)]
+    pub total_inner_parallel_work: usize,
+    #[pyo3(get)]
+    pub max_inner_parallel_work: usize,
+    #[pyo3(get)]
+    pub total_scatter_dofs: usize,
+    #[pyo3(get)]
+    pub outer_parallel_capacity: f64,
+    #[pyo3(get)]
+    pub scatter_overlap: f64,
+}
+
+impl PyAdditiveSchwarzDiagnostics {
+    fn from_native(preconditioner: &FePreconditioner) -> Option<Self> {
+        let diagnostics = get_additive_schwarz_diagnostics(preconditioner)?;
+        Some(Self {
+            reduction_strategy: PyReductionStrategy::from_native(get_additive_reduction_strategy(
+                preconditioner,
+            )?),
+            resolved_reduction_strategy: PyReductionStrategy::from_native(
+                get_resolved_additive_reduction_strategy(preconditioner)?,
+            ),
+            total_inner_parallel_work: diagnostics.total_inner_parallel_work(),
+            max_inner_parallel_work: diagnostics.max_inner_parallel_work(),
+            total_scatter_dofs: diagnostics.total_scatter_dofs(),
+            outer_parallel_capacity: diagnostics.outer_parallel_capacity(),
+            scatter_overlap: diagnostics.scatter_overlap(),
+        })
+    }
+}
+
+#[pymethods]
+impl PyAdditiveSchwarzDiagnostics {
+    fn __repr__(&self) -> String {
+        format!(
+            concat!(
+                "AdditiveSchwarzDiagnostics(",
+                "reduction_strategy={:?}, ",
+                "resolved_reduction_strategy={:?}, ",
+                "total_inner_parallel_work={}, ",
+                "max_inner_parallel_work={}, ",
+                "total_scatter_dofs={}, ",
+                "outer_parallel_capacity={:.3}, ",
+                "scatter_overlap={:.3})"
+            ),
+            self.reduction_strategy,
+            self.resolved_reduction_strategy,
+            self.total_inner_parallel_work,
+            self.max_inner_parallel_work,
+            self.total_scatter_dofs,
+            self.outer_parallel_capacity,
+            self.scatter_overlap,
+        )
     }
 }
 
@@ -742,46 +807,9 @@ impl PyFePreconditioner {
         self.inner.subdomain_inner_parallel_work()
     }
 
-    /// Configured additive reduction strategy, if this is an additive preconditioner.
-    #[getter]
-    fn reduction_strategy(&self) -> Option<PyReductionStrategy> {
-        additive_reduction_strategy(&self.inner).map(PyReductionStrategy::from_native)
-    }
-
-    /// Concrete additive backend selected for the current Rayon width.
-    #[getter]
-    fn resolved_reduction_strategy(&self) -> Option<PyReductionStrategy> {
-        resolved_additive_reduction_strategy(&self.inner).map(PyReductionStrategy::from_native)
-    }
-
-    /// Total additive inner-parallel work estimate.
-    #[getter]
-    fn total_inner_parallel_work(&self) -> Option<usize> {
-        additive_schwarz_diagnostics(&self.inner).map(|diag| diag.total_inner_parallel_work())
-    }
-
-    /// Largest single-subdomain inner-parallel work estimate.
-    #[getter]
-    fn max_inner_parallel_work(&self) -> Option<usize> {
-        additive_schwarz_diagnostics(&self.inner).map(|diag| diag.max_inner_parallel_work())
-    }
-
-    /// Total additive scatter entries across all subdomains.
-    #[getter]
-    fn total_scatter_dofs(&self) -> Option<usize> {
-        additive_schwarz_diagnostics(&self.inner).map(|diag| diag.total_scatter_dofs())
-    }
-
-    /// Estimated number of heavy subdomains available to outer parallelism.
-    #[getter]
-    fn outer_parallel_capacity(&self) -> Option<f64> {
-        additive_schwarz_diagnostics(&self.inner).map(|diag| diag.outer_parallel_capacity())
-    }
-
-    /// Average overlap multiplicity of the additive scatter.
-    #[getter]
-    fn scatter_overlap(&self) -> Option<f64> {
-        additive_schwarz_diagnostics(&self.inner).map(|diag| diag.scatter_overlap())
+    /// Additive Schwarz diagnostics, if this is an additive preconditioner.
+    fn additive_schwarz_diagnostics(&self) -> Option<PyAdditiveSchwarzDiagnostics> {
+        PyAdditiveSchwarzDiagnostics::from_native(&self.inner)
     }
 
     fn __repr__(&self) -> String {
@@ -970,6 +998,7 @@ fn _within(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCG>()?;
     m.add_class::<PyGMRES>()?;
     m.add_class::<PyAdditiveSchwarz>()?;
+    m.add_class::<PyAdditiveSchwarzDiagnostics>()?;
     m.add_class::<PyMultiplicativeSchwarz>()?;
     m.add_class::<PyReductionStrategy>()?;
     m.add_class::<PyOperatorRepr>()?;

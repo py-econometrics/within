@@ -10,6 +10,7 @@ from within._within import (
     solve,
     solve_batch,
     AdditiveSchwarz,
+    AdditiveSchwarzDiagnostics,
     MultiplicativeSchwarz,
     ReductionStrategy,
 )
@@ -32,6 +33,7 @@ __all__ = [
     "Additive",
     "Multiplicative",
     "AdditiveSchwarz",
+    "AdditiveSchwarzDiagnostics",
     "MultiplicativeSchwarz",
     "ReductionStrategy",
 ]
