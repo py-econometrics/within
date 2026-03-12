@@ -93,12 +93,9 @@ Each eliminated worker with $d$ firm connections creates a dense **clique** of $
 
 ![Schur complement: clique vs. tree](images/schur_clique_vs_tree.svg)
 
-The **approximate** variant (Gao, Kyng, and Spielman, 2025) replaces each clique with a random **spanning tree** - only $d - 1$ edges instead of $\binom{d}{2}$. The tree weights are chosen so that the expected Laplacian matches the clique Laplacian (an **unbiased estimator**).  
+The **approximate** variant (Gao, Kyng, and Spielman, 2025) replaces each clique with a random **spanning tree** with only $d - 1$ edges instead of $\binom{d}{2}$. The tree weights are chosen so that the expected Laplacian matches the clique Laplacian (i.e. is an **unbiased estimator**).  
 
 For a worker observed at 100 firms, this reduces the fill from 4,950 edges to just 99 - a 50× reduction - without introducing bias, since the tree weights are chosen so that the approximate Schur complement is unbiased.
-
-Exact elimination preserves the Laplacian property (zero row sums). The approximate variant produces an SDDM matrix (non-negative row sums), which is repaired via Gremban augmentation.
-
 ---
 
 ## 4. Approximate Cholesky Factorization
