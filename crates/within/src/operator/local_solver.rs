@@ -85,7 +85,7 @@ fn backsub_block(
 // ===========================================================================
 
 /// Local subdomain solver backed by approximate Cholesky factorization.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct ApproxCholSolver {
     factor: Factor,
     strategy: LocalSolveStrategy,
@@ -169,7 +169,7 @@ impl LocalSolver for ApproxCholSolver {
 
 /// FE-specific local solver, dispatching to either full-SDDM ApproxChol or
 /// Schur complement block elimination.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub enum FeLocalSolver {
     /// Full bipartite SDDM factorized via approximate Cholesky.
     FullSddm { solver: ApproxCholSolver },
@@ -286,7 +286,7 @@ impl LocalSolveStrategy {
 // ===========================================================================
 
 /// Reduced-system factor backend for Schur-complement local solves.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) enum ReducedFactor {
     /// Approximate sparse Cholesky on the reduced Schur CSR.
     Approx(Factor),
@@ -343,7 +343,7 @@ impl ReducedFactor {
 // ===========================================================================
 
 /// Dense Cholesky on an anchored principal minor of a Laplacian-like matrix.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct AnchoredDenseCholesky {
     /// Lower-triangular factor of the `(n-1) x (n-1)` anchored minor.
     l_row_major: Vec<f64>,
@@ -468,7 +468,7 @@ impl AnchoredDenseCholesky {
 // ===========================================================================
 
 /// Local subdomain solver using block elimination on the bipartite SDDM.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct BlockElimSolver {
     /// Bipartite Gramian structure: C, C^T, diag_q, diag_r.
     cross_tab: Arc<CrossTab>,

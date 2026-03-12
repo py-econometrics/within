@@ -18,7 +18,7 @@ use super::local_solver::{
     ApproxCholSolver, BlockElimSolver, FeLocalSolveInvoker, FeLocalSolver, LocalSolveStrategy,
     ReducedFactor,
 };
-use super::residual_update::{ObservationSpaceUpdater, SparseGramianUpdater};
+use super::residual_update::SparseGramianUpdater;
 use super::schur_complement::{
     ApproxSchurComplement, EliminationInfo, ExactSchurComplement, SchurComplement, SchurResult,
 };
@@ -90,10 +90,6 @@ impl schwarz_precond::Operator for FeSchwarz {
         self.0.try_apply_adjoint(x, y)
     }
 }
-
-/// Concrete multiplicative Schwarz type: one-level with observation-space residual updates.
-pub type FeMultSchwarz<'a, S> =
-    MultiplicativeSchwarzPreconditioner<FeLocalSolver, ObservationSpaceUpdater<'a, S>>;
 
 /// Concrete multiplicative Schwarz type: one-level with explicit Gramian CSR residual updates.
 pub type FeMultSchwarzSparse =
@@ -171,26 +167,6 @@ pub(crate) fn build_additive_with_strategy<S: ObservationStore>(
             FeLocalSolveInvoker,
         )?,
     ))
-}
-
-/// Build multiplicative Schwarz with observation-space updater.
-///
-/// Always non-symmetric (GMRES-only).
-#[cfg(test)]
-#[allow(dead_code)]
-pub(crate) fn build_multiplicative_obs<'a, S: ObservationStore>(
-    source: DomainSource<'_, S>,
-    design: &'a WeightedDesign<S>,
-    config: &LocalSolverConfig,
-) -> WithinResult<FeMultSchwarz<'a, S>> {
-    let entries = build_entries_from_source(source, config)?;
-    let updater = ObservationSpaceUpdater::new(design);
-    Ok(MultiplicativeSchwarzPreconditioner::new(
-        entries,
-        updater,
-        design.n_dofs,
-        false,
-    )?)
 }
 
 /// Build multiplicative Schwarz with sparse Gramian updater.

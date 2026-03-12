@@ -375,25 +375,39 @@ fn extract_local_solver_or_default(
     }
 }
 
-/// Extract a `Preconditioner` from a Python object.
+/// Extract `Option<Preconditioner>` from a Python preconditioner argument.
 ///
-/// Accepts:
-/// - `PyPreconditioner` enum variant (Additive / Multiplicative)
-/// - `AdditiveSchwarz(...)` / `MultiplicativeSchwarz(...)` — advanced config
-fn extract_preconditioner(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Preconditioner> {
+/// - `None` → additive Schwarz with default local solver
+/// - `Preconditioner.Off` → unpreconditioned (returns `Ok(None)`)
+/// - `Preconditioner.Additive` → additive Schwarz with default local solver
+/// - `Preconditioner.Multiplicative` → multiplicative Schwarz with default local solver
+/// - `AdditiveSchwarz(...)` / `MultiplicativeSchwarz(...)` → advanced config
+fn extract_preconditioner_config(
+    py: Python<'_>,
+    preconditioner: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Option<Preconditioner>> {
+    let obj = match preconditioner {
+        None => {
+            return Ok(Some(Preconditioner::Additive(
+                LocalSolverConfig::solver_default(),
+            )));
+        }
+        Some(obj) => obj,
+    };
+
     // Enum shorthand
     if let Ok(p) = obj.extract::<PyPreconditioner>() {
         return match p {
-            PyPreconditioner::Additive => {
-                Ok(Preconditioner::Additive(LocalSolverConfig::solver_default()))
-            }
-            PyPreconditioner::Multiplicative => Ok(Preconditioner::Multiplicative(
+            PyPreconditioner::Off => Ok(None),
+            PyPreconditioner::Additive => Ok(Some(Preconditioner::Additive(
                 LocalSolverConfig::solver_default(),
-            )),
-            // Off is handled by the caller before reaching extract_preconditioner.
-            PyPreconditioner::Off => unreachable!(),
+            ))),
+            PyPreconditioner::Multiplicative => Ok(Some(Preconditioner::Multiplicative(
+                LocalSolverConfig::solver_default(),
+            ))),
         };
     }
+
     // Advanced: AdditiveSchwarz / MultiplicativeSchwarz objects
     if let Ok(schwarz) = obj.downcast::<PyAdditiveSchwarz>() {
         let cfg = extract_local_solver_or_default(
@@ -401,7 +415,7 @@ fn extract_preconditioner(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Pr
             &schwarz.get().local_solver,
             LocalSolverConfig::solver_default(),
         )?;
-        return Ok(Preconditioner::Additive(cfg));
+        return Ok(Some(Preconditioner::Additive(cfg)));
     }
     if let Ok(schwarz) = obj.downcast::<PyMultiplicativeSchwarz>() {
         let cfg = extract_local_solver_or_default(
@@ -409,38 +423,13 @@ fn extract_preconditioner(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Pr
             &schwarz.get().local_solver,
             LocalSolverConfig::solver_default(),
         )?;
-        return Ok(Preconditioner::Multiplicative(cfg));
+        return Ok(Some(Preconditioner::Multiplicative(cfg)));
     }
+
     Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
         "preconditioner must be Preconditioner.Additive, Preconditioner.Multiplicative, \
          Preconditioner.Off, AdditiveSchwarz(...), MultiplicativeSchwarz(...), or None",
     ))
-}
-
-/// Extract `Option<Preconditioner>` from a standalone preconditioner argument.
-///
-/// - `None` → additive Schwarz with default local solver
-/// - `Preconditioner.Off` → unpreconditioned (returns `Ok(None)`)
-/// - `Preconditioner.Additive` → additive Schwarz with default local solver
-/// - `Preconditioner.Multiplicative` → multiplicative Schwarz with default local solver
-/// - `AdditiveSchwarz(...)` / `MultiplicativeSchwarz(...)` → advanced config
-fn extract_optional_preconditioner(
-    py: Python<'_>,
-    preconditioner: Option<&Bound<'_, PyAny>>,
-) -> PyResult<Option<Preconditioner>> {
-    match preconditioner {
-        // None → default: additive Schwarz
-        None => Ok(Some(Preconditioner::Additive(
-            LocalSolverConfig::solver_default(),
-        ))),
-        Some(obj) => {
-            // Preconditioner.Off → unpreconditioned
-            if matches!(obj.extract::<PyPreconditioner>(), Ok(PyPreconditioner::Off)) {
-                return Ok(None);
-            }
-            extract_preconditioner(py, obj).map(Some)
-        }
-    }
 }
 
 /// Extract solver parameters from a Python config object (CG or GMRES).
@@ -489,6 +478,21 @@ fn validate_cg_preconditioner(
     Ok(())
 }
 
+/// Extract solver config and preconditioner, applying CG/multiplicative validation.
+fn extract_and_validate_config(
+    py: Python<'_>,
+    config: Option<&Bound<'_, PyAny>>,
+    preconditioner: Option<&Bound<'_, PyAny>>,
+) -> PyResult<(SolverParams, Option<Preconditioner>)> {
+    let params = match config {
+        Some(c) => extract_solver_params(c)?,
+        None => SolverParams::default(),
+    };
+    let precond = extract_preconditioner_config(py, preconditioner)?;
+    validate_cg_preconditioner(&params, &precond)?;
+    Ok((params, precond))
+}
+
 // ---------------------------------------------------------------------------
 // Helpers: numpy ↔ Rust conversions
 // ---------------------------------------------------------------------------
@@ -532,6 +536,22 @@ fn into_py_batch_result(
     }
 }
 
+/// Extract columns from a 2-D array as owned vectors.
+///
+/// Columns may not be contiguous in memory, so we always copy.
+fn extract_columns(arr: &numpy::ndarray::ArrayView2<'_, f64>) -> Vec<Vec<f64>> {
+    (0..arr.ncols())
+        .map(|j| arr.column(j).iter().copied().collect())
+        .collect()
+}
+
+/// Extract an optional weight vector from a numpy array, returning owned data.
+fn extract_weight_vec(weights: &Option<PyReadonlyArray1<'_, f64>>) -> Option<Vec<f64>> {
+    weights
+        .as_ref()
+        .map(|w| w.as_array().iter().copied().collect())
+}
+
 fn warn_c_contiguous(py: Python<'_>, strides: &[isize]) -> PyResult<()> {
     if strides.len() >= 2 && strides[0] != 1 {
         PyErr::warn(
@@ -571,26 +591,10 @@ pub fn solve<'py>(
             &y_vec
         }
     };
-    let w_arr = weights.as_ref().map(|w| w.as_array());
-    let w_vec = w_arr.as_ref().and_then(|a| {
-        if a.as_slice().is_some() {
-            None
-        } else {
-            Some(a.to_vec())
-        }
-    });
-    let w_ref: Option<&[f64]> = match (&w_arr, &w_vec) {
-        (Some(a), None) => Some(a.as_slice().unwrap()),
-        (Some(_), Some(v)) => Some(v),
-        _ => None,
-    };
+    let w_vec = extract_weight_vec(&weights);
+    let w_ref = w_vec.as_deref();
 
-    let params = match config {
-        Some(config) => extract_solver_params(config)?,
-        None => SolverParams::default(),
-    };
-    let precond = extract_optional_preconditioner(py, preconditioner)?;
-    validate_cg_preconditioner(&params, &precond)?;
+    let (params, precond) = extract_and_validate_config(py, config, preconditioner)?;
 
     let result = py
         .allow_threads(|| solve_native(cats, y_ref, w_ref, &params, precond.as_ref()))
@@ -617,35 +621,15 @@ pub fn solve_batch<'py>(
     warn_c_contiguous(py, cats.strides())?;
 
     let y_arr = Y.as_array();
-    let k = y_arr.ncols();
     let n_obs = y_arr.nrows();
 
-    // Extract columns as owned vectors (columns may not be contiguous)
-    let columns: Vec<Vec<f64>> = (0..k)
-        .map(|j| y_arr.column(j).iter().copied().collect())
-        .collect();
+    let columns = extract_columns(&y_arr);
     let column_refs: Vec<&[f64]> = columns.iter().map(|c| c.as_slice()).collect();
 
-    let w_arr = weights.as_ref().map(|w| w.as_array());
-    let w_vec = w_arr.as_ref().and_then(|a| {
-        if a.as_slice().is_some() {
-            None
-        } else {
-            Some(a.to_vec())
-        }
-    });
-    let w_ref: Option<&[f64]> = match (&w_arr, &w_vec) {
-        (Some(a), None) => Some(a.as_slice().unwrap()),
-        (Some(_), Some(v)) => Some(v),
-        _ => None,
-    };
+    let w_vec = extract_weight_vec(&weights);
+    let w_ref = w_vec.as_deref();
 
-    let params = match config {
-        Some(config) => extract_solver_params(config)?,
-        None => SolverParams::default(),
-    };
-    let precond = extract_optional_preconditioner(py, preconditioner)?;
-    validate_cg_preconditioner(&params, &precond)?;
+    let (params, precond) = extract_and_validate_config(py, config, preconditioner)?;
 
     let result = py
         .allow_threads(|| solve_batch_native(cats, &column_refs, w_ref, &params, precond.as_ref()))
@@ -790,34 +774,21 @@ impl PySolver {
         let design = WeightedDesign::from_store(store)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
 
-        // Handle preconditioner argument
-        let solver = match preconditioner {
-            None => {
-                let precond = Preconditioner::Additive(LocalSolverConfig::solver_default());
-                validate_cg_preconditioner(&params, &Some(precond.clone()))?;
-                py.allow_threads(|| Solver::from_design(design, &params, Some(&precond)))
-            }
-            Some(obj) => {
-                // Pre-built FePreconditioner object
-                if let Ok(fe) = obj.downcast::<PyFePreconditioner>() {
-                    // Clone via serde roundtrip (inner types don't implement Clone)
-                    let bytes = postcard::to_stdvec(&fe.get().inner)
-                        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-                    let fe_precond: FePreconditioner = postcard::from_bytes(&bytes)
-                        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-                    py.allow_threads(|| {
-                        Solver::from_design_with_preconditioner(design, &params, fe_precond)
-                    })
-                } else if matches!(obj.extract::<PyPreconditioner>(), Ok(PyPreconditioner::Off)) {
-                    py.allow_threads(|| Solver::from_design(design, &params, None))
-                } else {
-                    let precond = extract_preconditioner(py, obj)?;
-                    validate_cg_preconditioner(&params, &Some(precond.clone()))?;
-                    py.allow_threads(|| Solver::from_design(design, &params, Some(&precond)))
-                }
-            }
-        }
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+        // Handle pre-built FePreconditioner separately (uses a different constructor);
+        // all other variants go through extract_preconditioner_config.
+        let solver =
+            if let Some(Ok(fe)) = preconditioner.map(|o| o.downcast::<PyFePreconditioner>()) {
+                let fe_precond = fe.get().inner.clone();
+                py.allow_threads(|| {
+                    Solver::from_design_with_preconditioner(design, &params, fe_precond)
+                })
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?
+            } else {
+                let precond = extract_preconditioner_config(py, preconditioner)?;
+                validate_cg_preconditioner(&params, &precond)?;
+                py.allow_threads(|| Solver::from_design(design, &params, precond.as_ref()))
+                    .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?
+            };
 
         Ok(Self { solver })
     }
@@ -857,12 +828,8 @@ impl PySolver {
         y_matrix: PyReadonlyArray2<'py, f64>,
     ) -> PyResult<PyBatchSolveResult> {
         let y_arr = y_matrix.as_array();
-        let k = y_arr.ncols();
 
-        // Extract columns as owned vectors (columns may not be contiguous)
-        let columns: Vec<Vec<f64>> = (0..k)
-            .map(|j| y_arr.column(j).iter().copied().collect())
-            .collect();
+        let columns = extract_columns(&y_arr);
         let column_refs: Vec<&[f64]> = columns.iter().map(|c| c.as_slice()).collect();
 
         let n_dofs = self.solver.n_dofs();
@@ -883,14 +850,7 @@ impl PySolver {
     fn preconditioner_py(&self) -> PyResult<Option<PyFePreconditioner>> {
         match self.solver.preconditioner() {
             None => Ok(None),
-            Some(p) => {
-                // Clone via serde roundtrip (inner types don't implement Clone)
-                let bytes = postcard::to_stdvec(p)
-                    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
-                let inner: FePreconditioner = postcard::from_bytes(&bytes)
-                    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
-                Ok(Some(PyFePreconditioner { inner }))
-            }
+            Some(p) => Ok(Some(PyFePreconditioner { inner: p.clone() })),
         }
     }
 

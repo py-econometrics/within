@@ -885,9 +885,8 @@ mod schwarz_tests {
     use crate::operator::local_solver::BlockElimSolver;
     use crate::operator::local_solver::FeLocalSolver;
     use crate::operator::schwarz::{
-        build_additive, build_additive_with_strategy, build_entry, build_multiplicative_obs,
-        build_multiplicative_sparse, build_reduced_schur_factor, build_schwarz,
-        compute_first_block_size, DomainSource, ReducedSchurConfig,
+        build_additive, build_additive_with_strategy, build_entry, build_reduced_schur_factor,
+        build_schwarz, compute_first_block_size, DomainSource, ReducedSchurConfig,
     };
     use approx_chol::Config;
     use schwarz_precond::{LocalSolver, Operator, ReductionStrategy};
@@ -1375,48 +1374,6 @@ mod schwarz_tests {
             "\nDefault dense threshold currently: {}",
             DEFAULT_DENSE_SCHUR_THRESHOLD
         );
-    }
-
-    #[test]
-    fn test_gramian_multiplicative_schwarz_matches_obs_schwarz() {
-        let store = FactorMajorStore::new(
-            vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]],
-            ObservationWeights::Unit,
-            5,
-        )
-        .expect("valid factor-major store");
-        let design = FixedEffectsDesign::from_store(store).expect("valid design");
-
-        let config = LocalSolverConfig::default();
-        let gramian = crate::operator::gramian::Gramian::build(&design);
-
-        let domain_pairs = build_local_domains(&design);
-
-        let obs_schwarz =
-            build_multiplicative_obs(DomainSource::FromDesign(&design), &design, &config).unwrap();
-        let gram_schwarz = build_multiplicative_sparse(
-            DomainSource::<FactorMajorStore>::FromParts(domain_pairs),
-            &gramian,
-            design.n_dofs,
-            &config,
-        )
-        .unwrap();
-
-        let r = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-        let mut z_obs = vec![0.0; 5];
-        let mut z_gram = vec![0.0; 5];
-
-        obs_schwarz.apply(&r, &mut z_obs);
-        gram_schwarz.apply(&r, &mut z_gram);
-
-        for i in 0..5 {
-            assert!(
-                (z_obs[i] - z_gram[i]).abs() < 1e-12,
-                "mismatch at DOF {i}: obs={}, gram={}",
-                z_obs[i],
-                z_gram[i],
-            );
-        }
     }
 }
 

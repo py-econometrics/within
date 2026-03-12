@@ -245,6 +245,26 @@ impl<S: LocalSolver, U: ResidualUpdater> Operator for MultiplicativeSchwarzPreco
     }
 }
 
+impl<S: LocalSolver + Clone, U: ResidualUpdater + Clone> Clone
+    for MultiplicativeSchwarzPreconditioner<S, U>
+{
+    fn clone(&self) -> Self {
+        let updater = self.updater.lock().expect("updater lock poisoned").clone();
+        let (max_scratch_size, max_local_dofs) = compute_sizes(&self.subdomains);
+        Self {
+            subdomains: self.subdomains.clone(),
+            updater: Mutex::new(updater),
+            n_dofs: self.n_dofs,
+            symmetric: self.symmetric,
+            scratch: Mutex::new(SweepBuffers::new(
+                self.n_dofs,
+                max_scratch_size,
+                max_local_dofs,
+            )),
+        }
+    }
+}
+
 #[cfg(feature = "serde")]
 mod serde_impl {
     use std::sync::Mutex;

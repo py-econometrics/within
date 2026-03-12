@@ -1,9 +1,8 @@
 use std::sync::Arc;
 
 use schwarz_precond::{ResidualUpdater, SparseMatrix};
-
-use crate::domain::WeightedDesign;
-use crate::observation::ObservationStore;
+#[cfg(test)]
+use {crate::domain::WeightedDesign, crate::observation::ObservationStore};
 
 // ===========================================================================
 // DofObservationIndex — inverted CSR index from DOFs to observations
@@ -14,11 +13,13 @@ use crate::observation::ObservationStore;
 /// Given a `WeightedDesign`, observation `i` references DOF `offset_q + level(i, q)` for
 /// each factor `q`. This structure lets you efficiently look up all observations that
 /// touch a given DOF — the key primitive for observation-space residual updates.
+#[cfg(test)]
 pub struct DofObservationIndex {
     offsets: Vec<u32>,
     indices: Vec<u32>,
 }
 
+#[cfg(test)]
 impl DofObservationIndex {
     /// Build the inverted index from a `WeightedDesign`.
     ///
@@ -94,6 +95,7 @@ impl DofObservationIndex {
 ///
 /// All buffers are pre-allocated and reused across calls — zero heap allocation
 /// in the hot loop. Uses a visited bitset for O(1) deduplication (no sort).
+#[cfg(test)]
 pub struct ObservationSpaceUpdater<'a, S: ObservationStore> {
     design: &'a WeightedDesign<S>,
     dof_obs_index: DofObservationIndex,
@@ -105,8 +107,10 @@ pub struct ObservationSpaceUpdater<'a, S: ObservationStore> {
     touched_obs: Vec<u32>,
 }
 
+#[cfg(test)]
 const SENTINEL: u32 = u32::MAX;
 
+#[cfg(test)]
 impl<'a, S: ObservationStore> ObservationSpaceUpdater<'a, S> {
     pub fn new(design: &'a WeightedDesign<S>) -> Self {
         let dof_obs_index = DofObservationIndex::build(design);
@@ -121,6 +125,7 @@ impl<'a, S: ObservationStore> ObservationSpaceUpdater<'a, S> {
     }
 }
 
+#[cfg(test)]
 impl<S: ObservationStore> ResidualUpdater for ObservationSpaceUpdater<'_, S> {
     fn update(&mut self, global_indices: &[u32], weighted_correction: &[f64], r_work: &mut [f64]) {
         let store = &self.design.store;
@@ -197,7 +202,7 @@ impl<S: ObservationStore> ResidualUpdater for ObservationSpaceUpdater<'_, S> {
 /// Cost: O(nnz_touched) with contiguous CSR reads. No buffers, no bookkeeping.
 /// Trades O(nnz) memory (the Gramian) for faster per-iteration updates compared
 /// to the observation-space path.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct SparseGramianUpdater {
     gramian: Arc<SparseMatrix>,
 }

@@ -78,6 +78,7 @@ impl<S: LocalSolver> LocalSolveInvoker<S> for DefaultLocalSolveInvoker {
 /// A subdomain entry: wraps a `SubdomainCore` (restriction indices + partition-of-unity
 /// weights) together with a generic local solver. Delegates gather/scatter/PoU
 /// weighting to `SubdomainCore`.
+#[derive(Clone)]
 pub struct SubdomainEntry<S: LocalSolver> {
     /// Subdomain core with restriction indices and partition-of-unity weights.
     core: SubdomainCore,

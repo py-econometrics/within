@@ -35,32 +35,6 @@ pub(crate) fn build_local_domains<S: ObservationStore>(
     domain_pairs
 }
 
-/// Build local subdomains from an explicit Gramian instead of scanning observations.
-///
-/// Same output as `build_local_domains` but uses `CrossTab::from_gramian_block()`
-/// to extract factor-pair blocks from the Gramian CSR. No `ObservationStore`
-/// access needed — only the Gramian and factor metadata.
-#[cfg(test)]
-pub(crate) fn build_local_domains_from_gramian(
-    gramian: &schwarz_precond::SparseMatrix,
-    factors: &[crate::observation::FactorMeta],
-    n_dofs: usize,
-) -> Vec<(Subdomain, CrossTab)> {
-    use rayon::prelude::*;
-
-    let n_factors = factors.len();
-    let pairs = build_pairs(n_factors);
-
-    let mut domain_pairs: Vec<(Subdomain, CrossTab)> = pairs
-        .par_iter()
-        .flat_map(|&(q, r)| domains_for_pair_from_gramian(gramian, factors, q, r))
-        .collect();
-
-    compute_partition_weights(&mut domain_pairs, n_dofs);
-
-    domain_pairs
-}
-
 /// Per-pair block data sufficient to compose the full Gramian CSR.
 ///
 /// Produced alongside subdomain construction so that the same observation scan
@@ -136,22 +110,6 @@ fn domains_and_block_for_pair<S: ObservationStore>(
     let domains = split_into_subdomains_arc(ct_arc, &l2g, n_q_full, (q, r));
 
     (domains, Some(block_data))
-}
-
-#[cfg(test)]
-fn domains_for_pair_from_gramian(
-    gramian: &schwarz_precond::SparseMatrix,
-    factors: &[crate::observation::FactorMeta],
-    q: usize,
-    r: usize,
-) -> Vec<(Subdomain, CrossTab)> {
-    let (full_ct, l2g) = match CrossTab::from_gramian_block(gramian, &factors[q], &factors[r]) {
-        Some(pair) => pair,
-        None => return Vec::new(),
-    };
-
-    let n_q_full = full_ct.n_q();
-    split_into_subdomains(full_ct, &l2g, n_q_full, (q, r))
 }
 
 fn domains_for_pair<S: ObservationStore>(
@@ -363,7 +321,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // build_local_domains_from_gramian tests
+    // build_domains_and_gramian_blocks + from_pair_blocks tests
     // -----------------------------------------------------------------------
 
     use crate::operator::gramian::Gramian;
@@ -394,66 +352,6 @@ mod tests {
             assert_eq!(o, g, "global_indices mismatch");
         }
     }
-
-    #[test]
-    fn test_gramian_domains_match_obs_domains() {
-        for design in [make_test_design(), {
-            let store = FactorMajorStore::new(
-                vec![vec![0, 1, 2, 0, 1], vec![0, 1, 2, 3, 0]],
-                ObservationWeights::Unit,
-                5,
-            )
-            .unwrap();
-            FixedEffectsDesign::from_store(store).unwrap()
-        }] {
-            let gramian = Gramian::build(&design);
-            let obs_domains = build_local_domains(&design);
-            let gram_domains =
-                build_local_domains_from_gramian(&gramian.matrix, &design.factors, design.n_dofs);
-            assert_domain_sets_equal(&obs_domains, &gram_domains);
-        }
-    }
-
-    #[test]
-    fn test_gramian_domains_partition_of_unity() {
-        let design = make_test_design();
-        let gramian = Gramian::build(&design);
-        let domain_pairs =
-            build_local_domains_from_gramian(&gramian.matrix, &design.factors, design.n_dofs);
-        let n_dofs = design.n_dofs;
-        // Two-sided PoU: squared weights must sum to 1 at every DOF.
-        let mut weight_sq_sum = vec![0.0; n_dofs];
-        for (d, _) in &domain_pairs {
-            for (i, &idx) in d.core.global_indices().iter().enumerate() {
-                let w = d.core.partition_weights().get(i);
-                weight_sq_sum[idx as usize] += w * w;
-            }
-        }
-        for &ws in &weight_sq_sum {
-            if ws > 0.0 {
-                assert!((ws - 1.0).abs() < 1e-12, "Weight² sum {ws} != 1.0");
-            }
-        }
-    }
-
-    #[test]
-    fn test_gramian_domains_cover_all_dofs() {
-        let design = make_test_design();
-        let gramian = Gramian::build(&design);
-        let domain_pairs =
-            build_local_domains_from_gramian(&gramian.matrix, &design.factors, design.n_dofs);
-        let mut covered = vec![false; design.n_dofs];
-        for (d, _) in &domain_pairs {
-            for &idx in d.core.global_indices() {
-                covered[idx as usize] = true;
-            }
-        }
-        assert!(covered.iter().all(|&c| c), "Not all DOFs covered");
-    }
-
-    // -----------------------------------------------------------------------
-    // build_domains_and_gramian_blocks + from_pair_blocks tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_composed_gramian_matches_observation_gramian() {
