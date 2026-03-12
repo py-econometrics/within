@@ -122,16 +122,12 @@ def run_ac_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
         SolverConfig(
             "CG(1L, AC)",
             benchmark_cg(opts),
-            preconditioner=make_additive_schwarz(
-                local_solver=_schur(opts.seed, 1), opts=opts
-            ),
+            preconditioner=make_additive_schwarz(local_solver=_schur(opts.seed, 1)),
         ),
         SolverConfig(
             "CG(1L, AC2)",
             benchmark_cg(opts),
-            preconditioner=make_additive_schwarz(
-                local_solver=_schur(opts.seed, 2), opts=opts
-            ),
+            preconditioner=make_additive_schwarz(local_solver=_schur(opts.seed, 2)),
         ),
         SolverConfig(
             "GMRES(M1L, AC)",
@@ -268,16 +264,12 @@ def run_graph_backend_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
         SolverConfig(
             "ac",
             benchmark_cg(opts, maxiter=maxiter),
-            preconditioner=make_additive_schwarz(
-                local_solver=_schur(opts.seed, 1), opts=opts
-            ),
+            preconditioner=make_additive_schwarz(local_solver=_schur(opts.seed, 1)),
         ),
         SolverConfig(
             "ac2",
             benchmark_cg(opts, maxiter=maxiter),
-            preconditioner=make_additive_schwarz(
-                local_solver=_schur(opts.seed, 2), opts=opts
-            ),
+            preconditioner=make_additive_schwarz(local_solver=_schur(opts.seed, 2)),
         ),
     ]
 

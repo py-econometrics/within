@@ -170,20 +170,6 @@ def run_solve(
     return _aggregate_runs(runs)
 
 
-def parse_reduction_strategy(raw: str) -> ReductionStrategy:
-    """Parse the additive reduction strategy for benchmark runs."""
-    try:
-        return {
-            "auto": ReductionStrategy.Auto,
-            "atomic": ReductionStrategy.AtomicScatter,
-            "parallel": ReductionStrategy.ParallelReduction,
-        }[raw.strip().lower()]
-    except KeyError as exc:
-        raise ValueError(
-            "reduction strategy must be one of: auto, atomic, parallel"
-        ) from exc
-
-
 def benchmark_solver_tol(tol: float) -> float:
     """Benchmark tolerance floor used to avoid borderline non-convergence noise."""
     return max(tol, BENCHMARK_SOLVER_TOL_MIN)
@@ -205,12 +191,9 @@ def benchmark_gmres(opts: Any, *, maxiter: int | None = None) -> GMRES:
     )
 
 
-def make_additive_schwarz(local_solver: Any, opts: "SuiteOptions") -> AdditiveSchwarz:
-    """Construct additive Schwarz using the selected benchmark reduction mode."""
-    return AdditiveSchwarz(
-        local_solver=local_solver,
-        reduction=opts.reduction_strategy,
-    )
+def make_additive_schwarz(local_solver: Any) -> AdditiveSchwarz:
+    """Construct additive Schwarz using the default Auto reduction mode."""
+    return AdditiveSchwarz(local_solver=local_solver, reduction=ReductionStrategy.Auto)
 
 
 def standard_solver_configs(opts: Any) -> list[SolverConfig]:
@@ -227,7 +210,7 @@ def standard_solver_configs(opts: Any) -> list[SolverConfig]:
         SolverConfig(
             "CG(Schwarz)",
             benchmark_cg(opts),
-            preconditioner=make_additive_schwarz(local_solver=schur, opts=opts),
+            preconditioner=make_additive_schwarz(local_solver=schur),
         ),
         SolverConfig(
             "GMRES(Mult-Schwarz)",
@@ -284,9 +267,6 @@ class SuiteOptions:
     profile: ScaleProfile = "full"
     repeat: int = 1
     warmup: int = 0
-    reduction_strategy: ReductionStrategy = field(
-        default_factory=lambda: ReductionStrategy.Auto
-    )
 
     @property
     def quick(self) -> bool:

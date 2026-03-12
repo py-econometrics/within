@@ -147,7 +147,7 @@ def run_verify(opts: SuiteOptions) -> list[BenchmarkResult]:
         SolverConfig(
             "CG(Schwarz)",
             benchmark_cg(opts),
-            preconditioner=make_additive_schwarz(local_solver=schur, opts=opts),
+            preconditioner=make_additive_schwarz(local_solver=schur),
         ),
         SolverConfig(
             "GMRES(Mult-Schwarz)",

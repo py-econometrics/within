@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from ._framework import SuiteOptions, get_suite, list_suites, parse_reduction_strategy
+from ._framework import SuiteOptions, get_suite, list_suites
 from ._table import print_pivot
 
 _PRESETS: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -102,7 +102,6 @@ def _cmd_run(args: argparse.Namespace) -> None:
         profile=profile,
         repeat=repeat,
         warmup=warmup,
-        reduction_strategy=parse_reduction_strategy(args.reduction_strategy),
     )
 
     print(
@@ -148,13 +147,6 @@ def main() -> None:
         default="full",
         help="Benchmark profile: smoke, iterate, or full",
     )
-    run_p.add_argument(
-        "--reduction-strategy",
-        choices=("auto", "atomic", "parallel"),
-        default="auto",
-        help="Additive Schwarz reduction backend for benchmark runs",
-    )
-
     args = parser.parse_args()
 
     if args.command == "list":

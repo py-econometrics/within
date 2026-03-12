@@ -56,7 +56,6 @@ def run_fixest_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
             "CG(Schwarz)",
             benchmark_cg(opts),
             preconditioner=make_additive_schwarz(
-                opts=opts,
                 local_solver=SchurComplement(
                     approx_chol=ApproxCholConfig(seed=0, split=8),
                     approx_schur=None,
