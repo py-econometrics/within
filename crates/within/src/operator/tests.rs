@@ -870,12 +870,15 @@ mod schur_complement_tests {
 
 mod schwarz_tests {
     use std::cmp::Ordering;
+    use std::env;
     use std::hint::black_box;
-    use std::time::Instant;
+    use std::process::Command;
+    use std::thread;
+    use std::time::{Duration, Instant};
 
     use crate::config::LocalSolverConfig;
     use crate::config::{ApproxSchurConfig, DEFAULT_DENSE_SCHUR_THRESHOLD};
-    use crate::domain::{build_local_domains, FixedEffectsDesign, Subdomain};
+    use crate::domain::{build_local_domains, FixedEffectsDesign, Subdomain, SubdomainCore};
     use crate::observation::{FactorMajorStore, ObservationWeights};
     use crate::operator::csr_block::CsrBlock;
     use crate::operator::gramian::CrossTab;
@@ -887,7 +890,9 @@ mod schwarz_tests {
         ReducedSchurConfig,
     };
     use approx_chol::Config;
-    use schwarz_precond::{LocalSolver, Operator};
+    use schwarz_precond::{LocalSolver, Operator, ReductionStrategy};
+
+    const BLOCK_ELIM_NESTED_RAYON_CHILD_ENV: &str = "WITHIN_TEST_BLOCK_ELIM_NESTED_RAYON_CHILD";
 
     fn make_test_data() -> (FixedEffectsDesign, Vec<(Subdomain, CrossTab)>) {
         let store = FactorMajorStore::new(
@@ -934,6 +939,187 @@ mod schwarz_tests {
             ct,
             diag_q,
             diag_r,
+        }
+    }
+
+    fn synthetic_sparse_cross_tab(n_keep: usize, elim_ratio: usize) -> CrossTab {
+        let n_q = n_keep * elim_ratio;
+        let n_r = n_keep;
+        let mut indptr = Vec::with_capacity(n_q + 1);
+        let mut indices = Vec::with_capacity(n_q * 3);
+        let mut data = Vec::with_capacity(n_q * 3);
+        let mut diag_q = vec![0.0; n_q];
+        let mut diag_r = vec![0.0; n_r];
+
+        indptr.push(0);
+        for (i, diag_q_i) in diag_q.iter_mut().enumerate().take(n_q) {
+            let mut row = [
+                (i % n_r, 1.0),
+                ((i + 1) % n_r, 0.8),
+                ((i.wrapping_mul(17).wrapping_add(3)) % n_r, 0.6),
+            ];
+            row.sort_unstable_by_key(|&(col, _)| col);
+
+            let mut row_sum = 0.0;
+            let mut cursor = 0usize;
+            while cursor < row.len() {
+                let col = row[cursor].0;
+                let mut value = row[cursor].1;
+                cursor += 1;
+                while cursor < row.len() && row[cursor].0 == col {
+                    value += row[cursor].1;
+                    cursor += 1;
+                }
+
+                indices.push(col as u32);
+                data.push(value);
+                row_sum += value;
+                diag_r[col] += value;
+            }
+
+            *diag_q_i = row_sum;
+            indptr.push(indices.len() as u32);
+        }
+
+        let c = CsrBlock {
+            indptr,
+            indices,
+            data,
+            nrows: n_q,
+            ncols: n_r,
+        };
+        let ct = c.transpose();
+        CrossTab {
+            c,
+            ct,
+            diag_q,
+            diag_r,
+        }
+    }
+
+    fn make_nested_block_elim_domain_pairs(
+        n_keep: usize,
+        elim_ratio: usize,
+        n_subdomains: usize,
+    ) -> (usize, Vec<(Subdomain, CrossTab)>) {
+        let cross_tab = synthetic_sparse_cross_tab(n_keep, elim_ratio);
+        let n_local = cross_tab.n_local();
+        let global_indices: Vec<u32> = (0..n_local as u32).collect();
+
+        let domain_pairs = (0..n_subdomains)
+            .map(|idx| {
+                (
+                    Subdomain {
+                        factor_pair: (idx, idx + 1),
+                        core: SubdomainCore::uniform(global_indices.clone()),
+                    },
+                    cross_tab.clone(),
+                )
+            })
+            .collect();
+        (n_local, domain_pairs)
+    }
+
+    fn run_block_elim_parallel_reduction_regression_case() {
+        let n_keep = 1_024;
+        let elim_ratio = 32;
+        let (n_dofs, domain_pairs) = make_nested_block_elim_domain_pairs(n_keep, elim_ratio, 2);
+        let config = LocalSolverConfig::SchurComplement {
+            approx_chol: Config {
+                split_merge: Some(8),
+                seed: 42,
+            },
+            approx_schur: Some(ApproxSchurConfig {
+                seed: 7,
+                ..Default::default()
+            }),
+            dense_threshold: DEFAULT_DENSE_SCHUR_THRESHOLD,
+        };
+        let rhs: Vec<f64> = (0..n_dofs).map(|i| ((i % 29) as f64) - 14.0).collect();
+
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .expect("test rayon pool");
+        pool.install(|| {
+            let reduction = build_additive::<FactorMajorStore>(
+                DomainSource::FromParts(domain_pairs),
+                n_dofs,
+                &config,
+                ReductionStrategy::ParallelReduction,
+            )
+            .expect("build block-elim additive preconditioner");
+            let atomic = reduction.with_reduction_strategy(ReductionStrategy::AtomicScatter);
+
+            assert_eq!(
+                reduction.resolved_reduction_strategy(),
+                ReductionStrategy::ParallelReduction
+            );
+            assert_eq!(reduction.diagnostics().n_subdomains(), 2);
+            assert!(
+                reduction.diagnostics().max_inner_parallel_work() > 200_000,
+                "test setup must force nested local-solver parallelism"
+            );
+
+            for _ in 0..4 {
+                let mut z_reduction = vec![0.0; n_dofs];
+                let mut z_atomic = vec![0.0; n_dofs];
+                reduction.apply(&rhs, &mut z_reduction);
+                atomic.apply(&rhs, &mut z_atomic);
+
+                for (i, (&zr, &za)) in z_reduction.iter().zip(&z_atomic).enumerate() {
+                    assert!(
+                        zr.is_finite() && za.is_finite(),
+                        "non-finite result at index {i}: reduction={zr}, atomic={za}"
+                    );
+                    assert!(
+                        (zr - za).abs() <= 1e-9,
+                        "backend mismatch at index {i}: reduction={zr}, atomic={za}"
+                    );
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn test_block_elim_parallel_reduction_nested_rayon_child() {
+        if env::var_os(BLOCK_ELIM_NESTED_RAYON_CHILD_ENV).is_none() {
+            return;
+        }
+        run_block_elim_parallel_reduction_regression_case();
+    }
+
+    #[test]
+    fn test_block_elim_parallel_reduction_nested_rayon_does_not_deadlock() {
+        let current_exe = env::current_exe().expect("test binary path");
+        let mut child = Command::new(current_exe)
+            .env(BLOCK_ELIM_NESTED_RAYON_CHILD_ENV, "1")
+            .arg("test_block_elim_parallel_reduction_nested_rayon_child")
+            .arg("--nocapture")
+            .spawn()
+            .expect("spawn block-elim nested Rayon regression child");
+
+        let timeout = Duration::from_secs(30);
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(status) = child.try_wait().expect("poll nested rayon child") {
+                assert!(
+                    status.success(),
+                    "block-elim nested rayon regression child exited with status {status}"
+                );
+                break;
+            }
+
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!(
+                    "block-elim parallel reduction nested Rayon regression child exceeded {:?}",
+                    timeout
+                );
+            }
+
+            thread::sleep(Duration::from_millis(25));
         }
     }
 

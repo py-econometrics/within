@@ -1,11 +1,17 @@
 mod common;
 
+use std::env;
+use std::process::Command;
+use std::thread;
+use std::time::{Duration, Instant};
+
 use rayon::prelude::*;
 use schwarz_precond::domain::PartitionWeights;
 use schwarz_precond::solve::cg::{cg_solve, cg_solve_preconditioned};
 use schwarz_precond::{
-    MultiplicativeSchwarzPreconditioner, Operator, OperatorResidualUpdater, SchwarzPreconditioner,
-    SubdomainCore, SubdomainEntry,
+    LocalSolveError, LocalSolver, MultiplicativeSchwarzPreconditioner, Operator,
+    OperatorResidualUpdater, ReductionStrategy, SchwarzPreconditioner, SubdomainCore,
+    SubdomainEntry,
 };
 
 use common::{
@@ -13,6 +19,160 @@ use common::{
     UniformDiagLocalSolver,
 };
 
+fn make_overlapping_entries(n: usize) -> Vec<SubdomainEntry<UniformDiagLocalSolver>> {
+    let mut entries = Vec::new();
+    for start in (0..n.saturating_sub(2)).step_by(2) {
+        let weights = if (start / 2) % 2 == 0 {
+            vec![1.0, 0.5, 1.0]
+        } else {
+            vec![0.75, 1.0, 0.5]
+        };
+        entries.push(SubdomainEntry::new(
+            SubdomainCore {
+                global_indices: vec![start as u32, (start + 1) as u32, (start + 2) as u32],
+                partition_weights: PartitionWeights::NonUniform(weights),
+            },
+            UniformDiagLocalSolver::new(3, 3.0),
+        ));
+    }
+    entries
+}
+
+fn assert_vec_close(lhs: &[f64], rhs: &[f64], tol: f64) {
+    assert_eq!(lhs.len(), rhs.len(), "vector lengths differ");
+    for (idx, (&a, &b)) in lhs.iter().zip(rhs.iter()).enumerate() {
+        assert!(
+            (a - b).abs() <= tol,
+            "vectors differ at index {idx}: lhs={a}, rhs={b}, tol={tol}",
+        );
+    }
+}
+
+const NESTED_RAYON_CHILD_ENV: &str = "WITHIN_TEST_NESTED_RAYON_CHILD";
+
+struct NestedRayonIdentitySolver {
+    n: usize,
+}
+
+impl NestedRayonIdentitySolver {
+    const CHUNK_SIZE: usize = 256;
+
+    fn new(n: usize) -> Self {
+        Self { n }
+    }
+}
+
+impl LocalSolver for NestedRayonIdentitySolver {
+    fn n_local(&self) -> usize {
+        self.n
+    }
+
+    fn scratch_size(&self) -> usize {
+        self.n
+    }
+
+    fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), LocalSolveError> {
+        sol[..self.n]
+            .par_chunks_mut(Self::CHUNK_SIZE)
+            .enumerate()
+            .for_each(|(chunk_idx, chunk)| {
+                let start = chunk_idx * Self::CHUNK_SIZE;
+                let end = start + chunk.len();
+                chunk.copy_from_slice(&rhs[start..end]);
+            });
+        Ok(())
+    }
+
+    fn inner_parallelism_work_estimate(&self) -> usize {
+        self.n.saturating_mul(32)
+    }
+}
+
+fn make_nested_parallel_entries(n: usize) -> Vec<SubdomainEntry<NestedRayonIdentitySolver>> {
+    let full_domain: Vec<u32> = (0..n as u32).collect();
+    (0..2)
+        .map(|_| {
+            SubdomainEntry::new(
+                SubdomainCore::uniform(full_domain.clone()),
+                NestedRayonIdentitySolver::new(n),
+            )
+        })
+        .collect()
+}
+
+fn run_nested_parallel_reduction_regression_case() {
+    let n = 16_384;
+    let rhs: Vec<f64> = (0..n).map(|i| ((i % 13) as f64) - 6.0).collect();
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(4)
+        .build()
+        .expect("test rayon pool");
+    pool.install(|| {
+        let schwarz = SchwarzPreconditioner::with_strategy(
+            make_nested_parallel_entries(n),
+            n,
+            ReductionStrategy::ParallelReduction,
+        )
+        .expect("valid nested parallel additive preconditioner");
+
+        for _ in 0..8 {
+            let mut z = vec![0.0; n];
+            schwarz.apply(&rhs, &mut z);
+
+            for (i, (&zi, &ri)) in z.iter().zip(&rhs).enumerate() {
+                assert!(
+                    (zi - 2.0 * ri).abs() <= 1e-12,
+                    "unexpected additive result at index {i}: got {zi}, expected {}",
+                    2.0 * ri,
+                );
+            }
+        }
+    });
+}
+
+#[test]
+fn test_parallel_reduction_nested_rayon_deadlock_child() {
+    if env::var_os(NESTED_RAYON_CHILD_ENV).is_none() {
+        return;
+    }
+    run_nested_parallel_reduction_regression_case();
+}
+
+#[test]
+fn test_parallel_reduction_nested_rayon_does_not_deadlock() {
+    let current_exe = env::current_exe().expect("test binary path");
+    let mut child = Command::new(current_exe)
+        .env(NESTED_RAYON_CHILD_ENV, "1")
+        .arg("test_parallel_reduction_nested_rayon_deadlock_child")
+        .arg("--exact")
+        .arg("--nocapture")
+        .spawn()
+        .expect("spawn nested rayon regression child");
+
+    let timeout = Duration::from_secs(15);
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait().expect("poll nested rayon child") {
+            assert!(
+                status.success(),
+                "nested rayon regression child exited with status {status}"
+            );
+            break;
+        }
+
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!(
+                "parallel reduction nested Rayon regression child exceeded {:?}",
+                timeout
+            );
+        }
+
+        thread::sleep(Duration::from_millis(25));
+    }
+}
 #[test]
 fn test_additive_schwarz_reduces_iterations() {
     let n = 20;
@@ -135,6 +295,76 @@ fn test_additive_schwarz_parallel_apply_stress_no_panics() {
         outputs.iter().flatten().all(|v| v.is_finite()),
         "all outputs should remain finite under concurrent apply stress",
     );
+}
+
+#[test]
+fn test_additive_backends_match_on_overlapping_subdomains() {
+    let n = 66;
+    let rhs: Vec<f64> = (0..n).map(|i| ((i % 11) as f64) - 5.0).collect();
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(4)
+        .build()
+        .expect("test rayon pool");
+    pool.install(|| {
+        let atomic = SchwarzPreconditioner::with_strategy(
+            make_overlapping_entries(n),
+            n,
+            ReductionStrategy::AtomicScatter,
+        )
+        .expect("valid atomic additive preconditioner");
+        let reduction = SchwarzPreconditioner::with_strategy(
+            make_overlapping_entries(n),
+            n,
+            ReductionStrategy::ParallelReduction,
+        )
+        .expect("valid reduction additive preconditioner");
+
+        let mut z_atomic = vec![0.0; n];
+        let mut z_reduction = vec![0.0; n];
+        atomic.apply(&rhs, &mut z_atomic);
+        reduction.apply(&rhs, &mut z_reduction);
+
+        assert_vec_close(&z_atomic, &z_reduction, 1e-12);
+    });
+}
+
+#[test]
+fn test_additive_auto_matches_resolved_backend() {
+    let n = 66;
+    let rhs: Vec<f64> = (0..n).map(|i| ((3 * i) % 17) as f64 - 8.0).collect();
+
+    for &n_threads in &[1usize, 4usize] {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(n_threads)
+            .build()
+            .expect("test rayon pool");
+        pool.install(|| {
+            let auto = SchwarzPreconditioner::with_strategy(
+                make_overlapping_entries(n),
+                n,
+                ReductionStrategy::Auto,
+            )
+            .expect("valid auto additive preconditioner");
+            let resolved = auto.resolved_reduction_strategy();
+            assert_ne!(
+                resolved,
+                ReductionStrategy::Auto,
+                "auto must resolve to a concrete backend"
+            );
+
+            let explicit =
+                SchwarzPreconditioner::with_strategy(make_overlapping_entries(n), n, resolved)
+                    .expect("valid explicit additive preconditioner");
+
+            let mut z_auto = vec![0.0; n];
+            let mut z_explicit = vec![0.0; n];
+            auto.apply(&rhs, &mut z_auto);
+            explicit.apply(&rhs, &mut z_explicit);
+
+            assert_vec_close(&z_auto, &z_explicit, 1e-12);
+        });
+    }
 }
 
 // ============================================================================
@@ -337,9 +567,7 @@ fn test_multiplicative_with_tridiag() {
 // IdentityOperator tests
 // ============================================================================
 
-use schwarz_precond::{
-    ApplyError, IdentityOperator, LocalSolveError, PreconditionerBuildError, SolveError,
-};
+use schwarz_precond::{ApplyError, IdentityOperator, PreconditionerBuildError, SolveError};
 use std::error::Error;
 
 #[test]
