@@ -3,16 +3,9 @@
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 
-from ._framework import (
-    SuiteOptions,
-    get_suite,
-    list_suites,
-    parse_fixest_variants,
-    parse_reduction_strategy,
-)
+from ._framework import SuiteOptions, get_suite, list_suites, parse_reduction_strategy
 from ._table import print_pivot
 
 _PRESETS: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -52,35 +45,6 @@ _PRESETS: dict[str, tuple[str, tuple[str, ...]]] = {
         ),
     ),
 }
-
-
-def _env_reduction_strategy():
-    raw = os.environ.get("WITHIN_BENCH_REDUCTION_STRATEGY", "auto")
-    try:
-        return parse_reduction_strategy(raw)
-    except ValueError as exc:
-        raise SystemExit(f"Invalid WITHIN_BENCH_REDUCTION_STRATEGY: {exc}") from exc
-
-
-def _env_fixest_variants(profile: str):
-    default = "both" if profile == "full" else "dense"
-    raw = os.environ.get("WITHIN_BENCH_FIXEST_VARIANTS", default)
-    try:
-        return parse_fixest_variants(raw)
-    except ValueError as exc:
-        raise SystemExit(f"Invalid WITHIN_BENCH_FIXEST_VARIANTS: {exc}") from exc
-
-
-def _env_fixest_max_obs() -> int | None:
-    raw = os.environ.get("WITHIN_BENCH_FIXEST_MAX_OBS")
-    if raw is None or not raw.strip():
-        return None
-    try:
-        return int(raw)
-    except ValueError as exc:
-        raise SystemExit(
-            "Invalid WITHIN_BENCH_FIXEST_MAX_OBS: expected integer"
-        ) from exc
 
 
 def _cmd_list(args: argparse.Namespace) -> None:
@@ -146,9 +110,10 @@ def _cmd_run(args: argparse.Namespace) -> None:
         profile=profile,
         repeat=repeat,
         warmup=warmup,
-        reduction_strategy=_env_reduction_strategy(),
-        fixest_variants=_env_fixest_variants(profile),
-        fixest_max_obs=_env_fixest_max_obs(),
+        reduction_strategy=parse_reduction_strategy(args.reduction_strategy),
+        fixest_variants=args.fixest_variants
+        or ("both" if profile == "full" else "dense"),
+        fixest_max_obs=args.fixest_max_obs,
     )
 
     print(
@@ -211,6 +176,24 @@ def main() -> None:
     run_p.add_argument("--seed", type=int, default=42)
     run_p.add_argument("--tol", type=float, default=1e-8)
     run_p.add_argument("--maxiter", type=int, default=2000)
+    run_p.add_argument(
+        "--reduction-strategy",
+        choices=("auto", "atomic", "parallel"),
+        default="auto",
+        help="Additive Schwarz reduction backend for benchmark runs",
+    )
+    run_p.add_argument(
+        "--fixest-variants",
+        choices=("dense", "both"),
+        default=None,
+        help="Fixest benchmark variants to run (default: profile-dependent)",
+    )
+    run_p.add_argument(
+        "--fixest-max-obs",
+        type=int,
+        default=None,
+        help="Cap fixest observation count for faster iteration",
+    )
 
     args = parser.parse_args()
 

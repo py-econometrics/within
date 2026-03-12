@@ -14,7 +14,6 @@ Public API
 """
 
 from __future__ import annotations
-
 import statistics
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, TypeVar
@@ -186,14 +185,6 @@ def parse_reduction_strategy(raw: str) -> ReductionStrategy:
         ) from exc
 
 
-def parse_fixest_variants(raw: str) -> FixestVariant:
-    """Parse the fixest variant selection."""
-    normalized = raw.strip().lower()
-    if normalized in ("dense", "both"):
-        return normalized
-    raise ValueError("fixest variants must be one of: dense, both")
-
-
 def benchmark_solver_tol(tol: float) -> float:
     """Benchmark tolerance floor used to avoid borderline non-convergence noise."""
     return max(tol, BENCHMARK_SOLVER_TOL_MIN)
@@ -294,7 +285,9 @@ class SuiteOptions:
     profile: ScaleProfile = "full"
     repeat: int = 1
     warmup: int = 0
-    reduction_strategy: ReductionStrategy = ReductionStrategy.Auto
+    reduction_strategy: ReductionStrategy = field(
+        default_factory=lambda: ReductionStrategy.Auto
+    )
     fixest_variants: FixestVariant = "both"
     fixest_max_obs: int | None = None
 
