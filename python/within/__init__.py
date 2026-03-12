@@ -1,5 +1,3 @@
-from within.utils import make_akm_panel
-
 from within._within import (
     OperatorRepr,
     Preconditioner,
@@ -36,5 +34,4 @@ __all__ = [
     "AdditiveSchwarz",
     "MultiplicativeSchwarz",
     "ReductionStrategy",
-    "make_akm_panel",
 ]
