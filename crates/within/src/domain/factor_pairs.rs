@@ -270,7 +270,7 @@ fn build_pairs(n_factors: usize) -> Vec<(usize, usize)> {
 fn compute_partition_weights(domain_pairs: &mut [(Subdomain, CrossTab)], n_dofs: usize) {
     let mut counts = vec![0u32; n_dofs];
     for (d, _) in domain_pairs.iter() {
-        for &idx in &d.core.global_indices {
+        for &idx in d.core.global_indices() {
             debug_assert!((idx as usize) < n_dofs);
             counts[idx as usize] += 1;
         }
@@ -278,15 +278,15 @@ fn compute_partition_weights(domain_pairs: &mut [(Subdomain, CrossTab)], n_dofs:
     for (d, _) in domain_pairs.iter_mut() {
         let all_unique = d
             .core
-            .global_indices
+            .global_indices()
             .iter()
             .all(|&idx| counts[idx as usize] <= 1);
         if all_unique {
-            d.core.partition_weights = PartitionWeights::Uniform(d.core.global_indices.len());
+            d.core.set_uniform_partition_weights();
         } else {
             let weights: Vec<f64> = d
                 .core
-                .global_indices
+                .global_indices()
                 .iter()
                 .map(|&idx| {
                     let c = counts[idx as usize];
@@ -294,7 +294,9 @@ fn compute_partition_weights(domain_pairs: &mut [(Subdomain, CrossTab)], n_dofs:
                     1.0 / (c as f64).sqrt()
                 })
                 .collect();
-            d.core.partition_weights = PartitionWeights::NonUniform(weights);
+            d.core
+                .set_partition_weights(PartitionWeights::NonUniform(weights))
+                .expect("partition weight count must match index count");
         }
     }
 }
@@ -335,8 +337,8 @@ mod tests {
         // Two-sided PoU: squared weights must sum to 1 at every DOF.
         let mut weight_sq_sum = vec![0.0; n_dofs];
         for (d, _) in &domain_pairs {
-            for (i, &idx) in d.core.global_indices.iter().enumerate() {
-                let w = d.core.partition_weights.get(i);
+            for (i, &idx) in d.core.global_indices().iter().enumerate() {
+                let w = d.core.partition_weights().get(i);
                 weight_sq_sum[idx as usize] += w * w;
             }
         }
@@ -353,7 +355,7 @@ mod tests {
         let domain_pairs = build_local_domains(&dm);
         let mut covered = vec![false; dm.n_dofs];
         for (d, _) in &domain_pairs {
-            for &idx in &d.core.global_indices {
+            for &idx in d.core.global_indices() {
                 covered[idx as usize] = true;
             }
         }
@@ -379,12 +381,12 @@ mod tests {
         // Sort both by global_indices for deterministic comparison
         let mut obs_sorted: Vec<_> = obs_domains
             .iter()
-            .map(|(d, _)| d.core.global_indices.clone())
+            .map(|(d, _)| d.core.global_indices().to_vec())
             .collect();
         obs_sorted.sort();
         let mut gram_sorted: Vec<_> = gram_domains
             .iter()
-            .map(|(d, _)| d.core.global_indices.clone())
+            .map(|(d, _)| d.core.global_indices().to_vec())
             .collect();
         gram_sorted.sort();
 
@@ -422,8 +424,8 @@ mod tests {
         // Two-sided PoU: squared weights must sum to 1 at every DOF.
         let mut weight_sq_sum = vec![0.0; n_dofs];
         for (d, _) in &domain_pairs {
-            for (i, &idx) in d.core.global_indices.iter().enumerate() {
-                let w = d.core.partition_weights.get(i);
+            for (i, &idx) in d.core.global_indices().iter().enumerate() {
+                let w = d.core.partition_weights().get(i);
                 weight_sq_sum[idx as usize] += w * w;
             }
         }
@@ -442,7 +444,7 @@ mod tests {
             build_local_domains_from_gramian(&gramian.matrix, &design.factors, design.n_dofs);
         let mut covered = vec![false; design.n_dofs];
         for (d, _) in &domain_pairs {
-            for &idx in &d.core.global_indices {
+            for &idx in d.core.global_indices() {
                 covered[idx as usize] = true;
             }
         }

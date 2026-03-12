@@ -19,7 +19,7 @@ impl std::fmt::Debug for Subdomain {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Subdomain")
             .field("factor_pair", &self.factor_pair)
-            .field("n_dofs", &self.core.global_indices.len())
+            .field("n_dofs", &self.core.n_local())
             .finish()
     }
 }

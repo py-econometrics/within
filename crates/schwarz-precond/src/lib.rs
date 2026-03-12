@@ -110,7 +110,10 @@ pub mod solve;
 mod sparse_matrix;
 
 pub use domain::{PartitionWeights, SubdomainCore};
-pub use error::{ApplyError, LocalSolveError, PreconditionerBuildError, SolveError};
+pub use error::{
+    ApplyError, LocalSolveError, PreconditionerBuildError, SolveError, SubdomainCoreBuildError,
+    SubdomainEntryBuildError,
+};
 pub use local_solve::{LocalSolveOptions, LocalSolver, SubdomainEntry};
 pub use schwarz::{
     AdditiveSchwarzDiagnostics, MultiplicativeSchwarzPreconditioner, OperatorResidualUpdater,

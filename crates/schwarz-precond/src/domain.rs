@@ -1,5 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::error::SubdomainCoreBuildError;
+
 /// Partition-of-unity weights for a subdomain.
 ///
 /// Most subdomains have uniform weights (all 1.0), so we avoid allocating
@@ -58,23 +60,73 @@ fn atomic_f64_add(target: &AtomicU64, val: f64) {
 ///
 /// Downstream crates (e.g. `within`) may wrap this with application-specific
 /// metadata such as factor-pair information.
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone)]
 pub struct SubdomainCore {
     /// Global DOF indices belonging to this subdomain.
-    pub global_indices: Vec<u32>,
+    global_indices: Vec<u32>,
     /// Partition-of-unity weights for each DOF.
-    pub partition_weights: PartitionWeights,
+    partition_weights: PartitionWeights,
 }
 
 impl SubdomainCore {
     /// Create a subdomain core with uniform weights.
     pub fn uniform(global_indices: Vec<u32>) -> Self {
-        let n = global_indices.len();
-        SubdomainCore {
+        Self {
+            partition_weights: PartitionWeights::Uniform(global_indices.len()),
             global_indices,
-            partition_weights: PartitionWeights::Uniform(n),
         }
+    }
+
+    /// Create a subdomain core with explicit partition weights.
+    pub fn with_partition_weights(
+        global_indices: Vec<u32>,
+        partition_weights: PartitionWeights,
+    ) -> Result<Self, SubdomainCoreBuildError> {
+        let mut core = Self::uniform(global_indices);
+        core.set_partition_weights(partition_weights)?;
+        Ok(core)
+    }
+
+    /// Global DOF indices belonging to this subdomain.
+    pub fn global_indices(&self) -> &[u32] {
+        &self.global_indices
+    }
+
+    /// Partition-of-unity weights for this subdomain.
+    pub fn partition_weights(&self) -> &PartitionWeights {
+        &self.partition_weights
+    }
+
+    /// Number of local DOFs in this subdomain.
+    pub fn n_local(&self) -> usize {
+        self.global_indices.len()
+    }
+
+    /// Returns `true` if this subdomain has no DOFs.
+    pub fn is_empty(&self) -> bool {
+        self.global_indices.is_empty()
+    }
+
+    /// Replace the partition weights, validating that the shape matches.
+    pub fn set_partition_weights(
+        &mut self,
+        partition_weights: PartitionWeights,
+    ) -> Result<(), SubdomainCoreBuildError> {
+        let index_count = self.global_indices.len();
+        let weight_count = partition_weights.len();
+        if weight_count != index_count {
+            return Err(SubdomainCoreBuildError::PartitionWeightLengthMismatch {
+                index_count,
+                weight_count,
+            });
+        }
+        self.partition_weights = partition_weights;
+        Ok(())
+    }
+
+    /// Reset the partition weights to the uniform representation.
+    pub fn set_uniform_partition_weights(&mut self) {
+        self.partition_weights = PartitionWeights::Uniform(self.global_indices.len());
     }
 
     /// Weighted gather: `local[i] = w[i] * global[idx[i]]`
@@ -132,5 +184,38 @@ impl SubdomainCore {
                 }
             }
         }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for SubdomainCore {
+    fn serialize<Ser>(&self, serializer: Ser) -> Result<Ser::Ok, Ser::Error>
+    where
+        Ser: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+
+        let mut state = serializer.serialize_struct("SubdomainCore", 2)?;
+        state.serialize_field("global_indices", &self.global_indices)?;
+        state.serialize_field("partition_weights", &self.partition_weights)?;
+        state.end()
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for SubdomainCore {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        struct Helper {
+            global_indices: Vec<u32>,
+            partition_weights: PartitionWeights,
+        }
+
+        let helper = Helper::deserialize(deserializer)?;
+        Self::with_partition_weights(helper.global_indices, helper.partition_weights)
+            .map_err(serde::de::Error::custom)
     }
 }

@@ -4,7 +4,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::local_solve::{LocalSolver, SubdomainEntry};
 
 use super::executor::AdditiveExecutor;
-use super::planning::{AdditiveSchwarzDiagnostics, ReductionStrategy};
+use super::planning::{AdditiveScheduler, ReductionStrategy};
 use super::preconditioner::SchwarzPreconditioner;
 
 impl<S: LocalSolver + Serialize> Serialize for SchwarzPreconditioner<S> {
@@ -30,10 +30,9 @@ impl<'de, S: LocalSolver + serde::de::DeserializeOwned> Deserialize<'de>
         }
 
         let h: Helper<S> = Helper::deserialize(deserializer)?;
-        let diagnostics = AdditiveSchwarzDiagnostics::from_entries(&h.subdomains, h.n_dofs);
         Ok(SchwarzPreconditioner {
             reduction_strategy: ReductionStrategy::default(),
-            diagnostics,
+            scheduler: AdditiveScheduler::from_entries(&h.subdomains, h.n_dofs),
             executor: AdditiveExecutor::new(h.subdomains, h.n_dofs, h.max_scratch_size),
         })
     }

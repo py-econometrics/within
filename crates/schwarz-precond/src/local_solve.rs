@@ -6,7 +6,7 @@
 use std::sync::atomic::AtomicU64;
 
 use crate::domain::SubdomainCore;
-use crate::error::LocalSolveError;
+use crate::error::{LocalSolveError, SubdomainEntryBuildError};
 
 // ---------------------------------------------------------------------------
 // LocalSolveOptions
@@ -80,25 +80,59 @@ pub trait LocalSolver: Send + Sync {
 /// A subdomain entry: wraps a `SubdomainCore` (restriction indices + partition-of-unity
 /// weights) together with a generic local solver. Delegates gather/scatter/PoU
 /// weighting to `SubdomainCore`.
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(
-    feature = "serde",
-    serde(bound(
-        serialize = "S: serde::Serialize",
-        deserialize = "S: serde::de::DeserializeOwned"
-    ))
-)]
 pub struct SubdomainEntry<S: LocalSolver> {
     /// Subdomain core with restriction indices and partition-of-unity weights.
-    pub core: SubdomainCore,
+    core: SubdomainCore,
     /// The local solver for this subdomain.
-    pub solver: S,
+    solver: S,
 }
 
 impl<S: LocalSolver> SubdomainEntry<S> {
-    /// Create a new subdomain entry from a core and a local solver.
-    pub fn new(core: SubdomainCore, solver: S) -> Self {
-        Self { core, solver }
+    /// Create a validated subdomain entry from a core and a local solver.
+    pub fn try_new(core: SubdomainCore, solver: S) -> Result<Self, SubdomainEntryBuildError> {
+        let index_count = core.n_local();
+        let solver_n_local = solver.n_local();
+        if solver_n_local != index_count {
+            return Err(SubdomainEntryBuildError::LocalDofCountMismatch {
+                index_count,
+                solver_n_local,
+            });
+        }
+
+        let scratch_size = solver.scratch_size();
+        if scratch_size < index_count {
+            return Err(SubdomainEntryBuildError::ScratchSizeTooSmall {
+                scratch_size,
+                required_min: index_count,
+            });
+        }
+
+        Ok(Self { core, solver })
+    }
+
+    /// Subdomain metadata and partition weights.
+    pub fn core(&self) -> &SubdomainCore {
+        &self.core
+    }
+
+    /// Global DOF indices covered by this subdomain.
+    pub fn global_indices(&self) -> &[u32] {
+        self.core.global_indices()
+    }
+
+    /// Partition-of-unity weights for this subdomain.
+    pub fn partition_weights(&self) -> &crate::domain::PartitionWeights {
+        self.core.partition_weights()
+    }
+
+    /// The local solver for this subdomain.
+    pub fn solver(&self) -> &S {
+        &self.solver
+    }
+
+    /// Returns `true` if this subdomain is empty.
+    pub fn is_empty(&self) -> bool {
+        self.core.is_empty()
     }
 
     /// Required scratch buffer size (delegates to solver).
@@ -121,7 +155,7 @@ impl<S: LocalSolver> SubdomainEntry<S> {
         z_scratch: &mut [f64],
         options: LocalSolveOptions,
     ) -> Result<(), LocalSolveError> {
-        if self.core.global_indices.is_empty() {
+        if self.core.is_empty() {
             return Ok(());
         }
 
@@ -147,7 +181,7 @@ impl<S: LocalSolver> SubdomainEntry<S> {
         z_scratch: &mut [f64],
         options: LocalSolveOptions,
     ) -> Result<(), LocalSolveError> {
-        if self.core.global_indices.is_empty() {
+        if self.core.is_empty() {
             return Ok(());
         }
 
@@ -160,6 +194,45 @@ impl<S: LocalSolver> SubdomainEntry<S> {
         // Weighted atomic scatter into output: out += R_i^T @ D_i @ z_local
         self.core.prolongate_weighted_add_atomic(z_scratch, out);
         Ok(())
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<S> serde::Serialize for SubdomainEntry<S>
+where
+    S: LocalSolver + serde::Serialize,
+{
+    fn serialize<Ser>(&self, serializer: Ser) -> Result<Ser::Ok, Ser::Error>
+    where
+        Ser: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+
+        let mut state = serializer.serialize_struct("SubdomainEntry", 2)?;
+        state.serialize_field("core", &self.core)?;
+        state.serialize_field("solver", &self.solver)?;
+        state.end()
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de, S> serde::Deserialize<'de> for SubdomainEntry<S>
+where
+    S: LocalSolver + serde::de::DeserializeOwned,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        #[serde(bound(deserialize = "S: serde::de::DeserializeOwned"))]
+        struct Helper<S> {
+            core: SubdomainCore,
+            solver: S,
+        }
+
+        let helper = Helper::<S>::deserialize(deserializer)?;
+        Self::try_new(helper.core, helper.solver).map_err(serde::de::Error::custom)
     }
 }
 
@@ -211,10 +284,11 @@ mod tests {
     #[test]
     fn test_weighted_gather_scatter() {
         // Non-uniform weights: two-sided PoU means effective weight = w^2
-        let core = SubdomainCore {
-            global_indices: vec![0, 1, 2],
-            partition_weights: PartitionWeights::NonUniform(vec![1.0, 0.5, 0.25]),
-        };
+        let core = SubdomainCore::with_partition_weights(
+            vec![0, 1, 2],
+            PartitionWeights::NonUniform(vec![1.0, 0.5, 0.25]),
+        )
+        .expect("matching non-uniform weights");
         let global = vec![4.0, 8.0, 16.0];
         let mut local = vec![0.0; 3];
 
@@ -240,7 +314,7 @@ mod tests {
         // apply_weighted = R_i^T D_i (I) D_i R_i r = R_i^T R_i r (since D_i = I)
         let core = SubdomainCore::uniform(vec![1, 2]);
         let solver = IdentityLocalSolver { n: 2 };
-        let entry = SubdomainEntry::new(core, solver);
+        let entry = SubdomainEntry::try_new(core, solver).expect("valid entry");
 
         let r = vec![10.0, 20.0, 30.0, 40.0];
         let mut out = vec![0.0; 4];

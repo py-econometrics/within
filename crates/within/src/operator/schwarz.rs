@@ -57,11 +57,20 @@ pub fn build_schwarz<S: ObservationStore>(
     design: &WeightedDesign<S>,
     config: &LocalSolverConfig,
 ) -> WithinResult<FeSchwarz> {
-    build_additive(
+    build_additive(DomainSource::FromDesign(design), design.n_dofs, config)
+}
+
+/// Build additive Schwarz from FE design with an explicit reduction strategy.
+pub fn build_schwarz_with_strategy<S: ObservationStore>(
+    design: &WeightedDesign<S>,
+    config: &LocalSolverConfig,
+    strategy: schwarz_precond::ReductionStrategy,
+) -> WithinResult<FeSchwarz> {
+    build_additive_with_strategy(
         DomainSource::FromDesign(design),
         design.n_dofs,
         config,
-        schwarz_precond::ReductionStrategy::default(),
+        strategy,
     )
 }
 
@@ -71,6 +80,20 @@ pub fn build_schwarz<S: ObservationStore>(
 
 /// Build additive Schwarz from any domain source.
 pub(crate) fn build_additive<S: ObservationStore>(
+    source: DomainSource<'_, S>,
+    n_dofs: usize,
+    config: &LocalSolverConfig,
+) -> WithinResult<FeSchwarz> {
+    build_additive_with_strategy(
+        source,
+        n_dofs,
+        config,
+        schwarz_precond::ReductionStrategy::default(),
+    )
+}
+
+/// Build additive Schwarz from any domain source with an explicit reduction strategy.
+pub(crate) fn build_additive_with_strategy<S: ObservationStore>(
     source: DomainSource<'_, S>,
     n_dofs: usize,
     config: &LocalSolverConfig,
@@ -200,7 +223,8 @@ pub(crate) fn build_entry(
             )))
         }
     };
-    Ok(SubdomainEntry::new(domain.core, solver))
+    SubdomainEntry::try_new(domain.core, solver)
+        .map_err(|e| WithinError::LocalSolverBuild(format!("invalid subdomain entry: {e}")))
 }
 
 pub(crate) struct ReducedSchurBuild {
@@ -299,7 +323,7 @@ pub fn compute_first_block_size<S: ObservationStore>(
     let hi = fq.offset + fq.n_levels;
     domain
         .core
-        .global_indices
+        .global_indices()
         .iter()
         .filter(|&&idx| {
             let idx = idx as usize;

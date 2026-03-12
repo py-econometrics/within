@@ -85,12 +85,8 @@ pub fn build_preconditioner<S: ObservationStore>(
     match preconditioner_config {
         Preconditioner::Additive(config) => {
             let domains = build_local_domains(design);
-            let precond = build_additive(
-                DomainSource::<S>::FromParts(domains),
-                design.n_dofs,
-                config,
-                schwarz_precond::ReductionStrategy::default(),
-            )?;
+            let precond =
+                build_additive(DomainSource::<S>::FromParts(domains), design.n_dofs, config)?;
             Ok(FePreconditioner::Additive(precond))
         }
         Preconditioner::Multiplicative(config) => {
@@ -129,12 +125,7 @@ pub(crate) fn build_preconditioner_fused<S: ObservationStore>(
 
     let precond = match preconditioner_config {
         Preconditioner::Additive(config) => {
-            let p = build_additive(
-                DomainSource::<S>::FromParts(domains),
-                design.n_dofs,
-                config,
-                schwarz_precond::ReductionStrategy::default(),
-            )?;
+            let p = build_additive(DomainSource::<S>::FromParts(domains), design.n_dofs, config)?;
             FePreconditioner::Additive(p)
         }
         Preconditioner::Multiplicative(config) => {

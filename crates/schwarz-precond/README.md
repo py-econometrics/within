@@ -72,7 +72,8 @@ fn main() {
         .map(|i| {
             let idx: Vec<u32> = (i..n.min(i + 2)).map(|j| j as u32).collect();
             let sz = idx.len();
-            SubdomainEntry::new(SubdomainCore::uniform(idx), DiagSolver(sz, 3.0))
+            SubdomainEntry::try_new(SubdomainCore::uniform(idx), DiagSolver(sz, 3.0))
+                .expect("valid subdomain entry")
         })
         .collect();
 

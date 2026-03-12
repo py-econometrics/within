@@ -103,26 +103,26 @@ fn apply_subdomain<S: LocalSolver, U: ResidualUpdater>(
     z: &mut [f64],
     updater: &mut U,
 ) -> Result<(), LocalSolveError> {
-    if entry.core.global_indices.is_empty() {
+    if entry.is_empty() {
         return Ok(());
     }
 
-    let n_local = entry.core.global_indices.len();
+    let n_local = entry.global_indices().len();
 
     entry
-        .core
+        .core()
         .restrict_weighted(&bufs.r_work, &mut bufs.r_scratch);
-    entry.solver.solve_local(
+    entry.solver().solve_local(
         &mut bufs.r_scratch,
         &mut bufs.z_scratch,
         LocalSolveOptions::default(),
     )?;
-    entry.core.prolongate_weighted_add(&bufs.z_scratch, z);
+    entry.core().prolongate_weighted_add(&bufs.z_scratch, z);
 
-    match &entry.core.partition_weights {
+    match entry.partition_weights() {
         PartitionWeights::Uniform(_) => {
             updater.update(
-                &entry.core.global_indices,
+                entry.global_indices(),
                 &bufs.z_scratch[..n_local],
                 &mut bufs.r_work,
             );
@@ -132,7 +132,7 @@ fn apply_subdomain<S: LocalSolver, U: ResidualUpdater>(
                 bufs.weighted_local_sol[k] = wk * bufs.z_scratch[k];
             }
             updater.update(
-                &entry.core.global_indices,
+                entry.global_indices(),
                 &bufs.weighted_local_sol[..n_local],
                 &mut bufs.r_work,
             );
@@ -145,7 +145,7 @@ fn compute_sizes<S: LocalSolver>(entries: &[SubdomainEntry<S>]) -> (usize, usize
     let max_scratch_size = entries.iter().map(|e| e.scratch_size()).max().unwrap_or(0);
     let max_local_dofs = entries
         .iter()
-        .map(|e| e.core.global_indices.len())
+        .map(|e| e.global_indices().len())
         .max()
         .unwrap_or(0);
     (max_scratch_size, max_local_dofs)

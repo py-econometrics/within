@@ -77,24 +77,30 @@ fn build_entries(n: usize) -> Vec<SubdomainEntry<DiagLocalSolver>> {
     let mut entries = Vec::new();
     let mut i = 0;
     while i + 1 < n {
-        entries.push(SubdomainEntry::new(
-            SubdomainCore::uniform(vec![i as u32, (i + 1) as u32]),
-            DiagLocalSolver {
-                n_local: 2,
-                diag_val: 3.0,
-            },
-        ));
+        entries.push(
+            SubdomainEntry::try_new(
+                SubdomainCore::uniform(vec![i as u32, (i + 1) as u32]),
+                DiagLocalSolver {
+                    n_local: 2,
+                    diag_val: 3.0,
+                },
+            )
+            .expect("valid 2-DOF subdomain entry"),
+        );
         i += 2;
     }
     // Handle odd n: last DOF gets a size-1 subdomain
     if i < n {
-        entries.push(SubdomainEntry::new(
-            SubdomainCore::uniform(vec![i as u32]),
-            DiagLocalSolver {
-                n_local: 1,
-                diag_val: 3.0,
-            },
-        ));
+        entries.push(
+            SubdomainEntry::try_new(
+                SubdomainCore::uniform(vec![i as u32]),
+                DiagLocalSolver {
+                    n_local: 1,
+                    diag_val: 3.0,
+                },
+            )
+            .expect("valid 1-DOF subdomain entry"),
+        );
     }
     entries
 }

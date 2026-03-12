@@ -19,6 +19,15 @@ use common::{
     UniformDiagLocalSolver,
 };
 
+fn make_entry<S: LocalSolver>(core: SubdomainCore, solver: S) -> SubdomainEntry<S> {
+    SubdomainEntry::try_new(core, solver).expect("valid subdomain entry")
+}
+
+fn weighted_core(global_indices: Vec<u32>, weights: Vec<f64>) -> SubdomainCore {
+    SubdomainCore::with_partition_weights(global_indices, PartitionWeights::NonUniform(weights))
+        .expect("matching partition weights")
+}
+
 fn make_overlapping_entries(n: usize) -> Vec<SubdomainEntry<UniformDiagLocalSolver>> {
     let mut entries = Vec::new();
     for start in (0..n.saturating_sub(2)).step_by(2) {
@@ -27,11 +36,11 @@ fn make_overlapping_entries(n: usize) -> Vec<SubdomainEntry<UniformDiagLocalSolv
         } else {
             vec![0.75, 1.0, 0.5]
         };
-        entries.push(SubdomainEntry::new(
-            SubdomainCore {
-                global_indices: vec![start as u32, (start + 1) as u32, (start + 2) as u32],
-                partition_weights: PartitionWeights::NonUniform(weights),
-            },
+        entries.push(make_entry(
+            weighted_core(
+                vec![start as u32, (start + 1) as u32, (start + 2) as u32],
+                weights,
+            ),
             UniformDiagLocalSolver::new(3, 3.0),
         ));
     }
@@ -101,7 +110,7 @@ fn make_nested_parallel_entries(n: usize) -> Vec<SubdomainEntry<NestedRayonIdent
     let full_domain: Vec<u32> = (0..n as u32).collect();
     (0..2)
         .map(|_| {
-            SubdomainEntry::new(
+            make_entry(
                 SubdomainCore::uniform(full_domain.clone()),
                 NestedRayonIdentitySolver::new(n),
             )
@@ -387,7 +396,7 @@ fn test_multiplicative_single_subdomain_exact() {
     };
     let solver = DiagLocalSolver::new(&[2.0, 3.0, 4.0]);
     let core = SubdomainCore::uniform(vec![0, 1, 2]);
-    let entry = SubdomainEntry::new(core, solver);
+    let entry = make_entry(core, solver);
 
     let updater = OperatorResidualUpdater::new(&a, 3);
     let prec = MultiplicativeSchwarzPreconditioner::new(vec![entry], updater, 3, false)
@@ -410,11 +419,11 @@ fn test_multiplicative_two_nonoverlapping_subdomains() {
 
     let solver0 = DiagLocalSolver::new(&[2.0, 3.0]);
     let core0 = SubdomainCore::uniform(vec![0, 1]);
-    let entry0 = SubdomainEntry::new(core0, solver0);
+    let entry0 = make_entry(core0, solver0);
 
     let solver1 = DiagLocalSolver::new(&[1.0, 5.0]);
     let core1 = SubdomainCore::uniform(vec![2, 3]);
-    let entry1 = SubdomainEntry::new(core1, solver1);
+    let entry1 = make_entry(core1, solver1);
 
     let updater = OperatorResidualUpdater::new(&a, 4);
     let prec = MultiplicativeSchwarzPreconditioner::new(vec![entry0, entry1], updater, 4, false)
@@ -437,18 +446,12 @@ fn test_multiplicative_overlapping_residual_update() {
     };
 
     let solver0 = DiagLocalSolver::new(&[2.0, 3.0]);
-    let core0 = SubdomainCore {
-        global_indices: vec![0, 1],
-        partition_weights: PartitionWeights::NonUniform(vec![1.0, 0.5]),
-    };
-    let entry0 = SubdomainEntry::new(core0, solver0);
+    let core0 = weighted_core(vec![0, 1], vec![1.0, 0.5]);
+    let entry0 = make_entry(core0, solver0);
 
     let solver1 = DiagLocalSolver::new(&[3.0, 4.0]);
-    let core1 = SubdomainCore {
-        global_indices: vec![1, 2],
-        partition_weights: PartitionWeights::NonUniform(vec![0.5, 1.0]),
-    };
-    let entry1 = SubdomainEntry::new(core1, solver1);
+    let core1 = weighted_core(vec![1, 2], vec![0.5, 1.0]);
+    let entry1 = make_entry(core1, solver1);
 
     let updater = OperatorResidualUpdater::new(&a, 3);
     let prec = MultiplicativeSchwarzPreconditioner::new(vec![entry0, entry1], updater, 3, false)
@@ -485,25 +488,12 @@ fn test_symmetric_multiplicative_reduces_residual_more() {
 
     let make_entries = || {
         let s0 = DiagLocalSolver::new(&[2.0, 3.0]);
-        let c0 = SubdomainCore {
-            global_indices: vec![0, 1],
-            partition_weights: PartitionWeights::NonUniform(vec![1.0, 0.5]),
-        };
+        let c0 = weighted_core(vec![0, 1], vec![1.0, 0.5]);
         let s1 = DiagLocalSolver::new(&[3.0, 4.0]);
-        let c1 = SubdomainCore {
-            global_indices: vec![1, 2],
-            partition_weights: PartitionWeights::NonUniform(vec![0.5, 0.5]),
-        };
+        let c1 = weighted_core(vec![1, 2], vec![0.5, 0.5]);
         let s2 = DiagLocalSolver::new(&[4.0, 5.0]);
-        let c2 = SubdomainCore {
-            global_indices: vec![2, 3],
-            partition_weights: PartitionWeights::NonUniform(vec![0.5, 1.0]),
-        };
-        vec![
-            SubdomainEntry::new(c0, s0),
-            SubdomainEntry::new(c1, s1),
-            SubdomainEntry::new(c2, s2),
-        ]
+        let c2 = weighted_core(vec![2, 3], vec![0.5, 1.0]);
+        vec![make_entry(c0, s0), make_entry(c1, s1), make_entry(c2, s2)]
     };
 
     let r = vec![4.0, 9.0, 12.0, 15.0];
@@ -542,9 +532,9 @@ fn test_multiplicative_with_tridiag() {
     let a = TridiagOperator::new(n, 3.0);
     let make_solver = |diag_val: f64| DiagLocalSolver::new(&[diag_val, diag_val]);
 
-    let e0 = SubdomainEntry::new(SubdomainCore::uniform(vec![0, 1]), make_solver(3.0));
-    let e1 = SubdomainEntry::new(SubdomainCore::uniform(vec![2, 3]), make_solver(3.0));
-    let e2 = SubdomainEntry::new(SubdomainCore::uniform(vec![4, 5]), make_solver(3.0));
+    let e0 = make_entry(SubdomainCore::uniform(vec![0, 1]), make_solver(3.0));
+    let e1 = make_entry(SubdomainCore::uniform(vec![2, 3]), make_solver(3.0));
+    let e2 = make_entry(SubdomainCore::uniform(vec![4, 5]), make_solver(3.0));
 
     let updater = OperatorResidualUpdater::new(&a, n);
     let prec = MultiplicativeSchwarzPreconditioner::new(vec![e0, e1, e2], updater, n, true)
@@ -576,7 +566,10 @@ fn test_multiplicative_with_tridiag() {
 // IdentityOperator tests
 // ============================================================================
 
-use schwarz_precond::{ApplyError, IdentityOperator, PreconditionerBuildError, SolveError};
+use schwarz_precond::{
+    ApplyError, IdentityOperator, PreconditionerBuildError, SolveError, SubdomainCoreBuildError,
+    SubdomainEntryBuildError,
+};
 use std::error::Error;
 
 #[test]
@@ -653,7 +646,7 @@ fn test_additive_schwarz_apply_subdomain_empty_indices() {
     // and scratch_size >= index_count, so n_local=0 with 0 indices should pass.
     let solver = common::UniformDiagLocalSolver::new(0, 1.0);
     let core = SubdomainCore::uniform(vec![]);
-    let entry = SubdomainEntry::new(core, solver);
+    let entry = make_entry(core, solver);
     let result = SchwarzPreconditioner::new(vec![entry], 5);
     match result {
         Ok(schwarz) => {
@@ -683,7 +676,7 @@ fn test_multiplicative_schwarz_subdomains_accessor() {
     };
     let solver = DiagLocalSolver::new(&[2.0, 3.0, 4.0]);
     let core = SubdomainCore::uniform(vec![0, 1, 2]);
-    let entry = SubdomainEntry::new(core, solver);
+    let entry = make_entry(core, solver);
 
     let updater = OperatorResidualUpdater::new(&a, 3);
     let prec = MultiplicativeSchwarzPreconditioner::new(vec![entry], updater, 3, false)
@@ -697,49 +690,34 @@ fn test_multiplicative_schwarz_subdomains_accessor() {
 // ============================================================================
 
 #[test]
-fn test_preconditioner_build_error_display_local_dof_mismatch() {
-    let err = PreconditionerBuildError::LocalDofCountMismatch {
-        subdomain: 2,
+fn test_subdomain_entry_build_error_display_local_dof_mismatch() {
+    let err = SubdomainEntryBuildError::LocalDofCountMismatch {
         index_count: 5,
         solver_n_local: 3,
     };
     let msg = err.to_string();
-    assert!(
-        msg.contains("subdomain 2"),
-        "missing subdomain index: {msg}"
-    );
     assert!(msg.contains("5"), "missing index_count: {msg}");
     assert!(msg.contains("3"), "missing solver_n_local: {msg}");
 }
 
 #[test]
-fn test_preconditioner_build_error_display_scratch_size_too_small() {
-    let err = PreconditionerBuildError::ScratchSizeTooSmall {
-        subdomain: 1,
+fn test_subdomain_entry_build_error_display_scratch_size_too_small() {
+    let err = SubdomainEntryBuildError::ScratchSizeTooSmall {
         scratch_size: 2,
         required_min: 4,
     };
     let msg = err.to_string();
-    assert!(
-        msg.contains("subdomain 1"),
-        "missing subdomain index: {msg}"
-    );
     assert!(msg.contains("2"), "missing scratch_size: {msg}");
     assert!(msg.contains("4"), "missing required_min: {msg}");
 }
 
 #[test]
-fn test_preconditioner_build_error_display_partition_weight_mismatch() {
-    let err = PreconditionerBuildError::PartitionWeightLengthMismatch {
-        subdomain: 0,
+fn test_subdomain_core_build_error_display_partition_weight_mismatch() {
+    let err = SubdomainCoreBuildError::PartitionWeightLengthMismatch {
         index_count: 3,
         weight_count: 5,
     };
     let msg = err.to_string();
-    assert!(
-        msg.contains("subdomain 0"),
-        "missing subdomain index: {msg}"
-    );
     assert!(msg.contains("3"), "missing index_count: {msg}");
     assert!(msg.contains("5"), "missing weight_count: {msg}");
 }
@@ -867,10 +845,9 @@ fn test_validate_local_dof_count_mismatch() {
     // Build entry where solver n_local != index count
     let solver = common::UniformDiagLocalSolver::new(3, 1.0); // n_local=3
     let core = SubdomainCore::uniform(vec![0, 1]); // 2 indices
-    let entry = SubdomainEntry::new(core, solver);
-    let result = SchwarzPreconditioner::new(vec![entry], 10);
+    let result = SubdomainEntry::try_new(core, solver);
     match result {
-        Err(PreconditionerBuildError::LocalDofCountMismatch { .. }) => {}
+        Err(SubdomainEntryBuildError::LocalDofCountMismatch { .. }) => {}
         Ok(_) => panic!("expected LocalDofCountMismatch, got Ok"),
         Err(other) => panic!("expected LocalDofCountMismatch, got: {:?}", other),
     }
@@ -880,29 +857,23 @@ fn test_validate_local_dof_count_mismatch() {
 fn test_validate_global_index_out_of_bounds() {
     let solver = common::UniformDiagLocalSolver::new(2, 1.0);
     let core = SubdomainCore::uniform(vec![0, 10]); // index 10 >= n_dofs=5
-    let entry = SubdomainEntry::new(core, solver);
+    let entry = make_entry(core, solver);
     let result = SchwarzPreconditioner::new(vec![entry], 5);
     match result {
         Err(PreconditionerBuildError::GlobalIndexOutOfBounds { .. }) => {}
         Ok(_) => panic!("expected GlobalIndexOutOfBounds, got Ok"),
-        Err(other) => panic!("expected GlobalIndexOutOfBounds, got: {:?}", other),
     }
 }
 
 #[test]
 fn test_validate_partition_weight_length_mismatch() {
-    use schwarz_precond::domain::PartitionWeights;
-    let solver = common::UniformDiagLocalSolver::new(2, 1.0);
-    let core = SubdomainCore {
-        global_indices: vec![0, 1],
-        partition_weights: PartitionWeights::NonUniform(vec![1.0, 0.5, 0.3]), // 3 weights, 2 indices
-    };
-    let entry = SubdomainEntry::new(core, solver);
-    let result = SchwarzPreconditioner::new(vec![entry], 10);
+    let result = SubdomainCore::with_partition_weights(
+        vec![0, 1],
+        PartitionWeights::NonUniform(vec![1.0, 0.5, 0.3]),
+    );
     match result {
-        Err(PreconditionerBuildError::PartitionWeightLengthMismatch { .. }) => {}
+        Err(SubdomainCoreBuildError::PartitionWeightLengthMismatch { .. }) => {}
         Ok(_) => panic!("expected PartitionWeightLengthMismatch, got Ok"),
-        Err(other) => panic!("expected PartitionWeightLengthMismatch, got: {:?}", other),
     }
 }
 
@@ -921,14 +892,14 @@ fn test_additive_schwarz_parallel_readout_large_n() {
     let mut entries: Vec<SubdomainEntry<UniformDiagLocalSolver>> = Vec::new();
     let mut i = 0usize;
     while i + 1 < n {
-        entries.push(SubdomainEntry::new(
+        entries.push(make_entry(
             SubdomainCore::uniform(vec![i as u32, (i + 1) as u32]),
             UniformDiagLocalSolver::new(2, 2.0),
         ));
         i += 2;
     }
     if i < n {
-        entries.push(SubdomainEntry::new(
+        entries.push(make_entry(
             SubdomainCore::uniform(vec![i as u32]),
             UniformDiagLocalSolver::new(1, 2.0),
         ));
@@ -961,7 +932,7 @@ fn test_additive_schwarz_apply_fills_nan_on_solver_failure() {
         scratch_size: 2,
     };
     let core = SubdomainCore::uniform(vec![0u32, 1]);
-    let entry = SubdomainEntry::new(core, solver);
+    let entry = make_entry(core, solver);
 
     let schwarz = SchwarzPreconditioner::new(vec![entry], n)
         .expect("valid preconditioner with failing solver");
@@ -989,7 +960,7 @@ fn test_multiplicative_schwarz_apply_fills_nan_on_solver_failure() {
         scratch_size: 2,
     };
     let core = SubdomainCore::uniform(vec![0u32, 1]);
-    let entry = SubdomainEntry::new(core, solver);
+    let entry = make_entry(core, solver);
 
     let updater = OperatorResidualUpdater::new(&a, n);
     let prec = MultiplicativeSchwarzPreconditioner::new(vec![entry], updater, n, false)
@@ -1023,12 +994,12 @@ fn test_multiplicative_schwarz_empty_subdomain_ignored() {
     // Use DiagLocalSolver with an empty slice so both entries share the same type.
     let empty_solver = DiagLocalSolver::new(&[]);
     let empty_core = SubdomainCore::uniform(vec![]);
-    let empty_entry = SubdomainEntry::new(empty_core, empty_solver);
+    let empty_entry = make_entry(empty_core, empty_solver);
 
     // Real subdomain over DOFs [0, 1] with exact diagonal solver (diag = [2.0, 3.0]).
     let real_solver = DiagLocalSolver::new(&[2.0, 3.0]);
     let real_core = SubdomainCore::uniform(vec![0u32, 1]);
-    let real_entry = SubdomainEntry::new(real_core, real_solver);
+    let real_entry = make_entry(real_core, real_solver);
 
     let updater = OperatorResidualUpdater::new(&a, n);
     let prec =

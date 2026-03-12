@@ -3,7 +3,9 @@ use crate::local_solve::{LocalSolver, SubdomainEntry};
 use crate::Operator;
 
 use super::executor::AdditiveExecutor;
-use super::planning::{AdditiveSchwarzDiagnostics, ReductionPlan, ReductionStrategy};
+use super::planning::{
+    AdditiveScheduler, AdditiveSchwarzDiagnostics, ReductionPlan, ReductionStrategy,
+};
 
 /// One-level additive Schwarz preconditioner, generic over the local solver.
 ///
@@ -14,8 +16,8 @@ use super::planning::{AdditiveSchwarzDiagnostics, ReductionPlan, ReductionStrate
 pub struct SchwarzPreconditioner<S: LocalSolver> {
     /// Strategy for combining per-subdomain results.
     pub(super) reduction_strategy: ReductionStrategy,
-    /// Build-time metrics used by the adaptive additive scheduler.
-    pub(super) diagnostics: AdditiveSchwarzDiagnostics,
+    /// Build-time scheduler state for additive apply.
+    pub(super) scheduler: AdditiveScheduler,
     /// Static execution state for additive apply.
     pub(super) executor: AdditiveExecutor<S>,
 }
@@ -36,11 +38,15 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
         strategy: ReductionStrategy,
     ) -> Result<Self, PreconditionerBuildError> {
         validate_entries(&entries, n_dofs)?;
-        let max_scratch_size = entries.iter().map(|e| e.scratch_size()).max().unwrap_or(0);
-        let diagnostics = AdditiveSchwarzDiagnostics::from_entries(&entries, n_dofs);
+        let max_scratch_size = entries
+            .iter()
+            .map(SubdomainEntry::scratch_size)
+            .max()
+            .unwrap_or(0);
+        let scheduler = AdditiveScheduler::from_entries(&entries, n_dofs);
         Ok(Self {
             reduction_strategy: strategy,
-            diagnostics,
+            scheduler,
             executor: AdditiveExecutor::new(entries, n_dofs, max_scratch_size),
         })
     }
@@ -62,7 +68,7 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
 
     /// Build-time metrics used by the additive scheduler.
     pub fn diagnostics(&self) -> AdditiveSchwarzDiagnostics {
-        self.diagnostics
+        self.scheduler.diagnostics()
     }
 
     /// Return a copy that uses a different reduction strategy.
@@ -72,7 +78,7 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
     pub fn with_reduction_strategy(&self, strategy: ReductionStrategy) -> Self {
         Self {
             reduction_strategy: strategy,
-            diagnostics: self.diagnostics,
+            scheduler: self.scheduler,
             executor: self.executor.with_fresh_buffers(),
         }
     }
@@ -85,7 +91,7 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
 
     fn reduction_plan(&self) -> ReductionPlan {
         let threads = rayon::current_num_threads().max(1);
-        self.diagnostics
+        self.scheduler
             .reduction_plan(self.reduction_strategy, threads)
     }
 }
@@ -96,7 +102,7 @@ impl<S: LocalSolver> Clone for SchwarzPreconditioner<S> {
     fn clone(&self) -> Self {
         Self {
             reduction_strategy: self.reduction_strategy,
-            diagnostics: self.diagnostics,
+            scheduler: self.scheduler,
             executor: self.executor.clone(),
         }
     }

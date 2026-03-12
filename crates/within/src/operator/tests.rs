@@ -885,9 +885,9 @@ mod schwarz_tests {
     use crate::operator::local_solver::BlockElimSolver;
     use crate::operator::local_solver::FeLocalSolver;
     use crate::operator::schwarz::{
-        build_additive, build_entry, build_multiplicative_obs, build_multiplicative_sparse,
-        build_reduced_schur_factor, build_schwarz, compute_first_block_size, DomainSource,
-        ReducedSchurConfig,
+        build_additive, build_additive_with_strategy, build_entry, build_multiplicative_obs,
+        build_multiplicative_sparse, build_reduced_schur_factor, build_schwarz,
+        compute_first_block_size, DomainSource, ReducedSchurConfig,
     };
     use approx_chol::Config;
     use schwarz_precond::{LocalSolveOptions, LocalSolver, Operator, ReductionStrategy};
@@ -1042,7 +1042,7 @@ mod schwarz_tests {
             .build()
             .expect("test rayon pool");
         pool.install(|| {
-            let reduction = build_additive::<FactorMajorStore>(
+            let reduction = build_additive_with_strategy::<FactorMajorStore>(
                 DomainSource::FromParts(domain_pairs),
                 n_dofs,
                 &config,
@@ -1206,7 +1206,6 @@ mod schwarz_tests {
             DomainSource::FromParts(domain_pairs),
             design.n_dofs,
             &config,
-            schwarz_precond::ReductionStrategy::default(),
         )
         .expect("build schwarz with explicit domains");
         assert!(!schwarz.subdomains().is_empty());
@@ -1254,7 +1253,7 @@ mod schwarz_tests {
         let entry =
             build_entry(domain, cross_tab, &config).expect("exact Schur entry build failed");
 
-        match entry.solver {
+        match entry.solver() {
             FeLocalSolver::SchurComplement(solver) => {
                 assert!(solver.uses_dense_reduced_factor());
             }
@@ -1278,7 +1277,7 @@ mod schwarz_tests {
         let entry =
             build_entry(domain, cross_tab, &config).expect("approximate Schur entry build failed");
 
-        match entry.solver {
+        match entry.solver() {
             FeLocalSolver::SchurComplement(solver) => {
                 assert!(solver.uses_dense_reduced_factor());
             }
@@ -1299,7 +1298,7 @@ mod schwarz_tests {
         let entry =
             build_entry(domain, cross_tab, &config).expect("exact Schur entry build failed");
 
-        match entry.solver {
+        match entry.solver() {
             FeLocalSolver::SchurComplement(solver) => {
                 assert!(!solver.uses_dense_reduced_factor());
             }
