@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from within._within import (
     ApproxCholConfig,
-    ApproxSchurConfig,
     MultiplicativeSchwarz,
     SchurComplement,
 )
@@ -29,7 +28,7 @@ from .._table import print_pivot, print_table
 
 @suite(
     "fixest_comparison",
-    description="Fixest-style 3FE difficult panel DGP up to 320M obs",
+    description="Fixest-style 3FE difficult panel DGP up to 160M obs",
     tags=("3fe", "fixest", "scaling", "difficult"),
 )
 def run_fixest_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
@@ -49,12 +48,8 @@ def run_fixest_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
             40_000_000,
             80_000_000,
             160_000_000,
-            320_000_000,
         ],
     )
-    max_obs = opts.fixest_max_obs or max(n_obs_list, default=0)
-    n_obs_list = [n_obs for n_obs in n_obs_list if n_obs <= max_obs]
-    fixest_variants = opts.fixest_variants
 
     solver_configs = [
         SolverConfig(
@@ -69,20 +64,6 @@ def run_fixest_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
             ),
         ),
     ]
-    if fixest_variants == "both":
-        solver_configs.append(
-            SolverConfig(
-                "CG(Schwarz)-sparse",
-                benchmark_cg(opts),
-                preconditioner=make_additive_schwarz(
-                    opts=opts,
-                    local_solver=SchurComplement(
-                        approx_chol=ApproxCholConfig(seed=0, split=2),
-                        approx_schur=ApproxSchurConfig(seed=0, split=2),
-                    ),
-                ),
-            )
-        )
     if opts.profile != "full":
         solver_configs.append(
             SolverConfig(

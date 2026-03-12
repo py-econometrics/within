@@ -111,9 +111,6 @@ def _cmd_run(args: argparse.Namespace) -> None:
         repeat=repeat,
         warmup=warmup,
         reduction_strategy=parse_reduction_strategy(args.reduction_strategy),
-        fixest_variants=args.fixest_variants
-        or ("both" if profile == "full" else "dense"),
-        fixest_max_obs=args.fixest_max_obs,
     )
 
     print(
@@ -181,18 +178,6 @@ def main() -> None:
         choices=("auto", "atomic", "parallel"),
         default="auto",
         help="Additive Schwarz reduction backend for benchmark runs",
-    )
-    run_p.add_argument(
-        "--fixest-variants",
-        choices=("dense", "both"),
-        default=None,
-        help="Fixest benchmark variants to run (default: profile-dependent)",
-    )
-    run_p.add_argument(
-        "--fixest-max-obs",
-        type=int,
-        default=None,
-        help="Cap fixest observation count for faster iteration",
     )
 
     args = parser.parse_args()

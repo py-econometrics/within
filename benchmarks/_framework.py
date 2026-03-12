@@ -32,7 +32,6 @@ from within._within import (
 )
 
 ScaleProfile = Literal["smoke", "iterate", "full"]
-FixestVariant = Literal["dense", "both"]
 _T = TypeVar("_T")
 BENCHMARK_SOLVER_TOL_MIN = 1e-7
 
@@ -288,8 +287,6 @@ class SuiteOptions:
     reduction_strategy: ReductionStrategy = field(
         default_factory=lambda: ReductionStrategy.Auto
     )
-    fixest_variants: FixestVariant = "both"
-    fixest_max_obs: int | None = None
 
     @property
     def quick(self) -> bool:
