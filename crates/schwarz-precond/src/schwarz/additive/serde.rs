@@ -1,13 +1,17 @@
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::local_solve::{LocalSolver, SubdomainEntry};
+use crate::local_solve::{LocalSolveInvoker, LocalSolver, SubdomainEntry};
 
 use super::executor::AdditiveExecutor;
 use super::planning::{AdditiveScheduler, ReductionStrategy};
 use super::preconditioner::SchwarzPreconditioner;
 
-impl<S: LocalSolver + Serialize> Serialize for SchwarzPreconditioner<S> {
+impl<S, I> Serialize for SchwarzPreconditioner<S, I>
+where
+    S: LocalSolver + Serialize,
+    I: LocalSolveInvoker<S>,
+{
     fn serialize<Ser: Serializer>(&self, serializer: Ser) -> Result<Ser::Ok, Ser::Error> {
         let mut state = serializer.serialize_struct("SchwarzPreconditioner", 3)?;
         state.serialize_field("subdomains", &*self.executor.subdomains)?;
@@ -17,8 +21,10 @@ impl<S: LocalSolver + Serialize> Serialize for SchwarzPreconditioner<S> {
     }
 }
 
-impl<'de, S: LocalSolver + serde::de::DeserializeOwned> Deserialize<'de>
-    for SchwarzPreconditioner<S>
+impl<'de, S, I> Deserialize<'de> for SchwarzPreconditioner<S, I>
+where
+    S: LocalSolver + serde::de::DeserializeOwned,
+    I: LocalSolveInvoker<S>,
 {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
@@ -33,7 +39,12 @@ impl<'de, S: LocalSolver + serde::de::DeserializeOwned> Deserialize<'de>
         Ok(SchwarzPreconditioner {
             reduction_strategy: ReductionStrategy::default(),
             scheduler: AdditiveScheduler::from_entries(&h.subdomains, h.n_dofs),
-            executor: AdditiveExecutor::new(h.subdomains, h.n_dofs, h.max_scratch_size),
+            executor: AdditiveExecutor::new(
+                h.subdomains,
+                h.n_dofs,
+                h.max_scratch_size,
+                I::default(),
+            ),
         })
     }
 }

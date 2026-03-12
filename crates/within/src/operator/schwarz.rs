@@ -11,10 +11,12 @@ use approx_chol::low_level::Builder;
 use approx_chol::{Config, CsrRef};
 use rayon::prelude::*;
 use schwarz_precond::SubdomainEntry;
+use serde::{Deserialize, Serialize};
 
 use super::gramian::CrossTab;
 use super::local_solver::{
-    ApproxCholSolver, BlockElimSolver, FeLocalSolver, LocalSolveStrategy, ReducedFactor,
+    ApproxCholSolver, BlockElimSolver, FeLocalSolveInvoker, FeLocalSolver, LocalSolveStrategy,
+    ReducedFactor,
 };
 use super::residual_update::{ObservationSpaceUpdater, SparseGramianUpdater};
 use super::schur_complement::{
@@ -25,8 +27,69 @@ use crate::domain::{build_local_domains, Subdomain, WeightedDesign};
 use crate::observation::ObservationStore;
 use crate::{WithinError, WithinResult};
 
-/// Concrete Schwarz type used in the parent crate.
-pub type FeSchwarz = SchwarzPreconditioner<FeLocalSolver>;
+/// Concrete additive Schwarz type used in the parent crate.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct FeSchwarz(SchwarzPreconditioner<FeLocalSolver, FeLocalSolveInvoker>);
+
+impl FeSchwarz {
+    pub(crate) fn new(inner: SchwarzPreconditioner<FeLocalSolver, FeLocalSolveInvoker>) -> Self {
+        Self(inner)
+    }
+
+    pub fn subdomains(&self) -> &[SubdomainEntry<FeLocalSolver>] {
+        self.0.subdomains()
+    }
+
+    pub fn reduction_strategy(&self) -> schwarz_precond::ReductionStrategy {
+        self.0.reduction_strategy()
+    }
+
+    pub fn resolved_reduction_strategy(&self) -> schwarz_precond::ReductionStrategy {
+        self.0.resolved_reduction_strategy()
+    }
+
+    pub fn diagnostics(&self) -> schwarz_precond::AdditiveSchwarzDiagnostics {
+        self.0.diagnostics()
+    }
+
+    pub fn with_reduction_strategy(&self, strategy: schwarz_precond::ReductionStrategy) -> Self {
+        Self(self.0.with_reduction_strategy(strategy))
+    }
+
+    pub fn try_apply(&self, r: &[f64], z: &mut [f64]) -> Result<(), schwarz_precond::ApplyError> {
+        self.0.try_apply(r, z)
+    }
+}
+
+impl schwarz_precond::Operator for FeSchwarz {
+    fn nrows(&self) -> usize {
+        self.0.nrows()
+    }
+
+    fn ncols(&self) -> usize {
+        self.0.ncols()
+    }
+
+    fn apply(&self, x: &[f64], y: &mut [f64]) {
+        self.0.apply(x, y);
+    }
+
+    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) {
+        self.0.apply_adjoint(x, y);
+    }
+
+    fn try_apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::ApplyError> {
+        self.0.try_apply(x, y)
+    }
+
+    fn try_apply_adjoint(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+    ) -> Result<(), schwarz_precond::ApplyError> {
+        self.0.try_apply_adjoint(x, y)
+    }
+}
 
 /// Concrete multiplicative Schwarz type: one-level with observation-space residual updates.
 pub type FeMultSchwarz<'a, S> =
@@ -100,9 +163,14 @@ pub(crate) fn build_additive_with_strategy<S: ObservationStore>(
     strategy: schwarz_precond::ReductionStrategy,
 ) -> WithinResult<FeSchwarz> {
     let entries = build_entries_from_source(source, config)?;
-    Ok(SchwarzPreconditioner::with_strategy(
-        entries, n_dofs, strategy,
-    )?)
+    Ok(FeSchwarz::new(
+        SchwarzPreconditioner::with_strategy_and_invoker(
+            entries,
+            n_dofs,
+            strategy,
+            FeLocalSolveInvoker,
+        )?,
+    ))
 }
 
 /// Build multiplicative Schwarz with observation-space updater.

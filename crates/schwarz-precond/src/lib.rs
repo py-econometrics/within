@@ -114,7 +114,7 @@ pub use error::{
     ApplyError, LocalSolveError, PreconditionerBuildError, SolveError, SubdomainCoreBuildError,
     SubdomainEntryBuildError,
 };
-pub use local_solve::{LocalSolver, SubdomainEntry};
+pub use local_solve::{DefaultLocalSolveInvoker, LocalSolveInvoker, LocalSolver, SubdomainEntry};
 pub use schwarz::{
     AdditiveSchwarzDiagnostics, MultiplicativeSchwarzPreconditioner, OperatorResidualUpdater,
     ReductionStrategy, ResidualUpdater, SchwarzPreconditioner,

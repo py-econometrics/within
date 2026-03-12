@@ -5,7 +5,7 @@ use std::sync::Arc;
 use approx_chol::Factor;
 use faer::{MatRef, Side};
 use rayon::prelude::*;
-use schwarz_precond::{LocalSolveError, LocalSolver, SparseMatrix};
+use schwarz_precond::{LocalSolveError, LocalSolveInvoker, LocalSolver, SparseMatrix};
 
 use crate::operator::csr_block::{CsrBlock, PAR_SPMV_THRESHOLD};
 use crate::operator::gramian::CrossTab;
@@ -178,6 +178,37 @@ pub enum FeLocalSolver {
     SchurComplement(Box<BlockElimSolver>),
 }
 
+impl FeLocalSolver {
+    pub(crate) fn solve_local_with_parallelism(
+        &self,
+        rhs: &mut [f64],
+        sol: &mut [f64],
+        allow_inner_parallelism: bool,
+    ) -> Result<(), LocalSolveError> {
+        match self {
+            Self::FullSddm { solver, .. } => solver.solve_local(rhs, sol),
+            Self::SchurComplement(s) => {
+                s.solve_local_with_parallelism(rhs, sol, allow_inner_parallelism)
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct FeLocalSolveInvoker;
+
+impl LocalSolveInvoker<FeLocalSolver> for FeLocalSolveInvoker {
+    fn solve_local(
+        &self,
+        solver: &FeLocalSolver,
+        rhs: &mut [f64],
+        sol: &mut [f64],
+        allow_inner_parallelism: bool,
+    ) -> Result<(), LocalSolveError> {
+        solver.solve_local_with_parallelism(rhs, sol, allow_inner_parallelism)
+    }
+}
+
 impl LocalSolver for FeLocalSolver {
     fn n_local(&self) -> usize {
         match self {
@@ -194,26 +225,7 @@ impl LocalSolver for FeLocalSolver {
     }
 
     fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), LocalSolveError> {
-        match self {
-            Self::FullSddm { solver, .. } => solver.solve_local(rhs, sol),
-            Self::SchurComplement(s) => s.solve_local(rhs, sol),
-        }
-    }
-
-    fn solve_local_with_policy(
-        &self,
-        rhs: &mut [f64],
-        sol: &mut [f64],
-        allow_inner_parallelism: bool,
-    ) -> Result<(), LocalSolveError> {
-        match self {
-            Self::FullSddm { solver, .. } => {
-                solver.solve_local_with_policy(rhs, sol, allow_inner_parallelism)
-            }
-            Self::SchurComplement(s) => {
-                s.solve_local_with_policy(rhs, sol, allow_inner_parallelism)
-            }
-        }
+        self.solve_local_with_parallelism(rhs, sol, true)
     }
 
     fn inner_parallelism_work_estimate(&self) -> usize {
@@ -508,20 +520,8 @@ impl BlockElimSolver {
     }
 }
 
-impl LocalSolver for BlockElimSolver {
-    fn n_local(&self) -> usize {
-        self.n_local
-    }
-
-    fn scratch_size(&self) -> usize {
-        self.n_local + self.n_reduced
-    }
-
-    fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), LocalSolveError> {
-        self.solve_local_with_policy(rhs, sol, true)
-    }
-
-    fn solve_local_with_policy(
+impl BlockElimSolver {
+    fn solve_local_with_parallelism(
         &self,
         rhs: &mut [f64],
         sol: &mut [f64],
@@ -610,6 +610,20 @@ impl LocalSolver for BlockElimSolver {
         subtract_mean(sol, n);
         negate_block(&mut sol[..n], n_q);
         Ok(())
+    }
+}
+
+impl LocalSolver for BlockElimSolver {
+    fn n_local(&self) -> usize {
+        self.n_local
+    }
+
+    fn scratch_size(&self) -> usize {
+        self.n_local + self.n_reduced
+    }
+
+    fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), LocalSolveError> {
+        self.solve_local_with_parallelism(rhs, sol, true)
     }
 
     fn inner_parallelism_work_estimate(&self) -> usize {

@@ -9,7 +9,7 @@ use rayon::prelude::*;
 use schwarz_precond::domain::PartitionWeights;
 use schwarz_precond::solve::cg::{cg_solve, cg_solve_preconditioned};
 use schwarz_precond::{
-    LocalSolveError, LocalSolver, MultiplicativeSchwarzPreconditioner, Operator,
+    LocalSolveError, LocalSolveInvoker, LocalSolver, MultiplicativeSchwarzPreconditioner, Operator,
     OperatorResidualUpdater, ReductionStrategy, SchwarzPreconditioner, SubdomainCore,
     SubdomainEntry,
 };
@@ -81,32 +81,39 @@ impl LocalSolver for NestedRayonIdentitySolver {
     }
 
     fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), LocalSolveError> {
-        self.solve_local_with_policy(rhs, sol, true)
-    }
-
-    fn solve_local_with_policy(
-        &self,
-        rhs: &mut [f64],
-        sol: &mut [f64],
-        allow_inner_parallelism: bool,
-    ) -> Result<(), LocalSolveError> {
-        if allow_inner_parallelism {
-            sol[..self.n]
-                .par_chunks_mut(Self::CHUNK_SIZE)
-                .enumerate()
-                .for_each(|(chunk_idx, chunk)| {
-                    let start = chunk_idx * Self::CHUNK_SIZE;
-                    let end = start + chunk.len();
-                    chunk.copy_from_slice(&rhs[start..end]);
-                });
-        } else {
-            sol[..self.n].copy_from_slice(&rhs[..self.n]);
-        }
+        sol[..self.n].copy_from_slice(&rhs[..self.n]);
         Ok(())
     }
 
     fn inner_parallelism_work_estimate(&self) -> usize {
         self.n.saturating_mul(32)
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct NestedRayonSolveInvoker;
+
+impl LocalSolveInvoker<NestedRayonIdentitySolver> for NestedRayonSolveInvoker {
+    fn solve_local(
+        &self,
+        solver: &NestedRayonIdentitySolver,
+        rhs: &mut [f64],
+        sol: &mut [f64],
+        allow_inner_parallelism: bool,
+    ) -> Result<(), LocalSolveError> {
+        if allow_inner_parallelism {
+            sol[..solver.n]
+                .par_chunks_mut(NestedRayonIdentitySolver::CHUNK_SIZE)
+                .enumerate()
+                .for_each(|(chunk_idx, chunk)| {
+                    let start = chunk_idx * NestedRayonIdentitySolver::CHUNK_SIZE;
+                    let end = start + chunk.len();
+                    chunk.copy_from_slice(&rhs[start..end]);
+                });
+        } else {
+            sol[..solver.n].copy_from_slice(&rhs[..solver.n]);
+        }
+        Ok(())
     }
 }
 
@@ -131,10 +138,11 @@ fn run_nested_parallel_reduction_regression_case() {
         .build()
         .expect("test rayon pool");
     pool.install(|| {
-        let schwarz = SchwarzPreconditioner::with_strategy(
+        let schwarz = SchwarzPreconditioner::with_strategy_and_invoker(
             make_nested_parallel_entries(n),
             n,
             ReductionStrategy::ParallelReduction,
+            NestedRayonSolveInvoker,
         )
         .expect("valid nested parallel additive preconditioner");
 

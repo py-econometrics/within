@@ -1,5 +1,7 @@
 use crate::error::{validate_entries, ApplyError, PreconditionerBuildError};
-use crate::local_solve::{LocalSolver, SubdomainEntry};
+use crate::local_solve::{
+    DefaultLocalSolveInvoker, LocalSolveInvoker, LocalSolver, SubdomainEntry,
+};
 use crate::Operator;
 
 use super::executor::AdditiveExecutor;
@@ -13,16 +15,17 @@ use super::planning::{
 /// shares the heavy subdomain data. A pool of per-thread buffer sets enables
 /// safe concurrent `apply()` calls on the same instance — each caller grabs
 /// an independent buffer set from the pool for the duration of the call.
-pub struct SchwarzPreconditioner<S: LocalSolver> {
+pub struct SchwarzPreconditioner<S: LocalSolver, I: LocalSolveInvoker<S> = DefaultLocalSolveInvoker>
+{
     /// Strategy for combining per-subdomain results.
     pub(super) reduction_strategy: ReductionStrategy,
     /// Build-time scheduler state for additive apply.
     pub(super) scheduler: AdditiveScheduler,
     /// Static execution state for additive apply.
-    pub(super) executor: AdditiveExecutor<S>,
+    pub(super) executor: AdditiveExecutor<S, I>,
 }
 
-impl<S: LocalSolver> SchwarzPreconditioner<S> {
+impl<S: LocalSolver> SchwarzPreconditioner<S, DefaultLocalSolveInvoker> {
     /// Construct from pre-built subdomain entries using the default strategy.
     pub fn new(
         entries: Vec<SubdomainEntry<S>>,
@@ -37,6 +40,19 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
         n_dofs: usize,
         strategy: ReductionStrategy,
     ) -> Result<Self, PreconditionerBuildError> {
+        Self::with_strategy_and_invoker(entries, n_dofs, strategy, DefaultLocalSolveInvoker)
+    }
+}
+
+impl<S: LocalSolver, I: LocalSolveInvoker<S>> SchwarzPreconditioner<S, I> {
+    /// Construct from pre-built subdomain entries with an explicit reduction strategy
+    /// and a caller-provided local-solve invoker.
+    pub fn with_strategy_and_invoker(
+        entries: Vec<SubdomainEntry<S>>,
+        n_dofs: usize,
+        strategy: ReductionStrategy,
+        invoker: I,
+    ) -> Result<Self, PreconditionerBuildError> {
         validate_entries(&entries, n_dofs)?;
         let max_scratch_size = entries
             .iter()
@@ -47,7 +63,7 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
         Ok(Self {
             reduction_strategy: strategy,
             scheduler,
-            executor: AdditiveExecutor::new(entries, n_dofs, max_scratch_size),
+            executor: AdditiveExecutor::new(entries, n_dofs, max_scratch_size, invoker),
         })
     }
 
@@ -96,7 +112,7 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
     }
 }
 
-impl<S: LocalSolver> Clone for SchwarzPreconditioner<S> {
+impl<S: LocalSolver, I: LocalSolveInvoker<S>> Clone for SchwarzPreconditioner<S, I> {
     /// Clone shares both the subdomain data and the buffer pool via `Arc`.
     /// This is O(1) and the clone is fully interchangeable with the original.
     fn clone(&self) -> Self {
@@ -108,7 +124,7 @@ impl<S: LocalSolver> Clone for SchwarzPreconditioner<S> {
     }
 }
 
-impl<S: LocalSolver> Operator for SchwarzPreconditioner<S> {
+impl<S: LocalSolver, I: LocalSolveInvoker<S>> Operator for SchwarzPreconditioner<S, I> {
     fn nrows(&self) -> usize {
         self.executor.n_dofs
     }
