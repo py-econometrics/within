@@ -39,7 +39,7 @@ fn main() {
 
     // Solve with default parameters (CG + additive Schwarz, implicit operator).
     let params = SolverParams::default();
-    let precond = Preconditioner::Additive(LocalSolverConfig::solver_default());
+    let precond = Preconditioner::additive(LocalSolverConfig::solver_default());
     let result = solve(categories.view(), &y, None, &params, Some(&precond)).expect("solve");
 
     println!("=== Basic solve (default params) ===");

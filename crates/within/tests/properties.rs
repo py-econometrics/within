@@ -42,7 +42,7 @@ fn default_params() -> SolverParams {
 }
 
 fn additive_precond() -> Preconditioner {
-    Preconditioner::Additive(LocalSolverConfig::solver_default())
+    Preconditioner::additive(LocalSolverConfig::solver_default())
 }
 
 proptest! {

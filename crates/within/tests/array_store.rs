@@ -10,7 +10,7 @@ fn default_params() -> SolverParams {
 }
 
 fn additive_precond() -> Preconditioner {
-    Preconditioner::Additive(LocalSolverConfig::solver_default())
+    Preconditioner::additive(LocalSolverConfig::solver_default())
 }
 
 /// Build a larger problem for more meaningful convergence tests.

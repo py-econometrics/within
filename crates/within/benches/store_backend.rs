@@ -54,7 +54,7 @@ fn generate_problem(n_obs: usize, n_lev: &[usize], seed: u64) -> Problem {
         maxiter: MAXITER,
         ..Default::default()
     };
-    let preconditioner = Some(Preconditioner::Additive(LocalSolverConfig::solver_default()));
+    let preconditioner = Some(Preconditioner::additive(LocalSolverConfig::solver_default()));
 
     let label = format!(
         "{}FE {} n={}",
