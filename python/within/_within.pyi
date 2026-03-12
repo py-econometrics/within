@@ -13,11 +13,6 @@ class Preconditioner(IntEnum):
     Multiplicative = 1
     Off = 2
 
-class ReductionStrategy(IntEnum):
-    Auto = 0
-    AtomicScatter = 1
-    ParallelReduction = 2
-
 class CG:
     """Conjugate Gradient solver configuration."""
 
@@ -145,24 +140,6 @@ class FePreconditioner:
     def nrows(self) -> int: ...
     @property
     def ncols(self) -> int: ...
-    @property
-    def n_subdomains(self) -> int: ...
-    @property
-    def subdomain_inner_parallel_work(self) -> list[int]: ...
-    @property
-    def reduction_strategy(self) -> ReductionStrategy | None: ...
-    @property
-    def resolved_reduction_strategy(self) -> ReductionStrategy | None: ...
-    @property
-    def total_inner_parallel_work(self) -> int | None: ...
-    @property
-    def max_inner_parallel_work(self) -> int | None: ...
-    @property
-    def total_scatter_dofs(self) -> int | None: ...
-    @property
-    def outer_parallel_capacity(self) -> float | None: ...
-    @property
-    def scatter_overlap(self) -> float | None: ...
     def __init__(self, data: bytes) -> None: ...
     def __repr__(self) -> str: ...
 
@@ -225,11 +202,9 @@ class FullSddm:
 
 class AdditiveSchwarz:
     local_solver: SchurComplement | FullSddm | None
-    reduction: ReductionStrategy
     def __init__(
         self,
         local_solver: SchurComplement | FullSddm | None = None,
-        reduction: ReductionStrategy = ReductionStrategy.Auto,
     ) -> None: ...
 
 class MultiplicativeSchwarz:

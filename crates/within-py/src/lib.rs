@@ -5,8 +5,8 @@ use numpy::{IntoPyArray, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
 
 use within::config::{
-    ApproxSchurConfig, KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner,
-    ReductionStrategy, SolverParams, DEFAULT_DENSE_SCHUR_THRESHOLD,
+    ApproxSchurConfig, KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner, SolverParams,
+    DEFAULT_DENSE_SCHUR_THRESHOLD,
 };
 use within::domain::WeightedDesign;
 use within::observation::{FactorMajorStore, ObservationWeights};
@@ -127,33 +127,6 @@ pub enum PyPreconditioner {
     Off = 2,
 }
 
-#[pyclass(frozen, eq, eq_int)]
-#[pyo3(name = "ReductionStrategy")]
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum PyReductionStrategy {
-    Auto = 0,
-    AtomicScatter = 1,
-    ParallelReduction = 2,
-}
-
-impl PyReductionStrategy {
-    fn to_native(self) -> ReductionStrategy {
-        match self {
-            Self::Auto => ReductionStrategy::Auto,
-            Self::AtomicScatter => ReductionStrategy::AtomicScatter,
-            Self::ParallelReduction => ReductionStrategy::ParallelReduction,
-        }
-    }
-
-    fn from_native(strategy: ReductionStrategy) -> Self {
-        match strategy {
-            ReductionStrategy::Auto => Self::Auto,
-            ReductionStrategy::AtomicScatter => Self::AtomicScatter,
-            ReductionStrategy::ParallelReduction => Self::ParallelReduction,
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Local solver config classes (available via `_within` for benchmarks)
 // ---------------------------------------------------------------------------
@@ -211,19 +184,14 @@ impl PyFullSddm {
 pub struct PyAdditiveSchwarz {
     #[pyo3(get)]
     pub local_solver: Option<PyObject>,
-    #[pyo3(get)]
-    pub reduction: PyReductionStrategy,
 }
 
 #[pymethods]
 impl PyAdditiveSchwarz {
     #[new]
-    #[pyo3(signature = (local_solver=None, reduction=PyReductionStrategy::Auto))]
-    fn new(local_solver: Option<PyObject>, reduction: PyReductionStrategy) -> Self {
-        Self {
-            local_solver,
-            reduction,
-        }
+    #[pyo3(signature = (local_solver=None))]
+    fn new(local_solver: Option<PyObject>) -> Self {
+        Self { local_solver }
     }
 }
 
@@ -417,7 +385,7 @@ fn extract_preconditioner(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Pr
     if let Ok(p) = obj.extract::<PyPreconditioner>() {
         return match p {
             PyPreconditioner::Additive => {
-                Ok(Preconditioner::additive(LocalSolverConfig::solver_default()))
+                Ok(Preconditioner::Additive(LocalSolverConfig::solver_default()))
             }
             PyPreconditioner::Multiplicative => Ok(Preconditioner::Multiplicative(
                 LocalSolverConfig::solver_default(),
@@ -428,14 +396,12 @@ fn extract_preconditioner(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Pr
     }
     // Advanced: AdditiveSchwarz / MultiplicativeSchwarz objects
     if let Ok(schwarz) = obj.downcast::<PyAdditiveSchwarz>() {
-        let s = schwarz.get();
         let cfg = extract_local_solver_or_default(
             py,
-            &s.local_solver,
+            &schwarz.get().local_solver,
             LocalSolverConfig::solver_default(),
         )?;
-        let strategy = s.reduction.to_native();
-        return Ok(Preconditioner::Additive(cfg, strategy));
+        return Ok(Preconditioner::Additive(cfg));
     }
     if let Ok(schwarz) = obj.downcast::<PyMultiplicativeSchwarz>() {
         let cfg = extract_local_solver_or_default(
@@ -464,7 +430,7 @@ fn extract_optional_preconditioner(
 ) -> PyResult<Option<Preconditioner>> {
     match preconditioner {
         // None → default: additive Schwarz
-        None => Ok(Some(Preconditioner::additive(
+        None => Ok(Some(Preconditioner::Additive(
             LocalSolverConfig::solver_default(),
         ))),
         Some(obj) => {
@@ -742,74 +708,6 @@ impl PyFePreconditioner {
         self.inner.ncols()
     }
 
-    /// Number of Schwarz subdomains in the built preconditioner.
-    #[getter]
-    fn n_subdomains(&self) -> usize {
-        self.inner.n_subdomains()
-    }
-
-    /// Estimated nested-parallel work per subdomain.
-    #[getter]
-    fn subdomain_inner_parallel_work(&self) -> Vec<usize> {
-        self.inner.subdomain_inner_parallel_work()
-    }
-
-    /// Configured additive reduction strategy, if this is an additive preconditioner.
-    #[getter]
-    fn reduction_strategy(&self) -> Option<PyReductionStrategy> {
-        self.inner
-            .reduction_strategy()
-            .map(PyReductionStrategy::from_native)
-    }
-
-    /// Concrete additive backend selected for the current Rayon width.
-    #[getter]
-    fn resolved_reduction_strategy(&self) -> Option<PyReductionStrategy> {
-        self.inner
-            .resolved_reduction_strategy()
-            .map(PyReductionStrategy::from_native)
-    }
-
-    /// Total additive inner-parallel work estimate.
-    #[getter]
-    fn total_inner_parallel_work(&self) -> Option<usize> {
-        self.inner
-            .additive_schwarz_diagnostics()
-            .map(|diag| diag.total_inner_parallel_work())
-    }
-
-    /// Largest single-subdomain inner-parallel work estimate.
-    #[getter]
-    fn max_inner_parallel_work(&self) -> Option<usize> {
-        self.inner
-            .additive_schwarz_diagnostics()
-            .map(|diag| diag.max_inner_parallel_work())
-    }
-
-    /// Total additive scatter entries across all subdomains.
-    #[getter]
-    fn total_scatter_dofs(&self) -> Option<usize> {
-        self.inner
-            .additive_schwarz_diagnostics()
-            .map(|diag| diag.total_scatter_dofs())
-    }
-
-    /// Estimated number of heavy subdomains available to outer parallelism.
-    #[getter]
-    fn outer_parallel_capacity(&self) -> Option<f64> {
-        self.inner
-            .additive_schwarz_diagnostics()
-            .map(|diag| diag.outer_parallel_capacity())
-    }
-
-    /// Average overlap multiplicity of the additive scatter.
-    #[getter]
-    fn scatter_overlap(&self) -> Option<f64> {
-        self.inner
-            .additive_schwarz_diagnostics()
-            .map(|diag| diag.scatter_overlap())
-    }
-
     fn __repr__(&self) -> String {
         let variant = match &self.inner {
             FePreconditioner::Additive(_) => "Additive",
@@ -895,7 +793,7 @@ impl PySolver {
         // Handle preconditioner argument
         let solver = match preconditioner {
             None => {
-                let precond = Preconditioner::additive(LocalSolverConfig::solver_default());
+                let precond = Preconditioner::Additive(LocalSolverConfig::solver_default());
                 validate_cg_preconditioner(&params, &Some(precond.clone()))?;
                 py.allow_threads(|| Solver::from_design(design, &params, Some(&precond)))
             }
@@ -1021,7 +919,6 @@ fn _within(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyGMRES>()?;
     m.add_class::<PyAdditiveSchwarz>()?;
     m.add_class::<PyMultiplicativeSchwarz>()?;
-    m.add_class::<PyReductionStrategy>()?;
     m.add_class::<PyOperatorRepr>()?;
     m.add_class::<PyPreconditioner>()?;
     m.add_class::<PyApproxCholConfig>()?;

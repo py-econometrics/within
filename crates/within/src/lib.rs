@@ -67,8 +67,8 @@ pub use solver::Solver;
 // ---------------------------------------------------------------------------
 
 pub use config::{
-    ApproxSchurConfig, KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner,
-    ReductionStrategy, SolverParams, DEFAULT_DENSE_SCHUR_THRESHOLD,
+    ApproxSchurConfig, KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner, SolverParams,
+    DEFAULT_DENSE_SCHUR_THRESHOLD,
 };
 pub use error::{WithinError, WithinResult};
 pub use orchestrate::SolveResult;

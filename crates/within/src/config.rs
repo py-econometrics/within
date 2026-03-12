@@ -1,7 +1,5 @@
 //! Solver and preconditioner configuration types.
 
-pub use schwarz_precond::ReductionStrategy;
-
 /// Default `n_keep` threshold for dense Schur fast-path factorization.
 ///
 /// Schur domains with `min(n_q, n_r) <= threshold` will first try dense
@@ -126,16 +124,9 @@ pub enum KrylovMethod {
 #[derive(Debug, Clone)]
 pub enum Preconditioner {
     /// Additive Schwarz (symmetric — valid for CG and GMRES).
-    Additive(LocalSolverConfig, ReductionStrategy),
+    Additive(LocalSolverConfig),
     /// Multiplicative Schwarz (non-symmetric — GMRES only).
     Multiplicative(LocalSolverConfig),
-}
-
-impl Preconditioner {
-    /// Construct additive Schwarz with default reduction strategy.
-    pub fn additive(config: LocalSolverConfig) -> Self {
-        Self::Additive(config, ReductionStrategy::default())
-    }
 }
 
 // ---------------------------------------------------------------------------

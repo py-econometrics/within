@@ -49,7 +49,7 @@ fn test_empty_categories_via_solve() {
     let cats = Array2::<u32>::zeros((0, 2));
     let y: Vec<f64> = vec![];
     let params = SolverParams::default();
-    let precond = Preconditioner::additive(LocalSolverConfig::solver_default());
+    let precond = Preconditioner::Additive(LocalSolverConfig::solver_default());
     let result = solve(cats.view(), &y, None, &params, Some(&precond));
     assert!(result.is_err());
 }

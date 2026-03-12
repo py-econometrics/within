@@ -11,7 +11,6 @@ from within._within import (
     solve_batch,
     AdditiveSchwarz,
     MultiplicativeSchwarz,
-    ReductionStrategy,
 )
 
 # Convenience aliases
@@ -33,5 +32,4 @@ __all__ = [
     "Multiplicative",
     "AdditiveSchwarz",
     "MultiplicativeSchwarz",
-    "ReductionStrategy",
 ]

@@ -41,7 +41,7 @@ fn main() {
     }
 
     let cg_params = SolverParams::default();
-    let cg_precond = Preconditioner::additive(LocalSolverConfig::solver_default());
+    let cg_precond = Preconditioner::Additive(LocalSolverConfig::solver_default());
     let cg_result =
         solve(categories.view(), &y, None, &cg_params, Some(&cg_precond)).expect("cg solve");
 

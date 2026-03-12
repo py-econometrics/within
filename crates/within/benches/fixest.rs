@@ -156,7 +156,7 @@ fn run_cg_one_level(design: &WeightedDesign<FactorMajorStore>, y: &[f64], ac2: b
         maxiter: MAXITER,
         ..Default::default()
     };
-    let precond = Preconditioner::additive(cfg);
+    let precond = Preconditioner::Additive(cfg);
     let label = if ac2 { "CG(1L,AC2)" } else { "CG(1L,AC)" };
     run_smoke(design, y, &params, Some(&precond), label);
 }
