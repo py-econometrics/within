@@ -91,9 +91,7 @@ The choice of solver depends on whether the preconditioner is symmetric; this in
 
 ### 3.2 Convergence criterion
 
-The solver converges when $\|r_k\|_2 / \|b\|_2 \leq \text{tol}$ (default $10^{-8}$). This controls the normal-equation residual, not the demeaning error directly, but in practice it is a reliable proxy: when the normal-equation residual is small, the demeaned values are accurate enough for downstream inference.
-
-The solver reports the independently verified residual $\|G\alpha - b\| / \|b\|$ after each solve.
+The solver converges when the normalized residual $\|r_k\|_2 / \|b\|_2 \leq \text{tol}$ (default $10^{-8}$). The residual $r_k = b - G\alpha_k$ measures how well the current $\alpha_k$ satisfies the normal equations — it is a property of the linear system, not a direct measure of how accurately the fixed effects have been removed from $y$. In practice the two are closely linked: a small residual implies that $\alpha_k$ is close to the true solution $\alpha^\ast$, and hence that the demeaned residuals $e = y - D\alpha_k$ are accurate.
 
 **Iterative refinement.** When higher accuracy is needed, the solution can be improved by solving $G\delta = (b - G\alpha_0)$ and updating $\alpha \leftarrow \alpha_0 + \delta$. Each refinement step reuses the existing preconditioner and reduces the error by roughly the same factor as the original solve.
 
@@ -127,11 +125,11 @@ $$
 M^{-1}_{\text{add}} r = \sum_{i=1}^{N_s} R_i^\top \tilde{D}_i A_i^+ \tilde{D}_i R_i r
 $$
 
-For each subdomain: gather DOFs from the global residual with weights → local solve → scatter back with weights. All subdomains are processed in parallel. The preconditioner is symmetric, making it compatible with CG.
+Each subdomain restricts the global residual to its local DOFs (with partition-of-unity weights applied on input), solves the local system, and prolongates the correction back to the global space (with weights applied on output). All subdomains are processed independently and in parallel. Because the weighting is applied symmetrically on both sides, the resulting preconditioner is symmetric, making it compatible with CG.
 
 ### 4.4 Multiplicative Schwarz
 
-The multiplicative variant processes subdomains sequentially, updating the residual after each correction. Each subdomain "sees" corrections from earlier subdomains, generally improving convergence versus additive Schwarz. However, the sequential processing makes the preconditioner non-symmetric, requiring GMRES.
+The multiplicative variant processes subdomains sequentially, updating the residual after each correction. Each subdomain "sees" corrections from earlier subdomains, generally improving convergence versus additive Schwarz. However, the sequential processing makes the preconditioner non-symmetric, requiring the use of the GMRES solver.
 
 ### 4.5 Subdomain construction
 
@@ -139,9 +137,9 @@ Subdomains are derived from the factor-pair structure of the Gramian:
 
 1. **Enumerate factor pairs**: all $\binom{Q}{2}$ unordered pairs $(q, r)$.
 2. **Build cross-tabulation**: for each pair, scan observations to build the sparse bipartite block $C_{qr}$ and diagonal vectors $D_q$, $D_r$.
-3. **Find connected components**: run DFS on the bipartite graph of $C_{qr}$ to identify independent components.
+3. **Find connected components**: run DFS (depth-first search — a standard graph traversal that follows edges recursively until no new nodes are reachable) on the bipartite graph of $C_{qr}$ to identify independent components.
 4. **Create subdomains**: each component becomes a subdomain with its global DOF indices.
-5. **Compute partition-of-unity weights**: count how many subdomains each DOF belongs to, assign $w = 1/\sqrt{\text{count}}$.
+5. **Compute partition-of-unity weights**: if subdomains overlap, count how many subdomains each DOF belongs to and assign $w = 1/\sqrt{\text{count}}$; for non-overlapping DOFs the weight is trivially 1.
 
 Factor pairs are processed in parallel.
 
