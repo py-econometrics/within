@@ -115,7 +115,7 @@ When subdomains overlap (a DOF belongs to multiple subdomains), corrections must
 
 ![Partition of unity](images/partition_of_unity.svg)
 
-Each DOF $j$ that appears in $c_j$ subdomains gets weight $1/\sqrt{c_j}$ in each subdomain. The weights are applied on both the restriction and prolongation sides, so they contribute $c_j \times (1/\sqrt{c_j})^2 = 1$ - correctly partitioning the correction. In the running example, every DOF appears in exactly 2 subdomains, so every weight is $1/\sqrt{2}$.
+Each DOF $j$ that appears in $c_j$ subdomains gets weight $\omega_j = 1/\sqrt{c_j}$ in each subdomain. The weights are applied on both the restriction and prolongation sides, so they contribute $c_j \times \omega_j^2 = 1$ - correctly partitioning the correction. In the running example, every DOF appears in exactly 2 subdomains, so every weight is $\omega_j = 1/\sqrt{2}$.
 
 ### 4.3 Additive Schwarz
 
@@ -139,7 +139,7 @@ Subdomains are derived from the factor-pair structure of the Gramian:
 2. **Build cross-tabulation**: for each pair, scan observations to build the sparse bipartite block $C_{qr}$ and diagonal vectors $D_q$, $D_r$.
 3. **Find connected components**: run DFS (depth-first search — a standard graph traversal that follows edges recursively until no new nodes are reachable) on the bipartite graph of $C_{qr}$ to identify independent components.
 4. **Create subdomains**: each component becomes a subdomain with its global DOF indices.
-5. **Compute partition-of-unity weights**: if subdomains overlap, count how many subdomains each DOF belongs to and assign $w = 1/\sqrt{\text{count}}$; for non-overlapping DOFs the weight is trivially 1.
+5. **Compute partition-of-unity weights**: if subdomains overlap, count how many subdomains each DOF belongs to and assign $\omega_j = 1/\sqrt{c_j}$; for non-overlapping DOFs the weight is trivially 1.
 
 Factor pairs are processed in parallel.
 
@@ -161,7 +161,7 @@ Input: categories[n][Q], y[n], weights[n], solver_params, precond_config
    b. Find connected components of the bipartite graph
    c. For each component: create subdomain with global DOF indices
 
-3. Compute partition-of-unity weights (1/sqrt(count) per DOF)
+3. Compute partition-of-unity weights (ω_j = 1/sqrt(c_j) per DOF)
 
 4. For each subdomain in parallel:
    a. Build local Laplacian (sign-flip) or compute Schur complement
