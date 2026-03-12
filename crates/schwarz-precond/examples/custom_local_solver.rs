@@ -168,20 +168,20 @@ fn build_entries(
         let sub = global_sparse.extract_submatrix(&indices);
         let solver = DenseCholeskyLocalSolver::from_sparse(&sub);
         let global_indices = indices.iter().map(|&x| x as u32).collect();
-        entries.push(SubdomainEntry::new(
-            SubdomainCore::uniform(global_indices),
-            solver,
-        ));
+        entries.push(
+            SubdomainEntry::try_new(SubdomainCore::uniform(global_indices), solver)
+                .expect("valid 2-DOF subdomain entry"),
+        );
         i += 2;
     }
     if i < n {
         let indices = vec![i];
         let sub = global_sparse.extract_submatrix(&indices);
         let solver = DenseCholeskyLocalSolver::from_sparse(&sub);
-        entries.push(SubdomainEntry::new(
-            SubdomainCore::uniform(vec![i as u32]),
-            solver,
-        ));
+        entries.push(
+            SubdomainEntry::try_new(SubdomainCore::uniform(vec![i as u32]), solver)
+                .expect("valid 1-DOF subdomain entry"),
+        );
     }
     entries
 }

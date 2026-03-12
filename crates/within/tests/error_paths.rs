@@ -113,10 +113,11 @@ fn test_within_error_display_local_solver_build() {
 
 #[test]
 fn test_within_error_display_preconditioner_build() {
-    let inner = PreconditionerBuildError::LocalDofCountMismatch {
+    let inner = PreconditionerBuildError::GlobalIndexOutOfBounds {
         subdomain: 0,
-        index_count: 5,
-        solver_n_local: 3,
+        local_index: 1,
+        global_index: 5,
+        n_dofs: 3,
     };
     let e = WithinError::PreconditionerBuild(inner);
     let s = e.to_string();
@@ -162,10 +163,11 @@ fn test_within_error_source_none_variants() {
 
 #[test]
 fn test_within_error_source_preconditioner_build() {
-    let inner = PreconditionerBuildError::LocalDofCountMismatch {
+    let inner = PreconditionerBuildError::GlobalIndexOutOfBounds {
         subdomain: 0,
-        index_count: 5,
-        solver_n_local: 3,
+        local_index: 1,
+        global_index: 5,
+        n_dofs: 3,
     };
     let e = WithinError::PreconditionerBuild(inner);
     assert!(e.source().is_some());

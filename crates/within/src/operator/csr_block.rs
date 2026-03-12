@@ -1,7 +1,7 @@
 use rayon::prelude::*;
 
 /// Minimum number of rows to trigger parallel SpMV.
-const PAR_SPMV_THRESHOLD: usize = 10_000;
+pub(crate) const PAR_SPMV_THRESHOLD: usize = 10_000;
 /// Target number of non-zeros per parallel chunk.
 const TARGET_NNZ_PER_CHUNK: usize = 32_768;
 
@@ -103,11 +103,17 @@ impl CsrBlock {
     ///
     /// Equivalent to `y += A * (d .* x)` but without allocating the
     /// element-wise product. Automatically parallelizes for large matrices.
-    pub(crate) fn spmv_diag_add(&self, d: &[f64], x: &[f64], y: &mut [f64]) {
+    pub(crate) fn spmv_diag_add(
+        &self,
+        d: &[f64],
+        x: &[f64],
+        y: &mut [f64],
+        allow_inner_parallelism: bool,
+    ) {
         debug_assert!(d.len() >= self.ncols);
         debug_assert!(x.len() >= self.ncols);
         debug_assert!(y.len() >= self.nrows);
-        if self.nrows > PAR_SPMV_THRESHOLD {
+        if self.nrows > PAR_SPMV_THRESHOLD && allow_inner_parallelism {
             self.par_spmv_diag_add(d, x, y);
         } else {
             self.seq_spmv_diag_add(d, x, y);
@@ -277,7 +283,7 @@ mod tests {
         let x = vec![1.0, 2.0, 1.0];
         let mut y = vec![10.0, 20.0];
 
-        b.spmv_diag_add(&d, &x, &mut y);
+        b.spmv_diag_add(&d, &x, &mut y, true);
 
         assert!((y[0] - 18.0).abs() < 1e-14, "y[0] = {}", y[0]);
         assert!((y[1] - 26.0).abs() < 1e-14, "y[1] = {}", y[1]);
@@ -291,7 +297,7 @@ mod tests {
         let x = vec![1.0, 1.0, 1.0, 1.0];
         let mut y = vec![0.0; 3];
 
-        b.spmv_diag_add(&d, &x, &mut y);
+        b.spmv_diag_add(&d, &x, &mut y, true);
 
         // Row 0: 1*1 + 2*1 = 3
         // Row 1: 3*1 + 4*1 = 7
@@ -308,7 +314,7 @@ mod tests {
         let x = vec![0.0; 4];
         let mut y = vec![5.0; 3];
 
-        b.spmv_diag_add(&d, &x, &mut y);
+        b.spmv_diag_add(&d, &x, &mut y, true);
 
         // y should remain unchanged
         assert_eq!(y, vec![5.0; 3]);
