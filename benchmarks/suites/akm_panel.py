@@ -233,7 +233,7 @@ def run_akm_scaling(opts: SuiteOptions) -> list[BenchmarkResult]:
         SolverConfig(
             "CG(Schwarz)",
             benchmark_cg(opts),
-            preconditioner=make_additive_schwarz(local_solver=schur),
+            preconditioner=make_additive_schwarz(local_solver=schur, opts=opts),
         ),
     ]
 

@@ -15,7 +15,6 @@ Public API
 
 from __future__ import annotations
 
-import os
 import statistics
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, TypeVar
@@ -34,6 +33,7 @@ from within._within import (
 )
 
 ScaleProfile = Literal["smoke", "iterate", "full"]
+FixestVariant = Literal["dense", "both"]
 _T = TypeVar("_T")
 BENCHMARK_SOLVER_TOL_MIN = 1e-7
 
@@ -172,19 +172,26 @@ def run_solve(
     return _aggregate_runs(runs)
 
 
-def benchmark_reduction_strategy() -> ReductionStrategy:
-    """Configured additive reduction strategy for benchmark runs."""
-    raw = os.environ.get("WITHIN_BENCH_REDUCTION_STRATEGY", "auto").strip().lower()
+def parse_reduction_strategy(raw: str) -> ReductionStrategy:
+    """Parse the additive reduction strategy for benchmark runs."""
     try:
         return {
             "auto": ReductionStrategy.Auto,
             "atomic": ReductionStrategy.AtomicScatter,
             "parallel": ReductionStrategy.ParallelReduction,
-        }[raw]
+        }[raw.strip().lower()]
     except KeyError as exc:
         raise ValueError(
-            "WITHIN_BENCH_REDUCTION_STRATEGY must be one of: auto, atomic, parallel"
+            "reduction strategy must be one of: auto, atomic, parallel"
         ) from exc
+
+
+def parse_fixest_variants(raw: str) -> FixestVariant:
+    """Parse the fixest variant selection."""
+    normalized = raw.strip().lower()
+    if normalized in ("dense", "both"):
+        return normalized
+    raise ValueError("fixest variants must be one of: dense, both")
 
 
 def benchmark_solver_tol(tol: float) -> float:
@@ -208,11 +215,11 @@ def benchmark_gmres(opts: Any, *, maxiter: int | None = None) -> GMRES:
     )
 
 
-def make_additive_schwarz(local_solver: Any) -> AdditiveSchwarz:
-    """Construct additive Schwarz using the benchmark-selected reduction mode."""
+def make_additive_schwarz(local_solver: Any, opts: "SuiteOptions") -> AdditiveSchwarz:
+    """Construct additive Schwarz using the selected benchmark reduction mode."""
     return AdditiveSchwarz(
         local_solver=local_solver,
-        reduction=benchmark_reduction_strategy(),
+        reduction=opts.reduction_strategy,
     )
 
 
@@ -230,7 +237,7 @@ def standard_solver_configs(opts: Any) -> list[SolverConfig]:
         SolverConfig(
             "CG(Schwarz)",
             benchmark_cg(opts),
-            preconditioner=make_additive_schwarz(local_solver=schur),
+            preconditioner=make_additive_schwarz(local_solver=schur, opts=opts),
         ),
         SolverConfig(
             "GMRES(Mult-Schwarz)",
@@ -287,6 +294,9 @@ class SuiteOptions:
     profile: ScaleProfile = "full"
     repeat: int = 1
     warmup: int = 0
+    reduction_strategy: ReductionStrategy = ReductionStrategy.Auto
+    fixest_variants: FixestVariant = "both"
+    fixest_max_obs: int | None = None
 
     @property
     def quick(self) -> bool:

@@ -202,7 +202,7 @@ def run_preconditioners_3fe(opts: SuiteOptions) -> list[BenchmarkResult]:
         SolverConfig(
             "CG(Schwarz)",
             benchmark_cg(opts),
-            preconditioner=make_additive_schwarz(local_solver=schur),
+            preconditioner=make_additive_schwarz(local_solver=schur, opts=opts),
         ),
         SolverConfig(
             "GMRES(Mult-Schwarz)",
@@ -339,7 +339,7 @@ def run_preconditioner_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
         SolverConfig(
             "CG(Schwarz)",
             benchmark_cg(opts, maxiter=maxiter),
-            preconditioner=make_additive_schwarz(local_solver=schur),
+            preconditioner=make_additive_schwarz(local_solver=schur, opts=opts),
         ),
         SolverConfig(
             "GMRES(Mult-Schwarz)",

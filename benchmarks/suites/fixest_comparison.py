@@ -7,8 +7,6 @@ observations.
 
 from __future__ import annotations
 
-import os
-
 from within._within import (
     ApproxCholConfig,
     ApproxSchurConfig,
@@ -54,29 +52,20 @@ def run_fixest_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
             320_000_000,
         ],
     )
-    max_obs = int(
-        os.environ.get("WITHIN_BENCH_FIXEST_MAX_OBS", str(max(n_obs_list, default=0)))
-    )
+    max_obs = opts.fixest_max_obs or max(n_obs_list, default=0)
     n_obs_list = [n_obs for n_obs in n_obs_list if n_obs <= max_obs]
-
-    fixest_variants = (
-        os.environ.get(
-            "WITHIN_BENCH_FIXEST_VARIANTS",
-            "both" if opts.profile == "full" else "dense",
-        )
-        .strip()
-        .lower()
-    )
+    fixest_variants = opts.fixest_variants
 
     solver_configs = [
         SolverConfig(
             "CG(Schwarz)",
             benchmark_cg(opts),
             preconditioner=make_additive_schwarz(
+                opts=opts,
                 local_solver=SchurComplement(
                     approx_chol=ApproxCholConfig(seed=0, split=8),
                     approx_schur=None,
-                )
+                ),
             ),
         ),
     ]
@@ -86,16 +75,14 @@ def run_fixest_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
                 "CG(Schwarz)-sparse",
                 benchmark_cg(opts),
                 preconditioner=make_additive_schwarz(
+                    opts=opts,
                     local_solver=SchurComplement(
                         approx_chol=ApproxCholConfig(seed=0, split=2),
                         approx_schur=ApproxSchurConfig(seed=0, split=2),
-                    )
+                    ),
                 ),
             )
         )
-    elif fixest_variants != "dense":
-        raise ValueError("WITHIN_BENCH_FIXEST_VARIANTS must be one of: dense, both")
-
     if opts.profile != "full":
         solver_configs.append(
             SolverConfig(
