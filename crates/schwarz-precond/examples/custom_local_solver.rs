@@ -147,12 +147,7 @@ impl LocalSolver for DenseCholeskyLocalSolver {
     fn scratch_size(&self) -> usize {
         self.n_local
     }
-    fn solve_local(
-        &self,
-        rhs: &mut [f64],
-        sol: &mut [f64],
-        _allow_inner_parallelism: bool,
-    ) -> Result<(), LocalSolveError> {
+    fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), LocalSolveError> {
         self.solve(rhs, sol);
         Ok(())
     }

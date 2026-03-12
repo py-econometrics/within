@@ -114,7 +114,7 @@ fn apply_subdomain<S: LocalSolver, U: ResidualUpdater>(
         .restrict_weighted(&bufs.r_work, &mut bufs.r_scratch);
     entry
         .solver()
-        .solve_local(&mut bufs.r_scratch, &mut bufs.z_scratch, true)?;
+        .solve_local(&mut bufs.r_scratch, &mut bufs.z_scratch)?;
     entry.core().prolongate_weighted_add(&bufs.z_scratch, z);
 
     match entry.partition_weights() {

@@ -1190,7 +1190,7 @@ mod schwarz_tests {
         for _ in 0..iters {
             rhs[..n_local].copy_from_slice(&rhs_template);
             solver
-                .solve_local(&mut rhs, &mut sol, true)
+                .solve_local(&mut rhs, &mut sol)
                 .expect("benchmark local solve");
             checksum += sol[0];
         }
@@ -1529,7 +1529,7 @@ mod block_elim_tests {
         let mut sol = vec![0.0; scratch_sz];
 
         solver
-            .solve_local(&mut rhs, &mut sol, true)
+            .solve_local(&mut rhs, &mut sol)
             .expect("solve_local should succeed");
 
         // Solution must be finite.

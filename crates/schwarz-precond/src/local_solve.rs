@@ -28,12 +28,21 @@ pub trait LocalSolver: Send + Sync {
     ///
     /// Both `rhs` and `sol` have length >= `scratch_size()`.
     /// The solver may read/write up to `scratch_size()` elements.
-    fn solve_local(
+    fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), LocalSolveError>;
+
+    /// Solve the local system with execution-policy information from the caller.
+    ///
+    /// Most solvers do not care about the caller's parallelism policy. They can
+    /// implement [`Self::solve_local`] only and inherit this default.
+    fn solve_local_with_policy(
         &self,
         rhs: &mut [f64],
         sol: &mut [f64],
         allow_inner_parallelism: bool,
-    ) -> Result<(), LocalSolveError>;
+    ) -> Result<(), LocalSolveError> {
+        let _ = allow_inner_parallelism;
+        self.solve_local(rhs, sol)
+    }
 
     /// Estimated amount of local work that can benefit from nested Rayon.
     ///
@@ -134,7 +143,7 @@ impl<S: LocalSolver> SubdomainEntry<S> {
 
         // Local solve (strategy-specific transforms happen inside the solver)
         self.solver
-            .solve_local(r_scratch, z_scratch, allow_inner_parallelism)?;
+            .solve_local_with_policy(r_scratch, z_scratch, allow_inner_parallelism)?;
 
         // Weighted scatter directly into output: out += R_i^T @ D_i @ z_local
         self.core.prolongate_weighted_add(z_scratch, out);
@@ -161,7 +170,7 @@ impl<S: LocalSolver> SubdomainEntry<S> {
 
         // Local solve (strategy-specific transforms happen inside the solver)
         self.solver
-            .solve_local(r_scratch, z_scratch, allow_inner_parallelism)?;
+            .solve_local_with_policy(r_scratch, z_scratch, allow_inner_parallelism)?;
 
         // Weighted atomic scatter into output: out += R_i^T @ D_i @ z_local
         self.core.prolongate_weighted_add_atomic(z_scratch, out);
@@ -225,12 +234,7 @@ mod tests {
         fn scratch_size(&self) -> usize {
             self.n
         }
-        fn solve_local(
-            &self,
-            rhs: &mut [f64],
-            sol: &mut [f64],
-            _allow_inner_parallelism: bool,
-        ) -> Result<(), LocalSolveError> {
+        fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), LocalSolveError> {
             sol[..self.n].copy_from_slice(&rhs[..self.n]);
             Ok(())
         }

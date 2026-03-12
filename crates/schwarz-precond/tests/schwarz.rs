@@ -80,7 +80,11 @@ impl LocalSolver for NestedRayonIdentitySolver {
         self.n
     }
 
-    fn solve_local(
+    fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), LocalSolveError> {
+        self.solve_local_with_policy(rhs, sol, true)
+    }
+
+    fn solve_local_with_policy(
         &self,
         rhs: &mut [f64],
         sol: &mut [f64],

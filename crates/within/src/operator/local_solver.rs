@@ -111,12 +111,7 @@ impl LocalSolver for ApproxCholSolver {
         self.factor.n()
     }
 
-    fn solve_local(
-        &self,
-        rhs: &mut [f64],
-        sol: &mut [f64],
-        _allow_inner_parallelism: bool,
-    ) -> Result<(), LocalSolveError> {
+    fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), LocalSolveError> {
         let n_local = self.n_local;
         let (solve_n, fbs) = match &self.strategy {
             LocalSolveStrategy::Laplacian => {
@@ -198,15 +193,26 @@ impl LocalSolver for FeLocalSolver {
         }
     }
 
-    fn solve_local(
+    fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), LocalSolveError> {
+        match self {
+            Self::FullSddm { solver, .. } => solver.solve_local(rhs, sol),
+            Self::SchurComplement(s) => s.solve_local(rhs, sol),
+        }
+    }
+
+    fn solve_local_with_policy(
         &self,
         rhs: &mut [f64],
         sol: &mut [f64],
         allow_inner_parallelism: bool,
     ) -> Result<(), LocalSolveError> {
         match self {
-            Self::FullSddm { solver, .. } => solver.solve_local(rhs, sol, allow_inner_parallelism),
-            Self::SchurComplement(s) => s.solve_local(rhs, sol, allow_inner_parallelism),
+            Self::FullSddm { solver, .. } => {
+                solver.solve_local_with_policy(rhs, sol, allow_inner_parallelism)
+            }
+            Self::SchurComplement(s) => {
+                s.solve_local_with_policy(rhs, sol, allow_inner_parallelism)
+            }
         }
     }
 
@@ -511,7 +517,11 @@ impl LocalSolver for BlockElimSolver {
         self.n_local + self.n_reduced
     }
 
-    fn solve_local(
+    fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), LocalSolveError> {
+        self.solve_local_with_policy(rhs, sol, true)
+    }
+
+    fn solve_local_with_policy(
         &self,
         rhs: &mut [f64],
         sol: &mut [f64],
