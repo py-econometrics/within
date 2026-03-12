@@ -99,46 +99,9 @@ impl CsrBlock {
         }
     }
 
-    /// y += A * diag(d) * x (sparse triple product, additive).
-    ///
-    /// Equivalent to `y += A * (d .* x)` but without allocating the
-    /// element-wise product. Automatically parallelizes for large matrices.
-    #[cfg(test)]
-    pub(crate) fn spmv_diag_add(
-        &self,
-        d: &[f64],
-        x: &[f64],
-        y: &mut [f64],
-        allow_inner_parallelism: bool,
-    ) {
-        debug_assert!(d.len() >= self.ncols);
-        debug_assert!(x.len() >= self.ncols);
-        debug_assert!(y.len() >= self.nrows);
-        if self.nrows > PAR_SPMV_THRESHOLD && allow_inner_parallelism {
-            self.par_spmv_diag_add(d, x, y);
-        } else {
-            self.seq_spmv_diag_add(d, x, y);
-        }
-    }
-
-    /// y += A * x (sparse matrix-vector multiply, additive).
-    ///
-    /// Automatically parallelizes for large matrices using the same chunking
-    /// policy as [`Self::spmv_diag_add`].
-    #[cfg(test)]
-    pub(crate) fn spmv_add(&self, x: &[f64], y: &mut [f64], allow_inner_parallelism: bool) {
-        debug_assert!(x.len() >= self.ncols);
-        debug_assert!(y.len() >= self.nrows);
-        if self.nrows > PAR_SPMV_THRESHOLD && allow_inner_parallelism {
-            self.par_spmv_add(x, y);
-        } else {
-            self.seq_spmv_add(x, y);
-        }
-    }
-
     /// y = base + A * x (sparse matrix-vector multiply with explicit base).
     ///
-    /// This fuses a `copy_from_slice(base)` with `spmv_add(x, y)` to avoid an
+    /// This fuses a `copy_from_slice(base)` with sparse accumulation to avoid an
     /// extra pass over the output buffer in block-elimination solves.
     pub(crate) fn spmv_assign_add(
         &self,
@@ -157,37 +120,6 @@ impl CsrBlock {
         }
     }
 
-    #[cfg(test)]
-    fn seq_spmv_diag_add(&self, d: &[f64], x: &[f64], y: &mut [f64]) {
-        for (i, yi) in y[..self.nrows].iter_mut().enumerate() {
-            let start = self.indptr[i] as usize;
-            let end = self.indptr[i + 1] as usize;
-            let row_data = &self.data[start..end];
-            let row_idx = &self.indices[start..end];
-            let mut acc = 0.0;
-            for (&val, &col) in row_data.iter().zip(row_idx) {
-                let j = col as usize;
-                acc += val * d[j] * x[j];
-            }
-            *yi += acc;
-        }
-    }
-
-    #[cfg(test)]
-    fn seq_spmv_add(&self, x: &[f64], y: &mut [f64]) {
-        for (i, yi) in y[..self.nrows].iter_mut().enumerate() {
-            let start = self.indptr[i] as usize;
-            let end = self.indptr[i + 1] as usize;
-            let row_data = &self.data[start..end];
-            let row_idx = &self.indices[start..end];
-            let mut acc = 0.0;
-            for (&val, &col) in row_data.iter().zip(row_idx) {
-                acc += val * x[col as usize];
-            }
-            *yi += acc;
-        }
-    }
-
     fn seq_spmv_assign_add(&self, x: &[f64], base: &[f64], y: &mut [f64]) {
         for (i, yi) in y[..self.nrows].iter_mut().enumerate() {
             let start = self.indptr[i] as usize;
@@ -200,67 +132,6 @@ impl CsrBlock {
             }
             *yi = acc;
         }
-    }
-
-    #[cfg(test)]
-    fn par_spmv_diag_add(&self, d: &[f64], x: &[f64], y: &mut [f64]) {
-        let indptr = &self.indptr;
-        let indices = &self.indices;
-        let data = &self.data;
-        let nnz = self.nnz();
-        let nrows = self.nrows;
-        let avg_nnz_per_row = nnz / nrows.max(1);
-        let chunk = (TARGET_NNZ_PER_CHUNK / avg_nnz_per_row.max(1)).clamp(256, 8192);
-
-        y[..self.nrows]
-            .par_chunks_mut(chunk)
-            .enumerate()
-            .for_each(|(chunk_idx, y_chunk)| {
-                let row_start = chunk_idx * chunk;
-                for (local_i, yi) in y_chunk.iter_mut().enumerate() {
-                    let i = row_start + local_i;
-                    let start = indptr[i] as usize;
-                    let end = indptr[i + 1] as usize;
-                    let row_data = &data[start..end];
-                    let row_idx = &indices[start..end];
-                    let mut acc = 0.0;
-                    for (&val, &col) in row_data.iter().zip(row_idx) {
-                        let j = col as usize;
-                        acc += val * d[j] * x[j];
-                    }
-                    *yi += acc;
-                }
-            });
-    }
-
-    #[cfg(test)]
-    fn par_spmv_add(&self, x: &[f64], y: &mut [f64]) {
-        let indptr = &self.indptr;
-        let indices = &self.indices;
-        let data = &self.data;
-        let nnz = self.nnz();
-        let nrows = self.nrows;
-        let avg_nnz_per_row = nnz / nrows.max(1);
-        let chunk = (TARGET_NNZ_PER_CHUNK / avg_nnz_per_row.max(1)).clamp(256, 8192);
-
-        y[..self.nrows]
-            .par_chunks_mut(chunk)
-            .enumerate()
-            .for_each(|(chunk_idx, y_chunk)| {
-                let row_start = chunk_idx * chunk;
-                for (local_i, yi) in y_chunk.iter_mut().enumerate() {
-                    let i = row_start + local_i;
-                    let start = indptr[i] as usize;
-                    let end = indptr[i + 1] as usize;
-                    let row_data = &data[start..end];
-                    let row_idx = &indices[start..end];
-                    let mut acc = 0.0;
-                    for (&val, &col) in row_data.iter().zip(row_idx) {
-                        acc += val * x[col as usize];
-                    }
-                    *yi += acc;
-                }
-            });
     }
 
     fn par_spmv_assign_add(&self, x: &[f64], base: &[f64], y: &mut [f64]) {
@@ -397,57 +268,6 @@ mod tests {
     }
 
     #[test]
-    fn test_spmv_diag_add_basic() {
-        // A = [[1, 0, 2],
-        //      [0, 3, 0]]
-        // d = [2, 1, 3]
-        // x = [1, 2, 1]
-        // y = [10, 20]
-        // A * diag(d) * x = A * [2, 2, 3] = [[1*2 + 2*3], [3*2]] = [8, 6]
-        // y += [8, 6] = [18, 26]
-        let b = CsrBlock::from_dense_table(&[1.0, 0.0, 2.0, 0.0, 3.0, 0.0], 2, 3);
-        let d = vec![2.0, 1.0, 3.0];
-        let x = vec![1.0, 2.0, 1.0];
-        let mut y = vec![10.0, 20.0];
-
-        b.spmv_diag_add(&d, &x, &mut y, true);
-
-        assert!((y[0] - 18.0).abs() < 1e-14, "y[0] = {}", y[0]);
-        assert!((y[1] - 26.0).abs() < 1e-14, "y[1] = {}", y[1]);
-    }
-
-    #[test]
-    fn test_spmv_diag_add_identity_diag() {
-        // With d = [1, 1, ...], spmv_diag_add degenerates to y += A * x
-        let b = make_3x4_block();
-        let d = vec![1.0; 4];
-        let x = vec![1.0, 1.0, 1.0, 1.0];
-        let mut y = vec![0.0; 3];
-
-        b.spmv_diag_add(&d, &x, &mut y, true);
-
-        // Row 0: 1*1 + 2*1 = 3
-        // Row 1: 3*1 + 4*1 = 7
-        // Row 2: 5*1 + 6*1 = 11
-        assert!((y[0] - 3.0).abs() < 1e-14);
-        assert!((y[1] - 7.0).abs() < 1e-14);
-        assert!((y[2] - 11.0).abs() < 1e-14);
-    }
-
-    #[test]
-    fn test_spmv_add_basic() {
-        let b = make_3x4_block();
-        let x = vec![1.0, 1.0, 1.0, 1.0];
-        let mut y = vec![0.0; 3];
-
-        b.spmv_add(&x, &mut y, true);
-
-        assert!((y[0] - 3.0).abs() < 1e-14);
-        assert!((y[1] - 7.0).abs() < 1e-14);
-        assert!((y[2] - 11.0).abs() < 1e-14);
-    }
-
-    #[test]
     fn test_spmv_assign_add_basic() {
         let b = make_3x4_block();
         let x = vec![1.0, 1.0, 1.0, 1.0];
@@ -462,16 +282,15 @@ mod tests {
     }
 
     #[test]
-    fn test_spmv_diag_add_zero_x() {
+    fn test_spmv_assign_add_zero_x_preserves_base() {
         let b = make_3x4_block();
-        let d = vec![1.0; 4];
         let x = vec![0.0; 4];
-        let mut y = vec![5.0; 3];
+        let base = vec![5.0; 3];
+        let mut y = vec![0.0; 3];
 
-        b.spmv_diag_add(&d, &x, &mut y, true);
+        b.spmv_assign_add(&x, &base, &mut y, true);
 
-        // y should remain unchanged
-        assert_eq!(y, vec![5.0; 3]);
+        assert_eq!(y, base);
     }
 
     #[test]

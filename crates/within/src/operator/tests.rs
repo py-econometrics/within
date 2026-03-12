@@ -139,19 +139,6 @@ mod csr_block_tests {
     }
 
     #[test]
-    fn test_spmv_diag_add() {
-        let a = sample_block();
-        let d = vec![2.0, 3.0, 1.0, 0.5];
-        let x = vec![1.0, 2.0, 3.0, 4.0];
-        let mut y = vec![0.0; 3];
-        a.spmv_diag_add(&d, &x, &mut y, true);
-        // row 0: 1*(2*1) + 2*(1*3) = 2+6 = 8
-        // row 1: 3*(3*2) + 4*(0.5*4) = 18+8 = 26
-        // row 2: 5*(2*1) + 6*(0.5*4) = 10+12 = 22
-        assert_eq!(y, vec![8.0, 26.0, 22.0]);
-    }
-
-    #[test]
     fn test_empty_block() {
         let a = CsrBlock {
             indptr: vec![0, 0, 0],
