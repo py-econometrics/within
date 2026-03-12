@@ -57,7 +57,7 @@ The bipartite graph of $C_{qr}$ may have multiple connected components. Each con
 |:---:|:---:|
 | ![Full graph](images/graph_plain.svg) | ![Worker–Firm bipartite subgraph](images/graph_bipartite_wf.svg) |
 
-Continuing the Worker/Firm/Year example from [Part 1](1_fixed_effects_and_block_methods.md): extracting just the Worker–Firm edges (right) gives the bipartite graph of $C_{WF}$. Because W1 worked at both firms, the graph is connected — there is a path between any two nodes — so all 5 DOFs belong to a single subdomain. Without W1's mobility, the graph would split into two components: {W1, W2, F1} and {W3, F2}, yielding two independent subdomains.
+Continuing the Worker/Firm/Year example from [Part 1](1_fixed_effects_and_block_methods.md): extracting just the Worker–Firm edges (right) gives the bipartite graph of $C_{WF}$. Because W1 worked at both firms, the graph is connected — there is a path between any two nodes — so all 5 DOFs / factor levels belong to a single subdomain. Without W1's mobility, the graph would split into two components: {W1, W2, F1} and {W3, F2}, yielding two independent subdomains.
 
 ### 2.3 Laplacian connection via sign-flip
 
@@ -103,7 +103,7 @@ The solver converges when the normalized residual $\|r_k\|_2 / \|b\|_2 \leq \tex
 
 ### 4.1 How it works
 
-The Schwarz preconditioner decomposes the global system into overlapping subdomains - one per factor pair - and applies local solves to each. The local operator on subdomain $i$ is $A_i = R_i G R_i^\top$, the principal submatrix of $G$ restricted to that subdomain's DOFs.
+The Schwarz preconditioner decomposes the global system into overlapping subdomains - one per factor pair - and applies local solves to each. The local operator on subdomain $i$ is $A_i = R_i G R_i^\top$, the principal submatrix of $G$ restricted to that subdomain's DOFs / factor levels.
 
 Two variants exist - additive and multiplicative - differing in how the local corrections are combined:
 
@@ -111,11 +111,11 @@ Two variants exist - additive and multiplicative - differing in how the local co
 
 ### 4.2 Partition of unity
 
-When subdomains overlap (a DOF belongs to multiple subdomains), corrections must be weighted to avoid double-counting:
+When subdomains overlap (a DOF / factor level belongs to multiple subdomains), corrections must be weighted to avoid double-counting:
 
 ![Partition of unity](images/partition_of_unity.svg)
 
-Each DOF $j$ that appears in $c_j$ subdomains gets weight $\omega_j = 1/\sqrt{c_j}$ in each subdomain. The weights are applied on both the restriction and prolongation sides, so they contribute $c_j \times \omega_j^2 = 1$ - correctly partitioning the correction. In the running example, every DOF appears in exactly 2 subdomains, so every weight is $\omega_j = 1/\sqrt{2}$.
+Each DOF / factor level $j$ that appears in $c_j$ subdomains gets weight $\omega_j = 1/\sqrt{c_j}$ in each subdomain. The weights are applied on both the restriction and prolongation sides, so they contribute $c_j \times \omega_j^2 = 1$ - correctly partitioning the correction. In the running example, every DOF / factor level appears in exactly 2 subdomains, so every weight is $\omega_j = 1/\sqrt{2}$.
 
 ### 4.3 Additive Schwarz
 
@@ -125,7 +125,7 @@ $$
 M^{-1}_{\text{add}} r = \sum_{i=1}^{N_s} R_i^\top \tilde{D}_i A_i^+ \tilde{D}_i R_i r
 $$
 
-Each subdomain restricts the global residual to its local DOFs (with partition-of-unity weights applied on input), solves the local system, and prolongates the correction back to the global space (with weights applied on output). All subdomains are processed independently and in parallel. Because the weighting is applied symmetrically on both sides, the resulting preconditioner is symmetric, making it compatible with CG.
+Each subdomain restricts the global residual to its local DOFs / factor levels (with partition-of-unity weights applied on input), solves the local system, and prolongates the correction back to the global space (with weights applied on output). All subdomains are processed independently and in parallel. Because the weighting is applied symmetrically on both sides, the resulting preconditioner is symmetric, making it compatible with CG.
 
 ### 4.4 Multiplicative Schwarz
 
@@ -138,8 +138,8 @@ Subdomains are derived from the factor-pair structure of the Gramian:
 1. **Enumerate factor pairs**: all $\binom{Q}{2}$ unordered pairs $(q, r)$.
 2. **Build cross-tabulation**: for each pair, scan observations to build the sparse bipartite block $C_{qr}$ and diagonal vectors $D_q$, $D_r$.
 3. **Find connected components**: run DFS (depth-first search — a standard graph traversal that follows edges recursively until no new nodes are reachable) on the bipartite graph of $C_{qr}$ to identify independent components.
-4. **Create subdomains**: each component becomes a subdomain with its global DOF indices.
-5. **Compute partition-of-unity weights**: if subdomains overlap, count how many subdomains each DOF belongs to and assign $\omega_j = 1/\sqrt{c_j}$; for non-overlapping DOFs the weight is trivially 1.
+4. **Create subdomains**: each component becomes a subdomain with its global DOF / factor level indices.
+5. **Compute partition-of-unity weights**: if subdomains overlap, count how many subdomains each DOF / factor level belongs to and assign $\omega_j = 1/\sqrt{c_j}$; for non-overlapping DOFs / factor levels the weight is trivially 1.
 
 Factor pairs are processed in parallel.
 
@@ -157,9 +157,9 @@ We conclude with a summary of the full algorithm:
 2. **For each factor pair $(q, r)$ in parallel:**
    - Build cross-tabulation $C_{qr}$ and diagonal blocks $D_q$, $D_r$
    - Find connected components of the bipartite graph of $C_{qr}$
-   - Create one subdomain per component, recording its global DOF indices
+   - Create one subdomain per component, recording its global DOF / factor level indices
 
-3. **Compute partition-of-unity weights**: $\omega_j = 1/\sqrt{c_j}$ for each DOF $j$
+3. **Compute partition-of-unity weights**: $\omega_j = 1/\sqrt{c_j}$ for each DOF / factor level $j$
 
 4. **For each subdomain in parallel:**
    - Build local Laplacian via sign-flip (Section 2.3)
