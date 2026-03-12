@@ -8,7 +8,12 @@ import sys
 from ._framework import SuiteOptions, get_suite, list_suites
 from ._table import print_pivot
 
-_PRESETS: dict[str, tuple[str, tuple[str, ...]]] = {
+_PROFILES: dict[str, tuple[str, tuple[str, ...], str]] = {
+    "smoke": (
+        "All benchmark suites at smoke scale",
+        (),
+        "smoke",
+    ),
     "iterate": (
         "Curated fast-iteration benchmark set for backend and Auto tuning",
         (
@@ -21,10 +26,12 @@ _PRESETS: dict[str, tuple[str, tuple[str, ...]]] = {
             "akm_panel",
             "fixest_comparison",
         ),
+        "iterate",
     ),
     "validation": (
         "Full validation sweep across all benchmark suites",
         (),
+        "full",
     ),
     "auto": (
         "Additive-focused tuning set spanning many-small, few-large, and high-FE regimes",
@@ -36,6 +43,7 @@ _PRESETS: dict[str, tuple[str, tuple[str, ...]]] = {
             "akm_panel",
             "fixest_comparison",
         ),
+        "iterate",
     ),
     "local_solver": (
         "Local-solver and ApproxChol variant comparisons",
@@ -43,6 +51,7 @@ _PRESETS: dict[str, tuple[str, tuple[str, ...]]] = {
             "ac_comparison",
             "graph_backend_comparison",
         ),
+        "iterate",
     ),
 }
 
@@ -59,25 +68,19 @@ def _cmd_list(args: argparse.Namespace) -> None:
         tags = ", ".join(sorted(info.tags)) or "-"
         print(f"{name:<{name_w}} {tags:<30} {info.description}")
 
-    print("\nPresets")
+    print("\nProfiles")
     print("-" * 80)
-    for name, (description, suite_names) in sorted(_PRESETS.items()):
+    for name, (description, suite_names, scale_profile) in sorted(_PROFILES.items()):
         members = ", ".join(suite_names) if suite_names else "all suites"
         print(f"{name:<14} {description}")
-        print(f"{'':<14} {members}")
+        print(f"{'':<14} {members}  [scale={scale_profile}]")
 
 
 def _cmd_run(args: argparse.Namespace) -> None:
     suites = list_suites()
     names: list[str] = []
 
-    if args.preset:
-        if args.preset not in _PRESETS:
-            print(f"Unknown preset: {args.preset!r}", file=sys.stderr)
-            sys.exit(1)
-        preset_names = _PRESETS[args.preset][1]
-        names = sorted(suites.keys()) if not preset_names else list(preset_names)
-    elif "all" in args.suites:
+    if "all" in args.suites:
         names = sorted(suites.keys())
     else:
         for s in args.suites:
@@ -87,11 +90,20 @@ def _cmd_run(args: argparse.Namespace) -> None:
                 print(f"Unknown suite: {s!r}", file=sys.stderr)
                 sys.exit(1)
 
+    profile_name = args.profile
+    if profile_name is None:
+        scale_profile = "full"
+    else:
+        default_names = _PROFILES[profile_name][1]
+        scale_profile = _PROFILES[profile_name][2]
+        if not names:
+            names = sorted(suites.keys()) if not default_names else list(default_names)
+
     if not names:
         print("No suites selected.")
         return
 
-    profile = args.profile
+    profile = scale_profile
     repeat = 1 if profile == "full" else 3
     warmup = 0 if profile == "full" else 1
 
@@ -104,9 +116,10 @@ def _cmd_run(args: argparse.Namespace) -> None:
         warmup=warmup,
     )
 
+    label = profile_name or "custom"
     print(
-        f"Running {len(names)} suite(s) with profile={opts.profile}, "
-        f"warmup={opts.warmup}, repeat={opts.repeat}"
+        f"Running {len(names)} suite(s) with profile={label}, "
+        f"scale={opts.profile}, warmup={opts.warmup}, repeat={opts.repeat}"
     )
 
     all_results = []
@@ -137,15 +150,10 @@ def main() -> None:
     run_p = sub.add_parser("run", help="Run one or more suites")
     run_p.add_argument("suites", nargs="*", help="Suite names or 'all'")
     run_p.add_argument(
-        "--preset",
-        choices=sorted(_PRESETS),
-        help="Run a named benchmark preset instead of explicit suites",
-    )
-    run_p.add_argument(
         "--profile",
-        choices=("smoke", "iterate", "full"),
-        default="full",
-        help="Benchmark profile: smoke, iterate, or full",
+        choices=sorted(_PROFILES),
+        default=None,
+        help="Named benchmark profile (suite set + scale tier)",
     )
     args = parser.parse_args()
 
