@@ -8,6 +8,53 @@ import sys
 from ._framework import SuiteOptions, get_suite, list_suites
 from ._table import print_pivot
 
+_PROFILES: dict[str, tuple[str, tuple[str, ...], str]] = {
+    "smoke": (
+        "All benchmark suites at smoke scale",
+        (),
+        "smoke",
+    ),
+    "iterate": (
+        "Curated fast-iteration benchmark set for backend and Auto tuning",
+        (
+            "verify",
+            "preconditioners_3fe",
+            "ac_comparison",
+            "scaling",
+            "many_components",
+            "high_fe",
+            "akm_panel",
+            "fixest_comparison",
+        ),
+        "iterate",
+    ),
+    "validation": (
+        "Full validation sweep across all benchmark suites",
+        (),
+        "full",
+    ),
+    "auto": (
+        "Additive-focused tuning set spanning many-small, few-large, and high-FE regimes",
+        (
+            "verify",
+            "scaling",
+            "many_components",
+            "high_fe",
+            "akm_panel",
+            "fixest_comparison",
+        ),
+        "iterate",
+    ),
+    "local_solver": (
+        "Local-solver and ApproxChol variant comparisons",
+        (
+            "ac_comparison",
+            "graph_backend_comparison",
+        ),
+        "iterate",
+    ),
+}
+
 
 def _cmd_list(args: argparse.Namespace) -> None:
     suites = list_suites()
@@ -20,6 +67,13 @@ def _cmd_list(args: argparse.Namespace) -> None:
     for name, info in sorted(suites.items()):
         tags = ", ".join(sorted(info.tags)) or "-"
         print(f"{name:<{name_w}} {tags:<30} {info.description}")
+
+    print("\nProfiles")
+    print("-" * 80)
+    for name, (description, suite_names, scale_profile) in sorted(_PROFILES.items()):
+        members = ", ".join(suite_names) if suite_names else "all suites"
+        print(f"{name:<14} {description}")
+        print(f"{'':<14} {members}  [scale={scale_profile}]")
 
 
 def _cmd_run(args: argparse.Namespace) -> None:
@@ -36,19 +90,36 @@ def _cmd_run(args: argparse.Namespace) -> None:
                 print(f"Unknown suite: {s!r}", file=sys.stderr)
                 sys.exit(1)
 
-    if args.tag:
-        tag_set = set(args.tag)
-        names = [n for n in names if suites[n].tags & tag_set]
+    profile_name = args.profile
+    if profile_name is None:
+        scale_profile = "full"
+    else:
+        default_names = _PROFILES[profile_name][1]
+        scale_profile = _PROFILES[profile_name][2]
+        if not names:
+            names = sorted(suites.keys()) if not default_names else list(default_names)
 
     if not names:
         print("No suites selected.")
         return
 
+    profile = scale_profile
+    repeat = 1 if profile == "full" else 3
+    warmup = 0 if profile == "full" else 1
+
     opts = SuiteOptions(
-        seed=args.seed,
-        tol=args.tol,
-        maxiter=args.maxiter,
-        quick=args.quick,
+        seed=42,
+        tol=1e-8,
+        maxiter=2000,
+        profile=profile,
+        repeat=repeat,
+        warmup=warmup,
+    )
+
+    label = profile_name or "custom"
+    print(
+        f"Running {len(names)} suite(s) with profile={label}, "
+        f"scale={opts.profile}, warmup={opts.warmup}, repeat={opts.repeat}"
     )
 
     all_results = []
@@ -77,13 +148,13 @@ def main() -> None:
     sub.add_parser("list", help="List available suites")
 
     run_p = sub.add_parser("run", help="Run one or more suites")
-    run_p.add_argument("suites", nargs="+", help="Suite names or 'all'")
-    run_p.add_argument("--quick", action="store_true", help="Use small problems")
-    run_p.add_argument("--tag", nargs="+", help="Filter by tag(s)")
-    run_p.add_argument("--seed", type=int, default=42)
-    run_p.add_argument("--tol", type=float, default=1e-8)
-    run_p.add_argument("--maxiter", type=int, default=2000)
-
+    run_p.add_argument("suites", nargs="*", help="Suite names or 'all'")
+    run_p.add_argument(
+        "--profile",
+        choices=sorted(_PROFILES),
+        default=None,
+        help="Named benchmark profile (suite set + scale tier)",
+    )
     args = parser.parse_args()
 
     if args.command == "list":
