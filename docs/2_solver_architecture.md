@@ -25,7 +25,7 @@ The solver combines three algorithmic ideas in a layered architecture:
 
 ### Why this combination
 
-As discussed in [Part 1, Section 5.2](1_fixed_effects_and_block_methods.md#52-the-key-idea-factor-pair-subdomains), the central trade-off is **exact solves on single factors** (demeaning) vs. **approximate solves on factor pairs** (`within`). The three layers exist to make this trade-off pay off:
+As discussed in [Part 1, Section 5.2](1_fixed_effects_and_block_methods.md#52-the-key-idea-factor-pair-subdomains), the central trade-off for solving the fixed effects problem is between **exact solves on single factors** (demeaning via the MAP algorithm) vs. **approximate solves on factor pairs** (`within`). The three layers exist to make this trade-off pay off:
 
 - **Block-bipartite structure**: each factor pair $(q,r)$ induces a bipartite subgraph. Connected components of these subgraphs form natural subdomains with limited overlap.
 
