@@ -9,7 +9,7 @@ use rand::{Rng, SeedableRng};
 
 use within::{
     FactorMajorStore, FixedEffectsDesign, KrylovMethod, LocalSolverConfig, ObservationStore,
-    ObservationWeights, Preconditioner, Solver, SolverParams, WeightedDesign,
+    ObservationWeights, Preconditioner, ReductionStrategy, Solver, SolverParams, WeightedDesign,
 };
 
 // ---------------------------------------------------------------------------
@@ -102,7 +102,8 @@ fn test_refinement_cg_improves_demeaning_quality() {
     // Chain design with n=200 creates κ(G) ~ O(n²), causing a significant gap
     // between normal-equation residual and demeaning quality.
     let (design, y) = make_chain_design(200, 42);
-    let precond = Preconditioner::Additive(LocalSolverConfig::solver_default());
+    let precond =
+        Preconditioner::Additive(LocalSolverConfig::solver_default(), ReductionStrategy::Auto);
 
     // Without refinement
     let params_no_refine = params_with_refinement(KrylovMethod::Cg, 0);
@@ -144,7 +145,8 @@ fn test_refinement_cg_improves_demeaning_quality() {
 fn test_refinement_cg_zero_means_old_behavior() {
     // max_refinements=0 should produce identical results to the old code path.
     let (design, y) = make_chain_design(50, 99);
-    let precond = Preconditioner::Additive(LocalSolverConfig::solver_default());
+    let precond =
+        Preconditioner::Additive(LocalSolverConfig::solver_default(), ReductionStrategy::Auto);
     let params = params_with_refinement(KrylovMethod::Cg, 0);
     let solver = Solver::from_design(design, &params, Some(&precond)).expect("build solver");
     let result = solver.solve(&y).expect("solve");
@@ -166,7 +168,8 @@ fn test_refinement_cg_well_conditioned_no_extra_iters() {
     let design = WeightedDesign::from_store(store).expect("design");
     let y = vec![1.0, 2.0, 3.0, 4.0, 5.0];
 
-    let precond = Preconditioner::Additive(LocalSolverConfig::solver_default());
+    let precond =
+        Preconditioner::Additive(LocalSolverConfig::solver_default(), ReductionStrategy::Auto);
 
     // With refinement
     let params_refine = params_with_refinement(KrylovMethod::Cg, 2);
@@ -277,7 +280,8 @@ fn test_refinement_unpreconditioned() {
 fn test_refinement_batch_applies() {
     // Refinement should apply to each RHS in a batch solve.
     let (design, _) = make_chain_design(50, 456);
-    let precond = Preconditioner::Additive(LocalSolverConfig::solver_default());
+    let precond =
+        Preconditioner::Additive(LocalSolverConfig::solver_default(), ReductionStrategy::Auto);
     let params = params_with_refinement(KrylovMethod::Cg, 2);
     let solver = Solver::from_design(design, &params, Some(&precond)).expect("build solver");
 
@@ -318,7 +322,8 @@ fn test_refinement_correction_tolerance_scaling() {
     let x0: Vec<f64> = (0..n_obs).map(|_| rng.random::<f64>() - 0.5).collect();
     let x1: Vec<f64> = (0..n_obs).map(|_| rng.random::<f64>() - 0.5).collect();
 
-    let precond = Preconditioner::Additive(LocalSolverConfig::solver_default());
+    let precond =
+        Preconditioner::Additive(LocalSolverConfig::solver_default(), ReductionStrategy::Auto);
     let params = params_with_refinement(KrylovMethod::Cg, 2);
     let solver = Solver::from_design(design, &params, Some(&precond)).expect("build solver");
 

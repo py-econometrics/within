@@ -9,7 +9,8 @@
 
 use ndarray::Array2;
 use within::{
-    solve, KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner, SolveResult, SolverParams,
+    solve, KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner, ReductionStrategy,
+    SolveResult, SolverParams,
 };
 
 fn main() {
@@ -41,7 +42,8 @@ fn main() {
     }
 
     let cg_params = SolverParams::default();
-    let cg_precond = Preconditioner::Additive(LocalSolverConfig::solver_default());
+    let cg_precond =
+        Preconditioner::Additive(LocalSolverConfig::solver_default(), ReductionStrategy::Auto);
     let cg_result =
         solve(categories.view(), &y, None, &cg_params, Some(&cg_precond)).expect("cg solve");
 

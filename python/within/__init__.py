@@ -10,7 +10,9 @@ from within._within import (
     solve,
     solve_batch,
     AdditiveSchwarz,
+    AdditiveSchwarzDiagnostics,
     MultiplicativeSchwarz,
+    ReductionStrategy,
 )
 
 # Convenience aliases
@@ -31,5 +33,7 @@ __all__ = [
     "Additive",
     "Multiplicative",
     "AdditiveSchwarz",
+    "AdditiveSchwarzDiagnostics",
     "MultiplicativeSchwarz",
+    "ReductionStrategy",
 ]

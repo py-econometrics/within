@@ -3,7 +3,10 @@ use std::error::Error;
 use ndarray::Array2;
 use schwarz_precond::{ApplyError, PreconditionerBuildError, SolveError};
 use within::observation::{FactorMajorStore, ObservationWeights};
-use within::{solve, LocalSolverConfig, Preconditioner, SolverParams, WeightedDesign, WithinError};
+use within::{
+    solve, LocalSolverConfig, Preconditioner, ReductionStrategy, SolverParams, WeightedDesign,
+    WithinError,
+};
 
 #[test]
 fn test_empty_observations_error() {
@@ -49,7 +52,8 @@ fn test_empty_categories_via_solve() {
     let cats = Array2::<u32>::zeros((0, 2));
     let y: Vec<f64> = vec![];
     let params = SolverParams::default();
-    let precond = Preconditioner::Additive(LocalSolverConfig::solver_default());
+    let precond =
+        Preconditioner::Additive(LocalSolverConfig::solver_default(), ReductionStrategy::Auto);
     let result = solve(cats.view(), &y, None, &params, Some(&precond));
     assert!(result.is_err());
 }

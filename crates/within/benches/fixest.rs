@@ -8,7 +8,9 @@ use criterion::{
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use schwarz_precond::Operator;
-use within::config::{KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner, SolverParams};
+use within::config::{
+    KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner, ReductionStrategy, SolverParams,
+};
 use within::domain::WeightedDesign;
 use within::observation::{FactorMajorStore, ObservationWeights};
 use within::operator::gramian::{Gramian, GramianOperator};
@@ -156,7 +158,7 @@ fn run_cg_one_level(design: &WeightedDesign<FactorMajorStore>, y: &[f64], ac2: b
         maxiter: MAXITER,
         ..Default::default()
     };
-    let precond = Preconditioner::Additive(cfg);
+    let precond = Preconditioner::Additive(cfg, ReductionStrategy::Auto);
     let label = if ac2 { "CG(1L,AC2)" } else { "CG(1L,AC)" };
     run_smoke(design, y, &params, Some(&precond), label);
 }

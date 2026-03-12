@@ -1494,7 +1494,7 @@ mod block_elim_tests {
 mod preconditioner_fused_tests {
     use schwarz_precond::Operator;
 
-    use crate::config::{LocalSolverConfig, Preconditioner};
+    use crate::config::{LocalSolverConfig, Preconditioner, ReductionStrategy};
     use crate::domain::FixedEffectsDesign;
     use crate::observation::{FactorMajorStore, ObservationWeights};
     use crate::operator::preconditioner::build_preconditioner_fused;
@@ -1512,7 +1512,8 @@ mod preconditioner_fused_tests {
     #[test]
     fn test_build_preconditioner_fused_additive_dimensions_and_apply() {
         let design = make_test_design();
-        let config = Preconditioner::Additive(LocalSolverConfig::default());
+        let config =
+            Preconditioner::Additive(LocalSolverConfig::default(), ReductionStrategy::Auto);
 
         let (gramian, precond) =
             build_preconditioner_fused(&design, &config).expect("fused build should succeed");

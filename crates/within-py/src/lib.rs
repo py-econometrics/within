@@ -5,11 +5,16 @@ use numpy::{IntoPyArray, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
 
 use within::config::{
-    ApproxSchurConfig, KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner, SolverParams,
-    DEFAULT_DENSE_SCHUR_THRESHOLD,
+    ApproxSchurConfig, KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner,
+    ReductionStrategy, SolverParams, DEFAULT_DENSE_SCHUR_THRESHOLD,
 };
 use within::domain::WeightedDesign;
 use within::observation::{FactorMajorStore, ObservationWeights};
+use within::operator::preconditioner::{
+    additive_reduction_strategy as get_additive_reduction_strategy,
+    additive_schwarz_diagnostics as get_additive_schwarz_diagnostics,
+    resolved_additive_reduction_strategy as get_resolved_additive_reduction_strategy,
+};
 use within::{
     solve as solve_native, solve_batch as solve_batch_native, FePreconditioner, Operator,
     SolveResult, Solver,
@@ -127,6 +132,96 @@ pub enum PyPreconditioner {
     Off = 2,
 }
 
+#[pyclass(frozen, eq, eq_int)]
+#[pyo3(name = "ReductionStrategy")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PyReductionStrategy {
+    Auto = 0,
+    AtomicScatter = 1,
+    ParallelReduction = 2,
+}
+
+impl PyReductionStrategy {
+    fn to_native(self) -> ReductionStrategy {
+        match self {
+            Self::Auto => ReductionStrategy::Auto,
+            Self::AtomicScatter => ReductionStrategy::AtomicScatter,
+            Self::ParallelReduction => ReductionStrategy::ParallelReduction,
+        }
+    }
+
+    fn from_native(strategy: ReductionStrategy) -> Self {
+        match strategy {
+            ReductionStrategy::Auto => Self::Auto,
+            ReductionStrategy::AtomicScatter => Self::AtomicScatter,
+            ReductionStrategy::ParallelReduction => Self::ParallelReduction,
+        }
+    }
+}
+
+#[pyclass(frozen)]
+#[pyo3(name = "AdditiveSchwarzDiagnostics")]
+pub struct PyAdditiveSchwarzDiagnostics {
+    #[pyo3(get)]
+    pub reduction_strategy: PyReductionStrategy,
+    #[pyo3(get)]
+    pub resolved_reduction_strategy: PyReductionStrategy,
+    #[pyo3(get)]
+    pub total_inner_parallel_work: usize,
+    #[pyo3(get)]
+    pub max_inner_parallel_work: usize,
+    #[pyo3(get)]
+    pub total_scatter_dofs: usize,
+    #[pyo3(get)]
+    pub outer_parallel_capacity: f64,
+    #[pyo3(get)]
+    pub scatter_overlap: f64,
+}
+
+impl PyAdditiveSchwarzDiagnostics {
+    fn from_native(preconditioner: &FePreconditioner) -> Option<Self> {
+        let diagnostics = get_additive_schwarz_diagnostics(preconditioner)?;
+        Some(Self {
+            reduction_strategy: PyReductionStrategy::from_native(get_additive_reduction_strategy(
+                preconditioner,
+            )?),
+            resolved_reduction_strategy: PyReductionStrategy::from_native(
+                get_resolved_additive_reduction_strategy(preconditioner)?,
+            ),
+            total_inner_parallel_work: diagnostics.total_inner_parallel_work(),
+            max_inner_parallel_work: diagnostics.max_inner_parallel_work(),
+            total_scatter_dofs: diagnostics.total_scatter_dofs(),
+            outer_parallel_capacity: diagnostics.outer_parallel_capacity(),
+            scatter_overlap: diagnostics.scatter_overlap(),
+        })
+    }
+}
+
+#[pymethods]
+impl PyAdditiveSchwarzDiagnostics {
+    fn __repr__(&self) -> String {
+        format!(
+            concat!(
+                "AdditiveSchwarzDiagnostics(",
+                "reduction_strategy={:?}, ",
+                "resolved_reduction_strategy={:?}, ",
+                "total_inner_parallel_work={}, ",
+                "max_inner_parallel_work={}, ",
+                "total_scatter_dofs={}, ",
+                "outer_parallel_capacity={:.3}, ",
+                "scatter_overlap={:.3})"
+            ),
+            self.reduction_strategy,
+            self.resolved_reduction_strategy,
+            self.total_inner_parallel_work,
+            self.max_inner_parallel_work,
+            self.total_scatter_dofs,
+            self.outer_parallel_capacity,
+            self.scatter_overlap,
+        )
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Local solver config classes (available via `_within` for benchmarks)
 // ---------------------------------------------------------------------------
@@ -184,14 +279,19 @@ impl PyFullSddm {
 pub struct PyAdditiveSchwarz {
     #[pyo3(get)]
     pub local_solver: Option<PyObject>,
+    #[pyo3(get)]
+    pub reduction: PyReductionStrategy,
 }
 
 #[pymethods]
 impl PyAdditiveSchwarz {
     #[new]
-    #[pyo3(signature = (local_solver=None))]
-    fn new(local_solver: Option<PyObject>) -> Self {
-        Self { local_solver }
+    #[pyo3(signature = (local_solver=None, reduction=PyReductionStrategy::Auto))]
+    fn new(local_solver: Option<PyObject>, reduction: PyReductionStrategy) -> Self {
+        Self {
+            local_solver,
+            reduction,
+        }
     }
 }
 
@@ -390,6 +490,7 @@ fn extract_preconditioner_config(
         None => {
             return Ok(Some(Preconditioner::Additive(
                 LocalSolverConfig::solver_default(),
+                ReductionStrategy::Auto,
             )));
         }
         Some(obj) => obj,
@@ -401,6 +502,7 @@ fn extract_preconditioner_config(
             PyPreconditioner::Off => Ok(None),
             PyPreconditioner::Additive => Ok(Some(Preconditioner::Additive(
                 LocalSolverConfig::solver_default(),
+                ReductionStrategy::Auto,
             ))),
             PyPreconditioner::Multiplicative => Ok(Some(Preconditioner::Multiplicative(
                 LocalSolverConfig::solver_default(),
@@ -410,12 +512,14 @@ fn extract_preconditioner_config(
 
     // Advanced: AdditiveSchwarz / MultiplicativeSchwarz objects
     if let Ok(schwarz) = obj.downcast::<PyAdditiveSchwarz>() {
+        let s = schwarz.get();
         let cfg = extract_local_solver_or_default(
             py,
-            &schwarz.get().local_solver,
+            &s.local_solver,
             LocalSolverConfig::solver_default(),
         )?;
-        return Ok(Some(Preconditioner::Additive(cfg)));
+        let strategy = s.reduction.to_native();
+        return Ok(Some(Preconditioner::Additive(cfg, strategy)));
     }
     if let Ok(schwarz) = obj.downcast::<PyMultiplicativeSchwarz>() {
         let cfg = extract_local_solver_or_default(
@@ -431,7 +535,6 @@ fn extract_preconditioner_config(
          Preconditioner.Off, AdditiveSchwarz(...), MultiplicativeSchwarz(...), or None",
     ))
 }
-
 /// Extract solver parameters from a Python config object (CG or GMRES).
 fn extract_solver_params(config: &Bound<'_, PyAny>) -> PyResult<SolverParams> {
     if let Ok(cg) = config.downcast::<PyCG>() {
@@ -692,6 +795,23 @@ impl PyFePreconditioner {
         self.inner.ncols()
     }
 
+    /// Number of Schwarz subdomains in the built preconditioner.
+    #[getter]
+    fn n_subdomains(&self) -> usize {
+        self.inner.n_subdomains()
+    }
+
+    /// Estimated nested-parallel work per subdomain.
+    #[getter]
+    fn subdomain_inner_parallel_work(&self) -> Vec<usize> {
+        self.inner.subdomain_inner_parallel_work()
+    }
+
+    /// Additive Schwarz diagnostics, if this is an additive preconditioner.
+    fn additive_schwarz_diagnostics(&self) -> Option<PyAdditiveSchwarzDiagnostics> {
+        PyAdditiveSchwarzDiagnostics::from_native(&self.inner)
+    }
+
     fn __repr__(&self) -> String {
         let variant = match &self.inner {
             FePreconditioner::Additive(_) => "Additive",
@@ -878,7 +998,9 @@ fn _within(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCG>()?;
     m.add_class::<PyGMRES>()?;
     m.add_class::<PyAdditiveSchwarz>()?;
+    m.add_class::<PyAdditiveSchwarzDiagnostics>()?;
     m.add_class::<PyMultiplicativeSchwarz>()?;
+    m.add_class::<PyReductionStrategy>()?;
     m.add_class::<PyOperatorRepr>()?;
     m.add_class::<PyPreconditioner>()?;
     m.add_class::<PyApproxCholConfig>()?;

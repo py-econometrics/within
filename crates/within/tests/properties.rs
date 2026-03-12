@@ -4,7 +4,8 @@ use schwarz_precond::Operator;
 use within::observation::{ArrayStore, ObservationWeights};
 use within::operator::gramian::{Gramian, GramianOperator};
 use within::{
-    solve, FePreconditioner, LocalSolverConfig, Preconditioner, SolverParams, WeightedDesign,
+    solve, FePreconditioner, LocalSolverConfig, Preconditioner, ReductionStrategy, SolverParams,
+    WeightedDesign,
 };
 
 /// Generate a random fixed-effects problem as (categories Array2<u32>, y Vec<f64>).
@@ -42,7 +43,7 @@ fn default_params() -> SolverParams {
 }
 
 fn additive_precond() -> Preconditioner {
-    Preconditioner::Additive(LocalSolverConfig::solver_default())
+    Preconditioner::Additive(LocalSolverConfig::solver_default(), ReductionStrategy::Auto)
 }
 
 proptest! {
