@@ -147,50 +147,44 @@ Factor pairs are processed in parallel.
 
 ## 5. Full Algorithm Summary
 
+We conclude with a summary of the full algorithm: 
+
 ### 5.1 Setup phase
 
-```
-Input: categories[n][Q], y[n], weights[n], solver_params, precond_config
+1. **Build weighted design** from `categories` and `weights`
+   - Infer $m_q$ (number of levels) per factor by scanning observations
+   - Compute global offsets: $\text{offset}_q = \sum_{q' < q} m_{q'}$
 
-1. Build WeightedDesign from categories and weights
-   - Infer n_levels per factor by scanning observations
-   - Compute global offsets: offset[q] = sum of n_levels[0..q]
+2. **For each factor pair $(q, r)$ in parallel:**
+   - Build cross-tabulation $C_{qr}$ and diagonal blocks $D_q$, $D_r$
+   - Find connected components of the bipartite graph of $C_{qr}$
+   - Create one subdomain per component, recording its global DOF indices
 
-2. For each factor pair (q, r) in parallel:
-   a. Build cross-tabulation C_qr, diagonal blocks D_q, D_r
-   b. Find connected components of the bipartite graph
-   c. For each component: create subdomain with global DOF indices
+3. **Compute partition-of-unity weights**: $\omega_j = 1/\sqrt{c_j}$ for each DOF $j$
 
-3. Compute partition-of-unity weights (ω_j = 1/sqrt(c_j) per DOF)
+4. **For each subdomain in parallel:**
+   - Build local Laplacian via sign-flip (Section 2.3)
+   - Factor with approximate Cholesky (or dense Cholesky for small systems; see Part 3)
 
-4. For each subdomain in parallel:
-   a. Build local Laplacian (sign-flip) or compute Schur complement
-   b. Factor with approximate Cholesky (or dense Cholesky for small systems)
+5. **Assemble** Schwarz preconditioner $M^{-1}$ from subdomain factors
 
-5. Assemble Schwarz preconditioner from subdomain entries
-
-6. Optionally: build explicit Gramian CSR from the same cross-tabulation blocks
-```
+6. *(Optional)* Build explicit Gramian $G$ in CSR format from the cross-tabulation blocks
 
 ### 5.2 Solve phase
 
-```
-Input: WeightedDesign, preconditioner M⁻¹, right-hand side y
+1. **Form right-hand side**: $b = D^\top W y$
 
-1. Project to normal equations: b = Dᵀ W y
-
-2. Dispatch Krylov solver:
+2. **Select Krylov solver**:
    - CG with additive Schwarz (symmetric preconditioner)
    - GMRES with multiplicative Schwarz (non-symmetric)
 
-3. Solve G α = b with preconditioner M⁻¹
-   - Each iteration: one G·x product + one M⁻¹·r application
-   - Converge when ‖rₖ‖ / ‖b‖ ≤ tol
+3. **Solve** $G\alpha = b$ with preconditioner $M^{-1}$
+   - Each iteration: one $Gx$ product and one $M^{-1}r$ application
+   - Converge when $\|r_k\| / \|b\| \leq \text{tol}$
 
-4. Compute demeaned residuals: e = y - D α
+4. **Compute demeaned residuals**: $e = y - D\alpha$
 
-5. Verify final residual: ‖G α - b‖ / ‖b‖
-```
+5. **Verify**: report final residual $\|G\alpha - b\| / \|b\|$
 
 ---
 
