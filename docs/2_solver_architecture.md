@@ -75,17 +75,19 @@ The transform is an involution: solving $L_{qr} z = b$ and flipping the sign of 
 
 ## 3. Krylov Outer Iteration
 
-The outer solver is a Krylov method that iteratively solves $G\alpha = b$ where $b = D^\top W y$. At each step, the Krylov solver computes a residual $r = b - G\alpha$, applies the preconditioner to get a correction direction $z = M^{-1}r$, and updates the solution.
-
-The key idea is that instead of solving $G\alpha = b$ directly (which may take thousands of demeaning iterations), we use the Schwarz preconditioner $M^{-1}$ to "pre-digest" the residual at each step, pointing the solver toward the answer much faster.
+The outer solver iteratively solves $G\alpha = b$ where $b = D^\top W y$, building a sequence of improving approximations $\alpha_0, \alpha_1, \ldots$ At each step it computes the residual $r_k = b - G\alpha_k$, applies the preconditioner to obtain a search direction $z_k = M^{-1}r_k$, and updates the solution. The preconditioner $M^{-1}$ — the Schwarz solver — is a cheap approximate inverse of $G$ that is not exact, but accurate enough so that the iteration converges in far fewer steps than an unpreconditioned solver would require.
 
 ![Preconditioned vs unpreconditioned convergence](images/preconditioned_convergence.svg)
 
 ### 3.1 Solver selection
 
-- **CG** (conjugate gradient) is used when the preconditioner is symmetric - this is the case with additive Schwarz. CG is optimal for symmetric positive-definite systems.
+From the class of Kyrlov solvers, we provide two algorithms: 
 
-- **GMRES** (generalized minimal residual) is used when the preconditioner is non-symmetric - this is the case with multiplicative Schwarz, where the sequential processing breaks symmetry.
+The choice of solver depends on whether the preconditioner is symmetric; this in turn depends on whether additive or multiplicative Schwarz is used (see [Section 4](#4-schwarz-domain-decomposition)):
+
+- **CG** (conjugate gradient) is used when the preconditioner is symmetric — this is the case with additive Schwarz. CG is optimal for symmetric positive-definite systems.
+
+- **GMRES** (generalized minimal residual) is used when the preconditioner is non-symmetric — this is the case with multiplicative Schwarz, where the sequential processing breaks symmetry.
 
 ### 3.2 Convergence criterion
 
