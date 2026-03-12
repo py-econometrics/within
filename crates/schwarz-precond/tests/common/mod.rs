@@ -3,7 +3,8 @@
 #![allow(dead_code)]
 
 use schwarz_precond::{
-    LocalSolveError, LocalSolver, Operator, SparseMatrix, SubdomainCore, SubdomainEntry,
+    LocalSolveError, LocalSolveOptions, LocalSolver, Operator, SparseMatrix, SubdomainCore,
+    SubdomainEntry,
 };
 
 // ---------------------------------------------------------------------------
@@ -175,7 +176,12 @@ impl LocalSolver for UniformDiagLocalSolver {
     fn scratch_size(&self) -> usize {
         self.n_local
     }
-    fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), LocalSolveError> {
+    fn solve_local(
+        &self,
+        rhs: &mut [f64],
+        sol: &mut [f64],
+        _options: LocalSolveOptions,
+    ) -> Result<(), LocalSolveError> {
         for i in 0..self.n_local {
             sol[i] = rhs[i] * self.inv_diag;
         }
@@ -203,7 +209,12 @@ impl LocalSolver for DiagLocalSolver {
     fn scratch_size(&self) -> usize {
         self.inv_diag.len()
     }
-    fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), LocalSolveError> {
+    fn solve_local(
+        &self,
+        rhs: &mut [f64],
+        sol: &mut [f64],
+        _options: LocalSolveOptions,
+    ) -> Result<(), LocalSolveError> {
         for i in 0..self.inv_diag.len() {
             sol[i] = self.inv_diag[i] * rhs[i];
         }
@@ -296,7 +307,12 @@ impl LocalSolver for FailingLocalSolver {
     fn scratch_size(&self) -> usize {
         self.scratch_size
     }
-    fn solve_local(&self, _rhs: &mut [f64], _sol: &mut [f64]) -> Result<(), LocalSolveError> {
+    fn solve_local(
+        &self,
+        _rhs: &mut [f64],
+        _sol: &mut [f64],
+        _options: LocalSolveOptions,
+    ) -> Result<(), LocalSolveError> {
         Err(LocalSolveError::ApproxCholSolveFailed {
             context: "test.failing_local_solver",
             message: format!("deliberate failure for n={}", self.n_local),

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use approx_chol::Factor;
 use faer::{MatRef, Side};
 use rayon::prelude::*;
-use schwarz_precond::{LocalSolveError, LocalSolver, SparseMatrix};
+use schwarz_precond::{LocalSolveError, LocalSolveOptions, LocalSolver, SparseMatrix};
 
 use crate::operator::csr_block::{CsrBlock, PAR_SPMV_THRESHOLD};
 use crate::operator::gramian::CrossTab;
@@ -45,9 +45,10 @@ fn backsub_block(
     cross_matrix: &CsrBlock,
     inv_diag: &[f64],
     sol_source: &[f64],
+    options: LocalSolveOptions,
 ) {
     let n = sol_output.len();
-    if n > PAR_BACKSUB_THRESHOLD && schwarz_precond::local_solver_inner_parallelism_enabled() {
+    if n > PAR_BACKSUB_THRESHOLD && options.allow_inner_parallelism() {
         sol_output
             .par_chunks_mut(PAR_BACKSUB_CHUNK)
             .enumerate()
@@ -110,7 +111,12 @@ impl LocalSolver for ApproxCholSolver {
         self.factor.n()
     }
 
-    fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), LocalSolveError> {
+    fn solve_local(
+        &self,
+        rhs: &mut [f64],
+        sol: &mut [f64],
+        _options: LocalSolveOptions,
+    ) -> Result<(), LocalSolveError> {
         let n_local = self.n_local;
         let (solve_n, fbs) = match &self.strategy {
             LocalSolveStrategy::Laplacian => {
@@ -192,10 +198,15 @@ impl LocalSolver for FeLocalSolver {
         }
     }
 
-    fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), LocalSolveError> {
+    fn solve_local(
+        &self,
+        rhs: &mut [f64],
+        sol: &mut [f64],
+        options: LocalSolveOptions,
+    ) -> Result<(), LocalSolveError> {
         match self {
-            Self::FullSddm { solver, .. } => solver.solve_local(rhs, sol),
-            Self::SchurComplement(s) => s.solve_local(rhs, sol),
+            Self::FullSddm { solver, .. } => solver.solve_local(rhs, sol, options),
+            Self::SchurComplement(s) => s.solve_local(rhs, sol, options),
         }
     }
 
@@ -500,7 +511,12 @@ impl LocalSolver for BlockElimSolver {
         self.n_local + self.n_reduced
     }
 
-    fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), LocalSolveError> {
+    fn solve_local(
+        &self,
+        rhs: &mut [f64],
+        sol: &mut [f64],
+        options: LocalSolveOptions,
+    ) -> Result<(), LocalSolveError> {
         let n = self.n_local;
         let n_q = self.cross_tab.n_q();
         let n_r = self.cross_tab.n_r();
@@ -519,8 +535,12 @@ impl LocalSolver for BlockElimSolver {
             {
                 let (main, scratch) = rhs.split_at_mut(n);
                 scratch[..n_keep].copy_from_slice(&main[n_q..]);
-                ct.ct
-                    .spmv_diag_add(&self.inv_diag_elim, &main[..n_q], &mut scratch[..n_keep]);
+                ct.ct.spmv_diag_add(
+                    &self.inv_diag_elim,
+                    &main[..n_q],
+                    &mut scratch[..n_keep],
+                    options.allow_inner_parallelism(),
+                );
             }
             if self.n_reduced > n_keep {
                 rhs[n + n_keep] = 0.0;
@@ -533,7 +553,14 @@ impl LocalSolver for BlockElimSolver {
 
             {
                 let (sol_q, sol_r) = sol.split_at_mut(n_q);
-                backsub_block(sol_q, &rhs[..n_q], &ct.c, &self.inv_diag_elim, sol_r);
+                backsub_block(
+                    sol_q,
+                    &rhs[..n_q],
+                    &ct.c,
+                    &self.inv_diag_elim,
+                    sol_r,
+                    options,
+                );
             }
         } else {
             let n_keep = n_q;
@@ -541,7 +568,12 @@ impl LocalSolver for BlockElimSolver {
             {
                 let (main, scratch) = rhs.split_at_mut(n);
                 scratch[..n_keep].copy_from_slice(&main[..n_q]);
-                ct.c.spmv_diag_add(&self.inv_diag_elim, &main[n_q..], &mut scratch[..n_keep]);
+                ct.c.spmv_diag_add(
+                    &self.inv_diag_elim,
+                    &main[n_q..],
+                    &mut scratch[..n_keep],
+                    options.allow_inner_parallelism(),
+                );
             }
             if self.n_reduced > n_keep {
                 rhs[n + n_keep] = 0.0;
@@ -560,6 +592,7 @@ impl LocalSolver for BlockElimSolver {
                     &ct.ct,
                     &self.inv_diag_elim,
                     sol_q,
+                    options,
                 );
             }
         }

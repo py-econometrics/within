@@ -9,6 +9,36 @@ use crate::domain::SubdomainCore;
 use crate::error::LocalSolveError;
 
 // ---------------------------------------------------------------------------
+// LocalSolveOptions
+// ---------------------------------------------------------------------------
+
+/// Runtime options for one local solve invocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalSolveOptions {
+    allow_inner_parallelism: bool,
+}
+
+impl LocalSolveOptions {
+    /// Create a new local-solve options value.
+    pub const fn new(allow_inner_parallelism: bool) -> Self {
+        Self {
+            allow_inner_parallelism,
+        }
+    }
+
+    /// Whether nested inner parallelism is allowed for this local solve.
+    pub const fn allow_inner_parallelism(self) -> bool {
+        self.allow_inner_parallelism
+    }
+}
+
+impl Default for LocalSolveOptions {
+    fn default() -> Self {
+        Self::new(true)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // LocalSolver trait
 // ---------------------------------------------------------------------------
 
@@ -28,7 +58,12 @@ pub trait LocalSolver: Send + Sync {
     ///
     /// Both `rhs` and `sol` have length >= `scratch_size()`.
     /// The solver may read/write up to `scratch_size()` elements.
-    fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), LocalSolveError>;
+    fn solve_local(
+        &self,
+        rhs: &mut [f64],
+        sol: &mut [f64],
+        options: LocalSolveOptions,
+    ) -> Result<(), LocalSolveError>;
 
     /// Estimated amount of local work that can benefit from nested Rayon.
     ///
@@ -84,6 +119,7 @@ impl<S: LocalSolver> SubdomainEntry<S> {
         out: &mut [f64],
         r_scratch: &mut [f64],
         z_scratch: &mut [f64],
+        options: LocalSolveOptions,
     ) -> Result<(), LocalSolveError> {
         if self.core.global_indices.is_empty() {
             return Ok(());
@@ -93,7 +129,7 @@ impl<S: LocalSolver> SubdomainEntry<S> {
         self.core.restrict_weighted(r, r_scratch);
 
         // Local solve (strategy-specific transforms happen inside the solver)
-        self.solver.solve_local(r_scratch, z_scratch)?;
+        self.solver.solve_local(r_scratch, z_scratch, options)?;
 
         // Weighted scatter directly into output: out += R_i^T @ D_i @ z_local
         self.core.prolongate_weighted_add(z_scratch, out);
@@ -109,6 +145,7 @@ impl<S: LocalSolver> SubdomainEntry<S> {
         out: &[AtomicU64],
         r_scratch: &mut [f64],
         z_scratch: &mut [f64],
+        options: LocalSolveOptions,
     ) -> Result<(), LocalSolveError> {
         if self.core.global_indices.is_empty() {
             return Ok(());
@@ -118,7 +155,7 @@ impl<S: LocalSolver> SubdomainEntry<S> {
         self.core.restrict_weighted(r, r_scratch);
 
         // Local solve (strategy-specific transforms happen inside the solver)
-        self.solver.solve_local(r_scratch, z_scratch)?;
+        self.solver.solve_local(r_scratch, z_scratch, options)?;
 
         // Weighted atomic scatter into output: out += R_i^T @ D_i @ z_local
         self.core.prolongate_weighted_add_atomic(z_scratch, out);
@@ -143,7 +180,12 @@ mod tests {
         fn scratch_size(&self) -> usize {
             self.n
         }
-        fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), LocalSolveError> {
+        fn solve_local(
+            &self,
+            rhs: &mut [f64],
+            sol: &mut [f64],
+            _options: LocalSolveOptions,
+        ) -> Result<(), LocalSolveError> {
             sol[..self.n].copy_from_slice(&rhs[..self.n]);
             Ok(())
         }
@@ -206,7 +248,13 @@ mod tests {
         let mut z_scratch = vec![0.0; 2];
 
         entry
-            .apply_weighted_into_with_scratch(&r, &mut out, &mut r_scratch, &mut z_scratch)
+            .apply_weighted_into_with_scratch(
+                &r,
+                &mut out,
+                &mut r_scratch,
+                &mut z_scratch,
+                LocalSolveOptions::default(),
+            )
             .expect("identity local solver should not fail");
 
         // Should restrict DOFs [1,2] → [20, 30], identity solve, scatter back

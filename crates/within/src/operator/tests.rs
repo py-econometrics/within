@@ -144,7 +144,7 @@ mod csr_block_tests {
         let d = vec![2.0, 3.0, 1.0, 0.5];
         let x = vec![1.0, 2.0, 3.0, 4.0];
         let mut y = vec![0.0; 3];
-        a.spmv_diag_add(&d, &x, &mut y);
+        a.spmv_diag_add(&d, &x, &mut y, true);
         // row 0: 1*(2*1) + 2*(1*3) = 2+6 = 8
         // row 1: 3*(3*2) + 4*(0.5*4) = 18+8 = 26
         // row 2: 5*(2*1) + 6*(0.5*4) = 10+12 = 22
@@ -890,7 +890,7 @@ mod schwarz_tests {
         ReducedSchurConfig,
     };
     use approx_chol::Config;
-    use schwarz_precond::{LocalSolver, Operator, ReductionStrategy};
+    use schwarz_precond::{LocalSolveOptions, LocalSolver, Operator, ReductionStrategy};
 
     const BLOCK_ELIM_NESTED_RAYON_CHILD_ENV: &str = "WITHIN_TEST_BLOCK_ELIM_NESTED_RAYON_CHILD";
 
@@ -1190,7 +1190,7 @@ mod schwarz_tests {
         for _ in 0..iters {
             rhs[..n_local].copy_from_slice(&rhs_template);
             solver
-                .solve_local(&mut rhs, &mut sol)
+                .solve_local(&mut rhs, &mut sol, LocalSolveOptions::default())
                 .expect("benchmark local solve");
             checksum += sol[0];
         }
@@ -1427,7 +1427,7 @@ mod schwarz_tests {
 
 mod block_elim_tests {
     use approx_chol::Config;
-    use schwarz_precond::LocalSolver;
+    use schwarz_precond::{LocalSolveOptions, LocalSolver};
 
     use crate::operator::csr_block::CsrBlock;
     use crate::operator::gramian::CrossTab;
@@ -1530,7 +1530,7 @@ mod block_elim_tests {
         let mut sol = vec![0.0; scratch_sz];
 
         solver
-            .solve_local(&mut rhs, &mut sol)
+            .solve_local(&mut rhs, &mut sol, LocalSolveOptions::default())
             .expect("solve_local should succeed");
 
         // Solution must be finite.

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use rayon::prelude::*;
 
 use crate::error::ApplyError;
-use crate::local_solve::{LocalSolver, SubdomainEntry};
+use crate::local_solve::{LocalSolveOptions, LocalSolver, SubdomainEntry};
 
 use super::buffers::{
     clear_additive_buffers, reduce_additive_buffers_into, AdditiveSweepBuffers, BufferPool,
@@ -74,18 +74,19 @@ impl<S: LocalSolver> AdditiveExecutor<S> {
         z: &mut [f64],
         accum: &[AtomicU64],
     ) -> Result<(), ApplyError> {
+        let options = LocalSolveOptions::new(allow_inner_parallelism);
         self.subdomains.par_iter().enumerate().try_for_each_init(
             || LocalSolveScratch::new(self.max_scratch_size),
             |scratch, (subdomain, entry)| {
-                crate::schwarz::with_local_solver_inner_parallelism(allow_inner_parallelism, || {
-                    entry.apply_weighted_into_atomic(
+                entry
+                    .apply_weighted_into_atomic(
                         r,
                         accum,
                         &mut scratch.r_scratch,
                         &mut scratch.z_scratch,
+                        options,
                     )
-                })
-                .map_err(|source| ApplyError::LocalSolveFailed { subdomain, source })
+                    .map_err(|source| ApplyError::LocalSolveFailed { subdomain, source })
             },
         )?;
 
@@ -110,6 +111,7 @@ impl<S: LocalSolver> AdditiveExecutor<S> {
         z: &mut [f64],
         pool: &mut Vec<AdditiveSweepBuffers>,
     ) -> Result<(), ApplyError> {
+        let options = LocalSolveOptions::new(allow_inner_parallelism);
         let worker_buffers =
             WorkerReductionBuffers::new(std::mem::take(pool), self.n_dofs, self.max_scratch_size);
         let apply_result =
@@ -118,18 +120,15 @@ impl<S: LocalSolver> AdditiveExecutor<S> {
                 .enumerate()
                 .try_for_each(|(subdomain, entry)| {
                     worker_buffers.with_buffer(|buffers| {
-                        crate::schwarz::with_local_solver_inner_parallelism(
-                            allow_inner_parallelism,
-                            || {
-                                entry.apply_weighted_into_with_scratch(
-                                    r,
-                                    &mut buffers.global_accum,
-                                    &mut buffers.scratch.r_scratch,
-                                    &mut buffers.scratch.z_scratch,
-                                )
-                            },
-                        )
-                        .map_err(|source| ApplyError::LocalSolveFailed { subdomain, source })
+                        entry
+                            .apply_weighted_into_with_scratch(
+                                r,
+                                &mut buffers.global_accum,
+                                &mut buffers.scratch.r_scratch,
+                                &mut buffers.scratch.z_scratch,
+                                options,
+                            )
+                            .map_err(|source| ApplyError::LocalSolveFailed { subdomain, source })
                     })
                 });
 

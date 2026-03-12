@@ -50,7 +50,12 @@ struct DiagSolver(usize, f64);
 impl LocalSolver for DiagSolver {
     fn n_local(&self) -> usize    { self.0 }
     fn scratch_size(&self) -> usize { self.0 }
-    fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), schwarz_precond::LocalSolveError> {
+    fn solve_local(
+        &self,
+        rhs: &mut [f64],
+        sol: &mut [f64],
+        _options: schwarz_precond::LocalSolveOptions,
+    ) -> Result<(), schwarz_precond::LocalSolveError> {
         for i in 0..self.0 { sol[i] = rhs[i] / self.1; }
         Ok(())
     }
