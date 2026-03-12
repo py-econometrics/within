@@ -87,26 +87,18 @@ def _cmd_run(args: argparse.Namespace) -> None:
                 print(f"Unknown suite: {s!r}", file=sys.stderr)
                 sys.exit(1)
 
-    if args.tag:
-        tag_set = set(args.tag)
-        names = [n for n in names if suites[n].tags & tag_set]
-
     if not names:
         print("No suites selected.")
         return
 
-    profile = "smoke" if args.quick else args.profile
-    repeat = args.repeat
-    warmup = args.warmup
-    if repeat is None:
-        repeat = 1 if profile == "full" else 3
-    if warmup is None:
-        warmup = 0 if profile == "full" else 1
+    profile = args.profile
+    repeat = 1 if profile == "full" else 3
+    warmup = 0 if profile == "full" else 1
 
     opts = SuiteOptions(
-        seed=args.seed,
-        tol=args.tol,
-        maxiter=args.maxiter,
+        seed=42,
+        tol=1e-8,
+        maxiter=2000,
         profile=profile,
         repeat=repeat,
         warmup=warmup,
@@ -150,29 +142,12 @@ def main() -> None:
         choices=sorted(_PRESETS),
         help="Run a named benchmark preset instead of explicit suites",
     )
-    run_p.add_argument("--quick", action="store_true", help="Use small problems")
     run_p.add_argument(
         "--profile",
         choices=("smoke", "iterate", "full"),
         default="full",
         help="Benchmark profile: smoke, iterate, or full",
     )
-    run_p.add_argument(
-        "--repeat",
-        type=int,
-        default=None,
-        help="Number of timed repeats per case (default: profile-dependent)",
-    )
-    run_p.add_argument(
-        "--warmup",
-        type=int,
-        default=None,
-        help="Number of warmup solves per case (default: profile-dependent)",
-    )
-    run_p.add_argument("--tag", nargs="+", help="Filter by tag(s)")
-    run_p.add_argument("--seed", type=int, default=42)
-    run_p.add_argument("--tol", type=float, default=1e-8)
-    run_p.add_argument("--maxiter", type=int, default=2000)
     run_p.add_argument(
         "--reduction-strategy",
         choices=("auto", "atomic", "parallel"),
