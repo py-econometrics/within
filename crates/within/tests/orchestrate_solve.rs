@@ -160,7 +160,7 @@ fn test_compare_factorization_strategies() {
     use within::operator::gramian::GramianOperator;
     use within::operator::schwarz::build_schwarz;
     use within::operator::DesignOperator;
-    use within::{ApproxCholConfig, FixedEffectsDesign};
+    use within::{ApproxCholConfig, WeightedDesign};
 
     let configs: Vec<(ApproxCholConfig, &str)> = vec![
         (
@@ -203,7 +203,7 @@ fn test_compare_factorization_strategies() {
             .collect();
         let store = within::FactorMajorStore::new(cats, within::ObservationWeights::Unit, *n_rows)
             .expect("valid factor-major store");
-        let design = FixedEffectsDesign::from_store(store).expect("valid synthetic design");
+        let design = WeightedDesign::from_store(store).expect("valid synthetic design");
 
         let y: Vec<f64> = (0..*n_rows).map(|_| rng.random::<f64>()).collect();
         let design_op = DesignOperator::new(&design);

@@ -6,7 +6,7 @@ use proptest::prelude::*;
 
 use super::CrossTab;
 use super::Gramian;
-use crate::domain::{FixedEffectsDesign, WeightedDesign};
+use crate::domain::WeightedDesign;
 use crate::observation::{FactorMajorStore, ObservationWeights};
 use crate::operator::gramian::find_all_active_levels;
 
@@ -35,17 +35,17 @@ fn assert_cross_tabs_equal(a: &CrossTab, b: &CrossTab) {
     }
 }
 
-fn make_2fe_design() -> FixedEffectsDesign {
+fn make_2fe_design() -> WeightedDesign<FactorMajorStore> {
     let store = FactorMajorStore::new(
         vec![vec![0, 1, 2, 0, 1], vec![0, 1, 2, 3, 0]],
         ObservationWeights::Unit,
         5,
     )
     .expect("valid factor-major store");
-    FixedEffectsDesign::from_store(store).expect("valid 2FE design")
+    WeightedDesign::from_store(store).expect("valid 2FE design")
 }
 
-fn make_3fe_design() -> FixedEffectsDesign {
+fn make_3fe_design() -> WeightedDesign<FactorMajorStore> {
     let store = FactorMajorStore::new(
         vec![
             vec![0, 1, 2, 0, 1, 2],
@@ -56,7 +56,7 @@ fn make_3fe_design() -> FixedEffectsDesign {
         6,
     )
     .expect("valid factor-major store");
-    FixedEffectsDesign::from_store(store).expect("valid 3FE design")
+    WeightedDesign::from_store(store).expect("valid 3FE design")
 }
 
 #[test]
@@ -108,7 +108,7 @@ fn test_from_gramian_block_single_component() {
         4,
     )
     .expect("valid factor-major store");
-    let design = FixedEffectsDesign::from_store(store).expect("valid design");
+    let design = WeightedDesign::from_store(store).expect("valid design");
     let gramian = Gramian::build(&design);
 
     let (ct_gram, _) =
@@ -130,7 +130,7 @@ fn test_from_gramian_block_multiple_components() {
         4,
     )
     .expect("valid factor-major store");
-    let design = FixedEffectsDesign::from_store(store).expect("valid design");
+    let design = WeightedDesign::from_store(store).expect("valid design");
     let gramian = Gramian::build(&design);
 
     let (ct_obs, _) = CrossTab::build_for_pair(&design, 0, 1).unwrap();
@@ -192,7 +192,7 @@ fn test_cross_tab_sparse_accumulation_path() {
         n_obs,
     )
     .expect("valid sparse store");
-    let design_sparse = FixedEffectsDesign::from_store(store_sparse).expect("valid sparse design");
+    let design_sparse = WeightedDesign::from_store(store_sparse).expect("valid sparse design");
     let (ct_sparse, _) =
         CrossTab::build_for_pair(&design_sparse, 0, 1).expect("sparse cross tab should build");
 
@@ -206,7 +206,7 @@ fn test_cross_tab_sparse_accumulation_path() {
         n_obs,
     )
     .expect("valid dense store");
-    let design_dense = FixedEffectsDesign::from_store(store_dense).expect("valid dense design");
+    let design_dense = WeightedDesign::from_store(store_dense).expect("valid dense design");
     let (ct_dense, _) =
         CrossTab::build_for_pair(&design_dense, 0, 1).expect("dense cross tab should build");
 
@@ -286,7 +286,7 @@ fn test_extract_component_two_components() {
     let n_obs = 8;
     let store =
         FactorMajorStore::new(vec![fa, fb], ObservationWeights::Unit, n_obs).expect("valid store");
-    let design = FixedEffectsDesign::from_store(store).expect("valid design");
+    let design = WeightedDesign::from_store(store).expect("valid design");
     let (ct, _) = CrossTab::build_for_pair(&design, 0, 1).expect("cross tab should build");
 
     let components = ct.bipartite_connected_components();
@@ -400,7 +400,7 @@ proptest! {
             ObservationWeights::Unit,
             n_obs,
         ).expect("valid store");
-        let design = FixedEffectsDesign::from_store(store).expect("valid design");
+        let design = WeightedDesign::from_store(store).expect("valid design");
         let (ct, _) = CrossTab::build_for_pair(&design, 0, 1)
             .expect("cross tab should build");
 
@@ -457,7 +457,7 @@ fn test_find_all_active_levels_with_gaps() {
     let n_obs = 6;
     let store =
         FactorMajorStore::new(vec![fa, fb], ObservationWeights::Unit, n_obs).expect("valid store");
-    let design = FixedEffectsDesign::from_store(store).expect("valid design");
+    let design = WeightedDesign::from_store(store).expect("valid design");
 
     let active = find_all_active_levels(&design);
 

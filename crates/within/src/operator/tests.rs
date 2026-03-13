@@ -3,19 +3,19 @@
 // ===========================================================================
 
 mod design_tests {
-    use crate::domain::FixedEffectsDesign;
+    use crate::domain::WeightedDesign;
     use crate::observation::{FactorMajorStore, ObservationWeights};
     use crate::operator::DesignOperator;
     use schwarz_precond::Operator;
 
-    fn make_test_design() -> FixedEffectsDesign {
+    fn make_test_design() -> WeightedDesign<FactorMajorStore> {
         let store = FactorMajorStore::new(
             vec![vec![0, 1, 2, 0, 1], vec![0, 1, 2, 3, 0]],
             ObservationWeights::Unit,
             5,
         )
         .expect("valid factor-major store");
-        FixedEffectsDesign::from_store(store).expect("valid test design")
+        WeightedDesign::from_store(store).expect("valid test design")
     }
 
     #[test]
@@ -168,7 +168,7 @@ mod csr_block_tests {
 // ===========================================================================
 
 mod residual_update_tests {
-    use crate::domain::FixedEffectsDesign;
+    use crate::domain::WeightedDesign;
     use crate::observation::{FactorMajorStore, ObservationWeights};
     use crate::operator::gramian::Gramian;
     use crate::operator::residual_update::{
@@ -184,14 +184,14 @@ mod residual_update_tests {
     //   factor 0: levels [0, 1, 2, 0, 1]  (3 levels, offset 0)
     //   factor 1: levels [0, 1, 2, 3, 0]  (4 levels, offset 3)
     // DOFs: 0..3 for factor 0, 3..7 for factor 1
-    fn make_dof_index_design() -> FixedEffectsDesign {
+    fn make_dof_index_design() -> WeightedDesign<FactorMajorStore> {
         let store = FactorMajorStore::new(
             vec![vec![0, 1, 2, 0, 1], vec![0, 1, 2, 3, 0]],
             ObservationWeights::Unit,
             5,
         )
         .expect("valid factor-major store");
-        FixedEffectsDesign::from_store(store).expect("valid test design")
+        WeightedDesign::from_store(store).expect("valid test design")
     }
 
     #[test]
@@ -246,7 +246,7 @@ mod residual_update_tests {
         // 1 factor, 3 observations, all same level
         let store = FactorMajorStore::new(vec![vec![0, 0, 0]], ObservationWeights::Unit, 3)
             .expect("valid factor-major store");
-        let design = FixedEffectsDesign::from_store(store).expect("valid single-factor design");
+        let design = WeightedDesign::from_store(store).expect("valid single-factor design");
         let idx = DofObservationIndex::build(&design);
 
         assert_eq!(idx.n_dofs(), 1);
@@ -260,7 +260,7 @@ mod residual_update_tests {
         // 1 factor, 2 observations using levels 0 and 2 — level 1 has no observations
         let store = FactorMajorStore::new(vec![vec![0, 2]], ObservationWeights::Unit, 2)
             .expect("valid factor-major store");
-        let design = FixedEffectsDesign::from_store(store).expect("valid sparse-level design");
+        let design = WeightedDesign::from_store(store).expect("valid sparse-level design");
         let idx = DofObservationIndex::build(&design);
 
         assert_eq!(idx.n_dofs(), 3);
@@ -275,7 +275,7 @@ mod residual_update_tests {
 
     /// Helper: build a design, explicit Gramian, and both updaters.
     /// Returns (design, gramian, obs_updater).
-    fn make_test_setup() -> (FixedEffectsDesign, Gramian) {
+    fn make_test_setup() -> (WeightedDesign<FactorMajorStore>, Gramian) {
         // 2 factors, 5 observations
         // factor 0: [0, 1, 2, 0, 1] (3 levels)
         // factor 1: [0, 1, 2, 3, 0] (4 levels)
@@ -286,7 +286,7 @@ mod residual_update_tests {
             5,
         )
         .expect("valid factor-major store");
-        let design = FixedEffectsDesign::from_store(store).expect("valid fixed-effects design");
+        let design = WeightedDesign::from_store(store).expect("valid fixed-effects design");
         let gramian = Gramian::build(&design);
         (design, gramian)
     }
@@ -866,7 +866,7 @@ mod schwarz_tests {
     use crate::config::{
         ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, DEFAULT_DENSE_SCHUR_THRESHOLD,
     };
-    use crate::domain::{build_local_domains, FixedEffectsDesign, Subdomain, SubdomainCore};
+    use crate::domain::{build_local_domains, Subdomain, SubdomainCore, WeightedDesign};
     use crate::observation::{FactorMajorStore, ObservationWeights};
     use crate::operator::csr_block::CsrBlock;
     use crate::operator::gramian::CrossTab;
@@ -879,14 +879,14 @@ mod schwarz_tests {
 
     const BLOCK_ELIM_NESTED_RAYON_CHILD_ENV: &str = "WITHIN_TEST_BLOCK_ELIM_NESTED_RAYON_CHILD";
 
-    fn make_test_data() -> (FixedEffectsDesign, Vec<(Subdomain, CrossTab)>) {
+    fn make_test_data() -> (WeightedDesign<FactorMajorStore>, Vec<(Subdomain, CrossTab)>) {
         let store = FactorMajorStore::new(
             vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]],
             ObservationWeights::Unit,
             5,
         )
         .expect("valid factor-major store");
-        let design = FixedEffectsDesign::from_store(store).expect("valid fixed-effects design");
+        let design = WeightedDesign::from_store(store).expect("valid fixed-effects design");
         let domain_pairs = build_local_domains(&design);
         (design, domain_pairs)
     }
@@ -1217,7 +1217,7 @@ mod schwarz_tests {
             4,
         )
         .expect("valid factor-major store");
-        let design = FixedEffectsDesign::from_store(store).expect("valid design");
+        let design = WeightedDesign::from_store(store).expect("valid design");
         let domain_pairs = build_local_domains(&design);
 
         assert!(!domain_pairs.is_empty());
@@ -1476,18 +1476,18 @@ mod preconditioner_fused_tests {
     use schwarz_precond::Operator;
 
     use crate::config::{LocalSolverConfig, Preconditioner, ReductionStrategy};
-    use crate::domain::FixedEffectsDesign;
+    use crate::domain::WeightedDesign;
     use crate::observation::{FactorMajorStore, ObservationWeights};
     use crate::operator::preconditioner::build_preconditioner_fused;
 
-    fn make_test_design() -> FixedEffectsDesign {
+    fn make_test_design() -> WeightedDesign<FactorMajorStore> {
         let store = FactorMajorStore::new(
             vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]],
             ObservationWeights::Unit,
             5,
         )
         .expect("valid factor-major store");
-        FixedEffectsDesign::from_store(store).expect("valid fixed-effects design")
+        WeightedDesign::from_store(store).expect("valid fixed-effects design")
     }
 
     #[test]
