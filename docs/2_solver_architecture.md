@@ -93,8 +93,6 @@ The choice of solver depends on whether the preconditioner is symmetric; this in
 
 The solver converges when the normalized residual $\|r_k\|_2 / \|b\|_2 \leq \text{tol}$ (default $10^{-8}$). The residual $r_k = b - G\alpha_k$ measures how well the current $\alpha_k$ satisfies the normal equations — it is a property of the linear system, not a direct measure of how accurately the fixed effects have been removed from $y$. In practice the two are closely linked: a small residual implies that $\alpha_k$ is close to the true solution $\alpha^\ast$, and hence that the demeaned residuals $e = y - D\alpha_k$ are accurate.
 
-**Iterative refinement.** When higher accuracy is needed, the solution can be improved by solving $G\delta = (b - G\alpha_0)$ and updating $\alpha \leftarrow \alpha_0 + \delta$. Each refinement step reuses the existing preconditioner and reduces the error by roughly the same factor as the original solve.
-
 ---
 
 ## 4. Schwarz Domain Decomposition
