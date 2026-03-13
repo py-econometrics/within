@@ -9,9 +9,7 @@
 //!   └── Preconditioner  (Schwarz variant + local solver config)
 //!         ├── Additive(LocalSolverConfig, ReductionStrategy)
 //!         └── Multiplicative(LocalSolverConfig)
-//!               └── LocalSolverConfig
-//!                     ├── FullSddm { ApproxCholConfig }
-//!                     └── SchurComplement { ApproxCholConfig, ApproxSchurConfig, dense_threshold }
+//!               └── LocalSolverConfig { ApproxCholConfig, ApproxSchurConfig, dense_threshold }
 //! ```
 //!
 //! # Defaults and why they are chosen
@@ -77,35 +75,27 @@ pub enum OperatorRepr {
 // Local solver configuration
 // ---------------------------------------------------------------------------
 
-/// Selects the local solver used inside each Schwarz subdomain.
+/// Local solver configuration for Schwarz subdomains.
 ///
-/// Each variant is self-contained: it carries its own [`ApproxCholConfig`].
+/// Uses Schur complement reduction: eliminates the larger diagonal block
+/// (exactly or approximately), then factorizes the smaller reduced system.
 #[derive(Debug, Clone)]
-pub enum LocalSolverConfig {
-    /// Full bipartite SDDM factorized via approximate Cholesky.
-    FullSddm {
-        /// Configuration for the approximate Cholesky factorization.
-        approx_chol: ApproxCholConfig,
-    },
-    /// Schur complement reduction: eliminate the larger diagonal block
-    /// (exactly or approximately), then factorize the smaller reduced system.
-    SchurComplement {
-        /// ApproxChol config for the reduced system.
-        approx_chol: ApproxCholConfig,
-        /// Approximate Schur complement configuration.
-        /// `None` = exact (default). `Some` = approximate with sampling.
-        approx_schur: Option<ApproxSchurConfig>,
-        /// Dense Schur fast-path threshold on reduced size `n_keep=min(n_q,n_r)`.
-        ///
-        /// `0` disables the dense fast path; larger values allow dense anchored
-        /// Cholesky for more subdomains.
-        dense_threshold: usize,
-    },
+pub struct LocalSolverConfig {
+    /// ApproxChol config for the reduced system.
+    pub approx_chol: ApproxCholConfig,
+    /// Approximate Schur complement configuration.
+    /// `None` = exact (default). `Some` = approximate with sampling.
+    pub approx_schur: Option<ApproxSchurConfig>,
+    /// Dense Schur fast-path threshold on reduced size `n_keep=min(n_q,n_r)`.
+    ///
+    /// `0` disables the dense fast path; larger values allow dense anchored
+    /// Cholesky for more subdomains.
+    pub dense_threshold: usize,
 }
 
 impl Default for LocalSolverConfig {
     fn default() -> Self {
-        Self::SchurComplement {
+        Self {
             approx_chol: ApproxCholConfig::default(),
             approx_schur: Some(ApproxSchurConfig::default()),
             dense_threshold: DEFAULT_DENSE_SCHUR_THRESHOLD,
@@ -116,7 +106,7 @@ impl Default for LocalSolverConfig {
 impl LocalSolverConfig {
     /// Default for iterative solvers: uses split_merge=2 for the reduced Schur system.
     pub fn solver_default() -> Self {
-        Self::SchurComplement {
+        Self {
             approx_chol: ApproxCholConfig {
                 split_merge: Some(2),
                 ..Default::default()

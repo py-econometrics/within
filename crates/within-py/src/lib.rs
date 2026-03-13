@@ -287,22 +287,6 @@ impl PySchurComplement {
     }
 }
 
-#[pyclass(frozen)]
-#[pyo3(name = "FullSddm")]
-pub struct PyFullSddm {
-    #[pyo3(get)]
-    pub approx_chol: Option<Py<PyApproxCholConfig>>,
-}
-
-#[pymethods]
-impl PyFullSddm {
-    #[new]
-    #[pyo3(signature = (approx_chol=None))]
-    fn new(approx_chol: Option<Py<PyApproxCholConfig>>) -> Self {
-        Self { approx_chol }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Schwarz preconditioner classes (available via `_within` for benchmarks)
 // ---------------------------------------------------------------------------
@@ -459,7 +443,7 @@ pub struct PyBatchSolveResult {
 // Extraction helpers
 // ---------------------------------------------------------------------------
 
-/// Extract a `LocalSolverConfig` from a Python `SchurComplement` or `FullSddm` object.
+/// Extract a `LocalSolverConfig` from a Python `SchurComplement` object.
 fn extract_local_solver_config(
     py: Python<'_>,
     obj: &Bound<'_, PyAny>,
@@ -475,22 +459,14 @@ fn extract_local_solver_config(
             .approx_schur
             .as_ref()
             .map(|c| c.bind(py).get().to_native());
-        Ok(LocalSolverConfig::SchurComplement {
+        Ok(LocalSolverConfig {
             approx_chol,
             approx_schur,
             dense_threshold: sc.dense_threshold,
         })
-    } else if let Ok(fd) = obj.downcast::<PyFullSddm>() {
-        let fd = fd.get();
-        let approx_chol = fd
-            .approx_chol
-            .as_ref()
-            .map(|c| c.bind(py).get().to_native())
-            .unwrap_or_default();
-        Ok(LocalSolverConfig::FullSddm { approx_chol })
     } else {
         Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-            "local_solver must be SchurComplement, FullSddm, or None",
+            "local_solver must be SchurComplement or None",
         ))
     }
 }
@@ -1039,7 +1015,6 @@ fn _within(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyApproxCholConfig>()?;
     m.add_class::<PyApproxSchurConfig>()?;
     m.add_class::<PySchurComplement>()?;
-    m.add_class::<PyFullSddm>()?;
     m.add_class::<PyFePreconditioner>()?;
     m.add_class::<PySolver>()?;
     m.add_function(wrap_pyfunction!(solve, m)?)?;

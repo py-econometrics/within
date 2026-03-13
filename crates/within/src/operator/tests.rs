@@ -871,7 +871,6 @@ mod schwarz_tests {
     use crate::operator::csr_block::CsrBlock;
     use crate::operator::gramian::CrossTab;
     use crate::operator::local_solver::BlockElimSolver;
-    use crate::operator::local_solver::FeLocalSolver;
     use crate::operator::schwarz::{
         build_additive, build_additive_with_strategy, build_entry, build_reduced_schur_factor,
         build_schwarz, compute_first_block_size, DomainSource, ReducedSchurConfig,
@@ -1010,7 +1009,7 @@ mod schwarz_tests {
         let n_keep = 1_024;
         let elim_ratio = 32;
         let (n_dofs, domain_pairs) = make_nested_block_elim_domain_pairs(n_keep, elim_ratio, 2);
-        let config = LocalSolverConfig::SchurComplement {
+        let config = LocalSolverConfig {
             approx_chol: ApproxCholConfig {
                 split_merge: Some(8),
                 seed: 42,
@@ -1231,20 +1230,14 @@ mod schwarz_tests {
         let (_, mut domain_pairs) = make_test_data();
         let (domain, cross_tab) = domain_pairs.swap_remove(0);
 
-        let config = LocalSolverConfig::SchurComplement {
+        let config = LocalSolverConfig {
             approx_chol: ApproxCholConfig::default(),
             approx_schur: None,
             dense_threshold: DEFAULT_DENSE_SCHUR_THRESHOLD,
         };
         let entry =
             build_entry(domain, cross_tab, &config).expect("exact Schur entry build failed");
-
-        match entry.solver() {
-            FeLocalSolver::SchurComplement(solver) => {
-                assert!(solver.uses_dense_reduced_factor());
-            }
-            FeLocalSolver::FullSddm { .. } => panic!("expected SchurComplement solver"),
-        }
+        assert!(entry.solver().uses_dense_reduced_factor());
     }
 
     #[test]
@@ -1252,7 +1245,7 @@ mod schwarz_tests {
         let (_, mut domain_pairs) = make_test_data();
         let (domain, cross_tab) = domain_pairs.swap_remove(0);
 
-        let config = LocalSolverConfig::SchurComplement {
+        let config = LocalSolverConfig {
             approx_chol: ApproxCholConfig::default(),
             approx_schur: Some(ApproxSchurConfig {
                 seed: 7,
@@ -1262,13 +1255,7 @@ mod schwarz_tests {
         };
         let entry =
             build_entry(domain, cross_tab, &config).expect("approximate Schur entry build failed");
-
-        match entry.solver() {
-            FeLocalSolver::SchurComplement(solver) => {
-                assert!(solver.uses_dense_reduced_factor());
-            }
-            FeLocalSolver::FullSddm { .. } => panic!("expected SchurComplement solver"),
-        }
+        assert!(entry.solver().uses_dense_reduced_factor());
     }
 
     #[test]
@@ -1276,20 +1263,14 @@ mod schwarz_tests {
         let (_, mut domain_pairs) = make_test_data();
         let (domain, cross_tab) = domain_pairs.swap_remove(0);
 
-        let config = LocalSolverConfig::SchurComplement {
+        let config = LocalSolverConfig {
             approx_chol: ApproxCholConfig::default(),
             approx_schur: None,
             dense_threshold: 0,
         };
         let entry =
             build_entry(domain, cross_tab, &config).expect("exact Schur entry build failed");
-
-        match entry.solver() {
-            FeLocalSolver::SchurComplement(solver) => {
-                assert!(!solver.uses_dense_reduced_factor());
-            }
-            FeLocalSolver::FullSddm { .. } => panic!("expected SchurComplement solver"),
-        }
+        assert!(!entry.solver().uses_dense_reduced_factor());
     }
 
     #[test]

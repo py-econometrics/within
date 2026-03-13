@@ -480,19 +480,6 @@ class SchurComplement:
         dense_threshold: int = 24,
     ) -> None: ...
 
-class FullSddm:
-    """Full SDDM (symmetric diagonally dominant M-matrix) local solver.
-
-    Solves each subdomain system directly without Schur reduction.
-
-    Attributes:
-        approx_chol: Approximate Cholesky config. Default: exact factorisation
-            (``None``).
-    """
-
-    approx_chol: ApproxCholConfig | None
-    def __init__(self, approx_chol: ApproxCholConfig | None = None) -> None: ...
-
 class AdditiveSchwarz:
     """Additive Schwarz preconditioner with configurable local solver.
 
@@ -501,16 +488,16 @@ class AdditiveSchwarz:
 
     Attributes:
         local_solver: Local solver for each subdomain. Pass ``SchurComplement()``
-            or ``FullSddm()`` to customise, or ``None`` for the default.
+            to customise, or ``None`` for the default.
         reduction: Strategy for combining subdomain contributions.
             Default ``ReductionStrategy.Auto``.
     """
 
-    local_solver: SchurComplement | FullSddm | None
+    local_solver: SchurComplement | None
     reduction: ReductionStrategy
     def __init__(
         self,
-        local_solver: SchurComplement | FullSddm | None = None,
+        local_solver: SchurComplement | None = None,
         reduction: ReductionStrategy = ReductionStrategy.Auto,
     ) -> None: ...
 
@@ -522,11 +509,11 @@ class MultiplicativeSchwarz:
 
     Attributes:
         local_solver: Local solver for each subdomain. Pass ``SchurComplement()``
-            or ``FullSddm()`` to customise, or ``None`` for the default.
+            to customise, or ``None`` for the default.
     """
 
-    local_solver: SchurComplement | FullSddm | None
+    local_solver: SchurComplement | None
     def __init__(
         self,
-        local_solver: SchurComplement | FullSddm | None = None,
+        local_solver: SchurComplement | None = None,
     ) -> None: ...

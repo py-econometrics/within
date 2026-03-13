@@ -15,9 +15,6 @@
 //! precomputed transpose `C^T`, and the two diagonals — rather than assembling
 //! the full symmetric CSR. This is more compact and directly supports:
 //!
-//! - **SDDM construction** ([`CrossTab::to_sddm`]) — the bipartite sign-flip
-//!   trick negates the off-diagonal blocks to produce a symmetric diagonally
-//!   dominant M-matrix suitable for approximate Cholesky
 //! - **Connected components** ([`CrossTab::bipartite_connected_components`]) —
 //!   DFS on the bipartite graph `C` to split disconnected subdomains
 //! - **Component extraction** ([`CrossTab::extract_component`]) — build a
@@ -28,8 +25,6 @@
 //! Not all levels of a factor may be active (observed). The cross-tab uses
 //! *compact* indices: only active levels are numbered `0..n_q` and `0..n_r`.
 //! A `local_to_global` vector maps these back to global DOF indices.
-
-use schwarz_precond::SparseMatrix;
 
 use super::super::csr_block::CsrBlock;
 use super::explicit::DENSE_TABLE_MAX_ENTRIES;
@@ -190,8 +185,6 @@ pub(crate) struct BipartiteComponent {
 /// diagonal blocks, avoiding construction of the full symmetric Gramian CSR.
 /// The Gramian has structure `G = [D_q, C; C^T, D_r]` where D_q and D_r are
 /// diagonal.
-///
-/// Used to build SDDM matrices directly (for ApproxChol).
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct CrossTab {
     /// CSR(C): q-block rows (n_q) x r-block cols (n_r).
@@ -219,65 +212,6 @@ impl CrossTab {
     /// Total number of DOFs (n_q + n_r).
     pub fn n_local(&self) -> usize {
         self.c.nrows + self.c.ncols
-    }
-
-    /// Size of the first (q) block.
-    pub fn first_block_size(&self) -> usize {
-        self.c.nrows
-    }
-
-    /// Build the SDDM matrix L = [D_q, -C; -C^T, D_r] directly in CSR format.
-    ///
-    /// Rows are already sorted: for q-block rows the diagonal (index i) comes
-    /// before shifted C columns (>= n_q); for r-block rows C^T columns (< n_q)
-    /// come before the diagonal (index n_q + i).
-    pub fn to_sddm(&self) -> SparseMatrix {
-        let n_q = self.n_q();
-        let n_r = self.n_r();
-        let n = n_q + n_r;
-        let nnz_c = self.c.nnz();
-        // Each row gets: 1 diagonal + off-diagonal entries from C or C^T
-        // Total NNZ = n (diagonals) + 2 * nnz_c (C and C^T entries)
-        let total_nnz = n + 2 * nnz_c;
-
-        let mut indptr = vec![0u32; n + 1];
-        let mut indices = Vec::with_capacity(total_nnz);
-        let mut data = Vec::with_capacity(total_nnz);
-
-        // Q-block rows (i = 0..n_q): diagonal at i, then C entries shifted by +n_q
-        for i in 0..n_q {
-            // Diagonal entry
-            indices.push(i as u32);
-            data.push(self.diag_q[i]);
-            // C entries for this row, with negated values and shifted columns
-            let c_start = self.c.indptr[i] as usize;
-            let c_end = self.c.indptr[i + 1] as usize;
-            for idx in c_start..c_end {
-                indices.push(self.c.indices[idx] + n_q as u32);
-                data.push(-self.c.data[idx]);
-            }
-            indptr[i + 1] = indices.len() as u32;
-        }
-
-        // R-block rows (i = 0..n_r): C^T entries first (cols < n_q), then diagonal at n_q+i
-        for i in 0..n_r {
-            // C^T entries for this row, with negated values (col indices already < n_q)
-            let ct_start = self.ct.indptr[i] as usize;
-            let ct_end = self.ct.indptr[i + 1] as usize;
-            for idx in ct_start..ct_end {
-                indices.push(self.ct.indices[idx]);
-                data.push(-self.ct.data[idx]);
-            }
-            // Diagonal entry
-            indices.push((n_q + i) as u32);
-            data.push(self.diag_r[i]);
-            indptr[n_q + i + 1] = indices.len() as u32;
-        }
-
-        debug_assert!(indptr.windows(2).all(|w| w[0] <= w[1]));
-        debug_assert_eq!(indices.len(), total_nnz);
-
-        SparseMatrix::new(indptr, indices, data, n)
     }
 
     /// Build a CrossTab for an entire factor pair, discovering active levels
@@ -342,7 +276,7 @@ impl CrossTab {
     /// Returns `None` if no active levels in either factor.
     #[cfg(test)]
     pub fn from_gramian_block(
-        gramian: &SparseMatrix,
+        gramian: &schwarz_precond::SparseMatrix,
         fq: &crate::observation::FactorMeta,
         fr: &crate::observation::FactorMeta,
     ) -> Option<(Self, Vec<u32>)> {
