@@ -16,6 +16,60 @@ use super::planning::{
     AdditiveScheduler, AdditiveSchwarzDiagnostics, ReductionPlan, ReductionStrategy,
 };
 
+// ---------------------------------------------------------------------------
+// Serde
+// ---------------------------------------------------------------------------
+
+/// Only the subdomain entries, DOF count, and scratch size are persisted.
+/// The reduction strategy resets to `Auto` on deserialize; buffers are
+/// re-allocated fresh.
+#[cfg(feature = "serde")]
+impl<S, I> serde::Serialize for SchwarzPreconditioner<S, I>
+where
+    S: LocalSolver + serde::Serialize,
+    I: LocalSolveInvoker<S>,
+{
+    fn serialize<Ser: serde::Serializer>(&self, serializer: Ser) -> Result<Ser::Ok, Ser::Error> {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("SchwarzPreconditioner", 3)?;
+        state.serialize_field("subdomains", &*self.executor.subdomains)?;
+        state.serialize_field("n_dofs", &self.executor.n_dofs)?;
+        state.serialize_field("max_scratch_size", &self.executor.max_scratch_size)?;
+        state.end()
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de, S, I> serde::Deserialize<'de> for SchwarzPreconditioner<S, I>
+where
+    S: LocalSolver + serde::de::DeserializeOwned,
+    I: LocalSolveInvoker<S>,
+{
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::Deserialize;
+
+        #[derive(Deserialize)]
+        #[serde(bound(deserialize = "S: serde::de::DeserializeOwned"))]
+        struct Helper<S: LocalSolver> {
+            subdomains: Vec<SubdomainEntry<S>>,
+            n_dofs: usize,
+            max_scratch_size: usize,
+        }
+
+        let h: Helper<S> = Helper::deserialize(deserializer)?;
+        Ok(SchwarzPreconditioner {
+            reduction_strategy: ReductionStrategy::default(),
+            scheduler: AdditiveScheduler::from_entries(&h.subdomains, h.n_dofs),
+            executor: AdditiveExecutor::new(
+                h.subdomains,
+                h.n_dofs,
+                h.max_scratch_size,
+                I::default(),
+            ),
+        })
+    }
+}
+
 /// One-level additive Schwarz preconditioner, generic over the local solver.
 ///
 /// Subdomains (factored matrices) are stored behind `Arc` so that cloning

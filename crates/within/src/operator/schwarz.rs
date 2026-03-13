@@ -308,24 +308,3 @@ pub(crate) fn build_reduced_schur_factor(
         elimination: schur.elimination,
     })
 }
-
-/// Compute how many DOFs in a domain belong to the first factor of its factor pair.
-#[cfg(test)]
-pub fn compute_first_block_size<S: ObservationStore>(
-    design: &WeightedDesign<S>,
-    domain: &Subdomain,
-) -> usize {
-    let (q, _) = domain.factor_pair;
-    let fq = &design.factors[q];
-    let lo = fq.offset;
-    let hi = fq.offset + fq.n_levels;
-    domain
-        .core
-        .global_indices()
-        .iter()
-        .filter(|&&idx| {
-            let idx = idx as usize;
-            idx >= lo && idx < hi
-        })
-        .count()
-}
