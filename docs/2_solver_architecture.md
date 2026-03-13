@@ -59,7 +59,7 @@ The bipartite graph of $C_{qr}$ may have multiple connected components. Each con
 
 Continuing the Worker/Firm/Year example from [Part 1](1_fixed_effects_and_block_methods.md): extracting just the Worker–Firm edges (right) gives the bipartite graph of $C_{WF}$. Because W1 worked at both firms, the graph is connected — there is a path between any two nodes — so all 5 DOFs / factor levels belong to a single subdomain. Without W1's mobility, the graph would split into two components: {W1, W2, F1} and {W3, F2}, yielding two independent subdomains.
 
-### 2.3 Laplacian connection via sign-flip
+### 2.3 Laplacian connection via sign-flip and Laplacian Solver
 
 The bipartite block $G_{qr}$ has non-negative off-diagonal entries, so it is not directly a graph Laplacian. Negating the off-diagonal blocks produces one:
 
