@@ -60,10 +60,6 @@ from within._within import (
     ReductionStrategy,
 )
 
-# Convenience aliases
-Additive = AdditiveSchwarz
-Multiplicative = MultiplicativeSchwarz
-
 __all__ = [
     "OperatorRepr",
     "Preconditioner",
@@ -75,8 +71,6 @@ __all__ = [
     "Solver",
     "solve",
     "solve_batch",
-    "Additive",
-    "Multiplicative",
     "AdditiveSchwarz",
     "AdditiveSchwarzDiagnostics",
     "MultiplicativeSchwarz",

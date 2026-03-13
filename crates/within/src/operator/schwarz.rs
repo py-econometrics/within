@@ -18,8 +18,8 @@
 //! Construction flows through a layered builder:
 //!
 //! 1. **Domain acquisition** — either scan observations from a
-//!    [`WeightedDesign`] or accept pre-built `(Subdomain, CrossTab)` pairs
-//!    via the `DomainSource` enum (the latter enables fused build paths
+//!    [`WeightedDesign`] (via [`build_schwarz`]) or accept pre-built
+//!    `(Subdomain, CrossTab)` pairs directly (enabling fused build paths
 //!    that scan observations only once)
 //! 2. **Entry construction** — each `(Subdomain, CrossTab)` pair is
 //!    converted into a `SubdomainEntry<BlockElimSolver>` in parallel via
@@ -125,18 +125,6 @@ pub type FeMultSchwarzSparse =
     MultiplicativeSchwarzPreconditioner<BlockElimSolver, SparseGramianUpdater>;
 
 // ---------------------------------------------------------------------------
-// Domain source abstraction
-// ---------------------------------------------------------------------------
-
-/// Abstracts over how domain entries are acquired.
-pub(crate) enum DomainSource<'a, S: ObservationStore> {
-    /// Scan observations to build from scratch.
-    FromDesign(&'a WeightedDesign<S>),
-    /// Reuse pre-built pairs (from fused domain+gramian pass).
-    FromParts(Vec<(Subdomain, CrossTab)>),
-}
-
-// ---------------------------------------------------------------------------
 // Public convenience builder
 // ---------------------------------------------------------------------------
 
@@ -145,35 +133,36 @@ pub fn build_schwarz<S: ObservationStore>(
     design: &WeightedDesign<S>,
     config: &LocalSolverConfig,
 ) -> WithinResult<FeSchwarz> {
-    build_additive(DomainSource::FromDesign(design), design.n_dofs, config)
+    let domains = build_local_domains(design);
+    build_additive(domains, design.n_dofs, config)
 }
 
 // ---------------------------------------------------------------------------
 // Crate-internal consolidated builders
 // ---------------------------------------------------------------------------
 
-/// Build additive Schwarz from any domain source.
-pub(crate) fn build_additive<S: ObservationStore>(
-    source: DomainSource<'_, S>,
+/// Build additive Schwarz from pre-built domain pairs.
+pub(crate) fn build_additive(
+    domains: Vec<(Subdomain, CrossTab)>,
     n_dofs: usize,
     config: &LocalSolverConfig,
 ) -> WithinResult<FeSchwarz> {
     build_additive_with_strategy(
-        source,
+        domains,
         n_dofs,
         config,
         schwarz_precond::ReductionStrategy::default(),
     )
 }
 
-/// Build additive Schwarz from any domain source with an explicit reduction strategy.
-pub(crate) fn build_additive_with_strategy<S: ObservationStore>(
-    source: DomainSource<'_, S>,
+/// Build additive Schwarz with an explicit reduction strategy.
+pub(crate) fn build_additive_with_strategy(
+    domains: Vec<(Subdomain, CrossTab)>,
     n_dofs: usize,
     config: &LocalSolverConfig,
     strategy: schwarz_precond::ReductionStrategy,
 ) -> WithinResult<FeSchwarz> {
-    let entries = build_entries_from_source(source, config)?;
+    let entries = build_entries_from_pairs(domains, config)?;
     Ok(FeSchwarz::new(
         SchwarzPreconditioner::with_strategy_and_invoker(
             entries,
@@ -187,34 +176,17 @@ pub(crate) fn build_additive_with_strategy<S: ObservationStore>(
 /// Build multiplicative Schwarz with sparse Gramian updater.
 ///
 /// Always non-symmetric (GMRES-only).
-pub(crate) fn build_multiplicative_sparse<S: ObservationStore>(
-    source: DomainSource<'_, S>,
+pub(crate) fn build_multiplicative_sparse(
+    domains: Vec<(Subdomain, CrossTab)>,
     gramian: &super::gramian::Gramian,
     n_dofs: usize,
     config: &LocalSolverConfig,
 ) -> WithinResult<FeMultSchwarzSparse> {
-    let entries = build_entries_from_source(source, config)?;
+    let entries = build_entries_from_pairs(domains, config)?;
     let updater = SparseGramianUpdater::new(gramian.matrix.clone());
     Ok(MultiplicativeSchwarzPreconditioner::new(
         entries, updater, n_dofs, false,
     )?)
-}
-
-// ---------------------------------------------------------------------------
-// Internal: build entries from source
-// ---------------------------------------------------------------------------
-
-fn build_entries_from_source<S: ObservationStore>(
-    source: DomainSource<'_, S>,
-    config: &LocalSolverConfig,
-) -> WithinResult<Vec<SubdomainEntry<BlockElimSolver>>> {
-    match source {
-        DomainSource::FromDesign(design) => {
-            let domain_pairs = build_local_domains(design);
-            build_entries_from_pairs(domain_pairs, config)
-        }
-        DomainSource::FromParts(domain_pairs) => build_entries_from_pairs(domain_pairs, config),
-    }
 }
 
 fn build_entries_from_pairs(

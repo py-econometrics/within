@@ -873,7 +873,7 @@ mod schwarz_tests {
     use crate::operator::local_solver::BlockElimSolver;
     use crate::operator::schwarz::{
         build_additive, build_additive_with_strategy, build_entry, build_reduced_schur_factor,
-        build_schwarz, compute_first_block_size, DomainSource, ReducedSchurConfig,
+        build_schwarz, compute_first_block_size, ReducedSchurConfig,
     };
     use schwarz_precond::{LocalSolver, Operator, ReductionStrategy};
 
@@ -1027,8 +1027,8 @@ mod schwarz_tests {
             .build()
             .expect("test rayon pool");
         pool.install(|| {
-            let reduction = build_additive_with_strategy::<FactorMajorStore>(
-                DomainSource::FromParts(domain_pairs),
+            let reduction = build_additive_with_strategy(
+                domain_pairs,
                 n_dofs,
                 &config,
                 ReductionStrategy::ParallelReduction,
@@ -1187,12 +1187,8 @@ mod schwarz_tests {
     fn test_build_schwarz() {
         let (design, domain_pairs) = make_test_data();
         let config = LocalSolverConfig::default();
-        let schwarz = build_additive::<FactorMajorStore>(
-            DomainSource::FromParts(domain_pairs),
-            design.n_dofs,
-            &config,
-        )
-        .expect("build schwarz with explicit domains");
+        let schwarz = build_additive(domain_pairs, design.n_dofs, &config)
+            .expect("build schwarz with explicit domains");
         assert!(!schwarz.subdomains().is_empty());
 
         let r = vec![1.0; design.n_dofs];

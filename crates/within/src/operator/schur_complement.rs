@@ -46,7 +46,7 @@
 //!
 //! - **Exact**: row-workspace accumulation ([`SchurLaplacian::from_elimination`]) —
 //!   avoids materializing intermediate edges
-//! - **Approximate**: star-based edge emission via [`CliqueEmitter`],
+//! - **Approximate**: star-based edge emission via [`SampledCliqueEmitter`],
 //!   then sort-merge assembly ([`SchurLaplacian::from_edges`])
 
 use approx_chol::low_level::{clique_tree_sample, clique_tree_sample_multi};
@@ -110,19 +110,6 @@ impl Star<'_> {
     }
 }
 
-// ===========================================================================
-// CliqueEmitter — strategy for edge emission
-// ===========================================================================
-
-/// Strategy for producing fill edges from a star neighborhood.
-trait CliqueEmitter {
-    /// Per-thread reusable scratch state.
-    type Scratch: Default + Send;
-
-    /// Emit fill edges from `star` into `edges`, using `scratch` for temporaries.
-    fn emit(&self, star: &Star, edges: &mut Vec<Edge>, scratch: &mut Self::Scratch);
-}
-
 /// Emits sampled clique-tree fill edges for every star.
 struct SampledCliqueEmitter {
     seed: u64,
@@ -136,18 +123,8 @@ impl SampledCliqueEmitter {
             split: config.split,
         }
     }
-}
 
-/// Thread-local scratch for [`SampledCliqueEmitter`].
-#[derive(Default)]
-struct SampledScratch {
-    /// AoS neighbor copy for `clique_tree_sample`.
-    buf: Vec<(u32, f64)>,
-}
-
-impl CliqueEmitter for SampledCliqueEmitter {
-    type Scratch = SampledScratch;
-
+    /// Emit fill edges from `star` into `edges`, using `scratch` for temporaries.
     fn emit(&self, star: &Star, edges: &mut Vec<Edge>, scratch: &mut SampledScratch) {
         scratch.buf.clear();
         for (&col, &w) in star.col_indices.iter().zip(star.weights) {
@@ -160,6 +137,13 @@ impl CliqueEmitter for SampledCliqueEmitter {
             clique_tree_sample_multi(&mut scratch.buf, self.split, seed, edges);
         }
     }
+}
+
+/// Thread-local scratch for [`SampledCliqueEmitter`].
+#[derive(Default)]
+struct SampledScratch {
+    /// AoS neighbor copy for `clique_tree_sample`.
+    buf: Vec<(u32, f64)>,
 }
 
 // ===========================================================================
@@ -243,15 +227,15 @@ impl<'a> Elimination<'a> {
         }
     }
 
-    /// Parallel edge emission over all stars using the given [`CliqueEmitter`].
+    /// Parallel edge emission over all stars using the given emitter.
     ///
     /// Each rayon task sorts and deduplicates its local edges, then the reduce
     /// tree merges sorted chunks — avoiding a single O(E log E) global sort.
-    fn par_emit<E: CliqueEmitter + Sync>(&self, emitter: &E) -> Vec<Edge> {
+    fn par_emit(&self, emitter: &SampledCliqueEmitter) -> Vec<Edge> {
         (0..self.n_elim)
             .into_par_iter()
             .fold(
-                || (Vec::new(), E::Scratch::default()),
+                || (Vec::new(), SampledScratch::default()),
                 |(mut edges, mut scratch), k| {
                     let star = self.star(k);
                     if star.degree() > 1 {

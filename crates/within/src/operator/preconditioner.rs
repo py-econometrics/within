@@ -36,8 +36,7 @@ use crate::domain::{Subdomain, WeightedDesign};
 use crate::observation::ObservationStore;
 use crate::operator::gramian::{CrossTab, Gramian};
 use crate::operator::schwarz::{
-    build_additive_with_strategy, build_multiplicative_sparse, DomainSource, FeMultSchwarzSparse,
-    FeSchwarz,
+    build_additive_with_strategy, build_multiplicative_sparse, FeMultSchwarzSparse, FeSchwarz,
 };
 use crate::{WithinError, WithinResult};
 
@@ -158,7 +157,7 @@ impl Operator for FePreconditioner {
 ///
 /// Shared dispatch logic used by both `build_preconditioner` and
 /// `build_preconditioner_fused`.
-fn build_from_domains<S: ObservationStore>(
+fn build_from_domains(
     domains: Vec<(Subdomain, CrossTab)>,
     n_dofs: usize,
     gramian: Option<&Gramian>,
@@ -166,12 +165,7 @@ fn build_from_domains<S: ObservationStore>(
 ) -> WithinResult<FePreconditioner> {
     match config {
         Preconditioner::Additive(solver_config, strategy) => {
-            let p = build_additive_with_strategy(
-                DomainSource::<S>::FromParts(domains),
-                n_dofs,
-                solver_config,
-                *strategy,
-            )?;
+            let p = build_additive_with_strategy(domains, n_dofs, solver_config, *strategy)?;
             Ok(FePreconditioner::Additive(p))
         }
         Preconditioner::Multiplicative(solver_config) => {
@@ -180,12 +174,7 @@ fn build_from_domains<S: ObservationStore>(
                     "multiplicative preconditioner requires an explicit Gramian".to_string(),
                 )
             })?;
-            let p = build_multiplicative_sparse(
-                DomainSource::<S>::FromParts(domains),
-                gramian,
-                n_dofs,
-                solver_config,
-            )?;
+            let p = build_multiplicative_sparse(domains, gramian, n_dofs, solver_config)?;
             Ok(FePreconditioner::Multiplicative(p))
         }
     }
@@ -203,7 +192,7 @@ pub fn build_preconditioner<S: ObservationStore>(
     use crate::domain::build_local_domains;
 
     let domains = build_local_domains(design);
-    build_from_domains::<S>(domains, design.n_dofs, gramian, preconditioner_config)
+    build_from_domains(domains, design.n_dofs, gramian, preconditioner_config)
 }
 
 /// Fused build: single observation scan -> domains + Gramian.
@@ -221,7 +210,7 @@ pub(crate) fn build_preconditioner_fused<S: ObservationStore>(
 
     let (domains, blocks) = build_domains_and_gramian_blocks(design);
     let gramian = Gramian::from_pair_blocks(&blocks, &design.factors, design.n_dofs)?;
-    let precond = build_from_domains::<S>(
+    let precond = build_from_domains(
         domains,
         design.n_dofs,
         Some(&gramian),
