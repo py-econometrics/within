@@ -306,10 +306,10 @@ fn compute_partition_weights(domain_pairs: &mut [(Subdomain, CrossTab)], n_dofs:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::FixedEffectsDesign;
+    use crate::domain::WeightedDesign;
     use crate::observation::{FactorMajorStore, ObservationWeights};
 
-    fn make_test_design() -> FixedEffectsDesign {
+    fn make_test_design() -> WeightedDesign<FactorMajorStore> {
         let store = FactorMajorStore::new(
             vec![
                 vec![0, 1, 2, 0, 1, 2],
@@ -320,7 +320,7 @@ mod tests {
             6,
         )
         .expect("valid factor-major store");
-        FixedEffectsDesign::from_store(store).expect("valid test design")
+        WeightedDesign::from_store(store).expect("valid test design")
     }
 
     #[test]
@@ -408,7 +408,7 @@ mod tests {
                 5,
             )
             .unwrap();
-            FixedEffectsDesign::from_store(store).unwrap()
+            WeightedDesign::from_store(store).unwrap()
         }] {
             let obs_gramian = Gramian::build(&design);
             let (_domains, blocks) = build_domains_and_gramian_blocks(&design);

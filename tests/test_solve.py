@@ -8,8 +8,8 @@ import pytest
 from within import (
     CG,
     GMRES,
-    Additive,
-    Multiplicative,
+    AdditiveSchwarz,
+    MultiplicativeSchwarz,
     FePreconditioner,
     OperatorRepr,
     Preconditioner,
@@ -367,7 +367,7 @@ class TestSolverSerde:
 class TestAliases:
     def test_additive_alias(self, problem):
         cats, y = problem
-        result = solve(as_solver_categories(cats), y, preconditioner=Additive())
+        result = solve(as_solver_categories(cats), y, preconditioner=AdditiveSchwarz())
         assert result.converged
 
     def test_multiplicative_alias(self, problem):
@@ -376,7 +376,7 @@ class TestAliases:
             as_solver_categories(cats),
             y,
             GMRES(),
-            preconditioner=Multiplicative(),
+            preconditioner=MultiplicativeSchwarz(),
         )
         assert result.converged
 

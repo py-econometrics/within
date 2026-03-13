@@ -10,7 +10,6 @@ from within._within import (
     AdditiveSchwarz,
     ApproxCholConfig,
     ApproxSchurConfig,
-    FullSddm,
     SchurComplement,
 )
 
@@ -68,20 +67,6 @@ class TestAdvancedConfigs:
             y,
             CG(),
             preconditioner=AdditiveSchwarz(local_solver=SchurComplement()),
-        )
-        assert result.converged
-
-    def test_full_sddm_defaults(self):
-        fs = FullSddm()
-        assert fs.approx_chol is None
-
-    def test_full_sddm_solve(self, problem):
-        cats, y = problem
-        result = solve(
-            as_solver_categories(cats),
-            y,
-            CG(),
-            preconditioner=AdditiveSchwarz(local_solver=FullSddm()),
         )
         assert result.converged
 

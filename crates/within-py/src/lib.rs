@@ -33,6 +33,8 @@
 //! `python/within/`. This crate's types are re-exported through
 //! `within.__init__` and documented in `within._within.pyi`.
 
+use std::borrow::Cow;
+
 use numpy::ndarray::{Array1, Array2, ShapeBuilder};
 use numpy::{IntoPyArray, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
@@ -287,22 +289,6 @@ impl PySchurComplement {
     }
 }
 
-#[pyclass(frozen)]
-#[pyo3(name = "FullSddm")]
-pub struct PyFullSddm {
-    #[pyo3(get)]
-    pub approx_chol: Option<Py<PyApproxCholConfig>>,
-}
-
-#[pymethods]
-impl PyFullSddm {
-    #[new]
-    #[pyo3(signature = (approx_chol=None))]
-    fn new(approx_chol: Option<Py<PyApproxCholConfig>>) -> Self {
-        Self { approx_chol }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Schwarz preconditioner classes (available via `_within` for benchmarks)
 // ---------------------------------------------------------------------------
@@ -456,10 +442,32 @@ pub struct PyBatchSolveResult {
 }
 
 // ---------------------------------------------------------------------------
+// Shared conversion helpers
+// ---------------------------------------------------------------------------
+
+/// Convert a numpy array view to a contiguous slice, copying only if non-contiguous.
+fn coerce_to_slice<'a>(arr: &'a numpy::ndarray::ArrayView1<'_, f64>) -> Cow<'a, [f64]> {
+    match arr.as_slice() {
+        Some(s) => Cow::Borrowed(s),
+        None => Cow::Owned(arr.to_vec()),
+    }
+}
+
+/// Wrap a display-able error as a `PyValueError`.
+fn value_err(e: impl std::fmt::Display) -> PyErr {
+    PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string())
+}
+
+/// Build a slice-of-slices reference view from owned column vectors.
+fn column_refs(columns: &[Vec<f64>]) -> Vec<&[f64]> {
+    columns.iter().map(|c| c.as_slice()).collect()
+}
+
+// ---------------------------------------------------------------------------
 // Extraction helpers
 // ---------------------------------------------------------------------------
 
-/// Extract a `LocalSolverConfig` from a Python `SchurComplement` or `FullSddm` object.
+/// Extract a `LocalSolverConfig` from a Python `SchurComplement` object.
 fn extract_local_solver_config(
     py: Python<'_>,
     obj: &Bound<'_, PyAny>,
@@ -475,22 +483,14 @@ fn extract_local_solver_config(
             .approx_schur
             .as_ref()
             .map(|c| c.bind(py).get().to_native());
-        Ok(LocalSolverConfig::SchurComplement {
+        Ok(LocalSolverConfig {
             approx_chol,
             approx_schur,
             dense_threshold: sc.dense_threshold,
         })
-    } else if let Ok(fd) = obj.downcast::<PyFullSddm>() {
-        let fd = fd.get();
-        let approx_chol = fd
-            .approx_chol
-            .as_ref()
-            .map(|c| c.bind(py).get().to_native())
-            .unwrap_or_default();
-        Ok(LocalSolverConfig::FullSddm { approx_chol })
     } else {
         Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-            "local_solver must be SchurComplement, FullSddm, or None",
+            "local_solver must be SchurComplement or None",
         ))
     }
 }
@@ -718,23 +718,16 @@ pub fn solve<'py>(
     let cats = categories.as_array();
     warn_c_contiguous(py, cats.strides())?;
 
-    let y_slice = y.as_array();
-    let y_vec;
-    let y_ref: &[f64] = match y_slice.as_slice() {
-        Some(s) => s,
-        None => {
-            y_vec = y_slice.to_vec();
-            &y_vec
-        }
-    };
+    let y_arr = y.as_array();
+    let y_cow = coerce_to_slice(&y_arr);
     let w_vec = extract_weight_vec(&weights);
     let w_ref = w_vec.as_deref();
 
     let (params, precond) = extract_and_validate_config(py, config, preconditioner)?;
 
     let result = py
-        .allow_threads(|| solve_native(cats, y_ref, w_ref, &params, precond.as_ref()))
-        .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+        .allow_threads(|| solve_native(cats, &y_cow, w_ref, &params, precond.as_ref()))
+        .map_err(value_err)?;
 
     Ok(into_py_result(py, result))
 }
@@ -760,7 +753,7 @@ pub fn solve_batch<'py>(
     let n_obs = y_arr.nrows();
 
     let columns = extract_columns(&y_arr);
-    let column_refs: Vec<&[f64]> = columns.iter().map(|c| c.as_slice()).collect();
+    let col_refs = column_refs(&columns);
 
     let w_vec = extract_weight_vec(&weights);
     let w_ref = w_vec.as_deref();
@@ -768,8 +761,8 @@ pub fn solve_batch<'py>(
     let (params, precond) = extract_and_validate_config(py, config, preconditioner)?;
 
     let result = py
-        .allow_threads(|| solve_batch_native(cats, &column_refs, w_ref, &params, precond.as_ref()))
-        .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?;
+        .allow_threads(|| solve_batch_native(cats, &col_refs, w_ref, &params, precond.as_ref()))
+        .map_err(value_err)?;
 
     let n_dofs = if result.n_rhs() > 0 {
         result.x_all().len() / result.n_rhs()
@@ -922,10 +915,8 @@ impl PySolver {
             Some(w) => ObservationWeights::Dense(w.as_array().iter().copied().collect()),
             None => ObservationWeights::Unit,
         };
-        let store = FactorMajorStore::new(factor_levels, w, n_obs)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-        let design = WeightedDesign::from_store(store)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+        let store = FactorMajorStore::new(factor_levels, w, n_obs).map_err(value_err)?;
+        let design = WeightedDesign::from_store(store).map_err(value_err)?;
 
         // Handle pre-built FePreconditioner separately (uses a different constructor);
         // all other variants go through extract_preconditioner_config.
@@ -935,12 +926,12 @@ impl PySolver {
                 py.allow_threads(|| {
                     Solver::from_design_with_preconditioner(design, &params, fe_precond)
                 })
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?
+                .map_err(value_err)?
             } else {
                 let precond = extract_preconditioner_config(py, preconditioner)?;
                 validate_cg_preconditioner(&params, &precond)?;
                 py.allow_threads(|| Solver::from_design(design, &params, precond.as_ref()))
-                    .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?
+                    .map_err(value_err)?
             };
 
         Ok(Self { solver })
@@ -953,19 +944,12 @@ impl PySolver {
         py: Python<'py>,
         y: PyReadonlyArray1<'py, f64>,
     ) -> PyResult<PySolveResult> {
-        let y_slice = y.as_array();
-        let y_vec;
-        let y_ref: &[f64] = match y_slice.as_slice() {
-            Some(s) => s,
-            None => {
-                y_vec = y_slice.to_vec();
-                &y_vec
-            }
-        };
+        let y_arr = y.as_array();
+        let y_cow = coerce_to_slice(&y_arr);
 
         let result = py
-            .allow_threads(|| self.solver.solve(y_ref))
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+            .allow_threads(|| self.solver.solve(&y_cow))
+            .map_err(value_err)?;
 
         Ok(into_py_result(py, result))
     }
@@ -983,14 +967,14 @@ impl PySolver {
         let y_arr = y_matrix.as_array();
 
         let columns = extract_columns(&y_arr);
-        let column_refs: Vec<&[f64]> = columns.iter().map(|c| c.as_slice()).collect();
+        let col_refs = column_refs(&columns);
 
         let n_dofs = self.solver.n_dofs();
         let n_obs = self.solver.n_obs();
 
         let result = py
-            .allow_threads(|| self.solver.solve_batch(&column_refs))
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+            .allow_threads(|| self.solver.solve_batch(&col_refs))
+            .map_err(value_err)?;
 
         Ok(into_py_batch_result(py, result, n_dofs, n_obs))
     }
@@ -1039,7 +1023,6 @@ fn _within(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyApproxCholConfig>()?;
     m.add_class::<PyApproxSchurConfig>()?;
     m.add_class::<PySchurComplement>()?;
-    m.add_class::<PyFullSddm>()?;
     m.add_class::<PyFePreconditioner>()?;
     m.add_class::<PySolver>()?;
     m.add_function(wrap_pyfunction!(solve, m)?)?;

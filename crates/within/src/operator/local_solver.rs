@@ -10,8 +10,7 @@
 //! ```
 //!
 //! where `D_q`, `D_r` are diagonal (weighted level counts) and `C` is the
-//! cross-tabulation matrix. This module provides two strategies to approximately
-//! solve `G z = r` on each subdomain.
+//! cross-tabulation matrix.
 //!
 //! # The bipartite sign-flipping trick
 //!
@@ -26,17 +25,7 @@
 //! blocks, producing a valid SDDM matrix. The solution is recovered by
 //! negating the corresponding block of the output.
 //!
-//! # Solver strategies
-//!
-//! ## `ApproxCholSolver` — full SDDM factorization
-//!
-//! Converts the entire local Gramian to SDDM via sign-flipping, then applies
-//! the `approx-chol` approximate Cholesky factorization. The [`LocalSolveStrategy`]
-//! enum tracks whether Gremban augmentation was needed (adding an extra node
-//! to make the matrix SDDM when it is not naturally a graph Laplacian) and
-//! whether bipartite sign-flipping applies.
-//!
-//! ## `BlockElimSolver` — block elimination with Schur complement
+//! # `BlockElimSolver` — block elimination with Schur complement
 //!
 //! Exploits the diagonal structure of `D_q` and `D_r` to perform (exact or approximate) block
 //! elimination of the larger factor. If `n_q >= n_r`, we eliminate the q-block:
@@ -51,17 +40,6 @@
 //! and is factored via either approximate Cholesky or dense Cholesky,
 //! depending on size. See [`schur_complement`](super::schur_complement) for
 //! the Schur complement computation.
-//!
-//! # When each strategy applies
-//!
-//! - **`SchurComplement`** is the default and generally preferred: it
-//!   eliminates the larger diagonal block exactly (a free operation since
-//!   the block is diagonal), leaving a reduced system that can be much
-//!   smaller. Even when both factors are similar in size, the reduction
-//!   roughly halves the dimension.
-//! - **`FullSddm`** exists as a fallback and for testing. It applies the
-//!   approximate Cholesky factorization to the full `(n_q + n_r)` system
-//!   without any block elimination.
 
 use std::sync::Arc;
 
@@ -72,6 +50,25 @@ use schwarz_precond::{LocalSolveError, LocalSolveInvoker, LocalSolver, SparseMat
 
 use crate::operator::csr_block::{CsrBlock, PAR_SPMV_THRESHOLD};
 use crate::operator::gramian::CrossTab;
+
+// ===========================================================================
+// FeLocalSolveInvoker — delegates to BlockElimSolver with parallelism control
+// ===========================================================================
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct FeLocalSolveInvoker;
+
+impl LocalSolveInvoker<BlockElimSolver> for FeLocalSolveInvoker {
+    fn solve_local(
+        &self,
+        solver: &BlockElimSolver,
+        rhs: &mut [f64],
+        sol: &mut [f64],
+        allow_inner_parallelism: bool,
+    ) -> Result<(), LocalSolveError> {
+        solver.solve_local_with_parallelism(rhs, sol, allow_inner_parallelism)
+    }
+}
 
 // ===========================================================================
 // Transform helpers — sign-flipping, mean subtraction, back-substitution
@@ -149,207 +146,6 @@ fn backsub_block_from_scaled_rhs(
                 sum += cross_matrix.data[idx] * sol_source[j];
             }
             sol_output[i] = scaled_rhs[i] + (inv_diag[i] * sum);
-        }
-    }
-}
-
-// ===========================================================================
-// ApproxCholSolver — local solver backed by approximate Cholesky
-// ===========================================================================
-
-/// Local subdomain solver backed by approximate Cholesky factorization.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-pub struct ApproxCholSolver {
-    factor: Factor,
-    strategy: LocalSolveStrategy,
-    n_local: usize,
-}
-
-impl ApproxCholSolver {
-    pub(crate) fn new(factor: Factor, strategy: LocalSolveStrategy, n_local: usize) -> Self {
-        Self {
-            factor,
-            strategy,
-            n_local,
-        }
-    }
-}
-
-impl LocalSolver for ApproxCholSolver {
-    fn n_local(&self) -> usize {
-        self.n_local
-    }
-
-    fn scratch_size(&self) -> usize {
-        self.factor.n()
-    }
-
-    fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), LocalSolveError> {
-        let n_local = self.n_local;
-        let (solve_n, fbs) = match &self.strategy {
-            LocalSolveStrategy::Laplacian => {
-                debug_assert_eq!(self.factor.n(), n_local);
-                sol[..n_local].copy_from_slice(&rhs[..n_local]);
-                self.factor
-                    .solve_in_place(&mut sol[..n_local])
-                    .map_err(|e| LocalSolveError::ApproxCholSolveFailed {
-                        context: "within.local.approx_chol.laplacian",
-                        message: e.to_string(),
-                    })?;
-                return Ok(());
-            }
-            LocalSolveStrategy::LaplacianGramian { first_block_size } => {
-                (n_local, Some(*first_block_size))
-            }
-            LocalSolveStrategy::GramianAugmented { first_block_size } => {
-                (n_local + 1, Some(*first_block_size))
-            }
-            LocalSolveStrategy::Sddm => (n_local + 1, None),
-        };
-
-        if let Some(fbs) = fbs {
-            negate_block(&mut rhs[..n_local], fbs);
-        }
-        if solve_n > n_local {
-            debug_assert_eq!(self.factor.n(), solve_n);
-            rhs[n_local] = 0.0;
-        }
-        subtract_mean(rhs, solve_n);
-
-        sol[..solve_n].copy_from_slice(&rhs[..solve_n]);
-        debug_assert_eq!(self.factor.n(), solve_n);
-        self.factor
-            .solve_in_place(&mut sol[..solve_n])
-            .map_err(|e| LocalSolveError::ApproxCholSolveFailed {
-                context: "within.local.approx_chol.augmented_or_gramian",
-                message: e.to_string(),
-            })?;
-
-        if let Some(fbs) = fbs {
-            negate_block(&mut sol[..n_local], fbs);
-        }
-        Ok(())
-    }
-
-    fn inner_parallelism_work_estimate(&self) -> usize {
-        0
-    }
-}
-
-// ===========================================================================
-// FeLocalSolver — dispatch enum
-// ===========================================================================
-
-/// FE-specific local solver, dispatching to either full-SDDM ApproxChol or
-/// Schur complement block elimination.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-pub enum FeLocalSolver {
-    /// Full bipartite SDDM factorized via approximate Cholesky.
-    FullSddm { solver: ApproxCholSolver },
-    /// Schur complement reduction + reduced-system factor solve
-    /// (dense anchored for tiny Schur when enabled, otherwise sparse ApproxChol).
-    SchurComplement(Box<BlockElimSolver>),
-}
-
-impl FeLocalSolver {
-    pub(crate) fn solve_local_with_parallelism(
-        &self,
-        rhs: &mut [f64],
-        sol: &mut [f64],
-        allow_inner_parallelism: bool,
-    ) -> Result<(), LocalSolveError> {
-        match self {
-            Self::FullSddm { solver, .. } => solver.solve_local(rhs, sol),
-            Self::SchurComplement(s) => {
-                s.solve_local_with_parallelism(rhs, sol, allow_inner_parallelism)
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct FeLocalSolveInvoker;
-
-impl LocalSolveInvoker<FeLocalSolver> for FeLocalSolveInvoker {
-    fn solve_local(
-        &self,
-        solver: &FeLocalSolver,
-        rhs: &mut [f64],
-        sol: &mut [f64],
-        allow_inner_parallelism: bool,
-    ) -> Result<(), LocalSolveError> {
-        solver.solve_local_with_parallelism(rhs, sol, allow_inner_parallelism)
-    }
-}
-
-impl LocalSolver for FeLocalSolver {
-    fn n_local(&self) -> usize {
-        match self {
-            Self::FullSddm { solver, .. } => solver.n_local(),
-            Self::SchurComplement(s) => s.n_local(),
-        }
-    }
-
-    fn scratch_size(&self) -> usize {
-        match self {
-            Self::FullSddm { solver, .. } => solver.scratch_size(),
-            Self::SchurComplement(s) => s.scratch_size(),
-        }
-    }
-
-    fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), LocalSolveError> {
-        self.solve_local_with_parallelism(rhs, sol, true)
-    }
-
-    fn inner_parallelism_work_estimate(&self) -> usize {
-        match self {
-            Self::FullSddm { solver, .. } => solver.inner_parallelism_work_estimate(),
-            Self::SchurComplement(s) => s.inner_parallelism_work_estimate(),
-        }
-    }
-}
-
-/// Determines how the local Gramian solve is performed for a subdomain.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub enum LocalSolveStrategy {
-    /// The local Gramian is naturally a graph Laplacian (no augmentation needed).
-    Laplacian,
-
-    /// The local Gramian is SDDM but not Laplacian, so Gremban augmentation added
-    /// an extra node.
-    Sddm,
-
-    /// Factor-pair domain where the bipartite Gramian maps to a Laplacian via
-    /// sign-flipping the second block. No augmentation was needed.
-    LaplacianGramian { first_block_size: usize },
-
-    /// Factor-pair domain where the Gramian needed Gremban augmentation.
-    GramianAugmented { first_block_size: usize },
-}
-
-impl LocalSolveStrategy {
-    /// Map a bipartite hint and augmentation flag to the appropriate local
-    /// solve strategy.
-    pub fn from_flags(first_block_size: Option<usize>, was_augmented: bool) -> Self {
-        match first_block_size {
-            Some(fbs) => {
-                if was_augmented {
-                    Self::GramianAugmented {
-                        first_block_size: fbs,
-                    }
-                } else {
-                    Self::LaplacianGramian {
-                        first_block_size: fbs,
-                    }
-                }
-            }
-            None => {
-                if was_augmented {
-                    Self::Sddm
-                } else {
-                    Self::Laplacian
-                }
-            }
         }
     }
 }
@@ -735,40 +531,6 @@ mod tests {
         assert!((data[0] - (-1.0)).abs() < 1e-14);
         assert!((data[1] - 1.0).abs() < 1e-14);
         assert_eq!(data[2], 100.0); // unchanged
-    }
-
-    #[test]
-    fn test_local_solve_strategy_from_flags_laplacian() {
-        let s = LocalSolveStrategy::from_flags(None, false);
-        assert!(matches!(s, LocalSolveStrategy::Laplacian));
-    }
-
-    #[test]
-    fn test_local_solve_strategy_from_flags_sddm() {
-        let s = LocalSolveStrategy::from_flags(None, true);
-        assert!(matches!(s, LocalSolveStrategy::Sddm));
-    }
-
-    #[test]
-    fn test_local_solve_strategy_from_flags_laplacian_gramian() {
-        let s = LocalSolveStrategy::from_flags(Some(5), false);
-        match s {
-            LocalSolveStrategy::LaplacianGramian { first_block_size } => {
-                assert_eq!(first_block_size, 5);
-            }
-            other => panic!("expected LaplacianGramian, got: {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_local_solve_strategy_from_flags_gramian_augmented() {
-        let s = LocalSolveStrategy::from_flags(Some(3), true);
-        match s {
-            LocalSolveStrategy::GramianAugmented { first_block_size } => {
-                assert_eq!(first_block_size, 3);
-            }
-            other => panic!("expected GramianAugmented, got: {:?}", other),
-        }
     }
 
     #[test]

@@ -44,11 +44,6 @@
 //! overlapping DOFs (levels that appear in multiple factor pairs) are correctly
 //! scaled. See the `factor_pairs` submodule for details.
 //!
-//! # Type alias
-//!
-//! [`FixedEffectsDesign`] is a convenience alias for
-//! `WeightedDesign<FactorMajorStore>`, preserving backward compatibility with
-//! code that predates the generic store parameter.
 
 pub(crate) mod factor_pairs;
 
@@ -87,15 +82,12 @@ impl std::fmt::Debug for Subdomain {
 // Stores per-factor metadata via `FactorMeta` and delegates observation
 // data access to the pluggable store backend `S`. Provides design matrix
 // operations (D·x, D^T·r, D^T·W·r, gramian diagonal) as methods.
-//
-// `FixedEffectsDesign` is a type alias for the unweighted `FactorMajorStore`
-// backend, preserving backward compatibility.
 use std::sync::atomic::Ordering;
 
 use portable_atomic::AtomicF64;
 use rayon::prelude::*;
 
-use crate::observation::{FactorMajorStore, FactorMeta, ObservationStore};
+use crate::observation::{FactorMeta, ObservationStore};
 use crate::{WithinError, WithinResult};
 
 /// Weighted fixed-effects design matrix, generic over observation storage.
@@ -134,9 +126,6 @@ impl<S: ObservationStore + std::fmt::Debug> std::fmt::Debug for WeightedDesign<S
             .finish()
     }
 }
-
-/// Backward-compatible alias: unweighted, factor-major storage.
-pub type FixedEffectsDesign = WeightedDesign<FactorMajorStore>;
 
 impl<S: ObservationStore> WeightedDesign<S> {
     /// Construct from a store, inferring the number of levels per factor
@@ -451,18 +440,18 @@ mod tests {
     use super::*;
     use crate::observation::{FactorMajorStore, ObservationWeights};
 
-    fn make_test_design() -> FixedEffectsDesign {
+    fn make_test_design() -> WeightedDesign<FactorMajorStore> {
         let categories = vec![vec![0, 1, 2, 0, 1], vec![0, 1, 2, 3, 0]];
         let store = FactorMajorStore::new(categories, ObservationWeights::Unit, 5)
             .expect("valid factor-major store");
-        FixedEffectsDesign::from_store(store).expect("valid test design")
+        WeightedDesign::from_store(store).expect("valid test design")
     }
 
-    fn make_weighted_design(weights: Vec<f64>) -> FixedEffectsDesign {
+    fn make_weighted_design(weights: Vec<f64>) -> WeightedDesign<FactorMajorStore> {
         let categories = vec![vec![0, 1, 0, 1], vec![0, 0, 1, 1]];
         let store = FactorMajorStore::new(categories, ObservationWeights::Dense(weights), 4)
             .expect("valid weighted factor-major store");
-        FixedEffectsDesign::from_store(store).expect("valid weighted design")
+        WeightedDesign::from_store(store).expect("valid weighted design")
     }
 
     #[test]

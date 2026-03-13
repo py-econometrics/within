@@ -105,7 +105,7 @@ fn test_schwarz_builder_schur_complement_modes_end_to_end() {
     let gramian = GramianOperator::new(&design);
 
     let local_solvers = [
-        LocalSolverConfig::SchurComplement {
+        LocalSolverConfig {
             approx_chol: ApproxCholConfig {
                 seed: 11,
                 ..Default::default()
@@ -113,7 +113,7 @@ fn test_schwarz_builder_schur_complement_modes_end_to_end() {
             approx_schur: None,
             dense_threshold: within::DEFAULT_DENSE_SCHUR_THRESHOLD,
         },
-        LocalSolverConfig::SchurComplement {
+        LocalSolverConfig {
             approx_chol: ApproxCholConfig {
                 seed: 13,
                 ..Default::default()
@@ -160,7 +160,7 @@ fn test_compare_factorization_strategies() {
     use within::operator::gramian::GramianOperator;
     use within::operator::schwarz::build_schwarz;
     use within::operator::DesignOperator;
-    use within::{ApproxCholConfig, FixedEffectsDesign};
+    use within::{ApproxCholConfig, WeightedDesign};
 
     let configs: Vec<(ApproxCholConfig, &str)> = vec![
         (
@@ -203,7 +203,7 @@ fn test_compare_factorization_strategies() {
             .collect();
         let store = within::FactorMajorStore::new(cats, within::ObservationWeights::Unit, *n_rows)
             .expect("valid factor-major store");
-        let design = FixedEffectsDesign::from_store(store).expect("valid synthetic design");
+        let design = WeightedDesign::from_store(store).expect("valid synthetic design");
 
         let y: Vec<f64> = (0..*n_rows).map(|_| rng.random::<f64>()).collect();
         let design_op = DesignOperator::new(&design);
@@ -212,7 +212,7 @@ fn test_compare_factorization_strategies() {
         let gramian_op = GramianOperator::new(&design);
 
         for (ac_config, label) in &configs {
-            let local_solver = LocalSolverConfig::SchurComplement {
+            let local_solver = LocalSolverConfig {
                 approx_chol: *ac_config,
                 approx_schur: Some(within::ApproxSchurConfig::default()),
                 dense_threshold: within::DEFAULT_DENSE_SCHUR_THRESHOLD,

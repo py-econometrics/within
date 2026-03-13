@@ -108,7 +108,7 @@ fn one_level_local_solver(ac2: bool) -> LocalSolverConfig {
             split_merge: None,
         }
     };
-    LocalSolverConfig::SchurComplement {
+    LocalSolverConfig {
         approx_chol,
         approx_schur: Some(within::ApproxSchurConfig::default()),
         dense_threshold: within::DEFAULT_DENSE_SCHUR_THRESHOLD,

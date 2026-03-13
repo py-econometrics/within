@@ -194,7 +194,7 @@ pub use orchestrate::SolveResult;
 // Core types
 // ---------------------------------------------------------------------------
 
-pub use domain::{FixedEffectsDesign, Subdomain, WeightedDesign};
+pub use domain::{Subdomain, WeightedDesign};
 pub use observation::{
     ArrayStore, FactorMajorStore, FactorMeta, ObservationStore, ObservationWeights,
 };

@@ -8,8 +8,8 @@ use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
 use within::{
-    FactorMajorStore, FixedEffectsDesign, KrylovMethod, LocalSolverConfig, ObservationStore,
-    ObservationWeights, Preconditioner, ReductionStrategy, Solver, SolverParams, WeightedDesign,
+    FactorMajorStore, KrylovMethod, LocalSolverConfig, ObservationStore, ObservationWeights,
+    Preconditioner, ReductionStrategy, Solver, SolverParams, WeightedDesign,
 };
 
 // ---------------------------------------------------------------------------
@@ -22,7 +22,7 @@ use within::{
 ///
 /// Structure: observation i connects factor1_level=i to factor2_level=i,
 /// and also factor1_level=i to factor2_level=i+1, forming a chain.
-fn make_chain_design(n_chain: usize, seed: u64) -> (FixedEffectsDesign, Vec<f64>) {
+fn make_chain_design(n_chain: usize, seed: u64) -> (WeightedDesign<FactorMajorStore>, Vec<f64>) {
     let mut rng = SmallRng::seed_from_u64(seed);
 
     let n_levels_1 = n_chain;
@@ -55,7 +55,7 @@ fn make_chain_design(n_chain: usize, seed: u64) -> (FixedEffectsDesign, Vec<f64>
 
     let store =
         FactorMajorStore::new(vec![f1, f2], ObservationWeights::Unit, n_obs).expect("valid store");
-    let design = FixedEffectsDesign::from_store(store).expect("valid design");
+    let design = WeightedDesign::from_store(store).expect("valid design");
 
     (design, y)
 }
@@ -63,7 +63,7 @@ fn make_chain_design(n_chain: usize, seed: u64) -> (FixedEffectsDesign, Vec<f64>
 /// Compute max absolute weighted group mean of demeaned values.
 /// This is the observation-space quality metric: if demeaning is perfect,
 /// the mean of demeaned values within every level of every factor is zero.
-fn max_abs_group_mean(design: &FixedEffectsDesign, demeaned: &[f64]) -> f64 {
+fn max_abs_group_mean(design: &WeightedDesign<FactorMajorStore>, demeaned: &[f64]) -> f64 {
     let mut worst = 0.0f64;
     for q in 0..design.factors.len() {
         let n_levels = design.factors[q].n_levels;

@@ -3,19 +3,19 @@
 // ===========================================================================
 
 mod design_tests {
-    use crate::domain::FixedEffectsDesign;
+    use crate::domain::WeightedDesign;
     use crate::observation::{FactorMajorStore, ObservationWeights};
     use crate::operator::DesignOperator;
     use schwarz_precond::Operator;
 
-    fn make_test_design() -> FixedEffectsDesign {
+    fn make_test_design() -> WeightedDesign<FactorMajorStore> {
         let store = FactorMajorStore::new(
             vec![vec![0, 1, 2, 0, 1], vec![0, 1, 2, 3, 0]],
             ObservationWeights::Unit,
             5,
         )
         .expect("valid factor-major store");
-        FixedEffectsDesign::from_store(store).expect("valid test design")
+        WeightedDesign::from_store(store).expect("valid test design")
     }
 
     #[test]
@@ -168,114 +168,14 @@ mod csr_block_tests {
 // ===========================================================================
 
 mod residual_update_tests {
-    use crate::domain::FixedEffectsDesign;
     use crate::observation::{FactorMajorStore, ObservationWeights};
     use crate::operator::gramian::Gramian;
-    use crate::operator::residual_update::{
-        DofObservationIndex, ObservationSpaceUpdater, SparseGramianUpdater,
-    };
+    use crate::operator::residual_update::SparseGramianUpdater;
     use schwarz_precond::{OperatorResidualUpdater, ResidualUpdater};
 
-    // -------------------------------------------------------------------
-    // DofObservationIndex tests
-    // -------------------------------------------------------------------
-
-    // 2 factors, 5 observations:
-    //   factor 0: levels [0, 1, 2, 0, 1]  (3 levels, offset 0)
-    //   factor 1: levels [0, 1, 2, 3, 0]  (4 levels, offset 3)
-    // DOFs: 0..3 for factor 0, 3..7 for factor 1
-    fn make_dof_index_design() -> FixedEffectsDesign {
-        let store = FactorMajorStore::new(
-            vec![vec![0, 1, 2, 0, 1], vec![0, 1, 2, 3, 0]],
-            ObservationWeights::Unit,
-            5,
-        )
-        .expect("valid factor-major store");
-        FixedEffectsDesign::from_store(store).expect("valid test design")
-    }
-
-    #[test]
-    fn test_basic_dof_observation_mapping() {
-        let design = make_dof_index_design();
-        let idx = DofObservationIndex::build(&design);
-
-        assert_eq!(idx.n_dofs(), 7);
-
-        // factor 0, level 0 (DOF 0): obs 0, 3
-        let mut dof0: Vec<u32> = idx.obs_for_dof(0).to_vec();
-        dof0.sort();
-        assert_eq!(dof0, vec![0, 3]);
-
-        // factor 0, level 1 (DOF 1): obs 1, 4
-        let mut dof1: Vec<u32> = idx.obs_for_dof(1).to_vec();
-        dof1.sort();
-        assert_eq!(dof1, vec![1, 4]);
-
-        // factor 0, level 2 (DOF 2): obs 2
-        assert_eq!(idx.obs_for_dof(2), &[2]);
-
-        // factor 1, level 0 (DOF 3): obs 0, 4
-        let mut dof3: Vec<u32> = idx.obs_for_dof(3).to_vec();
-        dof3.sort();
-        assert_eq!(dof3, vec![0, 4]);
-
-        // factor 1, level 1 (DOF 4): obs 1
-        assert_eq!(idx.obs_for_dof(4), &[1]);
-
-        // factor 1, level 2 (DOF 5): obs 2
-        assert_eq!(idx.obs_for_dof(5), &[2]);
-
-        // factor 1, level 3 (DOF 6): obs 3
-        assert_eq!(idx.obs_for_dof(6), &[3]);
-    }
-
-    #[test]
-    fn test_total_entries_equals_n_obs_times_n_factors() {
-        let design = make_dof_index_design();
-        let idx = DofObservationIndex::build(&design);
-
-        let total: usize = (0..idx.n_dofs())
-            .map(|d| idx.obs_for_dof(d as u32).len())
-            .sum();
-        // Each observation contributes one entry per factor
-        assert_eq!(total, 5 * 2);
-    }
-
-    #[test]
-    fn test_single_factor_single_level() {
-        // 1 factor, 3 observations, all same level
-        let store = FactorMajorStore::new(vec![vec![0, 0, 0]], ObservationWeights::Unit, 3)
-            .expect("valid factor-major store");
-        let design = FixedEffectsDesign::from_store(store).expect("valid single-factor design");
-        let idx = DofObservationIndex::build(&design);
-
-        assert_eq!(idx.n_dofs(), 1);
-        let mut obs: Vec<u32> = idx.obs_for_dof(0).to_vec();
-        obs.sort();
-        assert_eq!(obs, vec![0, 1, 2]);
-    }
-
-    #[test]
-    fn test_dof_with_zero_observations() {
-        // 1 factor, 2 observations using levels 0 and 2 — level 1 has no observations
-        let store = FactorMajorStore::new(vec![vec![0, 2]], ObservationWeights::Unit, 2)
-            .expect("valid factor-major store");
-        let design = FixedEffectsDesign::from_store(store).expect("valid sparse-level design");
-        let idx = DofObservationIndex::build(&design);
-
-        assert_eq!(idx.n_dofs(), 3);
-        assert_eq!(idx.obs_for_dof(0), &[0]);
-        assert_eq!(idx.obs_for_dof(1), &[] as &[u32]); // empty
-        assert_eq!(idx.obs_for_dof(2), &[1]);
-    }
-
-    // -------------------------------------------------------------------
-    // ObservationSpaceUpdater tests
-    // -------------------------------------------------------------------
-
-    /// Helper: build a design, explicit Gramian, and both updaters.
-    /// Returns (design, gramian, obs_updater).
-    fn make_test_setup() -> (FixedEffectsDesign, Gramian) {
+    /// Helper: build a design, explicit Gramian.
+    fn make_test_setup() -> (Gramian, usize) {
+        use crate::domain::WeightedDesign;
         // 2 factors, 5 observations
         // factor 0: [0, 1, 2, 0, 1] (3 levels)
         // factor 1: [0, 1, 2, 3, 0] (4 levels)
@@ -286,225 +186,65 @@ mod residual_update_tests {
             5,
         )
         .expect("valid factor-major store");
-        let design = FixedEffectsDesign::from_store(store).expect("valid fixed-effects design");
+        let design = WeightedDesign::from_store(store).expect("valid fixed-effects design");
         let gramian = Gramian::build(&design);
-        (design, gramian)
+        let n_dofs = design.n_dofs;
+        (gramian, n_dofs)
     }
 
     #[test]
-    fn test_obs_updater_matches_operator_updater_single_step() {
-        let (design, gramian) = make_test_setup();
-        let n_dofs = design.n_dofs;
+    fn test_sparse_gramian_updater_matches_operator_updater_single_step() {
+        let (gramian, n_dofs) = make_test_setup();
 
-        let mut obs_updater = ObservationSpaceUpdater::new(&design);
+        let mut sparse_updater = SparseGramianUpdater::new(gramian.matrix.clone());
         let mut op_updater = OperatorResidualUpdater::new(&gramian, n_dofs);
 
-        // Initial residual
         let r_original = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
         op_updater.reset(&r_original);
 
-        let mut r_obs = r_original.clone();
         let mut r_op = r_original.clone();
-
-        // Correction on subdomain {0, 1, 3, 4} (factor0 levels 0,1 + factor1 levels 0,1)
-        let global_indices: Vec<u32> = vec![0, 1, 3, 4];
-        let correction = vec![0.5, -0.3, 0.2, 0.1];
-
-        obs_updater.update(&global_indices, &correction, &mut r_obs);
-        op_updater.update(&global_indices, &correction, &mut r_op);
-
-        for i in 0..n_dofs {
-            assert!(
-                (r_obs[i] - r_op[i]).abs() < 1e-12,
-                "mismatch at DOF {i}: obs={}, op={}",
-                r_obs[i],
-                r_op[i],
-            );
-        }
-    }
-
-    #[test]
-    fn test_obs_updater_matches_operator_updater_two_steps() {
-        let (design, gramian) = make_test_setup();
-        let n_dofs = design.n_dofs;
-
-        let mut obs_updater = ObservationSpaceUpdater::new(&design);
-        let mut op_updater = OperatorResidualUpdater::new(&gramian, n_dofs);
-
-        let r_original = vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0];
-        op_updater.reset(&r_original);
-
-        let mut r_obs = r_original.clone();
-        let mut r_op = r_original.clone();
-
-        // First subdomain correction
-        let gi1: Vec<u32> = vec![0, 1, 3, 4];
-        let c1 = vec![0.5, -0.3, 0.2, 0.1];
-        obs_updater.update(&gi1, &c1, &mut r_obs);
-        op_updater.update(&gi1, &c1, &mut r_op);
-
-        for i in 0..n_dofs {
-            assert!(
-                (r_obs[i] - r_op[i]).abs() < 1e-12,
-                "step 1 mismatch at DOF {i}: obs={}, op={}",
-                r_obs[i],
-                r_op[i],
-            );
-        }
-
-        // Second subdomain correction
-        let gi2: Vec<u32> = vec![2, 5, 6];
-        let c2 = vec![1.0, -0.5, 0.8];
-        obs_updater.update(&gi2, &c2, &mut r_obs);
-        op_updater.update(&gi2, &c2, &mut r_op);
-
-        for i in 0..n_dofs {
-            assert!(
-                (r_obs[i] - r_op[i]).abs() < 1e-12,
-                "step 2 mismatch at DOF {i}: obs={}, op={}",
-                r_obs[i],
-                r_op[i],
-            );
-        }
-    }
-
-    #[test]
-    fn test_obs_updater_zero_correction_is_noop() {
-        let (design, _) = make_test_setup();
-        let mut updater = ObservationSpaceUpdater::new(&design);
-
-        let r_original = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
-        let mut r_work = r_original.clone();
-
-        let gi: Vec<u32> = vec![0, 1, 3];
-        let correction = vec![0.0, 0.0, 0.0];
-        updater.update(&gi, &correction, &mut r_work);
-
-        assert_eq!(r_work, r_original);
-    }
-
-    #[test]
-    fn test_obs_updater_single_dof_correction() {
-        let (design, gramian) = make_test_setup();
-        let n_dofs = design.n_dofs;
-
-        let mut obs_updater = ObservationSpaceUpdater::new(&design);
-        let mut op_updater = OperatorResidualUpdater::new(&gramian, n_dofs);
-
-        let r_original = vec![1.0; n_dofs];
-        op_updater.reset(&r_original);
-
-        let mut r_obs = r_original.clone();
-        let mut r_op = r_original.clone();
-
-        // Single DOF correction
-        let gi: Vec<u32> = vec![0];
-        let correction = vec![1.0];
-        obs_updater.update(&gi, &correction, &mut r_obs);
-        op_updater.update(&gi, &correction, &mut r_op);
-
-        for i in 0..n_dofs {
-            assert!(
-                (r_obs[i] - r_op[i]).abs() < 1e-12,
-                "single-DOF mismatch at {i}: obs={}, op={}",
-                r_obs[i],
-                r_op[i],
-            );
-        }
-    }
-
-    #[test]
-    fn test_obs_updater_weighted_design() {
-        use crate::domain::WeightedDesign;
-
-        let fl = vec![vec![0u32, 1, 0, 1], vec![0, 0, 1, 1]];
-        let weights = vec![1.0, 2.0, 3.0, 4.0];
-
-        let store = FactorMajorStore::new(fl, ObservationWeights::Dense(weights), 4)
-            .expect("valid weighted store");
-        let design = WeightedDesign::from_store(store).expect("valid weighted design");
-        let gramian = Gramian::build(&design);
-        let n_dofs = design.n_dofs; // 4
-
-        let mut obs_updater = ObservationSpaceUpdater::new(&design);
-        let mut op_updater = OperatorResidualUpdater::new(&gramian, n_dofs);
-
-        let r_original = vec![5.0, 3.0, 7.0, 1.0];
-        op_updater.reset(&r_original);
-
-        let mut r_obs = r_original.clone();
-        let mut r_op = r_original.clone();
-
-        let gi: Vec<u32> = vec![0, 2];
-        let correction = vec![0.5, -0.3];
-        obs_updater.update(&gi, &correction, &mut r_obs);
-        op_updater.update(&gi, &correction, &mut r_op);
-
-        for i in 0..n_dofs {
-            assert!(
-                (r_obs[i] - r_op[i]).abs() < 1e-12,
-                "weighted mismatch at {i}: obs={}, op={}",
-                r_obs[i],
-                r_op[i],
-            );
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // SparseGramianUpdater tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_sparse_gramian_updater_matches_obs_updater_single_step() {
-        let (design, gramian) = make_test_setup();
-        let n_dofs = design.n_dofs;
-
-        let mut obs_updater = ObservationSpaceUpdater::new(&design);
-        let mut sparse_updater = SparseGramianUpdater::new(gramian.matrix);
-
-        let r_original = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
-        let mut r_obs = r_original.clone();
         let mut r_sparse = r_original;
 
         let global_indices: Vec<u32> = vec![0, 1, 3, 4];
         let correction = vec![0.5, -0.3, 0.2, 0.1];
 
-        obs_updater.update(&global_indices, &correction, &mut r_obs);
+        op_updater.update(&global_indices, &correction, &mut r_op);
         sparse_updater.update(&global_indices, &correction, &mut r_sparse);
 
         for i in 0..n_dofs {
             assert!(
-                (r_obs[i] - r_sparse[i]).abs() < 1e-12,
-                "mismatch at DOF {i}: obs={}, sparse={}",
-                r_obs[i],
+                (r_op[i] - r_sparse[i]).abs() < 1e-12,
+                "mismatch at DOF {i}: op={}, sparse={}",
+                r_op[i],
                 r_sparse[i],
             );
         }
     }
 
     #[test]
-    fn test_sparse_gramian_updater_matches_obs_updater_two_steps() {
-        let (design, gramian) = make_test_setup();
-        let n_dofs = design.n_dofs;
+    fn test_sparse_gramian_updater_matches_operator_updater_two_steps() {
+        let (gramian, n_dofs) = make_test_setup();
 
-        let mut obs_updater = ObservationSpaceUpdater::new(&design);
-        let mut sparse_updater = SparseGramianUpdater::new(gramian.matrix);
+        let mut sparse_updater = SparseGramianUpdater::new(gramian.matrix.clone());
+        let mut op_updater = OperatorResidualUpdater::new(&gramian, n_dofs);
 
         let r_original = vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0];
-        let mut r_obs = r_original.clone();
+        op_updater.reset(&r_original);
+
+        let mut r_op = r_original.clone();
         let mut r_sparse = r_original;
 
         // First subdomain correction
         let gi1: Vec<u32> = vec![0, 1, 3, 4];
         let c1 = vec![0.5, -0.3, 0.2, 0.1];
-        obs_updater.update(&gi1, &c1, &mut r_obs);
+        op_updater.update(&gi1, &c1, &mut r_op);
         sparse_updater.update(&gi1, &c1, &mut r_sparse);
 
         for i in 0..n_dofs {
             assert!(
-                (r_obs[i] - r_sparse[i]).abs() < 1e-12,
-                "step 1 mismatch at DOF {i}: obs={}, sparse={}",
-                r_obs[i],
+                (r_op[i] - r_sparse[i]).abs() < 1e-12,
+                "step 1 mismatch at DOF {i}: op={}, sparse={}",
+                r_op[i],
                 r_sparse[i],
             );
         }
@@ -512,14 +252,14 @@ mod residual_update_tests {
         // Second subdomain correction
         let gi2: Vec<u32> = vec![2, 5, 6];
         let c2 = vec![1.0, -0.5, 0.8];
-        obs_updater.update(&gi2, &c2, &mut r_obs);
+        op_updater.update(&gi2, &c2, &mut r_op);
         sparse_updater.update(&gi2, &c2, &mut r_sparse);
 
         for i in 0..n_dofs {
             assert!(
-                (r_obs[i] - r_sparse[i]).abs() < 1e-12,
-                "step 2 mismatch at DOF {i}: obs={}, sparse={}",
-                r_obs[i],
+                (r_op[i] - r_sparse[i]).abs() < 1e-12,
+                "step 2 mismatch at DOF {i}: op={}, sparse={}",
+                r_op[i],
                 r_sparse[i],
             );
         }
@@ -527,7 +267,7 @@ mod residual_update_tests {
 
     #[test]
     fn test_sparse_gramian_updater_zero_correction_is_noop() {
-        let (_, gramian) = make_test_setup();
+        let (gramian, _) = make_test_setup();
         let mut updater = SparseGramianUpdater::new(gramian.matrix);
 
         let r_original = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
@@ -542,26 +282,27 @@ mod residual_update_tests {
 
     #[test]
     fn test_sparse_gramian_updater_single_dof_correction() {
-        let (design, gramian) = make_test_setup();
-        let n_dofs = design.n_dofs;
+        let (gramian, n_dofs) = make_test_setup();
 
-        let mut obs_updater = ObservationSpaceUpdater::new(&design);
-        let mut sparse_updater = SparseGramianUpdater::new(gramian.matrix);
+        let mut sparse_updater = SparseGramianUpdater::new(gramian.matrix.clone());
+        let mut op_updater = OperatorResidualUpdater::new(&gramian, n_dofs);
 
         let r_original = vec![1.0; n_dofs];
-        let mut r_obs = r_original.clone();
+        op_updater.reset(&r_original);
+
+        let mut r_op = r_original.clone();
         let mut r_sparse = r_original;
 
         let gi: Vec<u32> = vec![0];
         let correction = vec![1.0];
-        obs_updater.update(&gi, &correction, &mut r_obs);
+        op_updater.update(&gi, &correction, &mut r_op);
         sparse_updater.update(&gi, &correction, &mut r_sparse);
 
         for i in 0..n_dofs {
             assert!(
-                (r_obs[i] - r_sparse[i]).abs() < 1e-12,
-                "single-DOF mismatch at {i}: obs={}, sparse={}",
-                r_obs[i],
+                (r_op[i] - r_sparse[i]).abs() < 1e-12,
+                "single-DOF mismatch at {i}: op={}, sparse={}",
+                r_op[i],
                 r_sparse[i],
             );
         }
@@ -580,23 +321,25 @@ mod residual_update_tests {
         let gramian = Gramian::build(&design);
         let n_dofs = design.n_dofs;
 
-        let mut obs_updater = ObservationSpaceUpdater::new(&design);
-        let mut sparse_updater = SparseGramianUpdater::new(gramian.matrix);
+        let mut sparse_updater = SparseGramianUpdater::new(gramian.matrix.clone());
+        let mut op_updater = OperatorResidualUpdater::new(&gramian, n_dofs);
 
         let r_original = vec![5.0, 3.0, 7.0, 1.0];
-        let mut r_obs = r_original.clone();
+        op_updater.reset(&r_original);
+
+        let mut r_op = r_original.clone();
         let mut r_sparse = r_original;
 
         let gi: Vec<u32> = vec![0, 2];
         let correction = vec![0.5, -0.3];
-        obs_updater.update(&gi, &correction, &mut r_obs);
+        op_updater.update(&gi, &correction, &mut r_op);
         sparse_updater.update(&gi, &correction, &mut r_sparse);
 
         for i in 0..n_dofs {
             assert!(
-                (r_obs[i] - r_sparse[i]).abs() < 1e-12,
-                "weighted mismatch at {i}: obs={}, sparse={}",
-                r_obs[i],
+                (r_op[i] - r_sparse[i]).abs() < 1e-12,
+                "weighted mismatch at {i}: op={}, sparse={}",
+                r_op[i],
                 r_sparse[i],
             );
         }
@@ -866,28 +609,27 @@ mod schwarz_tests {
     use crate::config::{
         ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, DEFAULT_DENSE_SCHUR_THRESHOLD,
     };
-    use crate::domain::{build_local_domains, FixedEffectsDesign, Subdomain, SubdomainCore};
+    use crate::domain::{build_local_domains, Subdomain, SubdomainCore, WeightedDesign};
     use crate::observation::{FactorMajorStore, ObservationWeights};
     use crate::operator::csr_block::CsrBlock;
     use crate::operator::gramian::CrossTab;
     use crate::operator::local_solver::BlockElimSolver;
-    use crate::operator::local_solver::FeLocalSolver;
     use crate::operator::schwarz::{
         build_additive, build_additive_with_strategy, build_entry, build_reduced_schur_factor,
-        build_schwarz, compute_first_block_size, DomainSource, ReducedSchurConfig,
+        build_schwarz, ReducedSchurConfig,
     };
     use schwarz_precond::{LocalSolver, Operator, ReductionStrategy};
 
     const BLOCK_ELIM_NESTED_RAYON_CHILD_ENV: &str = "WITHIN_TEST_BLOCK_ELIM_NESTED_RAYON_CHILD";
 
-    fn make_test_data() -> (FixedEffectsDesign, Vec<(Subdomain, CrossTab)>) {
+    fn make_test_data() -> (WeightedDesign<FactorMajorStore>, Vec<(Subdomain, CrossTab)>) {
         let store = FactorMajorStore::new(
             vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]],
             ObservationWeights::Unit,
             5,
         )
         .expect("valid factor-major store");
-        let design = FixedEffectsDesign::from_store(store).expect("valid fixed-effects design");
+        let design = WeightedDesign::from_store(store).expect("valid fixed-effects design");
         let domain_pairs = build_local_domains(&design);
         (design, domain_pairs)
     }
@@ -1010,7 +752,7 @@ mod schwarz_tests {
         let n_keep = 1_024;
         let elim_ratio = 32;
         let (n_dofs, domain_pairs) = make_nested_block_elim_domain_pairs(n_keep, elim_ratio, 2);
-        let config = LocalSolverConfig::SchurComplement {
+        let config = LocalSolverConfig {
             approx_chol: ApproxCholConfig {
                 split_merge: Some(8),
                 seed: 42,
@@ -1028,8 +770,8 @@ mod schwarz_tests {
             .build()
             .expect("test rayon pool");
         pool.install(|| {
-            let reduction = build_additive_with_strategy::<FactorMajorStore>(
-                DomainSource::FromParts(domain_pairs),
+            let reduction = build_additive_with_strategy(
+                domain_pairs,
                 n_dofs,
                 &config,
                 ReductionStrategy::ParallelReduction,
@@ -1188,12 +930,8 @@ mod schwarz_tests {
     fn test_build_schwarz() {
         let (design, domain_pairs) = make_test_data();
         let config = LocalSolverConfig::default();
-        let schwarz = build_additive::<FactorMajorStore>(
-            DomainSource::FromParts(domain_pairs),
-            design.n_dofs,
-            &config,
-        )
-        .expect("build schwarz with explicit domains");
+        let schwarz = build_additive(domain_pairs, design.n_dofs, &config)
+            .expect("build schwarz with explicit domains");
         assert!(!schwarz.subdomains().is_empty());
 
         let r = vec![1.0; design.n_dofs];
@@ -1211,40 +949,18 @@ mod schwarz_tests {
     }
 
     #[test]
-    fn test_first_block_size_computation() {
-        let store = FactorMajorStore::new(
-            vec![vec![0, 1, 0, 1], vec![0, 0, 1, 1]],
-            ObservationWeights::Unit,
-            4,
-        )
-        .expect("valid factor-major store");
-        let design = FixedEffectsDesign::from_store(store).expect("valid design");
-        let domain_pairs = build_local_domains(&design);
-
-        assert!(!domain_pairs.is_empty());
-        let fbs = compute_first_block_size(&design, &domain_pairs[0].0);
-        assert_eq!(fbs, 2);
-    }
-
-    #[test]
     fn test_exact_schur_uses_dense_fast_path_for_tiny_reduced_system() {
         let (_, mut domain_pairs) = make_test_data();
         let (domain, cross_tab) = domain_pairs.swap_remove(0);
 
-        let config = LocalSolverConfig::SchurComplement {
+        let config = LocalSolverConfig {
             approx_chol: ApproxCholConfig::default(),
             approx_schur: None,
             dense_threshold: DEFAULT_DENSE_SCHUR_THRESHOLD,
         };
         let entry =
             build_entry(domain, cross_tab, &config).expect("exact Schur entry build failed");
-
-        match entry.solver() {
-            FeLocalSolver::SchurComplement(solver) => {
-                assert!(solver.uses_dense_reduced_factor());
-            }
-            FeLocalSolver::FullSddm { .. } => panic!("expected SchurComplement solver"),
-        }
+        assert!(entry.solver().uses_dense_reduced_factor());
     }
 
     #[test]
@@ -1252,7 +968,7 @@ mod schwarz_tests {
         let (_, mut domain_pairs) = make_test_data();
         let (domain, cross_tab) = domain_pairs.swap_remove(0);
 
-        let config = LocalSolverConfig::SchurComplement {
+        let config = LocalSolverConfig {
             approx_chol: ApproxCholConfig::default(),
             approx_schur: Some(ApproxSchurConfig {
                 seed: 7,
@@ -1262,13 +978,7 @@ mod schwarz_tests {
         };
         let entry =
             build_entry(domain, cross_tab, &config).expect("approximate Schur entry build failed");
-
-        match entry.solver() {
-            FeLocalSolver::SchurComplement(solver) => {
-                assert!(solver.uses_dense_reduced_factor());
-            }
-            FeLocalSolver::FullSddm { .. } => panic!("expected SchurComplement solver"),
-        }
+        assert!(entry.solver().uses_dense_reduced_factor());
     }
 
     #[test]
@@ -1276,20 +986,14 @@ mod schwarz_tests {
         let (_, mut domain_pairs) = make_test_data();
         let (domain, cross_tab) = domain_pairs.swap_remove(0);
 
-        let config = LocalSolverConfig::SchurComplement {
+        let config = LocalSolverConfig {
             approx_chol: ApproxCholConfig::default(),
             approx_schur: None,
             dense_threshold: 0,
         };
         let entry =
             build_entry(domain, cross_tab, &config).expect("exact Schur entry build failed");
-
-        match entry.solver() {
-            FeLocalSolver::SchurComplement(solver) => {
-                assert!(!solver.uses_dense_reduced_factor());
-            }
-            FeLocalSolver::FullSddm { .. } => panic!("expected SchurComplement solver"),
-        }
+        assert!(!entry.solver().uses_dense_reduced_factor());
     }
 
     #[test]
@@ -1495,18 +1199,18 @@ mod preconditioner_fused_tests {
     use schwarz_precond::Operator;
 
     use crate::config::{LocalSolverConfig, Preconditioner, ReductionStrategy};
-    use crate::domain::FixedEffectsDesign;
+    use crate::domain::WeightedDesign;
     use crate::observation::{FactorMajorStore, ObservationWeights};
     use crate::operator::preconditioner::build_preconditioner_fused;
 
-    fn make_test_design() -> FixedEffectsDesign {
+    fn make_test_design() -> WeightedDesign<FactorMajorStore> {
         let store = FactorMajorStore::new(
             vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]],
             ObservationWeights::Unit,
             5,
         )
         .expect("valid factor-major store");
-        FixedEffectsDesign::from_store(store).expect("valid fixed-effects design")
+        WeightedDesign::from_store(store).expect("valid fixed-effects design")
     }
 
     #[test]
