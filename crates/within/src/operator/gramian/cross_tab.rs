@@ -1,4 +1,33 @@
-//! CrossTab — bipartite block representation of a local Gramian for a single factor pair.
+//! Cross-tabulation of a factor pair: the bipartite local Gramian.
+//!
+//! For a pair of factors `(q, r)`, the local Gramian has 2×2 block structure:
+//!
+//! ```text
+//! G_local = [ D_q    C  ]
+//!           [ C^T    D_r ]
+//! ```
+//!
+//! where `D_q` and `D_r` are diagonal (weighted level counts) and `C` is the
+//! cross-tabulation matrix (`C[j,k]` = weighted count of observations at level
+//! `j` of factor `q` **and** level `k` of factor `r`).
+//!
+//! [`CrossTab`] stores this decomposed form — `C` as a [`CsrBlock`], its
+//! precomputed transpose `C^T`, and the two diagonals — rather than assembling
+//! the full symmetric CSR. This is more compact and directly supports:
+//!
+//! - **SDDM construction** ([`CrossTab::to_sddm`]) — the bipartite sign-flip
+//!   trick negates the off-diagonal blocks to produce a symmetric diagonally
+//!   dominant M-matrix suitable for approximate Cholesky
+//! - **Connected components** ([`CrossTab::bipartite_connected_components`]) —
+//!   DFS on the bipartite graph `C` to split disconnected subdomains
+//! - **Component extraction** ([`CrossTab::extract_component`]) — build a
+//!   sub-CrossTab for a single connected component
+//!
+//! # Compact indexing
+//!
+//! Not all levels of a factor may be active (observed). The cross-tab uses
+//! *compact* indices: only active levels are numbered `0..n_q` and `0..n_r`.
+//! A `local_to_global` vector maps these back to global DOF indices.
 
 use schwarz_precond::SparseMatrix;
 

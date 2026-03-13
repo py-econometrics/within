@@ -1,8 +1,43 @@
 //! Schur complement computation for bipartite SDDM systems.
 //!
-//! Provides a [`SchurComplement`] trait with two implementations:
-//! - [`ExactSchurComplement`]: exact block elimination via row-workspace accumulation
-//! - [`ApproxSchurComplement`]: clique-tree sampling approximation (GKS 2023)
+//! When using block elimination to solve the local bipartite Gramian
+//! (see [`local_solver`](super::local_solver)), we need the Schur complement
+//! of the eliminated factor block. For the 2x2 block system:
+//!
+//! ```text
+//!     [ D_elim    C_e ]       [ z_elim ]   [ r_elim ]
+//!     [                ]  *   [         ] = [         ]
+//!     [ C_e^T    D_keep]       [ z_keep ]   [ r_keep ]
+//! ```
+//!
+//! eliminating `z_elim` (trivial since `D_elim` is diagonal) yields the
+//! reduced system `S z_keep = r_keep - C_e^T D_elim^{-1} r_elim` where the
+//! **Schur complement** is:
+//!
+//! ```text
+//! S = D_keep - C_e^T D_elim^{-1} C_e
+//! ```
+//!
+//! This `S` is a graph Laplacian on the kept factor levels, encoding how
+//! they co-occur through the eliminated factor.
+//!
+//! # Exact vs approximate
+//!
+//! This module provides a [`SchurComplement`] trait with two implementations:
+//!
+//! - [`ExactSchurComplement`]: row-workspace accumulation computes `S` exactly.
+//!   Each kept-block row scatters fill contributions into a dense workspace,
+//!   then extracts non-zeros. Cost is O(nnz(S)), but `S` can be dense when
+//!   the eliminated factor has high-degree levels (many keep-block DOFs
+//!   share an eliminated level, creating fill edges between all of them).
+//!
+//! - [`ApproxSchurComplement`]: clique-tree sampling approximation (GKS 2023).
+//!   Each eliminated vertex contributes a "star" (clique) in the fill graph.
+//!   Instead of materializing all O(deg^2) fill edges per star, the
+//!   clique-tree sampler produces only O(deg) edges that spectrally
+//!   approximate the exact clique. This keeps `S` sparse even when the
+//!   exact Schur complement would be dense — critical for high-cardinality
+//!   factor structures.
 //!
 //! # Internal pipeline
 //!

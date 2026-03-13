@@ -1,3 +1,10 @@
+//! Public [`SchwarzPreconditioner`] type — the one-level additive Schwarz.
+//!
+//! Implements [`Operator`](crate::Operator) so it can be passed directly
+//! to CG or GMRES. Construction validates subdomain indices, pre-computes
+//! scheduling diagnostics, and allocates the executor. `apply` is lock-free
+//! in steady state (buffers are borrowed from a pool).
+
 use crate::error::{validate_entries, ApplyError, PreconditionerBuildError};
 use crate::local_solve::{
     DefaultLocalSolveInvoker, LocalSolveInvoker, LocalSolver, SubdomainEntry,

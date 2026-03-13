@@ -1,3 +1,9 @@
+//! `Serialize` / `Deserialize` for [`SchwarzPreconditioner`].
+//!
+//! Only the subdomain entries, DOF count, and scratch size are persisted.
+//! The reduction strategy resets to `Auto` on deserialize; buffers are
+//! re-allocated fresh.
+
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 

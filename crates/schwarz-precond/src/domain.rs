@@ -1,3 +1,51 @@
+//! Domain decomposition primitives: subdomain cores and partition-of-unity weights.
+//!
+//! A Schwarz preconditioner decomposes a global linear system into
+//! overlapping *subdomains*. Each subdomain knows which global
+//! degrees of freedom (DOFs) it owns and how to weight them so that
+//! overlapping contributions recombine correctly.
+//!
+//! # Partition of unity
+//!
+//! When subdomains overlap, a DOF may appear in more than one local
+//! problem. Without weighting, the additive Schwarz sum
+//! `Σ Rᵢᵀ Aᵢ⁻¹ Rᵢ` would double-count corrections in the overlap
+//! region. The *partition of unity* fixes this.
+//!
+//! For each DOF *j*, let *c(j)* be the number of subdomains that
+//! contain it. The diagonal weight matrix `D̃ᵢ` assigns weight
+//! `1/√c(j)` to DOF *j* inside subdomain *i*. Because the
+//! preconditioner applies weights on both sides of the local solve
+//! (`D̃ᵢ · Aᵢ⁻¹ · D̃ᵢ`), the effective contribution of DOF *j*
+//! across all subdomains is:
+//!
+//! ```text
+//! Σᵢ (1/√c)² = Σᵢ 1/c = c · (1/c) = 1
+//! ```
+//!
+//! This is the `Σ D̃ᵢ² = I` requirement that guarantees the
+//! preconditioner neither inflates nor deflates the overlapping DOFs.
+//!
+//!
+//! # Key types
+//!
+//! - [`SubdomainCore`] — The domain-agnostic primitive that implements
+//!   the `Rᵢ` (restriction) and `D̃ᵢ` (partition-of-unity weighting)
+//!   operators from the Schwarz formula. Concretely:
+//!   - `restrict_weighted(r, local)` computes `local = D̃ᵢ Rᵢ r`
+//!     (gather global DOFs into a local buffer, applying PoU weights)
+//!   - `prolongate_weighted_add(local, out)` computes `out += Rᵢᵀ D̃ᵢ local`
+//!     (scatter the weighted local correction back to the global vector)
+//!
+//!   Together with a [`LocalSolver`](crate::local_solve::LocalSolver)
+//!   providing `Aᵢ⁻¹`, a `SubdomainCore` supplies everything needed for
+//!   one term `Rᵢᵀ D̃ᵢ Aᵢ⁻¹ D̃ᵢ Rᵢ` of the Schwarz sum.
+//!   Downstream crates wrap this with application-specific metadata
+//!   (e.g. factor-pair information in the `within` econometrics solver).
+//!
+//! - [`PartitionWeights`] — Per-DOF weights, stored either as a
+//!   uniform constant or as an explicit `Vec<f64>`.
+
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::error::SubdomainCoreBuildError;
@@ -56,10 +104,18 @@ fn atomic_f64_add(target: &AtomicU64, val: f64) {
     }
 }
 
-/// A domain-agnostic subdomain core: DOF indices + partition-of-unity weights.
+/// A domain-agnostic subdomain core implementing `Rᵢ` and `D̃ᵢ` from the Schwarz formula.
 ///
-/// Downstream crates (e.g. `within`) may wrap this with application-specific
-/// metadata such as factor-pair information.
+/// Holds the sorted global DOF indices (defining the restriction operator `Rᵢ`)
+/// and partition-of-unity weights (defining `D̃ᵢ`). The two key operations map
+/// directly to the formula:
+///
+/// - [`restrict_weighted`](Self::restrict_weighted) computes `D̃ᵢ Rᵢ r` (gather + weight)
+/// - [`prolongate_weighted_add`](Self::prolongate_weighted_add) computes `out += Rᵢᵀ D̃ᵢ z` (weight + scatter)
+///
+/// Paired with a [`LocalSolver`](crate::local_solve::LocalSolver) (`Aᵢ⁻¹`)
+/// inside a [`SubdomainEntry`](crate::local_solve::SubdomainEntry), this
+/// yields the full per-subdomain term `Rᵢᵀ D̃ᵢ Aᵢ⁻¹ D̃ᵢ Rᵢ`.
 #[derive(Clone)]
 pub struct SubdomainCore {
     /// Global DOF indices belonging to this subdomain.

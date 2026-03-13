@@ -1,3 +1,16 @@
+//! Reduction strategy selection and build-time diagnostics.
+//!
+//! [`ReductionStrategy`] is the user-facing enum (`Auto`, `AtomicScatter`,
+//! `ParallelReduction`). [`AdditiveScheduler`] resolves `Auto` at apply-time
+//! using build-time metrics ([`AdditiveSchwarzDiagnostics`]) and the current
+//! Rayon thread-pool width.
+//!
+//! The heuristic balances two costs:
+//! - **Atomic scatter**: contention grows with overlap (DOFs shared across
+//!   many subdomains)
+//! - **Parallel reduction**: memory and final-reduction cost grow with
+//!   `P × n_dofs` where P is the number of active workers
+
 use crate::local_solve::{LocalSolver, SubdomainEntry};
 
 /// Strategy for combining per-subdomain results in additive Schwarz apply.

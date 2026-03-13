@@ -1,3 +1,10 @@
+//! Additive Schwarz execution engine.
+//!
+//! [`AdditiveExecutor`] owns the subdomain entries and dispatches
+//! `try_apply` using the reduction plan chosen by the scheduler.
+//! It manages the [`BufferPool`](super::buffers::BufferPool) for
+//! zero-allocation steady-state operation.
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 

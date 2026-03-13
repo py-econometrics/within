@@ -1,3 +1,42 @@
+//! Internal sparse matrix in Compressed Sparse Row (CSR) format.
+//!
+//! # Why a custom sparse matrix?
+//!
+//! The Rust ecosystem offers several sparse matrix crates (`sprs`, `nalgebra-sparse`,
+//! `faer`). This crate provides its own [`SparseMatrix`] for three reasons:
+//!
+//! 1. **Minimal surface area** — Only square CSR matrices with `f64` values and
+//!    `u32` indices are needed. A purpose-built type avoids generic parameters
+//!    and keeps the API lean.
+//!
+//! 2. **Controlled parallelism** — The matrix-vector product (`matvec`) switches
+//!    between sequential and Rayon-parallel row processing based on matrix size,
+//!    with a tuned chunk size. This threshold is important because subdomain
+//!    matrices are often small (hundreds of rows) while the global Gramian can
+//!    be large (millions of rows).
+//!
+//! 3. **Submatrix extraction** — [`SparseMatrix::extract_submatrix`] pulls out
+//!    a principal submatrix `A[S, S]` for a subset `S` of row/column indices,
+//!    remapping to local indices. This operation sits on the critical path of
+//!    subdomain construction and benefits from an adaptive dense-vs-HashMap
+//!    index lookup chosen at extraction time.
+//!
+//! # CSR layout
+//!
+//! A square `n x n` matrix with `nnz` non-zero entries is stored as:
+//!
+//! - `indptr: Vec<u32>` — Row pointers of length `n + 1`. Row `i` spans
+//!   `indices[indptr[i]..indptr[i+1]]`.
+//! - `indices: Vec<u32>` — Column indices of length `nnz`, sorted ascending
+//!   within each row.
+//! - `data: Vec<f64>` — Values of length `nnz`, parallel to `indices`.
+//!
+//! # Interoperability
+//!
+//! A `From<faer::sparse::SparseRowMatRef<u32, f64>>` conversion is provided
+//! for interoperability with the `faer` linear algebra crate, which the
+//! `within` solver uses for approximate Cholesky factorizations.
+
 use std::collections::HashMap;
 
 use rayon::prelude::*;

@@ -1,8 +1,40 @@
 //! Schwarz preconditioner: FE-specific construction helpers.
 //!
-//! Re-exports `SchwarzPreconditioner` from the `schwarz-precond` crate and
-//! provides helpers that bridge FE types (design, subdomains, Gramian) to the crate's generic
-//! `SubdomainEntry<BlockElimSolver>` API.
+//! This module bridges the fixed-effects domain types ([`WeightedDesign`],
+//! [`Subdomain`], `CrossTab`) to the generic `schwarz-precond` crate API.
+//! The generic crate knows nothing about panel data — it operates on abstract
+//! [`SubdomainEntry`] values containing a local solver and a set of global DOF
+//! indices. This module handles the translation.
+//!
+//! # Local solver dispatch
+//!
+//! Each subdomain needs a local solver that can approximately invert the
+//! restricted Gramian on that subdomain. The [`LocalSolverConfig`] enum
+//! selects between two backends:
+//!
+//! - **`FullSddm`** — converts the bipartite local Gramian to SDDM form
+//!   and factors it with approximate Cholesky (see `local_solver`)
+//! - **`SchurComplement`** — eliminates one factor block via exact diagonal
+//!   inversion, then factors the reduced Schur complement
+//!   (see `schur_complement`)
+//!
+//! # Builder pattern
+//!
+//! Construction flows through a layered builder:
+//!
+//! 1. **Domain acquisition** — either scan observations from a
+//!    [`WeightedDesign`] or accept pre-built `(Subdomain, CrossTab)` pairs
+//!    via the `DomainSource` enum (the latter enables fused build paths
+//!    that scan observations only once)
+//! 2. **Entry construction** — each `(Subdomain, CrossTab)` pair is
+//!    converted into a `SubdomainEntry<FeLocalSolver>` in parallel via
+//!    `build_entry`, which dispatches on the config
+//! 3. **Schwarz assembly** — entries are passed to the generic
+//!    `SchwarzPreconditioner` (additive) or
+//!    `MultiplicativeSchwarzPreconditioner` constructor from `schwarz-precond`
+//!
+//! The public entry points are [`build_schwarz`] and
+//! [`build_schwarz_with_strategy`] for the additive variant.
 
 pub use schwarz_precond::MultiplicativeSchwarzPreconditioner;
 pub use schwarz_precond::SchwarzPreconditioner;
@@ -36,26 +68,32 @@ impl FeSchwarz {
         Self(inner)
     }
 
+    /// Subdomain entries with their local solvers.
     pub fn subdomains(&self) -> &[SubdomainEntry<FeLocalSolver>] {
         self.0.subdomains()
     }
 
+    /// Current reduction strategy (may be `Auto`).
     pub fn reduction_strategy(&self) -> schwarz_precond::ReductionStrategy {
         self.0.reduction_strategy()
     }
 
+    /// Resolved reduction strategy (`Auto` replaced by the detected choice).
     pub fn resolved_reduction_strategy(&self) -> schwarz_precond::ReductionStrategy {
         self.0.resolved_reduction_strategy()
     }
 
+    /// Subdomain diagnostics (sizes, overlap counts).
     pub fn diagnostics(&self) -> schwarz_precond::AdditiveSchwarzDiagnostics {
         self.0.diagnostics()
     }
 
+    /// Clone with a different reduction strategy.
     pub fn with_reduction_strategy(&self, strategy: schwarz_precond::ReductionStrategy) -> Self {
         Self(self.0.with_reduction_strategy(strategy))
     }
 
+    /// Apply the preconditioner, returning an error on local-solver failure.
     pub fn try_apply(&self, r: &[f64], z: &mut [f64]) -> Result<(), schwarz_precond::ApplyError> {
         self.0.try_apply(r, z)
     }

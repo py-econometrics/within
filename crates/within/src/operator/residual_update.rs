@@ -1,3 +1,44 @@
+//! Residual update strategies for multiplicative Schwarz.
+//!
+//! In multiplicative Schwarz, after each subdomain solve produces a correction
+//! `delta`, the global residual `r` must be updated before the next subdomain
+//! can use it. This module provides two strategies with different cost profiles.
+//!
+//! # Observation-space update
+//!
+//! Computes `r <- r - D^T W (D delta)` by going through observation space:
+//!
+//! 1. Find affected observations via an inverted DOF-to-observation index
+//! 2. Gather `t_i = (D delta)_i` for each affected observation
+//! 3. Scatter back: `r -= D^T W t`
+//!
+//! This recomputes from scratch and is **numerically stable** — no error
+//! accumulation across iterations. Cost is O(n_affected_obs * n_factors),
+//! which scales with the number of observations touched by the subdomain's
+//! DOFs, not the total problem size.
+//!
+//! # Sparse Gramian update
+//!
+//! Computes `r <- r - G delta` using the pre-built explicit Gramian CSR,
+//! restricted to touched rows. Cost is O(nnz_touched) with cache-friendly
+//! contiguous CSR reads. This is typically cheaper per iteration than the
+//! observation-space path (since `G` compresses the observation structure
+//! into DOF-space), but requires O(nnz(G)) memory for storing the Gramian
+//! and may accumulate floating-point error over many updates.
+//!
+//! # Cost comparison
+//!
+//! | Strategy | Memory | Per-update cost | Numerical stability |
+//! |---|---|---|---|
+//! | Observation-space | O(nnz(D)) for index | O(n_affected_obs * n_factors) | Exact (recomputes from scratch) |
+//! | Sparse Gramian | O(nnz(G)) for G | O(nnz_touched(G)) | May accumulate rounding error |
+//!
+//! In practice, the sparse Gramian updater ([`SparseGramianUpdater`]) is used
+//! in production since the explicit Gramian is already available from the
+//! fused build path. The observation-space updater
+//! ([`ObservationSpaceUpdater`]) is currently test-only, serving as a
+//! reference implementation for correctness validation.
+
 use std::sync::Arc;
 
 use schwarz_precond::{ResidualUpdater, SparseMatrix};
