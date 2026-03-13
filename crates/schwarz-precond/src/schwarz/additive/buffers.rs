@@ -1,3 +1,19 @@
+//! Pooled scratch and accumulator buffers for additive Schwarz apply.
+//!
+//! Buffers are allocated once and reused across `apply` calls via a
+//! [`BufferPool`]. Two buffer layouts exist, matching the two reduction
+//! strategies:
+//!
+//! - [`SchwarzBuffers::Atomic`] — a single shared `Vec<AtomicU64>` accumulator
+//! - [`SchwarzBuffers::Reduction`] — a pool of per-worker
+//!   [`AdditiveSweepBuffers`], each containing a private `Vec<f64>`
+//!   accumulator plus local-solve scratch
+//!
+//! [`WorkerReductionBuffers`] manages the worker-local buffer stacks for
+//! the parallel-reduction path, using `ThreadLocal` to give each Rayon
+//! worker its own reusable buffer without cross-thread synchronization
+//! in the hot loop.
+
 use std::cell::RefCell;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};

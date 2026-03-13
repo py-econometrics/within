@@ -1,4 +1,32 @@
-//! Pre-built preconditioner for reuse across multiple solves.
+//! Preconditioner enum dispatch and fused build paths.
+//!
+//! [`FePreconditioner`] is the top-level preconditioner type used by the
+//! [`orchestrate`](crate::orchestrate) layer. It dispatches via enum to one
+//! of two Schwarz variants:
+//!
+//! - **Additive** ([`FeSchwarz`]) — symmetric, valid for both CG and GMRES.
+//!   Subdomains contribute independently and their corrections are summed.
+//! - **Multiplicative** ([`FeMultSchwarzSparse`]) — sequential updates with
+//!   a sparse Gramian residual updater. Non-symmetric, so requires GMRES.
+//!   Generally converges in fewer iterations but cannot be parallelized
+//!   across subdomains within a single sweep.
+//!
+//! # Fused build path
+//!
+//! Constructing both the explicit Gramian and the preconditioner requires
+//! scanning the observation data to build cross-tabulations. Doing this
+//! separately for each would double the I/O cost. The
+//! `build_preconditioner_fused` function scans observations once, producing
+//! both the domain decomposition (for the preconditioner) and the per-pair
+//! block data (for assembling the Gramian CSR). This fused path is the
+//! default in the orchestrate layer.
+//!
+//! # Integration with `schwarz-precond`
+//!
+//! The enum implements the [`Operator`] trait from
+//! the `schwarz-precond` crate, so it can be passed directly to CG/GMRES as
+//! a preconditioner. Error handling flows through `try_apply` for graceful
+//! reporting of local-solver failures.
 
 use schwarz_precond::{AdditiveSchwarzDiagnostics, LocalSolver, Operator, ReductionStrategy};
 use serde::{Deserialize, Serialize};

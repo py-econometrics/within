@@ -1,6 +1,14 @@
-//! Iterative solvers.
+//! Iterative Krylov solvers for `A x = b`.
 //!
-//! Contains CG and GMRES solvers.
+//! Both solvers accept an optional preconditioner `M` (any [`Operator`](crate::Operator)):
+//!
+//! - **`cg`** — Preconditioned conjugate gradient. Requires `A` symmetric
+//!   positive (semi-)definite and `M` symmetric. Optimal for the Schwarz
+//!   additive preconditioner.
+//! - **`gmres`** — Right-preconditioned GMRES(m) with restarts. Works with
+//!   any non-singular `A` and any `M`, including non-symmetric
+//!   (multiplicative Schwarz). Uses Modified Gram-Schmidt and Givens
+//!   rotations.
 
 /// Conjugate gradient solver (unpreconditioned and left-preconditioned).
 pub mod cg;

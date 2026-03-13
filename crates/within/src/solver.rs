@@ -1,4 +1,55 @@
-//! Persistent solver that reuses preconditioners across multiple RHS solves.
+//! Persistent solver that caches the preconditioner for reuse across multiple
+//! right-hand sides.
+//!
+//! # Motivation
+//!
+//! Building the Schwarz preconditioner is the most expensive step in a
+//! fixed-effects solve: it scans observations to build subdomains, assembles
+//! local operators, and computes approximate Cholesky factorizations. For a
+//! single right-hand side (RHS) this cost is unavoidable, but econometric
+//! workflows frequently solve the same design matrix with many different
+//! response vectors (e.g., multiple dependent variables, bootstrap replications,
+//! or iteratively reweighted least squares). [`Solver`] lets callers pay the
+//! preconditioner cost once and amortize it across all subsequent solves.
+//!
+//! # Iterative refinement
+//!
+//! The normal-equation condition number `kappa(G)` can be orders of magnitude
+//! larger than needed for observation-space accuracy. A Krylov solve that
+//! reduces the DOF-space residual `||G x - b||` to relative tolerance `tol`
+//! may still leave the observation-space residual `||D^T W (y - D x)||`
+//! significantly above `tol * ||D^T W y||`, because large eigenvalues of G
+//! amplify small DOF-space errors into visible observation-space errors.
+//!
+//! Iterative refinement closes this gap cheaply: after each Krylov solve,
+//! recompute the residual from observation space (`D^T W (y - D x)`) and
+//! solve for a correction. Each refinement step costs two inexpensive
+//! matrix-vector products (D and D^T W) plus one Krylov solve whose RHS is
+//! already small — so the correction converges in very few iterations.
+//! Typically 0-1 actual correction solves are needed.
+//!
+//! # Usage
+//!
+//! ```no_run
+//! use within::{Solver, SolverParams, Preconditioner, LocalSolverConfig};
+//! use ndarray::Array2;
+//!
+//! let categories = Array2::<u32>::zeros((1000, 2));
+//! let params = SolverParams::default();
+//! let precond = Preconditioner::Additive(
+//!     LocalSolverConfig::solver_default(),
+//!     Default::default(),
+//! );
+//!
+//! // Build once — expensive
+//! let solver = Solver::new(categories.view(), None, &params, Some(&precond)).unwrap();
+//!
+//! // Solve many — cheap (reuses preconditioner)
+//! let y1 = vec![1.0; 1000];
+//! let y2 = vec![2.0; 1000];
+//! let r1 = solver.solve(&y1).unwrap();
+//! let r2 = solver.solve(&y2).unwrap();
+//! ```
 
 use std::time::Instant;
 

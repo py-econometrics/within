@@ -1,4 +1,48 @@
 //! Factor-pair domain construction and partition-of-unity weights.
+//!
+//! In the additive Schwarz method, the global problem is split into overlapping
+//! local subproblems that are solved independently and then combined. This
+//! module constructs those subdomains from the structure of the fixed-effects
+//! problem.
+//!
+//! # Factor pairs as subdomains
+//!
+//! The Gramian `G = D^T W D` has a block structure dictated by factor pairs.
+//! For Q factors there are `Q(Q-1)/2` off-diagonal blocks, one per pair
+//! `(q, r)`. Each pair defines a natural subdomain: the DOFs (coefficient
+//! indices) are the union of active levels in factors q and r, and the local
+//! operator is the corresponding principal submatrix of G.
+//!
+//! When a factor pair's bipartite graph (levels of q on one side, levels of r
+//! on the other, edges from co-occurring observations) has multiple connected
+//! components, each component becomes a separate, smaller subdomain. This
+//! decomposition is computed via [`CrossTab::bipartite_connected_components`].
+//!
+//! # Partition of unity
+//!
+//! Because a single level can appear in multiple factor pairs (e.g., level j
+//! of factor q participates in pairs (q,r1), (q,r2), ...), the subdomains
+//! overlap. The two-sided additive Schwarz formula:
+//!
+//! ```text
+//! M^{-1} = sum_i  R_i^T  D_i  A_i^{-1}  D_i  R_i
+//! ```
+//!
+//! requires that the squared partition-of-unity weights sum to 1 at every DOF:
+//! `sum_i (D_i)^2 = I` (restricted to covered DOFs). If a DOF appears in `c`
+//! subdomains, each weight is set to `1/sqrt(c)` so that `c * (1/sqrt(c))^2 = 1`.
+//!
+//! In the common case where every DOF belongs to exactly one subdomain (no
+//! overlap), all weights are 1.0 and the compact [`PartitionWeights::Uniform`]
+//! representation avoids per-DOF storage.
+//!
+//! # Entry points
+//!
+//! - [`build_local_domains`] — builds subdomains only (for preconditioner-only paths).
+//! - [`build_domains_and_gramian_blocks`] — builds subdomains *and* collects
+//!   [`PairBlockData`] for composing an explicit Gramian, in a single observation
+//!   scan per pair. This fused path avoids redundant work when both the
+//!   preconditioner and an explicit Gramian are needed.
 
 use std::sync::Arc;
 

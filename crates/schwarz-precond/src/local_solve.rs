@@ -1,7 +1,19 @@
 //! Local solver trait and subdomain entry.
 //!
-//! `LocalSolver` defines the generic A_j^{-1} abstraction.
-//! `SubdomainEntry<S>` owns indices, weights, and a solver — provides gather/scatter/PoU.
+//! In the Schwarz formula `M⁻¹ = Σ Rᵢᵀ D̃ᵢ Aᵢ⁻¹ D̃ᵢ Rᵢ`, this module
+//! provides the two key abstractions:
+//!
+//! - [`LocalSolver`] — the `Aᵢ⁻¹` operator: given a local right-hand
+//!   side, produce an approximate (or exact) local solution. Implementations
+//!   are problem-specific (e.g. approximate Cholesky, block elimination).
+//!
+//! - [`SubdomainEntry`] — bundles a [`SubdomainCore`] (which implements
+//!   `Rᵢ` and `D̃ᵢ`) with a `LocalSolver` (which implements `Aᵢ⁻¹`),
+//!   giving a single object that can compute the full per-subdomain
+//!   contribution `Rᵢᵀ D̃ᵢ Aᵢ⁻¹ D̃ᵢ Rᵢ r` via [`SubdomainEntry::apply_weighted_into_with_scratch`].
+//!
+//! [`LocalSolveInvoker`] is a policy trait that controls *how* the local
+//! solve is dispatched (e.g. with or without nested parallelism).
 
 use std::sync::atomic::AtomicU64;
 
@@ -12,10 +24,11 @@ use crate::error::{LocalSolveError, SubdomainEntryBuildError};
 // LocalSolver trait
 // ---------------------------------------------------------------------------
 
-/// Trait for a local subdomain solver (the A_j^{-1} abstraction).
+/// The `Aᵢ⁻¹` operator in the Schwarz formula: a local subdomain solver.
 ///
-/// Implementors know how to solve the local system: given a right-hand side
-/// in `rhs`, write the solution into `sol`. Both buffers are scratch-sized
+/// Each subdomain's restricted system `Aᵢ = Rᵢ A Rᵢᵀ` is solved (exactly or
+/// approximately) by an implementor of this trait. Given a right-hand side
+/// in `rhs`, it writes the solution into `sol`. Both buffers are scratch-sized
 /// (may be larger than `n_local` for augmented systems).
 pub trait LocalSolver: Send + Sync {
     /// Number of DOFs in the subdomain (before augmentation).
@@ -75,9 +88,12 @@ impl<S: LocalSolver> LocalSolveInvoker<S> for DefaultLocalSolveInvoker {
 // SubdomainEntry<S>
 // ---------------------------------------------------------------------------
 
-/// A subdomain entry: wraps a `SubdomainCore` (restriction indices + partition-of-unity
-/// weights) together with a generic local solver. Delegates gather/scatter/PoU
-/// weighting to `SubdomainCore`.
+/// One term of the Schwarz sum: `Rᵢᵀ D̃ᵢ Aᵢ⁻¹ D̃ᵢ Rᵢ`.
+///
+/// Bundles a [`SubdomainCore`] (which provides `Rᵢ` and `D̃ᵢ`) with a
+/// [`LocalSolver`] (which provides `Aᵢ⁻¹`). The
+/// [`apply_weighted_into_with_scratch`](Self::apply_weighted_into_with_scratch)
+/// method computes the full contribution for this subdomain.
 #[derive(Clone)]
 pub struct SubdomainEntry<S: LocalSolver> {
     /// Subdomain core with restriction indices and partition-of-unity weights.
@@ -189,7 +205,7 @@ impl<S: LocalSolver> SubdomainEntry<S> {
 
     /// Accumulate the two-sided PoU weighted local solve into an atomic global buffer.
     ///
-    /// out[i] += R_i^T D_i A_i^{-1} D_i R_i r  (via atomic f64 add)
+    /// out\[i\] += R_i^T D_i A_i^{-1} D_i R_i r  (via atomic f64 add)
     pub fn apply_weighted_into_atomic(
         &self,
         r: &[f64],

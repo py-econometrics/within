@@ -203,6 +203,7 @@ impl PairAccumulator {
 // ===========================================================================
 
 impl Gramian {
+    /// Assemble the full explicit Gramian `G = D^T W D` as a CSR sparse matrix.
     pub fn build<S: ObservationStore>(design: &WeightedDesign<S>) -> Self {
         Self {
             matrix: Arc::new(build_full_matrix(design)),

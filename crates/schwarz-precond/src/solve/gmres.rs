@@ -1,3 +1,15 @@
+//! Right-preconditioned GMRES(m) with restarts.
+//!
+//! Solves `A x = b` using right preconditioning: the Krylov subspace is
+//! built for `A M⁻¹`, then the solution is recovered as `x = M⁻¹ y`.
+//! This avoids changing the residual norm (left preconditioning would),
+//! so the convergence check uses the true residual `‖b - A x‖`.
+//!
+//! Implementation uses Modified Gram-Schmidt orthogonalisation with
+//! Givens rotations to maintain the upper Hessenberg least-squares
+//! problem. All Krylov storage (basis vectors, Hessenberg matrix,
+//! rotation coefficients) is allocated once and reused across restarts.
+
 use super::{dot, vec_norm};
 use crate::{Operator, SolveError};
 

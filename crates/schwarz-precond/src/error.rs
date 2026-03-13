@@ -1,3 +1,17 @@
+//! Error types for the `schwarz-precond` crate.
+//!
+//! Errors are layered to match the build → apply → solve lifecycle:
+//!
+//! - **Build errors** ([`SubdomainCoreBuildError`], [`SubdomainEntryBuildError`],
+//!   [`PreconditionerBuildError`]) — caught during construction, before any
+//!   solve begins.
+//! - **Apply errors** ([`ApplyError`]) — runtime failures during a single
+//!   preconditioner or operator application (e.g. a local solver diverges).
+//! - **Solve errors** ([`SolveError`]) — wraps `ApplyError` for the iterative
+//!   solver layer.
+//!
+//! Each level chains to its source via [`Error::source`].
+
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 

@@ -1,4 +1,67 @@
-//! Approximate Cholesky-backed local solver for Schwarz subdomains.
+//! Local solvers for Schwarz subdomains.
+//!
+//! Each Schwarz subdomain corresponds to a pair of factors (q, r) and the
+//! local Gramian on that subdomain has a 2x2 block structure:
+//!
+//! ```text
+//!     [ D_q   C  ]
+//! G = [          ]
+//!     [ C^T  D_r ]
+//! ```
+//!
+//! where `D_q`, `D_r` are diagonal (weighted level counts) and `C` is the
+//! cross-tabulation matrix. This module provides two strategies to approximately
+//! solve `G z = r` on each subdomain.
+//!
+//! # The bipartite sign-flipping trick
+//!
+//! The `approx-chol` crate solves SDDM systems (Symmetric Diagonally Dominant
+//! M-matrices), where off-diagonal entries are non-positive. But our local
+//! Gramian `G` has *positive* off-diagonal entries in `C`. The key insight is
+//! that this two-factor Gramian has **bipartite structure**: DOFs split into
+//! the q-block and the r-block, and all non-zero off-diagonal entries connect
+//! a q-DOF to an r-DOF (never q-to-q or r-to-r). Negating all entries in one
+//! block — i.e., applying the similarity transform `S G S` where
+//! `S = diag(I, -I)` — flips the sign of `C` without changing the diagonal
+//! blocks, producing a valid SDDM matrix. The solution is recovered by
+//! negating the corresponding block of the output.
+//!
+//! # Solver strategies
+//!
+//! ## `ApproxCholSolver` — full SDDM factorization
+//!
+//! Converts the entire local Gramian to SDDM via sign-flipping, then applies
+//! the `approx-chol` approximate Cholesky factorization. The [`LocalSolveStrategy`]
+//! enum tracks whether Gremban augmentation was needed (adding an extra node
+//! to make the matrix SDDM when it is not naturally a graph Laplacian) and
+//! whether bipartite sign-flipping applies.
+//!
+//! ## `BlockElimSolver` — block elimination with Schur complement
+//!
+//! Exploits the diagonal structure of `D_q` and `D_r` to perform (exact or approximate) block
+//! elimination of the larger factor. If `n_q >= n_r`, we eliminate the q-block:
+//!
+//! 1. **Forward eliminate**: solve `D_q z_q = r_q - C z_r` (trivial since
+//!    `D_q` is diagonal)
+//! 2. **Reduced solve**: solve the Schur complement system
+//!    `S z_r = r_r - C^T D_q^{-1} r_q` where `S = D_r - C^T D_q^{-1} C`
+//! 3. **Back-substitute**: recover `z_q` from step 1
+//!
+//! The reduced system `S` is smaller (dimension `n_r` instead of `n_q + n_r`)
+//! and is factored via either approximate Cholesky or dense Cholesky,
+//! depending on size. See [`schur_complement`](super::schur_complement) for
+//! the Schur complement computation.
+//!
+//! # When each strategy applies
+//!
+//! - **`SchurComplement`** is the default and generally preferred: it
+//!   eliminates the larger diagonal block exactly (a free operation since
+//!   the block is diagonal), leaving a reduced system that can be much
+//!   smaller. Even when both factors are similar in size, the reduction
+//!   roughly halves the dimension.
+//! - **`FullSddm`** exists as a fallback and for testing. It applies the
+//!   approximate Cholesky factorization to the full `(n_q + n_r)` system
+//!   without any block elimination.
 
 use std::sync::Arc;
 

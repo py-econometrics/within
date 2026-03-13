@@ -1,3 +1,31 @@
+//! Multiplicative Schwarz preconditioner: sequential subdomain sweeps.
+//!
+//! Unlike the additive variant (which applies all subdomains in parallel
+//! and sums), the multiplicative variant applies subdomains **sequentially**,
+//! updating the global residual after each local solve. For a forward
+//! sweep over N subdomains the operator is the product:
+//!
+//! ```text
+//! M⁻¹ = (I - Tₙ)(I - Tₙ₋₁)···(I - T₁)    where Tᵢ = Rᵢᵀ D̃ᵢ Aᵢ⁻¹ D̃ᵢ Rᵢ A
+//! ```
+//!
+//! Each factor `(I - Tᵢ)` is a local error propagation operator: it
+//! restricts the current residual to subdomain *i*, solves locally,
+//! and subtracts the correction from the global residual before the
+//! next subdomain sees it. This is the block Gauss-Seidel analogue.
+//!
+//! The residual update is delegated to a [`ResidualUpdater`] trait, allowing
+//! different strategies:
+//! - [`OperatorResidualUpdater`] — naive `r = b - A·x_accum` recompute
+//!   (O(n_dofs) per subdomain, correct but slow)
+//! - Application-specific updaters (e.g. observation-space updates in the
+//!   `within` crate) that exploit problem structure for cheaper updates
+//!
+//! Because the sweep is sequential and non-symmetric, this preconditioner
+//! requires GMRES (not CG). Setting `symmetric = true` adds a backward
+//! sweep after the forward sweep, making the overall operator symmetric
+//! (at double the cost).
+
 use std::sync::Mutex;
 
 use crate::domain::PartitionWeights;
