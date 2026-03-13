@@ -93,13 +93,12 @@ fn test_least_squares_weighted_cg_preconditioned() {
 
 #[test]
 fn test_schwarz_builder_schur_complement_modes_end_to_end() {
-    use approx_chol::Config;
     use schwarz_precond::solve::cg::cg_solve_preconditioned;
     use schwarz_precond::solve::vec_norm;
     use schwarz_precond::Operator;
     use within::operator::gramian::GramianOperator;
     use within::operator::schwarz::build_schwarz;
-    use within::ApproxSchurConfig;
+    use within::{ApproxCholConfig, ApproxSchurConfig};
 
     let design = common::make_test_design();
     let rhs = common::make_rhs_from_unit_solution(&design);
@@ -107,7 +106,7 @@ fn test_schwarz_builder_schur_complement_modes_end_to_end() {
 
     let local_solvers = [
         LocalSolverConfig::SchurComplement {
-            approx_chol: Config {
+            approx_chol: ApproxCholConfig {
                 seed: 11,
                 ..Default::default()
             },
@@ -115,7 +114,7 @@ fn test_schwarz_builder_schur_complement_modes_end_to_end() {
             dense_threshold: within::DEFAULT_DENSE_SCHUR_THRESHOLD,
         },
         LocalSolverConfig::SchurComplement {
-            approx_chol: Config {
+            approx_chol: ApproxCholConfig {
                 seed: 13,
                 ..Default::default()
             },
@@ -152,7 +151,6 @@ fn test_schwarz_builder_schur_complement_modes_end_to_end() {
 #[test]
 #[ignore] // Run with: cargo test --release -- --ignored --nocapture
 fn test_compare_factorization_strategies() {
-    use approx_chol::Config;
     use rand::rngs::SmallRng;
     use rand::{Rng, SeedableRng};
     use schwarz_precond::solve::cg::cg_solve_preconditioned;
@@ -162,18 +160,18 @@ fn test_compare_factorization_strategies() {
     use within::operator::gramian::GramianOperator;
     use within::operator::schwarz::build_schwarz;
     use within::operator::DesignOperator;
-    use within::FixedEffectsDesign;
+    use within::{ApproxCholConfig, FixedEffectsDesign};
 
-    let configs: Vec<(Config, &str)> = vec![
+    let configs: Vec<(ApproxCholConfig, &str)> = vec![
         (
-            Config {
+            ApproxCholConfig {
                 seed: 42,
                 ..Default::default()
             },
             "AC      ",
         ),
         (
-            Config {
+            ApproxCholConfig {
                 seed: 42,
                 split_merge: Some(2),
             },

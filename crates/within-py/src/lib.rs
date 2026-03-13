@@ -5,8 +5,8 @@ use numpy::{IntoPyArray, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
 
 use within::config::{
-    ApproxSchurConfig, KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner,
-    ReductionStrategy, SolverParams, DEFAULT_DENSE_SCHUR_THRESHOLD,
+    ApproxCholConfig, ApproxSchurConfig, KrylovMethod, LocalSolverConfig, OperatorRepr,
+    Preconditioner, ReductionStrategy, SolverParams, DEFAULT_DENSE_SCHUR_THRESHOLD,
 };
 use within::domain::WeightedDesign;
 use within::observation::{FactorMajorStore, ObservationWeights};
@@ -48,13 +48,13 @@ impl PyApproxCholConfig {
 }
 
 impl PyApproxCholConfig {
-    fn to_native(&self) -> approx_chol::Config {
+    fn to_native(&self) -> ApproxCholConfig {
         let split_merge = if self.split > 1 {
             Some(self.split)
         } else {
             None
         };
-        approx_chol::Config {
+        ApproxCholConfig {
             seed: self.seed,
             split_merge,
         }

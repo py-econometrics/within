@@ -6,9 +6,6 @@ members = [
 ]
 resolver = "2"
 
-[workspace.dependencies]
-approx-chol = { git = "https://github.com/aai-institute/approx-chol.git", features = ["serde"] }
-
 [profile.release]
 opt-level = 3
 lto = "fat"

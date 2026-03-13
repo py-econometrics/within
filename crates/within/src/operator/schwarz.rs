@@ -8,7 +8,7 @@ pub use schwarz_precond::MultiplicativeSchwarzPreconditioner;
 pub use schwarz_precond::SchwarzPreconditioner;
 
 use approx_chol::low_level::Builder;
-use approx_chol::{Config, CsrRef};
+use approx_chol::CsrRef;
 use rayon::prelude::*;
 use schwarz_precond::SubdomainEntry;
 use serde::{Deserialize, Serialize};
@@ -22,7 +22,7 @@ use super::residual_update::SparseGramianUpdater;
 use super::schur_complement::{
     ApproxSchurComplement, EliminationInfo, ExactSchurComplement, SchurComplement, SchurResult,
 };
-use crate::config::{ApproxSchurConfig, LocalSolverConfig};
+use crate::config::{ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig};
 use crate::domain::{build_local_domains, Subdomain, WeightedDesign};
 use crate::observation::ObservationStore;
 use crate::{WithinError, WithinResult};
@@ -238,7 +238,7 @@ pub(crate) fn build_entry(
             .map_err(|e| {
                 WithinError::LocalSolverBuild(format!("invalid local SDDM CSR structure: {e}"))
             })?;
-            let builder = Builder::new(*approx_chol);
+            let builder = Builder::new(approx_chol.to_approx_chol());
             let factor = builder.build(csr).map_err(|e| {
                 WithinError::LocalSolverBuild(format!("failed local SDDM factorization: {e}"))
             })?;
@@ -292,9 +292,9 @@ fn compute_schur(
 
 fn build_sparse_reduced_factor(
     matrix: &schwarz_precond::SparseMatrix,
-    approx_chol: Config,
+    approx_chol: ApproxCholConfig,
 ) -> WithinResult<ReducedFactor> {
-    let schur_builder = Builder::new(approx_chol);
+    let schur_builder = Builder::new(approx_chol.to_approx_chol());
     let csr = CsrRef::new(
         matrix.indptr(),
         matrix.indices(),
@@ -312,7 +312,7 @@ fn build_sparse_reduced_factor(
 
 /// Configuration for building a reduced Schur factor.
 pub(crate) struct ReducedSchurConfig {
-    pub approx_chol: Config,
+    pub approx_chol: ApproxCholConfig,
     pub approx_schur: Option<ApproxSchurConfig>,
     pub dense_threshold: usize,
 }

@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use approx_chol::Config;
 use criterion::measurement::WallTime;
 use criterion::{
     criterion_group, criterion_main, BenchmarkGroup, BenchmarkId, Criterion, SamplingMode,
@@ -9,7 +8,8 @@ use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use schwarz_precond::Operator;
 use within::config::{
-    KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner, ReductionStrategy, SolverParams,
+    ApproxCholConfig, KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner,
+    ReductionStrategy, SolverParams,
 };
 use within::domain::WeightedDesign;
 use within::observation::{FactorMajorStore, ObservationWeights};
@@ -98,12 +98,12 @@ fn generate_fixest_like_case(
 
 fn one_level_local_solver(ac2: bool) -> LocalSolverConfig {
     let approx_chol = if ac2 {
-        Config {
+        ApproxCholConfig {
             seed: 42,
             split_merge: Some(2),
         }
     } else {
-        Config {
+        ApproxCholConfig {
             seed: 42,
             split_merge: None,
         }

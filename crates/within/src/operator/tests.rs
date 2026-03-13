@@ -863,8 +863,9 @@ mod schwarz_tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use crate::config::LocalSolverConfig;
-    use crate::config::{ApproxSchurConfig, DEFAULT_DENSE_SCHUR_THRESHOLD};
+    use crate::config::{
+        ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, DEFAULT_DENSE_SCHUR_THRESHOLD,
+    };
     use crate::domain::{build_local_domains, FixedEffectsDesign, Subdomain, SubdomainCore};
     use crate::observation::{FactorMajorStore, ObservationWeights};
     use crate::operator::csr_block::CsrBlock;
@@ -875,7 +876,6 @@ mod schwarz_tests {
         build_additive, build_additive_with_strategy, build_entry, build_reduced_schur_factor,
         build_schwarz, compute_first_block_size, DomainSource, ReducedSchurConfig,
     };
-    use approx_chol::Config;
     use schwarz_precond::{LocalSolver, Operator, ReductionStrategy};
 
     const BLOCK_ELIM_NESTED_RAYON_CHILD_ENV: &str = "WITHIN_TEST_BLOCK_ELIM_NESTED_RAYON_CHILD";
@@ -1011,7 +1011,7 @@ mod schwarz_tests {
         let elim_ratio = 32;
         let (n_dofs, domain_pairs) = make_nested_block_elim_domain_pairs(n_keep, elim_ratio, 2);
         let config = LocalSolverConfig::SchurComplement {
-            approx_chol: Config {
+            approx_chol: ApproxCholConfig {
                 split_merge: Some(8),
                 seed: 42,
             },
@@ -1115,7 +1115,7 @@ mod schwarz_tests {
         dense_threshold: usize,
         iters: usize,
     ) -> f64 {
-        let approx_chol = Config {
+        let approx_chol = ApproxCholConfig {
             split_merge: Some(8),
             seed: 42,
         };
@@ -1142,7 +1142,7 @@ mod schwarz_tests {
         dense_threshold: usize,
     ) -> BlockElimSolver {
         let cross_tab = synthetic_cross_tab(n_keep, 8);
-        let approx_chol = Config {
+        let approx_chol = ApproxCholConfig {
             split_merge: Some(8),
             seed: 42,
         };
@@ -1232,7 +1232,7 @@ mod schwarz_tests {
         let (domain, cross_tab) = domain_pairs.swap_remove(0);
 
         let config = LocalSolverConfig::SchurComplement {
-            approx_chol: Config::default(),
+            approx_chol: ApproxCholConfig::default(),
             approx_schur: None,
             dense_threshold: DEFAULT_DENSE_SCHUR_THRESHOLD,
         };
@@ -1253,7 +1253,7 @@ mod schwarz_tests {
         let (domain, cross_tab) = domain_pairs.swap_remove(0);
 
         let config = LocalSolverConfig::SchurComplement {
-            approx_chol: Config::default(),
+            approx_chol: ApproxCholConfig::default(),
             approx_schur: Some(ApproxSchurConfig {
                 seed: 7,
                 ..Default::default()
@@ -1277,7 +1277,7 @@ mod schwarz_tests {
         let (domain, cross_tab) = domain_pairs.swap_remove(0);
 
         let config = LocalSolverConfig::SchurComplement {
-            approx_chol: Config::default(),
+            approx_chol: ApproxCholConfig::default(),
             approx_schur: None,
             dense_threshold: 0,
         };
@@ -1369,9 +1369,9 @@ mod schwarz_tests {
 // ===========================================================================
 
 mod block_elim_tests {
-    use approx_chol::Config;
     use schwarz_precond::LocalSolver;
 
+    use crate::config::ApproxCholConfig;
     use crate::operator::csr_block::CsrBlock;
     use crate::operator::gramian::CrossTab;
     use crate::operator::local_solver::BlockElimSolver;
@@ -1411,7 +1411,7 @@ mod block_elim_tests {
         assert_eq!(cross_tab.n_r(), 5);
 
         let schur_config = ReducedSchurConfig {
-            approx_chol: Config::default(),
+            approx_chol: ApproxCholConfig::default(),
             approx_schur: None,
             dense_threshold: 0, // disable dense fast path to ensure we cover the sparse path
         };
@@ -1446,7 +1446,7 @@ mod block_elim_tests {
         let n_local = n_q + n_r; // 7
 
         let schur_config = ReducedSchurConfig {
-            approx_chol: Config::default(),
+            approx_chol: ApproxCholConfig::default(),
             approx_schur: None,
             dense_threshold: 0,
         };

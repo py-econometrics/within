@@ -8,6 +8,24 @@ pub use schwarz_precond::ReductionStrategy;
 /// anchored Cholesky before falling back to sparse ApproxChol.
 pub const DEFAULT_DENSE_SCHUR_THRESHOLD: usize = 24;
 
+/// Configuration for approximate Cholesky factorization.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ApproxCholConfig {
+    /// Random seed for the factorization sampler.
+    pub seed: u64,
+    /// Optional split/merge count for denser AC2-style factorizations.
+    pub split_merge: Option<u32>,
+}
+
+impl ApproxCholConfig {
+    pub(crate) fn to_approx_chol(self) -> approx_chol::Config {
+        approx_chol::Config {
+            seed: self.seed,
+            split_merge: self.split_merge,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Operator representation
 // ---------------------------------------------------------------------------
@@ -26,16 +44,16 @@ pub enum OperatorRepr {
 
 /// Selects the local solver used inside each Schwarz subdomain.
 ///
-/// Each variant is self-contained: it carries its own `approx_chol::Config`.
+/// Each variant is self-contained: it carries its own [`ApproxCholConfig`].
 #[derive(Debug, Clone)]
 pub enum LocalSolverConfig {
     /// Full bipartite SDDM factorized via approximate Cholesky.
-    FullSddm { approx_chol: approx_chol::Config },
+    FullSddm { approx_chol: ApproxCholConfig },
     /// Schur complement reduction: eliminate the larger diagonal block
     /// exactly, then factorize the smaller reduced system.
     SchurComplement {
         /// ApproxChol config for the reduced system.
-        approx_chol: approx_chol::Config,
+        approx_chol: ApproxCholConfig,
         /// Approximate Schur complement configuration.
         /// `None` = exact (default). `Some` = approximate with sampling.
         approx_schur: Option<ApproxSchurConfig>,
@@ -50,7 +68,7 @@ pub enum LocalSolverConfig {
 impl Default for LocalSolverConfig {
     fn default() -> Self {
         Self::SchurComplement {
-            approx_chol: approx_chol::Config::default(),
+            approx_chol: ApproxCholConfig::default(),
             approx_schur: Some(ApproxSchurConfig::default()),
             dense_threshold: DEFAULT_DENSE_SCHUR_THRESHOLD,
         }
@@ -61,7 +79,7 @@ impl LocalSolverConfig {
     /// Default for iterative solvers: uses split_merge=2 for the reduced Schur system.
     pub fn solver_default() -> Self {
         Self::SchurComplement {
-            approx_chol: approx_chol::Config {
+            approx_chol: ApproxCholConfig {
                 split_merge: Some(2),
                 ..Default::default()
             },
