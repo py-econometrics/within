@@ -113,7 +113,10 @@ G = \begin{pmatrix}
 {\color{gray}C_{WF}^\top} & {\color{red}D_F} & {\color{gray}C_{FY}} \\
 {\color{gray}C_{WY}^\top} & {\color{gray}C_{FY}^\top} & {\color{green}D_Y}
 \end{pmatrix}
-= \left(\begin{array}{ccccccc}
+$$
+
+$$
+= \begin{pmatrix}
 {\color{blue}2} & {\color{blue}0} & {\color{blue}0} & {\color{gray}1} & {\color{gray}1} & {\color{gray}1} & {\color{gray}1} \\
 {\color{blue}0} & {\color{blue}2} & {\color{blue}0} & {\color{gray}2} & {\color{gray}0} & {\color{gray}1} & {\color{gray}1} \\
 {\color{blue}0} & {\color{blue}0} & {\color{blue}2} & {\color{gray}0} & {\color{gray}2} & {\color{gray}1} & {\color{gray}1} \\
@@ -121,7 +124,7 @@ G = \begin{pmatrix}
 {\color{gray}1} & {\color{gray}0} & {\color{gray}2} & {\color{red}0} & {\color{red}3} & {\color{gray}1} & {\color{gray}2} \\
 {\color{gray}1} & {\color{gray}1} & {\color{gray}1} & {\color{gray}2} & {\color{gray}1} & {\color{green}3} & {\color{green}0} \\
 {\color{gray}1} & {\color{gray}1} & {\color{gray}1} & {\color{gray}1} & {\color{gray}2} & {\color{green}0} & {\color{green}3}
-\end{array}\right)
+\end{pmatrix}
 $$
 
 $D_W$ is $3 \times 3$ (one row/column per worker) with 2s on the diagonal because each worker appears in exactly 2 observations (e.g. W1 in obs 1, 2). Off-diagonals are zero because no observation belongs to two workers. $D_F$ is $2 \times 2$ with 3s on the diagonal because each firm appears in 3 observations (F1 in obs 1, 3, 4; F2 in obs 2, 5, 6). The cross-tabulation block $C_{WY}$ is $3 \times 2$ (3 workers $\times$ 2 years); entry $[j,k]$ counts observations where worker $j$ is observed in year $k$. Here every worker appears once per year, so $C_{WY}$ is all ones.
