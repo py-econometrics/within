@@ -689,7 +689,8 @@ fn extract_weight_vec(weights: &Option<PyReadonlyArray1<'_, f64>>) -> Option<Vec
 }
 
 fn warn_c_contiguous(py: Python<'_>, strides: &[isize]) -> PyResult<()> {
-    if strides.len() >= 2 && strides[0] != 1 {
+    // strides[0] == 0 occurs for zero-row arrays, which are trivially F-contiguous.
+    if strides.len() >= 2 && strides[0] != 1 && strides[0] != 0 {
         PyErr::warn(
             py,
             &py.get_type::<pyo3::exceptions::PyUserWarning>(),
