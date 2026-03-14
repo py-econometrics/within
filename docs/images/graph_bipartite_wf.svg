@@ -1,0 +1,29 @@
+<svg viewBox="0 0 360 280" xmlns="http://www.w3.org/2000/svg" font-family="Arial, Helvetica, sans-serif">
+  <rect width="360" height="280" fill="white" rx="4"/>
+
+  <!-- Edges: W1–F1, W1–F2, W2–F1, W3–F2 -->
+  <g stroke="#d99" stroke-width="2" stroke-linecap="round">
+    <line x1="60"  y1="70" x2="120" y2="210"/>
+    <line x1="60"  y1="70" x2="240" y2="210"/>
+    <line x1="180" y1="70" x2="120" y2="210"/>
+    <line x1="300" y1="70" x2="240" y2="210"/>
+  </g>
+
+  <!-- Worker nodes -->
+  <circle cx="60"  cy="70" r="24" fill="#f9f" stroke="#555" stroke-width="2"/>
+  <text x="60"  y="76" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">W1</text>
+  <circle cx="180" cy="70" r="24" fill="#f9f" stroke="#555" stroke-width="2"/>
+  <text x="180" y="76" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">W2</text>
+  <circle cx="300" cy="70" r="24" fill="#f9f" stroke="#555" stroke-width="2"/>
+  <text x="300" y="76" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">W3</text>
+
+  <!-- Firm nodes -->
+  <circle cx="120" cy="210" r="24" fill="#bbf" stroke="#555" stroke-width="2"/>
+  <text x="120" y="216" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">F1</text>
+  <circle cx="240" cy="210" r="24" fill="#bbf" stroke="#555" stroke-width="2"/>
+  <text x="240" y="216" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">F2</text>
+
+  <!-- Labels -->
+  <text x="180" y="30" text-anchor="middle" font-size="13" fill="#c44" font-weight="600">Worker–Firm bipartite subgraph</text>
+  <text x="180" y="268" text-anchor="middle" font-size="11" fill="#888">Single connected component (W1 bridges both firms)</text>
+</svg>

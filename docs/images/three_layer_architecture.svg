@@ -1,0 +1,61 @@
+<svg viewBox="0 0 520 380" xmlns="http://www.w3.org/2000/svg" font-family="Arial, Helvetica, sans-serif">
+  <rect width="520" height="380" fill="white" rx="4"/>
+
+  <defs>
+    <marker id="darr" viewBox="0 0 10 10" refX="5" refY="10" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 5 10 L 10 0 z" fill="#888"/>
+    </marker>
+    <marker id="uarr" viewBox="0 0 10 10" refX="5" refY="0" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 10 L 5 0 L 10 10 z" fill="#888"/>
+    </marker>
+  </defs>
+
+  <!-- Input -->
+  <text x="260" y="24" text-anchor="middle" font-size="12" fill="#888">Panel data + weights</text>
+  <line x1="260" y1="30" x2="260" y2="48" stroke="#888" stroke-width="1.5" marker-end="url(#darr)"/>
+
+  <!-- Layer 1: Krylov -->
+  <rect x="60" y="55" width="400" height="72" rx="8" fill="#e8f4e8" stroke="#6a6" stroke-width="2"/>
+  <text x="260" y="80" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">Krylov Solver</text>
+  <text x="260" y="97" text-anchor="middle" font-size="11" fill="#555">CG or GMRES — iterates toward the solution</text>
+  <text x="260" y="115" text-anchor="middle" font-size="10" fill="#888">Each iteration asks: "given the current error, what direction improves most?"</text>
+
+  <!-- Arrow 1→2 -->
+  <line x1="220" y1="127" x2="220" y2="152" stroke="#888" stroke-width="1.5" marker-end="url(#darr)"/>
+  <text x="225" y="143" font-size="9" fill="#888">residual r</text>
+
+  <!-- Arrow 2→1 -->
+  <line x1="300" y1="152" x2="300" y2="127" stroke="#888" stroke-width="1.5" marker-end="url(#uarr)"/>
+  <text x="305" y="143" font-size="9" fill="#888">correction z</text>
+
+  <!-- Layer 2: Schwarz -->
+  <rect x="60" y="158" width="400" height="72" rx="8" fill="#e8e8f8" stroke="#66a" stroke-width="2"/>
+  <text x="260" y="183" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">Schwarz Preconditioner</text>
+  <text x="260" y="200" text-anchor="middle" font-size="11" fill="#555">Splits the problem into overlapping factor-pair subdomains</text>
+  <text x="260" y="218" text-anchor="middle" font-size="10" fill="#888">Each pair (e.g. Worker-Firm) becomes an independent sub-problem</text>
+
+  <!-- Arrow 2→3 -->
+  <line x1="160" y1="230" x2="160" y2="255" stroke="#888" stroke-width="1.5" marker-end="url(#darr)"/>
+  <line x1="260" y1="230" x2="260" y2="255" stroke="#888" stroke-width="1.5" marker-end="url(#darr)"/>
+  <line x1="360" y1="230" x2="360" y2="255" stroke="#888" stroke-width="1.5" marker-end="url(#darr)"/>
+
+  <!-- Layer 3: Local solvers -->
+  <rect x="60" y="261" width="120" height="60" rx="8" fill="#f8e8e8" stroke="#a66" stroke-width="2"/>
+  <text x="120" y="286" text-anchor="middle" font-size="11" font-weight="bold" fill="#333">Worker-Firm</text>
+  <text x="120" y="302" text-anchor="middle" font-size="9" fill="#888">approx Cholesky</text>
+
+  <rect x="200" y="261" width="120" height="60" rx="8" fill="#f8e8e8" stroke="#a66" stroke-width="2"/>
+  <text x="260" y="286" text-anchor="middle" font-size="11" font-weight="bold" fill="#333">Worker-Year</text>
+  <text x="260" y="302" text-anchor="middle" font-size="9" fill="#888">approx Cholesky</text>
+
+  <rect x="340" y="261" width="120" height="60" rx="8" fill="#f8e8e8" stroke="#a66" stroke-width="2"/>
+  <text x="400" y="286" text-anchor="middle" font-size="11" font-weight="bold" fill="#333">Firm-Year</text>
+  <text x="400" y="302" text-anchor="middle" font-size="9" fill="#888">approx Cholesky</text>
+
+  <!-- Parallel annotation -->
+  <text x="260" y="340" text-anchor="middle" font-size="10" fill="#a66">Independent — solved in parallel</text>
+
+  <!-- Output -->
+  <line x1="260" y1="348" x2="260" y2="365" stroke="#888" stroke-width="1.5" marker-end="url(#darr)"/>
+  <text x="260" y="378" text-anchor="middle" font-size="12" fill="#888">Demeaned outcome</text>
+</svg>

@@ -1,0 +1,49 @@
+<svg viewBox="0 0 680 280" xmlns="http://www.w3.org/2000/svg" font-family="Arial, Helvetica, sans-serif">
+  <rect width="680" height="280" fill="white" rx="4"/>
+
+  <!-- LEFT PANEL: High mobility -->
+  <text x="160" y="24" text-anchor="middle" font-size="13" fill="#333" font-weight="600">High mobility</text>
+  <text x="160" y="42" text-anchor="middle" font-size="10" fill="#888">Workers move between many firms</text>
+
+  <!-- Axes -->
+  <line x1="50" y1="60" x2="50" y2="240" stroke="#999" stroke-width="1.5"/>
+  <line x1="50" y1="240" x2="290" y2="240" stroke="#999" stroke-width="1.5"/>
+  <text x="30" y="152" text-anchor="middle" font-size="10" fill="#888" transform="rotate(-90,30,152)">residual</text>
+  <text x="170" y="260" text-anchor="middle" font-size="10" fill="#888">iterations</text>
+
+  <!-- Fast convergence curve -->
+  <polyline fill="none" stroke="#4a9" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
+    points="50,70 80,105 110,130 140,155 170,175 200,192 230,205 260,215 290,225"/>
+
+  <!-- Convergence threshold -->
+  <line x1="50" y1="225" x2="290" y2="225" stroke="#4a9" stroke-width="1" stroke-dasharray="4,3"/>
+  <text x="292" y="228" font-size="9" fill="#4a9">tol</text>
+
+  <!-- Checkmark -->
+  <text x="270" y="210" font-size="16" fill="#4a9" font-weight="bold">&#x2713;</text>
+  <text x="220" y="198" font-size="9" fill="#4a9">converged</text>
+
+  <!-- Divider -->
+  <line x1="340" y1="55" x2="340" y2="250" stroke="#ddd" stroke-width="1"/>
+
+  <!-- RIGHT PANEL: Low mobility -->
+  <text x="510" y="24" text-anchor="middle" font-size="13" fill="#333" font-weight="600">Low mobility</text>
+  <text x="510" y="42" text-anchor="middle" font-size="10" fill="#888">Workers stuck at one firm</text>
+
+  <!-- Axes -->
+  <line x1="390" y1="60" x2="390" y2="240" stroke="#999" stroke-width="1.5"/>
+  <line x1="390" y1="240" x2="630" y2="240" stroke="#999" stroke-width="1.5"/>
+  <text x="370" y="152" text-anchor="middle" font-size="10" fill="#888" transform="rotate(-90,370,152)">residual</text>
+  <text x="510" y="260" text-anchor="middle" font-size="10" fill="#888">iterations</text>
+
+  <!-- Slow zigzag convergence curve -->
+  <polyline fill="none" stroke="#c55" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
+    points="390,70 410,100 425,85 445,115 458,102 478,128 490,118 510,140 522,132 540,150 550,144 568,160 578,155 595,168 605,164 620,174 630,170"/>
+
+  <!-- Convergence threshold -->
+  <line x1="390" y1="225" x2="630" y2="225" stroke="#c55" stroke-width="1" stroke-dasharray="4,3"/>
+  <text x="632" y="228" font-size="9" fill="#c55">tol</text>
+
+  <!-- Not converged annotation -->
+  <text x="580" y="198" font-size="9" fill="#c55">still far from tol</text>
+</svg>

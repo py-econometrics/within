@@ -1,0 +1,96 @@
+<svg viewBox="0 0 620 300" xmlns="http://www.w3.org/2000/svg" font-family="Arial, Helvetica, sans-serif">
+  <rect width="620" height="300" fill="white" rx="4"/>
+
+  <text x="310" y="22" text-anchor="middle" font-size="13" fill="#333" font-weight="600">Partition of unity: each DOF appears in 2 subdomains</text>
+
+  <!-- Column positions for DOFs -->
+  <!-- W1=95, W2=160, W3=225, F1=310, F2=375, Y1=460, Y2=525 -->
+
+  <!-- DOF header nodes -->
+  <circle cx="95" cy="55" r="18" fill="#f9f" stroke="#555" stroke-width="1.5"/>
+  <text x="95" y="60" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">W1</text>
+  <circle cx="160" cy="55" r="18" fill="#f9f" stroke="#555" stroke-width="1.5"/>
+  <text x="160" y="60" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">W2</text>
+  <circle cx="225" cy="55" r="18" fill="#f9f" stroke="#555" stroke-width="1.5"/>
+  <text x="225" y="60" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">W3</text>
+
+  <circle cx="310" cy="55" r="18" fill="#bbf" stroke="#555" stroke-width="1.5"/>
+  <text x="310" y="60" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">F1</text>
+  <circle cx="375" cy="55" r="18" fill="#bbf" stroke="#555" stroke-width="1.5"/>
+  <text x="375" y="60" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">F2</text>
+
+  <circle cx="460" cy="55" r="18" fill="#ffa" stroke="#555" stroke-width="1.5"/>
+  <text x="460" y="60" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">Y1</text>
+  <circle cx="525" cy="55" r="18" fill="#ffa" stroke="#555" stroke-width="1.5"/>
+  <text x="525" y="60" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">Y2</text>
+
+  <!-- Row 1: Worker-Firm subdomain -->
+  <text x="42" y="107" text-anchor="end" font-size="11" fill="#c66" font-weight="600">W-F</text>
+
+  <!-- W-F contains: W1, W2, W3, F1, F2 -->
+  <rect x="67" y="88" width="56" height="34" rx="5" fill="#f8e8e8" stroke="#c66" stroke-width="1.5"/>
+  <text x="95" y="110" text-anchor="middle" font-size="11" fill="#c66" font-weight="bold">1/&#x221A;2</text>
+  <rect x="132" y="88" width="56" height="34" rx="5" fill="#f8e8e8" stroke="#c66" stroke-width="1.5"/>
+  <text x="160" y="110" text-anchor="middle" font-size="11" fill="#c66" font-weight="bold">1/&#x221A;2</text>
+  <rect x="197" y="88" width="56" height="34" rx="5" fill="#f8e8e8" stroke="#c66" stroke-width="1.5"/>
+  <text x="225" y="110" text-anchor="middle" font-size="11" fill="#c66" font-weight="bold">1/&#x221A;2</text>
+  <rect x="282" y="88" width="56" height="34" rx="5" fill="#f8e8e8" stroke="#c66" stroke-width="1.5"/>
+  <text x="310" y="110" text-anchor="middle" font-size="11" fill="#c66" font-weight="bold">1/&#x221A;2</text>
+  <rect x="347" y="88" width="56" height="34" rx="5" fill="#f8e8e8" stroke="#c66" stroke-width="1.5"/>
+  <text x="375" y="110" text-anchor="middle" font-size="11" fill="#c66" font-weight="bold">1/&#x221A;2</text>
+  <!-- Y1, Y2 empty -->
+  <text x="460" y="110" text-anchor="middle" font-size="11" fill="#ccc">&#x2014;</text>
+  <text x="525" y="110" text-anchor="middle" font-size="11" fill="#ccc">&#x2014;</text>
+
+  <!-- Row 2: Worker-Year subdomain -->
+  <text x="42" y="152" text-anchor="end" font-size="11" fill="#6a6" font-weight="600">W-Y</text>
+
+  <!-- W-Y contains: W1, W2, W3, Y1, Y2 -->
+  <rect x="67" y="133" width="56" height="34" rx="5" fill="#e8f4e8" stroke="#6a6" stroke-width="1.5"/>
+  <text x="95" y="155" text-anchor="middle" font-size="11" fill="#6a6" font-weight="bold">1/&#x221A;2</text>
+  <rect x="132" y="133" width="56" height="34" rx="5" fill="#e8f4e8" stroke="#6a6" stroke-width="1.5"/>
+  <text x="160" y="155" text-anchor="middle" font-size="11" fill="#6a6" font-weight="bold">1/&#x221A;2</text>
+  <rect x="197" y="133" width="56" height="34" rx="5" fill="#e8f4e8" stroke="#6a6" stroke-width="1.5"/>
+  <text x="225" y="155" text-anchor="middle" font-size="11" fill="#6a6" font-weight="bold">1/&#x221A;2</text>
+  <!-- F1, F2 empty -->
+  <text x="310" y="155" text-anchor="middle" font-size="11" fill="#ccc">&#x2014;</text>
+  <text x="375" y="155" text-anchor="middle" font-size="11" fill="#ccc">&#x2014;</text>
+  <rect x="432" y="133" width="56" height="34" rx="5" fill="#e8f4e8" stroke="#6a6" stroke-width="1.5"/>
+  <text x="460" y="155" text-anchor="middle" font-size="11" fill="#6a6" font-weight="bold">1/&#x221A;2</text>
+  <rect x="497" y="133" width="56" height="34" rx="5" fill="#e8f4e8" stroke="#6a6" stroke-width="1.5"/>
+  <text x="525" y="155" text-anchor="middle" font-size="11" fill="#6a6" font-weight="bold">1/&#x221A;2</text>
+
+  <!-- Row 3: Firm-Year subdomain -->
+  <text x="42" y="197" text-anchor="end" font-size="11" fill="#66a" font-weight="600">F-Y</text>
+
+  <!-- F-Y contains: F1, F2, Y1, Y2 -->
+  <text x="95" y="200" text-anchor="middle" font-size="11" fill="#ccc">&#x2014;</text>
+  <text x="160" y="200" text-anchor="middle" font-size="11" fill="#ccc">&#x2014;</text>
+  <text x="225" y="200" text-anchor="middle" font-size="11" fill="#ccc">&#x2014;</text>
+  <rect x="282" y="178" width="56" height="34" rx="5" fill="#e8e8f8" stroke="#66a" stroke-width="1.5"/>
+  <text x="310" y="200" text-anchor="middle" font-size="11" fill="#66a" font-weight="bold">1/&#x221A;2</text>
+  <rect x="347" y="178" width="56" height="34" rx="5" fill="#e8e8f8" stroke="#66a" stroke-width="1.5"/>
+  <text x="375" y="200" text-anchor="middle" font-size="11" fill="#66a" font-weight="bold">1/&#x221A;2</text>
+  <rect x="432" y="178" width="56" height="34" rx="5" fill="#e8e8f8" stroke="#66a" stroke-width="1.5"/>
+  <text x="460" y="200" text-anchor="middle" font-size="11" fill="#66a" font-weight="bold">1/&#x221A;2</text>
+  <rect x="497" y="178" width="56" height="34" rx="5" fill="#e8e8f8" stroke="#66a" stroke-width="1.5"/>
+  <text x="525" y="200" text-anchor="middle" font-size="11" fill="#66a" font-weight="bold">1/&#x221A;2</text>
+
+  <!-- Separator line -->
+  <line x1="55" y1="225" x2="565" y2="225" stroke="#999" stroke-width="1.5"/>
+
+  <!-- Sum row -->
+  <text x="42" y="250" text-anchor="end" font-size="11" fill="#555" font-weight="600">w&#xB2; sum</text>
+
+  <!-- Each column sums to 1: two entries of (1/√2)² = ½, so ½+½ = 1 -->
+  <text x="95"  y="250" text-anchor="middle" font-size="12" fill="#333" font-weight="bold">1</text>
+  <text x="160" y="250" text-anchor="middle" font-size="12" fill="#333" font-weight="bold">1</text>
+  <text x="225" y="250" text-anchor="middle" font-size="12" fill="#333" font-weight="bold">1</text>
+  <text x="310" y="250" text-anchor="middle" font-size="12" fill="#333" font-weight="bold">1</text>
+  <text x="375" y="250" text-anchor="middle" font-size="12" fill="#333" font-weight="bold">1</text>
+  <text x="460" y="250" text-anchor="middle" font-size="12" fill="#333" font-weight="bold">1</text>
+  <text x="525" y="250" text-anchor="middle" font-size="12" fill="#333" font-weight="bold">1</text>
+
+  <!-- Explanation -->
+  <text x="310" y="280" text-anchor="middle" font-size="10" fill="#888">Each DOF appears in exactly 2 subdomains. Squared weights: (1/&#x221A;2)&#xB2; + (1/&#x221A;2)&#xB2; = 1 everywhere.</text>
+</svg>

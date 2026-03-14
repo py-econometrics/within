@@ -1,0 +1,94 @@
+<svg viewBox="0 0 700 200" xmlns="http://www.w3.org/2000/svg" font-family="Arial, Helvetica, sans-serif">
+  <rect width="700" height="200" fill="white" rx="4"/>
+
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#888"/>
+    </marker>
+  </defs>
+
+  <!-- PANEL 1: Star in the reduced (firm-only) graph, square layout -->
+  <text x="110" y="16" text-anchor="middle" font-size="11" fill="#555" font-weight="600">Reduced graph: star of F1</text>
+
+  <!-- Existing edge between neighbors (from earlier Schur complement / eliminations) -->
+  <line x1="170" y1="55" x2="170" y2="150" stroke="#bbb" stroke-width="1.5"/>
+  <text x="183" y="105" font-size="8" fill="#999">existing</text>
+
+  <!-- Star edges F1 → F2, F3, F4 -->
+  <line x1="50" y1="55"  x2="170" y2="55"  stroke="#aaa" stroke-width="2"/>
+  <line x1="50" y1="55"  x2="170" y2="150" stroke="#aaa" stroke-width="2"/>
+  <line x1="50" y1="55"  x2="50"  y2="150" stroke="#aaa" stroke-width="2"/>
+
+  <!-- F1 (highlighted: about to eliminate) -->
+  <circle cx="50" cy="55" r="18" fill="#fda" stroke="#c44" stroke-width="2"/>
+  <text x="50" y="61" text-anchor="middle" font-size="11" font-weight="bold" fill="#333">F1</text>
+  <!-- F2 -->
+  <circle cx="170" cy="55" r="18" fill="#bbf" stroke="#555" stroke-width="1.5"/>
+  <text x="170" y="61" text-anchor="middle" font-size="11" font-weight="bold" fill="#333">F2</text>
+  <!-- F3 -->
+  <circle cx="170" cy="150" r="18" fill="#bbf" stroke="#555" stroke-width="1.5"/>
+  <text x="170" y="156" text-anchor="middle" font-size="11" font-weight="bold" fill="#333">F3</text>
+  <!-- F4 -->
+  <circle cx="50" cy="150" r="18" fill="#bbf" stroke="#555" stroke-width="1.5"/>
+  <text x="50" y="156" text-anchor="middle" font-size="11" font-weight="bold" fill="#333">F4</text>
+
+  <!-- Arrow 1 → 2 -->
+  <line x1="198" y1="100" x2="232" y2="100" stroke="#888" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- PANEL 2: Exact clique -->
+  <text x="350" y="16" text-anchor="middle" font-size="11" fill="#c44" font-weight="600">Exact: clique (3 fill edges)</text>
+
+  <!-- F1 ghosted -->
+  <circle cx="280" cy="55" r="18" fill="#eee" stroke="#ccc" stroke-width="1.5" stroke-dasharray="3,2"/>
+  <text x="280" y="61" text-anchor="middle" font-size="11" fill="#bbb">F1</text>
+
+  <!-- Existing edge F2-F3 (kept) -->
+  <line x1="400" y1="55" x2="400" y2="150" stroke="#bbb" stroke-width="1.5"/>
+
+  <!-- Fill edges: F2-F4, F3-F4, F2-F3 (adds weight) -->
+  <line x1="400" y1="55"  x2="280" y2="150" stroke="#c44" stroke-width="2.5"/>
+  <line x1="400" y1="150" x2="280" y2="150" stroke="#c44" stroke-width="2.5"/>
+  <line x1="400" y1="55"  x2="400" y2="150" stroke="#c44" stroke-width="2.5"/>
+
+  <!-- F2 -->
+  <circle cx="400" cy="55" r="18" fill="#bbf" stroke="#555" stroke-width="1.5"/>
+  <text x="400" y="61" text-anchor="middle" font-size="11" font-weight="bold" fill="#333">F2</text>
+  <!-- F3 -->
+  <circle cx="400" cy="150" r="18" fill="#bbf" stroke="#555" stroke-width="1.5"/>
+  <text x="400" y="156" text-anchor="middle" font-size="11" font-weight="bold" fill="#333">F3</text>
+  <!-- F4 -->
+  <circle cx="280" cy="150" r="18" fill="#bbf" stroke="#555" stroke-width="1.5"/>
+  <text x="280" y="156" text-anchor="middle" font-size="11" font-weight="bold" fill="#333">F4</text>
+
+  <!-- Arrow 2 → 3 -->
+  <line x1="428" y1="100" x2="462" y2="100" stroke="#888" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- PANEL 3: Approx tree -->
+  <text x="580" y="16" text-anchor="middle" font-size="11" fill="#4a4" font-weight="600">Approx: tree (2 fill edges)</text>
+
+  <!-- F1 ghosted -->
+  <circle cx="510" cy="55" r="18" fill="#eee" stroke="#ccc" stroke-width="1.5" stroke-dasharray="3,2"/>
+  <text x="510" y="61" text-anchor="middle" font-size="11" fill="#bbb">F1</text>
+
+  <!-- Existing edge F2-F3 (kept) -->
+  <line x1="630" y1="55" x2="630" y2="150" stroke="#bbb" stroke-width="1.5"/>
+
+  <!-- Tree edges: F2-F4, F3-F4 -->
+  <line x1="630" y1="55"  x2="510" y2="150" stroke="#4a4" stroke-width="2.5"/>
+  <line x1="630" y1="150" x2="510" y2="150" stroke="#4a4" stroke-width="2.5"/>
+
+  <!-- Missing fill edge F2-F3 weight increase (ghost) -->
+  <line x1="630" y1="73" x2="630" y2="132" stroke="#ddd" stroke-width="2" stroke-dasharray="4,3"/>
+
+  <!-- F2 -->
+  <circle cx="630" cy="55" r="18" fill="#bbf" stroke="#555" stroke-width="1.5"/>
+  <text x="630" y="61" text-anchor="middle" font-size="11" font-weight="bold" fill="#333">F2</text>
+  <!-- F3 -->
+  <circle cx="630" cy="150" r="18" fill="#bbf" stroke="#555" stroke-width="1.5"/>
+  <text x="630" y="156" text-anchor="middle" font-size="11" font-weight="bold" fill="#333">F3</text>
+  <!-- F4 -->
+  <circle cx="510" cy="150" r="18" fill="#bbf" stroke="#555" stroke-width="1.5"/>
+  <text x="510" y="156" text-anchor="middle" font-size="11" font-weight="bold" fill="#333">F4</text>
+
+  <text x="350" y="190" text-anchor="middle" font-size="10" fill="#888">All nodes are firms (reduced graph after Schur complement). Gray edge existed before this elimination step.</text>
+</svg>
