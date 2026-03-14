@@ -46,7 +46,7 @@ use std::sync::Arc;
 use approx_chol::Factor;
 use faer::{MatRef, Side};
 use rayon::prelude::*;
-use schwarz_precond::{LocalSolveError, LocalSolveInvoker, LocalSolver, SparseMatrix};
+use schwarz_precond::{LocalSolveError, LocalSolveInvoker, LocalSolver};
 
 use crate::operator::csr_block::{CsrBlock, PAR_SPMV_THRESHOLD};
 use crate::operator::gramian::CrossTab;
@@ -168,15 +168,6 @@ impl ReducedFactor {
         Self::Approx(factor)
     }
 
-    /// Try dense anchored Cholesky factorization for a Laplacian-like Schur matrix.
-    ///
-    /// Uses the top-left `(n-1) x (n-1)` principal minor; the dropped coordinate
-    /// is fixed to zero during solves and later re-centered with the full local
-    /// mean subtraction already present in `BlockElimSolver`.
-    pub(crate) fn try_dense_laplacian(matrix: &SparseMatrix) -> Option<Self> {
-        AnchoredDenseCholesky::try_from_sparse_laplacian(matrix).map(Self::Dense)
-    }
-
     pub(crate) fn try_dense_laplacian_minor(anchored_minor: Vec<f64>, n: usize) -> Option<Self> {
         AnchoredDenseCholesky::try_from_dense_anchored_minor(anchored_minor, n).map(Self::Dense)
     }
@@ -221,30 +212,6 @@ pub(crate) struct AnchoredDenseCholesky {
 }
 
 impl AnchoredDenseCholesky {
-    fn try_from_sparse_laplacian(matrix: &SparseMatrix) -> Option<Self> {
-        let n = matrix.n();
-        if n <= 1 {
-            return Some(Self {
-                l_row_major: Vec::new(),
-                n,
-            });
-        }
-
-        let m = n - 1;
-        let mut dense_minor = vec![0.0; m * m];
-        for row in 0..m {
-            let start = matrix.indptr()[row] as usize;
-            let end = matrix.indptr()[row + 1] as usize;
-            for idx in start..end {
-                let col = matrix.indices()[idx] as usize;
-                if col < m {
-                    dense_minor[row * m + col] = matrix.data()[idx];
-                }
-            }
-        }
-        Self::factor_dense_minor(dense_minor, n)
-    }
-
     fn try_from_dense_anchored_minor(dense_minor: Vec<f64>, n: usize) -> Option<Self> {
         let m = n.saturating_sub(1);
         if m == 0 {
@@ -503,7 +470,6 @@ impl LocalSolver for BlockElimSolver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use schwarz_precond::SparseMatrix;
 
     #[test]
     fn test_subtract_mean_empty() {
@@ -534,26 +500,6 @@ mod tests {
     }
 
     #[test]
-    fn test_anchored_dense_cholesky_n0() {
-        // n <= 1: should return Some with empty l_row_major
-        let m = SparseMatrix::new(vec![0u32], Vec::new(), Vec::new(), 0);
-        let result = AnchoredDenseCholesky::try_from_sparse_laplacian(&m);
-        assert!(result.is_some());
-        let chol = result.unwrap();
-        assert_eq!(chol.n(), 0);
-    }
-
-    #[test]
-    fn test_anchored_dense_cholesky_n1() {
-        // 1x1 matrix: n=1 -> n<=1 early return
-        let m = SparseMatrix::new(vec![0u32, 1], vec![0u32], vec![2.0], 1);
-        let result = AnchoredDenseCholesky::try_from_sparse_laplacian(&m);
-        assert!(result.is_some());
-        let chol = result.unwrap();
-        assert_eq!(chol.n(), 1);
-    }
-
-    #[test]
     fn test_anchored_dense_cholesky_solve_n0() {
         let chol = AnchoredDenseCholesky {
             l_row_major: Vec::new(),
@@ -572,31 +518,6 @@ mod tests {
         let mut x = vec![42.0];
         chol.solve_in_place(&mut x);
         assert_eq!(x[0], 0.0); // n==1 -> x[0] = 0
-    }
-
-    #[test]
-    fn test_anchored_dense_cholesky_solve_3x3_laplacian() {
-        // 3-node path Laplacian: [[2,-1,0],[-1,2,-1],[0,-1,1]]
-        // Its 2x2 anchored minor = [[2,-1],[-1,2]] -> L = [[sqrt(2), 0], [-1/sqrt(2), sqrt(3/2)]]
-        let m = SparseMatrix::new(
-            vec![0u32, 2, 5, 7],
-            vec![0u32, 1, 0, 1, 2, 1, 2],
-            vec![2.0, -1.0, -1.0, 2.0, -1.0, -1.0, 1.0],
-            3,
-        );
-        let chol = AnchoredDenseCholesky::try_from_sparse_laplacian(&m).expect("should factor");
-        assert_eq!(chol.n(), 3);
-
-        // Solve L L^T x = [1, 0, ?] on anchored minor
-        let mut x = vec![1.0, 0.0, 0.0];
-        chol.solve_in_place(&mut x);
-        // x[2] should be 0 (anchored)
-        assert_eq!(x[2], 0.0);
-        // Verify: anchored minor * x[0..2] approx [1, 0]
-        let check0 = 2.0 * x[0] - 1.0 * x[1];
-        let check1 = -x[0] + 2.0 * x[1];
-        assert!((check0 - 1.0).abs() < 1e-10, "check0 = {}", check0);
-        assert!((check1 - 0.0).abs() < 1e-10, "check1 = {}", check1);
     }
 
     #[test]

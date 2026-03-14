@@ -278,8 +278,9 @@ pub(crate) fn build_reduced_schur_factor(
     let n_keep = cross_tab.n_q().min(cross_tab.n_r());
     let prefer_dense = dense_fast_path_enabled(n_keep, config.dense_threshold);
 
-    // Fastest path for tiny exact Schur: build dense directly and factor dense.
-    if prefer_dense && config.approx_schur.is_none() {
+    // Below the dense threshold the reduced system is tiny — always use exact
+    // Schur complement (cheap at this size) and dense Cholesky factorization.
+    if prefer_dense {
         let dense = ExactSchurComplement.compute_dense_anchored(cross_tab)?;
         if let Some(factor) =
             ReducedFactor::try_dense_laplacian_minor(dense.anchored_minor, dense.n)
@@ -291,16 +292,8 @@ pub(crate) fn build_reduced_schur_factor(
         }
     }
 
-    // General path (exact or approximate): sparse Schur assembly once.
+    // General path (exact or approximate): sparse Schur assembly.
     let schur = compute_schur(cross_tab, config.approx_schur)?;
-    if prefer_dense {
-        if let Some(factor) = ReducedFactor::try_dense_laplacian(&schur.matrix) {
-            return Ok(ReducedSchurBuild {
-                factor,
-                elimination: schur.elimination,
-            });
-        }
-    }
 
     let factor = build_sparse_reduced_factor(&schur.matrix, config.approx_chol)?;
     Ok(ReducedSchurBuild {

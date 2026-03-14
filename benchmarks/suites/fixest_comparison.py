@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from within._within import (
     ApproxCholConfig,
+    ApproxSchurConfig,
     MultiplicativeSchwarz,
     SchurComplement,
 )
@@ -51,29 +52,40 @@ def run_fixest_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
         ],
     )
 
+    exact_schur = SchurComplement(
+        approx_chol=ApproxCholConfig(seed=0, split=8),
+        approx_schur=None,
+    )
+    approx_schur = SchurComplement(
+        approx_chol=ApproxCholConfig(seed=0, split=8),
+        approx_schur=ApproxSchurConfig(seed=0),
+    )
+
     solver_configs = [
         SolverConfig(
-            "CG(Schwarz)",
+            "CG(exact)",
             benchmark_cg(opts),
-            preconditioner=make_additive_schwarz(
-                local_solver=SchurComplement(
-                    approx_chol=ApproxCholConfig(seed=0, split=8),
-                    approx_schur=None,
-                ),
-            ),
+            preconditioner=make_additive_schwarz(local_solver=exact_schur),
+        ),
+        SolverConfig(
+            "CG(approx)",
+            benchmark_cg(opts),
+            preconditioner=make_additive_schwarz(local_solver=approx_schur),
         ),
     ]
     if opts.profile != "full":
         solver_configs.append(
             SolverConfig(
-                "GMRES(Mult-Schwarz)",
+                "GMRES(exact)",
                 benchmark_gmres(opts),
-                preconditioner=MultiplicativeSchwarz(
-                    local_solver=SchurComplement(
-                        approx_chol=ApproxCholConfig(seed=0, split=8),
-                        approx_schur=None,
-                    )
-                ),
+                preconditioner=MultiplicativeSchwarz(local_solver=exact_schur),
+            )
+        )
+        solver_configs.append(
+            SolverConfig(
+                "GMRES(approx)",
+                benchmark_gmres(opts),
+                preconditioner=MultiplicativeSchwarz(local_solver=approx_schur),
             )
         )
 
