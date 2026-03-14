@@ -1,5 +1,7 @@
 //! Solver and preconditioner configuration types.
 
+pub use schwarz_precond::ReductionStrategy;
+
 /// Default `n_keep` threshold for dense Schur fast-path factorization.
 ///
 /// Schur domains with `min(n_q, n_r) <= threshold` will first try dense
@@ -124,7 +126,7 @@ pub enum KrylovMethod {
 #[derive(Debug, Clone)]
 pub enum Preconditioner {
     /// Additive Schwarz (symmetric — valid for CG and GMRES).
-    Additive(LocalSolverConfig),
+    Additive(LocalSolverConfig, ReductionStrategy),
     /// Multiplicative Schwarz (non-symmetric — GMRES only).
     Multiplicative(LocalSolverConfig),
 }
@@ -139,6 +141,17 @@ pub struct SolverParams {
     pub operator: OperatorRepr,
     pub tol: f64,
     pub maxiter: usize,
+    /// Maximum number of iterative refinement steps after the initial Krylov solve.
+    ///
+    /// Iterative refinement recomputes the normal-equation residual from observation
+    /// space (`D^T W (y - D x)`) and solves for a correction. This closes the gap
+    /// between normal-equation residual accuracy and observation-space demeaning
+    /// quality that arises when the Gramian condition number is large.
+    ///
+    /// Each refinement step costs two cheap matvecs (D and D^T W) plus one Krylov
+    /// solve with a small RHS. The check alone (without the solve) is nearly free.
+    /// Typically 0–1 actual correction solves are needed.
+    pub max_refinements: usize,
 }
 
 impl Default for SolverParams {
@@ -148,6 +161,7 @@ impl Default for SolverParams {
             operator: OperatorRepr::Implicit,
             tol: 1e-8,
             maxiter: 1000,
+            max_refinements: 2,
         }
     }
 }

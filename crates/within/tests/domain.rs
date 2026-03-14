@@ -301,7 +301,10 @@ fn test_three_factor_design_solve_converges() {
         maxiter: 500,
         ..SolverParams::default()
     };
-    let precond = Preconditioner::Additive(LocalSolverConfig::solver_default());
+    let precond = Preconditioner::Additive(
+        LocalSolverConfig::solver_default(),
+        within::ReductionStrategy::Auto,
+    );
     let result =
         solve(cats.view(), &y, None, &params, Some(&precond)).expect("solve should not error");
 
@@ -407,7 +410,10 @@ fn test_disconnected_design_larger_converges() {
         maxiter: 500,
         ..SolverParams::default()
     };
-    let precond = Preconditioner::Additive(LocalSolverConfig::solver_default());
+    let precond = Preconditioner::Additive(
+        LocalSolverConfig::solver_default(),
+        within::ReductionStrategy::Auto,
+    );
     let result =
         solve(cats.view(), &y, None, &params, Some(&precond)).expect("solve should not error");
 
@@ -440,7 +446,10 @@ fn test_disconnected_design_solve_converges() {
         maxiter: 500,
         ..SolverParams::default()
     };
-    let precond = Preconditioner::Additive(LocalSolverConfig::solver_default());
+    let precond = Preconditioner::Additive(
+        LocalSolverConfig::solver_default(),
+        within::ReductionStrategy::Auto,
+    );
     let result =
         solve(cats.view(), &y, None, &params, Some(&precond)).expect("solve should not error");
 

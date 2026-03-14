@@ -19,7 +19,7 @@ impl std::fmt::Debug for Subdomain {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Subdomain")
             .field("factor_pair", &self.factor_pair)
-            .field("n_dofs", &self.core.global_indices.len())
+            .field("n_dofs", &self.core.n_local())
             .finish()
     }
 }
@@ -179,6 +179,9 @@ fn level_from_column_or_store<S: ObservationStore>(
 /// Accumulates `value_fn(i)` into `slice[level(i, q)]` for all rows, using the
 /// requested parallelization strategy. The `atomic_buf` is reused across calls
 /// to avoid repeated allocation in the `Atomic` path.
+///
+/// All branches share the same per-row `(level, value)` computation via
+/// `level_value`; only the accumulation strategy differs.
 #[allow(clippy::too_many_arguments)]
 fn scatter_add_single_factor<S: ObservationStore>(
     slice: &mut [f64],
@@ -191,11 +194,23 @@ fn scatter_add_single_factor<S: ObservationStore>(
     strategy: ScatterStrategy,
     atomic_buf: &mut Vec<AtomicF64>,
 ) {
+    #[inline(always)]
+    fn level_value<S: ObservationStore>(
+        store: &S,
+        levels: Option<&[u32]>,
+        q: usize,
+        value_fn: &impl Fn(usize) -> f64,
+        i: usize,
+    ) -> (usize, f64) {
+        let level = level_from_column_or_store(store, levels, i, q);
+        (level, value_fn(i))
+    }
+
     match strategy {
         ScatterStrategy::Sequential => {
             for i in 0..n_rows {
-                let level = level_from_column_or_store(store, levels, i, q);
-                slice[level] += value_fn(i);
+                let (level, val) = level_value(store, levels, q, value_fn, i);
+                slice[level] += val;
             }
         }
         ScatterStrategy::Fold => {
@@ -206,8 +221,8 @@ fn scatter_add_single_factor<S: ObservationStore>(
                 .fold(
                     || vec![0.0f64; n_levels],
                     |mut acc, i| {
-                        let level = level_from_column_or_store(store, levels, i, q);
-                        acc[level] += value_fn(i);
+                        let (level, val) = level_value(store, levels, q, value_fn, i);
+                        acc[level] += val;
                         acc
                     },
                 )
@@ -228,8 +243,8 @@ fn scatter_add_single_factor<S: ObservationStore>(
             atomic_buf.clear();
             atomic_buf.extend(slice.iter().map(|&v| AtomicF64::new(v)));
             (0..n_rows).into_par_iter().for_each(|i| {
-                let level = level_from_column_or_store(store, levels, i, q);
-                atomic_buf[level].fetch_add(value_fn(i), Ordering::Relaxed);
+                let (level, val) = level_value(store, levels, q, value_fn, i);
+                atomic_buf[level].fetch_add(val, Ordering::Relaxed);
             });
             for (d, a) in slice.iter_mut().zip(atomic_buf.iter()) {
                 *d = a.load(Ordering::Relaxed);

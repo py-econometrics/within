@@ -7,9 +7,7 @@ Two suites:
 
 from __future__ import annotations
 
-from within import CG, GMRES
 from within._within import (
-    AdditiveSchwarz,
     ApproxCholConfig,
     ApproxSchurConfig,
     MultiplicativeSchwarz,
@@ -20,6 +18,9 @@ from .._framework import (
     ProblemSpec,
     SolverConfig,
     SuiteOptions,
+    benchmark_cg,
+    benchmark_gmres,
+    make_additive_schwarz,
     run_problem_set,
     suite,
 )
@@ -39,8 +40,8 @@ def _schur(seed: int, split: int) -> SchurComplement:
     tags=("local_solver", "precond"),
 )
 def run_ac_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
-    if opts.quick:
-        problems = [
+    problems = opts.select(
+        smoke=[
             ProblemSpec(
                 "Sparse 50^3 3e",
                 "sparse_3fe",
@@ -48,9 +49,35 @@ def run_ac_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
                 opts.seed,
             ),
             ProblemSpec("Chain 100 2fe", "chain_2fe", {"n_levels": 100}, opts.seed),
-        ]
-    else:
-        problems = [
+        ],
+        iterate=[
+            ProblemSpec("Chain 200 2fe", "chain_2fe", {"n_levels": 200}, opts.seed),
+            ProblemSpec(
+                "Expander 100 2fe",
+                "expander_2fe",
+                {"n_levels": 100, "degree": 3},
+                opts.seed,
+            ),
+            ProblemSpec(
+                "Sparse 100^3 3e",
+                "sparse_3fe",
+                {"n_levels": (100, 100, 100), "edges_per_level": 3},
+                opts.seed,
+            ),
+            ProblemSpec(
+                "Imbalanced 100^3",
+                "imbalanced_3fe",
+                {"n_levels": (100, 100, 100), "n_rows": 10000},
+                opts.seed,
+            ),
+            ProblemSpec(
+                "AKM Power-Law",
+                "akm_power_law",
+                {"n_workers": 5000, "n_firms": 200, "n_years": 10},
+                opts.seed,
+            ),
+        ],
+        full=[
             ProblemSpec("Chain 200 2fe", "chain_2fe", {"n_levels": 200}, opts.seed),
             ProblemSpec(
                 "Expander 100 2fe",
@@ -88,32 +115,33 @@ def run_ac_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
                 {"n_workers": 5000, "n_firms": 200, "n_years": 10},
                 opts.seed,
             ),
-        ]
+        ],
+    )
 
     configs = [
         SolverConfig(
             "CG(1L, AC)",
-            CG(tol=opts.tol, maxiter=opts.maxiter),
-            preconditioner=AdditiveSchwarz(local_solver=_schur(opts.seed, 1)),
+            benchmark_cg(opts),
+            preconditioner=make_additive_schwarz(local_solver=_schur(opts.seed, 1)),
         ),
         SolverConfig(
             "CG(1L, AC2)",
-            CG(tol=opts.tol, maxiter=opts.maxiter),
-            preconditioner=AdditiveSchwarz(local_solver=_schur(opts.seed, 2)),
+            benchmark_cg(opts),
+            preconditioner=make_additive_schwarz(local_solver=_schur(opts.seed, 2)),
         ),
         SolverConfig(
             "GMRES(M1L, AC)",
-            GMRES(tol=opts.tol, maxiter=opts.maxiter),
+            benchmark_gmres(opts),
             preconditioner=MultiplicativeSchwarz(local_solver=_schur(opts.seed, 1)),
         ),
         SolverConfig(
             "GMRES(M1L, AC2)",
-            GMRES(tol=opts.tol, maxiter=opts.maxiter),
+            benchmark_gmres(opts),
             preconditioner=MultiplicativeSchwarz(local_solver=_schur(opts.seed, 2)),
         ),
     ]
 
-    all_results = run_problem_set(problems, configs)
+    all_results = run_problem_set(problems, configs, opts)
     print_table(
         all_results,
         columns=[
@@ -141,14 +169,39 @@ def run_ac_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
     tags=("2fe", "3fe", "ac"),
 )
 def run_graph_backend_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
-    if opts.quick:
-        problems = [
+    maxiter = max(opts.maxiter, 6000)
+    problems = opts.select(
+        smoke=[
             ProblemSpec("chain 100 2fe", "chain_2fe", {"n_levels": 100}, opts.seed),
             ProblemSpec("chain 500 2fe", "chain_2fe", {"n_levels": 500}, opts.seed),
             ProblemSpec("star 100 2fe", "star_2fe", {"n_levels": 100}, opts.seed),
-        ]
-    else:
-        problems = [
+        ],
+        iterate=[
+            ProblemSpec("chain 500 2fe", "chain_2fe", {"n_levels": 500}, opts.seed),
+            ProblemSpec("chain 2000 2fe", "chain_2fe", {"n_levels": 2000}, opts.seed),
+            ProblemSpec("star 500 2fe", "star_2fe", {"n_levels": 500}, opts.seed),
+            ProblemSpec("barbell 500 2fe", "barbell_2fe", {"n_levels": 500}, opts.seed),
+            ProblemSpec(
+                "expander 500 d=3",
+                "expander_2fe",
+                {"n_levels": 500, "degree": 3},
+                opts.seed,
+            ),
+            ProblemSpec(
+                "expander 500 d=10",
+                "expander_2fe",
+                {"n_levels": 500, "degree": 10},
+                opts.seed,
+            ),
+            ProblemSpec("grid 50x50 2fe", "grid_2fe", {"n_side": 50}, opts.seed),
+            ProblemSpec(
+                "sparse 200^3 3fe",
+                "sparse_3fe",
+                {"n_levels": (200, 200, 200), "edges_per_level": 3},
+                opts.seed,
+            ),
+        ],
+        full=[
             ProblemSpec("chain 500 2fe", "chain_2fe", {"n_levels": 500}, opts.seed),
             ProblemSpec("chain 2000 2fe", "chain_2fe", {"n_levels": 2000}, opts.seed),
             ProblemSpec("chain 5000 2fe", "chain_2fe", {"n_levels": 5000}, opts.seed),
@@ -204,22 +257,23 @@ def run_graph_backend_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
                 {"n_levels": (500, 500, 500), "edges_per_level": 3},
                 opts.seed,
             ),
-        ]
+        ],
+    )
 
     configs = [
         SolverConfig(
             "ac",
-            CG(tol=opts.tol, maxiter=opts.maxiter),
-            preconditioner=AdditiveSchwarz(local_solver=_schur(opts.seed, 1)),
+            benchmark_cg(opts, maxiter=maxiter),
+            preconditioner=make_additive_schwarz(local_solver=_schur(opts.seed, 1)),
         ),
         SolverConfig(
             "ac2",
-            CG(tol=opts.tol, maxiter=opts.maxiter),
-            preconditioner=AdditiveSchwarz(local_solver=_schur(opts.seed, 2)),
+            benchmark_cg(opts, maxiter=maxiter),
+            preconditioner=make_additive_schwarz(local_solver=_schur(opts.seed, 2)),
         ),
     ]
 
-    all_results = run_problem_set(problems, configs)
+    all_results = run_problem_set(problems, configs, opts)
     print_table(all_results)
     print("\nSetup time pivot:")
     print_pivot(all_results, value="setup_time")

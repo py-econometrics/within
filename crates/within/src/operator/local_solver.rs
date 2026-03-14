@@ -5,9 +5,9 @@ use std::sync::Arc;
 use approx_chol::Factor;
 use faer::{MatRef, Side};
 use rayon::prelude::*;
-use schwarz_precond::{LocalSolveError, LocalSolver, SparseMatrix};
+use schwarz_precond::{LocalSolveError, LocalSolveInvoker, LocalSolver, SparseMatrix};
 
-use crate::operator::csr_block::CsrBlock;
+use crate::operator::csr_block::{CsrBlock, PAR_SPMV_THRESHOLD};
 use crate::operator::gramian::CrossTab;
 
 // ===========================================================================
@@ -38,16 +38,27 @@ fn subtract_mean(slice: &mut [f64], n: usize) {
     }
 }
 
-/// Back-substitute for the eliminated block.
-fn backsub_block(
+/// Scale `slice[i] *= diag[i]` for the first `slice.len()` entries.
+#[inline]
+fn scale_by_diag_in_place(slice: &mut [f64], diag: &[f64]) {
+    debug_assert!(diag.len() >= slice.len());
+    for (val, &di) in slice.iter_mut().zip(diag.iter()) {
+        *val *= di;
+    }
+}
+
+/// Back-substitute for the eliminated block from a pre-scaled RHS.
+fn backsub_block_from_scaled_rhs(
     sol_output: &mut [f64],
-    rhs_slice: &[f64],
+    scaled_rhs: &[f64],
     cross_matrix: &CsrBlock,
     inv_diag: &[f64],
     sol_source: &[f64],
+    allow_inner_parallelism: bool,
 ) {
     let n = sol_output.len();
-    if n > PAR_BACKSUB_THRESHOLD {
+    debug_assert!(scaled_rhs.len() >= n);
+    if n > PAR_BACKSUB_THRESHOLD && allow_inner_parallelism {
         sol_output
             .par_chunks_mut(PAR_BACKSUB_CHUNK)
             .enumerate()
@@ -62,7 +73,7 @@ fn backsub_block(
                         let j = cross_matrix.indices[idx] as usize;
                         sum += cross_matrix.data[idx] * sol_source[j];
                     }
-                    *si = inv_diag[i] * (rhs_slice[i] + sum);
+                    *si = scaled_rhs[i] + (inv_diag[i] * sum);
                 }
             });
     } else {
@@ -74,7 +85,7 @@ fn backsub_block(
                 let j = cross_matrix.indices[idx] as usize;
                 sum += cross_matrix.data[idx] * sol_source[j];
             }
-            sol_output[i] = inv_diag[i] * (rhs_slice[i] + sum);
+            sol_output[i] = scaled_rhs[i] + (inv_diag[i] * sum);
         }
     }
 }
@@ -84,7 +95,7 @@ fn backsub_block(
 // ===========================================================================
 
 /// Local subdomain solver backed by approximate Cholesky factorization.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct ApproxCholSolver {
     factor: Factor,
     strategy: LocalSolveStrategy,
@@ -156,6 +167,10 @@ impl LocalSolver for ApproxCholSolver {
         }
         Ok(())
     }
+
+    fn inner_parallelism_work_estimate(&self) -> usize {
+        0
+    }
 }
 
 // ===========================================================================
@@ -164,13 +179,44 @@ impl LocalSolver for ApproxCholSolver {
 
 /// FE-specific local solver, dispatching to either full-SDDM ApproxChol or
 /// Schur complement block elimination.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub enum FeLocalSolver {
     /// Full bipartite SDDM factorized via approximate Cholesky.
     FullSddm { solver: ApproxCholSolver },
     /// Schur complement reduction + reduced-system factor solve
     /// (dense anchored for tiny Schur when enabled, otherwise sparse ApproxChol).
     SchurComplement(Box<BlockElimSolver>),
+}
+
+impl FeLocalSolver {
+    pub(crate) fn solve_local_with_parallelism(
+        &self,
+        rhs: &mut [f64],
+        sol: &mut [f64],
+        allow_inner_parallelism: bool,
+    ) -> Result<(), LocalSolveError> {
+        match self {
+            Self::FullSddm { solver, .. } => solver.solve_local(rhs, sol),
+            Self::SchurComplement(s) => {
+                s.solve_local_with_parallelism(rhs, sol, allow_inner_parallelism)
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct FeLocalSolveInvoker;
+
+impl LocalSolveInvoker<FeLocalSolver> for FeLocalSolveInvoker {
+    fn solve_local(
+        &self,
+        solver: &FeLocalSolver,
+        rhs: &mut [f64],
+        sol: &mut [f64],
+        allow_inner_parallelism: bool,
+    ) -> Result<(), LocalSolveError> {
+        solver.solve_local_with_parallelism(rhs, sol, allow_inner_parallelism)
+    }
 }
 
 impl LocalSolver for FeLocalSolver {
@@ -189,9 +235,13 @@ impl LocalSolver for FeLocalSolver {
     }
 
     fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), LocalSolveError> {
+        self.solve_local_with_parallelism(rhs, sol, true)
+    }
+
+    fn inner_parallelism_work_estimate(&self) -> usize {
         match self {
-            Self::FullSddm { solver, .. } => solver.solve_local(rhs, sol),
-            Self::SchurComplement(s) => s.solve_local(rhs, sol),
+            Self::FullSddm { solver, .. } => solver.inner_parallelism_work_estimate(),
+            Self::SchurComplement(s) => s.inner_parallelism_work_estimate(),
         }
     }
 }
@@ -246,7 +296,7 @@ impl LocalSolveStrategy {
 // ===========================================================================
 
 /// Reduced-system factor backend for Schur-complement local solves.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) enum ReducedFactor {
     /// Approximate sparse Cholesky on the reduced Schur CSR.
     Approx(Factor),
@@ -303,7 +353,7 @@ impl ReducedFactor {
 // ===========================================================================
 
 /// Dense Cholesky on an anchored principal minor of a Laplacian-like matrix.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct AnchoredDenseCholesky {
     /// Lower-triangular factor of the `(n-1) x (n-1)` anchored minor.
     l_row_major: Vec<f64>,
@@ -428,7 +478,7 @@ impl AnchoredDenseCholesky {
 // ===========================================================================
 
 /// Local subdomain solver using block elimination on the bipartite SDDM.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct BlockElimSolver {
     /// Bipartite Gramian structure: C, C^T, diag_q, diag_r.
     cross_tab: Arc<CrossTab>,
@@ -468,34 +518,49 @@ impl BlockElimSolver {
     pub(crate) fn uses_dense_reduced_factor(&self) -> bool {
         matches!(self.reduced_factor, ReducedFactor::Dense(_))
     }
+
+    fn estimated_inner_parallel_work(&self) -> usize {
+        let max_rows = self.cross_tab.n_q().max(self.cross_tab.n_r());
+        if max_rows <= PAR_BACKSUB_THRESHOLD.max(PAR_SPMV_THRESHOLD) {
+            return 0;
+        }
+
+        let cross_nnz = self.cross_tab.c.nnz();
+        (2 * cross_nnz) + self.n_local
+    }
 }
 
-impl LocalSolver for BlockElimSolver {
-    fn n_local(&self) -> usize {
-        self.n_local
-    }
-
-    fn scratch_size(&self) -> usize {
-        self.n_local + self.n_reduced
-    }
-
-    fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), LocalSolveError> {
+impl BlockElimSolver {
+    fn solve_local_with_parallelism(
+        &self,
+        rhs: &mut [f64],
+        sol: &mut [f64],
+        allow_inner_parallelism: bool,
+    ) -> Result<(), LocalSolveError> {
         let n = self.n_local;
         let n_q = self.cross_tab.n_q();
         let n_r = self.cross_tab.n_r();
         let ct = &self.cross_tab;
 
+        // Block elimination for the bipartite SDDM system [D_q, C; C^T, D_r]:
+        // Step 1: Negate the q-block of rhs to convert from SDDM form to the
+        //         signed Laplacian form where C carries a negative sign.
+        //         This is equivalent to solving [-D_q, C; C^T, D_r] x = rhs'.
         negate_block(&mut rhs[..n], n_q);
         subtract_mean(rhs, n);
 
         if self.eliminate_q {
             let n_keep = n_r;
+            scale_by_diag_in_place(&mut rhs[..n_q], &self.inv_diag_elim);
 
             {
                 let (main, scratch) = rhs.split_at_mut(n);
-                scratch[..n_keep].copy_from_slice(&main[n_q..]);
-                ct.ct
-                    .spmv_diag_add(&self.inv_diag_elim, &main[..n_q], &mut scratch[..n_keep]);
+                ct.ct.spmv_assign_add(
+                    &main[..n_q],
+                    &main[n_q..n_q + n_keep],
+                    &mut scratch[..n_keep],
+                    allow_inner_parallelism,
+                );
             }
             if self.n_reduced > n_keep {
                 rhs[n + n_keep] = 0.0;
@@ -508,15 +573,27 @@ impl LocalSolver for BlockElimSolver {
 
             {
                 let (sol_q, sol_r) = sol.split_at_mut(n_q);
-                backsub_block(sol_q, &rhs[..n_q], &ct.c, &self.inv_diag_elim, sol_r);
+                backsub_block_from_scaled_rhs(
+                    sol_q,
+                    &rhs[..n_q],
+                    &ct.c,
+                    &self.inv_diag_elim,
+                    sol_r,
+                    allow_inner_parallelism,
+                );
             }
         } else {
             let n_keep = n_q;
+            scale_by_diag_in_place(&mut rhs[n_q..n_q + n_r], &self.inv_diag_elim);
 
             {
                 let (main, scratch) = rhs.split_at_mut(n);
-                scratch[..n_keep].copy_from_slice(&main[..n_q]);
-                ct.c.spmv_diag_add(&self.inv_diag_elim, &main[n_q..], &mut scratch[..n_keep]);
+                ct.c.spmv_assign_add(
+                    &main[n_q..n_q + n_r],
+                    &main[..n_q],
+                    &mut scratch[..n_keep],
+                    allow_inner_parallelism,
+                );
             }
             if self.n_reduced > n_keep {
                 rhs[n + n_keep] = 0.0;
@@ -529,12 +606,13 @@ impl LocalSolver for BlockElimSolver {
 
             {
                 let (sol_q, sol_r) = sol.split_at_mut(n_q);
-                backsub_block(
+                backsub_block_from_scaled_rhs(
                     &mut sol_r[..n_r],
                     &rhs[n_q..n_q + n_r],
                     &ct.ct,
                     &self.inv_diag_elim,
                     sol_q,
+                    allow_inner_parallelism,
                 );
             }
         }
@@ -542,6 +620,24 @@ impl LocalSolver for BlockElimSolver {
         subtract_mean(sol, n);
         negate_block(&mut sol[..n], n_q);
         Ok(())
+    }
+}
+
+impl LocalSolver for BlockElimSolver {
+    fn n_local(&self) -> usize {
+        self.n_local
+    }
+
+    fn scratch_size(&self) -> usize {
+        self.n_local + self.n_reduced
+    }
+
+    fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), LocalSolveError> {
+        self.solve_local_with_parallelism(rhs, sol, true)
+    }
+
+    fn inner_parallelism_work_estimate(&self) -> usize {
+        self.estimated_inner_parallel_work()
     }
 }
 

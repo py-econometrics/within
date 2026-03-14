@@ -32,6 +32,7 @@ pub struct Solver<S: ObservationStore> {
     krylov: KrylovMethod,
     tol: f64,
     maxiter: usize,
+    max_refinements: usize,
 }
 
 impl<S: ObservationStore> Solver<S> {
@@ -72,6 +73,7 @@ impl<S: ObservationStore> Solver<S> {
             krylov: params.krylov,
             tol: params.tol,
             maxiter: params.maxiter,
+            max_refinements: params.max_refinements,
         })
     }
 
@@ -94,6 +96,7 @@ impl<S: ObservationStore> Solver<S> {
             krylov: params.krylov,
             tol: params.tol,
             maxiter: params.maxiter,
+            max_refinements: params.max_refinements,
         })
     }
 
@@ -106,30 +109,30 @@ impl<S: ObservationStore> Solver<S> {
         let mut rhs = vec![0.0; self.design.n_dofs];
         self.design.rmatvec_wdt(y, &mut rhs);
         let rhs_norm = vec_norm(&rhs).max(1e-15);
+        let abs_tol = self.tol * rhs_norm;
 
         let t_solve_start = Instant::now();
         let time_setup = t_solve_start.duration_since(t_setup_start).as_secs_f64();
 
-        // Dispatch Krylov solve
+        // Initial Krylov solve + iterative refinement
         let solve = self.krylov_solve(&rhs)?;
+        let refined = self.iterative_refinement(y, abs_tol, solve)?;
 
         let time_solve = t_solve_start.elapsed().as_secs_f64();
 
-        // Compute relative residual in normal-equation space
-        let final_residual = self.compute_residual(&solve.x, &rhs, rhs_norm);
-
-        // Compute demeaned: y - D*x
-        let mut demeaned = vec![0.0; self.design.n_rows];
-        self.design.matvec_d(&solve.x, &mut demeaned);
-        for (d, &yi) in demeaned.iter_mut().zip(y.iter()) {
-            *d = yi - *d;
-        }
+        // Compute residual via observation space: ||D^T W (y - Dx)|| / ||rhs||.
+        // This is cheaper than a Gramian matvec and avoids the DOF-space
+        // cancellation that motivated iterative refinement.
+        let mut residual_dof = vec![0.0; self.design.n_dofs];
+        self.design
+            .rmatvec_wdt(&refined.demeaned, &mut residual_dof);
+        let final_residual = vec_norm(&residual_dof) / rhs_norm;
 
         Ok(SolveResult {
-            x: solve.x,
-            demeaned,
-            converged: solve.converged,
-            iterations: solve.iterations,
+            x: refined.x,
+            demeaned: refined.demeaned,
+            converged: refined.converged,
+            iterations: refined.iterations,
             final_residual,
             time_total: t_start.elapsed().as_secs_f64(),
             time_setup,
@@ -192,19 +195,85 @@ impl<S: ObservationStore> Solver<S> {
 
     // --- Internal ---
 
+    /// Iterative refinement: recompute the normal-equation residual from
+    /// observation space (`D^T W (y - D x)`) and solve for a correction.
+    ///
+    /// This closes the gap between normal-equation residual accuracy and
+    /// observation-space demeaning quality that arises when κ(G) is large.
+    /// The correction tolerance is scaled to the original problem so that each
+    /// refinement step does only the minimum work needed.
+    fn iterative_refinement(
+        &self,
+        y: &[f64],
+        abs_tol: f64,
+        initial: KrylovSolve,
+    ) -> WithinResult<RefinedSolve> {
+        let mut x = initial.x;
+        let mut iterations = initial.iterations;
+        let mut converged = initial.converged;
+
+        let mut demeaned = vec![0.0; self.design.n_rows];
+        let mut rhs_corr = vec![0.0; self.design.n_dofs];
+
+        for _ in 0..self.max_refinements {
+            // Observation-space residual: demeaned = y - D·x
+            self.design.matvec_d(&x, &mut demeaned);
+            for (d, &yi) in demeaned.iter_mut().zip(y.iter()) {
+                *d = yi - *d;
+            }
+
+            // Correction RHS in normal-equation space: D^T W (y - Dx)
+            self.design.rmatvec_wdt(&demeaned, &mut rhs_corr);
+
+            let corr_norm = vec_norm(&rhs_corr);
+            if corr_norm <= abs_tol {
+                break;
+            }
+
+            // Tolerance scaled to original problem: only reduce the correction
+            // enough to bring the total residual below abs_tol.
+            let corr_tol = (abs_tol / corr_norm).min(1.0);
+            let corr = self.krylov_solve_with_tol(&rhs_corr, corr_tol)?;
+            for (xi, &di) in x.iter_mut().zip(corr.x.iter()) {
+                *xi += di;
+            }
+            iterations += corr.iterations;
+            converged = corr.converged;
+        }
+
+        // Final demeaned: y - D*x
+        self.design.matvec_d(&x, &mut demeaned);
+        for (d, &yi) in demeaned.iter_mut().zip(y.iter()) {
+            *d = yi - *d;
+        }
+
+        Ok(RefinedSolve {
+            x,
+            demeaned,
+            converged,
+            iterations,
+        })
+    }
+
     fn krylov_solve(&self, rhs: &[f64]) -> WithinResult<KrylovSolve> {
+        self.krylov_solve_with_tol(rhs, self.tol)
+    }
+
+    fn krylov_solve_with_tol(&self, rhs: &[f64], tol: f64) -> WithinResult<KrylovSolve> {
         match (&self.gramian, &self.preconditioner) {
-            (Some(gramian), Some(precond)) => self.dispatch_krylov(gramian, Some(precond), rhs),
+            (Some(gramian), Some(precond)) => {
+                self.dispatch_krylov(gramian, Some(precond), rhs, tol)
+            }
             (Some(gramian), None) => {
-                self.dispatch_krylov::<_, FePreconditioner>(gramian, None, rhs)
+                self.dispatch_krylov::<_, FePreconditioner>(gramian, None, rhs, tol)
             }
             (None, Some(precond)) => {
                 let op = GramianOperator::new(&self.design);
-                self.dispatch_krylov(&op, Some(precond), rhs)
+                self.dispatch_krylov(&op, Some(precond), rhs, tol)
             }
             (None, None) => {
                 let op = GramianOperator::new(&self.design);
-                self.dispatch_krylov::<_, FePreconditioner>(&op, None, rhs)
+                self.dispatch_krylov::<_, FePreconditioner>(&op, None, rhs, tol)
             }
         }
     }
@@ -214,10 +283,11 @@ impl<S: ObservationStore> Solver<S> {
         op: &A,
         preconditioner: Option<&M>,
         rhs: &[f64],
+        tol: f64,
     ) -> WithinResult<KrylovSolve> {
         match self.krylov {
             KrylovMethod::Cg => {
-                let r = pcg(op, rhs, preconditioner, self.tol, self.maxiter)?;
+                let r = pcg(op, rhs, preconditioner, tol, self.maxiter)?;
                 Ok(KrylovSolve {
                     x: r.x,
                     converged: r.converged,
@@ -225,7 +295,7 @@ impl<S: ObservationStore> Solver<S> {
                 })
             }
             KrylovMethod::Gmres { restart } => {
-                let r = pgmres(op, rhs, preconditioner, self.tol, self.maxiter, restart)?;
+                let r = pgmres(op, rhs, preconditioner, tol, self.maxiter, restart)?;
                 Ok(KrylovSolve {
                     x: r.x,
                     converged: r.converged,
@@ -234,25 +304,17 @@ impl<S: ObservationStore> Solver<S> {
             }
         }
     }
-
-    fn compute_residual(&self, x: &[f64], rhs: &[f64], rhs_norm: f64) -> f64 {
-        let mut scratch = vec![0.0; self.design.n_dofs];
-        match &self.gramian {
-            Some(g) => g.apply(x, &mut scratch),
-            None => {
-                let op = GramianOperator::new(&self.design);
-                op.apply(x, &mut scratch);
-            }
-        }
-        for i in 0..rhs.len() {
-            scratch[i] -= rhs[i];
-        }
-        vec_norm(&scratch) / rhs_norm
-    }
 }
 
 struct KrylovSolve {
     x: Vec<f64>,
+    converged: bool,
+    iterations: usize,
+}
+
+struct RefinedSolve {
+    x: Vec<f64>,
+    demeaned: Vec<f64>,
     converged: bool,
     iterations: usize,
 }

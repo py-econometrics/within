@@ -1,26 +1,81 @@
 //! Pre-built preconditioner for reuse across multiple solves.
 
-use schwarz_precond::Operator;
+use schwarz_precond::{AdditiveSchwarzDiagnostics, LocalSolver, Operator, ReductionStrategy};
 use serde::{Deserialize, Serialize};
 
 use crate::config::Preconditioner;
-use crate::domain::WeightedDesign;
+use crate::domain::{Subdomain, WeightedDesign};
 use crate::observation::ObservationStore;
-use crate::operator::gramian::Gramian;
+use crate::operator::gramian::{CrossTab, Gramian};
 use crate::operator::schwarz::{
-    build_additive, build_multiplicative_sparse, DomainSource, FeMultSchwarzSparse, FeSchwarz,
+    build_additive_with_strategy, build_multiplicative_sparse, DomainSource, FeMultSchwarzSparse,
+    FeSchwarz,
 };
 use crate::{WithinError, WithinResult};
 
 /// A pre-built preconditioner ready for use in Krylov solves.
 ///
 /// Implements [`Operator`] via enum dispatch to the inner variant.
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub enum FePreconditioner {
     /// Additive Schwarz (symmetric -- valid for CG and GMRES).
     Additive(FeSchwarz),
     /// Multiplicative Schwarz with sparse Gramian updater (GMRES only).
     Multiplicative(FeMultSchwarzSparse),
+}
+
+impl FePreconditioner {
+    /// Number of Schwarz subdomains in the built preconditioner.
+    pub fn n_subdomains(&self) -> usize {
+        match self {
+            Self::Additive(p) => p.subdomains().len(),
+            Self::Multiplicative(p) => p.subdomains().len(),
+        }
+    }
+
+    /// Estimated nested-parallel work per subdomain.
+    pub fn subdomain_inner_parallel_work(&self) -> Vec<usize> {
+        match self {
+            Self::Additive(p) => p
+                .subdomains()
+                .iter()
+                .map(|entry| entry.solver().inner_parallelism_work_estimate())
+                .collect(),
+            Self::Multiplicative(p) => p
+                .subdomains()
+                .iter()
+                .map(|entry| entry.solver().inner_parallelism_work_estimate())
+                .collect(),
+        }
+    }
+}
+
+/// Configured additive reduction strategy, if this is an additive preconditioner.
+pub fn additive_reduction_strategy(preconditioner: &FePreconditioner) -> Option<ReductionStrategy> {
+    match preconditioner {
+        FePreconditioner::Additive(p) => Some(p.reduction_strategy()),
+        FePreconditioner::Multiplicative(_) => None,
+    }
+}
+
+/// Concrete additive backend selected for the current Rayon thread-pool width.
+pub fn resolved_additive_reduction_strategy(
+    preconditioner: &FePreconditioner,
+) -> Option<ReductionStrategy> {
+    match preconditioner {
+        FePreconditioner::Additive(p) => Some(p.resolved_reduction_strategy()),
+        FePreconditioner::Multiplicative(_) => None,
+    }
+}
+
+/// Build-time additive Schwarz scheduling diagnostics.
+pub fn additive_schwarz_diagnostics(
+    preconditioner: &FePreconditioner,
+) -> Option<AdditiveSchwarzDiagnostics> {
+    match preconditioner {
+        FePreconditioner::Additive(p) => Some(p.diagnostics()),
+        FePreconditioner::Multiplicative(_) => None,
+    }
 }
 
 impl Operator for FePreconditioner {
@@ -71,6 +126,43 @@ impl Operator for FePreconditioner {
     }
 }
 
+/// Build a [`FePreconditioner`] from pre-built domains and configuration.
+///
+/// Shared dispatch logic used by both `build_preconditioner` and
+/// `build_preconditioner_fused`.
+fn build_from_domains<S: ObservationStore>(
+    domains: Vec<(Subdomain, CrossTab)>,
+    n_dofs: usize,
+    gramian: Option<&Gramian>,
+    config: &Preconditioner,
+) -> WithinResult<FePreconditioner> {
+    match config {
+        Preconditioner::Additive(solver_config, strategy) => {
+            let p = build_additive_with_strategy(
+                DomainSource::<S>::FromParts(domains),
+                n_dofs,
+                solver_config,
+                *strategy,
+            )?;
+            Ok(FePreconditioner::Additive(p))
+        }
+        Preconditioner::Multiplicative(solver_config) => {
+            let gramian = gramian.ok_or_else(|| {
+                WithinError::LocalSolverBuild(
+                    "multiplicative preconditioner requires an explicit Gramian".to_string(),
+                )
+            })?;
+            let p = build_multiplicative_sparse(
+                DomainSource::<S>::FromParts(domains),
+                gramian,
+                n_dofs,
+                solver_config,
+            )?;
+            Ok(FePreconditioner::Multiplicative(p))
+        }
+    }
+}
+
 /// Build a [`FePreconditioner`] from a design and configuration.
 ///
 /// When `Multiplicative` is requested, a Gramian is required for the sparse
@@ -82,32 +174,11 @@ pub fn build_preconditioner<S: ObservationStore>(
 ) -> WithinResult<FePreconditioner> {
     use crate::domain::build_local_domains;
 
-    match preconditioner_config {
-        Preconditioner::Additive(config) => {
-            let domains = build_local_domains(design);
-            let precond =
-                build_additive(DomainSource::<S>::FromParts(domains), design.n_dofs, config)?;
-            Ok(FePreconditioner::Additive(precond))
-        }
-        Preconditioner::Multiplicative(config) => {
-            let gramian = gramian.ok_or_else(|| {
-                WithinError::LocalSolverBuild(
-                    "multiplicative preconditioner requires an explicit Gramian".to_string(),
-                )
-            })?;
-            let domains = build_local_domains(design);
-            let precond = build_multiplicative_sparse(
-                DomainSource::<S>::FromParts(domains),
-                gramian,
-                design.n_dofs,
-                config,
-            )?;
-            Ok(FePreconditioner::Multiplicative(precond))
-        }
-    }
+    let domains = build_local_domains(design);
+    build_from_domains::<S>(domains, design.n_dofs, gramian, preconditioner_config)
 }
 
-/// Fused build: single observation scan → domains + Gramian.
+/// Fused build: single observation scan -> domains + Gramian.
 ///
 /// Uses `build_domains_and_gramian_blocks` to scan observations once, producing
 /// both the domain decomposition (for the preconditioner) and per-pair block
@@ -122,22 +193,12 @@ pub(crate) fn build_preconditioner_fused<S: ObservationStore>(
 
     let (domains, blocks) = build_domains_and_gramian_blocks(design);
     let gramian = Gramian::from_pair_blocks(&blocks, &design.factors, design.n_dofs)?;
-
-    let precond = match preconditioner_config {
-        Preconditioner::Additive(config) => {
-            let p = build_additive(DomainSource::<S>::FromParts(domains), design.n_dofs, config)?;
-            FePreconditioner::Additive(p)
-        }
-        Preconditioner::Multiplicative(config) => {
-            let p = build_multiplicative_sparse(
-                DomainSource::<S>::FromParts(domains),
-                &gramian,
-                design.n_dofs,
-                config,
-            )?;
-            FePreconditioner::Multiplicative(p)
-        }
-    };
+    let precond = build_from_domains::<S>(
+        domains,
+        design.n_dofs,
+        Some(&gramian),
+        preconditioner_config,
+    )?;
 
     Ok((gramian, precond))
 }

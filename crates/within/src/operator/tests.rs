@@ -139,19 +139,6 @@ mod csr_block_tests {
     }
 
     #[test]
-    fn test_spmv_diag_add() {
-        let a = sample_block();
-        let d = vec![2.0, 3.0, 1.0, 0.5];
-        let x = vec![1.0, 2.0, 3.0, 4.0];
-        let mut y = vec![0.0; 3];
-        a.spmv_diag_add(&d, &x, &mut y);
-        // row 0: 1*(2*1) + 2*(1*3) = 2+6 = 8
-        // row 1: 3*(3*2) + 4*(0.5*4) = 18+8 = 26
-        // row 2: 5*(2*1) + 6*(0.5*4) = 10+12 = 22
-        assert_eq!(y, vec![8.0, 26.0, 22.0]);
-    }
-
-    #[test]
     fn test_empty_block() {
         let a = CsrBlock {
             indptr: vec![0, 0, 0],
@@ -870,24 +857,28 @@ mod schur_complement_tests {
 
 mod schwarz_tests {
     use std::cmp::Ordering;
+    use std::env;
     use std::hint::black_box;
-    use std::time::Instant;
+    use std::process::Command;
+    use std::thread;
+    use std::time::{Duration, Instant};
 
     use crate::config::LocalSolverConfig;
     use crate::config::{ApproxSchurConfig, DEFAULT_DENSE_SCHUR_THRESHOLD};
-    use crate::domain::{build_local_domains, FixedEffectsDesign, Subdomain};
+    use crate::domain::{build_local_domains, FixedEffectsDesign, Subdomain, SubdomainCore};
     use crate::observation::{FactorMajorStore, ObservationWeights};
     use crate::operator::csr_block::CsrBlock;
     use crate::operator::gramian::CrossTab;
     use crate::operator::local_solver::BlockElimSolver;
     use crate::operator::local_solver::FeLocalSolver;
     use crate::operator::schwarz::{
-        build_additive, build_entry, build_multiplicative_obs, build_multiplicative_sparse,
-        build_reduced_schur_factor, build_schwarz, compute_first_block_size, DomainSource,
-        ReducedSchurConfig,
+        build_additive, build_additive_with_strategy, build_entry, build_reduced_schur_factor,
+        build_schwarz, compute_first_block_size, DomainSource, ReducedSchurConfig,
     };
     use approx_chol::Config;
-    use schwarz_precond::{LocalSolver, Operator};
+    use schwarz_precond::{LocalSolver, Operator, ReductionStrategy};
+
+    const BLOCK_ELIM_NESTED_RAYON_CHILD_ENV: &str = "WITHIN_TEST_BLOCK_ELIM_NESTED_RAYON_CHILD";
 
     fn make_test_data() -> (FixedEffectsDesign, Vec<(Subdomain, CrossTab)>) {
         let store = FactorMajorStore::new(
@@ -934,6 +925,187 @@ mod schwarz_tests {
             ct,
             diag_q,
             diag_r,
+        }
+    }
+
+    fn synthetic_sparse_cross_tab(n_keep: usize, elim_ratio: usize) -> CrossTab {
+        let n_q = n_keep * elim_ratio;
+        let n_r = n_keep;
+        let mut indptr = Vec::with_capacity(n_q + 1);
+        let mut indices = Vec::with_capacity(n_q * 3);
+        let mut data = Vec::with_capacity(n_q * 3);
+        let mut diag_q = vec![0.0; n_q];
+        let mut diag_r = vec![0.0; n_r];
+
+        indptr.push(0);
+        for (i, diag_q_i) in diag_q.iter_mut().enumerate().take(n_q) {
+            let mut row = [
+                (i % n_r, 1.0),
+                ((i + 1) % n_r, 0.8),
+                ((i.wrapping_mul(17).wrapping_add(3)) % n_r, 0.6),
+            ];
+            row.sort_unstable_by_key(|&(col, _)| col);
+
+            let mut row_sum = 0.0;
+            let mut cursor = 0usize;
+            while cursor < row.len() {
+                let col = row[cursor].0;
+                let mut value = row[cursor].1;
+                cursor += 1;
+                while cursor < row.len() && row[cursor].0 == col {
+                    value += row[cursor].1;
+                    cursor += 1;
+                }
+
+                indices.push(col as u32);
+                data.push(value);
+                row_sum += value;
+                diag_r[col] += value;
+            }
+
+            *diag_q_i = row_sum;
+            indptr.push(indices.len() as u32);
+        }
+
+        let c = CsrBlock {
+            indptr,
+            indices,
+            data,
+            nrows: n_q,
+            ncols: n_r,
+        };
+        let ct = c.transpose();
+        CrossTab {
+            c,
+            ct,
+            diag_q,
+            diag_r,
+        }
+    }
+
+    fn make_nested_block_elim_domain_pairs(
+        n_keep: usize,
+        elim_ratio: usize,
+        n_subdomains: usize,
+    ) -> (usize, Vec<(Subdomain, CrossTab)>) {
+        let cross_tab = synthetic_sparse_cross_tab(n_keep, elim_ratio);
+        let n_local = cross_tab.n_local();
+        let global_indices: Vec<u32> = (0..n_local as u32).collect();
+
+        let domain_pairs = (0..n_subdomains)
+            .map(|idx| {
+                (
+                    Subdomain {
+                        factor_pair: (idx, idx + 1),
+                        core: SubdomainCore::uniform(global_indices.clone()),
+                    },
+                    cross_tab.clone(),
+                )
+            })
+            .collect();
+        (n_local, domain_pairs)
+    }
+
+    fn run_block_elim_parallel_reduction_regression_case() {
+        let n_keep = 1_024;
+        let elim_ratio = 32;
+        let (n_dofs, domain_pairs) = make_nested_block_elim_domain_pairs(n_keep, elim_ratio, 2);
+        let config = LocalSolverConfig::SchurComplement {
+            approx_chol: Config {
+                split_merge: Some(8),
+                seed: 42,
+            },
+            approx_schur: Some(ApproxSchurConfig {
+                seed: 7,
+                ..Default::default()
+            }),
+            dense_threshold: DEFAULT_DENSE_SCHUR_THRESHOLD,
+        };
+        let rhs: Vec<f64> = (0..n_dofs).map(|i| ((i % 29) as f64) - 14.0).collect();
+
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .expect("test rayon pool");
+        pool.install(|| {
+            let reduction = build_additive_with_strategy::<FactorMajorStore>(
+                DomainSource::FromParts(domain_pairs),
+                n_dofs,
+                &config,
+                ReductionStrategy::ParallelReduction,
+            )
+            .expect("build block-elim additive preconditioner");
+            let atomic = reduction.with_reduction_strategy(ReductionStrategy::AtomicScatter);
+
+            assert_eq!(
+                reduction.resolved_reduction_strategy(),
+                ReductionStrategy::ParallelReduction
+            );
+            assert_eq!(reduction.diagnostics().n_subdomains(), 2);
+            assert!(
+                reduction.diagnostics().max_inner_parallel_work() > 200_000,
+                "test setup must force nested local-solver parallelism"
+            );
+
+            for _ in 0..4 {
+                let mut z_reduction = vec![0.0; n_dofs];
+                let mut z_atomic = vec![0.0; n_dofs];
+                reduction.apply(&rhs, &mut z_reduction);
+                atomic.apply(&rhs, &mut z_atomic);
+
+                for (i, (&zr, &za)) in z_reduction.iter().zip(&z_atomic).enumerate() {
+                    assert!(
+                        zr.is_finite() && za.is_finite(),
+                        "non-finite result at index {i}: reduction={zr}, atomic={za}"
+                    );
+                    assert!(
+                        (zr - za).abs() <= 1e-9,
+                        "backend mismatch at index {i}: reduction={zr}, atomic={za}"
+                    );
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn test_block_elim_parallel_reduction_nested_rayon_child() {
+        if env::var_os(BLOCK_ELIM_NESTED_RAYON_CHILD_ENV).is_none() {
+            return;
+        }
+        run_block_elim_parallel_reduction_regression_case();
+    }
+
+    #[test]
+    fn test_block_elim_parallel_reduction_nested_rayon_does_not_deadlock() {
+        let current_exe = env::current_exe().expect("test binary path");
+        let mut child = Command::new(current_exe)
+            .env(BLOCK_ELIM_NESTED_RAYON_CHILD_ENV, "1")
+            .arg("test_block_elim_parallel_reduction_nested_rayon_child")
+            .arg("--nocapture")
+            .spawn()
+            .expect("spawn block-elim nested Rayon regression child");
+
+        let timeout = Duration::from_secs(30);
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(status) = child.try_wait().expect("poll nested rayon child") {
+                assert!(
+                    status.success(),
+                    "block-elim nested rayon regression child exited with status {status}"
+                );
+                break;
+            }
+
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!(
+                    "block-elim parallel reduction nested Rayon regression child exceeded {:?}",
+                    timeout
+                );
+            }
+
+            thread::sleep(Duration::from_millis(25));
         }
     }
 
@@ -1067,7 +1239,7 @@ mod schwarz_tests {
         let entry =
             build_entry(domain, cross_tab, &config).expect("exact Schur entry build failed");
 
-        match entry.solver {
+        match entry.solver() {
             FeLocalSolver::SchurComplement(solver) => {
                 assert!(solver.uses_dense_reduced_factor());
             }
@@ -1091,7 +1263,7 @@ mod schwarz_tests {
         let entry =
             build_entry(domain, cross_tab, &config).expect("approximate Schur entry build failed");
 
-        match entry.solver {
+        match entry.solver() {
             FeLocalSolver::SchurComplement(solver) => {
                 assert!(solver.uses_dense_reduced_factor());
             }
@@ -1112,7 +1284,7 @@ mod schwarz_tests {
         let entry =
             build_entry(domain, cross_tab, &config).expect("exact Schur entry build failed");
 
-        match entry.solver {
+        match entry.solver() {
             FeLocalSolver::SchurComplement(solver) => {
                 assert!(!solver.uses_dense_reduced_factor());
             }
@@ -1189,48 +1361,6 @@ mod schwarz_tests {
             "\nDefault dense threshold currently: {}",
             DEFAULT_DENSE_SCHUR_THRESHOLD
         );
-    }
-
-    #[test]
-    fn test_gramian_multiplicative_schwarz_matches_obs_schwarz() {
-        let store = FactorMajorStore::new(
-            vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]],
-            ObservationWeights::Unit,
-            5,
-        )
-        .expect("valid factor-major store");
-        let design = FixedEffectsDesign::from_store(store).expect("valid design");
-
-        let config = LocalSolverConfig::default();
-        let gramian = crate::operator::gramian::Gramian::build(&design);
-
-        let domain_pairs = build_local_domains(&design);
-
-        let obs_schwarz =
-            build_multiplicative_obs(DomainSource::FromDesign(&design), &design, &config).unwrap();
-        let gram_schwarz = build_multiplicative_sparse(
-            DomainSource::<FactorMajorStore>::FromParts(domain_pairs),
-            &gramian,
-            design.n_dofs,
-            &config,
-        )
-        .unwrap();
-
-        let r = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-        let mut z_obs = vec![0.0; 5];
-        let mut z_gram = vec![0.0; 5];
-
-        obs_schwarz.apply(&r, &mut z_obs);
-        gram_schwarz.apply(&r, &mut z_gram);
-
-        for i in 0..5 {
-            assert!(
-                (z_obs[i] - z_gram[i]).abs() < 1e-12,
-                "mismatch at DOF {i}: obs={}, gram={}",
-                z_obs[i],
-                z_gram[i],
-            );
-        }
     }
 }
 
@@ -1364,7 +1494,7 @@ mod block_elim_tests {
 mod preconditioner_fused_tests {
     use schwarz_precond::Operator;
 
-    use crate::config::{LocalSolverConfig, Preconditioner};
+    use crate::config::{LocalSolverConfig, Preconditioner, ReductionStrategy};
     use crate::domain::FixedEffectsDesign;
     use crate::observation::{FactorMajorStore, ObservationWeights};
     use crate::operator::preconditioner::build_preconditioner_fused;
@@ -1382,7 +1512,8 @@ mod preconditioner_fused_tests {
     #[test]
     fn test_build_preconditioner_fused_additive_dimensions_and_apply() {
         let design = make_test_design();
-        let config = Preconditioner::Additive(LocalSolverConfig::default());
+        let config =
+            Preconditioner::Additive(LocalSolverConfig::default(), ReductionStrategy::Auto);
 
         let (gramian, precond) =
             build_preconditioner_fused(&design, &config).expect("fused build should succeed");

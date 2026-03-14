@@ -13,17 +13,41 @@ class Preconditioner(IntEnum):
     Multiplicative = 1
     Off = 2
 
+class ReductionStrategy(IntEnum):
+    Auto = 0
+    AtomicScatter = 1
+    ParallelReduction = 2
+
+class AdditiveSchwarzDiagnostics:
+    @property
+    def reduction_strategy(self) -> ReductionStrategy: ...
+    @property
+    def resolved_reduction_strategy(self) -> ReductionStrategy: ...
+    @property
+    def total_inner_parallel_work(self) -> int: ...
+    @property
+    def max_inner_parallel_work(self) -> int: ...
+    @property
+    def total_scatter_dofs(self) -> int: ...
+    @property
+    def outer_parallel_capacity(self) -> float: ...
+    @property
+    def scatter_overlap(self) -> float: ...
+    def __repr__(self) -> str: ...
+
 class CG:
     """Conjugate Gradient solver configuration."""
 
     tol: float
     maxiter: int
     operator: OperatorRepr
+    max_refinements: int
     def __init__(
         self,
         tol: float = 1e-8,
         maxiter: int = 1000,
         operator: OperatorRepr = OperatorRepr.Implicit,
+        max_refinements: int = 2,
     ) -> None: ...
 
 class GMRES:
@@ -33,12 +57,14 @@ class GMRES:
     maxiter: int
     restart: int
     operator: OperatorRepr
+    max_refinements: int
     def __init__(
         self,
         tol: float = 1e-8,
         maxiter: int = 1000,
         restart: int = 30,
         operator: OperatorRepr = OperatorRepr.Implicit,
+        max_refinements: int = 2,
     ) -> None: ...
 
 class SolveResult:
@@ -136,6 +162,11 @@ class FePreconditioner:
     def nrows(self) -> int: ...
     @property
     def ncols(self) -> int: ...
+    @property
+    def n_subdomains(self) -> int: ...
+    @property
+    def subdomain_inner_parallel_work(self) -> list[int]: ...
+    def additive_schwarz_diagnostics(self) -> AdditiveSchwarzDiagnostics | None: ...
     def __init__(self, data: bytes) -> None: ...
     def __repr__(self) -> str: ...
 
@@ -198,9 +229,11 @@ class FullSddm:
 
 class AdditiveSchwarz:
     local_solver: SchurComplement | FullSddm | None
+    reduction: ReductionStrategy
     def __init__(
         self,
         local_solver: SchurComplement | FullSddm | None = None,
+        reduction: ReductionStrategy = ReductionStrategy.Auto,
     ) -> None: ...
 
 class MultiplicativeSchwarz:

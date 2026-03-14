@@ -1,4 +1,61 @@
+use std::collections::HashMap;
+
 use rayon::prelude::*;
+
+// ---------------------------------------------------------------------------
+// IndexLookup: adaptive global-to-local index mapping
+// ---------------------------------------------------------------------------
+
+/// Adaptive global-to-local index lookup used during submatrix extraction.
+///
+/// Picks a dense `Vec` when indices are tightly packed, or a `HashMap` when
+/// the index range is sparse relative to the subset size.
+enum IndexLookup {
+    /// Dense lookup: `table[global]` gives `local` (or `usize::MAX` if absent).
+    Dense(Vec<usize>),
+    /// Sparse lookup: HashMap from global index to local index.
+    Sparse(HashMap<usize, usize>),
+}
+
+impl IndexLookup {
+    /// Build the appropriate lookup variant based on index density.
+    fn new(subset: &[usize], max_idx: usize, m: usize) -> Self {
+        if max_idx + 1 > 4 * m {
+            let map = subset
+                .iter()
+                .enumerate()
+                .map(|(local, &global)| (global, local))
+                .collect();
+            IndexLookup::Sparse(map)
+        } else {
+            let mut table = vec![usize::MAX; max_idx + 1];
+            for (local, &global) in subset.iter().enumerate() {
+                table[global] = local;
+            }
+            IndexLookup::Dense(table)
+        }
+    }
+
+    /// Look up the local index for a global column index.
+    #[inline]
+    fn get(&self, global_col: usize) -> Option<usize> {
+        match self {
+            IndexLookup::Dense(table) => {
+                if global_col < table.len() {
+                    let local = table[global_col];
+                    if local != usize::MAX {
+                        Some(local)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+            IndexLookup::Sparse(map) => map.get(&global_col).copied(),
+        }
+    }
+}
 
 /// Square sparse matrix in Compressed Sparse Row (CSR) format.
 ///
@@ -160,69 +217,27 @@ impl SparseMatrix {
 
         let max_idx = subset.iter().copied().max().unwrap_or(0);
 
+        debug_assert!(m <= u32::MAX as usize);
+
+        let lookup = IndexLookup::new(subset, max_idx, m);
+
         let mut new_indptr = Vec::with_capacity(m + 1);
         let mut new_indices = Vec::new();
         let mut new_data = Vec::new();
         new_indptr.push(0u32);
 
-        debug_assert!(m <= u32::MAX as usize);
-
-        if max_idx + 1 > 4 * m {
-            // Sparse subset relative to index range: use HashMap.
-            let global_to_local: std::collections::HashMap<usize, usize> = subset
-                .iter()
-                .enumerate()
-                .map(|(local, &global)| (global, local))
-                .collect();
-
-            let collect_row =
-                |global_row: usize, new_indices: &mut Vec<u32>, new_data: &mut Vec<f64>| {
-                    let start = self.indptr[global_row] as usize;
-                    let end = self.indptr[global_row + 1] as usize;
-                    for idx in start..end {
-                        let global_col = self.indices[idx] as usize;
-                        if let Some(&local_col) = global_to_local.get(&global_col) {
-                            new_indices.push(local_col as u32);
-                            new_data.push(self.data[idx]);
-                        }
-                    }
-                };
-
-            for &global_row in subset {
-                collect_row(global_row, &mut new_indices, &mut new_data);
-                new_indptr.push(
-                    u32::try_from(new_indices.len()).expect("submatrix nnz exceeds u32::MAX"),
-                );
+        for &global_row in subset {
+            let start = self.indptr[global_row] as usize;
+            let end = self.indptr[global_row + 1] as usize;
+            for idx in start..end {
+                let global_col = self.indices[idx] as usize;
+                if let Some(local_col) = lookup.get(global_col) {
+                    new_indices.push(local_col as u32);
+                    new_data.push(self.data[idx]);
+                }
             }
-        } else {
-            // Dense subset relative to index range: use Vec for O(1) lookup.
-            let mut global_to_local = vec![usize::MAX; max_idx + 1];
-            for (local, &global) in subset.iter().enumerate() {
-                global_to_local[global] = local;
-            }
-
-            let collect_row =
-                |global_row: usize, new_indices: &mut Vec<u32>, new_data: &mut Vec<f64>| {
-                    let start = self.indptr[global_row] as usize;
-                    let end = self.indptr[global_row + 1] as usize;
-                    for idx in start..end {
-                        let global_col = self.indices[idx] as usize;
-                        if global_col <= max_idx {
-                            let local_col = global_to_local[global_col];
-                            if local_col != usize::MAX {
-                                new_indices.push(local_col as u32);
-                                new_data.push(self.data[idx]);
-                            }
-                        }
-                    }
-                };
-
-            for &global_row in subset {
-                collect_row(global_row, &mut new_indices, &mut new_data);
-                new_indptr.push(
-                    u32::try_from(new_indices.len()).expect("submatrix nnz exceeds u32::MAX"),
-                );
-            }
+            new_indptr
+                .push(u32::try_from(new_indices.len()).expect("submatrix nnz exceeds u32::MAX"));
         }
 
         SparseMatrix {

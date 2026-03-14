@@ -1,7 +1,7 @@
 use ndarray::array;
 use within::{
-    solve, FePreconditioner, KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner, Solver,
-    SolverParams,
+    solve, FePreconditioner, KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner,
+    ReductionStrategy, Solver, SolverParams,
 };
 
 #[path = "common/orchestrate_helpers.rs"]
@@ -12,7 +12,7 @@ fn default_params() -> SolverParams {
 }
 
 fn additive_precond() -> Preconditioner {
-    Preconditioner::Additive(LocalSolverConfig::solver_default())
+    Preconditioner::Additive(LocalSolverConfig::solver_default(), ReductionStrategy::Auto)
 }
 
 fn categories_and_y() -> (ndarray::Array2<u32>, Vec<f64>) {
@@ -79,6 +79,7 @@ fn test_solver_explicit_gramian() {
         operator: OperatorRepr::Explicit,
         tol: 1e-8,
         maxiter: 1000,
+        ..Default::default()
     };
     let precond = additive_precond();
 
@@ -187,6 +188,7 @@ fn test_solver_multiplicative_preconditioner() {
         operator: OperatorRepr::Explicit,
         tol: 1e-8,
         maxiter: 1000,
+        ..Default::default()
     };
     let precond = Preconditioner::Multiplicative(LocalSolverConfig::solver_default());
 
@@ -206,6 +208,7 @@ fn test_multiplicative_preconditioner_nrows_ncols() {
         operator: OperatorRepr::Explicit,
         tol: 1e-8,
         maxiter: 1000,
+        ..Default::default()
     };
     let precond = Preconditioner::Multiplicative(LocalSolverConfig::solver_default());
 
@@ -260,8 +263,10 @@ fn test_multiplicative_vs_additive_same_solution() {
         operator: OperatorRepr::Implicit,
         tol: 1e-10,
         maxiter: 2000,
+        ..Default::default()
     };
-    let precond_add = Preconditioner::Additive(LocalSolverConfig::solver_default());
+    let precond_add =
+        Preconditioner::Additive(LocalSolverConfig::solver_default(), ReductionStrategy::Auto);
     let result_add = solve(categories.view(), &y, None, &params_add, Some(&precond_add))
         .expect("additive solve");
 
@@ -270,6 +275,7 @@ fn test_multiplicative_vs_additive_same_solution() {
         operator: OperatorRepr::Explicit,
         tol: 1e-10,
         maxiter: 2000,
+        ..Default::default()
     };
     let precond_mult = Preconditioner::Multiplicative(LocalSolverConfig::solver_default());
     let result_mult = solve(
@@ -303,6 +309,7 @@ fn test_multiplicative_serde_roundtrip() {
         operator: OperatorRepr::Explicit,
         tol: 1e-8,
         maxiter: 1000,
+        ..Default::default()
     };
     let precond = Preconditioner::Multiplicative(LocalSolverConfig::solver_default());
 
@@ -334,6 +341,7 @@ fn test_solver_multiplicative_implicit_fused() {
         operator: OperatorRepr::Implicit,
         tol: 1e-8,
         maxiter: 1000,
+        ..Default::default()
     };
     let precond = Preconditioner::Multiplicative(LocalSolverConfig::solver_default());
 

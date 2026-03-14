@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from within import CG, GMRES
 from within._within import (
-    AdditiveSchwarz,
     ApproxCholConfig,
     ApproxSchurConfig,
     MultiplicativeSchwarz,
@@ -15,6 +13,9 @@ from .._framework import (
     ProblemSpec,
     SolverConfig,
     SuiteOptions,
+    benchmark_cg,
+    benchmark_gmres,
+    make_additive_schwarz,
     run_problem_set,
     suite,
 )
@@ -23,9 +24,10 @@ from .._table import print_table
 RESIDUAL_THRESHOLD = 1e-6
 
 
-def _problems(quick: bool, seed: int) -> list[ProblemSpec]:
-    if quick:
-        return [
+def _problems(opts: SuiteOptions) -> list[ProblemSpec]:
+    seed = opts.seed
+    return opts.select(
+        smoke=[
             ProblemSpec("chain-50 2fe", "chain_2fe", {"n_levels": 50}, seed),
             ProblemSpec("barbell-50 2fe", "barbell_2fe", {"n_levels": 50}, seed),
             ProblemSpec(
@@ -35,71 +37,98 @@ def _problems(quick: bool, seed: int) -> list[ProblemSpec]:
                 seed,
             ),
             ProblemSpec("chain-3fe-50", "chain_3fe", {"n_levels": 50}, seed),
-        ]
-    return [
-        # 2-FE
-        ProblemSpec("chain-100 2fe", "chain_2fe", {"n_levels": 100}, seed),
-        ProblemSpec("chain-250 2fe", "chain_2fe", {"n_levels": 250}, seed),
-        ProblemSpec("chain-500 2fe", "chain_2fe", {"n_levels": 500}, seed),
-        ProblemSpec("barbell-100 2fe", "barbell_2fe", {"n_levels": 100}, seed),
-        ProblemSpec("barbell-250 2fe", "barbell_2fe", {"n_levels": 250}, seed),
-        ProblemSpec("barbell-500 2fe", "barbell_2fe", {"n_levels": 500}, seed),
-        # 3-FE
-        ProblemSpec(
-            "sparse-3e-50^3",
-            "sparse_3fe",
-            {"n_levels": (50, 50, 50), "edges_per_level": 3},
-            seed,
-        ),
-        ProblemSpec(
-            "sparse-3e-100^3",
-            "sparse_3fe",
-            {"n_levels": (100, 100, 100), "edges_per_level": 3},
-            seed,
-        ),
-        ProblemSpec(
-            "sparse-2e-50^3",
-            "sparse_3fe",
-            {"n_levels": (50, 50, 50), "edges_per_level": 2},
-            seed,
-        ),
-        ProblemSpec(
-            "sparse-2e-100^3",
-            "sparse_3fe",
-            {"n_levels": (100, 100, 100), "edges_per_level": 2},
-            seed,
-        ),
-        ProblemSpec(
-            "imbal-50^3-5K",
-            "imbalanced_3fe",
-            {"n_levels": (50, 50, 50), "n_rows": 5000},
-            seed,
-        ),
-        ProblemSpec(
-            "imbal-100^3-10K",
-            "imbalanced_3fe",
-            {"n_levels": (100, 100, 100), "n_rows": 10000},
-            seed,
-        ),
-        ProblemSpec("chain-3fe-50", "chain_3fe", {"n_levels": 50}, seed),
-        ProblemSpec("chain-3fe-100", "chain_3fe", {"n_levels": 100}, seed),
-        ProblemSpec("chain-3fe-250", "chain_3fe", {"n_levels": 250}, seed),
-        ProblemSpec(
-            "barbell-3fe-100", "barbell_3fe", {"n_levels": 100, "bridge_width": 4}, seed
-        ),
-        ProblemSpec(
-            "barbell-3fe-250",
-            "barbell_3fe",
-            {"n_levels": 250, "bridge_width": 10},
-            seed,
-        ),
-        ProblemSpec(
-            "barbell-3fe-500",
-            "barbell_3fe",
-            {"n_levels": 500, "bridge_width": 20},
-            seed,
-        ),
-    ]
+        ],
+        iterate=[
+            ProblemSpec("chain-250 2fe", "chain_2fe", {"n_levels": 250}, seed),
+            ProblemSpec("barbell-250 2fe", "barbell_2fe", {"n_levels": 250}, seed),
+            ProblemSpec(
+                "sparse-3e-100^3",
+                "sparse_3fe",
+                {"n_levels": (100, 100, 100), "edges_per_level": 3},
+                seed,
+            ),
+            ProblemSpec(
+                "imbal-100^3-10K",
+                "imbalanced_3fe",
+                {"n_levels": (100, 100, 100), "n_rows": 10000},
+                seed,
+            ),
+            ProblemSpec("chain-3fe-250", "chain_3fe", {"n_levels": 250}, seed),
+            ProblemSpec(
+                "barbell-3fe-250",
+                "barbell_3fe",
+                {"n_levels": 250, "bridge_width": 10},
+                seed,
+            ),
+        ],
+        full=[
+            # 2-FE
+            ProblemSpec("chain-100 2fe", "chain_2fe", {"n_levels": 100}, seed),
+            ProblemSpec("chain-250 2fe", "chain_2fe", {"n_levels": 250}, seed),
+            ProblemSpec("chain-500 2fe", "chain_2fe", {"n_levels": 500}, seed),
+            ProblemSpec("barbell-100 2fe", "barbell_2fe", {"n_levels": 100}, seed),
+            ProblemSpec("barbell-250 2fe", "barbell_2fe", {"n_levels": 250}, seed),
+            ProblemSpec("barbell-500 2fe", "barbell_2fe", {"n_levels": 500}, seed),
+            # 3-FE
+            ProblemSpec(
+                "sparse-3e-50^3",
+                "sparse_3fe",
+                {"n_levels": (50, 50, 50), "edges_per_level": 3},
+                seed,
+            ),
+            ProblemSpec(
+                "sparse-3e-100^3",
+                "sparse_3fe",
+                {"n_levels": (100, 100, 100), "edges_per_level": 3},
+                seed,
+            ),
+            ProblemSpec(
+                "sparse-2e-50^3",
+                "sparse_3fe",
+                {"n_levels": (50, 50, 50), "edges_per_level": 2},
+                seed,
+            ),
+            ProblemSpec(
+                "sparse-2e-100^3",
+                "sparse_3fe",
+                {"n_levels": (100, 100, 100), "edges_per_level": 2},
+                seed,
+            ),
+            ProblemSpec(
+                "imbal-50^3-5K",
+                "imbalanced_3fe",
+                {"n_levels": (50, 50, 50), "n_rows": 5000},
+                seed,
+            ),
+            ProblemSpec(
+                "imbal-100^3-10K",
+                "imbalanced_3fe",
+                {"n_levels": (100, 100, 100), "n_rows": 10000},
+                seed,
+            ),
+            ProblemSpec("chain-3fe-50", "chain_3fe", {"n_levels": 50}, seed),
+            ProblemSpec("chain-3fe-100", "chain_3fe", {"n_levels": 100}, seed),
+            ProblemSpec("chain-3fe-250", "chain_3fe", {"n_levels": 250}, seed),
+            ProblemSpec(
+                "barbell-3fe-100",
+                "barbell_3fe",
+                {"n_levels": 100, "bridge_width": 4},
+                seed,
+            ),
+            ProblemSpec(
+                "barbell-3fe-250",
+                "barbell_3fe",
+                {"n_levels": 250, "bridge_width": 10},
+                seed,
+            ),
+            ProblemSpec(
+                "barbell-3fe-500",
+                "barbell_3fe",
+                {"n_levels": 500, "bridge_width": 20},
+                seed,
+            ),
+        ],
+    )
 
 
 @suite(
@@ -108,7 +137,7 @@ def _problems(quick: bool, seed: int) -> list[ProblemSpec]:
     tags=("2fe", "3fe", "correctness"),
 )
 def run_verify(opts: SuiteOptions) -> list[BenchmarkResult]:
-    problems = _problems(opts.quick, opts.seed)
+    problems = _problems(opts)
 
     schur = SchurComplement(
         approx_chol=ApproxCholConfig(seed=opts.seed),
@@ -117,17 +146,17 @@ def run_verify(opts: SuiteOptions) -> list[BenchmarkResult]:
     configs = [
         SolverConfig(
             "CG(Schwarz)",
-            CG(tol=opts.tol, maxiter=opts.maxiter),
-            preconditioner=AdditiveSchwarz(local_solver=schur),
+            benchmark_cg(opts),
+            preconditioner=make_additive_schwarz(local_solver=schur),
         ),
         SolverConfig(
             "GMRES(Mult-Schwarz)",
-            GMRES(tol=opts.tol, maxiter=opts.maxiter),
+            benchmark_gmres(opts),
             preconditioner=MultiplicativeSchwarz(local_solver=schur),
         ),
     ]
 
-    all_results = run_problem_set(problems, configs)
+    all_results = run_problem_set(problems, configs, opts)
     for r in all_results:
         r.passed = r.converged and r.final_residual < RESIDUAL_THRESHOLD
 
