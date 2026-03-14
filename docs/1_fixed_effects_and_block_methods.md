@@ -113,14 +113,12 @@ G = \begin{pmatrix}
 {\color{#808080}C_{WF}^\top} & {\color{#DC143C}D_F} & {\color{#808080}C_{FY}} \\
 {\color{#808080}C_{WY}^\top} & {\color{#808080}C_{FY}^\top} & {\color{#228B22}D_Y}
 \end{pmatrix}
-= \left(\begin{array}{ccc|cc|cc}
+= \left(\begin{array}{ccccccc}
 {\color{#4169E1}2} & {\color{#4169E1}0} & {\color{#4169E1}0} & {\color{#808080}1} & {\color{#808080}1} & {\color{#808080}1} & {\color{#808080}1} \\
 {\color{#4169E1}0} & {\color{#4169E1}2} & {\color{#4169E1}0} & {\color{#808080}2} & {\color{#808080}0} & {\color{#808080}1} & {\color{#808080}1} \\
 {\color{#4169E1}0} & {\color{#4169E1}0} & {\color{#4169E1}2} & {\color{#808080}0} & {\color{#808080}2} & {\color{#808080}1} & {\color{#808080}1} \\
-\hline
 {\color{#808080}1} & {\color{#808080}2} & {\color{#808080}0} & {\color{#DC143C}3} & {\color{#DC143C}0} & {\color{#808080}2} & {\color{#808080}1} \\
 {\color{#808080}1} & {\color{#808080}0} & {\color{#808080}2} & {\color{#DC143C}0} & {\color{#DC143C}3} & {\color{#808080}1} & {\color{#808080}2} \\
-\hline
 {\color{#808080}1} & {\color{#808080}1} & {\color{#808080}1} & {\color{#808080}2} & {\color{#808080}1} & {\color{#228B22}3} & {\color{#228B22}0} \\
 {\color{#808080}1} & {\color{#808080}1} & {\color{#808080}1} & {\color{#808080}1} & {\color{#808080}2} & {\color{#228B22}0} & {\color{#228B22}3}
 \end{array}\right)
