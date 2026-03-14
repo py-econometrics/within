@@ -13,17 +13,19 @@ This is Part 3 of the algorithm documentation for the `within` solver. It descri
 
 ## 1. The Local Solve Pipeline
 
-Each subdomain requires solving a system $A_i z_i = r_i$ where $A_i$ is the bipartite Gramian block for a factor pair. These systems are too large to solve exactly in practice - a Worker-Firm block in a real dataset may have millions of DOFs. Instead, the solver produces an **approximate** factorization that is cheap to build and cheap to apply, trading exactness for speed. The Krylov outer solver ([Part 2](2_solver_architecture.md)) compensates for this approximation by refining the global solution across iterations.
+Each subdomain requires solving a system $A_i z_i = r_i$ where $A_i$ is the bipartite Gramian block for a factor pair. These systems are too large to solve exactly in practice - a Worker-Firm block in a real dataset may have millions of DOFs / factor levels. Instead, the solver produces an **approximate** factorization that is cheap to build and cheap to apply, trading exactness for speed. The Krylov outer solver ([Part 2](2_solver_architecture.md)) compensates for this approximation by refining the global solution across iterations.
 
 The local solve applies a pipeline of transformations that progressively simplify the problem:
 
 ![Local solve pipeline](images/local_solve_pipeline.svg)
 
 The key stages are:
-1. **Sign-flip** the bipartite block into a graph Laplacian (zero row-sums)
-2. **Eliminate the larger factor** via Schur complement - which reduces e.g. a (workers + firms) system to a firms-only system. This step can be exact or approximate (Section 3.3).
-3. **Factor** the reduced system with approximate Cholesky - the main source of approximation
-4. **Solve** via cheap triangular substitution, then back-substitute to recover the full solution
+
+0. We start by forming a **Bipartite block** of a factor pair.
+1. We then **sign-flip** the bipartite block into a graph Laplacian (zero row-sums)
+2. Next we **eliminate the larger factor** via Schur complement - which reduces e.g. a (workers + firms) system to a firms-only system. This step can be exact or approximate (Section 3.3).
+3. We **factor** the reduced system with approximate Cholesky - the main source of approximation
+4. Last, we **solve** via cheap triangular substitution, then back-substitute to recover the full solution
 
 The approximation enters in steps 2 (optionally) and 3 (always): both use **clique-tree sampling** to avoid the quadratic fill that exact Gaussian elimination would produce.
 
@@ -91,12 +93,9 @@ Each eliminated worker with $d$ firm connections creates a dense **clique** of $
 
 ![Schur complement: clique vs. tree](images/schur_clique_vs_tree.svg)
 
-The **approximate** variant (Gao, Kyng, and Spielman, 2025) replaces each clique with a random **spanning tree** - only $d - 1$ edges instead of $\binom{d}{2}$. The tree weights are chosen so that the expected Laplacian matches the clique Laplacian (an **unbiased estimator**).  
+The **approximate** variant (Gao, Kyng, and Spielman, 2025) replaces each clique with a random **spanning tree** with only $d - 1$ edges instead of $\binom{d}{2}$. The tree weights are chosen so that the expected Laplacian matches the clique Laplacian (i.e. is an **unbiased estimator**).  
 
 For a worker observed at 100 firms, this reduces the fill from 4,950 edges to just 99 - a 50× reduction - without introducing bias, since the tree weights are chosen so that the approximate Schur complement is unbiased.
-
-Exact elimination preserves the Laplacian property (zero row sums). The approximate variant produces an SDDM matrix (non-negative row sums), which is repaired via Gremban augmentation.
-
 ---
 
 ## 4. Approximate Cholesky Factorization
