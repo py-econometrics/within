@@ -1,6 +1,6 @@
-# within
+# within-py
 
-`within` provides high-performance solvers for projecting out high-dimensional fixed effects from regression problems.
+`within-py` provides Python bindings to high-performance solvers for projecting out high-dimensional fixed effects from regression problems from the [`within` Rust crate](https://crates.io/crates/within).
 
 By the Frisch-Waugh-Lovell theorem, estimating a regression of the form *y = Xβ + Dα + ε* reduces to a sequence of least-squares projections, one for y and one for each column of X, followed by a cheap regression fit on the resulting residuals. The projection step of solving the normal equations *D'Dx = D'z* is the computational bottleneck, which is the problem `within` is designed to solve.
 
@@ -112,96 +112,3 @@ Pass `None` (the default) to use additive Schwarz with the default local solver.
 **`SolveResult`**: `x` (coefficients), `demeaned` (residuals), `converged`, `iterations`, `residual`, `time_total`, `time_setup`, `time_solve`.
 
 **`BatchSolveResult`**: Same fields, with `converged`, `iterations`, `residual`, and `time_solve` as lists (one entry per RHS).
-
-## Rust API
-
-```rust
-use ndarray::Array2;
-use within::{solve, SolverParams, KrylovMethod, Preconditioner, LocalSolverConfig};
-
-let categories = /* Array2<u32> of shape (n_obs, n_factors) */;
-let y: &[f64] = /* response vector */;
-
-// Default: CG + additive Schwarz
-let r = solve(categories.view(), &y, None, &SolverParams::default(), None)?;
-assert!(r.converged);
-
-// GMRES + multiplicative Schwarz
-let params = SolverParams {
-    krylov: KrylovMethod::Gmres { restart: 30 },
-    ..SolverParams::default()
-};
-let precond = Preconditioner::Multiplicative(LocalSolverConfig::default());
-let r = solve(categories.view(), &y, None, &params, Some(&precond))?;
-```
-
-Persistent solver — build once, solve many:
-
-```rust
-use within::Solver;
-
-let solver = Solver::new(categories.view(), None, &SolverParams::default(), None)?;
-let r1 = solver.solve(&y)?;
-let r2 = solver.solve(&another_y)?;  // reuses preconditioner
-```
-
-| Type | Variants / Fields |
-|---|---|
-| `SolverParams` | `krylov: KrylovMethod`, `operator: OperatorRepr`, `tol: f64`, `maxiter: usize` |
-| `KrylovMethod` | `Cg` (default), `Gmres { restart }` |
-| `OperatorRepr` | `Implicit` (default, matrix-free D'WD), `Explicit` (CSR Gramian) |
-| `Preconditioner` | `Additive(LocalSolverConfig)`, `Multiplicative(LocalSolverConfig)` |
-| `LocalSolverConfig` | `SchurComplement { approx_chol, approx_schur, dense_threshold }`, `FullSddm { approx_chol }` |
-
-### Lower-level types
-
-The crate exposes its internals for advanced use:
-
-| Module | Key types |
-|---|---|
-| `observation` | `FactorMajorStore`, `ArrayStore`, `ObservationStore` trait |
-| `domain` | `WeightedDesign`, `FixedEffectsDesign`, `Subdomain` |
-| `operator` | `Gramian` (CSR), `GramianOperator` (implicit), `DesignOperator`, `build_schwarz`, `FeSchwarz` |
-| `solver` | `Solver<S: ObservationStore>` — generic persistent solver |
-
-### Feature flags
-
-| Feature | Default | Effect |
-|---|---|---|
-| `ndarray` | yes | Enables `from_array` constructors for `ndarray::ArrayView2` interop. |
-
-## Project structure
-
-```
-crates/
-  schwarz-precond/   Generic domain decomposition library (traits, solvers, Schwarz preconditioners)
-  within/            Core fixed-effects solver (observation stores, domains, operators, orchestration)
-  within-py/         PyO3 bridge (cdylib → within._within)
-python/within/       Python package re-exporting the Rust extension
-benchmarks/          Python benchmark framework
-```
-
-## Development
-
-Uses [pixi](https://pixi.sh) as the task runner.
-
-```bash
-pixi run develop          # Build Rust extension (release mode)
-pixi run test             # Rebuild + pytest
-cargo test --workspace    # Rust tests only
-cargo bench -p within     # Criterion benchmarks
-pixi run bench run all    # Python benchmarks
-```
-
-Rust changes require rebuilding before running Python code (`pixi run develop`).
-
-## License
-
-MIT
-
-## References
-
-- Correia, Sergio. "A feasible estimator for linear models with multi-way fixed effects." *Preprint* at http://scorreia.com/research/hdfe.pdf (2016).
-- Gao, Y., Kyng, R. & Spielman, D. A. (2025). AC(k): Robust Solution of Laplacian Equations by Randomized Approximate Cholesky Factorization. *SIAM Journal on Scientific Computing*.
-- Toselli & Widlund (2005). *Domain Decomposition Methods — Algorithms and Theory*. Springer.
-- Xu, J. (1992). Iterative Methods by Space Decomposition and Subspace Correction. *SIAM Review*, 34(4), 581--613.
