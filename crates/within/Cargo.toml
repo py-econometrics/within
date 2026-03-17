@@ -10,7 +10,7 @@ keywords = ["fixed-effects", "least-squares", "preconditioner", "schwarz", "econ
 categories = ["mathematics", "science", "algorithms"]
 
 [dependencies]
-schwarz-precond = { path = "../schwarz-precond", features = ["serde"] }
+schwarz-precond = { version = "0.1.0", path = "../schwarz-precond", features = ["serde"] }
 approx-chol = { version = "0.1.0", features = ["serde"] }
 serde = { version = "1", features = ["derive", "rc"] }
 postcard = { version = "1", features = ["use-std"] }
