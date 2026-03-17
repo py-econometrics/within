@@ -2303,9 +2303,9 @@ packages:
   size: 4647744
   timestamp: 1772626120915
 - pypi: ./
-  name: within
+  name: within-py
   version: 0.1.0
-  sha256: 0df8a49df9f5adaf701c4d43927f14f4e2cbc7eacb53d697b9ed71d6c7bef08a
+  sha256: e3b8d37527f9018027197fe30fbeac46d6bc5075a669248cfeb07b7011c2d20f
   requires_dist:
   - numpy>=1.24
   - scipy>=1.10

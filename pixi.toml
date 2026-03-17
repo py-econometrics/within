@@ -8,7 +8,7 @@ pixi-pycharm = ">=0.0.10,<0.0.11"
 cargo-audit = ">=0.22.1,<0.23"
 
 [pypi-dependencies]
-within = { path = ".", editable = true }
+within-py = { path = ".", editable = true }
 
 [feature.build.dependencies]
 rust = ">=1.75"
