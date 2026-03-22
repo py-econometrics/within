@@ -19,7 +19,7 @@ pip install within_py
 `within`'s main user-facing function is `solve`. Provide a 2-D `uint32` array of category codes (one column per fixed-effect factor) and a response vector `y`. The solver finds x in the normal equations **D'D x = D'y**, where D is the sparse categorical design matrix.
 
 ```python
-from within import solve, solve_batch
+from within import solve, solve_batch, CG, GMRES, AdditiveSchwarz, MultiplicativeSchwarz
 import numpy as np
 
 np.random.seed(1)
@@ -30,8 +30,14 @@ fe = np.asfortranarray(np.column_stack([
 ]))
 y = np.random.randn(n)
 
-result = solve(fe, y)                          # Schwarz-preconditioned CG
-result = solve(fe, y, weights=np.ones(n))      # weighted solve
+# Default: additive Schwarz + CG (recommended for most problems)
+result = solve(fe, y)
+
+# Multiplicative Schwarz + GMRES (fewer iterations, less parallelism)
+result = solve(fe, y, config=GMRES(), preconditioner=MultiplicativeSchwarz())
+
+# Weighted solve
+result = solve(fe, y, weights=np.ones(n))
 ```
 
 ### FWL regression example
