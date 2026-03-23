@@ -113,11 +113,7 @@ G = \begin{pmatrix}
 {\color{#4169E1}D_W} & {\color{gray}C_{WF}} & {\color{gray}C_{WY}} \\
 {\color{gray}C_{WF}^\top} & {\color{#DC143C}D_F} & {\color{gray}C_{FY}} \\
 {\color{gray}C_{WY}^\top} & {\color{gray}C_{FY}^\top} & {\color{#228B22}D_Y}
-\end{pmatrix}
-```
-
-```math
-G = \begin{pmatrix}
+\end{pmatrix} = \begin{pmatrix}
 {\color{#4169E1}2} & {\color{#4169E1}0} & {\color{#4169E1}0} & 1 & 1 & 1 & 1 \\
 {\color{#4169E1}0} & {\color{#4169E1}2} & {\color{#4169E1}0} & 2 & 0 & 1 & 1 \\
 {\color{#4169E1}0} & {\color{#4169E1}0} & {\color{#4169E1}2} & 0 & 2 & 1 & 1 \\
