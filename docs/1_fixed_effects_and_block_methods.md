@@ -37,10 +37,11 @@ $$
 
 where $f_q(i) \in \{1, \dots, m_q\}$ is the level of factor $q$ for observation $i$ and $\alpha_{q,j}$ is the coefficient for level $j$ of factor $q$.
 
-In matrix form, we could writ this as 
+In matrix form, we could write this as
 
-$$y = D\alpha + \varepsilon
-$$, 
+$$
+y = D\alpha + \varepsilon
+$$
 
 where $D$ is the sparse $n \times m$ design matrix of 0s and 1s. Each row of $D$ has exactly $Q$ ones, one in each factor's column block.
 
@@ -74,11 +75,11 @@ The $m \times m$ Gramian inherits a natural block structure from the factor part
 
 $$
 G = \begin{pmatrix}
-{\color{royalblue}D_1} & C_{12} & C_{13} & \cdots & C_{1Q} \\
-C_{12}^\top & {\color{crimson}D_2} & C_{23} & \cdots & C_{2Q} \\
-C_{13}^\top & C_{23}^\top & {\color{forestgreen}D_3} & \cdots & C_{3Q} \\
+{\color{#4169E1}D_1} & C_{12} & C_{13} & \cdots & C_{1Q} \\
+C_{12}^\top & {\color{#DC143C}D_2} & C_{23} & \cdots & C_{2Q} \\
+C_{13}^\top & C_{23}^\top & {\color{#228B22}D_3} & \cdots & C_{3Q} \\
 \vdots & \vdots & \vdots & \ddots & \vdots \\
-C_{1Q}^\top & C_{2Q}^\top & C_{3Q}^\top & \cdots & {\color{goldenrod}D_Q}
+C_{1Q}^\top & C_{2Q}^\top & C_{3Q}^\top & \cdots & {\color{#DAA520}D_Q}
 \end{pmatrix}
 $$
 
@@ -109,20 +110,20 @@ The Gramian has $Q = 3$ diagonal blocks and $\binom{3}{2} = 3$ cross-tabulation 
 
 $$
 G = \begin{pmatrix}
-{\color{royalblue}D_W} & {\color{gray}C_{WF}} & {\color{gray}C_{WY}} \\
-{\color{gray}C_{WF}^\top} & {\color{crimson}D_F} & {\color{gray}C_{FY}} \\
-{\color{gray}C_{WY}^\top} & {\color{gray}C_{FY}^\top} & {\color{forestgreen}D_Y}
+{\color{#4169E1}D_W} & {\color{gray}C_{WF}} & {\color{gray}C_{WY}} \\
+{\color{gray}C_{WF}^\top} & {\color{#DC143C}D_F} & {\color{gray}C_{FY}} \\
+{\color{gray}C_{WY}^\top} & {\color{gray}C_{FY}^\top} & {\color{#228B22}D_Y}
 \end{pmatrix}
 = \left(\begin{array}{ccc|cc|cc}
-{\color{royalblue}2} & {\color{royalblue}0} & {\color{royalblue}0} & {\color{gray}1} & {\color{gray}1} & {\color{gray}1} & {\color{gray}1} \\
-{\color{royalblue}0} & {\color{royalblue}2} & {\color{royalblue}0} & {\color{gray}2} & {\color{gray}0} & {\color{gray}1} & {\color{gray}1} \\
-{\color{royalblue}0} & {\color{royalblue}0} & {\color{royalblue}2} & {\color{gray}0} & {\color{gray}2} & {\color{gray}1} & {\color{gray}1} \\
+{\color{#4169E1}2} & {\color{#4169E1}0} & {\color{#4169E1}0} & {\color{gray}1} & {\color{gray}1} & {\color{gray}1} & {\color{gray}1} \\
+{\color{#4169E1}0} & {\color{#4169E1}2} & {\color{#4169E1}0} & {\color{gray}2} & {\color{gray}0} & {\color{gray}1} & {\color{gray}1} \\
+{\color{#4169E1}0} & {\color{#4169E1}0} & {\color{#4169E1}2} & {\color{gray}0} & {\color{gray}2} & {\color{gray}1} & {\color{gray}1} \\
 \hline
-{\color{gray}1} & {\color{gray}2} & {\color{gray}0} & {\color{crimson}3} & {\color{crimson}0} & {\color{gray}2} & {\color{gray}1} \\
-{\color{gray}1} & {\color{gray}0} & {\color{gray}2} & {\color{crimson}0} & {\color{crimson}3} & {\color{gray}1} & {\color{gray}2} \\
+{\color{gray}1} & {\color{gray}2} & {\color{gray}0} & {\color{#DC143C}3} & {\color{#DC143C}0} & {\color{gray}2} & {\color{gray}1} \\
+{\color{gray}1} & {\color{gray}0} & {\color{gray}2} & {\color{#DC143C}0} & {\color{#DC143C}3} & {\color{gray}1} & {\color{gray}2} \\
 \hline
-{\color{gray}1} & {\color{gray}1} & {\color{gray}1} & {\color{gray}2} & {\color{gray}1} & {\color{forestgreen}3} & {\color{forestgreen}0} \\
-{\color{gray}1} & {\color{gray}1} & {\color{gray}1} & {\color{gray}1} & {\color{gray}2} & {\color{forestgreen}0} & {\color{forestgreen}3}
+{\color{gray}1} & {\color{gray}1} & {\color{gray}1} & {\color{gray}2} & {\color{gray}1} & {\color{#228B22}3} & {\color{#228B22}0} \\
+{\color{gray}1} & {\color{gray}1} & {\color{gray}1} & {\color{gray}1} & {\color{gray}2} & {\color{#228B22}0} & {\color{#228B22}3}
 \end{array}\right)
 $$
 
