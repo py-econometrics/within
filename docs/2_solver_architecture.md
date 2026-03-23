@@ -37,7 +37,7 @@ As discussed in [Part 1, Section 5.2](1_fixed_effects_and_block_methods.md#52-th
 
 ## 2. Graph Structure of the Gramian
 
-Part 1 derived the block structure of $G = D^\top W D$, with diagonal blocks $D_q$ and cross-tabulation blocks $C_{qr}$. It is convenient to write $G = \mathcal{D} + \mathcal{C}$, where $\mathcal{D} = \operatorname{block-diag}(D_1, \ldots, D_Q)$ collects the diagonal blocks and $\mathcal{C}$ collects the off-diagonal cross-tabulation blocks. This section describes the graph-theoretic properties that drive the domain decomposition.
+Part 1 derived the block structure of $G = D^\top W D$, with diagonal blocks $D_q$ and cross-tabulation blocks $C_{qr}$. It is convenient to write $`G = \mathcal{D} + \mathcal{C}`$, where $`\mathcal{D} = \text{block-diag}(D_1, \ldots, D_Q)`$ collects the diagonal blocks and $`\mathcal{C}`$ collects the off-diagonal cross-tabulation blocks. This section describes the graph-theoretic properties that drive the domain decomposition.
 
 ### 2.1 Factor-pair bipartite blocks
 

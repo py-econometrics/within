@@ -37,10 +37,11 @@ $$
 
 where $f_q(i) \in \{1, \dots, m_q\}$ is the level of factor $q$ for observation $i$ and $\alpha_{q,j}$ is the coefficient for level $j$ of factor $q$.
 
-In matrix form, we could writ this as 
+In matrix form, we could write this as
 
-$$y = D\alpha + \varepsilon
-$$, 
+$$
+y = D\alpha + \varepsilon
+$$
 
 where $D$ is the sparse $n \times m$ design matrix of 0s and 1s. Each row of $D$ has exactly $Q$ ones, one in each factor's column block.
 
@@ -72,15 +73,15 @@ The Gramian $G$ is symmetric positive semi-definite and always singular: within 
 
 The $m \times m$ Gramian inherits a natural block structure from the factor partition. With columns ordered by factor ($m_1$ columns for factor 1, then $m_2$ for factor 2, etc.):
 
-$$
+```math
 G = \begin{pmatrix}
-{\color{royalblue}D_1} & C_{12} & C_{13} & \cdots & C_{1Q} \\
-C_{12}^\top & {\color{crimson}D_2} & C_{23} & \cdots & C_{2Q} \\
-C_{13}^\top & C_{23}^\top & {\color{forestgreen}D_3} & \cdots & C_{3Q} \\
+{\color{#4169E1}D_1} & C_{12} & C_{13} & \cdots & C_{1Q} \\
+C_{12}^\top & {\color{#DC143C}D_2} & C_{23} & \cdots & C_{2Q} \\
+C_{13}^\top & C_{23}^\top & {\color{#228B22}D_3} & \cdots & C_{3Q} \\
 \vdots & \vdots & \vdots & \ddots & \vdots \\
-C_{1Q}^\top & C_{2Q}^\top & C_{3Q}^\top & \cdots & {\color{goldenrod}D_Q}
+C_{1Q}^\top & C_{2Q}^\top & C_{3Q}^\top & \cdots & {\color{#DAA520}D_Q}
 \end{pmatrix}
-$$
+```
 
 The blocks are:
 
@@ -107,24 +108,21 @@ Factor 1 (the worker fixed effect) has $m_1 = 3$ levels: {W1, W2, W3}. Factor 2 
 
 The Gramian has $Q = 3$ diagonal blocks and $\binom{3}{2} = 3$ cross-tabulation blocks:
 
-$$
+```math
 G = \begin{pmatrix}
-{\color{royalblue}D_W} & {\color{gray}C_{WF}} & {\color{gray}C_{WY}} \\
-{\color{gray}C_{WF}^\top} & {\color{crimson}D_F} & {\color{gray}C_{FY}} \\
-{\color{gray}C_{WY}^\top} & {\color{gray}C_{FY}^\top} & {\color{forestgreen}D_Y}
+{\color{#4169E1}D_W} & {\color{gray}C_{WF}} & {\color{gray}C_{WY}} \\
+{\color{gray}C_{WF}^\top} & {\color{#DC143C}D_F} & {\color{gray}C_{FY}} \\
+{\color{gray}C_{WY}^\top} & {\color{gray}C_{FY}^\top} & {\color{#228B22}D_Y}
+\end{pmatrix} = \begin{pmatrix}
+{\color{#4169E1}2} & {\color{#4169E1}0} & {\color{#4169E1}0} & 1 & 1 & 1 & 1 \\
+{\color{#4169E1}0} & {\color{#4169E1}2} & {\color{#4169E1}0} & 2 & 0 & 1 & 1 \\
+{\color{#4169E1}0} & {\color{#4169E1}0} & {\color{#4169E1}2} & 0 & 2 & 1 & 1 \\
+1 & 2 & 0 & {\color{#DC143C}3} & {\color{#DC143C}0} & 2 & 1 \\
+1 & 0 & 2 & {\color{#DC143C}0} & {\color{#DC143C}3} & 1 & 2 \\
+1 & 1 & 1 & 2 & 1 & {\color{#228B22}3} & {\color{#228B22}0} \\
+1 & 1 & 1 & 1 & 2 & {\color{#228B22}0} & {\color{#228B22}3}
 \end{pmatrix}
-= \left(\begin{array}{ccc|cc|cc}
-{\color{royalblue}2} & {\color{royalblue}0} & {\color{royalblue}0} & {\color{gray}1} & {\color{gray}1} & {\color{gray}1} & {\color{gray}1} \\
-{\color{royalblue}0} & {\color{royalblue}2} & {\color{royalblue}0} & {\color{gray}2} & {\color{gray}0} & {\color{gray}1} & {\color{gray}1} \\
-{\color{royalblue}0} & {\color{royalblue}0} & {\color{royalblue}2} & {\color{gray}0} & {\color{gray}2} & {\color{gray}1} & {\color{gray}1} \\
-\hline
-{\color{gray}1} & {\color{gray}2} & {\color{gray}0} & {\color{crimson}3} & {\color{crimson}0} & {\color{gray}2} & {\color{gray}1} \\
-{\color{gray}1} & {\color{gray}0} & {\color{gray}2} & {\color{crimson}0} & {\color{crimson}3} & {\color{gray}1} & {\color{gray}2} \\
-\hline
-{\color{gray}1} & {\color{gray}1} & {\color{gray}1} & {\color{gray}2} & {\color{gray}1} & {\color{forestgreen}3} & {\color{forestgreen}0} \\
-{\color{gray}1} & {\color{gray}1} & {\color{gray}1} & {\color{gray}1} & {\color{gray}2} & {\color{forestgreen}0} & {\color{forestgreen}3}
-\end{array}\right)
-$$
+```
 
 $D_W$ is $3 \times 3$ (one row/column per worker) with 2s on the diagonal because each worker appears in exactly 2 observations (e.g. W1 in obs 1, 2). Off-diagonals are zero because no observation belongs to two workers. $D_F$ is $2 \times 2$ with 3s on the diagonal because each firm appears in 3 observations (F1 in obs 1, 3, 4; F2 in obs 2, 5, 6). The cross-tabulation block $C_{WY}$ is $3 \times 2$ (3 workers $\times$ 2 years); entry $[j,k]$ counts observations where worker $j$ is observed in year $k$. Here every worker appears once per year, so $C_{WY}$ is all ones.
 
