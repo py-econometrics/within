@@ -118,10 +118,8 @@ G = \begin{pmatrix}
 {\color{#4169E1}2} & {\color{#4169E1}0} & {\color{#4169E1}0} & {\color{gray}1} & {\color{gray}1} & {\color{gray}1} & {\color{gray}1} \\
 {\color{#4169E1}0} & {\color{#4169E1}2} & {\color{#4169E1}0} & {\color{gray}2} & {\color{gray}0} & {\color{gray}1} & {\color{gray}1} \\
 {\color{#4169E1}0} & {\color{#4169E1}0} & {\color{#4169E1}2} & {\color{gray}0} & {\color{gray}2} & {\color{gray}1} & {\color{gray}1} \\
-\hline
 {\color{gray}1} & {\color{gray}2} & {\color{gray}0} & {\color{#DC143C}3} & {\color{#DC143C}0} & {\color{gray}2} & {\color{gray}1} \\
 {\color{gray}1} & {\color{gray}0} & {\color{gray}2} & {\color{#DC143C}0} & {\color{#DC143C}3} & {\color{gray}1} & {\color{gray}2} \\
-\hline
 {\color{gray}1} & {\color{gray}1} & {\color{gray}1} & {\color{gray}2} & {\color{gray}1} & {\color{#228B22}3} & {\color{#228B22}0} \\
 {\color{gray}1} & {\color{gray}1} & {\color{gray}1} & {\color{gray}1} & {\color{gray}2} & {\color{#228B22}0} & {\color{#228B22}3}
 \end{array}\right)
