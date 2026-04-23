@@ -10,7 +10,7 @@ Public API
 - ``suite`` — decorator to register a suite
 - ``list_suites`` / ``get_suite`` — suite lookup
 - ``run_solve`` / ``run_problem_set`` — solve helpers
-- ``standard_solver_configs`` — default CG + GMRES configs
+- ``standard_solver_configs`` — default CG + GMRES + LSMR configs
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from typing import Any, Callable, Literal, TypeVar
 import numpy as np
 from numpy.typing import NDArray
 
-from within import CG, GMRES, solve
+from within import CG, GMRES, LSMR, solve
 from within._within import (
     AdditiveSchwarz,
     ApproxCholConfig,
@@ -55,7 +55,7 @@ class SolverConfig:
     """Configuration for a solve via the Rust-backed API."""
 
     label: str
-    config: CG | GMRES
+    config: CG | GMRES | LSMR
     preconditioner: Any = None
 
 
@@ -191,16 +191,27 @@ def benchmark_gmres(opts: Any, *, maxiter: int | None = None) -> GMRES:
     )
 
 
+def benchmark_lsmr(opts: Any, *, maxiter: int | None = None) -> LSMR:
+    """Construct an LSMR config with benchmark-standard tolerance handling."""
+    return LSMR(
+        tol=benchmark_solver_tol(opts.tol),
+        maxiter=opts.maxiter if maxiter is None else maxiter,
+    )
+
+
 def make_additive_schwarz(local_solver: Any) -> AdditiveSchwarz:
     """Construct additive Schwarz using the default Auto reduction mode."""
     return AdditiveSchwarz(local_solver=local_solver, reduction=ReductionStrategy.Auto)
 
 
-def standard_solver_configs(opts: Any) -> list[SolverConfig]:
-    """Standard CG + GMRES solver configs used by most benchmark suites.
+def standard_solver_configs(
+    opts: Any, *, maxiter: int | None = None
+) -> list[SolverConfig]:
+    """Standard CG + GMRES + LSMR configs used by most benchmark suites.
 
     *opts* must have ``seed``, ``tol``, and ``maxiter`` attributes
-    (typically a ``SuiteOptions``).
+    (typically a ``SuiteOptions``).  Pass *maxiter* to override the
+    iteration cap applied to all three solvers.
     """
     schur = SchurComplement(
         approx_chol=ApproxCholConfig(seed=opts.seed),
@@ -209,13 +220,18 @@ def standard_solver_configs(opts: Any) -> list[SolverConfig]:
     return [
         SolverConfig(
             "CG(Schwarz)",
-            benchmark_cg(opts),
+            benchmark_cg(opts, maxiter=maxiter),
             preconditioner=make_additive_schwarz(local_solver=schur),
         ),
         SolverConfig(
             "GMRES(Mult-Schwarz)",
-            benchmark_gmres(opts),
+            benchmark_gmres(opts, maxiter=maxiter),
             preconditioner=MultiplicativeSchwarz(local_solver=schur),
+        ),
+        SolverConfig(
+            "LSMR(Schwarz)",
+            benchmark_lsmr(opts, maxiter=maxiter),
+            preconditioner=make_additive_schwarz(local_solver=schur),
         ),
     ]
 

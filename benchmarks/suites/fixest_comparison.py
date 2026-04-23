@@ -22,6 +22,7 @@ from .._framework import (
     benchmark_gmres,
     make_additive_schwarz,
     run_solve,
+    standard_solver_configs,
     suite,
 )
 from .._table import print_pivot, print_table
@@ -63,12 +64,12 @@ def run_fixest_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
 
     solver_configs = [
         SolverConfig(
-            "CG(exact)",
+            "CG(split8,exact-schur)",
             benchmark_cg(opts),
             preconditioner=make_additive_schwarz(local_solver=exact_schur),
         ),
         SolverConfig(
-            "CG(approx)",
+            "CG(split8,approx-schur)",
             benchmark_cg(opts),
             preconditioner=make_additive_schwarz(local_solver=approx_schur),
         ),
@@ -76,18 +77,19 @@ def run_fixest_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
     if opts.profile != "full":
         solver_configs.append(
             SolverConfig(
-                "GMRES(exact)",
+                "GMRES(split8,exact-schur)",
                 benchmark_gmres(opts),
                 preconditioner=MultiplicativeSchwarz(local_solver=exact_schur),
             )
         )
         solver_configs.append(
             SolverConfig(
-                "GMRES(approx)",
+                "GMRES(split8,approx-schur)",
                 benchmark_gmres(opts),
                 preconditioner=MultiplicativeSchwarz(local_solver=approx_schur),
             )
         )
+    solver_configs.extend(standard_solver_configs(opts))
 
     gen = get_generator("fixest_dgp")
     all_results: list[BenchmarkResult] = []
