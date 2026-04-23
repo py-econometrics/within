@@ -103,7 +103,13 @@ pub fn cg_solve_preconditioned<A: Operator + ?Sized, M: Operator + ?Sized>(
 
         preconditioner.try_apply(&r, &mut z)?;
         let rz_new = dot(&r, &z);
-        if rz_new.abs() < f64::EPSILON * rz_init.abs().max(f64::MIN_POSITIVE) {
+        // Guard threshold is EPS^2 (not EPS) so that rz must reach true
+        // numerical noise before we bail. At EPS*rz_init the recursive
+        // residual is roughly sqrt(EPS)*||b|| ~ 1.5e-8·||b||, which collides
+        // with user tolerances near 1e-8 and causes spurious non-convergence.
+        let stagnation_threshold =
+            f64::EPSILON * f64::EPSILON * rz_init.abs().max(f64::MIN_POSITIVE);
+        if rz_new.abs() < stagnation_threshold {
             return Ok(CgResult {
                 x,
                 converged: r_norm / b_norm <= tol,
