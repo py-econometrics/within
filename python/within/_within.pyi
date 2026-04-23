@@ -143,6 +143,27 @@ class GMRES:
         max_refinements: int = 2,
     ) -> None: ...
 
+class LSMR:
+    """Modified LSMR solver configuration.
+
+    Uses Modified Golub-Kahan bidiagonalization to solve the rectangular
+    least-squares problem directly. The preconditioner ``M ≈ A^T A`` is
+    applied as a single ``M^{-1}`` solve per iteration — no square-root
+    factorization needed.
+
+    Attributes:
+        tol: Convergence tolerance. Default ``1e-8``.
+        maxiter: Maximum number of iterations. Default ``1000``.
+    """
+
+    tol: float
+    maxiter: int
+    def __init__(
+        self,
+        tol: float = 1e-8,
+        maxiter: int = 1000,
+    ) -> None: ...
+
 class SolveResult:
     """Result of a single fixed-effects solve.
 
@@ -153,9 +174,10 @@ class SolveResult:
         demeaned: Response vector after subtracting estimated fixed effects,
             shape ``(n_obs,)``.
         converged: Whether the Krylov solver met the convergence tolerance.
-        iterations: Number of Krylov iterations performed.
+        iterations: Total number of Krylov iterations performed, including
+            iterative-refinement correction solves.
+            iterative-refinement correction solves.
         residual: Final relative residual norm.
-        time_total: Wall-clock time for the entire solve (setup + solve), in seconds.
         time_setup: Wall-clock time for the setup phase (operator + preconditioner
             construction), in seconds.
         time_solve: Wall-clock time for the iterative solve phase, in seconds.
@@ -187,7 +209,7 @@ class BatchSolveResult:
         x: Fixed-effect coefficients, shape ``(n_dofs, k)`` (column-major).
         demeaned: Demeaned responses, shape ``(n_obs, k)`` (column-major).
         converged: Whether each RHS converged.
-        iterations: Krylov iterations for each RHS.
+        iterations: Total Krylov iterations for each RHS.
         residual: Final relative residual norm for each RHS.
         time_solve: Wall-clock solve time for each RHS, in seconds.
         time_total: Wall-clock time for the entire batch (including shared setup),
@@ -212,7 +234,7 @@ class BatchSolveResult:
 def solve(
     categories: NDArray[np.uint32],
     y: NDArray[np.float64],
-    config: CG | GMRES | None = None,
+    config: CG | GMRES | LSMR | None = None,
     weights: NDArray[np.float64] | None = None,
     preconditioner: AdditiveSchwarz
     | MultiplicativeSchwarz
@@ -231,7 +253,8 @@ def solve(
             for one factor. Should be F-contiguous (column-major) for best
             performance; a ``UserWarning`` is emitted for C-contiguous arrays.
         y: Response vector, shape ``(n_obs,)``, dtype ``float64``.
-        config: Krylov solver configuration. Pass ``CG()`` or ``GMRES()``
+        config: Krylov solver configuration. Pass ``CG()``, ``GMRES()``,
+            or ``LSMR()``
             to override defaults (tolerance, max iterations, etc.).
             Default: ``CG(tol=1e-8, maxiter=1000)``.
         weights: Observation weights, shape ``(n_obs,)``, dtype ``float64``.
@@ -264,7 +287,7 @@ def solve(
 def solve_batch(
     categories: NDArray[np.uint32],
     Y: NDArray[np.float64],
-    config: CG | GMRES | None = None,
+    config: CG | GMRES | LSMR | None = None,
     weights: NDArray[np.float64] | None = None,
     preconditioner: AdditiveSchwarz
     | MultiplicativeSchwarz
@@ -370,7 +393,7 @@ class Solver:
     def __init__(
         self,
         categories: NDArray[np.uint32],
-        config: CG | GMRES | None = None,
+        config: CG | GMRES | LSMR | None = None,
         weights: NDArray[np.float64] | None = None,
         preconditioner: AdditiveSchwarz
         | MultiplicativeSchwarz

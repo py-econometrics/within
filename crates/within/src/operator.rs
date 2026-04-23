@@ -94,3 +94,88 @@ impl<S: ObservationStore> Operator for DesignOperator<'_, S> {
         self.design.rmatvec_dt(x, y);
     }
 }
+
+// ---------------------------------------------------------------------------
+// WeightedDesignOperator — rectangular, W^{1/2}·D·x / D^T·W^{1/2}·x
+// ---------------------------------------------------------------------------
+
+use std::sync::Mutex;
+
+/// Weighted rectangular design operator: `A = W^{1/2} D`.
+///
+/// `apply` = `W^{1/2} D x` (observation space), `apply_adjoint` = `D^T W^{1/2} x` (DOF space).
+/// For unweighted designs, delegates directly to `D x` / `D^T x` with no extra work.
+///
+/// The normal equations of this operator give `A^T A = D^T W D = G` (the Gramian),
+/// so the existing Schwarz preconditioner approximating `G^{-1}` can be used directly.
+pub struct WeightedDesignOperator<'a, S: ObservationStore> {
+    design: &'a WeightedDesign<S>,
+    /// Pre-computed `sqrt(w_i)` per observation. `None` when unweighted.
+    sqrt_weights: Option<Vec<f64>>,
+    /// Scratch for the adjoint path: stores `sqrt(w_i) * u_i`.
+    scratch: Mutex<Vec<f64>>,
+}
+
+impl<'a, S: ObservationStore> WeightedDesignOperator<'a, S> {
+    /// Create from a weighted design matrix.
+    pub fn new(design: &'a WeightedDesign<S>) -> Self {
+        let sqrt_weights = if design.store.is_unweighted() {
+            None
+        } else {
+            Some(
+                (0..design.n_rows)
+                    .map(|i| design.uid_weight(i).sqrt())
+                    .collect(),
+            )
+        };
+        Self {
+            scratch: Mutex::new(vec![0.0; design.n_rows]),
+            design,
+            sqrt_weights,
+        }
+    }
+
+    /// Compute the observation-space RHS `b = W^{1/2} y`.
+    ///
+    /// For unweighted designs, returns a copy of `y`.
+    pub fn weighted_rhs(&self, y: &[f64]) -> Vec<f64> {
+        match &self.sqrt_weights {
+            None => y.to_vec(),
+            Some(sw) => y.iter().zip(sw).map(|(&yi, &swi)| swi * yi).collect(),
+        }
+    }
+}
+
+impl<S: ObservationStore> Operator for WeightedDesignOperator<'_, S> {
+    fn nrows(&self) -> usize {
+        self.design.n_rows
+    }
+
+    fn ncols(&self) -> usize {
+        self.design.n_dofs
+    }
+
+    fn apply(&self, x: &[f64], y: &mut [f64]) {
+        // y = W^{1/2} (D x)
+        self.design.matvec_d(x, y);
+        if let Some(sw) = &self.sqrt_weights {
+            for (yi, &swi) in y.iter_mut().zip(sw) {
+                *yi *= swi;
+            }
+        }
+    }
+
+    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) {
+        // y = D^T (W^{1/2} x)
+        match &self.sqrt_weights {
+            None => self.design.rmatvec_dt(x, y),
+            Some(sw) => {
+                let mut tmp = self.scratch.lock().unwrap();
+                for (ti, (&xi, &swi)) in tmp.iter_mut().zip(x.iter().zip(sw)) {
+                    *ti = swi * xi;
+                }
+                self.design.rmatvec_dt(&tmp, y);
+            }
+        }
+    }
+}

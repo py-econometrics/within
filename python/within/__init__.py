@@ -35,7 +35,7 @@ Key exports:
 
 - :func:`solve` / :func:`solve_batch` -- one-shot solve functions
 - :class:`Solver` -- persistent solver with reusable preconditioner
-- :class:`CG` / :class:`GMRES` -- Krylov solver configuration
+- :class:`CG` / :class:`GMRES` / :class:`LSMR` -- Krylov solver configuration
 - :class:`Preconditioner` -- quick preconditioner selection enum
 - :class:`AdditiveSchwarz` / :class:`MultiplicativeSchwarz` -- fine-grained
   preconditioner configuration
@@ -50,6 +50,7 @@ from within._within import (
     BatchSolveResult,
     CG,
     GMRES,
+    LSMR,
     FePreconditioner,
     Solver,
     solve,
@@ -67,6 +68,7 @@ __all__ = [
     "BatchSolveResult",
     "CG",
     "GMRES",
+    "LSMR",
     "FePreconditioner",
     "Solver",
     "solve",

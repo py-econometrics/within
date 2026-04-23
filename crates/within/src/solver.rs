@@ -57,8 +57,11 @@ use ndarray::ArrayView2;
 use rayon::prelude::*;
 use schwarz_precond::solve::cg::pcg;
 use schwarz_precond::solve::gmres::pgmres;
+use schwarz_precond::solve::lsmr::mlsmr;
 use schwarz_precond::solve::vec_norm;
 use schwarz_precond::Operator;
+
+use crate::operator::WeightedDesignOperator;
 
 use crate::config::{KrylovMethod, OperatorRepr, Preconditioner, SolverParams};
 use crate::domain::WeightedDesign;
@@ -156,7 +159,47 @@ impl<S: ObservationStore> Solver<S> {
         let t_start = Instant::now();
         let t_setup_start = Instant::now();
 
-        // Project to normal equations: rhs = D^T W y
+        if matches!(self.krylov, KrylovMethod::Lsmr) {
+            let rect_op = WeightedDesignOperator::new(&self.design);
+            let b = rect_op.weighted_rhs(y);
+
+            let t_solve_start = Instant::now();
+            let time_setup = t_solve_start.duration_since(t_setup_start).as_secs_f64();
+
+            let precond = self.preconditioner.as_ref();
+            let r = match precond {
+                Some(p) => mlsmr(&rect_op, &b, Some(p), self.tol, self.maxiter)?,
+                None => mlsmr::<_, FePreconditioner>(&rect_op, &b, None, self.tol, self.maxiter)?,
+            };
+
+            let time_solve = t_solve_start.elapsed().as_secs_f64();
+
+            let mut demeaned = vec![0.0; self.design.n_rows];
+            self.design.matvec_d(&r.x, &mut demeaned);
+            for (d, &yi) in demeaned.iter_mut().zip(y.iter()) {
+                *d = yi - *d;
+            }
+
+            let mut rhs = vec![0.0; self.design.n_dofs];
+            self.design.rmatvec_wdt(y, &mut rhs);
+            let rhs_norm = vec_norm(&rhs).max(1e-15);
+            let mut residual_dof = vec![0.0; self.design.n_dofs];
+            self.design.rmatvec_wdt(&demeaned, &mut residual_dof);
+            let final_residual = vec_norm(&residual_dof) / rhs_norm;
+
+            return Ok(SolveResult {
+                x: r.x,
+                demeaned,
+                converged: r.converged,
+                iterations: r.iterations,
+                final_residual,
+                time_total: t_start.elapsed().as_secs_f64(),
+                time_setup,
+                time_solve,
+            });
+        }
+
+        // CG/GMRES path: normal equations + iterative refinement
         let mut rhs = vec![0.0; self.design.n_dofs];
         self.design.rmatvec_wdt(y, &mut rhs);
         let rhs_norm = vec_norm(&rhs).max(1e-15);
@@ -165,15 +208,12 @@ impl<S: ObservationStore> Solver<S> {
         let t_solve_start = Instant::now();
         let time_setup = t_solve_start.duration_since(t_setup_start).as_secs_f64();
 
-        // Initial Krylov solve + iterative refinement
         let solve = self.krylov_solve(&rhs)?;
         let refined = self.iterative_refinement(y, abs_tol, solve)?;
 
         let time_solve = t_solve_start.elapsed().as_secs_f64();
 
-        // Compute residual via observation space: ||D^T W (y - Dx)|| / ||rhs||.
-        // This is cheaper than a Gramian matvec and avoids the DOF-space
-        // cancellation that motivated iterative refinement.
+        // Residual via observation space: ||D^T W (y - Dx)|| / ||rhs||.
         let mut residual_dof = vec![0.0; self.design.n_dofs];
         self.design
             .rmatvec_wdt(&refined.demeaned, &mut residual_dof);
@@ -246,13 +286,6 @@ impl<S: ObservationStore> Solver<S> {
 
     // --- Internal ---
 
-    /// Iterative refinement: recompute the normal-equation residual from
-    /// observation space (`D^T W (y - D x)`) and solve for a correction.
-    ///
-    /// This closes the gap between normal-equation residual accuracy and
-    /// observation-space demeaning quality that arises when κ(G) is large.
-    /// The correction tolerance is scaled to the original problem so that each
-    /// refinement step does only the minimum work needed.
     fn iterative_refinement(
         &self,
         y: &[f64],
@@ -353,6 +386,7 @@ impl<S: ObservationStore> Solver<S> {
                     iterations: r.iterations,
                 })
             }
+            KrylovMethod::Lsmr => unreachable!("LSMR is dispatched inline in solve()"),
         }
     }
 }

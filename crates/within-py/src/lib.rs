@@ -397,6 +397,24 @@ impl PyGMRES {
     }
 }
 
+#[pyclass(frozen)]
+#[pyo3(name = "LSMR")]
+pub struct PyLSMR {
+    #[pyo3(get)]
+    pub tol: f64,
+    #[pyo3(get)]
+    pub maxiter: usize,
+}
+
+#[pymethods]
+impl PyLSMR {
+    #[new]
+    #[pyo3(signature = (tol=1e-8, maxiter=1000))]
+    fn new(tol: f64, maxiter: usize) -> Self {
+        Self { tol, maxiter }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Result types
 // ---------------------------------------------------------------------------
@@ -568,7 +586,7 @@ fn extract_preconditioner_config(
          Preconditioner.Off, AdditiveSchwarz(...), MultiplicativeSchwarz(...), or None",
     ))
 }
-/// Extract solver parameters from a Python config object (CG or GMRES).
+/// Extract solver parameters from a Python config object.
 fn extract_solver_params(config: &Bound<'_, PyAny>) -> PyResult<SolverParams> {
     if let Ok(cg) = config.downcast::<PyCG>() {
         let cg = cg.get();
@@ -594,27 +612,42 @@ fn extract_solver_params(config: &Bound<'_, PyAny>) -> PyResult<SolverParams> {
         });
     }
 
+    if let Ok(lsmr) = config.downcast::<PyLSMR>() {
+        let lsmr = lsmr.get();
+        return Ok(SolverParams {
+            krylov: KrylovMethod::Lsmr,
+            operator: OperatorRepr::Implicit,
+            tol: lsmr.tol,
+            maxiter: lsmr.maxiter,
+            max_refinements: 0,
+        });
+    }
     Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-        "config must be CG or GMRES",
+        "config must be CG, GMRES, or LSMR",
     ))
 }
 
-/// Validate that CG is not paired with a multiplicative preconditioner.
+/// Reject symmetric-only Krylov methods (CG, LSMR) paired with a multiplicative preconditioner.
 fn validate_cg_preconditioner(
     params: &SolverParams,
     preconditioner: &Option<Preconditioner>,
 ) -> PyResult<()> {
-    if matches!(params.krylov, KrylovMethod::Cg)
+    if matches!(params.krylov, KrylovMethod::Cg | KrylovMethod::Lsmr)
         && matches!(preconditioner, Some(Preconditioner::Multiplicative(_)))
     {
-        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-            "CG requires a symmetric preconditioner; use 'additive' or switch to GMRES",
-        ));
+        let method = match params.krylov {
+            KrylovMethod::Cg => "CG",
+            KrylovMethod::Lsmr => "LSMR",
+            KrylovMethod::Gmres { .. } => unreachable!(),
+        };
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "{method} requires a symmetric preconditioner; use 'additive' or switch to GMRES"
+        )));
     }
     Ok(())
 }
 
-/// Extract solver config and preconditioner, applying CG/multiplicative validation.
+/// Extract solver config and preconditioner, applying solver/preconditioner validation.
 fn extract_and_validate_config(
     py: Python<'_>,
     config: Option<&Bound<'_, PyAny>>,
@@ -1015,6 +1048,7 @@ fn _within(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyBatchSolveResult>()?;
     m.add_class::<PyCG>()?;
     m.add_class::<PyGMRES>()?;
+    m.add_class::<PyLSMR>()?;
     m.add_class::<PyAdditiveSchwarz>()?;
     m.add_class::<PyAdditiveSchwarzDiagnostics>()?;
     m.add_class::<PyMultiplicativeSchwarz>()?;

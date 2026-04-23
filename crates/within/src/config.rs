@@ -163,6 +163,11 @@ pub enum KrylovMethod {
         /// Restart dimension (number of Arnoldi vectors before restart).
         restart: usize,
     },
+    /// Modified LSMR: rectangular least-squares, minimum normal-equation residual.
+    ///
+    /// Uses Modified Golub-Kahan bidiagonalization — one `M⁻¹` solve per iteration.
+    /// The preconditioner `M ≈ A^T A` is used directly without square-root factorization.
+    Lsmr,
 }
 
 // ---------------------------------------------------------------------------

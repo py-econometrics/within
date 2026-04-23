@@ -287,3 +287,69 @@ fn test_gmres_multiplicative_explicit() {
     common::assert_converged_with_small_residual(&result, 1e-6);
     common::assert_solution_finite(&result);
 }
+
+// ===========================================================================
+// ===========================================================================
+// MLSMR rectangular solver tests
+// ===========================================================================
+#[test]
+fn test_lsmr_weighted() {
+    let design = common::make_weighted_design(
+        vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]],
+        within::ObservationWeights::Dense(vec![1.0, 2.0, 1.5, 0.5, 3.0]),
+    )
+    .expect("valid weighted design");
+    let y = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+
+    let params = SolverParams {
+        krylov: KrylovMethod::Lsmr,
+        operator: OperatorRepr::Implicit,
+        tol: 1e-8,
+        maxiter: 1000,
+        ..Default::default()
+    };
+    let precond =
+        Preconditioner::Additive(LocalSolverConfig::solver_default(), ReductionStrategy::Auto);
+    let solver = Solver::from_design(design, &params, Some(&precond)).expect("build solver");
+    let result = solver.solve(&y).expect("solve");
+    common::assert_converged_with_small_residual(&result, 1e-6);
+    common::assert_solution_finite(&result);
+}
+
+#[test]
+fn test_lsmr_matches_cg_solution() {
+    let design = common::make_test_design();
+    let y = common::make_y_from_unit_solution(&design);
+
+    let precond = Preconditioner::Additive(LocalSolverConfig::default(), ReductionStrategy::Auto);
+
+    let cg_params = SolverParams {
+        krylov: KrylovMethod::Cg,
+        tol: 1e-10,
+        maxiter: 1000,
+        ..Default::default()
+    };
+    let cg_solver = Solver::from_design(common::make_test_design(), &cg_params, Some(&precond))
+        .expect("build cg solver");
+    let cg_result = cg_solver.solve(&y).expect("cg solve");
+
+    let lsmr_params = SolverParams {
+        krylov: KrylovMethod::Lsmr,
+        tol: 1e-10,
+        maxiter: 1000,
+        ..Default::default()
+    };
+    let lsmr_solver =
+        Solver::from_design(design, &lsmr_params, Some(&precond)).expect("build lsmr solver");
+    let lsmr_result = lsmr_solver.solve(&y).expect("lsmr solve");
+
+    // Solutions should match to reasonable precision
+    let err: f64 = cg_result
+        .x
+        .iter()
+        .zip(lsmr_result.x.iter())
+        .map(|(a, b)| (a - b).powi(2))
+        .sum::<f64>()
+        .sqrt();
+    assert!(err < 1e-6, "CG and LSMR solutions differ: {err:.2e}");
+}
