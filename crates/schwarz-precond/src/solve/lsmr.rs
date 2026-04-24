@@ -28,8 +28,78 @@
 //! - Hamarik, Huang, Kaltenbacher, Kangro (2024). "Flexible Modified LSMR
 //!   for Least Squares Problems." arXiv:2408.16652.
 
+use rayon::prelude::*;
+
 use super::{dot, vec_norm};
 use crate::{IdentityOperator, Operator, SolveError};
+
+/// Below this count the per-iteration vector kernels run sequentially —
+/// rayon wake/steal overhead would dominate otherwise. Matches the threshold
+/// used by `sparse_matrix::CsrMatrix::matvec_add`.
+const LSMR_PAR_THRESHOLD: usize = 10_000;
+/// Per-worker chunk size for the parallel vector kernels. Tuned to keep each
+/// chunk's work above rayon dispatch overhead while staying L1-resident —
+/// sizing chunks to `n / n_threads` instead regresses at 5M+ DOFs because
+/// per-thread chunks blow L1/L2 and workers stream at DRAM bandwidth.
+const LSMR_UPDATE_CHUNK: usize = 4096;
+
+/// Fused `y = x + scale * y` with `‖y_new‖²` returned. Parallel above the
+/// threshold; each chunk accumulates its own partial sum to avoid cross-thread
+/// traffic on the reduction.
+#[inline]
+fn axpy_with_sq_norm(y: &mut [f64], x: &[f64], scale: f64) -> f64 {
+    debug_assert_eq!(x.len(), y.len());
+    let seq = |y_c: &mut [f64], x_c: &[f64]| -> f64 {
+        let mut s = 0.0;
+        for (yi, &xi) in y_c.iter_mut().zip(x_c.iter()) {
+            let val = xi + scale * *yi;
+            *yi = val;
+            s += val * val;
+        }
+        s
+    };
+    if y.len() >= LSMR_PAR_THRESHOLD {
+        y.par_chunks_mut(LSMR_UPDATE_CHUNK)
+            .zip(x.par_chunks(LSMR_UPDATE_CHUNK))
+            .map(|(y_c, x_c)| seq(y_c, x_c))
+            .sum()
+    } else {
+        seq(y, x)
+    }
+}
+
+/// `y = alpha * x + beta * y`. Parallel above the threshold.
+#[inline]
+fn axpby(y: &mut [f64], x: &[f64], alpha: f64, beta: f64) {
+    debug_assert_eq!(x.len(), y.len());
+    let seq = |y_c: &mut [f64], x_c: &[f64]| {
+        for (yi, &xi) in y_c.iter_mut().zip(x_c.iter()) {
+            *yi = alpha * xi + beta * *yi;
+        }
+    };
+    if y.len() >= LSMR_PAR_THRESHOLD {
+        y.par_chunks_mut(LSMR_UPDATE_CHUNK)
+            .zip(x.par_chunks(LSMR_UPDATE_CHUNK))
+            .for_each(|(y_c, x_c)| seq(y_c, x_c));
+    } else {
+        seq(y, x);
+    }
+}
+
+/// Parallel dot product; falls back to the sequential `super::dot` below
+/// the threshold.
+#[inline]
+fn par_dot(a: &[f64], b: &[f64]) -> f64 {
+    debug_assert_eq!(a.len(), b.len());
+    if a.len() >= LSMR_PAR_THRESHOLD {
+        a.par_chunks(LSMR_UPDATE_CHUNK)
+            .zip(b.par_chunks(LSMR_UPDATE_CHUNK))
+            .map(|(ac, bc)| ac.iter().zip(bc).map(|(x, y)| x * y).sum::<f64>())
+            .sum()
+    } else {
+        dot(a, b)
+    }
+}
 
 /// Result of an MLSMR solve.
 #[must_use]
@@ -134,12 +204,7 @@ fn mgk_step<A: Operator + ?Sized, M: Operator + ?Sized>(
     // ũ_{k+1} = A ṽ_k − (α_k / β_k) ũ_k, with β_{k+1} = ‖ũ_{k+1}‖.
     let scale = -(alpha * beta_prev_inv);
     operator.try_apply(&bufs.v, &mut bufs.av)?;
-    let mut beta_sq = 0.0;
-    for (ui, &avi) in bufs.u.iter_mut().zip(bufs.av.iter()) {
-        let val = avi + scale * *ui;
-        *ui = val;
-        beta_sq += val * val;
-    }
+    let beta_sq = axpy_with_sq_norm(&mut bufs.u, &bufs.av, scale);
     let beta = beta_sq.sqrt();
     let beta_inv = if beta > 0.0 { 1.0 / beta } else { 0.0 };
 
@@ -148,15 +213,13 @@ fn mgk_step<A: Operator + ?Sized, M: Operator + ?Sized>(
     // factor in p̃_stored.
     operator.try_apply_adjoint(&bufs.u, &mut bufs.atu)?;
     let p_coeff = beta / alpha;
-    for (pi, &ai) in bufs.p_tilde.iter_mut().zip(bufs.atu.iter()) {
-        *pi = ai * beta_inv - p_coeff * *pi;
-    }
+    axpby(&mut bufs.p_tilde, &bufs.atu, beta_inv, -p_coeff);
 
     // ṽ_{k+1} = M⁻¹ p̃
     preconditioner.try_apply(&bufs.p_tilde, &mut bufs.v)?;
 
     // α_{k+1} = √⟨ṽ_{k+1}, p̃⟩
-    let vp = dot(&bufs.v, &bufs.p_tilde);
+    let vp = par_dot(&bufs.v, &bufs.p_tilde);
     let alpha_new = if vp > 0.0 { vp.sqrt() } else { 0.0 };
 
     // v and p_tilde are left unnormalized (= α_{k+1} · normalized). The
@@ -323,18 +386,32 @@ fn mlsmr_solve<A: Operator + ?Sized, M: Operator + ?Sized>(
                 0.0
             };
 
-            for (((hbi, hi), xi), vi) in h_bar
-                .iter_mut()
-                .zip(h.iter_mut())
-                .zip(x.iter_mut())
-                .zip(bufs.v.iter_mut())
-            {
-                *vi *= alpha_new_inv; // normalize v in place
-                let h_old = *hi;
-                let hb = h_old - t_hbar * *hbi;
-                *hbi = hb;
-                *xi += t_x * hb;
-                *hi = *vi - t_h * h_old;
+            let update_chunk =
+                |hb_c: &mut [f64], h_c: &mut [f64], x_c: &mut [f64], v_c: &mut [f64]| {
+                    for (((hbi, hi), xi), vi) in hb_c
+                        .iter_mut()
+                        .zip(h_c.iter_mut())
+                        .zip(x_c.iter_mut())
+                        .zip(v_c.iter_mut())
+                    {
+                        *vi *= alpha_new_inv; // normalize v in place
+                        let h_old = *hi;
+                        let hb = h_old - t_hbar * *hbi;
+                        *hbi = hb;
+                        *xi += t_x * hb;
+                        *hi = *vi - t_h * h_old;
+                    }
+                };
+
+            if n >= LSMR_PAR_THRESHOLD {
+                h_bar
+                    .par_chunks_mut(LSMR_UPDATE_CHUNK)
+                    .zip(h.par_chunks_mut(LSMR_UPDATE_CHUNK))
+                    .zip(x.par_chunks_mut(LSMR_UPDATE_CHUNK))
+                    .zip(bufs.v.par_chunks_mut(LSMR_UPDATE_CHUNK))
+                    .for_each(|(((hb_c, h_c), x_c), v_c)| update_chunk(hb_c, h_c, x_c, v_c));
+            } else {
+                update_chunk(&mut h_bar, &mut h, &mut x, &mut bufs.v);
             }
         }
 
