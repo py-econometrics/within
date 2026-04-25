@@ -1,0 +1,17 @@
+[package]
+name = "withinr"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+
+# Detach from the repo root workspace to avoid nested-workspace Cargo errors.
+[workspace]
+
+[dependencies]
+extendr-api = "0.7"
+ndarray = "0.16"
+
+within = "0.1.0"
