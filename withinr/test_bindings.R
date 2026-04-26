@@ -36,7 +36,7 @@ cat("n =", n, "| factors:", n_f1, n_f2, n_f3,
 
 # --- Demean y and X to absorb fixed effects ---
 cat("--- demean y and X (3 covariates) ---\n")
-res <- withinr::solve_batch(categories, cbind(Y, X))
+res <- withinr::solve_batch(categories, cbind(y, X))
 
 # Extract demeaned variables
 y_tilde <- res$demeaned[, 1]

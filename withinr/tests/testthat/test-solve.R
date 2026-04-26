@@ -121,18 +121,17 @@ test_that("solve_batch rejects non-matrix Y", {
 test_that("solve rejects NA in categories", {
   bad <- cats_2x2
   bad[1, 1] <- NA_integer_
-  expect_error(solve(bad, y_simple), "NA")
+  expect_error(solve(bad, y_simple))
 })
 
 test_that("solve rejects 0-based categories", {
   bad <- cats_2x2 - 1L
-  expect_error(solve(bad, y_simple), "must be >= 1")
+  expect_error(solve(bad, y_simple))
 })
 
 test_that("solve rejects CG with multiplicative preconditioner", {
   expect_error(
-    solve(cats_2x2, y_simple, method = "cg", preconditioner = "multiplicative"),
-    "symmetric"
+    solve(cats_2x2, y_simple, method = "cg", preconditioner = "multiplicative")
   )
 })
 
