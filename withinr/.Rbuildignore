@@ -1,4 +1,9 @@
 ^.*\.Rproj$
 ^\.Rproj\.user$
-^src/rust/target$
-^src/\.cargo$
+^src/rust/target
+^src/rust/vendor$
+^src/\.cargo
+^src/.*\.o$
+^src/.*\.so$
+^src/.*\.dll$
+^test_bindings\.R$

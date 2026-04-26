@@ -11,14 +11,27 @@ $(SHLIB): $(STATLIB)
 CARGOTMP = $(CURDIR)/.cargo
 
 $(STATLIB):
-	if [ -f ./rust/vendor.tar.xz ]; then \
+	if [ "$(NOT_CRAN)" = "true" ] || [ "$(WITHINR_DEV)" = "true" ]; then \
+		export PATH="$(PATH):$(HOME)/.cargo/bin" && \
+		cargo build --lib --release --target=$(TARGET) --manifest-path=./rust/Cargo.toml --target-dir $(TARGET_DIR); \
+	elif [ -d ./rust/vendor ]; then \
+		mkdir -p $(CARGOTMP) && \
+		cp rust/vendor-config.toml $(CARGOTMP)/config.toml && \
+		export CARGO_HOME=$(CARGOTMP) && \
+		export PATH="$(PATH):$(HOME)/.cargo/bin" && \
+		cargo build --offline --lib --release --target=$(TARGET) --manifest-path=./rust/Cargo.toml --target-dir $(TARGET_DIR); \
+	elif [ -f ./rust/vendor.tar.xz ]; then \
 		tar xf rust/vendor.tar.xz && \
 		mkdir -p $(CARGOTMP) && \
-		cp rust/vendor-config.toml $(CARGOTMP)/config.toml; \
-	fi && \
-	export CARGO_HOME=$(CARGOTMP) && \
-	export PATH="$(PATH):$(HOME)/.cargo/bin" && \
-	cargo build --lib --release --target=$(TARGET) --manifest-path=./rust/Cargo.toml --target-dir $(TARGET_DIR)
+		cp rust/vendor-config.toml $(CARGOTMP)/config.toml && \
+		export CARGO_HOME=$(CARGOTMP) && \
+		export PATH="$(PATH):$(HOME)/.cargo/bin" && \
+		cargo build --offline --lib --release --target=$(TARGET) --manifest-path=./rust/Cargo.toml --target-dir $(TARGET_DIR); \
+	else \
+		echo "ERROR: missing rust/vendor.tar.xz (or rust/vendor/)."; \
+		echo "Run rextendr::vendor_pkgs(path = 'withinr') before install/check."; \
+		exit 1; \
+	fi
 
 C_clean:
 	rm -Rf $(SHLIB) $(OBJECTS)
