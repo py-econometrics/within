@@ -4,27 +4,93 @@
 //! generic over local solvers and residual update strategies. Includes
 //! iterative solvers (CG, GMRES).
 //!
-//! # Quick start
+//! # Why domain decomposition?
 //!
-//! ```rust,no_run
-//! use schwarz_precond::{
-//!     LocalSolver, Operator, SchwarzPreconditioner, SubdomainCore, SubdomainEntry,
-//! };
-//! use schwarz_precond::solve::cg::cg_solve_preconditioned;
+//! Domain decomposition splits s global problem
+//! `A x = b` into overlapping *subdomains*, solving each
+//! one cheaply, and stitching the local solutions back together.
 //!
-//! // 1. Implement Operator for your system matrix A.
-//! // 2. Implement LocalSolver for your local solve strategy.
-//! // 3. Build subdomain entries with restriction indices + weights.
-//! // 4. Construct the preconditioner and call CG.
+//! The result is a preconditioner `M^{-1}` that approximates `A^{-1}` well
+//! enough for a Krylov solver (CG or GMRES) to converge in far fewer
+//! iterations than it would unpreconditioned. Because the local solves are
+//! independent in the additive variant, they parallelize naturally.
+//!
+//! ## The additive Schwarz formula
+//!
+//! For `N` overlapping subdomains the one-level additive Schwarz
+//! preconditioner is:
+//!
+//! ```text
+//! M⁻¹ = Σᵢ Rᵢᵀ D̃ᵢ Aᵢ⁻¹ D̃ᵢ Rᵢ
 //! ```
 //!
-//! See the [`examples/`](https://github.com/kristof-mattei/domain-decomp-chol/tree/main/crates/schwarz-precond/examples)
+//! where each operator plays a specific role:
+//!
+//! | Symbol | Meaning |
+//! |--------|---------|
+//! | `Rᵢ` | **Restriction** — gathers global DOFs belonging to subdomain *i* into a local vector |
+//! | `D̃ᵢ` | **Partition-of-unity weight** — scales each DOF so that overlapping contributions sum to the identity (`Σ D̃ᵢ² = I`) |
+//! | `Aᵢ⁻¹` | **Local solve** — inverts the local system (exact or approximate) |
+//! | `Rᵢᵀ` | **Prolongation** — scatters the local correction back to the global vector |
+//!
+//! The two-sided weighting `Rᵢᵀ D̃ᵢ · · · D̃ᵢ Rᵢ` ensures that where
+//! subdomains overlap, their contributions blend smoothly rather than
+//! double-counting. Concretely, if a DOF belongs to *c* subdomains its
+//! weight in each is `1/√c`, so the squared weights sum to one.
+//!
+//! The **multiplicative** variant applies subdomains sequentially, updating
+//! the residual after each local solve. This is analogous to block
+//! Gauss-Seidel vs. block Jacobi: it converges faster per iteration but
+//! cannot parallelize the subdomain loop.
+//!
+//! # Module structure
+//!
+//! ```text
+//! schwarz-precond
+//! ├── domain          SubdomainCore, PartitionWeights
+//! ├── local_solve     LocalSolver trait, LocalSolveInvoker, SubdomainEntry
+//! ├── schwarz         Schwarz preconditioners
+//! │   ├── additive       SchwarzPreconditioner (parallel local solves)
+//! │   └── multiplicative MultiplicativeSchwarzPreconditioner, ResidualUpdater
+//! ├── solve           Iterative solvers
+//! │   ├── cg             Preconditioned conjugate gradient
+//! │   └── gmres          Right-preconditioned GMRES(m) with restarts
+//! ├── sparse_matrix   SparseMatrix (internal CSR representation)
+//! └── error           Typed errors for build and runtime failures
+//! ```
+//!
+//! # Trait relationships
+//!
+//! The crate is built around three core traits that compose to form the
+//! preconditioner:
+//!
+//! - **[`Operator`]** — A linear map `R^n -> R^n` with `apply` and
+//!   `apply_adjoint`. Both the system matrix `A` and the preconditioner
+//!   `M^{-1}` implement this trait, so solvers are generic over both.
+//!   All operators must be `Send + Sync` to enable Rayon parallelism.
+//!
+//! - **[`LocalSolver`]** — The `Aᵢ⁻¹` abstraction. Given a local
+//!   right-hand side, produce the local solution. Implementations range
+//!   from exact Cholesky to approximate incomplete factorizations.
+//!   The solver declares its DOF count and scratch buffer requirements,
+//!   which are validated at construction time.
+//!
+//! - **[`LocalSolveInvoker`]** — An execution-policy adapter that wraps
+//!   a `LocalSolver` call. The default ([`DefaultLocalSolveInvoker`])
+//!   delegates directly; specialized invokers can add instrumentation or
+//!   nested-parallelism control without polluting the solver trait itself.
+//!
+//! These compose inside [`SubdomainEntry`], which bundles a
+//! [`SubdomainCore`] (restriction indices + partition-of-unity weights)
+//! with a `LocalSolver`. The preconditioner owns a collection of entries
+//! and orchestrates the restrict-solve-prolongate loop.
+//!
+//! See [`examples/`](https://github.com/kristof-mattei/domain-decomp-chol/tree/main/crates/schwarz-precond/examples)
 //! directory for complete runnable examples.
 //!
 //! # References
 //!
 //! - Toselli & Widlund (2005). *Domain Decomposition Methods — Algorithms and Theory*. Springer.
-//! - Smith, Bjørstad & Gropp (1996). *Domain Decomposition: Parallel Multilevel Methods for Elliptic PDEs*. Cambridge University Press.
 
 #![deny(missing_docs)]
 #![warn(clippy::all)]
@@ -110,10 +176,13 @@ pub mod solve;
 mod sparse_matrix;
 
 pub use domain::{PartitionWeights, SubdomainCore};
-pub use error::{ApplyError, LocalSolveError, PreconditionerBuildError, SolveError};
-pub use local_solve::{LocalSolver, SubdomainEntry};
+pub use error::{
+    ApplyError, LocalSolveError, PreconditionerBuildError, SolveError, SubdomainCoreBuildError,
+    SubdomainEntryBuildError,
+};
+pub use local_solve::{DefaultLocalSolveInvoker, LocalSolveInvoker, LocalSolver, SubdomainEntry};
 pub use schwarz::{
-    MultiplicativeSchwarzPreconditioner, OperatorResidualUpdater, ResidualUpdater,
-    SchwarzPreconditioner,
+    AdditiveSchwarzDiagnostics, MultiplicativeSchwarzPreconditioner, OperatorResidualUpdater,
+    ReductionStrategy, ResidualUpdater, SchwarzPreconditioner,
 };
 pub use sparse_matrix::SparseMatrix;

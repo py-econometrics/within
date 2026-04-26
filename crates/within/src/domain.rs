@@ -1,3 +1,50 @@
+//! Domain layer: weighted design matrix and factor-pair subdomain construction.
+//!
+//! This module sits between raw observation storage ([`crate::observation`]) and
+//! the linear-algebra operators ([`crate::operator`]).  It answers two questions:
+//!
+//! 1. **What does the design matrix look like?** — [`WeightedDesign`] wraps an
+//!    [`ObservationStore`] with per-factor metadata ([`FactorMeta`]) and optional
+//!    observation weights, then provides the core matrix-vector products
+//!    (`D·x`, `D^T·r`, `D^T·W·r`) needed by every solver path.
+//!
+//! 2. **How is the problem decomposed into subdomains?** — The `factor_pairs`
+//!    submodule builds one [`Subdomain`] per connected component of each factor
+//!    pair, with partition-of-unity weights that ensure the additive Schwarz
+//!    preconditioner is mathematically correct.
+//!
+//! # Design matrix structure
+//!
+//! The design matrix **D** is a block matrix with one block per factor. Each
+//! block is a "one-hot" matrix: observation (row) *i* has a single 1
+//! corresponding to its level in that factor. With Q factors and `n_q` levels
+//! each, D has shape `(n_obs, sum(n_q))` and exactly Q nonzeros per row.
+//!
+//! ```text
+//! D = [ D_1 | D_2 | ... | D_Q ]     (n_obs × n_dofs)
+//!
+//! where D_q[i, j] = 1  if observation i has level j in factor q
+//!                    0  otherwise
+//! ```
+//!
+//! The coefficient vector **x** is laid out as `[x_1, x_2, ..., x_Q]` where
+//! `x_q` starts at `factors[q].offset` and has length `factors[q].n_levels`.
+//!
+//! # Domain decomposition and factor pairs
+//!
+//! The normal-equation Gramian `G = D^T W D` has a natural block structure:
+//! diagonal blocks are diagonal matrices (weighted level counts) and off-diagonal
+//! blocks `D_q^T W D_r` capture the co-occurrence between each pair of factors.
+//! Each factor pair `(q, r)` defines a subdomain whose DOFs are the union of
+//! active levels in factors q and r. When the factor-pair bipartite graph has
+//! multiple connected components, each component becomes a separate subdomain.
+//!
+//! This decomposition maps directly onto the Schwarz method: each subdomain
+//! gets a local solver, and the partition-of-unity weights ensure that
+//! overlapping DOFs (levels that appear in multiple factor pairs) are correctly
+//! scaled. See the `factor_pairs` submodule for details.
+//!
+
 pub(crate) mod factor_pairs;
 
 pub(crate) use factor_pairs::{
@@ -11,7 +58,9 @@ pub use schwarz_precond::SubdomainCore;
 /// A local subdomain corresponding to a pair of factors.
 #[derive(Clone)]
 pub struct Subdomain {
+    /// Indices `(q, r)` of the two factors this subdomain covers.
     pub factor_pair: (usize, usize),
+    /// Generic subdomain core: global DOF indices, restriction, and partition-of-unity weights.
     pub core: SubdomainCore,
 }
 
@@ -19,13 +68,13 @@ impl std::fmt::Debug for Subdomain {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Subdomain")
             .field("factor_pair", &self.factor_pair)
-            .field("n_dofs", &self.core.global_indices.len())
+            .field("n_dofs", &self.core.n_local())
             .finish()
     }
 }
 
 // ===========================================================================
-// Weighted design matrix (formerly schema.rs)
+// Weighted design matrix
 // ===========================================================================
 
 // Weighted design matrix: `WeightedDesign<S>` generic over `ObservationStore`.
@@ -33,26 +82,26 @@ impl std::fmt::Debug for Subdomain {
 // Stores per-factor metadata via `FactorMeta` and delegates observation
 // data access to the pluggable store backend `S`. Provides design matrix
 // operations (D·x, D^T·r, D^T·W·r, gramian diagonal) as methods.
-//
-// `FixedEffectsDesign` is a type alias for the unweighted `FactorMajorStore`
-// backend, preserving backward compatibility.
 use std::sync::atomic::Ordering;
 
 use portable_atomic::AtomicF64;
 use rayon::prelude::*;
 
-use crate::observation::{FactorMajorStore, FactorMeta, ObservationStore};
+use crate::observation::{FactorMeta, ObservationStore};
 use crate::{WithinError, WithinResult};
 
 /// Weighted fixed-effects design matrix, generic over observation storage.
 ///
 /// `store` holds per-observation data (levels, weights); `factors` holds
-/// per-factor metadata (n_levels, offset). The generic parameter `S` is
-/// monomorphized — no vtable, no per-element branch.
+/// per-factor metadata (n_levels, offset).
 pub struct WeightedDesign<S: ObservationStore> {
+    /// Observation storage backend (owns or borrows the raw data).
     pub store: S,
+    /// Per-factor metadata: level count and global DOF offset.
     pub factors: Vec<FactorMeta>,
+    /// Number of observations (rows of D).
     pub n_rows: usize,
+    /// Total degrees of freedom (columns of D = sum of levels across factors).
     pub n_dofs: usize,
 }
 
@@ -77,9 +126,6 @@ impl<S: ObservationStore + std::fmt::Debug> std::fmt::Debug for WeightedDesign<S
             .finish()
     }
 }
-
-/// Backward-compatible alias: unweighted, factor-major storage.
-pub type FixedEffectsDesign = WeightedDesign<FactorMajorStore>;
 
 impl<S: ObservationStore> WeightedDesign<S> {
     /// Construct from a store, inferring the number of levels per factor
@@ -118,6 +164,7 @@ impl<S: ObservationStore> WeightedDesign<S> {
         }
     }
 
+    /// Number of categorical factors in the design.
     #[inline]
     pub fn n_factors(&self) -> usize {
         self.factors.len()
@@ -179,6 +226,9 @@ fn level_from_column_or_store<S: ObservationStore>(
 /// Accumulates `value_fn(i)` into `slice[level(i, q)]` for all rows, using the
 /// requested parallelization strategy. The `atomic_buf` is reused across calls
 /// to avoid repeated allocation in the `Atomic` path.
+///
+/// All branches share the same per-row `(level, value)` computation via
+/// `level_value`; only the accumulation strategy differs.
 #[allow(clippy::too_many_arguments)]
 fn scatter_add_single_factor<S: ObservationStore>(
     slice: &mut [f64],
@@ -191,11 +241,23 @@ fn scatter_add_single_factor<S: ObservationStore>(
     strategy: ScatterStrategy,
     atomic_buf: &mut Vec<AtomicF64>,
 ) {
+    #[inline(always)]
+    fn level_value<S: ObservationStore>(
+        store: &S,
+        levels: Option<&[u32]>,
+        q: usize,
+        value_fn: &impl Fn(usize) -> f64,
+        i: usize,
+    ) -> (usize, f64) {
+        let level = level_from_column_or_store(store, levels, i, q);
+        (level, value_fn(i))
+    }
+
     match strategy {
         ScatterStrategy::Sequential => {
             for i in 0..n_rows {
-                let level = level_from_column_or_store(store, levels, i, q);
-                slice[level] += value_fn(i);
+                let (level, val) = level_value(store, levels, q, value_fn, i);
+                slice[level] += val;
             }
         }
         ScatterStrategy::Fold => {
@@ -206,8 +268,8 @@ fn scatter_add_single_factor<S: ObservationStore>(
                 .fold(
                     || vec![0.0f64; n_levels],
                     |mut acc, i| {
-                        let level = level_from_column_or_store(store, levels, i, q);
-                        acc[level] += value_fn(i);
+                        let (level, val) = level_value(store, levels, q, value_fn, i);
+                        acc[level] += val;
                         acc
                     },
                 )
@@ -228,8 +290,8 @@ fn scatter_add_single_factor<S: ObservationStore>(
             atomic_buf.clear();
             atomic_buf.extend(slice.iter().map(|&v| AtomicF64::new(v)));
             (0..n_rows).into_par_iter().for_each(|i| {
-                let level = level_from_column_or_store(store, levels, i, q);
-                atomic_buf[level].fetch_add(value_fn(i), Ordering::Relaxed);
+                let (level, val) = level_value(store, levels, q, value_fn, i);
+                atomic_buf[level].fetch_add(val, Ordering::Relaxed);
             });
             for (d, a) in slice.iter_mut().zip(atomic_buf.iter()) {
                 *d = a.load(Ordering::Relaxed);
@@ -378,18 +440,18 @@ mod tests {
     use super::*;
     use crate::observation::{FactorMajorStore, ObservationWeights};
 
-    fn make_test_design() -> FixedEffectsDesign {
+    fn make_test_design() -> WeightedDesign<FactorMajorStore> {
         let categories = vec![vec![0, 1, 2, 0, 1], vec![0, 1, 2, 3, 0]];
         let store = FactorMajorStore::new(categories, ObservationWeights::Unit, 5)
             .expect("valid factor-major store");
-        FixedEffectsDesign::from_store(store).expect("valid test design")
+        WeightedDesign::from_store(store).expect("valid test design")
     }
 
-    fn make_weighted_design(weights: Vec<f64>) -> FixedEffectsDesign {
+    fn make_weighted_design(weights: Vec<f64>) -> WeightedDesign<FactorMajorStore> {
         let categories = vec![vec![0, 1, 0, 1], vec![0, 0, 1, 1]];
         let store = FactorMajorStore::new(categories, ObservationWeights::Dense(weights), 4)
             .expect("valid weighted factor-major store");
-        FixedEffectsDesign::from_store(store).expect("valid weighted design")
+        WeightedDesign::from_store(store).expect("valid weighted design")
     }
 
     #[test]

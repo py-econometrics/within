@@ -1,6 +1,30 @@
-//! CrossTab — bipartite block representation of a local Gramian for a single factor pair.
-
-use schwarz_precond::SparseMatrix;
+//! Cross-tabulation of a factor pair: the bipartite local Gramian.
+//!
+//! For a pair of factors `(q, r)`, the local Gramian has 2×2 block structure:
+//!
+//! ```text
+//! G_local = [ D_q    C  ]
+//!           [ C^T    D_r ]
+//! ```
+//!
+//! where `D_q` and `D_r` are diagonal (weighted level counts) and `C` is the
+//! cross-tabulation matrix (`C[j,k]` = weighted count of observations at level
+//! `j` of factor `q` **and** level `k` of factor `r`).
+//!
+//! [`CrossTab`] stores this decomposed form — `C` as a [`CsrBlock`], its
+//! precomputed transpose `C^T`, and the two diagonals — rather than assembling
+//! the full symmetric CSR. This is more compact and directly supports:
+//!
+//! - **Connected components** ([`CrossTab::bipartite_connected_components`]) —
+//!   DFS on the bipartite graph `C` to split disconnected subdomains
+//! - **Component extraction** ([`CrossTab::extract_component`]) — build a
+//!   sub-CrossTab for a single connected component
+//!
+//! # Compact indexing
+//!
+//! Not all levels of a factor may be active (observed). The cross-tab uses
+//! *compact* indices: only active levels are numbered `0..n_q` and `0..n_r`.
+//! A `local_to_global` vector maps these back to global DOF indices.
 
 use super::super::csr_block::CsrBlock;
 use super::explicit::DENSE_TABLE_MAX_ENTRIES;
@@ -161,8 +185,6 @@ pub(crate) struct BipartiteComponent {
 /// diagonal blocks, avoiding construction of the full symmetric Gramian CSR.
 /// The Gramian has structure `G = [D_q, C; C^T, D_r]` where D_q and D_r are
 /// diagonal.
-///
-/// Used to build SDDM matrices directly (for ApproxChol).
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct CrossTab {
     /// CSR(C): q-block rows (n_q) x r-block cols (n_r).
@@ -190,65 +212,6 @@ impl CrossTab {
     /// Total number of DOFs (n_q + n_r).
     pub fn n_local(&self) -> usize {
         self.c.nrows + self.c.ncols
-    }
-
-    /// Size of the first (q) block.
-    pub fn first_block_size(&self) -> usize {
-        self.c.nrows
-    }
-
-    /// Build the SDDM matrix L = [D_q, -C; -C^T, D_r] directly in CSR format.
-    ///
-    /// Rows are already sorted: for q-block rows the diagonal (index i) comes
-    /// before shifted C columns (>= n_q); for r-block rows C^T columns (< n_q)
-    /// come before the diagonal (index n_q + i).
-    pub fn to_sddm(&self) -> SparseMatrix {
-        let n_q = self.n_q();
-        let n_r = self.n_r();
-        let n = n_q + n_r;
-        let nnz_c = self.c.nnz();
-        // Each row gets: 1 diagonal + off-diagonal entries from C or C^T
-        // Total NNZ = n (diagonals) + 2 * nnz_c (C and C^T entries)
-        let total_nnz = n + 2 * nnz_c;
-
-        let mut indptr = vec![0u32; n + 1];
-        let mut indices = Vec::with_capacity(total_nnz);
-        let mut data = Vec::with_capacity(total_nnz);
-
-        // Q-block rows (i = 0..n_q): diagonal at i, then C entries shifted by +n_q
-        for i in 0..n_q {
-            // Diagonal entry
-            indices.push(i as u32);
-            data.push(self.diag_q[i]);
-            // C entries for this row, with negated values and shifted columns
-            let c_start = self.c.indptr[i] as usize;
-            let c_end = self.c.indptr[i + 1] as usize;
-            for idx in c_start..c_end {
-                indices.push(self.c.indices[idx] + n_q as u32);
-                data.push(-self.c.data[idx]);
-            }
-            indptr[i + 1] = indices.len() as u32;
-        }
-
-        // R-block rows (i = 0..n_r): C^T entries first (cols < n_q), then diagonal at n_q+i
-        for i in 0..n_r {
-            // C^T entries for this row, with negated values (col indices already < n_q)
-            let ct_start = self.ct.indptr[i] as usize;
-            let ct_end = self.ct.indptr[i + 1] as usize;
-            for idx in ct_start..ct_end {
-                indices.push(self.ct.indices[idx]);
-                data.push(-self.ct.data[idx]);
-            }
-            // Diagonal entry
-            indices.push((n_q + i) as u32);
-            data.push(self.diag_r[i]);
-            indptr[n_q + i + 1] = indices.len() as u32;
-        }
-
-        debug_assert!(indptr.windows(2).all(|w| w[0] <= w[1]));
-        debug_assert_eq!(indices.len(), total_nnz);
-
-        SparseMatrix::new(indptr, indices, data, n)
     }
 
     /// Build a CrossTab for an entire factor pair, discovering active levels
@@ -313,7 +276,7 @@ impl CrossTab {
     /// Returns `None` if no active levels in either factor.
     #[cfg(test)]
     pub fn from_gramian_block(
-        gramian: &SparseMatrix,
+        gramian: &schwarz_precond::SparseMatrix,
         fq: &crate::observation::FactorMeta,
         fr: &crate::observation::FactorMeta,
     ) -> Option<(Self, Vec<u32>)> {
@@ -377,9 +340,18 @@ impl CrossTab {
             .collect();
 
         // Extract off-diagonal C block
-        let (c_indptr, c_indices, c_data) = test_helpers::extract_offdiag_block(
-            indptr, indices, data, fq, &active_q, &q_map, &r_map, r_lo, r_hi, n_q,
-        );
+        let (c_indptr, c_indices, c_data) = test_helpers::OffdiagExtractor {
+            indptr,
+            indices,
+            data,
+            fq,
+            active_q: &active_q,
+            q_map: &q_map,
+            r_map: &r_map,
+            r_lo,
+            r_hi,
+        }
+        .extract(n_q);
 
         let c = CsrBlock {
             indptr: c_indptr,
@@ -728,50 +700,53 @@ pub(crate) mod test_helpers {
         (full_diag, active)
     }
 
-    /// Extract the off-diagonal C block from a Gramian for a factor pair.
+    /// Extracts the off-diagonal C block from a Gramian for a factor pair.
     ///
-    /// Iterates active q-rows, filters columns in the r-factor range, and remaps
-    /// both row/column indices using the compact maps. Returns CSR components
-    /// `(indptr, indices, data)`.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn extract_offdiag_block(
-        indptr: &[u32],
-        indices: &[u32],
-        data: &[f64],
-        fq: &crate::observation::FactorMeta,
-        active_q: &[bool],
-        q_map: &[u32],
-        r_map: &[u32],
-        r_lo: u32,
-        r_hi: u32,
-        n_q: usize,
-    ) -> (Vec<u32>, Vec<u32>, Vec<f64>) {
-        let mut c_indptr = vec![0u32; n_q + 1];
-        let mut c_indices = Vec::new();
-        let mut c_data = Vec::new();
+    /// Bundles the many parameters of the extraction into a single struct,
+    /// iterating active q-rows, filtering columns in the r-factor range,
+    /// and remapping indices via the compact maps.
+    pub(crate) struct OffdiagExtractor<'a> {
+        pub indptr: &'a [u32],
+        pub indices: &'a [u32],
+        pub data: &'a [f64],
+        pub fq: &'a crate::observation::FactorMeta,
+        pub active_q: &'a [bool],
+        pub q_map: &'a [u32],
+        pub r_map: &'a [u32],
+        pub r_lo: u32,
+        pub r_hi: u32,
+    }
 
-        for j in 0..fq.n_levels {
-            if !active_q[j] {
-                continue;
-            }
-            let compact_q = q_map[j] as usize;
-            let row = fq.offset + j;
-            let start = indptr[row] as usize;
-            let end = indptr[row + 1] as usize;
-            for idx in start..end {
-                let col = indices[idx];
-                if col >= r_lo && col < r_hi {
-                    let k = (col - r_lo) as usize;
-                    if r_map[k] != u32::MAX {
-                        c_indices.push(r_map[k]);
-                        c_data.push(data[idx]);
+    impl OffdiagExtractor<'_> {
+        /// Extract CSR components `(indptr, indices, data)` for the C block.
+        pub fn extract(&self, n_q: usize) -> (Vec<u32>, Vec<u32>, Vec<f64>) {
+            let mut c_indptr = vec![0u32; n_q + 1];
+            let mut c_indices = Vec::new();
+            let mut c_data = Vec::new();
+
+            for j in 0..self.fq.n_levels {
+                if !self.active_q[j] {
+                    continue;
+                }
+                let compact_q = self.q_map[j] as usize;
+                let row = self.fq.offset + j;
+                let start = self.indptr[row] as usize;
+                let end = self.indptr[row + 1] as usize;
+                for idx in start..end {
+                    let col = self.indices[idx];
+                    if col >= self.r_lo && col < self.r_hi {
+                        let k = (col - self.r_lo) as usize;
+                        if self.r_map[k] != u32::MAX {
+                            c_indices.push(self.r_map[k]);
+                            c_data.push(self.data[idx]);
+                        }
                     }
                 }
+                c_indptr[compact_q + 1] = c_indices.len() as u32;
             }
-            c_indptr[compact_q + 1] = c_indices.len() as u32;
-        }
-        debug_assert!(c_indptr.windows(2).all(|w| w[0] <= w[1]));
+            debug_assert!(c_indptr.windows(2).all(|w| w[0] <= w[1]));
 
-        (c_indptr, c_indices, c_data)
+            (c_indptr, c_indices, c_data)
+        }
     }
 }

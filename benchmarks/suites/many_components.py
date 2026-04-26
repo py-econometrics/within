@@ -24,8 +24,8 @@ from .._table import print_pivot, print_table
     tags=("components", "2fe", "3fe", "4fe"),
 )
 def run_many_components(opts: SuiteOptions) -> list[BenchmarkResult]:
-    if opts.quick:
-        problems = [
+    problems = opts.select(
+        smoke=[
             # Truly disconnected (bridge_obs=0)
             ProblemSpec(
                 "discon 3fe 10c",
@@ -67,9 +67,86 @@ def run_many_components(opts: SuiteOptions) -> list[BenchmarkResult]:
                 },
                 opts.seed,
             ),
-        ]
-    else:
-        problems = [
+        ],
+        iterate=[
+            ProblemSpec(
+                "discon 3fe 10c",
+                "disconnected_kfe",
+                {
+                    "k": 3,
+                    "n_levels": 100,
+                    "n_clusters": 10,
+                    "obs_per_cluster": 200,
+                    "bridge_obs": 0,
+                },
+                opts.seed,
+            ),
+            ProblemSpec(
+                "weak 3fe 10c b=1",
+                "disconnected_kfe",
+                {
+                    "k": 3,
+                    "n_levels": 100,
+                    "n_clusters": 10,
+                    "obs_per_cluster": 200,
+                    "bridge_obs": 1,
+                },
+                opts.seed,
+            ),
+            ProblemSpec(
+                "weak 3fe 20c b=2",
+                "disconnected_kfe",
+                {
+                    "k": 3,
+                    "n_levels": 200,
+                    "n_clusters": 20,
+                    "obs_per_cluster": 200,
+                    "bridge_obs": 2,
+                },
+                opts.seed,
+            ),
+            ProblemSpec(
+                "weak 4fe 10c b=2",
+                "disconnected_kfe",
+                {
+                    "k": 4,
+                    "n_levels": 100,
+                    "n_clusters": 10,
+                    "obs_per_cluster": 200,
+                    "bridge_obs": 2,
+                },
+                opts.seed,
+            ),
+            ProblemSpec(
+                "akm discon 10c",
+                "akm_disconnected",
+                {
+                    "n_workers": 5000,
+                    "n_firms": 500,
+                    "n_years": 10,
+                    "n_clusters": 10,
+                    "within_mobility": 0.10,
+                    "cross_cluster_rate": 0.005,
+                    "n_fe": 3,
+                },
+                opts.seed,
+            ),
+            ProblemSpec(
+                "akm low-mob 10c",
+                "akm_disconnected",
+                {
+                    "n_workers": 5000,
+                    "n_firms": 500,
+                    "n_years": 10,
+                    "n_clusters": 10,
+                    "within_mobility": 0.05,
+                    "cross_cluster_rate": 0.002,
+                    "n_fe": 3,
+                },
+                opts.seed,
+            ),
+        ],
+        full=[
             # --- Truly disconnected (bridge_obs=0) ---
             ProblemSpec(
                 "discon 3fe 5c",
@@ -234,10 +311,11 @@ def run_many_components(opts: SuiteOptions) -> list[BenchmarkResult]:
                 },
                 opts.seed,
             ),
-        ]
+        ],
+    )
 
     configs = standard_solver_configs(opts)
-    results = run_problem_set(problems, configs)
+    results = run_problem_set(problems, configs, opts)
     print_table(results)
     print("\n")
     print_pivot(results)
@@ -251,8 +329,8 @@ def run_many_components(opts: SuiteOptions) -> list[BenchmarkResult]:
 )
 def run_component_scaling(opts: SuiteOptions) -> list[BenchmarkResult]:
     """Fix total size, vary number of clusters from 2 to 50."""
-    if opts.quick:
-        problems = [
+    problems = opts.select(
+        smoke=[
             ProblemSpec(
                 "3fe 2c",
                 "disconnected_kfe",
@@ -289,9 +367,46 @@ def run_component_scaling(opts: SuiteOptions) -> list[BenchmarkResult]:
                 },
                 opts.seed,
             ),
-        ]
-    else:
-        problems = [
+        ],
+        iterate=[
+            ProblemSpec(
+                "3fe 2c",
+                "disconnected_kfe",
+                {
+                    "k": 3,
+                    "n_levels": 100,
+                    "n_clusters": 2,
+                    "obs_per_cluster": 1000,
+                    "bridge_obs": 3,
+                },
+                opts.seed,
+            ),
+            ProblemSpec(
+                "3fe 10c",
+                "disconnected_kfe",
+                {
+                    "k": 3,
+                    "n_levels": 100,
+                    "n_clusters": 10,
+                    "obs_per_cluster": 200,
+                    "bridge_obs": 3,
+                },
+                opts.seed,
+            ),
+            ProblemSpec(
+                "3fe 20c",
+                "disconnected_kfe",
+                {
+                    "k": 3,
+                    "n_levels": 200,
+                    "n_clusters": 20,
+                    "obs_per_cluster": 200,
+                    "bridge_obs": 3,
+                },
+                opts.seed,
+            ),
+        ],
+        full=[
             ProblemSpec(
                 "3fe 2c",
                 "disconnected_kfe",
@@ -352,10 +467,11 @@ def run_component_scaling(opts: SuiteOptions) -> list[BenchmarkResult]:
                 },
                 opts.seed,
             ),
-        ]
+        ],
+    )
 
     configs = standard_solver_configs(opts)
-    results = run_problem_set(problems, configs)
+    results = run_problem_set(problems, configs, opts)
     print_table(results)
     print("\n")
     print_pivot(results)

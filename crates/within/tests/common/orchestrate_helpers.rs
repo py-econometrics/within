@@ -3,11 +3,9 @@
 use schwarz_precond::Operator;
 
 use within::operator::gramian::GramianOperator;
-use within::{
-    FactorMajorStore, FixedEffectsDesign, ObservationWeights, SolveResult, WeightedDesign,
-};
+use within::{FactorMajorStore, ObservationWeights, SolveResult, WeightedDesign};
 
-pub fn make_test_design() -> FixedEffectsDesign {
+pub fn make_test_design() -> WeightedDesign<FactorMajorStore> {
     make_weighted_design(
         vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]],
         ObservationWeights::Unit,
@@ -25,7 +23,7 @@ pub fn make_weighted_design(
 }
 
 /// Compute y = D * 1 so that the true solution of `min ||y - Dx||^2` is x = 1.
-pub fn make_y_from_unit_solution(design: &FixedEffectsDesign) -> Vec<f64> {
+pub fn make_y_from_unit_solution(design: &WeightedDesign<FactorMajorStore>) -> Vec<f64> {
     let x_true = vec![1.0; design.n_dofs];
     let mut y = vec![0.0; design.n_rows];
     design.matvec_d(&x_true, &mut y);
@@ -33,7 +31,7 @@ pub fn make_y_from_unit_solution(design: &FixedEffectsDesign) -> Vec<f64> {
 }
 
 /// Compute rhs = G * 1 in normal-equation space (for low-level Schwarz tests).
-pub fn make_rhs_from_unit_solution(design: &FixedEffectsDesign) -> Vec<f64> {
+pub fn make_rhs_from_unit_solution(design: &WeightedDesign<FactorMajorStore>) -> Vec<f64> {
     let gramian_op = GramianOperator::new(design);
     let x_true = vec![1.0; design.n_dofs];
     let mut rhs = vec![0.0; design.n_dofs];

@@ -1,52 +1,128 @@
 //! Schwarz preconditioner: FE-specific construction helpers.
 //!
-//! Re-exports `SchwarzPreconditioner` from the `schwarz-precond` crate and
-//! provides helpers that bridge FE types (design, subdomains, Gramian) to the crate's generic
-//! `SubdomainEntry<BlockElimSolver>` API.
+//! This module bridges the fixed-effects domain types ([`WeightedDesign`],
+//! [`Subdomain`], `CrossTab`) to the generic `schwarz-precond` crate API.
+//! The generic crate knows nothing about panel data — it operates on abstract
+//! [`SubdomainEntry`] values containing a local solver and a set of global DOF
+//! indices. This module handles the translation.
+//!
+//! # Local solver
+//!
+//! Each subdomain needs a local solver that can approximately invert the
+//! restricted Gramian on that subdomain. The solver eliminates one factor
+//! block via exact diagonal inversion, then factors the reduced Schur
+//! complement (see `schur_complement`).
+//!
+//! # Builder pattern
+//!
+//! Construction flows through a layered builder:
+//!
+//! 1. **Domain acquisition** — either scan observations from a
+//!    [`WeightedDesign`] (via [`build_schwarz`]) or accept pre-built
+//!    `(Subdomain, CrossTab)` pairs directly (enabling fused build paths
+//!    that scan observations only once)
+//! 2. **Entry construction** — each `(Subdomain, CrossTab)` pair is
+//!    converted into a `SubdomainEntry<BlockElimSolver>` in parallel via
+//!    `build_entry`, which dispatches on the config
+//! 3. **Schwarz assembly** — entries are passed to the generic
+//!    `SchwarzPreconditioner` (additive) or
+//!    `MultiplicativeSchwarzPreconditioner` constructor from `schwarz-precond`
+//!
+//! The public entry point is [`build_schwarz`] for the additive variant.
 
 pub use schwarz_precond::MultiplicativeSchwarzPreconditioner;
 pub use schwarz_precond::SchwarzPreconditioner;
 
 use approx_chol::low_level::Builder;
-use approx_chol::{Config, CsrRef};
+use approx_chol::CsrRef;
 use rayon::prelude::*;
 use schwarz_precond::SubdomainEntry;
+use serde::{Deserialize, Serialize};
 
 use super::gramian::CrossTab;
-use super::local_solver::{
-    ApproxCholSolver, BlockElimSolver, FeLocalSolver, LocalSolveStrategy, ReducedFactor,
-};
-use super::residual_update::{ObservationSpaceUpdater, SparseGramianUpdater};
+use super::local_solver::{BlockElimSolver, FeLocalSolveInvoker, ReducedFactor};
+use super::residual_update::SparseGramianUpdater;
 use super::schur_complement::{
     ApproxSchurComplement, EliminationInfo, ExactSchurComplement, SchurComplement, SchurResult,
 };
-use crate::config::{ApproxSchurConfig, LocalSolverConfig};
+use crate::config::{ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig};
 use crate::domain::{build_local_domains, Subdomain, WeightedDesign};
 use crate::observation::ObservationStore;
 use crate::{WithinError, WithinResult};
 
-/// Concrete Schwarz type used in the parent crate.
-pub type FeSchwarz = SchwarzPreconditioner<FeLocalSolver>;
+/// Concrete additive Schwarz type used in the parent crate.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct FeSchwarz(SchwarzPreconditioner<BlockElimSolver, FeLocalSolveInvoker>);
 
-/// Concrete multiplicative Schwarz type: one-level with observation-space residual updates.
-pub type FeMultSchwarz<'a, S> =
-    MultiplicativeSchwarzPreconditioner<FeLocalSolver, ObservationSpaceUpdater<'a, S>>;
+impl FeSchwarz {
+    pub(crate) fn new(inner: SchwarzPreconditioner<BlockElimSolver, FeLocalSolveInvoker>) -> Self {
+        Self(inner)
+    }
+
+    /// Subdomain entries with their local solvers.
+    pub fn subdomains(&self) -> &[SubdomainEntry<BlockElimSolver>] {
+        self.0.subdomains()
+    }
+
+    /// Current reduction strategy (may be `Auto`).
+    pub fn reduction_strategy(&self) -> schwarz_precond::ReductionStrategy {
+        self.0.reduction_strategy()
+    }
+
+    /// Resolved reduction strategy (`Auto` replaced by the detected choice).
+    pub fn resolved_reduction_strategy(&self) -> schwarz_precond::ReductionStrategy {
+        self.0.resolved_reduction_strategy()
+    }
+
+    /// Subdomain diagnostics (sizes, overlap counts).
+    pub fn diagnostics(&self) -> schwarz_precond::AdditiveSchwarzDiagnostics {
+        self.0.diagnostics()
+    }
+
+    /// Clone with a different reduction strategy.
+    pub fn with_reduction_strategy(&self, strategy: schwarz_precond::ReductionStrategy) -> Self {
+        Self(self.0.with_reduction_strategy(strategy))
+    }
+
+    /// Apply the preconditioner, returning an error on local-solver failure.
+    pub fn try_apply(&self, r: &[f64], z: &mut [f64]) -> Result<(), schwarz_precond::ApplyError> {
+        self.0.try_apply(r, z)
+    }
+}
+
+impl schwarz_precond::Operator for FeSchwarz {
+    fn nrows(&self) -> usize {
+        self.0.nrows()
+    }
+
+    fn ncols(&self) -> usize {
+        self.0.ncols()
+    }
+
+    fn apply(&self, x: &[f64], y: &mut [f64]) {
+        self.0.apply(x, y);
+    }
+
+    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) {
+        self.0.apply_adjoint(x, y);
+    }
+
+    fn try_apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::ApplyError> {
+        self.0.try_apply(x, y)
+    }
+
+    fn try_apply_adjoint(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+    ) -> Result<(), schwarz_precond::ApplyError> {
+        self.0.try_apply_adjoint(x, y)
+    }
+}
 
 /// Concrete multiplicative Schwarz type: one-level with explicit Gramian CSR residual updates.
 pub type FeMultSchwarzSparse =
-    MultiplicativeSchwarzPreconditioner<FeLocalSolver, SparseGramianUpdater>;
-
-// ---------------------------------------------------------------------------
-// Domain source abstraction
-// ---------------------------------------------------------------------------
-
-/// Abstracts over how domain entries are acquired.
-pub(crate) enum DomainSource<'a, S: ObservationStore> {
-    /// Scan observations to build from scratch.
-    FromDesign(&'a WeightedDesign<S>),
-    /// Reuse pre-built pairs (from fused domain+gramian pass).
-    FromParts(Vec<(Subdomain, CrossTab)>),
-}
+    MultiplicativeSchwarzPreconditioner<BlockElimSolver, SparseGramianUpdater>;
 
 // ---------------------------------------------------------------------------
 // Public convenience builder
@@ -57,80 +133,66 @@ pub fn build_schwarz<S: ObservationStore>(
     design: &WeightedDesign<S>,
     config: &LocalSolverConfig,
 ) -> WithinResult<FeSchwarz> {
-    build_additive(DomainSource::FromDesign(design), design.n_dofs, config)
+    let domains = build_local_domains(design);
+    build_additive(domains, design.n_dofs, config)
 }
 
 // ---------------------------------------------------------------------------
 // Crate-internal consolidated builders
 // ---------------------------------------------------------------------------
 
-/// Build additive Schwarz from any domain source.
-pub(crate) fn build_additive<S: ObservationStore>(
-    source: DomainSource<'_, S>,
+/// Build additive Schwarz from pre-built domain pairs.
+pub(crate) fn build_additive(
+    domains: Vec<(Subdomain, CrossTab)>,
     n_dofs: usize,
     config: &LocalSolverConfig,
 ) -> WithinResult<FeSchwarz> {
-    let entries = build_entries_from_source(source, config)?;
-    Ok(SchwarzPreconditioner::new(entries, n_dofs)?)
+    build_additive_with_strategy(
+        domains,
+        n_dofs,
+        config,
+        schwarz_precond::ReductionStrategy::default(),
+    )
 }
 
-/// Build multiplicative Schwarz with observation-space updater.
-///
-/// Always non-symmetric (GMRES-only).
-#[cfg(test)]
-#[allow(dead_code)]
-pub(crate) fn build_multiplicative_obs<'a, S: ObservationStore>(
-    source: DomainSource<'_, S>,
-    design: &'a WeightedDesign<S>,
+/// Build additive Schwarz with an explicit reduction strategy.
+pub(crate) fn build_additive_with_strategy(
+    domains: Vec<(Subdomain, CrossTab)>,
+    n_dofs: usize,
     config: &LocalSolverConfig,
-) -> WithinResult<FeMultSchwarz<'a, S>> {
-    let entries = build_entries_from_source(source, config)?;
-    let updater = ObservationSpaceUpdater::new(design);
-    Ok(MultiplicativeSchwarzPreconditioner::new(
-        entries,
-        updater,
-        design.n_dofs,
-        false,
-    )?)
+    strategy: schwarz_precond::ReductionStrategy,
+) -> WithinResult<FeSchwarz> {
+    let entries = build_entries_from_pairs(domains, config)?;
+    Ok(FeSchwarz::new(
+        SchwarzPreconditioner::with_strategy_and_invoker(
+            entries,
+            n_dofs,
+            strategy,
+            FeLocalSolveInvoker,
+        )?,
+    ))
 }
 
 /// Build multiplicative Schwarz with sparse Gramian updater.
 ///
 /// Always non-symmetric (GMRES-only).
-pub(crate) fn build_multiplicative_sparse<S: ObservationStore>(
-    source: DomainSource<'_, S>,
+pub(crate) fn build_multiplicative_sparse(
+    domains: Vec<(Subdomain, CrossTab)>,
     gramian: &super::gramian::Gramian,
     n_dofs: usize,
     config: &LocalSolverConfig,
 ) -> WithinResult<FeMultSchwarzSparse> {
-    let entries = build_entries_from_source(source, config)?;
+    let entries = build_entries_from_pairs(domains, config)?;
     let updater = SparseGramianUpdater::new(gramian.matrix.clone());
     Ok(MultiplicativeSchwarzPreconditioner::new(
         entries, updater, n_dofs, false,
     )?)
 }
 
-// ---------------------------------------------------------------------------
-// Internal: build entries from source
-// ---------------------------------------------------------------------------
-
-fn build_entries_from_source<S: ObservationStore>(
-    source: DomainSource<'_, S>,
-    config: &LocalSolverConfig,
-) -> WithinResult<Vec<SubdomainEntry<FeLocalSolver>>> {
-    match source {
-        DomainSource::FromDesign(design) => {
-            let domain_pairs = build_local_domains(design);
-            build_entries_from_pairs(domain_pairs, config)
-        }
-        DomainSource::FromParts(domain_pairs) => build_entries_from_pairs(domain_pairs, config),
-    }
-}
-
 fn build_entries_from_pairs(
     domain_pairs: Vec<(Subdomain, CrossTab)>,
     config: &LocalSolverConfig,
-) -> WithinResult<Vec<SubdomainEntry<FeLocalSolver>>> {
+) -> WithinResult<Vec<SubdomainEntry<BlockElimSolver>>> {
     domain_pairs
         .into_par_iter()
         .map(|(domain, cross_tab)| build_entry(domain, cross_tab, config))
@@ -141,58 +203,26 @@ fn build_entries_from_pairs(
 // Helper: build SubdomainEntry from FE types
 // ---------------------------------------------------------------------------
 
-/// Build a single `SubdomainEntry<FeLocalSolver>` from a pre-built CrossTab.
-///
-/// Dispatches to either full-SDDM or Schur complement path based on config.
+/// Build a single `SubdomainEntry<BlockElimSolver>` from a pre-built CrossTab.
 pub(crate) fn build_entry(
     domain: Subdomain,
     cross_tab: CrossTab,
     config: &LocalSolverConfig,
-) -> WithinResult<SubdomainEntry<FeLocalSolver>> {
-    let solver = match config {
-        LocalSolverConfig::FullSddm { approx_chol } => {
-            let first_block_size = cross_tab.first_block_size();
-            let matrix = cross_tab.to_sddm();
-            let n_local = matrix.n();
-            let csr = CsrRef::new(
-                matrix.indptr(),
-                matrix.indices(),
-                matrix.data(),
-                n_local as u32,
-            )
-            .map_err(|e| {
-                WithinError::LocalSolverBuild(format!("invalid local SDDM CSR structure: {e}"))
-            })?;
-            let builder = Builder::new(*approx_chol);
-            let factor = builder.build(csr).map_err(|e| {
-                WithinError::LocalSolverBuild(format!("failed local SDDM factorization: {e}"))
-            })?;
-            let was_augmented = factor.n() > n_local;
-            let strategy = LocalSolveStrategy::from_flags(Some(first_block_size), was_augmented);
-            FeLocalSolver::FullSddm {
-                solver: ApproxCholSolver::new(factor, strategy, n_local),
-            }
-        }
-        LocalSolverConfig::SchurComplement {
-            approx_chol,
-            approx_schur,
-            dense_threshold,
-        } => {
-            let schur_config = ReducedSchurConfig {
-                approx_chol: *approx_chol,
-                approx_schur: *approx_schur,
-                dense_threshold: *dense_threshold,
-            };
-            let reduced = build_reduced_schur_factor(&cross_tab, &schur_config)?;
-            FeLocalSolver::SchurComplement(Box::new(BlockElimSolver::new(
-                cross_tab,
-                reduced.elimination.inv_diag_elim,
-                reduced.factor,
-                reduced.elimination.eliminate_q,
-            )))
-        }
+) -> WithinResult<SubdomainEntry<BlockElimSolver>> {
+    let schur_config = ReducedSchurConfig {
+        approx_chol: config.approx_chol,
+        approx_schur: config.approx_schur,
+        dense_threshold: config.dense_threshold,
     };
-    Ok(SubdomainEntry::new(domain.core, solver))
+    let reduced = build_reduced_schur_factor(&cross_tab, &schur_config)?;
+    let solver = BlockElimSolver::new(
+        cross_tab,
+        reduced.elimination.inv_diag_elim,
+        reduced.factor,
+        reduced.elimination.eliminate_q,
+    );
+    SubdomainEntry::try_new(domain.core, solver)
+        .map_err(|e| WithinError::LocalSolverBuild(format!("invalid subdomain entry: {e}")))
 }
 
 pub(crate) struct ReducedSchurBuild {
@@ -216,9 +246,9 @@ fn compute_schur(
 
 fn build_sparse_reduced_factor(
     matrix: &schwarz_precond::SparseMatrix,
-    approx_chol: Config,
+    approx_chol: ApproxCholConfig,
 ) -> WithinResult<ReducedFactor> {
-    let schur_builder = Builder::new(approx_chol);
+    let schur_builder = Builder::new(approx_chol.to_approx_chol());
     let csr = CsrRef::new(
         matrix.indptr(),
         matrix.indices(),
@@ -236,7 +266,7 @@ fn build_sparse_reduced_factor(
 
 /// Configuration for building a reduced Schur factor.
 pub(crate) struct ReducedSchurConfig {
-    pub approx_chol: Config,
+    pub approx_chol: ApproxCholConfig,
     pub approx_schur: Option<ApproxSchurConfig>,
     pub dense_threshold: usize,
 }
@@ -248,8 +278,9 @@ pub(crate) fn build_reduced_schur_factor(
     let n_keep = cross_tab.n_q().min(cross_tab.n_r());
     let prefer_dense = dense_fast_path_enabled(n_keep, config.dense_threshold);
 
-    // Fastest path for tiny exact Schur: build dense directly and factor dense.
-    if prefer_dense && config.approx_schur.is_none() {
+    // Below the dense threshold the reduced system is tiny — always use exact
+    // Schur complement (cheap at this size) and dense Cholesky factorization.
+    if prefer_dense {
         let dense = ExactSchurComplement.compute_dense_anchored(cross_tab)?;
         if let Some(factor) =
             ReducedFactor::try_dense_laplacian_minor(dense.anchored_minor, dense.n)
@@ -261,41 +292,12 @@ pub(crate) fn build_reduced_schur_factor(
         }
     }
 
-    // General path (exact or approximate): sparse Schur assembly once.
+    // General path (exact or approximate): sparse Schur assembly.
     let schur = compute_schur(cross_tab, config.approx_schur)?;
-    if prefer_dense {
-        if let Some(factor) = ReducedFactor::try_dense_laplacian(&schur.matrix) {
-            return Ok(ReducedSchurBuild {
-                factor,
-                elimination: schur.elimination,
-            });
-        }
-    }
 
     let factor = build_sparse_reduced_factor(&schur.matrix, config.approx_chol)?;
     Ok(ReducedSchurBuild {
         factor,
         elimination: schur.elimination,
     })
-}
-
-/// Compute how many DOFs in a domain belong to the first factor of its factor pair.
-#[cfg(test)]
-pub fn compute_first_block_size<S: ObservationStore>(
-    design: &WeightedDesign<S>,
-    domain: &Subdomain,
-) -> usize {
-    let (q, _) = domain.factor_pair;
-    let fq = &design.factors[q];
-    let lo = fq.offset;
-    let hi = fq.offset + fq.n_levels;
-    domain
-        .core
-        .global_indices
-        .iter()
-        .filter(|&&idx| {
-            let idx = idx as usize;
-            idx >= lo && idx < hi
-        })
-        .count()
 }

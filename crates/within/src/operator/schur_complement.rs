@@ -1,8 +1,43 @@
 //! Schur complement computation for bipartite SDDM systems.
 //!
-//! Provides a [`SchurComplement`] trait with two implementations:
-//! - [`ExactSchurComplement`]: exact block elimination via row-workspace accumulation
-//! - [`ApproxSchurComplement`]: clique-tree sampling approximation (GKS 2023)
+//! When using block elimination to solve the local bipartite Gramian
+//! (see [`local_solver`](super::local_solver)), we need the Schur complement
+//! of the eliminated factor block. For the 2x2 block system:
+//!
+//! ```text
+//!     [ D_elim    C_e ]       [ z_elim ]   [ r_elim ]
+//!     [                ]  *   [         ] = [         ]
+//!     [ C_e^T    D_keep]       [ z_keep ]   [ r_keep ]
+//! ```
+//!
+//! eliminating `z_elim` (trivial since `D_elim` is diagonal) yields the
+//! reduced system `S z_keep = r_keep - C_e^T D_elim^{-1} r_elim` where the
+//! **Schur complement** is:
+//!
+//! ```text
+//! S = D_keep - C_e^T D_elim^{-1} C_e
+//! ```
+//!
+//! This `S` is a graph Laplacian on the kept factor levels, encoding how
+//! they co-occur through the eliminated factor.
+//!
+//! # Exact vs approximate
+//!
+//! This module provides a [`SchurComplement`] trait with two implementations:
+//!
+//! - [`ExactSchurComplement`]: row-workspace accumulation computes `S` exactly.
+//!   Each kept-block row scatters fill contributions into a dense workspace,
+//!   then extracts non-zeros. Cost is O(nnz(S)), but `S` can be dense when
+//!   the eliminated factor has high-degree levels (many keep-block DOFs
+//!   share an eliminated level, creating fill edges between all of them).
+//!
+//! - [`ApproxSchurComplement`]: clique-tree sampling approximation (GKS 2023).
+//!   Each eliminated vertex contributes a "star" (clique) in the fill graph.
+//!   Instead of materializing all O(deg^2) fill edges per star, the
+//!   clique-tree sampler produces only O(deg) edges that spectrally
+//!   approximate the exact clique. This keeps `S` sparse even when the
+//!   exact Schur complement would be dense — critical for high-cardinality
+//!   factor structures.
 //!
 //! # Internal pipeline
 //!
@@ -11,7 +46,7 @@
 //!
 //! - **Exact**: row-workspace accumulation ([`SchurLaplacian::from_elimination`]) —
 //!   avoids materializing intermediate edges
-//! - **Approximate**: star-based edge emission via [`CliqueEmitter`],
+//! - **Approximate**: star-based edge emission via [`SampledCliqueEmitter`],
 //!   then sort-merge assembly ([`SchurLaplacian::from_edges`])
 
 use approx_chol::low_level::{clique_tree_sample, clique_tree_sample_multi};
@@ -42,6 +77,19 @@ pub(crate) struct EliminationInfo {
 // Star — zero-copy neighborhood view
 // ===========================================================================
 
+// The Schur complement S = D_keep - C_keep^T * D_elim^{-1} * C_keep arises from
+// block-eliminating the diagonal block of the larger partition in the bipartite
+// SDDM system [D_q, -C; -C^T, D_r]. Since D_elim is diagonal, the elimination
+// is exact and each eliminated vertex k contributes a rank-1 clique (star) to
+// the fill graph: all pairs of k's neighbors in the keep-block get a fill edge.
+//
+// Two strategies materialize these fill edges:
+// - `ExactCliqueEmitter` (not shown here; the exact path uses row-workspace
+//   accumulation in `SchurLaplacian::from_elimination` instead)
+// - `SampledCliqueEmitter`: uses GKS 2023 clique-tree sampling to approximate
+//   high-degree cliques with O(deg) edges instead of O(deg^2), keeping the
+//   Schur complement spectrally close to the exact one.
+
 /// One eliminated vertex's neighbors in the keep-block.
 ///
 /// References into [`CsrBlock`]'s arrays for zero-copy access.
@@ -62,19 +110,6 @@ impl Star<'_> {
     }
 }
 
-// ===========================================================================
-// CliqueEmitter — strategy for edge emission
-// ===========================================================================
-
-/// Strategy for producing fill edges from a star neighborhood.
-trait CliqueEmitter {
-    /// Per-thread reusable scratch state.
-    type Scratch: Default + Send;
-
-    /// Emit fill edges from `star` into `edges`, using `scratch` for temporaries.
-    fn emit(&self, star: &Star, edges: &mut Vec<Edge>, scratch: &mut Self::Scratch);
-}
-
 /// Emits sampled clique-tree fill edges for every star.
 struct SampledCliqueEmitter {
     seed: u64,
@@ -88,18 +123,8 @@ impl SampledCliqueEmitter {
             split: config.split,
         }
     }
-}
 
-/// Thread-local scratch for [`SampledCliqueEmitter`].
-#[derive(Default)]
-struct SampledScratch {
-    /// AoS neighbor copy for `clique_tree_sample`.
-    buf: Vec<(u32, f64)>,
-}
-
-impl CliqueEmitter for SampledCliqueEmitter {
-    type Scratch = SampledScratch;
-
+    /// Emit fill edges from `star` into `edges`, using `scratch` for temporaries.
     fn emit(&self, star: &Star, edges: &mut Vec<Edge>, scratch: &mut SampledScratch) {
         scratch.buf.clear();
         for (&col, &w) in star.col_indices.iter().zip(star.weights) {
@@ -112,6 +137,13 @@ impl CliqueEmitter for SampledCliqueEmitter {
             clique_tree_sample_multi(&mut scratch.buf, self.split, seed, edges);
         }
     }
+}
+
+/// Thread-local scratch for [`SampledCliqueEmitter`].
+#[derive(Default)]
+struct SampledScratch {
+    /// AoS neighbor copy for `clique_tree_sample`.
+    buf: Vec<(u32, f64)>,
 }
 
 // ===========================================================================
@@ -195,15 +227,15 @@ impl<'a> Elimination<'a> {
         }
     }
 
-    /// Parallel edge emission over all stars using the given [`CliqueEmitter`].
+    /// Parallel edge emission over all stars using the given emitter.
     ///
     /// Each rayon task sorts and deduplicates its local edges, then the reduce
     /// tree merges sorted chunks — avoiding a single O(E log E) global sort.
-    fn par_emit<E: CliqueEmitter + Sync>(&self, emitter: &E) -> Vec<Edge> {
+    fn par_emit(&self, emitter: &SampledCliqueEmitter) -> Vec<Edge> {
         (0..self.n_elim)
             .into_par_iter()
             .fold(
-                || (Vec::new(), E::Scratch::default()),
+                || (Vec::new(), SampledScratch::default()),
                 |(mut edges, mut scratch), k| {
                     let star = self.star(k);
                     if star.degree() > 1 {

@@ -4,7 +4,6 @@
 //! disconnected bipartite structure.
 
 use proptest::prelude::*;
-use within::domain::FixedEffectsDesign;
 use within::observation::{FactorMajorStore, ObservationWeights};
 use within::WeightedDesign;
 
@@ -12,7 +11,7 @@ use within::WeightedDesign;
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn make_design(categories: Vec<Vec<u32>>, n_obs: usize) -> FixedEffectsDesign {
+fn make_design(categories: Vec<Vec<u32>>, n_obs: usize) -> WeightedDesign<FactorMajorStore> {
     let store = FactorMajorStore::new(categories, ObservationWeights::Unit, n_obs)
         .expect("valid factor-major store");
     WeightedDesign::from_store(store).expect("valid design")
@@ -29,7 +28,7 @@ fn dot(a: &[f64], b: &[f64]) -> f64 {
 /// Build a 15,000-row design with two factors (~50 levels each).
 /// This exercises the parallel code paths in `gather_add` (par_chunks_mut)
 /// and `scatter_add` (Fold strategy: n_rows > 10,000, n_levels < 100,000).
-fn make_large_design() -> FixedEffectsDesign {
+fn make_large_design() -> WeightedDesign<FactorMajorStore> {
     let n_obs = 15_000;
     let n_levels_a = 50usize;
     let n_levels_b = 50usize;
@@ -301,7 +300,10 @@ fn test_three_factor_design_solve_converges() {
         maxiter: 500,
         ..SolverParams::default()
     };
-    let precond = Preconditioner::Additive(LocalSolverConfig::solver_default());
+    let precond = Preconditioner::Additive(
+        LocalSolverConfig::solver_default(),
+        within::ReductionStrategy::Auto,
+    );
     let result =
         solve(cats.view(), &y, None, &params, Some(&precond)).expect("solve should not error");
 
@@ -407,7 +409,10 @@ fn test_disconnected_design_larger_converges() {
         maxiter: 500,
         ..SolverParams::default()
     };
-    let precond = Preconditioner::Additive(LocalSolverConfig::solver_default());
+    let precond = Preconditioner::Additive(
+        LocalSolverConfig::solver_default(),
+        within::ReductionStrategy::Auto,
+    );
     let result =
         solve(cats.view(), &y, None, &params, Some(&precond)).expect("solve should not error");
 
@@ -440,7 +445,10 @@ fn test_disconnected_design_solve_converges() {
         maxiter: 500,
         ..SolverParams::default()
     };
-    let precond = Preconditioner::Additive(LocalSolverConfig::solver_default());
+    let precond = Preconditioner::Additive(
+        LocalSolverConfig::solver_default(),
+        within::ReductionStrategy::Auto,
+    );
     let result =
         solve(cats.view(), &y, None, &params, Some(&precond)).expect("solve should not error");
 

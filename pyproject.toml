@@ -1,16 +1,36 @@
 [project]
-authors = [{name = "Kristof Schröder", email = "k.schroeder@appliedai-institute.de"}]
-dependencies = [
-    "numpy>=1.24",
-    "scipy>=1.10",
-]
-name = "within"
-requires-python = ">= 3.9"
+name = "within-py"
 version = "0.1.0"
+description = "High-performance fixed-effects solver for econometric panel data"
+readme = "README.md"
+authors = [
+    {name = "Alexander Fischer", email = "alexander-fischer1801@t-online.de"},
+    {name = "Kristof Schröder", email = "k.schroeder@appliedai-institute.de"},
+]
+requires-python = ">= 3.9"
 license = "MIT"
 license-files = [
     "LICENSE",
 ]
+keywords = ["fixed-effects", "econometrics", "panel-data", "least-squares", "solver"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Rust",
+    "Topic :: Scientific/Engineering :: Mathematics",
+]
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+]
+
+[project.urls]
+Homepage = "https://github.com/py-econometrics/within"
+Repository = "https://github.com/py-econometrics/within"
+Changelog = "https://github.com/py-econometrics/within/blob/main/CHANGELOG.md"
 
 [build-system]
 requires = ["maturin>=1.7,<2"]

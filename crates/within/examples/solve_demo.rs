@@ -6,7 +6,7 @@
 //! Run with: `cargo run --example solve_demo -p within`
 
 use ndarray::Array2;
-use within::{solve, LocalSolverConfig, Preconditioner, SolverParams};
+use within::{solve, LocalSolverConfig, Preconditioner, ReductionStrategy, SolverParams};
 
 fn main() {
     // Two factors, each with 100 levels, 10 000 observations.
@@ -39,7 +39,8 @@ fn main() {
 
     // Solve with default parameters (CG + additive Schwarz, implicit operator).
     let params = SolverParams::default();
-    let precond = Preconditioner::Additive(LocalSolverConfig::solver_default());
+    let precond =
+        Preconditioner::Additive(LocalSolverConfig::solver_default(), ReductionStrategy::Auto);
     let result = solve(categories.view(), &y, None, &params, Some(&precond)).expect("solve");
 
     println!("=== Basic solve (default params) ===");

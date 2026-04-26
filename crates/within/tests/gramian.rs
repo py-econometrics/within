@@ -1,27 +1,27 @@
 use schwarz_precond::Operator;
 
-use within::domain::FixedEffectsDesign;
 use within::observation::{FactorMajorStore, ObservationWeights};
 use within::operator::gramian::{Gramian, GramianOperator};
+use within::WeightedDesign;
 
-fn make_test_design() -> FixedEffectsDesign {
+fn make_test_design() -> WeightedDesign<FactorMajorStore> {
     let store = FactorMajorStore::new(
         vec![vec![0, 1, 2, 0], vec![0, 1, 0, 1]],
         ObservationWeights::Unit,
         4,
     )
     .expect("valid factor-major store");
-    FixedEffectsDesign::from_store(store).expect("valid test design")
+    WeightedDesign::from_store(store).expect("valid test design")
 }
 
-fn make_weighted_design(weights: Vec<f64>) -> FixedEffectsDesign {
+fn make_weighted_design(weights: Vec<f64>) -> WeightedDesign<FactorMajorStore> {
     let store = FactorMajorStore::new(
         vec![vec![0, 1, 0, 1], vec![0, 0, 1, 1]],
         ObservationWeights::Dense(weights),
         4,
     )
     .expect("valid weighted factor-major store");
-    FixedEffectsDesign::from_store(store).expect("valid weighted design")
+    WeightedDesign::from_store(store).expect("valid weighted design")
 }
 
 #[test]
@@ -141,7 +141,7 @@ fn test_gramian_sparse_accumulation_path() {
     }
     let store = FactorMajorStore::new(vec![fa, fb], ObservationWeights::Unit, n_obs)
         .expect("valid factor-major store");
-    let dm = FixedEffectsDesign::from_store(store).expect("valid sparse accumulation design");
+    let dm = WeightedDesign::from_store(store).expect("valid sparse accumulation design");
     let g = Gramian::build(&dm);
     let gop = GramianOperator::new(&dm);
     let n = g.n_dofs();
@@ -171,7 +171,7 @@ fn test_build_for_pair_matches_full_gramian() {
         8,
     )
     .expect("valid factor-major store");
-    let dm = FixedEffectsDesign::from_store(store).expect("valid pairwise design");
+    let dm = WeightedDesign::from_store(store).expect("valid pairwise design");
     let full = Gramian::build(&dm);
     let n = full.n_dofs();
 
@@ -278,7 +278,7 @@ fn test_three_factor_gramian_build() {
         8,
     )
     .expect("valid store");
-    let dm = FixedEffectsDesign::from_store(store).expect("valid design");
+    let dm = WeightedDesign::from_store(store).expect("valid design");
     let g = Gramian::build(&dm);
     let n = g.n_dofs();
 
@@ -350,7 +350,7 @@ fn test_gramian_large_row_permutation_sort() {
     }
     let store =
         FactorMajorStore::new(vec![fa, fb], ObservationWeights::Unit, n_obs).expect("valid store");
-    let dm = FixedEffectsDesign::from_store(store).expect("valid design");
+    let dm = WeightedDesign::from_store(store).expect("valid design");
     let g = Gramian::build(&dm);
     let gop = GramianOperator::new(&dm);
     let n = g.n_dofs();
@@ -385,7 +385,7 @@ fn test_gramian_parallel_build_path() {
 
     let store = FactorMajorStore::new(vec![fa, fb], ObservationWeights::Unit, n_obs)
         .expect("valid parallel store");
-    let dm = within::domain::FixedEffectsDesign::from_store(store).expect("valid parallel design");
+    let dm = within::domain::WeightedDesign::from_store(store).expect("valid parallel design");
 
     let g = Gramian::build(&dm);
     let gop = GramianOperator::new(&dm);
@@ -414,8 +414,7 @@ fn test_gramian_single_factor() {
     let n_obs = fa.len();
     let store =
         FactorMajorStore::new(vec![fa], ObservationWeights::Unit, n_obs).expect("valid store");
-    let dm =
-        within::domain::FixedEffectsDesign::from_store(store).expect("valid single-factor design");
+    let dm = within::domain::WeightedDesign::from_store(store).expect("valid single-factor design");
 
     let g = Gramian::build(&dm);
     let n = g.n_dofs();

@@ -1,5 +1,43 @@
-//! Core observation data types: weights, factor metadata,
-//! the ObservationStore trait, and the default factor-major backend.
+//! Observation storage layer: traits, backends, and metadata.
+//!
+//! This is the lowest layer of the `within` crate. It defines *how*
+//! per-observation data (factor levels, weights) is stored and accessed,
+//! without knowing anything about design matrices, operators, or solvers.
+//!
+//! # Why pluggable backends?
+//!
+//! Different callers supply data in different layouts:
+//!
+//! - **Python (via PyO3)** passes a borrowed numpy array — copying it into a
+//!   Rust-owned layout would double memory and add latency.
+//! - **Rust tests and benchmarks** build data programmatically as `Vec<Vec<u32>>`,
+//!   which is naturally factor-major.
+//!
+//! The [`ObservationStore`] trait abstracts over these layouts so that all
+//! upstream code (design matrix operations, domain decomposition, Gramian
+//! assembly) is generic and layout-agnostic.
+//!
+//! # Backends
+//!
+//! | Backend | Layout | Owns data? | Best for |
+//! |---|---|---|---|
+//! | [`FactorMajorStore`] | `factor_levels[q][i]` — grouped by factor | Yes | Rust-native construction; sequential factor-column access for Gramian build and domain decomposition |
+//! | [`ArrayStore`] | `categories[[i, q]]` — borrowed `ArrayView2` | No (borrows) | Zero-copy from numpy; F-contiguous arrays get contiguous column access matching `FactorMajorStore` performance |
+//!
+//! Both backends implement the optional [`ObservationStore::factor_column`]
+//! fast-path, which returns a contiguous `&[u32]` slice for a factor's levels
+//! when the memory layout permits it. The design-matrix scatter/gather loops
+//! exploit this to avoid per-element virtual dispatch.
+//!
+//! # Key types
+//!
+//! - [`ObservationWeights`] — either unit weights (all 1.0, zero storage) or
+//!   dense per-observation weights. The `is_unit()` check is hoisted outside
+//!   inner loops so the hot path sees no per-element branch.
+//! - [`FactorMeta`] — per-factor metadata (level count and global DOF offset),
+//!   separated from observation data so it can live in the [`WeightedDesign`](crate::domain::WeightedDesign).
+//! - [`ObservationStore`] — the core trait. All implementors must be
+//!   `Send + Sync` to support Rayon parallelism in the layers above.
 
 use ndarray::ArrayView2;
 
@@ -22,6 +60,7 @@ pub enum ObservationWeights {
 }
 
 impl ObservationWeights {
+    /// Return the weight for observation `obs`.
     #[inline]
     pub fn get(&self, obs: usize) -> f64 {
         match self {
@@ -30,6 +69,7 @@ impl ObservationWeights {
         }
     }
 
+    /// Returns `true` if all weights are 1.0 (the `Unit` variant).
     #[inline]
     pub fn is_unit(&self) -> bool {
         matches!(self, ObservationWeights::Unit)
@@ -116,6 +156,7 @@ pub struct FactorMajorStore {
 }
 
 impl FactorMajorStore {
+    /// Create a new factor-major store, validating that all columns have length `n_obs`.
     pub fn new(
         factor_levels: Vec<Vec<u32>>,
         weights: ObservationWeights,
@@ -198,6 +239,7 @@ pub struct ArrayStore<'a> {
 }
 
 impl<'a> ArrayStore<'a> {
+    /// Create a zero-copy store from a borrowed 2-D category array and optional weights.
     pub fn new(categories: ArrayView2<'a, u32>, weights: ObservationWeights) -> WithinResult<Self> {
         weights.validate_for(categories.nrows())?;
         Ok(Self {
@@ -253,6 +295,7 @@ impl ObservationStore for ArrayStore<'_> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+/// Small two-factor dataset for unit tests: 4 observations, factors with 3 and 2 levels.
 pub fn sample_factor_levels() -> Vec<Vec<u32>> {
     vec![vec![0, 1, 2, 0], vec![0, 1, 0, 1]]
 }

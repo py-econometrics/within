@@ -14,9 +14,9 @@ Public API
 """
 
 from __future__ import annotations
-
+import statistics
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Literal, TypeVar
 
 import numpy as np
 from numpy.typing import NDArray
@@ -27,8 +27,13 @@ from within._within import (
     ApproxCholConfig,
     ApproxSchurConfig,
     MultiplicativeSchwarz,
+    ReductionStrategy,
     SchurComplement,
 )
+
+ScaleProfile = Literal["smoke", "iterate", "full"]
+_T = TypeVar("_T")
+BENCHMARK_SOLVER_TOL_MIN = 1e-7
 
 # ---------------------------------------------------------------------------
 # Core data types (formerly _types.py)
@@ -92,13 +97,13 @@ def max_abs_group_mean(
     return worst
 
 
-def run_solve(
+def _solve_once(
     categories: list[NDArray[np.int64]],
     n_levels: list[int],
     y: NDArray[np.float64],
     config: SolverConfig,
 ) -> BenchmarkResult:
-    """Solve using *config* and return a timed result."""
+    """Run one timed solve."""
     result = solve(
         np.asfortranarray(np.column_stack(categories).astype(np.uint32)),
         y,
@@ -122,6 +127,75 @@ def run_solve(
     )
 
 
+def _aggregate_runs(runs: list[BenchmarkResult]) -> BenchmarkResult:
+    """Aggregate repeated solves into one median benchmark result."""
+    if not runs:
+        raise ValueError("expected at least one benchmark run")
+
+    first = runs[0]
+    return BenchmarkResult(
+        problem=first.problem,
+        config=first.config,
+        n_dofs=first.n_dofs,
+        n_rows=first.n_rows,
+        setup_time=float(statistics.median(r.setup_time for r in runs)),
+        solve_time=float(statistics.median(r.solve_time for r in runs)),
+        iterations=int(round(statistics.median(r.iterations for r in runs))),
+        final_residual=float(statistics.median(r.final_residual for r in runs)),
+        demeaning_error=max(r.demeaning_error for r in runs),
+        converged=all(r.converged for r in runs),
+    )
+
+
+def run_solve(
+    categories: list[NDArray[np.int64]],
+    n_levels: list[int],
+    y: NDArray[np.float64],
+    config: SolverConfig,
+    opts: SuiteOptions | None = None,
+) -> BenchmarkResult:
+    """Solve using *config* and return a timed result.
+
+    When *opts* requests repeats, discard warmups and report medians.
+    """
+    if opts is None:
+        return _solve_once(categories, n_levels, y, config)
+
+    runs: list[BenchmarkResult] = []
+    total_runs = opts.warmup + opts.repeat
+    for run_idx in range(total_runs):
+        result = _solve_once(categories, n_levels, y, config)
+        if run_idx >= opts.warmup:
+            runs.append(result)
+    return _aggregate_runs(runs)
+
+
+def benchmark_solver_tol(tol: float) -> float:
+    """Benchmark tolerance floor used to avoid borderline non-convergence noise."""
+    return max(tol, BENCHMARK_SOLVER_TOL_MIN)
+
+
+def benchmark_cg(opts: Any, *, maxiter: int | None = None) -> CG:
+    """Construct a CG config with benchmark-standard tolerance handling."""
+    return CG(
+        tol=benchmark_solver_tol(opts.tol),
+        maxiter=opts.maxiter if maxiter is None else maxiter,
+    )
+
+
+def benchmark_gmres(opts: Any, *, maxiter: int | None = None) -> GMRES:
+    """Construct a GMRES config with benchmark-standard tolerance handling."""
+    return GMRES(
+        tol=benchmark_solver_tol(opts.tol),
+        maxiter=opts.maxiter if maxiter is None else maxiter,
+    )
+
+
+def make_additive_schwarz(local_solver: Any) -> AdditiveSchwarz:
+    """Construct additive Schwarz using the default Auto reduction mode."""
+    return AdditiveSchwarz(local_solver=local_solver, reduction=ReductionStrategy.Auto)
+
+
 def standard_solver_configs(opts: Any) -> list[SolverConfig]:
     """Standard CG + GMRES solver configs used by most benchmark suites.
 
@@ -135,12 +209,12 @@ def standard_solver_configs(opts: Any) -> list[SolverConfig]:
     return [
         SolverConfig(
             "CG(Schwarz)",
-            CG(tol=opts.tol, maxiter=opts.maxiter),
-            preconditioner=AdditiveSchwarz(local_solver=schur),
+            benchmark_cg(opts),
+            preconditioner=make_additive_schwarz(local_solver=schur),
         ),
         SolverConfig(
             "GMRES(Mult-Schwarz)",
-            GMRES(tol=opts.tol, maxiter=opts.maxiter),
+            benchmark_gmres(opts),
             preconditioner=MultiplicativeSchwarz(local_solver=schur),
         ),
     ]
@@ -149,6 +223,7 @@ def standard_solver_configs(opts: Any) -> list[SolverConfig]:
 def run_problem_set(
     problems: list[ProblemSpec],
     configs: list[SolverConfig],
+    opts: SuiteOptions | None = None,
 ) -> list[BenchmarkResult]:
     """Run a list of ``ProblemSpec`` through the given solver configs.
 
@@ -167,7 +242,7 @@ def run_problem_set(
 
         for cfg in configs:
             try:
-                result = run_solve(cats, n_levels, y, cfg)
+                result = run_solve(cats, n_levels, y, cfg, opts)
                 result.problem = prob.name
                 all_results.append(result)
             except BaseException as e:
@@ -189,7 +264,39 @@ class SuiteOptions:
     seed: int = 42
     tol: float = 1e-8
     maxiter: int = 2000
-    quick: bool = False
+    profile: ScaleProfile = "full"
+    repeat: int = 1
+    warmup: int = 0
+
+    @property
+    def quick(self) -> bool:
+        return self.profile == "smoke"
+
+    def select(
+        self,
+        *,
+        smoke: list[_T],
+        iterate: list[_T] | None = None,
+        full: list[_T] | None = None,
+    ) -> list[_T]:
+        """Pick benchmark cases for the active profile.
+
+        `smoke` is the smallest, `iterate` is the default development tier,
+        and `full` is the long validation tier.
+        """
+        if self.profile == "smoke":
+            return smoke
+        if self.profile == "iterate":
+            if iterate is not None:
+                return iterate
+            if full is not None:
+                return full
+            return smoke
+        if full is not None:
+            return full
+        if iterate is not None:
+            return iterate
+        return smoke
 
 
 @dataclass

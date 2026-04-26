@@ -16,66 +16,60 @@ cargo add within
 ## Quick example
 
 ```rust
-use within::{
-    solve, GmresPrecond, LocalSolverConfig, OperatorRepr, SolverMethod, SolverParams,
-};
+use ndarray::Array2;
+use within::{solve, SolverParams, KrylovMethod, Preconditioner, LocalSolverConfig};
 
 // Two factors: 100 levels each, 10 000 observations
-let factor_0: Vec<u32> = (0..10_000).map(|i| (i % 100) as u32).collect();
-let factor_1: Vec<u32> = (0..10_000).map(|i| (i / 100) as u32).collect();
-let y: Vec<f64> = (0..10_000).map(|i| i as f64 * 0.01).collect();
+let n_obs = 10_000usize;
+let mut categories = Array2::<u32>::zeros((n_obs, 2));
+for i in 0..n_obs {
+    categories[[i, 0]] = (i % 100) as u32;
+    categories[[i, 1]] = (i / 100) as u32;
+}
+let y: Vec<f64> = (0..n_obs).map(|i| i as f64 * 0.01).collect();
 
 // Solve with the default solver: CG + additive Schwarz + implicit operator
-let result = solve(
-    &[factor_0.clone(), factor_1.clone()],
-    &[100, 100],
-    &y,
-    None,
-    &SolverParams::default(),
-).expect("solve should succeed");
+let result = solve(categories.view(), &y, None, &SolverParams::default(), None)
+    .expect("solve should succeed");
 assert!(result.converged);
-println!("default CG converged in {} iterations", result.iterations);
+println!("CG converged in {} iterations", result.iterations);
 
-// Solve with GMRES + multiplicative Schwarz on the implicit operator
+// GMRES with multiplicative Schwarz
 let params = SolverParams {
-    method: SolverMethod::Gmres {
-        preconditioner: Some(GmresPrecond::Multiplicative(LocalSolverConfig::gmres_default())),
-        operator: OperatorRepr::Implicit,
-        restart: 30,
-    },
-    tol: 1e-8,
-    maxiter: 1000,
+    krylov: KrylovMethod::Gmres { restart: 30 },
+    ..SolverParams::default()
 };
-let result = solve(
-    &[factor_0, factor_1],
-    &[100, 100],
-    &y,
-    None,
-    &params,
-).expect("solve should succeed");
+let precond = Preconditioner::Multiplicative(LocalSolverConfig::default());
+let result = solve(categories.view(), &y, None, &params, Some(&precond))
+    .expect("solve should succeed");
 assert!(result.converged);
 println!("GMRES converged in {} iterations", result.iterations);
 ```
+
+## Feature flags
+
+| Feature   | Default | Effect                                                                 |
+|-----------|---------|------------------------------------------------------------------------|
+| `ndarray` | yes     | Enables `from_array` constructors on observation stores for interop with `ndarray::ArrayView2`. |
 
 ## Architecture
 
 The crate is organized in four layers:
 
-1. **`observation`** -- Per-observation factor levels and weights via
+1. **`observation`** — Per-observation factor levels and weights via
    `FactorMajorStore` and the `ObservationStore` trait.
 
-2. **`domain`** -- Domain decomposition. `WeightedDesign` wraps a store with
+2. **`domain`** — Domain decomposition. `WeightedDesign` wraps a store with
    factor metadata; `build_local_domains` constructs factor-pair subdomains
    with partition-of-unity weights for the Schwarz preconditioner.
 
-3. **`operator`** -- Linear algebra primitives. `Gramian` (explicit CSR) and
+3. **`operator`** — Linear algebra primitives. `Gramian` (explicit CSR) and
    `GramianOperator` (implicit D^T W D) for the normal equations; Schwarz
    preconditioner builders that wire approximate Cholesky local solvers into
    the generic `schwarz-precond` framework.
 
-4. **`orchestrate`** -- End-to-end solve entry points (`solve`,
-   `solve_normal_equations`) with
-   typed configuration (`SolverParams`, `SolverMethod`, `GmresPrecond`,
+4. **`orchestrate`** — End-to-end solve entry points (`solve`, `solve_batch`)
+   with typed configuration (`SolverParams`, `KrylovMethod`, `Preconditioner`,
    `OperatorRepr`).
 
 ## License
@@ -84,15 +78,7 @@ MIT
 
 ## References
 
-- Correia, S. (2017). Linear Models with High-Dimensional Fixed Effects: An
-  Efficient and Feasible Estimator. *Working paper*.
-  https://hdl.handle.net/10.2139/ssrn.3129010
-
-- Gaure, S. (2013). OLS with Multiple High Dimensional Category Variables.
-  *Computational Statistics & Data Analysis*, 66, 2--17.
-  https://doi.org/10.1016/j.csda.2013.03.024
-
-- Spielman, D. A. & Teng, S.-H. (2014). Nearly Linear Time Algorithms for
-  Preconditioning and Solving Symmetric, Diagonally Dominant Linear Systems.
-  *SIAM Journal on Matrix Analysis and Applications*, 35(3), 835--885.
-  https://doi.org/10.1137/090771430
+- Correia, Sergio. "A feasible estimator for linear models with multi-way fixed effects." *Preprint* at http://scorreia.com/research/hdfe.pdf (2016).
+- Gao, Y., Kyng, R. & Spielman, D. A. (2025). AC(k): Robust Solution of Laplacian Equations by Randomized Approximate Cholesky Factorization. *SIAM Journal on Scientific Computing*.
+- Toselli & Widlund (2005). *Domain Decomposition Methods — Algorithms and Theory*. Springer.
+- Xu, J. (1992). Iterative Methods by Space Decomposition and Subspace Correction. *SIAM Review*, 34(4), 581--613.

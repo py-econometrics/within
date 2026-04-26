@@ -1,4 +1,7 @@
-use within::{KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner, Solver, SolverParams};
+use within::{
+    KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner, ReductionStrategy, Solver,
+    SolverParams,
+};
 
 #[path = "common/orchestrate_helpers.rs"]
 mod common;
@@ -17,6 +20,7 @@ fn test_cg_unpreconditioned() {
         operator: OperatorRepr::Implicit,
         tol: 1e-8,
         maxiter: 1000,
+        ..Default::default()
     };
     let solver = Solver::from_design(design, &params, None).expect("build solver");
     let result = solver.solve(&y).expect("solve");
@@ -33,8 +37,9 @@ fn test_cg_preconditioned() {
         operator: OperatorRepr::Implicit,
         tol: 1e-8,
         maxiter: 1000,
+        ..Default::default()
     };
-    let precond = Preconditioner::Additive(LocalSolverConfig::default());
+    let precond = Preconditioner::Additive(LocalSolverConfig::default(), ReductionStrategy::Auto);
     let solver = Solver::from_design(design, &params, Some(&precond)).expect("build solver");
     let result = solver.solve(&y).expect("solve");
     common::assert_converged_with_small_residual(&result, 1e-6);
@@ -50,6 +55,7 @@ fn test_least_squares_cg() {
         operator: OperatorRepr::Implicit,
         tol: 1e-8,
         maxiter: 1000,
+        ..Default::default()
     };
     let solver = Solver::from_design(design, &params, None).expect("build solver");
     let result = solver.solve(&y).expect("solve");
@@ -71,8 +77,10 @@ fn test_least_squares_weighted_cg_preconditioned() {
         operator: OperatorRepr::Implicit,
         tol: 1e-8,
         maxiter: 1000,
+        ..Default::default()
     };
-    let precond = Preconditioner::Additive(LocalSolverConfig::solver_default());
+    let precond =
+        Preconditioner::Additive(LocalSolverConfig::solver_default(), ReductionStrategy::Auto);
     let solver = Solver::from_design(design, &params, Some(&precond)).expect("build solver");
     let result = solver.solve(&y).expect("solve");
     common::assert_converged_with_small_residual(&result, 1e-6);
@@ -85,29 +93,28 @@ fn test_least_squares_weighted_cg_preconditioned() {
 
 #[test]
 fn test_schwarz_builder_schur_complement_modes_end_to_end() {
-    use approx_chol::Config;
     use schwarz_precond::solve::cg::cg_solve_preconditioned;
     use schwarz_precond::solve::vec_norm;
     use schwarz_precond::Operator;
     use within::operator::gramian::GramianOperator;
     use within::operator::schwarz::build_schwarz;
-    use within::ApproxSchurConfig;
+    use within::{ApproxCholConfig, ApproxSchurConfig};
 
     let design = common::make_test_design();
     let rhs = common::make_rhs_from_unit_solution(&design);
     let gramian = GramianOperator::new(&design);
 
     let local_solvers = [
-        LocalSolverConfig::SchurComplement {
-            approx_chol: Config {
+        LocalSolverConfig {
+            approx_chol: ApproxCholConfig {
                 seed: 11,
                 ..Default::default()
             },
             approx_schur: None,
             dense_threshold: within::DEFAULT_DENSE_SCHUR_THRESHOLD,
         },
-        LocalSolverConfig::SchurComplement {
-            approx_chol: Config {
+        LocalSolverConfig {
+            approx_chol: ApproxCholConfig {
                 seed: 13,
                 ..Default::default()
             },
@@ -144,7 +151,6 @@ fn test_schwarz_builder_schur_complement_modes_end_to_end() {
 #[test]
 #[ignore] // Run with: cargo test --release -- --ignored --nocapture
 fn test_compare_factorization_strategies() {
-    use approx_chol::Config;
     use rand::rngs::SmallRng;
     use rand::{Rng, SeedableRng};
     use schwarz_precond::solve::cg::cg_solve_preconditioned;
@@ -154,18 +160,18 @@ fn test_compare_factorization_strategies() {
     use within::operator::gramian::GramianOperator;
     use within::operator::schwarz::build_schwarz;
     use within::operator::DesignOperator;
-    use within::FixedEffectsDesign;
+    use within::{ApproxCholConfig, WeightedDesign};
 
-    let configs: Vec<(Config, &str)> = vec![
+    let configs: Vec<(ApproxCholConfig, &str)> = vec![
         (
-            Config {
+            ApproxCholConfig {
                 seed: 42,
                 ..Default::default()
             },
             "AC      ",
         ),
         (
-            Config {
+            ApproxCholConfig {
                 seed: 42,
                 split_merge: Some(2),
             },
@@ -197,7 +203,7 @@ fn test_compare_factorization_strategies() {
             .collect();
         let store = within::FactorMajorStore::new(cats, within::ObservationWeights::Unit, *n_rows)
             .expect("valid factor-major store");
-        let design = FixedEffectsDesign::from_store(store).expect("valid synthetic design");
+        let design = WeightedDesign::from_store(store).expect("valid synthetic design");
 
         let y: Vec<f64> = (0..*n_rows).map(|_| rng.random::<f64>()).collect();
         let design_op = DesignOperator::new(&design);
@@ -206,7 +212,7 @@ fn test_compare_factorization_strategies() {
         let gramian_op = GramianOperator::new(&design);
 
         for (ac_config, label) in &configs {
-            let local_solver = LocalSolverConfig::SchurComplement {
+            let local_solver = LocalSolverConfig {
                 approx_chol: *ac_config,
                 approx_schur: Some(within::ApproxSchurConfig::default()),
                 dense_threshold: within::DEFAULT_DENSE_SCHUR_THRESHOLD,
@@ -254,6 +260,7 @@ fn test_gmres_multiplicative_implicit() {
         operator: OperatorRepr::Implicit,
         tol: 1e-8,
         maxiter: 1000,
+        ..Default::default()
     };
     let precond = Preconditioner::Multiplicative(LocalSolverConfig::default());
     let solver = Solver::from_design(design, &params, Some(&precond)).expect("build solver");
@@ -272,6 +279,7 @@ fn test_gmres_multiplicative_explicit() {
         operator: OperatorRepr::Explicit,
         tol: 1e-8,
         maxiter: 1000,
+        ..Default::default()
     };
     let precond = Preconditioner::Multiplicative(LocalSolverConfig::default());
     let solver = Solver::from_design(design, &params, Some(&precond)).expect("build solver");

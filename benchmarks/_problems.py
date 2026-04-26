@@ -858,6 +858,96 @@ def random_kfe(
     )
 
 
+@register_generator("hub_kfe")
+def hub_kfe(
+    k: int = 3,
+    n_levels_per_factor: list[int] | None = None,
+    n_rows: int = 20000,
+    hub_factor: int = 0,
+    hub_share: float = 0.85,
+    seed: int = 42,
+) -> tuple[list[NDArray[np.int64]], list[int], NDArray[np.float64]]:
+    """k-FE with one dominant level on a single factor and a long random tail.
+
+    This creates one "hub" level that participates in most observations,
+    while the remaining rows still span the full support. It is intended to
+    stress mixed-size subdomain decompositions where one or two local problems
+    dominate the work.
+    """
+    rng = np.random.default_rng(seed)
+    if n_levels_per_factor is None:
+        n_levels_per_factor = [200, 200, 80][:k] if k <= 3 else [120] * k
+    assert len(n_levels_per_factor) == k
+    if not 0 <= hub_factor < k:
+        raise ValueError("hub_factor must index an existing factor")
+
+    cats = [
+        rng.integers(0, nl, size=n_rows, dtype=np.int64) for nl in n_levels_per_factor
+    ]
+    n_hub_rows = max(0, min(n_rows, int(round(n_rows * hub_share))))
+    if n_hub_rows > 0:
+        cats[hub_factor][:n_hub_rows] = 0
+
+    perm = rng.permutation(n_rows)
+    cats = [cat[perm] for cat in cats]
+    return (
+        cats,
+        list(n_levels_per_factor),
+        _make_response(cats, n_levels_per_factor, rng),
+    )
+
+
+@register_generator("dominant_block_kfe")
+def dominant_block_kfe(
+    k: int = 3,
+    n_levels_per_factor: list[int] | None = None,
+    n_rows: int = 20000,
+    block_levels: list[int] | None = None,
+    block_share: float = 0.80,
+    seed: int = 42,
+) -> tuple[list[NDArray[np.int64]], list[int], NDArray[np.float64]]:
+    """k-FE with one dense low-index block plus a diffuse background.
+
+    Most observations are drawn from a small Cartesian product of levels across
+    all factors, producing one or a few dense local regions. The remainder is
+    sampled over the full design to keep the graph connected and preserve a
+    realistic long tail.
+    """
+    rng = np.random.default_rng(seed)
+    if n_levels_per_factor is None:
+        n_levels_per_factor = [200, 160, 120][:k] if k <= 3 else [100] * k
+    assert len(n_levels_per_factor) == k
+
+    if block_levels is None:
+        block_levels = [max(2, nl // 10) for nl in n_levels_per_factor]
+    assert len(block_levels) == k
+
+    n_block_rows = max(0, min(n_rows, int(round(n_rows * block_share))))
+    n_tail_rows = n_rows - n_block_rows
+    cats: list[NDArray[np.int64]] = []
+
+    for nl, hot_n in zip(n_levels_per_factor, block_levels):
+        hot_n = max(1, min(nl, hot_n))
+        hot = rng.integers(0, hot_n, size=n_block_rows, dtype=np.int64)
+
+        if n_tail_rows == 0:
+            tail = np.empty(0, dtype=np.int64)
+        elif hot_n >= nl:
+            tail = rng.integers(0, nl, size=n_tail_rows, dtype=np.int64)
+        else:
+            tail = rng.integers(hot_n, nl, size=n_tail_rows, dtype=np.int64)
+
+        cats.append(np.concatenate([hot, tail]))
+
+    perm = rng.permutation(n_rows)
+    cats = [cat[perm] for cat in cats]
+    return (
+        cats,
+        list(n_levels_per_factor),
+        _make_response(cats, n_levels_per_factor, rng),
+    )
+
+
 @register_generator("imbalanced_kfe")
 def imbalanced_kfe(
     k: int = 4,

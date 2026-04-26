@@ -7,28 +7,36 @@ observations.
 
 from __future__ import annotations
 
-from within import CG
 from within._within import (
-    AdditiveSchwarz,
     ApproxCholConfig,
-    SchurComplement,
     ApproxSchurConfig,
+    MultiplicativeSchwarz,
+    SchurComplement,
 )
 from .._problems import get_generator
-from .._framework import BenchmarkResult, SolverConfig, SuiteOptions, run_solve, suite
+from .._framework import (
+    BenchmarkResult,
+    SolverConfig,
+    SuiteOptions,
+    benchmark_cg,
+    benchmark_gmres,
+    make_additive_schwarz,
+    run_solve,
+    suite,
+)
 from .._table import print_pivot, print_table
 
 
 @suite(
     "fixest_comparison",
-    description="Fixest-style 3FE difficult panel DGP up to 320M obs",
+    description="Fixest-style 3FE difficult panel DGP up to 160M obs",
     tags=("3fe", "fixest", "scaling", "difficult"),
 )
 def run_fixest_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
-    if opts.quick:
-        n_obs_list = [100_000, 500_000]
-    else:
-        n_obs_list = [
+    n_obs_list = opts.select(
+        smoke=[100_000, 500_000],
+        iterate=[500_000, 2_000_000, 5_000_000, 20_000_000],
+        full=[
             100_000,
             500_000,
             1_000_000,
@@ -41,31 +49,45 @@ def run_fixest_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
             40_000_000,
             80_000_000,
             160_000_000,
-            320_000_000,
-        ]
+        ],
+    )
+
+    exact_schur = SchurComplement(
+        approx_chol=ApproxCholConfig(seed=0, split=8),
+        approx_schur=None,
+    )
+    approx_schur = SchurComplement(
+        approx_chol=ApproxCholConfig(seed=0, split=8),
+        approx_schur=ApproxSchurConfig(seed=0),
+    )
 
     solver_configs = [
         SolverConfig(
-            "CG(Schwarz)",
-            CG(tol=opts.tol, maxiter=opts.maxiter),
-            preconditioner=AdditiveSchwarz(
-                local_solver=SchurComplement(
-                    approx_chol=ApproxCholConfig(seed=0, split=8),
-                    approx_schur=None,
-                )
-            ),
+            "CG(exact)",
+            benchmark_cg(opts),
+            preconditioner=make_additive_schwarz(local_solver=exact_schur),
         ),
         SolverConfig(
-            "CG(Schwarz)-sparse",
-            CG(tol=opts.tol, maxiter=opts.maxiter),
-            preconditioner=AdditiveSchwarz(
-                local_solver=SchurComplement(
-                    approx_chol=ApproxCholConfig(seed=0, split=2),
-                    approx_schur=ApproxSchurConfig(seed=0, split=2),
-                )
-            ),
+            "CG(approx)",
+            benchmark_cg(opts),
+            preconditioner=make_additive_schwarz(local_solver=approx_schur),
         ),
     ]
+    if opts.profile != "full":
+        solver_configs.append(
+            SolverConfig(
+                "GMRES(exact)",
+                benchmark_gmres(opts),
+                preconditioner=MultiplicativeSchwarz(local_solver=exact_schur),
+            )
+        )
+        solver_configs.append(
+            SolverConfig(
+                "GMRES(approx)",
+                benchmark_gmres(opts),
+                preconditioner=MultiplicativeSchwarz(local_solver=approx_schur),
+            )
+        )
 
     gen = get_generator("fixest_dgp")
     all_results: list[BenchmarkResult] = []
@@ -79,7 +101,7 @@ def run_fixest_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
 
         for cfg in solver_configs:
             try:
-                result = run_solve(cats, n_levels, y, cfg)
+                result = run_solve(cats, n_levels, y, cfg, opts)
                 result.problem = name
                 all_results.append(result)
             except Exception as e:

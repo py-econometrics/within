@@ -50,7 +50,11 @@ struct DiagSolver(usize, f64);
 impl LocalSolver for DiagSolver {
     fn n_local(&self) -> usize    { self.0 }
     fn scratch_size(&self) -> usize { self.0 }
-    fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), schwarz_precond::LocalSolveError> {
+    fn solve_local(
+        &self,
+        rhs: &mut [f64],
+        sol: &mut [f64],
+    ) -> Result<(), schwarz_precond::LocalSolveError> {
         for i in 0..self.0 { sol[i] = rhs[i] / self.1; }
         Ok(())
     }
@@ -67,7 +71,8 @@ fn main() {
         .map(|i| {
             let idx: Vec<u32> = (i..n.min(i + 2)).map(|j| j as u32).collect();
             let sz = idx.len();
-            SubdomainEntry::new(SubdomainCore::uniform(idx), DiagSolver(sz, 3.0))
+            SubdomainEntry::try_new(SubdomainCore::uniform(idx), DiagSolver(sz, 3.0))
+                .expect("valid subdomain entry")
         })
         .collect();
 

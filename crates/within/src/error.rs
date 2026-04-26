@@ -1,3 +1,17 @@
+//! Error types for the `within` crate.
+//!
+//! Errors fall into three categories:
+//!
+//! | Category | Variants | When it happens |
+//! |---|---|---|
+//! | **Validation** | [`WithinError::EmptyObservations`], [`ObservationCountMismatch`](WithinError::ObservationCountMismatch), [`WeightCountMismatch`](WithinError::WeightCountMismatch) | Bad input detected before any computation begins. |
+//! | **Build** | [`WithinError::Overflow`], [`SingularDiagonal`](WithinError::SingularDiagonal), [`LocalSolverBuild`](WithinError::LocalSolverBuild), [`PreconditionerBuild`](WithinError::PreconditionerBuild) | Construction of operators or preconditioners fails due to degenerate data (e.g., a factor with zero observations at some level, or numeric overflow during Gramian assembly). |
+//! | **Runtime** | [`WithinError::IterativeSolve`] | The iterative solver diverges or exceeds the iteration limit. Wraps [`schwarz_precond::SolveError`]. |
+//!
+//! All public APIs in this crate return [`WithinResult<T>`], which is
+//! `Result<T, WithinError>`. The build and runtime variants implement
+//! [`Error::source`] to chain the underlying `schwarz_precond` error.
+
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
@@ -13,16 +27,29 @@ pub enum WithinError {
     EmptyObservations,
     /// One factor column does not match the expected observation count.
     ObservationCountMismatch {
+        /// Index of the factor with mismatched length.
         factor: usize,
+        /// Expected number of observations.
         expected: usize,
+        /// Actual number of observations in this factor's column.
         got: usize,
     },
     /// Weight vector does not match the number of observations.
-    WeightCountMismatch { expected: usize, got: usize },
+    WeightCountMismatch {
+        /// Expected number of weights.
+        expected: usize,
+        /// Actual weight vector length.
+        got: usize,
+    },
     /// Numeric overflow during assembly.
     Overflow(String),
     /// A zero diagonal was encountered during block elimination.
-    SingularDiagonal { block: &'static str, index: usize },
+    SingularDiagonal {
+        /// Which block contained the zero diagonal ("keep" or "elim").
+        block: &'static str,
+        /// Row/column index of the zero diagonal entry.
+        index: usize,
+    },
     /// Local solver construction failed.
     LocalSolverBuild(String),
     /// Preconditioner structural validation failed.

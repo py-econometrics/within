@@ -1,15 +1,55 @@
+//! Error types for the `schwarz-precond` crate.
+//!
+//! Errors are layered to match the build → apply → solve lifecycle:
+//!
+//! - **Build errors** ([`SubdomainCoreBuildError`], [`SubdomainEntryBuildError`],
+//!   [`PreconditionerBuildError`]) — caught during construction, before any
+//!   solve begins.
+//! - **Apply errors** ([`ApplyError`]) — runtime failures during a single
+//!   preconditioner or operator application (e.g. a local solver diverges).
+//! - **Solve errors** ([`SolveError`]) — wraps `ApplyError` for the iterative
+//!   solver layer.
+//!
+//! Each level chains to its source via [`Error::source`].
+
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
 use crate::local_solve::{LocalSolver, SubdomainEntry};
 
-/// Construction-time validation errors for Schwarz preconditioners.
+/// Construction-time validation errors for a [`crate::SubdomainCore`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PreconditionerBuildError {
+pub enum SubdomainCoreBuildError {
+    /// Partition-of-unity weight vector length does not match index count.
+    PartitionWeightLengthMismatch {
+        /// Number of global indices in the subdomain core.
+        index_count: usize,
+        /// Number of partition weights in the subdomain core.
+        weight_count: usize,
+    },
+}
+
+impl Display for SubdomainCoreBuildError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PartitionWeightLengthMismatch {
+                index_count,
+                weight_count,
+            } => write!(
+                f,
+                "partition weight count ({weight_count}) does not match index count ({index_count})",
+            ),
+        }
+    }
+}
+
+impl Error for SubdomainCoreBuildError {}
+
+/// Construction-time validation errors for a [`crate::SubdomainEntry`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SubdomainEntryBuildError {
     /// Local solver `n_local` does not match the subdomain index count.
     LocalDofCountMismatch {
-        /// Index of the failing subdomain entry in the provided list.
-        subdomain: usize,
         /// Number of global indices in the subdomain core.
         index_count: usize,
         /// Local DOF count reported by the solver implementation.
@@ -17,22 +57,39 @@ pub enum PreconditionerBuildError {
     },
     /// Local solver scratch size is too small for the subdomain gather/scatter buffers.
     ScratchSizeTooSmall {
-        /// Index of the failing subdomain entry in the provided list.
-        subdomain: usize,
         /// Scratch size reported by the local solver.
         scratch_size: usize,
         /// Minimum scratch size required by the subdomain core.
         required_min: usize,
     },
-    /// Partition-of-unity weight vector length does not match index count.
-    PartitionWeightLengthMismatch {
-        /// Index of the failing subdomain entry in the provided list.
-        subdomain: usize,
-        /// Number of global indices in the subdomain core.
-        index_count: usize,
-        /// Number of partition weights in the subdomain core.
-        weight_count: usize,
-    },
+}
+
+impl Display for SubdomainEntryBuildError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::LocalDofCountMismatch {
+                index_count,
+                solver_n_local,
+            } => write!(
+                f,
+                "index count ({index_count}) does not match solver n_local ({solver_n_local})",
+            ),
+            Self::ScratchSizeTooSmall {
+                scratch_size,
+                required_min,
+            } => write!(
+                f,
+                "scratch size ({scratch_size}) is smaller than required minimum ({required_min})",
+            ),
+        }
+    }
+}
+
+impl Error for SubdomainEntryBuildError {}
+
+/// Construction-time validation errors for Schwarz preconditioners.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreconditionerBuildError {
     /// A subdomain references a global DOF outside `[0, n_dofs)`.
     GlobalIndexOutOfBounds {
         /// Index of the failing subdomain entry in the provided list.
@@ -49,30 +106,6 @@ pub enum PreconditionerBuildError {
 impl Display for PreconditionerBuildError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::LocalDofCountMismatch {
-                subdomain,
-                index_count,
-                solver_n_local,
-            } => write!(
-                f,
-                "subdomain {subdomain}: index count ({index_count}) does not match solver n_local ({solver_n_local})",
-            ),
-            Self::ScratchSizeTooSmall {
-                subdomain,
-                scratch_size,
-                required_min,
-            } => write!(
-                f,
-                "subdomain {subdomain}: scratch size ({scratch_size}) is smaller than required minimum ({required_min})",
-            ),
-            Self::PartitionWeightLengthMismatch {
-                subdomain,
-                index_count,
-                weight_count,
-            } => write!(
-                f,
-                "subdomain {subdomain}: partition weight count ({weight_count}) does not match index count ({index_count})",
-            ),
             Self::GlobalIndexOutOfBounds {
                 subdomain,
                 local_index,
@@ -185,35 +218,7 @@ pub(crate) fn validate_entries<S: LocalSolver>(
     n_dofs: usize,
 ) -> Result<(), PreconditionerBuildError> {
     for (subdomain, entry) in entries.iter().enumerate() {
-        let index_count = entry.core.global_indices.len();
-        let solver_n_local = entry.solver.n_local();
-        if solver_n_local != index_count {
-            return Err(PreconditionerBuildError::LocalDofCountMismatch {
-                subdomain,
-                index_count,
-                solver_n_local,
-            });
-        }
-
-        let scratch_size = entry.scratch_size();
-        if scratch_size < index_count {
-            return Err(PreconditionerBuildError::ScratchSizeTooSmall {
-                subdomain,
-                scratch_size,
-                required_min: index_count,
-            });
-        }
-
-        let weight_count = entry.core.partition_weights.len();
-        if weight_count != index_count {
-            return Err(PreconditionerBuildError::PartitionWeightLengthMismatch {
-                subdomain,
-                index_count,
-                weight_count,
-            });
-        }
-
-        for (local_index, &global_index) in entry.core.global_indices.iter().enumerate() {
+        for (local_index, &global_index) in entry.global_indices().iter().enumerate() {
             if (global_index as usize) >= n_dofs {
                 return Err(PreconditionerBuildError::GlobalIndexOutOfBounds {
                     subdomain,

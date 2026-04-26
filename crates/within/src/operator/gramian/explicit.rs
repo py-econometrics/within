@@ -203,6 +203,7 @@ impl PairAccumulator {
 // ===========================================================================
 
 impl Gramian {
+    /// Assemble the full explicit Gramian `G = D^T W D` as a CSR sparse matrix.
     pub fn build<S: ObservationStore>(design: &WeightedDesign<S>) -> Self {
         Self {
             matrix: Arc::new(build_full_matrix(design)),
@@ -275,6 +276,34 @@ impl Operator for Gramian {
     }
 }
 
+/// Accumulate diagonal weights and pair cross-table entries for a range of observations.
+///
+/// The `diag_add` callback abstracts the diagonal storage — either atomic (parallel)
+/// or plain `f64` (sequential).
+fn accumulate_observations<S: ObservationStore>(
+    design: &WeightedDesign<S>,
+    range: std::ops::Range<usize>,
+    pairs: &mut [PairAccumulator],
+    pair_info: &[(usize, usize)],
+    mut diag_add: impl FnMut(usize, f64),
+) {
+    let n_factors = design.n_factors();
+    for uid in range {
+        let w = design.uid_weight(uid);
+        for q in 0..n_factors {
+            let idx = design.factors[q].offset + design.store.level(uid, q) as usize;
+            diag_add(idx, w);
+        }
+        for (pi, &(q, r)) in pair_info.iter().enumerate() {
+            pairs[pi].add(
+                design.store.level(uid, q) as usize,
+                design.store.level(uid, r) as usize,
+                w,
+            );
+        }
+    }
+}
+
 fn build_full_matrix<S: ObservationStore>(design: &WeightedDesign<S>) -> SparseMatrix {
     let n_dofs = design.n_dofs;
     let n_obs = design.store.n_obs();
@@ -317,20 +346,9 @@ fn build_full_matrix<S: ObservationStore>(design: &WeightedDesign<S>) -> SparseM
                     })
                     .collect();
 
-                for uid in start..end {
-                    let w = design.uid_weight(uid);
-                    for q in 0..n_factors {
-                        let idx = design.factors[q].offset + design.store.level(uid, q) as usize;
-                        shared_diag[idx].fetch_add(w, Ordering::Relaxed);
-                    }
-                    for (pi, &(q, r)) in pair_info.iter().enumerate() {
-                        pairs[pi].add(
-                            design.store.level(uid, q) as usize,
-                            design.store.level(uid, r) as usize,
-                            w,
-                        );
-                    }
-                }
+                accumulate_observations(design, start..end, &mut pairs, &pair_info, |idx, w| {
+                    shared_diag[idx].fetch_add(w, Ordering::Relaxed);
+                });
 
                 pairs
             })
@@ -364,19 +382,9 @@ fn build_full_matrix<S: ObservationStore>(design: &WeightedDesign<S>) -> SparseM
             })
             .collect();
 
-        for uid in 0..n_obs {
-            let w = design.uid_weight(uid);
-            for q in 0..n_factors {
-                diag_flat[design.factors[q].offset + design.store.level(uid, q) as usize] += w;
-            }
-            for (pi, &(q, r)) in pair_info.iter().enumerate() {
-                pair_tables[pi].add(
-                    design.store.level(uid, q) as usize,
-                    design.store.level(uid, r) as usize,
-                    w,
-                );
-            }
-        }
+        accumulate_observations(design, 0..n_obs, &mut pair_tables, &pair_info, |idx, w| {
+            diag_flat[idx] += w;
+        });
         (diag_flat, pair_tables)
     };
 
@@ -516,9 +524,14 @@ fn compose_gramian_from_blocks(
     let mut indptr = vec![0u32; n_dofs + 1];
     for i in 0..n_dofs {
         let nnz_u64 = row_nnz[i];
-        indptr[i + 1] = indptr[i]
-            + u32::try_from(nnz_u64)
-                .map_err(|_| WithinError::Overflow(format!("row nnz exceeds u32 at row {i}")))?;
+        indptr[i + 1] =
+            indptr[i]
+                .checked_add(u32::try_from(nnz_u64).map_err(|_| {
+                    WithinError::Overflow(format!("row nnz exceeds u32 at row {i}"))
+                })?)
+                .ok_or_else(|| {
+                    WithinError::Overflow(format!("cumulative indptr exceeds u32 at row {i}"))
+                })?;
     }
     let total_nnz = indptr[n_dofs] as usize;
 

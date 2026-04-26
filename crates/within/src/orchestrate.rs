@@ -1,8 +1,28 @@
-//! End-to-end solve orchestration.
+//! End-to-end solve orchestration — the public entry points for `within`.
 //!
-//! This module provides the public convenience API ([`solve`], [`solve_batch`])
-//! and the result types shared by all entry points.  The heavy lifting is done
-//! by [`crate::solver::Solver`].
+//! This module provides the convenience functions [`solve`] and [`solve_batch`]
+//! that tie together all four architectural layers:
+//!
+//! ```text
+//! solve(categories, y, weights, params, preconditioner)
+//!   1. Validate  → observation layer builds an ArrayStore, checks dimensions
+//!   2. Design    → domain layer wraps the store in a WeightedDesign
+//!   3. Precond   → operator layer builds subdomains + local solvers (Schwarz)
+//!   4. Solve     → Krylov solver (CG/GMRES) with iterative refinement
+//!   5. Extract   → return coefficients x and demeaned residuals y - Dx
+//! ```
+//!
+//! For one-shot solves, [`solve`] and [`solve_batch`] are the simplest API.
+//! When the same design matrix is reused with multiple response vectors,
+//! prefer [`crate::Solver`] directly — it caches the preconditioner across
+//! calls (see [`crate::solver`] for details).
+//!
+//! # Result types
+//!
+//! - [`SolveResult`] — output of a single solve: coefficients `x`, demeaned
+//!   values `y - Dx`, convergence flag, iteration count, and timing breakdown.
+//! - [`BatchSolveResult`] — output of a batch solve: concatenated coefficients
+//!   and demeaned values with per-RHS convergence and timing metadata.
 
 use std::time::Instant;
 
@@ -15,13 +35,21 @@ use crate::WithinResult;
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct SolveResult {
+    /// Fixed-effect coefficients (length = total DOFs across all factors).
     pub x: Vec<f64>,
+    /// Demeaned response: `y - D x` (length = n_obs).
     pub demeaned: Vec<f64>,
+    /// Whether the iterative solver converged within `maxiter` iterations.
     pub converged: bool,
+    /// Number of Krylov iterations used.
     pub iterations: usize,
+    /// Final relative residual norm `‖r‖ / ‖b‖`.
     pub final_residual: f64,
+    /// Wall-clock time for the entire solve (setup + Krylov), in seconds.
     pub time_total: f64,
+    /// Wall-clock time for preconditioner construction, in seconds.
     pub time_setup: f64,
+    /// Wall-clock time for the Krylov solve phase, in seconds.
     pub time_solve: f64,
 }
 
@@ -58,35 +86,45 @@ impl BatchSolveResult {
         }
     }
 
+    /// Number of right-hand sides in the batch.
     pub fn n_rhs(&self) -> usize {
         self.converged.len()
     }
+    /// Coefficient vector for the `i`-th RHS.
     pub fn x(&self, i: usize) -> &[f64] {
         let n_dofs = self.x.len() / self.n_rhs();
         &self.x[i * n_dofs..(i + 1) * n_dofs]
     }
+    /// Demeaned response for the `i`-th RHS.
     pub fn demeaned(&self, i: usize) -> &[f64] {
         let n_obs = self.demeaned.len() / self.n_rhs();
         &self.demeaned[i * n_obs..(i + 1) * n_obs]
     }
+    /// All coefficient vectors concatenated (length = n_dofs * n_rhs).
     pub fn x_all(&self) -> &[f64] {
         &self.x
     }
+    /// All demeaned responses concatenated (length = n_obs * n_rhs).
     pub fn demeaned_all(&self) -> &[f64] {
         &self.demeaned
     }
+    /// Per-RHS convergence flags.
     pub fn converged(&self) -> &[bool] {
         &self.converged
     }
+    /// Per-RHS iteration counts.
     pub fn iterations(&self) -> &[usize] {
         &self.iterations
     }
+    /// Per-RHS final relative residual norms.
     pub fn final_residual(&self) -> &[f64] {
         &self.final_residual
     }
+    /// Per-RHS solve times in seconds.
     pub fn time_solve(&self) -> &[f64] {
         &self.time_solve
     }
+    /// Total wall-clock time for the entire batch (setup + all solves), in seconds.
     pub fn time_total(&self) -> f64 {
         self.time_total
     }

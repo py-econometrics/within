@@ -6,7 +6,7 @@ use proptest::prelude::*;
 
 use super::CrossTab;
 use super::Gramian;
-use crate::domain::{FixedEffectsDesign, WeightedDesign};
+use crate::domain::WeightedDesign;
 use crate::observation::{FactorMajorStore, ObservationWeights};
 use crate::operator::gramian::find_all_active_levels;
 
@@ -35,17 +35,17 @@ fn assert_cross_tabs_equal(a: &CrossTab, b: &CrossTab) {
     }
 }
 
-fn make_2fe_design() -> FixedEffectsDesign {
+fn make_2fe_design() -> WeightedDesign<FactorMajorStore> {
     let store = FactorMajorStore::new(
         vec![vec![0, 1, 2, 0, 1], vec![0, 1, 2, 3, 0]],
         ObservationWeights::Unit,
         5,
     )
     .expect("valid factor-major store");
-    FixedEffectsDesign::from_store(store).expect("valid 2FE design")
+    WeightedDesign::from_store(store).expect("valid 2FE design")
 }
 
-fn make_3fe_design() -> FixedEffectsDesign {
+fn make_3fe_design() -> WeightedDesign<FactorMajorStore> {
     let store = FactorMajorStore::new(
         vec![
             vec![0, 1, 2, 0, 1, 2],
@@ -56,7 +56,7 @@ fn make_3fe_design() -> FixedEffectsDesign {
         6,
     )
     .expect("valid factor-major store");
-    FixedEffectsDesign::from_store(store).expect("valid 3FE design")
+    WeightedDesign::from_store(store).expect("valid 3FE design")
 }
 
 #[test]
@@ -108,7 +108,7 @@ fn test_from_gramian_block_single_component() {
         4,
     )
     .expect("valid factor-major store");
-    let design = FixedEffectsDesign::from_store(store).expect("valid design");
+    let design = WeightedDesign::from_store(store).expect("valid design");
     let gramian = Gramian::build(&design);
 
     let (ct_gram, _) =
@@ -130,7 +130,7 @@ fn test_from_gramian_block_multiple_components() {
         4,
     )
     .expect("valid factor-major store");
-    let design = FixedEffectsDesign::from_store(store).expect("valid design");
+    let design = WeightedDesign::from_store(store).expect("valid design");
     let gramian = Gramian::build(&design);
 
     let (ct_obs, _) = CrossTab::build_for_pair(&design, 0, 1).unwrap();
@@ -192,7 +192,7 @@ fn test_cross_tab_sparse_accumulation_path() {
         n_obs,
     )
     .expect("valid sparse store");
-    let design_sparse = FixedEffectsDesign::from_store(store_sparse).expect("valid sparse design");
+    let design_sparse = WeightedDesign::from_store(store_sparse).expect("valid sparse design");
     let (ct_sparse, _) =
         CrossTab::build_for_pair(&design_sparse, 0, 1).expect("sparse cross tab should build");
 
@@ -206,7 +206,7 @@ fn test_cross_tab_sparse_accumulation_path() {
         n_obs,
     )
     .expect("valid dense store");
-    let design_dense = FixedEffectsDesign::from_store(store_dense).expect("valid dense design");
+    let design_dense = WeightedDesign::from_store(store_dense).expect("valid dense design");
     let (ct_dense, _) =
         CrossTab::build_for_pair(&design_dense, 0, 1).expect("dense cross tab should build");
 
@@ -270,155 +270,6 @@ fn test_cross_tab_sparse_accumulation_path() {
 }
 
 // ---------------------------------------------------------------------------
-// Test: to_sddm structure
-// ---------------------------------------------------------------------------
-
-#[test]
-fn test_to_sddm_structure() {
-    // Simple fully-connected design: factor 0 has 2 levels, factor 1 has 3 levels.
-    // Observations: (0,0), (0,1), (1,1), (1,2), (0,2)
-    let store = FactorMajorStore::new(
-        vec![vec![0, 0, 1, 1, 0], vec![0, 1, 1, 2, 2]],
-        ObservationWeights::Unit,
-        5,
-    )
-    .expect("valid store");
-    let design = FixedEffectsDesign::from_store(store).expect("valid design");
-    let (ct, _) = CrossTab::build_for_pair(&design, 0, 1).expect("cross tab should build");
-
-    let n_q = ct.n_q();
-    let n_r = ct.n_r();
-    let n = n_q + n_r;
-
-    let sddm = ct.to_sddm();
-    assert_eq!(sddm.n(), n, "SDDM dimension should be n_q + n_r");
-
-    let indptr = sddm.indptr();
-    let indices = sddm.indices();
-    let data = sddm.data();
-
-    // Diagonal entries: for q-rows, diagonal is at column i; for r-rows, at n_q+i.
-    for i in 0..n_q {
-        let row_start = indptr[i] as usize;
-        let row_end = indptr[i + 1] as usize;
-        // First entry in q-row is always the diagonal.
-        assert_eq!(
-            indices[row_start] as usize, i,
-            "q-row {i}: first entry should be diagonal at column {i}"
-        );
-        assert!(
-            (data[row_start] - ct.diag_q[i]).abs() < 1e-12,
-            "q-row {i}: diagonal value should match diag_q[{i}]"
-        );
-        // Off-diagonal entries are in columns >= n_q (r-block columns).
-        for idx in (row_start + 1)..row_end {
-            assert!(
-                indices[idx] as usize >= n_q,
-                "q-row {i}: off-diag column {} should be >= n_q={n_q}",
-                indices[idx]
-            );
-            assert!(
-                data[idx] <= 0.0,
-                "q-row {i}: off-diag entry at C-column should be negated (non-positive)"
-            );
-        }
-    }
-
-    // r-rows: off-diagonal entries come before diagonal.
-    for i in 0..n_r {
-        let row = n_q + i;
-        let row_start = indptr[row] as usize;
-        let row_end = indptr[row + 1] as usize;
-        // Last entry in r-row is always the diagonal.
-        let last_idx = row_end - 1;
-        assert_eq!(
-            indices[last_idx] as usize,
-            n_q + i,
-            "r-row {i}: last entry should be diagonal at column {}",
-            n_q + i
-        );
-        assert!(
-            (data[last_idx] - ct.diag_r[i]).abs() < 1e-12,
-            "r-row {i}: diagonal value should match diag_r[{i}]"
-        );
-        // Off-diagonal entries are in columns < n_q (q-block columns).
-        for idx in row_start..last_idx {
-            assert!(
-                (indices[idx] as usize) < n_q,
-                "r-row {i}: off-diag column {} should be < n_q={n_q}",
-                indices[idx]
-            );
-            assert!(
-                data[idx] <= 0.0,
-                "r-row {i}: off-diag entry should be negated (non-positive)"
-            );
-        }
-    }
-
-    // Symmetry: L[i,j] == L[j,i]
-    // Build a dense matrix from the SDDM sparse format.
-    let mut dense = vec![vec![0.0f64; n]; n];
-    for row in 0..n {
-        let row_start = indptr[row] as usize;
-        let row_end = indptr[row + 1] as usize;
-        for idx in row_start..row_end {
-            dense[row][indices[idx] as usize] = data[idx];
-        }
-    }
-    #[allow(clippy::needless_range_loop)]
-    for i in 0..n {
-        for j in 0..n {
-            assert!(
-                (dense[i][j] - dense[j][i]).abs() < 1e-12,
-                "SDDM symmetry violation at ({i},{j}): {} vs {}",
-                dense[i][j],
-                dense[j][i]
-            );
-        }
-    }
-}
-
-#[test]
-fn test_to_sddm_diagonal_only_when_no_cross_entries() {
-    // A design where factor 0 and factor 1 are perfectly nested:
-    // each q-level appears with exactly one r-level (but each observation
-    // is still stored). The C block will be non-empty, but we separately
-    // test that the SDDM diagonal = diag_q / diag_r.
-    //
-    // To get an empty C block we'd need factor 0 levels that never share
-    // observations with any factor 1 level — impossible with an ObservationStore.
-    // Instead we test that a single-observation design has C with exactly one entry.
-    let store = FactorMajorStore::new(vec![vec![0], vec![0]], ObservationWeights::Unit, 1)
-        .expect("valid single-obs store");
-    let design = FixedEffectsDesign::from_store(store).expect("valid single-obs design");
-    let (ct, _) = CrossTab::build_for_pair(&design, 0, 1).expect("should build");
-
-    let sddm = ct.to_sddm();
-    let n = sddm.n();
-    assert_eq!(n, 2, "single-observation design: n_q=1, n_r=1, total=2");
-
-    let indptr = sddm.indptr();
-    let indices = sddm.indices();
-    let data = sddm.data();
-
-    // Row 0 (q): diagonal=1, off-diag col=1 val=-1
-    assert_eq!(indptr[0], 0);
-    assert_eq!(indptr[1], 2);
-    assert_eq!(indices[0], 0);
-    assert!((data[0] - 1.0).abs() < 1e-12, "q-diag should be 1.0");
-    assert_eq!(indices[1], 1);
-    assert!((data[1] + 1.0).abs() < 1e-12, "C entry should be -1.0");
-
-    // Row 1 (r): off-diag col=0 val=-1, diagonal=1
-    assert_eq!(indptr[1], 2);
-    assert_eq!(indptr[2], 4);
-    assert_eq!(indices[2], 0);
-    assert!((data[2] + 1.0).abs() < 1e-12, "C^T entry should be -1.0");
-    assert_eq!(indices[3], 1);
-    assert!((data[3] - 1.0).abs() < 1e-12, "r-diag should be 1.0");
-}
-
-// ---------------------------------------------------------------------------
 // Test: extract_component correctness
 // ---------------------------------------------------------------------------
 
@@ -435,7 +286,7 @@ fn test_extract_component_two_components() {
     let n_obs = 8;
     let store =
         FactorMajorStore::new(vec![fa, fb], ObservationWeights::Unit, n_obs).expect("valid store");
-    let design = FixedEffectsDesign::from_store(store).expect("valid design");
+    let design = WeightedDesign::from_store(store).expect("valid design");
     let (ct, _) = CrossTab::build_for_pair(&design, 0, 1).expect("cross tab should build");
 
     let components = ct.bipartite_connected_components();
@@ -549,7 +400,7 @@ proptest! {
             ObservationWeights::Unit,
             n_obs,
         ).expect("valid store");
-        let design = FixedEffectsDesign::from_store(store).expect("valid design");
+        let design = WeightedDesign::from_store(store).expect("valid design");
         let (ct, _) = CrossTab::build_for_pair(&design, 0, 1)
             .expect("cross tab should build");
 
@@ -606,7 +457,7 @@ fn test_find_all_active_levels_with_gaps() {
     let n_obs = 6;
     let store =
         FactorMajorStore::new(vec![fa, fb], ObservationWeights::Unit, n_obs).expect("valid store");
-    let design = FixedEffectsDesign::from_store(store).expect("valid design");
+    let design = WeightedDesign::from_store(store).expect("valid design");
 
     let active = find_all_active_levels(&design);
 
