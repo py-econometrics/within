@@ -10,6 +10,8 @@ target
 .hypothesis/
 .pytest_cache/
 .ruff_cache/
+__pycache__/
+*.py[cod]
 *.proptest-regressions
 
 # R build/check artifacts
