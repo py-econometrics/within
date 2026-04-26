@@ -55,14 +55,8 @@ package:
 
 ```r
 install.packages("devtools")
-devtools::install_deps("r/", dependencies = TRUE)
-devtools::install("r/", upgrade = "never")
-```
-
-For interactive development (without reinstalling each edit):
-
-```r
-devtools::load_all("r/")
+devtools::install_deps("withinr/", dependencies = TRUE)
+devtools::load_all("withinr/")
 ```
 
 Example (FWL with two-way fixed effects):

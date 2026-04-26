@@ -54,30 +54,37 @@ cargo --version
 install.packages(c("rextendr", "devtools", "testthat"))
 ```
 
-### 3. Build and load `withinr`
+### 3. Load `withinr` for local testing
 
-Run the standard local dev loop (networked Rust build allowed):
+For local development (no vendored offline requirement), enable dev mode:
 
 ```r
 Sys.setenv(NOT_CRAN = "true") # or WITHINR_DEV = "true"
-rextendr::document(pkg = "withinr")
 devtools::load_all("withinr")
 devtools::test("withinr")
 ```
 
-### 4. Optional: command-line install instead of `load_all()`
+### 4. Optional: install via command line instead of `load_all()`
 
 ```bash
 NOT_CRAN=true R CMD INSTALL withinr
+```
+
+### 5. If you changed Rust exports (`#[extendr]`), regenerate wrappers/docs
+
+```r
+rextendr::document(pkg = "withinr")
 ```
 
 ---
 
 ## API
 
-### `solve()`and `solve_batch()`
+### `solve()` and `solve_batch()`
 
-Solve fixed-effects normal equations for a single response vector. Both share identical APIs - the only difference is that `solve` requires an input vector for y, while `solve_batch` also accepts matrices. 
+Both functions solve fixed-effects normal equations.
+- `solve(categories, y, ...)` expects a single response vector `y`.
+- `solve_batch(categories, Y, ...)` expects a matrix `Y` with one RHS per column.
 
 ```r
 solve(
@@ -97,7 +104,7 @@ solve(
 | Argument | Type | Description |
 |---|---|---|
 | `categories` | integer matrix `(n_obs x n_factors)` | Factor assignments. **1-based** in R; converted internally to 0-based Rust indices. |
-| `y` | numeric vector `(n_obs)` or `solve`, vector or matrix for `solve_batch`| Response vector / covariates. |
+| `y` / `Y` | `y`: numeric vector `(n_obs)`; `Y`: numeric matrix `(n_obs x k)` | Response input(s). |
 | `weights` | numeric vector `(n_obs)` or `NULL` | Observation weights. `NULL` = unit weights. |
 | `method` | `"cg"` or `"gmres"` | Krylov solver. CG requires a symmetric preconditioner. |
 | `tol` | numeric | Convergence tolerance on the relative residual norm. |
