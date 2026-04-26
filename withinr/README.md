@@ -51,7 +51,7 @@ cargo --version
 ### 2. Install required R packages (once)
 
 ```r
-install.packages(c("rextendr", "devtools", "testthat"))
+install.packages(c("rextendr", "devtools"))
 ```
 
 ### 3. Load `withinr` for local testing
@@ -61,7 +61,8 @@ For local development (no vendored offline requirement), enable dev mode:
 ```r
 Sys.setenv(NOT_CRAN = "true") # or WITHINR_DEV = "true"
 devtools::load_all("withinr")
-devtools::test("withinr")
+source("withinr/tests/run_tests.R")
+withinr_run_tests()
 ```
 
 ### 4. Optional: install via command line instead of `load_all()`

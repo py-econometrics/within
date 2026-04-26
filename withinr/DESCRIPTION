@@ -16,7 +16,4 @@ Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.3
 SystemRequirements: Rust tool chain w/ cargo, rustc
-Suggests:
-    testthat (>= 3.0.0)
-Config/testthat/edition: 3
 Config/rextendr/version: 0.5.0
