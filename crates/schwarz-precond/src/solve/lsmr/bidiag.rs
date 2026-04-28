@@ -89,9 +89,9 @@ fn par_dot(a: &[f64], b: &[f64]) -> f64 {
 /// Ring buffer of past `v` vectors for windowed modified Gram-Schmidt in the
 /// standard Euclidean inner product. Used by [`GolubKahan`].
 ///
-/// Capacity zero is the no-op fast path: [`Self::is_empty`] short-circuits
-/// [`Self::reorthogonalize`] and [`Self::push`] to keep the `local_size = 0`
-/// codepath allocation- and branch-free.
+/// The disabled state is encoded as `Option<LocalReorth> = None` on the
+/// owning buffer; this type is only ever constructed with a positive
+/// capacity.
 struct LocalReorth {
     slots: Vec<Vec<f64>>,
     next: usize,
@@ -99,29 +99,26 @@ struct LocalReorth {
 }
 
 impl LocalReorth {
-    fn new(m: usize, n: usize, local_size: usize) -> Self {
-        // The bidiagonalization can produce at most `min(m, n)` linearly
-        // independent basis vectors before α or β hits zero, so capping the
-        // ring at `min(m, n)` keeps the storage in step with the algorithm.
+    /// Returns `None` when no reorthogonalization is requested (the effective
+    /// capacity collapses to zero). The bidiagonalization can produce at most
+    /// `min(m, n)` linearly independent basis vectors before α or β hits zero,
+    /// so the ring is capped at `min(m, n)`.
+    fn new(m: usize, n: usize, local_size: usize) -> Option<Self> {
         let cap = local_size.min(m.min(n));
-        Self {
+        if cap == 0 {
+            return None;
+        }
+        Some(Self {
             slots: (0..cap).map(|_| vec![0.0; n]).collect(),
             next: 0,
             count: 0,
-        }
-    }
-
-    fn is_empty(&self) -> bool {
-        self.slots.is_empty()
+        })
     }
 
     /// Modified Gram-Schmidt sweep over stored slots in chronological order
     /// (oldest first). Subtracts the projection of `y` onto each stored
-    /// vector. No-op when capacity is zero.
+    /// vector.
     fn reorthogonalize(&self, y: &mut [f64]) {
-        if self.is_empty() {
-            return;
-        }
         let cap = self.slots.len();
         let start = if self.count < cap { 0 } else { self.next };
         for i in 0..self.count {
@@ -132,11 +129,8 @@ impl LocalReorth {
     }
 
     /// Copy `v` into the next slot, advancing the ring index and saturating
-    /// the count at capacity. No-op when capacity is zero.
+    /// the count at capacity.
     fn push(&mut self, v: &[f64]) {
-        if self.is_empty() {
-            return;
-        }
         let cap = self.slots.len();
         self.slots[self.next].copy_from_slice(v);
         self.next = (self.next + 1) % cap;
@@ -152,6 +146,9 @@ impl LocalReorth {
 /// coefficient is `⟨v_new, M v_j⟩ = ⟨v_new, p̃_j⟩`. Subtracting the same
 /// coefficient from both `v` and `p̃` in lockstep preserves the
 /// `p̃ = M v` invariant on the recurrence vectors.
+///
+/// As with [`LocalReorth`], the disabled state is encoded as
+/// `Option<ModifiedLocalReorth> = None` on the owning buffer.
 struct ModifiedLocalReorth {
     v: Vec<Vec<f64>>,
     p_tilde: Vec<Vec<f64>>,
@@ -160,29 +157,25 @@ struct ModifiedLocalReorth {
 }
 
 impl ModifiedLocalReorth {
-    fn new(m: usize, n: usize, local_size: usize) -> Self {
-        // See `LocalReorth::new` for why we clamp at `min(m, n)`.
+    /// Returns `None` when no reorthogonalization is requested. See
+    /// [`LocalReorth::new`] for the capacity-clamping rationale.
+    fn new(m: usize, n: usize, local_size: usize) -> Option<Self> {
         let cap = local_size.min(m.min(n));
-        Self {
+        if cap == 0 {
+            return None;
+        }
+        Some(Self {
             v: (0..cap).map(|_| vec![0.0; n]).collect(),
             p_tilde: (0..cap).map(|_| vec![0.0; n]).collect(),
             next: 0,
             count: 0,
-        }
-    }
-
-    fn is_empty(&self) -> bool {
-        self.v.is_empty()
+        })
     }
 
     /// M-weighted MGS over stored `(v_j, p̃_j)` pairs. The coefficient
     /// `c = ⟨v, p̃_j⟩` is subtracted from `v` (against `v_j`) and from
-    /// `p̃` (against `p̃_j`), keeping `p̃ = M v` consistent. No-op when
-    /// capacity is zero.
+    /// `p̃` (against `p̃_j`), keeping `p̃ = M v` consistent.
     fn reorthogonalize(&self, v: &mut [f64], p_tilde: &mut [f64]) {
-        if self.is_empty() {
-            return;
-        }
         let cap = self.v.len();
         let start = if self.count < cap { 0 } else { self.next };
         for i in 0..self.count {
@@ -196,12 +189,8 @@ impl ModifiedLocalReorth {
     }
 
     /// Copy the normalized `v` and `p_tilde * inv_alpha` (= `M · v_norm`)
-    /// into the paired next slots, advancing the ring index. No-op when
-    /// capacity is zero.
+    /// into the paired next slots, advancing the ring index.
     fn push(&mut self, v: &[f64], p_tilde_unscaled: &[f64], inv_alpha: f64) {
-        if self.is_empty() {
-            return;
-        }
         let cap = self.v.len();
         self.v[self.next].copy_from_slice(v);
         for (dst, &src) in self.p_tilde[self.next]
@@ -251,8 +240,8 @@ impl<A: Operator + ?Sized> Bidiagonalization for GolubKahan<'_, A> {
 
         // Windowed MGS in the standard inner product, before normalization.
         // After the correction, α must be re-derived from the updated v.
-        if !self.bufs.local_reorth.is_empty() {
-            self.bufs.local_reorth.reorthogonalize(&mut self.bufs.v);
+        if let Some(reorth) = &self.bufs.local_reorth {
+            reorth.reorthogonalize(&mut self.bufs.v);
             alpha_sq = par_dot(&self.bufs.v, &self.bufs.v);
         }
         let alpha = alpha_sq.sqrt();
@@ -260,8 +249,10 @@ impl<A: Operator + ?Sized> Bidiagonalization for GolubKahan<'_, A> {
             scale_in_place(&mut self.bufs.v, 1.0 / alpha);
         }
 
-        // Push the normalized v_{k+1} into the ring; no-op when capacity is 0.
-        self.bufs.local_reorth.push(&self.bufs.v);
+        // Push the normalized v_{k+1} into the ring.
+        if let Some(reorth) = &mut self.bufs.local_reorth {
+            reorth.push(&self.bufs.v);
+        }
 
         self.alpha = alpha;
         Ok(BidiagStep { alpha, beta })
@@ -294,12 +285,12 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
         self.preconditioner
             .try_apply(&self.bufs.p_tilde, &mut self.bufs.v)?;
 
-        // M-weighted MGS against past (v, p̃ = M v) pairs. No-op when
-        // capacity is zero. Mutates v and p_tilde in lockstep so the
-        // p̃ = M v invariant holds on the corrected pair.
-        self.bufs
-            .local_reorth
-            .reorthogonalize(&mut self.bufs.v, &mut self.bufs.p_tilde);
+        // M-weighted MGS against past (v, p̃ = M v) pairs. Mutates v and
+        // p_tilde in lockstep so the p̃ = M v invariant holds on the
+        // corrected pair.
+        if let Some(reorth) = &self.bufs.local_reorth {
+            reorth.reorthogonalize(&mut self.bufs.v, &mut self.bufs.p_tilde);
+        }
 
         // α_{k+1} = √⟨ṽ, p̃⟩  (corrected after MGS)
         let vp = par_dot(&self.bufs.v, &self.bufs.p_tilde);
@@ -311,15 +302,15 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
         }
 
         // Push the normalized v_{k+1} and p̃_{k+1,norm} = p_tilde / α_new
-        // into the ring for the next step's MGS. No-op when capacity is 0.
-        let inv_alpha = if alpha_new > 0.0 {
-            1.0 / alpha_new
-        } else {
-            0.0
-        };
-        self.bufs
-            .local_reorth
-            .push(&self.bufs.v, &self.bufs.p_tilde, inv_alpha);
+        // into the ring for the next step's MGS.
+        if let Some(reorth) = &mut self.bufs.local_reorth {
+            let inv_alpha = if alpha_new > 0.0 {
+                1.0 / alpha_new
+            } else {
+                0.0
+            };
+            reorth.push(&self.bufs.v, &self.bufs.p_tilde, inv_alpha);
+        }
 
         self.alpha = alpha_new;
         self.beta_prev_inv = beta_inv;
@@ -345,8 +336,8 @@ struct GolubKahanBuffers {
     av: Vec<f64>,
     /// Scratch for `Aᵀ · u` (length n).
     atu: Vec<f64>,
-    /// Windowed reorthogonalization buffer; capacity 0 disables it.
-    local_reorth: LocalReorth,
+    /// Windowed reorthogonalization buffer; `None` disables it.
+    local_reorth: Option<LocalReorth>,
 }
 
 impl GolubKahanBuffers {
@@ -399,7 +390,9 @@ impl<'a, A: Operator + ?Sized> GolubKahan<'a, A> {
         }
 
         // Seed the reorth buffer with v₁ so the next step's MGS sees it.
-        bufs.local_reorth.push(&bufs.v);
+        if let Some(reorth) = &mut bufs.local_reorth {
+            reorth.push(&bufs.v);
+        }
 
         Ok((
             Self {
@@ -428,8 +421,8 @@ struct ModifiedGolubKahanBuffers {
     av: Vec<f64>,
     /// Scratch for `Aᵀ · u` (length n).
     atu: Vec<f64>,
-    /// Windowed M-weighted reorthogonalization buffer; capacity 0 disables it.
-    local_reorth: ModifiedLocalReorth,
+    /// Windowed M-weighted reorthogonalization buffer; `None` disables it.
+    local_reorth: Option<ModifiedLocalReorth>,
 }
 
 impl ModifiedGolubKahanBuffers {
@@ -496,8 +489,10 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M
         }
 
         // Seed the reorth buffer with the (v₁, p̃₁_norm = M v₁) pair.
-        let inv_alpha = if alpha > 0.0 { 1.0 / alpha } else { 0.0 };
-        bufs.local_reorth.push(&bufs.v, &bufs.p_tilde, inv_alpha);
+        if let Some(reorth) = &mut bufs.local_reorth {
+            let inv_alpha = if alpha > 0.0 { 1.0 / alpha } else { 0.0 };
+            reorth.push(&bufs.v, &bufs.p_tilde, inv_alpha);
+        }
 
         Ok((
             Self {
