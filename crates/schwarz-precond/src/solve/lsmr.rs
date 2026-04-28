@@ -156,8 +156,11 @@ struct LocalReorth {
 }
 
 impl LocalReorth {
-    fn new(n: usize, local_size: usize) -> Self {
-        let cap = local_size.min(n);
+    fn new(m: usize, n: usize, local_size: usize) -> Self {
+        // The bidiagonalization can produce at most `min(m, n)` linearly
+        // independent basis vectors before α or β hits zero, so capping the
+        // ring at `min(m, n)` keeps the storage in step with the algorithm.
+        let cap = local_size.min(m.min(n));
         Self {
             slots: (0..cap).map(|_| vec![0.0; n]).collect(),
             next: 0,
@@ -214,8 +217,9 @@ struct ModifiedLocalReorth {
 }
 
 impl ModifiedLocalReorth {
-    fn new(n: usize, local_size: usize) -> Self {
-        let cap = local_size.min(n);
+    fn new(m: usize, n: usize, local_size: usize) -> Self {
+        // See `LocalReorth::new` for why we clamp at `min(m, n)`.
+        let cap = local_size.min(m.min(n));
         Self {
             v: (0..cap).map(|_| vec![0.0; n]).collect(),
             p_tilde: (0..cap).map(|_| vec![0.0; n]).collect(),
@@ -356,7 +360,7 @@ impl GolubKahanBuffers {
             v: vec![0.0; n],
             av: vec![0.0; m],
             atu: vec![0.0; n],
-            local_reorth: LocalReorth::new(n, local_size),
+            local_reorth: LocalReorth::new(m, n, local_size),
         }
     }
 }
@@ -482,7 +486,7 @@ impl ModifiedGolubKahanBuffers {
             p_tilde: vec![0.0; n],
             av: vec![0.0; m],
             atu: vec![0.0; n],
-            local_reorth: ModifiedLocalReorth::new(n, local_size),
+            local_reorth: ModifiedLocalReorth::new(m, n, local_size),
         }
     }
 }
@@ -889,7 +893,7 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
     debug_assert_eq!(b.len(), operator.nrows());
 
     let b_norm = vec_norm(b);
-    if b_norm < f64::EPSILON {
+    if b_norm == 0.0 {
         return Ok(LsmrResult {
             x: vec![0.0; n],
             converged: true,
@@ -1142,6 +1146,65 @@ mod tests {
         assert!(
             (none_result.residual_norm - id_result.residual_norm).abs() < 1e-10,
             "residual norm estimates disagree: {} vs {}",
+            none_result.residual_norm,
+            id_result.residual_norm
+        );
+    }
+
+    /// Same equivalence guarantee as above but with windowed reorthogonalization
+    /// active. The M-weighted MGS path uses dot products against `p̃ = M v` and
+    /// scales `p̃` by `1/α`; with `M = I` this must reduce to the Euclidean
+    /// MGS used by the unpreconditioned path. Guards the windowed scaling
+    /// logic in `ModifiedLocalReorth::push` against drift.
+    #[test]
+    fn test_mlsmr_none_matches_identity_precond_windowed() {
+        let op = DenseOp::vandermonde(30, 12);
+        let b: Vec<f64> = (0..op.rows)
+            .map(|i| {
+                let x = i as f64 / (op.rows - 1) as f64;
+                (1.0 + x).ln()
+            })
+            .collect();
+        let id = IdentityOperator::new(op.cols);
+        let local = Some(10);
+
+        // Tight tolerance with headroom in maxiter: drives both paths to the
+        // same minimum so the comparison isn't governed by rounding noise in
+        // the convergence test.
+        let none_result = mlsmr(&op, &b, None::<&IdentityOperator>, 1e-12, 50, local)
+            .expect("mlsmr None windowed solve");
+        let id_result =
+            mlsmr(&op, &b, Some(&id), 1e-12, 50, local).expect("mlsmr Identity windowed solve");
+
+        assert!(none_result.converged && id_result.converged);
+        // The two paths do the same algebra differently (par_dot on `v` vs on
+        // `p̃ = M v`), so rounding can shift the convergence test by one step.
+        // The solve must still land on the same answer.
+        assert!(
+            (none_result.iterations as isize - id_result.iterations as isize).abs() <= 1,
+            "iteration counts disagree: {} vs {}",
+            none_result.iterations,
+            id_result.iterations,
+        );
+
+        // Agreement bound is governed by what each path is converging to —
+        // the windowed Vandermonde test asserts a normal-equation residual of
+        // 1e-6, so 1e-7 here cleanly catches scaling drift in the M-weighted
+        // reorth without flagging algebra-order rounding.
+        let diff: f64 = none_result
+            .x
+            .iter()
+            .zip(id_result.x.iter())
+            .map(|(a, b)| (a - b).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        assert!(
+            diff < 1e-7,
+            "windowed GolubKahan vs ModifiedGolubKahan-with-identity disagree: {diff}"
+        );
+        assert!(
+            (none_result.residual_norm - id_result.residual_norm).abs() < 1e-7,
+            "windowed residual norm estimates disagree: {} vs {}",
             none_result.residual_norm,
             id_result.residual_norm
         );
