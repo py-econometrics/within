@@ -99,6 +99,120 @@ fn build_akm(n_obs: usize, seed: u64) -> (Array2<u32>, usize, String) {
     (c, 2, format!("worker={n_workers} × firm={n_firms}"))
 }
 
+/// AKM with very low mobility and a heavy-tailed firm-size distribution.
+/// Most workers never switch firms, and many firms have only a handful of
+/// workers, producing a near-disconnected bipartite mobility graph — i.e.
+/// a worker-firm Laplacian with many tiny eigenvalues.
+fn build_akm_sparse(n_obs: usize, seed: u64) -> (Array2<u32>, usize, String) {
+    let mut rng = SmallRng::seed_from_u64(seed.wrapping_add(0xA4748));
+    let n_workers = (n_obs / 6).max(1);
+    let n_firms = (n_obs / 200).max(1);
+    let mobility_prob = 0.005_f64;
+
+    // Heavy-tailed firm assignment: log-uniform pick → many small firms,
+    // a few huge ones. Increases the spread of cell sizes.
+    let pick_firm = |rng: &mut SmallRng| -> u32 {
+        let u: f64 = rng.random();
+        let exp = u.powi(3); // skew toward small index
+        ((exp * n_firms as f64) as usize).min(n_firms - 1) as u32
+    };
+
+    let mut c = Array2::<u32>::zeros((n_obs, 2));
+    let mut firm_for_worker = vec![0u32; n_workers];
+    for f in firm_for_worker.iter_mut() {
+        *f = pick_firm(&mut rng);
+    }
+    for i in 0..n_obs {
+        let w = i % n_workers;
+        if rng.random::<f64>() < mobility_prob {
+            firm_for_worker[w] = pick_firm(&mut rng);
+        }
+        c[[i, 0]] = w as u32;
+        c[[i, 1]] = firm_for_worker[w];
+    }
+    (
+        c,
+        2,
+        format!("worker={n_workers} × firm={n_firms} (sparse mobility, heavy-tailed)"),
+    )
+}
+
+/// Three high-cardinality factors with low pairwise overlap (worker × firm
+/// × city). Each worker stays mostly in one firm and one city; rare
+/// switches generate the only off-diagonal coupling.
+fn build_3fe_highcard(n_obs: usize, seed: u64) -> (Array2<u32>, usize, String) {
+    let mut rng = SmallRng::seed_from_u64(seed.wrapping_add(0x0003_FE4C));
+    let n_workers = (n_obs / 3).max(1);
+    let n_firms = (n_obs / 30).max(1);
+    let n_cities = (n_obs / 100).max(1);
+    let firm_switch = 0.01_f64;
+    let city_switch = 0.005_f64;
+
+    let mut c = Array2::<u32>::zeros((n_obs, 3));
+    let mut firm_for_worker = vec![0u32; n_workers];
+    let mut city_for_worker = vec![0u32; n_workers];
+    for w in 0..n_workers {
+        firm_for_worker[w] = rng.random_range(0..n_firms) as u32;
+        city_for_worker[w] = rng.random_range(0..n_cities) as u32;
+    }
+    for i in 0..n_obs {
+        let w = i % n_workers;
+        if rng.random::<f64>() < firm_switch {
+            firm_for_worker[w] = rng.random_range(0..n_firms) as u32;
+        }
+        if rng.random::<f64>() < city_switch {
+            city_for_worker[w] = rng.random_range(0..n_cities) as u32;
+        }
+        c[[i, 0]] = w as u32;
+        c[[i, 1]] = firm_for_worker[w];
+        c[[i, 2]] = city_for_worker[w];
+    }
+    (
+        c,
+        3,
+        format!("worker={n_workers} × firm={n_firms} × city={n_cities}"),
+    )
+}
+
+/// Four nested factors (worker × firm × occupation × year) with limited
+/// occupation/firm churn. The four-way structure plus the modest mobility
+/// rates lengthens the absorption cycles and inflates the condition number.
+fn build_4fe_chain(n_obs: usize, seed: u64) -> (Array2<u32>, usize, String) {
+    let mut rng = SmallRng::seed_from_u64(seed.wrapping_add(0x4FE));
+    let n_years = 10usize;
+    let n_occs = 200usize;
+    let n_firms = (n_obs / 40).max(1);
+    let n_workers = (n_obs / 4).max(1);
+    let firm_switch = 0.02_f64;
+    let occ_switch = 0.005_f64;
+
+    let mut c = Array2::<u32>::zeros((n_obs, 4));
+    let mut firm_for_worker = vec![0u32; n_workers];
+    let mut occ_for_worker = vec![0u32; n_workers];
+    for w in 0..n_workers {
+        firm_for_worker[w] = rng.random_range(0..n_firms) as u32;
+        occ_for_worker[w] = rng.random_range(0..n_occs) as u32;
+    }
+    for i in 0..n_obs {
+        let w = i % n_workers;
+        if rng.random::<f64>() < firm_switch {
+            firm_for_worker[w] = rng.random_range(0..n_firms) as u32;
+        }
+        if rng.random::<f64>() < occ_switch {
+            occ_for_worker[w] = rng.random_range(0..n_occs) as u32;
+        }
+        c[[i, 0]] = w as u32;
+        c[[i, 1]] = firm_for_worker[w];
+        c[[i, 2]] = occ_for_worker[w];
+        c[[i, 3]] = (i % n_years) as u32;
+    }
+    (
+        c,
+        4,
+        format!("worker={n_workers} × firm={n_firms} × occ={n_occs} × year={n_years}"),
+    )
+}
+
 const SHAPES: &[Shape] = &[
     Shape {
         name: "1fe-highcard",
@@ -115,6 +229,18 @@ const SHAPES: &[Shape] = &[
     Shape {
         name: "akm",
         ctor: build_akm,
+    },
+    Shape {
+        name: "akm-sparse",
+        ctor: build_akm_sparse,
+    },
+    Shape {
+        name: "3fe-highcard",
+        ctor: build_3fe_highcard,
+    },
+    Shape {
+        name: "4fe-chain",
+        ctor: build_4fe_chain,
     },
 ];
 
@@ -214,6 +340,7 @@ fn run_one(
     let configs: &[(&str, KrylovMethod, f64)] = &[
         ("CG   tol=1e-8 ", KrylovMethod::Cg, 1e-8),
         ("CG   tol=1e-12", KrylovMethod::Cg, 1e-12),
+        ("CG   tol=1e-13", KrylovMethod::Cg, 1e-13),
         (
             "LSMR tol=1e-8 ",
             KrylovMethod::Lsmr { local_size: None },
