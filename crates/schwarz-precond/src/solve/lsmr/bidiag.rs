@@ -267,42 +267,53 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
     for ModifiedGolubKahan<'_, A, M>
 {
     fn step(&mut self) -> Result<BidiagStep, SolveError> {
-        // ũ_{k+1} = A ṽ_k − (α_k / β_k) ũ_k, β_{k+1} = ‖ũ_{k+1}‖
+        // Phase 1 — ũ_{k+1} unnormalized: scale = −α_k / β_k.
+        // Compute ũ_{k+1} = A ṽ_k − (α_k / β_k) ũ_k, then β_{k+1} = ‖ũ_{k+1}‖.
         let scale = -(self.alpha * self.beta_prev_inv);
         self.operator.try_apply(&self.bufs.v, &mut self.bufs.av)?;
         let beta_sq = axpy_with_sq_norm(&mut self.bufs.u, &self.bufs.av, scale);
         let beta = beta_sq.sqrt();
         let beta_inv = if beta > 0.0 { 1.0 / beta } else { 0.0 };
 
-        // Aᵀ on unnormalized u: result is β · Aᵀ u_normalized.
-        // p̃_stored = α_prev · p̃_norm, so β/α_prev cancels α_prev in p̃_stored.
+        // Phase 2 — Aᵀ on unnormalized u: result is β · Aᵀ u_norm.
+        // Maintain the p̃ = α · M v invariant by scaling the running p̃ with
+        // β / α_k: the α_k in the denominator cancels the α_k factor stored
+        // in p̃ from the previous step, so the updated p̃ ends up as
+        // α_new · M v_new (up to MGS) on completion of this iteration.
+        // Precondition: α_k > 0 (the outer loop guard in lsmr_from_bidiag
+        // never calls step() once α has collapsed to zero).
         self.operator
             .try_apply_adjoint(&self.bufs.u, &mut self.bufs.atu)?;
+        debug_assert!(
+            self.alpha > 0.0,
+            "self.alpha must be > 0; lsmr_from_bidiag's loop guard prevents step() after alpha=0",
+        );
         let p_coeff = beta / self.alpha;
         axpby(&mut self.bufs.p_tilde, &self.bufs.atu, beta_inv, -p_coeff);
 
-        // ṽ_{k+1} = M⁻¹ p̃   (= α_new · v_norm before normalization)
+        // Phase 3 — M-weighted MGS, then normalization, then push to ring.
+        // First recover v from p̃ via the preconditioner: ṽ_{k+1} = M⁻¹ p̃
+        // (equals α_new · v_norm before normalization). Then run modified
+        // Gram-Schmidt against past (v, p̃ = M v) pairs, mutating v and
+        // p_tilde in lockstep so the p̃ = M v invariant holds on the corrected
+        // pair. After MGS, α_{k+1} = √⟨ṽ, p̃⟩ is the corrected norm; we
+        // normalize v in place (p_tilde stays at α_new · p̃_norm for the next
+        // step), and push the normalized v_{k+1} and p̃_{k+1,norm} = p_tilde /
+        // α_new into the ring for the next step's MGS.
         self.preconditioner
             .try_apply(&self.bufs.p_tilde, &mut self.bufs.v)?;
 
-        // M-weighted MGS against past (v, p̃ = M v) pairs. Mutates v and
-        // p_tilde in lockstep so the p̃ = M v invariant holds on the
-        // corrected pair.
         if let Some(reorth) = &self.bufs.local_reorth {
             reorth.reorthogonalize(&mut self.bufs.v, &mut self.bufs.p_tilde);
         }
 
-        // α_{k+1} = √⟨ṽ, p̃⟩  (corrected after MGS)
         let vp = par_dot(&self.bufs.v, &self.bufs.p_tilde);
         let alpha_new = if vp > 0.0 { vp.sqrt() } else { 0.0 };
 
-        // Normalize v in place. p_tilde stays at α_new · p̃_norm for next step.
         if alpha_new > 0.0 {
             scale_in_place(&mut self.bufs.v, 1.0 / alpha_new);
         }
 
-        // Push the normalized v_{k+1} and p̃_{k+1,norm} = p_tilde / α_new
-        // into the ring for the next step's MGS.
         if let Some(reorth) = &mut self.bufs.local_reorth {
             let inv_alpha = if alpha_new > 0.0 {
                 1.0 / alpha_new

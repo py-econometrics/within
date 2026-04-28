@@ -87,17 +87,35 @@ impl LsmrRecurrenceState {
 
     /// Construct and apply both rotations for the current step.
     pub(super) fn step(&mut self, s: BidiagStep) -> RotationStep {
-        // Construct rotation P̂_k: eliminates β_{k+1} against α̅_k.
+        // Construct rotation P̂_k (Algorithm 2.8, LSQR side): eliminates
+        // β_{k+1} against α̅_k. Outputs:
+        //   * `p_hat.r` is the diagonal entry `ρ_k` of the upper-bidiagonal
+        //     factor (returned below as `RotationStep::rho`).
+        //   * `theta_new = ŝ_k · α_{k+1}` is the superdiagonal `θ_{k+1}`
+        //     carried forward into P̄_k and the next iteration's P̂.
+        //   * `alpha_bar_new = −ĉ_k · α_{k+1}` becomes `α̅_{k+1}`, the
+        //     diagonal seed consumed by the next P̂.
+        //   * `phi_bar_new = ŝ_k · φ̄_k` advances the LSQR transformed-RHS
+        //     scalar used by the residual estimate `|φ̄|`.
         let p_hat = Givens::new(self.alpha_bar, s.beta);
         let theta_new = p_hat.s * s.alpha;
         let alpha_bar_new = -p_hat.c * s.alpha;
         let phi_bar_new = p_hat.s * self.phi_bar;
 
-        // Construct rotation P̄_k: eliminates θ_{k+1} against c̅_{k-1}·ρ_k.
-        // (s̅_{k-1} carries the previous step's value — read before commit.)
+        // Construct rotation P̄_k (Algorithm 2.8, LSMR side): eliminates
+        // θ_{k+1} against c̅_{k-1}·ρ_k. The off-diagonal feeding this
+        // rotation is `θ̄_k = s̄_{k-1} · ρ_k`, which reads `self.s_bar` —
+        // the *previous* iteration's `s̄`. The read MUST happen before we
+        // commit `p_bar.s` into `self.s_bar` further down; otherwise we
+        // would mix s̄_k into θ̄_k and break the recurrence.
         let theta_bar = self.s_bar * p_hat.r;
         let p_bar = Givens::new(self.c_bar * p_hat.r, theta_new);
+        // `p_bar.r` is `ρ̄_k`. `zeta = c̄_k · ζ̄_k` is the committed
+        // transformed-RHS scalar `ζ_k`.
         let zeta = p_bar.c * self.zeta_bar;
+        // Sign comes from applying P̄_k to the transformed RHS: the
+        // off-diagonal entry of `[[c̄, s̄], [−s̄, c̄]]` acting on `(ζ̄, 0)`
+        // yields `−s̄_k · ζ̄_k` as the new ζ̄.
         let zeta_bar_new = -p_bar.s * self.zeta_bar;
 
         // Commit chain state.
@@ -155,6 +173,14 @@ impl SolutionState {
     /// [`RotationStep::initial`] on the first iteration).
     pub(super) fn update(&mut self, v: &[f64], curr: RotationStep, prev: RotationStep) {
         // Ratios consumed by the recurrence (Algorithm 2.8, "Update h̄, x, h").
+        // Absolute f64::EPSILON guard rationale (Fong & Saunders use exact-zero):
+        // the denominators here are products of Givens-rotation diagonals (ρ, ρ̄)
+        // or single rotation diagonals — quantities that are O(1) in well-scaled
+        // problems. A magnitude below f64::EPSILON for an O(1) quantity indicates
+        // complete loss of significance, so the absolute guard is equivalent to a
+        // relative guard against the rotation magnitudes. The `EPSILON` widening
+        // is defensive; Fong & Saunders' reference implementation uses an exact-
+        // zero check.
         let t_x_denom = curr.rho * curr.rho_bar;
         let t_x = if t_x_denom.abs() > f64::EPSILON {
             curr.zeta / t_x_denom
@@ -208,8 +234,11 @@ impl SolutionState {
     }
 }
 
+/// Outcome of a single convergence test: continue iterating or stop.
 pub(super) enum Stop {
+    /// LSMR has not yet met the user-supplied tolerance.
     Continue,
+    /// `‖Aᵀ r_k‖` (estimated via `‖ζ̄‖`) fell below tolerance.
     Converged,
 }
 

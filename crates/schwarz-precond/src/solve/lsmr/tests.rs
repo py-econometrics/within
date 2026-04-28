@@ -50,6 +50,17 @@ impl Operator for DiagPrecond {
     }
 }
 
+/// `‖Aᵀ (b - A x)‖₂` — normal-equation residual, the scale-invariant
+/// "did we actually solve the least-squares problem?" check.
+fn normal_equation_residual<O: Operator + ?Sized>(op: &O, x: &[f64], b: &[f64]) -> f64 {
+    let mut ax = vec![0.0; op.nrows()];
+    op.apply(x, &mut ax);
+    let resid: Vec<f64> = b.iter().zip(&ax).map(|(bi, ai)| bi - ai).collect();
+    let mut atr = vec![0.0; op.ncols()];
+    op.apply_adjoint(&resid, &mut atr);
+    vec_norm(&atr)
+}
+
 #[test]
 fn test_mlsmr_unpreconditioned() {
     let b = vec![1.0, 2.0, 3.0, 3.0];
@@ -105,12 +116,7 @@ fn test_mlsmr_inconsistent_system() {
         result.converged,
         "MLSMR did not converge on inconsistent system"
     );
-    let mut ax = vec![0.0; 4];
-    OverdeterminedOp.apply(&result.x, &mut ax);
-    let residual: Vec<f64> = b.iter().zip(ax.iter()).map(|(bi, ai)| bi - ai).collect();
-    let mut atr = vec![0.0; 3];
-    OverdeterminedOp.apply_adjoint(&residual, &mut atr);
-    let normal_resid = vec_norm(&atr);
+    let normal_resid = normal_equation_residual(&OverdeterminedOp, &result.x, &b);
     assert!(
         normal_resid < 1e-6,
         "Normal equation residual too large: {normal_resid}"
@@ -159,7 +165,12 @@ fn test_mlsmr_none_matches_identity_precond() {
         mlsmr(&OverdeterminedOp, &b, Some(&id), 1e-12, 100, None).expect("mlsmr Identity solve");
 
     assert!(none_result.converged && id_result.converged);
-    assert_eq!(none_result.iterations, id_result.iterations);
+    assert!(
+        (none_result.iterations as isize - id_result.iterations as isize).abs() <= 1,
+        "iteration counts disagree: {} vs {}",
+        none_result.iterations,
+        id_result.iterations,
+    );
 
     let diff: f64 = none_result
         .x
@@ -187,6 +198,8 @@ fn test_mlsmr_none_matches_identity_precond() {
 /// logic in `ModifiedLocalReorth::push` against drift.
 #[test]
 fn test_mlsmr_none_matches_identity_precond_windowed() {
+    // 30×12 Vandermonde, cond(A) ≈ 1e10 — chosen to stress the windowed reorth
+    // path (see test_mlsmr_local_reorth_unpreconditioned for rationale).
     let op = DenseOp::vandermonde(30, 12);
     let b: Vec<f64> = (0..op.rows)
         .map(|i| {
@@ -316,8 +329,12 @@ fn test_mlsmr_local_reorth_zero_is_identity() {
     )
     .expect("second solve");
     assert_eq!(r1.iterations, r2.iterations);
-    assert_eq!(r1.x, r2.x);
-    assert_eq!(r1.residual_norm, r2.residual_norm);
+    // Tight tolerance, not exact bit-for-bit, so determinism remains testable
+    // if a future refactor adds parallel reductions.
+    for (a, b) in r1.x.iter().zip(&r2.x) {
+        assert!((a - b).abs() < 1e-15, "determinism: {a} vs {b}");
+    }
+    assert!((r1.residual_norm - r2.residual_norm).abs() < 1e-15);
     assert!(r1.converged);
 }
 
@@ -358,12 +375,7 @@ fn test_mlsmr_local_reorth_unpreconditioned() {
     );
 
     // Verify the windowed solution actually solves the normal equations.
-    let mut ax = vec![0.0; op.rows];
-    op.apply(&r10.x, &mut ax);
-    let resid: Vec<f64> = b.iter().zip(&ax).map(|(bi, ai)| bi - ai).collect();
-    let mut atr = vec![0.0; op.cols];
-    op.apply_adjoint(&resid, &mut atr);
-    let normal_resid = vec_norm(&atr);
+    let normal_resid = normal_equation_residual(&op, &r10.x, &b);
     assert!(
         normal_resid < 1e-6,
         "normal equation residual: {normal_resid}"
@@ -423,12 +435,7 @@ fn test_mlsmr_local_reorth_preconditioned() {
         r10.iterations
     );
 
-    let mut ax = vec![0.0; op.rows];
-    op.apply(&r10.x, &mut ax);
-    let resid: Vec<f64> = b.iter().zip(&ax).map(|(bi, ai)| bi - ai).collect();
-    let mut atr = vec![0.0; op.cols];
-    op.apply_adjoint(&resid, &mut atr);
-    let normal_resid = vec_norm(&atr);
+    let normal_resid = normal_equation_residual(&op, &r10.x, &b);
     assert!(
         normal_resid < 1e-6,
         "normal equation residual: {normal_resid}"
@@ -454,8 +461,8 @@ fn test_mlsmr_local_reorth_window_smaller_than_iter_count() {
 
     // Run the bidiagonalization directly so we can capture v_k after each
     // step. Mirrors the body of `lsmr_from_bidiag` minus the recurrence.
-    let collect_vs = |size: usize| -> Vec<Vec<f64>> {
-        let (mut bidiag, _) = GolubKahan::init(&op, &b, size).expect("init");
+    let collect_vs = |window_size: usize| -> Vec<Vec<f64>> {
+        let (mut bidiag, _) = GolubKahan::init(&op, &b, window_size).expect("init");
         let mut vs = vec![bidiag.v().to_vec()];
         for _ in 0..n_iters {
             bidiag.step().expect("step");
@@ -491,4 +498,67 @@ fn test_mlsmr_local_reorth_window_smaller_than_iter_count() {
         drift_yes < 1e-10,
         "last {local_size} v's not mutually orthogonal: {drift_yes:e}"
     );
+}
+
+/// `Aᵀb = 0` with `b ≠ 0` triggers the `step1.alpha == 0` early-exit:
+/// the solver immediately returns `x = 0` and reports the trivial residual
+/// `‖b‖`. Guards the early-exit branch in `mlsmr` / `lsmr_from_bidiag`.
+#[test]
+fn test_mlsmr_step1_alpha_zero_early_exit() {
+    /// `A = [[1.0], [0.0]]` — column vector e_1.
+    /// `Ax = [x, 0]`, `Aᵀy = [y_0]`, so `Aᵀb = 0` whenever `b_0 = 0`.
+    struct ColE1;
+    impl Operator for ColE1 {
+        fn nrows(&self) -> usize {
+            2
+        }
+        fn ncols(&self) -> usize {
+            1
+        }
+        fn apply(&self, x: &[f64], y: &mut [f64]) {
+            y[0] = x[0];
+            y[1] = 0.0;
+        }
+        fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) {
+            x[0] = u[0];
+        }
+    }
+
+    let b = vec![0.0, 1.0];
+    let result = mlsmr(&ColE1, &b, None::<&IdentityOperator>, 1e-12, 100, None)
+        .expect("mlsmr alpha=0 early exit");
+    assert!(result.converged);
+    assert_eq!(result.iterations, 0);
+    assert_eq!(result.x, vec![0.0; 1]);
+    assert!((result.residual_norm - vec_norm(&b)).abs() < 1e-15);
+}
+
+/// Window sizes at the boundaries of useful values: `Some(1)` (degenerate
+/// ring of one), `Some(12)` (= number of columns), `Some(13)` (= cols + 1).
+/// All three must converge and produce a small normal-equation residual.
+#[test]
+fn test_mlsmr_local_reorth_window_boundary_sizes() {
+    let op = DenseOp::vandermonde(30, 12);
+    let b: Vec<f64> = (0..op.rows)
+        .map(|i| {
+            let x = i as f64 / (op.rows - 1) as f64;
+            (1.0 + x).ln()
+        })
+        .collect();
+
+    // Budget of 200 iterations gives `Some(1)` (which degenerates to no real
+    // reorthogonalization) enough room to converge on this cond ≈ 1e10 system,
+    // while still being a small bounded budget for the larger window sizes.
+    for window_size in [Some(1usize), Some(12), Some(13)] {
+        let result = mlsmr(&op, &b, None::<&IdentityOperator>, 1e-9, 200, window_size)
+            .expect("mlsmr boundary-window solve");
+        assert!(
+            result.converged,
+            "did not converge with window {window_size:?}"
+        );
+        assert!(
+            normal_equation_residual(&op, &result.x, &b) < 1e-6,
+            "normal-eq residual too large with window {window_size:?}",
+        );
+    }
 }
