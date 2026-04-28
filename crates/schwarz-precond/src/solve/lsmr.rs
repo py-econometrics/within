@@ -890,4 +890,41 @@ mod tests {
         );
         assert_eq!(result.iterations, 1);
     }
+
+    /// `None` (GolubKahan path) and `Some(&IdentityOperator)`
+    /// (ModifiedGolubKahan with M = I) are mathematically the same algorithm.
+    /// They should produce numerically equivalent solutions and iteration
+    /// counts; this guards against future drift between the two
+    /// bidiagonalization implementations.
+    #[test]
+    fn test_mlsmr_none_matches_identity_precond() {
+        let b = vec![1.0, 2.0, 3.0, 3.0];
+        let id = IdentityOperator::new(3);
+
+        let none_result = mlsmr(&OverdeterminedOp, &b, None::<&IdentityOperator>, 1e-12, 100)
+            .expect("mlsmr None solve");
+        let id_result =
+            mlsmr(&OverdeterminedOp, &b, Some(&id), 1e-12, 100).expect("mlsmr Identity solve");
+
+        assert!(none_result.converged && id_result.converged);
+        assert_eq!(none_result.iterations, id_result.iterations);
+
+        let diff: f64 = none_result
+            .x
+            .iter()
+            .zip(id_result.x.iter())
+            .map(|(a, b)| (a - b).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        assert!(
+            diff < 1e-10,
+            "GolubKahan vs ModifiedGolubKahan-with-identity solutions disagree: {diff}"
+        );
+        assert!(
+            (none_result.residual_norm - id_result.residual_norm).abs() < 1e-10,
+            "residual norm estimates disagree: {} vs {}",
+            none_result.residual_norm,
+            id_result.residual_norm
+        );
+    }
 }
