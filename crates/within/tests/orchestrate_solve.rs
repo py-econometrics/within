@@ -302,7 +302,7 @@ fn test_lsmr_weighted() {
     let y = vec![1.0, 2.0, 3.0, 4.0, 5.0];
 
     let params = SolverParams {
-        krylov: KrylovMethod::Lsmr,
+        krylov: KrylovMethod::Lsmr { local_size: None },
         operator: OperatorRepr::Implicit,
         tol: 1e-8,
         maxiter: 1000,
@@ -334,7 +334,7 @@ fn test_lsmr_matches_cg_solution() {
     let cg_result = cg_solver.solve(&y).expect("cg solve");
 
     let lsmr_params = SolverParams {
-        krylov: KrylovMethod::Lsmr,
+        krylov: KrylovMethod::Lsmr { local_size: None },
         tol: 1e-10,
         maxiter: 1000,
         ..Default::default()

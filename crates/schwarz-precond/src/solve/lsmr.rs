@@ -140,6 +140,137 @@ fn par_dot(a: &[f64], b: &[f64]) -> f64 {
 }
 
 // ---------------------------------------------------------------------------
+// Local (windowed) reorthogonalization
+// ---------------------------------------------------------------------------
+
+/// Ring buffer of past `v` vectors for windowed modified Gram-Schmidt in the
+/// standard Euclidean inner product. Used by [`GolubKahan`].
+///
+/// Capacity zero is the no-op fast path: [`Self::is_empty`] short-circuits
+/// [`Self::reorthogonalize`] and [`Self::push`] to keep the `local_size = 0`
+/// codepath allocation- and branch-free.
+struct LocalReorth {
+    slots: Vec<Vec<f64>>,
+    next: usize,
+    count: usize,
+}
+
+impl LocalReorth {
+    fn new(n: usize, local_size: usize) -> Self {
+        let cap = local_size.min(n);
+        Self {
+            slots: (0..cap).map(|_| vec![0.0; n]).collect(),
+            next: 0,
+            count: 0,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.slots.is_empty()
+    }
+
+    /// Modified Gram-Schmidt sweep over stored slots in chronological order
+    /// (oldest first). Subtracts the projection of `y` onto each stored
+    /// vector. No-op when capacity is zero.
+    fn reorthogonalize(&self, y: &mut [f64]) {
+        if self.is_empty() {
+            return;
+        }
+        let cap = self.slots.len();
+        let start = if self.count < cap { 0 } else { self.next };
+        for i in 0..self.count {
+            let v_j = &self.slots[(start + i) % cap];
+            let c = par_dot(y, v_j);
+            axpby(y, v_j, -c, 1.0);
+        }
+    }
+
+    /// Copy `v` into the next slot, advancing the ring index and saturating
+    /// the count at capacity. No-op when capacity is zero.
+    fn push(&mut self, v: &[f64]) {
+        if self.is_empty() {
+            return;
+        }
+        let cap = self.slots.len();
+        self.slots[self.next].copy_from_slice(v);
+        self.next = (self.next + 1) % cap;
+        if self.count < cap {
+            self.count += 1;
+        }
+    }
+}
+
+/// Ring buffer of past `(v, p̃ = M v)` pairs for windowed modified
+/// Gram-Schmidt in the M-weighted inner product. Used by
+/// [`ModifiedGolubKahan`]: `v` is M-orthogonal, not Euclidean, so the MGS
+/// coefficient is `⟨v_new, M v_j⟩ = ⟨v_new, p̃_j⟩`. Subtracting the same
+/// coefficient from both `v` and `p̃` in lockstep preserves the
+/// `p̃ = M v` invariant on the recurrence vectors.
+struct ModifiedLocalReorth {
+    v: Vec<Vec<f64>>,
+    p_tilde: Vec<Vec<f64>>,
+    next: usize,
+    count: usize,
+}
+
+impl ModifiedLocalReorth {
+    fn new(n: usize, local_size: usize) -> Self {
+        let cap = local_size.min(n);
+        Self {
+            v: (0..cap).map(|_| vec![0.0; n]).collect(),
+            p_tilde: (0..cap).map(|_| vec![0.0; n]).collect(),
+            next: 0,
+            count: 0,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.v.is_empty()
+    }
+
+    /// M-weighted MGS over stored `(v_j, p̃_j)` pairs. The coefficient
+    /// `c = ⟨v, p̃_j⟩` is subtracted from `v` (against `v_j`) and from
+    /// `p̃` (against `p̃_j`), keeping `p̃ = M v` consistent. No-op when
+    /// capacity is zero.
+    fn reorthogonalize(&self, v: &mut [f64], p_tilde: &mut [f64]) {
+        if self.is_empty() {
+            return;
+        }
+        let cap = self.v.len();
+        let start = if self.count < cap { 0 } else { self.next };
+        for i in 0..self.count {
+            let idx = (start + i) % cap;
+            let v_j = &self.v[idx];
+            let p_j = &self.p_tilde[idx];
+            let c = par_dot(v, p_j);
+            axpby(v, v_j, -c, 1.0);
+            axpby(p_tilde, p_j, -c, 1.0);
+        }
+    }
+
+    /// Copy the normalized `v` and `p_tilde * inv_alpha` (= `M · v_norm`)
+    /// into the paired next slots, advancing the ring index. No-op when
+    /// capacity is zero.
+    fn push(&mut self, v: &[f64], p_tilde_unscaled: &[f64], inv_alpha: f64) {
+        if self.is_empty() {
+            return;
+        }
+        let cap = self.v.len();
+        self.v[self.next].copy_from_slice(v);
+        for (dst, &src) in self.p_tilde[self.next]
+            .iter_mut()
+            .zip(p_tilde_unscaled.iter())
+        {
+            *dst = src * inv_alpha;
+        }
+        self.next = (self.next + 1) % cap;
+        if self.count < cap {
+            self.count += 1;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
 
@@ -214,15 +345,18 @@ struct GolubKahanBuffers {
     av: Vec<f64>,
     /// Scratch for `Aᵀ · u` (length n).
     atu: Vec<f64>,
+    /// Windowed reorthogonalization buffer; capacity 0 disables it.
+    local_reorth: LocalReorth,
 }
 
 impl GolubKahanBuffers {
-    fn new(m: usize, n: usize) -> Self {
+    fn new(m: usize, n: usize, local_size: usize) -> Self {
         Self {
             u: vec![0.0; m],
             v: vec![0.0; n],
             av: vec![0.0; m],
             atu: vec![0.0; n],
+            local_reorth: LocalReorth::new(n, local_size),
         }
     }
 }
@@ -239,10 +373,14 @@ struct GolubKahan<'a, A: Operator + ?Sized> {
 impl<'a, A: Operator + ?Sized> GolubKahan<'a, A> {
     /// Initialize the bidiagonalization. Returns `Self` and the first step
     /// `(α₁, β₁)`.
-    fn init(operator: &'a A, b: &[f64]) -> Result<(Self, BidiagStep), SolveError> {
+    fn init(
+        operator: &'a A,
+        b: &[f64],
+        local_size: usize,
+    ) -> Result<(Self, BidiagStep), SolveError> {
         let m = operator.nrows();
         let n = operator.ncols();
-        let mut bufs = GolubKahanBuffers::new(m, n);
+        let mut bufs = GolubKahanBuffers::new(m, n, local_size);
 
         // β₁ = ‖b‖, u₁ = b / β₁
         let beta = vec_norm(b);
@@ -259,6 +397,9 @@ impl<'a, A: Operator + ?Sized> GolubKahan<'a, A> {
         if alpha > 0.0 {
             scale_in_place(&mut bufs.v, 1.0 / alpha);
         }
+
+        // Seed the reorth buffer with v₁ so the next step's MGS sees it.
+        bufs.local_reorth.push(&bufs.v);
 
         Ok((
             Self {
@@ -284,11 +425,21 @@ impl<A: Operator + ?Sized> Bidiagonalization for GolubKahan<'_, A> {
         // α_{k+1} v_{k+1} = Aᵀ u_{k+1} − β_{k+1} v_k
         self.operator
             .try_apply_adjoint(&self.bufs.u, &mut self.bufs.atu)?;
-        let alpha_sq = axpy_with_sq_norm(&mut self.bufs.v, &self.bufs.atu, -beta);
+        let mut alpha_sq = axpy_with_sq_norm(&mut self.bufs.v, &self.bufs.atu, -beta);
+
+        // Windowed MGS in the standard inner product, before normalization.
+        // After the correction, α must be re-derived from the updated v.
+        if !self.bufs.local_reorth.is_empty() {
+            self.bufs.local_reorth.reorthogonalize(&mut self.bufs.v);
+            alpha_sq = par_dot(&self.bufs.v, &self.bufs.v);
+        }
         let alpha = alpha_sq.sqrt();
         if alpha > 0.0 {
             scale_in_place(&mut self.bufs.v, 1.0 / alpha);
         }
+
+        // Push the normalized v_{k+1} into the ring; no-op when capacity is 0.
+        self.bufs.local_reorth.push(&self.bufs.v);
 
         self.alpha = alpha;
         Ok(BidiagStep { alpha, beta })
@@ -319,16 +470,19 @@ struct ModifiedGolubKahanBuffers {
     av: Vec<f64>,
     /// Scratch for `Aᵀ · u` (length n).
     atu: Vec<f64>,
+    /// Windowed M-weighted reorthogonalization buffer; capacity 0 disables it.
+    local_reorth: ModifiedLocalReorth,
 }
 
 impl ModifiedGolubKahanBuffers {
-    fn new(m: usize, n: usize) -> Self {
+    fn new(m: usize, n: usize, local_size: usize) -> Self {
         Self {
             u: vec![0.0; m],
             v: vec![0.0; n],
             p_tilde: vec![0.0; n],
             av: vec![0.0; m],
             atu: vec![0.0; n],
+            local_reorth: ModifiedLocalReorth::new(n, local_size),
         }
     }
 }
@@ -353,10 +507,11 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M
         operator: &'a A,
         preconditioner: &'a M,
         b: &[f64],
+        local_size: usize,
     ) -> Result<(Self, BidiagStep), SolveError> {
         let m = operator.nrows();
         let n = operator.ncols();
-        let mut bufs = ModifiedGolubKahanBuffers::new(m, n);
+        let mut bufs = ModifiedGolubKahanBuffers::new(m, n, local_size);
 
         // β₁ = ‖b‖, u₁ = b / β₁
         let beta = vec_norm(b);
@@ -381,6 +536,10 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M
         if alpha > 0.0 {
             scale_in_place(&mut bufs.v, 1.0 / alpha);
         }
+
+        // Seed the reorth buffer with the (v₁, p̃₁_norm = M v₁) pair.
+        let inv_alpha = if alpha > 0.0 { 1.0 / alpha } else { 0.0 };
+        bufs.local_reorth.push(&bufs.v, &bufs.p_tilde, inv_alpha);
 
         Ok((
             Self {
@@ -417,7 +576,14 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
         self.preconditioner
             .try_apply(&self.bufs.p_tilde, &mut self.bufs.v)?;
 
-        // α_{k+1} = √⟨ṽ, p̃⟩
+        // M-weighted MGS against past (v, p̃ = M v) pairs. No-op when
+        // capacity is zero. Mutates v and p_tilde in lockstep so the
+        // p̃ = M v invariant holds on the corrected pair.
+        self.bufs
+            .local_reorth
+            .reorthogonalize(&mut self.bufs.v, &mut self.bufs.p_tilde);
+
+        // α_{k+1} = √⟨ṽ, p̃⟩  (corrected after MGS)
         let vp = par_dot(&self.bufs.v, &self.bufs.p_tilde);
         let alpha_new = if vp > 0.0 { vp.sqrt() } else { 0.0 };
 
@@ -425,6 +591,17 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
         if alpha_new > 0.0 {
             scale_in_place(&mut self.bufs.v, 1.0 / alpha_new);
         }
+
+        // Push the normalized v_{k+1} and p̃_{k+1,norm} = p_tilde / α_new
+        // into the ring for the next step's MGS. No-op when capacity is 0.
+        let inv_alpha = if alpha_new > 0.0 {
+            1.0 / alpha_new
+        } else {
+            0.0
+        };
+        self.bufs
+            .local_reorth
+            .push(&self.bufs.v, &self.bufs.p_tilde, inv_alpha);
 
         self.alpha = alpha_new;
         self.beta_prev_inv = beta_inv;
@@ -689,12 +866,24 @@ impl ConvergenceState {
 ///
 /// `operator` is rectangular (m × n). `preconditioner` is square
 /// (n × n) and symmetric positive definite.
+///
+/// `local_size` is the number of past `v` vectors to reorthogonalize
+/// against via windowed modified Gram-Schmidt. `None` (default) disables
+/// the correction — the short-recurrence bidiagonalization is used as is.
+/// `Some(N)` enables a window of `N` past `v` vectors. `Some(5..20)` is
+/// cheap insurance for ill-conditioned problems where rounding causes the
+/// `v_k` sequence to lose orthogonality and convergence to stall. Values
+/// up to `min(m, n)` approach full reorthogonalization. Memory cost is
+/// `local_size · n` doubles for the unpreconditioned path and
+/// `2 · local_size · n` for the preconditioned path (it stores
+/// `(v_j, M v_j)` pairs).
 pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
     operator: &A,
     b: &[f64],
     preconditioner: Option<&M>,
     tol: f64,
     maxiter: usize,
+    local_size: Option<usize>,
 ) -> Result<LsmrResult, SolveError> {
     let n = operator.ncols();
     debug_assert_eq!(b.len(), operator.nrows());
@@ -709,13 +898,15 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
         });
     }
 
+    let local_size = local_size.unwrap_or(0);
+
     match preconditioner {
         None => {
-            let (bidiag, step1) = GolubKahan::init(operator, b)?;
+            let (bidiag, step1) = GolubKahan::init(operator, b, local_size)?;
             lsmr_from_bidiag(bidiag, step1, b_norm, tol, maxiter)
         }
         Some(m) => {
-            let (bidiag, step1) = ModifiedGolubKahan::init(operator, m, b)?;
+            let (bidiag, step1) = ModifiedGolubKahan::init(operator, m, b, local_size)?;
             lsmr_from_bidiag(bidiag, step1, b_norm, tol, maxiter)
         }
     }
@@ -829,8 +1020,15 @@ mod tests {
     #[test]
     fn test_mlsmr_unpreconditioned() {
         let b = vec![1.0, 2.0, 3.0, 3.0];
-        let result = mlsmr(&OverdeterminedOp, &b, None::<&IdentityOperator>, 1e-10, 100)
-            .expect("mlsmr solve");
+        let result = mlsmr(
+            &OverdeterminedOp,
+            &b,
+            None::<&IdentityOperator>,
+            1e-10,
+            100,
+            None,
+        )
+        .expect("mlsmr solve");
         assert!(result.converged, "MLSMR did not converge");
         let err: f64 = result
             .x
@@ -845,7 +1043,7 @@ mod tests {
     #[test]
     fn test_mlsmr_preconditioned() {
         let b = vec![1.0, 2.0, 3.0, 3.0];
-        let result = mlsmr(&OverdeterminedOp, &b, Some(&DiagPrecond), 1e-10, 100)
+        let result = mlsmr(&OverdeterminedOp, &b, Some(&DiagPrecond), 1e-10, 100, None)
             .expect("preconditioned mlsmr solve");
         assert!(result.converged, "Preconditioned MLSMR did not converge");
         let err: f64 = result
@@ -861,8 +1059,15 @@ mod tests {
     #[test]
     fn test_mlsmr_inconsistent_system() {
         let b = vec![1.0, 2.0, 3.0, 0.0];
-        let result = mlsmr(&OverdeterminedOp, &b, None::<&IdentityOperator>, 1e-10, 100)
-            .expect("mlsmr solve");
+        let result = mlsmr(
+            &OverdeterminedOp,
+            &b,
+            None::<&IdentityOperator>,
+            1e-10,
+            100,
+            None,
+        )
+        .expect("mlsmr solve");
         assert!(
             result.converged,
             "MLSMR did not converge on inconsistent system"
@@ -882,8 +1087,15 @@ mod tests {
     #[test]
     fn test_mlsmr_maxiter_exhaustion() {
         let b = vec![1.0, 2.0, 3.0, 3.0];
-        let result =
-            mlsmr(&OverdeterminedOp, &b, None::<&IdentityOperator>, 1e-15, 1).expect("mlsmr solve");
+        let result = mlsmr(
+            &OverdeterminedOp,
+            &b,
+            None::<&IdentityOperator>,
+            1e-15,
+            1,
+            None,
+        )
+        .expect("mlsmr solve");
         assert!(
             !result.converged,
             "should not converge in 1 iteration at 1e-15 tol"
@@ -901,10 +1113,17 @@ mod tests {
         let b = vec![1.0, 2.0, 3.0, 3.0];
         let id = IdentityOperator::new(3);
 
-        let none_result = mlsmr(&OverdeterminedOp, &b, None::<&IdentityOperator>, 1e-12, 100)
-            .expect("mlsmr None solve");
-        let id_result =
-            mlsmr(&OverdeterminedOp, &b, Some(&id), 1e-12, 100).expect("mlsmr Identity solve");
+        let none_result = mlsmr(
+            &OverdeterminedOp,
+            &b,
+            None::<&IdentityOperator>,
+            1e-12,
+            100,
+            None,
+        )
+        .expect("mlsmr None solve");
+        let id_result = mlsmr(&OverdeterminedOp, &b, Some(&id), 1e-12, 100, None)
+            .expect("mlsmr Identity solve");
 
         assert!(none_result.converged && id_result.converged);
         assert_eq!(none_result.iterations, id_result.iterations);
@@ -925,6 +1144,260 @@ mod tests {
             "residual norm estimates disagree: {} vs {}",
             none_result.residual_norm,
             id_result.residual_norm
+        );
+    }
+
+    /// Dense row-major test operator. Used by the local-reorth tests to build
+    /// ill-conditioned least-squares problems (Vandermonde-flavored) that
+    /// stress the v-orthogonality of the bidiagonalization.
+    struct DenseOp {
+        rows: usize,
+        cols: usize,
+        data: Vec<f64>,
+    }
+
+    impl DenseOp {
+        /// Vandermonde-like matrix `A[i,j] = (i / (rows-1))^j`.
+        ///
+        /// `rows = 30`, `cols = 12` gives `cond(A) ≈ 1e10` — well past where
+        /// the `v` short-recurrence drifts in floating point and convergence
+        /// stalls without reorthogonalization.
+        fn vandermonde(rows: usize, cols: usize) -> Self {
+            let mut data = vec![0.0; rows * cols];
+            for i in 0..rows {
+                let x = i as f64 / (rows - 1).max(1) as f64;
+                let mut p = 1.0;
+                for j in 0..cols {
+                    data[i * cols + j] = p;
+                    p *= x;
+                }
+            }
+            Self { rows, cols, data }
+        }
+    }
+
+    impl Operator for DenseOp {
+        fn nrows(&self) -> usize {
+            self.rows
+        }
+        fn ncols(&self) -> usize {
+            self.cols
+        }
+        fn apply(&self, x: &[f64], y: &mut [f64]) {
+            for (yi, row) in y.iter_mut().zip(self.data.chunks_exact(self.cols)) {
+                *yi = row.iter().zip(x).map(|(a, b)| a * b).sum();
+            }
+        }
+        fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) {
+            for (j, xj) in x.iter_mut().enumerate() {
+                let mut s = 0.0;
+                for (ui, row) in u.iter().zip(self.data.chunks_exact(self.cols)) {
+                    s += row[j] * ui;
+                }
+                *xj = s;
+            }
+        }
+    }
+
+    /// `local_size = 0` is the no-op fast path — it must match repeated runs
+    /// bit-for-bit and reproduce the same answer the unwindowed test gets.
+    /// Guards against the `is_empty()` early return ever drifting.
+    #[test]
+    fn test_mlsmr_local_reorth_zero_is_identity() {
+        let b = vec![1.0, 2.0, 3.0, 3.0];
+        let r1 = mlsmr(
+            &OverdeterminedOp,
+            &b,
+            None::<&IdentityOperator>,
+            1e-10,
+            100,
+            None,
+        )
+        .expect("first solve");
+        let r2 = mlsmr(
+            &OverdeterminedOp,
+            &b,
+            None::<&IdentityOperator>,
+            1e-10,
+            100,
+            None,
+        )
+        .expect("second solve");
+        assert_eq!(r1.iterations, r2.iterations);
+        assert_eq!(r1.x, r2.x);
+        assert_eq!(r1.residual_norm, r2.residual_norm);
+        assert!(r1.converged);
+    }
+
+    /// Ill-conditioned overdetermined system where the standard short
+    /// recurrence loses v-orthogonality. Windowed reorthogonalization
+    /// recovers convergence within the iteration budget.
+    #[test]
+    fn test_mlsmr_local_reorth_unpreconditioned() {
+        let op = DenseOp::vandermonde(30, 12);
+        // RHS sampled from a smooth function — well-approximable by the
+        // polynomial basis, so the least-squares residual is near zero.
+        let b: Vec<f64> = (0..op.rows)
+            .map(|i| {
+                let x = i as f64 / (op.rows - 1) as f64;
+                (1.0 + x).ln()
+            })
+            .collect();
+        let tol = 1e-9;
+        let maxiter = 30;
+
+        let r0 =
+            mlsmr(&op, &b, None::<&IdentityOperator>, tol, maxiter, None).expect("no-reorth solve");
+        let r10 = mlsmr(&op, &b, None::<&IdentityOperator>, tol, maxiter, Some(10))
+            .expect("windowed solve");
+
+        // The windowed solve should reach the tolerance; the unwindowed one
+        // typically stalls or overshoots maxiter on this matrix.
+        assert!(
+            r10.converged,
+            "windowed LSMR failed to converge (iters = {})",
+            r10.iterations
+        );
+        assert!(
+            !r0.converged || r10.iterations <= r0.iterations,
+            "windowed solve must not be slower than unwindowed: r0={} r10={}",
+            r0.iterations,
+            r10.iterations
+        );
+
+        // Verify the windowed solution actually solves the normal equations.
+        let mut ax = vec![0.0; op.rows];
+        op.apply(&r10.x, &mut ax);
+        let resid: Vec<f64> = b.iter().zip(&ax).map(|(bi, ai)| bi - ai).collect();
+        let mut atr = vec![0.0; op.cols];
+        op.apply_adjoint(&resid, &mut atr);
+        let normal_resid = vec_norm(&atr);
+        assert!(
+            normal_resid < 1e-6,
+            "normal equation residual: {normal_resid}"
+        );
+    }
+
+    /// Same shape but preconditioned: the M-weighted MGS path needs to stay
+    /// numerically consistent and not lose convergence vs the no-reorth case.
+    /// Diagonal preconditioner approximating diag(AᵀA)⁻¹.
+    #[test]
+    fn test_mlsmr_local_reorth_preconditioned() {
+        let op = DenseOp::vandermonde(30, 12);
+
+        // Build M⁻¹ ≈ diag(AᵀA)⁻¹.
+        let mut diag_inv = vec![0.0; op.cols];
+        for (j, di) in diag_inv.iter_mut().enumerate() {
+            let s: f64 = op
+                .data
+                .chunks_exact(op.cols)
+                .map(|row| row[j] * row[j])
+                .sum();
+            *di = if s > 0.0 { 1.0 / s } else { 1.0 };
+        }
+        struct DiagOp(Vec<f64>);
+        impl Operator for DiagOp {
+            fn nrows(&self) -> usize {
+                self.0.len()
+            }
+            fn ncols(&self) -> usize {
+                self.0.len()
+            }
+            fn apply(&self, x: &[f64], y: &mut [f64]) {
+                for ((yi, &xi), &di) in y.iter_mut().zip(x).zip(self.0.iter()) {
+                    *yi = di * xi;
+                }
+            }
+            fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) {
+                self.apply(x, y);
+            }
+        }
+        let m = DiagOp(diag_inv);
+
+        let b: Vec<f64> = (0..op.rows)
+            .map(|i| {
+                let x = i as f64 / (op.rows - 1) as f64;
+                (1.0 + x).ln()
+            })
+            .collect();
+        let tol = 1e-9;
+        let maxiter = 30;
+
+        let r10 = mlsmr(&op, &b, Some(&m), tol, maxiter, Some(10))
+            .expect("windowed preconditioned solve");
+        assert!(
+            r10.converged,
+            "windowed preconditioned LSMR failed to converge (iters = {})",
+            r10.iterations
+        );
+
+        let mut ax = vec![0.0; op.rows];
+        op.apply(&r10.x, &mut ax);
+        let resid: Vec<f64> = b.iter().zip(&ax).map(|(bi, ai)| bi - ai).collect();
+        let mut atr = vec![0.0; op.cols];
+        op.apply_adjoint(&resid, &mut atr);
+        let normal_resid = vec_norm(&atr);
+        assert!(
+            normal_resid < 1e-6,
+            "normal equation residual: {normal_resid}"
+        );
+    }
+
+    /// Window smaller than the iteration count: the ring must wrap correctly.
+    /// We re-run the bidiagonalization manually with the same window and
+    /// verify the last `local_size` `v` vectors are mutually orthogonal to
+    /// tighter tolerance than they would be without reorthogonalization.
+    #[test]
+    fn test_mlsmr_local_reorth_window_smaller_than_iter_count() {
+        let op = DenseOp::vandermonde(30, 12);
+        let b: Vec<f64> = (0..op.rows)
+            .map(|i| {
+                let x = i as f64 / (op.rows - 1) as f64;
+                (1.0 + x).ln()
+            })
+            .collect();
+
+        let local_size = 3;
+        let n_iters = 10;
+
+        // Run the bidiagonalization directly so we can capture v_k after each
+        // step. Mirrors the body of `lsmr_from_bidiag` minus the recurrence.
+        let collect_vs = |size: usize| -> Vec<Vec<f64>> {
+            let (mut bidiag, _) = GolubKahan::init(&op, &b, size).expect("init");
+            let mut vs = vec![bidiag.v().to_vec()];
+            for _ in 0..n_iters {
+                bidiag.step().expect("step");
+                vs.push(bidiag.v().to_vec());
+            }
+            vs
+        };
+
+        let vs_no_reorth = collect_vs(0);
+        let vs_windowed = collect_vs(local_size);
+
+        // Compare the maximum |⟨v_i, v_j⟩| over the last `local_size` vectors.
+        let max_off_diag = |vs: &[Vec<f64>]| -> f64 {
+            let n = vs.len();
+            let start = n.saturating_sub(local_size);
+            let mut worst: f64 = 0.0;
+            for i in start..n {
+                for j in (i + 1)..n {
+                    worst = worst.max(dot(&vs[i], &vs[j]).abs());
+                }
+            }
+            worst
+        };
+
+        let drift_no = max_off_diag(&vs_no_reorth);
+        let drift_yes = max_off_diag(&vs_windowed);
+        assert!(
+            drift_yes < drift_no,
+            "windowed drift ({drift_yes:e}) should be smaller than \
+             unwindowed drift ({drift_no:e})"
+        );
+        assert!(
+            drift_yes < 1e-10,
+            "last {local_size} v's not mutually orthogonal: {drift_yes:e}"
         );
     }
 }

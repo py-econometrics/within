@@ -191,11 +191,14 @@ def benchmark_gmres(opts: Any, *, maxiter: int | None = None) -> GMRES:
     )
 
 
-def benchmark_lsmr(opts: Any, *, maxiter: int | None = None) -> LSMR:
+def benchmark_lsmr(
+    opts: Any, *, maxiter: int | None = None, local_size: int | None = None
+) -> LSMR:
     """Construct an LSMR config with benchmark-standard tolerance handling."""
     return LSMR(
         tol=benchmark_solver_tol(opts.tol),
         maxiter=opts.maxiter if maxiter is None else maxiter,
+        local_size=local_size,
     )
 
 

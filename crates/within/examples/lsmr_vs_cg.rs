@@ -180,7 +180,7 @@ fn run_one(
 
     // Reference demean
     let ref_params = SolverParams {
-        krylov: KrylovMethod::Lsmr,
+        krylov: KrylovMethod::Lsmr { local_size: None },
         tol: 1e-14,
         maxiter: 2000,
         ..Default::default()
@@ -214,8 +214,16 @@ fn run_one(
     let configs: &[(&str, KrylovMethod, f64)] = &[
         ("CG   tol=1e-8 ", KrylovMethod::Cg, 1e-8),
         ("CG   tol=1e-12", KrylovMethod::Cg, 1e-12),
-        ("LSMR tol=1e-8 ", KrylovMethod::Lsmr, 1e-8),
-        ("LSMR tol=1e-12", KrylovMethod::Lsmr, 1e-12),
+        (
+            "LSMR tol=1e-8 ",
+            KrylovMethod::Lsmr { local_size: None },
+            1e-8,
+        ),
+        (
+            "LSMR tol=1e-12",
+            KrylovMethod::Lsmr { local_size: None },
+            1e-12,
+        ),
     ];
 
     println!(

@@ -404,14 +404,20 @@ pub struct PyLSMR {
     pub tol: f64,
     #[pyo3(get)]
     pub maxiter: usize,
+    #[pyo3(get)]
+    pub local_size: Option<usize>,
 }
 
 #[pymethods]
 impl PyLSMR {
     #[new]
-    #[pyo3(signature = (tol=1e-8, maxiter=1000))]
-    fn new(tol: f64, maxiter: usize) -> Self {
-        Self { tol, maxiter }
+    #[pyo3(signature = (tol=1e-8, maxiter=1000, local_size=None))]
+    fn new(tol: f64, maxiter: usize, local_size: Option<usize>) -> Self {
+        Self {
+            tol,
+            maxiter,
+            local_size,
+        }
     }
 }
 
@@ -615,7 +621,9 @@ fn extract_solver_params(config: &Bound<'_, PyAny>) -> PyResult<SolverParams> {
     if let Ok(lsmr) = config.downcast::<PyLSMR>() {
         let lsmr = lsmr.get();
         return Ok(SolverParams {
-            krylov: KrylovMethod::Lsmr,
+            krylov: KrylovMethod::Lsmr {
+                local_size: lsmr.local_size,
+            },
             operator: OperatorRepr::Implicit,
             tol: lsmr.tol,
             maxiter: lsmr.maxiter,
@@ -632,12 +640,12 @@ fn validate_cg_preconditioner(
     params: &SolverParams,
     preconditioner: &Option<Preconditioner>,
 ) -> PyResult<()> {
-    if matches!(params.krylov, KrylovMethod::Cg | KrylovMethod::Lsmr)
+    if matches!(params.krylov, KrylovMethod::Cg | KrylovMethod::Lsmr { .. })
         && matches!(preconditioner, Some(Preconditioner::Multiplicative(_)))
     {
         let method = match params.krylov {
             KrylovMethod::Cg => "CG",
-            KrylovMethod::Lsmr => "LSMR",
+            KrylovMethod::Lsmr { .. } => "LSMR",
             KrylovMethod::Gmres { .. } => unreachable!(),
         };
         return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(

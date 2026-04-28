@@ -159,7 +159,7 @@ impl<S: ObservationStore> Solver<S> {
         let t_start = Instant::now();
         let t_setup_start = Instant::now();
 
-        if matches!(self.krylov, KrylovMethod::Lsmr) {
+        if let KrylovMethod::Lsmr { local_size } = self.krylov {
             let rect_op = WeightedDesignOperator::new(&self.design);
             let b = rect_op.weighted_rhs(y);
 
@@ -168,8 +168,15 @@ impl<S: ObservationStore> Solver<S> {
 
             let precond = self.preconditioner.as_ref();
             let r = match precond {
-                Some(p) => mlsmr(&rect_op, &b, Some(p), self.tol, self.maxiter)?,
-                None => mlsmr::<_, FePreconditioner>(&rect_op, &b, None, self.tol, self.maxiter)?,
+                Some(p) => mlsmr(&rect_op, &b, Some(p), self.tol, self.maxiter, local_size)?,
+                None => mlsmr::<_, FePreconditioner>(
+                    &rect_op,
+                    &b,
+                    None,
+                    self.tol,
+                    self.maxiter,
+                    local_size,
+                )?,
             };
 
             let time_solve = t_solve_start.elapsed().as_secs_f64();
@@ -386,7 +393,7 @@ impl<S: ObservationStore> Solver<S> {
                     iterations: r.iterations,
                 })
             }
-            KrylovMethod::Lsmr => unreachable!("LSMR is dispatched inline in solve()"),
+            KrylovMethod::Lsmr { .. } => unreachable!("LSMR is dispatched inline in solve()"),
         }
     }
 }

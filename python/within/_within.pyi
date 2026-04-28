@@ -154,14 +154,23 @@ class LSMR:
     Attributes:
         tol: Convergence tolerance. Default ``1e-8``.
         maxiter: Maximum number of iterations. Default ``1000``.
+        local_size: Number of past ``v`` vectors to reorthogonalize against
+            via windowed modified Gram-Schmidt. ``None`` (default) disables —
+            the plain short recurrence is used. ``5..20`` is cheap insurance
+            for ill-conditioned problems where rounding causes the
+            bidiagonalization to lose orthogonality and convergence to
+            stall. Memory cost is ``local_size * n_dofs`` doubles
+            unpreconditioned, ``2 * local_size * n_dofs`` preconditioned.
     """
 
     tol: float
     maxiter: int
+    local_size: int | None
     def __init__(
         self,
         tol: float = 1e-8,
         maxiter: int = 1000,
+        local_size: int | None = None,
     ) -> None: ...
 
 class SolveResult:

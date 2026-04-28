@@ -67,7 +67,7 @@ fn main() {
 
     // -- Build solver once (preconditioner reuse) --
     let params = SolverParams {
-        krylov: KrylovMethod::Lsmr,
+        krylov: KrylovMethod::Lsmr { local_size: None },
         tol: 1e-10,
         maxiter: 500,
         ..Default::default()
