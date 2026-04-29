@@ -95,13 +95,13 @@ impl<S: Store> Operator for GramianOperator<'_, S> {
 /// Implicit weighted Gramian operator: computes `D^T W (D x)`.
 pub struct WeightedGramianOperator<'a, S: Store> {
     design: &'a Design<S>,
-    weights: Vec<f64>,
+    weights: &'a [f64],
     scratch: Mutex<Vec<f64>>,
 }
 
 impl<'a, S: Store> WeightedGramianOperator<'a, S> {
     /// Create an implicit weighted Gramian operator (length of `weights` must equal `design.n_rows`).
-    pub fn new(design: &'a Design<S>, weights: &[f64]) -> Self {
+    pub fn new(design: &'a Design<S>, weights: &'a [f64]) -> Self {
         assert_eq!(
             weights.len(),
             design.n_rows,
@@ -112,7 +112,7 @@ impl<'a, S: Store> WeightedGramianOperator<'a, S> {
         Self {
             scratch: Mutex::new(vec![0.0; design.n_rows]),
             design,
-            weights: weights.to_vec(),
+            weights,
         }
     }
 }
@@ -130,7 +130,7 @@ impl<S: Store> Operator for WeightedGramianOperator<'_, S> {
         let mut tmp = self.scratch.lock().unwrap();
         gather_apply(self.design, x, &mut tmp, |_, s| s); // tmp = D x
         y.fill(0.0);
-        let w = &self.weights;
+        let w = self.weights;
         scatter_apply(self.design, y, |i| w[i] * tmp[i]); // y = D^T W tmp
         Ok(())
     }
