@@ -98,6 +98,14 @@ and this project follows [Semantic Versioning](https://semver.org/).
   `build_preconditioner`, `CrossTab::build_for_pair`, and the
   `domain::factor_pairs` constructors. Callers using these lower-level
   entry points directly must now pass weights explicitly.
+- **`schwarz-precond`: `lsmr` and `preconditioned_lsmr` removed.** Both
+  bodies are folded into `mlsmr`, which now dispatches on its
+  `preconditioner: Option<&M>` argument. Callers pass `None::<&M>` for
+  the unpreconditioned path and `Some(&m)` for the preconditioned path.
+- **`ArrayStore::new` no longer returns `WithinResult`.** The signature
+  becomes `pub fn new(categories: ArrayView2<'a, u32>) -> Self`. The
+  prior `Result` was vestigial (the body was `Ok(Self { categories })`);
+  drop the `?` / `.unwrap()` at call sites.
 
 ### Added
 
@@ -137,6 +145,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - `SubdomainCoreBuildError`, `SubdomainEntryBuildError`,
   `PreconditionerBuildError`, `LocalSolveError`, `ApplyError` enums. All
   variants now live on `BuildError` or `SolveError`.
+- `lsmr` and `preconditioned_lsmr` public entry points in
+  `schwarz-precond`. Use `mlsmr` with `Option<&M>` for the preconditioner.
 
 ### Fixed
 
