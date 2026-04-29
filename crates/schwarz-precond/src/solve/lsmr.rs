@@ -78,6 +78,25 @@ pub struct LsmrResult {
     pub iterations: usize,
     /// Final residual norm estimate `‖b − A x‖`.
     pub residual_norm: f64,
+    /// Reason the solver stopped.
+    pub stop_reason: LsmrStopReason,
+}
+
+/// Reason an LSMR solve stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LsmrStopReason {
+    /// The right-hand side was exactly zero.
+    ZeroRhs,
+    /// The initial normal-equation residual was exactly zero (`Aᵀb = 0`).
+    InitialNormalEquationResidualZero,
+    /// The least-squares residual estimate met the absolute tolerance.
+    ResidualTolerance,
+    /// The normal-equation residual estimate met the relative tolerance.
+    NormalEquationTolerance,
+    /// The bidiagonalization reached a lucky breakdown.
+    BidiagonalizationBreakdown,
+    /// The iteration budget was exhausted before convergence.
+    MaxIterations,
 }
 
 /// LSMR with optional preconditioner `M ≈ AᵀA`.
@@ -108,30 +127,69 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
     maxiter: usize,
     local_size: Option<usize>,
 ) -> Result<LsmrResult, SolveError> {
+    match preconditioner {
+        None => lsmr(operator, b, tol, maxiter, local_size),
+        Some(m) => preconditioned_lsmr(operator, b, m, tol, maxiter, local_size),
+    }
+}
+
+/// Unpreconditioned LSMR.
+///
+/// Solves `min ‖b − A x‖₂` using the standard Golub-Kahan
+/// bidiagonalization.
+pub fn lsmr<A: Operator + ?Sized>(
+    operator: &A,
+    b: &[f64],
+    tol: f64,
+    maxiter: usize,
+    local_size: Option<usize>,
+) -> Result<LsmrResult, SolveError> {
+    validate_lsmr_inputs(operator, b, tol)?;
     let n = operator.ncols();
-    debug_assert_eq!(b.len(), operator.nrows());
 
     let b_norm = vec_norm(b);
     if b_norm == 0.0 {
-        return Ok(LsmrResult {
-            x: vec![0.0; n],
-            converged: true,
-            iterations: 0,
-            residual_norm: 0.0,
-        });
+        return Ok(zero_rhs_result(n));
     }
 
     let local_size = local_size.unwrap_or(0);
+    let (bidiag, step1) = GolubKahan::init(operator, b, local_size)?;
+    lsmr_from_bidiag(bidiag, step1, b_norm, tol, maxiter)
+}
 
-    match preconditioner {
-        None => {
-            let (bidiag, step1) = GolubKahan::init(operator, b, local_size)?;
-            lsmr_from_bidiag(bidiag, step1, b_norm, tol, maxiter)
-        }
-        Some(m) => {
-            let (bidiag, step1) = ModifiedGolubKahan::init(operator, m, b, local_size)?;
-            lsmr_from_bidiag(bidiag, step1, b_norm, tol, maxiter)
-        }
+/// Preconditioned LSMR with `M ≈ AᵀA`.
+///
+/// Uses the Modified Golub-Kahan variant requiring one `M⁻¹` application per
+/// iteration.
+pub fn preconditioned_lsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
+    operator: &A,
+    b: &[f64],
+    preconditioner: &M,
+    tol: f64,
+    maxiter: usize,
+    local_size: Option<usize>,
+) -> Result<LsmrResult, SolveError> {
+    validate_lsmr_inputs(operator, b, tol)?;
+    validate_lsmr_preconditioner(operator, preconditioner)?;
+    let n = operator.ncols();
+
+    let b_norm = vec_norm(b);
+    if b_norm == 0.0 {
+        return Ok(zero_rhs_result(n));
+    }
+
+    let local_size = local_size.unwrap_or(0);
+    let (bidiag, step1) = ModifiedGolubKahan::init(operator, preconditioner, b, local_size)?;
+    lsmr_from_bidiag(bidiag, step1, b_norm, tol, maxiter)
+}
+
+fn zero_rhs_result(n: usize) -> LsmrResult {
+    LsmrResult {
+        x: vec![0.0; n],
+        converged: true,
+        iterations: 0,
+        residual_norm: 0.0,
+        stop_reason: LsmrStopReason::ZeroRhs,
     }
 }
 
@@ -152,6 +210,7 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
             converged: true,
             iterations: 0,
             residual_norm: b_norm,
+            stop_reason: LsmrStopReason::InitialNormalEquationResidualZero,
         });
     }
 
@@ -166,13 +225,26 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
         let curr_rot = recurrence.step(step);
         solution.update(bidiag.v(), curr_rot, prev_rot);
 
-        let converged = matches!(convergence.check(&recurrence), Stop::Converged);
-        if converged || step.alpha == 0.0 {
+        // Convergence wins over breakdown when both fire on the same step:
+        // the user-specified tolerance is the contract, breakdown is an
+        // internal property of the bidiagonalization.
+        let stop = convergence.check(&recurrence);
+        if let Some(stop_reason) = lsmr_stop_reason(stop) {
             return Ok(LsmrResult {
                 x: solution.into_x(),
                 converged: true,
                 iterations: itn,
                 residual_norm: recurrence.residual_estimate(),
+                stop_reason,
+            });
+        }
+        if step.alpha == 0.0 {
+            return Ok(LsmrResult {
+                x: solution.into_x(),
+                converged: true,
+                iterations: itn,
+                residual_norm: recurrence.residual_estimate(),
+                stop_reason: LsmrStopReason::BidiagonalizationBreakdown,
             });
         }
         prev_rot = curr_rot;
@@ -183,5 +255,62 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
         converged: false,
         iterations: maxiter,
         residual_norm: recurrence.residual_estimate(),
+        stop_reason: LsmrStopReason::MaxIterations,
     })
+}
+
+fn validate_lsmr_inputs<A: Operator + ?Sized>(
+    operator: &A,
+    b: &[f64],
+    tol: f64,
+) -> Result<(), SolveError> {
+    if b.len() != operator.nrows() {
+        return Err(SolveError::InvalidInput {
+            context: "lsmr",
+            message: format!(
+                "rhs length {} does not match operator row count {}",
+                b.len(),
+                operator.nrows()
+            ),
+        });
+    }
+    if !tol.is_finite() || tol < 0.0 {
+        return Err(SolveError::InvalidInput {
+            context: "lsmr",
+            message: format!("tolerance must be finite and nonnegative, got {tol}"),
+        });
+    }
+    if let Some((index, value)) = b.iter().copied().enumerate().find(|(_, v)| !v.is_finite()) {
+        return Err(SolveError::InvalidInput {
+            context: "lsmr",
+            message: format!("rhs entry {index} must be finite, got {value}"),
+        });
+    }
+    Ok(())
+}
+
+fn validate_lsmr_preconditioner<A: Operator + ?Sized, M: Operator + ?Sized>(
+    operator: &A,
+    preconditioner: &M,
+) -> Result<(), SolveError> {
+    let n = operator.ncols();
+    if preconditioner.nrows() != n || preconditioner.ncols() != n {
+        return Err(SolveError::InvalidInput {
+            context: "lsmr",
+            message: format!(
+                "preconditioner shape {}x{} must match operator column count {n}",
+                preconditioner.nrows(),
+                preconditioner.ncols(),
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn lsmr_stop_reason(stop: Stop) -> Option<LsmrStopReason> {
+    match stop {
+        Stop::Continue => None,
+        Stop::ResidualTolerance => Some(LsmrStopReason::ResidualTolerance),
+        Stop::NormalEquationTolerance => Some(LsmrStopReason::NormalEquationTolerance),
+    }
 }

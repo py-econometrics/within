@@ -189,12 +189,22 @@ impl Error for ApplyError {
 pub enum SolveError {
     /// Operator/preconditioner apply failed.
     Apply(ApplyError),
+    /// Solver input was invalid before any iteration was attempted.
+    InvalidInput {
+        /// Context string identifying the validation site.
+        context: &'static str,
+        /// Validation failure details.
+        message: String,
+    },
 }
 
 impl Display for SolveError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Apply(err) => write!(f, "operator apply failed: {err}"),
+            Self::InvalidInput { context, message } => {
+                write!(f, "invalid solver input at {context}: {message}")
+            }
         }
     }
 }
@@ -203,6 +213,7 @@ impl Error for SolveError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Apply(err) => Some(err),
+            Self::InvalidInput { .. } => None,
         }
     }
 }

@@ -238,8 +238,10 @@ impl SolutionState {
 pub(super) enum Stop {
     /// LSMR has not yet met the user-supplied tolerance.
     Continue,
-    /// `‖Aᵀ r_k‖` (estimated via `‖ζ̄‖`) fell below tolerance.
-    Converged,
+    /// `‖r_k‖` estimate fell below absolute tolerance.
+    ResidualTolerance,
+    /// `‖Aᵀ r_k‖` estimate fell below relative tolerance.
+    NormalEquationTolerance,
 }
 
 /// Fong & Saunders' two stop criteria for LSMR plus the running `‖A‖_F²`
@@ -271,12 +273,12 @@ impl ConvergenceState {
     pub(super) fn check(&self, r: &LsmrRecurrenceState) -> Stop {
         let residual = r.residual_estimate();
         if residual <= self.abs_tol {
-            return Stop::Converged;
+            return Stop::ResidualTolerance;
         }
         let a_norm = self.a_norm_sq.sqrt().max(f64::MIN_POSITIVE);
         let normar = r.normal_eq_residual_estimate();
         if normar / (a_norm * residual.max(f64::MIN_POSITIVE)) <= self.rel_tol {
-            return Stop::Converged;
+            return Stop::NormalEquationTolerance;
         }
         Stop::Continue
     }

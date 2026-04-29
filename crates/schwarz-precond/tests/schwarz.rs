@@ -837,6 +837,18 @@ fn test_solve_error_source() {
 }
 
 #[test]
+fn test_solve_error_invalid_input_display_and_source() {
+    let err = SolveError::InvalidInput {
+        context: "test",
+        message: "bad dimension".to_string(),
+    };
+    let msg = err.to_string();
+    assert!(msg.contains("test"));
+    assert!(msg.contains("bad dimension"));
+    assert!(err.source().is_none());
+}
+
+#[test]
 fn test_solve_error_from_apply_error() {
     let apply_err = ApplyError::Synchronization { context: "conv" };
     let solve_err: SolveError = apply_err.into();
