@@ -58,6 +58,24 @@ use crate::operator::{DesignOperator, WeightedDesignOperator};
 use crate::orchestrate::{BatchSolveResult, SolveResult};
 use crate::WithinResult;
 
+enum PreconditionerSource<'a> {
+    Config(&'a Preconditioner),
+    Built(FePreconditioner),
+}
+
+impl PreconditionerSource<'_> {
+    fn requires_explicit_gramian(&self) -> bool {
+        matches!(self, Self::Config(Preconditioner::Multiplicative(_)))
+    }
+}
+
+fn build_gramian<S: Store>(design: &Design<S>, weights: Option<&[f64]>) -> Gramian {
+    match weights {
+        Some(w) => Gramian::build_weighted(design, w),
+        None => Gramian::build(design),
+    }
+}
+
 /// Persistent solver that owns its preconditioner for reuse across multiple solves.
 pub struct Solver<S: Store> {
     design: Design<S>,
@@ -78,43 +96,12 @@ impl<S: Store> Solver<S> {
         params: &SolverParams,
         preconditioner: Option<&Preconditioner>,
     ) -> WithinResult<Self> {
-        if let Some(w) = &weights {
-            validate_weights(w, design.n_rows)?;
-        }
-        let needs_gramian = params.operator == OperatorRepr::Explicit
-            || matches!(preconditioner, Some(Preconditioner::Multiplicative(_)));
-
-        let weights_slice = weights.as_deref();
-        let (gramian, built_precond) = match (needs_gramian, preconditioner) {
-            (true, Some(config)) => {
-                let (gramian, precond) =
-                    build_preconditioner_fused(&design, weights_slice, config)?;
-                (Some(gramian), Some(precond))
-            }
-            (true, None) => {
-                let g = match weights_slice {
-                    Some(w) => Gramian::build_weighted(&design, w),
-                    None => Gramian::build(&design),
-                };
-                (Some(g), None)
-            }
-            (false, Some(config)) => {
-                let precond = build_preconditioner(&design, weights_slice, None, config)?;
-                (None, Some(precond))
-            }
-            (false, None) => (None, None),
-        };
-
-        Ok(Self {
+        Self::from_design_with_source(
             design,
             weights,
-            gramian,
-            preconditioner: built_precond,
-            krylov: params.krylov,
-            tol: params.tol,
-            maxiter: params.maxiter,
-            max_refinements: params.max_refinements,
-        })
+            params,
+            preconditioner.map(PreconditionerSource::Config),
+        )
     }
 
     /// Build from a design with a pre-built preconditioner (e.g. deserialized).
@@ -124,23 +111,56 @@ impl<S: Store> Solver<S> {
         params: &SolverParams,
         preconditioner: FePreconditioner,
     ) -> WithinResult<Self> {
+        Self::from_design_with_source(
+            design,
+            weights,
+            params,
+            Some(PreconditionerSource::Built(preconditioner)),
+        )
+    }
+
+    fn from_design_with_source(
+        design: Design<S>,
+        weights: Option<Vec<f64>>,
+        params: &SolverParams,
+        preconditioner: Option<PreconditionerSource<'_>>,
+    ) -> WithinResult<Self> {
         if let Some(w) = &weights {
             validate_weights(w, design.n_rows)?;
         }
-        let gramian = if params.operator == OperatorRepr::Explicit {
-            Some(match weights.as_deref() {
-                Some(w) => Gramian::build_weighted(&design, w),
-                None => Gramian::build(&design),
-            })
-        } else {
-            None
+
+        let weights_slice = weights.as_deref();
+        let needs_gramian = params.operator == OperatorRepr::Explicit
+            || preconditioner
+                .as_ref()
+                .is_some_and(PreconditionerSource::requires_explicit_gramian);
+
+        let (gramian, preconditioner) = match (needs_gramian, preconditioner) {
+            (true, Some(PreconditionerSource::Config(config))) => {
+                let (gramian, preconditioner) =
+                    build_preconditioner_fused(&design, weights_slice, config)?;
+                (Some(gramian), Some(preconditioner))
+            }
+            (false, Some(PreconditionerSource::Config(config))) => {
+                let preconditioner = build_preconditioner(&design, weights_slice, None, config)?;
+                (None, Some(preconditioner))
+            }
+            (true, Some(PreconditionerSource::Built(preconditioner))) => (
+                Some(build_gramian(&design, weights_slice)),
+                Some(preconditioner),
+            ),
+            (false, Some(PreconditionerSource::Built(preconditioner))) => {
+                (None, Some(preconditioner))
+            }
+            (true, None) => (Some(build_gramian(&design, weights_slice)), None),
+            (false, None) => (None, None),
         };
 
         Ok(Self {
             design,
             weights,
             gramian,
-            preconditioner: Some(preconditioner),
+            preconditioner,
             krylov: params.krylov,
             tol: params.tol,
             maxiter: params.maxiter,
@@ -470,7 +490,7 @@ impl<'a> Solver<ArrayStore<'a>> {
         params: &SolverParams,
         preconditioner: Option<&Preconditioner>,
     ) -> WithinResult<Self> {
-        let store = ArrayStore::new(categories)?;
+        let store = ArrayStore::new(categories);
         let design = Design::from_store(store)?;
         let weights = weights.map(|w| w.to_vec());
         Self::from_design(design, weights, params, preconditioner)

@@ -137,7 +137,7 @@ proptest! {
     fn prop_weighted_explicit_equals_implicit(
         (cats, _y, weights) in random_weighted_fe_problem_strategy()
     ) {
-        let store = ArrayStore::new(cats.view()).unwrap();
+        let store = ArrayStore::new(cats.view());
         let design = Design::from_store(store).unwrap();
 
         let explicit = Gramian::build_weighted(&design, &weights);
@@ -170,7 +170,7 @@ proptest! {
         };
         let precond = additive_precond();
         // Build the design with a unit-solution RHS so the problem is feasible
-        let store = ArrayStore::new(cats.view()).unwrap();
+        let store = ArrayStore::new(cats.view());
         let design = Design::from_store(store).unwrap();
         let y_feasible: Vec<f64> = {
             let x_true = vec![1.0; design.n_dofs];
@@ -273,7 +273,7 @@ proptest! {
     #[test]
     fn prop_single_factor_converges((cats, _y) in single_factor_strategy()) {
         // Build a consistent RHS: y = D * 1 so the system is exactly solvable.
-        let store = ArrayStore::new(cats.view()).unwrap();
+        let store = ArrayStore::new(cats.view());
         let design = Design::from_store(store).unwrap();
         let n_levels = design.n_dofs;
         let x_true = vec![1.0; n_levels];

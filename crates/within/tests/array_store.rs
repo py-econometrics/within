@@ -101,7 +101,7 @@ fn test_array_store_factor_column_f_order() {
         f.assign(&cats);
         f
     };
-    let store = ArrayStore::new(cats_f.view()).expect("valid store");
+    let store = ArrayStore::new(cats_f.view());
     assert!(store.factor_column(0).is_some());
     assert!(store.factor_column(1).is_some());
 }
@@ -111,7 +111,7 @@ fn test_array_store_factor_column_c_order() {
     // C-contiguous array should return None from factor_column()
     let cats = array![[0u32, 0], [1, 0], [0, 1], [1, 1]];
     assert!(cats.is_standard_layout()); // C-contiguous
-    let store = ArrayStore::new(cats.view()).expect("valid store");
+    let store = ArrayStore::new(cats.view());
     assert!(store.factor_column(0).is_none());
     assert!(store.factor_column(1).is_none());
 }

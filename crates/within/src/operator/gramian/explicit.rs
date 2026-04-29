@@ -224,20 +224,6 @@ impl Gramian {
         }
     }
 
-    /// Build a Gramian containing only the single factor pair `(q, r)`,
-    /// optionally weighted.
-    #[cfg(test)]
-    pub(crate) fn build_for_pair<S: Store>(
-        design: &Design<S>,
-        q: usize,
-        r: usize,
-        weights: Option<&[f64]>,
-    ) -> Self {
-        Self {
-            matrix: Arc::new(build_pair_matrix(design, q, r, weights)),
-        }
-    }
-
     /// Compose the full Gramian CSR from pre-built per-pair block data.
     pub(crate) fn from_pair_blocks(
         blocks: &[PairBlockData],
@@ -438,54 +424,6 @@ fn build_full_matrix<S: Store>(design: &Design<S>, weights: Option<&[f64]>) -> S
                 emit(gk, gj, cnt);
             });
         }
-    })
-}
-
-#[cfg(test)]
-fn build_pair_matrix<S: Store>(
-    design: &Design<S>,
-    q: usize,
-    r: usize,
-    weights: Option<&[f64]>,
-) -> SparseMatrix {
-    let n_dofs = design.n_dofs;
-    let n_obs = design.store.n_obs();
-    let fq = &design.factors[q];
-    let fr = &design.factors[r];
-
-    let mut diag_q = vec![0.0; fq.n_levels];
-    let mut diag_r = vec![0.0; fr.n_levels];
-    let mut table = PairAccumulator::new(fq.n_levels, fr.n_levels, n_obs);
-
-    for uid in 0..n_obs {
-        let w = obs_weight(weights, uid);
-        let j = design.store.level(uid, q) as usize;
-        let k = design.store.level(uid, r) as usize;
-        diag_q[j] += w;
-        diag_r[k] += w;
-        table.add(j, k, w);
-    }
-
-    build_symmetric_csr(n_dofs, |emit| {
-        for (j, &cnt) in diag_q.iter().enumerate() {
-            if cnt > 0.0 {
-                let gj = fq.offset + j;
-                emit(gj, gj, cnt);
-            }
-        }
-        for (k, &cnt) in diag_r.iter().enumerate() {
-            if cnt > 0.0 {
-                let gk = fr.offset + k;
-                emit(gk, gk, cnt);
-            }
-        }
-
-        table.for_each_nonzero(|j, k, cnt| {
-            let gj = fq.offset + j;
-            let gk = fr.offset + k;
-            emit(gj, gk, cnt);
-            emit(gk, gj, cnt);
-        });
     })
 }
 

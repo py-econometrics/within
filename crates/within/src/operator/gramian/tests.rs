@@ -5,152 +5,9 @@
 use proptest::prelude::*;
 
 use super::CrossTab;
-use super::Gramian;
 use crate::domain::Design;
 use crate::observation::FactorMajorStore;
-use crate::operator::gramian::find_all_active_levels;
-
-fn assert_cross_tabs_equal(a: &CrossTab, b: &CrossTab) {
-    assert_eq!(a.n_q(), b.n_q(), "n_q mismatch");
-    assert_eq!(a.n_r(), b.n_r(), "n_r mismatch");
-    for (i, (av, bv)) in a.diag_q.iter().zip(&b.diag_q).enumerate() {
-        assert!(
-            (av - bv).abs() < 1e-12,
-            "diag_q[{i}] mismatch: {av} vs {bv}"
-        );
-    }
-    for (i, (av, bv)) in a.diag_r.iter().zip(&b.diag_r).enumerate() {
-        assert!(
-            (av - bv).abs() < 1e-12,
-            "diag_r[{i}] mismatch: {av} vs {bv}"
-        );
-    }
-    assert_eq!(a.c.indptr, b.c.indptr, "C indptr mismatch");
-    assert_eq!(a.c.indices, b.c.indices, "C indices mismatch");
-    for (i, (av, bv)) in a.c.data.iter().zip(&b.c.data).enumerate() {
-        assert!(
-            (av - bv).abs() < 1e-12,
-            "C data[{i}] mismatch: {av} vs {bv}"
-        );
-    }
-}
-
-fn make_2fe_design() -> Design<FactorMajorStore> {
-    let store = FactorMajorStore::new(vec![vec![0, 1, 2, 0, 1], vec![0, 1, 2, 3, 0]], 5)
-        .expect("valid factor-major store");
-    Design::from_store(store).expect("valid 2FE design")
-}
-
-fn make_3fe_design() -> Design<FactorMajorStore> {
-    let store = FactorMajorStore::new(
-        vec![
-            vec![0, 1, 2, 0, 1, 2],
-            vec![0, 1, 0, 1, 0, 1],
-            vec![0, 0, 1, 1, 0, 1],
-        ],
-        6,
-    )
-    .expect("valid factor-major store");
-    Design::from_store(store).expect("valid 3FE design")
-}
-
-#[test]
-fn test_from_gramian_block_matches_build_for_pair_2fe() {
-    let design = make_2fe_design();
-    let gramian = Gramian::build(&design);
-
-    let (ct_obs, l2g_obs) = CrossTab::build_for_pair(&design, None, 0, 1).unwrap();
-    let (ct_gram, l2g_gram) =
-        CrossTab::from_gramian_block(&gramian.matrix, &design.factors[0], &design.factors[1])
-            .unwrap();
-
-    assert_eq!(l2g_obs, l2g_gram, "local_to_global mismatch");
-    assert_cross_tabs_equal(&ct_obs, &ct_gram);
-}
-
-#[test]
-fn test_from_gramian_block_matches_build_for_pair_3fe() {
-    let design = make_3fe_design();
-    let gramian = Gramian::build(&design);
-
-    for q in 0..3 {
-        for r in (q + 1)..3 {
-            let obs_result = CrossTab::build_for_pair(&design, None, q, r);
-            let gram_result = CrossTab::from_gramian_block(
-                &gramian.matrix,
-                &design.factors[q],
-                &design.factors[r],
-            );
-
-            match (obs_result, gram_result) {
-                (Some((ct_obs, l2g_obs)), Some((ct_gram, l2g_gram))) => {
-                    assert_eq!(l2g_obs, l2g_gram, "l2g mismatch for pair ({q},{r})");
-                    assert_cross_tabs_equal(&ct_obs, &ct_gram);
-                }
-                (None, None) => {}
-                _ => panic!("one returned None and the other Some for pair ({q},{r})"),
-            }
-        }
-    }
-}
-
-#[test]
-fn test_from_gramian_block_single_component() {
-    // Fully connected 2FE design: single component
-    let store = FactorMajorStore::new(vec![vec![0, 1, 0, 1], vec![0, 0, 1, 1]], 4)
-        .expect("valid factor-major store");
-    let design = Design::from_store(store).expect("valid design");
-    let gramian = Gramian::build(&design);
-
-    let (ct_gram, _) =
-        CrossTab::from_gramian_block(&gramian.matrix, &design.factors[0], &design.factors[1])
-            .unwrap();
-
-    let components = ct_gram.bipartite_connected_components();
-    assert_eq!(components.len(), 1, "expected single component");
-}
-
-#[test]
-fn test_from_gramian_block_multiple_components() {
-    // Design with two disconnected components:
-    // factor 0: [0, 0, 1, 1]   factor 1: [0, 1, 2, 3]
-    // levels (0,0), (0,1) form one component; (1,2), (1,3) form another
-    let store = FactorMajorStore::new(vec![vec![0, 0, 1, 1], vec![0, 1, 2, 3]], 4)
-        .expect("valid factor-major store");
-    let design = Design::from_store(store).expect("valid design");
-    let gramian = Gramian::build(&design);
-
-    let (ct_obs, _) = CrossTab::build_for_pair(&design, None, 0, 1).unwrap();
-    let (ct_gram, _) =
-        CrossTab::from_gramian_block(&gramian.matrix, &design.factors[0], &design.factors[1])
-            .unwrap();
-
-    let comps_obs = ct_obs.bipartite_connected_components();
-    let comps_gram = ct_gram.bipartite_connected_components();
-    assert_eq!(comps_obs.len(), comps_gram.len());
-    for (co, cg) in comps_obs.iter().zip(&comps_gram) {
-        assert_eq!(co.q_indices, cg.q_indices);
-        assert_eq!(co.r_indices, cg.r_indices);
-    }
-}
-
-#[test]
-fn test_from_gramian_block_weighted() {
-    let fl = vec![vec![0u32, 1, 0, 1], vec![0, 0, 1, 1]];
-    let weights = vec![1.0, 2.0, 3.0, 4.0];
-
-    let store = FactorMajorStore::new(fl, 4).expect("valid weighted store");
-    let design = Design::from_store(store).expect("valid weighted design");
-    let gramian = Gramian::build_weighted(&design, &weights);
-
-    let (ct_obs, l2g_obs) = CrossTab::build_for_pair(&design, Some(&weights), 0, 1).unwrap();
-    let (ct_gram, l2g_gram) =
-        CrossTab::from_gramian_block(&gramian.matrix, &design.factors[0], &design.factors[1])
-            .unwrap();
-
-    assert_eq!(l2g_obs, l2g_gram);
-    assert_cross_tabs_equal(&ct_obs, &ct_gram);
-}
+use crate::operator::gramian::{find_all_active_levels, Gramian};
 
 // ---------------------------------------------------------------------------
 // Test: sparse accumulation path in CrossTab
@@ -418,6 +275,113 @@ proptest! {
 }
 
 // ---------------------------------------------------------------------------
+// Test: CrossTab block matches per-pair sub-block of the explicit Gramian
+// ---------------------------------------------------------------------------
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(20))]
+
+    /// `CrossTab::build_for_pair` and the corresponding sub-block of
+    /// `Gramian::build` must agree entry-for-entry. This was previously
+    /// guarded by the (now-removed) test-only `CrossTab::from_gramian_block`
+    /// constructor; the same invariant is recovered here through the public
+    /// `extract_submatrix` API.
+    #[test]
+    fn prop_cross_tab_matches_gramian_block(
+        n_q in 2u32..=8,
+        n_r in 2u32..=8,
+        n_obs in 4usize..=40,
+        weighted in any::<bool>(),
+        seed in 0u64..10_000,
+    ) {
+        let mut fa: Vec<u32> = Vec::with_capacity(n_obs);
+        let mut fb: Vec<u32> = Vec::with_capacity(n_obs);
+        let mut s = seed;
+        for _ in 0..n_obs {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            fa.push((s % n_q as u64) as u32);
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            fb.push((s % n_r as u64) as u32);
+        }
+
+        let store = FactorMajorStore::new(vec![fa, fb], n_obs).expect("valid store");
+        let design = Design::from_store(store).expect("valid design");
+
+        let weights: Option<Vec<f64>> = if weighted {
+            let mut w = Vec::with_capacity(n_obs);
+            for i in 0..n_obs {
+                w.push(0.25 + ((i + 1) as f64).sqrt());
+            }
+            Some(w)
+        } else {
+            None
+        };
+        let weights_slice = weights.as_deref();
+
+        let (ct, l2g) = match CrossTab::build_for_pair(&design, weights_slice, 0, 1) {
+            Some(pair) => pair,
+            None => return Ok(()),
+        };
+        let gramian = match weights_slice {
+            Some(w) => Gramian::build_weighted(&design, w),
+            None => Gramian::build(&design),
+        };
+
+        let l2g_usize: Vec<usize> = l2g.iter().map(|&x| x as usize).collect();
+        let sub = gramian.extract_submatrix(&l2g_usize);
+
+        let n_q_local = ct.n_q();
+        let n_r_local = ct.n_r();
+        let n_total = n_q_local + n_r_local;
+        prop_assert_eq!(sub.n(), n_total, "sub-block size mismatch");
+
+        // Densify both representations and compare.
+        let mut expected = vec![0.0f64; n_total * n_total];
+        for i in 0..n_q_local {
+            expected[i * n_total + i] = ct.diag_q[i];
+        }
+        for k in 0..n_r_local {
+            let p = n_q_local + k;
+            expected[p * n_total + p] = ct.diag_r[k];
+        }
+        for i in 0..n_q_local {
+            let row_start = ct.c.indptr[i] as usize;
+            let row_end = ct.c.indptr[i + 1] as usize;
+            for idx in row_start..row_end {
+                let k = ct.c.indices[idx] as usize;
+                let v = ct.c.data[idx];
+                expected[i * n_total + (n_q_local + k)] = v;
+                expected[(n_q_local + k) * n_total + i] = v;
+            }
+        }
+
+        let mut actual = vec![0.0f64; n_total * n_total];
+        let indptr = sub.indptr();
+        let indices = sub.indices();
+        let data = sub.data();
+        for row in 0..n_total {
+            let row_start = indptr[row] as usize;
+            let row_end = indptr[row + 1] as usize;
+            for idx in row_start..row_end {
+                let col = indices[idx] as usize;
+                actual[row * n_total + col] = data[idx];
+            }
+        }
+
+        for i in 0..n_total {
+            for j in 0..n_total {
+                let pos = i * n_total + j;
+                prop_assert!(
+                    (expected[pos] - actual[pos]).abs() < 1e-12,
+                    "mismatch at ({}, {}): expected {}, got {}",
+                    i, j, expected[pos], actual[pos]
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Test: find_all_active_levels
 // ---------------------------------------------------------------------------
 
@@ -448,55 +412,4 @@ fn test_find_all_active_levels_with_gaps() {
         vec![true, true, true],
         "factor 1 active pattern: all true"
     );
-}
-
-#[test]
-fn test_build_for_pair_matches_full_gramian() {
-    let store = FactorMajorStore::new(
-        vec![
-            vec![0, 1, 2, 0, 1, 2, 0, 1],
-            vec![0, 0, 1, 1, 0, 0, 1, 1],
-            vec![0, 1, 0, 1, 0, 1, 0, 1],
-        ],
-        8,
-    )
-    .expect("valid factor-major store");
-    let dm = Design::from_store(store).expect("valid pairwise design");
-    let full = Gramian::build(&dm);
-    let n = full.n_dofs();
-
-    let pairs = [(0, 1), (0, 2), (1, 2)];
-    let offsets = [0usize, 3, 5];
-    let sizes = [3usize, 2, 2];
-
-    for &(q, r) in &pairs {
-        let pair_g = Gramian::build_for_pair(&dm, q, r, None);
-        assert_eq!(pair_g.n_dofs(), n);
-
-        let relevant_rows: Vec<usize> = (offsets[q]..offsets[q] + sizes[q])
-            .chain(offsets[r]..offsets[r] + sizes[r])
-            .collect();
-
-        for &row in &relevant_rows {
-            let mut ei = vec![0.0; n];
-            ei[row] = 1.0;
-            let mut y_full = vec![0.0; n];
-            let mut y_pair = vec![0.0; n];
-            full.matvec(&ei, &mut y_full);
-            pair_g.matvec(&ei, &mut y_pair);
-
-            for &col in &relevant_rows {
-                assert!((y_full[col] - y_pair[col]).abs() < 1e-12);
-            }
-        }
-
-        for row in 0..n {
-            if relevant_rows.contains(&row) {
-                continue;
-            }
-            let start = pair_g.matrix.indptr()[row];
-            let end = pair_g.matrix.indptr()[row + 1];
-            assert_eq!(start, end);
-        }
-    }
 }

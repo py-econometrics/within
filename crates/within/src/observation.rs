@@ -169,8 +169,8 @@ pub struct ArrayStore<'a> {
 
 impl<'a> ArrayStore<'a> {
     /// Create a zero-copy store from a borrowed 2-D category array.
-    pub fn new(categories: ArrayView2<'a, u32>) -> WithinResult<Self> {
-        Ok(Self { categories })
+    pub fn new(categories: ArrayView2<'a, u32>) -> Self {
+        Self { categories }
     }
 }
 

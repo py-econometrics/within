@@ -118,7 +118,7 @@ fn bench_store_backends(c: &mut Criterion) {
         // ArrayStore C-order: zero-copy, strided columns.
         group.bench_function(BenchmarkId::new("Array(C)", &p.label), |b| {
             b.iter(|| {
-                let store = ArrayStore::new(p.categories_c.view()).unwrap();
+                let store = ArrayStore::new(p.categories_c.view());
                 let design = Design::from_store(store).unwrap();
                 let solver = Solver::from_design(design, None, &p.params, precond_ref).unwrap();
                 let r = solver.solve(&p.y).unwrap();
@@ -129,7 +129,7 @@ fn bench_store_backends(c: &mut Criterion) {
         // ArrayStore F-order: zero-copy, contiguous columns.
         group.bench_function(BenchmarkId::new("Array(F)", &p.label), |b| {
             b.iter(|| {
-                let store = ArrayStore::new(p.categories_f.view()).unwrap();
+                let store = ArrayStore::new(p.categories_f.view());
                 let design = Design::from_store(store).unwrap();
                 let solver = Solver::from_design(design, None, &p.params, precond_ref).unwrap();
                 let r = solver.solve(&p.y).unwrap();

@@ -155,7 +155,7 @@ fn test_serde_roundtrip() {
 
     // Deserialize and build new solver
     let precond2: FePreconditioner = postcard::from_bytes(&bytes).expect("deserialize");
-    let store = ArrayStore::new(categories.view()).expect("store");
+    let store = ArrayStore::new(categories.view());
     let design = Design::from_store(store).expect("design");
     let solver2 = Solver::from_design_with_preconditioner(design, None, &params, precond2)
         .expect("solver from preconditioner");
@@ -322,7 +322,7 @@ fn test_multiplicative_serde_roundtrip() {
     assert!(!bytes.is_empty());
 
     let precond2: FePreconditioner = postcard::from_bytes(&bytes).expect("deserialize");
-    let store = ArrayStore::new(categories.view()).expect("store");
+    let store = ArrayStore::new(categories.view());
     let design = Design::from_store(store).expect("design");
     let solver2 = Solver::from_design_with_preconditioner(design, None, &params, precond2)
         .expect("solver from preconditioner");

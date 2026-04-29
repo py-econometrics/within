@@ -127,60 +127,26 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
     maxiter: usize,
     local_size: Option<usize>,
 ) -> Result<LsmrResult, SolveError> {
+    validate_lsmr_inputs(operator, b, tol)?;
+    let n = operator.ncols();
+
+    let b_norm = vec_norm(b);
+    if b_norm == 0.0 {
+        return Ok(zero_rhs_result(n));
+    }
+
+    let local_size = local_size.unwrap_or(0);
     match preconditioner {
-        None => lsmr(operator, b, tol, maxiter, local_size),
-        Some(m) => preconditioned_lsmr(operator, b, m, tol, maxiter, local_size),
+        None => {
+            let (bidiag, step1) = GolubKahan::init(operator, b, local_size)?;
+            lsmr_from_bidiag(bidiag, step1, b_norm, tol, maxiter)
+        }
+        Some(m) => {
+            validate_lsmr_preconditioner(operator, m)?;
+            let (bidiag, step1) = ModifiedGolubKahan::init(operator, m, b, local_size)?;
+            lsmr_from_bidiag(bidiag, step1, b_norm, tol, maxiter)
+        }
     }
-}
-
-/// Unpreconditioned LSMR.
-///
-/// Solves `min ‖b − A x‖₂` using the standard Golub-Kahan
-/// bidiagonalization.
-pub fn lsmr<A: Operator + ?Sized>(
-    operator: &A,
-    b: &[f64],
-    tol: f64,
-    maxiter: usize,
-    local_size: Option<usize>,
-) -> Result<LsmrResult, SolveError> {
-    validate_lsmr_inputs(operator, b, tol)?;
-    let n = operator.ncols();
-
-    let b_norm = vec_norm(b);
-    if b_norm == 0.0 {
-        return Ok(zero_rhs_result(n));
-    }
-
-    let local_size = local_size.unwrap_or(0);
-    let (bidiag, step1) = GolubKahan::init(operator, b, local_size)?;
-    lsmr_from_bidiag(bidiag, step1, b_norm, tol, maxiter)
-}
-
-/// Preconditioned LSMR with `M ≈ AᵀA`.
-///
-/// Uses the Modified Golub-Kahan variant requiring one `M⁻¹` application per
-/// iteration.
-pub fn preconditioned_lsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
-    operator: &A,
-    b: &[f64],
-    preconditioner: &M,
-    tol: f64,
-    maxiter: usize,
-    local_size: Option<usize>,
-) -> Result<LsmrResult, SolveError> {
-    validate_lsmr_inputs(operator, b, tol)?;
-    validate_lsmr_preconditioner(operator, preconditioner)?;
-    let n = operator.ncols();
-
-    let b_norm = vec_norm(b);
-    if b_norm == 0.0 {
-        return Ok(zero_rhs_result(n));
-    }
-
-    let local_size = local_size.unwrap_or(0);
-    let (bidiag, step1) = ModifiedGolubKahan::init(operator, preconditioner, b, local_size)?;
-    lsmr_from_bidiag(bidiag, step1, b_norm, tol, maxiter)
 }
 
 fn zero_rhs_result(n: usize) -> LsmrResult {

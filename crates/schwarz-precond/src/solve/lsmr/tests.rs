@@ -64,10 +64,32 @@ fn normal_equation_residual<O: Operator + ?Sized>(op: &O, x: &[f64], b: &[f64]) 
     vec_norm(&atr)
 }
 
+fn unpreconditioned_mlsmr<A: Operator + ?Sized>(
+    operator: &A,
+    b: &[f64],
+    tol: f64,
+    maxiter: usize,
+    local_size: Option<usize>,
+) -> Result<LsmrResult, SolveError> {
+    mlsmr::<A, IdentityOperator>(operator, b, None, tol, maxiter, local_size)
+}
+
+fn preconditioned_mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
+    operator: &A,
+    b: &[f64],
+    preconditioner: &M,
+    tol: f64,
+    maxiter: usize,
+    local_size: Option<usize>,
+) -> Result<LsmrResult, SolveError> {
+    mlsmr(operator, b, Some(preconditioner), tol, maxiter, local_size)
+}
+
 #[test]
 fn test_mlsmr_unpreconditioned() {
     let b = vec![1.0, 2.0, 3.0, 3.0];
-    let result = lsmr(&OverdeterminedOp, &b, 1e-10, 100, None).expect("lsmr solve");
+    let result =
+        unpreconditioned_mlsmr(&OverdeterminedOp, &b, 1e-10, 100, None).expect("lsmr solve");
     assert!(result.converged, "MLSMR did not converge");
     let err: f64 = result
         .x
@@ -82,7 +104,7 @@ fn test_mlsmr_unpreconditioned() {
 #[test]
 fn test_mlsmr_preconditioned() {
     let b = vec![1.0, 2.0, 3.0, 3.0];
-    let result = preconditioned_lsmr(&OverdeterminedOp, &b, &DiagPrecond, 1e-10, 100, None)
+    let result = preconditioned_mlsmr(&OverdeterminedOp, &b, &DiagPrecond, 1e-10, 100, None)
         .expect("preconditioned mlsmr solve");
     assert!(result.converged, "Preconditioned MLSMR did not converge");
     let err: f64 = result
@@ -98,7 +120,8 @@ fn test_mlsmr_preconditioned() {
 #[test]
 fn test_mlsmr_inconsistent_system() {
     let b = vec![1.0, 2.0, 3.0, 0.0];
-    let result = lsmr(&OverdeterminedOp, &b, 1e-10, 100, None).expect("lsmr solve");
+    let result =
+        unpreconditioned_mlsmr(&OverdeterminedOp, &b, 1e-10, 100, None).expect("lsmr solve");
     assert!(
         result.converged,
         "MLSMR did not converge on inconsistent system"
@@ -134,7 +157,8 @@ fn test_mlsmr_underdetermined_system() {
     }
 
     let b = vec![1.0, 2.0];
-    let result = lsmr(&UnderOp, &b, 1e-12, 100, None).expect("underdetermined solve");
+    let result =
+        unpreconditioned_mlsmr(&UnderOp, &b, 1e-12, 100, None).expect("underdetermined solve");
     assert!(result.converged);
     assert!((result.x[0] - 1.0).abs() < 1e-10);
     assert!((result.x[1] - 2.0).abs() < 1e-10);
@@ -166,7 +190,8 @@ fn test_mlsmr_rank_deficient_system() {
     }
 
     let b = vec![3.0, 6.0];
-    let result = lsmr(&RankDeficientOp, &b, 1e-12, 100, None).expect("rank-deficient solve");
+    let result = unpreconditioned_mlsmr(&RankDeficientOp, &b, 1e-12, 100, None)
+        .expect("rank-deficient solve");
     assert!(result.converged);
     assert!(((result.x[0] + result.x[1]) - 3.0).abs() < 1e-10);
     assert!(normal_equation_residual(&RankDeficientOp, &result.x, &b) < 1e-10);
@@ -195,7 +220,8 @@ fn test_mlsmr_zero_column_and_zero_row() {
     }
 
     let b = vec![2.0, 3.0];
-    let result = lsmr(&DegenerateOp, &b, 1e-12, 100, None).expect("degenerate solve");
+    let result =
+        unpreconditioned_mlsmr(&DegenerateOp, &b, 1e-12, 100, None).expect("degenerate solve");
     assert!(result.converged);
     assert!((result.x[0] - 2.0).abs() < 1e-10);
     assert!(result.x[1].abs() < 1e-10);
@@ -229,7 +255,8 @@ fn test_mlsmr_mid_stream_beta_zero_breakdown() {
     }
 
     let b = vec![5.0, 0.0];
-    let result = lsmr(&ZeroSecondRow, &b, 1e-12, 100, None).expect("beta=0 solve");
+    let result =
+        unpreconditioned_mlsmr(&ZeroSecondRow, &b, 1e-12, 100, None).expect("beta=0 solve");
     assert!(result.converged);
     assert!((result.x[0] - 5.0).abs() < 1e-12);
     assert!(result.x[1].abs() < 1e-12);
@@ -238,7 +265,7 @@ fn test_mlsmr_mid_stream_beta_zero_breakdown() {
 #[test]
 fn test_mlsmr_maxiter_exhaustion() {
     let b = vec![1.0, 2.0, 3.0, 3.0];
-    let result = lsmr(&OverdeterminedOp, &b, 1e-15, 1, None).expect("lsmr solve");
+    let result = unpreconditioned_mlsmr(&OverdeterminedOp, &b, 1e-15, 1, None).expect("lsmr solve");
     assert!(
         !result.converged,
         "should not converge in 1 iteration at 1e-15 tol"
@@ -248,10 +275,9 @@ fn test_mlsmr_maxiter_exhaustion() {
 }
 
 #[test]
-fn test_mlsmr_dispatch_matches_wrappers() {
+fn test_mlsmr_optional_preconditioner_paths() {
     let b = vec![1.0, 2.0, 3.0, 3.0];
-    let direct = lsmr(&OverdeterminedOp, &b, 1e-10, 100, None).expect("direct lsmr");
-    let dispatch = mlsmr(
+    let unpreconditioned = mlsmr(
         &OverdeterminedOp,
         &b,
         None::<&DiagPrecond>,
@@ -259,21 +285,17 @@ fn test_mlsmr_dispatch_matches_wrappers() {
         100,
         None,
     )
-    .expect("dispatch lsmr");
-    assert_eq!(direct.iterations, dispatch.iterations);
-    assert_eq!(direct.stop_reason, dispatch.stop_reason);
-    for (a, b) in direct.x.iter().zip(&dispatch.x) {
-        assert!((a - b).abs() < 1e-15);
-    }
+    .expect("unpreconditioned lsmr");
+    let preconditioned = mlsmr(&OverdeterminedOp, &b, Some(&DiagPrecond), 1e-10, 100, None)
+        .expect("preconditioned lsmr");
 
-    let direct_pre = preconditioned_lsmr(&OverdeterminedOp, &b, &DiagPrecond, 1e-10, 100, None)
-        .expect("direct preconditioned lsmr");
-    let dispatch_pre = mlsmr(&OverdeterminedOp, &b, Some(&DiagPrecond), 1e-10, 100, None)
-        .expect("dispatch preconditioned lsmr");
-    assert_eq!(direct_pre.iterations, dispatch_pre.iterations);
-    assert_eq!(direct_pre.stop_reason, dispatch_pre.stop_reason);
-    for (a, b) in direct_pre.x.iter().zip(&dispatch_pre.x) {
-        assert!((a - b).abs() < 1e-15);
+    assert!(unpreconditioned.converged);
+    assert!(preconditioned.converged);
+    for (actual, expected) in unpreconditioned.x.iter().zip([1.0, 2.0, 3.0]) {
+        assert!((*actual - expected).abs() < 1e-6);
+    }
+    for (actual, expected) in preconditioned.x.iter().zip([1.0, 2.0, 3.0]) {
+        assert!((*actual - expected).abs() < 1e-6);
     }
 }
 
@@ -287,8 +309,9 @@ fn test_mlsmr_none_matches_identity_precond() {
     let b = vec![1.0, 2.0, 3.0, 3.0];
     let id = IdentityOperator::new(3);
 
-    let none_result = lsmr(&OverdeterminedOp, &b, 1e-12, 100, None).expect("lsmr solve");
-    let id_result = preconditioned_lsmr(&OverdeterminedOp, &b, &id, 1e-12, 100, None)
+    let none_result =
+        unpreconditioned_mlsmr(&OverdeterminedOp, &b, 1e-12, 100, None).expect("lsmr solve");
+    let id_result = preconditioned_mlsmr(&OverdeterminedOp, &b, &id, 1e-12, 100, None)
         .expect("preconditioned Identity solve");
 
     assert!(none_result.converged && id_result.converged);
@@ -340,8 +363,9 @@ fn test_mlsmr_none_matches_identity_precond_windowed() {
     // Tight tolerance with headroom in maxiter: drives both paths to the
     // same minimum so the comparison isn't governed by rounding noise in
     // the convergence test.
-    let none_result = lsmr(&op, &b, 1e-12, 50, local).expect("lsmr windowed solve");
-    let id_result = preconditioned_lsmr(&op, &b, &id, 1e-12, 50, local)
+    let none_result =
+        unpreconditioned_mlsmr(&op, &b, 1e-12, 50, local).expect("lsmr windowed solve");
+    let id_result = preconditioned_mlsmr(&op, &b, &id, 1e-12, 50, local)
         .expect("preconditioned Identity windowed solve");
 
     assert!(none_result.converged && id_result.converged);
@@ -438,8 +462,10 @@ impl Operator for DenseOp {
 #[test]
 fn test_mlsmr_local_reorth_zero_is_identity() {
     let b = vec![1.0, 2.0, 3.0, 3.0];
-    let r1 = lsmr(&OverdeterminedOp, &b, 1e-10, 100, None).expect("unwindowed solve");
-    let r2 = lsmr(&OverdeterminedOp, &b, 1e-10, 100, Some(0)).expect("zero-window solve");
+    let r1 =
+        unpreconditioned_mlsmr(&OverdeterminedOp, &b, 1e-10, 100, None).expect("unwindowed solve");
+    let r2 = unpreconditioned_mlsmr(&OverdeterminedOp, &b, 1e-10, 100, Some(0))
+        .expect("zero-window solve");
     assert_eq!(r1.iterations, r2.iterations);
     // Tight tolerance, not exact bit-for-bit, so determinism remains testable
     // if a future refactor adds parallel reductions.
@@ -467,8 +493,8 @@ fn test_mlsmr_local_reorth_unpreconditioned() {
     let tol = 1e-9;
     let maxiter = 30;
 
-    let r0 = lsmr(&op, &b, tol, maxiter, None).expect("no-reorth solve");
-    let r10 = lsmr(&op, &b, tol, maxiter, Some(10)).expect("windowed solve");
+    let r0 = unpreconditioned_mlsmr(&op, &b, tol, maxiter, None).expect("no-reorth solve");
+    let r10 = unpreconditioned_mlsmr(&op, &b, tol, maxiter, Some(10)).expect("windowed solve");
 
     // The windowed solve should reach the tolerance; the unwindowed one
     // typically stalls or overshoots maxiter on this matrix.
@@ -538,7 +564,7 @@ fn test_mlsmr_local_reorth_preconditioned() {
     let tol = 1e-9;
     let maxiter = 30;
 
-    let r10 = preconditioned_lsmr(&op, &b, &m, tol, maxiter, Some(10))
+    let r10 = preconditioned_mlsmr(&op, &b, &m, tol, maxiter, Some(10))
         .expect("windowed preconditioned solve");
     assert!(
         r10.converged,
@@ -638,7 +664,8 @@ fn test_mlsmr_step1_alpha_zero_early_exit() {
     }
 
     let b = vec![0.0, 1.0];
-    let result = lsmr(&ColE1, &b, 1e-12, 100, None).expect("lsmr alpha=0 early exit");
+    let result =
+        unpreconditioned_mlsmr(&ColE1, &b, 1e-12, 100, None).expect("lsmr alpha=0 early exit");
     assert!(result.converged);
     assert_eq!(result.iterations, 0);
     assert_eq!(result.x, vec![0.0; 1]);
@@ -652,7 +679,8 @@ fn test_mlsmr_step1_alpha_zero_early_exit() {
 #[test]
 fn test_mlsmr_zero_rhs_stop_reason() {
     let b = vec![0.0; 4];
-    let result = lsmr(&OverdeterminedOp, &b, 1e-12, 100, None).expect("zero-rhs solve");
+    let result =
+        unpreconditioned_mlsmr(&OverdeterminedOp, &b, 1e-12, 100, None).expect("zero-rhs solve");
     assert!(result.converged);
     assert_eq!(result.iterations, 0);
     assert_eq!(result.stop_reason, LsmrStopReason::ZeroRhs);
@@ -676,7 +704,8 @@ fn test_mlsmr_local_reorth_window_boundary_sizes() {
     // reorthogonalization) enough room to converge on this cond ≈ 1e10 system,
     // while still being a small bounded budget for the larger window sizes.
     for window_size in [Some(1usize), Some(12), Some(13)] {
-        let result = lsmr(&op, &b, 1e-9, 200, window_size).expect("lsmr boundary-window solve");
+        let result = unpreconditioned_mlsmr(&op, &b, 1e-9, 200, window_size)
+            .expect("lsmr boundary-window solve");
         assert!(
             result.converged,
             "did not converge with window {window_size:?}"
@@ -690,10 +719,10 @@ fn test_mlsmr_local_reorth_window_boundary_sizes() {
 
 #[test]
 fn test_mlsmr_rejects_invalid_inputs() {
-    let bad_len = lsmr(&OverdeterminedOp, &[1.0, 2.0], 1e-10, 100, None);
+    let bad_len = unpreconditioned_mlsmr(&OverdeterminedOp, &[1.0, 2.0], 1e-10, 100, None);
     assert!(matches!(bad_len, Err(SolveError::InvalidInput { .. })));
 
-    let bad_tol = lsmr(
+    let bad_tol = unpreconditioned_mlsmr(
         &OverdeterminedOp,
         &[1.0, 2.0, 3.0, 4.0],
         f64::NAN,
@@ -702,7 +731,7 @@ fn test_mlsmr_rejects_invalid_inputs() {
     );
     assert!(matches!(bad_tol, Err(SolveError::InvalidInput { .. })));
 
-    let bad_rhs = lsmr(
+    let bad_rhs = unpreconditioned_mlsmr(
         &OverdeterminedOp,
         &[1.0, f64::INFINITY, 3.0, 4.0],
         1e-10,
@@ -732,6 +761,6 @@ fn test_mlsmr_rejects_bad_preconditioner_shape() {
     }
 
     let b = vec![1.0, 2.0, 3.0, 3.0];
-    let result = preconditioned_lsmr(&OverdeterminedOp, &b, &BadPrecond, 1e-10, 100, None);
+    let result = preconditioned_mlsmr(&OverdeterminedOp, &b, &BadPrecond, 1e-10, 100, None);
     assert!(matches!(result, Err(SolveError::InvalidInput { .. })));
 }

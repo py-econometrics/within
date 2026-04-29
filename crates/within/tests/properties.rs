@@ -51,7 +51,7 @@ proptest! {
 
     #[test]
     fn prop_gramian_symmetry((cats, _y) in random_fe_problem_strategy()) {
-        let store = ArrayStore::new(cats.view()).unwrap();
+        let store = ArrayStore::new(cats.view());
         let design = Design::from_store(store).unwrap();
         let gramian = GramianOperator::new(&design);
         let n = design.n_dofs;
@@ -73,7 +73,7 @@ proptest! {
 
     #[test]
     fn prop_explicit_equals_implicit_gramian((cats, _y) in random_fe_problem_strategy()) {
-        let store = ArrayStore::new(cats.view()).unwrap();
+        let store = ArrayStore::new(cats.view());
         let design = Design::from_store(store).unwrap();
         let explicit = Gramian::build(&design);
         let implicit = GramianOperator::new(&design);
@@ -117,7 +117,7 @@ proptest! {
     #[test]
     fn prop_solver_convergence((cats, _y) in random_fe_problem_strategy()) {
         // Create y = D * x_true so we know the answer
-        let store = ArrayStore::new(cats.view()).unwrap();
+        let store = ArrayStore::new(cats.view());
         let design = Design::from_store(store).unwrap();
         let n_dofs = design.n_dofs;
         let n_obs = design.n_rows;
