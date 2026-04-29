@@ -69,26 +69,17 @@ pub fn build_schwarz<S: Store>(
     config: &LocalSolverConfig,
 ) -> WithinResult<FeSchwarz> {
     let domains = build_local_domains(design, weights);
-    build_additive(domains, design.n_dofs, config)
+    build_additive_with_strategy(
+        domains,
+        design.n_dofs,
+        config,
+        schwarz_precond::ReductionStrategy::default(),
+    )
 }
 
 // ---------------------------------------------------------------------------
 // Crate-internal consolidated builders
 // ---------------------------------------------------------------------------
-
-/// Build additive Schwarz from pre-built domain pairs.
-pub(crate) fn build_additive(
-    domains: Vec<(Subdomain, Arc<CrossTab>)>,
-    n_dofs: usize,
-    config: &LocalSolverConfig,
-) -> WithinResult<FeSchwarz> {
-    build_additive_with_strategy(
-        domains,
-        n_dofs,
-        config,
-        schwarz_precond::ReductionStrategy::default(),
-    )
-}
 
 /// Build additive Schwarz with an explicit reduction strategy.
 pub(crate) fn build_additive_with_strategy(

@@ -651,8 +651,8 @@ mod schwarz_tests {
     use crate::operator::gramian::CrossTab;
     use crate::operator::local_solver::{BlockElimSolver, ReducedFactor};
     use crate::operator::schwarz::{
-        build_additive, build_additive_with_strategy, build_entry, build_reduced_schur_factor,
-        build_schwarz, ReducedSchurConfig,
+        build_additive_with_strategy, build_entry, build_reduced_schur_factor, build_schwarz,
+        ReducedSchurConfig,
     };
     use schwarz_precond::{LocalSolver, Operator, ReductionStrategy};
 
@@ -969,8 +969,13 @@ mod schwarz_tests {
     fn test_build_schwarz() {
         let (design, domain_pairs) = make_test_data();
         let config = LocalSolverConfig::default();
-        let schwarz = build_additive(domain_pairs, design.n_dofs, &config)
-            .expect("build schwarz with explicit domains");
+        let schwarz = build_additive_with_strategy(
+            domain_pairs,
+            design.n_dofs,
+            &config,
+            ReductionStrategy::default(),
+        )
+        .expect("build schwarz with explicit domains");
         assert!(!schwarz.subdomains().is_empty());
 
         let r = vec![1.0; design.n_dofs];
