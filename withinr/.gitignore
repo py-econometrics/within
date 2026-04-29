@@ -1,0 +1,7 @@
+src/.cargo/
+src/rust/target/
+src/vendor/
+src/*.o
+src/*.so
+src/*.dll
+src/withinr.lib

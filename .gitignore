@@ -10,4 +10,16 @@ target
 .hypothesis/
 .pytest_cache/
 .ruff_cache/
+__pycache__/
+*.py[cod]
 *.proptest-regressions
+
+# R build/check artifacts
+*.Rcheck/
+*.tar.gz
+.Rhistory
+.RData
+.Rproj.user/
+
+# Serena MCP
+.serena/

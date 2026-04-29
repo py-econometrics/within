@@ -1,0 +1,22 @@
+Package: withinr
+Title: High-Performance Fixed Effects Solver
+Version: 0.1.0
+Authors@R: c(
+    person("Alexander", "Fischer", role = c("aut", "cre"),
+           email = "alexander-fischer1801@t-online.de"),
+    person("Kristof", "Schroeder", role = "aut"))
+Author: Alexander Fischer [aut, cre], Kristof Schroeder [aut]
+Maintainer: Alexander Fischer <alexander-fischer1801@t-online.de>
+Description: Fast iterative solvers (CG, GMRES) with Schwarz
+    domain-decomposition preconditioners for absorbing high-dimensional
+    fixed effects in panel data regressions. The computational core is
+    written in Rust via the 'within' crate and accessed through 'extendr'.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.3
+SystemRequirements: Rust tool chain w/ cargo, rustc
+Suggests:
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3
+Config/rextendr/version: 0.5.0

@@ -3,6 +3,7 @@ members = [
     "crates/schwarz-precond",
     "crates/within",
     "crates/within-py",
+    "crates/within-r",
 ]
 resolver = "2"
 

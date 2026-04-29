@@ -40,54 +40,48 @@ result = solve(fe, y, config=GMRES(), preconditioner=MultiplicativeSchwarz())
 result = solve(fe, y, weights=np.ones(n))
 ```
 
-### FWL regression example
+## R quickstart
 
-```python
-beta_true = np.array([1.0, -2.0, 0.5])
-X = np.random.randn(n, 3)
-y = X @ beta_true + np.random.randn(n)
+Requires R and a Rust toolchain (`cargo` on `PATH`).
 
-result = solve_batch(fe, np.column_stack([y, X]))
-y_tilde, X_tilde = result.demeaned[:, 0], result.demeaned[:, 1:]
-beta_hat = np.linalg.lstsq(X_tilde, y_tilde, rcond=None)[0]
-print(np.round(beta_hat, 4))  # [ 0.9982 -2.006   0.5005]
+From the repository root, use `devtools` to install R dependencies and build the
+package:
+
+```r
+install.packages("devtools")
+devtools::install_deps("withinr/", dependencies = TRUE)
+devtools::load_all("withinr/")
 ```
 
-## Python API
+Example (FWL with two-way fixed effects):
 
-### High-level functions
+```r
+set.seed(42)
+n <- 1000
+n_firms <- 50L
+n_years <- 20L
 
-| Function | Description |
-|---|---|
-| `solve(categories, y, config?, weights?, preconditioner?)` | Solve a single right-hand side. Returns `SolveResult`. |
-| `solve_batch(categories, Y, config?, weights?, preconditioner?)` | Solve multiple RHS vectors in parallel. `Y` has shape `(n_obs, k)`. Returns `BatchSolveResult`. |
+# 0-based fixed-effect ids (required by within)
+firm <- rep(0:(n_firms - 1L), each = n_years)
+year <- rep(0:(n_years - 1L), times = n_firms)
+categories <- matrix(as.integer(c(firm, year)), nrow = n, ncol = 2)
 
-`categories` is a 2-D `uint32` array of shape `(n_obs, n_factors)`. A `UserWarning` is emitted when a C-contiguous array is passed — use `np.asfortranarray(categories)` for best performance.
+beta <- 1.5
+firm_fe <- rnorm(n_firms, sd = 3)[firm + 1L]
+year_fe <- rnorm(n_years, sd = 1)[year + 1L]
+x <- rnorm(n) + 0.3 * firm_fe
+y <- beta * x + firm_fe + year_fe + rnorm(n, sd = 0.5)
 
-### Persistent solver
+res <- within_solve_batch(categories, cbind(y, x))
+y_tilde <- res$demeaned[, 1]
+x_tilde <- res$demeaned[, 2]
+beta_hat <- sum(x_tilde * y_tilde) / sum(x_tilde^2)
 
-For repeated solves with the same design matrix, `Solver` builds the preconditioner once and reuses it.
-
-```python
-from within import Solver
-
-solver = Solver(fe)
-r = solver.solve(y)                            # reuses preconditioner
-r = solver.solve_batch(np.column_stack([y, X]))
-
-precond = solver.preconditioner()              # picklable
-solver2 = Solver(fe, preconditioner=precond)   # skip re-factorization
+print(beta_hat)
+print(res$converged)
 ```
 
-| Property / Method | Description |
-|---|---|
-| `Solver(categories, config?, weights?, preconditioner?)` | Build solver. Factorizes the preconditioner at construction. |
-| `.solve(y)` | Solve a single RHS. Returns `SolveResult`. |
-| `.solve_batch(Y)` | Solve multiple RHS columns in parallel. Returns `BatchSolveResult`. |
-| `.preconditioner()` | Return the built `FePreconditioner` (picklable), or `None`. |
-
-
-### Solver configuration
+### Solver methods
 
 | Class | Description |
 |---|---|
