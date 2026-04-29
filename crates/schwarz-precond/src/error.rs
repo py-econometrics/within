@@ -186,6 +186,7 @@ impl Error for ApplyError {
 
 /// Runtime failure while executing an iterative solver.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SolveError {
     /// Operator/preconditioner apply failed.
     Apply(ApplyError),

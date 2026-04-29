@@ -185,8 +185,8 @@ class SolveResult:
         converged: Whether the Krylov solver met the convergence tolerance.
         iterations: Total number of Krylov iterations performed, including
             iterative-refinement correction solves.
-            iterative-refinement correction solves.
         residual: Final relative residual norm.
+        time_total: Wall-clock time for the entire solve (setup + solve), in seconds.
         time_setup: Wall-clock time for the setup phase (operator + preconditioner
             construction), in seconds.
         time_solve: Wall-clock time for the iterative solve phase, in seconds.

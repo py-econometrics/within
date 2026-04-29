@@ -15,6 +15,16 @@ and this project follows [Semantic Versioning](https://semver.org/).
   Avoids explicit normal-equation formation for improved numerical
   conditioning.
 
+### Changed
+
+- **`schwarz_precond::SolveError` is now `#[non_exhaustive]`** and gained an
+  `InvalidInput { context, message }` variant for pre-iteration validation
+  failures. Downstream Rust consumers matching on `SolveError` must add a
+  wildcard arm. Future variant additions will not be breaking.
+- `SolveResult.iterations` and `BatchSolveResult.iterations` now report the
+  total Krylov iterations across the initial solve and any iterative-refinement
+  correction solves (previously: outer solve only).
+
 ### Fixed
 
 - CG stagnation guard threshold tightened from `EPS * rz_init` to
