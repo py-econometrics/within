@@ -154,20 +154,20 @@ struct SampledScratch {
 ///
 /// Encapsulates which block to eliminate, precomputed inverse-diagonals,
 /// and provides zero-copy [`Star`] views for each eliminated vertex.
-struct Elimination<'a> {
-    eliminate_q: bool,
-    n_keep: usize,
-    n_elim: usize,
-    inv_diag_elim: Vec<f64>,
-    diag_elim: &'a [f64],
-    diag_keep: &'a [f64],
-    keep_to_elim: &'a CsrBlock,
-    elim_to_keep: &'a CsrBlock,
+pub(crate) struct Elimination<'a> {
+    pub(crate) eliminate_q: bool,
+    pub(crate) n_keep: usize,
+    pub(crate) n_elim: usize,
+    pub(crate) inv_diag_elim: Vec<f64>,
+    pub(crate) diag_elim: &'a [f64],
+    pub(crate) diag_keep: &'a [f64],
+    pub(crate) keep_to_elim: &'a CsrBlock,
+    pub(crate) elim_to_keep: &'a CsrBlock,
 }
 
 impl<'a> Elimination<'a> {
     /// Select which block to eliminate and precompute inverse-diagonals.
-    fn new(cross_tab: &'a CrossTab) -> WithinResult<Self> {
+    pub(crate) fn new(cross_tab: &'a CrossTab) -> WithinResult<Self> {
         let n_q = cross_tab.n_q();
         let n_r = cross_tab.n_r();
         // Eliminate the larger block to minimize the reduced system size.
@@ -252,7 +252,7 @@ impl<'a> Elimination<'a> {
     }
 
     /// Package elimination metadata into [`EliminationInfo`] for the solver.
-    fn into_info(self) -> EliminationInfo {
+    pub(crate) fn into_info(self) -> EliminationInfo {
         EliminationInfo {
             inv_diag_elim: self.inv_diag_elim,
             eliminate_q: self.eliminate_q,
@@ -446,43 +446,6 @@ impl SchurLaplacian {
         Self { matrix }
     }
 
-    /// Build a dense row-major Schur matrix from elimination data.
-    ///
-    /// Intended for tiny reduced systems where dense factorization is cheaper
-    /// than sparse setup.
-    #[cfg(test)]
-    fn dense_from_elimination(elim: &Elimination) -> Vec<f64> {
-        let n_keep = elim.n_keep;
-        let mut dense = vec![0.0; n_keep * n_keep];
-
-        // Start with the keep-block diagonal.
-        for i in 0..n_keep {
-            dense[i * n_keep + i] = elim.diag_keep[i];
-        }
-
-        let inv_diag_elim = &elim.inv_diag_elim;
-        let keep_to_elim = elim.keep_to_elim;
-        let elim_to_keep = elim.elim_to_keep;
-
-        // S = D_keep - keep_to_elim * diag(inv_diag_elim) * elim_to_keep
-        for i in 0..n_keep {
-            let fwd_start = keep_to_elim.indptr[i] as usize;
-            let fwd_end = keep_to_elim.indptr[i + 1] as usize;
-            for fwd_idx in fwd_start..fwd_end {
-                let k = keep_to_elim.indices[fwd_idx] as usize;
-                let scale = keep_to_elim.data[fwd_idx] * inv_diag_elim[k];
-                let bwd_start = elim_to_keep.indptr[k] as usize;
-                let bwd_end = elim_to_keep.indptr[k + 1] as usize;
-                for bwd_idx in bwd_start..bwd_end {
-                    let j = elim_to_keep.indices[bwd_idx] as usize;
-                    dense[i * n_keep + j] -= scale * elim_to_keep.data[bwd_idx];
-                }
-            }
-        }
-
-        dense
-    }
-
     /// Build the anchored top-left Schur minor `(n_keep-1) x (n_keep-1)` in row-major.
     ///
     /// This is the matrix actually factored by dense anchored Cholesky, so building
@@ -600,17 +563,6 @@ pub(crate) struct SchurResult {
     pub elimination: EliminationInfo,
 }
 
-/// Dense Schur complement result (row-major matrix + elimination metadata).
-#[cfg(test)]
-pub(crate) struct DenseSchurResult {
-    /// Row-major dense Schur matrix (size `n * n`).
-    pub matrix: Vec<f64>,
-    /// Matrix dimension.
-    pub n: usize,
-    /// Elimination metadata for the back-substitution step.
-    pub elimination: EliminationInfo,
-}
-
 /// Anchored dense Schur result: top-left principal minor + elimination metadata.
 pub(crate) struct AnchoredDenseSchurResult {
     /// Row-major anchored minor of size `(n-1) x (n-1)`.
@@ -661,21 +613,6 @@ impl SchurComplement for ExactSchurComplement {
 }
 
 impl ExactSchurComplement {
-    /// Compute the exact Schur complement as a dense row-major matrix.
-    ///
-    /// Used by the tiny-system fast path to avoid sparse Schur assembly and
-    /// sparse ApproxChol builder overhead.
-    #[cfg(test)]
-    pub(crate) fn compute_dense(&self, cross_tab: &CrossTab) -> WithinResult<DenseSchurResult> {
-        let elim = Elimination::new(cross_tab)?;
-        let matrix = SchurLaplacian::dense_from_elimination(&elim);
-        Ok(DenseSchurResult {
-            matrix,
-            n: elim.n_keep,
-            elimination: elim.into_info(),
-        })
-    }
-
     /// Compute the exact Schur anchored dense minor directly.
     ///
     /// The anchored top-left principal minor is what dense Cholesky factors, so

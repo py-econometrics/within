@@ -293,7 +293,7 @@ pub struct BlockElimSolver {
     /// `1 / D_elim[k]` for the eliminated (larger) diagonal block.
     inv_diag_elim: Vec<f64>,
     /// Reduced-system factor backend.
-    reduced_factor: ReducedFactor,
+    pub(crate) reduced_factor: ReducedFactor,
     /// True if the q-block was eliminated (n_q >= n_r).
     eliminate_q: bool,
     /// Total DOF count (`n_q + n_r`).
@@ -320,11 +320,6 @@ impl BlockElimSolver {
             n_local,
             n_reduced,
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn uses_dense_reduced_factor(&self) -> bool {
-        matches!(self.reduced_factor, ReducedFactor::Dense(_))
     }
 
     fn estimated_inner_parallel_work(&self) -> usize {

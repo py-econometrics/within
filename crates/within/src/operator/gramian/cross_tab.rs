@@ -144,25 +144,6 @@ fn build_compact_mapping(
     })
 }
 
-/// Scan factors q and r to find active levels, then delegate to `build_compact_mapping`.
-///
-/// Returns `None` if either factor has no active levels.
-#[cfg(test)]
-fn find_active_levels<S: Store>(design: &Design<S>, q: usize, r: usize) -> Option<ActiveLevels> {
-    let fq = &design.factors[q];
-    let fr = &design.factors[r];
-    let n_obs = design.store.n_obs();
-
-    let mut active_q = vec![false; fq.n_levels];
-    let mut active_r = vec![false; fr.n_levels];
-    for uid in 0..n_obs {
-        active_q[design.store.level(uid, q) as usize] = true;
-        active_r[design.store.level(uid, r) as usize] = true;
-    }
-
-    build_compact_mapping(&active_q, &active_r, fq, fr)
-}
-
 /// A connected component in a bipartite factor-pair graph.
 ///
 /// Indices are compact (0-based into the parent CrossTab's n_q / n_r).
@@ -208,33 +189,6 @@ impl CrossTab {
     /// Total number of DOFs (n_q + n_r).
     pub fn n_local(&self) -> usize {
         self.c.nrows + self.c.ncols
-    }
-
-    /// Build a CrossTab for an entire factor pair, discovering active levels
-    /// from the observation data in a single scan.
-    ///
-    /// Returns `None` if either factor has no active levels (empty pair).
-    /// Also returns `local_to_global`: q-levels first, then r-levels, matching
-    /// the convention used by `ActiveLevels` and `SubdomainCore::global_indices`.
-    #[cfg(test)]
-    pub fn build_for_pair<S: Store>(
-        design: &Design<S>,
-        weights: Option<&[f64]>,
-        q: usize,
-        r: usize,
-    ) -> Option<(Self, Vec<u32>)> {
-        let active = find_active_levels(design, q, r)?;
-
-        let (c, diag_q, diag_r) =
-            accumulate_cross_block(design, weights, q, r, &active.as_compact_pair());
-        let ct = c.transpose();
-        let cross_tab = CrossTab {
-            c,
-            ct,
-            diag_q,
-            diag_r,
-        };
-        Some((cross_tab, active.local_to_global))
     }
 
     /// Build a CrossTab using pre-computed active level flags.

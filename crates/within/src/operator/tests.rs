@@ -345,9 +345,54 @@ mod schur_complement_tests {
     use crate::operator::csr_block::CsrBlock;
     use crate::operator::gramian::CrossTab;
     use crate::operator::schur_complement::{
-        ApproxSchurComplement, ExactSchurComplement, SchurComplement,
+        ApproxSchurComplement, Elimination, EliminationInfo, ExactSchurComplement, SchurComplement,
     };
+    use crate::WithinResult;
     use schwarz_precond::SparseMatrix;
+
+    /// Dense Schur complement result (row-major matrix + elimination metadata).
+    struct DenseSchurResult {
+        matrix: Vec<f64>,
+        n: usize,
+        elimination: EliminationInfo,
+    }
+
+    /// Compute the exact Schur complement as a dense row-major matrix.
+    fn compute_dense_schur(cross_tab: &CrossTab) -> WithinResult<DenseSchurResult> {
+        let elim = Elimination::new(cross_tab)?;
+        let n_keep = elim.n_keep;
+        let mut matrix = vec![0.0; n_keep * n_keep];
+
+        for i in 0..n_keep {
+            matrix[i * n_keep + i] = elim.diag_keep[i];
+        }
+
+        let inv_diag_elim = &elim.inv_diag_elim;
+        let keep_to_elim = elim.keep_to_elim;
+        let elim_to_keep = elim.elim_to_keep;
+
+        // S = D_keep - keep_to_elim * diag(inv_diag_elim) * elim_to_keep
+        for i in 0..n_keep {
+            let fwd_start = keep_to_elim.indptr[i] as usize;
+            let fwd_end = keep_to_elim.indptr[i + 1] as usize;
+            for fwd_idx in fwd_start..fwd_end {
+                let k = keep_to_elim.indices[fwd_idx] as usize;
+                let scale = keep_to_elim.data[fwd_idx] * inv_diag_elim[k];
+                let bwd_start = elim_to_keep.indptr[k] as usize;
+                let bwd_end = elim_to_keep.indptr[k + 1] as usize;
+                for bwd_idx in bwd_start..bwd_end {
+                    let j = elim_to_keep.indices[bwd_idx] as usize;
+                    matrix[i * n_keep + j] -= scale * elim_to_keep.data[bwd_idx];
+                }
+            }
+        }
+
+        Ok(DenseSchurResult {
+            matrix,
+            n: n_keep,
+            elimination: elim.into_info(),
+        })
+    }
 
     fn make_cross_tab(
         c_dense: &[f64],
@@ -495,7 +540,7 @@ mod schur_complement_tests {
         let cross_tab = make_cross_tab(&c_dense, 3, 2, vec![5.0, 6.0, 8.0], vec![7.0, 9.0]);
 
         let sparse = ExactSchurComplement.compute(&cross_tab).unwrap();
-        let dense = ExactSchurComplement.compute_dense(&cross_tab).unwrap();
+        let dense = compute_dense_schur(&cross_tab).unwrap();
 
         assert_eq!(dense.n, sparse.matrix.n());
         assert_eq!(
@@ -527,7 +572,7 @@ mod schur_complement_tests {
         let c_dense = vec![1.0, 2.0, 3.0, 0.0, 0.0, 4.0];
         let cross_tab = make_cross_tab(&c_dense, 3, 2, vec![5.0, 6.0, 8.0], vec![7.0, 9.0]);
 
-        let full = ExactSchurComplement.compute_dense(&cross_tab).unwrap();
+        let full = compute_dense_schur(&cross_tab).unwrap();
         let anchored = ExactSchurComplement
             .compute_dense_anchored(&cross_tab)
             .unwrap();
@@ -604,7 +649,7 @@ mod schwarz_tests {
     use crate::observation::FactorMajorStore;
     use crate::operator::csr_block::CsrBlock;
     use crate::operator::gramian::CrossTab;
-    use crate::operator::local_solver::BlockElimSolver;
+    use crate::operator::local_solver::{BlockElimSolver, ReducedFactor};
     use crate::operator::schwarz::{
         build_additive, build_additive_with_strategy, build_entry, build_reduced_schur_factor,
         build_schwarz, ReducedSchurConfig,
@@ -612,6 +657,10 @@ mod schwarz_tests {
     use schwarz_precond::{LocalSolver, Operator, ReductionStrategy};
 
     const BLOCK_ELIM_NESTED_RAYON_CHILD_ENV: &str = "WITHIN_TEST_BLOCK_ELIM_NESTED_RAYON_CHILD";
+
+    fn uses_dense_reduced_factor(solver: &BlockElimSolver) -> bool {
+        matches!(solver.reduced_factor, ReducedFactor::Dense(_))
+    }
 
     fn make_test_data() -> (
         Design<FactorMajorStore>,
@@ -950,7 +999,7 @@ mod schwarz_tests {
         };
         let entry =
             build_entry(domain, cross_tab, &config).expect("exact Schur entry build failed");
-        assert!(entry.solver().uses_dense_reduced_factor());
+        assert!(uses_dense_reduced_factor(entry.solver()));
     }
 
     #[test]
@@ -968,7 +1017,7 @@ mod schwarz_tests {
         };
         let entry =
             build_entry(domain, cross_tab, &config).expect("approximate Schur entry build failed");
-        assert!(entry.solver().uses_dense_reduced_factor());
+        assert!(uses_dense_reduced_factor(entry.solver()));
     }
 
     #[test]
@@ -983,7 +1032,7 @@ mod schwarz_tests {
         };
         let entry =
             build_entry(domain, cross_tab, &config).expect("exact Schur entry build failed");
-        assert!(!entry.solver().uses_dense_reduced_factor());
+        assert!(!uses_dense_reduced_factor(entry.solver()));
     }
 
     #[test]

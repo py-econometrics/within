@@ -6,8 +6,20 @@ use proptest::prelude::*;
 
 use super::CrossTab;
 use crate::domain::Design;
-use crate::observation::FactorMajorStore;
+use crate::observation::{FactorMajorStore, Store};
 use crate::operator::gramian::{find_all_active_levels, Gramian};
+
+/// Test helper: build a CrossTab for a factor pair by composing the public
+/// `find_all_active_levels` + `CrossTab::build_for_pair_with_active`.
+fn build_for_pair<S: Store>(
+    design: &Design<S>,
+    weights: Option<&[f64]>,
+    q: usize,
+    r: usize,
+) -> Option<(CrossTab, Vec<u32>)> {
+    let active = find_all_active_levels(design);
+    CrossTab::build_for_pair_with_active(design, weights, q, r, &active)
+}
 
 // ---------------------------------------------------------------------------
 // Test: sparse accumulation path in CrossTab
@@ -32,8 +44,8 @@ fn test_cross_tab_sparse_accumulation_path() {
     let store_sparse =
         FactorMajorStore::new(vec![fa.clone(), fb.clone()], n_obs).expect("valid sparse store");
     let design_sparse = Design::from_store(store_sparse).expect("valid sparse design");
-    let (ct_sparse, _) = CrossTab::build_for_pair(&design_sparse, None, 0, 1)
-        .expect("sparse cross tab should build");
+    let (ct_sparse, _) =
+        build_for_pair(&design_sparse, None, 0, 1).expect("sparse cross tab should build");
 
     // Dense path reference: collapse levels to a small range so n_q * n_r <= 5M.
     // Map each observation to level % 100 for both factors (100*100 = 10 000 <= 5M).
@@ -43,7 +55,7 @@ fn test_cross_tab_sparse_accumulation_path() {
         .expect("valid dense store");
     let design_dense = Design::from_store(store_dense).expect("valid dense design");
     let (ct_dense, _) =
-        CrossTab::build_for_pair(&design_dense, None, 0, 1).expect("dense cross tab should build");
+        build_for_pair(&design_dense, None, 0, 1).expect("dense cross tab should build");
 
     // The sparse CrossTab for the large design should have identical diagonals
     // to what we'd compute by hand (each observation appears exactly once in the
@@ -121,7 +133,7 @@ fn test_extract_component_two_components() {
     let n_obs = 8;
     let store = FactorMajorStore::new(vec![fa, fb], n_obs).expect("valid store");
     let design = Design::from_store(store).expect("valid design");
-    let (ct, _) = CrossTab::build_for_pair(&design, None, 0, 1).expect("cross tab should build");
+    let (ct, _) = build_for_pair(&design, None, 0, 1).expect("cross tab should build");
 
     let components = ct.bipartite_connected_components();
     assert_eq!(components.len(), 2, "should have 2 connected components");
@@ -231,7 +243,7 @@ proptest! {
 
         let store = FactorMajorStore::new(vec![fa, fb], n_obs).expect("valid store");
         let design = Design::from_store(store).expect("valid design");
-        let (ct, _) = CrossTab::build_for_pair(&design, None, 0, 1)
+        let (ct, _) = build_for_pair(&design, None, 0, 1)
             .expect("cross tab should build");
 
         let components = ct.bipartite_connected_components();
@@ -318,7 +330,7 @@ proptest! {
         };
         let weights_slice = weights.as_deref();
 
-        let (ct, l2g) = match CrossTab::build_for_pair(&design, weights_slice, 0, 1) {
+        let (ct, l2g) = match build_for_pair(&design, weights_slice, 0, 1) {
             Some(pair) => pair,
             None => return Ok(()),
         };
