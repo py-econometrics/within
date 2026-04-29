@@ -6,7 +6,7 @@
 //! ```text
 //! solve(categories, y, weights, params, preconditioner)
 //!   1. Validate  → observation layer builds an ArrayStore, checks dimensions
-//!   2. Design    → domain layer wraps the store in a WeightedDesign
+//!   2. Design    → domain layer wraps the store in a Design
 //!   3. Precond   → operator layer builds subdomains + local solvers (Schwarz)
 //!   4. Solve     → Krylov solver (CG/GMRES) with iterative refinement
 //!   5. Extract   → return coefficients x and demeaned residuals y - Dx

@@ -165,10 +165,10 @@ The crate exposes its internals for advanced use:
 
 | Module | Key types |
 |---|---|
-| `observation` | `FactorMajorStore`, `ArrayStore`, `ObservationStore` trait |
-| `domain` | `WeightedDesign`, `FixedEffectsDesign`, `Subdomain` |
-| `operator` | `Gramian` (CSR), `GramianOperator` (implicit), `DesignOperator`, `build_schwarz`, `FeSchwarz` |
-| `solver` | `Solver<S: ObservationStore>` — generic persistent solver |
+| `observation` | `FactorMajorStore`, `ArrayStore`, `Store` trait |
+| `domain` | `Design`, `Subdomain` |
+| `operator` | `Gramian` (CSR), `GramianOperator` (implicit), `DesignOperator`, `WeightedDesignOperator`, `build_schwarz`, `FeSchwarz` |
+| `solver` | `Solver<S: Store>` — generic persistent solver |
 
 ### Feature flags
 

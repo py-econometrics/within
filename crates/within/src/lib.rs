@@ -95,7 +95,7 @@
 //! ```text
 //! within
 //! ├── observation         Storage backends (FactorMajorStore, ArrayStore)
-//! ├── domain              WeightedDesign<S> + factor-pair subdomains
+//! ├── domain              Design<S> + factor-pair subdomains
 //! │   └── factor_pairs      Domain construction, partition-of-unity weights
 //! ├── operator            Linear algebra layer
 //! │   ├── gramian           G = D^T W D (explicit CSR / implicit matvec)
