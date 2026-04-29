@@ -13,10 +13,59 @@ and this project follows [Semantic Versioning](https://semver.org/).
 > of the `within` and `schwarz-precond` crates. The Python boundary
 > (`within.solve`, `within.Solver`, type stubs) is unchanged.
 
-- **`schwarz_precond::SolveError` is now `#[non_exhaustive]`** and gained an
-  `InvalidInput { context, message }` variant for pre-iteration validation
-  failures. Downstream Rust consumers matching on `SolveError` must add a
-  wildcard arm. Future variant additions will not be breaking.
+- **Error enums consolidated from six to two.**
+  `SubdomainCoreBuildError`, `SubdomainEntryBuildError`, and
+  `PreconditionerBuildError` collapse into a single `BuildError` carrying
+  all four prior variants. `LocalSolveError`, `ApplyError`, and the
+  previous `SolveError` collapse into a single `SolveError` (still
+  `#[non_exhaustive]`) with three variants:
+  `LocalSolveFailed { subdomain, context, message }`,
+  `Synchronization { context }`, and `InvalidInput { context, message }`.
+  `SolveError::Apply(ApplyError)` and `ApplyError::LocalSolveFailed { source }`
+  no longer exist; the chained `From<ApplyError>` conversion is gone.
+  Local solvers construct `SolveError::LocalSolveFailed` with a placeholder
+  subdomain index — the Schwarz exec loop re-tags via an internal
+  `tag_subdomain` helper. Downstream consumers matching on `SolveError`
+  must include a wildcard arm; future variant additions will not be breaking.
+- **`Operator` trait collapsed to a single fallible `apply`.** `apply` and
+  `apply_adjoint` now return `Result<(), SolveError>` directly; the
+  `try_apply` / `try_apply_adjoint` methods are removed. Every `op.apply(x, y)`
+  call site must propagate (`?`) or `.expect(...)`. The Schwarz preconditioner
+  NaN-fill-on-error workaround in `apply` is gone — failures surface as
+  `Err(SolveError::LocalSolveFailed { .. })`.
+- **`LocalSolveInvoker` trait removed; parallelism hint folded into
+  `LocalSolver`.** `LocalSolveInvoker`, `DefaultLocalSolveInvoker`, and
+  `FeLocalSolveInvoker` are deleted. `LocalSolver::solve_local` now takes
+  `allow_inner_parallelism: bool` directly:
+
+  ```rust
+  fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64],
+                 allow_inner_parallelism: bool) -> Result<(), SolveError>;
+  ```
+
+  `SchwarzPreconditioner` and `MultiplicativeSchwarzPreconditioner` lose
+  their second type parameter (`I: LocalSolveInvoker<S>`).
+  `SchwarzPreconditioner::with_strategy_and_invoker` is replaced by
+  `with_strategy`. Solvers that don't care about the hint should accept
+  the parameter and ignore it.
+- **Public CG/GMRES entry points reduced to `pcg` and `pgmres`.** The
+  layered `cg_solve`, `cg_solve_preconditioned`, and `gmres_solve` entry
+  points are gone (merged into `pcg`/`pgmres` bodies, which dispatch on
+  `Option<&M>` directly). External callers pass `None::<&M>` for
+  unpreconditioned solves.
+- **`Solver::with_preconditioner` removed.** The two-line
+  `ArrayStore`/`Design` construction is now inlined at call sites; use
+  `Solver::from_design_with_preconditioner` directly.
+- **`FeSchwarz` is now a type alias** of
+  `SchwarzPreconditioner<BlockElimSolver>`. The newtype wrapper, its seven
+  delegation methods (`subdomains`, `reduction_strategy`,
+  `resolved_reduction_strategy`, `diagnostics`, `with_reduction_strategy`,
+  etc.), and the `impl Operator` forwarding block are deleted. Callers
+  invoke methods on the alias directly.
+- **`IdentityOperator` is no longer used in production paths.** `pcg`/`pgmres`
+  inline the unpreconditioned dispatch (`copy_from_slice` instead of
+  applying the identity). The type stays `pub` for tests/examples that
+  need an identity preconditioner instance.
 - **Observation store API: `ObservationStore` → `Store`; weights are
   externalized.** The `Store` trait no longer carries weights — `weight()`
   and `is_unweighted()` are removed and the `ObservationWeights` enum is
@@ -63,6 +112,31 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - `SolveResult.iterations` and `BatchSolveResult.iterations` now report the
   total Krylov iterations across the initial solve and any iterative-refinement
   correction solves (previously: outer solve only).
+- Schwarz preconditioner generic surface narrowed: `SchwarzPreconditioner<S>`
+  and `MultiplicativeSchwarzPreconditioner<S, U>` (was `<S, I>` /
+  `<S, U, I>`). The `I: LocalSolveInvoker<S>` parameter is gone; the
+  parallelism hint is now part of the `LocalSolver` contract.
+
+### Removed
+
+- `LocalSolveInvoker` trait, `DefaultLocalSolveInvoker`, and the within-crate
+  `FeLocalSolveInvoker` wrapper. Use `LocalSolver::solve_local`'s new
+  `allow_inner_parallelism: bool` parameter instead.
+- `Operator::try_apply` and `Operator::try_apply_adjoint`. The fallible
+  `apply` / `apply_adjoint` are now the only methods.
+- `cg_solve`, `cg_solve_preconditioned`, and `gmres_solve` public entry
+  points. Use `pcg` and `pgmres` (which take `Option<&M>` for the
+  preconditioner).
+- `Solver::with_preconditioner`. Use `Solver::from_design_with_preconditioner`
+  after constructing an `ArrayStore` + `Design` explicitly.
+- `SchwarzPreconditioner::with_strategy_and_invoker`. Use `with_strategy`
+  (the parallelism hint flows through `LocalSolver::solve_local` instead).
+- `FeSchwarz` newtype wrapper and its delegation methods. `FeSchwarz` is
+  now a type alias of `SchwarzPreconditioner<BlockElimSolver>`; methods
+  resolve directly on the alias.
+- `SubdomainCoreBuildError`, `SubdomainEntryBuildError`,
+  `PreconditionerBuildError`, `LocalSolveError`, `ApplyError` enums. All
+  variants now live on `BuildError` or `SolveError`.
 
 ### Fixed
 
