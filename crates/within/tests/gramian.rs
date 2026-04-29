@@ -1,27 +1,19 @@
 use schwarz_precond::Operator;
 
-use within::observation::{FactorMajorStore, ObservationWeights};
+use within::observation::FactorMajorStore;
 use within::operator::gramian::{Gramian, GramianOperator};
-use within::WeightedDesign;
+use within::Design;
 
-fn make_test_design() -> WeightedDesign<FactorMajorStore> {
-    let store = FactorMajorStore::new(
-        vec![vec![0, 1, 2, 0], vec![0, 1, 0, 1]],
-        ObservationWeights::Unit,
-        4,
-    )
-    .expect("valid factor-major store");
-    WeightedDesign::from_store(store).expect("valid test design")
+fn make_test_design() -> Design<FactorMajorStore> {
+    let store = FactorMajorStore::new(vec![vec![0, 1, 2, 0], vec![0, 1, 0, 1]], 4)
+        .expect("valid factor-major store");
+    Design::from_store(store).expect("valid test design")
 }
 
-fn make_weighted_design(weights: Vec<f64>) -> WeightedDesign<FactorMajorStore> {
-    let store = FactorMajorStore::new(
-        vec![vec![0, 1, 0, 1], vec![0, 0, 1, 1]],
-        ObservationWeights::Dense(weights),
-        4,
-    )
-    .expect("valid weighted factor-major store");
-    WeightedDesign::from_store(store).expect("valid weighted design")
+fn make_weighted_design() -> Design<FactorMajorStore> {
+    let store = FactorMajorStore::new(vec![vec![0, 1, 0, 1], vec![0, 0, 1, 1]], 4)
+        .expect("valid weighted factor-major store");
+    Design::from_store(store).expect("valid weighted design")
 }
 
 #[test]
@@ -102,21 +94,26 @@ fn test_gramian_operator_symmetric() {
 fn test_gramian_diagonal_matches_explicit() {
     let dm = make_test_design();
     let g = Gramian::build(&dm);
-    assert_eq!(g.diagonal(), dm.gramian_diagonal());
+    assert_eq!(g.diagonal(), Gramian::build(&dm).diagonal());
 }
 
 #[test]
 fn test_weighted_gramian_diagonal() {
-    let dm = make_weighted_design(vec![1.0, 2.0, 3.0, 4.0]);
-    let g = Gramian::build(&dm);
-    assert_eq!(g.diagonal(), dm.gramian_diagonal());
+    let dm = make_weighted_design();
+    let weights = vec![1.0, 2.0, 3.0, 4.0];
+    let g = Gramian::build_weighted(&dm, &weights);
+    assert_eq!(
+        g.diagonal(),
+        Gramian::build_weighted(&dm, &weights).diagonal()
+    );
 }
 
 #[test]
 fn test_weighted_gramian_matches_operator() {
-    let dm = make_weighted_design(vec![1.0, 2.0, 3.0, 4.0]);
-    let g = Gramian::build(&dm);
-    let gop = GramianOperator::new(&dm);
+    let dm = make_weighted_design();
+    let weights = vec![1.0, 2.0, 3.0, 4.0];
+    let g = Gramian::build_weighted(&dm, &weights);
+    let gop = within::operator::gramian::WeightedGramianOperator::new(&dm, &weights);
     let n = g.n_dofs();
     let x = vec![1.0, -0.5, 2.0, 0.3];
     let mut y_explicit = vec![0.0; n];
@@ -139,9 +136,8 @@ fn test_gramian_sparse_accumulation_path() {
         fa.push((i % n_lev_a) as u32);
         fb.push(((i * 7) % n_lev_b) as u32);
     }
-    let store = FactorMajorStore::new(vec![fa, fb], ObservationWeights::Unit, n_obs)
-        .expect("valid factor-major store");
-    let dm = WeightedDesign::from_store(store).expect("valid sparse accumulation design");
+    let store = FactorMajorStore::new(vec![fa, fb], n_obs).expect("valid factor-major store");
+    let dm = Design::from_store(store).expect("valid sparse accumulation design");
     let g = Gramian::build(&dm);
     let gop = GramianOperator::new(&dm);
     let n = g.n_dofs();
@@ -167,11 +163,10 @@ fn test_build_for_pair_matches_full_gramian() {
             vec![0, 0, 1, 1, 0, 0, 1, 1],
             vec![0, 1, 0, 1, 0, 1, 0, 1],
         ],
-        ObservationWeights::Unit,
         8,
     )
     .expect("valid factor-major store");
-    let dm = WeightedDesign::from_store(store).expect("valid pairwise design");
+    let dm = Design::from_store(store).expect("valid pairwise design");
     let full = Gramian::build(&dm);
     let n = full.n_dofs();
 
@@ -180,7 +175,7 @@ fn test_build_for_pair_matches_full_gramian() {
     let sizes = [3usize, 2, 2];
 
     for &(q, r) in &pairs {
-        let pair_g = Gramian::build_for_pair(&dm, q, r);
+        let pair_g = Gramian::build_for_pair(&dm, q, r, None);
         assert_eq!(pair_g.n_dofs(), n);
 
         let relevant_rows: Vec<usize> = (offsets[q]..offsets[q] + sizes[q])
@@ -274,11 +269,10 @@ fn test_three_factor_gramian_build() {
             vec![0, 0, 1, 1, 0, 0, 1, 1],
             vec![0, 1, 0, 1, 0, 1, 0, 1],
         ],
-        ObservationWeights::Unit,
         8,
     )
     .expect("valid store");
-    let dm = WeightedDesign::from_store(store).expect("valid design");
+    let dm = Design::from_store(store).expect("valid design");
     let g = Gramian::build(&dm);
     let n = g.n_dofs();
 
@@ -348,9 +342,8 @@ fn test_gramian_large_row_permutation_sort() {
             *val = (i % 3) as u32;
         }
     }
-    let store =
-        FactorMajorStore::new(vec![fa, fb], ObservationWeights::Unit, n_obs).expect("valid store");
-    let dm = WeightedDesign::from_store(store).expect("valid design");
+    let store = FactorMajorStore::new(vec![fa, fb], n_obs).expect("valid store");
+    let dm = Design::from_store(store).expect("valid design");
     let g = Gramian::build(&dm);
     let gop = GramianOperator::new(&dm);
     let n = g.n_dofs();
@@ -383,9 +376,8 @@ fn test_gramian_parallel_build_path() {
     let fa: Vec<u32> = (0..n_obs).map(|i| (i % n_lev_a) as u32).collect();
     let fb: Vec<u32> = (0..n_obs).map(|i| ((i * 7) % n_lev_b) as u32).collect();
 
-    let store = FactorMajorStore::new(vec![fa, fb], ObservationWeights::Unit, n_obs)
-        .expect("valid parallel store");
-    let dm = within::domain::WeightedDesign::from_store(store).expect("valid parallel design");
+    let store = FactorMajorStore::new(vec![fa, fb], n_obs).expect("valid parallel store");
+    let dm = within::domain::Design::from_store(store).expect("valid parallel design");
 
     let g = Gramian::build(&dm);
     let gop = GramianOperator::new(&dm);
@@ -412,9 +404,8 @@ fn test_gramian_single_factor() {
     // Factor 0 has 4 levels; observations cycle through them.
     let fa = vec![0u32, 1, 2, 3, 0, 1, 2, 0];
     let n_obs = fa.len();
-    let store =
-        FactorMajorStore::new(vec![fa], ObservationWeights::Unit, n_obs).expect("valid store");
-    let dm = within::domain::WeightedDesign::from_store(store).expect("valid single-factor design");
+    let store = FactorMajorStore::new(vec![fa], n_obs).expect("valid store");
+    let dm = within::domain::Design::from_store(store).expect("valid single-factor design");
 
     let g = Gramian::build(&dm);
     let n = g.n_dofs();

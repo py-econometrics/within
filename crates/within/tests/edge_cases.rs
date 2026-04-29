@@ -2,11 +2,11 @@ use ndarray::array;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use schwarz_precond::Operator;
-use within::observation::{FactorMajorStore, ObservationWeights};
+use within::observation::FactorMajorStore;
 use within::operator::gramian::GramianOperator;
 use within::{
-    solve, FactorMajorStore as FMStore, KrylovMethod, LocalSolverConfig, OperatorRepr,
-    Preconditioner, ReductionStrategy, Solver, SolverParams, WeightedDesign,
+    solve, Design, DesignOperator, FactorMajorStore as FMStore, KrylovMethod, LocalSolverConfig,
+    OperatorRepr, Preconditioner, ReductionStrategy, Solver, SolverParams,
 };
 
 #[path = "common/orchestrate_helpers.rs"]
@@ -142,8 +142,8 @@ fn test_cg_maxiter_1_partial_result() {
         (0..n_obs).map(|_| rng.random_range(0..20u32)).collect(),
         (0..n_obs).map(|_| rng.random_range(0..20u32)).collect(),
     ];
-    let store = FactorMajorStore::new(cats, ObservationWeights::Unit, n_obs).expect("valid store");
-    let design = WeightedDesign::from_store(store).expect("valid design");
+    let store = FactorMajorStore::new(cats, n_obs).expect("valid store");
+    let design = Design::from_store(store).expect("valid design");
 
     let y: Vec<f64> = (0..n_obs).map(|i| (i as f64 * 0.17).sin()).collect();
 
@@ -153,7 +153,7 @@ fn test_cg_maxiter_1_partial_result() {
         max_refinements: 0,
         ..SolverParams::default()
     };
-    let solver = Solver::from_design(design, &params, None).expect("solver build");
+    let solver = Solver::from_design(design, None, &params, None).expect("solver build");
     let result = solver.solve(&y).expect("solve with maxiter=1");
 
     // Convergence is not expected (tolerance is unreachable in 1 iteration),
@@ -193,7 +193,7 @@ fn test_gmres_known_solution() {
         ..SolverParams::default()
     };
     let precond = additive_precond();
-    let solver = Solver::from_design(design, &params, Some(&precond)).expect("solver build");
+    let solver = Solver::from_design(design, None, &params, Some(&precond)).expect("solver build");
     let result = solver.solve(&y).expect("GMRES solve");
 
     assert!(
@@ -230,7 +230,7 @@ fn test_gmres_residual_estimate_vs_actual() {
         ..SolverParams::default()
     };
     let precond = additive_precond();
-    let solver = Solver::from_design(design, &params, Some(&precond)).expect("solver build");
+    let solver = Solver::from_design(design, None, &params, Some(&precond)).expect("solver build");
     let result = solver.solve(&y).expect("GMRES solve");
 
     assert!(result.converged);
@@ -249,7 +249,7 @@ fn test_gmres_residual_estimate_vs_actual() {
 
     // rhs = D^T W y (unit weights, so D^T y)
     let mut rhs = vec![0.0; n_dofs];
-    design2.rmatvec_wdt(&y, &mut rhs);
+    DesignOperator::new(&design2).apply_adjoint(&y, &mut rhs);
     let rhs_norm = rhs.iter().map(|v| v * v).sum::<f64>().sqrt().max(1e-15);
 
     // residual = G*x - rhs
@@ -294,8 +294,8 @@ fn test_large_design_convergence() {
         (0..n_obs).map(|_| rng.random_range(0..100u32)).collect(),
     ];
 
-    let store = FMStore::new(cats, ObservationWeights::Unit, n_obs).expect("valid large store");
-    let design = WeightedDesign::from_store(store).expect("valid large design");
+    let store = FMStore::new(cats, n_obs).expect("valid large store");
+    let design = Design::from_store(store).expect("valid large design");
     let y = common::make_y_from_unit_solution(&design);
 
     let params = SolverParams {
@@ -303,7 +303,7 @@ fn test_large_design_convergence() {
         ..SolverParams::default()
     };
     let precond = additive_precond();
-    let solver = Solver::from_design(design, &params, Some(&precond)).expect("solver build");
+    let solver = Solver::from_design(design, None, &params, Some(&precond)).expect("solver build");
     let result = solver.solve(&y).expect("large design solve");
 
     assert!(
@@ -326,7 +326,7 @@ fn test_zero_rhs_zero_solution() {
     let y = vec![0.0f64; design.n_rows];
 
     let params = SolverParams::default();
-    let solver = Solver::from_design(design, &params, None).expect("solver build");
+    let solver = Solver::from_design(design, None, &params, None).expect("solver build");
     let result = solver.solve(&y).expect("zero RHS solve");
 
     assert!(result.converged, "zero RHS should trivially converge");
@@ -387,7 +387,7 @@ fn test_repeated_solve_is_deterministic() {
 
     let params = SolverParams::default();
     let precond = additive_precond();
-    let solver = Solver::from_design(design, &params, Some(&precond)).expect("solver build");
+    let solver = Solver::from_design(design, None, &params, Some(&precond)).expect("solver build");
 
     let r1 = solver.solve(&y).expect("first solve");
     let r2 = solver.solve(&y).expect("second solve");

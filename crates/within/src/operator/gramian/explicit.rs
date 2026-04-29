@@ -7,8 +7,8 @@ use rayon::prelude::*;
 use schwarz_precond::{Operator, SparseMatrix};
 
 use super::Gramian;
-use crate::domain::{PairBlockData, WeightedDesign};
-use crate::observation::{FactorMeta, ObservationStore};
+use crate::domain::{Design, PairBlockData};
+use crate::observation::{FactorMeta, Store};
 use crate::{WithinError, WithinResult};
 
 // ===========================================================================
@@ -203,30 +203,35 @@ impl PairAccumulator {
 // ===========================================================================
 
 impl Gramian {
-    /// Assemble the full explicit Gramian `G = D^T W D` as a CSR sparse matrix.
-    pub fn build<S: ObservationStore>(design: &WeightedDesign<S>) -> Self {
+    /// Assemble the unweighted Gramian `G = D^T D` as a CSR sparse matrix.
+    pub fn build<S: Store>(design: &Design<S>) -> Self {
         Self {
-            matrix: Arc::new(build_full_matrix(design)),
+            matrix: Arc::new(build_full_matrix(design, None)),
         }
     }
 
-    /// Build a Gramian containing only the single factor pair `(q, r)`.
-    pub fn build_for_pair<S: ObservationStore>(
-        design: &WeightedDesign<S>,
+    /// Assemble the weighted Gramian `G = D^T W D` as a CSR sparse matrix.
+    pub fn build_weighted<S: Store>(design: &Design<S>, weights: &[f64]) -> Self {
+        debug_assert_eq!(weights.len(), design.n_rows);
+        Self {
+            matrix: Arc::new(build_full_matrix(design, Some(weights))),
+        }
+    }
+
+    /// Build a Gramian containing only the single factor pair `(q, r)`,
+    /// optionally weighted.
+    pub fn build_for_pair<S: Store>(
+        design: &Design<S>,
         q: usize,
         r: usize,
+        weights: Option<&[f64]>,
     ) -> Self {
         Self {
-            matrix: Arc::new(build_pair_matrix(design, q, r)),
+            matrix: Arc::new(build_pair_matrix(design, q, r, weights)),
         }
     }
 
     /// Compose the full Gramian CSR from pre-built per-pair block data.
-    ///
-    /// Each `PairBlockData` carries the off-diagonal block C_qr (and C_qr^T),
-    /// diagonal entries for both factors, and the local-to-global index mapping.
-    /// Because factor offsets are monotonically increasing, column indices within
-    /// each row are emitted in sorted order — no per-row sorting is needed.
     pub(crate) fn from_pair_blocks(
         blocks: &[PairBlockData],
         factors: &[FactorMeta],
@@ -276,12 +281,18 @@ impl Operator for Gramian {
     }
 }
 
+#[inline]
+fn obs_weight(weights: Option<&[f64]>, uid: usize) -> f64 {
+    match weights {
+        Some(w) => w[uid],
+        None => 1.0,
+    }
+}
+
 /// Accumulate diagonal weights and pair cross-table entries for a range of observations.
-///
-/// The `diag_add` callback abstracts the diagonal storage — either atomic (parallel)
-/// or plain `f64` (sequential).
-fn accumulate_observations<S: ObservationStore>(
-    design: &WeightedDesign<S>,
+fn accumulate_observations<S: Store>(
+    design: &Design<S>,
+    weights: Option<&[f64]>,
     range: std::ops::Range<usize>,
     pairs: &mut [PairAccumulator],
     pair_info: &[(usize, usize)],
@@ -289,7 +300,7 @@ fn accumulate_observations<S: ObservationStore>(
 ) {
     let n_factors = design.n_factors();
     for uid in range {
-        let w = design.uid_weight(uid);
+        let w = obs_weight(weights, uid);
         for q in 0..n_factors {
             let idx = design.factors[q].offset + design.store.level(uid, q) as usize;
             diag_add(idx, w);
@@ -304,7 +315,7 @@ fn accumulate_observations<S: ObservationStore>(
     }
 }
 
-fn build_full_matrix<S: ObservationStore>(design: &WeightedDesign<S>) -> SparseMatrix {
+fn build_full_matrix<S: Store>(design: &Design<S>, weights: Option<&[f64]>) -> SparseMatrix {
     let n_dofs = design.n_dofs;
     let n_obs = design.store.n_obs();
     let n_factors = design.n_factors();
@@ -346,9 +357,16 @@ fn build_full_matrix<S: ObservationStore>(design: &WeightedDesign<S>) -> SparseM
                     })
                     .collect();
 
-                accumulate_observations(design, start..end, &mut pairs, &pair_info, |idx, w| {
-                    shared_diag[idx].fetch_add(w, Ordering::Relaxed);
-                });
+                accumulate_observations(
+                    design,
+                    weights,
+                    start..end,
+                    &mut pairs,
+                    &pair_info,
+                    |idx, w| {
+                        shared_diag[idx].fetch_add(w, Ordering::Relaxed);
+                    },
+                );
 
                 pairs
             })
@@ -382,9 +400,16 @@ fn build_full_matrix<S: ObservationStore>(design: &WeightedDesign<S>) -> SparseM
             })
             .collect();
 
-        accumulate_observations(design, 0..n_obs, &mut pair_tables, &pair_info, |idx, w| {
-            diag_flat[idx] += w;
-        });
+        accumulate_observations(
+            design,
+            weights,
+            0..n_obs,
+            &mut pair_tables,
+            &pair_info,
+            |idx, w| {
+                diag_flat[idx] += w;
+            },
+        );
         (diag_flat, pair_tables)
     };
 
@@ -408,10 +433,11 @@ fn build_full_matrix<S: ObservationStore>(design: &WeightedDesign<S>) -> SparseM
     })
 }
 
-fn build_pair_matrix<S: ObservationStore>(
-    design: &WeightedDesign<S>,
+fn build_pair_matrix<S: Store>(
+    design: &Design<S>,
     q: usize,
     r: usize,
+    weights: Option<&[f64]>,
 ) -> SparseMatrix {
     let n_dofs = design.n_dofs;
     let n_obs = design.store.n_obs();
@@ -423,7 +449,7 @@ fn build_pair_matrix<S: ObservationStore>(
     let mut table = PairAccumulator::new(fq.n_levels, fr.n_levels, n_obs);
 
     for uid in 0..n_obs {
-        let w = design.uid_weight(uid);
+        let w = obs_weight(weights, uid);
         let j = design.store.level(uid, q) as usize;
         let k = design.store.level(uid, r) as usize;
         diag_q[j] += w;
@@ -455,17 +481,6 @@ fn build_pair_matrix<S: ObservationStore>(
 }
 
 /// Compose a contiguous Gramian CSR from per-pair block data.
-///
-/// The Gramian has block structure:
-/// ```text
-/// G = | D_0    C_01   C_02   ... |
-///     | C_01^T D_1    C_12   ... |
-///     | C_02^T C_12^T D_2    ... |
-/// ```
-///
-/// Since factor offsets are monotonically increasing, entries within each row
-/// are emitted in sorted column order: pairs with earlier factors first,
-/// then the diagonal, then pairs with later factors. No per-row sorting needed.
 fn compose_gramian_from_blocks(
     blocks: &[PairBlockData],
     factors: &[FactorMeta],
@@ -488,8 +503,6 @@ fn compose_gramian_from_blocks(
     }
 
     // Group blocks by factor for fast lookup.
-    // first_pairs[f]: blocks where f is the q-factor (entries from C go into f's rows)
-    // second_pairs[f]: blocks where f is the r-factor (entries from C^T go into f's rows)
     let mut first_pairs: Vec<Vec<usize>> = vec![Vec::new(); n_factors];
     let mut second_pairs: Vec<Vec<usize>> = vec![Vec::new(); n_factors];
     for (bi, b) in blocks.iter().enumerate() {
@@ -500,20 +513,17 @@ fn compose_gramian_from_blocks(
     // --- Pass 1: count NNZ per row ---
     let mut row_nnz = vec![0u64; n_dofs];
 
-    // Diagonals: one entry per active level per factor
     for f_global in factor_global.iter().flatten() {
         for &g in *f_global {
             row_nnz[g as usize] += 1;
         }
     }
 
-    // Off-diagonals from C blocks (placed in q-factor rows)
     for b in blocks {
         for (cj, &g) in b.q_global.iter().enumerate() {
             let nnz_in_row = (b.cross_tab.c.indptr[cj + 1] - b.cross_tab.c.indptr[cj]) as u64;
             row_nnz[g as usize] += nnz_in_row;
         }
-        // C^T entries placed in r-factor rows
         for (ck, &g) in b.r_global.iter().enumerate() {
             let nnz_in_row = (b.cross_tab.ct.indptr[ck + 1] - b.cross_tab.ct.indptr[ck]) as u64;
             row_nnz[g as usize] += nnz_in_row;
@@ -540,11 +550,6 @@ fn compose_gramian_from_blocks(
     let mut data = vec![0.0f64; total_nnz];
     let mut cursor = indptr[..n_dofs].to_vec();
 
-    // Process factor by factor to maintain sorted column order.
-    // For each active level of factor f:
-    //   1. C^T entries from pairs (p, f) where p < f → columns in p's range (< f's offset)
-    //   2. Diagonal entry → column = own global index (in f's range)
-    //   3. C entries from pairs (f, r) where r > f → columns in r's range (> f's offset)
     for f in 0..n_factors {
         let f_global = match factor_global[f] {
             Some(g) => g,
@@ -556,10 +561,9 @@ fn compose_gramian_from_blocks(
         for compact_j in 0..n_active_f {
             let g = f_global[compact_j] as usize;
 
-            // 1. Entries from pairs (p, f) where p < f — columns in p's range
+            // 1. Entries from pairs (p, f) where p < f
             for &bi in &second_pairs[f] {
                 let b = &blocks[bi];
-                // f is the r-factor in this block; row compact_j of C^T
                 let start = b.cross_tab.ct.indptr[compact_j] as usize;
                 let end = b.cross_tab.ct.indptr[compact_j + 1] as usize;
                 for idx in start..end {
@@ -582,10 +586,9 @@ fn compose_gramian_from_blocks(
             data[pos] = f_diag[compact_j];
             cursor[g] += 1;
 
-            // 3. Entries from pairs (f, r) where r > f — columns in r's range
+            // 3. Entries from pairs (f, r) where r > f
             for &bi in &first_pairs[f] {
                 let b = &blocks[bi];
-                // f is the q-factor in this block; row compact_j of C
                 let start = b.cross_tab.c.indptr[compact_j] as usize;
                 let end = b.cross_tab.c.indptr[compact_j + 1] as usize;
                 for idx in start..end {

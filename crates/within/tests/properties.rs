@@ -1,11 +1,11 @@
 use ndarray::Array2;
 use proptest::prelude::*;
 use schwarz_precond::Operator;
-use within::observation::{ArrayStore, ObservationWeights};
+use within::observation::ArrayStore;
 use within::operator::gramian::{Gramian, GramianOperator};
 use within::{
-    solve, FePreconditioner, LocalSolverConfig, Preconditioner, ReductionStrategy, SolverParams,
-    WeightedDesign,
+    solve, Design, DesignOperator, FePreconditioner, LocalSolverConfig, Preconditioner,
+    ReductionStrategy, SolverParams,
 };
 
 /// Generate a random fixed-effects problem as (categories Array2<u32>, y Vec<f64>).
@@ -51,8 +51,8 @@ proptest! {
 
     #[test]
     fn prop_gramian_symmetry((cats, _y) in random_fe_problem_strategy()) {
-        let store = ArrayStore::new(cats.view(), ObservationWeights::Unit).unwrap();
-        let design = WeightedDesign::from_store(store).unwrap();
+        let store = ArrayStore::new(cats.view()).unwrap();
+        let design = Design::from_store(store).unwrap();
         let gramian = GramianOperator::new(&design);
         let n = design.n_dofs;
 
@@ -73,8 +73,8 @@ proptest! {
 
     #[test]
     fn prop_explicit_equals_implicit_gramian((cats, _y) in random_fe_problem_strategy()) {
-        let store = ArrayStore::new(cats.view(), ObservationWeights::Unit).unwrap();
-        let design = WeightedDesign::from_store(store).unwrap();
+        let store = ArrayStore::new(cats.view()).unwrap();
+        let design = Design::from_store(store).unwrap();
         let explicit = Gramian::build(&design);
         let implicit = GramianOperator::new(&design);
         let n = design.n_dofs;
@@ -117,14 +117,14 @@ proptest! {
     #[test]
     fn prop_solver_convergence((cats, _y) in random_fe_problem_strategy()) {
         // Create y = D * x_true so we know the answer
-        let store = ArrayStore::new(cats.view(), ObservationWeights::Unit).unwrap();
-        let design = WeightedDesign::from_store(store).unwrap();
+        let store = ArrayStore::new(cats.view()).unwrap();
+        let design = Design::from_store(store).unwrap();
         let n_dofs = design.n_dofs;
         let n_obs = design.n_rows;
 
         let x_true: Vec<f64> = (0..n_dofs).map(|i| (i as f64 * 0.4).sin()).collect();
         let mut y = vec![0.0; n_obs];
-        design.matvec_d(&x_true, &mut y);
+        DesignOperator::new(&design).apply(&x_true, &mut y);
 
         // Use slightly relaxed tolerance — randomly generated problems can be
         // borderline at 1e-8 (e.g. residual 1.02e-8 after 13 iters).

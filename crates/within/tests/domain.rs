@@ -1,20 +1,21 @@
-//! Integration tests for the domain layer: WeightedDesign operations,
+//! Integration tests for the domain layer: Design operations,
 //! adjoint properties, gramian diagonal identity, and convergence through
 //! the solve API for designs that exercise partition-of-unity weights and
 //! disconnected bipartite structure.
 
 use proptest::prelude::*;
-use within::observation::{FactorMajorStore, ObservationWeights};
-use within::WeightedDesign;
+use schwarz_precond::Operator;
+use within::observation::FactorMajorStore;
+use within::operator::gramian::Gramian;
+use within::{Design, DesignOperator, WeightedDesignOperator};
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn make_design(categories: Vec<Vec<u32>>, n_obs: usize) -> WeightedDesign<FactorMajorStore> {
-    let store = FactorMajorStore::new(categories, ObservationWeights::Unit, n_obs)
-        .expect("valid factor-major store");
-    WeightedDesign::from_store(store).expect("valid design")
+fn make_design(categories: Vec<Vec<u32>>, n_obs: usize) -> Design<FactorMajorStore> {
+    let store = FactorMajorStore::new(categories, n_obs).expect("valid factor-major store");
+    Design::from_store(store).expect("valid design")
 }
 
 fn dot(a: &[f64], b: &[f64]) -> f64 {
@@ -28,7 +29,7 @@ fn dot(a: &[f64], b: &[f64]) -> f64 {
 /// Build a 15,000-row design with two factors (~50 levels each).
 /// This exercises the parallel code paths in `gather_add` (par_chunks_mut)
 /// and `scatter_add` (Fold strategy: n_rows > 10,000, n_levels < 100,000).
-fn make_large_design() -> WeightedDesign<FactorMajorStore> {
+fn make_large_design() -> Design<FactorMajorStore> {
     let n_obs = 15_000;
     let n_levels_a = 50usize;
     let n_levels_b = 50usize;
@@ -48,10 +49,10 @@ fn test_large_design_adjoint_property_matvec_d_rmatvec_dt() {
     let r: Vec<f64> = (0..n_rows).map(|i| (i as f64 * 0.23 + 2.0).cos()).collect();
 
     let mut dx = vec![0.0f64; n_rows];
-    dm.matvec_d(&x, &mut dx);
+    DesignOperator::new(&dm).apply(&x, &mut dx);
 
     let mut dtr = vec![0.0f64; n_dofs];
-    dm.rmatvec_dt(&r, &mut dtr);
+    DesignOperator::new(&dm).apply_adjoint(&r, &mut dtr);
 
     let lhs = dot(&dx, &r);
     let rhs = dot(&x, &dtr);
@@ -74,7 +75,7 @@ fn test_large_design_matvec_correctness() {
     let mut ej = vec![0.0f64; n_dofs];
     ej[0] = 1.0;
     let mut y = vec![0.0f64; n_rows];
-    dm.matvec_d(&ej, &mut y);
+    DesignOperator::new(&dm).apply(&ej, &mut y);
 
     for (i, &yi) in y.iter().enumerate() {
         let expected = if i % 50 == 0 { 1.0 } else { 0.0 };
@@ -94,7 +95,7 @@ fn test_large_design_rmatvec_dt_correctness() {
 
     let ones = vec![1.0f64; n_rows];
     let mut x = vec![0.0f64; n_dofs];
-    dm.rmatvec_dt(&ones, &mut x);
+    DesignOperator::new(&dm).apply_adjoint(&ones, &mut x);
 
     // Each factor has 50 levels, 15,000 obs cycling → each level appears 300 times.
     let expected_count = (n_rows / 50) as f64;
@@ -114,14 +115,14 @@ fn test_large_design_gramian_diagonal_from_unit_vectors() {
     let n_dofs = dm.n_dofs;
     let n_rows = dm.n_rows;
 
-    let diag = dm.gramian_diagonal();
+    let diag = Gramian::build(&dm).diagonal();
 
     for j in 0..n_dofs {
         let mut ej = vec![0.0f64; n_dofs];
         ej[j] = 1.0;
 
         let mut dej = vec![0.0f64; n_rows];
-        dm.matvec_d(&ej, &mut dej);
+        DesignOperator::new(&dm).apply(&ej, &mut dej);
 
         let norm_sq: f64 = dej.iter().map(|v| v * v).sum();
         assert!(
@@ -161,17 +162,12 @@ proptest! {
             .map(|i| 0.5 + (i as f64 * 0.1 + seed as f64 * 0.3).sin().abs())
             .collect();
 
-        let store = FactorMajorStore::new(
-            vec![fa, fb],
-            ObservationWeights::Dense(weights),
-            n_obs,
-        )
-        .unwrap();
-        let dm = WeightedDesign::from_store(store).unwrap();
+        let store = FactorMajorStore::new(vec![fa, fb], n_obs).unwrap();
+        let dm = Design::from_store(store).unwrap();
 
         let n_dofs = dm.n_dofs;
         let n_rows = dm.n_rows;
-        let diag = dm.gramian_diagonal();
+        let diag = Gramian::build_weighted(&dm, &weights).diagonal();
 
         for j in 0..n_dofs {
             let mut ej = vec![0.0f64; n_dofs];
@@ -179,12 +175,10 @@ proptest! {
 
             // D · e_j
             let mut dej = vec![0.0f64; n_rows];
-            dm.matvec_d(&ej, &mut dej);
+            DesignOperator::new(&dm).apply(&ej, &mut dej);
 
             // e_j^T · D^T · W · D · e_j = sum_i w_i * (D·e_j)[i]^2
-            let quadratic: f64 = (0..n_rows)
-                .map(|i| dm.uid_weight(i) * dej[i] * dej[i])
-                .sum();
+            let quadratic: f64 = (0..n_rows).map(|i| weights[i] * dej[i] * dej[i]).sum();
 
             prop_assert!(
                 (diag[j] - quadratic).abs() < 1e-10,
@@ -214,13 +208,8 @@ proptest! {
             .map(|i| 0.5 + (i as f64 * 0.13 + seed as f64 * 0.41).sin().abs())
             .collect();
 
-        let store = FactorMajorStore::new(
-            vec![fa, fb],
-            ObservationWeights::Dense(weights.clone()),
-            n_obs,
-        )
-        .unwrap();
-        let dm = WeightedDesign::from_store(store).unwrap();
+        let store = FactorMajorStore::new(vec![fa, fb], n_obs).unwrap();
+        let dm = Design::from_store(store).unwrap();
 
         let n_dofs = dm.n_dofs;
         let n_rows = dm.n_rows;
@@ -234,7 +223,7 @@ proptest! {
 
         // <D·x, W·r>
         let mut dx = vec![0.0f64; n_rows];
-        dm.matvec_d(&x, &mut dx);
+        DesignOperator::new(&dm).apply(&x, &mut dx);
         let lhs: f64 = dx
             .iter()
             .zip(r.iter())
@@ -244,7 +233,8 @@ proptest! {
 
         // <x, D^T·W·r>
         let mut wdtr = vec![0.0f64; n_dofs];
-        dm.rmatvec_wdt(&r, &mut wdtr);
+        let weighted_op = WeightedDesignOperator::new(&dm, &weights);
+        weighted_op.apply_adjoint(&weighted_op.weighted_rhs(&r), &mut wdtr);
         let rhs: f64 = x.iter().zip(wdtr.iter()).map(|(xi, wi)| xi * wi).sum();
 
         prop_assert!(
@@ -275,16 +265,15 @@ fn test_three_factor_design_solve_converges() {
     let fb: Vec<u32> = (0..n_obs).map(|i| ((i / n_lev) % n_lev) as u32).collect();
     let fc: Vec<u32> = (0..n_obs).map(|i| ((i * 3) % n_lev) as u32).collect();
 
-    let store = FactorMajorStore::new(vec![fa, fb, fc], ObservationWeights::Unit, n_obs)
-        .expect("valid 3-factor store");
-    let dm = WeightedDesign::from_store(store).expect("valid 3-factor design");
+    let store = FactorMajorStore::new(vec![fa, fb, fc], n_obs).expect("valid 3-factor store");
+    let dm = Design::from_store(store).expect("valid 3-factor design");
 
     assert_eq!(dm.n_factors(), 3);
 
     // Build y = D·1 so the true normal-equation solution is 1.
     let x_true = vec![1.0f64; dm.n_dofs];
     let mut y = vec![0.0f64; dm.n_rows];
-    dm.matvec_d(&x_true, &mut y);
+    DesignOperator::new(&dm).apply(&x_true, &mut y);
 
     // Use ndarray array2 as required by the solve() API.
     let n_factors = 3;
@@ -338,14 +327,13 @@ fn test_three_factor_design_multiplicative_schwarz_converges() {
             (0..n_obs).map(|i| ((i / n_lev) % n_lev) as u32).collect(),
             (0..n_obs).map(|i| ((i * 3) % n_lev) as u32).collect(),
         ],
-        ObservationWeights::Unit,
         n_obs,
     )
     .expect("valid 3-factor store");
-    let dm = WeightedDesign::from_store(store).expect("valid 3-factor design");
+    let dm = Design::from_store(store).expect("valid 3-factor design");
     let x_true = vec![1.0f64; dm.n_dofs];
     let mut y = vec![0.0f64; dm.n_rows];
-    dm.matvec_d(&x_true, &mut y);
+    DesignOperator::new(&dm).apply(&x_true, &mut y);
 
     let params = SolverParams {
         tol: 1e-8,
@@ -392,17 +380,13 @@ fn test_disconnected_design_larger_converges() {
         cats[[i, 1]] = fb[i];
     }
 
-    let store = FactorMajorStore::new(
-        vec![fa.clone(), fb.clone()],
-        ObservationWeights::Unit,
-        n_obs,
-    )
-    .expect("valid disconnected store");
-    let dm = WeightedDesign::from_store(store).expect("valid disconnected design");
+    let store = FactorMajorStore::new(vec![fa.clone(), fb.clone()], n_obs)
+        .expect("valid disconnected store");
+    let dm = Design::from_store(store).expect("valid disconnected design");
 
     let x_true = vec![1.0f64; dm.n_dofs];
     let mut y = vec![0.0f64; dm.n_rows];
-    dm.matvec_d(&x_true, &mut y);
+    DesignOperator::new(&dm).apply(&x_true, &mut y);
 
     let params = SolverParams {
         tol: 1e-8,
@@ -466,9 +450,8 @@ fn test_disconnected_design_solve_converges() {
 #[test]
 fn test_single_factor_design_construction() {
     let categories = vec![vec![0u32, 1, 2, 0, 1]];
-    let store =
-        FactorMajorStore::new(categories, ObservationWeights::Unit, 5).expect("valid store");
-    let dm = WeightedDesign::from_store(store).expect("valid single-factor design");
+    let store = FactorMajorStore::new(categories, 5).expect("valid store");
+    let dm = Design::from_store(store).expect("valid single-factor design");
 
     assert_eq!(dm.n_factors(), 1, "expected 1 factor");
     assert_eq!(dm.n_dofs, 3, "expected 3 DOFs (levels 0,1,2)");
@@ -478,9 +461,8 @@ fn test_single_factor_design_construction() {
 #[test]
 fn test_single_factor_design_adjoint_property() {
     let categories = vec![vec![0u32, 1, 2, 0, 1]];
-    let store =
-        FactorMajorStore::new(categories, ObservationWeights::Unit, 5).expect("valid store");
-    let dm = WeightedDesign::from_store(store).expect("valid single-factor design");
+    let store = FactorMajorStore::new(categories, 5).expect("valid store");
+    let dm = Design::from_store(store).expect("valid single-factor design");
 
     let n_dofs = dm.n_dofs;
     let n_rows = dm.n_rows;
@@ -489,10 +471,10 @@ fn test_single_factor_design_adjoint_property() {
     let r: Vec<f64> = vec![0.5, 1.5, -0.5, 2.0, -1.0];
 
     let mut dx = vec![0.0f64; n_rows];
-    dm.matvec_d(&x, &mut dx);
+    DesignOperator::new(&dm).apply(&x, &mut dx);
 
     let mut dtr = vec![0.0f64; n_dofs];
-    dm.rmatvec_dt(&r, &mut dtr);
+    DesignOperator::new(&dm).apply_adjoint(&r, &mut dtr);
 
     let lhs = dot(&dx, &r);
     let rhs = dot(&x, &dtr);
@@ -508,11 +490,10 @@ fn test_single_factor_design_gramian_diagonal_is_level_counts() {
     // For unweighted single-factor: gramian_diagonal = observation count per level.
     // levels: [0, 1, 2, 0, 1] → counts [2, 2, 1]
     let categories = vec![vec![0u32, 1, 2, 0, 1]];
-    let store =
-        FactorMajorStore::new(categories, ObservationWeights::Unit, 5).expect("valid store");
-    let dm = WeightedDesign::from_store(store).expect("valid single-factor design");
+    let store = FactorMajorStore::new(categories, 5).expect("valid store");
+    let dm = Design::from_store(store).expect("valid single-factor design");
 
-    let diag = dm.gramian_diagonal();
+    let diag = Gramian::build(&dm).diagonal();
     assert_eq!(diag, vec![2.0, 2.0, 1.0]);
 }
 
@@ -554,13 +535,12 @@ fn test_single_factor_design_solve_without_precond() {
 fn test_single_factor_matvec_d_values() {
     // D·[a, b, c] with levels [0,1,2,0,1] should give [a, b, c, a, b]
     let categories = vec![vec![0u32, 1, 2, 0, 1]];
-    let store =
-        FactorMajorStore::new(categories, ObservationWeights::Unit, 5).expect("valid store");
-    let dm = WeightedDesign::from_store(store).expect("valid single-factor design");
+    let store = FactorMajorStore::new(categories, 5).expect("valid store");
+    let dm = Design::from_store(store).expect("valid single-factor design");
 
     let x = vec![10.0, 20.0, 30.0];
     let mut y = vec![0.0f64; 5];
-    dm.matvec_d(&x, &mut y);
+    DesignOperator::new(&dm).apply(&x, &mut y);
     assert_eq!(y, vec![10.0, 20.0, 30.0, 10.0, 20.0]);
 }
 
@@ -568,12 +548,11 @@ fn test_single_factor_matvec_d_values() {
 fn test_single_factor_rmatvec_dt_values() {
     // D^T·[1,2,3,4,5] with levels [0,1,2,0,1] should give [1+4, 2+5, 3] = [5, 7, 3]
     let categories = vec![vec![0u32, 1, 2, 0, 1]];
-    let store =
-        FactorMajorStore::new(categories, ObservationWeights::Unit, 5).expect("valid store");
-    let dm = WeightedDesign::from_store(store).expect("valid single-factor design");
+    let store = FactorMajorStore::new(categories, 5).expect("valid store");
+    let dm = Design::from_store(store).expect("valid single-factor design");
 
     let r = vec![1.0, 2.0, 3.0, 4.0, 5.0];
     let mut x = vec![0.0f64; 3];
-    dm.rmatvec_dt(&r, &mut x);
+    DesignOperator::new(&dm).apply_adjoint(&r, &mut x);
     assert_eq!(x, vec![5.0, 7.0, 3.0]);
 }

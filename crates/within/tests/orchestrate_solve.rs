@@ -22,7 +22,7 @@ fn test_cg_unpreconditioned() {
         maxiter: 1000,
         ..Default::default()
     };
-    let solver = Solver::from_design(design, &params, None).expect("build solver");
+    let solver = Solver::from_design(design, None, &params, None).expect("build solver");
     let result = solver.solve(&y).expect("solve");
     common::assert_converged_with_small_residual(&result, 1e-6);
 }
@@ -40,7 +40,7 @@ fn test_cg_preconditioned() {
         ..Default::default()
     };
     let precond = Preconditioner::Additive(LocalSolverConfig::default(), ReductionStrategy::Auto);
-    let solver = Solver::from_design(design, &params, Some(&precond)).expect("build solver");
+    let solver = Solver::from_design(design, None, &params, Some(&precond)).expect("build solver");
     let result = solver.solve(&y).expect("solve");
     common::assert_converged_with_small_residual(&result, 1e-6);
 }
@@ -57,7 +57,7 @@ fn test_least_squares_cg() {
         maxiter: 1000,
         ..Default::default()
     };
-    let solver = Solver::from_design(design, &params, None).expect("build solver");
+    let solver = Solver::from_design(design, None, &params, None).expect("build solver");
     let result = solver.solve(&y).expect("solve");
     assert!(result.converged, "CG LS did not converge");
     common::assert_solution_finite(&result);
@@ -65,11 +65,9 @@ fn test_least_squares_cg() {
 
 #[test]
 fn test_least_squares_weighted_cg_preconditioned() {
-    let design = common::make_weighted_design(
-        vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]],
-        within::ObservationWeights::Dense(vec![1.0, 2.0, 1.5, 0.5, 3.0]),
-    )
-    .expect("valid weighted design");
+    let design = common::make_design(vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]])
+        .expect("valid weighted design");
+    let weights = vec![1.0, 2.0, 1.5, 0.5, 3.0];
     let y = vec![1.0, 2.0, 3.0, 4.0, 5.0];
 
     let params = SolverParams {
@@ -81,7 +79,8 @@ fn test_least_squares_weighted_cg_preconditioned() {
     };
     let precond =
         Preconditioner::Additive(LocalSolverConfig::solver_default(), ReductionStrategy::Auto);
-    let solver = Solver::from_design(design, &params, Some(&precond)).expect("build solver");
+    let solver =
+        Solver::from_design(design, Some(weights), &params, Some(&precond)).expect("build solver");
     let result = solver.solve(&y).expect("solve");
     common::assert_converged_with_small_residual(&result, 1e-6);
     common::assert_solution_finite(&result);
@@ -127,7 +126,8 @@ fn test_schwarz_builder_schur_complement_modes_end_to_end() {
     ];
 
     for local_solver in local_solvers {
-        let schwarz = build_schwarz(&design, &local_solver).expect("build schwarz preconditioner");
+        let schwarz =
+            build_schwarz(&design, None, &local_solver).expect("build schwarz preconditioner");
         let result =
             cg_solve_preconditioned(&gramian, &schwarz, &rhs, 1e-8, 500).expect("cg solve");
         assert!(
@@ -160,7 +160,7 @@ fn test_compare_factorization_strategies() {
     use within::operator::gramian::GramianOperator;
     use within::operator::schwarz::build_schwarz;
     use within::operator::DesignOperator;
-    use within::{ApproxCholConfig, WeightedDesign};
+    use within::{ApproxCholConfig, Design};
 
     let configs: Vec<(ApproxCholConfig, &str)> = vec![
         (
@@ -201,9 +201,8 @@ fn test_compare_factorization_strategies() {
                     .collect()
             })
             .collect();
-        let store = within::FactorMajorStore::new(cats, within::ObservationWeights::Unit, *n_rows)
-            .expect("valid factor-major store");
-        let design = WeightedDesign::from_store(store).expect("valid synthetic design");
+        let store = within::FactorMajorStore::new(cats, *n_rows).expect("valid factor-major store");
+        let design = Design::from_store(store).expect("valid synthetic design");
 
         let y: Vec<f64> = (0..*n_rows).map(|_| rng.random::<f64>()).collect();
         let design_op = DesignOperator::new(&design);
@@ -219,7 +218,7 @@ fn test_compare_factorization_strategies() {
             };
             let t0 = Instant::now();
             let schwarz =
-                build_schwarz(&design, &local_solver).expect("build schwarz preconditioner");
+                build_schwarz(&design, None, &local_solver).expect("build schwarz preconditioner");
             let _setup_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
             let t1 = Instant::now();
@@ -263,7 +262,7 @@ fn test_gmres_multiplicative_implicit() {
         ..Default::default()
     };
     let precond = Preconditioner::Multiplicative(LocalSolverConfig::default());
-    let solver = Solver::from_design(design, &params, Some(&precond)).expect("build solver");
+    let solver = Solver::from_design(design, None, &params, Some(&precond)).expect("build solver");
     let result = solver.solve(&y).expect("solve");
     common::assert_converged_with_small_residual(&result, 1e-6);
     common::assert_solution_finite(&result);
@@ -282,7 +281,7 @@ fn test_gmres_multiplicative_explicit() {
         ..Default::default()
     };
     let precond = Preconditioner::Multiplicative(LocalSolverConfig::default());
-    let solver = Solver::from_design(design, &params, Some(&precond)).expect("build solver");
+    let solver = Solver::from_design(design, None, &params, Some(&precond)).expect("build solver");
     let result = solver.solve(&y).expect("solve");
     common::assert_converged_with_small_residual(&result, 1e-6);
     common::assert_solution_finite(&result);
@@ -294,11 +293,9 @@ fn test_gmres_multiplicative_explicit() {
 // ===========================================================================
 #[test]
 fn test_lsmr_weighted() {
-    let design = common::make_weighted_design(
-        vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]],
-        within::ObservationWeights::Dense(vec![1.0, 2.0, 1.5, 0.5, 3.0]),
-    )
-    .expect("valid weighted design");
+    let design = common::make_design(vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]])
+        .expect("valid weighted design");
+    let weights = vec![1.0, 2.0, 1.5, 0.5, 3.0];
     let y = vec![1.0, 2.0, 3.0, 4.0, 5.0];
 
     let params = SolverParams {
@@ -310,7 +307,8 @@ fn test_lsmr_weighted() {
     };
     let precond =
         Preconditioner::Additive(LocalSolverConfig::solver_default(), ReductionStrategy::Auto);
-    let solver = Solver::from_design(design, &params, Some(&precond)).expect("build solver");
+    let solver =
+        Solver::from_design(design, Some(weights), &params, Some(&precond)).expect("build solver");
     let result = solver.solve(&y).expect("solve");
     common::assert_converged_with_small_residual(&result, 1e-6);
     common::assert_solution_finite(&result);
@@ -329,8 +327,9 @@ fn test_lsmr_matches_cg_solution() {
         maxiter: 1000,
         ..Default::default()
     };
-    let cg_solver = Solver::from_design(common::make_test_design(), &cg_params, Some(&precond))
-        .expect("build cg solver");
+    let cg_solver =
+        Solver::from_design(common::make_test_design(), None, &cg_params, Some(&precond))
+            .expect("build cg solver");
     let cg_result = cg_solver.solve(&y).expect("cg solve");
 
     let lsmr_params = SolverParams {
@@ -340,7 +339,7 @@ fn test_lsmr_matches_cg_solution() {
         ..Default::default()
     };
     let lsmr_solver =
-        Solver::from_design(design, &lsmr_params, Some(&precond)).expect("build lsmr solver");
+        Solver::from_design(design, None, &lsmr_params, Some(&precond)).expect("build lsmr solver");
     let lsmr_result = lsmr_solver.solve(&y).expect("lsmr solve");
 
     // Solutions should match to reasonable precision

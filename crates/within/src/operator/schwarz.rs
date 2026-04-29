@@ -1,6 +1,6 @@
 //! Schwarz preconditioner: FE-specific construction helpers.
 //!
-//! This module bridges the fixed-effects domain types ([`WeightedDesign`],
+//! This module bridges the fixed-effects domain types ([`Design`],
 //! [`Subdomain`], `CrossTab`) to the generic `schwarz-precond` crate API.
 //! The generic crate knows nothing about panel data — it operates on abstract
 //! [`SubdomainEntry`] values containing a local solver and a set of global DOF
@@ -18,7 +18,7 @@
 //! Construction flows through a layered builder:
 //!
 //! 1. **Domain acquisition** — either scan observations from a
-//!    [`WeightedDesign`] (via [`build_schwarz`]) or accept pre-built
+//!    [`Design`] (via [`build_schwarz`]) or accept pre-built
 //!    `(Subdomain, CrossTab)` pairs directly (enabling fused build paths
 //!    that scan observations only once)
 //! 2. **Entry construction** — each `(Subdomain, CrossTab)` pair is
@@ -46,8 +46,8 @@ use super::schur_complement::{
     ApproxSchurComplement, EliminationInfo, ExactSchurComplement, SchurComplement, SchurResult,
 };
 use crate::config::{ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig};
-use crate::domain::{build_local_domains, Subdomain, WeightedDesign};
-use crate::observation::ObservationStore;
+use crate::domain::{build_local_domains, Design, Subdomain};
+use crate::observation::Store;
 use crate::{WithinError, WithinResult};
 
 /// Concrete additive Schwarz type used in the parent crate.
@@ -129,11 +129,12 @@ pub type FeMultSchwarzSparse =
 // ---------------------------------------------------------------------------
 
 /// Build additive Schwarz from FE design with default domain decomposition.
-pub fn build_schwarz<S: ObservationStore>(
-    design: &WeightedDesign<S>,
+pub fn build_schwarz<S: Store>(
+    design: &Design<S>,
+    weights: Option<&[f64]>,
     config: &LocalSolverConfig,
 ) -> WithinResult<FeSchwarz> {
-    let domains = build_local_domains(design);
+    let domains = build_local_domains(design, weights);
     build_additive(domains, design.n_dofs, config)
 }
 

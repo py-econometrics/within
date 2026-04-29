@@ -43,8 +43,8 @@ use within::config::{
     ApproxCholConfig, ApproxSchurConfig, KrylovMethod, LocalSolverConfig, OperatorRepr,
     Preconditioner, ReductionStrategy, SolverParams, DEFAULT_DENSE_SCHUR_THRESHOLD,
 };
-use within::domain::WeightedDesign;
-use within::observation::{FactorMajorStore, ObservationWeights};
+use within::domain::Design;
+use within::observation::FactorMajorStore;
 use within::operator::preconditioner::{
     additive_reduction_strategy as get_additive_reduction_strategy,
     additive_schwarz_diagnostics as get_additive_schwarz_diagnostics,
@@ -953,28 +953,28 @@ impl PySolver {
         let factor_levels: Vec<Vec<u32>> = (0..n_factors)
             .map(|f| cats.column(f).iter().copied().collect())
             .collect();
-        let w = match &weights {
-            Some(w) => ObservationWeights::Dense(w.as_array().iter().copied().collect()),
-            None => ObservationWeights::Unit,
-        };
-        let store = FactorMajorStore::new(factor_levels, w, n_obs).map_err(value_err)?;
-        let design = WeightedDesign::from_store(store).map_err(value_err)?;
+        let weights_vec: Option<Vec<f64>> = weights
+            .as_ref()
+            .map(|w| w.as_array().iter().copied().collect());
+        let store = FactorMajorStore::new(factor_levels, n_obs).map_err(value_err)?;
+        let design = Design::from_store(store).map_err(value_err)?;
 
         // Handle pre-built FePreconditioner separately (uses a different constructor);
         // all other variants go through extract_preconditioner_config.
-        let solver =
-            if let Some(Ok(fe)) = preconditioner.map(|o| o.downcast::<PyFePreconditioner>()) {
-                let fe_precond = fe.get().inner.clone();
-                py.allow_threads(|| {
-                    Solver::from_design_with_preconditioner(design, &params, fe_precond)
-                })
+        let solver = if let Some(Ok(fe)) =
+            preconditioner.map(|o| o.downcast::<PyFePreconditioner>())
+        {
+            let fe_precond = fe.get().inner.clone();
+            py.allow_threads(|| {
+                Solver::from_design_with_preconditioner(design, weights_vec, &params, fe_precond)
+            })
+            .map_err(value_err)?
+        } else {
+            let precond = extract_preconditioner_config(py, preconditioner)?;
+            validate_cg_preconditioner(&params, &precond)?;
+            py.allow_threads(|| Solver::from_design(design, weights_vec, &params, precond.as_ref()))
                 .map_err(value_err)?
-            } else {
-                let precond = extract_preconditioner_config(py, preconditioner)?;
-                validate_cg_preconditioner(&params, &precond)?;
-                py.allow_threads(|| Solver::from_design(design, &params, precond.as_ref()))
-                    .map_err(value_err)?
-            };
+        };
 
         Ok(Self { solver })
     }

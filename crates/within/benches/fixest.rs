@@ -11,10 +11,10 @@ use within::config::{
     ApproxCholConfig, KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner,
     ReductionStrategy, SolverParams,
 };
-use within::domain::WeightedDesign;
-use within::observation::{FactorMajorStore, ObservationWeights};
+use within::domain::Design;
+use within::observation::FactorMajorStore;
 use within::operator::gramian::{Gramian, GramianOperator};
-use within::Solver;
+use within::{DesignOperator, Solver};
 
 // ===========================================================================
 // Shared types and helpers
@@ -47,10 +47,7 @@ impl Case {
     }
 }
 
-fn generate_fixest_like_case(
-    case: Case,
-    seed: u64,
-) -> (WeightedDesign<FactorMajorStore>, Vec<f64>) {
+fn generate_fixest_like_case(case: Case, seed: u64) -> (Design<FactorMajorStore>, Vec<f64>) {
     let mut rng = SmallRng::seed_from_u64(seed);
     let n_years = 10usize;
     let n_indiv_per_firm = 23usize;
@@ -78,9 +75,8 @@ fn generate_fixest_like_case(
         vec![indiv_id, year, firm_id]
     };
 
-    let store = FactorMajorStore::new(factor_levels, ObservationWeights::Unit, case.n_obs)
-        .expect("valid factor-major store");
-    let design = WeightedDesign::from_store(store).expect("valid design");
+    let store = FactorMajorStore::new(factor_levels, case.n_obs).expect("valid factor-major store");
+    let design = Design::from_store(store).expect("valid design");
 
     let mut x_true = vec![0.0; design.n_dofs];
     for x in &mut x_true {
@@ -88,7 +84,7 @@ fn generate_fixest_like_case(
     }
 
     let mut y = vec![0.0; case.n_obs];
-    design.matvec_d(&x_true, &mut y);
+    DesignOperator::new(&design).apply(&x_true, &mut y);
     for yi in &mut y {
         *yi += 0.1 * rng.random_range(-1.0..1.0);
     }
@@ -130,13 +126,14 @@ fn configure_group<'a>(
 }
 
 fn run_smoke(
-    design: &WeightedDesign<FactorMajorStore>,
+    design: &Design<FactorMajorStore>,
     y: &[f64],
     params: &SolverParams,
     preconditioner: Option<&Preconditioner>,
     label: &str,
 ) {
-    let solver = Solver::from_design(design.clone(), params, preconditioner).expect("build solver");
+    let solver =
+        Solver::from_design(design.clone(), None, params, preconditioner).expect("build solver");
     let result = solver.solve(y).expect("solve");
     assert!(result.converged, "{label}: solver did not converge");
     assert!(
@@ -149,7 +146,7 @@ fn run_smoke(
     );
 }
 
-fn run_cg_one_level(design: &WeightedDesign<FactorMajorStore>, y: &[f64], ac2: bool) {
+fn run_cg_one_level(design: &Design<FactorMajorStore>, y: &[f64], ac2: bool) {
     let cfg = one_level_local_solver(ac2);
     let params = SolverParams {
         krylov: KrylovMethod::Cg,
@@ -164,7 +161,7 @@ fn run_cg_one_level(design: &WeightedDesign<FactorMajorStore>, y: &[f64], ac2: b
 }
 
 fn run_gmres_multiplicative_one_level(
-    design: &WeightedDesign<FactorMajorStore>,
+    design: &Design<FactorMajorStore>,
     y: &[f64],
     ac2: bool,
     operator: OperatorRepr,

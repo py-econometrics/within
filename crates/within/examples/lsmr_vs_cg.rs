@@ -16,6 +16,7 @@
 //!   - `panel-3fe`    — indiv × year × firm (within-default benchmark DGP)
 //!   - `akm`          — worker × firm (AKM-style, limited mobility → ill-conditioned)
 
+use schwarz_precond::Operator;
 use std::env;
 use std::time::Instant;
 
@@ -23,10 +24,11 @@ use ndarray::Array2;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
-use within::observation::{FactorMajorStore, ObservationWeights};
+use within::observation::FactorMajorStore;
+use within::DesignOperator;
 use within::{
-    KrylovMethod, LocalSolverConfig, Preconditioner, ReductionStrategy, Solver, SolverParams,
-    WeightedDesign,
+    Design, KrylovMethod, LocalSolverConfig, Preconditioner, ReductionStrategy, Solver,
+    SolverParams,
 };
 
 #[derive(Clone, Copy)]
@@ -279,15 +281,15 @@ fn run_one(
     let factor_levels: Vec<Vec<u32>> = (0..n_factors)
         .map(|q| categories.column(q).to_vec())
         .collect();
-    let store = FactorMajorStore::new(factor_levels, ObservationWeights::Unit, n_obs)?;
-    let design = WeightedDesign::from_store(store)?;
+    let store = FactorMajorStore::new(factor_levels, n_obs)?;
+    let design = Design::from_store(store)?;
     let x_true: Vec<f64> = (0..design.n_dofs)
         .map(|_| rng.random_range(-1.0..1.0))
         .collect();
     let rhses: Vec<Vec<f64>> = (0..(n_solves + 1))
         .map(|_| {
             let mut y = vec![0.0; n_obs];
-            design.matvec_d(&x_true, &mut y);
+            DesignOperator::new(&design).apply(&x_true, &mut y);
             for yi in &mut y {
                 *yi += 0.1 * rng.random_range(-1.0..1.0);
             }

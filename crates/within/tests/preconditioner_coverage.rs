@@ -27,7 +27,7 @@ fn build_multiplicative_solver() -> Solver<within::FactorMajorStore> {
         ..Default::default()
     };
     let precond = Preconditioner::Multiplicative(LocalSolverConfig::default());
-    Solver::from_design(design, &params, Some(&precond)).expect("multiplicative solver build")
+    Solver::from_design(design, None, &params, Some(&precond)).expect("multiplicative solver build")
 }
 
 // ---------------------------------------------------------------------------
@@ -89,6 +89,7 @@ fn test_build_preconditioner_multiplicative_success() {
 
     let result = build_preconditioner(
         &design,
+        None,
         Some(&gramian),
         &Preconditioner::Multiplicative(LocalSolverConfig::default()),
     );
@@ -112,7 +113,7 @@ fn test_build_preconditioner_none_returns_none() {
     let design = common::make_test_design();
     let params = SolverParams::default();
 
-    let solver = Solver::from_design(design, &params, None).expect("solver build");
+    let solver = Solver::from_design(design, None, &params, None).expect("solver build");
     assert!(
         solver.preconditioner().is_none(),
         "solver with no preconditioner should return None"
@@ -126,7 +127,7 @@ fn test_build_preconditioner_none_returns_none() {
 #[test]
 fn test_fe_schwarz_with_reduction_strategy() {
     let design = common::make_test_design();
-    let schwarz = build_schwarz(&design, &LocalSolverConfig::default())
+    let schwarz = build_schwarz(&design, None, &LocalSolverConfig::default())
         .expect("build_schwarz should succeed");
 
     let new_schwarz = schwarz.with_reduction_strategy(ReductionStrategy::AtomicScatter);
@@ -153,7 +154,7 @@ fn test_fe_schwarz_with_reduction_strategy() {
 #[test]
 fn test_fe_schwarz_subdomains_count() {
     let design = common::make_test_design();
-    let schwarz = build_schwarz(&design, &LocalSolverConfig::default())
+    let schwarz = build_schwarz(&design, None, &LocalSolverConfig::default())
         .expect("build_schwarz should succeed");
 
     assert!(
@@ -169,7 +170,7 @@ fn test_fe_schwarz_subdomains_count() {
 #[test]
 fn test_fe_schwarz_auto_resolves() {
     let design = common::make_test_design();
-    let schwarz = build_schwarz(&design, &LocalSolverConfig::default())
+    let schwarz = build_schwarz(&design, None, &LocalSolverConfig::default())
         .expect("build_schwarz should succeed");
 
     // Default strategy is Auto.
@@ -203,7 +204,7 @@ fn test_fe_schwarz_auto_resolves() {
 #[test]
 fn test_fe_schwarz_diagnostics_valid() {
     let design = common::make_test_design();
-    let schwarz = build_schwarz(&design, &LocalSolverConfig::default())
+    let schwarz = build_schwarz(&design, None, &LocalSolverConfig::default())
         .expect("build_schwarz should succeed");
 
     let diag = schwarz.diagnostics();
@@ -227,7 +228,7 @@ fn test_fe_schwarz_diagnostics_valid() {
 #[test]
 fn test_fe_schwarz_try_apply_matches_apply() {
     let design = common::make_test_design();
-    let schwarz = build_schwarz(&design, &LocalSolverConfig::default())
+    let schwarz = build_schwarz(&design, None, &LocalSolverConfig::default())
         .expect("build_schwarz should succeed");
 
     let x = vec![1.0; design.n_dofs];
@@ -257,6 +258,7 @@ fn test_additive_preconditioner_functions_return_some() {
 
     let precond = build_preconditioner(
         &design,
+        None,
         Some(&gramian),
         &Preconditioner::Additive(LocalSolverConfig::default(), ReductionStrategy::Auto),
     )

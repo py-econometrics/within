@@ -32,8 +32,8 @@ use schwarz_precond::{AdditiveSchwarzDiagnostics, LocalSolver, Operator, Reducti
 use serde::{Deserialize, Serialize};
 
 use crate::config::Preconditioner;
-use crate::domain::{Subdomain, WeightedDesign};
-use crate::observation::ObservationStore;
+use crate::domain::{Design, Subdomain};
+use crate::observation::Store;
 use crate::operator::gramian::{CrossTab, Gramian};
 use crate::operator::schwarz::{
     build_additive_with_strategy, build_multiplicative_sparse, FeMultSchwarzSparse, FeSchwarz,
@@ -184,14 +184,15 @@ fn build_from_domains(
 ///
 /// When `Multiplicative` is requested, a Gramian is required for the sparse
 /// residual updater.
-pub fn build_preconditioner<S: ObservationStore>(
-    design: &WeightedDesign<S>,
+pub fn build_preconditioner<S: Store>(
+    design: &Design<S>,
+    weights: Option<&[f64]>,
     gramian: Option<&Gramian>,
     preconditioner_config: &Preconditioner,
 ) -> WithinResult<FePreconditioner> {
     use crate::domain::build_local_domains;
 
-    let domains = build_local_domains(design);
+    let domains = build_local_domains(design, weights);
     build_from_domains(domains, design.n_dofs, gramian, preconditioner_config)
 }
 
@@ -202,13 +203,14 @@ pub fn build_preconditioner<S: ObservationStore>(
 /// data (for composing the explicit Gramian CSR). Avoids the double scan that
 /// would occur if `Gramian::build` and `build_local_domains` were called
 /// separately.
-pub(crate) fn build_preconditioner_fused<S: ObservationStore>(
-    design: &WeightedDesign<S>,
+pub(crate) fn build_preconditioner_fused<S: Store>(
+    design: &Design<S>,
+    weights: Option<&[f64]>,
     preconditioner_config: &Preconditioner,
 ) -> WithinResult<(Gramian, FePreconditioner)> {
     use crate::domain::build_domains_and_gramian_blocks;
 
-    let (domains, blocks) = build_domains_and_gramian_blocks(design);
+    let (domains, blocks) = build_domains_and_gramian_blocks(design, weights);
     let gramian = Gramian::from_pair_blocks(&blocks, &design.factors, design.n_dofs)?;
     let precond = build_from_domains(
         domains,

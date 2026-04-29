@@ -2,18 +2,16 @@ use std::error::Error;
 
 use ndarray::Array2;
 use schwarz_precond::{ApplyError, PreconditionerBuildError, SolveError};
-use within::observation::{FactorMajorStore, ObservationWeights};
+use within::observation::FactorMajorStore;
 use within::{
-    solve, LocalSolverConfig, Preconditioner, ReductionStrategy, SolverParams, WeightedDesign,
-    WithinError,
+    solve, Design, LocalSolverConfig, Preconditioner, ReductionStrategy, SolverParams, WithinError,
 };
 
 #[test]
 fn test_empty_observations_error() {
-    // FactorMajorStore::new allows 0 rows; EmptyObservations is raised by WeightedDesign::from_store
-    let store =
-        FactorMajorStore::new(vec![vec![], vec![]], ObservationWeights::Unit, 0).expect("store ok");
-    let result = WeightedDesign::from_store(store);
+    // FactorMajorStore::new allows 0 rows; EmptyObservations is raised by Design::from_store
+    let store = FactorMajorStore::new(vec![vec![], vec![]], 0).expect("store ok");
+    let result = Design::from_store(store);
     assert!(result.is_err());
     match result.unwrap_err() {
         WithinError::EmptyObservations => {}
@@ -24,8 +22,7 @@ fn test_empty_observations_error() {
 #[test]
 fn test_observation_count_mismatch_error() {
     // Factor columns have different lengths
-    let result =
-        FactorMajorStore::new(vec![vec![0, 1, 2], vec![0, 1]], ObservationWeights::Unit, 3);
+    let result = FactorMajorStore::new(vec![vec![0, 1, 2], vec![0, 1]], 3);
     assert!(result.is_err());
     match result.unwrap_err() {
         WithinError::ObservationCountMismatch { .. } => {}
@@ -35,13 +32,14 @@ fn test_observation_count_mismatch_error() {
 
 #[test]
 fn test_weight_count_mismatch_error() {
-    let result = FactorMajorStore::new(
-        vec![vec![0, 1, 2], vec![0, 1, 0]],
-        ObservationWeights::Dense(vec![1.0, 2.0]), // wrong length
-        3,
-    );
-    assert!(result.is_err());
-    match result.unwrap_err() {
+    use within::Design;
+    let store = FactorMajorStore::new(vec![vec![0, 1, 2], vec![0, 1, 0]], 3).expect("valid store");
+    let design = Design::from_store(store).expect("valid design");
+    let params = SolverParams::default();
+    let err = within::Solver::from_design(design, Some(vec![1.0, 2.0]), &params, None)
+        .err()
+        .expect("expected mismatch error");
+    match err {
         WithinError::WeightCountMismatch { .. } => {}
         other => panic!("Expected WeightCountMismatch, got: {:?}", other),
     }

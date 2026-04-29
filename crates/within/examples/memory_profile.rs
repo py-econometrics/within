@@ -10,8 +10,10 @@ use std::time::Instant;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use schwarz_precond::solve::cg::cg_solve_preconditioned;
-use within::domain::WeightedDesign;
-use within::observation::{FactorMajorStore, ObservationWeights};
+use schwarz_precond::Operator;
+use within::domain::Design;
+use within::observation::FactorMajorStore;
+use within::DesignOperator;
 use within::LocalSolverConfig;
 use within::{build_schwarz, GramianOperator};
 
@@ -30,7 +32,7 @@ fn rss_mb() -> f64 {
     0.0
 }
 
-fn generate_fixest_3fe(n_obs: usize, seed: u64) -> (WeightedDesign<FactorMajorStore>, Vec<f64>) {
+fn generate_fixest_3fe(n_obs: usize, seed: u64) -> (Design<FactorMajorStore>, Vec<f64>) {
     let mut rng = SmallRng::seed_from_u64(seed);
     let n_years = 10usize;
     let n_indiv_per_firm = 23usize;
@@ -50,9 +52,8 @@ fn generate_fixest_3fe(n_obs: usize, seed: u64) -> (WeightedDesign<FactorMajorSt
 
     let factor_levels = vec![indiv_id, year, firm_id];
 
-    let store = FactorMajorStore::new(factor_levels, ObservationWeights::Unit, n_obs)
-        .expect("valid factor-major store");
-    let design = WeightedDesign::from_store(store).expect("valid design");
+    let store = FactorMajorStore::new(factor_levels, n_obs).expect("valid factor-major store");
+    let design = Design::from_store(store).expect("valid design");
 
     let mut x_true = vec![0.0; design.n_dofs];
     for x in &mut x_true {
@@ -60,7 +61,7 @@ fn generate_fixest_3fe(n_obs: usize, seed: u64) -> (WeightedDesign<FactorMajorSt
     }
 
     let mut y = vec![0.0; n_obs];
-    design.matvec_d(&x_true, &mut y);
+    DesignOperator::new(&design).apply(&x_true, &mut y);
     for yi in &mut y {
         *yi += 0.1 * rng.random_range(-1.0..1.0);
     }
@@ -103,7 +104,7 @@ fn main() {
 
     // Phase 2: Build Schwarz preconditioner
     let t = Instant::now();
-    let schwarz = build_schwarz(&design, &LocalSolverConfig::solver_default())
+    let schwarz = build_schwarz(&design, None, &LocalSolverConfig::solver_default())
         .expect("build schwarz preconditioner");
     let rss_schwarz = rss_mb();
     let dt_schwarz = t.elapsed().as_secs_f64();

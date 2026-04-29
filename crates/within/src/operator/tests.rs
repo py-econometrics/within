@@ -3,19 +3,15 @@
 // ===========================================================================
 
 mod design_tests {
-    use crate::domain::WeightedDesign;
-    use crate::observation::{FactorMajorStore, ObservationWeights};
+    use crate::domain::Design;
+    use crate::observation::FactorMajorStore;
     use crate::operator::DesignOperator;
     use schwarz_precond::Operator;
 
-    fn make_test_design() -> WeightedDesign<FactorMajorStore> {
-        let store = FactorMajorStore::new(
-            vec![vec![0, 1, 2, 0, 1], vec![0, 1, 2, 3, 0]],
-            ObservationWeights::Unit,
-            5,
-        )
-        .expect("valid factor-major store");
-        WeightedDesign::from_store(store).expect("valid test design")
+    fn make_test_design() -> Design<FactorMajorStore> {
+        let store = FactorMajorStore::new(vec![vec![0, 1, 2, 0, 1], vec![0, 1, 2, 3, 0]], 5)
+            .expect("valid factor-major store");
+        Design::from_store(store).expect("valid test design")
     }
 
     #[test]
@@ -168,25 +164,21 @@ mod csr_block_tests {
 // ===========================================================================
 
 mod residual_update_tests {
-    use crate::observation::{FactorMajorStore, ObservationWeights};
+    use crate::observation::FactorMajorStore;
     use crate::operator::gramian::Gramian;
     use crate::operator::residual_update::SparseGramianUpdater;
     use schwarz_precond::{OperatorResidualUpdater, ResidualUpdater};
 
     /// Helper: build a design, explicit Gramian.
     fn make_test_setup() -> (Gramian, usize) {
-        use crate::domain::WeightedDesign;
+        use crate::domain::Design;
         // 2 factors, 5 observations
         // factor 0: [0, 1, 2, 0, 1] (3 levels)
         // factor 1: [0, 1, 2, 3, 0] (4 levels)
         // n_dofs = 7
-        let store = FactorMajorStore::new(
-            vec![vec![0, 1, 2, 0, 1], vec![0, 1, 2, 3, 0]],
-            ObservationWeights::Unit,
-            5,
-        )
-        .expect("valid factor-major store");
-        let design = WeightedDesign::from_store(store).expect("valid fixed-effects design");
+        let store = FactorMajorStore::new(vec![vec![0, 1, 2, 0, 1], vec![0, 1, 2, 3, 0]], 5)
+            .expect("valid factor-major store");
+        let design = Design::from_store(store).expect("valid fixed-effects design");
         let gramian = Gramian::build(&design);
         let n_dofs = design.n_dofs;
         (gramian, n_dofs)
@@ -310,15 +302,14 @@ mod residual_update_tests {
 
     #[test]
     fn test_sparse_gramian_updater_weighted_design() {
-        use crate::domain::WeightedDesign;
+        use crate::domain::Design;
 
         let fl = vec![vec![0u32, 1, 0, 1], vec![0, 0, 1, 1]];
         let weights = vec![1.0, 2.0, 3.0, 4.0];
 
-        let store = FactorMajorStore::new(fl, ObservationWeights::Dense(weights), 4)
-            .expect("valid weighted store");
-        let design = WeightedDesign::from_store(store).expect("valid weighted design");
-        let gramian = Gramian::build(&design);
+        let store = FactorMajorStore::new(fl, 4).expect("valid weighted store");
+        let design = Design::from_store(store).expect("valid weighted design");
+        let gramian = Gramian::build_weighted(&design, &weights);
         let n_dofs = design.n_dofs;
 
         let mut sparse_updater = SparseGramianUpdater::new(gramian.matrix.clone());
@@ -609,8 +600,8 @@ mod schwarz_tests {
     use crate::config::{
         ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, DEFAULT_DENSE_SCHUR_THRESHOLD,
     };
-    use crate::domain::{build_local_domains, Subdomain, SubdomainCore, WeightedDesign};
-    use crate::observation::{FactorMajorStore, ObservationWeights};
+    use crate::domain::{build_local_domains, Design, Subdomain, SubdomainCore};
+    use crate::observation::FactorMajorStore;
     use crate::operator::csr_block::CsrBlock;
     use crate::operator::gramian::CrossTab;
     use crate::operator::local_solver::BlockElimSolver;
@@ -622,15 +613,11 @@ mod schwarz_tests {
 
     const BLOCK_ELIM_NESTED_RAYON_CHILD_ENV: &str = "WITHIN_TEST_BLOCK_ELIM_NESTED_RAYON_CHILD";
 
-    fn make_test_data() -> (WeightedDesign<FactorMajorStore>, Vec<(Subdomain, CrossTab)>) {
-        let store = FactorMajorStore::new(
-            vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]],
-            ObservationWeights::Unit,
-            5,
-        )
-        .expect("valid factor-major store");
-        let design = WeightedDesign::from_store(store).expect("valid fixed-effects design");
-        let domain_pairs = build_local_domains(&design);
+    fn make_test_data() -> (Design<FactorMajorStore>, Vec<(Subdomain, CrossTab)>) {
+        let store = FactorMajorStore::new(vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]], 5)
+            .expect("valid factor-major store");
+        let design = Design::from_store(store).expect("valid fixed-effects design");
+        let domain_pairs = build_local_domains(&design, None);
         (design, domain_pairs)
     }
 
@@ -944,7 +931,7 @@ mod schwarz_tests {
     fn test_build_default() {
         let (design, _) = make_test_data();
         let config = LocalSolverConfig::default();
-        let schwarz = build_schwarz(&design, &config).expect("build default schwarz");
+        let schwarz = build_schwarz(&design, None, &config).expect("build default schwarz");
         assert!(!schwarz.subdomains().is_empty());
     }
 
@@ -1199,18 +1186,14 @@ mod preconditioner_fused_tests {
     use schwarz_precond::Operator;
 
     use crate::config::{LocalSolverConfig, Preconditioner, ReductionStrategy};
-    use crate::domain::WeightedDesign;
-    use crate::observation::{FactorMajorStore, ObservationWeights};
+    use crate::domain::Design;
+    use crate::observation::FactorMajorStore;
     use crate::operator::preconditioner::build_preconditioner_fused;
 
-    fn make_test_design() -> WeightedDesign<FactorMajorStore> {
-        let store = FactorMajorStore::new(
-            vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]],
-            ObservationWeights::Unit,
-            5,
-        )
-        .expect("valid factor-major store");
-        WeightedDesign::from_store(store).expect("valid fixed-effects design")
+    fn make_test_design() -> Design<FactorMajorStore> {
+        let store = FactorMajorStore::new(vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]], 5)
+            .expect("valid factor-major store");
+        Design::from_store(store).expect("valid fixed-effects design")
     }
 
     #[test]
@@ -1220,7 +1203,7 @@ mod preconditioner_fused_tests {
             Preconditioner::Additive(LocalSolverConfig::default(), ReductionStrategy::Auto);
 
         let (gramian, precond) =
-            build_preconditioner_fused(&design, &config).expect("fused build should succeed");
+            build_preconditioner_fused(&design, None, &config).expect("fused build should succeed");
 
         // Gramian dimensions must match n_dofs.
         assert_eq!(gramian.matrix.n(), design.n_dofs);
@@ -1248,7 +1231,7 @@ mod preconditioner_fused_tests {
         let config = Preconditioner::Multiplicative(LocalSolverConfig::default());
 
         let (gramian, precond) =
-            build_preconditioner_fused(&design, &config).expect("fused build should succeed");
+            build_preconditioner_fused(&design, None, &config).expect("fused build should succeed");
 
         assert_eq!(gramian.matrix.n(), design.n_dofs);
         assert_eq!(precond.nrows(), design.n_dofs);
