@@ -106,7 +106,13 @@ pub struct WeightedGramianOperator<'a, S: Store> {
 impl<'a, S: Store> WeightedGramianOperator<'a, S> {
     /// Create an implicit weighted Gramian operator (length of `weights` must equal `design.n_rows`).
     pub fn new(design: &'a Design<S>, weights: &[f64]) -> Self {
-        debug_assert_eq!(weights.len(), design.n_rows);
+        assert_eq!(
+            weights.len(),
+            design.n_rows,
+            "weights length {} does not match design.n_rows {}",
+            weights.len(),
+            design.n_rows
+        );
         Self {
             scratch: Mutex::new(vec![0.0; design.n_rows]),
             design,

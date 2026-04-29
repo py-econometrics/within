@@ -212,7 +212,13 @@ impl Gramian {
 
     /// Assemble the weighted Gramian `G = D^T W D` as a CSR sparse matrix.
     pub fn build_weighted<S: Store>(design: &Design<S>, weights: &[f64]) -> Self {
-        debug_assert_eq!(weights.len(), design.n_rows);
+        assert_eq!(
+            weights.len(),
+            design.n_rows,
+            "weights length {} does not match design.n_rows {}",
+            weights.len(),
+            design.n_rows
+        );
         Self {
             matrix: Arc::new(build_full_matrix(design, Some(weights))),
         }

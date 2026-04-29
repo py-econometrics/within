@@ -329,7 +329,13 @@ pub struct WeightedDesignOperator<'a, S: Store> {
 impl<'a, S: Store> WeightedDesignOperator<'a, S> {
     /// Build from a design matrix and a non-empty weight slice (length = n_rows).
     pub fn new(design: &'a Design<S>, weights: &[f64]) -> Self {
-        debug_assert_eq!(weights.len(), design.n_rows);
+        assert_eq!(
+            weights.len(),
+            design.n_rows,
+            "weights length {} does not match design.n_rows {}",
+            weights.len(),
+            design.n_rows
+        );
         let sqrt_weights = weights.iter().map(|w| w.sqrt()).collect();
         Self {
             design,
