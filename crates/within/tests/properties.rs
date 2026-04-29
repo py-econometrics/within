@@ -62,8 +62,8 @@ proptest! {
 
         let mut gx = vec![0.0; n];
         let mut gy = vec![0.0; n];
-        gramian.apply(&x, &mut gx);
-        gramian.apply(&y, &mut gy);
+        gramian.apply(&x, &mut gx).expect("apply");
+        gramian.apply(&y, &mut gy).expect("apply");
 
         let xt_gy: f64 = x.iter().zip(gy.iter()).map(|(a, b)| a * b).sum();
         let yt_gx: f64 = y.iter().zip(gx.iter()).map(|(a, b)| a * b).sum();
@@ -83,7 +83,7 @@ proptest! {
         let mut y_explicit = vec![0.0; n];
         let mut y_implicit = vec![0.0; n];
         explicit.matvec(&x, &mut y_explicit);
-        implicit.apply(&x, &mut y_implicit);
+        implicit.apply(&x, &mut y_implicit).expect("apply");
 
         for (a, b) in y_explicit.iter().zip(y_implicit.iter()) {
             prop_assert!((a - b).abs() < 1e-10, "explicit vs implicit: {} vs {}", a, b);
@@ -106,8 +106,8 @@ proptest! {
 
         let mut y1 = vec![0.0; n];
         let mut y2 = vec![0.0; n];
-        fe_precond.apply(&x, &mut y1);
-        deserialized.apply(&x, &mut y2);
+        fe_precond.apply(&x, &mut y1).expect("apply");
+        deserialized.apply(&x, &mut y2).expect("apply");
 
         for (a, b) in y1.iter().zip(y2.iter()) {
             prop_assert!((a - b).abs() < 1e-12, "serde roundtrip mismatch: {} vs {}", a, b);
@@ -124,7 +124,7 @@ proptest! {
 
         let x_true: Vec<f64> = (0..n_dofs).map(|i| (i as f64 * 0.4).sin()).collect();
         let mut y = vec![0.0; n_obs];
-        DesignOperator::new(&design).apply(&x_true, &mut y);
+        DesignOperator::new(&design).apply(&x_true, &mut y).expect("apply");
 
         // Use slightly relaxed tolerance — randomly generated problems can be
         // borderline at 1e-8 (e.g. residual 1.02e-8 after 13 iters).

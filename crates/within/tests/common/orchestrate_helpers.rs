@@ -19,7 +19,9 @@ pub fn make_design(categories: Vec<Vec<u32>>) -> within::WithinResult<Design<Fac
 pub fn make_y_from_unit_solution(design: &Design<FactorMajorStore>) -> Vec<f64> {
     let x_true = vec![1.0; design.n_dofs];
     let mut y = vec![0.0; design.n_rows];
-    DesignOperator::new(design).apply(&x_true, &mut y);
+    DesignOperator::new(design)
+        .apply(&x_true, &mut y)
+        .expect("DesignOperator apply");
     y
 }
 
@@ -28,7 +30,9 @@ pub fn make_rhs_from_unit_solution(design: &Design<FactorMajorStore>) -> Vec<f64
     let gramian_op = GramianOperator::new(design);
     let x_true = vec![1.0; design.n_dofs];
     let mut rhs = vec![0.0; design.n_dofs];
-    gramian_op.apply(&x_true, &mut rhs);
+    gramian_op
+        .apply(&x_true, &mut rhs)
+        .expect("GramianOperator apply");
     rhs
 }
 

@@ -3,9 +3,10 @@
 //! Demonstrates the simplest use of `SchwarzPreconditioner` with hand-built
 //! subdomains and diagonal local solvers.
 
-use schwarz_precond::solve::cg::{cg_solve, cg_solve_preconditioned};
+use schwarz_precond::solve::cg::pcg;
+use schwarz_precond::IdentityOperator;
 use schwarz_precond::{
-    LocalSolveError, LocalSolver, Operator, SchwarzPreconditioner, SubdomainCore, SubdomainEntry,
+    LocalSolver, Operator, SchwarzPreconditioner, SolveError, SubdomainCore, SubdomainEntry,
 };
 
 // ---------------------------------------------------------------------------
@@ -23,7 +24,7 @@ impl Operator for TridiagOperator {
     fn ncols(&self) -> usize {
         self.n
     }
-    fn apply(&self, x: &[f64], y: &mut [f64]) {
+    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
         for i in 0..self.n {
             y[i] = 3.0 * x[i];
             if i > 0 {
@@ -33,9 +34,10 @@ impl Operator for TridiagOperator {
                 y[i] -= x[i + 1];
             }
         }
+        Ok(())
     }
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) {
-        self.apply(x, y); // symmetric
+    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+        self.apply(x, y) // symmetric
     }
 }
 
@@ -55,7 +57,12 @@ impl LocalSolver for DiagLocalSolver {
     fn scratch_size(&self) -> usize {
         self.n_local
     }
-    fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), LocalSolveError> {
+    fn solve_local(
+        &self,
+        rhs: &mut [f64],
+        sol: &mut [f64],
+        _allow_inner_parallelism: bool,
+    ) -> Result<(), SolveError> {
         for i in 0..self.n_local {
             sol[i] = rhs[i] / self.diag_val;
         }
@@ -105,7 +112,8 @@ fn main() {
     let a = TridiagOperator { n };
 
     // --- Unpreconditioned CG ---
-    let result_plain = cg_solve(&a, &rhs, 1e-10, 200).expect("unpreconditioned cg");
+    let result_plain =
+        pcg(&a, &rhs, None::<&IdentityOperator>, 1e-10, 200).expect("unpreconditioned cg");
     println!(
         "Unpreconditioned CG : converged={}, iterations={:>3}, residual={:.3e}",
         result_plain.converged, result_plain.iterations, result_plain.residual_norm,
@@ -114,8 +122,7 @@ fn main() {
     // --- Additive Schwarz preconditioned CG ---
     let precond = SchwarzPreconditioner::new(build_entries(n), n)
         .expect("valid additive schwarz preconditioner");
-    let result_schwarz =
-        cg_solve_preconditioned(&a, &precond, &rhs, 1e-10, 200).expect("preconditioned cg");
+    let result_schwarz = pcg(&a, &rhs, Some(&precond), 1e-10, 200).expect("preconditioned cg");
     println!(
         "Additive Schwarz CG : converged={}, iterations={:>3}, residual={:.3e}",
         result_schwarz.converged, result_schwarz.iterations, result_schwarz.residual_norm,

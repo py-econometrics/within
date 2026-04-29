@@ -6,9 +6,7 @@ import pytest
 from within import solve
 from within._within import ApproxCholConfig, ApproxSchurConfig
 
-
-def as_solver_categories(cats):
-    return np.asfortranarray(np.column_stack(cats).astype(np.uint32))
+from conftest import as_solver_categories
 
 
 class TestErrorHandling:

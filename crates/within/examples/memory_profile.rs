@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
-use schwarz_precond::solve::cg::cg_solve_preconditioned;
+use schwarz_precond::solve::cg::pcg;
 use schwarz_precond::Operator;
 use within::domain::Design;
 use within::observation::FactorMajorStore;
@@ -61,7 +61,9 @@ fn generate_fixest_3fe(n_obs: usize, seed: u64) -> (Design<FactorMajorStore>, Ve
     }
 
     let mut y = vec![0.0; n_obs];
-    DesignOperator::new(&design).apply(&x_true, &mut y);
+    DesignOperator::new(&design)
+        .apply(&x_true, &mut y)
+        .expect("apply");
     for yi in &mut y {
         *yi += 0.1 * rng.random_range(-1.0..1.0);
     }
@@ -129,7 +131,7 @@ fn main() {
     {
         use schwarz_precond::Operator;
         let design_op = within::DesignOperator::new(&design);
-        design_op.apply_adjoint(&y, &mut rhs);
+        design_op.apply_adjoint(&y, &mut rhs).expect("apply");
     }
     let rss_rhs = rss_mb();
     let dt_rhs = t.elapsed().as_secs_f64();
@@ -141,8 +143,7 @@ fn main() {
 
     // Phase 5: CG solve
     let t = Instant::now();
-    let cg_result =
-        cg_solve_preconditioned(&gramian_op, &schwarz, &rhs, 1e-8, 100).expect("cg solve");
+    let cg_result = pcg(&gramian_op, &rhs, Some(&schwarz), 1e-8, 100).expect("cg solve");
     let rss_solve = rss_mb();
     let dt_solve = t.elapsed().as_secs_f64();
     println!("\n[5] CG Solve ({dt_solve:.3}s)");

@@ -148,7 +148,7 @@ proptest! {
         let mut y_exp = vec![0.0; n];
         let mut y_imp = vec![0.0; n];
         explicit.matvec(&x, &mut y_exp);
-        implicit.apply(&x, &mut y_imp);
+        implicit.apply(&x, &mut y_imp).expect("apply");
 
         for (a, b) in y_exp.iter().zip(y_imp.iter()) {
             prop_assert!(
@@ -175,7 +175,7 @@ proptest! {
         let y_feasible: Vec<f64> = {
             let x_true = vec![1.0; design.n_dofs];
             let mut y_out = vec![0.0; design.n_rows];
-            DesignOperator::new(&design).apply(&x_true, &mut y_out);
+            DesignOperator::new(&design).apply(&x_true, &mut y_out).expect("apply");
             y_out
         };
         // Use y_feasible so convergence is guaranteed on a consistent system
@@ -278,7 +278,7 @@ proptest! {
         let n_levels = design.n_dofs;
         let x_true = vec![1.0; n_levels];
         let mut y_feasible = vec![0.0; design.n_rows];
-        DesignOperator::new(&design).apply(&x_true, &mut y_feasible);
+        DesignOperator::new(&design).apply(&x_true, &mut y_feasible).expect("apply");
 
         // No preconditioner, no iterative refinement.
         let params = SolverParams {

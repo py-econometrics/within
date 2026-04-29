@@ -243,7 +243,9 @@ impl<S: Store> Solver<S> {
 
     /// `dst = D x`.
     fn design_apply(&self, x: &[f64], dst: &mut [f64]) {
-        DesignOperator::new(&self.design).apply(x, dst);
+        DesignOperator::new(&self.design)
+            .apply(x, dst)
+            .expect("DesignOperator::apply is infallible");
     }
 
     /// `dst = D^T W r` (or `D^T r` when unweighted).
@@ -255,7 +257,9 @@ impl<S: Store> Solver<S> {
                 scatter_apply(&self.design, dst, |i| w[i] * r[i]);
             }
             None => {
-                DesignOperator::new(&self.design).apply_adjoint(r, dst);
+                DesignOperator::new(&self.design)
+                    .apply_adjoint(r, dst)
+                    .expect("DesignOperator::apply_adjoint is infallible");
             }
         }
     }
@@ -470,18 +474,5 @@ impl<'a> Solver<ArrayStore<'a>> {
         let design = Design::from_store(store)?;
         let weights = weights.map(|w| w.to_vec());
         Self::from_design(design, weights, params, preconditioner)
-    }
-
-    /// Build a solver with a pre-built preconditioner (e.g. deserialized).
-    pub fn with_preconditioner(
-        categories: ArrayView2<'a, u32>,
-        weights: Option<&[f64]>,
-        params: &SolverParams,
-        preconditioner: FePreconditioner,
-    ) -> WithinResult<Self> {
-        let store = ArrayStore::new(categories)?;
-        let design = Design::from_store(store)?;
-        let weights = weights.map(|w| w.to_vec());
-        Self::from_design_with_preconditioner(design, weights, params, preconditioner)
     }
 }

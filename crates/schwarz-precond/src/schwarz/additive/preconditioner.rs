@@ -5,10 +5,8 @@
 //! scheduling diagnostics, and allocates the executor. `apply` is lock-free
 //! in steady state (buffers are borrowed from a pool).
 
-use crate::error::{validate_entries, ApplyError, PreconditionerBuildError};
-use crate::local_solve::{
-    DefaultLocalSolveInvoker, LocalSolveInvoker, LocalSolver, SubdomainEntry,
-};
+use crate::error::{validate_entries, BuildError, SolveError};
+use crate::local_solve::{LocalSolver, SubdomainEntry};
 use crate::Operator;
 
 use super::executor::AdditiveExecutor;
@@ -24,10 +22,9 @@ use super::planning::{
 /// The reduction strategy resets to `Auto` on deserialize; buffers are
 /// re-allocated fresh.
 #[cfg(feature = "serde")]
-impl<S, I> serde::Serialize for SchwarzPreconditioner<S, I>
+impl<S> serde::Serialize for SchwarzPreconditioner<S>
 where
     S: LocalSolver + serde::Serialize,
-    I: LocalSolveInvoker<S>,
 {
     fn serialize<Ser: serde::Serializer>(&self, serializer: Ser) -> Result<Ser::Ok, Ser::Error> {
         use serde::ser::SerializeStruct;
@@ -40,10 +37,9 @@ where
 }
 
 #[cfg(feature = "serde")]
-impl<'de, S, I> serde::Deserialize<'de> for SchwarzPreconditioner<S, I>
+impl<'de, S> serde::Deserialize<'de> for SchwarzPreconditioner<S>
 where
     S: LocalSolver + serde::de::DeserializeOwned,
-    I: LocalSolveInvoker<S>,
 {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         use serde::Deserialize;
@@ -60,12 +56,7 @@ where
         Ok(SchwarzPreconditioner {
             reduction_strategy: ReductionStrategy::default(),
             scheduler: AdditiveScheduler::from_entries(&h.subdomains, h.n_dofs),
-            executor: AdditiveExecutor::new(
-                h.subdomains,
-                h.n_dofs,
-                h.max_scratch_size,
-                I::default(),
-            ),
+            executor: AdditiveExecutor::new(h.subdomains, h.n_dofs, h.max_scratch_size),
         })
     }
 }
@@ -76,22 +67,18 @@ where
 /// shares the heavy subdomain data. A pool of per-thread buffer sets enables
 /// safe concurrent `apply()` calls on the same instance — each caller grabs
 /// an independent buffer set from the pool for the duration of the call.
-pub struct SchwarzPreconditioner<S: LocalSolver, I: LocalSolveInvoker<S> = DefaultLocalSolveInvoker>
-{
+pub struct SchwarzPreconditioner<S: LocalSolver> {
     /// Strategy for combining per-subdomain results.
     pub(super) reduction_strategy: ReductionStrategy,
     /// Build-time scheduler state for additive apply.
     pub(super) scheduler: AdditiveScheduler,
     /// Static execution state for additive apply.
-    pub(super) executor: AdditiveExecutor<S, I>,
+    pub(super) executor: AdditiveExecutor<S>,
 }
 
-impl<S: LocalSolver> SchwarzPreconditioner<S, DefaultLocalSolveInvoker> {
+impl<S: LocalSolver> SchwarzPreconditioner<S> {
     /// Construct from pre-built subdomain entries using the default strategy.
-    pub fn new(
-        entries: Vec<SubdomainEntry<S>>,
-        n_dofs: usize,
-    ) -> Result<Self, PreconditionerBuildError> {
+    pub fn new(entries: Vec<SubdomainEntry<S>>, n_dofs: usize) -> Result<Self, BuildError> {
         Self::with_strategy(entries, n_dofs, ReductionStrategy::default())
     }
 
@@ -100,20 +87,7 @@ impl<S: LocalSolver> SchwarzPreconditioner<S, DefaultLocalSolveInvoker> {
         entries: Vec<SubdomainEntry<S>>,
         n_dofs: usize,
         strategy: ReductionStrategy,
-    ) -> Result<Self, PreconditionerBuildError> {
-        Self::with_strategy_and_invoker(entries, n_dofs, strategy, DefaultLocalSolveInvoker)
-    }
-}
-
-impl<S: LocalSolver, I: LocalSolveInvoker<S>> SchwarzPreconditioner<S, I> {
-    /// Construct from pre-built subdomain entries with an explicit reduction strategy
-    /// and a caller-provided local-solve invoker.
-    pub fn with_strategy_and_invoker(
-        entries: Vec<SubdomainEntry<S>>,
-        n_dofs: usize,
-        strategy: ReductionStrategy,
-        invoker: I,
-    ) -> Result<Self, PreconditionerBuildError> {
+    ) -> Result<Self, BuildError> {
         validate_entries(&entries, n_dofs)?;
         let max_scratch_size = entries
             .iter()
@@ -124,7 +98,7 @@ impl<S: LocalSolver, I: LocalSolveInvoker<S>> SchwarzPreconditioner<S, I> {
         Ok(Self {
             reduction_strategy: strategy,
             scheduler,
-            executor: AdditiveExecutor::new(entries, n_dofs, max_scratch_size, invoker),
+            executor: AdditiveExecutor::new(entries, n_dofs, max_scratch_size),
         })
     }
 
@@ -160,12 +134,6 @@ impl<S: LocalSolver, I: LocalSolveInvoker<S>> SchwarzPreconditioner<S, I> {
         }
     }
 
-    /// Fallible operator apply that propagates local-solver failures.
-    pub fn try_apply(&self, r: &[f64], z: &mut [f64]) -> Result<(), ApplyError> {
-        let plan = self.reduction_plan();
-        self.executor.try_apply(plan, r, z)
-    }
-
     fn reduction_plan(&self) -> ReductionPlan {
         let threads = rayon::current_num_threads().max(1);
         self.scheduler
@@ -173,7 +141,7 @@ impl<S: LocalSolver, I: LocalSolveInvoker<S>> SchwarzPreconditioner<S, I> {
     }
 }
 
-impl<S: LocalSolver, I: LocalSolveInvoker<S>> Clone for SchwarzPreconditioner<S, I> {
+impl<S: LocalSolver> Clone for SchwarzPreconditioner<S> {
     /// Clone shares both the subdomain data and the buffer pool via `Arc`.
     /// This is O(1) and the clone is fully interchangeable with the original.
     fn clone(&self) -> Self {
@@ -185,7 +153,7 @@ impl<S: LocalSolver, I: LocalSolveInvoker<S>> Clone for SchwarzPreconditioner<S,
     }
 }
 
-impl<S: LocalSolver, I: LocalSolveInvoker<S>> Operator for SchwarzPreconditioner<S, I> {
+impl<S: LocalSolver> Operator for SchwarzPreconditioner<S> {
     fn nrows(&self) -> usize {
         self.executor.n_dofs
     }
@@ -194,21 +162,12 @@ impl<S: LocalSolver, I: LocalSolveInvoker<S>> Operator for SchwarzPreconditioner
         self.executor.n_dofs
     }
 
-    fn apply(&self, r: &[f64], z: &mut [f64]) {
-        if self.try_apply(r, z).is_err() {
-            z.fill(f64::NAN);
-        }
+    fn apply(&self, r: &[f64], z: &mut [f64]) -> Result<(), SolveError> {
+        let plan = self.reduction_plan();
+        self.executor.try_apply(plan, r, z)
     }
 
-    fn apply_adjoint(&self, r: &[f64], z: &mut [f64]) {
-        self.apply(r, z);
-    }
-
-    fn try_apply(&self, r: &[f64], z: &mut [f64]) -> Result<(), ApplyError> {
-        SchwarzPreconditioner::try_apply(self, r, z)
-    }
-
-    fn try_apply_adjoint(&self, r: &[f64], z: &mut [f64]) -> Result<(), ApplyError> {
-        SchwarzPreconditioner::try_apply(self, r, z)
+    fn apply_adjoint(&self, r: &[f64], z: &mut [f64]) -> Result<(), SolveError> {
+        self.apply(r, z)
     }
 }

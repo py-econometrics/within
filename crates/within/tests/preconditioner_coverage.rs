@@ -140,7 +140,7 @@ fn test_fe_schwarz_with_reduction_strategy() {
 
     let x = vec![1.0; design.n_dofs];
     let mut y = vec![0.0; design.n_dofs];
-    new_schwarz.apply(&x, &mut y);
+    new_schwarz.apply(&x, &mut y).expect("apply");
     assert!(
         y.iter().all(|v| v.is_finite()),
         "apply output should be finite after with_reduction_strategy"
@@ -222,27 +222,29 @@ fn test_fe_schwarz_diagnostics_valid() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 10: FeSchwarz try_apply matches apply
+// Test 10: FeSchwarz apply succeeds and produces consistent output
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_fe_schwarz_try_apply_matches_apply() {
+fn test_fe_schwarz_apply_succeeds() {
     let design = common::make_test_design();
     let schwarz = build_schwarz(&design, None, &LocalSolverConfig::default())
         .expect("build_schwarz should succeed");
 
     let x = vec![1.0; design.n_dofs];
 
-    let mut y_apply = vec![0.0; design.n_dofs];
-    schwarz.apply(&x, &mut y_apply);
-
-    let mut y_try = vec![0.0; design.n_dofs];
+    let mut y_first = vec![0.0; design.n_dofs];
     schwarz
-        .try_apply(&x, &mut y_try)
-        .expect("try_apply should not fail");
+        .apply(&x, &mut y_first)
+        .expect("apply should succeed");
 
-    for (a, b) in y_apply.iter().zip(y_try.iter()) {
-        assert_eq!(a, b, "apply and try_apply should produce identical results");
+    let mut y_second = vec![0.0; design.n_dofs];
+    schwarz
+        .apply(&x, &mut y_second)
+        .expect("apply should succeed");
+
+    for (a, b) in y_first.iter().zip(y_second.iter()) {
+        assert_eq!(a, b, "apply should be deterministic");
     }
 }
 

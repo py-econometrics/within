@@ -11,14 +11,11 @@
 //!   `Rᵢ` and `D̃ᵢ`) with a `LocalSolver` (which implements `Aᵢ⁻¹`),
 //!   giving a single object that can compute the full per-subdomain
 //!   contribution `Rᵢᵀ D̃ᵢ Aᵢ⁻¹ D̃ᵢ Rᵢ r` via [`SubdomainEntry::apply_weighted_into_with_scratch`].
-//!
-//! [`LocalSolveInvoker`] is a policy trait that controls *how* the local
-//! solve is dispatched (e.g. with or without nested parallelism).
 
 use std::sync::atomic::AtomicU64;
 
 use crate::domain::SubdomainCore;
-use crate::error::{LocalSolveError, SubdomainEntryBuildError};
+use crate::error::{BuildError, SolveError};
 
 // ---------------------------------------------------------------------------
 // LocalSolver trait
@@ -41,46 +38,22 @@ pub trait LocalSolver: Send + Sync {
     ///
     /// Both `rhs` and `sol` have length >= `scratch_size()`.
     /// The solver may read/write up to `scratch_size()` elements.
-    fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), LocalSolveError>;
+    ///
+    /// `allow_inner_parallelism` is a hint from the Schwarz scheduler: when
+    /// `false`, the caller does not want this solve to spawn nested Rayon work.
+    /// Solvers without nested-parallel regions can ignore the parameter.
+    fn solve_local(
+        &self,
+        rhs: &mut [f64],
+        sol: &mut [f64],
+        allow_inner_parallelism: bool,
+    ) -> Result<(), SolveError>;
 
     /// Estimated amount of local work that can benefit from nested Rayon.
     ///
     /// Return zero when the solver has no nested-parallel region worth enabling.
     fn inner_parallelism_work_estimate(&self) -> usize {
         0
-    }
-}
-
-/// Strategy for invoking a local solver under a specific execution policy.
-///
-/// The default invoker simply calls [`LocalSolver::solve_local`] and ignores
-/// the policy hint. Specialized integrations can override this without
-/// polluting the core [`LocalSolver`] trait.
-pub trait LocalSolveInvoker<S: LocalSolver>: Clone + Default + Send + Sync {
-    /// Invoke `solver` for one local solve.
-    fn solve_local(
-        &self,
-        solver: &S,
-        rhs: &mut [f64],
-        sol: &mut [f64],
-        allow_inner_parallelism: bool,
-    ) -> Result<(), LocalSolveError>;
-}
-
-/// Default local-solve invoker: ignores the policy hint.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct DefaultLocalSolveInvoker;
-
-impl<S: LocalSolver> LocalSolveInvoker<S> for DefaultLocalSolveInvoker {
-    fn solve_local(
-        &self,
-        solver: &S,
-        rhs: &mut [f64],
-        sol: &mut [f64],
-        allow_inner_parallelism: bool,
-    ) -> Result<(), LocalSolveError> {
-        let _ = allow_inner_parallelism;
-        solver.solve_local(rhs, sol)
     }
 }
 
@@ -104,11 +77,11 @@ pub struct SubdomainEntry<S: LocalSolver> {
 
 impl<S: LocalSolver> SubdomainEntry<S> {
     /// Create a validated subdomain entry from a core and a local solver.
-    pub fn try_new(core: SubdomainCore, solver: S) -> Result<Self, SubdomainEntryBuildError> {
+    pub fn try_new(core: SubdomainCore, solver: S) -> Result<Self, BuildError> {
         let index_count = core.n_local();
         let solver_n_local = solver.n_local();
         if solver_n_local != index_count {
-            return Err(SubdomainEntryBuildError::LocalDofCountMismatch {
+            return Err(BuildError::LocalDofCountMismatch {
                 index_count,
                 solver_n_local,
             });
@@ -116,7 +89,7 @@ impl<S: LocalSolver> SubdomainEntry<S> {
 
         let scratch_size = solver.scratch_size();
         if scratch_size < index_count {
-            return Err(SubdomainEntryBuildError::ScratchSizeTooSmall {
+            return Err(BuildError::ScratchSizeTooSmall {
                 scratch_size,
                 required_min: index_count,
             });
@@ -168,26 +141,18 @@ impl<S: LocalSolver> SubdomainEntry<S> {
         out: &mut [f64],
         r_scratch: &mut [f64],
         z_scratch: &mut [f64],
-    ) -> Result<(), LocalSolveError> {
-        self.apply_weighted_into_with_scratch_by(
-            r,
-            out,
-            r_scratch,
-            z_scratch,
-            &DefaultLocalSolveInvoker,
-            true,
-        )
+    ) -> Result<(), SolveError> {
+        self.apply_weighted_into_with_scratch_with(r, out, r_scratch, z_scratch, true)
     }
 
-    pub(crate) fn apply_weighted_into_with_scratch_by<I: LocalSolveInvoker<S>>(
+    pub(crate) fn apply_weighted_into_with_scratch_with(
         &self,
         r: &[f64],
         out: &mut [f64],
         r_scratch: &mut [f64],
         z_scratch: &mut [f64],
-        invoker: &I,
         allow_inner_parallelism: bool,
-    ) -> Result<(), LocalSolveError> {
+    ) -> Result<(), SolveError> {
         if self.core.is_empty() {
             return Ok(());
         }
@@ -196,7 +161,8 @@ impl<S: LocalSolver> SubdomainEntry<S> {
         self.core.restrict_weighted(r, r_scratch);
 
         // Local solve (strategy-specific transforms happen inside the solver)
-        invoker.solve_local(&self.solver, r_scratch, z_scratch, allow_inner_parallelism)?;
+        self.solver
+            .solve_local(r_scratch, z_scratch, allow_inner_parallelism)?;
 
         // Weighted scatter directly into output: out += R_i^T @ D_i @ z_local
         self.core.prolongate_weighted_add(z_scratch, out);
@@ -212,26 +178,18 @@ impl<S: LocalSolver> SubdomainEntry<S> {
         out: &[AtomicU64],
         r_scratch: &mut [f64],
         z_scratch: &mut [f64],
-    ) -> Result<(), LocalSolveError> {
-        self.apply_weighted_into_atomic_by(
-            r,
-            out,
-            r_scratch,
-            z_scratch,
-            &DefaultLocalSolveInvoker,
-            true,
-        )
+    ) -> Result<(), SolveError> {
+        self.apply_weighted_into_atomic_with(r, out, r_scratch, z_scratch, true)
     }
 
-    pub(crate) fn apply_weighted_into_atomic_by<I: LocalSolveInvoker<S>>(
+    pub(crate) fn apply_weighted_into_atomic_with(
         &self,
         r: &[f64],
         out: &[AtomicU64],
         r_scratch: &mut [f64],
         z_scratch: &mut [f64],
-        invoker: &I,
         allow_inner_parallelism: bool,
-    ) -> Result<(), LocalSolveError> {
+    ) -> Result<(), SolveError> {
         if self.core.is_empty() {
             return Ok(());
         }
@@ -240,7 +198,8 @@ impl<S: LocalSolver> SubdomainEntry<S> {
         self.core.restrict_weighted(r, r_scratch);
 
         // Local solve (strategy-specific transforms happen inside the solver)
-        invoker.solve_local(&self.solver, r_scratch, z_scratch, allow_inner_parallelism)?;
+        self.solver
+            .solve_local(r_scratch, z_scratch, allow_inner_parallelism)?;
 
         // Weighted atomic scatter into output: out += R_i^T @ D_i @ z_local
         self.core.prolongate_weighted_add_atomic(z_scratch, out);
@@ -304,7 +263,12 @@ mod tests {
         fn scratch_size(&self) -> usize {
             self.n
         }
-        fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), LocalSolveError> {
+        fn solve_local(
+            &self,
+            rhs: &mut [f64],
+            sol: &mut [f64],
+            _allow_inner_parallelism: bool,
+        ) -> Result<(), SolveError> {
             sol[..self.n].copy_from_slice(&rhs[..self.n]);
             Ok(())
         }

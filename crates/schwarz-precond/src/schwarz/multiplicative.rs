@@ -29,7 +29,7 @@
 use std::sync::Mutex;
 
 use crate::domain::PartitionWeights;
-use crate::error::{validate_entries, ApplyError, LocalSolveError, PreconditionerBuildError};
+use crate::error::{tag_subdomain, validate_entries, BuildError, SolveError};
 use crate::local_solve::{LocalSolver, SubdomainEntry};
 use crate::Operator;
 
@@ -87,7 +87,9 @@ impl<A: Operator> ResidualUpdater for OperatorResidualUpdater<'_, A> {
             self.y_accum[gi as usize] += weighted_correction[k];
         }
 
-        self.operator.apply(&self.y_accum, &mut self.a_y);
+        self.operator
+            .apply(&self.y_accum, &mut self.a_y)
+            .expect("OperatorResidualUpdater: operator apply failed");
         for (r, (&ro, &ay)) in r_work
             .iter_mut()
             .zip(self.r_original.iter().zip(self.a_y.iter()))
@@ -130,7 +132,7 @@ fn apply_subdomain<S: LocalSolver, U: ResidualUpdater>(
     bufs: &mut SweepBuffers,
     z: &mut [f64],
     updater: &mut U,
-) -> Result<(), LocalSolveError> {
+) -> Result<(), SolveError> {
     if entry.is_empty() {
         return Ok(());
     }
@@ -142,7 +144,7 @@ fn apply_subdomain<S: LocalSolver, U: ResidualUpdater>(
         .restrict_weighted(&bufs.r_work, &mut bufs.r_scratch);
     entry
         .solver()
-        .solve_local(&mut bufs.r_scratch, &mut bufs.z_scratch)?;
+        .solve_local(&mut bufs.r_scratch, &mut bufs.z_scratch, true)?;
     entry.core().prolongate_weighted_add(&bufs.z_scratch, z);
 
     match entry.partition_weights() {
@@ -193,7 +195,7 @@ impl<S: LocalSolver, U: ResidualUpdater> MultiplicativeSchwarzPreconditioner<S, 
         updater: U,
         n_dofs: usize,
         symmetric: bool,
-    ) -> Result<Self, PreconditionerBuildError> {
+    ) -> Result<Self, BuildError> {
         validate_entries(&entries, n_dofs)?;
         let (max_scratch_size, max_local_dofs) = compute_sizes(&entries);
         Ok(Self {
@@ -209,40 +211,6 @@ impl<S: LocalSolver, U: ResidualUpdater> MultiplicativeSchwarzPreconditioner<S, 
     pub fn subdomains(&self) -> &[SubdomainEntry<S>] {
         &self.subdomains
     }
-
-    /// Fallible operator apply that propagates local-solver failures.
-    pub fn try_apply(&self, r: &[f64], z: &mut [f64]) -> Result<(), ApplyError> {
-        let mut bufs = self
-            .scratch
-            .lock()
-            .map_err(|_| ApplyError::Synchronization {
-                context: "multiplicative.scratch.lock",
-            })?;
-        let mut updater = self
-            .updater
-            .lock()
-            .map_err(|_| ApplyError::Synchronization {
-                context: "multiplicative.updater.lock",
-            })?;
-        z.fill(0.0);
-
-        bufs.r_work.copy_from_slice(r);
-        updater.reset(r);
-        for (subdomain, entry) in self.subdomains.iter().enumerate() {
-            apply_subdomain(entry, &mut bufs, z, &mut *updater)
-                .map_err(|source| ApplyError::LocalSolveFailed { subdomain, source })?;
-        }
-
-        if self.symmetric {
-            updater.reset(&bufs.r_work);
-            for (rev_idx, entry) in self.subdomains.iter().rev().enumerate() {
-                let subdomain = self.subdomains.len().saturating_sub(1) - rev_idx;
-                apply_subdomain(entry, &mut bufs, z, &mut *updater)
-                    .map_err(|source| ApplyError::LocalSolveFailed { subdomain, source })?;
-            }
-        }
-        Ok(())
-    }
 }
 
 impl<S: LocalSolver, U: ResidualUpdater> Operator for MultiplicativeSchwarzPreconditioner<S, U> {
@@ -254,22 +222,41 @@ impl<S: LocalSolver, U: ResidualUpdater> Operator for MultiplicativeSchwarzPreco
         self.n_dofs
     }
 
-    fn apply(&self, r: &[f64], z: &mut [f64]) {
-        if self.try_apply(r, z).is_err() {
-            z.fill(f64::NAN);
+    fn apply(&self, r: &[f64], z: &mut [f64]) -> Result<(), SolveError> {
+        let mut bufs = self
+            .scratch
+            .lock()
+            .map_err(|_| SolveError::Synchronization {
+                context: "multiplicative.scratch.lock",
+            })?;
+        let mut updater = self
+            .updater
+            .lock()
+            .map_err(|_| SolveError::Synchronization {
+                context: "multiplicative.updater.lock",
+            })?;
+        z.fill(0.0);
+
+        bufs.r_work.copy_from_slice(r);
+        updater.reset(r);
+        for (subdomain, entry) in self.subdomains.iter().enumerate() {
+            apply_subdomain(entry, &mut bufs, z, &mut *updater)
+                .map_err(|e| tag_subdomain(e, subdomain))?;
         }
+
+        if self.symmetric {
+            updater.reset(&bufs.r_work);
+            for (rev_idx, entry) in self.subdomains.iter().rev().enumerate() {
+                let subdomain = self.subdomains.len().saturating_sub(1) - rev_idx;
+                apply_subdomain(entry, &mut bufs, z, &mut *updater)
+                    .map_err(|e| tag_subdomain(e, subdomain))?;
+            }
+        }
+        Ok(())
     }
 
-    fn apply_adjoint(&self, r: &[f64], z: &mut [f64]) {
-        self.apply(r, z);
-    }
-
-    fn try_apply(&self, r: &[f64], z: &mut [f64]) -> Result<(), ApplyError> {
-        MultiplicativeSchwarzPreconditioner::try_apply(self, r, z)
-    }
-
-    fn try_apply_adjoint(&self, r: &[f64], z: &mut [f64]) -> Result<(), ApplyError> {
-        MultiplicativeSchwarzPreconditioner::try_apply(self, r, z)
+    fn apply_adjoint(&self, r: &[f64], z: &mut [f64]) -> Result<(), SolveError> {
+        self.apply(r, z)
     }
 }
 
@@ -378,14 +365,15 @@ mod tests {
             self.values.len()
         }
 
-        fn apply(&self, x: &[f64], y: &mut [f64]) {
+        fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
             for i in 0..self.values.len() {
                 y[i] = self.values[i] * x[i];
             }
+            Ok(())
         }
 
-        fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) {
-            self.apply(x, y);
+        fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+            self.apply(x, y)
         }
     }
 

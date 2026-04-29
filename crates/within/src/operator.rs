@@ -298,13 +298,15 @@ impl<S: Store> Operator for DesignOperator<'_, S> {
         self.design.n_dofs
     }
 
-    fn apply(&self, x: &[f64], y: &mut [f64]) {
+    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
         gather_apply(self.design, x, y, |_, s| s);
+        Ok(())
     }
 
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) {
+    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
         y.fill(0.0);
         scatter_apply(self.design, y, |i| x[i]);
+        Ok(())
     }
 }
 
@@ -361,14 +363,16 @@ impl<S: Store> Operator for WeightedDesignOperator<'_, S> {
         self.design.n_dofs
     }
 
-    fn apply(&self, x: &[f64], y: &mut [f64]) {
+    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
         let sw = &self.sqrt_weights;
         gather_apply(self.design, x, y, |i, s| sw[i] * s);
+        Ok(())
     }
 
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) {
+    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
         y.fill(0.0);
         let sw = &self.sqrt_weights;
         scatter_apply(self.design, y, |i| sw[i] * x[i]);
+        Ok(())
     }
 }

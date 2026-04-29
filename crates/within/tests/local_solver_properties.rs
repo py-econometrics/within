@@ -1,4 +1,4 @@
-use schwarz_precond::solve::cg::cg_solve_preconditioned;
+use schwarz_precond::solve::cg::pcg;
 use schwarz_precond::{LocalSolver, Operator};
 use within::operator::gramian::GramianOperator;
 use within::operator::schwarz::build_schwarz;
@@ -29,7 +29,7 @@ fn test_block_elim_round_trip() {
     // Aggregate preconditioner apply: rhs → result should be finite and non-trivial.
     let rhs = common::make_rhs_from_unit_solution(&design);
     let mut result = vec![0.0; design.n_dofs];
-    schwarz.apply(&rhs, &mut result);
+    schwarz.apply(&rhs, &mut result).expect("apply");
 
     assert!(
         result.iter().all(|v| v.is_finite()),
@@ -58,7 +58,7 @@ fn test_block_elim_round_trip() {
 
         // Use rhs = 0 (trivial rhs for null-space consistency check).
         solver
-            .solve_local(&mut rhs_buf, &mut sol_buf)
+            .solve_local(&mut rhs_buf, &mut sol_buf, true)
             .unwrap_or_else(|e| panic!("subdomain {idx}: local solve failed: {e}"));
 
         assert!(
@@ -95,8 +95,8 @@ fn test_dense_schur_vs_sparse_schur_equivalent() {
 
     let mut res_dense = vec![0.0; design.n_dofs];
     let mut res_sparse = vec![0.0; design.n_dofs];
-    schwarz_dense.apply(&rhs, &mut res_dense);
-    schwarz_sparse.apply(&rhs, &mut res_sparse);
+    schwarz_dense.apply(&rhs, &mut res_dense).expect("apply");
+    schwarz_sparse.apply(&rhs, &mut res_sparse).expect("apply");
 
     for (i, (d, s)) in res_dense.iter().zip(res_sparse.iter()).enumerate() {
         assert!(d.is_finite(), "dense result[{i}] is non-finite");
@@ -128,7 +128,7 @@ fn test_local_solver_dense_factor_small_levels() {
 
     let rhs = common::make_rhs_from_unit_solution(&design);
     let mut result = vec![0.0; design.n_dofs];
-    schwarz.apply(&rhs, &mut result);
+    schwarz.apply(&rhs, &mut result).expect("apply");
 
     assert!(
         result.iter().all(|v| v.is_finite()),
@@ -155,7 +155,7 @@ fn test_eliminate_q_vs_r_equivalent_square() {
 
     let rhs = common::make_rhs_from_unit_solution(&design);
     let mut result = vec![0.0; design.n_dofs];
-    schwarz.apply(&rhs, &mut result);
+    schwarz.apply(&rhs, &mut result).expect("apply");
 
     assert!(
         result.iter().all(|v| v.is_finite()),
@@ -183,10 +183,8 @@ fn test_dense_threshold_zero_forces_sparse_cg_convergence() {
         let schwarz = build_schwarz(&design, None, &config)
             .unwrap_or_else(|e| panic!("threshold={threshold}: build_schwarz failed: {e}"));
 
-        let cg_result = cg_solve_preconditioned(&gramian, &schwarz, &rhs, 1e-8, 500)
-            .unwrap_or_else(|e| {
-                panic!("threshold={threshold}: cg_solve_preconditioned failed: {e}")
-            });
+        let cg_result = pcg(&gramian, &rhs, Some(&schwarz), 1e-8, 500)
+            .unwrap_or_else(|e| panic!("threshold={threshold}: pcg failed: {e}"));
 
         assert!(
             cg_result.converged,

@@ -279,7 +279,7 @@ pub(super) trait Bidiagonalization {
 impl<A: Operator + ?Sized> Bidiagonalization for GolubKahan<'_, A> {
     fn step(&mut self) -> Result<BidiagStep, SolveError> {
         // β_{k+1} u_{k+1} = A v_k − α_k u_k
-        self.operator.try_apply(&self.bufs.v, &mut self.bufs.av)?;
+        self.operator.apply(&self.bufs.v, &mut self.bufs.av)?;
         let beta_sq = axpy_with_sq_norm(&mut self.bufs.u, &self.bufs.av, -self.alpha);
         let beta = beta_sq.sqrt();
         if beta == 0.0 {
@@ -296,7 +296,7 @@ impl<A: Operator + ?Sized> Bidiagonalization for GolubKahan<'_, A> {
 
         // α_{k+1} v_{k+1} = Aᵀ u_{k+1} − β_{k+1} v_k
         self.operator
-            .try_apply_adjoint(&self.bufs.u, &mut self.bufs.atu)?;
+            .apply_adjoint(&self.bufs.u, &mut self.bufs.atu)?;
         let mut alpha_sq = axpy_with_sq_norm(&mut self.bufs.v, &self.bufs.atu, -beta);
 
         // Windowed MGS in the standard inner product, before normalization.
@@ -331,7 +331,7 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
         // Phase 1 — ũ_{k+1} unnormalized: scale = −α_k / β_k.
         // Compute ũ_{k+1} = A ṽ_k − (α_k / β_k) ũ_k, then β_{k+1} = ‖ũ_{k+1}‖.
         let scale = -(self.alpha * self.beta_prev_inv);
-        self.operator.try_apply(&self.bufs.v, &mut self.bufs.av)?;
+        self.operator.apply(&self.bufs.v, &mut self.bufs.av)?;
         let beta_sq = axpy_with_sq_norm(&mut self.bufs.u, &self.bufs.av, scale);
         let beta = beta_sq.sqrt();
         if beta == 0.0 {
@@ -354,7 +354,7 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
         // Precondition: α_k > 0 (the outer loop guard in lsmr_from_bidiag
         // never calls step() once α has collapsed to zero).
         self.operator
-            .try_apply_adjoint(&self.bufs.u, &mut self.bufs.atu)?;
+            .apply_adjoint(&self.bufs.u, &mut self.bufs.atu)?;
         debug_assert!(
             self.alpha > 0.0,
             "self.alpha must be > 0; lsmr_from_bidiag's loop guard prevents step() after alpha=0",
@@ -372,7 +372,7 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
         // step), and push the normalized v_{k+1} and p̃_{k+1,norm} = p_tilde /
         // α_new into the ring for the next step's MGS.
         self.preconditioner
-            .try_apply(&self.bufs.p_tilde, &mut self.bufs.v)?;
+            .apply(&self.bufs.p_tilde, &mut self.bufs.v)?;
 
         if let Some(reorth) = &self.bufs.local_reorth {
             reorth.reorthogonalize(&mut self.bufs.v, &mut self.bufs.p_tilde);
@@ -465,7 +465,7 @@ impl<'a, A: Operator + ?Sized> GolubKahan<'a, A> {
         }
 
         // α₁ v₁ = Aᵀ u₁
-        operator.try_apply_adjoint(&bufs.u, &mut bufs.v)?;
+        operator.apply_adjoint(&bufs.u, &mut bufs.v)?;
         let alpha = par_dot(&bufs.v, &bufs.v).sqrt();
         if alpha > 0.0 {
             scale_in_place(&mut bufs.v, 1.0 / alpha);
@@ -556,10 +556,10 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M
         }
 
         // p̃ = Aᵀ u₁
-        operator.try_apply_adjoint(&bufs.u, &mut bufs.p_tilde)?;
+        operator.apply_adjoint(&bufs.u, &mut bufs.p_tilde)?;
 
         // ṽ₁ = M⁻¹ p̃
-        preconditioner.try_apply(&bufs.p_tilde, &mut bufs.v)?;
+        preconditioner.apply(&bufs.p_tilde, &mut bufs.v)?;
 
         // α₁ = √⟨ṽ₁, p̃⟩ via the M-norm dot product trick.
         let vp = par_dot(&bufs.v, &bufs.p_tilde);

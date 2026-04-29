@@ -449,3 +449,54 @@ fn test_find_all_active_levels_with_gaps() {
         "factor 1 active pattern: all true"
     );
 }
+
+#[test]
+fn test_build_for_pair_matches_full_gramian() {
+    let store = FactorMajorStore::new(
+        vec![
+            vec![0, 1, 2, 0, 1, 2, 0, 1],
+            vec![0, 0, 1, 1, 0, 0, 1, 1],
+            vec![0, 1, 0, 1, 0, 1, 0, 1],
+        ],
+        8,
+    )
+    .expect("valid factor-major store");
+    let dm = Design::from_store(store).expect("valid pairwise design");
+    let full = Gramian::build(&dm);
+    let n = full.n_dofs();
+
+    let pairs = [(0, 1), (0, 2), (1, 2)];
+    let offsets = [0usize, 3, 5];
+    let sizes = [3usize, 2, 2];
+
+    for &(q, r) in &pairs {
+        let pair_g = Gramian::build_for_pair(&dm, q, r, None);
+        assert_eq!(pair_g.n_dofs(), n);
+
+        let relevant_rows: Vec<usize> = (offsets[q]..offsets[q] + sizes[q])
+            .chain(offsets[r]..offsets[r] + sizes[r])
+            .collect();
+
+        for &row in &relevant_rows {
+            let mut ei = vec![0.0; n];
+            ei[row] = 1.0;
+            let mut y_full = vec![0.0; n];
+            let mut y_pair = vec![0.0; n];
+            full.matvec(&ei, &mut y_full);
+            pair_g.matvec(&ei, &mut y_pair);
+
+            for &col in &relevant_rows {
+                assert!((y_full[col] - y_pair[col]).abs() < 1e-12);
+            }
+        }
+
+        for row in 0..n {
+            if relevant_rows.contains(&row) {
+                continue;
+            }
+            let start = pair_g.matrix.indptr()[row];
+            let end = pair_g.matrix.indptr()[row + 1];
+            assert_eq!(start, end);
+        }
+    }
+}

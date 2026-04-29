@@ -84,7 +84,9 @@ fn generate_fixest_like_case(case: Case, seed: u64) -> (Design<FactorMajorStore>
     }
 
     let mut y = vec![0.0; case.n_obs];
-    DesignOperator::new(&design).apply(&x_true, &mut y);
+    DesignOperator::new(&design)
+        .apply(&x_true, &mut y)
+        .expect("apply");
     for yi in &mut y {
         *yi += 0.1 * rng.random_range(-1.0..1.0);
     }
@@ -394,8 +396,8 @@ fn bench_matvec(c: &mut Criterion) {
         // Sanity check: both produce the same result
         let mut y_impl = vec![0.0; n_dofs];
         let mut y_expl = vec![0.0; n_dofs];
-        implicit_op.apply(&x, &mut y_impl);
-        explicit_g.apply(&x, &mut y_expl);
+        implicit_op.apply(&x, &mut y_impl).expect("apply");
+        explicit_g.apply(&x, &mut y_expl).expect("apply");
         for (a, b) in y_impl.iter().zip(y_expl.iter()) {
             assert!((a - b).abs() < 1e-10 * a.abs().max(1.0));
         }

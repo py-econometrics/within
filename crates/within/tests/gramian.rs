@@ -58,7 +58,7 @@ fn test_gramian_matches_gramian_operator() {
     let mut y_explicit = vec![0.0; n];
     let mut y_implicit = vec![0.0; n];
     g.matvec(&x, &mut y_explicit);
-    gop.apply(&x, &mut y_implicit);
+    gop.apply(&x, &mut y_implicit).expect("apply");
     for (a, b) in y_explicit.iter().zip(y_implicit.iter()) {
         assert!((a - b).abs() < 1e-12);
     }
@@ -85,8 +85,8 @@ fn test_gramian_operator_symmetric() {
     let x = vec![1.0, -0.5, 2.0, 0.3, -1.0];
     let mut y1 = vec![0.0; n];
     let mut y2 = vec![0.0; n];
-    gop.apply(&x, &mut y1);
-    gop.apply_adjoint(&x, &mut y2);
+    gop.apply(&x, &mut y1).expect("apply");
+    gop.apply_adjoint(&x, &mut y2).expect("apply");
     assert_eq!(y1, y2);
 }
 
@@ -119,7 +119,7 @@ fn test_weighted_gramian_matches_operator() {
     let mut y_explicit = vec![0.0; n];
     let mut y_implicit = vec![0.0; n];
     g.matvec(&x, &mut y_explicit);
-    gop.apply(&x, &mut y_implicit);
+    gop.apply(&x, &mut y_implicit).expect("apply");
     for (a, b) in y_explicit.iter().zip(y_implicit.iter()) {
         assert!((a - b).abs() < 1e-12);
     }
@@ -149,60 +149,9 @@ fn test_gramian_sparse_accumulation_path() {
     let mut y_explicit = vec![0.0; n];
     let mut y_implicit = vec![0.0; n];
     g.matvec(&x, &mut y_explicit);
-    gop.apply(&x, &mut y_implicit);
+    gop.apply(&x, &mut y_implicit).expect("apply");
     for (a, b) in y_explicit.iter().zip(y_implicit.iter()) {
         assert!((a - b).abs() < 1e-10);
-    }
-}
-
-#[test]
-fn test_build_for_pair_matches_full_gramian() {
-    let store = FactorMajorStore::new(
-        vec![
-            vec![0, 1, 2, 0, 1, 2, 0, 1],
-            vec![0, 0, 1, 1, 0, 0, 1, 1],
-            vec![0, 1, 0, 1, 0, 1, 0, 1],
-        ],
-        8,
-    )
-    .expect("valid factor-major store");
-    let dm = Design::from_store(store).expect("valid pairwise design");
-    let full = Gramian::build(&dm);
-    let n = full.n_dofs();
-
-    let pairs = [(0, 1), (0, 2), (1, 2)];
-    let offsets = [0usize, 3, 5];
-    let sizes = [3usize, 2, 2];
-
-    for &(q, r) in &pairs {
-        let pair_g = Gramian::build_for_pair(&dm, q, r, None);
-        assert_eq!(pair_g.n_dofs(), n);
-
-        let relevant_rows: Vec<usize> = (offsets[q]..offsets[q] + sizes[q])
-            .chain(offsets[r]..offsets[r] + sizes[r])
-            .collect();
-
-        for &row in &relevant_rows {
-            let mut ei = vec![0.0; n];
-            ei[row] = 1.0;
-            let mut y_full = vec![0.0; n];
-            let mut y_pair = vec![0.0; n];
-            full.matvec(&ei, &mut y_full);
-            pair_g.matvec(&ei, &mut y_pair);
-
-            for &col in &relevant_rows {
-                assert!((y_full[col] - y_pair[col]).abs() < 1e-12);
-            }
-        }
-
-        for row in 0..n {
-            if relevant_rows.contains(&row) {
-                continue;
-            }
-            let start = pair_g.matrix.indptr()[row];
-            let end = pair_g.matrix.indptr()[row + 1];
-            assert_eq!(start, end);
-        }
     }
 }
 
@@ -214,8 +163,8 @@ fn test_gramian_apply_adjoint_delegates() {
     let x = vec![1.0, -0.5, 2.0, 0.3, -1.0];
     let mut y1 = vec![0.0; n];
     let mut y2 = vec![0.0; n];
-    g.apply(&x, &mut y1);
-    g.apply_adjoint(&x, &mut y2);
+    g.apply(&x, &mut y1).expect("apply");
+    g.apply_adjoint(&x, &mut y2).expect("apply");
     assert_eq!(y1, y2);
 }
 
@@ -353,7 +302,7 @@ fn test_gramian_large_row_permutation_sort() {
     let mut y_exp = vec![0.0; n];
     let mut y_imp = vec![0.0; n];
     g.matvec(&x, &mut y_exp);
-    gop.apply(&x, &mut y_imp);
+    gop.apply(&x, &mut y_imp).expect("apply");
     for (a, b) in y_exp.iter().zip(y_imp.iter()) {
         assert!((a - b).abs() < 1e-10, "explicit/implicit mismatch");
     }
@@ -388,7 +337,7 @@ fn test_gramian_parallel_build_path() {
     let mut y_explicit = vec![0.0; n];
     let mut y_implicit = vec![0.0; n];
     g.matvec(&x, &mut y_explicit);
-    gop.apply(&x, &mut y_implicit);
+    gop.apply(&x, &mut y_implicit).expect("apply");
 
     for (i, (a, b)) in y_explicit.iter().zip(y_implicit.iter()).enumerate() {
         assert!(

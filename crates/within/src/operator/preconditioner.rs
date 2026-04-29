@@ -120,35 +120,17 @@ impl Operator for FePreconditioner {
         }
     }
 
-    fn apply(&self, x: &[f64], y: &mut [f64]) {
+    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
         match self {
             Self::Additive(p) => p.apply(x, y),
             Self::Multiplicative(p) => p.apply(x, y),
         }
     }
 
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) {
+    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
         match self {
             Self::Additive(p) => p.apply_adjoint(x, y),
             Self::Multiplicative(p) => p.apply_adjoint(x, y),
-        }
-    }
-
-    fn try_apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::ApplyError> {
-        match self {
-            Self::Additive(p) => p.try_apply(x, y),
-            Self::Multiplicative(p) => p.try_apply(x, y),
-        }
-    }
-
-    fn try_apply_adjoint(
-        &self,
-        x: &[f64],
-        y: &mut [f64],
-    ) -> Result<(), schwarz_precond::ApplyError> {
-        match self {
-            Self::Additive(p) => p.try_apply_adjoint(x, y),
-            Self::Multiplicative(p) => p.try_apply_adjoint(x, y),
         }
     }
 }

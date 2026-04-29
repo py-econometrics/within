@@ -226,7 +226,8 @@ impl Gramian {
 
     /// Build a Gramian containing only the single factor pair `(q, r)`,
     /// optionally weighted.
-    pub fn build_for_pair<S: Store>(
+    #[cfg(test)]
+    pub(crate) fn build_for_pair<S: Store>(
         design: &Design<S>,
         q: usize,
         r: usize,
@@ -278,12 +279,13 @@ impl Operator for Gramian {
         self.n_dofs()
     }
 
-    fn apply(&self, x: &[f64], y: &mut [f64]) {
+    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
         self.matvec(x, y);
+        Ok(())
     }
 
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) {
-        self.apply(x, y);
+    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
+        self.apply(x, y)
     }
 }
 
@@ -439,6 +441,7 @@ fn build_full_matrix<S: Store>(design: &Design<S>, weights: Option<&[f64]>) -> S
     })
 }
 
+#[cfg(test)]
 fn build_pair_matrix<S: Store>(
     design: &Design<S>,
     q: usize,

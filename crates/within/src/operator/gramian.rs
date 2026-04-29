@@ -68,11 +68,6 @@ impl<'a, S: Store> GramianOperator<'a, S> {
             design,
         }
     }
-
-    /// Materialize this implicit Gramian as an explicit CSR matrix.
-    pub fn to_csr(&self) -> Gramian {
-        Gramian::build(self.design)
-    }
 }
 
 impl<S: Store> Operator for GramianOperator<'_, S> {
@@ -84,15 +79,16 @@ impl<S: Store> Operator for GramianOperator<'_, S> {
         self.design.n_dofs
     }
 
-    fn apply(&self, x: &[f64], y: &mut [f64]) {
+    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
         let mut tmp = self.scratch.lock().unwrap();
         gather_apply(self.design, x, &mut tmp, |_, s| s); // tmp = D x
         y.fill(0.0);
         scatter_apply(self.design, y, |i| tmp[i]); // y = D^T tmp
+        Ok(())
     }
 
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) {
-        self.apply(x, y);
+    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
+        self.apply(x, y)
     }
 }
 
@@ -119,11 +115,6 @@ impl<'a, S: Store> WeightedGramianOperator<'a, S> {
             weights: weights.to_vec(),
         }
     }
-
-    /// Materialize this implicit weighted Gramian as an explicit CSR matrix.
-    pub fn to_csr(&self) -> Gramian {
-        Gramian::build_weighted(self.design, &self.weights)
-    }
 }
 
 impl<S: Store> Operator for WeightedGramianOperator<'_, S> {
@@ -135,15 +126,16 @@ impl<S: Store> Operator for WeightedGramianOperator<'_, S> {
         self.design.n_dofs
     }
 
-    fn apply(&self, x: &[f64], y: &mut [f64]) {
+    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
         let mut tmp = self.scratch.lock().unwrap();
         gather_apply(self.design, x, &mut tmp, |_, s| s); // tmp = D x
         y.fill(0.0);
         let w = &self.weights;
         scatter_apply(self.design, y, |i| w[i] * tmp[i]); // y = D^T W tmp
+        Ok(())
     }
 
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) {
-        self.apply(x, y);
+    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
+        self.apply(x, y)
     }
 }

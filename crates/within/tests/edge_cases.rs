@@ -249,12 +249,14 @@ fn test_gmres_residual_estimate_vs_actual() {
 
     // rhs = D^T W y (unit weights, so D^T y)
     let mut rhs = vec![0.0; n_dofs];
-    DesignOperator::new(&design2).apply_adjoint(&y, &mut rhs);
+    DesignOperator::new(&design2)
+        .apply_adjoint(&y, &mut rhs)
+        .expect("apply");
     let rhs_norm = rhs.iter().map(|v| v * v).sum::<f64>().sqrt().max(1e-15);
 
     // residual = G*x - rhs
     let mut gx = vec![0.0; n_dofs];
-    gramian_op.apply(&result.x, &mut gx);
+    gramian_op.apply(&result.x, &mut gx).expect("apply");
     let actual_residual_norm = gx
         .iter()
         .zip(rhs.iter())

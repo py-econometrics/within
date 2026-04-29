@@ -1,7 +1,7 @@
 use ndarray::array;
 use within::{
-    solve, FePreconditioner, KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner,
-    ReductionStrategy, Solver, SolverParams,
+    observation::ArrayStore, solve, Design, FePreconditioner, KrylovMethod, LocalSolverConfig,
+    OperatorRepr, Preconditioner, ReductionStrategy, Solver, SolverParams,
 };
 
 #[path = "common/orchestrate_helpers.rs"]
@@ -155,7 +155,9 @@ fn test_serde_roundtrip() {
 
     // Deserialize and build new solver
     let precond2: FePreconditioner = postcard::from_bytes(&bytes).expect("deserialize");
-    let solver2 = Solver::with_preconditioner(categories.view(), None, &params, precond2)
+    let store = ArrayStore::new(categories.view()).expect("store");
+    let design = Design::from_store(store).expect("design");
+    let solver2 = Solver::from_design_with_preconditioner(design, None, &params, precond2)
         .expect("solver from preconditioner");
     let r2 = solver2.solve(&y).expect("solve 2");
 
@@ -223,12 +225,12 @@ fn test_multiplicative_preconditioner_nrows_ncols() {
     // Test apply produces finite output
     let x = vec![1.0; solver.n_dofs()];
     let mut y = vec![0.0; solver.n_dofs()];
-    precond_ref.apply(&x, &mut y);
+    precond_ref.apply(&x, &mut y).expect("apply");
     assert!(y.iter().all(|v| v.is_finite()));
 
     // Test apply_adjoint produces finite output
     let mut y2 = vec![0.0; solver.n_dofs()];
-    precond_ref.apply_adjoint(&x, &mut y2);
+    precond_ref.apply_adjoint(&x, &mut y2).expect("apply");
     assert!(y2.iter().all(|v| v.is_finite()));
 }
 
@@ -320,7 +322,9 @@ fn test_multiplicative_serde_roundtrip() {
     assert!(!bytes.is_empty());
 
     let precond2: FePreconditioner = postcard::from_bytes(&bytes).expect("deserialize");
-    let solver2 = Solver::with_preconditioner(categories.view(), None, &params, precond2)
+    let store = ArrayStore::new(categories.view()).expect("store");
+    let design = Design::from_store(store).expect("design");
+    let solver2 = Solver::from_design_with_preconditioner(design, None, &params, precond2)
         .expect("solver from preconditioner");
     let r2 = solver2.solve(&y).expect("solve 2");
 

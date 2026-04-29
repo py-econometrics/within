@@ -10,34 +10,31 @@ use std::sync::Arc;
 
 use rayon::prelude::*;
 
-use crate::error::ApplyError;
-use crate::local_solve::{LocalSolveInvoker, LocalSolver, SubdomainEntry};
+use crate::error::{tag_subdomain, SolveError};
+use crate::local_solve::{LocalSolver, SubdomainEntry};
 
 use super::buffers::{
     AdditiveSweepBuffers, BufferPool, LocalSolveScratch, SchwarzBuffers, WorkerReductionBuffers,
 };
 use super::planning::ReductionPlan;
 
-pub(super) struct AdditiveExecutor<S: LocalSolver, I: LocalSolveInvoker<S>> {
+pub(super) struct AdditiveExecutor<S: LocalSolver> {
     pub(super) subdomains: Arc<Vec<SubdomainEntry<S>>>,
     pub(super) n_dofs: usize,
     pub(super) max_scratch_size: usize,
-    pub(super) invoker: I,
     pub(super) buf_pool: BufferPool,
 }
 
-impl<S: LocalSolver, I: LocalSolveInvoker<S>> AdditiveExecutor<S, I> {
+impl<S: LocalSolver> AdditiveExecutor<S> {
     pub(super) fn new(
         entries: Vec<SubdomainEntry<S>>,
         n_dofs: usize,
         max_scratch_size: usize,
-        invoker: I,
     ) -> Self {
         Self {
             subdomains: Arc::new(entries),
             n_dofs,
             max_scratch_size,
-            invoker,
             buf_pool: BufferPool::default(),
         }
     }
@@ -51,7 +48,6 @@ impl<S: LocalSolver, I: LocalSolveInvoker<S>> AdditiveExecutor<S, I> {
             subdomains: Arc::clone(&self.subdomains),
             n_dofs: self.n_dofs,
             max_scratch_size: self.max_scratch_size,
-            invoker: self.invoker.clone(),
             buf_pool: BufferPool::default(),
         }
     }
@@ -61,7 +57,7 @@ impl<S: LocalSolver, I: LocalSolveInvoker<S>> AdditiveExecutor<S, I> {
         plan: ReductionPlan,
         r: &[f64],
         z: &mut [f64],
-    ) -> Result<(), ApplyError> {
+    ) -> Result<(), SolveError> {
         let mut bufs = self
             .buf_pool
             .take(plan.strategy, self.n_dofs, self.max_scratch_size)?;
@@ -83,20 +79,19 @@ impl<S: LocalSolver, I: LocalSolveInvoker<S>> AdditiveExecutor<S, I> {
         r: &[f64],
         z: &mut [f64],
         accum: &[AtomicU64],
-    ) -> Result<(), ApplyError> {
+    ) -> Result<(), SolveError> {
         self.subdomains.par_iter().enumerate().try_for_each_init(
             || LocalSolveScratch::new(self.max_scratch_size),
             |scratch, (subdomain, entry)| {
                 entry
-                    .apply_weighted_into_atomic_by(
+                    .apply_weighted_into_atomic_with(
                         r,
                         accum,
                         &mut scratch.r_scratch,
                         &mut scratch.z_scratch,
-                        &self.invoker,
                         allow_inner_parallelism,
                     )
-                    .map_err(|source| ApplyError::LocalSolveFailed { subdomain, source })
+                    .map_err(|e| tag_subdomain(e, subdomain))
             },
         )?;
 
@@ -119,7 +114,7 @@ impl<S: LocalSolver, I: LocalSolveInvoker<S>> AdditiveExecutor<S, I> {
         r: &[f64],
         z: &mut [f64],
         pool: &mut Vec<AdditiveSweepBuffers>,
-    ) -> Result<(), ApplyError> {
+    ) -> Result<(), SolveError> {
         let worker_buffers =
             WorkerReductionBuffers::new(std::mem::take(pool), self.n_dofs, self.max_scratch_size);
         let apply_result =
@@ -129,15 +124,14 @@ impl<S: LocalSolver, I: LocalSolveInvoker<S>> AdditiveExecutor<S, I> {
                 .try_for_each(|(subdomain, entry)| {
                     worker_buffers.with_buffer(|buffers| {
                         entry
-                            .apply_weighted_into_with_scratch_by(
+                            .apply_weighted_into_with_scratch_with(
                                 r,
                                 &mut buffers.global_accum,
                                 &mut buffers.scratch.r_scratch,
                                 &mut buffers.scratch.z_scratch,
-                                &self.invoker,
                                 allow_inner_parallelism,
                             )
-                            .map_err(|source| ApplyError::LocalSolveFailed { subdomain, source })
+                            .map_err(|e| tag_subdomain(e, subdomain))
                     })
                 });
 
@@ -147,13 +141,12 @@ impl<S: LocalSolver, I: LocalSolveInvoker<S>> AdditiveExecutor<S, I> {
     }
 }
 
-impl<S: LocalSolver, I: LocalSolveInvoker<S>> Clone for AdditiveExecutor<S, I> {
+impl<S: LocalSolver> Clone for AdditiveExecutor<S> {
     fn clone(&self) -> Self {
         Self {
             subdomains: Arc::clone(&self.subdomains),
             n_dofs: self.n_dofs,
             max_scratch_size: self.max_scratch_size,
-            invoker: self.invoker.clone(),
             buf_pool: self.buf_pool.clone(),
         }
     }

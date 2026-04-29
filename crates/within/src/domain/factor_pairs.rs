@@ -422,8 +422,8 @@ mod tests {
                 let x: Vec<f64> = (0..n).map(|i| (i * 7 + seed) as f64 * 0.1).collect();
                 let mut y_obs = vec![0.0; n];
                 let mut y_composed = vec![0.0; n];
-                obs_gramian.apply(&x, &mut y_obs);
-                composed.apply(&x, &mut y_composed);
+                obs_gramian.apply(&x, &mut y_obs).expect("apply");
+                composed.apply(&x, &mut y_composed).expect("apply");
                 for i in 0..n {
                     assert!(
                         (y_obs[i] - y_composed[i]).abs() < 1e-12,

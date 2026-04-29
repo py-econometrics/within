@@ -221,8 +221,7 @@ pub fn validate_weights(weights: &[f64], n_obs: usize) -> WithinResult<()> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-/// Small two-factor dataset for unit tests: 4 observations, factors with 3 and 2 levels.
-pub fn sample_factor_levels() -> Vec<Vec<u32>> {
+fn sample_factor_levels() -> Vec<Vec<u32>> {
     vec![vec![0, 1, 2, 0], vec![0, 1, 0, 1]]
 }
 

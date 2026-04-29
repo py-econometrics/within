@@ -16,16 +16,18 @@ impl Operator for OverdeterminedOp {
     fn ncols(&self) -> usize {
         3
     }
-    fn apply(&self, x: &[f64], y: &mut [f64]) {
+    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
         y[0] = x[0];
         y[1] = x[1];
         y[2] = x[2];
         y[3] = x[0] + x[1];
+        Ok(())
     }
-    fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) {
+    fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) -> Result<(), SolveError> {
         x[0] = u[0] + u[3];
         x[1] = u[1] + u[3];
         x[2] = u[2];
+        Ok(())
     }
 }
 
@@ -40,13 +42,14 @@ impl Operator for DiagPrecond {
     fn ncols(&self) -> usize {
         3
     }
-    fn apply(&self, x: &[f64], y: &mut [f64]) {
+    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
         y[0] = x[0] / 2.0;
         y[1] = x[1] / 2.0;
         y[2] = x[2];
+        Ok(())
     }
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) {
-        self.apply(x, y);
+    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+        self.apply(x, y)
     }
 }
 
@@ -54,10 +57,10 @@ impl Operator for DiagPrecond {
 /// "did we actually solve the least-squares problem?" check.
 fn normal_equation_residual<O: Operator + ?Sized>(op: &O, x: &[f64], b: &[f64]) -> f64 {
     let mut ax = vec![0.0; op.nrows()];
-    op.apply(x, &mut ax);
+    op.apply(x, &mut ax).expect("apply");
     let resid: Vec<f64> = b.iter().zip(&ax).map(|(bi, ai)| bi - ai).collect();
     let mut atr = vec![0.0; op.ncols()];
-    op.apply_adjoint(&resid, &mut atr);
+    op.apply_adjoint(&resid, &mut atr).expect("apply");
     vec_norm(&atr)
 }
 
@@ -117,14 +120,16 @@ fn test_mlsmr_underdetermined_system() {
         fn ncols(&self) -> usize {
             3
         }
-        fn apply(&self, x: &[f64], y: &mut [f64]) {
+        fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
             y[0] = x[0];
             y[1] = x[1];
+            Ok(())
         }
-        fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) {
+        fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) -> Result<(), SolveError> {
             x[0] = u[0];
             x[1] = u[1];
             x[2] = 0.0;
+            Ok(())
         }
     }
 
@@ -146,15 +151,17 @@ fn test_mlsmr_rank_deficient_system() {
         fn ncols(&self) -> usize {
             2
         }
-        fn apply(&self, x: &[f64], y: &mut [f64]) {
+        fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
             let s = x[0] + x[1];
             y[0] = s;
             y[1] = 2.0 * s;
+            Ok(())
         }
-        fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) {
+        fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) -> Result<(), SolveError> {
             let s = u[0] + 2.0 * u[1];
             x[0] = s;
             x[1] = s;
+            Ok(())
         }
     }
 
@@ -175,13 +182,15 @@ fn test_mlsmr_zero_column_and_zero_row() {
         fn ncols(&self) -> usize {
             2
         }
-        fn apply(&self, x: &[f64], y: &mut [f64]) {
+        fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
             y[0] = x[0];
             y[1] = 0.0;
+            Ok(())
         }
-        fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) {
+        fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) -> Result<(), SolveError> {
             x[0] = u[0];
             x[1] = 0.0;
+            Ok(())
         }
     }
 
@@ -207,13 +216,15 @@ fn test_mlsmr_mid_stream_beta_zero_breakdown() {
         fn ncols(&self) -> usize {
             2
         }
-        fn apply(&self, x: &[f64], y: &mut [f64]) {
+        fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
             y[0] = x[0];
             y[1] = 0.0;
+            Ok(())
         }
-        fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) {
+        fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) -> Result<(), SolveError> {
             x[0] = u[0];
             x[1] = 0.0;
+            Ok(())
         }
     }
 
@@ -403,12 +414,13 @@ impl Operator for DenseOp {
     fn ncols(&self) -> usize {
         self.cols
     }
-    fn apply(&self, x: &[f64], y: &mut [f64]) {
+    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
         for (yi, row) in y.iter_mut().zip(self.data.chunks_exact(self.cols)) {
             *yi = row.iter().zip(x).map(|(a, b)| a * b).sum();
         }
+        Ok(())
     }
-    fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) {
+    fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) -> Result<(), SolveError> {
         for (j, xj) in x.iter_mut().enumerate() {
             let mut s = 0.0;
             for (ui, row) in u.iter().zip(self.data.chunks_exact(self.cols)) {
@@ -416,6 +428,7 @@ impl Operator for DenseOp {
             }
             *xj = s;
         }
+        Ok(())
     }
 }
 
@@ -504,13 +517,14 @@ fn test_mlsmr_local_reorth_preconditioned() {
         fn ncols(&self) -> usize {
             self.0.len()
         }
-        fn apply(&self, x: &[f64], y: &mut [f64]) {
+        fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
             for ((yi, &xi), &di) in y.iter_mut().zip(x).zip(self.0.iter()) {
                 *yi = di * xi;
             }
+            Ok(())
         }
-        fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) {
-            self.apply(x, y);
+        fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+            self.apply(x, y)
         }
     }
     let m = DiagOp(diag_inv);
@@ -612,12 +626,14 @@ fn test_mlsmr_step1_alpha_zero_early_exit() {
         fn ncols(&self) -> usize {
             1
         }
-        fn apply(&self, x: &[f64], y: &mut [f64]) {
+        fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
             y[0] = x[0];
             y[1] = 0.0;
+            Ok(())
         }
-        fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) {
+        fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) -> Result<(), SolveError> {
             x[0] = u[0];
+            Ok(())
         }
     }
 
@@ -706,11 +722,12 @@ fn test_mlsmr_rejects_bad_preconditioner_shape() {
         fn ncols(&self) -> usize {
             2
         }
-        fn apply(&self, x: &[f64], y: &mut [f64]) {
+        fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
             y.copy_from_slice(x);
+            Ok(())
         }
-        fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) {
-            self.apply(x, y);
+        fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+            self.apply(x, y)
         }
     }
 

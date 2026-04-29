@@ -46,29 +46,10 @@ use std::sync::Arc;
 use approx_chol::Factor;
 use faer::{MatRef, Side};
 use rayon::prelude::*;
-use schwarz_precond::{LocalSolveError, LocalSolveInvoker, LocalSolver};
+use schwarz_precond::{LocalSolver, SolveError};
 
 use crate::operator::csr_block::{CsrBlock, PAR_SPMV_THRESHOLD};
 use crate::operator::gramian::CrossTab;
-
-// ===========================================================================
-// FeLocalSolveInvoker — delegates to BlockElimSolver with parallelism control
-// ===========================================================================
-
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct FeLocalSolveInvoker;
-
-impl LocalSolveInvoker<BlockElimSolver> for FeLocalSolveInvoker {
-    fn solve_local(
-        &self,
-        solver: &BlockElimSolver,
-        rhs: &mut [f64],
-        sol: &mut [f64],
-        allow_inner_parallelism: bool,
-    ) -> Result<(), LocalSolveError> {
-        solver.solve_local_with_parallelism(rhs, sol, allow_inner_parallelism)
-    }
-}
 
 // ===========================================================================
 // Transform helpers — sign-flipping, mean subtraction, back-substitution
@@ -179,12 +160,13 @@ impl ReducedFactor {
         }
     }
 
-    fn solve_in_place(&self, x: &mut [f64]) -> Result<(), LocalSolveError> {
+    fn solve_in_place(&self, x: &mut [f64]) -> Result<(), SolveError> {
         match self {
             Self::Approx(f) => {
                 debug_assert_eq!(f.n(), x.len());
                 f.solve_in_place(x)
-                    .map_err(|e| LocalSolveError::ApproxCholSolveFailed {
+                    .map_err(|e| SolveError::LocalSolveFailed {
+                        subdomain: 0,
                         context: "within.local.block_elim.reduced_approx",
                         message: e.to_string(),
                     })?;
@@ -362,7 +344,7 @@ impl BlockElimSolver {
         rhs: &mut [f64],
         sol: &mut [f64],
         allow_inner_parallelism: bool,
-    ) -> Result<(), LocalSolveError> {
+    ) -> Result<(), SolveError> {
         let n = self.n_local;
         let n_q = self.cross_tab.n_q();
         let n_r = self.cross_tab.n_r();
@@ -458,8 +440,13 @@ impl LocalSolver for BlockElimSolver {
         self.n_local + self.n_reduced
     }
 
-    fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), LocalSolveError> {
-        self.solve_local_with_parallelism(rhs, sol, true)
+    fn solve_local(
+        &self,
+        rhs: &mut [f64],
+        sol: &mut [f64],
+        allow_inner_parallelism: bool,
+    ) -> Result<(), SolveError> {
+        self.solve_local_with_parallelism(rhs, sol, allow_inner_parallelism)
     }
 
     fn inner_parallelism_work_estimate(&self) -> usize {

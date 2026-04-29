@@ -92,7 +92,7 @@ fn test_least_squares_weighted_cg_preconditioned() {
 
 #[test]
 fn test_schwarz_builder_schur_complement_modes_end_to_end() {
-    use schwarz_precond::solve::cg::cg_solve_preconditioned;
+    use schwarz_precond::solve::cg::pcg;
     use schwarz_precond::solve::vec_norm;
     use schwarz_precond::Operator;
     use within::operator::gramian::GramianOperator;
@@ -128,15 +128,14 @@ fn test_schwarz_builder_schur_complement_modes_end_to_end() {
     for local_solver in local_solvers {
         let schwarz =
             build_schwarz(&design, None, &local_solver).expect("build schwarz preconditioner");
-        let result =
-            cg_solve_preconditioned(&gramian, &schwarz, &rhs, 1e-8, 500).expect("cg solve");
+        let result = pcg(&gramian, &rhs, Some(&schwarz), 1e-8, 500).expect("cg solve");
         assert!(
             result.converged,
             "CG with Schur-complement local solver did not converge"
         );
 
         let mut residual = vec![0.0; design.n_dofs];
-        gramian.apply(&result.x, &mut residual);
+        gramian.apply(&result.x, &mut residual).expect("apply");
         for (ri, &bi) in residual.iter_mut().zip(rhs.iter()) {
             *ri -= bi;
         }
@@ -153,7 +152,7 @@ fn test_schwarz_builder_schur_complement_modes_end_to_end() {
 fn test_compare_factorization_strategies() {
     use rand::rngs::SmallRng;
     use rand::{Rng, SeedableRng};
-    use schwarz_precond::solve::cg::cg_solve_preconditioned;
+    use schwarz_precond::solve::cg::pcg;
     use schwarz_precond::solve::vec_norm;
     use schwarz_precond::Operator;
     use std::time::Instant;
@@ -207,7 +206,7 @@ fn test_compare_factorization_strategies() {
         let y: Vec<f64> = (0..*n_rows).map(|_| rng.random::<f64>()).collect();
         let design_op = DesignOperator::new(&design);
         let mut rhs = vec![0.0; design.n_dofs];
-        design_op.apply_adjoint(&y, &mut rhs);
+        design_op.apply_adjoint(&y, &mut rhs).expect("apply");
         let gramian_op = GramianOperator::new(&design);
 
         for (ac_config, label) in &configs {
@@ -222,12 +221,11 @@ fn test_compare_factorization_strategies() {
             let _setup_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
             let t1 = Instant::now();
-            let cg_result =
-                cg_solve_preconditioned(&gramian_op, &schwarz, &rhs, 1e-8, 1000).expect("cg solve");
+            let cg_result = pcg(&gramian_op, &rhs, Some(&schwarz), 1e-8, 1000).expect("cg solve");
             let _solve_ms = t1.elapsed().as_secs_f64() * 1000.0;
 
             let mut gx = vec![0.0; design.n_dofs];
-            gramian_op.apply(&cg_result.x, &mut gx);
+            gramian_op.apply(&cg_result.x, &mut gx).expect("apply");
             for i in 0..design.n_dofs {
                 gx[i] -= rhs[i];
             }

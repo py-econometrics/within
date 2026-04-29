@@ -37,10 +37,9 @@ use approx_chol::low_level::Builder;
 use approx_chol::CsrRef;
 use rayon::prelude::*;
 use schwarz_precond::SubdomainEntry;
-use serde::{Deserialize, Serialize};
 
 use super::gramian::CrossTab;
-use super::local_solver::{BlockElimSolver, FeLocalSolveInvoker, ReducedFactor};
+use super::local_solver::{BlockElimSolver, ReducedFactor};
 use super::residual_update::SparseGramianUpdater;
 use super::schur_complement::{
     ApproxSchurComplement, EliminationInfo, ExactSchurComplement, SchurComplement, SchurResult,
@@ -51,74 +50,7 @@ use crate::observation::Store;
 use crate::{WithinError, WithinResult};
 
 /// Concrete additive Schwarz type used in the parent crate.
-#[derive(Clone, Serialize, Deserialize)]
-pub struct FeSchwarz(SchwarzPreconditioner<BlockElimSolver, FeLocalSolveInvoker>);
-
-impl FeSchwarz {
-    pub(crate) fn new(inner: SchwarzPreconditioner<BlockElimSolver, FeLocalSolveInvoker>) -> Self {
-        Self(inner)
-    }
-
-    /// Subdomain entries with their local solvers.
-    pub fn subdomains(&self) -> &[SubdomainEntry<BlockElimSolver>] {
-        self.0.subdomains()
-    }
-
-    /// Current reduction strategy (may be `Auto`).
-    pub fn reduction_strategy(&self) -> schwarz_precond::ReductionStrategy {
-        self.0.reduction_strategy()
-    }
-
-    /// Resolved reduction strategy (`Auto` replaced by the detected choice).
-    pub fn resolved_reduction_strategy(&self) -> schwarz_precond::ReductionStrategy {
-        self.0.resolved_reduction_strategy()
-    }
-
-    /// Subdomain diagnostics (sizes, overlap counts).
-    pub fn diagnostics(&self) -> schwarz_precond::AdditiveSchwarzDiagnostics {
-        self.0.diagnostics()
-    }
-
-    /// Clone with a different reduction strategy.
-    pub fn with_reduction_strategy(&self, strategy: schwarz_precond::ReductionStrategy) -> Self {
-        Self(self.0.with_reduction_strategy(strategy))
-    }
-
-    /// Apply the preconditioner, returning an error on local-solver failure.
-    pub fn try_apply(&self, r: &[f64], z: &mut [f64]) -> Result<(), schwarz_precond::ApplyError> {
-        self.0.try_apply(r, z)
-    }
-}
-
-impl schwarz_precond::Operator for FeSchwarz {
-    fn nrows(&self) -> usize {
-        self.0.nrows()
-    }
-
-    fn ncols(&self) -> usize {
-        self.0.ncols()
-    }
-
-    fn apply(&self, x: &[f64], y: &mut [f64]) {
-        self.0.apply(x, y);
-    }
-
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) {
-        self.0.apply_adjoint(x, y);
-    }
-
-    fn try_apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::ApplyError> {
-        self.0.try_apply(x, y)
-    }
-
-    fn try_apply_adjoint(
-        &self,
-        x: &[f64],
-        y: &mut [f64],
-    ) -> Result<(), schwarz_precond::ApplyError> {
-        self.0.try_apply_adjoint(x, y)
-    }
-}
+pub type FeSchwarz = SchwarzPreconditioner<BlockElimSolver>;
 
 /// Concrete multiplicative Schwarz type: one-level with explicit Gramian CSR residual updates.
 pub type FeMultSchwarzSparse =
@@ -164,14 +96,9 @@ pub(crate) fn build_additive_with_strategy(
     strategy: schwarz_precond::ReductionStrategy,
 ) -> WithinResult<FeSchwarz> {
     let entries = build_entries_from_pairs(domains, config)?;
-    Ok(FeSchwarz::new(
-        SchwarzPreconditioner::with_strategy_and_invoker(
-            entries,
-            n_dofs,
-            strategy,
-            FeLocalSolveInvoker,
-        )?,
-    ))
+    Ok(SchwarzPreconditioner::with_strategy(
+        entries, n_dofs, strategy,
+    )?)
 }
 
 /// Build multiplicative Schwarz with sparse Gramian updater.

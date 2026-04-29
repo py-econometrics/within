@@ -275,7 +275,7 @@ impl CrossTab {
     /// the compact `local_to_global` mapping (skipping levels with zero diagonal).
     /// Returns `None` if no active levels in either factor.
     #[cfg(test)]
-    pub fn from_gramian_block(
+    pub(crate) fn from_gramian_block(
         gramian: &schwarz_precond::SparseMatrix,
         fq: &crate::observation::FactorMeta,
         fr: &crate::observation::FactorMeta,

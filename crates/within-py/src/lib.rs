@@ -847,7 +847,9 @@ impl PyFePreconditioner {
             )));
         }
         let mut y = vec![0.0; self.inner.nrows()];
-        self.inner.apply(x_slice, &mut y);
+        self.inner
+            .apply(x_slice, &mut y)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         Ok(numpy::PyArray1::from_vec(py, y))
     }
 
@@ -949,13 +951,10 @@ impl PySolver {
 
         // Build owned factor-major store from numpy array
         let n_obs = cats.nrows();
-        let n_factors = cats.ncols();
-        let factor_levels: Vec<Vec<u32>> = (0..n_factors)
+        let factor_levels: Vec<Vec<u32>> = (0..cats.ncols())
             .map(|f| cats.column(f).iter().copied().collect())
             .collect();
-        let weights_vec: Option<Vec<f64>> = weights
-            .as_ref()
-            .map(|w| w.as_array().iter().copied().collect());
+        let weights_vec = extract_weight_vec(&weights);
         let store = FactorMajorStore::new(factor_levels, n_obs).map_err(value_err)?;
         let design = Design::from_store(store).map_err(value_err)?;
 

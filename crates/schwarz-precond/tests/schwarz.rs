@@ -7,9 +7,9 @@ use std::time::{Duration, Instant};
 
 use rayon::prelude::*;
 use schwarz_precond::domain::PartitionWeights;
-use schwarz_precond::solve::cg::{cg_solve, cg_solve_preconditioned};
+use schwarz_precond::solve::cg::pcg;
 use schwarz_precond::{
-    LocalSolveError, LocalSolveInvoker, LocalSolver, MultiplicativeSchwarzPreconditioner, Operator,
+    IdentityOperator, LocalSolver, MultiplicativeSchwarzPreconditioner, Operator,
     OperatorResidualUpdater, ReductionStrategy, SchwarzPreconditioner, SubdomainCore,
     SubdomainEntry,
 };
@@ -80,40 +80,29 @@ impl LocalSolver for NestedRayonIdentitySolver {
         self.n
     }
 
-    fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), LocalSolveError> {
-        sol[..self.n].copy_from_slice(&rhs[..self.n]);
+    fn solve_local(
+        &self,
+        rhs: &mut [f64],
+        sol: &mut [f64],
+        allow_inner_parallelism: bool,
+    ) -> Result<(), SolveError> {
+        if allow_inner_parallelism {
+            sol[..self.n]
+                .par_chunks_mut(Self::CHUNK_SIZE)
+                .enumerate()
+                .for_each(|(chunk_idx, chunk)| {
+                    let start = chunk_idx * Self::CHUNK_SIZE;
+                    let end = start + chunk.len();
+                    chunk.copy_from_slice(&rhs[start..end]);
+                });
+        } else {
+            sol[..self.n].copy_from_slice(&rhs[..self.n]);
+        }
         Ok(())
     }
 
     fn inner_parallelism_work_estimate(&self) -> usize {
         self.n.saturating_mul(32)
-    }
-}
-
-#[derive(Clone, Copy, Default)]
-struct NestedRayonSolveInvoker;
-
-impl LocalSolveInvoker<NestedRayonIdentitySolver> for NestedRayonSolveInvoker {
-    fn solve_local(
-        &self,
-        solver: &NestedRayonIdentitySolver,
-        rhs: &mut [f64],
-        sol: &mut [f64],
-        allow_inner_parallelism: bool,
-    ) -> Result<(), LocalSolveError> {
-        if allow_inner_parallelism {
-            sol[..solver.n]
-                .par_chunks_mut(NestedRayonIdentitySolver::CHUNK_SIZE)
-                .enumerate()
-                .for_each(|(chunk_idx, chunk)| {
-                    let start = chunk_idx * NestedRayonIdentitySolver::CHUNK_SIZE;
-                    let end = start + chunk.len();
-                    chunk.copy_from_slice(&rhs[start..end]);
-                });
-        } else {
-            sol[..solver.n].copy_from_slice(&rhs[..solver.n]);
-        }
-        Ok(())
     }
 }
 
@@ -138,17 +127,16 @@ fn run_nested_parallel_reduction_regression_case() {
         .build()
         .expect("test rayon pool");
     pool.install(|| {
-        let schwarz = SchwarzPreconditioner::with_strategy_and_invoker(
+        let schwarz = SchwarzPreconditioner::with_strategy(
             make_nested_parallel_entries(n),
             n,
             ReductionStrategy::ParallelReduction,
-            NestedRayonSolveInvoker,
         )
         .expect("valid nested parallel additive preconditioner");
 
         for _ in 0..8 {
             let mut z = vec![0.0; n];
-            schwarz.apply(&rhs, &mut z);
+            schwarz.apply(&rhs, &mut z).expect("apply");
 
             for (i, (&zi, &ri)) in z.iter().zip(&rhs).enumerate() {
                 assert!(
@@ -209,13 +197,13 @@ fn test_additive_schwarz_reduces_iterations() {
     let a = TridiagOperator::new(n, 3.0);
     let rhs = vec![1.0; n];
 
-    let unprecond = cg_solve(&a, &rhs, 1e-8, 200).expect("unpreconditioned cg");
+    let unprecond =
+        pcg(&a, &rhs, None::<&IdentityOperator>, 1e-8, 200).expect("unpreconditioned cg");
     assert!(unprecond.converged, "Unpreconditioned CG did not converge");
 
     let schwarz = SchwarzPreconditioner::new(make_schwarz_entries(n), n)
         .expect("valid additive schwarz preconditioner");
-    let precond =
-        cg_solve_preconditioned(&a, &schwarz, &rhs, 1e-8, 200).expect("preconditioned cg");
+    let precond = pcg(&a, &rhs, Some(&schwarz), 1e-8, 200).expect("preconditioned cg");
     assert!(precond.converged, "Preconditioned CG did not converge");
 
     assert!(
@@ -240,12 +228,12 @@ fn test_clone_produces_independent_preconditioner() {
     let mut z_orig = vec![0.0; n];
     let mut z_clone = vec![0.0; n];
 
-    original.apply(&r1, &mut z_orig);
-    cloned.apply(&r2, &mut z_clone);
+    original.apply(&r1, &mut z_orig).expect("apply");
+    cloned.apply(&r2, &mut z_clone).expect("apply");
 
     // Verify independently: apply the original with r2 to check the clone's result.
     let mut z_check = vec![0.0; n];
-    original.apply(&r2, &mut z_check);
+    original.apply(&r2, &mut z_check).expect("apply");
 
     for i in 0..n {
         assert!(
@@ -259,7 +247,7 @@ fn test_clone_produces_independent_preconditioner() {
 
     // Verify the original was not corrupted by the clone's apply.
     let mut z_orig2 = vec![0.0; n];
-    original.apply(&r1, &mut z_orig2);
+    original.apply(&r1, &mut z_orig2).expect("apply");
     for i in 0..n {
         assert!(
             (z_orig[i] - z_orig2[i]).abs() < 1e-14,
@@ -281,8 +269,8 @@ fn test_additive_schwarz_operator_dimensions() {
     let r = vec![1.0; n];
     let mut z1 = vec![0.0; n];
     let mut z2 = vec![0.0; n];
-    schwarz.apply(&r, &mut z1);
-    schwarz.apply_adjoint(&r, &mut z2);
+    schwarz.apply(&r, &mut z1).expect("apply");
+    schwarz.apply_adjoint(&r, &mut z2).expect("apply");
 
     for i in 0..n {
         assert!(
@@ -314,7 +302,7 @@ fn test_additive_schwarz_parallel_apply_stress_no_panics() {
         .map(|rhs| {
             let mut z = vec![0.0; n];
             for _ in 0..16 {
-                schwarz.apply(rhs, &mut z);
+                schwarz.apply(rhs, &mut z).expect("apply");
             }
             z
         })
@@ -352,8 +340,8 @@ fn test_additive_backends_match_on_overlapping_subdomains() {
 
         let mut z_atomic = vec![0.0; n];
         let mut z_reduction = vec![0.0; n];
-        atomic.apply(&rhs, &mut z_atomic);
-        reduction.apply(&rhs, &mut z_reduction);
+        atomic.apply(&rhs, &mut z_atomic).expect("apply");
+        reduction.apply(&rhs, &mut z_reduction).expect("apply");
 
         assert_vec_close(&z_atomic, &z_reduction, 1e-12);
     });
@@ -389,8 +377,8 @@ fn test_additive_auto_matches_resolved_backend() {
 
             let mut z_auto = vec![0.0; n];
             let mut z_explicit = vec![0.0; n];
-            auto.apply(&rhs, &mut z_auto);
-            explicit.apply(&rhs, &mut z_explicit);
+            auto.apply(&rhs, &mut z_auto).expect("apply");
+            explicit.apply(&rhs, &mut z_explicit).expect("apply");
 
             assert_vec_close(&z_auto, &z_explicit, 1e-12);
         });
@@ -416,7 +404,7 @@ fn test_multiplicative_single_subdomain_exact() {
 
     let r = vec![6.0, 9.0, 12.0];
     let mut z = vec![0.0; 3];
-    prec.apply(&r, &mut z);
+    prec.apply(&r, &mut z).expect("apply");
 
     assert!((z[0] - 3.0).abs() < 1e-12);
     assert!((z[1] - 3.0).abs() < 1e-12);
@@ -443,7 +431,7 @@ fn test_multiplicative_two_nonoverlapping_subdomains() {
 
     let r = vec![4.0, 9.0, 3.0, 10.0];
     let mut z = vec![0.0; 4];
-    prec.apply(&r, &mut z);
+    prec.apply(&r, &mut z).expect("apply");
 
     assert!((z[0] - 2.0).abs() < 1e-12);
     assert!((z[1] - 3.0).abs() < 1e-12);
@@ -471,14 +459,14 @@ fn test_multiplicative_overlapping_residual_update() {
 
     let r = vec![2.0, 6.0, 8.0];
     let mut z = vec![0.0; 3];
-    prec.apply(&r, &mut z);
+    prec.apply(&r, &mut z).expect("apply");
 
     for &v in &z {
         assert!(v.is_finite(), "z contains non-finite value: {}", v);
     }
 
     let mut residual = vec![0.0; 3];
-    a.apply(&z, &mut residual);
+    a.apply(&z, &mut residual).expect("apply");
     let resid_norm: f64 = (0..3)
         .map(|i| (r[i] - residual[i]).powi(2))
         .sum::<f64>()
@@ -514,17 +502,17 @@ fn test_symmetric_multiplicative_reduces_residual_more() {
     let prec_fwd = MultiplicativeSchwarzPreconditioner::new(make_entries(), updater_fwd, 4, false)
         .expect("valid forward multiplicative preconditioner");
     let mut z_fwd = vec![0.0; 4];
-    prec_fwd.apply(&r, &mut z_fwd);
+    prec_fwd.apply(&r, &mut z_fwd).expect("apply");
 
     let updater_sym = OperatorResidualUpdater::new(&a, 4);
     let prec_sym = MultiplicativeSchwarzPreconditioner::new(make_entries(), updater_sym, 4, true)
         .expect("valid symmetric multiplicative preconditioner");
     let mut z_sym = vec![0.0; 4];
-    prec_sym.apply(&r, &mut z_sym);
+    prec_sym.apply(&r, &mut z_sym).expect("apply");
 
     let resid_norm = |z: &[f64]| -> f64 {
         let mut az = vec![0.0; 4];
-        a.apply(z, &mut az);
+        a.apply(z, &mut az).expect("apply");
         (0..4).map(|i| (r[i] - az[i]).powi(2)).sum::<f64>().sqrt()
     };
 
@@ -554,7 +542,7 @@ fn test_multiplicative_with_tridiag() {
 
     let r = vec![1.0; n];
     let mut z = vec![0.0; n];
-    prec.apply(&r, &mut z);
+    prec.apply(&r, &mut z).expect("apply");
 
     for (i, &v) in z.iter().enumerate() {
         assert!(v.is_finite(), "z[{}] = {} is not finite", i, v);
@@ -563,7 +551,7 @@ fn test_multiplicative_with_tridiag() {
     assert!(z_norm > 1e-14, "z is zero");
 
     let mut az = vec![0.0; n];
-    a.apply(&z, &mut az);
+    a.apply(&z, &mut az).expect("apply");
     let resid_norm: f64 = (0..n).map(|i| (r[i] - az[i]).powi(2)).sum::<f64>().sqrt();
     let r_norm: f64 = r.iter().map(|v| v * v).sum::<f64>().sqrt();
     assert!(
@@ -578,11 +566,7 @@ fn test_multiplicative_with_tridiag() {
 // IdentityOperator tests
 // ============================================================================
 
-use schwarz_precond::{
-    ApplyError, IdentityOperator, PreconditionerBuildError, SolveError, SubdomainCoreBuildError,
-    SubdomainEntryBuildError,
-};
-use std::error::Error;
+use schwarz_precond::{BuildError, SolveError};
 
 #[test]
 fn test_identity_operator_dimensions() {
@@ -596,7 +580,7 @@ fn test_identity_operator_apply() {
     let id = IdentityOperator::new(4);
     let x = vec![1.0, 2.0, 3.0, 4.0];
     let mut y = vec![0.0; 4];
-    id.apply(&x, &mut y);
+    id.apply(&x, &mut y).expect("apply");
     assert_eq!(y, x);
 }
 
@@ -605,36 +589,8 @@ fn test_identity_operator_apply_adjoint() {
     let id = IdentityOperator::new(4);
     let x = vec![5.0, 6.0, 7.0, 8.0];
     let mut y = vec![0.0; 4];
-    id.apply_adjoint(&x, &mut y);
+    id.apply_adjoint(&x, &mut y).expect("apply");
     assert_eq!(y, x);
-}
-
-// ============================================================================
-// Default try_apply / try_apply_adjoint tests
-// ============================================================================
-
-#[test]
-fn test_try_apply_default_succeeds() {
-    let a = TridiagOperator::new(5, 3.0);
-    let x = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-    let mut y_apply = vec![0.0; 5];
-    let mut y_try = vec![0.0; 5];
-    a.apply(&x, &mut y_apply);
-    let result = a.try_apply(&x, &mut y_try);
-    assert!(result.is_ok());
-    assert_eq!(y_apply, y_try);
-}
-
-#[test]
-fn test_try_apply_adjoint_default_succeeds() {
-    let a = TridiagOperator::new(5, 3.0);
-    let x = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-    let mut y_apply = vec![0.0; 5];
-    let mut y_try = vec![0.0; 5];
-    a.apply_adjoint(&x, &mut y_apply);
-    let result = a.try_apply_adjoint(&x, &mut y_try);
-    assert!(result.is_ok());
-    assert_eq!(y_apply, y_try);
 }
 
 // ============================================================================
@@ -665,7 +621,7 @@ fn test_additive_schwarz_apply_subdomain_empty_indices() {
             // Verify apply works with empty subdomain
             let r = vec![1.0; 5];
             let mut z = vec![0.0; 5];
-            schwarz.apply(&r, &mut z);
+            schwarz.apply(&r, &mut z).expect("apply");
             // Empty subdomain contributes nothing
             for &v in &z {
                 assert!((v - 0.0).abs() < 1e-14);
@@ -703,7 +659,7 @@ fn test_multiplicative_schwarz_subdomains_accessor() {
 
 #[test]
 fn test_subdomain_entry_build_error_display_local_dof_mismatch() {
-    let err = SubdomainEntryBuildError::LocalDofCountMismatch {
+    let err = BuildError::LocalDofCountMismatch {
         index_count: 5,
         solver_n_local: 3,
     };
@@ -714,7 +670,7 @@ fn test_subdomain_entry_build_error_display_local_dof_mismatch() {
 
 #[test]
 fn test_subdomain_entry_build_error_display_scratch_size_too_small() {
-    let err = SubdomainEntryBuildError::ScratchSizeTooSmall {
+    let err = BuildError::ScratchSizeTooSmall {
         scratch_size: 2,
         required_min: 4,
     };
@@ -725,7 +681,7 @@ fn test_subdomain_entry_build_error_display_scratch_size_too_small() {
 
 #[test]
 fn test_subdomain_core_build_error_display_partition_weight_mismatch() {
-    let err = SubdomainCoreBuildError::PartitionWeightLengthMismatch {
+    let err = BuildError::PartitionWeightLengthMismatch {
         index_count: 3,
         weight_count: 5,
     };
@@ -736,7 +692,7 @@ fn test_subdomain_core_build_error_display_partition_weight_mismatch() {
 
 #[test]
 fn test_preconditioner_build_error_display_global_index_out_of_bounds() {
-    let err = PreconditionerBuildError::GlobalIndexOutOfBounds {
+    let err = BuildError::GlobalIndexOutOfBounds {
         subdomain: 3,
         local_index: 1,
         global_index: 99,
@@ -752,37 +708,21 @@ fn test_preconditioner_build_error_display_global_index_out_of_bounds() {
 }
 
 #[test]
-fn test_local_solve_error_display() {
-    let err = LocalSolveError::ApproxCholSolveFailed {
+fn test_solve_error_display_local_solve_failed() {
+    let err = SolveError::LocalSolveFailed {
+        subdomain: 7,
         context: "backsolve",
         message: "singular matrix".to_string(),
     };
     let msg = err.to_string();
+    assert!(msg.contains("subdomain 7"), "missing subdomain: {msg}");
     assert!(msg.contains("backsolve"), "missing context: {msg}");
     assert!(msg.contains("singular matrix"), "missing message: {msg}");
 }
 
 #[test]
-fn test_apply_error_display_local_solve_failed() {
-    let local_err = LocalSolveError::ApproxCholSolveFailed {
-        context: "test",
-        message: "fail".to_string(),
-    };
-    let err = ApplyError::LocalSolveFailed {
-        subdomain: 7,
-        source: local_err,
-    };
-    let msg = err.to_string();
-    assert!(msg.contains("subdomain 7"), "missing subdomain: {msg}");
-    assert!(
-        msg.contains("local solve failed"),
-        "missing description: {msg}"
-    );
-}
-
-#[test]
-fn test_apply_error_display_synchronization() {
-    let err = ApplyError::Synchronization {
+fn test_solve_error_display_synchronization() {
+    let err = SolveError::Synchronization {
         context: "mutex.lock",
     };
     let msg = err.to_string();
@@ -794,50 +734,7 @@ fn test_apply_error_display_synchronization() {
 }
 
 #[test]
-fn test_apply_error_source() {
-    let local_err = LocalSolveError::ApproxCholSolveFailed {
-        context: "test",
-        message: "err".to_string(),
-    };
-    let err = ApplyError::LocalSolveFailed {
-        subdomain: 0,
-        source: local_err,
-    };
-    assert!(
-        err.source().is_some(),
-        "LocalSolveFailed should have a source"
-    );
-
-    let err2 = ApplyError::Synchronization { context: "test" };
-    assert!(
-        err2.source().is_none(),
-        "Synchronization should have no source"
-    );
-}
-
-#[test]
-fn test_solve_error_display() {
-    let apply_err = ApplyError::Synchronization { context: "test" };
-    let err = SolveError::Apply(apply_err);
-    let msg = err.to_string();
-    assert!(
-        msg.contains("operator apply failed"),
-        "missing prefix: {msg}"
-    );
-}
-
-#[test]
-fn test_solve_error_source() {
-    let apply_err = ApplyError::Synchronization { context: "test" };
-    let err = SolveError::Apply(apply_err);
-    assert!(
-        err.source().is_some(),
-        "SolveError::Apply should have a source"
-    );
-}
-
-#[test]
-fn test_solve_error_invalid_input_display_and_source() {
+fn test_solve_error_invalid_input_display() {
     let err = SolveError::InvalidInput {
         context: "test",
         message: "bad dimension".to_string(),
@@ -845,19 +742,6 @@ fn test_solve_error_invalid_input_display_and_source() {
     let msg = err.to_string();
     assert!(msg.contains("test"));
     assert!(msg.contains("bad dimension"));
-    assert!(err.source().is_none());
-}
-
-#[test]
-fn test_solve_error_from_apply_error() {
-    let apply_err = ApplyError::Synchronization { context: "conv" };
-    let solve_err: SolveError = apply_err.into();
-    match solve_err {
-        SolveError::Apply(ApplyError::Synchronization { context }) => {
-            assert_eq!(context, "conv");
-        }
-        _ => panic!("expected SolveError::Apply(Synchronization)"),
-    }
 }
 
 // ============================================================================
@@ -871,7 +755,7 @@ fn test_validate_local_dof_count_mismatch() {
     let core = SubdomainCore::uniform(vec![0, 1]); // 2 indices
     let result = SubdomainEntry::try_new(core, solver);
     match result {
-        Err(SubdomainEntryBuildError::LocalDofCountMismatch { .. }) => {}
+        Err(BuildError::LocalDofCountMismatch { .. }) => {}
         Ok(_) => panic!("expected LocalDofCountMismatch, got Ok"),
         Err(other) => panic!("expected LocalDofCountMismatch, got: {:?}", other),
     }
@@ -884,8 +768,9 @@ fn test_validate_global_index_out_of_bounds() {
     let entry = make_entry(core, solver);
     let result = SchwarzPreconditioner::new(vec![entry], 5);
     match result {
-        Err(PreconditionerBuildError::GlobalIndexOutOfBounds { .. }) => {}
+        Err(BuildError::GlobalIndexOutOfBounds { .. }) => {}
         Ok(_) => panic!("expected GlobalIndexOutOfBounds, got Ok"),
+        Err(other) => panic!("expected GlobalIndexOutOfBounds, got: {:?}", other),
     }
 }
 
@@ -896,8 +781,9 @@ fn test_validate_partition_weight_length_mismatch() {
         PartitionWeights::NonUniform(vec![1.0, 0.5, 0.3]),
     );
     match result {
-        Err(SubdomainCoreBuildError::PartitionWeightLengthMismatch { .. }) => {}
+        Err(BuildError::PartitionWeightLengthMismatch { .. }) => {}
         Ok(_) => panic!("expected PartitionWeightLengthMismatch, got Ok"),
+        Err(other) => panic!("expected PartitionWeightLengthMismatch, got: {:?}", other),
     }
 }
 
@@ -934,22 +820,20 @@ fn test_additive_schwarz_parallel_readout_large_n() {
 
     let rhs = vec![4.0; n];
     let mut z = vec![0.0; n];
-    let result = schwarz.try_apply(&rhs, &mut z);
-    assert!(result.is_ok(), "try_apply should succeed: {:?}", result);
+    schwarz.apply(&rhs, &mut z).expect("apply should succeed");
 
     // Each DOF: output = 1.0 * (1.0 * 4.0 / 2.0) = 2.0
     for (i, &v) in z.iter().enumerate() {
-        assert!((v - 2.0).abs() < 1e-12, "z[{i}] = {v}, expected 2.0",);
+        assert!((v - 2.0_f64).abs() < 1e-12, "z[{i}] = {v}, expected 2.0",);
     }
 }
 
 // ============================================================================
-// NaN-fill on solver error (apply, not try_apply)
+// Solver error propagation: apply returns Err when local solve fails
 // ============================================================================
 
 #[test]
-fn test_additive_schwarz_apply_fills_nan_on_solver_failure() {
-    // FailingLocalSolver always returns Err — apply must fill z with NAN.
+fn test_additive_schwarz_apply_returns_err_on_solver_failure() {
     let n = 4;
     let solver = FailingLocalSolver {
         n_local: 2,
@@ -963,17 +847,12 @@ fn test_additive_schwarz_apply_fills_nan_on_solver_failure() {
 
     let rhs = vec![1.0; n];
     let mut z = vec![0.0; n];
-    schwarz.apply(&rhs, &mut z);
-
-    assert!(
-        z.iter().all(|v| v.is_nan()),
-        "all outputs should be NaN when solver fails, got: {:?}",
-        z,
-    );
+    let result = schwarz.apply(&rhs, &mut z);
+    assert!(result.is_err(), "apply should return Err on solver failure");
 }
 
 #[test]
-fn test_multiplicative_schwarz_apply_fills_nan_on_solver_failure() {
+fn test_multiplicative_schwarz_apply_returns_err_on_solver_failure() {
     let n = 4;
     let a = DiagOperator {
         values: vec![2.0, 3.0, 4.0, 5.0],
@@ -992,13 +871,8 @@ fn test_multiplicative_schwarz_apply_fills_nan_on_solver_failure() {
 
     let rhs = vec![1.0; n];
     let mut z = vec![0.0; n];
-    prec.apply(&rhs, &mut z);
-
-    assert!(
-        z.iter().all(|v| v.is_nan()),
-        "all outputs should be NaN when solver fails, got: {:?}",
-        z,
-    );
+    let result = prec.apply(&rhs, &mut z);
+    assert!(result.is_err(), "apply should return Err on solver failure");
 }
 
 // ============================================================================
@@ -1032,58 +906,23 @@ fn test_multiplicative_schwarz_empty_subdomain_ignored() {
 
     let rhs = vec![4.0, 9.0, 1.0];
     let mut z = vec![0.0; n];
-    let result = prec.try_apply(&rhs, &mut z);
-    assert!(result.is_ok(), "try_apply should succeed: {:?}", result);
+    prec.apply(&rhs, &mut z).expect("apply should succeed");
 
     // DOFs [0, 1] are solved: z[0] = 4/2 = 2.0, z[1] = 9/3 = 3.0
     // DOF [2] is not covered by any subdomain: z[2] = 0.0
-    assert!((z[0] - 2.0).abs() < 1e-12, "z[0] = {}, expected 2.0", z[0]);
-    assert!((z[1] - 3.0).abs() < 1e-12, "z[1] = {}, expected 3.0", z[1]);
+    assert!(
+        (z[0] - 2.0_f64).abs() < 1e-12,
+        "z[0] = {}, expected 2.0",
+        z[0]
+    );
+    assert!(
+        (z[1] - 3.0_f64).abs() < 1e-12,
+        "z[1] = {}, expected 3.0",
+        z[1]
+    );
     assert!(
         z[2].abs() < 1e-12,
         "z[2] = {}, expected 0.0 (uncovered DOF)",
         z[2]
     );
-}
-
-// ============================================================================
-// try_apply / try_apply_adjoint direct calls match apply / apply_adjoint
-// ============================================================================
-
-#[test]
-fn test_additive_schwarz_try_apply_matches_apply() {
-    let n = 10;
-    let schwarz =
-        SchwarzPreconditioner::new(make_schwarz_entries(n), n).expect("valid additive schwarz");
-
-    let rhs: Vec<f64> = (0..n).map(|i| (i + 1) as f64).collect();
-
-    // apply path
-    let mut z_apply = vec![0.0; n];
-    schwarz.apply(&rhs, &mut z_apply);
-
-    // try_apply direct call
-    let mut z_try = vec![0.0; n];
-    let res = SchwarzPreconditioner::try_apply(&schwarz, &rhs, &mut z_try);
-    assert!(res.is_ok(), "try_apply should return Ok");
-
-    // try_apply_adjoint direct call (symmetric — same result)
-    let mut z_try_adj = vec![0.0; n];
-    let res_adj = Operator::try_apply_adjoint(&schwarz, &rhs, &mut z_try_adj);
-    assert!(res_adj.is_ok(), "try_apply_adjoint should return Ok");
-
-    for i in 0..n {
-        assert!(
-            (z_apply[i] - z_try[i]).abs() < 1e-14,
-            "try_apply mismatch at {i}: apply={}, try={}",
-            z_apply[i],
-            z_try[i],
-        );
-        assert!(
-            (z_apply[i] - z_try_adj[i]).abs() < 1e-14,
-            "try_apply_adjoint mismatch at {i}: apply={}, try_adj={}",
-            z_apply[i],
-            z_try_adj[i],
-        );
-    }
 }
