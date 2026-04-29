@@ -7,8 +7,8 @@
 //! helpers — they are implementation detail of this stream, not an
 //! independent subsystem.
 
+use crate::solve::dot;
 use crate::solve::lsmr::{LSMR_PAR_THRESHOLD, LSMR_UPDATE_CHUNK};
-use crate::solve::{dot, vec_norm};
 use crate::{Operator, SolveError};
 use rayon::iter::{IndexedParallelIterator, ParallelIterator};
 use rayon::prelude::{ParallelSlice, ParallelSliceMut};
@@ -93,7 +93,8 @@ fn par_dot(a: &[f64], b: &[f64]) -> f64 {
 /// owning buffer; this type is only ever constructed with a positive
 /// capacity.
 struct LocalReorth {
-    slots: Vec<Vec<f64>>,
+    slots: Vec<f64>,
+    n: usize,
     next: usize,
     count: usize,
 }
@@ -109,7 +110,8 @@ impl LocalReorth {
             return None;
         }
         Some(Self {
-            slots: (0..cap).map(|_| vec![0.0; n]).collect(),
+            slots: vec![0.0; cap * n],
+            n,
             next: 0,
             count: 0,
         })
@@ -119,10 +121,10 @@ impl LocalReorth {
     /// (oldest first). Subtracts the projection of `y` onto each stored
     /// vector.
     fn reorthogonalize(&self, y: &mut [f64]) {
-        let cap = self.slots.len();
+        let cap = self.capacity();
         let start = if self.count < cap { 0 } else { self.next };
         for i in 0..self.count {
-            let v_j = &self.slots[(start + i) % cap];
+            let v_j = self.slot((start + i) % cap);
             let c = par_dot(y, v_j);
             axpby(y, v_j, -c, 1.0);
         }
@@ -131,12 +133,30 @@ impl LocalReorth {
     /// Copy `v` into the next slot, advancing the ring index and saturating
     /// the count at capacity.
     fn push(&mut self, v: &[f64]) {
-        let cap = self.slots.len();
-        self.slots[self.next].copy_from_slice(v);
+        let cap = self.capacity();
+        let next = self.next;
+        self.slot_mut(next).copy_from_slice(v);
         self.next = (self.next + 1) % cap;
         if self.count < cap {
             self.count += 1;
         }
+    }
+
+    #[inline]
+    fn capacity(&self) -> usize {
+        self.slots.len() / self.n
+    }
+
+    #[inline]
+    fn slot(&self, slot: usize) -> &[f64] {
+        let start = slot * self.n;
+        &self.slots[start..start + self.n]
+    }
+
+    #[inline]
+    fn slot_mut(&mut self, slot: usize) -> &mut [f64] {
+        let start = slot * self.n;
+        &mut self.slots[start..start + self.n]
     }
 }
 
@@ -150,8 +170,9 @@ impl LocalReorth {
 /// As with [`LocalReorth`], the disabled state is encoded as
 /// `Option<ModifiedLocalReorth> = None` on the owning buffer.
 struct ModifiedLocalReorth {
-    v: Vec<Vec<f64>>,
-    p_tilde: Vec<Vec<f64>>,
+    v: Vec<f64>,
+    p_tilde: Vec<f64>,
+    n: usize,
     next: usize,
     count: usize,
 }
@@ -165,8 +186,9 @@ impl ModifiedLocalReorth {
             return None;
         }
         Some(Self {
-            v: (0..cap).map(|_| vec![0.0; n]).collect(),
-            p_tilde: (0..cap).map(|_| vec![0.0; n]).collect(),
+            v: vec![0.0; cap * n],
+            p_tilde: vec![0.0; cap * n],
+            n,
             next: 0,
             count: 0,
         })
@@ -176,12 +198,12 @@ impl ModifiedLocalReorth {
     /// `c = ⟨v, p̃_j⟩` is subtracted from `v` (against `v_j`) and from
     /// `p̃` (against `p̃_j`), keeping `p̃ = M v` consistent.
     fn reorthogonalize(&self, v: &mut [f64], p_tilde: &mut [f64]) {
-        let cap = self.v.len();
+        let cap = self.capacity();
         let start = if self.count < cap { 0 } else { self.next };
         for i in 0..self.count {
             let idx = (start + i) % cap;
-            let v_j = &self.v[idx];
-            let p_j = &self.p_tilde[idx];
+            let v_j = self.v_slot(idx);
+            let p_j = self.p_slot(idx);
             let c = par_dot(v, p_j);
             axpby(v, v_j, -c, 1.0);
             axpby(p_tilde, p_j, -c, 1.0);
@@ -191,9 +213,11 @@ impl ModifiedLocalReorth {
     /// Copy the normalized `v` and `p_tilde * inv_alpha` (= `M · v_norm`)
     /// into the paired next slots, advancing the ring index.
     fn push(&mut self, v: &[f64], p_tilde_unscaled: &[f64], inv_alpha: f64) {
-        let cap = self.v.len();
-        self.v[self.next].copy_from_slice(v);
-        for (dst, &src) in self.p_tilde[self.next]
+        let cap = self.capacity();
+        let next = self.next;
+        self.v_slot_mut(next).copy_from_slice(v);
+        for (dst, &src) in self
+            .p_slot_mut(next)
             .iter_mut()
             .zip(p_tilde_unscaled.iter())
         {
@@ -203,6 +227,35 @@ impl ModifiedLocalReorth {
         if self.count < cap {
             self.count += 1;
         }
+    }
+
+    #[inline]
+    fn capacity(&self) -> usize {
+        self.v.len() / self.n
+    }
+
+    #[inline]
+    fn v_slot(&self, slot: usize) -> &[f64] {
+        let start = slot * self.n;
+        &self.v[start..start + self.n]
+    }
+
+    #[inline]
+    fn p_slot(&self, slot: usize) -> &[f64] {
+        let start = slot * self.n;
+        &self.p_tilde[start..start + self.n]
+    }
+
+    #[inline]
+    fn v_slot_mut(&mut self, slot: usize) -> &mut [f64] {
+        let start = slot * self.n;
+        &mut self.v[start..start + self.n]
+    }
+
+    #[inline]
+    fn p_slot_mut(&mut self, slot: usize) -> &mut [f64] {
+        let start = slot * self.n;
+        &mut self.p_tilde[start..start + self.n]
     }
 }
 
@@ -229,6 +282,14 @@ impl<A: Operator + ?Sized> Bidiagonalization for GolubKahan<'_, A> {
         self.operator.try_apply(&self.bufs.v, &mut self.bufs.av)?;
         let beta_sq = axpy_with_sq_norm(&mut self.bufs.u, &self.bufs.av, -self.alpha);
         let beta = beta_sq.sqrt();
+        if beta == 0.0 {
+            // Lucky breakdown: the Krylov space is exhausted. Zero v so the
+            // caller's `solution.update` produces no contribution this step;
+            // alpha = 0 in the rotation makes the recurrence well-defined.
+            self.bufs.v.fill(0.0);
+            self.alpha = 0.0;
+            return Ok(BidiagStep { alpha: 0.0, beta });
+        }
         if beta > 0.0 {
             scale_in_place(&mut self.bufs.u, 1.0 / beta);
         }
@@ -273,6 +334,16 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
         self.operator.try_apply(&self.bufs.v, &mut self.bufs.av)?;
         let beta_sq = axpy_with_sq_norm(&mut self.bufs.u, &self.bufs.av, scale);
         let beta = beta_sq.sqrt();
+        if beta == 0.0 {
+            // Lucky breakdown (preconditioned): same invariant as the
+            // unpreconditioned path — zero v (and the paired p̃) so
+            // `solution.update` is a no-op this step.
+            self.bufs.v.fill(0.0);
+            self.bufs.p_tilde.fill(0.0);
+            self.alpha = 0.0;
+            self.beta_prev_inv = 0.0;
+            return Ok(BidiagStep { alpha: 0.0, beta });
+        }
         let beta_inv = if beta > 0.0 { 1.0 / beta } else { 0.0 };
 
         // Phase 2 — Aᵀ on unnormalized u: result is β · Aᵀ u_norm.
@@ -385,7 +456,7 @@ impl<'a, A: Operator + ?Sized> GolubKahan<'a, A> {
         let mut bufs = GolubKahanBuffers::new(m, n, local_size);
 
         // β₁ = ‖b‖, u₁ = b / β₁
-        let beta = vec_norm(b);
+        let beta = par_dot(b, b).sqrt();
         if beta > 0.0 {
             let inv = 1.0 / beta;
             for (ui, &bi) in bufs.u.iter_mut().zip(b) {
@@ -395,7 +466,7 @@ impl<'a, A: Operator + ?Sized> GolubKahan<'a, A> {
 
         // α₁ v₁ = Aᵀ u₁
         operator.try_apply_adjoint(&bufs.u, &mut bufs.v)?;
-        let alpha = vec_norm(&bufs.v);
+        let alpha = par_dot(&bufs.v, &bufs.v).sqrt();
         if alpha > 0.0 {
             scale_in_place(&mut bufs.v, 1.0 / alpha);
         }
@@ -476,7 +547,7 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M
         let mut bufs = ModifiedGolubKahanBuffers::new(m, n, local_size);
 
         // β₁ = ‖b‖, u₁ = b / β₁
-        let beta = vec_norm(b);
+        let beta = par_dot(b, b).sqrt();
         if beta > 0.0 {
             let inv = 1.0 / beta;
             for (ui, &bi) in bufs.u.iter_mut().zip(b) {
@@ -491,7 +562,7 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M
         preconditioner.try_apply(&bufs.p_tilde, &mut bufs.v)?;
 
         // α₁ = √⟨ṽ₁, p̃⟩ via the M-norm dot product trick.
-        let vp = dot(&bufs.v, &bufs.p_tilde);
+        let vp = par_dot(&bufs.v, &bufs.p_tilde);
         let alpha = if vp > 0.0 { vp.sqrt() } else { 0.0 };
 
         // Normalize v; leave p_tilde at α₁·p̃_norm.
