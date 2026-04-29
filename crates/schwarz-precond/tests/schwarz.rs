@@ -399,7 +399,7 @@ fn test_multiplicative_single_subdomain_exact() {
     let entry = make_entry(core, solver);
 
     let updater = OperatorResidualUpdater::new(&a, 3);
-    let prec = MultiplicativeSchwarzPreconditioner::new(vec![entry], updater, 3, false)
+    let prec = MultiplicativeSchwarzPreconditioner::new(vec![entry], updater, 3)
         .expect("valid multiplicative preconditioner");
 
     let r = vec![6.0, 9.0, 12.0];
@@ -426,7 +426,7 @@ fn test_multiplicative_two_nonoverlapping_subdomains() {
     let entry1 = make_entry(core1, solver1);
 
     let updater = OperatorResidualUpdater::new(&a, 4);
-    let prec = MultiplicativeSchwarzPreconditioner::new(vec![entry0, entry1], updater, 4, false)
+    let prec = MultiplicativeSchwarzPreconditioner::new(vec![entry0, entry1], updater, 4)
         .expect("valid multiplicative preconditioner");
 
     let r = vec![4.0, 9.0, 3.0, 10.0];
@@ -454,7 +454,7 @@ fn test_multiplicative_overlapping_residual_update() {
     let entry1 = make_entry(core1, solver1);
 
     let updater = OperatorResidualUpdater::new(&a, 3);
-    let prec = MultiplicativeSchwarzPreconditioner::new(vec![entry0, entry1], updater, 3, false)
+    let prec = MultiplicativeSchwarzPreconditioner::new(vec![entry0, entry1], updater, 3)
         .expect("valid multiplicative preconditioner");
 
     let r = vec![2.0, 6.0, 8.0];
@@ -481,52 +481,6 @@ fn test_multiplicative_overlapping_residual_update() {
 }
 
 #[test]
-fn test_symmetric_multiplicative_reduces_residual_more() {
-    let a = DiagOperator {
-        values: vec![2.0, 3.0, 4.0, 5.0],
-    };
-
-    let make_entries = || {
-        let s0 = DiagLocalSolver::new(&[2.0, 3.0]);
-        let c0 = weighted_core(vec![0, 1], vec![1.0, 0.5]);
-        let s1 = DiagLocalSolver::new(&[3.0, 4.0]);
-        let c1 = weighted_core(vec![1, 2], vec![0.5, 0.5]);
-        let s2 = DiagLocalSolver::new(&[4.0, 5.0]);
-        let c2 = weighted_core(vec![2, 3], vec![0.5, 1.0]);
-        vec![make_entry(c0, s0), make_entry(c1, s1), make_entry(c2, s2)]
-    };
-
-    let r = vec![4.0, 9.0, 12.0, 15.0];
-
-    let updater_fwd = OperatorResidualUpdater::new(&a, 4);
-    let prec_fwd = MultiplicativeSchwarzPreconditioner::new(make_entries(), updater_fwd, 4, false)
-        .expect("valid forward multiplicative preconditioner");
-    let mut z_fwd = vec![0.0; 4];
-    prec_fwd.apply(&r, &mut z_fwd).expect("apply");
-
-    let updater_sym = OperatorResidualUpdater::new(&a, 4);
-    let prec_sym = MultiplicativeSchwarzPreconditioner::new(make_entries(), updater_sym, 4, true)
-        .expect("valid symmetric multiplicative preconditioner");
-    let mut z_sym = vec![0.0; 4];
-    prec_sym.apply(&r, &mut z_sym).expect("apply");
-
-    let resid_norm = |z: &[f64]| -> f64 {
-        let mut az = vec![0.0; 4];
-        a.apply(z, &mut az).expect("apply");
-        (0..4).map(|i| (r[i] - az[i]).powi(2)).sum::<f64>().sqrt()
-    };
-
-    let rn_fwd = resid_norm(&z_fwd);
-    let rn_sym = resid_norm(&z_sym);
-    assert!(
-        rn_sym <= rn_fwd + 1e-12,
-        "Symmetric should not be worse: sym={} > fwd={}",
-        rn_sym,
-        rn_fwd
-    );
-}
-
-#[test]
 fn test_multiplicative_with_tridiag() {
     let n = 6;
     let a = TridiagOperator::new(n, 3.0);
@@ -537,7 +491,7 @@ fn test_multiplicative_with_tridiag() {
     let e2 = make_entry(SubdomainCore::uniform(vec![4, 5]), make_solver(3.0));
 
     let updater = OperatorResidualUpdater::new(&a, n);
-    let prec = MultiplicativeSchwarzPreconditioner::new(vec![e0, e1, e2], updater, n, true)
+    let prec = MultiplicativeSchwarzPreconditioner::new(vec![e0, e1, e2], updater, n)
         .expect("valid multiplicative preconditioner");
 
     let r = vec![1.0; n];
@@ -647,7 +601,7 @@ fn test_multiplicative_schwarz_subdomains_accessor() {
     let entry = make_entry(core, solver);
 
     let updater = OperatorResidualUpdater::new(&a, 3);
-    let prec = MultiplicativeSchwarzPreconditioner::new(vec![entry], updater, 3, false)
+    let prec = MultiplicativeSchwarzPreconditioner::new(vec![entry], updater, 3)
         .expect("valid multiplicative preconditioner");
 
     assert_eq!(prec.subdomains().len(), 1);
@@ -866,7 +820,7 @@ fn test_multiplicative_schwarz_apply_returns_err_on_solver_failure() {
     let entry = make_entry(core, solver);
 
     let updater = OperatorResidualUpdater::new(&a, n);
-    let prec = MultiplicativeSchwarzPreconditioner::new(vec![entry], updater, n, false)
+    let prec = MultiplicativeSchwarzPreconditioner::new(vec![entry], updater, n)
         .expect("valid multiplicative preconditioner with failing solver");
 
     let rhs = vec![1.0; n];
@@ -900,9 +854,8 @@ fn test_multiplicative_schwarz_empty_subdomain_ignored() {
     let real_entry = make_entry(real_core, real_solver);
 
     let updater = OperatorResidualUpdater::new(&a, n);
-    let prec =
-        MultiplicativeSchwarzPreconditioner::new(vec![empty_entry, real_entry], updater, n, false)
-            .expect("valid multiplicative preconditioner with empty subdomain");
+    let prec = MultiplicativeSchwarzPreconditioner::new(vec![empty_entry, real_entry], updater, n)
+        .expect("valid multiplicative preconditioner with empty subdomain");
 
     let rhs = vec![4.0, 9.0, 1.0];
     let mut z = vec![0.0; n];

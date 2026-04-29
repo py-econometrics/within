@@ -22,9 +22,7 @@
 //!   `within` crate) that exploit problem structure for cheaper updates
 //!
 //! Because the sweep is sequential and non-symmetric, this preconditioner
-//! requires GMRES (not CG). Setting `symmetric = true` adds a backward
-//! sweep after the forward sweep, making the overall operator symmetric
-//! (at double the cost).
+//! requires GMRES (not CG).
 
 use std::sync::Mutex;
 
@@ -184,7 +182,6 @@ pub struct MultiplicativeSchwarzPreconditioner<S: LocalSolver, U: ResidualUpdate
     subdomains: Vec<SubdomainEntry<S>>,
     updater: Mutex<U>,
     n_dofs: usize,
-    symmetric: bool,
     scratch: Mutex<SweepBuffers>,
 }
 
@@ -194,7 +191,6 @@ impl<S: LocalSolver, U: ResidualUpdater> MultiplicativeSchwarzPreconditioner<S, 
         entries: Vec<SubdomainEntry<S>>,
         updater: U,
         n_dofs: usize,
-        symmetric: bool,
     ) -> Result<Self, BuildError> {
         validate_entries(&entries, n_dofs)?;
         let (max_scratch_size, max_local_dofs) = compute_sizes(&entries);
@@ -202,7 +198,6 @@ impl<S: LocalSolver, U: ResidualUpdater> MultiplicativeSchwarzPreconditioner<S, 
             subdomains: entries,
             updater: Mutex::new(updater),
             n_dofs,
-            symmetric,
             scratch: Mutex::new(SweepBuffers::new(n_dofs, max_scratch_size, max_local_dofs)),
         })
     }
@@ -243,15 +238,6 @@ impl<S: LocalSolver, U: ResidualUpdater> Operator for MultiplicativeSchwarzPreco
             apply_subdomain(entry, &mut bufs, z, &mut *updater)
                 .map_err(|e| tag_subdomain(e, subdomain))?;
         }
-
-        if self.symmetric {
-            updater.reset(&bufs.r_work);
-            for (rev_idx, entry) in self.subdomains.iter().rev().enumerate() {
-                let subdomain = self.subdomains.len().saturating_sub(1) - rev_idx;
-                apply_subdomain(entry, &mut bufs, z, &mut *updater)
-                    .map_err(|e| tag_subdomain(e, subdomain))?;
-            }
-        }
         Ok(())
     }
 
@@ -270,7 +256,6 @@ impl<S: LocalSolver + Clone, U: ResidualUpdater + Clone> Clone
             subdomains: self.subdomains.clone(),
             updater: Mutex::new(updater),
             n_dofs: self.n_dofs,
-            symmetric: self.symmetric,
             scratch: Mutex::new(SweepBuffers::new(
                 self.n_dofs,
                 max_scratch_size,
@@ -297,12 +282,11 @@ mod serde_impl {
     {
         fn serialize<Ser: Serializer>(&self, serializer: Ser) -> Result<Ser::Ok, Ser::Error> {
             let mut state =
-                serializer.serialize_struct("MultiplicativeSchwarzPreconditioner", 4)?;
+                serializer.serialize_struct("MultiplicativeSchwarzPreconditioner", 3)?;
             state.serialize_field("subdomains", &self.subdomains)?;
             let updater = self.updater.lock().map_err(serde::ser::Error::custom)?;
             state.serialize_field("updater", &*updater)?;
             state.serialize_field("n_dofs", &self.n_dofs)?;
-            state.serialize_field("symmetric", &self.symmetric)?;
             state.end()
         }
     }
@@ -322,7 +306,6 @@ mod serde_impl {
                 subdomains: Vec<SubdomainEntry<S>>,
                 updater: U,
                 n_dofs: usize,
-                symmetric: bool,
             }
 
             let h = Helper::deserialize(deserializer)?;
@@ -336,7 +319,6 @@ mod serde_impl {
                 subdomains: h.subdomains,
                 updater: Mutex::new(h.updater),
                 n_dofs: h.n_dofs,
-                symmetric: h.symmetric,
             })
         }
     }

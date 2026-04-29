@@ -115,7 +115,7 @@ pub(crate) fn build_multiplicative_sparse(
     let entries = build_entries_from_pairs(domains, config)?;
     let updater = SparseGramianUpdater::new(gramian.matrix.clone());
     Ok(MultiplicativeSchwarzPreconditioner::new(
-        entries, updater, n_dofs, false,
+        entries, updater, n_dofs,
     )?)
 }
 
