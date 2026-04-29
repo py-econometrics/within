@@ -80,16 +80,17 @@ and this project follows [Semantic Versioning](https://semver.org/).
   - `design.matvec_d(x, y)` → `DesignOperator::new(&design).apply(x, y)`
   - `design.rmatvec_dt(r, x)` →
     `DesignOperator::new(&design).apply_adjoint(r, x)`
-  - `design.gramian_diagonal()` → `Gramian::build(&design).diagonal()`
-    (or `Gramian::build_weighted(&design, &w).diagonal()` when weighted).
+  - `design.gramian_diagonal()` → `Gramian::build(&design, None).diagonal()`
+    (or `Gramian::build(&design, Some(&w)).diagonal()` when weighted).
 - **Operator layer split into weighted / unweighted variants.** The
   implicit Gramian splits into `GramianOperator` (`D^T D`) and the new
   `WeightedGramianOperator` (`D^T W D`); the design operator splits into
   `DesignOperator` (`D`) and the new `WeightedDesignOperator` (`sqrt(W) D`,
   used by the LSMR path). Each Gramian operator exposes `to_csr()`.
-  Explicit assembly is now `Gramian::build` (unweighted) and
-  `Gramian::build_weighted` (weighted). Weighted apply / apply\_adjoint
-  are single fused passes — the `Mutex` scratch buffer is gone.
+  Explicit assembly is now `Gramian::build(&design, weights)` taking
+  `weights: Option<&[f64]>`, which dispatches on the optional slice.
+  Weighted apply / apply\_adjoint are single fused passes — the
+  `Mutex` scratch buffer is gone.
 - **`Solver::from_design` and `Solver::from_design_with_preconditioner`
   take an explicit `weights: Option<Vec<f64>>` argument** between
   `design` and `params`, mirroring the externalized weights. Passing
@@ -106,6 +107,31 @@ and this project follows [Semantic Versioning](https://semver.org/).
   becomes `pub fn new(categories: ArrayView2<'a, u32>) -> Self`. The
   prior `Result` was vestigial (the body was `Ok(Self { categories })`);
   drop the `?` / `.unwrap()` at call sites.
+- **`Gramian::build` and `Gramian::build_weighted` unified.** Merged into
+  a single `Gramian::build(design, weights: Option<&[f64]>)` that
+  dispatches on the optional weight slice. The standalone
+  `Gramian::build_weighted` is removed: pass `Some(&w)` to `Gramian::build`
+  for the weighted form, `None` for the unweighted form.
+- **`MultiplicativeSchwarzPreconditioner::new` signature change.** The
+  `symmetric: bool` parameter is removed; the forward+backward symmetric
+  sweep (and the corresponding `if self.symmetric { .. }` branch in
+  `apply`) is gone. Production code always passed `false`. Serialized
+  preconditioners (postcard / serde) carry one fewer field — the
+  `serialize_struct` field count drops 4 -> 3, and `Helper` no longer
+  has a `symmetric` field. Previously serialized blobs that include the
+  `symmetric` field will fail to deserialize.
+- **`WeightedGramianOperator::new` borrows weights.** Signature becomes
+  `pub fn new(design: &'a Design<S>, weights: &'a [f64]) -> Self` —
+  the operator now borrows the weight slice with the same lifetime as
+  the design reference, instead of cloning into an owned `Vec<f64>`.
+  Callers must ensure the weight slice outlives the operator.
+  Eliminates a per-construction `weights.to_vec()` clone on every
+  iterative-refinement step.
+- **`within::observation::validate_weights` removed.** The four-line
+  `if w.len() != n_obs { Err(WeightCountMismatch { .. }) }` check is
+  inlined at its single call site (`Solver::from_design_with_source`).
+  External callers that imported the helper should inline the same
+  guard locally.
 
 ### Added
 
@@ -147,6 +173,12 @@ and this project follows [Semantic Versioning](https://semver.org/).
   variants now live on `BuildError` or `SolveError`.
 - `lsmr` and `preconditioned_lsmr` public entry points in
   `schwarz-precond`. Use `mlsmr` with `Option<&M>` for the preconditioner.
+- `Gramian::build_weighted`. Folded into `Gramian::build(design, Option<&[f64]>)`.
+- `within::observation::validate_weights`. Inlined at its sole call site
+  in `Solver` construction.
+- `MultiplicativeSchwarzPreconditioner::new`'s `symmetric: bool`
+  parameter and the symmetric-sweep branch in `apply`. Production
+  code always passed `false`.
 
 ### Fixed
 
@@ -156,13 +188,13 @@ and this project follows [Semantic Versioning](https://semver.org/).
   non-convergence on well-conditioned problems. The new threshold fires
   only at the true numerical-noise floor `||r|| ~ EPS * ||b||`.
 - Weighted-operator length checks are active in release builds.
-  `Gramian::build_weighted`, `WeightedGramianOperator::new`, and
-  `WeightedDesignOperator::new` now use `assert_eq!` (was
-  `debug_assert_eq!`) on `weights.len() == design.n_rows`, restoring the
-  always-on validation boundary previously held by
-  `ObservationWeights::validate_for`. Previously, a mismatched weights
-  slice could either panic on short input or silently mis-index in
-  release builds.
+  `Gramian::build` (when called with `Some(&w)`),
+  `WeightedGramianOperator::new`, and `WeightedDesignOperator::new`
+  now use `assert_eq!` (was `debug_assert_eq!`) on
+  `weights.len() == design.n_rows`, restoring the always-on validation
+  boundary previously held by `ObservationWeights::validate_for`.
+  Previously, a mismatched weights slice could either panic on short
+  input or silently mis-index in release builds.
 
 ## [0.1.0] - 2026-03-12
 
