@@ -205,17 +205,6 @@ impl Store for ArrayStore<'_> {
     }
 }
 
-/// Validate that a weight vector is compatible with `n_obs` observations.
-pub fn validate_weights(weights: &[f64], n_obs: usize) -> WithinResult<()> {
-    if weights.len() != n_obs {
-        return Err(WithinError::WeightCountMismatch {
-            expected: n_obs,
-            got: weights.len(),
-        });
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

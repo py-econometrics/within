@@ -321,20 +321,18 @@ impl BlockElimSolver {
             n_reduced,
         }
     }
-
-    fn estimated_inner_parallel_work(&self) -> usize {
-        let max_rows = self.cross_tab.n_q().max(self.cross_tab.n_r());
-        if max_rows <= PAR_BACKSUB_THRESHOLD.max(PAR_SPMV_THRESHOLD) {
-            return 0;
-        }
-
-        let cross_nnz = self.cross_tab.c.nnz();
-        (2 * cross_nnz) + self.n_local
-    }
 }
 
-impl BlockElimSolver {
-    fn solve_local_with_parallelism(
+impl LocalSolver for BlockElimSolver {
+    fn n_local(&self) -> usize {
+        self.n_local
+    }
+
+    fn scratch_size(&self) -> usize {
+        self.n_local + self.n_reduced
+    }
+
+    fn solve_local(
         &self,
         rhs: &mut [f64],
         sol: &mut [f64],
@@ -424,28 +422,15 @@ impl BlockElimSolver {
         negate_block(&mut sol[..n], n_q);
         Ok(())
     }
-}
-
-impl LocalSolver for BlockElimSolver {
-    fn n_local(&self) -> usize {
-        self.n_local
-    }
-
-    fn scratch_size(&self) -> usize {
-        self.n_local + self.n_reduced
-    }
-
-    fn solve_local(
-        &self,
-        rhs: &mut [f64],
-        sol: &mut [f64],
-        allow_inner_parallelism: bool,
-    ) -> Result<(), SolveError> {
-        self.solve_local_with_parallelism(rhs, sol, allow_inner_parallelism)
-    }
 
     fn inner_parallelism_work_estimate(&self) -> usize {
-        self.estimated_inner_parallel_work()
+        let max_rows = self.cross_tab.n_q().max(self.cross_tab.n_r());
+        if max_rows <= PAR_BACKSUB_THRESHOLD.max(PAR_SPMV_THRESHOLD) {
+            return 0;
+        }
+
+        let cross_nnz = self.cross_tab.c.nnz();
+        (2 * cross_nnz) + self.n_local
     }
 }
 

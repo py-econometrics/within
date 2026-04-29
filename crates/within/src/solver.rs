@@ -49,7 +49,8 @@ use schwarz_precond::Operator;
 
 use crate::config::{KrylovMethod, OperatorRepr, Preconditioner, SolverParams};
 use crate::domain::Design;
-use crate::observation::{validate_weights, ArrayStore, Store};
+use crate::error::WithinError;
+use crate::observation::{ArrayStore, Store};
 use crate::operator::gramian::{Gramian, GramianOperator, WeightedGramianOperator};
 use crate::operator::preconditioner::{
     build_preconditioner, build_preconditioner_fused, FePreconditioner,
@@ -126,7 +127,12 @@ impl<S: Store> Solver<S> {
         preconditioner: Option<PreconditionerSource<'_>>,
     ) -> WithinResult<Self> {
         if let Some(w) = &weights {
-            validate_weights(w, design.n_rows)?;
+            if w.len() != design.n_rows {
+                return Err(WithinError::WeightCountMismatch {
+                    expected: design.n_rows,
+                    got: w.len(),
+                });
+            }
         }
 
         let weights_slice = weights.as_deref();
@@ -233,15 +239,15 @@ impl<S: Store> Solver<S> {
             time_solve.push(r.time_solve);
         }
 
-        Ok(BatchSolveResult::new(
+        Ok(BatchSolveResult {
             x,
             demeaned,
             converged,
             iterations,
             final_residual,
             time_solve,
-            t_start.elapsed().as_secs_f64(),
-        ))
+            time_total: t_start.elapsed().as_secs_f64(),
+        })
     }
 
     /// Access the preconditioner (for serialization).

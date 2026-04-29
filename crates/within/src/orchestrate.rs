@@ -56,36 +56,16 @@ pub struct SolveResult {
 /// Result of a batch solve across multiple RHS vectors.
 #[derive(Debug, Clone)]
 pub struct BatchSolveResult {
-    x: Vec<f64>,
-    demeaned: Vec<f64>,
-    converged: Vec<bool>,
-    iterations: Vec<usize>,
-    final_residual: Vec<f64>,
-    time_solve: Vec<f64>,
-    time_total: f64,
+    pub(crate) x: Vec<f64>,
+    pub(crate) demeaned: Vec<f64>,
+    pub(crate) converged: Vec<bool>,
+    pub(crate) iterations: Vec<usize>,
+    pub(crate) final_residual: Vec<f64>,
+    pub(crate) time_solve: Vec<f64>,
+    pub(crate) time_total: f64,
 }
 
 impl BatchSolveResult {
-    pub(crate) fn new(
-        x: Vec<f64>,
-        demeaned: Vec<f64>,
-        converged: Vec<bool>,
-        iterations: Vec<usize>,
-        final_residual: Vec<f64>,
-        time_solve: Vec<f64>,
-        time_total: f64,
-    ) -> Self {
-        Self {
-            x,
-            demeaned,
-            converged,
-            iterations,
-            final_residual,
-            time_solve,
-            time_total,
-        }
-    }
-
     /// Number of right-hand sides in the batch.
     pub fn n_rhs(&self) -> usize {
         self.converged.len()
@@ -127,10 +107,6 @@ impl BatchSolveResult {
     /// Total wall-clock time for the entire batch (setup + all solves), in seconds.
     pub fn time_total(&self) -> f64 {
         self.time_total
-    }
-
-    pub(crate) fn set_time_total(&mut self, t: f64) {
-        self.time_total = t;
     }
 }
 
@@ -179,6 +155,6 @@ pub fn solve_batch(
     let t_start = Instant::now();
     let solver = crate::solver::Solver::new(categories, weights, params, preconditioner)?;
     let mut result = solver.solve_batch(ys)?;
-    result.set_time_total(t_start.elapsed().as_secs_f64());
+    result.time_total = t_start.elapsed().as_secs_f64();
     Ok(result)
 }
