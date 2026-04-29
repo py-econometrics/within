@@ -70,13 +70,6 @@ impl PreconditionerSource<'_> {
     }
 }
 
-fn build_gramian<S: Store>(design: &Design<S>, weights: Option<&[f64]>) -> Gramian {
-    match weights {
-        Some(w) => Gramian::build_weighted(design, w),
-        None => Gramian::build(design),
-    }
-}
-
 /// Persistent solver that owns its preconditioner for reuse across multiple solves.
 pub struct Solver<S: Store> {
     design: Design<S>,
@@ -152,13 +145,13 @@ impl<S: Store> Solver<S> {
                 (None, Some(preconditioner))
             }
             (true, Some(PreconditionerSource::Built(preconditioner))) => (
-                Some(build_gramian(&design, weights_slice)),
+                Some(Gramian::build(&design, weights_slice)),
                 Some(preconditioner),
             ),
             (false, Some(PreconditionerSource::Built(preconditioner))) => {
                 (None, Some(preconditioner))
             }
-            (true, None) => (Some(build_gramian(&design, weights_slice)), None),
+            (true, None) => (Some(Gramian::build(&design, weights_slice)), None),
             (false, None) => (None, None),
         };
 

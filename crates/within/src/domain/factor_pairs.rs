@@ -381,7 +381,7 @@ mod tests {
                 FactorMajorStore::new(vec![vec![0, 1, 2, 0, 1], vec![0, 1, 2, 3, 0]], 5).unwrap();
             Design::from_store(store).unwrap()
         }] {
-            let obs_gramian = Gramian::build(&design);
+            let obs_gramian = Gramian::build(&design, None);
             let (_domains, blocks) = build_domains_and_gramian_blocks(&design, None);
             let composed =
                 Gramian::from_pair_blocks(&blocks, &design.factors, design.n_dofs).unwrap();

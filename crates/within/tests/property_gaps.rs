@@ -140,7 +140,7 @@ proptest! {
         let store = ArrayStore::new(cats.view());
         let design = Design::from_store(store).unwrap();
 
-        let explicit = Gramian::build_weighted(&design, &weights);
+        let explicit = Gramian::build(&design, Some(&weights));
         let implicit = WeightedGramianOperator::new(&design, &weights);
         let n = design.n_dofs;
 

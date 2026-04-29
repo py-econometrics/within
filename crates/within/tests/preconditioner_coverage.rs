@@ -85,7 +85,7 @@ fn test_additive_schwarz_diagnostics_none_for_multiplicative() {
 #[test]
 fn test_build_preconditioner_multiplicative_success() {
     let design = common::make_test_design();
-    let gramian = Gramian::build(&design);
+    let gramian = Gramian::build(&design, None);
 
     let result = build_preconditioner(
         &design,
@@ -256,7 +256,7 @@ fn test_fe_schwarz_apply_succeeds() {
 #[test]
 fn test_additive_preconditioner_functions_return_some() {
     let design = common::make_test_design();
-    let gramian = Gramian::build(&design);
+    let gramian = Gramian::build(&design, None);
 
     let precond = build_preconditioner(
         &design,

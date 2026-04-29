@@ -334,10 +334,7 @@ proptest! {
             Some(pair) => pair,
             None => return Ok(()),
         };
-        let gramian = match weights_slice {
-            Some(w) => Gramian::build_weighted(&design, w),
-            None => Gramian::build(&design),
-        };
+        let gramian = Gramian::build(&design, weights_slice);
 
         let l2g_usize: Vec<usize> = l2g.iter().map(|&x| x as usize).collect();
         let sub = gramian.extract_submatrix(&l2g_usize);

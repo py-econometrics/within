@@ -75,7 +75,7 @@ proptest! {
     fn prop_explicit_equals_implicit_gramian((cats, _y) in random_fe_problem_strategy()) {
         let store = ArrayStore::new(cats.view());
         let design = Design::from_store(store).unwrap();
-        let explicit = Gramian::build(&design);
+        let explicit = Gramian::build(&design, None);
         let implicit = GramianOperator::new(&design);
         let n = design.n_dofs;
 

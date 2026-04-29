@@ -391,7 +391,7 @@ fn bench_matvec(c: &mut Criterion) {
         let implicit_op = GramianOperator::new(&design);
 
         // Explicit: CSR SpMV
-        let explicit_g = Gramian::build(&design);
+        let explicit_g = Gramian::build(&design, None);
 
         // Sanity check: both produce the same result
         let mut y_impl = vec![0.0; n_dofs];

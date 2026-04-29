@@ -179,7 +179,7 @@ mod residual_update_tests {
         let store = FactorMajorStore::new(vec![vec![0, 1, 2, 0, 1], vec![0, 1, 2, 3, 0]], 5)
             .expect("valid factor-major store");
         let design = Design::from_store(store).expect("valid fixed-effects design");
-        let gramian = Gramian::build(&design);
+        let gramian = Gramian::build(&design, None);
         let n_dofs = design.n_dofs;
         (gramian, n_dofs)
     }
@@ -309,7 +309,7 @@ mod residual_update_tests {
 
         let store = FactorMajorStore::new(fl, 4).expect("valid weighted store");
         let design = Design::from_store(store).expect("valid weighted design");
-        let gramian = Gramian::build_weighted(&design, &weights);
+        let gramian = Gramian::build(&design, Some(&weights));
         let n_dofs = design.n_dofs;
 
         let mut sparse_updater = SparseGramianUpdater::new(gramian.matrix.clone());

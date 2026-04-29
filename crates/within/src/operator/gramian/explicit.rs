@@ -203,24 +203,21 @@ impl PairAccumulator {
 // ===========================================================================
 
 impl Gramian {
-    /// Assemble the unweighted Gramian `G = D^T D` as a CSR sparse matrix.
-    pub fn build<S: Store>(design: &Design<S>) -> Self {
-        Self {
-            matrix: Arc::new(build_full_matrix(design, None)),
+    /// Assemble the Gramian `G = D^T W D` as a CSR sparse matrix.
+    ///
+    /// Pass `weights = None` for the unweighted form `G = D^T D`.
+    pub fn build<S: Store>(design: &Design<S>, weights: Option<&[f64]>) -> Self {
+        if let Some(w) = weights {
+            assert_eq!(
+                w.len(),
+                design.n_rows,
+                "weights length {} does not match design.n_rows {}",
+                w.len(),
+                design.n_rows
+            );
         }
-    }
-
-    /// Assemble the weighted Gramian `G = D^T W D` as a CSR sparse matrix.
-    pub fn build_weighted<S: Store>(design: &Design<S>, weights: &[f64]) -> Self {
-        assert_eq!(
-            weights.len(),
-            design.n_rows,
-            "weights length {} does not match design.n_rows {}",
-            weights.len(),
-            design.n_rows
-        );
         Self {
-            matrix: Arc::new(build_full_matrix(design, Some(weights))),
+            matrix: Arc::new(build_full_matrix(design, weights)),
         }
     }
 

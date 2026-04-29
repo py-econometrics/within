@@ -19,7 +19,7 @@ fn make_weighted_design() -> Design<FactorMajorStore> {
 #[test]
 fn test_gramian_build_diagonal_block() {
     let dm = make_test_design();
-    let g = Gramian::build(&dm);
+    let g = Gramian::build(&dm, None);
     let diag = g.diagonal();
     assert_eq!(diag[0], 2.0);
     assert_eq!(diag[1], 1.0);
@@ -31,7 +31,7 @@ fn test_gramian_build_diagonal_block() {
 #[test]
 fn test_gramian_symmetry() {
     let dm = make_test_design();
-    let g = Gramian::build(&dm);
+    let g = Gramian::build(&dm, None);
     let n = g.n_dofs();
     for i in 0..n {
         let mut ei = vec![0.0; n];
@@ -51,7 +51,7 @@ fn test_gramian_symmetry() {
 #[test]
 fn test_gramian_matches_gramian_operator() {
     let dm = make_test_design();
-    let g = Gramian::build(&dm);
+    let g = Gramian::build(&dm, None);
     let gop = GramianOperator::new(&dm);
     let n = g.n_dofs();
     let x = vec![1.0, -0.5, 2.0, 0.3, -1.0];
@@ -67,7 +67,7 @@ fn test_gramian_matches_gramian_operator() {
 #[test]
 fn test_gramian_submatrix() {
     let dm = make_test_design();
-    let g = Gramian::build(&dm);
+    let g = Gramian::build(&dm, None);
     let sub = g.extract_submatrix(&[0, 1, 2]);
     assert_eq!(sub.n(), 3);
     let diag = sub.diagonal();
@@ -93,26 +93,23 @@ fn test_gramian_operator_symmetric() {
 #[test]
 fn test_gramian_diagonal_matches_explicit() {
     let dm = make_test_design();
-    let g = Gramian::build(&dm);
-    assert_eq!(g.diagonal(), Gramian::build(&dm).diagonal());
+    let g = Gramian::build(&dm, None);
+    assert_eq!(g.diagonal(), Gramian::build(&dm, None).diagonal());
 }
 
 #[test]
 fn test_weighted_gramian_diagonal() {
     let dm = make_weighted_design();
     let weights = vec![1.0, 2.0, 3.0, 4.0];
-    let g = Gramian::build_weighted(&dm, &weights);
-    assert_eq!(
-        g.diagonal(),
-        Gramian::build_weighted(&dm, &weights).diagonal()
-    );
+    let g = Gramian::build(&dm, Some(&weights));
+    assert_eq!(g.diagonal(), Gramian::build(&dm, Some(&weights)).diagonal());
 }
 
 #[test]
 fn test_weighted_gramian_matches_operator() {
     let dm = make_weighted_design();
     let weights = vec![1.0, 2.0, 3.0, 4.0];
-    let g = Gramian::build_weighted(&dm, &weights);
+    let g = Gramian::build(&dm, Some(&weights));
     let gop = within::operator::gramian::WeightedGramianOperator::new(&dm, &weights);
     let n = g.n_dofs();
     let x = vec![1.0, -0.5, 2.0, 0.3];
@@ -138,7 +135,7 @@ fn test_gramian_sparse_accumulation_path() {
     }
     let store = FactorMajorStore::new(vec![fa, fb], n_obs).expect("valid factor-major store");
     let dm = Design::from_store(store).expect("valid sparse accumulation design");
-    let g = Gramian::build(&dm);
+    let g = Gramian::build(&dm, None);
     let gop = GramianOperator::new(&dm);
     let n = g.n_dofs();
 
@@ -158,7 +155,7 @@ fn test_gramian_sparse_accumulation_path() {
 #[test]
 fn test_gramian_apply_adjoint_delegates() {
     let dm = make_test_design();
-    let g = Gramian::build(&dm);
+    let g = Gramian::build(&dm, None);
     let n = g.n_dofs();
     let x = vec![1.0, -0.5, 2.0, 0.3, -1.0];
     let mut y1 = vec![0.0; n];
@@ -171,7 +168,7 @@ fn test_gramian_apply_adjoint_delegates() {
 #[test]
 fn test_gramian_linearity() {
     let dm = make_test_design();
-    let g = Gramian::build(&dm);
+    let g = Gramian::build(&dm, None);
     let n = g.n_dofs();
 
     let x = vec![1.0, -0.5, 2.0, 0.3, -1.0];
@@ -222,7 +219,7 @@ fn test_three_factor_gramian_build() {
     )
     .expect("valid store");
     let dm = Design::from_store(store).expect("valid design");
-    let g = Gramian::build(&dm);
+    let g = Gramian::build(&dm, None);
     let n = g.n_dofs();
 
     // Verify symmetry
@@ -293,7 +290,7 @@ fn test_gramian_large_row_permutation_sort() {
     }
     let store = FactorMajorStore::new(vec![fa, fb], n_obs).expect("valid store");
     let dm = Design::from_store(store).expect("valid design");
-    let g = Gramian::build(&dm);
+    let g = Gramian::build(&dm, None);
     let gop = GramianOperator::new(&dm);
     let n = g.n_dofs();
 
@@ -311,7 +308,7 @@ fn test_gramian_large_row_permutation_sort() {
 #[test]
 fn test_gramian_operator_trait() {
     let dm = make_test_design();
-    let g = Gramian::build(&dm);
+    let g = Gramian::build(&dm, None);
     assert_eq!(g.nrows(), dm.n_dofs);
     assert_eq!(g.ncols(), dm.n_dofs);
 }
@@ -328,7 +325,7 @@ fn test_gramian_parallel_build_path() {
     let store = FactorMajorStore::new(vec![fa, fb], n_obs).expect("valid parallel store");
     let dm = within::domain::Design::from_store(store).expect("valid parallel design");
 
-    let g = Gramian::build(&dm);
+    let g = Gramian::build(&dm, None);
     let gop = GramianOperator::new(&dm);
     let n = g.n_dofs();
     assert_eq!(n, n_lev_a + n_lev_b);
@@ -356,7 +353,7 @@ fn test_gramian_single_factor() {
     let store = FactorMajorStore::new(vec![fa], n_obs).expect("valid store");
     let dm = within::domain::Design::from_store(store).expect("valid single-factor design");
 
-    let g = Gramian::build(&dm);
+    let g = Gramian::build(&dm, None);
     let n = g.n_dofs();
 
     assert_eq!(n, 4, "single factor with 4 levels -> n_dofs=4");

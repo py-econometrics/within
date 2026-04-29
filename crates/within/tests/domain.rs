@@ -119,7 +119,7 @@ fn test_large_design_gramian_diagonal_from_unit_vectors() {
     let n_dofs = dm.n_dofs;
     let n_rows = dm.n_rows;
 
-    let diag = Gramian::build(&dm).diagonal();
+    let diag = Gramian::build(&dm, None).diagonal();
 
     for j in 0..n_dofs {
         let mut ej = vec![0.0f64; n_dofs];
@@ -173,7 +173,7 @@ proptest! {
 
         let n_dofs = dm.n_dofs;
         let n_rows = dm.n_rows;
-        let diag = Gramian::build_weighted(&dm, &weights).diagonal();
+        let diag = Gramian::build(&dm, Some(&weights)).diagonal();
 
         for j in 0..n_dofs {
             let mut ej = vec![0.0f64; n_dofs];
@@ -507,7 +507,7 @@ fn test_single_factor_design_gramian_diagonal_is_level_counts() {
     let store = FactorMajorStore::new(categories, 5).expect("valid store");
     let dm = Design::from_store(store).expect("valid single-factor design");
 
-    let diag = Gramian::build(&dm).diagonal();
+    let diag = Gramian::build(&dm, None).diagonal();
     assert_eq!(diag, vec![2.0, 2.0, 1.0]);
 }
 
