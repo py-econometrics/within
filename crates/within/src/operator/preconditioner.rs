@@ -28,6 +28,8 @@
 //! a preconditioner. Error handling flows through `try_apply` for graceful
 //! reporting of local-solver failures.
 
+use std::sync::Arc;
+
 use schwarz_precond::{AdditiveSchwarzDiagnostics, LocalSolver, Operator, ReductionStrategy};
 use serde::{Deserialize, Serialize};
 
@@ -140,7 +142,7 @@ impl Operator for FePreconditioner {
 /// Shared dispatch logic used by both `build_preconditioner` and
 /// `build_preconditioner_fused`.
 fn build_from_domains(
-    domains: Vec<(Subdomain, CrossTab)>,
+    domains: Vec<(Subdomain, Arc<CrossTab>)>,
     n_dofs: usize,
     gramian: Option<&Gramian>,
     config: &Preconditioner,

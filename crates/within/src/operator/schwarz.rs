@@ -33,6 +33,8 @@
 pub use schwarz_precond::MultiplicativeSchwarzPreconditioner;
 pub use schwarz_precond::SchwarzPreconditioner;
 
+use std::sync::Arc;
+
 use approx_chol::low_level::Builder;
 use approx_chol::CsrRef;
 use rayon::prelude::*;
@@ -76,7 +78,7 @@ pub fn build_schwarz<S: Store>(
 
 /// Build additive Schwarz from pre-built domain pairs.
 pub(crate) fn build_additive(
-    domains: Vec<(Subdomain, CrossTab)>,
+    domains: Vec<(Subdomain, Arc<CrossTab>)>,
     n_dofs: usize,
     config: &LocalSolverConfig,
 ) -> WithinResult<FeSchwarz> {
@@ -90,7 +92,7 @@ pub(crate) fn build_additive(
 
 /// Build additive Schwarz with an explicit reduction strategy.
 pub(crate) fn build_additive_with_strategy(
-    domains: Vec<(Subdomain, CrossTab)>,
+    domains: Vec<(Subdomain, Arc<CrossTab>)>,
     n_dofs: usize,
     config: &LocalSolverConfig,
     strategy: schwarz_precond::ReductionStrategy,
@@ -105,7 +107,7 @@ pub(crate) fn build_additive_with_strategy(
 ///
 /// Always non-symmetric (GMRES-only).
 pub(crate) fn build_multiplicative_sparse(
-    domains: Vec<(Subdomain, CrossTab)>,
+    domains: Vec<(Subdomain, Arc<CrossTab>)>,
     gramian: &super::gramian::Gramian,
     n_dofs: usize,
     config: &LocalSolverConfig,
@@ -118,7 +120,7 @@ pub(crate) fn build_multiplicative_sparse(
 }
 
 fn build_entries_from_pairs(
-    domain_pairs: Vec<(Subdomain, CrossTab)>,
+    domain_pairs: Vec<(Subdomain, Arc<CrossTab>)>,
     config: &LocalSolverConfig,
 ) -> WithinResult<Vec<SubdomainEntry<BlockElimSolver>>> {
     domain_pairs
@@ -134,7 +136,7 @@ fn build_entries_from_pairs(
 /// Build a single `SubdomainEntry<BlockElimSolver>` from a pre-built CrossTab.
 pub(crate) fn build_entry(
     domain: Subdomain,
-    cross_tab: CrossTab,
+    cross_tab: Arc<CrossTab>,
     config: &LocalSolverConfig,
 ) -> WithinResult<SubdomainEntry<BlockElimSolver>> {
     let schur_config = ReducedSchurConfig {

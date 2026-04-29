@@ -63,14 +63,14 @@ use crate::operator::gramian::{find_all_active_levels, BipartiteComponent, Cross
 pub(crate) fn build_local_domains<S: Store>(
     design: &Design<S>,
     weights: Option<&[f64]>,
-) -> Vec<(Subdomain, CrossTab)> {
+) -> Vec<(Subdomain, Arc<CrossTab>)> {
     use rayon::prelude::*;
 
     let n_factors = design.n_factors();
     let pairs = build_pairs(n_factors);
     let all_active = find_all_active_levels(design);
 
-    let mut domain_pairs: Vec<(Subdomain, CrossTab)> = pairs
+    let mut domain_pairs: Vec<(Subdomain, Arc<CrossTab>)> = pairs
         .par_iter()
         .flat_map(|&(q, r)| domains_for_pair(design, weights, q, r, &all_active))
         .collect();
@@ -105,14 +105,14 @@ pub(crate) struct PairBlockData {
 pub(crate) fn build_domains_and_gramian_blocks<S: Store>(
     design: &Design<S>,
     weights: Option<&[f64]>,
-) -> (Vec<(Subdomain, CrossTab)>, Vec<PairBlockData>) {
+) -> (Vec<(Subdomain, Arc<CrossTab>)>, Vec<PairBlockData>) {
     use rayon::prelude::*;
 
     let n_factors = design.n_factors();
     let pairs = build_pairs(n_factors);
     let all_active = find_all_active_levels(design);
 
-    type PairResult = (Vec<(Subdomain, CrossTab)>, Option<PairBlockData>);
+    type PairResult = (Vec<(Subdomain, Arc<CrossTab>)>, Option<PairBlockData>);
     let results: Vec<PairResult> = pairs
         .par_iter()
         .map(|&(q, r)| domains_and_block_for_pair(design, weights, q, r, &all_active))
@@ -137,7 +137,7 @@ fn domains_and_block_for_pair<S: Store>(
     q: usize,
     r: usize,
     all_active: &[Vec<bool>],
-) -> (Vec<(Subdomain, CrossTab)>, Option<PairBlockData>) {
+) -> (Vec<(Subdomain, Arc<CrossTab>)>, Option<PairBlockData>) {
     let (full_ct, l2g) =
         match CrossTab::build_for_pair_with_active(design, weights, q, r, all_active) {
             Some(pair) => pair,
@@ -145,17 +145,19 @@ fn domains_and_block_for_pair<S: Store>(
         };
 
     let n_q_full = full_ct.n_q();
-    let ct_arc = Arc::new(full_ct);
+    let full_ct = Arc::new(full_ct);
 
     let block_data = PairBlockData {
         q,
         r,
-        cross_tab: Arc::clone(&ct_arc),
+        cross_tab: Arc::clone(&full_ct),
         q_global: l2g[..n_q_full].to_vec(),
         r_global: l2g[n_q_full..].to_vec(),
     };
 
-    let domains = split_into_subdomains_arc(ct_arc, &l2g, n_q_full, (q, r));
+    // Single-component pairs share the Arc with `block_data` (refcount bump,
+    // no data clone); multi-component pairs allocate per-component sub-CrossTabs.
+    let domains = split_into_subdomains(full_ct, &l2g, n_q_full, (q, r));
 
     (domains, Some(block_data))
 }
@@ -166,7 +168,7 @@ fn domains_for_pair<S: Store>(
     q: usize,
     r: usize,
     all_active: &[Vec<bool>],
-) -> Vec<(Subdomain, CrossTab)> {
+) -> Vec<(Subdomain, Arc<CrossTab>)> {
     let (full_ct, l2g) =
         match CrossTab::build_for_pair_with_active(design, weights, q, r, all_active) {
             Some(pair) => pair,
@@ -174,60 +176,28 @@ fn domains_for_pair<S: Store>(
         };
 
     let n_q_full = full_ct.n_q();
-    split_into_subdomains(full_ct, &l2g, n_q_full, (q, r))
+    split_into_subdomains(Arc::new(full_ct), &l2g, n_q_full, (q, r))
 }
 
 /// Split a full CrossTab into per-component subdomains.
 ///
-/// Finds bipartite connected components, extracts a sub-CrossTab for each,
-/// and builds a `Subdomain` with uniform partition-of-unity weights.
+/// Single-component pairs hand the input `Arc` straight back to the caller
+/// (refcount bump, no data clone). Multi-component pairs allocate one
+/// fresh `Arc<CrossTab>` per component via `extract_component`.
 fn split_into_subdomains(
-    full_ct: CrossTab,
-    l2g: &[u32],
-    n_q_full: usize,
-    factor_pair: (usize, usize),
-) -> Vec<(Subdomain, CrossTab)> {
-    let components = full_ct.bipartite_connected_components();
-
-    let cross_tabs: Vec<CrossTab> = if components.len() == 1 {
-        vec![full_ct]
-    } else {
-        components
-            .iter()
-            .map(|comp| full_ct.extract_component(comp))
-            .collect()
-    };
-
-    components
-        .iter()
-        .zip(cross_tabs)
-        .map(|(comp, comp_ct)| {
-            let comp_l2g = component_global_indices(comp, l2g, n_q_full);
-            let core =
-                super::SubdomainCore::uniform(comp_l2g.into_iter().map(|g| g as u32).collect());
-            (Subdomain { factor_pair, core }, comp_ct)
-        })
-        .collect()
-}
-
-/// Like `split_into_subdomains` but accepts an `Arc<CrossTab>`.
-///
-/// When there is a single component, unwraps or clones the Arc to avoid
-/// full CrossTab cloning. Multiple components extract sub-CrossTabs as usual.
-fn split_into_subdomains_arc(
     full_ct: Arc<CrossTab>,
     l2g: &[u32],
     n_q_full: usize,
     factor_pair: (usize, usize),
-) -> Vec<(Subdomain, CrossTab)> {
+) -> Vec<(Subdomain, Arc<CrossTab>)> {
     let components = full_ct.bipartite_connected_components();
 
-    let cross_tabs: Vec<CrossTab> = if components.len() == 1 {
-        vec![Arc::try_unwrap(full_ct).unwrap_or_else(|arc| (*arc).clone())]
+    let cross_tabs: Vec<Arc<CrossTab>> = if components.len() == 1 {
+        vec![full_ct]
     } else {
         components
             .iter()
-            .map(|comp| full_ct.extract_component(comp))
+            .map(|comp| Arc::new(full_ct.extract_component(comp)))
             .collect()
     };
 
@@ -275,7 +245,7 @@ fn build_pairs(n_factors: usize) -> Vec<(usize, usize)> {
 /// In the common (non-overlapping) case where every DOF belongs to exactly one
 /// subdomain, all weights are 1.0 and the compact `PartitionWeights::Uniform`
 /// representation is used to avoid per-DOF storage.
-fn compute_partition_weights(domain_pairs: &mut [(Subdomain, CrossTab)], n_dofs: usize) {
+fn compute_partition_weights(domain_pairs: &mut [(Subdomain, Arc<CrossTab>)], n_dofs: usize) {
     let mut counts = vec![0u32; n_dofs];
     for (d, _) in domain_pairs.iter() {
         for &idx in d.core.global_indices() {
@@ -376,8 +346,8 @@ mod tests {
     use crate::operator::gramian::Gramian;
 
     fn assert_domain_sets_equal(
-        obs_domains: &[(Subdomain, crate::operator::gramian::CrossTab)],
-        gram_domains: &[(Subdomain, crate::operator::gramian::CrossTab)],
+        obs_domains: &[(Subdomain, Arc<crate::operator::gramian::CrossTab>)],
+        gram_domains: &[(Subdomain, Arc<crate::operator::gramian::CrossTab>)],
     ) {
         assert_eq!(
             obs_domains.len(),

@@ -613,7 +613,10 @@ mod schwarz_tests {
 
     const BLOCK_ELIM_NESTED_RAYON_CHILD_ENV: &str = "WITHIN_TEST_BLOCK_ELIM_NESTED_RAYON_CHILD";
 
-    fn make_test_data() -> (Design<FactorMajorStore>, Vec<(Subdomain, CrossTab)>) {
+    fn make_test_data() -> (
+        Design<FactorMajorStore>,
+        Vec<(Subdomain, std::sync::Arc<CrossTab>)>,
+    ) {
         let store = FactorMajorStore::new(vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]], 5)
             .expect("valid factor-major store");
         let design = Design::from_store(store).expect("valid fixed-effects design");
@@ -716,8 +719,8 @@ mod schwarz_tests {
         n_keep: usize,
         elim_ratio: usize,
         n_subdomains: usize,
-    ) -> (usize, Vec<(Subdomain, CrossTab)>) {
-        let cross_tab = synthetic_sparse_cross_tab(n_keep, elim_ratio);
+    ) -> (usize, Vec<(Subdomain, std::sync::Arc<CrossTab>)>) {
+        let cross_tab = std::sync::Arc::new(synthetic_sparse_cross_tab(n_keep, elim_ratio));
         let n_local = cross_tab.n_local();
         let global_indices: Vec<u32> = (0..n_local as u32).collect();
 
@@ -728,7 +731,7 @@ mod schwarz_tests {
                         factor_pair: (idx, idx + 1),
                         core: SubdomainCore::uniform(global_indices.clone()),
                     },
-                    cross_tab.clone(),
+                    std::sync::Arc::clone(&cross_tab),
                 )
             })
             .collect();
