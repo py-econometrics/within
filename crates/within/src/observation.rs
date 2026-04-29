@@ -216,23 +216,14 @@ pub fn validate_weights(weights: &[f64], n_obs: usize) -> WithinResult<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Test helpers
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-fn sample_factor_levels() -> Vec<Vec<u32>> {
-    vec![vec![0, 1, 2, 0], vec![0, 1, 0, 1]]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_factor_major_store_basic() {
-        let store =
-            FactorMajorStore::new(sample_factor_levels(), 4).expect("valid factor-major store");
+        let store = FactorMajorStore::new(vec![vec![0, 1, 2, 0], vec![0, 1, 0, 1]], 4)
+            .expect("valid factor-major store");
         assert_eq!(store.n_obs(), 4);
         assert_eq!(store.n_factors(), 2);
         assert_eq!(store.level(0, 0), 0);
