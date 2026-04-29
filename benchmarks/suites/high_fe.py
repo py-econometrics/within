@@ -7,21 +7,12 @@ domain decomposition.
 
 from __future__ import annotations
 
-from within._within import (
-    ApproxCholConfig,
-    ApproxSchurConfig,
-    MultiplicativeSchwarz,
-    SchurComplement,
-)
 from .._framework import (
     BenchmarkResult,
     ProblemSpec,
-    SolverConfig,
     SuiteOptions,
-    benchmark_cg,
-    benchmark_gmres,
-    make_additive_schwarz,
     run_problem_set,
+    standard_solver_configs,
     suite,
 )
 from .._table import print_pivot, print_table
@@ -190,23 +181,7 @@ def run_high_fe(opts: SuiteOptions) -> list[BenchmarkResult]:
         ],
     )
 
-    schur = SchurComplement(
-        approx_chol=ApproxCholConfig(seed=opts.seed),
-        approx_schur=ApproxSchurConfig(seed=opts.seed),
-    )
-    configs = [
-        SolverConfig(
-            "CG(Schwarz)",
-            benchmark_cg(opts),
-            preconditioner=make_additive_schwarz(local_solver=schur),
-        ),
-        SolverConfig(
-            "GMRES(Mult-Schwarz)",
-            benchmark_gmres(opts),
-            preconditioner=MultiplicativeSchwarz(local_solver=schur),
-        ),
-    ]
-    results = run_problem_set(problems, configs, opts)
+    results = run_problem_set(problems, standard_solver_configs(opts), opts)
     print_table(results)
     print("\n")
     print_pivot(results)
@@ -313,23 +288,7 @@ def run_high_fe_scaling(opts: SuiteOptions) -> list[BenchmarkResult]:
         ],
     )
 
-    schur = SchurComplement(
-        approx_chol=ApproxCholConfig(seed=opts.seed),
-        approx_schur=ApproxSchurConfig(seed=opts.seed),
-    )
-    configs = [
-        SolverConfig(
-            "CG(Schwarz)",
-            benchmark_cg(opts),
-            preconditioner=make_additive_schwarz(local_solver=schur),
-        ),
-        SolverConfig(
-            "GMRES(Mult-Schwarz)",
-            benchmark_gmres(opts),
-            preconditioner=MultiplicativeSchwarz(local_solver=schur),
-        ),
-    ]
-    results = run_problem_set(problems, configs, opts)
+    results = run_problem_set(problems, standard_solver_configs(opts), opts)
     print_table(results)
     print("\n")
     print_pivot(results)

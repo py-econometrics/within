@@ -9,21 +9,14 @@ Three suites:
 
 from __future__ import annotations
 
-from within._within import (
-    ApproxCholConfig,
-    ApproxSchurConfig,
-    MultiplicativeSchwarz,
-    SchurComplement,
-)
 from .._framework import (
     BenchmarkResult,
     ProblemSpec,
     SolverConfig,
     SuiteOptions,
     benchmark_cg,
-    benchmark_gmres,
-    make_additive_schwarz,
     run_problem_set,
+    standard_solver_configs,
     suite,
 )
 from .._table import print_pivot, print_table
@@ -194,24 +187,7 @@ def run_preconditioners_3fe(opts: SuiteOptions) -> list[BenchmarkResult]:
         ],
     )
 
-    schur = SchurComplement(
-        approx_chol=ApproxCholConfig(seed=opts.seed),
-        approx_schur=ApproxSchurConfig(seed=opts.seed),
-    )
-    configs = [
-        SolverConfig(
-            "CG(Schwarz)",
-            benchmark_cg(opts),
-            preconditioner=make_additive_schwarz(local_solver=schur),
-        ),
-        SolverConfig(
-            "GMRES(Mult-Schwarz)",
-            benchmark_gmres(opts),
-            preconditioner=MultiplicativeSchwarz(local_solver=schur),
-        ),
-    ]
-
-    all_results = run_problem_set(problems, configs, opts)
+    all_results = run_problem_set(problems, standard_solver_configs(opts), opts)
     print_table(all_results)
     print("\n")
     print_pivot(all_results)
@@ -327,25 +303,12 @@ def run_preconditioner_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
         ],
     )
 
-    schur = SchurComplement(
-        approx_chol=ApproxCholConfig(seed=opts.seed),
-        approx_schur=ApproxSchurConfig(seed=opts.seed),
-    )
     configs = [
         SolverConfig(
             "CG(none)",
             benchmark_cg(opts, maxiter=maxiter),
         ),
-        SolverConfig(
-            "CG(Schwarz)",
-            benchmark_cg(opts, maxiter=maxiter),
-            preconditioner=make_additive_schwarz(local_solver=schur),
-        ),
-        SolverConfig(
-            "GMRES(Mult-Schwarz)",
-            benchmark_gmres(opts, maxiter=maxiter),
-            preconditioner=MultiplicativeSchwarz(local_solver=schur),
-        ),
+        *standard_solver_configs(opts),
     ]
 
     all_results = run_problem_set(problems, configs, opts)

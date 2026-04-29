@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **LSMR rectangular least-squares solver**: a preconditioned LSMR variant
+  operating directly on the weighted design operator (`sqrt(W) D`), exposed
+  via a new `KrylovMethod::Lsmr` and dispatched inline from `Solver::solve`.
+  Avoids explicit normal-equation formation for improved numerical
+  conditioning.
+
+### Changed
+
+- **`schwarz_precond::SolveError` is now `#[non_exhaustive]`** and gained an
+  `InvalidInput { context, message }` variant for pre-iteration validation
+  failures. Downstream Rust consumers matching on `SolveError` must add a
+  wildcard arm. Future variant additions will not be breaking.
+- `SolveResult.iterations` and `BatchSolveResult.iterations` now report the
+  total Krylov iterations across the initial solve and any iterative-refinement
+  correction solves (previously: outer solve only).
+
+### Fixed
+
+- CG stagnation guard threshold tightened from `EPS * rz_init` to
+  `EPS^2 * rz_init`. The old threshold fired at `||r||/||b|| ~ sqrt(EPS)`,
+  colliding with user tolerances near `1e-8` and causing spurious
+  non-convergence on well-conditioned problems. The new threshold fires
+  only at the true numerical-noise floor `||r|| ~ EPS * ||b||`.
+
 ## [0.1.0] - 2026-03-12
 
 Initial release of `within`, a high-performance fixed-effects solver for

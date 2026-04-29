@@ -163,6 +163,21 @@ pub enum KrylovMethod {
         /// Restart dimension (number of Arnoldi vectors before restart).
         restart: usize,
     },
+    /// Modified LSMR: rectangular least-squares, minimum normal-equation residual.
+    ///
+    /// Uses Modified Golub-Kahan bidiagonalization — one `M⁻¹` solve per iteration.
+    /// The preconditioner `M ≈ A^T A` is used directly without square-root factorization.
+    Lsmr {
+        /// Number of past `v` vectors to reorthogonalize against via
+        /// windowed modified Gram-Schmidt. `None` (default) disables — the
+        /// plain short recurrence is used. `Some(N)` enables a window of
+        /// `N` past vectors; `Some(5..20)` is cheap insurance for
+        /// ill-conditioned problems where rounding causes the
+        /// bidiagonalization to lose orthogonality and convergence to
+        /// stall. Memory cost is `local_size · n` doubles unpreconditioned,
+        /// `2·local_size · n` preconditioned.
+        local_size: Option<usize>,
+    },
 }
 
 // ---------------------------------------------------------------------------

@@ -22,6 +22,7 @@ from .._framework import (
     benchmark_gmres,
     make_additive_schwarz,
     run_problem_set,
+    standard_solver_configs,
     suite,
 )
 from .._table import print_pivot, print_table
@@ -139,6 +140,7 @@ def run_ac_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
             benchmark_gmres(opts),
             preconditioner=MultiplicativeSchwarz(local_solver=_schur(opts.seed, 2)),
         ),
+        *standard_solver_configs(opts),
     ]
 
     all_results = run_problem_set(problems, configs, opts)
@@ -262,15 +264,16 @@ def run_graph_backend_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
 
     configs = [
         SolverConfig(
-            "ac",
+            "CG(AC)",
             benchmark_cg(opts, maxiter=maxiter),
             preconditioner=make_additive_schwarz(local_solver=_schur(opts.seed, 1)),
         ),
         SolverConfig(
-            "ac2",
+            "CG(AC2)",
             benchmark_cg(opts, maxiter=maxiter),
             preconditioner=make_additive_schwarz(local_solver=_schur(opts.seed, 2)),
         ),
+        *standard_solver_configs(opts, maxiter=maxiter),
     ]
 
     all_results = run_problem_set(problems, configs, opts)
