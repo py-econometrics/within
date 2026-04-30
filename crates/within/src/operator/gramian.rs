@@ -25,10 +25,11 @@
 //!
 //! - **Explicit** ([`Gramian`]): pre-assembles the CSR matrix once; subsequent
 //!   matvecs cost O(nnz(G)).
-//! - **Implicit**: computes `G x` on the fly via `D^T (W (D x))`. Two flavors,
-//!   distinguished at the type level — [`GramianOperator`] for the unweighted
-//!   case (`D^T D`), [`WeightedGramianOperator`] for the weighted case
-//!   (`D^T W D`).
+//! - **Implicit** ([`GramianOperator`]): computes `G x` on the fly via
+//!   `D^T (W (D x))`. Construct with `GramianOperator::new(design, weights)`,
+//!   passing `None` for `D^T D` or `Some(&w)` for `D^T W D`. The
+//!   weighted/unweighted choice branches once per matvec — the per-row scatter
+//!   loop stays branch-free, monomorphized over distinct closure types.
 
 mod cross_tab;
 mod explicit;
@@ -52,20 +53,34 @@ pub struct Gramian {
     pub matrix: Arc<SparseMatrix>,
 }
 
-/// Implicit Gramian operator: computes `D^T (D x)`.
+/// Implicit Gramian operator: computes `D^T (W (D x))`.
 ///
-/// Use [`WeightedGramianOperator`] when observation weights are present.
+/// Weights are optional. The unweighted case (`D^T D`) and weighted case
+/// (`D^T W D`) share one struct; the per-matvec branch is hoisted outside the
+/// scatter loop, so each variant compiles to its own monomorphized hot kernel.
 pub struct GramianOperator<'a, S: Store> {
     design: &'a Design<S>,
+    weights: Option<&'a [f64]>,
     scratch: Mutex<Vec<f64>>,
 }
 
 impl<'a, S: Store> GramianOperator<'a, S> {
-    /// Create an implicit unweighted Gramian operator.
-    pub fn new(design: &'a Design<S>) -> Self {
+    /// Create an implicit Gramian operator. Pass `None` for `D^T D`,
+    /// `Some(&w)` for `D^T W D` (then `w.len()` must equal `design.n_rows`).
+    pub fn new(design: &'a Design<S>, weights: Option<&'a [f64]>) -> Self {
+        if let Some(w) = weights {
+            assert_eq!(
+                w.len(),
+                design.n_rows,
+                "weights length {} does not match design.n_rows {}",
+                w.len(),
+                design.n_rows
+            );
+        }
         Self {
             scratch: Mutex::new(vec![0.0; design.n_rows]),
             design,
+            weights,
         }
     }
 }
@@ -83,55 +98,10 @@ impl<S: Store> Operator for GramianOperator<'_, S> {
         let mut tmp = self.scratch.lock().unwrap();
         gather_apply(self.design, x, &mut tmp, |_, s| s); // tmp = D x
         y.fill(0.0);
-        scatter_apply(self.design, y, |i| tmp[i]); // y = D^T tmp
-        Ok(())
-    }
-
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
-        self.apply(x, y)
-    }
-}
-
-/// Implicit weighted Gramian operator: computes `D^T W (D x)`.
-pub struct WeightedGramianOperator<'a, S: Store> {
-    design: &'a Design<S>,
-    weights: &'a [f64],
-    scratch: Mutex<Vec<f64>>,
-}
-
-impl<'a, S: Store> WeightedGramianOperator<'a, S> {
-    /// Create an implicit weighted Gramian operator (length of `weights` must equal `design.n_rows`).
-    pub fn new(design: &'a Design<S>, weights: &'a [f64]) -> Self {
-        assert_eq!(
-            weights.len(),
-            design.n_rows,
-            "weights length {} does not match design.n_rows {}",
-            weights.len(),
-            design.n_rows
-        );
-        Self {
-            scratch: Mutex::new(vec![0.0; design.n_rows]),
-            design,
-            weights,
+        match self.weights {
+            Some(w) => scatter_apply(self.design, y, |i| w[i] * tmp[i]), // y = D^T W tmp
+            None => scatter_apply(self.design, y, |i| tmp[i]),           // y = D^T tmp
         }
-    }
-}
-
-impl<S: Store> Operator for WeightedGramianOperator<'_, S> {
-    fn nrows(&self) -> usize {
-        self.design.n_dofs
-    }
-
-    fn ncols(&self) -> usize {
-        self.design.n_dofs
-    }
-
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
-        let mut tmp = self.scratch.lock().unwrap();
-        gather_apply(self.design, x, &mut tmp, |_, s| s); // tmp = D x
-        y.fill(0.0);
-        let w = self.weights;
-        scatter_apply(self.design, y, |i| w[i] * tmp[i]); // y = D^T W tmp
         Ok(())
     }
 

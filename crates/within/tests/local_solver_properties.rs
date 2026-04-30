@@ -192,7 +192,7 @@ fn test_eliminate_q_vs_r_equivalent_square() {
 #[test]
 fn test_dense_threshold_zero_forces_sparse_cg_convergence() {
     let design = common::make_test_design();
-    let gramian = GramianOperator::new(&design);
+    let gramian = GramianOperator::new(&design, None);
     let rhs = common::make_rhs_from_unit_solution(&design);
 
     for threshold in [0usize, 100] {

@@ -289,7 +289,7 @@ fn run_one(
     let rhses: Vec<Vec<f64>> = (0..(n_solves + 1))
         .map(|_| {
             let mut y = vec![0.0; n_obs];
-            DesignOperator::new(&design)
+            DesignOperator::new(&design, None)
                 .apply(&x_true, &mut y)
                 .expect("apply");
             for yi in &mut y {

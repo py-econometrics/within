@@ -2,7 +2,7 @@ use ndarray::Array2;
 use proptest::prelude::*;
 use schwarz_precond::Operator;
 use within::observation::ArrayStore;
-use within::operator::gramian::{Gramian, WeightedGramianOperator};
+use within::operator::gramian::{Gramian, GramianOperator};
 use within::{
     solve, Design, DesignOperator, LocalSolverConfig, Preconditioner, ReductionStrategy, Solver,
     SolverParams,
@@ -141,7 +141,7 @@ proptest! {
         let design = Design::from_store(store).unwrap();
 
         let explicit = Gramian::build(&design, Some(&weights));
-        let implicit = WeightedGramianOperator::new(&design, &weights);
+        let implicit = GramianOperator::new(&design, Some(&weights));
         let n = design.n_dofs;
 
         let x: Vec<f64> = (0..n).map(|i| (i as f64 * 0.3).sin()).collect();
@@ -175,7 +175,7 @@ proptest! {
         let y_feasible: Vec<f64> = {
             let x_true = vec![1.0; design.n_dofs];
             let mut y_out = vec![0.0; design.n_rows];
-            DesignOperator::new(&design).apply(&x_true, &mut y_out).expect("apply");
+            DesignOperator::new(&design, None).apply(&x_true, &mut y_out).expect("apply");
             y_out
         };
         // Use y_feasible so convergence is guaranteed on a consistent system
@@ -278,7 +278,7 @@ proptest! {
         let n_levels = design.n_dofs;
         let x_true = vec![1.0; n_levels];
         let mut y_feasible = vec![0.0; design.n_rows];
-        DesignOperator::new(&design).apply(&x_true, &mut y_feasible).expect("apply");
+        DesignOperator::new(&design, None).apply(&x_true, &mut y_feasible).expect("apply");
 
         // No preconditioner, no iterative refinement.
         let params = SolverParams {

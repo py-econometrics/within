@@ -17,7 +17,7 @@ mod design_tests {
     #[test]
     fn test_design_operator_dimensions() {
         let schema = make_test_design();
-        let op = DesignOperator::new(&schema);
+        let op = DesignOperator::new(&schema, None);
         assert_eq!(op.nrows(), 5);
         assert_eq!(op.ncols(), 7);
     }
@@ -25,7 +25,7 @@ mod design_tests {
     #[test]
     fn test_design_operator_adjoint() {
         let schema = make_test_design();
-        let op = DesignOperator::new(&schema);
+        let op = DesignOperator::new(&schema, None);
 
         let x = vec![1.0, -0.5, 2.0, 0.3, -1.0, 0.7, 1.5];
         let r = vec![0.1, 0.2, -0.3, 0.4, -0.5];
@@ -44,7 +44,7 @@ mod design_tests {
     #[test]
     fn test_matvec_d() {
         let schema = make_test_design();
-        let op = DesignOperator::new(&schema);
+        let op = DesignOperator::new(&schema, None);
         let x = vec![1.0, 2.0, 3.0, 10.0, 20.0, 30.0, 40.0];
         let mut y = vec![0.0; 5];
         op.apply(&x, &mut y).expect("apply");
@@ -54,7 +54,7 @@ mod design_tests {
     #[test]
     fn test_rmatvec_dt() {
         let schema = make_test_design();
-        let op = DesignOperator::new(&schema);
+        let op = DesignOperator::new(&schema, None);
         let r = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         let mut x = vec![0.0; 7];
         op.apply_adjoint(&r, &mut x).expect("apply");

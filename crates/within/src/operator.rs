@@ -10,16 +10,14 @@
 //! Fixed-effects estimation reduces to solving the normal equations `G x = b`
 //! where `G = D^T W D` is the Gramian of the weighted design matrix.
 //!
-//! Operators come in unweighted and weighted flavors. The "weighted vs
-//! unweighted" choice is encoded at the *type* level — there are no
-//! `Option<weights>` fields and no runtime branches inside the hot loops:
+//! Operators carry an optional weight slice and dispatch on it once per
+//! matvec — the per-row hot loops stay branch-free because each match arm
+//! calls into a separately-monomorphized closure:
 //!
 //! | Representation | Type | Description |
 //! |---|---|---|
-//! | **D** | [`DesignOperator`] | Rectangular `D x` / `D^T x` |
-//! | **W^{1/2} D** | [`WeightedDesignOperator`] | Weighted rectangular operator with mandatory weights |
-//! | **D^T D** (implicit) | [`gramian::GramianOperator`] | Matrix-free unweighted Gramian |
-//! | **D^T W D** (implicit) | [`gramian::WeightedGramianOperator`] | Matrix-free weighted Gramian |
+//! | **D** / **W^{1/2} D** | [`DesignOperator`] | Rectangular `D x` (or `W^{1/2} D x`); use [`DesignOperator::with_weights`] for the weighted variant |
+//! | **D^T D** / **D^T W D** (implicit) | [`gramian::GramianOperator`] | Matrix-free Gramian; use [`gramian::GramianOperator::with_weights`] for the weighted variant |
 //! | **G explicit** | [`gramian::Gramian`] | Pre-assembled CSR sparse matrix |
 //!
 //! # Submodules
@@ -257,20 +255,46 @@ where
 }
 
 // ===========================================================================
-// DesignOperator — D, no weights
+// DesignOperator — D, optionally rescaled by W^{1/2}
 // ===========================================================================
 
-/// Operator wrapper around `&Design<S>`.
+/// Rectangular design operator: `D` (unweighted) or `W^{1/2} D` (weighted).
 ///
-/// `apply` = D·x (gather), `apply_adjoint` = D^T·x (scatter).
+/// `apply` = `D x` / `W^{1/2} D x` (gather), `apply_adjoint` = `D^T x` /
+/// `D^T W^{1/2} x` (scatter). For the weighted variant, the normal equations
+/// `A^T A = D^T W D = G` recover the Gramian, so the same Schwarz
+/// preconditioner approximating `G^{-1}` applies. Use
+/// [`DesignOperator::new`] for `D` and [`DesignOperator::with_weights`] for
+/// `W^{1/2} D`. The branch on weights is hoisted outside the per-row loop.
 pub struct DesignOperator<'a, S: Store> {
     design: &'a Design<S>,
+    sqrt_weights: Option<Vec<f64>>,
 }
 
 impl<'a, S: Store> DesignOperator<'a, S> {
-    /// Wrap a design matrix as a linear operator.
-    pub fn new(design: &'a Design<S>) -> Self {
-        Self { design }
+    /// Wrap a design matrix as a linear operator. Pass `None` for `D`,
+    /// `Some(&w)` for `W^{1/2} D` (then `w.len()` must equal `design.n_rows`).
+    /// Precomputes and stores `sqrt(W)` when weights are present.
+    pub fn new(design: &'a Design<S>, weights: Option<&[f64]>) -> Self {
+        let sqrt_weights = weights.map(|w| {
+            assert_eq!(
+                w.len(),
+                design.n_rows,
+                "weights length {} does not match design.n_rows {}",
+                w.len(),
+                design.n_rows
+            );
+            w.iter().map(|wi| wi.sqrt()).collect()
+        });
+        Self {
+            design,
+            sqrt_weights,
+        }
+    }
+
+    /// Precomputed `sqrt(W)`, or `None` for the unweighted case.
+    pub fn sqrt_weights(&self) -> Option<&[f64]> {
+        self.sqrt_weights.as_deref()
     }
 }
 
@@ -284,80 +308,19 @@ impl<S: Store> Operator for DesignOperator<'_, S> {
     }
 
     fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
-        gather_apply(self.design, x, y, |_, s| s);
-        Ok(())
-    }
-
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
-        y.fill(0.0);
-        scatter_apply(self.design, y, |i| x[i]);
-        Ok(())
-    }
-}
-
-// ===========================================================================
-// WeightedDesignOperator — W^{1/2} D
-// ===========================================================================
-
-/// Weighted rectangular design operator: `A = W^{1/2} D`.
-///
-/// `apply` = `W^{1/2} D x` fused as a single sweep; `apply_adjoint` =
-/// `D^T W^{1/2} x` likewise fused. The normal equations `A^T A = D^T W D = G`
-/// are the Gramian, so the existing Schwarz preconditioner approximating
-/// `G^{-1}` can be used directly.
-///
-/// Invariant: `sqrt_weights` are real per-observation weights, never unit-fill
-/// placeholders. Choose [`DesignOperator`] for the unweighted case.
-pub struct WeightedDesignOperator<'a, S: Store> {
-    design: &'a Design<S>,
-    sqrt_weights: Vec<f64>,
-}
-
-impl<'a, S: Store> WeightedDesignOperator<'a, S> {
-    /// Build from a design matrix and a non-empty weight slice (length = n_rows).
-    pub fn new(design: &'a Design<S>, weights: &[f64]) -> Self {
-        assert_eq!(
-            weights.len(),
-            design.n_rows,
-            "weights length {} does not match design.n_rows {}",
-            weights.len(),
-            design.n_rows
-        );
-        let sqrt_weights = weights.iter().map(|w| w.sqrt()).collect();
-        Self {
-            design,
-            sqrt_weights,
+        match &self.sqrt_weights {
+            Some(sw) => gather_apply(self.design, x, y, |i, s| sw[i] * s),
+            None => gather_apply(self.design, x, y, |_, s| s),
         }
-    }
-
-    /// Compute the observation-space RHS `b = W^{1/2} y`.
-    pub fn weighted_rhs(&self, y: &[f64]) -> Vec<f64> {
-        y.iter()
-            .zip(&self.sqrt_weights)
-            .map(|(&yi, &swi)| swi * yi)
-            .collect()
-    }
-}
-
-impl<S: Store> Operator for WeightedDesignOperator<'_, S> {
-    fn nrows(&self) -> usize {
-        self.design.n_rows
-    }
-
-    fn ncols(&self) -> usize {
-        self.design.n_dofs
-    }
-
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
-        let sw = &self.sqrt_weights;
-        gather_apply(self.design, x, y, |i, s| sw[i] * s);
         Ok(())
     }
 
     fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
         y.fill(0.0);
-        let sw = &self.sqrt_weights;
-        scatter_apply(self.design, y, |i| sw[i] * x[i]);
+        match &self.sqrt_weights {
+            Some(sw) => scatter_apply(self.design, y, |i| sw[i] * x[i]),
+            None => scatter_apply(self.design, y, |i| x[i]),
+        }
         Ok(())
     }
 }

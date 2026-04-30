@@ -245,11 +245,11 @@ fn test_gmres_residual_estimate_vs_actual() {
     // We rebuild a fresh design from the same categories to access the operator.
     let design2 = common::make_test_design();
     let n_dofs = design2.n_dofs;
-    let gramian_op = GramianOperator::new(&design2);
+    let gramian_op = GramianOperator::new(&design2, None);
 
     // rhs = D^T W y (unit weights, so D^T y)
     let mut rhs = vec![0.0; n_dofs];
-    DesignOperator::new(&design2)
+    DesignOperator::new(&design2, None)
         .apply_adjoint(&y, &mut rhs)
         .expect("apply");
     let rhs_norm = rhs.iter().map(|v| v * v).sum::<f64>().sqrt().max(1e-15);

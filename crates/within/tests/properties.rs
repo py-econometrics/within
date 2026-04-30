@@ -53,7 +53,7 @@ proptest! {
     fn prop_gramian_symmetry((cats, _y) in random_fe_problem_strategy()) {
         let store = ArrayStore::new(cats.view());
         let design = Design::from_store(store).unwrap();
-        let gramian = GramianOperator::new(&design);
+        let gramian = GramianOperator::new(&design, None);
         let n = design.n_dofs;
 
         // Test x^T G y == y^T G x for random vectors
@@ -76,7 +76,7 @@ proptest! {
         let store = ArrayStore::new(cats.view());
         let design = Design::from_store(store).unwrap();
         let explicit = Gramian::build(&design, None);
-        let implicit = GramianOperator::new(&design);
+        let implicit = GramianOperator::new(&design, None);
         let n = design.n_dofs;
 
         let x: Vec<f64> = (0..n).map(|i| (i as f64 * 0.3).sin()).collect();
@@ -124,7 +124,7 @@ proptest! {
 
         let x_true: Vec<f64> = (0..n_dofs).map(|i| (i as f64 * 0.4).sin()).collect();
         let mut y = vec![0.0; n_obs];
-        DesignOperator::new(&design).apply(&x_true, &mut y).expect("apply");
+        DesignOperator::new(&design, None).apply(&x_true, &mut y).expect("apply");
 
         // Use slightly relaxed tolerance — randomly generated problems can be
         // borderline at 1e-8 (e.g. residual 1.02e-8 after 13 iters).

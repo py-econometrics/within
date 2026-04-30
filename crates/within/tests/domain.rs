@@ -7,7 +7,7 @@ use proptest::prelude::*;
 use schwarz_precond::Operator;
 use within::observation::FactorMajorStore;
 use within::operator::gramian::Gramian;
-use within::{Design, DesignOperator, WeightedDesignOperator};
+use within::{Design, DesignOperator};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -49,10 +49,12 @@ fn test_large_design_adjoint_property_matvec_d_rmatvec_dt() {
     let r: Vec<f64> = (0..n_rows).map(|i| (i as f64 * 0.23 + 2.0).cos()).collect();
 
     let mut dx = vec![0.0f64; n_rows];
-    DesignOperator::new(&dm).apply(&x, &mut dx).expect("apply");
+    DesignOperator::new(&dm, None)
+        .apply(&x, &mut dx)
+        .expect("apply");
 
     let mut dtr = vec![0.0f64; n_dofs];
-    DesignOperator::new(&dm)
+    DesignOperator::new(&dm, None)
         .apply_adjoint(&r, &mut dtr)
         .expect("apply");
 
@@ -77,7 +79,9 @@ fn test_large_design_matvec_correctness() {
     let mut ej = vec![0.0f64; n_dofs];
     ej[0] = 1.0;
     let mut y = vec![0.0f64; n_rows];
-    DesignOperator::new(&dm).apply(&ej, &mut y).expect("apply");
+    DesignOperator::new(&dm, None)
+        .apply(&ej, &mut y)
+        .expect("apply");
 
     for (i, &yi) in y.iter().enumerate() {
         let expected = if i % 50 == 0 { 1.0 } else { 0.0 };
@@ -97,7 +101,7 @@ fn test_large_design_rmatvec_dt_correctness() {
 
     let ones = vec![1.0f64; n_rows];
     let mut x = vec![0.0f64; n_dofs];
-    DesignOperator::new(&dm)
+    DesignOperator::new(&dm, None)
         .apply_adjoint(&ones, &mut x)
         .expect("apply");
 
@@ -126,7 +130,7 @@ fn test_large_design_gramian_diagonal_from_unit_vectors() {
         ej[j] = 1.0;
 
         let mut dej = vec![0.0f64; n_rows];
-        DesignOperator::new(&dm)
+        DesignOperator::new(&dm, None)
             .apply(&ej, &mut dej)
             .expect("apply");
 
@@ -181,7 +185,7 @@ proptest! {
 
             // D · e_j
             let mut dej = vec![0.0f64; n_rows];
-            DesignOperator::new(&dm).apply(&ej, &mut dej).expect("apply");
+            DesignOperator::new(&dm, None).apply(&ej, &mut dej).expect("apply");
 
             // e_j^T · D^T · W · D · e_j = sum_i w_i * (D·e_j)[i]^2
             let quadratic: f64 = (0..n_rows).map(|i| weights[i] * dej[i] * dej[i]).sum();
@@ -229,7 +233,7 @@ proptest! {
 
         // <D·x, W·r>
         let mut dx = vec![0.0f64; n_rows];
-        DesignOperator::new(&dm).apply(&x, &mut dx).expect("apply");
+        DesignOperator::new(&dm, None).apply(&x, &mut dx).expect("apply");
         let lhs: f64 = dx
             .iter()
             .zip(r.iter())
@@ -239,8 +243,13 @@ proptest! {
 
         // <x, D^T·W·r>
         let mut wdtr = vec![0.0f64; n_dofs];
-        let weighted_op = WeightedDesignOperator::new(&dm, &weights);
-        weighted_op.apply_adjoint(&weighted_op.weighted_rhs(&r), &mut wdtr).expect("apply");
+        let weighted_op = DesignOperator::new(&dm, Some(&weights));
+        let weighted_r: Vec<f64> = r
+            .iter()
+            .zip(weighted_op.sqrt_weights().expect("weighted op has sqrt_weights"))
+            .map(|(&ri, &swi)| swi * ri)
+            .collect();
+        weighted_op.apply_adjoint(&weighted_r, &mut wdtr).expect("apply");
         let rhs: f64 = x.iter().zip(wdtr.iter()).map(|(xi, wi)| xi * wi).sum();
 
         prop_assert!(
@@ -279,7 +288,7 @@ fn test_three_factor_design_solve_converges() {
     // Build y = D·1 so the true normal-equation solution is 1.
     let x_true = vec![1.0f64; dm.n_dofs];
     let mut y = vec![0.0f64; dm.n_rows];
-    DesignOperator::new(&dm)
+    DesignOperator::new(&dm, None)
         .apply(&x_true, &mut y)
         .expect("apply");
 
@@ -341,7 +350,7 @@ fn test_three_factor_design_multiplicative_schwarz_converges() {
     let dm = Design::from_store(store).expect("valid 3-factor design");
     let x_true = vec![1.0f64; dm.n_dofs];
     let mut y = vec![0.0f64; dm.n_rows];
-    DesignOperator::new(&dm)
+    DesignOperator::new(&dm, None)
         .apply(&x_true, &mut y)
         .expect("apply");
 
@@ -396,7 +405,7 @@ fn test_disconnected_design_larger_converges() {
 
     let x_true = vec![1.0f64; dm.n_dofs];
     let mut y = vec![0.0f64; dm.n_rows];
-    DesignOperator::new(&dm)
+    DesignOperator::new(&dm, None)
         .apply(&x_true, &mut y)
         .expect("apply");
 
@@ -483,10 +492,12 @@ fn test_single_factor_design_adjoint_property() {
     let r: Vec<f64> = vec![0.5, 1.5, -0.5, 2.0, -1.0];
 
     let mut dx = vec![0.0f64; n_rows];
-    DesignOperator::new(&dm).apply(&x, &mut dx).expect("apply");
+    DesignOperator::new(&dm, None)
+        .apply(&x, &mut dx)
+        .expect("apply");
 
     let mut dtr = vec![0.0f64; n_dofs];
-    DesignOperator::new(&dm)
+    DesignOperator::new(&dm, None)
         .apply_adjoint(&r, &mut dtr)
         .expect("apply");
 
@@ -554,7 +565,9 @@ fn test_single_factor_matvec_d_values() {
 
     let x = vec![10.0, 20.0, 30.0];
     let mut y = vec![0.0f64; 5];
-    DesignOperator::new(&dm).apply(&x, &mut y).expect("apply");
+    DesignOperator::new(&dm, None)
+        .apply(&x, &mut y)
+        .expect("apply");
     assert_eq!(y, vec![10.0, 20.0, 30.0, 10.0, 20.0]);
 }
 
@@ -567,7 +580,7 @@ fn test_single_factor_rmatvec_dt_values() {
 
     let r = vec![1.0, 2.0, 3.0, 4.0, 5.0];
     let mut x = vec![0.0f64; 3];
-    DesignOperator::new(&dm)
+    DesignOperator::new(&dm, None)
         .apply_adjoint(&r, &mut x)
         .expect("apply");
     assert_eq!(x, vec![5.0, 7.0, 3.0]);

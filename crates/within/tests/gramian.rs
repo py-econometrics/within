@@ -52,7 +52,7 @@ fn test_gramian_symmetry() {
 fn test_gramian_matches_gramian_operator() {
     let dm = make_test_design();
     let g = Gramian::build(&dm, None);
-    let gop = GramianOperator::new(&dm);
+    let gop = GramianOperator::new(&dm, None);
     let n = g.n_dofs();
     let x = vec![1.0, -0.5, 2.0, 0.3, -1.0];
     let mut y_explicit = vec![0.0; n];
@@ -79,7 +79,7 @@ fn test_gramian_submatrix() {
 #[test]
 fn test_gramian_operator_symmetric() {
     let dm = make_test_design();
-    let gop = GramianOperator::new(&dm);
+    let gop = GramianOperator::new(&dm, None);
     let n = dm.n_dofs;
 
     let x = vec![1.0, -0.5, 2.0, 0.3, -1.0];
@@ -110,7 +110,7 @@ fn test_weighted_gramian_matches_operator() {
     let dm = make_weighted_design();
     let weights = vec![1.0, 2.0, 3.0, 4.0];
     let g = Gramian::build(&dm, Some(&weights));
-    let gop = within::operator::gramian::WeightedGramianOperator::new(&dm, &weights);
+    let gop = within::operator::gramian::GramianOperator::new(&dm, Some(&weights));
     let n = g.n_dofs();
     let x = vec![1.0, -0.5, 2.0, 0.3];
     let mut y_explicit = vec![0.0; n];
@@ -136,7 +136,7 @@ fn test_gramian_sparse_accumulation_path() {
     let store = FactorMajorStore::new(vec![fa, fb], n_obs).expect("valid factor-major store");
     let dm = Design::from_store(store).expect("valid sparse accumulation design");
     let g = Gramian::build(&dm, None);
-    let gop = GramianOperator::new(&dm);
+    let gop = GramianOperator::new(&dm, None);
     let n = g.n_dofs();
 
     let mut x = vec![0.0; n];
@@ -261,7 +261,7 @@ fn test_three_factor_gramian_build() {
 #[test]
 fn test_gramian_operator_dimensions() {
     let dm = make_test_design();
-    let gop = GramianOperator::new(&dm);
+    let gop = GramianOperator::new(&dm, None);
     assert_eq!(gop.nrows(), dm.n_dofs);
     assert_eq!(gop.ncols(), dm.n_dofs);
 }
@@ -291,7 +291,7 @@ fn test_gramian_large_row_permutation_sort() {
     let store = FactorMajorStore::new(vec![fa, fb], n_obs).expect("valid store");
     let dm = Design::from_store(store).expect("valid design");
     let g = Gramian::build(&dm, None);
-    let gop = GramianOperator::new(&dm);
+    let gop = GramianOperator::new(&dm, None);
     let n = g.n_dofs();
 
     // Verify explicit matches implicit
@@ -326,7 +326,7 @@ fn test_gramian_parallel_build_path() {
     let dm = within::domain::Design::from_store(store).expect("valid parallel design");
 
     let g = Gramian::build(&dm, None);
-    let gop = GramianOperator::new(&dm);
+    let gop = GramianOperator::new(&dm, None);
     let n = g.n_dofs();
     assert_eq!(n, n_lev_a + n_lev_b);
 

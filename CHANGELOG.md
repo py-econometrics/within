@@ -45,13 +45,18 @@ and this project follows [Semantic Versioning](https://semver.org/).
   `matvec_d`, `rmatvec_dt`, `rmatvec_wdt`, `gather_add`, `scatter_add`,
   `uid_weight`, `is_unweighted`, `gramian_diagonal` methods are gone —
   use `DesignOperator` / `Gramian::build(&design, None|Some(&w))`.
-- **Operator layer split into weighted / unweighted variants:**
-  `GramianOperator` (`D^T D`) + `WeightedGramianOperator` (`D^T W D`),
-  `DesignOperator` (`D`) + `WeightedDesignOperator` (`sqrt(W) D`, for LSMR).
-  Explicit assembly: `Gramian::build(&design, weights: Option<&[f64]>)`
-  (replaces both prior `build` and `build_weighted`).
-  `WeightedGramianOperator::new(&design, &weights)` now borrows weights
-  with the design's lifetime instead of cloning.
+- **Operator layer carries optional weights on a single struct per role.**
+  `GramianOperator` covers both `D^T D` and `D^T W D`; `DesignOperator`
+  covers both `D` and `sqrt(W) D` (the LSMR rectangular form). One
+  constructor each: `GramianOperator::new(&design, weights: Option<&[f64]>)`
+  and `DesignOperator::new(&design, weights: Option<&[f64]>)` —
+  pass `None` for unweighted, `Some(&w)` for weighted. The branch on
+  weights is hoisted outside the per-row hot loop, so each variant
+  still monomorphizes to its own scatter kernel. Explicit assembly:
+  `Gramian::build(&design, weights: Option<&[f64]>)` (replaces both
+  prior `build` and `build_weighted`). `GramianOperator` borrows
+  `&'a [f64]` weights with the design's lifetime; `DesignOperator`
+  owns `Vec<f64>` of precomputed `sqrt(W)`.
 - **`Solver::from_design{,_with_preconditioner}` take
   `weights: Option<Vec<f64>>`** between `design` and `params`.
   `Solver::with_preconditioner` removed — use
@@ -89,8 +94,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
   `EPS^2 * rz_init`. The old threshold fired at `~sqrt(EPS)`, causing
   spurious non-convergence near user tolerances of `1e-8`.
 - **Weighted-operator length checks active in release builds.**
-  `Gramian::build` (with `Some(&w)`), `WeightedGramianOperator::new`,
-  and `WeightedDesignOperator::new` now use `assert_eq!` (was
+  `Gramian::build`, `GramianOperator::new`, and `DesignOperator::new`
+  (each when called with `Some(&w)`) now use `assert_eq!` (was
   `debug_assert_eq!`) for `weights.len() == design.n_rows`. A mismatch
   could previously mis-index silently in release.
 

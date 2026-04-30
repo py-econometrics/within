@@ -51,11 +51,11 @@ use crate::config::{KrylovMethod, OperatorRepr, Preconditioner, SolverParams};
 use crate::domain::Design;
 use crate::error::WithinError;
 use crate::observation::{ArrayStore, Store};
-use crate::operator::gramian::{Gramian, GramianOperator, WeightedGramianOperator};
+use crate::operator::gramian::{Gramian, GramianOperator};
 use crate::operator::preconditioner::{
     build_preconditioner, build_preconditioner_fused, FePreconditioner,
 };
-use crate::operator::{DesignOperator, WeightedDesignOperator};
+use crate::operator::DesignOperator;
 use crate::orchestrate::{BatchSolveResult, SolveResult};
 use crate::WithinResult;
 
@@ -270,7 +270,7 @@ impl<S: Store> Solver<S> {
                 scatter_apply(&self.design, dst, |i| w[i] * r[i]);
             }
             None => {
-                DesignOperator::new(&self.design)
+                DesignOperator::new(&self.design, None)
                     .apply_adjoint(r, dst)
                     .expect("DesignOperator::apply_adjoint is infallible");
             }
@@ -284,55 +284,34 @@ impl<S: Store> Solver<S> {
         t_start: Instant,
         t_setup_start: Instant,
     ) -> WithinResult<SolveResult> {
-        let t_solve_start;
-        let time_setup;
-        let r;
+        let rect_op = match &self.weights {
+            Some(w) => DesignOperator::new(&self.design, Some(w)),
+            None => DesignOperator::new(&self.design, None),
+        };
+        let b: Vec<f64> = match rect_op.sqrt_weights() {
+            Some(sw) => y.iter().zip(sw).map(|(&yi, &swi)| swi * yi).collect(),
+            None => y.to_vec(),
+        };
 
-        match &self.weights {
-            Some(w) => {
-                let rect_op = WeightedDesignOperator::new(&self.design, w);
-                let b = rect_op.weighted_rhs(y);
+        let t_solve_start = Instant::now();
+        let time_setup = t_solve_start.duration_since(t_setup_start).as_secs_f64();
 
-                t_solve_start = Instant::now();
-                time_setup = t_solve_start.duration_since(t_setup_start).as_secs_f64();
-
-                r = match self.preconditioner.as_ref() {
-                    Some(p) => mlsmr(&rect_op, &b, Some(p), self.tol, self.maxiter, local_size)?,
-                    None => mlsmr::<_, FePreconditioner>(
-                        &rect_op,
-                        &b,
-                        None,
-                        self.tol,
-                        self.maxiter,
-                        local_size,
-                    )?,
-                };
-            }
-            None => {
-                let rect_op = DesignOperator::new(&self.design);
-                let b = y.to_vec();
-
-                t_solve_start = Instant::now();
-                time_setup = t_solve_start.duration_since(t_setup_start).as_secs_f64();
-
-                r = match self.preconditioner.as_ref() {
-                    Some(p) => mlsmr(&rect_op, &b, Some(p), self.tol, self.maxiter, local_size)?,
-                    None => mlsmr::<_, FePreconditioner>(
-                        &rect_op,
-                        &b,
-                        None,
-                        self.tol,
-                        self.maxiter,
-                        local_size,
-                    )?,
-                };
-            }
-        }
+        let r = match self.preconditioner.as_ref() {
+            Some(p) => mlsmr(&rect_op, &b, Some(p), self.tol, self.maxiter, local_size)?,
+            None => mlsmr::<_, FePreconditioner>(
+                &rect_op,
+                &b,
+                None,
+                self.tol,
+                self.maxiter,
+                local_size,
+            )?,
+        };
 
         let time_solve = t_solve_start.elapsed().as_secs_f64();
 
         let mut demeaned = vec![0.0; self.design.n_rows];
-        DesignOperator::new(&self.design)
+        DesignOperator::new(&self.design, None)
             .apply(&r.x, &mut demeaned)
             .expect("DesignOperator::apply is infallible");
         for (d, &yi) in demeaned.iter_mut().zip(y.iter()) {
@@ -378,7 +357,7 @@ impl<S: Store> Solver<S> {
 
         for _ in 0..self.max_refinements {
             // Observation-space residual: demeaned = y - D·x
-            DesignOperator::new(&self.design)
+            DesignOperator::new(&self.design, None)
                 .apply(&x, &mut demeaned)
                 .expect("DesignOperator::apply is infallible");
             for (d, &yi) in demeaned.iter_mut().zip(y.iter()) {
@@ -404,7 +383,7 @@ impl<S: Store> Solver<S> {
         }
 
         // Final demeaned: y - D*x
-        DesignOperator::new(&self.design)
+        DesignOperator::new(&self.design, None)
             .apply(&x, &mut demeaned)
             .expect("DesignOperator::apply is infallible");
         for (d, &yi) in demeaned.iter_mut().zip(y.iter()) {
@@ -431,16 +410,13 @@ impl<S: Store> Solver<S> {
             (Some(gramian), None) => {
                 self.dispatch_krylov::<_, FePreconditioner>(gramian, None, rhs, tol)
             }
-            (None, precond) => match &self.weights {
-                Some(w) => {
-                    let op = WeightedGramianOperator::new(&self.design, w);
-                    self.dispatch_krylov(&op, precond.as_ref(), rhs, tol)
-                }
-                None => {
-                    let op = GramianOperator::new(&self.design);
-                    self.dispatch_krylov(&op, precond.as_ref(), rhs, tol)
-                }
-            },
+            (None, precond) => {
+                let op = match &self.weights {
+                    Some(w) => GramianOperator::new(&self.design, Some(w)),
+                    None => GramianOperator::new(&self.design, None),
+                };
+                self.dispatch_krylov(&op, precond.as_ref(), rhs, tol)
+            }
         }
     }
 

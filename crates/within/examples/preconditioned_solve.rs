@@ -36,7 +36,7 @@ fn main() {
     let total_dofs = design.n_dofs;
     let x_true: Vec<f64> = (0..total_dofs).map(|j| (j % 7) as f64 - 3.0).collect();
     let mut y = vec![0.0; n_obs];
-    DesignOperator::new(&design)
+    DesignOperator::new(&design, None)
         .apply(&x_true, &mut y)
         .expect("apply");
     for (i, yi) in y.iter_mut().enumerate() {

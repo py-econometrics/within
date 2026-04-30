@@ -152,9 +152,10 @@
 //!   and the [`Store`] trait.
 //! - **`domain`** — Domain decomposition: [`Design`] wraps a store with factor
 //!   metadata; factor-pair subdomains are built with partition-of-unity weights.
-//! - **`operator`** — Linear algebra primitives: [`Gramian`] (explicit CSR), implicit
-//!   Gramian operators ([`GramianOperator`], [`WeightedGramianOperator`]), design
-//!   operators ([`DesignOperator`], [`WeightedDesignOperator`]), Schwarz preconditioner builders.
+//! - **`operator`** — Linear algebra primitives: [`Gramian`] (explicit CSR),
+//!   the implicit [`GramianOperator`], the rectangular [`DesignOperator`]
+//!   (both with optional `with_weights` constructors), and Schwarz
+//!   preconditioner builders.
 //! - **`orchestrate`** — End-to-end solve: [`solve`] with typed configuration.
 //!
 //! # References
@@ -202,7 +203,7 @@ pub use observation::{ArrayStore, FactorMajorStore, FactorMeta, Store};
 // Operators & builders
 // ---------------------------------------------------------------------------
 
-pub use operator::gramian::{Gramian, GramianOperator, WeightedGramianOperator};
+pub use operator::gramian::{Gramian, GramianOperator};
 pub use operator::schwarz::FeSchwarz;
-pub use operator::{DesignOperator, WeightedDesignOperator};
+pub use operator::DesignOperator;
 pub use schwarz_precond::Operator;

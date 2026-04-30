@@ -84,7 +84,7 @@ fn generate_fixest_like_case(case: Case, seed: u64) -> (Design<FactorMajorStore>
     }
 
     let mut y = vec![0.0; case.n_obs];
-    DesignOperator::new(&design)
+    DesignOperator::new(&design, None)
         .apply(&x_true, &mut y)
         .expect("apply");
     for yi in &mut y {
@@ -388,7 +388,7 @@ fn bench_matvec(c: &mut Criterion) {
         let x: Vec<f64> = (0..n_dofs).map(|_| rng.random_range(-1.0..1.0)).collect();
 
         // Implicit: D^T W D through observation space
-        let implicit_op = GramianOperator::new(&design);
+        let implicit_op = GramianOperator::new(&design, None);
 
         // Explicit: CSR SpMV
         let explicit_g = Gramian::build(&design, None);

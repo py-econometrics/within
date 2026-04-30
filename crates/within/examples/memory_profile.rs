@@ -62,7 +62,7 @@ fn generate_fixest_3fe(n_obs: usize, seed: u64) -> (Design<FactorMajorStore>, Ve
     }
 
     let mut y = vec![0.0; n_obs];
-    DesignOperator::new(&design)
+    DesignOperator::new(&design, None)
         .apply(&x_true, &mut y)
         .expect("apply");
     for yi in &mut y {
@@ -126,7 +126,7 @@ fn main() {
     );
 
     // Phase 3: Build GramianOperator (just a reference + scratch)
-    let gramian_op = GramianOperator::new(&design);
+    let gramian_op = GramianOperator::new(&design, None);
     let rss_gramian = rss_mb();
     println!("\n[3] GramianOperator");
     println!(
@@ -139,7 +139,7 @@ fn main() {
     let mut rhs = vec![0.0; design.n_dofs];
     {
         use schwarz_precond::Operator;
-        let design_op = within::DesignOperator::new(&design);
+        let design_op = within::DesignOperator::new(&design, None);
         design_op.apply_adjoint(&y, &mut rhs).expect("apply");
     }
     let rss_rhs = rss_mb();

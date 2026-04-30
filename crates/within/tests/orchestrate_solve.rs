@@ -101,7 +101,7 @@ fn test_schwarz_builder_schur_complement_modes_end_to_end() {
 
     let design = common::make_test_design();
     let rhs = common::make_rhs_from_unit_solution(&design);
-    let gramian = GramianOperator::new(&design);
+    let gramian = GramianOperator::new(&design, None);
 
     let local_solvers = [
         LocalSolverConfig {
@@ -209,10 +209,10 @@ fn test_compare_factorization_strategies() {
         let design = Design::from_store(store).expect("valid synthetic design");
 
         let y: Vec<f64> = (0..*n_rows).map(|_| rng.random::<f64>()).collect();
-        let design_op = DesignOperator::new(&design);
+        let design_op = DesignOperator::new(&design, None);
         let mut rhs = vec![0.0; design.n_dofs];
         design_op.apply_adjoint(&y, &mut rhs).expect("apply");
-        let gramian_op = GramianOperator::new(&design);
+        let gramian_op = GramianOperator::new(&design, None);
 
         for (ac_config, label) in &configs {
             let local_solver = LocalSolverConfig {
