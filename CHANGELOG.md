@@ -32,6 +32,12 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - **`FeSchwarz` is now a type alias** of
   `SchwarzPreconditioner<BlockElimSolver>`; the newtype wrapper and its
   delegation methods are gone — call methods directly on the alias.
+- **`build_schwarz` removed.** Use
+  `build_preconditioner(&design, weights, gramian, &Preconditioner::Additive(cfg, ReductionStrategy::default()))`.
+- **Additive-Schwarz diagnostic free functions are now inherent methods**
+  on `FePreconditioner`: `additive_reduction_strategy`,
+  `resolved_additive_reduction_strategy`, `additive_schwarz_diagnostics`.
+  Call as `preconditioner.additive_schwarz_diagnostics()` etc.
 - **Weights externalized from the store/design layer.** `ObservationStore`
   → `Store` (no `weight()` / `is_unweighted()`); `ObservationWeights`
   deleted. `FactorMajorStore::new` / `ArrayStore::new` no longer take
