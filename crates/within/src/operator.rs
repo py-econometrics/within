@@ -191,11 +191,7 @@ where
             let levels = factor_columns[q];
             for (local, dst_val) in chunk.iter_mut().enumerate() {
                 let i = row_start + local;
-                let level = match levels {
-                    Some(col) => col[i] as usize,
-                    None => store.level(i, q) as usize,
-                };
-                *dst_val += src[f.offset + level];
+                *dst_val += src[f.offset + level_at(store, levels, i, q)];
             }
         }
         // Last factor: accumulate AND finalize, single store per row.
@@ -204,11 +200,7 @@ where
         let levels = factor_columns[last];
         for (local, dst_val) in chunk.iter_mut().enumerate() {
             let i = row_start + local;
-            let level = match levels {
-                Some(col) => col[i] as usize,
-                None => store.level(i, last) as usize,
-            };
-            let s = *dst_val + src[f.offset + level];
+            let s = *dst_val + src[f.offset + level_at(store, levels, i, last)];
             *dst_val = finalize(i, s);
         }
     };
