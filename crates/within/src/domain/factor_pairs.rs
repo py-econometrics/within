@@ -72,7 +72,7 @@ pub(crate) fn build_local_domains<S: Store>(
 
     let mut domain_pairs: Vec<(Subdomain, Arc<CrossTab>)> = pairs
         .par_iter()
-        .flat_map(|&(q, r)| domains_for_pair(design, weights, q, r, &all_active))
+        .flat_map(|&(q, r)| domains_and_block_for_pair(design, weights, q, r, &all_active).0)
         .collect();
 
     compute_partition_weights(&mut domain_pairs, design.n_dofs);
@@ -131,6 +131,38 @@ pub(crate) fn build_domains_and_gramian_blocks<S: Store>(
     (domain_pairs, blocks)
 }
 
+/// Build per-pair block data only (no subdomain construction).
+///
+/// Slim variant of [`build_domains_and_gramian_blocks`] used by `Gramian::build`
+/// when only the explicit Gramian is needed — skipping the connected-component
+/// split and partition-of-unity weights.
+pub(crate) fn build_gramian_blocks<S: Store>(
+    design: &Design<S>,
+    weights: Option<&[f64]>,
+) -> Vec<PairBlockData> {
+    use rayon::prelude::*;
+
+    let n_factors = design.n_factors();
+    let pairs = build_pairs(n_factors);
+    let all_active = find_all_active_levels(design);
+
+    pairs
+        .par_iter()
+        .filter_map(|&(q, r)| {
+            let (full_ct, l2g) =
+                CrossTab::build_for_pair_with_active(design, weights, q, r, &all_active)?;
+            let n_q_full = full_ct.n_q();
+            Some(PairBlockData {
+                q,
+                r,
+                cross_tab: Arc::new(full_ct),
+                q_global: l2g[..n_q_full].to_vec(),
+                r_global: l2g[n_q_full..].to_vec(),
+            })
+        })
+        .collect()
+}
+
 fn domains_and_block_for_pair<S: Store>(
     design: &Design<S>,
     weights: Option<&[f64]>,
@@ -160,23 +192,6 @@ fn domains_and_block_for_pair<S: Store>(
     let domains = split_into_subdomains(full_ct, &l2g, n_q_full, (q, r));
 
     (domains, Some(block_data))
-}
-
-fn domains_for_pair<S: Store>(
-    design: &Design<S>,
-    weights: Option<&[f64]>,
-    q: usize,
-    r: usize,
-    all_active: &[Vec<bool>],
-) -> Vec<(Subdomain, Arc<CrossTab>)> {
-    let (full_ct, l2g) =
-        match CrossTab::build_for_pair_with_active(design, weights, q, r, all_active) {
-            Some(pair) => pair,
-            None => return Vec::new(),
-        };
-
-    let n_q_full = full_ct.n_q();
-    split_into_subdomains(Arc::new(full_ct), &l2g, n_q_full, (q, r))
 }
 
 /// Split a full CrossTab into per-component subdomains.

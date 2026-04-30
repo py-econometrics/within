@@ -203,6 +203,6 @@ pub use observation::{ArrayStore, FactorMajorStore, FactorMeta, Store};
 // ---------------------------------------------------------------------------
 
 pub use operator::gramian::{Gramian, GramianOperator, WeightedGramianOperator};
-pub use operator::schwarz::{build_schwarz, FeSchwarz};
+pub use operator::schwarz::FeSchwarz;
 pub use operator::{DesignOperator, WeightedDesignOperator};
 pub use schwarz_precond::Operator;

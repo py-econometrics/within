@@ -10,12 +10,13 @@ use std::time::Instant;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use schwarz_precond::solve::cg::pcg;
-use schwarz_precond::Operator;
+use schwarz_precond::{Operator, ReductionStrategy};
 use within::domain::Design;
 use within::observation::FactorMajorStore;
+use within::operator::preconditioner::build_preconditioner;
 use within::DesignOperator;
 use within::LocalSolverConfig;
-use within::{build_schwarz, GramianOperator};
+use within::{GramianOperator, Preconditioner};
 
 fn rss_mb() -> f64 {
     let pid = std::process::id();
@@ -106,8 +107,16 @@ fn main() {
 
     // Phase 2: Build Schwarz preconditioner
     let t = Instant::now();
-    let schwarz = build_schwarz(&design, None, &LocalSolverConfig::solver_default())
-        .expect("build schwarz preconditioner");
+    let schwarz = build_preconditioner(
+        &design,
+        None,
+        None,
+        &Preconditioner::Additive(
+            LocalSolverConfig::solver_default(),
+            ReductionStrategy::default(),
+        ),
+    )
+    .expect("build schwarz preconditioner");
     let rss_schwarz = rss_mb();
     let dt_schwarz = t.elapsed().as_secs_f64();
     println!("\n[2] Build Schwarz Preconditioner ({dt_schwarz:.3}s)");

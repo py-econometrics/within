@@ -185,21 +185,22 @@ impl<S: Store> Solver<S> {
         let t_solve_start = Instant::now();
         let time_setup = t_solve_start.duration_since(t_setup_start).as_secs_f64();
 
-        let solve = self.krylov_solve(&rhs)?;
-        let refined = self.iterative_refinement(y, abs_tol, solve)?;
+        let (x0, conv0, iter0) = self.krylov_solve(&rhs)?;
+        let (x, demeaned, converged, iterations) =
+            self.iterative_refinement(y, abs_tol, x0, iter0, conv0)?;
 
         let time_solve = t_solve_start.elapsed().as_secs_f64();
 
         // Residual via observation space: ||D^T W (y - Dx)|| / ||rhs||.
         let mut residual_dof = vec![0.0; self.design.n_dofs];
-        self.adjoint_apply_weighted(&refined.demeaned, &mut residual_dof);
+        self.adjoint_apply_weighted(&demeaned, &mut residual_dof);
         let final_residual = vec_norm(&residual_dof) / rhs_norm;
 
         Ok(SolveResult {
-            x: refined.x,
-            demeaned: refined.demeaned,
-            converged: refined.converged,
-            iterations: refined.iterations,
+            x,
+            demeaned,
+            converged,
+            iterations,
             final_residual,
             time_total: t_start.elapsed().as_secs_f64(),
             time_setup,
@@ -259,13 +260,6 @@ impl<S: Store> Solver<S> {
     }
 
     // --- Internal ---
-
-    /// `dst = D x`.
-    fn design_apply(&self, x: &[f64], dst: &mut [f64]) {
-        DesignOperator::new(&self.design)
-            .apply(x, dst)
-            .expect("DesignOperator::apply is infallible");
-    }
 
     /// `dst = D^T W r` (or `D^T r` when unweighted).
     fn adjoint_apply_weighted(&self, r: &[f64], dst: &mut [f64]) {
@@ -338,7 +332,9 @@ impl<S: Store> Solver<S> {
         let time_solve = t_solve_start.elapsed().as_secs_f64();
 
         let mut demeaned = vec![0.0; self.design.n_rows];
-        self.design_apply(&r.x, &mut demeaned);
+        DesignOperator::new(&self.design)
+            .apply(&r.x, &mut demeaned)
+            .expect("DesignOperator::apply is infallible");
         for (d, &yi) in demeaned.iter_mut().zip(y.iter()) {
             *d = yi - *d;
         }
@@ -362,22 +358,29 @@ impl<S: Store> Solver<S> {
         })
     }
 
+    /// Iterative refinement starting from `(initial_x, initial_iters, initial_converged)`.
+    ///
+    /// Returns `(x, demeaned, converged, iterations)`.
     fn iterative_refinement(
         &self,
         y: &[f64],
         abs_tol: f64,
-        initial: KrylovSolve,
-    ) -> WithinResult<RefinedSolve> {
-        let mut x = initial.x;
-        let mut iterations = initial.iterations;
-        let mut converged = initial.converged;
+        initial_x: Vec<f64>,
+        initial_iters: usize,
+        initial_converged: bool,
+    ) -> WithinResult<(Vec<f64>, Vec<f64>, bool, usize)> {
+        let mut x = initial_x;
+        let mut iterations = initial_iters;
+        let mut converged = initial_converged;
 
         let mut demeaned = vec![0.0; self.design.n_rows];
         let mut rhs_corr = vec![0.0; self.design.n_dofs];
 
         for _ in 0..self.max_refinements {
             // Observation-space residual: demeaned = y - D·x
-            self.design_apply(&x, &mut demeaned);
+            DesignOperator::new(&self.design)
+                .apply(&x, &mut demeaned)
+                .expect("DesignOperator::apply is infallible");
             for (d, &yi) in demeaned.iter_mut().zip(y.iter()) {
                 *d = yi - *d;
             }
@@ -391,33 +394,36 @@ impl<S: Store> Solver<S> {
             }
 
             let corr_tol = (abs_tol / corr_norm).min(1.0);
-            let corr = self.krylov_solve_with_tol(&rhs_corr, corr_tol)?;
-            for (xi, &di) in x.iter_mut().zip(corr.x.iter()) {
+            let (corr_x, corr_converged, corr_iterations) =
+                self.krylov_solve_with_tol(&rhs_corr, corr_tol)?;
+            for (xi, &di) in x.iter_mut().zip(corr_x.iter()) {
                 *xi += di;
             }
-            iterations += corr.iterations;
-            converged = corr.converged;
+            iterations += corr_iterations;
+            converged = corr_converged;
         }
 
         // Final demeaned: y - D*x
-        self.design_apply(&x, &mut demeaned);
+        DesignOperator::new(&self.design)
+            .apply(&x, &mut demeaned)
+            .expect("DesignOperator::apply is infallible");
         for (d, &yi) in demeaned.iter_mut().zip(y.iter()) {
             *d = yi - *d;
         }
 
-        Ok(RefinedSolve {
-            x,
-            demeaned,
-            converged,
-            iterations,
-        })
+        Ok((x, demeaned, converged, iterations))
     }
 
-    fn krylov_solve(&self, rhs: &[f64]) -> WithinResult<KrylovSolve> {
+    /// Run the configured Krylov solver. Returns `(x, converged, iterations)`.
+    fn krylov_solve(&self, rhs: &[f64]) -> WithinResult<(Vec<f64>, bool, usize)> {
         self.krylov_solve_with_tol(rhs, self.tol)
     }
 
-    fn krylov_solve_with_tol(&self, rhs: &[f64], tol: f64) -> WithinResult<KrylovSolve> {
+    fn krylov_solve_with_tol(
+        &self,
+        rhs: &[f64],
+        tol: f64,
+    ) -> WithinResult<(Vec<f64>, bool, usize)> {
         match (&self.gramian, &self.preconditioner) {
             (Some(gramian), Some(precond)) => {
                 self.dispatch_krylov(gramian, Some(precond), rhs, tol)
@@ -444,40 +450,19 @@ impl<S: Store> Solver<S> {
         preconditioner: Option<&M>,
         rhs: &[f64],
         tol: f64,
-    ) -> WithinResult<KrylovSolve> {
+    ) -> WithinResult<(Vec<f64>, bool, usize)> {
         match self.krylov {
             KrylovMethod::Cg => {
                 let r = pcg(op, rhs, preconditioner, tol, self.maxiter)?;
-                Ok(KrylovSolve {
-                    x: r.x,
-                    converged: r.converged,
-                    iterations: r.iterations,
-                })
+                Ok((r.x, r.converged, r.iterations))
             }
             KrylovMethod::Gmres { restart } => {
                 let r = pgmres(op, rhs, preconditioner, tol, self.maxiter, restart)?;
-                Ok(KrylovSolve {
-                    x: r.x,
-                    converged: r.converged,
-                    iterations: r.iterations,
-                })
+                Ok((r.x, r.converged, r.iterations))
             }
             KrylovMethod::Lsmr { .. } => unreachable!("LSMR is dispatched inline in solve()"),
         }
     }
-}
-
-struct KrylovSolve {
-    x: Vec<f64>,
-    converged: bool,
-    iterations: usize,
-}
-
-struct RefinedSolve {
-    x: Vec<f64>,
-    demeaned: Vec<f64>,
-    converged: bool,
-    iterations: usize,
 }
 
 // Convenience constructors for ArrayStore

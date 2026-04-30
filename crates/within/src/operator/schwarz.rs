@@ -17,18 +17,14 @@
 //!
 //! Construction flows through a layered builder:
 //!
-//! 1. **Domain acquisition** — either scan observations from a
-//!    [`Design`] (via [`build_schwarz`]) or accept pre-built
-//!    `(Subdomain, CrossTab)` pairs directly (enabling fused build paths
-//!    that scan observations only once)
+//! 1. **Domain acquisition** — accept pre-built `(Subdomain, CrossTab)`
+//!    pairs (enabling fused build paths that scan observations only once)
 //! 2. **Entry construction** — each `(Subdomain, CrossTab)` pair is
 //!    converted into a `SubdomainEntry<BlockElimSolver>` in parallel via
 //!    `build_entry`, which dispatches on the config
 //! 3. **Schwarz assembly** — entries are passed to the generic
 //!    `SchwarzPreconditioner` (additive) or
 //!    `MultiplicativeSchwarzPreconditioner` constructor from `schwarz-precond`
-//!
-//! The public entry point is [`build_schwarz`] for the additive variant.
 
 pub use schwarz_precond::MultiplicativeSchwarzPreconditioner;
 pub use schwarz_precond::SchwarzPreconditioner;
@@ -47,8 +43,7 @@ use super::schur_complement::{
     ApproxSchurComplement, EliminationInfo, ExactSchurComplement, SchurComplement, SchurResult,
 };
 use crate::config::{ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig};
-use crate::domain::{build_local_domains, Design, Subdomain};
-use crate::observation::Store;
+use crate::domain::Subdomain;
 use crate::{WithinError, WithinResult};
 
 /// Concrete additive Schwarz type used in the parent crate.
@@ -57,25 +52,6 @@ pub type FeSchwarz = SchwarzPreconditioner<BlockElimSolver>;
 /// Concrete multiplicative Schwarz type: one-level with explicit Gramian CSR residual updates.
 pub type FeMultSchwarzSparse =
     MultiplicativeSchwarzPreconditioner<BlockElimSolver, SparseGramianUpdater>;
-
-// ---------------------------------------------------------------------------
-// Public convenience builder
-// ---------------------------------------------------------------------------
-
-/// Build additive Schwarz from FE design with default domain decomposition.
-pub fn build_schwarz<S: Store>(
-    design: &Design<S>,
-    weights: Option<&[f64]>,
-    config: &LocalSolverConfig,
-) -> WithinResult<FeSchwarz> {
-    let domains = build_local_domains(design, weights);
-    build_additive_with_strategy(
-        domains,
-        design.n_dofs,
-        config,
-        schwarz_precond::ReductionStrategy::default(),
-    )
-}
 
 // ---------------------------------------------------------------------------
 // Crate-internal consolidated builders
@@ -151,10 +127,6 @@ pub(crate) struct ReducedSchurBuild {
     pub(crate) elimination: EliminationInfo,
 }
 
-fn dense_fast_path_enabled(n_keep: usize, threshold: usize) -> bool {
-    threshold > 0 && n_keep <= threshold
-}
-
 fn compute_schur(
     cross_tab: &CrossTab,
     approx_schur: Option<ApproxSchurConfig>,
@@ -197,7 +169,7 @@ pub(crate) fn build_reduced_schur_factor(
     config: &ReducedSchurConfig,
 ) -> WithinResult<ReducedSchurBuild> {
     let n_keep = cross_tab.n_q().min(cross_tab.n_r());
-    let prefer_dense = dense_fast_path_enabled(n_keep, config.dense_threshold);
+    let prefer_dense = config.dense_threshold > 0 && n_keep <= config.dense_threshold;
 
     // Below the dense threshold the reduced system is tiny — always use exact
     // Schur complement (cheap at this size) and dense Cholesky factorization.

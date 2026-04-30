@@ -643,16 +643,17 @@ mod schwarz_tests {
     use std::time::{Duration, Instant};
 
     use crate::config::{
-        ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, DEFAULT_DENSE_SCHUR_THRESHOLD,
+        ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, Preconditioner,
+        DEFAULT_DENSE_SCHUR_THRESHOLD,
     };
     use crate::domain::{build_local_domains, Design, Subdomain, SubdomainCore};
     use crate::observation::FactorMajorStore;
     use crate::operator::csr_block::CsrBlock;
     use crate::operator::gramian::CrossTab;
     use crate::operator::local_solver::{BlockElimSolver, ReducedFactor};
+    use crate::operator::preconditioner::{build_preconditioner, FePreconditioner};
     use crate::operator::schwarz::{
-        build_additive_with_strategy, build_entry, build_reduced_schur_factor, build_schwarz,
-        ReducedSchurConfig,
+        build_additive_with_strategy, build_entry, build_reduced_schur_factor, ReducedSchurConfig,
     };
     use schwarz_precond::{LocalSolver, Operator, ReductionStrategy};
 
@@ -988,7 +989,17 @@ mod schwarz_tests {
     fn test_build_default() {
         let (design, _) = make_test_data();
         let config = LocalSolverConfig::default();
-        let schwarz = build_schwarz(&design, None, &config).expect("build default schwarz");
+        let precond = build_preconditioner(
+            &design,
+            None,
+            None,
+            &Preconditioner::Additive(config.clone(), ReductionStrategy::default()),
+        )
+        .expect("build default schwarz");
+        let schwarz = match precond {
+            FePreconditioner::Additive(p) => p,
+            _ => panic!("expected additive"),
+        };
         assert!(!schwarz.subdomains().is_empty());
     }
 

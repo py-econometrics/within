@@ -337,7 +337,7 @@ proptest! {
         let gramian = Gramian::build(&design, weights_slice);
 
         let l2g_usize: Vec<usize> = l2g.iter().map(|&x| x as usize).collect();
-        let sub = gramian.extract_submatrix(&l2g_usize);
+        let sub = gramian.matrix.extract_submatrix(&l2g_usize);
 
         let n_q_local = ct.n_q();
         let n_r_local = ct.n_r();

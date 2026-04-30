@@ -45,11 +45,6 @@ use within::config::{
 };
 use within::domain::Design;
 use within::observation::FactorMajorStore;
-use within::operator::preconditioner::{
-    additive_reduction_strategy as get_additive_reduction_strategy,
-    additive_schwarz_diagnostics as get_additive_schwarz_diagnostics,
-    resolved_additive_reduction_strategy as get_resolved_additive_reduction_strategy,
-};
 use within::{
     solve as solve_native, solve_batch as solve_batch_native, FePreconditioner, Operator,
     SolveResult, Solver,
@@ -215,13 +210,13 @@ pub struct PyAdditiveSchwarzDiagnostics {
 
 impl PyAdditiveSchwarzDiagnostics {
     fn from_native(preconditioner: &FePreconditioner) -> Option<Self> {
-        let diagnostics = get_additive_schwarz_diagnostics(preconditioner)?;
+        let diagnostics = preconditioner.additive_schwarz_diagnostics()?;
         Some(Self {
-            reduction_strategy: PyReductionStrategy::from_native(get_additive_reduction_strategy(
-                preconditioner,
-            )?),
+            reduction_strategy: PyReductionStrategy::from_native(
+                preconditioner.additive_reduction_strategy()?,
+            ),
             resolved_reduction_strategy: PyReductionStrategy::from_native(
-                get_resolved_additive_reduction_strategy(preconditioner)?,
+                preconditioner.resolved_additive_reduction_strategy()?,
             ),
             total_inner_parallel_work: diagnostics.total_inner_parallel_work(),
             max_inner_parallel_work: diagnostics.max_inner_parallel_work(),

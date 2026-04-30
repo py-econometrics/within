@@ -37,12 +37,12 @@ fn test_gramian_symmetry() {
         let mut ei = vec![0.0; n];
         ei[i] = 1.0;
         let mut gi = vec![0.0; n];
-        g.matvec(&ei, &mut gi);
+        g.matrix.matvec(&ei, &mut gi);
         for j in 0..n {
             let mut ej = vec![0.0; n];
             ej[j] = 1.0;
             let mut gj = vec![0.0; n];
-            g.matvec(&ej, &mut gj);
+            g.matrix.matvec(&ej, &mut gj);
             assert!((gi[j] - gj[i]).abs() < 1e-14);
         }
     }
@@ -57,7 +57,7 @@ fn test_gramian_matches_gramian_operator() {
     let x = vec![1.0, -0.5, 2.0, 0.3, -1.0];
     let mut y_explicit = vec![0.0; n];
     let mut y_implicit = vec![0.0; n];
-    g.matvec(&x, &mut y_explicit);
+    g.matrix.matvec(&x, &mut y_explicit);
     gop.apply(&x, &mut y_implicit).expect("apply");
     for (a, b) in y_explicit.iter().zip(y_implicit.iter()) {
         assert!((a - b).abs() < 1e-12);
@@ -68,7 +68,7 @@ fn test_gramian_matches_gramian_operator() {
 fn test_gramian_submatrix() {
     let dm = make_test_design();
     let g = Gramian::build(&dm, None);
-    let sub = g.extract_submatrix(&[0, 1, 2]);
+    let sub = g.matrix.extract_submatrix(&[0, 1, 2]);
     assert_eq!(sub.n(), 3);
     let diag = sub.diagonal();
     assert_eq!(diag[0], 2.0);
@@ -115,7 +115,7 @@ fn test_weighted_gramian_matches_operator() {
     let x = vec![1.0, -0.5, 2.0, 0.3];
     let mut y_explicit = vec![0.0; n];
     let mut y_implicit = vec![0.0; n];
-    g.matvec(&x, &mut y_explicit);
+    g.matrix.matvec(&x, &mut y_explicit);
     gop.apply(&x, &mut y_implicit).expect("apply");
     for (a, b) in y_explicit.iter().zip(y_implicit.iter()) {
         assert!((a - b).abs() < 1e-12);
@@ -145,7 +145,7 @@ fn test_gramian_sparse_accumulation_path() {
     }
     let mut y_explicit = vec![0.0; n];
     let mut y_implicit = vec![0.0; n];
-    g.matvec(&x, &mut y_explicit);
+    g.matrix.matvec(&x, &mut y_explicit);
     gop.apply(&x, &mut y_implicit).expect("apply");
     for (a, b) in y_explicit.iter().zip(y_implicit.iter()) {
         assert!((a - b).abs() < 1e-10);
@@ -183,13 +183,13 @@ fn test_gramian_linearity() {
         .map(|(&xi, &yi)| a * xi + b * yi)
         .collect();
     let mut g_combined = vec![0.0; n];
-    g.matvec(&combined, &mut g_combined);
+    g.matrix.matvec(&combined, &mut g_combined);
 
     // Compute a*G(x) + b*G(y)
     let mut gx = vec![0.0; n];
     let mut gy = vec![0.0; n];
-    g.matvec(&x, &mut gx);
-    g.matvec(&y_vec, &mut gy);
+    g.matrix.matvec(&x, &mut gx);
+    g.matrix.matvec(&y_vec, &mut gy);
     let linear_combo: Vec<f64> = gx
         .iter()
         .zip(&gy)
@@ -227,12 +227,12 @@ fn test_three_factor_gramian_build() {
         let mut ei = vec![0.0; n];
         ei[i] = 1.0;
         let mut gi = vec![0.0; n];
-        g.matvec(&ei, &mut gi);
+        g.matrix.matvec(&ei, &mut gi);
         for j in (i + 1)..n {
             let mut ej = vec![0.0; n];
             ej[j] = 1.0;
             let mut gj = vec![0.0; n];
-            g.matvec(&ej, &mut gj);
+            g.matrix.matvec(&ej, &mut gj);
             assert!(
                 (gi[j] - gj[i]).abs() < 1e-14,
                 "symmetry violation at ({}, {}): {} vs {}",
@@ -298,7 +298,7 @@ fn test_gramian_large_row_permutation_sort() {
     let x: Vec<f64> = (0..n).map(|i| (i as f64 * 0.1).sin()).collect();
     let mut y_exp = vec![0.0; n];
     let mut y_imp = vec![0.0; n];
-    g.matvec(&x, &mut y_exp);
+    g.matrix.matvec(&x, &mut y_exp);
     gop.apply(&x, &mut y_imp).expect("apply");
     for (a, b) in y_exp.iter().zip(y_imp.iter()) {
         assert!((a - b).abs() < 1e-10, "explicit/implicit mismatch");
@@ -333,7 +333,7 @@ fn test_gramian_parallel_build_path() {
     let x: Vec<f64> = (0..n).map(|i| (i as f64 * 0.13).sin()).collect();
     let mut y_explicit = vec![0.0; n];
     let mut y_implicit = vec![0.0; n];
-    g.matvec(&x, &mut y_explicit);
+    g.matrix.matvec(&x, &mut y_explicit);
     gop.apply(&x, &mut y_implicit).expect("apply");
 
     for (i, (a, b)) in y_explicit.iter().zip(y_implicit.iter()).enumerate() {
@@ -372,7 +372,7 @@ fn test_gramian_single_factor() {
         let mut ei = vec![0.0; n];
         ei[i] = 1.0;
         let mut gi = vec![0.0; n];
-        g.matvec(&ei, &mut gi);
+        g.matrix.matvec(&ei, &mut gi);
         for (j, &gij) in gi.iter().enumerate() {
             if i == j {
                 assert!(
@@ -394,7 +394,7 @@ fn test_gramian_single_factor() {
     // matvec scales each DOF by its observation count.
     let x = vec![1.0, 2.0, 3.0, 4.0];
     let mut y = vec![0.0; n];
-    g.matvec(&x, &mut y);
+    g.matrix.matvec(&x, &mut y);
     assert!((y[0] - 3.0 * 1.0).abs() < 1e-12, "y[0] = diag[0]*x[0]");
     assert!((y[1] - 2.0 * 2.0).abs() < 1e-12, "y[1] = diag[1]*x[1]");
     assert!((y[2] - 2.0 * 3.0).abs() < 1e-12, "y[2] = diag[2]*x[2]");

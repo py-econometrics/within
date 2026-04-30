@@ -83,19 +83,6 @@ enum ScatterStrategy {
     Atomic,
 }
 
-#[inline]
-fn level_from_column_or_store<S: Store>(
-    store: &S,
-    levels: Option<&[u32]>,
-    row: usize,
-    factor: usize,
-) -> u32 {
-    match levels {
-        Some(col) => col[row],
-        None => store.level(row, factor),
-    }
-}
-
 /// Scatter-add for a single factor, dispatched by strategy.
 ///
 /// Accumulates `value_fn(i)` into `slice[level(i, q)]` for all rows, using the
@@ -113,23 +100,17 @@ fn scatter_add_single_factor<S: Store>(
     strategy: ScatterStrategy,
     atomic_buf: &mut Vec<AtomicF64>,
 ) {
-    #[inline(always)]
-    fn level_value<S: Store>(
-        store: &S,
-        levels: Option<&[u32]>,
-        q: usize,
-        value_fn: &impl Fn(usize) -> f64,
-        i: usize,
-    ) -> (usize, f64) {
-        let level = level_from_column_or_store(store, levels, i, q) as usize;
-        (level, value_fn(i))
-    }
+    let level_at = |i: usize| -> usize {
+        match levels {
+            Some(col) => col[i] as usize,
+            None => store.level(i, q) as usize,
+        }
+    };
 
     match strategy {
         ScatterStrategy::Sequential => {
             for i in 0..n_rows {
-                let (level, val) = level_value(store, levels, q, value_fn, i);
-                slice[level] += val;
+                slice[level_at(i)] += value_fn(i);
             }
         }
         ScatterStrategy::Fold => {
@@ -140,8 +121,7 @@ fn scatter_add_single_factor<S: Store>(
                 .fold(
                     || vec![0.0f64; n_levels],
                     |mut acc, i| {
-                        let (level, val) = level_value(store, levels, q, value_fn, i);
-                        acc[level] += val;
+                        acc[level_at(i)] += value_fn(i);
                         acc
                     },
                 )
@@ -162,8 +142,7 @@ fn scatter_add_single_factor<S: Store>(
             atomic_buf.clear();
             atomic_buf.extend(slice.iter().map(|&v| AtomicF64::new(v)));
             (0..n_rows).into_par_iter().for_each(|i| {
-                let (level, val) = level_value(store, levels, q, value_fn, i);
-                atomic_buf[level].fetch_add(val, Ordering::Relaxed);
+                atomic_buf[level_at(i)].fetch_add(value_fn(i), Ordering::Relaxed);
             });
             for (d, a) in slice.iter_mut().zip(atomic_buf.iter()) {
                 *d = a.load(Ordering::Relaxed);
@@ -204,8 +183,11 @@ where
             let levels = factor_columns[q];
             for (local, dst_val) in chunk.iter_mut().enumerate() {
                 let i = row_start + local;
-                *dst_val +=
-                    src[f.offset + level_from_column_or_store(store, levels, i, q) as usize];
+                let level = match levels {
+                    Some(col) => col[i] as usize,
+                    None => store.level(i, q) as usize,
+                };
+                *dst_val += src[f.offset + level];
             }
         }
         // Last factor: accumulate AND finalize, single store per row.
@@ -214,8 +196,11 @@ where
         let levels = factor_columns[last];
         for (local, dst_val) in chunk.iter_mut().enumerate() {
             let i = row_start + local;
-            let s = *dst_val
-                + src[f.offset + level_from_column_or_store(store, levels, i, last) as usize];
+            let level = match levels {
+                Some(col) => col[i] as usize,
+                None => store.level(i, last) as usize,
+            };
+            let s = *dst_val + src[f.offset + level];
             *dst_val = finalize(i, s);
         }
     };

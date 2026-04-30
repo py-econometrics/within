@@ -96,7 +96,7 @@ fn test_schwarz_builder_schur_complement_modes_end_to_end() {
     use schwarz_precond::solve::vec_norm;
     use schwarz_precond::Operator;
     use within::operator::gramian::GramianOperator;
-    use within::operator::schwarz::build_schwarz;
+    use within::operator::preconditioner::build_preconditioner;
     use within::{ApproxCholConfig, ApproxSchurConfig};
 
     let design = common::make_test_design();
@@ -126,8 +126,13 @@ fn test_schwarz_builder_schur_complement_modes_end_to_end() {
     ];
 
     for local_solver in local_solvers {
-        let schwarz =
-            build_schwarz(&design, None, &local_solver).expect("build schwarz preconditioner");
+        let schwarz = build_preconditioner(
+            &design,
+            None,
+            None,
+            &Preconditioner::Additive(local_solver.clone(), ReductionStrategy::default()),
+        )
+        .expect("build schwarz preconditioner");
         let result = pcg(&gramian, &rhs, Some(&schwarz), 1e-8, 500).expect("cg solve");
         assert!(
             result.converged,
@@ -157,7 +162,7 @@ fn test_compare_factorization_strategies() {
     use schwarz_precond::Operator;
     use std::time::Instant;
     use within::operator::gramian::GramianOperator;
-    use within::operator::schwarz::build_schwarz;
+    use within::operator::preconditioner::build_preconditioner;
     use within::operator::DesignOperator;
     use within::{ApproxCholConfig, Design};
 
@@ -216,8 +221,13 @@ fn test_compare_factorization_strategies() {
                 dense_threshold: within::DEFAULT_DENSE_SCHUR_THRESHOLD,
             };
             let t0 = Instant::now();
-            let schwarz =
-                build_schwarz(&design, None, &local_solver).expect("build schwarz preconditioner");
+            let schwarz = build_preconditioner(
+                &design,
+                None,
+                None,
+                &Preconditioner::Additive(local_solver.clone(), ReductionStrategy::default()),
+            )
+            .expect("build schwarz preconditioner");
             let _setup_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
             let t1 = Instant::now();

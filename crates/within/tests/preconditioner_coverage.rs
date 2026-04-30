@@ -1,14 +1,24 @@
 use schwarz_precond::Operator;
 use within::operator::gramian::Gramian;
-use within::operator::preconditioner::{
-    additive_reduction_strategy, additive_schwarz_diagnostics, build_preconditioner,
-    resolved_additive_reduction_strategy, FePreconditioner,
-};
-use within::operator::schwarz::build_schwarz;
+use within::operator::preconditioner::{build_preconditioner, FePreconditioner};
 use within::{
     KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner, ReductionStrategy, Solver,
     SolverParams,
 };
+
+fn build_test_schwarz(design: &within::Design<within::FactorMajorStore>) -> within::FeSchwarz {
+    let precond = build_preconditioner(
+        design,
+        None,
+        None,
+        &Preconditioner::Additive(LocalSolverConfig::default(), ReductionStrategy::default()),
+    )
+    .expect("build_preconditioner should succeed");
+    match precond {
+        FePreconditioner::Additive(p) => p,
+        _ => panic!("expected additive variant"),
+    }
+}
 
 #[path = "common/orchestrate_helpers.rs"]
 mod common;
@@ -39,7 +49,7 @@ fn test_additive_reduction_strategy_none_for_multiplicative() {
     let solver = build_multiplicative_solver();
     let preconditioner = solver.preconditioner().expect("should have preconditioner");
 
-    let result = additive_reduction_strategy(preconditioner);
+    let result = preconditioner.additive_reduction_strategy();
     assert!(
         result.is_none(),
         "additive_reduction_strategy should return None for multiplicative preconditioner"
@@ -55,7 +65,7 @@ fn test_resolved_additive_reduction_strategy_none_for_multiplicative() {
     let solver = build_multiplicative_solver();
     let preconditioner = solver.preconditioner().expect("should have preconditioner");
 
-    let result = resolved_additive_reduction_strategy(preconditioner);
+    let result = preconditioner.resolved_additive_reduction_strategy();
     assert!(
         result.is_none(),
         "resolved_additive_reduction_strategy should return None for multiplicative preconditioner"
@@ -71,7 +81,7 @@ fn test_additive_schwarz_diagnostics_none_for_multiplicative() {
     let solver = build_multiplicative_solver();
     let preconditioner = solver.preconditioner().expect("should have preconditioner");
 
-    let result = additive_schwarz_diagnostics(preconditioner);
+    let result = preconditioner.additive_schwarz_diagnostics();
     assert!(
         result.is_none(),
         "additive_schwarz_diagnostics should return None for multiplicative preconditioner"
@@ -127,8 +137,7 @@ fn test_build_preconditioner_none_returns_none() {
 #[test]
 fn test_fe_schwarz_with_reduction_strategy() {
     let design = common::make_test_design();
-    let schwarz = build_schwarz(&design, None, &LocalSolverConfig::default())
-        .expect("build_schwarz should succeed");
+    let schwarz = build_test_schwarz(&design);
 
     let new_schwarz = schwarz.with_reduction_strategy(ReductionStrategy::AtomicScatter);
 
@@ -154,8 +163,7 @@ fn test_fe_schwarz_with_reduction_strategy() {
 #[test]
 fn test_fe_schwarz_subdomains_count() {
     let design = common::make_test_design();
-    let schwarz = build_schwarz(&design, None, &LocalSolverConfig::default())
-        .expect("build_schwarz should succeed");
+    let schwarz = build_test_schwarz(&design);
 
     assert!(
         !schwarz.subdomains().is_empty(),
@@ -170,8 +178,7 @@ fn test_fe_schwarz_subdomains_count() {
 #[test]
 fn test_fe_schwarz_auto_resolves() {
     let design = common::make_test_design();
-    let schwarz = build_schwarz(&design, None, &LocalSolverConfig::default())
-        .expect("build_schwarz should succeed");
+    let schwarz = build_test_schwarz(&design);
 
     // Default strategy is Auto.
     assert_eq!(
@@ -204,8 +211,7 @@ fn test_fe_schwarz_auto_resolves() {
 #[test]
 fn test_fe_schwarz_diagnostics_valid() {
     let design = common::make_test_design();
-    let schwarz = build_schwarz(&design, None, &LocalSolverConfig::default())
-        .expect("build_schwarz should succeed");
+    let schwarz = build_test_schwarz(&design);
 
     let diag = schwarz.diagnostics();
 
@@ -228,8 +234,7 @@ fn test_fe_schwarz_diagnostics_valid() {
 #[test]
 fn test_fe_schwarz_apply_succeeds() {
     let design = common::make_test_design();
-    let schwarz = build_schwarz(&design, None, &LocalSolverConfig::default())
-        .expect("build_schwarz should succeed");
+    let schwarz = build_test_schwarz(&design);
 
     let x = vec![1.0; design.n_dofs];
 
@@ -267,15 +272,15 @@ fn test_additive_preconditioner_functions_return_some() {
     .expect("additive build_preconditioner should succeed");
 
     assert!(
-        additive_reduction_strategy(&precond).is_some(),
+        precond.additive_reduction_strategy().is_some(),
         "additive_reduction_strategy should return Some for additive preconditioner"
     );
     assert!(
-        resolved_additive_reduction_strategy(&precond).is_some(),
+        precond.resolved_additive_reduction_strategy().is_some(),
         "resolved_additive_reduction_strategy should return Some for additive preconditioner"
     );
     assert!(
-        additive_schwarz_diagnostics(&precond).is_some(),
+        precond.additive_schwarz_diagnostics().is_some(),
         "additive_schwarz_diagnostics should return Some for additive preconditioner"
     );
 }

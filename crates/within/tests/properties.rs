@@ -82,7 +82,7 @@ proptest! {
         let x: Vec<f64> = (0..n).map(|i| (i as f64 * 0.3).sin()).collect();
         let mut y_explicit = vec![0.0; n];
         let mut y_implicit = vec![0.0; n];
-        explicit.matvec(&x, &mut y_explicit);
+        explicit.matrix.matvec(&x, &mut y_explicit);
         implicit.apply(&x, &mut y_implicit).expect("apply");
 
         for (a, b) in y_explicit.iter().zip(y_implicit.iter()) {

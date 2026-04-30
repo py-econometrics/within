@@ -118,12 +118,6 @@ impl FactorMajorStore {
             n_obs,
         })
     }
-
-    /// Direct access to the level column for a factor (contiguous slice).
-    #[inline]
-    pub fn factor_column(&self, factor: usize) -> &[u32] {
-        &self.factor_levels[factor]
-    }
 }
 
 impl Store for FactorMajorStore {
@@ -144,7 +138,7 @@ impl Store for FactorMajorStore {
 
     #[inline]
     fn factor_column(&self, factor: usize) -> Option<&[u32]> {
-        Some(self.factor_column(factor))
+        Some(&self.factor_levels[factor])
     }
 }
 
@@ -224,7 +218,13 @@ mod tests {
     fn test_factor_column() {
         let store = FactorMajorStore::new(vec![vec![0u32, 1, 2, 0], vec![3, 2, 1, 0]], 4)
             .expect("valid factor-major store");
-        assert_eq!(store.factor_column(0), &[0u32, 1, 2, 0]);
-        assert_eq!(store.factor_column(1), &[3u32, 2, 1, 0]);
+        assert_eq!(
+            store.factor_column(0).expect("factor-major exposes column"),
+            &[0u32, 1, 2, 0]
+        );
+        assert_eq!(
+            store.factor_column(1).expect("factor-major exposes column"),
+            &[3u32, 2, 1, 0]
+        );
     }
 }

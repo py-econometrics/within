@@ -1,11 +1,31 @@
 use schwarz_precond::solve::cg::pcg;
-use schwarz_precond::{LocalSolver, Operator};
+use schwarz_precond::{LocalSolver, Operator, ReductionStrategy};
 use within::operator::gramian::GramianOperator;
-use within::operator::schwarz::build_schwarz;
-use within::{LocalSolverConfig, DEFAULT_DENSE_SCHUR_THRESHOLD};
+use within::operator::preconditioner::{build_preconditioner, FePreconditioner};
+use within::{
+    Design, FactorMajorStore, FeSchwarz, LocalSolverConfig, Preconditioner,
+    DEFAULT_DENSE_SCHUR_THRESHOLD,
+};
 
 #[path = "common/orchestrate_helpers.rs"]
 mod common;
+
+fn build_schwarz(
+    design: &Design<FactorMajorStore>,
+    weights: Option<&[f64]>,
+    config: &LocalSolverConfig,
+) -> Result<FeSchwarz, within::WithinError> {
+    let precond = build_preconditioner(
+        design,
+        weights,
+        None,
+        &Preconditioner::Additive(config.clone(), ReductionStrategy::default()),
+    )?;
+    match precond {
+        FePreconditioner::Additive(p) => Ok(p),
+        _ => panic!("expected additive variant"),
+    }
+}
 
 // ===========================================================================
 // Test 1: BlockElimSolver round-trip via subdomain-level LocalSolver API

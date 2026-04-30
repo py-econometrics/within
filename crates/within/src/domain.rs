@@ -44,7 +44,7 @@
 pub(crate) mod factor_pairs;
 
 pub(crate) use factor_pairs::{
-    build_domains_and_gramian_blocks, build_local_domains, PairBlockData,
+    build_domains_and_gramian_blocks, build_gramian_blocks, build_local_domains, PairBlockData,
 };
 
 // Re-exports from schwarz-precond
