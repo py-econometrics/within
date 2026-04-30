@@ -81,6 +81,19 @@ enum ScatterStrategy {
     Atomic,
 }
 
+/// Resolve the level for row `i` in factor `q`.
+///
+/// `levels` is the optional fast-path column (a contiguous `&[u32]` view of the
+/// factor's levels); when `None`, fall back to the store's virtual lookup.
+/// Hoisted out of inner loops so the compiler keeps the row body branch-free.
+#[inline]
+fn level_at<S: Store>(store: &S, levels: Option<&[u32]>, i: usize, q: usize) -> usize {
+    match levels {
+        Some(col) => col[i] as usize,
+        None => store.level(i, q) as usize,
+    }
+}
+
 /// Scatter-add for a single factor, dispatched by strategy.
 ///
 /// Accumulates `value_fn(i)` into `slice[level(i, q)]` for all rows, using the
@@ -90,7 +103,6 @@ enum ScatterStrategy {
 fn scatter_add_single_factor<S: Store>(
     slice: &mut [f64],
     n_rows: usize,
-    n_levels: usize,
     store: &S,
     levels: Option<&[u32]>,
     q: usize,
@@ -98,40 +110,38 @@ fn scatter_add_single_factor<S: Store>(
     strategy: ScatterStrategy,
     atomic_buf: &mut Vec<AtomicF64>,
 ) {
-    let level_at = |i: usize| -> usize {
-        match levels {
-            Some(col) => col[i] as usize,
-            None => store.level(i, q) as usize,
-        }
-    };
+    let n_levels = slice.len();
+    let lvl = |i: usize| level_at(store, levels, i, q);
 
     match strategy {
         ScatterStrategy::Sequential => {
             for i in 0..n_rows {
-                slice[level_at(i)] += value_fn(i);
+                slice[lvl(i)] += value_fn(i);
             }
         }
         ScatterStrategy::Fold => {
             let min_len = (n_rows / rayon::current_num_threads().max(1)).max(1024);
+
+            let identity = || vec![0.0f64; n_levels];
+
+            let fold = |mut acc: Vec<f64>, i| {
+                acc[lvl(i)] += value_fn(i);
+                acc
+            };
+
+            let reduction = |mut a: Vec<f64>, b: Vec<f64>| {
+                for (ai, bi) in a.iter_mut().zip(b.iter()) {
+                    *ai += *bi;
+                }
+                a
+            };
+
             let result: Vec<f64> = (0..n_rows)
                 .into_par_iter()
                 .with_min_len(min_len)
-                .fold(
-                    || vec![0.0f64; n_levels],
-                    |mut acc, i| {
-                        acc[level_at(i)] += value_fn(i);
-                        acc
-                    },
-                )
-                .reduce(
-                    || vec![0.0f64; n_levels],
-                    |mut a, b| {
-                        for (ai, bi) in a.iter_mut().zip(b.iter()) {
-                            *ai += *bi;
-                        }
-                        a
-                    },
-                );
+                .fold(identity, fold)
+                .reduce(identity, reduction);
+
             for (d, r) in slice.iter_mut().zip(result.iter()) {
                 *d += *r;
             }
@@ -140,7 +150,7 @@ fn scatter_add_single_factor<S: Store>(
             atomic_buf.clear();
             atomic_buf.extend(slice.iter().map(|&v| AtomicF64::new(v)));
             (0..n_rows).into_par_iter().for_each(|i| {
-                atomic_buf[level_at(i)].fetch_add(value_fn(i), Ordering::Relaxed);
+                atomic_buf[lvl(i)].fetch_add(value_fn(i), Ordering::Relaxed);
             });
             for (d, a) in slice.iter_mut().zip(atomic_buf.iter()) {
                 *d = a.load(Ordering::Relaxed);
@@ -243,7 +253,6 @@ where
         scatter_add_single_factor(
             slice,
             design.n_rows,
-            f.n_levels,
             &design.store,
             levels,
             q,
