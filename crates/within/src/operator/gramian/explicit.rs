@@ -85,9 +85,19 @@ impl Gramian {
         })
     }
 
+    /// Matrix-vector product `y = G x`.
+    pub fn matvec(&self, x: &[f64], y: &mut [f64]) {
+        self.matrix.matvec(x, y);
+    }
+
     /// Diagonal of `G`.
     pub fn diagonal(&self) -> Vec<f64> {
         self.matrix.diagonal()
+    }
+
+    /// Extract submatrix `G[indices, indices]`.
+    pub fn extract_submatrix(&self, indices: &[usize]) -> SparseMatrix {
+        self.matrix.extract_submatrix(indices)
     }
 
     /// Number of DOFs.
@@ -106,7 +116,7 @@ impl Operator for Gramian {
     }
 
     fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
-        self.matrix.matvec(x, y);
+        self.matvec(x, y);
         Ok(())
     }
 
