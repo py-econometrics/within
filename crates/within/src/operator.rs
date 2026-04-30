@@ -81,6 +81,23 @@ enum ScatterStrategy {
     Atomic,
 }
 
+impl ScatterStrategy {
+    /// Pick the scatter strategy for one factor.
+    ///
+    /// `parallel` is `true` when `n_rows > PAR_THRESHOLD`; `n_levels` is the
+    /// factor's level count. Below `SCATTER_LOCAL_THRESHOLD` levels, prefer
+    /// thread-local fold/reduce (memory `O(n_levels * n_threads)`); above it,
+    /// per-thread accumulators dominate cache and atomic CAS wins because bins
+    /// vastly outnumber threads (low contention).
+    fn pick(parallel: bool, n_levels: usize) -> Self {
+        match (parallel, n_levels < SCATTER_LOCAL_THRESHOLD) {
+            (false, _) => ScatterStrategy::Sequential,
+            (true, true) => ScatterStrategy::Fold,
+            (true, false) => ScatterStrategy::Atomic,
+        }
+    }
+}
+
 /// Resolve the level for row `i` in factor `q`.
 ///
 /// `levels` is the optional fast-path column (a contiguous `&[u32]` view of the
@@ -235,13 +252,7 @@ where
     for (q, f) in design.factors.iter().enumerate() {
         let slice = &mut dst[f.offset..f.offset + f.n_levels];
         let levels = factor_columns[q];
-        let strategy = if !parallel {
-            ScatterStrategy::Sequential
-        } else if f.n_levels < SCATTER_LOCAL_THRESHOLD {
-            ScatterStrategy::Fold
-        } else {
-            ScatterStrategy::Atomic
-        };
+        let strategy = ScatterStrategy::pick(parallel, f.n_levels);
         scatter_add_single_factor(
             slice,
             design.n_rows,
