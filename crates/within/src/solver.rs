@@ -284,10 +284,7 @@ impl<S: Store> Solver<S> {
         t_start: Instant,
         t_setup_start: Instant,
     ) -> WithinResult<SolveResult> {
-        let rect_op = match &self.weights {
-            Some(w) => DesignOperator::new(&self.design, Some(w)),
-            None => DesignOperator::new(&self.design, None),
-        };
+        let rect_op = DesignOperator::new(&self.design, self.weights.as_deref());
         let b: Vec<f64> = match rect_op.sqrt_weights() {
             Some(sw) => y.iter().zip(sw).map(|(&yi, &swi)| swi * yi).collect(),
             None => y.to_vec(),
@@ -411,10 +408,7 @@ impl<S: Store> Solver<S> {
                 self.dispatch_krylov::<_, FePreconditioner>(gramian, None, rhs, tol)
             }
             (None, precond) => {
-                let op = match &self.weights {
-                    Some(w) => GramianOperator::new(&self.design, Some(w)),
-                    None => GramianOperator::new(&self.design, None),
-                };
+                let op = GramianOperator::new(&self.design, self.weights.as_deref());
                 self.dispatch_krylov(&op, precond.as_ref(), rhs, tol)
             }
         }
