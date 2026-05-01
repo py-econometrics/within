@@ -41,7 +41,6 @@ pub(crate) mod csr_block;
 pub mod gramian;
 pub(crate) mod local_solver;
 pub mod preconditioner;
-pub(crate) mod residual_update;
 pub(crate) mod schur_complement;
 pub mod schwarz;
 

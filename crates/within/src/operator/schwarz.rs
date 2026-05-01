@@ -34,11 +34,10 @@ use std::sync::Arc;
 use approx_chol::low_level::Builder;
 use approx_chol::CsrRef;
 use rayon::prelude::*;
-use schwarz_precond::SubdomainEntry;
+use schwarz_precond::{ResidualUpdater, SparseMatrix, SubdomainEntry};
 
 use super::gramian::CrossTab;
 use super::local_solver::{AnchoredDenseCholesky, BlockElimSolver, ReducedFactor};
-use super::residual_update::SparseGramianUpdater;
 use super::schur_complement::{
     ApproxSchurComplement, EliminationInfo, ExactSchurComplement, SchurComplement, SchurResult,
 };
@@ -52,6 +51,54 @@ pub type FeSchwarz = SchwarzPreconditioner<BlockElimSolver>;
 /// Concrete multiplicative Schwarz type: one-level with explicit Gramian CSR residual updates.
 pub type FeMultSchwarzSparse =
     MultiplicativeSchwarzPreconditioner<BlockElimSolver, SparseGramianUpdater>;
+
+// ---------------------------------------------------------------------------
+// Residual updater for multiplicative Schwarz
+// ---------------------------------------------------------------------------
+
+/// Sparse Gramian residual updater for multiplicative Schwarz.
+///
+/// After each subdomain solve produces a correction `delta`, the global
+/// residual is updated via `r -= G * delta` restricted to the touched rows,
+/// using the pre-built explicit Gramian CSR for cache-friendly contiguous
+/// reads. Cost is O(nnz_touched) per update; trades O(nnz(G)) memory for
+/// faster per-iteration updates compared to an observation-space path.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct SparseGramianUpdater {
+    gramian: Arc<SparseMatrix>,
+}
+
+impl SparseGramianUpdater {
+    /// Construct a new updater from a shared explicit Gramian CSR.
+    pub(crate) fn new(gramian: Arc<SparseMatrix>) -> Self {
+        Self { gramian }
+    }
+}
+
+impl ResidualUpdater for SparseGramianUpdater {
+    fn update(&mut self, global_indices: &[u32], weighted_correction: &[f64], r_work: &mut [f64]) {
+        let indptr = self.gramian.indptr();
+        let indices = self.gramian.indices();
+        let data = self.gramian.data();
+
+        for (k, &gi) in global_indices.iter().enumerate() {
+            let c = weighted_correction[k];
+            if c == 0.0 {
+                continue;
+            }
+            let row = gi as usize;
+            let start = indptr[row] as usize;
+            let end = indptr[row + 1] as usize;
+            for idx in start..end {
+                r_work[indices[idx] as usize] -= c * data[idx];
+            }
+        }
+    }
+
+    fn reset(&mut self, _r_original: &[f64]) {
+        // No-op: each update is a pure incremental r -= G * delta.
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Crate-internal consolidated builders

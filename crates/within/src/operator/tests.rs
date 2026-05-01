@@ -166,7 +166,7 @@ mod csr_block_tests {
 mod residual_update_tests {
     use crate::observation::FactorMajorStore;
     use crate::operator::gramian::Gramian;
-    use crate::operator::residual_update::SparseGramianUpdater;
+    use crate::operator::schwarz::SparseGramianUpdater;
     use schwarz_precond::{OperatorResidualUpdater, ResidualUpdater};
 
     /// Helper: build a design, explicit Gramian.
