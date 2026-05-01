@@ -134,25 +134,19 @@ impl<S: Store> Solver<S> {
                 .as_ref()
                 .is_some_and(PreconditionerSource::requires_explicit_gramian);
 
-        let (gramian, preconditioner) = match (needs_gramian, preconditioner) {
-            (true, Some(PreconditionerSource::Config(config))) => {
+        let gramian_if_needed = || needs_gramian.then(|| Gramian::build(&design, weights_slice));
+        let (gramian, preconditioner) = match preconditioner {
+            Some(PreconditionerSource::Config(config)) if needs_gramian => {
                 let (gramian, preconditioner) =
                     build_preconditioner_fused(&design, weights_slice, config)?;
                 (Some(gramian), Some(preconditioner))
             }
-            (false, Some(PreconditionerSource::Config(config))) => {
-                let preconditioner = build_preconditioner(&design, weights_slice, None, config)?;
-                (None, Some(preconditioner))
-            }
-            (true, Some(PreconditionerSource::Built(preconditioner))) => (
-                Some(Gramian::build(&design, weights_slice)),
-                Some(preconditioner),
+            Some(PreconditionerSource::Config(config)) => (
+                None,
+                Some(build_preconditioner(&design, weights_slice, None, config)?),
             ),
-            (false, Some(PreconditionerSource::Built(preconditioner))) => {
-                (None, Some(preconditioner))
-            }
-            (true, None) => (Some(Gramian::build(&design, weights_slice)), None),
-            (false, None) => (None, None),
+            Some(PreconditionerSource::Built(p)) => (gramian_if_needed(), Some(p)),
+            None => (gramian_if_needed(), None),
         };
 
         Ok(Self {
