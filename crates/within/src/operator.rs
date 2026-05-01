@@ -16,8 +16,8 @@
 //!
 //! | Representation | Type | Description |
 //! |---|---|---|
-//! | **D** / **W^{1/2} D** | [`DesignOperator`] | Rectangular `D x` (or `W^{1/2} D x`); use [`DesignOperator::with_weights`] for the weighted variant |
-//! | **D^T D** / **D^T W D** (implicit) | [`gramian::GramianOperator`] | Matrix-free Gramian; use [`gramian::GramianOperator::with_weights`] for the weighted variant |
+//! | **D** / **W^{1/2} D** | [`DesignOperator`] | Rectangular `D x` (or `W^{1/2} D x`); pass weights to [`DesignOperator::new`] for the weighted variant |
+//! | **D^T D** / **D^T W D** (implicit) | [`gramian::GramianOperator`] | Matrix-free Gramian; pass weights to [`gramian::GramianOperator::new`] for the weighted variant |
 //! | **G explicit** | [`gramian::Gramian`] | Pre-assembled CSR sparse matrix |
 //!
 //! # Submodules
@@ -275,9 +275,9 @@ where
 /// `apply` = `D x` / `W^{1/2} D x` (gather), `apply_adjoint` = `D^T x` /
 /// `D^T W^{1/2} x` (scatter). For the weighted variant, the normal equations
 /// `A^T A = D^T W D = G` recover the Gramian, so the same Schwarz
-/// preconditioner approximating `G^{-1}` applies. Use
-/// [`DesignOperator::new`] for `D` and [`DesignOperator::with_weights`] for
-/// `W^{1/2} D`. The branch on weights is hoisted outside the per-row loop.
+/// preconditioner approximating `G^{-1}` applies. Pass `None` to
+/// [`DesignOperator::new`] for `D`, or `Some(&w)` for `W^{1/2} D`. The branch
+/// on weights is hoisted outside the per-row loop.
 pub struct DesignOperator<'a, S: Store> {
     design: &'a Design<S>,
     sqrt_weights: Option<Vec<f64>>,

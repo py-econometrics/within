@@ -341,12 +341,10 @@ fn compute_residual<A: Operator + ?Sized>(
 // Main entry point
 // ---------------------------------------------------------------------------
 
-/// Right-preconditioned GMRES(m) with restarts and optional preconditioner.
-///
 /// Unpreconditioned GMRES(m) with restarts.
 ///
-/// Solves `A x = b` with no preconditioner. Uses Arnoldi iteration with
-/// Modified Gram-Schmidt orthogonalisation and Givens rotations.
+/// Solves `A x = b` using Arnoldi iteration with Modified Gram-Schmidt
+/// orthogonalisation and Givens rotations.
 ///
 /// `restart`: Krylov subspace dimension before restart (m in GMRES(m)).
 pub fn gmres<A: Operator + ?Sized>(

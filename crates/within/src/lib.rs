@@ -154,7 +154,7 @@
 //!   metadata; factor-pair subdomains are built with partition-of-unity weights.
 //! - **`operator`** — Linear algebra primitives: [`Gramian`] (explicit CSR),
 //!   the implicit [`GramianOperator`], the rectangular [`DesignOperator`]
-//!   (both with optional `with_weights` constructors), and Schwarz
+//!   (both accept optional weights via their `new` constructor), and Schwarz
 //!   preconditioner builders.
 //! - **`orchestrate`** — End-to-end solve: [`solve`] with typed configuration.
 //!
