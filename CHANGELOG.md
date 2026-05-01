@@ -38,6 +38,16 @@ and this project follows [Semantic Versioning](https://semver.org/).
   on `FePreconditioner`: `additive_reduction_strategy`,
   `resolved_additive_reduction_strategy`, `additive_schwarz_diagnostics`.
   Call as `preconditioner.additive_schwarz_diagnostics()` etc.
+- **`FePreconditioner::subdomain_inner_parallel_work` removed** (Rust and
+  Python). The per-subdomain work vector had no in-tree callers; the
+  actionable scheduling signals (`total_inner_parallel_work`,
+  `max_inner_parallel_work`, `outer_parallel_capacity`) remain available
+  on `AdditiveSchwarzDiagnostics`.
+- **`schwarz_precond::IdentityOperator` removed.** Its original purpose
+  (deduplicating CG/LSMR by passing identity as preconditioner) was made
+  obsolete by the `pcg`/`pgmres`/`mlsmr` refactor to `Option<&M>`. Tests
+  that needed turbofish disambiguation can use any concrete `Operator`
+  type already in scope (`None::<&MyOp>`).
 - **Weights externalized from the store/design layer.** `ObservationStore`
   → `Store` (no `weight()` / `is_unweighted()`); `ObservationWeights`
   deleted. `FactorMajorStore::new` / `ArrayStore::new` no longer take
