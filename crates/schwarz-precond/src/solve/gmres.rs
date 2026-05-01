@@ -343,13 +343,39 @@ fn compute_residual<A: Operator + ?Sized>(
 
 /// Right-preconditioned GMRES(m) with restarts and optional preconditioner.
 ///
-/// Solves A x = b using right preconditioning: A M^{-1} (M x) = b. When
-/// `preconditioner` is `None`, runs unpreconditioned GMRES (M = I).
-/// Uses Arnoldi iteration with Modified Gram-Schmidt orthogonalisation
-/// and Givens rotations to solve the Hessenberg least-squares problem.
+/// Unpreconditioned GMRES(m) with restarts.
+///
+/// Solves `A x = b` with no preconditioner. Uses Arnoldi iteration with
+/// Modified Gram-Schmidt orthogonalisation and Givens rotations.
+///
+/// `restart`: Krylov subspace dimension before restart (m in GMRES(m)).
+pub fn gmres<A: Operator + ?Sized>(
+    operator: &A,
+    b: &[f64],
+    tol: f64,
+    maxiter: usize,
+    restart: usize,
+) -> Result<GmresResult, SolveError> {
+    pgmres_impl::<A, A>(operator, b, None, tol, maxiter, restart)
+}
+
+/// Right-preconditioned GMRES(m) with restarts.
+///
+/// Solves `A x = b` using right preconditioning: `A M^{-1} (M x) = b`.
 ///
 /// `restart`: Krylov subspace dimension before restart (m in GMRES(m)).
 pub fn pgmres<A: Operator + ?Sized, M: Operator + ?Sized>(
+    operator: &A,
+    b: &[f64],
+    preconditioner: &M,
+    tol: f64,
+    maxiter: usize,
+    restart: usize,
+) -> Result<GmresResult, SolveError> {
+    pgmres_impl(operator, b, Some(preconditioner), tol, maxiter, restart)
+}
+
+fn pgmres_impl<A: Operator + ?Sized, M: Operator + ?Sized>(
     operator: &A,
     b: &[f64],
     preconditioner: Option<&M>,

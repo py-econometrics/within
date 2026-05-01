@@ -31,11 +31,34 @@ fn apply_preconditioner<M: Operator + ?Sized>(
     Ok(())
 }
 
-/// Conjugate gradient solver, optionally left-preconditioned.
+/// Unpreconditioned conjugate gradient.
 ///
-/// Solves `A x = b` with optional preconditioner `M` applied to the residual
-/// each iteration. `tol`: relative tolerance (`||r|| / ||b|| < tol`).
+/// Solves `A x = b` with no preconditioner. `tol` is the relative tolerance
+/// `||r|| / ||b|| < tol`.
+pub fn cg<A: Operator + ?Sized>(
+    operator: &A,
+    b: &[f64],
+    tol: f64,
+    maxiter: usize,
+) -> Result<CgResult, SolveError> {
+    pcg_impl::<A, A>(operator, b, None, tol, maxiter)
+}
+
+/// Left-preconditioned conjugate gradient.
+///
+/// Solves `A x = b` with preconditioner `M` applied to the residual each
+/// iteration. `tol` is the relative tolerance `||r|| / ||b|| < tol`.
 pub fn pcg<A: Operator + ?Sized, M: Operator + ?Sized>(
+    operator: &A,
+    b: &[f64],
+    preconditioner: &M,
+    tol: f64,
+    maxiter: usize,
+) -> Result<CgResult, SolveError> {
+    pcg_impl(operator, b, Some(preconditioner), tol, maxiter)
+}
+
+fn pcg_impl<A: Operator + ?Sized, M: Operator + ?Sized>(
     operator: &A,
     b: &[f64],
     preconditioner: Option<&M>,
@@ -176,7 +199,7 @@ mod tests {
     #[test]
     fn test_cg_unpreconditioned() {
         let b = vec![1.0, 2.0, 3.0];
-        let result = pcg(&SpdMatrix3, &b, None::<&SpdMatrix3>, 1e-10, 100).expect("cg solve");
+        let result = cg(&SpdMatrix3, &b, 1e-10, 100).expect("cg solve");
         assert!(result.converged, "CG did not converge");
         assert!(result.iterations <= 3, "CG took too many iterations");
 
@@ -196,8 +219,8 @@ mod tests {
     #[test]
     fn test_cg_preconditioned() {
         let b = vec![1.0, 2.0, 3.0];
-        let result = pcg(&SpdMatrix3, &b, Some(&JacobiPrecond3), 1e-10, 100)
-            .expect("preconditioned cg solve");
+        let result =
+            pcg(&SpdMatrix3, &b, &JacobiPrecond3, 1e-10, 100).expect("preconditioned cg solve");
         assert!(result.converged, "Preconditioned CG did not converge");
 
         let mut ax = vec![0.0; 3];
@@ -216,7 +239,7 @@ mod tests {
     #[test]
     fn test_cg_zero_rhs() {
         let b = vec![0.0; 3];
-        let result = pcg(&SpdMatrix3, &b, None::<&SpdMatrix3>, 1e-10, 100).expect("cg solve");
+        let result = cg(&SpdMatrix3, &b, 1e-10, 100).expect("cg solve");
         assert!(result.converged);
         assert_eq!(result.iterations, 0);
         assert!(result.x.iter().all(|&v| v == 0.0));
@@ -248,8 +271,7 @@ mod tests {
         // NegDiagOperator has all negative eigenvalues, so pap <= 0 on the
         // first iteration, triggering the early-exit branch.
         let b = vec![1.0, 1.0, 1.0];
-        let result =
-            pcg(&NegDiagOperator, &b, None::<&NegDiagOperator>, 1e-10, 100).expect("cg solve");
+        let result = cg(&NegDiagOperator, &b, 1e-10, 100).expect("cg solve");
         assert!(
             !result.converged,
             "expected non-convergence for indefinite operator"
@@ -265,7 +287,7 @@ mod tests {
         // A single iteration cannot achieve 1e-15 relative tolerance on a
         // non-trivial system, so maxiter=1 forces early termination.
         let b = vec![1.0, 2.0, 3.0];
-        let result = pcg(&SpdMatrix3, &b, None::<&SpdMatrix3>, 1e-15, 1).expect("cg solve");
+        let result = cg(&SpdMatrix3, &b, 1e-15, 1).expect("cg solve");
         assert!(
             !result.converged,
             "expected non-convergence when maxiter exhausted"

@@ -203,7 +203,7 @@ fn test_dense_threshold_zero_forces_sparse_cg_convergence() {
         let schwarz = build_schwarz(&design, None, &config)
             .unwrap_or_else(|e| panic!("threshold={threshold}: build_schwarz failed: {e}"));
 
-        let cg_result = pcg(&gramian, &rhs, Some(&schwarz), 1e-8, 500)
+        let cg_result = pcg(&gramian, &rhs, &schwarz, 1e-8, 500)
             .unwrap_or_else(|e| panic!("threshold={threshold}: pcg failed: {e}"));
 
         assert!(

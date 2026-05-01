@@ -3,7 +3,7 @@
 //! Demonstrates the simplest use of `SchwarzPreconditioner` with hand-built
 //! subdomains and diagonal local solvers.
 
-use schwarz_precond::solve::cg::pcg;
+use schwarz_precond::solve::cg::{cg, pcg};
 use schwarz_precond::{
     LocalSolver, Operator, SchwarzPreconditioner, SolveError, SubdomainCore, SubdomainEntry,
 };
@@ -111,8 +111,7 @@ fn main() {
     let a = TridiagOperator { n };
 
     // --- Unpreconditioned CG ---
-    let result_plain =
-        pcg(&a, &rhs, None::<&TridiagOperator>, 1e-10, 200).expect("unpreconditioned cg");
+    let result_plain = cg(&a, &rhs, 1e-10, 200).expect("unpreconditioned cg");
     println!(
         "Unpreconditioned CG : converged={}, iterations={:>3}, residual={:.3e}",
         result_plain.converged, result_plain.iterations, result_plain.residual_norm,
@@ -121,7 +120,7 @@ fn main() {
     // --- Additive Schwarz preconditioned CG ---
     let precond = SchwarzPreconditioner::new(build_entries(n), n)
         .expect("valid additive schwarz preconditioner");
-    let result_schwarz = pcg(&a, &rhs, Some(&precond), 1e-10, 200).expect("preconditioned cg");
+    let result_schwarz = pcg(&a, &rhs, &precond, 1e-10, 200).expect("preconditioned cg");
     println!(
         "Additive Schwarz CG : converged={}, iterations={:>3}, residual={:.3e}",
         result_schwarz.converged, result_schwarz.iterations, result_schwarz.residual_norm,

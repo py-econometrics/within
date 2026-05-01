@@ -152,7 +152,7 @@ fn main() {
 
     // Phase 5: CG solve
     let t = Instant::now();
-    let cg_result = pcg(&gramian_op, &rhs, Some(&schwarz), 1e-8, 100).expect("cg solve");
+    let cg_result = pcg(&gramian_op, &rhs, &schwarz, 1e-8, 100).expect("cg solve");
     let rss_solve = rss_mb();
     let dt_solve = t.elapsed().as_secs_f64();
     println!("\n[5] CG Solve ({dt_solve:.3}s)");

@@ -1,6 +1,6 @@
 mod common;
 
-use schwarz_precond::solve::cg::pcg;
+use schwarz_precond::solve::cg::{cg, pcg};
 use schwarz_precond::solve::gmres::pgmres;
 use schwarz_precond::Operator;
 use schwarz_precond::SolveError;
@@ -103,8 +103,7 @@ impl Operator for Rank1Projector {
 fn test_cg_zero_pap_clean_exit() {
     let op = ZeroOperator { n: 3 };
     let b = vec![1.0, 1.0, 1.0];
-    let result =
-        pcg(&op, &b, None::<&ZeroOperator>, 1e-10, 100).expect("cg solve should not error");
+    let result = cg(&op, &b, 1e-10, 100).expect("cg solve should not error");
 
     assert!(!result.converged, "zero operator cannot satisfy Ax=b");
     assert_eq!(result.iterations, 1, "should exit on first pap <= 0 check");
@@ -123,7 +122,7 @@ fn test_cg_preconditioned_zero_pap_clean_exit() {
     let op = ZeroOperator { n: 3 };
     let prec = IdentityOp { n: 3 };
     let b = vec![1.0, 0.0, 0.0];
-    let result = pcg(&op, &b, Some(&prec), 1e-10, 100).expect("cg solve should not error");
+    let result = pcg(&op, &b, &prec, 1e-10, 100).expect("cg solve should not error");
 
     assert!(!result.converged);
     assert_eq!(result.iterations, 1);
@@ -142,7 +141,7 @@ fn test_cg_stagnation_guard_near_zero_rz_init() {
     let op = SpdMatrix3;
     let prec = TinyPreconditioner { n: 3 };
     let b = vec![1.0, 2.0, 3.0];
-    let result = pcg(&op, &b, Some(&prec), 1e-10, 100).expect("cg solve should not error");
+    let result = pcg(&op, &b, &prec, 1e-10, 100).expect("cg solve should not error");
 
     // Regardless of convergence, the result must be numerically safe.
     assert!(
@@ -168,8 +167,7 @@ fn test_cg_stagnation_guard_extreme_conditioning() {
         values: vec![1e15, 1.0, 1e-15],
     };
     let b = vec![1.0, 1.0, 1.0];
-    let result =
-        pcg(&op, &b, None::<&DiagOperator>, 1e-12, 100).expect("cg solve should not error");
+    let result = cg(&op, &b, 1e-12, 100).expect("cg solve should not error");
 
     assert!(
         result.x.iter().all(|v| v.is_finite()),
@@ -189,7 +187,7 @@ fn test_cg_stagnation_guard_extreme_conditioning() {
 fn test_cg_zero_rhs_exits_immediately() {
     let op = SpdMatrix3;
     let b = vec![0.0; 3];
-    let result = pcg(&op, &b, None::<&SpdMatrix3>, 1e-10, 100).expect("cg solve should not error");
+    let result = cg(&op, &b, 1e-10, 100).expect("cg solve should not error");
 
     assert!(result.converged);
     assert_eq!(result.iterations, 0);
@@ -205,7 +203,7 @@ fn test_cg_zero_rhs_exits_immediately() {
 fn test_cg_maxiter_zero_returns_initial_guess() {
     let op = SpdMatrix3;
     let b = vec![1.0, 2.0, 3.0];
-    let result = pcg(&op, &b, None::<&SpdMatrix3>, 1e-10, 0).expect("cg solve should not error");
+    let result = cg(&op, &b, 1e-10, 0).expect("cg solve should not error");
 
     assert!(!result.converged);
     assert_eq!(result.iterations, 0);
@@ -221,8 +219,7 @@ fn test_cg_maxiter_zero_returns_initial_guess() {
 fn test_cg_single_element_system() {
     let op = DiagOperator { values: vec![5.0] };
     let b = vec![10.0];
-    let result =
-        pcg(&op, &b, None::<&DiagOperator>, 1e-12, 100).expect("cg solve should not error");
+    let result = cg(&op, &b, 1e-12, 100).expect("cg solve should not error");
 
     assert!(result.converged);
     assert_eq!(result.iterations, 1);
@@ -235,7 +232,7 @@ fn test_cg_preconditioned_single_element_system() {
     let op = DiagOperator { values: vec![5.0] };
     let prec = DiagOperator { values: vec![0.2] }; // exact inverse
     let b = vec![10.0];
-    let result = pcg(&op, &b, Some(&prec), 1e-12, 100).expect("cg solve should not error");
+    let result = pcg(&op, &b, &prec, 1e-12, 100).expect("cg solve should not error");
 
     assert!(result.converged);
     assert!((result.x[0] - 2.0).abs() < 1e-12, "expected x[0] = 2.0");
@@ -253,7 +250,7 @@ fn test_gmres_maxiter_zero_returns_initial_guess() {
     let op = SpdMatrix3;
     let id = IdentityOp { n: 3 };
     let b = vec![1.0, 2.0, 3.0];
-    let result = pgmres(&op, &b, Some(&id), 1e-10, 0, 30).expect("gmres solve should not error");
+    let result = pgmres(&op, &b, &id, 1e-10, 0, 30).expect("gmres solve should not error");
 
     assert!(!result.converged);
     assert_eq!(result.iterations, 0);
@@ -265,7 +262,7 @@ fn test_gmres_zero_rhs_exits_immediately() {
     let op = SpdMatrix3;
     let id = IdentityOp { n: 3 };
     let b = vec![0.0; 3];
-    let result = pgmres(&op, &b, Some(&id), 1e-10, 100, 30).expect("gmres solve should not error");
+    let result = pgmres(&op, &b, &id, 1e-10, 100, 30).expect("gmres solve should not error");
 
     assert!(result.converged);
     assert_eq!(result.iterations, 0);
@@ -285,8 +282,8 @@ fn test_gmres_restart_accumulates_progress() {
     let b: Vec<f64> = (0..n).map(|i| i as f64 + 1.0).collect();
     let id = IdentityOp { n };
 
-    let r1 = pgmres(&op, &b, Some(&id), 1e-10, 500, 1).expect("GMRES(1) solve");
-    let r30 = pgmres(&op, &b, Some(&id), 1e-10, 500, 30).expect("GMRES(30) solve");
+    let r1 = pgmres(&op, &b, &id, 1e-10, 500, 1).expect("GMRES(1) solve");
+    let r30 = pgmres(&op, &b, &id, 1e-10, 500, 30).expect("GMRES(30) solve");
 
     assert!(r1.converged, "GMRES(1) did not converge");
     assert!(r30.converged, "GMRES(30) did not converge");
@@ -318,7 +315,7 @@ fn test_gmres_lucky_breakdown_rank1_operator() {
     let id = IdentityOp { n: 3 };
     let b = vec![1.0, 0.0, 0.0];
 
-    let result = pgmres(&op, &b, Some(&id), 1e-10, 100, 30).expect("gmres solve should not error");
+    let result = pgmres(&op, &b, &id, 1e-10, 100, 30).expect("gmres solve should not error");
 
     // The solver must terminate cleanly (breakdown path) and the solution
     // must satisfy Ax = b.
@@ -338,7 +335,7 @@ fn test_gmres_lucky_breakdown_identity_operator() {
     let b = vec![1.0, 2.0, 3.0];
 
     let result =
-        pgmres(&id_op, &b, Some(&id_prec), 1e-10, 100, 30).expect("gmres solve should not error");
+        pgmres(&id_op, &b, &id_prec, 1e-10, 100, 30).expect("gmres solve should not error");
 
     assert!(result.converged, "GMRES on identity system must converge");
     // With A = I, the residual is zero after 1 step; breakdown fires immediately.
@@ -364,7 +361,7 @@ fn test_gmres_near_singular_hessenberg_diagonal() {
     let id = IdentityOp { n: 3 };
     let b = vec![1.0, 1.0, 1.0];
 
-    let result = pgmres(&op, &b, Some(&id), 1e-10, 100, 30).expect("gmres solve should not error");
+    let result = pgmres(&op, &b, &id, 1e-10, 100, 30).expect("gmres solve should not error");
 
     assert!(
         result.x.iter().all(|v| v.is_finite()),
@@ -385,7 +382,7 @@ fn test_gmres_many_restarts_large_system() {
     let b: Vec<f64> = (0..n).map(|i| (i as f64).sin() + 1.0).collect();
     let id = IdentityOp { n };
 
-    let result = pgmres(&op, &b, Some(&id), 1e-8, 1000, 1).expect("gmres solve should not error");
+    let result = pgmres(&op, &b, &id, 1e-8, 1000, 1).expect("gmres solve should not error");
 
     assert!(
         result.converged,
@@ -406,7 +403,7 @@ fn test_gmres_full_restart_equals_system_size() {
     let b = vec![1.0, 2.0, 3.0, 2.0, 1.0];
     let id = IdentityOp { n };
 
-    let result = pgmres(&op, &b, Some(&id), 1e-12, 100, n).expect("gmres solve should not error");
+    let result = pgmres(&op, &b, &id, 1e-12, 100, n).expect("gmres solve should not error");
 
     assert!(
         result.converged,
@@ -430,8 +427,8 @@ fn test_gmres_tighter_tolerance_gives_smaller_residual() {
     let b: Vec<f64> = (0..n).map(|i| i as f64 + 1.0).collect();
     let id = IdentityOp { n };
 
-    let loose = pgmres(&op, &b, Some(&id), 1e-4, 200, 20).expect("gmres loose solve");
-    let tight = pgmres(&op, &b, Some(&id), 1e-10, 200, 20).expect("gmres tight solve");
+    let loose = pgmres(&op, &b, &id, 1e-4, 200, 20).expect("gmres loose solve");
+    let tight = pgmres(&op, &b, &id, 1e-10, 200, 20).expect("gmres tight solve");
 
     assert!(loose.converged, "loose tolerance must converge");
     assert!(tight.converged, "tight tolerance must converge");

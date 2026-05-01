@@ -41,9 +41,9 @@ use std::time::Instant;
 
 use ndarray::ArrayView2;
 use rayon::prelude::*;
-use schwarz_precond::solve::cg::pcg;
-use schwarz_precond::solve::gmres::pgmres;
-use schwarz_precond::solve::lsmr::mlsmr;
+use schwarz_precond::solve::cg::{cg, pcg};
+use schwarz_precond::solve::gmres::{gmres, pgmres};
+use schwarz_precond::solve::lsmr::{lsmr, mlsmr};
 use schwarz_precond::solve::vec_norm;
 use schwarz_precond::Operator;
 
@@ -294,15 +294,8 @@ impl<S: Store> Solver<S> {
         let time_setup = t_solve_start.duration_since(t_setup_start).as_secs_f64();
 
         let r = match self.preconditioner.as_ref() {
-            Some(p) => mlsmr(&rect_op, &b, Some(p), self.tol, self.maxiter, local_size)?,
-            None => mlsmr::<_, FePreconditioner>(
-                &rect_op,
-                &b,
-                None,
-                self.tol,
-                self.maxiter,
-                local_size,
-            )?,
+            Some(p) => mlsmr(&rect_op, &b, p, self.tol, self.maxiter, local_size)?,
+            None => lsmr(&rect_op, &b, self.tol, self.maxiter, local_size)?,
         };
 
         let time_solve = t_solve_start.elapsed().as_secs_f64();
@@ -423,11 +416,17 @@ impl<S: Store> Solver<S> {
     ) -> WithinResult<(Vec<f64>, bool, usize)> {
         match self.krylov {
             KrylovMethod::Cg => {
-                let r = pcg(op, rhs, preconditioner, tol, self.maxiter)?;
+                let r = match preconditioner {
+                    Some(p) => pcg(op, rhs, p, tol, self.maxiter)?,
+                    None => cg(op, rhs, tol, self.maxiter)?,
+                };
                 Ok((r.x, r.converged, r.iterations))
             }
             KrylovMethod::Gmres { restart } => {
-                let r = pgmres(op, rhs, preconditioner, tol, self.maxiter, restart)?;
+                let r = match preconditioner {
+                    Some(p) => pgmres(op, rhs, p, tol, self.maxiter, restart)?,
+                    None => gmres(op, rhs, tol, self.maxiter, restart)?,
+                };
                 Ok((r.x, r.converged, r.iterations))
             }
             KrylovMethod::Lsmr { .. } => unreachable!("LSMR is dispatched inline in solve()"),

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use rayon::prelude::*;
 use schwarz_precond::domain::PartitionWeights;
-use schwarz_precond::solve::cg::pcg;
+use schwarz_precond::solve::cg::{cg, pcg};
 use schwarz_precond::{
     LocalSolver, MultiplicativeSchwarzPreconditioner, Operator, OperatorResidualUpdater,
     ReductionStrategy, SchwarzPreconditioner, SubdomainCore, SubdomainEntry,
@@ -196,13 +196,12 @@ fn test_additive_schwarz_reduces_iterations() {
     let a = TridiagOperator::new(n, 3.0);
     let rhs = vec![1.0; n];
 
-    let unprecond =
-        pcg(&a, &rhs, None::<&TridiagOperator>, 1e-8, 200).expect("unpreconditioned cg");
+    let unprecond = cg(&a, &rhs, 1e-8, 200).expect("unpreconditioned cg");
     assert!(unprecond.converged, "Unpreconditioned CG did not converge");
 
     let schwarz = SchwarzPreconditioner::new(make_schwarz_entries(n), n)
         .expect("valid additive schwarz preconditioner");
-    let precond = pcg(&a, &rhs, Some(&schwarz), 1e-8, 200).expect("preconditioned cg");
+    let precond = pcg(&a, &rhs, &schwarz, 1e-8, 200).expect("preconditioned cg");
     assert!(precond.converged, "Preconditioned CG did not converge");
 
     assert!(

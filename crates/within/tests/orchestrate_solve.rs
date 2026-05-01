@@ -133,7 +133,7 @@ fn test_schwarz_builder_schur_complement_modes_end_to_end() {
             &Preconditioner::Additive(local_solver.clone(), ReductionStrategy::default()),
         )
         .expect("build schwarz preconditioner");
-        let result = pcg(&gramian, &rhs, Some(&schwarz), 1e-8, 500).expect("cg solve");
+        let result = pcg(&gramian, &rhs, &schwarz, 1e-8, 500).expect("cg solve");
         assert!(
             result.converged,
             "CG with Schur-complement local solver did not converge"
@@ -231,7 +231,7 @@ fn test_compare_factorization_strategies() {
             let _setup_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
             let t1 = Instant::now();
-            let cg_result = pcg(&gramian_op, &rhs, Some(&schwarz), 1e-8, 1000).expect("cg solve");
+            let cg_result = pcg(&gramian_op, &rhs, &schwarz, 1e-8, 1000).expect("cg solve");
             let _solve_ms = t1.elapsed().as_secs_f64() * 1000.0;
 
             let mut gx = vec![0.0; design.n_dofs];

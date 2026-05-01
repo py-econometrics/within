@@ -200,7 +200,7 @@ fn main() {
 
     let precond = SchwarzPreconditioner::new(build_entries(&a_sparse, n), n)
         .expect("valid additive schwarz preconditioner");
-    let result = pcg(&a, &rhs, Some(&precond), 1e-10, 200).expect("preconditioned cg");
+    let result = pcg(&a, &rhs, &precond, 1e-10, 200).expect("preconditioned cg");
     println!(
         "Dense Cholesky Schwarz CG: converged={}, iterations={:>3}, residual={:.3e}",
         result.converged, result.iterations, result.residual_norm,
