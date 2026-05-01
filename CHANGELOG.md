@@ -25,10 +25,14 @@ and this project follows [Semantic Versioning](https://semver.org/).
   `SchwarzPreconditioner` / `MultiplicativeSchwarzPreconditioner` drop
   their `I: LocalSolveInvoker` type parameter. `with_strategy_and_invoker`
   → `with_strategy`.
-- **CG/GMRES public entry points reduced to `pcg` and `pgmres`**, each
-  taking `Option<&M>`. `cg_solve`, `cg_solve_preconditioned`, `gmres_solve`
-  removed. `schwarz-precond`: `lsmr` / `preconditioned_lsmr` likewise
-  collapsed into `mlsmr(.., Option<&M>)`.
+- **Krylov solvers split back into idiomatic two-function pairs.** `pcg` /
+  `pgmres` / `mlsmr` no longer take `Option<&M>`; they require `&M` and
+  are paired with `cg` / `gmres` / `lsmr` for the unpreconditioned case.
+  This restores the std-library convention (cf. `Vec::new` /
+  `Vec::with_capacity`) and removes the `None::<&SomeType>` turbofish
+  burden at every unpreconditioned call site. `cg_solve`,
+  `cg_solve_preconditioned`, `gmres_solve`, and `preconditioned_lsmr`
+  remain removed (their replacements are the new `cg` / `pcg` etc.).
 - **`FeSchwarz` is now a type alias** of
   `SchwarzPreconditioner<BlockElimSolver>`; the newtype wrapper and its
   delegation methods are gone — call methods directly on the alias.
