@@ -10,7 +10,8 @@
 //! - [`SubdomainEntry`] — bundles a [`SubdomainCore`] (which implements
 //!   `Rᵢ` and `D̃ᵢ`) with a `LocalSolver` (which implements `Aᵢ⁻¹`),
 //!   giving a single object that can compute the full per-subdomain
-//!   contribution `Rᵢᵀ D̃ᵢ Aᵢ⁻¹ D̃ᵢ Rᵢ r` via [`SubdomainEntry::apply_weighted_into_with_scratch`].
+//!   contribution `Rᵢᵀ D̃ᵢ Aᵢ⁻¹ D̃ᵢ Rᵢ r` via
+//!   [`SubdomainEntry::apply_weighted_into_with_scratch_with`].
 
 use std::sync::atomic::AtomicU64;
 
@@ -65,7 +66,7 @@ pub trait LocalSolver: Send + Sync {
 ///
 /// Bundles a [`SubdomainCore`] (which provides `Rᵢ` and `D̃ᵢ`) with a
 /// [`LocalSolver`] (which provides `Aᵢ⁻¹`). The
-/// [`apply_weighted_into_with_scratch`](Self::apply_weighted_into_with_scratch)
+/// [`apply_weighted_into_with_scratch_with`](Self::apply_weighted_into_with_scratch_with)
 /// method computes the full contribution for this subdomain.
 #[derive(Clone)]
 pub struct SubdomainEntry<S: LocalSolver> {
@@ -135,16 +136,6 @@ impl<S: LocalSolver> SubdomainEntry<S> {
     ///
     /// - `r_scratch` must have length >= `self.scratch_size()`
     /// - `z_scratch` must have length >= `self.scratch_size()`
-    pub fn apply_weighted_into_with_scratch(
-        &self,
-        r: &[f64],
-        out: &mut [f64],
-        r_scratch: &mut [f64],
-        z_scratch: &mut [f64],
-    ) -> Result<(), SolveError> {
-        self.apply_weighted_into_with_scratch_with(r, out, r_scratch, z_scratch, true)
-    }
-
     pub(crate) fn apply_weighted_into_with_scratch_with(
         &self,
         r: &[f64],
@@ -172,16 +163,6 @@ impl<S: LocalSolver> SubdomainEntry<S> {
     /// Accumulate the two-sided PoU weighted local solve into an atomic global buffer.
     ///
     /// out\[i\] += R_i^T D_i A_i^{-1} D_i R_i r  (via atomic f64 add)
-    pub fn apply_weighted_into_atomic(
-        &self,
-        r: &[f64],
-        out: &[AtomicU64],
-        r_scratch: &mut [f64],
-        z_scratch: &mut [f64],
-    ) -> Result<(), SolveError> {
-        self.apply_weighted_into_atomic_with(r, out, r_scratch, z_scratch, true)
-    }
-
     pub(crate) fn apply_weighted_into_atomic_with(
         &self,
         r: &[f64],
@@ -332,7 +313,13 @@ mod tests {
         let mut z_scratch = vec![0.0; 2];
 
         entry
-            .apply_weighted_into_with_scratch(&r, &mut out, &mut r_scratch, &mut z_scratch)
+            .apply_weighted_into_with_scratch_with(
+                &r,
+                &mut out,
+                &mut r_scratch,
+                &mut z_scratch,
+                true,
+            )
             .expect("identity local solver should not fail");
 
         // Should restrict DOFs [1,2] → [20, 30], identity solve, scatter back
