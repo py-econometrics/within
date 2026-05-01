@@ -25,6 +25,10 @@ and this project follows [Semantic Versioning](https://semver.org/).
   `SchwarzPreconditioner` / `MultiplicativeSchwarzPreconditioner` drop
   their `I: LocalSolveInvoker` type parameter. `with_strategy_and_invoker`
   → `with_strategy`.
+- **`SubdomainEntry::apply_weighted_into_with_scratch` /
+  `apply_weighted_into_atomic` removed.** They were `pub` forwarders to
+  `_with(.., parallel: bool)` variants, now `pub(crate)`. Drive solves via
+  `SchwarzPreconditioner::apply` / `apply_adjoint`.
 - **Krylov solvers split back into idiomatic two-function pairs.** `pcg` /
   `pgmres` / `mlsmr` no longer take `Option<&M>`; they require `&M` and
   are paired with `cg` / `gmres` / `lsmr` for the unpreconditioned case.
