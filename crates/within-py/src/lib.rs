@@ -866,12 +866,6 @@ impl PyFePreconditioner {
         self.inner.n_subdomains()
     }
 
-    /// Estimated nested-parallel work per subdomain.
-    #[getter]
-    fn subdomain_inner_parallel_work(&self) -> Vec<usize> {
-        self.inner.subdomain_inner_parallel_work()
-    }
-
     /// Additive Schwarz diagnostics, if this is an additive preconditioner.
     fn additive_schwarz_diagnostics(&self) -> Option<PyAdditiveSchwarzDiagnostics> {
         PyAdditiveSchwarzDiagnostics::from_native(&self.inner)

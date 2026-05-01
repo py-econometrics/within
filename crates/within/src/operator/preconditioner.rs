@@ -30,7 +30,7 @@
 
 use std::sync::Arc;
 
-use schwarz_precond::{AdditiveSchwarzDiagnostics, LocalSolver, Operator, ReductionStrategy};
+use schwarz_precond::{AdditiveSchwarzDiagnostics, Operator, ReductionStrategy};
 use serde::{Deserialize, Serialize};
 
 use crate::config::Preconditioner;
@@ -59,22 +59,6 @@ impl FePreconditioner {
         match self {
             Self::Additive(p) => p.subdomains().len(),
             Self::Multiplicative(p) => p.subdomains().len(),
-        }
-    }
-
-    /// Estimated nested-parallel work per subdomain.
-    pub fn subdomain_inner_parallel_work(&self) -> Vec<usize> {
-        match self {
-            Self::Additive(p) => p
-                .subdomains()
-                .iter()
-                .map(|entry| entry.solver().inner_parallelism_work_estimate())
-                .collect(),
-            Self::Multiplicative(p) => p
-                .subdomains()
-                .iter()
-                .map(|entry| entry.solver().inner_parallelism_work_estimate())
-                .collect(),
         }
     }
 
