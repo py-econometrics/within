@@ -9,9 +9,8 @@ use rayon::prelude::*;
 use schwarz_precond::domain::PartitionWeights;
 use schwarz_precond::solve::cg::pcg;
 use schwarz_precond::{
-    IdentityOperator, LocalSolver, MultiplicativeSchwarzPreconditioner, Operator,
-    OperatorResidualUpdater, ReductionStrategy, SchwarzPreconditioner, SubdomainCore,
-    SubdomainEntry,
+    LocalSolver, MultiplicativeSchwarzPreconditioner, Operator, OperatorResidualUpdater,
+    ReductionStrategy, SchwarzPreconditioner, SubdomainCore, SubdomainEntry,
 };
 
 use common::{
@@ -198,7 +197,7 @@ fn test_additive_schwarz_reduces_iterations() {
     let rhs = vec![1.0; n];
 
     let unprecond =
-        pcg(&a, &rhs, None::<&IdentityOperator>, 1e-8, 200).expect("unpreconditioned cg");
+        pcg(&a, &rhs, None::<&TridiagOperator>, 1e-8, 200).expect("unpreconditioned cg");
     assert!(unprecond.converged, "Unpreconditioned CG did not converge");
 
     let schwarz = SchwarzPreconditioner::new(make_schwarz_entries(n), n)
@@ -516,36 +515,7 @@ fn test_multiplicative_with_tridiag() {
     );
 }
 
-// ============================================================================
-// IdentityOperator tests
-// ============================================================================
-
 use schwarz_precond::{BuildError, SolveError};
-
-#[test]
-fn test_identity_operator_dimensions() {
-    let id = IdentityOperator::new(7);
-    assert_eq!(id.nrows(), 7);
-    assert_eq!(id.ncols(), 7);
-}
-
-#[test]
-fn test_identity_operator_apply() {
-    let id = IdentityOperator::new(4);
-    let x = vec![1.0, 2.0, 3.0, 4.0];
-    let mut y = vec![0.0; 4];
-    id.apply(&x, &mut y).expect("apply");
-    assert_eq!(y, x);
-}
-
-#[test]
-fn test_identity_operator_apply_adjoint() {
-    let id = IdentityOperator::new(4);
-    let x = vec![5.0, 6.0, 7.0, 8.0];
-    let mut y = vec![0.0; 4];
-    id.apply_adjoint(&x, &mut y).expect("apply");
-    assert_eq!(y, x);
-}
 
 // ============================================================================
 // Additive Schwarz edge cases

@@ -4,7 +4,6 @@
 //! subdomains and diagonal local solvers.
 
 use schwarz_precond::solve::cg::pcg;
-use schwarz_precond::IdentityOperator;
 use schwarz_precond::{
     LocalSolver, Operator, SchwarzPreconditioner, SolveError, SubdomainCore, SubdomainEntry,
 };
@@ -113,7 +112,7 @@ fn main() {
 
     // --- Unpreconditioned CG ---
     let result_plain =
-        pcg(&a, &rhs, None::<&IdentityOperator>, 1e-10, 200).expect("unpreconditioned cg");
+        pcg(&a, &rhs, None::<&TridiagOperator>, 1e-10, 200).expect("unpreconditioned cg");
     println!(
         "Unpreconditioned CG : converged={}, iterations={:>3}, residual={:.3e}",
         result_plain.converged, result_plain.iterations, result_plain.residual_norm,

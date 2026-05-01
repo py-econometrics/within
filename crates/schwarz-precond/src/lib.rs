@@ -91,7 +91,7 @@
 #![warn(clippy::all)]
 
 // ============================================================================
-// Operator trait + IdentityOperator
+// Operator trait
 // ============================================================================
 
 /// A linear operator A: R^ncols -> R^nrows with its adjoint A^T.
@@ -108,40 +108,6 @@ pub trait Operator: Send + Sync {
     fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), error::SolveError>;
     /// y = A^T * x. For symmetric operators, this should delegate to `apply`.
     fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), error::SolveError>;
-}
-
-/// Identity operator: applies the identity map (y = x).
-///
-/// Used to deduplicate CG: unpreconditioned CG delegates to preconditioned CG
-/// with this as the preconditioner. The monomorphizer fully inlines the copies.
-pub struct IdentityOperator {
-    n: usize,
-}
-
-impl IdentityOperator {
-    /// Create an identity operator of dimension `n`.
-    pub fn new(n: usize) -> Self {
-        Self { n }
-    }
-}
-
-impl Operator for IdentityOperator {
-    fn nrows(&self) -> usize {
-        self.n
-    }
-    fn ncols(&self) -> usize {
-        self.n
-    }
-    #[inline(always)]
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), error::SolveError> {
-        y.copy_from_slice(x);
-        Ok(())
-    }
-    #[inline(always)]
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), error::SolveError> {
-        y.copy_from_slice(x);
-        Ok(())
-    }
 }
 
 // ============================================================================

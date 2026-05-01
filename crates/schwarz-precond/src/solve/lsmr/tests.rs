@@ -3,7 +3,38 @@
 use super::bidiag::{Bidiagonalization, GolubKahan};
 use super::*;
 use crate::solve::{dot, vec_norm};
-use crate::{IdentityOperator, Operator, SolveError};
+use crate::{Operator, SolveError};
+
+/// Identity operator used as a no-op preconditioner in regression tests.
+/// `mlsmr(.., Some(&Identity), ..)` should match `mlsmr(.., None, ..)`,
+/// guarding against drift between the GolubKahan and ModifiedGolubKahan
+/// bidiagonalization paths.
+struct Identity {
+    n: usize,
+}
+
+impl Identity {
+    fn new(n: usize) -> Self {
+        Self { n }
+    }
+}
+
+impl Operator for Identity {
+    fn nrows(&self) -> usize {
+        self.n
+    }
+    fn ncols(&self) -> usize {
+        self.n
+    }
+    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+        y.copy_from_slice(x);
+        Ok(())
+    }
+    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+        y.copy_from_slice(x);
+        Ok(())
+    }
+}
 
 /// Simple 4×3 overdetermined system.
 /// A = [1 0 0; 0 1 0; 0 0 1; 1 1 0]
@@ -71,7 +102,7 @@ fn unpreconditioned_mlsmr<A: Operator + ?Sized>(
     maxiter: usize,
     local_size: Option<usize>,
 ) -> Result<LsmrResult, SolveError> {
-    mlsmr::<A, IdentityOperator>(operator, b, None, tol, maxiter, local_size)
+    mlsmr::<A, A>(operator, b, None, tol, maxiter, local_size)
 }
 
 fn preconditioned_mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
@@ -299,7 +330,7 @@ fn test_mlsmr_optional_preconditioner_paths() {
     }
 }
 
-/// `None` (GolubKahan path) and `Some(&IdentityOperator)`
+/// `None` (GolubKahan path) and `Some(&Identity)`
 /// (ModifiedGolubKahan with M = I) are mathematically the same algorithm.
 /// They should produce numerically equivalent solutions and iteration
 /// counts; this guards against future drift between the two
@@ -307,7 +338,7 @@ fn test_mlsmr_optional_preconditioner_paths() {
 #[test]
 fn test_mlsmr_none_matches_identity_precond() {
     let b = vec![1.0, 2.0, 3.0, 3.0];
-    let id = IdentityOperator::new(3);
+    let id = Identity::new(3);
 
     let none_result =
         unpreconditioned_mlsmr(&OverdeterminedOp, &b, 1e-12, 100, None).expect("lsmr solve");
@@ -357,7 +388,7 @@ fn test_mlsmr_none_matches_identity_precond_windowed() {
             (1.0 + x).ln()
         })
         .collect();
-    let id = IdentityOperator::new(op.cols);
+    let id = Identity::new(op.cols);
     let local = Some(10);
 
     // Tight tolerance with headroom in maxiter: drives both paths to the

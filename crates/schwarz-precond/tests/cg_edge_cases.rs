@@ -3,7 +3,7 @@ mod common;
 use schwarz_precond::solve::cg::pcg;
 use schwarz_precond::solve::gmres::pgmres;
 use schwarz_precond::Operator;
-use schwarz_precond::{IdentityOperator, SolveError};
+use schwarz_precond::SolveError;
 
 use common::{check_residual, DiagOperator, IdentityOp, SpdMatrix3, TridiagOperator};
 
@@ -104,7 +104,7 @@ fn test_cg_zero_pap_clean_exit() {
     let op = ZeroOperator { n: 3 };
     let b = vec![1.0, 1.0, 1.0];
     let result =
-        pcg(&op, &b, None::<&IdentityOperator>, 1e-10, 100).expect("cg solve should not error");
+        pcg(&op, &b, None::<&ZeroOperator>, 1e-10, 100).expect("cg solve should not error");
 
     assert!(!result.converged, "zero operator cannot satisfy Ax=b");
     assert_eq!(result.iterations, 1, "should exit on first pap <= 0 check");
@@ -169,7 +169,7 @@ fn test_cg_stagnation_guard_extreme_conditioning() {
     };
     let b = vec![1.0, 1.0, 1.0];
     let result =
-        pcg(&op, &b, None::<&IdentityOperator>, 1e-12, 100).expect("cg solve should not error");
+        pcg(&op, &b, None::<&DiagOperator>, 1e-12, 100).expect("cg solve should not error");
 
     assert!(
         result.x.iter().all(|v| v.is_finite()),
@@ -189,8 +189,7 @@ fn test_cg_stagnation_guard_extreme_conditioning() {
 fn test_cg_zero_rhs_exits_immediately() {
     let op = SpdMatrix3;
     let b = vec![0.0; 3];
-    let result =
-        pcg(&op, &b, None::<&IdentityOperator>, 1e-10, 100).expect("cg solve should not error");
+    let result = pcg(&op, &b, None::<&SpdMatrix3>, 1e-10, 100).expect("cg solve should not error");
 
     assert!(result.converged);
     assert_eq!(result.iterations, 0);
@@ -206,8 +205,7 @@ fn test_cg_zero_rhs_exits_immediately() {
 fn test_cg_maxiter_zero_returns_initial_guess() {
     let op = SpdMatrix3;
     let b = vec![1.0, 2.0, 3.0];
-    let result =
-        pcg(&op, &b, None::<&IdentityOperator>, 1e-10, 0).expect("cg solve should not error");
+    let result = pcg(&op, &b, None::<&SpdMatrix3>, 1e-10, 0).expect("cg solve should not error");
 
     assert!(!result.converged);
     assert_eq!(result.iterations, 0);
@@ -224,7 +222,7 @@ fn test_cg_single_element_system() {
     let op = DiagOperator { values: vec![5.0] };
     let b = vec![10.0];
     let result =
-        pcg(&op, &b, None::<&IdentityOperator>, 1e-12, 100).expect("cg solve should not error");
+        pcg(&op, &b, None::<&DiagOperator>, 1e-12, 100).expect("cg solve should not error");
 
     assert!(result.converged);
     assert_eq!(result.iterations, 1);
