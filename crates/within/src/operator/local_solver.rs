@@ -145,14 +145,6 @@ pub(crate) enum ReducedFactor {
 }
 
 impl ReducedFactor {
-    pub(crate) fn approx(factor: Factor) -> Self {
-        Self::Approx(factor)
-    }
-
-    pub(crate) fn try_dense_laplacian_minor(anchored_minor: Vec<f64>, n: usize) -> Option<Self> {
-        AnchoredDenseCholesky::try_from_dense_anchored_minor(anchored_minor, n).map(Self::Dense)
-    }
-
     fn n(&self) -> usize {
         match self {
             Self::Approx(f) => f.n(),
@@ -194,7 +186,7 @@ pub(crate) struct AnchoredDenseCholesky {
 }
 
 impl AnchoredDenseCholesky {
-    fn try_from_dense_anchored_minor(dense_minor: Vec<f64>, n: usize) -> Option<Self> {
+    pub(crate) fn try_from_dense_anchored_minor(dense_minor: Vec<f64>, n: usize) -> Option<Self> {
         let m = n.saturating_sub(1);
         if m == 0 {
             return Some(Self {

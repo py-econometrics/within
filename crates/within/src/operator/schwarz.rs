@@ -37,7 +37,7 @@ use rayon::prelude::*;
 use schwarz_precond::SubdomainEntry;
 
 use super::gramian::CrossTab;
-use super::local_solver::{BlockElimSolver, ReducedFactor};
+use super::local_solver::{AnchoredDenseCholesky, BlockElimSolver, ReducedFactor};
 use super::residual_update::SparseGramianUpdater;
 use super::schur_complement::{
     ApproxSchurComplement, EliminationInfo, ExactSchurComplement, SchurComplement, SchurResult,
@@ -151,7 +151,7 @@ fn build_sparse_reduced_factor(
     .map_err(|e| WithinError::LocalSolverBuild(format!("invalid Schur complement CSR: {e}")))?;
     schur_builder
         .build(csr)
-        .map(ReducedFactor::approx)
+        .map(ReducedFactor::Approx)
         .map_err(|e| {
             WithinError::LocalSolverBuild(format!("failed Schur complement factorization: {e}"))
         })
@@ -176,7 +176,8 @@ pub(crate) fn build_reduced_schur_factor(
     if prefer_dense {
         let dense = ExactSchurComplement.compute_dense_anchored(cross_tab)?;
         if let Some(factor) =
-            ReducedFactor::try_dense_laplacian_minor(dense.anchored_minor, dense.n)
+            AnchoredDenseCholesky::try_from_dense_anchored_minor(dense.anchored_minor, dense.n)
+                .map(ReducedFactor::Dense)
         {
             return Ok(ReducedSchurBuild {
                 factor,
