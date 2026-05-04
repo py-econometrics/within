@@ -1,8 +1,8 @@
 use schwarz_precond::Operator;
 
+use within::domain::Design;
 use within::observation::FactorMajorStore;
 use within::operator::gramian::{Gramian, GramianOperator};
-use within::Design;
 
 fn make_test_design() -> Design<FactorMajorStore> {
     let store = FactorMajorStore::new(vec![vec![0, 1, 2, 0], vec![0, 1, 0, 1]], 4)

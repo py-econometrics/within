@@ -1,12 +1,12 @@
 use ndarray::Array2;
 use proptest::prelude::*;
 use schwarz_precond::Operator;
+use within::config::LocalSolverConfig;
+use within::domain::Design;
 use within::observation::ArrayStore;
 use within::operator::gramian::{Gramian, GramianOperator};
-use within::{
-    solve, Design, DesignOperator, LocalSolverConfig, Preconditioner, ReductionStrategy, Solver,
-    SolverParams,
-};
+use within::operator::DesignOperator;
+use within::{solve, Preconditioner, ReductionStrategy, Solver, SolverParams};
 
 #[path = "common/orchestrate_helpers.rs"]
 mod common;

@@ -2,11 +2,14 @@ use ndarray::array;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use schwarz_precond::Operator;
+use within::config::LocalSolverConfig;
+use within::domain::Design;
 use within::observation::FactorMajorStore;
 use within::operator::gramian::GramianOperator;
+use within::operator::DesignOperator;
 use within::{
-    solve, Design, DesignOperator, FactorMajorStore as FMStore, KrylovMethod, LocalSolverConfig,
-    OperatorRepr, Preconditioner, ReductionStrategy, Solver, SolverParams,
+    solve, FactorMajorStore as FMStore, KrylovMethod, OperatorRepr, Preconditioner,
+    ReductionStrategy, Solver, SolverParams,
 };
 
 #[path = "common/orchestrate_helpers.rs"]

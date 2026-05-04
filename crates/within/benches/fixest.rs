@@ -14,7 +14,8 @@ use within::config::{
 use within::domain::Design;
 use within::observation::FactorMajorStore;
 use within::operator::gramian::{Gramian, GramianOperator};
-use within::{DesignOperator, Solver};
+use within::operator::DesignOperator;
+use within::Solver;
 
 // ===========================================================================
 // Shared types and helpers
@@ -108,8 +109,8 @@ fn one_level_local_solver(ac2: bool) -> LocalSolverConfig {
     };
     LocalSolverConfig {
         approx_chol,
-        approx_schur: Some(within::ApproxSchurConfig::default()),
-        dense_threshold: within::DEFAULT_DENSE_SCHUR_THRESHOLD,
+        approx_schur: Some(within::config::ApproxSchurConfig::default()),
+        dense_threshold: within::config::DEFAULT_DENSE_SCHUR_THRESHOLD,
     }
 }
 

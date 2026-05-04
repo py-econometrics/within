@@ -21,7 +21,8 @@
 //! # Usage
 //!
 //! ```no_run
-//! use within::{Solver, SolverParams, Preconditioner, LocalSolverConfig};
+//! use within::config::LocalSolverConfig;
+//! use within::{Solver, SolverParams, Preconditioner};
 //! use ndarray::Array2;
 //!
 //! let categories = Array2::<u32>::zeros((1000, 2));

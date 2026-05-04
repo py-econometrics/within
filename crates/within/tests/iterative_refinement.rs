@@ -7,9 +7,11 @@
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
+use within::config::LocalSolverConfig;
+use within::domain::Design;
+use within::observation::Store;
 use within::{
-    Design, FactorMajorStore, KrylovMethod, LocalSolverConfig, Preconditioner, ReductionStrategy,
-    Solver, SolverParams, Store,
+    FactorMajorStore, KrylovMethod, Preconditioner, ReductionStrategy, Solver, SolverParams,
 };
 
 // ---------------------------------------------------------------------------

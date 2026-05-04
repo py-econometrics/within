@@ -2,10 +2,10 @@ use std::error::Error;
 
 use ndarray::Array2;
 use schwarz_precond::{BuildError, SolveError};
+use within::config::LocalSolverConfig;
+use within::domain::Design;
 use within::observation::FactorMajorStore;
-use within::{
-    solve, Design, LocalSolverConfig, Preconditioner, ReductionStrategy, SolverParams, WithinError,
-};
+use within::{solve, Preconditioner, ReductionStrategy, SolverParams, WithinError};
 
 #[test]
 fn test_empty_observations_error() {
@@ -32,7 +32,7 @@ fn test_observation_count_mismatch_error() {
 
 #[test]
 fn test_weight_count_mismatch_error() {
-    use within::Design;
+    use within::domain::Design;
     let store = FactorMajorStore::new(vec![vec![0, 1, 2], vec![0, 1, 0]], 3).expect("valid store");
     let design = Design::from_store(store).expect("valid design");
     let params = SolverParams::default();

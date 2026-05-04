@@ -1,7 +1,10 @@
 use ndarray::array;
+use within::config::LocalSolverConfig;
+use within::domain::Design;
+use within::observation::ArrayStore;
 use within::{
-    observation::ArrayStore, solve, Design, FePreconditioner, KrylovMethod, LocalSolverConfig,
-    OperatorRepr, Preconditioner, ReductionStrategy, Solver, SolverParams,
+    solve, FePreconditioner, KrylovMethod, OperatorRepr, Preconditioner, ReductionStrategy, Solver,
+    SolverParams,
 };
 
 #[path = "common/orchestrate_helpers.rs"]
@@ -236,9 +239,9 @@ fn test_multiplicative_preconditioner_nrows_ncols() {
 
 #[test]
 fn test_multiplicative_preconditioner_requires_gramian() {
+    use within::domain::Design;
     use within::observation::FactorMajorStore;
     use within::operator::preconditioner::build_preconditioner;
-    use within::Design;
 
     let store =
         FactorMajorStore::new(vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]], 5).expect("store ok");

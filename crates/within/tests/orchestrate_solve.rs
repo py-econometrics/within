@@ -1,7 +1,5 @@
-use within::{
-    KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner, ReductionStrategy, Solver,
-    SolverParams,
-};
+use within::config::LocalSolverConfig;
+use within::{KrylovMethod, OperatorRepr, Preconditioner, ReductionStrategy, Solver, SolverParams};
 
 #[path = "common/orchestrate_helpers.rs"]
 mod common;
@@ -95,9 +93,9 @@ fn test_schwarz_builder_schur_complement_modes_end_to_end() {
     use schwarz_precond::solve::cg::pcg;
     use schwarz_precond::solve::vec_norm;
     use schwarz_precond::Operator;
+    use within::config::{ApproxCholConfig, ApproxSchurConfig};
     use within::operator::gramian::GramianOperator;
     use within::operator::preconditioner::build_preconditioner;
-    use within::{ApproxCholConfig, ApproxSchurConfig};
 
     let design = common::make_test_design();
     let rhs = common::make_rhs_from_unit_solution(&design);
@@ -110,7 +108,7 @@ fn test_schwarz_builder_schur_complement_modes_end_to_end() {
                 ..Default::default()
             },
             approx_schur: None,
-            dense_threshold: within::DEFAULT_DENSE_SCHUR_THRESHOLD,
+            dense_threshold: within::config::DEFAULT_DENSE_SCHUR_THRESHOLD,
         },
         LocalSolverConfig {
             approx_chol: ApproxCholConfig {
@@ -121,7 +119,7 @@ fn test_schwarz_builder_schur_complement_modes_end_to_end() {
                 seed: 42,
                 ..Default::default()
             }),
-            dense_threshold: within::DEFAULT_DENSE_SCHUR_THRESHOLD,
+            dense_threshold: within::config::DEFAULT_DENSE_SCHUR_THRESHOLD,
         },
     ];
 
@@ -161,10 +159,11 @@ fn test_compare_factorization_strategies() {
     use schwarz_precond::solve::vec_norm;
     use schwarz_precond::Operator;
     use std::time::Instant;
+    use within::config::ApproxCholConfig;
+    use within::domain::Design;
     use within::operator::gramian::GramianOperator;
     use within::operator::preconditioner::build_preconditioner;
     use within::operator::DesignOperator;
-    use within::{ApproxCholConfig, Design};
 
     let configs: Vec<(ApproxCholConfig, &str)> = vec![
         (
@@ -217,8 +216,8 @@ fn test_compare_factorization_strategies() {
         for (ac_config, label) in &configs {
             let local_solver = LocalSolverConfig {
                 approx_chol: *ac_config,
-                approx_schur: Some(within::ApproxSchurConfig::default()),
-                dense_threshold: within::DEFAULT_DENSE_SCHUR_THRESHOLD,
+                approx_schur: Some(within::config::ApproxSchurConfig::default()),
+                dense_threshold: within::config::DEFAULT_DENSE_SCHUR_THRESHOLD,
             };
             let t0 = Instant::now();
             let schwarz = build_preconditioner(

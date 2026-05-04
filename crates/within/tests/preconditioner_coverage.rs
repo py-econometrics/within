@@ -1,12 +1,15 @@
 use schwarz_precond::Operator;
+use within::config::LocalSolverConfig;
+use within::domain::Design;
 use within::operator::gramian::Gramian;
 use within::operator::preconditioner::{build_preconditioner, FePreconditioner};
+use within::operator::schwarz::FeSchwarz;
 use within::{
-    KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner, ReductionStrategy, Solver,
+    FactorMajorStore, KrylovMethod, OperatorRepr, Preconditioner, ReductionStrategy, Solver,
     SolverParams,
 };
 
-fn build_test_schwarz(design: &within::Design<within::FactorMajorStore>) -> within::FeSchwarz {
+fn build_test_schwarz(design: &Design<FactorMajorStore>) -> FeSchwarz {
     let precond = build_preconditioner(
         design,
         None,

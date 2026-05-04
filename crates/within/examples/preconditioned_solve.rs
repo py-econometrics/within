@@ -9,9 +9,9 @@
 
 use ndarray::Array2;
 use schwarz_precond::Operator;
+use within::config::LocalSolverConfig;
 use within::{
-    solve, KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner, ReductionStrategy,
-    SolveResult, SolverParams,
+    solve, KrylovMethod, OperatorRepr, Preconditioner, ReductionStrategy, SolveResult, SolverParams,
 };
 
 fn main() {
@@ -25,8 +25,9 @@ fn main() {
     }
 
     // Build design to compute D * x_true.
+    use within::domain::Design;
     use within::observation::FactorMajorStore;
-    use within::{Design, DesignOperator};
+    use within::operator::DesignOperator;
 
     let factor_levels = vec![categories.column(0).to_vec(), categories.column(1).to_vec()];
     let store = FactorMajorStore::new(factor_levels, n_obs).expect("valid factor-major store");

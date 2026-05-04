@@ -11,12 +11,13 @@ use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use schwarz_precond::solve::cg::pcg;
 use schwarz_precond::{Operator, ReductionStrategy};
+use within::config::LocalSolverConfig;
 use within::domain::Design;
 use within::observation::FactorMajorStore;
+use within::operator::gramian::GramianOperator;
 use within::operator::preconditioner::build_preconditioner;
-use within::DesignOperator;
-use within::LocalSolverConfig;
-use within::{GramianOperator, Preconditioner};
+use within::operator::DesignOperator;
+use within::Preconditioner;
 
 fn rss_mb() -> f64 {
     let pid = std::process::id();
@@ -139,7 +140,7 @@ fn main() {
     let mut rhs = vec![0.0; design.n_dofs];
     {
         use schwarz_precond::Operator;
-        let design_op = within::DesignOperator::new(&design, None);
+        let design_op = DesignOperator::new(&design, None);
         design_op.apply_adjoint(&y, &mut rhs).expect("apply");
     }
     let rss_rhs = rss_mb();

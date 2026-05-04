@@ -1,12 +1,12 @@
 use ndarray::Array2;
 use proptest::prelude::*;
 use schwarz_precond::Operator;
+use within::config::LocalSolverConfig;
+use within::domain::Design;
 use within::observation::ArrayStore;
 use within::operator::gramian::{Gramian, GramianOperator};
-use within::{
-    solve, Design, DesignOperator, FePreconditioner, LocalSolverConfig, Preconditioner,
-    ReductionStrategy, SolverParams,
-};
+use within::operator::DesignOperator;
+use within::{solve, FePreconditioner, Preconditioner, ReductionStrategy, SolverParams};
 
 /// Generate a random fixed-effects problem as (categories Array2<u32>, y Vec<f64>).
 fn random_fe_problem_strategy() -> impl Strategy<Value = (Array2<u32>, Vec<f64>)> {

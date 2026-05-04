@@ -1,6 +1,8 @@
 use ndarray::{array, Array2, ShapeBuilder};
+use within::config::LocalSolverConfig;
+use within::domain::Design;
 use within::observation::{ArrayStore, FactorMajorStore, Store};
-use within::{solve, Design, LocalSolverConfig, Preconditioner, ReductionStrategy, SolverParams};
+use within::{solve, Preconditioner, ReductionStrategy, SolverParams};
 
 #[path = "common/orchestrate_helpers.rs"]
 mod common;

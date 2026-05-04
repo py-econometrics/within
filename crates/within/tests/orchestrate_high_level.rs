@@ -1,7 +1,7 @@
 use ndarray::array;
+use within::config::LocalSolverConfig;
 use within::{
-    solve, solve_batch, KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner,
-    ReductionStrategy, SolverParams,
+    solve, solve_batch, KrylovMethod, OperatorRepr, Preconditioner, ReductionStrategy, SolverParams,
 };
 
 #[path = "common/orchestrate_helpers.rs"]

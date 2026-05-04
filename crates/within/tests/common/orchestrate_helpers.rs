@@ -2,8 +2,10 @@
 
 use schwarz_precond::Operator;
 
+use within::domain::Design;
 use within::operator::gramian::GramianOperator;
-use within::{Design, DesignOperator, FactorMajorStore, SolveResult};
+use within::operator::DesignOperator;
+use within::{FactorMajorStore, SolveResult};
 
 pub fn make_test_design() -> Design<FactorMajorStore> {
     make_design(vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]]).expect("valid test design")

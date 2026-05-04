@@ -24,12 +24,11 @@ use ndarray::Array2;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
+use within::config::LocalSolverConfig;
+use within::domain::Design;
 use within::observation::FactorMajorStore;
-use within::DesignOperator;
-use within::{
-    Design, KrylovMethod, LocalSolverConfig, Preconditioner, ReductionStrategy, Solver,
-    SolverParams,
-};
+use within::operator::DesignOperator;
+use within::{KrylovMethod, Preconditioner, ReductionStrategy, Solver, SolverParams};
 
 #[derive(Clone, Copy)]
 struct Shape {

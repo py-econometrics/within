@@ -7,7 +7,8 @@
 
 use ndarray::Array2;
 use schwarz_precond::Operator;
-use within::{solve, LocalSolverConfig, Preconditioner, ReductionStrategy, SolverParams};
+use within::config::LocalSolverConfig;
+use within::{solve, Preconditioner, ReductionStrategy, SolverParams};
 
 fn main() {
     // Two factors, each with 100 levels, 10 000 observations.
@@ -20,8 +21,9 @@ fn main() {
     }
 
     // Build design to compute D * x_true.
+    use within::domain::Design;
     use within::observation::FactorMajorStore;
-    use within::{Design, DesignOperator};
+    use within::operator::DesignOperator;
 
     let factor_levels = vec![categories.column(0).to_vec(), categories.column(1).to_vec()];
     let store = FactorMajorStore::new(factor_levels, n_obs).expect("valid factor-major store");

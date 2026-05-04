@@ -1,11 +1,11 @@
 use schwarz_precond::solve::cg::pcg;
 use schwarz_precond::{LocalSolver, Operator, ReductionStrategy};
+use within::config::{LocalSolverConfig, DEFAULT_DENSE_SCHUR_THRESHOLD};
+use within::domain::Design;
 use within::operator::gramian::GramianOperator;
 use within::operator::preconditioner::{build_preconditioner, FePreconditioner};
-use within::{
-    Design, FactorMajorStore, FeSchwarz, LocalSolverConfig, Preconditioner,
-    DEFAULT_DENSE_SCHUR_THRESHOLD,
-};
+use within::operator::schwarz::FeSchwarz;
+use within::{FactorMajorStore, Preconditioner};
 
 #[path = "common/orchestrate_helpers.rs"]
 mod common;
