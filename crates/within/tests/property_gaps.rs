@@ -182,11 +182,11 @@ proptest! {
         let _ = y; // provided by strategy but we use the feasible version
         let result = solve(cats.view(), &y_feasible, None, &params, Some(&precond)).unwrap();
         prop_assert!(
-            result.converged,
+            result.converged(),
             "4-factor solve did not converge (n_obs={}, n_dofs={}, residual={:.2e})",
             design.n_rows,
             design.n_dofs,
-            result.final_residual
+            result.final_residual()
         );
     }
 
@@ -210,11 +210,11 @@ proptest! {
         let result_b = solver_b.solve(&y).unwrap();
 
         prop_assert_eq!(
-            result_a.x.len(),
-            result_b.x.len(),
+            result_a.x().len(),
+            result_b.x().len(),
             "x length mismatch"
         );
-        for (i, (a, b)) in result_a.x.iter().zip(result_b.x.iter()).enumerate() {
+        for (i, (a, b)) in result_a.x().iter().zip(result_b.x().iter()).enumerate() {
             prop_assert!(
                 (a - b).abs() < 1e-12,
                 "x[{}] mismatch: solve()={} vs Solver::new().solve()={}",
@@ -234,7 +234,7 @@ proptest! {
         let precond = additive_precond();
         let result = solve(cats.view(), &y, None, &params, Some(&precond)).unwrap();
 
-        if !result.converged {
+        if !result.converged() {
             return Ok(());
         }
 
@@ -254,14 +254,14 @@ proptest! {
             let dx_i: f64 = (0..n_factors)
                 .map(|f| {
                     let level = cats[[i, f]] as usize;
-                    result.x[offsets[f] + level]
+                    result.x()[offsets[f] + level]
                 })
                 .sum();
             let expected_demeaned = y[i] - dx_i;
             prop_assert!(
-                (result.demeaned[i] - expected_demeaned).abs() < 1e-8,
+                (result.demeaned()[i] - expected_demeaned).abs() < 1e-8,
                 "demeaned[{}]: got {}, expected {} (y={}, Dx={})",
-                i, result.demeaned[i], expected_demeaned, y[i], dx_i
+                i, result.demeaned()[i], expected_demeaned, y[i], dx_i
             );
         }
     }
@@ -290,12 +290,12 @@ proptest! {
         let result = solve(cats.view(), &y_feasible, None, &params, None).unwrap();
 
         prop_assert!(
-            result.converged,
+            result.converged(),
             "single-factor CG did not converge in {} iterations (residual={:.2e}, n_levels={})",
-            result.iterations,
-            result.final_residual,
+            result.iterations(),
+            result.final_residual(),
             n_levels
         );
-        prop_assert!(result.x.iter().all(|v| v.is_finite()), "non-finite x");
+        prop_assert!(result.x().iter().all(|v| v.is_finite()), "non-finite x");
     }
 }

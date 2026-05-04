@@ -36,9 +36,9 @@ fn test_solver_matches_oneshot() {
         Solver::new(categories.view(), None, &params, Some(&precond)).expect("solver build");
     let result = solver.solve(&y).expect("solver solve");
 
-    assert!(result.converged);
-    assert_eq!(result.x.len(), oneshot.x.len());
-    for (a, b) in result.x.iter().zip(oneshot.x.iter()) {
+    assert!(result.converged());
+    assert_eq!(result.x().len(), oneshot.x().len());
+    for (a, b) in result.x().iter().zip(oneshot.x().iter()) {
         assert!((a - b).abs() < 1e-12, "x mismatch: {} vs {}", a, b);
     }
 }
@@ -53,11 +53,11 @@ fn test_solver_demeaned() {
         Solver::new(categories.view(), None, &params, Some(&precond)).expect("solver build");
     let result = solver.solve(&y).expect("solver solve");
 
-    assert_eq!(result.demeaned.len(), y.len());
+    assert_eq!(result.demeaned().len(), y.len());
     // demeaned = y - D*x: verify by checking D^T * demeaned ≈ 0
     // (the residual should be orthogonal to the design matrix)
     assert!(
-        result.demeaned.iter().all(|v| v.is_finite()),
+        result.demeaned().iter().all(|v| v.is_finite()),
         "demeaned should be finite"
     );
 }
@@ -70,7 +70,7 @@ fn test_solver_no_preconditioner() {
     let solver = Solver::new(categories.view(), None, &params, None).expect("solver build");
     let result = solver.solve(&y).expect("solver solve");
 
-    assert!(result.converged);
+    assert!(result.converged());
     common::assert_solution_finite(&result);
 }
 
@@ -90,7 +90,7 @@ fn test_solver_explicit_gramian() {
         Solver::new(categories.view(), None, &params, Some(&precond)).expect("solver build");
     let result = solver.solve(&y).expect("solver solve");
 
-    assert!(result.converged);
+    assert!(result.converged());
 }
 
 #[test]
@@ -115,9 +115,9 @@ fn test_solver_batch() {
     assert_eq!(batch.n_rhs(), 3);
 
     for (batch_x, individual_x) in [
-        (batch.x(0), r1.x.as_slice()),
-        (batch.x(1), r2.x.as_slice()),
-        (batch.x(2), r3.x.as_slice()),
+        (batch.x(0), r1.x()),
+        (batch.x(1), r2.x()),
+        (batch.x(2), r3.x()),
     ] {
         for (a, b) in batch_x.iter().zip(individual_x.iter()) {
             assert!((a - b).abs() < 1e-12, "batch x mismatch");
@@ -164,7 +164,7 @@ fn test_serde_roundtrip() {
         .expect("solver from preconditioner");
     let r2 = solver2.solve(&y).expect("solve 2");
 
-    for (a, b) in r1.x.iter().zip(r2.x.iter()) {
+    for (a, b) in r1.x().iter().zip(r2.x().iter()) {
         assert!((a - b).abs() < 1e-12, "serde roundtrip x mismatch");
     }
 }
@@ -178,7 +178,7 @@ fn test_solver_from_design() {
 
     let solver = Solver::from_design(design, None, &params, Some(&precond)).expect("from_design");
     let result = solver.solve(&y).expect("solve");
-    assert!(result.converged);
+    assert!(result.converged());
 }
 
 // ---------------------------------------------------------------------------
@@ -201,7 +201,7 @@ fn test_solver_multiplicative_preconditioner() {
         Solver::new(categories.view(), None, &params, Some(&precond)).expect("solver build");
     let result = solver.solve(&y).expect("solver solve");
 
-    assert!(result.converged, "multiplicative solver should converge");
+    assert!(result.converged(), "multiplicative solver should converge");
     common::assert_solution_finite(&result);
 }
 
@@ -288,11 +288,11 @@ fn test_multiplicative_vs_additive_same_solution() {
     )
     .expect("multiplicative solve");
 
-    assert!(result_add.converged);
-    assert!(result_mult.converged);
+    assert!(result_add.converged());
+    assert!(result_mult.converged());
 
     // Both should converge to the same solution
-    for (a, m) in result_add.x.iter().zip(result_mult.x.iter()) {
+    for (a, m) in result_add.x().iter().zip(result_mult.x().iter()) {
         assert!(
             (a - m).abs() < 1e-4,
             "solution mismatch: additive={} multiplicative={}",
@@ -331,7 +331,7 @@ fn test_multiplicative_serde_roundtrip() {
         .expect("solver from preconditioner");
     let r2 = solver2.solve(&y).expect("solve 2");
 
-    for (a, b) in r1.x.iter().zip(r2.x.iter()) {
+    for (a, b) in r1.x().iter().zip(r2.x().iter()) {
         assert!((a - b).abs() < 1e-10, "serde roundtrip x mismatch");
     }
 }
@@ -351,6 +351,6 @@ fn test_solver_multiplicative_implicit_fused() {
     let solver =
         Solver::new(categories.view(), None, &params, Some(&precond)).expect("solver build");
     let result = solver.solve(&y).expect("solver solve");
-    assert!(result.converged);
+    assert!(result.converged());
     common::assert_solution_finite(&result);
 }

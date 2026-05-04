@@ -83,26 +83,38 @@ fn print_comparison(name_a: &str, a: &SolveResult, name_b: &str, b: &SolveResult
     println!("{}", "-".repeat(54));
     println!(
         "{:<30} {:>12} {:>12}",
-        "converged", a.converged, b.converged,
+        "converged",
+        a.converged(),
+        b.converged(),
     );
     println!(
         "{:<30} {:>12} {:>12}",
-        "iterations", a.iterations, b.iterations,
+        "iterations",
+        a.iterations(),
+        b.iterations(),
     );
     println!(
         "{:<30} {:>12.3e} {:>12.3e}",
-        "residual", a.final_residual, b.final_residual,
+        "residual",
+        a.final_residual(),
+        b.final_residual(),
     );
     println!(
         "{:<30} {:>12.3} {:>12.3}",
-        "time_total (s)", a.time_total, b.time_total,
+        "time_total (s)",
+        a.time_total(),
+        b.time_total(),
     );
     println!(
         "{:<30} {:>12.3} {:>12.3}",
-        "time_setup (s)", a.time_setup, b.time_setup,
+        "time_setup (s)",
+        a.time_setup(),
+        b.time_setup(),
     );
     println!(
         "{:<30} {:>12.3} {:>12.3}",
-        "time_solve (s)", a.time_solve, b.time_solve,
+        "time_solve (s)",
+        a.time_solve(),
+        b.time_solve(),
     );
 }

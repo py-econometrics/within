@@ -39,17 +39,17 @@ pub fn make_rhs_from_unit_solution(design: &Design<FactorMajorStore>) -> Vec<f64
 }
 
 pub fn assert_converged_with_small_residual(result: &SolveResult, tol: f64) {
-    assert!(result.converged, "solver did not converge");
+    assert!(result.converged(), "solver did not converge");
     assert!(
-        result.final_residual < tol,
+        result.final_residual() < tol,
         "residual too large: {}",
-        result.final_residual
+        result.final_residual()
     );
 }
 
 pub fn assert_solution_finite(result: &SolveResult) {
     assert!(
-        result.x.iter().all(|v| v.is_finite()),
+        result.x().iter().all(|v| v.is_finite()),
         "Non-finite solution"
     );
 }

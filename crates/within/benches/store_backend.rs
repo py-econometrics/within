@@ -111,7 +111,7 @@ fn bench_store_backends(c: &mut Criterion) {
                 let design = Design::from_store(store).unwrap();
                 let solver = Solver::from_design(design, None, &p.params, precond_ref).unwrap();
                 let r = solver.solve(&p.y).unwrap();
-                assert!(r.converged);
+                assert!(r.converged());
             });
         });
 
@@ -122,7 +122,7 @@ fn bench_store_backends(c: &mut Criterion) {
                 let design = Design::from_store(store).unwrap();
                 let solver = Solver::from_design(design, None, &p.params, precond_ref).unwrap();
                 let r = solver.solve(&p.y).unwrap();
-                assert!(r.converged);
+                assert!(r.converged());
             });
         });
 
@@ -133,7 +133,7 @@ fn bench_store_backends(c: &mut Criterion) {
                 let design = Design::from_store(store).unwrap();
                 let solver = Solver::from_design(design, None, &p.params, precond_ref).unwrap();
                 let r = solver.solve(&p.y).unwrap();
-                assert!(r.converged);
+                assert!(r.converged());
             });
         });
     }

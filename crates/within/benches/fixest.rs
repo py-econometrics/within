@@ -138,13 +138,13 @@ fn run_smoke(
     let solver =
         Solver::from_design(design.clone(), None, params, preconditioner).expect("build solver");
     let result = solver.solve(y).expect("solve");
-    assert!(result.converged, "{label}: solver did not converge");
+    assert!(result.converged(), "{label}: solver did not converge");
     assert!(
-        result.final_residual.is_finite(),
+        result.final_residual().is_finite(),
         "{label}: non-finite residual"
     );
     assert!(
-        result.iterations < MAXITER,
+        result.iterations() < MAXITER,
         "{label}: solver hit max iterations"
     );
 }

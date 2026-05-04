@@ -135,8 +135,8 @@ proptest! {
         let precond = additive_precond();
         let result = solve(cats.view(), &y, None, &params, Some(&precond)).unwrap();
 
-        prop_assert!(result.converged, "Solver did not converge after {} iterations (residual: {:.2e}, n_obs: {}, n_dofs: {})",
-            result.iterations, result.final_residual, n_obs, n_dofs);
+        prop_assert!(result.converged(), "Solver did not converge after {} iterations (residual: {:.2e}, n_obs: {}, n_dofs: {})",
+            result.iterations(), result.final_residual(), n_obs, n_dofs);
     }
 
     #[test]
@@ -145,13 +145,13 @@ proptest! {
         let precond = additive_precond();
         let result = solve(cats.view(), &y, None, &params, Some(&precond)).unwrap();
 
-        if !result.converged {
+        if !result.converged() {
             return Ok(());
         }
 
         let n_obs = y.len();
         let n_factors = cats.ncols();
-        let residual = &result.demeaned;
+        let residual = &result.demeaned();
 
         // D^T * residual should be ≈ 0
         for f in 0..n_factors {

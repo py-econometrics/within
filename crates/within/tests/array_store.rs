@@ -63,9 +63,9 @@ fn test_array_store_f_contiguous_matches_factor_major() {
             .expect("solver");
     let result_fms = solver.solve(&y).expect("FactorMajorStore solve");
 
-    assert!(result_array.converged);
-    assert!(result_fms.converged);
-    for (a, b) in result_array.x.iter().zip(result_fms.x.iter()) {
+    assert!(result_array.converged());
+    assert!(result_fms.converged());
+    for (a, b) in result_array.x().iter().zip(result_fms.x().iter()) {
         assert!(
             (a - b).abs() < 1e-8,
             "ArrayStore vs FactorMajorStore mismatch: {} vs {}",
@@ -90,7 +90,7 @@ fn test_array_store_c_contiguous_solves() {
     )
     .expect("C-contiguous ArrayStore solve");
 
-    assert!(result.converged);
+    assert!(result.converged());
     common::assert_solution_finite(&result);
 }
 
@@ -132,6 +132,6 @@ fn test_array_store_weighted() {
     )
     .expect("weighted ArrayStore solve");
 
-    assert!(result.converged);
+    assert!(result.converged());
     common::assert_solution_finite(&result);
 }

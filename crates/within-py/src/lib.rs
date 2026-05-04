@@ -670,15 +670,22 @@ fn extract_and_validate_config(
 // ---------------------------------------------------------------------------
 
 fn into_py_result(py: Python<'_>, result: SolveResult) -> PySolveResult {
+    let converged = result.converged();
+    let iterations = result.iterations();
+    let residual = result.final_residual();
+    let time_total = result.time_total();
+    let time_setup = result.time_setup();
+    let time_solve = result.time_solve();
+    let (x, demeaned) = result.into_parts();
     PySolveResult {
-        x: Array1::from_vec(result.x).into_pyarray(py).unbind(),
-        demeaned: Array1::from_vec(result.demeaned).into_pyarray(py).unbind(),
-        converged: result.converged,
-        iterations: result.iterations,
-        residual: result.final_residual,
-        time_total: result.time_total,
-        time_setup: result.time_setup,
-        time_solve: result.time_solve,
+        x: Array1::from_vec(x).into_pyarray(py).unbind(),
+        demeaned: Array1::from_vec(demeaned).into_pyarray(py).unbind(),
+        converged,
+        iterations,
+        residual,
+        time_total,
+        time_setup,
+        time_solve,
     }
 }
 

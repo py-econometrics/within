@@ -120,12 +120,12 @@ fn test_refinement_cg_improves_demeaning_quality() {
         Solver::from_design(design2, None, &params_refine, Some(&precond)).expect("build solver");
     let result_yes = solver_yes.solve(&y).expect("solve with refinement");
 
-    assert!(result_no.converged, "initial solve should converge");
-    assert!(result_yes.converged, "refined solve should converge");
+    assert!(result_no.converged(), "initial solve should converge");
+    assert!(result_yes.converged(), "refined solve should converge");
 
     let (design3, _) = make_chain_design(200, 42);
-    let demean_no = max_abs_group_mean(&design3, &result_no.demeaned);
-    let demean_yes = max_abs_group_mean(&design3, &result_yes.demeaned);
+    let demean_no = max_abs_group_mean(&design3, result_no.demeaned());
+    let demean_yes = max_abs_group_mean(&design3, result_yes.demeaned());
 
     // Refinement should improve demeaning quality
     assert!(
@@ -135,10 +135,10 @@ fn test_refinement_cg_improves_demeaning_quality() {
 
     // The refined residual should be at least as good
     assert!(
-        result_yes.final_residual <= result_no.final_residual + 1e-15,
+        result_yes.final_residual() <= result_no.final_residual() + 1e-15,
         "refinement should not worsen residual: {} > {}",
-        result_yes.final_residual,
-        result_no.final_residual
+        result_yes.final_residual(),
+        result_no.final_residual()
     );
 }
 
@@ -152,8 +152,8 @@ fn test_refinement_cg_zero_means_old_behavior() {
     let solver = Solver::from_design(design, None, &params, Some(&precond)).expect("build solver");
     let result = solver.solve(&y).expect("solve");
 
-    assert!(result.converged);
-    assert!(result.final_residual < 1e-6);
+    assert!(result.converged());
+    assert!(result.final_residual() < 1e-6);
 }
 
 #[test]
@@ -175,11 +175,11 @@ fn test_refinement_cg_well_conditioned_no_extra_iters() {
     let result = solver.solve(&y).expect("solve");
 
     // Should converge with very few iterations (small problem)
-    assert!(result.converged);
+    assert!(result.converged());
     assert!(
-        result.iterations <= 10,
+        result.iterations() <= 10,
         "too many iterations on small problem: {}",
-        result.iterations
+        result.iterations()
     );
 }
 
@@ -205,12 +205,15 @@ fn test_refinement_gmres_improves_demeaning_quality() {
         Solver::from_design(design2, None, &params_refine, Some(&precond)).expect("build solver");
     let result_yes = solver_yes.solve(&y).expect("solve with refinement");
 
-    assert!(result_no.converged, "initial GMRES solve should converge");
-    assert!(result_yes.converged, "refined GMRES solve should converge");
+    assert!(result_no.converged(), "initial GMRES solve should converge");
+    assert!(
+        result_yes.converged(),
+        "refined GMRES solve should converge"
+    );
 
     let (design3, _) = make_chain_design(200, 77);
-    let demean_no = max_abs_group_mean(&design3, &result_no.demeaned);
-    let demean_yes = max_abs_group_mean(&design3, &result_yes.demeaned);
+    let demean_no = max_abs_group_mean(&design3, result_no.demeaned());
+    let demean_yes = max_abs_group_mean(&design3, result_yes.demeaned());
 
     assert!(
         demean_yes <= demean_no,
@@ -230,8 +233,8 @@ fn test_refinement_gmres_well_conditioned() {
     let solver = Solver::from_design(design, None, &params, Some(&precond)).expect("build solver");
     let result = solver.solve(&y).expect("solve");
 
-    assert!(result.converged);
-    assert!(result.final_residual < 1e-6);
+    assert!(result.converged());
+    assert!(result.final_residual() < 1e-6);
 }
 
 // ---------------------------------------------------------------------------
@@ -249,9 +252,9 @@ fn test_refinement_zero_rhs() {
     let solver = Solver::from_design(design, None, &params, None).expect("build solver");
     let result = solver.solve(&y).expect("solve");
 
-    assert!(result.converged);
-    assert_eq!(result.iterations, 0);
-    assert!(result.x.iter().all(|&v| v == 0.0));
+    assert!(result.converged());
+    assert_eq!(result.iterations(), 0);
+    assert!(result.x().iter().all(|&v| v == 0.0));
 }
 
 #[test]
@@ -262,8 +265,8 @@ fn test_refinement_unpreconditioned() {
     let solver = Solver::from_design(design, None, &params, None).expect("build solver");
     let result = solver.solve(&y).expect("solve");
 
-    assert!(result.converged);
-    assert!(result.final_residual < 1e-6);
+    assert!(result.converged());
+    assert!(result.final_residual() < 1e-6);
 }
 
 #[test]
@@ -288,10 +291,10 @@ fn test_refinement_batch_applies() {
     assert!(batch.converged().iter().all(|&c| c));
 
     // Batch results should match single solves
-    for (a, b) in batch.x(0).iter().zip(single1.x.iter()) {
+    for (a, b) in batch.x(0).iter().zip(single1.x().iter()) {
         assert!((a - b).abs() < 1e-12, "batch/single x mismatch: {a} vs {b}");
     }
-    for (a, b) in batch.x(1).iter().zip(single2.x.iter()) {
+    for (a, b) in batch.x(1).iter().zip(single2.x().iter()) {
         assert!((a - b).abs() < 1e-12, "batch/single x mismatch: {a} vs {b}");
     }
 }

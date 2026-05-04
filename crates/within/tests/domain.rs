@@ -316,9 +316,9 @@ fn test_three_factor_design_solve_converges() {
         solve(cats.view(), &y, None, &params, Some(&precond)).expect("solve should not error");
 
     assert!(
-        result.converged,
+        result.converged(),
         "3-factor solver did not converge (residual: {:.2e})",
-        result.final_residual
+        result.final_residual()
     );
 }
 
@@ -367,9 +367,9 @@ fn test_three_factor_design_multiplicative_schwarz_converges() {
         solve(cats.view(), &y, None, &params, Some(&precond)).expect("solve should not error");
 
     assert!(
-        result.converged,
+        result.converged(),
         "3-factor multiplicative Schwarz did not converge (residual: {:.2e})",
-        result.final_residual
+        result.final_residual()
     );
 }
 
@@ -426,9 +426,9 @@ fn test_disconnected_design_larger_converges() {
         solve(cats.view(), &y, None, &params, Some(&precond)).expect("solve should not error");
 
     assert!(
-        result.converged,
+        result.converged(),
         "disconnected larger design did not converge (residual: {:.2e})",
-        result.final_residual
+        result.final_residual()
     );
 }
 
@@ -463,9 +463,9 @@ fn test_disconnected_design_solve_converges() {
         solve(cats.view(), &y, None, &params, Some(&precond)).expect("solve should not error");
 
     assert!(
-        result.converged,
+        result.converged(),
         "disconnected design solver did not converge (residual: {:.2e})",
-        result.final_residual
+        result.final_residual()
     );
 }
 
@@ -555,9 +555,9 @@ fn test_single_factor_design_solve_without_precond() {
     let result = solve(cats.view(), &y, None, &params, None).expect("solve should not error");
 
     assert!(
-        result.converged,
+        result.converged(),
         "single-factor unpreconditioned solve did not converge (residual: {:.2e})",
-        result.final_residual
+        result.final_residual()
     );
 }
 

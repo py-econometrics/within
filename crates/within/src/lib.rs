@@ -87,7 +87,7 @@
 //!
 //! let result = solve(categories.view(), &y, None, &SolverParams::default(), None)
 //!     .expect("solve should succeed");
-//! assert!(result.converged);
+//! assert!(result.converged());
 //! ```
 //!
 //! # Module structure

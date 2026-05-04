@@ -48,9 +48,9 @@ fn main() {
     let result = solve(categories.view(), &y, None, &params, Some(&precond)).expect("solve");
 
     println!("=== Basic solve (default params) ===");
-    println!("  converged:  {}", result.converged);
-    println!("  iterations: {}", result.iterations);
-    println!("  residual:   {:.3e}", result.final_residual);
-    println!("  time_total: {:.3} s", result.time_total);
-    println!("  time_solve: {:.3} s", result.time_solve);
+    println!("  converged:  {}", result.converged());
+    println!("  iterations: {}", result.iterations());
+    println!("  residual:   {:.3e}", result.final_residual());
+    println!("  time_total: {:.3} s", result.time_total());
+    println!("  time_solve: {:.3} s", result.time_solve());
 }

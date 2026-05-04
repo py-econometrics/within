@@ -57,7 +57,7 @@ fn test_least_squares_cg() {
     };
     let solver = Solver::from_design(design, None, &params, None).expect("build solver");
     let result = solver.solve(&y).expect("solve");
-    assert!(result.converged, "CG LS did not converge");
+    assert!(result.converged(), "CG LS did not converge");
     common::assert_solution_finite(&result);
 }
 
@@ -351,9 +351,9 @@ fn test_lsmr_matches_cg_solution() {
 
     // Solutions should match to reasonable precision
     let err: f64 = cg_result
-        .x
+        .x()
         .iter()
-        .zip(lsmr_result.x.iter())
+        .zip(lsmr_result.x().iter())
         .map(|(a, b)| (a - b).powi(2))
         .sum::<f64>()
         .sqrt();

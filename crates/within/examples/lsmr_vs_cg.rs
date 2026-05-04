@@ -322,9 +322,9 @@ fn run_one(
         .iter()
         .map(|y| {
             let r = ref_solver.solve(y).expect("ref solve");
-            ref_iters += r.iterations;
-            ref_converged &= r.converged;
-            r.demeaned
+            ref_iters += r.iterations();
+            ref_converged &= r.converged();
+            r.into_parts().1
         })
         .collect();
     let ref_wall = t_ref.elapsed().as_secs_f64();
@@ -379,9 +379,9 @@ fn run_one(
         let t = Instant::now();
         for y in &rhses[1..=n_solves] {
             let r = solver.solve(y)?;
-            iter_sum += r.iterations;
-            all_converged &= r.converged;
-            demeans.push(r.demeaned);
+            iter_sum += r.iterations();
+            all_converged &= r.converged();
+            demeans.push(r.into_parts().1);
         }
         let wall = t.elapsed().as_secs_f64();
 

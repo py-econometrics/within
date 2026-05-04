@@ -32,25 +32,59 @@ use crate::config::{Preconditioner, SolverParams};
 use crate::WithinResult;
 
 /// Common solve output for all orchestration entry points.
+///
+/// Fields are accessed via methods to keep storage internal — see
+/// [`SolveResult::x`], [`SolveResult::demeaned`], etc.
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct SolveResult {
+    pub(crate) x: Vec<f64>,
+    pub(crate) demeaned: Vec<f64>,
+    pub(crate) converged: bool,
+    pub(crate) iterations: usize,
+    pub(crate) final_residual: f64,
+    pub(crate) time_total: f64,
+    pub(crate) time_setup: f64,
+    pub(crate) time_solve: f64,
+}
+
+impl SolveResult {
     /// Fixed-effect coefficients (length = total DOFs across all factors).
-    pub x: Vec<f64>,
+    pub fn x(&self) -> &[f64] {
+        &self.x
+    }
     /// Demeaned response: `y - D x` (length = n_obs).
-    pub demeaned: Vec<f64>,
+    pub fn demeaned(&self) -> &[f64] {
+        &self.demeaned
+    }
     /// Whether the iterative solver converged within `maxiter` iterations.
-    pub converged: bool,
+    pub fn converged(&self) -> bool {
+        self.converged
+    }
     /// Number of Krylov iterations used.
-    pub iterations: usize,
+    pub fn iterations(&self) -> usize {
+        self.iterations
+    }
     /// Final relative residual norm `‖r‖ / ‖b‖`.
-    pub final_residual: f64,
+    pub fn final_residual(&self) -> f64 {
+        self.final_residual
+    }
     /// Wall-clock time for the entire solve (setup + Krylov), in seconds.
-    pub time_total: f64,
+    pub fn time_total(&self) -> f64 {
+        self.time_total
+    }
     /// Wall-clock time for preconditioner construction, in seconds.
-    pub time_setup: f64,
+    pub fn time_setup(&self) -> f64 {
+        self.time_setup
+    }
     /// Wall-clock time for the Krylov solve phase, in seconds.
-    pub time_solve: f64,
+    pub fn time_solve(&self) -> f64 {
+        self.time_solve
+    }
+    /// Consume the result, returning `(x, demeaned)` as owned vectors.
+    pub fn into_parts(self) -> (Vec<f64>, Vec<f64>) {
+        (self.x, self.demeaned)
+    }
 }
 
 /// Result of a batch solve across multiple RHS vectors.
