@@ -12,6 +12,24 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Breaking Changes
 
+- **`within` crate root re-exports trimmed for stable release.** Lower-level
+  types are no longer surfaced at the crate root; they remain accessible via
+  their module paths. Migrations:
+  - `within::Design` → `within::domain::Design`
+  - `within::Subdomain` → `within::domain::Subdomain`
+  - `within::ArrayStore` / `within::Store` → `within::observation::{ArrayStore, Store}`
+  - `within::FactorMeta` → `within::observation::FactorMeta`
+  - `within::DesignOperator` → `within::operator::DesignOperator`
+  - `within::Gramian` / `within::GramianOperator` →
+    `within::operator::gramian::{Gramian, GramianOperator}`
+  - `within::FeSchwarz` → `within::operator::schwarz::FeSchwarz`
+  - `within::LocalSolverConfig`, `ApproxCholConfig`, `ApproxSchurConfig`,
+    `DEFAULT_DENSE_SCHUR_THRESHOLD` → `within::config::*`
+  Stable root API now includes only `solve`, `solve_batch`, `Solver`,
+  `SolveResult`, `BatchSolveResult`, `FePreconditioner`, `SolverParams`,
+  `Preconditioner`, `KrylovMethod`, `OperatorRepr`, `ReductionStrategy`,
+  `WithinError`, `WithinResult`, `FactorMajorStore`, and the `Operator`
+  trait. Python API is unchanged.
 - **Error enums consolidated from six to two.** `SubdomainCoreBuildError`,
   `SubdomainEntryBuildError`, `PreconditionerBuildError` → `BuildError`.
   `LocalSolveError`, `ApplyError`, and the prior `SolveError` →
