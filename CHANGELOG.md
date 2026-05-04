@@ -12,6 +12,19 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Breaking Changes
 
+- **`SolveResult` fields are now private; access via getters.** Mirrors the
+  `BatchSolveResult` shape so internal storage can change without API
+  breakage. Migrations:
+  - `result.x` → `result.x()` (returns `&[f64]`)
+  - `result.demeaned` → `result.demeaned()` (returns `&[f64]`)
+  - `result.converged` → `result.converged()`
+  - `result.iterations` → `result.iterations()`
+  - `result.final_residual` → `result.final_residual()`
+  - `result.time_total` → `result.time_total()`
+  - `result.time_setup` → `result.time_setup()`
+  - `result.time_solve` → `result.time_solve()`
+  - For owned `x` / `demeaned` (e.g. moving into `ndarray::Array1`), use
+    `let (x, demeaned) = result.into_parts();`. Python API is unchanged.
 - **`within` crate root re-exports trimmed for stable release.** Lower-level
   types are no longer surfaced at the crate root; they remain accessible via
   their module paths. Migrations:
