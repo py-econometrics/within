@@ -16,6 +16,7 @@
 //!   - `panel-3fe`    — indiv × year × firm (within-default benchmark DGP)
 //!   - `akm`          — worker × firm (AKM-style, limited mobility → ill-conditioned)
 
+use schwarz_precond::Operator;
 use std::env;
 use std::time::Instant;
 
@@ -23,11 +24,11 @@ use ndarray::Array2;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
-use within::observation::{FactorMajorStore, ObservationWeights};
-use within::{
-    KrylovMethod, LocalSolverConfig, Preconditioner, ReductionStrategy, Solver, SolverParams,
-    WeightedDesign,
-};
+use within::config::LocalSolverConfig;
+use within::domain::Design;
+use within::observation::FactorMajorStore;
+use within::operator::DesignOperator;
+use within::{KrylovMethod, Preconditioner, ReductionStrategy, Solver, SolverParams};
 
 #[derive(Clone, Copy)]
 struct Shape {
@@ -279,15 +280,17 @@ fn run_one(
     let factor_levels: Vec<Vec<u32>> = (0..n_factors)
         .map(|q| categories.column(q).to_vec())
         .collect();
-    let store = FactorMajorStore::new(factor_levels, ObservationWeights::Unit, n_obs)?;
-    let design = WeightedDesign::from_store(store)?;
+    let store = FactorMajorStore::new(factor_levels, n_obs)?;
+    let design = Design::from_store(store)?;
     let x_true: Vec<f64> = (0..design.n_dofs)
         .map(|_| rng.random_range(-1.0..1.0))
         .collect();
     let rhses: Vec<Vec<f64>> = (0..(n_solves + 1))
         .map(|_| {
             let mut y = vec![0.0; n_obs];
-            design.matvec_d(&x_true, &mut y);
+            DesignOperator::new(&design, None)
+                .apply(&x_true, &mut y)
+                .expect("apply");
             for yi in &mut y {
                 *yi += 0.1 * rng.random_range(-1.0..1.0);
             }
@@ -319,9 +322,9 @@ fn run_one(
         .iter()
         .map(|y| {
             let r = ref_solver.solve(y).expect("ref solve");
-            ref_iters += r.iterations;
-            ref_converged &= r.converged;
-            r.demeaned
+            ref_iters += r.iterations();
+            ref_converged &= r.converged();
+            r.into_parts().1
         })
         .collect();
     let ref_wall = t_ref.elapsed().as_secs_f64();
@@ -376,9 +379,9 @@ fn run_one(
         let t = Instant::now();
         for y in &rhses[1..=n_solves] {
             let r = solver.solve(y)?;
-            iter_sum += r.iterations;
-            all_converged &= r.converged;
-            demeans.push(r.demeaned);
+            iter_sum += r.iterations();
+            all_converged &= r.converged();
+            demeans.push(r.into_parts().1);
         }
         let wall = t.elapsed().as_secs_f64();
 

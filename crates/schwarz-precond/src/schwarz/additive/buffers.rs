@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 
 use thread_local::ThreadLocal;
 
-use crate::error::ApplyError;
+use crate::error::SolveError;
 
 use super::planning::ResolvedReductionStrategy;
 
@@ -37,8 +37,8 @@ impl BufferPool {
         strategy: ResolvedReductionStrategy,
         n_dofs: usize,
         max_scratch_size: usize,
-    ) -> Result<SchwarzBuffers, ApplyError> {
-        let mut pool = self.inner.lock().map_err(|_| ApplyError::Synchronization {
+    ) -> Result<SchwarzBuffers, SolveError> {
+        let mut pool = self.inner.lock().map_err(|_| SolveError::Synchronization {
             context: "additive.buf_pool.lock.pop",
         })?;
         if let Some(idx) = pool.iter().position(|bufs| bufs.strategy() == strategy) {
@@ -50,15 +50,15 @@ impl BufferPool {
     pub(super) fn put(
         &self,
         bufs: SchwarzBuffers,
-        apply_result: &Result<(), ApplyError>,
-    ) -> Result<(), ApplyError> {
+        apply_result: &Result<(), SolveError>,
+    ) -> Result<(), SolveError> {
         if let Ok(mut pool) = self.inner.lock() {
             if pool.len() < Self::MAX_POOL_SIZE {
                 pool.push(bufs);
             }
             Ok(())
         } else if apply_result.is_ok() {
-            Err(ApplyError::Synchronization {
+            Err(SolveError::Synchronization {
                 context: "additive.buf_pool.lock.push",
             })
         } else {
@@ -175,8 +175,8 @@ impl WorkerReductionBuffers {
     pub(super) fn finish_round(
         self,
         z: &mut [f64],
-        apply_result: &Result<(), ApplyError>,
-    ) -> Result<Vec<AdditiveSweepBuffers>, ApplyError> {
+        apply_result: &Result<(), SolveError>,
+    ) -> Result<Vec<AdditiveSweepBuffers>, SolveError> {
         let mut buffers = self.into_buffers()?;
         if apply_result.is_ok() {
             reduce_into(z, &buffers);
@@ -185,11 +185,11 @@ impl WorkerReductionBuffers {
         Ok(buffers)
     }
 
-    fn into_buffers(mut self) -> Result<Vec<AdditiveSweepBuffers>, ApplyError> {
+    fn into_buffers(mut self) -> Result<Vec<AdditiveSweepBuffers>, SolveError> {
         let mut buffers =
             self.shared_pool
                 .into_inner()
-                .map_err(|_| ApplyError::Synchronization {
+                .map_err(|_| SolveError::Synchronization {
                     context: "additive.reduction.pool.into_inner",
                 })?;
         for worker_stack in self.worker_stacks.iter_mut() {

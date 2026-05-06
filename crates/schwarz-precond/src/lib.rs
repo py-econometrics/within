@@ -6,7 +6,7 @@
 //!
 //! # Why domain decomposition?
 //!
-//! Domain decomposition splits s global problem
+//! Domain decomposition splits a global problem
 //! `A x = b` into overlapping *subdomains*, solving each
 //! one cheaply, and stitching the local solutions back together.
 //!
@@ -48,7 +48,7 @@
 //! ```text
 //! schwarz-precond
 //! ├── domain          SubdomainCore, PartitionWeights
-//! ├── local_solve     LocalSolver trait, LocalSolveInvoker, SubdomainEntry
+//! ├── local_solve     LocalSolver trait, SubdomainEntry
 //! ├── schwarz         Schwarz preconditioners
 //! │   ├── additive       SchwarzPreconditioner (parallel local solves)
 //! │   └── multiplicative MultiplicativeSchwarzPreconditioner, ResidualUpdater
@@ -75,11 +75,6 @@
 //!   The solver declares its DOF count and scratch buffer requirements,
 //!   which are validated at construction time.
 //!
-//! - **[`LocalSolveInvoker`]** — An execution-policy adapter that wraps
-//!   a `LocalSolver` call. The default ([`DefaultLocalSolveInvoker`])
-//!   delegates directly; specialized invokers can add instrumentation or
-//!   nested-parallelism control without polluting the solver trait itself.
-//!
 //! These compose inside [`SubdomainEntry`], which bundles a
 //! [`SubdomainCore`] (restriction indices + partition-of-unity weights)
 //! with a `LocalSolver`. The preconditioner owns a collection of entries
@@ -96,7 +91,7 @@
 #![warn(clippy::all)]
 
 // ============================================================================
-// Operator trait + IdentityOperator
+// Operator trait
 // ============================================================================
 
 /// A linear operator A: R^ncols -> R^nrows with its adjoint A^T.
@@ -108,58 +103,11 @@ pub trait Operator: Send + Sync {
     fn nrows(&self) -> usize;
     /// Number of columns in the operator.
     fn ncols(&self) -> usize;
-    /// y = A*x
-    fn apply(&self, x: &[f64], y: &mut [f64]);
-    /// Computes y = A^T * x. For symmetric operators, this should delegate to `apply`.
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]);
-
-    /// Fallible version of [`Operator::apply`].
-    ///
-    /// Implementors with runtime failure modes should override this.
-    fn try_apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), error::ApplyError> {
-        self.apply(x, y);
-        Ok(())
-    }
-
-    /// Fallible version of [`Operator::apply_adjoint`].
-    ///
-    /// Implementors with runtime failure modes should override this.
-    fn try_apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), error::ApplyError> {
-        self.apply_adjoint(x, y);
-        Ok(())
-    }
-}
-
-/// Identity operator: applies the identity map (y = x).
-///
-/// Used to deduplicate CG: unpreconditioned CG delegates to preconditioned CG
-/// with this as the preconditioner. The monomorphizer fully inlines the copies.
-pub struct IdentityOperator {
-    n: usize,
-}
-
-impl IdentityOperator {
-    /// Create an identity operator of dimension `n`.
-    pub fn new(n: usize) -> Self {
-        Self { n }
-    }
-}
-
-impl Operator for IdentityOperator {
-    fn nrows(&self) -> usize {
-        self.n
-    }
-    fn ncols(&self) -> usize {
-        self.n
-    }
-    #[inline(always)]
-    fn apply(&self, x: &[f64], y: &mut [f64]) {
-        y.copy_from_slice(x);
-    }
-    #[inline(always)]
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) {
-        y.copy_from_slice(x);
-    }
+    /// y = A*x. Returns an error if the operator cannot be applied
+    /// (e.g. a local subdomain solve diverges).
+    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), error::SolveError>;
+    /// y = A^T * x. For symmetric operators, this should delegate to `apply`.
+    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), error::SolveError>;
 }
 
 // ============================================================================
@@ -176,11 +124,8 @@ pub mod solve;
 mod sparse_matrix;
 
 pub use domain::{PartitionWeights, SubdomainCore};
-pub use error::{
-    ApplyError, LocalSolveError, PreconditionerBuildError, SolveError, SubdomainCoreBuildError,
-    SubdomainEntryBuildError,
-};
-pub use local_solve::{DefaultLocalSolveInvoker, LocalSolveInvoker, LocalSolver, SubdomainEntry};
+pub use error::{BuildError, SolveError};
+pub use local_solve::{LocalSolver, SubdomainEntry};
 pub use schwarz::{
     AdditiveSchwarzDiagnostics, MultiplicativeSchwarzPreconditioner, OperatorResidualUpdater,
     ReductionStrategy, ResidualUpdater, SchwarzPreconditioner,

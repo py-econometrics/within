@@ -7,31 +7,146 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+> Breaking changes affect Rust consumers of `within` and `schwarz-precond`
+> only. The Python API (`within.solve`, `within.Solver`) is unchanged.
+
+### Breaking Changes
+
+- **`SolveResult` fields are now private; access via getters.** Mirrors the
+  `BatchSolveResult` shape so internal storage can change without API
+  breakage. Migrations:
+  - `result.x` → `result.x()` (returns `&[f64]`)
+  - `result.demeaned` → `result.demeaned()` (returns `&[f64]`)
+  - `result.converged` → `result.converged()`
+  - `result.iterations` → `result.iterations()`
+  - `result.final_residual` → `result.final_residual()`
+  - `result.time_total` → `result.time_total()`
+  - `result.time_setup` → `result.time_setup()`
+  - `result.time_solve` → `result.time_solve()`
+  - For owned `x` / `demeaned` (e.g. moving into `ndarray::Array1`), use
+    `let (x, demeaned) = result.into_parts();`. Python API is unchanged.
+- **`within` crate root re-exports trimmed for stable release.** Lower-level
+  types are no longer surfaced at the crate root; they remain accessible via
+  their module paths. Migrations:
+  - `within::Design` → `within::domain::Design`
+  - `within::Subdomain` → `within::domain::Subdomain`
+  - `within::ArrayStore` / `within::Store` → `within::observation::{ArrayStore, Store}`
+  - `within::FactorMeta` → `within::observation::FactorMeta`
+  - `within::DesignOperator` → `within::operator::DesignOperator`
+  - `within::Gramian` / `within::GramianOperator` →
+    `within::operator::gramian::{Gramian, GramianOperator}`
+  - `within::FeSchwarz` → `within::operator::schwarz::FeSchwarz`
+  - `within::LocalSolverConfig`, `ApproxCholConfig`, `ApproxSchurConfig`,
+    `DEFAULT_DENSE_SCHUR_THRESHOLD` → `within::config::*`
+  Stable root API now includes only `solve`, `solve_batch`, `Solver`,
+  `SolveResult`, `BatchSolveResult`, `FePreconditioner`, `SolverParams`,
+  `Preconditioner`, `KrylovMethod`, `OperatorRepr`, `ReductionStrategy`,
+  `WithinError`, `WithinResult`, `FactorMajorStore`, and the `Operator`
+  trait. Python API is unchanged.
+- **Error enums consolidated from six to two.** `SubdomainCoreBuildError`,
+  `SubdomainEntryBuildError`, `PreconditionerBuildError` → `BuildError`.
+  `LocalSolveError`, `ApplyError`, and the prior `SolveError` →
+  `SolveError` (`#[non_exhaustive]`) with variants `LocalSolveFailed`,
+  `Synchronization`, `InvalidInput`. Match arms need a wildcard.
+- **`Operator::apply` / `apply_adjoint` are now fallible**, returning
+  `Result<(), SolveError>`. `try_apply` / `try_apply_adjoint` removed;
+  propagate with `?` at call sites.
+- **`LocalSolveInvoker` removed; parallelism hint moved to `LocalSolver`.**
+  `solve_local` now takes `allow_inner_parallelism: bool`.
+  `SchwarzPreconditioner` / `MultiplicativeSchwarzPreconditioner` drop
+  their `I: LocalSolveInvoker` type parameter. `with_strategy_and_invoker`
+  → `with_strategy`.
+- **`SubdomainEntry::apply_weighted_into_with_scratch` /
+  `apply_weighted_into_atomic` removed.** They were `pub` forwarders to
+  `_with(.., parallel: bool)` variants, now `pub(crate)`. Drive solves via
+  `SchwarzPreconditioner::apply` / `apply_adjoint`.
+- **Krylov solvers split back into idiomatic two-function pairs.** `pcg` /
+  `pgmres` / `mlsmr` no longer take `Option<&M>`; they require `&M` and
+  are paired with `cg` / `gmres` / `lsmr` for the unpreconditioned case.
+  This restores the std-library convention (cf. `Vec::new` /
+  `Vec::with_capacity`) and removes the `None::<&SomeType>` turbofish
+  burden at every unpreconditioned call site. `cg_solve`,
+  `cg_solve_preconditioned`, `gmres_solve`, and `preconditioned_lsmr`
+  remain removed (their replacements are the new `cg` / `pcg` etc.).
+- **`FeSchwarz` is now a type alias** of
+  `SchwarzPreconditioner<BlockElimSolver>`; the newtype wrapper and its
+  delegation methods are gone — call methods directly on the alias.
+- **`build_schwarz` removed.** Use
+  `build_preconditioner(&design, weights, gramian, &Preconditioner::Additive(cfg, ReductionStrategy::default()))`.
+- **Additive-Schwarz diagnostic free functions are now inherent methods**
+  on `FePreconditioner`: `additive_reduction_strategy`,
+  `resolved_additive_reduction_strategy`, `additive_schwarz_diagnostics`.
+  Call as `preconditioner.additive_schwarz_diagnostics()` etc.
+- **`FePreconditioner::subdomain_inner_parallel_work` removed** (Rust and
+  Python). The per-subdomain work vector had no in-tree callers; the
+  actionable scheduling signals (`total_inner_parallel_work`,
+  `max_inner_parallel_work`, `outer_parallel_capacity`) remain available
+  on `AdditiveSchwarzDiagnostics`.
+- **`schwarz_precond::IdentityOperator` removed.** Its original purpose
+  (deduplicating CG/LSMR by passing identity as preconditioner) was made
+  obsolete by the `pcg`/`pgmres`/`mlsmr` refactor to `Option<&M>`. Tests
+  that needed turbofish disambiguation can use any concrete `Operator`
+  type already in scope (`None::<&MyOp>`).
+- **Weights externalized from the store/design layer.** `ObservationStore`
+  → `Store` (no `weight()` / `is_unweighted()`); `ObservationWeights`
+  deleted. `FactorMajorStore::new` / `ArrayStore::new` no longer take
+  weights. `WeightedDesign` → `Design` (pure data + metadata); the
+  `matvec_d`, `rmatvec_dt`, `rmatvec_wdt`, `gather_add`, `scatter_add`,
+  `uid_weight`, `is_unweighted`, `gramian_diagonal` methods are gone —
+  use `DesignOperator` / `Gramian::build(&design, None|Some(&w))`.
+- **Operator layer carries optional weights on a single struct per role.**
+  `GramianOperator` covers both `D^T D` and `D^T W D`; `DesignOperator`
+  covers both `D` and `sqrt(W) D` (the LSMR rectangular form). One
+  constructor each: `GramianOperator::new(&design, weights: Option<&[f64]>)`
+  and `DesignOperator::new(&design, weights: Option<&[f64]>)` —
+  pass `None` for unweighted, `Some(&w)` for weighted. The branch on
+  weights is hoisted outside the per-row hot loop, so each variant
+  still monomorphizes to its own scatter kernel. Explicit assembly:
+  `Gramian::build(&design, weights: Option<&[f64]>)` (replaces both
+  prior `build` and `build_weighted`). `GramianOperator` borrows
+  `&'a [f64]` weights with the design's lifetime; `DesignOperator`
+  owns `Vec<f64>` of precomputed `sqrt(W)`.
+- **`Solver::from_design{,_with_preconditioner}` take
+  `weights: Option<Vec<f64>>`** between `design` and `params`.
+  `Solver::with_preconditioner` removed — use
+  `from_design_with_preconditioner` directly.
+- **Internal builders (`build_schwarz`, `build_preconditioner`,
+  `CrossTab::build_for_pair`, `domain::factor_pairs`) take
+  `Option<&[f64]>` weights** explicitly.
+- **`ArrayStore::new` is infallible** — returns `Self`, not
+  `WithinResult<Self>`. Drop `?` / `.unwrap()` at call sites.
+- **`MultiplicativeSchwarzPreconditioner::new`** drops the
+  `symmetric: bool` parameter (production always passed `false`).
+  Serialized blobs now have one fewer field; older blobs containing
+  `symmetric` won't deserialize.
+- **`within::observation::validate_weights` removed** (inlined at its
+  sole call site).
+- **`IdentityOperator`** no longer used by `pcg`/`pgmres` (they inline
+  `copy_from_slice` for the unpreconditioned path); type remains `pub`
+  for tests/examples.
+
 ### Added
 
-- **LSMR rectangular least-squares solver**: a preconditioned LSMR variant
-  operating directly on the weighted design operator (`sqrt(W) D`), exposed
-  via a new `KrylovMethod::Lsmr` and dispatched inline from `Solver::solve`.
-  Avoids explicit normal-equation formation for improved numerical
-  conditioning.
+- **LSMR rectangular least-squares solver** — preconditioned LSMR on
+  the weighted design operator (`sqrt(W) D`), exposed as
+  `KrylovMethod::Lsmr`. Avoids explicit normal-equation formation.
 
 ### Changed
 
-- **`schwarz_precond::SolveError` is now `#[non_exhaustive]`** and gained an
-  `InvalidInput { context, message }` variant for pre-iteration validation
-  failures. Downstream Rust consumers matching on `SolveError` must add a
-  wildcard arm. Future variant additions will not be breaking.
-- `SolveResult.iterations` and `BatchSolveResult.iterations` now report the
-  total Krylov iterations across the initial solve and any iterative-refinement
-  correction solves (previously: outer solve only).
+- `SolveResult.iterations` / `BatchSolveResult.iterations` now report
+  total Krylov iterations across the initial solve plus any
+  iterative-refinement corrections (previously: outer solve only).
 
 ### Fixed
 
-- CG stagnation guard threshold tightened from `EPS * rz_init` to
-  `EPS^2 * rz_init`. The old threshold fired at `||r||/||b|| ~ sqrt(EPS)`,
-  colliding with user tolerances near `1e-8` and causing spurious
-  non-convergence on well-conditioned problems. The new threshold fires
-  only at the true numerical-noise floor `||r|| ~ EPS * ||b||`.
+- **CG stagnation guard tightened** from `EPS * rz_init` to
+  `EPS^2 * rz_init`. The old threshold fired at `~sqrt(EPS)`, causing
+  spurious non-convergence near user tolerances of `1e-8`.
+- **Weighted-operator length checks active in release builds.**
+  `Gramian::build`, `GramianOperator::new`, and `DesignOperator::new`
+  (each when called with `Some(&w)`) now use `assert_eq!` (was
+  `debug_assert_eq!`) for `weights.len() == design.n_rows`. A mismatch
+  could previously mis-index silently in release.
 
 ## [0.1.0] - 2026-03-12
 

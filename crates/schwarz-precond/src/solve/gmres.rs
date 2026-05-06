@@ -237,7 +237,7 @@ fn apply_previous_givens(h: &mut HessenbergMatrix, cs: &[f64], sn: &[f64], j: us
 /// system and updating `x` once, regardless of the outcome.
 fn arnoldi_cycle<A: Operator + ?Sized, M: Operator + ?Sized>(
     operator: &A,
-    preconditioner: &M,
+    preconditioner: Option<&M>,
     bufs: &mut KrylovBuffers,
     abs_tol: f64,
     iters_this_cycle: usize,
@@ -253,13 +253,16 @@ fn arnoldi_cycle<A: Operator + ?Sized, M: Operator + ?Sized>(
             let v_j = bufs.v_basis.col(j);
             bufs.z_basis.push_zeroed();
             let z_j = bufs.z_basis.last_col_mut();
-            preconditioner.try_apply(v_j, z_j)?;
+            match preconditioner {
+                Some(m) => m.apply(v_j, z_j)?,
+                None => z_j.copy_from_slice(v_j),
+            }
         }
 
         // w = A z_j
         {
             let z_j = bufs.z_basis.col(j);
-            operator.try_apply(z_j, &mut bufs.w)?;
+            operator.apply(z_j, &mut bufs.w)?;
         }
 
         // Modified Gram-Schmidt orthogonalisation
@@ -327,7 +330,7 @@ fn compute_residual<A: Operator + ?Sized>(
     b: &[f64],
     r: &mut [f64],
 ) -> Result<f64, SolveError> {
-    operator.try_apply(x, r)?;
+    operator.apply(x, r)?;
     for (ri, &bi) in r.iter_mut().zip(b) {
         *ri = bi - *ri;
     }
@@ -338,17 +341,42 @@ fn compute_residual<A: Operator + ?Sized>(
 // Main entry point
 // ---------------------------------------------------------------------------
 
-/// Right-preconditioned GMRES(m) with restarts.
+/// Unpreconditioned GMRES(m) with restarts.
 ///
-/// Solves A x = b using right preconditioning: A M^{-1} (M x) = b.
-/// Uses Arnoldi iteration with Modified Gram-Schmidt orthogonalisation
-/// and Givens rotations to solve the Hessenberg least-squares problem.
+/// Solves `A x = b` using Arnoldi iteration with Modified Gram-Schmidt
+/// orthogonalisation and Givens rotations.
 ///
 /// `restart`: Krylov subspace dimension before restart (m in GMRES(m)).
-pub fn gmres_solve<A: Operator + ?Sized, M: Operator + ?Sized>(
+pub fn gmres<A: Operator + ?Sized>(
     operator: &A,
-    preconditioner: &M,
     b: &[f64],
+    tol: f64,
+    maxiter: usize,
+    restart: usize,
+) -> Result<GmresResult, SolveError> {
+    pgmres_impl::<A, A>(operator, b, None, tol, maxiter, restart)
+}
+
+/// Right-preconditioned GMRES(m) with restarts.
+///
+/// Solves `A x = b` using right preconditioning: `A M^{-1} (M x) = b`.
+///
+/// `restart`: Krylov subspace dimension before restart (m in GMRES(m)).
+pub fn pgmres<A: Operator + ?Sized, M: Operator + ?Sized>(
+    operator: &A,
+    b: &[f64],
+    preconditioner: &M,
+    tol: f64,
+    maxiter: usize,
+    restart: usize,
+) -> Result<GmresResult, SolveError> {
+    pgmres_impl(operator, b, Some(preconditioner), tol, maxiter, restart)
+}
+
+fn pgmres_impl<A: Operator + ?Sized, M: Operator + ?Sized>(
+    operator: &A,
+    b: &[f64],
+    preconditioner: Option<&M>,
     tol: f64,
     maxiter: usize,
     restart: usize,
@@ -448,27 +476,6 @@ pub fn gmres_solve<A: Operator + ?Sized, M: Operator + ?Sized>(
                 // Loop continues with updated x
             }
         }
-    }
-}
-
-/// Right-preconditioned GMRES(m) with optional preconditioner.
-///
-/// Dispatches to unpreconditioned GMRES (identity preconditioner) when
-/// `preconditioner` is `None`, or right-preconditioned GMRES when `Some(m)`.
-pub fn pgmres<A: Operator + ?Sized, M: Operator + ?Sized>(
-    operator: &A,
-    b: &[f64],
-    preconditioner: Option<&M>,
-    tol: f64,
-    maxiter: usize,
-    restart: usize,
-) -> Result<GmresResult, SolveError> {
-    match preconditioner {
-        None => {
-            let id = crate::IdentityOperator::new(operator.ncols());
-            gmres_solve(operator, &id, b, tol, maxiter, restart)
-        }
-        Some(m) => gmres_solve(operator, m, b, tol, maxiter, restart),
     }
 }
 

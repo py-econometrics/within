@@ -9,11 +9,15 @@ use std::time::Instant;
 
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
-use schwarz_precond::solve::cg::cg_solve_preconditioned;
-use within::domain::WeightedDesign;
-use within::observation::{FactorMajorStore, ObservationWeights};
-use within::LocalSolverConfig;
-use within::{build_schwarz, GramianOperator};
+use schwarz_precond::solve::cg::pcg;
+use schwarz_precond::{Operator, ReductionStrategy};
+use within::config::LocalSolverConfig;
+use within::domain::Design;
+use within::observation::FactorMajorStore;
+use within::operator::gramian::GramianOperator;
+use within::operator::preconditioner::build_preconditioner;
+use within::operator::DesignOperator;
+use within::Preconditioner;
 
 fn rss_mb() -> f64 {
     let pid = std::process::id();
@@ -30,7 +34,7 @@ fn rss_mb() -> f64 {
     0.0
 }
 
-fn generate_fixest_3fe(n_obs: usize, seed: u64) -> (WeightedDesign<FactorMajorStore>, Vec<f64>) {
+fn generate_fixest_3fe(n_obs: usize, seed: u64) -> (Design<FactorMajorStore>, Vec<f64>) {
     let mut rng = SmallRng::seed_from_u64(seed);
     let n_years = 10usize;
     let n_indiv_per_firm = 23usize;
@@ -50,9 +54,8 @@ fn generate_fixest_3fe(n_obs: usize, seed: u64) -> (WeightedDesign<FactorMajorSt
 
     let factor_levels = vec![indiv_id, year, firm_id];
 
-    let store = FactorMajorStore::new(factor_levels, ObservationWeights::Unit, n_obs)
-        .expect("valid factor-major store");
-    let design = WeightedDesign::from_store(store).expect("valid design");
+    let store = FactorMajorStore::new(factor_levels, n_obs).expect("valid factor-major store");
+    let design = Design::from_store(store).expect("valid design");
 
     let mut x_true = vec![0.0; design.n_dofs];
     for x in &mut x_true {
@@ -60,7 +63,9 @@ fn generate_fixest_3fe(n_obs: usize, seed: u64) -> (WeightedDesign<FactorMajorSt
     }
 
     let mut y = vec![0.0; n_obs];
-    design.matvec_d(&x_true, &mut y);
+    DesignOperator::new(&design, None)
+        .apply(&x_true, &mut y)
+        .expect("apply");
     for yi in &mut y {
         *yi += 0.1 * rng.random_range(-1.0..1.0);
     }
@@ -103,8 +108,16 @@ fn main() {
 
     // Phase 2: Build Schwarz preconditioner
     let t = Instant::now();
-    let schwarz = build_schwarz(&design, &LocalSolverConfig::solver_default())
-        .expect("build schwarz preconditioner");
+    let schwarz = build_preconditioner(
+        &design,
+        None,
+        None,
+        &Preconditioner::Additive(
+            LocalSolverConfig::solver_default(),
+            ReductionStrategy::default(),
+        ),
+    )
+    .expect("build schwarz preconditioner");
     let rss_schwarz = rss_mb();
     let dt_schwarz = t.elapsed().as_secs_f64();
     println!("\n[2] Build Schwarz Preconditioner ({dt_schwarz:.3}s)");
@@ -114,7 +127,7 @@ fn main() {
     );
 
     // Phase 3: Build GramianOperator (just a reference + scratch)
-    let gramian_op = GramianOperator::new(&design);
+    let gramian_op = GramianOperator::new(&design, None);
     let rss_gramian = rss_mb();
     println!("\n[3] GramianOperator");
     println!(
@@ -127,8 +140,8 @@ fn main() {
     let mut rhs = vec![0.0; design.n_dofs];
     {
         use schwarz_precond::Operator;
-        let design_op = within::DesignOperator::new(&design);
-        design_op.apply_adjoint(&y, &mut rhs);
+        let design_op = DesignOperator::new(&design, None);
+        design_op.apply_adjoint(&y, &mut rhs).expect("apply");
     }
     let rss_rhs = rss_mb();
     let dt_rhs = t.elapsed().as_secs_f64();
@@ -140,8 +153,7 @@ fn main() {
 
     // Phase 5: CG solve
     let t = Instant::now();
-    let cg_result =
-        cg_solve_preconditioned(&gramian_op, &schwarz, &rhs, 1e-8, 100).expect("cg solve");
+    let cg_result = pcg(&gramian_op, &rhs, &schwarz, 1e-8, 100).expect("cg solve");
     let rss_solve = rss_mb();
     let dt_solve = t.elapsed().as_secs_f64();
     println!("\n[5] CG Solve ({dt_solve:.3}s)");

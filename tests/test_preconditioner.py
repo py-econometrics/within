@@ -13,21 +13,7 @@ from within._within import (
     SchurComplement,
 )
 
-
-def as_solver_categories(cats):
-    return np.asfortranarray(np.column_stack(cats).astype(np.uint32))
-
-
-@pytest.fixture()
-def problem():
-    """Two-factor problem with 50 levels each, 10k observations."""
-    np.random.seed(42)
-    cats = [
-        np.random.randint(0, 50, size=10_000),
-        np.random.randint(0, 50, size=10_000),
-    ]
-    y = np.random.randn(10_000)
-    return cats, y
+from conftest import as_solver_categories
 
 
 @pytest.fixture()

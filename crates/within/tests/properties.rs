@@ -1,12 +1,12 @@
 use ndarray::Array2;
 use proptest::prelude::*;
 use schwarz_precond::Operator;
-use within::observation::{ArrayStore, ObservationWeights};
+use within::config::LocalSolverConfig;
+use within::domain::Design;
+use within::observation::ArrayStore;
 use within::operator::gramian::{Gramian, GramianOperator};
-use within::{
-    solve, FePreconditioner, LocalSolverConfig, Preconditioner, ReductionStrategy, SolverParams,
-    WeightedDesign,
-};
+use within::operator::DesignOperator;
+use within::{solve, FePreconditioner, Preconditioner, ReductionStrategy, SolverParams};
 
 /// Generate a random fixed-effects problem as (categories Array2<u32>, y Vec<f64>).
 fn random_fe_problem_strategy() -> impl Strategy<Value = (Array2<u32>, Vec<f64>)> {
@@ -51,9 +51,9 @@ proptest! {
 
     #[test]
     fn prop_gramian_symmetry((cats, _y) in random_fe_problem_strategy()) {
-        let store = ArrayStore::new(cats.view(), ObservationWeights::Unit).unwrap();
-        let design = WeightedDesign::from_store(store).unwrap();
-        let gramian = GramianOperator::new(&design);
+        let store = ArrayStore::new(cats.view());
+        let design = Design::from_store(store).unwrap();
+        let gramian = GramianOperator::new(&design, None);
         let n = design.n_dofs;
 
         // Test x^T G y == y^T G x for random vectors
@@ -62,8 +62,8 @@ proptest! {
 
         let mut gx = vec![0.0; n];
         let mut gy = vec![0.0; n];
-        gramian.apply(&x, &mut gx);
-        gramian.apply(&y, &mut gy);
+        gramian.apply(&x, &mut gx).expect("apply");
+        gramian.apply(&y, &mut gy).expect("apply");
 
         let xt_gy: f64 = x.iter().zip(gy.iter()).map(|(a, b)| a * b).sum();
         let yt_gx: f64 = y.iter().zip(gx.iter()).map(|(a, b)| a * b).sum();
@@ -73,17 +73,17 @@ proptest! {
 
     #[test]
     fn prop_explicit_equals_implicit_gramian((cats, _y) in random_fe_problem_strategy()) {
-        let store = ArrayStore::new(cats.view(), ObservationWeights::Unit).unwrap();
-        let design = WeightedDesign::from_store(store).unwrap();
-        let explicit = Gramian::build(&design);
-        let implicit = GramianOperator::new(&design);
+        let store = ArrayStore::new(cats.view());
+        let design = Design::from_store(store).unwrap();
+        let explicit = Gramian::build(&design, None);
+        let implicit = GramianOperator::new(&design, None);
         let n = design.n_dofs;
 
         let x: Vec<f64> = (0..n).map(|i| (i as f64 * 0.3).sin()).collect();
         let mut y_explicit = vec![0.0; n];
         let mut y_implicit = vec![0.0; n];
-        explicit.matvec(&x, &mut y_explicit);
-        implicit.apply(&x, &mut y_implicit);
+        explicit.matrix.matvec(&x, &mut y_explicit);
+        implicit.apply(&x, &mut y_implicit).expect("apply");
 
         for (a, b) in y_explicit.iter().zip(y_implicit.iter()) {
             prop_assert!((a - b).abs() < 1e-10, "explicit vs implicit: {} vs {}", a, b);
@@ -106,8 +106,8 @@ proptest! {
 
         let mut y1 = vec![0.0; n];
         let mut y2 = vec![0.0; n];
-        fe_precond.apply(&x, &mut y1);
-        deserialized.apply(&x, &mut y2);
+        fe_precond.apply(&x, &mut y1).expect("apply");
+        deserialized.apply(&x, &mut y2).expect("apply");
 
         for (a, b) in y1.iter().zip(y2.iter()) {
             prop_assert!((a - b).abs() < 1e-12, "serde roundtrip mismatch: {} vs {}", a, b);
@@ -117,14 +117,14 @@ proptest! {
     #[test]
     fn prop_solver_convergence((cats, _y) in random_fe_problem_strategy()) {
         // Create y = D * x_true so we know the answer
-        let store = ArrayStore::new(cats.view(), ObservationWeights::Unit).unwrap();
-        let design = WeightedDesign::from_store(store).unwrap();
+        let store = ArrayStore::new(cats.view());
+        let design = Design::from_store(store).unwrap();
         let n_dofs = design.n_dofs;
         let n_obs = design.n_rows;
 
         let x_true: Vec<f64> = (0..n_dofs).map(|i| (i as f64 * 0.4).sin()).collect();
         let mut y = vec![0.0; n_obs];
-        design.matvec_d(&x_true, &mut y);
+        DesignOperator::new(&design, None).apply(&x_true, &mut y).expect("apply");
 
         // Use slightly relaxed tolerance — randomly generated problems can be
         // borderline at 1e-8 (e.g. residual 1.02e-8 after 13 iters).
@@ -135,8 +135,8 @@ proptest! {
         let precond = additive_precond();
         let result = solve(cats.view(), &y, None, &params, Some(&precond)).unwrap();
 
-        prop_assert!(result.converged, "Solver did not converge after {} iterations (residual: {:.2e}, n_obs: {}, n_dofs: {})",
-            result.iterations, result.final_residual, n_obs, n_dofs);
+        prop_assert!(result.converged(), "Solver did not converge after {} iterations (residual: {:.2e}, n_obs: {}, n_dofs: {})",
+            result.iterations(), result.final_residual(), n_obs, n_dofs);
     }
 
     #[test]
@@ -145,13 +145,13 @@ proptest! {
         let precond = additive_precond();
         let result = solve(cats.view(), &y, None, &params, Some(&precond)).unwrap();
 
-        if !result.converged {
+        if !result.converged() {
             return Ok(());
         }
 
         let n_obs = y.len();
         let n_factors = cats.ncols();
-        let residual = &result.demeaned;
+        let residual = &result.demeaned();
 
         // D^T * residual should be ≈ 0
         for f in 0..n_factors {

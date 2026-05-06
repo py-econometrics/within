@@ -3,25 +3,21 @@
 // ===========================================================================
 
 mod design_tests {
-    use crate::domain::WeightedDesign;
-    use crate::observation::{FactorMajorStore, ObservationWeights};
+    use crate::domain::Design;
+    use crate::observation::FactorMajorStore;
     use crate::operator::DesignOperator;
     use schwarz_precond::Operator;
 
-    fn make_test_design() -> WeightedDesign<FactorMajorStore> {
-        let store = FactorMajorStore::new(
-            vec![vec![0, 1, 2, 0, 1], vec![0, 1, 2, 3, 0]],
-            ObservationWeights::Unit,
-            5,
-        )
-        .expect("valid factor-major store");
-        WeightedDesign::from_store(store).expect("valid test design")
+    fn make_test_design() -> Design<FactorMajorStore> {
+        let store = FactorMajorStore::new(vec![vec![0, 1, 2, 0, 1], vec![0, 1, 2, 3, 0]], 5)
+            .expect("valid factor-major store");
+        Design::from_store(store).expect("valid test design")
     }
 
     #[test]
     fn test_design_operator_dimensions() {
         let schema = make_test_design();
-        let op = DesignOperator::new(&schema);
+        let op = DesignOperator::new(&schema, None);
         assert_eq!(op.nrows(), 5);
         assert_eq!(op.ncols(), 7);
     }
@@ -29,17 +25,17 @@ mod design_tests {
     #[test]
     fn test_design_operator_adjoint() {
         let schema = make_test_design();
-        let op = DesignOperator::new(&schema);
+        let op = DesignOperator::new(&schema, None);
 
         let x = vec![1.0, -0.5, 2.0, 0.3, -1.0, 0.7, 1.5];
         let r = vec![0.1, 0.2, -0.3, 0.4, -0.5];
 
         let mut dx = vec![0.0; 5];
-        op.apply(&x, &mut dx);
+        op.apply(&x, &mut dx).expect("apply");
         let lhs: f64 = dx.iter().zip(r.iter()).map(|(a, b)| a * b).sum();
 
         let mut dtr = vec![0.0; 7];
-        op.apply_adjoint(&r, &mut dtr);
+        op.apply_adjoint(&r, &mut dtr).expect("apply");
         let rhs: f64 = x.iter().zip(dtr.iter()).map(|(a, b)| a * b).sum();
 
         assert!((lhs - rhs).abs() < 1e-12);
@@ -48,20 +44,20 @@ mod design_tests {
     #[test]
     fn test_matvec_d() {
         let schema = make_test_design();
-        let op = DesignOperator::new(&schema);
+        let op = DesignOperator::new(&schema, None);
         let x = vec![1.0, 2.0, 3.0, 10.0, 20.0, 30.0, 40.0];
         let mut y = vec![0.0; 5];
-        op.apply(&x, &mut y);
+        op.apply(&x, &mut y).expect("apply");
         assert_eq!(y, vec![11.0, 22.0, 33.0, 41.0, 12.0]);
     }
 
     #[test]
     fn test_rmatvec_dt() {
         let schema = make_test_design();
-        let op = DesignOperator::new(&schema);
+        let op = DesignOperator::new(&schema, None);
         let r = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         let mut x = vec![0.0; 7];
-        op.apply_adjoint(&r, &mut x);
+        op.apply_adjoint(&r, &mut x).expect("apply");
         assert_eq!(x, vec![5.0, 7.0, 3.0, 6.0, 2.0, 3.0, 4.0]);
     }
 }
@@ -168,26 +164,22 @@ mod csr_block_tests {
 // ===========================================================================
 
 mod residual_update_tests {
-    use crate::observation::{FactorMajorStore, ObservationWeights};
+    use crate::observation::FactorMajorStore;
     use crate::operator::gramian::Gramian;
-    use crate::operator::residual_update::SparseGramianUpdater;
+    use crate::operator::schwarz::SparseGramianUpdater;
     use schwarz_precond::{OperatorResidualUpdater, ResidualUpdater};
 
     /// Helper: build a design, explicit Gramian.
     fn make_test_setup() -> (Gramian, usize) {
-        use crate::domain::WeightedDesign;
+        use crate::domain::Design;
         // 2 factors, 5 observations
         // factor 0: [0, 1, 2, 0, 1] (3 levels)
         // factor 1: [0, 1, 2, 3, 0] (4 levels)
         // n_dofs = 7
-        let store = FactorMajorStore::new(
-            vec![vec![0, 1, 2, 0, 1], vec![0, 1, 2, 3, 0]],
-            ObservationWeights::Unit,
-            5,
-        )
-        .expect("valid factor-major store");
-        let design = WeightedDesign::from_store(store).expect("valid fixed-effects design");
-        let gramian = Gramian::build(&design);
+        let store = FactorMajorStore::new(vec![vec![0, 1, 2, 0, 1], vec![0, 1, 2, 3, 0]], 5)
+            .expect("valid factor-major store");
+        let design = Design::from_store(store).expect("valid fixed-effects design");
+        let gramian = Gramian::build(&design, None);
         let n_dofs = design.n_dofs;
         (gramian, n_dofs)
     }
@@ -310,15 +302,14 @@ mod residual_update_tests {
 
     #[test]
     fn test_sparse_gramian_updater_weighted_design() {
-        use crate::domain::WeightedDesign;
+        use crate::domain::Design;
 
         let fl = vec![vec![0u32, 1, 0, 1], vec![0, 0, 1, 1]];
         let weights = vec![1.0, 2.0, 3.0, 4.0];
 
-        let store = FactorMajorStore::new(fl, ObservationWeights::Dense(weights), 4)
-            .expect("valid weighted store");
-        let design = WeightedDesign::from_store(store).expect("valid weighted design");
-        let gramian = Gramian::build(&design);
+        let store = FactorMajorStore::new(fl, 4).expect("valid weighted store");
+        let design = Design::from_store(store).expect("valid weighted design");
+        let gramian = Gramian::build(&design, Some(&weights));
         let n_dofs = design.n_dofs;
 
         let mut sparse_updater = SparseGramianUpdater::new(gramian.matrix.clone());
@@ -354,9 +345,54 @@ mod schur_complement_tests {
     use crate::operator::csr_block::CsrBlock;
     use crate::operator::gramian::CrossTab;
     use crate::operator::schur_complement::{
-        ApproxSchurComplement, ExactSchurComplement, SchurComplement,
+        ApproxSchurComplement, Elimination, EliminationInfo, ExactSchurComplement, SchurComplement,
     };
+    use crate::WithinResult;
     use schwarz_precond::SparseMatrix;
+
+    /// Dense Schur complement result (row-major matrix + elimination metadata).
+    struct DenseSchurResult {
+        matrix: Vec<f64>,
+        n: usize,
+        elimination: EliminationInfo,
+    }
+
+    /// Compute the exact Schur complement as a dense row-major matrix.
+    fn compute_dense_schur(cross_tab: &CrossTab) -> WithinResult<DenseSchurResult> {
+        let elim = Elimination::new(cross_tab)?;
+        let n_keep = elim.n_keep;
+        let mut matrix = vec![0.0; n_keep * n_keep];
+
+        for i in 0..n_keep {
+            matrix[i * n_keep + i] = elim.diag_keep[i];
+        }
+
+        let inv_diag_elim = &elim.inv_diag_elim;
+        let keep_to_elim = elim.keep_to_elim;
+        let elim_to_keep = elim.elim_to_keep;
+
+        // S = D_keep - keep_to_elim * diag(inv_diag_elim) * elim_to_keep
+        for i in 0..n_keep {
+            let fwd_start = keep_to_elim.indptr[i] as usize;
+            let fwd_end = keep_to_elim.indptr[i + 1] as usize;
+            for fwd_idx in fwd_start..fwd_end {
+                let k = keep_to_elim.indices[fwd_idx] as usize;
+                let scale = keep_to_elim.data[fwd_idx] * inv_diag_elim[k];
+                let bwd_start = elim_to_keep.indptr[k] as usize;
+                let bwd_end = elim_to_keep.indptr[k + 1] as usize;
+                for bwd_idx in bwd_start..bwd_end {
+                    let j = elim_to_keep.indices[bwd_idx] as usize;
+                    matrix[i * n_keep + j] -= scale * elim_to_keep.data[bwd_idx];
+                }
+            }
+        }
+
+        Ok(DenseSchurResult {
+            matrix,
+            n: n_keep,
+            elimination: elim.into_info(),
+        })
+    }
 
     fn make_cross_tab(
         c_dense: &[f64],
@@ -504,7 +540,7 @@ mod schur_complement_tests {
         let cross_tab = make_cross_tab(&c_dense, 3, 2, vec![5.0, 6.0, 8.0], vec![7.0, 9.0]);
 
         let sparse = ExactSchurComplement.compute(&cross_tab).unwrap();
-        let dense = ExactSchurComplement.compute_dense(&cross_tab).unwrap();
+        let dense = compute_dense_schur(&cross_tab).unwrap();
 
         assert_eq!(dense.n, sparse.matrix.n());
         assert_eq!(
@@ -536,7 +572,7 @@ mod schur_complement_tests {
         let c_dense = vec![1.0, 2.0, 3.0, 0.0, 0.0, 4.0];
         let cross_tab = make_cross_tab(&c_dense, 3, 2, vec![5.0, 6.0, 8.0], vec![7.0, 9.0]);
 
-        let full = ExactSchurComplement.compute_dense(&cross_tab).unwrap();
+        let full = compute_dense_schur(&cross_tab).unwrap();
         let anchored = ExactSchurComplement
             .compute_dense_anchored(&cross_tab)
             .unwrap();
@@ -607,30 +643,34 @@ mod schwarz_tests {
     use std::time::{Duration, Instant};
 
     use crate::config::{
-        ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, DEFAULT_DENSE_SCHUR_THRESHOLD,
+        ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, Preconditioner,
+        DEFAULT_DENSE_SCHUR_THRESHOLD,
     };
-    use crate::domain::{build_local_domains, Subdomain, SubdomainCore, WeightedDesign};
-    use crate::observation::{FactorMajorStore, ObservationWeights};
+    use crate::domain::{build_local_domains, Design, Subdomain, SubdomainCore};
+    use crate::observation::FactorMajorStore;
     use crate::operator::csr_block::CsrBlock;
     use crate::operator::gramian::CrossTab;
-    use crate::operator::local_solver::BlockElimSolver;
+    use crate::operator::local_solver::{BlockElimSolver, ReducedFactor};
+    use crate::operator::preconditioner::{build_preconditioner, FePreconditioner};
     use crate::operator::schwarz::{
-        build_additive, build_additive_with_strategy, build_entry, build_reduced_schur_factor,
-        build_schwarz, ReducedSchurConfig,
+        build_additive_with_strategy, build_entry, build_reduced_schur_factor, ReducedSchurConfig,
     };
     use schwarz_precond::{LocalSolver, Operator, ReductionStrategy};
 
     const BLOCK_ELIM_NESTED_RAYON_CHILD_ENV: &str = "WITHIN_TEST_BLOCK_ELIM_NESTED_RAYON_CHILD";
 
-    fn make_test_data() -> (WeightedDesign<FactorMajorStore>, Vec<(Subdomain, CrossTab)>) {
-        let store = FactorMajorStore::new(
-            vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]],
-            ObservationWeights::Unit,
-            5,
-        )
-        .expect("valid factor-major store");
-        let design = WeightedDesign::from_store(store).expect("valid fixed-effects design");
-        let domain_pairs = build_local_domains(&design);
+    fn uses_dense_reduced_factor(solver: &BlockElimSolver) -> bool {
+        matches!(solver.reduced_factor, ReducedFactor::Dense(_))
+    }
+
+    fn make_test_data() -> (
+        Design<FactorMajorStore>,
+        Vec<(Subdomain, std::sync::Arc<CrossTab>)>,
+    ) {
+        let store = FactorMajorStore::new(vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]], 5)
+            .expect("valid factor-major store");
+        let design = Design::from_store(store).expect("valid fixed-effects design");
+        let domain_pairs = build_local_domains(&design, None);
         (design, domain_pairs)
     }
 
@@ -729,8 +769,8 @@ mod schwarz_tests {
         n_keep: usize,
         elim_ratio: usize,
         n_subdomains: usize,
-    ) -> (usize, Vec<(Subdomain, CrossTab)>) {
-        let cross_tab = synthetic_sparse_cross_tab(n_keep, elim_ratio);
+    ) -> (usize, Vec<(Subdomain, std::sync::Arc<CrossTab>)>) {
+        let cross_tab = std::sync::Arc::new(synthetic_sparse_cross_tab(n_keep, elim_ratio));
         let n_local = cross_tab.n_local();
         let global_indices: Vec<u32> = (0..n_local as u32).collect();
 
@@ -741,7 +781,7 @@ mod schwarz_tests {
                         factor_pair: (idx, idx + 1),
                         core: SubdomainCore::uniform(global_indices.clone()),
                     },
-                    cross_tab.clone(),
+                    std::sync::Arc::clone(&cross_tab),
                 )
             })
             .collect();
@@ -792,8 +832,8 @@ mod schwarz_tests {
             for _ in 0..4 {
                 let mut z_reduction = vec![0.0; n_dofs];
                 let mut z_atomic = vec![0.0; n_dofs];
-                reduction.apply(&rhs, &mut z_reduction);
-                atomic.apply(&rhs, &mut z_atomic);
+                reduction.apply(&rhs, &mut z_reduction).expect("apply");
+                atomic.apply(&rhs, &mut z_atomic).expect("apply");
 
                 for (i, (&zr, &za)) in z_reduction.iter().zip(&z_atomic).enumerate() {
                     assert!(
@@ -918,7 +958,7 @@ mod schwarz_tests {
         for _ in 0..iters {
             rhs[..n_local].copy_from_slice(&rhs_template);
             solver
-                .solve_local(&mut rhs, &mut sol)
+                .solve_local(&mut rhs, &mut sol, true)
                 .expect("benchmark local solve");
             checksum += sol[0];
         }
@@ -930,13 +970,18 @@ mod schwarz_tests {
     fn test_build_schwarz() {
         let (design, domain_pairs) = make_test_data();
         let config = LocalSolverConfig::default();
-        let schwarz = build_additive(domain_pairs, design.n_dofs, &config)
-            .expect("build schwarz with explicit domains");
+        let schwarz = build_additive_with_strategy(
+            domain_pairs,
+            design.n_dofs,
+            &config,
+            ReductionStrategy::default(),
+        )
+        .expect("build schwarz with explicit domains");
         assert!(!schwarz.subdomains().is_empty());
 
         let r = vec![1.0; design.n_dofs];
         let mut z = vec![0.0; design.n_dofs];
-        schwarz.apply(&r, &mut z);
+        schwarz.apply(&r, &mut z).expect("apply");
         assert!(z.iter().all(|&v| v.is_finite()));
     }
 
@@ -944,7 +989,17 @@ mod schwarz_tests {
     fn test_build_default() {
         let (design, _) = make_test_data();
         let config = LocalSolverConfig::default();
-        let schwarz = build_schwarz(&design, &config).expect("build default schwarz");
+        let precond = build_preconditioner(
+            &design,
+            None,
+            None,
+            &Preconditioner::Additive(config.clone(), ReductionStrategy::default()),
+        )
+        .expect("build default schwarz");
+        let schwarz = match precond {
+            FePreconditioner::Additive(p) => p,
+            _ => panic!("expected additive"),
+        };
         assert!(!schwarz.subdomains().is_empty());
     }
 
@@ -960,7 +1015,7 @@ mod schwarz_tests {
         };
         let entry =
             build_entry(domain, cross_tab, &config).expect("exact Schur entry build failed");
-        assert!(entry.solver().uses_dense_reduced_factor());
+        assert!(uses_dense_reduced_factor(entry.solver()));
     }
 
     #[test]
@@ -978,7 +1033,7 @@ mod schwarz_tests {
         };
         let entry =
             build_entry(domain, cross_tab, &config).expect("approximate Schur entry build failed");
-        assert!(entry.solver().uses_dense_reduced_factor());
+        assert!(uses_dense_reduced_factor(entry.solver()));
     }
 
     #[test]
@@ -993,7 +1048,7 @@ mod schwarz_tests {
         };
         let entry =
             build_entry(domain, cross_tab, &config).expect("exact Schur entry build failed");
-        assert!(!entry.solver().uses_dense_reduced_factor());
+        assert!(!uses_dense_reduced_factor(entry.solver()));
     }
 
     #[test]
@@ -1177,7 +1232,7 @@ mod block_elim_tests {
         let mut sol = vec![0.0; scratch_sz];
 
         solver
-            .solve_local(&mut rhs, &mut sol)
+            .solve_local(&mut rhs, &mut sol, true)
             .expect("solve_local should succeed");
 
         // Solution must be finite.
@@ -1199,18 +1254,14 @@ mod preconditioner_fused_tests {
     use schwarz_precond::Operator;
 
     use crate::config::{LocalSolverConfig, Preconditioner, ReductionStrategy};
-    use crate::domain::WeightedDesign;
-    use crate::observation::{FactorMajorStore, ObservationWeights};
+    use crate::domain::Design;
+    use crate::observation::FactorMajorStore;
     use crate::operator::preconditioner::build_preconditioner_fused;
 
-    fn make_test_design() -> WeightedDesign<FactorMajorStore> {
-        let store = FactorMajorStore::new(
-            vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]],
-            ObservationWeights::Unit,
-            5,
-        )
-        .expect("valid factor-major store");
-        WeightedDesign::from_store(store).expect("valid fixed-effects design")
+    fn make_test_design() -> Design<FactorMajorStore> {
+        let store = FactorMajorStore::new(vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]], 5)
+            .expect("valid factor-major store");
+        Design::from_store(store).expect("valid fixed-effects design")
     }
 
     #[test]
@@ -1220,7 +1271,7 @@ mod preconditioner_fused_tests {
             Preconditioner::Additive(LocalSolverConfig::default(), ReductionStrategy::Auto);
 
         let (gramian, precond) =
-            build_preconditioner_fused(&design, &config).expect("fused build should succeed");
+            build_preconditioner_fused(&design, None, &config).expect("fused build should succeed");
 
         // Gramian dimensions must match n_dofs.
         assert_eq!(gramian.matrix.n(), design.n_dofs);
@@ -1232,7 +1283,7 @@ mod preconditioner_fused_tests {
         // apply must produce finite output.
         let r = vec![1.0; design.n_dofs];
         let mut z = vec![0.0; design.n_dofs];
-        precond.apply(&r, &mut z);
+        precond.apply(&r, &mut z).expect("apply");
 
         for (i, &v) in z.iter().enumerate() {
             assert!(
@@ -1248,7 +1299,7 @@ mod preconditioner_fused_tests {
         let config = Preconditioner::Multiplicative(LocalSolverConfig::default());
 
         let (gramian, precond) =
-            build_preconditioner_fused(&design, &config).expect("fused build should succeed");
+            build_preconditioner_fused(&design, None, &config).expect("fused build should succeed");
 
         assert_eq!(gramian.matrix.n(), design.n_dofs);
         assert_eq!(precond.nrows(), design.n_dofs);
@@ -1256,7 +1307,7 @@ mod preconditioner_fused_tests {
 
         let r = vec![1.0; design.n_dofs];
         let mut z = vec![0.0; design.n_dofs];
-        precond.apply(&r, &mut z);
+        precond.apply(&r, &mut z).expect("apply");
 
         for (i, &v) in z.iter().enumerate() {
             assert!(

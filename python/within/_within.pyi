@@ -368,10 +368,6 @@ class FePreconditioner:
     def n_subdomains(self) -> int:
         """Number of Schwarz subdomains."""
         ...
-    @property
-    def subdomain_inner_parallel_work(self) -> list[int]:
-        """Estimated inner parallel work per subdomain."""
-        ...
     def additive_schwarz_diagnostics(self) -> AdditiveSchwarzDiagnostics | None:
         """Return diagnostics if this is an additive preconditioner, else ``None``."""
         ...

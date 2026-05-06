@@ -1,7 +1,7 @@
 use ndarray::array;
+use within::config::LocalSolverConfig;
 use within::{
-    solve, solve_batch, KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner,
-    ReductionStrategy, SolverParams,
+    solve, solve_batch, KrylovMethod, OperatorRepr, Preconditioner, ReductionStrategy, SolverParams,
 };
 
 #[path = "common/orchestrate_helpers.rs"]
@@ -84,10 +84,10 @@ fn test_solve_batch_matches_individual() {
     .expect("solve batch");
 
     assert_eq!(batch.n_rhs(), 2);
-    for (a, b) in batch.x(0).iter().zip(r1.x.iter()) {
+    for (a, b) in batch.x(0).iter().zip(r1.x().iter()) {
         assert!((a - b).abs() < 1e-12, "batch vs individual x mismatch");
     }
-    for (a, b) in batch.x(1).iter().zip(r2.x.iter()) {
+    for (a, b) in batch.x(1).iter().zip(r2.x().iter()) {
         assert!((a - b).abs() < 1e-12, "batch vs individual x mismatch");
     }
 }

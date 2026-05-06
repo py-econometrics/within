@@ -4,9 +4,9 @@
 //! of the local submatrix extracted from the global operator.
 
 use faer::{MatRef, Side};
-use schwarz_precond::solve::cg::cg_solve_preconditioned;
+use schwarz_precond::solve::cg::pcg;
 use schwarz_precond::{
-    LocalSolveError, LocalSolver, Operator, SchwarzPreconditioner, SparseMatrix, SubdomainCore,
+    LocalSolver, Operator, SchwarzPreconditioner, SolveError, SparseMatrix, SubdomainCore,
     SubdomainEntry,
 };
 
@@ -25,7 +25,7 @@ impl Operator for TridiagOperator {
     fn ncols(&self) -> usize {
         self.n
     }
-    fn apply(&self, x: &[f64], y: &mut [f64]) {
+    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
         for i in 0..self.n {
             y[i] = 3.0 * x[i];
             if i > 0 {
@@ -35,9 +35,10 @@ impl Operator for TridiagOperator {
                 y[i] -= x[i + 1];
             }
         }
+        Ok(())
     }
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) {
-        self.apply(x, y);
+    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+        self.apply(x, y)
     }
 }
 
@@ -147,7 +148,12 @@ impl LocalSolver for DenseCholeskyLocalSolver {
     fn scratch_size(&self) -> usize {
         self.n_local
     }
-    fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), LocalSolveError> {
+    fn solve_local(
+        &self,
+        rhs: &mut [f64],
+        sol: &mut [f64],
+        _allow_inner_parallelism: bool,
+    ) -> Result<(), SolveError> {
         self.solve(rhs, sol);
         Ok(())
     }
@@ -194,8 +200,7 @@ fn main() {
 
     let precond = SchwarzPreconditioner::new(build_entries(&a_sparse, n), n)
         .expect("valid additive schwarz preconditioner");
-    let result =
-        cg_solve_preconditioned(&a, &precond, &rhs, 1e-10, 200).expect("preconditioned cg");
+    let result = pcg(&a, &rhs, &precond, 1e-10, 200).expect("preconditioned cg");
     println!(
         "Dense Cholesky Schwarz CG: converged={}, iterations={:>3}, residual={:.3e}",
         result.converged, result.iterations, result.residual_norm,

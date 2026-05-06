@@ -46,29 +46,10 @@ use std::sync::Arc;
 use approx_chol::Factor;
 use faer::{MatRef, Side};
 use rayon::prelude::*;
-use schwarz_precond::{LocalSolveError, LocalSolveInvoker, LocalSolver};
+use schwarz_precond::{LocalSolver, SolveError};
 
 use crate::operator::csr_block::{CsrBlock, PAR_SPMV_THRESHOLD};
 use crate::operator::gramian::CrossTab;
-
-// ===========================================================================
-// FeLocalSolveInvoker — delegates to BlockElimSolver with parallelism control
-// ===========================================================================
-
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct FeLocalSolveInvoker;
-
-impl LocalSolveInvoker<BlockElimSolver> for FeLocalSolveInvoker {
-    fn solve_local(
-        &self,
-        solver: &BlockElimSolver,
-        rhs: &mut [f64],
-        sol: &mut [f64],
-        allow_inner_parallelism: bool,
-    ) -> Result<(), LocalSolveError> {
-        solver.solve_local_with_parallelism(rhs, sol, allow_inner_parallelism)
-    }
-}
 
 // ===========================================================================
 // Transform helpers — sign-flipping, mean subtraction, back-substitution
@@ -164,14 +145,6 @@ pub(crate) enum ReducedFactor {
 }
 
 impl ReducedFactor {
-    pub(crate) fn approx(factor: Factor) -> Self {
-        Self::Approx(factor)
-    }
-
-    pub(crate) fn try_dense_laplacian_minor(anchored_minor: Vec<f64>, n: usize) -> Option<Self> {
-        AnchoredDenseCholesky::try_from_dense_anchored_minor(anchored_minor, n).map(Self::Dense)
-    }
-
     fn n(&self) -> usize {
         match self {
             Self::Approx(f) => f.n(),
@@ -179,12 +152,13 @@ impl ReducedFactor {
         }
     }
 
-    fn solve_in_place(&self, x: &mut [f64]) -> Result<(), LocalSolveError> {
+    fn solve_in_place(&self, x: &mut [f64]) -> Result<(), SolveError> {
         match self {
             Self::Approx(f) => {
                 debug_assert_eq!(f.n(), x.len());
                 f.solve_in_place(x)
-                    .map_err(|e| LocalSolveError::ApproxCholSolveFailed {
+                    .map_err(|e| SolveError::LocalSolveFailed {
+                        subdomain: 0,
                         context: "within.local.block_elim.reduced_approx",
                         message: e.to_string(),
                     })?;
@@ -212,7 +186,7 @@ pub(crate) struct AnchoredDenseCholesky {
 }
 
 impl AnchoredDenseCholesky {
-    fn try_from_dense_anchored_minor(dense_minor: Vec<f64>, n: usize) -> Option<Self> {
+    pub(crate) fn try_from_dense_anchored_minor(dense_minor: Vec<f64>, n: usize) -> Option<Self> {
         let m = n.saturating_sub(1);
         if m == 0 {
             return Some(Self {
@@ -311,7 +285,7 @@ pub struct BlockElimSolver {
     /// `1 / D_elim[k]` for the eliminated (larger) diagonal block.
     inv_diag_elim: Vec<f64>,
     /// Reduced-system factor backend.
-    reduced_factor: ReducedFactor,
+    pub(crate) reduced_factor: ReducedFactor,
     /// True if the q-block was eliminated (n_q >= n_r).
     eliminate_q: bool,
     /// Total DOF count (`n_q + n_r`).
@@ -339,30 +313,23 @@ impl BlockElimSolver {
             n_reduced,
         }
     }
-
-    #[cfg(test)]
-    pub(crate) fn uses_dense_reduced_factor(&self) -> bool {
-        matches!(self.reduced_factor, ReducedFactor::Dense(_))
-    }
-
-    fn estimated_inner_parallel_work(&self) -> usize {
-        let max_rows = self.cross_tab.n_q().max(self.cross_tab.n_r());
-        if max_rows <= PAR_BACKSUB_THRESHOLD.max(PAR_SPMV_THRESHOLD) {
-            return 0;
-        }
-
-        let cross_nnz = self.cross_tab.c.nnz();
-        (2 * cross_nnz) + self.n_local
-    }
 }
 
-impl BlockElimSolver {
-    fn solve_local_with_parallelism(
+impl LocalSolver for BlockElimSolver {
+    fn n_local(&self) -> usize {
+        self.n_local
+    }
+
+    fn scratch_size(&self) -> usize {
+        self.n_local + self.n_reduced
+    }
+
+    fn solve_local(
         &self,
         rhs: &mut [f64],
         sol: &mut [f64],
         allow_inner_parallelism: bool,
-    ) -> Result<(), LocalSolveError> {
+    ) -> Result<(), SolveError> {
         let n = self.n_local;
         let n_q = self.cross_tab.n_q();
         let n_r = self.cross_tab.n_r();
@@ -447,23 +414,15 @@ impl BlockElimSolver {
         negate_block(&mut sol[..n], n_q);
         Ok(())
     }
-}
-
-impl LocalSolver for BlockElimSolver {
-    fn n_local(&self) -> usize {
-        self.n_local
-    }
-
-    fn scratch_size(&self) -> usize {
-        self.n_local + self.n_reduced
-    }
-
-    fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), LocalSolveError> {
-        self.solve_local_with_parallelism(rhs, sol, true)
-    }
 
     fn inner_parallelism_work_estimate(&self) -> usize {
-        self.estimated_inner_parallel_work()
+        let max_rows = self.cross_tab.n_q().max(self.cross_tab.n_r());
+        if max_rows <= PAR_BACKSUB_THRESHOLD.max(PAR_SPMV_THRESHOLD) {
+            return 0;
+        }
+
+        let cross_nnz = self.cross_tab.c.nnz();
+        (2 * cross_nnz) + self.n_local
     }
 }
 

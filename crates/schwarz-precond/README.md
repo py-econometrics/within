@@ -26,7 +26,7 @@ use schwarz_precond::{
     LocalSolver, Operator, SubdomainCore, SubdomainEntry,
     SchwarzPreconditioner,
 };
-use schwarz_precond::solve::cg::cg_solve_preconditioned;
+use schwarz_precond::solve::cg::pcg;
 
 // --- Tridiagonal SPD operator: A = tridiag(-1, 3, -1) ---
 struct TridiagOp(usize);
@@ -54,7 +54,7 @@ impl LocalSolver for DiagSolver {
         &self,
         rhs: &mut [f64],
         sol: &mut [f64],
-    ) -> Result<(), schwarz_precond::LocalSolveError> {
+    ) -> Result<(), schwarz_precond::SolveError> {
         for i in 0..self.0 { sol[i] = rhs[i] / self.1; }
         Ok(())
     }
@@ -77,7 +77,7 @@ fn main() {
         .collect();
 
     let precond = SchwarzPreconditioner::new(entries, n).expect("valid preconditioner");
-    let result = cg_solve_preconditioned(&a, &precond, &b, 1e-10, 500).expect("cg should converge");
+    let result = pcg(&a, &b, Some(&precond), 1e-10, 500).expect("cg should converge");
 
     println!("converged={} iters={} res={:.3e}",
         result.converged, result.iterations, result.residual_norm);

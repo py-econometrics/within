@@ -3,7 +3,38 @@
 use super::bidiag::{Bidiagonalization, GolubKahan};
 use super::*;
 use crate::solve::{dot, vec_norm};
-use crate::{IdentityOperator, Operator, SolveError};
+use crate::{Operator, SolveError};
+
+/// Identity operator used as a no-op preconditioner in regression tests.
+/// `mlsmr(.., Some(&Identity), ..)` should match `mlsmr(.., None, ..)`,
+/// guarding against drift between the GolubKahan and ModifiedGolubKahan
+/// bidiagonalization paths.
+struct Identity {
+    n: usize,
+}
+
+impl Identity {
+    fn new(n: usize) -> Self {
+        Self { n }
+    }
+}
+
+impl Operator for Identity {
+    fn nrows(&self) -> usize {
+        self.n
+    }
+    fn ncols(&self) -> usize {
+        self.n
+    }
+    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+        y.copy_from_slice(x);
+        Ok(())
+    }
+    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+        y.copy_from_slice(x);
+        Ok(())
+    }
+}
 
 /// Simple 4×3 overdetermined system.
 /// A = [1 0 0; 0 1 0; 0 0 1; 1 1 0]
@@ -16,16 +47,18 @@ impl Operator for OverdeterminedOp {
     fn ncols(&self) -> usize {
         3
     }
-    fn apply(&self, x: &[f64], y: &mut [f64]) {
+    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
         y[0] = x[0];
         y[1] = x[1];
         y[2] = x[2];
         y[3] = x[0] + x[1];
+        Ok(())
     }
-    fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) {
+    fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) -> Result<(), SolveError> {
         x[0] = u[0] + u[3];
         x[1] = u[1] + u[3];
         x[2] = u[2];
+        Ok(())
     }
 }
 
@@ -40,13 +73,14 @@ impl Operator for DiagPrecond {
     fn ncols(&self) -> usize {
         3
     }
-    fn apply(&self, x: &[f64], y: &mut [f64]) {
+    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
         y[0] = x[0] / 2.0;
         y[1] = x[1] / 2.0;
         y[2] = x[2];
+        Ok(())
     }
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) {
-        self.apply(x, y);
+    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+        self.apply(x, y)
     }
 }
 
@@ -54,10 +88,10 @@ impl Operator for DiagPrecond {
 /// "did we actually solve the least-squares problem?" check.
 fn normal_equation_residual<O: Operator + ?Sized>(op: &O, x: &[f64], b: &[f64]) -> f64 {
     let mut ax = vec![0.0; op.nrows()];
-    op.apply(x, &mut ax);
+    op.apply(x, &mut ax).expect("apply");
     let resid: Vec<f64> = b.iter().zip(&ax).map(|(bi, ai)| bi - ai).collect();
     let mut atr = vec![0.0; op.ncols()];
-    op.apply_adjoint(&resid, &mut atr);
+    op.apply_adjoint(&resid, &mut atr).expect("apply");
     vec_norm(&atr)
 }
 
@@ -79,7 +113,7 @@ fn test_mlsmr_unpreconditioned() {
 #[test]
 fn test_mlsmr_preconditioned() {
     let b = vec![1.0, 2.0, 3.0, 3.0];
-    let result = preconditioned_lsmr(&OverdeterminedOp, &b, &DiagPrecond, 1e-10, 100, None)
+    let result = mlsmr(&OverdeterminedOp, &b, &DiagPrecond, 1e-10, 100, None)
         .expect("preconditioned mlsmr solve");
     assert!(result.converged, "Preconditioned MLSMR did not converge");
     let err: f64 = result
@@ -117,14 +151,16 @@ fn test_mlsmr_underdetermined_system() {
         fn ncols(&self) -> usize {
             3
         }
-        fn apply(&self, x: &[f64], y: &mut [f64]) {
+        fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
             y[0] = x[0];
             y[1] = x[1];
+            Ok(())
         }
-        fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) {
+        fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) -> Result<(), SolveError> {
             x[0] = u[0];
             x[1] = u[1];
             x[2] = 0.0;
+            Ok(())
         }
     }
 
@@ -146,15 +182,17 @@ fn test_mlsmr_rank_deficient_system() {
         fn ncols(&self) -> usize {
             2
         }
-        fn apply(&self, x: &[f64], y: &mut [f64]) {
+        fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
             let s = x[0] + x[1];
             y[0] = s;
             y[1] = 2.0 * s;
+            Ok(())
         }
-        fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) {
+        fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) -> Result<(), SolveError> {
             let s = u[0] + 2.0 * u[1];
             x[0] = s;
             x[1] = s;
+            Ok(())
         }
     }
 
@@ -175,13 +213,15 @@ fn test_mlsmr_zero_column_and_zero_row() {
         fn ncols(&self) -> usize {
             2
         }
-        fn apply(&self, x: &[f64], y: &mut [f64]) {
+        fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
             y[0] = x[0];
             y[1] = 0.0;
+            Ok(())
         }
-        fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) {
+        fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) -> Result<(), SolveError> {
             x[0] = u[0];
             x[1] = 0.0;
+            Ok(())
         }
     }
 
@@ -207,13 +247,15 @@ fn test_mlsmr_mid_stream_beta_zero_breakdown() {
         fn ncols(&self) -> usize {
             2
         }
-        fn apply(&self, x: &[f64], y: &mut [f64]) {
+        fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
             y[0] = x[0];
             y[1] = 0.0;
+            Ok(())
         }
-        fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) {
+        fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) -> Result<(), SolveError> {
             x[0] = u[0];
             x[1] = 0.0;
+            Ok(())
         }
     }
 
@@ -237,36 +279,24 @@ fn test_mlsmr_maxiter_exhaustion() {
 }
 
 #[test]
-fn test_mlsmr_dispatch_matches_wrappers() {
+fn test_mlsmr_optional_preconditioner_paths() {
     let b = vec![1.0, 2.0, 3.0, 3.0];
-    let direct = lsmr(&OverdeterminedOp, &b, 1e-10, 100, None).expect("direct lsmr");
-    let dispatch = mlsmr(
-        &OverdeterminedOp,
-        &b,
-        None::<&DiagPrecond>,
-        1e-10,
-        100,
-        None,
-    )
-    .expect("dispatch lsmr");
-    assert_eq!(direct.iterations, dispatch.iterations);
-    assert_eq!(direct.stop_reason, dispatch.stop_reason);
-    for (a, b) in direct.x.iter().zip(&dispatch.x) {
-        assert!((a - b).abs() < 1e-15);
-    }
+    let unpreconditioned =
+        lsmr(&OverdeterminedOp, &b, 1e-10, 100, None).expect("unpreconditioned lsmr");
+    let preconditioned =
+        mlsmr(&OverdeterminedOp, &b, &DiagPrecond, 1e-10, 100, None).expect("preconditioned lsmr");
 
-    let direct_pre = preconditioned_lsmr(&OverdeterminedOp, &b, &DiagPrecond, 1e-10, 100, None)
-        .expect("direct preconditioned lsmr");
-    let dispatch_pre = mlsmr(&OverdeterminedOp, &b, Some(&DiagPrecond), 1e-10, 100, None)
-        .expect("dispatch preconditioned lsmr");
-    assert_eq!(direct_pre.iterations, dispatch_pre.iterations);
-    assert_eq!(direct_pre.stop_reason, dispatch_pre.stop_reason);
-    for (a, b) in direct_pre.x.iter().zip(&dispatch_pre.x) {
-        assert!((a - b).abs() < 1e-15);
+    assert!(unpreconditioned.converged);
+    assert!(preconditioned.converged);
+    for (actual, expected) in unpreconditioned.x.iter().zip([1.0, 2.0, 3.0]) {
+        assert!((*actual - expected).abs() < 1e-6);
+    }
+    for (actual, expected) in preconditioned.x.iter().zip([1.0, 2.0, 3.0]) {
+        assert!((*actual - expected).abs() < 1e-6);
     }
 }
 
-/// `None` (GolubKahan path) and `Some(&IdentityOperator)`
+/// `None` (GolubKahan path) and `Some(&Identity)`
 /// (ModifiedGolubKahan with M = I) are mathematically the same algorithm.
 /// They should produce numerically equivalent solutions and iteration
 /// counts; this guards against future drift between the two
@@ -274,11 +304,11 @@ fn test_mlsmr_dispatch_matches_wrappers() {
 #[test]
 fn test_mlsmr_none_matches_identity_precond() {
     let b = vec![1.0, 2.0, 3.0, 3.0];
-    let id = IdentityOperator::new(3);
+    let id = Identity::new(3);
 
     let none_result = lsmr(&OverdeterminedOp, &b, 1e-12, 100, None).expect("lsmr solve");
-    let id_result = preconditioned_lsmr(&OverdeterminedOp, &b, &id, 1e-12, 100, None)
-        .expect("preconditioned Identity solve");
+    let id_result =
+        mlsmr(&OverdeterminedOp, &b, &id, 1e-12, 100, None).expect("preconditioned Identity solve");
 
     assert!(none_result.converged && id_result.converged);
     assert!(
@@ -323,15 +353,15 @@ fn test_mlsmr_none_matches_identity_precond_windowed() {
             (1.0 + x).ln()
         })
         .collect();
-    let id = IdentityOperator::new(op.cols);
+    let id = Identity::new(op.cols);
     let local = Some(10);
 
     // Tight tolerance with headroom in maxiter: drives both paths to the
     // same minimum so the comparison isn't governed by rounding noise in
     // the convergence test.
     let none_result = lsmr(&op, &b, 1e-12, 50, local).expect("lsmr windowed solve");
-    let id_result = preconditioned_lsmr(&op, &b, &id, 1e-12, 50, local)
-        .expect("preconditioned Identity windowed solve");
+    let id_result =
+        mlsmr(&op, &b, &id, 1e-12, 50, local).expect("preconditioned Identity windowed solve");
 
     assert!(none_result.converged && id_result.converged);
     // The two paths do the same algebra differently (par_dot on `v` vs on
@@ -403,12 +433,13 @@ impl Operator for DenseOp {
     fn ncols(&self) -> usize {
         self.cols
     }
-    fn apply(&self, x: &[f64], y: &mut [f64]) {
+    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
         for (yi, row) in y.iter_mut().zip(self.data.chunks_exact(self.cols)) {
             *yi = row.iter().zip(x).map(|(a, b)| a * b).sum();
         }
+        Ok(())
     }
-    fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) {
+    fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) -> Result<(), SolveError> {
         for (j, xj) in x.iter_mut().enumerate() {
             let mut s = 0.0;
             for (ui, row) in u.iter().zip(self.data.chunks_exact(self.cols)) {
@@ -416,6 +447,7 @@ impl Operator for DenseOp {
             }
             *xj = s;
         }
+        Ok(())
     }
 }
 
@@ -504,13 +536,14 @@ fn test_mlsmr_local_reorth_preconditioned() {
         fn ncols(&self) -> usize {
             self.0.len()
         }
-        fn apply(&self, x: &[f64], y: &mut [f64]) {
+        fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
             for ((yi, &xi), &di) in y.iter_mut().zip(x).zip(self.0.iter()) {
                 *yi = di * xi;
             }
+            Ok(())
         }
-        fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) {
-            self.apply(x, y);
+        fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+            self.apply(x, y)
         }
     }
     let m = DiagOp(diag_inv);
@@ -524,8 +557,7 @@ fn test_mlsmr_local_reorth_preconditioned() {
     let tol = 1e-9;
     let maxiter = 30;
 
-    let r10 = preconditioned_lsmr(&op, &b, &m, tol, maxiter, Some(10))
-        .expect("windowed preconditioned solve");
+    let r10 = mlsmr(&op, &b, &m, tol, maxiter, Some(10)).expect("windowed preconditioned solve");
     assert!(
         r10.converged,
         "windowed preconditioned LSMR failed to converge (iters = {})",
@@ -612,12 +644,14 @@ fn test_mlsmr_step1_alpha_zero_early_exit() {
         fn ncols(&self) -> usize {
             1
         }
-        fn apply(&self, x: &[f64], y: &mut [f64]) {
+        fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
             y[0] = x[0];
             y[1] = 0.0;
+            Ok(())
         }
-        fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) {
+        fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) -> Result<(), SolveError> {
             x[0] = u[0];
+            Ok(())
         }
     }
 
@@ -706,15 +740,16 @@ fn test_mlsmr_rejects_bad_preconditioner_shape() {
         fn ncols(&self) -> usize {
             2
         }
-        fn apply(&self, x: &[f64], y: &mut [f64]) {
+        fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
             y.copy_from_slice(x);
+            Ok(())
         }
-        fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) {
-            self.apply(x, y);
+        fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+            self.apply(x, y)
         }
     }
 
     let b = vec![1.0, 2.0, 3.0, 3.0];
-    let result = preconditioned_lsmr(&OverdeterminedOp, &b, &BadPrecond, 1e-10, 100, None);
+    let result = mlsmr(&OverdeterminedOp, &b, &BadPrecond, 1e-10, 100, None);
     assert!(matches!(result, Err(SolveError::InvalidInput { .. })));
 }

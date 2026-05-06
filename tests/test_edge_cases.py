@@ -11,9 +11,7 @@ import pytest
 
 from within import CG, GMRES, Preconditioner, Solver, solve
 
-
-def as_solver_categories(cats):
-    return np.asfortranarray(np.column_stack(cats).astype(np.uint32))
+from conftest import as_solver_categories
 
 
 # ---------------------------------------------------------------------------

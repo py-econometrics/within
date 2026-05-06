@@ -56,10 +56,10 @@ println!("GMRES converged in {} iterations", result.iterations);
 
 The crate is organized in four layers:
 
-1. **`observation`** — Per-observation factor levels and weights via
-   `FactorMajorStore` and the `ObservationStore` trait.
+1. **`observation`** — Per-observation factor levels via
+   `FactorMajorStore` and the `Store` trait.
 
-2. **`domain`** — Domain decomposition. `WeightedDesign` wraps a store with
+2. **`domain`** — Domain decomposition. `Design` wraps a store with
    factor metadata; `build_local_domains` constructs factor-pair subdomains
    with partition-of-unity weights for the Schwarz preconditioner.
 

@@ -48,7 +48,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::error::SubdomainCoreBuildError;
+use crate::error::BuildError;
 
 /// Partition-of-unity weights for a subdomain.
 ///
@@ -137,7 +137,7 @@ impl SubdomainCore {
     pub fn with_partition_weights(
         global_indices: Vec<u32>,
         partition_weights: PartitionWeights,
-    ) -> Result<Self, SubdomainCoreBuildError> {
+    ) -> Result<Self, BuildError> {
         let mut core = Self::uniform(global_indices);
         core.set_partition_weights(partition_weights)?;
         Ok(core)
@@ -167,11 +167,11 @@ impl SubdomainCore {
     pub fn set_partition_weights(
         &mut self,
         partition_weights: PartitionWeights,
-    ) -> Result<(), SubdomainCoreBuildError> {
+    ) -> Result<(), BuildError> {
         let index_count = self.global_indices.len();
         let weight_count = partition_weights.len();
         if weight_count != index_count {
-            return Err(SubdomainCoreBuildError::PartitionWeightLengthMismatch {
+            return Err(BuildError::PartitionWeightLengthMismatch {
                 index_count,
                 weight_count,
             });

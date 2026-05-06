@@ -87,7 +87,7 @@
 //!
 //! let result = solve(categories.view(), &y, None, &SolverParams::default(), None)
 //!     .expect("solve should succeed");
-//! assert!(result.converged);
+//! assert!(result.converged());
 //! ```
 //!
 //! # Module structure
@@ -95,7 +95,7 @@
 //! ```text
 //! within
 //! ├── observation         Storage backends (FactorMajorStore, ArrayStore)
-//! ├── domain              WeightedDesign<S> + factor-pair subdomains
+//! ├── domain              Design<S> + factor-pair subdomains
 //! │   └── factor_pairs      Domain construction, partition-of-unity weights
 //! ├── operator            Linear algebra layer
 //! │   ├── gramian           G = D^T W D (explicit CSR / implicit matvec)
@@ -134,10 +134,10 @@
 //!   Schwarz preconditioner. The internal `operator::schur_complement`
 //!   module implements block-elimination local solves.
 //!
-//! - **Extending with new backends** — The [`ObservationStore`] trait in
-//!   [`observation`] abstracts over how factor-level data is laid out in
-//!   memory. The [`schwarz_precond::LocalSolver`] trait (from the
-//!   `schwarz-precond` crate) governs subdomain solvers.
+//! - **Extending with new backends** — The [`observation::Store`] trait
+//!   abstracts over how factor-level data is laid out in memory. The
+//!   [`schwarz_precond::LocalSolver`] trait (from the `schwarz-precond` crate)
+//!   governs subdomain solvers.
 //!
 //! - **Tuning performance** — See the [`config`] module. [`SolverParams`]
 //!   controls operator representation (implicit vs explicit Gramian),
@@ -149,11 +149,14 @@
 //! The crate is organized in four layers:
 //!
 //! - **`observation`** — Per-observation data storage via [`FactorMajorStore`]
-//!   and the [`ObservationStore`] trait.
-//! - **`domain`** — Domain decomposition: [`WeightedDesign`] wraps a store with factor
-//!   metadata; factor-pair subdomains are built with partition-of-unity weights.
-//! - **`operator`** — Linear algebra primitives: [`Gramian`] (explicit CSR), [`GramianOperator`]
-//!   (implicit D^T W D), [`DesignOperator`] (D and D^T), Schwarz preconditioner builders.
+//!   and the [`observation::Store`] trait.
+//! - **`domain`** — Domain decomposition: [`domain::Design`] wraps a store with
+//!   factor metadata; factor-pair subdomains are built with partition-of-unity
+//!   weights.
+//! - **`operator`** — Linear algebra primitives: [`operator::gramian::Gramian`]
+//!   (explicit CSR), the implicit [`operator::gramian::GramianOperator`], the
+//!   rectangular [`operator::DesignOperator`] (both accept optional weights via
+//!   their `new` constructor), and Schwarz preconditioner builders.
 //! - **`orchestrate`** — End-to-end solve: [`solve`] with typed configuration.
 //!
 //! # References
@@ -170,40 +173,25 @@ pub mod operator;
 pub mod orchestrate;
 pub mod solver;
 // ---------------------------------------------------------------------------
-// High-level API
+// Stable public API
 // ---------------------------------------------------------------------------
+//
+// Lower-level types (Gramian, GramianOperator, DesignOperator, FeSchwarz,
+// Design, Subdomain, ArrayStore, Store, LocalSolverConfig, ApproxCholConfig,
+// ApproxSchurConfig, DEFAULT_DENSE_SCHUR_THRESHOLD) are intentionally not
+// re-exported at the crate root. They remain accessible
+// via their module paths (e.g. `within::operator::gramian::Gramian`,
+// `within::config::LocalSolverConfig`) but are not part of the advertised
+// stable surface.
 
 pub use operator::preconditioner::FePreconditioner;
-pub use orchestrate::solve;
-pub use orchestrate::solve_batch;
-pub use orchestrate::BatchSolveResult;
+pub use orchestrate::{solve, solve_batch, BatchSolveResult, SolveResult};
 pub use solver::Solver;
 
-// ---------------------------------------------------------------------------
-// Configuration
-// ---------------------------------------------------------------------------
-
-pub use config::{
-    ApproxCholConfig, ApproxSchurConfig, KrylovMethod, LocalSolverConfig, OperatorRepr,
-    Preconditioner, ReductionStrategy, SolverParams, DEFAULT_DENSE_SCHUR_THRESHOLD,
-};
+pub use config::{KrylovMethod, OperatorRepr, Preconditioner, ReductionStrategy, SolverParams};
 pub use error::{WithinError, WithinResult};
-pub use orchestrate::SolveResult;
+pub use observation::FactorMajorStore;
 
-// ---------------------------------------------------------------------------
-// Core types
-// ---------------------------------------------------------------------------
-
-pub use domain::{Subdomain, WeightedDesign};
-pub use observation::{
-    ArrayStore, FactorMajorStore, FactorMeta, ObservationStore, ObservationWeights,
-};
-
-// ---------------------------------------------------------------------------
-// Operators & builders
-// ---------------------------------------------------------------------------
-
-pub use operator::gramian::{Gramian, GramianOperator};
-pub use operator::schwarz::{build_schwarz, FeSchwarz};
-pub use operator::DesignOperator;
+// `Operator` is the trait `FePreconditioner` and the implicit operators
+// implement; users need it in scope to call `apply` / `nrows` / `ncols`.
 pub use schwarz_precond::Operator;

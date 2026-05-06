@@ -43,13 +43,8 @@ use within::config::{
     ApproxCholConfig, ApproxSchurConfig, KrylovMethod, LocalSolverConfig, OperatorRepr,
     Preconditioner, ReductionStrategy, SolverParams, DEFAULT_DENSE_SCHUR_THRESHOLD,
 };
-use within::domain::WeightedDesign;
-use within::observation::{FactorMajorStore, ObservationWeights};
-use within::operator::preconditioner::{
-    additive_reduction_strategy as get_additive_reduction_strategy,
-    additive_schwarz_diagnostics as get_additive_schwarz_diagnostics,
-    resolved_additive_reduction_strategy as get_resolved_additive_reduction_strategy,
-};
+use within::domain::Design;
+use within::observation::FactorMajorStore;
 use within::{
     solve as solve_native, solve_batch as solve_batch_native, FePreconditioner, Operator,
     SolveResult, Solver,
@@ -215,13 +210,13 @@ pub struct PyAdditiveSchwarzDiagnostics {
 
 impl PyAdditiveSchwarzDiagnostics {
     fn from_native(preconditioner: &FePreconditioner) -> Option<Self> {
-        let diagnostics = get_additive_schwarz_diagnostics(preconditioner)?;
+        let diagnostics = preconditioner.additive_schwarz_diagnostics()?;
         Some(Self {
-            reduction_strategy: PyReductionStrategy::from_native(get_additive_reduction_strategy(
-                preconditioner,
-            )?),
+            reduction_strategy: PyReductionStrategy::from_native(
+                preconditioner.additive_reduction_strategy()?,
+            ),
             resolved_reduction_strategy: PyReductionStrategy::from_native(
-                get_resolved_additive_reduction_strategy(preconditioner)?,
+                preconditioner.resolved_additive_reduction_strategy()?,
             ),
             total_inner_parallel_work: diagnostics.total_inner_parallel_work(),
             max_inner_parallel_work: diagnostics.max_inner_parallel_work(),
@@ -675,15 +670,22 @@ fn extract_and_validate_config(
 // ---------------------------------------------------------------------------
 
 fn into_py_result(py: Python<'_>, result: SolveResult) -> PySolveResult {
+    let converged = result.converged();
+    let iterations = result.iterations();
+    let residual = result.final_residual();
+    let time_total = result.time_total();
+    let time_setup = result.time_setup();
+    let time_solve = result.time_solve();
+    let (x, demeaned) = result.into_parts();
     PySolveResult {
-        x: Array1::from_vec(result.x).into_pyarray(py).unbind(),
-        demeaned: Array1::from_vec(result.demeaned).into_pyarray(py).unbind(),
-        converged: result.converged,
-        iterations: result.iterations,
-        residual: result.final_residual,
-        time_total: result.time_total,
-        time_setup: result.time_setup,
-        time_solve: result.time_solve,
+        x: Array1::from_vec(x).into_pyarray(py).unbind(),
+        demeaned: Array1::from_vec(demeaned).into_pyarray(py).unbind(),
+        converged,
+        iterations,
+        residual,
+        time_total,
+        time_setup,
+        time_solve,
     }
 }
 
@@ -847,7 +849,9 @@ impl PyFePreconditioner {
             )));
         }
         let mut y = vec![0.0; self.inner.nrows()];
-        self.inner.apply(x_slice, &mut y);
+        self.inner
+            .apply(x_slice, &mut y)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         Ok(numpy::PyArray1::from_vec(py, y))
     }
 
@@ -867,12 +871,6 @@ impl PyFePreconditioner {
     #[getter]
     fn n_subdomains(&self) -> usize {
         self.inner.n_subdomains()
-    }
-
-    /// Estimated nested-parallel work per subdomain.
-    #[getter]
-    fn subdomain_inner_parallel_work(&self) -> Vec<usize> {
-        self.inner.subdomain_inner_parallel_work()
     }
 
     /// Additive Schwarz diagnostics, if this is an additive preconditioner.
@@ -949,32 +947,29 @@ impl PySolver {
 
         // Build owned factor-major store from numpy array
         let n_obs = cats.nrows();
-        let n_factors = cats.ncols();
-        let factor_levels: Vec<Vec<u32>> = (0..n_factors)
+        let factor_levels: Vec<Vec<u32>> = (0..cats.ncols())
             .map(|f| cats.column(f).iter().copied().collect())
             .collect();
-        let w = match &weights {
-            Some(w) => ObservationWeights::Dense(w.as_array().iter().copied().collect()),
-            None => ObservationWeights::Unit,
-        };
-        let store = FactorMajorStore::new(factor_levels, w, n_obs).map_err(value_err)?;
-        let design = WeightedDesign::from_store(store).map_err(value_err)?;
+        let weights_vec = extract_weight_vec(&weights);
+        let store = FactorMajorStore::new(factor_levels, n_obs).map_err(value_err)?;
+        let design = Design::from_store(store).map_err(value_err)?;
 
         // Handle pre-built FePreconditioner separately (uses a different constructor);
         // all other variants go through extract_preconditioner_config.
-        let solver =
-            if let Some(Ok(fe)) = preconditioner.map(|o| o.downcast::<PyFePreconditioner>()) {
-                let fe_precond = fe.get().inner.clone();
-                py.allow_threads(|| {
-                    Solver::from_design_with_preconditioner(design, &params, fe_precond)
-                })
+        let solver = if let Some(Ok(fe)) =
+            preconditioner.map(|o| o.downcast::<PyFePreconditioner>())
+        {
+            let fe_precond = fe.get().inner.clone();
+            py.allow_threads(|| {
+                Solver::from_design_with_preconditioner(design, weights_vec, &params, fe_precond)
+            })
+            .map_err(value_err)?
+        } else {
+            let precond = extract_preconditioner_config(py, preconditioner)?;
+            validate_cg_preconditioner(&params, &precond)?;
+            py.allow_threads(|| Solver::from_design(design, weights_vec, &params, precond.as_ref()))
                 .map_err(value_err)?
-            } else {
-                let precond = extract_preconditioner_config(py, preconditioner)?;
-                validate_cg_preconditioner(&params, &precond)?;
-                py.allow_threads(|| Solver::from_design(design, &params, precond.as_ref()))
-                    .map_err(value_err)?
-            };
+        };
 
         Ok(Self { solver })
     }

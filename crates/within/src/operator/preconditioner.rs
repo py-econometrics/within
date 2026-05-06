@@ -28,12 +28,14 @@
 //! a preconditioner. Error handling flows through `try_apply` for graceful
 //! reporting of local-solver failures.
 
-use schwarz_precond::{AdditiveSchwarzDiagnostics, LocalSolver, Operator, ReductionStrategy};
+use std::sync::Arc;
+
+use schwarz_precond::{AdditiveSchwarzDiagnostics, Operator, ReductionStrategy};
 use serde::{Deserialize, Serialize};
 
 use crate::config::Preconditioner;
-use crate::domain::{Subdomain, WeightedDesign};
-use crate::observation::ObservationStore;
+use crate::domain::{Design, Subdomain};
+use crate::observation::Store;
 use crate::operator::gramian::{CrossTab, Gramian};
 use crate::operator::schwarz::{
     build_additive_with_strategy, build_multiplicative_sparse, FeMultSchwarzSparse, FeSchwarz,
@@ -60,48 +62,28 @@ impl FePreconditioner {
         }
     }
 
-    /// Estimated nested-parallel work per subdomain.
-    pub fn subdomain_inner_parallel_work(&self) -> Vec<usize> {
+    /// Configured additive reduction strategy, if this is an additive preconditioner.
+    pub fn additive_reduction_strategy(&self) -> Option<ReductionStrategy> {
         match self {
-            Self::Additive(p) => p
-                .subdomains()
-                .iter()
-                .map(|entry| entry.solver().inner_parallelism_work_estimate())
-                .collect(),
-            Self::Multiplicative(p) => p
-                .subdomains()
-                .iter()
-                .map(|entry| entry.solver().inner_parallelism_work_estimate())
-                .collect(),
+            Self::Additive(p) => Some(p.reduction_strategy()),
+            Self::Multiplicative(_) => None,
         }
     }
-}
 
-/// Configured additive reduction strategy, if this is an additive preconditioner.
-pub fn additive_reduction_strategy(preconditioner: &FePreconditioner) -> Option<ReductionStrategy> {
-    match preconditioner {
-        FePreconditioner::Additive(p) => Some(p.reduction_strategy()),
-        FePreconditioner::Multiplicative(_) => None,
+    /// Concrete additive backend selected for the current Rayon thread-pool width.
+    pub fn resolved_additive_reduction_strategy(&self) -> Option<ReductionStrategy> {
+        match self {
+            Self::Additive(p) => Some(p.resolved_reduction_strategy()),
+            Self::Multiplicative(_) => None,
+        }
     }
-}
 
-/// Concrete additive backend selected for the current Rayon thread-pool width.
-pub fn resolved_additive_reduction_strategy(
-    preconditioner: &FePreconditioner,
-) -> Option<ReductionStrategy> {
-    match preconditioner {
-        FePreconditioner::Additive(p) => Some(p.resolved_reduction_strategy()),
-        FePreconditioner::Multiplicative(_) => None,
-    }
-}
-
-/// Build-time additive Schwarz scheduling diagnostics.
-pub fn additive_schwarz_diagnostics(
-    preconditioner: &FePreconditioner,
-) -> Option<AdditiveSchwarzDiagnostics> {
-    match preconditioner {
-        FePreconditioner::Additive(p) => Some(p.diagnostics()),
-        FePreconditioner::Multiplicative(_) => None,
+    /// Build-time additive Schwarz scheduling diagnostics.
+    pub fn additive_schwarz_diagnostics(&self) -> Option<AdditiveSchwarzDiagnostics> {
+        match self {
+            Self::Additive(p) => Some(p.diagnostics()),
+            Self::Multiplicative(_) => None,
+        }
     }
 }
 
@@ -120,35 +102,17 @@ impl Operator for FePreconditioner {
         }
     }
 
-    fn apply(&self, x: &[f64], y: &mut [f64]) {
+    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
         match self {
             Self::Additive(p) => p.apply(x, y),
             Self::Multiplicative(p) => p.apply(x, y),
         }
     }
 
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) {
+    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
         match self {
             Self::Additive(p) => p.apply_adjoint(x, y),
             Self::Multiplicative(p) => p.apply_adjoint(x, y),
-        }
-    }
-
-    fn try_apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::ApplyError> {
-        match self {
-            Self::Additive(p) => p.try_apply(x, y),
-            Self::Multiplicative(p) => p.try_apply(x, y),
-        }
-    }
-
-    fn try_apply_adjoint(
-        &self,
-        x: &[f64],
-        y: &mut [f64],
-    ) -> Result<(), schwarz_precond::ApplyError> {
-        match self {
-            Self::Additive(p) => p.try_apply_adjoint(x, y),
-            Self::Multiplicative(p) => p.try_apply_adjoint(x, y),
         }
     }
 }
@@ -158,7 +122,7 @@ impl Operator for FePreconditioner {
 /// Shared dispatch logic used by both `build_preconditioner` and
 /// `build_preconditioner_fused`.
 fn build_from_domains(
-    domains: Vec<(Subdomain, CrossTab)>,
+    domains: Vec<(Subdomain, Arc<CrossTab>)>,
     n_dofs: usize,
     gramian: Option<&Gramian>,
     config: &Preconditioner,
@@ -184,14 +148,15 @@ fn build_from_domains(
 ///
 /// When `Multiplicative` is requested, a Gramian is required for the sparse
 /// residual updater.
-pub fn build_preconditioner<S: ObservationStore>(
-    design: &WeightedDesign<S>,
+pub fn build_preconditioner<S: Store>(
+    design: &Design<S>,
+    weights: Option<&[f64]>,
     gramian: Option<&Gramian>,
     preconditioner_config: &Preconditioner,
 ) -> WithinResult<FePreconditioner> {
     use crate::domain::build_local_domains;
 
-    let domains = build_local_domains(design);
+    let domains = build_local_domains(design, weights);
     build_from_domains(domains, design.n_dofs, gramian, preconditioner_config)
 }
 
@@ -202,13 +167,14 @@ pub fn build_preconditioner<S: ObservationStore>(
 /// data (for composing the explicit Gramian CSR). Avoids the double scan that
 /// would occur if `Gramian::build` and `build_local_domains` were called
 /// separately.
-pub(crate) fn build_preconditioner_fused<S: ObservationStore>(
-    design: &WeightedDesign<S>,
+pub(crate) fn build_preconditioner_fused<S: Store>(
+    design: &Design<S>,
+    weights: Option<&[f64]>,
     preconditioner_config: &Preconditioner,
 ) -> WithinResult<(Gramian, FePreconditioner)> {
     use crate::domain::build_domains_and_gramian_blocks;
 
-    let (domains, blocks) = build_domains_and_gramian_blocks(design);
+    let (domains, blocks) = build_domains_and_gramian_blocks(design, weights);
     let gramian = Gramian::from_pair_blocks(&blocks, &design.factors, design.n_dofs)?;
     let precond = build_from_domains(
         domains,

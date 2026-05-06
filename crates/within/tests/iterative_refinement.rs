@@ -7,9 +7,11 @@
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
+use within::config::LocalSolverConfig;
+use within::domain::Design;
+use within::observation::Store;
 use within::{
-    FactorMajorStore, KrylovMethod, LocalSolverConfig, ObservationStore, ObservationWeights,
-    Preconditioner, ReductionStrategy, Solver, SolverParams, WeightedDesign,
+    FactorMajorStore, KrylovMethod, Preconditioner, ReductionStrategy, Solver, SolverParams,
 };
 
 // ---------------------------------------------------------------------------
@@ -22,7 +24,7 @@ use within::{
 ///
 /// Structure: observation i connects factor1_level=i to factor2_level=i,
 /// and also factor1_level=i to factor2_level=i+1, forming a chain.
-fn make_chain_design(n_chain: usize, seed: u64) -> (WeightedDesign<FactorMajorStore>, Vec<f64>) {
+fn make_chain_design(n_chain: usize, seed: u64) -> (Design<FactorMajorStore>, Vec<f64>) {
     let mut rng = SmallRng::seed_from_u64(seed);
 
     let n_levels_1 = n_chain;
@@ -53,9 +55,8 @@ fn make_chain_design(n_chain: usize, seed: u64) -> (WeightedDesign<FactorMajorSt
     let n_obs = f1.len();
     let y: Vec<f64> = (0..n_obs).map(|_| rng.random::<f64>()).collect();
 
-    let store =
-        FactorMajorStore::new(vec![f1, f2], ObservationWeights::Unit, n_obs).expect("valid store");
-    let design = WeightedDesign::from_store(store).expect("valid design");
+    let store = FactorMajorStore::new(vec![f1, f2], n_obs).expect("valid store");
+    let design = Design::from_store(store).expect("valid design");
 
     (design, y)
 }
@@ -63,7 +64,7 @@ fn make_chain_design(n_chain: usize, seed: u64) -> (WeightedDesign<FactorMajorSt
 /// Compute max absolute weighted group mean of demeaned values.
 /// This is the observation-space quality metric: if demeaning is perfect,
 /// the mean of demeaned values within every level of every factor is zero.
-fn max_abs_group_mean(design: &WeightedDesign<FactorMajorStore>, demeaned: &[f64]) -> f64 {
+fn max_abs_group_mean(design: &Design<FactorMajorStore>, demeaned: &[f64]) -> f64 {
     let mut worst = 0.0f64;
     for q in 0..design.factors.len() {
         let n_levels = design.factors[q].n_levels;
@@ -108,7 +109,7 @@ fn test_refinement_cg_improves_demeaning_quality() {
     // Without refinement
     let params_no_refine = params_with_refinement(KrylovMethod::Cg, 0);
     let solver_no =
-        Solver::from_design(design, &params_no_refine, Some(&precond)).expect("build solver");
+        Solver::from_design(design, None, &params_no_refine, Some(&precond)).expect("build solver");
     // Need a fresh design for the second solver (design was moved)
     let (design2, _) = make_chain_design(200, 42);
     let result_no = solver_no.solve(&y).expect("solve without refinement");
@@ -116,15 +117,15 @@ fn test_refinement_cg_improves_demeaning_quality() {
     // With refinement
     let params_refine = params_with_refinement(KrylovMethod::Cg, 2);
     let solver_yes =
-        Solver::from_design(design2, &params_refine, Some(&precond)).expect("build solver");
+        Solver::from_design(design2, None, &params_refine, Some(&precond)).expect("build solver");
     let result_yes = solver_yes.solve(&y).expect("solve with refinement");
 
-    assert!(result_no.converged, "initial solve should converge");
-    assert!(result_yes.converged, "refined solve should converge");
+    assert!(result_no.converged(), "initial solve should converge");
+    assert!(result_yes.converged(), "refined solve should converge");
 
     let (design3, _) = make_chain_design(200, 42);
-    let demean_no = max_abs_group_mean(&design3, &result_no.demeaned);
-    let demean_yes = max_abs_group_mean(&design3, &result_yes.demeaned);
+    let demean_no = max_abs_group_mean(&design3, result_no.demeaned());
+    let demean_yes = max_abs_group_mean(&design3, result_yes.demeaned());
 
     // Refinement should improve demeaning quality
     assert!(
@@ -134,10 +135,10 @@ fn test_refinement_cg_improves_demeaning_quality() {
 
     // The refined residual should be at least as good
     assert!(
-        result_yes.final_residual <= result_no.final_residual + 1e-15,
+        result_yes.final_residual() <= result_no.final_residual() + 1e-15,
         "refinement should not worsen residual: {} > {}",
-        result_yes.final_residual,
-        result_no.final_residual
+        result_yes.final_residual(),
+        result_no.final_residual()
     );
 }
 
@@ -148,24 +149,20 @@ fn test_refinement_cg_zero_means_old_behavior() {
     let precond =
         Preconditioner::Additive(LocalSolverConfig::solver_default(), ReductionStrategy::Auto);
     let params = params_with_refinement(KrylovMethod::Cg, 0);
-    let solver = Solver::from_design(design, &params, Some(&precond)).expect("build solver");
+    let solver = Solver::from_design(design, None, &params, Some(&precond)).expect("build solver");
     let result = solver.solve(&y).expect("solve");
 
-    assert!(result.converged);
-    assert!(result.final_residual < 1e-6);
+    assert!(result.converged());
+    assert!(result.final_residual() < 1e-6);
 }
 
 #[test]
 fn test_refinement_cg_well_conditioned_no_extra_iters() {
     // On a well-conditioned problem, the refinement check should find the
     // residual already small enough and not trigger any correction solves.
-    let store = FactorMajorStore::new(
-        vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]],
-        ObservationWeights::Unit,
-        5,
-    )
-    .expect("valid store");
-    let design = WeightedDesign::from_store(store).expect("design");
+    let store = FactorMajorStore::new(vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]], 5)
+        .expect("valid store");
+    let design = Design::from_store(store).expect("design");
     let y = vec![1.0, 2.0, 3.0, 4.0, 5.0];
 
     let precond =
@@ -173,15 +170,16 @@ fn test_refinement_cg_well_conditioned_no_extra_iters() {
 
     // With refinement
     let params_refine = params_with_refinement(KrylovMethod::Cg, 2);
-    let solver = Solver::from_design(design, &params_refine, Some(&precond)).expect("build solver");
+    let solver =
+        Solver::from_design(design, None, &params_refine, Some(&precond)).expect("build solver");
     let result = solver.solve(&y).expect("solve");
 
     // Should converge with very few iterations (small problem)
-    assert!(result.converged);
+    assert!(result.converged());
     assert!(
-        result.iterations <= 10,
+        result.iterations() <= 10,
         "too many iterations on small problem: {}",
-        result.iterations
+        result.iterations()
     );
 }
 
@@ -197,22 +195,25 @@ fn test_refinement_gmres_improves_demeaning_quality() {
     // Without refinement
     let params_no_refine = params_with_refinement(KrylovMethod::Gmres { restart: 30 }, 0);
     let solver_no =
-        Solver::from_design(design, &params_no_refine, Some(&precond)).expect("build solver");
+        Solver::from_design(design, None, &params_no_refine, Some(&precond)).expect("build solver");
     let (design2, _) = make_chain_design(200, 77);
     let result_no = solver_no.solve(&y).expect("solve without refinement");
 
     // With refinement
     let params_refine = params_with_refinement(KrylovMethod::Gmres { restart: 30 }, 2);
     let solver_yes =
-        Solver::from_design(design2, &params_refine, Some(&precond)).expect("build solver");
+        Solver::from_design(design2, None, &params_refine, Some(&precond)).expect("build solver");
     let result_yes = solver_yes.solve(&y).expect("solve with refinement");
 
-    assert!(result_no.converged, "initial GMRES solve should converge");
-    assert!(result_yes.converged, "refined GMRES solve should converge");
+    assert!(result_no.converged(), "initial GMRES solve should converge");
+    assert!(
+        result_yes.converged(),
+        "refined GMRES solve should converge"
+    );
 
     let (design3, _) = make_chain_design(200, 77);
-    let demean_no = max_abs_group_mean(&design3, &result_no.demeaned);
-    let demean_yes = max_abs_group_mean(&design3, &result_yes.demeaned);
+    let demean_no = max_abs_group_mean(&design3, result_no.demeaned());
+    let demean_yes = max_abs_group_mean(&design3, result_yes.demeaned());
 
     assert!(
         demean_yes <= demean_no,
@@ -222,22 +223,18 @@ fn test_refinement_gmres_improves_demeaning_quality() {
 
 #[test]
 fn test_refinement_gmres_well_conditioned() {
-    let store = FactorMajorStore::new(
-        vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]],
-        ObservationWeights::Unit,
-        5,
-    )
-    .expect("valid store");
-    let design = WeightedDesign::from_store(store).expect("design");
+    let store = FactorMajorStore::new(vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]], 5)
+        .expect("valid store");
+    let design = Design::from_store(store).expect("design");
     let y = vec![1.0, 2.0, 3.0, 4.0, 5.0];
 
     let precond = Preconditioner::Multiplicative(LocalSolverConfig::solver_default());
     let params = params_with_refinement(KrylovMethod::Gmres { restart: 30 }, 2);
-    let solver = Solver::from_design(design, &params, Some(&precond)).expect("build solver");
+    let solver = Solver::from_design(design, None, &params, Some(&precond)).expect("build solver");
     let result = solver.solve(&y).expect("solve");
 
-    assert!(result.converged);
-    assert!(result.final_residual < 1e-6);
+    assert!(result.converged());
+    assert!(result.final_residual() < 1e-6);
 }
 
 // ---------------------------------------------------------------------------
@@ -246,22 +243,18 @@ fn test_refinement_gmres_well_conditioned() {
 
 #[test]
 fn test_refinement_zero_rhs() {
-    let store = FactorMajorStore::new(
-        vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]],
-        ObservationWeights::Unit,
-        5,
-    )
-    .expect("valid store");
-    let design = WeightedDesign::from_store(store).expect("design");
+    let store = FactorMajorStore::new(vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]], 5)
+        .expect("valid store");
+    let design = Design::from_store(store).expect("design");
     let y = vec![0.0; 5];
 
     let params = params_with_refinement(KrylovMethod::Cg, 2);
-    let solver = Solver::from_design(design, &params, None).expect("build solver");
+    let solver = Solver::from_design(design, None, &params, None).expect("build solver");
     let result = solver.solve(&y).expect("solve");
 
-    assert!(result.converged);
-    assert_eq!(result.iterations, 0);
-    assert!(result.x.iter().all(|&v| v == 0.0));
+    assert!(result.converged());
+    assert_eq!(result.iterations(), 0);
+    assert!(result.x().iter().all(|&v| v == 0.0));
 }
 
 #[test]
@@ -269,11 +262,11 @@ fn test_refinement_unpreconditioned() {
     // Refinement should work without a preconditioner too.
     let (design, y) = make_chain_design(50, 123);
     let params = params_with_refinement(KrylovMethod::Cg, 2);
-    let solver = Solver::from_design(design, &params, None).expect("build solver");
+    let solver = Solver::from_design(design, None, &params, None).expect("build solver");
     let result = solver.solve(&y).expect("solve");
 
-    assert!(result.converged);
-    assert!(result.final_residual < 1e-6);
+    assert!(result.converged());
+    assert!(result.final_residual() < 1e-6);
 }
 
 #[test]
@@ -283,7 +276,7 @@ fn test_refinement_batch_applies() {
     let precond =
         Preconditioner::Additive(LocalSolverConfig::solver_default(), ReductionStrategy::Auto);
     let params = params_with_refinement(KrylovMethod::Cg, 2);
-    let solver = Solver::from_design(design, &params, Some(&precond)).expect("build solver");
+    let solver = Solver::from_design(design, None, &params, Some(&precond)).expect("build solver");
 
     let mut rng = SmallRng::seed_from_u64(789);
     let n_obs = solver.n_obs();
@@ -298,10 +291,10 @@ fn test_refinement_batch_applies() {
     assert!(batch.converged().iter().all(|&c| c));
 
     // Batch results should match single solves
-    for (a, b) in batch.x(0).iter().zip(single1.x.iter()) {
+    for (a, b) in batch.x(0).iter().zip(single1.x().iter()) {
         assert!((a - b).abs() < 1e-12, "batch/single x mismatch: {a} vs {b}");
     }
-    for (a, b) in batch.x(1).iter().zip(single2.x.iter()) {
+    for (a, b) in batch.x(1).iter().zip(single2.x().iter()) {
         assert!((a - b).abs() < 1e-12, "batch/single x mismatch: {a} vs {b}");
     }
 }
@@ -325,7 +318,7 @@ fn test_refinement_correction_tolerance_scaling() {
     let precond =
         Preconditioner::Additive(LocalSolverConfig::solver_default(), ReductionStrategy::Auto);
     let params = params_with_refinement(KrylovMethod::Cg, 2);
-    let solver = Solver::from_design(design, &params, Some(&precond)).expect("build solver");
+    let solver = Solver::from_design(design, None, &params, Some(&precond)).expect("build solver");
 
     let batch = solver
         .solve_batch(&[&y_structured, &x0, &x1])

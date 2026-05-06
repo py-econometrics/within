@@ -1,33 +1,25 @@
 use schwarz_precond::Operator;
 
-use within::observation::{FactorMajorStore, ObservationWeights};
+use within::domain::Design;
+use within::observation::FactorMajorStore;
 use within::operator::gramian::{Gramian, GramianOperator};
-use within::WeightedDesign;
 
-fn make_test_design() -> WeightedDesign<FactorMajorStore> {
-    let store = FactorMajorStore::new(
-        vec![vec![0, 1, 2, 0], vec![0, 1, 0, 1]],
-        ObservationWeights::Unit,
-        4,
-    )
-    .expect("valid factor-major store");
-    WeightedDesign::from_store(store).expect("valid test design")
+fn make_test_design() -> Design<FactorMajorStore> {
+    let store = FactorMajorStore::new(vec![vec![0, 1, 2, 0], vec![0, 1, 0, 1]], 4)
+        .expect("valid factor-major store");
+    Design::from_store(store).expect("valid test design")
 }
 
-fn make_weighted_design(weights: Vec<f64>) -> WeightedDesign<FactorMajorStore> {
-    let store = FactorMajorStore::new(
-        vec![vec![0, 1, 0, 1], vec![0, 0, 1, 1]],
-        ObservationWeights::Dense(weights),
-        4,
-    )
-    .expect("valid weighted factor-major store");
-    WeightedDesign::from_store(store).expect("valid weighted design")
+fn make_weighted_design() -> Design<FactorMajorStore> {
+    let store = FactorMajorStore::new(vec![vec![0, 1, 0, 1], vec![0, 0, 1, 1]], 4)
+        .expect("valid weighted factor-major store");
+    Design::from_store(store).expect("valid weighted design")
 }
 
 #[test]
 fn test_gramian_build_diagonal_block() {
     let dm = make_test_design();
-    let g = Gramian::build(&dm);
+    let g = Gramian::build(&dm, None);
     let diag = g.diagonal();
     assert_eq!(diag[0], 2.0);
     assert_eq!(diag[1], 1.0);
@@ -39,18 +31,18 @@ fn test_gramian_build_diagonal_block() {
 #[test]
 fn test_gramian_symmetry() {
     let dm = make_test_design();
-    let g = Gramian::build(&dm);
+    let g = Gramian::build(&dm, None);
     let n = g.n_dofs();
     for i in 0..n {
         let mut ei = vec![0.0; n];
         ei[i] = 1.0;
         let mut gi = vec![0.0; n];
-        g.matvec(&ei, &mut gi);
+        g.matrix.matvec(&ei, &mut gi);
         for j in 0..n {
             let mut ej = vec![0.0; n];
             ej[j] = 1.0;
             let mut gj = vec![0.0; n];
-            g.matvec(&ej, &mut gj);
+            g.matrix.matvec(&ej, &mut gj);
             assert!((gi[j] - gj[i]).abs() < 1e-14);
         }
     }
@@ -59,14 +51,14 @@ fn test_gramian_symmetry() {
 #[test]
 fn test_gramian_matches_gramian_operator() {
     let dm = make_test_design();
-    let g = Gramian::build(&dm);
-    let gop = GramianOperator::new(&dm);
+    let g = Gramian::build(&dm, None);
+    let gop = GramianOperator::new(&dm, None);
     let n = g.n_dofs();
     let x = vec![1.0, -0.5, 2.0, 0.3, -1.0];
     let mut y_explicit = vec![0.0; n];
     let mut y_implicit = vec![0.0; n];
-    g.matvec(&x, &mut y_explicit);
-    gop.apply(&x, &mut y_implicit);
+    g.matrix.matvec(&x, &mut y_explicit);
+    gop.apply(&x, &mut y_implicit).expect("apply");
     for (a, b) in y_explicit.iter().zip(y_implicit.iter()) {
         assert!((a - b).abs() < 1e-12);
     }
@@ -75,8 +67,8 @@ fn test_gramian_matches_gramian_operator() {
 #[test]
 fn test_gramian_submatrix() {
     let dm = make_test_design();
-    let g = Gramian::build(&dm);
-    let sub = g.extract_submatrix(&[0, 1, 2]);
+    let g = Gramian::build(&dm, None);
+    let sub = g.matrix.extract_submatrix(&[0, 1, 2]);
     assert_eq!(sub.n(), 3);
     let diag = sub.diagonal();
     assert_eq!(diag[0], 2.0);
@@ -87,42 +79,44 @@ fn test_gramian_submatrix() {
 #[test]
 fn test_gramian_operator_symmetric() {
     let dm = make_test_design();
-    let gop = GramianOperator::new(&dm);
+    let gop = GramianOperator::new(&dm, None);
     let n = dm.n_dofs;
 
     let x = vec![1.0, -0.5, 2.0, 0.3, -1.0];
     let mut y1 = vec![0.0; n];
     let mut y2 = vec![0.0; n];
-    gop.apply(&x, &mut y1);
-    gop.apply_adjoint(&x, &mut y2);
+    gop.apply(&x, &mut y1).expect("apply");
+    gop.apply_adjoint(&x, &mut y2).expect("apply");
     assert_eq!(y1, y2);
 }
 
 #[test]
 fn test_gramian_diagonal_matches_explicit() {
     let dm = make_test_design();
-    let g = Gramian::build(&dm);
-    assert_eq!(g.diagonal(), dm.gramian_diagonal());
+    let g = Gramian::build(&dm, None);
+    assert_eq!(g.diagonal(), Gramian::build(&dm, None).diagonal());
 }
 
 #[test]
 fn test_weighted_gramian_diagonal() {
-    let dm = make_weighted_design(vec![1.0, 2.0, 3.0, 4.0]);
-    let g = Gramian::build(&dm);
-    assert_eq!(g.diagonal(), dm.gramian_diagonal());
+    let dm = make_weighted_design();
+    let weights = vec![1.0, 2.0, 3.0, 4.0];
+    let g = Gramian::build(&dm, Some(&weights));
+    assert_eq!(g.diagonal(), Gramian::build(&dm, Some(&weights)).diagonal());
 }
 
 #[test]
 fn test_weighted_gramian_matches_operator() {
-    let dm = make_weighted_design(vec![1.0, 2.0, 3.0, 4.0]);
-    let g = Gramian::build(&dm);
-    let gop = GramianOperator::new(&dm);
+    let dm = make_weighted_design();
+    let weights = vec![1.0, 2.0, 3.0, 4.0];
+    let g = Gramian::build(&dm, Some(&weights));
+    let gop = within::operator::gramian::GramianOperator::new(&dm, Some(&weights));
     let n = g.n_dofs();
     let x = vec![1.0, -0.5, 2.0, 0.3];
     let mut y_explicit = vec![0.0; n];
     let mut y_implicit = vec![0.0; n];
-    g.matvec(&x, &mut y_explicit);
-    gop.apply(&x, &mut y_implicit);
+    g.matrix.matvec(&x, &mut y_explicit);
+    gop.apply(&x, &mut y_implicit).expect("apply");
     for (a, b) in y_explicit.iter().zip(y_implicit.iter()) {
         assert!((a - b).abs() < 1e-12);
     }
@@ -139,11 +133,10 @@ fn test_gramian_sparse_accumulation_path() {
         fa.push((i % n_lev_a) as u32);
         fb.push(((i * 7) % n_lev_b) as u32);
     }
-    let store = FactorMajorStore::new(vec![fa, fb], ObservationWeights::Unit, n_obs)
-        .expect("valid factor-major store");
-    let dm = WeightedDesign::from_store(store).expect("valid sparse accumulation design");
-    let g = Gramian::build(&dm);
-    let gop = GramianOperator::new(&dm);
+    let store = FactorMajorStore::new(vec![fa, fb], n_obs).expect("valid factor-major store");
+    let dm = Design::from_store(store).expect("valid sparse accumulation design");
+    let g = Gramian::build(&dm, None);
+    let gop = GramianOperator::new(&dm, None);
     let n = g.n_dofs();
 
     let mut x = vec![0.0; n];
@@ -152,82 +145,30 @@ fn test_gramian_sparse_accumulation_path() {
     }
     let mut y_explicit = vec![0.0; n];
     let mut y_implicit = vec![0.0; n];
-    g.matvec(&x, &mut y_explicit);
-    gop.apply(&x, &mut y_implicit);
+    g.matrix.matvec(&x, &mut y_explicit);
+    gop.apply(&x, &mut y_implicit).expect("apply");
     for (a, b) in y_explicit.iter().zip(y_implicit.iter()) {
         assert!((a - b).abs() < 1e-10);
     }
 }
 
 #[test]
-fn test_build_for_pair_matches_full_gramian() {
-    let store = FactorMajorStore::new(
-        vec![
-            vec![0, 1, 2, 0, 1, 2, 0, 1],
-            vec![0, 0, 1, 1, 0, 0, 1, 1],
-            vec![0, 1, 0, 1, 0, 1, 0, 1],
-        ],
-        ObservationWeights::Unit,
-        8,
-    )
-    .expect("valid factor-major store");
-    let dm = WeightedDesign::from_store(store).expect("valid pairwise design");
-    let full = Gramian::build(&dm);
-    let n = full.n_dofs();
-
-    let pairs = [(0, 1), (0, 2), (1, 2)];
-    let offsets = [0usize, 3, 5];
-    let sizes = [3usize, 2, 2];
-
-    for &(q, r) in &pairs {
-        let pair_g = Gramian::build_for_pair(&dm, q, r);
-        assert_eq!(pair_g.n_dofs(), n);
-
-        let relevant_rows: Vec<usize> = (offsets[q]..offsets[q] + sizes[q])
-            .chain(offsets[r]..offsets[r] + sizes[r])
-            .collect();
-
-        for &row in &relevant_rows {
-            let mut ei = vec![0.0; n];
-            ei[row] = 1.0;
-            let mut y_full = vec![0.0; n];
-            let mut y_pair = vec![0.0; n];
-            full.matvec(&ei, &mut y_full);
-            pair_g.matvec(&ei, &mut y_pair);
-
-            for &col in &relevant_rows {
-                assert!((y_full[col] - y_pair[col]).abs() < 1e-12);
-            }
-        }
-
-        for row in 0..n {
-            if relevant_rows.contains(&row) {
-                continue;
-            }
-            let start = pair_g.matrix.indptr()[row];
-            let end = pair_g.matrix.indptr()[row + 1];
-            assert_eq!(start, end);
-        }
-    }
-}
-
-#[test]
 fn test_gramian_apply_adjoint_delegates() {
     let dm = make_test_design();
-    let g = Gramian::build(&dm);
+    let g = Gramian::build(&dm, None);
     let n = g.n_dofs();
     let x = vec![1.0, -0.5, 2.0, 0.3, -1.0];
     let mut y1 = vec![0.0; n];
     let mut y2 = vec![0.0; n];
-    g.apply(&x, &mut y1);
-    g.apply_adjoint(&x, &mut y2);
+    g.apply(&x, &mut y1).expect("apply");
+    g.apply_adjoint(&x, &mut y2).expect("apply");
     assert_eq!(y1, y2);
 }
 
 #[test]
 fn test_gramian_linearity() {
     let dm = make_test_design();
-    let g = Gramian::build(&dm);
+    let g = Gramian::build(&dm, None);
     let n = g.n_dofs();
 
     let x = vec![1.0, -0.5, 2.0, 0.3, -1.0];
@@ -242,13 +183,13 @@ fn test_gramian_linearity() {
         .map(|(&xi, &yi)| a * xi + b * yi)
         .collect();
     let mut g_combined = vec![0.0; n];
-    g.matvec(&combined, &mut g_combined);
+    g.matrix.matvec(&combined, &mut g_combined);
 
     // Compute a*G(x) + b*G(y)
     let mut gx = vec![0.0; n];
     let mut gy = vec![0.0; n];
-    g.matvec(&x, &mut gx);
-    g.matvec(&y_vec, &mut gy);
+    g.matrix.matvec(&x, &mut gx);
+    g.matrix.matvec(&y_vec, &mut gy);
     let linear_combo: Vec<f64> = gx
         .iter()
         .zip(&gy)
@@ -274,12 +215,11 @@ fn test_three_factor_gramian_build() {
             vec![0, 0, 1, 1, 0, 0, 1, 1],
             vec![0, 1, 0, 1, 0, 1, 0, 1],
         ],
-        ObservationWeights::Unit,
         8,
     )
     .expect("valid store");
-    let dm = WeightedDesign::from_store(store).expect("valid design");
-    let g = Gramian::build(&dm);
+    let dm = Design::from_store(store).expect("valid design");
+    let g = Gramian::build(&dm, None);
     let n = g.n_dofs();
 
     // Verify symmetry
@@ -287,12 +227,12 @@ fn test_three_factor_gramian_build() {
         let mut ei = vec![0.0; n];
         ei[i] = 1.0;
         let mut gi = vec![0.0; n];
-        g.matvec(&ei, &mut gi);
+        g.matrix.matvec(&ei, &mut gi);
         for j in (i + 1)..n {
             let mut ej = vec![0.0; n];
             ej[j] = 1.0;
             let mut gj = vec![0.0; n];
-            g.matvec(&ej, &mut gj);
+            g.matrix.matvec(&ej, &mut gj);
             assert!(
                 (gi[j] - gj[i]).abs() < 1e-14,
                 "symmetry violation at ({}, {}): {} vs {}",
@@ -321,7 +261,7 @@ fn test_three_factor_gramian_build() {
 #[test]
 fn test_gramian_operator_dimensions() {
     let dm = make_test_design();
-    let gop = GramianOperator::new(&dm);
+    let gop = GramianOperator::new(&dm, None);
     assert_eq!(gop.nrows(), dm.n_dofs);
     assert_eq!(gop.ncols(), dm.n_dofs);
 }
@@ -348,19 +288,18 @@ fn test_gramian_large_row_permutation_sort() {
             *val = (i % 3) as u32;
         }
     }
-    let store =
-        FactorMajorStore::new(vec![fa, fb], ObservationWeights::Unit, n_obs).expect("valid store");
-    let dm = WeightedDesign::from_store(store).expect("valid design");
-    let g = Gramian::build(&dm);
-    let gop = GramianOperator::new(&dm);
+    let store = FactorMajorStore::new(vec![fa, fb], n_obs).expect("valid store");
+    let dm = Design::from_store(store).expect("valid design");
+    let g = Gramian::build(&dm, None);
+    let gop = GramianOperator::new(&dm, None);
     let n = g.n_dofs();
 
     // Verify explicit matches implicit
     let x: Vec<f64> = (0..n).map(|i| (i as f64 * 0.1).sin()).collect();
     let mut y_exp = vec![0.0; n];
     let mut y_imp = vec![0.0; n];
-    g.matvec(&x, &mut y_exp);
-    gop.apply(&x, &mut y_imp);
+    g.matrix.matvec(&x, &mut y_exp);
+    gop.apply(&x, &mut y_imp).expect("apply");
     for (a, b) in y_exp.iter().zip(y_imp.iter()) {
         assert!((a - b).abs() < 1e-10, "explicit/implicit mismatch");
     }
@@ -369,7 +308,7 @@ fn test_gramian_large_row_permutation_sort() {
 #[test]
 fn test_gramian_operator_trait() {
     let dm = make_test_design();
-    let g = Gramian::build(&dm);
+    let g = Gramian::build(&dm, None);
     assert_eq!(g.nrows(), dm.n_dofs);
     assert_eq!(g.ncols(), dm.n_dofs);
 }
@@ -383,20 +322,19 @@ fn test_gramian_parallel_build_path() {
     let fa: Vec<u32> = (0..n_obs).map(|i| (i % n_lev_a) as u32).collect();
     let fb: Vec<u32> = (0..n_obs).map(|i| ((i * 7) % n_lev_b) as u32).collect();
 
-    let store = FactorMajorStore::new(vec![fa, fb], ObservationWeights::Unit, n_obs)
-        .expect("valid parallel store");
-    let dm = within::domain::WeightedDesign::from_store(store).expect("valid parallel design");
+    let store = FactorMajorStore::new(vec![fa, fb], n_obs).expect("valid parallel store");
+    let dm = within::domain::Design::from_store(store).expect("valid parallel design");
 
-    let g = Gramian::build(&dm);
-    let gop = GramianOperator::new(&dm);
+    let g = Gramian::build(&dm, None);
+    let gop = GramianOperator::new(&dm, None);
     let n = g.n_dofs();
     assert_eq!(n, n_lev_a + n_lev_b);
 
     let x: Vec<f64> = (0..n).map(|i| (i as f64 * 0.13).sin()).collect();
     let mut y_explicit = vec![0.0; n];
     let mut y_implicit = vec![0.0; n];
-    g.matvec(&x, &mut y_explicit);
-    gop.apply(&x, &mut y_implicit);
+    g.matrix.matvec(&x, &mut y_explicit);
+    gop.apply(&x, &mut y_implicit).expect("apply");
 
     for (i, (a, b)) in y_explicit.iter().zip(y_implicit.iter()).enumerate() {
         assert!(
@@ -412,11 +350,10 @@ fn test_gramian_single_factor() {
     // Factor 0 has 4 levels; observations cycle through them.
     let fa = vec![0u32, 1, 2, 3, 0, 1, 2, 0];
     let n_obs = fa.len();
-    let store =
-        FactorMajorStore::new(vec![fa], ObservationWeights::Unit, n_obs).expect("valid store");
-    let dm = within::domain::WeightedDesign::from_store(store).expect("valid single-factor design");
+    let store = FactorMajorStore::new(vec![fa], n_obs).expect("valid store");
+    let dm = within::domain::Design::from_store(store).expect("valid single-factor design");
 
-    let g = Gramian::build(&dm);
+    let g = Gramian::build(&dm, None);
     let n = g.n_dofs();
 
     assert_eq!(n, 4, "single factor with 4 levels -> n_dofs=4");
@@ -435,7 +372,7 @@ fn test_gramian_single_factor() {
         let mut ei = vec![0.0; n];
         ei[i] = 1.0;
         let mut gi = vec![0.0; n];
-        g.matvec(&ei, &mut gi);
+        g.matrix.matvec(&ei, &mut gi);
         for (j, &gij) in gi.iter().enumerate() {
             if i == j {
                 assert!(
@@ -457,7 +394,7 @@ fn test_gramian_single_factor() {
     // matvec scales each DOF by its observation count.
     let x = vec![1.0, 2.0, 3.0, 4.0];
     let mut y = vec![0.0; n];
-    g.matvec(&x, &mut y);
+    g.matrix.matvec(&x, &mut y);
     assert!((y[0] - 3.0 * 1.0).abs() < 1e-12, "y[0] = diag[0]*x[0]");
     assert!((y[1] - 2.0 * 2.0).abs() < 1e-12, "y[1] = diag[1]*x[1]");
     assert!((y[2] - 2.0 * 3.0).abs() < 1e-12, "y[2] = diag[2]*x[2]");

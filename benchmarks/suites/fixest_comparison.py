@@ -10,7 +10,6 @@ from __future__ import annotations
 from within._within import (
     ApproxCholConfig,
     ApproxSchurConfig,
-    MultiplicativeSchwarz,
     SchurComplement,
 )
 from .._problems import get_generator
@@ -19,10 +18,9 @@ from .._framework import (
     SolverConfig,
     SuiteOptions,
     benchmark_cg,
-    benchmark_gmres,
+    benchmark_lsmr,
     make_additive_schwarz,
     run_solve,
-    standard_solver_configs,
     suite,
 )
 from .._table import print_pivot, print_table
@@ -53,43 +51,22 @@ def run_fixest_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
         ],
     )
 
-    exact_schur = SchurComplement(
-        approx_chol=ApproxCholConfig(seed=0, split=8),
-        approx_schur=None,
+    schur = SchurComplement(
+        approx_chol=ApproxCholConfig(seed=opts.seed),
+        approx_schur=ApproxSchurConfig(seed=opts.seed),
     )
-    approx_schur = SchurComplement(
-        approx_chol=ApproxCholConfig(seed=0, split=8),
-        approx_schur=ApproxSchurConfig(seed=0),
-    )
-
     solver_configs = [
         SolverConfig(
-            "CG(split8,exact-schur)",
+            "CG(Schwarz)",
             benchmark_cg(opts),
-            preconditioner=make_additive_schwarz(local_solver=exact_schur),
+            preconditioner=make_additive_schwarz(local_solver=schur),
         ),
         SolverConfig(
-            "CG(split8,approx-schur)",
-            benchmark_cg(opts),
-            preconditioner=make_additive_schwarz(local_solver=approx_schur),
+            "LSMR(Schwarz)",
+            benchmark_lsmr(opts),
+            preconditioner=make_additive_schwarz(local_solver=schur),
         ),
     ]
-    if opts.profile != "full":
-        solver_configs.append(
-            SolverConfig(
-                "GMRES(split8,exact-schur)",
-                benchmark_gmres(opts),
-                preconditioner=MultiplicativeSchwarz(local_solver=exact_schur),
-            )
-        )
-        solver_configs.append(
-            SolverConfig(
-                "GMRES(split8,approx-schur)",
-                benchmark_gmres(opts),
-                preconditioner=MultiplicativeSchwarz(local_solver=approx_schur),
-            )
-        )
-    solver_configs.extend(standard_solver_configs(opts))
 
     gen = get_generator("fixest_dgp")
     all_results: list[BenchmarkResult] = []

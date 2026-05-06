@@ -8,9 +8,10 @@
 //! Run with: `cargo run --example preconditioned_solve`
 
 use ndarray::Array2;
+use schwarz_precond::Operator;
+use within::config::LocalSolverConfig;
 use within::{
-    solve, KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner, ReductionStrategy,
-    SolveResult, SolverParams,
+    solve, KrylovMethod, OperatorRepr, Preconditioner, ReductionStrategy, SolveResult, SolverParams,
 };
 
 fn main() {
@@ -24,19 +25,21 @@ fn main() {
     }
 
     // Build design to compute D * x_true.
-    use within::observation::{FactorMajorStore, ObservationWeights};
-    use within::WeightedDesign;
+    use within::domain::Design;
+    use within::observation::FactorMajorStore;
+    use within::operator::DesignOperator;
 
     let factor_levels = vec![categories.column(0).to_vec(), categories.column(1).to_vec()];
-    let store = FactorMajorStore::new(factor_levels, ObservationWeights::Unit, n_obs)
-        .expect("valid factor-major store");
-    let design = WeightedDesign::from_store(store).expect("valid design");
+    let store = FactorMajorStore::new(factor_levels, n_obs).expect("valid factor-major store");
+    let design = Design::from_store(store).expect("valid design");
 
     // True coefficient vector: x_true[j] = (j mod 7) - 3.
     let total_dofs = design.n_dofs;
     let x_true: Vec<f64> = (0..total_dofs).map(|j| (j % 7) as f64 - 3.0).collect();
     let mut y = vec![0.0; n_obs];
-    design.matvec_d(&x_true, &mut y);
+    DesignOperator::new(&design, None)
+        .apply(&x_true, &mut y)
+        .expect("apply");
     for (i, yi) in y.iter_mut().enumerate() {
         *yi += 0.01 * ((i * 7 + 3) % 13) as f64 - 0.06;
     }
@@ -80,26 +83,38 @@ fn print_comparison(name_a: &str, a: &SolveResult, name_b: &str, b: &SolveResult
     println!("{}", "-".repeat(54));
     println!(
         "{:<30} {:>12} {:>12}",
-        "converged", a.converged, b.converged,
+        "converged",
+        a.converged(),
+        b.converged(),
     );
     println!(
         "{:<30} {:>12} {:>12}",
-        "iterations", a.iterations, b.iterations,
+        "iterations",
+        a.iterations(),
+        b.iterations(),
     );
     println!(
         "{:<30} {:>12.3e} {:>12.3e}",
-        "residual", a.final_residual, b.final_residual,
+        "residual",
+        a.final_residual(),
+        b.final_residual(),
     );
     println!(
         "{:<30} {:>12.3} {:>12.3}",
-        "time_total (s)", a.time_total, b.time_total,
+        "time_total (s)",
+        a.time_total(),
+        b.time_total(),
     );
     println!(
         "{:<30} {:>12.3} {:>12.3}",
-        "time_setup (s)", a.time_setup, b.time_setup,
+        "time_setup (s)",
+        a.time_setup(),
+        b.time_setup(),
     );
     println!(
         "{:<30} {:>12.3} {:>12.3}",
-        "time_solve (s)", a.time_solve, b.time_solve,
+        "time_solve (s)",
+        a.time_solve(),
+        b.time_solve(),
     );
 }

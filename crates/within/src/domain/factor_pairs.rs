@@ -46,8 +46,8 @@
 
 use std::sync::Arc;
 
-use super::{PartitionWeights, Subdomain, WeightedDesign};
-use crate::observation::ObservationStore;
+use super::{Design, PartitionWeights, Subdomain};
+use crate::observation::Store;
 use crate::operator::gramian::{find_all_active_levels, BipartiteComponent, CrossTab};
 
 /// Build local subdomains (with pre-built CrossTabs) for pairs of factors.
@@ -60,18 +60,19 @@ use crate::operator::gramian::{find_all_active_levels, BipartiteComponent, Cross
 /// Factor pairs are processed in parallel via Rayon. The
 /// `compute_partition_weights` step remains sequential after the parallel
 /// collect.
-pub(crate) fn build_local_domains<S: ObservationStore>(
-    design: &WeightedDesign<S>,
-) -> Vec<(Subdomain, CrossTab)> {
+pub(crate) fn build_local_domains<S: Store>(
+    design: &Design<S>,
+    weights: Option<&[f64]>,
+) -> Vec<(Subdomain, Arc<CrossTab>)> {
     use rayon::prelude::*;
 
     let n_factors = design.n_factors();
     let pairs = build_pairs(n_factors);
     let all_active = find_all_active_levels(design);
 
-    let mut domain_pairs: Vec<(Subdomain, CrossTab)> = pairs
+    let mut domain_pairs: Vec<(Subdomain, Arc<CrossTab>)> = pairs
         .par_iter()
-        .flat_map(|&(q, r)| domains_for_pair(design, q, r, &all_active))
+        .flat_map(|&(q, r)| domains_and_block_for_pair(design, weights, q, r, &all_active).0)
         .collect();
 
     compute_partition_weights(&mut domain_pairs, design.n_dofs);
@@ -101,19 +102,20 @@ pub(crate) struct PairBlockData {
 /// Combines the parallel observation scan (for domain construction) with block
 /// extraction (for Gramian assembly) in a single pass per pair. This avoids a
 /// double observation scan when both domains and an explicit Gramian are needed.
-pub(crate) fn build_domains_and_gramian_blocks<S: ObservationStore>(
-    design: &WeightedDesign<S>,
-) -> (Vec<(Subdomain, CrossTab)>, Vec<PairBlockData>) {
+pub(crate) fn build_domains_and_gramian_blocks<S: Store>(
+    design: &Design<S>,
+    weights: Option<&[f64]>,
+) -> (Vec<(Subdomain, Arc<CrossTab>)>, Vec<PairBlockData>) {
     use rayon::prelude::*;
 
     let n_factors = design.n_factors();
     let pairs = build_pairs(n_factors);
     let all_active = find_all_active_levels(design);
 
-    type PairResult = (Vec<(Subdomain, CrossTab)>, Option<PairBlockData>);
+    type PairResult = (Vec<(Subdomain, Arc<CrossTab>)>, Option<PairBlockData>);
     let results: Vec<PairResult> = pairs
         .par_iter()
-        .map(|&(q, r)| domains_and_block_for_pair(design, q, r, &all_active))
+        .map(|&(q, r)| domains_and_block_for_pair(design, weights, q, r, &all_active))
         .collect();
 
     let mut domain_pairs = Vec::new();
@@ -129,99 +131,88 @@ pub(crate) fn build_domains_and_gramian_blocks<S: ObservationStore>(
     (domain_pairs, blocks)
 }
 
-fn domains_and_block_for_pair<S: ObservationStore>(
-    design: &WeightedDesign<S>,
-    q: usize,
-    r: usize,
-    all_active: &[Vec<bool>],
-) -> (Vec<(Subdomain, CrossTab)>, Option<PairBlockData>) {
-    let (full_ct, l2g) = match CrossTab::build_for_pair_with_active(design, q, r, all_active) {
-        Some(pair) => pair,
-        None => return (Vec::new(), None),
-    };
-
-    let n_q_full = full_ct.n_q();
-    let ct_arc = Arc::new(full_ct);
-
-    let block_data = PairBlockData {
-        q,
-        r,
-        cross_tab: Arc::clone(&ct_arc),
-        q_global: l2g[..n_q_full].to_vec(),
-        r_global: l2g[n_q_full..].to_vec(),
-    };
-
-    let domains = split_into_subdomains_arc(ct_arc, &l2g, n_q_full, (q, r));
-
-    (domains, Some(block_data))
-}
-
-fn domains_for_pair<S: ObservationStore>(
-    design: &WeightedDesign<S>,
-    q: usize,
-    r: usize,
-    all_active: &[Vec<bool>],
-) -> Vec<(Subdomain, CrossTab)> {
-    let (full_ct, l2g) = match CrossTab::build_for_pair_with_active(design, q, r, all_active) {
-        Some(pair) => pair,
-        None => return Vec::new(),
-    };
-
-    let n_q_full = full_ct.n_q();
-    split_into_subdomains(full_ct, &l2g, n_q_full, (q, r))
-}
-
-/// Split a full CrossTab into per-component subdomains.
+/// Build per-pair block data only (no subdomain construction).
 ///
-/// Finds bipartite connected components, extracts a sub-CrossTab for each,
-/// and builds a `Subdomain` with uniform partition-of-unity weights.
-fn split_into_subdomains(
-    full_ct: CrossTab,
-    l2g: &[u32],
-    n_q_full: usize,
-    factor_pair: (usize, usize),
-) -> Vec<(Subdomain, CrossTab)> {
-    let components = full_ct.bipartite_connected_components();
+/// Slim variant of [`build_domains_and_gramian_blocks`] used by `Gramian::build`
+/// when only the explicit Gramian is needed — skipping the connected-component
+/// split and partition-of-unity weights.
+pub(crate) fn build_gramian_blocks<S: Store>(
+    design: &Design<S>,
+    weights: Option<&[f64]>,
+) -> Vec<PairBlockData> {
+    use rayon::prelude::*;
 
-    let cross_tabs: Vec<CrossTab> = if components.len() == 1 {
-        vec![full_ct]
-    } else {
-        components
-            .iter()
-            .map(|comp| full_ct.extract_component(comp))
-            .collect()
-    };
+    let n_factors = design.n_factors();
+    let pairs = build_pairs(n_factors);
+    let all_active = find_all_active_levels(design);
 
-    components
-        .iter()
-        .zip(cross_tabs)
-        .map(|(comp, comp_ct)| {
-            let comp_l2g = component_global_indices(comp, l2g, n_q_full);
-            let core =
-                super::SubdomainCore::uniform(comp_l2g.into_iter().map(|g| g as u32).collect());
-            (Subdomain { factor_pair, core }, comp_ct)
+    pairs
+        .par_iter()
+        .filter_map(|&(q, r)| {
+            let (full_ct, l2g) =
+                CrossTab::build_for_pair_with_active(design, weights, q, r, &all_active)?;
+            let n_q_full = full_ct.n_q();
+            Some(PairBlockData {
+                q,
+                r,
+                cross_tab: Arc::new(full_ct),
+                q_global: l2g[..n_q_full].to_vec(),
+                r_global: l2g[n_q_full..].to_vec(),
+            })
         })
         .collect()
 }
 
-/// Like `split_into_subdomains` but accepts an `Arc<CrossTab>`.
+fn domains_and_block_for_pair<S: Store>(
+    design: &Design<S>,
+    weights: Option<&[f64]>,
+    q: usize,
+    r: usize,
+    all_active: &[Vec<bool>],
+) -> (Vec<(Subdomain, Arc<CrossTab>)>, Option<PairBlockData>) {
+    let (full_ct, l2g) =
+        match CrossTab::build_for_pair_with_active(design, weights, q, r, all_active) {
+            Some(pair) => pair,
+            None => return (Vec::new(), None),
+        };
+
+    let n_q_full = full_ct.n_q();
+    let full_ct = Arc::new(full_ct);
+
+    let block_data = PairBlockData {
+        q,
+        r,
+        cross_tab: Arc::clone(&full_ct),
+        q_global: l2g[..n_q_full].to_vec(),
+        r_global: l2g[n_q_full..].to_vec(),
+    };
+
+    // Single-component pairs share the Arc with `block_data` (refcount bump,
+    // no data clone); multi-component pairs allocate per-component sub-CrossTabs.
+    let domains = split_into_subdomains(full_ct, &l2g, n_q_full, (q, r));
+
+    (domains, Some(block_data))
+}
+
+/// Split a full CrossTab into per-component subdomains.
 ///
-/// When there is a single component, unwraps or clones the Arc to avoid
-/// full CrossTab cloning. Multiple components extract sub-CrossTabs as usual.
-fn split_into_subdomains_arc(
+/// Single-component pairs hand the input `Arc` straight back to the caller
+/// (refcount bump, no data clone). Multi-component pairs allocate one
+/// fresh `Arc<CrossTab>` per component via `extract_component`.
+fn split_into_subdomains(
     full_ct: Arc<CrossTab>,
     l2g: &[u32],
     n_q_full: usize,
     factor_pair: (usize, usize),
-) -> Vec<(Subdomain, CrossTab)> {
+) -> Vec<(Subdomain, Arc<CrossTab>)> {
     let components = full_ct.bipartite_connected_components();
 
-    let cross_tabs: Vec<CrossTab> = if components.len() == 1 {
-        vec![Arc::try_unwrap(full_ct).unwrap_or_else(|arc| (*arc).clone())]
+    let cross_tabs: Vec<Arc<CrossTab>> = if components.len() == 1 {
+        vec![full_ct]
     } else {
         components
             .iter()
-            .map(|comp| full_ct.extract_component(comp))
+            .map(|comp| Arc::new(full_ct.extract_component(comp)))
             .collect()
     };
 
@@ -269,7 +260,7 @@ fn build_pairs(n_factors: usize) -> Vec<(usize, usize)> {
 /// In the common (non-overlapping) case where every DOF belongs to exactly one
 /// subdomain, all weights are 1.0 and the compact `PartitionWeights::Uniform`
 /// representation is used to avoid per-DOF storage.
-fn compute_partition_weights(domain_pairs: &mut [(Subdomain, CrossTab)], n_dofs: usize) {
+fn compute_partition_weights(domain_pairs: &mut [(Subdomain, Arc<CrossTab>)], n_dofs: usize) {
     let mut counts = vec![0u32; n_dofs];
     for (d, _) in domain_pairs.iter() {
         for &idx in d.core.global_indices() {
@@ -306,27 +297,26 @@ fn compute_partition_weights(domain_pairs: &mut [(Subdomain, CrossTab)], n_dofs:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::WeightedDesign;
-    use crate::observation::{FactorMajorStore, ObservationWeights};
+    use crate::domain::Design;
+    use crate::observation::FactorMajorStore;
 
-    fn make_test_design() -> WeightedDesign<FactorMajorStore> {
+    fn make_test_design() -> Design<FactorMajorStore> {
         let store = FactorMajorStore::new(
             vec![
                 vec![0, 1, 2, 0, 1, 2],
                 vec![0, 1, 0, 1, 0, 1],
                 vec![0, 0, 1, 1, 0, 1],
             ],
-            ObservationWeights::Unit,
             6,
         )
         .expect("valid factor-major store");
-        WeightedDesign::from_store(store).expect("valid test design")
+        Design::from_store(store).expect("valid test design")
     }
 
     #[test]
     fn test_full_cover_domain_count() {
         let dm = make_test_design();
-        let domain_pairs = build_local_domains(&dm);
+        let domain_pairs = build_local_domains(&dm, None);
         // 3 factor pairs; each pair may produce multiple components
         assert!(domain_pairs.len() >= 3);
     }
@@ -334,7 +324,7 @@ mod tests {
     #[test]
     fn test_partition_of_unity() {
         let dm = make_test_design();
-        let domain_pairs = build_local_domains(&dm);
+        let domain_pairs = build_local_domains(&dm, None);
         let n_dofs = dm.n_dofs;
         // Two-sided PoU: squared weights must sum to 1 at every DOF.
         let mut weight_sq_sum = vec![0.0; n_dofs];
@@ -354,7 +344,7 @@ mod tests {
     #[test]
     fn test_domains_cover_all_dofs() {
         let dm = make_test_design();
-        let domain_pairs = build_local_domains(&dm);
+        let domain_pairs = build_local_domains(&dm, None);
         let mut covered = vec![false; dm.n_dofs];
         for (d, _) in &domain_pairs {
             for &idx in d.core.global_indices() {
@@ -371,8 +361,8 @@ mod tests {
     use crate::operator::gramian::Gramian;
 
     fn assert_domain_sets_equal(
-        obs_domains: &[(Subdomain, crate::operator::gramian::CrossTab)],
-        gram_domains: &[(Subdomain, crate::operator::gramian::CrossTab)],
+        obs_domains: &[(Subdomain, Arc<crate::operator::gramian::CrossTab>)],
+        gram_domains: &[(Subdomain, Arc<crate::operator::gramian::CrossTab>)],
     ) {
         assert_eq!(
             obs_domains.len(),
@@ -402,16 +392,12 @@ mod tests {
         use schwarz_precond::Operator;
 
         for design in [make_test_design(), {
-            let store = FactorMajorStore::new(
-                vec![vec![0, 1, 2, 0, 1], vec![0, 1, 2, 3, 0]],
-                ObservationWeights::Unit,
-                5,
-            )
-            .unwrap();
-            WeightedDesign::from_store(store).unwrap()
+            let store =
+                FactorMajorStore::new(vec![vec![0, 1, 2, 0, 1], vec![0, 1, 2, 3, 0]], 5).unwrap();
+            Design::from_store(store).unwrap()
         }] {
-            let obs_gramian = Gramian::build(&design);
-            let (_domains, blocks) = build_domains_and_gramian_blocks(&design);
+            let obs_gramian = Gramian::build(&design, None);
+            let (_domains, blocks) = build_domains_and_gramian_blocks(&design, None);
             let composed =
                 Gramian::from_pair_blocks(&blocks, &design.factors, design.n_dofs).unwrap();
 
@@ -421,8 +407,8 @@ mod tests {
                 let x: Vec<f64> = (0..n).map(|i| (i * 7 + seed) as f64 * 0.1).collect();
                 let mut y_obs = vec![0.0; n];
                 let mut y_composed = vec![0.0; n];
-                obs_gramian.apply(&x, &mut y_obs);
-                composed.apply(&x, &mut y_composed);
+                obs_gramian.apply(&x, &mut y_obs).expect("apply");
+                composed.apply(&x, &mut y_composed).expect("apply");
                 for i in 0..n {
                     assert!(
                         (y_obs[i] - y_composed[i]).abs() < 1e-12,
@@ -438,8 +424,8 @@ mod tests {
     #[test]
     fn test_composed_gramian_domains_match() {
         let design = make_test_design();
-        let obs_domains = build_local_domains(&design);
-        let (composed_domains, _blocks) = build_domains_and_gramian_blocks(&design);
+        let obs_domains = build_local_domains(&design, None);
+        let (composed_domains, _blocks) = build_domains_and_gramian_blocks(&design, None);
         assert_domain_sets_equal(&obs_domains, &composed_domains);
     }
 }

@@ -1,7 +1,10 @@
 use ndarray::array;
+use within::config::LocalSolverConfig;
+use within::domain::Design;
+use within::observation::ArrayStore;
 use within::{
-    solve, FePreconditioner, KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner,
-    ReductionStrategy, Solver, SolverParams,
+    solve, FePreconditioner, KrylovMethod, OperatorRepr, Preconditioner, ReductionStrategy, Solver,
+    SolverParams,
 };
 
 #[path = "common/orchestrate_helpers.rs"]
@@ -33,9 +36,9 @@ fn test_solver_matches_oneshot() {
         Solver::new(categories.view(), None, &params, Some(&precond)).expect("solver build");
     let result = solver.solve(&y).expect("solver solve");
 
-    assert!(result.converged);
-    assert_eq!(result.x.len(), oneshot.x.len());
-    for (a, b) in result.x.iter().zip(oneshot.x.iter()) {
+    assert!(result.converged());
+    assert_eq!(result.x().len(), oneshot.x().len());
+    for (a, b) in result.x().iter().zip(oneshot.x().iter()) {
         assert!((a - b).abs() < 1e-12, "x mismatch: {} vs {}", a, b);
     }
 }
@@ -50,11 +53,11 @@ fn test_solver_demeaned() {
         Solver::new(categories.view(), None, &params, Some(&precond)).expect("solver build");
     let result = solver.solve(&y).expect("solver solve");
 
-    assert_eq!(result.demeaned.len(), y.len());
+    assert_eq!(result.demeaned().len(), y.len());
     // demeaned = y - D*x: verify by checking D^T * demeaned ≈ 0
     // (the residual should be orthogonal to the design matrix)
     assert!(
-        result.demeaned.iter().all(|v| v.is_finite()),
+        result.demeaned().iter().all(|v| v.is_finite()),
         "demeaned should be finite"
     );
 }
@@ -67,7 +70,7 @@ fn test_solver_no_preconditioner() {
     let solver = Solver::new(categories.view(), None, &params, None).expect("solver build");
     let result = solver.solve(&y).expect("solver solve");
 
-    assert!(result.converged);
+    assert!(result.converged());
     common::assert_solution_finite(&result);
 }
 
@@ -87,7 +90,7 @@ fn test_solver_explicit_gramian() {
         Solver::new(categories.view(), None, &params, Some(&precond)).expect("solver build");
     let result = solver.solve(&y).expect("solver solve");
 
-    assert!(result.converged);
+    assert!(result.converged());
 }
 
 #[test]
@@ -112,9 +115,9 @@ fn test_solver_batch() {
     assert_eq!(batch.n_rhs(), 3);
 
     for (batch_x, individual_x) in [
-        (batch.x(0), r1.x.as_slice()),
-        (batch.x(1), r2.x.as_slice()),
-        (batch.x(2), r3.x.as_slice()),
+        (batch.x(0), r1.x()),
+        (batch.x(1), r2.x()),
+        (batch.x(2), r3.x()),
     ] {
         for (a, b) in batch_x.iter().zip(individual_x.iter()) {
             assert!((a - b).abs() < 1e-12, "batch x mismatch");
@@ -155,11 +158,13 @@ fn test_serde_roundtrip() {
 
     // Deserialize and build new solver
     let precond2: FePreconditioner = postcard::from_bytes(&bytes).expect("deserialize");
-    let solver2 = Solver::with_preconditioner(categories.view(), None, &params, precond2)
+    let store = ArrayStore::new(categories.view());
+    let design = Design::from_store(store).expect("design");
+    let solver2 = Solver::from_design_with_preconditioner(design, None, &params, precond2)
         .expect("solver from preconditioner");
     let r2 = solver2.solve(&y).expect("solve 2");
 
-    for (a, b) in r1.x.iter().zip(r2.x.iter()) {
+    for (a, b) in r1.x().iter().zip(r2.x().iter()) {
         assert!((a - b).abs() < 1e-12, "serde roundtrip x mismatch");
     }
 }
@@ -171,9 +176,9 @@ fn test_solver_from_design() {
     let params = default_params();
     let precond = additive_precond();
 
-    let solver = Solver::from_design(design, &params, Some(&precond)).expect("from_design");
+    let solver = Solver::from_design(design, None, &params, Some(&precond)).expect("from_design");
     let result = solver.solve(&y).expect("solve");
-    assert!(result.converged);
+    assert!(result.converged());
 }
 
 // ---------------------------------------------------------------------------
@@ -196,7 +201,7 @@ fn test_solver_multiplicative_preconditioner() {
         Solver::new(categories.view(), None, &params, Some(&precond)).expect("solver build");
     let result = solver.solve(&y).expect("solver solve");
 
-    assert!(result.converged, "multiplicative solver should converge");
+    assert!(result.converged(), "multiplicative solver should converge");
     common::assert_solution_finite(&result);
 }
 
@@ -223,31 +228,27 @@ fn test_multiplicative_preconditioner_nrows_ncols() {
     // Test apply produces finite output
     let x = vec![1.0; solver.n_dofs()];
     let mut y = vec![0.0; solver.n_dofs()];
-    precond_ref.apply(&x, &mut y);
+    precond_ref.apply(&x, &mut y).expect("apply");
     assert!(y.iter().all(|v| v.is_finite()));
 
     // Test apply_adjoint produces finite output
     let mut y2 = vec![0.0; solver.n_dofs()];
-    precond_ref.apply_adjoint(&x, &mut y2);
+    precond_ref.apply_adjoint(&x, &mut y2).expect("apply");
     assert!(y2.iter().all(|v| v.is_finite()));
 }
 
 #[test]
 fn test_multiplicative_preconditioner_requires_gramian() {
-    use within::observation::{FactorMajorStore, ObservationWeights};
+    use within::domain::Design;
+    use within::observation::FactorMajorStore;
     use within::operator::preconditioner::build_preconditioner;
-    use within::WeightedDesign;
 
-    let store = FactorMajorStore::new(
-        vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]],
-        ObservationWeights::Unit,
-        5,
-    )
-    .expect("store ok");
-    let design = WeightedDesign::from_store(store).expect("design ok");
+    let store =
+        FactorMajorStore::new(vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]], 5).expect("store ok");
+    let design = Design::from_store(store).expect("design ok");
 
     let config = Preconditioner::Multiplicative(LocalSolverConfig::solver_default());
-    let result = build_preconditioner(&design, None, &config);
+    let result = build_preconditioner(&design, None, None, &config);
     assert!(
         result.is_err(),
         "multiplicative without gramian should fail"
@@ -287,11 +288,11 @@ fn test_multiplicative_vs_additive_same_solution() {
     )
     .expect("multiplicative solve");
 
-    assert!(result_add.converged);
-    assert!(result_mult.converged);
+    assert!(result_add.converged());
+    assert!(result_mult.converged());
 
     // Both should converge to the same solution
-    for (a, m) in result_add.x.iter().zip(result_mult.x.iter()) {
+    for (a, m) in result_add.x().iter().zip(result_mult.x().iter()) {
         assert!(
             (a - m).abs() < 1e-4,
             "solution mismatch: additive={} multiplicative={}",
@@ -324,11 +325,13 @@ fn test_multiplicative_serde_roundtrip() {
     assert!(!bytes.is_empty());
 
     let precond2: FePreconditioner = postcard::from_bytes(&bytes).expect("deserialize");
-    let solver2 = Solver::with_preconditioner(categories.view(), None, &params, precond2)
+    let store = ArrayStore::new(categories.view());
+    let design = Design::from_store(store).expect("design");
+    let solver2 = Solver::from_design_with_preconditioner(design, None, &params, precond2)
         .expect("solver from preconditioner");
     let r2 = solver2.solve(&y).expect("solve 2");
 
-    for (a, b) in r1.x.iter().zip(r2.x.iter()) {
+    for (a, b) in r1.x().iter().zip(r2.x().iter()) {
         assert!((a - b).abs() < 1e-10, "serde roundtrip x mismatch");
     }
 }
@@ -348,6 +351,6 @@ fn test_solver_multiplicative_implicit_fused() {
     let solver =
         Solver::new(categories.view(), None, &params, Some(&precond)).expect("solver build");
     let result = solver.solve(&y).expect("solver solve");
-    assert!(result.converged);
+    assert!(result.converged());
     common::assert_solution_finite(&result);
 }

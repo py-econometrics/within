@@ -15,7 +15,7 @@
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
-use schwarz_precond::{PreconditionerBuildError, SolveError};
+use schwarz_precond::{BuildError, SolveError};
 
 /// Result alias used by fallible public APIs in this crate.
 pub type WithinResult<T> = Result<T, WithinError>;
@@ -53,7 +53,7 @@ pub enum WithinError {
     /// Local solver construction failed.
     LocalSolverBuild(String),
     /// Preconditioner structural validation failed.
-    PreconditionerBuild(PreconditionerBuildError),
+    PreconditionerBuild(BuildError),
     /// Iterative solver runtime error.
     IterativeSolve(SolveError),
 }
@@ -94,8 +94,8 @@ impl Error for WithinError {
     }
 }
 
-impl From<PreconditionerBuildError> for WithinError {
-    fn from(value: PreconditionerBuildError) -> Self {
+impl From<BuildError> for WithinError {
+    fn from(value: BuildError) -> Self {
         Self::PreconditionerBuild(value)
     }
 }

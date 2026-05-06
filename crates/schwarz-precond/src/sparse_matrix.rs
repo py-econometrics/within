@@ -58,6 +58,12 @@ enum IndexLookup {
 
 impl IndexLookup {
     /// Build the appropriate lookup variant based on index density.
+    ///
+    /// Uses a dense `Vec<usize>` table when the index range fits in `4 * m`
+    /// slots (subset density ≥ 25%); otherwise falls back to a `HashMap`.
+    /// The 4× threshold trades memory for the lookup speedup of direct
+    /// indexing over hashing — beyond it, the table grows faster than the
+    /// lookup cost saved.
     fn new(subset: &[usize], max_idx: usize, m: usize) -> Self {
         if max_idx + 1 > 4 * m {
             let map = subset

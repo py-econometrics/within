@@ -2,11 +2,14 @@ use ndarray::array;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use schwarz_precond::Operator;
-use within::observation::{FactorMajorStore, ObservationWeights};
+use within::config::LocalSolverConfig;
+use within::domain::Design;
+use within::observation::FactorMajorStore;
 use within::operator::gramian::GramianOperator;
+use within::operator::DesignOperator;
 use within::{
-    solve, FactorMajorStore as FMStore, KrylovMethod, LocalSolverConfig, OperatorRepr,
-    Preconditioner, ReductionStrategy, Solver, SolverParams, WeightedDesign,
+    solve, FactorMajorStore as FMStore, KrylovMethod, OperatorRepr, Preconditioner,
+    ReductionStrategy, Solver, SolverParams,
 };
 
 #[path = "common/orchestrate_helpers.rs"]
@@ -31,11 +34,11 @@ fn test_single_observation() {
 
     let result = solve(cats.view(), &y, None, &params, None).expect("single-obs solve");
     assert!(
-        result.x.iter().all(|v| v.is_finite()),
+        result.x().iter().all(|v| v.is_finite()),
         "non-finite x for single observation"
     );
     assert!(
-        result.demeaned.iter().all(|v| v.is_finite()),
+        result.demeaned().iter().all(|v| v.is_finite()),
         "non-finite demeaned for single observation"
     );
 }
@@ -58,12 +61,12 @@ fn test_trivial_factor_all_same_level() {
     let result =
         solve(cats.view(), &y, None, &params, Some(&precond)).expect("trivial-factor solve");
     assert!(
-        result.converged,
+        result.converged(),
         "solver did not converge with constant factor"
     );
     common::assert_solution_finite(&result);
     assert_eq!(
-        result.x.len(),
+        result.x().len(),
         4,
         "1 level for factor0 + 3 levels for factor1"
     );
@@ -96,7 +99,7 @@ fn test_zero_weight_error_with_preconditioner() {
     assert!(
         result.is_err(),
         "zero weights with preconditioner should produce an error, but got: {:?}",
-        result.map(|r| r.x)
+        result.map(|r| r.into_parts().0)
     );
 }
 
@@ -118,11 +121,11 @@ fn test_zero_weight_no_preconditioner_returns_zero() {
     .expect("zero weights with no preconditioner should succeed");
 
     assert!(
-        result.converged,
+        result.converged(),
         "zero-Gramian system should trivially converge"
     );
     assert!(
-        result.x.iter().all(|&v| v == 0.0),
+        result.x().iter().all(|&v| v == 0.0),
         "zero-Gramian solution must be the zero vector"
     );
 }
@@ -142,8 +145,8 @@ fn test_cg_maxiter_1_partial_result() {
         (0..n_obs).map(|_| rng.random_range(0..20u32)).collect(),
         (0..n_obs).map(|_| rng.random_range(0..20u32)).collect(),
     ];
-    let store = FactorMajorStore::new(cats, ObservationWeights::Unit, n_obs).expect("valid store");
-    let design = WeightedDesign::from_store(store).expect("valid design");
+    let store = FactorMajorStore::new(cats, n_obs).expect("valid store");
+    let design = Design::from_store(store).expect("valid design");
 
     let y: Vec<f64> = (0..n_obs).map(|i| (i as f64 * 0.17).sin()).collect();
 
@@ -153,23 +156,23 @@ fn test_cg_maxiter_1_partial_result() {
         max_refinements: 0,
         ..SolverParams::default()
     };
-    let solver = Solver::from_design(design, &params, None).expect("solver build");
+    let solver = Solver::from_design(design, None, &params, None).expect("solver build");
     let result = solver.solve(&y).expect("solve with maxiter=1");
 
     // Convergence is not expected (tolerance is unreachable in 1 iteration),
     // but all values must be finite.
     assert!(
-        result.x.iter().all(|v| v.is_finite()),
+        result.x().iter().all(|v| v.is_finite()),
         "non-finite x after maxiter=1"
     );
     assert!(
-        result.demeaned.iter().all(|v| v.is_finite()),
+        result.demeaned().iter().all(|v| v.is_finite()),
         "non-finite demeaned after maxiter=1"
     );
     assert!(
-        result.iterations <= 1,
+        result.iterations() <= 1,
         "expected ≤ 1 iteration, got {}",
-        result.iterations
+        result.iterations()
     );
 }
 
@@ -193,18 +196,18 @@ fn test_gmres_known_solution() {
         ..SolverParams::default()
     };
     let precond = additive_precond();
-    let solver = Solver::from_design(design, &params, Some(&precond)).expect("solver build");
+    let solver = Solver::from_design(design, None, &params, Some(&precond)).expect("solver build");
     let result = solver.solve(&y).expect("GMRES solve");
 
     assert!(
-        result.converged,
+        result.converged(),
         "GMRES did not converge (residual={:.2e})",
-        result.final_residual
+        result.final_residual()
     );
     assert!(
-        result.final_residual < 1e-6,
+        result.final_residual() < 1e-6,
         "residual too large: {:.2e}",
-        result.final_residual
+        result.final_residual()
     );
     common::assert_solution_finite(&result);
 }
@@ -215,7 +218,7 @@ fn test_gmres_known_solution() {
 
 /// After a GMRES solve, compute the actual observation-space residual
 /// ||D^T W (y - Dx)|| / ||D^T W y|| independently and compare with
-/// `result.final_residual`. They must agree to within floating-point
+/// `result.final_residual()`. They must agree to within floating-point
 /// rounding (the solver uses the same formula).
 #[test]
 fn test_gmres_residual_estimate_vs_actual() {
@@ -230,10 +233,10 @@ fn test_gmres_residual_estimate_vs_actual() {
         ..SolverParams::default()
     };
     let precond = additive_precond();
-    let solver = Solver::from_design(design, &params, Some(&precond)).expect("solver build");
+    let solver = Solver::from_design(design, None, &params, Some(&precond)).expect("solver build");
     let result = solver.solve(&y).expect("GMRES solve");
 
-    assert!(result.converged);
+    assert!(result.converged());
 
     // Recompute the residual from scratch using the GramianOperator.
     // `final_residual` is ||D^T W (y - Dx)|| / ||D^T W y||.
@@ -245,16 +248,18 @@ fn test_gmres_residual_estimate_vs_actual() {
     // We rebuild a fresh design from the same categories to access the operator.
     let design2 = common::make_test_design();
     let n_dofs = design2.n_dofs;
-    let gramian_op = GramianOperator::new(&design2);
+    let gramian_op = GramianOperator::new(&design2, None);
 
     // rhs = D^T W y (unit weights, so D^T y)
     let mut rhs = vec![0.0; n_dofs];
-    design2.rmatvec_wdt(&y, &mut rhs);
+    DesignOperator::new(&design2, None)
+        .apply_adjoint(&y, &mut rhs)
+        .expect("apply");
     let rhs_norm = rhs.iter().map(|v| v * v).sum::<f64>().sqrt().max(1e-15);
 
     // residual = G*x - rhs
     let mut gx = vec![0.0; n_dofs];
-    gramian_op.apply(&result.x, &mut gx);
+    gramian_op.apply(result.x(), &mut gx).expect("apply");
     let actual_residual_norm = gx
         .iter()
         .zip(rhs.iter())
@@ -271,9 +276,9 @@ fn test_gmres_residual_estimate_vs_actual() {
         actual_relative_residual
     );
     assert!(
-        result.final_residual < 1e-5,
+        result.final_residual() < 1e-5,
         "reported residual too large: {:.2e}",
-        result.final_residual
+        result.final_residual()
     );
 }
 
@@ -294,8 +299,8 @@ fn test_large_design_convergence() {
         (0..n_obs).map(|_| rng.random_range(0..100u32)).collect(),
     ];
 
-    let store = FMStore::new(cats, ObservationWeights::Unit, n_obs).expect("valid large store");
-    let design = WeightedDesign::from_store(store).expect("valid large design");
+    let store = FMStore::new(cats, n_obs).expect("valid large store");
+    let design = Design::from_store(store).expect("valid large design");
     let y = common::make_y_from_unit_solution(&design);
 
     let params = SolverParams {
@@ -303,13 +308,13 @@ fn test_large_design_convergence() {
         ..SolverParams::default()
     };
     let precond = additive_precond();
-    let solver = Solver::from_design(design, &params, Some(&precond)).expect("solver build");
+    let solver = Solver::from_design(design, None, &params, Some(&precond)).expect("solver build");
     let result = solver.solve(&y).expect("large design solve");
 
     assert!(
-        result.converged,
+        result.converged(),
         "large design did not converge (n_obs={n_obs}, residual={:.2e})",
-        result.final_residual
+        result.final_residual()
     );
     common::assert_solution_finite(&result);
 }
@@ -326,13 +331,13 @@ fn test_zero_rhs_zero_solution() {
     let y = vec![0.0f64; design.n_rows];
 
     let params = SolverParams::default();
-    let solver = Solver::from_design(design, &params, None).expect("solver build");
+    let solver = Solver::from_design(design, None, &params, None).expect("solver build");
     let result = solver.solve(&y).expect("zero RHS solve");
 
-    assert!(result.converged, "zero RHS should trivially converge");
-    assert_eq!(result.iterations, 0, "zero RHS should need 0 iterations");
+    assert!(result.converged(), "zero RHS should trivially converge");
+    assert_eq!(result.iterations(), 0, "zero RHS should need 0 iterations");
     assert!(
-        result.x.iter().all(|&v| v == 0.0),
+        result.x().iter().all(|&v| v == 0.0),
         "zero RHS should produce zero solution"
     );
 }
@@ -364,7 +369,7 @@ fn test_uniform_weights_matches_unweighted() {
 
     // Constant scaling of W leaves G and D^T W y proportional, so the solution
     // is identical.
-    for (a, b) in r_unit.x.iter().zip(r_uniform.x.iter()) {
+    for (a, b) in r_unit.x().iter().zip(r_uniform.x().iter()) {
         assert!(
             (a - b).abs() < 1e-8,
             "uniform weights changed solution: {} vs {}",
@@ -387,13 +392,13 @@ fn test_repeated_solve_is_deterministic() {
 
     let params = SolverParams::default();
     let precond = additive_precond();
-    let solver = Solver::from_design(design, &params, Some(&precond)).expect("solver build");
+    let solver = Solver::from_design(design, None, &params, Some(&precond)).expect("solver build");
 
     let r1 = solver.solve(&y).expect("first solve");
     let r2 = solver.solve(&y).expect("second solve");
 
-    assert_eq!(r1.x.len(), r2.x.len());
-    for (i, (a, b)) in r1.x.iter().zip(r2.x.iter()).enumerate() {
+    assert_eq!(r1.x().len(), r2.x().len());
+    for (i, (a, b)) in r1.x().iter().zip(r2.x().iter()).enumerate() {
         assert_eq!(a, b, "x[{i}] differs between two solves: {} vs {}", a, b);
     }
 }

@@ -1,12 +1,12 @@
 use ndarray::Array2;
 use proptest::prelude::*;
 use schwarz_precond::Operator;
-use within::observation::{ArrayStore, ObservationWeights};
+use within::config::LocalSolverConfig;
+use within::domain::Design;
+use within::observation::ArrayStore;
 use within::operator::gramian::{Gramian, GramianOperator};
-use within::{
-    solve, LocalSolverConfig, Preconditioner, ReductionStrategy, Solver, SolverParams,
-    WeightedDesign,
-};
+use within::operator::DesignOperator;
+use within::{solve, Preconditioner, ReductionStrategy, Solver, SolverParams};
 
 #[path = "common/orchestrate_helpers.rs"]
 mod common;
@@ -137,22 +137,18 @@ proptest! {
     fn prop_weighted_explicit_equals_implicit(
         (cats, _y, weights) in random_weighted_fe_problem_strategy()
     ) {
-        let store = ArrayStore::new(
-            cats.view(),
-            ObservationWeights::Dense(weights),
-        )
-        .unwrap();
-        let design = WeightedDesign::from_store(store).unwrap();
+        let store = ArrayStore::new(cats.view());
+        let design = Design::from_store(store).unwrap();
 
-        let explicit = Gramian::build(&design);
-        let implicit = GramianOperator::new(&design);
+        let explicit = Gramian::build(&design, Some(&weights));
+        let implicit = GramianOperator::new(&design, Some(&weights));
         let n = design.n_dofs;
 
         let x: Vec<f64> = (0..n).map(|i| (i as f64 * 0.3).sin()).collect();
         let mut y_exp = vec![0.0; n];
         let mut y_imp = vec![0.0; n];
-        explicit.matvec(&x, &mut y_exp);
-        implicit.apply(&x, &mut y_imp);
+        explicit.matrix.matvec(&x, &mut y_exp);
+        implicit.apply(&x, &mut y_imp).expect("apply");
 
         for (a, b) in y_exp.iter().zip(y_imp.iter()) {
             prop_assert!(
@@ -174,23 +170,23 @@ proptest! {
         };
         let precond = additive_precond();
         // Build the design with a unit-solution RHS so the problem is feasible
-        let store = ArrayStore::new(cats.view(), ObservationWeights::Unit).unwrap();
-        let design = WeightedDesign::from_store(store).unwrap();
+        let store = ArrayStore::new(cats.view());
+        let design = Design::from_store(store).unwrap();
         let y_feasible: Vec<f64> = {
             let x_true = vec![1.0; design.n_dofs];
             let mut y_out = vec![0.0; design.n_rows];
-            design.matvec_d(&x_true, &mut y_out);
+            DesignOperator::new(&design, None).apply(&x_true, &mut y_out).expect("apply");
             y_out
         };
         // Use y_feasible so convergence is guaranteed on a consistent system
         let _ = y; // provided by strategy but we use the feasible version
         let result = solve(cats.view(), &y_feasible, None, &params, Some(&precond)).unwrap();
         prop_assert!(
-            result.converged,
+            result.converged(),
             "4-factor solve did not converge (n_obs={}, n_dofs={}, residual={:.2e})",
             design.n_rows,
             design.n_dofs,
-            result.final_residual
+            result.final_residual()
         );
     }
 
@@ -214,11 +210,11 @@ proptest! {
         let result_b = solver_b.solve(&y).unwrap();
 
         prop_assert_eq!(
-            result_a.x.len(),
-            result_b.x.len(),
+            result_a.x().len(),
+            result_b.x().len(),
             "x length mismatch"
         );
-        for (i, (a, b)) in result_a.x.iter().zip(result_b.x.iter()).enumerate() {
+        for (i, (a, b)) in result_a.x().iter().zip(result_b.x().iter()).enumerate() {
             prop_assert!(
                 (a - b).abs() < 1e-12,
                 "x[{}] mismatch: solve()={} vs Solver::new().solve()={}",
@@ -238,7 +234,7 @@ proptest! {
         let precond = additive_precond();
         let result = solve(cats.view(), &y, None, &params, Some(&precond)).unwrap();
 
-        if !result.converged {
+        if !result.converged() {
             return Ok(());
         }
 
@@ -247,7 +243,7 @@ proptest! {
         let n_obs = y.len();
         let n_factors = cats.ncols();
 
-        // Compute factor offsets (same ordering as WeightedDesign)
+        // Compute factor offsets (same ordering as Design)
         let mut offsets = vec![0usize; n_factors];
         for f in 1..n_factors {
             let n_levels_prev = *cats.column(f - 1).iter().max().unwrap() as usize + 1;
@@ -258,14 +254,14 @@ proptest! {
             let dx_i: f64 = (0..n_factors)
                 .map(|f| {
                     let level = cats[[i, f]] as usize;
-                    result.x[offsets[f] + level]
+                    result.x()[offsets[f] + level]
                 })
                 .sum();
             let expected_demeaned = y[i] - dx_i;
             prop_assert!(
-                (result.demeaned[i] - expected_demeaned).abs() < 1e-8,
+                (result.demeaned()[i] - expected_demeaned).abs() < 1e-8,
                 "demeaned[{}]: got {}, expected {} (y={}, Dx={})",
-                i, result.demeaned[i], expected_demeaned, y[i], dx_i
+                i, result.demeaned()[i], expected_demeaned, y[i], dx_i
             );
         }
     }
@@ -277,12 +273,12 @@ proptest! {
     #[test]
     fn prop_single_factor_converges((cats, _y) in single_factor_strategy()) {
         // Build a consistent RHS: y = D * 1 so the system is exactly solvable.
-        let store = ArrayStore::new(cats.view(), ObservationWeights::Unit).unwrap();
-        let design = WeightedDesign::from_store(store).unwrap();
+        let store = ArrayStore::new(cats.view());
+        let design = Design::from_store(store).unwrap();
         let n_levels = design.n_dofs;
         let x_true = vec![1.0; n_levels];
         let mut y_feasible = vec![0.0; design.n_rows];
-        design.matvec_d(&x_true, &mut y_feasible);
+        DesignOperator::new(&design, None).apply(&x_true, &mut y_feasible).expect("apply");
 
         // No preconditioner, no iterative refinement.
         let params = SolverParams {
@@ -294,12 +290,12 @@ proptest! {
         let result = solve(cats.view(), &y_feasible, None, &params, None).unwrap();
 
         prop_assert!(
-            result.converged,
+            result.converged(),
             "single-factor CG did not converge in {} iterations (residual={:.2e}, n_levels={})",
-            result.iterations,
-            result.final_residual,
+            result.iterations(),
+            result.final_residual(),
             n_levels
         );
-        prop_assert!(result.x.iter().all(|v| v.is_finite()), "non-finite x");
+        prop_assert!(result.x().iter().all(|v| v.is_finite()), "non-finite x");
     }
 }

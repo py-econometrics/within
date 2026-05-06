@@ -11,9 +11,10 @@ use within::config::{
     ApproxCholConfig, KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner,
     ReductionStrategy, SolverParams,
 };
-use within::domain::WeightedDesign;
-use within::observation::{FactorMajorStore, ObservationWeights};
+use within::domain::Design;
+use within::observation::FactorMajorStore;
 use within::operator::gramian::{Gramian, GramianOperator};
+use within::operator::DesignOperator;
 use within::Solver;
 
 // ===========================================================================
@@ -47,10 +48,7 @@ impl Case {
     }
 }
 
-fn generate_fixest_like_case(
-    case: Case,
-    seed: u64,
-) -> (WeightedDesign<FactorMajorStore>, Vec<f64>) {
+fn generate_fixest_like_case(case: Case, seed: u64) -> (Design<FactorMajorStore>, Vec<f64>) {
     let mut rng = SmallRng::seed_from_u64(seed);
     let n_years = 10usize;
     let n_indiv_per_firm = 23usize;
@@ -78,9 +76,8 @@ fn generate_fixest_like_case(
         vec![indiv_id, year, firm_id]
     };
 
-    let store = FactorMajorStore::new(factor_levels, ObservationWeights::Unit, case.n_obs)
-        .expect("valid factor-major store");
-    let design = WeightedDesign::from_store(store).expect("valid design");
+    let store = FactorMajorStore::new(factor_levels, case.n_obs).expect("valid factor-major store");
+    let design = Design::from_store(store).expect("valid design");
 
     let mut x_true = vec![0.0; design.n_dofs];
     for x in &mut x_true {
@@ -88,7 +85,9 @@ fn generate_fixest_like_case(
     }
 
     let mut y = vec![0.0; case.n_obs];
-    design.matvec_d(&x_true, &mut y);
+    DesignOperator::new(&design, None)
+        .apply(&x_true, &mut y)
+        .expect("apply");
     for yi in &mut y {
         *yi += 0.1 * rng.random_range(-1.0..1.0);
     }
@@ -110,8 +109,8 @@ fn one_level_local_solver(ac2: bool) -> LocalSolverConfig {
     };
     LocalSolverConfig {
         approx_chol,
-        approx_schur: Some(within::ApproxSchurConfig::default()),
-        dense_threshold: within::DEFAULT_DENSE_SCHUR_THRESHOLD,
+        approx_schur: Some(within::config::ApproxSchurConfig::default()),
+        dense_threshold: within::config::DEFAULT_DENSE_SCHUR_THRESHOLD,
     }
 }
 
@@ -130,26 +129,27 @@ fn configure_group<'a>(
 }
 
 fn run_smoke(
-    design: &WeightedDesign<FactorMajorStore>,
+    design: &Design<FactorMajorStore>,
     y: &[f64],
     params: &SolverParams,
     preconditioner: Option<&Preconditioner>,
     label: &str,
 ) {
-    let solver = Solver::from_design(design.clone(), params, preconditioner).expect("build solver");
+    let solver =
+        Solver::from_design(design.clone(), None, params, preconditioner).expect("build solver");
     let result = solver.solve(y).expect("solve");
-    assert!(result.converged, "{label}: solver did not converge");
+    assert!(result.converged(), "{label}: solver did not converge");
     assert!(
-        result.final_residual.is_finite(),
+        result.final_residual().is_finite(),
         "{label}: non-finite residual"
     );
     assert!(
-        result.iterations < MAXITER,
+        result.iterations() < MAXITER,
         "{label}: solver hit max iterations"
     );
 }
 
-fn run_cg_one_level(design: &WeightedDesign<FactorMajorStore>, y: &[f64], ac2: bool) {
+fn run_cg_one_level(design: &Design<FactorMajorStore>, y: &[f64], ac2: bool) {
     let cfg = one_level_local_solver(ac2);
     let params = SolverParams {
         krylov: KrylovMethod::Cg,
@@ -164,7 +164,7 @@ fn run_cg_one_level(design: &WeightedDesign<FactorMajorStore>, y: &[f64], ac2: b
 }
 
 fn run_gmres_multiplicative_one_level(
-    design: &WeightedDesign<FactorMajorStore>,
+    design: &Design<FactorMajorStore>,
     y: &[f64],
     ac2: bool,
     operator: OperatorRepr,
@@ -389,16 +389,16 @@ fn bench_matvec(c: &mut Criterion) {
         let x: Vec<f64> = (0..n_dofs).map(|_| rng.random_range(-1.0..1.0)).collect();
 
         // Implicit: D^T W D through observation space
-        let implicit_op = GramianOperator::new(&design);
+        let implicit_op = GramianOperator::new(&design, None);
 
         // Explicit: CSR SpMV
-        let explicit_g = Gramian::build(&design);
+        let explicit_g = Gramian::build(&design, None);
 
         // Sanity check: both produce the same result
         let mut y_impl = vec![0.0; n_dofs];
         let mut y_expl = vec![0.0; n_dofs];
-        implicit_op.apply(&x, &mut y_impl);
-        explicit_g.apply(&x, &mut y_expl);
+        implicit_op.apply(&x, &mut y_impl).expect("apply");
+        explicit_g.apply(&x, &mut y_expl).expect("apply");
         for (a, b) in y_impl.iter().zip(y_expl.iter()) {
             assert!((a - b).abs() < 1e-10 * a.abs().max(1.0));
         }

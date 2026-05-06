@@ -3,7 +3,7 @@
 #![allow(dead_code)]
 
 use schwarz_precond::{
-    LocalSolveError, LocalSolver, Operator, SparseMatrix, SubdomainCore, SubdomainEntry,
+    LocalSolver, Operator, SolveError, SparseMatrix, SubdomainCore, SubdomainEntry,
 };
 
 // ---------------------------------------------------------------------------
@@ -29,7 +29,7 @@ impl Operator for TridiagOperator {
     fn ncols(&self) -> usize {
         self.n
     }
-    fn apply(&self, x: &[f64], y: &mut [f64]) {
+    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
         for i in 0..self.n {
             y[i] = self.diag_val * x[i];
             if i > 0 {
@@ -39,9 +39,10 @@ impl Operator for TridiagOperator {
                 y[i] -= x[i + 1];
             }
         }
+        Ok(())
     }
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) {
-        self.apply(x, y);
+    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+        self.apply(x, y)
     }
 }
 
@@ -57,13 +58,14 @@ impl Operator for DiagOperator {
     fn ncols(&self) -> usize {
         self.values.len()
     }
-    fn apply(&self, x: &[f64], y: &mut [f64]) {
+    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
         for i in 0..self.values.len() {
             y[i] = self.values[i] * x[i];
         }
+        Ok(())
     }
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) {
-        self.apply(x, y);
+    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+        self.apply(x, y)
     }
 }
 
@@ -79,11 +81,13 @@ impl Operator for IdentityOp {
     fn ncols(&self) -> usize {
         self.n
     }
-    fn apply(&self, x: &[f64], y: &mut [f64]) {
+    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
         y.copy_from_slice(x);
+        Ok(())
     }
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) {
+    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
         y.copy_from_slice(x);
+        Ok(())
     }
 }
 
@@ -97,13 +101,14 @@ impl Operator for SpdMatrix3 {
     fn ncols(&self) -> usize {
         3
     }
-    fn apply(&self, x: &[f64], y: &mut [f64]) {
+    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
         y[0] = 4.0 * x[0] + 1.0 * x[1];
         y[1] = 1.0 * x[0] + 3.0 * x[1] + 1.0 * x[2];
         y[2] = 1.0 * x[1] + 2.0 * x[2];
+        Ok(())
     }
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) {
-        self.apply(x, y);
+    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+        self.apply(x, y)
     }
 }
 
@@ -117,13 +122,14 @@ impl Operator for JacobiPrecond3 {
     fn ncols(&self) -> usize {
         3
     }
-    fn apply(&self, r: &[f64], z: &mut [f64]) {
+    fn apply(&self, r: &[f64], z: &mut [f64]) -> Result<(), SolveError> {
         z[0] = r[0] / 4.0;
         z[1] = r[1] / 3.0;
         z[2] = r[2] / 2.0;
+        Ok(())
     }
-    fn apply_adjoint(&self, r: &[f64], z: &mut [f64]) {
-        self.apply(r, z);
+    fn apply_adjoint(&self, r: &[f64], z: &mut [f64]) -> Result<(), SolveError> {
+        self.apply(r, z)
     }
 }
 
@@ -137,15 +143,17 @@ impl Operator for NonsymMatrix3 {
     fn ncols(&self) -> usize {
         3
     }
-    fn apply(&self, x: &[f64], y: &mut [f64]) {
+    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
         y[0] = 3.0 * x[0] + 1.0 * x[1];
         y[1] = 4.0 * x[1] + 2.0 * x[2];
         y[2] = 1.0 * x[0] + 5.0 * x[2];
+        Ok(())
     }
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) {
+    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
         y[0] = 3.0 * x[0] + 1.0 * x[2];
         y[1] = 1.0 * x[0] + 4.0 * x[1];
         y[2] = 2.0 * x[1] + 5.0 * x[2];
+        Ok(())
     }
 }
 
@@ -175,7 +183,12 @@ impl LocalSolver for UniformDiagLocalSolver {
     fn scratch_size(&self) -> usize {
         self.n_local
     }
-    fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), LocalSolveError> {
+    fn solve_local(
+        &self,
+        rhs: &mut [f64],
+        sol: &mut [f64],
+        _allow_inner_parallelism: bool,
+    ) -> Result<(), SolveError> {
         for i in 0..self.n_local {
             sol[i] = rhs[i] * self.inv_diag;
         }
@@ -203,7 +216,12 @@ impl LocalSolver for DiagLocalSolver {
     fn scratch_size(&self) -> usize {
         self.inv_diag.len()
     }
-    fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), LocalSolveError> {
+    fn solve_local(
+        &self,
+        rhs: &mut [f64],
+        sol: &mut [f64],
+        _allow_inner_parallelism: bool,
+    ) -> Result<(), SolveError> {
         for i in 0..self.inv_diag.len() {
             sol[i] = self.inv_diag[i] * rhs[i];
         }
@@ -289,7 +307,7 @@ pub fn make_schwarz_entries(n: usize) -> Vec<SubdomainEntry<UniformDiagLocalSolv
     entries
 }
 
-/// Local solver that always fails with `ApproxCholSolveFailed`.
+/// Local solver that always returns a `LocalSolveFailed` SolveError.
 pub struct FailingLocalSolver {
     pub n_local: usize,
     pub scratch_size: usize,
@@ -302,8 +320,14 @@ impl LocalSolver for FailingLocalSolver {
     fn scratch_size(&self) -> usize {
         self.scratch_size
     }
-    fn solve_local(&self, _rhs: &mut [f64], _sol: &mut [f64]) -> Result<(), LocalSolveError> {
-        Err(LocalSolveError::ApproxCholSolveFailed {
+    fn solve_local(
+        &self,
+        _rhs: &mut [f64],
+        _sol: &mut [f64],
+        _allow_inner_parallelism: bool,
+    ) -> Result<(), SolveError> {
+        Err(SolveError::LocalSolveFailed {
+            subdomain: 0,
             context: "test.failing_local_solver",
             message: format!("deliberate failure for n={}", self.n_local),
         })
@@ -314,7 +338,7 @@ impl LocalSolver for FailingLocalSolver {
 pub fn check_residual<A: Operator>(op: &A, x: &[f64], b: &[f64], tol: f64) {
     let n = b.len();
     let mut ax = vec![0.0; n];
-    op.apply(x, &mut ax);
+    op.apply(x, &mut ax).expect("test operator apply");
     let err: f64 = ax
         .iter()
         .zip(b.iter())
