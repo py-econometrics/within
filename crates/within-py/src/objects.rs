@@ -211,6 +211,61 @@ impl PySolver {
         into_py_batch_result(py, result, n_dofs, n_obs)
     }
 
+    /// Compute a one-shot approximate solution by applying the cached
+    /// Schwarz preconditioner once, without LSMR correction iterations.
+    #[pyo3(name = "solve_approx_parallel", signature = (y, options=None))]
+    fn solve_approx_parallel_py<'py>(
+        &self,
+        py: Python<'py>,
+        y: PyReadonlyArray1<'py, f64>,
+        options: Option<&Bound<'py, PyAny>>,
+    ) -> PyResult<PySolveResult> {
+        let y_arr = y.as_array();
+        let y_cow = coerce_to_slice(&y_arr);
+        let params = resolve_lsmr_config(options)?;
+
+        let result = py
+            .allow_threads(|| self.solver.solve_approx_parallel(&y_cow, params.tol))
+            .map_err(value_err)?;
+
+        Ok(into_py_result(py, result))
+    }
+
+    /// Compute one-shot approximate solutions for multiple response vectors.
+    #[pyo3(name = "solve_approx_parallel_batch", signature = (Y, options=None))]
+    fn solve_approx_parallel_batch_py<'py>(
+        &self,
+        py: Python<'py>,
+        #[allow(non_snake_case)] Y: PyReadonlyArray2<'py, f64>,
+        options: Option<&Bound<'py, PyAny>>,
+    ) -> PyResult<PyBatchSolveResult> {
+        let y_arr = Y.as_array();
+
+        let n_obs = self.solver.n_obs();
+        if y_arr.nrows() != n_obs {
+            return Err(value_err(format!(
+                "Y has {} rows but solver has {} observations",
+                y_arr.nrows(),
+                n_obs
+            )));
+        }
+
+        let columns = extract_columns(&y_arr);
+        let col_refs = column_refs(&columns);
+
+        let n_dofs = self.solver.n_dofs();
+        let params = resolve_lsmr_config(options)?;
+
+        let result = py
+            .allow_threads(|| {
+                self.solver
+                    .solve_approx_parallel_batch(&col_refs, params.tol)
+            })
+            .map_err(value_err)?;
+
+        into_py_batch_result(py, result, n_dofs, n_obs)
+    }
+
     /// Return the built preconditioner, or ``None`` if unconfigured.
     ///
     /// The returned object is picklable and can be passed to a new

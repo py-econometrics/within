@@ -5,9 +5,15 @@
 target
 *.so
 *.dSYM
+__pycache__/
+*.py[cod]
 
 .coverage
 .hypothesis/
 .pytest_cache/
 .ruff_cache/
 *.proptest-regressions
+
+# Local benchmark data archives/extracts.
+benchmarks/all-csv.zip
+benchmarks/all-csv/
