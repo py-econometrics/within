@@ -14,7 +14,7 @@ mod convert;
 mod objects;
 mod results;
 
-use api::{solve, solve_batch};
+use api::{solve, solve_approx_parallel, solve_approx_parallel_batch, solve_batch};
 use config::{
     PyAdditiveSchwarz, PyApproxCholConfig, PyApproxSchurConfig, PyLocalSolverConfig, PyLsmrOptions,
     PyPreconditionerConfig, PyReductionStrategy,
@@ -40,6 +40,8 @@ fn _within(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPreconditioner>()?;
     m.add_class::<PySolver>()?;
     m.add_function(wrap_pyfunction!(solve, m)?)?;
+    m.add_function(wrap_pyfunction!(solve_approx_parallel, m)?)?;
     m.add_function(wrap_pyfunction!(solve_batch, m)?)?;
+    m.add_function(wrap_pyfunction!(solve_approx_parallel_batch, m)?)?;
     Ok(())
 }

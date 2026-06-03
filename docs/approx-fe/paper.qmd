@@ -1,0 +1,1106 @@
+---
+title: "Approximate Parallel Fixed-Effect Residualization by Local Graph Solves"
+author: "Apoorva Lal"
+date: "May 30, 2026"
+bibliography: references.bib
+format:
+  html:
+    embed-resources: true
+    page-layout: full
+    code-fold: true
+    code-tools: true
+    number-sections: true
+    toc: true
+    toc-depth: 3
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+## Abstract {.unnumbered}
+
+High-dimensional fixed effects are usually estimated by residualizing the
+outcome and regressors against many categorical controls, then running a small
+ordinary least squares regression. The computational bottleneck is the
+residualization step. The standard algorithm, often called the method of
+alternating projections, iterative demeaning, or the zig-zag algorithm, removes
+one fixed-effect dimension at a time and repeats until convergence
+[@guimaraes2010; @gaure2013]. This is highly effective when the fixed-effect
+structure is well connected, but it can be slow when the graph linking factor
+levels is sparse, weakly connected, or nearly nested. This note develops an
+approximate alternative: solve many local fixed-effect subproblems in parallel,
+combine them with partition-of-unity weights, and use the resulting one-shot
+solution as an approximate within transformation. Algebraically, this is one
+application of an additive Schwarz preconditioner to the fixed-effect normal
+equations. If embedded inside an outer Krylov solver, the method is a safe
+preconditioner that preserves the exact Frisch-Waugh-Lovell estimand. If stopped
+after one application, it becomes an approximate estimator whose error is
+measured directly by the remaining fixed-effect normal-equation residual. The
+memo proposes a solver-selection rule based on connected components,
+conductance, and the second eigenvalue of the normalized graph Laplacian.
+
+## Introduction
+
+Applied regressions often include many categorical controls: worker fixed
+effects, firm fixed effects, year fixed effects, county fixed effects, product
+fixed effects, exporter-importer fixed effects, teacher fixed effects, and many
+others. A canonical labor-market specification is the Abowd-Kramarz-Margolis
+worker-firm model [@akm1999],
+
+$$
+y_{it} = \alpha_i + \psi_{J(i,t)} + \phi_t + x_{it}'\beta + \varepsilon_{it},
+$$
+
+where $\alpha_i$ is a worker effect, $\psi_{J(i,t)}$ is a firm effect, and
+$\phi_t$ is a time effect. Similar structures appear in health, education,
+trade, innovation, and spatial applications [@card2013; @molitor2018;
+@head2014; @chetty2014].
+
+The statistical target is usually a low-dimensional coefficient $\beta$, not
+the millions of nuisance fixed-effect coefficients. The classical
+Frisch-Waugh-Lovell theorem [@frisch1933; @lovell1963] lets the researcher get
+$\hat\beta$ by residualizing the outcome and each regressor of interest against
+the fixed effects, then regressing the residualized outcome on the residualized
+regressors. This insight is the basis for high-dimensional fixed-effect
+software.
+
+The practical difficulty is that residualizing against many large categorical
+variables is not the same as subtracting a single set of group means. With one
+fixed effect, demeaning is exact after one pass: subtract each observation's
+group mean. With two or more fixed effects, subtracting worker means changes
+firm means, subtracting firm means changes worker means, and the process must
+be repeated. Guimaraes and Portugal's feasible procedure, Gaure's `lfe`, and
+the later ecosystem around `reghdfe`, `fixest`, `FixedEffectModels.jl`, and
+PyFixest build on this basic idea, with increasingly sophisticated
+accelerations and implementation details [@guimaraes2010; @gaure2013;
+@reghdfe; @berge2026fixest; @fixedeffectmodels; @pyfixest].
+
+This note asks a narrower question. If the fixed-effect graph is sparse and not
+densely connected, can we get a useful approximate fixed-effect solution by
+solving subproblems in parallel? The answer is yes, but with an important
+distinction:
+
+1. If disconnected components are genuinely disconnected, component-wise local
+   solves are exact up to the usual within-component normalizations.
+2. If the graph is only weakly connected, local parallel solves are an
+   approximation to the global fixed-effect residualization.
+3. The safest algorithmic use is to treat local solves as a preconditioner
+   inside an outer iterative solver, as in domain-decomposition methods
+   [@xu1992; @toselli2005].
+4. If we stop after one local-solve sweep, the method becomes a fast approximate
+   within transformation whose error must be diagnosed, not assumed away.
+
+The graph-theoretic content is not decoration. The graph explains both why the
+standard zig-zag method can be slow and why local subproblem solves can help.
+When worker mobility links firms densely, one-factor demeaning rapidly
+propagates information across the labor market. When workers mostly stay within
+firm clusters and only a few movers bridge those clusters, information crosses
+the graph slowly. A graph-aware local solve can absorb much of the hard
+worker-firm coupling immediately, while the remaining approximation error is
+concentrated in the weak bridges and in conflicts among overlapping local
+subproblems.
+
+### Fixed Effects from First Principles
+
+Consider the weighted linear model
+
+$$
+y = X\beta + D\alpha + \varepsilon,
+$$
+
+where $X$ contains the regressors of interest, $D$ is the fixed-effect design
+matrix, $\alpha$ stacks all fixed-effect coefficients, and $W$ is a diagonal
+matrix of observation weights. Each row of $D$ has one entry equal to one for
+each absorbed factor. In a worker-firm-year design, an observation contributes
+one worker level, one firm level, and one year level.
+
+Directly forming the full design matrix is not attractive. If there are
+500,000 workers, 100,000 firms, and 30 years, then $D$ has 600,030 columns
+before any regressors are included. The matrix is sparse, but a direct solve in
+the full normal equations can still be costly and numerically delicate.
+
+The Frisch-Waugh-Lovell theorem says that the coefficient of interest can be
+obtained by first removing the fixed-effect component from $y$ and from every
+column of $X$. Let
+
+$$
+P_D = D(D'WD)^+D'W
+$$
+
+be the weighted projection onto the column space of $D$, and let
+
+$$
+M_D = I - P_D
+$$
+
+be the corresponding residualization operator. The coefficient of interest is
+
+$$
+\hat\beta = (X'WM_DX)^{-1}X'WM_Dy.
+$$
+
+Equivalently, define $\tilde y = M_Dy$ and $\tilde X = M_DX$, then regress
+$\tilde y$ on $\tilde X$ with weights $W$.
+
+For any right-hand side $\mu$, such as $y$ or one column of $X$, fixed-effect
+residualization amounts to solving
+
+$$
+\hat\alpha_\mu
+= \arg\min_{\alpha} \lVert D\alpha - \mu\rVert_W^2.
+$$
+
+The first-order conditions are
+
+$$
+D'W(D\hat\alpha_\mu - \mu) = 0,
+$$
+
+or
+
+$$
+G\hat\alpha_\mu = b_\mu,
+\qquad
+G = D'WD,
+\qquad
+b_\mu = D'W\mu.
+$$
+
+The matrix $G = D'WD$ is the fixed-effect Gramian. A Gramian is a matrix of
+inner products between columns of a design matrix. Here the columns are dummy
+variables for fixed-effect levels, so each entry of $G$ has a direct counting
+interpretation. A diagonal entry counts the weighted number of observations in
+one level. An off-diagonal entry counts the weighted number of observations
+shared by two levels from different factors. If one observation belongs to
+worker $i$ and firm $j$, then it contributes one unit to the worker count, one
+unit to the firm count, and one unit to the worker-firm cross-tabulation.
+
+This is the first place where the graph enters. The Gramian is not just a
+numerical matrix; it is also an encoded fixed-effect network. The diagonal
+entries are node degrees. The off-diagonal cross-factor entries are edge
+weights. The normal equations above are therefore both least-squares equations
+and graph equations.
+
+Once $\hat\alpha_\mu$ is found, the residualized variable is
+
+$$
+\tilde\mu = \mu - D\hat\alpha_\mu.
+$$
+
+This is the central computational problem. The full regression may have only a
+few variables of interest, but it may require solving this fixed-effect system
+once for $y$ and once for each column of $X$.
+
+### What MAP or Zig-Zag Demeaning Does
+
+The method of alternating projections is easiest to understand through two
+fixed effects. Suppose $D = [D_A \; D_B]$, where $A$ might be workers and $B$
+might be firms. If there were only worker fixed effects, residualization would
+subtract the worker mean from every observation. If there were only firm fixed
+effects, residualization would subtract the firm mean from every observation.
+
+With both worker and firm effects, a single worker demeaning pass is not enough.
+After subtracting worker means, the firm means of the residual are generally
+not zero. After subtracting firm means, the worker means are generally no
+longer zero. MAP repeats:
+
+1. subtract means within factor $A$;
+2. subtract means within factor $B$;
+3. repeat until all factor-level means are small.
+
+With three factors, such as worker, firm, and year, the cycle is worker means,
+firm means, year means, then repeat. This is why the method is also called
+zig-zag demeaning: the residual is pushed back and forth between fixed-effect
+subspaces until it lies approximately orthogonal to all of them.
+
+In coefficient space, MAP is block Gauss-Seidel applied to the normal equations.
+For a worker-firm-year design, the normal equations have block form
+
+$$
+\begin{pmatrix}
+G_{WW} & C_{WF} & C_{WY} \\
+C_{WF}' & G_{FF} & C_{FY} \\
+C_{WY}' & C_{FY}' & G_{YY}
+\end{pmatrix}
+\begin{pmatrix}
+\alpha_W \\
+\alpha_F \\
+\alpha_Y
+\end{pmatrix}
+=
+\begin{pmatrix}
+D_W'W\mu \\
+D_F'W\mu \\
+D_Y'W\mu
+\end{pmatrix}.
+$$
+
+The diagonal blocks $G_{WW}$, $G_{FF}$, and $G_{YY}$ are weighted count
+matrices. Because each observation belongs to only one worker, one firm, and
+one year, those blocks are diagonal. Solving a diagonal block is just division
+by group counts. That is why MAP iterations are cheap.
+
+The off-diagonal blocks are different. $C_{WF}$ records how many times each
+worker is observed at each firm. $C_{WY}$ records worker-year co-occurrences,
+and $C_{FY}$ records firm-year co-occurrences. These blocks encode the coupling
+among fixed-effect dimensions. MAP does not solve these coupled blocks
+directly. It only lets their information propagate through repeated one-factor
+updates.
+
+This distinction is harmless when the factors are well connected. If many
+workers move across many firms, then worker and firm effects can be separated
+quickly. A worker update changes the residuals seen by many firm updates, and a
+firm update changes the residuals seen by many worker updates. Information
+flows quickly across the graph.
+
+It becomes costly when the graph is weakly connected. If most workers stay at
+one firm and only a few workers move between clusters of firms, the distinction
+between worker effects and firm effects is weak across those clusters. MAP can
+still converge, but each one-factor pass transmits only a little information
+across the sparse bridge. Many cheap iterations can add up to a slow solve.
+
+This is the computational version of an identification issue. The same movers
+that identify relative firm effects across groups are also the observations
+that carry numerical information across the worker-firm graph.
+
+### The Graph Behind a Fixed-Effect Design
+
+The fixed-effect graph is built from factor levels. In a two-way worker-firm
+design, workers and firms are nodes in a bipartite graph. Each observation adds
+an edge between the observed worker and the observed firm, with edge weight
+equal to the observation weight or count. A worker who stays at one firm adds
+weight to a single worker-firm edge. A worker who moves creates edges to
+multiple firms and thereby connects those firms through the worker node.
+
+The same construction applies beyond labor economics:
+
+- patient-doctor designs connect patients and doctors;
+- student-teacher designs connect students and teachers;
+- exporter-importer designs connect exporters and importers;
+- product-market designs connect products and markets.
+
+To make the objects explicit, fix two factors $q$ and $r$. Put all levels of
+factor $q$ first and all levels of factor $r$ second. The weighted adjacency
+matrix of the bipartite graph has the block form
+
+$$
+A_{qr}
+=
+\begin{pmatrix}
+0 & C_{qr} \\
+C_{qr}' & 0
+\end{pmatrix},
+$$
+
+where $C_{qr}$ is the weighted cross-tabulation. If worker $i$ appears at firm
+$j$ three times, then $C_{qr}[i,j] = 3$. The degree matrix is diagonal:
+
+$$
+\Delta_{qr}
+=
+\begin{pmatrix}
+N_q & 0 \\
+0 & N_r
+\end{pmatrix},
+$$
+
+where $N_q$ and $N_r$ contain weighted counts for each level. The graph
+Laplacian is
+
+$$
+L_{qr} = \Delta_{qr} - A_{qr}
+=
+\begin{pmatrix}
+N_q & -C_{qr} \\
+-C_{qr}' & N_r
+\end{pmatrix}.
+$$
+
+A Laplacian has three features worth remembering. Its diagonal entries are
+degrees. Its off-diagonal entries are negative edge weights. Its rows sum to
+zero within each connected component. The row-sum property means that adding a
+constant to every node in a connected component does not change any edge
+difference; this is the same normalization issue that fixed-effect coefficients
+have.
+
+The graph is exactly visible in the fixed-effect Gramian. For the same factor
+pair, the Gramian block is
+
+$$
+G_{qr} =
+\begin{pmatrix}
+N_q & C_{qr} \\
+C_{qr}' & N_r
+\end{pmatrix}.
+$$
+
+This differs from the Laplacian only by a sign flip on one side. With
+$T = \operatorname{diag}(I_q, -I_r)$,
+
+$$
+L_{qr} = T G_{qr} T.
+$$
+
+So solving a local fixed-effect pair problem is, after a harmless sign
+conversion, a Laplacian solve. This is the same Laplacian structure emphasized
+by Correia's graph-theoretic treatment of high-dimensional fixed effects
+[@correia2017].
+
+The Laplacian perspective gives language for the hard cases:
+
+- a disconnected graph means separate components can be solved independently;
+- a nearly disconnected graph means there are weak bridges between components;
+- a low-conductance graph means some large sets are connected to the rest by
+  relatively few cross edges;
+- a small spectral gap means the graph has slow-mixing directions, often
+  corresponding to nearly constant shifts on one side of a weak bridge.
+
+For MAP, these slow directions are exactly the problem. A nearly constant
+difference between two firm clusters can be hard to eliminate because the only
+observations that compare the clusters are the few movers crossing the bridge.
+For a graph-aware solver, those same directions can be handled more directly by
+solving local graph subproblems.
+
+### Three Small Worked Examples
+
+The preceding definitions are easier to see in tiny datasets. The three
+examples below use small enough designs that we can write down the dataset,
+adjacency matrix, Laplacian matrix, first zig-zag/Gauss-Seidel sweep, and
+parallel local solve by hand.
+
+#### Balanced Panel with One-Shot Adoption
+
+Start with a balanced unit-time panel. The right-hand side to residualize is an
+adoption indicator $d$: units A and B adopt in period 1; unit C never adopts.
+
+| observation | unit | time | $d$ |
+|---:|:---:|:---:|---:|
+| 1 | A | 0 | 0 |
+| 2 | A | 1 | 1 |
+| 3 | B | 0 | 0 |
+| 4 | B | 1 | 1 |
+| 5 | C | 0 | 0 |
+| 6 | C | 1 | 0 |
+
+Use node order $(A,B,C,t0,t1)$. The fixed-effect design has one unit dummy and
+one time dummy per row. The Gramian is
+
+$$
+G =
+\begin{pmatrix}
+2 & 0 & 0 & 1 & 1 \\
+0 & 2 & 0 & 1 & 1 \\
+0 & 0 & 2 & 1 & 1 \\
+1 & 1 & 1 & 3 & 0 \\
+1 & 1 & 1 & 0 & 3
+\end{pmatrix}.
+$$
+
+The off-diagonal part is the bipartite adjacency matrix:
+
+$$
+A =
+\begin{pmatrix}
+0 & 0 & 0 & 1 & 1 \\
+0 & 0 & 0 & 1 & 1 \\
+0 & 0 & 0 & 1 & 1 \\
+1 & 1 & 1 & 0 & 0 \\
+1 & 1 & 1 & 0 & 0
+\end{pmatrix}.
+$$
+
+The degree matrix is $\Delta = \operatorname{diag}(2,2,2,3,3)$, so the
+Laplacian is
+
+$$
+L = \Delta - A =
+\begin{pmatrix}
+2 & 0 & 0 & -1 & -1 \\
+0 & 2 & 0 & -1 & -1 \\
+0 & 0 & 2 & -1 & -1 \\
+-1 & -1 & -1 & 3 & 0 \\
+-1 & -1 & -1 & 0 & 3
+\end{pmatrix}.
+$$
+
+Now run one zig-zag sweep on $d = (0,1,0,1,0,0)'$. First subtract unit means.
+The unit means are $1/2$, $1/2$, and $0$, giving
+
+$$
+(-1/2, 1/2, -1/2, 1/2, 0, 0)'.
+$$
+
+Then subtract time means. The time-0 mean is $-1/3$ and the time-1 mean is
+$1/3$, so the residual becomes
+
+$$
+\tilde d =
+(-1/6, 1/6, -1/6, 1/6, 1/3, -1/3)'.
+$$
+
+This is already the exact two-way residual. The balanced panel is the easy
+case: the unit-time graph is complete bipartite, and the textbook
+double-demeaning formula is exact after one unit pass and one time pass. A
+parallel local solve sees one connected pair problem and returns the same
+residual. There is no approximation error, but there is also little to gain
+from sophisticated graph machinery.
+
+#### Disconnected Worker-Firm Network: Parallel Solves Are Exact
+
+Now consider a sparse worker-firm dataset with two disconnected components.
+This is the best case for parallelization: the global problem literally splits
+into independent fixed-effect problems.
+
+| observation | worker | firm | $y$ |
+|---:|:---:|:---:|---:|
+| 1 | W1 | F1 | 3 |
+| 2 | W2 | F1 | 5 |
+| 3 | W2 | F2 | 7 |
+| 4 | W3 | F3 | 11 |
+| 5 | W4 | F3 | 13 |
+| 6 | W4 | F4 | 17 |
+
+Use node order $(W1,W2,W3,W4,F1,F2,F3,F4)$. The adjacency matrix is
+
+$$
+A =
+\begin{pmatrix}
+0 & 0 & 0 & 0 & 1 & 0 & 0 & 0 \\
+0 & 0 & 0 & 0 & 1 & 1 & 0 & 0 \\
+0 & 0 & 0 & 0 & 0 & 0 & 1 & 0 \\
+0 & 0 & 0 & 0 & 0 & 0 & 1 & 1 \\
+1 & 1 & 0 & 0 & 0 & 0 & 0 & 0 \\
+0 & 1 & 0 & 0 & 0 & 0 & 0 & 0 \\
+0 & 0 & 1 & 1 & 0 & 0 & 0 & 0 \\
+0 & 0 & 0 & 1 & 0 & 0 & 0 & 0
+\end{pmatrix},
+$$
+
+and the Laplacian is
+
+$$
+L =
+\begin{pmatrix}
+1 & 0 & 0 & 0 & -1 & 0 & 0 & 0 \\
+0 & 2 & 0 & 0 & -1 & -1 & 0 & 0 \\
+0 & 0 & 1 & 0 & 0 & 0 & -1 & 0 \\
+0 & 0 & 0 & 2 & 0 & 0 & -1 & -1 \\
+-1 & -1 & 0 & 0 & 2 & 0 & 0 & 0 \\
+0 & -1 & 0 & 0 & 0 & 1 & 0 & 0 \\
+0 & 0 & -1 & -1 & 0 & 0 & 2 & 0 \\
+0 & 0 & 0 & -1 & 0 & 0 & 0 & 1
+\end{pmatrix}.
+$$
+
+The graph has two components:
+
+$$
+\{W1,W2,F1,F2\}
+\qquad \text{and} \qquad
+\{W3,W4,F3,F4\}.
+$$
+
+A zig-zag sweep starts by subtracting worker means. The worker means are
+$3$, $6$, $11$, and $15$, leaving
+
+$$
+(0, -1, 1, 0, -2, 2)'.
+$$
+
+Then subtract firm means. The result after this first full worker-firm sweep
+is
+
+$$
+(1/2, -1/2, 0, 1, -1, 0)'.
+$$
+
+So MAP is not exact after one sweep, even though the problem is tiny. It must
+keep alternating until the residual vanishes.
+
+The parallel local solve behaves differently. Each component has three
+observations and fixed effects with rank three after the component
+normalization, so each component is saturated. Solving the two components in
+parallel gives the exact residual
+
+$$
+\tilde y = (0,0,0,0,0,0)'.
+$$
+
+This is the cleanest case for approximate parallel residualization: because
+there are no edges between the components, the "approximation" is exact. The
+parallel algorithm gains from decomposition and pays no error cost.
+
+#### Connected Worker-Firm Network: Cutting Can Produce Bad Coefficient Bias
+
+The hard case is a graph that is connected, but whose natural local subproblems
+do not coordinate the globally relevant directions. The next dataset has two
+worker-firm cycles connected through worker W3. It is small, but it has enough
+connectivity to make the exact within coefficient nontrivial.
+
+| observation | worker | firm | $x$ | $y$ |
+|---:|:---:|:---:|---:|---:|
+| 1 | W1 | F1 | 0 | 2 |
+| 2 | W1 | F2 | -2 | -5 |
+| 3 | W2 | F1 | 2 | -1 |
+| 4 | W2 | F2 | 0 | 5 |
+| 5 | W3 | F2 | -2 | -5 |
+| 6 | W3 | F3 | 2 | 0 |
+| 7 | W4 | F3 | -2 | 5 |
+| 8 | W4 | F4 | -1 | -4 |
+| 9 | W5 | F3 | -1 | -5 |
+| 10 | W5 | F4 | -1 | 5 |
+
+Use node order $(W1,W2,W3,W4,W5,F1,F2,F3,F4)$. The adjacency matrix is
+
+$$
+A =
+\begin{pmatrix}
+0 & 0 & 0 & 0 & 0 & 1 & 1 & 0 & 0 \\
+0 & 0 & 0 & 0 & 0 & 1 & 1 & 0 & 0 \\
+0 & 0 & 0 & 0 & 0 & 0 & 1 & 1 & 0 \\
+0 & 0 & 0 & 0 & 0 & 0 & 0 & 1 & 1 \\
+0 & 0 & 0 & 0 & 0 & 0 & 0 & 1 & 1 \\
+1 & 1 & 0 & 0 & 0 & 0 & 0 & 0 & 0 \\
+1 & 1 & 1 & 0 & 0 & 0 & 0 & 0 & 0 \\
+0 & 0 & 1 & 1 & 1 & 0 & 0 & 0 & 0 \\
+0 & 0 & 0 & 1 & 1 & 0 & 0 & 0 & 0
+\end{pmatrix},
+$$
+
+and the Laplacian is
+
+$$
+L =
+\begin{pmatrix}
+2 & 0 & 0 & 0 & 0 & -1 & -1 & 0 & 0 \\
+0 & 2 & 0 & 0 & 0 & -1 & -1 & 0 & 0 \\
+0 & 0 & 2 & 0 & 0 & 0 & -1 & -1 & 0 \\
+0 & 0 & 0 & 2 & 0 & 0 & 0 & -1 & -1 \\
+0 & 0 & 0 & 0 & 2 & 0 & 0 & -1 & -1 \\
+-1 & -1 & 0 & 0 & 0 & 2 & 0 & 0 & 0 \\
+-1 & -1 & -1 & 0 & 0 & 0 & 3 & 0 & 0 \\
+0 & 0 & -1 & -1 & -1 & 0 & 0 & 3 & 0 \\
+0 & 0 & 0 & -1 & -1 & 0 & 0 & 0 & 2
+\end{pmatrix}.
+$$
+
+Run a first zig-zag sweep on $y$. After subtracting worker means and then firm
+means, the residual is
+
+$$
+(3.25, -2.50, -3.25, 4.00, -1.50, 1.83, 3.83, -4.75, -5.67, 4.75)'.
+$$
+
+This is not exact, but it is moving toward the global within residual. The
+exact FWL residuals for $x$ and $y$ are
+
+$$
+\tilde x =
+(0,0,0,0,0,0,-0.25,0.25,0.25,-0.25)',
+$$
+
+$$
+\tilde y =
+(3.25,-3.25,-3.25,3.25,0,0,4.75,-4.75,-4.75,4.75)'.
+$$
+
+The exact within coefficient is therefore
+
+$$
+\hat\beta_{\mathrm{FWL}}
+= \frac{\tilde x'\tilde y}{\tilde x'\tilde x}
+= -19.
+$$
+
+Now use a cartoon one-shot parallel solve that cuts the graph into two
+overlapping local domains:
+
+$$
+\{W1,W2,W3,F1,F2\}
+\qquad \text{and} \qquad
+\{W3,W4,W5,F3,F4\}.
+$$
+
+The two local solves are individually sensible, and W3 is shared between them.
+But one additive sweep does not fully coordinate the bridge between F2 and F3.
+The approximate residuals are
+
+$$
+\bar x =
+(-0.20,0.60,-0.20,0.60,-1.78,1.16,-0.85,0.45,-0.35,-0.05)',
+$$
+
+$$
+\bar y =
+(3.10,-2.81,-3.40,3.69,0.08,3.88,3.69,-4.40,-5.81,5.10)'.
+$$
+
+The approximate coefficient is
+
+$$
+\bar\beta
+= \frac{\bar x'\bar y}{\bar x'\bar x}
+= 0.25.
+$$
+
+This is not a small numerical discrepancy. It is the wrong estimand for the
+regression problem. The exact coefficient is identified by residual variation
+that lives mostly in the right-hand cycle of the graph. The one-shot local
+solve creates additional residual variation around the bridge and changes the
+projection geometry. The lesson is that connectedness can be bad for a cut
+approximation even when it is good for identification: the bridge is not
+noise; it is part of what defines the exact within variation.
+
+## Parallelization Proposal
+
+### Method
+
+The standard safe use of local graph solves is preconditioning. A preconditioner
+is an operator $M^{-1}$ that approximately applies $G^{-1}$ but is cheaper than
+solving the full system. Instead of solving
+
+$$
+G\alpha = b,
+$$
+
+an iterative method is given a transformed system with better numerical
+geometry. Krylov methods such as LSMR [@fong2011] or conjugate gradient can
+then converge in fewer iterations. If the outer iterative method is run to
+tolerance, the final solution still targets the original fixed-effect normal
+equations, not the approximate preconditioner.
+
+The approximate parallel idea is to stop after the preconditioner application
+itself. Let the fixed-effect RHS be $b_\mu = D'W\mu$. Build local subdomains
+$s = 1,\ldots,S$ from factor-pair graph components or graph partitions. Let
+$R_s$ restrict a global coefficient vector to the levels in subdomain $s$, and
+let $A_s$ be the local fixed-effect operator on that subdomain. Let
+$\tilde D_s$ hold partition-of-unity weights so that overlapping subdomains do
+not double count shared levels. The one-shot Schwarz approximation is
+
+$$
+\alpha_\mu^{(0)}
+=
+\sum_{s=1}^S
+R_s'\tilde D_s A_s^+ \tilde D_s R_s b_\mu.
+$$
+
+Each local solve $A_s^+\tilde D_s R_s b_\mu$ can be computed independently.
+This is the parallelism. After all subdomain corrections are computed, they are
+prolongated back to the global coefficient space and added.
+
+The approximate residualized variable is
+
+$$
+\bar\mu = \mu - D\alpha_\mu^{(0)}.
+$$
+
+The diagnostic residual is
+
+$$
+\eta(\mu)
+=
+\frac{\lVert D'W(\mu - D\alpha_\mu^{(0)})\rVert_2}
+       {\lVert D'W\mu\rVert_2}.
+$$
+
+This residual has a direct interpretation. If $\eta(\mu)$ is small, the
+approximate residual $\bar\mu$ is nearly orthogonal to every fixed-effect
+column. If $\eta(\mu)$ is large, the local solves have not produced a good
+within transformation for $\mu$.
+
+The algorithm is therefore:
+
+1. Construct the fixed-effect graph from the categorical design.
+2. Build local subdomains from factor pairs or graph partitions.
+3. Factor or approximate each local subdomain operator.
+4. For each right-hand side $\mu$, compute $b_\mu = D'W\mu$.
+5. Solve all local subproblems in parallel.
+6. Combine local corrections with partition-of-unity weights.
+7. Return $\bar\mu = \mu - D\alpha_\mu^{(0)}$ and report $\eta(\mu)$.
+
+The method becomes exact in the special case where the local domains form a
+true block decomposition of the global fixed-effect normal equations. This is
+what happens for disconnected components when the component structure is
+respected. It is generally approximate when the graph has cross-domain edges,
+overlapping factor-pair constraints, or higher-order interactions among three
+or more absorbed factors.
+
+### Cut Error
+
+A useful way to understand the approximation is to imagine cutting a weakly
+connected graph into pieces. If the cut edges were removed, the normal matrix
+would become block diagonal and the local solves would be exact for the cut
+problem. Let $\tilde G$ denote the block-local approximation and let
+
+$$
+G = \tilde G + E,
+$$
+
+where $E$ collects the cross-boundary coupling that the local approximation
+does not fully resolve. If the one-shot local solution satisfies
+$\tilde G\alpha^{(0)} \approx b$, then the true global residual is roughly
+
+$$
+b - G\alpha^{(0)}
+\approx
+-E\alpha^{(0)}.
+$$
+
+Thus the approximation error is governed by the strength of the ignored or
+imperfectly coordinated cross-boundary edges. This is why sparse graph cuts are
+ambiguous:
+
+- They are good for parallel approximation because the missing coupling is
+  small.
+- They are bad for MAP because the same small coupling is the only channel
+  through which information moves between large pieces of the graph.
+
+The approximate solver and MAP therefore exploit opposite sides of the same
+graph fact. MAP suffers when bridges are weak. Local graph solves exploit the
+fact that most of the problem is already nearly local.
+
+### Caveats
+
+#### When One-Shot Approximation Is Plausible
+
+The one-shot approximation is most plausible under three conditions.
+
+First, most of the fixed-effect variation must be internal to local domains.
+If worker-firm coupling is the hard part and the local worker-firm domains
+capture that coupling almost completely, one application of the local solver
+can remove most fixed-effect signal.
+
+Second, cross-domain bridges must be weak in a quantitative sense. A small
+number of boundary edges is not enough by itself; the boundary must also be
+small relative to the volume of the connected pieces. Otherwise, a partition
+may isolate a tiny component and look cheap while leaving the main problem
+unchanged. Normalized cut, conductance, component share, and spectral-gap
+diagnostics are more informative than raw edge counts.
+
+Third, the downstream regression must tolerate the remaining residualization
+error. The relevant question is not whether $\alpha^{(0)}$ equals the exact
+minimum-norm fixed-effect coefficient vector. Fixed-effect coefficients are
+often not the inferential target. The relevant question is whether the
+approximate residualized outcome and regressors are close enough to their exact
+within-transformed counterparts to leave $\hat\beta$ materially unchanged.
+
+Let exact residuals be $\tilde y = M_Dy$ and $\tilde X = M_DX$. Let approximate
+residuals be
+
+$$
+\bar y = \tilde y + e_y,
+\qquad
+\bar X = \tilde X + E_X.
+$$
+
+The approximate slope is
+
+$$
+\bar\beta = (\bar X'W\bar X)^{-1}\bar X'W\bar y.
+$$
+
+For small residualization errors, the first-order perturbation depends on
+$\tilde X'We_y$, $E_X'W\tilde y$, and the perturbation to
+$\tilde X'W\tilde X$. This is why an approximate FE method should report more
+than runtime. It should report normal-equation residuals for all residualized
+variables and, in validation settings, coefficient differences relative to a
+tight solve.
+
+#### When One-Shot Approximation Is Risky
+
+The approximation is risky when the graph looks sparse but the regression
+depends precisely on cross-boundary comparisons. This can happen in AKM-style
+settings. Sparse mobility creates the hard graph; it also creates the
+identifying variation for relative firm effects. If the regressor of interest
+is correlated with the weak bridge directions, approximate residualization can
+move the slope coefficient.
+
+It is also risky in multi-way designs where pairwise local solves conflict.
+Worker-firm, worker-year, and firm-year subproblems can each look sensible
+locally, but the global residual must be orthogonal to all fixed-effect
+dimensions at once. One additive sweep may not reconcile all pairwise
+corrections.
+
+Finally, it is risky on dense or compact graphs. In those cases MAP or
+accelerated MAP is often already fast, and a graph preconditioner may spend
+more time building local structure than it saves. This is the same practical
+lesson found in comparisons among accelerated MAP, diagonally preconditioned
+Krylov methods, and graph-preconditioned approaches [@correia2017;
+@berge2026fixest; @fixedeffectmodels; @within].
+
+### Relationship to Existing Fixed-Effect Algorithms
+
+Guimaraes and Portugal [@guimaraes2010] gave a simple feasible algorithm for
+models with high-dimensional fixed effects. The key computational idea is to
+avoid forming the full dummy matrix and instead iterate over demeaning steps.
+Gaure [@gaure2013] developed related methods in `lfe`, with attention to
+multiple high-dimensional category variables and estimability.
+
+Correia [@correia2017] made the graph structure explicit and connected
+high-dimensional fixed effects to sparse linear algebra. The `reghdfe`
+implementation combines alternating projections, accelerations, singleton
+handling, and graph-informed numerical ideas [@reghdfe]. Correia, Guimaraes,
+and Zylkin extended the computational agenda to Poisson models with
+high-dimensional fixed effects [@correia2020ppmlhdfe]. Stammann studied related
+fast estimation for generalized linear models with many fixed effects
+[@stammann2018].
+
+The present approach differs in the point at which it stops. As a
+preconditioner, local Schwarz solves are standard domain decomposition: they
+improve the search directions of an exact outer solver [@xu1992; @toselli2005].
+As a one-shot approximate estimator, the same operation is intentionally
+incomplete. It asks whether the preconditioner alone is already a useful
+approximate within transformation.
+
+This makes the method closer in spirit to a controlled approximation than to a
+replacement for MAP. The exact solver remains available: simply continue with
+LSMR or CG until the fixed-effect residual is below tolerance. The approximate
+solver is useful when the first preconditioned step is good enough for a
+particular exploratory, screening, or warm-start purpose.
+
+## Selection of the Best Solver Using Graph Diagnostics
+
+The practical algorithm should not choose between MAP, preconditioning, and
+one-shot parallelization by taste. The fixed-effect graph gives cheap
+diagnostics before any expensive residualization is attempted. These
+diagnostics are not a proof that an approximate estimator is accurate, but
+they are useful for deciding which computational path is worth trying first.
+
+### Components and Spectral Connectedness
+
+The first pass is purely combinatorial. Build the weighted incidence graph for
+the fixed effects and compute connected components. This can be done by
+union-find in time essentially linear in the number of nonzero dummy entries.
+If the graph separates into disconnected components, the residualization
+problem separates exactly. Component-wise parallel solves are then not an
+approximation; they are the exact FWL residualization, up to the usual
+within-component normalizations.
+
+If the graph is connected, the next question is how connected it is. For a
+candidate two-factor graph, let
+
+$$
+A =
+\begin{pmatrix}
+0 & C \\
+C' & 0
+\end{pmatrix},
+\qquad
+\Delta = \operatorname{diag}(A\mathbf 1),
+$$
+
+and define the normalized Laplacian
+
+$$
+\mathcal L
+= I - \Delta^{-1/2}A\Delta^{-1/2}.
+$$
+
+Its eigenvalues satisfy
+
+$$
+0 = \lambda_1 \leq \lambda_2 \leq \cdots \leq \lambda_m \leq 2.
+$$
+
+The multiplicity of the zero eigenvalue is the number of connected components.
+Once the graph is connected, $\lambda_2$ is the spectral connectedness
+diagnostic. A small $\lambda_2$ means the graph has a slow graph direction: a
+vector that is nearly constant on one side of a bottleneck, nearly constant on
+the other side, and changes mostly across a small set of bridges. In fixed
+effects language, this is a weakly identified contrast between large pieces of
+the design. In numerical language, it is a direction in which MAP transmits
+information slowly.
+
+This is exactly the direction in which a graph-cut or domain-decomposition
+method can help. The Fiedler vector, the eigenvector associated with
+$\lambda_2$, gives a cheap candidate split. A sweep over that vector can
+produce cuts with low conductance [@fiedler1973; @chung1997],
+
+$$
+\phi(S)
+=
+\frac{w(E(S,S^c))}
+       {\min\{\operatorname{vol}(S), \operatorname{vol}(S^c)\}}.
+$$
+
+Low conductance is evidence that most graph mass is internal to the proposed
+subproblems. High conductance is evidence that a cut would throw away many
+important constraints.
+
+In practice, $\lambda_2$ does not require a dense eigensolve. A sparse Lanczos
+or LOBPCG iteration only needs products of the form $\mathcal L v$, which are
+grouped sums over the same incidence lists already used for demeaning. The
+goal is not a high-precision spectral computation. For solver selection, it is
+enough to know whether the graph has exact components, a very small spectral
+gap, or no obvious bottleneck.
+
+### Routing Rule
+
+The resulting routing rule is:
+
+1. **Many disconnected components.** Solve components in parallel exactly.
+   There is no need for MAP across components.
+2. **Connected graph with small $\lambda_2$ and low-conductance cuts.** Build
+   local graph solves on the cut pieces. Use them as an additive Schwarz
+   preconditioner. A one-shot approximate residualization is plausible only if
+   the post-solve diagnostics are also small.
+3. **Connected graph with small $\lambda_2$ but target variables concentrated
+   on bridges.** Use the graph preconditioner, but keep the outer exact solver.
+   This is the dangerous case: the graph looks cuttable, but the regression may
+   be identified by the cut edges.
+4. **Connected graph with moderate or large $\lambda_2$.** The graph is
+   comparatively compact. MAP, accelerated MAP, or a standard Krylov solve is
+   likely to be competitive. A one-shot cut is less attractive because there is
+   no weak boundary to exploit.
+
+For multi-way fixed effects, the same logic can be applied to factor-pair
+graphs and to the combined incidence graph. Pairwise spectra are useful for
+finding the hard two-way couplings, such as worker-firm or exporter-importer
+blocks. The combined graph is useful for seeing whether those pairwise
+couplings conflict with the remaining absorbed dimensions. A practical
+implementation should report both, because a pairwise cut that looks excellent
+can still interact badly with year, market, or cohort effects.
+
+### Residual and Coefficient Checks
+
+Graph diagnostics are design diagnostics. They say whether a local solve is
+structurally plausible. They do not say whether the particular variables being
+residualized are safe. The second pass is therefore task-specific. After a
+one-shot or preconditioned step, compute
+
+$$
+\eta(\mu)
+=
+\frac{\lVert D'W(\mu - D\alpha_\mu^{(0)})\rVert_2}
+       {\lVert D'W\mu\rVert_2}
+$$
+
+for $y$ and every regressor of interest. Also compute a sensitivity ladder:
+
+$$
+\alpha^{(0)} = M^{-1}b,
+\qquad
+\alpha^{(1)}, \alpha^{(2)}, \ldots,
+$$
+
+where later iterates are produced by an outer Krylov method. If the coefficient
+of interest is stable from one-shot to a few corrected steps, the approximation
+is empirically benign for that target. If the coefficient moves materially, the
+local solve should be treated only as a preconditioner or warm start.
+
+This gives the memo a simple selection principle. Use graph spectra and cuts
+to choose the computational strategy; use normal-equation residuals and
+coefficient sensitivity to decide whether stopping early is scientifically
+acceptable.
+
+## Simulation Studies
+
+### Prototype Implementation
+
+The prototype in the `within` codebase implements the one-shot method as a
+thin layer over the existing additive Schwarz preconditioner [@within]. The
+steps are:
+
+1. Build the usual fixed-effect design metadata from observation-level
+   category codes.
+2. Build factor-pair cross-tabulations $C_{qr}$.
+3. Split each factor-pair graph into connected local domains.
+4. Build local solvers for those domains using block elimination, Schur
+   complements, and approximate Laplacian solvers when appropriate
+   [@spielman2014; @gao2025].
+5. For a right-hand side $y$, compute $b = D'Wy$.
+6. Apply the preconditioner once to get $\alpha^{(0)} = M^{-1}b$.
+7. Return $y - D\alpha^{(0)}$ and the relative normal-equation residual.
+
+The same preconditioner can be reused for many right-hand sides. This matters
+because a regression needs to residualize the outcome and each regressor. If
+there are $k$ regressors, the setup cost is paid once and the local parallel
+solves are applied to $k+1$ right-hand sides.
+
+The one-shot API deliberately reuses the same result structure as the exact
+solve. The `iterations` field is set to one, and the `converged` flag means
+only that the one-shot residual was below the requested tolerance. It should
+not be read as evidence that an iterative process converged. The important
+field is the reported residual.
+
+### Benchmark Diagnostics
+
+The following table applies the prototype to every CSV dataset in the Correia
+benchmark bundle. The run uses the two graph identifiers in each metadata file
+and residualizes the outcome $y$. The outer-corrected solve is the usual LSMR
+path with the same cached Schwarz preconditioner. The one-shot method applies
+the preconditioner once and stops. Times are solve-phase times after the design
+and preconditioner are available.
+
+The spectral columns are computed on the largest connected component of the
+two-way graph. The column $\phi(S)$ is the conductance of the best sweep cut
+from the Fiedler vector. `directors` has 281,627 connected components; the
+current Schwarz-builder timing path is skipped for that dataset because the
+graph diagnostic already points to exact component-wise parallelization.
+
+| Dataset | Rows | DOFs | Comp. | LCC edge | $\lambda_2$ | $\phi(S)$ | One-shot resid. | Rel. y gap | One-shot time | Corrected time | Recommended solver |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| `credit` | 516,810 | 14,086 | 1 | 1.0000 | 0.2258 | 0.2348 | 0.0063 | 0.0010 | 0.042s | 0.231s | MAP or accelerated MAP |
+| `credit2` | 19,094 | 741 | 1 | 1.0000 | 0.1808 | 0.2163 | 0.0410 | 0.0113 | 0.007s | 0.026s | MAP or accelerated MAP |
+| `directors` | 525,012 | 796,775 | 281,627 | 0.0474 | 1.10e-04 | 0.0058 | n/a | n/a | n/a | n/a | component-parallel exact |
+| `enron` | 367,662 | 73,384 | 1,887 | 0.9836 | 0.0035 | 0.0045 | 0.8274 | 3.0306 | 0.147s | 19.440s | Schwarz-preconditioned exact |
+| `github` | 548,843 | 52,328 | 13,232 | 0.3205 | 3.15e-04 | 0.0023 | 0.1006 | 0.1621 | 0.044s | 1.160s | component-parallel exact |
+| `patents` | 500,008 | 464,832 | 25,229 | 0.7602 | 1.46e-04 | 6.84e-04 | 0.2247 | 0.8400 | 0.940s | 39.844s | component-parallel exact |
+| `schools` | 413,444 | 218,682 | 15 | 0.9989 | 0.0011 | 0.0055 | 0.0279 | 0.0230 | 0.074s | 0.536s | Schwarz-preconditioned exact |
+| `soccer` | 73,487 | 1,049 | 1 | 1.0000 | 0.6663 | 0.3982 | 0.0314 | 0.0097 | 0.010s | 0.075s | MAP or accelerated MAP |
+| `synthetic-assortative` | 499,155 | 221,034 | 33,042 | 0.6898 | 6.34e-04 | 0.0047 | 0.0531 | 1.7744 | 0.433s | 13.215s | component-parallel exact |
+| `synthetic-complete` | 500,000 | 1,500 | 1 | 1.0000 | 1.0000 | 0.5177 | 0.0097 | 0.0019 | 0.047s | 0.291s | MAP or accelerated MAP |
+| `synthetic-uniform-easy` | 500,000 | 216,027 | 1 | 1.0000 | 0.3385 | 0.2927 | 2.30e-14 | 2.99e-15 | 0.068s | 0.131s | one-shot parallel |
+| `synthetic-uniform-hard` | 500,000 | 245,357 | 194 | 0.9996 | 0.0449 | 0.0769 | 0.4040 | 0.5455 | 0.273s | 10.647s | Schwarz-preconditioned exact |
+| `synthetic-uniform-harder` | 500,000 | 432,053 | 13,213 | 0.9588 | 0.0047 | 0.0238 | 0.5476 | 1.7951 | 1.054s | 53.708s | Schwarz-preconditioned exact |
+| `synthetic-zigzag` | 10,002 | 10,001 | 1 | 1.0000 | 2.31e-05 | 0.0022 | 3.70e-15 | 2.03e-12 | 0.006s | 0.016s | one-shot parallel |
+| `workers` | 504,315 | 247,254 | 19,994 | 0.6132 | 1.40e-04 | 0.0015 | 0.0013 | 0.0199 | 0.224s | 2.931s | component-parallel exact |
+
+These results are not a claim that the one-shot method is generally accurate.
+They are a useful warning. The method can be extremely accurate in a path-like
+case where the local graph solve captures the structure almost exactly. It can
+also be badly wrong on graphs with low spectral gaps when the outcome variation
+loads on the weakly connected directions, as in `enron`,
+`synthetic-uniform-hard`, `synthetic-uniform-harder`, and
+`synthetic-assortative`. The table also separates two different reasons not to
+use MAP. Some datasets are genuinely fragmented and should be solved by
+connected components. Others have one dominant component with low spectral
+gap, where the right use of the local solver is as a preconditioner rather than
+as a one-shot estimator.
+
+The practical implication is that the one-shot method should always be paired
+with diagnostics:
+
+- the relative normal-equation residual $\eta(\mu)$;
+- maximum absolute fixed-effect group mean of the residual;
+- coefficient differences relative to an exact solve on a subsample or pilot
+  problem;
+- sensitivity of $\hat\beta$ to one, two, and more preconditioned outer
+  correction steps.
+
+## Conclusion
+
+Solving fixed-effect subproblems in parallel is not just plausible; it is
+already the computational structure behind additive Schwarz preconditioning.
+The new question is whether one application of that parallel local solver is
+good enough to use as an approximate within transformation.
+
+The answer is design-dependent. If the fixed-effect graph decomposes into true
+components, local solves are exact. If the graph is sparse but weakly
+connected, local solves can be fast and useful, but their approximation error
+lives precisely in the weak bridges that identify cross-group fixed-effect
+contrasts. If the graph is dense or compact, one-shot approximation may not
+help and accelerated MAP may remain the better default.
+
+The right framing is therefore not "replace MAP with an approximate solver."
+It is: use graph-local parallel solves as a controllable approximation, a warm
+start, or a preconditioner. The same code path can support all three. The
+scientific burden is to report residualization diagnostics and coefficient
+sensitivity clearly enough that users know when the approximation is harmless
+and when the outer exact solver should continue.
+
+## References {.unnumbered}
+
+::: {#refs}
+:::

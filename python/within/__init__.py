@@ -51,6 +51,8 @@ from within._within import (
     SolveResult,
     Solver,
     solve,
+    solve_approx_parallel,
+    solve_approx_parallel_batch,
     solve_batch,
 )
 from within import config  # noqa: F401 — expose submodule on `within.config`
@@ -63,6 +65,8 @@ __all__ = [
     "SolveResult",
     "Solver",
     "solve",
+    "solve_approx_parallel",
+    "solve_approx_parallel_batch",
     "solve_batch",
     "config",
 ]

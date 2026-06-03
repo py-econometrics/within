@@ -1,5 +1,7 @@
 use ndarray::array;
-use within::{solve, LsmrOptions, Preconditioner, PreconditionerConfig, Solver};
+use within::{
+    solve, solve_approx_parallel, LsmrOptions, Preconditioner, PreconditionerConfig, Solver,
+};
 
 #[path = "common/orchestrate_helpers.rs"]
 mod common;
@@ -103,6 +105,50 @@ fn test_solver_batch() {
 
     assert_eq!(batch.converged.len(), 3);
     assert!(batch.converged.iter().all(|&c| c));
+}
+
+#[test]
+fn test_approx_parallel_solver_is_one_shot() {
+    let (categories, y) = categories_and_y();
+    let precond = additive_precond();
+
+    let solver =
+        Solver::new(categories.view(), None::<Vec<f64>>, Some(&precond)).expect("solver build");
+    let result = solver
+        .solve_approx_parallel(&y, 1e-8)
+        .expect("approximate solve");
+
+    assert_eq!(result.iterations, 1);
+    assert!(result.x.iter().all(|v| v.is_finite()));
+    assert!(result.demeaned.iter().all(|v| v.is_finite()));
+    assert!(result.residual.is_finite());
+}
+
+#[test]
+fn test_approx_parallel_oneshot_api() {
+    let (categories, y) = categories_and_y();
+    let params = default_params();
+    let precond = additive_precond();
+
+    let result = solve_approx_parallel(categories.view(), &y, None, &params, Some(&precond))
+        .expect("approximate oneshot");
+
+    assert_eq!(result.iterations, 1);
+    assert_eq!(result.x.len(), 5);
+    assert_eq!(result.demeaned.len(), y.len());
+}
+
+#[test]
+fn test_approx_parallel_requires_preconditioner() {
+    let (categories, y) = categories_and_y();
+    let solver = Solver::new(
+        categories.view(),
+        None::<Vec<f64>>,
+        PreconditionerConfig::Off,
+    )
+    .expect("solver build");
+
+    assert!(solver.solve_approx_parallel(&y, 1e-8).is_err());
 }
 
 #[test]

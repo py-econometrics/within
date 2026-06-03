@@ -215,6 +215,36 @@ def solve_batch(
     """
     ...
 
+def solve_approx_parallel(
+    categories: NDArray[np.uint32],
+    y: NDArray[np.float64],
+    options: LsmrOptions | None = None,
+    weights: NDArray[np.float64] | None = None,
+    preconditioner: (
+        PreconditionerConfig | AdditiveSchwarz | Preconditioner | None
+    ) = None,
+) -> SolveResult:
+    """Compute a one-shot approximate fixed-effects residualization.
+
+    This applies the additive Schwarz preconditioner once to ``D^T W y`` and
+    skips the outer LSMR correction. The result is useful for prototyping
+    parallel subproblem residualization on sparse, weakly connected FE graphs.
+    ``options.tol`` controls only the returned ``converged`` flag.
+    """
+    ...
+
+def solve_approx_parallel_batch(
+    categories: NDArray[np.uint32],
+    Y: NDArray[np.float64],
+    options: LsmrOptions | None = None,
+    weights: NDArray[np.float64] | None = None,
+    preconditioner: (
+        PreconditionerConfig | AdditiveSchwarz | Preconditioner | None
+    ) = None,
+) -> BatchSolveResult:
+    """Compute one-shot approximate residualizations for multiple RHS columns."""
+    ...
+
 class Preconditioner:
     """Pre-built fixed-effects preconditioner.
 
@@ -263,6 +293,20 @@ class Solver:
         options: LsmrOptions | None = None,
     ) -> BatchSolveResult:
         """Solve for multiple response vectors in parallel."""
+        ...
+    def solve_approx_parallel(
+        self,
+        y: NDArray[np.float64],
+        options: LsmrOptions | None = None,
+    ) -> SolveResult:
+        """Apply the cached Schwarz preconditioner once for one RHS."""
+        ...
+    def solve_approx_parallel_batch(
+        self,
+        Y: NDArray[np.float64],
+        options: LsmrOptions | None = None,
+    ) -> BatchSolveResult:
+        """Apply the cached Schwarz preconditioner once for each RHS column."""
         ...
     @property
     def preconditioner(self) -> Preconditioner | None:

@@ -12,6 +12,7 @@ from within import (
     PreconditionerConfig,
     Solver,
     solve,
+    solve_approx_parallel,
 )
 from within.config import AdditiveSchwarz
 
@@ -150,6 +151,35 @@ class TestSolveResult:
         assert result.time_total >= 0
         assert result.time_setup >= 0
         assert result.time_solve >= 0
+
+
+class TestApproxParallelSolve:
+    def test_oneshot_approximate_solve_shape(self, problem):
+        cats, y = problem
+        result = solve_approx_parallel(as_solver_categories(cats), y)
+        assert result.iterations == 1
+        assert result.x.shape == (100,)
+        assert result.demeaned.shape == y.shape
+        assert np.isfinite(result.residual)
+
+    def test_solver_method_matches_top_level(self, problem):
+        cats, y = problem
+        categories = as_solver_categories(cats)
+        top_level = solve_approx_parallel(categories, y)
+        solver = Solver(categories)
+        method = solver.solve_approx_parallel(y)
+        np.testing.assert_allclose(method.x, top_level.x, atol=1e-12)
+        np.testing.assert_allclose(method.demeaned, top_level.demeaned, atol=1e-12)
+
+    def test_batch_shape(self, problem):
+        cats, y = problem
+        categories = as_solver_categories(cats)
+        solver = Solver(categories)
+        Y = np.column_stack([y, y + 1.0])
+        result = solver.solve_approx_parallel_batch(Y)
+        assert result.x.shape == (100, 2)
+        assert result.demeaned.shape == (len(y), 2)
+        assert result.iterations == [1, 1]
 
 
 class TestContiguityWarning:

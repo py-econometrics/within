@@ -294,6 +294,77 @@ impl<S: Store> Solver<S> {
         })
     }
 
+    /// Compute a one-shot approximate FE solution by applying the parallel
+    /// additive-Schwarz preconditioner once to the normal-equation RHS.
+    ///
+    /// This is a prototype for the "solve sparse subproblems in parallel and
+    /// stitch" idea. It does **not** run the outer LSMR correction, so it
+    /// should be treated as an approximation to the FWL residualization unless
+    /// the factor-pair graph is block separated enough that the local solves
+    /// already capture the relevant directions. The returned `converged` flag
+    /// records whether the final normal-equation residual is at most `tol`.
+    pub fn solve_approx_parallel(&self, y: &[f64], tol: f64) -> Result<SolveResult, SolveError> {
+        if y.len() != self.design.n_obs {
+            return Err(SolveError::InvalidInput {
+                context: "Solver::solve_approx_parallel",
+                message: format!(
+                    "response vector length ({}) does not match number of observations ({})",
+                    y.len(),
+                    self.design.n_obs
+                ),
+            });
+        }
+
+        let preconditioner =
+            self.preconditioner
+                .as_ref()
+                .ok_or_else(|| SolveError::InvalidInput {
+                    context: "Solver::solve_approx_parallel",
+                    message:
+                        "approximate parallel solve requires an additive Schwarz preconditioner"
+                            .to_string(),
+                })?;
+
+        let t_start = Instant::now();
+        let rect_op = DesignOperator::new(&self.design, self.weights.as_deref());
+        let weighted_y = rect_op.weighted_rhs(y);
+
+        let mut rhs = vec![0.0; self.design.n_dofs];
+        rect_op.apply_adjoint(weighted_y.as_ref(), &mut rhs)?;
+        let rhs_norm = norm(&rhs).max(1e-15);
+
+        let t_solve_start = Instant::now();
+        let time_setup = t_solve_start.duration_since(t_start).as_secs_f64();
+
+        let mut x = vec![0.0; self.design.n_dofs];
+        preconditioner.apply(&rhs, &mut x)?;
+
+        let time_solve = t_solve_start.elapsed().as_secs_f64();
+
+        let bare_op = DesignOperator::new(&self.design, None);
+        let mut demeaned = vec![0.0; self.design.n_obs];
+        bare_op.apply(&x, &mut demeaned)?;
+        for (d, &yi) in demeaned.iter_mut().zip(y.iter()) {
+            *d = yi - *d;
+        }
+
+        let weighted_demeaned = rect_op.weighted_rhs(&demeaned);
+        let mut residual_dof = vec![0.0; self.design.n_dofs];
+        rect_op.apply_adjoint(weighted_demeaned.as_ref(), &mut residual_dof)?;
+        let residual = norm(&residual_dof) / rhs_norm;
+
+        Ok(SolveResult {
+            x,
+            demeaned,
+            converged: residual <= tol,
+            iterations: 1,
+            residual,
+            time_total: t_start.elapsed().as_secs_f64(),
+            time_setup,
+            time_solve,
+        })
+    }
+
     /// Solve for multiple RHS vectors in parallel.
     pub fn solve_batch(
         &self,
@@ -318,6 +389,54 @@ impl<S: Store> Solver<S> {
         let mut time_solve = Vec::with_capacity(n_rhs);
 
         for r in results {
+            x.extend_from_slice(&r.x);
+            demeaned.extend_from_slice(&r.demeaned);
+            converged.push(r.converged);
+            iterations.push(r.iterations);
+            residual.push(r.residual);
+            time_solve.push(r.time_solve);
+        }
+
+        Ok(BatchSolveResult {
+            x,
+            demeaned,
+            converged,
+            iterations,
+            residual,
+            time_solve,
+            time_total: t_start.elapsed().as_secs_f64(),
+            n_dofs: self.design.n_dofs,
+            n_obs: self.design.n_obs,
+        })
+    }
+
+    /// Compute one-shot approximate FE solutions for multiple RHS vectors.
+    ///
+    /// Each RHS uses [`Solver::solve_approx_parallel`], and the RHS columns are
+    /// dispatched in parallel. The cached Schwarz preconditioner is reused
+    /// across all columns.
+    pub fn solve_approx_parallel_batch(
+        &self,
+        ys: &[&[f64]],
+        tol: f64,
+    ) -> Result<BatchSolveResult, SolveError> {
+        let t_start = Instant::now();
+        let n_rhs = ys.len();
+
+        let results: Vec<Result<SolveResult, SolveError>> = ys
+            .par_iter()
+            .map(|y| self.solve_approx_parallel(y, tol))
+            .collect();
+
+        let mut x = Vec::with_capacity(self.design.n_dofs * n_rhs);
+        let mut demeaned = Vec::with_capacity(self.design.n_obs * n_rhs);
+        let mut converged = Vec::with_capacity(n_rhs);
+        let mut iterations = Vec::with_capacity(n_rhs);
+        let mut residual = Vec::with_capacity(n_rhs);
+        let mut time_solve = Vec::with_capacity(n_rhs);
+
+        for r in results {
+            let r = r?;
             x.extend_from_slice(&r.x);
             demeaned.extend_from_slice(&r.demeaned);
             converged.push(r.converged);
@@ -390,6 +509,30 @@ pub fn solve(
     Ok(result)
 }
 
+/// Compute a one-shot approximate fixed-effects residualization from raw
+/// category data.
+///
+/// This builds or reuses the additive Schwarz preconditioner and applies it
+/// once to `D^T W y`. Unlike [`solve`], it does not run LSMR correction
+/// iterations. `lsmr.tol` is used only to populate the returned `converged`
+/// flag from the final normal-equation residual; `maxiter` and `local_size`
+/// are ignored.
+pub fn solve_approx_parallel(
+    categories: ArrayView2<u32>,
+    y: &[f64],
+    weights: Option<&[f64]>,
+    lsmr: &LsmrOptions,
+    preconditioner: impl Into<PreconditionerInput>,
+) -> Result<SolveResult, WithinError> {
+    let t_start = Instant::now();
+    let solver = Solver::new(categories, weights, preconditioner)?;
+    let time_setup = t_start.elapsed().as_secs_f64();
+    let mut result = solver.solve_approx_parallel(y, lsmr.tol)?;
+    result.time_setup += time_setup;
+    result.time_total = t_start.elapsed().as_secs_f64();
+    Ok(result)
+}
+
 /// Solve fixed-effects least squares for multiple response vectors.
 ///
 /// Same as [`solve`] but solves all RHS vectors in parallel (via rayon),
@@ -404,6 +547,25 @@ pub fn solve_batch(
     let t_start = Instant::now();
     let solver = Solver::new(categories, weights, preconditioner)?;
     let mut result = solver.solve_batch(ys, lsmr)?;
+    result.time_total = t_start.elapsed().as_secs_f64();
+    Ok(result)
+}
+
+/// Compute one-shot approximate fixed-effects residualizations for multiple
+/// response vectors from raw category data.
+///
+/// This is the batch companion to [`solve_approx_parallel`]. It reuses the
+/// same additive Schwarz preconditioner across all RHS columns.
+pub fn solve_approx_parallel_batch(
+    categories: ArrayView2<u32>,
+    ys: &[&[f64]],
+    weights: Option<&[f64]>,
+    lsmr: &LsmrOptions,
+    preconditioner: impl Into<PreconditionerInput>,
+) -> Result<BatchSolveResult, WithinError> {
+    let t_start = Instant::now();
+    let solver = Solver::new(categories, weights, preconditioner)?;
+    let mut result = solver.solve_approx_parallel_batch(ys, lsmr.tol)?;
     result.time_total = t_start.elapsed().as_secs_f64();
     Ok(result)
 }
