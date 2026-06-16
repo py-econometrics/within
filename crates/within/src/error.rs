@@ -11,6 +11,21 @@ pub enum BuildError {
     /// No observations provided.
     #[error("no observations provided")]
     EmptyObservations,
+    /// A factor term has no columns: it has no intercept and no slopes, so it
+    /// contributes nothing to the design.
+    #[error("factor term has no columns: set intercept = true or provide at least one slope")]
+    EmptyTerm,
+    /// A slope column's length does not match the number of observations
+    /// (level indices) in its factor term.
+    #[error("slope {slope} has {got} loadings, expected {expected}")]
+    SlopeCountMismatch {
+        /// Index of the slope column with mismatched length.
+        slope: usize,
+        /// Expected number of loadings (one per observation).
+        expected: usize,
+        /// Actual length of the slope column.
+        got: usize,
+    },
     /// One factor column does not match the expected observation count.
     #[error("factor {factor} has {got} observations, expected {expected}")]
     ObservationCountMismatch {
