@@ -26,6 +26,10 @@ pub enum BuildError {
         /// Actual length of the slope column.
         got: usize,
     },
+    /// A feature that is recognized as valid input but not yet supported by the
+    /// solver. The message names the unsupported feature (e.g. "varying slopes").
+    #[error("not yet supported: {0}")]
+    Unsupported(&'static str),
     /// One factor column does not match the expected observation count.
     #[error("factor {factor} has {got} observations, expected {expected}")]
     ObservationCountMismatch {
