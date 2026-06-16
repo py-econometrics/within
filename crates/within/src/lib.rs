@@ -29,3 +29,4 @@ pub use domain::Design;
 pub use error::{BuildError, SolveError, WithinError};
 pub use operator::schwarz::Preconditioner;
 pub use solver::{solve, solve_batch, BatchSolveResult, SolveResult, Solver};
+pub use terms::Fe;
