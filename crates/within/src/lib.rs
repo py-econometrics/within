@@ -16,6 +16,7 @@
 pub mod config;
 pub mod error;
 pub mod observation;
+pub mod terms;
 
 pub(crate) mod block_elim;
 pub(crate) mod csr_block;
