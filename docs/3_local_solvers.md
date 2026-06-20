@@ -4,7 +4,7 @@ This is Part 3 of the algorithm documentation for the `within` solver. It descri
 
 **Series overview**:
 - [Part 1: Fixed Effects and Block Iterative Methods](1_fixed_effects_and_block_methods.md)
-- [Part 2: Preconditioned Krylov Solvers and Schwarz Decomposition](2_solver_architecture.md)
+- [Part 2: Preconditioned LSMR and Schwarz Decomposition](2_solver_architecture.md)
 - **Part 3: Local Solvers and Approximate Cholesky** (this document)
 
 **Prerequisites**: Part 1 (Gramian block structure), Part 2 (Schwarz framework, Laplacian connection).
@@ -13,7 +13,7 @@ This is Part 3 of the algorithm documentation for the `within` solver. It descri
 
 ## 1. The Local Solve Pipeline
 
-Each subdomain requires solving a system $A_i z_i = r_i$ where $A_i$ is the bipartite Gramian block for a factor pair. These systems are too large to solve exactly in practice - a Worker-Firm block in a real dataset may have millions of DOFs / factor levels. Instead, the solver produces an **approximate** factorization that is cheap to build and cheap to apply, trading exactness for speed. The Krylov outer solver ([Part 2](2_solver_architecture.md)) compensates for this approximation by refining the global solution across iterations.
+Each subdomain requires solving a system $A_i z_i = r_i$ where $A_i$ is the bipartite Gramian block for a factor pair. These systems are too large to solve exactly in practice - a Worker-Firm block in a real dataset may have millions of DOFs / factor levels. Instead, the solver produces an **approximate** factorization that is cheap to build and cheap to apply, trading exactness for speed. The LSMR outer iteration ([Part 2](2_solver_architecture.md)) compensates for this approximation by refining the global solution across iterations.
 
 The local solve applies a pipeline of transformations that progressively simplify the problem:
 

@@ -1,6 +1,6 @@
 [package]
 name = "schwarz-precond"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Schwarz domain decomposition preconditioner"
 license = "MIT"
@@ -16,4 +16,5 @@ serde = ["dep:serde"]
 rayon = "1.10"
 faer = "0.24.0"
 serde = { version = "1", features = ["derive"], optional = true }
+thiserror = "2"
 thread_local = "1.1"

@@ -1,19 +1,14 @@
 use ndarray::array;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
-use schwarz_precond::Operator;
-use within::observation::{FactorMajorStore, ObservationWeights};
-use within::operator::gramian::GramianOperator;
-use within::{
-    solve, FactorMajorStore as FMStore, KrylovMethod, LocalSolverConfig, OperatorRepr,
-    Preconditioner, ReductionStrategy, Solver, SolverParams, WeightedDesign,
-};
+use within::observation::FactorMajorStore;
+use within::{solve, Design, LsmrOptions, PreconditionerConfig, Solver};
 
 #[path = "common/orchestrate_helpers.rs"]
 mod common;
 
-fn additive_precond() -> Preconditioner {
-    Preconditioner::Additive(LocalSolverConfig::solver_default(), ReductionStrategy::Auto)
+fn additive_precond() -> PreconditionerConfig {
+    PreconditionerConfig::default()
 }
 
 // ---------------------------------------------------------------------------
@@ -27,7 +22,7 @@ fn additive_precond() -> Preconditioner {
 fn test_single_observation() {
     let cats = array![[0u32, 0]];
     let y = vec![5.0f64];
-    let params = SolverParams::default();
+    let params = LsmrOptions::default();
 
     let result = solve(cats.view(), &y, None, &params, None).expect("single-obs solve");
     assert!(
@@ -52,11 +47,10 @@ fn test_trivial_factor_all_same_level() {
     // 5 observations; factor 0 is constant, factor 1 cycles through 0, 1, 2.
     let cats = array![[0u32, 0], [0u32, 1], [0u32, 2], [0u32, 0], [0u32, 1]];
     let y = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-    let params = SolverParams::default();
+    let params = LsmrOptions::default();
     let precond = additive_precond();
 
-    let result =
-        solve(cats.view(), &y, None, &params, Some(&precond)).expect("trivial-factor solve");
+    let result = solve(cats.view(), &y, None, &params, &precond).expect("trivial-factor solve");
     assert!(
         result.converged,
         "solver did not converge with constant factor"
@@ -75,7 +69,7 @@ fn test_trivial_factor_all_same_level() {
 
 /// All-zero weights produce a zero Gramian diagonal.
 ///
-/// Without a preconditioner, the Gramian and RHS are both zero so CG returns
+/// Without a preconditioner, the system and RHS are both zero so LSMR returns
 /// x=0 immediately — this is technically valid (the "solution" is trivially
 /// the zero vector). With a preconditioner, the local solver must factorize
 /// a matrix with a zero diagonal and should fail with a build error.
@@ -90,8 +84,8 @@ fn test_zero_weight_error_with_preconditioner() {
         cats.view(),
         &y,
         Some(&weights),
-        &SolverParams::default(),
-        Some(&precond),
+        &LsmrOptions::default(),
+        &precond,
     );
     assert!(
         result.is_err(),
@@ -100,8 +94,38 @@ fn test_zero_weight_error_with_preconditioner() {
     );
 }
 
-/// Without a preconditioner, all-zero weights produce a zero Gramian and a
-/// zero RHS. CG starts with residual zero and converges immediately to x=0.
+/// All-zero weights make every diagonal entry zero. Unlike the additive path
+/// (whose local factorization hits a zero pivot and errors — see
+/// `test_zero_weight_error_with_preconditioner`), the diagonal preconditioner
+/// takes the pseudo-inverse of each zero entry, so — like the unpreconditioned
+/// path — it solves the resulting zero system and returns x=0.
+#[test]
+fn test_zero_weight_diagonal_preconditioner_returns_zero() {
+    let cats = array![[0u32, 0], [1u32, 0], [0u32, 1], [1u32, 1], [2u32, 0]];
+    let y = vec![1.0f64; 5];
+    let weights = vec![0.0f64; 5];
+
+    let result = solve(
+        cats.view(),
+        &y,
+        Some(&weights),
+        &LsmrOptions::default(),
+        &PreconditionerConfig::Diagonal,
+    )
+    .expect("zero weights with diagonal preconditioner should succeed");
+
+    assert!(
+        result.converged,
+        "zero-Gramian system should trivially converge"
+    );
+    assert!(
+        result.x.iter().all(|&v| v == 0.0),
+        "zero-Gramian solution must be the zero vector"
+    );
+}
+
+/// Without a preconditioner, all-zero weights produce a zero system and a
+/// zero RHS. LSMR starts with residual zero and converges immediately to x=0.
 #[test]
 fn test_zero_weight_no_preconditioner_returns_zero() {
     let cats = array![[0u32, 0], [1u32, 0], [0u32, 1], [1u32, 1], [2u32, 0]];
@@ -112,8 +136,8 @@ fn test_zero_weight_no_preconditioner_returns_zero() {
         cats.view(),
         &y,
         Some(&weights),
-        &SolverParams::default(),
-        None,
+        &LsmrOptions::default(),
+        &PreconditionerConfig::Off,
     )
     .expect("zero weights with no preconditioner should succeed");
 
@@ -127,14 +151,73 @@ fn test_zero_weight_no_preconditioner_returns_zero() {
     );
 }
 
+/// A preconditioner changes convergence, not the answer: the diagonal and
+/// unpreconditioned solves must agree on the same least-squares solution.
+///
+/// Uses a single full-rank factor so the solution is unique. A multi-factor FE
+/// design is rank-deficient (the additive constant is unidentified), so the
+/// minimum-norm coefficient vector LSMR returns depends on the preconditioned
+/// metric — only the fitted values, not the raw coefficients, are invariant.
+#[test]
+fn test_diagonal_matches_unpreconditioned_solution() {
+    let cats = array![[0u32], [0], [1], [1], [2], [2]];
+    let y = vec![1.0, 3.0, 2.0, 4.0, 5.0, 7.0];
+    let params = LsmrOptions::default();
+
+    let diagonal = solve(
+        cats.view(),
+        &y,
+        None,
+        &params,
+        &PreconditionerConfig::Diagonal,
+    )
+    .expect("diagonal solve");
+    let unpreconditioned = solve(cats.view(), &y, None, &params, &PreconditionerConfig::Off)
+        .expect("unpreconditioned solve");
+
+    common::assert_solution_finite(&diagonal);
+    common::assert_solutions_close(&diagonal.x, &unpreconditioned.x, 1e-6);
+}
+
+/// A factor whose observed levels leave interior gaps (`n_levels = max + 1`)
+/// produces structural zero columns of `D` — unidentified DOFs whose diagonal
+/// is zero. The unpreconditioned and additive paths both pin those coefficients
+/// to 0 and solve fine; with the pseudo-inverse of a zero diagonal, the diagonal
+/// preconditioner now matches rather than failing with `SingularDiagonal`.
+#[test]
+fn test_diagonal_matches_unpreconditioned_on_gap_design() {
+    // Single factor observed only at levels {0, 2, 4} => n_levels = 5, so global
+    // DOFs 1 and 3 have no observations.
+    let cats = array![[0u32], [2], [4]];
+    let y = vec![1.0, 2.0, 3.0];
+    let params = LsmrOptions::default();
+
+    let diagonal = solve(
+        cats.view(),
+        &y,
+        None,
+        &params,
+        &PreconditionerConfig::Diagonal,
+    )
+    .expect("diagonal solve must succeed on a gap design (pseudo-inverse of zero diagonal)");
+    let unpreconditioned = solve(cats.view(), &y, None, &params, &PreconditionerConfig::Off)
+        .expect("unpreconditioned solve");
+
+    assert!(diagonal.converged, "diagonal solve must converge");
+    common::assert_solutions_close(&diagonal.x, &unpreconditioned.x, 1e-6);
+    // The unobserved DOFs are unidentified and must be pinned to exactly 0.
+    assert_eq!(diagonal.x[1], 0.0, "unobserved DOF 1 must be 0");
+    assert_eq!(diagonal.x[3], 0.0, "unobserved DOF 3 must be 0");
+}
+
 // ---------------------------------------------------------------------------
 // Test 4: maxiter=1 on a non-trivial problem
 // ---------------------------------------------------------------------------
 
-/// With maxiter=1, CG should stop after one iteration. The result need not be
+/// With maxiter=1, LSMR should stop after one iteration. The result need not be
 /// converged, but x must be finite — no NaN/Inf should escape.
 #[test]
-fn test_cg_maxiter_1_partial_result() {
+fn test_maxiter_1_partial_result() {
     // Use a moderately sized seeded problem to ensure 1 iteration is insufficient.
     let mut rng = SmallRng::seed_from_u64(7);
     let n_obs = 200usize;
@@ -142,19 +225,18 @@ fn test_cg_maxiter_1_partial_result() {
         (0..n_obs).map(|_| rng.random_range(0..20u32)).collect(),
         (0..n_obs).map(|_| rng.random_range(0..20u32)).collect(),
     ];
-    let store = FactorMajorStore::new(cats, ObservationWeights::Unit, n_obs).expect("valid store");
-    let design = WeightedDesign::from_store(store).expect("valid design");
+    let store = FactorMajorStore::new(cats, n_obs).expect("valid store");
+    let design = Design::from_store(store).expect("valid design");
 
     let y: Vec<f64> = (0..n_obs).map(|i| (i as f64 * 0.17).sin()).collect();
 
-    let params = SolverParams {
+    let params = LsmrOptions {
         tol: 1e-15,
         maxiter: 1,
-        max_refinements: 0,
-        ..SolverParams::default()
+        ..LsmrOptions::default()
     };
-    let solver = Solver::from_design(design, &params, None).expect("solver build");
-    let result = solver.solve(&y).expect("solve with maxiter=1");
+    let solver = Solver::new(design, None, None).expect("solver build");
+    let result = solver.solve(&y, &params).expect("solve with maxiter=1");
 
     // Convergence is not expected (tolerance is unreachable in 1 iteration),
     // but all values must be finite.
@@ -174,116 +256,12 @@ fn test_cg_maxiter_1_partial_result() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 5: GMRES on a known-solution problem
-// ---------------------------------------------------------------------------
-
-/// Solve with GMRES (explicit Gramian + additive Schwarz) using y = D * 1.
-/// The system is consistent so GMRES should converge, and final_residual
-/// must be below the requested tolerance.
-#[test]
-fn test_gmres_known_solution() {
-    let design = common::make_test_design();
-    let y = common::make_y_from_unit_solution(&design);
-
-    let params = SolverParams {
-        krylov: KrylovMethod::Gmres { restart: 30 },
-        operator: OperatorRepr::Explicit,
-        tol: 1e-8,
-        maxiter: 1000,
-        ..SolverParams::default()
-    };
-    let precond = additive_precond();
-    let solver = Solver::from_design(design, &params, Some(&precond)).expect("solver build");
-    let result = solver.solve(&y).expect("GMRES solve");
-
-    assert!(
-        result.converged,
-        "GMRES did not converge (residual={:.2e})",
-        result.final_residual
-    );
-    assert!(
-        result.final_residual < 1e-6,
-        "residual too large: {:.2e}",
-        result.final_residual
-    );
-    common::assert_solution_finite(&result);
-}
-
-// ---------------------------------------------------------------------------
-// Test 6: GMRES reported residual matches actual residual
-// ---------------------------------------------------------------------------
-
-/// After a GMRES solve, compute the actual observation-space residual
-/// ||D^T W (y - Dx)|| / ||D^T W y|| independently and compare with
-/// `result.final_residual`. They must agree to within floating-point
-/// rounding (the solver uses the same formula).
-#[test]
-fn test_gmres_residual_estimate_vs_actual() {
-    let design = common::make_test_design();
-    let y = common::make_y_from_unit_solution(&design);
-
-    let params = SolverParams {
-        krylov: KrylovMethod::Gmres { restart: 30 },
-        operator: OperatorRepr::Explicit,
-        tol: 1e-8,
-        maxiter: 1000,
-        ..SolverParams::default()
-    };
-    let precond = additive_precond();
-    let solver = Solver::from_design(design, &params, Some(&precond)).expect("solver build");
-    let result = solver.solve(&y).expect("GMRES solve");
-
-    assert!(result.converged);
-
-    // Recompute the residual from scratch using the GramianOperator.
-    // `final_residual` is ||D^T W (y - Dx)|| / ||D^T W y||.
-    // Because the solver computes it via `rmatvec_wdt`, we reconstruct the
-    // same quantity from the public `Gramian` API:
-    //   actual_resid_vec = G * x - D^T W y
-    // and normalise by ||D^T W y|| = ||rhs||.
-    //
-    // We rebuild a fresh design from the same categories to access the operator.
-    let design2 = common::make_test_design();
-    let n_dofs = design2.n_dofs;
-    let gramian_op = GramianOperator::new(&design2);
-
-    // rhs = D^T W y (unit weights, so D^T y)
-    let mut rhs = vec![0.0; n_dofs];
-    design2.rmatvec_wdt(&y, &mut rhs);
-    let rhs_norm = rhs.iter().map(|v| v * v).sum::<f64>().sqrt().max(1e-15);
-
-    // residual = G*x - rhs
-    let mut gx = vec![0.0; n_dofs];
-    gramian_op.apply(&result.x, &mut gx);
-    let actual_residual_norm = gx
-        .iter()
-        .zip(rhs.iter())
-        .map(|(a, b)| (a - b) * (a - b))
-        .sum::<f64>()
-        .sqrt();
-    let actual_relative_residual = actual_residual_norm / rhs_norm;
-
-    // The reported residual uses observation-space recomputation; the normal-
-    // equation residual should agree to within a small factor.
-    assert!(
-        actual_relative_residual < 1e-5,
-        "actual normal-equation residual too large: {:.2e}",
-        actual_relative_residual
-    );
-    assert!(
-        result.final_residual < 1e-5,
-        "reported residual too large: {:.2e}",
-        result.final_residual
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Test 7: large design with seeded random data
+// Test 5: large design with seeded random data
 // ---------------------------------------------------------------------------
 
 /// Build a 10 000-observation, 2-factor design with seeded random categories.
 /// Use the unit-solution RHS (y = D * 1) for a consistent system and verify
-/// the preconditioned CG converges. This exercises the Schwarz preconditioner
+/// the preconditioned LSMR converges. This exercises the Schwarz preconditioner
 /// at moderate scale without being slow enough to require `#[ignore]`.
 #[test]
 fn test_large_design_convergence() {
@@ -294,22 +272,22 @@ fn test_large_design_convergence() {
         (0..n_obs).map(|_| rng.random_range(0..100u32)).collect(),
     ];
 
-    let store = FMStore::new(cats, ObservationWeights::Unit, n_obs).expect("valid large store");
-    let design = WeightedDesign::from_store(store).expect("valid large design");
-    let y = common::make_y_from_unit_solution(&design);
+    let store = FactorMajorStore::new(cats, n_obs).expect("valid large store");
+    let design = Design::from_store(store).expect("valid large design");
+    let y = common::make_deterministic_y(&design);
 
-    let params = SolverParams {
+    let params = LsmrOptions {
         tol: 1e-7,
-        ..SolverParams::default()
+        ..LsmrOptions::default()
     };
     let precond = additive_precond();
-    let solver = Solver::from_design(design, &params, Some(&precond)).expect("solver build");
-    let result = solver.solve(&y).expect("large design solve");
+    let solver = Solver::new(design, None, &precond).expect("solver build");
+    let result = solver.solve(&y, &params).expect("large design solve");
 
     assert!(
         result.converged,
         "large design did not converge (n_obs={n_obs}, residual={:.2e})",
-        result.final_residual
+        result.residual
     );
     common::assert_solution_finite(&result);
 }
@@ -318,16 +296,16 @@ fn test_large_design_convergence() {
 // Test 8: zero RHS produces zero solution immediately
 // ---------------------------------------------------------------------------
 
-/// y = 0 means D^T W y = 0, so the initial residual is already zero and CG
-/// should return immediately with 0 iterations and x = 0.
+/// y = 0 means the residual is already zero, so LSMR should return immediately
+/// with 0 iterations and x = 0.
 #[test]
 fn test_zero_rhs_zero_solution() {
     let design = common::make_test_design();
-    let y = vec![0.0f64; design.n_rows];
+    let y = vec![0.0f64; design.n_obs()];
 
-    let params = SolverParams::default();
-    let solver = Solver::from_design(design, &params, None).expect("solver build");
-    let result = solver.solve(&y).expect("zero RHS solve");
+    let params = LsmrOptions::default();
+    let solver = Solver::new(design, None, None).expect("solver build");
+    let result = solver.solve(&y, &params).expect("zero RHS solve");
 
     assert!(result.converged, "zero RHS should trivially converge");
     assert_eq!(result.iterations, 0, "zero RHS should need 0 iterations");
@@ -349,18 +327,12 @@ fn test_uniform_weights_matches_unweighted() {
     let y = vec![1.0, 2.0, 3.0, 4.0, 5.0f64];
     let uniform_weights = vec![2.0f64; 5]; // constant — equivalent to unit weights
 
-    let params = SolverParams::default();
+    let params = LsmrOptions::default();
     let precond = additive_precond();
 
-    let r_unit = solve(cats.view(), &y, None, &params, Some(&precond)).expect("unweighted solve");
-    let r_uniform = solve(
-        cats.view(),
-        &y,
-        Some(&uniform_weights),
-        &params,
-        Some(&precond),
-    )
-    .expect("uniform-weight solve");
+    let r_unit = solve(cats.view(), &y, None, &params, &precond).expect("unweighted solve");
+    let r_uniform = solve(cats.view(), &y, Some(&uniform_weights), &params, &precond)
+        .expect("uniform-weight solve");
 
     // Constant scaling of W leaves G and D^T W y proportional, so the solution
     // is identical.
@@ -383,14 +355,14 @@ fn test_uniform_weights_matches_unweighted() {
 #[test]
 fn test_repeated_solve_is_deterministic() {
     let design = common::make_test_design();
-    let y = common::make_y_from_unit_solution(&design);
+    let y = common::make_deterministic_y(&design);
 
-    let params = SolverParams::default();
+    let params = LsmrOptions::default();
     let precond = additive_precond();
-    let solver = Solver::from_design(design, &params, Some(&precond)).expect("solver build");
+    let solver = Solver::new(design, None, &precond).expect("solver build");
 
-    let r1 = solver.solve(&y).expect("first solve");
-    let r2 = solver.solve(&y).expect("second solve");
+    let r1 = solver.solve(&y, &params).expect("first solve");
+    let r2 = solver.solve(&y, &params).expect("second solve");
 
     assert_eq!(r1.x.len(), r2.x.len());
     for (i, (a, b)) in r1.x.iter().zip(r2.x.iter()).enumerate() {

@@ -1,6 +1,6 @@
 [package]
 name = "within"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Fixed-effects normal equation solver with Schwarz preconditioning"
 license = "MIT"
@@ -10,14 +10,15 @@ keywords = ["fixed-effects", "least-squares", "preconditioner", "schwarz", "econ
 categories = ["mathematics", "science", "algorithms"]
 
 [dependencies]
-schwarz-precond = { version = "0.1.0", path = "../schwarz-precond", features = ["serde"] }
-approx-chol = { version = "0.1.0", features = ["serde"] }
+schwarz-precond = { version = "0.2.0", path = "../schwarz-precond", features = ["serde"] }
+approx-chol = { version = "0.2.0", features = ["serde"] }
 serde = { version = "1", features = ["derive", "rc"] }
 postcard = { version = "1", features = ["use-std"] }
 ndarray = "0.16"
 portable-atomic = { version = "1", features = ["float"] }
 rayon = "1.10"
 faer = "0.24.0"
+thiserror = "2"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

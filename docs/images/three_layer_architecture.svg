@@ -17,7 +17,7 @@
   <!-- Layer 1: Krylov -->
   <rect x="60" y="55" width="400" height="72" rx="8" fill="#e8f4e8" stroke="#6a6" stroke-width="2"/>
   <text x="260" y="80" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">Krylov Solver</text>
-  <text x="260" y="97" text-anchor="middle" font-size="11" fill="#555">CG or GMRES — iterates toward the solution</text>
+  <text x="260" y="97" text-anchor="middle" font-size="11" fill="#555">Modified LSMR — iterates toward the solution</text>
   <text x="260" y="115" text-anchor="middle" font-size="10" fill="#888">Each iteration asks: "given the current error, what direction improves most?"</text>
 
   <!-- Arrow 1→2 -->

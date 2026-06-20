@@ -1,18 +1,16 @@
-use ndarray::{array, Array2, ShapeBuilder};
-use within::observation::{ArrayStore, FactorMajorStore, ObservationStore, ObservationWeights};
-use within::{
-    solve, LocalSolverConfig, Preconditioner, ReductionStrategy, SolverParams, WeightedDesign,
-};
+use ndarray::{array, s, Array2, ShapeBuilder};
+use within::observation::{ArrayStore, FactorMajorStore, Store};
+use within::{solve, Design, LsmrOptions, PreconditionerConfig};
 
 #[path = "common/orchestrate_helpers.rs"]
 mod common;
 
-fn default_params() -> SolverParams {
-    SolverParams::default()
+fn default_params() -> LsmrOptions {
+    LsmrOptions::default()
 }
 
-fn additive_precond() -> Preconditioner {
-    Preconditioner::Additive(LocalSolverConfig::solver_default(), ReductionStrategy::Auto)
+fn additive_precond() -> PreconditionerConfig {
+    PreconditionerConfig::default()
 }
 
 /// Build a larger problem for more meaningful convergence tests.
@@ -48,7 +46,7 @@ fn test_array_store_f_contiguous_matches_factor_major() {
         &y,
         None,
         &default_params(),
-        Some(&additive_precond()),
+        additive_precond(),
     )
     .expect("ArrayStore solve");
 
@@ -56,12 +54,12 @@ fn test_array_store_f_contiguous_matches_factor_major() {
     let factor_cols: Vec<Vec<u32>> = (0..2)
         .map(|f| cats.column(f).iter().copied().collect())
         .collect();
-    let store = FactorMajorStore::new(factor_cols, ObservationWeights::Unit, cats.nrows())
-        .expect("valid FactorMajorStore");
-    let design = WeightedDesign::from_store(store).expect("valid design");
-    let solver = within::Solver::from_design(design, &default_params(), Some(&additive_precond()))
-        .expect("solver");
-    let result_fms = solver.solve(&y).expect("FactorMajorStore solve");
+    let store = FactorMajorStore::new(factor_cols, cats.nrows()).expect("valid FactorMajorStore");
+    let design = Design::from_store(store).expect("valid design");
+    let solver = within::Solver::new(design, None, additive_precond()).expect("solver");
+    let result_fms = solver
+        .solve(&y, &default_params())
+        .expect("FactorMajorStore solve");
 
     assert!(result_array.converged);
     assert!(result_fms.converged);
@@ -81,14 +79,8 @@ fn test_array_store_c_contiguous_solves() {
     let (cats, y) = larger_problem();
     assert!(cats.is_standard_layout()); // C-contiguous by default
 
-    let result = solve(
-        cats.view(),
-        &y,
-        None,
-        &default_params(),
-        Some(&additive_precond()),
-    )
-    .expect("C-contiguous ArrayStore solve");
+    let result = solve(cats.view(), &y, None, &default_params(), additive_precond())
+        .expect("C-contiguous ArrayStore solve");
 
     assert!(result.converged);
     common::assert_solution_finite(&result);
@@ -103,7 +95,7 @@ fn test_array_store_factor_column_f_order() {
         f.assign(&cats);
         f
     };
-    let store = ArrayStore::new(cats_f.view(), ObservationWeights::Unit).expect("valid store");
+    let store = ArrayStore::new(cats_f.view()).expect("valid store");
     assert!(store.factor_column(0).is_some());
     assert!(store.factor_column(1).is_some());
 }
@@ -113,9 +105,48 @@ fn test_array_store_factor_column_c_order() {
     // C-contiguous array should return None from factor_column()
     let cats = array![[0u32, 0], [1, 0], [0, 1], [1, 1]];
     assert!(cats.is_standard_layout()); // C-contiguous
-    let store = ArrayStore::new(cats.view(), ObservationWeights::Unit).expect("valid store");
+    let store = ArrayStore::new(cats.view()).expect("valid store");
     assert!(store.factor_column(0).is_none());
     assert!(store.factor_column(1).is_none());
+}
+
+#[test]
+fn test_array_store_factor_column_negative_col_stride_falls_back() {
+    // A column-reversed view of an F-order array keeps strides[0] == 1 (row
+    // stride) but has strides[1] < 1 (negative column stride). The unsafe
+    // contiguous fast-path would derive a huge usize col_stride and read out
+    // of bounds, so factor_column() must reject it and fall back to the safe
+    // per-element level() path (returning None).
+    let cats_f = {
+        let cats = array![[0u32, 10], [1, 11], [2, 12], [3, 13]];
+        let mut f = Array2::<u32>::zeros(cats.dim().f());
+        f.assign(&cats);
+        f
+    };
+    // Reverse along the column axis: strides[0] stays 1, strides[1] becomes negative.
+    let reversed = cats_f.slice(s![.., ..;-1]);
+    let strides = reversed.strides();
+    assert_eq!(strides[0], 1, "row stride should remain 1 (F-order)");
+    assert!(
+        strides[1] < 1,
+        "column stride should be negative after reversal"
+    );
+
+    let store = ArrayStore::new(reversed).expect("valid store");
+    // Must fall back to the safe path rather than perform an OOB unsafe read.
+    assert!(
+        store.factor_column(0).is_none(),
+        "negative column stride must force the safe fallback"
+    );
+    assert!(store.factor_column(1).is_none());
+
+    // The safe level() path must still return correct, in-bounds values. The
+    // reversed view swaps the two columns, so column 0 now holds the original
+    // factor-1 values and vice versa.
+    assert_eq!(store.level(0, 0), 10);
+    assert_eq!(store.level(0, 1), 0);
+    assert_eq!(store.level(3, 0), 13);
+    assert_eq!(store.level(3, 1), 3);
 }
 
 #[test]
@@ -128,7 +159,7 @@ fn test_array_store_weighted() {
         &y,
         Some(&weights),
         &default_params(),
-        Some(&additive_precond()),
+        additive_precond(),
     )
     .expect("weighted ArrayStore solve");
 

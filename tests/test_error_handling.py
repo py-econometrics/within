@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from within import solve
-from within._within import ApproxCholConfig, ApproxSchurConfig
+from within._within import ApproxSchurConfig
 
 
 def as_solver_categories(cats):
@@ -60,19 +60,15 @@ class TestErrorHandling:
         cats = as_solver_categories([np.array([0, 1, 0]), np.array([0, 0, 1])])
         y = np.array([1.0, 2.0, 3.0])
         with pytest.raises(TypeError):
-            solve(cats, y, config="invalid")
+            solve(cats, y, options="invalid")
 
     def test_invalid_preconditioner_type_raises(self):
         """String preconditioner should raise TypeError."""
         cats = as_solver_categories([np.array([0, 1, 0]), np.array([0, 0, 1])])
         y = np.array([1.0, 2.0, 3.0])
-        with pytest.raises(TypeError):
+        with pytest.raises(TypeError) as exc:
             solve(cats, y, preconditioner="invalid")
-
-    def test_approx_chol_config_split_zero_raises(self):
-        """ApproxCholConfig(split=0) should raise ValueError."""
-        with pytest.raises((ValueError, OverflowError)):
-            ApproxCholConfig(split=0)
+        assert "PreconditionerConfig.Diagonal" in str(exc.value)
 
     def test_approx_schur_config_split_zero_raises(self):
         """ApproxSchurConfig(split=0) should raise ValueError."""

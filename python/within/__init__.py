@@ -1,9 +1,9 @@
 """High-performance fixed-effects solver for econometric panel data.
 
 ``within`` solves the normal equations arising from multi-way fixed-effect
-models (D^T W D x = D^T W y) using preconditioned Krylov methods with
-domain-decomposition (Schwarz) preconditioners. The heavy lifting is done
-in Rust; this package provides the Python API.
+models (D^T W D x = D^T W y) using modified LSMR with a domain-decomposition
+(Schwarz) preconditioner. The heavy lifting is done in Rust; this package
+provides the Python API.
 
 Quick start::
 
@@ -31,48 +31,38 @@ For repeated solves on the same panel structure, use the persistent
     r1 = solver.solve(y1)
     r2 = solver.solve(y2)
 
-Key exports:
+Two-tier public API:
 
-- :func:`solve` / :func:`solve_batch` -- one-shot solve functions
-- :class:`Solver` -- persistent solver with reusable preconditioner
-- :class:`CG` / :class:`GMRES` -- Krylov solver configuration
-- :class:`Preconditioner` -- quick preconditioner selection enum
-- :class:`AdditiveSchwarz` / :class:`MultiplicativeSchwarz` -- fine-grained
-  preconditioner configuration
+- The top-level ``within`` namespace exposes the call-site essentials
+  (``solve``, ``Solver``, ``LsmrOptions``, ``PreconditionerConfig``,
+  ``Preconditioner``).
+- :mod:`within.config` re-exports the advanced configuration objects
+  (``AdditiveSchwarz``, ``LocalSolverConfig``, ``ApproxCholConfig``,
+  ``ApproxSchurConfig``, ``ReductionStrategy``).
 
 For Rust-level internals, build the API docs with ``cargo doc --open``.
 """
 
 from within._within import (
-    OperatorRepr,
-    Preconditioner,
-    SolveResult,
     BatchSolveResult,
-    CG,
-    GMRES,
-    FePreconditioner,
+    LsmrOptions,
+    Preconditioner,
+    PreconditionerConfig,
+    SolveResult,
     Solver,
     solve,
     solve_batch,
-    AdditiveSchwarz,
-    AdditiveSchwarzDiagnostics,
-    MultiplicativeSchwarz,
-    ReductionStrategy,
 )
+from within import config  # noqa: F401 — expose submodule on `within.config`
 
 __all__ = [
-    "OperatorRepr",
-    "Preconditioner",
-    "SolveResult",
     "BatchSolveResult",
-    "CG",
-    "GMRES",
-    "FePreconditioner",
+    "LsmrOptions",
+    "Preconditioner",
+    "PreconditionerConfig",
+    "SolveResult",
     "Solver",
     "solve",
     "solve_batch",
-    "AdditiveSchwarz",
-    "AdditiveSchwarzDiagnostics",
-    "MultiplicativeSchwarz",
-    "ReductionStrategy",
+    "config",
 ]

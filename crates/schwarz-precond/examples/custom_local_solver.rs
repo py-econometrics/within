@@ -1,17 +1,16 @@
-//! Custom local solver using faer dense Cholesky on extracted submatrices.
+//! Custom local solver using faer dense Cholesky on local submatrices.
 //!
 //! Shows how to implement the `LocalSolver` trait with a dense factorization
 //! of the local submatrix extracted from the global operator.
 
 use faer::{MatRef, Side};
-use schwarz_precond::solve::cg::cg_solve_preconditioned;
-use schwarz_precond::{
-    LocalSolveError, LocalSolver, Operator, SchwarzPreconditioner, SparseMatrix, SubdomainCore,
-    SubdomainEntry,
-};
 
+use schwarz_precond::{
+    mlsmr, LocalSolveError, LocalSolver, Operator, ReductionStrategy, SchwarzPreconditioner,
+    SolveError, SubdomainCore, SubdomainEntry,
+};
 // ---------------------------------------------------------------------------
-// Tridiagonal operator (for CG)
+// Tridiagonal operator
 // ---------------------------------------------------------------------------
 
 struct TridiagOperator {
@@ -25,7 +24,7 @@ impl Operator for TridiagOperator {
     fn ncols(&self) -> usize {
         self.n
     }
-    fn apply(&self, x: &[f64], y: &mut [f64]) {
+    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
         for i in 0..self.n {
             y[i] = 3.0 * x[i];
             if i > 0 {
@@ -35,37 +34,11 @@ impl Operator for TridiagOperator {
                 y[i] -= x[i + 1];
             }
         }
+        Ok(())
     }
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) {
-        self.apply(x, y);
+    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+        self.apply(x, y)
     }
-}
-
-// ---------------------------------------------------------------------------
-// Build the same tridiag as a SparseMatrix (CSR) for submatrix extraction
-// ---------------------------------------------------------------------------
-
-fn build_tridiag_sparse(n: usize) -> SparseMatrix {
-    let mut indptr = Vec::with_capacity(n + 1);
-    let mut indices = Vec::new();
-    let mut data = Vec::new();
-    indptr.push(0u32);
-
-    for i in 0..n {
-        if i > 0 {
-            indices.push((i - 1) as u32);
-            data.push(-1.0);
-        }
-        indices.push(i as u32);
-        data.push(3.0);
-        if i + 1 < n {
-            indices.push((i + 1) as u32);
-            data.push(-1.0);
-        }
-        indptr.push(indices.len() as u32);
-    }
-
-    SparseMatrix::new(indptr, indices, data, n)
 }
 
 // ---------------------------------------------------------------------------
@@ -79,23 +52,10 @@ struct DenseCholeskyLocalSolver {
 }
 
 impl DenseCholeskyLocalSolver {
-    /// Build from a sparse local submatrix.
-    fn from_sparse(sub: &SparseMatrix) -> Self {
-        let m = sub.n();
-
-        // Expand sparse submatrix to dense row-major
-        let mut dense = vec![0.0; m * m];
-        for row in 0..m {
-            let start = sub.indptr()[row] as usize;
-            let end = sub.indptr()[row + 1] as usize;
-            for idx in start..end {
-                let col = sub.indices()[idx] as usize;
-                dense[row * m + col] = sub.data()[idx];
-            }
-        }
-
+    /// Build from a dense, row-major `m` x `m` local submatrix.
+    fn from_dense(dense: &[f64], m: usize) -> Self {
         // Factor with faer: Cholesky L L^T
-        let mat_ref = MatRef::from_row_major_slice(&dense, m, m);
+        let mat_ref = MatRef::from_row_major_slice(dense, m, m);
         let llt = mat_ref
             .llt(Side::Lower)
             .expect("Cholesky factorization failed (matrix not SPD)");
@@ -147,26 +107,49 @@ impl LocalSolver for DenseCholeskyLocalSolver {
     fn scratch_size(&self) -> usize {
         self.n_local
     }
-    fn solve_local(&self, rhs: &mut [f64], sol: &mut [f64]) -> Result<(), LocalSolveError> {
+    fn solve_local(
+        &self,
+        rhs: &mut [f64],
+        sol: &mut [f64],
+        _allow_inner_parallelism: bool,
+    ) -> Result<(), LocalSolveError> {
         self.solve(rhs, sol);
         Ok(())
     }
 }
 
 // ---------------------------------------------------------------------------
-// Build subdomains with dense Cholesky solvers from extracted submatrices
+// Build subdomains with dense Cholesky solvers from local submatrices
 // ---------------------------------------------------------------------------
 
-fn build_entries(
-    global_sparse: &SparseMatrix,
-    n: usize,
-) -> Vec<SubdomainEntry<DenseCholeskyLocalSolver>> {
+/// Dense, row-major submatrix of the tridiagonal operator over `indices`.
+///
+/// The operator has `3` on the diagonal and `-1` between adjacent DOFs, so the
+/// local block follows directly from the global index pattern — no sparse
+/// container needed to carve it out.
+fn tridiag_block(indices: &[usize]) -> Vec<f64> {
+    let m = indices.len();
+    let mut dense = vec![0.0; m * m];
+    for (r, &global_r) in indices.iter().enumerate() {
+        for (c, &global_c) in indices.iter().enumerate() {
+            dense[r * m + c] = if global_r == global_c {
+                3.0
+            } else if global_r.abs_diff(global_c) == 1 {
+                -1.0
+            } else {
+                0.0
+            };
+        }
+    }
+    dense
+}
+
+fn build_entries(n: usize) -> Vec<SubdomainEntry<DenseCholeskyLocalSolver>> {
     let mut entries = Vec::new();
     let mut i = 0;
     while i + 1 < n {
         let indices = vec![i, i + 1];
-        let sub = global_sparse.extract_submatrix(&indices);
-        let solver = DenseCholeskyLocalSolver::from_sparse(&sub);
+        let solver = DenseCholeskyLocalSolver::from_dense(&tridiag_block(&indices), indices.len());
         let global_indices = indices.iter().map(|&x| x as u32).collect();
         entries.push(
             SubdomainEntry::try_new(SubdomainCore::uniform(global_indices), solver)
@@ -176,8 +159,7 @@ fn build_entries(
     }
     if i < n {
         let indices = vec![i];
-        let sub = global_sparse.extract_submatrix(&indices);
-        let solver = DenseCholeskyLocalSolver::from_sparse(&sub);
+        let solver = DenseCholeskyLocalSolver::from_dense(&tridiag_block(&indices), indices.len());
         entries.push(
             SubdomainEntry::try_new(SubdomainCore::uniform(vec![i as u32]), solver)
                 .expect("valid 1-DOF subdomain entry"),
@@ -190,14 +172,11 @@ fn main() {
     let n = 30;
     let rhs = vec![1.0; n];
     let a = TridiagOperator { n };
-    let a_sparse = build_tridiag_sparse(n);
 
-    let precond = SchwarzPreconditioner::new(build_entries(&a_sparse, n), n)
-        .expect("valid additive schwarz preconditioner");
-    let result =
-        cg_solve_preconditioned(&a, &precond, &rhs, 1e-10, 200).expect("preconditioned cg");
+    let precond = SchwarzPreconditioner::new(build_entries(n), ReductionStrategy::default());
+    let result = mlsmr(&a, &rhs, &precond, 1e-10, 200, None).expect("preconditioned lsmr");
     println!(
-        "Dense Cholesky Schwarz CG: converged={}, iterations={:>3}, residual={:.3e}",
+        "Dense Cholesky Schwarz LSMR: converged={}, iterations={:>3}, residual={:.3e}",
         result.converged, result.iterations, result.residual_norm,
     );
 }

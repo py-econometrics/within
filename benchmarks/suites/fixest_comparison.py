@@ -1,8 +1,8 @@
-"""Fixest-style DGP benchmark suite.
+"""Fixest-style 3-FE difficult panel DGP scaling suite.
 
 Runs the 3-FE "difficult" (sequential/block firm assignment) variant of the
-fixest panel DGP through our solver pipeline, scaling from 100K to 5M
-observations.
+fixest panel DGP through LSMR Schwarz, comparing exact vs approximate Schur
+complement on the local solver. Scales from 100K to 160M observations.
 """
 
 from __future__ import annotations
@@ -10,26 +10,24 @@ from __future__ import annotations
 from within._within import (
     ApproxCholConfig,
     ApproxSchurConfig,
-    MultiplicativeSchwarz,
-    SchurComplement,
+    LocalSolverConfig,
 )
-from .._problems import get_generator
 from .._framework import (
     BenchmarkResult,
     SolverConfig,
     SuiteOptions,
-    benchmark_cg,
-    benchmark_gmres,
+    benchmark_lsmr,
     make_additive_schwarz,
     run_solve,
     suite,
 )
+from .._problems import get_generator
 from .._table import print_pivot, print_table
 
 
 @suite(
     "fixest_comparison",
-    description="Fixest-style 3FE difficult panel DGP up to 160M obs",
+    description="Fixest-style 3FE difficult panel DGP, exact vs approx Schur",
     tags=("3fe", "fixest", "scaling", "difficult"),
 )
 def run_fixest_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
@@ -52,45 +50,41 @@ def run_fixest_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
         ],
     )
 
-    exact_schur = SchurComplement(
-        approx_chol=ApproxCholConfig(seed=0, split=8),
+    exact_schur = LocalSolverConfig(
+        approx_chol=ApproxCholConfig(seed=0, split_merge=8),
         approx_schur=None,
     )
-    approx_schur = SchurComplement(
-        approx_chol=ApproxCholConfig(seed=0, split=8),
+    approx_schur = LocalSolverConfig(
+        approx_chol=ApproxCholConfig(seed=0, split_merge=8),
         approx_schur=ApproxSchurConfig(seed=0),
+    )
+    # "2-2": both densification knobs on — split_merge=2 (AC2 factorization)
+    # and split=2 (denser Schur clique-tree sampling).
+    schur_2_2 = LocalSolverConfig(
+        approx_chol=ApproxCholConfig(seed=0, split_merge=2),
+        approx_schur=ApproxSchurConfig(seed=0, split=2),
     )
 
     solver_configs = [
         SolverConfig(
-            "CG(exact)",
-            benchmark_cg(opts),
+            "LSMR(exact)",
+            benchmark_lsmr(opts),
             preconditioner=make_additive_schwarz(local_solver=exact_schur),
         ),
         SolverConfig(
-            "CG(approx)",
-            benchmark_cg(opts),
+            "LSMR(approx)",
+            benchmark_lsmr(opts),
             preconditioner=make_additive_schwarz(local_solver=approx_schur),
         ),
+        SolverConfig(
+            "LSMR(2-2)",
+            benchmark_lsmr(opts),
+            preconditioner=make_additive_schwarz(local_solver=schur_2_2),
+        ),
     ]
-    if opts.profile != "full":
-        solver_configs.append(
-            SolverConfig(
-                "GMRES(exact)",
-                benchmark_gmres(opts),
-                preconditioner=MultiplicativeSchwarz(local_solver=exact_schur),
-            )
-        )
-        solver_configs.append(
-            SolverConfig(
-                "GMRES(approx)",
-                benchmark_gmres(opts),
-                preconditioner=MultiplicativeSchwarz(local_solver=approx_schur),
-            )
-        )
 
     gen = get_generator("fixest_dgp")
-    all_results: list[BenchmarkResult] = []
+    results: list[BenchmarkResult] = []
 
     for n_obs in n_obs_list:
         name = f"n={n_obs:,} difficult 3FE"
@@ -103,16 +97,16 @@ def run_fixest_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
             try:
                 result = run_solve(cats, n_levels, y, cfg, opts)
                 result.problem = name
-                all_results.append(result)
+                results.append(result)
             except Exception as e:
                 print(f"    WARNING: {cfg.label} failed: {e}")
 
-    print_table(all_results)
+    print_table(results)
     print_table(
-        all_results,
+        results,
         columns=["config", "setup_time", "solve_time", "iterations", "ms_per_iter"],
         title="Per-iteration cost",
     )
     print("\n")
-    print_pivot(all_results)
-    return all_results
+    print_pivot(results)
+    return results

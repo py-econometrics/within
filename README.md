@@ -4,7 +4,7 @@
 
 By the Frisch-Waugh-Lovell theorem, estimating a regression of the form *y = Xβ + Dα + ε* reduces to a sequence of least-squares projections, one for y and one for each column of X, followed by a cheap regression fit on the resulting residuals. The projection step of solving the normal equations *D'Dx = D'z* is the computational bottleneck, which is the problem `within` is designed to solve.
 
-`within`'s solvers are tailored to the structure of fixed effects problems, which can be represented as a graph (as first noted by Correia, 2016). Concretely, `within` uses iterative methods (preconditioned CG, right-preconditioned GMRES) with domain decomposition (Schwarz) preconditioners, backed by approximate Cholesky local solvers (Gao et al, 2025).
+`within`'s solvers are tailored to the structure of fixed effects problems, which can be represented as a graph (as first noted by Correia, 2016). Concretely, `within` uses modified LSMR with a domain decomposition (Schwarz) preconditioner, backed by approximate Cholesky local solvers (Gao et al, 2025).
 
 ## Installation
 
@@ -19,8 +19,8 @@ pip install within_py
 `within`'s main user-facing function is `solve`. Provide a 2-D `uint32` array of category codes (one column per fixed-effect factor) and a response vector `y`. The solver finds x in the normal equations **D'D x = D'y**, where D is the sparse categorical design matrix.
 
 ```python
-from within import solve, solve_batch, CG, GMRES, AdditiveSchwarz, MultiplicativeSchwarz
 import numpy as np
+from within import solve, solve_batch, LsmrOptions, PreconditionerConfig
 
 np.random.seed(1)
 n = 100_000
@@ -30,14 +30,17 @@ fe = np.asfortranarray(np.column_stack([
 ]))
 y = np.random.randn(n)
 
-# Default: additive Schwarz + CG (recommended for most problems)
+# Default: additive Schwarz + LSMR
 result = solve(fe, y)
 
-# Multiplicative Schwarz + GMRES (fewer iterations, less parallelism)
-result = solve(fe, y, config=GMRES(), preconditioner=MultiplicativeSchwarz())
+# Custom tolerance / iteration cap
+result = solve(fe, y, options=LsmrOptions(tol=1e-10, maxiter=2000))
 
 # Weighted solve
 result = solve(fe, y, weights=np.ones(n))
+
+# Opt into diagonal/Jacobi preconditioning
+result = solve(fe, y, preconditioner=PreconditionerConfig.Diagonal)
 ```
 
 ## R quickstart
@@ -49,6 +52,7 @@ package:
 
 ```r
 install.packages("devtools")
+Sys.setenv(NOT_CRAN = "true")
 devtools::install_deps("withinr/", dependencies = TRUE)
 devtools::load_all("withinr/")
 ```
@@ -61,18 +65,18 @@ n <- 1000
 n_firms <- 50L
 n_years <- 20L
 
-# 0-based fixed-effect ids (required by within)
-firm <- rep(0:(n_firms - 1L), each = n_years)
-year <- rep(0:(n_years - 1L), times = n_firms)
-categories <- matrix(as.integer(c(firm, year)), nrow = n, ncol = 2)
+# 1-based fixed-effect ids in R
+firm <- rep(seq_len(n_firms), each = n_years)
+year <- rep(seq_len(n_years), times = n_firms)
+categories <- cbind(firm, year)
 
 beta <- 1.5
-firm_fe <- rnorm(n_firms, sd = 3)[firm + 1L]
-year_fe <- rnorm(n_years, sd = 1)[year + 1L]
+firm_fe <- rnorm(n_firms, sd = 3)[firm]
+year_fe <- rnorm(n_years, sd = 1)[year]
 x <- rnorm(n) + 0.3 * firm_fe
 y <- beta * x + firm_fe + year_fe + rnorm(n, sd = 0.5)
 
-res <- within_solve_batch(categories, cbind(y, x))
+res <- withinr::solve_batch(categories, cbind(y, x))
 y_tilde <- res$demeaned[, 1]
 x_tilde <- res$demeaned[, 2]
 beta_hat <- sum(x_tilde * y_tilde) / sum(x_tilde^2)
@@ -81,31 +85,58 @@ print(beta_hat)
 print(res$converged)
 ```
 
-### Solver methods
+| Function | Description |
+|---|---|
+| `solve(categories, y, options?, weights?, preconditioner?)` | Solve a single right-hand side. Returns a list shaped like `SolveResult`. |
+| `solve_batch(categories, Y, options?, weights?, preconditioner?)` | Solve multiple RHS vectors in parallel. `Y` has shape `(n_obs, k)`. |
+
+For repeated solves with the same design matrix, `Solver` builds the preconditioner once and reuses it. In R, the solver is an environment with methods.
+
+```r
+solver <- withinr::Solver(categories)
+r <- solver$solve(y)
+r <- solver$solve_batch(cbind(y, x))
+
+precond <- solver$preconditioner()
+payload <- precond$serialize()
+solver2 <- withinr::Solver(categories, preconditioner = withinr::Preconditioner(payload))
+```
+
+| Property / Method | Description |
+|---|---|
+| `Solver(categories, weights?, preconditioner?)` | Build solver. Factorizes the preconditioner at construction. |
+| `$solve(y, options?)` | Solve a single RHS with the given LSMR tuning. |
+| `$solve_batch(Y, options?)` | Solve multiple RHS columns in parallel. |
+| `$preconditioner()` | Return the built `Preconditioner`, or `NULL`. Reuse via `Solver(categories, preconditioner=p)`. |
+
+
+### Solver configuration
 
 | Class | Description |
 |---|---|
-| `CG(tol=1e-8, maxiter=1000, operator=Implicit)` | Conjugate gradient on the normal equations. Default solver. |
-| `GMRES(tol=1e-8, maxiter=1000, restart=30, operator=Implicit)` | Right-preconditioned GMRES. |
+| `LsmrOptions(tol=1e-8, maxiter=1000, local_size=None)` / `LsmrOptions(tol = 1e-8, maxiter = 1000L, local_size = NULL)` | Modified LSMR. `local_size` enables windowed reorthogonalization. |
 
-### Preconditioners
+### Preconditioner (5-form Union)
+
+The `preconditioner` argument accepts any of:
+
+| Form | Meaning |
+|---|---|
+| `None` / `NULL` (default) | Library default — Additive Schwarz with sensible defaults. |
+| `PreconditionerConfig.Off` / `PreconditionerConfig$Off` | Explicit identity — solve unpreconditioned. |
+| `PreconditionerConfig.Additive` / `PreconditionerConfig$Additive` | Additive Schwarz shortcut, equivalent to the default. |
+| `PreconditionerConfig.Diagonal` / `PreconditionerConfig$Diagonal` | Diagonal/Jacobi preconditioner using `diag(D^T W D)^{-1}`. |
+| `AdditiveSchwarz(local_solver?, reduction?)` | Tuned Schwarz config — import from `within.config`. |
+| `Preconditioner` instance | Reuse a previously-built preconditioner across solvers. |
+
+### Local solver configuration (advanced — `within.config`)
 
 | Class | Description |
 |---|---|
-| `AdditiveSchwarz(local_solver?)` | Additive one-level Schwarz. Works with CG and GMRES. |
-| `MultiplicativeSchwarz(local_solver?)` | Multiplicative one-level Schwarz. GMRES only. |
-| `Preconditioner.Off` | Disable preconditioning. |
-
-Pass `None` (the default) to use additive Schwarz with the default local solver.
-
-### Local solver configuration (advanced)
-
-| Class | Description |
-|---|---|
-| `SchurComplement(approx_chol?, approx_schur?, dense_threshold=24)` | Schur complement reduction with approximate Cholesky on the reduced system. Default local solver. |
-| `FullSddm(approx_chol?)` | Full bipartite SDDM factorized via approximate Cholesky. |
-| `ApproxCholConfig(seed=0, split=1)` | Approximate Cholesky parameters. |
+| `LocalSolverConfig(approx_chol?, approx_schur?, dense_threshold=24)` | Schur reduction + approximate Cholesky. Omit `approx_schur` for the library-default approximate variant; pass `approx_schur=None` to request an exact Schur (slower, used for validation). |
+| `ApproxCholConfig(seed=0, split_merge=None)` | Approximate Cholesky parameters. |
 | `ApproxSchurConfig(seed=0, split=1)` | Approximate Schur complement sampling parameters. |
+| `ReductionStrategy` enum | `Auto` (default), `AtomicScatter`, `ParallelReduction`. |
 
 ### Result types
 
@@ -117,22 +148,27 @@ Pass `None` (the default) to use additive Schwarz with the default local solver.
 
 ```rust
 use ndarray::Array2;
-use within::{solve, SolverParams, KrylovMethod, Preconditioner, LocalSolverConfig};
+use within::{solve, LsmrOptions, PreconditionerConfig};
+use within::config::{LocalSolverConfig, ReductionStrategy};
 
 let categories = /* Array2<u32> of shape (n_obs, n_factors) */;
 let y: &[f64] = /* response vector */;
 
-// Default: CG + additive Schwarz
-let r = solve(categories.view(), &y, None, &SolverParams::default(), None)?;
+// Default: LSMR + additive Schwarz (None → library default)
+let r = solve(categories.view(), &y, None, &LsmrOptions::default(), None)?;
 assert!(r.converged);
 
-// GMRES + multiplicative Schwarz
-let params = SolverParams {
-    krylov: KrylovMethod::Gmres { restart: 30 },
-    ..SolverParams::default()
+// Tighter tolerance with an explicit additive preconditioner
+let lsmr = LsmrOptions { tol: 1e-10, ..LsmrOptions::default() };
+let precond = PreconditionerConfig::Additive {
+    local_solver: LocalSolverConfig::default(),
+    reduction: ReductionStrategy::default(),
 };
-let precond = Preconditioner::Multiplicative(LocalSolverConfig::default());
-let r = solve(categories.view(), &y, None, &params, Some(&precond))?;
+let r = solve(categories.view(), &y, None, &lsmr, &precond)?;
+
+// Opt into diagonal/Jacobi preconditioning
+let diagonal = PreconditionerConfig::Diagonal;
+let r = solve(categories.view(), &y, None, &lsmr, &diagonal)?;
 ```
 
 Persistent solver — build once, solve many:
@@ -140,29 +176,30 @@ Persistent solver — build once, solve many:
 ```rust
 use within::Solver;
 
-let solver = Solver::new(categories.view(), None, &SolverParams::default(), None)?;
-let r1 = solver.solve(&y)?;
-let r2 = solver.solve(&another_y)?;  // reuses preconditioner
+let solver = Solver::new(categories.view(), None, None)?;
+let r1 = solver.solve(&y, &LsmrOptions::default())?;
+let r2 = solver.solve(&another_y, &LsmrOptions::default())?;  // reuses preconditioner
 ```
+
+Two-channel preconditioner signaling: `Option<&PreconditionerConfig>` where
+`None` is the library default and `Some(PreconditionerConfig::Off)` is the
+explicit identity preconditioner.
 
 | Type | Variants / Fields |
 |---|---|
-| `SolverParams` | `krylov: KrylovMethod`, `operator: OperatorRepr`, `tol: f64`, `maxiter: usize` |
-| `KrylovMethod` | `Cg` (default), `Gmres { restart }` |
-| `OperatorRepr` | `Implicit` (default, matrix-free D'WD), `Explicit` (CSR Gramian) |
-| `Preconditioner` | `Additive(LocalSolverConfig)`, `Multiplicative(LocalSolverConfig)` |
-| `LocalSolverConfig` | `SchurComplement { approx_chol, approx_schur, dense_threshold }`, `FullSddm { approx_chol }` |
+| `LsmrOptions` | `{ tol: f64, maxiter: usize, local_size: Option<usize> }` |
+| `PreconditionerConfig` | `Off` \| `Additive { local_solver: LocalSolverConfig, reduction: ReductionStrategy }` \| `Diagonal` (`#[non_exhaustive]`) |
+| `LocalSolverConfig` | `{ approx_chol, approx_schur, dense_threshold }` |
+| `Preconditioner` | Opaque built handle — reuse via `Solver::new(.., precond)` (owned or `&`) |
 
-### Lower-level types
+### Lower-level access
 
-The crate exposes its internals for advanced use:
-
-| Module | Key types |
-|---|---|
-| `observation` | `FactorMajorStore`, `ArrayStore`, `ObservationStore` trait |
-| `domain` | `WeightedDesign`, `FixedEffectsDesign`, `Subdomain` |
-| `operator` | `Gramian` (CSR), `GramianOperator` (implicit), `DesignOperator`, `build_schwarz`, `FeSchwarz` |
-| `solver` | `Solver<S: ObservationStore>` — generic persistent solver |
+| Module | Visibility | Key types |
+|---|---|---|
+| `within::config` | public | `LsmrOptions`, `PreconditionerConfig`, `LocalSolverConfig`, `ApproxCholConfig`, `ApproxSchurConfig`, `ReductionStrategy` |
+| `within::observation` | public | `Store` trait, `FactorMajorStore`, `ArrayStore`, `FactorMeta` |
+| `within::error` | public | `WithinError`, `BuildError`, `SolveError` |
+| `domain` / `operator` / `solver` / `orchestrate` | `pub(crate)` | implementation layers — public items are re-exported at the crate root |
 
 ### Feature flags
 
@@ -177,7 +214,9 @@ crates/
   schwarz-precond/   Generic domain decomposition library (traits, solvers, Schwarz preconditioners)
   within/            Core fixed-effects solver (observation stores, domains, operators, orchestration)
   within-py/         PyO3 bridge (cdylib → within._within)
+  within-r/          Workspace mirror for the extendr bridge
 python/within/       Python package re-exporting the Rust extension
+withinr/             R package using the published within 0.2.0 crate
 benchmarks/          Python benchmark framework
 ```
 

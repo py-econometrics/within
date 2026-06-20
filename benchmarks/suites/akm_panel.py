@@ -1,8 +1,7 @@
 """AKM panel-data benchmark suites.
 
-Stress-tests Schwarz-preconditioned normal-equation solvers on realistic
-matched employer-employee panel structures with the four pathologies that
-make real AKM data hard:
+Stress-tests the LSMR Schwarz solver on realistic matched employer-employee
+panel structures with the four pathologies that make real AKM data hard:
 
 1. Power-law (Zipf) firm-size distributions
 2. Low worker mobility (sparse bipartite graph)
@@ -12,28 +11,15 @@ make real AKM data hard:
 
 from __future__ import annotations
 
-from within._within import (
-    ApproxCholConfig,
-    ApproxSchurConfig,
-    SchurComplement,
-)
 from .._framework import (
     BenchmarkResult,
     ProblemSpec,
-    SolverConfig,
     SuiteOptions,
-    benchmark_cg,
-    make_additive_schwarz,
     run_problem_set,
     standard_solver_configs,
     suite,
 )
 from .._table import print_pivot, print_table
-
-
-# -----------------------------------------------------------------------
-# Suite: akm_panel — main comparison across all 4 generators
-# -----------------------------------------------------------------------
 
 
 @suite(
@@ -84,13 +70,11 @@ def run_akm_panel(opts: SuiteOptions) -> list[BenchmarkResult]:
             ),
         ],
         full=[
-            # --- 10K workers (quick-tier) ---
             ProblemSpec("power_law 10K", "akm_power_law", {}, opts.seed),
             ProblemSpec("low_mobility 10K", "akm_low_mobility", {}, opts.seed),
             ProblemSpec("disconnected 10K", "akm_disconnected", {}, opts.seed),
             ProblemSpec("realistic 10K", "akm_realistic", {}, opts.seed),
             ProblemSpec("realistic 10K 2FE", "akm_realistic", {"n_fe": 2}, opts.seed),
-            # --- 100K workers ---
             ProblemSpec(
                 "power_law 100K",
                 "akm_power_law",
@@ -121,7 +105,6 @@ def run_akm_panel(opts: SuiteOptions) -> list[BenchmarkResult]:
                 {"n_workers": 100_000, "n_firms": 5_000, "n_years": 15, "n_fe": 2},
                 opts.seed,
             ),
-            # --- 1M workers ---
             ProblemSpec(
                 "realistic 1M",
                 "akm_realistic",
@@ -137,17 +120,11 @@ def run_akm_panel(opts: SuiteOptions) -> list[BenchmarkResult]:
         ],
     )
 
-    configs = standard_solver_configs(opts)
-    all_results = run_problem_set(problems, configs, opts)
-    print_table(all_results)
+    results = run_problem_set(problems, standard_solver_configs(opts), opts)
+    print_table(results)
     print("\n")
-    print_pivot(all_results)
-    return all_results
-
-
-# -----------------------------------------------------------------------
-# Suite: akm_scaling — scaling behavior of akm_realistic
-# -----------------------------------------------------------------------
+    print_pivot(results)
+    return results
 
 
 @suite(
@@ -225,20 +202,8 @@ def run_akm_scaling(opts: SuiteOptions) -> list[BenchmarkResult]:
         ],
     )
 
-    schur = SchurComplement(
-        approx_chol=ApproxCholConfig(seed=opts.seed),
-        approx_schur=ApproxSchurConfig(seed=opts.seed),
-    )
-    scaling_configs = [
-        SolverConfig(
-            "CG(Schwarz)",
-            benchmark_cg(opts),
-            preconditioner=make_additive_schwarz(local_solver=schur),
-        ),
-    ]
-
-    all_results = run_problem_set(problems, scaling_configs, opts)
-    print_table(all_results)
+    results = run_problem_set(problems, standard_solver_configs(opts), opts)
+    print_table(results)
     print("\n")
-    print_pivot(all_results)
-    return all_results
+    print_pivot(results)
+    return results

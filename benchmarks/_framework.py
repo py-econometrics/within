@@ -10,7 +10,7 @@ Public API
 - ``suite`` — decorator to register a suite
 - ``list_suites`` / ``get_suite`` — suite lookup
 - ``run_solve`` / ``run_problem_set`` — solve helpers
-- ``standard_solver_configs`` — default CG + GMRES configs
+- ``standard_solver_configs`` — default LSMR config
 """
 
 from __future__ import annotations
@@ -21,14 +21,13 @@ from typing import Any, Callable, Literal, TypeVar
 import numpy as np
 from numpy.typing import NDArray
 
-from within import CG, GMRES, solve
+from within import LsmrOptions, solve
 from within._within import (
     AdditiveSchwarz,
     ApproxCholConfig,
     ApproxSchurConfig,
-    MultiplicativeSchwarz,
     ReductionStrategy,
-    SchurComplement,
+    LocalSolverConfig,
 )
 
 ScaleProfile = Literal["smoke", "iterate", "full"]
@@ -55,7 +54,7 @@ class SolverConfig:
     """Configuration for a solve via the Rust-backed API."""
 
     label: str
-    config: CG | GMRES
+    config: LsmrOptions
     preconditioner: Any = None
 
 
@@ -175,19 +174,14 @@ def benchmark_solver_tol(tol: float) -> float:
     return max(tol, BENCHMARK_SOLVER_TOL_MIN)
 
 
-def benchmark_cg(opts: Any, *, maxiter: int | None = None) -> CG:
-    """Construct a CG config with benchmark-standard tolerance handling."""
-    return CG(
+def benchmark_lsmr(
+    opts: Any, *, maxiter: int | None = None, local_size: int | None = None
+) -> LsmrOptions:
+    """Construct an LSMR config with benchmark-standard tolerance handling."""
+    return LsmrOptions(
         tol=benchmark_solver_tol(opts.tol),
         maxiter=opts.maxiter if maxiter is None else maxiter,
-    )
-
-
-def benchmark_gmres(opts: Any, *, maxiter: int | None = None) -> GMRES:
-    """Construct a GMRES config with benchmark-standard tolerance handling."""
-    return GMRES(
-        tol=benchmark_solver_tol(opts.tol),
-        maxiter=opts.maxiter if maxiter is None else maxiter,
+        local_size=local_size,
     )
 
 
@@ -196,26 +190,35 @@ def make_additive_schwarz(local_solver: Any) -> AdditiveSchwarz:
     return AdditiveSchwarz(local_solver=local_solver, reduction=ReductionStrategy.Auto)
 
 
-def standard_solver_configs(opts: Any) -> list[SolverConfig]:
-    """Standard CG + GMRES solver configs used by most benchmark suites.
+def standard_solver_configs(
+    opts: Any, *, maxiter: int | None = None
+) -> list[SolverConfig]:
+    """Standard LSMR config used by most benchmark suites.
 
     *opts* must have ``seed``, ``tol``, and ``maxiter`` attributes
-    (typically a ``SuiteOptions``).
+    (typically a ``SuiteOptions``).  Pass *maxiter* to override the
+    iteration cap.
     """
-    schur = SchurComplement(
+    schur = LocalSolverConfig(
         approx_chol=ApproxCholConfig(seed=opts.seed),
         approx_schur=ApproxSchurConfig(seed=opts.seed),
     )
+    # "2-2": both densification knobs on — split_merge=2 (AC2 reduced-system
+    # factorization) and split=2 (denser Schur clique-tree sampling).
+    schur_2_2 = LocalSolverConfig(
+        approx_chol=ApproxCholConfig(seed=opts.seed, split_merge=2),
+        approx_schur=ApproxSchurConfig(seed=opts.seed, split=2),
+    )
     return [
         SolverConfig(
-            "CG(Schwarz)",
-            benchmark_cg(opts),
+            "LSMR(Schwarz)",
+            benchmark_lsmr(opts, maxiter=maxiter),
             preconditioner=make_additive_schwarz(local_solver=schur),
         ),
         SolverConfig(
-            "GMRES(Mult-Schwarz)",
-            benchmark_gmres(opts),
-            preconditioner=MultiplicativeSchwarz(local_solver=schur),
+            "LSMR(Schwarz,2-2)",
+            benchmark_lsmr(opts, maxiter=maxiter),
+            preconditioner=make_additive_schwarz(local_solver=schur_2_2),
         ),
     ]
 

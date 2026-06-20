@@ -6,8 +6,8 @@ import numpy as np
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from within import CG, GMRES, OperatorRepr, Preconditioner, Solver, solve
-from within import AdditiveSchwarz, MultiplicativeSchwarz, ReductionStrategy
+from within import Solver, solve
+from within.config import AdditiveSchwarz, ReductionStrategy
 
 
 @st.composite
@@ -77,7 +77,7 @@ class TestProperties:
         """Pickle roundtrip of preconditioner preserves apply()."""
         categories, y = data
         solver = Solver(categories)
-        precond = solver.preconditioner()
+        precond = solver.preconditioner
         if precond is None:
             return
 
@@ -89,21 +89,6 @@ class TestProperties:
         result_after = precond2.apply(x)
 
         np.testing.assert_array_equal(result_before, result_after)
-
-    @given(data=random_fe_problem())
-    @settings(
-        max_examples=10, deadline=30000, suppress_health_check=[HealthCheck.too_slow]
-    )
-    def test_explicit_vs_implicit_equivalent(self, data):
-        """Both OperatorRepr modes should give the same solution."""
-        categories, y = data
-        r_implicit = solve(categories, y, CG(operator=OperatorRepr.Implicit))
-        r_explicit = solve(categories, y, CG(operator=OperatorRepr.Explicit))
-
-        if not (r_implicit.converged and r_explicit.converged):
-            return
-
-        np.testing.assert_allclose(r_implicit.x, r_explicit.x, atol=1e-6)
 
     @given(data=random_fe_problem())
     @settings(
@@ -215,7 +200,7 @@ class TestProperties:
 
 
 class TestAdvancedPreconditioners:
-    """Tests for AdditiveSchwarz and MultiplicativeSchwarz preconditioner configs."""
+    """Tests for AdditiveSchwarz preconditioner configs."""
 
     def test_additive_schwarz_object_converges(self):
         """AdditiveSchwarz() as preconditioner object should converge."""
@@ -227,18 +212,6 @@ class TestAdvancedPreconditioners:
         )
         y = rng.standard_normal(500)
         result = solve(categories, y, preconditioner=AdditiveSchwarz())
-        assert result.converged
-
-    def test_multiplicative_schwarz_object_converges_with_gmres(self):
-        """MultiplicativeSchwarz() with GMRES should converge."""
-        rng = np.random.default_rng(42)
-        categories = np.asfortranarray(
-            np.column_stack(
-                [rng.integers(0, 20, size=500), rng.integers(0, 20, size=500)]
-            ).astype(np.uint32)
-        )
-        y = rng.standard_normal(500)
-        result = solve(categories, y, GMRES(), preconditioner=MultiplicativeSchwarz())
         assert result.converged
 
     def test_reduction_strategy_atomic_scatter_converges(self):
@@ -298,22 +271,6 @@ class TestAdvancedPreconditioners:
         )
         if r_atomic.converged and r_parallel.converged:
             np.testing.assert_allclose(r_atomic.x, r_parallel.x, atol=1e-4)
-
-    def test_additive_schwarz_diagnostics_available(self):
-        """FePreconditioner built with additive Schwarz should expose diagnostics."""
-        rng = np.random.default_rng(5)
-        categories = np.asfortranarray(
-            np.column_stack(
-                [rng.integers(0, 10, size=300), rng.integers(0, 10, size=300)]
-            ).astype(np.uint32)
-        )
-        solver = Solver(categories, preconditioner=Preconditioner.Additive)
-        precond = solver.preconditioner()
-        assert precond is not None
-        diag = precond.additive_schwarz_diagnostics()
-        assert diag is not None
-        assert diag.total_inner_parallel_work >= 0
-        assert diag.total_scatter_dofs >= 0
 
 
 class TestBatchProperties:

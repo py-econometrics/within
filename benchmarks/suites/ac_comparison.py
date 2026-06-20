@@ -1,8 +1,15 @@
 """AC vs AC2 local-solver comparison.
 
 Two suites:
-- ``ac_comparison`` — CG + GMRES with AC vs AC2 on mixed topologies
-- ``graph_backend_comparison`` — CG-only AC vs AC2 on large-scale 2-FE and 3-FE topologies
+- ``ac_comparison`` — AC vs AC2 on mixed 2-FE / 3-FE topologies
+- ``graph_backend_comparison`` — AC vs AC2 on large-scale chain / star /
+  expander / barbell / grid / sparse topologies (scaling sweep)
+
+The ``split_merge`` parameter on ``ApproxCholConfig`` controls how many
+copies each star edge is split into before clique-tree sampling.
+``split_merge=None`` (AC) is the standard sparser approximation;
+``split_merge=2`` (AC2) is denser and gives a better Schur approximation
+at the cost of more fill-in.
 """
 
 from __future__ import annotations
@@ -10,16 +17,14 @@ from __future__ import annotations
 from within._within import (
     ApproxCholConfig,
     ApproxSchurConfig,
-    MultiplicativeSchwarz,
-    SchurComplement,
+    LocalSolverConfig,
 )
 from .._framework import (
     BenchmarkResult,
     ProblemSpec,
     SolverConfig,
     SuiteOptions,
-    benchmark_cg,
-    benchmark_gmres,
+    benchmark_lsmr,
     make_additive_schwarz,
     run_problem_set,
     suite,
@@ -27,16 +32,16 @@ from .._framework import (
 from .._table import print_pivot, print_table
 
 
-def _schur(seed: int, split: int) -> SchurComplement:
-    return SchurComplement(
-        approx_chol=ApproxCholConfig(seed=seed, split=split),
+def _schur(seed: int, split_merge: int | None) -> LocalSolverConfig:
+    return LocalSolverConfig(
+        approx_chol=ApproxCholConfig(seed=seed, split_merge=split_merge),
         approx_schur=ApproxSchurConfig(seed=seed),
     )
 
 
 @suite(
     "ac_comparison",
-    description="AC vs AC2 local solver across preconditioner types",
+    description="AC vs AC2 local solver on mixed 2-FE / 3-FE topologies",
     tags=("local_solver", "precond"),
 )
 def run_ac_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
@@ -120,52 +125,31 @@ def run_ac_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
 
     configs = [
         SolverConfig(
-            "CG(1L, AC)",
-            benchmark_cg(opts),
-            preconditioner=make_additive_schwarz(local_solver=_schur(opts.seed, 1)),
+            "LSMR(AC)",
+            benchmark_lsmr(opts),
+            preconditioner=make_additive_schwarz(local_solver=_schur(opts.seed, None)),
         ),
         SolverConfig(
-            "CG(1L, AC2)",
-            benchmark_cg(opts),
+            "LSMR(AC2)",
+            benchmark_lsmr(opts),
             preconditioner=make_additive_schwarz(local_solver=_schur(opts.seed, 2)),
-        ),
-        SolverConfig(
-            "GMRES(M1L, AC)",
-            benchmark_gmres(opts),
-            preconditioner=MultiplicativeSchwarz(local_solver=_schur(opts.seed, 1)),
-        ),
-        SolverConfig(
-            "GMRES(M1L, AC2)",
-            benchmark_gmres(opts),
-            preconditioner=MultiplicativeSchwarz(local_solver=_schur(opts.seed, 2)),
         ),
     ]
 
-    all_results = run_problem_set(problems, configs, opts)
-    print_table(
-        all_results,
-        columns=[
-            "problem",
-            "config",
-            "setup_time",
-            "solve_time",
-            "iterations",
-            "final_residual",
-            "converged",
-        ],
-    )
+    results = run_problem_set(problems, configs, opts)
+    print_table(results)
     print("\n--- Iterations pivot ---")
-    print_pivot(all_results)
+    print_pivot(results)
     print("\n--- Setup time pivot ---")
-    print_pivot(all_results, value="setup_time")
+    print_pivot(results, value="setup_time")
     print("\n--- Solve time pivot ---")
-    print_pivot(all_results, value="solve_time")
-    return all_results
+    print_pivot(results, value="solve_time")
+    return results
 
 
 @suite(
     "graph_backend_comparison",
-    description="ApproxChol variant comparison across large-scale topologies",
+    description="AC vs AC2 across large-scale 2-FE / 3-FE graph topologies",
     tags=("2fe", "3fe", "ac"),
 )
 def run_graph_backend_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
@@ -263,20 +247,20 @@ def run_graph_backend_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
     configs = [
         SolverConfig(
             "ac",
-            benchmark_cg(opts, maxiter=maxiter),
-            preconditioner=make_additive_schwarz(local_solver=_schur(opts.seed, 1)),
+            benchmark_lsmr(opts, maxiter=maxiter),
+            preconditioner=make_additive_schwarz(local_solver=_schur(opts.seed, None)),
         ),
         SolverConfig(
             "ac2",
-            benchmark_cg(opts, maxiter=maxiter),
+            benchmark_lsmr(opts, maxiter=maxiter),
             preconditioner=make_additive_schwarz(local_solver=_schur(opts.seed, 2)),
         ),
     ]
 
-    all_results = run_problem_set(problems, configs, opts)
-    print_table(all_results)
+    results = run_problem_set(problems, configs, opts)
+    print_table(results)
     print("\nSetup time pivot:")
-    print_pivot(all_results, value="setup_time")
+    print_pivot(results, value="setup_time")
     print("\nIteration count pivot:")
-    print_pivot(all_results, value="iterations")
-    return all_results
+    print_pivot(results, value="iterations")
+    return results

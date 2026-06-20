@@ -1,31 +1,18 @@
 //! Error types for the `within` crate.
-//!
-//! Errors fall into three categories:
-//!
-//! | Category | Variants | When it happens |
-//! |---|---|---|
-//! | **Validation** | [`WithinError::EmptyObservations`], [`ObservationCountMismatch`](WithinError::ObservationCountMismatch), [`WeightCountMismatch`](WithinError::WeightCountMismatch) | Bad input detected before any computation begins. |
-//! | **Build** | [`WithinError::Overflow`], [`SingularDiagonal`](WithinError::SingularDiagonal), [`LocalSolverBuild`](WithinError::LocalSolverBuild), [`PreconditionerBuild`](WithinError::PreconditionerBuild) | Construction of operators or preconditioners fails due to degenerate data (e.g., a factor with zero observations at some level, or numeric overflow during Gramian assembly). |
-//! | **Runtime** | [`WithinError::IterativeSolve`] | The iterative solver diverges or exceeds the iteration limit. Wraps [`schwarz_precond::SolveError`]. |
-//!
-//! All public APIs in this crate return [`WithinResult<T>`], which is
-//! `Result<T, WithinError>`. The build and runtime variants implement
-//! [`Error::source`] to chain the underlying `schwarz_precond` error.
 
-use std::error::Error;
-use std::fmt::{Display, Formatter};
+use thiserror::Error;
 
-use schwarz_precond::{PreconditionerBuildError, SolveError};
-
-/// Result alias used by fallible public APIs in this crate.
-pub type WithinResult<T> = Result<T, WithinError>;
+pub use schwarz_precond::SolveError;
 
 /// Errors produced while validating inputs or building solver components.
-#[derive(Debug)]
-pub enum WithinError {
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum BuildError {
     /// No observations provided.
+    #[error("no observations provided")]
     EmptyObservations,
     /// One factor column does not match the expected observation count.
+    #[error("factor {factor} has {got} observations, expected {expected}")]
     ObservationCountMismatch {
         /// Index of the factor with mismatched length.
         factor: usize,
@@ -35,15 +22,25 @@ pub enum WithinError {
         got: usize,
     },
     /// Weight vector does not match the number of observations.
+    #[error("weights has length {got}, expected {expected}")]
     WeightCountMismatch {
         /// Expected number of weights.
         expected: usize,
         /// Actual weight vector length.
         got: usize,
     },
-    /// Numeric overflow during assembly.
-    Overflow(String),
+    /// A weight is not a usable variance. The operator applies `W^{1/2}`, so a
+    /// negative or non-finite (NaN/∞) weight would take `sqrt` of a bad value
+    /// and silently corrupt the solution; weights must be finite and `>= 0`.
+    #[error("weight at index {index} must be finite and non-negative, got {value}")]
+    InvalidWeight {
+        /// Index of the offending weight.
+        index: usize,
+        /// The offending value.
+        value: f64,
+    },
     /// A zero diagonal was encountered during block elimination.
+    #[error("zero diagonal in {block} block at index {index}")]
     SingularDiagonal {
         /// Which block contained the zero diagonal ("keep" or "elim").
         block: &'static str,
@@ -51,57 +48,34 @@ pub enum WithinError {
         index: usize,
     },
     /// Local solver construction failed.
+    #[error("local solver build failed: {0}")]
     LocalSolverBuild(String),
-    /// Preconditioner structural validation failed.
-    PreconditionerBuild(PreconditionerBuildError),
-    /// Iterative solver runtime error.
-    IterativeSolve(SolveError),
+    /// Schwarz preconditioner structural validation failed.
+    #[error("preconditioner build failed: {0}")]
+    Preconditioner(#[source] schwarz_precond::BuildError),
+    /// A pre-built preconditioner's shape does not match the design's DOF count.
+    #[error(
+        "prebuilt preconditioner shape ({actual_rows}x{actual_cols}) does not match \
+         design DOF count {expected}"
+    )]
+    PreconditionerDimensionMismatch {
+        /// Expected number of rows and columns (design `n_dofs`).
+        expected: usize,
+        /// Actual row count of the supplied preconditioner.
+        actual_rows: usize,
+        /// Actual column count of the supplied preconditioner.
+        actual_cols: usize,
+    },
 }
 
-impl Display for WithinError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::EmptyObservations => write!(f, "no observations provided"),
-            Self::ObservationCountMismatch {
-                factor,
-                expected,
-                got,
-            } => write!(
-                f,
-                "factor {factor} has {got} observations, expected {expected}",
-            ),
-            Self::WeightCountMismatch { expected, got } => {
-                write!(f, "weights has length {got}, expected {expected}")
-            }
-            Self::Overflow(msg) => write!(f, "numeric overflow: {msg}"),
-            Self::SingularDiagonal { block, index } => {
-                write!(f, "zero diagonal in {block} block at index {index}")
-            }
-            Self::LocalSolverBuild(msg) => write!(f, "local solver build failed: {msg}"),
-            Self::PreconditionerBuild(err) => write!(f, "{err}"),
-            Self::IterativeSolve(err) => write!(f, "{err}"),
-        }
-    }
-}
-
-impl Error for WithinError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::PreconditionerBuild(err) => Some(err),
-            Self::IterativeSolve(err) => Some(err),
-            _ => None,
-        }
-    }
-}
-
-impl From<PreconditionerBuildError> for WithinError {
-    fn from(value: PreconditionerBuildError) -> Self {
-        Self::PreconditionerBuild(value)
-    }
-}
-
-impl From<SolveError> for WithinError {
-    fn from(value: SolveError) -> Self {
-        Self::IterativeSolve(value)
-    }
+/// Top-level error type returned by [`crate::solve`] and [`crate::solve_batch`].
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum WithinError {
+    /// Build-time failure.
+    #[error(transparent)]
+    Build(#[from] BuildError),
+    /// Solve-time failure.
+    #[error(transparent)]
+    Solve(#[from] SolveError),
 }

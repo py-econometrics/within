@@ -4,7 +4,7 @@ This is Part 1 of the algorithm documentation for the `within` solver. It introd
 
 **Series overview**:
 - **Part 1: Fixed Effects and Block Iterative Methods** (this document)
-- [Part 2: Preconditioned Krylov Solvers and Schwarz Decomposition](2_solver_architecture.md)
+- [Part 2: Preconditioned LSMR and Schwarz Decomposition](2_solver_architecture.md)
 - [Part 3: Local Solvers and Approximate Cholesky](3_local_solvers.md)
 
 ---
@@ -270,8 +270,8 @@ The Worker–Firm subdomain (red) covers the top two rows. The Firm–Year subdo
 The factor-pair decomposition raises three algorithmic questions:
 
 1. **How can we solve the local systems efficiently?** Here the answer is to use an approximate Cholesky factorization with Schur complement reduction ([Part 3](3_local_solvers.md))
-2. **How can we combine the local corrections?** Via additive or multiplicative Schwarz with partition-of-unity weights ([Part 2](2_solver_architecture.md))
-3. **How can we drive the global iteration?** → Preconditioned CG or GMRES ([Part 2](2_solver_architecture.md))
+2. **How can we combine the local corrections?** Via additive Schwarz with partition-of-unity weights ([Part 2](2_solver_architecture.md))
+3. **How can we drive the global iteration?** → Preconditioned modified LSMR ([Part 2](2_solver_architecture.md))
 
 ---
 

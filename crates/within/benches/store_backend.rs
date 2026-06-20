@@ -7,11 +7,9 @@ use ndarray::{Array2, ShapeBuilder};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
-use within::config::{
-    KrylovMethod, LocalSolverConfig, OperatorRepr, Preconditioner, ReductionStrategy, SolverParams,
-};
-use within::domain::WeightedDesign;
-use within::observation::{ArrayStore, FactorMajorStore, ObservationWeights};
+use within::config::{LsmrOptions, PreconditionerConfig};
+use within::observation::{ArrayStore, FactorMajorStore};
+use within::Design;
 use within::Solver;
 
 const TOL: f64 = 1e-6;
@@ -23,8 +21,8 @@ struct Problem {
     /// F-contiguous (n_obs, n_factors) category array (same data).
     categories_f: Array2<u32>,
     y: Vec<f64>,
-    params: SolverParams,
-    preconditioner: Option<Preconditioner>,
+    params: LsmrOptions,
+    preconditioner: Option<PreconditionerConfig>,
     label: String,
 }
 
@@ -49,17 +47,12 @@ fn generate_problem(n_obs: usize, n_lev: &[usize], seed: u64) -> Problem {
 
     let y: Vec<f64> = (0..n_obs).map(|_| rng.random::<f64>()).collect();
 
-    let params = SolverParams {
-        krylov: KrylovMethod::Cg,
-        operator: OperatorRepr::Implicit,
+    let params = LsmrOptions {
         tol: TOL,
         maxiter: MAXITER,
         ..Default::default()
     };
-    let preconditioner = Some(Preconditioner::Additive(
-        LocalSolverConfig::solver_default(),
-        ReductionStrategy::Auto,
-    ));
+    let preconditioner = Some(PreconditionerConfig::default());
 
     let label = format!(
         "{}FE {} n={}",
@@ -107,11 +100,10 @@ fn bench_store_backends(c: &mut Criterion) {
                 let factor_levels: Vec<Vec<u32>> = (0..p.categories_c.ncols())
                     .map(|q| p.categories_c.column(q).to_vec())
                     .collect();
-                let store =
-                    FactorMajorStore::new(factor_levels, ObservationWeights::Unit, *n_obs).unwrap();
-                let design = WeightedDesign::from_store(store).unwrap();
-                let solver = Solver::from_design(design, &p.params, precond_ref).unwrap();
-                let r = solver.solve(&p.y).unwrap();
+                let store = FactorMajorStore::new(factor_levels, *n_obs).unwrap();
+                let design = Design::from_store(store).unwrap();
+                let solver = Solver::new(design, None, precond_ref).unwrap();
+                let r = solver.solve(&p.y, &p.params).unwrap();
                 assert!(r.converged);
             });
         });
@@ -119,11 +111,10 @@ fn bench_store_backends(c: &mut Criterion) {
         // ArrayStore C-order: zero-copy, strided columns.
         group.bench_function(BenchmarkId::new("Array(C)", &p.label), |b| {
             b.iter(|| {
-                let store =
-                    ArrayStore::new(p.categories_c.view(), ObservationWeights::Unit).unwrap();
-                let design = WeightedDesign::from_store(store).unwrap();
-                let solver = Solver::from_design(design, &p.params, precond_ref).unwrap();
-                let r = solver.solve(&p.y).unwrap();
+                let store = ArrayStore::new(p.categories_c.view()).unwrap();
+                let design = Design::from_store(store).unwrap();
+                let solver = Solver::new(design, None, precond_ref).unwrap();
+                let r = solver.solve(&p.y, &p.params).unwrap();
                 assert!(r.converged);
             });
         });
@@ -131,11 +122,10 @@ fn bench_store_backends(c: &mut Criterion) {
         // ArrayStore F-order: zero-copy, contiguous columns.
         group.bench_function(BenchmarkId::new("Array(F)", &p.label), |b| {
             b.iter(|| {
-                let store =
-                    ArrayStore::new(p.categories_f.view(), ObservationWeights::Unit).unwrap();
-                let design = WeightedDesign::from_store(store).unwrap();
-                let solver = Solver::from_design(design, &p.params, precond_ref).unwrap();
-                let r = solver.solve(&p.y).unwrap();
+                let store = ArrayStore::new(p.categories_f.view()).unwrap();
+                let design = Design::from_store(store).unwrap();
+                let solver = Solver::new(design, None, precond_ref).unwrap();
+                let r = solver.solve(&p.y, &p.params).unwrap();
                 assert!(r.converged);
             });
         });

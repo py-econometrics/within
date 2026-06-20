@@ -17,15 +17,10 @@ _PROFILES: dict[str, tuple[str, tuple[str, ...], str]] = {
     "iterate": (
         "Curated fast-iteration benchmark set for backend and Auto tuning",
         (
-            "verify",
-            "preconditioners_3fe",
-            "ac_comparison",
             "scaling",
             "many_components",
             "subdomain_regimes",
             "high_fe",
-            "akm_panel",
-            "fixest_comparison",
         ),
         "iterate",
     ),
@@ -37,21 +32,10 @@ _PROFILES: dict[str, tuple[str, tuple[str, ...], str]] = {
     "auto": (
         "Additive-focused tuning set spanning many-small, few-large, and high-FE regimes",
         (
-            "verify",
             "scaling",
             "many_components",
             "subdomain_regimes",
             "high_fe",
-            "akm_panel",
-            "fixest_comparison",
-        ),
-        "iterate",
-    ),
-    "local_solver": (
-        "Local-solver and ApproxChol variant comparisons",
-        (
-            "ac_comparison",
-            "graph_backend_comparison",
         ),
         "iterate",
     ),

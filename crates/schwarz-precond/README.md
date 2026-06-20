@@ -1,10 +1,10 @@
 # schwarz-precond
 
-Generic domain decomposition library for additive and multiplicative Schwarz
-preconditioners. Provides one-level variants with pluggable local solvers and
-iterative solvers (CG, GMRES). Suitable for symmetric positive
-(semi-)definite systems arising in finite elements, graph Laplacians, and
-fixed-effects models.
+Generic domain decomposition library providing a one-level additive Schwarz
+preconditioner with pluggable local solvers, plus a Modified LSMR iterative
+solver for rectangular least-squares problems. Suitable for symmetric
+positive (semi-)definite systems arising in finite elements, graph
+Laplacians, and fixed-effects models.
 
 ## Install
 
@@ -23,10 +23,9 @@ cargo add schwarz-precond
 
 ```rust
 use schwarz_precond::{
-    LocalSolver, Operator, SubdomainCore, SubdomainEntry,
-    SchwarzPreconditioner,
+    mlsmr, LocalSolver, Operator, ReductionStrategy, SchwarzPreconditioner, SubdomainCore,
+    SubdomainEntry,
 };
-use schwarz_precond::solve::cg::cg_solve_preconditioned;
 
 // --- Tridiagonal SPD operator: A = tridiag(-1, 3, -1) ---
 struct TridiagOp(usize);
@@ -76,8 +75,8 @@ fn main() {
         })
         .collect();
 
-    let precond = SchwarzPreconditioner::new(entries, n).expect("valid preconditioner");
-    let result = cg_solve_preconditioned(&a, &precond, &b, 1e-10, 500).expect("cg should converge");
+    let precond = SchwarzPreconditioner::new(entries, ReductionStrategy::default());
+    let result = mlsmr(&a, &b, &precond, 1e-10, 500, None).expect("lsmr should converge");
 
     println!("converged={} iters={} res={:.3e}",
         result.converged, result.iterations, result.residual_norm);

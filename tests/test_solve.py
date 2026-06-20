@@ -6,17 +6,14 @@ import numpy as np
 import pytest
 
 from within import (
-    CG,
-    GMRES,
-    AdditiveSchwarz,
-    MultiplicativeSchwarz,
-    FePreconditioner,
-    OperatorRepr,
-    Preconditioner,
-    Solver,
     BatchSolveResult,
+    LsmrOptions,
+    Preconditioner,
+    PreconditionerConfig,
+    Solver,
     solve,
 )
+from within.config import AdditiveSchwarz
 
 from conftest import generate_synthetic_data
 
@@ -45,47 +42,13 @@ class TestSolveDefaults:
         assert result.iterations > 0
         assert result.residual < 1e-6
 
-    def test_explicit_cg(self, problem):
-        cats, y = problem
-        result = solve(
-            as_solver_categories(cats), y, CG(operator=OperatorRepr.Explicit)
-        )
-        assert result.converged
-
-    def test_gmres_multiplicative(self, problem):
+    def test_unpreconditioned(self, problem):
         cats, y = problem
         result = solve(
             as_solver_categories(cats),
             y,
-            GMRES(),
-            preconditioner=Preconditioner.Multiplicative,
-        )
-        assert result.converged
-
-    def test_rejects_multiplicative_cg(self, problem):
-        cats, y = problem
-        with pytest.raises(
-            ValueError,
-            match="CG requires a symmetric preconditioner",
-        ):
-            solve(
-                as_solver_categories(cats),
-                y,
-                CG(),
-                preconditioner=Preconditioner.Multiplicative,
-            )
-
-    def test_unpreconditioned_cg(self, problem):
-        cats, y = problem
-        result = solve(
-            as_solver_categories(cats), y, CG(), preconditioner=Preconditioner.Off
-        )
-        assert result.converged
-
-    def test_unpreconditioned_gmres(self, problem):
-        cats, y = problem
-        result = solve(
-            as_solver_categories(cats), y, GMRES(), preconditioner=Preconditioner.Off
+            LsmrOptions(),
+            preconditioner=PreconditionerConfig.Off,
         )
         assert result.converged
 
@@ -104,46 +67,36 @@ class TestPreconditioners:
         result = solve(
             as_solver_categories(cats),
             y,
-            CG(),
-            preconditioner=Preconditioner.Additive,
-        )
-        assert result.converged
-
-    def test_multiplicative_schwarz(self, problem):
-        cats, y = problem
-        result = solve(
-            as_solver_categories(cats),
-            y,
-            GMRES(),
-            preconditioner=Preconditioner.Multiplicative,
+            LsmrOptions(),
+            preconditioner=PreconditionerConfig.Additive,
         )
         assert result.converged
 
     def test_advanced_additive_schwarz(self, problem):
         """Test advanced config via AdditiveSchwarz."""
-        from within._within import AdditiveSchwarz
-
         cats, y = problem
         result = solve(
             as_solver_categories(cats),
             y,
-            CG(),
+            LsmrOptions(),
             preconditioner=AdditiveSchwarz(),
         )
         assert result.converged
 
-    def test_advanced_multiplicative_schwarz(self, problem):
-        """Test advanced config via MultiplicativeSchwarz."""
-        from within._within import MultiplicativeSchwarz
-
-        cats, y = problem
+    def test_diagonal_preconditioner(self):
+        rng = np.random.default_rng(123)
+        categories = as_solver_categories(
+            [rng.integers(0, 10, size=400), rng.integers(0, 8, size=400)]
+        )
+        y = rng.standard_normal(400)
         result = solve(
-            as_solver_categories(cats),
+            categories,
             y,
-            GMRES(),
-            preconditioner=MultiplicativeSchwarz(),
+            LsmrOptions(maxiter=2000),
+            preconditioner=PreconditionerConfig.Diagonal,
         )
         assert result.converged
+        assert np.all(np.isfinite(result.x))
 
 
 class TestDemean:
@@ -259,19 +212,10 @@ class TestSolver:
         np.testing.assert_array_equal(r1.x, r2.x)
 
     def test_solver_no_preconditioner(self, problem):
-        """Solver with Preconditioner.Off works."""
-        cats, y = problem
-        solver = Solver(as_solver_categories(cats), preconditioner=Preconditioner.Off)
-        result = solver.solve(y)
-        assert result.converged
-
-    def test_solver_multiplicative(self, problem):
-        """Solver with multiplicative Schwarz."""
+        """Solver with PreconditionerConfig.Off works."""
         cats, y = problem
         solver = Solver(
-            as_solver_categories(cats),
-            GMRES(),
-            preconditioner=Preconditioner.Multiplicative,
+            as_solver_categories(cats), preconditioner=PreconditionerConfig.Off
         )
         result = solver.solve(y)
         assert result.converged
@@ -326,8 +270,8 @@ class TestSolverSerde:
         solver1 = Solver(categories)
         r1 = solver1.solve(y)
 
-        precond = solver1.preconditioner()
-        assert isinstance(precond, FePreconditioner)
+        precond = solver1.preconditioner
+        assert isinstance(precond, Preconditioner)
         assert precond.nrows > 0
 
         # Reuse in new solver
@@ -336,7 +280,7 @@ class TestSolverSerde:
         np.testing.assert_allclose(r2.x, r1.x, atol=1e-10)
 
     def test_preconditioner_pickle(self, problem):
-        """Pickle roundtrip of FePreconditioner."""
+        """Pickle roundtrip of Preconditioner."""
         import pickle
 
         cats, y = problem
@@ -345,7 +289,7 @@ class TestSolverSerde:
         solver1 = Solver(categories)
         r1 = solver1.solve(y)
 
-        precond = solver1.preconditioner()
+        precond = solver1.preconditioner
         data = pickle.dumps(precond)
         precond2 = pickle.loads(data)
 
@@ -355,8 +299,35 @@ class TestSolverSerde:
 
     def test_no_preconditioner_returns_none(self, problem):
         cats, y = problem
-        solver = Solver(as_solver_categories(cats), preconditioner=Preconditioner.Off)
-        assert solver.preconditioner() is None
+        solver = Solver(
+            as_solver_categories(cats), preconditioner=PreconditionerConfig.Off
+        )
+        assert solver.preconditioner is None
+
+    def test_diagonal_preconditioner_pickle_and_reuse(self):
+        import pickle
+
+        categories = as_solver_categories(
+            [np.array([0, 1, 0, 1, 2, 2]), np.array([0, 0, 1, 1, 0, 1])]
+        )
+        y = np.array([1.0, 2.0, 1.5, 2.5, 3.0, 3.5])
+
+        solver1 = Solver(categories, preconditioner=PreconditionerConfig.Diagonal)
+        r1 = solver1.solve(y)
+        precond = solver1.preconditioner
+
+        assert precond is not None
+        assert "Diagonal" in repr(precond)
+
+        x = np.arange(precond.ncols, dtype=np.float64) + 0.25
+        np.testing.assert_array_equal(precond.apply(x), precond.apply(x))
+
+        precond2 = pickle.loads(pickle.dumps(precond))
+        np.testing.assert_array_equal(precond.apply(x), precond2.apply(x))
+
+        solver2 = Solver(categories, preconditioner=precond2)
+        r2 = solver2.solve(y)
+        np.testing.assert_allclose(r2.x, r1.x, atol=1e-10)
 
 
 # ---------------------------------------------------------------------------
@@ -368,16 +339,6 @@ class TestAliases:
     def test_additive_alias(self, problem):
         cats, y = problem
         result = solve(as_solver_categories(cats), y, preconditioner=AdditiveSchwarz())
-        assert result.converged
-
-    def test_multiplicative_alias(self, problem):
-        cats, y = problem
-        result = solve(
-            as_solver_categories(cats),
-            y,
-            GMRES(),
-            preconditioner=MultiplicativeSchwarz(),
-        )
         assert result.converged
 
 

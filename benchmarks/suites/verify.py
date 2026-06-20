@@ -1,22 +1,13 @@
-"""Preconditioner correctness verification suite."""
+"""LSMR Schwarz correctness verification suite."""
 
 from __future__ import annotations
 
-from within._within import (
-    ApproxCholConfig,
-    ApproxSchurConfig,
-    MultiplicativeSchwarz,
-    SchurComplement,
-)
 from .._framework import (
     BenchmarkResult,
     ProblemSpec,
-    SolverConfig,
     SuiteOptions,
-    benchmark_cg,
-    benchmark_gmres,
-    make_additive_schwarz,
     run_problem_set,
+    standard_solver_configs,
     suite,
 )
 from .._table import print_table
@@ -62,14 +53,12 @@ def _problems(opts: SuiteOptions) -> list[ProblemSpec]:
             ),
         ],
         full=[
-            # 2-FE
             ProblemSpec("chain-100 2fe", "chain_2fe", {"n_levels": 100}, seed),
             ProblemSpec("chain-250 2fe", "chain_2fe", {"n_levels": 250}, seed),
             ProblemSpec("chain-500 2fe", "chain_2fe", {"n_levels": 500}, seed),
             ProblemSpec("barbell-100 2fe", "barbell_2fe", {"n_levels": 100}, seed),
             ProblemSpec("barbell-250 2fe", "barbell_2fe", {"n_levels": 250}, seed),
             ProblemSpec("barbell-500 2fe", "barbell_2fe", {"n_levels": 500}, seed),
-            # 3-FE
             ProblemSpec(
                 "sparse-3e-50^3",
                 "sparse_3fe",
@@ -133,35 +122,17 @@ def _problems(opts: SuiteOptions) -> list[ProblemSpec]:
 
 @suite(
     "verify",
-    description="Verify preconditioner correctness on 2-FE and 3-FE problems",
+    description="Verify LSMR Schwarz correctness on 2-FE and 3-FE problems",
     tags=("2fe", "3fe", "correctness"),
 )
 def run_verify(opts: SuiteOptions) -> list[BenchmarkResult]:
     problems = _problems(opts)
-
-    schur = SchurComplement(
-        approx_chol=ApproxCholConfig(seed=opts.seed),
-        approx_schur=ApproxSchurConfig(seed=opts.seed),
-    )
-    configs = [
-        SolverConfig(
-            "CG(Schwarz)",
-            benchmark_cg(opts),
-            preconditioner=make_additive_schwarz(local_solver=schur),
-        ),
-        SolverConfig(
-            "GMRES(Mult-Schwarz)",
-            benchmark_gmres(opts),
-            preconditioner=MultiplicativeSchwarz(local_solver=schur),
-        ),
-    ]
-
-    all_results = run_problem_set(problems, configs, opts)
-    for r in all_results:
+    results = run_problem_set(problems, standard_solver_configs(opts), opts)
+    for r in results:
         r.passed = r.converged and r.final_residual < RESIDUAL_THRESHOLD
 
     print_table(
-        all_results,
+        results,
         columns=[
             "config",
             "setup_time",
@@ -173,16 +144,15 @@ def run_verify(opts: SuiteOptions) -> list[BenchmarkResult]:
         ],
     )
 
-    # Correctness summary
-    n_pass = sum(1 for r in all_results if r.passed)
-    n_fail = sum(1 for r in all_results if not r.passed)
+    n_pass = sum(1 for r in results if r.passed)
+    n_fail = sum(1 for r in results if not r.passed)
     status = "PASS" if n_fail == 0 else "FAIL"
-    print(f"\nCorrectness: {n_pass}/{len(all_results)} PASS, {n_fail} FAIL  [{status}]")
+    print(f"\nCorrectness: {n_pass}/{len(results)} PASS, {n_fail} FAIL  [{status}]")
     if n_fail:
-        for r in all_results:
+        for r in results:
             if not r.passed:
                 print(
                     f"  FAIL: {r.problem} / {r.config}: residual={r.final_residual:.2e}"
                 )
 
-    return all_results
+    return results
