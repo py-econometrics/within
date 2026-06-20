@@ -7,14 +7,67 @@
 #' @useDynLib withinr, .registration = TRUE
 NULL
 
-#' @rdname solve_impl
-#' @keywords internal
-solve_impl <- function(categories, y, weights, method, tol, maxiter, restart, preconditioner) {
-  .Call("wrap__solve_impl", categories, y, weights, method, tol, maxiter, restart, preconditioner)
+# Internal .Call wrapper.
+solve_impl <- function(categories, y, weights, tol, maxiter, local_size, preconditioner) {
+  .Call("wrap__solve_impl", categories, y, weights, tol, maxiter, local_size, preconditioner)
 }
 
-#' @rdname solve_batch_impl
-#' @keywords internal
-solve_batch_impl <- function(categories, y_matrix, weights, method, tol, maxiter, restart, preconditioner) {
-  .Call("wrap__solve_batch_impl", categories, y_matrix, weights, method, tol, maxiter, restart, preconditioner)
+# Internal .Call wrapper.
+solve_batch_impl <- function(categories, y_matrix, weights, tol, maxiter, local_size, preconditioner) {
+  .Call("wrap__solve_batch_impl", categories, y_matrix, weights, tol, maxiter, local_size, preconditioner)
+}
+
+# Internal .Call wrapper.
+solver_new_impl <- function(categories, weights, preconditioner) {
+  .Call("wrap__solver_new_impl", categories, weights, preconditioner)
+}
+
+# Internal .Call wrapper.
+solver_solve_impl <- function(solver, y, tol, maxiter, local_size) {
+  .Call("wrap__solver_solve_impl", solver, y, tol, maxiter, local_size)
+}
+
+# Internal .Call wrapper.
+solver_solve_batch_impl <- function(solver, y_matrix, tol, maxiter, local_size) {
+  .Call("wrap__solver_solve_batch_impl", solver, y_matrix, tol, maxiter, local_size)
+}
+
+# Internal .Call wrapper.
+solver_preconditioner_impl <- function(solver) {
+  .Call("wrap__solver_preconditioner_impl", solver)
+}
+
+# Internal .Call wrapper.
+solver_n_dofs_impl <- function(solver) {
+  .Call("wrap__solver_n_dofs_impl", solver)
+}
+
+# Internal .Call wrapper.
+solver_n_obs_impl <- function(solver) {
+  .Call("wrap__solver_n_obs_impl", solver)
+}
+
+# Internal .Call wrapper.
+preconditioner_apply_impl <- function(preconditioner, x) {
+  .Call("wrap__preconditioner_apply_impl", preconditioner, x)
+}
+
+# Internal .Call wrapper.
+preconditioner_nrows_impl <- function(preconditioner) {
+  .Call("wrap__preconditioner_nrows_impl", preconditioner)
+}
+
+# Internal .Call wrapper.
+preconditioner_ncols_impl <- function(preconditioner) {
+  .Call("wrap__preconditioner_ncols_impl", preconditioner)
+}
+
+# Internal .Call wrapper.
+preconditioner_serialize_impl <- function(preconditioner) {
+  .Call("wrap__preconditioner_serialize_impl", preconditioner)
+}
+
+# Internal .Call wrapper.
+preconditioner_deserialize_impl <- function(data) {
+  .Call("wrap__preconditioner_deserialize_impl", data)
 }

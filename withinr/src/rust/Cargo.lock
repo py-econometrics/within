@@ -19,9 +19,9 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
 name = "approx-chol"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b01f4d29e486845115cf5e8bec8af1e2aabc2fbddd3f40931e5375c2d6315b47"
+checksum = "f8fc1b78930a040edb9d77183530c9ebe65cffb929469f044f5bba8dd4fbb8f7"
 dependencies = [
  "num-traits",
  "rand 0.10.1",
@@ -351,21 +351,27 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
 name = "extendr-api"
-version = "0.7.1"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "67505d96c7faa49d20e749dba7ba2447db52c40a788fd88cc2b6bef02c02277a"
+checksum = "ea54977c6e37236839ffcbc20b5dcea58aa32ae43fbef54a81e1011dc6b19061"
 dependencies = [
+ "extendr-ffi",
  "extendr-macros",
- "libR-sys",
  "once_cell",
  "paste",
 ]
 
 [[package]]
-name = "extendr-macros"
-version = "0.7.1"
+name = "extendr-ffi"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81b58838056f294411d0b2c35ac1a2b24c507d6828b75f2c1e74f00ee9b99267"
+checksum = "c76777174a82bdb3e66872f580687d3d0143eed1df9b9cd72b321b9596a23ca7"
+
+[[package]]
+name = "extendr-macros"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "661cc4ae29de9c4dafe16cfcbda1dbb9f31bd2568f96ebad232cc1f9bcc8b04d"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -712,12 +718,6 @@ name = "leb128fmt"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
-
-[[package]]
-name = "libR-sys"
-version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "06ac9752bc1e83f5a354a62b9e81bd8db4468b1008e29f262441e7f0e91e6bb3"
 
 [[package]]
 name = "libc"
@@ -1296,13 +1296,14 @@ dependencies = [
 
 [[package]]
 name = "schwarz-precond"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f32c75299c86cb61cc76134440f370cb61015555febab85324db8147fe276eb0"
+checksum = "39a7c61c114c1b43e8efb73ec228f37edc985577480af7d2e7e5ad6759596de4"
 dependencies = [
  "faer",
  "rayon",
  "serde",
+ "thiserror 2.0.18",
  "thread_local",
 ]
 
@@ -1851,9 +1852,9 @@ dependencies = [
 
 [[package]]
 name = "within"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f7df961e684950e65e7b1ccce88d5a9fc81555256d78e5025b42a49d54906c50"
+checksum = "f4301860f9b664e947ebc6de2ad1735c9d31de32d0b20d108687ab75ade12fa7"
 dependencies = [
  "approx-chol",
  "faer",
@@ -1863,6 +1864,7 @@ dependencies = [
  "rayon",
  "schwarz-precond",
  "serde",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1871,6 +1873,7 @@ version = "0.1.0"
 dependencies = [
  "extendr-api",
  "ndarray",
+ "postcard",
  "within",
 ]
 

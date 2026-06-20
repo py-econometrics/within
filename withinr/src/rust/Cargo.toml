@@ -11,7 +11,8 @@ crate-type = ["staticlib"]
 [workspace]
 
 [dependencies]
-extendr-api = "0.7"
+extendr-api = "0.8"
 ndarray = "0.16"
+postcard = { version = "1.1", features = ["use-std"] }
 
-within = "0.1.0"
+within = "0.2.0"

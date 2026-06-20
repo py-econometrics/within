@@ -7,46 +7,30 @@
 solve_batch(
   categories,
   Y,
+  options = NULL,
   weights = NULL,
-  method = c("cg", "gmres"),
-  tol = 1e-08,
-  maxiter = 1000L,
-  restart = 30L,
-  preconditioner = c("additive", "multiplicative", "off")
+  preconditioner = NULL
 )
 }
 \arguments{
-\item{categories}{Integer matrix of shape \code{(n_obs, n_factors)}. Each column
-contains \strong{1-based} factor level assignments.}
+\item{categories}{Integer matrix of shape \verb{(n_obs, n_factors)}. Each column
+contains \strong{1-based} factor level assignments. Values must be positive
+integers with no \code{NA}s.}
 
-\item{Y}{Numeric matrix of shape \code{(n_obs, k)}. Each column is a separate
-response vector.}
+\item{Y}{Numeric matrix of shape \verb{(n_obs, k)}.}
 
-\item{weights}{Numeric vector of length \code{n_obs} or \code{NULL} (default).}
+\item{options}{\code{NULL} for default \code{\link[=LsmrOptions]{LsmrOptions()}} or an options object.}
 
-\item{method}{Character, one of \code{"cg"} (default) or \code{"gmres"}.}
+\item{weights}{Numeric vector of length \code{n_obs} or \code{NULL}.}
 
-\item{tol}{Convergence tolerance. Default \code{1e-8}.}
-
-\item{maxiter}{Maximum Krylov iterations. Default \code{1000L}.}
-
-\item{restart}{GMRES restart parameter. Default \code{30L}.}
-
-\item{preconditioner}{Character, one of \code{"additive"}, \code{"multiplicative"}, or \code{"off"}.}
+\item{preconditioner}{\code{NULL}, a \code{PreconditionerConfig} value,
+\code{\link[=AdditiveSchwarz]{AdditiveSchwarz()}}, or a built \code{\link[=Preconditioner]{Preconditioner()}} object.}
 }
 \value{
-A named list with components:
-\describe{
-\item{coefficients}{Numeric matrix \code{(n_dofs, k)}.}
-\item{demeaned}{Numeric matrix \code{(n_obs, k)}.}
-\item{converged}{Logical vector of length \code{k}.}
-\item{iterations}{Integer vector of length \code{k}.}
-\item{residual}{Numeric vector of length \code{k}.}
-\item{time_total}{Numeric scalar. Wall-clock seconds for the entire batch.}
-\item{time_solve}{Numeric vector of length \code{k}. Per-RHS solve time.}
-}
+A named list with matrix fields \code{x} and \code{demeaned}, plus
+\code{converged}, \code{iterations}, \code{residual}, \code{time_solve}, and \code{time_total}.
 }
 \description{
 Builds the operator and preconditioner once, then solves for each column
-of \code{Y} in parallel. More efficient than calling \code{\link{solve}} in a loop.
+of \code{Y} in parallel.
 }

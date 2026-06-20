@@ -4,54 +4,25 @@
 \alias{solve}
 \title{Solve fixed-effects normal equations}
 \usage{
-solve(
-  categories,
-  y,
-  weights = NULL,
-  method = c("cg", "gmres"),
-  tol = 1e-08,
-  maxiter = 1000L,
-  restart = 30L,
-  preconditioner = c("additive", "multiplicative", "off")
-)
+solve(categories, y, options = NULL, weights = NULL, preconditioner = NULL)
 }
 \arguments{
-\item{categories}{Integer matrix of shape \code{(n_obs, n_factors)}. Each column
+\item{categories}{Integer matrix of shape \verb{(n_obs, n_factors)}. Each column
 contains \strong{1-based} factor level assignments. Values must be positive
 integers with no \code{NA}s.}
 
-\item{y}{Numeric vector of length \code{n_obs}. The response variable.}
+\item{y}{Numeric vector of length \code{n_obs}.}
 
-\item{weights}{Numeric vector of length \code{n_obs} or \code{NULL} (default).
-Observation weights. \code{NULL} means unit weights (unweighted).}
+\item{options}{\code{NULL} for default \code{\link[=LsmrOptions]{LsmrOptions()}} or an options object.}
 
-\item{method}{Character, one of \code{"cg"} (default) or \code{"gmres"}.
-\code{"cg"} uses Conjugate Gradient (requires symmetric preconditioner).
-\code{"gmres"} uses GMRES (supports all preconditioners).}
+\item{weights}{Numeric vector of length \code{n_obs} or \code{NULL}.}
 
-\item{tol}{Convergence tolerance on the relative residual norm.
-Default \code{1e-8}.}
-
-\item{maxiter}{Maximum number of Krylov iterations. Default \code{1000L}.}
-
-\item{restart}{GMRES restart parameter (ignored for CG). Default \code{30L}.}
-
-\item{preconditioner}{Character, one of \code{"additive"} (default),
-\code{"multiplicative"}, or \code{"off"}. Schwarz preconditioner variant.
-\code{"multiplicative"} requires \code{method = "gmres"}.}
+\item{preconditioner}{\code{NULL}, a \code{PreconditionerConfig} value,
+\code{\link[=AdditiveSchwarz]{AdditiveSchwarz()}}, or a built \code{\link[=Preconditioner]{Preconditioner()}} object.}
 }
 \value{
-A named list with components:
-\describe{
-\item{coefficients}{Numeric vector of fixed-effect coefficient estimates.}
-\item{demeaned}{Numeric vector. Response after subtracting estimated fixed effects.}
-\item{converged}{Logical. Did the solver meet the tolerance?}
-\item{iterations}{Integer. Number of Krylov iterations performed.}
-\item{residual}{Numeric. Final relative residual norm.}
-\item{time_total}{Numeric. Wall-clock seconds (setup + solve).}
-\item{time_setup}{Numeric. Wall-clock seconds for operator/preconditioner construction.}
-\item{time_solve}{Numeric. Wall-clock seconds for the iterative solve.}
-}
+A named list with fields \code{x}, \code{demeaned}, \code{converged},
+\code{iterations}, \code{residual}, \code{time_total}, \code{time_setup}, and \code{time_solve}.
 }
 \description{
 Computes fixed-effect coefficients by solving the normal equations

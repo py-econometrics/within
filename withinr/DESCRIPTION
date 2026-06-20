@@ -7,10 +7,10 @@ Authors@R: c(
     person("Kristof", "Schroeder", role = "aut"))
 Author: Alexander Fischer [aut, cre], Kristof Schroeder [aut]
 Maintainer: Alexander Fischer <alexander-fischer1801@t-online.de>
-Description: Fast iterative solvers (CG, GMRES) with Schwarz
-    domain-decomposition preconditioners for absorbing high-dimensional
-    fixed effects in panel data regressions. The computational core is
-    written in Rust via the 'within' crate and accessed through 'extendr'.
+Description: Fast modified LSMR solvers with Schwarz and diagonal
+    preconditioners for absorbing high-dimensional fixed effects in panel
+    data regressions. The computational core is written in Rust via version
+    0.2.0 of the 'within' crate and accessed through 'extendr'.
 License: MIT + file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)

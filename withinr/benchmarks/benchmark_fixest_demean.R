@@ -43,11 +43,8 @@ benchmark_withinr_vs_fixest_difficult <- function(
     pows = 4:7,
     reps = 3L,
     seed = 1L,
-    method = "cg",
-    tol = 1e-8,
-    maxiter = 1000L,
-    restart = 30L,
-    preconditioner = "additive",
+    options = withinr::LsmrOptions(),
+    preconditioner = NULL,
     verbose = TRUE) {
   if (!requireNamespace("fixest", quietly = TRUE)) {
     stop("Package 'fixest' is required. Install with install.packages('fixest').", call. = FALSE)
@@ -87,10 +84,7 @@ benchmark_withinr_vs_fixest_difficult <- function(
         wr <- withinr::solve_batch(
           categories = cats,
           Y = Y,
-          method = method,
-          tol = tol,
-          maxiter = as.integer(maxiter),
-          restart = as.integer(restart),
+          options = options,
           preconditioner = preconditioner
         )
       })[["elapsed"]]
