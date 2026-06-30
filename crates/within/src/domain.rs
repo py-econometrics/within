@@ -1,9 +1,12 @@
 //! Domain layer: [`Design`] (design-matrix metadata) and factor-pair [`Subdomain`] construction.
 
 pub(crate) mod cross_tab;
+mod effect;
 pub(crate) mod factor_pairs;
 
 pub(crate) use cross_tab::{find_all_active_levels, BlockDiagonals, CrossTab};
+
+pub use effect::Effect;
 
 pub(crate) use factor_pairs::{build_local_domains, LocalDomain};
 
@@ -93,6 +96,30 @@ pub struct Design<S: Store> {
     /// Locality permutation applied at construction, if any: `obs_perm[k]` is
     /// the caller's original index of the observation at internal position `k`.
     pub(crate) obs_perm: Option<Vec<u32>>,
+}
+
+impl Design<FactorMajorStore> {
+    /// Lowers each effect's level column onto the categories path, yielding a
+    /// design bit-compatible with one built from a categories matrix. Slope-bearing
+    /// effects are rejected for now (slopes land in a later slice).
+    pub fn new<'a>(effects: impl IntoIterator<Item = Effect<'a>>) -> Result<Self, BuildError> {
+        let mut columns: Vec<Vec<u32>> = Vec::new();
+        for (idx, effect) in effects.into_iter().enumerate() {
+            if !effect.slopes().is_empty() {
+                return Err(BuildError::SlopesNotYetSupported { effect: idx });
+            }
+            // A slope-free effect must carry an intercept: `Effect::new` rejects
+            // the one with neither, so this is the only intercept-only shape left.
+            debug_assert!(
+                effect.intercept(),
+                "slope-free effect must be intercept-only"
+            );
+            columns.push(effect.levels().to_vec());
+        }
+        let n_obs = columns.first().map_or(0, Vec::len);
+        let store = FactorMajorStore::new(columns, n_obs)?;
+        Design::from_store(store)
+    }
 }
 
 impl<S: Store> Design<S> {
@@ -339,5 +366,20 @@ mod tests {
         };
         assert_eq!(col(0), [0, 0, 1, 2]);
         assert_eq!(col(1), [0, 1, 1, 0]);
+    }
+
+    #[test]
+    fn new_rejects_slope_bearing_effect_naming_its_index() {
+        let plain = [0u32, 1, 0, 1];
+        let slope = [1.0, 2.0, 3.0, 4.0];
+        let effects = vec![
+            Effect::new(&plain, true, []).unwrap(),
+            Effect::new(&plain, true, [&slope[..]]).unwrap(),
+        ];
+        let err = Design::new(effects).unwrap_err();
+        assert!(matches!(
+            err,
+            BuildError::SlopesNotYetSupported { effect: 1 }
+        ));
     }
 }
