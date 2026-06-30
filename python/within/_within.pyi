@@ -134,8 +134,18 @@ class BatchSolveResult:
     @property
     def time_total(self) -> float: ...
 
+class Effect:
+    """One factor's effect: level codes, an optional intercept, and slope covariates."""
+
+    def __init__(
+        self,
+        levels: NDArray[np.uint32],
+        intercept: bool,
+        slopes: list[NDArray[np.float64]] | None = None,
+    ) -> None: ...
+
 def solve(
-    categories: NDArray[np.uint32],
+    design: NDArray[np.uint32] | list[Effect],
     y: NDArray[np.float64],
     options: LsmrOptions | None = None,
     weights: NDArray[np.float64] | None = None,
@@ -150,10 +160,9 @@ def solve(
     implied by ``categories`` and ``W`` is the diagonal weight matrix.
 
     Args:
-        categories: Factor assignments, shape ``(n_obs, n_factors)``,
-            dtype ``uint32``. Each column contains zero-based level indices
-            for one factor. Should be F-contiguous (column-major) for best
-            performance; a ``UserWarning`` is emitted for C-contiguous arrays.
+        design: Either a ``(n_obs, n_factors)`` ``uint32`` array of factor
+            assignments (F-contiguous for best performance; a ``UserWarning``
+            is emitted otherwise), or a list of :class:`Effect` terms.
         y: Response vector, shape ``(n_obs,)``, dtype ``float64``.
         options: LSMR solver tuning. Pass ``LsmrOptions(...)`` to override
             defaults. Default: ``LsmrOptions(tol=1e-8, maxiter=1000)``.
@@ -247,7 +256,7 @@ class Solver:
 
     def __init__(
         self,
-        categories: NDArray[np.uint32],
+        design: NDArray[np.uint32] | list[Effect],
         weights: NDArray[np.float64] | None = None,
         preconditioner: (
             PreconditionerConfig | AdditiveSchwarz | Preconditioner | None

@@ -11,7 +11,7 @@ use within::config::{
     ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, LsmrOptions, PreconditionerConfig,
     ReductionStrategy,
 };
-use within::Preconditioner;
+use within::{Preconditioner, PreconditionerInput};
 
 // ---------------------------------------------------------------------------
 // Low-level config classes (available via `_within` for benchmarks)
@@ -297,6 +297,15 @@ impl PyPreconditioner {
 pub(crate) enum PrecondInput {
     Prebuilt(Preconditioner),
     Config(Option<PreconditionerConfig>),
+}
+
+impl From<PrecondInput> for PreconditionerInput {
+    fn from(input: PrecondInput) -> Self {
+        match input {
+            PrecondInput::Prebuilt(p) => p.into(),
+            PrecondInput::Config(c) => c.as_ref().into(),
+        }
+    }
 }
 
 /// Resolve the Python `preconditioner` argument into a [`PrecondInput`].
