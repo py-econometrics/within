@@ -162,3 +162,59 @@ fn test_single_factor_design_solve_without_precond() {
         result.residual
     );
 }
+
+// ---------------------------------------------------------------------------
+// 4. Effect-term design API (issue #58)
+// ---------------------------------------------------------------------------
+
+/// Intercept-only `Effect` design vs. the categories path. Both run through the
+/// same `from_store` locality sort, so rows sum in the same order and the result
+/// is bit-identical — hence the exact `assert_eq`, not a tolerance.
+#[test]
+fn test_intercept_only_effects_match_categories_bitwise() {
+    use within::{Effect, LsmrOptions, PreconditionerConfig, Solver};
+
+    // Non-monotonic dominant factor so the locality sort is genuinely exercised.
+    let col0: Vec<u32> = vec![3, 0, 2, 1, 3, 0, 2, 1, 3, 0, 2, 1];
+    let col1: Vec<u32> = vec![0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 0, 1];
+    let n_obs = col0.len();
+    let y: Vec<f64> = (0..n_obs)
+        .map(|i| (i as f64 * 1.3 - 2.0).sin() + 0.5)
+        .collect();
+    let params = LsmrOptions::default();
+    let precond = PreconditionerConfig::default();
+
+    let categories = Design::from_store(
+        FactorMajorStore::new(vec![col0.clone(), col1.clone()], n_obs).expect("store"),
+    )
+    .expect("categories design");
+    let cat = Solver::new(categories, None, &precond)
+        .expect("categories solver")
+        .solve(&y, &params)
+        .expect("categories solve");
+
+    let eff = Solver::new(
+        vec![
+            Effect::new(&col0, true, []).expect("effect 0"),
+            Effect::new(&col1, true, []).expect("effect 1"),
+        ],
+        None,
+        &precond,
+    )
+    .expect("effect solver")
+    .solve(&y, &params)
+    .expect("effect solve");
+
+    // Bit-identity is only meaningful if both solves actually converged:
+    // `Solver::solve` returns `Ok` even at `maxiter`, so without this the
+    // assert_eqs could pass on two identical non-converged states.
+    assert!(
+        eff.converged && cat.converged,
+        "both solves must converge for bit-identity to be meaningful"
+    );
+    assert_eq!(eff.x, cat.x, "coefficients must be bit-identical");
+    assert_eq!(
+        eff.demeaned, cat.demeaned,
+        "residuals must be bit-identical"
+    );
+}
