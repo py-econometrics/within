@@ -9,8 +9,8 @@ use rayon::prelude::*;
 use schwarz_precond::{lsmr as lsmr_solve, mlsmr, Operator as _};
 
 use crate::config::{LsmrOptions, PreconditionerConfig};
-use crate::domain::Design;
-use crate::observation::{validate_weights, ArrayStore, Store};
+use crate::domain::{Design, Effect};
+use crate::observation::{validate_weights, ArrayStore, FactorMajorStore, Store};
 use crate::operator::design::gather_apply;
 use crate::operator::schwarz::{build_preconditioner, Preconditioner};
 use crate::operator::DesignOperator;
@@ -24,6 +24,7 @@ fn norm(v: &[f64]) -> f64 {
 ///
 /// Implemented for:
 /// - `ArrayView2<'a, u32>` — categories matrix; an `ArrayStore`-backed [`Design`] is built
+/// - `Vec<Effect<'a>>` — effect terms lowered to a [`Design`] via [`Design::new`]
 /// - `Design<S>` — pass-through for an already-built design
 pub trait IntoDesign<'a> {
     /// Storage backend the resulting [`Design`] uses.
@@ -43,6 +44,13 @@ impl<S: Store> IntoDesign<'_> for Design<S> {
     type Store = S;
     fn into_design(self) -> Result<Design<S>, BuildError> {
         Ok(self)
+    }
+}
+
+impl<'a> IntoDesign<'a> for Vec<Effect<'a>> {
+    type Store = FactorMajorStore;
+    fn into_design(self) -> Result<Design<FactorMajorStore>, BuildError> {
+        Design::new(self)
     }
 }
 
@@ -386,11 +394,11 @@ impl<S: Store> Solver<S> {
 // High-level one-shot API
 // ===========================================================================
 
-/// Solve fixed-effects least squares from raw category data.
+/// Solve fixed-effects least squares for a design input.
 ///
-/// `categories` is an observation-major `(n_obs, n_factors)` array where
-/// `categories[[i, q]]` is the level of observation `i` in factor `q`.
-/// Levels must be `0..max_level` per factor; the number of levels is inferred.
+/// `design` is anything implementing [`IntoDesign`]: an observation-major
+/// `(n_obs, n_factors)` categories array (levels `0..max_level` per factor,
+/// count inferred) or a list of [`Effect`] terms.
 /// `y` is the response vector (length = n_obs).
 ///
 /// Zero-copy when the dominant factor is already sorted: the category array is
@@ -402,15 +410,15 @@ impl<S: Store> Solver<S> {
 /// [`crate::Preconditioner`], or a `&Preconditioner` for amortized reuse.
 ///
 /// This is a convenience wrapper around [`Solver::new`] + [`Solver::solve`].
-pub fn solve(
-    categories: ArrayView2<u32>,
+pub fn solve<'a>(
+    design: impl IntoDesign<'a>,
     y: &[f64],
     weights: Option<&[f64]>,
     lsmr: &LsmrOptions,
     preconditioner: impl Into<PreconditionerInput>,
 ) -> Result<SolveResult, WithinError> {
     let t_start = Instant::now();
-    let solver = Solver::new(categories, weights.map(|w| w.to_vec()), preconditioner)?;
+    let solver = Solver::new(design, weights.map(|w| w.to_vec()), preconditioner)?;
     let time_setup = t_start.elapsed().as_secs_f64();
     let mut result = solver.solve(y, lsmr)?;
     // Include solver construction (preconditioner build) in setup time
@@ -423,15 +431,15 @@ pub fn solve(
 ///
 /// Same as [`solve`] but solves all RHS vectors in parallel (via rayon),
 /// reusing the preconditioner across all solves.
-pub fn solve_batch(
-    categories: ArrayView2<u32>,
+pub fn solve_batch<'a>(
+    design: impl IntoDesign<'a>,
     ys: &[&[f64]],
     weights: Option<&[f64]>,
     lsmr: &LsmrOptions,
     preconditioner: impl Into<PreconditionerInput>,
 ) -> Result<BatchSolveResult, WithinError> {
     let t_start = Instant::now();
-    let solver = Solver::new(categories, weights.map(|w| w.to_vec()), preconditioner)?;
+    let solver = Solver::new(design, weights.map(|w| w.to_vec()), preconditioner)?;
     let mut result = solver.solve_batch(ys, lsmr)?;
     result.time_total = t_start.elapsed().as_secs_f64();
     Ok(result)

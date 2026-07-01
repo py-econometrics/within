@@ -45,6 +45,7 @@ For Rust-level internals, build the API docs with ``cargo doc --open``.
 
 from within._within import (
     BatchSolveResult,
+    Effect,
     LsmrOptions,
     Preconditioner,
     PreconditionerConfig,
@@ -57,6 +58,7 @@ from within import config  # noqa: F401 — expose submodule on `within.config`
 
 __all__ = [
     "BatchSolveResult",
+    "Effect",
     "LsmrOptions",
     "Preconditioner",
     "PreconditionerConfig",

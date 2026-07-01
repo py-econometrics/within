@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from within import solve
+from within import Effect, solve
 from within._within import ApproxSchurConfig
 
 
@@ -74,3 +74,21 @@ class TestErrorHandling:
         """ApproxSchurConfig(split=0) should raise ValueError."""
         with pytest.raises((ValueError, OverflowError)):
             ApproxSchurConfig(split=0)
+
+
+class TestEffectErrors:
+    def test_empty_effect_raises(self):
+        with pytest.raises(ValueError, match="intercept or at least one slope"):
+            Effect(np.array([0, 1, 0], dtype=np.uint32), intercept=False)
+
+    def test_slope_length_mismatch_names_slope(self):
+        levels = np.array([0, 1, 0], dtype=np.uint32)
+        with pytest.raises(ValueError, match="slope 0"):
+            Effect(levels, intercept=True, slopes=[np.array([1.0, 2.0])])
+
+    def test_slope_bearing_design_raises(self):
+        levels = np.array([0, 1, 0], dtype=np.uint32)
+        slope = np.array([1.0, 2.0, 3.0])
+        y = np.array([1.0, 2.0, 3.0])
+        with pytest.raises(ValueError, match="slope"):
+            solve([Effect(levels, intercept=True, slopes=[slope])], y)
