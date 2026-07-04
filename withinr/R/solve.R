@@ -340,6 +340,13 @@ new_preconditioner <- function(ptr) {
   preconditioner$ptr <- ptr
   preconditioner$nrows <- preconditioner_nrows_impl(ptr)
   preconditioner$ncols <- preconditioner_ncols_impl(ptr)
+  preconditioner$variant <- preconditioner_variant_impl(ptr)
+  build_time_seconds <- preconditioner_build_time_seconds_impl(ptr)
+  preconditioner$build_time_seconds <- if (is.null(build_time_seconds)) {
+    NA_real_
+  } else {
+    as.double(build_time_seconds)
+  }
   preconditioner$apply <- function(x) {
     preconditioner_apply_impl(ptr, as.double(x))
   }
@@ -373,6 +380,17 @@ print.within_solver <- function(x, ...) {
 
 #' @export
 print.within_preconditioner <- function(x, ...) {
-  cat(sprintf("<within_preconditioner: nrows=%d, ncols=%d>\n", x$nrows, x$ncols))
+  build_time <- if (is.na(x$build_time_seconds)) {
+    "NA"
+  } else {
+    sprintf("%.6g", x$build_time_seconds)
+  }
+  cat(sprintf(
+    "<within_preconditioner: variant=%s, nrows=%d, ncols=%d, build_time_seconds=%s>\n",
+    x$variant,
+    x$nrows,
+    x$ncols,
+    build_time
+  ))
   invisible(x)
 }

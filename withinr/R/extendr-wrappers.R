@@ -63,6 +63,16 @@ preconditioner_ncols_impl <- function(preconditioner) {
 }
 
 # Internal .Call wrapper.
+preconditioner_variant_impl <- function(preconditioner) {
+  .Call("wrap__preconditioner_variant_impl", preconditioner)
+}
+
+# Internal .Call wrapper.
+preconditioner_build_time_seconds_impl <- function(preconditioner) {
+  .Call("wrap__preconditioner_build_time_seconds_impl", preconditioner)
+}
+
+# Internal .Call wrapper.
 preconditioner_serialize_impl <- function(preconditioner) {
   .Call("wrap__preconditioner_serialize_impl", preconditioner)
 }

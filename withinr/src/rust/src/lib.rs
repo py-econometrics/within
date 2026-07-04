@@ -10,6 +10,7 @@
 
 use extendr_api::prelude::*;
 use ndarray::{ArrayView2, ShapeBuilder};
+use std::time::Instant;
 
 use within::config::{
     ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, LsmrOptions, PreconditionerConfig,
@@ -27,15 +28,20 @@ use within::{
 
 struct SolverHandle {
     solver: NativeSolver<FactorMajorStore>,
+    preconditioner_build_time_seconds: Option<f64>,
 }
 
 struct PreconditionerHandle {
     preconditioner: Preconditioner,
+    build_time_seconds: Option<f64>,
 }
 
 enum PreconditionerArg {
     Config(Option<PreconditionerConfig>),
-    Built(Preconditioner),
+    Built {
+        preconditioner: Preconditioner,
+        build_time_seconds: Option<f64>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -278,7 +284,10 @@ fn parse_preconditioner(preconditioner: Robj) -> Result<PreconditionerArg> {
 
     if let Ok(ptr) = ExternalPtr::<PreconditionerHandle>::try_from(preconditioner.clone()) {
         let handle = ptr.try_addr()?;
-        return Ok(PreconditionerArg::Built(handle.preconditioner.clone()));
+        return Ok(PreconditionerArg::Built {
+            preconditioner: handle.preconditioner.clone(),
+            build_time_seconds: handle.build_time_seconds,
+        });
     }
 
     if let Some(name) = preconditioner.as_str() {
@@ -399,7 +408,9 @@ fn solve_impl_inner(
         )
         .map_err(|e| err(e.to_string()))
         .and_then(result_to_list),
-        PreconditionerArg::Built(preconditioner) => {
+        PreconditionerArg::Built {
+            preconditioner, ..
+        } => {
             solve_native(cats, y, weights.as_deref(), &lsmr, preconditioner)
                 .map_err(|e| err(e.to_string()))
                 .and_then(result_to_list)
@@ -471,7 +482,9 @@ fn solve_batch_impl_inner(
         )
         .map_err(|e| err(e.to_string()))
         .and_then(batch_result_to_list),
-        PreconditionerArg::Built(preconditioner) => {
+        PreconditionerArg::Built {
+            preconditioner, ..
+        } => {
             solve_batch_native(cats, &column_refs, weights.as_deref(), &lsmr, preconditioner)
                 .map_err(|e| err(e.to_string()))
                 .and_then(batch_result_to_list)
@@ -504,16 +517,30 @@ fn solver_new_impl_inner(
     let store = factor_major_store(&categories)?;
     let design = Design::from_store(store).map_err(|e| err(e.to_string()))?;
 
-    let solver = match parse_preconditioner(preconditioner)? {
+    let (solver, preconditioner_build_time_seconds) = match parse_preconditioner(preconditioner)? {
         PreconditionerArg::Config(config) => {
-            NativeSolver::new(design, weights, config.as_ref()).map_err(|e| err(e.to_string()))?
+            let started = Instant::now();
+            let solver = NativeSolver::new(design, weights, config.as_ref())
+                .map_err(|e| err(e.to_string()))?;
+            let build_time_seconds = solver
+                .preconditioner()
+                .map(|_| started.elapsed().as_secs_f64());
+            (solver, build_time_seconds)
         }
-        PreconditionerArg::Built(preconditioner) => {
-            NativeSolver::new(design, weights, preconditioner).map_err(|e| err(e.to_string()))?
+        PreconditionerArg::Built {
+            preconditioner,
+            build_time_seconds,
+        } => {
+            let solver = NativeSolver::new(design, weights, preconditioner)
+                .map_err(|e| err(e.to_string()))?;
+            (solver, build_time_seconds)
         }
     };
 
-    Ok(ExternalPtr::new(SolverHandle { solver }))
+    Ok(ExternalPtr::new(SolverHandle {
+        solver,
+        preconditioner_build_time_seconds,
+    }))
 }
 
 /// Solve one response vector with a persistent solver.
@@ -611,11 +638,13 @@ fn solver_preconditioner_impl_inner(
     solver: ExternalPtr<SolverHandle>,
 ) -> Result<Option<ExternalPtr<PreconditionerHandle>>> {
     let handle = solver.try_addr()?;
+    let build_time_seconds = handle.preconditioner_build_time_seconds;
     Ok(handle
         .solver
         .preconditioner()
         .map(|preconditioner| ExternalPtr::new(PreconditionerHandle {
             preconditioner: preconditioner.clone(),
+            build_time_seconds,
         })))
 }
 
@@ -710,6 +739,40 @@ fn preconditioner_ncols_impl_inner(
     usize_to_i32(handle.preconditioner.ncols(), "ncols")
 }
 
+/// Concrete preconditioner variant name.
+///
+/// @export
+#[extendr]
+fn preconditioner_variant_impl(preconditioner: ExternalPtr<PreconditionerHandle>) -> String {
+    or_throw(preconditioner_variant_impl_inner(preconditioner))
+}
+
+fn preconditioner_variant_impl_inner(
+    preconditioner: ExternalPtr<PreconditionerHandle>,
+) -> Result<String> {
+    let handle = preconditioner.try_addr()?;
+    Ok(handle.preconditioner.variant_name().to_string())
+}
+
+/// Build time for a preconditioner returned by Solver, or NULL if unknown.
+///
+/// @export
+#[extendr]
+fn preconditioner_build_time_seconds_impl(
+    preconditioner: ExternalPtr<PreconditionerHandle>,
+) -> Robj {
+    or_throw(preconditioner_build_time_seconds_impl_inner(preconditioner))
+}
+
+fn preconditioner_build_time_seconds_impl_inner(
+    preconditioner: ExternalPtr<PreconditionerHandle>,
+) -> Result<Robj> {
+    let handle = preconditioner.try_addr()?;
+    Ok(handle
+        .build_time_seconds
+        .map_or_else(nil_value, |seconds| r!(seconds)))
+}
+
 /// Serialize a built preconditioner into raw bytes.
 ///
 /// @export
@@ -737,7 +800,10 @@ fn preconditioner_deserialize_impl(data: Raw) -> ExternalPtr<PreconditionerHandl
 fn preconditioner_deserialize_impl_inner(data: Raw) -> Result<ExternalPtr<PreconditionerHandle>> {
     let preconditioner: Preconditioner =
         postcard::from_bytes(data.as_slice()).map_err(|e| err(e.to_string()))?;
-    Ok(ExternalPtr::new(PreconditionerHandle { preconditioner }))
+    Ok(ExternalPtr::new(PreconditionerHandle {
+        preconditioner,
+        build_time_seconds: None,
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -757,6 +823,8 @@ extendr_module! {
     fn preconditioner_apply_impl;
     fn preconditioner_nrows_impl;
     fn preconditioner_ncols_impl;
+    fn preconditioner_variant_impl;
+    fn preconditioner_build_time_seconds_impl;
     fn preconditioner_serialize_impl;
     fn preconditioner_deserialize_impl;
 }
