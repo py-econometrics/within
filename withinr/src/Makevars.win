@@ -3,6 +3,7 @@ TARGET_DIR = ./rust/target
 LIBDIR = $(TARGET_DIR)/$(TARGET)/release
 STATLIB = $(LIBDIR)/libwithinr.a
 PKG_LIBS = -L$(LIBDIR) -lwithinr -lws2_32 -ladvapi32 -luserenv -lbcrypt -lntdll
+CARGO_DEV_PATCH = --config 'patch.crates-io.within.path="../../crates/within"'
 
 all: C_clean
 
@@ -13,20 +14,20 @@ CARGOTMP = $(CURDIR)/.cargo
 $(STATLIB):
 	if [ "$(NOT_CRAN)" = "true" ] || [ "$(WITHINR_DEV)" = "true" ]; then \
 		export PATH="$(PATH):$(HOME)/.cargo/bin" && \
-		cargo build --lib --release --target=$(TARGET) --manifest-path=./rust/Cargo.toml --target-dir $(TARGET_DIR); \
+		cargo build --locked --lib --release --target=$(TARGET) --manifest-path=./rust/Cargo.toml --target-dir $(TARGET_DIR) $(CARGO_DEV_PATCH); \
 	elif [ -d ./rust/vendor ]; then \
 		mkdir -p $(CARGOTMP) && \
 		cp rust/vendor-config.toml $(CARGOTMP)/config.toml && \
 		export CARGO_HOME=$(CARGOTMP) && \
 		export PATH="$(PATH):$(HOME)/.cargo/bin" && \
-		cargo build --offline --lib --release --target=$(TARGET) --manifest-path=./rust/Cargo.toml --target-dir $(TARGET_DIR); \
+		cargo build --offline --locked --lib --release --target=$(TARGET) --manifest-path=./rust/Cargo.toml --target-dir $(TARGET_DIR); \
 	elif [ -f ./rust/vendor.tar.xz ]; then \
 		tar xf rust/vendor.tar.xz && \
 		mkdir -p $(CARGOTMP) && \
 		cp rust/vendor-config.toml $(CARGOTMP)/config.toml && \
 		export CARGO_HOME=$(CARGOTMP) && \
 		export PATH="$(PATH):$(HOME)/.cargo/bin" && \
-		cargo build --offline --lib --release --target=$(TARGET) --manifest-path=./rust/Cargo.toml --target-dir $(TARGET_DIR); \
+		cargo build --offline --locked --lib --release --target=$(TARGET) --manifest-path=./rust/Cargo.toml --target-dir $(TARGET_DIR); \
 	else \
 		echo "ERROR: missing rust/vendor.tar.xz (or rust/vendor/)."; \
 		echo "Run rextendr::vendor_pkgs(path = 'withinr') before install/check."; \

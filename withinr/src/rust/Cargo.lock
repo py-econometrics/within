@@ -1297,8 +1297,6 @@ dependencies = [
 [[package]]
 name = "schwarz-precond"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39a7c61c114c1b43e8efb73ec228f37edc985577480af7d2e7e5ad6759596de4"
 dependencies = [
  "faer",
  "rayon",
@@ -1853,8 +1851,6 @@ dependencies = [
 [[package]]
 name = "within"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f4301860f9b664e947ebc6de2ad1735c9d31de32d0b20d108687ab75ade12fa7"
 dependencies = [
  "approx-chol",
  "faer",
