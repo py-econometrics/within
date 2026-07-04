@@ -49,11 +49,16 @@ validate_weights <- function(weights) {
   }
 }
 
-#' LSMR solver options
+#' Modified LSMR solver options
 #'
-#' @param tol Positive finite convergence tolerance.
-#' @param maxiter Maximum number of LSMR iterations.
-#' @param local_size Optional reorthogonalization window size, or `NULL`.
+#' Uses Modified Golub-Kahan bidiagonalization to solve the least-squares
+#' problem directly. The preconditioner approximates `A^T A` and is applied as
+#' one `M^{-1}` solve per iteration.
+#'
+#' @param tol Positive finite convergence tolerance. Default `1e-8`.
+#' @param maxiter Maximum number of LSMR iterations. Default `1000L`.
+#' @param local_size Optional window size for modified Gram-Schmidt
+#'   reorthogonalization, or `NULL` to use the short recurrence.
 #' @return A solver options object accepted by [solve()], [solve_batch()], and
 #'   persistent solver methods.
 #' @export
@@ -85,6 +90,8 @@ lsmr_options <- LsmrOptions
 #'
 #' Use `PreconditionerConfig$Additive`, `PreconditionerConfig$Off`, or
 #' `PreconditionerConfig$Diagonal` as the `preconditioner` argument.
+#' `Additive` builds the default additive Schwarz preconditioner, `Off`
+#' disables preconditioning, and `Diagonal` uses diagonal/Jacobi scaling.
 #'
 #' @export
 PreconditionerConfig <- structure(
@@ -218,8 +225,12 @@ AdditiveSchwarz <- function(local_solver = NULL,
 #' @param y Numeric vector of length `n_obs`.
 #' @param options `NULL` for default [LsmrOptions()] or an options object.
 #' @param weights Numeric vector of length `n_obs` or `NULL`.
-#' @param preconditioner `NULL`, a `PreconditionerConfig` value,
-#'   [AdditiveSchwarz()], or a built [Preconditioner()] object.
+#' @param preconditioner Controls preconditioning. Five input forms are
+#'   accepted: `NULL` builds the default additive Schwarz preconditioner,
+#'   `PreconditionerConfig$Off` disables preconditioning,
+#'   `PreconditionerConfig$Diagonal` uses diagonal/Jacobi scaling,
+#'   [AdditiveSchwarz()] overrides local-solver and reduction settings, and a
+#'   built [Preconditioner()] object reuses an existing factorization.
 #' @return A named list with fields `x`, `demeaned`, `converged`,
 #'   `iterations`, `residual`, `time_total`, `time_setup`, and `time_solve`.
 #' @export
@@ -360,10 +371,14 @@ new_preconditioner <- function(ptr) {
 #' Built preconditioner handle
 #'
 #' Deserializes a preconditioner from raw bytes produced by
-#' `solver$preconditioner()$serialize()`.
+#' `solver$preconditioner()$serialize()`. Handles returned by
+#' `solver$preconditioner()` also expose `$variant` and `$build_time_seconds`
+#' metadata. Deserialized handles keep `$variant` but report
+#' `$build_time_seconds = NA_real_`.
 #'
 #' @param data Raw vector containing serialized preconditioner bytes.
-#' @return A `within_preconditioner` object.
+#' @return A `within_preconditioner` object with `$apply()` and `$serialize()`
+#'   methods, `$nrows`, `$ncols`, `$variant`, and `$build_time_seconds` fields.
 #' @export
 Preconditioner <- function(data) {
   if (!is.raw(data)) {

@@ -13,5 +13,7 @@ PreconditionerConfig
 \description{
 Use \code{PreconditionerConfig$Additive}, \code{PreconditionerConfig$Off}, or
 \code{PreconditionerConfig$Diagonal} as the \code{preconditioner} argument.
+\code{Additive} builds the default additive Schwarz preconditioner, \code{Off}
+disables preconditioning, and \code{Diagonal} uses diagonal/Jacobi scaling.
 }
 \keyword{datasets}

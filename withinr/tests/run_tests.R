@@ -24,6 +24,10 @@ assert_error <- function(expr, contains = NULL, msg = "Expected an error, but no
   }
 }
 
+assert_all_converged <- function(result, msg) {
+  assert_true(all(result$converged), msg)
+}
+
 withinr_run_tests <- function(verbose = TRUE) {
   if (!requireNamespace("withinr", quietly = TRUE)) {
     stop("Package 'withinr' must be installed or loaded first.", call. = FALSE)
@@ -145,6 +149,93 @@ withinr_run_tests <- function(verbose = TRUE) {
 
   cats_dbl <- matrix(c(1, 1, 2, 2, 1, 2, 1, 2), ncol = 2)
   assert_true(withinr::solve(cats_dbl, y_simple)$converged, "Numeric categories coercion case failed.")
+
+  # Larger deterministic design: preconditioner correctness and caller-order invariance
+  set.seed(20260704)
+  n <- 180L
+  cats <- cbind(
+    sample.int(29L, n, replace = TRUE),
+    sample.int(17L, n, replace = TRUE),
+    sample.int(11L, n, replace = TRUE)
+  )
+  y <- rnorm(n)
+  y_alt <- 0.25 * y + rnorm(n)
+  Y_big <- cbind(y, y_alt)
+  weights <- runif(n, min = 0.5, max = 2.0)
+  tight <- withinr::LsmrOptions(tol = 1e-10, maxiter = 4000L, local_size = 4L)
+
+  add_big <- withinr::solve(cats, y, options = tight, weights = weights)
+  diag_big <- withinr::solve(
+    cats,
+    y,
+    options = tight,
+    weights = weights,
+    preconditioner = withinr::PreconditionerConfig$Diagonal
+  )
+  off_big <- withinr::solve(
+    cats,
+    y,
+    options = tight,
+    weights = weights,
+    preconditioner = withinr::PreconditionerConfig$Off
+  )
+  assert_all_converged(add_big, "Additive preconditioner failed on larger design.")
+  assert_all_converged(diag_big, "Diagonal preconditioner failed on larger design.")
+  assert_all_converged(off_big, "Unpreconditioned solve failed on larger design.")
+  assert_equal(
+    diag_big$demeaned,
+    add_big$demeaned,
+    tol = 1e-6,
+    msg = "Diagonal and additive demeaned outputs disagree."
+  )
+  assert_equal(
+    off_big$demeaned,
+    add_big$demeaned,
+    tol = 1e-6,
+    msg = "Unpreconditioned and additive demeaned outputs disagree."
+  )
+
+  solver_big <- withinr::Solver(cats, weights = weights)
+  pre_big <- solver_big$preconditioner()
+  reuse_big <- withinr::solve(cats, y, options = tight, weights = weights, preconditioner = pre_big)
+  assert_equal(reuse_big$demeaned, add_big$demeaned, tol = 1e-6, msg = "One-shot preconditioner reuse mismatch.")
+
+  batch_reuse <- withinr::solve_batch(cats, Y_big, options = tight, weights = weights, preconditioner = pre_big)
+  batch_fresh <- withinr::solve_batch(cats, Y_big, options = tight, weights = weights)
+  assert_all_converged(batch_reuse, "Prebuilt batch solve failed on larger design.")
+  assert_equal(
+    batch_reuse$demeaned,
+    batch_fresh$demeaned,
+    tol = 1e-6,
+    msg = "Batch preconditioner reuse mismatch."
+  )
+
+  order_dominant <- order(cats[, 1], cats[, 2], cats[, 3])
+  sorted <- withinr::solve(
+    cats[order_dominant, , drop = FALSE],
+    y[order_dominant],
+    options = tight,
+    weights = weights[order_dominant]
+  )
+  assert_equal(
+    add_big$demeaned[order_dominant],
+    sorted$demeaned,
+    tol = 1e-6,
+    msg = "Unsorted input did not return demeaned values in caller order."
+  )
+
+  sorted_batch <- withinr::solve_batch(
+    cats[order_dominant, , drop = FALSE],
+    Y_big[order_dominant, , drop = FALSE],
+    options = tight,
+    weights = weights[order_dominant]
+  )
+  assert_equal(
+    batch_fresh$demeaned[order_dominant, , drop = FALSE],
+    sorted_batch$demeaned,
+    tol = 1e-6,
+    msg = "Unsorted batch input did not return demeaned values in caller order."
+  )
 
   if (verbose) message("withinr manual tests: OK")
   invisible(TRUE)

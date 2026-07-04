@@ -3,23 +3,26 @@
 \name{LsmrOptions}
 \alias{LsmrOptions}
 \alias{lsmr_options}
-\title{LSMR solver options}
+\title{Modified LSMR solver options}
 \usage{
 LsmrOptions(tol = 1e-08, maxiter = 1000L, local_size = NULL)
 
 lsmr_options(tol = 1e-08, maxiter = 1000L, local_size = NULL)
 }
 \arguments{
-\item{tol}{Positive finite convergence tolerance.}
+\item{tol}{Positive finite convergence tolerance. Default \code{1e-8}.}
 
-\item{maxiter}{Maximum number of LSMR iterations.}
+\item{maxiter}{Maximum number of LSMR iterations. Default \code{1000L}.}
 
-\item{local_size}{Optional reorthogonalization window size, or \code{NULL}.}
+\item{local_size}{Optional window size for modified Gram-Schmidt
+reorthogonalization, or \code{NULL} to use the short recurrence.}
 }
 \value{
 A solver options object accepted by \code{\link[=solve]{solve()}}, \code{\link[=solve_batch]{solve_batch()}}, and
 persistent solver methods.
 }
 \description{
-LSMR solver options
+Uses Modified Golub-Kahan bidiagonalization to solve the least-squares
+problem directly. The preconditioner approximates \verb{A^T A} and is applied as
+one \code{M^{-1}} solve per iteration.
 }

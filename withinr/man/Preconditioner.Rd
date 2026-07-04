@@ -10,9 +10,13 @@ Preconditioner(data)
 \item{data}{Raw vector containing serialized preconditioner bytes.}
 }
 \value{
-A \code{within_preconditioner} object.
+A \code{within_preconditioner} object with \verb{$apply()} and \verb{$serialize()}
+methods, \verb{$nrows}, \verb{$ncols}, \verb{$variant}, and \verb{$build_time_seconds} fields.
 }
 \description{
 Deserializes a preconditioner from raw bytes produced by
-\code{solver$preconditioner()$serialize()}.
+\code{solver$preconditioner()$serialize()}. Handles returned by
+\code{solver$preconditioner()} also expose \verb{$variant} and \verb{$build_time_seconds}
+metadata. Deserialized handles keep \verb{$variant} but report
+\verb{$build_time_seconds = NA_real_}.
 }

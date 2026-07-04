@@ -2,7 +2,7 @@
 
 R bindings for the [within](https://github.com/py-econometrics/within) fixed-effects solver.
 
-`withinr` exposes the Rust `within` crate through [extendr](https://extendr.github.io/extendr/extendr_api/). The package currently targets `within` crate version 0.2.0: modified LSMR with additive Schwarz, diagonal, or identity preconditioning.
+`withinr` exposes the Rust `within` crate through [extendr](https://extendr.github.io/extendr/extendr_api/). Development builds target the workspace `within` crate on `main`, including unreleased solver improvements; offline/CRAN-style builds use the vendored copy of those same local Rust sources. The solver surface is modified LSMR with additive Schwarz, diagonal, or identity preconditioning.
 
 ## Quickstart (local development)
 
@@ -74,6 +74,9 @@ r <- solver$solve(y)
 b <- solver$solve_batch(cbind(y, X), options = LsmrOptions(tol = 1e-10))
 
 precond <- solver$preconditioner()
+precond$variant
+precond$build_time_seconds
+
 payload <- precond$serialize()
 precond2 <- Preconditioner(payload)
 solver2 <- Solver(categories, preconditioner = precond2)
@@ -98,15 +101,18 @@ Passing `approx_schur = NULL` to `LocalSolverConfig()` requests exact Schur comp
 
 ## CRAN / Offline Packaging
 
-The package crate depends on `within = "0.2.0"`.
+The package crate keeps `within = "0.2.0"` in `src/rust/Cargo.toml` as the compatibility requirement. Build wiring overrides that requirement:
 
-For offline builds, regenerate the vendored crate archive after dependency changes:
+- `NOT_CRAN=true` or `WITHINR_DEV=true` builds patch `within` to `../../crates/within` from this workspace.
+- Offline builds unpack `src/rust/vendor.tar.xz`; `src/rust/vendor-config.toml` patches `within` to `vendor/within`.
+
+Regenerate the vendored crate archive after Rust dependency or local crate changes:
 
 ```r
 rextendr::vendor_crates(path = "withinr")
 ```
 
-This refreshes `src/rust/vendor.tar.xz` and `src/rust/vendor-config.toml`.
+Then replace `vendor/within` and `vendor/schwarz-precond` in the archive with the local workspace crates so offline builds match development builds.
 
 ## Tests
 

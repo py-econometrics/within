@@ -23,8 +23,12 @@ integers with no \code{NA}s.}
 
 \item{weights}{Numeric vector of length \code{n_obs} or \code{NULL}.}
 
-\item{preconditioner}{\code{NULL}, a \code{PreconditionerConfig} value,
-\code{\link[=AdditiveSchwarz]{AdditiveSchwarz()}}, or a built \code{\link[=Preconditioner]{Preconditioner()}} object.}
+\item{preconditioner}{Controls preconditioning. Five input forms are
+accepted: \code{NULL} builds the default additive Schwarz preconditioner,
+\code{PreconditionerConfig$Off} disables preconditioning,
+\code{PreconditionerConfig$Diagonal} uses diagonal/Jacobi scaling,
+\code{\link[=AdditiveSchwarz]{AdditiveSchwarz()}} overrides local-solver and reduction settings, and a
+built \code{\link[=Preconditioner]{Preconditioner()}} object reuses an existing factorization.}
 }
 \value{
 A named list with matrix fields \code{x} and \code{demeaned}, plus
