@@ -57,7 +57,7 @@ print(np.round(beta_hat, 4))  # [ 0.9982 -2.006   0.5005]
 | `solve(categories, y, options?, weights?, preconditioner?)` | Solve a single right-hand side. Returns `SolveResult`. |
 | `solve_batch(categories, Y, options?, weights?, preconditioner?)` | Solve multiple RHS vectors in parallel. `Y` has shape `(n_obs, k)`. Returns `BatchSolveResult`. |
 
-`categories` is a 2-D `uint32` array of shape `(n_obs, n_factors)`. A `UserWarning` is emitted when a C-contiguous array is passed — use `np.asfortranarray(categories)` for best performance.
+`categories` is a 2-D `uint32` array of shape `(n_obs, n_factors)`. A `UserWarning` is emitted when a C-contiguous array is passed — if the data is already sorted by the largest factor, `np.asfortranarray(categories)` gives faster solves; unsorted input is copied internally either way.
 
 ### Persistent solver
 

@@ -63,6 +63,13 @@ def run_akm_panel(opts: SuiteOptions) -> list[BenchmarkResult]:
                 opts.seed,
             ),
             ProblemSpec(
+                "realistic 100K shuffled",
+                "akm_realistic",
+                {"n_workers": 100_000, "n_firms": 5_000, "n_years": 15},
+                opts.seed,
+                shuffled=True,
+            ),
+            ProblemSpec(
                 "realistic 100K 2FE",
                 "akm_realistic",
                 {"n_workers": 100_000, "n_firms": 5_000, "n_years": 15, "n_fe": 2},

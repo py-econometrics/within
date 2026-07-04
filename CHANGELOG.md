@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Locality sort:** `Design` construction reorders observations by the highest-cardinality factor when unsorted, copying them once into an internal sorted store (the caller's store is never mutated; the `Store` trait stays read-only). Transparent — results return in caller row order.
+- Coalesced scatter for large sorted factors: one atomic add per equal-level run per chunk instead of one per row.
+
+### Changed
+
+- Category views are borrowed only when the dominant factor is already sorted; otherwise the columns are copied once for the locality sort. The reorder changes summation order, so unsorted-input results match 0.2.0 within solver tolerance, not bitwise.
+
 ## [0.2.0] - 2026-06-04
 
 Modified LSMR is now the sole iterative solver, replacing CG and GMRES.

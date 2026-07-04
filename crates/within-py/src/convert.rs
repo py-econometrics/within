@@ -58,13 +58,18 @@ pub(crate) fn warn_c_contiguous(
     // slices -- i.e. exactly when `ArrayStore::factor_column` rejects the fast
     // path: row stride != 1, or a non-positive (reversed) column stride. A
     // single row or empty input is trivially contiguous regardless of strides.
+    // Sortedness is unknown here (the locality sort happens later, inside
+    // Design construction), so the advice is hedged: when the dominant factor
+    // is unsorted, the sort copies the columns into contiguous owned storage
+    // anyway and asfortranarray would only add a redundant copy.
     let strides = cats.strides();
     if cats.nrows() > 1 && (strides[0] != 1 || strides[1] < 1) {
         PyErr::warn(
             py,
             &py.get_type::<pyo3::exceptions::PyUserWarning>(),
-            c"categories array is not F-contiguous (column-major). \
-             Use np.asfortranarray(categories) for faster solves.",
+            c"categories array is not F-contiguous (column-major). If the data \
+             is already sorted by the largest factor, np.asfortranarray(categories) \
+             gives faster solves; unsorted input is copied internally either way.",
             1,
         )?;
     }

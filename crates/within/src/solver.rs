@@ -102,7 +102,11 @@ impl From<&Preconditioner> for PreconditionerInput {
 pub struct SolveResult {
     /// Fixed-effect coefficients (length = total DOFs across all factors).
     pub x: Vec<f64>,
-    /// Demeaned response: `y - D x` (length = n_obs).
+    /// Demeaned response: `y - D x` (length = n_obs), in caller order.
+    ///
+    /// Invariant: any per-observation field added here must be translated
+    /// back from internal order via `Design::permute_obs_out` before being
+    /// stored, or it leaks the locality-sorted row order to the caller.
     pub demeaned: Vec<f64>,
     /// Whether the iterative solver converged within `maxiter` iterations.
     pub converged: bool,
@@ -212,6 +216,14 @@ impl<S: Store> Solver<S> {
         let design = design.into_design()?;
         validate_weights(weights.as_deref(), design.n_obs)?;
 
+        // Align weights with the design's internal (possibly locality-sorted)
+        // observation order. The match keeps the unpermuted arm a plain move
+        // (`permute_obs_in` would borrow and `into_owned` would copy).
+        let weights = match &design.obs_perm {
+            Some(_) => weights.map(|w| design.permute_obs_in(&w).into_owned()),
+            None => weights,
+        };
+
         let preconditioner = match preconditioner.into() {
             PreconditionerInput::Default => {
                 build_preconditioner(&design, weights.as_deref(), None)?
@@ -255,6 +267,13 @@ impl<S: Store> Solver<S> {
 
         let t_start = Instant::now();
 
+        // All matvecs run in the design's internal (possibly locality-sorted)
+        // observation order; `demeaned` is translated back on return. The
+        // gather is a recurring per-solve cost of the locality sort, so it
+        // counts toward `time_setup` (and `time_total`).
+        let y_internal = self.design.permute_obs_in(y);
+        let y: &[f64] = &y_internal;
+
         let rect_op = DesignOperator::new(&self.design, self.weights.as_deref());
         let b = rect_op.weighted_rhs(y);
         let b: &[f64] = &b;
@@ -291,7 +310,8 @@ impl<S: Store> Solver<S> {
 
         Ok(SolveResult {
             x: r.x,
-            demeaned,
+            // Back to the caller's observation order (no-op if not reordered).
+            demeaned: self.design.permute_obs_out(demeaned),
             converged: r.converged,
             iterations: r.iterations,
             residual,
@@ -373,7 +393,9 @@ impl<S: Store> Solver<S> {
 /// Levels must be `0..max_level` per factor; the number of levels is inferred.
 /// `y` is the response vector (length = n_obs).
 ///
-/// Zero-copy: the category array is borrowed, not copied.
+/// Zero-copy when the dominant factor is already sorted: the category array is
+/// borrowed. Otherwise the columns are copied once into owned sorted storage
+/// so the gather/scatter locality sort can apply (see [`ArrayStore`]).
 ///
 /// `preconditioner` accepts the same input shapes as [`Solver::new`]:
 /// `None`, a [`crate::PreconditionerConfig`] by reference or value, an owned

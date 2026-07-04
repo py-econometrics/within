@@ -30,15 +30,21 @@ enum ScatterStrategy {
     Fold,
     /// Parallel atomic CAS — for large factors with low contention.
     Atomic,
+    /// Atomic path for a large sorted factor: equal-level runs coalesce into
+    /// one atomic add per distinct level per chunk instead of one per row,
+    /// avoiding the atomic-CAS storm.
+    SortedCoalesced,
 }
 
 impl ScatterStrategy {
-    /// Pick the scatter strategy for one factor.
-    fn pick(parallel: bool, n_levels: usize) -> Self {
-        match (parallel, n_levels < SCATTER_LOCAL_THRESHOLD) {
-            (false, _) => ScatterStrategy::Sequential,
-            (true, true) => ScatterStrategy::Fold,
-            (true, false) => ScatterStrategy::Atomic,
+    /// Pick the scatter strategy for one factor; `sorted` is the factor's
+    /// level-column sortedness (`FactorMeta::sorted`).
+    fn pick(parallel: bool, n_levels: usize, sorted: bool) -> Self {
+        match (parallel, n_levels < SCATTER_LOCAL_THRESHOLD, sorted) {
+            (false, _, _) => ScatterStrategy::Sequential,
+            (true, true, _) => ScatterStrategy::Fold,
+            (true, false, true) => ScatterStrategy::SortedCoalesced,
+            (true, false, false) => ScatterStrategy::Atomic,
         }
     }
 }
@@ -99,30 +105,6 @@ where
     }
 }
 
-fn scatter_apply<S, F>(design: &Design<S>, dst: &mut [f64], value_fn: F, atomic_buf: &[AtomicF64])
-where
-    S: Store,
-    F: Fn(usize) -> f64 + Sync,
-{
-    debug_assert_eq!(dst.len(), design.n_dofs);
-    let factor_columns = factor_columns(&design.store);
-    let parallel = design.n_obs > PAR_THRESHOLD;
-    let store = &design.store;
-    let n_rows = design.n_obs;
-
-    for (q, f) in design.factors.iter().enumerate() {
-        let slice = &mut dst[f.offset..f.offset + f.n_levels];
-        let levels = factor_columns[q];
-        let lvl = |i: usize| level_at(store, levels, i, q);
-
-        match ScatterStrategy::pick(parallel, f.n_levels) {
-            ScatterStrategy::Sequential => scatter_sequential(slice, n_rows, lvl, &value_fn),
-            ScatterStrategy::Fold => scatter_fold(slice, n_rows, lvl, &value_fn),
-            ScatterStrategy::Atomic => scatter_atomic(slice, n_rows, lvl, &value_fn, atomic_buf),
-        }
-    }
-}
-
 /// Sequential scatter-add: `slice[lvl(i)] += value_fn(i)` for `i in 0..n_rows`.
 fn scatter_sequential(
     slice: &mut [f64],
@@ -166,6 +148,24 @@ fn scatter_fold(
     }
 }
 
+/// Seed the operator's atomic scratch with `slice`'s current contents,
+/// returning the trimmed view the scatter accumulates into.
+fn seed_scatter_scratch<'b>(atomic_buf: &'b [AtomicF64], slice: &[f64]) -> &'b [AtomicF64] {
+    debug_assert!(atomic_buf.len() >= slice.len());
+    let buf = &atomic_buf[..slice.len()];
+    for (a, &v) in buf.iter().zip(slice.iter()) {
+        a.store(v, Ordering::Relaxed);
+    }
+    buf
+}
+
+/// Copy accumulated scratch values back into `slice`.
+fn writeback_scatter_scratch(slice: &mut [f64], buf: &[AtomicF64]) {
+    for (d, a) in slice.iter_mut().zip(buf.iter()) {
+        *d = a.load(Ordering::Relaxed);
+    }
+}
+
 /// Parallel scatter-add via atomic CAS — best when `slice.len()` is large
 /// relative to thread count (low contention). `atomic_buf` is the operator's
 /// reusable scratch (sized to the largest factor); we use its first
@@ -177,17 +177,46 @@ fn scatter_atomic(
     value_fn: &(impl Fn(usize) -> f64 + Sync),
     atomic_buf: &[AtomicF64],
 ) {
-    debug_assert!(atomic_buf.len() >= slice.len());
-    let buf = &atomic_buf[..slice.len()];
-    for (a, &v) in buf.iter().zip(slice.iter()) {
-        a.store(v, Ordering::Relaxed);
-    }
+    let buf = seed_scatter_scratch(atomic_buf, slice);
     (0..n_rows).into_par_iter().for_each(|i| {
         buf[lvl(i)].fetch_add(value_fn(i), Ordering::Relaxed);
     });
-    for (d, a) in slice.iter_mut().zip(buf.iter()) {
-        *d = a.load(Ordering::Relaxed);
-    }
+    writeback_scatter_scratch(slice, buf);
+}
+
+fn scatter_sorted_coalesced(
+    slice: &mut [f64],
+    n_rows: usize,
+    lvl: impl Fn(usize) -> usize + Sync,
+    value_fn: &(impl Fn(usize) -> f64 + Sync),
+    atomic_buf: &[AtomicF64],
+) {
+    let buf = seed_scatter_scratch(atomic_buf, slice);
+    // Each row-chunk coalesces its equal-level runs locally and commits one
+    // atomic add per distinct level. A run split across a chunk boundary is
+    // committed by both chunks — additive, so still correct — keeping chunks
+    // independent without a carry/fixup pass.
+    const CHUNK: usize = 65_536;
+    let n_chunks = n_rows.div_ceil(CHUNK);
+    (0..n_chunks).into_par_iter().for_each(|c| {
+        let start = c * CHUNK;
+        let end = ((c + 1) * CHUNK).min(n_rows);
+        // Single flat pass, one `lvl` load per row: accumulate the current
+        // run's sum and commit it whenever the level changes.
+        let mut level = lvl(start);
+        let mut sum = value_fn(start);
+        for i in start + 1..end {
+            let li = lvl(i);
+            if li != level {
+                buf[level].fetch_add(sum, Ordering::Relaxed);
+                level = li;
+                sum = 0.0;
+            }
+            sum += value_fn(i);
+        }
+        buf[level].fetch_add(sum, Ordering::Relaxed);
+    });
+    writeback_scatter_scratch(slice, buf);
 }
 
 // ===========================================================================
@@ -259,6 +288,35 @@ impl<'a, S: Store> DesignOperator<'a, S> {
             Some(sw) => Cow::Owned(y.iter().zip(sw).map(|(&yi, &swi)| swi * yi).collect()),
         }
     }
+
+    fn scatter_apply<F>(&self, dst: &mut [f64], value_fn: F)
+    where
+        F: Fn(usize) -> f64 + Sync,
+    {
+        let design = self.design;
+        debug_assert_eq!(dst.len(), design.n_dofs);
+        let factor_columns = factor_columns(&design.store);
+        let parallel = design.n_obs > PAR_THRESHOLD;
+        let store = &design.store;
+        let n_rows = design.n_obs;
+
+        for (q, f) in design.factors.iter().enumerate() {
+            let slice = &mut dst[f.offset..f.offset + f.n_levels];
+            let levels = factor_columns[q];
+            let lvl = |i: usize| level_at(store, levels, i, q);
+
+            match ScatterStrategy::pick(parallel, f.n_levels, f.sorted) {
+                ScatterStrategy::Sequential => scatter_sequential(slice, n_rows, lvl, &value_fn),
+                ScatterStrategy::Fold => scatter_fold(slice, n_rows, lvl, &value_fn),
+                ScatterStrategy::Atomic => {
+                    scatter_atomic(slice, n_rows, lvl, &value_fn, &self.scatter_scratch)
+                }
+                ScatterStrategy::SortedCoalesced => {
+                    scatter_sorted_coalesced(slice, n_rows, lvl, &value_fn, &self.scatter_scratch)
+                }
+            }
+        }
+    }
 }
 
 impl<S: Store> Operator for DesignOperator<'_, S> {
@@ -287,9 +345,41 @@ impl<S: Store> Operator for DesignOperator<'_, S> {
         // operator's `apply_adjoint` calls are sequential (`solve_batch` builds
         // a distinct operator per RHS), so the shared buffer is never raced.
         match &self.sqrt_weights {
-            Some(sw) => scatter_apply(self.design, y, |i| sw[i] * x[i], &self.scatter_scratch),
-            None => scatter_apply(self.design, y, |i| x[i], &self.scatter_scratch),
+            Some(sw) => self.scatter_apply(y, |i| sw[i] * x[i]),
+            None => self.scatter_apply(y, |i| x[i]),
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Must match a naive per-row scatter-add, including a run straddling the
+    /// chunk boundary (committed by two chunks via additive atomics). Gated on
+    /// large sorted factors, so integration tests never reach it — exercised
+    /// directly here.
+    #[test]
+    fn coalesced_scatter_matches_naive() {
+        // > 65_536 rows so the level-0 run crosses the chunk boundary, exercising
+        // the two-chunk additive commit for a single level.
+        let n_rows = 100_000usize;
+        let col: Vec<u32> = (0..n_rows).map(|i| u32::from(i >= 70_000)).collect();
+        let n_levels = 2usize;
+        let values: Vec<f64> = (0..n_rows).map(|i| (i % 7) as f64 - 3.0).collect();
+
+        let mut expected = vec![0.0f64; n_levels];
+        for (i, &c) in col.iter().enumerate() {
+            expected[c as usize] += values[i];
+        }
+
+        let buf: Vec<AtomicF64> = (0..n_levels).map(|_| AtomicF64::new(0.0)).collect();
+        let mut got = vec![0.0f64; n_levels];
+        scatter_sorted_coalesced(&mut got, n_rows, |i| col[i] as usize, &|i| values[i], &buf);
+
+        for (g, e) in got.iter().zip(&expected) {
+            assert!((g - e).abs() < 1e-6, "got {g}, expected {e}");
+        }
     }
 }

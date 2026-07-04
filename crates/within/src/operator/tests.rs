@@ -5,7 +5,10 @@ mod design_tests {
     use schwarz_precond::Operator;
 
     fn make_test_design() -> Design<FactorMajorStore> {
-        let store = FactorMajorStore::new(vec![vec![0, 1, 2, 0, 1], vec![0, 1, 2, 3, 0]], 5)
+        // Sorted on the dominant factor (factor 1, 4 levels) so construction
+        // applies no locality permutation and rows stay where the hand-computed
+        // expectations below put them.
+        let store = FactorMajorStore::new(vec![vec![0, 1, 1, 2, 0], vec![0, 0, 1, 2, 3]], 5)
             .expect("valid factor-major store");
         Design::from_store(store).expect("valid test design")
     }
@@ -44,7 +47,7 @@ mod design_tests {
         let x = vec![1.0, 2.0, 3.0, 10.0, 20.0, 30.0, 40.0];
         let mut y = vec![0.0; 5];
         op.apply(&x, &mut y).expect("apply succeeds");
-        assert_eq!(y, vec![11.0, 22.0, 33.0, 41.0, 12.0]);
+        assert_eq!(y, vec![11.0, 12.0, 22.0, 33.0, 41.0]);
     }
 
     #[test]
@@ -55,7 +58,7 @@ mod design_tests {
         let mut x = vec![0.0; 7];
         op.apply_adjoint(&r, &mut x)
             .expect("apply_adjoint succeeds");
-        assert_eq!(x, vec![5.0, 7.0, 3.0, 6.0, 2.0, 3.0, 4.0]);
+        assert_eq!(x, vec![6.0, 5.0, 4.0, 3.0, 3.0, 4.0, 5.0]);
     }
 
     fn dot(a: &[f64], b: &[f64]) -> f64 {
@@ -63,16 +66,18 @@ mod design_tests {
     }
 
     fn make_single_factor_design() -> Design<FactorMajorStore> {
-        let store = FactorMajorStore::new(vec![vec![0u32, 1, 2, 0, 1]], 5).expect("valid store");
+        // Sorted: a single-factor store is always dominated by its only factor.
+        let store = FactorMajorStore::new(vec![vec![0u32, 0, 1, 1, 2]], 5).expect("valid store");
         Design::from_store(store).expect("valid single-factor design")
     }
 
     fn make_large_design() -> Design<FactorMajorStore> {
+        // Block pattern (level = i / 300): sorted on both factors, 50 levels
+        // each, 300 rows per level — no construction-time permutation.
         let n_obs = 15_000;
-        let n_levels_a = 50usize;
-        let n_levels_b = 50usize;
-        let fa: Vec<u32> = (0..n_obs).map(|i| (i % n_levels_a) as u32).collect();
-        let fb: Vec<u32> = (0..n_obs).map(|i| (i % n_levels_b) as u32).collect();
+        let block = 300u32;
+        let fa: Vec<u32> = (0..n_obs).map(|i| i as u32 / block).collect();
+        let fb = fa.clone();
         let store = FactorMajorStore::new(vec![fa, fb], n_obs).expect("valid factor-major store");
         Design::from_store(store).expect("valid design")
     }
@@ -105,6 +110,45 @@ mod design_tests {
         );
     }
 
+    /// Fold on an *unsorted* column. Construction only sorts by the dominant
+    /// factor, so a small non-dominant factor legitimately reaches
+    /// `ScatterStrategy::Fold` (parallel, `n_levels < SCATTER_LOCAL_THRESHOLD`)
+    /// with interleaved levels — Fold must stay order-agnostic. The dominant
+    /// factor here is pre-sorted (no permutation), leaving `fb = i % 50`
+    /// interleaved.
+    #[test]
+    fn test_fold_unsorted_secondary_factor() {
+        let n_obs = 15_000;
+        let fa: Vec<u32> = (0..n_obs as u32).collect();
+        let fb: Vec<u32> = (0..n_obs).map(|i| (i % 50) as u32).collect();
+        let store = FactorMajorStore::new(vec![fa, fb], n_obs).expect("valid store");
+        let dm = Design::from_store(store).expect("valid design");
+        assert!(dm.obs_perm.is_none(), "dominant factor is sorted; no perm");
+
+        let op = DesignOperator::new(&dm, None);
+        let x: Vec<f64> = (0..dm.n_dofs)
+            .map(|i| (i as f64 * 0.17 + 1.0).sin())
+            .collect();
+        let r: Vec<f64> = (0..dm.n_obs)
+            .map(|i| (i as f64 * 0.23 + 2.0).cos())
+            .collect();
+
+        let mut dx = vec![0.0f64; dm.n_obs];
+        op.apply(&x, &mut dx).expect("apply succeeds");
+        let mut dtr = vec![0.0f64; dm.n_dofs];
+        op.apply_adjoint(&r, &mut dtr)
+            .expect("apply_adjoint succeeds");
+
+        let lhs = dot(&dx, &r);
+        let rhs = dot(&x, &dtr);
+        assert!(
+            (lhs - rhs).abs() < 1e-8,
+            "Adjoint property violated: <D·x, r>={lhs} vs <x, D^T·r>={rhs}"
+        );
+
+        assert_scratch_reuse_matches_fresh(&dm, "fold: non-dominant unsorted 50 levels");
+    }
+
     #[test]
     fn test_large_design_matvec_correctness() {
         let dm = make_large_design();
@@ -116,7 +160,7 @@ mod design_tests {
         op.apply(&ej, &mut y).expect("apply succeeds");
 
         for (i, &yi) in y.iter().enumerate() {
-            let expected = if i % 50 == 0 { 1.0 } else { 0.0 };
+            let expected = if i < 300 { 1.0 } else { 0.0 };
             assert_eq!(
                 yi, expected,
                 "D·e_0 at row {i}: expected {expected}, got {yi}"
@@ -174,7 +218,7 @@ mod design_tests {
         let x = vec![10.0, 20.0, 30.0];
         let mut y = vec![0.0f64; 5];
         op.apply(&x, &mut y).expect("apply succeeds");
-        assert_eq!(y, vec![10.0, 20.0, 30.0, 10.0, 20.0]);
+        assert_eq!(y, vec![10.0, 10.0, 20.0, 20.0, 30.0]);
     }
 
     #[test]
@@ -185,7 +229,7 @@ mod design_tests {
         let mut x = vec![0.0f64; 3];
         op.apply_adjoint(&r, &mut x)
             .expect("apply_adjoint succeeds");
-        assert_eq!(x, vec![5.0, 7.0, 3.0]);
+        assert_eq!(x, vec![3.0, 7.0, 5.0]);
     }
 
     /// Single-factor design with `level(i) = i % n_levels`; when
@@ -211,46 +255,56 @@ mod design_tests {
         }
     }
 
-    /// Regression guard for the scatter-scratch reuse bug class (cf. the removed
-    /// `SCATTER_FOLD_POOL` leak). `apply_adjoint` reuses the operator's atomic
-    /// scatter scratch across calls, so a second call on the *same* operator
-    /// must match a freshly built operator — i.e. stale values from the first
-    /// call must not bleed into the second. The three `(n_obs, n_levels)` pairs
-    /// route the three scatter strategies: Sequential (`n_obs <= PAR_THRESHOLD`),
-    /// Fold (parallel, `n_levels < SCATTER_LOCAL_THRESHOLD`), and Atomic
-    /// (`n_levels >= SCATTER_LOCAL_THRESHOLD`) — the Atomic path, which owns the
-    /// reused scratch, was otherwise never unit-tested.
     #[test]
     fn test_scatter_scratch_reuse_matches_fresh_operator() {
+        // Single-factor designs are sorted at construction, so the three pairs
+        // route Sequential (`n_obs <= PAR_THRESHOLD`), Fold (parallel,
+        // `n_levels < SCATTER_LOCAL_THRESHOLD`), and SortedCoalesced
+        // (`n_levels >= SCATTER_LOCAL_THRESHOLD`, sorted).
         for (n_obs, n_levels) in [(200usize, 16usize), (15_000, 64), (150_000, 100_000)] {
             let dm = make_strategy_design(n_obs, n_levels);
-            let r: Vec<f64> = (0..dm.n_obs)
-                .map(|i| (i as f64 * 0.37 + 1.0).sin())
-                .collect();
-
-            // Baseline: a fresh operator that has never applied before.
-            let fresh = DesignOperator::new(&dm, None);
-            let mut baseline = vec![0.0f64; dm.n_dofs];
-            fresh
-                .apply_adjoint(&r, &mut baseline)
-                .expect("apply_adjoint succeeds");
-
-            // Dirty the scratch with a first apply, then apply again on the same
-            // operator; the second result must equal the fresh baseline.
-            let op = DesignOperator::new(&dm, None);
-            let mut warmup = vec![0.0f64; dm.n_dofs];
-            op.apply_adjoint(&r, &mut warmup)
-                .expect("apply_adjoint succeeds");
-            let mut reused = vec![0.0f64; dm.n_dofs];
-            op.apply_adjoint(&r, &mut reused)
-                .expect("apply_adjoint succeeds");
-
-            assert_all_close(
-                &reused,
-                &baseline,
-                &format!("reused vs fresh (n_obs={n_obs}, n_levels={n_levels})"),
-            );
+            assert_scratch_reuse_matches_fresh(&dm, &format!("n_obs={n_obs}, n_levels={n_levels}"));
         }
+
+        // Atomic: a large *unsorted* factor that is not dominant (the already
+        // sorted dominant factor suppresses construction-time reordering), so
+        // it cannot coalesce.
+        let n_obs = 150_000usize;
+        let fa: Vec<u32> = (0..n_obs as u32).collect();
+        let fb: Vec<u32> = (0..n_obs).map(|i| ((i * 7919) % 100_000) as u32).collect();
+        let store = FactorMajorStore::new(vec![fa, fb], n_obs).expect("valid store");
+        let dm = Design::from_store(store).expect("valid design");
+        assert!(dm.obs_perm.is_none(), "dominant factor is sorted; no perm");
+        assert_scratch_reuse_matches_fresh(&dm, "atomic: non-dominant unsorted 100K levels");
+    }
+
+    /// `apply_adjoint` reuses the operator's atomic scatter scratch across
+    /// calls (cf. the removed `SCATTER_FOLD_POOL` leak): a second call on the
+    /// *same* operator must match a freshly built operator — stale values from
+    /// the first call must not bleed into the second.
+    fn assert_scratch_reuse_matches_fresh(dm: &Design<FactorMajorStore>, ctx: &str) {
+        let r: Vec<f64> = (0..dm.n_obs)
+            .map(|i| (i as f64 * 0.37 + 1.0).sin())
+            .collect();
+
+        // Baseline: a fresh operator that has never applied before.
+        let fresh = DesignOperator::new(dm, None);
+        let mut baseline = vec![0.0f64; dm.n_dofs];
+        fresh
+            .apply_adjoint(&r, &mut baseline)
+            .expect("apply_adjoint succeeds");
+
+        // Dirty the scratch with a first apply, then apply again on the same
+        // operator; the second result must equal the fresh baseline.
+        let op = DesignOperator::new(dm, None);
+        let mut warmup = vec![0.0f64; dm.n_dofs];
+        op.apply_adjoint(&r, &mut warmup)
+            .expect("apply_adjoint succeeds");
+        let mut reused = vec![0.0f64; dm.n_dofs];
+        op.apply_adjoint(&r, &mut reused)
+            .expect("apply_adjoint succeeds");
+
+        assert_all_close(&reused, &baseline, &format!("reused vs fresh ({ctx})"));
     }
 }
 

@@ -76,9 +76,10 @@ proptest! {
     }
 
     /// `solve()` and `Solver::new().solve(, &params)` must produce bit-identical
-    /// results given the same design and RHS. Both use the ArrayStore path
-    /// (raw category view); the wrappers differ only in timing accounting.
-    /// Both should reach the same fixed point.
+    /// results given the same design and RHS: the wrappers differ only in
+    /// timing accounting. Both build an `ArrayStore` design from the raw view,
+    /// so they share the same locality sort (or its absence) and run in
+    /// identical internal row order on any input.
     #[test]
     fn prop_solve_vs_solver_identical((cats, y) in random_fe_problem_strategy()) {
         let params = LsmrOptions {

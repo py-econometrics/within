@@ -64,8 +64,8 @@ pub(crate) fn factor_columns<S: Store>(store: &S) -> Vec<Option<&[u32]>> {
 /// and domain decomposition (which iterate per-factor).
 #[derive(Debug, Clone)]
 pub struct FactorMajorStore {
-    factor_levels: Vec<Vec<u32>>,
-    n_obs: usize,
+    pub(crate) factor_levels: Vec<Vec<u32>>,
+    pub(crate) n_obs: usize,
 }
 
 impl FactorMajorStore {
@@ -110,14 +110,17 @@ impl Store for FactorMajorStore {
 }
 
 // ---------------------------------------------------------------------------
-// ArrayStore — zero-copy observation-major backend
+// ArrayStore — borrowed observation-major backend (zero-copy)
 // ---------------------------------------------------------------------------
 
-/// Zero-copy store backed by a borrowed `ArrayView2<u32>`.
+/// Store backed by a borrowed `ArrayView2<u32>`.
 ///
 /// `categories[[obs, factor]]` is the level for observation `obs` in factor
 /// `factor`. No data is copied — the view points directly into the caller's
-/// buffer (e.g. a numpy array from Python).
+/// buffer (e.g. a numpy array from Python). When the input needs the locality
+/// sort, [`Design::from_store`](crate::Design::from_store) copies the columns
+/// into an owned sorted store instead; only already-sorted input is read
+/// through this view during solves.
 ///
 /// For F-contiguous (column-major) arrays, `factor_column()` returns
 /// contiguous slices — matching `FactorMajorStore` performance.

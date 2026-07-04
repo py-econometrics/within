@@ -42,9 +42,8 @@ pub fn solve<'py>(
     match resolve_precond_input(py, preconditioner)? {
         PrecondInput::Prebuilt(built) => run_solve(py, || -> Result<SolveResult, WithinError> {
             let y_cow = coerce_to_slice(&y_arr);
-            let w_vec = w_view.as_ref().map(|v| coerce_to_slice(v).into_owned());
-            let solver = Solver::new(cats, w_vec, built)?;
-            Ok(solver.solve(&y_cow, &params)?)
+            let w_cow = w_view.as_ref().map(coerce_to_slice);
+            solve_native(cats, &y_cow, w_cow.as_deref(), &params, built)
         }),
         PrecondInput::Config(precond) => run_solve(py, || {
             let y_cow = coerce_to_slice(&y_arr);
@@ -90,9 +89,8 @@ pub fn solve_batch<'py>(
         PrecondInput::Prebuilt(built) => run_batch(py, || -> Result<_, WithinError> {
             let columns = extract_columns(&y_arr);
             let col_refs = column_refs(&columns);
-            let w_vec = w_view.as_ref().map(|v| coerce_to_slice(v).into_owned());
-            let solver = Solver::new(cats, w_vec, built)?;
-            Ok(solver.solve_batch(&col_refs, &params)?)
+            let w_cow = w_view.as_ref().map(coerce_to_slice);
+            solve_batch_native(cats, &col_refs, w_cow.as_deref(), &params, built)
         }),
         PrecondInput::Config(precond) => run_batch(py, || {
             let columns = extract_columns(&y_arr);

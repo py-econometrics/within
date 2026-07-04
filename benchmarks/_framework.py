@@ -47,6 +47,7 @@ class ProblemSpec:
     generator: str  # Registry key in _problems.py
     params: dict[str, Any] = field(default_factory=dict)
     seed: int = 42
+    shuffled: bool = False  # Row-shuffle the generated problem (unsorted input)
 
 
 @dataclass(frozen=True)
@@ -238,6 +239,12 @@ def run_problem_set(
     for prob in problems:
         gen = get_generator(prob.generator)
         cats, n_levels, y = gen(**prob.params, seed=prob.seed)
+        if prob.shuffled:
+            # Same permutation for categories AND y: identical problem, only
+            # its row order is scrambled — the case the locality sort targets.
+            perm = np.random.default_rng(prob.seed).permutation(len(y))
+            cats = [c[perm] for c in cats]
+            y = y[perm]
         n_fe = len(n_levels)
         print(
             f"\nProblem: {prob.name}  ({n_fe}-FE, DOFs={sum(n_levels)}, Rows={len(cats[0])})"

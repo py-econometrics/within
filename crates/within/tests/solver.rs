@@ -204,3 +204,46 @@ fn test_solver_accepts_prebuilt_design() {
     let result = solver.solve(&y, &params).expect("solve");
     assert!(result.converged);
 }
+
+/// The construction-time locality sort must be transparent: coefficients are
+/// permutation-invariant and `demeaned` comes back in caller order. The sort
+/// is applied to every store by `Design::from_store`, so the oracle is built
+/// via `from_store_unsorted`, the explicit caller-order escape hatch. Results
+/// agree within solver tolerance, not bitwise: the paths sum in different
+/// row orders.
+#[test]
+fn test_internal_locality_sort_is_transparent() {
+    use within::observation::FactorMajorStore;
+    use within::Design;
+
+    // Factor 0 (4 levels) is the dominant factor and is non-monotonic.
+    let col0: Vec<u32> = vec![3, 0, 2, 1, 3, 0, 2, 1, 3, 0, 2, 1];
+    let col1: Vec<u32> = vec![0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 0, 1];
+    let n_obs = col0.len();
+    let y: Vec<f64> = (0..n_obs)
+        .map(|i| (i as f64 * 1.3 - 2.0).sin() + 0.5)
+        .collect();
+    let w: Vec<f64> = (0..n_obs).map(|i| 0.5 + 0.1 * i as f64).collect();
+    let params = default_params();
+    let precond = additive_precond();
+
+    let make_solver = |weights: Option<Vec<f64>>| {
+        let design = common::make_design(vec![col0.clone(), col1.clone()]).expect("design");
+        Solver::new(design, weights, &precond).expect("solver")
+    };
+    let make_oracle = |weights: Option<Vec<f64>>| {
+        let store = FactorMajorStore::new(vec![col0.clone(), col1.clone()], n_obs).expect("store");
+        let design = Design::from_store_unsorted(store).expect("oracle design");
+        Solver::new(design, weights, &precond).expect("oracle solver")
+    };
+
+    // The weighted run also exercises the weights-permutation path.
+    for weights in [None, Some(w)] {
+        let oracle = make_oracle(weights.clone())
+            .solve(&y, &params)
+            .expect("oracle");
+        let sorted = make_solver(weights).solve(&y, &params).expect("sorted");
+        common::assert_solutions_close(&sorted.x, &oracle.x, 1e-7);
+        common::assert_solutions_close(&sorted.demeaned, &oracle.demeaned, 1e-7);
+    }
+}
