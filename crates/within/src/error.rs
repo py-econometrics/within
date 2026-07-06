@@ -11,15 +11,34 @@ pub enum BuildError {
     /// No observations provided.
     #[error("no observations provided")]
     EmptyObservations,
-    /// One factor column does not match the expected observation count.
-    #[error("factor {factor} has {got} observations, expected {expected}")]
+    /// One column does not match the expected observation count.
+    #[error("column {column} has {got} observations, expected {expected}")]
     ObservationCountMismatch {
-        /// Index of the factor with mismatched length.
-        factor: usize,
+        /// Index of the mismatched column (categorical first, then continuous).
+        column: usize,
         /// Expected number of observations.
         expected: usize,
-        /// Actual number of observations in this factor's column.
+        /// Actual number of observations in this column.
         got: usize,
+    },
+    /// An effect with neither an intercept nor a slope.
+    #[error("an effect must have an intercept or at least one slope")]
+    EmptyEffect,
+    /// A slope covariate's length does not match the effect's level count.
+    #[error("slope {slope} has {got} values, expected {expected}")]
+    SlopeLengthMismatch {
+        /// Index of the slope covariate within its effect.
+        slope: usize,
+        /// Expected length (the effect's level count).
+        expected: usize,
+        /// Actual length.
+        got: usize,
+    },
+    /// An effect carries varying slopes, which the solver does not yet support.
+    #[error("effect {effect} has varying slopes, not yet supported by the solver")]
+    SlopesNotYetSupported {
+        /// Index of the offending effect.
+        effect: usize,
     },
     /// Weight vector does not match the number of observations.
     #[error("weights has length {got}, expected {expected}")]

@@ -24,8 +24,17 @@ ruff = ">=0.9"
 hypothesis = ">=6.0"
 samply = ">=0.13"
 
+[feature.fixest.dependencies]
+r-base = ">=4.3"
+r-fixest = ">=0.12"
+"r-data.table" = "*"
+
+[feature.fixest.tasks]
+bench-slopes = "python -m benchmarks.slopes_fixest"
+
 [environments]
 default = { features = ["build", "dev"], solve-group = "default" }
+fixest = { features = ["fixest", "build"], solve-group = "default" }
 
 [tasks]
 test = "maturin develop --uv && pytest tests/ -v --cov=within --cov-report=term-missing"

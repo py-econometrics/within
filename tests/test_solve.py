@@ -7,6 +7,7 @@ import pytest
 
 from within import (
     BatchSolveResult,
+    Effect,
     LsmrOptions,
     Preconditioner,
     PreconditionerConfig,
@@ -182,6 +183,17 @@ class TestContiguityWarning:
         with warnings.catch_warnings():
             warnings.simplefilter("error")
             solve(cats_f, y)
+
+    def test_column_reversed_f_view_no_warning(self, problem):
+        # Reversing columns keeps each column contiguous (row stride == itemsize),
+        # so ingest borrows them zero-copy and no warning applies.
+        cats, y = problem
+        cats_rev = as_solver_categories(cats)[:, ::-1]
+        assert cats_rev.strides[0] == cats_rev.itemsize
+        assert cats_rev.strides[1] < 0
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            solve(cats_rev, y)
 
 
 # ---------------------------------------------------------------------------
@@ -413,3 +425,24 @@ class TestGenerateSyntheticData:
         np.testing.assert_array_equal(c1, c2)
         np.testing.assert_array_equal(x1, x2)
         np.testing.assert_array_equal(y1, y2)
+
+
+class TestEffectDesign:
+    def test_intercept_only_matches_categories_path(self):
+        # The issue's trust anchor: an intercept-only effect design must be
+        # bit-identical to the equivalent categories-matrix solve.
+        rng = np.random.default_rng(0)
+        n = 300
+        col0 = rng.integers(0, 4, size=n).astype(np.uint32)
+        col1 = rng.integers(0, 6, size=n).astype(np.uint32)
+        y = rng.standard_normal(n)
+
+        categories = np.asfortranarray(np.column_stack([col0, col1]))
+        from_categories = solve(categories, y)
+        from_effects = solve(
+            [Effect(col0, intercept=True), Effect(col1, intercept=True)], y
+        )
+
+        assert from_effects.converged
+        np.testing.assert_array_equal(from_effects.x, from_categories.x)
+        np.testing.assert_array_equal(from_effects.demeaned, from_categories.demeaned)

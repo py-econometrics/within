@@ -1,16 +1,15 @@
 //! Free `#[pyfunction]`s exposed via `within._within`: [`solve`] and
 //! [`solve_batch`].
 
-use numpy::{PyReadonlyArray1, PyReadonlyArray2};
+use numpy::{PyReadonlyArray1, PyReadonlyArray2, PyUntypedArray};
 use pyo3::prelude::*;
 
-use within::observation::FactorMajorStore;
 use within::{
-    solve as solve_native, solve_batch as solve_batch_native, BuildError, Design, SolveResult,
-    Solver, WithinError,
+    solve as solve_native, solve_batch as solve_batch_native, BuildError, Design, Effect,
+    IntoDesign, SolveResult, Solver, WithinError,
 };
 
-use crate::config::{resolve_lsmr_config, resolve_precond_input, PrecondInput, PyPreconditioner};
+use crate::config::{resolve_lsmr_config, resolve_precond_input, PyPreconditioner};
 use crate::convert::{coerce_to_slice, column_refs, extract_columns, value_err, warn_c_contiguous};
 use crate::results::{run_batch, run_solve, PyBatchSolveResult, PySolveResult};
 
@@ -19,37 +18,41 @@ use crate::results::{run_batch, run_solve, PyBatchSolveResult, PySolveResult};
 // ---------------------------------------------------------------------------
 
 #[pyfunction]
-#[pyo3(signature = (categories, y, options=None, weights=None, preconditioner=None))]
+#[pyo3(signature = (design, y, options=None, weights=None, preconditioner=None))]
 pub fn solve<'py>(
     py: Python<'py>,
-    categories: PyReadonlyArray2<'py, u32>,
+    design: &Bound<'py, PyAny>,
     y: PyReadonlyArray1<'py, f64>,
     options: Option<&Bound<'py, PyAny>>,
     weights: Option<PyReadonlyArray1<'py, f64>>,
     preconditioner: Option<&Bound<'py, PyAny>>,
 ) -> PyResult<PySolveResult> {
-    let cats = categories.as_array();
-    warn_c_contiguous(py, &cats)?;
+    let params = resolve_lsmr_config(options)?;
+    let precond = resolve_precond_input(py, preconditioner)?;
 
     // Borrow the array views while the GIL is held (`PyReadonlyArray` needs the
-    // token), but defer the slice coercion -- and any copy of strided input --
-    // into the GIL-released closures below. The common F-contiguous path then
-    // borrows both `y` and `weights` with no copy at all.
+    // token), but defer slice coercion -- and any copy of strided input -- into
+    // the GIL-released closures below, so the F-contiguous path copies nothing.
     let y_arr = y.as_array();
     let w_view = weights.as_ref().map(|w| w.as_array());
-    let params = resolve_lsmr_config(options)?;
 
-    match resolve_precond_input(py, preconditioner)? {
-        PrecondInput::Prebuilt(built) => run_solve(py, || -> Result<SolveResult, WithinError> {
-            let y_cow = coerce_to_slice(&y_arr);
-            let w_cow = w_view.as_ref().map(coerce_to_slice);
-            solve_native(cats, &y_cow, w_cow.as_deref(), &params, built)
-        }),
-        PrecondInput::Config(precond) => run_solve(py, || {
-            let y_cow = coerce_to_slice(&y_arr);
-            let w_cow = w_view.as_ref().map(coerce_to_slice);
-            solve_native(cats, &y_cow, w_cow.as_deref(), &params, precond.as_ref())
-        }),
+    match extract_design(py, design)? {
+        DesignSource::Categories(categories) => {
+            let cats = categories.as_array();
+            run_solve(py, move || -> Result<SolveResult, WithinError> {
+                let y_cow = coerce_to_slice(&y_arr);
+                let w_cow = w_view.as_ref().map(coerce_to_slice);
+                solve_native(cats, &y_cow, w_cow.as_deref(), &params, precond)
+            })
+        }
+        DesignSource::Effects(terms) => {
+            run_solve(py, move || -> Result<SolveResult, WithinError> {
+                let effects: Vec<_> = terms.iter().map(PyEffect::as_effect).collect();
+                let y_cow = coerce_to_slice(&y_arr);
+                let w_cow = w_view.as_ref().map(coerce_to_slice);
+                solve_native(effects, &y_cow, w_cow.as_deref(), &params, precond)
+            })
+        }
     }
 }
 
@@ -79,26 +82,101 @@ pub fn solve_batch<'py>(
         )));
     }
 
-    // Defer column extraction and weight coercion into the GIL-released closures
+    // Defer column extraction and weight coercion into the GIL-released closure
     // below: F-contiguous columns and contiguous weights are borrowed directly,
     // only strided input is copied (off-GIL).
     let w_view = weights.as_ref().map(|w| w.as_array());
     let params = resolve_lsmr_config(options)?;
+    let precond = resolve_precond_input(py, preconditioner)?;
 
-    match resolve_precond_input(py, preconditioner)? {
-        PrecondInput::Prebuilt(built) => run_batch(py, || -> Result<_, WithinError> {
-            let columns = extract_columns(&y_arr);
-            let col_refs = column_refs(&columns);
-            let w_cow = w_view.as_ref().map(coerce_to_slice);
-            solve_batch_native(cats, &col_refs, w_cow.as_deref(), &params, built)
-        }),
-        PrecondInput::Config(precond) => run_batch(py, || {
-            let columns = extract_columns(&y_arr);
-            let col_refs = column_refs(&columns);
-            let w_cow = w_view.as_ref().map(coerce_to_slice);
-            solve_batch_native(cats, &col_refs, w_cow.as_deref(), &params, precond.as_ref())
-        }),
+    run_batch(py, move || -> Result<_, WithinError> {
+        let columns = extract_columns(&y_arr);
+        let col_refs = column_refs(&columns);
+        let w_cow = w_view.as_ref().map(coerce_to_slice);
+        solve_batch_native(cats, &col_refs, w_cow.as_deref(), &params, precond)
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Effect-term design
+// ---------------------------------------------------------------------------
+
+/// One factor's effect: level codes, an optional intercept, and slope covariates.
+///
+/// Holds its columns natively (copied out of numpy) so the borrowed [`Effect`]
+/// it lowers to can be rebuilt off-GIL, where `Py` handles can't reach.
+#[pyclass(frozen, module = "within._within")]
+#[pyo3(name = "Effect")]
+#[derive(Clone)]
+pub struct PyEffect {
+    levels: Vec<u32>,
+    intercept: bool,
+    slopes: Vec<Vec<f64>>,
+}
+
+#[pymethods]
+impl PyEffect {
+    #[new]
+    #[pyo3(signature = (levels, intercept, slopes=None))]
+    fn new<'py>(
+        levels: PyReadonlyArray1<'py, u32>,
+        intercept: bool,
+        slopes: Option<Vec<PyReadonlyArray1<'py, f64>>>,
+    ) -> PyResult<Self> {
+        let levels = levels.as_array().to_vec();
+        let slopes: Vec<Vec<f64>> = slopes
+            .unwrap_or_default()
+            .iter()
+            .map(|s| s.as_array().to_vec())
+            .collect();
+        // Validate through the native constructor so the rules live in one place.
+        Effect::new(&levels, intercept, slopes.iter().map(Vec::as_slice)).map_err(value_err)?;
+        Ok(Self {
+            levels,
+            intercept,
+            slopes,
+        })
     }
+}
+
+impl PyEffect {
+    /// Rebuild the borrowed native [`Effect`]. Infallible: `PyEffect::new`
+    /// already validated these exact columns through `Effect::new`.
+    fn as_effect(&self) -> Effect<'_> {
+        Effect::new(
+            &self.levels,
+            self.intercept,
+            self.slopes.iter().map(Vec::as_slice),
+        )
+        .expect("PyEffect columns were validated at construction")
+    }
+}
+
+/// A solve's design, as interpreted from the Python `design` argument.
+enum DesignSource<'py> {
+    /// An `(n_obs, n_factors)` categories matrix, borrowed from numpy.
+    Categories(PyReadonlyArray2<'py, u32>),
+    /// Effect terms, cloned out of Python so they can be rebuilt off-GIL.
+    Effects(Vec<PyEffect>),
+}
+
+/// Interpret the Python `design` argument: a 2-D `uint32` categories matrix
+/// (borrowed) or a list of [`Effect`] terms (cloned out of Python).
+fn extract_design<'py>(py: Python<'_>, design: &Bound<'py, PyAny>) -> PyResult<DesignSource<'py>> {
+    if design.downcast::<PyUntypedArray>().is_ok() {
+        let categories = design.extract::<PyReadonlyArray2<u32>>()?;
+        warn_c_contiguous(py, &categories.as_array())?;
+        return Ok(DesignSource::Categories(categories));
+    }
+    let effects: Vec<Py<PyEffect>> = design
+        .extract()
+        .map_err(|_| value_err("design must be a 2-D uint32 array or a list of Effect"))?;
+    Ok(DesignSource::Effects(
+        effects
+            .iter()
+            .map(|e| e.bind(py).borrow().clone())
+            .collect(),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -113,52 +191,43 @@ pub fn solve_batch<'py>(
 #[pyclass(frozen, module = "within._within")]
 #[pyo3(name = "Solver")]
 pub struct PySolver {
-    solver: Solver<FactorMajorStore>,
+    solver: Solver<'static>,
 }
 
 #[pymethods]
 impl PySolver {
     #[new]
-    #[pyo3(signature = (categories, weights=None, preconditioner=None))]
+    #[pyo3(signature = (design, weights=None, preconditioner=None))]
     fn new<'py>(
         py: Python<'py>,
-        categories: PyReadonlyArray2<'py, u32>,
+        design: &Bound<'py, PyAny>,
         weights: Option<PyReadonlyArray1<'py, f64>>,
         preconditioner: Option<&Bound<'py, PyAny>>,
     ) -> PyResult<Self> {
-        let cats = categories.as_array();
-        warn_c_contiguous(py, &cats)?;
-
-        let n_obs = cats.nrows();
-        let n_factors = cats.ncols();
-        let weights_vec: Option<Vec<f64>> = weights
-            .as_ref()
-            .map(|w| w.as_array().iter().copied().collect());
-
-        // Resolve the preconditioner argument while the GIL is held (it inspects
-        // Python objects); the result carries only native data.
+        let weights_vec: Option<Vec<f64>> = weights.as_ref().map(|w| w.as_array().to_vec());
         let precond = resolve_precond_input(py, preconditioner)?;
 
-        // Release the GIL for the CPU-heavy work: the factor-major copy out of
-        // the numpy array, the store/design construction, and the preconditioner
-        // factorisation. The `BuildError` carries no GIL types, so it is mapped
-        // to a Python exception only after the GIL is reacquired.
-        let solver = py
-            .allow_threads(move || -> Result<Solver<FactorMajorStore>, BuildError> {
-                let factor_levels: Vec<Vec<u32>> = (0..n_factors)
-                    .map(|f| cats.column(f).iter().copied().collect())
-                    .collect();
-                let store = FactorMajorStore::new(factor_levels, n_obs)?;
-                let design = Design::from_store(store)?;
-                match precond {
-                    PrecondInput::Prebuilt(built) => Solver::new(design, weights_vec, built),
-                    PrecondInput::Config(config) => {
-                        Solver::new(design, weights_vec, config.as_ref())
-                    }
-                }
-            })
-            .map_err(value_err)?;
-
+        // Release the GIL for the design copy/build and preconditioner
+        // factorisation; `BuildError` carries no Python types, so it is mapped
+        // to a Python exception only once the GIL is reacquired.
+        let solver = match extract_design(py, design)? {
+            DesignSource::Categories(categories) => {
+                let cats = categories.as_array();
+                py.allow_threads(move || -> Result<Solver<'static>, BuildError> {
+                    Solver::new(cats.into_design()?.into_owned(), weights_vec, precond)
+                })
+            }
+            DesignSource::Effects(terms) => {
+                py.allow_threads(move || -> Result<Solver<'static>, BuildError> {
+                    let effects: Vec<_> = terms.iter().map(PyEffect::as_effect).collect();
+                    // The design borrows the terms' buffers; the solver outlives
+                    // them, so lower to owned columns first.
+                    let design = Design::new(effects)?.into_owned();
+                    Solver::new(design, weights_vec, precond)
+                })
+            }
+        }
+        .map_err(value_err)?;
         Ok(Self { solver })
     }
 

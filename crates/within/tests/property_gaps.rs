@@ -77,7 +77,7 @@ proptest! {
 
     /// `solve()` and `Solver::new().solve(, &params)` must produce bit-identical
     /// results given the same design and RHS: the wrappers differ only in
-    /// timing accounting. Both build an `ArrayStore` design from the raw view,
+    /// timing accounting. Both ingest the raw view into a frame design,
     /// so they share the same locality sort (or its absence) and run in
     /// identical internal row order on any input.
     #[test]
@@ -88,7 +88,7 @@ proptest! {
         };
         let precond = additive_precond();
 
-        // Path A: convenience `solve()` (uses ArrayStore internally)
+        // Path A: convenience `solve()` (ingests the view internally)
         let result_a = solve(cats.view(), &y, None, &params, &precond).unwrap();
 
         // Path B: Solver::new() — identical to solve() but without timing wrapper

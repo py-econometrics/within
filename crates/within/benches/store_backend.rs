@@ -1,4 +1,5 @@
-//! Benchmark: ArrayStore (zero-copy, C vs F order) vs FactorMajorStore (copy).
+//! Benchmark: input-path cost — owned columns vs borrowed views (C vs F order).
+//! Bench IDs keep their pre-frame names so criterion baselines stay comparable.
 
 use std::time::Duration;
 
@@ -8,8 +9,6 @@ use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
 use within::config::{LsmrOptions, PreconditionerConfig};
-use within::observation::{ArrayStore, FactorMajorStore};
-use within::Design;
 use within::Solver;
 
 const TOL: f64 = 1e-6;
@@ -94,37 +93,19 @@ fn bench_store_backends(c: &mut Criterion) {
         let p = generate_problem(*n_obs, n_lev, *seed);
         let precond_ref = p.preconditioner.as_ref();
 
-        // FactorMajorStore: copy columns from C-order array, contiguous factor_column.
-        group.bench_function(BenchmarkId::new("FactorMajor", &p.label), |b| {
-            b.iter(|| {
-                let factor_levels: Vec<Vec<u32>> = (0..p.categories_c.ncols())
-                    .map(|q| p.categories_c.column(q).to_vec())
-                    .collect();
-                let store = FactorMajorStore::new(factor_levels, *n_obs).unwrap();
-                let design = Design::from_store(store).unwrap();
-                let solver = Solver::new(design, None, precond_ref).unwrap();
-                let r = solver.solve(&p.y, &p.params).unwrap();
-                assert!(r.converged);
-            });
-        });
-
-        // ArrayStore C-order: zero-copy, strided columns.
+        // C-order view: ingest copies each strided column once.
         group.bench_function(BenchmarkId::new("Array(C)", &p.label), |b| {
             b.iter(|| {
-                let store = ArrayStore::new(p.categories_c.view()).unwrap();
-                let design = Design::from_store(store).unwrap();
-                let solver = Solver::new(design, None, precond_ref).unwrap();
+                let solver = Solver::new(p.categories_c.view(), None, precond_ref).unwrap();
                 let r = solver.solve(&p.y, &p.params).unwrap();
                 assert!(r.converged);
             });
         });
 
-        // ArrayStore F-order: zero-copy, contiguous columns.
+        // F-order view: contiguous columns borrowed zero-copy.
         group.bench_function(BenchmarkId::new("Array(F)", &p.label), |b| {
             b.iter(|| {
-                let store = ArrayStore::new(p.categories_f.view()).unwrap();
-                let design = Design::from_store(store).unwrap();
-                let solver = Solver::new(design, None, precond_ref).unwrap();
+                let solver = Solver::new(p.categories_f.view(), None, precond_ref).unwrap();
                 let r = solver.solve(&p.y, &p.params).unwrap();
                 assert!(r.converged);
             });
