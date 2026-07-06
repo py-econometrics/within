@@ -224,6 +224,11 @@ impl<'a> Solver<'a> {
         preconditioner: impl Into<PreconditionerInput>,
     ) -> Result<Self, BuildError> {
         let design = design.into_design()?;
+        // Slope-bearing designs build and their operator is exercisable, but
+        // the solve transform and preconditioner land in later slices (#59+).
+        if let Some(idx) = design.terms.iter().position(|t| !t.slopes.is_empty()) {
+            return Err(BuildError::SlopesNotYetSupported { effect: idx });
+        }
         design.validate_weights(weights.as_deref())?;
 
         // Align weights with the design's internal (possibly locality-sorted)

@@ -26,7 +26,7 @@ fn to_u32(x: usize) -> u32 {
 
 /// Compact mapping of active levels for a factor pair.
 ///
-/// Maps global level indices to local (compact) indices for terms q and r,
+/// Maps global level indices to local (compact) indices for factors q and r,
 /// and provides the local-to-global index vector for the combined domain.
 struct ActiveLevels {
     q_map: Vec<u32>,
