@@ -21,7 +21,7 @@ use crate::BuildError;
 
 /// Per-factor metadata: level count and global DOF offset.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct FactorMeta {
+pub(crate) struct TermMeta {
     pub n_levels: usize,
     pub offset: usize,
     /// Non-decreasing in the design's internal row order (fixed at construction).
@@ -33,7 +33,7 @@ pub(crate) struct FactorMeta {
 pub struct Design<'a> {
     /// Columns in internal row order (caller's, or an owned locality-sorted copy).
     pub(crate) frame: ObservationFrame<'a>,
-    pub(crate) factors: Vec<FactorMeta>,
+    pub(crate) terms: Vec<TermMeta>,
     pub(crate) n_obs: usize,
     pub(crate) n_dofs: usize,
     /// `obs_perm[k]` = caller's original index of the observation at internal position `k`.
@@ -75,7 +75,7 @@ impl<'a> Design<'a> {
         }
 
         let n_obs = frame.n_obs();
-        let mut factors = Vec::with_capacity(frame.n_factors());
+        let mut terms = Vec::with_capacity(frame.n_factors());
         let mut offset = 0;
         for q in 0..frame.n_factors() {
             let col = frame.level_column(q);
@@ -88,7 +88,7 @@ impl<'a> Design<'a> {
                 prev = v;
             }
             let n_levels = max as usize + 1;
-            factors.push(FactorMeta {
+            terms.push(TermMeta {
                 n_levels,
                 offset,
                 sorted,
@@ -99,9 +99,9 @@ impl<'a> Design<'a> {
         // Sort by the highest-cardinality factor so its gather/scatter runs
         // sequentially. `obs_perm` indexes observations as u32; beyond
         // u32::MAX rows skip the optimization — the solve itself has no such limit.
-        let dominant = (0..factors.len()).max_by_key(|&q| factors[q].n_levels);
+        let dominant = (0..terms.len()).max_by_key(|&q| terms[q].n_levels);
         let (frame, obs_perm) = match dominant {
-            Some(d) if locality_sort && !factors[d].sorted && u32::try_from(n_obs).is_ok() => {
+            Some(d) if locality_sort && !terms[d].sorted && u32::try_from(n_obs).is_ok() => {
                 // Stable argsort. Must be `sort_by_cached_key`, NOT `sort_by_key`:
                 // the latter re-gathers `key[i]` O(n log n) times and dominated
                 // setup at tens of millions of rows.
@@ -109,9 +109,9 @@ impl<'a> Design<'a> {
                 let mut perm: Vec<u32> = (0..n_obs as u32).collect();
                 perm.sort_by_cached_key(|&i| key[i as usize]);
                 let sorted_frame = frame.permuted(&perm);
-                // Rescan sortedness: factors nested in (or duplicating) the
+                // Rescan sortedness: terms nested in (or duplicating) the
                 // dominant one come out sorted, keeping their coalesced scatter.
-                for (q, meta) in factors.iter_mut().enumerate() {
+                for (q, meta) in terms.iter_mut().enumerate() {
                     meta.sorted = sorted_frame.level_column(q).is_sorted();
                 }
                 (sorted_frame, Some(perm))
@@ -121,7 +121,7 @@ impl<'a> Design<'a> {
 
         Ok(Design {
             frame,
-            factors,
+            terms,
             n_obs,
             n_dofs: offset,
             obs_perm,
@@ -132,7 +132,7 @@ impl<'a> Design<'a> {
     pub fn into_owned(self) -> Design<'static> {
         Design {
             frame: self.frame.into_owned(),
-            factors: self.factors,
+            terms: self.terms,
             n_obs: self.n_obs,
             n_dofs: self.n_dofs,
             obs_perm: self.obs_perm,
@@ -187,10 +187,10 @@ impl<'a> Design<'a> {
         }
     }
 
-    /// Number of categorical factors in the design.
+    /// Number of categorical terms in the design.
     #[inline]
     pub fn n_factors(&self) -> usize {
-        self.factors.len()
+        self.terms.len()
     }
 
     /// Number of observations (rows of D).
@@ -255,9 +255,9 @@ mod tests {
 
         // Stable argsort of [2,0,1,0] → original indices [1,3,2,0].
         assert_eq!(design.obs_perm.as_deref(), Some(&[1u32, 3, 2, 0][..]));
-        assert!(design.factors[0].sorted);
+        assert!(design.terms[0].sorted);
         // Factor 1's permuted column [0,1,1,0] is no longer non-decreasing.
-        assert!(!design.factors[1].sorted);
+        assert!(!design.terms[1].sorted);
 
         assert_eq!(design.frame.level_column(0), [0, 0, 1, 2]);
         assert_eq!(design.frame.level_column(1), [0, 1, 1, 0]);
@@ -271,8 +271,8 @@ mod tests {
         let col1: Vec<u32> = col0.iter().map(|&v| v / 2).collect();
         let design = Design::from_frame(frame(vec![col0, col1], vec![])).unwrap();
         assert!(design.obs_perm.is_some());
-        assert!(design.factors[0].sorted);
-        assert!(design.factors[1].sorted);
+        assert!(design.terms[0].sorted);
+        assert!(design.terms[1].sorted);
     }
 
     #[test]
@@ -280,8 +280,8 @@ mod tests {
         let design =
             Design::from_frame(frame(vec![vec![0, 0, 1, 2], vec![1, 0, 1, 0]], vec![])).unwrap();
         assert!(design.obs_perm.is_none());
-        assert!(design.factors[0].sorted);
-        assert!(!design.factors[1].sorted);
+        assert!(design.terms[0].sorted);
+        assert!(!design.terms[1].sorted);
     }
 
     #[test]

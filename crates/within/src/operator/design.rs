@@ -17,7 +17,7 @@ const PAR_THRESHOLD: usize = 10_000;
 /// Factor-level threshold for choosing between fold and atomic scatter-add.
 ///
 /// Factors with fewer than this many levels use thread-local fold/reduce
-/// (O(n_levels * n_threads) memory). Larger factors use atomic CAS instead,
+/// (O(n_levels * n_threads) memory). Larger terms use atomic CAS instead,
 /// which has low contention when bins vastly outnumber threads.
 const SCATTER_LOCAL_THRESHOLD: usize = 100_000;
 
@@ -25,9 +25,9 @@ const SCATTER_LOCAL_THRESHOLD: usize = 100_000;
 enum ScatterStrategy {
     /// Plain sequential loop — used when n_rows is below `PAR_THRESHOLD`.
     Sequential,
-    /// Parallel fold/reduce with thread-local accumulators — for small factors.
+    /// Parallel fold/reduce with thread-local accumulators — for small terms.
     Fold,
-    /// Parallel atomic CAS — for large factors with low contention.
+    /// Parallel atomic CAS — for large terms with low contention.
     Atomic,
     /// Atomic path for a large sorted factor: equal-level runs coalesce into
     /// one atomic add per distinct level per chunk instead of one per row,
@@ -37,7 +37,7 @@ enum ScatterStrategy {
 
 impl ScatterStrategy {
     /// Pick the scatter strategy for one factor; `sorted` is the factor's
-    /// level-column sortedness (`FactorMeta::sorted`).
+    /// level-column sortedness (`TermMeta::sorted`).
     fn pick(parallel: bool, n_levels: usize, sorted: bool) -> Self {
         match (parallel, n_levels < SCATTER_LOCAL_THRESHOLD, sorted) {
             (false, _, _) => ScatterStrategy::Sequential,
@@ -63,15 +63,15 @@ pub(crate) fn gather_apply(
 
     dst.fill(0.0);
 
-    let factors = &design.factors;
-    let columns: Vec<&[u32]> = (0..factors.len())
+    let terms = &design.terms;
+    let columns: Vec<&[u32]> = (0..terms.len())
         .map(|q| design.frame.level_column(q))
         .collect();
 
     let kernel = |chunk: &mut [f64], row_start: usize| {
         // `&levels` copies the slice ref out of `columns`; binding `&&[u32]`
         // leaves a non-hoisted double deref in the inner loop (~5% measured).
-        for (f, &levels) in factors.iter().zip(columns.iter()) {
+        for (f, &levels) in terms.iter().zip(columns.iter()) {
             for (local, dst_val) in chunk.iter_mut().enumerate() {
                 let i = row_start + local;
                 *dst_val += src[f.offset + levels[i] as usize];
@@ -221,7 +221,7 @@ pub(crate) struct DesignOperator<'a> {
     design: &'a Design<'a>,
     sqrt_weights: Option<Vec<f64>>,
     /// Reusable atomic-scatter scratch, sized once to the largest factor's
-    /// level count and reused across factors and `apply_adjoint` calls so it is
+    /// level count and reused across terms and `apply_adjoint` calls so it is
     /// allocated once per operator rather than once per LSMR iteration.
     /// `apply_adjoint` takes `&self`, but `AtomicF64`'s load/store/fetch_add are
     /// `&self` operations, so a plain `Vec<AtomicF64>` (already `Sync`) needs no
@@ -254,7 +254,7 @@ impl<'a> DesignOperator<'a> {
             );
             w.iter().map(|wi| wi.sqrt()).collect()
         });
-        let max_levels = design.factors.iter().map(|f| f.n_levels).max().unwrap_or(0);
+        let max_levels = design.terms.iter().map(|f| f.n_levels).max().unwrap_or(0);
         Self {
             design,
             sqrt_weights,
@@ -281,7 +281,7 @@ impl<'a> DesignOperator<'a> {
         debug_assert_eq!(dst.len(), design.n_dofs);
         let parallel = design.n_obs > PAR_THRESHOLD;
 
-        for (q, f) in design.factors.iter().enumerate() {
+        for (q, f) in design.terms.iter().enumerate() {
             let slice = &mut dst[f.offset..f.offset + f.n_levels];
             let levels = design.frame.level_column(q);
 
@@ -335,7 +335,7 @@ mod tests {
 
     /// Must match a naive per-row scatter-add, including a run straddling the
     /// chunk boundary (committed by two chunks via additive atomics). Gated on
-    /// large sorted factors, so integration tests never reach it — exercised
+    /// large sorted terms, so integration tests never reach it — exercised
     /// directly here.
     #[test]
     fn coalesced_scatter_matches_naive() {
