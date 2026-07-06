@@ -9,7 +9,6 @@
 use schwarz_precond::{PartitionWeights, SubdomainCore};
 
 use super::{find_all_active_levels, BlockDiagonals, CrossTab, Design};
-use crate::observation::Store;
 
 /// A local subdomain corresponding to a pair of factors.
 #[derive(Clone)]
@@ -48,8 +47,8 @@ pub(crate) struct LocalDomain {
 /// Factor pairs are processed in parallel via Rayon. The
 /// `compute_partition_weights` step remains sequential after the parallel
 /// collect.
-pub(crate) fn build_local_domains<S: Store>(
-    design: &Design<S>,
+pub(crate) fn build_local_domains(
+    design: &Design<'_>,
     weights: Option<&[f64]>,
 ) -> Vec<LocalDomain> {
     use rayon::prelude::*;
@@ -188,19 +187,19 @@ fn compute_partition_weights(domain_pairs: &mut [LocalDomain], n_dofs: usize) {
 mod tests {
     use super::*;
     use crate::domain::Design;
-    use crate::observation::FactorMajorStore;
+    use crate::observation::ObservationFrame;
 
-    fn make_test_design() -> Design<FactorMajorStore> {
-        let store = FactorMajorStore::new(
+    fn make_test_design() -> Design<'static> {
+        let frame = ObservationFrame::new(
             vec![
-                vec![0, 1, 2, 0, 1, 2],
-                vec![0, 1, 0, 1, 0, 1],
-                vec![0, 0, 1, 1, 0, 1],
+                vec![0u32, 1, 2, 0, 1, 2].into(),
+                vec![0u32, 1, 0, 1, 0, 1].into(),
+                vec![0u32, 0, 1, 1, 0, 1].into(),
             ],
-            6,
+            Vec::new(),
         )
-        .expect("valid factor-major store");
-        Design::from_store(store).expect("valid test design")
+        .expect("valid frame");
+        Design::from_frame(frame).expect("valid test design")
     }
 
     #[test]

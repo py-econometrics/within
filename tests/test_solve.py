@@ -184,6 +184,17 @@ class TestContiguityWarning:
             warnings.simplefilter("error")
             solve(cats_f, y)
 
+    def test_column_reversed_f_view_no_warning(self, problem):
+        # Reversing columns keeps each column contiguous (row stride == itemsize),
+        # so ingest borrows them zero-copy and no warning applies.
+        cats, y = problem
+        cats_rev = as_solver_categories(cats)[:, ::-1]
+        assert cats_rev.strides[0] == cats_rev.itemsize
+        assert cats_rev.strides[1] < 0
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            solve(cats_rev, y)
+
 
 # ---------------------------------------------------------------------------
 # Solver class tests

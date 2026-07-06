@@ -1,16 +1,23 @@
+use crate::domain::Design;
+use crate::observation::ObservationFrame;
+
+fn design_of(columns: Vec<Vec<u32>>) -> Design<'static> {
+    let frame = ObservationFrame::new(columns.into_iter().map(Into::into).collect(), Vec::new())
+        .expect("valid frame");
+    Design::from_frame(frame).expect("valid design")
+}
+
 mod design_tests {
+    use super::design_of;
     use crate::domain::Design;
-    use crate::observation::FactorMajorStore;
     use crate::operator::DesignOperator;
     use schwarz_precond::Operator;
 
-    fn make_test_design() -> Design<FactorMajorStore> {
+    fn make_test_design() -> Design<'static> {
         // Sorted on the dominant factor (factor 1, 4 levels) so construction
         // applies no locality permutation and rows stay where the hand-computed
         // expectations below put them.
-        let store = FactorMajorStore::new(vec![vec![0, 1, 1, 2, 0], vec![0, 0, 1, 2, 3]], 5)
-            .expect("valid factor-major store");
-        Design::from_store(store).expect("valid test design")
+        design_of(vec![vec![0, 1, 1, 2, 0], vec![0, 0, 1, 2, 3]])
     }
 
     #[test]
@@ -65,21 +72,19 @@ mod design_tests {
         a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
     }
 
-    fn make_single_factor_design() -> Design<FactorMajorStore> {
+    fn make_single_factor_design() -> Design<'static> {
         // Sorted: a single-factor store is always dominated by its only factor.
-        let store = FactorMajorStore::new(vec![vec![0u32, 0, 1, 1, 2]], 5).expect("valid store");
-        Design::from_store(store).expect("valid single-factor design")
+        design_of(vec![vec![0u32, 0, 1, 1, 2]])
     }
 
-    fn make_large_design() -> Design<FactorMajorStore> {
+    fn make_large_design() -> Design<'static> {
         // Block pattern (level = i / 300): sorted on both factors, 50 levels
         // each, 300 rows per level — no construction-time permutation.
         let n_obs = 15_000;
         let block = 300u32;
         let fa: Vec<u32> = (0..n_obs).map(|i| i as u32 / block).collect();
         let fb = fa.clone();
-        let store = FactorMajorStore::new(vec![fa, fb], n_obs).expect("valid factor-major store");
-        Design::from_store(store).expect("valid design")
+        design_of(vec![fa, fb])
     }
 
     /// Verify <D·x, r> == <x, D^T·r> on a large design exercising the parallel
@@ -121,8 +126,7 @@ mod design_tests {
         let n_obs = 15_000;
         let fa: Vec<u32> = (0..n_obs as u32).collect();
         let fb: Vec<u32> = (0..n_obs).map(|i| (i % 50) as u32).collect();
-        let store = FactorMajorStore::new(vec![fa, fb], n_obs).expect("valid store");
-        let dm = Design::from_store(store).expect("valid design");
+        let dm = design_of(vec![fa, fb]);
         assert!(dm.obs_perm.is_none(), "dominant factor is sorted; no perm");
 
         let op = DesignOperator::new(&dm, None);
@@ -235,10 +239,9 @@ mod design_tests {
     /// Single-factor design with `level(i) = i % n_levels`; when
     /// `n_obs >= n_levels` every level is populated so the inferred level count
     /// is exactly `n_levels` (which selects the scatter strategy).
-    fn make_strategy_design(n_obs: usize, n_levels: usize) -> Design<FactorMajorStore> {
+    fn make_strategy_design(n_obs: usize, n_levels: usize) -> Design<'static> {
         let f: Vec<u32> = (0..n_obs).map(|i| (i % n_levels) as u32).collect();
-        let store = FactorMajorStore::new(vec![f], n_obs).expect("valid store");
-        Design::from_store(store).expect("valid design")
+        design_of(vec![f])
     }
 
     fn assert_all_close(actual: &[f64], expected: &[f64], ctx: &str) {
@@ -272,8 +275,7 @@ mod design_tests {
         let n_obs = 150_000usize;
         let fa: Vec<u32> = (0..n_obs as u32).collect();
         let fb: Vec<u32> = (0..n_obs).map(|i| ((i * 7919) % 100_000) as u32).collect();
-        let store = FactorMajorStore::new(vec![fa, fb], n_obs).expect("valid store");
-        let dm = Design::from_store(store).expect("valid design");
+        let dm = design_of(vec![fa, fb]);
         assert!(dm.obs_perm.is_none(), "dominant factor is sorted; no perm");
         assert_scratch_reuse_matches_fresh(&dm, "atomic: non-dominant unsorted 100K levels");
     }
@@ -282,7 +284,7 @@ mod design_tests {
     /// calls (cf. the removed `SCATTER_FOLD_POOL` leak): a second call on the
     /// *same* operator must match a freshly built operator — stale values from
     /// the first call must not bleed into the second.
-    fn assert_scratch_reuse_matches_fresh(dm: &Design<FactorMajorStore>, ctx: &str) {
+    fn assert_scratch_reuse_matches_fresh(dm: &Design<'_>, ctx: &str) {
         let r: Vec<f64> = (0..dm.n_obs)
             .map(|i| (i as f64 * 0.37 + 1.0).sin())
             .collect();
@@ -313,8 +315,7 @@ mod design_tests {
 // ===========================================================================
 
 mod weighted_adjoint_proptests {
-    use crate::domain::Design;
-    use crate::observation::FactorMajorStore;
+    use super::design_of;
     use crate::operator::DesignOperator;
     use proptest::prelude::*;
     use schwarz_precond::Operator;
@@ -343,8 +344,7 @@ mod weighted_adjoint_proptests {
                 .map(|i| 0.5 + (i as f64 * 0.13 + seed as f64 * 0.41).sin().abs())
                 .collect();
 
-            let store = FactorMajorStore::new(vec![fa, fb], n_obs).unwrap();
-            let dm = Design::from_store(store).unwrap();
+            let dm = design_of(vec![fa, fb]);
 
             let n_dofs = dm.n_dofs;
             let n_rows = dm.n_obs;
@@ -400,16 +400,13 @@ mod schwarz_tests {
     use crate::domain::factor_pairs::Subdomain;
     use crate::domain::{build_local_domains, Design, LocalDomain};
     use crate::domain::{BlockDiagonals, CrossTab};
-    use crate::observation::FactorMajorStore;
     use crate::operator::schwarz::{build_additive_with_strategy, build_entry};
     use schwarz_precond::{Operator, ReductionStrategy};
 
     const BLOCK_ELIM_NESTED_RAYON_CHILD_ENV: &str = "WITHIN_TEST_BLOCK_ELIM_NESTED_RAYON_CHILD";
 
-    fn make_test_data() -> (Design<FactorMajorStore>, Vec<LocalDomain>) {
-        let store = FactorMajorStore::new(vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]], 5)
-            .expect("valid factor-major store");
-        let design = Design::from_store(store).expect("valid fixed-effects design");
+    fn make_test_data() -> (Design<'static>, Vec<LocalDomain>) {
+        let design = super::design_of(vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]]);
         let domain_pairs = build_local_domains(&design, None);
         (design, domain_pairs)
     }

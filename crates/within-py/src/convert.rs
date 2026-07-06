@@ -55,15 +55,16 @@ pub(crate) fn warn_c_contiguous(
     cats: &numpy::ndarray::ArrayView2<'_, u32>,
 ) -> PyResult<()> {
     // Warn only when the per-factor columns are NOT readable as contiguous
-    // slices -- i.e. exactly when `ArrayStore::factor_column` rejects the fast
-    // path: row stride != 1, or a non-positive (reversed) column stride. A
+    // slices -- i.e. exactly when ingest must copy them: row stride != 1.
+    // The column stride is irrelevant: even reversed (negative), each column
+    // stays a contiguous slice and is borrowed zero-copy in logical order. A
     // single row or empty input is trivially contiguous regardless of strides.
     // Sortedness is unknown here (the locality sort happens later, inside
     // Design construction), so the advice is hedged: when the dominant factor
     // is unsorted, the sort copies the columns into contiguous owned storage
     // anyway and asfortranarray would only add a redundant copy.
     let strides = cats.strides();
-    if cats.nrows() > 1 && (strides[0] != 1 || strides[1] < 1) {
+    if cats.nrows() > 1 && strides[0] != 1 {
         PyErr::warn(
             py,
             &py.get_type::<pyo3::exceptions::PyUserWarning>(),

@@ -10,7 +10,6 @@ use serde::{Deserialize, Serialize};
 use crate::block_elim::BlockElimSolver;
 use crate::config::{LocalSolverConfig, PreconditionerConfig};
 use crate::domain::{Design, LocalDomain};
-use crate::observation::{factor_columns, level_at, validate_weights, Store};
 use crate::BuildError;
 
 /// Concrete additive Schwarz type used in the parent crate.
@@ -195,18 +194,16 @@ impl Operator for Preconditioner {
     }
 }
 
-fn build_diagonal<S: Store>(
-    design: &Design<S>,
+fn build_diagonal(
+    design: &Design<'_>,
     weights: Option<&[f64]>,
 ) -> Result<DiagonalPreconditioner, BuildError> {
     let mut diag = vec![0.0; design.n_dofs];
-    let cols = factor_columns(&design.store);
 
     for (factor_idx, factor) in design.factors.iter().enumerate() {
         let slice = &mut diag[factor.offset..factor.offset + factor.n_levels];
-        for uid in 0..design.n_obs {
-            let level = level_at(&design.store, cols[factor_idx], uid, factor_idx);
-            slice[level] += weights.map_or(1.0, |w| w[uid]);
+        for (uid, &level) in design.frame.level_column(factor_idx).iter().enumerate() {
+            slice[level as usize] += weights.map_or(1.0, |w| w[uid]);
         }
     }
 
@@ -234,14 +231,14 @@ fn build_diagonal<S: Store>(
 }
 
 /// Build a [`Preconditioner`] from a design and optional observation weights.
-pub(crate) fn build_preconditioner<S: Store>(
-    design: &Design<S>,
+pub(crate) fn build_preconditioner(
+    design: &Design<'_>,
     weights: Option<&[f64]>,
     config: Option<&PreconditionerConfig>,
 ) -> Result<Option<Preconditioner>, BuildError> {
     use crate::domain::build_local_domains;
 
-    validate_weights(weights, design.n_obs)?;
+    design.validate_weights(weights)?;
 
     let default_cfg = PreconditionerConfig::default();
     let resolved = config.unwrap_or(&default_cfg);

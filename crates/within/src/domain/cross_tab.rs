@@ -7,7 +7,6 @@
 
 use crate::csr_block::CsrBlock;
 use crate::domain::{Design, FactorMeta};
-use crate::observation::{factor_columns, level_at, Store};
 
 mod accumulate;
 use accumulate::accumulate_cross_block;
@@ -40,9 +39,7 @@ struct ActiveLevels {
 /// Scan all observations once and mark which levels are active for each factor.
 ///
 /// Returns `active[f][level]` = true if any observation uses that level of factor f.
-pub(crate) fn find_all_active_levels<S: Store>(design: &Design<S>) -> Vec<Vec<bool>> {
-    let n_obs = design.store.n_obs();
-    let cols = factor_columns(&design.store);
+pub(crate) fn find_all_active_levels(design: &Design<'_>) -> Vec<Vec<bool>> {
     let mut active: Vec<Vec<bool>> = design
         .factors
         .iter()
@@ -52,9 +49,8 @@ pub(crate) fn find_all_active_levels<S: Store>(design: &Design<S>) -> Vec<Vec<bo
     // buffer before moving on, instead of hopping between `n_factors` buffers
     // on every observation.
     for (f, col) in active.iter_mut().enumerate() {
-        let levels = cols[f];
-        for uid in 0..n_obs {
-            col[level_at(&design.store, levels, uid, f)] = true;
+        for &v in design.frame.level_column(f) {
+            col[v as usize] = true;
         }
     }
     active
@@ -191,8 +187,8 @@ impl CrossTab {
     ///
     /// Returns the diagonal blocks separately ([`BlockDiagonals`]): they are
     /// build-time-only and so are not stored on the `CrossTab`.
-    pub(crate) fn build_for_pair_with_active<S: Store>(
-        design: &Design<S>,
+    pub(crate) fn build_for_pair_with_active(
+        design: &Design<'_>,
         weights: Option<&[f64]>,
         q: usize,
         r: usize,

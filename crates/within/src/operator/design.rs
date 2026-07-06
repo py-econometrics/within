@@ -6,7 +6,6 @@ use rayon::prelude::*;
 use schwarz_precond::Operator;
 
 use crate::domain::Design;
-use crate::observation::{factor_columns, level_at, Store};
 
 // ===========================================================================
 // Iteration kernels — module-private, shared between apply / apply_adjoint
@@ -49,87 +48,75 @@ impl ScatterStrategy {
     }
 }
 
-/// Gather-apply: `dst[i] = finalize(i, Σ_q src[off_q + level(i, q)])`.
+/// Gather-apply: `dst[i] = Σ_q src[off_q + level(i, q)]`, times `scale[i]` if given.
 ///
-/// `finalize` is folded into the LAST factor's pass — exactly Q sweeps over
-/// `dst`, no trailing scale loop. The identity finalize (`|_, s| s`) recovers
-/// the unweighted gather.
-pub(crate) fn gather_apply<S, F>(design: &Design<S>, src: &[f64], dst: &mut [f64], finalize: F)
-where
-    S: Store,
-    F: Fn(usize, f64) -> f64 + Sync,
-{
+/// One sweep over `dst` per factor, plus a scale sweep only when given.
+pub(crate) fn gather_apply(
+    design: &Design<'_>,
+    src: &[f64],
+    dst: &mut [f64],
+    scale: Option<&[f64]>,
+) {
+    debug_assert!(scale.is_none_or(|s| s.len() == design.n_obs));
     debug_assert_eq!(src.len(), design.n_dofs);
     debug_assert_eq!(dst.len(), design.n_obs);
-    let factors = &design.factors;
-    if factors.is_empty() {
-        // Q=0 guard — no factors means dst[i] = finalize(i, 0.0).
-        for (i, d) in dst.iter_mut().enumerate() {
-            *d = finalize(i, 0.0);
-        }
-        return;
-    }
+
     dst.fill(0.0);
-    let factor_columns = factor_columns(&design.store);
-    let store = &design.store;
-    let last = factors.len() - 1;
+
+    let factors = &design.factors;
+    let columns: Vec<&[u32]> = (0..factors.len())
+        .map(|q| design.frame.level_column(q))
+        .collect();
 
     let kernel = |chunk: &mut [f64], row_start: usize| {
-        // Accumulate factors 0..last
-        for q in 0..last {
-            let f = &factors[q];
-            let levels = factor_columns[q];
+        // `&levels` copies the slice ref out of `columns`; binding `&&[u32]`
+        // leaves a non-hoisted double deref in the inner loop (~5% measured).
+        for (f, &levels) in factors.iter().zip(columns.iter()) {
             for (local, dst_val) in chunk.iter_mut().enumerate() {
                 let i = row_start + local;
-                *dst_val += src[f.offset + level_at(store, levels, i, q)];
+                *dst_val += src[f.offset + levels[i] as usize];
             }
         }
-        // Last factor: accumulate AND finalize, single store per row.
-        // Q=1 is well-defined: this is the only loop that runs.
-        let f = &factors[last];
-        let levels = factor_columns[last];
-        for (local, dst_val) in chunk.iter_mut().enumerate() {
-            let i = row_start + local;
-            let s = *dst_val + src[f.offset + level_at(store, levels, i, last)];
-            *dst_val = finalize(i, s);
+
+        if let Some(scale) = scale {
+            for (s, dst_val) in scale[row_start..].iter().zip(chunk.iter_mut()) {
+                *dst_val *= s;
+            }
         }
     };
 
     if design.n_obs > PAR_THRESHOLD {
         const CHUNK_SIZE: usize = 4096;
+
         dst.par_chunks_mut(CHUNK_SIZE)
             .enumerate()
-            .for_each(|(chunk_idx, chunk)| kernel(chunk, chunk_idx * CHUNK_SIZE));
+            .for_each(|(chunk_idx, chunk)| {
+                kernel(chunk, chunk_idx * CHUNK_SIZE);
+            });
     } else {
         kernel(dst, 0);
     }
 }
 
-/// Sequential scatter-add: `slice[lvl(i)] += value_fn(i)` for `i in 0..n_rows`.
+/// Sequential scatter-add: `slice[levels[i]] += value_fn(i)`.
 fn scatter_sequential(
     slice: &mut [f64],
-    n_rows: usize,
-    lvl: impl Fn(usize) -> usize,
+    levels: &[u32],
     value_fn: &(impl Fn(usize) -> f64 + Sync),
 ) {
-    for i in 0..n_rows {
-        slice[lvl(i)] += value_fn(i);
+    for (i, &l) in levels.iter().enumerate() {
+        slice[l as usize] += value_fn(i);
     }
 }
 
 /// Parallel scatter-add via thread-local fold/reduce — best when `slice.len()`
 /// (the factor's level count) is small relative to thread count.
-fn scatter_fold(
-    slice: &mut [f64],
-    n_rows: usize,
-    lvl: impl Fn(usize) -> usize + Sync,
-    value_fn: &(impl Fn(usize) -> f64 + Sync),
-) {
+fn scatter_fold(slice: &mut [f64], levels: &[u32], value_fn: &(impl Fn(usize) -> f64 + Sync)) {
     let n_levels = slice.len();
-    let min_len = (n_rows / rayon::current_num_threads().max(1)).max(1024);
+    let min_len = (levels.len() / rayon::current_num_threads().max(1)).max(1024);
     let identity = || vec![0.0f64; n_levels];
-    let fold = |mut acc: Vec<f64>, i| {
-        acc[lvl(i)] += value_fn(i);
+    let fold = |mut acc: Vec<f64>, (i, &l): (usize, &u32)| {
+        acc[l as usize] += value_fn(i);
         acc
     };
     let reduction = |mut a: Vec<f64>, b: Vec<f64>| {
@@ -138,8 +125,9 @@ fn scatter_fold(
         }
         a
     };
-    let result: Vec<f64> = (0..n_rows)
-        .into_par_iter()
+    let result: Vec<f64> = levels
+        .par_iter()
+        .enumerate()
         .with_min_len(min_len)
         .fold(identity, fold)
         .reduce(identity, reduction);
@@ -172,22 +160,20 @@ fn writeback_scatter_scratch(slice: &mut [f64], buf: &[AtomicF64]) {
 /// `slice.len()` slots, re-seeding them via `store` so no allocation occurs.
 fn scatter_atomic(
     slice: &mut [f64],
-    n_rows: usize,
-    lvl: impl Fn(usize) -> usize + Sync,
+    levels: &[u32],
     value_fn: &(impl Fn(usize) -> f64 + Sync),
     atomic_buf: &[AtomicF64],
 ) {
     let buf = seed_scatter_scratch(atomic_buf, slice);
-    (0..n_rows).into_par_iter().for_each(|i| {
-        buf[lvl(i)].fetch_add(value_fn(i), Ordering::Relaxed);
+    levels.par_iter().enumerate().for_each(|(i, &l)| {
+        buf[l as usize].fetch_add(value_fn(i), Ordering::Relaxed);
     });
     writeback_scatter_scratch(slice, buf);
 }
 
 fn scatter_sorted_coalesced(
     slice: &mut [f64],
-    n_rows: usize,
-    lvl: impl Fn(usize) -> usize + Sync,
+    levels: &[u32],
     value_fn: &(impl Fn(usize) -> f64 + Sync),
     atomic_buf: &[AtomicF64],
 ) {
@@ -197,16 +183,14 @@ fn scatter_sorted_coalesced(
     // committed by both chunks — additive, so still correct — keeping chunks
     // independent without a carry/fixup pass.
     const CHUNK: usize = 65_536;
-    let n_chunks = n_rows.div_ceil(CHUNK);
-    (0..n_chunks).into_par_iter().for_each(|c| {
+    levels.par_chunks(CHUNK).enumerate().for_each(|(c, chunk)| {
         let start = c * CHUNK;
-        let end = ((c + 1) * CHUNK).min(n_rows);
-        // Single flat pass, one `lvl` load per row: accumulate the current
+        // Single flat pass, one level load per row: accumulate the current
         // run's sum and commit it whenever the level changes.
-        let mut level = lvl(start);
+        let mut level = chunk[0] as usize;
         let mut sum = value_fn(start);
-        for i in start + 1..end {
-            let li = lvl(i);
+        for (i, &li) in (start + 1..).zip(&chunk[1..]) {
+            let li = li as usize;
             if li != level {
                 buf[level].fetch_add(sum, Ordering::Relaxed);
                 level = li;
@@ -230,11 +214,11 @@ fn scatter_sorted_coalesced(
 /// `A^T A = D^T W D = G` recover the Gramian, so the same Schwarz
 /// preconditioner approximating `G^{-1}` applies. Pass `None` to
 /// [`DesignOperator::new`] for `D`, or `Some(&w)` for `W^{1/2} D`. The branch
-/// on weights is hoisted outside the per-row loop — the weighted finalize is
-/// fused into the last gather sweep, and the adjoint multiplies inline through
-/// a closure, so there is no per-row scratch buffer.
-pub(crate) struct DesignOperator<'a, S: Store> {
-    design: &'a Design<S>,
+/// on weights is hoisted outside the per-row loop — the weighted gather applies
+/// `W^{1/2}` in a trailing per-chunk sweep, and the adjoint multiplies inline
+/// through a closure, so there is no per-row scratch buffer.
+pub(crate) struct DesignOperator<'a> {
+    design: &'a Design<'a>,
     sqrt_weights: Option<Vec<f64>>,
     /// Reusable atomic-scatter scratch, sized once to the largest factor's
     /// level count and reused across factors and `apply_adjoint` calls so it is
@@ -245,7 +229,7 @@ pub(crate) struct DesignOperator<'a, S: Store> {
     scatter_scratch: Vec<AtomicF64>,
 }
 
-impl<'a, S: Store> DesignOperator<'a, S> {
+impl<'a> DesignOperator<'a> {
     /// Wrap a design matrix as a linear operator.
     ///
     /// Pass `None` for `D`, `Some(&w)` for `W^{1/2} D` (then `w.len()` must
@@ -259,7 +243,7 @@ impl<'a, S: Store> DesignOperator<'a, S> {
     /// validation against `BuildError::WeightCountMismatch` before
     /// construction, so callers that go through `Solver::new` or
     /// `solve()` never trigger this panic.
-    pub(crate) fn new(design: &'a Design<S>, weights: Option<&[f64]>) -> Self {
+    pub(crate) fn new(design: &'a Design<'a>, weights: Option<&[f64]>) -> Self {
         let sqrt_weights = weights.map(|w| {
             assert_eq!(
                 w.len(),
@@ -295,31 +279,27 @@ impl<'a, S: Store> DesignOperator<'a, S> {
     {
         let design = self.design;
         debug_assert_eq!(dst.len(), design.n_dofs);
-        let factor_columns = factor_columns(&design.store);
         let parallel = design.n_obs > PAR_THRESHOLD;
-        let store = &design.store;
-        let n_rows = design.n_obs;
 
         for (q, f) in design.factors.iter().enumerate() {
             let slice = &mut dst[f.offset..f.offset + f.n_levels];
-            let levels = factor_columns[q];
-            let lvl = |i: usize| level_at(store, levels, i, q);
+            let levels = design.frame.level_column(q);
 
             match ScatterStrategy::pick(parallel, f.n_levels, f.sorted) {
-                ScatterStrategy::Sequential => scatter_sequential(slice, n_rows, lvl, &value_fn),
-                ScatterStrategy::Fold => scatter_fold(slice, n_rows, lvl, &value_fn),
+                ScatterStrategy::Sequential => scatter_sequential(slice, levels, &value_fn),
+                ScatterStrategy::Fold => scatter_fold(slice, levels, &value_fn),
                 ScatterStrategy::Atomic => {
-                    scatter_atomic(slice, n_rows, lvl, &value_fn, &self.scatter_scratch)
+                    scatter_atomic(slice, levels, &value_fn, &self.scatter_scratch)
                 }
                 ScatterStrategy::SortedCoalesced => {
-                    scatter_sorted_coalesced(slice, n_rows, lvl, &value_fn, &self.scatter_scratch)
+                    scatter_sorted_coalesced(slice, levels, &value_fn, &self.scatter_scratch)
                 }
             }
         }
     }
 }
 
-impl<S: Store> Operator for DesignOperator<'_, S> {
+impl Operator for DesignOperator<'_> {
     fn nrows(&self) -> usize {
         self.design.n_obs
     }
@@ -329,10 +309,7 @@ impl<S: Store> Operator for DesignOperator<'_, S> {
     }
 
     fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
-        match &self.sqrt_weights {
-            Some(sw) => gather_apply(self.design, x, y, |i, s| sw[i] * s),
-            None => gather_apply(self.design, x, y, |_, s| s),
-        }
+        gather_apply(self.design, x, y, self.sqrt_weights.as_deref());
         Ok(())
     }
 
@@ -376,7 +353,7 @@ mod tests {
 
         let buf: Vec<AtomicF64> = (0..n_levels).map(|_| AtomicF64::new(0.0)).collect();
         let mut got = vec![0.0f64; n_levels];
-        scatter_sorted_coalesced(&mut got, n_rows, |i| col[i] as usize, &|i| values[i], &buf);
+        scatter_sorted_coalesced(&mut got, &col, &|i| values[i], &buf);
 
         for (g, e) in got.iter().zip(&expected) {
             assert!((g - e).abs() < 1e-6, "got {g}, expected {e}");

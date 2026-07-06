@@ -7,7 +7,6 @@ use criterion::{
 use within::config::{
     ApproxCholConfig, LocalSolverConfig, LsmrOptions, PreconditionerConfig, ReductionStrategy,
 };
-use within::observation::FactorMajorStore;
 use within::{Design, Solver};
 
 #[path = "shared/fixest_dgp.rs"]
@@ -43,7 +42,7 @@ impl Case {
         format!("n={} {} {}FE", self.n_obs, kind, self.n_fe)
     }
 
-    fn generate(&self, seed: u64) -> (Design<FactorMajorStore>, Vec<f64>) {
+    fn generate(&self, seed: u64) -> (Design<'static>, Vec<f64>) {
         let difficult = matches!(self.dgp_type, FixestType::Difficult);
         generate_fixest_like_case(self.n_obs, self.n_fe, difficult, seed)
     }
@@ -78,7 +77,7 @@ fn configure_group<'a>(
 fn run_smoke(
     group: &mut BenchmarkGroup<'_, WallTime>,
     label: &str,
-    design: &Design<FactorMajorStore>,
+    design: &Design<'_>,
     y: &[f64],
 ) {
     group.bench_function(BenchmarkId::new(label, ""), |b| {
@@ -86,7 +85,7 @@ fn run_smoke(
     });
 }
 
-fn run_lsmr_one_level(design: &Design<FactorMajorStore>, y: &[f64], ac2: bool) {
+fn run_lsmr_one_level(design: &Design<'_>, y: &[f64], ac2: bool) {
     let params = LsmrOptions {
         tol: TOL,
         maxiter: MAXITER,

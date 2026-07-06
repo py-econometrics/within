@@ -6,7 +6,6 @@
 
 use crate::csr_block::CsrBlock;
 use crate::domain::Design;
-use crate::observation::{factor_columns, level_at, Store};
 
 use super::{to_u32, ActiveLevels};
 
@@ -19,19 +18,15 @@ const DENSE_TABLE_MAX_ENTRIES: usize = 5_000_000;
 /// either factor level is inactive (compact index `u32::MAX`) and the
 /// observation should be skipped.
 #[inline]
-fn decode_obs<S: Store>(
-    design: &Design<S>,
+fn decode_obs(
+    levels_q: &[u32],
+    levels_r: &[u32],
     weights: Option<&[f64]>,
-    cols: &[Option<&[u32]>],
-    q: usize,
-    r: usize,
     active: &ActiveLevels,
     uid: usize,
 ) -> Option<(u32, u32, f64)> {
-    let j = level_at(&design.store, cols[q], uid, q);
-    let k = level_at(&design.store, cols[r], uid, r);
-    let cj = active.q_map[j];
-    let ck = active.r_map[k];
+    let cj = active.q_map[levels_q[uid] as usize];
+    let ck = active.r_map[levels_r[uid] as usize];
     if cj == u32::MAX || ck == u32::MAX {
         return None;
     }
@@ -46,8 +41,8 @@ fn decode_obs<S: Store>(
 ///
 /// Dispatches to a dense or sparse path by comparing their estimated peak
 /// transient memory, with a hard dense-table ceiling.
-pub(super) fn accumulate_cross_block<S: Store>(
-    design: &Design<S>,
+pub(super) fn accumulate_cross_block(
+    design: &Design<'_>,
     weights: Option<&[f64]>,
     q: usize,
     r: usize,
@@ -69,7 +64,7 @@ pub(super) fn accumulate_cross_block<S: Store>(
     // enormous level counts.
     let table_size = active.n_q.saturating_mul(active.n_r);
     let dense_cost = table_size.saturating_mul(8);
-    let sparse_cost = design.store.n_obs().saturating_mul(12);
+    let sparse_cost = design.n_obs.saturating_mul(12);
     let go_sparse = table_size > DENSE_TABLE_MAX_ENTRIES && sparse_cost < dense_cost;
     if go_sparse {
         accumulate_sparse_cross_block(design, weights, q, r, active)
@@ -79,23 +74,24 @@ pub(super) fn accumulate_cross_block<S: Store>(
 }
 
 /// Dense path: flat `n_q * n_r` table with O(1) accumulation per observation.
-fn accumulate_dense_cross_block<S: Store>(
-    design: &Design<S>,
+fn accumulate_dense_cross_block(
+    design: &Design<'_>,
     weights: Option<&[f64]>,
     q: usize,
     r: usize,
     active: &ActiveLevels,
 ) -> (CsrBlock, Vec<f64>, Vec<f64>) {
-    let n_obs = design.store.n_obs();
+    let n_obs = design.n_obs;
     let n_q = active.n_q;
     let n_r = active.n_r;
-    let cols = factor_columns(&design.store);
+    let levels_q = design.frame.level_column(q);
+    let levels_r = design.frame.level_column(r);
     let mut diag_q = vec![0.0f64; n_q];
     let mut diag_r = vec![0.0f64; n_r];
     let mut table = vec![0.0f64; n_q * n_r];
 
     for uid in 0..n_obs {
-        let Some((cj, ck, w)) = decode_obs(design, weights, &cols, q, r, active, uid) else {
+        let Some((cj, ck, w)) = decode_obs(levels_q, levels_r, weights, active, uid) else {
             continue;
         };
         debug_assert!((cj as usize) < n_q && (ck as usize) < n_r);
@@ -113,24 +109,25 @@ fn accumulate_dense_cross_block<S: Store>(
 /// Bucket observations by row in two passes (count + fill), then use
 /// a dense workspace of size n_r to accumulate and deduplicate each
 /// row. The workspace sort is on unique columns only (n_r_active << len).
-fn accumulate_sparse_cross_block<S: Store>(
-    design: &Design<S>,
+fn accumulate_sparse_cross_block(
+    design: &Design<'_>,
     weights: Option<&[f64]>,
     q: usize,
     r: usize,
     active: &ActiveLevels,
 ) -> (CsrBlock, Vec<f64>, Vec<f64>) {
-    let n_obs = design.store.n_obs();
+    let n_obs = design.n_obs;
     let n_q = active.n_q;
     let n_r = active.n_r;
-    let cols = factor_columns(&design.store);
+    let levels_q = design.frame.level_column(q);
+    let levels_r = design.frame.level_column(r);
     let mut diag_q = vec![0.0f64; n_q];
     let mut diag_r = vec![0.0f64; n_r];
 
     // Pass 1: accumulate diags + count entries per row
     let mut row_counts = vec![0u32; n_q];
     for uid in 0..n_obs {
-        let Some((cj, ck, w)) = decode_obs(design, weights, &cols, q, r, active, uid) else {
+        let Some((cj, ck, w)) = decode_obs(levels_q, levels_r, weights, active, uid) else {
             continue;
         };
         diag_q[cj as usize] += w;
@@ -150,7 +147,7 @@ fn accumulate_sparse_cross_block<S: Store>(
     let mut bucket_vals = vec![0.0f64; total_entries];
     let mut cursor = bucket_indptr[..n_q].to_vec();
     for uid in 0..n_obs {
-        let Some((cj, ck, w)) = decode_obs(design, weights, &cols, q, r, active, uid) else {
+        let Some((cj, ck, w)) = decode_obs(levels_q, levels_r, weights, active, uid) else {
             continue;
         };
         let pos = cursor[cj as usize] as usize;

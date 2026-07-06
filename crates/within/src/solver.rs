@@ -2,15 +2,16 @@
 //! multiple solves on the same design) and the one-shot [`solve`] / [`solve_batch`]
 //! convenience wrappers built on top of it.
 
+use std::borrow::Cow;
 use std::time::Instant;
 
-use ndarray::ArrayView2;
+use ndarray::{ArrayView2, Axis};
 use rayon::prelude::*;
 use schwarz_precond::{lsmr as lsmr_solve, mlsmr, Operator as _};
 
 use crate::config::{LsmrOptions, PreconditionerConfig};
 use crate::domain::{Design, Effect};
-use crate::observation::{validate_weights, ArrayStore, FactorMajorStore, Store};
+use crate::observation::ObservationFrame;
 use crate::operator::design::gather_apply;
 use crate::operator::schwarz::{build_preconditioner, Preconditioner};
 use crate::operator::DesignOperator;
@@ -20,36 +21,39 @@ fn norm(v: &[f64]) -> f64 {
     v.iter().map(|x| x * x).sum::<f64>().sqrt()
 }
 
-/// Fallible conversion into a [`Design`] for [`Solver::new`].
-///
-/// Implemented for:
-/// - `ArrayView2<'a, u32>` — categories matrix; an `ArrayStore`-backed [`Design`] is built
-/// - `Vec<Effect<'a>>` — effect terms lowered to a [`Design`] via [`Design::new`]
-/// - `Design<S>` — pass-through for an already-built design
+/// Fallible conversion into a [`Design`] for [`Solver::new`]: a categories
+/// matrix (`ArrayView2<u32>`), a list of [`Effect`] terms, or a pass-through
+/// [`Design`].
 pub trait IntoDesign<'a> {
-    /// Storage backend the resulting [`Design`] uses.
-    type Store: Store;
     /// Build the [`Design`], validating inputs along the way.
-    fn into_design(self) -> Result<Design<Self::Store>, BuildError>;
+    fn into_design(self) -> Result<Design<'a>, BuildError>;
 }
 
 impl<'a> IntoDesign<'a> for ArrayView2<'a, u32> {
-    type Store = ArrayStore<'a>;
-    fn into_design(self) -> Result<Design<ArrayStore<'a>>, BuildError> {
-        Design::from_store(ArrayStore::new(self)?)
+    fn into_design(self) -> Result<Design<'a>, BuildError> {
+        // Borrow F-contiguous columns zero-copy; gather strided (C-order)
+        // columns once here so every downstream read is a contiguous slice.
+        let categorical = (0..self.ncols())
+            .map(|q| {
+                let col = self.index_axis_move(Axis(1), q);
+                match col.to_slice() {
+                    Some(s) => Cow::Borrowed(s),
+                    None => Cow::Owned(col.to_vec()),
+                }
+            })
+            .collect();
+        Design::from_frame(ObservationFrame::new(categorical, Vec::new())?)
     }
 }
 
-impl<S: Store> IntoDesign<'_> for Design<S> {
-    type Store = S;
-    fn into_design(self) -> Result<Design<S>, BuildError> {
+impl<'a> IntoDesign<'a> for Design<'a> {
+    fn into_design(self) -> Result<Design<'a>, BuildError> {
         Ok(self)
     }
 }
 
 impl<'a> IntoDesign<'a> for Vec<Effect<'a>> {
-    type Store = FactorMajorStore;
-    fn into_design(self) -> Result<Design<FactorMajorStore>, BuildError> {
+    fn into_design(self) -> Result<Design<'a>, BuildError> {
         Design::new(self)
     }
 }
@@ -175,19 +179,17 @@ impl BatchSolveResult {
 /// preconditioner factorization happens only at construction time; LSMR tuning
 /// ([`LsmrOptions`]) is supplied per call.
 ///
-/// Ownership: the store type `S` decides whether the categories are borrowed
-/// (`ArrayStore`, zero-copy from an `ArrayView2`) or owned (`FactorMajorStore`);
-/// weights are always owned. A solver that outlives its inputs — e.g. one
-/// returned across the Python boundary — therefore uses an owned store. The
-/// borrow/own choice is parameterized only for the large category data; for a
+/// Ownership: each observation column is borrowed or owned independently
+/// (`Cow`); a solver that outlives its inputs — e.g. one returned across the
+/// Python boundary — uses owned columns. Weights are always owned; for a
 /// one-shot weighted solve from a borrowed slice, use the free [`solve`] function.
-pub struct Solver<S: Store> {
-    design: Design<S>,
+pub struct Solver<'a> {
+    design: Design<'a>,
     weights: Option<Vec<f64>>,
     preconditioner: Option<Preconditioner>,
 }
 
-impl<S: Store> std::fmt::Debug for Solver<S> {
+impl std::fmt::Debug for Solver<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Solver")
             .field("n_obs", &self.design.n_obs)
@@ -198,7 +200,7 @@ impl<S: Store> std::fmt::Debug for Solver<S> {
     }
 }
 
-impl<S: Store> Solver<S> {
+impl<'a> Solver<'a> {
     /// Construct a solver.
     ///
     /// `design` accepts raw categories (`ArrayView2<u32>`) or a pre-built
@@ -216,13 +218,13 @@ impl<S: Store> Solver<S> {
     /// LSMR tuning ([`LsmrOptions`]) is supplied per call to [`Solver::solve`] /
     /// [`Solver::solve_batch`], not at construction; preconditioner factorization
     /// state is the only expensive thing built here.
-    pub fn new<'a>(
-        design: impl IntoDesign<'a, Store = S>,
+    pub fn new(
+        design: impl IntoDesign<'a>,
         weights: Option<Vec<f64>>,
         preconditioner: impl Into<PreconditionerInput>,
     ) -> Result<Self, BuildError> {
         let design = design.into_design()?;
-        validate_weights(weights.as_deref(), design.n_obs)?;
+        design.validate_weights(weights.as_deref())?;
 
         // Align weights with the design's internal (possibly locality-sorted)
         // observation order. The match keeps the unpermuted arm a plain move
@@ -296,11 +298,11 @@ impl<S: Store> Solver<S> {
 
         let time_solve = t_solve_start.elapsed().as_secs_f64();
 
-        // demeaned = y - D x. The bare unweighted `D x` matvec is the identity
-        // finalize over `gather_apply`; shapes are guaranteed here, so it is
-        // infallible — no DesignOperator wrapper (and its scatter scratch) needed.
+        // demeaned = y - D x. The bare unweighted `D x` matvec is `gather_apply`
+        // without a scale; shapes are guaranteed here, so it is infallible —
+        // no DesignOperator wrapper (and its scatter scratch) needed.
         let mut demeaned = vec![0.0; self.design.n_obs];
-        gather_apply(&self.design, &r.x, &mut demeaned, |_, s| s);
+        gather_apply(&self.design, &r.x, &mut demeaned, None);
         for (d, &yi) in demeaned.iter_mut().zip(y.iter()) {
             *d = yi - *d;
         }
@@ -401,9 +403,9 @@ impl<S: Store> Solver<S> {
 /// count inferred) or a list of [`Effect`] terms.
 /// `y` is the response vector (length = n_obs).
 ///
-/// Zero-copy when the dominant factor is already sorted: the category array is
-/// borrowed. Otherwise the columns are copied once into owned sorted storage
-/// so the gather/scatter locality sort can apply (see [`ArrayStore`]).
+/// Zero-copy for F-order category arrays whose dominant factor is already
+/// sorted; otherwise columns are copied once (per column at ingest, or
+/// whole-frame by the locality sort).
 ///
 /// `preconditioner` accepts the same input shapes as [`Solver::new`]:
 /// `None`, a [`crate::PreconditionerConfig`] by reference or value, an owned
