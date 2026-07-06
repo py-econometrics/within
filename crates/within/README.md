@@ -57,11 +57,12 @@ assert!(result.converged);
 
 The crate is organized in four layers:
 
-1. **`observation`** — Per-observation factor levels via `FactorMajorStore`
-   and the `Store` trait. Observation weights are not owned here — they
-   flow as `Option<&[f64]>` to the operator layer.
+1. **`observation`** — Row-aligned observation columns via the
+   `ObservationFrame` (categorical level codes plus continuous loadings,
+   each borrowed or owned per column). Observation weights are not owned
+   here — they flow as `Option<&[f64]>` to the operator layer.
 
-2. **`domain`** — Domain decomposition. `Design` wraps a store with
+2. **`domain`** — Domain decomposition. `Design` wraps a frame with
    factor metadata; `build_local_domains` constructs factor-pair subdomains
    with partition-of-unity weights for the Schwarz preconditioner.
 

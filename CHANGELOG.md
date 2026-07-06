@@ -9,12 +9,21 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **Locality sort:** `Design` construction reorders observations by the highest-cardinality factor when unsorted, copying them once into an internal sorted store (the caller's store is never mutated; the `Store` trait stays read-only). Transparent — results return in caller row order.
+- **`ObservationFrame`:** columnar observation storage — one `u32` level-code column per factor plus `f64` loading columns (provisioning for varying slopes), each column independently borrowed or owned, with column lengths validated at construction (#68).
+- **Locality sort:** `Design` construction reorders observations by the highest-cardinality factor when unsorted, copying the columns once into an owned locality-sorted frame (caller buffers are never mutated). Transparent — results return in caller row order.
 - Coalesced scatter for large sorted factors: one atomic add per equal-level run per chunk instead of one per row.
+- `IntoDesign` is re-exported from the crate root, so the trait behind `Solver::new`'s design argument can be named, imported, and called directly.
 
 ### Changed
 
+- **BREAKING:** `Design<S>` and `Solver<S>` trade their storage type parameter for a lifetime — `Design<'a>` / `Solver<'a>` — borrowing caller columns until a locality sort or `into_owned()` detaches them (#68).
+- **BREAKING:** `Design::from_store` → `Design::from_frame`, taking an `ObservationFrame` (#68).
+- **BREAKING:** `BuildError::ObservationCountMismatch` reports the offending `column` index (#68).
 - Category views are borrowed only when the dominant factor is already sorted; otherwise the columns are copied once for the locality sort. The reorder changes summation order, so unsorted-input results match 0.2.0 within solver tolerance, not bitwise.
+
+### Removed
+
+- **BREAKING:** The `Store` trait and its `ArrayStore` / `FactorMajorStore` backends, superseded by `ObservationFrame`; `within::observation` now exposes only the frame (#68).
 
 ## [0.2.0] - 2026-06-04
 
