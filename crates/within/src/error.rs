@@ -11,14 +11,14 @@ pub enum BuildError {
     /// No observations provided.
     #[error("no observations provided")]
     EmptyObservations,
-    /// One factor column does not match the expected observation count.
-    #[error("factor {factor} has {got} observations, expected {expected}")]
+    /// One column does not match the expected observation count.
+    #[error("column {column} has {got} observations, expected {expected}")]
     ObservationCountMismatch {
-        /// Index of the factor with mismatched length.
-        factor: usize,
+        /// Index of the mismatched column (categorical first, then continuous).
+        column: usize,
         /// Expected number of observations.
         expected: usize,
-        /// Actual number of observations in this factor's column.
+        /// Actual number of observations in this column.
         got: usize,
     },
     /// An effect with neither an intercept nor a slope.

@@ -4,10 +4,9 @@
 use numpy::{PyReadonlyArray1, PyReadonlyArray2, PyUntypedArray};
 use pyo3::prelude::*;
 
-use within::observation::FactorMajorStore;
 use within::{
     solve as solve_native, solve_batch as solve_batch_native, BuildError, Design, Effect,
-    SolveResult, Solver, WithinError,
+    IntoDesign, SolveResult, Solver, WithinError,
 };
 
 use crate::config::{resolve_lsmr_config, resolve_precond_input, PyPreconditioner};
@@ -192,7 +191,7 @@ fn extract_design<'py>(py: Python<'_>, design: &Bound<'py, PyAny>) -> PyResult<D
 #[pyclass(frozen, module = "within._within")]
 #[pyo3(name = "Solver")]
 pub struct PySolver {
-    solver: Solver<FactorMajorStore>,
+    solver: Solver<'static>,
 }
 
 #[pymethods]
@@ -214,17 +213,17 @@ impl PySolver {
         let solver = match extract_design(py, design)? {
             DesignSource::Categories(categories) => {
                 let cats = categories.as_array();
-                py.allow_threads(move || -> Result<Solver<FactorMajorStore>, BuildError> {
-                    let factor_levels =
-                        (0..cats.ncols()).map(|f| cats.column(f).to_vec()).collect();
-                    let store = FactorMajorStore::new(factor_levels, cats.nrows())?;
-                    Solver::new(Design::from_store(store)?, weights_vec, precond)
+                py.allow_threads(move || -> Result<Solver<'static>, BuildError> {
+                    Solver::new(cats.into_design()?.into_owned(), weights_vec, precond)
                 })
             }
             DesignSource::Effects(terms) => {
-                py.allow_threads(move || -> Result<Solver<FactorMajorStore>, BuildError> {
+                py.allow_threads(move || -> Result<Solver<'static>, BuildError> {
                     let effects: Vec<_> = terms.iter().map(PyEffect::as_effect).collect();
-                    Solver::new(effects, weights_vec, precond)
+                    // The design borrows the terms' buffers; the solver outlives
+                    // them, so lower to owned columns first.
+                    let design = Design::new(effects)?.into_owned();
+                    Solver::new(design, weights_vec, precond)
                 })
             }
         }

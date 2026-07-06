@@ -27,4 +27,6 @@ pub use config::{LsmrOptions, PreconditionerConfig};
 pub use domain::{Design, Effect};
 pub use error::{BuildError, SolveError, WithinError};
 pub use operator::schwarz::Preconditioner;
-pub use solver::{solve, solve_batch, BatchSolveResult, PreconditionerInput, SolveResult, Solver};
+pub use solver::{
+    solve, solve_batch, BatchSolveResult, IntoDesign, PreconditionerInput, SolveResult, Solver,
+};

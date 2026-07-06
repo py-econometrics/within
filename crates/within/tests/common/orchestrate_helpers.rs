@@ -1,23 +1,21 @@
 #![allow(dead_code)]
 
-use within::observation::FactorMajorStore;
+use within::observation::ObservationFrame;
 use within::{Design, SolveResult};
 
-pub fn make_test_design() -> Design<FactorMajorStore> {
+pub fn make_test_design() -> Design<'static> {
     make_design(vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]]).expect("valid test design")
 }
 
-pub fn make_design(
-    categories: Vec<Vec<u32>>,
-) -> Result<Design<FactorMajorStore>, within::BuildError> {
-    let n_rows = categories.first().map_or(0, Vec::len);
-    let store = FactorMajorStore::new(categories, n_rows)?;
-    Design::from_store(store)
+pub fn make_design(categories: Vec<Vec<u32>>) -> Result<Design<'static>, within::BuildError> {
+    let frame =
+        ObservationFrame::new(categories.into_iter().map(Into::into).collect(), Vec::new())?;
+    Design::from_frame(frame)
 }
 
 /// Deterministic, non-trivial RHS sized to the design's observation count.
 /// Used to drive convergence assertions where the exact x is irrelevant.
-pub fn make_deterministic_y(design: &Design<FactorMajorStore>) -> Vec<f64> {
+pub fn make_deterministic_y(design: &Design<'_>) -> Vec<f64> {
     (0..design.n_obs())
         .map(|i| (i as f64 * 0.17 + 1.0).sin())
         .collect()

@@ -1,8 +1,7 @@
 use ndarray::array;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
-use within::observation::FactorMajorStore;
-use within::{solve, Design, LsmrOptions, PreconditionerConfig, Solver};
+use within::{solve, LsmrOptions, PreconditionerConfig, Solver};
 
 #[path = "common/orchestrate_helpers.rs"]
 mod common;
@@ -225,8 +224,7 @@ fn test_maxiter_1_partial_result() {
         (0..n_obs).map(|_| rng.random_range(0..20u32)).collect(),
         (0..n_obs).map(|_| rng.random_range(0..20u32)).collect(),
     ];
-    let store = FactorMajorStore::new(cats, n_obs).expect("valid store");
-    let design = Design::from_store(store).expect("valid design");
+    let design = common::make_design(cats).expect("valid design");
 
     let y: Vec<f64> = (0..n_obs).map(|i| (i as f64 * 0.17).sin()).collect();
 
@@ -272,8 +270,7 @@ fn test_large_design_convergence() {
         (0..n_obs).map(|_| rng.random_range(0..100u32)).collect(),
     ];
 
-    let store = FactorMajorStore::new(cats, n_obs).expect("valid large store");
-    let design = Design::from_store(store).expect("valid large design");
+    let design = common::make_design(cats).expect("valid large design");
     let y = common::make_deterministic_y(&design);
 
     let params = LsmrOptions {

@@ -2,7 +2,7 @@
 //! public `solve` API for designs that exercise partition-of-unity weights
 //! and disconnected bipartite structure.
 
-use within::observation::FactorMajorStore;
+use within::observation::ObservationFrame;
 use within::Design;
 
 // Three-factor design: shared DOFs across factor pairs force NonUniform
@@ -18,8 +18,9 @@ fn test_three_factor_design_solve_converges() {
     let fb: Vec<u32> = (0..n_obs).map(|i| ((i / n_lev) % n_lev) as u32).collect();
     let fc: Vec<u32> = (0..n_obs).map(|i| ((i * 3) % n_lev) as u32).collect();
 
-    let store = FactorMajorStore::new(vec![fa, fb, fc], n_obs).expect("valid 3-factor store");
-    let dm = Design::from_store(store).expect("valid 3-factor design");
+    let frame = ObservationFrame::new(vec![fa.into(), fb.into(), fc.into()], Vec::new())
+        .expect("valid 3-factor frame");
+    let dm = Design::from_frame(frame).expect("valid 3-factor design");
 
     assert_eq!(dm.n_factors(), 3);
 
@@ -124,9 +125,9 @@ fn test_disconnected_design_solve_converges() {
 
 #[test]
 fn test_single_factor_design_construction() {
-    let categories = vec![vec![0u32, 1, 2, 0, 1]];
-    let store = FactorMajorStore::new(categories, 5).expect("valid store");
-    let dm = Design::from_store(store).expect("valid single-factor design");
+    let frame = ObservationFrame::new(vec![vec![0u32, 1, 2, 0, 1].into()], Vec::new())
+        .expect("valid frame");
+    let dm = Design::from_frame(frame).expect("valid single-factor design");
 
     assert_eq!(dm.n_factors(), 1, "expected 1 factor");
     assert_eq!(dm.n_dofs(), 3, "expected 3 DOFs (levels 0,1,2)");
@@ -168,7 +169,7 @@ fn test_single_factor_design_solve_without_precond() {
 // ---------------------------------------------------------------------------
 
 /// Intercept-only `Effect` design vs. the categories path. Both run through the
-/// same `from_store` locality sort, so rows sum in the same order and the result
+/// same `from_frame` locality sort, so rows sum in the same order and the result
 /// is bit-identical — hence the exact `assert_eq`, not a tolerance.
 #[test]
 fn test_intercept_only_effects_match_categories_bitwise() {
@@ -184,8 +185,9 @@ fn test_intercept_only_effects_match_categories_bitwise() {
     let params = LsmrOptions::default();
     let precond = PreconditionerConfig::default();
 
-    let categories = Design::from_store(
-        FactorMajorStore::new(vec![col0.clone(), col1.clone()], n_obs).expect("store"),
+    let categories = Design::from_frame(
+        ObservationFrame::new(vec![col0.clone().into(), col1.clone().into()], Vec::new())
+            .expect("frame"),
     )
     .expect("categories design");
     let cat = Solver::new(categories, None, &precond)

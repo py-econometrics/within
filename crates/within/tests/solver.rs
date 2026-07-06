@@ -207,13 +207,13 @@ fn test_solver_accepts_prebuilt_design() {
 
 /// The construction-time locality sort must be transparent: coefficients are
 /// permutation-invariant and `demeaned` comes back in caller order. The sort
-/// is applied to every store by `Design::from_store`, so the oracle is built
-/// via `from_store_unsorted`, the explicit caller-order escape hatch. Results
+/// is applied to every frame by `Design::from_frame`, so the oracle is built
+/// via `from_frame_unsorted`, the explicit caller-order escape hatch. Results
 /// agree within solver tolerance, not bitwise: the paths sum in different
 /// row orders.
 #[test]
 fn test_internal_locality_sort_is_transparent() {
-    use within::observation::FactorMajorStore;
+    use within::observation::ObservationFrame;
     use within::Design;
 
     // Factor 0 (4 levels) is the dominant factor and is non-monotonic.
@@ -232,8 +232,10 @@ fn test_internal_locality_sort_is_transparent() {
         Solver::new(design, weights, &precond).expect("solver")
     };
     let make_oracle = |weights: Option<Vec<f64>>| {
-        let store = FactorMajorStore::new(vec![col0.clone(), col1.clone()], n_obs).expect("store");
-        let design = Design::from_store_unsorted(store).expect("oracle design");
+        let frame =
+            ObservationFrame::new(vec![col0.clone().into(), col1.clone().into()], Vec::new())
+                .expect("frame");
+        let design = Design::from_frame_unsorted(frame).expect("oracle design");
         Solver::new(design, weights, &precond).expect("oracle solver")
     };
 

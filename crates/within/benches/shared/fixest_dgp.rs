@@ -4,7 +4,7 @@
 
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
-use within::observation::FactorMajorStore;
+use within::observation::ObservationFrame;
 use within::Design;
 
 /// Build a panel with 10 observations per worker and ~23 workers per firm.
@@ -15,7 +15,7 @@ pub fn generate_fixest_like_case(
     n_fe: usize,
     difficult: bool,
     seed: u64,
-) -> (Design<FactorMajorStore>, Vec<f64>) {
+) -> (Design<'static>, Vec<f64>) {
     let mut rng = SmallRng::seed_from_u64(seed);
     let n_years = 10usize;
     let n_indiv_per_firm = 23usize;
@@ -44,8 +44,12 @@ pub fn generate_fixest_like_case(
         vec![indiv_id, year, firm_id]
     };
 
-    let store = FactorMajorStore::new(factor_levels, n_obs).expect("valid factor-major store");
-    let design = Design::from_store(store).expect("valid design");
+    let frame = ObservationFrame::new(
+        factor_levels.into_iter().map(Into::into).collect(),
+        Vec::new(),
+    )
+    .expect("valid frame");
+    let design = Design::from_frame(frame).expect("valid design");
 
     // Random y — callers measure iteration time on an arbitrary RHS, not
     // ground-truth recovery.

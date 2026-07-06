@@ -8,7 +8,13 @@ use proptest::prelude::*;
 use super::CrossTab;
 use crate::domain::find_all_active_levels;
 use crate::domain::Design;
-use crate::observation::FactorMajorStore;
+use crate::observation::ObservationFrame;
+
+fn design_of(columns: Vec<Vec<u32>>) -> Design<'static> {
+    let frame = ObservationFrame::new(columns.into_iter().map(Into::into).collect(), Vec::new())
+        .expect("valid frame");
+    Design::from_frame(frame).expect("valid design")
+}
 
 #[test]
 fn test_cross_tab_sparse_accumulation_path() {
@@ -26,9 +32,7 @@ fn test_cross_tab_sparse_accumulation_path() {
     }
 
     // Sparse path (large level counts)
-    let store_sparse =
-        FactorMajorStore::new(vec![fa.clone(), fb.clone()], n_obs).expect("valid sparse store");
-    let design_sparse = Design::from_store(store_sparse).expect("valid sparse design");
+    let design_sparse = design_of(vec![fa.clone(), fb.clone()]);
     let active_sparse = find_all_active_levels(&design_sparse);
     let (ct_sparse, diag_sparse, _) =
         CrossTab::build_for_pair_with_active(&design_sparse, None, 0, 1, &active_sparse)
@@ -38,9 +42,7 @@ fn test_cross_tab_sparse_accumulation_path() {
     // Map each observation to level % 100 for both factors (100*100 = 10 000 <= 5M).
     let fa_small: Vec<u32> = fa.iter().map(|&x| x % 100).collect();
     let fb_small: Vec<u32> = fb.iter().map(|&x| x % 100).collect();
-    let store_dense = FactorMajorStore::new(vec![fa_small.clone(), fb_small.clone()], n_obs)
-        .expect("valid dense store");
-    let design_dense = Design::from_store(store_dense).expect("valid dense design");
+    let design_dense = design_of(vec![fa_small.clone(), fb_small.clone()]);
     let active_dense = find_all_active_levels(&design_dense);
     let (_ct_dense, diag_dense, _) =
         CrossTab::build_for_pair_with_active(&design_dense, None, 0, 1, &active_dense)
@@ -119,9 +121,7 @@ fn test_extract_component_two_components() {
     //   (q=2, r=2), (q=2, r=3), (q=3, r=2), (q=3, r=3)   <- component B
     let fa = vec![0u32, 0, 1, 1, 2, 2, 3, 3];
     let fb = vec![0u32, 1, 0, 1, 2, 3, 2, 3];
-    let n_obs = 8;
-    let store = FactorMajorStore::new(vec![fa, fb], n_obs).expect("valid store");
-    let design = Design::from_store(store).expect("valid design");
+    let design = design_of(vec![fa, fb]);
     let all_active = find_all_active_levels(&design);
     let (ct, parent_diag, _) =
         CrossTab::build_for_pair_with_active(&design, None, 0, 1, &all_active)
@@ -237,8 +237,7 @@ proptest! {
             fb.push((s % n_r as u64) as u32);
         }
 
-        let store = FactorMajorStore::new(vec![fa, fb], n_obs).expect("valid store");
-        let design = Design::from_store(store).expect("valid design");
+        let design = design_of(vec![fa, fb]);
         let all_active = find_all_active_levels(&design);
         let (ct, _, _) = CrossTab::build_for_pair_with_active(&design, None, 0, 1, &all_active)
             .expect("cross tab should build");
@@ -293,9 +292,7 @@ fn test_find_all_active_levels_with_gaps() {
     // Factor 1 uses all 3 levels 0, 1, 2.
     let fa = vec![0u32, 2, 4, 0, 2, 4];
     let fb = vec![0u32, 1, 2, 0, 1, 2];
-    let n_obs = 6;
-    let store = FactorMajorStore::new(vec![fa, fb], n_obs).expect("valid store");
-    let design = Design::from_store(store).expect("valid design");
+    let design = design_of(vec![fa, fb]);
 
     let active = find_all_active_levels(&design);
 

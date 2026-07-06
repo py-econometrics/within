@@ -37,7 +37,7 @@ impl<'a> Effect<'a> {
         })
     }
 
-    pub(crate) fn levels(&self) -> &[u32] {
+    pub(crate) fn levels(&self) -> &'a [u32] {
         self.levels
     }
 
