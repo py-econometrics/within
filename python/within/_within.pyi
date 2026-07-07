@@ -72,10 +72,12 @@ class SolveResult:
     """Result of a single fixed-effects solve.
 
     Attributes:
-        x: Fixed-effect coefficients, shape ``(n_dofs,)``. The DOF ordering
-            matches the factor levels: all levels of factor 0 first, then
-            factor 1, etc. Slots for unidentified directions hold the
-            minimal-norm value ``0``, never NaN.
+        x: Fixed-effect coefficients, shape ``(n_dofs,)``. Term-major:
+            coefficient column ``c`` of level ``level`` sits at
+            ``term_offset + c * n_levels + level``, columns ordered
+            ``[intercept?, slopes...]`` (for plain factors: all levels of
+            factor 0 first, then factor 1, etc.). Slots for unidentified
+            directions hold the minimal-norm value ``0``, never NaN.
         unidentified: Per-level directions the data cannot identify, as
             ``(term, level, column)`` tuples.
         demeaned: Response vector after subtracting estimated fixed effects,

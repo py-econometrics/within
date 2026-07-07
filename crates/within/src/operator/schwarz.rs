@@ -200,10 +200,29 @@ fn build_diagonal(
 ) -> Result<DiagonalPreconditioner, BuildError> {
     let mut diag = vec![0.0; design.n_dofs];
 
-    for (factor_idx, factor) in design.terms.iter().enumerate() {
-        let slice = &mut diag[factor.offset..factor.offset + factor.n_levels];
-        for (uid, &level) in design.frame.level_column(factor_idx).iter().enumerate() {
-            slice[level as usize] += weights.map_or(1.0, |w| w[uid]);
+    // diag(DᵀWD): each column contributes w·loading² per observation — the
+    // loading is 1 for an intercept column and the slope value otherwise.
+    for (factor_idx, term) in design.terms.iter().enumerate() {
+        let levels = design.frame.level_column(factor_idx);
+        let w = |uid: usize| weights.map_or(1.0, |ws| ws[uid]);
+        let mut column = 0;
+        if term.intercept {
+            let slice = &mut diag[term.offset..term.offset + term.n_levels];
+            for (uid, &level) in levels.iter().enumerate() {
+                slice[level as usize] += w(uid);
+            }
+            column = 1;
+        }
+        for &z_col in &term.slopes {
+            let z = design.frame.loading_column(z_col);
+            let base = term.offset + column * term.n_levels;
+            let slice = &mut diag[base..base + term.n_levels];
+            for (uid, &level) in levels.iter().enumerate() {
+                // Keep `w * z * z` left-to-right: a zero weight then kills a
+                // huge `z` before the square can overflow (0 * inf = NaN).
+                slice[level as usize] += w(uid) * z[uid] * z[uid];
+            }
+            column += 1;
         }
     }
 
