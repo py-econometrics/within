@@ -17,6 +17,9 @@ use crate::operator::schwarz::{build_preconditioner, Preconditioner};
 use crate::operator::DesignOperator;
 use crate::{BuildError, SolveError, WithinError};
 
+mod reparam;
+use reparam::SlopeReparam;
+
 fn norm(v: &[f64]) -> f64 {
     v.iter().map(|x| x * x).sum::<f64>().sqrt()
 }
@@ -126,11 +129,12 @@ pub struct UnidentifiedDirection {
 pub struct SolveResult {
     /// Fixed-effect coefficients (length = total DOFs across all factors).
     ///
-    /// Slots for unidentified directions hold the minimal-norm value `0`,
-    /// never NaN; see [`SolveResult::unidentified`].
+    /// Term-major: coefficient column `c` of level `level` sits at
+    /// `term_offset + c * n_levels + level`, columns ordered
+    /// `[intercept?, slopes…]`. Slots for unidentified directions hold the
+    /// minimal-norm value `0`, never NaN; see [`SolveResult::unidentified`].
     pub x: Vec<f64>,
-    /// Per-level directions the data cannot identify. Empty until
-    /// [`Solver::new`] accepts slope terms.
+    /// Per-level directions the data cannot identify.
     pub unidentified: Vec<UnidentifiedDirection>,
     /// Demeaned response: `y - D x` (length = n_obs), in caller order.
     ///
@@ -155,7 +159,8 @@ pub struct SolveResult {
 /// Result of a batch solve across multiple RHS vectors.
 #[derive(Debug, Clone)]
 pub struct BatchSolveResult {
-    /// All coefficient vectors concatenated (length = n_dofs * n_rhs).
+    /// All coefficient vectors concatenated (length = n_dofs * n_rhs), each
+    /// block laid out as in [`SolveResult::x`].
     ///
     /// Slots for unidentified directions hold the minimal-norm value `0`,
     /// never NaN; see [`BatchSolveResult::unidentified`].
@@ -211,6 +216,7 @@ pub struct Solver<'a> {
     design: Design<'a>,
     weights: Option<Vec<f64>>,
     preconditioner: Option<Preconditioner>,
+    reparam: Option<SlopeReparam>,
 }
 
 impl std::fmt::Debug for Solver<'_> {
@@ -247,11 +253,14 @@ impl<'a> Solver<'a> {
         weights: Option<Vec<f64>>,
         preconditioner: impl Into<PreconditionerInput>,
     ) -> Result<Self, BuildError> {
-        let design = design.into_design()?;
-        // Slope-bearing designs build and their operator is exercisable, but
-        // the solve transform and preconditioner land in later slices (#59+).
+        let mut design = design.into_design()?;
+        // A sole V=1 term is solvable via within-level reparametrization (the
+        // whitening below); slopes alongside other terms (#61) or multiple
+        // slopes per factor (#60) land in later slices.
         if let Some(idx) = design.terms.iter().position(|t| !t.slopes.is_empty()) {
-            return Err(BuildError::SlopesNotYetSupported { effect: idx });
+            if design.terms.len() > 1 || design.terms[idx].slopes.len() > 1 {
+                return Err(BuildError::SlopesNotYetSupported { effect: idx });
+            }
         }
         design.validate_weights(weights.as_deref())?;
 
@@ -262,6 +271,9 @@ impl<'a> Solver<'a> {
             Some(_) => weights.map(|w| design.permute_obs_in(&w).into_owned()),
             None => weights,
         };
+
+        // Whiten the slope column (if any) before the preconditioner reads the frame.
+        let reparam = SlopeReparam::build(&mut design, weights.as_deref());
 
         let preconditioner = match preconditioner.into() {
             PreconditionerInput::Default => {
@@ -286,6 +298,7 @@ impl<'a> Solver<'a> {
             design,
             weights,
             preconditioner,
+            reparam,
         })
     }
 
@@ -347,9 +360,18 @@ impl<'a> Solver<'a> {
         rect_op.apply_adjoint(weighted_demeaned.as_ref(), &mut residual_dof)?;
         let residual = norm(&residual_dof) / rhs_norm;
 
+        let mut x = r.x;
+        let unidentified = match &self.reparam {
+            Some(rp) => {
+                rp.back_transform(&mut x);
+                rp.unidentified.clone()
+            }
+            None => Vec::new(),
+        };
+
         Ok(SolveResult {
-            x: r.x,
-            unidentified: Vec::new(),
+            x,
+            unidentified,
             // Back to the caller's observation order (no-op if not reordered).
             demeaned: self.design.permute_obs_out(demeaned),
             converged: r.converged,

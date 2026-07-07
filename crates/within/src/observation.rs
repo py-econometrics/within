@@ -69,6 +69,12 @@ impl<'a> ObservationFrame<'a> {
         &self.continuous[k]
     }
 
+    /// Replace loading column `i` with an owned column of matching row count.
+    pub(crate) fn set_loading_column(&mut self, i: usize, column: Vec<f64>) {
+        debug_assert_eq!(column.len(), self.n_obs);
+        self.continuous[i] = Cow::Owned(column);
+    }
+
     /// Convert every column to owned, dropping ties to caller buffers.
     pub fn into_owned(self) -> ObservationFrame<'static> {
         ObservationFrame {
