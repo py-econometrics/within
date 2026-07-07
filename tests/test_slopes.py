@@ -1,4 +1,4 @@
-"""Single varying slope on one factor (#59), cross-checked against pyfixest.
+"""Varying slopes on one factor (#59, #60), cross-checked against pyfixest.
 
 pyfixest has no native ``f[z]`` syntax; the reference is the explicit
 interaction parametrization ``y ~ C(f) + i(f, z) - 1``, which estimates the
@@ -93,3 +93,43 @@ def test_constant_slope_level_reports_drop_with_exact_zero():
     _assert_matches(
         res, _pyfixest_coef(f, z, y, "y ~ C(f) + i(f, z) - 1"), skip_slopes={1}
     )
+
+
+def _panel_multi(seed, v, n=400):
+    rng = np.random.default_rng(seed)
+    f = rng.integers(0, N_LEVELS, n).astype(np.uint32)
+    base = rng.normal(size=n)
+    # Correlated slopes so the raw per-level Grams are ill-conditioned.
+    zs = [base * (0.6 + 0.2 * j) + 0.15 * rng.normal(size=n) for j in range(v)]
+    a = rng.normal(size=N_LEVELS)
+    b = rng.normal(size=(v, N_LEVELS))
+    y = a[f] + sum(b[j][f] * zs[j] for j in range(v)) + rng.normal(scale=0.1, size=n)
+    return f, zs, y
+
+
+def _pyfixest_coef_multi(f, zs, y, w=None):
+    df = pd.DataFrame({"f": [f"L{v}" for v in f], "y": y})
+    for j, z in enumerate(zs):
+        df[f"z{j}"] = z
+    weights = None
+    if w is not None:
+        df["w"] = w
+        weights = "w"
+    terms = " + ".join(f"i(f, z{j})" for j in range(len(zs)))
+    return pf.feols(f"y ~ C(f) + {terms} - 1", data=df, weights=weights).coef()
+
+
+def test_three_correlated_weighted_slopes_match_pyfixest():
+    f, zs, y = _panel_multi(seed=19, v=3)
+    w = np.random.default_rng(29).uniform(0.2, 3.0, size=len(y))
+    res = within.solve([Effect(f, True, zs)], y, OPTS, weights=w)
+    assert res.converged
+    assert res.unidentified == []
+
+    coef = _pyfixest_coef_multi(f, zs, y, w=w)
+    for lvl in range(N_LEVELS):
+        assert res.x[lvl] == pytest.approx(coef[f"C(f)[L{lvl}]"], rel=1e-6, abs=1e-8)
+        for j in range(3):
+            assert res.x[N_LEVELS * (1 + j) + lvl] == pytest.approx(
+                coef[f"f::L{lvl}:z{j}"], rel=1e-6, abs=1e-8
+            )

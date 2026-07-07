@@ -254,11 +254,11 @@ impl<'a> Solver<'a> {
         preconditioner: impl Into<PreconditionerInput>,
     ) -> Result<Self, BuildError> {
         let mut design = design.into_design()?;
-        // A sole V=1 term is solvable via within-level reparametrization (the
-        // whitening below); slopes alongside other terms (#61) or multiple
-        // slopes per factor (#60) land in later slices.
-        if let Some(idx) = design.terms.iter().position(|t| !t.slopes.is_empty()) {
-            if design.terms.len() > 1 || design.terms[idx].slopes.len() > 1 {
+        // A sole slope term is solvable via within-level reparametrization
+        // (the whitening below); slopes alongside other terms (#61) land in a
+        // later slice.
+        if design.terms.len() > 1 {
+            if let Some(idx) = design.terms.iter().position(|t| !t.slopes.is_empty()) {
                 return Err(BuildError::SlopesNotYetSupported { effect: idx });
             }
         }
@@ -272,7 +272,7 @@ impl<'a> Solver<'a> {
             None => weights,
         };
 
-        // Whiten the slope column (if any) before the preconditioner reads the frame.
+        // Whiten the slope columns (if any) before the preconditioner reads the frame.
         let reparam = SlopeReparam::build(&mut design, weights.as_deref());
 
         let preconditioner = match preconditioner.into() {

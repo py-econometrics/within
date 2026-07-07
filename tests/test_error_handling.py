@@ -86,10 +86,16 @@ class TestEffectErrors:
         with pytest.raises(ValueError, match="slope 0"):
             Effect(levels, intercept=True, slopes=[np.array([1.0, 2.0])])
 
-    def test_multi_slope_design_raises(self):
+    def test_slope_term_alongside_other_terms_raises(self):
         levels = np.array([0, 1, 0], dtype=np.uint32)
-        slopes = [np.array([1.0, 2.0, 3.0]), np.array([0.5, -1.0, 2.0])]
+        slope = [np.array([1.0, 2.0, 3.0])]
         y = np.array([1.0, 2.0, 3.0])
-        # A sole V=1 slope term solves (#59); V>=2 waits on #60.
-        with pytest.raises(ValueError, match="more than one slope"):
-            solve([Effect(levels, intercept=True, slopes=slopes)], y)
+        # A sole slope term solves (#59/#60); mixing waits on #61.
+        with pytest.raises(ValueError, match="alongside other effects"):
+            solve(
+                [
+                    Effect(levels, intercept=True, slopes=slope),
+                    Effect(levels, intercept=True),
+                ],
+                y,
+            )
