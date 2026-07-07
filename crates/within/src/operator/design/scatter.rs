@@ -1,10 +1,80 @@
-//! Scatter-add kernels: observation space → coefficient space (`Dᵀ x`), one
+//! Scatter kernel: observation space → coefficient space (`Dᵀ x`), one
 //! strategy per term picked by block size and level-column sortedness.
 
 use std::sync::atomic::Ordering;
 
 use portable_atomic::AtomicF64;
 use rayon::prelude::*;
+
+use super::{resolve_terms, ResolvedTerm, PAR_THRESHOLD};
+use crate::domain::Design;
+
+/// Adjoint scatter over all terms; `base(i)` is the row value (`x[i]`, or
+/// `sw[i]·x[i]` when weighted) that each column scales by its loading.
+pub(super) fn scatter_apply(
+    design: &Design<'_>,
+    scratch: &[AtomicF64],
+    dst: &mut [f64],
+    base: &(impl Fn(usize) -> f64 + Sync),
+) {
+    debug_assert_eq!(dst.len(), design.n_dofs);
+    let parallel = design.n_obs > PAR_THRESHOLD;
+
+    for t in resolve_terms(design) {
+        let n_levels = t.meta.n_levels;
+        let block = &mut dst[t.meta.offset..t.meta.offset + t.meta.n_dofs()];
+        match (t.meta.intercept, t.zs.as_slice()) {
+            (true, []) => scatter_term::<1>(block, &t, parallel, scratch, |i| [base(i)]),
+            (true, &[z0]) => scatter_term::<2>(block, &t, parallel, scratch, |i| {
+                let b = base(i);
+                [b, z0[i] * b]
+            }),
+            (true, &[z0, z1]) => scatter_term::<3>(block, &t, parallel, scratch, |i| {
+                let b = base(i);
+                [b, z0[i] * b, z1[i] * b]
+            }),
+            (intercept, zs) => {
+                let zoff = usize::from(intercept);
+                if intercept {
+                    scatter_term::<1>(&mut block[..n_levels], &t, parallel, scratch, |i| [base(i)]);
+                }
+                for (v, &z) in zs.iter().enumerate() {
+                    let start = (zoff + v) * n_levels;
+                    scatter_term::<1>(
+                        &mut block[start..start + n_levels],
+                        &t,
+                        parallel,
+                        scratch,
+                        move |i| [z[i] * base(i)],
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Scatter one term's coefficient block: `block[c·L + level(i)] += values(i)[c]`.
+fn scatter_term<const C: usize>(
+    block: &mut [f64],
+    term: &ResolvedTerm<'_>,
+    parallel: bool,
+    scratch: &[AtomicF64],
+    values: impl Fn(usize) -> [f64; C] + Sync,
+) {
+    debug_assert_eq!(block.len(), C * term.meta.n_levels);
+    match ScatterStrategy::pick(parallel, C * term.meta.n_levels, term.meta.sorted) {
+        ScatterStrategy::Sequential => {
+            scatter_sequential::<C>(block, term.meta.n_levels, term.levels, &values)
+        }
+        ScatterStrategy::Fold => scatter_fold::<C>(block, term.meta.n_levels, term.levels, &values),
+        ScatterStrategy::Atomic => {
+            scatter_atomic::<C>(block, term.meta.n_levels, term.levels, &values, scratch)
+        }
+        ScatterStrategy::SortedCoalesced => {
+            scatter_sorted_coalesced::<C>(block, term.meta.n_levels, term.levels, &values, scratch)
+        }
+    }
+}
 
 /// Coefficient-block threshold for choosing between fold and atomic scatter-add.
 ///
@@ -15,7 +85,7 @@ use rayon::prelude::*;
 const SCATTER_LOCAL_THRESHOLD: usize = 100_000;
 
 /// Strategy for a single term's scatter-add loop.
-pub(super) enum ScatterStrategy {
+enum ScatterStrategy {
     /// Plain sequential loop — used when n_rows is below `PAR_THRESHOLD`.
     Sequential,
     /// Parallel fold/reduce with thread-local accumulators — for small blocks.
@@ -32,7 +102,7 @@ impl ScatterStrategy {
     /// Pick the scatter strategy for one term; `block` is the coefficient
     /// count written by the kernel call, `sorted` the term's level-column
     /// sortedness (`TermMeta::sorted`).
-    pub(super) fn pick(parallel: bool, block: usize, sorted: bool) -> Self {
+    fn pick(parallel: bool, block: usize, sorted: bool) -> Self {
         match (parallel, block < SCATTER_LOCAL_THRESHOLD, sorted) {
             (false, _, _) => ScatterStrategy::Sequential,
             (true, true, _) => ScatterStrategy::Fold,
@@ -43,23 +113,23 @@ impl ScatterStrategy {
 }
 
 /// Sequential scatter-add: `block[c·L + levels[i]] += values(i)[c]`.
-pub(super) fn scatter_sequential<const C: usize>(
+fn scatter_sequential<const C: usize>(
     block: &mut [f64],
     n_levels: usize,
     levels: &[u32],
     values: &(impl Fn(usize) -> [f64; C] + Sync),
 ) {
-    for (i, &l) in levels.iter().enumerate() {
+    for (i, &lev) in levels.iter().enumerate() {
         let vals = values(i);
         for (c, v) in vals.into_iter().enumerate() {
-            block[c * n_levels + l as usize] += v;
+            block[c * n_levels + lev as usize] += v;
         }
     }
 }
 
 /// Parallel scatter-add via thread-local fold/reduce — best when the block
 /// (the term's coefficient count) is small relative to thread count.
-pub(super) fn scatter_fold<const C: usize>(
+fn scatter_fold<const C: usize>(
     block: &mut [f64],
     n_levels: usize,
     levels: &[u32],
@@ -67,10 +137,10 @@ pub(super) fn scatter_fold<const C: usize>(
 ) {
     let min_len = (levels.len() / rayon::current_num_threads().max(1)).max(1024);
     let identity = || vec![0.0f64; C * n_levels];
-    let fold = |mut acc: Vec<f64>, (i, &l): (usize, &u32)| {
+    let fold = |mut acc: Vec<f64>, (i, &lev): (usize, &u32)| {
         let vals = values(i);
         for (c, v) in vals.into_iter().enumerate() {
-            acc[c * n_levels + l as usize] += v;
+            acc[c * n_levels + lev as usize] += v;
         }
         acc
     };
@@ -113,7 +183,7 @@ fn writeback_scatter_scratch(block: &mut [f64], buf: &[AtomicF64]) {
 /// relative to thread count (low contention). `atomic_buf` is the operator's
 /// reusable scratch (sized to the largest term's block); we use its first
 /// `block.len()` slots, re-seeding them via `store` so no allocation occurs.
-pub(super) fn scatter_atomic<const C: usize>(
+fn scatter_atomic<const C: usize>(
     block: &mut [f64],
     n_levels: usize,
     levels: &[u32],
@@ -121,16 +191,16 @@ pub(super) fn scatter_atomic<const C: usize>(
     atomic_buf: &[AtomicF64],
 ) {
     let buf = seed_scatter_scratch(atomic_buf, block);
-    levels.par_iter().enumerate().for_each(|(i, &l)| {
+    levels.par_iter().enumerate().for_each(|(i, &lev)| {
         let vals = values(i);
         for (c, v) in vals.into_iter().enumerate() {
-            buf[c * n_levels + l as usize].fetch_add(v, Ordering::Relaxed);
+            buf[c * n_levels + lev as usize].fetch_add(v, Ordering::Relaxed);
         }
     });
     writeback_scatter_scratch(block, buf);
 }
 
-pub(super) fn scatter_sorted_coalesced<const C: usize>(
+fn scatter_sorted_coalesced<const C: usize>(
     block: &mut [f64],
     n_levels: usize,
     levels: &[u32],

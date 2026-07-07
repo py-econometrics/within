@@ -9,9 +9,7 @@ mod gather;
 mod scatter;
 
 pub(crate) use gather::gather_apply;
-use scatter::{
-    scatter_atomic, scatter_fold, scatter_sequential, scatter_sorted_coalesced, ScatterStrategy,
-};
+use scatter::scatter_apply;
 
 /// Minimum number of rows before scatter/gather loops are parallelized.
 const PAR_THRESHOLD: usize = 10_000;
@@ -109,80 +107,6 @@ impl<'a> DesignOperator<'a> {
             Some(sw) => Cow::Owned(y.iter().zip(sw).map(|(&yi, &swi)| swi * yi).collect()),
         }
     }
-
-    /// Scatter one term's coefficient block: `block[c·L + level(i)] += values(i)[c]`.
-    fn scatter_term<const C: usize>(
-        &self,
-        block: &mut [f64],
-        term: &ResolvedTerm<'_>,
-        parallel: bool,
-        values: impl Fn(usize) -> [f64; C] + Sync,
-    ) {
-        debug_assert_eq!(block.len(), C * term.meta.n_levels);
-        match ScatterStrategy::pick(parallel, C * term.meta.n_levels, term.meta.sorted) {
-            ScatterStrategy::Sequential => {
-                scatter_sequential::<C>(block, term.meta.n_levels, term.levels, &values)
-            }
-            ScatterStrategy::Fold => {
-                scatter_fold::<C>(block, term.meta.n_levels, term.levels, &values)
-            }
-            ScatterStrategy::Atomic => scatter_atomic::<C>(
-                block,
-                term.meta.n_levels,
-                term.levels,
-                &values,
-                &self.scatter_scratch,
-            ),
-            ScatterStrategy::SortedCoalesced => scatter_sorted_coalesced::<C>(
-                block,
-                term.meta.n_levels,
-                term.levels,
-                &values,
-                &self.scatter_scratch,
-            ),
-        }
-    }
-
-    /// Adjoint scatter over all terms; `base(i)` is the row value (`x[i]`,
-    /// or `sw[i]·x[i]` when weighted) that each column scales by its loading.
-    ///
-    /// A term's columns are scattered in one fused pass — they share one level
-    /// load and one run detection, measured well ahead of per-column passes
-    /// for the coalesced and fold strategies. Shapes without a
-    /// specialized arm fall back to per-column passes.
-    fn scatter_apply(&self, dst: &mut [f64], base: &(impl Fn(usize) -> f64 + Sync)) {
-        let design = self.design;
-        debug_assert_eq!(dst.len(), design.n_dofs);
-        let parallel = design.n_obs > PAR_THRESHOLD;
-
-        for t in resolve_terms(design) {
-            let l = t.meta.n_levels;
-            let block = &mut dst[t.meta.offset..t.meta.offset + t.meta.n_dofs()];
-            match (t.meta.intercept, t.zs.as_slice()) {
-                (true, []) => self.scatter_term::<1>(block, &t, parallel, |i| [base(i)]),
-                (true, &[z0]) => self.scatter_term::<2>(block, &t, parallel, |i| {
-                    let b = base(i);
-                    [b, z0[i] * b]
-                }),
-                (true, &[z0, z1]) => self.scatter_term::<3>(block, &t, parallel, |i| {
-                    let b = base(i);
-                    [b, z0[i] * b, z1[i] * b]
-                }),
-                (intercept, zs) => {
-                    let zoff = usize::from(intercept);
-                    if intercept {
-                        self.scatter_term::<1>(&mut block[..l], &t, parallel, |i| [base(i)]);
-                    }
-                    for (v, &z) in zs.iter().enumerate() {
-                        let s = (zoff + v) * l;
-                        self.scatter_term::<1>(&mut block[s..s + l], &t, parallel, move |i| {
-                            [z[i] * base(i)]
-                        });
-                    }
-                }
-            }
-        }
-    }
 }
 
 impl Operator for DesignOperator<'_> {
@@ -208,8 +132,8 @@ impl Operator for DesignOperator<'_> {
         // operator's `apply_adjoint` calls are sequential (`solve_batch` builds
         // a distinct operator per RHS), so the shared buffer is never raced.
         match &self.sqrt_weights {
-            Some(sw) => self.scatter_apply(y, &|i| sw[i] * x[i]),
-            None => self.scatter_apply(y, &|i| x[i]),
+            Some(sw) => scatter_apply(self.design, &self.scatter_scratch, y, &|i| sw[i] * x[i]),
+            None => scatter_apply(self.design, &self.scatter_scratch, y, &|i| x[i]),
         }
         Ok(())
     }
