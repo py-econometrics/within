@@ -163,6 +163,7 @@ class TestSolveResult:
         assert isinstance(result.x, np.ndarray)
         assert result.x.dtype == np.float64
         assert len(result.x) == 100  # 50 + 50 levels
+        assert result.unidentified == []
         assert result.time_total >= 0
         assert result.time_setup >= 0
         assert result.time_solve >= 0
@@ -271,6 +272,7 @@ class TestSolverBatch:
         assert len(batch.residual) == 2
         assert len(batch.time_solve) == 2
         assert batch.time_total >= 0
+        assert batch.unidentified == []
 
 
 class TestSolverSerde:

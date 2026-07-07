@@ -108,12 +108,30 @@ impl From<&Preconditioner> for PreconditionerInput {
     }
 }
 
+/// A per-level direction of the design that the data cannot identify.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnidentifiedDirection {
+    /// Index into the design's term list.
+    pub term: usize,
+    /// Level index within the term (`0..n_levels`).
+    pub level: usize,
+    /// Column within the term's per-level block: intercept first (when
+    /// present), then slopes in declaration order.
+    pub column: usize,
+}
+
 /// Common solve output for all orchestration entry points.
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct SolveResult {
     /// Fixed-effect coefficients (length = total DOFs across all factors).
+    ///
+    /// Slots for unidentified directions hold the minimal-norm value `0`,
+    /// never NaN; see [`SolveResult::unidentified`].
     pub x: Vec<f64>,
+    /// Per-level directions the data cannot identify. Empty until
+    /// [`Solver::new`] accepts slope terms.
+    pub unidentified: Vec<UnidentifiedDirection>,
     /// Demeaned response: `y - D x` (length = n_obs), in caller order.
     ///
     /// Invariant: any per-observation field added here must be translated
@@ -138,7 +156,13 @@ pub struct SolveResult {
 #[derive(Debug, Clone)]
 pub struct BatchSolveResult {
     /// All coefficient vectors concatenated (length = n_dofs * n_rhs).
+    ///
+    /// Slots for unidentified directions hold the minimal-norm value `0`,
+    /// never NaN; see [`BatchSolveResult::unidentified`].
     pub x: Vec<f64>,
+    /// Per-level directions the data cannot identify, shared across all RHS:
+    /// identification depends only on the design and weights, never on `y`.
+    pub unidentified: Vec<UnidentifiedDirection>,
     /// All demeaned responses concatenated (length = n_obs * n_rhs).
     pub demeaned: Vec<f64>,
     /// Per-RHS convergence flags.
@@ -325,6 +349,7 @@ impl<'a> Solver<'a> {
 
         Ok(SolveResult {
             x: r.x,
+            unidentified: Vec::new(),
             // Back to the caller's observation order (no-op if not reordered).
             demeaned: self.design.permute_obs_out(demeaned),
             converged: r.converged,
@@ -359,6 +384,13 @@ impl<'a> Solver<'a> {
         let mut residual = Vec::with_capacity(n_rhs);
         let mut time_solve = Vec::with_capacity(n_rhs);
 
+        // Identical for every RHS: identification depends only on the design
+        // and weights, never on `y`.
+        let unidentified = results
+            .first()
+            .map(|r| r.unidentified.clone())
+            .unwrap_or_default();
+
         for r in results {
             x.extend_from_slice(&r.x);
             demeaned.extend_from_slice(&r.demeaned);
@@ -370,6 +402,7 @@ impl<'a> Solver<'a> {
 
         Ok(BatchSolveResult {
             x,
+            unidentified,
             demeaned,
             converged,
             iterations,
