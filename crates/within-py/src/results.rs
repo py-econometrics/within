@@ -18,6 +18,8 @@ pub struct PySolveResult {
     #[pyo3(get)]
     pub x: Py<numpy::PyArray1<f64>>,
     #[pyo3(get)]
+    pub unidentified: Vec<(usize, usize, usize)>,
+    #[pyo3(get)]
     pub demeaned: Py<numpy::PyArray1<f64>>,
     #[pyo3(get)]
     pub converged: bool,
@@ -39,6 +41,8 @@ pub struct PyBatchSolveResult {
     #[pyo3(get)]
     pub x: Py<numpy::PyArray2<f64>>,
     #[pyo3(get)]
+    pub unidentified: Vec<(usize, usize, usize)>,
+    #[pyo3(get)]
     pub demeaned: Py<numpy::PyArray2<f64>>,
     #[pyo3(get)]
     pub converged: Vec<bool>,
@@ -59,6 +63,11 @@ pub struct PyBatchSolveResult {
 pub(crate) fn into_py_result(py: Python<'_>, result: SolveResult) -> PySolveResult {
     PySolveResult {
         x: result.x.into_pyarray(py).unbind(),
+        unidentified: result
+            .unidentified
+            .iter()
+            .map(|u| (u.term, u.level, u.column))
+            .collect(),
         demeaned: result.demeaned.into_pyarray(py).unbind(),
         converged: result.converged,
         iterations: result.iterations,
@@ -83,6 +92,11 @@ pub(crate) fn into_py_batch_result(
 
     Ok(PyBatchSolveResult {
         x: x.into_pyarray(py).unbind(),
+        unidentified: result
+            .unidentified
+            .iter()
+            .map(|u| (u.term, u.level, u.column))
+            .collect(),
         demeaned: demeaned.into_pyarray(py).unbind(),
         converged: result.converged,
         iterations: result.iterations,
