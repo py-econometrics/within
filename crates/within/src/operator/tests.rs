@@ -310,6 +310,138 @@ mod design_tests {
     }
 }
 
+mod slope_design_tests {
+    use crate::domain::{Design, Effect};
+    use crate::operator::DesignOperator;
+    use schwarz_precond::Operator;
+
+    /// Deterministic pseudo-random f64 in [-1, 1).
+    fn noise(seed: usize) -> f64 {
+        let mut z = seed as u64 ^ 0x9E37_79B9_7F4A_7C15;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        (z >> 11) as f64 / (1u64 << 52) as f64 - 1.0
+    }
+
+    /// Dense design matrix from the design's internal (post-sort) columns —
+    /// the reference the operator must agree with regardless of the locality
+    /// permutation.
+    fn dense_matrix(design: &Design<'_>) -> Vec<Vec<f64>> {
+        let mut d = vec![vec![0.0; design.n_dofs]; design.n_obs];
+        for (q, t) in design.terms.iter().enumerate() {
+            let levels = design.frame.level_column(q);
+            let mut c = 0;
+            if t.intercept {
+                for (i, &lev) in levels.iter().enumerate() {
+                    d[i][t.offset + lev as usize] = 1.0;
+                }
+                c = 1;
+            }
+            for (v, &z_idx) in t.slopes.iter().enumerate() {
+                let z = design.frame.loading_column(z_idx);
+                for (i, &lev) in levels.iter().enumerate() {
+                    d[i][t.offset + (c + v) * t.n_levels + lev as usize] = z[i];
+                }
+            }
+        }
+        d
+    }
+
+    fn assert_close(a: &[f64], b: &[f64]) {
+        for (x, y) in a.iter().zip(b) {
+            assert!(
+                (x - y).abs() <= 1e-10 * x.abs().max(y.abs()).max(1.0),
+                "{x} vs {y}"
+            );
+        }
+    }
+
+    /// Covers every kernel arm on the sequential path: plain, fused V=1/V=2,
+    /// slope-only, and the generic V=3 fallback — against the dense reference.
+    #[test]
+    fn slope_matvec_and_adjoint_match_dense_reference() {
+        let n = 6;
+        let f0 = [0u32, 1, 2, 0, 1, 2];
+        let f1 = [0u32, 0, 1, 1, 2, 2];
+        let f2 = [0u32, 1, 0, 1, 0, 1];
+        let f3 = [0u32, 0, 0, 1, 1, 1];
+        let f4 = [1u32, 0, 2, 1, 0, 2];
+        let zs: Vec<Vec<f64>> = (0..6)
+            .map(|k| (0..n).map(|i| noise(k * 100 + i)).collect())
+            .collect();
+        let effects = vec![
+            Effect::new(&f0, true, [&zs[0][..], &zs[1][..], &zs[2][..]]).unwrap(),
+            Effect::new(&f1, true, [&zs[3][..]]).unwrap(),
+            Effect::new(&f2, false, [&zs[4][..]]).unwrap(),
+            Effect::new(&f3, true, []).unwrap(),
+            Effect::new(&f4, true, [&zs[5][..], &zs[4][..]]).unwrap(),
+        ];
+        let design = Design::new(effects).unwrap();
+        let dense = dense_matrix(&design);
+        let op = DesignOperator::new(&design, None);
+
+        let x: Vec<f64> = (0..design.n_dofs).map(|j| noise(7_000 + j)).collect();
+        let mut got = vec![0.0; design.n_obs];
+        op.apply(&x, &mut got).unwrap();
+        let expect: Vec<f64> = dense
+            .iter()
+            .map(|row| row.iter().zip(&x).map(|(d, xj)| d * xj).sum())
+            .collect();
+        assert_close(&got, &expect);
+
+        let r: Vec<f64> = (0..design.n_obs).map(|i| noise(9_000 + i)).collect();
+        let mut got_t = vec![0.0; design.n_dofs];
+        op.apply_adjoint(&r, &mut got_t).unwrap();
+        let mut expect_t = vec![0.0; design.n_dofs];
+        for (row, &ri) in dense.iter().zip(&r) {
+            for (e, d) in expect_t.iter_mut().zip(row) {
+                *e += d * ri;
+            }
+        }
+        assert_close(&got_t, &expect_t);
+    }
+
+    /// Adjoint identity ⟨Dx, r⟩ = ⟨x, Dᵀr⟩ on a design large enough to take
+    /// the parallel strategies — sorted-coalesced (C=2), atomic (C=2), and
+    /// fold (C=3) — with weights in play. Gather and scatter share the layout
+    /// logic but not the kernels, so a per-strategy addressing bug breaks the
+    /// identity.
+    #[test]
+    fn slope_adjoint_property_parallel_strategies() {
+        let n = 150_000;
+        let l_big = 60_000usize;
+        let sorted: Vec<u32> = (0..n).map(|i| (i * l_big / n) as u32).collect();
+        let unsorted: Vec<u32> = (0..n).map(|i| ((i * 7919) % l_big) as u32).collect();
+        let small: Vec<u32> = (0..n).map(|i| (i % 10) as u32).collect();
+        let z: Vec<Vec<f64>> = (0..4)
+            .map(|k| (0..n).map(|i| noise(k * n + i)).collect())
+            .collect();
+        let effects = vec![
+            Effect::new(&sorted, true, [&z[0][..]]).unwrap(),
+            Effect::new(&unsorted, true, [&z[1][..]]).unwrap(),
+            Effect::new(&small, true, [&z[2][..], &z[3][..]]).unwrap(),
+        ];
+        let design = Design::new(effects).unwrap();
+        let weights: Vec<f64> = (0..n).map(|i| 0.5 + noise(i).abs()).collect();
+        let op = DesignOperator::new(&design, Some(&weights));
+
+        let x: Vec<f64> = (0..design.n_dofs).map(|j| noise(13 * j + 1)).collect();
+        let r: Vec<f64> = (0..n).map(|i| noise(29 * i + 5)).collect();
+
+        let mut dx = vec![0.0; n];
+        op.apply(&x, &mut dx).unwrap();
+        let mut dtr = vec![0.0; design.n_dofs];
+        op.apply_adjoint(&r, &mut dtr).unwrap();
+
+        let lhs: f64 = dx.iter().zip(&r).map(|(a, b)| a * b).sum();
+        let rhs: f64 = x.iter().zip(&dtr).map(|(a, b)| a * b).sum();
+        assert!(
+            (lhs - rhs).abs() <= 1e-9 * lhs.abs().max(rhs.abs()).max(1.0),
+            "{lhs} vs {rhs}"
+        );
+    }
+}
+
 // ===========================================================================
 // weighted adjoint property test
 // ===========================================================================

@@ -200,7 +200,7 @@ fn build_diagonal(
 ) -> Result<DiagonalPreconditioner, BuildError> {
     let mut diag = vec![0.0; design.n_dofs];
 
-    for (factor_idx, factor) in design.factors.iter().enumerate() {
+    for (factor_idx, factor) in design.terms.iter().enumerate() {
         let slice = &mut diag[factor.offset..factor.offset + factor.n_levels];
         for (uid, &level) in design.frame.level_column(factor_idx).iter().enumerate() {
             slice[level as usize] += weights.map_or(1.0, |w| w[uid]);

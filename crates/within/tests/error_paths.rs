@@ -272,3 +272,21 @@ fn test_build_error_display_preconditioner_dimension_mismatch() {
     assert!(s.contains("7"));
     assert!(s.contains("5"));
 }
+
+#[test]
+fn test_solver_rejects_slope_bearing_design_naming_its_term() {
+    let levels = [0u32, 1, 0, 1];
+    let slope = [1.0, 2.0, 3.0, 4.0];
+    let effects = vec![
+        within::Effect::new(&levels, true, []).expect("plain effect"),
+        within::Effect::new(&levels, true, [&slope[..]]).expect("slope effect"),
+    ];
+    // The design builds — the operator contract is exercisable — but solving
+    // is deferred to the transform slices (#59+).
+    let design = Design::new(effects).expect("slope design builds");
+    let err = Solver::new(design, None, None).unwrap_err();
+    match err {
+        BuildError::SlopesNotYetSupported { effect: 1 } => {}
+        other => panic!("Expected SlopesNotYetSupported for term 1, got: {other:?}"),
+    }
+}
