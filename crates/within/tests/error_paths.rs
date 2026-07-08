@@ -274,19 +274,14 @@ fn test_build_error_display_preconditioner_dimension_mismatch() {
 }
 
 #[test]
-fn test_solver_rejects_slope_bearing_design_naming_its_term() {
+fn test_solver_accepts_slope_bearing_design_alongside_other_terms() {
     let levels = [0u32, 1, 0, 1];
     let slope = [1.0, 2.0, 3.0, 4.0];
     let effects = vec![
         within::Effect::new(&levels, true, []).expect("plain effect"),
         within::Effect::new(&levels, true, [&slope[..]]).expect("slope effect"),
     ];
-    // The design builds — the operator contract is exercisable — but solving
-    // slopes alongside other terms is deferred to cross-factor routing (#61).
+    // Cross-factor routing (#61): slope terms alongside other terms build.
     let design = Design::new(effects).expect("slope design builds");
-    let err = Solver::new(design, None, None).unwrap_err();
-    match err {
-        BuildError::SlopesNotYetSupported { effect: 1 } => {}
-        other => panic!("Expected SlopesNotYetSupported for term 1, got: {other:?}"),
-    }
+    Solver::new(design, None, None).expect("signed routing builds");
 }

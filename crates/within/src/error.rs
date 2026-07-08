@@ -34,12 +34,6 @@ pub enum BuildError {
         /// Actual length.
         got: usize,
     },
-    /// An effect carries varying slopes in a form the solver does not yet support.
-    #[error("effect {effect} has varying slopes, not yet supported alongside other effects")]
-    SlopesNotYetSupported {
-        /// Index of the offending effect.
-        effect: usize,
-    },
     /// Weight vector does not match the number of observations.
     #[error("weights has length {got}, expected {expected}")]
     WeightCountMismatch {
