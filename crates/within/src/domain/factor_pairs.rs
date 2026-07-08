@@ -10,11 +10,38 @@ use schwarz_precond::{PartitionWeights, SubdomainCore};
 
 use super::{find_all_active_levels, BlockDiagonals, CrossTab, Design};
 
+/// Kernel policy the local solve honors for one component.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum KernelPolicy {
+    /// Constant-kernel (plain) component: symmetric mean projection around the solve.
+    #[default]
+    MeanProjection,
+    /// No projection (signed component): the reduced solve is grounded exactly.
+    None,
+}
+
+/// Per-component congruence and kernel policy consumed by the local solve.
+///
+/// The congruence `d = σ ⊙ λ` (balancing signature times diagonal scaling, over
+/// the `[q | r]` local DOF layout) turns a signed component's Gram into the
+/// plain sign convention: the factorization is built on `d·A·d` and each solve
+/// is sandwiched with `d`, so the local operator realizes the
+/// congruence-transformed pseudo-solve `D Â⁺ D`.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ComponentTransform {
+    /// `d = σ ⊙ λ` per local DOF; `None` is the identity (plain pairs).
+    pub congruence: Option<Box<[f64]>>,
+    /// Projection policy around the local solve.
+    pub kernel: KernelPolicy,
+}
+
 /// A local subdomain corresponding to a pair of factors.
 #[derive(Clone)]
 pub(crate) struct Subdomain {
     /// Generic subdomain core: global DOF indices, restriction, and partition-of-unity weights.
     pub core: SubdomainCore,
+    /// Per-component congruence + kernel policy for the local solve.
+    pub transform: ComponentTransform,
 }
 
 impl std::fmt::Debug for Subdomain {
@@ -121,7 +148,10 @@ fn split_into_subdomains(
                 .collect();
             let core = schwarz_precond::SubdomainCore::uniform(comp_l2g);
             LocalDomain {
-                subdomain: Subdomain { core },
+                subdomain: Subdomain {
+                    core,
+                    transform: ComponentTransform::default(),
+                },
                 cross_tab: comp_ct,
                 block_diagonals: comp_diag,
             }

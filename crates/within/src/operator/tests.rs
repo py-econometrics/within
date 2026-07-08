@@ -612,6 +612,7 @@ mod schwarz_tests {
             .map(|_| LocalDomain {
                 subdomain: Subdomain {
                     core: SubdomainCore::uniform(global_indices.clone()),
+                    transform: crate::domain::ComponentTransform::default(),
                 },
                 cross_tab: cross_tab.clone(),
                 block_diagonals: block_diagonals.clone(),
