@@ -1,4 +1,4 @@
-//! Cross-tabulation of a factor pair: the bipartite local Gramian.
+//! Cross-tabulation of a channel pair: the bipartite local Gramian.
 //!
 //! [`CrossTab`] holds `C` as a [`CsrBlock`] plus its precomputed transpose and
 //! the two diagonals (rather than assembling the symmetric block matrix), and
@@ -6,7 +6,7 @@
 //! Levels are stored compactly with a `local_to_global` map for active levels only.
 
 use crate::csr_block::CsrBlock;
-use crate::domain::{Design, TermMeta};
+use crate::domain::{ChannelPair, Design};
 
 mod accumulate;
 use accumulate::accumulate_cross_block;
@@ -71,15 +71,14 @@ fn compact_map(active: &[bool]) -> (Vec<u32>, usize) {
     (map, n as usize)
 }
 
-/// Build compact mapping for a factor pair using pre-computed active level flags.
-///
-/// Extracts the mapping logic from `find_all_active_levels`, taking pre-computed
-/// active booleans instead of scanning observations.
+/// Build compact mapping for a channel pair using pre-computed active level
+/// flags; `base_q`/`base_r` are the channels' global DOF offsets
+/// ([`Channel::base`](crate::domain::Channel::base)).
 fn build_compact_mapping(
     active_q: &[bool],
     active_r: &[bool],
-    fq: &TermMeta,
-    fr: &TermMeta,
+    base_q: usize,
+    base_r: usize,
 ) -> Option<ActiveLevels> {
     let (q_map, n_q) = compact_map(active_q);
     let (r_map, n_r) = compact_map(active_r);
@@ -91,12 +90,12 @@ fn build_compact_mapping(
     let mut local_to_global = Vec::with_capacity(n_q + n_r);
     for (j, &a) in active_q.iter().enumerate() {
         if a {
-            local_to_global.push(to_u32(fq.offset + j));
+            local_to_global.push(to_u32(base_q + j));
         }
     }
     for (k, &a) in active_r.iter().enumerate() {
         if a {
-            local_to_global.push(to_u32(fr.offset + k));
+            local_to_global.push(to_u32(base_r + k));
         }
     }
 
@@ -180,7 +179,7 @@ impl CrossTab {
         self.c.nrows + self.c.ncols
     }
 
-    /// Build a CrossTab using pre-computed active level flags.
+    /// Build a CrossTab for one channel pair using pre-computed active level flags.
     ///
     /// Reuses active levels already determined via `find_all_active_levels`,
     /// avoiding a redundant observation scan.
@@ -190,15 +189,17 @@ impl CrossTab {
     pub(crate) fn build_for_pair_with_active(
         design: &Design<'_>,
         weights: Option<&[f64]>,
-        q: usize,
-        r: usize,
+        pair: ChannelPair,
         all_active: &[Vec<bool>],
     ) -> Option<(Self, BlockDiagonals, Vec<u32>)> {
-        let fq = &design.terms[q];
-        let fr = &design.terms[r];
-        let active = build_compact_mapping(&all_active[q], &all_active[r], fq, fr)?;
+        let active = build_compact_mapping(
+            &all_active[pair.q.term],
+            &all_active[pair.r.term],
+            pair.q.base(&design.terms[pair.q.term]),
+            pair.r.base(&design.terms[pair.r.term]),
+        )?;
 
-        let (c, diag_q, diag_r) = accumulate_cross_block(design, weights, q, r, &active);
+        let (c, diag_q, diag_r) = accumulate_cross_block(design, weights, pair, &active);
         let ct = c.transpose();
         let cross_tab = CrossTab { c, ct };
         let diagonals = BlockDiagonals {

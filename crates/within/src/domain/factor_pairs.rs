@@ -1,14 +1,14 @@
-//! Factor-pair subdomain construction.
+//! Channel-pair subdomain construction.
 //!
-//! Each factor pair `(q, r)` becomes a Schwarz subdomain (one per connected
-//! component of its bipartite cross-tab). Overlap is handled by partition-of-unity
-//! weights — see [`schwarz_precond::domain`] for the math.
+//! Each cross-factor channel pair becomes a Schwarz subdomain (one per
+//! connected component of its bipartite cross-tab). Overlap is handled by
+//! partition-of-unity weights — see [`schwarz_precond::domain`] for the math.
 //!
 //! Entry point: [`build_local_domains`].
 
 use schwarz_precond::{PartitionWeights, SubdomainCore};
 
-use super::{find_all_active_levels, BlockDiagonals, CrossTab, Design};
+use super::{find_all_active_levels, BlockDiagonals, ChannelPair, CrossTab, Design};
 
 /// Kernel policy the local solve honors for one component.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -64,14 +64,17 @@ pub(crate) struct LocalDomain {
     pub(crate) block_diagonals: BlockDiagonals,
 }
 
-/// Build local subdomains (with pre-built CrossTabs) for pairs of factors.
+/// Build local subdomains (with pre-built CrossTabs) for cross-factor channel
+/// pairs.
 ///
-/// For each factor pair, builds a fused CrossTab via a single observation scan,
-/// detects connected components on the bipartite structure, and creates one
-/// subdomain per component. The CrossTab travels with each subdomain to avoid
-/// a rebuild.
+/// For each pair of distinct terms `q < r`, every channel of `q` is paired
+/// with every channel of `r` (same-factor channel pairs are exactly
+/// orthogonal after whitening, so they are never enumerated). Each channel
+/// pair builds a fused CrossTab via one observation scan, detects connected
+/// components on the bipartite structure, and creates one subdomain per
+/// component. The CrossTab travels with each subdomain to avoid a rebuild.
 ///
-/// Factor pairs are processed in parallel via Rayon. The
+/// Channel pairs are processed in parallel via Rayon. The
 /// `compute_partition_weights` step remains sequential after the parallel
 /// collect.
 pub(crate) fn build_local_domains(
@@ -81,16 +84,23 @@ pub(crate) fn build_local_domains(
     use rayon::prelude::*;
 
     let n_factors = design.n_factors();
-    let pairs: Vec<(usize, usize)> = (0..n_factors)
+    let pairs: Vec<ChannelPair> = (0..n_factors)
         .flat_map(|q| ((q + 1)..n_factors).map(move |r| (q, r)))
+        .flat_map(|(q, r)| {
+            design.channels(q).flat_map(move |cq| {
+                design
+                    .channels(r)
+                    .map(move |cr| ChannelPair { q: cq, r: cr })
+            })
+        })
         .collect();
     let all_active = find_all_active_levels(design);
 
     let mut domain_pairs: Vec<LocalDomain> = pairs
         .par_iter()
-        .flat_map(|&(q, r)| {
+        .flat_map(|&pair| {
             let (full_ct, full_diag, l2g) =
-                match CrossTab::build_for_pair_with_active(design, weights, q, r, &all_active) {
+                match CrossTab::build_for_pair_with_active(design, weights, pair, &all_active) {
                     Some(triple) => triple,
                     None => return Vec::new(),
                 };
