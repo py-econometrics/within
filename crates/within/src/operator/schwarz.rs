@@ -267,7 +267,7 @@ pub(crate) fn build_preconditioner(
             local_solver,
             reduction,
         } => {
-            let domains = build_local_domains(design, weights);
+            let domains = build_local_domains(design, weights)?;
             if domains.is_empty() {
                 // Single-factor designs (and other configurations with no
                 // factor-pair subdomains) have no useful additive Schwarz

@@ -62,6 +62,13 @@ pub(crate) struct ChannelPair {
     pub r: Channel,
 }
 
+impl ChannelPair {
+    /// Both channels are intercepts, so every accumulated value is `w·1·1 ≥ 0`.
+    pub(crate) fn is_plain(&self) -> bool {
+        self.q.loading.is_none() && self.r.loading.is_none()
+    }
+}
+
 /// Fixed-effects design: observation columns plus coefficient-space layout.
 #[derive(Clone, Debug)]
 pub struct Design<'a> {

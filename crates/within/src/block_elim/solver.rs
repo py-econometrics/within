@@ -265,7 +265,11 @@ impl BlockElimSolver {
 
         // Below the dense threshold the reduced system is tiny — always use exact
         // Schur complement (cheap at this size) and dense Cholesky factorization.
-        let dense_factor = if prefer_dense {
+        let dense_factor = if n_keep == 0 {
+            // Trivial 1×1 component: nothing kept to reduce, so the solve
+            // degenerates to `x = r/d`; never send an empty system to approx-chol.
+            ReducedFactor::try_dense_laplacian_minor(Vec::new(), 0)
+        } else if prefer_dense {
             let anchored_minor = SchurLaplacian::anchored_minor_from_elimination(&elim);
             ReducedFactor::try_dense_laplacian_minor(anchored_minor, n_keep)
         } else {
@@ -560,6 +564,41 @@ mod tests {
         }
         let sol_norm: f64 = sol[..n_local].iter().map(|v| v * v).sum::<f64>().sqrt();
         assert!(sol_norm > 1e-15, "solution is unexpectedly all-zero");
+    }
+
+    #[test]
+    fn trivial_singleton_component_solves_r_over_d() {
+        // Live 1×1 components (positive diagonal, cancelled cross row) keep
+        // n_keep = 0: the whole solve must degenerate to x = r/d exactly, in
+        // both block orientations.
+        let config = LocalSolverConfig {
+            approx_chol: ApproxCholConfig::default(),
+            approx_schur: None,
+            dense_threshold: 0,
+        };
+        for (n_q, n_r) in [(1usize, 0usize), (0, 1)] {
+            let c = CsrBlock::from_dense_table(&[], n_q, n_r);
+            let ct = c.transpose();
+            let diagonals = BlockDiagonals {
+                q: vec![4.0; n_q],
+                r: vec![4.0; n_r],
+            };
+            let transform = ComponentTransform {
+                congruence: None,
+                kernel: KernelPolicy::None,
+            };
+            let solver = BlockElimSolver::build(CrossTab { c, ct }, diagonals, transform, &config)
+                .expect("trivial 1×1 build");
+            assert_eq!(solver.n_local(), 1);
+
+            let mut rhs = vec![0.0; solver.scratch_size()];
+            rhs[0] = 2.0;
+            let mut sol = vec![0.0; solver.scratch_size()];
+            solver
+                .solve_local(&mut rhs, &mut sol, false)
+                .expect("trivial solve");
+            assert_eq!(sol[0], 0.5, "n_q={n_q}, n_r={n_r}: expected r/d");
+        }
     }
 
     #[test]
