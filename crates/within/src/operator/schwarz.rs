@@ -117,7 +117,7 @@ pub(crate) fn build_entry(
         cross_tab,
         block_diagonals,
     } = domain;
-    let solver = BlockElimSolver::build(cross_tab, &block_diagonals, config)?;
+    let solver = BlockElimSolver::build(cross_tab, block_diagonals, subdomain.transform, config)?;
     SubdomainEntry::try_new(subdomain.core, solver).map_err(BuildError::Preconditioner)
 }
 
