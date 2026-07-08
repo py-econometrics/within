@@ -72,9 +72,14 @@ class SolveResult:
     """Result of a single fixed-effects solve.
 
     Attributes:
-        x: Fixed-effect coefficients, shape ``(n_dofs,)``. The DOF ordering
-            matches the factor levels: all levels of factor 0 first, then
-            factor 1, etc.
+        x: Fixed-effect coefficients, shape ``(n_dofs,)``. Term-major:
+            coefficient column ``c`` of level ``level`` sits at
+            ``term_offset + c * n_levels + level``, columns ordered
+            ``[intercept?, slopes...]`` (for plain factors: all levels of
+            factor 0 first, then factor 1, etc.). Slots for unidentified
+            directions hold the minimal-norm value ``0``, never NaN.
+        unidentified: Per-level directions the data cannot identify, as
+            ``(term, level, column)`` tuples.
         demeaned: Response vector after subtracting estimated fixed effects,
             shape ``(n_obs,)``.
         converged: Whether the LSMR solver met the convergence tolerance.
@@ -88,6 +93,8 @@ class SolveResult:
 
     @property
     def x(self) -> NDArray[np.float64]: ...
+    @property
+    def unidentified(self) -> list[tuple[int, int, int]]: ...
     @property
     def demeaned(self) -> NDArray[np.float64]: ...
     @property
@@ -110,6 +117,10 @@ class BatchSolveResult:
 
     Attributes:
         x: Fixed-effect coefficients, shape ``(n_dofs, k)`` (column-major).
+            Slots for unidentified directions hold the minimal-norm value
+            ``0``, never NaN.
+        unidentified: Per-level directions the data cannot identify, as
+            ``(term, level, column)`` tuples; shared across all RHS.
         demeaned: Demeaned responses, shape ``(n_obs, k)`` (column-major).
         converged: Whether each RHS converged.
         iterations: Total LSMR iterations for each RHS.
@@ -121,6 +132,8 @@ class BatchSolveResult:
 
     @property
     def x(self) -> NDArray[np.float64]: ...
+    @property
+    def unidentified(self) -> list[tuple[int, int, int]]: ...
     @property
     def demeaned(self) -> NDArray[np.float64]: ...
     @property

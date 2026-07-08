@@ -19,13 +19,24 @@ use std::borrow::Cow;
 use crate::observation::ObservationFrame;
 use crate::BuildError;
 
-/// Per-factor metadata: level count and global DOF offset.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct FactorMeta {
+/// Per-term metadata: level count, coefficient-block offset, and column
+/// structure. Columns are ordered `[intercept?, slopes…]`; coefficient `c` of
+/// level `level` lives at `offset + c * n_levels + level`.
+#[derive(Debug, Clone)]
+pub(crate) struct TermMeta {
     pub n_levels: usize,
     pub offset: usize,
     /// Non-decreasing in the design's internal row order (fixed at construction).
     pub sorted: bool,
+    pub intercept: bool,
+    /// This term's slope loadings, as indices into the frame's continuous columns.
+    pub slopes: Vec<usize>,
+}
+
+impl TermMeta {
+    pub fn n_dofs(&self) -> usize {
+        (usize::from(self.intercept) + self.slopes.len()) * self.n_levels
+    }
 }
 
 /// Fixed-effects design: observation columns plus coefficient-space layout.
@@ -33,7 +44,7 @@ pub(crate) struct FactorMeta {
 pub struct Design<'a> {
     /// Columns in internal row order (caller's, or an owned locality-sorted copy).
     pub(crate) frame: ObservationFrame<'a>,
-    pub(crate) factors: Vec<FactorMeta>,
+    pub(crate) terms: Vec<TermMeta>,
     pub(crate) n_obs: usize,
     pub(crate) n_dofs: usize,
     /// `obs_perm[k]` = caller's original index of the observation at internal position `k`.
@@ -41,43 +52,53 @@ pub struct Design<'a> {
 }
 
 impl<'a> Design<'a> {
-    /// Lower effect terms onto the categories path; slope-bearing effects are
-    /// rejected until a later slice.
+    /// Lower effect terms into a design: level columns plus each term's slope
+    /// loadings, laid out term-major (`offset[t] + c * L_t + level`).
     pub fn new(effects: impl IntoIterator<Item = Effect<'a>>) -> Result<Self, BuildError> {
         let mut categorical: Vec<Cow<'a, [u32]>> = Vec::new();
-        for (idx, effect) in effects.into_iter().enumerate() {
-            if !effect.slopes().is_empty() {
-                return Err(BuildError::SlopesNotYetSupported { effect: idx });
-            }
-            // `Effect::new` rejects the intercept-less slope-free shape.
-            debug_assert!(effect.intercept());
+        let mut continuous: Vec<Cow<'a, [f64]>> = Vec::new();
+        let mut columns: Vec<(bool, Vec<usize>)> = Vec::new();
+        for effect in effects {
+            let slots = (continuous.len()..continuous.len() + effect.slopes().len()).collect();
+            continuous.extend(effect.slopes().iter().map(|&z| Cow::Borrowed(z)));
+            columns.push((effect.intercept(), slots));
             categorical.push(Cow::Borrowed(effect.levels()));
         }
-        let frame = ObservationFrame::new(categorical, Vec::new())?;
-        Design::from_frame(frame)
+        let frame = ObservationFrame::new(categorical, continuous)?;
+        Self::build(frame, columns, true)
     }
 
-    /// Construct from a frame, inferring each factor's level count (`max + 1`);
-    /// locality-sorts all columns when the dominant factor is unsorted.
+    /// Construct from a frame of plain factors (each an intercept-only term),
+    /// inferring each factor's level count (`max + 1`); locality-sorts all
+    /// columns when the dominant factor is unsorted.
     pub fn from_frame(frame: ObservationFrame<'a>) -> Result<Self, BuildError> {
-        Self::build(frame, true)
+        let columns = vec![(true, Vec::new()); frame.n_factors()];
+        Self::build(frame, columns, true)
     }
 
     /// [`from_frame`](Self::from_frame) without the locality sort — profiling escape hatch.
     #[doc(hidden)]
     pub fn from_frame_unsorted(frame: ObservationFrame<'a>) -> Result<Self, BuildError> {
-        Self::build(frame, false)
+        let columns = vec![(true, Vec::new()); frame.n_factors()];
+        Self::build(frame, columns, false)
     }
 
-    fn build(frame: ObservationFrame<'a>, locality_sort: bool) -> Result<Self, BuildError> {
+    /// `column_structure[q]` = the term's `(intercept, slope column indices)`,
+    /// aligned with the frame's categorical columns.
+    fn build(
+        frame: ObservationFrame<'a>,
+        column_structure: Vec<(bool, Vec<usize>)>,
+        locality_sort: bool,
+    ) -> Result<Self, BuildError> {
         if frame.n_obs() == 0 {
             return Err(BuildError::EmptyObservations);
         }
+        debug_assert_eq!(column_structure.len(), frame.n_factors());
 
         let n_obs = frame.n_obs();
-        let mut factors = Vec::with_capacity(frame.n_factors());
+        let mut terms = Vec::with_capacity(frame.n_factors());
         let mut offset = 0;
-        for q in 0..frame.n_factors() {
+        for (q, (intercept, slopes)) in column_structure.into_iter().enumerate() {
             let col = frame.level_column(q);
             let mut max = 0;
             let mut sorted = true;
@@ -87,21 +108,24 @@ impl<'a> Design<'a> {
                 sorted &= v >= prev;
                 prev = v;
             }
-            let n_levels = max as usize + 1;
-            factors.push(FactorMeta {
-                n_levels,
+            let meta = TermMeta {
+                n_levels: max as usize + 1,
                 offset,
                 sorted,
-            });
-            offset += n_levels;
+                intercept,
+                slopes,
+            };
+            offset += meta.n_dofs();
+            terms.push(meta);
         }
 
-        // Sort by the highest-cardinality factor so its gather/scatter runs
-        // sequentially. `obs_perm` indexes observations as u32; beyond
-        // u32::MAX rows skip the optimization — the solve itself has no such limit.
-        let dominant = (0..factors.len()).max_by_key(|&q| factors[q].n_levels);
+        // Sort by the term contributing the most DOFs (for plain factors, the
+        // highest-cardinality one) so its gather/scatter runs sequentially.
+        // `obs_perm` indexes observations as u32; beyond u32::MAX rows skip
+        // the optimization — the solve itself has no such limit.
+        let dominant = (0..terms.len()).max_by_key(|&q| terms[q].n_dofs());
         let (frame, obs_perm) = match dominant {
-            Some(d) if locality_sort && !factors[d].sorted && u32::try_from(n_obs).is_ok() => {
+            Some(d) if locality_sort && !terms[d].sorted && u32::try_from(n_obs).is_ok() => {
                 // Stable argsort. Must be `sort_by_cached_key`, NOT `sort_by_key`:
                 // the latter re-gathers `key[i]` O(n log n) times and dominated
                 // setup at tens of millions of rows.
@@ -111,7 +135,7 @@ impl<'a> Design<'a> {
                 let sorted_frame = frame.permuted(&perm);
                 // Rescan sortedness: factors nested in (or duplicating) the
                 // dominant one come out sorted, keeping their coalesced scatter.
-                for (q, meta) in factors.iter_mut().enumerate() {
+                for (q, meta) in terms.iter_mut().enumerate() {
                     meta.sorted = sorted_frame.level_column(q).is_sorted();
                 }
                 (sorted_frame, Some(perm))
@@ -121,7 +145,7 @@ impl<'a> Design<'a> {
 
         Ok(Design {
             frame,
-            factors,
+            terms,
             n_obs,
             n_dofs: offset,
             obs_perm,
@@ -132,7 +156,7 @@ impl<'a> Design<'a> {
     pub fn into_owned(self) -> Design<'static> {
         Design {
             frame: self.frame.into_owned(),
-            factors: self.factors,
+            terms: self.terms,
             n_obs: self.n_obs,
             n_dofs: self.n_dofs,
             obs_perm: self.obs_perm,
@@ -190,7 +214,7 @@ impl<'a> Design<'a> {
     /// Number of categorical factors in the design.
     #[inline]
     pub fn n_factors(&self) -> usize {
-        self.factors.len()
+        self.terms.len()
     }
 
     /// Number of observations (rows of D).
@@ -255,9 +279,9 @@ mod tests {
 
         // Stable argsort of [2,0,1,0] → original indices [1,3,2,0].
         assert_eq!(design.obs_perm.as_deref(), Some(&[1u32, 3, 2, 0][..]));
-        assert!(design.factors[0].sorted);
+        assert!(design.terms[0].sorted);
         // Factor 1's permuted column [0,1,1,0] is no longer non-decreasing.
-        assert!(!design.factors[1].sorted);
+        assert!(!design.terms[1].sorted);
 
         assert_eq!(design.frame.level_column(0), [0, 0, 1, 2]);
         assert_eq!(design.frame.level_column(1), [0, 1, 1, 0]);
@@ -271,8 +295,8 @@ mod tests {
         let col1: Vec<u32> = col0.iter().map(|&v| v / 2).collect();
         let design = Design::from_frame(frame(vec![col0, col1], vec![])).unwrap();
         assert!(design.obs_perm.is_some());
-        assert!(design.factors[0].sorted);
-        assert!(design.factors[1].sorted);
+        assert!(design.terms[0].sorted);
+        assert!(design.terms[1].sorted);
     }
 
     #[test]
@@ -280,8 +304,8 @@ mod tests {
         let design =
             Design::from_frame(frame(vec![vec![0, 0, 1, 2], vec![1, 0, 1, 0]], vec![])).unwrap();
         assert!(design.obs_perm.is_none());
-        assert!(design.factors[0].sorted);
-        assert!(!design.factors[1].sorted);
+        assert!(design.terms[0].sorted);
+        assert!(!design.terms[1].sorted);
     }
 
     #[test]
@@ -299,17 +323,35 @@ mod tests {
     }
 
     #[test]
-    fn new_rejects_slope_bearing_effect_naming_its_index() {
-        let plain = [0u32, 1, 0, 1];
-        let slope = [1.0, 2.0, 3.0, 4.0];
+    fn new_lays_out_slope_terms_term_major() {
+        // Term 0 is dominant (most DOFs); sorted levels keep the locality
+        // sort a no-op so the frame columns stay in caller order.
+        let f0 = [0u32, 0, 1, 1];
+        let f1 = [0u32, 2, 1, 0];
+        let z0 = [1.0, 2.0, 3.0, 4.0];
+        let z1 = [5.0, 6.0, 7.0, 8.0];
         let effects = vec![
-            Effect::new(&plain, true, []).unwrap(),
-            Effect::new(&plain, true, [&slope[..]]).unwrap(),
+            Effect::new(&f0, true, [&z0[..], &z1[..]]).unwrap(),
+            Effect::new(&f1, true, []).unwrap(),
+            Effect::new(&f0, false, [&z1[..]]).unwrap(),
         ];
-        let err = Design::new(effects).unwrap_err();
-        assert!(matches!(
-            err,
-            BuildError::SlopesNotYetSupported { effect: 1 }
-        ));
+        let design = Design::new(effects).unwrap();
+
+        // term 0: [intercept, z0, z1] over 2 levels; term 1: intercept over 3;
+        // term 2: slope-only over 2.
+        assert_eq!(design.terms[0].offset, 0);
+        assert_eq!(design.terms[0].n_dofs(), 6);
+        assert_eq!(design.terms[1].offset, 6);
+        assert_eq!(design.terms[1].n_dofs(), 3);
+        assert_eq!(design.terms[2].offset, 9);
+        assert!(!design.terms[2].intercept);
+        assert_eq!(design.terms[2].n_dofs(), 2);
+        assert_eq!(design.n_dofs, 11);
+
+        // slope indices resolve to the effects' loading columns in the frame.
+        assert_eq!(design.terms[0].slopes, vec![0, 1]);
+        assert_eq!(design.terms[2].slopes, vec![2]);
+        assert_eq!(design.frame.loading_column(0), &z0[..]);
+        assert_eq!(design.frame.loading_column(2), &z1[..]);
     }
 }

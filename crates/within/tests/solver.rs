@@ -134,6 +134,22 @@ fn test_solver_batch() {
 }
 
 #[test]
+fn test_unidentified_empty_for_plain_factors() {
+    let (categories, y) = categories_and_y();
+    let params = default_params();
+    let precond = additive_precond();
+
+    let solver = Solver::new(categories.view(), None, &precond).expect("solver build");
+
+    let single = solver.solve(&y, &params).expect("solve");
+    assert!(single.unidentified.is_empty());
+    assert!(single.x.iter().all(|v| v.is_finite()));
+
+    let batch = solver.solve_batch(&[&y], &params).expect("solve batch");
+    assert!(batch.unidentified.is_empty());
+}
+
+#[test]
 fn test_solver_properties() {
     let (categories, _) = categories_and_y();
 

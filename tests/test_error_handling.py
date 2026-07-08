@@ -86,9 +86,16 @@ class TestEffectErrors:
         with pytest.raises(ValueError, match="slope 0"):
             Effect(levels, intercept=True, slopes=[np.array([1.0, 2.0])])
 
-    def test_slope_bearing_design_raises(self):
+    def test_slope_term_alongside_other_terms_raises(self):
         levels = np.array([0, 1, 0], dtype=np.uint32)
-        slope = np.array([1.0, 2.0, 3.0])
+        slope = [np.array([1.0, 2.0, 3.0])]
         y = np.array([1.0, 2.0, 3.0])
-        with pytest.raises(ValueError, match="slope"):
-            solve([Effect(levels, intercept=True, slopes=[slope])], y)
+        # A sole slope term solves (#59/#60); mixing waits on #61.
+        with pytest.raises(ValueError, match="alongside other effects"):
+            solve(
+                [
+                    Effect(levels, intercept=True, slopes=slope),
+                    Effect(levels, intercept=True),
+                ],
+                y,
+            )

@@ -17,6 +17,9 @@ use crate::operator::schwarz::{build_preconditioner, Preconditioner};
 use crate::operator::DesignOperator;
 use crate::{BuildError, SolveError, WithinError};
 
+mod reparam;
+use reparam::SlopeReparam;
+
 fn norm(v: &[f64]) -> f64 {
     v.iter().map(|x| x * x).sum::<f64>().sqrt()
 }
@@ -108,12 +111,31 @@ impl From<&Preconditioner> for PreconditionerInput {
     }
 }
 
+/// A per-level direction of the design that the data cannot identify.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnidentifiedDirection {
+    /// Index into the design's term list.
+    pub term: usize,
+    /// Level index within the term (`0..n_levels`).
+    pub level: usize,
+    /// Column within the term's per-level block: intercept first (when
+    /// present), then slopes in declaration order.
+    pub column: usize,
+}
+
 /// Common solve output for all orchestration entry points.
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct SolveResult {
     /// Fixed-effect coefficients (length = total DOFs across all factors).
+    ///
+    /// Term-major: coefficient column `c` of level `level` sits at
+    /// `term_offset + c * n_levels + level`, columns ordered
+    /// `[intercept?, slopes…]`. Slots for unidentified directions hold the
+    /// minimal-norm value `0`, never NaN; see [`SolveResult::unidentified`].
     pub x: Vec<f64>,
+    /// Per-level directions the data cannot identify.
+    pub unidentified: Vec<UnidentifiedDirection>,
     /// Demeaned response: `y - D x` (length = n_obs), in caller order.
     ///
     /// Invariant: any per-observation field added here must be translated
@@ -137,8 +159,15 @@ pub struct SolveResult {
 /// Result of a batch solve across multiple RHS vectors.
 #[derive(Debug, Clone)]
 pub struct BatchSolveResult {
-    /// All coefficient vectors concatenated (length = n_dofs * n_rhs).
+    /// All coefficient vectors concatenated (length = n_dofs * n_rhs), each
+    /// block laid out as in [`SolveResult::x`].
+    ///
+    /// Slots for unidentified directions hold the minimal-norm value `0`,
+    /// never NaN; see [`BatchSolveResult::unidentified`].
     pub x: Vec<f64>,
+    /// Per-level directions the data cannot identify, shared across all RHS:
+    /// identification depends only on the design and weights, never on `y`.
+    pub unidentified: Vec<UnidentifiedDirection>,
     /// All demeaned responses concatenated (length = n_obs * n_rhs).
     pub demeaned: Vec<f64>,
     /// Per-RHS convergence flags.
@@ -187,6 +216,7 @@ pub struct Solver<'a> {
     design: Design<'a>,
     weights: Option<Vec<f64>>,
     preconditioner: Option<Preconditioner>,
+    reparam: Option<SlopeReparam>,
 }
 
 impl std::fmt::Debug for Solver<'_> {
@@ -223,7 +253,15 @@ impl<'a> Solver<'a> {
         weights: Option<Vec<f64>>,
         preconditioner: impl Into<PreconditionerInput>,
     ) -> Result<Self, BuildError> {
-        let design = design.into_design()?;
+        let mut design = design.into_design()?;
+        // A sole slope term is solvable via within-level reparametrization
+        // (`SlopeReparam::build` below); slopes alongside other terms (#61)
+        // land in a later slice.
+        if design.terms.len() > 1 {
+            if let Some(idx) = design.terms.iter().position(|t| !t.slopes.is_empty()) {
+                return Err(BuildError::SlopesNotYetSupported { effect: idx });
+            }
+        }
         design.validate_weights(weights.as_deref())?;
 
         // Align weights with the design's internal (possibly locality-sorted)
@@ -233,6 +271,9 @@ impl<'a> Solver<'a> {
             Some(_) => weights.map(|w| design.permute_obs_in(&w).into_owned()),
             None => weights,
         };
+
+        // Reparametrize the slope columns (if any) before the preconditioner reads the frame.
+        let reparam = SlopeReparam::build(&mut design, weights.as_deref());
 
         let preconditioner = match preconditioner.into() {
             PreconditionerInput::Default => {
@@ -257,6 +298,7 @@ impl<'a> Solver<'a> {
             design,
             weights,
             preconditioner,
+            reparam,
         })
     }
 
@@ -318,8 +360,18 @@ impl<'a> Solver<'a> {
         rect_op.apply_adjoint(weighted_demeaned.as_ref(), &mut residual_dof)?;
         let residual = norm(&residual_dof) / rhs_norm;
 
+        let mut x = r.x;
+        let unidentified = match &self.reparam {
+            Some(rp) => {
+                rp.back_transform(&mut x);
+                rp.unidentified.clone()
+            }
+            None => Vec::new(),
+        };
+
         Ok(SolveResult {
-            x: r.x,
+            x,
+            unidentified,
             // Back to the caller's observation order (no-op if not reordered).
             demeaned: self.design.permute_obs_out(demeaned),
             converged: r.converged,
@@ -354,6 +406,13 @@ impl<'a> Solver<'a> {
         let mut residual = Vec::with_capacity(n_rhs);
         let mut time_solve = Vec::with_capacity(n_rhs);
 
+        // Identical for every RHS: identification depends only on the design
+        // and weights, never on `y`.
+        let unidentified = results
+            .first()
+            .map(|r| r.unidentified.clone())
+            .unwrap_or_default();
+
         for r in results {
             x.extend_from_slice(&r.x);
             demeaned.extend_from_slice(&r.demeaned);
@@ -365,6 +424,7 @@ impl<'a> Solver<'a> {
 
         Ok(BatchSolveResult {
             x,
+            unidentified,
             demeaned,
             converged,
             iterations,

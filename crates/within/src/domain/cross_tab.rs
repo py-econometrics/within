@@ -6,7 +6,7 @@
 //! Levels are stored compactly with a `local_to_global` map for active levels only.
 
 use crate::csr_block::CsrBlock;
-use crate::domain::{Design, FactorMeta};
+use crate::domain::{Design, TermMeta};
 
 mod accumulate;
 use accumulate::accumulate_cross_block;
@@ -41,7 +41,7 @@ struct ActiveLevels {
 /// Returns `active[f][level]` = true if any observation uses that level of factor f.
 pub(crate) fn find_all_active_levels(design: &Design<'_>) -> Vec<Vec<bool>> {
     let mut active: Vec<Vec<bool>> = design
-        .factors
+        .terms
         .iter()
         .map(|f| vec![false; f.n_levels])
         .collect();
@@ -78,8 +78,8 @@ fn compact_map(active: &[bool]) -> (Vec<u32>, usize) {
 fn build_compact_mapping(
     active_q: &[bool],
     active_r: &[bool],
-    fq: &FactorMeta,
-    fr: &FactorMeta,
+    fq: &TermMeta,
+    fr: &TermMeta,
 ) -> Option<ActiveLevels> {
     let (q_map, n_q) = compact_map(active_q);
     let (r_map, n_r) = compact_map(active_r);
@@ -194,8 +194,8 @@ impl CrossTab {
         r: usize,
         all_active: &[Vec<bool>],
     ) -> Option<(Self, BlockDiagonals, Vec<u32>)> {
-        let fq = &design.factors[q];
-        let fr = &design.factors[r];
+        let fq = &design.terms[q];
+        let fr = &design.terms[r];
         let active = build_compact_mapping(&all_active[q], &all_active[r], fq, fr)?;
 
         let (c, diag_q, diag_r) = accumulate_cross_block(design, weights, q, r, &active);
