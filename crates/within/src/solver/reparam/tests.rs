@@ -1,17 +1,17 @@
-//! Seam tests for the per-level pivoted-Cholesky whitening: pivot
-//! bookkeeping through non-trivial pivot orders and the rank-tolerance
-//! contract, neither reachable through the public API (the tolerance is a
-//! crate-internal constant).
+//! Seam tests for the per-level pivoted Gram–Schmidt: pivot bookkeeping through
+//! non-trivial pivot orders and the rank-tolerance contract, neither
+//! reachable through the public API (the tolerance is a crate-internal
+//! constant).
 
 use super::*;
 
 #[test]
-fn whitening_rows_orthonormalize_under_a_non_monotonic_pivot_order() {
+fn gram_schmidt_orthonormalizes_under_a_non_monotonic_pivot_order() {
     // Diagonals [2, 5, 3] force the pivot sequence 1 → 2 → 0: any
     // bookkeeping that assumes natural or physically swapped order breaks
     // the W·G·Wᵀ = I identity below (the prototype's ≥3-slope cliff).
     let g = [2.0, 1.0, 0.5, 1.0, 5.0, 2.0, 0.5, 2.0, 3.0];
-    let (w, kept) = whitening_rows(&g, 3, RANK_TOL);
+    let (w, kept) = pivoted_gram_schmidt(&g, 3, RANK_TOL);
     assert_eq!(kept, [true; 3]);
     assert_eq!(w.len(), 9);
 
@@ -34,8 +34,8 @@ fn whitening_rows_orthonormalize_under_a_non_monotonic_pivot_order() {
 fn zero_tolerance_keeps_a_near_degenerate_direction_the_default_drops() {
     let eps = 1e-12;
     let g = [1.0, 1.0 - eps, 1.0 - eps, 1.0];
-    let (_, kept) = whitening_rows(&g, 2, RANK_TOL);
+    let (_, kept) = pivoted_gram_schmidt(&g, 2, RANK_TOL);
     assert_eq!(kept.iter().filter(|&&k| k).count(), 1);
-    let (_, kept) = whitening_rows(&g, 2, 0.0);
+    let (_, kept) = pivoted_gram_schmidt(&g, 2, 0.0);
     assert_eq!(kept, [true, true]);
 }

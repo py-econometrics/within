@@ -7,17 +7,12 @@ use super::UnidentifiedDirection;
 #[cfg(test)]
 mod tests;
 
-/// Relative rank tolerance: a slope direction is dropped once its remaining
-/// within-level variance is no longer above `RANK_TOL` × its own initial
-/// variance. Zero keeps every direction whose remaining variance stays
-/// positive, so only exact structural zeros drop.
+/// Relative rank tolerance: a slope direction drops once its remaining
+/// within-level variance falls to `RANK_TOL` × its own initial variance.
 const RANK_TOL: f64 = 1e-10;
 
-/// Per-level change of basis for the design's sole slope term: the solve sees
-/// weighted-orthonormal slope directions that are uncorrelated with the
-/// level's intercept, leaving fitted values invariant while the per-level
-/// Gram becomes diagonal. [`Self::back_transform`] returns coefficients to
-/// the user's parametrization.
+/// Per-level change of basis making the sole slope term's within-level Gram
+/// the identity; [`Self::back_transform`] restores the user's parametrization.
 pub(crate) struct SlopeReparam {
     offset: usize,
     n_levels: usize,
@@ -28,11 +23,8 @@ pub(crate) struct SlopeReparam {
     pub(crate) unidentified: Vec<UnidentifiedDirection>,
 }
 
-/// One level's whitening map `u = W·(z − center)` with `W` of shape
-/// `rank × V` (row-major). `Wᵀ` maps solved coefficients back to the user's
-/// basis; a dropped slope is a zero column of `W`, so its coefficient comes
-/// back as an exact `0`. An empty `w` marks a level whose every slope
-/// direction dropped (or an empty level).
+/// One level's `u = W·(z − center)`, `W` row-major `rank × V`; an empty `w`
+/// marks a fully dropped level, a dropped slope is a zero column of `W`.
 struct LevelTransform {
     w: Box<[f64]>,
     /// Within-level weighted means; all-zero for slope-only terms.
@@ -40,16 +32,9 @@ struct LevelTransform {
 }
 
 impl SlopeReparam {
-    /// Whiten the sole slope term's loading columns in place and record how
-    /// to undo it. Returns `None` for slope-free designs.
-    ///
-    /// Identification is judged over positive-weight rows: an empty level
-    /// drops the term's every column; within-level rank deficiency (constant
-    /// or collinear slopes, per [`RANK_TOL`]) drops the directions the pivot
-    /// order rejects, keeping the largest-remaining-variance direction at
-    /// each step. Dropped directions are materialized as exact zeros, so the
-    /// minimal-norm LSMR solution leaves an exact `0` in the coefficient
-    /// slot and the layout stays data-independent.
+    /// Orthonormalize the sole slope term's loading columns in place; `None`
+    /// for slope-free designs. Unidentified directions become exact-zero
+    /// columns, so the minimal-norm solve leaves exact-`0` coefficients.
     pub(crate) fn build(design: &mut Design<'_>, weights: Option<&[f64]>) -> Option<Self> {
         let term = design.terms.iter().position(|t| !t.slopes.is_empty())?;
         let meta = &design.terms[term];
@@ -76,9 +61,7 @@ impl SlopeReparam {
         let mut gram = vec![0.0; v * v];
         for level in 0..n_levels {
             moments.gram(level, intercept, &mut gram);
-            let (w, kept) = whitening_rows(&gram, v, RANK_TOL);
-            // An empty level loses its intercept column too; its every slope
-            // direction already drops through the all-zero Gram.
+            let (w, kept) = pivoted_gram_schmidt(&gram, v, RANK_TOL);
             if intercept && moments.w_sum[level] == 0.0 {
                 unidentified.push(UnidentifiedDirection {
                     term,
@@ -86,8 +69,8 @@ impl SlopeReparam {
                     column: 0,
                 });
             }
-            for (j, &kept) in kept.iter().enumerate() {
-                if !kept {
+            for (j, &kept_j) in kept.iter().enumerate() {
+                if !kept_j {
                     unidentified.push(UnidentifiedDirection {
                         term,
                         level,
@@ -106,21 +89,17 @@ impl SlopeReparam {
             });
         }
 
-        // The whitened columns mix all raw columns, so materialize every
-        // output before writing any back. Whitened direction `k` lands in
-        // column slot `k`; slots past the level's rank stay exactly zero.
-        let mut outs = vec![vec![0.0; levels.len()]; v];
+        let mut u_cols = vec![vec![0.0; levels.len()]; v];
         for (i, &level) in levels.iter().enumerate() {
             let t = &transforms[level as usize];
             for ((zr, col), cj) in z_row.iter_mut().zip(&zs).zip(&*t.center) {
                 *zr = col[i] - cj;
             }
-            for (k, out) in outs.iter_mut().enumerate().take(t.w.len() / v) {
-                let row = &t.w[k * v..(k + 1) * v];
-                out[i] = row.iter().zip(&z_row).map(|(wj, zj)| wj * zj).sum();
+            for (w_row, out) in t.w.chunks_exact(v).zip(&mut u_cols) {
+                out[i] = dot(w_row, &z_row);
             }
         }
-        for (out, &c) in outs.into_iter().zip(&z_cols) {
+        for (out, &c) in u_cols.into_iter().zip(&z_cols) {
             design.frame.set_loading_column(c, out);
         }
 
@@ -137,43 +116,51 @@ impl SlopeReparam {
     /// Map solve-basis coefficients back to the user's parametrization.
     pub(crate) fn back_transform(&self, x: &mut [f64]) {
         let v = self.n_slopes;
-        let slope_base = self.offset + if self.intercept { self.n_levels } else { 0 };
         let mut b = vec![0.0; v];
         for (l, t) in self.transforms.iter().enumerate() {
-            let rank = t.w.len() / v;
-            // Fully dropped levels were never transformed; their slots are 0.
-            if rank == 0 {
+            if t.w.is_empty() {
                 continue;
             }
             b.fill(0.0);
-            for k in 0..rank {
-                let bw = x[slope_base + k * self.n_levels + l];
-                for (bj, wj) in b.iter_mut().zip(&t.w[k * v..(k + 1) * v]) {
-                    *bj += wj * bw;
+            for (k, w_row) in t.w.chunks_exact(v).enumerate() {
+                let bk = x[self.slope_slot(k, l)];
+                for (bj, wj) in b.iter_mut().zip(w_row) {
+                    *bj += wj * bk;
                 }
             }
             for (j, &bj) in b.iter().enumerate() {
-                x[slope_base + j * self.n_levels + l] = bj;
+                x[self.slope_slot(j, l)] = bj;
             }
             if self.intercept {
-                let shift: f64 = b.iter().zip(&*t.center).map(|(bj, cj)| bj * cj).sum();
-                x[self.offset + l] -= shift;
+                x[self.offset + l] -= dot(&b, &t.center);
             }
         }
     }
+
+    fn slope_slot(&self, j: usize, level: usize) -> usize {
+        self.offset + (usize::from(self.intercept) + j) * self.n_levels + level
+    }
 }
 
-/// Weighted within-level first and second moments of the slope loadings,
-/// accumulated in one pass (multivariate Welford) over positive-weight rows.
-/// A structurally constant column keeps an exactly-zero variance row, so
-/// exact rank drops survive a zero tolerance.
+/// One-pass weighted within-level moments (multivariate Welford); structural
+/// zeros stay exact, so rank drops survive a zero tolerance.
 struct LevelMoments {
     n_slopes: usize,
     w_sum: Vec<f64>,
     mean: Vec<f64>,
     /// Per level, `Σ w (z−μ)(z−μ)ᵀ` packed as a row-major lower triangle.
     comoment: Vec<f64>,
+    /// Scratch: deviations from the pre-update means.
     delta: Vec<f64>,
+}
+
+/// Index of `(j, k)`, `k ≤ j`, in a packed row-major lower triangle.
+fn tri_index(j: usize, k: usize) -> usize {
+    j * (j + 1) / 2 + k
+}
+
+fn tri_len(v: usize) -> usize {
+    v * (v + 1) / 2
 }
 
 impl LevelMoments {
@@ -182,109 +169,96 @@ impl LevelMoments {
             n_slopes,
             w_sum: vec![0.0; n_levels],
             mean: vec![0.0; n_levels * n_slopes],
-            comoment: vec![0.0; n_levels * n_slopes * (n_slopes + 1) / 2],
+            comoment: vec![0.0; n_levels * tri_len(n_slopes)],
             delta: vec![0.0; n_slopes],
         }
     }
 
     fn observe(&mut self, level: usize, z: &[f64], w: f64) {
-        // Zero-weight rows may carry arbitrary values; they must not affect
-        // identification or the whitening.
         if w <= 0.0 {
             return;
         }
         let v = self.n_slopes;
         self.w_sum[level] += w;
         let ratio = w / self.w_sum[level];
-        let mean = &mut self.mean[level * v..(level + 1) * v];
+        let mean = &mut self.mean[level * v..][..v];
         for (dj, (zj, mj)) in self.delta.iter_mut().zip(z.iter().zip(mean.iter_mut())) {
             *dj = zj - *mj;
             *mj += ratio * *dj;
         }
-        let tri = v * (v + 1) / 2;
-        let com = &mut self.comoment[level * tri..(level + 1) * tri];
-        let mut idx = 0;
+        let com = &mut self.comoment[level * tri_len(v)..][..tri_len(v)];
         for j in 0..v {
-            let wpost = w * (z[j] - mean[j]);
+            let dev = w * (z[j] - mean[j]);
             for k in 0..=j {
-                com[idx] += self.delta[k] * wpost;
-                idx += 1;
+                com[tri_index(j, k)] += self.delta[k] * dev;
             }
         }
     }
 
     fn mean(&self, level: usize) -> &[f64] {
-        &self.mean[level * self.n_slopes..(level + 1) * self.n_slopes]
+        &self.mean[level * self.n_slopes..][..self.n_slopes]
     }
 
-    /// The level's dense V×V slope Gram: centered against a pinned intercept,
-    /// raw (`Σwzzᵀ = M2 + w·μμᵀ`) for a slope-only term.
+    /// The level's V×V slope Gram: centered against a pinned intercept, raw
+    /// (`M2 + w·μμᵀ`) for a slope-only term.
     fn gram(&self, level: usize, intercept: bool, out: &mut [f64]) {
         let v = self.n_slopes;
-        let tri = v * (v + 1) / 2;
-        let com = &self.comoment[level * tri..(level + 1) * tri];
+        let com = &self.comoment[level * tri_len(v)..][..tri_len(v)];
         let mean = self.mean(level);
         let w = self.w_sum[level];
-        let mut idx = 0;
         for j in 0..v {
             for k in 0..=j {
-                let mut g = com[idx];
+                let mut g = com[tri_index(j, k)];
                 if !intercept {
                     g += w * mean[j] * mean[k];
                 }
                 out[j * v + k] = g;
                 out[k * v + j] = g;
-                idx += 1;
             }
         }
     }
 }
 
-/// Pivoted Cholesky whitening of one level's PSD slope Gram `g` (dense V×V,
-/// row-major): picks the largest-remaining-variance direction at each step
-/// and stops a column once its remaining variance is no longer above
-/// `tol` × its own initial variance (relative, hence scale-invariant per
-/// column). Returns the `rank × V` whitening rows `w` — `w·g·wᵀ = I` — and
-/// which columns were kept. Pivots are tracked through original column
-/// indices; nothing is swapped in place.
-fn whitening_rows(g: &[f64], v: usize, tol: f64) -> (Vec<f64>, Vec<bool>) {
-    let mut d: Vec<f64> = (0..v).map(|j| g[j * v + j]).collect();
-    let thresholds: Vec<f64> = d.iter().map(|&dj| tol * dj).collect();
-    // lfac[j][t]: weighted inner product of column j with whitened row t.
-    let mut lfac = vec![0.0; v * v];
-    let mut w: Vec<f64> = Vec::new();
+/// Pivoted Gram–Schmidt on the raw slope columns, run in coordinates:
+/// column `j` enters as `e_j` and all geometry goes through the dense
+/// row-major `v×v` level Gram, `⟨a, b⟩ = a·g·bᵀ`. Returns the `rank × v`
+/// orthonormal rows `w` — `w·g·wᵀ = I` — plus the kept-column mask. A column
+/// drops once its residual variance falls to `tol` × its initial variance;
+/// pivots keep their original column indices — nothing is swapped.
+fn pivoted_gram_schmidt(g: &[f64], v: usize, tol: f64) -> (Vec<f64>, Vec<bool>) {
+    let mut residual: Vec<f64> = (0..v).map(|j| g[j * v + j]).collect();
     let mut kept = vec![false; v];
-    for step in 0..v {
-        let pivot = (0..v)
-            .filter(|&j| !kept[j] && d[j].is_finite() && d[j] > thresholds[j])
-            .max_by(|&a, &b| d[a].total_cmp(&d[b]));
-        let Some(p) = pivot else { break };
+    let mut basis = Vec::new();
+    while let Some(p) = (0..v)
+        .filter(|&j| !kept[j] && residual[j].is_finite() && residual[j] > tol * g[j * v + j])
+        .max_by(|&a, &b| residual[a].total_cmp(&residual[b]))
+    {
         kept[p] = true;
-        let root = d[p].sqrt();
 
-        // Whitened row `step`: (e_p − Σ_t lfac[p][t]·w[t]) / root.
-        let row_base = step * v;
-        w.resize(row_base + v, 0.0);
-        w[row_base + p] = 1.0;
-        for t in 0..step {
-            let c = lfac[p * v + t];
-            for j in 0..v {
-                w[row_base + j] -= c * w[t * v + j];
+        // q = e_p − Σₜ ⟨e_p, qₜ⟩·qₜ, whose norm is already √residual[p].
+        let mut q = vec![0.0; v];
+        q[p] = 1.0;
+        for q_t in basis.chunks_exact(v) {
+            let c = dot(&g[p * v..][..v], q_t);
+            for (qj, &qtj) in q.iter_mut().zip(q_t) {
+                *qj -= c * qtj;
             }
         }
-        for wj in &mut w[row_base..row_base + v] {
-            *wj /= root;
+        let norm = residual[p].sqrt();
+        for qj in &mut q {
+            *qj /= norm;
         }
 
-        for j in (0..v).filter(|&j| !kept[j]) {
-            let mut val = g[j * v + p];
-            for t in 0..step {
-                val -= lfac[j * v + t] * lfac[p * v + t];
-            }
-            val /= root;
-            lfac[j * v + step] = val;
-            d[j] -= val * val;
+        // Pythagoras: projecting out q costs every column ⟨e_j, q⟩² of variance.
+        for (r, g_row) in residual.iter_mut().zip(g.chunks_exact(v)) {
+            let c = dot(g_row, &q);
+            *r -= c * c;
         }
+        basis.extend_from_slice(&q);
     }
-    (w, kept)
+    (basis, kept)
+}
+
+fn dot(a: &[f64], b: &[f64]) -> f64 {
+    a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
