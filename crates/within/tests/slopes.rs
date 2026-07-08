@@ -1,4 +1,4 @@
-//! Single varying slope on one factor (#59): coefficient recovery in the
+//! Varying slopes on one factor (#59, #60): coefficient recovery in the
 //! user's parametrization, fitted-value invariance under the internal
 //! reparametrization, and deterministic rank-drop reporting.
 
@@ -274,4 +274,66 @@ fn batch_solve_shares_unidentified_and_back_transforms_each_rhs() {
     let n = single1.x.len();
     assert_eq!(&batch.x[..n], &single1.x[..]);
     assert_eq!(&batch.x[n..], &single2.x[..]);
+}
+
+#[test]
+fn three_slopes_solve_bounded_with_exact_rank_drops() {
+    // Strongly correlated slopes make the raw per-level Grams
+    // ill-conditioned (the ≥3-slope cliff scenario), and level 1's z2/z3
+    // are exactly collinear on top.
+    let n = 24;
+    let levels: Vec<u32> = (0..n).map(|i| (i % 3) as u32).collect();
+    let z1: Vec<f64> = (0..n).map(|i| (i as f64 * 0.37).sin() * 2.0).collect();
+    let z2: Vec<f64> = (0..n)
+        .map(|i| 0.95 * z1[i] + 0.1 * (i as f64 * 0.9 + 0.2).cos())
+        .collect();
+    let z3: Vec<f64> = (0..n)
+        .map(|i| {
+            if i % 3 == 1 {
+                2.0 * z2[i]
+            } else {
+                -0.8 * z1[i] + 0.15 * (i as f64 * 1.7).sin() + 0.1
+            }
+        })
+        .collect();
+    let y = synthetic_y(n);
+
+    let r = Solver::new(
+        vec![Effect::new(&levels, true, [&z1[..], &z2, &z3]).expect("effect")],
+        None,
+        PreconditionerConfig::default(),
+    )
+    .expect("solver")
+    .solve(&y, &LsmrOptions::default())
+    .expect("solve");
+    assert!(r.converged);
+    assert!(
+        r.iterations <= 30,
+        "conditioning cliff: {} iterations",
+        r.iterations
+    );
+
+    // Level 1 drops exactly one direction — the pivot keeps the
+    // larger-variance z3, so z2's coordinate (column 2) reads exactly 0.
+    assert_eq!(drops(&r), [(0, 1, 2)]);
+    assert_eq!(r.x[2 * 3 + 1], 0.0);
+
+    // The fit is the exact projection (residuals orthogonal to every design
+    // column within every level), and the reported user-basis coefficients
+    // reproduce it — together this pins the identified coefficients without
+    // an external solve.
+    for l in 0..3 {
+        for col in [None, Some(&z1), Some(&z2), Some(&z3)] {
+            let dot: f64 = (0..n)
+                .filter(|&i| levels[i] as usize == l)
+                .map(|i| r.demeaned[i] * col.map_or(1.0, |z| z[i]))
+                .sum();
+            assert!(dot.abs() < 1e-6, "level {l}: residual·column = {dot}");
+        }
+    }
+    for i in 0..n {
+        let l = levels[i] as usize;
+        let fitted = r.x[l] + r.x[3 + l] * z1[i] + r.x[6 + l] * z2[i] + r.x[9 + l] * z3[i];
+        assert_close(y[i] - r.demeaned[i], fitted, &format!("fitted value {i}"));
+    }
 }

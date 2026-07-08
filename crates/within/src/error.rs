@@ -35,7 +35,7 @@ pub enum BuildError {
         got: usize,
     },
     /// An effect carries varying slopes in a form the solver does not yet support.
-    #[error("effect {effect} has varying slopes, not yet supported alongside other effects or with more than one slope")]
+    #[error("effect {effect} has varying slopes, not yet supported alongside other effects")]
     SlopesNotYetSupported {
         /// Index of the offending effect.
         effect: usize,

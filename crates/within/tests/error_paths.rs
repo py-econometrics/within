@@ -282,26 +282,11 @@ fn test_solver_rejects_slope_bearing_design_naming_its_term() {
         within::Effect::new(&levels, true, [&slope[..]]).expect("slope effect"),
     ];
     // The design builds — the operator contract is exercisable — but solving
-    // is deferred to the transform slices (#59+).
+    // slopes alongside other terms is deferred to cross-factor routing (#61).
     let design = Design::new(effects).expect("slope design builds");
     let err = Solver::new(design, None, None).unwrap_err();
     match err {
         BuildError::SlopesNotYetSupported { effect: 1 } => {}
         other => panic!("Expected SlopesNotYetSupported for term 1, got: {other:?}"),
-    }
-}
-
-#[test]
-fn test_solver_rejects_multiple_slopes_on_one_factor() {
-    let levels = [0u32, 1, 0, 1];
-    let z1 = [1.0, 2.0, 3.0, 4.0];
-    let z2 = [0.5, -1.0, 2.0, 0.0];
-    let effects = vec![within::Effect::new(&levels, true, [&z1[..], &z2[..]]).expect("V=2 effect")];
-    // A sole V=1 term solves (#59); V≥2 waits on the rank-drop contract (#60).
-    let design = Design::new(effects).expect("V=2 design builds");
-    let err = Solver::new(design, None, None).unwrap_err();
-    match err {
-        BuildError::SlopesNotYetSupported { effect: 0 } => {}
-        other => panic!("Expected SlopesNotYetSupported for term 0, got: {other:?}"),
     }
 }
