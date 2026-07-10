@@ -17,24 +17,45 @@ use super::{to_u32, ActiveLevels};
 /// sparse, regardless of the cost comparison in `accumulate_cross_block`.
 const DENSE_TABLE_MAX_ENTRIES: usize = 5_000_000;
 
-/// Decode observation `uid` into its compact `(cj, ck, weight)`, or `None` if
+/// One observation's contribution to the pair's Gram: the signed cell
+/// `w·lq·lr` plus the diagonals `w·lq²` / `w·lr²`, `l` the channel's loading
+/// (`≡ 1` on intercept channels).
+struct Contribution {
+    cj: u32,
+    ck: u32,
+    cell: f64,
+    diag_q: f64,
+    diag_r: f64,
+}
+
+/// Decode observation `uid` into its compact [`Contribution`], or `None` if
 /// either factor level is inactive (compact index `u32::MAX`) and the
 /// observation should be skipped.
 #[inline]
 fn decode_obs(
     levels_q: &[u32],
     levels_r: &[u32],
+    load_q: Option<&[f64]>,
+    load_r: Option<&[f64]>,
     weights: Option<&[f64]>,
     active: &ActiveLevels,
     uid: usize,
-) -> Option<(u32, u32, f64)> {
+) -> Option<Contribution> {
     let cj = active.q_map[levels_q[uid] as usize];
     let ck = active.r_map[levels_r[uid] as usize];
     if cj == u32::MAX || ck == u32::MAX {
         return None;
     }
     let w = weights.map_or(1.0, |w| w[uid]);
-    Some((cj, ck, w))
+    let lq = load_q.map_or(1.0, |z| z[uid]);
+    let lr = load_r.map_or(1.0, |z| z[uid]);
+    Some(Contribution {
+        cj,
+        ck,
+        cell: w * lq * lr,
+        diag_q: w * lq * lq,
+        diag_r: w * lr * lr,
+    })
 }
 
 /// Accumulate observation weights into a cross-tabulation block C plus diagonals.
@@ -94,15 +115,13 @@ pub(super) fn accumulate_dense_cross_block(
     let mut table = vec![0.0f64; n_q * n_r];
 
     for uid in 0..n_obs {
-        let Some((cj, ck, w)) = decode_obs(levels_q, levels_r, weights, active, uid) else {
+        let Some(o) = decode_obs(levels_q, levels_r, load_q, load_r, weights, active, uid) else {
             continue;
         };
-        debug_assert!((cj as usize) < n_q && (ck as usize) < n_r);
-        let lq = load_q.map_or(1.0, |z| z[uid]);
-        let lr = load_r.map_or(1.0, |z| z[uid]);
-        diag_q[cj as usize] += w * lq * lq;
-        diag_r[ck as usize] += w * lr * lr;
-        table[cj as usize * n_r + ck as usize] += w * lq * lr;
+        debug_assert!((o.cj as usize) < n_q && (o.ck as usize) < n_r);
+        diag_q[o.cj as usize] += o.diag_q;
+        diag_r[o.ck as usize] += o.diag_r;
+        table[o.cj as usize * n_r + o.ck as usize] += o.cell;
     }
 
     let c = CsrBlock::from_dense_table(&table, n_q, n_r);
@@ -133,14 +152,12 @@ pub(super) fn accumulate_sparse_cross_block(
     // Pass 1: accumulate diags + count entries per row
     let mut row_counts = vec![0u32; n_q];
     for uid in 0..n_obs {
-        let Some((cj, ck, w)) = decode_obs(levels_q, levels_r, weights, active, uid) else {
+        let Some(o) = decode_obs(levels_q, levels_r, load_q, load_r, weights, active, uid) else {
             continue;
         };
-        let lq = load_q.map_or(1.0, |z| z[uid]);
-        let lr = load_r.map_or(1.0, |z| z[uid]);
-        diag_q[cj as usize] += w * lq * lq;
-        diag_r[ck as usize] += w * lr * lr;
-        row_counts[cj as usize] += 1;
+        diag_q[o.cj as usize] += o.diag_q;
+        diag_r[o.ck as usize] += o.diag_r;
+        row_counts[o.cj as usize] += 1;
     }
 
     // Build row-pointer array for the unsorted bucket CSR
@@ -155,15 +172,13 @@ pub(super) fn accumulate_sparse_cross_block(
     let mut bucket_vals = vec![0.0f64; total_entries];
     let mut cursor = bucket_indptr[..n_q].to_vec();
     for uid in 0..n_obs {
-        let Some((cj, ck, w)) = decode_obs(levels_q, levels_r, weights, active, uid) else {
+        let Some(o) = decode_obs(levels_q, levels_r, load_q, load_r, weights, active, uid) else {
             continue;
         };
-        let lq = load_q.map_or(1.0, |z| z[uid]);
-        let lr = load_r.map_or(1.0, |z| z[uid]);
-        let pos = cursor[cj as usize] as usize;
-        bucket_cols[pos] = ck;
-        bucket_vals[pos] = w * lq * lr;
-        cursor[cj as usize] += 1;
+        let pos = cursor[o.cj as usize] as usize;
+        bucket_cols[pos] = o.ck;
+        bucket_vals[pos] = o.cell;
+        cursor[o.cj as usize] += 1;
     }
 
     // Pass 3: workspace-based dedup per row.
