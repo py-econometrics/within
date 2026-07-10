@@ -5,7 +5,7 @@
 
 use proptest::prelude::*;
 
-use super::accumulate::{accumulate_dense_cross_block, accumulate_sparse_cross_block};
+use super::accumulate::{accumulate_dense_cross_block, accumulate_sparse_cross_block, Unit};
 use super::{build_compact_mapping, CrossTab};
 use crate::domain::find_all_active_levels;
 use crate::domain::{Channel, ChannelPair, Design, Effect};
@@ -367,9 +367,13 @@ fn dense_and_sparse_paths_agree_on_signed_data() {
     )
     .expect("both factors have active levels");
 
-    let (c_dense, dq_dense, dr_dense) = accumulate_dense_cross_block(&design, None, pair, &active);
+    let levels_f = design.frame.level_column(0);
+    let levels_g = design.frame.level_column(1);
+    let z_col = design.frame.loading_column(0);
+    let (c_dense, dq_dense, dr_dense) =
+        accumulate_dense_cross_block(levels_f, levels_g, z_col, Unit, None, &active);
     let (c_sparse, dq_sparse, dr_sparse) =
-        accumulate_sparse_cross_block(&design, None, pair, &active);
+        accumulate_sparse_cross_block(levels_f, levels_g, z_col, Unit, None, &active);
 
     // Bit-exact parity: identical per-cell addition order in both paths.
     assert_eq!(c_dense.indptr, c_sparse.indptr);
