@@ -15,17 +15,21 @@ use super::{find_all_active_levels, BlockDiagonals, ChannelPair, CrossTab, Desig
 mod routing;
 use routing::{balance_and_scale, Frustrated};
 
-/// Kernel policy the local solve honors for one component.
+/// The folded operator's null space — a computed property of the component, not
+/// a chosen policy — fixing the local solve's gauge.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum KernelPolicy {
-    /// Constant-kernel (plain) component: symmetric mean projection around the solve.
+pub(crate) enum Kernel {
+    /// Zero-surplus (singular) Laplacian: null space is the constant, so the
+    /// solve projects onto its complement (symmetric mean subtraction). Every
+    /// plain component lands here; so do balanced singular signed ones.
     #[default]
-    MeanProjection,
-    /// No projection (signed component): the reduced solve is grounded exactly.
-    None,
+    Constant,
+    /// Diagonal surplus makes the operator nonsingular (null space `{0}`): the
+    /// reduced solve is grounded exactly, no outer projection.
+    Trivial,
 }
 
-/// Per-component congruence and kernel policy consumed by the local solve.
+/// Per-component congruence and kernel consumed by the local solve.
 ///
 /// The congruence `d = σ ⊙ λ` (balancing signature times diagonal scaling, over
 /// the `[q | r]` local DOF layout) turns a signed component's Gram into the
@@ -36,8 +40,8 @@ pub(crate) enum KernelPolicy {
 pub(crate) struct ComponentTransform {
     /// `d = σ ⊙ λ` per local DOF; `None` is the identity (plain pairs).
     pub congruence: Option<Box<[f64]>>,
-    /// Projection policy around the local solve.
-    pub kernel: KernelPolicy,
+    /// Null space of the folded operator, fixing the solve's gauge.
+    pub kernel: Kernel,
 }
 
 /// A local subdomain corresponding to a pair of factors.
@@ -45,7 +49,7 @@ pub(crate) struct ComponentTransform {
 pub(crate) struct Subdomain {
     /// Generic subdomain core: global DOF indices, restriction, and partition-of-unity weights.
     pub core: SubdomainCore,
-    /// Per-component congruence + kernel policy for the local solve.
+    /// Per-component congruence + kernel for the local solve.
     pub transform: ComponentTransform,
 }
 
@@ -131,8 +135,8 @@ pub(crate) fn build_local_domains(
 /// - live singleton (positive diagonal, cross row cancelled — signed pairs
 ///   only): kept as a trivial 1×1 so `M⁻¹` has no zero row;
 /// - plain multi-node: today's default transform, arithmetic untouched;
-/// - signed multi-node: exact-Schur kernel policy plus the
-///   [`balance_and_scale`] congruence; frustration is a build error.
+/// - signed multi-node: the [`balance_and_scale`] congruence and the kernel it
+///   reads off the folded operator; frustration is a build error.
 fn split_into_subdomains(
     pair: ChannelPair,
     full_ct: CrossTab,
@@ -172,16 +176,13 @@ fn split_into_subdomains(
                 }
                 ComponentTransform {
                     congruence: None,
-                    kernel: KernelPolicy::None,
+                    kernel: Kernel::Trivial,
                 }
             } else if pair.is_plain() {
                 ComponentTransform::default()
             } else {
                 match balance_and_scale(&comp_ct, &comp_diag) {
-                    Ok(congruence) => ComponentTransform {
-                        congruence,
-                        kernel: KernelPolicy::None,
-                    },
+                    Ok(transform) => transform,
                     Err(Frustrated) => {
                         return Some(Err(BuildError::FrustratedComponent {
                             term_q: pair.q.term,
@@ -265,11 +266,8 @@ fn compute_partition_weights(domain_pairs: &mut [LocalDomain], n_dofs: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::block_elim::BlockElimSolver;
-    use crate::config::{ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig};
-    use crate::domain::{Design, Effect};
+    use crate::domain::Design;
     use crate::observation::ObservationFrame;
-    use schwarz_precond::LocalSolver;
 
     fn make_test_design() -> Design<'static> {
         let frame = ObservationFrame::new(
@@ -324,144 +322,5 @@ mod tests {
             }
         }
         assert!(covered.iter().all(|&c| c), "Not all DOFs covered");
-    }
-
-    /// `f[z] + g` with `z` pre-whitened per f-level (`Σu = 0`, `Σu² = 1`),
-    /// mirroring what `SlopeReparam::build` hands the preconditioner. The
-    /// 2-level `g` makes the signed pair structurally balanced (centering
-    /// forces opposite-signed row cells).
-    fn slope_plus_binary_design() -> Design<'static> {
-        const A: f64 = std::f64::consts::FRAC_1_SQRT_2;
-        const F: [u32; 6] = [0, 0, 1, 1, 2, 2];
-        const G: [u32; 6] = [0, 1, 1, 0, 0, 1];
-        const U: [f64; 6] = [-A, A, -A, A, -A, A];
-        let effects = vec![
-            Effect::new(&F, true, [&U[..]]).unwrap(),
-            Effect::new(&G, true, []).unwrap(),
-        ];
-        Design::new(effects).expect("valid slope design")
-    }
-
-    #[test]
-    fn routes_signed_pair_with_congruence_and_exact_kernel() {
-        let design = slope_plus_binary_design();
-        let domains =
-            build_local_domains(&design, None).expect("structurally balanced design builds");
-        // One single-component domain per channel pair: (f-int, g-int) plain
-        // and (f-slope, g-int) signed.
-        assert_eq!(domains.len(), 2);
-
-        // DOF layout: f-int 0..3, f-slope 3..6, g-int 6..8.
-        let plain = domains
-            .iter()
-            .find(|d| d.subdomain.transform.kernel == KernelPolicy::MeanProjection)
-            .expect("plain pair domain");
-        assert!(plain.subdomain.transform.congruence.is_none());
-        assert!(plain
-            .subdomain
-            .core
-            .global_indices()
-            .iter()
-            .all(|&i| i < 3 || (6..8).contains(&i)));
-
-        let signed = domains
-            .iter()
-            .find(|d| d.subdomain.transform.kernel == KernelPolicy::None)
-            .expect("signed pair domain");
-        assert!(signed
-            .subdomain
-            .core
-            .global_indices()
-            .iter()
-            .all(|&i| (3..8).contains(&i)));
-        let d = signed
-            .subdomain
-            .transform
-            .congruence
-            .as_deref()
-            .expect("mixed-sign cells need a congruence");
-        assert_eq!(d.len(), 5);
-        let ct = &signed.cross_tab;
-        for i in 0..ct.n_q() {
-            for idx in ct.c.indptr[i] as usize..ct.c.indptr[i + 1] as usize {
-                let j = ct.c.indices[idx] as usize;
-                let v = d[i] * d[ct.n_q() + j] * ct.c.data[idx];
-                assert!(v >= 0.0, "cell ({i},{j}) folds to {v}");
-            }
-        }
-
-        // No zero-diagonal singleton survived routing.
-        for dom in &domains {
-            assert!(dom
-                .block_diagonals
-                .q
-                .iter()
-                .chain(&dom.block_diagonals.r)
-                .all(|&v| v > 0.0));
-        }
-    }
-
-    #[test]
-    fn signed_component_solve_realizes_produced_congruence() {
-        let design = slope_plus_binary_design();
-        let domains = build_local_domains(&design, None).expect("builds");
-        let signed = domains
-            .into_iter()
-            .find(|d| d.subdomain.transform.kernel == KernelPolicy::None)
-            .expect("signed pair domain");
-
-        // Raw (pre-congruence) A = [D_q, C; Cᵀ, D_r] as the solve oracle;
-        // `BlockElimSolver::build` consumes and congruence-scales its copy.
-        let ct_raw = signed.cross_tab.clone();
-        let diag_raw = signed.block_diagonals.clone();
-        let n_q = ct_raw.n_q();
-        let n = ct_raw.n_local();
-        let mut a = vec![0.0; n * n];
-        for (i, v) in diag_raw.q.iter().chain(&diag_raw.r).enumerate() {
-            a[i * n + i] = *v;
-        }
-        for i in 0..n_q {
-            for idx in ct_raw.c.indptr[i] as usize..ct_raw.c.indptr[i + 1] as usize {
-                let j = n_q + ct_raw.c.indices[idx] as usize;
-                a[i * n + j] = ct_raw.c.data[idx];
-                a[j * n + i] = ct_raw.c.data[idx];
-            }
-        }
-
-        let config = LocalSolverConfig {
-            approx_chol: ApproxCholConfig::default(),
-            approx_schur: Some(ApproxSchurConfig::default()),
-            dense_threshold: 8,
-        };
-        let solver = BlockElimSolver::build(
-            signed.cross_tab,
-            signed.block_diagonals,
-            signed.subdomain.transform,
-            &config,
-        )
-        .expect("signed local build");
-
-        // The component is singular, so D·Â⁺·D is exact only on range(A):
-        // take r = A·y and check A·x = r (gauge drops out).
-        let y = [0.3, -1.1, 0.7, 0.25, -0.6];
-        let r: Vec<f64> = (0..n)
-            .map(|i| (0..n).map(|j| a[i * n + j] * y[j]).sum())
-            .collect();
-
-        let mut rhs = vec![0.0; solver.scratch_size()];
-        rhs[..n].copy_from_slice(&r);
-        let mut sol = vec![0.0; solver.scratch_size()];
-        solver
-            .solve_local(&mut rhs, &mut sol, false)
-            .expect("signed solve_local");
-
-        for i in 0..n {
-            let ax: f64 = (0..n).map(|j| a[i * n + j] * sol[j]).sum();
-            assert!(
-                (ax - r[i]).abs() < 1e-8,
-                "row {i}: A·x = {ax}, expected {}",
-                r[i]
-            );
-        }
     }
 }

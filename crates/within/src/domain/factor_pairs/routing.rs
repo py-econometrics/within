@@ -8,6 +8,7 @@
 //! dominance. σ is exact; λ is quality-only (approx-chol clamps residual
 //! deficits), so the congruence-transformed solve is exact for any λ > 0.
 
+use super::{ComponentTransform, Kernel};
 use crate::domain::{BlockDiagonals, CrossTab};
 
 /// Acceptance slack for weak diagonal dominance: rows within
@@ -20,17 +21,23 @@ const WDD_SLACK: f64 = 1e-6;
 /// Relaxation budget; exhaustion hands the current λ over as-is.
 const MAX_SWEEPS: usize = 64;
 
+/// Relative diagonal surplus below which the folded operator is a pure
+/// (singular) Laplacian. Above it the operator is nonsingular.
+const SURPLUS_TOL: f64 = 1e-9;
+
 /// A negative-sign cycle: no ±1 signature folds every cross cell non-negative.
 #[derive(Debug)]
 pub(super) struct Frustrated;
 
 /// Compute the congruence `d = σ ⊙ λ` over the `[q | r]` local DOF layout of
-/// one connected multi-node component; `Ok(None)` when `d ≡ 1` suffices
-/// (already non-negative and weakly diagonally dominant).
+/// one connected multi-node component, plus the folded operator's kernel: a
+/// zero-surplus Laplacian is singular ([`Kernel::Constant`], symmetric
+/// mean-projection), diagonal surplus makes it nonsingular ([`Kernel::Trivial`],
+/// grounded). `congruence` is `None` when `d ≡ 1` suffices.
 pub(super) fn balance_and_scale(
     cross_tab: &CrossTab,
     diagonals: &BlockDiagonals,
-) -> Result<Option<Box<[f64]>>, Frustrated> {
+) -> Result<ComponentTransform, Frustrated> {
     let n_q = cross_tab.n_q();
     let n = cross_tab.n_local();
     // Connected component: every node has an edge, and any node with an edge
@@ -84,41 +91,56 @@ pub(super) fn balance_and_scale(
         }
     }
 
-    // Already weakly diagonally dominant (σ-independent): λ ≡ 1.
-    let row_abs: Vec<f64> = (0..n).map(|i| row(i).map(|(_, v)| v.abs()).sum()).collect();
-    if (0..n).all(|i| diag(i) * (1.0 + WDD_SLACK) >= row_abs[i]) {
-        return Ok(if sigma.iter().all(|&s| s == 1.0) {
-            None
-        } else {
-            Some(sigma.into())
-        });
-    }
-
     // λ in Jacobi-normalized coordinates `λ_i = μ_i/√D_i`: WDD becomes
     // `μ_i ≥ Σ_j n_ij μ_j` with `n_ij = |c_ij|/√(D_i D_j)`. Monotone block
     // Gauss–Seidel (q-side then r-side, deterministic order — defeats the
     // period-2 stall of bipartite power iteration) raises deficient rows; a
-    // no-op sweep certifies every row within slack of the final μ.
+    // no-op sweep certifies every row within slack of the final μ. Already
+    // weakly diagonally dominant (σ-independent) ⇒ λ ≡ 1.
     let inv_sqrt_d: Vec<f64> = (0..n).map(|i| 1.0 / diag(i).sqrt()).collect();
-    let mut mu = vec![1.0f64; n];
-    for _ in 0..MAX_SWEEPS {
-        let mut raised = false;
-        for i in 0..n {
-            let t: f64 = row(i)
-                .map(|(j, v)| v.abs() * inv_sqrt_d[i] * inv_sqrt_d[j] * mu[j])
-                .sum();
-            if t > mu[i] * (1.0 + WDD_SLACK) {
-                mu[i] = t;
-                raised = true;
+    let already_wdd =
+        (0..n).all(|i| diag(i) * (1.0 + WDD_SLACK) >= row(i).map(|(_, v)| v.abs()).sum::<f64>());
+    let d: Vec<f64> = if already_wdd {
+        sigma.clone()
+    } else {
+        let mut mu = vec![1.0f64; n];
+        for _ in 0..MAX_SWEEPS {
+            let mut raised = false;
+            for i in 0..n {
+                let t: f64 = row(i)
+                    .map(|(j, v)| v.abs() * inv_sqrt_d[i] * inv_sqrt_d[j] * mu[j])
+                    .sum();
+                if t > mu[i] * (1.0 + WDD_SLACK) {
+                    mu[i] = t;
+                    raised = true;
+                }
+            }
+            if !raised {
+                break;
             }
         }
-        if !raised {
-            break;
-        }
+        (0..n).map(|i| sigma[i] * mu[i] * inv_sqrt_d[i]).collect()
+    };
+
+    // Kernel: read off the folded operator. Zero total diagonal surplus ⇒ a
+    // singular Laplacian whose null space is the constant; any surplus ⇒
+    // nonsingular.
+    let mut total_surplus = 0.0f64;
+    let mut total_diag = 0.0f64;
+    for i in 0..n {
+        let scaled_diag = d[i] * d[i] * diag(i);
+        let row_abs: f64 = row(i).map(|(j, v)| (d[i] * d[j] * v).abs()).sum();
+        total_surplus += (scaled_diag - row_abs).max(0.0);
+        total_diag += scaled_diag;
     }
-    Ok(Some(
-        (0..n).map(|i| sigma[i] * mu[i] * inv_sqrt_d[i]).collect(),
-    ))
+    let kernel = if total_surplus <= SURPLUS_TOL * total_diag {
+        Kernel::Constant
+    } else {
+        Kernel::Trivial
+    };
+
+    let congruence = (!d.iter().all(|&s| s == 1.0)).then(|| d.into_boxed_slice());
+    Ok(ComponentTransform { congruence, kernel })
 }
 
 #[cfg(test)]
@@ -190,24 +212,11 @@ mod tests {
                 .collect(),
         };
 
-        let d = balance_and_scale(&ct, &diagonals)
-            .expect("balanced component")
-            .expect("mixed signs need a congruence");
+        let t = balance_and_scale(&ct, &diagonals).expect("balanced component");
+        assert_eq!(t.kernel, Kernel::Trivial, "strict surplus ⇒ nonsingular");
+        let d = t.congruence.expect("mixed signs need a congruence");
         assert_folds_non_negative(&ct, &d);
         assert_wdd(&ct, &diagonals, &d);
-    }
-
-    #[test]
-    fn already_wdd_mixed_sign_component_gets_a_pure_signature() {
-        let ct = cross_tab_of(&[1.0, -1.0, 2.0, -2.0], 2, 2);
-        let diagonals = BlockDiagonals {
-            q: vec![3.0, 5.0],
-            r: vec![4.0, 6.0],
-        };
-        let d = balance_and_scale(&ct, &diagonals)
-            .expect("balanced component")
-            .expect("mixed signs need a congruence");
-        assert_eq!(&*d, &[1.0, 1.0, 1.0, -1.0]);
     }
 
     #[test]
@@ -222,18 +231,18 @@ mod tests {
     }
 
     #[test]
-    fn exactly_singular_boundary_is_accepted_within_slack() {
-        // Congruence-scaled singular boundary (kernel [1/2, −1, −1]): the
-        // exact fixed point has t_i == μ_i, so only the slack lets the
-        // relaxation certify and exit instead of chasing rounding.
+    fn exactly_singular_boundary_folds_within_slack_as_constant_kernel() {
+        // Congruence-scaled singular boundary (kernel [1/2, −1, −1]): zero
+        // surplus ⇒ Constant kernel, and only the slack lets the relaxation
+        // certify and exit instead of chasing rounding.
         let ct = cross_tab_of(&[0.5, -1.0], 2, 1);
         let diagonals = BlockDiagonals {
             q: vec![0.25, 1.0],
             r: vec![2.0],
         };
-        let d = balance_and_scale(&ct, &diagonals)
-            .expect("balanced component")
-            .expect("not WDD at λ ≡ 1");
+        let t = balance_and_scale(&ct, &diagonals).expect("balanced component");
+        assert_eq!(t.kernel, Kernel::Constant, "zero surplus ⇒ singular");
+        let d = t.congruence.expect("not WDD at λ ≡ 1");
         assert_folds_non_negative(&ct, &d);
         assert_wdd(&ct, &diagonals, &d);
     }
@@ -249,6 +258,7 @@ mod tests {
         };
         let d = balance_and_scale(&ct, &diagonals)
             .expect("balanced component")
+            .congruence
             .expect("non-WDD component needs a congruence");
         assert!(d.iter().all(|v| v.is_finite()));
         assert_folds_non_negative(&ct, &d);
