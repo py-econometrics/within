@@ -107,3 +107,36 @@ fn frustrated_component_errors_cleanly() {
         other => panic!("expected FrustratedComponent for (f-slope, g-int), got: {other:?}"),
     }
 }
+
+#[test]
+fn near_collinear_cross_term_direction_survives_routing() {
+    // Relative surplus 5e-10 sat below the former 1e-9 SURPLUS_TOL; routing
+    // this PD component as singular projected out the identified [1, -1]
+    // direction, returning x ≈ 0 with converged = true.
+    let c = 1.0 - 5e-10;
+    let f = [0u32, 0];
+    let z1 = [1.0, 0.0];
+    let z2 = [c, (1.0f64 - c * c).sqrt()];
+    let y: Vec<f64> = (0..2).map(|i| z1[i] - z2[i]).collect();
+    let effects = vec![
+        Effect::new(&f, false, [&z1[..]]).unwrap(),
+        Effect::new(&f, false, [&z2[..]]).unwrap(),
+    ];
+    let r = Solver::new(effects, None, PreconditionerConfig::default())
+        .expect("near-collinear pair builds")
+        .solve(&y, &LsmrOptions::default())
+        .expect("solve");
+    assert!(r.converged);
+    assert!(
+        (r.x[0] - 1.0).abs() < 1e-6 && (r.x[1] + 1.0).abs() < 1e-6,
+        "x = {:?}",
+        r.x
+    );
+    let rnorm: f64 = r.demeaned.iter().map(|v| v * v).sum::<f64>().sqrt();
+    let ynorm: f64 = y.iter().map(|v| v * v).sum::<f64>().sqrt();
+    assert!(
+        rnorm <= 1e-6 * ynorm,
+        "relative residual {:e}",
+        rnorm / ynorm
+    );
+}

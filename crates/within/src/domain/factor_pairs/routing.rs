@@ -22,8 +22,12 @@ const WDD_SLACK: f64 = 1e-6;
 const MAX_SWEEPS: usize = 64;
 
 /// Relative diagonal surplus below which the folded operator is a pure
-/// (singular) Laplacian. Above it the operator is nonsingular.
-const SURPLUS_TOL: f64 = 1e-9;
+/// (singular) Laplacian. True singulars measure ≲ √n·ε (observed 1e-16 to
+/// 3e-14 at n=2000), and the two misroutes are asymmetric: a singular sent
+/// to [`Kernel::Trivial`] is merely grounded (correct, a few extra
+/// iterations), while a barely-PD component sent to [`Kernel::Constant`] has
+/// a live direction silently projected out — so err small.
+const SURPLUS_TOL: f64 = 1e-12;
 
 /// A negative-sign cycle: no ±1 signature folds every cross cell non-negative.
 #[derive(Debug)]
