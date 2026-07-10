@@ -10,7 +10,7 @@ use schwarz_precond::{PartitionWeights, SubdomainCore};
 
 use crate::BuildError;
 
-use super::{find_all_active_levels, BlockDiagonals, ChannelPair, CrossTab, Design};
+use super::{find_all_active_levels, BlockDiagonals, Channel, ChannelPair, CrossTab, Design};
 
 mod routing;
 use routing::{balance_and_scale, Frustrated};
@@ -92,15 +92,17 @@ pub(crate) fn build_local_domains(
 ) -> Result<Vec<LocalDomain>, BuildError> {
     use rayon::prelude::*;
 
-    let n_factors = design.n_factors();
-    let pairs: Vec<ChannelPair> = (0..n_factors)
-        .flat_map(|q| ((q + 1)..n_factors).map(move |r| (q, r)))
-        .flat_map(|(q, r)| {
-            design.channels(q).flat_map(move |cq| {
-                design
-                    .channels(r)
-                    .map(move |cr| ChannelPair { q: cq, r: cr })
-            })
+    let channels: Vec<Channel> = (0..design.n_factors())
+        .flat_map(|term| design.channels(term))
+        .collect();
+    let pairs: Vec<ChannelPair> = channels
+        .iter()
+        .enumerate()
+        .flat_map(|(i, &q)| {
+            channels[i + 1..]
+                .iter()
+                .filter(move |r| r.term != q.term)
+                .map(move |&r| ChannelPair { q, r })
         })
         .collect();
     let all_active = find_all_active_levels(design);
@@ -113,8 +115,7 @@ pub(crate) fn build_local_domains(
             else {
                 return Ok(Vec::new());
             };
-            let n_q_full = full_ct.n_q();
-            split_into_subdomains(pair, full_ct, full_diag, &l2g, n_q_full)
+            split_into_subdomains(pair, full_ct, full_diag, &l2g)
         })
         .collect::<Result<_, BuildError>>()?;
     let mut domain_pairs: Vec<LocalDomain> = per_pair.into_iter().flatten().collect();
@@ -126,24 +127,20 @@ pub(crate) fn build_local_domains(
 
 /// Split a full CrossTab into per-component subdomains.
 ///
-/// Finds bipartite connected components, extracts a sub-CrossTab and its sliced
-/// [`BlockDiagonals`] for each, and builds a `Subdomain` with uniform
-/// partition-of-unity weights and the per-component routing policy:
-///
-/// - dead singleton (edgeless, zero diagonal — an exact-zero design column):
-///   skipped, matching the uncovered-inactive-level invariant;
-/// - live singleton (positive diagonal, cross row cancelled — signed pairs
-///   only): kept as a trivial 1×1 so `M⁻¹` has no zero row;
-/// - plain multi-node: today's default transform, arithmetic untouched;
-/// - signed multi-node: the [`balance_and_scale`] congruence and the kernel it
-///   reads off the folded operator; frustration is a build error.
+/// Finds bipartite connected components, extracts a sub-CrossTab and its
+/// sliced [`BlockDiagonals`] for each, and routes every component through
+/// [`balance_and_scale`]; frustration is a build error. Plain pairs shortcut
+/// to the identity transform routing would compute anyway (all cells
+/// non-negative and exactly row-singular), skipping its passes. Dead
+/// singletons (zero diagonal — an exact-zero design column) produce no
+/// subdomain, matching the uncovered-inactive-level invariant.
 fn split_into_subdomains(
     pair: ChannelPair,
     full_ct: CrossTab,
     full_diag: BlockDiagonals,
     l2g: &[u32],
-    n_q_full: usize,
 ) -> Result<Vec<LocalDomain>, BuildError> {
+    let n_q_full = full_ct.n_q();
     let components = full_ct.bipartite_connected_components();
 
     let (cross_tabs, diagonals): (Vec<CrossTab>, Vec<BlockDiagonals>) = if components.len() == 1 {
@@ -164,49 +161,39 @@ fn split_into_subdomains(
         (cross_tabs, diagonals)
     };
 
-    components
-        .iter()
-        .zip(cross_tabs)
-        .zip(diagonals)
-        .filter_map(|((comp, comp_ct), comp_diag)| {
-            let transform = if comp_ct.n_local() == 1 {
-                let diag = comp_diag.q.first().or(comp_diag.r.first());
-                if *diag.expect("singleton has one diagonal") == 0.0 {
-                    return None;
+    let mut domains = Vec::with_capacity(components.len());
+    for ((comp, comp_ct), comp_diag) in components.iter().zip(cross_tabs).zip(diagonals) {
+        if comp_diag.q.iter().chain(&comp_diag.r).all(|&v| v == 0.0) {
+            continue;
+        }
+        let transform = if pair.is_plain() {
+            ComponentTransform::default()
+        } else {
+            balance_and_scale(&comp_ct, &comp_diag).map_err(|Frustrated| {
+                BuildError::FrustratedComponent {
+                    term_q: pair.q.term,
+                    column_q: pair.q.column,
+                    term_r: pair.r.term,
+                    column_r: pair.r.column,
                 }
-                ComponentTransform {
-                    congruence: None,
-                    kernel: Kernel::Trivial,
-                }
-            } else if pair.is_plain() {
-                ComponentTransform::default()
-            } else {
-                match balance_and_scale(&comp_ct, &comp_diag) {
-                    Ok(transform) => transform,
-                    Err(Frustrated) => {
-                        return Some(Err(BuildError::FrustratedComponent {
-                            term_q: pair.q.term,
-                            column_q: pair.q.column,
-                            term_r: pair.r.term,
-                            column_r: pair.r.column,
-                        }))
-                    }
-                }
-            };
-            let comp_l2g: Vec<u32> = comp
-                .q_indices
-                .iter()
-                .map(|&i| l2g[i])
-                .chain(comp.r_indices.iter().map(|&i| l2g[n_q_full + i]))
-                .collect();
-            let core = schwarz_precond::SubdomainCore::uniform(comp_l2g);
-            Some(Ok(LocalDomain {
-                subdomain: Subdomain { core, transform },
-                cross_tab: comp_ct,
-                block_diagonals: comp_diag,
-            }))
-        })
-        .collect()
+            })?
+        };
+        let comp_l2g: Vec<u32> = comp
+            .q_indices
+            .iter()
+            .map(|&i| l2g[i])
+            .chain(comp.r_indices.iter().map(|&i| l2g[n_q_full + i]))
+            .collect();
+        domains.push(LocalDomain {
+            subdomain: Subdomain {
+                core: schwarz_precond::SubdomainCore::uniform(comp_l2g),
+                transform,
+            },
+            cross_tab: comp_ct,
+            block_diagonals: comp_diag,
+        });
+    }
+    Ok(domains)
 }
 
 /// Compute partition-of-unity weights for overlapping Schwarz subdomains.

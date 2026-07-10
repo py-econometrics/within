@@ -30,19 +30,21 @@ const SURPLUS_TOL: f64 = 1e-9;
 pub(super) struct Frustrated;
 
 /// Compute the congruence `d = σ ⊙ λ` over the `[q | r]` local DOF layout of
-/// one connected multi-node component, plus the folded operator's kernel: a
-/// zero-surplus Laplacian is singular ([`Kernel::Constant`], symmetric
-/// mean-projection), diagonal surplus makes it nonsingular ([`Kernel::Trivial`],
-/// grounded). `congruence` is `None` when `d ≡ 1` suffices.
+/// one connected component, plus the folded operator's kernel: a zero-surplus
+/// Laplacian is singular ([`Kernel::Constant`], symmetric mean-projection),
+/// diagonal surplus makes it nonsingular ([`Kernel::Trivial`], grounded).
+/// `congruence` is `None` when `d ≡ 1` suffices. Plain components come out as
+/// the identity (`None`, [`Kernel::Constant`]); a live singleton — positive
+/// diagonal, cross row cancelled — as a grounded 1×1 (`None`,
+/// [`Kernel::Trivial`]).
 pub(super) fn balance_and_scale(
     cross_tab: &CrossTab,
     diagonals: &BlockDiagonals,
 ) -> Result<ComponentTransform, Frustrated> {
     let n_q = cross_tab.n_q();
     let n = cross_tab.n_local();
-    // Connected component: every node has an edge, and any node with an edge
-    // has a strictly positive diagonal (each nonzero cell contributes w·l² > 0
-    // to both endpoint diagonals), so 1/√D below is safe.
+    // Any node with an edge has a strictly positive diagonal (each nonzero
+    // cell contributes w·l² > 0 to both endpoint diagonals), so 1/√D is safe.
     let diag = |i: usize| {
         if i < n_q {
             diagonals.q[i]
@@ -50,64 +52,44 @@ pub(super) fn balance_and_scale(
             diagonals.r[i - n_q]
         }
     };
-    // Row `i` of the symmetric cross structure: q-nodes walk C, r-nodes walk
-    // Cᵀ; neighbor indices come back local to the opposite block.
-    let row = |i: usize| {
-        let (block, r, off) = if i < n_q {
-            (&cross_tab.c, i, n_q)
-        } else {
-            (&cross_tab.ct, i - n_q, 0)
-        };
-        let lo = block.indptr[r] as usize;
-        let hi = block.indptr[r + 1] as usize;
-        block.indices[lo..hi]
-            .iter()
-            .zip(&block.data[lo..hi])
-            .map(move |(&j, &v)| (off + j as usize, v))
-    };
 
-    // σ: sign the spanning tree of a DFS from node 0 so every tree edge folds
-    // positive (0.0 marks unvisited; cells are nonzero, so signum is ±1).
+    // σ by DFS 2-coloring: tree edges fold positive; a visited neighbor with
+    // the wrong sign closes a negative cycle. ±1 folding is exact, so
+    // acceptance means the consumer's `v ≥ 0` assertion holds exactly.
     let mut sigma = vec![0.0f64; n];
     sigma[0] = 1.0;
     let mut stack = vec![0usize];
     while let Some(i) = stack.pop() {
-        for (j, v) in row(i) {
+        for (j, v) in cross_tab.neighbors(i) {
+            let s = sigma[i] * v.signum();
             if sigma[j] == 0.0 {
-                sigma[j] = sigma[i] * v.signum();
+                sigma[j] = s;
                 stack.push(j);
-            }
-        }
-    }
-
-    // Frustration: a non-tree edge violating the signature is a negative
-    // cycle; ±1 folding is exact, so acceptance here means the consumer's
-    // `v ≥ 0` assertion holds exactly.
-    for i in 0..n_q {
-        for (j, v) in row(i) {
-            if sigma[i] * sigma[j] * v < 0.0 {
+            } else if sigma[j] != s {
                 return Err(Frustrated);
             }
         }
     }
 
-    // λ in Jacobi-normalized coordinates `λ_i = μ_i/√D_i`: WDD becomes
-    // `μ_i ≥ Σ_j n_ij μ_j` with `n_ij = |c_ij|/√(D_i D_j)`. Monotone block
-    // Gauss–Seidel (q-side then r-side, deterministic order — defeats the
-    // period-2 stall of bipartite power iteration) raises deficient rows; a
-    // no-op sweep certifies every row within slack of the final μ. Already
-    // weakly diagonally dominant (σ-independent) ⇒ λ ≡ 1.
-    let inv_sqrt_d: Vec<f64> = (0..n).map(|i| 1.0 / diag(i).sqrt()).collect();
-    let already_wdd =
-        (0..n).all(|i| diag(i) * (1.0 + WDD_SLACK) >= row(i).map(|(_, v)| v.abs()).sum::<f64>());
+    // λ ≡ 1 when the raw component is already weakly diagonally dominant
+    // (σ-independent). Otherwise relax in Jacobi-normalized coordinates
+    // `λ_i = μ_i/√D_i`, where WDD reads `μ_i ≥ Σ_j |c_ij| μ_j / √(D_i D_j)`:
+    // monotone block Gauss–Seidel in deterministic order (defeats the
+    // period-2 stall of bipartite power iteration) raises deficient rows
+    // until a no-op sweep certifies every row within slack.
+    let already_wdd = (0..n).all(|i| {
+        diag(i) * (1.0 + WDD_SLACK) >= cross_tab.neighbors(i).map(|(_, v)| v.abs()).sum::<f64>()
+    });
     let d: Vec<f64> = if already_wdd {
         sigma.clone()
     } else {
+        let inv_sqrt_d: Vec<f64> = (0..n).map(|i| 1.0 / diag(i).sqrt()).collect();
         let mut mu = vec![1.0f64; n];
         for _ in 0..MAX_SWEEPS {
             let mut raised = false;
             for i in 0..n {
-                let t: f64 = row(i)
+                let t: f64 = cross_tab
+                    .neighbors(i)
                     .map(|(j, v)| v.abs() * inv_sqrt_d[i] * inv_sqrt_d[j] * mu[j])
                     .sum();
                 if t > mu[i] * (1.0 + WDD_SLACK) {
@@ -122,15 +104,17 @@ pub(super) fn balance_and_scale(
         (0..n).map(|i| sigma[i] * mu[i] * inv_sqrt_d[i]).collect()
     };
 
-    // Kernel: read off the folded operator. Zero total diagonal surplus ⇒ a
-    // singular Laplacian whose null space is the constant; any surplus ⇒
-    // nonsingular.
+    // Kernel: zero total diagonal surplus of the folded operator ⇒ a singular
+    // Laplacian whose null space is the constant; any surplus ⇒ nonsingular.
     let mut total_surplus = 0.0f64;
     let mut total_diag = 0.0f64;
     for i in 0..n {
         let scaled_diag = d[i] * d[i] * diag(i);
-        let row_abs: f64 = row(i).map(|(j, v)| (d[i] * d[j] * v).abs()).sum();
-        total_surplus += (scaled_diag - row_abs).max(0.0);
+        let scaled_row: f64 = cross_tab
+            .neighbors(i)
+            .map(|(j, v)| (d[i] * d[j] * v).abs())
+            .sum();
+        total_surplus += (scaled_diag - scaled_row).max(0.0);
         total_diag += scaled_diag;
     }
     let kernel = if total_surplus <= SURPLUS_TOL * total_diag {
@@ -154,36 +138,27 @@ mod tests {
         CrossTab { c, ct }
     }
 
-    /// `d·A·d` is weakly diagonally dominant within slack on every row.
-    fn assert_wdd(cross_tab: &CrossTab, diagonals: &BlockDiagonals, d: &[f64]) {
+    /// Every cell of `d·A·d` folds non-negative and every row is weakly
+    /// diagonally dominant within slack.
+    fn assert_routed(cross_tab: &CrossTab, diagonals: &BlockDiagonals, d: &[f64]) {
         let n_q = cross_tab.n_q();
-        for i in 0..n_q {
-            let lo = cross_tab.c.indptr[i] as usize;
-            let hi = cross_tab.c.indptr[i + 1] as usize;
-            let row_abs: f64 = (lo..hi)
-                .map(|idx| {
-                    let j = cross_tab.c.indices[idx] as usize;
-                    (d[i] * d[n_q + j] * cross_tab.c.data[idx]).abs()
-                })
-                .sum();
-            let scaled_diag = d[i] * d[i] * diagonals.q[i];
-            assert!(
-                scaled_diag * (1.0 + 2.0 * WDD_SLACK) >= row_abs,
-                "q-row {i}: scaled diag {scaled_diag} < row abs {row_abs}"
-            );
-        }
-    }
-
-    fn assert_folds_non_negative(cross_tab: &CrossTab, d: &[f64]) {
-        let n_q = cross_tab.n_q();
-        for i in 0..n_q {
-            let lo = cross_tab.c.indptr[i] as usize;
-            let hi = cross_tab.c.indptr[i + 1] as usize;
-            for idx in lo..hi {
-                let j = cross_tab.c.indices[idx] as usize;
-                let v = d[i] * d[n_q + j] * cross_tab.c.data[idx];
-                assert!(v >= 0.0, "cell ({i},{j}) folds to {v}");
+        for i in 0..cross_tab.n_local() {
+            let mut row_sum = 0.0;
+            for (j, v) in cross_tab.neighbors(i) {
+                let folded = d[i] * d[j] * v;
+                assert!(folded >= 0.0, "cell ({i},{j}) folds to {folded}");
+                row_sum += folded;
             }
+            let diag = if i < n_q {
+                diagonals.q[i]
+            } else {
+                diagonals.r[i - n_q]
+            };
+            let scaled_diag = d[i] * d[i] * diag;
+            assert!(
+                scaled_diag * (1.0 + 2.0 * WDD_SLACK) >= row_sum,
+                "row {i}: scaled diag {scaled_diag} < row sum {row_sum}"
+            );
         }
     }
 
@@ -215,8 +190,39 @@ mod tests {
         let t = balance_and_scale(&ct, &diagonals).expect("balanced component");
         assert_eq!(t.kernel, Kernel::Trivial, "strict surplus ⇒ nonsingular");
         let d = t.congruence.expect("mixed signs need a congruence");
-        assert_folds_non_negative(&ct, &d);
-        assert_wdd(&ct, &diagonals, &d);
+        assert_routed(&ct, &diagonals, &d);
+    }
+
+    #[test]
+    fn plain_component_routes_to_the_identity() {
+        // Warrant for the plain fast path in `split_into_subdomains`: a plain
+        // component (non-negative cells, rows exactly singular) must route to
+        // the default transform, so skipping the routing passes is pure
+        // optimization.
+        let ct = cross_tab_of(&[2.0, 1.0, 0.0, 3.0], 2, 2);
+        let diagonals = BlockDiagonals {
+            q: vec![3.0, 3.0],
+            r: vec![2.0, 4.0],
+        };
+        let t = balance_and_scale(&ct, &diagonals).expect("plain component");
+        assert!(t.congruence.is_none());
+        assert_eq!(t.kernel, Kernel::Constant);
+    }
+
+    #[test]
+    fn live_singleton_routes_to_grounded_identity() {
+        // A cancelled cross row leaves a positive-diagonal 1×1: identity
+        // congruence, nonsingular kernel, in both block orientations.
+        for (n_q, n_r) in [(1usize, 0usize), (0, 1)] {
+            let ct = cross_tab_of(&[], n_q, n_r);
+            let diagonals = BlockDiagonals {
+                q: vec![4.0; n_q],
+                r: vec![4.0; n_r],
+            };
+            let t = balance_and_scale(&ct, &diagonals).expect("live singleton");
+            assert!(t.congruence.is_none());
+            assert_eq!(t.kernel, Kernel::Trivial, "n_q={n_q}, n_r={n_r}");
+        }
     }
 
     #[test]
@@ -243,8 +249,7 @@ mod tests {
         let t = balance_and_scale(&ct, &diagonals).expect("balanced component");
         assert_eq!(t.kernel, Kernel::Constant, "zero surplus ⇒ singular");
         let d = t.congruence.expect("not WDD at λ ≡ 1");
-        assert_folds_non_negative(&ct, &d);
-        assert_wdd(&ct, &diagonals, &d);
+        assert_routed(&ct, &diagonals, &d);
     }
 
     #[test]
@@ -261,6 +266,10 @@ mod tests {
             .congruence
             .expect("non-WDD component needs a congruence");
         assert!(d.iter().all(|v| v.is_finite()));
-        assert_folds_non_negative(&ct, &d);
+        for i in 0..ct.n_local() {
+            for (j, v) in ct.neighbors(i) {
+                assert!(d[i] * d[j] * v >= 0.0, "cell ({i},{j}) fails to fold");
+            }
+        }
     }
 }
