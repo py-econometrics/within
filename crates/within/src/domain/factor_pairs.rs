@@ -166,7 +166,7 @@ fn split_into_subdomains(
         if comp_diag.q.iter().chain(&comp_diag.r).all(|&v| v == 0.0) {
             continue;
         }
-        let transform = if pair.is_plain() {
+        let transform = if pair.q.loading.is_none() && pair.r.loading.is_none() {
             ComponentTransform::default()
         } else {
             balance_and_scale(&comp_ct, &comp_diag).map_err(|Frustrated| {
