@@ -37,6 +37,11 @@ impl TermMeta {
     pub fn n_dofs(&self) -> usize {
         (usize::from(self.intercept) + self.slopes.len()) * self.n_levels
     }
+
+    /// Global DOF base of coefficient column `column`.
+    pub fn column_base(&self, column: usize) -> usize {
+        self.offset + column * self.n_levels
+    }
 }
 
 /// One coefficient column of a term: the intercept (`loading: None`, loading
@@ -46,13 +51,6 @@ pub(crate) struct Channel {
     pub term: usize,
     pub column: usize,
     pub loading: Option<usize>,
-}
-
-impl Channel {
-    /// Global DOF offset of this channel's level block.
-    pub(crate) fn base(&self, meta: &TermMeta) -> usize {
-        meta.offset + self.column * meta.n_levels
-    }
 }
 
 /// A cross-factor channel pair: one Gramian cross-block per pair.
@@ -250,19 +248,12 @@ impl<'a> Design<'a> {
     /// The term's coefficient columns in `[intercept?, slopes…]` order.
     pub(crate) fn channels(&self, term: usize) -> impl Iterator<Item = Channel> + '_ {
         let meta = &self.terms[term];
-        let intercept = meta.intercept.then_some(Channel {
-            term,
-            column: 0,
-            loading: None,
-        });
         let first_slope = usize::from(meta.intercept);
-        intercept
-            .into_iter()
-            .chain(meta.slopes.iter().enumerate().map(move |(j, &c)| Channel {
-                term,
-                column: first_slope + j,
-                loading: Some(c),
-            }))
+        (0..first_slope + meta.slopes.len()).map(move |column| Channel {
+            term,
+            column,
+            loading: (column >= first_slope).then(|| meta.slopes[column - first_slope]),
+        })
     }
 
     /// Number of observations (rows of D).
