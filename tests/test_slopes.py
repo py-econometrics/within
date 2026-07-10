@@ -1,8 +1,11 @@
-"""Varying slopes on one factor (#59, #60), cross-checked against pyfixest.
+"""Varying slopes (#59, #60) and cross-factor routing (#61), cross-checked
+against pyfixest.
 
 pyfixest has no native ``f[z]`` syntax; the reference is the explicit
 interaction parametrization ``y ~ C(f) + i(f, z) - 1``, which estimates the
 same per-level intercepts and slopes with no absorption or reference coding.
+With a second factor the intercept blocks pick up gauge freedom, so
+two-factor comparisons check residuals and slope coefficients only.
 """
 
 import numpy as np
@@ -133,3 +136,79 @@ def test_three_correlated_weighted_slopes_match_pyfixest():
             assert res.x[N_LEVELS * (1 + j) + lvl] == pytest.approx(
                 coef[f"f::L{lvl}:z{j}"], rel=1e-6, abs=1e-8
             )
+
+
+def test_two_factor_slope_matches_pyfixest():
+    rng = np.random.default_rng(101)
+    n = 500
+    f = rng.integers(0, N_LEVELS, n).astype(np.uint32)
+    g = rng.integers(0, 2, n).astype(np.uint32)
+    z = rng.normal(size=n)
+    a = rng.normal(size=N_LEVELS)
+    b = rng.normal(size=N_LEVELS)
+    c = rng.normal(size=2)
+    y = a[f] + b[f] * z + c[g] + rng.normal(scale=0.1, size=n)
+
+    res = within.solve([Effect(f, True, [z]), Effect(g, True)], y, OPTS)
+    assert res.converged
+    assert res.unidentified == []
+
+    df = pd.DataFrame(
+        {"f": [f"L{v}" for v in f], "g": [f"G{v}" for v in g], "z": z, "y": y}
+    )
+    fit = pf.feols("y ~ C(f) + i(f, z) + C(g) - 1", data=df)
+    coef = fit.coef()
+    # A generic z keeps every slope identified; only intercepts carry gauge.
+    for lvl in range(N_LEVELS):
+        assert res.x[N_LEVELS + lvl] == pytest.approx(
+            coef[f"f::L{lvl}:z"], rel=1e-6, abs=1e-8
+        )
+    assert np.allclose(res.demeaned, fit.resid(), rtol=1e-6, atol=1e-8)
+
+
+def test_unit_trends_time_effects_boundary_matches_pyfixest():
+    rng = np.random.default_rng(202)
+    n_units, n_times = 20, 9
+    unit = np.repeat(np.arange(n_units, dtype=np.uint32), n_times)
+    time = np.tile(np.arange(n_times, dtype=np.uint32), n_units)
+    t = time.astype(np.float64)
+    alpha = rng.normal(size=n_units)
+    trend = rng.normal(scale=0.3, size=n_units)
+    delta = rng.normal(size=n_times)
+    y = (
+        alpha[unit]
+        + trend[unit] * t
+        + delta[time]
+        + rng.normal(scale=0.1, size=n_units * n_times)
+    )
+
+    res = within.solve([Effect(unit, True, [t]), Effect(time, True)], y, OPTS)
+    assert res.converged
+    assert res.unidentified == []
+
+    df = pd.DataFrame(
+        {"f": [f"U{u}" for u in unit], "g": [f"T{k}" for k in time], "z": t, "y": y}
+    )
+    fit = pf.feols("y ~ C(f) + i(f, z) + C(g) - 1", data=df)
+    assert np.allclose(res.demeaned, fit.resid(), rtol=1e-6, atol=1e-8)
+
+    # The trend column is a linear combination of the time dummies, so the
+    # gauge shifts every unit slope uniformly: compare slope differences
+    # against whichever slope columns the reference kept.
+    coef = fit.coef()
+    kept = {u: coef[f"f::U{u}:z"] for u in range(n_units) if f"f::U{u}:z" in coef.index}
+    assert len(kept) >= n_units - 1
+    (u0, s0), *rest = sorted(kept.items())
+    for u, s in rest:
+        assert res.x[n_units + u] - res.x[n_units + u0] == pytest.approx(
+            s - s0, rel=1e-6, abs=1e-8
+        )
+
+
+def test_frustrated_two_factor_raises():
+    f = np.array([0, 0, 0, 1, 1, 1], dtype=np.uint32)
+    g = np.array([0, 1, 2, 0, 1, 2], dtype=np.uint32)
+    z = np.array([-2.0, 1.0, 1.0, -1.0, -1.0, 2.0])
+    y = np.zeros(6)
+    with pytest.raises(ValueError, match="frustrated"):
+        within.solve([Effect(f, True, [z]), Effect(g, True)], y, OPTS)

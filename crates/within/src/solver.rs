@@ -254,14 +254,6 @@ impl<'a> Solver<'a> {
         preconditioner: impl Into<PreconditionerInput>,
     ) -> Result<Self, BuildError> {
         let mut design = design.into_design()?;
-        // A sole slope term is solvable via within-level reparametrization
-        // (`SlopeReparam::build` below); slopes alongside other terms (#61)
-        // land in a later slice.
-        if design.terms.len() > 1 {
-            if let Some(idx) = design.terms.iter().position(|t| !t.slopes.is_empty()) {
-                return Err(BuildError::SlopesNotYetSupported { effect: idx });
-            }
-        }
         design.validate_weights(weights.as_deref())?;
 
         // Align weights with the design's internal (possibly locality-sorted)

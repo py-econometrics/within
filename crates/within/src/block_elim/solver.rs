@@ -5,7 +5,7 @@ use schwarz_precond::{LocalSolveError, LocalSolver};
 
 use crate::config::LocalSolverConfig;
 use crate::csr_block::{CsrBlock, PAR_SPMV_THRESHOLD};
-use crate::domain::{BlockDiagonals, ComponentTransform, CrossTab, KernelPolicy};
+use crate::domain::{BlockDiagonals, ComponentTransform, CrossTab, Kernel};
 use crate::BuildError;
 
 use super::elimination::Elimination;
@@ -259,13 +259,17 @@ impl BlockElimSolver {
         let n_keep = elim.n_keep;
         // The dense factor anchors one node (`x_anchor = 0`) — a gauge choice
         // valid only for the singular constant-kernel case.
-        let prefer_dense = transform.kernel == KernelPolicy::MeanProjection
+        let prefer_dense = transform.kernel == Kernel::Constant
             && config.dense_threshold > 0
             && n_keep <= config.dense_threshold;
 
         // Below the dense threshold the reduced system is tiny — always use exact
         // Schur complement (cheap at this size) and dense Cholesky factorization.
-        let dense_factor = if prefer_dense {
+        let dense_factor = if n_keep == 0 {
+            // Trivial 1×1 component: nothing kept to reduce, so the solve
+            // degenerates to `x = r/d`; never send an empty system to approx-chol.
+            ReducedFactor::try_dense_laplacian_minor(Vec::new(), 0)
+        } else if prefer_dense {
             let anchored_minor = SchurLaplacian::anchored_minor_from_elimination(&elim);
             ReducedFactor::try_dense_laplacian_minor(anchored_minor, n_keep)
         } else {
@@ -281,7 +285,7 @@ impl BlockElimSolver {
                 // discarding the surplus that keeps a signed component
                 // nonsingular — signed components always take the exact path.
                 let schur_csr = match config.approx_schur {
-                    Some(cfg) if transform.kernel == KernelPolicy::MeanProjection => {
+                    Some(cfg) if transform.kernel == Kernel::Constant => {
                         ApproxSchurComplement::new(cfg).compute(&elim)
                     }
                     _ => ExactSchurComplement.compute(&elim),
@@ -333,7 +337,7 @@ impl BlockElimSolver {
             );
         }
         match self.transform.kernel {
-            KernelPolicy::MeanProjection => {
+            Kernel::Constant => {
                 if self.n_reduced > n_keep {
                     rhs[n + n_keep] = 0.0;
                 }
@@ -342,7 +346,7 @@ impl BlockElimSolver {
             // Grounded-Laplacian reduction of the nonsingular SDD reduced
             // system: the ground node absorbs the injected current, and its
             // potential is the gauge subtracted after the solve.
-            KernelPolicy::None => {
+            Kernel::Trivial => {
                 if self.n_reduced > n_keep {
                     rhs[n + n_keep] = -compensated_sum(&rhs[n..n + n_keep]);
                 }
@@ -353,7 +357,7 @@ impl BlockElimSolver {
         let reduced = roles.keep.start..roles.keep.start + self.n_reduced;
         sol[reduced.clone()].copy_from_slice(&rhs[n..n + self.n_reduced]);
         self.reduced_factor.solve_in_place(&mut sol[reduced])?;
-        if self.transform.kernel == KernelPolicy::None && self.n_reduced > n_keep {
+        if self.transform.kernel == Kernel::Trivial && self.n_reduced > n_keep {
             let ground = sol[roles.keep.start + n_keep];
             for v in &mut sol[roles.keep.start..roles.keep.start + n_keep] {
                 *v -= ground;
@@ -414,7 +418,7 @@ impl LocalSolver for BlockElimSolver {
         // form where C carries a negative sign (equivalent to solving
         // [-D_q, C; C^T, D_r] x = rhs').
         negate_block(&mut rhs[..n], n_q);
-        if self.transform.kernel == KernelPolicy::MeanProjection {
+        if self.transform.kernel == Kernel::Constant {
             subtract_mean(rhs, n);
         }
 
@@ -436,7 +440,7 @@ impl LocalSolver for BlockElimSolver {
         };
         self.eliminate_and_recover(&roles, rhs, sol, allow_inner_parallelism)?;
 
-        if self.transform.kernel == KernelPolicy::MeanProjection {
+        if self.transform.kernel == Kernel::Constant {
             subtract_mean(sol, n);
         }
         negate_block(&mut sol[..n], n_q);
@@ -563,6 +567,41 @@ mod tests {
     }
 
     #[test]
+    fn trivial_singleton_component_solves_r_over_d() {
+        // Live 1×1 components (positive diagonal, cancelled cross row) keep
+        // n_keep = 0: the whole solve must degenerate to x = r/d exactly, in
+        // both block orientations.
+        let config = LocalSolverConfig {
+            approx_chol: ApproxCholConfig::default(),
+            approx_schur: None,
+            dense_threshold: 0,
+        };
+        for (n_q, n_r) in [(1usize, 0usize), (0, 1)] {
+            let c = CsrBlock::from_dense_table(&[], n_q, n_r);
+            let ct = c.transpose();
+            let diagonals = BlockDiagonals {
+                q: vec![4.0; n_q],
+                r: vec![4.0; n_r],
+            };
+            let transform = ComponentTransform {
+                congruence: None,
+                kernel: Kernel::Trivial,
+            };
+            let solver = BlockElimSolver::build(CrossTab { c, ct }, diagonals, transform, &config)
+                .expect("trivial 1×1 build");
+            assert_eq!(solver.n_local(), 1);
+
+            let mut rhs = vec![0.0; solver.scratch_size()];
+            rhs[0] = 2.0;
+            let mut sol = vec![0.0; solver.scratch_size()];
+            solver
+                .solve_local(&mut rhs, &mut sol, false)
+                .expect("trivial solve");
+            assert_eq!(sol[0], 0.5, "n_q={n_q}, n_r={n_r}: expected r/d");
+        }
+    }
+
+    #[test]
     fn signed_component_realizes_congruence_transformed_solve() {
         // Balanced/scalable signed component, constructed backward from a plain
         // strictly-SDD target Â and a mixed-sign congruence d: the solver gets
@@ -589,7 +628,7 @@ mod tests {
                 .collect(),
         };
 
-        // Both non-exact reduced paths must be refused under KernelPolicy::None:
+        // Both non-exact reduced paths must be refused under Kernel::Trivial:
         // the dense minor anchors a node, sampled Schur drops the surplus.
         let config = LocalSolverConfig {
             approx_chol: ApproxCholConfig::default(),
@@ -598,7 +637,7 @@ mod tests {
         };
         let transform = ComponentTransform {
             congruence: Some(d.clone().into_boxed_slice()),
-            kernel: KernelPolicy::None,
+            kernel: Kernel::Trivial,
         };
         let solver = BlockElimSolver::build(CrossTab { c, ct }, diagonals, transform, &config)
             .expect("signed block-elim build failed");

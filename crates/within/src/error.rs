@@ -34,12 +34,6 @@ pub enum BuildError {
         /// Actual length.
         got: usize,
     },
-    /// An effect carries varying slopes in a form the solver does not yet support.
-    #[error("effect {effect} has varying slopes, not yet supported alongside other effects")]
-    SlopesNotYetSupported {
-        /// Index of the offending effect.
-        effect: usize,
-    },
     /// Weight vector does not match the number of observations.
     #[error("weights has length {got}, expected {expected}")]
     WeightCountMismatch {
@@ -57,6 +51,23 @@ pub enum BuildError {
         index: usize,
         /// The offending value.
         value: f64,
+    },
+    /// A signed cross-factor component contains a negative-sign cycle, so no
+    /// balancing signature exists.
+    #[error(
+        "frustrated signed component between term {term_q} column {column_q} and \
+         term {term_r} column {column_r}: a negative-sign cycle cannot be balanced \
+         (support tracked in #62)"
+    )]
+    FrustratedComponent {
+        /// Term index of the pair's first channel.
+        term_q: usize,
+        /// Coefficient column of the first channel within its term.
+        column_q: usize,
+        /// Term index of the pair's second channel.
+        term_r: usize,
+        /// Coefficient column of the second channel within its term.
+        column_r: usize,
     },
     /// A zero diagonal was encountered during block elimination.
     #[error("zero diagonal in {block} block at index {index}")]

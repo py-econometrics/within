@@ -86,16 +86,17 @@ class TestEffectErrors:
         with pytest.raises(ValueError, match="slope 0"):
             Effect(levels, intercept=True, slopes=[np.array([1.0, 2.0])])
 
-    def test_slope_term_alongside_other_terms_raises(self):
+    def test_slope_term_alongside_other_terms_solves(self):
         levels = np.array([0, 1, 0], dtype=np.uint32)
         slope = [np.array([1.0, 2.0, 3.0])]
         y = np.array([1.0, 2.0, 3.0])
-        # A sole slope term solves (#59/#60); mixing waits on #61.
-        with pytest.raises(ValueError, match="alongside other effects"):
-            solve(
-                [
-                    Effect(levels, intercept=True, slopes=slope),
-                    Effect(levels, intercept=True),
-                ],
-                y,
-            )
+        # Cross-factor routing (#61): slope terms solve alongside others.
+        result = solve(
+            [
+                Effect(levels, intercept=True, slopes=slope),
+                Effect(levels, intercept=True),
+            ],
+            y,
+        )
+        assert result.converged
+        assert np.all(np.isfinite(result.x))

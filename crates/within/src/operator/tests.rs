@@ -539,7 +539,7 @@ mod schwarz_tests {
 
     fn make_test_data() -> (Design<'static>, Vec<LocalDomain>) {
         let design = super::design_of(vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]]);
-        let domain_pairs = build_local_domains(&design, None);
+        let domain_pairs = build_local_domains(&design, None).expect("plain domains build");
         (design, domain_pairs)
     }
 

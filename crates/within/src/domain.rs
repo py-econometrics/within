@@ -8,7 +8,7 @@ pub(crate) use cross_tab::{find_all_active_levels, BlockDiagonals, CrossTab};
 
 pub use effect::Effect;
 
-pub(crate) use factor_pairs::{build_local_domains, ComponentTransform, KernelPolicy, LocalDomain};
+pub(crate) use factor_pairs::{build_local_domains, ComponentTransform, Kernel, LocalDomain};
 
 // ===========================================================================
 // Design — categorical fixed-effects design (data + layout)
@@ -37,6 +37,27 @@ impl TermMeta {
     pub fn n_dofs(&self) -> usize {
         (usize::from(self.intercept) + self.slopes.len()) * self.n_levels
     }
+
+    /// Global DOF base of coefficient column `column`.
+    pub fn column_base(&self, column: usize) -> usize {
+        self.offset + column * self.n_levels
+    }
+}
+
+/// One coefficient column of a term: the intercept (`loading: None`, loading
+/// value 1) or one slope column (`loading` = frame continuous column index).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Channel {
+    pub term: usize,
+    pub column: usize,
+    pub loading: Option<usize>,
+}
+
+/// A cross-factor channel pair: one Gramian cross-block per pair.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ChannelPair {
+    pub q: Channel,
+    pub r: Channel,
 }
 
 /// Fixed-effects design: observation columns plus coefficient-space layout.
@@ -215,6 +236,17 @@ impl<'a> Design<'a> {
     #[inline]
     pub fn n_factors(&self) -> usize {
         self.terms.len()
+    }
+
+    /// The term's coefficient columns in `[intercept?, slopes…]` order.
+    pub(crate) fn channels(&self, term: usize) -> impl Iterator<Item = Channel> + '_ {
+        let meta = &self.terms[term];
+        let first_slope = usize::from(meta.intercept);
+        (0..first_slope + meta.slopes.len()).map(move |column| Channel {
+            term,
+            column,
+            loading: (column >= first_slope).then(|| meta.slopes[column - first_slope]),
+        })
     }
 
     /// Number of observations (rows of D).

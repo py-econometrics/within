@@ -215,7 +215,7 @@ fn build_diagonal(
         }
         for &z_col in &term.slopes {
             let z = design.frame.loading_column(z_col);
-            let base = term.offset + column * term.n_levels;
+            let base = term.column_base(column);
             let slice = &mut diag[base..base + term.n_levels];
             for (uid, &level) in levels.iter().enumerate() {
                 // Keep `w * z * z` left-to-right: a zero weight then kills a
@@ -267,7 +267,7 @@ pub(crate) fn build_preconditioner(
             local_solver,
             reduction,
         } => {
-            let domains = build_local_domains(design, weights);
+            let domains = build_local_domains(design, weights)?;
             if domains.is_empty() {
                 // Single-factor designs (and other configurations with no
                 // factor-pair subdomains) have no useful additive Schwarz
