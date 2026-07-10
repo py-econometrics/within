@@ -81,7 +81,7 @@ pub(super) fn balance_and_scale(
         diag(i) * (1.0 + WDD_SLACK) >= cross_tab.neighbors(i).map(|(_, v)| v.abs()).sum::<f64>()
     });
     let d: Vec<f64> = if already_wdd {
-        sigma.clone()
+        sigma
     } else {
         let inv_sqrt_d: Vec<f64> = (0..n).map(|i| 1.0 / diag(i).sqrt()).collect();
         let mut mu = vec![1.0f64; n];
@@ -110,10 +110,7 @@ pub(super) fn balance_and_scale(
     let mut total_diag = 0.0f64;
     for i in 0..n {
         let scaled_diag = d[i] * d[i] * diag(i);
-        let scaled_row: f64 = cross_tab
-            .neighbors(i)
-            .map(|(j, v)| (d[i] * d[j] * v).abs())
-            .sum();
+        let scaled_row: f64 = cross_tab.neighbors(i).map(|(j, v)| d[i] * d[j] * v).sum();
         total_surplus += (scaled_diag - scaled_row).max(0.0);
         total_diag += scaled_diag;
     }
