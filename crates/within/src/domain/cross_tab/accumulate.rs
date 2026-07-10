@@ -12,13 +12,6 @@ use crate::domain::{ChannelPair, Design};
 
 use super::{to_u32, ActiveLevels};
 
-/// A channel pair's loading columns, resolved once per scan; `None` reads as
-/// the constant 1 (intercept channel).
-struct PairLoadings<'a> {
-    q: Option<&'a [f64]>,
-    r: Option<&'a [f64]>,
-}
-
 /// Max entries in a flat dense cross-tab accumulator (~40 MB at 8 bytes each).
 /// Absolute hard cap on the dense path: tables larger than this always go
 /// sparse, regardless of the cost comparison in `accumulate_cross_block`.
@@ -94,10 +87,8 @@ pub(super) fn accumulate_dense_cross_block(
     let n_r = active.n_r;
     let levels_q = design.frame.level_column(pair.q.term);
     let levels_r = design.frame.level_column(pair.r.term);
-    let loadings = PairLoadings {
-        q: pair.q.loading.map(|c| design.frame.loading_column(c)),
-        r: pair.r.loading.map(|c| design.frame.loading_column(c)),
-    };
+    let load_q = pair.q.loading.map(|c| design.frame.loading_column(c));
+    let load_r = pair.r.loading.map(|c| design.frame.loading_column(c));
     let mut diag_q = vec![0.0f64; n_q];
     let mut diag_r = vec![0.0f64; n_r];
     let mut table = vec![0.0f64; n_q * n_r];
@@ -107,8 +98,8 @@ pub(super) fn accumulate_dense_cross_block(
             continue;
         };
         debug_assert!((cj as usize) < n_q && (ck as usize) < n_r);
-        let lq = loadings.q.map_or(1.0, |z| z[uid]);
-        let lr = loadings.r.map_or(1.0, |z| z[uid]);
+        let lq = load_q.map_or(1.0, |z| z[uid]);
+        let lr = load_r.map_or(1.0, |z| z[uid]);
         diag_q[cj as usize] += w * lq * lq;
         diag_r[ck as usize] += w * lr * lr;
         table[cj as usize * n_r + ck as usize] += w * lq * lr;
@@ -134,10 +125,8 @@ pub(super) fn accumulate_sparse_cross_block(
     let n_r = active.n_r;
     let levels_q = design.frame.level_column(pair.q.term);
     let levels_r = design.frame.level_column(pair.r.term);
-    let loadings = PairLoadings {
-        q: pair.q.loading.map(|c| design.frame.loading_column(c)),
-        r: pair.r.loading.map(|c| design.frame.loading_column(c)),
-    };
+    let load_q = pair.q.loading.map(|c| design.frame.loading_column(c));
+    let load_r = pair.r.loading.map(|c| design.frame.loading_column(c));
     let mut diag_q = vec![0.0f64; n_q];
     let mut diag_r = vec![0.0f64; n_r];
 
@@ -147,8 +136,8 @@ pub(super) fn accumulate_sparse_cross_block(
         let Some((cj, ck, w)) = decode_obs(levels_q, levels_r, weights, active, uid) else {
             continue;
         };
-        let lq = loadings.q.map_or(1.0, |z| z[uid]);
-        let lr = loadings.r.map_or(1.0, |z| z[uid]);
+        let lq = load_q.map_or(1.0, |z| z[uid]);
+        let lr = load_r.map_or(1.0, |z| z[uid]);
         diag_q[cj as usize] += w * lq * lq;
         diag_r[ck as usize] += w * lr * lr;
         row_counts[cj as usize] += 1;
@@ -169,8 +158,8 @@ pub(super) fn accumulate_sparse_cross_block(
         let Some((cj, ck, w)) = decode_obs(levels_q, levels_r, weights, active, uid) else {
             continue;
         };
-        let lq = loadings.q.map_or(1.0, |z| z[uid]);
-        let lr = loadings.r.map_or(1.0, |z| z[uid]);
+        let lq = load_q.map_or(1.0, |z| z[uid]);
+        let lr = load_r.map_or(1.0, |z| z[uid]);
         let pos = cursor[cj as usize] as usize;
         bucket_cols[pos] = ck;
         bucket_vals[pos] = w * lq * lr;
