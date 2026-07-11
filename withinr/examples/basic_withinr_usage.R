@@ -46,7 +46,7 @@ options <- withinr::LsmrOptions(
 )
 
 # 1. One-shot demeaning of y.
-fit_y <- withinr::solve(
+fit_y <- withinr::within_solve(
   categories,
   y,
   options = options,
@@ -59,7 +59,7 @@ cat("Iterations:", fit_y$iterations, "\n")
 cat("Residual:", signif(fit_y$residual, 4), "\n\n")
 
 # 2. Batch demeaning: demean y and all regressors with one shared setup.
-batch <- withinr::solve_batch(
+batch <- withinr::within_solve_batch(
   categories,
   cbind(y = y, X),
   options = options,

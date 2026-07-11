@@ -38,7 +38,7 @@ withinr_run_tests <- function(verbose = TRUE) {
   y_simple <- c(1.0, 2.0, 3.0, 4.0)
 
   # solve() smoke
-  r <- withinr::solve(cats_2x2, y_simple)
+  r <- withinr::within_solve(cats_2x2, y_simple)
   assert_true(is.list(r), "solve() did not return a list.")
   assert_equal(
     names(r),
@@ -54,13 +54,13 @@ withinr_run_tests <- function(verbose = TRUE) {
   assert_true(r$time_total >= 0, "solve() time_total is negative.")
 
   opts <- withinr::LsmrOptions(tol = 1e-10, maxiter = 2000L, local_size = 2L)
-  assert_true(withinr::solve(cats_2x2, y_simple, options = opts)$converged, "Custom options failed.")
+  assert_true(withinr::within_solve(cats_2x2, y_simple, options = opts)$converged, "Custom options failed.")
   assert_true(
-    withinr::solve(cats_2x2, y_simple, preconditioner = withinr::PreconditionerConfig$Off)$converged,
+    withinr::within_solve(cats_2x2, y_simple, preconditioner = withinr::PreconditionerConfig$Off)$converged,
     "Unpreconditioned solve failed."
   )
   assert_true(
-    withinr::solve(cats_2x2, y_simple, preconditioner = withinr::PreconditionerConfig$Diagonal)$converged,
+    withinr::within_solve(cats_2x2, y_simple, preconditioner = withinr::PreconditionerConfig$Diagonal)$converged,
     "Diagonal preconditioner solve failed."
   )
   schwarz <- withinr::AdditiveSchwarz(
@@ -70,26 +70,26 @@ withinr_run_tests <- function(verbose = TRUE) {
     ),
     reduction = withinr::ReductionStrategy$Auto
   )
-  assert_true(withinr::solve(cats_2x2, y_simple, preconditioner = schwarz)$converged, "AdditiveSchwarz config failed.")
+  assert_true(withinr::within_solve(cats_2x2, y_simple, preconditioner = schwarz)$converged, "AdditiveSchwarz config failed.")
 
   w <- c(1.0, 2.0, 1.0, 2.0)
-  assert_true(withinr::solve(cats_2x2, y_simple, weights = w)$converged, "Weighted solve failed.")
+  assert_true(withinr::within_solve(cats_2x2, y_simple, weights = w)$converged, "Weighted solve failed.")
 
   # solve() correctness checks
-  d <- withinr::solve(cats_2x2, y_simple)$demeaned
+  d <- withinr::within_solve(cats_2x2, y_simple)$demeaned
   assert_equal(d[1] + d[2], 0, tol = 1e-6, msg = "Factor-1 group mean not centered (group 1).")
   assert_equal(d[3] + d[4], 0, tol = 1e-6, msg = "Factor-1 group mean not centered (group 2).")
   assert_equal(d[1] + d[3], 0, tol = 1e-6, msg = "Factor-2 group mean not centered (group 1).")
   assert_equal(d[2] + d[4], 0, tol = 1e-6, msg = "Factor-2 group mean not centered (group 2).")
 
-  r2 <- withinr::solve(cats_2x2, y_simple)
+  r2 <- withinr::within_solve(cats_2x2, y_simple)
   n1 <- 2L
   y_hat <- r2$x[cats_2x2[, 1]] + r2$x[n1 + cats_2x2[, 2]]
   assert_equal(y_hat + r2$demeaned, y_simple, tol = 1e-6, msg = "Reconstruction y != y_hat + demeaned.")
 
   # solve_batch() smoke
   Y <- cbind(y_simple, rev(y_simple))
-  b <- withinr::solve_batch(cats_2x2, Y)
+  b <- withinr::within_solve_batch(cats_2x2, Y)
   assert_true(is.matrix(b$x), "solve_batch() x is not matrix.")
   assert_true(is.matrix(b$demeaned), "solve_batch() demeaned are not matrix.")
   assert_true(ncol(b$x) == 2L, "solve_batch() x column count mismatch.")
@@ -98,8 +98,8 @@ withinr_run_tests <- function(verbose = TRUE) {
   assert_true(length(b$converged) == 2L, "solve_batch() converged vector length mismatch.")
   assert_true(all(b$converged), "solve_batch() did not converge for all RHS.")
 
-  s1 <- withinr::solve(cats_2x2, Y[, 1])
-  s2 <- withinr::solve(cats_2x2, Y[, 2])
+  s1 <- withinr::within_solve(cats_2x2, Y[, 1])
+  s2 <- withinr::within_solve(cats_2x2, Y[, 2])
   assert_equal(b$x[, 1], s1$x, tol = 1e-6, msg = "Batch x RHS1 mismatch.")
   assert_equal(b$x[, 2], s2$x, tol = 1e-6, msg = "Batch x RHS2 mismatch.")
   assert_equal(b$demeaned[, 1], s1$demeaned, tol = 1e-6, msg = "Batch demeaned RHS1 mismatch.")
@@ -140,18 +140,18 @@ withinr_run_tests <- function(verbose = TRUE) {
   assert_equal(solver2$solve(y_simple)$demeaned, s1$demeaned, tol = 1e-6, msg = "Preconditioner reuse mismatch.")
 
   # validation/error behavior
-  assert_error(withinr::solve(c(1L, 2L), y_simple), contains = "must be a matrix")
-  assert_error(withinr::solve_batch(cats_2x2, y_simple), contains = "must be a matrix")
+  assert_error(withinr::within_solve(c(1L, 2L), y_simple), contains = "must be a matrix")
+  assert_error(withinr::within_solve_batch(cats_2x2, y_simple), contains = "must be a matrix")
 
   bad <- cats_2x2
   bad[1, 1] <- NA_integer_
-  assert_error(withinr::solve(bad, y_simple), contains = "must not contain NA")
+  assert_error(withinr::within_solve(bad, y_simple), contains = "must not contain NA")
 
   bad0 <- cats_2x2 - 1L
-  assert_error(withinr::solve(bad0, y_simple), contains = "1-based")
+  assert_error(withinr::within_solve(bad0, y_simple), contains = "1-based")
 
   cats_dbl <- matrix(c(1, 1, 2, 2, 1, 2, 1, 2), ncol = 2)
-  assert_true(withinr::solve(cats_dbl, y_simple)$converged, "Numeric categories coercion case failed.")
+  assert_true(withinr::within_solve(cats_dbl, y_simple)$converged, "Numeric categories coercion case failed.")
 
   # Larger deterministic design: preconditioner correctness and caller-order invariance
   set.seed(20260704)
@@ -167,15 +167,15 @@ withinr_run_tests <- function(verbose = TRUE) {
   weights <- runif(n, min = 0.5, max = 2.0)
   tight <- withinr::LsmrOptions(tol = 1e-10, maxiter = 4000L, local_size = 4L)
 
-  add_big <- withinr::solve(cats, y, options = tight, weights = weights)
-  diag_big <- withinr::solve(
+  add_big <- withinr::within_solve(cats, y, options = tight, weights = weights)
+  diag_big <- withinr::within_solve(
     cats,
     y,
     options = tight,
     weights = weights,
     preconditioner = withinr::PreconditionerConfig$Diagonal
   )
-  off_big <- withinr::solve(
+  off_big <- withinr::within_solve(
     cats,
     y,
     options = tight,
@@ -200,11 +200,11 @@ withinr_run_tests <- function(verbose = TRUE) {
 
   solver_big <- withinr::Solver(cats, weights = weights)
   pre_big <- solver_big$preconditioner()
-  reuse_big <- withinr::solve(cats, y, options = tight, weights = weights, preconditioner = pre_big)
+  reuse_big <- withinr::within_solve(cats, y, options = tight, weights = weights, preconditioner = pre_big)
   assert_equal(reuse_big$demeaned, add_big$demeaned, tol = 1e-6, msg = "One-shot preconditioner reuse mismatch.")
 
-  batch_reuse <- withinr::solve_batch(cats, Y_big, options = tight, weights = weights, preconditioner = pre_big)
-  batch_fresh <- withinr::solve_batch(cats, Y_big, options = tight, weights = weights)
+  batch_reuse <- withinr::within_solve_batch(cats, Y_big, options = tight, weights = weights, preconditioner = pre_big)
+  batch_fresh <- withinr::within_solve_batch(cats, Y_big, options = tight, weights = weights)
   assert_all_converged(batch_reuse, "Prebuilt batch solve failed on larger design.")
   assert_equal(
     batch_reuse$demeaned,
@@ -214,7 +214,7 @@ withinr_run_tests <- function(verbose = TRUE) {
   )
 
   order_dominant <- order(cats[, 1], cats[, 2], cats[, 3])
-  sorted <- withinr::solve(
+  sorted <- withinr::within_solve(
     cats[order_dominant, , drop = FALSE],
     y[order_dominant],
     options = tight,
@@ -227,7 +227,7 @@ withinr_run_tests <- function(verbose = TRUE) {
     msg = "Unsorted input did not return demeaned values in caller order."
   )
 
-  sorted_batch <- withinr::solve_batch(
+  sorted_batch <- withinr::within_solve_batch(
     cats[order_dominant, , drop = FALSE],
     Y_big[order_dominant, , drop = FALSE],
     options = tight,

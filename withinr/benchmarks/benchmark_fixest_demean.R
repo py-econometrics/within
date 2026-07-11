@@ -1,4 +1,4 @@
-# Benchmark withinr::solve_batch() vs fixest::demean() on the "difficult data" DGP.
+# Benchmark withinr::within_solve_batch() vs fixest::demean() on the "difficult data" DGP.
 #
 # DGP provenance:
 # - taken from fixest benchmarks
@@ -81,7 +81,7 @@ benchmark_withinr_vs_fixest_difficult <- function(
 
     for (r in seq_len(reps)) {
       t_within[r] <- system.time({
-        wr <- withinr::solve_batch(
+        wr <- withinr::within_solve_batch(
           categories = cats,
           Y = Y,
           options = options,

@@ -36,8 +36,8 @@ validate_weights <- function(weights) {
 #' @param maxiter Maximum number of LSMR iterations. Default `1000L`.
 #' @param local_size Optional window size for modified Gram-Schmidt
 #'   reorthogonalization, or `NULL` to use the short recurrence.
-#' @return A solver options object accepted by [solve()], [solve_batch()], and
-#'   persistent solver methods.
+#' @return A solver options object accepted by [within_solve()],
+#'   [within_solve_batch()], and persistent solver methods.
 #' @export
 LsmrOptions <- function(tol = 1e-8, maxiter = 1000L, local_size = NULL) {
   structure(
@@ -158,11 +158,11 @@ AdditiveSchwarz <- function(local_solver = NULL,
 #' @return A named list with fields `x`, `demeaned`, `converged`,
 #'   `iterations`, `residual`, `time_total`, `time_setup`, and `time_solve`.
 #' @export
-solve <- function(categories,
-                  y,
-                  options = NULL,
-                  weights = NULL,
-                  preconditioner = NULL) {
+within_solve <- function(categories,
+                         y,
+                         options = NULL,
+                         weights = NULL,
+                         preconditioner = NULL) {
   categories <- validate_categories(categories)
   y <- as.double(y)
   weights <- validate_weights(weights)
@@ -175,16 +175,16 @@ solve <- function(categories,
 #' Builds the operator and preconditioner once, then solves for each column
 #' of `Y` in parallel.
 #'
-#' @inheritParams solve
+#' @inheritParams within_solve
 #' @param Y Numeric matrix of shape `(n_obs, k)`.
 #' @return A named list with matrix fields `x` and `demeaned`, plus
 #'   `converged`, `iterations`, `residual`, `time_solve`, and `time_total`.
 #' @export
-solve_batch <- function(categories,
-                        Y,
-                        options = NULL,
-                        weights = NULL,
-                        preconditioner = NULL) {
+within_solve_batch <- function(categories,
+                               Y,
+                               options = NULL,
+                               weights = NULL,
+                               preconditioner = NULL) {
   categories <- validate_categories(categories)
   if (!is.matrix(Y)) {
     stop("`Y` must be a matrix", call. = FALSE)
@@ -200,7 +200,7 @@ solve_batch <- function(categories,
 #' Builds the preconditioner once and reuses it for repeated solves with the
 #' same design matrix.
 #'
-#' @inheritParams solve
+#' @inheritParams within_solve
 #' @return A `within_solver` object with `$solve()`, `$solve_batch()`, and
 #'   `$preconditioner()` methods, plus `$n_dofs` and `$n_obs` fields.
 #' @export

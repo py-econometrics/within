@@ -25,9 +25,13 @@ NOT_CRAN=true R CMD INSTALL withinr
 R category matrices are 1-based. Each column is one fixed-effect factor, and `withinr` converts values to the 0-based indices used by Rust.
 
 ```r
-solve(categories, y, options = NULL, weights = NULL, preconditioner = NULL)
-solve_batch(categories, Y, options = NULL, weights = NULL, preconditioner = NULL)
+within_solve(categories, y, options = NULL, weights = NULL, preconditioner = NULL)
+within_solve_batch(categories, Y, options = NULL, weights = NULL, preconditioner = NULL)
 ```
+
+The one-shot entry points carry a `within_` prefix (unlike Python's
+`within.solve`, which is namespaced) so that attaching the package does not
+mask `base::solve()`.
 
 `options` is `NULL` or `LsmrOptions(tol = 1e-8, maxiter = 1000L, local_size = NULL)`.
 
@@ -58,7 +62,7 @@ beta <- c(1, 2, 3)
 X <- matrix(rnorm(n * 3), ncol = 3)
 y <- X %*% beta + alpha1[f1] + alpha2[f2] + alpha3[f3] + rnorm(n, sd = 0.5)
 
-res <- solve_batch(categories, cbind(y, X))
+res <- within_solve_batch(categories, cbind(y, X))
 y_tilde <- res$demeaned[, 1]
 X_tilde <- res$demeaned[, 2:4]
 qr.solve(X_tilde, y_tilde)
@@ -93,7 +97,7 @@ schwarz <- AdditiveSchwarz(
   reduction = ReductionStrategy$Auto
 )
 
-res <- solve(categories, y, preconditioner = schwarz)
+res <- within_solve(categories, y, preconditioner = schwarz)
 ```
 
 Passing `approx_schur = NULL` to `LocalSolverConfig()` requests exact Schur complements; omitting it uses the library-default approximate Schur configuration.

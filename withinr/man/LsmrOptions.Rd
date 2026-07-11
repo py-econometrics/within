@@ -15,8 +15,8 @@ LsmrOptions(tol = 1e-08, maxiter = 1000L, local_size = NULL)
 reorthogonalization, or \code{NULL} to use the short recurrence.}
 }
 \value{
-A solver options object accepted by \code{\link[=solve]{solve()}}, \code{\link[=solve_batch]{solve_batch()}}, and
-persistent solver methods.
+A solver options object accepted by \code{\link[=within_solve]{within_solve()}},
+\code{\link[=within_solve_batch]{within_solve_batch()}}, and persistent solver methods.
 }
 \description{
 Uses Modified Golub-Kahan bidiagonalization to solve the least-squares
