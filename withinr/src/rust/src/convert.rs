@@ -30,6 +30,21 @@ pub(crate) fn usize_to_i32(value: usize, name: &str) -> Result<i32> {
     i32::try_from(value).map_err(|_| err(format!("{name} exceeds i32 range")))
 }
 
+pub(crate) fn parse_positive_f64(field: &Robj, name: &str) -> Result<f64> {
+    let value = if let Some(value) = field.as_real() {
+        value
+    } else if let Some(value) = field.as_integer() {
+        value as f64
+    } else {
+        return Err(err(format!("{name} must be a positive finite number")));
+    };
+
+    if !value.is_finite() || value <= 0.0 {
+        return Err(err(format!("{name} must be a positive finite number")));
+    }
+    Ok(value)
+}
+
 pub(crate) fn parse_nonnegative_integer(field: &Robj, name: &str) -> Result<i64> {
     let value = if let Some(value) = field.as_integer() {
         value as f64

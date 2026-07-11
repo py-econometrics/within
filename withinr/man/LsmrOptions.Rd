@@ -26,3 +26,6 @@ Uses Modified Golub-Kahan bidiagonalization to solve the least-squares
 problem directly. The preconditioner approximates \verb{A^T A} and is applied as
 one \code{M^{-1}} solve per iteration.
 }
+\details{
+Values are validated by the Rust bridge when the options are used.
+}

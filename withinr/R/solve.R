@@ -2,24 +2,6 @@
   ApproxSchurConfig()
 }
 
-as_nullable_integer <- function(x) {
-  if (is.null(x)) {
-    NULL
-  } else {
-    as.integer(x)
-  }
-}
-
-as_lsmr_options <- function(options) {
-  if (is.null(options)) {
-    return(LsmrOptions())
-  }
-  if (!inherits(options, "within_lsmr_options")) {
-    stop("`options` must be created by LsmrOptions(...) or NULL", call. = FALSE)
-  }
-  options
-}
-
 as_preconditioner_arg <- function(preconditioner) {
   if (inherits(preconditioner, "within_preconditioner")) {
     return(preconditioner$ptr)
@@ -55,6 +37,8 @@ validate_weights <- function(weights) {
 #' problem directly. The preconditioner approximates `A^T A` and is applied as
 #' one `M^{-1}` solve per iteration.
 #'
+#' Values are validated by the Rust bridge when the options are used.
+#'
 #' @param tol Positive finite convergence tolerance. Default `1e-8`.
 #' @param maxiter Maximum number of LSMR iterations. Default `1000L`.
 #' @param local_size Optional window size for modified Gram-Schmidt
@@ -63,21 +47,8 @@ validate_weights <- function(weights) {
 #'   persistent solver methods.
 #' @export
 LsmrOptions <- function(tol = 1e-8, maxiter = 1000L, local_size = NULL) {
-  if (!is.finite(tol) || tol <= 0) {
-    stop("`tol` must be a positive finite number", call. = FALSE)
-  }
-  maxiter <- as.integer(maxiter)
-  if (length(maxiter) != 1L || is.na(maxiter) || maxiter < 1L) {
-    stop("`maxiter` must be >= 1", call. = FALSE)
-  }
-  if (!is.null(local_size)) {
-    local_size <- as.integer(local_size)
-    if (length(local_size) != 1L || is.na(local_size) || local_size < 1L) {
-      stop("`local_size` must be NULL or >= 1", call. = FALSE)
-    }
-  }
   structure(
-    list(tol = as.double(tol), maxiter = maxiter, local_size = local_size),
+    list(tol = tol, maxiter = maxiter, local_size = local_size),
     class = "within_lsmr_options"
   )
 }
@@ -120,16 +91,6 @@ ReductionStrategy <- structure(
 #' @return A local-solver configuration object.
 #' @export
 ApproxCholConfig <- function(seed = 0, split_merge = NULL) {
-  seed <- as.numeric(seed)
-  if (length(seed) != 1L || is.na(seed) || seed < 0 || seed != floor(seed)) {
-    stop("`seed` must be a non-negative integer", call. = FALSE)
-  }
-  if (!is.null(split_merge)) {
-    split_merge <- as.integer(split_merge)
-    if (length(split_merge) != 1L || is.na(split_merge) || split_merge < 1L) {
-      stop("`split_merge` must be NULL or >= 1", call. = FALSE)
-    }
-  }
   structure(
     list(seed = seed, split_merge = split_merge),
     class = "within_approx_chol_config"
@@ -143,14 +104,6 @@ ApproxCholConfig <- function(seed = 0, split_merge = NULL) {
 #' @return A local-solver configuration object.
 #' @export
 ApproxSchurConfig <- function(seed = 0, split = 1L) {
-  seed <- as.numeric(seed)
-  split <- as.integer(split)
-  if (length(seed) != 1L || is.na(seed) || seed < 0 || seed != floor(seed)) {
-    stop("`seed` must be a non-negative integer", call. = FALSE)
-  }
-  if (length(split) != 1L || is.na(split) || split < 1L) {
-    stop("`split` must be >= 1", call. = FALSE)
-  }
   structure(
     list(seed = seed, split = split),
     class = "within_approx_schur_config"
@@ -169,18 +122,6 @@ ApproxSchurConfig <- function(seed = 0, split = 1L) {
 LocalSolverConfig <- function(approx_chol = NULL,
                               approx_schur = .default_approx_schur(),
                               dense_threshold = NULL) {
-  if (!is.null(approx_chol) && !inherits(approx_chol, "within_approx_chol_config")) {
-    stop("`approx_chol` must be created by ApproxCholConfig(...) or NULL", call. = FALSE)
-  }
-  if (!is.null(approx_schur) && !inherits(approx_schur, "within_approx_schur_config")) {
-    stop("`approx_schur` must be created by ApproxSchurConfig(...) or NULL", call. = FALSE)
-  }
-  if (!is.null(dense_threshold)) {
-    dense_threshold <- as.integer(dense_threshold)
-    if (length(dense_threshold) != 1L || is.na(dense_threshold) || dense_threshold < 0L) {
-      stop("`dense_threshold` must be NULL or >= 0", call. = FALSE)
-    }
-  }
   structure(
     list(
       approx_chol = approx_chol,
@@ -201,12 +142,6 @@ LocalSolverConfig <- function(approx_chol = NULL,
 #' @export
 AdditiveSchwarz <- function(local_solver = NULL,
                             reduction = ReductionStrategy$Auto) {
-  if (!is.null(local_solver) && !inherits(local_solver, "within_local_solver_config")) {
-    stop("`local_solver` must be created by LocalSolverConfig(...) or NULL", call. = FALSE)
-  }
-  if (!is.character(reduction) || length(reduction) != 1L) {
-    stop("`reduction` must be a ReductionStrategy value", call. = FALSE)
-  }
   structure(
     list(local_solver = local_solver, reduction = reduction),
     class = "within_additive_schwarz"
@@ -240,20 +175,11 @@ solve <- function(categories,
                   weights = NULL,
                   preconditioner = NULL) {
   categories <- validate_categories(categories)
-  options <- as_lsmr_options(options)
   y <- as.double(y)
   weights <- validate_weights(weights)
   preconditioner <- as_preconditioner_arg(preconditioner)
 
-  solve_impl(
-    categories,
-    y,
-    weights,
-    options$tol,
-    options$maxiter,
-    as_nullable_integer(options$local_size),
-    preconditioner
-  )
+  solve_impl(categories, y, options, weights, preconditioner)
 }
 
 #' Solve fixed-effects normal equations for multiple response vectors
@@ -272,7 +198,6 @@ solve_batch <- function(categories,
                         weights = NULL,
                         preconditioner = NULL) {
   categories <- validate_categories(categories)
-  options <- as_lsmr_options(options)
   if (!is.matrix(Y)) {
     stop("`Y` must be a matrix", call. = FALSE)
   }
@@ -280,15 +205,7 @@ solve_batch <- function(categories,
   weights <- validate_weights(weights)
   preconditioner <- as_preconditioner_arg(preconditioner)
 
-  solve_batch_impl(
-    categories,
-    Y,
-    weights,
-    options$tol,
-    options$maxiter,
-    as_nullable_integer(options$local_size),
-    preconditioner
-  )
+  solve_batch_impl(categories, Y, options, weights, preconditioner)
 }
 
 #' Persistent fixed-effects solver
@@ -311,28 +228,14 @@ Solver <- function(categories, weights = NULL, preconditioner = NULL) {
   solver$n_dofs <- solver_n_dofs_impl(ptr)
   solver$n_obs <- solver_n_obs_impl(ptr)
   solver$solve <- function(y, options = NULL) {
-    options <- as_lsmr_options(options)
-    solver_solve_impl(
-      ptr,
-      as.double(y),
-      options$tol,
-      options$maxiter,
-      as_nullable_integer(options$local_size)
-    )
+    solver_solve_impl(ptr, as.double(y), options)
   }
   solver$solve_batch <- function(Y, options = NULL) {
-    options <- as_lsmr_options(options)
     if (!is.matrix(Y)) {
       stop("`Y` must be a matrix", call. = FALSE)
     }
     Y <- matrix(as.double(Y), nrow = nrow(Y), ncol = ncol(Y))
-    solver_solve_batch_impl(
-      ptr,
-      Y,
-      options$tol,
-      options$maxiter,
-      as_nullable_integer(options$local_size)
-    )
+    solver_solve_batch_impl(ptr, Y, options)
   }
   solver$preconditioner <- function() {
     ptr <- solver_preconditioner_impl(solver$ptr)

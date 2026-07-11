@@ -15,7 +15,7 @@ use within::Preconditioner;
 
 use crate::convert::{
     err, get_field_or_null, or_throw, parse_nonnegative_integer, parse_optional_u32,
-    parse_positive_u32, usize_to_i32,
+    parse_positive_f64, parse_positive_u32, usize_to_i32,
 };
 
 // ---------------------------------------------------------------------------
@@ -43,19 +43,35 @@ pub(crate) enum PreconditionerArg {
 // LSMR options
 // ---------------------------------------------------------------------------
 
-pub(crate) fn build_lsmr(tol: f64, maxiter: i32, local_size: Nullable<i32>) -> Result<LsmrOptions> {
-    if !tol.is_finite() || tol <= 0.0 {
-        return Err(err("tol must be a positive finite number"));
+/// Resolve the R `options` argument into native [`LsmrOptions`].
+///
+/// `NULL` means library defaults; anything else must be created by
+/// `LsmrOptions(...)`. Mirrors `resolve_lsmr_config` on the Python side;
+/// value validation lives here, not in the R constructor.
+pub(crate) fn parse_lsmr_options(options: &Robj) -> Result<LsmrOptions> {
+    if options.is_null() {
+        return Ok(LsmrOptions::default());
     }
+    if !options.inherits("within_lsmr_options") {
+        return Err(err("options must be created by LsmrOptions(...) or NULL"));
+    }
+
+    let tol = parse_positive_f64(&get_field_or_null(options, "tol"), "tol")?;
+
+    let maxiter = parse_nonnegative_integer(&get_field_or_null(options, "maxiter"), "maxiter")?;
     if maxiter < 1 {
         return Err(err("maxiter must be >= 1"));
     }
 
-    let local_size: Option<i32> = local_size.into();
-    let local_size = match local_size {
-        None => None,
-        Some(value) if value >= 1 => Some(value as usize),
-        Some(_) => return Err(err("local_size must be NULL or >= 1")),
+    let local_size_obj = get_field_or_null(options, "local_size");
+    let local_size = if local_size_obj.is_null() {
+        None
+    } else {
+        let value = parse_nonnegative_integer(&local_size_obj, "local_size")?;
+        if value < 1 {
+            return Err(err("local_size must be NULL or >= 1"));
+        }
+        Some(value as usize)
     };
 
     Ok(LsmrOptions {
@@ -210,9 +226,7 @@ pub(crate) fn parse_preconditioner(preconditioner: Robj) -> Result<Preconditione
 // Preconditioner handle API
 // ---------------------------------------------------------------------------
 
-/// Apply a built preconditioner: y = M^{-1} x.
-///
-/// @export
+// Apply a built preconditioner: y = M^{-1} x.
 #[extendr]
 fn preconditioner_apply_impl(
     preconditioner: ExternalPtr<PreconditionerHandle>,
@@ -236,9 +250,7 @@ fn preconditioner_apply_impl(
     })())
 }
 
-/// Number of rows in a built preconditioner.
-///
-/// @export
+// Number of rows in a built preconditioner.
 #[extendr]
 fn preconditioner_nrows_impl(preconditioner: ExternalPtr<PreconditionerHandle>) -> i32 {
     or_throw((|| -> Result<i32> {
@@ -247,9 +259,7 @@ fn preconditioner_nrows_impl(preconditioner: ExternalPtr<PreconditionerHandle>) 
     })())
 }
 
-/// Number of columns in a built preconditioner.
-///
-/// @export
+// Number of columns in a built preconditioner.
 #[extendr]
 fn preconditioner_ncols_impl(preconditioner: ExternalPtr<PreconditionerHandle>) -> i32 {
     or_throw((|| -> Result<i32> {
@@ -258,9 +268,7 @@ fn preconditioner_ncols_impl(preconditioner: ExternalPtr<PreconditionerHandle>) 
     })())
 }
 
-/// Concrete preconditioner variant name.
-///
-/// @export
+// Concrete preconditioner variant name.
 #[extendr]
 fn preconditioner_variant_impl(preconditioner: ExternalPtr<PreconditionerHandle>) -> String {
     or_throw((|| -> Result<String> {
@@ -269,9 +277,7 @@ fn preconditioner_variant_impl(preconditioner: ExternalPtr<PreconditionerHandle>
     })())
 }
 
-/// Build time for a preconditioner returned by Solver, or NULL if unknown.
-///
-/// @export
+// Build time for a preconditioner returned by Solver, or NULL if unknown.
 #[extendr]
 fn preconditioner_build_time_seconds_impl(
     preconditioner: ExternalPtr<PreconditionerHandle>,
@@ -284,9 +290,7 @@ fn preconditioner_build_time_seconds_impl(
     })())
 }
 
-/// Serialize a built preconditioner into raw bytes.
-///
-/// @export
+// Serialize a built preconditioner into raw bytes.
 #[extendr]
 fn preconditioner_serialize_impl(preconditioner: ExternalPtr<PreconditionerHandle>) -> Raw {
     or_throw((|| -> Result<Raw> {
@@ -296,9 +300,7 @@ fn preconditioner_serialize_impl(preconditioner: ExternalPtr<PreconditionerHandl
     })())
 }
 
-/// Deserialize a built preconditioner from raw bytes.
-///
-/// @export
+// Deserialize a built preconditioner from raw bytes.
 #[extendr]
 fn preconditioner_deserialize_impl(data: Raw) -> ExternalPtr<PreconditionerHandle> {
     or_throw((|| -> Result<ExternalPtr<PreconditionerHandle>> {

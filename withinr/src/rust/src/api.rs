@@ -11,7 +11,9 @@ use within::{
     solve as solve_native, solve_batch as solve_batch_native, Design, Solver as NativeSolver,
 };
 
-use crate::config::{build_lsmr, parse_preconditioner, PreconditionerArg, PreconditionerHandle};
+use crate::config::{
+    parse_lsmr_options, parse_preconditioner, PreconditionerArg, PreconditionerHandle,
+};
 use crate::convert::{
     cast_categories, categories_view, err, extract_weights, factor_major_store, or_throw,
     usize_to_i32,
@@ -31,23 +33,19 @@ pub(crate) struct SolverHandle {
 // One-shot solve API
 // ---------------------------------------------------------------------------
 
-/// Solve fixed-effects normal equations for a single response vector.
-///
-/// @export
+// Solve fixed-effects normal equations for a single response vector.
 #[extendr]
 fn solve_impl(
     categories: RMatrix<i32>,
     y: &[f64],
+    options: Robj,
     weights: Robj,
-    tol: f64,
-    maxiter: i32,
-    local_size: Nullable<i32>,
     preconditioner: Robj,
 ) -> List {
     or_throw((|| -> Result<List> {
         let cats_u32 = cast_categories(categories.data())?;
         let cats = categories_view(&categories, &cats_u32)?;
-        let lsmr = build_lsmr(tol, maxiter, local_size)?;
+        let lsmr = parse_lsmr_options(&options)?;
         let weights = extract_weights(weights)?;
 
         match parse_preconditioner(preconditioner)? {
@@ -65,17 +63,13 @@ fn solve_impl(
     })())
 }
 
-/// Solve fixed-effects normal equations for multiple response vectors.
-///
-/// @export
+// Solve fixed-effects normal equations for multiple response vectors.
 #[extendr]
 fn solve_batch_impl(
     categories: RMatrix<i32>,
     y_matrix: RMatrix<f64>,
+    options: Robj,
     weights: Robj,
-    tol: f64,
-    maxiter: i32,
-    local_size: Nullable<i32>,
     preconditioner: Robj,
 ) -> List {
     or_throw((|| -> Result<List> {
@@ -89,7 +83,7 @@ fn solve_batch_impl(
 
         let cats_u32 = cast_categories(categories.data())?;
         let cats = categories_view(&categories, &cats_u32)?;
-        let lsmr = build_lsmr(tol, maxiter, local_size)?;
+        let lsmr = parse_lsmr_options(&options)?;
         let weights = extract_weights(weights)?;
 
         let y_data = y_matrix.data();
@@ -127,9 +121,7 @@ fn solve_batch_impl(
 // Persistent solver API
 // ---------------------------------------------------------------------------
 
-/// Build a persistent solver that can be reused across multiple solves.
-///
-/// @export
+// Build a persistent solver that can be reused across multiple solves.
 #[extendr]
 fn solver_new_impl(
     categories: RMatrix<i32>,
@@ -169,19 +161,11 @@ fn solver_new_impl(
     })())
 }
 
-/// Solve one response vector with a persistent solver.
-///
-/// @export
+// Solve one response vector with a persistent solver.
 #[extendr]
-fn solver_solve_impl(
-    solver: ExternalPtr<SolverHandle>,
-    y: &[f64],
-    tol: f64,
-    maxiter: i32,
-    local_size: Nullable<i32>,
-) -> List {
+fn solver_solve_impl(solver: ExternalPtr<SolverHandle>, y: &[f64], options: Robj) -> List {
     or_throw((|| -> Result<List> {
-        let lsmr = build_lsmr(tol, maxiter, local_size)?;
+        let lsmr = parse_lsmr_options(&options)?;
         let handle = solver.try_addr()?;
         handle
             .solver
@@ -191,19 +175,15 @@ fn solver_solve_impl(
     })())
 }
 
-/// Solve multiple response vectors with a persistent solver.
-///
-/// @export
+// Solve multiple response vectors with a persistent solver.
 #[extendr]
 fn solver_solve_batch_impl(
     solver: ExternalPtr<SolverHandle>,
     y_matrix: RMatrix<f64>,
-    tol: f64,
-    maxiter: i32,
-    local_size: Nullable<i32>,
+    options: Robj,
 ) -> List {
     or_throw((|| -> Result<List> {
-        let lsmr = build_lsmr(tol, maxiter, local_size)?;
+        let lsmr = parse_lsmr_options(&options)?;
         let handle = solver.try_addr()?;
 
         if y_matrix.nrows() != handle.solver.n_obs() {
@@ -230,9 +210,7 @@ fn solver_solve_batch_impl(
     })())
 }
 
-/// Return the built preconditioner from a persistent solver, or NULL.
-///
-/// @export
+// Return the built preconditioner from a persistent solver, or NULL.
 #[extendr]
 fn solver_preconditioner_impl(
     solver: ExternalPtr<SolverHandle>,
@@ -249,9 +227,7 @@ fn solver_preconditioner_impl(
     })())
 }
 
-/// Number of DOFs (coefficients) in the persistent solver.
-///
-/// @export
+// Number of DOFs (coefficients) in the persistent solver.
 #[extendr]
 fn solver_n_dofs_impl(solver: ExternalPtr<SolverHandle>) -> i32 {
     or_throw((|| -> Result<i32> {
@@ -260,9 +236,7 @@ fn solver_n_dofs_impl(solver: ExternalPtr<SolverHandle>) -> i32 {
     })())
 }
 
-/// Number of observations in the persistent solver.
-///
-/// @export
+// Number of observations in the persistent solver.
 #[extendr]
 fn solver_n_obs_impl(solver: ExternalPtr<SolverHandle>) -> i32 {
     or_throw((|| -> Result<i32> {
