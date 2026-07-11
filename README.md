@@ -43,58 +43,78 @@ result = solve(fe, y, weights=np.ones(n))
 result = solve(fe, y, preconditioner=PreconditionerConfig.Diagonal)
 ```
 
-### FWL regression example
+## R quickstart
 
-```python
-beta_true = np.array([1.0, -2.0, 0.5])
-X = np.random.randn(n, 3)
-y = X @ beta_true + np.random.randn(n)
+Requires R and a Rust toolchain (`cargo` on `PATH`).
 
-result = solve_batch(fe, np.column_stack([y, X]))
-y_tilde, X_tilde = result.demeaned[:, 0], result.demeaned[:, 1:]
-beta_hat = np.linalg.lstsq(X_tilde, y_tilde, rcond=None)[0]
-print(np.round(beta_hat, 4))  # [ 0.9982 -2.006   0.5005]
+From the repository root, use `devtools` to install R dependencies and build the
+package:
+
+```r
+install.packages("devtools")
+Sys.setenv(NOT_CRAN = "true")
+devtools::install_deps("withinr/", dependencies = TRUE)
+devtools::load_all("withinr/")
 ```
 
-## Python API
+Example (FWL with two-way fixed effects):
 
-### High-level functions
+```r
+set.seed(42)
+n <- 1000
+n_firms <- 50L
+n_years <- 20L
+
+# 1-based fixed-effect ids in R
+firm <- rep(seq_len(n_firms), each = n_years)
+year <- rep(seq_len(n_years), times = n_firms)
+categories <- cbind(firm, year)
+
+beta <- 1.5
+firm_fe <- rnorm(n_firms, sd = 3)[firm]
+year_fe <- rnorm(n_years, sd = 1)[year]
+x <- rnorm(n) + 0.3 * firm_fe
+y <- beta * x + firm_fe + year_fe + rnorm(n, sd = 0.5)
+
+res <- withinr::solve_batch(categories, cbind(y, x))
+y_tilde <- res$demeaned[, 1]
+x_tilde <- res$demeaned[, 2]
+beta_hat <- sum(x_tilde * y_tilde) / sum(x_tilde^2)
+
+print(beta_hat)
+print(res$converged)
+```
 
 | Function | Description |
 |---|---|
-| `solve(categories, y, options?, weights?, preconditioner?)` | Solve a single right-hand side. Returns `SolveResult`. |
-| `solve_batch(categories, Y, options?, weights?, preconditioner?)` | Solve multiple RHS vectors in parallel. `Y` has shape `(n_obs, k)`. Returns `BatchSolveResult`. |
+| `solve(categories, y, options?, weights?, preconditioner?)` | Solve a single right-hand side. Returns a list shaped like `SolveResult`. |
+| `solve_batch(categories, Y, options?, weights?, preconditioner?)` | Solve multiple RHS vectors in parallel. `Y` has shape `(n_obs, k)`. |
 
-`categories` is a 2-D `uint32` array of shape `(n_obs, n_factors)`. A `UserWarning` is emitted when a C-contiguous array is passed — use `np.asfortranarray(categories)` for best performance.
+For repeated solves with the same design matrix, `Solver` builds the preconditioner once and reuses it. In R, the solver is an environment with methods.
 
-### Persistent solver
+```r
+solver <- withinr::Solver(categories)
+r <- solver$solve(y)
+r <- solver$solve_batch(cbind(y, x))
 
-For repeated solves with the same design matrix, `Solver` builds the preconditioner once and reuses it.
-
-```python
-from within import Solver
-
-solver = Solver(fe)
-r = solver.solve(y)                            # reuses preconditioner
-r = solver.solve_batch(np.column_stack([y, X]))
-
-precond = solver.preconditioner                # picklable property
-solver2 = Solver(fe, preconditioner=precond)   # skip re-factorization
+precond <- solver$preconditioner()
+payload <- precond$serialize()
+solver2 <- withinr::Solver(categories, preconditioner = withinr::Preconditioner(payload))
 ```
 
 | Property / Method | Description |
 |---|---|
 | `Solver(categories, weights?, preconditioner?)` | Build solver. Factorizes the preconditioner at construction. |
-| `.solve(y, options?)` | Solve a single RHS with the given LSMR tuning. Returns `SolveResult`. |
-| `.solve_batch(Y, options?)` | Solve multiple RHS columns in parallel. Returns `BatchSolveResult`. |
-| `.preconditioner` | Return the built `Preconditioner` (picklable), or `None`. Reuse via `Solver(fe, preconditioner=p)`. |
+| `$solve(y, options?)` | Solve a single RHS with the given LSMR tuning. |
+| `$solve_batch(Y, options?)` | Solve multiple RHS columns in parallel. |
+| `$preconditioner()` | Return the built `Preconditioner`, or `NULL`. Reuse via `Solver(categories, preconditioner=p)`. |
 
 
 ### Solver configuration
 
 | Class | Description |
 |---|---|
-| `LsmrOptions(tol=1e-8, maxiter=1000, local_size=None)` | Modified LSMR. `local_size` enables windowed reorthogonalization. |
+| `LsmrOptions(tol=1e-8, maxiter=1000, local_size=None)` / `LsmrOptions(tol = 1e-8, maxiter = 1000L, local_size = NULL)` | Modified LSMR. `local_size` enables windowed reorthogonalization. |
 
 ### Preconditioner (5-form Union)
 
@@ -102,10 +122,10 @@ The `preconditioner` argument accepts any of:
 
 | Form | Meaning |
 |---|---|
-| `None` (default) | Library default — Additive Schwarz with sensible defaults. |
-| `PreconditionerConfig.Off` | Explicit identity — solve unpreconditioned. |
-| `PreconditionerConfig.Additive` | Additive Schwarz shortcut, equivalent to `None`. |
-| `PreconditionerConfig.Diagonal` | Diagonal/Jacobi preconditioner using `diag(D^T W D)^{-1}`. |
+| `None` / `NULL` (default) | Library default — Additive Schwarz with sensible defaults. |
+| `PreconditionerConfig.Off` / `PreconditionerConfig$Off` | Explicit identity — solve unpreconditioned. |
+| `PreconditionerConfig.Additive` / `PreconditionerConfig$Additive` | Additive Schwarz shortcut, equivalent to the default. |
+| `PreconditionerConfig.Diagonal` / `PreconditionerConfig$Diagonal` | Diagonal/Jacobi preconditioner using `diag(D^T W D)^{-1}`. |
 | `AdditiveSchwarz(local_solver?, reduction?)` | Tuned Schwarz config — import from `within.config`. |
 | `Preconditioner` instance | Reuse a previously-built preconditioner across solvers. |
 
@@ -114,7 +134,7 @@ The `preconditioner` argument accepts any of:
 | Class | Description |
 |---|---|
 | `LocalSolverConfig(approx_chol?, approx_schur?, dense_threshold=24)` | Schur reduction + approximate Cholesky. Omit `approx_schur` for the library-default approximate variant; pass `approx_schur=None` to request an exact Schur (slower, used for validation). |
-| `ApproxCholConfig(seed=0, split=1)` | Approximate Cholesky parameters. |
+| `ApproxCholConfig(seed=0, split_merge=None)` | Approximate Cholesky parameters. |
 | `ApproxSchurConfig(seed=0, split=1)` | Approximate Schur complement sampling parameters. |
 | `ReductionStrategy` enum | `Auto` (default), `AtomicScatter`, `ParallelReduction`. |
 
@@ -194,7 +214,9 @@ crates/
   schwarz-precond/   Generic domain decomposition library (traits, solvers, Schwarz preconditioners)
   within/            Core fixed-effects solver (observation stores, domains, operators, orchestration)
   within-py/         PyO3 bridge (cdylib → within._within)
+  within-r/          Workspace mirror for the extendr bridge
 python/within/       Python package re-exporting the Rust extension
+withinr/             R package using the published within 0.2.0 crate
 benchmarks/          Python benchmark framework
 ```
 

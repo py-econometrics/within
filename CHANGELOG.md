@@ -11,10 +11,13 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - **Locality sort:** `Design` construction reorders observations by the highest-cardinality factor when unsorted, copying them once into an internal sorted store (the caller's store is never mutated; the `Store` trait stays read-only). Transparent — results return in caller row order.
 - Coalesced scatter for large sorted factors: one atomic add per equal-level run per chunk instead of one per row.
+- `withinr` preconditioner handles now expose `variant` and `build_time_seconds` metadata for cache compatibility checks and diagnostics.
+- `withinr` manual tests now cover diagonal/additive/off correctness parity, prebuilt preconditioner reuse, and sorted-vs-unsorted caller-order equivalence.
 
 ### Changed
 
 - Category views are borrowed only when the dominant factor is already sorted; otherwise the columns are copied once for the locality sort. The reorder changes summation order, so unsorted-input results match 0.2.0 within solver tolerance, not bitwise.
+- `withinr` development builds patch `within` to the workspace crate, while offline builds patch it to the vendored local crate sources.
 
 ## [0.2.0] - 2026-06-04
 
