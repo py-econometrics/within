@@ -33,8 +33,11 @@ $(STATLIB):
 		exit 1; \
 	fi
 
+# Also drop the staticlib so cargo always runs (its own cache keeps this
+# cheap); otherwise a stale rust/target/release/libwithinr.a from an earlier
+# build gets linked silently and Rust changes never reach the package.
 C_clean:
-	rm -Rf $(SHLIB) $(OBJECTS)
+	rm -Rf $(SHLIB) $(OBJECTS) $(STATLIB)
 
 clean:
 	rm -Rf $(SHLIB) $(OBJECTS) $(STATLIB) \
