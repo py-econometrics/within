@@ -112,16 +112,18 @@ withinr_run_tests <- function(verbose = TRUE) {
   assert_true(solver$n_dofs >= 4L, "solver$n_dofs is too small.")
   p <- solver$preconditioner()
   assert_true(inherits(p, "within_preconditioner"), "solver$preconditioner() did not return a preconditioner.")
-  assert_equal(p$variant, "Additive", msg = "preconditioner variant mismatch.")
-  assert_true(is.numeric(p$build_time_seconds), "preconditioner build time is not numeric.")
-  assert_true(!is.na(p$build_time_seconds), "solver-built preconditioner build time is missing.")
-  assert_true(p$build_time_seconds >= 0, "preconditioner build time is negative.")
+  assert_true(
+    grepl("Preconditioner(Additive", paste(capture.output(print(p)), collapse = ""), fixed = TRUE),
+    "preconditioner print does not report the Additive variant."
+  )
   assert_equal(length(p$apply(rep(1, p$ncols))), p$nrows, msg = "preconditioner apply length mismatch.")
 
   solver_diag <- withinr::Solver(cats_2x2, preconditioner = withinr::PreconditionerConfig$Diagonal)
   p_diag <- solver_diag$preconditioner()
-  assert_equal(p_diag$variant, "Diagonal", msg = "diagonal preconditioner variant mismatch.")
-  assert_true(!is.na(p_diag$build_time_seconds), "diagonal preconditioner build time is missing.")
+  assert_true(
+    grepl("Preconditioner(Diagonal", paste(capture.output(print(p_diag)), collapse = ""), fixed = TRUE),
+    "diagonal preconditioner print does not report the Diagonal variant."
+  )
 
   r_persistent <- solver$solve(y_simple)
   assert_equal(r_persistent$demeaned, s1$demeaned, tol = 1e-6, msg = "Persistent solve mismatch.")
@@ -130,10 +132,11 @@ withinr_run_tests <- function(verbose = TRUE) {
 
   bytes <- p$serialize()
   p2 <- withinr::Preconditioner(bytes)
-  assert_equal(p2$variant, "Additive", msg = "deserialized preconditioner variant mismatch.")
-  assert_true(is.na(p2$build_time_seconds), "deserialized preconditioner build time should be unknown.")
+  assert_true(
+    grepl("Preconditioner(Additive", paste(capture.output(print(p2)), collapse = ""), fixed = TRUE),
+    "deserialized preconditioner print does not report the Additive variant."
+  )
   solver2 <- withinr::Solver(cats_2x2, preconditioner = p2)
-  assert_true(is.na(solver2$preconditioner()$build_time_seconds), "reused preconditioner build time should remain unknown.")
   assert_equal(solver2$solve(y_simple)$demeaned, s1$demeaned, tol = 1e-6, msg = "Preconditioner reuse mismatch.")
 
   # validation/error behavior

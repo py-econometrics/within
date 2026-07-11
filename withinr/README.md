@@ -74,8 +74,7 @@ r <- solver$solve(y)
 b <- solver$solve_batch(cbind(y, X), options = LsmrOptions(tol = 1e-10))
 
 precond <- solver$preconditioner()
-precond$variant
-precond$build_time_seconds
+print(precond) # Preconditioner(Additive, n=...)
 
 payload <- precond$serialize()
 precond2 <- Preconditioner(payload)

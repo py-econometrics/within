@@ -78,10 +78,7 @@ cat("\n")
 # 3. Persistent solver: build the design/preconditioner once and reuse it.
 solver <- withinr::Solver(categories, weights = weights)
 preconditioner <- solver$preconditioner()
-
-cat("Preconditioner metadata:\n")
-cat("  variant:", preconditioner$variant, "\n")
-cat("  build_time_seconds:", signif(preconditioner$build_time_seconds, 4), "\n\n")
+print(preconditioner)
 
 again <- solver$solve(y, options = options)
 stopifnot(isTRUE(all.equal(again$demeaned, fit_y$demeaned, tolerance = 1e-6)))

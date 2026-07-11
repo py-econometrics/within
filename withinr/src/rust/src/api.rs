@@ -4,30 +4,22 @@
 //! bindings plus the persistent `Solver` surface.
 
 use extendr_api::prelude::*;
-use std::time::Instant;
 
 use within::observation::FactorMajorStore;
 use within::{
-    solve as solve_native, solve_batch as solve_batch_native, Design, Solver as NativeSolver,
+    solve as solve_native, solve_batch as solve_batch_native, Design, Preconditioner,
+    Solver as NativeSolver,
 };
 
-use crate::config::{
-    parse_lsmr_options, parse_preconditioner, PreconditionerArg, PreconditionerHandle,
-};
+use crate::config::{parse_lsmr_options, parse_preconditioner, PreconditionerArg};
 use crate::convert::{
     cast_categories, categories_view, err, extract_weights, factor_major_store, or_throw,
     usize_to_i32,
 };
 use crate::results::{batch_result_to_list, result_to_list};
 
-// ---------------------------------------------------------------------------
-// Persistent solver handle
-// ---------------------------------------------------------------------------
-
-pub(crate) struct SolverHandle {
-    solver: NativeSolver<FactorMajorStore>,
-    preconditioner_build_time_seconds: Option<f64>,
-}
+/// Owned-store solver held behind the R external pointer.
+pub(crate) type SolverHandle = NativeSolver<FactorMajorStore>;
 
 // ---------------------------------------------------------------------------
 // One-shot solve API
@@ -54,8 +46,8 @@ fn solve_impl(
                     .map_err(|e| err(e.to_string()))
                     .and_then(result_to_list)
             }
-            PreconditionerArg::Built { preconditioner, .. } => {
-                solve_native(cats, y, weights.as_deref(), &lsmr, preconditioner)
+            PreconditionerArg::Built(built) => {
+                solve_native(cats, y, weights.as_deref(), &lsmr, built)
                     .map_err(|e| err(e.to_string()))
                     .and_then(result_to_list)
             }
@@ -104,15 +96,11 @@ fn solve_batch_impl(
             )
             .map_err(|e| err(e.to_string()))
             .and_then(batch_result_to_list),
-            PreconditionerArg::Built { preconditioner, .. } => solve_batch_native(
-                cats,
-                &column_refs,
-                weights.as_deref(),
-                &lsmr,
-                preconditioner,
-            )
-            .map_err(|e| err(e.to_string()))
-            .and_then(batch_result_to_list),
+            PreconditionerArg::Built(built) => {
+                solve_batch_native(cats, &column_refs, weights.as_deref(), &lsmr, built)
+                    .map_err(|e| err(e.to_string()))
+                    .and_then(batch_result_to_list)
+            }
         }
     })())
 }
@@ -133,31 +121,15 @@ fn solver_new_impl(
         let store = factor_major_store(&categories)?;
         let design = Design::from_store(store).map_err(|e| err(e.to_string()))?;
 
-        let (solver, preconditioner_build_time_seconds) =
-            match parse_preconditioner(preconditioner)? {
-                PreconditionerArg::Config(config) => {
-                    let started = Instant::now();
-                    let solver = NativeSolver::new(design, weights, config.as_ref())
-                        .map_err(|e| err(e.to_string()))?;
-                    let build_time_seconds = solver
-                        .preconditioner()
-                        .map(|_| started.elapsed().as_secs_f64());
-                    (solver, build_time_seconds)
-                }
-                PreconditionerArg::Built {
-                    preconditioner,
-                    build_time_seconds,
-                } => {
-                    let solver = NativeSolver::new(design, weights, preconditioner)
-                        .map_err(|e| err(e.to_string()))?;
-                    (solver, build_time_seconds)
-                }
-            };
+        let solver = match parse_preconditioner(preconditioner)? {
+            PreconditionerArg::Config(config) => {
+                NativeSolver::new(design, weights, config.as_ref())
+            }
+            PreconditionerArg::Built(built) => NativeSolver::new(design, weights, built),
+        }
+        .map_err(|e| err(e.to_string()))?;
 
-        Ok(ExternalPtr::new(SolverHandle {
-            solver,
-            preconditioner_build_time_seconds,
-        }))
+        Ok(ExternalPtr::new(solver))
     })())
 }
 
@@ -166,9 +138,8 @@ fn solver_new_impl(
 fn solver_solve_impl(solver: ExternalPtr<SolverHandle>, y: &[f64], options: Robj) -> List {
     or_throw((|| -> Result<List> {
         let lsmr = parse_lsmr_options(&options)?;
-        let handle = solver.try_addr()?;
-        handle
-            .solver
+        solver
+            .try_addr()?
             .solve(y, &lsmr)
             .map_err(|e| err(e.to_string()))
             .and_then(result_to_list)
@@ -186,11 +157,11 @@ fn solver_solve_batch_impl(
         let lsmr = parse_lsmr_options(&options)?;
         let handle = solver.try_addr()?;
 
-        if y_matrix.nrows() != handle.solver.n_obs() {
+        if y_matrix.nrows() != handle.n_obs() {
             return Err(err(format!(
                 "Y has {} rows but solver has {} observations",
                 y_matrix.nrows(),
-                handle.solver.n_obs()
+                handle.n_obs()
             )));
         }
 
@@ -203,7 +174,6 @@ fn solver_solve_batch_impl(
         let column_refs: Vec<&[f64]> = columns.iter().map(Vec::as_slice).collect();
 
         handle
-            .solver
             .solve_batch(&column_refs, &lsmr)
             .map_err(|e| err(e.to_string()))
             .and_then(batch_result_to_list)
@@ -214,16 +184,12 @@ fn solver_solve_batch_impl(
 #[extendr]
 fn solver_preconditioner_impl(
     solver: ExternalPtr<SolverHandle>,
-) -> Option<ExternalPtr<PreconditionerHandle>> {
-    or_throw((|| -> Result<Option<ExternalPtr<PreconditionerHandle>>> {
-        let handle = solver.try_addr()?;
-        let build_time_seconds = handle.preconditioner_build_time_seconds;
-        Ok(handle.solver.preconditioner().map(|preconditioner| {
-            ExternalPtr::new(PreconditionerHandle {
-                preconditioner: preconditioner.clone(),
-                build_time_seconds,
-            })
-        }))
+) -> Option<ExternalPtr<Preconditioner>> {
+    or_throw((|| -> Result<Option<ExternalPtr<Preconditioner>>> {
+        Ok(solver
+            .try_addr()?
+            .preconditioner()
+            .map(|preconditioner| ExternalPtr::new(preconditioner.clone())))
     })())
 }
 
@@ -231,8 +197,7 @@ fn solver_preconditioner_impl(
 #[extendr]
 fn solver_n_dofs_impl(solver: ExternalPtr<SolverHandle>) -> i32 {
     or_throw((|| -> Result<i32> {
-        let handle = solver.try_addr()?;
-        usize_to_i32(handle.solver.n_dofs(), "n_dofs")
+        usize_to_i32(solver.try_addr()?.n_dofs(), "n_dofs")
     })())
 }
 
@@ -240,8 +205,7 @@ fn solver_n_dofs_impl(solver: ExternalPtr<SolverHandle>) -> i32 {
 #[extendr]
 fn solver_n_obs_impl(solver: ExternalPtr<SolverHandle>) -> i32 {
     or_throw((|| -> Result<i32> {
-        let handle = solver.try_addr()?;
-        usize_to_i32(handle.solver.n_obs(), "n_obs")
+        usize_to_i32(solver.try_addr()?.n_obs(), "n_obs")
     })())
 }
 

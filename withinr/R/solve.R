@@ -2,13 +2,6 @@
   ApproxSchurConfig()
 }
 
-as_preconditioner_arg <- function(preconditioner) {
-  if (inherits(preconditioner, "within_preconditioner")) {
-    return(preconditioner$ptr)
-  }
-  preconditioner
-}
-
 validate_categories <- function(categories) {
   if (!is.matrix(categories)) {
     stop("`categories` must be a matrix", call. = FALSE)
@@ -52,10 +45,6 @@ LsmrOptions <- function(tol = 1e-8, maxiter = 1000L, local_size = NULL) {
     class = "within_lsmr_options"
   )
 }
-
-#' @rdname LsmrOptions
-#' @export
-lsmr_options <- LsmrOptions
 
 #' Preconditioner shortcut values
 #'
@@ -177,7 +166,6 @@ solve <- function(categories,
   categories <- validate_categories(categories)
   y <- as.double(y)
   weights <- validate_weights(weights)
-  preconditioner <- as_preconditioner_arg(preconditioner)
 
   solve_impl(categories, y, options, weights, preconditioner)
 }
@@ -203,7 +191,6 @@ solve_batch <- function(categories,
   }
   Y <- matrix(as.double(Y), nrow = nrow(Y), ncol = ncol(Y))
   weights <- validate_weights(weights)
-  preconditioner <- as_preconditioner_arg(preconditioner)
 
   solve_batch_impl(categories, Y, options, weights, preconditioner)
 }
@@ -220,7 +207,6 @@ solve_batch <- function(categories,
 Solver <- function(categories, weights = NULL, preconditioner = NULL) {
   categories <- validate_categories(categories)
   weights <- validate_weights(weights)
-  preconditioner <- as_preconditioner_arg(preconditioner)
   ptr <- solver_new_impl(categories, weights, preconditioner)
 
   solver <- new.env(parent = emptyenv())
@@ -254,13 +240,6 @@ new_preconditioner <- function(ptr) {
   preconditioner$ptr <- ptr
   preconditioner$nrows <- preconditioner_nrows_impl(ptr)
   preconditioner$ncols <- preconditioner_ncols_impl(ptr)
-  preconditioner$variant <- preconditioner_variant_impl(ptr)
-  build_time_seconds <- preconditioner_build_time_seconds_impl(ptr)
-  preconditioner$build_time_seconds <- if (is.null(build_time_seconds)) {
-    NA_real_
-  } else {
-    as.double(build_time_seconds)
-  }
   preconditioner$apply <- function(x) {
     preconditioner_apply_impl(ptr, as.double(x))
   }
@@ -274,14 +253,11 @@ new_preconditioner <- function(ptr) {
 #' Built preconditioner handle
 #'
 #' Deserializes a preconditioner from raw bytes produced by
-#' `solver$preconditioner()$serialize()`. Handles returned by
-#' `solver$preconditioner()` also expose `$variant` and `$build_time_seconds`
-#' metadata. Deserialized handles keep `$variant` but report
-#' `$build_time_seconds = NA_real_`.
+#' `solver$preconditioner()$serialize()`.
 #'
 #' @param data Raw vector containing serialized preconditioner bytes.
 #' @return A `within_preconditioner` object with `$apply()` and `$serialize()`
-#'   methods, `$nrows`, `$ncols`, `$variant`, and `$build_time_seconds` fields.
+#'   methods and `$nrows` and `$ncols` fields.
 #' @export
 Preconditioner <- function(data) {
   if (!is.raw(data)) {
@@ -296,19 +272,13 @@ print.within_solver <- function(x, ...) {
   invisible(x)
 }
 
+# Matches the Python __repr__: Preconditioner(<variant>, n=<nrows>).
 #' @export
 print.within_preconditioner <- function(x, ...) {
-  build_time <- if (is.na(x$build_time_seconds)) {
-    "NA"
-  } else {
-    sprintf("%.6g", x$build_time_seconds)
-  }
   cat(sprintf(
-    "<within_preconditioner: variant=%s, nrows=%d, ncols=%d, build_time_seconds=%s>\n",
-    x$variant,
-    x$nrows,
-    x$ncols,
-    build_time
+    "Preconditioner(%s, n=%d)\n",
+    preconditioner_variant_impl(x$ptr),
+    x$nrows
   ))
   invisible(x)
 }

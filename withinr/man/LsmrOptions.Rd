@@ -2,12 +2,9 @@
 % Please edit documentation in R/solve.R
 \name{LsmrOptions}
 \alias{LsmrOptions}
-\alias{lsmr_options}
 \title{Modified LSMR solver options}
 \usage{
 LsmrOptions(tol = 1e-08, maxiter = 1000L, local_size = NULL)
-
-lsmr_options(tol = 1e-08, maxiter = 1000L, local_size = NULL)
 }
 \arguments{
 \item{tol}{Positive finite convergence tolerance. Default \code{1e-8}.}

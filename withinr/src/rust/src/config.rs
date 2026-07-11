@@ -18,25 +18,14 @@ use crate::convert::{
     parse_positive_f64, parse_positive_u32, usize_to_i32,
 };
 
-// ---------------------------------------------------------------------------
-// Persistent preconditioner handle
-// ---------------------------------------------------------------------------
-
-pub(crate) struct PreconditionerHandle {
-    pub(crate) preconditioner: Preconditioner,
-    pub(crate) build_time_seconds: Option<f64>,
-}
-
 /// Native interpretation of the R `preconditioner` argument.
 ///
-/// A pre-built preconditioner takes the reuse path; everything else is a
+/// A pre-built [`Preconditioner`] takes the reuse path; everything else is a
 /// [`PreconditionerConfig`] (or `None` for the library default) to build from.
+/// Mirrors `PrecondInput` on the Python side.
 pub(crate) enum PreconditionerArg {
     Config(Option<PreconditionerConfig>),
-    Built {
-        preconditioner: Preconditioner,
-        build_time_seconds: Option<f64>,
-    },
+    Built(Preconditioner),
 }
 
 // ---------------------------------------------------------------------------
@@ -164,9 +153,9 @@ fn parse_reduction_strategy(obj: &Robj) -> Result<ReductionStrategy> {
         return Err(err("reduction must be a character scalar"));
     };
     match name {
-        "auto" | "Auto" => Ok(ReductionStrategy::Auto),
-        "atomic_scatter" | "AtomicScatter" => Ok(ReductionStrategy::AtomicScatter),
-        "parallel_reduction" | "ParallelReduction" => Ok(ReductionStrategy::ParallelReduction),
+        "auto" => Ok(ReductionStrategy::Auto),
+        "atomic_scatter" => Ok(ReductionStrategy::AtomicScatter),
+        "parallel_reduction" => Ok(ReductionStrategy::ParallelReduction),
         other => Err(err(format!(
             "unknown reduction strategy '{other}'; use 'auto', 'atomic_scatter', or 'parallel_reduction'"
         ))),
@@ -175,15 +164,17 @@ fn parse_reduction_strategy(obj: &Robj) -> Result<ReductionStrategy> {
 
 fn parse_preconditioner_string(name: &str) -> Result<PreconditionerArg> {
     match name {
-        "additive" | "Additive" => Ok(PreconditionerArg::Config(Some(
+        "additive" => Ok(PreconditionerArg::Config(Some(
             PreconditionerConfig::default(),
         ))),
-        "off" | "Off" => Ok(PreconditionerArg::Config(Some(PreconditionerConfig::Off))),
-        "diagonal" | "Diagonal" => Ok(PreconditionerArg::Config(Some(
+        "off" => Ok(PreconditionerArg::Config(Some(PreconditionerConfig::Off))),
+        "diagonal" => Ok(PreconditionerArg::Config(Some(
             PreconditionerConfig::Diagonal,
         ))),
         other => Err(err(format!(
-            "unknown preconditioner '{other}'; use 'additive', 'off', 'diagonal', AdditiveSchwarz(...), a Preconditioner, or NULL"
+            "unknown preconditioner '{other}'; use PreconditionerConfig$Additive, \
+             PreconditionerConfig$Off, PreconditionerConfig$Diagonal, AdditiveSchwarz(...), \
+             a Preconditioner, or NULL"
         ))),
     }
 }
@@ -193,12 +184,15 @@ pub(crate) fn parse_preconditioner(preconditioner: Robj) -> Result<Preconditione
         return Ok(PreconditionerArg::Config(None));
     }
 
-    if let Ok(ptr) = ExternalPtr::<PreconditionerHandle>::try_from(preconditioner.clone()) {
-        let handle = ptr.try_addr()?;
-        return Ok(PreconditionerArg::Built {
-            preconditioner: handle.preconditioner.clone(),
-            build_time_seconds: handle.build_time_seconds,
-        });
+    // A `within_preconditioner` R object is an environment holding the
+    // external pointer in `$ptr`; a bare external pointer is accepted too.
+    let ptr_obj = if preconditioner.inherits("within_preconditioner") {
+        get_field_or_null(&preconditioner, "ptr")
+    } else {
+        preconditioner.clone()
+    };
+    if let Ok(ptr) = ExternalPtr::<Preconditioner>::try_from(ptr_obj) {
+        return Ok(PreconditionerArg::Built(ptr.try_addr()?.clone()));
     }
 
     if let Some(name) = preconditioner.as_str() {
@@ -228,88 +222,64 @@ pub(crate) fn parse_preconditioner(preconditioner: Robj) -> Result<Preconditione
 
 // Apply a built preconditioner: y = M^{-1} x.
 #[extendr]
-fn preconditioner_apply_impl(
-    preconditioner: ExternalPtr<PreconditionerHandle>,
-    x: &[f64],
-) -> Vec<f64> {
+fn preconditioner_apply_impl(preconditioner: ExternalPtr<Preconditioner>, x: &[f64]) -> Vec<f64> {
     or_throw((|| -> Result<Vec<f64>> {
-        let handle = preconditioner.try_addr()?;
-        if x.len() != handle.preconditioner.ncols() {
+        let inner = preconditioner.try_addr()?;
+        if x.len() != inner.ncols() {
             return Err(err(format!(
                 "x has length {} but preconditioner expects {}",
                 x.len(),
-                handle.preconditioner.ncols()
+                inner.ncols()
             )));
         }
-        let mut y = vec![0.0; handle.preconditioner.nrows()];
-        handle
-            .preconditioner
-            .apply(x, &mut y)
-            .map_err(|e| err(e.to_string()))?;
+        let mut y = vec![0.0; inner.nrows()];
+        inner.apply(x, &mut y).map_err(|e| err(e.to_string()))?;
         Ok(y)
     })())
 }
 
 // Number of rows in a built preconditioner.
 #[extendr]
-fn preconditioner_nrows_impl(preconditioner: ExternalPtr<PreconditionerHandle>) -> i32 {
+fn preconditioner_nrows_impl(preconditioner: ExternalPtr<Preconditioner>) -> i32 {
     or_throw((|| -> Result<i32> {
-        let handle = preconditioner.try_addr()?;
-        usize_to_i32(handle.preconditioner.nrows(), "nrows")
+        usize_to_i32(preconditioner.try_addr()?.nrows(), "nrows")
     })())
 }
 
 // Number of columns in a built preconditioner.
 #[extendr]
-fn preconditioner_ncols_impl(preconditioner: ExternalPtr<PreconditionerHandle>) -> i32 {
+fn preconditioner_ncols_impl(preconditioner: ExternalPtr<Preconditioner>) -> i32 {
     or_throw((|| -> Result<i32> {
-        let handle = preconditioner.try_addr()?;
-        usize_to_i32(handle.preconditioner.ncols(), "ncols")
+        usize_to_i32(preconditioner.try_addr()?.ncols(), "ncols")
     })())
 }
 
-// Concrete preconditioner variant name.
+// Concrete preconditioner variant name (used by the R print method, matching
+// the Python __repr__).
 #[extendr]
-fn preconditioner_variant_impl(preconditioner: ExternalPtr<PreconditionerHandle>) -> String {
+fn preconditioner_variant_impl(preconditioner: ExternalPtr<Preconditioner>) -> String {
     or_throw((|| -> Result<String> {
-        let handle = preconditioner.try_addr()?;
-        Ok(handle.preconditioner.variant_name().to_string())
-    })())
-}
-
-// Build time for a preconditioner returned by Solver, or NULL if unknown.
-#[extendr]
-fn preconditioner_build_time_seconds_impl(
-    preconditioner: ExternalPtr<PreconditionerHandle>,
-) -> Robj {
-    or_throw((|| -> Result<Robj> {
-        let handle = preconditioner.try_addr()?;
-        Ok(handle
-            .build_time_seconds
-            .map_or_else(nil_value, |seconds| r!(seconds)))
+        Ok(preconditioner.try_addr()?.variant_name().to_string())
     })())
 }
 
 // Serialize a built preconditioner into raw bytes.
 #[extendr]
-fn preconditioner_serialize_impl(preconditioner: ExternalPtr<PreconditionerHandle>) -> Raw {
+fn preconditioner_serialize_impl(preconditioner: ExternalPtr<Preconditioner>) -> Raw {
     or_throw((|| -> Result<Raw> {
-        let handle = preconditioner.try_addr()?;
-        let bytes = postcard::to_stdvec(&handle.preconditioner).map_err(|e| err(e.to_string()))?;
+        let bytes =
+            postcard::to_stdvec(preconditioner.try_addr()?).map_err(|e| err(e.to_string()))?;
         Ok(Raw::from_bytes(&bytes))
     })())
 }
 
 // Deserialize a built preconditioner from raw bytes.
 #[extendr]
-fn preconditioner_deserialize_impl(data: Raw) -> ExternalPtr<PreconditionerHandle> {
-    or_throw((|| -> Result<ExternalPtr<PreconditionerHandle>> {
+fn preconditioner_deserialize_impl(data: Raw) -> ExternalPtr<Preconditioner> {
+    or_throw((|| -> Result<ExternalPtr<Preconditioner>> {
         let preconditioner: Preconditioner =
             postcard::from_bytes(data.as_slice()).map_err(|e| err(e.to_string()))?;
-        Ok(ExternalPtr::new(PreconditionerHandle {
-            preconditioner,
-            build_time_seconds: None,
-        }))
+        Ok(ExternalPtr::new(preconditioner))
     })())
 }
 
@@ -319,7 +289,6 @@ extendr_module! {
     fn preconditioner_nrows_impl;
     fn preconditioner_ncols_impl;
     fn preconditioner_variant_impl;
-    fn preconditioner_build_time_seconds_impl;
     fn preconditioner_serialize_impl;
     fn preconditioner_deserialize_impl;
 }

@@ -31,8 +31,6 @@ preconditioner_ncols_impl <- function(preconditioner) .Call(wrap__preconditioner
 
 preconditioner_variant_impl <- function(preconditioner) .Call(wrap__preconditioner_variant_impl, preconditioner)
 
-preconditioner_build_time_seconds_impl <- function(preconditioner) .Call(wrap__preconditioner_build_time_seconds_impl, preconditioner)
-
 preconditioner_serialize_impl <- function(preconditioner) .Call(wrap__preconditioner_serialize_impl, preconditioner)
 
 preconditioner_deserialize_impl <- function(data) .Call(wrap__preconditioner_deserialize_impl, data)
