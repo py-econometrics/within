@@ -5,3 +5,4 @@ src/*.o
 src/*.so
 src/*.dll
 src/withinr.lib
+src/rust/vendor.tar.xz

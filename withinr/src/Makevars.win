@@ -30,7 +30,7 @@ $(STATLIB):
 		cargo build --offline --locked --lib --release --target=$(TARGET) --manifest-path=./rust/Cargo.toml --target-dir $(TARGET_DIR); \
 	else \
 		echo "ERROR: missing rust/vendor.tar.xz (or rust/vendor/)."; \
-		echo "Run rextendr::vendor_pkgs(path = 'withinr') before install/check."; \
+		echo "Run rextendr::vendor_crates(path = 'withinr') before install/check."; \
 		exit 1; \
 	fi
 

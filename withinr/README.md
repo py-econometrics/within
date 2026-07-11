@@ -104,18 +104,18 @@ Passing `approx_schur = NULL` to `LocalSolverConfig()` requests exact Schur comp
 
 ## CRAN / Offline Packaging
 
-The package crate keeps `within = "0.2.0"` in `src/rust/Cargo.toml` as the compatibility requirement. Build wiring overrides that requirement:
+The package crate pins the released `within` version in `src/rust/Cargo.toml` as the compatibility requirement. Build wiring overrides that requirement:
 
 - `NOT_CRAN=true` or `WITHINR_DEV=true` builds patch `within` to `../../crates/within` from this workspace.
 - Offline builds unpack `src/rust/vendor.tar.xz`; `src/rust/vendor-config.toml` patches `within` to `vendor/within`.
 
-Regenerate the vendored crate archive after Rust dependency or local crate changes:
+The vendor archive is a build artifact and is not tracked in git — generate it at packaging time (and after Rust dependency or local crate changes):
 
 ```r
 rextendr::vendor_crates(path = "withinr")
 ```
 
-Then replace `vendor/within` and `vendor/schwarz-precond` in the archive with the local workspace crates so offline builds match development builds.
+Then replace `vendor/within` and `vendor/schwarz-precond` in the archive with the local workspace crates so offline builds match development builds. When the workspace `within` crate version or its dependencies change, also regenerate `src/rust/Cargo.lock` (build once in dev mode) so `--locked` builds keep resolving.
 
 ## Tests
 
