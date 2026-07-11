@@ -295,10 +295,8 @@ fn parse_preconditioner(preconditioner: Robj) -> Result<PreconditionerArg> {
     }
 
     if preconditioner.inherits("within_additive_schwarz") {
-        let local_solver = parse_local_solver_config(&get_field_or_null(
-            &preconditioner,
-            "local_solver",
-        ))?;
+        let local_solver =
+            parse_local_solver_config(&get_field_or_null(&preconditioner, "local_solver"))?;
         let reduction = parse_reduction_strategy(&get_field_or_null(&preconditioner, "reduction"))?;
         return Ok(PreconditionerArg::Config(Some(
             PreconditionerConfig::Additive {
@@ -399,18 +397,12 @@ fn solve_impl_inner(
     let weights = extract_weights(weights)?;
 
     match parse_preconditioner(preconditioner)? {
-        PreconditionerArg::Config(config) => solve_native(
-            cats,
-            y,
-            weights.as_deref(),
-            &lsmr,
-            config.as_ref(),
-        )
-        .map_err(|e| err(e.to_string()))
-        .and_then(result_to_list),
-        PreconditionerArg::Built {
-            preconditioner, ..
-        } => {
+        PreconditionerArg::Config(config) => {
+            solve_native(cats, y, weights.as_deref(), &lsmr, config.as_ref())
+                .map_err(|e| err(e.to_string()))
+                .and_then(result_to_list)
+        }
+        PreconditionerArg::Built { preconditioner, .. } => {
             solve_native(cats, y, weights.as_deref(), &lsmr, preconditioner)
                 .map_err(|e| err(e.to_string()))
                 .and_then(result_to_list)
@@ -482,13 +474,15 @@ fn solve_batch_impl_inner(
         )
         .map_err(|e| err(e.to_string()))
         .and_then(batch_result_to_list),
-        PreconditionerArg::Built {
-            preconditioner, ..
-        } => {
-            solve_batch_native(cats, &column_refs, weights.as_deref(), &lsmr, preconditioner)
-                .map_err(|e| err(e.to_string()))
-                .and_then(batch_result_to_list)
-        }
+        PreconditionerArg::Built { preconditioner, .. } => solve_batch_native(
+            cats,
+            &column_refs,
+            weights.as_deref(),
+            &lsmr,
+            preconditioner,
+        )
+        .map_err(|e| err(e.to_string()))
+        .and_then(batch_result_to_list),
     }
 }
 
@@ -554,9 +548,7 @@ fn solver_solve_impl(
     maxiter: i32,
     local_size: Nullable<i32>,
 ) -> List {
-    or_throw(solver_solve_impl_inner(
-        solver, y, tol, maxiter, local_size,
-    ))
+    or_throw(solver_solve_impl_inner(solver, y, tol, maxiter, local_size))
 }
 
 fn solver_solve_impl_inner(
@@ -639,13 +631,12 @@ fn solver_preconditioner_impl_inner(
 ) -> Result<Option<ExternalPtr<PreconditionerHandle>>> {
     let handle = solver.try_addr()?;
     let build_time_seconds = handle.preconditioner_build_time_seconds;
-    Ok(handle
-        .solver
-        .preconditioner()
-        .map(|preconditioner| ExternalPtr::new(PreconditionerHandle {
+    Ok(handle.solver.preconditioner().map(|preconditioner| {
+        ExternalPtr::new(PreconditionerHandle {
             preconditioner: preconditioner.clone(),
             build_time_seconds,
-        })))
+        })
+    }))
 }
 
 /// Number of DOFs (coefficients) in the persistent solver.
