@@ -14,12 +14,25 @@ use within::{
 use crate::config::{parse_lsmr_options, parse_preconditioner, PreconditionerArg};
 use crate::convert::{
     cast_categories, categories_view, err, extract_weights, factor_major_store, or_throw,
-    usize_to_i32,
+    usize_to_i32, weights_slice,
 };
 use crate::results::{batch_result_to_list, result_to_list};
 
 /// Owned-store solver held behind the R external pointer.
 pub(crate) type SolverHandle = NativeSolver<FactorMajorStore>;
+
+/// Borrow the columns of an R numeric matrix as slices.
+///
+/// R matrices are column-major, so every RHS column is already contiguous —
+/// no copy needed (the Python glue needs Cow columns for strided input; R
+/// input never is).
+fn matrix_columns(matrix: &RMatrix<f64>) -> Vec<&[f64]> {
+    let data = matrix.data();
+    let nrow = matrix.nrows();
+    (0..matrix.ncols())
+        .map(|j| &data[j * nrow..(j + 1) * nrow])
+        .collect()
+}
 
 // ---------------------------------------------------------------------------
 // One-shot solve API
@@ -38,19 +51,17 @@ fn solve_impl(
         let cats_u32 = cast_categories(categories.data())?;
         let cats = categories_view(&categories, &cats_u32)?;
         let lsmr = parse_lsmr_options(&options)?;
-        let weights = extract_weights(weights)?;
+        let weights = weights_slice(&weights)?;
 
         match parse_preconditioner(preconditioner)? {
             PreconditionerArg::Config(config) => {
-                solve_native(cats, y, weights.as_deref(), &lsmr, config.as_ref())
+                solve_native(cats, y, weights, &lsmr, config.as_ref())
                     .map_err(|e| err(e.to_string()))
                     .and_then(result_to_list)
             }
-            PreconditionerArg::Built(built) => {
-                solve_native(cats, y, weights.as_deref(), &lsmr, built)
-                    .map_err(|e| err(e.to_string()))
-                    .and_then(result_to_list)
-            }
+            PreconditionerArg::Built(built) => solve_native(cats, y, weights, &lsmr, built)
+                .map_err(|e| err(e.to_string()))
+                .and_then(result_to_list),
         }
     })())
 }
@@ -76,28 +87,17 @@ fn solve_batch_impl(
         let cats_u32 = cast_categories(categories.data())?;
         let cats = categories_view(&categories, &cats_u32)?;
         let lsmr = parse_lsmr_options(&options)?;
-        let weights = extract_weights(weights)?;
-
-        let y_data = y_matrix.data();
-        let y_nrow = y_matrix.nrows();
-        let y_ncol = y_matrix.ncols();
-        let columns: Vec<Vec<f64>> = (0..y_ncol)
-            .map(|j| y_data[j * y_nrow..(j + 1) * y_nrow].to_vec())
-            .collect();
-        let column_refs: Vec<&[f64]> = columns.iter().map(Vec::as_slice).collect();
+        let weights = weights_slice(&weights)?;
+        let column_refs = matrix_columns(&y_matrix);
 
         match parse_preconditioner(preconditioner)? {
-            PreconditionerArg::Config(config) => solve_batch_native(
-                cats,
-                &column_refs,
-                weights.as_deref(),
-                &lsmr,
-                config.as_ref(),
-            )
-            .map_err(|e| err(e.to_string()))
-            .and_then(batch_result_to_list),
+            PreconditionerArg::Config(config) => {
+                solve_batch_native(cats, &column_refs, weights, &lsmr, config.as_ref())
+                    .map_err(|e| err(e.to_string()))
+                    .and_then(batch_result_to_list)
+            }
             PreconditionerArg::Built(built) => {
-                solve_batch_native(cats, &column_refs, weights.as_deref(), &lsmr, built)
+                solve_batch_native(cats, &column_refs, weights, &lsmr, built)
                     .map_err(|e| err(e.to_string()))
                     .and_then(batch_result_to_list)
             }
@@ -165,13 +165,7 @@ fn solver_solve_batch_impl(
             )));
         }
 
-        let y_data = y_matrix.data();
-        let y_nrow = y_matrix.nrows();
-        let y_ncol = y_matrix.ncols();
-        let columns: Vec<Vec<f64>> = (0..y_ncol)
-            .map(|j| y_data[j * y_nrow..(j + 1) * y_nrow].to_vec())
-            .collect();
-        let column_refs: Vec<&[f64]> = columns.iter().map(Vec::as_slice).collect();
+        let column_refs = matrix_columns(&y_matrix);
 
         handle
             .solve_batch(&column_refs, &lsmr)

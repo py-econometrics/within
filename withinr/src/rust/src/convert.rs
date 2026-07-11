@@ -79,12 +79,24 @@ pub(crate) fn get_field_or_null(obj: &Robj, field: &str) -> Robj {
     obj.dollar(field).unwrap_or_else(|_| nil_value())
 }
 
+/// Owned weights for the persistent solver (which stores them across solves).
 pub(crate) fn extract_weights(weights: Robj) -> Result<Option<Vec<f64>>> {
     if weights.is_null() {
         return Ok(None);
     }
     weights
         .as_real_vector()
+        .map(Some)
+        .ok_or_else(|| err("weights must be a numeric vector or NULL"))
+}
+
+/// Borrowed weights for the one-shot paths (`NULL` → `None`), avoiding a copy.
+pub(crate) fn weights_slice(weights: &Robj) -> Result<Option<&[f64]>> {
+    if weights.is_null() {
+        return Ok(None);
+    }
+    weights
+        .as_real_slice()
         .map(Some)
         .ok_or_else(|| err("weights must be a numeric vector or NULL"))
 }
