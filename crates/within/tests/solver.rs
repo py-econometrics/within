@@ -1,5 +1,5 @@
 use ndarray::array;
-use within::{solve, LsmrOptions, Preconditioner, PreconditionerConfig, Solver};
+use within::{solve, Effect, LsmrOptions, Preconditioner, PreconditionerConfig, Solver};
 
 #[path = "common/orchestrate_helpers.rs"]
 mod common;
@@ -131,6 +131,41 @@ fn test_solver_batch() {
 
     assert_eq!(batch.converged.len(), 3);
     assert!(batch.converged.iter().all(|&c| c));
+}
+
+#[test]
+fn test_solver_batch_term_design_shares_drop_report() {
+    // Level 0's z is constant, so its whitened slope column drops; each batch
+    // column must reproduce the single solve and share the drop report.
+    let f = [0u32, 0, 0, 1, 1, 1];
+    let g = [0u32, 1, 2, 0, 1, 2];
+    let z = [3.0, 3.0, 3.0, -1.0, -1.0, 2.0];
+    let ys = [
+        [1.0, -2.0, 0.5, 3.0, -1.5, 2.5],
+        [0.3, 1.1, -0.7, 2.2, 0.9, -1.4],
+    ];
+    let effects = vec![
+        Effect::new(&f, true, [&z[..]]).expect("slope effect"),
+        Effect::new(&g, true, []).expect("plain effect"),
+    ];
+    let params = default_params();
+
+    let solver = Solver::new(effects, None, additive_precond()).expect("solver build");
+    let batch = solver
+        .solve_batch(&[&ys[0], &ys[1]], &params)
+        .expect("solve batch");
+    assert!(!batch.unidentified.is_empty(), "level 0 slope should drop");
+
+    for (i, y) in ys.iter().enumerate() {
+        let single = solver.solve(y, &params).expect("single solve");
+        assert_eq!(batch.unidentified, single.unidentified);
+        for (a, b) in batch.x(i).iter().zip(single.x.iter()) {
+            assert!((a - b).abs() < 1e-12, "batch x mismatch");
+        }
+        for (a, b) in batch.demeaned(i).iter().zip(single.demeaned.iter()) {
+            assert!((a - b).abs() < 1e-12, "batch demeaned mismatch");
+        }
+    }
 }
 
 #[test]
