@@ -15,9 +15,11 @@ use crate::observation::ObservationFrame;
 use crate::operator::design::gather_apply;
 use crate::operator::schwarz::{build_preconditioner, Preconditioner};
 use crate::operator::DesignOperator;
-use crate::{BuildError, SolveError, WithinError};
+use crate::{BuildError, BuildWarning, SolveError, WithinError};
 
 mod reparam;
+#[cfg(test)]
+mod tests;
 use reparam::SlopeReparam;
 
 fn norm(v: &[f64]) -> f64 {
@@ -217,6 +219,7 @@ pub struct Solver<'a> {
     weights: Option<Vec<f64>>,
     preconditioner: Option<Preconditioner>,
     reparam: Option<SlopeReparam>,
+    warnings: Vec<BuildWarning>,
 }
 
 impl std::fmt::Debug for Solver<'_> {
@@ -267,7 +270,7 @@ impl<'a> Solver<'a> {
         // Reparametrize the slope columns (if any) before the preconditioner reads the frame.
         let reparam = SlopeReparam::build(&mut design, weights.as_deref());
 
-        let preconditioner = match preconditioner.into() {
+        let (preconditioner, warnings) = match preconditioner.into() {
             PreconditionerInput::Default => {
                 build_preconditioner(&design, weights.as_deref(), None)?
             }
@@ -282,7 +285,7 @@ impl<'a> Solver<'a> {
                         actual_cols: p.ncols(),
                     });
                 }
-                Some(p)
+                (Some(p), Vec::new())
             }
         };
 
@@ -291,7 +294,14 @@ impl<'a> Solver<'a> {
             weights,
             preconditioner,
             reparam,
+            warnings,
         })
+    }
+
+    /// Non-fatal events from the preconditioner build; empty when reusing a
+    /// pre-built preconditioner (its warnings were reported when it was built).
+    pub fn warnings(&self) -> &[BuildWarning] {
+        &self.warnings
     }
 
     /// Solve for a single RHS vector with the given LSMR tuning.

@@ -9,7 +9,7 @@ use pyo3::prelude::*;
 
 use within::config::{
     ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, LsmrOptions, PreconditionerConfig,
-    ReductionStrategy,
+    ReductionStrategy, ScalingConfig, ScalingFailure,
 };
 use within::{Preconditioner, PreconditionerInput};
 
@@ -76,6 +76,67 @@ impl PyApproxSchurConfig {
     }
 }
 
+/// Certification policy for the diagonal scaling of signed (varying-slope)
+/// components: relative ``tolerance`` for weak diagonal dominance, relaxation
+/// ``max_sweeps`` budget, and ``on_failure`` disposition (``"warn"`` clamps
+/// residual deficits — preconditioner quality only — and emits a
+/// ``UserWarning``; ``"error"`` fails the build).
+#[pyclass(frozen, module = "within._within")]
+#[pyo3(name = "ScalingConfig")]
+pub struct PyScalingConfig {
+    #[pyo3(get)]
+    pub tolerance: f64,
+    #[pyo3(get)]
+    pub max_sweeps: usize,
+    pub on_failure: ScalingFailure,
+}
+
+#[pymethods]
+impl PyScalingConfig {
+    #[new]
+    #[pyo3(signature = (tolerance=None, max_sweeps=None, on_failure=None))]
+    fn new(
+        tolerance: Option<f64>,
+        max_sweeps: Option<usize>,
+        on_failure: Option<&str>,
+    ) -> PyResult<Self> {
+        let default = ScalingConfig::default();
+        let on_failure = match on_failure {
+            None => default.on_failure,
+            Some("warn") => ScalingFailure::Warn,
+            Some("error") => ScalingFailure::Error,
+            Some(other) => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "on_failure must be 'warn' or 'error', got {other:?}"
+                )))
+            }
+        };
+        Ok(Self {
+            tolerance: tolerance.unwrap_or(default.tolerance),
+            max_sweeps: max_sweeps.unwrap_or(default.max_sweeps),
+            on_failure,
+        })
+    }
+
+    #[getter(on_failure)]
+    fn on_failure_str(&self) -> &'static str {
+        match self.on_failure {
+            ScalingFailure::Warn => "warn",
+            ScalingFailure::Error => "error",
+        }
+    }
+}
+
+impl PyScalingConfig {
+    pub(crate) fn to_native(&self) -> ScalingConfig {
+        ScalingConfig {
+            tolerance: self.tolerance,
+            max_sweeps: self.max_sweeps,
+            on_failure: self.on_failure,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // PreconditionerConfig enum (IntEnum shortcut)
 // ---------------------------------------------------------------------------
@@ -126,22 +187,26 @@ pub struct PyLocalSolverConfig {
     pub approx_schur: Option<Py<PyApproxSchurConfig>>,
     #[pyo3(get)]
     pub dense_threshold: usize,
+    #[pyo3(get)]
+    pub scaling: Option<Py<PyScalingConfig>>,
 }
 
 #[pymethods]
 impl PyLocalSolverConfig {
     #[new]
-    #[pyo3(signature = (approx_chol=None, approx_schur=None, dense_threshold=None))]
+    #[pyo3(signature = (approx_chol=None, approx_schur=None, dense_threshold=None, scaling=None))]
     fn new(
         approx_chol: Option<Py<PyApproxCholConfig>>,
         approx_schur: Option<Py<PyApproxSchurConfig>>,
         dense_threshold: Option<usize>,
+        scaling: Option<Py<PyScalingConfig>>,
     ) -> Self {
         Self {
             approx_chol,
             approx_schur,
             dense_threshold: dense_threshold
                 .unwrap_or_else(|| LocalSolverConfig::default().dense_threshold),
+            scaling,
         }
     }
 }
@@ -367,10 +432,16 @@ fn extract_preconditioner_config(
                     .approx_schur
                     .as_ref()
                     .map(|c| c.bind(py).get().to_native());
+                let scaling = sc
+                    .scaling
+                    .as_ref()
+                    .map(|c| c.bind(py).get().to_native())
+                    .unwrap_or_default();
                 LocalSolverConfig {
                     approx_chol,
                     approx_schur,
                     dense_threshold: sc.dense_threshold,
+                    scaling,
                 }
             }
         };

@@ -219,12 +219,7 @@ impl CrossTab {
         } else {
             (&self.ct, i - n_q, 0)
         };
-        let lo = block.indptr[row] as usize;
-        let hi = block.indptr[row + 1] as usize;
-        block.indices[lo..hi]
-            .iter()
-            .zip(&block.data[lo..hi])
-            .map(move |(&j, &v)| (off + j as usize, v))
+        block.row(row).map(move |(j, v)| (off + j, v))
     }
 
     /// Find connected components in the bipartite graph defined by C.

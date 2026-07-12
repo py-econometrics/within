@@ -11,3 +11,22 @@ pub(crate) mod schur;
 pub(crate) mod solver;
 
 pub(crate) use solver::BlockElimSolver;
+
+/// Neumaier compensated sum: a flat `iter().sum()` loses precision for large
+/// `n`, which biases the mean (or ground charge) derived from it. The running
+/// compensation recovers the low-order bits dropped on each addition.
+#[inline]
+pub(crate) fn compensated_sum(values: &[f64]) -> f64 {
+    let mut sum = 0.0;
+    let mut compensation = 0.0;
+    for &value in values {
+        let next = sum + value;
+        if sum.abs() >= value.abs() {
+            compensation += (sum - next) + value;
+        } else {
+            compensation += (value - next) + sum;
+        }
+        sum = next;
+    }
+    sum + compensation
+}

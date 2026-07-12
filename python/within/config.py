@@ -30,6 +30,7 @@ from within._within import (
     ApproxSchurConfig,
     LocalSolverConfig as _NativeLocalSolverConfig,
     ReductionStrategy,
+    ScalingConfig,
 )
 
 # Module-level constant capturing the library-default approximate Schur config.
@@ -60,12 +61,14 @@ class LocalSolverConfig(_NativeLocalSolverConfig):
         approx_chol: ApproxCholConfig | None = None,
         approx_schur: ApproxSchurConfig | None = _DEFAULT_APPROX_SCHUR,
         dense_threshold: int | None = None,
+        scaling: ScalingConfig | None = None,
     ) -> "LocalSolverConfig":
         return _NativeLocalSolverConfig.__new__(
             cls,
             approx_chol=approx_chol,
             approx_schur=approx_schur,
             dense_threshold=dense_threshold,
+            scaling=scaling,
         )
 
     def __reduce__(self):
@@ -73,7 +76,7 @@ class LocalSolverConfig(_NativeLocalSolverConfig):
         # goes back through the default-injection logic in ``__new__``.
         return (
             LocalSolverConfig,
-            (self.approx_chol, self.approx_schur, self.dense_threshold),
+            (self.approx_chol, self.approx_schur, self.dense_threshold, self.scaling),
         )
 
 
@@ -83,4 +86,5 @@ __all__ = [
     "ApproxSchurConfig",
     "LocalSolverConfig",
     "ReductionStrategy",
+    "ScalingConfig",
 ]

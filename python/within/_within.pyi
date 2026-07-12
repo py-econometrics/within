@@ -316,6 +316,23 @@ class ApproxSchurConfig:
     split: int
     def __init__(self, seed: int = 0, split: int = 1) -> None: ...
 
+class ScalingConfig:
+    """Certification policy for the diagonal scaling of signed components.
+
+    ``on_failure`` is ``"warn"`` (clamp residual deficits — preconditioner
+    quality only — and emit a ``UserWarning``) or ``"error"`` (fail the build).
+    """
+
+    tolerance: float
+    max_sweeps: int
+    on_failure: str
+    def __init__(
+        self,
+        tolerance: float | None = None,
+        max_sweeps: int | None = None,
+        on_failure: str | None = None,
+    ) -> None: ...
+
 class LocalSolverConfig:
     """Local solver: Schur reduction + approximate Cholesky.
 
@@ -329,11 +346,13 @@ class LocalSolverConfig:
     approx_chol: ApproxCholConfig | None
     approx_schur: ApproxSchurConfig | None
     dense_threshold: int
+    scaling: ScalingConfig | None
     def __init__(
         self,
         approx_chol: ApproxCholConfig | None = None,
         approx_schur: ApproxSchurConfig | None = None,
         dense_threshold: int | None = None,
+        scaling: ScalingConfig | None = None,
     ) -> None: ...
 
 class AdditiveSchwarz:
