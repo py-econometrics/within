@@ -57,44 +57,57 @@ pub fn solve<'py>(
 }
 
 #[pyfunction]
-#[pyo3(signature = (categories, Y, options=None, weights=None, preconditioner=None))]
+#[pyo3(signature = (design, Y, options=None, weights=None, preconditioner=None))]
 pub fn solve_batch<'py>(
     py: Python<'py>,
-    categories: PyReadonlyArray2<'py, u32>,
+    design: &Bound<'py, PyAny>,
     #[allow(non_snake_case)] Y: PyReadonlyArray2<'py, f64>,
     options: Option<&Bound<'py, PyAny>>,
     weights: Option<PyReadonlyArray1<'py, f64>>,
     preconditioner: Option<&Bound<'py, PyAny>>,
 ) -> PyResult<PyBatchSolveResult> {
-    let cats = categories.as_array();
-    warn_c_contiguous(py, &cats)?;
-
-    let y_arr = Y.as_array();
-
-    // Validate Y row count against the design up front. Without this, an empty
-    // batch (Y.shape[1] == 0) would silently skip the per-column length check
-    // inside `Solver::solve`.
-    if y_arr.nrows() != cats.nrows() {
-        return Err(value_err(format!(
-            "Y has {} rows but categories has {} observations",
-            y_arr.nrows(),
-            cats.nrows()
-        )));
-    }
-
-    // Defer column extraction and weight coercion into the GIL-released closure
-    // below: F-contiguous columns and contiguous weights are borrowed directly,
-    // only strided input is copied (off-GIL).
-    let w_view = weights.as_ref().map(|w| w.as_array());
     let params = resolve_lsmr_config(options)?;
     let precond = resolve_precond_input(py, preconditioner)?;
 
-    run_batch(py, move || -> Result<_, WithinError> {
-        let columns = extract_columns(&y_arr);
-        let col_refs = column_refs(&columns);
-        let w_cow = w_view.as_ref().map(coerce_to_slice);
-        solve_batch_native(cats, &col_refs, w_cow.as_deref(), &params, precond)
-    })
+    let y_arr = Y.as_array();
+    let w_view = weights.as_ref().map(|w| w.as_array());
+
+    match extract_design(py, design)? {
+        DesignSource::Categories(categories) => {
+            let cats = categories.as_array();
+            warn_c_contiguous(py, &cats)?;
+            validate_batch_rows(y_arr.nrows(), cats.nrows())?;
+            run_batch(py, move || -> Result<_, WithinError> {
+                let columns = extract_columns(&y_arr);
+                let col_refs = column_refs(&columns);
+                let w_cow = w_view.as_ref().map(coerce_to_slice);
+                solve_batch_native(cats, &col_refs, w_cow.as_deref(), &params, precond)
+            })
+        }
+        DesignSource::Effects(terms) => {
+            if let Some(first) = terms.first() {
+                validate_batch_rows(y_arr.nrows(), first.levels.len())?;
+            }
+            run_batch(py, move || -> Result<_, WithinError> {
+                let effects: Vec<_> = terms.iter().map(PyEffect::as_effect).collect();
+                let columns = extract_columns(&y_arr);
+                let col_refs = column_refs(&columns);
+                let w_cow = w_view.as_ref().map(coerce_to_slice);
+                solve_batch_native(effects, &col_refs, w_cow.as_deref(), &params, precond)
+            })
+        }
+    }
+}
+
+/// Validate `Y`'s row count up front: an empty batch (`Y.shape[1] == 0`) would
+/// otherwise silently skip the per-column length check inside `Solver::solve`.
+fn validate_batch_rows(y_rows: usize, n_obs: usize) -> PyResult<()> {
+    if y_rows != n_obs {
+        return Err(value_err(format!(
+            "Y has {y_rows} rows but the design has {n_obs} observations"
+        )));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

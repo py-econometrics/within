@@ -210,7 +210,7 @@ def solve(
     ...
 
 def solve_batch(
-    categories: NDArray[np.uint32],
+    design: NDArray[np.uint32] | list[Effect],
     Y: NDArray[np.float64],
     options: LsmrOptions | None = None,
     weights: NDArray[np.float64] | None = None,
@@ -224,7 +224,9 @@ def solve_batch(
     the setup phase (preconditioner construction).
 
     Args:
-        categories: Factor assignments, shape ``(n_obs, n_factors)``, dtype ``uint32``.
+        design: Either a ``(n_obs, n_factors)`` ``uint32`` array of factor
+            assignments (F-contiguous for best performance; a ``UserWarning``
+            is emitted otherwise), or a list of :class:`Effect` terms.
         Y: Response matrix, shape ``(n_obs, k)``, dtype ``float64``. Each column
             is a separate response vector.
         options: LSMR solver tuning. Default: ``LsmrOptions(tol=1e-8, maxiter=1000)``.
