@@ -220,3 +220,57 @@ fn test_intercept_only_effects_match_categories_bitwise() {
         "residuals must be bit-identical"
     );
 }
+
+/// Weakly-connected slope design: firms form a chain linked only by two
+/// mover observations per adjacent pair, and the worker factor carries a
+/// slope. The intercept and slope subdomains overlap on the firm block;
+/// multiplicity-weighted partition weights on that overlap blow this design
+/// up to hundreds of LSMR iterations that grow with slope count and scale
+/// (issue #94). With uniform weights on slope-carrying subdomains it
+/// converges in a few dozen. Regression guard for the slope-chain blind spot.
+#[test]
+fn test_slope_chain_design_converges_fast() {
+    use within::{Effect, LsmrOptions, PreconditionerConfig, Solver};
+
+    let (n_firms, wpf, t) = (60usize, 3usize, 4usize);
+    let n_workers = n_firms * wpf;
+    let n_obs = n_workers * t;
+    let mut worker = Vec::with_capacity(n_obs);
+    let mut firm = Vec::with_capacity(n_obs);
+    for w in 0..n_workers {
+        let home = (w / wpf) as u32;
+        for obs in 0..t {
+            worker.push(w as u32);
+            // first worker of each firm block spends its last obs at the
+            // next firm in the chain
+            let moves = w % wpf == 0 && obs == t - 1 && (home as usize) < n_firms - 1;
+            firm.push(if moves { home + 1 } else { home });
+        }
+    }
+    let z: Vec<f64> = (0..n_obs).map(|i| (i as f64 * 3.7 + 0.5).sin()).collect();
+    let y: Vec<f64> = (0..n_obs).map(|i| (i as f64 * 0.17 + 1.0).sin()).collect();
+
+    let effects = vec![
+        Effect::new(&worker, true, [&z[..]]).expect("slope effect"),
+        Effect::new(&firm, true, []).expect("plain effect"),
+    ];
+    let solver = Solver::new(effects, None, PreconditionerConfig::default()).expect("solver build");
+    let params = LsmrOptions {
+        tol: 1e-8,
+        maxiter: 500,
+        ..Default::default()
+    };
+    let result = solver.solve(&y, &params).expect("solve");
+
+    assert!(
+        result.converged,
+        "slope-chain solve did not converge (residual: {:.2e})",
+        result.residual
+    );
+    assert!(
+        result.iterations < 100,
+        "slope-chain solve took {} iterations — preconditioner regression on \
+         weakly-connected slope designs",
+        result.iterations
+    );
+}
