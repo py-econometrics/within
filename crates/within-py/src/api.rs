@@ -228,6 +228,17 @@ impl PySolver {
             }
         }
         .map_err(value_err)?;
+
+        for warning in solver.warnings() {
+            let message = std::ffi::CString::new(warning.to_string())
+                .expect("warning messages contain no NUL bytes");
+            PyErr::warn(
+                py,
+                &py.get_type::<pyo3::exceptions::PyUserWarning>(),
+                &message,
+                1,
+            )?;
+        }
         Ok(Self { solver })
     }
 

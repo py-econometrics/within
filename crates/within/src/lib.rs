@@ -23,9 +23,9 @@ pub(crate) mod domain;
 pub(crate) mod operator;
 pub(crate) mod solver;
 
-pub use config::{LsmrOptions, PreconditionerConfig};
+pub use config::{LsmrOptions, PreconditionerConfig, ScalingConfig, ScalingFailure};
 pub use domain::{Design, Effect};
-pub use error::{BuildError, SolveError, WithinError};
+pub use error::{BuildError, BuildWarning, SignedPair, SolveError, WithinError};
 pub use operator::schwarz::Preconditioner;
 pub use solver::{
     solve, solve_batch, BatchSolveResult, IntoDesign, PreconditionerInput, SolveResult, Solver,

@@ -2,7 +2,7 @@
 //! factors through balanced/scaled signed subdomains, plus the frustration
 //! error path (lifted by #62).
 
-use within::{BuildError, Effect, LsmrOptions, PreconditionerConfig, Solver};
+use within::{BuildError, Effect, LsmrOptions, PreconditionerConfig, SignedPair, Solver};
 
 fn lcg(seed: &mut u64) -> u64 {
     *seed = seed
@@ -99,10 +99,13 @@ fn frustrated_component_errors_cleanly() {
     assert!(err.to_string().contains("frustrated"));
     match err {
         BuildError::FrustratedComponent {
-            term_q: 0,
-            column_q: 1,
-            term_r: 1,
-            column_r: 0,
+            pair:
+                SignedPair {
+                    term_q: 0,
+                    column_q: 1,
+                    term_r: 1,
+                    column_r: 0,
+                },
         } => {}
         other => panic!("expected FrustratedComponent for (f-slope, g-int), got: {other:?}"),
     }

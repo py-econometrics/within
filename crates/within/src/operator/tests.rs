@@ -523,15 +523,15 @@ mod schwarz_tests {
     use std::time::{Duration, Instant};
 
     use crate::config::{
-        ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, DEFAULT_DENSE_SCHUR_THRESHOLD,
+        ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, ScalingConfig,
+        DEFAULT_DENSE_SCHUR_THRESHOLD,
     };
     use schwarz_precond::SubdomainCore;
 
     use crate::block_elim::factor::ReducedFactor;
     use crate::csr_block::CsrBlock;
-    use crate::domain::factor_pairs::Subdomain;
     use crate::domain::{build_local_domains, Design, LocalDomain};
-    use crate::domain::{BlockDiagonals, CrossTab};
+    use crate::domain::{BlockDiagonals, CrossTab, SddmComponent};
     use crate::operator::schwarz::{build_additive_with_strategy, build_entry};
     use schwarz_precond::{Operator, ReductionStrategy};
 
@@ -539,7 +539,8 @@ mod schwarz_tests {
 
     fn make_test_data() -> (Design<'static>, Vec<LocalDomain>) {
         let design = super::design_of(vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]]);
-        let domain_pairs = build_local_domains(&design, None).expect("plain domains build");
+        let (domain_pairs, _) = build_local_domains(&design, None, &ScalingConfig::default())
+            .expect("plain domains build");
         (design, domain_pairs)
     }
 
@@ -610,12 +611,11 @@ mod schwarz_tests {
 
         let domain_pairs = (0..n_subdomains)
             .map(|_| LocalDomain {
-                subdomain: Subdomain {
-                    core: SubdomainCore::uniform(global_indices.clone()),
-                    transform: crate::domain::ComponentTransform::default(),
-                },
-                cross_tab: cross_tab.clone(),
-                block_diagonals: block_diagonals.clone(),
+                core: SubdomainCore::uniform(global_indices.clone()),
+                component: SddmComponent::plain_for_test(
+                    cross_tab.clone(),
+                    block_diagonals.clone(),
+                ),
             })
             .collect();
         (n_local, domain_pairs)
@@ -635,6 +635,7 @@ mod schwarz_tests {
                 ..Default::default()
             }),
             dense_threshold: DEFAULT_DENSE_SCHUR_THRESHOLD,
+            scaling: Default::default(),
         };
         let rhs: Vec<f64> = (0..n_dofs).map(|i| ((i % 29) as f64) - 14.0).collect();
 
@@ -744,6 +745,7 @@ mod schwarz_tests {
             approx_chol: ApproxCholConfig::default(),
             approx_schur: None,
             dense_threshold: DEFAULT_DENSE_SCHUR_THRESHOLD,
+            scaling: Default::default(),
         };
         let entry = build_entry(domain, &config).expect("exact Schur entry build failed");
         assert!(matches!(
@@ -764,6 +766,7 @@ mod schwarz_tests {
                 ..Default::default()
             }),
             dense_threshold: DEFAULT_DENSE_SCHUR_THRESHOLD,
+            scaling: Default::default(),
         };
         let entry = build_entry(domain, &config).expect("approximate Schur entry build failed");
         assert!(matches!(
@@ -781,6 +784,7 @@ mod schwarz_tests {
             approx_chol: ApproxCholConfig::default(),
             approx_schur: None,
             dense_threshold: 0,
+            scaling: Default::default(),
         };
         let entry = build_entry(domain, &config).expect("exact Schur entry build failed");
         assert!(!matches!(

@@ -8,7 +8,9 @@ pub(crate) use cross_tab::{find_all_active_levels, BlockDiagonals, CrossTab};
 
 pub use effect::Effect;
 
-pub(crate) use factor_pairs::{build_local_domains, ComponentTransform, Kernel, LocalDomain};
+pub(crate) use factor_pairs::{
+    build_local_domains, CoordinateMap, LocalDomain, SddmComponent, SolveSpace,
+};
 
 // ===========================================================================
 // Design — categorical fixed-effects design (data + layout)
