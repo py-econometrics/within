@@ -104,11 +104,9 @@ pub struct BlockElimSolver {
     n_internal: usize,
     /// Internal factor dimension, including backend-added auxiliary vertices.
     n_reduced: usize,
-    /// Original-to-SDDM coordinate map; in-memory only until the wire-format bump.
-    #[serde(skip)]
+    /// Original-to-SDDM coordinate map.
     coordinates: CoordinateMap,
     /// Whether the augmented Laplacian has a ground vertex.
-    #[serde(skip)]
     solve_space: SolveSpace,
 }
 

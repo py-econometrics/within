@@ -30,8 +30,10 @@ const LAPLACIAN_VALIDATION_BUDGET: RoundoffBudget = RoundoffBudget { ulps: 64.0 
 // classification deletes an identified direction.
 const FLOATING_CLASSIFICATION_BUDGET: RoundoffBudget = RoundoffBudget { ulps: 4.0 };
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum SolveSpace {
+    // Keep this order: postcard encodes enum discriminants by declaration
+    // order, and the wire fixture pins Floating = 0.
     #[default]
     Floating,
     Grounded,
@@ -40,8 +42,10 @@ pub(crate) enum SolveSpace {
 /// Map between original and SDDM coordinates, applied to vectors at the
 /// solve boundary. `Canonical` is the bipartite map (negate the `r` block) —
 /// not the identity.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) enum CoordinateMap {
+    // Keep this order: postcard encodes enum discriminants by declaration
+    // order, and the wire fixture pins Canonical = 0.
     #[default]
     Canonical,
     /// Diagonal congruence factors (sign · scale) of a balanced component.
