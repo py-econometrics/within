@@ -1,12 +1,11 @@
 """Varying-slopes reference benchmark: R fixest vs within (#65).
 
 On-demand perf comparison for the varying-slopes epic (#64): times slope
-estimation on shared synthetic DGPs and prints R fixest's fit time + iteration
-counts. within's slope solver (#58/#59) doesn't exist yet — ``run_within`` is
-the stub seam to fill once it lands. The point is reference numbers before
-within can produce its own.
+estimation on shared synthetic DGPs and prints fit time + iteration counts
+per tool. The R arm needs a provisioned R; the within arm always runs.
 
     pixi run -e fixest bench-slopes     # provisions R + fixest, runs the catalog
+    pixi run bench-slopes               # within arm only
 
 Edit ``SIZES`` to sweep scale.
 """
@@ -17,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -254,35 +254,60 @@ def run_fixest(case: Case) -> dict:
 
 
 def run_within(case: Case) -> dict:
-    # === #65 within hook ===
-    # within's varying-slopes solver does not exist in the live tree yet
-    # (#58/#59). Once it lands, build the design from case.fe_terms (factor
-    # codes + their slope columns out of case.columns) plus case.regressors,
-    # time the solve median-of-REPEAT, and return a run_fixest-shaped dict.
-    raise NotImplementedError(
-        "within varying-slopes solver not implemented yet (#58/#59); "
-        "this hook returns a result once the slope API lands."
-    )
+    """Time within on ``case``: one solver build per fit, then a demeaning
+    solve for the response and each regressor (matching feols's per-variable
+    iteration report)."""
+    import within
+
+    effects = [
+        within.Effect(
+            case.columns[factor].astype(np.uint32),
+            True,
+            [case.columns[s].astype(np.float64) for s in slopes],
+        )
+        for factor, slopes in case.fe_terms
+    ]
+    targets = [case.response, *case.regressors]
+
+    times: list[float] = []
+    for _ in range(REPEAT):
+        start = time.perf_counter()
+        solver = within.Solver(effects)
+        results = [solver.solve(case.columns[t].astype(np.float64)) for t in targets]
+        times.append(time.perf_counter() - start)
+    return {
+        "tool": "within",
+        "case": case.name,
+        "n_obs": case.n_obs,
+        "time_s": float(np.median(times)),
+        "iters": "/".join(
+            f"{r.iterations}{'' if r.converged else '!'}" for r in results
+        ),
+    }
 
 
 def main() -> int:
-    if not _r_available():
+    r_available = _r_available()
+    if not r_available:
         print(
             "R fixest: skipped (Rscript/fixest not found) — "
             "run `pixi run -e fixest bench-slopes` to provision R."
         )
-        return 0
 
     rows: list[dict] = []
     for size in SIZES:
         for builder in CASES:
             case = builder(size)
             print(f"  {case.name}  n_obs={case.n_obs:,}  feols: {case.formula()}")
+            if r_available:
+                try:
+                    rows.append(run_fixest(case))
+                except Exception as exc:  # noqa: BLE001 - report and continue the sweep
+                    print(f"    R fixest failed: {exc}")
             try:
-                rows.append(run_fixest(case))
+                rows.append(run_within(case))
             except Exception as exc:  # noqa: BLE001 - report and continue the sweep
-                print(f"    R fixest failed: {exc}")
-    # within arm plugs in here once #58/#59 land — see run_within.
+                print(f"    within failed: {exc}")
 
     print(f"\n{'tool':<10}{'case':<22}{'n_obs':>10}{'time_s':>9}   iters")
     for r in rows:

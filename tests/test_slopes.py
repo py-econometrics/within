@@ -1,4 +1,4 @@
-"""Varying slopes (#59, #60) and cross-factor routing (#61), cross-checked
+"""Varying slopes (#59, #60) and cross-factor routing (#61, #62), cross-checked
 against pyfixest.
 
 pyfixest has no native ``f[z]`` syntax; the reference is the explicit
@@ -205,10 +205,32 @@ def test_unit_trends_time_effects_boundary_matches_pyfixest():
         )
 
 
-def test_frustrated_two_factor_raises():
-    f = np.array([0, 0, 0, 1, 1, 1], dtype=np.uint32)
-    g = np.array([0, 1, 2, 0, 1, 2], dtype=np.uint32)
-    z = np.array([-2.0, 1.0, 1.0, -1.0, -1.0, 2.0])
-    y = np.zeros(6)
-    with pytest.raises(ValueError, match="frustrated"):
-        within.solve([Effect(f, True, [z]), Effect(g, True)], y, OPTS)
+def test_frustrated_two_factor_slope_matches_pyfixest():
+    # A partner factor with three or more levels generically frustrates the
+    # (f-slope, g) pair — whitened slope rows are zero-sum, so cycles close
+    # with negative sign. Solved through the Gremban double cover; the fit
+    # must still match the reference exactly.
+    rng = np.random.default_rng(303)
+    n = 500
+    f = rng.integers(0, N_LEVELS, n).astype(np.uint32)
+    g = rng.integers(0, 5, n).astype(np.uint32)
+    z = rng.normal(size=n)
+    a = rng.normal(size=N_LEVELS)
+    b = rng.normal(size=N_LEVELS)
+    c = rng.normal(size=5)
+    y = a[f] + b[f] * z + c[g] + rng.normal(scale=0.1, size=n)
+
+    res = within.solve([Effect(f, True, [z]), Effect(g, True)], y, OPTS)
+    assert res.converged
+    assert res.unidentified == []
+
+    df = pd.DataFrame(
+        {"f": [f"L{v}" for v in f], "g": [f"G{v}" for v in g], "z": z, "y": y}
+    )
+    fit = pf.feols("y ~ C(f) + i(f, z) + C(g) - 1", data=df)
+    coef = fit.coef()
+    for lvl in range(N_LEVELS):
+        assert res.x[N_LEVELS + lvl] == pytest.approx(
+            coef[f"f::L{lvl}:z"], rel=1e-6, abs=1e-8
+        )
+    assert np.allclose(res.demeaned, fit.resid(), rtol=1e-6, atol=1e-8)

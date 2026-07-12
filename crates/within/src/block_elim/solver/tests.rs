@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::block_elim::csr_matrix::CsrMatrix;
 use crate::config::ApproxCholConfig;
 use crate::csr_block::CsrBlock;
 use crate::domain::BlockDiagonals;
@@ -122,6 +123,83 @@ fn trivial_singleton_component_solves_r_over_d() {
 }
 
 #[test]
+fn sampled_sparse_preserves_barely_pd_direction() {
+    let surplus = 5e-10;
+    let c = CsrBlock::from_dense_table(&[1.0], 1, 1);
+    let ct = c.transpose();
+    let component = SddmComponent::general_for_test(
+        CrossTab { c, ct },
+        BlockDiagonals {
+            q: vec![1.0 + surplus],
+            r: vec![1.0],
+        },
+    );
+    let config = LocalSolverConfig {
+        approx_chol: ApproxCholConfig::default(),
+        approx_schur: Some(crate::config::ApproxSchurConfig::default()),
+        dense_threshold: 0,
+        scaling: Default::default(),
+    };
+    let solver = BlockElimSolver::build(component, &config).unwrap();
+    let mut rhs = vec![0.0; solver.scratch_size()];
+    rhs[..2].copy_from_slice(&[1.0, -1.0]);
+    let mut solution = vec![0.0; solver.scratch_size()];
+    solver.solve_local(&mut rhs, &mut solution, false).unwrap();
+
+    let ax = [
+        (1.0 + surplus) * solution[0] + solution[1],
+        solution[0] + solution[1],
+    ];
+    assert!((ax[0] - 1.0).abs() < 1e-6);
+    assert!((ax[1] + 1.0).abs() < 1e-6);
+}
+
+#[test]
+fn grounded_backend_auxiliary_is_initialized_on_every_solve() {
+    let large = 1e7;
+    let small = 1e-9;
+    let principal = CsrMatrix::new(
+        vec![0, 2, 4],
+        vec![0, 1, 0, 1],
+        vec![large, -large, -large, large + small],
+        2,
+    );
+    let explicit_ground_laplacian =
+        schur::build_explicit_laplacian(&principal, &[0.0, small], SolveSpace::Grounded);
+    let factor = factor_sparse(&explicit_ground_laplacian, ApproxCholConfig::default())
+        .expect("factorization must succeed");
+    assert_eq!(factor.input_dimension(), 3);
+    assert_eq!(factor.factor_dimension(), 4);
+
+    let c = CsrBlock::from_dense_table(&[0.0; 6], 3, 2);
+    let cross_tab = CrossTab {
+        ct: c.transpose(),
+        c,
+    };
+    let solver = BlockElimSolver::new(
+        cross_tab,
+        vec![1.0; 3],
+        factor,
+        true,
+        CoordinateMap::default(),
+        SolveSpace::Grounded,
+    );
+
+    let solve_with_dirty_auxiliary = |dirty: f64| {
+        let mut rhs = vec![0.0; solver.scratch_size()];
+        rhs[3..5].copy_from_slice(&[1.0, -1.0]);
+        rhs[8] = dirty;
+        let mut solution = vec![0.0; solver.scratch_size()];
+        solver.solve_local(&mut rhs, &mut solution, false).unwrap();
+        solution
+    };
+
+    let first = solve_with_dirty_auxiliary(3.0);
+    let second = solve_with_dirty_auxiliary(-7.0);
+    assert_eq!(first[..solver.n_local()], second[..solver.n_local()]);
+}
+
+#[test]
 fn signed_component_realizes_congruence_transformed_solve() {
     // Balanced/scalable signed component, constructed backward from a plain
     // strictly-SDD target Â and a mixed-sign congruence d: the solver gets
@@ -209,5 +287,62 @@ fn signed_component_realizes_congruence_transformed_solve() {
                 r[i]
             );
         }
+    }
+}
+
+#[test]
+fn frustrated_component_solves_exactly_through_cover() {
+    // Frustrated 2×2 component (negative 4-cycle), weakly dominant with
+    // strict surplus on the kept side (Grounded cover). Dense reduction only:
+    // it is the one arm whose factor is exact, so the oracle A·x = r is sharp
+    // (A is irreducibly dominant, hence nonsingular, and the cover acts as
+    // the exact inverse on the antisymmetric subspace). The sparse arms'
+    // approx-chol factor is inexact on the cover's degree-3 reduced graph;
+    // they are exercised end-to-end in slopes_routing.rs, where factor error
+    // only costs LSMR iterations.
+    let (n_q, n_r) = (2usize, 2usize);
+    let c_raw = [1.0, 1.5, 2.0, -1.0];
+    let a = [
+        [2.5, 0.0, 1.0, 1.5],
+        [0.0, 3.0, 2.0, -1.0],
+        [1.0, 2.0, 3.4, 0.0],
+        [1.5, -1.0, 0.0, 2.9],
+    ];
+
+    let c = CsrBlock::from_dense_table(&c_raw, n_q, n_r);
+    let ct = c.transpose();
+    let component = SddmComponent::general_for_test(
+        CrossTab { c, ct },
+        BlockDiagonals {
+            q: vec![a[0][0], a[1][1]],
+            r: vec![a[2][2], a[3][3]],
+        },
+    );
+    let config = LocalSolverConfig {
+        approx_chol: ApproxCholConfig::default(),
+        approx_schur: None,
+        dense_threshold: 8,
+        scaling: Default::default(),
+    };
+    let solver =
+        BlockElimSolver::build(component, &config).expect("covered block-elim build failed");
+    let n = n_q + n_r;
+    assert_eq!(solver.n_local(), n, "cover reports external size");
+
+    let r = [1.0, -2.0, 0.5, 3.0];
+    let mut rhs = vec![0.0; solver.scratch_size()];
+    rhs[..n].copy_from_slice(&r);
+    let mut sol = vec![0.0; solver.scratch_size()];
+    solver
+        .solve_local(&mut rhs, &mut sol, false)
+        .expect("solve_local failed");
+
+    for i in 0..n {
+        let ax: f64 = (0..n).map(|j| a[i][j] * sol[j]).sum();
+        assert!(
+            (ax - r[i]).abs() < 1e-9,
+            "row {i}: A·x = {ax}, expected {}",
+            r[i]
+        );
     }
 }

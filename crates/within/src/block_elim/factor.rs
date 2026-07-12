@@ -1,7 +1,7 @@
 //! Reduced-system factor backends for Schur-complement local solves.
 //!
 //! [`ReducedFactor`] wraps either approximate sparse Cholesky (from `approx-chol`)
-//! or dense Cholesky on an anchored principal minor ([`AnchoredDenseCholesky`]).
+//! or dense Cholesky on a principal minor ([`DenseCholesky`]).
 //! [`factor_sparse`] bridges to the `approx-chol` builder, surfacing build errors
 //! as [`BuildError::LocalSolverBuild`].
 
@@ -23,16 +23,23 @@ use crate::BuildError;
 pub(crate) enum ReducedFactor {
     /// Approximate sparse Cholesky on the reduced Schur CSR.
     Approx(Factor),
-    /// Exact dense Cholesky on an anchored principal minor of the Schur matrix.
-    Dense(AnchoredDenseCholesky),
+    /// Exact dense Cholesky on a principal minor of the Schur matrix.
+    Dense(DenseCholesky),
 }
 
 impl ReducedFactor {
-    pub(crate) fn try_dense_laplacian_minor(anchored_minor: Vec<f64>, n: usize) -> Option<Self> {
-        AnchoredDenseCholesky::try_from_dense_anchored_minor(anchored_minor, n).map(Self::Dense)
+    pub(crate) fn try_dense(minor: Vec<f64>, n: usize) -> Option<Self> {
+        DenseCholesky::try_factor(minor, n).map(Self::Dense)
     }
 
-    pub(crate) fn n(&self) -> usize {
+    pub(crate) fn input_dimension(&self) -> usize {
+        match self {
+            Self::Approx(f) => f.original_n(),
+            Self::Dense(f) => f.n(),
+        }
+    }
+
+    pub(crate) fn factor_dimension(&self) -> usize {
         match self {
             Self::Approx(f) => f.n(),
             Self::Dense(f) => f.n(),
@@ -59,36 +66,38 @@ impl ReducedFactor {
 }
 
 // ===========================================================================
-// AnchoredDenseCholesky — dense Cholesky on anchored principal minor
+// DenseCholesky — dense Cholesky on a principal minor
 // ===========================================================================
 
-/// Dense Cholesky on an anchored principal minor of a Laplacian-like matrix.
+/// Dense Cholesky on a principal `m × m` minor of the reduced Schur system.
+///
+/// `m == n` factors the full (nonsingular) complement; `m == n − 1` anchors
+/// the last node (`x = 0`) — the gauge for a floating Laplacian.
+/// `m` is recovered from the factor length, keeping the wire format unchanged.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) struct AnchoredDenseCholesky {
-    /// Lower-triangular factor of the `(n-1) x (n-1)` anchored minor.
+pub(crate) struct DenseCholesky {
+    /// Lower-triangular factor of the `m × m` minor, row-major.
     l_row_major: Vec<f64>,
-    /// Full Schur dimension before anchoring.
+    /// Full Schur dimension.
     n: usize,
 }
 
-impl AnchoredDenseCholesky {
-    fn try_from_dense_anchored_minor(dense_minor: Vec<f64>, n: usize) -> Option<Self> {
-        let m = n.saturating_sub(1);
+impl DenseCholesky {
+    fn try_factor(minor: Vec<f64>, n: usize) -> Option<Self> {
+        let anchored = n.saturating_sub(1);
+        let m = match minor.len() {
+            len if len == n * n => n,
+            len if len == anchored * anchored => anchored,
+            _ => return None,
+        };
         if m == 0 {
             return Some(Self {
                 l_row_major: Vec::new(),
                 n,
             });
         }
-        if dense_minor.len() != m * m {
-            return None;
-        }
-        Self::factor_dense_minor(dense_minor, n)
-    }
 
-    fn factor_dense_minor(dense_minor: Vec<f64>, n: usize) -> Option<Self> {
-        let m = n.saturating_sub(1);
-        let mat_ref = MatRef::from_row_major_slice(&dense_minor, m, m);
+        let mat_ref = MatRef::from_row_major_slice(&minor, m, m);
         let llt = mat_ref.llt(Side::Lower).ok()?;
         let l = llt.L();
 
@@ -106,24 +115,21 @@ impl AnchoredDenseCholesky {
         self.n
     }
 
-    /// Solve `L L^T x = b` on the anchored minor in-place.
+    /// Solve `L L^T x = b` on the factored minor in-place.
     ///
-    /// Expects `x.len() == n`; writes the anchored coordinate `x[n-1] = 0`.
+    /// Expects `x.len() == n`; coordinates past the minor (`x[m..]`) are the
+    /// anchored gauge and are written as zero.
     fn solve_in_place(&self, x: &mut [f64]) {
         debug_assert_eq!(x.len(), self.n);
-        if self.n == 0 {
-            return;
-        }
-        if self.n == 1 {
-            x[0] = 0.0;
-            return;
-        }
-
-        let m = self.n - 1;
         let l = &self.l_row_major;
+        let m = if l.len() == self.n * self.n {
+            self.n
+        } else {
+            self.n.saturating_sub(1)
+        };
         debug_assert_eq!(l.len(), m * m);
 
-        // Forward solve on anchored block: L y = b.
+        // Forward solve on the minor: L y = b.
         for i in 0..m {
             // SAFETY: i<m, row bounds and triangular-access bounds are validated by loop limits.
             let mut s = unsafe { *x.get_unchecked(i) };
@@ -139,7 +145,7 @@ impl AnchoredDenseCholesky {
             unsafe { *x.get_unchecked_mut(i) = s / lii };
         }
 
-        // Backward solve on anchored block: L^T x = y.
+        // Backward solve on the minor: L^T x = y.
         for i in (0..m).rev() {
             // SAFETY: i<m -> in bounds.
             let mut s = unsafe { *x.get_unchecked(i) };
@@ -155,7 +161,9 @@ impl AnchoredDenseCholesky {
             unsafe { *x.get_unchecked_mut(i) = s / lii };
         }
 
-        x[m] = 0.0;
+        for v in &mut x[m..] {
+            *v = 0.0;
+        }
     }
 }
 
@@ -189,8 +197,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_anchored_dense_cholesky_solve_n0() {
-        let chol = AnchoredDenseCholesky {
+    fn test_dense_cholesky_solve_n0() {
+        let chol = DenseCholesky {
             l_row_major: Vec::new(),
             n: 0,
         };
@@ -199,35 +207,44 @@ mod tests {
     }
 
     #[test]
-    fn test_anchored_dense_cholesky_solve_n1() {
-        let chol = AnchoredDenseCholesky {
+    fn test_dense_cholesky_solve_n1_anchored() {
+        let chol = DenseCholesky {
             l_row_major: Vec::new(),
             n: 1,
         };
         let mut x = vec![42.0];
         chol.solve_in_place(&mut x);
-        assert_eq!(x[0], 0.0); // n==1 -> x[0] = 0
+        assert_eq!(x[0], 0.0); // empty anchored minor -> x[0] = 0
     }
 
     #[test]
-    fn test_try_from_dense_anchored_minor_wrong_length() {
-        // n=3 -> m=2, expects 4 elements, give 3
-        let result = AnchoredDenseCholesky::try_from_dense_anchored_minor(vec![1.0, 2.0, 3.0], 3);
+    fn test_try_factor_wrong_length() {
+        // n=3 admits minors of 9 (full) or 4 (anchored) elements; give 3.
+        let result = DenseCholesky::try_factor(vec![1.0, 2.0, 3.0], 3);
         assert!(result.is_none());
     }
 
     #[test]
-    fn test_try_from_dense_anchored_minor_n1() {
-        // n=1 -> m=0, should return Some with empty
-        let result = AnchoredDenseCholesky::try_from_dense_anchored_minor(Vec::new(), 1);
+    fn test_try_factor_anchored_n1() {
+        // n=1, empty minor -> anchored m=0, Some with empty factor.
+        let result = DenseCholesky::try_factor(Vec::new(), 1);
         assert!(result.is_some());
         assert_eq!(result.unwrap().n(), 1);
     }
 
     #[test]
-    fn test_factor_dense_minor_singular() {
-        // Singular 2x2 matrix (both rows identical)
-        let result = AnchoredDenseCholesky::factor_dense_minor(vec![1.0, 1.0, 1.0, 1.0], 3);
+    fn test_try_factor_singular() {
+        // Singular 2x2 anchored minor of n=3 (both rows identical).
+        let result = DenseCholesky::try_factor(vec![1.0, 1.0, 1.0, 1.0], 3);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_full_minor_solves_directly() {
+        // Full 2x2 SPD minor (m == n): plain LLT solve, no anchored zero.
+        let chol = DenseCholesky::try_factor(vec![4.0, 0.0, 0.0, 9.0], 2).unwrap();
+        let mut x = vec![8.0, 18.0];
+        chol.solve_in_place(&mut x);
+        assert_eq!(x, vec![2.0, 2.0]);
     }
 }

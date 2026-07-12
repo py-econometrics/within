@@ -14,8 +14,8 @@ use crate::{BuildError, BuildWarning, SignedPair};
 use super::{find_all_active_levels, BlockDiagonals, Channel, ChannelPair, CrossTab, Design};
 
 mod sddm;
-use sddm::{convert, ConversionError};
-pub(crate) use sddm::{CoordinateMap, SddmComponent, SolveSpace};
+use sddm::{convert, NotScalable};
+pub(crate) use sddm::{CoordinateMap, GroundEdges, SddmComponent, SolveSpace};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ComponentClass {
@@ -141,15 +141,8 @@ fn split_into_subdomains(
             term_r: pair.r.term,
             column_r: pair.r.column,
         };
-        let (component, uncertified) =
-            convert(comp_ct, comp_diag, class, scaling).map_err(|error| match error {
-                ConversionError::Frustrated => {
-                    BuildError::FrustratedComponent { pair: signed_pair }
-                }
-                ConversionError::NotScalable => {
-                    BuildError::UnscalableComponent { pair: signed_pair }
-                }
-            })?;
+        let (component, uncertified) = convert(comp_ct, comp_diag, class, scaling)
+            .map_err(|NotScalable| BuildError::UnscalableComponent { pair: signed_pair })?;
         if let Some(uncertified) = uncertified {
             warnings.push(BuildWarning::UnscalableComponent {
                 pair: signed_pair,

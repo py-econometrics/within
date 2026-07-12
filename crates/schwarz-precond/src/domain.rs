@@ -18,7 +18,7 @@ use crate::error::BuildError;
 pub enum PartitionWeights {
     /// All weights are 1.0 (no shared DOFs).
     Uniform(usize),
-    /// Non-uniform weights (1/count for shared DOFs).
+    /// Non-uniform weights (1/√count for shared DOFs).
     NonUniform(Vec<f64>),
 }
 
