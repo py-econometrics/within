@@ -340,7 +340,7 @@ fn assemble_cover(
             .zip(scales.iter())
             .map(|(&diagonal, &scale)| diagonal * scale * scale)
             .collect();
-        [scaled.as_slice(), scaled.as_slice()].concat()
+        scaled.repeat(2)
     };
     let scaled_diagonals = BlockDiagonals {
         q: doubled(&diagonals.q, &scales[..n_q]),

@@ -270,19 +270,19 @@ def run_within(case: Case) -> dict:
     targets = [case.response, *case.regressors]
 
     times: list[float] = []
-    iters: list[str] = []
     for _ in range(REPEAT):
         start = time.perf_counter()
         solver = within.Solver(effects)
         results = [solver.solve(case.columns[t].astype(np.float64)) for t in targets]
         times.append(time.perf_counter() - start)
-        iters = [f"{r.iterations}{'' if r.converged else '!'}" for r in results]
     return {
         "tool": "within",
         "case": case.name,
         "n_obs": case.n_obs,
         "time_s": float(np.median(times)),
-        "iters": "/".join(iters),
+        "iters": "/".join(
+            f"{r.iterations}{'' if r.converged else '!'}" for r in results
+        ),
     }
 
 
