@@ -301,10 +301,13 @@ impl BlockElimSolver {
             }
         }
 
-        // Solve the reduced system in place.
+        // Solve the reduced system in place. The `rhs` tail past the reduced
+        // block is the reduced factor's embed scratch (empty unless Cover).
         let reduced = roles.keep.start..roles.keep.start + self.n_reduced;
         sol[reduced.clone()].copy_from_slice(&rhs[n..n + self.n_reduced]);
-        self.reduced_factor.solve_in_place(&mut sol[reduced])?;
+        let embed = &mut rhs[n + self.n_reduced..];
+        self.reduced_factor
+            .solve_in_place(&mut sol[reduced], embed)?;
         if let Some(ground) = explicit_ground {
             let ground = sol[roles.keep.start + ground];
             for v in &mut sol[roles.keep.start..roles.keep.start + n_keep] {
@@ -332,7 +335,7 @@ impl LocalSolver for BlockElimSolver {
     }
 
     fn scratch_size(&self) -> usize {
-        self.n_internal + self.n_reduced
+        self.n_internal + self.n_reduced + self.reduced_factor.scratch_len()
     }
 
     fn inner_parallelism_work_estimate(&self) -> usize {
