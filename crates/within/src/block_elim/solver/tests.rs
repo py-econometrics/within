@@ -68,24 +68,8 @@ fn test_block_elim_solver_eliminate_q_false() {
         !solver.eliminate_q,
         "expected eliminate_q=false when n_q < n_r",
     );
-    // n_local = n_q + n_r = 2 + 5 = 7
-    assert_eq!(solver.n_local(), 7);
-}
-
-#[test]
-fn test_block_elim_solver_eliminate_q_false_solve_residual() {
-    let (cross_tab, diagonals) = make_cross_tab_q_lt_r();
-    let n_local = cross_tab.n_q() + cross_tab.n_r(); // 7
-
-    let config = LocalSolverConfig {
-        approx_chol: ApproxCholConfig::default(),
-        approx_schur: None,
-        dense_threshold: 0,
-        scaling: Default::default(),
-    };
-    let component = SddmComponent::general_for_test(cross_tab, diagonals);
-    let solver = BlockElimSolver::build(component, &config).expect("block-elim build failed");
-    assert!(!solver.eliminate_q);
+    let n_local = solver.n_local();
+    assert_eq!(n_local, 7);
 
     let scratch_sz = solver.scratch_size();
     let mut rhs = vec![0.0; scratch_sz];
