@@ -1,4 +1,4 @@
-//! Within-level reparametrization of a design's sole varying-slope term.
+//! Within-level reparametrization of a design's varying-slope terms.
 
 use crate::domain::Design;
 
@@ -11,16 +11,22 @@ mod tests;
 /// within-level variance falls to `RANK_TOL` × its own initial variance.
 const RANK_TOL: f64 = 1e-10;
 
-/// Per-level change of basis making the sole slope term's within-level Gram
-/// the identity; [`Self::back_transform`] restores the user's parametrization.
+/// Per-level change of basis making each slope-bearing term's within-level
+/// Gram the identity; [`Self::back_transform`] restores the user's
+/// parametrization.
 pub(crate) struct SlopeReparam {
+    terms: Vec<TermReparam>,
+    /// Directions the data cannot identify, ascending in `(term, level, column)`.
+    pub(crate) unidentified: Vec<UnidentifiedDirection>,
+}
+
+/// One slope-bearing term's whitening state.
+struct TermReparam {
     offset: usize,
     n_levels: usize,
     intercept: bool,
     n_slopes: usize,
     transforms: Vec<LevelTransform>,
-    /// Directions the data cannot identify, ascending in `(level, column)`.
-    pub(crate) unidentified: Vec<UnidentifiedDirection>,
 }
 
 /// One level's `u = W·(z − center)`, `W` row-major `rank × V`; an empty `w`
@@ -32,11 +38,42 @@ struct LevelTransform {
 }
 
 impl SlopeReparam {
-    /// Orthonormalize the sole slope term's loading columns in place; `None`
-    /// for slope-free designs. Unidentified directions become exact-zero
-    /// columns, so the minimal-norm solve leaves exact-`0` coefficients.
+    /// Orthonormalize every slope-bearing term's loading columns in place;
+    /// `None` for slope-free designs. Unidentified directions become
+    /// exact-zero columns, so the minimal-norm solve leaves exact-`0`
+    /// coefficients.
     pub(crate) fn build(design: &mut Design<'_>, weights: Option<&[f64]>) -> Option<Self> {
-        let term = design.terms.iter().position(|t| !t.slopes.is_empty())?;
+        let mut terms = Vec::new();
+        let mut unidentified = Vec::new();
+        for term in 0..design.terms.len() {
+            if design.terms[term].slopes.is_empty() {
+                continue;
+            }
+            terms.push(TermReparam::build(design, term, weights, &mut unidentified));
+        }
+        (!terms.is_empty()).then_some(Self {
+            terms,
+            unidentified,
+        })
+    }
+
+    /// Map solve-basis coefficients back to the user's parametrization.
+    pub(crate) fn back_transform(&self, x: &mut [f64]) {
+        for term in &self.terms {
+            term.back_transform(x);
+        }
+    }
+}
+
+impl TermReparam {
+    /// Whiten one term's loading columns in place, appending its unidentified
+    /// directions ascending in `(level, column)`.
+    fn build(
+        design: &mut Design<'_>,
+        term: usize,
+        weights: Option<&[f64]>,
+        unidentified: &mut Vec<UnidentifiedDirection>,
+    ) -> Self {
         let meta = &design.terms[term];
         let (offset, n_levels, intercept) = (meta.offset, meta.n_levels, meta.intercept);
         let z_cols = meta.slopes.clone();
@@ -57,7 +94,6 @@ impl SlopeReparam {
         }
 
         let mut transforms = Vec::with_capacity(n_levels);
-        let mut unidentified = Vec::new();
         let mut gram = vec![0.0; v * v];
         for level in 0..n_levels {
             moments.gram(level, intercept, &mut gram);
@@ -103,18 +139,18 @@ impl SlopeReparam {
             design.frame.set_loading_column(c, out);
         }
 
-        Some(Self {
+        Self {
             offset,
             n_levels,
             intercept,
             n_slopes: v,
             transforms,
-            unidentified,
-        })
+        }
     }
 
-    /// Map solve-basis coefficients back to the user's parametrization.
-    pub(crate) fn back_transform(&self, x: &mut [f64]) {
+    /// Map this term's solve-basis coefficients back to the user's
+    /// parametrization; slots outside the term's block are untouched.
+    fn back_transform(&self, x: &mut [f64]) {
         let v = self.n_slopes;
         let mut b = vec![0.0; v];
         for (l, t) in self.transforms.iter().enumerate() {

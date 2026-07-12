@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::block_elim::BlockElimSolver;
 use crate::config::{LocalSolverConfig, PreconditionerConfig};
 use crate::domain::{Design, LocalDomain};
-use crate::BuildError;
+use crate::{BuildError, BuildWarning};
 
 /// Concrete additive Schwarz type used in the parent crate.
 #[derive(Clone, Serialize, Deserialize)]
@@ -112,13 +112,9 @@ pub(crate) fn build_entry(
     domain: LocalDomain,
     config: &LocalSolverConfig,
 ) -> Result<SubdomainEntry<BlockElimSolver>, BuildError> {
-    let LocalDomain {
-        subdomain,
-        cross_tab,
-        block_diagonals,
-    } = domain;
-    let solver = BlockElimSolver::build(cross_tab, &block_diagonals, config)?;
-    SubdomainEntry::try_new(subdomain.core, solver).map_err(BuildError::Preconditioner)
+    let LocalDomain { core, component } = domain;
+    let solver = BlockElimSolver::build(component, config)?;
+    SubdomainEntry::try_new(core, solver).map_err(BuildError::Preconditioner)
 }
 
 /// Opaque handle to a pre-built fixed-effects preconditioner.
@@ -215,7 +211,7 @@ fn build_diagonal(
         }
         for &z_col in &term.slopes {
             let z = design.frame.loading_column(z_col);
-            let base = term.offset + column * term.n_levels;
+            let base = term.column_base(column);
             let slice = &mut diag[base..base + term.n_levels];
             for (uid, &level) in levels.iter().enumerate() {
                 // Keep `w * z * z` left-to-right: a zero weight then kills a
@@ -249,12 +245,13 @@ fn build_diagonal(
     Ok(DiagonalPreconditioner::new(diag))
 }
 
-/// Build a [`Preconditioner`] from a design and optional observation weights.
+/// Build a [`Preconditioner`] from a design and optional observation weights,
+/// plus any non-fatal [`BuildWarning`]s the build produced.
 pub(crate) fn build_preconditioner(
     design: &Design<'_>,
     weights: Option<&[f64]>,
     config: Option<&PreconditionerConfig>,
-) -> Result<Option<Preconditioner>, BuildError> {
+) -> Result<(Option<Preconditioner>, Vec<BuildWarning>), BuildError> {
     use crate::domain::build_local_domains;
 
     design.validate_weights(weights)?;
@@ -262,28 +259,34 @@ pub(crate) fn build_preconditioner(
     let default_cfg = PreconditionerConfig::default();
     let resolved = config.unwrap_or(&default_cfg);
     match resolved {
-        PreconditionerConfig::Off => Ok(None),
+        PreconditionerConfig::Off => Ok((None, Vec::new())),
         PreconditionerConfig::Additive {
             local_solver,
             reduction,
         } => {
-            let domains = build_local_domains(design, weights);
+            let (domains, warnings) = build_local_domains(design, weights, &local_solver.scaling)?;
             if domains.is_empty() {
                 // Single-factor designs (and other configurations with no
                 // factor-pair subdomains) have no useful additive Schwarz
                 // preconditioner. Fall back to unpreconditioned LSMR.
-                return Ok(None);
+                return Ok((None, warnings));
             }
             let p = build_additive_with_strategy(domains, local_solver, *reduction)?;
-            Ok(Some(Preconditioner {
-                inner: Variant::Additive(p),
-            }))
+            Ok((
+                Some(Preconditioner {
+                    inner: Variant::Additive(p),
+                }),
+                warnings,
+            ))
         }
         PreconditionerConfig::Diagonal => {
             let p = build_diagonal(design, weights)?;
-            Ok(Some(Preconditioner {
-                inner: Variant::Diagonal(p),
-            }))
+            Ok((
+                Some(Preconditioner {
+                    inner: Variant::Diagonal(p),
+                }),
+                Vec::new(),
+            ))
         }
     }
 }

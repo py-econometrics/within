@@ -5,28 +5,21 @@ use schwarz_precond::{LocalSolveError, LocalSolver};
 
 use crate::config::LocalSolverConfig;
 use crate::csr_block::{CsrBlock, PAR_SPMV_THRESHOLD};
-use crate::domain::{BlockDiagonals, CrossTab};
+use crate::domain::{CoordinateMap, CrossTab, SddmComponent, SolveSpace};
 use crate::BuildError;
 
+use super::compensated_sum;
 use super::elimination::Elimination;
 use super::factor::{factor_sparse, ReducedFactor};
 use super::schur::{ApproxSchurComplement, ExactSchurComplement, SchurComplement, SchurLaplacian};
 
 // ===========================================================================
-// Transform helpers — sign-flipping, mean subtraction, back-substitution
+// Solve helpers
 // ===========================================================================
 
 /// Minimum number of rows to trigger parallel back-substitution.
 const PAR_BACKSUB_THRESHOLD: usize = 10_000;
 const PAR_BACKSUB_CHUNK: usize = 4096;
-
-/// Negate elements in `slice[from..]`.
-#[inline]
-fn negate_block(slice: &mut [f64], from: usize) {
-    for val in slice[from..].iter_mut() {
-        *val = -*val;
-    }
-}
 
 /// Subtract the mean of `slice[..n]` from those `n` elements.
 #[inline]
@@ -34,32 +27,17 @@ fn subtract_mean(slice: &mut [f64], n: usize) {
     if n == 0 {
         return;
     }
-    // Neumaier compensated summation: a flat `iter().sum()` loses precision for
-    // large `n`, which biases the mean we subtract. The running compensation
-    // recovers the low-order bits dropped on each addition.
-    let mut sum = 0.0_f64;
-    let mut comp = 0.0_f64;
-    for &val in &slice[..n] {
-        let t = sum + val;
-        if sum.abs() >= val.abs() {
-            comp += (sum - t) + val;
-        } else {
-            comp += (val - t) + sum;
-        }
-        sum = t;
-    }
-    let mean = (sum + comp) / n as f64;
+    let mean = compensated_sum(&slice[..n]) / n as f64;
     for val in slice[..n].iter_mut() {
         *val -= mean;
     }
 }
 
-/// Scale `slice[i] *= diag[i]` for the first `slice.len()` entries.
 #[inline]
-fn scale_by_diag_in_place(slice: &mut [f64], diag: &[f64]) {
-    debug_assert!(diag.len() >= slice.len());
-    for (val, &di) in slice.iter_mut().zip(diag.iter()) {
-        *val *= di;
+fn scale_by_diag_in_place(slice: &mut [f64], diagonal: &[f64]) {
+    debug_assert!(diagonal.len() >= slice.len());
+    for (value, &scale) in slice.iter_mut().zip(diagonal.iter()) {
+        *value *= scale;
     }
 }
 
@@ -124,8 +102,14 @@ pub struct BlockElimSolver {
     eliminate_q: bool,
     /// Total DOF count (`n_q + n_r`).
     n_local: usize,
-    /// Factor dimension for the reduced solve (may be `n_keep + 1` for sparse AC).
+    /// Internal factor dimension, including backend-added auxiliary vertices.
     n_reduced: usize,
+    /// Original-to-SDDM coordinate map; in-memory only until the wire-format bump.
+    #[serde(skip)]
+    coordinates: CoordinateMap,
+    /// Whether the augmented Laplacian has a ground vertex.
+    #[serde(skip)]
+    solve_space: SolveSpace,
 }
 
 /// The q/r blocks assigned to their eliminated/kept roles for one solve.
@@ -176,6 +160,8 @@ impl BlockElimSolver {
         inv_diag_elim: Vec<f64>,
         reduced_factor: ReducedFactor,
         eliminate_q: bool,
+        coordinates: CoordinateMap,
+        solve_space: SolveSpace,
     ) -> Self {
         let cross_tab = cross_tab.into();
         let n_local = cross_tab.n_local();
@@ -187,6 +173,8 @@ impl BlockElimSolver {
             eliminate_q,
             n_local,
             n_reduced,
+            coordinates,
+            solve_space,
         }
     }
 
@@ -197,21 +185,31 @@ impl BlockElimSolver {
     /// failure) assemble the sparse Schur complement and factor it via
     /// `approx_chol`. The `Elimination` is consumed at the end to produce
     /// `inv_diag_elim` and `eliminate_q`.
-    ///
-    /// `diagonals` are the build-time-only diagonal blocks; they are read by
-    /// [`Elimination::new`] and dropped once the factor is built.
     pub(crate) fn build(
-        cross_tab: CrossTab,
-        diagonals: &BlockDiagonals,
+        component: SddmComponent,
         config: &LocalSolverConfig,
     ) -> Result<Self, BuildError> {
-        let elim = Elimination::new(&cross_tab, diagonals)?;
+        let SddmComponent {
+            cross_tab,
+            diagonals,
+            coordinates,
+            solve_space,
+        } = component;
+        let elim = Elimination::new(&cross_tab, &diagonals)?;
         let n_keep = elim.n_keep;
-        let prefer_dense = config.dense_threshold > 0 && n_keep <= config.dense_threshold;
+        // The dense factor anchors one node (`x_anchor = 0`) — a gauge choice
+        // valid only for the singular floating case.
+        let prefer_dense = solve_space == SolveSpace::Floating
+            && config.dense_threshold > 0
+            && n_keep <= config.dense_threshold;
 
         // Below the dense threshold the reduced system is tiny — always use exact
         // Schur complement (cheap at this size) and dense Cholesky factorization.
-        let dense_factor = if prefer_dense {
+        let dense_factor = if n_keep == 0 {
+            // Trivial 1×1 component: nothing kept to reduce, so the solve
+            // degenerates to `x = r/d`; never send an empty system to approx-chol.
+            ReducedFactor::try_dense_laplacian_minor(Vec::new(), 0)
+        } else if prefer_dense {
             let anchored_minor = SchurLaplacian::anchored_minor_from_elimination(&elim);
             ReducedFactor::try_dense_laplacian_minor(anchored_minor, n_keep)
         } else {
@@ -223,9 +221,14 @@ impl BlockElimSolver {
         let factor = match dense_factor {
             Some(f) => f,
             None => {
+                // Sampled Schur rebuilds the diagonal from edge weights alone,
+                // discarding the surplus that keeps a grounded component
+                // nonsingular — grounded components always take the exact path.
                 let schur_csr = match config.approx_schur {
-                    None => ExactSchurComplement.compute(&elim),
-                    Some(cfg) => ApproxSchurComplement::new(cfg).compute(&elim),
+                    Some(cfg) if solve_space == SolveSpace::Floating => {
+                        ApproxSchurComplement::new(cfg).compute(&elim)
+                    }
+                    _ => ExactSchurComplement.compute(&elim),
                 };
                 factor_sparse(&schur_csr, config.approx_chol)?
             }
@@ -241,6 +244,8 @@ impl BlockElimSolver {
             inv_diag_elim,
             factor,
             eliminate_q,
+            coordinates,
+            solve_space,
         ))
     }
 
@@ -272,15 +277,33 @@ impl BlockElimSolver {
                 allow_inner_parallelism,
             );
         }
-        if self.n_reduced > n_keep {
-            rhs[n + n_keep] = 0.0;
+        match self.solve_space {
+            SolveSpace::Floating => {
+                if self.n_reduced > n_keep {
+                    rhs[n + n_keep] = 0.0;
+                }
+                subtract_mean(&mut rhs[n..], self.n_reduced);
+            }
+            // Grounded-Laplacian reduction of the nonsingular SDD reduced
+            // system: the ground node absorbs the injected current, and its
+            // potential is the gauge subtracted after the solve.
+            SolveSpace::Grounded => {
+                if self.n_reduced > n_keep {
+                    rhs[n + n_keep] = -compensated_sum(&rhs[n..n + n_keep]);
+                }
+            }
         }
-        subtract_mean(&mut rhs[n..], self.n_reduced);
 
         // Solve the reduced system in place.
         let reduced = roles.keep.start..roles.keep.start + self.n_reduced;
         sol[reduced.clone()].copy_from_slice(&rhs[n..n + self.n_reduced]);
         self.reduced_factor.solve_in_place(&mut sol[reduced])?;
+        if self.solve_space == SolveSpace::Grounded && self.n_reduced > n_keep {
+            let ground = sol[roles.keep.start + n_keep];
+            for v in &mut sol[roles.keep.start..roles.keep.start + n_keep] {
+                *v -= ground;
+            }
+        }
 
         // Back-substitute to recover the eliminated block.
         let (sol_output, sol_source) = roles.split_sol(sol);
@@ -325,12 +348,10 @@ impl LocalSolver for BlockElimSolver {
         let n_q = self.cross_tab.n_q();
         let ct = &self.cross_tab;
 
-        // Block elimination for the bipartite SDDM system [D_q, C; C^T, D_r]:
-        // negate the q-block to convert from SDDM form to the signed-Laplacian
-        // form where C carries a negative sign (equivalent to solving
-        // [-D_q, C; C^T, D_r] x = rhs').
-        negate_block(&mut rhs[..n], n_q);
-        subtract_mean(rhs, n);
+        self.coordinates.apply(&mut rhs[..n], n_q);
+        if self.solve_space == SolveSpace::Floating {
+            subtract_mean(rhs, n);
+        }
 
         // The eliminated/kept roles are fixed by `eliminate_q`; name the swap once.
         let roles = if self.eliminate_q {
@@ -350,122 +371,13 @@ impl LocalSolver for BlockElimSolver {
         };
         self.eliminate_and_recover(&roles, rhs, sol, allow_inner_parallelism)?;
 
-        subtract_mean(sol, n);
-        negate_block(&mut sol[..n], n_q);
+        if self.solve_space == SolveSpace::Floating {
+            subtract_mean(sol, n);
+        }
+        self.coordinates.apply(&mut sol[..n], n_q);
         Ok(())
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    use crate::config::ApproxCholConfig;
-    use crate::csr_block::CsrBlock;
-
-    #[test]
-    fn test_subtract_mean_empty() {
-        let mut data = vec![1.0, 2.0, 3.0];
-        subtract_mean(&mut data, 0);
-        // Should not modify anything
-        assert_eq!(data, vec![1.0, 2.0, 3.0]);
-    }
-
-    #[test]
-    fn test_subtract_mean_basic() {
-        let mut data = vec![2.0, 4.0, 6.0];
-        subtract_mean(&mut data, 3);
-        // mean = 4.0
-        assert!((data[0] - (-2.0)).abs() < 1e-14);
-        assert!((data[1] - 0.0).abs() < 1e-14);
-        assert!((data[2] - 2.0).abs() < 1e-14);
-    }
-
-    #[test]
-    fn test_subtract_mean_partial() {
-        let mut data = vec![3.0, 5.0, 100.0];
-        subtract_mean(&mut data, 2);
-        // mean of first 2 = 4.0
-        assert!((data[0] - (-1.0)).abs() < 1e-14);
-        assert!((data[1] - 1.0).abs() < 1e-14);
-        assert_eq!(data[2], 100.0); // unchanged
-    }
-
-    #[test]
-    fn test_negate_block() {
-        let mut data = vec![1.0, -2.0, 3.0, -4.0];
-        negate_block(&mut data, 2);
-        assert_eq!(data, vec![1.0, -2.0, -3.0, 4.0]);
-    }
-
-    /// Build a CrossTab with `n_q < r` so that `eliminate_q == false`, plus its
-    /// build-time diagonals.
-    fn make_cross_tab_q_lt_r() -> (CrossTab, BlockDiagonals) {
-        let c_dense = vec![
-            // row 0
-            1.0, 0.0, 0.0, 0.0, 0.0, // row 1
-            0.0, 1.0, 0.0, 0.0, 0.0,
-        ];
-        let c = CsrBlock::from_dense_table(&c_dense, 2, 5);
-        let ct = c.transpose();
-        let diagonals = BlockDiagonals {
-            q: vec![2.0, 3.0],
-            r: vec![2.0, 3.0, 1.0, 1.0, 1.0],
-        };
-        (CrossTab { c, ct }, diagonals)
-    }
-
-    #[test]
-    fn test_block_elim_solver_eliminate_q_false() {
-        let (cross_tab, diagonals) = make_cross_tab_q_lt_r();
-        assert_eq!(cross_tab.n_q(), 2);
-        assert_eq!(cross_tab.n_r(), 5);
-
-        let config = LocalSolverConfig {
-            approx_chol: ApproxCholConfig::default(),
-            approx_schur: None,
-            dense_threshold: 0, // disable dense fast path to ensure sparse path is covered
-        };
-        let solver = BlockElimSolver::build(cross_tab, &diagonals, &config)
-            .expect("block-elim build failed");
-
-        assert!(
-            !solver.eliminate_q,
-            "expected eliminate_q=false when n_q < n_r",
-        );
-        // n_local = n_q + n_r = 2 + 5 = 7
-        assert_eq!(solver.n_local(), 7);
-    }
-
-    #[test]
-    fn test_block_elim_solver_eliminate_q_false_solve_residual() {
-        let (cross_tab, diagonals) = make_cross_tab_q_lt_r();
-        let n_local = cross_tab.n_q() + cross_tab.n_r(); // 7
-
-        let config = LocalSolverConfig {
-            approx_chol: ApproxCholConfig::default(),
-            approx_schur: None,
-            dense_threshold: 0,
-        };
-        let solver = BlockElimSolver::build(cross_tab, &diagonals, &config)
-            .expect("block-elim build failed");
-        assert!(!solver.eliminate_q);
-
-        let scratch_sz = solver.scratch_size();
-        let mut rhs = vec![0.0; scratch_sz];
-        for (i, v) in rhs[..n_local].iter_mut().enumerate() {
-            *v = (i as f64 + 1.0) * 0.5;
-        }
-        let mut sol = vec![0.0; scratch_sz];
-
-        solver
-            .solve_local(&mut rhs, &mut sol, true)
-            .expect("solve_local should succeed");
-
-        for (i, &v) in sol[..n_local].iter().enumerate() {
-            assert!(v.is_finite(), "sol[{i}] = {v} is not finite");
-        }
-        let sol_norm: f64 = sol[..n_local].iter().map(|v| v * v).sum::<f64>().sqrt();
-        assert!(sol_norm > 1e-15, "solution is unexpectedly all-zero");
-    }
-}
+mod tests;

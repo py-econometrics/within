@@ -63,17 +63,15 @@ fn test_trivial_factor_all_same_level() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 3: all-zero weights should produce an error
+// Test 3: all-zero weights solve the zero system to x=0
 // ---------------------------------------------------------------------------
 
-/// All-zero weights produce a zero Gramian diagonal.
-///
-/// Without a preconditioner, the system and RHS are both zero so LSMR returns
-/// x=0 immediately — this is technically valid (the "solution" is trivially
-/// the zero vector). With a preconditioner, the local solver must factorize
-/// a matrix with a zero diagonal and should fail with a build error.
+/// All-zero weights zero every Gramian cell and diagonal. Routing skips the
+/// resulting dead DOFs, so no additive subdomain remains and the solve falls
+/// back to unpreconditioned LSMR — which, like the diagonal and
+/// unpreconditioned paths, solves the zero system and returns x=0.
 #[test]
-fn test_zero_weight_error_with_preconditioner() {
+fn test_zero_weight_additive_preconditioner_returns_zero() {
     let cats = array![[0u32, 0], [1u32, 0], [0u32, 1], [1u32, 1], [2u32, 0]];
     let y = vec![1.0f64; 5];
     let weights = vec![0.0f64; 5];
@@ -85,19 +83,22 @@ fn test_zero_weight_error_with_preconditioner() {
         Some(&weights),
         &LsmrOptions::default(),
         &precond,
+    )
+    .expect("zero weights with additive preconditioner should succeed");
+    assert!(
+        result.converged,
+        "zero-Gramian system should trivially converge"
     );
     assert!(
-        result.is_err(),
-        "zero weights with preconditioner should produce an error, but got: {:?}",
-        result.map(|r| r.x)
+        result.x.iter().all(|&v| v == 0.0),
+        "zero-Gramian solution must be the zero vector"
     );
 }
 
-/// All-zero weights make every diagonal entry zero. Unlike the additive path
-/// (whose local factorization hits a zero pivot and errors — see
-/// `test_zero_weight_error_with_preconditioner`), the diagonal preconditioner
-/// takes the pseudo-inverse of each zero entry, so — like the unpreconditioned
-/// path — it solves the resulting zero system and returns x=0.
+/// All-zero weights make every diagonal entry zero. The diagonal
+/// preconditioner takes the pseudo-inverse of each zero entry, so — like the
+/// additive and unpreconditioned paths — it solves the resulting zero system
+/// and returns x=0.
 #[test]
 fn test_zero_weight_diagonal_preconditioner_returns_zero() {
     let cats = array![[0u32, 0], [1u32, 0], [0u32, 1], [1u32, 1], [2u32, 0]];

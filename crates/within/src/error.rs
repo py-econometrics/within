@@ -34,12 +34,6 @@ pub enum BuildError {
         /// Actual length.
         got: usize,
     },
-    /// An effect carries varying slopes in a form the solver does not yet support.
-    #[error("effect {effect} has varying slopes, not yet supported alongside other effects")]
-    SlopesNotYetSupported {
-        /// Index of the offending effect.
-        effect: usize,
-    },
     /// Weight vector does not match the number of observations.
     #[error("weights has length {got}, expected {expected}")]
     WeightCountMismatch {
@@ -57,6 +51,23 @@ pub enum BuildError {
         index: usize,
         /// The offending value.
         value: f64,
+    },
+    /// A signed cross-factor component contains a negative-sign cycle, so no
+    /// balancing signature exists.
+    #[error(
+        "frustrated signed component between {pair}: a negative-sign cycle cannot \
+         be balanced (support tracked in #62)"
+    )]
+    FrustratedComponent {
+        /// The offending channel pair.
+        pair: SignedPair,
+    },
+    /// A signed component could not be certified as diagonally scalable to an
+    /// SDDM operator.
+    #[error("signed component between {pair} is not diagonally scalable to SDDM form")]
+    UnscalableComponent {
+        /// The offending channel pair.
+        pair: SignedPair,
     },
     /// A zero diagonal was encountered during block elimination.
     #[error("zero diagonal in {block} block at index {index}")]
@@ -85,6 +96,65 @@ pub enum BuildError {
         /// Actual column count of the supplied preconditioner.
         actual_cols: usize,
     },
+}
+
+/// The channel pair whose signed cross-factor component an error or warning
+/// refers to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SignedPair {
+    /// Term index of the pair's first channel.
+    pub term_q: usize,
+    /// Coefficient column of the first channel within its term.
+    pub column_q: usize,
+    /// Term index of the pair's second channel.
+    pub term_r: usize,
+    /// Coefficient column of the second channel within its term.
+    pub column_r: usize,
+}
+
+impl std::fmt::Display for SignedPair {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "term {} column {} and term {} column {}",
+            self.term_q, self.column_q, self.term_r, self.column_r
+        )
+    }
+}
+
+/// A non-fatal preconditioner-build event, surfaced via
+/// [`Solver::warnings`](crate::Solver::warnings).
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum BuildWarning {
+    /// A signed component's dominance scaling was not certified within the
+    /// configured tolerance; residual deficits were clamped, which degrades
+    /// only preconditioner quality.
+    UnscalableComponent {
+        /// The offending channel pair.
+        pair: SignedPair,
+        /// Relaxation sweeps spent before handing the scaling over.
+        sweeps: usize,
+        /// Largest relative dominance violation at hand-over.
+        violation: f64,
+    },
+}
+
+impl std::fmt::Display for BuildWarning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnscalableComponent {
+                pair,
+                sweeps,
+                violation,
+            } => write!(
+                f,
+                "signed component between {pair}: dominance scaling uncertified after \
+                 {sweeps} sweeps (max relative violation {violation:.2e}); deficits \
+                 clamped, preconditioner quality may degrade"
+            ),
+        }
+    }
 }
 
 /// Top-level error type returned by [`crate::solve`] and [`crate::solve_batch`].
