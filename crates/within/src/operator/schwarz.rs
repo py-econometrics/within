@@ -130,7 +130,7 @@ pub struct Preconditioner {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 enum Variant {
     // Keep Additive first: postcard encodes enum discriminants by declaration order,
-    // and the v3 fixture depends on Additive remaining discriminant 0.
+    // and the wire fixture depends on Additive remaining discriminant 0.
     Additive(FeSchwarz),
     Diagonal(DiagonalPreconditioner),
 }
