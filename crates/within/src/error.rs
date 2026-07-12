@@ -52,16 +52,6 @@ pub enum BuildError {
         /// The offending value.
         value: f64,
     },
-    /// A signed cross-factor component contains a negative-sign cycle, so no
-    /// balancing signature exists.
-    #[error(
-        "frustrated signed component between {pair}: a negative-sign cycle cannot \
-         be balanced (support tracked in #62)"
-    )]
-    FrustratedComponent {
-        /// The offending channel pair.
-        pair: SignedPair,
-    },
     /// A signed component could not be certified as diagonally scalable to an
     /// SDDM operator.
     #[error("signed component between {pair} is not diagonally scalable to SDDM form")]
