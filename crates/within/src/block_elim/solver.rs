@@ -11,7 +11,7 @@ use crate::BuildError;
 use super::compensated_sum;
 use super::elimination::Elimination;
 use super::factor::{factor_sparse, ReducedFactor};
-use super::schur::{ApproxSchurComplement, ExactSchurComplement, SchurComplement, SchurLaplacian};
+use super::schur;
 
 // ===========================================================================
 // Solve helpers
@@ -155,6 +155,12 @@ impl BlockRoles<'_> {
 }
 
 impl BlockElimSolver {
+    fn explicit_ground_index(&self, n_keep: usize) -> Option<usize> {
+        (self.solve_space == SolveSpace::Grounded
+            && self.reduced_factor.input_dimension() == n_keep + 1)
+            .then_some(n_keep)
+    }
+
     pub(crate) fn new(
         cross_tab: impl Into<Arc<CrossTab>>,
         inv_diag_elim: Vec<f64>,
@@ -165,7 +171,7 @@ impl BlockElimSolver {
     ) -> Self {
         let cross_tab = cross_tab.into();
         let n_local = cross_tab.n_local();
-        let n_reduced = reduced_factor.n();
+        let n_reduced = reduced_factor.factor_dimension();
         Self {
             cross_tab,
             inv_diag_elim,
@@ -180,11 +186,14 @@ impl BlockElimSolver {
 
     /// Build a `BlockElimSolver` from a [`CrossTab`] and solver config.
     ///
-    /// Pipeline: build the [`Elimination`] once; attempt dense factorization on
-    /// the anchored minor when below `dense_threshold`; otherwise (or on dense
-    /// failure) assemble the sparse Schur complement and factor it via
-    /// `approx_chol`. The `Elimination` is consumed at the end to produce
-    /// `inv_diag_elim` and `eliminate_q`.
+    /// Pipeline: build the [`Elimination`] once; attempt dense factorization of
+    /// the exact Schur minor when below `dense_threshold`; otherwise (or on
+    /// dense failure) assemble the sparse Schur complement — sampled unless
+    /// configured exact — and factor it via `approx_chol`. The `Elimination` is
+    /// consumed at the end to produce `inv_diag_elim` and `eliminate_q`.
+    ///
+    /// `diagonals` are the build-time-only diagonal blocks; they are read by
+    /// [`Elimination::new`] and dropped once the factor is built.
     pub(crate) fn build(
         component: SddmComponent,
         config: &LocalSolverConfig,
@@ -192,26 +201,26 @@ impl BlockElimSolver {
         let SddmComponent {
             cross_tab,
             diagonals,
+            ground_edges,
             coordinates,
             solve_space,
         } = component;
-        let elim = Elimination::new(&cross_tab, &diagonals)?;
+        let elim = Elimination::new(&cross_tab, &diagonals, &ground_edges, solve_space)?;
         let n_keep = elim.n_keep;
-        // The dense factor anchors one node (`x_anchor = 0`) — a gauge choice
-        // valid only for the singular floating case.
-        let prefer_dense = solve_space == SolveSpace::Floating
-            && config.dense_threshold > 0
-            && n_keep <= config.dense_threshold;
 
-        // Below the dense threshold the reduced system is tiny — always use exact
-        // Schur complement (cheap at this size) and dense Cholesky factorization.
+        // Below the dense threshold the reduced system is tiny — factor the
+        // exact Schur minor densely. Floating systems anchor one node; grounded
+        // systems factor the full nonsingular complement.
         let dense_factor = if n_keep == 0 {
             // Trivial 1×1 component: nothing kept to reduce, so the solve
             // degenerates to `x = r/d`; never send an empty system to approx-chol.
-            ReducedFactor::try_dense_laplacian_minor(Vec::new(), 0)
-        } else if prefer_dense {
-            let anchored_minor = SchurLaplacian::anchored_minor_from_elimination(&elim);
-            ReducedFactor::try_dense_laplacian_minor(anchored_minor, n_keep)
+            ReducedFactor::try_dense(Vec::new(), 0)
+        } else if config.dense_threshold > 0 && n_keep <= config.dense_threshold {
+            let m = match solve_space {
+                SolveSpace::Floating => n_keep - 1,
+                SolveSpace::Grounded => n_keep,
+            };
+            ReducedFactor::try_dense(schur::dense_minor(&elim, m), n_keep)
         } else {
             None
         };
@@ -221,18 +230,19 @@ impl BlockElimSolver {
         let factor = match dense_factor {
             Some(f) => f,
             None => {
-                // Sampled Schur rebuilds the diagonal from edge weights alone,
-                // discarding the surplus that keeps a grounded component
-                // nonsingular — grounded components always take the exact path.
                 let schur_csr = match config.approx_schur {
-                    Some(cfg) if solve_space == SolveSpace::Floating => {
-                        ApproxSchurComplement::new(cfg).compute(&elim)
-                    }
-                    _ => ExactSchurComplement.compute(&elim),
+                    Some(cfg) => schur::sampled(&elim, &cfg),
+                    None => schur::exact_for_factor(&elim),
                 };
                 factor_sparse(&schur_csr, config.approx_chol)?
             }
         };
+        let reduced_input_dimension = factor.input_dimension();
+        debug_assert!(
+            reduced_input_dimension == n_keep
+                || (solve_space == SolveSpace::Grounded && reduced_input_dimension == n_keep + 1)
+        );
+        debug_assert!(factor.factor_dimension() >= reduced_input_dimension);
 
         let Elimination {
             inv_diag_elim,
@@ -263,6 +273,7 @@ impl BlockElimSolver {
     ) -> Result<(), LocalSolveError> {
         let n = self.n_local;
         let n_keep = roles.keep.len();
+        let explicit_ground = self.explicit_ground_index(n_keep);
 
         // Scale the eliminated block by its inverse diagonal.
         scale_by_diag_in_place(&mut rhs[roles.elim.clone()], &self.inv_diag_elim);
@@ -270,6 +281,7 @@ impl BlockElimSolver {
         // Apply `keep_to_elim` into the scratch tail to form the reduced RHS.
         {
             let (main, scratch) = rhs.split_at_mut(n);
+            scratch[n_keep..self.n_reduced].fill(0.0);
             roles.keep_to_elim.spmv_assign_add(
                 &main[roles.elim.clone()],
                 &main[roles.keep.clone()],
@@ -279,17 +291,14 @@ impl BlockElimSolver {
         }
         match self.solve_space {
             SolveSpace::Floating => {
-                if self.n_reduced > n_keep {
-                    rhs[n + n_keep] = 0.0;
-                }
                 subtract_mean(&mut rhs[n..], self.n_reduced);
             }
             // Grounded-Laplacian reduction of the nonsingular SDD reduced
             // system: the ground node absorbs the injected current, and its
             // potential is the gauge subtracted after the solve.
             SolveSpace::Grounded => {
-                if self.n_reduced > n_keep {
-                    rhs[n + n_keep] = -compensated_sum(&rhs[n..n + n_keep]);
+                if let Some(ground) = explicit_ground {
+                    rhs[n + ground] = -compensated_sum(&rhs[n..n + n_keep]);
                 }
             }
         }
@@ -298,8 +307,8 @@ impl BlockElimSolver {
         let reduced = roles.keep.start..roles.keep.start + self.n_reduced;
         sol[reduced.clone()].copy_from_slice(&rhs[n..n + self.n_reduced]);
         self.reduced_factor.solve_in_place(&mut sol[reduced])?;
-        if self.solve_space == SolveSpace::Grounded && self.n_reduced > n_keep {
-            let ground = sol[roles.keep.start + n_keep];
+        if let Some(ground) = explicit_ground {
+            let ground = sol[roles.keep.start + ground];
             for v in &mut sol[roles.keep.start..roles.keep.start + n_keep] {
                 *v -= ground;
             }

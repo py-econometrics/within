@@ -1,17 +1,17 @@
 //! Block-elimination metadata and star iteration for Schur complement assembly.
 //!
 //! For the bipartite SDDM `[D_q, -C; -C^T, D_r]`, eliminating the larger
-//! diagonal block (exact since it's diagonal) yields a reduced Laplacian-style
-//! system on the smaller block. This module owns the block-selection decision,
-//! precomputed inverse-diagonals, and zero-copy [`Star`] views used by both
-//! Schur complement strategies.
+//! diagonal block (exact since it's diagonal) yields a reduced SDDM system on
+//! the smaller block. This module owns the block-selection decision,
+//! precomputed inverse-diagonals, zero-copy [`Star`] views, and sampled fill
+//! edges on the explicit augmented graph.
 
 use approx_chol::low_level::{clique_tree_sample, clique_tree_sample_multi};
 use rayon::prelude::*;
 
 use crate::config::ApproxSchurConfig;
 use crate::csr_block::CsrBlock;
-use crate::domain::{BlockDiagonals, CrossTab};
+use crate::domain::{BlockDiagonals, CrossTab, GroundEdges, SolveSpace};
 use crate::BuildError;
 
 /// Undirected fill edge: `(lo_col, hi_col, weight)` with `lo_col < hi_col`.
@@ -23,9 +23,9 @@ pub(crate) type Edge = (u32, u32, f64);
 
 // Eliminating a diagonal vertex contributes a rank-1 clique (star) to the
 // Schur fill graph: every pair of its keep-block neighbors gets a fill edge.
-// `SampledCliqueEmitter` approximates high-degree stars with GKS 2023
-// clique-tree sampling — O(deg) edges instead of O(deg^2) — keeping the Schur
-// complement spectrally close to the exact (row-workspace) path.
+// `sample_star` approximates high-degree stars with GKS 2023 clique-tree
+// sampling — O(deg) edges instead of O(deg^2) — keeping the Schur complement
+// spectrally close to the exact (row-workspace) path.
 
 /// One eliminated vertex's neighbors in the keep-block.
 ///
@@ -45,31 +45,34 @@ impl Star<'_> {
     }
 }
 
-/// Emits sampled clique-tree fill edges for every star.
-pub(crate) struct SampledCliqueEmitter {
-    seed: u64,
-    split: u32,
-}
-
-impl SampledCliqueEmitter {
-    pub(crate) fn new(config: &ApproxSchurConfig) -> Self {
-        Self {
-            seed: config.seed,
-            split: config.split,
+/// Sample clique-tree fill edges for one eliminated star.
+///
+/// Ground surplus is one more incident edge, so the sampled star's capacity is
+/// exactly its eliminated diagonal.
+fn sample_star(
+    star: &Star,
+    ground: Option<(u32, f64)>,
+    config: &ApproxSchurConfig,
+    edges: &mut Vec<Edge>,
+    scratch: &mut Vec<(u32, f64)>,
+) {
+    scratch.clear();
+    for (&col, &w) in star.col_indices.iter().zip(star.weights) {
+        scratch.push((col, w));
+    }
+    if let Some((ground, surplus)) = ground {
+        if surplus > 0.0 {
+            scratch.push((ground, surplus));
         }
     }
-
-    fn emit(&self, star: &Star, edges: &mut Vec<Edge>, scratch: &mut Vec<(u32, f64)>) {
-        scratch.clear();
-        for (&col, &w) in star.col_indices.iter().zip(star.weights) {
-            scratch.push((col, w));
-        }
-        let seed = self.seed.wrapping_add(star.index as u64);
-        if self.split <= 1 {
-            clique_tree_sample(scratch, seed, edges);
-        } else {
-            clique_tree_sample_multi(scratch, self.split, seed, edges);
-        }
+    if scratch.len() <= 1 {
+        return;
+    }
+    let seed = config.seed.wrapping_add(star.index as u64);
+    if config.split <= 1 {
+        clique_tree_sample(scratch, seed, edges);
+    } else {
+        clique_tree_sample_multi(scratch, config.split, seed, edges);
     }
 }
 
@@ -87,6 +90,9 @@ pub(crate) struct Elimination<'a> {
     pub(crate) n_elim: usize,
     pub(crate) inv_diag_elim: Vec<f64>,
     pub(crate) diag_keep: &'a [f64],
+    pub(crate) surplus_keep: &'a [f64],
+    pub(crate) surplus_elim: &'a [f64],
+    pub(crate) solve_space: SolveSpace,
     pub(crate) keep_to_elim: &'a CsrBlock,
     pub(crate) elim_to_keep: &'a CsrBlock,
 }
@@ -100,6 +106,8 @@ impl<'a> Elimination<'a> {
     pub(crate) fn new(
         cross_tab: &'a CrossTab,
         diagonals: &'a BlockDiagonals,
+        ground_edges: &'a GroundEdges,
+        solve_space: SolveSpace,
     ) -> Result<Self, BuildError> {
         let n_q = cross_tab.n_q();
         let n_r = cross_tab.n_r();
@@ -132,6 +140,11 @@ impl<'a> Elimination<'a> {
         } else {
             &diagonals.q
         };
+        let (surplus_keep, surplus_elim) = if eliminate_q {
+            (&ground_edges.r[..], &ground_edges.q[..])
+        } else {
+            (&ground_edges.q[..], &ground_edges.r[..])
+        };
 
         let (keep_to_elim, elim_to_keep) = if eliminate_q {
             (&cross_tab.ct, &cross_tab.c)
@@ -145,6 +158,9 @@ impl<'a> Elimination<'a> {
             n_elim,
             inv_diag_elim,
             diag_keep,
+            surplus_keep,
+            surplus_elim,
+            solve_space,
             keep_to_elim,
             elim_to_keep,
         })
@@ -161,19 +177,22 @@ impl<'a> Elimination<'a> {
         }
     }
 
-    pub(crate) fn par_emit(&self, emitter: &SampledCliqueEmitter) -> Vec<Edge> {
+    pub(crate) fn par_emit(&self, config: &ApproxSchurConfig) -> Vec<Edge> {
         // Emit in parallel (one scratch buffer reused per fold chunk), concatenate,
         // then a single total-order `sort_and_dedup`. The total order fixes the
         // per-`(lo, hi)` weight summation order, so the result is independent of
         // thread scheduling (the concatenation order no longer matters).
+        let ground_vertex = (self.solve_space == SolveSpace::Grounded)
+            .then(|| u32::try_from(self.n_keep).expect("ground vertex exceeds u32::MAX"));
         let mut edges = (0..self.n_elim)
             .into_par_iter()
             .fold(
                 || (Vec::new(), Vec::<(u32, f64)>::new()),
                 |(mut edges, mut scratch), k| {
                     let star = self.star(k);
-                    if star.degree() > 1 {
-                        emitter.emit(&star, &mut edges, &mut scratch);
+                    if star.degree() > 0 {
+                        let ground = ground_vertex.map(|g| (g, self.surplus_elim[k]));
+                        sample_star(&star, ground, config, &mut edges, &mut scratch);
                     }
                     (edges, scratch)
                 },
@@ -183,6 +202,15 @@ impl<'a> Elimination<'a> {
                 a.append(&mut b);
                 a
             });
+        if let Some(ground) = ground_vertex {
+            edges.extend(
+                self.surplus_keep
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, surplus)| **surplus > 0.0)
+                    .map(|(i, &surplus)| (i as u32, ground, surplus)),
+            );
+        }
         Self::sort_and_dedup(&mut edges);
         edges
     }

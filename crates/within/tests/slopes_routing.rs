@@ -143,3 +143,69 @@ fn near_collinear_cross_term_direction_survives_routing() {
         rnorm / ynorm
     );
 }
+
+#[test]
+fn surplus_component_sampled_matches_exact_reduction() {
+    // DGP in lockstep with `positive_slope_only_pair_grounds_beyond_dense_threshold`
+    // (src/solver/tests.rs), which pins that this design grounds a surplus-carrying
+    // component whose kept side exceeds the dense threshold: the default arm below
+    // exercises the sparse SAMPLED reduction on it; `approx_schur: None` is the
+    // exact-reduction reference (#83).
+    let n = 8000usize;
+    let f: Vec<u32> = (0..n).map(|i| (i % 80) as u32).collect();
+    let g: Vec<u32> = (0..n).map(|i| ((i / 80) % 40) as u32).collect();
+    let z: Vec<f64> = (0..n)
+        .map(|i| 0.5 + ((i * 13) % 100) as f64 / 100.0)
+        .collect();
+    let y: Vec<f64> = (0..n)
+        .map(|i| {
+            let fl = f[i] as f64;
+            (0.5 + (fl * 0.037).cos()) * z[i]
+                + 0.8 * (g[i] as f64 * 0.11).sin()
+                + (i as f64 * 0.61).sin() * 0.3
+        })
+        .collect();
+
+    let solve = |approx_schur| {
+        let effects = vec![
+            Effect::new(&f, false, [&z[..]]).expect("slope effect"),
+            Effect::new(&g, true, []).expect("plain effect"),
+        ];
+        let config = PreconditionerConfig::Additive {
+            local_solver: within::config::LocalSolverConfig {
+                approx_schur,
+                ..Default::default()
+            },
+            reduction: Default::default(),
+        };
+        Solver::new(effects, None, config)
+            .expect("build")
+            .solve(&y, &LsmrOptions::default())
+            .expect("solve")
+    };
+
+    let sampled = solve(Some(within::config::ApproxSchurConfig::default()));
+    let exact = solve(None);
+    assert!(sampled.converged, "sampled arm did not converge");
+    assert!(exact.converged, "exact arm did not converge");
+    assert!(sampled.unidentified.is_empty());
+    assert!(
+        sampled.iterations <= 30,
+        "iterations = {}",
+        sampled.iterations
+    );
+    // The demeaned response is the kernel-invariant deliverable; both arms
+    // must land on the same one.
+    for (i, ((&s, &e), &yi)) in sampled
+        .demeaned
+        .iter()
+        .zip(&exact.demeaned)
+        .zip(&y)
+        .enumerate()
+    {
+        assert!(
+            (s - e).abs() <= 1e-6 * (1.0 + yi.abs()),
+            "demeaned[{i}]: sampled {s} vs exact {e}"
+        );
+    }
+}

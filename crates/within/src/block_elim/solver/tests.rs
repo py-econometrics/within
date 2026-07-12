@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::block_elim::csr_matrix::CsrMatrix;
 use crate::config::ApproxCholConfig;
 use crate::csr_block::CsrBlock;
 use crate::domain::BlockDiagonals;
@@ -119,6 +120,83 @@ fn trivial_singleton_component_solves_r_over_d() {
             .expect("trivial solve");
         assert_eq!(sol[0], 0.5, "n_q={n_q}, n_r={n_r}: expected r/d");
     }
+}
+
+#[test]
+fn sampled_sparse_preserves_barely_pd_direction() {
+    let surplus = 5e-10;
+    let c = CsrBlock::from_dense_table(&[1.0], 1, 1);
+    let ct = c.transpose();
+    let component = SddmComponent::general_for_test(
+        CrossTab { c, ct },
+        BlockDiagonals {
+            q: vec![1.0 + surplus],
+            r: vec![1.0],
+        },
+    );
+    let config = LocalSolverConfig {
+        approx_chol: ApproxCholConfig::default(),
+        approx_schur: Some(crate::config::ApproxSchurConfig::default()),
+        dense_threshold: 0,
+        scaling: Default::default(),
+    };
+    let solver = BlockElimSolver::build(component, &config).unwrap();
+    let mut rhs = vec![0.0; solver.scratch_size()];
+    rhs[..2].copy_from_slice(&[1.0, -1.0]);
+    let mut solution = vec![0.0; solver.scratch_size()];
+    solver.solve_local(&mut rhs, &mut solution, false).unwrap();
+
+    let ax = [
+        (1.0 + surplus) * solution[0] + solution[1],
+        solution[0] + solution[1],
+    ];
+    assert!((ax[0] - 1.0).abs() < 1e-6);
+    assert!((ax[1] + 1.0).abs() < 1e-6);
+}
+
+#[test]
+fn grounded_backend_auxiliary_is_initialized_on_every_solve() {
+    let large = 1e7;
+    let small = 1e-9;
+    let principal = CsrMatrix::new(
+        vec![0, 2, 4],
+        vec![0, 1, 0, 1],
+        vec![large, -large, -large, large + small],
+        2,
+    );
+    let explicit_ground_laplacian =
+        schur::build_explicit_laplacian(&principal, &[0.0, small], SolveSpace::Grounded);
+    let factor = factor_sparse(&explicit_ground_laplacian, ApproxCholConfig::default())
+        .expect("factorization must succeed");
+    assert_eq!(factor.input_dimension(), 3);
+    assert_eq!(factor.factor_dimension(), 4);
+
+    let c = CsrBlock::from_dense_table(&[0.0; 6], 3, 2);
+    let cross_tab = CrossTab {
+        ct: c.transpose(),
+        c,
+    };
+    let solver = BlockElimSolver::new(
+        cross_tab,
+        vec![1.0; 3],
+        factor,
+        true,
+        CoordinateMap::default(),
+        SolveSpace::Grounded,
+    );
+
+    let solve_with_dirty_auxiliary = |dirty: f64| {
+        let mut rhs = vec![0.0; solver.scratch_size()];
+        rhs[3..5].copy_from_slice(&[1.0, -1.0]);
+        rhs[8] = dirty;
+        let mut solution = vec![0.0; solver.scratch_size()];
+        solver.solve_local(&mut rhs, &mut solution, false).unwrap();
+        solution
+    };
+
+    let first = solve_with_dirty_auxiliary(3.0);
+    let second = solve_with_dirty_auxiliary(-7.0);
+    assert_eq!(first[..solver.n_local], second[..solver.n_local]);
 }
 
 #[test]

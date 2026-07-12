@@ -1,10 +1,10 @@
 //! Validated conversion from a signed bipartite Gram block to SDDM form.
 //!
 //! One signed diagonal coordinate map `S` makes `S A S` a Z-matrix and scales
-//! it to diagonal dominance. Diagonal surplus is classified once, here, so
-//! downstream reduction never has to infer rank or grounding from rounded
-//! diagonals. Plain components take a fast path: their Laplacian claim is
-//! validated and adopted without sign folding, scaling, or a data rewrite.
+//! it to diagonal dominance. Surplus is retained as explicit ground-edge
+//! weight, so downstream reduction never has to infer rank or grounding from
+//! rounded diagonals. Plain components take a fast path: their Laplacian claim
+//! is validated and adopted without sign folding, scaling, or a data rewrite.
 
 use super::ComponentClass;
 use crate::config::{ScalingConfig, ScalingFailure};
@@ -41,6 +41,12 @@ pub(crate) struct CoordinateMap {
     factors: Option<Box<[f64]>>,
 }
 
+#[derive(Clone)]
+pub(crate) struct GroundEdges {
+    pub(crate) q: Vec<f64>,
+    pub(crate) r: Vec<f64>,
+}
+
 impl CoordinateMap {
     pub(crate) fn apply(&self, values: &mut [f64], n_q: usize) {
         match &self.factors {
@@ -63,6 +69,7 @@ impl CoordinateMap {
 pub(crate) struct SddmComponent {
     pub(crate) cross_tab: CrossTab,
     pub(crate) diagonals: BlockDiagonals,
+    pub(crate) ground_edges: GroundEdges,
     pub(crate) coordinates: CoordinateMap,
     pub(crate) solve_space: SolveSpace,
 }
@@ -118,9 +125,14 @@ fn convert_known_laplacian(
     if total_mismatch > LAPLACIAN_VALIDATION_BUDGET.tolerance(cross_tab.n_local(), total_diagonal) {
         return Err(ConversionError::NotScalable);
     }
+    let ground_edges = GroundEdges {
+        q: vec![0.0; cross_tab.n_q()],
+        r: vec![0.0; cross_tab.n_r()],
+    };
     Ok(SddmComponent {
         cross_tab,
         diagonals: row_sums,
+        ground_edges,
         coordinates: CoordinateMap::default(),
         solve_space: SolveSpace::Floating,
     })
@@ -190,19 +202,25 @@ fn assemble(
             .collect(),
     };
     let row_sums = adjacency_sums(&cross_tab);
+    let mut ground_edges = GroundEdges {
+        q: vec![0.0; n_q],
+        r: vec![0.0; cross_tab.n_r()],
+    };
 
     let mut total_diagonal = 0.0;
     let mut total_surplus = 0.0;
     let mut clamped_deficit = 0.0f64;
-    for (diagonal, row_sum) in scaled_diagonals
+    for ((diagonal, row_sum), row_surplus) in scaled_diagonals
         .q
         .iter_mut()
         .zip(row_sums.q.iter().copied())
+        .zip(ground_edges.q.iter_mut())
         .chain(
             scaled_diagonals
                 .r
                 .iter_mut()
-                .zip(row_sums.r.iter().copied()),
+                .zip(row_sums.r.iter().copied())
+                .zip(ground_edges.r.iter_mut()),
         )
     {
         if !diagonal.is_finite() || *diagonal <= 0.0 {
@@ -216,13 +234,16 @@ fn assemble(
             clamped_deficit = clamped_deficit.max(deficit);
         }
         *diagonal = diagonal.max(row_sum);
+        *row_surplus = (*diagonal - row_sum).max(0.0);
         total_diagonal += *diagonal;
-        total_surplus += *diagonal - row_sum;
+        total_surplus += *row_surplus;
     }
 
     let solve_space =
         if total_surplus <= FLOATING_CLASSIFICATION_BUDGET.tolerance(n, total_diagonal) {
             scaled_diagonals = row_sums;
+            ground_edges.q.fill(0.0);
+            ground_edges.r.fill(0.0);
             SolveSpace::Floating
         } else {
             SolveSpace::Grounded
@@ -240,6 +261,7 @@ fn assemble(
         SddmComponent {
             cross_tab,
             diagonals: scaled_diagonals,
+            ground_edges,
             coordinates,
             solve_space,
         },

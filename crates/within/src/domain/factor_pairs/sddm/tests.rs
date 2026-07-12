@@ -52,14 +52,23 @@ fn cross_tab(table: &[f64], n_q: usize, n_r: usize) -> CrossTab {
 fn assert_sddm(component: &SddmComponent) {
     assert!(component.cross_tab.c.data.iter().all(|value| *value >= 0.0));
     let sums = adjacency_sums(&component.cross_tab);
-    for (&diagonal, &row_sum) in component
+    for ((&diagonal, &row_sum), &surplus) in component
         .diagonals
         .q
         .iter()
         .zip(sums.q.iter())
-        .chain(component.diagonals.r.iter().zip(sums.r.iter()))
+        .zip(component.ground_edges.q.iter())
+        .chain(
+            component
+                .diagonals
+                .r
+                .iter()
+                .zip(sums.r.iter())
+                .zip(component.ground_edges.r.iter()),
+        )
     {
         assert!(diagonal >= row_sum);
+        assert!((diagonal - row_sum - surplus).abs() <= 1e-12 * diagonal);
     }
 }
 
@@ -246,6 +255,7 @@ fn barely_pd_surplus_is_structural() {
     )
     .unwrap();
     assert_eq!(component.solve_space, SolveSpace::Grounded);
+    assert!((component.ground_edges.q[0] - surplus).abs() < 1e-15);
     assert_sddm(&component);
 }
 
