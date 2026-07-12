@@ -84,7 +84,14 @@ pub(crate) fn build_local_domains(
         warnings.extend(pair_warnings);
     }
 
-    compute_partition_weights(&mut domain_pairs, design.n_dofs);
+    // 1/√c reweighting assumes every subdomain sharing a DOF is equally
+    // informative about it; a slope channel breaks that assumption and
+    // collapses convergence on weakly-connected designs (#94). Slope-carrying
+    // designs keep every subdomain at uniform weight instead — the plain path
+    // is measurably indifferent to this weighting, so this changes nothing there.
+    if !channels.iter().any(|c| c.loading.is_some()) {
+        compute_partition_weights(&mut domain_pairs, design.n_dofs);
+    }
 
     Ok((domain_pairs, warnings))
 }
