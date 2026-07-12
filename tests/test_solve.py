@@ -381,6 +381,27 @@ class TestSolveBatchFreeFunction:
         np.testing.assert_allclose(batch.x[:, 0], r1.x, atol=1e-10)
         np.testing.assert_allclose(batch.x[:, 1], r2.x, atol=1e-10)
 
+    def test_solve_batch_effect_terms_match_individual(self):
+        f = np.array([0, 0, 0, 1, 1, 1], dtype=np.uint32)
+        g = np.array([0, 1, 2, 0, 1, 2], dtype=np.uint32)
+        z = np.array([-2.0, 1.0, 1.0, -1.0, -1.0, 2.0])
+        Y = np.column_stack(
+            [
+                np.array([1.0, -2.0, 0.5, 3.0, -1.5, 2.5]),
+                np.array([0.3, 1.1, -0.7, 2.2, 0.9, -1.4]),
+            ]
+        )
+        from within import Effect, solve_batch
+
+        effects = [Effect(f, True, [z]), Effect(g, True)]
+        batch = solve_batch(effects, Y)
+        for j in range(Y.shape[1]):
+            single = solve(effects, Y[:, j].copy())
+            np.testing.assert_allclose(batch.x[:, j], single.x, atol=1e-10)
+            np.testing.assert_allclose(
+                batch.demeaned[:, j], single.demeaned, atol=1e-10
+            )
+
     def test_solve_batch_result_shapes(self, problem):
         cats, y = problem
         categories = as_solver_categories(cats)
