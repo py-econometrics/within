@@ -100,8 +100,8 @@ pub struct BlockElimSolver {
     pub(crate) reduced_factor: ReducedFactor,
     /// True if the q-block was eliminated (n_q >= n_r).
     eliminate_q: bool,
-    /// Total DOF count (`n_q + n_r`).
-    n_local: usize,
+    /// Internal DOF count (`n_q + n_r`); twice the external count for covers.
+    n_internal: usize,
     /// Internal factor dimension, including backend-added auxiliary vertices.
     n_reduced: usize,
     /// Original-to-SDDM coordinate map; in-memory only until the wire-format bump.
@@ -170,14 +170,14 @@ impl BlockElimSolver {
         solve_space: SolveSpace,
     ) -> Self {
         let cross_tab = cross_tab.into();
-        let n_local = cross_tab.n_local();
+        let n_internal = cross_tab.n_local();
         let n_reduced = reduced_factor.factor_dimension();
         Self {
             cross_tab,
             inv_diag_elim,
             reduced_factor,
             eliminate_q,
-            n_local,
+            n_internal,
             n_reduced,
             coordinates,
             solve_space,
@@ -271,7 +271,7 @@ impl BlockElimSolver {
         sol: &mut [f64],
         allow_inner_parallelism: bool,
     ) -> Result<(), LocalSolveError> {
-        let n = self.n_local;
+        let n = self.n_internal;
         let n_keep = roles.keep.len();
         let explicit_ground = self.explicit_ground_index(n_keep);
 
@@ -330,11 +330,11 @@ impl BlockElimSolver {
 
 impl LocalSolver for BlockElimSolver {
     fn n_local(&self) -> usize {
-        self.n_local
+        self.coordinates.n_external(self.n_internal)
     }
 
     fn scratch_size(&self) -> usize {
-        self.n_local + self.n_reduced
+        self.n_internal + self.n_reduced
     }
 
     fn inner_parallelism_work_estimate(&self) -> usize {
@@ -344,7 +344,7 @@ impl LocalSolver for BlockElimSolver {
         }
 
         let cross_nnz = self.cross_tab.c.nnz();
-        (2 * cross_nnz) + self.n_local
+        (2 * cross_nnz) + self.n_internal
     }
 
     fn solve_local(
@@ -353,11 +353,11 @@ impl LocalSolver for BlockElimSolver {
         sol: &mut [f64],
         allow_inner_parallelism: bool,
     ) -> Result<(), LocalSolveError> {
-        let n = self.n_local;
+        let n = self.n_internal;
         let n_q = self.cross_tab.n_q();
         let ct = &self.cross_tab;
 
-        self.coordinates.apply(&mut rhs[..n], n_q);
+        self.coordinates.fold(&mut rhs[..n], n_q);
         if self.solve_space == SolveSpace::Floating {
             subtract_mean(rhs, n);
         }
@@ -383,7 +383,7 @@ impl LocalSolver for BlockElimSolver {
         if self.solve_space == SolveSpace::Floating {
             subtract_mean(sol, n);
         }
-        self.coordinates.apply(&mut sol[..n], n_q);
+        self.coordinates.unfold(&mut sol[..n], n_q);
         Ok(())
     }
 }

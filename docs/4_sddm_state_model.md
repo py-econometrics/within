@@ -4,7 +4,7 @@ States = matrix classes (invariants). Edges = transforms (domain, exactness,
 pullback). Code is audited against the model: a code path with no legal edge is
 a bug or a missing theorem. Tags: **[exact]**, **[quality]** (costs iterations,
 never correctness), **[def]** (definitional boundary), **[open]** (missing
-mathematics), **[planned]** (see Status).
+mathematics).
 
 ## Problem
 
@@ -106,7 +106,7 @@ it).
 | scale | dominant B → S± | $A \mapsto SAS$, $S$ certified by monotone fixed point | exact | $x = S\hat x$ |
 | clamp | ¬dominant B → S± | diagonal lift $d_i \mapsto \max\bigl(d_i, \sum_j \lvert a_{ij}\rvert\bigr)$ — operator perturbation | quality | — |
 | switch | balanced S± → L₊ | $A \mapsto \sigma A \sigma$, fused with scale; surplus → ground edges; floating ⟺ total surplus ≤ roundoff | exact | $x = \sigma \circ \hat x$ |
-| cover | frustrated S± → L₊ ($2n$) | Gremban double cover; balanced ⟺ cover disconnects | exact, planned | $x = (x^+ - x^-)/2$ |
+| cover | frustrated S± → L₊ ($2n$) | Gremban double cover; balanced ⟺ cover disconnects | exact | $x = (x^+ - x^-)/2$ |
 | eliminate | L₊ → L₊ | Schur on the larger bipartite side: independent set ⇒ pivots = original diagonals; ground kept; eliminated surplus joins its star (capacity = pivot) | exact rows / sampled per-star clique-tree (unbiased, kernel sure, no spectral guarantee; exact on ≤ 2-entry stars) | back-substitution |
 | factor | L₊ → 𝓛 | clique-tree to completion (ground ordinary) / dense Cholesky (floating: anchored minor = grounding, benign) | sampled / exact | substitution |
 | pseudo-solve | 𝓛 → B⁺ | compose pullbacks in reverse; floating: mean-project RHS and solution; grounded: gauge $(b, -\mathbf{1}^\top b)$, $x = \hat x - \hat x_g$ | — | is the pullback |
@@ -261,7 +261,5 @@ which problem is solved, invisibly.
   grounding isomorphism; exact Schur closure and clique decomposition
   (AC(k) §3.1); Gremban cover exactness; additive-Schwarz symmetry/PSD-ness
   under two-sided PoU weights.
-- **Planned** — cover; until it lands, frustrated components — generic for
-  slope pairs — have no path through the model.
 - **Open** — elimination theory for rank-1-block matrix-weighted Laplacians
   (state P); connection-Laplacian theory needs scaled-unitary weights.
