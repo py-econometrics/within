@@ -62,7 +62,7 @@ fn test_block_elim_solver_eliminate_q_false() {
         dense_threshold: 0, // disable dense fast path to ensure sparse path is covered
         scaling: Default::default(),
     };
-    let component = SddmComponent::general_for_test(cross_tab, diagonals);
+    let component = LocalComponent::general_for_test(cross_tab, diagonals);
     let solver = BlockElimSolver::build(component, &config).expect("block-elim build failed");
 
     assert!(
@@ -108,7 +108,7 @@ fn trivial_singleton_component_solves_r_over_d() {
             q: vec![4.0; n_q],
             r: vec![4.0; n_r],
         };
-        let component = SddmComponent::general_for_test(CrossTab { c, ct }, diagonals);
+        let component = LocalComponent::general_for_test(CrossTab { c, ct }, diagonals);
         let solver = BlockElimSolver::build(component, &config).expect("trivial 1×1 build");
         assert_eq!(solver.n_local(), 1);
 
@@ -127,7 +127,7 @@ fn sampled_sparse_preserves_barely_pd_direction() {
     let surplus = 5e-10;
     let c = CsrBlock::from_dense_table(&[1.0], 1, 1);
     let ct = c.transpose();
-    let component = SddmComponent::general_for_test(
+    let component = LocalComponent::general_for_test(
         CrossTab { c, ct },
         BlockDiagonals {
             q: vec![1.0 + surplus],
@@ -254,7 +254,7 @@ fn signed_component_realizes_congruence_transformed_solve() {
             .map(|(i, &v)| if i < n_q { v } else { -v })
             .collect();
         let component =
-            SddmComponent::with_factors_for_test(CrossTab { c, ct }, diagonals, &factors);
+            LocalComponent::with_factors_for_test(CrossTab { c, ct }, diagonals, &factors);
         let solver =
             BlockElimSolver::build(component, &config).expect("signed block-elim build failed");
 
@@ -311,7 +311,7 @@ fn frustrated_component_solves_exactly_through_cover() {
 
     let c = CsrBlock::from_dense_table(&c_raw, n_q, n_r);
     let ct = c.transpose();
-    let component = SddmComponent::general_for_test(
+    let component = LocalComponent::general_for_test(
         CrossTab { c, ct },
         BlockDiagonals {
             q: vec![a[0][0], a[1][1]],
@@ -327,7 +327,18 @@ fn frustrated_component_solves_exactly_through_cover() {
     let solver =
         BlockElimSolver::build(component, &config).expect("covered block-elim build failed");
     let n = n_q + n_r;
-    assert_eq!(solver.n_local(), n, "cover reports external size");
+    // #91 invariant: the stored operator stays single-sized (not doubled); the
+    // cover lives only inside the reduced factor.
+    assert_eq!(solver.n_local(), n, "operator stays single-sized");
+    assert_eq!(
+        solver.cross_tab.n_local(),
+        n,
+        "stored cross-tab not doubled"
+    );
+    assert!(
+        matches!(solver.reduced_factor, ReducedFactor::Cover { .. }),
+        "frustrated component must reduce through a cover",
+    );
 
     let r = [1.0, -2.0, 0.5, 3.0];
     let mut rhs = vec![0.0; solver.scratch_size()];

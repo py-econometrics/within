@@ -27,14 +27,16 @@ pub(crate) enum ReducedFactor {
     Approx(Factor),
     /// Exact dense Cholesky on a principal minor of the Schur matrix.
     Dense(DenseCholesky),
-    /// Approximate sparse Cholesky on the Gremban double cover of a signed
-    /// (frustrated) reduced Schur. `factor` is the doubled cover system;
-    /// `m` is the single signed dimension the solve presents to the caller.
-    /// The cover is stored only here — the local operator stays single-sized.
+    /// Gremban double cover of a signed (frustrated) reduced Schur: `inner`
+    /// factors the doubled cover system (any backend — sampled approx-chol for
+    /// large covers, exact dense for small ones), and `m` is the single signed
+    /// dimension the solve presents to the caller. The cover lives only here —
+    /// the local operator stays single-sized.
     Cover {
-        /// Factor of the doubled cover system (dimension `factor.n() >= 2*m`;
-        /// the tail past `2*m` is the cover's grounding augmentation).
-        factor: Factor,
+        /// Factor of the doubled cover (dimension
+        /// `inner.factor_dimension() >= 2*m`; the tail past `2*m` is the
+        /// cover's grounding augmentation).
+        inner: Box<ReducedFactor>,
         /// Single signed reduced dimension exposed to the caller.
         m: usize,
     },
@@ -68,7 +70,7 @@ impl ReducedFactor {
     pub(crate) fn scratch_len(&self) -> usize {
         match self {
             Self::Approx(_) | Self::Dense(_) => 0,
-            Self::Cover { factor, .. } => factor.n(),
+            Self::Cover { inner, .. } => inner.factor_dimension() + inner.scratch_len(),
         }
     }
 
@@ -94,13 +96,14 @@ impl ReducedFactor {
                 f.solve_in_place(x);
                 Ok(())
             }
-            Self::Cover { factor, m } => {
+            Self::Cover { inner, m } => {
                 debug_assert_eq!(*m, x.len());
+                let cover_n = inner.factor_dimension();
+                let (buf, rest) = scratch.split_at_mut(cover_n);
                 // Embed the antisymmetric RHS [b, -b] into the cover. Any
                 // grounding vertex past the 2m cover nodes has zero RHS (it
                 // cancels in the antisymmetric sheet difference), so clear the
                 // reused scratch tail rather than assume it is zeroed.
-                let buf = &mut scratch[..factor.n()];
                 buf[..*m].copy_from_slice(x);
                 for (out, &v) in buf[*m..2 * *m].iter_mut().zip(x.iter()) {
                     *out = -v;
@@ -108,12 +111,7 @@ impl ReducedFactor {
                 for slot in buf[2 * *m..].iter_mut() {
                     *slot = 0.0;
                 }
-                factor
-                    .solve_in_place(buf)
-                    .map_err(|e| LocalSolveError::BackendFailed {
-                        context: "within.local.block_elim.reduced_cover",
-                        message: e.to_string(),
-                    })?;
+                inner.solve_in_place(buf, rest)?;
                 // Read back the antisymmetric solution: x = (x⁺ - x⁻) / 2.
                 for (i, out) in x.iter_mut().enumerate() {
                     *out = 0.5 * (buf[i] - buf[*m + i]);
@@ -335,7 +333,10 @@ mod tests {
             },
         )
         .expect("factor cover");
-        let reduced = ReducedFactor::Cover { factor, m: 2 };
+        let reduced = ReducedFactor::Cover {
+            inner: Box::new(ReducedFactor::Approx(factor)),
+            m: 2,
+        };
         assert_eq!(reduced.input_dimension(), 2);
         assert_eq!(reduced.factor_dimension(), 2);
 

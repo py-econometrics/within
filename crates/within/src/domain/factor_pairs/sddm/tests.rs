@@ -1,7 +1,7 @@
 use super::*;
 use crate::csr_block::CsrBlock;
 
-impl SddmComponent {
+impl LocalComponent {
     pub(crate) fn plain_for_test(cross_tab: CrossTab, diagonals: BlockDiagonals) -> Self {
         convert(
             cross_tab,
@@ -49,7 +49,7 @@ fn cross_tab(table: &[f64], n_q: usize, n_r: usize) -> CrossTab {
     CrossTab { c, ct }
 }
 
-fn assert_sddm(component: &SddmComponent) {
+fn assert_sddm(component: &LocalComponent) {
     assert!(component.cross_tab.c.data.iter().all(|value| *value >= 0.0));
     let sums = adjacency_sums(&component.cross_tab);
     for ((&diagonal, &row_sum), &surplus) in component
@@ -107,7 +107,7 @@ fn known_laplacian_claim_is_checked() {
 }
 
 #[test]
-fn frustrated_component_converts_to_gremban_cover() {
+fn frustrated_component_stores_single_signed_operator() {
     let (component, uncertified) = convert(
         cross_tab(&[1.0, 1.0, 1.0, -1.0], 2, 2),
         BlockDiagonals {
@@ -119,30 +119,26 @@ fn frustrated_component_converts_to_gremban_cover() {
     )
     .unwrap();
     assert!(uncertified.is_none());
-    assert_sddm(&component);
-    // Doubled bipartite cover: raw-positive cells within each copy,
-    // raw-negative cells across copies, magnitudes preserved.
-    assert_eq!(component.cross_tab.c.nrows, 4);
-    assert_eq!(component.cross_tab.c.ncols, 4);
-    let mut dense = [[0.0; 4]; 4];
+    // The operator stays single-sized and signed (M[1,1] = −1): the cover is
+    // deferred to factor time via the Cover reduction marker.
+    assert_eq!(component.reduction, SchurReduction::Cover);
+    assert_eq!(component.cross_tab.c.nrows, 2);
+    assert_eq!(component.cross_tab.c.ncols, 2);
+    let mut dense = [[0.0; 2]; 2];
     for (i, row) in dense.iter_mut().enumerate() {
         for (j, value) in component.cross_tab.c.row(i) {
             row[j] = value;
         }
     }
-    let expected = [
-        [1.0, 1.0, 0.0, 0.0],
-        [1.0, 0.0, 0.0, 1.0],
-        [0.0, 0.0, 1.0, 1.0],
-        [0.0, 1.0, 1.0, 0.0],
-    ];
-    assert_eq!(dense, expected);
-    // Weak dominance with zero surplus: the cover floats, and vectors pass
-    // through canonical-sign unit factors.
-    assert_eq!(component.solve_space, SolveSpace::Floating);
+    assert_eq!(dense, [[1.0, 1.0], [1.0, -1.0]]);
+    // Magnitude dominance with zero surplus: the operator is Signed (the cover
+    // self-grounds), and vectors pass through canonical-sign unit factors.
+    assert_eq!(component.solve_space, SolveSpace::Signed);
+    assert!(component.ground_edges.q.iter().all(|&s| s == 0.0));
+    assert!(component.ground_edges.r.iter().all(|&s| s == 0.0));
     match &component.coordinates {
-        CoordinateMap::Cover(factors) => assert_eq!(factors.as_ref(), [1.0, 1.0, -1.0, -1.0]),
-        other => panic!("expected cover coordinates, got {other:?}"),
+        CoordinateMap::Scaled(factors) => assert_eq!(factors.as_ref(), [1.0, 1.0, -1.0, -1.0]),
+        other => panic!("expected scaled coordinates, got {other:?}"),
     }
 }
 

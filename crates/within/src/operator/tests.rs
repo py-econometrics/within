@@ -531,7 +531,7 @@ mod schwarz_tests {
     use crate::block_elim::factor::ReducedFactor;
     use crate::csr_block::CsrBlock;
     use crate::domain::{build_local_domains, Design, LocalDomain};
-    use crate::domain::{BlockDiagonals, CrossTab, SddmComponent};
+    use crate::domain::{BlockDiagonals, CrossTab, LocalComponent};
     use crate::operator::schwarz::{build_additive_with_strategy, build_entry};
     use schwarz_precond::{Operator, ReductionStrategy};
 
@@ -612,7 +612,7 @@ mod schwarz_tests {
         let domain_pairs = (0..n_subdomains)
             .map(|_| LocalDomain {
                 core: SubdomainCore::uniform(global_indices.clone()),
-                component: SddmComponent::plain_for_test(
+                component: LocalComponent::plain_for_test(
                     cross_tab.clone(),
                     block_diagonals.clone(),
                 ),

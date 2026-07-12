@@ -5,9 +5,11 @@
 //! weight, so downstream reduction never has to infer rank or grounding from
 //! rounded diagonals. Plain components take a fast path: their Laplacian claim
 //! is validated and adopted without sign folding, scaling, or a data rewrite.
-//! Frustrated components — where no signature exists — convert through their
-//! Gremban double cover, which is SDDM under the same dominance scaling and
-//! acts on the antisymmetric subspace as the scaled original.
+//! Frustrated components — where no signature exists — keep their single
+//! *signed* operator (dominance-scaled but not folded to a Z-matrix) and carry
+//! a [`SchurReduction::Cover`] marker; the Gremban double cover that makes the
+//! reduced Schur SDDM is built transiently at factor time (see
+//! [`crate::block_elim`]), so the stored operator stays single-sized.
 
 use super::ComponentClass;
 use crate::config::{ScalingConfig, ScalingFailure};
@@ -33,10 +35,28 @@ const FLOATING_CLASSIFICATION_BUDGET: RoundoffBudget = RoundoffBudget { ulps: 4.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum SolveSpace {
     // Keep this order: postcard encodes enum discriminants by declaration
-    // order, and the wire fixture pins Floating = 0.
+    // order, and the wire fixture pins Floating = 0; new variants append last.
     #[default]
     Floating,
     Grounded,
+    /// Signed operator whose reduced Schur self-grounds through its Gremban
+    /// cover ([`SchurReduction::Cover`]): the antisymmetric `[b, -b]` embed
+    /// balances the RHS, so the operator-level solve does no mean-subtraction
+    /// and injects no ground current.
+    Signed,
+}
+
+/// How a component's reduced Schur complement is factored.
+///
+/// Orthogonal to [`CoordinateMap`] (an operator-level congruence): a frustrated
+/// component keeps its single signed operator and marks the *reduction* as
+/// [`SchurReduction::Cover`], deferring the double-cover construction to factor
+/// time so the stored operator never doubles.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum SchurReduction {
+    #[default]
+    Direct,
+    Cover,
 }
 
 /// Map between original and SDDM coordinates, applied to vectors at the
@@ -48,13 +68,10 @@ pub(crate) enum CoordinateMap {
     // order, and the wire fixture pins Canonical = 0.
     #[default]
     Canonical,
-    /// Diagonal congruence factors (sign · scale) of a balanced component.
+    /// Diagonal congruence factors (sign · scale). For a frustrated component
+    /// these are the canonical bipartite signs (`+` on q, `−` on r) times the
+    /// dominance scaling, leaving the operator signed.
     Scaled(Box<[f64]>),
-    /// Gremban double cover of a frustrated component: `factors` (canonical
-    /// sign · scale, external length) map the original coordinates, and
-    /// vectors pass through the doubled system via the antisymmetric
-    /// embedding `[z, -z]` and read-back `(x⁺ - x⁻) / 2`.
-    Cover(Box<[f64]>),
 }
 
 #[derive(Clone)]
@@ -64,18 +81,8 @@ pub(crate) struct GroundEdges {
 }
 
 impl CoordinateMap {
-    /// DOF count exposed to gather/scatter; a cover solves an internally
-    /// doubled system.
-    pub(crate) fn n_external(&self, n_internal: usize) -> usize {
-        match self {
-            CoordinateMap::Cover(_) => n_internal / 2,
-            _ => n_internal,
-        }
-    }
-
     /// Map an original-coordinate RHS into SDDM coordinates. `values` spans
-    /// the internal system and `n_q` is its internal q-size; for covers only
-    /// the first `n_external` entries hold data on entry.
+    /// the internal system and `n_q` is its q-size.
     pub(crate) fn fold(&self, values: &mut [f64], n_q: usize) {
         match self {
             CoordinateMap::Canonical => {
@@ -89,57 +96,24 @@ impl CoordinateMap {
                     *value *= factor;
                 }
             }
-            CoordinateMap::Cover(factors) => {
-                let (n_ext, n_q) = (values.len() / 2, n_q / 2);
-                let n_r = n_ext - n_q;
-                debug_assert_eq!(n_ext, factors.len());
-                for (value, &factor) in values[..n_ext].iter_mut().zip(factors.iter()) {
-                    *value *= factor;
-                }
-                // Expand [z_q | z_r] into [z_q | -z_q | z_r | -z_r]; block
-                // moves ordered so no source is clobbered before its copy.
-                values.copy_within(n_q..n_ext, 2 * n_q + n_r);
-                values.copy_within(n_q..n_ext, 2 * n_q);
-                values.copy_within(..n_q, n_q);
-                for value in &mut values[n_q..2 * n_q] {
-                    *value = -*value;
-                }
-                for value in &mut values[2 * n_q + n_r..] {
-                    *value = -*value;
-                }
-            }
         }
     }
 
     /// Map an SDDM-coordinate solution back to original coordinates; the
     /// diagonal maps are involutions up to scale, so they re-apply `fold`.
     pub(crate) fn unfold(&self, values: &mut [f64], n_q: usize) {
-        match self {
-            CoordinateMap::Canonical | CoordinateMap::Scaled(_) => self.fold(values, n_q),
-            CoordinateMap::Cover(factors) => {
-                let (n_ext, n_q) = (values.len() / 2, n_q / 2);
-                let n_r = n_ext - n_q;
-                for i in 0..n_q {
-                    values[i] = 0.5 * (values[i] - values[n_q + i]);
-                }
-                for i in 0..n_r {
-                    values[n_q + i] = 0.5 * (values[2 * n_q + i] - values[2 * n_q + n_r + i]);
-                }
-                for (value, &factor) in values[..n_ext].iter_mut().zip(factors.iter()) {
-                    *value *= factor;
-                }
-            }
-        }
+        self.fold(values, n_q);
     }
 }
 
 #[derive(Clone)]
-pub(crate) struct SddmComponent {
+pub(crate) struct LocalComponent {
     pub(crate) cross_tab: CrossTab,
     pub(crate) diagonals: BlockDiagonals,
     pub(crate) ground_edges: GroundEdges,
     pub(crate) coordinates: CoordinateMap,
     pub(crate) solve_space: SolveSpace,
+    pub(crate) reduction: SchurReduction,
 }
 
 /// The component admits no diagonal scaling to weak dominance (Boman); its
@@ -161,7 +135,7 @@ pub(super) fn convert(
     diagonals: BlockDiagonals,
     class: ComponentClass,
     scaling: &ScalingConfig,
-) -> Result<(SddmComponent, Option<UncertifiedScaling>), NotScalable> {
+) -> Result<(LocalComponent, Option<UncertifiedScaling>), NotScalable> {
     match class {
         ComponentClass::KnownLaplacian => {
             convert_known_laplacian(cross_tab, diagonals).map(|component| (component, None))
@@ -176,7 +150,7 @@ pub(super) fn convert(
 fn convert_known_laplacian(
     cross_tab: CrossTab,
     diagonals: BlockDiagonals,
-) -> Result<SddmComponent, NotScalable> {
+) -> Result<LocalComponent, NotScalable> {
     let row_sums = adjacency_sums(&cross_tab);
     let mut total_diagonal = 0.0;
     let mut total_mismatch = 0.0;
@@ -196,12 +170,13 @@ fn convert_known_laplacian(
         q: vec![0.0; cross_tab.n_q()],
         r: vec![0.0; cross_tab.n_r()],
     };
-    Ok(SddmComponent {
+    Ok(LocalComponent {
         cross_tab,
         diagonals: row_sums,
         ground_edges,
         coordinates: CoordinateMap::default(),
         solve_space: SolveSpace::Floating,
+        reduction: SchurReduction::Direct,
     })
 }
 
@@ -209,7 +184,7 @@ fn convert_general(
     cross_tab: CrossTab,
     diagonals: BlockDiagonals,
     scaling: &ScalingConfig,
-) -> Result<(SddmComponent, Option<UncertifiedScaling>), NotScalable> {
+) -> Result<(LocalComponent, Option<UncertifiedScaling>), NotScalable> {
     let signs = folding_signs(&cross_tab);
     let relaxation = dominance_scaling(&cross_tab, &diagonals, scaling)?;
     if !relaxation.certified && scaling.on_failure == ScalingFailure::Error {
@@ -224,7 +199,7 @@ fn convert_general(
                 .collect();
             assemble(cross_tab, diagonals, factors, scaling)?
         }
-        None => assemble_cover(cross_tab, diagonals, relaxation.scales, scaling)?,
+        None => assemble_signed(cross_tab, diagonals, relaxation.scales, scaling)?,
     };
     let violation = relaxation.violation.max(clamped_deficit);
     let uncertified = (violation > scaling.tolerance).then_some(UncertifiedScaling {
@@ -242,7 +217,7 @@ fn assemble(
     diagonals: BlockDiagonals,
     factors: Vec<f64>,
     scaling: &ScalingConfig,
-) -> Result<(SddmComponent, f64), NotScalable> {
+) -> Result<(LocalComponent, f64), NotScalable> {
     let n_q = cross_tab.n_q();
     for i in 0..n_q {
         let start = cross_tab.c.indptr[i] as usize;
@@ -282,99 +257,102 @@ fn assemble(
     } else {
         CoordinateMap::Scaled(factors.into_boxed_slice())
     };
-    finalize(cross_tab, scaled_diagonals, coordinates, scaling)
-}
-
-/// Assemble the Gremban double cover of a frustrated component: scaled cell
-/// magnitudes, raw-nonnegative cells within each copy, raw-negative cells
-/// across copies. The cover is SDDM exactly when `scales` certifies dominance
-/// of the magnitudes, and acts on the antisymmetric subspace as the scaled
-/// original.
-fn assemble_cover(
-    cross_tab: CrossTab,
-    diagonals: BlockDiagonals,
-    scales: Vec<f64>,
-    scaling: &ScalingConfig,
-) -> Result<(SddmComponent, f64), NotScalable> {
-    let n_q = cross_tab.n_q();
-    let n_r = cross_tab.n_r();
-
-    let mut indptr = Vec::with_capacity(2 * n_q + 1);
-    let mut indices = Vec::with_capacity(2 * cross_tab.c.nnz());
-    let mut data = Vec::with_capacity(2 * cross_tab.c.nnz());
-    indptr.push(0u32);
-    for copy_shifted in [false, true] {
-        for i in 0..n_q {
-            let start = cross_tab.c.indptr[i] as usize;
-            let end = cross_tab.c.indptr[i + 1] as usize;
-            // Emit the unshifted column block before the shifted one so each
-            // row's columns stay sorted.
-            for column_shifted in [false, true] {
-                let column_base = if column_shifted { n_r as u32 } else { 0 };
-                let select_negative = column_shifted != copy_shifted;
-                for idx in start..end {
-                    let value = cross_tab.c.data[idx];
-                    if (value < 0.0) != select_negative {
-                        continue;
-                    }
-                    let scaled =
-                        scales[i] * value * scales[n_q + cross_tab.c.indices[idx] as usize];
-                    if !scaled.is_finite() {
-                        return Err(NotScalable);
-                    }
-                    indices.push(cross_tab.c.indices[idx] + column_base);
-                    data.push(scaled.abs());
-                }
-            }
-            indptr.push(indices.len() as u32);
-        }
-    }
-    let c = CsrBlock {
-        indptr,
-        indices,
-        data,
-        nrows: 2 * n_q,
-        ncols: 2 * n_r,
-    };
-    let ct = c.transpose();
-
-    let doubled = |diagonal: &[f64], scales: &[f64]| -> Vec<f64> {
-        let scaled: Vec<f64> = diagonal
-            .iter()
-            .zip(scales.iter())
-            .map(|(&diagonal, &scale)| diagonal * scale * scale)
-            .collect();
-        scaled.repeat(2)
-    };
-    let scaled_diagonals = BlockDiagonals {
-        q: doubled(&diagonals.q, &scales[..n_q]),
-        r: doubled(&diagonals.r, &scales[n_q..]),
-    };
-
-    let mut factors = scales;
-    for factor in &mut factors[n_q..] {
-        *factor = -*factor;
-    }
+    let row_sums = adjacency_sums(&cross_tab);
     finalize(
-        CrossTab { c, ct },
+        cross_tab,
         scaled_diagonals,
-        CoordinateMap::Cover(factors.into_boxed_slice()),
+        row_sums,
+        coordinates,
+        SchurReduction::Direct,
         scaling,
     )
 }
 
-/// Validate weak dominance of an assembled SDDM form: clamp roundoff
+/// Assemble a frustrated component as a single *signed* operator: the same
+/// congruence fold as [`assemble`] but with the canonical bipartite signs
+/// (`+` on q, `−` on r), skipping the Z-matrix (nonnegative) check that no
+/// signature can satisfy. The stored operator stays single-sized; its Gremban
+/// double cover — needed only to sample an SDDM reduced Schur — is built
+/// transiently at factor time (see [`crate::block_elim`]). Dominance is
+/// classified against *magnitude* row sums, since the cover's off-diagonals
+/// are `|M_ij|`.
+fn assemble_signed(
+    mut cross_tab: CrossTab,
+    diagonals: BlockDiagonals,
+    scales: Vec<f64>,
+    scaling: &ScalingConfig,
+) -> Result<(LocalComponent, f64), NotScalable> {
+    let n_q = cross_tab.n_q();
+    let mut factors = scales;
+    for factor in &mut factors[n_q..] {
+        *factor = -*factor;
+    }
+
+    for i in 0..n_q {
+        let start = cross_tab.c.indptr[i] as usize;
+        let end = cross_tab.c.indptr[i + 1] as usize;
+        let columns = &cross_tab.c.indices[start..end];
+        for (&j, value) in columns.iter().zip(&mut cross_tab.c.data[start..end]) {
+            let folded = -factors[i] * factors[n_q + j as usize] * *value;
+            if !folded.is_finite() {
+                return Err(NotScalable);
+            }
+            *value = folded;
+        }
+    }
+    cross_tab.ct = cross_tab.c.transpose();
+
+    let scaled_diagonals = BlockDiagonals {
+        q: diagonals
+            .q
+            .iter()
+            .zip(factors[..n_q].iter())
+            .map(|(&diagonal, &factor)| diagonal * factor * factor)
+            .collect(),
+        r: diagonals
+            .r
+            .iter()
+            .zip(factors[n_q..].iter())
+            .map(|(&diagonal, &factor)| diagonal * factor * factor)
+            .collect(),
+    };
+    let magnitude_sums = |block: &CsrBlock| -> Vec<f64> {
+        (0..block.nrows)
+            .map(|i| block.row(i).map(|(_, v)| v.abs()).sum())
+            .collect()
+    };
+    let row_sums = BlockDiagonals {
+        q: magnitude_sums(&cross_tab.c),
+        r: magnitude_sums(&cross_tab.ct),
+    };
+
+    finalize(
+        cross_tab,
+        scaled_diagonals,
+        row_sums,
+        CoordinateMap::Scaled(factors.into_boxed_slice()),
+        SchurReduction::Cover,
+        scaling,
+    )
+}
+
+/// Validate weak dominance of an assembled operator against `row_sums` (signed
+/// adjacency for a Z-matrix, magnitudes for a signed operator): clamp roundoff
 /// deficits, retain surplus as ground edges, and classify the solve space.
-/// Returns the largest relative deficit that was clamped; deficits beyond
-/// tolerance are errors under [`ScalingFailure::Error`].
+/// A `Cover`-reduced component is always [`SolveSpace::Signed`]; the
+/// float/ground classification only decides whether its surplus is retained
+/// (the cover self-grounds either way). Returns the largest relative deficit
+/// that was clamped; deficits beyond tolerance are errors under
+/// [`ScalingFailure::Error`].
 fn finalize(
     cross_tab: CrossTab,
     mut scaled_diagonals: BlockDiagonals,
+    row_sums: BlockDiagonals,
     coordinates: CoordinateMap,
+    reduction: SchurReduction,
     scaling: &ScalingConfig,
-) -> Result<(SddmComponent, f64), NotScalable> {
+) -> Result<(LocalComponent, f64), NotScalable> {
     let n = cross_tab.n_local();
-    let row_sums = adjacency_sums(&cross_tab);
     let mut ground_edges = GroundEdges {
         q: vec![0.0; cross_tab.n_q()],
         r: vec![0.0; cross_tab.n_r()],
@@ -412,23 +390,26 @@ fn finalize(
         total_surplus += *row_surplus;
     }
 
-    let solve_space =
-        if total_surplus <= FLOATING_CLASSIFICATION_BUDGET.tolerance(n, total_diagonal) {
-            scaled_diagonals = row_sums;
-            ground_edges.q.fill(0.0);
-            ground_edges.r.fill(0.0);
-            SolveSpace::Floating
-        } else {
-            SolveSpace::Grounded
-        };
+    let floats = total_surplus <= FLOATING_CLASSIFICATION_BUDGET.tolerance(n, total_diagonal);
+    if floats {
+        scaled_diagonals = row_sums;
+        ground_edges.q.fill(0.0);
+        ground_edges.r.fill(0.0);
+    }
+    let solve_space = match reduction {
+        SchurReduction::Cover => SolveSpace::Signed,
+        SchurReduction::Direct if floats => SolveSpace::Floating,
+        SchurReduction::Direct => SolveSpace::Grounded,
+    };
 
     Ok((
-        SddmComponent {
+        LocalComponent {
             cross_tab,
             diagonals: scaled_diagonals,
             ground_edges,
             coordinates,
             solve_space,
+            reduction,
         },
         clamped_deficit,
     ))
