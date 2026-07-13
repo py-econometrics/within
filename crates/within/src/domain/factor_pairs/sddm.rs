@@ -197,9 +197,28 @@ fn convert_general(
                 .zip(relaxation.scales.iter())
                 .map(|(&sign, &scale)| sign * scale)
                 .collect();
-            assemble(cross_tab, diagonals, factors, scaling)?
+            assemble(
+                cross_tab,
+                diagonals,
+                factors,
+                SchurReduction::Direct,
+                scaling,
+            )?
         }
-        None => assemble_signed(cross_tab, diagonals, relaxation.scales, scaling)?,
+        None => {
+            let n_q = cross_tab.n_q();
+            let mut factors = relaxation.scales;
+            for factor in &mut factors[n_q..] {
+                *factor = -*factor;
+            }
+            assemble(
+                cross_tab,
+                diagonals,
+                factors,
+                SchurReduction::Cover,
+                scaling,
+            )?
+        }
     };
     let violation = relaxation.violation.max(clamped_deficit);
     let uncertified = (violation > scaling.tolerance).then_some(UncertifiedScaling {
@@ -210,22 +229,31 @@ fn convert_general(
 }
 
 /// Fold the component through `factors` and assemble the validated SDDM form.
-/// Returns the largest relative diagonal deficit that was clamped; deficits
-/// beyond tolerance are errors under [`ScalingFailure::Error`].
+/// The `reduction` fixes the fold contract: a [`SchurReduction::Direct`]
+/// component must fold to a true Z-matrix, so any off-diagonal the signature
+/// failed to drive nonnegative is an error; a [`SchurReduction::Cover`] component
+/// keeps its single *signed* operator (negatives retained) and grounds through a
+/// Gremban double cover built at factor time (see [`crate::block_elim`]).
+/// Dominance is classified against *magnitude* row sums either way — after a
+/// Z-fold every off-diagonal is nonnegative, so magnitudes match the signed
+/// adjacency there. Returns the largest relative diagonal deficit that was
+/// clamped; deficits beyond tolerance are errors under [`ScalingFailure::Error`].
 fn assemble(
     mut cross_tab: CrossTab,
     diagonals: BlockDiagonals,
     factors: Vec<f64>,
+    reduction: SchurReduction,
     scaling: &ScalingConfig,
 ) -> Result<(LocalComponent, f64), NotScalable> {
     let n_q = cross_tab.n_q();
+    let enforce_z = reduction == SchurReduction::Direct;
     for i in 0..n_q {
         let start = cross_tab.c.indptr[i] as usize;
         let end = cross_tab.c.indptr[i + 1] as usize;
         let columns = &cross_tab.c.indices[start..end];
         for (&j, value) in columns.iter().zip(&mut cross_tab.c.data[start..end]) {
             let folded = -factors[i] * factors[n_q + j as usize] * *value;
-            if !folded.is_finite() || folded < 0.0 {
+            if !folded.is_finite() || (enforce_z && folded < 0.0) {
                 return Err(NotScalable);
             }
             *value = folded;
@@ -248,6 +276,10 @@ fn assemble(
             .collect(),
     };
 
+    // Canonical bipartite factors (`+1` on q, `−1` on r) need no stored map: the
+    // congruence is just the sign flip `fold` applies by default. This holds for
+    // a plain already-dominant component and equally for a frustrated one, so it
+    // is detected regardless of the reduction.
     let canonical = factors
         .iter()
         .enumerate()
@@ -257,65 +289,7 @@ fn assemble(
     } else {
         CoordinateMap::Scaled(factors.into_boxed_slice())
     };
-    let row_sums = adjacency_sums(&cross_tab);
-    finalize(
-        cross_tab,
-        scaled_diagonals,
-        row_sums,
-        coordinates,
-        SchurReduction::Direct,
-        scaling,
-    )
-}
 
-/// Assemble a frustrated component as a single *signed* operator: the same
-/// congruence fold as [`assemble`] but with the canonical bipartite signs
-/// (`+` on q, `−` on r), skipping the Z-matrix (nonnegative) check that no
-/// signature can satisfy. The stored operator stays single-sized; its Gremban
-/// double cover — needed only to sample an SDDM reduced Schur — is built
-/// transiently at factor time (see [`crate::block_elim`]). Dominance is
-/// classified against *magnitude* row sums, since the cover's off-diagonals
-/// are `|M_ij|`.
-fn assemble_signed(
-    mut cross_tab: CrossTab,
-    diagonals: BlockDiagonals,
-    scales: Vec<f64>,
-    scaling: &ScalingConfig,
-) -> Result<(LocalComponent, f64), NotScalable> {
-    let n_q = cross_tab.n_q();
-    let mut factors = scales;
-    for factor in &mut factors[n_q..] {
-        *factor = -*factor;
-    }
-
-    for i in 0..n_q {
-        let start = cross_tab.c.indptr[i] as usize;
-        let end = cross_tab.c.indptr[i + 1] as usize;
-        let columns = &cross_tab.c.indices[start..end];
-        for (&j, value) in columns.iter().zip(&mut cross_tab.c.data[start..end]) {
-            let folded = -factors[i] * factors[n_q + j as usize] * *value;
-            if !folded.is_finite() {
-                return Err(NotScalable);
-            }
-            *value = folded;
-        }
-    }
-    cross_tab.ct = cross_tab.c.transpose();
-
-    let scaled_diagonals = BlockDiagonals {
-        q: diagonals
-            .q
-            .iter()
-            .zip(factors[..n_q].iter())
-            .map(|(&diagonal, &factor)| diagonal * factor * factor)
-            .collect(),
-        r: diagonals
-            .r
-            .iter()
-            .zip(factors[n_q..].iter())
-            .map(|(&diagonal, &factor)| diagonal * factor * factor)
-            .collect(),
-    };
     let magnitude_sums = |block: &CsrBlock| -> Vec<f64> {
         (0..block.nrows)
             .map(|i| block.row(i).map(|(_, v)| v.abs()).sum())
@@ -330,8 +304,8 @@ fn assemble_signed(
         cross_tab,
         scaled_diagonals,
         row_sums,
-        CoordinateMap::Scaled(factors.into_boxed_slice()),
-        SchurReduction::Cover,
+        coordinates,
+        reduction,
         scaling,
     )
 }

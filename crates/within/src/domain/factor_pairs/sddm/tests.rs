@@ -36,6 +36,7 @@ impl LocalComponent {
             cross_tab,
             diagonals,
             factors.to_vec(),
+            SchurReduction::Direct,
             &ScalingConfig::default(),
         )
         .expect("test factors must fold to SDDM")
@@ -132,14 +133,12 @@ fn frustrated_component_stores_single_signed_operator() {
     }
     assert_eq!(dense, [[1.0, 1.0], [1.0, -1.0]]);
     // Magnitude dominance with zero surplus: the operator is Signed (the cover
-    // self-grounds), and vectors pass through canonical-sign unit factors.
+    // self-grounds). Its congruence is exactly the canonical bipartite sign flip
+    // (`+1` on q, `−1` on r), so no explicit factor map is stored.
     assert_eq!(component.solve_space, SolveSpace::Signed);
     assert!(component.ground_edges.q.iter().all(|&s| s == 0.0));
     assert!(component.ground_edges.r.iter().all(|&s| s == 0.0));
-    match &component.coordinates {
-        CoordinateMap::Scaled(factors) => assert_eq!(factors.as_ref(), [1.0, 1.0, -1.0, -1.0]),
-        other => panic!("expected scaled coordinates, got {other:?}"),
-    }
+    assert!(matches!(component.coordinates, CoordinateMap::Canonical));
 }
 
 #[test]
@@ -215,8 +214,14 @@ fn large_rescaled_singular_boundary_remains_floating() {
     };
     let factors: Vec<f64> = std::iter::once(q_factor).chain(r_factors).collect();
 
-    let (component, _) =
-        assemble(cross_tab, diagonals, factors, &ScalingConfig::default()).unwrap();
+    let (component, _) = assemble(
+        cross_tab,
+        diagonals,
+        factors,
+        SchurReduction::Direct,
+        &ScalingConfig::default(),
+    )
+    .unwrap();
 
     assert_eq!(component.solve_space, SolveSpace::Floating);
     assert_sddm(&component);
