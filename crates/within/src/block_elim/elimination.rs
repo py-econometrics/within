@@ -211,7 +211,7 @@ impl<'a> Elimination<'a> {
                     .map(|(i, &surplus)| (i as u32, ground, surplus)),
             );
         }
-        Self::sort_and_dedup(&mut edges);
+        self.sort_and_dedup(&mut edges);
         edges
     }
 
@@ -219,14 +219,24 @@ impl<'a> Elimination<'a> {
     /// summing weights. The weight tiebreak fixes the per-`(lo, hi)` summation
     /// order, making the assembled Schur complement reproducible across runs and
     /// thread counts.
-    fn sort_and_dedup(edges: &mut Vec<Edge>) {
-        edges.sort_unstable_by(|a, b| {
-            a.0.cmp(&b.0)
-                .then(a.1.cmp(&b.1))
-                .then_with(|| a.2.total_cmp(&b.2))
-        });
+    fn sort_and_dedup(&self, edges: &mut Vec<Edge>) {
         if edges.len() <= 1 {
             return;
+        }
+        // Dense: linear counting sort by `lo` + parallel per-`lo`-run sorts by
+        // `(hi, weight)`. Sparse: one parallel comparison sort. Same total order.
+        if edges.len() >= self.n_keep {
+            self.counting_sort_by_lo(edges);
+            let by_hi_weight = |a: &Edge, b: &Edge| a.1.cmp(&b.1).then_with(|| a.2.total_cmp(&b.2));
+            edges
+                .par_chunk_by_mut(|a, b| a.0 == b.0)
+                .for_each(|run| run.sort_unstable_by(by_hi_weight));
+        } else {
+            edges.par_sort_unstable_by(|a, b| {
+                a.0.cmp(&b.0)
+                    .then(a.1.cmp(&b.1))
+                    .then_with(|| a.2.total_cmp(&b.2))
+            });
         }
         let mut write = 0;
         for read in 1..edges.len() {
@@ -238,5 +248,29 @@ impl<'a> Elimination<'a> {
             }
         }
         edges.truncate(write + 1);
+    }
+
+    /// Stable counting sort of `edges` by `lo` in O(E + n_keep).
+    fn counting_sort_by_lo(&self, edges: &mut Vec<Edge>) {
+        let mut cursors = vec![0usize; self.n_keep + 1];
+        for e in edges.iter() {
+            // `lo < n_keep` always holds: the ground vertex (the only id that can
+            // equal `n_keep`) carries the maximum id and lands on `hi`.
+            debug_assert!(
+                (e.0 as usize) < self.n_keep,
+                "counting sort key `lo` must be a keep-block id (< n_keep)"
+            );
+            cursors[e.0 as usize + 1] += 1;
+        }
+        for i in 1..cursors.len() {
+            cursors[i] += cursors[i - 1];
+        }
+        let mut out = vec![(0u32, 0u32, 0.0f64); edges.len()];
+        for &e in edges.iter() {
+            let cursor = &mut cursors[e.0 as usize];
+            out[*cursor] = e;
+            *cursor += 1;
+        }
+        *edges = out;
     }
 }
