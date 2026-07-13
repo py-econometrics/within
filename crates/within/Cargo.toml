@@ -11,7 +11,7 @@ categories = ["mathematics", "science", "algorithms"]
 
 [dependencies]
 schwarz-precond = { version = "0.2.0", path = "../schwarz-precond", features = ["serde"] }
-approx-chol = { version = "0.2.0", features = ["serde"] }
+approx-chol = { version = "0.3.1", features = ["serde"] }
 serde = { version = "1", features = ["derive", "rc"] }
 postcard = { version = "1", features = ["use-std"] }
 ndarray = "0.16"
