@@ -15,7 +15,7 @@ use super::{find_all_active_levels, BlockDiagonals, Channel, ChannelPair, CrossT
 
 mod sddm;
 use sddm::{convert, NotScalable};
-pub(crate) use sddm::{CoordinateMap, GroundEdges, SddmComponent, SolveSpace};
+pub(crate) use sddm::{CoordinateMap, GroundEdges, LocalComponent, SchurReduction, SolveSpace};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ComponentClass {
@@ -23,11 +23,11 @@ enum ComponentClass {
     General,
 }
 
-/// A factor-pair Schwarz domain paired with its validated SDDM operator.
+/// A factor-pair Schwarz domain paired with its validated local operator.
 #[derive(Clone)]
 pub(crate) struct LocalDomain {
     pub(crate) core: SubdomainCore,
-    pub(crate) component: SddmComponent,
+    pub(crate) component: LocalComponent,
 }
 
 /// Build local subdomains (with pre-built CrossTabs) for cross-factor channel
