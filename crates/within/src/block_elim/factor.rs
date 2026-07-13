@@ -228,11 +228,11 @@ impl DenseCholesky {
 // factor_sparse — bridge into approx_chol for sparse reduced Schur
 // ===========================================================================
 
-/// Factor a sparse Schur complement matrix into a bare `approx_chol` factor.
-pub(crate) fn build_factor(
+/// Factor a sparse (SDDM) reduced Schur complement into a direct `Approx` factor.
+pub(crate) fn factor_sparse(
     matrix: &CsrMatrix,
     approx_chol: ApproxCholConfig,
-) -> Result<Factor, BuildError> {
+) -> Result<ReducedFactor, BuildError> {
     let schur_builder = Builder::new(approx_chol.to_approx_chol());
     let csr = CsrRef::new(
         matrix.indptr(),
@@ -241,17 +241,12 @@ pub(crate) fn build_factor(
         u32::try_from(matrix.n()).expect("Schur complement dimension exceeds u32::MAX"),
     )
     .map_err(|e| BuildError::LocalSolverBuild(format!("invalid Schur complement CSR: {e}")))?;
-    schur_builder.build(csr).map_err(|e| {
-        BuildError::LocalSolverBuild(format!("failed Schur complement factorization: {e}"))
-    })
-}
-
-/// Factor a sparse (SDDM) reduced Schur complement into a direct `Approx` factor.
-pub(crate) fn factor_sparse(
-    matrix: &CsrMatrix,
-    approx_chol: ApproxCholConfig,
-) -> Result<ReducedFactor, BuildError> {
-    build_factor(matrix, approx_chol).map(ReducedFactor::Approx)
+    schur_builder
+        .build(csr)
+        .map(ReducedFactor::Approx)
+        .map_err(|e| {
+            BuildError::LocalSolverBuild(format!("failed Schur complement factorization: {e}"))
+        })
 }
 
 #[cfg(test)]
@@ -325,7 +320,7 @@ mod tests {
             vec![2.0, -1.0, 2.0, -1.0, -1.0, 2.0, -1.0, 2.0],
             4,
         );
-        let factor = build_factor(
+        let inner = factor_sparse(
             &cover,
             ApproxCholConfig {
                 seed: 0,
@@ -334,7 +329,7 @@ mod tests {
         )
         .expect("factor cover");
         let reduced = ReducedFactor::Cover {
-            inner: Box::new(ReducedFactor::Approx(factor)),
+            inner: Box::new(inner),
             m: 2,
         };
         assert_eq!(reduced.input_dimension(), 2);

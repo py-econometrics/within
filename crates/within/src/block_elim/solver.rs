@@ -248,8 +248,8 @@ fn assemble_bipartite_cover(
     };
     let cover_ct = cover_c.transpose();
     let cover_diagonals = BlockDiagonals {
-        q: [&diagonals.q[..], &diagonals.q[..]].concat(),
-        r: [&diagonals.r[..], &diagonals.r[..]].concat(),
+        q: diagonals.q.repeat(2),
+        r: diagonals.r.repeat(2),
     };
     (
         CrossTab {
@@ -334,8 +334,8 @@ impl BlockElimSolver {
                 // only the factor is retained.
                 let (cover_cross, cover_diag) = assemble_bipartite_cover(&cross_tab, &diagonals);
                 let cover_ground = GroundEdges {
-                    q: [&ground_edges.q[..], &ground_edges.q[..]].concat(),
-                    r: [&ground_edges.r[..], &ground_edges.r[..]].concat(),
+                    q: ground_edges.q.repeat(2),
+                    r: ground_edges.r.repeat(2),
                 };
                 // Surplus survives the cover, so the cover grounds exactly when
                 // the signed operator did (its edges are zeroed otherwise).
