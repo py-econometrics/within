@@ -26,6 +26,7 @@ from within._within import (
     AdditiveSchwarz,
     ApproxCholConfig,
     ApproxSchurConfig,
+    Schur,
     ReductionStrategy,
     LocalSolverConfig,
 )
@@ -107,7 +108,7 @@ def _solve_once(
     result = solve(
         np.asfortranarray(np.column_stack(categories).astype(np.uint32)),
         y,
-        config.config,
+        options=config.config,
         preconditioner=config.preconditioner,
     )
 
@@ -202,13 +203,13 @@ def standard_solver_configs(
     """
     schur = LocalSolverConfig(
         approx_chol=ApproxCholConfig(seed=opts.seed),
-        approx_schur=ApproxSchurConfig(seed=opts.seed),
+        schur=Schur.approximate(ApproxSchurConfig(seed=opts.seed)),
     )
     # "2-2": both densification knobs on — split_merge=2 (AC2 reduced-system
     # factorization) and split=2 (denser Schur clique-tree sampling).
     schur_2_2 = LocalSolverConfig(
         approx_chol=ApproxCholConfig(seed=opts.seed, split_merge=2),
-        approx_schur=ApproxSchurConfig(seed=opts.seed, split=2),
+        schur=Schur.approximate(ApproxSchurConfig(seed=opts.seed, split=2)),
     )
     return [
         SolverConfig(
