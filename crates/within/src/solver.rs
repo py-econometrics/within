@@ -149,7 +149,7 @@ impl CoefficientLayout {
             .map(|t| TermLayout {
                 offset: t.offset,
                 n_levels: t.n_levels,
-                n_columns: usize::from(t.intercept) + t.slopes.len(),
+                n_columns: t.n_columns(),
             })
             .collect();
         Self {
