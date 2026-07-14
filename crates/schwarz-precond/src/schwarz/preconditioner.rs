@@ -2,8 +2,8 @@
 //!
 //! Implements [`Operator`](crate::Operator) so it can be passed directly
 //! to an iterative solver as a preconditioner. The constructor walks the
-//! subdomain entries once to derive `n_dofs`, `max_scratch_size`, and the
-//! scheduling metrics. `apply` is lock-free in steady state (buffers are
+//! subdomain entries once to derive `max_scratch_size` and the scheduling
+//! metrics (and, unless given explicitly, `n_dofs`). `apply` is lock-free in steady state (buffers are
 //! borrowed from a pool).
 
 use std::sync::Arc;
@@ -19,9 +19,11 @@ use super::planning::{AdditiveScheduler, ReductionPlan, ReductionStrategy};
 // Serde
 // ---------------------------------------------------------------------------
 
-/// Persists only the subdomain entries; `n_dofs` and `max_scratch_size` are
-/// re-derived from the entries at deserialize time. The reduction strategy
-/// resets to `Auto`; buffers are re-allocated fresh.
+/// Persists the subdomain entries and the global DOF count `n_dofs` — the
+/// latter is not recoverable from the entries alone when some operator columns
+/// are covered by no subdomain. `max_scratch_size` and the scheduling metrics
+/// are re-derived on deserialize; the reduction strategy resets to `Auto`;
+/// buffers are re-allocated fresh.
 #[cfg(feature = "serde")]
 impl<S> serde::Serialize for SchwarzPreconditioner<S>
 where
@@ -29,8 +31,12 @@ where
 {
     fn serialize<Ser: serde::Serializer>(&self, serializer: Ser) -> Result<Ser::Ok, Ser::Error> {
         use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("SchwarzPreconditioner", 1)?;
+        let mut state = serializer.serialize_struct("SchwarzPreconditioner", 2)?;
         state.serialize_field("subdomains", self.executor.subdomains())?;
+        // Persist the global DOF count: it is not recoverable from the
+        // subdomains alone when the operator has structural-null tail DOFs
+        // that no subdomain covers.
+        state.serialize_field("n_dofs", &self.executor.n_dofs())?;
         state.end()
     }
 }
@@ -47,11 +53,13 @@ where
         #[serde(bound(deserialize = "S: serde::de::DeserializeOwned"))]
         struct Helper<S: LocalSolver> {
             subdomains: Vec<SubdomainEntry<S>>,
+            n_dofs: usize,
         }
 
         let h: Helper<S> = Helper::deserialize(deserializer)?;
-        Ok(SchwarzPreconditioner::new(
+        Ok(SchwarzPreconditioner::with_n_dofs(
             h.subdomains,
+            h.n_dofs,
             ReductionStrategy::default(),
         ))
     }
@@ -70,17 +78,43 @@ pub struct SchwarzPreconditioner<S: LocalSolver> {
 }
 
 impl<S: LocalSolver> SchwarzPreconditioner<S> {
-    /// Construct from pre-built subdomain entries with a reduction strategy.
+    /// Construct from pre-built subdomain entries, inferring the global DOF
+    /// count from the maximum global index across entries (or 0 if empty).
     ///
-    /// `n_dofs` is derived from the maximum global index across entries
-    /// (or 0 if `entries` is empty). An empty entry list yields a degenerate
-    /// preconditioner; misuse is caught at apply time by the dimension check.
+    /// Suitable only when every DOF is covered by a subdomain. An operator
+    /// with columns no subdomain touches (e.g. an unidentified direction kept
+    /// for shape) must state its true width via [`Self::with_n_dofs`], or the
+    /// inferred count falls short and the mismatch surfaces at apply time.
     pub fn new(entries: Vec<SubdomainEntry<S>>, strategy: ReductionStrategy) -> Self {
-        let mut n_dofs: usize = 0;
+        Self::build(entries, None, strategy)
+    }
+
+    /// Construct with an explicit global DOF count: the operator's column
+    /// count, which may exceed the span of the subdomains' global indices. A
+    /// column no subdomain covers stays in the null space, so its apply output
+    /// is `0`. A count below the covered span is a caller bug (a subdomain
+    /// would scatter out of bounds), caught in debug builds.
+    pub fn with_n_dofs(
+        entries: Vec<SubdomainEntry<S>>,
+        n_dofs: usize,
+        strategy: ReductionStrategy,
+    ) -> Self {
+        Self::build(entries, Some(n_dofs), strategy)
+    }
+
+    /// Shared constructor: one pass over `entries` derives `max_scratch_size`,
+    /// the scheduling metrics, and the covered index span. `n_dofs` is taken
+    /// as given, or inferred from that span when `None`.
+    fn build(
+        entries: Vec<SubdomainEntry<S>>,
+        n_dofs: Option<usize>,
+        strategy: ReductionStrategy,
+    ) -> Self {
         let mut max_scratch_size: usize = 0;
         let mut total_inner_parallel_work: usize = 0;
         let mut max_inner_parallel_work: usize = 0;
         let mut total_scatter_dofs: usize = 0;
+        let mut covered_span: usize = 0;
 
         for entry in &entries {
             let work = entry.solver().inner_parallelism_work_estimate();
@@ -91,12 +125,14 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
             let indices = entry.global_indices();
             total_scatter_dofs = total_scatter_dofs.saturating_add(indices.len());
             if let Some(&max_idx) = indices.iter().max() {
-                let candidate = max_idx as usize + 1;
-                if candidate > n_dofs {
-                    n_dofs = candidate;
-                }
+                covered_span = covered_span.max(max_idx as usize + 1);
             }
         }
+        let n_dofs = n_dofs.unwrap_or(covered_span);
+        debug_assert!(
+            n_dofs >= covered_span,
+            "n_dofs ({n_dofs}) is below the covered index span ({covered_span})"
+        );
 
         let executor = AdditiveExecutor::new(Arc::new(entries), n_dofs, max_scratch_size);
         let scheduler = AdditiveScheduler {

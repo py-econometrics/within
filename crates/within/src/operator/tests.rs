@@ -650,12 +650,14 @@ mod schwarz_tests {
                 domain_pairs,
                 &config,
                 ReductionStrategy::ParallelReduction,
+                n_dofs,
             )
             .expect("build block-elim additive preconditioner");
             let atomic = build_additive_with_strategy(
                 domain_pairs_atomic,
                 &config,
                 ReductionStrategy::AtomicScatter,
+                n_dofs,
             )
             .expect("build block-elim atomic preconditioner");
 
@@ -729,7 +731,7 @@ mod schwarz_tests {
         let (design, domain_pairs) = make_test_data();
         let config = LocalSolverConfig::default();
         let strategy = schwarz_precond::ReductionStrategy::default();
-        let schwarz = build_additive_with_strategy(domain_pairs, &config, strategy)
+        let schwarz = build_additive_with_strategy(domain_pairs, &config, strategy, design.n_dofs)
             .expect("build schwarz with explicit domains");
         let r = vec![1.0; design.n_dofs];
         let mut z = vec![0.0; design.n_dofs];
