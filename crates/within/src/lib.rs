@@ -23,7 +23,7 @@ pub(crate) mod domain;
 pub(crate) mod operator;
 pub(crate) mod solver;
 
-pub use config::{LsmrOptions, PreconditionerConfig, ScalingConfig, ScalingFailure};
+pub use config::{LsmrOptions, PreconditionerConfig, ScalingConfig, ScalingFailure, SchurMode};
 pub use domain::{Design, Effect};
 pub use error::{BuildError, BuildWarning, SignedPair, SolveError, WithinError};
 pub use operator::schwarz::Preconditioner;

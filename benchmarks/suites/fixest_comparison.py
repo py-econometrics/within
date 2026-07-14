@@ -10,6 +10,7 @@ from __future__ import annotations
 from within._within import (
     ApproxCholConfig,
     ApproxSchurConfig,
+    Schur,
     LocalSolverConfig,
 )
 from .._framework import (
@@ -52,17 +53,17 @@ def run_fixest_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
 
     exact_schur = LocalSolverConfig(
         approx_chol=ApproxCholConfig(seed=0, split_merge=8),
-        approx_schur=None,
+        schur=Schur.exact(),
     )
     approx_schur = LocalSolverConfig(
         approx_chol=ApproxCholConfig(seed=0, split_merge=8),
-        approx_schur=ApproxSchurConfig(seed=0),
+        schur=Schur.approximate(ApproxSchurConfig(seed=0)),
     )
     # "2-2": both densification knobs on — split_merge=2 (AC2 factorization)
     # and split=2 (denser Schur clique-tree sampling).
     schur_2_2 = LocalSolverConfig(
         approx_chol=ApproxCholConfig(seed=0, split_merge=2),
-        approx_schur=ApproxSchurConfig(seed=0, split=2),
+        schur=Schur.approximate(ApproxSchurConfig(seed=0, split=2)),
     )
 
     solver_configs = [

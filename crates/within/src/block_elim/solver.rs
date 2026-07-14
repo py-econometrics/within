@@ -3,7 +3,7 @@ use std::sync::Arc;
 use rayon::prelude::*;
 use schwarz_precond::{LocalSolveError, LocalSolver};
 
-use crate::config::LocalSolverConfig;
+use crate::config::{LocalSolverConfig, SchurMode};
 use crate::csr_block::{CsrBlock, PAR_SPMV_THRESHOLD};
 use crate::domain::{
     BlockDiagonals, CoordinateMap, CrossTab, GroundEdges, LocalComponent, SchurReduction,
@@ -189,9 +189,9 @@ fn build_reduced_factor(
     match dense_factor {
         Some(factor) => Ok(factor),
         None => {
-            let schur_csr = match config.approx_schur {
-                Some(cfg) => schur::sampled(elim, &cfg),
-                None => schur::exact_for_factor(elim),
+            let schur_csr = match &config.schur {
+                SchurMode::Approximate(cfg) => schur::sampled(elim, cfg),
+                SchurMode::Exact => schur::exact_for_factor(elim),
             };
             factor_sparse(&schur_csr, config.approx_chol)
         }

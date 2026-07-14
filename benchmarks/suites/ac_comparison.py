@@ -17,6 +17,7 @@ from __future__ import annotations
 from within._within import (
     ApproxCholConfig,
     ApproxSchurConfig,
+    Schur,
     LocalSolverConfig,
 )
 from .._framework import (
@@ -35,7 +36,7 @@ from .._table import print_pivot, print_table
 def _schur(seed: int, split_merge: int | None) -> LocalSolverConfig:
     return LocalSolverConfig(
         approx_chol=ApproxCholConfig(seed=seed, split_merge=split_merge),
-        approx_schur=ApproxSchurConfig(seed=seed),
+        schur=Schur.approximate(ApproxSchurConfig(seed=seed)),
     )
 
 
