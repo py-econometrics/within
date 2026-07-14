@@ -56,16 +56,42 @@ beta_hat = np.linalg.lstsq(X_tilde, y_tilde, rcond=None)[0]
 print(np.round(beta_hat, 4))  # [ 0.9982 -2.006   0.5005]
 ```
 
+### Varying slopes
+
+Pass a list of `Effect` terms instead of a categories array. Each term is a
+factor's level codes plus an optional intercept and zero or more slope
+covariates (per-level slopes, as in fixest's `f[z]` notation).
+
+```python
+from within import solve, Effect
+
+firm = np.random.randint(0, 500, n).astype(np.uint32)
+year = np.random.randint(0, 20, n).astype(np.uint32)
+x = np.random.randn(n)  # covariate whose slope varies by firm
+
+result = solve(
+    [
+        Effect(firm, intercept=True, slopes=[x]),  # firm intercept + firm-specific x slope
+        Effect(year, intercept=True),              # year intercept
+    ],
+    y,
+)
+
+# Read firm level 3's x-slope via the layout map (column 0 = intercept, 1 = first slope):
+i = result.layout.index(0, 3, 1)
+print(result.x[i])
+```
+
 ## Python API
 
 ### High-level functions
 
 | Function | Description |
 |---|---|
-| `solve(categories, y, options?, weights?, preconditioner?)` | Solve a single right-hand side. Returns `SolveResult`. |
-| `solve_batch(categories, Y, options?, weights?, preconditioner?)` | Solve multiple RHS vectors in parallel. `Y` has shape `(n_obs, k)`. Returns `BatchSolveResult`. |
+| `solve(design, y, weights?, options?, preconditioner?)` | Solve a single right-hand side. Returns `SolveResult`. |
+| `solve_batch(design, Y, weights?, options?, preconditioner?)` | Solve multiple RHS vectors in parallel. `Y` has shape `(n_obs, k)`. Returns `BatchSolveResult`. |
 
-`categories` is a 2-D `uint32` array of shape `(n_obs, n_factors)`. A `UserWarning` is emitted when a C-contiguous array is passed — use `np.asfortranarray(categories)` for best performance.
+`design` is either a 2-D `uint32` array of shape `(n_obs, n_factors)` or a list of `Effect` terms (see [Varying slopes](#varying-slopes)). A `UserWarning` is emitted when a C-contiguous categories array is passed — use `np.asfortranarray(design)` for best performance.
 
 ### Persistent solver
 
@@ -84,7 +110,7 @@ solver2 = Solver(fe, preconditioner=precond)   # skip re-factorization
 
 | Property / Method | Description |
 |---|---|
-| `Solver(categories, weights?, preconditioner?)` | Build solver. Factorizes the preconditioner at construction. |
+| `Solver(design, weights?, preconditioner?)` | Build solver. Factorizes the preconditioner at construction. |
 | `.solve(y, options?)` | Solve a single RHS with the given LSMR tuning. Returns `SolveResult`. |
 | `.solve_batch(Y, options?)` | Solve multiple RHS columns in parallel. Returns `BatchSolveResult`. |
 | `.preconditioner` | Return the built `Preconditioner` (picklable), or `None`. Reuse via `Solver(fe, preconditioner=p)`. |
@@ -113,16 +139,19 @@ The `preconditioner` argument accepts any of:
 
 | Class | Description |
 |---|---|
-| `LocalSolverConfig(approx_chol?, approx_schur?, dense_threshold=24)` | Schur reduction + approximate Cholesky. Omit `approx_schur` for the library-default approximate variant; pass `approx_schur=None` to request an exact Schur (slower, used for validation). |
-| `ApproxCholConfig(seed=0, split=1)` | Approximate Cholesky parameters. |
+| `LocalSolverConfig(approx_chol?, schur?, dense_threshold=24, scaling?)` | Schur reduction + approximate Cholesky. Omit `schur` for the library-default approximate variant; pass `schur=Schur.exact()` to request an exact Schur (slower, used for validation). |
+| `Schur.approximate(config?)` / `Schur.exact()` | Schur-reduction mode passed as `LocalSolverConfig(schur=...)`. |
+| `ApproxCholConfig(seed=0, split_merge=None)` | Approximate Cholesky parameters. |
 | `ApproxSchurConfig(seed=0, split=1)` | Approximate Schur complement sampling parameters. |
-| `ReductionStrategy` enum | `Auto` (default), `AtomicScatter`, `ParallelReduction`. |
+| `ReductionStrategy` | `Auto` (default), `AtomicScatter`, `ParallelReduction` (class attributes, not an `Enum`). |
 
 ### Result types
 
-**`SolveResult`**: `x` (coefficients), `demeaned` (residuals), `converged`, `iterations`, `residual`, `time_total`, `time_setup`, `time_solve`.
+**`SolveResult`**: `x` (coefficients), `unidentified` (directions the data cannot identify, as `UnidentifiedDirection(term, level, column)` records), `layout` (a `CoefficientLayout` mapping a `(term, level, column)` address to its flat `x` index and back), `demeaned` (residuals), `converged`, `iterations`, `residual`, `time_total`, `time_setup`, `time_solve`.
 
 **`BatchSolveResult`**: Same fields, with `converged`, `iterations`, `residual`, and `time_solve` as lists (one entry per RHS).
+
+Coefficients for unidentified directions are pinned to the **minimal-norm** value `0` (never NaN). This is why `x` can differ from reference tools that instead drop a reference level; the identified fit — `demeaned` — is unaffected by the choice.
 
 ## Rust API
 
@@ -161,23 +190,26 @@ let r1 = solver.solve(&y, &LsmrOptions::default())?;
 let r2 = solver.solve(&another_y, &LsmrOptions::default())?;  // reuses preconditioner
 ```
 
-Two-channel preconditioner signaling: `Option<&PreconditionerConfig>` where
-`None` is the library default and `Some(PreconditionerConfig::Off)` is the
-explicit identity preconditioner.
+`solve` and `Solver::new` take the preconditioner as `impl Into<PreconditionerInput>`:
+`None` (library default), a `&PreconditionerConfig` or owned `PreconditionerConfig`
+(e.g. `PreconditionerConfig::Off` for the identity), or an owned/borrowed
+`Preconditioner` for reuse. LSMR options are `impl Into<Option<&LsmrOptions>>`, so
+`None` accepts the defaults and `&opts` overrides them.
 
 | Type | Variants / Fields |
 |---|---|
 | `LsmrOptions` | `{ tol: f64, maxiter: usize, local_size: Option<usize> }` |
 | `PreconditionerConfig` | `Off` \| `Additive { local_solver: LocalSolverConfig, reduction: ReductionStrategy }` \| `Diagonal` (`#[non_exhaustive]`) |
-| `LocalSolverConfig` | `{ approx_chol, approx_schur, dense_threshold }` |
+| `LocalSolverConfig` | `{ approx_chol, schur: SchurMode, dense_threshold, scaling }` |
+| `SchurMode` | `Approximate(ApproxSchurConfig)` \| `Exact` |
 | `Preconditioner` | Opaque built handle — reuse via `Solver::new(.., precond)` (owned or `&`) |
 
 ### Lower-level access
 
 | Module | Visibility | Key types |
 |---|---|---|
-| `within::config` | public | `LsmrOptions`, `PreconditionerConfig`, `LocalSolverConfig`, `ApproxCholConfig`, `ApproxSchurConfig`, `ReductionStrategy` |
-| `within::observation` | public | `Store` trait, `FactorMajorStore`, `ArrayStore`, `FactorMeta` |
+| `within::config` | public | `LsmrOptions`, `PreconditionerConfig`, `LocalSolverConfig`, `SchurMode`, `ApproxCholConfig`, `ApproxSchurConfig`, `ScalingConfig`, `ReductionStrategy` |
+| `within::observation` | public | `ObservationFrame` (columnar level-code + loading columns) |
 | `within::error` | public | `WithinError`, `BuildError`, `SolveError` |
 | `domain` / `operator` / `solver` / `orchestrate` | `pub(crate)` | implementation layers — public items are re-exported at the crate root |
 
