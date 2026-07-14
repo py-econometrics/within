@@ -37,8 +37,14 @@ pub(crate) struct TermMeta {
 }
 
 impl TermMeta {
+    /// Coefficient-column count (`intercept? + slopes`), ordered
+    /// `[intercept?, slopes…]`.
+    pub fn n_columns(&self) -> usize {
+        usize::from(self.intercept) + self.slopes.len()
+    }
+
     pub fn n_dofs(&self) -> usize {
-        (usize::from(self.intercept) + self.slopes.len()) * self.n_levels
+        self.n_columns() * self.n_levels
     }
 
     /// Global DOF base of coefficient column `column`.

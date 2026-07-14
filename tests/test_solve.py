@@ -7,6 +7,7 @@ import pytest
 
 from within import (
     BatchSolveResult,
+    CoefficientLayout,
     Effect,
     LsmrOptions,
     Preconditioner,
@@ -21,6 +22,40 @@ from conftest import generate_synthetic_data
 
 def as_solver_categories(cats):
     return np.asfortranarray(np.column_stack(cats).astype(np.uint32))
+
+
+def test_coefficient_layout_locates_unidentified_and_round_trips():
+    # firm level 2 is a singleton in the (non-first) slope term, so its slope
+    # direction is unidentified.
+    worker = np.array([0, 0, 1, 1, 2, 2], np.uint32)
+    firm = np.array([2, 0, 0, 1, 1, 0], np.uint32)
+    x = np.array([0.5, -1.0, 0.3, 2.0, -0.7, 1.1])
+    y = np.array([1.0, 2.0, 3.0, 1.5, 0.4, -0.2])
+
+    res = solve([Effect(worker, True), Effect(firm, True, [x])], y)
+    layout = res.layout
+    assert isinstance(layout, CoefficientLayout)
+    assert layout.n_dofs() == len(res.x)
+    assert [
+        (layout.n_levels(t), layout.n_columns(t)) for t in range(layout.n_terms())
+    ] == [
+        (3, 1),
+        (3, 2),
+    ]
+
+    # The reported unidentified direction resolves to a zero coefficient slot.
+    (u,) = res.unidentified
+    assert res.x[layout.index(u.term, u.level, u.column)] == 0.0
+
+    # index and address are mutual inverses over the whole vector.
+    for i in range(layout.n_dofs()):
+        assert layout.index(*layout.address(i)) == i
+
+    # Out-of-range coordinates raise instead of reading the wrong coefficient.
+    with pytest.raises(IndexError):
+        layout.index(u.term, u.level, layout.n_columns(u.term))
+    with pytest.raises(IndexError):
+        layout.address(layout.n_dofs())
 
 
 @pytest.fixture()
