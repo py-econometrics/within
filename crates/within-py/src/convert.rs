@@ -3,6 +3,7 @@
 
 use std::borrow::Cow;
 
+use numpy::{PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
 
 // ---------------------------------------------------------------------------
@@ -20,6 +21,45 @@ pub(crate) fn coerce_to_slice<'a>(arr: &'a numpy::ndarray::ArrayView1<'_, f64>) 
 /// Wrap a display-able error as a `PyValueError`.
 pub(crate) fn value_err(e: impl std::fmt::Display) -> PyErr {
     PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string())
+}
+
+/// A `TypeError` naming the dtype an input array must have (and the dtype it
+/// actually had, when the object exposes one) — the opaque PyO3 extraction
+/// failure names neither.
+fn dtype_err(name: &str, expected: &str, obj: &Bound<'_, PyAny>) -> PyErr {
+    let got = obj
+        .getattr("dtype")
+        .and_then(|d| d.str())
+        .and_then(|s| s.extract::<String>())
+        .map(|s| format!(", got dtype {s}"))
+        .unwrap_or_default();
+    PyErr::new::<pyo3::exceptions::PyTypeError, _>(format!(
+        "{name} must be a {expected} array{got}"
+    ))
+}
+
+/// Extract a `float64` 1-D array, or raise a `TypeError` naming the dtype.
+pub(crate) fn readonly_f64_1d<'py>(
+    name: &str,
+    obj: &Bound<'py, PyAny>,
+) -> PyResult<PyReadonlyArray1<'py, f64>> {
+    obj.extract().map_err(|_| dtype_err(name, "float64", obj))
+}
+
+/// Extract a `float64` 2-D array, or raise a `TypeError` naming the dtype.
+pub(crate) fn readonly_f64_2d<'py>(
+    name: &str,
+    obj: &Bound<'py, PyAny>,
+) -> PyResult<PyReadonlyArray2<'py, f64>> {
+    obj.extract().map_err(|_| dtype_err(name, "float64", obj))
+}
+
+/// Extract a `uint32` 2-D array, or raise a `TypeError` naming the dtype.
+pub(crate) fn readonly_u32_2d<'py>(
+    name: &str,
+    obj: &Bound<'py, PyAny>,
+) -> PyResult<PyReadonlyArray2<'py, u32>> {
+    obj.extract().map_err(|_| dtype_err(name, "uint32", obj))
 }
 
 /// Build a slice-of-slices reference view from borrowed-or-owned columns.

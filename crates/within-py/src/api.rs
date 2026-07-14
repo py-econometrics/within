@@ -12,7 +12,10 @@ use within::{
 };
 
 use crate::config::{resolve_lsmr_config, resolve_precond_input, PyPreconditioner};
-use crate::convert::{coerce_to_slice, column_refs, extract_columns, value_err, warn_c_contiguous};
+use crate::convert::{
+    coerce_to_slice, column_refs, extract_columns, readonly_f64_1d, readonly_f64_2d,
+    readonly_u32_2d, value_err, warn_c_contiguous,
+};
 use crate::results::{
     emit_build_warnings, run_batch, run_batch_with_warnings, run_solve, run_solve_with_warnings,
     PyBatchSolveResult, PySolveResult,
@@ -60,13 +63,15 @@ fn build_and_solve_batch<'a>(
 pub fn solve<'py>(
     py: Python<'py>,
     design: &Bound<'py, PyAny>,
-    y: PyReadonlyArray1<'py, f64>,
-    weights: Option<PyReadonlyArray1<'py, f64>>,
+    y: &Bound<'py, PyAny>,
+    weights: Option<&Bound<'py, PyAny>>,
     options: Option<&Bound<'py, PyAny>>,
     preconditioner: Option<&Bound<'py, PyAny>>,
 ) -> PyResult<PySolveResult> {
     let params = resolve_lsmr_config(options)?;
     let precond = resolve_precond_input(py, preconditioner)?;
+    let y = readonly_f64_1d("y", y)?;
+    let weights = weights.map(|w| readonly_f64_1d("weights", w)).transpose()?;
 
     // Borrow the array views while the GIL is held (`PyReadonlyArray` needs the
     // token), but defer slice coercion -- and any copy of strided input -- into
@@ -97,15 +102,17 @@ pub fn solve<'py>(
 pub fn solve_batch<'py>(
     py: Python<'py>,
     design: &Bound<'py, PyAny>,
-    #[allow(non_snake_case)] Y: PyReadonlyArray2<'py, f64>,
-    weights: Option<PyReadonlyArray1<'py, f64>>,
+    #[allow(non_snake_case)] Y: &Bound<'py, PyAny>,
+    weights: Option<&Bound<'py, PyAny>>,
     options: Option<&Bound<'py, PyAny>>,
     preconditioner: Option<&Bound<'py, PyAny>>,
 ) -> PyResult<PyBatchSolveResult> {
     let params = resolve_lsmr_config(options)?;
     let precond = resolve_precond_input(py, preconditioner)?;
+    let y = readonly_f64_2d("Y", Y)?;
+    let weights = weights.map(|w| readonly_f64_1d("weights", w)).transpose()?;
 
-    let y_arr = Y.as_array();
+    let y_arr = y.as_array();
     let w_view = weights.as_ref().map(|w| w.as_array());
 
     match extract_design(py, design)? {
@@ -213,7 +220,7 @@ enum DesignSource<'py> {
 /// (borrowed) or a list of [`Effect`] terms (cloned out of Python).
 fn extract_design<'py>(py: Python<'_>, design: &Bound<'py, PyAny>) -> PyResult<DesignSource<'py>> {
     if design.downcast::<PyUntypedArray>().is_ok() {
-        let categories = design.extract::<PyReadonlyArray2<u32>>()?;
+        let categories = readonly_u32_2d("design", design)?;
         warn_c_contiguous(py, &categories.as_array())?;
         return Ok(DesignSource::Categories(categories));
     }
@@ -250,9 +257,10 @@ impl PySolver {
     fn new<'py>(
         py: Python<'py>,
         design: &Bound<'py, PyAny>,
-        weights: Option<PyReadonlyArray1<'py, f64>>,
+        weights: Option<&Bound<'py, PyAny>>,
         preconditioner: Option<&Bound<'py, PyAny>>,
     ) -> PyResult<Self> {
+        let weights = weights.map(|w| readonly_f64_1d("weights", w)).transpose()?;
         let weights_vec: Option<Vec<f64>> = weights.as_ref().map(|w| w.as_array().to_vec());
         let precond = resolve_precond_input(py, preconditioner)?;
 
@@ -287,9 +295,10 @@ impl PySolver {
     fn solve_py<'py>(
         &self,
         py: Python<'py>,
-        y: PyReadonlyArray1<'py, f64>,
+        y: &Bound<'py, PyAny>,
         options: Option<&Bound<'py, PyAny>>,
     ) -> PyResult<PySolveResult> {
+        let y = readonly_f64_1d("y", y)?;
         let y_arr = y.as_array();
         let y_cow = coerce_to_slice(&y_arr);
         let params = resolve_lsmr_config(options)?;
@@ -305,10 +314,11 @@ impl PySolver {
     fn solve_batch_py<'py>(
         &self,
         py: Python<'py>,
-        #[allow(non_snake_case)] Y: PyReadonlyArray2<'py, f64>,
+        #[allow(non_snake_case)] Y: &Bound<'py, PyAny>,
         options: Option<&Bound<'py, PyAny>>,
     ) -> PyResult<PyBatchSolveResult> {
-        let y_arr = Y.as_array();
+        let y = readonly_f64_2d("Y", Y)?;
+        let y_arr = y.as_array();
 
         let n_obs = self.solver.n_obs();
         if y_arr.nrows() != n_obs {

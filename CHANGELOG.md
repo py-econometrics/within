@@ -34,6 +34,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - Rust `solve` / `solve_batch` / `Solver::solve` / `Solver::solve_batch` take LSMR options as `impl Into<Option<&LsmrOptions>>`, so `None` selects the default (a bare `&LsmrOptions` still works). The crate root now also re-exports `LocalSolverConfig`, `ReductionStrategy`, `ApproxCholConfig`, and `ApproxSchurConfig`, so a tuned `Additive` is constructible from crate-root imports alone (#105).
 - Python `Preconditioner.apply` raises `ValueError` (was `RuntimeError`) on a solve-time failure, matching the `solve` paths (#105).
 - The one-shot Python `solve` / `solve_batch` re-emit build warnings as `UserWarning`s (e.g. uncertified signed-component scaling), matching the persistent `Solver`; previously they were discarded (#103).
+- Wrong-dtype input arrays raise a `TypeError` naming the expected dtype (design → `uint32`, response and weights → `float64`) and the dtype received, instead of an opaque PyO3 conversion error (#100).
 
 ### Removed
 
