@@ -35,6 +35,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - Python `Preconditioner.apply` raises `ValueError` (was `RuntimeError`) on a solve-time failure, matching the `solve` paths (#105).
 - The one-shot Python `solve` / `solve_batch` re-emit build warnings as `UserWarning`s (e.g. uncertified signed-component scaling), matching the persistent `Solver`; previously they were discarded (#103).
 - Wrong-dtype input arrays raise a `TypeError` naming the expected dtype (design → `uint32`, response and weights → `float64`) and the dtype received, instead of an opaque PyO3 conversion error (#100).
+- Corrected published examples and type stubs: `PreconditionerConfig` / `ReductionStrategy` are documented as (non-iterable) attribute holders rather than `IntEnum`, examples use the current argument order and `Schur` / `split_merge` spellings, and the varying-slopes workflow and minimal-norm normalization convention are documented (#102).
 
 ### Removed
 
