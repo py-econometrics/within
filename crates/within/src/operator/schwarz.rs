@@ -95,16 +95,26 @@ impl Operator for DiagonalPreconditioner {
 // ---------------------------------------------------------------------------
 
 /// Build additive Schwarz with an explicit reduction strategy.
+///
+/// `n_dofs` is the operator's column count. It can exceed the span of the
+/// subdomains' global indices: an unidentified direction (e.g. a singleton
+/// level's slope) is kept as a structural-zero operator column that no
+/// subdomain covers, and must still count toward the preconditioner's shape
+/// so it matches the operator. Uncovered DOFs resolve to `0`, matching the
+/// `Off`/`Diagonal` paths.
 pub(crate) fn build_additive_with_strategy(
     domains: Vec<LocalDomain>,
     config: &LocalSolverConfig,
     strategy: schwarz_precond::ReductionStrategy,
+    n_dofs: usize,
 ) -> Result<FeSchwarz, BuildError> {
     let entries = domains
         .into_par_iter()
         .map(|domain| build_entry(domain, config))
         .collect::<Result<Vec<_>, BuildError>>()?;
-    Ok(FeSchwarz(SchwarzPreconditioner::new(entries, strategy)))
+    Ok(FeSchwarz(SchwarzPreconditioner::with_n_dofs(
+        entries, n_dofs, strategy,
+    )))
 }
 
 /// Build a single `SubdomainEntry<BlockElimSolver>` from a pre-built CrossTab.
@@ -271,7 +281,7 @@ pub(crate) fn build_preconditioner(
                 // preconditioner. Fall back to unpreconditioned LSMR.
                 return Ok((None, warnings));
             }
-            let p = build_additive_with_strategy(domains, local_solver, *reduction)?;
+            let p = build_additive_with_strategy(domains, local_solver, *reduction, design.n_dofs)?;
             Ok((
                 Some(Preconditioner {
                     inner: Variant::Additive(p),

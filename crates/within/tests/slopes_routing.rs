@@ -2,7 +2,7 @@
 //! factors through balanced/scaled signed subdomains, with frustrated
 //! components solving through their Gremban double cover (#62).
 
-use within::{Effect, LsmrOptions, PreconditionerConfig, Solver};
+use within::{Effect, LsmrOptions, Preconditioner, PreconditionerConfig, Solver};
 
 fn lcg(seed: &mut u64) -> u64 {
     *seed = seed
@@ -262,6 +262,88 @@ fn surplus_component_sampled_matches_exact_reduction() {
         assert!(
             (s - e).abs() <= 1e-6 * (1.0 + yi.abs()),
             "demeaned[{i}]: sampled {s} vs exact {e}"
+        );
+    }
+}
+
+/// Regression for #98: with the default (additive Schwarz) preconditioner, a
+/// level observed exactly once in a slope-carrying term that is not the first
+/// term used to crash LSMR with a preconditioner one column short of the
+/// operator. That singleton-slope direction is unidentified — a structural-zero
+/// operator column no subdomain covers — yet it must still count toward the
+/// preconditioner's shape. The solve must succeed and land the same identified
+/// fit the `Off`/`Diagonal` preconditioners already produce.
+#[test]
+fn singleton_level_in_non_first_slope_term_solves_under_default() {
+    // firm level 2 is observed exactly once (obs 0); the slope sits on the
+    // second (non-first) term. n_dofs = 3 (worker) + 3 + 3 (firm intercept +
+    // slope) = 9, and the firm-slope level-2 column (global index 8) is last,
+    // so an omitted preconditioner column shows up as a shape mismatch.
+    let worker = [0u32, 0, 1, 1, 2, 2];
+    let firm = [2u32, 0, 0, 1, 1, 0];
+    let x = [0.5, -1.0, 0.3, 2.0, -0.7, 1.1];
+    let y = [1.0, 2.0, 3.0, 1.5, 0.4, -0.2];
+
+    let effects = || {
+        vec![
+            Effect::new(&worker[..], true, []).expect("plain effect"),
+            Effect::new(&firm[..], true, [&x[..]]).expect("slope effect"),
+        ]
+    };
+
+    let solver = Solver::new(effects(), None, PreconditionerConfig::default())
+        .expect("default preconditioner builds");
+
+    // The preconditioner must match the operator's column count, including the
+    // uncovered structural-zero singleton-slope direction.
+    let precond = solver
+        .preconditioner()
+        .expect("default has a preconditioner");
+    assert_eq!(precond.ncols(), solver.n_dofs());
+    assert_eq!(precond.nrows(), solver.n_dofs());
+
+    let r = solver
+        .solve(&y, &LsmrOptions::default())
+        .expect("default solve");
+    assert!(r.converged);
+    assert_eq!(
+        r.unidentified
+            .iter()
+            .map(|d| (d.term, d.level, d.column))
+            .collect::<Vec<_>>(),
+        vec![(1, 2, 1)],
+    );
+
+    // Same identified fit as Off/Diagonal: the demeaned residual y - Dx is
+    // gauge-invariant, so it agrees even though the raw coefficient vectors
+    // (with within-factor gauge freedom) need not.
+    for cfg in [PreconditionerConfig::Off, PreconditionerConfig::Diagonal] {
+        let alt = Solver::new(effects(), None, cfg)
+            .expect("alt preconditioner builds")
+            .solve(&y, &LsmrOptions::default())
+            .expect("alt solve");
+        for (i, (&d, &a)) in r.demeaned.iter().zip(&alt.demeaned).enumerate() {
+            assert!(
+                (d - a).abs() < 1e-8,
+                "fit mismatch at obs {i}: default {d} vs alt {a}"
+            );
+        }
+    }
+
+    // Reuse-safe: the preconditioner round-trips through postcard and the
+    // reloaded copy carries the full dimension, so a fresh solver accepts it
+    // (a dropped n_dofs would trip Solver::new's dimension check).
+    let bytes = postcard::to_stdvec(precond).expect("serialize");
+    let restored: Preconditioner = postcard::from_bytes(&bytes).expect("deserialize");
+    assert_eq!(restored.ncols(), solver.n_dofs());
+    let reused = Solver::new(effects(), None, restored)
+        .expect("reused preconditioner accepted")
+        .solve(&y, &LsmrOptions::default())
+        .expect("reused solve");
+    for (i, (&a, &b)) in r.x.iter().zip(&reused.x).enumerate() {
+        assert!(
+            (a - b).abs() < 1e-9,
+            "reuse coefficient drift at {i}: {a} vs {b}"
         );
     }
 }

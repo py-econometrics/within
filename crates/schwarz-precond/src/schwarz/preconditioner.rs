@@ -29,8 +29,12 @@ where
 {
     fn serialize<Ser: serde::Serializer>(&self, serializer: Ser) -> Result<Ser::Ok, Ser::Error> {
         use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("SchwarzPreconditioner", 1)?;
+        let mut state = serializer.serialize_struct("SchwarzPreconditioner", 2)?;
         state.serialize_field("subdomains", self.executor.subdomains())?;
+        // Persist the global DOF count: it is not recoverable from the
+        // subdomains alone when the operator has structural-null tail DOFs
+        // that no subdomain covers.
+        state.serialize_field("n_dofs", &self.executor.n_dofs())?;
         state.end()
     }
 }
@@ -47,11 +51,13 @@ where
         #[serde(bound(deserialize = "S: serde::de::DeserializeOwned"))]
         struct Helper<S: LocalSolver> {
             subdomains: Vec<SubdomainEntry<S>>,
+            n_dofs: usize,
         }
 
         let h: Helper<S> = Helper::deserialize(deserializer)?;
-        Ok(SchwarzPreconditioner::new(
+        Ok(SchwarzPreconditioner::with_n_dofs(
             h.subdomains,
+            h.n_dofs,
             ReductionStrategy::default(),
         ))
     }
@@ -70,17 +76,41 @@ pub struct SchwarzPreconditioner<S: LocalSolver> {
 }
 
 impl<S: LocalSolver> SchwarzPreconditioner<S> {
-    /// Construct from pre-built subdomain entries with a reduction strategy.
+    /// Construct from pre-built subdomain entries, deriving the global DOF
+    /// count from the maximum global index across entries (or 0 if `entries`
+    /// is empty).
     ///
-    /// `n_dofs` is derived from the maximum global index across entries
-    /// (or 0 if `entries` is empty). An empty entry list yields a degenerate
-    /// preconditioner; misuse is caught at apply time by the dimension check.
+    /// Suitable when every DOF is covered by at least one subdomain. A design
+    /// with structural-null DOFs — operator columns no subdomain touches, e.g.
+    /// an unidentified direction kept for shape — must state the true
+    /// dimension via [`Self::with_n_dofs`]; otherwise the inferred count falls
+    /// short of the operator and the mismatch surfaces at apply time.
     pub fn new(entries: Vec<SubdomainEntry<S>>, strategy: ReductionStrategy) -> Self {
-        let mut n_dofs: usize = 0;
+        let n_dofs = entries
+            .iter()
+            .filter_map(|e| e.global_indices().iter().max())
+            .max()
+            .map_or(0, |&m| m as usize + 1);
+        Self::with_n_dofs(entries, n_dofs, strategy)
+    }
+
+    /// Construct with an explicit global DOF count.
+    ///
+    /// `n_dofs` is the operator's column count. It may exceed the span of the
+    /// subdomains' global indices: a DOF no subdomain covers stays in the
+    /// preconditioner's null space, so its apply output is `0`. `n_dofs` below
+    /// the covered span is a caller bug (a subdomain would scatter out of
+    /// bounds), caught in debug builds.
+    pub fn with_n_dofs(
+        entries: Vec<SubdomainEntry<S>>,
+        n_dofs: usize,
+        strategy: ReductionStrategy,
+    ) -> Self {
         let mut max_scratch_size: usize = 0;
         let mut total_inner_parallel_work: usize = 0;
         let mut max_inner_parallel_work: usize = 0;
         let mut total_scatter_dofs: usize = 0;
+        let mut covered_span: usize = 0;
 
         for entry in &entries {
             let work = entry.solver().inner_parallelism_work_estimate();
@@ -91,12 +121,13 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
             let indices = entry.global_indices();
             total_scatter_dofs = total_scatter_dofs.saturating_add(indices.len());
             if let Some(&max_idx) = indices.iter().max() {
-                let candidate = max_idx as usize + 1;
-                if candidate > n_dofs {
-                    n_dofs = candidate;
-                }
+                covered_span = covered_span.max(max_idx as usize + 1);
             }
         }
+        debug_assert!(
+            n_dofs >= covered_span,
+            "n_dofs ({n_dofs}) is below the covered index span ({covered_span})"
+        );
 
         let executor = AdditiveExecutor::new(Arc::new(entries), n_dofs, max_scratch_size);
         let scheduler = AdditiveScheduler {
