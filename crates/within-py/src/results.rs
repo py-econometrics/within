@@ -18,7 +18,7 @@ pub struct PySolveResult {
     #[pyo3(get)]
     pub x: Py<numpy::PyArray1<f64>>,
     #[pyo3(get)]
-    pub unidentified: Vec<(usize, usize, usize)>,
+    pub unidentified: Vec<PyUnidentifiedDirection>,
     #[pyo3(get)]
     pub demeaned: Py<numpy::PyArray1<f64>>,
     #[pyo3(get)]
@@ -41,7 +41,7 @@ pub struct PyBatchSolveResult {
     #[pyo3(get)]
     pub x: Py<numpy::PyArray2<f64>>,
     #[pyo3(get)]
-    pub unidentified: Vec<(usize, usize, usize)>,
+    pub unidentified: Vec<PyUnidentifiedDirection>,
     #[pyo3(get)]
     pub demeaned: Py<numpy::PyArray2<f64>>,
     #[pyo3(get)]
@@ -56,6 +56,29 @@ pub struct PyBatchSolveResult {
     pub time_total: f64,
 }
 
+/// A per-level design direction the data cannot identify.
+#[pyclass(frozen, eq, hash, module = "within._within")]
+#[pyo3(name = "UnidentifiedDirection")]
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct PyUnidentifiedDirection {
+    #[pyo3(get)]
+    pub term: usize,
+    #[pyo3(get)]
+    pub level: usize,
+    #[pyo3(get)]
+    pub column: usize,
+}
+
+#[pymethods]
+impl PyUnidentifiedDirection {
+    fn __repr__(&self) -> String {
+        format!(
+            "UnidentifiedDirection(term={}, level={}, column={})",
+            self.term, self.level, self.column
+        )
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Result conversion helpers
 // ---------------------------------------------------------------------------
@@ -66,7 +89,11 @@ pub(crate) fn into_py_result(py: Python<'_>, result: SolveResult) -> PySolveResu
         unidentified: result
             .unidentified
             .iter()
-            .map(|u| (u.term, u.level, u.column))
+            .map(|u| PyUnidentifiedDirection {
+                term: u.term,
+                level: u.level,
+                column: u.column,
+            })
             .collect(),
         demeaned: result.demeaned.into_pyarray(py).unbind(),
         converged: result.converged,
@@ -95,7 +122,11 @@ pub(crate) fn into_py_batch_result(
         unidentified: result
             .unidentified
             .iter()
-            .map(|u| (u.term, u.level, u.column))
+            .map(|u| PyUnidentifiedDirection {
+                term: u.term,
+                level: u.level,
+                column: u.column,
+            })
             .collect(),
         demeaned: demeaned.into_pyarray(py).unbind(),
         converged: result.converged,

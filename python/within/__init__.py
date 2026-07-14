@@ -51,6 +51,7 @@ from within._within import (
     PreconditionerConfig,
     SolveResult,
     Solver,
+    UnidentifiedDirection,
     solve,
     solve_batch,
 )
@@ -64,6 +65,7 @@ __all__ = [
     "PreconditionerConfig",
     "SolveResult",
     "Solver",
+    "UnidentifiedDirection",
     "solve",
     "solve_batch",
     "config",

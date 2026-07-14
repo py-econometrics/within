@@ -68,6 +68,23 @@ class LsmrOptions:
         local_size: int | None = None,
     ) -> None: ...
 
+class UnidentifiedDirection:
+    """A per-level design direction the data cannot identify.
+
+    Attributes:
+        term: Index into the design's term list.
+        level: Level index within the term (``0..n_levels``).
+        column: Column within the term's per-level block — intercept first
+            (when present), then slopes in declaration order.
+    """
+
+    @property
+    def term(self) -> int: ...
+    @property
+    def level(self) -> int: ...
+    @property
+    def column(self) -> int: ...
+
 class SolveResult:
     """Result of a single fixed-effects solve.
 
@@ -79,7 +96,7 @@ class SolveResult:
             factor 0 first, then factor 1, etc.). Slots for unidentified
             directions hold the minimal-norm value ``0``, never NaN.
         unidentified: Per-level directions the data cannot identify, as
-            ``(term, level, column)`` tuples.
+            :class:`UnidentifiedDirection` records.
         demeaned: Response vector after subtracting estimated fixed effects,
             shape ``(n_obs,)``.
         converged: Whether the LSMR solver met the convergence tolerance.
@@ -94,7 +111,7 @@ class SolveResult:
     @property
     def x(self) -> NDArray[np.float64]: ...
     @property
-    def unidentified(self) -> list[tuple[int, int, int]]: ...
+    def unidentified(self) -> list[UnidentifiedDirection]: ...
     @property
     def demeaned(self) -> NDArray[np.float64]: ...
     @property
@@ -120,7 +137,7 @@ class BatchSolveResult:
             Slots for unidentified directions hold the minimal-norm value
             ``0``, never NaN.
         unidentified: Per-level directions the data cannot identify, as
-            ``(term, level, column)`` tuples; shared across all RHS.
+            :class:`UnidentifiedDirection` records; shared across all RHS.
         demeaned: Demeaned responses, shape ``(n_obs, k)`` (column-major).
         converged: Whether each RHS converged.
         iterations: Total LSMR iterations for each RHS.
@@ -133,7 +150,7 @@ class BatchSolveResult:
     @property
     def x(self) -> NDArray[np.float64]: ...
     @property
-    def unidentified(self) -> list[tuple[int, int, int]]: ...
+    def unidentified(self) -> list[UnidentifiedDirection]: ...
     @property
     def demeaned(self) -> NDArray[np.float64]: ...
     @property

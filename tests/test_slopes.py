@@ -87,7 +87,13 @@ def test_constant_slope_level_reports_drop_with_exact_zero():
     z[f == 1] = 2.5
     res = within.solve([Effect(f, True, [z])], y, OPTS)
 
-    assert res.unidentified == [(0, 1, 1)]
+    (u,) = res.unidentified
+    assert (u.term, u.level, u.column) == (0, 1, 1)
+    assert repr(u) == "UnidentifiedDirection(term=0, level=1, column=1)"
+    # Parity with the (term, level, column) tuple it replaced: value-comparable
+    # and hashable (the property rebuilds the record, so this is cross-instance).
+    other = res.unidentified[0]
+    assert u == other and hash(u) == hash(other)
     assert res.x[N_LEVELS + 1] == 0.0
     assert np.isfinite(res.x).all()
 

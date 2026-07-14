@@ -18,7 +18,7 @@ use config::{
     PyAdditiveSchwarz, PyApproxCholConfig, PyApproxSchurConfig, PyLocalSolverConfig, PyLsmrOptions,
     PyPreconditioner, PyPreconditionerConfig, PyReductionStrategy, PyScalingConfig,
 };
-use results::{PyBatchSolveResult, PySolveResult};
+use results::{PyBatchSolveResult, PySolveResult, PyUnidentifiedDirection};
 
 // ---------------------------------------------------------------------------
 // Module
@@ -28,6 +28,7 @@ use results::{PyBatchSolveResult, PySolveResult};
 fn _within(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySolveResult>()?;
     m.add_class::<PyBatchSolveResult>()?;
+    m.add_class::<PyUnidentifiedDirection>()?;
     m.add_class::<PyLsmrOptions>()?;
     m.add_class::<PyAdditiveSchwarz>()?;
     m.add_class::<PyReductionStrategy>()?;
