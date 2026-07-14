@@ -14,6 +14,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - `CoefficientLayout` (Rust and Python), reached via `SolveResult.layout` / `BatchSolveResult.layout`, translates a `(term, level, column)` address to its flat `x` index and back, so callers need not reconstruct term offsets by hand (#99).
 - `SolveResult.x` is term-major — coefficient column `c` of `level` sits at `term_offset + c * n_levels + level`; intercept-only designs keep the 0.2.0 ordering (#71).
 - `ScalingConfig` (in `within.config`) tunes certification of signed-component scaling; `Solver::warnings()` returns non-fatal `BuildWarning`s from the build (#61).
+- `SchurMode` (Rust) / `Schur` (Python, `Schur.approximate(...)` / `Schur.exact()`) names the local solver's Schur-reduction mode explicitly (#104).
 - New `BuildError` variants `EmptyEffect` and `SlopeLengthMismatch` for malformed effect terms (#58).
 - **`ObservationFrame`:** columnar observation storage — one `u32` level-code column per factor plus `f64` loading columns, each independently borrowed or owned (#68).
 - **Locality sort:** `Design` reorders observations by the highest-cardinality factor when unsorted, copying columns once; results still return in caller row order (#68).
@@ -22,6 +23,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - **BREAKING:** The Python `solve` / `solve_batch` / `Solver` first parameter is renamed `categories` → `design` and now accepts a `list[Effect]` as well as a `uint32` array; positional calls are unaffected, `categories=` keyword calls break (#58).
 - **BREAKING:** The serialized `Preconditioner` wire format changed (v3 → v6); `Preconditioner` bytes from 0.2.0 no longer decode (#72, #98).
+- **BREAKING:** `LocalSolverConfig.approx_schur: Option<ApproxSchurConfig>` becomes `schur: SchurMode` (Rust) / `schur: Schur | None` (Python). Omitted/`None` now uniformly means the library default (approximate); "exact Schur" is `SchurMode::Exact` / `Schur.exact()` (was `approx_schur=None`). The `within.config.LocalSolverConfig` compatibility subclass is removed (#104).
 - **BREAKING:** `SolveResult` / `BatchSolveResult` gain public `unidentified` and `layout` fields and are not `#[non_exhaustive]`, so exhaustive Rust destructuring must account for them (#69, #99).
 - **BREAKING:** `Design` / `Solver` trade their storage type parameter for a lifetime — `Design<'a>` / `Solver<'a>` — borrowing caller columns until a locality sort or `into_owned()` (#68).
 - **BREAKING:** `Design::from_store` → `Design::from_frame`, taking an `ObservationFrame` (#68).

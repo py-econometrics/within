@@ -523,7 +523,7 @@ mod schwarz_tests {
     use std::time::{Duration, Instant};
 
     use crate::config::{
-        ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, ScalingConfig,
+        ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, ScalingConfig, SchurMode,
         DEFAULT_DENSE_SCHUR_THRESHOLD,
     };
     use schwarz_precond::SubdomainCore;
@@ -630,7 +630,7 @@ mod schwarz_tests {
                 split_merge: Some(8),
                 seed: 42,
             },
-            approx_schur: Some(ApproxSchurConfig {
+            schur: SchurMode::Approximate(ApproxSchurConfig {
                 seed: 7,
                 ..Default::default()
             }),
@@ -745,7 +745,7 @@ mod schwarz_tests {
 
         let config = LocalSolverConfig {
             approx_chol: ApproxCholConfig::default(),
-            approx_schur: None,
+            schur: SchurMode::Exact,
             dense_threshold: DEFAULT_DENSE_SCHUR_THRESHOLD,
             scaling: Default::default(),
         };
@@ -763,7 +763,7 @@ mod schwarz_tests {
 
         let config = LocalSolverConfig {
             approx_chol: ApproxCholConfig::default(),
-            approx_schur: Some(ApproxSchurConfig {
+            schur: SchurMode::Approximate(ApproxSchurConfig {
                 seed: 7,
                 ..Default::default()
             }),
@@ -784,7 +784,7 @@ mod schwarz_tests {
 
         let config = LocalSolverConfig {
             approx_chol: ApproxCholConfig::default(),
-            approx_schur: None,
+            schur: SchurMode::Exact,
             dense_threshold: 0,
             scaling: Default::default(),
         };

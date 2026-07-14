@@ -34,6 +34,26 @@ impl ApproxCholConfig {
 // Local solver configuration
 // ---------------------------------------------------------------------------
 
+/// Schur-complement reduction mode for the local solver.
+///
+/// [`Approximate`](Self::Approximate) (the default) uses clique-tree sampling,
+/// which keeps per-subdomain factorization cost bounded under the iterative
+/// solver. [`Exact`](Self::Exact) forms the exact Schur complement — higher
+/// fidelity, slower per subdomain — for validation and callers who want it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SchurMode {
+    /// Approximate Schur via clique-tree sampling.
+    Approximate(ApproxSchurConfig),
+    /// Exact Schur complement.
+    Exact,
+}
+
+impl Default for SchurMode {
+    fn default() -> Self {
+        SchurMode::Approximate(ApproxSchurConfig::default())
+    }
+}
+
 /// Local solver configuration for Schwarz subdomains.
 ///
 /// Uses Schur complement reduction: eliminates the larger diagonal block
@@ -42,14 +62,8 @@ impl ApproxCholConfig {
 pub struct LocalSolverConfig {
     /// ApproxChol config for the reduced system.
     pub approx_chol: ApproxCholConfig,
-    /// Approximate Schur complement configuration.
-    ///
-    /// `Some(ApproxSchurConfig::default())` is the library default — approximate
-    /// Schur with clique-tree sampling, which keeps per-subdomain factorization
-    /// cost bounded under the iterative-solver context. `None` requests an
-    /// exact Schur complement, used by tests and by callers who specifically
-    /// want the higher-fidelity factorization.
-    pub approx_schur: Option<ApproxSchurConfig>,
+    /// Schur-complement reduction mode (default: approximate).
+    pub schur: SchurMode,
     /// Dense Schur fast-path threshold on reduced size `n_keep=min(n_q,n_r)`.
     ///
     /// `0` disables the dense fast path; larger values allow dense Cholesky for
@@ -66,7 +80,7 @@ impl Default for LocalSolverConfig {
                 seed: 0,
                 split_merge: Some(2),
             },
-            approx_schur: Some(ApproxSchurConfig::default()),
+            schur: SchurMode::default(),
             dense_threshold: DEFAULT_DENSE_SCHUR_THRESHOLD,
             scaling: ScalingConfig::default(),
         }
@@ -131,7 +145,7 @@ impl Default for ScalingConfig {
 /// copies (each carrying `1/split` of the original weight) before sampling
 /// the clique-tree. This produces a denser Schur approximation at the cost of
 /// more fill-in.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ApproxSchurConfig {
     /// Random seed for the clique-tree sampler.
     pub seed: u64,

@@ -2,7 +2,7 @@
 //! factors through balanced/scaled signed subdomains, with frustrated
 //! components solving through their Gremban double cover (#62).
 
-use within::{Effect, LsmrOptions, Preconditioner, PreconditionerConfig, Solver};
+use within::{Effect, LsmrOptions, Preconditioner, PreconditionerConfig, SchurMode, Solver};
 
 fn lcg(seed: &mut u64) -> u64 {
     *seed = seed
@@ -205,7 +205,7 @@ fn surplus_component_sampled_matches_exact_reduction() {
     // DGP in lockstep with `positive_slope_only_pair_grounds_beyond_dense_threshold`
     // (src/solver/tests.rs), which pins that this design grounds a surplus-carrying
     // component whose kept side exceeds the dense threshold: the default arm below
-    // exercises the sparse SAMPLED reduction on it; `approx_schur: None` is the
+    // exercises the sparse SAMPLED reduction on it; `SchurMode::Exact` is the
     // exact-reduction reference (#83).
     let n = 8000usize;
     let f: Vec<u32> = (0..n).map(|i| (i % 80) as u32).collect();
@@ -222,14 +222,14 @@ fn surplus_component_sampled_matches_exact_reduction() {
         })
         .collect();
 
-    let solve = |approx_schur| {
+    let solve = |schur: SchurMode| {
         let effects = vec![
             Effect::new(&f, false, [&z[..]]).expect("slope effect"),
             Effect::new(&g, true, []).expect("plain effect"),
         ];
         let config = PreconditionerConfig::Additive {
             local_solver: within::config::LocalSolverConfig {
-                approx_schur,
+                schur,
                 ..Default::default()
             },
             reduction: Default::default(),
@@ -240,8 +240,10 @@ fn surplus_component_sampled_matches_exact_reduction() {
             .expect("solve")
     };
 
-    let sampled = solve(Some(within::config::ApproxSchurConfig::default()));
-    let exact = solve(None);
+    let sampled = solve(SchurMode::Approximate(
+        within::config::ApproxSchurConfig::default(),
+    ));
+    let exact = solve(SchurMode::Exact);
     assert!(sampled.converged, "sampled arm did not converge");
     assert!(exact.converged, "exact arm did not converge");
     assert!(sampled.unidentified.is_empty());

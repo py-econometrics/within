@@ -357,6 +357,18 @@ class ApproxSchurConfig:
     split: int
     def __init__(self, seed: int = 0, split: int = 1) -> None: ...
 
+class Schur:
+    """Schur-complement reduction mode for :class:`LocalSolverConfig`.
+
+    Omitting ``schur`` on ``LocalSolverConfig`` uses the library default
+    (approximate); use these static constructors to request a specific mode.
+    """
+
+    @staticmethod
+    def approximate(config: ApproxSchurConfig | None = None) -> Schur: ...
+    @staticmethod
+    def exact() -> Schur: ...
+
 class ScalingConfig:
     """Certification policy for the diagonal scaling of signed components.
 
@@ -377,21 +389,18 @@ class ScalingConfig:
 class LocalSolverConfig:
     """Local solver: Schur reduction + approximate Cholesky.
 
-    Note: the Python-level constructor exposed via ``within.config`` uses an
-    explicit default for ``approx_schur`` (the library-default approximate
-    config). The native PyO3 constructor accepts ``None`` as the *explicit*
-    "exact Schur" signal — see ``python/within/config.py`` for the wrapper
-    that injects the default.
+    Omit ``schur`` for the library default (approximate Schur); pass
+    ``Schur.exact()`` for the exact complement.
     """
 
     approx_chol: ApproxCholConfig | None
-    approx_schur: ApproxSchurConfig | None
+    schur: Schur | None
     dense_threshold: int
     scaling: ScalingConfig | None
     def __init__(
         self,
         approx_chol: ApproxCholConfig | None = None,
-        approx_schur: ApproxSchurConfig | None = None,
+        schur: Schur | None = None,
         dense_threshold: int | None = None,
         scaling: ScalingConfig | None = None,
     ) -> None: ...

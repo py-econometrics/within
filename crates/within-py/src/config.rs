@@ -9,7 +9,7 @@ use pyo3::prelude::*;
 
 use within::config::{
     ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, LsmrOptions, PreconditionerConfig,
-    ReductionStrategy, ScalingConfig, ScalingFailure,
+    ReductionStrategy, ScalingConfig, ScalingFailure, SchurMode,
 };
 use within::{Preconditioner, PreconditionerInput};
 
@@ -81,6 +81,55 @@ impl PyApproxSchurConfig {
 /// ``max_sweeps`` budget, and ``on_failure`` disposition (``"warn"`` clamps
 /// residual deficits — preconditioner quality only — and emits a
 /// ``UserWarning``; ``"error"`` fails the build).
+/// Schur-complement reduction mode for `LocalSolverConfig`: approximate (the
+/// library default) or exact. Build via `Schur.approximate(...)` or
+/// `Schur.exact()`.
+#[pyclass(frozen, module = "within._within")]
+#[pyo3(name = "Schur")]
+#[derive(Clone)]
+pub struct PySchur {
+    inner: SchurMode,
+}
+
+#[pymethods]
+impl PySchur {
+    /// Approximate Schur via clique-tree sampling (the library default).
+    /// `config` tunes the sampler; omitted uses the default.
+    #[staticmethod]
+    #[pyo3(signature = (config=None))]
+    fn approximate(py: Python<'_>, config: Option<Py<PyApproxSchurConfig>>) -> Self {
+        let cfg = config
+            .map(|c| c.bind(py).get().to_native())
+            .unwrap_or_default();
+        Self {
+            inner: SchurMode::Approximate(cfg),
+        }
+    }
+
+    /// Exact Schur complement (higher fidelity, slower per subdomain).
+    #[staticmethod]
+    fn exact() -> Self {
+        Self {
+            inner: SchurMode::Exact,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        match &self.inner {
+            SchurMode::Approximate(cfg) => {
+                format!("Schur.approximate(seed={}, split={})", cfg.seed, cfg.split)
+            }
+            SchurMode::Exact => "Schur.exact()".to_string(),
+        }
+    }
+}
+
+impl PySchur {
+    pub(crate) fn to_native(&self) -> SchurMode {
+        self.inner.clone()
+    }
+}
+
 #[pyclass(frozen, module = "within._within")]
 #[pyo3(name = "ScalingConfig")]
 pub struct PyScalingConfig {
@@ -178,13 +227,13 @@ impl PyReductionStrategy {
 // Local solver config (available via `_within` for benchmarks)
 // ---------------------------------------------------------------------------
 
-#[pyclass(frozen, subclass, module = "within._within")]
+#[pyclass(frozen, module = "within._within")]
 #[pyo3(name = "LocalSolverConfig")]
 pub struct PyLocalSolverConfig {
     #[pyo3(get)]
     pub approx_chol: Option<Py<PyApproxCholConfig>>,
     #[pyo3(get)]
-    pub approx_schur: Option<Py<PyApproxSchurConfig>>,
+    pub schur: Option<Py<PySchur>>,
     #[pyo3(get)]
     pub dense_threshold: usize,
     #[pyo3(get)]
@@ -194,16 +243,16 @@ pub struct PyLocalSolverConfig {
 #[pymethods]
 impl PyLocalSolverConfig {
     #[new]
-    #[pyo3(signature = (approx_chol=None, approx_schur=None, dense_threshold=None, scaling=None))]
+    #[pyo3(signature = (approx_chol=None, schur=None, dense_threshold=None, scaling=None))]
     fn new(
         approx_chol: Option<Py<PyApproxCholConfig>>,
-        approx_schur: Option<Py<PyApproxSchurConfig>>,
+        schur: Option<Py<PySchur>>,
         dense_threshold: Option<usize>,
         scaling: Option<Py<PyScalingConfig>>,
     ) -> Self {
         Self {
             approx_chol,
-            approx_schur,
+            schur,
             dense_threshold: dense_threshold
                 .unwrap_or_else(|| LocalSolverConfig::default().dense_threshold),
             scaling,
@@ -428,10 +477,11 @@ fn extract_preconditioner_config(
                     .as_ref()
                     .map(|c| c.bind(py).get().to_native())
                     .unwrap_or_else(|| LocalSolverConfig::default().approx_chol);
-                let approx_schur = sc
-                    .approx_schur
+                let schur = sc
+                    .schur
                     .as_ref()
-                    .map(|c| c.bind(py).get().to_native());
+                    .map(|s| s.bind(py).get().to_native())
+                    .unwrap_or_default();
                 let scaling = sc
                     .scaling
                     .as_ref()
@@ -439,7 +489,7 @@ fn extract_preconditioner_config(
                     .unwrap_or_default();
                 LocalSolverConfig {
                     approx_chol,
-                    approx_schur,
+                    schur,
                     dense_threshold: sc.dense_threshold,
                     scaling,
                 }

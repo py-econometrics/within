@@ -1,7 +1,7 @@
 use super::*;
 
 use crate::block_elim::csr_matrix::CsrMatrix;
-use crate::config::ApproxCholConfig;
+use crate::config::{ApproxCholConfig, SchurMode};
 use crate::csr_block::CsrBlock;
 use crate::domain::BlockDiagonals;
 
@@ -58,7 +58,7 @@ fn test_block_elim_solver_eliminate_q_false() {
 
     let config = LocalSolverConfig {
         approx_chol: ApproxCholConfig::default(),
-        approx_schur: None,
+        schur: SchurMode::Exact,
         dense_threshold: 0, // disable dense fast path to ensure sparse path is covered
         scaling: Default::default(),
     };
@@ -97,7 +97,7 @@ fn trivial_singleton_component_solves_r_over_d() {
     // both block orientations.
     let config = LocalSolverConfig {
         approx_chol: ApproxCholConfig::default(),
-        approx_schur: None,
+        schur: SchurMode::Exact,
         dense_threshold: 0,
         scaling: Default::default(),
     };
@@ -136,7 +136,7 @@ fn sampled_sparse_preserves_barely_pd_direction() {
     );
     let config = LocalSolverConfig {
         approx_chol: ApproxCholConfig::default(),
-        approx_schur: Some(crate::config::ApproxSchurConfig::default()),
+        schur: SchurMode::Approximate(crate::config::ApproxSchurConfig::default()),
         dense_threshold: 0,
         scaling: Default::default(),
     };
@@ -224,13 +224,13 @@ fn signed_component_realizes_congruence_transformed_solve() {
         }
     }
 
-    for (label, dense_threshold, approx_schur) in [
-        ("dense full minor", 8, None),
-        ("exact sparse", 0, None),
+    for (label, dense_threshold, schur) in [
+        ("dense full minor", 8, SchurMode::Exact),
+        ("exact sparse", 0, SchurMode::Exact),
         (
             "sampled sparse",
             0,
-            Some(crate::config::ApproxSchurConfig::default()),
+            SchurMode::Approximate(crate::config::ApproxSchurConfig::default()),
         ),
     ] {
         let c = CsrBlock::from_dense_table(&c_raw, n_q, n_r);
@@ -243,7 +243,7 @@ fn signed_component_realizes_congruence_transformed_solve() {
         };
         let config = LocalSolverConfig {
             approx_chol: ApproxCholConfig::default(),
-            approx_schur,
+            schur,
             dense_threshold,
             scaling: Default::default(),
         };
@@ -320,7 +320,7 @@ fn frustrated_component_solves_exactly_through_cover() {
     );
     let config = LocalSolverConfig {
         approx_chol: ApproxCholConfig::default(),
-        approx_schur: None,
+        schur: SchurMode::Exact,
         dense_threshold: 8,
         scaling: Default::default(),
     };
