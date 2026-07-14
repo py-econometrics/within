@@ -349,7 +349,7 @@ impl PyPreconditioner {
         self.inner
             .apply(x_slice, &mut y)
             .map_err(|e: within::SolveError| {
-                pyo3::exceptions::PyRuntimeError::new_err(e.to_string())
+                pyo3::exceptions::PyValueError::new_err(e.to_string())
             })?;
         Ok(numpy::PyArray1::from_vec(py, y))
     }
