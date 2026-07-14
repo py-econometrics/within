@@ -167,7 +167,7 @@ class TestSolverConfigLimits:
             [rng.integers(0, 50, size=1000), rng.integers(0, 50, size=1000)]
         )
         y = rng.standard_normal(1000)
-        result = solve(cats, y, LsmrOptions(maxiter=1, tol=1e-15))
+        result = solve(cats, y, options=LsmrOptions(maxiter=1, tol=1e-15))
         assert not result.converged
         assert np.all(np.isfinite(result.x))
 
@@ -178,7 +178,7 @@ class TestSolverConfigLimits:
             [rng.integers(0, 50, size=1000), rng.integers(0, 50, size=1000)]
         )
         y = rng.standard_normal(1000)
-        result = solve(cats, y, LsmrOptions(maxiter=2, tol=1e-15))
+        result = solve(cats, y, options=LsmrOptions(maxiter=2, tol=1e-15))
         assert not result.converged
         assert np.all(np.isfinite(result.x))
 
@@ -188,7 +188,7 @@ class TestSolverConfigLimits:
             [np.array([0, 1, 0, 1, 2]), np.array([0, 0, 1, 1, 0])]
         )
         y = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
-        result = solve(cats, y, LsmrOptions(tol=1e-14))
+        result = solve(cats, y, options=LsmrOptions(tol=1e-14))
         assert np.all(np.isfinite(result.x))
 
     def test_tol_1_converges_immediately(self):
@@ -198,7 +198,7 @@ class TestSolverConfigLimits:
             [rng.integers(0, 20, size=200), rng.integers(0, 20, size=200)]
         )
         y = rng.standard_normal(200)
-        result = solve(cats, y, LsmrOptions(tol=1.0))
+        result = solve(cats, y, options=LsmrOptions(tol=1.0))
         assert result.converged
         assert result.iterations <= 5
 
@@ -209,7 +209,7 @@ class TestSolverConfigLimits:
         )
         y = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
         try:
-            result = solve(cats, y, LsmrOptions(tol=0.0))
+            result = solve(cats, y, options=LsmrOptions(tol=0.0))
             assert np.all(np.isfinite(result.x))
         except Exception:
             pass  # raising is also acceptable
@@ -219,7 +219,7 @@ class TestSolverConfigLimits:
         cats = as_solver_categories([np.array([0, 1, 0]), np.array([0, 0, 1])])
         y = np.array([1.0, 2.0, 3.0])
         try:
-            result = solve(cats, y, LsmrOptions(tol=float("nan")))
+            result = solve(cats, y, options=LsmrOptions(tol=float("nan")))
             # If it ran, result should be finite or non-converged
             assert isinstance(result.converged, bool)
         except Exception:

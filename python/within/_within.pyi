@@ -199,8 +199,8 @@ class Effect:
 def solve(
     design: NDArray[np.uint32] | list[Effect],
     y: NDArray[np.float64],
-    options: LsmrOptions | None = None,
     weights: NDArray[np.float64] | None = None,
+    options: LsmrOptions | None = None,
     preconditioner: (
         PreconditionerConfig | AdditiveSchwarz | Preconditioner | None
     ) = None,
@@ -216,10 +216,10 @@ def solve(
             assignments (F-contiguous for best performance; a ``UserWarning``
             is emitted otherwise), or a list of :class:`Effect` terms.
         y: Response vector, shape ``(n_obs,)``, dtype ``float64``.
-        options: LSMR solver tuning. Pass ``LsmrOptions(...)`` to override
-            defaults. Default: ``LsmrOptions(tol=1e-8, maxiter=1000)``.
         weights: Observation weights, shape ``(n_obs,)``, dtype ``float64``.
             Default: unit weights (unweighted).
+        options: LSMR solver tuning. Pass ``LsmrOptions(...)`` to override
+            defaults. Default: ``LsmrOptions(tol=1e-8, maxiter=1000)``.
         preconditioner: Controls preconditioning. Five input forms are accepted:
             ``None`` (default) builds the additive Schwarz preconditioner with
             default settings. ``PreconditionerConfig.Off`` disables it.
@@ -251,8 +251,8 @@ def solve(
 def solve_batch(
     design: NDArray[np.uint32] | list[Effect],
     Y: NDArray[np.float64],
-    options: LsmrOptions | None = None,
     weights: NDArray[np.float64] | None = None,
+    options: LsmrOptions | None = None,
     preconditioner: (
         PreconditionerConfig | AdditiveSchwarz | Preconditioner | None
     ) = None,
@@ -268,8 +268,8 @@ def solve_batch(
             is emitted otherwise), or a list of :class:`Effect` terms.
         Y: Response matrix, shape ``(n_obs, k)``, dtype ``float64``. Each column
             is a separate response vector.
-        options: LSMR solver tuning. Default: ``LsmrOptions(tol=1e-8, maxiter=1000)``.
         weights: Observation weights. Default: unit weights.
+        options: LSMR solver tuning. Default: ``LsmrOptions(tol=1e-8, maxiter=1000)``.
         preconditioner: Preconditioner configuration; see :func:`solve` for the
             accepted forms.
 
