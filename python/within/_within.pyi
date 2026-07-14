@@ -7,13 +7,13 @@ Most users should import from ``within`` directly rather than from
 
 import numpy as np
 from numpy.typing import NDArray
-from enum import IntEnum
 
-class PreconditionerConfig(IntEnum):
+class PreconditionerConfig:
     """Preconditioner selection shortcut for the LSMR solver.
 
-    Use the enum variants for defaults, or pass an ``AdditiveSchwarz``
-    instance for fine-grained control.
+    Not an ``Enum``: the members below are class attributes (not iterable, so
+    ``list(PreconditionerConfig)`` raises). Use them for defaults, or pass an
+    ``AdditiveSchwarz`` instance for fine-grained control.
 
     Attributes:
         Additive: Additive Schwarz (default).
@@ -21,12 +21,14 @@ class PreconditionerConfig(IntEnum):
         Diagonal: Diagonal/Jacobi preconditioner.
     """
 
-    Additive = 0
-    Off = 1
-    Diagonal = 2
+    Additive: PreconditionerConfig
+    Off: PreconditionerConfig
+    Diagonal: PreconditionerConfig
 
-class ReductionStrategy(IntEnum):
+class ReductionStrategy:
     """Strategy for combining subdomain contributions in additive Schwarz.
+
+    Not an ``Enum``: the members below are class attributes (not iterable).
 
     Attributes:
         Auto: Let the solver choose based on problem structure (recommended).
@@ -34,9 +36,9 @@ class ReductionStrategy(IntEnum):
         ParallelReduction: Use parallel reduction over subdomain results.
     """
 
-    Auto = 0
-    AtomicScatter = 1
-    ParallelReduction = 2
+    Auto: ReductionStrategy
+    AtomicScatter: ReductionStrategy
+    ParallelReduction: ReductionStrategy
 
 class LsmrOptions:
     """Modified LSMR solver configuration.
