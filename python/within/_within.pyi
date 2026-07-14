@@ -85,6 +85,22 @@ class UnidentifiedDirection:
     @property
     def column(self) -> int: ...
 
+class CoefficientLayout:
+    """Translate a ``(term, level, column)`` coefficient address to its flat
+    ``SolveResult.x`` index and back, so callers need not reconstruct the
+    term-major offset formula.
+
+    ``n_levels``, ``n_columns``, ``index``, and ``address`` raise ``IndexError``
+    on an out-of-range coordinate rather than returning a wrong value.
+    """
+
+    def n_dofs(self) -> int: ...
+    def n_terms(self) -> int: ...
+    def n_levels(self, term: int) -> int: ...
+    def n_columns(self, term: int) -> int: ...
+    def index(self, term: int, level: int, column: int) -> int: ...
+    def address(self, index: int) -> tuple[int, int, int]: ...
+
 class SolveResult:
     """Result of a single fixed-effects solve.
 
@@ -97,6 +113,7 @@ class SolveResult:
             directions hold the minimal-norm value ``0``, never NaN.
         unidentified: Per-level directions the data cannot identify, as
             :class:`UnidentifiedDirection` records.
+        layout: Address <-> flat-``x``-index translation for the coefficients.
         demeaned: Response vector after subtracting estimated fixed effects,
             shape ``(n_obs,)``.
         converged: Whether the LSMR solver met the convergence tolerance.
@@ -112,6 +129,8 @@ class SolveResult:
     def x(self) -> NDArray[np.float64]: ...
     @property
     def unidentified(self) -> list[UnidentifiedDirection]: ...
+    @property
+    def layout(self) -> CoefficientLayout: ...
     @property
     def demeaned(self) -> NDArray[np.float64]: ...
     @property
@@ -138,6 +157,7 @@ class BatchSolveResult:
             ``0``, never NaN.
         unidentified: Per-level directions the data cannot identify, as
             :class:`UnidentifiedDirection` records; shared across all RHS.
+        layout: Address <-> flat-``x``-index translation for the coefficients.
         demeaned: Demeaned responses, shape ``(n_obs, k)`` (column-major).
         converged: Whether each RHS converged.
         iterations: Total LSMR iterations for each RHS.
@@ -151,6 +171,8 @@ class BatchSolveResult:
     def x(self) -> NDArray[np.float64]: ...
     @property
     def unidentified(self) -> list[UnidentifiedDirection]: ...
+    @property
+    def layout(self) -> CoefficientLayout: ...
     @property
     def demeaned(self) -> NDArray[np.float64]: ...
     @property

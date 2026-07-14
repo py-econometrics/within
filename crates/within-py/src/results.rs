@@ -2,9 +2,10 @@
 
 use numpy::ndarray::{Array2, ShapeBuilder};
 use numpy::IntoPyArray;
+use pyo3::exceptions::PyIndexError;
 use pyo3::prelude::*;
 
-use within::{BatchSolveResult, SolveResult};
+use within::{BatchSolveResult, CoefficientLayout, SolveResult};
 
 use crate::convert::value_err;
 
@@ -19,6 +20,8 @@ pub struct PySolveResult {
     pub x: Py<numpy::PyArray1<f64>>,
     #[pyo3(get)]
     pub unidentified: Vec<PyUnidentifiedDirection>,
+    #[pyo3(get)]
+    pub layout: PyCoefficientLayout,
     #[pyo3(get)]
     pub demeaned: Py<numpy::PyArray1<f64>>,
     #[pyo3(get)]
@@ -42,6 +45,8 @@ pub struct PyBatchSolveResult {
     pub x: Py<numpy::PyArray2<f64>>,
     #[pyo3(get)]
     pub unidentified: Vec<PyUnidentifiedDirection>,
+    #[pyo3(get)]
+    pub layout: PyCoefficientLayout,
     #[pyo3(get)]
     pub demeaned: Py<numpy::PyArray2<f64>>,
     #[pyo3(get)]
@@ -79,6 +84,70 @@ impl PyUnidentifiedDirection {
     }
 }
 
+/// Translates a ``(term, level, column)`` coefficient address to its flat
+/// index in ``SolveResult.x`` and back.
+#[pyclass(frozen, module = "within._within")]
+#[pyo3(name = "CoefficientLayout")]
+#[derive(Clone)]
+pub struct PyCoefficientLayout {
+    inner: CoefficientLayout,
+}
+
+#[pymethods]
+impl PyCoefficientLayout {
+    fn n_dofs(&self) -> usize {
+        self.inner.n_dofs()
+    }
+
+    fn n_terms(&self) -> usize {
+        self.inner.n_terms()
+    }
+
+    fn n_levels(&self, term: usize) -> PyResult<usize> {
+        self.inner.n_levels(term).ok_or_else(|| self.term_oob(term))
+    }
+
+    fn n_columns(&self, term: usize) -> PyResult<usize> {
+        self.inner
+            .n_columns(term)
+            .ok_or_else(|| self.term_oob(term))
+    }
+
+    fn index(&self, term: usize, level: usize, column: usize) -> PyResult<usize> {
+        self.inner.index(term, level, column).ok_or_else(|| {
+            PyIndexError::new_err(format!(
+                "coefficient address (term={term}, level={level}, column={column}) out of range"
+            ))
+        })
+    }
+
+    fn address(&self, index: usize) -> PyResult<(usize, usize, usize)> {
+        self.inner.address(index).ok_or_else(|| {
+            PyIndexError::new_err(format!(
+                "x index {index} out of range (n_dofs={})",
+                self.inner.n_dofs()
+            ))
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "CoefficientLayout(n_terms={}, n_dofs={})",
+            self.inner.n_terms(),
+            self.inner.n_dofs()
+        )
+    }
+}
+
+impl PyCoefficientLayout {
+    fn term_oob(&self, term: usize) -> PyErr {
+        PyIndexError::new_err(format!(
+            "term {term} out of range (n_terms={})",
+            self.inner.n_terms()
+        ))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Result conversion helpers
 // ---------------------------------------------------------------------------
@@ -95,6 +164,9 @@ pub(crate) fn into_py_result(py: Python<'_>, result: SolveResult) -> PySolveResu
                 column: u.column,
             })
             .collect(),
+        layout: PyCoefficientLayout {
+            inner: result.layout,
+        },
         demeaned: result.demeaned.into_pyarray(py).unbind(),
         converged: result.converged,
         iterations: result.iterations,
@@ -128,6 +200,9 @@ pub(crate) fn into_py_batch_result(
                 column: u.column,
             })
             .collect(),
+        layout: PyCoefficientLayout {
+            inner: result.layout,
+        },
         demeaned: demeaned.into_pyarray(py).unbind(),
         converged: result.converged,
         iterations: result.iterations,

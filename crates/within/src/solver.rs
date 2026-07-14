@@ -125,6 +125,82 @@ pub struct UnidentifiedDirection {
     pub column: usize,
 }
 
+/// Translates a `(term, level, column)` coefficient address to its flat index
+/// in [`SolveResult::x`] and back, so callers need not reconstruct the
+/// term-major offset formula (`offset + column * n_levels + level`) by hand.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoefficientLayout {
+    terms: Vec<TermLayout>,
+    n_dofs: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TermLayout {
+    offset: usize,
+    n_levels: usize,
+    n_columns: usize,
+}
+
+impl CoefficientLayout {
+    pub(crate) fn from_design(design: &Design) -> Self {
+        let terms = design
+            .terms
+            .iter()
+            .map(|t| TermLayout {
+                offset: t.offset,
+                n_levels: t.n_levels,
+                n_columns: usize::from(t.intercept) + t.slopes.len(),
+            })
+            .collect();
+        Self {
+            terms,
+            n_dofs: design.n_dofs,
+        }
+    }
+
+    /// Total number of coefficients (the length of [`SolveResult::x`]).
+    pub fn n_dofs(&self) -> usize {
+        self.n_dofs
+    }
+
+    /// Number of terms in the design.
+    pub fn n_terms(&self) -> usize {
+        self.terms.len()
+    }
+
+    /// Level count of `term`, or `None` if `term` is out of range.
+    pub fn n_levels(&self, term: usize) -> Option<usize> {
+        self.terms.get(term).map(|t| t.n_levels)
+    }
+
+    /// Coefficient-column count of `term` (`intercept? + slopes`, ordered
+    /// `[intercept?, slopes…]`), or `None` if `term` is out of range.
+    pub fn n_columns(&self, term: usize) -> Option<usize> {
+        self.terms.get(term).map(|t| t.n_columns)
+    }
+
+    /// Flat [`SolveResult::x`] index of coefficient `column` of `level` within
+    /// `term`, or `None` if any coordinate is out of range.
+    pub fn index(&self, term: usize, level: usize, column: usize) -> Option<usize> {
+        let t = self.terms.get(term)?;
+        (level < t.n_levels && column < t.n_columns).then(|| t.offset + column * t.n_levels + level)
+    }
+
+    /// The `(term, level, column)` address of flat index `i`, or `None` if
+    /// `i >= n_dofs`.
+    pub fn address(&self, i: usize) -> Option<(usize, usize, usize)> {
+        if i >= self.n_dofs {
+            return None;
+        }
+        // Term blocks are contiguous in ascending offset order, so the owning
+        // term is the last one whose offset does not exceed `i`.
+        let term = self.terms.partition_point(|t| t.offset <= i) - 1;
+        let t = &self.terms[term];
+        let within = i - t.offset;
+        Some((term, within % t.n_levels, within / t.n_levels))
+    }
+}
+
 /// Common solve output for all orchestration entry points.
 #[derive(Debug, Clone)]
 #[must_use]
@@ -138,6 +214,8 @@ pub struct SolveResult {
     pub x: Vec<f64>,
     /// Per-level directions the data cannot identify.
     pub unidentified: Vec<UnidentifiedDirection>,
+    /// Address ↔ flat-`x`-index translation for this design's coefficients.
+    pub layout: CoefficientLayout,
     /// Demeaned response: `y - D x` (length = n_obs), in caller order.
     ///
     /// Invariant: any per-observation field added here must be translated
@@ -170,6 +248,8 @@ pub struct BatchSolveResult {
     /// Per-level directions the data cannot identify, shared across all RHS:
     /// identification depends only on the design and weights, never on `y`.
     pub unidentified: Vec<UnidentifiedDirection>,
+    /// Address ↔ flat-`x`-index translation for this design's coefficients.
+    pub layout: CoefficientLayout,
     /// All demeaned responses concatenated (length = n_obs * n_rhs).
     pub demeaned: Vec<f64>,
     /// Per-RHS convergence flags.
@@ -374,6 +454,7 @@ impl<'a> Solver<'a> {
         Ok(SolveResult {
             x,
             unidentified,
+            layout: CoefficientLayout::from_design(&self.design),
             // Back to the caller's observation order (no-op if not reordered).
             demeaned: self.design.permute_obs_out(demeaned),
             converged: r.converged,
@@ -427,6 +508,7 @@ impl<'a> Solver<'a> {
         Ok(BatchSolveResult {
             x,
             unidentified,
+            layout: CoefficientLayout::from_design(&self.design),
             demeaned,
             converged,
             iterations,
