@@ -55,7 +55,7 @@ def _assert_matches(res, coef, *, intercepts=True, skip_slopes=()):
 
 def test_single_slope_matches_pyfixest():
     f, z, y = _panel(seed=42)
-    res = within.solve([Effect(f, True, [z])], y, OPTS)
+    res = within.solve([Effect(f, True, [z])], y, options=OPTS)
     assert res.converged
     assert res.unidentified == []
 
@@ -65,7 +65,7 @@ def test_single_slope_matches_pyfixest():
 def test_weighted_single_slope_matches_pyfixest():
     f, z, y = _panel(seed=7)
     w = np.random.default_rng(11).uniform(0.2, 3.0, size=len(y))
-    res = within.solve([Effect(f, True, [z])], y, OPTS, weights=w)
+    res = within.solve([Effect(f, True, [z])], y, options=OPTS, weights=w)
     assert res.converged
 
     _assert_matches(res, _pyfixest_coef(f, z, y, "y ~ C(f) + i(f, z) - 1", w=w))
@@ -73,7 +73,7 @@ def test_weighted_single_slope_matches_pyfixest():
 
 def test_slope_only_term_matches_pyfixest():
     f, z, y = _panel(seed=3)
-    res = within.solve([Effect(f, False, [z])], y, OPTS)
+    res = within.solve([Effect(f, False, [z])], y, options=OPTS)
     assert res.converged
     assert res.unidentified == []
     assert len(res.x) == N_LEVELS
@@ -85,7 +85,7 @@ def test_constant_slope_level_reports_drop_with_exact_zero():
     f, z, y = _panel(seed=5)
     z = z.copy()
     z[f == 1] = 2.5
-    res = within.solve([Effect(f, True, [z])], y, OPTS)
+    res = within.solve([Effect(f, True, [z])], y, options=OPTS)
 
     (u,) = res.unidentified
     assert (u.term, u.level, u.column) == (0, 1, 1)
@@ -131,7 +131,7 @@ def _pyfixest_coef_multi(f, zs, y, w=None):
 def test_three_correlated_weighted_slopes_match_pyfixest():
     f, zs, y = _panel_multi(seed=19, v=3)
     w = np.random.default_rng(29).uniform(0.2, 3.0, size=len(y))
-    res = within.solve([Effect(f, True, zs)], y, OPTS, weights=w)
+    res = within.solve([Effect(f, True, zs)], y, options=OPTS, weights=w)
     assert res.converged
     assert res.unidentified == []
 
@@ -155,7 +155,7 @@ def test_two_factor_slope_matches_pyfixest():
     c = rng.normal(size=2)
     y = a[f] + b[f] * z + c[g] + rng.normal(scale=0.1, size=n)
 
-    res = within.solve([Effect(f, True, [z]), Effect(g, True)], y, OPTS)
+    res = within.solve([Effect(f, True, [z]), Effect(g, True)], y, options=OPTS)
     assert res.converged
     assert res.unidentified == []
 
@@ -188,7 +188,7 @@ def test_unit_trends_time_effects_boundary_matches_pyfixest():
         + rng.normal(scale=0.1, size=n_units * n_times)
     )
 
-    res = within.solve([Effect(unit, True, [t]), Effect(time, True)], y, OPTS)
+    res = within.solve([Effect(unit, True, [t]), Effect(time, True)], y, options=OPTS)
     assert res.converged
     assert res.unidentified == []
 
@@ -226,7 +226,7 @@ def test_frustrated_two_factor_slope_matches_pyfixest():
     c = rng.normal(size=5)
     y = a[f] + b[f] * z + c[g] + rng.normal(scale=0.1, size=n)
 
-    res = within.solve([Effect(f, True, [z]), Effect(g, True)], y, OPTS)
+    res = within.solve([Effect(f, True, [z]), Effect(g, True)], y, options=OPTS)
     assert res.converged
     assert res.unidentified == []
 

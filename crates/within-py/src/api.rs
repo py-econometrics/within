@@ -1,17 +1,55 @@
 //! Free `#[pyfunction]`s exposed via `within._within`: [`solve`] and
 //! [`solve_batch`].
 
+use std::time::Instant;
+
 use numpy::{PyReadonlyArray1, PyReadonlyArray2, PyUntypedArray};
 use pyo3::prelude::*;
 
 use within::{
-    solve as solve_native, solve_batch as solve_batch_native, BuildError, Design, Effect,
-    IntoDesign, SolveResult, Solver, WithinError,
+    BatchSolveResult, BuildError, BuildWarning, Design, Effect, IntoDesign, LsmrOptions,
+    PreconditionerInput, SolveResult, Solver, WithinError,
 };
 
 use crate::config::{resolve_lsmr_config, resolve_precond_input, PyPreconditioner};
 use crate::convert::{coerce_to_slice, column_refs, extract_columns, value_err, warn_c_contiguous};
-use crate::results::{run_batch, run_solve, PyBatchSolveResult, PySolveResult};
+use crate::results::{
+    emit_build_warnings, run_batch, run_batch_with_warnings, run_solve, run_solve_with_warnings,
+    PyBatchSolveResult, PySolveResult,
+};
+
+/// Build a one-shot solver, run the solve (mirroring [`within::solve`]'s
+/// timing), and hand back the build warnings so the caller can re-emit them.
+fn build_and_solve<'a>(
+    design: impl IntoDesign<'a>,
+    y: &[f64],
+    weights: Option<&[f64]>,
+    lsmr: &LsmrOptions,
+    precond: impl Into<PreconditionerInput>,
+) -> Result<(SolveResult, Vec<BuildWarning>), WithinError> {
+    let t_start = Instant::now();
+    let solver = Solver::new(design, weights.map(|w| w.to_vec()), precond)?;
+    let time_setup = t_start.elapsed().as_secs_f64();
+    let mut result = solver.solve(y, lsmr)?;
+    result.time_setup += time_setup;
+    result.time_total = t_start.elapsed().as_secs_f64();
+    Ok((result, solver.warnings().to_vec()))
+}
+
+/// Batch counterpart to [`build_and_solve`], mirroring [`within::solve_batch`].
+fn build_and_solve_batch<'a>(
+    design: impl IntoDesign<'a>,
+    ys: &[&[f64]],
+    weights: Option<&[f64]>,
+    lsmr: &LsmrOptions,
+    precond: impl Into<PreconditionerInput>,
+) -> Result<(BatchSolveResult, Vec<BuildWarning>), WithinError> {
+    let t_start = Instant::now();
+    let solver = Solver::new(design, weights.map(|w| w.to_vec()), precond)?;
+    let mut result = solver.solve_batch(ys, lsmr)?;
+    result.time_total = t_start.elapsed().as_secs_f64();
+    Ok((result, solver.warnings().to_vec()))
+}
 
 // ---------------------------------------------------------------------------
 // Public solve functions
@@ -39,20 +77,18 @@ pub fn solve<'py>(
     match extract_design(py, design)? {
         DesignSource::Categories(categories) => {
             let cats = categories.as_array();
-            run_solve(py, move || -> Result<SolveResult, WithinError> {
+            run_solve_with_warnings(py, move || {
                 let y_cow = coerce_to_slice(&y_arr);
                 let w_cow = w_view.as_ref().map(coerce_to_slice);
-                solve_native(cats, &y_cow, w_cow.as_deref(), &params, precond)
+                build_and_solve(cats, &y_cow, w_cow.as_deref(), &params, precond)
             })
         }
-        DesignSource::Effects(terms) => {
-            run_solve(py, move || -> Result<SolveResult, WithinError> {
-                let effects: Vec<_> = terms.iter().map(PyEffect::as_effect).collect();
-                let y_cow = coerce_to_slice(&y_arr);
-                let w_cow = w_view.as_ref().map(coerce_to_slice);
-                solve_native(effects, &y_cow, w_cow.as_deref(), &params, precond)
-            })
-        }
+        DesignSource::Effects(terms) => run_solve_with_warnings(py, move || {
+            let effects: Vec<_> = terms.iter().map(PyEffect::as_effect).collect();
+            let y_cow = coerce_to_slice(&y_arr);
+            let w_cow = w_view.as_ref().map(coerce_to_slice);
+            build_and_solve(effects, &y_cow, w_cow.as_deref(), &params, precond)
+        }),
     }
 }
 
@@ -77,23 +113,23 @@ pub fn solve_batch<'py>(
             let cats = categories.as_array();
             warn_c_contiguous(py, &cats)?;
             validate_batch_rows(y_arr.nrows(), cats.nrows())?;
-            run_batch(py, move || -> Result<_, WithinError> {
+            run_batch_with_warnings(py, move || {
                 let columns = extract_columns(&y_arr);
                 let col_refs = column_refs(&columns);
                 let w_cow = w_view.as_ref().map(coerce_to_slice);
-                solve_batch_native(cats, &col_refs, w_cow.as_deref(), &params, precond)
+                build_and_solve_batch(cats, &col_refs, w_cow.as_deref(), &params, precond)
             })
         }
         DesignSource::Effects(terms) => {
             if let Some(first) = terms.first() {
                 validate_batch_rows(y_arr.nrows(), first.levels.len())?;
             }
-            run_batch(py, move || -> Result<_, WithinError> {
+            run_batch_with_warnings(py, move || {
                 let effects: Vec<_> = terms.iter().map(PyEffect::as_effect).collect();
                 let columns = extract_columns(&y_arr);
                 let col_refs = column_refs(&columns);
                 let w_cow = w_view.as_ref().map(coerce_to_slice);
-                solve_batch_native(effects, &col_refs, w_cow.as_deref(), &params, precond)
+                build_and_solve_batch(effects, &col_refs, w_cow.as_deref(), &params, precond)
             })
         }
     }
@@ -242,16 +278,7 @@ impl PySolver {
         }
         .map_err(value_err)?;
 
-        for warning in solver.warnings() {
-            let message = std::ffi::CString::new(warning.to_string())
-                .expect("warning messages contain no NUL bytes");
-            PyErr::warn(
-                py,
-                &py.get_type::<pyo3::exceptions::PyUserWarning>(),
-                &message,
-                1,
-            )?;
-        }
+        emit_build_warnings(py, solver.warnings())?;
         Ok(Self { solver })
     }
 
