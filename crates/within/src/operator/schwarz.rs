@@ -96,12 +96,10 @@ impl Operator for DiagonalPreconditioner {
 
 /// Build additive Schwarz with an explicit reduction strategy.
 ///
-/// `n_dofs` is the operator's column count. It can exceed the span of the
-/// subdomains' global indices: an unidentified direction (e.g. a singleton
-/// level's slope) is kept as a structural-zero operator column that no
-/// subdomain covers, and must still count toward the preconditioner's shape
-/// so it matches the operator. Uncovered DOFs resolve to `0`, matching the
-/// `Off`/`Diagonal` paths.
+/// `n_dofs` is the operator's column count, which can exceed the span of the
+/// subdomains' indices: an unidentified direction (e.g. a singleton level's
+/// slope) is a structural-zero column no subdomain covers, yet must count
+/// toward the shape. Uncovered DOFs resolve to `0`, like `Off`/`Diagonal`.
 pub(crate) fn build_additive_with_strategy(
     domains: Vec<LocalDomain>,
     config: &LocalSolverConfig,
