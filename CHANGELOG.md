@@ -9,21 +9,28 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **`ObservationFrame`:** columnar observation storage — one `u32` level-code column per factor plus `f64` loading columns (provisioning for varying slopes), each column independently borrowed or owned, with column lengths validated at construction (#68).
-- **Locality sort:** `Design` construction reorders observations by the highest-cardinality factor when unsorted, copying the columns once into an owned locality-sorted frame (caller buffers are never mutated). Transparent — results return in caller row order.
-- Coalesced scatter for large sorted factors: one atomic add per equal-level run per chunk instead of one per row.
-- `IntoDesign` is re-exported from the crate root, so the trait behind `Solver::new`'s design argument can be named, imported, and called directly.
+- **Varying slopes:** factor effects can carry continuous slope covariates via the new `Effect` term type (level codes, an intercept flag, and zero or more slope columns), accepted anywhere a categories matrix is — Rust `Solver::new` / `solve` / `solve_batch` and the Python first argument (#58–#63).
+- `SolveResult` / `BatchSolveResult` report unidentified directions as `UnidentifiedDirection` records (`term`, `level`, `column`) in both Rust and Python; those coefficient slots hold `0`, never NaN (#69).
+- `SolveResult.x` is term-major — coefficient column `c` of `level` sits at `term_offset + c * n_levels + level`; intercept-only designs keep the 0.2.0 ordering (#71).
+- `ScalingConfig` (in `within.config`) tunes certification of signed-component scaling; `Solver::warnings()` returns non-fatal `BuildWarning`s from the build (#61).
+- New `BuildError` variants `EmptyEffect` and `SlopeLengthMismatch` for malformed effect terms (#58).
+- **`ObservationFrame`:** columnar observation storage — one `u32` level-code column per factor plus `f64` loading columns, each independently borrowed or owned (#68).
+- **Locality sort:** `Design` reorders observations by the highest-cardinality factor when unsorted, copying columns once; results still return in caller row order (#68).
 
 ### Changed
 
-- **BREAKING:** `Design<S>` and `Solver<S>` trade their storage type parameter for a lifetime — `Design<'a>` / `Solver<'a>` — borrowing caller columns until a locality sort or `into_owned()` detaches them (#68).
+- **BREAKING:** The Python `solve` / `solve_batch` / `Solver` first parameter is renamed `categories` → `design` and now accepts a `list[Effect]` as well as a `uint32` array; positional calls are unaffected, `categories=` keyword calls break (#58).
+- **BREAKING:** The serialized `Preconditioner` wire format changed (v3 → v6); `Preconditioner` bytes from 0.2.0 no longer decode (#72, #98).
+- **BREAKING:** `SolveResult` / `BatchSolveResult` gain a public `unidentified` field and are not `#[non_exhaustive]`, so exhaustive Rust destructuring must account for it (#69).
+- **BREAKING:** `Design` / `Solver` trade their storage type parameter for a lifetime — `Design<'a>` / `Solver<'a>` — borrowing caller columns until a locality sort or `into_owned()` (#68).
 - **BREAKING:** `Design::from_store` → `Design::from_frame`, taking an `ObservationFrame` (#68).
 - **BREAKING:** `BuildError::ObservationCountMismatch` reports the offending `column` index (#68).
-- Category views are borrowed only when the dominant factor is already sorted; otherwise the columns are copied once for the locality sort. The reorder changes summation order, so unsorted-input results match 0.2.0 within solver tolerance, not bitwise.
+- `approx-chol` bumped 0.2.0 → 0.3.1, speeding up local-solver setup.
+- The locality reorder changes summation order, so unsorted-input results match 0.2.0 within solver tolerance, not bitwise.
 
 ### Removed
 
-- **BREAKING:** The `Store` trait and its `ArrayStore` / `FactorMajorStore` backends, superseded by `ObservationFrame`; `within::observation` now exposes only the frame (#68).
+- **BREAKING:** The `Store` trait and its `ArrayStore` / `FactorMajorStore` backends, superseded by `ObservationFrame` (#68).
 
 ## [0.2.0] - 2026-06-04
 
