@@ -76,11 +76,6 @@ impl PyApproxSchurConfig {
     }
 }
 
-/// Certification policy for the diagonal scaling of signed (varying-slope)
-/// components: relative ``tolerance`` for weak diagonal dominance, relaxation
-/// ``max_sweeps`` budget, and ``on_failure`` disposition (``"warn"`` clamps
-/// residual deficits — preconditioner quality only — and emits a
-/// ``UserWarning``; ``"error"`` fails the build).
 /// Schur-complement reduction mode for `LocalSolverConfig`: approximate (the
 /// library default) or exact. Build via `Schur.approximate(...)` or
 /// `Schur.exact()`.
@@ -130,6 +125,11 @@ impl PySchur {
     }
 }
 
+/// Certification policy for the diagonal scaling of signed (varying-slope)
+/// components: relative ``tolerance`` for weak diagonal dominance, relaxation
+/// ``max_sweeps`` budget, and ``on_failure`` disposition (``"warn"`` clamps
+/// residual deficits — preconditioner quality only — and emits a
+/// ``UserWarning``; ``"error"`` fails the build).
 #[pyclass(frozen, module = "within._within")]
 #[pyo3(name = "ScalingConfig")]
 pub struct PyScalingConfig {
