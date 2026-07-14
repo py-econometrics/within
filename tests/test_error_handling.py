@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from within import solve
+from within import Effect, solve
 from within._within import ApproxSchurConfig
 
 
@@ -35,18 +35,26 @@ class TestErrorHandling:
             solve(cats, y, weights=weights)
 
     def test_wrong_dtype_categories(self):
-        """float64 categories should raise TypeError."""
+        """float64 categories should raise a TypeError naming uint32."""
         cats = np.array([[0.0, 0.0], [1.0, 1.0]], dtype=np.float64, order="F")
         y = np.array([1.0, 2.0])
-        with pytest.raises(TypeError):
+        with pytest.raises(TypeError, match="uint32"):
             solve(cats, y)
 
     def test_wrong_dtype_y(self):
-        """int32 y should raise TypeError."""
+        """int32 y should raise a TypeError naming float64."""
         cats = as_solver_categories([np.array([0, 1, 0]), np.array([0, 0, 1])])
         y = np.array([1, 2, 3], dtype=np.int32)
-        with pytest.raises(TypeError):
+        with pytest.raises(TypeError, match="float64"):
             solve(cats, y)
+
+    def test_wrong_dtype_weights(self):
+        """float32 weights should raise a TypeError naming float64."""
+        cats = as_solver_categories([np.array([0, 1, 0]), np.array([0, 0, 1])])
+        y = np.array([1.0, 2.0, 3.0])
+        w = np.array([1.0, 1.0, 1.0], dtype=np.float32)
+        with pytest.raises(TypeError, match="float64"):
+            solve(cats, y, weights=w)
 
     def test_1d_categories_raises(self):
         """1-D categories should raise TypeError."""
@@ -74,3 +82,29 @@ class TestErrorHandling:
         """ApproxSchurConfig(split=0) should raise ValueError."""
         with pytest.raises((ValueError, OverflowError)):
             ApproxSchurConfig(split=0)
+
+
+class TestEffectErrors:
+    def test_empty_effect_raises(self):
+        with pytest.raises(ValueError, match="intercept or at least one slope"):
+            Effect(np.array([0, 1, 0], dtype=np.uint32), intercept=False)
+
+    def test_slope_length_mismatch_names_slope(self):
+        levels = np.array([0, 1, 0], dtype=np.uint32)
+        with pytest.raises(ValueError, match="slope 0"):
+            Effect(levels, intercept=True, slopes=[np.array([1.0, 2.0])])
+
+    def test_slope_term_alongside_other_terms_solves(self):
+        levels = np.array([0, 1, 0], dtype=np.uint32)
+        slope = [np.array([1.0, 2.0, 3.0])]
+        y = np.array([1.0, 2.0, 3.0])
+        # Cross-factor routing (#61): slope terms solve alongside others.
+        result = solve(
+            [
+                Effect(levels, intercept=True, slopes=slope),
+                Effect(levels, intercept=True),
+            ],
+            y,
+        )
+        assert result.converged
+        assert np.all(np.isfinite(result.x))

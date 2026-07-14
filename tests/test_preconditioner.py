@@ -11,6 +11,7 @@ from within._within import (
     ApproxCholConfig,
     ApproxSchurConfig,
     LocalSolverConfig,
+    Schur,
 )
 
 
@@ -59,13 +60,34 @@ class TestAdvancedConfigs:
     def test_schur_complement_defaults(self):
         sc = LocalSolverConfig()
         assert sc.dense_threshold == 24
+        # Omitted schur means the library default (approximate), not exact.
+        assert sc.schur is None
+
+    def test_schur_mode_spellings(self):
+        # Omission and Schur.approximate() are the default; Schur.exact() is the
+        # explicit opt-in — all three build and solve.
+        rng = np.random.default_rng(7)
+        cats = as_solver_categories(
+            [rng.integers(0, 12, size=600), rng.integers(0, 9, size=600)]
+        )
+        y = rng.standard_normal(600)
+        for schur in (None, Schur.approximate(), Schur.exact()):
+            local = LocalSolverConfig(schur=schur)
+            assert local.schur is schur
+            result = solve(
+                cats,
+                y,
+                options=LsmrOptions(maxiter=2000),
+                preconditioner=AdditiveSchwarz(local_solver=local),
+            )
+            assert result.converged
 
     def test_schur_complement_solve(self, problem):
         cats, y = problem
         result = solve(
             as_solver_categories(cats),
             y,
-            LsmrOptions(),
+            options=LsmrOptions(),
             preconditioner=AdditiveSchwarz(local_solver=LocalSolverConfig()),
         )
         assert result.converged
