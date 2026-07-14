@@ -385,7 +385,13 @@ impl<'a> Solver<'a> {
     }
 
     /// Solve for a single RHS vector with the given LSMR tuning.
-    pub fn solve(&self, y: &[f64], lsmr: &LsmrOptions) -> Result<SolveResult, SolveError> {
+    pub fn solve<'o>(
+        &self,
+        y: &[f64],
+        lsmr: impl Into<Option<&'o LsmrOptions>>,
+    ) -> Result<SolveResult, SolveError> {
+        let default = LsmrOptions::default();
+        let lsmr = lsmr.into().unwrap_or(&default);
         // Guard the silent-truncation hole: weighted_rhs zips y with sqrt-weights,
         // which would otherwise discard trailing values when y.len() > n_rows.
         if y.len() != self.design.n_obs {
@@ -467,12 +473,14 @@ impl<'a> Solver<'a> {
     }
 
     /// Solve for multiple RHS vectors in parallel.
-    pub fn solve_batch(
+    pub fn solve_batch<'o>(
         &self,
         ys: &[&[f64]],
-        lsmr: &LsmrOptions,
+        lsmr: impl Into<Option<&'o LsmrOptions>>,
     ) -> Result<BatchSolveResult, SolveError> {
         let t_start = Instant::now();
+        let default = LsmrOptions::default();
+        let lsmr = lsmr.into().unwrap_or(&default);
         let n_rhs = ys.len();
 
         // Fail fast on the first per-RHS error rather than materializing a
@@ -556,11 +564,11 @@ impl<'a> Solver<'a> {
 /// [`crate::Preconditioner`], or a `&Preconditioner` for amortized reuse.
 ///
 /// This is a convenience wrapper around [`Solver::new`] + [`Solver::solve`].
-pub fn solve<'a>(
+pub fn solve<'a, 'o>(
     design: impl IntoDesign<'a>,
     y: &[f64],
     weights: Option<&[f64]>,
-    lsmr: &LsmrOptions,
+    lsmr: impl Into<Option<&'o LsmrOptions>>,
     preconditioner: impl Into<PreconditionerInput>,
 ) -> Result<SolveResult, WithinError> {
     let t_start = Instant::now();
@@ -577,11 +585,11 @@ pub fn solve<'a>(
 ///
 /// Same as [`solve`] but solves all RHS vectors in parallel (via rayon),
 /// reusing the preconditioner across all solves.
-pub fn solve_batch<'a>(
+pub fn solve_batch<'a, 'o>(
     design: impl IntoDesign<'a>,
     ys: &[&[f64]],
     weights: Option<&[f64]>,
-    lsmr: &LsmrOptions,
+    lsmr: impl Into<Option<&'o LsmrOptions>>,
     preconditioner: impl Into<PreconditionerInput>,
 ) -> Result<BatchSolveResult, WithinError> {
     let t_start = Instant::now();

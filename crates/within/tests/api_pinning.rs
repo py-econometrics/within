@@ -93,3 +93,40 @@ fn solver_new_weights_call_shapes_compile() {
     // Owned `Vec<f64>` weights — moved into the solver.
     let _ = Solver::new(categories.view(), Some(w_vec), None).expect("Vec<f64> weights");
 }
+
+#[test]
+fn options_are_optional_and_tuned_additive_builds_from_crate_root() {
+    // A tuned Additive preconditioner is constructible from crate-root imports
+    // alone — no `within::config::` paths — and LSMR options are optional (#105).
+    use within::{
+        ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, PreconditionerConfig,
+        ReductionStrategy, SchurMode,
+    };
+
+    let categories = cats();
+    let y = vec![0.0; 4];
+    let opts = LsmrOptions::default();
+
+    let tuned = PreconditionerConfig::Additive {
+        local_solver: LocalSolverConfig {
+            approx_chol: ApproxCholConfig::default(),
+            schur: SchurMode::Approximate(ApproxSchurConfig::default()),
+            ..Default::default()
+        },
+        reduction: ReductionStrategy::Auto,
+    };
+    let solver = Solver::new(categories.view(), None, tuned).expect("tuned Additive builds");
+
+    // `None` accepts the default options; `&opts` still works.
+    let _ = solver.solve(&y, None).expect("solve, default options");
+    let _ = solver.solve(&y, &opts).expect("solve, explicit options");
+    let ys: Vec<&[f64]> = vec![&y];
+    let _ = solver
+        .solve_batch(&ys, None)
+        .expect("solve_batch, default options");
+
+    // Free functions accept `None` options too (previously `&LsmrOptions::default()`).
+    let _ = solve(categories.view(), &y, None, None, None).expect("free solve, None options");
+    let _ = solve_batch(categories.view(), &ys, None, None, None)
+        .expect("free solve_batch, None options");
+}
