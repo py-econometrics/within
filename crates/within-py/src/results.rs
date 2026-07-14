@@ -1,11 +1,13 @@
 //! PyO3 result wrapper classes and native-to-Python result conversions.
 
+use std::ffi::CString;
+
 use numpy::ndarray::{Array2, ShapeBuilder};
 use numpy::IntoPyArray;
-use pyo3::exceptions::PyIndexError;
+use pyo3::exceptions::{PyIndexError, PyUserWarning};
 use pyo3::prelude::*;
 
-use within::{BatchSolveResult, CoefficientLayout, SolveResult};
+use within::{BatchSolveResult, BuildWarning, CoefficientLayout, SolveResult};
 
 use crate::convert::value_err;
 
@@ -240,5 +242,42 @@ where
     F: Send + FnOnce() -> Result<BatchSolveResult, E>,
 {
     let result = py.allow_threads(solve).map_err(value_err)?;
+    into_py_batch_result(py, result)
+}
+
+/// Re-emit build-time warnings as Python `UserWarning`s. Shared by the
+/// persistent `Solver` (at construction) and the one-shot `solve` path.
+pub(crate) fn emit_build_warnings(py: Python<'_>, warnings: &[BuildWarning]) -> PyResult<()> {
+    for warning in warnings {
+        let message =
+            CString::new(warning.to_string()).expect("warning messages contain no NUL bytes");
+        PyErr::warn(py, &py.get_type::<PyUserWarning>(), &message, 1)?;
+    }
+    Ok(())
+}
+
+/// [`run_solve`] for the one-shot path: the off-GIL closure also returns the
+/// build warnings collected during construction, which are re-emitted on-GIL.
+pub(crate) fn run_solve_with_warnings<E, F>(py: Python<'_>, solve: F) -> PyResult<PySolveResult>
+where
+    E: std::fmt::Display + Send,
+    F: Send + FnOnce() -> Result<(SolveResult, Vec<BuildWarning>), E>,
+{
+    let (result, warnings) = py.allow_threads(solve).map_err(value_err)?;
+    emit_build_warnings(py, &warnings)?;
+    Ok(into_py_result(py, result))
+}
+
+/// Batch counterpart to [`run_solve_with_warnings`].
+pub(crate) fn run_batch_with_warnings<E, F>(
+    py: Python<'_>,
+    solve: F,
+) -> PyResult<PyBatchSolveResult>
+where
+    E: std::fmt::Display + Send,
+    F: Send + FnOnce() -> Result<(BatchSolveResult, Vec<BuildWarning>), E>,
+{
+    let (result, warnings) = py.allow_threads(solve).map_err(value_err)?;
+    emit_build_warnings(py, &warnings)?;
     into_py_batch_result(py, result)
 }

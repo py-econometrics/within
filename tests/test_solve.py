@@ -15,7 +15,7 @@ from within import (
     Solver,
     solve,
 )
-from within.config import AdditiveSchwarz
+from within.config import AdditiveSchwarz, LocalSolverConfig, ScalingConfig
 
 from conftest import generate_synthetic_data
 
@@ -70,6 +70,38 @@ def test_free_solve_positional_order_is_weights_then_options():
     w = rng.uniform(0.5, 2.0, size=300)
     result = solve(cats, y, w, LsmrOptions(maxiter=2000))
     assert result.converged
+
+
+def test_one_shot_solve_surfaces_build_warnings():
+    # A frustrated slope design with scaling certification disabled emits a
+    # build warning; the one-shot solve/solve_batch must re-emit it, matching
+    # the persistent Solver (#103).
+    f = np.array([0, 0, 0, 1, 1, 1], np.uint32)
+    g = np.array([0, 1, 2, 0, 1, 2], np.uint32)
+    z = np.array([-2.0, 1.0, 1.0, -1.0, -1.0, 2.0])
+    y = np.array([1.0, -2.0, 0.5, 3.0, -1.5, 2.5])
+    from within import solve_batch
+
+    design = [Effect(f, True, [z]), Effect(g, True)]
+    precond = AdditiveSchwarz(
+        local_solver=LocalSolverConfig(scaling=ScalingConfig(max_sweeps=0))
+    )
+
+    def user_warnings(call):
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter("always")
+            call()
+        return [str(w.message) for w in record if issubclass(w.category, UserWarning)]
+
+    persistent = user_warnings(lambda: Solver(design, preconditioner=precond))
+    assert persistent, "fixture should emit a build warning"
+    assert user_warnings(lambda: solve(design, y, preconditioner=precond)) == persistent
+    assert (
+        user_warnings(
+            lambda: solve_batch(design, np.column_stack([y, y]), preconditioner=precond)
+        )
+        == persistent
+    )
 
 
 @pytest.fixture()

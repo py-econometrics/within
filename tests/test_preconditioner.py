@@ -77,7 +77,7 @@ class TestAdvancedConfigs:
             result = solve(
                 cats,
                 y,
-                LsmrOptions(maxiter=2000),
+                options=LsmrOptions(maxiter=2000),
                 preconditioner=AdditiveSchwarz(local_solver=local),
             )
             assert result.converged
@@ -87,7 +87,7 @@ class TestAdvancedConfigs:
         result = solve(
             as_solver_categories(cats),
             y,
-            LsmrOptions(),
+            options=LsmrOptions(),
             preconditioner=AdditiveSchwarz(local_solver=LocalSolverConfig()),
         )
         assert result.converged
