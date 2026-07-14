@@ -1,4 +1,4 @@
-//! Cross-tabulation of a factor pair: the bipartite local Gramian.
+//! Cross-tabulation of a channel pair: the bipartite local Gramian.
 //!
 //! [`CrossTab`] holds `C` as a [`CsrBlock`] plus its precomputed transpose and
 //! the two diagonals (rather than assembling the symmetric block matrix), and
@@ -6,8 +6,7 @@
 //! Levels are stored compactly with a `local_to_global` map for active levels only.
 
 use crate::csr_block::CsrBlock;
-use crate::domain::{Design, FactorMeta};
-use crate::observation::{factor_columns, level_at, Store};
+use crate::domain::{ChannelPair, Design};
 
 mod accumulate;
 use accumulate::accumulate_cross_block;
@@ -40,11 +39,9 @@ struct ActiveLevels {
 /// Scan all observations once and mark which levels are active for each factor.
 ///
 /// Returns `active[f][level]` = true if any observation uses that level of factor f.
-pub(crate) fn find_all_active_levels<S: Store>(design: &Design<S>) -> Vec<Vec<bool>> {
-    let n_obs = design.store.n_obs();
-    let cols = factor_columns(&design.store);
+pub(crate) fn find_all_active_levels(design: &Design<'_>) -> Vec<Vec<bool>> {
     let mut active: Vec<Vec<bool>> = design
-        .factors
+        .terms
         .iter()
         .map(|f| vec![false; f.n_levels])
         .collect();
@@ -52,9 +49,8 @@ pub(crate) fn find_all_active_levels<S: Store>(design: &Design<S>) -> Vec<Vec<bo
     // buffer before moving on, instead of hopping between `n_factors` buffers
     // on every observation.
     for (f, col) in active.iter_mut().enumerate() {
-        let levels = cols[f];
-        for uid in 0..n_obs {
-            col[level_at(&design.store, levels, uid, f)] = true;
+        for &v in design.frame.level_column(f) {
+            col[v as usize] = true;
         }
     }
     active
@@ -75,15 +71,14 @@ fn compact_map(active: &[bool]) -> (Vec<u32>, usize) {
     (map, n as usize)
 }
 
-/// Build compact mapping for a factor pair using pre-computed active level flags.
-///
-/// Extracts the mapping logic from `find_all_active_levels`, taking pre-computed
-/// active booleans instead of scanning observations.
+/// Build compact mapping for a channel pair using pre-computed active level
+/// flags; `base_q`/`base_r` are the channels' global DOF offsets
+/// ([`TermMeta::column_base`](crate::domain::TermMeta::column_base)).
 fn build_compact_mapping(
     active_q: &[bool],
     active_r: &[bool],
-    fq: &FactorMeta,
-    fr: &FactorMeta,
+    base_q: usize,
+    base_r: usize,
 ) -> Option<ActiveLevels> {
     let (q_map, n_q) = compact_map(active_q);
     let (r_map, n_r) = compact_map(active_r);
@@ -95,12 +90,12 @@ fn build_compact_mapping(
     let mut local_to_global = Vec::with_capacity(n_q + n_r);
     for (j, &a) in active_q.iter().enumerate() {
         if a {
-            local_to_global.push(to_u32(fq.offset + j));
+            local_to_global.push(to_u32(base_q + j));
         }
     }
     for (k, &a) in active_r.iter().enumerate() {
         if a {
-            local_to_global.push(to_u32(fr.offset + k));
+            local_to_global.push(to_u32(base_r + k));
         }
     }
 
@@ -184,25 +179,27 @@ impl CrossTab {
         self.c.nrows + self.c.ncols
     }
 
-    /// Build a CrossTab using pre-computed active level flags.
+    /// Build a CrossTab for one channel pair using pre-computed active level flags.
     ///
     /// Reuses active levels already determined via `find_all_active_levels`,
     /// avoiding a redundant observation scan.
     ///
     /// Returns the diagonal blocks separately ([`BlockDiagonals`]): they are
     /// build-time-only and so are not stored on the `CrossTab`.
-    pub(crate) fn build_for_pair_with_active<S: Store>(
-        design: &Design<S>,
+    pub(crate) fn build_for_pair_with_active(
+        design: &Design<'_>,
         weights: Option<&[f64]>,
-        q: usize,
-        r: usize,
+        pair: ChannelPair,
         all_active: &[Vec<bool>],
     ) -> Option<(Self, BlockDiagonals, Vec<u32>)> {
-        let fq = &design.factors[q];
-        let fr = &design.factors[r];
-        let active = build_compact_mapping(&all_active[q], &all_active[r], fq, fr)?;
+        let active = build_compact_mapping(
+            &all_active[pair.q.term],
+            &all_active[pair.r.term],
+            design.terms[pair.q.term].column_base(pair.q.column),
+            design.terms[pair.r.term].column_base(pair.r.column),
+        )?;
 
-        let (c, diag_q, diag_r) = accumulate_cross_block(design, weights, q, r, &active);
+        let (c, diag_q, diag_r) = accumulate_cross_block(design, weights, pair, &active);
         let ct = c.transpose();
         let cross_tab = CrossTab { c, ct };
         let diagonals = BlockDiagonals {
@@ -212,25 +209,30 @@ impl CrossTab {
         Some((cross_tab, diagonals, active.local_to_global))
     }
 
+    /// Symmetric adjacency of the bipartite Gram over local `[q | r]` node
+    /// indexing: q-nodes walk `C`, r-nodes walk `Cᵀ`; neighbor indices come
+    /// back in the same `[q | r]` indexing.
+    pub(crate) fn neighbors(&self, i: usize) -> impl Iterator<Item = (usize, f64)> + '_ {
+        let n_q = self.n_q();
+        let (block, row, off) = if i < n_q {
+            (&self.c, i, n_q)
+        } else {
+            (&self.ct, i - n_q, 0)
+        };
+        block.row(row).map(move |(j, v)| (off + j, v))
+    }
+
     /// Find connected components in the bipartite graph defined by C.
     ///
-    /// Uses DFS on CSR(C) (q->r edges) and CSR(C^T) (r->q edges).
-    /// Returns components as vectors of compact q-indices and r-indices.
+    /// DFS over [`Self::neighbors`]; components as sorted compact q/r indices.
     /// O(n_q + n_r + nnz_C).
     pub(crate) fn bipartite_connected_components(&self) -> Vec<BipartiteComponent> {
         let n_q = self.n_q();
-        let n_r = self.n_r();
-        let n = n_q + n_r;
-        if n == 0 {
-            return Vec::new();
-        }
-
-        // Node labels: 0..n_q are q-nodes, n_q..n_q+n_r are r-nodes
-        let mut visited = vec![false; n];
+        let mut visited = vec![false; self.n_local()];
         let mut components = Vec::new();
         let mut stack = Vec::new();
 
-        for start in 0..n {
+        for start in 0..self.n_local() {
             if visited[start] {
                 continue;
             }
@@ -241,31 +243,14 @@ impl CrossTab {
 
             while let Some(node) = stack.pop() {
                 if node < n_q {
-                    // q-node: follow C edges to r-nodes
-                    let qi = node;
-                    q_indices.push(qi);
-                    let start_idx = self.c.indptr[qi] as usize;
-                    let end_idx = self.c.indptr[qi + 1] as usize;
-                    for idx in start_idx..end_idx {
-                        let rj = self.c.indices[idx] as usize;
-                        let global_rj = n_q + rj;
-                        if !visited[global_rj] {
-                            visited[global_rj] = true;
-                            stack.push(global_rj);
-                        }
-                    }
+                    q_indices.push(node);
                 } else {
-                    // r-node: follow C^T edges to q-nodes
-                    let ri = node - n_q;
-                    r_indices.push(ri);
-                    let start_idx = self.ct.indptr[ri] as usize;
-                    let end_idx = self.ct.indptr[ri + 1] as usize;
-                    for idx in start_idx..end_idx {
-                        let qj = self.ct.indices[idx] as usize;
-                        if !visited[qj] {
-                            visited[qj] = true;
-                            stack.push(qj);
-                        }
+                    r_indices.push(node - n_q);
+                }
+                for (j, _) in self.neighbors(node) {
+                    if !visited[j] {
+                        visited[j] = true;
+                        stack.push(j);
                     }
                 }
             }

@@ -2,14 +2,15 @@ use std::error::Error;
 
 use ndarray::Array2;
 use schwarz_precond::SolveError;
-use within::observation::FactorMajorStore;
+use within::observation::ObservationFrame;
 use within::{solve, BuildError, Design, LsmrOptions, PreconditionerConfig, Solver, WithinError};
 
 #[test]
 fn test_empty_observations_error() {
-    // FactorMajorStore::new allows 0 rows; EmptyObservations is raised by Design::from_store
-    let store = FactorMajorStore::new(vec![vec![], vec![]], 0).expect("store ok");
-    let result = Design::from_store(store);
+    // A zero-row frame is valid; EmptyObservations is raised by Design::from_frame.
+    let frame =
+        ObservationFrame::new(vec![vec![].into(), vec![].into()], Vec::new()).expect("frame ok");
+    let result = Design::from_frame(frame);
     assert!(result.is_err());
     match result.unwrap_err() {
         BuildError::EmptyObservations => {}
@@ -20,7 +21,10 @@ fn test_empty_observations_error() {
 #[test]
 fn test_observation_count_mismatch_error() {
     // Factor columns have different lengths
-    let result = FactorMajorStore::new(vec![vec![0, 1, 2], vec![0, 1]], 3);
+    let result = ObservationFrame::new(
+        vec![vec![0u32, 1, 2].into(), vec![0u32, 1].into()],
+        Vec::new(),
+    );
     assert!(result.is_err());
     match result.unwrap_err() {
         BuildError::ObservationCountMismatch { .. } => {}
@@ -31,8 +35,12 @@ fn test_observation_count_mismatch_error() {
 #[test]
 fn test_weight_count_mismatch_error() {
     // Weights of wrong length are caught at Solver construction time.
-    let store = FactorMajorStore::new(vec![vec![0, 1, 2], vec![0, 1, 0]], 3).expect("store ok");
-    let design = Design::from_store(store).expect("valid design");
+    let frame = ObservationFrame::new(
+        vec![vec![0u32, 1, 2].into(), vec![0u32, 1, 0].into()],
+        Vec::new(),
+    )
+    .expect("frame ok");
+    let design = Design::from_frame(frame).expect("valid design");
     let result = Solver::new(design, Some(vec![1.0, 2.0]), None);
     let err = result.expect_err("expected WeightCountMismatch error, got Ok");
     match err {
@@ -71,12 +79,12 @@ fn test_build_error_display_empty_observations() {
 #[test]
 fn test_build_error_display_observation_count_mismatch() {
     let e = BuildError::ObservationCountMismatch {
-        factor: 1,
+        column: 1,
         expected: 10,
         got: 5,
     };
     let s = e.to_string();
-    assert!(s.contains("factor 1"));
+    assert!(s.contains("column 1"));
     assert!(s.contains("5"));
     assert!(s.contains("10"));
 }
@@ -146,7 +154,7 @@ fn test_build_error_source_leaf_variants_have_no_source() {
     let variants: Vec<BuildError> = vec![
         BuildError::EmptyObservations,
         BuildError::ObservationCountMismatch {
-            factor: 0,
+            column: 0,
             expected: 1,
             got: 2,
         },
@@ -263,4 +271,17 @@ fn test_build_error_display_preconditioner_dimension_mismatch() {
     let s = e.to_string();
     assert!(s.contains("7"));
     assert!(s.contains("5"));
+}
+
+#[test]
+fn test_solver_accepts_slope_bearing_design_alongside_other_terms() {
+    let levels = [0u32, 1, 0, 1];
+    let slope = [1.0, 2.0, 3.0, 4.0];
+    let effects = vec![
+        within::Effect::new(&levels, true, []).expect("plain effect"),
+        within::Effect::new(&levels, true, [&slope[..]]).expect("slope effect"),
+    ];
+    // Cross-factor routing (#61): slope terms alongside other terms build.
+    let design = Design::new(effects).expect("slope design builds");
+    Solver::new(design, None, None).expect("signed routing builds");
 }

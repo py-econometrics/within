@@ -5,10 +5,33 @@
 
 use proptest::prelude::*;
 
-use super::CrossTab;
+use super::accumulate::{
+    accumulate_dense_cross_block, accumulate_sparse_cross_block, PairColumns, Unit,
+};
+use super::{build_compact_mapping, CrossTab};
 use crate::domain::find_all_active_levels;
-use crate::domain::Design;
-use crate::observation::FactorMajorStore;
+use crate::domain::{Channel, ChannelPair, Design, Effect};
+use crate::observation::ObservationFrame;
+
+/// Terms 0 and 1 paired on their intercept channels (plain cross-tab).
+const INTERCEPT_PAIR: ChannelPair = ChannelPair {
+    q: Channel {
+        term: 0,
+        column: 0,
+        loading: None,
+    },
+    r: Channel {
+        term: 1,
+        column: 0,
+        loading: None,
+    },
+};
+
+fn design_of(columns: Vec<Vec<u32>>) -> Design<'static> {
+    let frame = ObservationFrame::new(columns.into_iter().map(Into::into).collect(), Vec::new())
+        .expect("valid frame");
+    Design::from_frame(frame).expect("valid design")
+}
 
 #[test]
 fn test_cross_tab_sparse_accumulation_path() {
@@ -26,24 +49,20 @@ fn test_cross_tab_sparse_accumulation_path() {
     }
 
     // Sparse path (large level counts)
-    let store_sparse =
-        FactorMajorStore::new(vec![fa.clone(), fb.clone()], n_obs).expect("valid sparse store");
-    let design_sparse = Design::from_store(store_sparse).expect("valid sparse design");
+    let design_sparse = design_of(vec![fa.clone(), fb.clone()]);
     let active_sparse = find_all_active_levels(&design_sparse);
     let (ct_sparse, diag_sparse, _) =
-        CrossTab::build_for_pair_with_active(&design_sparse, None, 0, 1, &active_sparse)
+        CrossTab::build_for_pair_with_active(&design_sparse, None, INTERCEPT_PAIR, &active_sparse)
             .expect("sparse cross tab should build");
 
     // Dense path reference: collapse levels to a small range so n_q * n_r <= 5M.
     // Map each observation to level % 100 for both factors (100*100 = 10 000 <= 5M).
     let fa_small: Vec<u32> = fa.iter().map(|&x| x % 100).collect();
     let fb_small: Vec<u32> = fb.iter().map(|&x| x % 100).collect();
-    let store_dense = FactorMajorStore::new(vec![fa_small.clone(), fb_small.clone()], n_obs)
-        .expect("valid dense store");
-    let design_dense = Design::from_store(store_dense).expect("valid dense design");
+    let design_dense = design_of(vec![fa_small.clone(), fb_small.clone()]);
     let active_dense = find_all_active_levels(&design_dense);
     let (_ct_dense, diag_dense, _) =
-        CrossTab::build_for_pair_with_active(&design_dense, None, 0, 1, &active_dense)
+        CrossTab::build_for_pair_with_active(&design_dense, None, INTERCEPT_PAIR, &active_dense)
             .expect("dense cross tab should build");
 
     // The sparse CrossTab for the large design should have identical diagonals
@@ -119,12 +138,10 @@ fn test_extract_component_two_components() {
     //   (q=2, r=2), (q=2, r=3), (q=3, r=2), (q=3, r=3)   <- component B
     let fa = vec![0u32, 0, 1, 1, 2, 2, 3, 3];
     let fb = vec![0u32, 1, 0, 1, 2, 3, 2, 3];
-    let n_obs = 8;
-    let store = FactorMajorStore::new(vec![fa, fb], n_obs).expect("valid store");
-    let design = Design::from_store(store).expect("valid design");
+    let design = design_of(vec![fa, fb]);
     let all_active = find_all_active_levels(&design);
     let (ct, parent_diag, _) =
-        CrossTab::build_for_pair_with_active(&design, None, 0, 1, &all_active)
+        CrossTab::build_for_pair_with_active(&design, None, INTERCEPT_PAIR, &all_active)
             .expect("cross tab should build");
 
     let components = ct.bipartite_connected_components();
@@ -237,10 +254,9 @@ proptest! {
             fb.push((s % n_r as u64) as u32);
         }
 
-        let store = FactorMajorStore::new(vec![fa, fb], n_obs).expect("valid store");
-        let design = Design::from_store(store).expect("valid design");
+        let design = design_of(vec![fa, fb]);
         let all_active = find_all_active_levels(&design);
-        let (ct, _, _) = CrossTab::build_for_pair_with_active(&design, None, 0, 1, &all_active)
+        let (ct, _, _) = CrossTab::build_for_pair_with_active(&design, None, INTERCEPT_PAIR, &all_active)
             .expect("cross tab should build");
 
         let components = ct.bipartite_connected_components();
@@ -293,9 +309,7 @@ fn test_find_all_active_levels_with_gaps() {
     // Factor 1 uses all 3 levels 0, 1, 2.
     let fa = vec![0u32, 2, 4, 0, 2, 4];
     let fb = vec![0u32, 1, 2, 0, 1, 2];
-    let n_obs = 6;
-    let store = FactorMajorStore::new(vec![fa, fb], n_obs).expect("valid store");
-    let design = Design::from_store(store).expect("valid design");
+    let design = design_of(vec![fa, fb]);
 
     let active = find_all_active_levels(&design);
 
@@ -314,4 +328,70 @@ fn test_find_all_active_levels_with_gaps() {
         vec![true, true, true],
         "factor 1 active pattern: all true"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Test: dense/sparse accumulation parity on signed (slope-channel) data
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dense_and_sparse_paths_agree_on_signed_data() {
+    // Slope channel of f against the intercept of g. Cell (f=0, g=0) crosses
+    // exactly 0.0 mid-row (+1, −1, +2) — the sparse path re-pushes the column
+    // into `touched` — and cell (f=0, g=1) cancels to exactly 0.0 (+3, −3),
+    // which both paths must drop.
+    let f = [0u32, 0, 0, 0, 0, 1];
+    let z = [1.0, -1.0, 2.0, 3.0, -3.0, 4.0];
+    let g = [0u32, 0, 0, 1, 1, 0];
+    let effects = vec![
+        Effect::new(&f, true, [&z[..]]).unwrap(),
+        Effect::new(&g, true, []).unwrap(),
+    ];
+    let design = Design::new(effects).unwrap();
+    let pair = ChannelPair {
+        q: Channel {
+            term: 0,
+            column: 1,
+            loading: Some(0),
+        },
+        r: Channel {
+            term: 1,
+            column: 0,
+            loading: None,
+        },
+    };
+    let all_active = find_all_active_levels(&design);
+    let active = build_compact_mapping(
+        &all_active[0],
+        &all_active[1],
+        design.terms[0].column_base(pair.q.column),
+        design.terms[1].column_base(pair.r.column),
+    )
+    .expect("both factors have active levels");
+
+    let cols = PairColumns {
+        levels_q: design.frame.level_column(0),
+        levels_r: design.frame.level_column(1),
+        load_q: design.frame.loading_column(0),
+        load_r: Unit,
+        weights: None,
+    };
+    let (c_dense, dq_dense, dr_dense) = accumulate_dense_cross_block(cols, &active);
+    let (c_sparse, dq_sparse, dr_sparse) = accumulate_sparse_cross_block(cols, &active);
+
+    // Bit-exact parity: identical per-cell addition order in both paths.
+    assert_eq!(c_dense.indptr, c_sparse.indptr);
+    assert_eq!(c_dense.indices, c_sparse.indices);
+    assert_eq!(c_dense.data, c_sparse.data);
+    assert_eq!(dq_dense, dq_sparse);
+    assert_eq!(dr_dense, dr_sparse);
+
+    // Row f=0 keeps only cell (0,0) = 2.0; the exact-0.0 cell (0,1) is gone.
+    assert_eq!(&c_dense.indptr, &[0, 1, 2]);
+    assert_eq!(c_dense.indices[0], 0);
+    assert_eq!(c_dense.data[0], 2.0);
+    // Diagonals accumulate w·l²: z² sums on the slope side, plain counts on
+    // the intercept side (nonnegative even on signed channels).
+    assert_eq!(dq_dense, vec![1.0 + 1.0 + 4.0 + 9.0 + 9.0, 16.0]);
+    assert_eq!(dr_dense, vec![4.0, 2.0]);
 }

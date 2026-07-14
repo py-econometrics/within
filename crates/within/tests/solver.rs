@@ -1,5 +1,5 @@
 use ndarray::array;
-use within::{solve, LsmrOptions, Preconditioner, PreconditionerConfig, Solver};
+use within::{solve, Effect, LsmrOptions, Preconditioner, PreconditionerConfig, Solver};
 
 #[path = "common/orchestrate_helpers.rs"]
 mod common;
@@ -134,6 +134,57 @@ fn test_solver_batch() {
 }
 
 #[test]
+fn test_solver_batch_term_design_shares_drop_report() {
+    // Level 0's z is constant, so its whitened slope column drops; each batch
+    // column must reproduce the single solve and share the drop report.
+    let f = [0u32, 0, 0, 1, 1, 1];
+    let g = [0u32, 1, 2, 0, 1, 2];
+    let z = [3.0, 3.0, 3.0, -1.0, -1.0, 2.0];
+    let ys = [
+        [1.0, -2.0, 0.5, 3.0, -1.5, 2.5],
+        [0.3, 1.1, -0.7, 2.2, 0.9, -1.4],
+    ];
+    let effects = vec![
+        Effect::new(&f, true, [&z[..]]).expect("slope effect"),
+        Effect::new(&g, true, []).expect("plain effect"),
+    ];
+    let params = default_params();
+
+    let solver = Solver::new(effects, None, additive_precond()).expect("solver build");
+    let batch = solver
+        .solve_batch(&[&ys[0], &ys[1]], &params)
+        .expect("solve batch");
+    assert!(!batch.unidentified.is_empty(), "level 0 slope should drop");
+
+    for (i, y) in ys.iter().enumerate() {
+        let single = solver.solve(y, &params).expect("single solve");
+        assert_eq!(batch.unidentified, single.unidentified);
+        for (a, b) in batch.x(i).iter().zip(single.x.iter()) {
+            assert!((a - b).abs() < 1e-12, "batch x mismatch");
+        }
+        for (a, b) in batch.demeaned(i).iter().zip(single.demeaned.iter()) {
+            assert!((a - b).abs() < 1e-12, "batch demeaned mismatch");
+        }
+    }
+}
+
+#[test]
+fn test_unidentified_empty_for_plain_factors() {
+    let (categories, y) = categories_and_y();
+    let params = default_params();
+    let precond = additive_precond();
+
+    let solver = Solver::new(categories.view(), None, &precond).expect("solver build");
+
+    let single = solver.solve(&y, &params).expect("solve");
+    assert!(single.unidentified.is_empty());
+    assert!(single.x.iter().all(|v| v.is_finite()));
+
+    let batch = solver.solve_batch(&[&y], &params).expect("solve batch");
+    assert!(batch.unidentified.is_empty());
+}
+
+#[test]
 fn test_solver_properties() {
     let (categories, _) = categories_and_y();
 
@@ -207,13 +258,13 @@ fn test_solver_accepts_prebuilt_design() {
 
 /// The construction-time locality sort must be transparent: coefficients are
 /// permutation-invariant and `demeaned` comes back in caller order. The sort
-/// is applied to every store by `Design::from_store`, so the oracle is built
-/// via `from_store_unsorted`, the explicit caller-order escape hatch. Results
+/// is applied to every frame by `Design::from_frame`, so the oracle is built
+/// via `from_frame_unsorted`, the explicit caller-order escape hatch. Results
 /// agree within solver tolerance, not bitwise: the paths sum in different
 /// row orders.
 #[test]
 fn test_internal_locality_sort_is_transparent() {
-    use within::observation::FactorMajorStore;
+    use within::observation::ObservationFrame;
     use within::Design;
 
     // Factor 0 (4 levels) is the dominant factor and is non-monotonic.
@@ -232,8 +283,10 @@ fn test_internal_locality_sort_is_transparent() {
         Solver::new(design, weights, &precond).expect("solver")
     };
     let make_oracle = |weights: Option<Vec<f64>>| {
-        let store = FactorMajorStore::new(vec![col0.clone(), col1.clone()], n_obs).expect("store");
-        let design = Design::from_store_unsorted(store).expect("oracle design");
+        let frame =
+            ObservationFrame::new(vec![col0.clone().into(), col1.clone().into()], Vec::new())
+                .expect("frame");
+        let design = Design::from_frame_unsorted(frame).expect("oracle design");
         Solver::new(design, weights, &precond).expect("oracle solver")
     };
 

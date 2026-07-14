@@ -2,47 +2,64 @@
 //! multiple solves on the same design) and the one-shot [`solve`] / [`solve_batch`]
 //! convenience wrappers built on top of it.
 
+use std::borrow::Cow;
 use std::time::Instant;
 
-use ndarray::ArrayView2;
+use ndarray::{ArrayView2, Axis};
 use rayon::prelude::*;
 use schwarz_precond::{lsmr as lsmr_solve, mlsmr, Operator as _};
 
 use crate::config::{LsmrOptions, PreconditionerConfig};
-use crate::domain::Design;
-use crate::observation::{validate_weights, ArrayStore, Store};
+use crate::domain::{Design, Effect};
+use crate::observation::ObservationFrame;
 use crate::operator::design::gather_apply;
 use crate::operator::schwarz::{build_preconditioner, Preconditioner};
 use crate::operator::DesignOperator;
-use crate::{BuildError, SolveError, WithinError};
+use crate::{BuildError, BuildWarning, SolveError, WithinError};
+
+mod reparam;
+#[cfg(test)]
+mod tests;
+use reparam::SlopeReparam;
 
 fn norm(v: &[f64]) -> f64 {
     v.iter().map(|x| x * x).sum::<f64>().sqrt()
 }
 
-/// Fallible conversion into a [`Design`] for [`Solver::new`].
-///
-/// Implemented for:
-/// - `ArrayView2<'a, u32>` — categories matrix; an `ArrayStore`-backed [`Design`] is built
-/// - `Design<S>` — pass-through for an already-built design
+/// Fallible conversion into a [`Design`] for [`Solver::new`]: a categories
+/// matrix (`ArrayView2<u32>`), a list of [`Effect`] terms, or a pass-through
+/// [`Design`].
 pub trait IntoDesign<'a> {
-    /// Storage backend the resulting [`Design`] uses.
-    type Store: Store;
     /// Build the [`Design`], validating inputs along the way.
-    fn into_design(self) -> Result<Design<Self::Store>, BuildError>;
+    fn into_design(self) -> Result<Design<'a>, BuildError>;
 }
 
 impl<'a> IntoDesign<'a> for ArrayView2<'a, u32> {
-    type Store = ArrayStore<'a>;
-    fn into_design(self) -> Result<Design<ArrayStore<'a>>, BuildError> {
-        Design::from_store(ArrayStore::new(self)?)
+    fn into_design(self) -> Result<Design<'a>, BuildError> {
+        // Borrow F-contiguous columns zero-copy; gather strided (C-order)
+        // columns once here so every downstream read is a contiguous slice.
+        let categorical = (0..self.ncols())
+            .map(|q| {
+                let col = self.index_axis_move(Axis(1), q);
+                match col.to_slice() {
+                    Some(s) => Cow::Borrowed(s),
+                    None => Cow::Owned(col.to_vec()),
+                }
+            })
+            .collect();
+        Design::from_frame(ObservationFrame::new(categorical, Vec::new())?)
     }
 }
 
-impl<S: Store> IntoDesign<'_> for Design<S> {
-    type Store = S;
-    fn into_design(self) -> Result<Design<S>, BuildError> {
+impl<'a> IntoDesign<'a> for Design<'a> {
+    fn into_design(self) -> Result<Design<'a>, BuildError> {
         Ok(self)
+    }
+}
+
+impl<'a> IntoDesign<'a> for Vec<Effect<'a>> {
+    fn into_design(self) -> Result<Design<'a>, BuildError> {
+        Design::new(self)
     }
 }
 
@@ -96,12 +113,109 @@ impl From<&Preconditioner> for PreconditionerInput {
     }
 }
 
+/// A per-level direction of the design that the data cannot identify.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnidentifiedDirection {
+    /// Index into the design's term list.
+    pub term: usize,
+    /// Level index within the term (`0..n_levels`).
+    pub level: usize,
+    /// Column within the term's per-level block: intercept first (when
+    /// present), then slopes in declaration order.
+    pub column: usize,
+}
+
+/// Translates a `(term, level, column)` coefficient address to its flat index
+/// in [`SolveResult::x`] and back, so callers need not reconstruct the
+/// term-major offset formula (`offset + column * n_levels + level`) by hand.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoefficientLayout {
+    terms: Vec<TermLayout>,
+    n_dofs: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TermLayout {
+    offset: usize,
+    n_levels: usize,
+    n_columns: usize,
+}
+
+impl CoefficientLayout {
+    pub(crate) fn from_design(design: &Design) -> Self {
+        let terms = design
+            .terms
+            .iter()
+            .map(|t| TermLayout {
+                offset: t.offset,
+                n_levels: t.n_levels,
+                n_columns: t.n_columns(),
+            })
+            .collect();
+        Self {
+            terms,
+            n_dofs: design.n_dofs,
+        }
+    }
+
+    /// Total number of coefficients (the length of [`SolveResult::x`]).
+    pub fn n_dofs(&self) -> usize {
+        self.n_dofs
+    }
+
+    /// Number of terms in the design.
+    pub fn n_terms(&self) -> usize {
+        self.terms.len()
+    }
+
+    /// Level count of `term`, or `None` if `term` is out of range.
+    pub fn n_levels(&self, term: usize) -> Option<usize> {
+        self.terms.get(term).map(|t| t.n_levels)
+    }
+
+    /// Coefficient-column count of `term` (`intercept? + slopes`, ordered
+    /// `[intercept?, slopes…]`), or `None` if `term` is out of range.
+    pub fn n_columns(&self, term: usize) -> Option<usize> {
+        self.terms.get(term).map(|t| t.n_columns)
+    }
+
+    /// Flat [`SolveResult::x`] index of coefficient `column` of `level` within
+    /// `term`, or `None` if any coordinate is out of range.
+    pub fn index(&self, term: usize, level: usize, column: usize) -> Option<usize> {
+        let t = self.terms.get(term)?;
+        (level < t.n_levels && column < t.n_columns).then(|| t.offset + column * t.n_levels + level)
+    }
+
+    /// The `(term, level, column)` address of flat index `i`, or `None` if
+    /// `i >= n_dofs`.
+    pub fn address(&self, i: usize) -> Option<(usize, usize, usize)> {
+        if i >= self.n_dofs {
+            return None;
+        }
+        // Term blocks are contiguous in ascending offset order, so the owning
+        // term is the last one whose offset does not exceed `i`.
+        let term = self.terms.partition_point(|t| t.offset <= i) - 1;
+        let t = &self.terms[term];
+        let within = i - t.offset;
+        Some((term, within % t.n_levels, within / t.n_levels))
+    }
+}
+
 /// Common solve output for all orchestration entry points.
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct SolveResult {
     /// Fixed-effect coefficients (length = total DOFs across all factors).
+    ///
+    /// Term-major: coefficient column `c` of level `level` sits at
+    /// `term_offset + c * n_levels + level`, columns ordered
+    /// `[intercept?, slopes…]`. Slots for unidentified directions hold the
+    /// minimal-norm value `0`, never NaN; see [`SolveResult::unidentified`].
     pub x: Vec<f64>,
+    /// Per-level directions the data cannot identify.
+    pub unidentified: Vec<UnidentifiedDirection>,
+    /// Address ↔ flat-`x`-index translation for this design's coefficients.
+    pub layout: CoefficientLayout,
     /// Demeaned response: `y - D x` (length = n_obs), in caller order.
     ///
     /// Invariant: any per-observation field added here must be translated
@@ -125,8 +239,17 @@ pub struct SolveResult {
 /// Result of a batch solve across multiple RHS vectors.
 #[derive(Debug, Clone)]
 pub struct BatchSolveResult {
-    /// All coefficient vectors concatenated (length = n_dofs * n_rhs).
+    /// All coefficient vectors concatenated (length = n_dofs * n_rhs), each
+    /// block laid out as in [`SolveResult::x`].
+    ///
+    /// Slots for unidentified directions hold the minimal-norm value `0`,
+    /// never NaN; see [`BatchSolveResult::unidentified`].
     pub x: Vec<f64>,
+    /// Per-level directions the data cannot identify, shared across all RHS:
+    /// identification depends only on the design and weights, never on `y`.
+    pub unidentified: Vec<UnidentifiedDirection>,
+    /// Address ↔ flat-`x`-index translation for this design's coefficients.
+    pub layout: CoefficientLayout,
     /// All demeaned responses concatenated (length = n_obs * n_rhs).
     pub demeaned: Vec<f64>,
     /// Per-RHS convergence flags.
@@ -167,19 +290,19 @@ impl BatchSolveResult {
 /// preconditioner factorization happens only at construction time; LSMR tuning
 /// ([`LsmrOptions`]) is supplied per call.
 ///
-/// Ownership: the store type `S` decides whether the categories are borrowed
-/// (`ArrayStore`, zero-copy from an `ArrayView2`) or owned (`FactorMajorStore`);
-/// weights are always owned. A solver that outlives its inputs — e.g. one
-/// returned across the Python boundary — therefore uses an owned store. The
-/// borrow/own choice is parameterized only for the large category data; for a
+/// Ownership: each observation column is borrowed or owned independently
+/// (`Cow`); a solver that outlives its inputs — e.g. one returned across the
+/// Python boundary — uses owned columns. Weights are always owned; for a
 /// one-shot weighted solve from a borrowed slice, use the free [`solve`] function.
-pub struct Solver<S: Store> {
-    design: Design<S>,
+pub struct Solver<'a> {
+    design: Design<'a>,
     weights: Option<Vec<f64>>,
     preconditioner: Option<Preconditioner>,
+    reparam: Option<SlopeReparam>,
+    warnings: Vec<BuildWarning>,
 }
 
-impl<S: Store> std::fmt::Debug for Solver<S> {
+impl std::fmt::Debug for Solver<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Solver")
             .field("n_obs", &self.design.n_obs)
@@ -190,7 +313,7 @@ impl<S: Store> std::fmt::Debug for Solver<S> {
     }
 }
 
-impl<S: Store> Solver<S> {
+impl<'a> Solver<'a> {
     /// Construct a solver.
     ///
     /// `design` accepts raw categories (`ArrayView2<u32>`) or a pre-built
@@ -208,13 +331,13 @@ impl<S: Store> Solver<S> {
     /// LSMR tuning ([`LsmrOptions`]) is supplied per call to [`Solver::solve`] /
     /// [`Solver::solve_batch`], not at construction; preconditioner factorization
     /// state is the only expensive thing built here.
-    pub fn new<'a>(
-        design: impl IntoDesign<'a, Store = S>,
+    pub fn new(
+        design: impl IntoDesign<'a>,
         weights: Option<Vec<f64>>,
         preconditioner: impl Into<PreconditionerInput>,
     ) -> Result<Self, BuildError> {
-        let design = design.into_design()?;
-        validate_weights(weights.as_deref(), design.n_obs)?;
+        let mut design = design.into_design()?;
+        design.validate_weights(weights.as_deref())?;
 
         // Align weights with the design's internal (possibly locality-sorted)
         // observation order. The match keeps the unpermuted arm a plain move
@@ -224,7 +347,10 @@ impl<S: Store> Solver<S> {
             None => weights,
         };
 
-        let preconditioner = match preconditioner.into() {
+        // Reparametrize the slope columns (if any) before the preconditioner reads the frame.
+        let reparam = SlopeReparam::build(&mut design, weights.as_deref());
+
+        let (preconditioner, warnings) = match preconditioner.into() {
             PreconditionerInput::Default => {
                 build_preconditioner(&design, weights.as_deref(), None)?
             }
@@ -239,7 +365,7 @@ impl<S: Store> Solver<S> {
                         actual_cols: p.ncols(),
                     });
                 }
-                Some(p)
+                (Some(p), Vec::new())
             }
         };
 
@@ -247,11 +373,25 @@ impl<S: Store> Solver<S> {
             design,
             weights,
             preconditioner,
+            reparam,
+            warnings,
         })
     }
 
+    /// Non-fatal events from the preconditioner build; empty when reusing a
+    /// pre-built preconditioner (its warnings were reported when it was built).
+    pub fn warnings(&self) -> &[BuildWarning] {
+        &self.warnings
+    }
+
     /// Solve for a single RHS vector with the given LSMR tuning.
-    pub fn solve(&self, y: &[f64], lsmr: &LsmrOptions) -> Result<SolveResult, SolveError> {
+    pub fn solve<'o>(
+        &self,
+        y: &[f64],
+        lsmr: impl Into<Option<&'o LsmrOptions>>,
+    ) -> Result<SolveResult, SolveError> {
+        let default = LsmrOptions::default();
+        let lsmr = lsmr.into().unwrap_or(&default);
         // Guard the silent-truncation hole: weighted_rhs zips y with sqrt-weights,
         // which would otherwise discard trailing values when y.len() > n_rows.
         if y.len() != self.design.n_obs {
@@ -288,11 +428,11 @@ impl<S: Store> Solver<S> {
 
         let time_solve = t_solve_start.elapsed().as_secs_f64();
 
-        // demeaned = y - D x. The bare unweighted `D x` matvec is the identity
-        // finalize over `gather_apply`; shapes are guaranteed here, so it is
-        // infallible — no DesignOperator wrapper (and its scatter scratch) needed.
+        // demeaned = y - D x. The bare unweighted `D x` matvec is `gather_apply`
+        // without a scale; shapes are guaranteed here, so it is infallible —
+        // no DesignOperator wrapper (and its scatter scratch) needed.
         let mut demeaned = vec![0.0; self.design.n_obs];
-        gather_apply(&self.design, &r.x, &mut demeaned, |_, s| s);
+        gather_apply(&self.design, &r.x, &mut demeaned, None);
         for (d, &yi) in demeaned.iter_mut().zip(y.iter()) {
             *d = yi - *d;
         }
@@ -308,8 +448,19 @@ impl<S: Store> Solver<S> {
         rect_op.apply_adjoint(weighted_demeaned.as_ref(), &mut residual_dof)?;
         let residual = norm(&residual_dof) / rhs_norm;
 
+        let mut x = r.x;
+        let unidentified = match &self.reparam {
+            Some(rp) => {
+                rp.back_transform(&mut x);
+                rp.unidentified.clone()
+            }
+            None => Vec::new(),
+        };
+
         Ok(SolveResult {
-            x: r.x,
+            x,
+            unidentified,
+            layout: CoefficientLayout::from_design(&self.design),
             // Back to the caller's observation order (no-op if not reordered).
             demeaned: self.design.permute_obs_out(demeaned),
             converged: r.converged,
@@ -322,12 +473,14 @@ impl<S: Store> Solver<S> {
     }
 
     /// Solve for multiple RHS vectors in parallel.
-    pub fn solve_batch(
+    pub fn solve_batch<'o>(
         &self,
         ys: &[&[f64]],
-        lsmr: &LsmrOptions,
+        lsmr: impl Into<Option<&'o LsmrOptions>>,
     ) -> Result<BatchSolveResult, SolveError> {
         let t_start = Instant::now();
+        let default = LsmrOptions::default();
+        let lsmr = lsmr.into().unwrap_or(&default);
         let n_rhs = ys.len();
 
         // Fail fast on the first per-RHS error rather than materializing a
@@ -344,6 +497,13 @@ impl<S: Store> Solver<S> {
         let mut residual = Vec::with_capacity(n_rhs);
         let mut time_solve = Vec::with_capacity(n_rhs);
 
+        // Identical for every RHS: identification depends only on the design
+        // and weights, never on `y`.
+        let unidentified = results
+            .first()
+            .map(|r| r.unidentified.clone())
+            .unwrap_or_default();
+
         for r in results {
             x.extend_from_slice(&r.x);
             demeaned.extend_from_slice(&r.demeaned);
@@ -355,6 +515,8 @@ impl<S: Store> Solver<S> {
 
         Ok(BatchSolveResult {
             x,
+            unidentified,
+            layout: CoefficientLayout::from_design(&self.design),
             demeaned,
             converged,
             iterations,
@@ -386,31 +548,31 @@ impl<S: Store> Solver<S> {
 // High-level one-shot API
 // ===========================================================================
 
-/// Solve fixed-effects least squares from raw category data.
+/// Solve fixed-effects least squares for a design input.
 ///
-/// `categories` is an observation-major `(n_obs, n_factors)` array where
-/// `categories[[i, q]]` is the level of observation `i` in factor `q`.
-/// Levels must be `0..max_level` per factor; the number of levels is inferred.
+/// `design` is anything implementing [`IntoDesign`]: an observation-major
+/// `(n_obs, n_factors)` categories array (levels `0..max_level` per factor,
+/// count inferred) or a list of [`Effect`] terms.
 /// `y` is the response vector (length = n_obs).
 ///
-/// Zero-copy when the dominant factor is already sorted: the category array is
-/// borrowed. Otherwise the columns are copied once into owned sorted storage
-/// so the gather/scatter locality sort can apply (see [`ArrayStore`]).
+/// Zero-copy for F-order category arrays whose dominant factor is already
+/// sorted; otherwise columns are copied once (per column at ingest, or
+/// whole-frame by the locality sort).
 ///
 /// `preconditioner` accepts the same input shapes as [`Solver::new`]:
 /// `None`, a [`crate::PreconditionerConfig`] by reference or value, an owned
 /// [`crate::Preconditioner`], or a `&Preconditioner` for amortized reuse.
 ///
 /// This is a convenience wrapper around [`Solver::new`] + [`Solver::solve`].
-pub fn solve(
-    categories: ArrayView2<u32>,
+pub fn solve<'a, 'o>(
+    design: impl IntoDesign<'a>,
     y: &[f64],
     weights: Option<&[f64]>,
-    lsmr: &LsmrOptions,
+    lsmr: impl Into<Option<&'o LsmrOptions>>,
     preconditioner: impl Into<PreconditionerInput>,
 ) -> Result<SolveResult, WithinError> {
     let t_start = Instant::now();
-    let solver = Solver::new(categories, weights.map(|w| w.to_vec()), preconditioner)?;
+    let solver = Solver::new(design, weights.map(|w| w.to_vec()), preconditioner)?;
     let time_setup = t_start.elapsed().as_secs_f64();
     let mut result = solver.solve(y, lsmr)?;
     // Include solver construction (preconditioner build) in setup time
@@ -423,15 +585,15 @@ pub fn solve(
 ///
 /// Same as [`solve`] but solves all RHS vectors in parallel (via rayon),
 /// reusing the preconditioner across all solves.
-pub fn solve_batch(
-    categories: ArrayView2<u32>,
+pub fn solve_batch<'a, 'o>(
+    design: impl IntoDesign<'a>,
     ys: &[&[f64]],
     weights: Option<&[f64]>,
-    lsmr: &LsmrOptions,
+    lsmr: impl Into<Option<&'o LsmrOptions>>,
     preconditioner: impl Into<PreconditionerInput>,
 ) -> Result<BatchSolveResult, WithinError> {
     let t_start = Instant::now();
-    let solver = Solver::new(categories, weights.map(|w| w.to_vec()), preconditioner)?;
+    let solver = Solver::new(design, weights.map(|w| w.to_vec()), preconditioner)?;
     let mut result = solver.solve_batch(ys, lsmr)?;
     result.time_total = t_start.elapsed().as_secs_f64();
     Ok(result)

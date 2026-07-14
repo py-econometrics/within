@@ -23,8 +23,14 @@ pub(crate) mod domain;
 pub(crate) mod operator;
 pub(crate) mod solver;
 
-pub use config::{LsmrOptions, PreconditionerConfig};
-pub use domain::Design;
-pub use error::{BuildError, SolveError, WithinError};
+pub use config::{
+    ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, LsmrOptions, PreconditionerConfig,
+    ReductionStrategy, ScalingConfig, ScalingFailure, SchurMode,
+};
+pub use domain::{Design, Effect};
+pub use error::{BuildError, BuildWarning, SignedPair, SolveError, WithinError};
 pub use operator::schwarz::Preconditioner;
-pub use solver::{solve, solve_batch, BatchSolveResult, SolveResult, Solver};
+pub use solver::{
+    solve, solve_batch, BatchSolveResult, CoefficientLayout, IntoDesign, PreconditionerInput,
+    SolveResult, Solver, UnidentifiedDirection,
+};

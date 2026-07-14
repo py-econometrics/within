@@ -10,8 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::block_elim::BlockElimSolver;
 use crate::config::{LocalSolverConfig, PreconditionerConfig};
 use crate::domain::{Design, LocalDomain};
-use crate::observation::{factor_columns, level_at, validate_weights, Store};
-use crate::BuildError;
+use crate::{BuildError, BuildWarning};
 
 /// Concrete additive Schwarz type used in the parent crate.
 #[derive(Clone, Serialize, Deserialize)]
@@ -96,16 +95,24 @@ impl Operator for DiagonalPreconditioner {
 // ---------------------------------------------------------------------------
 
 /// Build additive Schwarz with an explicit reduction strategy.
+///
+/// `n_dofs` is the operator's column count, which can exceed the span of the
+/// subdomains' indices: an unidentified direction (e.g. a singleton level's
+/// slope) is a structural-zero column no subdomain covers, yet must count
+/// toward the shape. Uncovered DOFs resolve to `0`, like `Off`/`Diagonal`.
 pub(crate) fn build_additive_with_strategy(
     domains: Vec<LocalDomain>,
     config: &LocalSolverConfig,
     strategy: schwarz_precond::ReductionStrategy,
+    n_dofs: usize,
 ) -> Result<FeSchwarz, BuildError> {
     let entries = domains
         .into_par_iter()
         .map(|domain| build_entry(domain, config))
         .collect::<Result<Vec<_>, BuildError>>()?;
-    Ok(FeSchwarz(SchwarzPreconditioner::new(entries, strategy)))
+    Ok(FeSchwarz(SchwarzPreconditioner::with_n_dofs(
+        entries, n_dofs, strategy,
+    )))
 }
 
 /// Build a single `SubdomainEntry<BlockElimSolver>` from a pre-built CrossTab.
@@ -113,13 +120,9 @@ pub(crate) fn build_entry(
     domain: LocalDomain,
     config: &LocalSolverConfig,
 ) -> Result<SubdomainEntry<BlockElimSolver>, BuildError> {
-    let LocalDomain {
-        subdomain,
-        cross_tab,
-        block_diagonals,
-    } = domain;
-    let solver = BlockElimSolver::build(cross_tab, &block_diagonals, config)?;
-    SubdomainEntry::try_new(subdomain.core, solver).map_err(BuildError::Preconditioner)
+    let LocalDomain { core, component } = domain;
+    let solver = BlockElimSolver::build(component, config)?;
+    SubdomainEntry::try_new(core, solver).map_err(BuildError::Preconditioner)
 }
 
 /// Opaque handle to a pre-built fixed-effects preconditioner.
@@ -135,7 +138,7 @@ pub struct Preconditioner {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 enum Variant {
     // Keep Additive first: postcard encodes enum discriminants by declaration order,
-    // and the v3 fixture depends on Additive remaining discriminant 0.
+    // and the wire fixture depends on Additive remaining discriminant 0.
     Additive(FeSchwarz),
     Diagonal(DiagonalPreconditioner),
 }
@@ -195,18 +198,35 @@ impl Operator for Preconditioner {
     }
 }
 
-fn build_diagonal<S: Store>(
-    design: &Design<S>,
+fn build_diagonal(
+    design: &Design<'_>,
     weights: Option<&[f64]>,
 ) -> Result<DiagonalPreconditioner, BuildError> {
     let mut diag = vec![0.0; design.n_dofs];
-    let cols = factor_columns(&design.store);
 
-    for (factor_idx, factor) in design.factors.iter().enumerate() {
-        let slice = &mut diag[factor.offset..factor.offset + factor.n_levels];
-        for uid in 0..design.n_obs {
-            let level = level_at(&design.store, cols[factor_idx], uid, factor_idx);
-            slice[level] += weights.map_or(1.0, |w| w[uid]);
+    // diag(DᵀWD): each column contributes w·loading² per observation — the
+    // loading is 1 for an intercept column and the slope value otherwise.
+    for (factor_idx, term) in design.terms.iter().enumerate() {
+        let levels = design.frame.level_column(factor_idx);
+        let w = |uid: usize| weights.map_or(1.0, |ws| ws[uid]);
+        let mut column = 0;
+        if term.intercept {
+            let slice = &mut diag[term.offset..term.offset + term.n_levels];
+            for (uid, &level) in levels.iter().enumerate() {
+                slice[level as usize] += w(uid);
+            }
+            column = 1;
+        }
+        for &z_col in &term.slopes {
+            let z = design.frame.loading_column(z_col);
+            let base = term.column_base(column);
+            let slice = &mut diag[base..base + term.n_levels];
+            for (uid, &level) in levels.iter().enumerate() {
+                // Keep `w * z * z` left-to-right: a zero weight then kills a
+                // huge `z` before the square can overflow (0 * inf = NaN).
+                slice[level as usize] += w(uid) * z[uid] * z[uid];
+            }
+            column += 1;
         }
     }
 
@@ -233,41 +253,48 @@ fn build_diagonal<S: Store>(
     Ok(DiagonalPreconditioner::new(diag))
 }
 
-/// Build a [`Preconditioner`] from a design and optional observation weights.
-pub(crate) fn build_preconditioner<S: Store>(
-    design: &Design<S>,
+/// Build a [`Preconditioner`] from a design and optional observation weights,
+/// plus any non-fatal [`BuildWarning`]s the build produced.
+pub(crate) fn build_preconditioner(
+    design: &Design<'_>,
     weights: Option<&[f64]>,
     config: Option<&PreconditionerConfig>,
-) -> Result<Option<Preconditioner>, BuildError> {
+) -> Result<(Option<Preconditioner>, Vec<BuildWarning>), BuildError> {
     use crate::domain::build_local_domains;
 
-    validate_weights(weights, design.n_obs)?;
+    design.validate_weights(weights)?;
 
     let default_cfg = PreconditionerConfig::default();
     let resolved = config.unwrap_or(&default_cfg);
     match resolved {
-        PreconditionerConfig::Off => Ok(None),
+        PreconditionerConfig::Off => Ok((None, Vec::new())),
         PreconditionerConfig::Additive {
             local_solver,
             reduction,
         } => {
-            let domains = build_local_domains(design, weights);
+            let (domains, warnings) = build_local_domains(design, weights, &local_solver.scaling)?;
             if domains.is_empty() {
                 // Single-factor designs (and other configurations with no
                 // factor-pair subdomains) have no useful additive Schwarz
                 // preconditioner. Fall back to unpreconditioned LSMR.
-                return Ok(None);
+                return Ok((None, warnings));
             }
-            let p = build_additive_with_strategy(domains, local_solver, *reduction)?;
-            Ok(Some(Preconditioner {
-                inner: Variant::Additive(p),
-            }))
+            let p = build_additive_with_strategy(domains, local_solver, *reduction, design.n_dofs)?;
+            Ok((
+                Some(Preconditioner {
+                    inner: Variant::Additive(p),
+                }),
+                warnings,
+            ))
         }
         PreconditionerConfig::Diagonal => {
             let p = build_diagonal(design, weights)?;
-            Ok(Some(Preconditioner {
-                inner: Variant::Diagonal(p),
-            }))
+            Ok((
+                Some(Preconditioner {
+                    inner: Variant::Diagonal(p),
+                }),
+                Vec::new(),
+            ))
         }
     }
 }

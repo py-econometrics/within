@@ -647,3 +647,29 @@ fn test_additive_schwarz_apply_returns_err_on_solver_failure() {
         other => panic!("expected LocalSolveFailed, got: {:?}", other),
     }
 }
+
+// ============================================================================
+// with_n_dofs: explicit dimension may exceed the covered index span
+// ============================================================================
+
+#[test]
+fn with_n_dofs_pads_uncovered_tail_and_applies_zero() {
+    // One subdomain covers DOFs 0..2 (diagonal solver, diag 2.0). The operator
+    // is two columns wider — a structural-null tail no subdomain touches.
+    // `with_n_dofs` sizes the preconditioner to the full width; the uncovered
+    // DOFs stay in the null space and apply to exactly 0 (whereas `new` would
+    // infer the covered span of 2 and come up short of the operator).
+    let entries = vec![make_entry(
+        SubdomainCore::uniform(vec![0u32, 1]),
+        UniformDiagLocalSolver::new(2, 2.0),
+    )];
+    let n_dofs = 4;
+    let padded = SchwarzPreconditioner::with_n_dofs(entries, n_dofs, ReductionStrategy::default());
+    assert_eq!((padded.nrows(), padded.ncols()), (n_dofs, n_dofs));
+
+    let rhs = vec![4.0; n_dofs];
+    let mut z = vec![f64::NAN; n_dofs];
+    padded.apply(&rhs, &mut z).expect("apply succeeds");
+    // Covered DOFs: 1.0 * (4.0 / 2.0) = 2.0; uncovered tail stays exactly 0.
+    assert_eq!(z, vec![2.0, 2.0, 0.0, 0.0]);
+}

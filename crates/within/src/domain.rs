@@ -1,241 +1,232 @@
 //! Domain layer: [`Design`] (design-matrix metadata) and factor-pair [`Subdomain`] construction.
 
 pub(crate) mod cross_tab;
+mod effect;
 pub(crate) mod factor_pairs;
 
 pub(crate) use cross_tab::{find_all_active_levels, BlockDiagonals, CrossTab};
 
-pub(crate) use factor_pairs::{build_local_domains, LocalDomain};
+pub use effect::Effect;
+
+pub(crate) use factor_pairs::{
+    build_local_domains, CoordinateMap, GroundEdges, LocalComponent, LocalDomain, SchurReduction,
+    SolveSpace,
+};
 
 // ===========================================================================
 // Design — categorical fixed-effects design (data + layout)
 // ===========================================================================
 
-use crate::observation::{level_at, FactorMajorStore, Store};
+use std::borrow::Cow;
+
+use crate::observation::ObservationFrame;
 use crate::BuildError;
 
-/// Per-factor metadata: level count and global DOF offset.
-///
-/// Pure design-space layout derived from the store's raw levels — the store
-/// holds categories, this records where each factor lands in coefficient space.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct FactorMeta {
-    /// Number of levels (groups) in this factor.
+/// Per-term metadata: level count, coefficient-block offset, and column
+/// structure. Columns are ordered `[intercept?, slopes…]`; coefficient `c` of
+/// level `level` lives at `offset + c * n_levels + level`.
+#[derive(Debug, Clone)]
+pub(crate) struct TermMeta {
     pub n_levels: usize,
-    /// Starting index in coefficient space for this factor.
     pub offset: usize,
-    /// Whether this factor's level column is non-decreasing in the design's
-    /// internal observation order (fixed at construction).
+    /// Non-decreasing in the design's internal row order (fixed at construction).
     pub sorted: bool,
+    pub intercept: bool,
+    /// This term's slope loadings, as indices into the frame's continuous columns.
+    pub slopes: Vec<usize>,
 }
 
-/// The observation data in the design's internal row order: the caller's
-/// store passed through untouched, or an owned locality-sorted copy of it
-/// (built by [`Design::from_store`]). Reads delegate to whichever is held,
-/// so all matvec/cross-tab code consumes it through the [`Store`] trait.
+impl TermMeta {
+    /// Coefficient-column count (`intercept? + slopes`), ordered
+    /// `[intercept?, slopes…]`.
+    pub fn n_columns(&self) -> usize {
+        usize::from(self.intercept) + self.slopes.len()
+    }
+
+    pub fn n_dofs(&self) -> usize {
+        self.n_columns() * self.n_levels
+    }
+
+    /// Global DOF base of coefficient column `column`.
+    pub fn column_base(&self, column: usize) -> usize {
+        self.offset + column * self.n_levels
+    }
+}
+
+/// One coefficient column of a term: the intercept (`loading: None`, loading
+/// value 1) or one slope column (`loading` = frame continuous column index).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Channel {
+    pub term: usize,
+    pub column: usize,
+    pub loading: Option<usize>,
+}
+
+/// A cross-factor channel pair: one Gramian cross-block per pair.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ChannelPair {
+    pub q: Channel,
+    pub r: Channel,
+}
+
+/// Fixed-effects design: observation columns plus coefficient-space layout.
 #[derive(Clone, Debug)]
-pub(crate) enum InternalStore<S> {
-    /// Caller's store as provided — internal order equals caller order.
-    AsProvided(S),
-    /// Locality-sorted copy; `Design::obs_perm` maps back to caller order.
-    Sorted(FactorMajorStore),
-}
-
-impl<S: Store> Store for InternalStore<S> {
-    #[inline]
-    fn n_obs(&self) -> usize {
-        match self {
-            InternalStore::AsProvided(s) => s.n_obs(),
-            InternalStore::Sorted(s) => s.n_obs(),
-        }
-    }
-
-    #[inline]
-    fn n_factors(&self) -> usize {
-        match self {
-            InternalStore::AsProvided(s) => s.n_factors(),
-            InternalStore::Sorted(s) => s.n_factors(),
-        }
-    }
-
-    #[inline]
-    fn level(&self, obs: usize, factor: usize) -> u32 {
-        match self {
-            InternalStore::AsProvided(s) => s.level(obs, factor),
-            InternalStore::Sorted(s) => s.level(obs, factor),
-        }
-    }
-
-    #[inline]
-    fn factor_column(&self, factor: usize) -> Option<&[u32]> {
-        match self {
-            InternalStore::AsProvided(s) => s.factor_column(factor),
-            InternalStore::Sorted(s) => s.factor_column(factor),
-        }
-    }
-}
-
-/// Fixed-effects design, generic over observation storage.
-///
-/// `store` holds per-observation factor levels; `factors` holds per-factor
-/// metadata (n_levels, offset). The `Design` itself is pure data + layout —
-/// matrix-vector products live in the internal operator layer.
-#[derive(Clone, Debug)]
-pub struct Design<S: Store> {
-    /// Observation data in internal row order (see [`InternalStore`]).
-    pub(crate) store: InternalStore<S>,
-    /// Per-factor metadata: level count and global DOF offset.
-    pub(crate) factors: Vec<FactorMeta>,
-    /// Number of observations (rows of D).
+pub struct Design<'a> {
+    /// Columns in internal row order (caller's, or an owned locality-sorted copy).
+    pub(crate) frame: ObservationFrame<'a>,
+    pub(crate) terms: Vec<TermMeta>,
     pub(crate) n_obs: usize,
-    /// Total degrees of freedom (columns of D = sum of levels across factors).
     pub(crate) n_dofs: usize,
-    /// Locality permutation applied at construction, if any: `obs_perm[k]` is
-    /// the caller's original index of the observation at internal position `k`.
+    /// `obs_perm[k]` = caller's original index of the observation at internal position `k`.
     pub(crate) obs_perm: Option<Vec<u32>>,
 }
 
-impl<S: Store> Design<S> {
-    /// Construct from a store, inferring the number of levels per factor
-    /// from the maximum observed level in each column (`max + 1`).
-    ///
-    /// If the highest-cardinality factor is unsorted, the observations are
-    /// copied into an owned locality-sorted store so its gather/scatter runs
-    /// sequentially; `obs_perm` records the permutation and the `Solver`
-    /// translates per-observation I/O across it. The caller's store is never
-    /// mutated.
-    pub fn from_store(store: S) -> Result<Self, BuildError> {
-        Self::build(store, true)
+impl<'a> Design<'a> {
+    /// Lower effect terms into a design: level columns plus each term's slope
+    /// loadings, laid out term-major (`offset[t] + c * L_t + level`).
+    pub fn new(effects: impl IntoIterator<Item = Effect<'a>>) -> Result<Self, BuildError> {
+        let mut categorical: Vec<Cow<'a, [u32]>> = Vec::new();
+        let mut continuous: Vec<Cow<'a, [f64]>> = Vec::new();
+        let mut columns: Vec<(bool, Vec<usize>)> = Vec::new();
+        for effect in effects {
+            let slots = (continuous.len()..continuous.len() + effect.slopes().len()).collect();
+            continuous.extend(effect.slopes().iter().map(|&z| Cow::Borrowed(z)));
+            columns.push((effect.intercept(), slots));
+            categorical.push(Cow::Borrowed(effect.levels()));
+        }
+        let frame = ObservationFrame::new(categorical, continuous)?;
+        Self::build(frame, columns, true)
     }
 
-    /// [`from_store`](Self::from_store) without the locality sort: rows stay
-    /// in caller order regardless of sortedness.
-    ///
-    /// Escape hatch for measuring the sort's effect (profiling baselines,
-    /// transparency oracles); production solves want `from_store`.
+    /// Construct from a frame of plain factors (each an intercept-only term),
+    /// inferring each factor's level count (`max + 1`); locality-sorts all
+    /// columns when the dominant factor is unsorted.
+    pub fn from_frame(frame: ObservationFrame<'a>) -> Result<Self, BuildError> {
+        let columns = vec![(true, Vec::new()); frame.n_factors()];
+        Self::build(frame, columns, true)
+    }
+
+    /// [`from_frame`](Self::from_frame) without the locality sort — profiling escape hatch.
     #[doc(hidden)]
-    pub fn from_store_unsorted(store: S) -> Result<Self, BuildError> {
-        Self::build(store, false)
+    pub fn from_frame_unsorted(frame: ObservationFrame<'a>) -> Result<Self, BuildError> {
+        let columns = vec![(true, Vec::new()); frame.n_factors()];
+        Self::build(frame, columns, false)
     }
 
-    fn build(store: S, locality_sort: bool) -> Result<Self, BuildError> {
-        if store.n_obs() == 0 {
+    /// `column_structure[q]` = the term's `(intercept, slope column indices)`,
+    /// aligned with the frame's categorical columns.
+    fn build(
+        frame: ObservationFrame<'a>,
+        column_structure: Vec<(bool, Vec<usize>)>,
+        locality_sort: bool,
+    ) -> Result<Self, BuildError> {
+        if frame.n_obs() == 0 {
             return Err(BuildError::EmptyObservations);
         }
+        debug_assert_eq!(column_structure.len(), frame.n_factors());
 
-        let n_obs = store.n_obs();
-        let mut factors = Vec::with_capacity(store.n_factors());
+        let n_obs = frame.n_obs();
+        let mut terms = Vec::with_capacity(frame.n_factors());
         let mut offset = 0;
-        for q in 0..store.n_factors() {
-            // One pass per column: level count (max + 1) and sortedness.
-            let col = store.factor_column(q);
+        for (q, (intercept, slopes)) in column_structure.into_iter().enumerate() {
+            let col = frame.level_column(q);
             let mut max = 0;
             let mut sorted = true;
             let mut prev = 0;
-            for i in 0..n_obs {
-                let v = level_at(&store, col, i, q);
+            for &v in col {
                 max = max.max(v);
                 sorted &= v >= prev;
                 prev = v;
             }
-            let n_levels = max + 1;
-            factors.push(FactorMeta {
-                n_levels,
+            let meta = TermMeta {
+                n_levels: max as usize + 1,
                 offset,
                 sorted,
-            });
-            offset += n_levels;
+                intercept,
+                slopes,
+            };
+            offset += meta.n_dofs();
+            terms.push(meta);
         }
 
-        // Sort by the highest-cardinality factor (ties resolve to the last):
-        // it makes the dominant gather/scatter sequential. The permutation
-        // indexes observations as u32 (`obs_perm`); beyond u32::MAX
-        // rows it is unrepresentable, so skip the optimization and keep
-        // caller order — the solve itself has no such limit.
-        let dominant = (0..factors.len()).max_by_key(|&q| factors[q].n_levels);
-        let (store, obs_perm) = match dominant {
-            Some(d) if locality_sort && !factors[d].sorted && u32::try_from(n_obs).is_ok() => {
-                // Argsort key: the contiguous fast path when available, else a
-                // gathered copy (strided/virtual columns expose no slice),
-                // kept alive so the column gather below reads it back rather
-                // than paying a second strided pass through `Store::level`.
-                let gathered: Vec<u32>;
-                let key: &[u32] = match store.factor_column(d) {
-                    Some(col) => col,
-                    None => {
-                        gathered = (0..n_obs).map(|i| store.level(i, d)).collect();
-                        &gathered
-                    }
-                };
-                // Stable argsort, preserving caller order within a level.
-                // Must be `sort_by_cached_key`, NOT `sort_by_key`: the latter
-                // re-gathers `key[i]` O(n log n) times — cache-miss-bound once
-                // the column spills out of cache, and it dominated setup at
-                // tens of millions of rows. The guard above proved n_obs
-                // fits u32.
+        // Sort by the term contributing the most DOFs (for plain factors, the
+        // highest-cardinality one) so its gather/scatter runs sequentially.
+        // `obs_perm` indexes observations as u32; beyond u32::MAX rows skip
+        // the optimization — the solve itself has no such limit.
+        let dominant = (0..terms.len()).max_by_key(|&q| terms[q].n_dofs());
+        let (frame, obs_perm) = match dominant {
+            Some(d) if locality_sort && !terms[d].sorted && u32::try_from(n_obs).is_ok() => {
+                // Stable argsort. Must be `sort_by_cached_key`, NOT `sort_by_key`:
+                // the latter re-gathers `key[i]` O(n log n) times and dominated
+                // setup at tens of millions of rows.
+                let key = frame.level_column(d);
                 let mut perm: Vec<u32> = (0..n_obs as u32).collect();
                 perm.sort_by_cached_key(|&i| key[i as usize]);
-                // Gather every column into owned factor-major storage,
-                // tracking sortedness in the new order within the same pass.
-                // The dominant column comes out sorted by construction, and
-                // factors nested in — or duplicating — it come out sorted
-                // too, keeping the coalesced scatter for them.
-                let factor_levels: Vec<Vec<u32>> = (0..factors.len())
-                    .map(|q| {
-                        // The dominant factor always reads through `key`: it
-                        // is either the store's contiguous column or the copy
-                        // gathered for the argsort above.
-                        let src = if q == d {
-                            Some(key)
-                        } else {
-                            store.factor_column(q)
-                        };
-                        let mut col = Vec::with_capacity(n_obs);
-                        let mut sorted = true;
-                        let mut prev = 0;
-                        for &k in &perm {
-                            let v = match src {
-                                Some(s) => s[k as usize],
-                                None => store.level(k as usize, q),
-                            };
-                            sorted &= v >= prev;
-                            prev = v;
-                            col.push(v);
-                        }
-                        factors[q].sorted = sorted;
-                        col
-                    })
-                    .collect();
-                let sorted_store = FactorMajorStore {
-                    factor_levels,
-                    n_obs,
-                };
-                (InternalStore::Sorted(sorted_store), Some(perm))
+                let sorted_frame = frame.permuted(&perm);
+                // Rescan sortedness: factors nested in (or duplicating) the
+                // dominant one come out sorted, keeping their coalesced scatter.
+                for (q, meta) in terms.iter_mut().enumerate() {
+                    meta.sorted = sorted_frame.level_column(q).is_sorted();
+                }
+                (sorted_frame, Some(perm))
             }
-            _ => (InternalStore::AsProvided(store), None),
+            _ => (frame, None),
         };
 
         Ok(Design {
-            store,
-            factors,
+            frame,
+            terms,
             n_obs,
             n_dofs: offset,
             obs_perm,
         })
     }
 
-    /// Translate a per-observation input from caller order into internal
-    /// order: `out[k] = v[obs_perm[k]]`. Borrows unchanged when not permuted.
-    pub(crate) fn permute_obs_in<'v>(&self, v: &'v [f64]) -> std::borrow::Cow<'v, [f64]> {
-        debug_assert_eq!(v.len(), self.n_obs);
-        match &self.obs_perm {
-            None => std::borrow::Cow::Borrowed(v),
-            Some(perm) => std::borrow::Cow::Owned(perm.iter().map(|&i| v[i as usize]).collect()),
+    /// Convert the frame's columns to owned, dropping ties to caller buffers.
+    pub fn into_owned(self) -> Design<'static> {
+        Design {
+            frame: self.frame.into_owned(),
+            terms: self.terms,
+            n_obs: self.n_obs,
+            n_dofs: self.n_dofs,
+            obs_perm: self.obs_perm,
         }
     }
 
-    /// Translate a per-observation result from internal order back into caller
-    /// order: `out[obs_perm[k]] = v[k]`. Returns `v` unchanged when not permuted.
+    /// Validate that an optional weight slice matches this design's observation count.
+    pub(crate) fn validate_weights(&self, weights: Option<&[f64]>) -> Result<(), BuildError> {
+        if let Some(w) = weights {
+            if w.len() != self.n_obs {
+                return Err(BuildError::WeightCountMismatch {
+                    expected: self.n_obs,
+                    got: w.len(),
+                });
+            }
+            // `W^{1/2}` is applied to the design, so each weight must be finite and
+            // non-negative; otherwise `sqrt(w)` is NaN and the solution is silently
+            // corrupted. `wi >= 0.0` already rejects NaN (comparisons with NaN are
+            // false); `is_finite` additionally rejects `+∞`.
+            if let Some((index, &value)) = w
+                .iter()
+                .enumerate()
+                .find(|&(_, &wi)| !(wi >= 0.0 && wi.is_finite()))
+            {
+                return Err(BuildError::InvalidWeight { index, value });
+            }
+        }
+        Ok(())
+    }
+
+    /// Caller order → internal order: `out[k] = v[obs_perm[k]]`; borrows when unpermuted.
+    pub(crate) fn permute_obs_in<'v>(&self, v: &'v [f64]) -> Cow<'v, [f64]> {
+        debug_assert_eq!(v.len(), self.n_obs);
+        match &self.obs_perm {
+            None => Cow::Borrowed(v),
+            Some(perm) => Cow::Owned(perm.iter().map(|&i| v[i as usize]).collect()),
+        }
+    }
+
+    /// Internal order → caller order: `out[obs_perm[k]] = v[k]`.
     pub(crate) fn permute_obs_out(&self, v: Vec<f64>) -> Vec<f64> {
         debug_assert_eq!(v.len(), self.n_obs);
         match &self.obs_perm {
@@ -253,7 +244,18 @@ impl<S: Store> Design<S> {
     /// Number of categorical factors in the design.
     #[inline]
     pub fn n_factors(&self) -> usize {
-        self.factors.len()
+        self.terms.len()
+    }
+
+    /// The term's coefficient columns in `[intercept?, slopes…]` order.
+    pub(crate) fn channels(&self, term: usize) -> impl Iterator<Item = Channel> + '_ {
+        let meta = &self.terms[term];
+        let first_slope = usize::from(meta.intercept);
+        (0..first_slope + meta.slopes.len()).map(move |column| Channel {
+            term,
+            column,
+            loading: (column >= first_slope).then(|| meta.slopes[column - first_slope]),
+        })
     }
 
     /// Number of observations (rows of D).
@@ -262,7 +264,7 @@ impl<S: Store> Design<S> {
         self.n_obs
     }
 
-    /// Total degrees of freedom (columns of D = sum of levels across factors).
+    /// Total degrees of freedom (columns of D).
     #[inline]
     pub fn n_dofs(&self) -> usize {
         self.n_dofs
@@ -272,72 +274,125 @@ impl<S: Store> Design<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::observation::{ArrayStore, FactorMajorStore};
+    use crate::observation::ObservationFrame;
+
+    fn frame(categorical: Vec<Vec<u32>>, continuous: Vec<Vec<f64>>) -> ObservationFrame<'static> {
+        ObservationFrame::new(
+            categorical.into_iter().map(Into::into).collect(),
+            continuous.into_iter().map(Into::into).collect(),
+        )
+        .unwrap()
+    }
 
     #[test]
-    fn from_store_sorts_owned_unsorted_dominant() {
+    fn validate_weights_checks_count_and_finiteness() {
+        let design = Design::from_frame(frame(vec![vec![0, 0, 0, 0, 0]], vec![])).unwrap();
+        assert!(design.validate_weights(None).is_ok());
+        assert!(design
+            .validate_weights(Some(&[1.0, 2.0, 3.0, 4.0, 5.0]))
+            .is_ok());
+        // Zero weights are valid (an excluded observation).
+        assert!(design
+            .validate_weights(Some(&[0.0, 1.0, 2.0, 3.0, 4.0]))
+            .is_ok());
+        // Length mismatch.
+        assert!(design.validate_weights(Some(&[1.0, 2.0])).is_err());
+        // Negative / non-finite weights are rejected with the offending index.
+        assert!(matches!(
+            design.validate_weights(Some(&[1.0, -2.0, 3.0, 4.0, 5.0])),
+            Err(BuildError::InvalidWeight { index: 1, .. })
+        ));
+        assert!(matches!(
+            design.validate_weights(Some(&[1.0, 2.0, f64::NAN, 4.0, 5.0])),
+            Err(BuildError::InvalidWeight { index: 2, .. })
+        ));
+        assert!(matches!(
+            design.validate_weights(Some(&[1.0, 2.0, 3.0, f64::INFINITY, 5.0])),
+            Err(BuildError::InvalidWeight { index: 3, .. })
+        ));
+    }
+
+    #[test]
+    fn from_frame_sorts_owned_unsorted_dominant() {
         // Factor 0 (3 levels) dominates and is unsorted; factor 1 starts sorted.
-        let store = FactorMajorStore::new(vec![vec![2, 0, 1, 0], vec![0, 0, 1, 1]], 4).unwrap();
-        let design = Design::from_store(store).unwrap();
+        let design =
+            Design::from_frame(frame(vec![vec![2, 0, 1, 0], vec![0, 0, 1, 1]], vec![])).unwrap();
 
         // Stable argsort of [2,0,1,0] → original indices [1,3,2,0].
         assert_eq!(design.obs_perm.as_deref(), Some(&[1u32, 3, 2, 0][..]));
-        assert!(design.factors[0].sorted);
-        // Rescanned after the sort: factor 1's permuted column [0,1,1,0] is
-        // no longer non-decreasing.
-        assert!(!design.factors[1].sorted);
+        assert!(design.terms[0].sorted);
+        // Factor 1's permuted column [0,1,1,0] is no longer non-decreasing.
+        assert!(!design.terms[1].sorted);
 
-        let col = |q| {
-            (0..4)
-                .map(|i| design.store.level(i, q))
-                .collect::<Vec<u32>>()
-        };
-        assert_eq!(col(0), [0, 0, 1, 2]);
-        assert_eq!(col(1), [0, 1, 1, 0]);
+        assert_eq!(design.frame.level_column(0), [0, 0, 1, 2]);
+        assert_eq!(design.frame.level_column(1), [0, 1, 1, 0]);
     }
 
     #[test]
     fn rescan_marks_nested_factor_sorted_after_permutation() {
-        // Factor 1 is nested in the dominant factor 0 (level = col0 / 2), so
-        // sorting by factor 0 also sorts factor 1; the post-sort rescan must
-        // detect that instead of conservatively flagging it unsorted.
+        // Factor 1 nested in dominant factor 0 (level = col0 / 2): sorting by
+        // factor 0 also sorts factor 1; the rescan must detect that.
         let col0 = vec![3u32, 0, 2, 1];
         let col1: Vec<u32> = col0.iter().map(|&v| v / 2).collect();
-        let store = FactorMajorStore::new(vec![col0, col1], 4).unwrap();
-        let design = Design::from_store(store).unwrap();
+        let design = Design::from_frame(frame(vec![col0, col1], vec![])).unwrap();
         assert!(design.obs_perm.is_some());
-        assert!(design.factors[0].sorted);
-        assert!(design.factors[1].sorted);
+        assert!(design.terms[0].sorted);
+        assert!(design.terms[1].sorted);
     }
 
     #[test]
-    fn from_store_keeps_sorted_input() {
-        let store = FactorMajorStore::new(vec![vec![0, 0, 1, 2], vec![1, 0, 1, 0]], 4).unwrap();
-        let design = Design::from_store(store).unwrap();
+    fn from_frame_keeps_sorted_input() {
+        let design =
+            Design::from_frame(frame(vec![vec![0, 0, 1, 2], vec![1, 0, 1, 0]], vec![])).unwrap();
         assert!(design.obs_perm.is_none());
-        assert!(design.factors[0].sorted);
-        assert!(!design.factors[1].sorted);
+        assert!(design.terms[0].sorted);
+        assert!(!design.terms[1].sorted);
     }
 
     #[test]
-    fn array_store_sorts_unsorted_dominant() {
-        // C-order two-column array: `factor_column` is `None` for every
-        // column, so both the argsort key and the column gather take the
-        // virtual per-element fallback. The borrowed view is never mutated;
-        // from_store copies the columns once into an owned sorted internal
-        // store.
-        let arr = ndarray::Array2::from_shape_vec((4, 2), vec![2u32, 0, 0, 0, 1, 1, 0, 1]).unwrap();
-        let store = ArrayStore::new(arr.view()).unwrap();
-        assert!(store.factor_column(0).is_none(), "C-order has no fast path");
-        let design = Design::from_store(store).unwrap();
+    fn continuous_column_stays_row_aligned_after_locality_sort() {
+        let design = Design::from_frame(frame(
+            vec![vec![2, 0, 1, 0]],
+            vec![vec![10.0, 20.0, 30.0, 40.0]],
+        ))
+        .unwrap();
+
         let perm = design.obs_perm.as_ref().expect("permutation applied");
         assert_eq!(perm, &[1, 3, 2, 0]);
-        let col = |q| {
-            (0..4)
-                .map(|i| design.store.level(i, q))
-                .collect::<Vec<u32>>()
-        };
-        assert_eq!(col(0), [0, 0, 1, 2]);
-        assert_eq!(col(1), [0, 1, 1, 0]);
+        assert_eq!(design.frame.level_column(0), [0, 0, 1, 2]);
+        assert_eq!(design.frame.loading_column(0), [20.0, 40.0, 30.0, 10.0]);
+    }
+
+    #[test]
+    fn new_lays_out_slope_terms_term_major() {
+        // Term 0 is dominant (most DOFs); sorted levels keep the locality
+        // sort a no-op so the frame columns stay in caller order.
+        let f0 = [0u32, 0, 1, 1];
+        let f1 = [0u32, 2, 1, 0];
+        let z0 = [1.0, 2.0, 3.0, 4.0];
+        let z1 = [5.0, 6.0, 7.0, 8.0];
+        let effects = vec![
+            Effect::new(&f0, true, [&z0[..], &z1[..]]).unwrap(),
+            Effect::new(&f1, true, []).unwrap(),
+            Effect::new(&f0, false, [&z1[..]]).unwrap(),
+        ];
+        let design = Design::new(effects).unwrap();
+
+        // term 0: [intercept, z0, z1] over 2 levels; term 1: intercept over 3;
+        // term 2: slope-only over 2.
+        assert_eq!(design.terms[0].offset, 0);
+        assert_eq!(design.terms[0].n_dofs(), 6);
+        assert_eq!(design.terms[1].offset, 6);
+        assert_eq!(design.terms[1].n_dofs(), 3);
+        assert_eq!(design.terms[2].offset, 9);
+        assert!(!design.terms[2].intercept);
+        assert_eq!(design.terms[2].n_dofs(), 2);
+        assert_eq!(design.n_dofs, 11);
+
+        // slope indices resolve to the effects' loading columns in the frame.
+        assert_eq!(design.terms[0].slopes, vec![0, 1]);
+        assert_eq!(design.terms[2].slopes, vec![2]);
+        assert_eq!(design.frame.loading_column(0), &z0[..]);
+        assert_eq!(design.frame.loading_column(2), &z1[..]);
     }
 }

@@ -1,16 +1,23 @@
+use crate::domain::Design;
+use crate::observation::ObservationFrame;
+
+fn design_of(columns: Vec<Vec<u32>>) -> Design<'static> {
+    let frame = ObservationFrame::new(columns.into_iter().map(Into::into).collect(), Vec::new())
+        .expect("valid frame");
+    Design::from_frame(frame).expect("valid design")
+}
+
 mod design_tests {
+    use super::design_of;
     use crate::domain::Design;
-    use crate::observation::FactorMajorStore;
     use crate::operator::DesignOperator;
     use schwarz_precond::Operator;
 
-    fn make_test_design() -> Design<FactorMajorStore> {
+    fn make_test_design() -> Design<'static> {
         // Sorted on the dominant factor (factor 1, 4 levels) so construction
         // applies no locality permutation and rows stay where the hand-computed
         // expectations below put them.
-        let store = FactorMajorStore::new(vec![vec![0, 1, 1, 2, 0], vec![0, 0, 1, 2, 3]], 5)
-            .expect("valid factor-major store");
-        Design::from_store(store).expect("valid test design")
+        design_of(vec![vec![0, 1, 1, 2, 0], vec![0, 0, 1, 2, 3]])
     }
 
     #[test]
@@ -65,21 +72,19 @@ mod design_tests {
         a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
     }
 
-    fn make_single_factor_design() -> Design<FactorMajorStore> {
+    fn make_single_factor_design() -> Design<'static> {
         // Sorted: a single-factor store is always dominated by its only factor.
-        let store = FactorMajorStore::new(vec![vec![0u32, 0, 1, 1, 2]], 5).expect("valid store");
-        Design::from_store(store).expect("valid single-factor design")
+        design_of(vec![vec![0u32, 0, 1, 1, 2]])
     }
 
-    fn make_large_design() -> Design<FactorMajorStore> {
+    fn make_large_design() -> Design<'static> {
         // Block pattern (level = i / 300): sorted on both factors, 50 levels
         // each, 300 rows per level — no construction-time permutation.
         let n_obs = 15_000;
         let block = 300u32;
         let fa: Vec<u32> = (0..n_obs).map(|i| i as u32 / block).collect();
         let fb = fa.clone();
-        let store = FactorMajorStore::new(vec![fa, fb], n_obs).expect("valid factor-major store");
-        Design::from_store(store).expect("valid design")
+        design_of(vec![fa, fb])
     }
 
     /// Verify <D·x, r> == <x, D^T·r> on a large design exercising the parallel
@@ -121,8 +126,7 @@ mod design_tests {
         let n_obs = 15_000;
         let fa: Vec<u32> = (0..n_obs as u32).collect();
         let fb: Vec<u32> = (0..n_obs).map(|i| (i % 50) as u32).collect();
-        let store = FactorMajorStore::new(vec![fa, fb], n_obs).expect("valid store");
-        let dm = Design::from_store(store).expect("valid design");
+        let dm = design_of(vec![fa, fb]);
         assert!(dm.obs_perm.is_none(), "dominant factor is sorted; no perm");
 
         let op = DesignOperator::new(&dm, None);
@@ -235,10 +239,9 @@ mod design_tests {
     /// Single-factor design with `level(i) = i % n_levels`; when
     /// `n_obs >= n_levels` every level is populated so the inferred level count
     /// is exactly `n_levels` (which selects the scatter strategy).
-    fn make_strategy_design(n_obs: usize, n_levels: usize) -> Design<FactorMajorStore> {
+    fn make_strategy_design(n_obs: usize, n_levels: usize) -> Design<'static> {
         let f: Vec<u32> = (0..n_obs).map(|i| (i % n_levels) as u32).collect();
-        let store = FactorMajorStore::new(vec![f], n_obs).expect("valid store");
-        Design::from_store(store).expect("valid design")
+        design_of(vec![f])
     }
 
     fn assert_all_close(actual: &[f64], expected: &[f64], ctx: &str) {
@@ -272,8 +275,7 @@ mod design_tests {
         let n_obs = 150_000usize;
         let fa: Vec<u32> = (0..n_obs as u32).collect();
         let fb: Vec<u32> = (0..n_obs).map(|i| ((i * 7919) % 100_000) as u32).collect();
-        let store = FactorMajorStore::new(vec![fa, fb], n_obs).expect("valid store");
-        let dm = Design::from_store(store).expect("valid design");
+        let dm = design_of(vec![fa, fb]);
         assert!(dm.obs_perm.is_none(), "dominant factor is sorted; no perm");
         assert_scratch_reuse_matches_fresh(&dm, "atomic: non-dominant unsorted 100K levels");
     }
@@ -282,7 +284,7 @@ mod design_tests {
     /// calls (cf. the removed `SCATTER_FOLD_POOL` leak): a second call on the
     /// *same* operator must match a freshly built operator — stale values from
     /// the first call must not bleed into the second.
-    fn assert_scratch_reuse_matches_fresh(dm: &Design<FactorMajorStore>, ctx: &str) {
+    fn assert_scratch_reuse_matches_fresh(dm: &Design<'_>, ctx: &str) {
         let r: Vec<f64> = (0..dm.n_obs)
             .map(|i| (i as f64 * 0.37 + 1.0).sin())
             .collect();
@@ -308,13 +310,144 @@ mod design_tests {
     }
 }
 
+mod slope_design_tests {
+    use crate::domain::{Design, Effect};
+    use crate::operator::DesignOperator;
+    use schwarz_precond::Operator;
+
+    /// Deterministic pseudo-random f64 in [-1, 1).
+    fn noise(seed: usize) -> f64 {
+        let mut z = seed as u64 ^ 0x9E37_79B9_7F4A_7C15;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        (z >> 11) as f64 / (1u64 << 52) as f64 - 1.0
+    }
+
+    /// Dense design matrix from the design's internal (post-sort) columns —
+    /// the reference the operator must agree with regardless of the locality
+    /// permutation.
+    fn dense_matrix(design: &Design<'_>) -> Vec<Vec<f64>> {
+        let mut d = vec![vec![0.0; design.n_dofs]; design.n_obs];
+        for (q, t) in design.terms.iter().enumerate() {
+            let levels = design.frame.level_column(q);
+            let mut c = 0;
+            if t.intercept {
+                for (i, &lev) in levels.iter().enumerate() {
+                    d[i][t.offset + lev as usize] = 1.0;
+                }
+                c = 1;
+            }
+            for (v, &z_idx) in t.slopes.iter().enumerate() {
+                let z = design.frame.loading_column(z_idx);
+                for (i, &lev) in levels.iter().enumerate() {
+                    d[i][t.offset + (c + v) * t.n_levels + lev as usize] = z[i];
+                }
+            }
+        }
+        d
+    }
+
+    fn assert_close(a: &[f64], b: &[f64]) {
+        for (x, y) in a.iter().zip(b) {
+            assert!(
+                (x - y).abs() <= 1e-10 * x.abs().max(y.abs()).max(1.0),
+                "{x} vs {y}"
+            );
+        }
+    }
+
+    /// Covers every kernel arm on the sequential path: plain, fused V=1/V=2,
+    /// slope-only, and the generic V=3 fallback — against the dense reference.
+    #[test]
+    fn slope_matvec_and_adjoint_match_dense_reference() {
+        let n = 6;
+        let f0 = [0u32, 1, 2, 0, 1, 2];
+        let f1 = [0u32, 0, 1, 1, 2, 2];
+        let f2 = [0u32, 1, 0, 1, 0, 1];
+        let f3 = [0u32, 0, 0, 1, 1, 1];
+        let f4 = [1u32, 0, 2, 1, 0, 2];
+        let zs: Vec<Vec<f64>> = (0..6)
+            .map(|k| (0..n).map(|i| noise(k * 100 + i)).collect())
+            .collect();
+        let effects = vec![
+            Effect::new(&f0, true, [&zs[0][..], &zs[1][..], &zs[2][..]]).unwrap(),
+            Effect::new(&f1, true, [&zs[3][..]]).unwrap(),
+            Effect::new(&f2, false, [&zs[4][..]]).unwrap(),
+            Effect::new(&f3, true, []).unwrap(),
+            Effect::new(&f4, true, [&zs[5][..], &zs[4][..]]).unwrap(),
+        ];
+        let design = Design::new(effects).unwrap();
+        let dense = dense_matrix(&design);
+        let op = DesignOperator::new(&design, None);
+
+        let x: Vec<f64> = (0..design.n_dofs).map(|j| noise(7_000 + j)).collect();
+        let mut got = vec![0.0; design.n_obs];
+        op.apply(&x, &mut got).unwrap();
+        let expect: Vec<f64> = dense
+            .iter()
+            .map(|row| row.iter().zip(&x).map(|(d, xj)| d * xj).sum())
+            .collect();
+        assert_close(&got, &expect);
+
+        let r: Vec<f64> = (0..design.n_obs).map(|i| noise(9_000 + i)).collect();
+        let mut got_t = vec![0.0; design.n_dofs];
+        op.apply_adjoint(&r, &mut got_t).unwrap();
+        let mut expect_t = vec![0.0; design.n_dofs];
+        for (row, &ri) in dense.iter().zip(&r) {
+            for (e, d) in expect_t.iter_mut().zip(row) {
+                *e += d * ri;
+            }
+        }
+        assert_close(&got_t, &expect_t);
+    }
+
+    /// Adjoint identity ⟨Dx, r⟩ = ⟨x, Dᵀr⟩ on a design large enough to take
+    /// the parallel strategies — sorted-coalesced (C=2), atomic (C=2), and
+    /// fold (C=3) — with weights in play. Gather and scatter share the layout
+    /// logic but not the kernels, so a per-strategy addressing bug breaks the
+    /// identity.
+    #[test]
+    fn slope_adjoint_property_parallel_strategies() {
+        let n = 150_000;
+        let l_big = 60_000usize;
+        let sorted: Vec<u32> = (0..n).map(|i| (i * l_big / n) as u32).collect();
+        let unsorted: Vec<u32> = (0..n).map(|i| ((i * 7919) % l_big) as u32).collect();
+        let small: Vec<u32> = (0..n).map(|i| (i % 10) as u32).collect();
+        let z: Vec<Vec<f64>> = (0..4)
+            .map(|k| (0..n).map(|i| noise(k * n + i)).collect())
+            .collect();
+        let effects = vec![
+            Effect::new(&sorted, true, [&z[0][..]]).unwrap(),
+            Effect::new(&unsorted, true, [&z[1][..]]).unwrap(),
+            Effect::new(&small, true, [&z[2][..], &z[3][..]]).unwrap(),
+        ];
+        let design = Design::new(effects).unwrap();
+        let weights: Vec<f64> = (0..n).map(|i| 0.5 + noise(i).abs()).collect();
+        let op = DesignOperator::new(&design, Some(&weights));
+
+        let x: Vec<f64> = (0..design.n_dofs).map(|j| noise(13 * j + 1)).collect();
+        let r: Vec<f64> = (0..n).map(|i| noise(29 * i + 5)).collect();
+
+        let mut dx = vec![0.0; n];
+        op.apply(&x, &mut dx).unwrap();
+        let mut dtr = vec![0.0; design.n_dofs];
+        op.apply_adjoint(&r, &mut dtr).unwrap();
+
+        let lhs: f64 = dx.iter().zip(&r).map(|(a, b)| a * b).sum();
+        let rhs: f64 = x.iter().zip(&dtr).map(|(a, b)| a * b).sum();
+        assert!(
+            (lhs - rhs).abs() <= 1e-9 * lhs.abs().max(rhs.abs()).max(1.0),
+            "{lhs} vs {rhs}"
+        );
+    }
+}
+
 // ===========================================================================
 // weighted adjoint property test
 // ===========================================================================
 
 mod weighted_adjoint_proptests {
-    use crate::domain::Design;
-    use crate::observation::FactorMajorStore;
+    use super::design_of;
     use crate::operator::DesignOperator;
     use proptest::prelude::*;
     use schwarz_precond::Operator;
@@ -343,8 +476,7 @@ mod weighted_adjoint_proptests {
                 .map(|i| 0.5 + (i as f64 * 0.13 + seed as f64 * 0.41).sin().abs())
                 .collect();
 
-            let store = FactorMajorStore::new(vec![fa, fb], n_obs).unwrap();
-            let dm = Design::from_store(store).unwrap();
+            let dm = design_of(vec![fa, fb]);
 
             let n_dofs = dm.n_dofs;
             let n_rows = dm.n_obs;
@@ -391,26 +523,24 @@ mod schwarz_tests {
     use std::time::{Duration, Instant};
 
     use crate::config::{
-        ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, DEFAULT_DENSE_SCHUR_THRESHOLD,
+        ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, ScalingConfig, SchurMode,
+        DEFAULT_DENSE_SCHUR_THRESHOLD,
     };
     use schwarz_precond::SubdomainCore;
 
     use crate::block_elim::factor::ReducedFactor;
     use crate::csr_block::CsrBlock;
-    use crate::domain::factor_pairs::Subdomain;
     use crate::domain::{build_local_domains, Design, LocalDomain};
-    use crate::domain::{BlockDiagonals, CrossTab};
-    use crate::observation::FactorMajorStore;
+    use crate::domain::{BlockDiagonals, CrossTab, LocalComponent};
     use crate::operator::schwarz::{build_additive_with_strategy, build_entry};
     use schwarz_precond::{Operator, ReductionStrategy};
 
     const BLOCK_ELIM_NESTED_RAYON_CHILD_ENV: &str = "WITHIN_TEST_BLOCK_ELIM_NESTED_RAYON_CHILD";
 
-    fn make_test_data() -> (Design<FactorMajorStore>, Vec<LocalDomain>) {
-        let store = FactorMajorStore::new(vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]], 5)
-            .expect("valid factor-major store");
-        let design = Design::from_store(store).expect("valid fixed-effects design");
-        let domain_pairs = build_local_domains(&design, None);
+    fn make_test_data() -> (Design<'static>, Vec<LocalDomain>) {
+        let design = super::design_of(vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]]);
+        let (domain_pairs, _) = build_local_domains(&design, None, &ScalingConfig::default())
+            .expect("plain domains build");
         (design, domain_pairs)
     }
 
@@ -481,11 +611,11 @@ mod schwarz_tests {
 
         let domain_pairs = (0..n_subdomains)
             .map(|_| LocalDomain {
-                subdomain: Subdomain {
-                    core: SubdomainCore::uniform(global_indices.clone()),
-                },
-                cross_tab: cross_tab.clone(),
-                block_diagonals: block_diagonals.clone(),
+                core: SubdomainCore::uniform(global_indices.clone()),
+                component: LocalComponent::plain_for_test(
+                    cross_tab.clone(),
+                    block_diagonals.clone(),
+                ),
             })
             .collect();
         (n_local, domain_pairs)
@@ -500,11 +630,12 @@ mod schwarz_tests {
                 split_merge: Some(8),
                 seed: 42,
             },
-            approx_schur: Some(ApproxSchurConfig {
+            schur: SchurMode::Approximate(ApproxSchurConfig {
                 seed: 7,
                 ..Default::default()
             }),
             dense_threshold: DEFAULT_DENSE_SCHUR_THRESHOLD,
+            scaling: Default::default(),
         };
         let rhs: Vec<f64> = (0..n_dofs).map(|i| ((i % 29) as f64) - 14.0).collect();
 
@@ -519,12 +650,14 @@ mod schwarz_tests {
                 domain_pairs,
                 &config,
                 ReductionStrategy::ParallelReduction,
+                n_dofs,
             )
             .expect("build block-elim additive preconditioner");
             let atomic = build_additive_with_strategy(
                 domain_pairs_atomic,
                 &config,
                 ReductionStrategy::AtomicScatter,
+                n_dofs,
             )
             .expect("build block-elim atomic preconditioner");
 
@@ -598,7 +731,7 @@ mod schwarz_tests {
         let (design, domain_pairs) = make_test_data();
         let config = LocalSolverConfig::default();
         let strategy = schwarz_precond::ReductionStrategy::default();
-        let schwarz = build_additive_with_strategy(domain_pairs, &config, strategy)
+        let schwarz = build_additive_with_strategy(domain_pairs, &config, strategy, design.n_dofs)
             .expect("build schwarz with explicit domains");
         let r = vec![1.0; design.n_dofs];
         let mut z = vec![0.0; design.n_dofs];
@@ -612,8 +745,9 @@ mod schwarz_tests {
 
         let config = LocalSolverConfig {
             approx_chol: ApproxCholConfig::default(),
-            approx_schur: None,
+            schur: SchurMode::Exact,
             dense_threshold: DEFAULT_DENSE_SCHUR_THRESHOLD,
+            scaling: Default::default(),
         };
         let entry = build_entry(domain, &config).expect("exact Schur entry build failed");
         assert!(matches!(
@@ -629,11 +763,12 @@ mod schwarz_tests {
 
         let config = LocalSolverConfig {
             approx_chol: ApproxCholConfig::default(),
-            approx_schur: Some(ApproxSchurConfig {
+            schur: SchurMode::Approximate(ApproxSchurConfig {
                 seed: 7,
                 ..Default::default()
             }),
             dense_threshold: DEFAULT_DENSE_SCHUR_THRESHOLD,
+            scaling: Default::default(),
         };
         let entry = build_entry(domain, &config).expect("approximate Schur entry build failed");
         assert!(matches!(
@@ -649,8 +784,9 @@ mod schwarz_tests {
 
         let config = LocalSolverConfig {
             approx_chol: ApproxCholConfig::default(),
-            approx_schur: None,
+            schur: SchurMode::Exact,
             dense_threshold: 0,
+            scaling: Default::default(),
         };
         let entry = build_entry(domain, &config).expect("exact Schur entry build failed");
         assert!(!matches!(

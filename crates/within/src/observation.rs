@@ -1,208 +1,113 @@
-//! Observation storage: [`Store`] trait + [`FactorMajorStore`] / [`ArrayStore`] backends.
+//! Columnar observation storage: categorical + continuous columns, row-aligned.
 
-use ndarray::ArrayView2;
+use std::borrow::Cow;
 
 use crate::error::BuildError;
 
-// ---------------------------------------------------------------------------
-// Store trait
-// ---------------------------------------------------------------------------
-
-/// Core abstraction: how observation data is stored and accessed.
-///
-/// Each backend optimizes for different data characteristics.
-/// All implementors must be `Send + Sync` for Rayon parallelism.
-pub trait Store: Send + Sync {
-    /// Number of observations.
-    fn n_obs(&self) -> usize;
-
-    /// Number of factors.
-    fn n_factors(&self) -> usize;
-
-    /// Level index for observation `obs` in factor `factor`.
-    fn level(&self, obs: usize, factor: usize) -> u32;
-
-    /// Optional fast-path access to a factor-major column of levels.
-    ///
-    /// Stores that naturally keep `level(obs, factor)` as contiguous
-    /// `levels[factor][obs]` should return `Some(&levels[factor])`.
-    /// Others should return `None` (default).
-    fn factor_column(&self, _factor: usize) -> Option<&[u32]> {
-        None
-    }
+/// Row-aligned observation columns: per-factor level codes and per-slope loadings.
+#[derive(Clone, Debug)]
+pub struct ObservationFrame<'a> {
+    categorical: Vec<Cow<'a, [u32]>>,
+    continuous: Vec<Cow<'a, [f64]>>,
+    n_obs: usize,
 }
 
-/// Resolve the level for row `i` in factor `q`.
-///
-/// `levels` is the optional fast-path column (a contiguous `&[u32]` view of the
-/// factor's levels); when `None`, fall back to the store's virtual lookup.
-/// Hoisted out of inner loops so the compiler keeps the row body branch-free.
-#[inline]
-pub(crate) fn level_at<S: Store>(store: &S, levels: Option<&[u32]>, i: usize, q: usize) -> usize {
-    match levels {
-        Some(col) => col[i] as usize,
-        None => store.level(i, q) as usize,
-    }
+fn gather<T: Copy>(col: &[T], perm: &[u32]) -> Vec<T> {
+    perm.iter().map(|&k| col[k as usize]).collect()
 }
 
-/// Pre-compute the factor-column fast-path slices for every factor of `store`.
-pub(crate) fn factor_columns<S: Store>(store: &S) -> Vec<Option<&[u32]>> {
-    (0..store.n_factors())
-        .map(|q| store.factor_column(q))
-        .collect()
-}
-
-// ---------------------------------------------------------------------------
-// FactorMajorStore
-// ---------------------------------------------------------------------------
-
-/// Factor-major observation storage: `factor_levels[q][i]` is the level
-/// for observation `i` in factor `q`.
-///
-/// Construction is nearly free — just convert i64 to usize from Python input.
-/// Factor-column access is sequential, making it optimal for Gramian build
-/// and domain decomposition (which iterate per-factor).
-#[derive(Debug, Clone)]
-pub struct FactorMajorStore {
-    pub(crate) factor_levels: Vec<Vec<u32>>,
-    pub(crate) n_obs: usize,
-}
-
-impl FactorMajorStore {
-    /// Create a new factor-major store, validating that all columns have length `n_obs`.
-    pub fn new(factor_levels: Vec<Vec<u32>>, n_obs: usize) -> Result<Self, BuildError> {
-        for (factor, col) in factor_levels.iter().enumerate() {
-            if col.len() != n_obs {
+impl<'a> ObservationFrame<'a> {
+    /// Build a frame, validating that all columns share one length.
+    pub fn new(
+        categorical: Vec<Cow<'a, [u32]>>,
+        continuous: Vec<Cow<'a, [f64]>>,
+    ) -> Result<Self, BuildError> {
+        let n_obs = categorical
+            .first()
+            .map(|c| c.len())
+            .or_else(|| continuous.first().map(|c| c.len()))
+            .unwrap_or(0);
+        let lens = categorical
+            .iter()
+            .map(|c| c.len())
+            .chain(continuous.iter().map(|c| c.len()));
+        for (column, len) in lens.enumerate() {
+            if len != n_obs {
                 return Err(BuildError::ObservationCountMismatch {
-                    factor,
+                    column,
                     expected: n_obs,
-                    got: col.len(),
+                    got: len,
                 });
             }
         }
-        Ok(Self {
-            factor_levels,
+        Ok(ObservationFrame {
+            categorical,
+            continuous,
             n_obs,
         })
     }
-}
 
-impl Store for FactorMajorStore {
+    /// Number of observations (rows).
     #[inline]
-    fn n_obs(&self) -> usize {
+    pub fn n_obs(&self) -> usize {
         self.n_obs
     }
 
+    /// Number of categorical columns.
     #[inline]
-    fn n_factors(&self) -> usize {
-        self.factor_levels.len()
+    pub fn n_factors(&self) -> usize {
+        self.categorical.len()
     }
 
-    #[inline]
-    fn level(&self, obs: usize, factor: usize) -> u32 {
-        self.factor_levels[factor][obs]
+    /// Level codes of factor `q`.
+    pub fn level_column(&self, q: usize) -> &[u32] {
+        &self.categorical[q]
     }
 
-    #[inline]
-    fn factor_column(&self, factor: usize) -> Option<&[u32]> {
-        Some(&self.factor_levels[factor])
-    }
-}
-
-// ---------------------------------------------------------------------------
-// ArrayStore — borrowed observation-major backend (zero-copy)
-// ---------------------------------------------------------------------------
-
-/// Store backed by a borrowed `ArrayView2<u32>`.
-///
-/// `categories[[obs, factor]]` is the level for observation `obs` in factor
-/// `factor`. No data is copied — the view points directly into the caller's
-/// buffer (e.g. a numpy array from Python). When the input needs the locality
-/// sort, [`Design::from_store`](crate::Design::from_store) copies the columns
-/// into an owned sorted store instead; only already-sorted input is read
-/// through this view during solves.
-///
-/// For F-contiguous (column-major) arrays, `factor_column()` returns
-/// contiguous slices — matching `FactorMajorStore` performance.
-/// For C-contiguous arrays, columns are strided and the hot loops fall
-/// back to per-element `level()` indexing.
-#[derive(Debug)]
-pub struct ArrayStore<'a> {
-    categories: ArrayView2<'a, u32>,
-}
-
-impl<'a> ArrayStore<'a> {
-    /// Create a zero-copy store from a borrowed 2-D category array.
-    pub fn new(categories: ArrayView2<'a, u32>) -> Result<Self, BuildError> {
-        Ok(Self { categories })
-    }
-}
-
-impl Store for ArrayStore<'_> {
-    #[inline]
-    fn n_obs(&self) -> usize {
-        self.categories.nrows()
+    /// Loadings of continuous column `k`.
+    pub fn loading_column(&self, k: usize) -> &[f64] {
+        &self.continuous[k]
     }
 
-    #[inline]
-    fn n_factors(&self) -> usize {
-        self.categories.ncols()
+    /// Replace loading column `i` with an owned column of matching row count.
+    pub(crate) fn set_loading_column(&mut self, i: usize, column: Vec<f64>) {
+        debug_assert_eq!(column.len(), self.n_obs);
+        self.continuous[i] = Cow::Owned(column);
     }
 
-    #[inline]
-    fn level(&self, obs: usize, factor: usize) -> u32 {
-        self.categories[[obs, factor]]
-    }
-
-    fn factor_column(&self, factor: usize) -> Option<&[u32]> {
-        let strides = self.categories.strides();
-        // Columns are contiguous only when the row stride is 1 (F-order). The
-        // column stride must additionally be positive: a column-reversed view
-        // (e.g. `cats[:, ::-1]` of an F-order array) keeps `strides[0] == 1`
-        // but has `strides[1] < 1`, which would wrap to a huge `usize` below
-        // and produce an out-of-bounds `from_raw_parts`. Fall back to the safe
-        // per-element `level()` path in that case.
-        if strides[0] != 1 || strides[1] < 1 {
-            return None;
-        }
-        let n_obs = self.categories.nrows();
-        let col_stride = strides[1] as usize;
-        let ptr = self.categories.as_ptr();
-        // Safety: F-contiguous layout guarantees n_obs elements at stride-1
-        // starting at ptr + factor * col_stride.
-        Some(unsafe { std::slice::from_raw_parts(ptr.add(factor * col_stride), n_obs) })
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Weight validation helpers
-// ---------------------------------------------------------------------------
-
-/// Validate that an optional weight slice matches `n_obs` observations.
-///
-/// `None` is always valid (interpreted as unit weights). `Some(w)` requires
-/// `w.len() == n_obs`.
-pub(crate) fn validate_weights(weights: Option<&[f64]>, n_obs: usize) -> Result<(), BuildError> {
-    if let Some(w) = weights {
-        if w.len() != n_obs {
-            return Err(BuildError::WeightCountMismatch {
-                expected: n_obs,
-                got: w.len(),
-            });
-        }
-        // `W^{1/2}` is applied to the design, so each weight must be finite and
-        // non-negative; otherwise `sqrt(w)` is NaN and the solution is silently
-        // corrupted. `wi >= 0.0` already rejects NaN (comparisons with NaN are
-        // false); `is_finite` additionally rejects `+∞`.
-        if let Some((index, &value)) = w
-            .iter()
-            .enumerate()
-            .find(|&(_, &wi)| !(wi >= 0.0 && wi.is_finite()))
-        {
-            return Err(BuildError::InvalidWeight { index, value });
+    /// Convert every column to owned, dropping ties to caller buffers.
+    pub fn into_owned(self) -> ObservationFrame<'static> {
+        ObservationFrame {
+            categorical: self
+                .categorical
+                .into_iter()
+                .map(|c| Cow::Owned(c.into_owned()))
+                .collect(),
+            continuous: self
+                .continuous
+                .into_iter()
+                .map(|c| Cow::Owned(c.into_owned()))
+                .collect(),
+            n_obs: self.n_obs,
         }
     }
-    Ok(())
+
+    /// Owned copy with row `i` holding observation `perm[i]` (matches `Design::obs_perm`).
+    pub fn permuted(&self, perm: &[u32]) -> ObservationFrame<'static> {
+        ObservationFrame {
+            categorical: self
+                .categorical
+                .iter()
+                .map(|col| gather(col, perm).into())
+                .collect(),
+            continuous: self
+                .continuous
+                .iter()
+                .map(|col| gather(col, perm).into())
+                .collect(),
+            n_obs: perm.len(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -210,44 +115,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_factor_major_store_basic() {
-        let store = FactorMajorStore::new(vec![vec![0, 1, 2, 0], vec![0, 1, 0, 1]], 4)
-            .expect("valid factor-major store");
-        assert_eq!(store.n_obs(), 4);
-        assert_eq!(store.n_factors(), 2);
-        assert_eq!(store.level(0, 0), 0);
-        assert_eq!(store.level(1, 0), 1);
-        assert_eq!(store.level(2, 1), 0);
+    fn columns_stay_row_aligned_under_permutation() {
+        let frame = ObservationFrame::new(
+            vec![vec![2u32, 0, 1, 0].into()],
+            vec![vec![10.0f64, 20.0, 30.0, 40.0].into()],
+        )
+        .unwrap();
+
+        let sorted = frame.permuted(&[1, 3, 2, 0]);
+
+        assert_eq!(sorted.level_column(0), &[0, 0, 1, 2]);
+        assert_eq!(sorted.loading_column(0), &[20.0, 40.0, 30.0, 10.0]);
     }
 
     #[test]
-    fn test_factor_column() {
-        let store = FactorMajorStore::new(vec![vec![0u32, 1, 2, 0], vec![3, 2, 1, 0]], 4)
-            .expect("valid factor-major store");
-        assert_eq!(store.factor_column(0).unwrap(), &[0u32, 1, 2, 0]);
-        assert_eq!(store.factor_column(1).unwrap(), &[3u32, 2, 1, 0]);
-    }
-
-    #[test]
-    fn test_validate_weights() {
-        assert!(validate_weights(None, 5).is_ok());
-        assert!(validate_weights(Some(&[1.0, 2.0, 3.0, 4.0, 5.0]), 5).is_ok());
-        // Zero weights are valid (an excluded observation).
-        assert!(validate_weights(Some(&[0.0, 1.0, 2.0, 3.0, 4.0]), 5).is_ok());
-        // Length mismatch.
-        assert!(validate_weights(Some(&[1.0, 2.0]), 5).is_err());
-        // Negative / non-finite weights are rejected with the offending index.
+    fn mismatched_column_lengths_rejected() {
+        let result = ObservationFrame::new(
+            vec![vec![0u32, 1, 0].into()],
+            vec![vec![1.0f64, 2.0].into()],
+        );
         assert!(matches!(
-            validate_weights(Some(&[1.0, -2.0, 3.0, 4.0, 5.0]), 5),
-            Err(BuildError::InvalidWeight { index: 1, .. })
-        ));
-        assert!(matches!(
-            validate_weights(Some(&[1.0, 2.0, f64::NAN, 4.0, 5.0]), 5),
-            Err(BuildError::InvalidWeight { index: 2, .. })
-        ));
-        assert!(matches!(
-            validate_weights(Some(&[1.0, 2.0, 3.0, f64::INFINITY, 5.0]), 5),
-            Err(BuildError::InvalidWeight { index: 3, .. })
+            result,
+            Err(BuildError::ObservationCountMismatch { .. })
         ));
     }
 }

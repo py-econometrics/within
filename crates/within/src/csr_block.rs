@@ -24,6 +24,16 @@ impl CsrBlock {
         self.data.len()
     }
 
+    /// Row `i` as `(column, weight)` pairs.
+    pub(crate) fn row(&self, i: usize) -> impl Iterator<Item = (usize, f64)> + '_ {
+        let start = self.indptr[i] as usize;
+        let end = self.indptr[i + 1] as usize;
+        self.indices[start..end]
+            .iter()
+            .zip(&self.data[start..end])
+            .map(|(&j, &w)| (j as usize, w))
+    }
+
     /// Transpose this CSR block: (nrows × ncols) → (ncols × nrows).
     ///
     /// O(nnz). Rows of the output are automatically sorted because we process
