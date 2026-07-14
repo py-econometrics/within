@@ -108,7 +108,7 @@ def _solve_once(
     result = solve(
         np.asfortranarray(np.column_stack(categories).astype(np.uint32)),
         y,
-        config.config,
+        options=config.config,
         preconditioner=config.preconditioner,
     )
 

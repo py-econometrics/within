@@ -18,13 +18,13 @@ use crate::results::{run_batch, run_solve, PyBatchSolveResult, PySolveResult};
 // ---------------------------------------------------------------------------
 
 #[pyfunction]
-#[pyo3(signature = (design, y, options=None, weights=None, preconditioner=None))]
+#[pyo3(signature = (design, y, weights=None, options=None, preconditioner=None))]
 pub fn solve<'py>(
     py: Python<'py>,
     design: &Bound<'py, PyAny>,
     y: PyReadonlyArray1<'py, f64>,
-    options: Option<&Bound<'py, PyAny>>,
     weights: Option<PyReadonlyArray1<'py, f64>>,
+    options: Option<&Bound<'py, PyAny>>,
     preconditioner: Option<&Bound<'py, PyAny>>,
 ) -> PyResult<PySolveResult> {
     let params = resolve_lsmr_config(options)?;
@@ -57,13 +57,13 @@ pub fn solve<'py>(
 }
 
 #[pyfunction]
-#[pyo3(signature = (design, Y, options=None, weights=None, preconditioner=None))]
+#[pyo3(signature = (design, Y, weights=None, options=None, preconditioner=None))]
 pub fn solve_batch<'py>(
     py: Python<'py>,
     design: &Bound<'py, PyAny>,
     #[allow(non_snake_case)] Y: PyReadonlyArray2<'py, f64>,
-    options: Option<&Bound<'py, PyAny>>,
     weights: Option<PyReadonlyArray1<'py, f64>>,
+    options: Option<&Bound<'py, PyAny>>,
     preconditioner: Option<&Bound<'py, PyAny>>,
 ) -> PyResult<PyBatchSolveResult> {
     let params = resolve_lsmr_config(options)?;

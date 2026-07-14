@@ -58,6 +58,20 @@ def test_coefficient_layout_locates_unidentified_and_round_trips():
         layout.address(layout.n_dofs())
 
 
+def test_free_solve_positional_order_is_weights_then_options():
+    # Pins (design, y, weights, options, ...): a weights array 3rd and
+    # LsmrOptions 4th must be accepted. A re-swap would parse the array as
+    # options (and LsmrOptions as weights) and raise.
+    rng = np.random.default_rng(0)
+    cats = as_solver_categories(
+        [rng.integers(0, 8, size=300), rng.integers(0, 6, size=300)]
+    )
+    y = rng.standard_normal(300)
+    w = rng.uniform(0.5, 2.0, size=300)
+    result = solve(cats, y, w, LsmrOptions(maxiter=2000))
+    assert result.converged
+
+
 @pytest.fixture()
 def problem():
     """Two-factor problem with 50 levels each, 10k observations."""
@@ -83,7 +97,7 @@ class TestSolveDefaults:
         result = solve(
             as_solver_categories(cats),
             y,
-            LsmrOptions(),
+            options=LsmrOptions(),
             preconditioner=PreconditionerConfig.Off,
         )
         assert result.converged
@@ -103,7 +117,7 @@ class TestPreconditioners:
         result = solve(
             as_solver_categories(cats),
             y,
-            LsmrOptions(),
+            options=LsmrOptions(),
             preconditioner=PreconditionerConfig.Additive,
         )
         assert result.converged
@@ -114,7 +128,7 @@ class TestPreconditioners:
         result = solve(
             as_solver_categories(cats),
             y,
-            LsmrOptions(),
+            options=LsmrOptions(),
             preconditioner=AdditiveSchwarz(),
         )
         assert result.converged
@@ -128,7 +142,7 @@ class TestPreconditioners:
         result = solve(
             categories,
             y,
-            LsmrOptions(maxiter=2000),
+            options=LsmrOptions(maxiter=2000),
             preconditioner=PreconditionerConfig.Diagonal,
         )
         assert result.converged
