@@ -27,6 +27,7 @@ from .suites import (  # noqa: F401
     high_fe,
     many_components,
     scaling,
+    slopes,
     subdomain_regimes,
     verify,
 )
