@@ -713,3 +713,75 @@ fn test_mlsmr_rejects_bad_preconditioner_shape() {
     let result = mlsmr(&OverdeterminedOp, &b, &BadPrecond, 1e-10, 100, None);
     assert!(matches!(result, Err(SolveError::InvalidInput { .. })));
 }
+
+/// Near a lucky breakdown `p̃ ≈ 0`, `vp = ⟨v, p̃⟩` (mathematically `≥ 0`) can
+/// come out slightly negative from rounding. A value well inside the relative
+/// tolerance must be treated as an `α = 0` breakdown, not rejected as an
+/// indefinite preconditioner. Regression for the old strict `vp < 0.0` abort.
+#[test]
+fn test_mlsmr_near_breakdown_vp_clamps_to_zero() {
+    // M⁻¹ maps p̃ to (perp(p̃) − 1e-10·p̃): the perpendicular part cancels in
+    // ⟨v, p̃⟩, leaving vp ≈ −1e-10·‖p̃‖² — negative, but ~8 orders inside the
+    // √ε·‖v‖‖p̃‖ floor, so it must clamp rather than raise.
+    struct NearBreakdownPrecond;
+    impl Operator for NearBreakdownPrecond {
+        fn nrows(&self) -> usize {
+            2
+        }
+        fn ncols(&self) -> usize {
+            2
+        }
+        fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+            y[0] = -x[1] - 1e-10 * x[0];
+            y[1] = x[0] - 1e-10 * x[1];
+            Ok(())
+        }
+        fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+            self.apply(x, y)
+        }
+    }
+
+    let b = vec![3.0, 4.0];
+    let result = mlsmr(
+        &IdentityOp { n: 2 },
+        &b,
+        &NearBreakdownPrecond,
+        1e-10,
+        100,
+        None,
+    );
+    assert!(
+        result.is_ok(),
+        "rounding-scale negative vp must clamp to breakdown, got err {:?}",
+        result.err()
+    );
+}
+
+/// A genuinely indefinite preconditioner (`M⁻¹ = −I` ⇒ `vp = −‖p̃‖²`, relative
+/// magnitude 1) must still be rejected — the clamp only ever absorbs a
+/// negligible negative direction, never a real loss of positive-definiteness.
+#[test]
+fn test_mlsmr_rejects_indefinite_preconditioner() {
+    struct NegIdentity;
+    impl Operator for NegIdentity {
+        fn nrows(&self) -> usize {
+            2
+        }
+        fn ncols(&self) -> usize {
+            2
+        }
+        fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+            for (yi, &xi) in y.iter_mut().zip(x) {
+                *yi = -xi;
+            }
+            Ok(())
+        }
+        fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+            self.apply(x, y)
+        }
+    }
+
+    let b = vec![3.0, 4.0];
+    let result = mlsmr(&IdentityOp { n: 2 }, &b, &NegIdentity, 1e-10, 100, None);
+    assert!(matches!(result, Err(SolveError::InvalidInput { .. })));
+}
