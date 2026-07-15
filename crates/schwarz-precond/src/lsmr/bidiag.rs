@@ -97,23 +97,13 @@ fn par_dot(a: &[f64], b: &[f64]) -> f64 {
     }
 }
 
-/// Relative floor separating a rounding-scale negative `⟨v, p̃⟩` (near a lucky
-/// breakdown) from a genuinely indefinite preconditioner. `√ε`: loose enough to
-/// absorb accumulated rounding across the recurrence, yet — being relative to
-/// `‖v‖‖p̃‖` — orders of magnitude below the `≈ 1` relative magnitude an
-/// indefinite `M` produces at any eigenvalue scale.
-const MLSMR_INDEFINITE_REL_TOL: f64 = 1.4901161193847656e-8; // f64::EPSILON.sqrt()
-
-/// `α = √⟨v, p̃⟩` with a near-breakdown guard. `⟨v, p̃⟩ = ‖v‖²_M ≥ 0` for an SPD
-/// preconditioner; a negative within [`MLSMR_INDEFINITE_REL_TOL`]`·‖v‖‖p̃‖` is a
-/// rounding artifact of an essentially-converged step and is clamped to `α = 0`
-/// (breakdown). Only a more negative value — a genuinely non-positive-definite
-/// preconditioner, which would otherwise yield a silent premature "converged"
-/// at the wrong solution — is rejected.
+/// `α = √⟨v, p̃⟩`. A near-breakdown negative `vp` (exact `‖v‖²_M ≥ 0` rounded
+/// below 0) within the relative floor `√ε·‖v‖‖p̃‖` clamps to `α = 0`; a genuinely
+/// indefinite preconditioner raises.
 fn alpha_from_vp(v: &[f64], p_tilde: &[f64]) -> Result<f64, SolveError> {
     let vp = par_dot(v, p_tilde);
     if vp < 0.0 {
-        let bound = MLSMR_INDEFINITE_REL_TOL * (par_dot(v, v) * par_dot(p_tilde, p_tilde)).sqrt();
+        let bound = f64::EPSILON.sqrt() * (par_dot(v, v) * par_dot(p_tilde, p_tilde)).sqrt();
         if vp < -bound {
             return Err(SolveError::InvalidInput {
                 context: "mlsmr",
