@@ -3,7 +3,7 @@ use std::borrow::Cow;
 use portable_atomic::AtomicF64;
 use schwarz_precond::Operator;
 
-use crate::domain::{Design, TermMeta};
+use crate::domain::Design;
 
 mod gather;
 mod scatter;
@@ -13,30 +13,6 @@ use scatter::scatter_apply;
 
 /// Minimum number of rows before scatter/gather loops are parallelized.
 const PAR_THRESHOLD: usize = 10_000;
-
-/// A [`TermMeta`] with its frame columns resolved into borrows for the kernels.
-struct ResolvedTerm<'a> {
-    meta: &'a TermMeta,
-    levels: &'a [u32],
-    zs: Vec<&'a [f64]>,
-}
-
-fn resolve_terms<'a>(design: &'a Design<'_>) -> Vec<ResolvedTerm<'a>> {
-    design
-        .terms
-        .iter()
-        .enumerate()
-        .map(|(q, t)| ResolvedTerm {
-            meta: t,
-            levels: design.frame.level_column(q),
-            zs: t
-                .slopes
-                .iter()
-                .map(|&c| design.frame.loading_column(c))
-                .collect(),
-        })
-        .collect()
-}
 
 // ===========================================================================
 // DesignOperator — D, optionally rescaled by W^{1/2}

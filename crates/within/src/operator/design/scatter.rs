@@ -6,8 +6,8 @@ use std::sync::atomic::Ordering;
 use portable_atomic::AtomicF64;
 use rayon::prelude::*;
 
-use super::{resolve_terms, ResolvedTerm, PAR_THRESHOLD};
-use crate::domain::Design;
+use super::PAR_THRESHOLD;
+use crate::domain::{Design, TermMeta};
 
 /// Adjoint scatter over all terms; `base(i)` is the row value (`x[i]`, or
 /// `sw[i]·x[i]` when weighted) that each column scales by its loading.
@@ -19,30 +19,47 @@ pub(super) fn scatter_apply(
 ) {
     debug_assert_eq!(dst.len(), design.n_dofs);
     let parallel = design.n_obs > PAR_THRESHOLD;
+    let frame = &design.frame;
 
-    for t in resolve_terms(design) {
-        let n_levels = t.meta.n_levels;
-        let block = &mut dst[t.meta.offset..t.meta.offset + t.meta.n_dofs()];
-        match (t.meta.intercept, t.zs.as_slice()) {
-            (true, []) => scatter_term::<1>(block, &t, parallel, scratch, |i| [base(i)]),
-            (true, &[z0]) => scatter_term::<2>(block, &t, parallel, scratch, |i| {
-                let b = base(i);
-                [b, z0[i] * b]
-            }),
-            (true, &[z0, z1]) => scatter_term::<3>(block, &t, parallel, scratch, |i| {
-                let b = base(i);
-                [b, z0[i] * b, z1[i] * b]
-            }),
-            (intercept, zs) => {
+    for (q, t) in design.terms.iter().enumerate() {
+        let levels = frame.level_column(q);
+        let block = &mut dst[t.offset..t.offset + t.n_dofs()];
+        match (t.intercept, t.slopes.as_slice()) {
+            (true, []) => scatter_term::<1>(block, t, levels, parallel, scratch, |i| [base(i)]),
+            (true, &[c0]) => {
+                let z0 = frame.loading_column(c0);
+                scatter_term::<2>(block, t, levels, parallel, scratch, |i| {
+                    let b = base(i);
+                    [b, z0[i] * b]
+                })
+            }
+            (true, &[c0, c1]) => {
+                let z0 = frame.loading_column(c0);
+                let z1 = frame.loading_column(c1);
+                scatter_term::<3>(block, t, levels, parallel, scratch, |i| {
+                    let b = base(i);
+                    [b, z0[i] * b, z1[i] * b]
+                })
+            }
+            (intercept, slope_cols) => {
                 let zoff = usize::from(intercept);
                 if intercept {
-                    scatter_term::<1>(&mut block[..n_levels], &t, parallel, scratch, |i| [base(i)]);
-                }
-                for (v, &z) in zs.iter().enumerate() {
-                    let start = (zoff + v) * n_levels;
                     scatter_term::<1>(
-                        &mut block[start..start + n_levels],
-                        &t,
+                        &mut block[..t.n_levels],
+                        t,
+                        levels,
+                        parallel,
+                        scratch,
+                        |i| [base(i)],
+                    );
+                }
+                for (v, &c) in slope_cols.iter().enumerate() {
+                    let z = frame.loading_column(c);
+                    let start = (zoff + v) * t.n_levels;
+                    scatter_term::<1>(
+                        &mut block[start..start + t.n_levels],
+                        t,
+                        levels,
                         parallel,
                         scratch,
                         move |i| [z[i] * base(i)],
@@ -56,22 +73,20 @@ pub(super) fn scatter_apply(
 /// Scatter one term's coefficient block: `block[c·L + level(i)] += values(i)[c]`.
 fn scatter_term<const C: usize>(
     block: &mut [f64],
-    term: &ResolvedTerm<'_>,
+    meta: &TermMeta,
+    levels: &[u32],
     parallel: bool,
     scratch: &[AtomicF64],
     values: impl Fn(usize) -> [f64; C] + Sync,
 ) {
-    debug_assert_eq!(block.len(), C * term.meta.n_levels);
-    match ScatterStrategy::pick(parallel, C * term.meta.n_levels, term.meta.sorted) {
-        ScatterStrategy::Sequential => {
-            scatter_sequential::<C>(block, term.meta.n_levels, term.levels, &values)
-        }
-        ScatterStrategy::Fold => scatter_fold::<C>(block, term.meta.n_levels, term.levels, &values),
-        ScatterStrategy::Atomic => {
-            scatter_atomic::<C>(block, term.meta.n_levels, term.levels, &values, scratch)
-        }
+    let n_levels = meta.n_levels;
+    debug_assert_eq!(block.len(), C * n_levels);
+    match ScatterStrategy::pick(parallel, C * n_levels, meta.sorted) {
+        ScatterStrategy::Sequential => scatter_sequential::<C>(block, n_levels, levels, &values),
+        ScatterStrategy::Fold => scatter_fold::<C>(block, n_levels, levels, &values),
+        ScatterStrategy::Atomic => scatter_atomic::<C>(block, n_levels, levels, &values, scratch),
         ScatterStrategy::SortedCoalesced => {
-            scatter_sorted_coalesced::<C>(block, term.meta.n_levels, term.levels, &values, scratch)
+            scatter_sorted_coalesced::<C>(block, n_levels, levels, &values, scratch)
         }
     }
 }

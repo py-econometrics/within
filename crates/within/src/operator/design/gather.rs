@@ -2,7 +2,7 @@
 
 use rayon::prelude::*;
 
-use super::{resolve_terms, ResolvedTerm, PAR_THRESHOLD};
+use super::PAR_THRESHOLD;
 use crate::domain::Design;
 
 /// Gather-apply: `dst[i] = Σ_t Σ_c src[off_t + c·L_t + level(i,t)] · loading_c(i)`,
@@ -19,10 +19,45 @@ pub(crate) fn gather_apply(
 
     dst.fill(0.0);
 
-    let terms = resolve_terms(design);
+    let frame = &design.frame;
     for_each_chunk(dst, |chunk, row_start| {
-        for t in &terms {
-            apply_term(t, src, chunk, row_start);
+        for (q, t) in design.terms.iter().enumerate() {
+            let (offset, n_levels) = (t.offset, t.n_levels);
+            let levels = frame.level_column(q);
+            let col = |c: usize| &src[offset + c * n_levels..offset + (c + 1) * n_levels];
+            match (t.intercept, t.slopes.as_slice()) {
+                (true, []) => gather_term(chunk, row_start, levels, [col(0)], |_| [1.0]),
+                (true, &[c0]) => {
+                    let z0 = frame.loading_column(c0);
+                    gather_term(chunk, row_start, levels, [col(0), col(1)], |i| [1.0, z0[i]])
+                }
+                (true, &[c0, c1]) => {
+                    let z0 = frame.loading_column(c0);
+                    let z1 = frame.loading_column(c1);
+                    gather_term(chunk, row_start, levels, [col(0), col(1), col(2)], |i| {
+                        [1.0, z0[i], z1[i]]
+                    })
+                }
+                (false, &[c0]) => {
+                    let z0 = frame.loading_column(c0);
+                    gather_term(chunk, row_start, levels, [col(0)], |i| [z0[i]])
+                }
+                (intercept, slope_cols) => {
+                    // Cold path: a dynamic slope count can't monomorphize a
+                    // fixed-arity `gather_term`, so accumulate by hand.
+                    let zoff = usize::from(intercept);
+                    for (local, dst_val) in chunk.iter_mut().enumerate() {
+                        let i = row_start + local;
+                        let lev = levels[i] as usize;
+                        let mut acc = if intercept { src[offset + lev] } else { 0.0 };
+                        for (v, &c) in slope_cols.iter().enumerate() {
+                            acc += src[offset + (zoff + v) * n_levels + lev]
+                                * frame.loading_column(c)[i];
+                        }
+                        *dst_val += acc;
+                    }
+                }
+            }
         }
         if let Some(scale) = scale {
             for (s, dst_val) in scale[row_start..].iter().zip(chunk.iter_mut()) {
@@ -43,35 +78,6 @@ fn for_each_chunk(dst: &mut [f64], kernel: impl Fn(&mut [f64], usize) + Sync) {
             .for_each(|(chunk_idx, chunk)| kernel(chunk, chunk_idx * CHUNK_SIZE));
     } else {
         kernel(dst, 0);
-    }
-}
-
-/// One term's contribution to a chunk of rows: dispatch the term's shape to a
-/// monomorphized sweep.
-fn apply_term(t: &ResolvedTerm<'_>, src: &[f64], chunk: &mut [f64], row_start: usize) {
-    let offset = t.meta.offset;
-    let n_levels = t.meta.n_levels;
-    let levels = t.levels;
-    let col = |c: usize| &src[offset + c * n_levels..offset + (c + 1) * n_levels];
-    match (t.meta.intercept, t.zs.as_slice()) {
-        (true, []) => gather_term(chunk, row_start, levels, [col(0)], |_| [1.0]),
-        (true, &[z0]) => gather_term(chunk, row_start, levels, [col(0), col(1)], |i| [1.0, z0[i]]),
-        (true, &[z0, z1]) => gather_term(chunk, row_start, levels, [col(0), col(1), col(2)], |i| {
-            [1.0, z0[i], z1[i]]
-        }),
-        (false, &[z0]) => gather_term(chunk, row_start, levels, [col(0)], |i| [z0[i]]),
-        (intercept, zs) => {
-            let zoff = usize::from(intercept);
-            for (local, dst_val) in chunk.iter_mut().enumerate() {
-                let i = row_start + local;
-                let lev = levels[i] as usize;
-                let mut acc = if intercept { src[offset + lev] } else { 0.0 };
-                for (v, z) in zs.iter().enumerate() {
-                    acc += src[offset + (zoff + v) * n_levels + lev] * z[i];
-                }
-                *dst_val += acc;
-            }
-        }
     }
 }
 
