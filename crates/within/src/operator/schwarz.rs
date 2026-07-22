@@ -128,7 +128,7 @@ pub(crate) fn build_entry(
 /// Opaque handle to a pre-built fixed-effects preconditioner.
 ///
 /// Cloning is O(1): the inner factorization is `Arc`-backed, so passing
-/// `&precond` to [`Solver::new`] never duplicates it.
+/// `&precond` to [`Solver::new`](crate::Solver::new) never duplicates it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Preconditioner {

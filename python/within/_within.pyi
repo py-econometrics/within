@@ -241,8 +241,8 @@ def solve(
         A single-threaded run (``RAYON_NUM_THREADS=1``) is bitwise-reproducible.
         Across thread counts, parallel summation reorders floating-point adds,
         so coefficients differ at the ULP scale — reproducible within solver
-        tolerance, not bitwise. Pin the thread count to reproduce estimates
-        exactly.
+        tolerance, not bitwise. Pin the thread count to keep estimates stable
+        within solver tolerance across runs (only single-threaded is bitwise).
 
     Example::
 
