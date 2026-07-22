@@ -50,8 +50,6 @@ pub enum LsmrStopReason {
     ResidualTolerance,
     /// The normal-equation residual estimate met the relative tolerance.
     NormalEquationTolerance,
-    /// The bidiagonalization reached a lucky breakdown.
-    BidiagonalizationBreakdown,
     /// The iteration budget was exhausted before convergence.
     MaxIterations,
 }
@@ -159,9 +157,11 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
         let curr_rot = recurrence.step(step);
         solution.update(bidiag.v(), curr_rot, prev_rot);
 
-        // Convergence wins over breakdown when both fire on the same step:
-        // the user-specified tolerance is the contract, breakdown is an
-        // internal property of the bidiagonalization.
+        // A bidiagonalization breakdown needs no explicit handling: `‖Aᵀr‖`
+        // and `‖r‖` are proportional to the bidiagonal entries α, β, so they
+        // vanish on the same step the recurrence collapses (α or β = 0). The
+        // tolerance check therefore always catches a breakdown as a converged
+        // solve.
         if let Some(stop_reason) = match convergence.check(&recurrence) {
             Stop::Continue => None,
             Stop::ResidualTolerance => Some(LsmrStopReason::ResidualTolerance),
@@ -173,15 +173,6 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
                 iterations: itn,
                 residual_norm: recurrence.residual_estimate(),
                 stop_reason,
-            });
-        }
-        if step.alpha == 0.0 {
-            return Ok(LsmrResult {
-                x: solution.into_x(),
-                converged: true,
-                iterations: itn,
-                residual_norm: recurrence.residual_estimate(),
-                stop_reason: LsmrStopReason::BidiagonalizationBreakdown,
             });
         }
         prev_rot = curr_rot;

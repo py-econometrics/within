@@ -236,9 +236,16 @@ fn test_mlsmr_mid_stream_beta_zero_breakdown() {
     // first step, A v_1 - alpha_1 u_1 collapses to zero exactly, so beta_2
     // is zero. Exercises the mid-stream beta == 0 branch in
     // GolubKahan::step that zeroes v before the caller's solution.update.
+    //
+    // A breakdown is reported as a converged solve, not a distinct reason: the
+    // convergence estimates vanish on the same step the recurrence collapses
+    // (see test_mid_stream_breakdown_reports_convergence). Here the system is
+    // consistent, so the residual estimate is exactly zero — ResidualTolerance.
     let b = vec![5.0, 0.0];
     let result = lsmr(&ZeroSecondRow, &b, 1e-12, 100, None).expect("beta=0 solve");
     assert!(result.converged);
+    assert_eq!(result.iterations, 1);
+    assert_eq!(result.stop_reason, LsmrStopReason::ResidualTolerance);
     assert!((result.x[0] - 5.0).abs() < 1e-12);
     assert!(result.x[1].abs() < 1e-12);
 }
@@ -625,6 +632,47 @@ fn test_mlsmr_step1_alpha_zero_early_exit() {
         LsmrStopReason::InitialNormalEquationResidualZero
     );
     assert!((result.residual_norm - vec_norm(&b)).abs() < 1e-15);
+}
+
+/// ModifiedGolubKahan (`mlsmr`) counterpart of
+/// `test_mlsmr_mid_stream_beta_zero_breakdown`: the same consistent rank-1
+/// system drives the `beta == 0` branch in `ModifiedGolubKahan::step` (with
+/// `M = I`), which zeroes both `v` and the paired `p̃`. Asserts the stop
+/// reason and iteration count, not just the solution vector.
+#[test]
+fn test_mlsmr_modified_gk_beta_zero_breakdown() {
+    let b = vec![5.0, 0.0];
+    let result = mlsmr(&ZeroSecondRow, &b, &IdentityOp { n: 2 }, 1e-12, 100, None)
+        .expect("modified Golub-Kahan beta=0 solve");
+    assert!(result.converged);
+    assert_eq!(result.iterations, 1);
+    assert_eq!(result.stop_reason, LsmrStopReason::ResidualTolerance);
+    assert!((result.x[0] - 5.0).abs() < 1e-12);
+    assert!(result.x[1].abs() < 1e-12);
+}
+
+/// A mid-stream bidiagonalization breakdown surfaces as a converged solve, not
+/// a distinct stop reason. Whenever a step returns `alpha == 0`, that same
+/// rotation step drives `zeta_bar` (the ‖Aᵀr‖ estimate) to exactly zero, so
+/// the convergence check fires. On an *inconsistent* breakdown (nonzero
+/// residual) it fires as NormalEquationTolerance.
+///
+/// `ZeroSecondRow` with `b = [5, 3]` reaches `alpha_2 = 0` while leaving a
+/// residual of 3, exercising exactly this path on both bidiagonalizations.
+#[test]
+fn test_mid_stream_breakdown_reports_convergence() {
+    let b = vec![5.0, 3.0];
+    for result in [
+        lsmr(&ZeroSecondRow, &b, 1e-12, 100, None).expect("Golub-Kahan breakdown"),
+        mlsmr(&ZeroSecondRow, &b, &IdentityOp { n: 2 }, 1e-12, 100, None)
+            .expect("modified Golub-Kahan breakdown"),
+    ] {
+        assert!(result.converged);
+        assert_eq!(result.stop_reason, LsmrStopReason::NormalEquationTolerance);
+        // x_0 = 5 fits row 0; row 1 is unmatchable, leaving residual 3.
+        assert!((result.x[0] - 5.0).abs() < 1e-10);
+        assert!((result.residual_norm - 3.0).abs() < 1e-10);
+    }
 }
 
 #[test]
