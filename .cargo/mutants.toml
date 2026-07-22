@@ -1,0 +1,6 @@
+# cargo-mutants configuration: `cargo mutants`, https://mutants.rs/.
+# Scoped to the `within` core solver (sign conventions, compensated
+# summation, block elimination) — not schwarz-precond or the PyO3 glue.
+examine_globs = ["crates/within/src/**/*.rs"]
+exclude_globs = ["crates/within/src/**/tests.rs"]
+test_package = ["within"]

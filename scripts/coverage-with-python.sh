@@ -12,4 +12,6 @@ else
 fi
 pytest tests/ -v
 
-cargo llvm-cov report --summary-only
+# Floor set just below the measured total (94.99% lines); only lower it
+# deliberately, never raise it above what's actually measured.
+cargo llvm-cov report --summary-only --fail-under-lines 94
