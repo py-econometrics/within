@@ -5,6 +5,10 @@ use schwarz_precond::SolveError;
 use within::observation::ObservationFrame;
 use within::{solve, BuildError, Design, LsmrOptions, PreconditionerConfig, Solver, WithinError};
 
+// Behavior: a malformed input produces the right typed error. The Display /
+// source() / From plumbing is covered by a single wiring check per enum below,
+// not by pinning every message string.
+
 #[test]
 fn test_empty_observations_error() {
     // A zero-row frame is valid; EmptyObservations is raised by Design::from_frame.
@@ -66,173 +70,6 @@ fn test_empty_categories_via_solve() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Display tests for BuildError variants
-// ---------------------------------------------------------------------------
-
-#[test]
-fn test_build_error_display_empty_observations() {
-    let e = BuildError::EmptyObservations;
-    assert_eq!(e.to_string(), "no observations provided");
-}
-
-#[test]
-fn test_build_error_display_observation_count_mismatch() {
-    let e = BuildError::ObservationCountMismatch {
-        column: 1,
-        expected: 10,
-        got: 5,
-    };
-    let s = e.to_string();
-    assert!(s.contains("column 1"));
-    assert!(s.contains("5"));
-    assert!(s.contains("10"));
-}
-
-#[test]
-fn test_build_error_display_weight_count_mismatch() {
-    let e = BuildError::WeightCountMismatch {
-        expected: 10,
-        got: 5,
-    };
-    let s = e.to_string();
-    assert!(s.contains("5"));
-    assert!(s.contains("10"));
-}
-
-#[test]
-fn test_build_error_display_singular_diagonal() {
-    let e = BuildError::SingularDiagonal {
-        block: "test_block",
-        index: 42,
-    };
-    let s = e.to_string();
-    assert!(s.contains("test_block"));
-    assert!(s.contains("42"));
-}
-
-#[test]
-fn test_build_error_display_local_solver_build() {
-    let e = BuildError::LocalSolverBuild("factorization failed".to_string());
-    assert!(e.to_string().contains("factorization failed"));
-}
-
-#[test]
-fn test_build_error_display_preconditioner() {
-    let inner = schwarz_precond::BuildError::ScratchSizeTooSmall {
-        scratch_size: 1,
-        required_min: 2,
-    };
-    let e = BuildError::Preconditioner(inner);
-    let s = e.to_string();
-    assert!(s.contains("scratch size"));
-}
-
-// ---------------------------------------------------------------------------
-// Display tests for WithinError union
-// ---------------------------------------------------------------------------
-
-#[test]
-fn test_within_error_display_build() {
-    let e = WithinError::Build(BuildError::EmptyObservations);
-    assert_eq!(e.to_string(), "no observations provided");
-}
-
-#[test]
-fn test_within_error_display_solve() {
-    let inner = SolveError::Synchronization { context: "test" };
-    let e = WithinError::Solve(inner);
-    assert!(e.to_string().contains("test"));
-}
-
-// ---------------------------------------------------------------------------
-// Error::source() tests
-// ---------------------------------------------------------------------------
-
-#[test]
-fn test_build_error_source_leaf_variants_have_no_source() {
-    let variants: Vec<BuildError> = vec![
-        BuildError::EmptyObservations,
-        BuildError::ObservationCountMismatch {
-            column: 0,
-            expected: 1,
-            got: 2,
-        },
-        BuildError::WeightCountMismatch {
-            expected: 1,
-            got: 2,
-        },
-        BuildError::SingularDiagonal {
-            block: "b",
-            index: 0,
-        },
-        BuildError::LocalSolverBuild("x".to_string()),
-    ];
-    for e in &variants {
-        assert!(e.source().is_none(), "expected None source for {:?}", e);
-    }
-}
-
-#[test]
-fn test_build_error_source_preconditioner_chains() {
-    let inner = schwarz_precond::BuildError::ScratchSizeTooSmall {
-        scratch_size: 1,
-        required_min: 2,
-    };
-    let e = BuildError::Preconditioner(inner);
-    assert!(e.source().is_some());
-}
-
-#[test]
-fn test_within_error_build_leaf_variant_has_no_source() {
-    // WithinError::Build is transparent, so source() forwards to the inner
-    // BuildError's source. A leaf variant has no underlying source.
-    let e = WithinError::Build(BuildError::EmptyObservations);
-    assert!(e.source().is_none());
-}
-
-#[test]
-fn test_within_error_build_preconditioner_chains_through_transparent_wrapper() {
-    // Transparent: WithinError -> (BuildError::Preconditioner via #[source]) -> schwarz_precond::BuildError
-    let inner = schwarz_precond::BuildError::ScratchSizeTooSmall {
-        scratch_size: 1,
-        required_min: 2,
-    };
-    let e = WithinError::Build(BuildError::Preconditioner(inner));
-    assert!(e.source().is_some());
-}
-
-#[test]
-fn test_within_error_solve_leaf_variant_has_no_source() {
-    let inner = SolveError::Synchronization { context: "test" };
-    let e = WithinError::Solve(inner);
-    assert!(e.source().is_none());
-}
-
-// ---------------------------------------------------------------------------
-// Convenience-wrapper From conversions
-// ---------------------------------------------------------------------------
-
-#[test]
-fn test_within_error_from_build_error() {
-    let inner = BuildError::EmptyObservations;
-    let e: WithinError = inner.into();
-    match e {
-        WithinError::Build(BuildError::EmptyObservations) => {}
-        other => panic!("expected Build(EmptyObservations), got: {:?}", other),
-    }
-}
-
-#[test]
-fn test_within_error_from_solve_error() {
-    let inner = SolveError::Synchronization { context: "test" };
-    let e: WithinError = inner.into();
-    match e {
-        WithinError::Solve(_) => {}
-        other => panic!("expected Solve, got: {:?}", other),
-    }
-}
-
 #[test]
 fn test_preconditioner_dimension_mismatch_error() {
     // Build a preconditioner against a larger design, then try to reuse it
@@ -262,18 +99,6 @@ fn test_preconditioner_dimension_mismatch_error() {
 }
 
 #[test]
-fn test_build_error_display_preconditioner_dimension_mismatch() {
-    let e = BuildError::PreconditionerDimensionMismatch {
-        expected: 7,
-        actual_rows: 5,
-        actual_cols: 5,
-    };
-    let s = e.to_string();
-    assert!(s.contains("7"));
-    assert!(s.contains("5"));
-}
-
-#[test]
 fn test_solver_accepts_slope_bearing_design_alongside_other_terms() {
     let levels = [0u32, 1, 0, 1];
     let slope = [1.0, 2.0, 3.0, 4.0];
@@ -284,4 +109,40 @@ fn test_solver_accepts_slope_bearing_design_alongside_other_terms() {
     // Cross-factor routing (#61): slope terms alongside other terms build.
     let design = Design::new(effects).expect("slope design builds");
     Solver::new(design, None, None).expect("signed routing builds");
+}
+
+// ---------------------------------------------------------------------------
+// Error-type plumbing: one wiring check per enum (From conversions and the
+// transparent source() forward), not per-message pinning.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_within_error_from_build_error() {
+    let inner = BuildError::EmptyObservations;
+    let e: WithinError = inner.into();
+    match e {
+        WithinError::Build(BuildError::EmptyObservations) => {}
+        other => panic!("expected Build(EmptyObservations), got: {:?}", other),
+    }
+}
+
+#[test]
+fn test_within_error_from_solve_error() {
+    let inner = SolveError::Synchronization { context: "test" };
+    let e: WithinError = inner.into();
+    match e {
+        WithinError::Solve(_) => {}
+        other => panic!("expected Solve, got: {:?}", other),
+    }
+}
+
+#[test]
+fn test_within_error_source_chains_through_transparent_wrapper() {
+    // Transparent: WithinError -> (BuildError::Preconditioner via #[source]) -> schwarz_precond::BuildError
+    let inner = schwarz_precond::BuildError::ScratchSizeTooSmall {
+        scratch_size: 1,
+        required_min: 2,
+    };
+    let e = WithinError::Build(BuildError::Preconditioner(inner));
+    assert!(e.source().is_some());
 }

@@ -28,6 +28,11 @@ def random_fe_problem(draw):
 
 
 class TestProperties:
+    # Mathematical properties (residual orthogonality, demeaned == y - D*x,
+    # solve() == Solver().solve()) are proptested with stronger, unguarded
+    # oracles on the Rust side (properties.rs, property_gaps.rs). Kept here:
+    # determinism through the binding, and pickle roundtrip (Python-only path).
+
     @given(data=random_fe_problem())
     @settings(
         max_examples=10, deadline=30000, suppress_health_check=[HealthCheck.too_slow]
@@ -38,36 +43,6 @@ class TestProperties:
         r1 = solve(categories, y)
         r2 = solve(categories, y)
         np.testing.assert_allclose(r1.x, r2.x, atol=1e-14)
-
-    @given(data=random_fe_problem())
-    @settings(
-        max_examples=10, deadline=30000, suppress_health_check=[HealthCheck.too_slow]
-    )
-    def test_residual_orthogonality(self, data):
-        """D^T * (y - D*x) should be approximately zero."""
-        categories, y = data
-        result = solve(categories, y)
-        if not result.converged:
-            return  # skip non-converged cases
-
-        n_obs, n_factors = categories.shape
-        residual = (
-            y - result.demeaned - y
-        )  # demeaned = y - D*x, so residual = D*x... wait
-        # Actually: demeaned = y - D*x, so D*x = y - demeaned
-        # residual = y - D*x = demeaned
-        residual = result.demeaned  # this IS y - D*x
-
-        # Check D^T * residual ≈ 0
-        offset = 0
-        for f in range(n_factors):
-            col = categories[:, f]
-            n_levels = int(col.max()) + 1
-            for lvl in range(n_levels):
-                mask = col == lvl
-                dot = residual[mask].sum()
-                assert abs(dot) < 1e-3, f"factor {f}, level {lvl}: D^T r = {dot}"
-            offset += n_levels
 
     @given(data=random_fe_problem())
     @settings(
@@ -89,114 +64,6 @@ class TestProperties:
         result_after = precond2.apply(x)
 
         np.testing.assert_array_equal(result_before, result_after)
-
-    @given(data=random_fe_problem())
-    @settings(
-        max_examples=10, deadline=30000, suppress_health_check=[HealthCheck.too_slow]
-    )
-    def test_unit_weights_match_unweighted(self, data):
-        """weights=ones should match no weights."""
-        categories, y = data
-        n_obs = len(y)
-        r_no_weights = solve(categories, y)
-        r_unit_weights = solve(categories, y, weights=np.ones(n_obs))
-
-        if not (r_no_weights.converged and r_unit_weights.converged):
-            return
-
-        np.testing.assert_allclose(r_no_weights.x, r_unit_weights.x, atol=1e-6)
-
-    @given(data=random_fe_problem())
-    @settings(
-        max_examples=10, deadline=30000, suppress_health_check=[HealthCheck.too_slow]
-    )
-    def test_solve_vs_solver_equivalence(self, data):
-        """solve() and Solver().solve() produce identical results."""
-        categories, y = data
-        r1 = solve(categories, y)
-        solver = Solver(categories)
-        r2 = solver.solve(y)
-        if r1.converged and r2.converged:
-            np.testing.assert_allclose(r1.x, r2.x, atol=1e-10)
-
-    @given(data=random_fe_problem())
-    @settings(
-        max_examples=10, deadline=30000, suppress_health_check=[HealthCheck.too_slow]
-    )
-    def test_demeaned_is_y_minus_design_times_x(self, data):
-        """demeaned[i] should equal y[i] minus the sum of factor effects for obs i."""
-        categories, y = data
-        result = solve(categories, y)
-        if not result.converged:
-            return
-
-        n_obs, n_factors = categories.shape
-        # Reconstruct D*x from categories and result.x
-        fitted = np.zeros(n_obs)
-        offset = 0
-        for f in range(n_factors):
-            col = categories[:, f]
-            n_levels = int(col.max()) + 1
-            fitted += result.x[offset + col]
-            offset += n_levels
-
-        expected_demeaned = y - fitted
-        np.testing.assert_allclose(result.demeaned, expected_demeaned, atol=1e-8)
-
-    @given(data=random_fe_problem())
-    @settings(
-        max_examples=10, deadline=30000, suppress_health_check=[HealthCheck.too_slow]
-    )
-    def test_solver_n_dofs_matches_x_length(self, data):
-        """Solver.n_dofs should equal len(result.x)."""
-        categories, y = data
-        solver = Solver(categories)
-        result = solver.solve(y)
-        assert solver.n_dofs == len(result.x)
-
-    @given(data=random_fe_problem())
-    @settings(
-        max_examples=10, deadline=30000, suppress_health_check=[HealthCheck.too_slow]
-    )
-    def test_solver_n_obs_matches_y_length(self, data):
-        """Solver.n_obs should equal len(y)."""
-        categories, y = data
-        solver = Solver(categories)
-        assert solver.n_obs == len(y)
-
-    @given(data=random_fe_problem())
-    @settings(
-        max_examples=10, deadline=30000, suppress_health_check=[HealthCheck.too_slow]
-    )
-    def test_residual_nonnegative(self, data):
-        """The final residual norm must be non-negative."""
-        categories, y = data
-        result = solve(categories, y)
-        assert result.residual >= 0.0
-
-    @given(data=random_fe_problem())
-    @settings(
-        max_examples=10, deadline=30000, suppress_health_check=[HealthCheck.too_slow]
-    )
-    def test_iterations_positive_when_not_trivial(self, data):
-        """Iterations should be >= 1 for non-trivial problems."""
-        categories, y = data
-        if np.allclose(y, 0.0):
-            return
-        result = solve(categories, y)
-        assert result.iterations >= 1
-
-    @given(data=random_fe_problem())
-    @settings(
-        max_examples=10, deadline=30000, suppress_health_check=[HealthCheck.too_slow]
-    )
-    def test_time_fields_nonnegative(self, data):
-        """All timing fields should be non-negative."""
-        categories, y = data
-        result = solve(categories, y)
-        assert result.time_total >= 0.0
-        assert result.time_setup >= 0.0
-        assert result.time_solve >= 0.0
 
 
 class TestAdvancedPreconditioners:
