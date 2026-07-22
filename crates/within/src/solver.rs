@@ -571,6 +571,9 @@ pub fn solve<'a, 'o>(
     lsmr: impl Into<Option<&'o LsmrOptions>>,
     preconditioner: impl Into<PreconditionerInput>,
 ) -> Result<SolveResult, WithinError> {
+    if let Some((index, &value)) = y.iter().enumerate().find(|&(_, &v)| !v.is_finite()) {
+        return Err(BuildError::InvalidResponse { index, value }.into());
+    }
     let t_start = Instant::now();
     let solver = Solver::new(design, weights.map(|w| w.to_vec()), preconditioner)?;
     let time_setup = t_start.elapsed().as_secs_f64();
@@ -592,6 +595,11 @@ pub fn solve_batch<'a, 'o>(
     lsmr: impl Into<Option<&'o LsmrOptions>>,
     preconditioner: impl Into<PreconditionerInput>,
 ) -> Result<BatchSolveResult, WithinError> {
+    for y in ys {
+        if let Some((index, &value)) = y.iter().enumerate().find(|&(_, &v)| !v.is_finite()) {
+            return Err(BuildError::InvalidResponse { index, value }.into());
+        }
+    }
     let t_start = Instant::now();
     let solver = Solver::new(design, weights.map(|w| w.to_vec()), preconditioner)?;
     let mut result = solver.solve_batch(ys, lsmr)?;

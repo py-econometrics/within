@@ -3,7 +3,10 @@ use std::error::Error;
 use ndarray::Array2;
 use schwarz_precond::SolveError;
 use within::observation::ObservationFrame;
-use within::{solve, BuildError, Design, LsmrOptions, PreconditionerConfig, Solver, WithinError};
+use within::{
+    solve, solve_batch, BuildError, Design, Effect, LsmrOptions, PreconditionerConfig, Solver,
+    WithinError,
+};
 
 // Behavior: a malformed input produces the right typed error. The Display /
 // source() / From plumbing is covered by a single wiring check per enum below,
@@ -96,6 +99,52 @@ fn test_preconditioner_dimension_mismatch_error() {
         }
         other => panic!("Expected PreconditionerDimensionMismatch, got: {:?}", other),
     }
+}
+
+#[test]
+fn test_non_finite_response_rejected() {
+    let cats = Array2::from_shape_vec((3, 1), vec![0u32, 1, 2]).expect("cats");
+    let params = LsmrOptions::default();
+    let precond = PreconditionerConfig::default();
+
+    let y = [1.0, f64::NAN, 3.0];
+    match solve(cats.view(), &y, None, &params, &precond).unwrap_err() {
+        WithinError::Build(BuildError::InvalidResponse { index: 1, .. }) => {}
+        other => panic!(
+            "Expected Build(InvalidResponse) via solve(), got: {:?}",
+            other
+        ),
+    }
+
+    // solve_batch scans every column: the offending value is in the 2nd RHS.
+    let good = [1.0, 2.0, 3.0];
+    let bad = [1.0, 2.0, f64::INFINITY];
+    match solve_batch(cats.view(), &[&good[..], &bad[..]], None, &params, &precond).unwrap_err() {
+        WithinError::Build(BuildError::InvalidResponse { index: 2, .. }) => {}
+        other => panic!(
+            "Expected Build(InvalidResponse) via solve_batch(), got: {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
+fn test_collinear_finite_slope_is_unidentified_not_rejected() {
+    // A duplicated (collinear) but FINITE slope is genuine rank deficiency, not
+    // malformed input: it must resolve to an UnidentifiedDirection, never an
+    // InvalidLoading. Guards against conflating the two (#122).
+    let levels = [0u32, 0, 1, 1];
+    let z = [1.0, 3.0, 2.0, 5.0];
+    let y = [1.0, 2.0, 3.0, 4.0];
+    let effects = vec![Effect::new(&levels, true, [&z[..], &z[..]]).expect("effect")];
+    let params = LsmrOptions::default();
+    let precond = PreconditionerConfig::default();
+
+    let r = solve(effects, &y, None, &params, &precond).expect("collinear-but-finite must solve");
+    assert!(
+        !r.unidentified.is_empty(),
+        "a duplicated finite slope must report an unidentified direction"
+    );
 }
 
 #[test]

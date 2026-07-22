@@ -29,6 +29,13 @@ impl<'a> Effect<'a> {
                     got: s.len(),
                 });
             }
+            if let Some((index, &value)) = s.iter().enumerate().find(|&(_, &v)| !v.is_finite()) {
+                return Err(BuildError::InvalidLoading {
+                    slope,
+                    index,
+                    value,
+                });
+            }
         }
         Ok(Self {
             levels,
@@ -75,5 +82,21 @@ mod tests {
         let levels = [0u32, 1, 0, 1];
         let err = Effect::new(&levels, false, []).unwrap_err();
         assert!(matches!(err, BuildError::EmptyEffect));
+    }
+
+    #[test]
+    fn new_rejects_non_finite_slope_loading_naming_the_offending_slope() {
+        let levels = [0u32, 1, 0, 1];
+        let ok = [1.0, 2.0, 3.0, 4.0];
+        let bad = [1.0, f64::NAN, 3.0, 4.0];
+        let err = Effect::new(&levels, true, [&ok[..], &bad[..]]).unwrap_err();
+        assert!(matches!(
+            err,
+            BuildError::InvalidLoading {
+                slope: 1,
+                index: 1,
+                ..
+            }
+        ));
     }
 }
