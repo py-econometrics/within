@@ -32,7 +32,7 @@ fn positive_slope_only_pair_grounds_beyond_dense_threshold() {
     assert!(
         domains.iter().any(|ld| {
             let ct = &ld.component.cross_tab;
-            ld.component.solve_space == SolveSpace::Grounded
+            ld.component.reduction.solve_space() == SolveSpace::Grounded
                 && ct.n_q().min(ct.n_r()) > DEFAULT_DENSE_SCHUR_THRESHOLD
         }),
         "fixture must ground a component past the dense threshold (warnings: {warnings:?})"

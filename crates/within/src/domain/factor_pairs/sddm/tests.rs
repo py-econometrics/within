@@ -85,7 +85,7 @@ fn known_laplacian_has_canonical_coordinates_and_no_ground() {
         &ScalingConfig::default(),
     )
     .unwrap();
-    assert_eq!(component.solve_space, SolveSpace::Floating);
+    assert_eq!(component.reduction.solve_space(), SolveSpace::Floating);
     assert!(matches!(component.coordinates, CoordinateMap::Canonical));
     assert!(uncertified.is_none());
     assert_sddm(&component);
@@ -122,7 +122,7 @@ fn frustrated_component_stores_single_signed_operator() {
     assert!(uncertified.is_none());
     // The operator stays single-sized and signed (M[1,1] = −1): the cover is
     // deferred to factor time via the Cover reduction marker.
-    assert_eq!(component.reduction, SchurReduction::Cover);
+    assert_eq!(component.reduction, Reduction::Cover);
     assert_eq!(component.cross_tab.c.nrows, 2);
     assert_eq!(component.cross_tab.c.ncols, 2);
     let mut dense = [[0.0; 2]; 2];
@@ -135,7 +135,7 @@ fn frustrated_component_stores_single_signed_operator() {
     // Magnitude dominance with zero surplus: the operator is Signed (the cover
     // self-grounds). Its congruence is exactly the canonical bipartite sign flip
     // (`+1` on q, `−1` on r), so no explicit factor map is stored.
-    assert_eq!(component.solve_space, SolveSpace::Signed);
+    assert_eq!(component.reduction.solve_space(), SolveSpace::Signed);
     assert!(component.ground_edges.q.iter().all(|&s| s == 0.0));
     assert!(component.ground_edges.r.iter().all(|&s| s == 0.0));
     assert!(matches!(component.coordinates, CoordinateMap::Canonical));
@@ -162,7 +162,7 @@ fn scalable_signed_component_produces_valid_grounded_sddm() {
         &ScalingConfig::default(),
     )
     .unwrap();
-    assert_eq!(component.solve_space, SolveSpace::Grounded);
+    assert_eq!(component.reduction.solve_space(), SolveSpace::Grounded);
     assert!(uncertified.is_none());
     assert_sddm(&component);
 }
@@ -179,7 +179,7 @@ fn singular_signed_boundary_remains_floating() {
         &ScalingConfig::default(),
     )
     .unwrap();
-    assert_eq!(component.solve_space, SolveSpace::Floating);
+    assert_eq!(component.reduction.solve_space(), SolveSpace::Floating);
     assert_sddm(&component);
 }
 
@@ -223,7 +223,7 @@ fn large_rescaled_singular_boundary_remains_floating() {
     )
     .unwrap();
 
-    assert_eq!(component.solve_space, SolveSpace::Floating);
+    assert_eq!(component.reduction.solve_space(), SolveSpace::Floating);
     assert_sddm(&component);
 }
 
@@ -281,7 +281,7 @@ fn barely_pd_surplus_is_structural() {
         &ScalingConfig::default(),
     )
     .unwrap();
-    assert_eq!(component.solve_space, SolveSpace::Grounded);
+    assert_eq!(component.reduction.solve_space(), SolveSpace::Grounded);
     assert!((component.ground_edges.q[0] - surplus).abs() < 1e-15);
     assert_sddm(&component);
 }

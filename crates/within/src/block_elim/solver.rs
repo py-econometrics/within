@@ -6,7 +6,7 @@ use schwarz_precond::{LocalSolveError, LocalSolver};
 use crate::config::{LocalSolverConfig, SchurMode};
 use crate::csr_block::{CsrBlock, PAR_SPMV_THRESHOLD};
 use crate::domain::{
-    BlockDiagonals, CoordinateMap, CrossTab, GroundEdges, LocalComponent, SchurReduction,
+    BlockDiagonals, CoordinateMap, CrossTab, GroundEdges, Grounding, LocalComponent, Reduction,
     SolveSpace,
 };
 use crate::BuildError;
@@ -154,12 +154,11 @@ impl BlockRoles<'_> {
 /// Factor one operator's reduced Schur complement, choosing the backend by
 /// size and configuration: an exact dense minor below `dense_threshold`,
 /// otherwise a sparse Schur — sampled unless `approx_schur` is disabled —
-/// factored via `approx_chol`. `solve_space` gauges the reduced system
-/// (`Floating` anchors one node; `Grounded` factors the full complement) and
-/// must not be `Signed` — signed operators reach here only through their cover.
+/// factored via `approx_chol`. `grounding` gauges the reduced system:
+/// `Floating` anchors one node, `Grounded` factors the full complement.
 fn build_reduced_factor(
     elim: &Elimination,
-    solve_space: SolveSpace,
+    grounding: Grounding,
     config: &LocalSolverConfig,
 ) -> Result<ReducedFactor, BuildError> {
     let n_keep = elim.n_keep;
@@ -168,12 +167,9 @@ fn build_reduced_factor(
         // to `x = r/d`; never send an empty system to approx-chol.
         ReducedFactor::try_dense(Vec::new(), 0)
     } else if config.dense_threshold > 0 && n_keep <= config.dense_threshold {
-        let m = match solve_space {
-            SolveSpace::Floating => n_keep - 1,
-            SolveSpace::Grounded => n_keep,
-            SolveSpace::Signed => {
-                unreachable!("signed operators reduce through a cover, not a direct minor")
-            }
+        let m = match grounding {
+            Grounding::Floating => n_keep - 1,
+            Grounding::Grounded => n_keep,
         };
         ReducedFactor::try_dense(schur::dense_minor(elim, m), n_keep)
     } else {
@@ -199,7 +195,7 @@ fn build_reduced_factor(
 /// 2×-sized cover is SDDM and acts on the antisymmetric `[z, -z]` subspace as
 /// the original signed operator. Diagonals (and the caller's ground edges)
 /// duplicate across sheets. Built transiently in [`BlockElimSolver::build`] to
-/// factor a [`SchurReduction::Cover`] reduction, then discarded.
+/// factor a [`Reduction::Cover`] reduction, then discarded.
 fn assemble_bipartite_cover(
     cross_tab: &CrossTab,
     diagonals: &BlockDiagonals,
@@ -288,7 +284,7 @@ impl BlockElimSolver {
     /// Build a `BlockElimSolver` from a [`LocalComponent`] and solver config.
     ///
     /// Pipeline: build the [`Elimination`] on the single stored operator, then
-    /// factor its reduced Schur per [`SchurReduction`]. A `Direct` component
+    /// factor its reduced Schur per [`Reduction`]. A `Direct` component
     /// factors the reduced Schur straight away; a `Cover` (frustrated, signed)
     /// component rebuilds its Gremban double cover transiently, factors the
     /// cover's reduced Schur, and keeps only that factor — the stored operator
@@ -306,14 +302,14 @@ impl BlockElimSolver {
             diagonals,
             ground_edges,
             coordinates,
-            solve_space,
             reduction,
         } = component;
+        let solve_space = reduction.solve_space();
         let elim = Elimination::new(&cross_tab, &diagonals, &ground_edges, solve_space)?;
 
         let factor = match reduction {
-            SchurReduction::Direct => {
-                let factor = build_reduced_factor(&elim, solve_space, config)?;
+            Reduction::Direct(grounding) => {
+                let factor = build_reduced_factor(&elim, grounding, config)?;
                 let reduced_input_dimension = factor.input_dimension();
                 debug_assert!(
                     reduced_input_dimension == elim.n_keep
@@ -323,7 +319,7 @@ impl BlockElimSolver {
                 debug_assert!(factor.factor_dimension() >= reduced_input_dimension);
                 factor
             }
-            SchurReduction::Cover => {
+            Reduction::Cover => {
                 // Cover the single signed operator, factor the cover's reduced
                 // Schur (now SDDM, hence sampleable), then discard the cover —
                 // only the factor is retained.
@@ -334,19 +330,23 @@ impl BlockElimSolver {
                 };
                 // Surplus survives the cover, so the cover grounds exactly when
                 // the signed operator did (its edges are zeroed otherwise).
-                let cover_space = if cover_ground
+                let cover_grounding = if cover_ground
                     .q
                     .iter()
                     .chain(&cover_ground.r)
                     .any(|&surplus| surplus > 0.0)
                 {
-                    SolveSpace::Grounded
+                    Grounding::Grounded
                 } else {
-                    SolveSpace::Floating
+                    Grounding::Floating
                 };
-                let cover_elim =
-                    Elimination::new(&cover_cross, &cover_diag, &cover_ground, cover_space)?;
-                let inner = build_reduced_factor(&cover_elim, cover_space, config)?;
+                let cover_elim = Elimination::new(
+                    &cover_cross,
+                    &cover_diag,
+                    &cover_ground,
+                    cover_grounding.solve_space(),
+                )?;
+                let inner = build_reduced_factor(&cover_elim, cover_grounding, config)?;
                 ReducedFactor::Cover {
                     inner: Box::new(inner),
                     m: elim.n_keep,
