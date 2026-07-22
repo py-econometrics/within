@@ -22,8 +22,13 @@ mod reparam;
 mod tests;
 use reparam::SlopeReparam;
 
+// Max-scaled so the squared sum can't overflow for large-magnitude vectors.
 fn norm(v: &[f64]) -> f64 {
-    v.iter().map(|x| x * x).sum::<f64>().sqrt()
+    let scale = v.iter().fold(0.0_f64, |m, &x| m.max(x.abs()));
+    if scale == 0.0 {
+        return 0.0;
+    }
+    scale * v.iter().map(|&x| (x / scale).powi(2)).sum::<f64>().sqrt()
 }
 
 /// Fallible conversion into a [`Design`] for [`Solver::new`]: a categories

@@ -5,6 +5,14 @@ pub(crate) const PAR_SPMV_THRESHOLD: usize = 10_000;
 /// Target number of non-zeros per parallel chunk.
 const TARGET_NNZ_PER_CHUNK: usize = 32_768;
 
+/// Checked `usize -> u32` for CSR index / compact-level values: a silent
+/// `as u32` truncation above `u32::MAX` would corrupt the structure with no
+/// diagnostic, and these are build-path invariants, so panic loudly instead.
+#[inline]
+pub(crate) fn to_u32(x: usize) -> u32 {
+    u32::try_from(x).expect("CSR index exceeds u32::MAX")
+}
+
 /// Rectangular CSR matrix used as the off-diagonal block in bipartite Gramians.
 ///
 /// Stores C (n_q × n_r) or C^T (n_r × n_q). All column indices within each

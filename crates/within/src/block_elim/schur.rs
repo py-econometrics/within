@@ -11,15 +11,8 @@ use rayon::prelude::*;
 
 use super::elimination::{Edge, Elimination};
 use crate::config::ApproxSchurConfig;
+use crate::csr_block::to_u32;
 use crate::domain::SolveSpace;
-
-/// Checked `usize -> u32` for CSR indptr/index values. A silent `as u32`
-/// truncation above `u32::MAX` would corrupt the factorization with no
-/// diagnostic; these are build-path invariants, so panic loudly instead.
-#[inline]
-fn to_u32(x: usize) -> u32 {
-    u32::try_from(x).expect("CSR index exceeds u32::MAX")
-}
 
 /// Build the exact Schur complement via row-workspace accumulation.
 ///

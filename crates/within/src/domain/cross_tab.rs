@@ -5,20 +5,11 @@
 //! supports bipartite connected-components splitting and per-component extraction.
 //! Levels are stored compactly with a `local_to_global` map for active levels only.
 
-use crate::csr_block::CsrBlock;
+use crate::csr_block::{to_u32, CsrBlock};
 use crate::domain::{ChannelPair, Design};
 
 mod accumulate;
 use accumulate::accumulate_cross_block;
-
-/// Checked `usize -> u32` for CSR indptr/index and compact-level values. A
-/// silent `as u32` truncation above `u32::MAX` would corrupt the assembled
-/// cross-tab with no diagnostic; these are build-path invariants, so panic
-/// loudly instead.
-#[inline]
-fn to_u32(x: usize) -> u32 {
-    u32::try_from(x).expect("CSR index exceeds u32::MAX")
-}
 
 // ---------------------------------------------------------------------------
 // BipartiteComponent / SchurData — supporting types for CrossTab
