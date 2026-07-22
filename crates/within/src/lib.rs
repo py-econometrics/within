@@ -3,7 +3,7 @@
 //! `G = D^T W D`) for a sparse categorical design `D` via modified LSMR with a
 //! Schwarz preconditioner over factor-pair subdomains.
 //!
-//! ```no_run
+//! ```
 //! use ndarray::Array2;
 //! use within::{solve, LsmrOptions};
 //!
