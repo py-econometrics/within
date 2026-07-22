@@ -3,8 +3,9 @@
 //! Implements [`Operator`](crate::Operator) so it can be passed directly
 //! to an iterative solver as a preconditioner. The constructor walks the
 //! subdomain entries once to derive `max_scratch_size` and the scheduling
-//! metrics (and, unless given explicitly, `n_dofs`). `apply` is lock-free in steady state (buffers are
-//! borrowed from a pool).
+//! metrics (and, unless given explicitly, `n_dofs`). `apply` reuses pooled
+//! scratch buffers — no large per-apply allocation, but a short buffer-pool
+//! lock is taken on both borrow and return.
 
 use std::sync::Arc;
 
