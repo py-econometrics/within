@@ -144,6 +144,9 @@ impl Preconditioner {
         }
     }
 
+    // nrows/ncols/apply mirror the `Operator` impl deliberately: `within` does
+    // not re-export `schwarz_precond::Operator`, so these are the only public
+    // way to query or apply a `Preconditioner` returned by the API.
     /// Number of rows of the underlying linear operator.
     pub fn nrows(&self) -> usize {
         <Self as schwarz_precond::Operator>::nrows(self)
