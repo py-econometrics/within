@@ -1,4 +1,6 @@
 use std::borrow::Cow;
+#[cfg(debug_assertions)]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use portable_atomic::AtomicF64;
 use schwarz_precond::Operator;
@@ -38,6 +40,12 @@ pub(crate) struct DesignOperator<'a> {
     /// `&self` operations, so a plain `Vec<AtomicF64>` (already `Sync`) needs no
     /// lock: each call re-seeds the buffer via `store` instead of resizing it.
     scatter_scratch: Vec<AtomicF64>,
+    /// Debug-only reentry sentinel. `apply_adjoint` seeds and accumulates
+    /// `scatter_scratch` through `&self`, so two concurrent calls on one
+    /// operator would interleave those writes; the guard trips a
+    /// `debug_assert!` instead of silently corrupting the buffer.
+    #[cfg(debug_assertions)]
+    adjoint_active: AtomicBool,
 }
 
 impl<'a> DesignOperator<'a> {
@@ -70,6 +78,8 @@ impl<'a> DesignOperator<'a> {
             design,
             sqrt_weights,
             scatter_scratch: (0..max_block).map(|_| AtomicF64::new(0.0)).collect(),
+            #[cfg(debug_assertions)]
+            adjoint_active: AtomicBool::new(false),
         }
     }
 
@@ -85,6 +95,33 @@ impl<'a> DesignOperator<'a> {
     }
 }
 
+/// RAII sentinel enforcing a single in-flight `apply_adjoint` per operator in
+/// debug builds: acquisition trips a `debug_assert!` when another call is
+/// already active, and `Drop` clears the flag on every exit path, panics
+/// included.
+#[cfg(debug_assertions)]
+struct ReentryGuard<'a>(&'a AtomicBool);
+
+#[cfg(debug_assertions)]
+impl<'a> ReentryGuard<'a> {
+    fn acquire(active: &'a AtomicBool) -> Self {
+        let already_in_flight = active.swap(true, Ordering::AcqRel);
+        debug_assert!(
+            !already_in_flight,
+            "DesignOperator::apply_adjoint entered concurrently on one operator; \
+             its shared scatter buffer is sound for only one in-flight call"
+        );
+        Self(active)
+    }
+}
+
+#[cfg(debug_assertions)]
+impl Drop for ReentryGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
 impl Operator for DesignOperator<'_> {
     fn nrows(&self) -> usize {
         self.design.n_obs
@@ -95,11 +132,15 @@ impl Operator for DesignOperator<'_> {
     }
 
     fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
+        debug_assert_eq!(x.len(), self.design.n_dofs);
+        debug_assert_eq!(y.len(), self.design.n_obs);
         gather_apply(self.design, x, y, self.sqrt_weights.as_deref());
         Ok(())
     }
 
     fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
+        #[cfg(debug_assertions)]
+        let _guard = ReentryGuard::acquire(&self.adjoint_active);
         debug_assert_eq!(x.len(), self.design.n_obs);
         debug_assert_eq!(y.len(), self.design.n_dofs);
         y.fill(0.0);
@@ -112,5 +153,41 @@ impl Operator for DesignOperator<'_> {
             None => scatter_apply(self.design, &self.scatter_scratch, y, &|i| x[i]),
         }
         Ok(())
+    }
+}
+
+// The guard's flag is a private, debug-gated field, so this test lives beside
+// it rather than in the crate's shared `operator/tests.rs`.
+#[cfg(all(test, debug_assertions))]
+mod reentry_guard_tests {
+    use std::sync::atomic::Ordering;
+
+    use schwarz_precond::Operator;
+
+    use super::DesignOperator;
+    use crate::domain::Design;
+    use crate::observation::ObservationFrame;
+
+    fn one_factor_design() -> Design<'static> {
+        let frame = ObservationFrame::new(
+            vec![vec![0u32, 1, 0]].into_iter().map(Into::into).collect(),
+            Vec::new(),
+        )
+        .expect("valid frame");
+        Design::from_frame(frame).expect("valid design")
+    }
+
+    #[test]
+    #[should_panic(expected = "concurrently")]
+    fn apply_adjoint_detects_in_flight_reentry() {
+        let design = one_factor_design();
+        let op = DesignOperator::new(&design, None);
+        // Simulate a sibling apply_adjoint already in flight on this operator.
+        op.adjoint_active.store(true, Ordering::Release);
+        op.apply_adjoint(
+            &vec![0.0; op.design.n_obs],
+            &mut vec![0.0; op.design.n_dofs],
+        )
+        .expect("unreachable: the guard panics before returning");
     }
 }
