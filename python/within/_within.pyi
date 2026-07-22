@@ -237,6 +237,13 @@ def solve(
     Raises:
         ValueError: If dimensions are inconsistent or the solve fails.
 
+    Note:
+        A single-threaded run (``RAYON_NUM_THREADS=1``) is bitwise-reproducible.
+        Across thread counts, parallel summation reorders floating-point adds,
+        so coefficients differ at the ULP scale — reproducible within solver
+        tolerance, not bitwise. Pin the thread count to reproduce estimates
+        exactly.
+
     Example::
 
         import numpy as np

@@ -31,6 +31,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - **BREAKING:** `BuildError::ObservationCountMismatch` reports the offending `column` index (#68).
 - `approx-chol` bumped 0.2.0 → 0.3.1, speeding up local-solver setup.
 - The locality reorder changes summation order, so unsorted-input results match 0.2.0 within solver tolerance, not bitwise.
+- Documented the reproducibility contract (#110): a single-threaded run is bitwise-reproducible; across thread counts, parallel summation reorders floating-point adds, so coefficients agree within solver tolerance (~1e-16), not bitwise. Pin the Rayon width — and an explicit `ReductionStrategy` if the width may vary — to reproduce estimates exactly.
 - Rust `solve` / `solve_batch` / `Solver::solve` / `Solver::solve_batch` take LSMR options as `impl Into<Option<&LsmrOptions>>`, so `None` selects the default (a bare `&LsmrOptions` still works). The crate root now also re-exports `LocalSolverConfig`, `ReductionStrategy`, `ApproxCholConfig`, and `ApproxSchurConfig`, so a tuned `Additive` is constructible from crate-root imports alone (#105).
 - Python `Preconditioner.apply` raises `ValueError` (was `RuntimeError`) on a solve-time failure, matching the `solve` paths (#105).
 - The one-shot Python `solve` / `solve_batch` re-emit build warnings as `UserWarning`s (e.g. uncertified signed-component scaling), matching the persistent `Solver`; previously they were discarded (#103).

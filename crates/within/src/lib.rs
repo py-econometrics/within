@@ -12,6 +12,16 @@
 //! let r = solve(categories.view(), &y, None, &LsmrOptions::default(), None).unwrap();
 //! assert!(r.converged);
 //! ```
+//!
+//! # Reproducibility
+//!
+//! A single-threaded run (a one-thread Rayon pool, or `RAYON_NUM_THREADS=1`)
+//! is bitwise-reproducible. Parallel reductions sum in an order that depends on
+//! the Rayon width, so coefficients from different thread counts differ at the
+//! ULP scale — reproducible within solver tolerance, not bitwise. To reproduce
+//! estimates exactly, pin the Rayon width across runs; when the width may vary,
+//! also pin an explicit [`ReductionStrategy`] rather than
+//! [`ReductionStrategy::Auto`], which selects its backend from the width.
 
 pub mod config;
 pub mod error;
