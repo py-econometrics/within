@@ -64,16 +64,6 @@ pub enum BuildError {
         /// The offending value.
         value: f64,
     },
-    /// A response value is not finite. A NaN/∞ entry propagates through the
-    /// weighted right-hand side and silently corrupts the solution; responses
-    /// must be finite.
-    #[error("response at index {index} must be finite, got {value}")]
-    InvalidResponse {
-        /// Index of the offending response value.
-        index: usize,
-        /// The offending value.
-        value: f64,
-    },
     /// A signed component could not be certified as diagonally scalable to an
     /// SDDM operator.
     #[error("signed component between {pair} is not diagonally scalable to SDDM form")]

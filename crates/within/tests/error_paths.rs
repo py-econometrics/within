@@ -109,22 +109,40 @@ fn test_non_finite_response_rejected() {
 
     let y = [1.0, f64::NAN, 3.0];
     match solve(cats.view(), &y, None, &params, &precond).unwrap_err() {
-        WithinError::Build(BuildError::InvalidResponse { index: 1, .. }) => {}
-        other => panic!(
-            "Expected Build(InvalidResponse) via solve(), got: {:?}",
-            other
-        ),
+        WithinError::Solve(SolveError::InvalidInput { message, .. }) => {
+            assert!(
+                message.contains("index 1"),
+                "message names the index: {message}"
+            );
+        }
+        other => panic!("Expected Solve(InvalidInput) via solve(), got: {other:?}"),
     }
 
-    // solve_batch scans every column: the offending value is in the 2nd RHS.
+    // The persistent Solver API funnels through the same Solver::solve guard, so
+    // the check cannot be bypassed by constructing a Solver and solving in place.
+    let solver = Solver::new(cats.view(), None, &precond).expect("solver");
+    match solver.solve(&y, &params).unwrap_err() {
+        SolveError::InvalidInput { message, .. } => {
+            assert!(
+                message.contains("index 1"),
+                "message names the index: {message}"
+            );
+        }
+        other => panic!("Expected InvalidInput via Solver::solve(), got: {other:?}"),
+    }
+
+    // solve_batch funnels every column through Solver::solve; the bad value is
+    // in the 2nd RHS.
     let good = [1.0, 2.0, 3.0];
     let bad = [1.0, 2.0, f64::INFINITY];
     match solve_batch(cats.view(), &[&good[..], &bad[..]], None, &params, &precond).unwrap_err() {
-        WithinError::Build(BuildError::InvalidResponse { index: 2, .. }) => {}
-        other => panic!(
-            "Expected Build(InvalidResponse) via solve_batch(), got: {:?}",
-            other
-        ),
+        WithinError::Solve(SolveError::InvalidInput { message, .. }) => {
+            assert!(
+                message.contains("index 2"),
+                "message names the index: {message}"
+            );
+        }
+        other => panic!("Expected Solve(InvalidInput) via solve_batch(), got: {other:?}"),
     }
 }
 
