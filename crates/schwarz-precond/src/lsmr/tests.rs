@@ -232,22 +232,23 @@ fn test_mlsmr_zero_column_and_zero_row() {
 
 #[test]
 fn test_mlsmr_mid_stream_beta_zero_breakdown() {
-    // Consistent rank-1 system: b lies entirely in A's range. After the
-    // first step, A v_1 - alpha_1 u_1 collapses to zero exactly, so beta_2
-    // is zero. Exercises the mid-stream beta == 0 branch in
-    // GolubKahan::step that zeroes v before the caller's solution.update.
-    //
-    // A breakdown is reported as a converged solve, not a distinct reason: the
-    // convergence estimates vanish on the same step the recurrence collapses
-    // (see test_mid_stream_breakdown_reports_convergence). Here the system is
-    // consistent, so the residual estimate is exactly zero — ResidualTolerance.
+    // Consistent rank-1 system: b lies in A's range, so A v_1 - alpha_1 u_1
+    // collapses and beta_2 == 0, driving the mid-stream beta == 0 branch in
+    // both bidiagonalizations (ModifiedGolubKahan also zeroes the paired p̃).
+    // The residual estimate is then exactly zero — reported as a converged
+    // ResidualTolerance solve, not a distinct breakdown reason.
     let b = vec![5.0, 0.0];
-    let result = lsmr(&ZeroSecondRow, &b, 1e-12, 100, None).expect("beta=0 solve");
-    assert!(result.converged);
-    assert_eq!(result.iterations, 1);
-    assert_eq!(result.stop_reason, LsmrStopReason::ResidualTolerance);
-    assert!((result.x[0] - 5.0).abs() < 1e-12);
-    assert!(result.x[1].abs() < 1e-12);
+    for result in [
+        lsmr(&ZeroSecondRow, &b, 1e-12, 100, None).expect("Golub-Kahan beta=0"),
+        mlsmr(&ZeroSecondRow, &b, &IdentityOp { n: 2 }, 1e-12, 100, None)
+            .expect("modified Golub-Kahan beta=0"),
+    ] {
+        assert!(result.converged);
+        assert_eq!(result.iterations, 1);
+        assert_eq!(result.stop_reason, LsmrStopReason::ResidualTolerance);
+        assert!((result.x[0] - 5.0).abs() < 1e-12);
+        assert!(result.x[1].abs() < 1e-12);
+    }
 }
 
 #[test]
@@ -632,23 +633,6 @@ fn test_mlsmr_step1_alpha_zero_early_exit() {
         LsmrStopReason::InitialNormalEquationResidualZero
     );
     assert!((result.residual_norm - vec_norm(&b)).abs() < 1e-15);
-}
-
-/// ModifiedGolubKahan (`mlsmr`) counterpart of
-/// `test_mlsmr_mid_stream_beta_zero_breakdown`: the same consistent rank-1
-/// system drives the `beta == 0` branch in `ModifiedGolubKahan::step` (with
-/// `M = I`), which zeroes both `v` and the paired `p̃`. Asserts the stop
-/// reason and iteration count, not just the solution vector.
-#[test]
-fn test_mlsmr_modified_gk_beta_zero_breakdown() {
-    let b = vec![5.0, 0.0];
-    let result = mlsmr(&ZeroSecondRow, &b, &IdentityOp { n: 2 }, 1e-12, 100, None)
-        .expect("modified Golub-Kahan beta=0 solve");
-    assert!(result.converged);
-    assert_eq!(result.iterations, 1);
-    assert_eq!(result.stop_reason, LsmrStopReason::ResidualTolerance);
-    assert!((result.x[0] - 5.0).abs() < 1e-12);
-    assert!(result.x[1].abs() < 1e-12);
 }
 
 /// A mid-stream bidiagonalization breakdown surfaces as a converged solve, not
