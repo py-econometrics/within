@@ -31,11 +31,11 @@ jobs:
         run: pixi run test
 
   msrv:
-    name: MSRV (1.84.0)
+    name: MSRV (1.85.0)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.84.0
+      - uses: dtolnay/rust-toolchain@1.85.0
       - uses: Swatinem/rust-cache@v2
       - name: cargo check (workspace, all features, at the declared MSRV)
         run: cargo check --workspace --all-features --locked
