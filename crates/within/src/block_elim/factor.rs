@@ -199,6 +199,10 @@ impl DenseCholesky {
             }
             // SAFETY: i<m -> diagonal index and write index are in bounds.
             let lii = unsafe { *l.get_unchecked(i * m + i) };
+            debug_assert!(
+                lii.is_finite() && lii != 0.0,
+                "Cholesky diagonal must be a finite nonzero pivot"
+            );
             unsafe { *x.get_unchecked_mut(i) = s / lii };
         }
 
@@ -215,6 +219,10 @@ impl DenseCholesky {
             }
             // SAFETY: i<m -> diagonal index and write index are in bounds.
             let lii = unsafe { *l.get_unchecked(i * m + i) };
+            debug_assert!(
+                lii.is_finite() && lii != 0.0,
+                "Cholesky diagonal must be a finite nonzero pivot"
+            );
             unsafe { *x.get_unchecked_mut(i) = s / lii };
         }
 

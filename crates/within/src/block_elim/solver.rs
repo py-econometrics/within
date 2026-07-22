@@ -55,6 +55,16 @@ fn backsub_block_from_scaled_rhs(
 ) {
     let n = sol_output.len();
     debug_assert!(scaled_rhs.len() >= n);
+    let recover = |i: usize| -> f64 {
+        let start = cross_matrix.indptr[i] as usize;
+        let end = cross_matrix.indptr[i + 1] as usize;
+        let mut sum = 0.0;
+        for idx in start..end {
+            let j = cross_matrix.indices[idx] as usize;
+            sum += cross_matrix.data[idx] * sol_source[j];
+        }
+        scaled_rhs[i] + (inv_diag[i] * sum)
+    };
     if n > PAR_BACKSUB_THRESHOLD && allow_inner_parallelism {
         sol_output
             .par_chunks_mut(PAR_BACKSUB_CHUNK)
@@ -62,27 +72,12 @@ fn backsub_block_from_scaled_rhs(
             .for_each(|(chunk_idx, chunk)| {
                 let row_start = chunk_idx * PAR_BACKSUB_CHUNK;
                 for (local_i, si) in chunk.iter_mut().enumerate() {
-                    let i = row_start + local_i;
-                    let start = cross_matrix.indptr[i] as usize;
-                    let end = cross_matrix.indptr[i + 1] as usize;
-                    let mut sum = 0.0;
-                    for idx in start..end {
-                        let j = cross_matrix.indices[idx] as usize;
-                        sum += cross_matrix.data[idx] * sol_source[j];
-                    }
-                    *si = scaled_rhs[i] + (inv_diag[i] * sum);
+                    *si = recover(row_start + local_i);
                 }
             });
     } else {
-        for i in 0..n {
-            let start = cross_matrix.indptr[i] as usize;
-            let end = cross_matrix.indptr[i + 1] as usize;
-            let mut sum = 0.0;
-            for idx in start..end {
-                let j = cross_matrix.indices[idx] as usize;
-                sum += cross_matrix.data[idx] * sol_source[j];
-            }
-            sol_output[i] = scaled_rhs[i] + (inv_diag[i] * sum);
+        for (i, out) in sol_output.iter_mut().enumerate() {
+            *out = recover(i);
         }
     }
 }

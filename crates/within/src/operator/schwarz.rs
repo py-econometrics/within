@@ -48,14 +48,6 @@ struct DiagonalPreconditioner {
     inv_diag: Arc<[f64]>,
 }
 
-impl DiagonalPreconditioner {
-    fn new(inv_diag: Vec<f64>) -> Self {
-        Self {
-            inv_diag: Arc::from(inv_diag),
-        }
-    }
-}
-
 impl Operator for DiagonalPreconditioner {
     fn nrows(&self) -> usize {
         self.inv_diag.len()
@@ -250,7 +242,9 @@ fn build_diagonal(
         *d = inv;
     }
 
-    Ok(DiagonalPreconditioner::new(diag))
+    Ok(DiagonalPreconditioner {
+        inv_diag: Arc::from(diag),
+    })
 }
 
 /// Build a [`Preconditioner`] from a design and optional observation weights,
