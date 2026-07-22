@@ -73,3 +73,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run coverage
         run: pixi run coverage
+
+  miri:
+    name: Miri (block elimination unsafe)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo miri test
+        # Only unsafe in the crate: the dense triangular solve kernel, see
+        # crates/within/src/block_elim/factor.rs.
+        run: cargo miri test -p within --locked --lib block_elim::factor::tests
