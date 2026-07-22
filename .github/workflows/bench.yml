@@ -1,0 +1,55 @@
+name: Bench
+
+# Trend, not gate: small/medium benches carry several-percent run-to-run noise
+# (see crates/within/benches), so this workflow never fails the run. It only
+# runs the large n=1,000,000 3-way-FE LSMR solves — the one case stable enough
+# to trend — against a rolling Criterion baseline, for human review.
+
+on:
+  schedule:
+    - cron: '0 3 * * 1'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  BENCH_FILTER: 'n=1000000.*3FE'
+
+concurrency:
+  group: bench-baseline
+  cancel-in-progress: false
+
+jobs:
+  large-solve-baseline:
+    name: Large 1M-row 3FE solve baseline
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # target/criterion isn't checked in, so the rolling "main" baseline has
+      # to survive between workflow runs via cache. Cache entries are
+      # immutable per key, so the primary key is unique per run (guaranteeing
+      # a fresh save) while restore-keys pulls the most recent prior entry.
+      - name: Restore Criterion baseline
+        uses: actions/cache@v4
+        with:
+          path: target/criterion
+          key: criterion-baseline-${{ github.run_id }}
+          restore-keys: |
+            criterion-baseline-
+
+      - name: Run large-solve benchmark against saved baseline
+        run: |
+          cargo bench -p within --bench fixest -- "$BENCH_FILTER" --save-baseline main
+
+      - name: Upload Criterion report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: criterion-report-${{ github.run_id }}
+          path: target/criterion
+          retention-days: 90
