@@ -4,11 +4,11 @@ set -euo pipefail
 cargo llvm-cov clean --workspace
 source <(cargo llvm-cov show-env --sh)
 
-cargo test --workspace --all-features
+cargo test --workspace --all-features --locked
 if python -m pip --version >/dev/null 2>&1; then
-    maturin develop
+    maturin develop --locked
 else
-    maturin develop --uv
+    maturin develop --uv --locked
 fi
 pytest tests/ -v
 
