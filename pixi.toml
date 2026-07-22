@@ -24,6 +24,7 @@ pre-commit = ">=4.0"
 ruff = ">=0.9"
 hypothesis = ">=6.0"
 samply = ">=0.13"
+cargo-mutants = ">=27.1,<28"
 
 [environments]
 default = { features = ["build", "dev"], solve-group = "default" }
@@ -33,3 +34,4 @@ test = "maturin develop --uv --locked && pytest tests/ -v --cov=within --cov-rep
 develop = "maturin develop --uv --release"
 coverage-rust = "cargo llvm-cov --workspace --all-features --summary-only"
 coverage = "./scripts/coverage-with-python.sh"
+mutants = "cargo mutants -C --locked"
