@@ -36,7 +36,7 @@ impl LocalComponent {
             cross_tab,
             diagonals,
             factors.to_vec(),
-            SchurReduction::Direct,
+            ReductionKind::Direct,
             &ScalingConfig::default(),
         )
         .expect("test factors must fold to SDDM")
@@ -218,7 +218,7 @@ fn large_rescaled_singular_boundary_remains_floating() {
         cross_tab,
         diagonals,
         factors,
-        SchurReduction::Direct,
+        ReductionKind::Direct,
         &ScalingConfig::default(),
     )
     .unwrap();
