@@ -6,6 +6,17 @@ use super::vec_norm;
 use super::*;
 use crate::{Operator, SolveError};
 
+#[test]
+fn vec_norm_is_overflow_safe_and_propagates_nan() {
+    assert_eq!(vec_norm(&[]), 0.0);
+    assert_eq!(vec_norm(&[3.0, 4.0]), 5.0);
+    // Scaling keeps the squared sum finite where a naive Σx² would overflow.
+    assert!(vec_norm(&[1e300, 1e300]).is_finite());
+    // f64::max ignores NaN, so an all-{zero,NaN} vector must still report NaN.
+    assert!(vec_norm(&[f64::NAN]).is_nan());
+    assert!(vec_norm(&[0.0, f64::NAN]).is_nan());
+}
+
 /// Identity operator used by mlsmr equivalence tests.
 struct IdentityOp {
     n: usize,

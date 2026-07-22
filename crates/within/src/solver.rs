@@ -26,7 +26,13 @@ use reparam::SlopeReparam;
 fn norm(v: &[f64]) -> f64 {
     let scale = v.iter().fold(0.0_f64, |m, &x| m.max(x.abs()));
     if scale == 0.0 {
-        return 0.0;
+        // f64::max ignores NaN, so all-{zero,NaN} vectors land here: propagate
+        // NaN instead of laundering it into a finite-looking zero norm.
+        return if v.iter().any(|x| x.is_nan()) {
+            f64::NAN
+        } else {
+            0.0
+        };
     }
     scale * v.iter().map(|&x| (x / scale).powi(2)).sum::<f64>().sqrt()
 }
