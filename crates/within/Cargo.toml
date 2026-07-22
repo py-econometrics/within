@@ -1,24 +1,25 @@
 [package]
 name = "within"
-version = "0.2.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 description = "Fixed-effects normal equation solver with Schwarz preconditioning"
-license = "MIT"
+license.workspace = true
 readme = "README.md"
-repository = "https://github.com/py-econometrics/within"
+repository.workspace = true
 keywords = ["fixed-effects", "least-squares", "preconditioner", "schwarz", "econometrics"]
-categories = ["mathematics", "science", "algorithms"]
+categories.workspace = true
 
 [dependencies]
-schwarz-precond = { version = "0.2.0", path = "../schwarz-precond", features = ["serde"] }
+schwarz-precond = { workspace = true, features = ["serde"] }
 approx-chol = { version = "0.3.1", features = ["serde"] }
-serde = { version = "1", features = ["derive", "rc"] }
-postcard = { version = "1", features = ["use-std"] }
+serde = { workspace = true, features = ["rc"] }
+postcard.workspace = true
 ndarray = "0.16"
 portable-atomic = { version = "1", features = ["float"] }
-rayon = "1.10"
-faer = "0.24.0"
-thiserror = "2"
+rayon.workspace = true
+faer.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

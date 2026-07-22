@@ -1,7 +1,8 @@
 [package]
 name = "within-py"
-version = "0.2.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 
 [lib]
 name = "_within"
@@ -9,7 +10,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 within = { path = "../within" }
-schwarz-precond = { path = "../schwarz-precond" }
-postcard = { version = "1", features = ["use-std"] }
+schwarz-precond.workspace = true
+postcard.workspace = true
 pyo3 = { version = "0.25", features = ["extension-module"] }
 numpy = "0.25"

@@ -6,6 +6,22 @@ members = [
 ]
 resolver = "2"
 
+[workspace.package]
+version = "0.2.0"
+edition = "2021"
+rust-version = "1.84"
+license = "MIT"
+repository = "https://github.com/py-econometrics/within"
+categories = ["mathematics", "science", "algorithms"]
+
+[workspace.dependencies]
+schwarz-precond = { version = "0.2.0", path = "crates/schwarz-precond" }
+faer = "0.24.0"
+rayon = "1.10"
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", features = ["use-std"] }
+thiserror = "2"
+
 [profile.release]
 opt-level = 3
 lto = "fat"

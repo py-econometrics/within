@@ -11,7 +11,7 @@ cargo-audit = ">=0.22.1,<0.23"
 within-py = { path = ".", editable = true }
 
 [feature.build.dependencies]
-rust = ">=1.75"
+rust = ">=1.84"
 maturin = ">=1.7"
 uv = ">=0.4"
 
