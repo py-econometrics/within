@@ -40,10 +40,8 @@ pub(crate) struct DesignOperator<'a> {
     /// `&self` operations, so a plain `Vec<AtomicF64>` (already `Sync`) needs no
     /// lock: each call re-seeds the buffer via `store` instead of resizing it.
     scatter_scratch: Vec<AtomicF64>,
-    /// Debug-only reentry sentinel. `apply_adjoint` seeds and accumulates
-    /// `scatter_scratch` through `&self`, so two concurrent calls on one
-    /// operator would interleave those writes; the guard trips a
-    /// `debug_assert!` instead of silently corrupting the buffer.
+    /// Debug-only reentry sentinel: a concurrent `apply_adjoint` would race the
+    /// `scatter_scratch` writes it makes through `&self`.
     #[cfg(debug_assertions)]
     adjoint_active: AtomicBool,
 }
@@ -95,10 +93,8 @@ impl<'a> DesignOperator<'a> {
     }
 }
 
-/// RAII sentinel enforcing a single in-flight `apply_adjoint` per operator in
-/// debug builds: acquisition trips a `debug_assert!` when another call is
-/// already active, and `Drop` clears the flag on every exit path, panics
-/// included.
+/// RAII reentry guard: `acquire` asserts no call is in flight; `Drop` clears
+/// the flag on every exit path, panics included.
 #[cfg(debug_assertions)]
 struct ReentryGuard<'a>(&'a AtomicBool);
 
