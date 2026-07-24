@@ -23,12 +23,19 @@ jobs:
   refresh:
     name: Refresh wall-clock reference
     runs-on: ubuntu-latest
+    # Same caching as the alert path, so the reference is built the same way it
+    # will be compared against. Cache hits are bit-identical rustc output.
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: prefix-dev/setup-pixi@a09b6247153796b190642a2b53fac4241043cf6f # v0.10.0
         with:
           environments: ci
           cache: true
+          cache-write: ${{ github.ref == 'refs/heads/main' }}
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       # Same harness and threading as the alert path, so the reference is
