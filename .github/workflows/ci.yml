@@ -65,11 +65,13 @@ jobs:
 
   platform:
     name: Tests (${{ matrix.os }})
-    if: github.ref == 'refs/heads/main' || github.event_name == 'push'
     runs-on: ${{ matrix.os }}
     env:
       RUSTC_WRAPPER: sccache
       SCCACHE_GHA_ENABLED: "true"
+      # CI only needs pass/fail: dropping debug info shrinks artifacts (faster
+      # Windows linking) and the target cache (faster restore).
+      RUSTFLAGS: "-C debuginfo=0"
     strategy:
       fail-fast: false
       matrix:
