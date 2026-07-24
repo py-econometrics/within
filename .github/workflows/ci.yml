@@ -27,11 +27,8 @@ jobs:
           cache: true
           # Only main writes the cache; PRs read it, avoiding churn/eviction.
           cache-write: ${{ github.ref == 'refs/heads/main' }}
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      # Compiled artifacts come from sccache; only cache the crate registry.
+      - uses: mozilla-actions/sccache-action@v0.0.10
       - uses: Swatinem/rust-cache@v2
-        with:
-          cache-targets: false
       - name: cargo fmt
         run: pixi run -e ci cargo fmt --all -- --check
       - name: cargo clippy
@@ -87,11 +84,8 @@ jobs:
           cache: true
           # Only main writes the cache; PRs read it, avoiding churn/eviction.
           cache-write: ${{ github.ref == 'refs/heads/main' }}
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      # Compiled artifacts come from sccache; only cache the crate registry.
+      - uses: mozilla-actions/sccache-action@v0.0.10
       - uses: Swatinem/rust-cache@v2
-        with:
-          cache-targets: false
       - name: cargo test
         run: pixi run -e ci cargo test --workspace --all-features --locked
       - name: pytest
