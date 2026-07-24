@@ -9,6 +9,11 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# Cancel superseded PR runs; let every push to main run to completion.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   check:
     name: Check + Coverage (Linux)
