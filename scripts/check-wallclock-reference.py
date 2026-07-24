@@ -58,8 +58,8 @@ def main() -> int:
     if not baseline:
         emit(
             f"⚠️ **Perf reference not bootstrapped.** Measured {measured_ms:.1f} ms. "
-            f"Run the perf-alert workflow via `workflow_dispatch` with "
-            f"`update-reference=true` to seed it on CI hardware."
+            f"Run the **Perf Reference** workflow via `workflow_dispatch` to "
+            f"seed it on CI hardware."
         )
         return 0
 
@@ -76,8 +76,8 @@ def main() -> int:
             f"| reference | {baseline_ms:.1f} ms |\n"
             f"| change | +{delta_pct:.1f}% |\n"
             f"| threshold | +{threshold_pct:.1f}% |\n\n"
-            f"If this cost is expected, refresh the reference via the perf-alert "
-            f"`workflow_dispatch` (`update-reference=true`)."
+            f"If this cost is expected, refresh the reference via the "
+            f"**Perf Reference** workflow."
         )
     else:
         emit(

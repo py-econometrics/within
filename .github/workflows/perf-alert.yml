@@ -4,21 +4,23 @@ name: Perf Alert
 # solve on every merge to main and compares the best of N runs against a
 # committed, FIXED reference. NON-blocking by design — it raises a job-summary
 # alert but never fails the build (it runs post-merge, so it cannot block a
-# merge). Supersedes the rolling-baseline bench workflow from #139.
+# merge). Refreshing the reference is the Perf Reference workflow's job, which
+# is why this one needs no write access.
 
 on:
   push:
     branches:
       - main
   workflow_dispatch:
-    inputs:
-      update-reference:
-        description: "Bootstrap/refresh the committed wall-clock reference from this run (on CI hardware)"
-        type: boolean
-        default: false
 
 permissions:
-  contents: write
+  contents: read
+
+# The bench takes minutes; queue back-to-back merges rather than cancelling, so
+# every merge to main gets its own attributed measurement.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -47,31 +49,6 @@ jobs:
           best="$(printf '%s\n' "$out" | grep -oE 'WALLCLOCK_BEST_NS=[0-9]+' | tail -n1 | cut -d= -f2)"
           echo "best_ns=${best:-}" >> "$GITHUB_OUTPUT"
 
-      - name: Bootstrap reference
-        if: github.event_name == 'workflow_dispatch' && inputs.update-reference && steps.bench.outputs.best_ns != ''
-        run: python3 scripts/check-wallclock-reference.py --measured-ns "${{ steps.bench.outputs.best_ns }}" --update
-
       - name: Compare against committed reference (alert only)
-        if: steps.bench.outputs.best_ns != '' && !(github.event_name == 'workflow_dispatch' && inputs.update-reference)
+        if: steps.bench.outputs.best_ns != ''
         run: python3 scripts/check-wallclock-reference.py --measured-ns "${{ steps.bench.outputs.best_ns }}" --commit "${{ github.sha }}"
-
-      - name: Commit refreshed reference
-        if: github.event_name == 'workflow_dispatch' && inputs.update-reference
-        run: |
-          if git diff --quiet -- benches/wallclock_reference.json; then
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add benches/wallclock_reference.json
-          git commit -m "chore(perf): bootstrap wall-clock reference (#147) [skip ci]"
-          # The bench takes minutes; a merge to main can land in that window and
-          # make the push a non-fast-forward. Rebase our single-file commit onto
-          # the new tip (no concurrent merge touches this file) and retry.
-          for attempt in 1 2 3 4 5; do
-            git push && exit 0
-            echo "push rejected (raced a merge to main); rebasing and retrying ($attempt)…"
-            git pull --rebase origin main
-          done
-          echo "::error::could not push refreshed wall-clock reference after retries"
-          exit 1
