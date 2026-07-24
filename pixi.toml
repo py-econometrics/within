@@ -4,36 +4,44 @@ platforms = ["linux-64", "win-64", "osx-arm64", "osx-64"]
 
 [dependencies]
 python = ">=3.9"
-pixi-pycharm = ">=0.0.10,<0.0.11"
-cargo-audit = ">=0.22.1,<0.23"
-cargo-deny = ">=0.20.2,<0.21"
-
-[pypi-dependencies]
-within-py = { path = ".", editable = true }
 
 [feature.build.dependencies]
 rust = ">=1.84"
 maturin = ">=1.7"
 uv = ">=0.4"
 
-[feature.dev.dependencies]
+# Everything CI needs to run the suite (cargo test + pytest + coverage + deny).
+[feature.test.dependencies]
 pytest = ">=7.0"
 pytest-cov = "*"
+hypothesis = ">=6.0"
 cargo-llvm-cov = ">=0.8.4,<0.9"
+cargo-deny = ">=0.20.2,<0.21"
+
+# Local-only conveniences never invoked in CI, plus the editable install. The
+# editable build compiles the extension inside `pixi install`; keeping it out
+# of the `ci` environment means setup-pixi never pays that cold compile — CI
+# builds the extension exactly once, warm, via `maturin develop`.
+[feature.dev.dependencies]
 pre-commit = ">=4.0"
 ruff = ">=0.9"
-hypothesis = ">=6.0"
 samply = ">=0.13"
 cargo-mutants = ">=27.1,<28"
+cargo-audit = ">=0.22.1,<0.23"
+pixi-pycharm = ">=0.0.10,<0.0.11"
 
-# Isolated so `pixi run -e audit abi3audit <wheel>` installs only the auditor,
-# not the build+dev toolchain. Verifies a built wheel uses only the py3.9
-# limited API, so the single cp39-abi3 wheel is valid on every later CPython.
+[feature.dev.pypi-dependencies]
+within-py = { path = ".", editable = true }
+
+# Isolated so `pixi run -e audit abi3audit <wheel>` installs only the auditor.
+# Verifies a built wheel uses only the py3.9 limited API, so the single
+# cp39-abi3 wheel is valid on every later CPython.
 [feature.audit.dependencies]
 abi3audit = ">=0.0.26"
 
 [environments]
-default = { features = ["build", "dev"], solve-group = "default" }
+default = { features = ["build", "test", "dev"], solve-group = "default" }
+ci = { features = ["build", "test"], solve-group = "default" }
 audit = { features = ["audit"] }
 
 [tasks]
