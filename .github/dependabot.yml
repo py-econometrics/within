@@ -24,7 +24,10 @@ updates:
     schedule:
       interval: monthly
     versioning-strategy: lockfile-only
-    open-pull-requests-limit: 3
+    # Version updates cover only direct deps by default, but deny.toml's skip
+    # list is entirely transitive duplicates — the drift this is meant to catch.
+    allow:
+      - dependency-type: all
     groups:
       cargo:
         patterns: ["*"]

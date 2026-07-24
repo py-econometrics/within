@@ -2,9 +2,8 @@ name: Perf Reference
 
 # Manual counterpart to Perf Alert (#147): re-measures the 1M-row 3FE solve on
 # CI hardware and commits the result as the new fixed reference. Split out of
-# Perf Alert so the always-on alert never holds write access to main — this is
-# the only workflow that can push to the default branch, so its actions are
-# SHA-pinned rather than tag-pinned.
+# Perf Alert so the always-on alert never holds write access. This job pushes a
+# commit, so its actions are SHA-pinned rather than tag-pinned.
 
 on:
   workflow_dispatch:
@@ -39,13 +38,14 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       # Same harness and threading as the alert path, so the reference is
-      # measured on the same footing it will be compared against.
+      # measured on the same footing it will be compared against. `|| true` keeps
+      # a missing marker an empty value, so the next step reports why.
       - name: Time 1M-row 3FE solve (release, best-of-N)
         id: bench
         run: |
           out="$(pixi run -e ci cargo bench -p within --bench wallclock_1m3fe)"
           echo "$out"
-          best="$(printf '%s\n' "$out" | grep -oE 'WALLCLOCK_BEST_NS=[0-9]+' | tail -n1 | cut -d= -f2)"
+          best="$(printf '%s\n' "$out" | grep -oE 'WALLCLOCK_BEST_NS=[0-9]+' | tail -n1 | cut -d= -f2 || true)"
           echo "best_ns=${best:-}" >> "$GITHUB_OUTPUT"
 
       - name: Write reference

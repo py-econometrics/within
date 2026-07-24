@@ -16,12 +16,6 @@ on:
 permissions:
   contents: read
 
-# The bench takes minutes; queue back-to-back merges rather than cancelling, so
-# every merge to main gets its own attributed measurement.
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
-
 env:
   CARGO_TERM_COLOR: always
 
@@ -47,13 +41,14 @@ jobs:
 
       # Multi-threaded on purpose (default Rayon width = all runner cores): this
       # tier is the multi-threaded safety net, not the deterministic path. The
-      # harness prints WALLCLOCK_BEST_NS=<ns> (best of N runs).
+      # harness prints WALLCLOCK_BEST_NS=<ns> (best of N runs). `|| true` keeps a
+      # missing marker an empty value rather than a step failure under pipefail.
       - name: Time 1M-row 3FE solve (release, best-of-N)
         id: bench
         run: |
           out="$(pixi run -e ci cargo bench -p within --bench wallclock_1m3fe)"
           echo "$out"
-          best="$(printf '%s\n' "$out" | grep -oE 'WALLCLOCK_BEST_NS=[0-9]+' | tail -n1 | cut -d= -f2)"
+          best="$(printf '%s\n' "$out" | grep -oE 'WALLCLOCK_BEST_NS=[0-9]+' | tail -n1 | cut -d= -f2 || true)"
           echo "best_ns=${best:-}" >> "$GITHUB_OUTPUT"
 
       - name: Compare against committed reference (alert only)
