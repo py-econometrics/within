@@ -1,10 +1,5 @@
 name: Perf Reference
 
-# Manual counterpart to Perf Alert (#147): re-measures the 1M-row 3FE solve on
-# CI hardware and commits the result as the new fixed reference. Split out of
-# Perf Alert so the always-on alert never holds write access. This job pushes a
-# commit, so its actions are SHA-pinned rather than tag-pinned.
-
 on:
   workflow_dispatch:
 
@@ -22,12 +17,16 @@ jobs:
   refresh:
     name: Refresh wall-clock reference
     runs-on: ubuntu-latest
-    # Same caching as the alert path, so the reference is built the same way it
-    # will be compared against. Cache hits are bit-identical rustc output.
     env:
       RUSTC_WRAPPER: sccache
       SCCACHE_GHA_ENABLED: "true"
     steps:
+      - name: Require main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::dispatch this workflow on main"
+          exit 1
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: prefix-dev/setup-pixi@a09b6247153796b190642a2b53fac4241043cf6f # v0.10.0
         with:
@@ -37,9 +36,6 @@ jobs:
       - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
-      # Same harness and threading as the alert path, so the reference is
-      # measured on the same footing it will be compared against. `|| true` keeps
-      # a missing marker an empty value, so the next step reports why.
       - name: Time 1M-row 3FE solve (release, best-of-N)
         id: bench
         run: |
@@ -66,9 +62,6 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add benches/wallclock_reference.json
           git commit -m "chore(perf): refresh wall-clock reference (#147) [skip ci]"
-          # The bench takes minutes; a merge to main can land in that window and
-          # make the push a non-fast-forward. Rebase our single-file commit onto
-          # the new tip (no concurrent merge touches this file) and retry.
           for attempt in 1 2 3 4 5; do
             git push && exit 0
             echo "push rejected (raced a merge to main); rebasing and retrying ($attempt)…"

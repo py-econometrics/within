@@ -4,8 +4,7 @@ name: Perf Alert
 # solve on every merge to main and compares the best of N runs against a
 # committed, FIXED reference. NON-blocking by design — it raises a job-summary
 # alert but never fails the build (it runs post-merge, so it cannot block a
-# merge). Refreshing the reference is the Perf Reference workflow's job, which
-# is why this one needs no write access.
+# merge). Supersedes the rolling-baseline bench workflow from #139.
 
 on:
   push:
@@ -16,6 +15,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -23,9 +26,6 @@ jobs:
   wallclock:
     name: Wall-clock 1M 3FE (alert only)
     runs-on: ubuntu-latest
-    # rust-cache's target/ reuse is unreliable run-to-run, so sccache is the
-    # floor that keeps a miss from becoming a cold release build. Cache hits are
-    # bit-identical rustc output, so this cannot perturb the measurement.
     env:
       RUSTC_WRAPPER: sccache
       SCCACHE_GHA_ENABLED: "true"
@@ -39,10 +39,6 @@ jobs:
       - uses: mozilla-actions/sccache-action@v0.0.10
       - uses: Swatinem/rust-cache@v2
 
-      # Multi-threaded on purpose (default Rayon width = all runner cores): this
-      # tier is the multi-threaded safety net, not the deterministic path. The
-      # harness prints WALLCLOCK_BEST_NS=<ns> (best of N runs). `|| true` keeps a
-      # missing marker an empty value rather than a step failure under pipefail.
       - name: Time 1M-row 3FE solve (release, best-of-N)
         id: bench
         run: |

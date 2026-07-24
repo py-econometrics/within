@@ -1,5 +1,5 @@
 {
-  "_comment": "Fixed (NOT rolling) wall-clock reference for the Tier-2 non-blocking perf alert (#147). best_ns is a PLACEHOLDER (null) until CI bootstraps it: the reference MUST be measured on CI hardware (ubuntu-latest), not a maintainer's machine, so run the perf-alert workflow via workflow_dispatch with update-reference=true on first setup. An intentional, accepted slowdown is recorded by re-running that dispatch, so drift shows up as a reviewable diff to this file. threshold_pct is set well above the repo's documented +-2-9% runner noise so only genuine sustained regressions alert (and the alert is non-blocking regardless).",
+  "_comment": "Fixed (NOT rolling) wall-clock reference for the Tier-2 non-blocking perf alert (#147). The reference MUST be measured on CI hardware (ubuntu-latest), not a maintainer's machine, so it is refreshed by dispatching the Perf Reference workflow on main. An intentional, accepted slowdown is recorded by re-running that dispatch, so drift shows up as a reviewable diff to this file. threshold_pct is set well above the repo's documented +-2-9% runner noise so only genuine sustained regressions alert (and the alert is non-blocking regardless).",
   "threshold_pct": 25.0,
   "best_ns": 239836106.0
 }

@@ -1,7 +1,5 @@
 version: 2
 
-# pixi.lock has no Dependabot ecosystem, so the conda-side toolchain and test
-# deps (rust, maturin, pytest, uv) stay manual.
 updates:
   - package-ecosystem: github-actions
     directory: "/"
@@ -11,21 +9,13 @@ updates:
       actions:
         patterns: ["*"]
     ignore:
-      # @1.85.0 asserts the declared rust-version; bumping it would leave a
-      # green MSRV check that no longer tests the MSRV.
       - dependency-name: dtolnay/rust-toolchain
 
-  # Requirements are ranges, so most releases need no manifest change:
-  # lockfile-only makes this a scheduled `cargo update` that CI validates (every
-  # step runs --locked). Grouped so a bump that strands an exact crate@version
-  # in deny.toml's skip list costs one edit, not one per PR.
   - package-ecosystem: cargo
     directory: "/"
     schedule:
       interval: monthly
     versioning-strategy: lockfile-only
-    # Version updates cover only direct deps by default, but deny.toml's skip
-    # list is entirely transitive duplicates — the drift this is meant to catch.
     allow:
       - dependency-type: all
     groups:
