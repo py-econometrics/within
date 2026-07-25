@@ -5,7 +5,6 @@ on:
 
 permissions:
   contents: write
-  pull-requests: write
 
 concurrency:
   group: ${{ github.workflow }}
@@ -56,24 +55,23 @@ jobs:
           fi
           python3 scripts/check-wallclock-reference.py --measured-ns "$BEST_NS" --update
 
-      - name: Open refresh pull request
+      - name: Push refresh branch
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BEST_NS: ${{ steps.bench.outputs.best_ns }}
           SOURCE_SHA: ${{ github.sha }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
         run: |
           if git diff --quiet -- "$REFERENCE_FILE"; then
-            echo "reference already matches this run; no pull request opened"
+            printf 'Measured %s ns; within the refresh floor, so the reference is unchanged and no branch was pushed.\n' "$BEST_NS" | tee -a "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          branch="perf/reference-$stamp"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git switch -c "perf/reference-$stamp"
+          git switch -c "$branch"
           git add "$REFERENCE_FILE"
           git commit -m "chore(perf): refresh wall-clock reference to ${BEST_NS}ns (#147)" -m "Measured on ${SOURCE_SHA}."
-          git push origin "perf/reference-$stamp"
-          gh pr create --base main --head "perf/reference-$stamp" \
-            --title "chore(perf): refresh wall-clock reference ($stamp)" \
-            --body "$(printf 'Measured on `%s` by [this run](%s).\n\nRequired checks do not start on a `GITHUB_TOKEN` pull request: merge with the admin bypass, or push to the branch to trigger them.\n' "$SOURCE_SHA" "$RUN_URL")"
+          git push origin "$branch"
+          printf 'Refreshed the reference to %s ns, measured on `%s`.\n\n[Open the pull request](%s/compare/main...%s?expand=1) — opening it yourself runs the required checks, which a bot-opened pull request cannot.\n' \
+            "$BEST_NS" "$SOURCE_SHA" "$REPO_URL" "$branch" | tee -a "$GITHUB_STEP_SUMMARY"
