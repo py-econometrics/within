@@ -29,9 +29,9 @@ use reparam::SlopeReparam;
 /// [`Effect`] terms, a pass-through [`Design`], or — with the optional
 /// `ndarray` feature — a categories matrix (`ArrayView2<u32>`).
 #[diagnostic::on_unimplemented(
-    note = "to pass an `ndarray::ArrayView2<u32>`, enable this crate's `ndarray` feature",
-    note = "if it is already enabled, your `ndarray` major version differs from this crate's, which makes the two `ArrayView2` types distinct",
-    note = "`Effect` terms are built from plain slices and need neither"
+    note = "`Effect` terms are built from plain slices and always apply",
+    note = "an `ndarray::ArrayView2<u32>` additionally requires this crate's `ndarray` feature and the same `ndarray` release line, which makes the two `ArrayView2` types distinct otherwise",
+    note = "an owned `Array2<u32>` must be borrowed first, as `array.view()`"
 )]
 pub trait IntoDesign<'a> {
     /// Build the [`Design`], validating inputs along the way.
@@ -354,8 +354,9 @@ struct RhsSolution {
 impl<'a> Solver<'a> {
     /// Construct a solver.
     ///
-    /// `design` accepts raw categories (`ArrayView2<u32>`) or a pre-built
-    /// [`Design`]. `preconditioner` accepts:
+    /// `design` accepts a list of [`Effect`] terms, a pre-built [`Design`], or
+    /// — with the `ndarray` feature — raw categories (`ArrayView2<u32>`).
+    /// `preconditioner` accepts:
     /// - `None` — build the library default Schwarz preconditioner
     /// - `&PreconditionerConfig` / `Some(&PreconditionerConfig)` — build from a tuned config
     /// - `PreconditionerConfig::Off` — solve unpreconditioned
@@ -615,9 +616,9 @@ impl<'a> Solver<'a> {
 
 /// Solve fixed-effects least squares for a design input.
 ///
-/// `design` is anything implementing [`IntoDesign`]: an observation-major
-/// `(n_obs, n_factors)` categories array (levels `0..max_level` per factor,
-/// count inferred) or a list of [`Effect`] terms.
+/// `design` is anything implementing [`IntoDesign`]: a list of [`Effect`] terms,
+/// or — with the `ndarray` feature — an observation-major `(n_obs, n_factors)`
+/// categories array (levels `0..max_level` per factor, count inferred).
 /// `y` is the response vector (length = n_obs).
 ///
 /// Zero-copy for F-order category arrays whose dominant factor is already
