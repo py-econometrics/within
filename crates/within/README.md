@@ -15,20 +15,20 @@ cargo add within
 ## Quick example
 
 ```rust
-use ndarray::Array2;
-use within::{solve, LsmrOptions, PreconditionerConfig};
+use within::{solve, Effect, LsmrOptions, PreconditionerConfig};
 
 // Two factors: 100 levels each, 10 000 observations
 let n_obs = 10_000usize;
-let mut categories = Array2::<u32>::zeros((n_obs, 2));
-for i in 0..n_obs {
-    categories[[i, 0]] = (i % 100) as u32;
-    categories[[i, 1]] = (i / 100) as u32;
-}
+let f0: Vec<u32> = (0..n_obs).map(|i| (i % 100) as u32).collect();
+let f1: Vec<u32> = (0..n_obs).map(|i| (i / 100) as u32).collect();
 let y: Vec<f64> = (0..n_obs).map(|i| i as f64 * 0.01).collect();
+let design = vec![
+    Effect::new(&f0, true, []).expect("valid effect"),
+    Effect::new(&f1, true, []).expect("valid effect"),
+];
 
 // Solve with library defaults: LSMR + additive Schwarz
-let result = solve(categories.view(), &y, None, &LsmrOptions::default(), None)
+let result = solve(design.clone(), &y, None, &LsmrOptions::default(), None)
     .expect("solve should succeed");
 assert!(result.converged);
 println!("LSMR converged in {} iterations", result.iterations);
@@ -36,13 +36,13 @@ println!("LSMR converged in {} iterations", result.iterations);
 // Tighter tolerance with an explicit preconditioner config
 let lsmr = LsmrOptions { tol: 1e-10, ..LsmrOptions::default() };
 let precond = PreconditionerConfig::default();
-let result = solve(categories.view(), &y, None, &lsmr, &precond)
+let result = solve(design.clone(), &y, None, &lsmr, &precond)
     .expect("solve should succeed");
 assert!(result.converged);
 
 // Or opt into a diagonal/Jacobi preconditioner.
 let diagonal = PreconditionerConfig::Diagonal;
-let result = solve(categories.view(), &y, None, &lsmr, &diagonal)
+let result = solve(design, &y, None, &lsmr, &diagonal)
     .expect("solve should succeed");
 assert!(result.converged);
 ```
@@ -51,7 +51,7 @@ assert!(result.converged);
 
 | Feature   | Default | Effect                                                                 |
 |-----------|---------|------------------------------------------------------------------------|
-| `ndarray` | yes     | Enables `from_array` constructors on observation stores for interop with `ndarray::ArrayView2`. |
+| `ndarray` | no      | Accepts `ndarray::ArrayView2<u32>` as a design, in addition to the always-available `Effect` slice terms. Off by default so the crate imposes no `ndarray` major version on callers. |
 
 ## Architecture
 

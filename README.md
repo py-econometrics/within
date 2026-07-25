@@ -160,15 +160,15 @@ Coefficients for unidentified directions are pinned to the **minimal-norm** valu
 ## Rust API
 
 ```rust
-use ndarray::Array2;
-use within::{solve, LsmrOptions, PreconditionerConfig};
+use within::{solve, Effect, LsmrOptions, PreconditionerConfig};
 use within::config::{LocalSolverConfig, ReductionStrategy};
 
-let categories = /* Array2<u32> of shape (n_obs, n_factors) */;
+let levels: &[u32] = /* level codes, one per observation, per factor */;
 let y: &[f64] = /* response vector */;
+let design = vec![Effect::new(levels, true, [])?];
 
 // Default: LSMR + additive Schwarz (None → library default)
-let r = solve(categories.view(), &y, None, &LsmrOptions::default(), None)?;
+let r = solve(design.clone(), &y, None, &LsmrOptions::default(), None)?;
 assert!(r.converged);
 
 // Tighter tolerance with an explicit additive preconditioner
@@ -177,11 +177,11 @@ let precond = PreconditionerConfig::Additive {
     local_solver: LocalSolverConfig::default(),
     reduction: ReductionStrategy::default(),
 };
-let r = solve(categories.view(), &y, None, &lsmr, &precond)?;
+let r = solve(design.clone(), &y, None, &lsmr, &precond)?;
 
 // Opt into diagonal/Jacobi preconditioning
 let diagonal = PreconditionerConfig::Diagonal;
-let r = solve(categories.view(), &y, None, &lsmr, &diagonal)?;
+let r = solve(design.clone(), &y, None, &lsmr, &diagonal)?;
 ```
 
 Persistent solver — build once, solve many:
@@ -189,7 +189,7 @@ Persistent solver — build once, solve many:
 ```rust
 use within::Solver;
 
-let solver = Solver::new(categories.view(), None, None)?;
+let solver = Solver::new(design, None, None)?;
 let r1 = solver.solve(&y, &LsmrOptions::default())?;
 let r2 = solver.solve(&another_y, &LsmrOptions::default())?;  // reuses preconditioner
 ```
@@ -221,7 +221,7 @@ let r2 = solver.solve(&another_y, &LsmrOptions::default())?;  // reuses precondi
 
 | Feature | Default | Effect |
 |---|---|---|
-| `ndarray` | yes | Enables `from_array` constructors for `ndarray::ArrayView2` interop. |
+| `ndarray` | no | Accepts `ndarray::ArrayView2<u32>` as a design, in addition to the always-available `Effect` slice terms. Off by default so the crate imposes no `ndarray` major version on callers. |
 
 ## Project structure
 

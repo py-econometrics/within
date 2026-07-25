@@ -2,15 +2,18 @@
 //! multiple solves on the same design) and the one-shot [`solve`] / [`solve_batch`]
 //! convenience wrappers built on top of it.
 
+#[cfg(feature = "ndarray")]
 use std::borrow::Cow;
 use std::time::Instant;
 
+#[cfg(feature = "ndarray")]
 use ndarray::{ArrayView2, Axis};
 use rayon::prelude::*;
 use schwarz_precond::{lsmr as lsmr_solve, mlsmr};
 
 use crate::config::{LsmrOptions, PreconditionerConfig};
 use crate::domain::{Design, Effect};
+#[cfg(feature = "ndarray")]
 use crate::observation::ObservationFrame;
 use crate::operator::design::gather_apply;
 use crate::operator::schwarz::{build_preconditioner, Preconditioner};
@@ -22,14 +25,15 @@ mod reparam;
 mod tests;
 use reparam::SlopeReparam;
 
-/// Fallible conversion into a [`Design`] for [`Solver::new`]: a categories
-/// matrix (`ArrayView2<u32>`), a list of [`Effect`] terms, or a pass-through
-/// [`Design`].
+/// Fallible conversion into a [`Design`] for [`Solver::new`]: a list of
+/// [`Effect`] terms, a pass-through [`Design`], or — with the optional
+/// `ndarray` feature — a categories matrix (`ArrayView2<u32>`).
 pub trait IntoDesign<'a> {
     /// Build the [`Design`], validating inputs along the way.
     fn into_design(self) -> Result<Design<'a>, BuildError>;
 }
 
+#[cfg(feature = "ndarray")]
 impl<'a> IntoDesign<'a> for ArrayView2<'a, u32> {
     fn into_design(self) -> Result<Design<'a>, BuildError> {
         // Borrow F-contiguous columns zero-copy; gather strided (C-order)

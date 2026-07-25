@@ -11,7 +11,7 @@ name = "_within"
 crate-type = ["cdylib"]
 
 [dependencies]
-within = { path = "../within" }
+within = { path = "../within", features = ["ndarray"] }
 postcard.workspace = true
 pyo3 = { version = "0.29", features = ["extension-module", "abi3-py39"] }
 numpy = "0.29"

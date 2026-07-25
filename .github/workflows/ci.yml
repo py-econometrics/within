@@ -38,6 +38,8 @@ jobs:
         run: pixi run -e ci cargo fmt --all -- --check
       - name: cargo clippy
         run: pixi run -e ci cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: cargo clippy (within, default features — no ndarray)
+        run: pixi run -e ci cargo clippy -p within --no-default-features --locked -- -D warnings
       - name: cargo deny
         run: pixi run -e ci cargo deny --locked check
       # Coverage instruments and runs the full workspace test suite + pytest,

@@ -4,6 +4,24 @@
 //! Schwarz preconditioner over factor-pair subdomains.
 //!
 //! ```
+//! use within::{solve, Effect, LsmrOptions};
+//!
+//! let f0 = vec![0u32; 10_000];
+//! let f1 = vec![0u32; 10_000];
+//! let design = vec![
+//!     Effect::new(&f0, true, []).unwrap(),
+//!     Effect::new(&f1, true, []).unwrap(),
+//! ];
+//! let y = vec![0.0; 10_000];
+//! let r = solve(design, &y, None, &LsmrOptions::default(), None).unwrap();
+//! assert!(r.converged);
+//! ```
+//!
+//! The optional `ndarray` feature additionally accepts a categories matrix,
+//! at the cost of pinning callers to this crate's `ndarray` major version:
+//!
+//! ```
+//! # #[cfg(feature = "ndarray")] fn main() {
 //! use ndarray::Array2;
 //! use within::{solve, LsmrOptions};
 //!
@@ -11,6 +29,8 @@
 //! let y = vec![0.0; 10_000];
 //! let r = solve(categories.view(), &y, None, &LsmrOptions::default(), None).unwrap();
 //! assert!(r.converged);
+//! # }
+//! # #[cfg(not(feature = "ndarray"))] fn main() {}
 //! ```
 //!
 //! # Reproducibility
