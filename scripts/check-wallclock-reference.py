@@ -39,7 +39,7 @@ def main() -> int:
     p.add_argument(
         "--update",
         action="store_true",
-        help="write the measured time into the reference file and exit",
+        help="refresh the reference file if the measured time clears the noise floor, then exit",
     )
     args = p.parse_args()
 
@@ -47,14 +47,23 @@ def main() -> int:
     reference = json.loads(ref_path.read_text())
     measured = args.measured_ns
     measured_ms = measured / 1e6
+    baseline = reference.get("best_ns")
 
     if args.update:
+        min_delta_pct = float(reference.get("refresh_min_delta_pct", 10.0))
+        if baseline:
+            delta_pct = (measured - baseline) / baseline * 100.0
+            if abs(delta_pct) <= min_delta_pct:
+                emit(
+                    f"Reference unchanged: {measured_ms:.1f} ms vs {baseline / 1e6:.1f} ms "
+                    f"({delta_pct:+.1f}%) is inside the ±{min_delta_pct:.0f}% refresh floor."
+                )
+                return 0
         reference["best_ns"] = round(measured, 3)
         ref_path.write_text(json.dumps(reference, indent=2) + "\n")
         emit(f"Updated wall-clock reference to {measured_ms:.1f} ms (best of runs).")
         return 0
 
-    baseline = reference.get("best_ns")
     if not baseline:
         emit(
             f"⚠️ **Perf reference not bootstrapped.** Measured {measured_ms:.1f} ms. "

@@ -5,6 +5,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 concurrency:
   group: ${{ github.workflow }}
@@ -12,6 +13,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  REFERENCE_FILE: benches/wallclock_reference.json
 
 jobs:
   refresh:
@@ -44,28 +46,34 @@ jobs:
           best="$(printf '%s\n' "$out" | grep -oE 'WALLCLOCK_BEST_NS=[0-9]+' | tail -n1 | cut -d= -f2 || true)"
           echo "best_ns=${best:-}" >> "$GITHUB_OUTPUT"
 
-      - name: Write reference
+      - name: Update reference
+        env:
+          BEST_NS: ${{ steps.bench.outputs.best_ns }}
         run: |
-          if [ -z "${{ steps.bench.outputs.best_ns }}" ]; then
+          if [ -z "$BEST_NS" ]; then
             echo "::error::bench emitted no WALLCLOCK_BEST_NS; reference unchanged"
             exit 1
           fi
-          python3 scripts/check-wallclock-reference.py --measured-ns "${{ steps.bench.outputs.best_ns }}" --update
+          python3 scripts/check-wallclock-reference.py --measured-ns "$BEST_NS" --update
 
-      - name: Commit refreshed reference
+      - name: Open refresh pull request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BEST_NS: ${{ steps.bench.outputs.best_ns }}
+          SOURCE_SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          if git diff --quiet -- benches/wallclock_reference.json; then
-            echo "reference already matches this run; nothing to commit"
+          if git diff --quiet -- "$REFERENCE_FILE"; then
+            echo "reference already matches this run; no pull request opened"
             exit 0
           fi
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add benches/wallclock_reference.json
-          git commit -m "chore(perf): refresh wall-clock reference (#147) [skip ci]"
-          for attempt in 1 2 3 4 5; do
-            git push && exit 0
-            echo "push rejected (raced a merge to main); rebasing and retrying ($attempt)…"
-            git pull --rebase origin main
-          done
-          echo "::error::could not push refreshed wall-clock reference after retries"
-          exit 1
+          git switch -c "perf/reference-$stamp"
+          git add "$REFERENCE_FILE"
+          git commit -m "chore(perf): refresh wall-clock reference to ${BEST_NS}ns (#147)" -m "Measured on ${SOURCE_SHA}."
+          git push origin "perf/reference-$stamp"
+          gh pr create --base main --head "perf/reference-$stamp" \
+            --title "chore(perf): refresh wall-clock reference ($stamp)" \
+            --body "$(printf 'Measured on `%s` by [this run](%s).\n\nRequired checks do not start on a `GITHUB_TOKEN` pull request: merge with the admin bypass, or push to the branch to trigger them.\n' "$SOURCE_SHA" "$RUN_URL")"
