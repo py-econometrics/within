@@ -24,6 +24,7 @@ thiserror = "2"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(docsrs)'] }
 
 [profile.release]
 opt-level = 3

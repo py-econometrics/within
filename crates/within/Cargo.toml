@@ -9,6 +9,14 @@ readme = "README.md"
 repository.workspace = true
 keywords = ["fixed-effects", "least-squares", "preconditioner", "schwarz", "econometrics"]
 categories.workspace = true
+# Test and bench targets reach the array path through a self-referential
+# dev-dependency, which cargo strips on publish; shipping them would ship
+# sources that cannot build from the tarball.
+exclude = ["tests/", "benches/"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []

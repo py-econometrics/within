@@ -1,3 +1,4 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![deny(missing_docs)]
 //! Fixed-effects normal-equation solver. Solves `G x = D^T W y` (with
 //! `G = D^T W D`) for a sparse categorical design `D` via modified LSMR with a

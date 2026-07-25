@@ -18,7 +18,6 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - `SchurMode` (Rust) / `Schur` (Python, `Schur.approximate(...)` / `Schur.exact()`) names the local solver's Schur-reduction mode explicitly (#104).
 - New `BuildError` variants `EmptyEffect` and `SlopeLengthMismatch` for malformed effect terms (#58).
 - **`ObservationFrame`:** columnar observation storage — one `u32` level-code column per factor plus `f64` loading columns, each independently borrowed or owned (#68).
-- Optional, off-by-default `ndarray` feature for `ArrayView2<u32>` design input; a default build has no `ndarray` dependency.
 - **Locality sort:** `Design` reorders observations by the highest-cardinality factor when unsorted, copying columns once; results still return in caller row order (#68).
 
 ### Changed

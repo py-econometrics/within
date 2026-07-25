@@ -28,6 +28,11 @@ use reparam::SlopeReparam;
 /// Fallible conversion into a [`Design`] for [`Solver::new`]: a list of
 /// [`Effect`] terms, a pass-through [`Design`], or — with the optional
 /// `ndarray` feature — a categories matrix (`ArrayView2<u32>`).
+#[diagnostic::on_unimplemented(
+    note = "to pass an `ndarray::ArrayView2<u32>`, enable this crate's `ndarray` feature",
+    note = "if it is already enabled, your `ndarray` major version differs from this crate's, which makes the two `ArrayView2` types distinct",
+    note = "`Effect` terms are built from plain slices and need neither"
+)]
 pub trait IntoDesign<'a> {
     /// Build the [`Design`], validating inputs along the way.
     fn into_design(self) -> Result<Design<'a>, BuildError>;

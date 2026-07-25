@@ -163,9 +163,13 @@ Coefficients for unidentified directions are pinned to the **minimal-norm** valu
 use within::{solve, Effect, LsmrOptions, PreconditionerConfig};
 use within::config::{LocalSolverConfig, ReductionStrategy};
 
-let levels: &[u32] = /* level codes, one per observation, per factor */;
+let firm: &[u32] = /* level codes, one per observation */;
+let year: &[u32] = /* level codes, one per observation */;
 let y: &[f64] = /* response vector */;
-let design = vec![Effect::new(levels, true, [])?];
+let design = vec![
+    Effect::new(firm, true, [])?,
+    Effect::new(year, true, [])?,
+];
 
 // Default: LSMR + additive Schwarz (None → library default)
 let r = solve(design.clone(), &y, None, &LsmrOptions::default(), None)?;
