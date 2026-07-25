@@ -18,6 +18,14 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
+    "Programming Language :: Python :: Free Threading :: 2 - Beta",
     "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: Rust",
     "Topic :: Scientific/Engineering :: Mathematics",
@@ -32,7 +40,7 @@ Repository = "https://github.com/py-econometrics/within"
 Changelog = "https://github.com/py-econometrics/within/blob/main/CHANGELOG.md"
 
 [build-system]
-requires = ["maturin>=1.7,<2"]
+requires = ["maturin>=1.14,<2"]
 build-backend = "maturin"
 
 [tool.maturin]

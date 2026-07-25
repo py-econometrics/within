@@ -7,7 +7,7 @@ python = ">=3.9"
 
 [feature.build.dependencies]
 rust = ">=1.84"
-maturin = ">=1.7"
+maturin = ">=1.14"
 uv = ">=0.4"
 
 # Everything CI needs to run the suite (cargo test + pytest + coverage + deny).

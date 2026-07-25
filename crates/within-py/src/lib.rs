@@ -24,7 +24,7 @@ use results::{PyBatchSolveResult, PyCoefficientLayout, PySolveResult, PyUnidenti
 // Module
 // ---------------------------------------------------------------------------
 
-#[pymodule]
+#[pymodule(gil_used = false)]
 fn _within(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySolveResult>()?;
     m.add_class::<PyBatchSolveResult>()?;
