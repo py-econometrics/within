@@ -1,7 +1,7 @@
 //! Reduced-system factor backends for Schur-complement local solves.
 //!
-//! [`ReducedFactor`] wraps either approximate sparse Cholesky (from `approx-chol`)
-//! or dense Cholesky on a principal minor ([`DenseCholesky`]).
+//! [`ReducedSystem`] pairs an approximate sparse or dense direct factor with
+//! the floating, grounded, or signed solve semantics it supports.
 //! [`factor_sparse`] bridges to the `approx-chol` builder, surfacing build errors
 //! as [`BuildError::LocalSolverBuild`].
 
@@ -18,34 +18,34 @@ use crate::config::ApproxCholConfig;
 use crate::BuildError;
 
 // ===========================================================================
-// ReducedFactor — reduced-system factor backend for Schur-complement solves
+// ReducedSystem — factor backend paired with its solve semantics
 // ===========================================================================
 
-/// Reduced-system factor backend for Schur-complement local solves.
 #[derive(Clone, serde::Serialize)]
-pub(crate) enum ReducedFactor {
-    // Postcard encodes enum discriminants by declaration order; the wire
-    // fixture pins Approx = 0 and Dense = 1, so new variants append after them.
-    /// Approximate sparse Cholesky on the reduced Schur CSR.
+pub(crate) enum DirectFactor {
     Approx(Factor),
-    /// Exact dense Cholesky on a principal minor of the Schur matrix.
     Dense(DenseCholesky),
-    /// Gremban double cover of a signed (frustrated) reduced Schur: `inner`
-    /// factors the doubled cover system (any backend — sampled approx-chol for
-    /// large covers, exact dense for small ones), and `m` is the single signed
-    /// dimension the solve presents to the caller. The cover lives only here —
-    /// the local operator stays single-sized.
-    Cover {
-        /// Factor of the doubled cover (dimension
-        /// `inner.factor_dimension() >= 2*m`; the tail past `2*m` is the
-        /// cover's grounding augmentation).
-        inner: Box<ReducedFactor>,
-        /// Single signed reduced dimension exposed to the caller.
-        m: usize,
-    },
 }
 
-impl ReducedFactor {
+impl<'de> serde::Deserialize<'de> for DirectFactor {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+
+        #[derive(serde::Deserialize)]
+        enum Repr {
+            Approx(Factor),
+            Dense(DenseCholesky),
+        }
+
+        match Repr::deserialize(deserializer)? {
+            Repr::Approx(factor) => checked_approx(factor),
+            Repr::Dense(factor) => checked_dense(factor),
+        }
+        .map_err(D::Error::custom)
+    }
+}
+
+impl DirectFactor {
     pub(crate) fn try_dense(minor: Vec<f64>, n: usize) -> Option<Self> {
         DenseCholesky::try_factor(minor, n).map(Self::Dense)
     }
@@ -54,8 +54,6 @@ impl ReducedFactor {
         match self {
             Self::Approx(f) => f.original_n(),
             Self::Dense(f) => f.n(),
-            // The cover is hidden behind the single signed interface.
-            Self::Cover { m, .. } => *m,
         }
     }
 
@@ -63,28 +61,10 @@ impl ReducedFactor {
         match self {
             Self::Approx(f) => f.n(),
             Self::Dense(f) => f.n(),
-            Self::Cover { m, .. } => *m,
         }
     }
 
-    /// Extra scratch beyond the reduced buffers that [`Self::solve_in_place`]
-    /// needs. Only [`Self::Cover`] embeds into a larger system; the direct
-    /// arms solve in place and need none.
-    pub(crate) fn scratch_len(&self) -> usize {
-        match self {
-            Self::Approx(_) | Self::Dense(_) => 0,
-            Self::Cover { inner, .. } => inner.factor_dimension() + inner.scratch_len(),
-        }
-    }
-
-    /// Solve the reduced system in place. `x` has length [`Self::factor_dimension`];
-    /// `scratch` is at least [`Self::scratch_len`] long (the [`Self::Cover`]
-    /// embed buffer, reused across LSMR iterations).
-    pub(crate) fn solve_in_place(
-        &self,
-        x: &mut [f64],
-        scratch: &mut [f64],
-    ) -> Result<(), LocalSolveError> {
+    fn solve_in_place(&self, x: &mut [f64]) -> Result<(), LocalSolveError> {
         match self {
             Self::Approx(f) => {
                 debug_assert_eq!(f.n(), x.len());
@@ -99,114 +79,139 @@ impl ReducedFactor {
                 f.solve_in_place(x);
                 Ok(())
             }
-            Self::Cover { inner, m } => {
-                debug_assert_eq!(*m, x.len());
-                let cover_n = inner.factor_dimension();
-                let (buf, rest) = scratch.split_at_mut(cover_n);
-                // Embed the antisymmetric RHS [b, -b] into the cover. Any
-                // grounding vertex past the 2m cover nodes has zero RHS (it
-                // cancels in the antisymmetric sheet difference), so clear the
-                // reused scratch tail rather than assume it is zeroed.
-                buf[..*m].copy_from_slice(x);
-                for (out, &v) in buf[*m..2 * *m].iter_mut().zip(x.iter()) {
-                    *out = -v;
-                }
-                for slot in buf[2 * *m..].iter_mut() {
-                    *slot = 0.0;
-                }
-                inner.solve_in_place(buf, rest)?;
-                // Read back the antisymmetric solution: x = (x⁺ - x⁻) / 2.
-                for (i, out) in x.iter_mut().enumerate() {
-                    *out = 0.5 * (buf[i] - buf[*m + i]);
-                }
-                Ok(())
-            }
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Deserialize — validated reconstruction from untrusted bytes
-// ---------------------------------------------------------------------------
-
-/// Wire mirror of [`ReducedFactor`]. `Cover`'s `inner` is a non-recursive
-/// [`LeafFactor`], so a `Cover`-of-`Cover` — which no real build produces —
-/// fails to decode with an unknown-variant error instead of recursing without
-/// bound (a serialized chain of `Cover` discriminants would otherwise overflow
-/// the stack, both while decoding and in [`ReducedFactor::scratch_len`]).
-#[derive(serde::Deserialize)]
-enum ReducedFactorWire {
-    Approx(Factor),
-    Dense(DenseCholesky),
-    Cover { inner: Box<LeafFactor>, m: usize },
+#[derive(Clone, serde::Serialize)]
+pub(crate) struct CoverFactor {
+    inner: DirectFactor,
+    m: usize,
 }
 
-/// A `Cover`'s inner factor: only ever a direct backend, never another cover.
-#[derive(serde::Deserialize)]
-enum LeafFactor {
-    Approx(Factor),
-    Dense(DenseCholesky),
+impl<'de> serde::Deserialize<'de> for CoverFactor {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+
+        #[derive(serde::Deserialize)]
+        struct Repr {
+            inner: DirectFactor,
+            m: usize,
+        }
+
+        let repr = Repr::deserialize(deserializer)?;
+        Self::try_new(repr.inner, repr.m).map_err(D::Error::custom)
+    }
 }
 
-/// Reject an `Approx` factor whose dimensions cannot arise from `approx-chol`,
-/// whose contract augments the input by at most one Gremban vertex, so
-/// `n ∈ {original_n, original_n + 1}`. Without this, a crafted `Factor::n`
-/// overflows the caller's scratch arithmetic.
-fn checked_approx(f: Factor) -> Result<ReducedFactor, &'static str> {
-    let (n, base) = (f.n(), f.original_n());
+impl CoverFactor {
+    pub(crate) fn try_new(inner: DirectFactor, m: usize) -> Result<Self, &'static str> {
+        let two_m = m.checked_mul(2).ok_or("Cover dimension m too large")?;
+        let cover_dimension = inner.factor_dimension();
+        if cover_dimension < two_m || cover_dimension > two_m.saturating_add(2) {
+            return Err("Cover inner factor dimension inconsistent with m");
+        }
+        Ok(Self { inner, m })
+    }
+
+    fn solve_in_place(&self, x: &mut [f64], scratch: &mut [f64]) -> Result<(), LocalSolveError> {
+        debug_assert_eq!(self.m, x.len());
+        let cover_n = self.inner.factor_dimension();
+        let buf = &mut scratch[..cover_n];
+        buf[..self.m].copy_from_slice(x);
+        for (out, &value) in buf[self.m..2 * self.m].iter_mut().zip(x.iter()) {
+            *out = -value;
+        }
+        buf[2 * self.m..].fill(0.0);
+        self.inner.solve_in_place(buf)?;
+        for (i, out) in x.iter_mut().enumerate() {
+            *out = 0.5 * (buf[i] - buf[self.m + i]);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) enum ReducedSystem {
+    Floating(DirectFactor),
+    Grounded(DirectFactor),
+    Signed(CoverFactor),
+}
+
+impl ReducedSystem {
+    pub(crate) fn floating(factor: DirectFactor) -> Self {
+        Self::Floating(factor)
+    }
+
+    pub(crate) fn grounded(factor: DirectFactor) -> Self {
+        Self::Grounded(factor)
+    }
+
+    pub(crate) fn signed(factor: CoverFactor) -> Self {
+        Self::Signed(factor)
+    }
+
+    pub(crate) fn is_floating(&self) -> bool {
+        matches!(self, Self::Floating(_))
+    }
+
+    pub(crate) fn factor_dimension(&self) -> usize {
+        match self {
+            Self::Floating(factor) | Self::Grounded(factor) => factor.factor_dimension(),
+            Self::Signed(factor) => factor.m,
+        }
+    }
+
+    pub(crate) fn scratch_len(&self) -> usize {
+        match self {
+            Self::Floating(_) | Self::Grounded(_) => 0,
+            Self::Signed(factor) => factor.inner.factor_dimension(),
+        }
+    }
+
+    pub(crate) fn solve_in_place(
+        &self,
+        x: &mut [f64],
+        scratch: &mut [f64],
+    ) -> Result<(), LocalSolveError> {
+        match self {
+            Self::Floating(factor) | Self::Grounded(factor) => factor.solve_in_place(x),
+            Self::Signed(factor) => factor.solve_in_place(x, scratch),
+        }
+    }
+
+    pub(crate) fn validate_keep_dimension(&self, n_keep: usize) -> Result<(), &'static str> {
+        match self {
+            Self::Floating(factor) if factor.input_dimension() == n_keep => Ok(()),
+            Self::Grounded(factor)
+                if factor.input_dimension() == n_keep
+                    || factor.input_dimension() == n_keep.saturating_add(1) =>
+            {
+                Ok(())
+            }
+            Self::Signed(factor) if factor.m == n_keep => Ok(()),
+            _ => Err("reduced system dimension disagrees with kept block"),
+        }
+    }
+}
+
+fn checked_approx(factor: Factor) -> Result<DirectFactor, &'static str> {
+    let (n, base) = (factor.n(), factor.original_n());
     if n == base || Some(n) == base.checked_add(1) {
-        Ok(ReducedFactor::Approx(f))
+        Ok(DirectFactor::Approx(factor))
     } else {
         Err("Approx factor dimension inconsistent with its original dimension")
     }
 }
 
-/// Reject a [`DenseCholesky`] whose factor length is neither the full `n×n`
-/// minor nor the anchored `(n-1)×(n-1)` one — the only two shapes
-/// [`DenseCholesky::solve_in_place`] can view without reading out of bounds.
-fn checked_dense(dc: DenseCholesky) -> Result<ReducedFactor, &'static str> {
-    let n = dc.n;
+fn checked_dense(factor: DenseCholesky) -> Result<DirectFactor, &'static str> {
+    let n = factor.n;
     let full = n.checked_mul(n);
     let anchored = n.saturating_sub(1).checked_mul(n.saturating_sub(1));
-    if Some(dc.l_row_major.len()) == full || Some(dc.l_row_major.len()) == anchored {
-        Ok(ReducedFactor::Dense(dc))
+    if Some(factor.l_row_major.len()) == full || Some(factor.l_row_major.len()) == anchored {
+        Ok(DirectFactor::Dense(factor))
     } else {
         Err("DenseCholesky factor length inconsistent with its dimension")
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for ReducedFactor {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        use serde::de::Error;
-        match ReducedFactorWire::deserialize(deserializer)? {
-            ReducedFactorWire::Approx(f) => checked_approx(f).map_err(D::Error::custom),
-            ReducedFactorWire::Dense(dc) => checked_dense(dc).map_err(D::Error::custom),
-            ReducedFactorWire::Cover { inner, m } => {
-                let inner = match *inner {
-                    LeafFactor::Approx(f) => checked_approx(f),
-                    LeafFactor::Dense(dc) => checked_dense(dc),
-                }
-                .map_err(D::Error::custom)?;
-                // `solve_in_place` embeds the antisymmetric `[b, -b]` RHS into
-                // the inner factor, whose dimension is the `2m` doubled cover
-                // nodes plus at most two augmentation vertices (the grounded
-                // minor's and approx-chol's Gremban vertex). Anything outside
-                // `[2m, 2m + 2]` over- or under-runs that embed.
-                let two_m = m
-                    .checked_mul(2)
-                    .ok_or_else(|| D::Error::custom("Cover dimension m too large"))?;
-                let cover_dim = inner.factor_dimension();
-                if cover_dim < two_m || cover_dim > two_m.saturating_add(2) {
-                    return Err(D::Error::custom(
-                        "Cover inner factor dimension inconsistent with m",
-                    ));
-                }
-                Ok(ReducedFactor::Cover {
-                    inner: Box::new(inner),
-                    m,
-                })
-            }
-        }
     }
 }
 
@@ -303,7 +308,7 @@ impl DenseCholesky {
 pub(crate) fn factor_sparse(
     matrix: &CsrMatrix,
     approx_chol: ApproxCholConfig,
-) -> Result<ReducedFactor, BuildError> {
+) -> Result<DirectFactor, BuildError> {
     let schur_builder = Builder::new(approx_chol.to_approx_chol());
     let csr = CsrRef::new(
         matrix.indptr(),
@@ -314,7 +319,7 @@ pub(crate) fn factor_sparse(
     .map_err(|e| BuildError::LocalSolverBuild(format!("invalid Schur complement CSR: {e}")))?;
     schur_builder
         .build(csr)
-        .map(ReducedFactor::Approx)
+        .map(DirectFactor::Approx)
         .map_err(|e| {
             BuildError::LocalSolverBuild(format!("failed Schur complement factorization: {e}"))
         })
@@ -383,7 +388,7 @@ mod tests {
         // edge (0,1) routes to 0-1' and 0'-1 as SDDM off-diagonals, so the
         // cover is strictly diagonally dominant. Verified by hand that
         // Ŝ·[z, -z] = [Mz, -Mz], hence the antisymmetric embed of b recovers
-        // M⁻¹b — this pins the ReducedFactor::Cover embed/read-back, not
+        // M⁻¹b — this pins the cover embed/read-back, not
         // approx-chol's accuracy (checked via the residual M x ≈ b).
         let cover = CsrMatrix::new(
             vec![0, 2, 4, 6, 8],
@@ -399,11 +404,8 @@ mod tests {
             },
         )
         .expect("factor cover");
-        let reduced = ReducedFactor::Cover {
-            inner: Box::new(inner),
-            m: 2,
-        };
-        assert_eq!(reduced.input_dimension(), 2);
+        let reduced =
+            ReducedSystem::signed(CoverFactor::try_new(inner, 2).expect("valid cover dimensions"));
         assert_eq!(reduced.factor_dimension(), 2);
 
         let b = [1.0, 0.5];
@@ -419,52 +421,48 @@ mod tests {
         assert!(r0.hypot(r1) < 1e-9, "residual too large: ({r0}, {r1})");
     }
 
-    fn dense_2x2() -> ReducedFactor {
-        ReducedFactor::try_dense(vec![4.0, 0.0, 0.0, 9.0], 2).expect("spd minor")
+    fn dense_2x2() -> DirectFactor {
+        DirectFactor::try_dense(vec![4.0, 0.0, 0.0, 9.0], 2).expect("spd minor")
     }
 
     #[test]
     fn valid_dense_round_trips() {
-        let bytes = postcard::to_stdvec(&dense_2x2()).expect("serialize");
-        let restored: ReducedFactor = postcard::from_bytes(&bytes).expect("deserialize");
+        let system = ReducedSystem::floating(dense_2x2());
+        let bytes = postcard::to_stdvec(&system).expect("serialize");
+        let restored: ReducedSystem = postcard::from_bytes(&bytes).expect("deserialize");
         assert_eq!(restored.factor_dimension(), 2);
     }
 
     #[test]
-    fn nested_cover_is_rejected() {
-        // A cover whose inner is itself a cover — never built, and the shape
-        // whose `scratch_len` recursion overflowed the stack (#166).
-        let nested = ReducedFactor::Cover {
-            inner: Box::new(ReducedFactor::Cover {
-                inner: Box::new(dense_2x2()),
-                m: 1,
-            }),
-            m: 1,
-        };
-        let bytes = postcard::to_stdvec(&nested).expect("serialize");
-        assert!(postcard::from_bytes::<ReducedFactor>(&bytes).is_err());
-    }
-
-    #[test]
     fn dense_with_inconsistent_length_is_rejected() {
-        // len 3 is neither the full 4×4 nor the anchored 3×3 minor of n = 4.
-        let bad = ReducedFactor::Dense(DenseCholesky {
+        #[allow(dead_code)]
+        #[derive(serde::Serialize)]
+        enum UncheckedDirectFactor {
+            Approx(Factor),
+            Dense(DenseCholesky),
+        }
+
+        let bad = UncheckedDirectFactor::Dense(DenseCholesky {
             l_row_major: vec![1.0, 2.0, 3.0],
             n: 4,
         });
         let bytes = postcard::to_stdvec(&bad).expect("serialize");
-        assert!(postcard::from_bytes::<ReducedFactor>(&bytes).is_err());
+        assert!(postcard::from_bytes::<DirectFactor>(&bytes).is_err());
     }
 
     #[test]
     fn cover_with_undersized_inner_is_rejected() {
-        // The inner factor (dim 2) cannot hold the antisymmetric embed for m = 5
-        // (which needs 2m = 10 nodes).
-        let bad = ReducedFactor::Cover {
-            inner: Box::new(dense_2x2()),
+        #[derive(serde::Serialize)]
+        struct UncheckedCoverFactor {
+            inner: DirectFactor,
+            m: usize,
+        }
+
+        let bad = UncheckedCoverFactor {
+            inner: dense_2x2(),
             m: 5,
         };
         let bytes = postcard::to_stdvec(&bad).expect("serialize");
-        assert!(postcard::from_bytes::<ReducedFactor>(&bytes).is_err());
+        assert!(postcard::from_bytes::<CoverFactor>(&bytes).is_err());
     }
 }

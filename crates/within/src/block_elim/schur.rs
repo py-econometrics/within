@@ -9,10 +9,9 @@ use super::compensated_sum;
 use super::csr_matrix::CsrMatrix;
 use rayon::prelude::*;
 
-use super::elimination::{Edge, Elimination};
+use super::elimination::{Edge, Elimination, EliminationGrounding};
 use crate::config::ApproxSchurConfig;
 use crate::csr_block::to_u32;
-use crate::domain::SolveSpace;
 
 /// Build the exact Schur complement via row-workspace accumulation.
 ///
@@ -45,14 +44,14 @@ pub(crate) fn exact(elim: &Elimination) -> CsrMatrix {
 /// the ground vertex as an ordinary final vertex.
 pub(crate) fn sampled(elim: &Elimination, config: &ApproxSchurConfig) -> CsrMatrix {
     let edges = elim.par_emit(config);
-    let n = elim.n_keep + usize::from(elim.solve_space == SolveSpace::Grounded);
+    let n = elim.n_keep + usize::from(elim.grounding.is_grounded());
     build_laplacian_csr(&edges, n)
 }
 
 pub(crate) fn exact_for_factor(elim: &Elimination) -> CsrMatrix {
     let principal = exact(elim);
     let surplus = reduced_surplus(elim);
-    build_explicit_laplacian(&principal, &surplus, elim.solve_space)
+    build_explicit_laplacian(&principal, surplus.as_deref())
 }
 
 /// Build the exact top-left `m × m` Schur minor in row-major order.
@@ -201,37 +200,41 @@ fn build_laplacian_csr(edges: &[Edge], n: usize) -> CsrMatrix {
     CsrMatrix::new(offsets, indices, data, n)
 }
 
-fn reduced_surplus(elim: &Elimination) -> Vec<f64> {
-    if elim.solve_space == SolveSpace::Floating {
-        return vec![0.0; elim.n_keep];
-    }
+fn reduced_surplus(elim: &Elimination) -> Option<Vec<f64>> {
+    let EliminationGrounding::Grounded {
+        surplus_keep,
+        surplus_elim,
+    } = &elim.grounding
+    else {
+        return None;
+    };
     let scaled: Vec<f64> = elim
         .inv_diag_elim
         .iter()
-        .zip(elim.surplus_elim)
+        .zip(*surplus_elim)
         .map(|(&inv_diag, &surplus)| inv_diag * surplus)
         .collect();
-    let mut surplus = vec![0.0; elim.n_keep];
+    let mut reduced = vec![0.0; elim.n_keep];
     elim.keep_to_elim
-        .spmv_assign_add(&scaled, elim.surplus_keep, &mut surplus, false);
-    surplus
+        .spmv_assign_add(&scaled, surplus_keep, &mut reduced, false);
+    Some(reduced)
 }
 
 pub(super) fn build_explicit_laplacian(
     principal: &CsrMatrix,
-    surplus: &[f64],
-    solve_space: SolveSpace,
+    surplus: Option<&[f64]>,
 ) -> CsrMatrix {
     let n_keep = principal.n();
     let ground = to_u32(n_keep);
-    let grounded = solve_space == SolveSpace::Grounded;
+    let grounded = surplus.is_some();
     let n = n_keep + usize::from(grounded);
     let mut indptr = Vec::with_capacity(n + 1);
     let mut indices = Vec::new();
     let mut data = Vec::new();
     indptr.push(0);
 
-    for (i, &row_surplus) in surplus.iter().enumerate().take(n_keep) {
+    for i in 0..n_keep {
+        let row_surplus = surplus.map_or(0.0, |values| values[i]);
         let start = principal.indptr()[i] as usize;
         let end = principal.indptr()[i + 1] as usize;
         let mut adjacency = 0.0;
@@ -259,7 +262,7 @@ pub(super) fn build_explicit_laplacian(
         indptr.push(to_u32(indices.len()));
     }
 
-    if grounded {
+    if let Some(surplus) = surplus {
         for (i, &value) in surplus.iter().enumerate() {
             if value > 0.0 {
                 indices.push(to_u32(i));
@@ -277,7 +280,7 @@ pub(super) fn build_explicit_laplacian(
 mod tests {
     use super::*;
     use crate::csr_block::CsrBlock;
-    use crate::domain::{BlockDiagonals, CrossTab, GroundEdges};
+    use crate::domain::{BlockDiagonals, CrossTab, GroundEdges, Grounding};
 
     fn make_cross_tab(
         c_dense: &[f64],
@@ -397,10 +400,9 @@ mod tests {
         let diag_r = vec![7.0, 9.0];
         let (cross_tab, diagonals) = make_cross_tab(&c_dense, 3, 2, diag_q.clone(), diag_r.clone());
         let surplus = surplus_of(&cross_tab, &diagonals);
-        let elim =
-            Elimination::new(&cross_tab, &diagonals, &surplus, SolveSpace::Grounded).unwrap();
+        let grounding = Grounding::Grounded(surplus);
+        let elim = Elimination::new(&cross_tab, &diagonals, &grounding).unwrap();
 
-        assert!(elim.eliminate_q);
         assert_eq!(elim.inv_diag_elim.len(), 3);
         for (&got, &expected) in elim
             .inv_diag_elim
@@ -426,7 +428,8 @@ mod tests {
         let (cross_tab, diagonals) = make_cross_tab(&c_dense, 2, 3, diag_q, diag_r);
 
         let surplus = surplus_of(&cross_tab, &diagonals);
-        let result = Elimination::new(&cross_tab, &diagonals, &surplus, SolveSpace::Grounded);
+        let grounding = Grounding::Grounded(surplus);
+        let result = Elimination::new(&cross_tab, &diagonals, &grounding);
         match result {
             Err(crate::BuildError::SingularDiagonal { index: 2, .. }) => {}
             Err(e) => panic!("expected SingularDiagonal at index 2, got: {e}"),
@@ -442,11 +445,9 @@ mod tests {
         let c_dense = vec![1.0, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
         let (cross_tab, diagonals) =
             make_cross_tab(&c_dense, 3, 3, vec![6.0, 1.0, 1.0], vec![2.0, 3.0, 3.0]);
-        let surplus = surplus_of(&cross_tab, &diagonals);
-        let elim_a =
-            Elimination::new(&cross_tab, &diagonals, &surplus, SolveSpace::Floating).unwrap();
-        let elim_b =
-            Elimination::new(&cross_tab, &diagonals, &surplus, SolveSpace::Floating).unwrap();
+        let grounding = Grounding::Floating;
+        let elim_a = Elimination::new(&cross_tab, &diagonals, &grounding).unwrap();
+        let elim_b = Elimination::new(&cross_tab, &diagonals, &grounding).unwrap();
         let config = crate::config::ApproxSchurConfig {
             seed: 12345,
             ..Default::default()
@@ -455,7 +456,6 @@ mod tests {
         let a = sampled(&elim_a, &config);
         let b = sampled(&elim_b, &config);
 
-        assert_eq!(elim_a.eliminate_q, elim_b.eliminate_q);
         assert_eq!(elim_a.inv_diag_elim, elim_b.inv_diag_elim);
         assert_eq!(a.indptr(), b.indptr());
         assert_eq!(a.indices(), b.indices());
@@ -494,10 +494,8 @@ mod tests {
         let diag_r = vec![3.5, 7.0];
         let (cross_tab, diagonals) = make_cross_tab(&c_dense, 3, 2, diag_q.clone(), diag_r.clone());
         let surplus = surplus_of(&cross_tab, &diagonals);
-        let elim =
-            Elimination::new(&cross_tab, &diagonals, &surplus, SolveSpace::Grounded).unwrap();
-        assert!(elim.eliminate_q);
-
+        let grounding = Grounding::Grounded(surplus);
+        let elim = Elimination::new(&cross_tab, &diagonals, &grounding).unwrap();
         let sampled_dense = sparse_to_dense(&sampled(&elim, &Default::default()));
         let expected = dense_exact_schur(&c_dense, 3, 2, &diag_q, &diag_r, true);
         let sampled_principal: Vec<Vec<f64>> = sampled_dense[..expected.len()]

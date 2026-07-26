@@ -14,10 +14,10 @@ use crate::{BuildError, BuildWarning, SignedPair};
 use super::{find_all_active_levels, BlockDiagonals, Channel, ChannelPair, CrossTab, Design};
 
 mod sddm;
+#[cfg(test)]
+pub(crate) use sddm::GroundEdges;
 use sddm::{convert, NotScalable};
-pub(crate) use sddm::{
-    CoordinateMap, GroundEdges, Grounding, LocalComponent, Reduction, SolveSpace,
-};
+pub(crate) use sddm::{CoordinateMap, Grounding, LocalComponent, Reduction};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ComponentClass {

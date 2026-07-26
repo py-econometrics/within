@@ -52,7 +52,7 @@ fn test_solve_batch_matches_individual() {
     let batch =
         solve_batch(categories.view(), &[&y1, &y2], None, &params, &precond).expect("solve batch");
 
-    assert_eq!(batch.converged.len(), 2);
+    assert_eq!(batch.n_rhs(), 2);
     for (a, b) in batch.x(0).iter().zip(r1.x.iter()) {
         assert!((a - b).abs() < 1e-12, "batch vs individual x mismatch");
     }
@@ -72,8 +72,8 @@ fn test_solve_batch_single_rhs() {
     let batch = solve_batch(categories.view(), &[&y[..]], None, &params, &precond)
         .expect("solve batch single");
 
-    assert_eq!(batch.converged.len(), 1);
-    assert!(batch.converged[0]);
+    assert_eq!(batch.n_rhs(), 1);
+    assert!(batch.stats[0].converged);
     assert!(batch.x(0).iter().all(|v| v.is_finite()));
 }
 
@@ -96,8 +96,8 @@ fn test_solve_batch_weighted() {
     )
     .expect("solve batch weighted");
 
-    assert_eq!(batch.converged.len(), 2);
-    assert!(batch.converged.iter().all(|&c| c));
+    assert_eq!(batch.n_rhs(), 2);
+    assert!(batch.stats.iter().all(|stats| stats.converged));
 }
 
 #[test]
@@ -112,8 +112,7 @@ fn test_batch_result_accessors() {
     let batch =
         solve_batch(categories.view(), &[&y1, &y2], None, &params, &precond).expect("solve batch");
 
-    // n_rhs
-    assert_eq!(batch.converged.len(), 2);
+    assert_eq!(batch.n_rhs(), 2);
 
     // x_all length
     let n_dofs = batch.x(0).len();
@@ -125,20 +124,12 @@ fn test_batch_result_accessors() {
     assert_eq!(batch.demeaned(1).len(), n_obs);
     assert_eq!(batch.demeaned.len(), 2 * n_obs);
 
-    // converged
-    assert_eq!(batch.converged.len(), 2);
-    assert!(batch.converged.iter().all(|&c| c));
-
-    // iterations
-    assert_eq!(batch.iterations.len(), 2);
-
-    // residual
-    assert_eq!(batch.residual.len(), 2);
-    assert!(batch.residual.iter().all(|&r| r.is_finite() && r >= 0.0));
-
-    // time_solve
-    assert_eq!(batch.time_solve.len(), 2);
-    assert!(batch.time_solve.iter().all(|&t| t >= 0.0));
+    assert!(batch.stats.iter().all(|stats| stats.converged));
+    assert!(batch
+        .stats
+        .iter()
+        .all(|stats| stats.residual.is_finite() && stats.residual >= 0.0));
+    assert!(batch.stats.iter().all(|stats| stats.time_solve >= 0.0));
 
     // The free solve_batch folds the shared preconditioner build into
     // time_setup; a dropped build cost would read as exactly 0.

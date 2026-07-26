@@ -185,7 +185,17 @@ pub(crate) fn into_py_batch_result(
     py: Python<'_>,
     result: within::BatchSolveResult,
 ) -> PyResult<PyBatchSolveResult> {
-    let n_rhs = result.converged.len();
+    let n_rhs = result.stats.len();
+    let mut converged = Vec::with_capacity(n_rhs);
+    let mut iterations = Vec::with_capacity(n_rhs);
+    let mut residual = Vec::with_capacity(n_rhs);
+    let mut time_solve = Vec::with_capacity(n_rhs);
+    for stats in result.stats {
+        converged.push(stats.converged);
+        iterations.push(stats.iterations);
+        residual.push(stats.residual);
+        time_solve.push(stats.time_solve);
+    }
 
     // Source dimensions from the result (not output lengths) so empty batches
     // stay well-shaped at (n_dofs, 0) / (n_obs, 0).
@@ -208,10 +218,10 @@ pub(crate) fn into_py_batch_result(
             inner: result.layout,
         },
         demeaned: demeaned.into_pyarray(py).unbind(),
-        converged: result.converged,
-        iterations: result.iterations,
-        residual: result.residual,
-        time_solve: result.time_solve,
+        converged,
+        iterations,
+        residual,
+        time_solve,
         time_setup: result.time_setup,
         time_total: result.time_total,
     })

@@ -239,6 +239,19 @@ pub struct SolveResult {
     pub time_solve: f64,
 }
 
+/// Convergence and timing information for one solved right-hand side.
+#[derive(Debug, Clone, Copy)]
+pub struct SolveStats {
+    /// Whether the iterative solver converged within `maxiter` iterations.
+    pub converged: bool,
+    /// Number of LSMR iterations used.
+    pub iterations: usize,
+    /// Relative normal-equation residual estimate.
+    pub residual: f64,
+    /// Wall-clock solve time in seconds.
+    pub time_solve: f64,
+}
+
 /// Result of a batch solve across multiple RHS vectors.
 #[derive(Debug, Clone)]
 pub struct BatchSolveResult {
@@ -258,15 +271,8 @@ pub struct BatchSolveResult {
     pub layout: CoefficientLayout,
     /// All demeaned responses concatenated (length = n_obs * n_rhs).
     pub demeaned: Vec<f64>,
-    /// Per-RHS convergence flags.
-    pub converged: Vec<bool>,
-    /// Per-RHS iteration counts.
-    pub iterations: Vec<usize>,
-    /// Per-RHS relative normal-equation residual estimate; see
-    /// [`SolveResult::residual`].
-    pub residual: Vec<f64>,
-    /// Per-RHS solve times in seconds.
-    pub time_solve: Vec<f64>,
+    /// Per-RHS convergence, iteration, residual, and solve-time information.
+    pub stats: Vec<SolveStats>,
     /// Wall-clock time for the shared batch setup -- solver and preconditioner
     /// construction (`Solver::new`) -- in seconds; 0 when a pre-built
     /// preconditioner was reused.
@@ -280,6 +286,11 @@ pub struct BatchSolveResult {
 }
 
 impl BatchSolveResult {
+    /// Number of solved right-hand sides.
+    pub fn n_rhs(&self) -> usize {
+        self.stats.len()
+    }
+
     /// Coefficient vector for the `i`-th RHS.
     pub fn x(&self, i: usize) -> &[f64] {
         &self.x[i * self.n_dofs..(i + 1) * self.n_dofs]
@@ -335,11 +346,8 @@ impl std::fmt::Debug for Solver<'_> {
 struct RhsSolution {
     x: Vec<f64>,
     demeaned: Vec<f64>,
-    converged: bool,
-    iterations: usize,
-    residual: f64,
+    stats: SolveStats,
     time_setup: f64,
-    time_solve: f64,
 }
 
 impl<'a> Solver<'a> {
@@ -485,13 +493,13 @@ impl<'a> Solver<'a> {
             x,
             // Back to the caller's observation order (no-op if not reordered).
             demeaned: self.design.permute_obs_out(demeaned),
-            converged: r.converged,
-            iterations: r.iterations,
-            // Relative normal-equation residual estimate, read from the LSMR
-            // recurrence at no extra cost; see `SolveResult::residual`.
-            residual: r.normal_eq_residual,
+            stats: SolveStats {
+                converged: r.converged,
+                iterations: r.iterations,
+                residual: r.normal_eq_residual,
+                time_solve,
+            },
             time_setup,
-            time_solve,
         })
     }
 
@@ -522,12 +530,12 @@ impl<'a> Solver<'a> {
             warnings: self.warnings.clone(),
             layout: CoefficientLayout::from_design(&self.design),
             demeaned: solution.demeaned,
-            converged: solution.converged,
-            iterations: solution.iterations,
-            residual: solution.residual,
+            converged: solution.stats.converged,
+            iterations: solution.stats.iterations,
+            residual: solution.stats.residual,
             time_total: t_start.elapsed().as_secs_f64(),
             time_setup: solution.time_setup,
-            time_solve: solution.time_solve,
+            time_solve: solution.stats.time_solve,
         })
     }
 
@@ -553,18 +561,12 @@ impl<'a> Solver<'a> {
 
         let mut x = Vec::with_capacity(self.design.n_dofs * n_rhs);
         let mut demeaned = Vec::with_capacity(self.design.n_obs * n_rhs);
-        let mut converged = Vec::with_capacity(n_rhs);
-        let mut iterations = Vec::with_capacity(n_rhs);
-        let mut residual = Vec::with_capacity(n_rhs);
-        let mut time_solve = Vec::with_capacity(n_rhs);
+        let mut stats = Vec::with_capacity(n_rhs);
 
         for solution in solutions {
             x.extend_from_slice(&solution.x);
             demeaned.extend_from_slice(&solution.demeaned);
-            converged.push(solution.converged);
-            iterations.push(solution.iterations);
-            residual.push(solution.residual);
-            time_solve.push(solution.time_solve);
+            stats.push(solution.stats);
         }
 
         Ok(BatchSolveResult {
@@ -573,10 +575,7 @@ impl<'a> Solver<'a> {
             warnings: self.warnings.clone(),
             layout: CoefficientLayout::from_design(&self.design),
             demeaned,
-            converged,
-            iterations,
-            residual,
-            time_solve,
+            stats,
             time_setup: 0.0,
             time_total: t_start.elapsed().as_secs_f64(),
             n_dofs: self.design.n_dofs,

@@ -66,7 +66,7 @@ fn test_block_elim_solver_eliminate_q_false() {
     let solver = BlockElimSolver::build(component, &config).expect("block-elim build failed");
 
     assert!(
-        !solver.eliminate_q,
+        !solver.eliminate_q(),
         "expected eliminate_q=false when n_q < n_r",
     );
     let n_local = solver.n_local();
@@ -106,7 +106,7 @@ fn eliminate_r_explicit_ground_overlap_is_consumed_not_leaked() {
     let solver = BlockElimSolver::build(component, &config).expect("block-elim build failed");
     let n_q = solver.cross_tab.n_q();
     assert!(
-        !solver.eliminate_q,
+        !solver.eliminate_q(),
         "expected eliminate_q=false when n_q < n_r"
     );
     assert_eq!(
@@ -229,7 +229,7 @@ fn grounded_backend_auxiliary_is_initialized_on_every_solve() {
         2,
     );
     let explicit_ground_laplacian =
-        schur::build_explicit_laplacian(&principal, &[0.0, small], SolveSpace::Grounded);
+        schur::build_explicit_laplacian(&principal, Some(&[0.0, small]));
     let factor = factor_sparse(&explicit_ground_laplacian, ApproxCholConfig::default())
         .expect("factorization must succeed");
     assert_eq!(factor.input_dimension(), 3);
@@ -243,10 +243,8 @@ fn grounded_backend_auxiliary_is_initialized_on_every_solve() {
     let solver = BlockElimSolver::new(
         cross_tab,
         vec![1.0; 3],
-        factor,
-        true,
+        ReducedSystem::grounded(factor),
         CoordinateMap::default(),
-        SolveSpace::Grounded,
     );
 
     let solve_with_dirty_auxiliary = |dirty: f64| {
@@ -400,7 +398,7 @@ fn frustrated_component_solves_exactly_through_cover() {
         "stored cross-tab not doubled"
     );
     assert!(
-        matches!(solver.reduced_factor, ReducedFactor::Cover { .. }),
+        matches!(solver.reduced_system, ReducedSystem::Signed(_)),
         "frustrated component must reduce through a cover",
     );
 
@@ -454,17 +452,18 @@ fn inv_diag_elim_length_mismatch_is_rejected() {
 }
 
 #[test]
-fn n_internal_mismatch_is_rejected() {
+fn scaled_coordinate_length_mismatch_is_rejected() {
     let mut bad = valid_solver_for_deser();
-    bad.n_internal += 1;
+    bad.coordinates = CoordinateMap::Scaled(vec![1.0; bad.n_internal() + 3].into_boxed_slice());
     let bytes = postcard::to_stdvec(&bad).expect("serialize");
     assert!(postcard::from_bytes::<BlockElimSolver>(&bytes).is_err());
 }
 
 #[test]
-fn scaled_coordinate_length_mismatch_is_rejected() {
+fn reduced_system_dimension_mismatch_is_rejected() {
     let mut bad = valid_solver_for_deser();
-    bad.coordinates = CoordinateMap::Scaled(vec![1.0; bad.n_internal + 3].into_boxed_slice());
+    bad.reduced_system =
+        ReducedSystem::floating(DirectFactor::try_dense(vec![1.0], 1).expect("factor"));
     let bytes = postcard::to_stdvec(&bad).expect("serialize");
     assert!(postcard::from_bytes::<BlockElimSolver>(&bytes).is_err());
 }

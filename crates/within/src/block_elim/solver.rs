@@ -6,14 +6,13 @@ use schwarz_precond::{LocalSolveError, LocalSolver};
 use crate::config::{LocalSolverConfig, SchurMode};
 use crate::csr_block::{CsrBlock, PAR_SPMV_THRESHOLD};
 use crate::domain::{
-    BlockDiagonals, CoordinateMap, CrossTab, GroundEdges, Grounding, LocalComponent, Reduction,
-    SolveSpace,
+    BlockDiagonals, CoordinateMap, CrossTab, Grounding, LocalComponent, Reduction,
 };
 use crate::BuildError;
 
 use super::compensated_sum;
 use super::elimination::Elimination;
-use super::factor::{factor_sparse, ReducedFactor};
+use super::factor::{factor_sparse, CoverFactor, DirectFactor, ReducedSystem};
 use super::schur;
 
 // ===========================================================================
@@ -90,32 +89,17 @@ fn backsub_block_from_scaled_rhs(
 #[derive(Clone, serde::Serialize)]
 pub struct BlockElimSolver {
     /// Bipartite Gramian structure: C and C^T (diagonals are folded into
-    /// `inv_diag_elim`/`reduced_factor` at build time and not retained).
+    /// `inv_diag_elim`/`reduced_system` at build time and not retained).
     cross_tab: Arc<CrossTab>,
     /// `1 / D_elim[k]` for the eliminated (larger) diagonal block.
     inv_diag_elim: Vec<f64>,
-    /// Reduced-system factor backend.
-    pub(crate) reduced_factor: ReducedFactor,
-    /// True if the q-block was eliminated (n_q >= n_r).
-    eliminate_q: bool,
-    /// Internal DOF count (`n_q + n_r`) — the operator is always single-sized;
-    /// a frustrated component's cover lives inside `reduced_factor`.
-    n_internal: usize,
-    /// Internal factor dimension, including backend-added auxiliary vertices.
-    n_reduced: usize,
+    /// Reduced-system factor paired with its solve semantics.
+    pub(crate) reduced_system: ReducedSystem,
     /// Original-to-SDDM coordinate map.
     coordinates: CoordinateMap,
-    /// Whether the augmented Laplacian has a ground vertex.
-    solve_space: SolveSpace,
 }
 
 impl<'de> serde::Deserialize<'de> for BlockElimSolver {
-    /// Reconstruct from bytes that may be untrusted (a pickle cache, another
-    /// machine, a tampered file), validating every cross-field invariant the
-    /// infallible [`Self::new`] takes for granted. The two count fields are
-    /// re-derived rather than trusted, and each dimension is pinned to a witness
-    /// that is itself bounded by the input length, so no accepted solver can
-    /// overflow its scratch arithmetic or index out of bounds when applied.
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         use serde::de::Error;
 
@@ -123,19 +107,12 @@ impl<'de> serde::Deserialize<'de> for BlockElimSolver {
         struct Helper {
             cross_tab: CrossTab,
             inv_diag_elim: Vec<f64>,
-            reduced_factor: ReducedFactor,
-            eliminate_q: bool,
-            n_internal: usize,
-            n_reduced: usize,
+            reduced_system: ReducedSystem,
             coordinates: CoordinateMap,
-            solve_space: SolveSpace,
         }
 
         let h = Helper::deserialize(deserializer)?;
 
-        // `c` bounds n_q by its `indptr` length; the stored transpose's row
-        // count (validated the same way) is the only witness that bounds n_r,
-        // without which recomputing the transpose below could allocate wildly.
         let CrossTab { c, ct } = h.cross_tab;
         if !c.is_structurally_valid() {
             return Err(D::Error::custom(
@@ -146,23 +123,12 @@ impl<'de> serde::Deserialize<'de> for BlockElimSolver {
             return Err(D::Error::custom("cross_tab.ct shape disagrees with c"));
         }
         let (n_q, n_r) = (c.nrows, c.ncols);
-        let n_internal = n_q + n_r;
-        if h.n_internal != n_internal {
-            return Err(D::Error::custom("n_internal disagrees with cross_tab"));
-        }
+        let n_internal = n_q
+            .checked_add(n_r)
+            .ok_or_else(|| D::Error::custom("cross_tab dimensions overflow usize"))?;
 
-        let n_reduced = h.reduced_factor.factor_dimension();
-        if h.n_reduced != n_reduced {
-            return Err(D::Error::custom("n_reduced disagrees with reduced factor"));
-        }
-
-        // Roles are fixed by `eliminate_q`: the eliminated block is scaled by
-        // `inv_diag_elim`, the kept block is what the reduced factor solves.
-        let (elim_size, n_keep) = if h.eliminate_q {
-            (n_q, n_r)
-        } else {
-            (n_r, n_q)
-        };
+        let eliminate_q = n_q >= n_r;
+        let (elim_size, n_keep) = if eliminate_q { (n_q, n_r) } else { (n_r, n_q) };
         if h.inv_diag_elim.len() != elim_size {
             return Err(D::Error::custom(
                 "inv_diag_elim length disagrees with eliminated block",
@@ -176,31 +142,16 @@ impl<'de> serde::Deserialize<'de> for BlockElimSolver {
             }
         }
 
-        // The reduced factor's input dimension and its cover/direct kind must
-        // match the solve space `eliminate_and_recover` will drive it through.
-        let input_dim = h.reduced_factor.input_dimension();
-        let is_cover = matches!(h.reduced_factor, ReducedFactor::Cover { .. });
-        let consistent = match h.solve_space {
-            SolveSpace::Signed => is_cover && input_dim == n_keep,
-            SolveSpace::Floating => !is_cover && input_dim == n_keep,
-            SolveSpace::Grounded => !is_cover && (input_dim == n_keep || input_dim == n_keep + 1),
-        };
-        if !consistent {
-            return Err(D::Error::custom(
-                "reduced factor disagrees with solve space or kept block size",
-            ));
-        }
+        h.reduced_system
+            .validate_keep_dimension(n_keep)
+            .map_err(D::Error::custom)?;
 
-        // Rebuild the transpose from the validated `c` so it cannot disagree,
-        // then let `new` re-derive the counts we checked above.
         let ct = c.transpose();
         Ok(BlockElimSolver::new(
             CrossTab { c, ct },
             h.inv_diag_elim,
-            h.reduced_factor,
-            h.eliminate_q,
+            h.reduced_system,
             h.coordinates,
-            h.solve_space,
         ))
     }
 }
@@ -208,7 +159,7 @@ impl<'de> serde::Deserialize<'de> for BlockElimSolver {
 /// The q/r blocks assigned to their eliminated/kept roles for one solve.
 ///
 /// `BlockElimSolver` eliminates one diagonal block and solves a reduced system
-/// on the other; `eliminate_q` fixes which is which at construction. This bundles
+/// on the other; block sizes fix which is which at construction. This bundles
 /// the per-orientation block ranges and cross operators under named roles —
 /// reusing [`super::elimination::Elimination`]'s `keep_to_elim` / `elim_to_keep`
 /// vocabulary — so [`BlockElimSolver::eliminate_and_recover`] stays
@@ -254,20 +205,20 @@ impl BlockRoles<'_> {
 /// `Floating` anchors one node, `Grounded` factors the full complement.
 fn build_reduced_factor(
     elim: &Elimination,
-    grounding: Grounding,
+    grounding: &Grounding,
     config: &LocalSolverConfig,
-) -> Result<ReducedFactor, BuildError> {
+) -> Result<DirectFactor, BuildError> {
     let n_keep = elim.n_keep;
     let dense_factor = if n_keep == 0 {
         // Trivial 1×1 operator: nothing kept to reduce, so the solve degenerates
         // to `x = r/d`; never send an empty system to approx-chol.
-        ReducedFactor::try_dense(Vec::new(), 0)
+        DirectFactor::try_dense(Vec::new(), 0)
     } else if config.dense_threshold > 0 && n_keep <= config.dense_threshold {
         let m = match grounding {
             Grounding::Floating => n_keep - 1,
-            Grounding::Grounded => n_keep,
+            Grounding::Grounded(_) => n_keep,
         };
-        ReducedFactor::try_dense(schur::dense_minor(elim, m), n_keep)
+        DirectFactor::try_dense(schur::dense_minor(elim, m), n_keep)
     } else {
         None
     };
@@ -353,32 +304,38 @@ fn assemble_bipartite_cover(
 }
 
 impl BlockElimSolver {
+    fn n_internal(&self) -> usize {
+        self.cross_tab.n_local()
+    }
+
+    fn n_reduced(&self) -> usize {
+        self.reduced_system.factor_dimension()
+    }
+
+    fn eliminate_q(&self) -> bool {
+        self.cross_tab.n_q() >= self.cross_tab.n_r()
+    }
+
     fn explicit_ground_index(&self, n_keep: usize) -> Option<usize> {
-        (self.solve_space == SolveSpace::Grounded
-            && self.reduced_factor.input_dimension() == n_keep + 1)
-            .then_some(n_keep)
+        match &self.reduced_system {
+            ReducedSystem::Grounded(factor) if factor.input_dimension() == n_keep + 1 => {
+                Some(n_keep)
+            }
+            _ => None,
+        }
     }
 
     pub(crate) fn new(
         cross_tab: impl Into<Arc<CrossTab>>,
         inv_diag_elim: Vec<f64>,
-        reduced_factor: ReducedFactor,
-        eliminate_q: bool,
+        reduced_system: ReducedSystem,
         coordinates: CoordinateMap,
-        solve_space: SolveSpace,
     ) -> Self {
-        let cross_tab = cross_tab.into();
-        let n_internal = cross_tab.n_local();
-        let n_reduced = reduced_factor.factor_dimension();
         Self {
-            cross_tab,
+            cross_tab: cross_tab.into(),
             inv_diag_elim,
-            reduced_factor,
-            eliminate_q,
-            n_internal,
-            n_reduced,
+            reduced_system,
             coordinates,
-            solve_space,
         }
     }
 
@@ -390,7 +347,7 @@ impl BlockElimSolver {
     /// component rebuilds its Gremban double cover transiently, factors the
     /// cover's reduced Schur, and keeps only that factor — the stored operator
     /// and `inv_diag_elim` stay single-sized (#91). The `Elimination` is
-    /// consumed at the end to produce `inv_diag_elim` and `eliminate_q`.
+    /// consumed at the end to produce `inv_diag_elim`.
     ///
     /// `diagonals` are the build-time-only diagonal blocks; they are read by
     /// [`Elimination::new`] and dropped once the factor is built.
@@ -401,72 +358,39 @@ impl BlockElimSolver {
         let LocalComponent {
             cross_tab,
             diagonals,
-            ground_edges,
             coordinates,
             reduction,
         } = component;
-        let solve_space = reduction.solve_space();
-        let elim = Elimination::new(&cross_tab, &diagonals, &ground_edges, solve_space)?;
+        let elim = Elimination::new(&cross_tab, &diagonals, reduction.grounding())?;
 
-        let factor = match reduction {
+        let reduced_system = match &reduction {
             Reduction::Direct(grounding) => {
                 let factor = build_reduced_factor(&elim, grounding, config)?;
-                let reduced_input_dimension = factor.input_dimension();
-                debug_assert!(
-                    reduced_input_dimension == elim.n_keep
-                        || (solve_space == SolveSpace::Grounded
-                            && reduced_input_dimension == elim.n_keep + 1)
-                );
-                debug_assert!(factor.factor_dimension() >= reduced_input_dimension);
-                factor
+                match grounding {
+                    Grounding::Floating => ReducedSystem::floating(factor),
+                    Grounding::Grounded(_) => ReducedSystem::grounded(factor),
+                }
             }
-            Reduction::Cover => {
+            Reduction::Cover(grounding) => {
                 // Cover the single signed operator, factor the cover's reduced
                 // Schur (now SDDM, hence sampleable), then discard the cover —
                 // only the factor is retained.
                 let (cover_cross, cover_diag) = assemble_bipartite_cover(&cross_tab, &diagonals);
-                let cover_ground = GroundEdges {
-                    q: ground_edges.q.repeat(2),
-                    r: ground_edges.r.repeat(2),
-                };
-                // Surplus survives the cover, so the cover grounds exactly when
-                // the signed operator did (its edges are zeroed otherwise).
-                let cover_grounding = if cover_ground
-                    .q
-                    .iter()
-                    .chain(&cover_ground.r)
-                    .any(|&surplus| surplus > 0.0)
-                {
-                    Grounding::Grounded
-                } else {
-                    Grounding::Floating
-                };
-                let cover_elim = Elimination::new(
-                    &cover_cross,
-                    &cover_diag,
-                    &cover_ground,
-                    cover_grounding.solve_space(),
-                )?;
-                let inner = build_reduced_factor(&cover_elim, cover_grounding, config)?;
-                ReducedFactor::Cover {
-                    inner: Box::new(inner),
-                    m: elim.n_keep,
-                }
+                let cover_grounding = grounding.doubled();
+                let cover_elim = Elimination::new(&cover_cross, &cover_diag, &cover_grounding)?;
+                let inner = build_reduced_factor(&cover_elim, &cover_grounding, config)?;
+                let cover = CoverFactor::try_new(inner, elim.n_keep)
+                    .map_err(|message| BuildError::LocalSolverBuild(message.to_owned()))?;
+                ReducedSystem::signed(cover)
             }
         };
 
-        let Elimination {
-            inv_diag_elim,
-            eliminate_q,
-            ..
-        } = elim;
+        let Elimination { inv_diag_elim, .. } = elim;
         Ok(BlockElimSolver::new(
             cross_tab,
             inv_diag_elim,
-            factor,
-            eliminate_q,
+            reduced_system,
             coordinates,
-            solve_space,
         ))
     }
 
@@ -482,7 +406,8 @@ impl BlockElimSolver {
         sol: &mut [f64],
         allow_inner_parallelism: bool,
     ) -> Result<(), LocalSolveError> {
-        let n = self.n_internal;
+        let n = self.n_internal();
+        let n_reduced = self.n_reduced();
         let n_keep = roles.keep.len();
         let explicit_ground = self.explicit_ground_index(n_keep);
 
@@ -492,7 +417,7 @@ impl BlockElimSolver {
         // Apply `keep_to_elim` into the scratch tail to form the reduced RHS.
         {
             let (main, scratch) = rhs.split_at_mut(n);
-            scratch[n_keep..self.n_reduced].fill(0.0);
+            scratch[n_keep..n_reduced].fill(0.0);
             roles.keep_to_elim.spmv_assign_add(
                 &main[roles.elim.clone()],
                 &main[roles.keep.clone()],
@@ -500,43 +425,43 @@ impl BlockElimSolver {
                 allow_inner_parallelism,
             );
         }
-        match self.solve_space {
-            SolveSpace::Floating => {
-                subtract_mean(&mut rhs[n..], self.n_reduced);
+        match &self.reduced_system {
+            ReducedSystem::Floating(_) => {
+                subtract_mean(&mut rhs[n..], n_reduced);
             }
             // Grounded-Laplacian reduction of the nonsingular SDD reduced
             // system: the ground node absorbs the injected current, and its
             // potential is the gauge subtracted after the solve.
-            SolveSpace::Grounded => {
+            ReducedSystem::Grounded(_) => {
                 if let Some(ground) = explicit_ground {
                     rhs[n + ground] = -compensated_sum(&rhs[n..n + n_keep]);
                 }
             }
             // Signed operator: the reduced `Cover` factor grounds itself via
             // the antisymmetric `[b, -b]` embed, so no gauge handling here.
-            SolveSpace::Signed => {}
+            ReducedSystem::Signed(_) => {}
         }
 
         // Anchored at the kept block, the reduced solve spills past it into the
         // eliminated block (eliminate-r) or scratch tail (eliminate-q); those slots
         // are dead except the grounded gauge slot, a transient the subtraction below
         // consumes. The `rhs` tail is the factor's embed scratch (unused unless Cover).
-        let reduced = roles.keep.start..roles.keep.start + self.n_reduced;
+        let reduced = roles.keep.start..roles.keep.start + n_reduced;
         debug_assert!(
-            n_keep <= self.n_reduced,
+            n_keep <= n_reduced,
             "reduced region must cover the kept block",
         );
         debug_assert!(
-            reduced.end <= sol.len() && n + self.n_reduced <= rhs.len(),
+            reduced.end <= sol.len() && n + n_reduced <= rhs.len(),
             "reduced solve and its RHS copy must fit sol and rhs",
         );
         debug_assert!(
-            explicit_ground.is_none_or(|g| n_keep <= g && g < self.n_reduced),
+            explicit_ground.is_none_or(|g| n_keep <= g && g < n_reduced),
             "grounded gauge slot must spill past the kept block into a solved slot",
         );
-        sol[reduced.clone()].copy_from_slice(&rhs[n..n + self.n_reduced]);
-        let embed = &mut rhs[n + self.n_reduced..];
-        self.reduced_factor
+        sol[reduced.clone()].copy_from_slice(&rhs[n..n + n_reduced]);
+        let embed = &mut rhs[n + n_reduced..];
+        self.reduced_system
             .solve_in_place(&mut sol[reduced], embed)?;
         if let Some(ground) = explicit_ground {
             let ground = sol[roles.keep.start + ground];
@@ -562,11 +487,11 @@ impl BlockElimSolver {
 
 impl LocalSolver for BlockElimSolver {
     fn n_local(&self) -> usize {
-        self.n_internal
+        self.n_internal()
     }
 
     fn scratch_size(&self) -> usize {
-        self.n_internal + self.n_reduced + self.reduced_factor.scratch_len()
+        self.n_internal() + self.n_reduced() + self.reduced_system.scratch_len()
     }
 
     fn inner_parallelism_work_estimate(&self) -> usize {
@@ -576,7 +501,7 @@ impl LocalSolver for BlockElimSolver {
         }
 
         let cross_nnz = self.cross_tab.c.nnz();
-        (2 * cross_nnz) + self.n_internal
+        (2 * cross_nnz) + self.n_internal()
     }
 
     fn solve_local(
@@ -585,17 +510,17 @@ impl LocalSolver for BlockElimSolver {
         sol: &mut [f64],
         allow_inner_parallelism: bool,
     ) -> Result<(), LocalSolveError> {
-        let n = self.n_internal;
+        let n = self.n_internal();
         let n_q = self.cross_tab.n_q();
         let ct = &self.cross_tab;
 
         self.coordinates.fold(&mut rhs[..n], n_q);
-        if self.solve_space == SolveSpace::Floating {
+        if self.reduced_system.is_floating() {
             subtract_mean(rhs, n);
         }
 
-        // The eliminated/kept roles are fixed by `eliminate_q`; name the swap once.
-        let roles = if self.eliminate_q {
+        // The eliminated/kept roles are fixed by block size; name the swap once.
+        let roles = if self.eliminate_q() {
             BlockRoles {
                 elim: 0..n_q,
                 keep: n_q..n,
@@ -612,7 +537,7 @@ impl LocalSolver for BlockElimSolver {
         };
         self.eliminate_and_recover(&roles, rhs, sol, allow_inner_parallelism)?;
 
-        if self.solve_space == SolveSpace::Floating {
+        if self.reduced_system.is_floating() {
             subtract_mean(sol, n);
         }
         self.coordinates.unfold(&mut sol[..n], n_q);

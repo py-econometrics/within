@@ -32,20 +32,6 @@ const LAPLACIAN_VALIDATION_BUDGET: RoundoffBudget = RoundoffBudget { ulps: 64.0 
 // classification deletes an identified direction.
 const FLOATING_CLASSIFICATION_BUDGET: RoundoffBudget = RoundoffBudget { ulps: 4.0 };
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum SolveSpace {
-    // Keep this order: postcard encodes enum discriminants by declaration
-    // order, and the wire fixture pins Floating = 0; new variants append last.
-    #[default]
-    Floating,
-    Grounded,
-    /// Signed operator whose reduced Schur self-grounds through its Gremban
-    /// cover ([`ReductionKind::Cover`]): the antisymmetric `[b, -b]` embed
-    /// balances the RHS, so the operator-level solve does no mean-subtraction
-    /// and injects no ground current.
-    Signed,
-}
-
 /// The reduction strategy chosen from a component's signature, before its
 /// grounding is known: `Direct` folds to a Z-matrix and reduces its minor
 /// straight; `Cover` keeps the signed operator and defers a Gremban double
@@ -56,46 +42,6 @@ pub(crate) enum SolveSpace {
 enum ReductionKind {
     Direct,
     Cover,
-}
-
-/// Grounding of a directly-reduced SDDM minor: `Floating` anchors one node,
-/// `Grounded` factors the full complement.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Grounding {
-    Floating,
-    Grounded,
-}
-
-impl Grounding {
-    /// The solve space a floating/grounded minor gauges.
-    pub(crate) fn solve_space(self) -> SolveSpace {
-        match self {
-            Grounding::Floating => SolveSpace::Floating,
-            Grounding::Grounded => SolveSpace::Grounded,
-        }
-    }
-}
-
-/// Resolved reduction state of a local component: the [`ReductionKind`]
-/// strategy paired with the solve space it produced. Only these combinations
-/// are reachable, so the illegal signed-with-direct pairing cannot be
-/// constructed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Reduction {
-    /// Direct Schur factorization of a floating or grounded minor.
-    Direct(Grounding),
-    /// Gremban-cover reduction of a signed operator; solves in [`SolveSpace::Signed`].
-    Cover,
-}
-
-impl Reduction {
-    /// The solve space this reduction gauges.
-    pub(crate) fn solve_space(self) -> SolveSpace {
-        match self {
-            Reduction::Direct(grounding) => grounding.solve_space(),
-            Reduction::Cover => SolveSpace::Signed,
-        }
-    }
 }
 
 /// Map between original and SDDM coordinates, applied to vectors at the
@@ -113,10 +59,51 @@ pub(crate) enum CoordinateMap {
     Scaled(Box<[f64]>),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct GroundEdges {
     pub(crate) q: Vec<f64>,
     pub(crate) r: Vec<f64>,
+}
+
+/// Grounding state and, when grounded, the surplus edges that witness it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Grounding {
+    Floating,
+    Grounded(GroundEdges),
+}
+
+impl Grounding {
+    pub(crate) fn ground_edges(&self) -> Option<&GroundEdges> {
+        match self {
+            Grounding::Floating => None,
+            Grounding::Grounded(edges) => Some(edges),
+        }
+    }
+
+    pub(crate) fn doubled(&self) -> Self {
+        match self {
+            Grounding::Floating => Grounding::Floating,
+            Grounding::Grounded(edges) => Grounding::Grounded(GroundEdges {
+                q: edges.q.repeat(2),
+                r: edges.r.repeat(2),
+            }),
+        }
+    }
+}
+
+/// Resolved reduction and grounding state of a local component.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Reduction {
+    Direct(Grounding),
+    Cover(Grounding),
+}
+
+impl Reduction {
+    pub(crate) fn grounding(&self) -> &Grounding {
+        match self {
+            Reduction::Direct(grounding) | Reduction::Cover(grounding) => grounding,
+        }
+    }
 }
 
 impl CoordinateMap {
@@ -149,7 +136,6 @@ impl CoordinateMap {
 pub(crate) struct LocalComponent {
     pub(crate) cross_tab: CrossTab,
     pub(crate) diagonals: BlockDiagonals,
-    pub(crate) ground_edges: GroundEdges,
     pub(crate) coordinates: CoordinateMap,
     pub(crate) reduction: Reduction,
 }
@@ -204,14 +190,9 @@ fn convert_known_laplacian(
     if total_mismatch > LAPLACIAN_VALIDATION_BUDGET.tolerance(cross_tab.n_local(), total_diagonal) {
         return Err(NotScalable);
     }
-    let ground_edges = GroundEdges {
-        q: vec![0.0; cross_tab.n_q()],
-        r: vec![0.0; cross_tab.n_r()],
-    };
     Ok(LocalComponent {
         cross_tab,
         diagonals: row_sums,
-        ground_edges,
         coordinates: CoordinateMap::default(),
         reduction: Reduction::Direct(Grounding::Floating),
     })
@@ -344,10 +325,9 @@ fn assemble(
 /// Validate weak dominance of an assembled operator against `row_sums` (signed
 /// adjacency for a Z-matrix, magnitudes for a signed operator): clamp roundoff
 /// deficits, retain surplus as ground edges, and resolve the [`Reduction`]
-/// state. A `Cover`-reduced component is always [`SolveSpace::Signed`]; the
-/// float/ground classification only decides whether its surplus is retained
-/// (the cover self-grounds either way). Returns the largest relative deficit
-/// that was clamped; deficits beyond tolerance are errors under
+/// state. For a `Cover` reduction, the float/ground classification only decides
+/// whether its surplus is retained because the cover self-grounds either way.
+/// Returns the largest relative deficit that was clamped; deficits beyond tolerance are errors under
 /// [`ScalingFailure::Error`].
 fn finalize(
     cross_tab: CrossTab,
@@ -396,22 +376,21 @@ fn finalize(
     }
 
     let floats = total_surplus <= FLOATING_CLASSIFICATION_BUDGET.tolerance(n, total_diagonal);
-    if floats {
+    let grounding = if floats {
         scaled_diagonals = row_sums;
-        ground_edges.q.fill(0.0);
-        ground_edges.r.fill(0.0);
-    }
+        Grounding::Floating
+    } else {
+        Grounding::Grounded(ground_edges)
+    };
     let reduction = match reduction {
-        ReductionKind::Cover => Reduction::Cover,
-        ReductionKind::Direct if floats => Reduction::Direct(Grounding::Floating),
-        ReductionKind::Direct => Reduction::Direct(Grounding::Grounded),
+        ReductionKind::Cover => Reduction::Cover(grounding),
+        ReductionKind::Direct => Reduction::Direct(grounding),
     };
 
     Ok((
         LocalComponent {
             cross_tab,
             diagonals: scaled_diagonals,
-            ground_edges,
             coordinates,
             reduction,
         },

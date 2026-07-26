@@ -529,7 +529,7 @@ mod schwarz_tests {
     };
     use schwarz_precond::SubdomainCore;
 
-    use crate::block_elim::factor::ReducedFactor;
+    use crate::block_elim::factor::{DirectFactor, ReducedSystem};
     use crate::csr_block::CsrBlock;
     use crate::domain::{build_local_domains, Design, LocalDomain};
     use crate::domain::{BlockDiagonals, CrossTab, LocalComponent};
@@ -752,8 +752,9 @@ mod schwarz_tests {
         };
         let entry = build_entry(domain, &config).expect("exact Schur entry build failed");
         assert!(matches!(
-            entry.solver().reduced_factor,
-            ReducedFactor::Dense(_)
+            entry.solver().reduced_system,
+            ReducedSystem::Floating(DirectFactor::Dense(_))
+                | ReducedSystem::Grounded(DirectFactor::Dense(_))
         ));
     }
 
@@ -773,8 +774,9 @@ mod schwarz_tests {
         };
         let entry = build_entry(domain, &config).expect("approximate Schur entry build failed");
         assert!(matches!(
-            entry.solver().reduced_factor,
-            ReducedFactor::Dense(_)
+            entry.solver().reduced_system,
+            ReducedSystem::Floating(DirectFactor::Dense(_))
+                | ReducedSystem::Grounded(DirectFactor::Dense(_))
         ));
     }
 
@@ -791,8 +793,9 @@ mod schwarz_tests {
         };
         let entry = build_entry(domain, &config).expect("exact Schur entry build failed");
         assert!(!matches!(
-            entry.solver().reduced_factor,
-            ReducedFactor::Dense(_)
+            entry.solver().reduced_system,
+            ReducedSystem::Floating(DirectFactor::Dense(_))
+                | ReducedSystem::Grounded(DirectFactor::Dense(_))
         ));
     }
 }

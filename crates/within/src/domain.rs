@@ -8,9 +8,10 @@ pub(crate) use cross_tab::{find_all_active_levels, BlockDiagonals, CrossTab};
 
 pub use effect::Effect;
 
+#[cfg(test)]
+pub(crate) use factor_pairs::GroundEdges;
 pub(crate) use factor_pairs::{
-    build_local_domains, CoordinateMap, GroundEdges, Grounding, LocalComponent, LocalDomain,
-    Reduction, SolveSpace,
+    build_local_domains, CoordinateMap, Grounding, LocalComponent, LocalDomain, Reduction,
 };
 
 // ===========================================================================

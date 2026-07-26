@@ -110,7 +110,7 @@ proptest! {
 
         let refs: Vec<&[f64]> = ys.iter().map(Vec::as_slice).collect();
         let batch = solve_batch(cats.view(), &refs, None, &params, &precond).unwrap();
-        prop_assert!(batch.converged.iter().all(|&c| c));
+        prop_assert!(batch.stats.iter().all(|stats| stats.converged));
 
         for (j, y) in ys.iter().enumerate() {
             let single = solve(cats.view(), y, None, &params, &precond).unwrap();

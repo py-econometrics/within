@@ -117,7 +117,7 @@ fn test_solver_batch() {
         .solve_batch(&[&y1, &y2, &y3], &params)
         .expect("solve batch");
 
-    assert_eq!(batch.converged.len(), 3);
+    assert_eq!(batch.n_rhs(), 3);
 
     for (batch_x, individual_x) in [
         (batch.x(0), r1.x.as_slice()),
@@ -129,8 +129,7 @@ fn test_solver_batch() {
         }
     }
 
-    assert_eq!(batch.converged.len(), 3);
-    assert!(batch.converged.iter().all(|&c| c));
+    assert!(batch.stats.iter().all(|stats| stats.converged));
 
     // The method reuses the already-built preconditioner, so it reports no
     // build cost; the free solve_batch is what folds construction in.
