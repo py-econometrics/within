@@ -53,7 +53,10 @@ fn cross_tab(table: &[f64], n_q: usize, n_r: usize) -> CrossTab {
 fn assert_sddm(component: &LocalComponent) {
     assert!(component.cross_tab.c.data.iter().all(|value| *value >= 0.0));
     let sums = adjacency_sums(&component.cross_tab);
-    let ground_edges = component.reduction.grounding().ground_edges();
+    let ground_edges = match component.reduction.grounding() {
+        Grounding::Floating => None,
+        Grounding::Grounded(edges) => Some(edges),
+    };
     for (diagonals, row_sums, surplus) in [
         (
             component.diagonals.q.as_slice(),

@@ -243,7 +243,7 @@ fn grounded_backend_auxiliary_is_initialized_on_every_solve() {
     let solver = BlockElimSolver::new(
         cross_tab,
         vec![1.0; 3],
-        ReducedSystem::grounded(factor),
+        ReducedSystem::Grounded(factor),
         CoordinateMap::default(),
     );
 
@@ -463,7 +463,7 @@ fn scaled_coordinate_length_mismatch_is_rejected() {
 fn reduced_system_dimension_mismatch_is_rejected() {
     let mut bad = valid_solver_for_deser();
     bad.reduced_system =
-        ReducedSystem::floating(DirectFactor::try_dense(vec![1.0], 1).expect("factor"));
+        ReducedSystem::Floating(DirectFactor::try_dense(vec![1.0], 1).expect("factor"));
     let bytes = postcard::to_stdvec(&bad).expect("serialize");
     assert!(postcard::from_bytes::<BlockElimSolver>(&bytes).is_err());
 }

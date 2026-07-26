@@ -44,7 +44,11 @@ pub(crate) fn exact(elim: &Elimination) -> CsrMatrix {
 /// the ground vertex as an ordinary final vertex.
 pub(crate) fn sampled(elim: &Elimination, config: &ApproxSchurConfig) -> CsrMatrix {
     let edges = elim.par_emit(config);
-    let n = elim.n_keep + usize::from(elim.grounding.is_grounded());
+    let n = elim.n_keep
+        + usize::from(matches!(
+            elim.grounding,
+            EliminationGrounding::Grounded { .. }
+        ));
     build_laplacian_csr(&edges, n)
 }
 

@@ -102,12 +102,6 @@ pub(crate) enum EliminationGrounding<'a> {
     },
 }
 
-impl EliminationGrounding<'_> {
-    pub(crate) fn is_grounded(&self) -> bool {
-        matches!(self, Self::Grounded { .. })
-    }
-}
-
 impl<'a> Elimination<'a> {
     /// Select which block to eliminate and precompute inverse-diagonals.
     ///
@@ -147,9 +141,9 @@ impl<'a> Elimination<'a> {
         } else {
             &diagonals.q
         };
-        let grounding = match grounding.ground_edges() {
-            None => EliminationGrounding::Floating,
-            Some(edges) => {
+        let grounding = match grounding {
+            Grounding::Floating => EliminationGrounding::Floating,
+            Grounding::Grounded(edges) => {
                 let (surplus_keep, surplus_elim) = if eliminate_q {
                     (&edges.r[..], &edges.q[..])
                 } else {

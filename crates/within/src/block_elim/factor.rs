@@ -139,22 +139,6 @@ pub(crate) enum ReducedSystem {
 }
 
 impl ReducedSystem {
-    pub(crate) fn floating(factor: DirectFactor) -> Self {
-        Self::Floating(factor)
-    }
-
-    pub(crate) fn grounded(factor: DirectFactor) -> Self {
-        Self::Grounded(factor)
-    }
-
-    pub(crate) fn signed(factor: CoverFactor) -> Self {
-        Self::Signed(factor)
-    }
-
-    pub(crate) fn is_floating(&self) -> bool {
-        matches!(self, Self::Floating(_))
-    }
-
     pub(crate) fn factor_dimension(&self) -> usize {
         match self {
             Self::Floating(factor) | Self::Grounded(factor) => factor.factor_dimension(),
@@ -405,7 +389,7 @@ mod tests {
         )
         .expect("factor cover");
         let reduced =
-            ReducedSystem::signed(CoverFactor::try_new(inner, 2).expect("valid cover dimensions"));
+            ReducedSystem::Signed(CoverFactor::try_new(inner, 2).expect("valid cover dimensions"));
         assert_eq!(reduced.factor_dimension(), 2);
 
         let b = [1.0, 0.5];
@@ -427,7 +411,7 @@ mod tests {
 
     #[test]
     fn valid_dense_round_trips() {
-        let system = ReducedSystem::floating(dense_2x2());
+        let system = ReducedSystem::Floating(dense_2x2());
         let bytes = postcard::to_stdvec(&system).expect("serialize");
         let restored: ReducedSystem = postcard::from_bytes(&bytes).expect("deserialize");
         assert_eq!(restored.factor_dimension(), 2);

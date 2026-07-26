@@ -65,7 +65,6 @@ pub(crate) struct GroundEdges {
     pub(crate) r: Vec<f64>,
 }
 
-/// Grounding state and, when grounded, the surplus edges that witness it.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Grounding {
     Floating,
@@ -73,13 +72,6 @@ pub(crate) enum Grounding {
 }
 
 impl Grounding {
-    pub(crate) fn ground_edges(&self) -> Option<&GroundEdges> {
-        match self {
-            Grounding::Floating => None,
-            Grounding::Grounded(edges) => Some(edges),
-        }
-    }
-
     pub(crate) fn doubled(&self) -> Self {
         match self {
             Grounding::Floating => Grounding::Floating,
@@ -91,7 +83,6 @@ impl Grounding {
     }
 }
 
-/// Resolved reduction and grounding state of a local component.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Reduction {
     Direct(Grounding),

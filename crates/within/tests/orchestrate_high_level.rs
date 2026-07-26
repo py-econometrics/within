@@ -52,7 +52,7 @@ fn test_solve_batch_matches_individual() {
     let batch =
         solve_batch(categories.view(), &[&y1, &y2], None, &params, &precond).expect("solve batch");
 
-    assert_eq!(batch.n_rhs(), 2);
+    assert_eq!(batch.stats.len(), 2);
     for (a, b) in batch.x(0).iter().zip(r1.x.iter()) {
         assert!((a - b).abs() < 1e-12, "batch vs individual x mismatch");
     }
@@ -72,7 +72,7 @@ fn test_solve_batch_single_rhs() {
     let batch = solve_batch(categories.view(), &[&y[..]], None, &params, &precond)
         .expect("solve batch single");
 
-    assert_eq!(batch.n_rhs(), 1);
+    assert_eq!(batch.stats.len(), 1);
     assert!(batch.stats[0].converged);
     assert!(batch.x(0).iter().all(|v| v.is_finite()));
 }
@@ -96,7 +96,7 @@ fn test_solve_batch_weighted() {
     )
     .expect("solve batch weighted");
 
-    assert_eq!(batch.n_rhs(), 2);
+    assert_eq!(batch.stats.len(), 2);
     assert!(batch.stats.iter().all(|stats| stats.converged));
 }
 
@@ -112,7 +112,7 @@ fn test_batch_result_accessors() {
     let batch =
         solve_batch(categories.view(), &[&y1, &y2], None, &params, &precond).expect("solve batch");
 
-    assert_eq!(batch.n_rhs(), 2);
+    assert_eq!(batch.stats.len(), 2);
 
     // x_all length
     let n_dofs = batch.x(0).len();

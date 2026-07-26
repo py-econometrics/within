@@ -117,7 +117,7 @@ fn test_solver_batch() {
         .solve_batch(&[&y1, &y2, &y3], &params)
         .expect("solve batch");
 
-    assert_eq!(batch.n_rhs(), 3);
+    assert_eq!(batch.stats.len(), 3);
 
     for (batch_x, individual_x) in [
         (batch.x(0), r1.x.as_slice()),

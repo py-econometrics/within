@@ -93,7 +93,6 @@ pub struct BlockElimSolver {
     cross_tab: Arc<CrossTab>,
     /// `1 / D_elim[k]` for the eliminated (larger) diagonal block.
     inv_diag_elim: Vec<f64>,
-    /// Reduced-system factor paired with its solve semantics.
     pub(crate) reduced_system: ReducedSystem,
     /// Original-to-SDDM coordinate map.
     coordinates: CoordinateMap,
@@ -156,35 +155,15 @@ impl<'de> serde::Deserialize<'de> for BlockElimSolver {
     }
 }
 
-/// The q/r blocks assigned to their eliminated/kept roles for one solve.
-///
-/// `BlockElimSolver` eliminates one diagonal block and solves a reduced system
-/// on the other; block sizes fix which is which at construction. This bundles
-/// the per-orientation block ranges and cross operators under named roles —
-/// reusing [`super::elimination::Elimination`]'s `keep_to_elim` / `elim_to_keep`
-/// vocabulary — so [`BlockElimSolver::eliminate_and_recover`] stays
-/// orientation-agnostic.
 struct BlockRoles<'a> {
-    /// Index range of the eliminated block within the `[q | r]` layout.
     elim: std::ops::Range<usize>,
-    /// Index range of the kept (reduced) block.
     keep: std::ops::Range<usize>,
-    /// Cross block with kept rows / eliminated columns; applied to the eliminated
-    /// block to form the reduced RHS (`Cᵀ` when eliminating q, `C` when r).
     keep_to_elim: &'a CsrBlock,
-    /// Cross block with eliminated rows / kept columns; used in back-substitution
-    /// to recover the eliminated block (`C` when eliminating q, `Cᵀ` when r).
     elim_to_keep: &'a CsrBlock,
 }
 
 impl BlockRoles<'_> {
-    /// Borrow the eliminated block (mutable, the back-substitution output) and
-    /// the kept block (immutable source) out of `sol`. The two blocks meet at
-    /// the q/r boundary; `sol`'s tail past `n_local` is reduced-solve scratch,
-    /// so the kept side is clamped to `keep`'s length.
     fn split_sol<'s>(&self, sol: &'s mut [f64]) -> (&'s mut [f64], &'s [f64]) {
-        // The split relies on the two blocks being adjacent: the lower one ends
-        // exactly where the upper one begins (they meet at the q/r boundary).
         debug_assert!(
             self.elim.end == self.keep.start || self.keep.end == self.elim.start,
             "elim and keep blocks must be adjacent",
@@ -367,8 +346,8 @@ impl BlockElimSolver {
             Reduction::Direct(grounding) => {
                 let factor = build_reduced_factor(&elim, grounding, config)?;
                 match grounding {
-                    Grounding::Floating => ReducedSystem::floating(factor),
-                    Grounding::Grounded(_) => ReducedSystem::grounded(factor),
+                    Grounding::Floating => ReducedSystem::Floating(factor),
+                    Grounding::Grounded(_) => ReducedSystem::Grounded(factor),
                 }
             }
             Reduction::Cover(grounding) => {
@@ -381,7 +360,7 @@ impl BlockElimSolver {
                 let inner = build_reduced_factor(&cover_elim, &cover_grounding, config)?;
                 let cover = CoverFactor::try_new(inner, elim.n_keep)
                     .map_err(|message| BuildError::LocalSolverBuild(message.to_owned()))?;
-                ReducedSystem::signed(cover)
+                ReducedSystem::Signed(cover)
             }
         };
 
@@ -513,13 +492,13 @@ impl LocalSolver for BlockElimSolver {
         let n = self.n_internal();
         let n_q = self.cross_tab.n_q();
         let ct = &self.cross_tab;
+        let floating = matches!(self.reduced_system, ReducedSystem::Floating(_));
 
         self.coordinates.fold(&mut rhs[..n], n_q);
-        if self.reduced_system.is_floating() {
+        if floating {
             subtract_mean(rhs, n);
         }
 
-        // The eliminated/kept roles are fixed by block size; name the swap once.
         let roles = if self.eliminate_q() {
             BlockRoles {
                 elim: 0..n_q,
@@ -537,7 +516,7 @@ impl LocalSolver for BlockElimSolver {
         };
         self.eliminate_and_recover(&roles, rhs, sol, allow_inner_parallelism)?;
 
-        if self.reduced_system.is_floating() {
+        if floating {
             subtract_mean(sol, n);
         }
         self.coordinates.unfold(&mut sol[..n], n_q);

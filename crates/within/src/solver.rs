@@ -286,11 +286,6 @@ pub struct BatchSolveResult {
 }
 
 impl BatchSolveResult {
-    /// Number of solved right-hand sides.
-    pub fn n_rhs(&self) -> usize {
-        self.stats.len()
-    }
-
     /// Coefficient vector for the `i`-th RHS.
     pub fn x(&self, i: usize) -> &[f64] {
         &self.x[i * self.n_dofs..(i + 1) * self.n_dofs]
