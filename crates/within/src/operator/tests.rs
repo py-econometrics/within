@@ -738,13 +738,8 @@ mod schwarz_tests {
         schwarz.apply(&r, &mut z).expect("schwarz apply succeeds");
     }
 
-    /// Solve a fixed RHS through a subdomain whose reduced system is under the
-    /// threshold but whose eliminated stars have three entries, so clique
-    /// sampling is not deterministic-exact and the two routes are separable.
-    ///
-    /// The exact route is no longer a distinct factor variant, so these tests
-    /// pin it by its consequence instead: nothing is sampled, so neither the
-    /// Schur mode nor the sampler seed can move the answer.
+    /// Three-entry eliminated stars, so clique sampling is not
+    /// deterministic-exact and the two routes are separable.
     fn small_subdomain_solve(schur: SchurMode, dense_threshold: usize) -> Vec<f64> {
         let (cross_tab, block_diagonals) = synthetic_sparse_cross_tab(8, 4);
         let component = LocalComponent::plain_for_test(cross_tab, block_diagonals);
@@ -769,16 +764,9 @@ mod schwarz_tests {
     }
 
     #[test]
-    fn test_exact_schur_uses_exact_route_for_small_reduced_system() {
-        let exact = small_subdomain_solve(SchurMode::Exact, DEFAULT_DENSE_SCHUR_THRESHOLD);
-        let reseeded = small_subdomain_solve(SchurMode::Exact, DEFAULT_DENSE_SCHUR_THRESHOLD);
-        assert_eq!(exact, reseeded);
-    }
-
-    #[test]
-    fn test_approximate_schur_uses_exact_route_for_small_reduced_system() {
-        // The dimension gate outranks the Schur mode: below the threshold the
-        // exact complement is formed either way, so both agree exactly.
+    fn test_schur_mode_is_outranked_by_the_exact_route_for_small_reduced_system() {
+        // Agreeing here is only possible if both took the exact route: otherwise
+        // one forms the exact complement and the other a sampled one.
         let exact = small_subdomain_solve(SchurMode::Exact, DEFAULT_DENSE_SCHUR_THRESHOLD);
         let sampled_mode = small_subdomain_solve(
             SchurMode::Approximate(ApproxSchurConfig {
