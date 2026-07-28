@@ -20,8 +20,6 @@ _REGISTRY: dict[str, GeneratorFn] = {}
 
 
 def register_generator(key: str) -> Callable[[GeneratorFn], GeneratorFn]:
-    """Decorator that registers a generator function under *key*."""
-
     def _decorator(fn: GeneratorFn) -> GeneratorFn:
         if key in _REGISTRY:
             raise ValueError(f"Duplicate generator key: {key!r}")
@@ -32,15 +30,9 @@ def register_generator(key: str) -> Callable[[GeneratorFn], GeneratorFn]:
 
 
 def get_generator(key: str) -> GeneratorFn:
-    """Look up a registered generator by key."""
     if key not in _REGISTRY:
         raise KeyError(f"Unknown generator {key!r}. Available: {sorted(_REGISTRY)}")
     return _REGISTRY[key]
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _matvec_d(
@@ -48,7 +40,6 @@ def _matvec_d(
     n_levels: list[int],
     x: NDArray[np.float64],
 ) -> NDArray[np.float64]:
-    """Compute D @ x where D is the categorical design matrix."""
     n_rows = len(categories[0])
     y = np.zeros(n_rows, dtype=np.float64)
     offset = 0

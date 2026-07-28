@@ -45,7 +45,7 @@ fn make_overlapping_entries(n: usize) -> Vec<SubdomainEntry<UniformDiagLocalSolv
     // trailing subdomain so the entries collectively cover [0, n).
     if entries
         .last()
-        .and_then(|e| e.global_indices().iter().max())
+        .and_then(|entry| entry.global_indices().iter().max())
         .copied()
         .is_none_or(|max_idx| (max_idx as usize) < n - 1)
     {
@@ -401,16 +401,9 @@ fn test_additive_auto_matches_resolved_backend() {
 use schwarz_precond::{BuildError, SolveError};
 use std::error::Error;
 
-// ============================================================================
-// Additive Schwarz edge cases
-// ============================================================================
-// Additive Schwarz edge cases
-// ============================================================================
-
 #[test]
 fn test_additive_schwarz_subdomains_accessor() {
-    let n = 10;
-    let entries = make_schwarz_entries(n);
+    let entries = make_schwarz_entries(10);
     let expected_len = entries.len();
     let schwarz = SchwarzPreconditioner::new(entries, ReductionStrategy::default());
     assert_eq!(schwarz.subdomains().len(), expected_len);

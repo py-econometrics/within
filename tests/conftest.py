@@ -9,7 +9,6 @@ def generate_synthetic_data(
     n_rows: int,
     seed: int = 42,
 ) -> tuple[list[NDArray[np.int64]], NDArray[np.float64], NDArray[np.float64]]:
-    """Generate synthetic fixed-effects data: y = D @ x_true (no noise)."""
     rng = np.random.default_rng(seed)
     cats = [rng.integers(0, nl, size=n_rows) for nl in n_levels]
     x_true = rng.standard_normal(sum(n_levels))
@@ -22,5 +21,4 @@ def generate_synthetic_data(
 
 
 def as_solver_categories(cats):
-    """Stack per-factor level arrays into F-contiguous uint32 (the solver's fast path)."""
     return np.asfortranarray(np.column_stack(cats).astype(np.uint32))

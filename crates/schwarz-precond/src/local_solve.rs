@@ -17,10 +17,6 @@ use std::sync::atomic::AtomicU64;
 use crate::domain::SubdomainCore;
 use crate::error::{BuildError, LocalSolveError};
 
-// ---------------------------------------------------------------------------
-// LocalSolver trait
-// ---------------------------------------------------------------------------
-
 /// The `Aᵢ⁻¹` operator in the Schwarz formula: a local subdomain solver.
 ///
 /// Each subdomain's restricted system `Aᵢ = Rᵢ A Rᵢᵀ` is solved (exactly or
@@ -57,10 +53,6 @@ pub trait LocalSolver: Send + Sync {
         0
     }
 }
-
-// ---------------------------------------------------------------------------
-// SubdomainEntry<S>
-// ---------------------------------------------------------------------------
 
 /// One term of the Schwarz sum: `Rᵢᵀ D̃ᵢ Aᵢ⁻¹ D̃ᵢ Rᵢ`.
 ///
@@ -306,6 +298,10 @@ mod tests {
         let core = SubdomainCore::uniform(vec![1, 2]);
         let solver = IdentityLocalSolver { n: 2 };
         let entry = SubdomainEntry::try_new(core, solver).expect("valid entry");
+        assert_eq!(entry.global_indices(), &[1, 2]);
+        assert_eq!(entry.partition_weights().len(), 2);
+        assert!(!entry.is_empty());
+        assert_eq!(entry.scratch_size(), 2);
 
         let r = vec![10.0, 20.0, 30.0, 40.0];
         let mut out = vec![0.0; 4];

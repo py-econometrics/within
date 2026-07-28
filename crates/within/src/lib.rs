@@ -44,5 +44,5 @@ pub use error::{BuildError, BuildWarning, SignedPair, SolveError, WithinError};
 pub use operator::schwarz::Preconditioner;
 pub use solver::{
     solve, solve_batch, BatchSolveResult, CoefficientLayout, IntoDesign, PreconditionerInput,
-    SolveResult, SolveStats, Solver, UnidentifiedDirection,
+    SolveResult, Solver, UnidentifiedDirection,
 };

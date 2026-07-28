@@ -1,25 +1,10 @@
-"""Type stubs for the ``within._within`` Rust extension module.
-
-This module is the compiled PyO3 bridge to the ``within`` Rust crate.
-Most users should import from ``within`` directly rather than from
-``within._within``.
-"""
+"""Type stubs for the ``within._within`` Rust extension."""
 
 import numpy as np
 from numpy.typing import NDArray
 
 class PreconditionerConfig:
-    """Preconditioner selection shortcut for the LSMR solver.
-
-    Not an ``Enum``: the members below are class attributes (not iterable, so
-    ``list(PreconditionerConfig)`` raises). Use them for defaults, or pass an
-    ``AdditiveSchwarz`` instance for fine-grained control.
-
-    Attributes:
-        Additive: Additive Schwarz (default).
-        Off: No preconditioner. Useful for debugging or well-conditioned problems.
-        Diagonal: Diagonal/Jacobi preconditioner.
-    """
+    """Preconditioner selection shortcuts; ``None`` also uses additive Schwarz."""
 
     Additive: PreconditionerConfig
     Off: PreconditionerConfig

@@ -16,10 +16,6 @@ use crate::Operator;
 use super::executor::AdditiveExecutor;
 use super::planning::{AdditiveScheduler, ReductionPlan, ReductionStrategy};
 
-// ---------------------------------------------------------------------------
-// Serde
-// ---------------------------------------------------------------------------
-
 /// Persists the subdomain entries and the global DOF count `n_dofs` — the
 /// latter is not recoverable from the entries alone when some operator columns
 /// are covered by no subdomain. `max_scratch_size` and the scheduling metrics

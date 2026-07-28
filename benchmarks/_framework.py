@@ -1,17 +1,4 @@
-"""Benchmark framework: types, solve helpers, and suite registry.
-
-Public API
-----------
-- ``BenchmarkResult`` — result dataclass
-- ``ProblemSpec`` — problem specification
-- ``SolverConfig`` — solver configuration wrapper
-- ``SuiteOptions`` — options for suite runs
-- ``SuiteInfo`` — metadata + callable for one benchmark suite
-- ``suite`` — decorator to register a suite
-- ``list_suites`` / ``get_suite`` — suite lookup
-- ``run_solve`` / ``run_problem_set`` — solve helpers
-- ``standard_solver_configs`` — default LSMR config
-"""
+"""Benchmark types, solve helpers, and suite registry."""
 
 from __future__ import annotations
 import statistics
@@ -26,24 +13,18 @@ from within._within import (
     AdditiveSchwarz,
     ApproxCholConfig,
     ApproxSchurConfig,
-    Schur,
-    ReductionStrategy,
     LocalSolverConfig,
+    ReductionStrategy,
+    Schur,
 )
 
 ScaleProfile = Literal["smoke", "iterate", "full"]
 _T = TypeVar("_T")
 BENCHMARK_SOLVER_TOL_MIN = 1e-7
 
-# ---------------------------------------------------------------------------
-# Core data types (formerly _types.py)
-# ---------------------------------------------------------------------------
-
 
 @dataclass(frozen=True)
 class ProblemSpec:
-    """Specification for a benchmark problem."""
-
     name: str
     generator: str  # Registry key in _problems.py
     params: dict[str, Any] = field(default_factory=dict)
@@ -53,8 +34,6 @@ class ProblemSpec:
 
 @dataclass(frozen=True)
 class SolverConfig:
-    """Configuration for a solve via the Rust-backed API."""
-
     label: str
     config: LsmrOptions
     preconditioner: Any = None
@@ -62,8 +41,6 @@ class SolverConfig:
 
 @dataclass
 class BenchmarkResult:
-    """Result from a single (problem, solver config) benchmark run."""
-
     problem: str
     config: str  # SolverConfig.label
     n_dofs: int
@@ -104,7 +81,6 @@ def _solve_once(
     y: NDArray[np.float64],
     config: SolverConfig,
 ) -> BenchmarkResult:
-    """Run one timed solve."""
     result = solve(
         np.asfortranarray(np.column_stack(categories).astype(np.uint32)),
         y,
@@ -172,14 +148,12 @@ def run_solve(
 
 
 def benchmark_solver_tol(tol: float) -> float:
-    """Benchmark tolerance floor used to avoid borderline non-convergence noise."""
     return max(tol, BENCHMARK_SOLVER_TOL_MIN)
 
 
 def benchmark_lsmr(
     opts: Any, *, maxiter: int | None = None, local_size: int | None = None
 ) -> LsmrOptions:
-    """Construct an LSMR config with benchmark-standard tolerance handling."""
     return LsmrOptions(
         tol=benchmark_solver_tol(opts.tol),
         maxiter=opts.maxiter if maxiter is None else maxiter,
@@ -188,7 +162,6 @@ def benchmark_lsmr(
 
 
 def make_additive_schwarz(local_solver: Any) -> AdditiveSchwarz:
-    """Construct additive Schwarz using the default Auto reduction mode."""
     return AdditiveSchwarz(local_solver=local_solver, reduction=ReductionStrategy.Auto)
 
 
@@ -263,15 +236,8 @@ def run_problem_set(
     return all_results
 
 
-# ---------------------------------------------------------------------------
-# Suite registry (formerly _registry.py)
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class SuiteOptions:
-    """Options passed to every suite run function."""
-
     seed: int = 42
     tol: float = 1e-8
     maxiter: int = 2000
@@ -312,8 +278,6 @@ class SuiteOptions:
 
 @dataclass
 class SuiteInfo:
-    """Metadata + callable for one benchmark suite."""
-
     name: str
     description: str
     tags: frozenset[str]
@@ -331,7 +295,6 @@ def suite(
     [Callable[[SuiteOptions], list[BenchmarkResult]]],
     Callable[[SuiteOptions], list[BenchmarkResult]],
 ]:
-    """Decorator that registers a function as a benchmark suite."""
     tag_set = frozenset(tags)
 
     def _decorator(
@@ -351,12 +314,10 @@ def suite(
 
 
 def list_suites() -> dict[str, SuiteInfo]:
-    """Return all registered suites."""
     return dict(_SUITES)
 
 
 def get_suite(name: str) -> SuiteInfo:
-    """Look up a suite by name."""
     if name not in _SUITES:
         raise KeyError(f"Unknown suite {name!r}. Available: {sorted(_SUITES)}")
     return _SUITES[name]

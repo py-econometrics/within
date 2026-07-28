@@ -11,21 +11,18 @@ from conftest import as_solver_categories
 
 class TestErrorHandling:
     def test_empty_categories_raises(self):
-        """0-row categories should raise ValueError."""
         cats = np.empty((0, 2), dtype=np.uint32, order="F")
         y = np.array([], dtype=np.float64)
         with pytest.raises(ValueError):
             solve(cats, y)
 
     def test_mismatched_y_length_raises(self):
-        """len(y) != n_obs should raise."""
         cats = as_solver_categories([np.array([0, 1, 0]), np.array([0, 0, 1])])
         y = np.array([1.0, 2.0])  # wrong length
         with pytest.raises((ValueError, BaseException)):
             solve(cats, y)
 
     def test_mismatched_weights_length_raises(self):
-        """len(weights) != n_obs should raise."""
         cats = as_solver_categories([np.array([0, 1, 0]), np.array([0, 0, 1])])
         y = np.array([1.0, 2.0, 3.0])
         weights = np.array([1.0, 2.0])  # wrong length
@@ -33,28 +30,24 @@ class TestErrorHandling:
             solve(cats, y, weights=weights)
 
     def test_wrong_dtype_categories(self):
-        """float64 categories should raise a TypeError naming uint32."""
         cats = np.array([[0.0, 0.0], [1.0, 1.0]], dtype=np.float64, order="F")
         y = np.array([1.0, 2.0])
         with pytest.raises(TypeError, match="uint32"):
             solve(cats, y)
 
     def test_int64_categories_raises_typeerror(self):
-        """int64 categories (the pandas.factorize default) should raise a TypeError naming uint32."""
         cats = np.array([[0, 0], [1, 1]], dtype=np.int64, order="F")
         y = np.array([1.0, 2.0])
         with pytest.raises(TypeError, match="uint32"):
             solve(cats, y)
 
     def test_wrong_dtype_y(self):
-        """int32 y should raise a TypeError naming float64."""
         cats = as_solver_categories([np.array([0, 1, 0]), np.array([0, 0, 1])])
         y = np.array([1, 2, 3], dtype=np.int32)
         with pytest.raises(TypeError, match="float64"):
             solve(cats, y)
 
     def test_wrong_dtype_weights(self):
-        """float32 weights should raise a TypeError naming float64."""
         cats = as_solver_categories([np.array([0, 1, 0]), np.array([0, 0, 1])])
         y = np.array([1.0, 2.0, 3.0])
         w = np.array([1.0, 1.0, 1.0], dtype=np.float32)
@@ -62,21 +55,18 @@ class TestErrorHandling:
             solve(cats, y, weights=w)
 
     def test_1d_categories_raises(self):
-        """1-D categories should raise TypeError."""
         cats = np.array([0, 1, 2], dtype=np.uint32)
         y = np.array([1.0, 2.0, 3.0])
         with pytest.raises(TypeError):
             solve(cats, y)
 
     def test_invalid_config_type_raises(self):
-        """String config should raise TypeError."""
         cats = as_solver_categories([np.array([0, 1, 0]), np.array([0, 0, 1])])
         y = np.array([1.0, 2.0, 3.0])
         with pytest.raises(TypeError):
             solve(cats, y, options="invalid")
 
     def test_invalid_preconditioner_type_raises(self):
-        """String preconditioner should raise TypeError."""
         cats = as_solver_categories([np.array([0, 1, 0]), np.array([0, 0, 1])])
         y = np.array([1.0, 2.0, 3.0])
         with pytest.raises(TypeError) as exc:
@@ -84,7 +74,6 @@ class TestErrorHandling:
         assert "PreconditionerConfig.Diagonal" in str(exc.value)
 
     def test_approx_schur_config_split_zero_raises(self):
-        """ApproxSchurConfig(split=0) should raise ValueError."""
         with pytest.raises((ValueError, OverflowError)):
             ApproxSchurConfig(split=0)
 

@@ -10,7 +10,6 @@ def print_table(
     columns: list[str] | None = None,
     title: str | None = None,
 ) -> None:
-    """Print benchmark results as a formatted console table."""
     if not results:
         print("  (no results)")
         return
@@ -38,9 +37,9 @@ def print_table(
         "ms_per_iter": (
             "ms/iter",
             8,
-            lambda r: f"{r.solve_time / r.iterations * 1e3:.2f}"
-            if r.iterations > 0
-            else "--",
+            lambda r: (
+                f"{r.solve_time / r.iterations * 1e3:.2f}" if r.iterations > 0 else "--"
+            ),
         ),
         "final_residual": ("Residual", 12, lambda r: f"{r.final_residual:.2e}"),
         "demeaning_error": ("Demean", 12, lambda r: f"{r.demeaning_error:.2e}"),

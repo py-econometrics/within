@@ -135,7 +135,6 @@ def test_one_shot_solve_surfaces_build_warnings():
 
 @pytest.fixture()
 def problem():
-    """Two-factor problem with 50 levels each, 10k observations."""
     np.random.seed(42)
     cats = [
         np.random.randint(0, 50, size=10_000),
@@ -185,7 +184,6 @@ class TestPreconditioners:
         assert result.converged
 
     def test_advanced_additive_schwarz(self, problem):
-        """Test advanced config via AdditiveSchwarz."""
         cats, y = problem
         result = solve(
             as_solver_categories(cats),
@@ -213,7 +211,6 @@ class TestPreconditioners:
 
 class TestDemean:
     def test_recovers_fixed_effects(self):
-        """Solve D x = y where y = D x_true, and check we recover x_true."""
         n_levels = [50, 50]
         cats, x_true, y = generate_synthetic_data(n_levels, 10_000, seed=7)
         result = solve(as_solver_categories(cats), y)
@@ -232,7 +229,6 @@ class TestDemean:
             offset += n
 
     def test_residual_is_orthogonal_to_design(self):
-        """The residual y - D x should be orthogonal to every column of D."""
         np.random.seed(99)
         n_obs, n_levels = 5_000, [30, 40]
         cats = [np.random.randint(0, nl, size=n_obs) for nl in n_levels]
@@ -253,7 +249,6 @@ class TestDemean:
             offset += nl
 
     def test_demeaned_field(self, problem):
-        """The demeaned field should equal y - D*x."""
         cats, y = problem
         result = solve(as_solver_categories(cats), y)
         assert result.demeaned.shape == y.shape
@@ -315,7 +310,6 @@ class TestContiguityWarning:
 
 class TestSolver:
     def test_solver_matches_oneshot(self, problem):
-        """Solver.solve() matches one-shot solve()."""
         cats, y = problem
         categories = as_solver_categories(cats)
         oneshot = solve(categories, y)
@@ -327,7 +321,6 @@ class TestSolver:
         np.testing.assert_allclose(result.demeaned, oneshot.demeaned, atol=1e-10)
 
     def test_solver_reuse(self, problem):
-        """Multiple solves with same Solver give consistent results."""
         cats, y = problem
         categories = as_solver_categories(cats)
         solver = Solver(categories)
@@ -336,7 +329,6 @@ class TestSolver:
         np.testing.assert_array_equal(r1.x, r2.x)
 
     def test_solver_no_preconditioner(self, problem):
-        """Solver with PreconditionerConfig.Off works."""
         cats, y = problem
         solver = Solver(
             as_solver_categories(cats), preconditioner=PreconditionerConfig.Off
@@ -353,7 +345,6 @@ class TestSolver:
 
 class TestSolverBatch:
     def test_batch_matches_individual(self, problem):
-        """Batch solve matches individual solves."""
         cats, y = problem
         categories = as_solver_categories(cats)
         solver = Solver(categories)
@@ -390,7 +381,6 @@ class TestSolverBatch:
 
 class TestSolverSerde:
     def test_preconditioner_roundtrip(self, problem):
-        """Extract preconditioner object, reuse in new solver."""
         cats, y = problem
         categories = as_solver_categories(cats)
 
@@ -407,7 +397,6 @@ class TestSolverSerde:
         np.testing.assert_allclose(r2.x, r1.x, atol=1e-10)
 
     def test_preconditioner_pickle(self, problem):
-        """Pickle roundtrip of Preconditioner."""
         import pickle
 
         cats, y = problem
@@ -457,21 +446,7 @@ class TestSolverSerde:
         np.testing.assert_allclose(r2.x, r1.x, atol=1e-10)
 
 
-# ---------------------------------------------------------------------------
-# Convenience alias tests
-# ---------------------------------------------------------------------------
-
-
-class TestAliases:
-    def test_additive_alias(self, problem):
-        cats, y = problem
-        result = solve(as_solver_categories(cats), y, preconditioner=AdditiveSchwarz())
-        assert result.converged
-
-
 class TestSolveBatchFreeFunction:
-    """Tests for the free-function solve_batch()."""
-
     def test_solve_batch_basic(self, problem):
         cats, y = problem
         categories = as_solver_categories(cats)

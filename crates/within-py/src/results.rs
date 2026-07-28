@@ -7,13 +7,11 @@ use numpy::IntoPyArray;
 use pyo3::exceptions::{PyIndexError, PyUserWarning};
 use pyo3::prelude::*;
 
-use within::{BatchSolveResult, BuildWarning, CoefficientLayout, SolveResult};
+use within::{
+    BatchSolveResult, BuildWarning, CoefficientLayout, SolveResult, UnidentifiedDirection,
+};
 
 use crate::convert::{value_err, IntoPyErr};
-
-// ---------------------------------------------------------------------------
-// Result types
-// ---------------------------------------------------------------------------
 
 #[pyclass(module = "within._within")]
 #[pyo3(name = "SolveResult")]
@@ -76,6 +74,16 @@ pub struct PyUnidentifiedDirection {
     pub level: usize,
     #[pyo3(get)]
     pub column: usize,
+}
+
+impl From<&UnidentifiedDirection> for PyUnidentifiedDirection {
+    fn from(direction: &UnidentifiedDirection) -> Self {
+        Self {
+            term: direction.term,
+            level: direction.level,
+            column: direction.column,
+        }
+    }
 }
 
 #[pymethods]
@@ -152,21 +160,13 @@ impl PyCoefficientLayout {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Result conversion helpers
-// ---------------------------------------------------------------------------
-
 pub(crate) fn into_py_result(py: Python<'_>, result: SolveResult) -> PySolveResult {
     PySolveResult {
         x: result.x.into_pyarray(py).unbind(),
         unidentified: result
             .unidentified
             .iter()
-            .map(|u| PyUnidentifiedDirection {
-                term: u.term,
-                level: u.level,
-                column: u.column,
-            })
+            .map(PyUnidentifiedDirection::from)
             .collect(),
         layout: PyCoefficientLayout {
             inner: result.layout,
@@ -185,17 +185,7 @@ pub(crate) fn into_py_batch_result(
     py: Python<'_>,
     result: within::BatchSolveResult,
 ) -> PyResult<PyBatchSolveResult> {
-    let n_rhs = result.stats.len();
-    let mut converged = Vec::with_capacity(n_rhs);
-    let mut iterations = Vec::with_capacity(n_rhs);
-    let mut residual = Vec::with_capacity(n_rhs);
-    let mut time_solve = Vec::with_capacity(n_rhs);
-    for stats in result.stats {
-        converged.push(stats.converged);
-        iterations.push(stats.iterations);
-        residual.push(stats.residual);
-        time_solve.push(stats.time_solve);
-    }
+    let n_rhs = result.converged.len();
 
     // Source dimensions from the result (not output lengths) so empty batches
     // stay well-shaped at (n_dofs, 0) / (n_obs, 0).
@@ -208,35 +198,22 @@ pub(crate) fn into_py_batch_result(
         unidentified: result
             .unidentified
             .iter()
-            .map(|u| PyUnidentifiedDirection {
-                term: u.term,
-                level: u.level,
-                column: u.column,
-            })
+            .map(PyUnidentifiedDirection::from)
             .collect(),
         layout: PyCoefficientLayout {
             inner: result.layout,
         },
         demeaned: demeaned.into_pyarray(py).unbind(),
-        converged,
-        iterations,
-        residual,
-        time_solve,
+        converged: result.converged,
+        iterations: result.iterations,
+        residual: result.residual,
+        time_solve: result.time_solve,
         time_setup: result.time_setup,
         time_total: result.time_total,
     })
 }
 
-// ---------------------------------------------------------------------------
-// Off-GIL solve orchestration
-// ---------------------------------------------------------------------------
-
-/// Run a native single-response solve with the GIL released, then convert.
-///
-/// The closure produces a [`SolveResult`] off-GIL (`detach`); its native error
-/// is mapped to the matching Python exception class (see [`IntoPyErr`]) and the
-/// result to its Python wrapper. Shared by the free `solve` function and the
-/// persistent `Solver.solve`.
+/// Run a native single-response solve off-GIL, then convert it.
 pub(crate) fn run_solve<E, F>(py: Python<'_>, solve: F) -> PyResult<PySolveResult>
 where
     E: IntoPyErr + Send,
@@ -246,10 +223,7 @@ where
     Ok(into_py_result(py, result))
 }
 
-/// Run a native batch solve with the GIL released, then convert.
-///
-/// Batch counterpart to [`run_solve`]; the conversion itself is fallible
-/// (re-shaping the flat column buffers into 2-D arrays).
+/// Run a native batch solve off-GIL, then convert it.
 pub(crate) fn run_batch<E, F>(py: Python<'_>, solve: F) -> PyResult<PyBatchSolveResult>
 where
     E: IntoPyErr + Send,
@@ -259,8 +233,7 @@ where
     into_py_batch_result(py, result)
 }
 
-/// Re-emit build-time warnings as Python `UserWarning`s. Shared by the
-/// persistent `Solver` (at construction) and the one-shot `solve` path.
+/// Re-emit build-time warnings as Python `UserWarning`s.
 pub(crate) fn emit_build_warnings(py: Python<'_>, warnings: &[BuildWarning]) -> PyResult<()> {
     for warning in warnings {
         let message =
@@ -270,8 +243,7 @@ pub(crate) fn emit_build_warnings(py: Python<'_>, warnings: &[BuildWarning]) -> 
     Ok(())
 }
 
-/// [`run_solve`] for the one-shot path: the off-GIL closure also returns the
-/// build warnings collected during construction, which are re-emitted on-GIL.
+/// Run a one-shot solve and re-emit its build warnings.
 pub(crate) fn run_solve_with_warnings<E, F>(py: Python<'_>, solve: F) -> PyResult<PySolveResult>
 where
     E: IntoPyErr + Send,
@@ -282,7 +254,7 @@ where
     Ok(into_py_result(py, result))
 }
 
-/// Batch counterpart to [`run_solve_with_warnings`].
+/// Run a one-shot batch and re-emit its build warnings.
 pub(crate) fn run_batch_with_warnings<E, F>(
     py: Python<'_>,
     solve: F,

@@ -19,7 +19,6 @@ from conftest import as_solver_categories
 
 @pytest.fixture()
 def problem():
-    """Two-factor problem with 50 levels each, 10k observations."""
     np.random.seed(42)
     cats = [
         np.random.randint(0, 50, size=10_000),
@@ -31,7 +30,6 @@ def problem():
 
 @pytest.fixture()
 def solver_and_precond(problem):
-    """Build a Solver and extract its preconditioner."""
     cats, y = problem
     categories = as_solver_categories(cats)
     solver = Solver(categories)
