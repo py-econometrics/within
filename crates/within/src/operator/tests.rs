@@ -630,6 +630,7 @@ mod schwarz_tests {
             approx_chol: ApproxCholConfig {
                 split_merge: Some(8),
                 seed: 42,
+                ..Default::default()
             },
             schur: SchurMode::Approximate(ApproxSchurConfig {
                 seed: 7,

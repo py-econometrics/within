@@ -396,6 +396,7 @@ mod tests {
             ApproxCholConfig {
                 seed: 0,
                 split_merge: Some(2),
+                ..Default::default()
             },
         )
         .expect("factor cover");

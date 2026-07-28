@@ -233,7 +233,9 @@ fn grounded_backend_auxiliary_is_initialized_on_every_solve() {
     let factor = factor_sparse(&explicit_ground_laplacian, ApproxCholConfig::default())
         .expect("factorization must succeed");
     assert_eq!(factor.input_dimension(), 3);
-    assert_eq!(factor.factor_dimension(), 4);
+    // approx-chol declines to ground a surplus below the pivot scale it can
+    // resolve, so this explicit Laplacian gains no auxiliary vertex.
+    assert_eq!(factor.factor_dimension(), 3);
 
     let c = CsrBlock::from_dense_table(&[0.0; 6], 3, 2);
     let cross_tab = CrossTab {
@@ -252,7 +254,7 @@ fn grounded_backend_auxiliary_is_initialized_on_every_solve() {
     let solve_with_dirty_auxiliary = |dirty: f64| {
         let mut rhs = vec![0.0; solver.scratch_size()];
         rhs[3..5].copy_from_slice(&[1.0, -1.0]);
-        rhs[8] = dirty;
+        rhs[7] = dirty;
         let mut solution = vec![0.0; solver.scratch_size()];
         solver.solve_local(&mut rhs, &mut solution, false).unwrap();
         solution

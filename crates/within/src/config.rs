@@ -19,13 +19,29 @@ pub use schwarz_precond::ReductionStrategy;
 /// before falling back to sparse ApproxChol.
 pub(crate) const DEFAULT_DENSE_SCHUR_THRESHOLD: usize = 24;
 
+/// Default block size below which approx-chol factors exactly.
+pub(crate) const DEFAULT_EXACT_BELOW: usize = 24;
+
 /// Configuration for approximate Cholesky factorization.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ApproxCholConfig {
     /// Random seed for the factorization sampler.
     pub seed: u64,
     /// Optional split/merge count for denser AC2-style factorizations.
     pub split_merge: Option<u32>,
+    /// Exact dense Cholesky for connected blocks solving at most this many
+    /// variables; `None` factors every block approximately.
+    pub exact_below: Option<usize>,
+}
+
+impl Default for ApproxCholConfig {
+    fn default() -> Self {
+        Self {
+            seed: 0,
+            split_merge: None,
+            exact_below: Some(DEFAULT_EXACT_BELOW),
+        }
+    }
 }
 
 impl ApproxCholConfig {
@@ -33,6 +49,13 @@ impl ApproxCholConfig {
         approx_chol::Config {
             seed: self.seed,
             split_merge: self.split_merge,
+            backend: match self.exact_below {
+                Some(max_dim) => approx_chol::Backend::ExactBelow {
+                    max_dim,
+                    on_failure: approx_chol::ExactFailure::FallBackToApproximate,
+                },
+                None => approx_chol::Backend::Approximate,
+            },
         }
     }
 }
@@ -86,6 +109,7 @@ impl Default for LocalSolverConfig {
             approx_chol: ApproxCholConfig {
                 seed: 0,
                 split_merge: Some(2),
+                exact_below: Some(DEFAULT_EXACT_BELOW),
             },
             schur: SchurMode::default(),
             dense_threshold: DEFAULT_DENSE_SCHUR_THRESHOLD,
