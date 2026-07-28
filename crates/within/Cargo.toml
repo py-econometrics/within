@@ -18,7 +18,6 @@ postcard.workspace = true
 ndarray = "0.17"
 portable-atomic = { version = "1", features = ["float"] }
 rayon.workspace = true
-faer.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

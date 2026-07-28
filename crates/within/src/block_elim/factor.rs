@@ -111,28 +111,12 @@ enum ReducedFactorWire {
     Cover { inner: Factor, m: usize },
 }
 
-/// Reject a factor whose dimensions cannot arise from `approx-chol`, whose
-/// contract augments the input by at most one Gremban vertex, so
-/// `n ∈ {original_n, original_n + 1}`. Without this, a crafted `Factor::n`
-/// overflows the caller's scratch arithmetic.
-fn checked_approx(f: Factor) -> Result<Factor, &'static str> {
-    let (n, base) = (f.n(), f.original_n());
-    if n == base || Some(n) == base.checked_add(1) {
-        Ok(f)
-    } else {
-        Err("Approx factor dimension inconsistent with its original dimension")
-    }
-}
-
 impl<'de> serde::Deserialize<'de> for ReducedFactor {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         use serde::de::Error;
         match ReducedFactorWire::deserialize(deserializer)? {
-            ReducedFactorWire::Approx(f) => Ok(ReducedFactor::Approx(
-                checked_approx(f).map_err(D::Error::custom)?,
-            )),
+            ReducedFactorWire::Approx(f) => Ok(ReducedFactor::Approx(f)),
             ReducedFactorWire::Cover { inner, m } => {
-                let inner = checked_approx(inner).map_err(D::Error::custom)?;
                 // `solve_in_place` embeds the antisymmetric `[b, -b]` RHS into
                 // the inner factor, whose dimension is the `2m` doubled cover
                 // nodes plus at most two augmentation vertices (the grounded
@@ -190,12 +174,8 @@ pub(crate) fn local_solver_build(e: approx_chol::Error) -> BuildError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ApproxCholConfig;
+    use crate::config::{ApproxCholConfig, DEFAULT_DENSE_SCHUR_THRESHOLD};
     use approx_chol::ExactFailure;
-
-    fn exact_config() -> approx_chol::Config {
-        ApproxCholConfig::default().to_approx_chol(24, ExactFailure::Error)
-    }
 
     #[test]
     fn cover_reduced_factor_solves_signed_system() {
@@ -216,7 +196,7 @@ mod tests {
             seed: 0,
             split_merge: Some(2),
         }
-        .to_approx_chol(24, ExactFailure::Error);
+        .to_approx_chol(DEFAULT_DENSE_SCHUR_THRESHOLD, ExactFailure::Error);
         let inner = factor_sparse(&cover, config).expect("factor cover");
         let reduced = ReducedFactor::Cover { inner, m: 2 };
         assert_eq!(reduced.input_dimension(), 2);
@@ -244,7 +224,9 @@ mod tests {
             vec![2.0, -1.0, -1.0, 2.0],
             2,
         );
-        factor_sparse(&m, exact_config()).expect("factor 2x2")
+        let config = ApproxCholConfig::default()
+            .to_approx_chol(DEFAULT_DENSE_SCHUR_THRESHOLD, ExactFailure::Error);
+        factor_sparse(&m, config).expect("factor 2x2")
     }
 
     #[test]

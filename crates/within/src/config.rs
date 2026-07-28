@@ -38,13 +38,10 @@ impl ApproxCholConfig {
         approx_chol::Config {
             seed: self.seed,
             split_merge: self.split_merge,
-            backend: if exact_below == 0 {
-                approx_chol::Backend::Approximate
-            } else {
-                approx_chol::Backend::ExactBelow {
-                    max_dim: exact_below,
-                    on_failure,
-                }
+            // `max_dim: 0` claims no block, which is what `dense_threshold: 0` asks for.
+            backend: approx_chol::Backend::ExactBelow {
+                max_dim: exact_below,
+                on_failure,
             },
         }
     }

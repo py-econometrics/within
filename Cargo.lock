@@ -2047,7 +2047,6 @@ version = "0.3.0"
 dependencies = [
  "approx-chol",
  "criterion",
- "faer",
  "ndarray",
  "portable-atomic",
  "postcard",

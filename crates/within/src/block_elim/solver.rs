@@ -96,7 +96,7 @@ pub struct BlockElimSolver {
     /// `1 / D_elim[k]` for the eliminated (larger) diagonal block.
     inv_diag_elim: Vec<f64>,
     /// Reduced-system factor backend.
-    pub(crate) reduced_factor: ReducedFactor,
+    reduced_factor: ReducedFactor,
     /// True if the q-block was eliminated (n_q >= n_r).
     eliminate_q: bool,
     /// Internal DOF count (`n_q + n_r`) — the operator is always single-sized;
