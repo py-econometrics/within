@@ -63,6 +63,14 @@ pub enum Loading<T> {
 }
 
 impl<T> Loading<T> {
+    /// The covariate payload; `None` for the constant column.
+    pub fn covariate(&self) -> Option<&T> {
+        match self {
+            Self::Constant => None,
+            Self::Covariate(t) => Some(t),
+        }
+    }
+
     /// Replace the covariate payload, preserving which variant this is.
     pub fn map<U>(&self, f: impl FnOnce(&T) -> U) -> Loading<U> {
         match self {

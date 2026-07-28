@@ -121,9 +121,9 @@ pub(super) fn accumulate_cross_block(
 
     let levels_q = design.frame.level_column(pair.q.term);
     let levels_r = design.frame.level_column(pair.r.term);
-    let load = |col: ColumnLoading<u32>| match col {
-        ColumnLoading::Constant => None,
-        ColumnLoading::Covariate(c) => Some(design.frame.loading_column(c as usize)),
+    let load = |col: ColumnLoading<u32>| {
+        col.covariate()
+            .map(|&c| design.frame.loading_column(c as usize))
     };
     // One arm per monomorphized loading combination; a generic constructor
     // can't express this (closures aren't generic), so the literals repeat.

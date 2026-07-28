@@ -5,7 +5,6 @@
 use crate::domain::Effect;
 
 use super::*;
-use crate::domain::Loading;
 
 #[test]
 fn gram_schmidt_orthonormalizes_under_a_non_monotonic_pivot_order() {
@@ -71,10 +70,8 @@ fn build_whitens_each_slope_bearing_term() {
         let us: Vec<&[f64]> = meta
             .columns
             .iter()
-            .filter_map(|c| match c {
-                Loading::Covariate(k) => Some(design.frame.loading_column(*k as usize)),
-                Loading::Constant => None,
-            })
+            .filter_map(|c| c.covariate())
+            .map(|&k| design.frame.loading_column(k as usize))
             .collect();
         for level in 0..meta.n_levels {
             let obs: Vec<usize> = (0..levels.len())
