@@ -461,14 +461,6 @@ fn inv_diag_elim_length_mismatch_is_rejected() {
 }
 
 #[test]
-fn n_internal_mismatch_is_rejected() {
-    let mut bad = valid_solver_for_deser();
-    bad.n_internal += 1;
-    let bytes = postcard::to_stdvec(&bad).expect("serialize");
-    assert!(postcard::from_bytes::<BlockElimSolver>(&bytes).is_err());
-}
-
-#[test]
 fn scaled_coordinate_length_mismatch_is_rejected() {
     let mut bad = valid_solver_for_deser();
     bad.coordinates = CoordinateMap::Scaled(vec![1.0; bad.n_internal + 3].into_boxed_slice());

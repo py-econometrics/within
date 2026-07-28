@@ -101,8 +101,10 @@ pub struct BlockElimSolver {
     eliminate_q: bool,
     /// Internal DOF count (`n_q + n_r`) — the operator is always single-sized;
     /// a frustrated component's cover lives inside `reduced_factor`.
+    #[serde(skip)]
     n_internal: usize,
     /// Internal factor dimension, including backend-added auxiliary vertices.
+    #[serde(skip)]
     n_reduced: usize,
     /// Original-to-SDDM coordinate map.
     coordinates: CoordinateMap,
@@ -113,10 +115,9 @@ pub struct BlockElimSolver {
 impl<'de> serde::Deserialize<'de> for BlockElimSolver {
     /// Reconstruct from bytes that may be untrusted (a pickle cache, another
     /// machine, a tampered file), validating every cross-field invariant the
-    /// infallible [`Self::new`] takes for granted. The two count fields are
-    /// re-derived rather than trusted, and each dimension is pinned to a witness
-    /// that is itself bounded by the input length, so no accepted solver can
-    /// overflow its scratch arithmetic or index out of bounds when applied.
+    /// infallible [`Self::new`] takes for granted. Each dimension is pinned to a
+    /// witness that is itself bounded by the input length, so no accepted solver
+    /// can overflow its scratch arithmetic or index out of bounds when applied.
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         use serde::de::Error;
 
@@ -126,8 +127,6 @@ impl<'de> serde::Deserialize<'de> for BlockElimSolver {
             inv_diag_elim: Vec<f64>,
             reduced_factor: ReducedFactor,
             eliminate_q: bool,
-            n_internal: usize,
-            n_reduced: usize,
             coordinates: CoordinateMap,
             solve_space: SolveSpace,
         }
@@ -148,14 +147,6 @@ impl<'de> serde::Deserialize<'de> for BlockElimSolver {
         }
         let (n_q, n_r) = (c.nrows, c.ncols);
         let n_internal = n_q + n_r;
-        if h.n_internal != n_internal {
-            return Err(D::Error::custom("n_internal disagrees with cross_tab"));
-        }
-
-        let n_reduced = h.reduced_factor.factor_dimension();
-        if h.n_reduced != n_reduced {
-            return Err(D::Error::custom("n_reduced disagrees with reduced factor"));
-        }
 
         // Roles are fixed by `eliminate_q`: the eliminated block is scaled by
         // `inv_diag_elim`, the kept block is what the reduced factor solves.
@@ -192,8 +183,8 @@ impl<'de> serde::Deserialize<'de> for BlockElimSolver {
             ));
         }
 
-        // Rebuild the transpose from the validated `c` so it cannot disagree,
-        // then let `new` re-derive the counts we checked above.
+        // Rebuild the transpose from the validated `c` so it cannot disagree;
+        // `new` derives the counts, which never travel on the wire.
         let ct = c.transpose();
         Ok(BlockElimSolver::new(
             CrossTab { c, ct },
