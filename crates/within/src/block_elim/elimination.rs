@@ -80,34 +80,12 @@ fn sample_star(
 // Elimination — block selection + star iteration
 // ===========================================================================
 
-/// Which diagonal block the elimination removes; the other is kept and reduced.
+/// Star iteration over the eliminated block for Schur elimination.
 ///
-/// Owns the q/r-to-role swap, so the build, the wire check and the solve all
-/// reorder through [`Self::roles`] rather than restating the rule.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum Orientation {
-    // Keep this order: postcard encodes enum discriminants by declaration
-    // order, and the wire pins EliminateQ = 1 from the `eliminate_q` bool.
-    EliminateR,
-    EliminateQ,
-}
-
-impl Orientation {
-    /// A `(q, r)` pair reordered into `(eliminated, kept)` roles.
-    pub(crate) fn roles<T>(self, q: T, r: T) -> (T, T) {
-        match self {
-            Self::EliminateQ => (q, r),
-            Self::EliminateR => (r, q),
-        }
-    }
-}
-
-/// Block-selection decision and star iteration for Schur elimination.
-///
-/// Encapsulates which block to eliminate, precomputed inverse-diagonals,
-/// and provides zero-copy [`Star`] views for each eliminated vertex.
+/// Components arrive normalized — the q block is the larger one and is always
+/// the eliminated side — so this holds precomputed inverse-diagonals and
+/// zero-copy [`Star`] views rather than a role assignment.
 pub(crate) struct Elimination<'a> {
-    pub(crate) orientation: Orientation,
     pub(crate) n_keep: usize,
     pub(crate) n_elim: usize,
     pub(crate) inv_diag_elim: Vec<f64>,
@@ -120,7 +98,7 @@ pub(crate) struct Elimination<'a> {
 }
 
 impl<'a> Elimination<'a> {
-    /// Select which block to eliminate and precompute inverse-diagonals.
+    /// Precompute inverse-diagonals for the eliminated (q) block.
     ///
     /// The diagonal blocks are build-time-only inputs ([`BlockDiagonals`]); they
     /// are folded into `inv_diag_elim` and borrowed as `diag_keep` here and not
@@ -131,21 +109,13 @@ impl<'a> Elimination<'a> {
         ground_edges: &'a GroundEdges,
         grounding: Grounding,
     ) -> Result<Self, BuildError> {
-        let n_q = cross_tab.n_q();
-        let n_r = cross_tab.n_r();
-        // Eliminate the larger block to minimize the reduced system size.
-        let orientation = if n_q >= n_r {
-            Orientation::EliminateQ
-        } else {
-            Orientation::EliminateR
-        };
-        let (n_elim, n_keep) = orientation.roles(n_q, n_r);
-        let (diag_elim, diag_keep) = orientation.roles(&diagonals.q[..], &diagonals.r[..]);
-        let (surplus_elim, surplus_keep) =
-            orientation.roles(&ground_edges.q[..], &ground_edges.r[..]);
-        let (elim_to_keep, keep_to_elim) = orientation.roles(&cross_tab.c, &cross_tab.ct);
+        let (n_elim, n_keep) = (cross_tab.n_q(), cross_tab.n_r());
+        // Eliminating the larger block minimizes the reduced system; components
+        // are normalized to put it on q, so the choice is already made.
+        debug_assert!(n_elim >= n_keep, "component is not q-major");
 
-        let inv_diag_elim = diag_elim
+        let inv_diag_elim = diagonals
+            .q
             .iter()
             .enumerate()
             .map(|(i, &d)| {
@@ -158,16 +128,15 @@ impl<'a> Elimination<'a> {
             .collect::<Result<_, _>>()?;
 
         Ok(Self {
-            orientation,
             n_keep,
             n_elim,
             inv_diag_elim,
-            diag_keep,
-            surplus_keep,
-            surplus_elim,
+            diag_keep: &diagonals.r,
+            surplus_keep: &ground_edges.r,
+            surplus_elim: &ground_edges.q,
             grounding,
-            keep_to_elim,
-            elim_to_keep,
+            keep_to_elim: &cross_tab.ct,
+            elim_to_keep: &cross_tab.c,
         })
     }
 

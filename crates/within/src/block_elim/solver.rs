@@ -12,7 +12,7 @@ use crate::domain::{
 use crate::BuildError;
 
 use super::compensated_sum;
-use super::elimination::{Elimination, Orientation};
+use super::elimination::Elimination;
 use super::factor::{factor_sparse, local_solver_build, ReducedFactor};
 use super::schur;
 
@@ -96,8 +96,6 @@ pub struct BlockElimSolver {
     inv_diag_elim: Vec<f64>,
     /// Reduced-system factor backend.
     reduced_factor: ReducedFactor,
-    /// Which diagonal block was eliminated.
-    orientation: Orientation,
     /// Internal DOF count (`n_q + n_r`) — the operator is always single-sized;
     /// a frustrated component's cover lives inside `reduced_factor`.
     #[serde(skip)]
@@ -123,7 +121,6 @@ impl<'de> serde::Deserialize<'de> for BlockElimSolver {
             cross_tab: CrossTab,
             inv_diag_elim: Vec<f64>,
             reduced_factor: ReducedFactor,
-            orientation: Orientation,
             coordinates: CoordinateMap,
         }
 
@@ -144,9 +141,9 @@ impl<'de> serde::Deserialize<'de> for BlockElimSolver {
         let (n_q, n_r) = (c.nrows, c.ncols);
         let n_internal = n_q + n_r;
 
-        // The eliminated block is scaled by `inv_diag_elim`; the kept block is
-        // what the reduced factor solves.
-        let (elim_size, n_keep) = h.orientation.roles(n_q, n_r);
+        // Components are q-major: the q block is scaled by `inv_diag_elim` and
+        // the r block is what the reduced factor solves.
+        let (elim_size, n_keep) = (n_q, n_r);
         if h.inv_diag_elim.len() != elim_size {
             return Err(D::Error::custom(
                 "inv_diag_elim length disagrees with eliminated block",
@@ -177,51 +174,8 @@ impl<'de> serde::Deserialize<'de> for BlockElimSolver {
             CrossTab { c, ct },
             h.inv_diag_elim,
             h.reduced_factor,
-            h.orientation,
             h.coordinates,
         ))
-    }
-}
-
-/// The q/r blocks assigned to their eliminated/kept roles for one solve.
-///
-/// `BlockElimSolver` eliminates one diagonal block and solves a reduced system
-/// on the other; [`Orientation`] fixes which is which at construction. This bundles
-/// the per-orientation block ranges and cross operators under named roles —
-/// reusing [`super::elimination::Elimination`]'s `keep_to_elim` / `elim_to_keep`
-/// vocabulary — so [`BlockElimSolver::eliminate_and_recover`] stays
-/// orientation-agnostic.
-struct BlockRoles<'a> {
-    /// Index range of the eliminated block within the `[q | r]` layout.
-    elim: std::ops::Range<usize>,
-    /// Index range of the kept (reduced) block.
-    keep: std::ops::Range<usize>,
-    /// Cross block with kept rows / eliminated columns; applied to the eliminated
-    /// block to form the reduced RHS (`Cᵀ` when eliminating q, `C` when r).
-    keep_to_elim: &'a CsrBlock,
-    /// Cross block with eliminated rows / kept columns; used in back-substitution
-    /// to recover the eliminated block (`C` when eliminating q, `Cᵀ` when r).
-    elim_to_keep: &'a CsrBlock,
-}
-
-impl BlockRoles<'_> {
-    /// Borrow the eliminated block (mutable, the back-substitution output) and
-    /// the kept block (immutable source) out of `sol`. The two blocks meet at
-    /// the q/r boundary; `sol`'s tail past `n_local` is reduced-solve scratch,
-    /// so the kept side is clamped to `keep`'s length.
-    fn split_sol<'s>(&self, sol: &'s mut [f64]) -> (&'s mut [f64], &'s [f64]) {
-        // The split relies on the two blocks being adjacent: the lower one ends
-        // exactly where the upper one begins (they meet at the q/r boundary).
-        debug_assert!(
-            self.elim.end == self.keep.start || self.keep.end == self.elim.start,
-            "elim and keep blocks must be adjacent",
-        );
-        let (lo, hi) = sol.split_at_mut(self.elim.start.max(self.keep.start));
-        if self.elim.start < self.keep.start {
-            (&mut lo[self.elim.clone()], &hi[..self.keep.len()])
-        } else {
-            (&mut hi[..self.elim.len()], &lo[self.keep.clone()])
-        }
     }
 }
 
@@ -334,7 +288,6 @@ impl BlockElimSolver {
         cross_tab: impl Into<Arc<CrossTab>>,
         inv_diag_elim: Vec<f64>,
         reduced_factor: ReducedFactor,
-        orientation: Orientation,
         coordinates: CoordinateMap,
     ) -> Self {
         let cross_tab = cross_tab.into();
@@ -344,7 +297,6 @@ impl BlockElimSolver {
             cross_tab,
             inv_diag_elim,
             reduced_factor,
-            orientation,
             n_internal,
             n_reduced,
             coordinates,
@@ -412,16 +364,11 @@ impl BlockElimSolver {
             }
         };
 
-        let Elimination {
-            inv_diag_elim,
-            orientation,
-            ..
-        } = elim;
+        let Elimination { inv_diag_elim, .. } = elim;
         Ok(BlockElimSolver::new(
             cross_tab,
             inv_diag_elim,
             factor,
-            orientation,
             coordinates,
         ))
     }
@@ -433,25 +380,25 @@ impl BlockElimSolver {
     /// and runs unchanged for both orientations.
     fn eliminate_and_recover(
         &self,
-        roles: &BlockRoles,
         rhs: &mut [f64],
         sol: &mut [f64],
         allow_inner_parallelism: bool,
     ) -> Result<(), LocalSolveError> {
         let n = self.n_internal;
-        let n_keep = roles.keep.len();
+        let n_elim = self.cross_tab.n_q();
+        let n_keep = n - n_elim;
         let explicit_ground = self.explicit_ground_index(n_keep);
 
         // Scale the eliminated block by its inverse diagonal.
-        scale_by_diag_in_place(&mut rhs[roles.elim.clone()], &self.inv_diag_elim);
+        scale_by_diag_in_place(&mut rhs[..n_elim], &self.inv_diag_elim);
 
         // Apply `keep_to_elim` into the scratch tail to form the reduced RHS.
         {
             let (main, scratch) = rhs.split_at_mut(n);
             scratch[n_keep..self.n_reduced].fill(0.0);
-            roles.keep_to_elim.spmv_assign_add(
-                &main[roles.elim.clone()],
-                &main[roles.keep.clone()],
+            self.cross_tab.ct.spmv_assign_add(
+                &main[..n_elim],
+                &main[n_elim..],
                 &mut scratch[..n_keep],
                 allow_inner_parallelism,
             );
@@ -476,7 +423,7 @@ impl BlockElimSolver {
         // eliminated block (eliminate-r) or scratch tail (eliminate-q); those slots
         // are dead except the grounded gauge slot, a transient the subtraction below
         // consumes. The `rhs` tail is the factor's embed scratch (unused unless Cover).
-        let reduced = roles.keep.start..roles.keep.start + self.n_reduced;
+        let reduced = n_elim..n_elim + self.n_reduced;
         debug_assert!(
             n_keep <= self.n_reduced,
             "reduced region must cover the kept block",
@@ -494,19 +441,20 @@ impl BlockElimSolver {
         self.reduced_factor
             .solve_in_place(&mut sol[reduced], embed)?;
         if let Some(ground) = explicit_ground {
-            let ground = sol[roles.keep.start + ground];
-            for v in &mut sol[roles.keep.start..roles.keep.start + n_keep] {
+            let ground = sol[n_elim + ground];
+            for v in &mut sol[n_elim..n_elim + n_keep] {
                 *v -= ground;
             }
         }
 
         // Back-substitute for the eliminated block; it reads the gauged kept block,
         // so the gauge subtraction above must run first.
-        let (sol_output, sol_source) = roles.split_sol(sol);
+        let (sol_output, sol_source) = sol.split_at_mut(n_elim);
+        let sol_source = &sol_source[..n_keep];
         backsub_block_from_scaled_rhs(
             sol_output,
-            &rhs[roles.elim.clone()],
-            roles.elim_to_keep,
+            &rhs[..n_elim],
+            &self.cross_tab.c,
             &self.inv_diag_elim,
             sol_source,
             allow_inner_parallelism,
@@ -542,22 +490,13 @@ impl LocalSolver for BlockElimSolver {
     ) -> Result<(), LocalSolveError> {
         let n = self.n_internal;
         let n_q = self.cross_tab.n_q();
-        let ct = &self.cross_tab;
 
         self.coordinates.fold(&mut rhs[..n], n_q);
         if self.reduced_factor.grounding() == Some(Grounding::Floating) {
             subtract_mean(rhs, n);
         }
 
-        let (elim, keep) = self.orientation.roles(0..n_q, n_q..n);
-        let (elim_to_keep, keep_to_elim) = self.orientation.roles(&ct.c, &ct.ct);
-        let roles = BlockRoles {
-            elim,
-            keep,
-            keep_to_elim,
-            elim_to_keep,
-        };
-        self.eliminate_and_recover(&roles, rhs, sol, allow_inner_parallelism)?;
+        self.eliminate_and_recover(rhs, sol, allow_inner_parallelism)?;
 
         if self.reduced_factor.grounding() == Some(Grounding::Floating) {
             subtract_mean(sol, n);

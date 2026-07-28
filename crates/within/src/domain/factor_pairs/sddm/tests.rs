@@ -14,6 +14,7 @@ impl LocalComponent {
     }
 
     pub(crate) fn general_for_test(cross_tab: CrossTab, diagonals: BlockDiagonals) -> Self {
+        let (cross_tab, diagonals, _) = super::q_major(cross_tab, diagonals);
         convert(
             cross_tab,
             diagonals,

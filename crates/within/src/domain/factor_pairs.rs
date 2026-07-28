@@ -151,6 +151,7 @@ fn split_into_subdomains(
             term_r: pair.r.term,
             column_r: pair.r.column,
         };
+        let (comp_ct, comp_diag, swap) = sddm::q_major(comp_ct, comp_diag);
         let (component, uncertified) = convert(comp_ct, comp_diag, class, scaling)
             .map_err(|NotScalable| BuildError::UnscalableComponent { pair: signed_pair })?;
         if let Some(uncertified) = uncertified {
@@ -160,12 +161,13 @@ fn split_into_subdomains(
                 violation: uncertified.violation,
             });
         }
-        let comp_l2g: Vec<u32> = comp
-            .q_indices
-            .iter()
-            .map(|&i| l2g[i])
-            .chain(comp.r_indices.iter().map(|&i| l2g[n_q_full + i]))
-            .collect();
+        let q_globals = comp.q_indices.iter().map(|&i| l2g[i]);
+        let r_globals = comp.r_indices.iter().map(|&i| l2g[n_q_full + i]);
+        let comp_l2g: Vec<u32> = if swap {
+            r_globals.chain(q_globals).collect()
+        } else {
+            q_globals.chain(r_globals).collect()
+        };
         domains.push(LocalDomain {
             core: schwarz_precond::SubdomainCore::uniform(comp_l2g),
             component,

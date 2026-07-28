@@ -113,6 +113,29 @@ impl CoordinateMap {
     }
 }
 
+/// Relabel a component so the larger block is `q`, which the block elimination
+/// always removes. Returns whether the sides were exchanged, so a caller
+/// holding a parallel `[q | r]` index list can follow.
+pub(crate) fn q_major(
+    cross_tab: CrossTab,
+    diagonals: BlockDiagonals,
+) -> (CrossTab, BlockDiagonals, bool) {
+    if cross_tab.n_r() <= cross_tab.n_q() {
+        return (cross_tab, diagonals, false);
+    }
+    (
+        CrossTab {
+            c: cross_tab.ct,
+            ct: cross_tab.c,
+        },
+        BlockDiagonals {
+            q: diagonals.r,
+            r: diagonals.q,
+        },
+        true,
+    )
+}
+
 #[derive(Clone)]
 pub(crate) struct LocalComponent {
     pub(crate) cross_tab: CrossTab,
