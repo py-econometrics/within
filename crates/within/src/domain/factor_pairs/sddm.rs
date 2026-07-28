@@ -13,8 +13,7 @@
 
 use super::ComponentClass;
 use crate::config::{ScalingConfig, ScalingFailure};
-use crate::csr_block::CsrBlock;
-use crate::domain::{BlockDiagonals, CrossTab};
+use crate::domain::CrossTab;
 
 #[derive(Clone, Copy)]
 struct RoundoffBudget {
@@ -81,12 +80,6 @@ pub(crate) enum CoordinateMap {
     Scaled(Box<[f64]>),
 }
 
-#[derive(Clone)]
-pub(crate) struct GroundEdges {
-    pub(crate) rows: Vec<f64>,
-    pub(crate) cols: Vec<f64>,
-}
-
 impl CoordinateMap {
     /// Map an original-coordinate RHS into SDDM coordinates. `values` spans
     /// the internal system and `n_rows` is its q-size.
@@ -114,37 +107,39 @@ impl CoordinateMap {
 }
 
 /// Orient a component for elimination: the larger block becomes the eliminated
-/// side, which the block elimination always removes. `globals` arrives in
-/// `[q | r]` order and leaves in eliminated-major order, so a component and its
-/// restriction cannot disagree on vertex order.
+/// side, which the block elimination always removes. Every per-vertex array
+/// arrives in `[rows | cols]` order and leaves in eliminated-major order, so a
+/// component and its restriction cannot disagree on vertex order.
 pub(crate) fn orient_for_elimination(
     cross_tab: CrossTab,
-    diagonals: BlockDiagonals,
+    mut diagonal: Vec<f64>,
     mut globals: Vec<u32>,
-) -> (CrossTab, BlockDiagonals, Vec<u32>) {
+) -> (CrossTab, Vec<f64>, Vec<u32>) {
     debug_assert_eq!(globals.len(), cross_tab.n_local());
+    debug_assert_eq!(diagonal.len(), cross_tab.n_local());
     if cross_tab.n_cols() <= cross_tab.n_rows() {
-        return (cross_tab, diagonals, globals);
+        return (cross_tab, diagonal, globals);
     }
+    diagonal.rotate_left(cross_tab.n_rows());
     globals.rotate_left(cross_tab.n_rows());
     (
         CrossTab {
             c: cross_tab.ct,
             ct: cross_tab.c,
         },
-        BlockDiagonals {
-            rows: diagonals.cols,
-            cols: diagonals.rows,
-        },
+        diagonal,
         globals,
     )
 }
 
+/// A connected component in SDDM form. The per-vertex arrays are flat in the
+/// `[eliminated | kept]` order [`CrossTab::neighbors`] indexes, split at
+/// `cross_tab.n_rows()`.
 #[derive(Clone)]
 pub(crate) struct LocalComponent {
     pub(crate) cross_tab: CrossTab,
-    pub(crate) diagonals: BlockDiagonals,
-    pub(crate) ground_edges: GroundEdges,
+    pub(crate) diagonal: Vec<f64>,
+    pub(crate) ground_edges: Vec<f64>,
     pub(crate) coordinates: CoordinateMap,
     pub(crate) reduction: Reduction,
 }
@@ -165,15 +160,15 @@ pub(crate) struct UncertifiedScaling {
 
 pub(super) fn convert(
     cross_tab: CrossTab,
-    diagonals: BlockDiagonals,
+    diagonal: Vec<f64>,
     class: ComponentClass,
     scaling: &ScalingConfig,
 ) -> Result<(LocalComponent, Option<UncertifiedScaling>), NotScalable> {
     match class {
         ComponentClass::KnownLaplacian => {
-            convert_known_laplacian(cross_tab, diagonals).map(|component| (component, None))
+            convert_known_laplacian(cross_tab, diagonal).map(|component| (component, None))
         }
-        ComponentClass::General => convert_general(cross_tab, diagonals, scaling),
+        ComponentClass::General => convert_general(cross_tab, diagonal, scaling),
     }
 }
 
@@ -182,31 +177,22 @@ pub(super) fn convert(
 /// dominant plain path at two streaming passes over the cross data.
 fn convert_known_laplacian(
     cross_tab: CrossTab,
-    diagonals: BlockDiagonals,
+    diagonal: Vec<f64>,
 ) -> Result<LocalComponent, NotScalable> {
     let row_sums = adjacency_sums(&cross_tab);
     let mut total_diagonal = 0.0;
     let mut total_mismatch = 0.0;
-    for (&diagonal, &row_sum) in diagonals
-        .rows
-        .iter()
-        .zip(row_sums.rows.iter())
-        .chain(diagonals.cols.iter().zip(row_sums.cols.iter()))
-    {
-        total_diagonal += diagonal;
-        total_mismatch += (diagonal - row_sum).abs();
+    for (&entry, &row_sum) in diagonal.iter().zip(row_sums.iter()) {
+        total_diagonal += entry;
+        total_mismatch += (entry - row_sum).abs();
     }
     if total_mismatch > LAPLACIAN_VALIDATION_BUDGET.tolerance(cross_tab.n_local(), total_diagonal) {
         return Err(NotScalable);
     }
-    let ground_edges = GroundEdges {
-        rows: vec![0.0; cross_tab.n_rows()],
-        cols: vec![0.0; cross_tab.n_cols()],
-    };
     Ok(LocalComponent {
+        ground_edges: vec![0.0; cross_tab.n_local()],
         cross_tab,
-        diagonals: row_sums,
-        ground_edges,
+        diagonal: row_sums,
         coordinates: CoordinateMap::default(),
         reduction: Reduction::Direct(Grounding::Floating),
     })
@@ -214,11 +200,11 @@ fn convert_known_laplacian(
 
 fn convert_general(
     cross_tab: CrossTab,
-    diagonals: BlockDiagonals,
+    diagonal: Vec<f64>,
     scaling: &ScalingConfig,
 ) -> Result<(LocalComponent, Option<UncertifiedScaling>), NotScalable> {
     let signs = folding_signs(&cross_tab);
-    let relaxation = dominance_scaling(&cross_tab, &diagonals, scaling)?;
+    let relaxation = dominance_scaling(&cross_tab, &diagonal, scaling)?;
     if !relaxation.certified && scaling.on_failure == ScalingFailure::Error {
         return Err(NotScalable);
     }
@@ -229,13 +215,7 @@ fn convert_general(
                 .zip(relaxation.scales.iter())
                 .map(|(&sign, &scale)| sign * scale)
                 .collect();
-            assemble(
-                cross_tab,
-                diagonals,
-                factors,
-                ReductionKind::Direct,
-                scaling,
-            )?
+            assemble(cross_tab, diagonal, factors, ReductionKind::Direct, scaling)?
         }
         None => {
             let n_rows = cross_tab.n_rows();
@@ -243,7 +223,7 @@ fn convert_general(
             for factor in &mut factors[n_rows..] {
                 *factor = -*factor;
             }
-            assemble(cross_tab, diagonals, factors, ReductionKind::Cover, scaling)?
+            assemble(cross_tab, diagonal, factors, ReductionKind::Cover, scaling)?
         }
     };
     let violation = relaxation.violation.max(clamped_deficit);
@@ -266,7 +246,7 @@ fn convert_general(
 /// clamped; deficits beyond tolerance are errors under [`ScalingFailure::Error`].
 fn assemble(
     mut cross_tab: CrossTab,
-    diagonals: BlockDiagonals,
+    diagonal: Vec<f64>,
     factors: Vec<f64>,
     reduction: ReductionKind,
     scaling: &ScalingConfig,
@@ -287,20 +267,11 @@ fn assemble(
     }
     cross_tab.ct = cross_tab.c.transpose();
 
-    let scaled_diagonals = BlockDiagonals {
-        rows: diagonals
-            .rows
-            .iter()
-            .zip(factors[..n_rows].iter())
-            .map(|(&diagonal, &factor)| diagonal * factor * factor)
-            .collect(),
-        cols: diagonals
-            .cols
-            .iter()
-            .zip(factors[n_rows..].iter())
-            .map(|(&diagonal, &factor)| diagonal * factor * factor)
-            .collect(),
-    };
+    let scaled_diagonal: Vec<f64> = diagonal
+        .iter()
+        .zip(factors.iter())
+        .map(|(&entry, &factor)| entry * factor * factor)
+        .collect();
 
     // Canonical bipartite factors (`+1` on q, `−1` on r) need no stored map: the
     // congruence is just the sign flip `fold` applies by default. This holds for
@@ -316,19 +287,10 @@ fn assemble(
         CoordinateMap::Scaled(factors.into_boxed_slice())
     };
 
-    let magnitude_sums = |block: &CsrBlock| -> Vec<f64> {
-        (0..block.nrows)
-            .map(|i| block.row(i).map(|(_, v)| v.abs()).sum())
-            .collect()
-    };
-    let row_sums = BlockDiagonals {
-        rows: magnitude_sums(&cross_tab.c),
-        cols: magnitude_sums(&cross_tab.ct),
-    };
-
+    let row_sums = magnitude_sums(&cross_tab);
     finalize(
         cross_tab,
-        scaled_diagonals,
+        scaled_diagonal,
         row_sums,
         coordinates,
         reduction,
@@ -343,33 +305,22 @@ fn assemble(
 /// beyond tolerance are errors under [`ScalingFailure::Error`].
 fn finalize(
     cross_tab: CrossTab,
-    mut scaled_diagonals: BlockDiagonals,
-    row_sums: BlockDiagonals,
+    mut scaled_diagonal: Vec<f64>,
+    row_sums: Vec<f64>,
     coordinates: CoordinateMap,
     reduction: ReductionKind,
     scaling: &ScalingConfig,
 ) -> Result<(LocalComponent, f64), NotScalable> {
     let n = cross_tab.n_local();
-    let mut ground_edges = GroundEdges {
-        rows: vec![0.0; cross_tab.n_rows()],
-        cols: vec![0.0; cross_tab.n_cols()],
-    };
+    let mut ground_edges = vec![0.0; n];
 
     let mut total_diagonal = 0.0;
     let mut total_surplus = 0.0;
     let mut clamped_deficit = 0.0f64;
-    for ((diagonal, row_sum), row_surplus) in scaled_diagonals
-        .rows
+    for ((diagonal, &row_sum), surplus) in scaled_diagonal
         .iter_mut()
-        .zip(row_sums.rows.iter().copied())
-        .zip(ground_edges.rows.iter_mut())
-        .chain(
-            scaled_diagonals
-                .cols
-                .iter_mut()
-                .zip(row_sums.cols.iter().copied())
-                .zip(ground_edges.cols.iter_mut()),
-        )
+        .zip(row_sums.iter())
+        .zip(ground_edges.iter_mut())
     {
         if !diagonal.is_finite() || *diagonal <= 0.0 {
             return Err(NotScalable);
@@ -382,16 +333,15 @@ fn finalize(
             clamped_deficit = clamped_deficit.max(deficit);
         }
         *diagonal = diagonal.max(row_sum);
-        *row_surplus = (*diagonal - row_sum).max(0.0);
+        *surplus = (*diagonal - row_sum).max(0.0);
         total_diagonal += *diagonal;
-        total_surplus += *row_surplus;
+        total_surplus += *surplus;
     }
 
     let floats = total_surplus <= FLOATING_CLASSIFICATION_BUDGET.tolerance(n, total_diagonal);
     if floats {
-        scaled_diagonals = row_sums;
-        ground_edges.rows.fill(0.0);
-        ground_edges.cols.fill(0.0);
+        scaled_diagonal = row_sums;
+        ground_edges.fill(0.0);
     }
     let grounding = if floats {
         Grounding::Floating
@@ -406,7 +356,7 @@ fn finalize(
     Ok((
         LocalComponent {
             cross_tab,
-            diagonals: scaled_diagonals,
+            diagonal: scaled_diagonal,
             ground_edges,
             coordinates,
             reduction,
@@ -454,25 +404,18 @@ struct DominanceScaling {
 
 fn dominance_scaling(
     cross_tab: &CrossTab,
-    diagonals: &BlockDiagonals,
+    diagonal: &[f64],
     scaling: &ScalingConfig,
 ) -> Result<DominanceScaling, NotScalable> {
-    let n_rows = cross_tab.n_rows();
     let n = cross_tab.n_local();
-    let diagonal = |i: usize| {
-        if i < n_rows {
-            diagonals.rows[i]
-        } else {
-            diagonals.cols[i - n_rows]
-        }
-    };
-    if (0..n).any(|i| !diagonal(i).is_finite() || diagonal(i) <= 0.0) {
+    debug_assert_eq!(diagonal.len(), n);
+    if diagonal.iter().any(|d| !d.is_finite() || *d <= 0.0) {
         return Err(NotScalable);
     }
 
     let already_dominant = (0..n).all(|i| {
         let row_sum: f64 = cross_tab.neighbors(i).map(|(_, value)| value.abs()).sum();
-        row_sum <= diagonal(i) * (1.0 + scaling.tolerance)
+        row_sum <= diagonal[i] * (1.0 + scaling.tolerance)
     });
     if already_dominant {
         return Ok(DominanceScaling {
@@ -483,7 +426,7 @@ fn dominance_scaling(
         });
     }
 
-    let inv_sqrt: Vec<f64> = (0..n).map(|i| 1.0 / diagonal(i).sqrt()).collect();
+    let inv_sqrt: Vec<f64> = diagonal.iter().map(|d| 1.0 / d.sqrt()).collect();
     let violation_of = |mu: &[f64]| {
         (0..n)
             .map(|i| {
@@ -539,16 +482,16 @@ fn dominance_scaling(
     })
 }
 
-fn adjacency_sums(cross_tab: &CrossTab) -> BlockDiagonals {
-    let sum_rows = |block: &CsrBlock| {
-        (0..block.nrows)
-            .map(|i| block.row(i).map(|(_, v)| v).sum())
-            .collect()
-    };
-    BlockDiagonals {
-        rows: sum_rows(&cross_tab.c),
-        cols: sum_rows(&cross_tab.ct),
-    }
+fn adjacency_sums(cross_tab: &CrossTab) -> Vec<f64> {
+    (0..cross_tab.n_local())
+        .map(|i| cross_tab.neighbors(i).map(|(_, v)| v).sum())
+        .collect()
+}
+
+fn magnitude_sums(cross_tab: &CrossTab) -> Vec<f64> {
+    (0..cross_tab.n_local())
+        .map(|i| cross_tab.neighbors(i).map(|(_, v)| v.abs()).sum())
+        .collect()
 }
 
 #[cfg(test)]

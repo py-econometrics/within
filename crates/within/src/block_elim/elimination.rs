@@ -11,7 +11,7 @@ use rayon::prelude::*;
 
 use crate::config::ApproxSchurConfig;
 use crate::csr_block::CsrBlock;
-use crate::domain::{BlockDiagonals, CrossTab, GroundEdges, Grounding};
+use crate::domain::{CrossTab, Grounding};
 use crate::BuildError;
 
 /// Undirected fill edge: `(lo_col, hi_col, weight)` with `lo_col < hi_col`.
@@ -82,9 +82,9 @@ fn sample_star(
 
 /// Star iteration over the eliminated block for Schur elimination.
 ///
-/// Components arrive normalized — the q block is the larger one and is always
-/// the eliminated side — so this holds precomputed inverse-diagonals and
-/// zero-copy [`Star`] views rather than a role assignment.
+/// Components arrive oriented — the larger block comes first and is always the
+/// eliminated side — so this holds precomputed inverse-diagonals and zero-copy
+/// [`Star`] views rather than a role assignment.
 pub(crate) struct Elimination<'a> {
     pub(crate) n_keep: usize,
     pub(crate) n_elim: usize,
@@ -98,24 +98,26 @@ pub(crate) struct Elimination<'a> {
 }
 
 impl<'a> Elimination<'a> {
-    /// Precompute inverse-diagonals for the eliminated (q) block.
-    ///
-    /// The diagonal blocks are build-time-only inputs ([`BlockDiagonals`]); they
-    /// are folded into `inv_diag_elim` and borrowed as `diag_keep` here and not
-    /// retained past the build.
+    /// Precompute inverse-diagonals for the eliminated block. The per-vertex
+    /// arrays arrive flat in `[eliminated | kept]` order; the diagonal is a
+    /// build-time-only input, folded into `inv_diag_elim` and borrowed as
+    /// `diag_keep` here and not retained past the build.
     pub(crate) fn new(
         cross_tab: &'a CrossTab,
-        diagonals: &'a BlockDiagonals,
-        ground_edges: &'a GroundEdges,
+        diagonal: &'a [f64],
+        ground_edges: &'a [f64],
         grounding: Grounding,
     ) -> Result<Self, BuildError> {
         let (n_elim, n_keep) = (cross_tab.n_rows(), cross_tab.n_cols());
         // Eliminating the larger block minimizes the reduced system; components
-        // are normalized to put it on q, so the choice is already made.
-        debug_assert!(n_elim >= n_keep, "component is not q-major");
+        // are oriented to put it first, so the choice is already made.
+        debug_assert!(n_elim >= n_keep, "component is not eliminated-major");
+        debug_assert_eq!(diagonal.len(), n_elim + n_keep);
+        debug_assert_eq!(ground_edges.len(), n_elim + n_keep);
 
-        let inv_diag_elim = diagonals
-            .rows
+        let (diag_elim, diag_keep) = diagonal.split_at(n_elim);
+        let (surplus_elim, surplus_keep) = ground_edges.split_at(n_elim);
+        let inv_diag_elim = diag_elim
             .iter()
             .enumerate()
             .map(|(i, &d)| {
@@ -131,9 +133,9 @@ impl<'a> Elimination<'a> {
             n_keep,
             n_elim,
             inv_diag_elim,
-            diag_keep: &diagonals.cols,
-            surplus_keep: &ground_edges.cols,
-            surplus_elim: &ground_edges.rows,
+            diag_keep,
+            surplus_keep,
+            surplus_elim,
             grounding,
             keep_to_elim: &cross_tab.ct,
             elim_to_keep: &cross_tab.c,

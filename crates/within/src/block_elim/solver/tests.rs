@@ -3,7 +3,6 @@ use super::*;
 use crate::block_elim::csr_matrix::CsrMatrix;
 use crate::config::{ApproxCholConfig, SchurMode, DEFAULT_DENSE_SCHUR_THRESHOLD};
 use crate::csr_block::CsrBlock;
-use crate::domain::BlockDiagonals;
 
 #[test]
 fn test_subtract_mean_empty() {
@@ -33,9 +32,10 @@ fn test_subtract_mean_partial() {
     assert_eq!(data[2], 100.0); // unchanged
 }
 
-/// Build a q-major CrossTab (`n_rows > n_cols`, as normalization guarantees) whose
-/// two cross entries leave three isolated q rows, plus its build-time diagonals.
-fn make_cross_tab() -> (CrossTab, BlockDiagonals) {
+/// Build an eliminated-major CrossTab (`n_rows > n_cols`, as orientation
+/// guarantees) whose two cross entries leave three isolated rows, plus its
+/// build-time diagonal.
+fn make_cross_tab() -> (CrossTab, Vec<f64>) {
     let c_dense = vec![
         1.0, 0.0, // row 0
         0.0, 1.0, // row 1
@@ -45,11 +45,8 @@ fn make_cross_tab() -> (CrossTab, BlockDiagonals) {
     ];
     let c = CsrBlock::from_dense_table(&c_dense, 5, 2);
     let ct = c.transpose();
-    let diagonals = BlockDiagonals {
-        rows: vec![2.0, 3.0, 1.0, 1.0, 1.0],
-        cols: vec![2.0, 3.0],
-    };
-    (CrossTab { c, ct }, diagonals)
+    let diagonal = vec![2.0, 3.0, 1.0, 1.0, 1.0, 2.0, 3.0];
+    (CrossTab { c, ct }, diagonal)
 }
 
 #[test]
@@ -155,11 +152,8 @@ fn trivial_singleton_component_solves_r_over_d() {
     for (n_rows, n_cols) in [(1usize, 0usize), (0, 1)] {
         let c = CsrBlock::from_dense_table(&[], n_rows, n_cols);
         let ct = c.transpose();
-        let diagonals = BlockDiagonals {
-            rows: vec![4.0; n_rows],
-            cols: vec![4.0; n_cols],
-        };
-        let component = LocalComponent::general_for_test(CrossTab { c, ct }, diagonals);
+        let diagonal = vec![4.0; n_rows + n_cols];
+        let component = LocalComponent::general_for_test(CrossTab { c, ct }, diagonal);
         let solver = BlockElimSolver::build(component, &config).expect("trivial 1×1 build");
         assert_eq!(solver.n_local(), 1);
 
@@ -181,13 +175,7 @@ fn sampled_sparse_preserves_barely_pd_direction() {
     let surplus = 5e-10;
     let c = CsrBlock::from_dense_table(&[1.0], 1, 1);
     let ct = c.transpose();
-    let component = LocalComponent::general_for_test(
-        CrossTab { c, ct },
-        BlockDiagonals {
-            rows: vec![1.0 + surplus],
-            cols: vec![1.0],
-        },
-    );
+    let component = LocalComponent::general_for_test(CrossTab { c, ct }, vec![1.0 + surplus, 1.0]);
     let config = LocalSolverConfig {
         approx_chol: ApproxCholConfig::default(),
         schur: SchurMode::Approximate(crate::config::ApproxSchurConfig::default()),
@@ -291,12 +279,9 @@ fn signed_component_realizes_congruence_transformed_solve() {
     ] {
         let c = CsrBlock::from_dense_table(&c_raw, n_rows, n_cols);
         let ct = c.transpose();
-        let diagonals = BlockDiagonals {
-            rows: (0..n_rows).map(|k| diag_hat[k] / (d[k] * d[k])).collect(),
-            cols: (n_rows..n_rows + n_cols)
-                .map(|k| diag_hat[k] / (d[k] * d[k]))
-                .collect(),
-        };
+        let diagonals: Vec<f64> = (0..n_rows + n_cols)
+            .map(|k| diag_hat[k] / (d[k] * d[k]))
+            .collect();
         let config = LocalSolverConfig {
             approx_chol: ApproxCholConfig::default(),
             schur,
@@ -369,10 +354,7 @@ fn frustrated_component_solves_exactly_through_cover() {
     let ct = c.transpose();
     let component = LocalComponent::general_for_test(
         CrossTab { c, ct },
-        BlockDiagonals {
-            rows: vec![a[0][0], a[1][1]],
-            cols: vec![a[2][2], a[3][3]],
-        },
+        vec![a[0][0], a[1][1], a[2][2], a[3][3]],
     );
     let config = LocalSolverConfig {
         approx_chol: ApproxCholConfig::default(),

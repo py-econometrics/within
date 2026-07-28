@@ -138,20 +138,22 @@ pub(crate) struct CrossTab {
 /// [`Elimination::new`]: crate::block_elim
 #[derive(Clone)]
 pub(crate) struct BlockDiagonals {
-    /// Diagonal block for factor q (length n_rows).
+    /// Diagonal block for the row factor (length n_rows).
     pub(crate) rows: Vec<f64>,
-    /// Diagonal block for factor r (length n_cols).
+    /// Diagonal block for the col factor (length n_cols).
     pub(crate) cols: Vec<f64>,
 }
 
 impl BlockDiagonals {
-    /// Slice the diagonals for a single bipartite component, mirroring the CSR
-    /// extraction in [`CrossTab::extract_component`].
-    pub(crate) fn extract_component(&self, comp: &BipartiteComponent) -> Self {
-        Self {
-            rows: comp.rows.iter().map(|&i| self.rows[i]).collect(),
-            cols: comp.cols.iter().map(|&i| self.cols[i]).collect(),
-        }
+    /// Gather the diagonal for a single bipartite component into the flat
+    /// per-vertex order `[rows | cols]` that [`CrossTab::neighbors`] indexes,
+    /// mirroring the CSR extraction in [`CrossTab::extract_component`].
+    pub(crate) fn extract_component(&self, comp: &BipartiteComponent) -> Vec<f64> {
+        comp.rows
+            .iter()
+            .map(|&i| self.rows[i])
+            .chain(comp.cols.iter().map(|&i| self.cols[i]))
+            .collect()
     }
 }
 

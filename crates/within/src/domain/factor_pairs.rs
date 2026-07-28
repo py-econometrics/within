@@ -16,7 +16,7 @@ use super::{find_all_active_levels, BlockDiagonals, Channel, ChannelPair, CrossT
 mod sddm;
 use crate::domain::Loading;
 use sddm::{convert, NotScalable};
-pub(crate) use sddm::{CoordinateMap, GroundEdges, Grounding, LocalComponent, Reduction};
+pub(crate) use sddm::{CoordinateMap, Grounding, LocalComponent, Reduction};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ComponentClass {
@@ -114,8 +114,9 @@ fn split_into_subdomains(
     let n_rows_full = full_ct.n_rows();
     let components = full_ct.bipartite_connected_components();
 
-    let (cross_tabs, diagonals): (Vec<CrossTab>, Vec<BlockDiagonals>) = if components.len() == 1 {
-        (vec![full_ct], vec![full_diag])
+    let (cross_tabs, diagonals): (Vec<CrossTab>, Vec<Vec<f64>>) = if components.len() == 1 {
+        let flat = full_diag.rows.into_iter().chain(full_diag.cols).collect();
+        (vec![full_ct], vec![flat])
     } else {
         // One reusable remap buffer pair for the whole parent; `extract_component`
         // resets it per component, avoiding a fresh parent-sized allocation each.
@@ -135,12 +136,7 @@ fn split_into_subdomains(
     let mut domains = Vec::with_capacity(components.len());
     let mut warnings = Vec::new();
     for ((comp, comp_ct), comp_diag) in components.iter().zip(cross_tabs).zip(diagonals) {
-        if comp_diag
-            .rows
-            .iter()
-            .chain(&comp_diag.cols)
-            .all(|&v| v == 0.0)
-        {
+        if comp_diag.iter().all(|&v| v == 0.0) {
             continue;
         }
         let class = if matches!(pair.rows.loading, Loading::Constant)

@@ -247,7 +247,7 @@ pub(super) fn build_explicit_laplacian(
 mod tests {
     use super::*;
     use crate::csr_block::CsrBlock;
-    use crate::domain::{BlockDiagonals, CrossTab, GroundEdges};
+    use crate::domain::CrossTab;
 
     fn make_cross_tab(
         c_dense: &[f64],
@@ -255,28 +255,19 @@ mod tests {
         n_cols: usize,
         row_diag: Vec<f64>,
         col_diag: Vec<f64>,
-    ) -> (CrossTab, BlockDiagonals) {
+    ) -> (CrossTab, Vec<f64>) {
         let c = CsrBlock::from_dense_table(c_dense, n_rows, n_cols);
         let ct = c.transpose();
         (
             CrossTab { c, ct },
-            BlockDiagonals {
-                rows: row_diag,
-                cols: col_diag,
-            },
+            row_diag.into_iter().chain(col_diag).collect(),
         )
     }
 
-    fn surplus_of(cross_tab: &CrossTab, diagonals: &BlockDiagonals) -> GroundEdges {
-        let row_surplus = |block: &CsrBlock, diagonal: &[f64]| {
-            (0..block.nrows)
-                .map(|i| (diagonal[i] - block.row(i).map(|(_, v)| v).sum::<f64>()).max(0.0))
-                .collect()
-        };
-        GroundEdges {
-            rows: row_surplus(&cross_tab.c, &diagonals.rows),
-            cols: row_surplus(&cross_tab.ct, &diagonals.cols),
-        }
+    fn surplus_of(cross_tab: &CrossTab, diagonal: &[f64]) -> Vec<f64> {
+        (0..cross_tab.n_local())
+            .map(|i| (diagonal[i] - cross_tab.neighbors(i).map(|(_, v)| v).sum::<f64>()).max(0.0))
+            .collect()
     }
 
     fn sparse_to_dense(matrix: &CsrMatrix) -> Vec<Vec<f64>> {

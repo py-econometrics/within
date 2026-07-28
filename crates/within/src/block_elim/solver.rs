@@ -6,9 +6,7 @@ use schwarz_precond::{LocalSolveError, LocalSolver};
 
 use crate::config::{LocalSolverConfig, SchurMode};
 use crate::csr_block::{CsrBlock, PAR_SPMV_THRESHOLD};
-use crate::domain::{
-    BlockDiagonals, CoordinateMap, CrossTab, GroundEdges, Grounding, LocalComponent, Reduction,
-};
+use crate::domain::{CoordinateMap, CrossTab, Grounding, LocalComponent, Reduction};
 use crate::BuildError;
 
 use super::compensated_sum;
@@ -141,8 +139,8 @@ impl<'de> serde::Deserialize<'de> for BlockElimSolver {
         let (n_rows, n_cols) = (c.nrows, c.ncols);
         let n_internal = n_rows + n_cols;
 
-        // Components are q-major: the q block is scaled by `inv_diag_elim` and
-        // the r block is what the reduced factor solves.
+        // Components are eliminated-major: the first block is scaled by
+        // `inv_diag_elim` and the second is what the reduced factor solves.
         let (elim_size, n_keep) = (n_rows, n_cols);
         if h.inv_diag_elim.len() != elim_size {
             return Err(D::Error::custom(
@@ -217,10 +215,7 @@ fn build_reduced_factor(
 /// the original signed operator. Diagonals (and the caller's ground edges)
 /// duplicate across sheets. Built transiently in [`BlockElimSolver::build`] to
 /// factor a [`Reduction::Cover`] reduction, then discarded.
-fn assemble_bipartite_cover(
-    cross_tab: &CrossTab,
-    diagonals: &BlockDiagonals,
-) -> (CrossTab, BlockDiagonals) {
+fn assemble_bipartite_cover(cross_tab: &CrossTab, diagonal: &[f64]) -> (CrossTab, Vec<f64>) {
     let c = &cross_tab.c;
     let n_rows = c.nrows;
     let n_cols = c.ncols;
@@ -264,17 +259,20 @@ fn assemble_bipartite_cover(
         ncols: 2 * n_cols,
     };
     let cover_ct = cover_c.transpose();
-    let cover_diagonals = BlockDiagonals {
-        rows: diagonals.rows.repeat(2),
-        cols: diagonals.cols.repeat(2),
-    };
     (
         CrossTab {
             c: cover_c,
             ct: cover_ct,
         },
-        cover_diagonals,
+        double_for_cover(diagonal, n_rows),
     )
+}
+
+/// Each Gremban sheet carries a copy of every vertex, so a flat per-vertex
+/// array doubles within each side rather than end to end.
+fn double_for_cover(values: &[f64], n_rows: usize) -> Vec<f64> {
+    let (rows, cols) = values.split_at(n_rows);
+    [rows, rows, cols, cols].concat()
 }
 
 impl BlockElimSolver {
@@ -313,7 +311,7 @@ impl BlockElimSolver {
     /// and `inv_diag_elim` stay single-sized (#91). The `Elimination` is
     /// consumed at the end to produce `inv_diag_elim` and the [`Orientation`].
     ///
-    /// `diagonals` are the build-time-only diagonal blocks; they are read by
+    /// The `diagonal` is a build-time-only input; it is read by
     /// [`Elimination::new`] and dropped once the factor is built.
     pub(crate) fn build(
         component: LocalComponent,
@@ -321,13 +319,13 @@ impl BlockElimSolver {
     ) -> Result<Self, BuildError> {
         let LocalComponent {
             cross_tab,
-            diagonals,
+            diagonal,
             ground_edges,
             coordinates,
             reduction,
         } = component;
         let (Reduction::Direct(grounding) | Reduction::Cover(grounding)) = reduction;
-        let elim = Elimination::new(&cross_tab, &diagonals, &ground_edges, grounding)?;
+        let elim = Elimination::new(&cross_tab, &diagonal, &ground_edges, grounding)?;
 
         let factor = match reduction {
             Reduction::Direct(_) => {
@@ -349,11 +347,8 @@ impl BlockElimSolver {
             // only the factor is retained. Surplus survives the cover, so it
             // grounds exactly as the signed operator did.
             Reduction::Cover(_) => {
-                let (cover_cross, cover_diag) = assemble_bipartite_cover(&cross_tab, &diagonals);
-                let cover_ground = GroundEdges {
-                    rows: ground_edges.rows.repeat(2),
-                    cols: ground_edges.cols.repeat(2),
-                };
+                let (cover_cross, cover_diag) = assemble_bipartite_cover(&cross_tab, &diagonal);
+                let cover_ground = double_for_cover(&ground_edges, cross_tab.n_rows());
                 let cover_elim =
                     Elimination::new(&cover_cross, &cover_diag, &cover_ground, grounding)?;
                 let inner = build_reduced_factor(&cover_elim, config)?;

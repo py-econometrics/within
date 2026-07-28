@@ -527,7 +527,7 @@ mod schwarz_tests {
 
     use crate::csr_block::CsrBlock;
     use crate::domain::{build_local_domains, Design, LocalDomain};
-    use crate::domain::{BlockDiagonals, CrossTab, LocalComponent};
+    use crate::domain::{CrossTab, LocalComponent};
     use crate::operator::schwarz::build_additive_with_strategy;
     use schwarz_precond::{LocalSolver, Operator, ReductionStrategy};
 
@@ -540,7 +540,7 @@ mod schwarz_tests {
         (design, domain_pairs)
     }
 
-    fn synthetic_sparse_cross_tab(n_keep: usize, elim_ratio: usize) -> (CrossTab, BlockDiagonals) {
+    fn synthetic_sparse_cross_tab(n_keep: usize, elim_ratio: usize) -> (CrossTab, Vec<f64>) {
         let n_rows = n_keep * elim_ratio;
         let n_cols = n_keep;
         let mut indptr = Vec::with_capacity(n_rows + 1);
@@ -589,10 +589,7 @@ mod schwarz_tests {
         let ct = c.transpose();
         (
             CrossTab { c, ct },
-            BlockDiagonals {
-                rows: row_diag,
-                cols: col_diag,
-            },
+            row_diag.into_iter().chain(col_diag).collect(),
         )
     }
 

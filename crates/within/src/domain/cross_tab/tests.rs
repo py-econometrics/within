@@ -169,18 +169,19 @@ fn test_extract_component_two_components() {
     assert_eq!(sub_a.n_rows(), 2, "component A: n_rows=2");
     assert_eq!(sub_a.n_cols(), 2, "component A: n_cols=2");
 
-    // Component A's sliced diagonals should match the parent's at indices 0,1.
+    // Component A's gathered diagonal should match the parent's at indices 0,1,
+    // laid out flat as `[rows | cols]`.
     let sub_a_diag = parent_diag.extract_component(comp_a);
     for (new_i, &old_i) in comp_a.rows.iter().enumerate() {
         assert!(
-            (sub_a_diag.rows[new_i] - parent_diag.rows[old_i]).abs() < 1e-12,
-            "sub_a diag q[{new_i}] should match parent diag q[{old_i}]"
+            (sub_a_diag[new_i] - parent_diag.rows[old_i]).abs() < 1e-12,
+            "sub_a diag row[{new_i}] should match parent diag row[{old_i}]"
         );
     }
     for (new_i, &old_i) in comp_a.cols.iter().enumerate() {
         assert!(
-            (sub_a_diag.cols[new_i] - parent_diag.cols[old_i]).abs() < 1e-12,
-            "sub_a diag r[{new_i}] should match parent diag r[{old_i}]"
+            (sub_a_diag[comp_a.rows.len() + new_i] - parent_diag.cols[old_i]).abs() < 1e-12,
+            "sub_a diag col[{new_i}] should match parent diag col[{old_i}]"
         );
     }
 
