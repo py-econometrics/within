@@ -228,7 +228,7 @@ fn convert_general(
 ) -> Result<(LocalComponent, Option<UncertifiedScaling>), NotScalable> {
     let signs = folding_signs(&cross_tab);
     let relaxation = dominance_scaling(&cross_tab, &diagonal, scaling)?;
-    if !relaxation.certified && scaling.on_failure == ScalingFailure::Error {
+    if relaxation.violation > scaling.tolerance && scaling.on_failure == ScalingFailure::Error {
         return Err(NotScalable);
     }
     let (component, clamped_deficit) = match signs {
@@ -423,9 +423,9 @@ fn folding_signs(cross_tab: &CrossTab) -> Option<Vec<f64>> {
 
 struct DominanceScaling {
     scales: Vec<f64>,
-    certified: bool,
     sweeps: usize,
-    /// Largest relative dominance violation at hand-over (0 when certified).
+    /// Largest relative dominance violation at hand-over, clamped at 0. It is
+    /// certified exactly when this is within the configured tolerance.
     violation: f64,
 }
 
@@ -447,7 +447,6 @@ fn dominance_scaling(
     if already_dominant {
         return Ok(DominanceScaling {
             scales: vec![1.0; n],
-            certified: true,
             sweeps: 0,
             violation: 0.0,
         });
@@ -503,7 +502,6 @@ fn dominance_scaling(
     }
     Ok(DominanceScaling {
         scales,
-        certified: violation <= scaling.tolerance,
         sweeps,
         violation: violation.max(0.0),
     })
