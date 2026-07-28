@@ -16,7 +16,7 @@ use super::{find_all_active_levels, BlockDiagonals, Channel, ChannelPair, CrossT
 mod sddm;
 use crate::domain::Loading;
 use sddm::{convert, NotScalable};
-pub(crate) use sddm::{CoordinateMap, Grounding, LocalComponent, Reduction};
+pub(crate) use sddm::{CoordinateMap, Grounding, LocalComponent, OperatorForm, SddmOperator};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ComponentClass {

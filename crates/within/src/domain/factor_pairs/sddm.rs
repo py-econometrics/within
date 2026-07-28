@@ -31,17 +31,6 @@ const LAPLACIAN_VALIDATION_BUDGET: RoundoffBudget = RoundoffBudget { ulps: 64.0 
 // classification deletes an identified direction.
 const FLOATING_CLASSIFICATION_BUDGET: RoundoffBudget = RoundoffBudget { ulps: 4.0 };
 
-/// The reduction strategy chosen from a component's signature: `Direct` folds
-/// to a Z-matrix and reduces its minor straight; `Cover` keeps the signed
-/// operator and defers a Gremban double cover to factor time so the stored
-/// operator never doubles. Orthogonal to [`CoordinateMap`] (an operator-level
-/// congruence) and to the [`Grounding`] classified alongside it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ReductionKind {
-    Direct,
-    Cover,
-}
-
 /// Gauge of a reduced system: `Floating` anchors one node, `Grounded` factors
 /// the full complement.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -53,16 +42,16 @@ pub(crate) enum Grounding {
     Grounded,
 }
 
-/// A component's resolved state: the strategy its signature admitted, carrying
-/// the grounding classified from the same surplus. The two axes are
-/// independent — a frustrated component floats or grounds like any other, and
-/// its cover inherits that gauge.
+/// Which form a component's signature left its operator in. Orthogonal to the
+/// [`Grounding`] classified from the same surplus and to [`CoordinateMap`], the
+/// congruence that produced it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Reduction {
-    /// Direct Schur factorization of a folded minor.
-    Direct(Grounding),
-    /// Gremban-cover reduction of a signed operator, built at factor time.
-    Cover(Grounding),
+pub(crate) enum OperatorForm {
+    /// Folded to a Z-matrix: the minor reduces directly.
+    Laplacian,
+    /// Kept signed, because no signature exists: a Gremban double cover is
+    /// built at factor time so the stored operator never doubles.
+    SignedPendingCover,
 }
 
 /// Map between original and SDDM coordinates, applied to vectors at the
@@ -132,16 +121,47 @@ pub(crate) fn orient_for_elimination(
     )
 }
 
-/// A connected component in SDDM form. The per-vertex arrays are flat in the
-/// `[eliminated | kept]` order [`CrossTab::neighbors`] indexes, split at
-/// `cross_tab.n_rows()`.
+/// A bipartite SDDM operator in eliminated-major form, carrying the gauge its
+/// surplus implies. The per-vertex arrays are flat in the `[eliminated | kept]`
+/// order [`CrossTab::neighbors`] indexes, split at `n_eliminated`. A converted
+/// component holds one; so does the transient Gremban cover built from a signed
+/// one, which is why this is not simply part of [`LocalComponent`].
 #[derive(Clone)]
-pub(crate) struct LocalComponent {
+pub(crate) struct SddmOperator {
     pub(crate) cross_tab: CrossTab,
     pub(crate) diagonal: Vec<f64>,
     pub(crate) ground_edges: Vec<f64>,
+    pub(crate) grounding: Grounding,
+}
+
+impl SddmOperator {
+    pub(crate) fn n_eliminated(&self) -> usize {
+        self.cross_tab.n_rows()
+    }
+
+    pub(crate) fn n_kept(&self) -> usize {
+        self.cross_tab.n_cols()
+    }
+
+    pub(crate) fn diagonal_kept(&self) -> &[f64] {
+        &self.diagonal[self.n_eliminated()..]
+    }
+
+    pub(crate) fn surplus_eliminated(&self) -> &[f64] {
+        &self.ground_edges[..self.n_eliminated()]
+    }
+
+    pub(crate) fn surplus_kept(&self) -> &[f64] {
+        &self.ground_edges[self.n_eliminated()..]
+    }
+}
+
+/// A connected component of a channel pair's cross-tab, converted to SDDM form.
+#[derive(Clone)]
+pub(crate) struct LocalComponent {
+    pub(crate) operator: SddmOperator,
+    pub(crate) form: OperatorForm,
     pub(crate) coordinates: CoordinateMap,
-    pub(crate) reduction: Reduction,
 }
 
 /// The component admits no diagonal scaling to weak dominance (Boman); its
@@ -190,11 +210,14 @@ fn convert_known_laplacian(
         return Err(NotScalable);
     }
     Ok(LocalComponent {
-        ground_edges: vec![0.0; cross_tab.n_local()],
-        cross_tab,
-        diagonal: row_sums,
+        operator: SddmOperator {
+            ground_edges: vec![0.0; cross_tab.n_local()],
+            cross_tab,
+            diagonal: row_sums,
+            grounding: Grounding::Floating,
+        },
+        form: OperatorForm::Laplacian,
         coordinates: CoordinateMap::default(),
-        reduction: Reduction::Direct(Grounding::Floating),
     })
 }
 
@@ -215,7 +238,13 @@ fn convert_general(
                 .zip(relaxation.scales.iter())
                 .map(|(&sign, &scale)| sign * scale)
                 .collect();
-            assemble(cross_tab, diagonal, factors, ReductionKind::Direct, scaling)?
+            assemble(
+                cross_tab,
+                diagonal,
+                factors,
+                OperatorForm::Laplacian,
+                scaling,
+            )?
         }
         None => {
             let n_rows = cross_tab.n_rows();
@@ -223,7 +252,13 @@ fn convert_general(
             for factor in &mut factors[n_rows..] {
                 *factor = -*factor;
             }
-            assemble(cross_tab, diagonal, factors, ReductionKind::Cover, scaling)?
+            assemble(
+                cross_tab,
+                diagonal,
+                factors,
+                OperatorForm::SignedPendingCover,
+                scaling,
+            )?
         }
     };
     let violation = relaxation.violation.max(clamped_deficit);
@@ -248,11 +283,11 @@ fn assemble(
     mut cross_tab: CrossTab,
     diagonal: Vec<f64>,
     factors: Vec<f64>,
-    reduction: ReductionKind,
+    form: OperatorForm,
     scaling: &ScalingConfig,
 ) -> Result<(LocalComponent, f64), NotScalable> {
     let n_rows = cross_tab.n_rows();
-    let enforce_z = reduction == ReductionKind::Direct;
+    let enforce_z = form == OperatorForm::Laplacian;
     for i in 0..n_rows {
         let start = cross_tab.c.indptr[i] as usize;
         let end = cross_tab.c.indptr[i + 1] as usize;
@@ -293,7 +328,7 @@ fn assemble(
         scaled_diagonal,
         row_sums,
         coordinates,
-        reduction,
+        form,
         scaling,
     )
 }
@@ -308,7 +343,7 @@ fn finalize(
     mut scaled_diagonal: Vec<f64>,
     row_sums: Vec<f64>,
     coordinates: CoordinateMap,
-    reduction: ReductionKind,
+    form: OperatorForm,
     scaling: &ScalingConfig,
 ) -> Result<(LocalComponent, f64), NotScalable> {
     let n = cross_tab.n_local();
@@ -348,18 +383,16 @@ fn finalize(
     } else {
         Grounding::Grounded
     };
-    let reduction = match reduction {
-        ReductionKind::Direct => Reduction::Direct(grounding),
-        ReductionKind::Cover => Reduction::Cover(grounding),
-    };
-
     Ok((
         LocalComponent {
-            cross_tab,
-            diagonal: scaled_diagonal,
-            ground_edges,
+            operator: SddmOperator {
+                cross_tab,
+                diagonal: scaled_diagonal,
+                ground_edges,
+                grounding,
+            },
+            form,
             coordinates,
-            reduction,
         },
         clamped_deficit,
     ))

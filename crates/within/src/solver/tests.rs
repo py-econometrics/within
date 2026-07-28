@@ -1,7 +1,7 @@
 use super::reparam::SlopeReparam;
 use super::CoefficientLayout;
 use crate::config::{ScalingConfig, DEFAULT_DENSE_SCHUR_THRESHOLD};
-use crate::domain::{build_local_domains, Design, Grounding, Reduction};
+use crate::domain::{build_local_domains, Design, Grounding, OperatorForm};
 use crate::Effect;
 
 /// DGP kept in lockstep with `surplus_component_sampled_matches_exact_reduction`
@@ -31,8 +31,9 @@ fn positive_slope_only_pair_grounds_beyond_dense_threshold() {
         build_local_domains(&design, None, &ScalingConfig::default()).expect("domains");
     assert!(
         domains.iter().any(|ld| {
-            let ct = &ld.component.cross_tab;
-            ld.component.reduction == Reduction::Direct(Grounding::Grounded)
+            let ct = &ld.component.operator.cross_tab;
+            ld.component.form == OperatorForm::Laplacian
+                && ld.component.operator.grounding == Grounding::Grounded
                 && ct.n_rows().min(ct.n_cols()) > DEFAULT_DENSE_SCHUR_THRESHOLD
         }),
         "fixture must ground a component past the dense threshold (warnings: {warnings:?})"
