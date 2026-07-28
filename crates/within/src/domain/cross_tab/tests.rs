@@ -10,6 +10,7 @@ use super::accumulate::{
 };
 use super::{build_compact_mapping, CrossTab};
 use crate::domain::find_all_active_levels;
+use crate::domain::Loading;
 use crate::domain::{Channel, ChannelPair, Design, Effect};
 use crate::observation::ObservationFrame;
 
@@ -18,12 +19,12 @@ const INTERCEPT_PAIR: ChannelPair = ChannelPair {
     q: Channel {
         term: 0,
         column: 0,
-        loading: None,
+        loading: Loading::Constant,
     },
     r: Channel {
         term: 1,
         column: 0,
-        loading: None,
+        loading: Loading::Constant,
     },
 };
 
@@ -352,12 +353,12 @@ fn dense_and_sparse_paths_agree_on_signed_data() {
         q: Channel {
             term: 0,
             column: 1,
-            loading: Some(0),
+            loading: Loading::Covariate(0),
         },
         r: Channel {
             term: 1,
             column: 0,
-            loading: None,
+            loading: Loading::Constant,
         },
     };
     let all_active = find_all_active_levels(&design);

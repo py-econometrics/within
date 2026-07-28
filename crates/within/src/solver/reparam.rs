@@ -3,6 +3,7 @@
 use crate::domain::Design;
 
 use super::UnidentifiedDirection;
+use crate::domain::Loading;
 
 #[cfg(test)]
 mod tests;
@@ -46,7 +47,11 @@ impl SlopeReparam {
         let mut terms = Vec::new();
         let mut unidentified = Vec::new();
         for term in 0..design.terms.len() {
-            if design.terms[term].slopes.is_empty() {
+            if !design.terms[term]
+                .columns
+                .iter()
+                .any(|c| matches!(c, Loading::Covariate(_)))
+            {
                 continue;
             }
             terms.push(TermReparam::build(design, term, weights, &mut unidentified));
@@ -75,8 +80,16 @@ impl TermReparam {
         unidentified: &mut Vec<UnidentifiedDirection>,
     ) -> Self {
         let meta = &design.terms[term];
-        let (offset, n_levels, intercept) = (meta.offset, meta.n_levels, meta.intercept);
-        let z_cols = meta.slopes.clone();
+        let (offset, n_levels) = (meta.offset, meta.n_levels);
+        let intercept = matches!(meta.columns[0], Loading::Constant);
+        let z_cols: Vec<usize> = meta
+            .columns
+            .iter()
+            .filter_map(|c| match c {
+                Loading::Covariate(k) => Some(*k as usize),
+                Loading::Constant => None,
+            })
+            .collect();
         let v = z_cols.len();
         let levels = design.frame.level_column(term);
         let zs: Vec<&[f64]> = z_cols

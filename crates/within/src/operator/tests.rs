@@ -311,7 +311,7 @@ mod design_tests {
 }
 
 mod slope_design_tests {
-    use crate::domain::{Design, Effect};
+    use crate::domain::{Design, Effect, Loading};
     use crate::operator::DesignOperator;
     use schwarz_precond::Operator;
 
@@ -330,17 +330,13 @@ mod slope_design_tests {
         let mut d = vec![vec![0.0; design.n_dofs]; design.n_obs];
         for (q, t) in design.terms.iter().enumerate() {
             let levels = design.frame.level_column(q);
-            let mut c = 0;
-            if t.intercept {
+            for (c, loading) in t.columns.iter().enumerate() {
+                let base = t.offset + c * t.n_levels;
                 for (i, &lev) in levels.iter().enumerate() {
-                    d[i][t.offset + lev as usize] = 1.0;
-                }
-                c = 1;
-            }
-            for (v, &z_idx) in t.slopes.iter().enumerate() {
-                let z = design.frame.loading_column(z_idx);
-                for (i, &lev) in levels.iter().enumerate() {
-                    d[i][t.offset + (c + v) * t.n_levels + lev as usize] = z[i];
+                    d[i][base + lev as usize] = match loading {
+                        Loading::Constant => 1.0,
+                        Loading::Covariate(k) => design.frame.loading_column(*k as usize)[i],
+                    };
                 }
             }
         }

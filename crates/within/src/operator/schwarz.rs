@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::block_elim::BlockElimSolver;
 use crate::config::{LocalSolverConfig, PreconditionerConfig};
+use crate::domain::Loading;
 use crate::domain::{Design, LocalDomain};
 use crate::{BuildError, BuildWarning};
 
@@ -204,24 +205,24 @@ fn build_diagonal(
     for (factor_idx, term) in design.terms.iter().enumerate() {
         let levels = design.frame.level_column(factor_idx);
         let w = |uid: usize| weights.map_or(1.0, |ws| ws[uid]);
-        let mut column = 0;
-        if term.intercept {
-            let slice = &mut diag[term.offset..term.offset + term.n_levels];
-            for (uid, &level) in levels.iter().enumerate() {
-                slice[level as usize] += w(uid);
-            }
-            column = 1;
-        }
-        for &z_col in &term.slopes {
-            let z = design.frame.loading_column(z_col);
+        for (column, loading) in term.columns.iter().enumerate() {
             let base = term.column_base(column);
             let slice = &mut diag[base..base + term.n_levels];
-            for (uid, &level) in levels.iter().enumerate() {
-                // Keep `w * z * z` left-to-right: a zero weight then kills a
-                // huge `z` before the square can overflow (0 * inf = NaN).
-                slice[level as usize] += w(uid) * z[uid] * z[uid];
+            match loading {
+                Loading::Constant => {
+                    for (uid, &level) in levels.iter().enumerate() {
+                        slice[level as usize] += w(uid);
+                    }
+                }
+                Loading::Covariate(z_col) => {
+                    let z = design.frame.loading_column(*z_col as usize);
+                    for (uid, &level) in levels.iter().enumerate() {
+                        // Keep `w * z * z` left-to-right: a zero weight then kills a
+                        // huge `z` before the square can overflow (0 * inf = NaN).
+                        slice[level as usize] += w(uid) * z[uid] * z[uid];
+                    }
+                }
             }
-            column += 1;
         }
     }
 

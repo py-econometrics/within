@@ -7,6 +7,7 @@ use portable_atomic::AtomicF64;
 use rayon::prelude::*;
 
 use super::PAR_THRESHOLD;
+use crate::domain::Loading;
 use crate::domain::{Design, TermMeta};
 
 /// Adjoint scatter over all terms; `base(i)` is the row value (`x[i]`, or
@@ -24,46 +25,40 @@ pub(super) fn scatter_apply(
     for (q, t) in design.terms.iter().enumerate() {
         let levels = frame.level_column(q);
         let block = &mut dst[t.offset..t.offset + t.n_dofs()];
-        match (t.intercept, t.slopes.as_slice()) {
-            (true, []) => scatter_term::<1>(block, t, levels, parallel, scratch, |i| [base(i)]),
-            (true, &[c0]) => {
-                let z0 = frame.loading_column(c0);
+        match &*t.columns {
+            [Loading::Constant] => {
+                scatter_term::<1>(block, t, levels, parallel, scratch, |i| [base(i)])
+            }
+            [Loading::Constant, Loading::Covariate(c0)] => {
+                let z0 = frame.loading_column(*c0 as usize);
                 scatter_term::<2>(block, t, levels, parallel, scratch, |i| {
                     let b = base(i);
                     [b, z0[i] * b]
                 })
             }
-            (true, &[c0, c1]) => {
-                let z0 = frame.loading_column(c0);
-                let z1 = frame.loading_column(c1);
+            [Loading::Constant, Loading::Covariate(c0), Loading::Covariate(c1)] => {
+                let z0 = frame.loading_column(*c0 as usize);
+                let z1 = frame.loading_column(*c1 as usize);
                 scatter_term::<3>(block, t, levels, parallel, scratch, |i| {
                     let b = base(i);
                     [b, z0[i] * b, z1[i] * b]
                 })
             }
-            (intercept, slope_cols) => {
-                let zoff = usize::from(intercept);
-                if intercept {
-                    scatter_term::<1>(
-                        &mut block[..t.n_levels],
-                        t,
-                        levels,
-                        parallel,
-                        scratch,
-                        |i| [base(i)],
-                    );
-                }
-                for (v, &c) in slope_cols.iter().enumerate() {
-                    let z = frame.loading_column(c);
-                    let start = (zoff + v) * t.n_levels;
-                    scatter_term::<1>(
-                        &mut block[start..start + t.n_levels],
-                        t,
-                        levels,
-                        parallel,
-                        scratch,
-                        move |i| [z[i] * base(i)],
-                    );
+            columns => {
+                for (c, loading) in columns.iter().enumerate() {
+                    let start = c * t.n_levels;
+                    let slot = &mut block[start..start + t.n_levels];
+                    match loading {
+                        Loading::Constant => {
+                            scatter_term::<1>(slot, t, levels, parallel, scratch, |i| [base(i)]);
+                        }
+                        Loading::Covariate(k) => {
+                            let z = frame.loading_column(*k as usize);
+                            scatter_term::<1>(slot, t, levels, parallel, scratch, move |i| {
+                                [z[i] * base(i)]
+                            });
+                        }
+                    }
                 }
             }
         }

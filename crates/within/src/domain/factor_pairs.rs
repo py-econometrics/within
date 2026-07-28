@@ -14,6 +14,7 @@ use crate::{BuildError, BuildWarning, SignedPair};
 use super::{find_all_active_levels, BlockDiagonals, Channel, ChannelPair, CrossTab, Design};
 
 mod sddm;
+use crate::domain::Loading;
 use sddm::{convert, NotScalable};
 pub(crate) use sddm::{
     CoordinateMap, GroundEdges, Grounding, LocalComponent, Reduction, SolveSpace,
@@ -91,7 +92,10 @@ pub(crate) fn build_local_domains(
     // collapses convergence on weakly-connected designs (#94). Slope-carrying
     // designs keep every subdomain at uniform weight instead — the plain path
     // is measurably indifferent to this weighting, so this changes nothing there.
-    if !channels.iter().any(|c| c.loading.is_some()) {
+    if !channels
+        .iter()
+        .any(|c| matches!(c.loading, Loading::Covariate(_)))
+    {
         compute_partition_weights(&mut domain_pairs, design.n_dofs);
     }
 
@@ -139,7 +143,9 @@ fn split_into_subdomains(
         if comp_diag.q.iter().chain(&comp_diag.r).all(|&v| v == 0.0) {
             continue;
         }
-        let class = if pair.q.loading.is_none() && pair.r.loading.is_none() {
+        let class = if matches!(pair.q.loading, Loading::Constant)
+            && matches!(pair.r.loading, Loading::Constant)
+        {
             ComponentClass::KnownLaplacian
         } else {
             ComponentClass::General

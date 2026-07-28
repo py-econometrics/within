@@ -12,6 +12,7 @@ use crate::csr_block::CsrBlock;
 use crate::domain::{ChannelPair, Design};
 
 use super::{to_u32, ActiveLevels};
+use crate::domain::Loading as ColumnLoading;
 
 /// Max entries in a flat dense cross-tab accumulator (~40 MB at 8 bytes each).
 /// Absolute hard cap on the dense path: tables larger than this always go
@@ -120,7 +121,10 @@ pub(super) fn accumulate_cross_block(
 
     let levels_q = design.frame.level_column(pair.q.term);
     let levels_r = design.frame.level_column(pair.r.term);
-    let load = |col: Option<usize>| col.map(|c| design.frame.loading_column(c));
+    let load = |col: ColumnLoading<u32>| match col {
+        ColumnLoading::Constant => None,
+        ColumnLoading::Covariate(c) => Some(design.frame.loading_column(c as usize)),
+    };
     // One arm per monomorphized loading combination; a generic constructor
     // can't express this (closures aren't generic), so the literals repeat.
     match (load(pair.q.loading), load(pair.r.loading)) {

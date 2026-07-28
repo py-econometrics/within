@@ -22,25 +22,73 @@ use std::borrow::Cow;
 use crate::observation::ObservationFrame;
 use crate::BuildError;
 
+/// A slice that is guaranteed non-empty by construction.
+#[repr(transparent)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NonEmpty<T>(Box<[T]>);
+
+impl<T> NonEmpty<T> {
+    /// `None` if `items` is empty.
+    pub fn new(items: impl Into<Box<[T]>>) -> Option<Self> {
+        let items = items.into();
+        (!items.is_empty()).then(|| Self(items))
+    }
+
+    /// A single-element run.
+    pub fn of(item: T) -> Self {
+        Self(Box::new([item]))
+    }
+
+    /// Structure-preserving map; non-emptiness is carried over.
+    pub fn map<U>(&self, f: impl FnMut(&T) -> U) -> NonEmpty<U> {
+        NonEmpty(self.0.iter().map(f).collect())
+    }
+}
+
+impl<T> std::ops::Deref for NonEmpty<T> {
+    type Target = [T];
+    fn deref(&self) -> &[T] {
+        &self.0
+    }
+}
+
+/// One coefficient column's per-observation loading: the intercept's implicit
+/// `1.0`, or a covariate column carried as `T`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Loading<T> {
+    /// The intercept column; loading value `1.0` at every observation.
+    Constant,
+    /// A slope column.
+    Covariate(T),
+}
+
+impl<T> Loading<T> {
+    /// Replace the covariate payload, preserving which variant this is.
+    pub fn map<U>(&self, f: impl FnOnce(&T) -> U) -> Loading<U> {
+        match self {
+            Self::Constant => Loading::Constant,
+            Self::Covariate(t) => Loading::Covariate(f(t)),
+        }
+    }
+}
+
 /// Per-term metadata: level count, coefficient-block offset, and column
-/// structure. Columns are ordered `[intercept?, slopes…]`; coefficient `c` of
-/// level `level` lives at `offset + c * n_levels + level`.
+/// structure. Coefficient `c` of level `level` lives at
+/// `offset + c * n_levels + level`.
 #[derive(Debug, Clone)]
 pub(crate) struct TermMeta {
     pub n_levels: usize,
     pub offset: usize,
     /// Non-decreasing in the design's internal row order (fixed at construction).
     pub sorted: bool,
-    pub intercept: bool,
-    /// This term's slope loadings, as indices into the frame's continuous columns.
-    pub slopes: Vec<usize>,
+    /// Coefficient columns in layout order; `Covariate` indexes the frame's
+    /// continuous columns.
+    pub columns: NonEmpty<Loading<u32>>,
 }
 
 impl TermMeta {
-    /// Coefficient-column count (`intercept? + slopes`), ordered
-    /// `[intercept?, slopes…]`.
     pub fn n_columns(&self) -> usize {
-        usize::from(self.intercept) + self.slopes.len()
+        self.columns.len()
     }
 
     pub fn n_dofs(&self) -> usize {
@@ -53,13 +101,12 @@ impl TermMeta {
     }
 }
 
-/// One coefficient column of a term: the intercept (`loading: None`, loading
-/// value 1) or one slope column (`loading` = frame continuous column index).
+/// One coefficient column of a term, located by `(term, column)`.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Channel {
     pub term: usize,
     pub column: usize,
-    pub loading: Option<usize>,
+    pub loading: Loading<u32>,
 }
 
 /// A cross-factor channel pair: one Gramian cross-block per pair.
@@ -87,37 +134,40 @@ impl<'a> Design<'a> {
     pub fn new(effects: impl IntoIterator<Item = Effect<'a>>) -> Result<Self, BuildError> {
         let mut categorical: Vec<Cow<'a, [u32]>> = Vec::new();
         let mut continuous: Vec<Cow<'a, [f64]>> = Vec::new();
-        let mut columns: Vec<(bool, Vec<usize>)> = Vec::new();
+        let mut structure: Vec<NonEmpty<Loading<u32>>> = Vec::new();
         for effect in effects {
-            let slots = (continuous.len()..continuous.len() + effect.slopes().len()).collect();
-            continuous.extend(effect.slopes().iter().map(|&z| Cow::Borrowed(z)));
-            columns.push((effect.intercept(), slots));
+            structure.push(effect.columns().map(|column| {
+                column.map(|&z| {
+                    continuous.push(Cow::Borrowed(z));
+                    (continuous.len() - 1) as u32
+                })
+            }));
             categorical.push(Cow::Borrowed(effect.levels()));
         }
         let frame = ObservationFrame::new(categorical, continuous)?;
-        Self::build(frame, columns, true)
+        Self::build(frame, structure, true)
     }
 
     /// Construct from a frame of plain factors (each an intercept-only term),
     /// inferring each factor's level count (`max + 1`); locality-sorts all
     /// columns when the dominant factor is unsorted.
     pub fn from_frame(frame: ObservationFrame<'a>) -> Result<Self, BuildError> {
-        let columns = vec![(true, Vec::new()); frame.n_factors()];
-        Self::build(frame, columns, true)
+        let structure = vec![NonEmpty::of(Loading::Constant); frame.n_factors()];
+        Self::build(frame, structure, true)
     }
 
     /// [`from_frame`](Self::from_frame) without the locality sort — profiling escape hatch.
     #[doc(hidden)]
     pub fn from_frame_unsorted(frame: ObservationFrame<'a>) -> Result<Self, BuildError> {
-        let columns = vec![(true, Vec::new()); frame.n_factors()];
-        Self::build(frame, columns, false)
+        let structure = vec![NonEmpty::of(Loading::Constant); frame.n_factors()];
+        Self::build(frame, structure, false)
     }
 
-    /// `column_structure[q]` = the term's `(intercept, slope column indices)`,
-    /// aligned with the frame's categorical columns.
+    /// `column_structure[q]` = term `q`'s coefficient columns, aligned with the
+    /// frame's categorical columns.
     fn build(
         frame: ObservationFrame<'a>,
-        column_structure: Vec<(bool, Vec<usize>)>,
+        column_structure: Vec<NonEmpty<Loading<u32>>>,
         locality_sort: bool,
     ) -> Result<Self, BuildError> {
         if frame.n_obs() == 0 {
@@ -128,7 +178,7 @@ impl<'a> Design<'a> {
         let n_obs = frame.n_obs();
         let mut terms = Vec::with_capacity(frame.n_factors());
         let mut offset = 0;
-        for (q, (intercept, slopes)) in column_structure.into_iter().enumerate() {
+        for (q, columns) in column_structure.into_iter().enumerate() {
             let col = frame.level_column(q);
             let mut max = 0;
             let mut sorted = true;
@@ -142,8 +192,7 @@ impl<'a> Design<'a> {
                 n_levels: max as usize + 1,
                 offset,
                 sorted,
-                intercept,
-                slopes,
+                columns,
             };
             offset += meta.n_dofs();
             terms.push(meta);
@@ -253,15 +302,17 @@ impl<'a> Design<'a> {
         self.terms.len()
     }
 
-    /// The term's coefficient columns in `[intercept?, slopes…]` order.
+    /// The term's coefficient columns in layout order.
     pub(crate) fn channels(&self, term: usize) -> impl Iterator<Item = Channel> + '_ {
-        let meta = &self.terms[term];
-        let first_slope = usize::from(meta.intercept);
-        (0..first_slope + meta.slopes.len()).map(move |column| Channel {
-            term,
-            column,
-            loading: (column >= first_slope).then(|| meta.slopes[column - first_slope]),
-        })
+        self.terms[term]
+            .columns
+            .iter()
+            .enumerate()
+            .map(move |(column, &loading)| Channel {
+                term,
+                column,
+                loading,
+            })
     }
 
     /// Number of observations (rows of D).
@@ -403,13 +454,20 @@ mod tests {
         assert_eq!(design.terms[1].offset, 6);
         assert_eq!(design.terms[1].n_dofs(), 3);
         assert_eq!(design.terms[2].offset, 9);
-        assert!(!design.terms[2].intercept);
+        assert!(!matches!(design.terms[2].columns[0], Loading::Constant));
         assert_eq!(design.terms[2].n_dofs(), 2);
         assert_eq!(design.n_dofs, 11);
 
         // slope indices resolve to the effects' loading columns in the frame.
-        assert_eq!(design.terms[0].slopes, vec![0, 1]);
-        assert_eq!(design.terms[2].slopes, vec![2]);
+        assert_eq!(
+            &*design.terms[0].columns,
+            &[
+                Loading::Constant,
+                Loading::Covariate(0),
+                Loading::Covariate(1)
+            ]
+        );
+        assert_eq!(&*design.terms[2].columns, &[Loading::Covariate(2)]);
         assert_eq!(design.frame.loading_column(0), &z0[..]);
         assert_eq!(design.frame.loading_column(2), &z1[..]);
     }
