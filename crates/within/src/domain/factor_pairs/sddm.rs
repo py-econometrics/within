@@ -32,70 +32,38 @@ const LAPLACIAN_VALIDATION_BUDGET: RoundoffBudget = RoundoffBudget { ulps: 64.0 
 // classification deletes an identified direction.
 const FLOATING_CLASSIFICATION_BUDGET: RoundoffBudget = RoundoffBudget { ulps: 4.0 };
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum SolveSpace {
-    // Keep this order: postcard encodes enum discriminants by declaration
-    // order, and the wire fixture pins Floating = 0; new variants append last.
-    #[default]
-    Floating,
-    Grounded,
-    /// Signed operator whose reduced Schur self-grounds through its Gremban
-    /// cover ([`ReductionKind::Cover`]): the antisymmetric `[b, -b]` embed
-    /// balances the RHS, so the operator-level solve does no mean-subtraction
-    /// and injects no ground current.
-    Signed,
-}
-
-/// The reduction strategy chosen from a component's signature, before its
-/// grounding is known: `Direct` folds to a Z-matrix and reduces its minor
-/// straight; `Cover` keeps the signed operator and defers a Gremban double
-/// cover to factor time so the stored operator never doubles. Orthogonal to
-/// [`CoordinateMap`] (an operator-level congruence). Resolved into a
-/// [`Reduction`] once the grounding is classified.
+/// The reduction strategy chosen from a component's signature: `Direct` folds
+/// to a Z-matrix and reduces its minor straight; `Cover` keeps the signed
+/// operator and defers a Gremban double cover to factor time so the stored
+/// operator never doubles. Orthogonal to [`CoordinateMap`] (an operator-level
+/// congruence) and to the [`Grounding`] classified alongside it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ReductionKind {
     Direct,
     Cover,
 }
 
-/// Grounding of a directly-reduced SDDM minor: `Floating` anchors one node,
-/// `Grounded` factors the full complement.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Gauge of a reduced system: `Floating` anchors one node, `Grounded` factors
+/// the full complement.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Grounding {
+    // Keep this order: postcard encodes enum discriminants by declaration
+    // order, and the wire fixture pins Floating = 0.
+    #[default]
     Floating,
     Grounded,
 }
 
-impl Grounding {
-    /// The solve space a floating/grounded minor gauges.
-    pub(crate) fn solve_space(self) -> SolveSpace {
-        match self {
-            Grounding::Floating => SolveSpace::Floating,
-            Grounding::Grounded => SolveSpace::Grounded,
-        }
-    }
-}
-
-/// Resolved reduction state of a local component: the [`ReductionKind`]
-/// strategy paired with the solve space it produced. Only these combinations
-/// are reachable, so the illegal signed-with-direct pairing cannot be
-/// constructed.
+/// A component's resolved state: the strategy its signature admitted, carrying
+/// the grounding classified from the same surplus. The two axes are
+/// independent — a frustrated component floats or grounds like any other, and
+/// its cover inherits that gauge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Reduction {
-    /// Direct Schur factorization of a floating or grounded minor.
+    /// Direct Schur factorization of a folded minor.
     Direct(Grounding),
-    /// Gremban-cover reduction of a signed operator; solves in [`SolveSpace::Signed`].
-    Cover,
-}
-
-impl Reduction {
-    /// The solve space this reduction gauges.
-    pub(crate) fn solve_space(self) -> SolveSpace {
-        match self {
-            Reduction::Direct(grounding) => grounding.solve_space(),
-            Reduction::Cover => SolveSpace::Signed,
-        }
-    }
+    /// Gremban-cover reduction of a signed operator, built at factor time.
+    Cover(Grounding),
 }
 
 /// Map between original and SDDM coordinates, applied to vectors at the
@@ -344,11 +312,8 @@ fn assemble(
 /// Validate weak dominance of an assembled operator against `row_sums` (signed
 /// adjacency for a Z-matrix, magnitudes for a signed operator): clamp roundoff
 /// deficits, retain surplus as ground edges, and resolve the [`Reduction`]
-/// state. A `Cover`-reduced component is always [`SolveSpace::Signed`]; the
-/// float/ground classification only decides whether its surplus is retained
-/// (the cover self-grounds either way). Returns the largest relative deficit
-/// that was clamped; deficits beyond tolerance are errors under
-/// [`ScalingFailure::Error`].
+/// state. Returns the largest relative deficit that was clamped; deficits
+/// beyond tolerance are errors under [`ScalingFailure::Error`].
 fn finalize(
     cross_tab: CrossTab,
     mut scaled_diagonals: BlockDiagonals,
@@ -401,10 +366,14 @@ fn finalize(
         ground_edges.q.fill(0.0);
         ground_edges.r.fill(0.0);
     }
+    let grounding = if floats {
+        Grounding::Floating
+    } else {
+        Grounding::Grounded
+    };
     let reduction = match reduction {
-        ReductionKind::Cover => Reduction::Cover,
-        ReductionKind::Direct if floats => Reduction::Direct(Grounding::Floating),
-        ReductionKind::Direct => Reduction::Direct(Grounding::Grounded),
+        ReductionKind::Direct => Reduction::Direct(grounding),
+        ReductionKind::Cover => Reduction::Cover(grounding),
     };
 
     Ok((

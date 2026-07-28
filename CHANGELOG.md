@@ -24,7 +24,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - **BREAKING:** The Python `solve` / `solve_batch` / `Solver` first parameter is renamed `categories` → `design` and now accepts a `list[Effect]` as well as a `uint32` array; positional calls are unaffected, `categories=` keyword calls break (#58).
 - **BREAKING:** The Python free `solve` / `solve_batch` take `weights` before `options` — `(design, y, weights, options, preconditioner)` — matching the `Solver` constructor and the Rust core. Callers passing `options` positionally must switch to the `options=` keyword (#101).
-- **BREAKING:** The serialized `Preconditioner` wire format changed (v3 → v8); `Preconditioner` bytes from 0.2.0 no longer decode (#72, #98).
+- **BREAKING:** The serialized `Preconditioner` wire format changed (v3 → v9); `Preconditioner` bytes from 0.2.0 no longer decode (#72, #98).
 - **BREAKING:** `LocalSolverConfig.approx_schur: Option<ApproxSchurConfig>` becomes `schur: SchurMode` (Rust) / `schur: Schur | None` (Python). Omitted/`None` now uniformly means the library default (approximate); "exact Schur" is `SchurMode::Exact` / `Schur.exact()` (was `approx_schur=None`). The `within.config.LocalSolverConfig` compatibility subclass is removed (#104).
 - **BREAKING:** `SolveResult` / `BatchSolveResult` gain public `unidentified` and `layout` fields and are not `#[non_exhaustive]`, so exhaustive Rust destructuring must account for them (#69, #99).
 - **BREAKING:** `Design` / `Solver` trade their storage type parameter for a lifetime — `Design<'a>` / `Solver<'a>` — borrowing caller columns until a locality sort or `into_owned()` (#68).

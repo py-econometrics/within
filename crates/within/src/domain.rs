@@ -10,7 +10,7 @@ pub use effect::Effect;
 
 pub(crate) use factor_pairs::{
     build_local_domains, CoordinateMap, GroundEdges, Grounding, LocalComponent, LocalDomain,
-    Reduction, SolveSpace,
+    Reduction,
 };
 
 // ===========================================================================

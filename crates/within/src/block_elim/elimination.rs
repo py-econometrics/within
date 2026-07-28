@@ -11,7 +11,7 @@ use rayon::prelude::*;
 
 use crate::config::ApproxSchurConfig;
 use crate::csr_block::CsrBlock;
-use crate::domain::{BlockDiagonals, CrossTab, GroundEdges, SolveSpace};
+use crate::domain::{BlockDiagonals, CrossTab, GroundEdges, Grounding};
 use crate::BuildError;
 
 /// Undirected fill edge: `(lo_col, hi_col, weight)` with `lo_col < hi_col`.
@@ -92,7 +92,7 @@ pub(crate) struct Elimination<'a> {
     pub(crate) diag_keep: &'a [f64],
     pub(crate) surplus_keep: &'a [f64],
     pub(crate) surplus_elim: &'a [f64],
-    pub(crate) solve_space: SolveSpace,
+    pub(crate) grounding: Grounding,
     pub(crate) keep_to_elim: &'a CsrBlock,
     pub(crate) elim_to_keep: &'a CsrBlock,
 }
@@ -107,7 +107,7 @@ impl<'a> Elimination<'a> {
         cross_tab: &'a CrossTab,
         diagonals: &'a BlockDiagonals,
         ground_edges: &'a GroundEdges,
-        solve_space: SolveSpace,
+        grounding: Grounding,
     ) -> Result<Self, BuildError> {
         let n_q = cross_tab.n_q();
         let n_r = cross_tab.n_r();
@@ -157,7 +157,7 @@ impl<'a> Elimination<'a> {
             diag_keep,
             surplus_keep,
             surplus_elim,
-            solve_space,
+            grounding,
             keep_to_elim,
             elim_to_keep,
         })
@@ -179,7 +179,7 @@ impl<'a> Elimination<'a> {
         // then a single total-order `sort_and_dedup`. The total order fixes the
         // per-`(lo, hi)` weight summation order, so the result is independent of
         // thread scheduling (the concatenation order no longer matters).
-        let ground_vertex = (self.solve_space == SolveSpace::Grounded)
+        let ground_vertex = (self.grounding == Grounding::Grounded)
             .then(|| u32::try_from(self.n_keep).expect("ground vertex exceeds u32::MAX"));
         let mut edges = (0..self.n_elim)
             .into_par_iter()

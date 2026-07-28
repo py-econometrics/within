@@ -8,7 +8,6 @@ use crate::config::{LocalSolverConfig, SchurMode};
 use crate::csr_block::{CsrBlock, PAR_SPMV_THRESHOLD};
 use crate::domain::{
     BlockDiagonals, CoordinateMap, CrossTab, GroundEdges, Grounding, LocalComponent, Reduction,
-    SolveSpace,
 };
 use crate::BuildError;
 
@@ -108,8 +107,6 @@ pub struct BlockElimSolver {
     n_reduced: usize,
     /// Original-to-SDDM coordinate map.
     coordinates: CoordinateMap,
-    /// Whether the augmented Laplacian has a ground vertex.
-    solve_space: SolveSpace,
 }
 
 impl<'de> serde::Deserialize<'de> for BlockElimSolver {
@@ -128,7 +125,6 @@ impl<'de> serde::Deserialize<'de> for BlockElimSolver {
             reduced_factor: ReducedFactor,
             eliminate_q: bool,
             coordinates: CoordinateMap,
-            solve_space: SolveSpace,
         }
 
         let h = Helper::deserialize(deserializer)?;
@@ -168,18 +164,13 @@ impl<'de> serde::Deserialize<'de> for BlockElimSolver {
             }
         }
 
-        // The reduced factor's input dimension and its cover/direct kind must
-        // match the solve space `eliminate_and_recover` will drive it through.
+        // The reduced factor is driven over the kept block, plus the explicit
+        // ground slot a grounded complement appends.
         let input_dim = h.reduced_factor.input_dimension();
-        let is_cover = matches!(h.reduced_factor, ReducedFactor::Cover { .. });
-        let consistent = match h.solve_space {
-            SolveSpace::Signed => is_cover && input_dim == n_keep,
-            SolveSpace::Floating => !is_cover && input_dim == n_keep,
-            SolveSpace::Grounded => !is_cover && (input_dim == n_keep || input_dim == n_keep + 1),
-        };
-        if !consistent {
+        let ground_slot = h.reduced_factor.grounding() == Some(Grounding::Grounded);
+        if input_dim != n_keep && !(ground_slot && input_dim == n_keep + 1) {
             return Err(D::Error::custom(
-                "reduced factor disagrees with solve space or kept block size",
+                "reduced factor input dimension disagrees with the kept block",
             ));
         }
 
@@ -192,7 +183,6 @@ impl<'de> serde::Deserialize<'de> for BlockElimSolver {
             h.reduced_factor,
             h.eliminate_q,
             h.coordinates,
-            h.solve_space,
         ))
     }
 }
@@ -339,7 +329,7 @@ fn assemble_bipartite_cover(
 
 impl BlockElimSolver {
     fn explicit_ground_index(&self, n_keep: usize) -> Option<usize> {
-        (self.solve_space == SolveSpace::Grounded
+        (self.reduced_factor.grounding() == Some(Grounding::Grounded)
             && self.reduced_factor.input_dimension() == n_keep + 1)
             .then_some(n_keep)
     }
@@ -350,7 +340,6 @@ impl BlockElimSolver {
         reduced_factor: ReducedFactor,
         eliminate_q: bool,
         coordinates: CoordinateMap,
-        solve_space: SolveSpace,
     ) -> Self {
         let cross_tab = cross_tab.into();
         let n_internal = cross_tab.n_local();
@@ -363,7 +352,6 @@ impl BlockElimSolver {
             n_internal,
             n_reduced,
             coordinates,
-            solve_space,
         }
     }
 
@@ -390,48 +378,36 @@ impl BlockElimSolver {
             coordinates,
             reduction,
         } = component;
-        let solve_space = reduction.solve_space();
-        let elim = Elimination::new(&cross_tab, &diagonals, &ground_edges, solve_space)?;
+        let (Reduction::Direct(grounding) | Reduction::Cover(grounding)) = reduction;
+        let elim = Elimination::new(&cross_tab, &diagonals, &ground_edges, grounding)?;
 
         let factor = match reduction {
             Reduction::Direct(_) => {
-                let factor = ReducedFactor::Approx(build_reduced_factor(&elim, config)?);
+                let factor = ReducedFactor::Approx {
+                    factor: build_reduced_factor(&elim, config)?,
+                    grounding,
+                };
                 let reduced_input_dimension = factor.input_dimension();
                 debug_assert!(
                     reduced_input_dimension == elim.n_keep
-                        || (solve_space == SolveSpace::Grounded
+                        || (grounding == Grounding::Grounded
                             && reduced_input_dimension == elim.n_keep + 1)
                 );
                 debug_assert!(factor.factor_dimension() >= reduced_input_dimension);
                 factor
             }
-            Reduction::Cover => {
-                // Cover the single signed operator, factor the cover's reduced
-                // Schur (now SDDM, hence sampleable), then discard the cover —
-                // only the factor is retained.
+            // Cover the single signed operator, factor the cover's reduced
+            // Schur (now SDDM, hence sampleable), then discard the cover —
+            // only the factor is retained. Surplus survives the cover, so it
+            // grounds exactly as the signed operator did.
+            Reduction::Cover(_) => {
                 let (cover_cross, cover_diag) = assemble_bipartite_cover(&cross_tab, &diagonals);
                 let cover_ground = GroundEdges {
                     q: ground_edges.q.repeat(2),
                     r: ground_edges.r.repeat(2),
                 };
-                // Surplus survives the cover, so the cover grounds exactly when
-                // the signed operator did (its edges are zeroed otherwise).
-                let cover_grounding = if cover_ground
-                    .q
-                    .iter()
-                    .chain(&cover_ground.r)
-                    .any(|&surplus| surplus > 0.0)
-                {
-                    Grounding::Grounded
-                } else {
-                    Grounding::Floating
-                };
-                let cover_elim = Elimination::new(
-                    &cover_cross,
-                    &cover_diag,
-                    &cover_ground,
-                    cover_grounding.solve_space(),
-                )?;
+                let cover_elim =
+                    Elimination::new(&cover_cross, &cover_diag, &cover_ground, grounding)?;
                 let inner = build_reduced_factor(&cover_elim, config)?;
                 ReducedFactor::Cover {
                     inner,
@@ -451,7 +427,6 @@ impl BlockElimSolver {
             factor,
             eliminate_q,
             coordinates,
-            solve_space,
         ))
     }
 
@@ -485,21 +460,20 @@ impl BlockElimSolver {
                 allow_inner_parallelism,
             );
         }
-        match self.solve_space {
-            SolveSpace::Floating => {
+        match self.reduced_factor.grounding() {
+            Some(Grounding::Floating) => {
                 subtract_mean(&mut rhs[n..], self.n_reduced);
             }
             // Grounded-Laplacian reduction of the nonsingular SDD reduced
             // system: the ground node absorbs the injected current, and its
             // potential is the gauge subtracted after the solve.
-            SolveSpace::Grounded => {
+            Some(Grounding::Grounded) => {
                 if let Some(ground) = explicit_ground {
                     rhs[n + ground] = -compensated_sum(&rhs[n..n + n_keep]);
                 }
             }
-            // Signed operator: the reduced `Cover` factor grounds itself via
-            // the antisymmetric `[b, -b]` embed, so no gauge handling here.
-            SolveSpace::Signed => {}
+            // A cover grounds itself via the antisymmetric `[b, -b]` embed.
+            None => {}
         }
 
         // Anchored at the kept block, the reduced solve spills past it into the
@@ -575,7 +549,7 @@ impl LocalSolver for BlockElimSolver {
         let ct = &self.cross_tab;
 
         self.coordinates.fold(&mut rhs[..n], n_q);
-        if self.solve_space == SolveSpace::Floating {
+        if self.reduced_factor.grounding() == Some(Grounding::Floating) {
             subtract_mean(rhs, n);
         }
 
@@ -597,7 +571,7 @@ impl LocalSolver for BlockElimSolver {
         };
         self.eliminate_and_recover(&roles, rhs, sol, allow_inner_parallelism)?;
 
-        if self.solve_space == SolveSpace::Floating {
+        if self.reduced_factor.grounding() == Some(Grounding::Floating) {
             subtract_mean(sol, n);
         }
         self.coordinates.unfold(&mut sol[..n], n_q);

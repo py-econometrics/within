@@ -8,6 +8,7 @@ use approx_chol::{CsrRef, Factor};
 use schwarz_precond::LocalSolveError;
 
 use super::csr_matrix::CsrMatrix;
+use crate::domain::Grounding;
 use crate::BuildError;
 
 // ===========================================================================
@@ -19,8 +20,14 @@ use crate::BuildError;
 pub(crate) enum ReducedFactor {
     // Postcard encodes enum discriminants by declaration order; the wire
     // fixture pins Approx = 0, so new variants append after it.
-    /// `approx-chol` factor of the reduced Schur CSR.
-    Approx(Factor),
+    /// `approx-chol` factor of the reduced Schur CSR, carrying the gauge the
+    /// operator-level solve applies around it.
+    Approx {
+        /// Factor of the reduced Schur.
+        factor: Factor,
+        /// Gauge of the reduced system.
+        grounding: Grounding,
+    },
     /// Gremban double cover of a signed (frustrated) reduced Schur: `inner`
     /// factors the doubled cover system and `m` is the single signed dimension
     /// the solve presents to the caller. The cover lives only here — the local
@@ -35,9 +42,18 @@ pub(crate) enum ReducedFactor {
 }
 
 impl ReducedFactor {
+    /// The gauge the operator-level solve must apply; `None` for a cover, which
+    /// self-grounds through its antisymmetric embed.
+    pub(crate) fn grounding(&self) -> Option<Grounding> {
+        match self {
+            Self::Approx { grounding, .. } => Some(*grounding),
+            Self::Cover { .. } => None,
+        }
+    }
+
     pub(crate) fn input_dimension(&self) -> usize {
         match self {
-            Self::Approx(f) => f.original_n(),
+            Self::Approx { factor, .. } => factor.original_n(),
             // The cover is hidden behind the single signed interface.
             Self::Cover { m, .. } => *m,
         }
@@ -45,7 +61,7 @@ impl ReducedFactor {
 
     pub(crate) fn factor_dimension(&self) -> usize {
         match self {
-            Self::Approx(f) => f.n(),
+            Self::Approx { factor, .. } => factor.n(),
             Self::Cover { m, .. } => *m,
         }
     }
@@ -54,7 +70,7 @@ impl ReducedFactor {
     /// needs. Only [`Self::Cover`] embeds into a larger system.
     pub(crate) fn scratch_len(&self) -> usize {
         match self {
-            Self::Approx(_) => 0,
+            Self::Approx { .. } => 0,
             Self::Cover { inner, .. } => inner.n(),
         }
     }
@@ -68,9 +84,9 @@ impl ReducedFactor {
         scratch: &mut [f64],
     ) -> Result<(), LocalSolveError> {
         match self {
-            Self::Approx(f) => {
-                debug_assert_eq!(f.n(), x.len());
-                solve_approx(f, x)
+            Self::Approx { factor, .. } => {
+                debug_assert_eq!(factor.n(), x.len());
+                solve_approx(factor, x)
             }
             Self::Cover { inner, m } => {
                 debug_assert_eq!(*m, x.len());
@@ -107,15 +123,23 @@ impl ReducedFactor {
 /// rather than a decode that recurses without bound.
 #[derive(serde::Deserialize)]
 enum ReducedFactorWire {
-    Approx(Factor),
-    Cover { inner: Factor, m: usize },
+    Approx {
+        factor: Factor,
+        grounding: Grounding,
+    },
+    Cover {
+        inner: Factor,
+        m: usize,
+    },
 }
 
 impl<'de> serde::Deserialize<'de> for ReducedFactor {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         use serde::de::Error;
         match ReducedFactorWire::deserialize(deserializer)? {
-            ReducedFactorWire::Approx(f) => Ok(ReducedFactor::Approx(f)),
+            ReducedFactorWire::Approx { factor, grounding } => {
+                Ok(ReducedFactor::Approx { factor, grounding })
+            }
             ReducedFactorWire::Cover { inner, m } => {
                 // `solve_in_place` embeds the antisymmetric `[b, -b]` RHS into
                 // the inner factor, whose dimension is the `2m` doubled cover
@@ -231,7 +255,11 @@ mod tests {
 
     #[test]
     fn valid_approx_round_trips() {
-        let bytes = postcard::to_stdvec(&ReducedFactor::Approx(approx_2x2())).expect("serialize");
+        let bytes = postcard::to_stdvec(&ReducedFactor::Approx {
+            factor: approx_2x2(),
+            grounding: Grounding::Floating,
+        })
+        .expect("serialize");
         let restored: ReducedFactor = postcard::from_bytes(&bytes).expect("deserialize");
         assert_eq!(restored.input_dimension(), 2);
     }

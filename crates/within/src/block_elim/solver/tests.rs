@@ -229,14 +229,16 @@ fn grounded_backend_auxiliary_is_initialized_on_every_solve() {
         2,
     );
     let explicit_ground_laplacian =
-        schur::build_explicit_laplacian(&principal, &[0.0, small], SolveSpace::Grounded);
+        schur::build_explicit_laplacian(&principal, &[0.0, small], Grounding::Grounded);
     let config = ApproxCholConfig::default().to_approx_chol(
         DEFAULT_DENSE_SCHUR_THRESHOLD,
         ExactFailure::FallBackToApproximate,
     );
-    let factor = ReducedFactor::Approx(
-        factor_sparse(&explicit_ground_laplacian, config).expect("factorization must succeed"),
-    );
+    let factor = ReducedFactor::Approx {
+        factor: factor_sparse(&explicit_ground_laplacian, config)
+            .expect("factorization must succeed"),
+        grounding: Grounding::Grounded,
+    };
     assert_eq!(factor.input_dimension(), 3);
     // approx-chol declines to ground a surplus below the pivot scale it can
     // resolve, so this explicit Laplacian gains no auxiliary vertex.
@@ -253,7 +255,6 @@ fn grounded_backend_auxiliary_is_initialized_on_every_solve() {
         factor,
         true,
         CoordinateMap::default(),
-        SolveSpace::Grounded,
     );
 
     let solve_with_dirty_auxiliary = |dirty: f64| {
