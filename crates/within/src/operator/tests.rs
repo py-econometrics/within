@@ -529,12 +529,11 @@ mod schwarz_tests {
     };
     use schwarz_precond::SubdomainCore;
 
-    use crate::block_elim::factor::ReducedFactor;
     use crate::csr_block::CsrBlock;
     use crate::domain::{build_local_domains, Design, LocalDomain};
     use crate::domain::{BlockDiagonals, CrossTab, LocalComponent};
-    use crate::operator::schwarz::{build_additive_with_strategy, build_entry};
-    use schwarz_precond::{Operator, ReductionStrategy};
+    use crate::operator::schwarz::build_additive_with_strategy;
+    use schwarz_precond::{LocalSolver, Operator, ReductionStrategy};
 
     const BLOCK_ELIM_NESTED_RAYON_CHILD_ENV: &str = "WITHIN_TEST_BLOCK_ELIM_NESTED_RAYON_CHILD";
 
@@ -630,7 +629,6 @@ mod schwarz_tests {
             approx_chol: ApproxCholConfig {
                 split_merge: Some(8),
                 seed: 42,
-                ..Default::default()
             },
             schur: SchurMode::Approximate(ApproxSchurConfig {
                 seed: 7,
@@ -740,60 +738,68 @@ mod schwarz_tests {
         schwarz.apply(&r, &mut z).expect("schwarz apply succeeds");
     }
 
-    #[test]
-    fn test_exact_schur_uses_dense_fast_path_for_tiny_reduced_system() {
-        let (_, mut domain_pairs) = make_test_data();
-        let domain = domain_pairs.swap_remove(0);
-
+    /// Solve a fixed RHS through a subdomain whose reduced system is under the
+    /// threshold but whose eliminated stars have three entries, so clique
+    /// sampling is not deterministic-exact and the two routes are separable.
+    ///
+    /// The exact route is no longer a distinct factor variant, so these tests
+    /// pin it by its consequence instead: nothing is sampled, so neither the
+    /// Schur mode nor the sampler seed can move the answer.
+    fn small_subdomain_solve(schur: SchurMode, dense_threshold: usize) -> Vec<f64> {
+        let (cross_tab, block_diagonals) = synthetic_sparse_cross_tab(8, 4);
+        let component = LocalComponent::plain_for_test(cross_tab, block_diagonals);
         let config = LocalSolverConfig {
             approx_chol: ApproxCholConfig::default(),
-            schur: SchurMode::Exact,
-            dense_threshold: DEFAULT_DENSE_SCHUR_THRESHOLD,
+            schur,
+            dense_threshold,
             scaling: Default::default(),
         };
-        let entry = build_entry(domain, &config).expect("exact Schur entry build failed");
-        assert!(matches!(
-            entry.solver().reduced_factor,
-            ReducedFactor::Dense(_)
-        ));
+        let solver = crate::block_elim::BlockElimSolver::build(component, &config)
+            .expect("block-elim build");
+        let mut rhs = vec![0.0; solver.scratch_size()];
+        for (i, slot) in rhs.iter_mut().take(solver.n_local()).enumerate() {
+            *slot = if i % 2 == 0 { 1.0 } else { -1.0 };
+        }
+        let mut solution = vec![0.0; solver.scratch_size()];
+        solver
+            .solve_local(&mut rhs, &mut solution, false)
+            .expect("local solve");
+        solution.truncate(solver.n_local());
+        solution
     }
 
     #[test]
-    fn test_approximate_schur_uses_dense_fast_path_for_tiny_reduced_system() {
-        let (_, mut domain_pairs) = make_test_data();
-        let domain = domain_pairs.swap_remove(0);
+    fn test_exact_schur_uses_exact_route_for_small_reduced_system() {
+        let exact = small_subdomain_solve(SchurMode::Exact, DEFAULT_DENSE_SCHUR_THRESHOLD);
+        let reseeded = small_subdomain_solve(SchurMode::Exact, DEFAULT_DENSE_SCHUR_THRESHOLD);
+        assert_eq!(exact, reseeded);
+    }
 
-        let config = LocalSolverConfig {
-            approx_chol: ApproxCholConfig::default(),
-            schur: SchurMode::Approximate(ApproxSchurConfig {
+    #[test]
+    fn test_approximate_schur_uses_exact_route_for_small_reduced_system() {
+        // The dimension gate outranks the Schur mode: below the threshold the
+        // exact complement is formed either way, so both agree exactly.
+        let exact = small_subdomain_solve(SchurMode::Exact, DEFAULT_DENSE_SCHUR_THRESHOLD);
+        let sampled_mode = small_subdomain_solve(
+            SchurMode::Approximate(ApproxSchurConfig {
                 seed: 7,
                 ..Default::default()
             }),
-            dense_threshold: DEFAULT_DENSE_SCHUR_THRESHOLD,
-            scaling: Default::default(),
-        };
-        let entry = build_entry(domain, &config).expect("approximate Schur entry build failed");
-        assert!(matches!(
-            entry.solver().reduced_factor,
-            ReducedFactor::Dense(_)
-        ));
+            DEFAULT_DENSE_SCHUR_THRESHOLD,
+        );
+        assert_eq!(exact, sampled_mode);
     }
 
     #[test]
-    fn test_dense_threshold_zero_disables_dense_fast_path() {
-        let (_, mut domain_pairs) = make_test_data();
-        let domain = domain_pairs.swap_remove(0);
-
-        let config = LocalSolverConfig {
-            approx_chol: ApproxCholConfig::default(),
-            schur: SchurMode::Exact,
-            dense_threshold: 0,
-            scaling: Default::default(),
-        };
-        let entry = build_entry(domain, &config).expect("exact Schur entry build failed");
-        assert!(!matches!(
-            entry.solver().reduced_factor,
-            ReducedFactor::Dense(_)
-        ));
+    fn test_dense_threshold_zero_disables_exact_route() {
+        let exact = small_subdomain_solve(SchurMode::Exact, DEFAULT_DENSE_SCHUR_THRESHOLD);
+        let approximate = small_subdomain_solve(
+            SchurMode::Approximate(ApproxSchurConfig {
+                seed: 7,
+                ..Default::default()
+            }),
+            0,
+        );
+        assert_ne!(exact, approximate);
     }
 }

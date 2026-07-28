@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use approx_chol::{ExactFailure, Factor};
 use rayon::prelude::*;
 use schwarz_precond::{LocalSolveError, LocalSolver};
 
@@ -13,7 +14,7 @@ use crate::BuildError;
 
 use super::compensated_sum;
 use super::elimination::Elimination;
-use super::factor::{factor_sparse, ReducedFactor};
+use super::factor::{factor_sparse, local_solver_build, ReducedFactor};
 use super::schur;
 
 // ===========================================================================
@@ -247,42 +248,35 @@ impl BlockRoles<'_> {
     }
 }
 
-/// Factor one operator's reduced Schur complement, choosing the backend by
-/// size and configuration: an exact dense minor below `dense_threshold`,
-/// otherwise a sparse Schur — sampled unless `approx_schur` is disabled —
-/// factored via `approx_chol`. `grounding` gauges the reduced system:
-/// `Floating` anchors one node, `Grounded` factors the full complement.
+/// Factor one operator's reduced Schur complement. At or below
+/// `dense_threshold` the reduced system is small enough that fill-in does not
+/// matter, so the exact complement goes to approx-chol under an exact-only
+/// backend; a pivot it cannot use falls through to the sampled Schur, as does
+/// any larger system. approx-chol picks exact or approximate elimination per
+/// connected block either way.
 fn build_reduced_factor(
     elim: &Elimination,
-    grounding: Grounding,
     config: &LocalSolverConfig,
-) -> Result<ReducedFactor, BuildError> {
-    let n_keep = elim.n_keep;
-    let dense_factor = if n_keep == 0 {
-        // Trivial 1×1 operator: nothing kept to reduce, so the solve degenerates
-        // to `x = r/d`; never send an empty system to approx-chol.
-        ReducedFactor::try_dense(Vec::new(), 0)
-    } else if config.dense_threshold > 0 && n_keep <= config.dense_threshold {
-        let m = match grounding {
-            Grounding::Floating => n_keep - 1,
-            Grounding::Grounded => n_keep,
-        };
-        ReducedFactor::try_dense(schur::dense_minor(elim, m), n_keep)
-    } else {
-        None
-    };
-    // Dense factorization returns None on a singular minor — fall through to the
-    // sparse path rather than failing.
-    match dense_factor {
-        Some(factor) => Ok(factor),
-        None => {
-            let schur_csr = match &config.schur {
-                SchurMode::Approximate(cfg) => schur::sampled(elim, cfg),
-                SchurMode::Exact => schur::exact_for_factor(elim),
-            };
-            factor_sparse(&schur_csr, config.approx_chol)
+) -> Result<Factor, BuildError> {
+    let exact_below = config.dense_threshold;
+    if exact_below > 0 && elim.n_keep <= exact_below {
+        let exact = schur::exact_for_factor(elim);
+        let ac = config
+            .approx_chol
+            .to_approx_chol(exact_below, ExactFailure::Error);
+        match factor_sparse(&exact, ac) {
+            Err(approx_chol::Error::DenseFactorizationFailed { .. }) => {}
+            result => return result.map_err(local_solver_build),
         }
     }
+    let schur_csr = match &config.schur {
+        SchurMode::Approximate(cfg) => schur::sampled(elim, cfg),
+        SchurMode::Exact => schur::exact_for_factor(elim),
+    };
+    let ac = config
+        .approx_chol
+        .to_approx_chol(exact_below, ExactFailure::FallBackToApproximate);
+    factor_sparse(&schur_csr, ac).map_err(local_solver_build)
 }
 
 /// Build the Gremban double cover of a signed subdomain operator: each
@@ -409,8 +403,8 @@ impl BlockElimSolver {
         let elim = Elimination::new(&cross_tab, &diagonals, &ground_edges, solve_space)?;
 
         let factor = match reduction {
-            Reduction::Direct(grounding) => {
-                let factor = build_reduced_factor(&elim, grounding, config)?;
+            Reduction::Direct(_) => {
+                let factor = ReducedFactor::Approx(build_reduced_factor(&elim, config)?);
                 let reduced_input_dimension = factor.input_dimension();
                 debug_assert!(
                     reduced_input_dimension == elim.n_keep
@@ -447,9 +441,9 @@ impl BlockElimSolver {
                     &cover_ground,
                     cover_grounding.solve_space(),
                 )?;
-                let inner = build_reduced_factor(&cover_elim, cover_grounding, config)?;
+                let inner = build_reduced_factor(&cover_elim, config)?;
                 ReducedFactor::Cover {
-                    inner: Box::new(inner),
+                    inner,
                     m: elim.n_keep,
                 }
             }

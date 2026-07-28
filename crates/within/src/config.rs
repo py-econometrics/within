@@ -13,48 +13,38 @@
 
 pub use schwarz_precond::ReductionStrategy;
 
-/// Default `n_keep` threshold for dense Schur fast-path factorization.
+/// Default `n_keep` threshold for exact Schur factorization.
 ///
-/// Schur domains with `min(n_q, n_r) <= threshold` first try dense Cholesky
-/// before falling back to sparse ApproxChol.
+/// Schur domains with `min(n_q, n_r) <= threshold` first try the exact Schur
+/// complement under approx-chol's exact dense backend, falling back to a
+/// sampled Schur under approximate elimination.
 pub(crate) const DEFAULT_DENSE_SCHUR_THRESHOLD: usize = 24;
 
-/// Default block size below which approx-chol factors exactly.
-pub(crate) const DEFAULT_EXACT_BELOW: usize = 24;
-
 /// Configuration for approximate Cholesky factorization.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ApproxCholConfig {
     /// Random seed for the factorization sampler.
     pub seed: u64,
     /// Optional split/merge count for denser AC2-style factorizations.
     pub split_merge: Option<u32>,
-    /// Exact dense Cholesky for connected blocks solving at most this many
-    /// variables; `None` factors every block approximately.
-    pub exact_below: Option<usize>,
-}
-
-impl Default for ApproxCholConfig {
-    fn default() -> Self {
-        Self {
-            seed: 0,
-            split_merge: None,
-            exact_below: Some(DEFAULT_EXACT_BELOW),
-        }
-    }
 }
 
 impl ApproxCholConfig {
-    pub(crate) fn to_approx_chol(self) -> approx_chol::Config {
+    pub(crate) fn to_approx_chol(
+        self,
+        exact_below: usize,
+        on_failure: approx_chol::ExactFailure,
+    ) -> approx_chol::Config {
         approx_chol::Config {
             seed: self.seed,
             split_merge: self.split_merge,
-            backend: match self.exact_below {
-                Some(max_dim) => approx_chol::Backend::ExactBelow {
-                    max_dim,
-                    on_failure: approx_chol::ExactFailure::FallBackToApproximate,
-                },
-                None => approx_chol::Backend::Approximate,
+            backend: if exact_below == 0 {
+                approx_chol::Backend::Approximate
+            } else {
+                approx_chol::Backend::ExactBelow {
+                    max_dim: exact_below,
+                    on_failure,
+                }
             },
         }
     }
@@ -94,10 +84,9 @@ pub struct LocalSolverConfig {
     pub approx_chol: ApproxCholConfig,
     /// Schur-complement reduction mode (default: approximate).
     pub schur: SchurMode,
-    /// Dense Schur fast-path threshold on reduced size `n_keep=min(n_q,n_r)`.
-    ///
-    /// `0` disables the dense fast path; larger values allow dense Cholesky for
-    /// more subdomains.
+    /// Exact-Schur threshold on reduced size `n_keep=min(n_q,n_r)`: at or below
+    /// it fill-in is affordable, so the exact Schur complement is factored
+    /// exactly. `0` disables it.
     pub dense_threshold: usize,
     /// Certification policy for the diagonal scaling of signed components.
     pub scaling: ScalingConfig,
@@ -109,7 +98,6 @@ impl Default for LocalSolverConfig {
             approx_chol: ApproxCholConfig {
                 seed: 0,
                 split_merge: Some(2),
-                exact_below: Some(DEFAULT_EXACT_BELOW),
             },
             schur: SchurMode::default(),
             dense_threshold: DEFAULT_DENSE_SCHUR_THRESHOLD,

@@ -22,20 +22,14 @@ pub struct PyApproxCholConfig {
     pub seed: u64,
     #[pyo3(get)]
     pub split_merge: Option<u32>,
-    #[pyo3(get)]
-    pub exact_below: Option<usize>,
 }
 
 #[pymethods]
 impl PyApproxCholConfig {
     #[new]
-    #[pyo3(signature = (seed=0, split_merge=None, exact_below=ApproxCholConfig::default().exact_below))]
-    fn new(seed: u64, split_merge: Option<u32>, exact_below: Option<usize>) -> Self {
-        Self {
-            seed,
-            split_merge,
-            exact_below,
-        }
+    #[pyo3(signature = (seed=0, split_merge=None))]
+    fn new(seed: u64, split_merge: Option<u32>) -> Self {
+        Self { seed, split_merge }
     }
 }
 
@@ -44,7 +38,6 @@ impl PyApproxCholConfig {
         ApproxCholConfig {
             seed: self.seed,
             split_merge: self.split_merge,
-            exact_below: self.exact_below,
         }
     }
 }

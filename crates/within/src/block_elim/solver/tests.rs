@@ -1,7 +1,7 @@
 use super::*;
 
 use crate::block_elim::csr_matrix::CsrMatrix;
-use crate::config::{ApproxCholConfig, SchurMode};
+use crate::config::{ApproxCholConfig, SchurMode, DEFAULT_DENSE_SCHUR_THRESHOLD};
 use crate::csr_block::CsrBlock;
 use crate::domain::BlockDiagonals;
 
@@ -230,8 +230,13 @@ fn grounded_backend_auxiliary_is_initialized_on_every_solve() {
     );
     let explicit_ground_laplacian =
         schur::build_explicit_laplacian(&principal, &[0.0, small], SolveSpace::Grounded);
-    let factor = factor_sparse(&explicit_ground_laplacian, ApproxCholConfig::default())
-        .expect("factorization must succeed");
+    let config = ApproxCholConfig::default().to_approx_chol(
+        DEFAULT_DENSE_SCHUR_THRESHOLD,
+        ExactFailure::FallBackToApproximate,
+    );
+    let factor = ReducedFactor::Approx(
+        factor_sparse(&explicit_ground_laplacian, config).expect("factorization must succeed"),
+    );
     assert_eq!(factor.input_dimension(), 3);
     // approx-chol declines to ground a surplus below the pivot scale it can
     // resolve, so this explicit Laplacian gains no auxiliary vertex.

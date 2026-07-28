@@ -2,8 +2,7 @@
 //! system — SDDM in, SDDM on the kept levels out.
 //!
 //! [`exact`] accumulates the true reduced rows; [`sampled`] approximates each
-//! eliminated star's clique on the explicit augmented graph; [`dense_minor`]
-//! materializes the exact top-left `m × m` minor for the dense direct path.
+//! eliminated star's clique on the explicit augmented graph.
 
 use super::compensated_sum;
 use super::csr_matrix::CsrMatrix;
@@ -53,35 +52,6 @@ pub(crate) fn exact_for_factor(elim: &Elimination) -> CsrMatrix {
     let principal = exact(elim);
     let surplus = reduced_surplus(elim);
     build_explicit_laplacian(&principal, &surplus, elim.solve_space)
-}
-
-/// Build the exact top-left `m × m` Schur minor in row-major order.
-///
-/// `m == n_keep` is the full grounded complement; `m == n_keep − 1` anchors the
-/// last node of a floating Laplacian.
-pub(crate) fn dense_minor(elim: &Elimination, m: usize) -> Vec<f64> {
-    if m == 0 {
-        return Vec::new();
-    }
-
-    let mut minor = vec![0.0; m * m];
-    for i in 0..m {
-        minor[i * m + i] = elim.diag_keep[i];
-    }
-
-    // S_minor = D_keep_minor - keep_to_elim_minor * inv(D_elim) * elim_to_keep_minor
-    for i in 0..m {
-        for (k, w) in elim.keep_to_elim.row(i) {
-            let scale = w * elim.inv_diag_elim[k];
-            for (j, v) in elim.elim_to_keep.row(k) {
-                if j < m {
-                    minor[i * m + j] -= scale * v;
-                }
-            }
-        }
-    }
-
-    minor
 }
 
 /// Scatter the Schur row `i` into a dense workspace.
