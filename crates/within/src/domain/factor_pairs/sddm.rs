@@ -6,10 +6,10 @@
 //! rounded diagonals. Plain components take a fast path: their Laplacian claim
 //! is validated and adopted without sign folding, scaling, or a data rewrite.
 //! Frustrated components — where no signature exists — keep their single
-//! *signed* operator (dominance-scaled but not folded to a Z-matrix) and carry
-//! a [`Reduction::Cover`] marker; the Gremban double cover that makes the
+//! *signed* matrix (dominance-scaled but not folded to a Z-matrix) and carry
+//! a [`MatrixForm::SignedPendingCover`] marker; the Gremban cover that makes the
 //! reduced Schur SDDM is built transiently at factor time (see
-//! [`crate::block_elim`]), so the stored operator stays single-sized.
+//! [`crate::block_elim`]), so the stored matrix stays single-sized.
 
 use super::ComponentClass;
 use crate::config::{ScalingConfig, ScalingFailure};
@@ -42,15 +42,15 @@ pub(crate) enum Grounding {
     Grounded,
 }
 
-/// Which form a component's signature left its operator in. Orthogonal to the
+/// Which form a component's signature left its matrix in. Orthogonal to the
 /// [`Grounding`] classified from the same surplus and to [`CoordinateMap`], the
 /// congruence that produced it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum OperatorForm {
+pub(crate) enum MatrixForm {
     /// Folded to a Z-matrix: the minor reduces directly.
     Laplacian,
     /// Kept signed, because no signature exists: a Gremban double cover is
-    /// built at factor time so the stored operator never doubles.
+    /// built at factor time so the stored matrix never doubles.
     SignedPendingCover,
 }
 
@@ -64,18 +64,18 @@ pub(crate) enum CoordinateMap {
     #[default]
     Canonical,
     /// Diagonal congruence factors (sign · scale). For a frustrated component
-    /// these are the canonical bipartite signs (`+` on q, `−` on r) times the
-    /// dominance scaling, leaving the operator signed.
+    /// these are the canonical bipartite signs (`+` on the eliminated block,
+    /// `−` on the kept one) times the dominance scaling, leaving it signed.
     Scaled(Box<[f64]>),
 }
 
 impl CoordinateMap {
     /// Map an original-coordinate RHS into SDDM coordinates. `values` spans
-    /// the internal system and `n_rows` is its q-size.
-    pub(crate) fn fold(&self, values: &mut [f64], n_rows: usize) {
+    /// the internal system, split at `n_eliminated`.
+    pub(crate) fn fold(&self, values: &mut [f64], n_eliminated: usize) {
         match self {
             CoordinateMap::Canonical => {
-                for value in &mut values[n_rows..] {
+                for value in &mut values[n_eliminated..] {
                     *value = -*value;
                 }
             }
@@ -90,8 +90,8 @@ impl CoordinateMap {
 
     /// Map an SDDM-coordinate solution back to original coordinates; the
     /// diagonal maps are involutions up to scale, so they re-apply `fold`.
-    pub(crate) fn unfold(&self, values: &mut [f64], n_rows: usize) {
-        self.fold(values, n_rows);
+    pub(crate) fn unfold(&self, values: &mut [f64], n_eliminated: usize) {
+        self.fold(values, n_eliminated);
     }
 }
 
@@ -121,20 +121,20 @@ pub(crate) fn orient_for_elimination(
     )
 }
 
-/// A bipartite SDDM operator in eliminated-major form, carrying the gauge its
+/// A bipartite SDDM matrix in eliminated-major form, carrying the gauge its
 /// surplus implies. The per-vertex arrays are flat in the `[eliminated | kept]`
 /// order [`CrossTab::neighbors`] indexes, split at `n_eliminated`. A converted
 /// component holds one; so does the transient Gremban cover built from a signed
 /// one, which is why this is not simply part of [`LocalComponent`].
 #[derive(Clone)]
-pub(crate) struct SddmOperator {
+pub(crate) struct SddmMatrix {
     pub(crate) cross_tab: CrossTab,
     pub(crate) diagonal: Vec<f64>,
     pub(crate) ground_edges: Vec<f64>,
     pub(crate) grounding: Grounding,
 }
 
-impl SddmOperator {
+impl SddmMatrix {
     pub(crate) fn n_eliminated(&self) -> usize {
         self.cross_tab.n_rows()
     }
@@ -159,8 +159,8 @@ impl SddmOperator {
 /// A connected component of a channel pair's cross-tab, converted to SDDM form.
 #[derive(Clone)]
 pub(crate) struct LocalComponent {
-    pub(crate) operator: SddmOperator,
-    pub(crate) form: OperatorForm,
+    pub(crate) matrix: SddmMatrix,
+    pub(crate) form: MatrixForm,
     pub(crate) coordinates: CoordinateMap,
 }
 
@@ -210,13 +210,13 @@ fn convert_known_laplacian(
         return Err(NotScalable);
     }
     Ok(LocalComponent {
-        operator: SddmOperator {
+        matrix: SddmMatrix {
             ground_edges: vec![0.0; cross_tab.n_local()],
             cross_tab,
             diagonal: row_sums,
             grounding: Grounding::Floating,
         },
-        form: OperatorForm::Laplacian,
+        form: MatrixForm::Laplacian,
         coordinates: CoordinateMap::default(),
     })
 }
@@ -238,13 +238,7 @@ fn convert_general(
                 .zip(relaxation.scales.iter())
                 .map(|(&sign, &scale)| sign * scale)
                 .collect();
-            assemble(
-                cross_tab,
-                diagonal,
-                factors,
-                OperatorForm::Laplacian,
-                scaling,
-            )?
+            assemble(cross_tab, diagonal, factors, MatrixForm::Laplacian, scaling)?
         }
         None => {
             let n_rows = cross_tab.n_rows();
@@ -256,7 +250,7 @@ fn convert_general(
                 cross_tab,
                 diagonal,
                 factors,
-                OperatorForm::SignedPendingCover,
+                MatrixForm::SignedPendingCover,
                 scaling,
             )?
         }
@@ -270,10 +264,10 @@ fn convert_general(
 }
 
 /// Fold the component through `factors` and assemble the validated SDDM form.
-/// The `reduction` fixes the fold contract: a [`ReductionKind::Direct`]
+/// The `form` fixes the fold contract: a [`MatrixForm::Laplacian`]
 /// component must fold to a true Z-matrix, so any off-diagonal the signature
-/// failed to drive nonnegative is an error; a [`ReductionKind::Cover`] component
-/// keeps its single *signed* operator (negatives retained) and grounds through a
+/// failed to drive nonnegative is an error; a [`MatrixForm::SignedPendingCover`]
+/// keeps its single *signed* matrix (negatives retained) and grounds through a
 /// Gremban double cover built at factor time (see [`crate::block_elim`]).
 /// Dominance is classified against *magnitude* row sums either way — after a
 /// Z-fold every off-diagonal is nonnegative, so magnitudes match the signed
@@ -283,11 +277,11 @@ fn assemble(
     mut cross_tab: CrossTab,
     diagonal: Vec<f64>,
     factors: Vec<f64>,
-    form: OperatorForm,
+    form: MatrixForm,
     scaling: &ScalingConfig,
 ) -> Result<(LocalComponent, f64), NotScalable> {
     let n_rows = cross_tab.n_rows();
-    let enforce_z = form == OperatorForm::Laplacian;
+    let enforce_z = form == MatrixForm::Laplacian;
     for i in 0..n_rows {
         let start = cross_tab.c.indptr[i] as usize;
         let end = cross_tab.c.indptr[i + 1] as usize;
@@ -333,17 +327,17 @@ fn assemble(
     )
 }
 
-/// Validate weak dominance of an assembled operator against `row_sums` (signed
-/// adjacency for a Z-matrix, magnitudes for a signed operator): clamp roundoff
-/// deficits, retain surplus as ground edges, and resolve the [`Reduction`]
-/// state. Returns the largest relative deficit that was clamped; deficits
+/// Validate weak dominance of an assembled matrix against `row_sums` (signed
+/// adjacency for a Z-matrix, magnitudes for a signed matrix): clamp roundoff
+/// deficits, retain surplus as ground edges, and classify the [`Grounding`].
+/// Returns the largest relative deficit that was clamped; deficits
 /// beyond tolerance are errors under [`ScalingFailure::Error`].
 fn finalize(
     cross_tab: CrossTab,
     mut scaled_diagonal: Vec<f64>,
     row_sums: Vec<f64>,
     coordinates: CoordinateMap,
-    form: OperatorForm,
+    form: MatrixForm,
     scaling: &ScalingConfig,
 ) -> Result<(LocalComponent, f64), NotScalable> {
     let n = cross_tab.n_local();
@@ -385,7 +379,7 @@ fn finalize(
     };
     Ok((
         LocalComponent {
-            operator: SddmOperator {
+            matrix: SddmMatrix {
                 cross_tab,
                 diagonal: scaled_diagonal,
                 ground_edges,

@@ -38,7 +38,7 @@ impl LocalComponent {
             cross_tab,
             diagonal,
             factors.to_vec(),
-            OperatorForm::Laplacian,
+            MatrixForm::Laplacian,
             &ScalingConfig::default(),
         )
         .expect("test factors must fold to SDDM")
@@ -54,19 +54,19 @@ fn cross_tab(table: &[f64], n_rows: usize, n_cols: usize) -> CrossTab {
 
 fn assert_sddm(component: &LocalComponent) {
     assert!(component
-        .operator
+        .matrix
         .cross_tab
         .c
         .data
         .iter()
         .all(|value| *value >= 0.0));
-    let sums = adjacency_sums(&component.operator.cross_tab);
+    let sums = adjacency_sums(&component.matrix.cross_tab);
     for ((&diagonal, &row_sum), &surplus) in component
-        .operator
+        .matrix
         .diagonal
         .iter()
         .zip(sums.iter())
-        .zip(component.operator.ground_edges.iter())
+        .zip(component.matrix.ground_edges.iter())
     {
         assert!(diagonal >= row_sum);
         assert!((diagonal - row_sum - surplus).abs() <= 1e-12 * diagonal);
@@ -82,8 +82,8 @@ fn known_laplacian_has_canonical_coordinates_and_no_ground() {
         &ScalingConfig::default(),
     )
     .unwrap();
-    assert_eq!(component.form, OperatorForm::Laplacian);
-    assert_eq!(component.operator.grounding, Grounding::Floating);
+    assert_eq!(component.form, MatrixForm::Laplacian);
+    assert_eq!(component.matrix.grounding, Grounding::Floating);
     assert!(matches!(component.coordinates, CoordinateMap::Canonical));
     assert!(uncertified.is_none());
     assert_sddm(&component);
@@ -112,15 +112,15 @@ fn frustrated_component_stores_single_signed_operator() {
     )
     .unwrap();
     assert!(uncertified.is_none());
-    // The operator stays single-sized and signed (M[1,1] = −1): the cover is
+    // The matrix stays single-sized and signed (M[1,1] = −1): the cover is
     // deferred to factor time via the Cover reduction marker.
-    assert_eq!(component.form, OperatorForm::SignedPendingCover);
-    assert_eq!(component.operator.grounding, Grounding::Floating);
-    assert_eq!(component.operator.cross_tab.c.nrows, 2);
-    assert_eq!(component.operator.cross_tab.c.ncols, 2);
+    assert_eq!(component.form, MatrixForm::SignedPendingCover);
+    assert_eq!(component.matrix.grounding, Grounding::Floating);
+    assert_eq!(component.matrix.cross_tab.c.nrows, 2);
+    assert_eq!(component.matrix.cross_tab.c.ncols, 2);
     let mut dense = [[0.0; 2]; 2];
     for (i, row) in dense.iter_mut().enumerate() {
-        for (j, value) in component.operator.cross_tab.c.row(i) {
+        for (j, value) in component.matrix.cross_tab.c.row(i) {
             row[j] = value;
         }
     }
@@ -128,7 +128,7 @@ fn frustrated_component_stores_single_signed_operator() {
     // Magnitude dominance with zero surplus. The congruence is exactly the
     // canonical bipartite sign flip (`+1` on rows, `−1` on cols), so no explicit
     // factor map is stored.
-    assert!(component.operator.ground_edges.iter().all(|&s| s == 0.0));
+    assert!(component.matrix.ground_edges.iter().all(|&s| s == 0.0));
     assert!(matches!(component.coordinates, CoordinateMap::Canonical));
 }
 
@@ -150,8 +150,8 @@ fn scalable_signed_component_produces_valid_grounded_sddm() {
         &ScalingConfig::default(),
     )
     .unwrap();
-    assert_eq!(component.form, OperatorForm::Laplacian);
-    assert_eq!(component.operator.grounding, Grounding::Grounded);
+    assert_eq!(component.form, MatrixForm::Laplacian);
+    assert_eq!(component.matrix.grounding, Grounding::Grounded);
     assert!(uncertified.is_none());
     assert_sddm(&component);
 }
@@ -165,8 +165,8 @@ fn singular_signed_boundary_remains_floating() {
         &ScalingConfig::default(),
     )
     .unwrap();
-    assert_eq!(component.form, OperatorForm::Laplacian);
-    assert_eq!(component.operator.grounding, Grounding::Floating);
+    assert_eq!(component.form, MatrixForm::Laplacian);
+    assert_eq!(component.matrix.grounding, Grounding::Floating);
     assert_sddm(&component);
 }
 
@@ -205,13 +205,13 @@ fn large_rescaled_singular_boundary_remains_floating() {
         cross_tab,
         diagonal,
         factors,
-        OperatorForm::Laplacian,
+        MatrixForm::Laplacian,
         &ScalingConfig::default(),
     )
     .unwrap();
 
-    assert_eq!(component.form, OperatorForm::Laplacian);
-    assert_eq!(component.operator.grounding, Grounding::Floating);
+    assert_eq!(component.form, MatrixForm::Laplacian);
+    assert_eq!(component.matrix.grounding, Grounding::Floating);
     assert_sddm(&component);
 }
 
@@ -260,9 +260,9 @@ fn barely_pd_surplus_is_structural() {
         &ScalingConfig::default(),
     )
     .unwrap();
-    assert_eq!(component.form, OperatorForm::Laplacian);
-    assert_eq!(component.operator.grounding, Grounding::Grounded);
-    assert!((component.operator.ground_edges[0] - surplus).abs() < 1e-15);
+    assert_eq!(component.form, MatrixForm::Laplacian);
+    assert_eq!(component.matrix.grounding, Grounding::Grounded);
+    assert!((component.matrix.ground_edges[0] - surplus).abs() < 1e-15);
     assert_sddm(&component);
 }
 

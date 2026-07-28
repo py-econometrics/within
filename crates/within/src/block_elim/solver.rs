@@ -6,9 +6,7 @@ use schwarz_precond::{LocalSolveError, LocalSolver};
 
 use crate::config::{LocalSolverConfig, SchurMode};
 use crate::csr_block::{CsrBlock, PAR_SPMV_THRESHOLD};
-use crate::domain::{
-    CoordinateMap, CrossTab, Grounding, LocalComponent, OperatorForm, SddmOperator,
-};
+use crate::domain::{CoordinateMap, CrossTab, Grounding, LocalComponent, MatrixForm, SddmMatrix};
 use crate::BuildError;
 
 use super::compensated_sum;
@@ -96,7 +94,7 @@ pub struct BlockElimSolver {
     inv_diag_elim: Vec<f64>,
     /// Reduced-system factor backend.
     reduced_factor: ReducedFactor,
-    /// Internal DOF count (`n_rows + n_cols`) — the operator is always single-sized;
+    /// Internal DOF count (`n_rows + n_cols`) — the matrix is always single-sized;
     /// a frustrated component's cover lives inside `reduced_factor`.
     #[serde(skip)]
     n_internal: usize,
@@ -138,13 +136,12 @@ impl<'de> serde::Deserialize<'de> for BlockElimSolver {
         if ct.nrows != c.ncols || ct.ncols != c.nrows || !ct.is_structurally_valid() {
             return Err(D::Error::custom("cross_tab.ct shape disagrees with c"));
         }
-        let (n_rows, n_cols) = (c.nrows, c.ncols);
-        let n_internal = n_rows + n_cols;
-
         // Components are eliminated-major: the first block is scaled by
         // `inv_diag_elim` and the second is what the reduced factor solves.
-        let (elim_size, n_keep) = (n_rows, n_cols);
-        if h.inv_diag_elim.len() != elim_size {
+        let (n_eliminated, n_kept) = (c.nrows, c.ncols);
+        let n_internal = n_eliminated + n_kept;
+
+        if h.inv_diag_elim.len() != n_eliminated {
             return Err(D::Error::custom(
                 "inv_diag_elim length disagrees with eliminated block",
             ));
@@ -161,7 +158,7 @@ impl<'de> serde::Deserialize<'de> for BlockElimSolver {
         // ground slot a grounded complement appends.
         let input_dim = h.reduced_factor.input_dimension();
         let ground_slot = h.reduced_factor.grounding() == Some(Grounding::Grounded);
-        if input_dim != n_keep && !(ground_slot && input_dim == n_keep + 1) {
+        if input_dim != n_kept && !(ground_slot && input_dim == n_kept + 1) {
             return Err(D::Error::custom(
                 "reduced factor input dimension disagrees with the kept block",
             ));
@@ -179,20 +176,20 @@ impl<'de> serde::Deserialize<'de> for BlockElimSolver {
     }
 }
 
-/// Factor one operator's reduced Schur complement. At or below
+/// Factor one matrix's reduced Schur complement. At or below
 /// `dense_threshold` the reduced system is small enough that fill-in does not
 /// matter, so the exact complement goes to approx-chol under an exact-only
 /// backend; a pivot it cannot use falls through to the sampled Schur, as does
 /// any larger system. approx-chol picks exact or approximate elimination per
 /// connected block either way.
 fn build_reduced_factor(
-    operator: &SddmOperator,
+    matrix: &SddmMatrix,
     inv_diagonal_eliminated: &[f64],
     config: &LocalSolverConfig,
 ) -> Result<Factor, BuildError> {
     let exact_below = config.dense_threshold;
-    if exact_below > 0 && operator.n_kept() <= exact_below {
-        let exact = schur::exact_for_factor(operator, inv_diagonal_eliminated);
+    if exact_below > 0 && matrix.n_kept() <= exact_below {
+        let exact = schur::exact_for_factor(matrix, inv_diagonal_eliminated);
         let ac = config
             .approx_chol
             .to_approx_chol(exact_below, ExactFailure::Error);
@@ -202,8 +199,8 @@ fn build_reduced_factor(
         }
     }
     let schur_csr = match &config.schur {
-        SchurMode::Approximate(cfg) => schur::sampled(operator, cfg),
-        SchurMode::Exact => schur::exact_for_factor(operator, inv_diagonal_eliminated),
+        SchurMode::Approximate(cfg) => schur::sampled(matrix, cfg),
+        SchurMode::Exact => schur::exact_for_factor(matrix, inv_diagonal_eliminated),
     };
     let ac = config
         .approx_chol
@@ -211,15 +208,15 @@ fn build_reduced_factor(
     factor_sparse(&schur_csr, ac).map_err(local_solver_build)
 }
 
-/// Build the Gremban double cover of a signed subdomain operator: each
+/// Build the Gremban double cover of a signed subdomain matrix: each
 /// off-diagonal `M_ij` becomes a same-sheet copy when nonnegative and a
 /// cross-sheet copy when negative, both of magnitude `|M_ij|`, so the
 /// 2×-sized cover is SDDM and acts on the antisymmetric `[z, -z]` subspace as
-/// the original signed operator. Diagonals (and the caller's ground edges)
+/// the original signed matrix. Diagonals (and the caller's ground edges)
 /// duplicate across sheets. Built transiently in [`BlockElimSolver::build`] to
-/// factor an [`OperatorForm::SignedPendingCover`] component, then discarded.
-fn assemble_bipartite_cover(operator: &SddmOperator) -> SddmOperator {
-    let c = &operator.cross_tab.c;
+/// factor a [`MatrixForm::SignedPendingCover`] component, then discarded.
+fn assemble_bipartite_cover(matrix: &SddmMatrix) -> SddmMatrix {
+    let c = &matrix.cross_tab.c;
     let n_rows = c.nrows;
     let n_cols = c.ncols;
     let n_cols_u32 = u32::try_from(n_cols).expect("cover columns exceed u32::MAX");
@@ -262,14 +259,14 @@ fn assemble_bipartite_cover(operator: &SddmOperator) -> SddmOperator {
         ncols: 2 * n_cols,
     };
     let cover_ct = cover_c.transpose();
-    SddmOperator {
+    SddmMatrix {
         cross_tab: CrossTab {
             c: cover_c,
             ct: cover_ct,
         },
-        diagonal: double_for_cover(&operator.diagonal, n_rows),
-        ground_edges: double_for_cover(&operator.ground_edges, n_rows),
-        grounding: operator.grounding,
+        diagonal: double_for_cover(&matrix.diagonal, n_rows),
+        ground_edges: double_for_cover(&matrix.ground_edges, n_rows),
+        grounding: matrix.grounding,
     }
 }
 
@@ -281,10 +278,22 @@ fn double_for_cover(values: &[f64], n_rows: usize) -> Vec<f64> {
 }
 
 impl BlockElimSolver {
-    fn explicit_ground_index(&self, n_keep: usize) -> Option<usize> {
+    /// Size of the block the elimination removes. Components are stored
+    /// eliminated-major, so it is the leading one.
+    fn n_eliminated(&self) -> usize {
+        self.cross_tab.n_rows()
+    }
+
+    /// Size of the block the reduced factor solves.
+    fn n_kept(&self) -> usize {
+        self.cross_tab.n_cols()
+    }
+
+    fn explicit_ground_index(&self) -> Option<usize> {
+        let n_kept = self.n_kept();
         (self.reduced_factor.grounding() == Some(Grounding::Grounded)
-            && self.reduced_factor.input_dimension() == n_keep + 1)
-            .then_some(n_keep)
+            && self.reduced_factor.input_dimension() == n_kept + 1)
+            .then_some(n_kept)
     }
 
     pub(crate) fn new(
@@ -308,58 +317,58 @@ impl BlockElimSolver {
 
     /// Build a `BlockElimSolver` from a [`LocalComponent`] and solver config.
     ///
-    /// Pipeline: fold the eliminated diagonal on the single stored operator,
-    /// then factor its reduced Schur per [`OperatorForm`]. A `Laplacian`
+    /// Pipeline: fold the eliminated diagonal on the single stored matrix,
+    /// then factor its reduced Schur per [`MatrixForm`]. A `Laplacian`
     /// component factors the reduced Schur straight away; a signed one rebuilds
     /// its Gremban double cover transiently, factors the cover's reduced Schur,
-    /// and keeps only that factor — the stored operator and its inverse diagonal
+    /// and keeps only that factor — the stored matrix and its inverse diagonal
     /// stay single-sized (#91).
     ///
-    /// The operator's diagonal and ground edges are build-time-only inputs and
+    /// The matrix's diagonal and ground edges are build-time-only inputs and
     /// are dropped once the factor is built.
     pub(crate) fn build(
         component: LocalComponent,
         config: &LocalSolverConfig,
     ) -> Result<Self, BuildError> {
         let LocalComponent {
-            operator,
+            matrix,
             form,
             coordinates,
         } = component;
-        let inv_diagonal_eliminated = invert_eliminated_diagonal(&operator)?;
+        let inv_diagonal_eliminated = invert_eliminated_diagonal(&matrix)?;
 
         let factor = match form {
-            OperatorForm::Laplacian => {
+            MatrixForm::Laplacian => {
                 let factor = ReducedFactor::Approx {
-                    factor: build_reduced_factor(&operator, &inv_diagonal_eliminated, config)?,
-                    grounding: operator.grounding,
+                    factor: build_reduced_factor(&matrix, &inv_diagonal_eliminated, config)?,
+                    grounding: matrix.grounding,
                 };
                 let reduced_input_dimension = factor.input_dimension();
                 debug_assert!(
-                    reduced_input_dimension == operator.n_kept()
-                        || (operator.grounding == Grounding::Grounded
-                            && reduced_input_dimension == operator.n_kept() + 1)
+                    reduced_input_dimension == matrix.n_kept()
+                        || (matrix.grounding == Grounding::Grounded
+                            && reduced_input_dimension == matrix.n_kept() + 1)
                 );
                 debug_assert!(factor.factor_dimension() >= reduced_input_dimension);
                 factor
             }
-            // Cover the single signed operator, factor the cover's reduced
+            // Cover the single signed matrix, factor the cover's reduced
             // Schur (now SDDM, hence sampleable), then discard the cover —
             // only the factor is retained. Surplus survives the cover, so it
-            // grounds exactly as the signed operator did.
-            OperatorForm::SignedPendingCover => {
-                let cover = assemble_bipartite_cover(&operator);
+            // grounds exactly as the signed matrix did.
+            MatrixForm::SignedPendingCover => {
+                let cover = assemble_bipartite_cover(&matrix);
                 let cover_inv_diagonal = invert_eliminated_diagonal(&cover)?;
                 let inner = build_reduced_factor(&cover, &cover_inv_diagonal, config)?;
                 ReducedFactor::Cover {
                     inner,
-                    m: operator.n_kept(),
+                    m: matrix.n_kept(),
                 }
             }
         };
 
         Ok(BlockElimSolver::new(
-            operator.cross_tab,
+            matrix.cross_tab,
             inv_diagonal_eliminated,
             factor,
             coordinates,
@@ -376,9 +385,8 @@ impl BlockElimSolver {
         allow_inner_parallelism: bool,
     ) -> Result<(), LocalSolveError> {
         let n = self.n_internal;
-        let n_elim = self.cross_tab.n_rows();
-        let n_keep = n - n_elim;
-        let explicit_ground = self.explicit_ground_index(n_keep);
+        let (n_elim, n_keep) = (self.n_eliminated(), self.n_kept());
+        let explicit_ground = self.explicit_ground_index();
 
         // Scale the eliminated block by its inverse diagonal.
         scale_by_diag_in_place(&mut rhs[..n_elim], &self.inv_diag_elim);
@@ -480,9 +488,9 @@ impl LocalSolver for BlockElimSolver {
         allow_inner_parallelism: bool,
     ) -> Result<(), LocalSolveError> {
         let n = self.n_internal;
-        let n_rows = self.cross_tab.n_rows();
+        let n_eliminated = self.n_eliminated();
 
-        self.coordinates.fold(&mut rhs[..n], n_rows);
+        self.coordinates.fold(&mut rhs[..n], n_eliminated);
         if self.reduced_factor.grounding() == Some(Grounding::Floating) {
             subtract_mean(rhs, n);
         }
@@ -492,7 +500,7 @@ impl LocalSolver for BlockElimSolver {
         if self.reduced_factor.grounding() == Some(Grounding::Floating) {
             subtract_mean(sol, n);
         }
-        self.coordinates.unfold(&mut sol[..n], n_rows);
+        self.coordinates.unfold(&mut sol[..n], n_eliminated);
         Ok(())
     }
 }

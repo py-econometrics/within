@@ -11,15 +11,15 @@ use rayon::prelude::*;
 use super::elimination::{par_emit, Edge};
 use crate::config::ApproxSchurConfig;
 use crate::csr_block::to_u32;
-use crate::domain::{Grounding, SddmOperator};
+use crate::domain::{Grounding, SddmMatrix};
 
 /// Build the exact Schur complement via row-workspace accumulation.
 ///
 /// Computes `S = D_keep − keep_to_elim · diag(inv_diag_elim) · elim_to_keep`
 /// directly, without materializing intermediate edges. Each keep-block row
 /// scatters into a dense workspace, then extracts non-zeros.
-pub(crate) fn exact(operator: &SddmOperator, inv_diagonal_eliminated: &[f64]) -> CsrMatrix {
-    let n_keep = operator.n_kept();
+pub(crate) fn exact(matrix: &SddmMatrix, inv_diagonal_eliminated: &[f64]) -> CsrMatrix {
+    let n_keep = matrix.n_kept();
 
     // Per-row Schur complement accumulation, parallelized via map_init.
     // The (work, touched) pair is allocated once per rayon task and reused
@@ -29,7 +29,7 @@ pub(crate) fn exact(operator: &SddmOperator, inv_diagonal_eliminated: &[f64]) ->
         .map_init(
             || (vec![0.0f64; n_keep], Vec::new()),
             |(work, touched), i| {
-                compute_schur_row_dense(operator, inv_diagonal_eliminated, i, work, touched);
+                compute_schur_row_dense(matrix, inv_diagonal_eliminated, i, work, touched);
                 let result = extract_sparse_row(i, work, touched);
                 touched.clear();
                 result
@@ -42,19 +42,16 @@ pub(crate) fn exact(operator: &SddmOperator, inv_diagonal_eliminated: &[f64]) ->
 
 /// Build the sampled Schur complement as a Laplacian. Grounded systems retain
 /// the ground vertex as an ordinary final vertex.
-pub(crate) fn sampled(operator: &SddmOperator, config: &ApproxSchurConfig) -> CsrMatrix {
-    let edges = par_emit(operator, config);
-    let n = operator.n_kept() + usize::from(operator.grounding == Grounding::Grounded);
+pub(crate) fn sampled(matrix: &SddmMatrix, config: &ApproxSchurConfig) -> CsrMatrix {
+    let edges = par_emit(matrix, config);
+    let n = matrix.n_kept() + usize::from(matrix.grounding == Grounding::Grounded);
     build_laplacian_csr(&edges, n)
 }
 
-pub(crate) fn exact_for_factor(
-    operator: &SddmOperator,
-    inv_diagonal_eliminated: &[f64],
-) -> CsrMatrix {
-    let principal = exact(operator, inv_diagonal_eliminated);
-    let surplus = reduced_surplus(operator, inv_diagonal_eliminated);
-    build_explicit_laplacian(&principal, &surplus, operator.grounding)
+pub(crate) fn exact_for_factor(matrix: &SddmMatrix, inv_diagonal_eliminated: &[f64]) -> CsrMatrix {
+    let principal = exact(matrix, inv_diagonal_eliminated);
+    let surplus = reduced_surplus(matrix, inv_diagonal_eliminated);
+    build_explicit_laplacian(&principal, &surplus, matrix.grounding)
 }
 
 /// Scatter the Schur row `i` into a dense workspace.
@@ -62,18 +59,18 @@ pub(crate) fn exact_for_factor(
 /// Computes `work[j] = D_keep[i] δ_{ij} - Σ_k (keep_to_elim[i,k] / D_elim[k]) * elim_to_keep[k,j]`
 /// and records touched column indices.
 fn compute_schur_row_dense(
-    operator: &SddmOperator,
+    matrix: &SddmMatrix,
     inv_diagonal_eliminated: &[f64],
     i: usize,
     work: &mut [f64],
     touched: &mut Vec<usize>,
 ) {
-    work[i] = operator.diagonal_kept()[i];
+    work[i] = matrix.diagonal_kept()[i];
     touched.push(i);
 
-    for (k, w) in operator.cross_tab.ct.row(i) {
+    for (k, w) in matrix.cross_tab.ct.row(i) {
         let scale = w * inv_diagonal_eliminated[k];
-        for (j, v) in operator.cross_tab.c.row(k) {
+        for (j, v) in matrix.cross_tab.c.row(k) {
             if work[j] == 0.0 && j != i {
                 touched.push(j);
             }
@@ -175,20 +172,20 @@ fn build_laplacian_csr(edges: &[Edge], n: usize) -> CsrMatrix {
     CsrMatrix::new(offsets, indices, data, n)
 }
 
-fn reduced_surplus(operator: &SddmOperator, inv_diagonal_eliminated: &[f64]) -> Vec<f64> {
-    if operator.grounding == Grounding::Floating {
-        return vec![0.0; operator.n_kept()];
+fn reduced_surplus(matrix: &SddmMatrix, inv_diagonal_eliminated: &[f64]) -> Vec<f64> {
+    if matrix.grounding == Grounding::Floating {
+        return vec![0.0; matrix.n_kept()];
     }
     let scaled: Vec<f64> = inv_diagonal_eliminated
         .iter()
-        .zip(operator.surplus_eliminated())
+        .zip(matrix.surplus_eliminated())
         .map(|(&inv_diag, &surplus)| inv_diag * surplus)
         .collect();
-    let mut surplus = vec![0.0; operator.n_kept()];
-    operator
+    let mut surplus = vec![0.0; matrix.n_kept()];
+    matrix
         .cross_tab
         .ct
-        .spmv_assign_add(&scaled, operator.surplus_kept(), &mut surplus, false);
+        .spmv_assign_add(&scaled, matrix.surplus_kept(), &mut surplus, false);
     surplus
 }
 
@@ -262,7 +259,7 @@ mod tests {
         row_diag: Vec<f64>,
         col_diag: Vec<f64>,
         grounding: Grounding,
-    ) -> SddmOperator {
+    ) -> SddmMatrix {
         let c = CsrBlock::from_dense_table(c_dense, n_rows, n_cols);
         let ct = c.transpose();
         let cross_tab = CrossTab { c, ct };
@@ -270,7 +267,7 @@ mod tests {
         let ground_edges = (0..cross_tab.n_local())
             .map(|i| (diagonal[i] - cross_tab.neighbors(i).map(|(_, v)| v).sum::<f64>()).max(0.0))
             .collect();
-        SddmOperator {
+        SddmMatrix {
             cross_tab,
             diagonal,
             ground_edges,
@@ -364,7 +361,7 @@ mod tests {
         let c_dense = vec![1.0, 2.0, 3.0, 0.0, 0.0, 4.0];
         let row_diag = vec![5.0, 6.0, 8.0];
         let col_diag = vec![7.0, 9.0];
-        let operator = make_operator(
+        let matrix = make_operator(
             &c_dense,
             3,
             2,
@@ -372,7 +369,7 @@ mod tests {
             col_diag.clone(),
             Grounding::Grounded,
         );
-        let inv_diagonal = invert_eliminated_diagonal(&operator).unwrap();
+        let inv_diagonal = invert_eliminated_diagonal(&matrix).unwrap();
 
         assert_eq!(inv_diagonal.len(), 3);
         for (&got, &expected) in inv_diagonal
@@ -382,7 +379,7 @@ mod tests {
             assert!((got - expected).abs() < 1e-12);
         }
 
-        let matrix = exact(&operator, &inv_diagonal);
+        let matrix = exact(&matrix, &inv_diagonal);
         let expected = dense_exact_schur(&c_dense, 3, 2, &row_diag, &col_diag, true);
         let got = sparse_to_dense(&matrix);
         assert_dense_close(&got, &expected, 1e-12);
@@ -395,9 +392,9 @@ mod tests {
         let c_dense = vec![2.0, 0.0, 0.0, 3.0, 1.0, 4.0];
         let row_diag = vec![5.0, 6.0, 0.0];
         let col_diag = vec![8.0, 9.0];
-        let operator = make_operator(&c_dense, 3, 2, row_diag, col_diag, Grounding::Grounded);
+        let matrix = make_operator(&c_dense, 3, 2, row_diag, col_diag, Grounding::Grounded);
 
-        match invert_eliminated_diagonal(&operator) {
+        match invert_eliminated_diagonal(&matrix) {
             Err(crate::BuildError::SingularDiagonal { index: 2, .. }) => {}
             Err(e) => panic!("expected SingularDiagonal at index 2, got: {e}"),
             Ok(_) => panic!("expected SingularDiagonal error, got Ok"),
@@ -410,7 +407,7 @@ mod tests {
         // Diagonals equal the adjacency row/column sums exactly, so the
         // reduced system is a pure (zero-row-sum) Laplacian.
         let c_dense = vec![1.0, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
-        let operator = make_operator(
+        let matrix = make_operator(
             &c_dense,
             3,
             3,
@@ -423,8 +420,8 @@ mod tests {
             ..Default::default()
         };
 
-        let a = sampled(&operator, &config);
-        let b = sampled(&operator, &config);
+        let a = sampled(&matrix, &config);
+        let b = sampled(&matrix, &config);
 
         assert_eq!(a.indptr(), b.indptr());
         assert_eq!(a.indices(), b.indices());
@@ -461,7 +458,7 @@ mod tests {
         let c_dense = vec![1.0, 0.0, 2.0, 3.0, 0.0, 4.0];
         let row_diag = vec![3.0, 5.0, 6.0];
         let col_diag = vec![3.5, 7.0];
-        let operator = make_operator(
+        let matrix = make_operator(
             &c_dense,
             3,
             2,
@@ -470,7 +467,7 @@ mod tests {
             Grounding::Grounded,
         );
 
-        let sampled_dense = sparse_to_dense(&sampled(&operator, &Default::default()));
+        let sampled_dense = sparse_to_dense(&sampled(&matrix, &Default::default()));
         let expected = dense_exact_schur(&c_dense, 3, 2, &row_diag, &col_diag, true);
         let sampled_principal: Vec<Vec<f64>> = sampled_dense[..expected.len()]
             .iter()

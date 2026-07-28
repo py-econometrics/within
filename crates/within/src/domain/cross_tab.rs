@@ -128,14 +128,12 @@ pub(crate) struct CrossTab {
     pub(crate) ct: CsrBlock,
 }
 
-/// Diagonal blocks `D_q`, `D_r` of a factor-pair Gramian.
+/// Diagonal blocks of a factor-pair Gramian, one per side of `C`.
 ///
-/// These are consumed only during preconditioner assembly: [`Elimination::new`]
-/// folds them into the reduced factor, after which they are never read again.
-/// They therefore travel alongside the [`CrossTab`] through the build step
-/// rather than being stored on (and serialized with) it.
-///
-/// [`Elimination::new`]: crate::block_elim
+/// These are consumed only during preconditioner assembly, which folds them
+/// into the reduced factor, after which they are never read again. They
+/// therefore travel alongside the [`CrossTab`] through the build step rather
+/// than being stored on (and serialized with) it.
 #[derive(Clone)]
 pub(crate) struct BlockDiagonals {
     /// Diagonal block for the row factor (length n_rows).

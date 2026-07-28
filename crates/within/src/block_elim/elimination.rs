@@ -10,7 +10,7 @@ use approx_chol::low_level::{clique_tree_sample, clique_tree_sample_multi};
 use rayon::prelude::*;
 
 use crate::config::ApproxSchurConfig;
-use crate::domain::{Grounding, SddmOperator};
+use crate::domain::{Grounding, SddmMatrix};
 use crate::BuildError;
 
 /// Undirected fill edge: `(lo_col, hi_col, weight)` with `lo_col < hi_col`.
@@ -28,7 +28,7 @@ pub(crate) type Edge = (u32, u32, f64);
 
 /// One eliminated vertex's neighbors in the keep-block.
 ///
-/// References into [`CsrBlock`]'s arrays for zero-copy access.
+/// References into the cross-tab's CSR arrays for zero-copy access.
 pub(crate) struct Star<'a> {
     /// Eliminated vertex index (used for deterministic seeding).
     index: usize,
@@ -80,13 +80,13 @@ fn sample_star(
 // ===========================================================================
 
 /// Fold the eliminated block's diagonal to its reciprocals, the one value
-/// Schur assembly needs that the operator does not already carry.
-pub(crate) fn invert_eliminated_diagonal(operator: &SddmOperator) -> Result<Vec<f64>, BuildError> {
+/// Schur assembly needs that the matrix does not already carry.
+pub(crate) fn invert_eliminated_diagonal(matrix: &SddmMatrix) -> Result<Vec<f64>, BuildError> {
     debug_assert!(
-        operator.n_eliminated() >= operator.n_kept(),
+        matrix.n_eliminated() >= matrix.n_kept(),
         "component is not eliminated-major"
     );
-    operator.diagonal[..operator.n_eliminated()]
+    matrix.diagonal[..matrix.n_eliminated()]
         .iter()
         .enumerate()
         .map(|(i, &d)| {
@@ -100,8 +100,8 @@ pub(crate) fn invert_eliminated_diagonal(operator: &SddmOperator) -> Result<Vec<
 }
 
 /// Create a zero-copy [`Star`] view for eliminated vertex `k`.
-fn star(operator: &SddmOperator, k: usize) -> Star<'_> {
-    let elim_to_keep = &operator.cross_tab.c;
+fn star(matrix: &SddmMatrix, k: usize) -> Star<'_> {
+    let elim_to_keep = &matrix.cross_tab.c;
     let start = elim_to_keep.indptr[k] as usize;
     let end = elim_to_keep.indptr[k + 1] as usize;
     Star {
@@ -111,21 +111,21 @@ fn star(operator: &SddmOperator, k: usize) -> Star<'_> {
     }
 }
 
-pub(crate) fn par_emit(operator: &SddmOperator, config: &ApproxSchurConfig) -> Vec<Edge> {
+pub(crate) fn par_emit(matrix: &SddmMatrix, config: &ApproxSchurConfig) -> Vec<Edge> {
     // Emit in parallel (one scratch buffer reused per fold chunk), concatenate,
     // then a single total-order `sort_and_dedup`. The total order fixes the
     // per-`(lo, hi)` weight summation order, so the result is independent of
     // thread scheduling (the concatenation order no longer matters).
-    let n_kept = operator.n_kept();
-    let surplus_eliminated = operator.surplus_eliminated();
-    let ground_vertex = (operator.grounding == Grounding::Grounded)
+    let n_kept = matrix.n_kept();
+    let surplus_eliminated = matrix.surplus_eliminated();
+    let ground_vertex = (matrix.grounding == Grounding::Grounded)
         .then(|| u32::try_from(n_kept).expect("ground vertex exceeds u32::MAX"));
-    let mut edges = (0..operator.n_eliminated())
+    let mut edges = (0..matrix.n_eliminated())
         .into_par_iter()
         .fold(
             || (Vec::new(), Vec::<(u32, f64)>::new()),
             |(mut edges, mut scratch), k| {
-                let star = star(operator, k);
+                let star = star(matrix, k);
                 if star.degree() > 0 {
                     let ground = ground_vertex.map(|g| (g, surplus_eliminated[k]));
                     sample_star(&star, ground, config, &mut edges, &mut scratch);
@@ -140,7 +140,7 @@ pub(crate) fn par_emit(operator: &SddmOperator, config: &ApproxSchurConfig) -> V
         });
     if let Some(ground) = ground_vertex {
         edges.extend(
-            operator
+            matrix
                 .surplus_kept()
                 .iter()
                 .enumerate()
