@@ -113,16 +113,20 @@ impl CoordinateMap {
     }
 }
 
-/// Relabel a component so the larger block is `q`, which the block elimination
-/// always removes. Returns whether the sides were exchanged, so a caller
-/// holding a parallel `[q | r]` index list can follow.
-pub(crate) fn q_major(
+/// Orient a component for elimination: the larger block becomes the eliminated
+/// side, which the block elimination always removes. `globals` arrives in
+/// `[q | r]` order and leaves in eliminated-major order, so a component and its
+/// restriction cannot disagree on vertex order.
+pub(crate) fn orient_for_elimination(
     cross_tab: CrossTab,
     diagonals: BlockDiagonals,
-) -> (CrossTab, BlockDiagonals, bool) {
+    mut globals: Vec<u32>,
+) -> (CrossTab, BlockDiagonals, Vec<u32>) {
+    debug_assert_eq!(globals.len(), cross_tab.n_local());
     if cross_tab.n_r() <= cross_tab.n_q() {
-        return (cross_tab, diagonals, false);
+        return (cross_tab, diagonals, globals);
     }
+    globals.rotate_left(cross_tab.n_q());
     (
         CrossTab {
             c: cross_tab.ct,
@@ -132,7 +136,7 @@ pub(crate) fn q_major(
             q: diagonals.r,
             r: diagonals.q,
         },
-        true,
+        globals,
     )
 }
 
