@@ -304,7 +304,7 @@ impl BlockElimSolver {
     ) -> Self {
         let cross_tab = cross_tab.into();
         let n_internal = cross_tab.n_local();
-        let n_reduced = reduced_factor.factor_dimension();
+        let n_reduced = reduced_factor.solve_dimension();
         Self {
             cross_tab,
             inv_diag_elim,
@@ -339,7 +339,7 @@ impl BlockElimSolver {
 
         let factor = match form {
             MatrixForm::Laplacian => {
-                let factor = ReducedFactor::Approx {
+                let factor = ReducedFactor::Direct {
                     factor: build_reduced_factor(&matrix, &inv_diagonal_eliminated, config)?,
                     grounding: matrix.grounding,
                 };
@@ -349,7 +349,7 @@ impl BlockElimSolver {
                         || (matrix.grounding == Grounding::Grounded
                             && reduced_input_dimension == matrix.n_kept() + 1)
                 );
-                debug_assert!(factor.factor_dimension() >= reduced_input_dimension);
+                debug_assert!(factor.solve_dimension() >= reduced_input_dimension);
                 factor
             }
             // Cover the single signed matrix, factor the cover's reduced

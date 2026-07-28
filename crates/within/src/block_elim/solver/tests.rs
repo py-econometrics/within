@@ -212,7 +212,7 @@ fn grounded_backend_auxiliary_is_initialized_on_every_solve() {
         DEFAULT_DENSE_SCHUR_THRESHOLD,
         ExactFailure::FallBackToApproximate,
     );
-    let factor = ReducedFactor::Approx {
+    let factor = ReducedFactor::Direct {
         factor: factor_sparse(&explicit_ground_laplacian, config)
             .expect("factorization must succeed"),
         grounding: Grounding::Grounded,
@@ -220,7 +220,7 @@ fn grounded_backend_auxiliary_is_initialized_on_every_solve() {
     assert_eq!(factor.input_dimension(), 3);
     // approx-chol declines to ground a surplus below the pivot scale it can
     // resolve, so this explicit Laplacian gains no auxiliary vertex.
-    assert_eq!(factor.factor_dimension(), 3);
+    assert_eq!(factor.solve_dimension(), 3);
 
     let c = CsrBlock::from_dense_table(&[0.0; 6], 3, 2);
     let cross_tab = CrossTab {

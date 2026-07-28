@@ -19,10 +19,10 @@ use crate::BuildError;
 #[derive(Clone, serde::Serialize)]
 pub(crate) enum ReducedFactor {
     // Postcard encodes enum discriminants by declaration order; the wire
-    // fixture pins Approx = 0, so new variants append after it.
-    /// `approx-chol` factor of the reduced Schur CSR, carrying the gauge the
+    // fixture pins Direct = 0, so new variants append after it.
+    /// Factor of the reduced Schur CSR itself, carrying the gauge the
     /// operator-level solve applies around it.
-    Approx {
+    Direct {
         /// Factor of the reduced Schur.
         factor: Factor,
         /// Gauge of the reduced system.
@@ -46,22 +46,24 @@ impl ReducedFactor {
     /// self-grounds through its antisymmetric embed.
     pub(crate) fn grounding(&self) -> Option<Grounding> {
         match self {
-            Self::Approx { grounding, .. } => Some(*grounding),
+            Self::Direct { grounding, .. } => Some(*grounding),
             Self::Cover { .. } => None,
         }
     }
 
+    /// Dimension of the system handed to the backend, which augments it with
+    /// grounding vertices of its own — hence below [`Self::solve_dimension`].
     pub(crate) fn input_dimension(&self) -> usize {
         match self {
-            Self::Approx { factor, .. } => factor.original_n(),
+            Self::Direct { factor, .. } => factor.original_n(),
             // The cover is hidden behind the single signed interface.
             Self::Cover { m, .. } => *m,
         }
     }
 
-    pub(crate) fn factor_dimension(&self) -> usize {
+    pub(crate) fn solve_dimension(&self) -> usize {
         match self {
-            Self::Approx { factor, .. } => factor.n(),
+            Self::Direct { factor, .. } => factor.n(),
             Self::Cover { m, .. } => *m,
         }
     }
@@ -70,12 +72,12 @@ impl ReducedFactor {
     /// needs. Only [`Self::Cover`] embeds into a larger system.
     pub(crate) fn scratch_len(&self) -> usize {
         match self {
-            Self::Approx { .. } => 0,
+            Self::Direct { .. } => 0,
             Self::Cover { inner, .. } => inner.n(),
         }
     }
 
-    /// Solve the reduced system in place. `x` has length [`Self::factor_dimension`];
+    /// Solve the reduced system in place. `x` has length [`Self::solve_dimension`];
     /// `scratch` is at least [`Self::scratch_len`] long (the [`Self::Cover`]
     /// embed buffer, reused across LSMR iterations).
     pub(crate) fn solve_in_place(
@@ -84,7 +86,7 @@ impl ReducedFactor {
         scratch: &mut [f64],
     ) -> Result<(), LocalSolveError> {
         match self {
-            Self::Approx { factor, .. } => {
+            Self::Direct { factor, .. } => {
                 debug_assert_eq!(factor.n(), x.len());
                 solve_approx(factor, x)
             }
@@ -123,7 +125,7 @@ impl ReducedFactor {
 /// rather than a decode that recurses without bound.
 #[derive(serde::Deserialize)]
 enum ReducedFactorWire {
-    Approx {
+    Direct {
         factor: Factor,
         grounding: Grounding,
     },
@@ -137,8 +139,8 @@ impl<'de> serde::Deserialize<'de> for ReducedFactor {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         use serde::de::Error;
         match ReducedFactorWire::deserialize(deserializer)? {
-            ReducedFactorWire::Approx { factor, grounding } => {
-                Ok(ReducedFactor::Approx { factor, grounding })
+            ReducedFactorWire::Direct { factor, grounding } => {
+                Ok(ReducedFactor::Direct { factor, grounding })
             }
             ReducedFactorWire::Cover { inner, m } => {
                 // `solve_in_place` embeds the antisymmetric `[b, -b]` RHS into
@@ -224,7 +226,7 @@ mod tests {
         let inner = factor_sparse(&cover, config).expect("factor cover");
         let reduced = ReducedFactor::Cover { inner, m: 2 };
         assert_eq!(reduced.input_dimension(), 2);
-        assert_eq!(reduced.factor_dimension(), 2);
+        assert_eq!(reduced.solve_dimension(), 2);
 
         let b = [1.0, 0.5];
         let mut x = b;
@@ -254,8 +256,8 @@ mod tests {
     }
 
     #[test]
-    fn valid_approx_round_trips() {
-        let bytes = postcard::to_stdvec(&ReducedFactor::Approx {
+    fn valid_direct_round_trips() {
+        let bytes = postcard::to_stdvec(&ReducedFactor::Direct {
             factor: approx_2x2(),
             grounding: Grounding::Floating,
         })
