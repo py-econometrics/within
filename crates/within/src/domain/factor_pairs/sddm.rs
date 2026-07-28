@@ -67,7 +67,7 @@ pub(crate) enum Reduction {
 }
 
 /// Map between original and SDDM coordinates, applied to vectors at the
-/// solve boundary. `Canonical` is the bipartite map (negate the `r` block) —
+/// solve boundary. `Canonical` is the bipartite map (negate the col block) —
 /// not the identity.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) enum CoordinateMap {
@@ -83,17 +83,17 @@ pub(crate) enum CoordinateMap {
 
 #[derive(Clone)]
 pub(crate) struct GroundEdges {
-    pub(crate) q: Vec<f64>,
-    pub(crate) r: Vec<f64>,
+    pub(crate) rows: Vec<f64>,
+    pub(crate) cols: Vec<f64>,
 }
 
 impl CoordinateMap {
     /// Map an original-coordinate RHS into SDDM coordinates. `values` spans
-    /// the internal system and `n_q` is its q-size.
-    pub(crate) fn fold(&self, values: &mut [f64], n_q: usize) {
+    /// the internal system and `n_rows` is its q-size.
+    pub(crate) fn fold(&self, values: &mut [f64], n_rows: usize) {
         match self {
             CoordinateMap::Canonical => {
-                for value in &mut values[n_q..] {
+                for value in &mut values[n_rows..] {
                     *value = -*value;
                 }
             }
@@ -108,8 +108,8 @@ impl CoordinateMap {
 
     /// Map an SDDM-coordinate solution back to original coordinates; the
     /// diagonal maps are involutions up to scale, so they re-apply `fold`.
-    pub(crate) fn unfold(&self, values: &mut [f64], n_q: usize) {
-        self.fold(values, n_q);
+    pub(crate) fn unfold(&self, values: &mut [f64], n_rows: usize) {
+        self.fold(values, n_rows);
     }
 }
 
@@ -123,18 +123,18 @@ pub(crate) fn orient_for_elimination(
     mut globals: Vec<u32>,
 ) -> (CrossTab, BlockDiagonals, Vec<u32>) {
     debug_assert_eq!(globals.len(), cross_tab.n_local());
-    if cross_tab.n_r() <= cross_tab.n_q() {
+    if cross_tab.n_cols() <= cross_tab.n_rows() {
         return (cross_tab, diagonals, globals);
     }
-    globals.rotate_left(cross_tab.n_q());
+    globals.rotate_left(cross_tab.n_rows());
     (
         CrossTab {
             c: cross_tab.ct,
             ct: cross_tab.c,
         },
         BlockDiagonals {
-            q: diagonals.r,
-            r: diagonals.q,
+            rows: diagonals.cols,
+            cols: diagonals.rows,
         },
         globals,
     )
@@ -188,10 +188,10 @@ fn convert_known_laplacian(
     let mut total_diagonal = 0.0;
     let mut total_mismatch = 0.0;
     for (&diagonal, &row_sum) in diagonals
-        .q
+        .rows
         .iter()
-        .zip(row_sums.q.iter())
-        .chain(diagonals.r.iter().zip(row_sums.r.iter()))
+        .zip(row_sums.rows.iter())
+        .chain(diagonals.cols.iter().zip(row_sums.cols.iter()))
     {
         total_diagonal += diagonal;
         total_mismatch += (diagonal - row_sum).abs();
@@ -200,8 +200,8 @@ fn convert_known_laplacian(
         return Err(NotScalable);
     }
     let ground_edges = GroundEdges {
-        q: vec![0.0; cross_tab.n_q()],
-        r: vec![0.0; cross_tab.n_r()],
+        rows: vec![0.0; cross_tab.n_rows()],
+        cols: vec![0.0; cross_tab.n_cols()],
     };
     Ok(LocalComponent {
         cross_tab,
@@ -238,9 +238,9 @@ fn convert_general(
             )?
         }
         None => {
-            let n_q = cross_tab.n_q();
+            let n_rows = cross_tab.n_rows();
             let mut factors = relaxation.scales;
-            for factor in &mut factors[n_q..] {
+            for factor in &mut factors[n_rows..] {
                 *factor = -*factor;
             }
             assemble(cross_tab, diagonals, factors, ReductionKind::Cover, scaling)?
@@ -271,14 +271,14 @@ fn assemble(
     reduction: ReductionKind,
     scaling: &ScalingConfig,
 ) -> Result<(LocalComponent, f64), NotScalable> {
-    let n_q = cross_tab.n_q();
+    let n_rows = cross_tab.n_rows();
     let enforce_z = reduction == ReductionKind::Direct;
-    for i in 0..n_q {
+    for i in 0..n_rows {
         let start = cross_tab.c.indptr[i] as usize;
         let end = cross_tab.c.indptr[i + 1] as usize;
         let columns = &cross_tab.c.indices[start..end];
         for (&j, value) in columns.iter().zip(&mut cross_tab.c.data[start..end]) {
-            let folded = -factors[i] * factors[n_q + j as usize] * *value;
+            let folded = -factors[i] * factors[n_rows + j as usize] * *value;
             if !folded.is_finite() || (enforce_z && folded < 0.0) {
                 return Err(NotScalable);
             }
@@ -288,16 +288,16 @@ fn assemble(
     cross_tab.ct = cross_tab.c.transpose();
 
     let scaled_diagonals = BlockDiagonals {
-        q: diagonals
-            .q
+        rows: diagonals
+            .rows
             .iter()
-            .zip(factors[..n_q].iter())
+            .zip(factors[..n_rows].iter())
             .map(|(&diagonal, &factor)| diagonal * factor * factor)
             .collect(),
-        r: diagonals
-            .r
+        cols: diagonals
+            .cols
             .iter()
-            .zip(factors[n_q..].iter())
+            .zip(factors[n_rows..].iter())
             .map(|(&diagonal, &factor)| diagonal * factor * factor)
             .collect(),
     };
@@ -309,7 +309,7 @@ fn assemble(
     let canonical = factors
         .iter()
         .enumerate()
-        .all(|(i, &factor)| factor == if i < n_q { 1.0 } else { -1.0 });
+        .all(|(i, &factor)| factor == if i < n_rows { 1.0 } else { -1.0 });
     let coordinates = if canonical {
         CoordinateMap::Canonical
     } else {
@@ -322,8 +322,8 @@ fn assemble(
             .collect()
     };
     let row_sums = BlockDiagonals {
-        q: magnitude_sums(&cross_tab.c),
-        r: magnitude_sums(&cross_tab.ct),
+        rows: magnitude_sums(&cross_tab.c),
+        cols: magnitude_sums(&cross_tab.ct),
     };
 
     finalize(
@@ -351,24 +351,24 @@ fn finalize(
 ) -> Result<(LocalComponent, f64), NotScalable> {
     let n = cross_tab.n_local();
     let mut ground_edges = GroundEdges {
-        q: vec![0.0; cross_tab.n_q()],
-        r: vec![0.0; cross_tab.n_r()],
+        rows: vec![0.0; cross_tab.n_rows()],
+        cols: vec![0.0; cross_tab.n_cols()],
     };
 
     let mut total_diagonal = 0.0;
     let mut total_surplus = 0.0;
     let mut clamped_deficit = 0.0f64;
     for ((diagonal, row_sum), row_surplus) in scaled_diagonals
-        .q
+        .rows
         .iter_mut()
-        .zip(row_sums.q.iter().copied())
-        .zip(ground_edges.q.iter_mut())
+        .zip(row_sums.rows.iter().copied())
+        .zip(ground_edges.rows.iter_mut())
         .chain(
             scaled_diagonals
-                .r
+                .cols
                 .iter_mut()
-                .zip(row_sums.r.iter().copied())
-                .zip(ground_edges.r.iter_mut()),
+                .zip(row_sums.cols.iter().copied())
+                .zip(ground_edges.cols.iter_mut()),
         )
     {
         if !diagonal.is_finite() || *diagonal <= 0.0 {
@@ -390,8 +390,8 @@ fn finalize(
     let floats = total_surplus <= FLOATING_CLASSIFICATION_BUDGET.tolerance(n, total_diagonal);
     if floats {
         scaled_diagonals = row_sums;
-        ground_edges.q.fill(0.0);
-        ground_edges.r.fill(0.0);
+        ground_edges.rows.fill(0.0);
+        ground_edges.cols.fill(0.0);
     }
     let grounding = if floats {
         Grounding::Floating
@@ -457,13 +457,13 @@ fn dominance_scaling(
     diagonals: &BlockDiagonals,
     scaling: &ScalingConfig,
 ) -> Result<DominanceScaling, NotScalable> {
-    let n_q = cross_tab.n_q();
+    let n_rows = cross_tab.n_rows();
     let n = cross_tab.n_local();
     let diagonal = |i: usize| {
-        if i < n_q {
-            diagonals.q[i]
+        if i < n_rows {
+            diagonals.rows[i]
         } else {
-            diagonals.r[i - n_q]
+            diagonals.cols[i - n_rows]
         }
     };
     if (0..n).any(|i| !diagonal(i).is_finite() || diagonal(i) <= 0.0) {
@@ -546,8 +546,8 @@ fn adjacency_sums(cross_tab: &CrossTab) -> BlockDiagonals {
             .collect()
     };
     BlockDiagonals {
-        q: sum_rows(&cross_tab.c),
-        r: sum_rows(&cross_tab.ct),
+        rows: sum_rows(&cross_tab.c),
+        cols: sum_rows(&cross_tab.ct),
     }
 }
 

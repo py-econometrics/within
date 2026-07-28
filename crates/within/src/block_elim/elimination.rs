@@ -109,13 +109,13 @@ impl<'a> Elimination<'a> {
         ground_edges: &'a GroundEdges,
         grounding: Grounding,
     ) -> Result<Self, BuildError> {
-        let (n_elim, n_keep) = (cross_tab.n_q(), cross_tab.n_r());
+        let (n_elim, n_keep) = (cross_tab.n_rows(), cross_tab.n_cols());
         // Eliminating the larger block minimizes the reduced system; components
         // are normalized to put it on q, so the choice is already made.
         debug_assert!(n_elim >= n_keep, "component is not q-major");
 
         let inv_diag_elim = diagonals
-            .q
+            .rows
             .iter()
             .enumerate()
             .map(|(i, &d)| {
@@ -131,9 +131,9 @@ impl<'a> Elimination<'a> {
             n_keep,
             n_elim,
             inv_diag_elim,
-            diag_keep: &diagonals.r,
-            surplus_keep: &ground_edges.r,
-            surplus_elim: &ground_edges.q,
+            diag_keep: &diagonals.cols,
+            surplus_keep: &ground_edges.cols,
+            surplus_elim: &ground_edges.rows,
             grounding,
             keep_to_elim: &cross_tab.ct,
             elim_to_keep: &cross_tab.c,

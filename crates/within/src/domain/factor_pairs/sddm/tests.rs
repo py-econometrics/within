@@ -47,8 +47,8 @@ impl LocalComponent {
     }
 }
 
-fn cross_tab(table: &[f64], n_q: usize, n_r: usize) -> CrossTab {
-    let c = CsrBlock::from_dense_table(table, n_q, n_r);
+fn cross_tab(table: &[f64], n_rows: usize, n_cols: usize) -> CrossTab {
+    let c = CsrBlock::from_dense_table(table, n_rows, n_cols);
     let ct = c.transpose();
     CrossTab { c, ct }
 }
@@ -58,17 +58,17 @@ fn assert_sddm(component: &LocalComponent) {
     let sums = adjacency_sums(&component.cross_tab);
     for ((&diagonal, &row_sum), &surplus) in component
         .diagonals
-        .q
+        .rows
         .iter()
-        .zip(sums.q.iter())
-        .zip(component.ground_edges.q.iter())
+        .zip(sums.rows.iter())
+        .zip(component.ground_edges.rows.iter())
         .chain(
             component
                 .diagonals
-                .r
+                .cols
                 .iter()
-                .zip(sums.r.iter())
-                .zip(component.ground_edges.r.iter()),
+                .zip(sums.cols.iter())
+                .zip(component.ground_edges.cols.iter()),
         )
     {
         assert!(diagonal >= row_sum);
@@ -81,8 +81,8 @@ fn known_laplacian_has_canonical_coordinates_and_no_ground() {
     let (component, uncertified) = convert(
         cross_tab(&[2.0, 1.0, 0.0, 3.0], 2, 2),
         BlockDiagonals {
-            q: vec![3.0, 3.0],
-            r: vec![2.0, 4.0],
+            rows: vec![3.0, 3.0],
+            cols: vec![2.0, 4.0],
         },
         ComponentClass::KnownLaplacian,
         &ScalingConfig::default(),
@@ -101,8 +101,8 @@ fn known_laplacian_claim_is_checked() {
     let result = convert(
         cross_tab(&[2.0, 1.0, 0.0, 3.0], 2, 2),
         BlockDiagonals {
-            q: vec![4.0, 3.0],
-            r: vec![2.0, 4.0],
+            rows: vec![4.0, 3.0],
+            cols: vec![2.0, 4.0],
         },
         ComponentClass::KnownLaplacian,
         &ScalingConfig::default(),
@@ -115,8 +115,8 @@ fn frustrated_component_stores_single_signed_operator() {
     let (component, uncertified) = convert(
         cross_tab(&[1.0, 1.0, 1.0, -1.0], 2, 2),
         BlockDiagonals {
-            q: vec![2.0, 2.0],
-            r: vec![2.0, 2.0],
+            rows: vec![2.0, 2.0],
+            cols: vec![2.0, 2.0],
         },
         ComponentClass::General,
         &ScalingConfig::default(),
@@ -138,8 +138,8 @@ fn frustrated_component_stores_single_signed_operator() {
     // Magnitude dominance with zero surplus. The congruence is exactly the
     // canonical bipartite sign flip (`+1` on q, `−1` on r), so no explicit
     // factor map is stored.
-    assert!(component.ground_edges.q.iter().all(|&s| s == 0.0));
-    assert!(component.ground_edges.r.iter().all(|&s| s == 0.0));
+    assert!(component.ground_edges.rows.iter().all(|&s| s == 0.0));
+    assert!(component.ground_edges.cols.iter().all(|&s| s == 0.0));
     assert!(matches!(component.coordinates, CoordinateMap::Canonical));
 }
 
@@ -157,8 +157,8 @@ fn scalable_signed_component_produces_valid_grounded_sddm() {
     let (component, uncertified) = convert(
         cross_tab(&raw, 2, 3),
         BlockDiagonals {
-            q: (0..2).map(|i| diag_hat[i] / (d[i] * d[i])).collect(),
-            r: (2..5).map(|i| diag_hat[i] / (d[i] * d[i])).collect(),
+            rows: (0..2).map(|i| diag_hat[i] / (d[i] * d[i])).collect(),
+            cols: (2..5).map(|i| diag_hat[i] / (d[i] * d[i])).collect(),
         },
         ComponentClass::General,
         &ScalingConfig::default(),
@@ -174,8 +174,8 @@ fn singular_signed_boundary_remains_floating() {
     let (component, _) = convert(
         cross_tab(&[0.5, -1.0], 2, 1),
         BlockDiagonals {
-            q: vec![0.25, 1.0],
-            r: vec![2.0],
+            rows: vec![0.25, 1.0],
+            cols: vec![2.0],
         },
         ComponentClass::General,
         &ScalingConfig::default(),
@@ -187,34 +187,34 @@ fn singular_signed_boundary_remains_floating() {
 
 #[test]
 fn large_rescaled_singular_boundary_remains_floating() {
-    let n_r = 20_000usize;
-    let q_factor = 1.3;
-    let r_factors: Vec<f64> = (0..n_r).map(|j| 0.7 + 0.03 * (j % 17) as f64).collect();
-    let weights: Vec<f64> = (0..n_r).map(|j| 1.0 + 0.01 * (j % 23) as f64).collect();
+    let n_cols = 20_000usize;
+    let row_factor = 1.3;
+    let r_factors: Vec<f64> = (0..n_cols).map(|j| 0.7 + 0.03 * (j % 17) as f64).collect();
+    let weights: Vec<f64> = (0..n_cols).map(|j| 1.0 + 0.01 * (j % 23) as f64).collect();
     let c = CsrBlock {
-        indptr: vec![0, n_r as u32],
-        indices: (0..n_r as u32).collect(),
+        indptr: vec![0, n_cols as u32],
+        indices: (0..n_cols as u32).collect(),
         data: weights
             .iter()
             .zip(&r_factors)
-            .map(|(&weight, &factor)| -weight / (q_factor * factor))
+            .map(|(&weight, &factor)| -weight / (row_factor * factor))
             .collect(),
         nrows: 1,
-        ncols: n_r,
+        ncols: n_cols,
     };
     let cross_tab = CrossTab {
         ct: c.transpose(),
         c,
     };
     let diagonals = BlockDiagonals {
-        q: vec![weights.iter().sum::<f64>() / q_factor.powi(2)],
-        r: weights
+        rows: vec![weights.iter().sum::<f64>() / row_factor.powi(2)],
+        cols: weights
             .iter()
             .zip(&r_factors)
             .map(|(&weight, &factor)| weight / factor.powi(2))
             .collect(),
     };
-    let factors: Vec<f64> = std::iter::once(q_factor).chain(r_factors).collect();
+    let factors: Vec<f64> = std::iter::once(row_factor).chain(r_factors).collect();
 
     let (component, _) = assemble(
         cross_tab,
@@ -234,8 +234,8 @@ fn non_scalable_component_errors_under_error_mode() {
     let result = convert(
         cross_tab(&[1.0, -1.0, 2.0, -2.0], 2, 2),
         BlockDiagonals {
-            q: vec![1.0, 2.0],
-            r: vec![1.0, 2.0],
+            rows: vec![1.0, 2.0],
+            cols: vec![1.0, 2.0],
         },
         ComponentClass::General,
         &ScalingConfig {
@@ -256,8 +256,8 @@ fn non_scalable_component_warns_and_clamps_under_warn_mode() {
     let (component, uncertified) = convert(
         cross_tab(&[1.0, -1.0, 2.0, -2.0], 2, 2),
         BlockDiagonals {
-            q: vec![1.0, 2.0],
-            r: vec![1.0, 2.0],
+            rows: vec![1.0, 2.0],
+            cols: vec![1.0, 2.0],
         },
         ComponentClass::General,
         &config,
@@ -276,15 +276,15 @@ fn barely_pd_surplus_is_structural() {
     let (component, _) = convert(
         cross_tab(&[1.0], 1, 1),
         BlockDiagonals {
-            q: vec![1.0 + surplus],
-            r: vec![1.0],
+            rows: vec![1.0 + surplus],
+            cols: vec![1.0],
         },
         ComponentClass::General,
         &ScalingConfig::default(),
     )
     .unwrap();
     assert_eq!(component.reduction, Reduction::Direct(Grounding::Grounded));
-    assert!((component.ground_edges.q[0] - surplus).abs() < 1e-15);
+    assert!((component.ground_edges.rows[0] - surplus).abs() < 1e-15);
     assert_sddm(&component);
 }
 

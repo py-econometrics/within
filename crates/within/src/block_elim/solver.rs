@@ -96,7 +96,7 @@ pub struct BlockElimSolver {
     inv_diag_elim: Vec<f64>,
     /// Reduced-system factor backend.
     reduced_factor: ReducedFactor,
-    /// Internal DOF count (`n_q + n_r`) — the operator is always single-sized;
+    /// Internal DOF count (`n_rows + n_cols`) — the operator is always single-sized;
     /// a frustrated component's cover lives inside `reduced_factor`.
     #[serde(skip)]
     n_internal: usize,
@@ -126,8 +126,8 @@ impl<'de> serde::Deserialize<'de> for BlockElimSolver {
 
         let h = Helper::deserialize(deserializer)?;
 
-        // `c` bounds n_q by its `indptr` length; the stored transpose's row
-        // count (validated the same way) is the only witness that bounds n_r,
+        // `c` bounds n_rows by its `indptr` length; the stored transpose's row
+        // count (validated the same way) is the only witness that bounds n_cols,
         // without which recomputing the transpose below could allocate wildly.
         let CrossTab { c, ct } = h.cross_tab;
         if !c.is_structurally_valid() {
@@ -138,12 +138,12 @@ impl<'de> serde::Deserialize<'de> for BlockElimSolver {
         if ct.nrows != c.ncols || ct.ncols != c.nrows || !ct.is_structurally_valid() {
             return Err(D::Error::custom("cross_tab.ct shape disagrees with c"));
         }
-        let (n_q, n_r) = (c.nrows, c.ncols);
-        let n_internal = n_q + n_r;
+        let (n_rows, n_cols) = (c.nrows, c.ncols);
+        let n_internal = n_rows + n_cols;
 
         // Components are q-major: the q block is scaled by `inv_diag_elim` and
         // the r block is what the reduced factor solves.
-        let (elim_size, n_keep) = (n_q, n_r);
+        let (elim_size, n_keep) = (n_rows, n_cols);
         if h.inv_diag_elim.len() != elim_size {
             return Err(D::Error::custom(
                 "inv_diag_elim length disagrees with eliminated block",
@@ -222,27 +222,27 @@ fn assemble_bipartite_cover(
     diagonals: &BlockDiagonals,
 ) -> (CrossTab, BlockDiagonals) {
     let c = &cross_tab.c;
-    let n_q = c.nrows;
-    let n_r = c.ncols;
-    let n_r_u32 = u32::try_from(n_r).expect("cover columns exceed u32::MAX");
-    // The cover doubles both dimensions: transpose stores source rows (0..2*n_q)
-    // as u32 indices and the cross-sheet shift emits columns up to 2*n_r - 1, so
-    // both doubled sizes — not just n_r — must fit the u32 index.
-    u32::try_from(2 * n_q).expect("doubled cover rows exceed u32::MAX");
-    u32::try_from(2 * n_r).expect("doubled cover columns exceed u32::MAX");
+    let n_rows = c.nrows;
+    let n_cols = c.ncols;
+    let n_cols_u32 = u32::try_from(n_cols).expect("cover columns exceed u32::MAX");
+    // The cover doubles both dimensions: transpose stores source rows (0..2*n_rows)
+    // as u32 indices and the cross-sheet shift emits columns up to 2*n_cols - 1, so
+    // both doubled sizes — not just n_cols — must fit the u32 index.
+    u32::try_from(2 * n_rows).expect("doubled cover rows exceed u32::MAX");
+    u32::try_from(2 * n_cols).expect("doubled cover columns exceed u32::MAX");
 
-    let mut indptr = Vec::with_capacity(2 * n_q + 1);
+    let mut indptr = Vec::with_capacity(2 * n_rows + 1);
     let mut indices = Vec::with_capacity(2 * c.nnz());
     let mut data = Vec::with_capacity(2 * c.nnz());
     indptr.push(0u32);
     for copy_shifted in [false, true] {
-        for i in 0..n_q {
+        for i in 0..n_rows {
             let start = c.indptr[i] as usize;
             let end = c.indptr[i + 1] as usize;
             // Same-sheet columns (base 0) precede cross-sheet columns (base
-            // n_r) so each output row stays column-sorted.
+            // n_cols) so each output row stays column-sorted.
             for column_shifted in [false, true] {
-                let column_base = if column_shifted { n_r_u32 } else { 0 };
+                let column_base = if column_shifted { n_cols_u32 } else { 0 };
                 let select_negative = column_shifted != copy_shifted;
                 for idx in start..end {
                     let value = c.data[idx];
@@ -260,13 +260,13 @@ fn assemble_bipartite_cover(
         indptr,
         indices,
         data,
-        nrows: 2 * n_q,
-        ncols: 2 * n_r,
+        nrows: 2 * n_rows,
+        ncols: 2 * n_cols,
     };
     let cover_ct = cover_c.transpose();
     let cover_diagonals = BlockDiagonals {
-        q: diagonals.q.repeat(2),
-        r: diagonals.r.repeat(2),
+        rows: diagonals.rows.repeat(2),
+        cols: diagonals.cols.repeat(2),
     };
     (
         CrossTab {
@@ -351,8 +351,8 @@ impl BlockElimSolver {
             Reduction::Cover(_) => {
                 let (cover_cross, cover_diag) = assemble_bipartite_cover(&cross_tab, &diagonals);
                 let cover_ground = GroundEdges {
-                    q: ground_edges.q.repeat(2),
-                    r: ground_edges.r.repeat(2),
+                    rows: ground_edges.rows.repeat(2),
+                    cols: ground_edges.cols.repeat(2),
                 };
                 let cover_elim =
                     Elimination::new(&cover_cross, &cover_diag, &cover_ground, grounding)?;
@@ -375,9 +375,7 @@ impl BlockElimSolver {
 
     /// Eliminate one diagonal block and recover it by back-substitution.
     ///
-    /// `roles` assigns the q/r blocks and cross operators to the eliminated/kept
-    /// roles; the sequence below is the bipartite-SDDM block-elimination kernel
-    /// and runs unchanged for both orientations.
+    /// Components arrive oriented, so the row block is the eliminated side.
     fn eliminate_and_recover(
         &self,
         rhs: &mut [f64],
@@ -385,7 +383,7 @@ impl BlockElimSolver {
         allow_inner_parallelism: bool,
     ) -> Result<(), LocalSolveError> {
         let n = self.n_internal;
-        let n_elim = self.cross_tab.n_q();
+        let n_elim = self.cross_tab.n_rows();
         let n_keep = n - n_elim;
         let explicit_ground = self.explicit_ground_index(n_keep);
 
@@ -473,7 +471,7 @@ impl LocalSolver for BlockElimSolver {
     }
 
     fn inner_parallelism_work_estimate(&self) -> usize {
-        let max_rows = self.cross_tab.n_q().max(self.cross_tab.n_r());
+        let max_rows = self.cross_tab.n_rows().max(self.cross_tab.n_cols());
         if max_rows <= PAR_BACKSUB_THRESHOLD.max(PAR_SPMV_THRESHOLD) {
             return 0;
         }
@@ -489,9 +487,9 @@ impl LocalSolver for BlockElimSolver {
         allow_inner_parallelism: bool,
     ) -> Result<(), LocalSolveError> {
         let n = self.n_internal;
-        let n_q = self.cross_tab.n_q();
+        let n_rows = self.cross_tab.n_rows();
 
-        self.coordinates.fold(&mut rhs[..n], n_q);
+        self.coordinates.fold(&mut rhs[..n], n_rows);
         if self.reduced_factor.grounding() == Some(Grounding::Floating) {
             subtract_mean(rhs, n);
         }
@@ -501,7 +499,7 @@ impl LocalSolver for BlockElimSolver {
         if self.reduced_factor.grounding() == Some(Grounding::Floating) {
             subtract_mean(sol, n);
         }
-        self.coordinates.unfold(&mut sol[..n], n_q);
+        self.coordinates.unfold(&mut sol[..n], n_rows);
         Ok(())
     }
 }

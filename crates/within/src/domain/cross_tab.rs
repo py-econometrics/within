@@ -17,13 +17,14 @@ use accumulate::accumulate_cross_block;
 
 /// Compact mapping of active levels for a factor pair.
 ///
-/// Maps global level indices to local (compact) indices for factors q and r,
+/// Maps global level indices to local (compact) indices for the row and col
+/// channels,
 /// and provides the local-to-global index vector for the combined domain.
 struct ActiveLevels {
-    q_map: Vec<u32>,
-    n_q: usize,
-    r_map: Vec<u32>,
-    n_r: usize,
+    row_map: Vec<u32>,
+    n_rows: usize,
+    col_map: Vec<u32>,
+    n_cols: usize,
     local_to_global: Vec<u32>,
 }
 
@@ -63,48 +64,48 @@ fn compact_map(active: &[bool]) -> (Vec<u32>, usize) {
 }
 
 /// Build compact mapping for a channel pair using pre-computed active level
-/// flags; `base_q`/`base_r` are the channels' global DOF offsets
+/// flags; `base_rows`/`base_cols` are the channels' global DOF offsets
 /// ([`TermMeta::column_base`](crate::domain::TermMeta::column_base)).
 fn build_compact_mapping(
-    active_q: &[bool],
-    active_r: &[bool],
-    base_q: usize,
-    base_r: usize,
+    active_rows: &[bool],
+    active_cols: &[bool],
+    base_rows: usize,
+    base_cols: usize,
 ) -> Option<ActiveLevels> {
-    let (q_map, n_q) = compact_map(active_q);
-    let (r_map, n_r) = compact_map(active_r);
+    let (row_map, n_rows) = compact_map(active_rows);
+    let (col_map, n_cols) = compact_map(active_cols);
 
-    if n_q == 0 || n_r == 0 {
+    if n_rows == 0 || n_cols == 0 {
         return None;
     }
 
-    let mut local_to_global = Vec::with_capacity(n_q + n_r);
-    for (j, &a) in active_q.iter().enumerate() {
+    let mut local_to_global = Vec::with_capacity(n_rows + n_cols);
+    for (j, &a) in active_rows.iter().enumerate() {
         if a {
-            local_to_global.push(to_u32(base_q + j));
+            local_to_global.push(to_u32(base_rows + j));
         }
     }
-    for (k, &a) in active_r.iter().enumerate() {
+    for (k, &a) in active_cols.iter().enumerate() {
         if a {
-            local_to_global.push(to_u32(base_r + k));
+            local_to_global.push(to_u32(base_cols + k));
         }
     }
 
     Some(ActiveLevels {
-        q_map,
-        n_q,
-        r_map,
-        n_r,
+        row_map,
+        n_rows,
+        col_map,
+        n_cols,
         local_to_global,
     })
 }
 
 /// A connected component in a bipartite factor-pair graph.
 ///
-/// Indices are compact (0-based into the parent CrossTab's n_q / n_r).
+/// Indices are compact (0-based into the parent CrossTab's n_rows / n_cols).
 pub(crate) struct BipartiteComponent {
-    pub(crate) q_indices: Vec<usize>,
-    pub(crate) r_indices: Vec<usize>,
+    pub(crate) rows: Vec<usize>,
+    pub(crate) cols: Vec<usize>,
 }
 
 // ---------------------------------------------------------------------------
@@ -120,9 +121,9 @@ pub(crate) struct BipartiteComponent {
 /// here, since the solve path never reads them.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct CrossTab {
-    /// CSR(C): q-block rows (n_q) x r-block cols (n_r).
+    /// CSR(C): row-block rows (n_rows) x col-block cols (n_cols).
     pub(crate) c: CsrBlock,
-    /// CSR(C^T): r-block rows (n_r) x q-block cols (n_q). Precomputed via
+    /// CSR(C^T): col-block rows (n_cols) x row-block cols (n_rows). Precomputed via
     /// `c.transpose()`.
     pub(crate) ct: CsrBlock,
 }
@@ -137,10 +138,10 @@ pub(crate) struct CrossTab {
 /// [`Elimination::new`]: crate::block_elim
 #[derive(Clone)]
 pub(crate) struct BlockDiagonals {
-    /// Diagonal block for factor q (length n_q).
-    pub(crate) q: Vec<f64>,
-    /// Diagonal block for factor r (length n_r).
-    pub(crate) r: Vec<f64>,
+    /// Diagonal block for factor q (length n_rows).
+    pub(crate) rows: Vec<f64>,
+    /// Diagonal block for factor r (length n_cols).
+    pub(crate) cols: Vec<f64>,
 }
 
 impl BlockDiagonals {
@@ -148,24 +149,24 @@ impl BlockDiagonals {
     /// extraction in [`CrossTab::extract_component`].
     pub(crate) fn extract_component(&self, comp: &BipartiteComponent) -> Self {
         Self {
-            q: comp.q_indices.iter().map(|&i| self.q[i]).collect(),
-            r: comp.r_indices.iter().map(|&i| self.r[i]).collect(),
+            rows: comp.rows.iter().map(|&i| self.rows[i]).collect(),
+            cols: comp.cols.iter().map(|&i| self.cols[i]).collect(),
         }
     }
 }
 
 impl CrossTab {
-    /// Number of rows in the q-block.
-    pub(crate) fn n_q(&self) -> usize {
+    /// Number of rows in the row block.
+    pub(crate) fn n_rows(&self) -> usize {
         self.c.nrows
     }
 
-    /// Number of rows in the r-block.
-    pub(crate) fn n_r(&self) -> usize {
+    /// Number of rows in the col block.
+    pub(crate) fn n_cols(&self) -> usize {
         self.c.ncols
     }
 
-    /// Total number of DOFs (n_q + n_r).
+    /// Total number of DOFs (n_rows + n_cols).
     pub(crate) fn n_local(&self) -> usize {
         self.c.nrows + self.c.ncols
     }
@@ -184,18 +185,18 @@ impl CrossTab {
         all_active: &[Vec<bool>],
     ) -> Option<(Self, BlockDiagonals, Vec<u32>)> {
         let active = build_compact_mapping(
-            &all_active[pair.q.term],
-            &all_active[pair.r.term],
-            design.terms[pair.q.term].column_base(pair.q.column),
-            design.terms[pair.r.term].column_base(pair.r.column),
+            &all_active[pair.rows.term],
+            &all_active[pair.cols.term],
+            design.terms[pair.rows.term].column_base(pair.rows.column),
+            design.terms[pair.cols.term].column_base(pair.cols.column),
         )?;
 
-        let (c, diag_q, diag_r) = accumulate_cross_block(design, weights, pair, &active);
+        let (c, row_diag, col_diag) = accumulate_cross_block(design, weights, pair, &active);
         let ct = c.transpose();
         let cross_tab = CrossTab { c, ct };
         let diagonals = BlockDiagonals {
-            q: diag_q,
-            r: diag_r,
+            rows: row_diag,
+            cols: col_diag,
         };
         Some((cross_tab, diagonals, active.local_to_global))
     }
@@ -204,21 +205,21 @@ impl CrossTab {
     /// indexing: q-nodes walk `C`, r-nodes walk `Cᵀ`; neighbor indices come
     /// back in the same `[q | r]` indexing.
     pub(crate) fn neighbors(&self, i: usize) -> impl Iterator<Item = (usize, f64)> + '_ {
-        let n_q = self.n_q();
-        let (block, row, off) = if i < n_q {
-            (&self.c, i, n_q)
+        let n_rows = self.n_rows();
+        let (block, row, off) = if i < n_rows {
+            (&self.c, i, n_rows)
         } else {
-            (&self.ct, i - n_q, 0)
+            (&self.ct, i - n_rows, 0)
         };
         block.row(row).map(move |(j, v)| (off + j, v))
     }
 
     /// Find connected components in the bipartite graph defined by C.
     ///
-    /// DFS over [`Self::neighbors`]; components as sorted compact q/r indices.
-    /// O(n_q + n_r + nnz_C).
+    /// DFS over [`Self::neighbors`]; components as sorted compact row/col indices.
+    /// O(n_rows + n_cols + nnz_C).
     pub(crate) fn bipartite_connected_components(&self) -> Vec<BipartiteComponent> {
-        let n_q = self.n_q();
+        let n_rows = self.n_rows();
         let mut visited = vec![false; self.n_local()];
         let mut components = Vec::new();
         let mut stack = Vec::new();
@@ -229,14 +230,14 @@ impl CrossTab {
             }
             visited[start] = true;
             stack.push(start);
-            let mut q_indices = Vec::new();
-            let mut r_indices = Vec::new();
+            let mut rows = Vec::new();
+            let mut cols = Vec::new();
 
             while let Some(node) = stack.pop() {
-                if node < n_q {
-                    q_indices.push(node);
+                if node < n_rows {
+                    rows.push(node);
                 } else {
-                    r_indices.push(node - n_q);
+                    cols.push(node - n_rows);
                 }
                 for (j, _) in self.neighbors(node) {
                     if !visited[j] {
@@ -247,12 +248,9 @@ impl CrossTab {
             }
 
             // Sort for deterministic ordering
-            q_indices.sort_unstable();
-            r_indices.sort_unstable();
-            components.push(BipartiteComponent {
-                q_indices,
-                r_indices,
-            });
+            rows.sort_unstable();
+            cols.sort_unstable();
+            components.push(BipartiteComponent { rows, cols });
         }
 
         components
@@ -260,66 +258,66 @@ impl CrossTab {
 
     /// Extract a sub-CrossTab for a single bipartite component.
     ///
-    /// Remaps q/r indices to the component's local 0-based indexing.
+    /// Remaps row/col indices to the component's local 0-based indexing.
     /// O(nnz in the component).
     ///
-    /// `q_remap`/`r_remap` are parent-sized scratch buffers (length `n_q()` /
-    /// `n_r()`). They must arrive all-`u32::MAX` and are reset to that on exit,
+    /// `row_remap`/`col_remap` are parent-sized scratch buffers (length `n_rows()` /
+    /// `n_cols()`). They must arrive all-`u32::MAX` and are reset to that on exit,
     /// so a single pair can be reused across every component of one parent
     /// instead of allocating fresh per component.
     pub(crate) fn extract_component(
         &self,
         comp: &BipartiteComponent,
-        q_remap: &mut [u32],
-        r_remap: &mut [u32],
+        row_remap: &mut [u32],
+        col_remap: &mut [u32],
     ) -> Self {
-        let n_q = comp.q_indices.len();
-        let n_r = comp.r_indices.len();
-        debug_assert_eq!(q_remap.len(), self.n_q());
-        debug_assert_eq!(r_remap.len(), self.n_r());
+        let n_rows = comp.rows.len();
+        let n_cols = comp.cols.len();
+        debug_assert_eq!(row_remap.len(), self.n_rows());
+        debug_assert_eq!(col_remap.len(), self.n_cols());
 
         // Build reverse maps: parent compact index -> component compact index.
-        for (new_idx, &old_idx) in comp.q_indices.iter().enumerate() {
-            q_remap[old_idx] = to_u32(new_idx);
+        for (new_idx, &old_idx) in comp.rows.iter().enumerate() {
+            row_remap[old_idx] = to_u32(new_idx);
         }
-        for (new_idx, &old_idx) in comp.r_indices.iter().enumerate() {
-            r_remap[old_idx] = to_u32(new_idx);
+        for (new_idx, &old_idx) in comp.cols.iter().enumerate() {
+            col_remap[old_idx] = to_u32(new_idx);
         }
 
-        // Extract CSR(C): only rows in comp.q_indices, remap columns
-        let mut c_indptr = vec![0u32; n_q + 1];
+        // Extract CSR(C): only rows in comp.rows, remap columns
+        let mut c_indptr = vec![0u32; n_rows + 1];
         let mut c_indices = Vec::new();
         let mut c_data = Vec::new();
-        for (new_qi, &old_qi) in comp.q_indices.iter().enumerate() {
-            let start = self.c.indptr[old_qi] as usize;
-            let end = self.c.indptr[old_qi + 1] as usize;
+        for (new_row, &old_row) in comp.rows.iter().enumerate() {
+            let start = self.c.indptr[old_row] as usize;
+            let end = self.c.indptr[old_row + 1] as usize;
             for idx in start..end {
                 let old_rj = self.c.indices[idx] as usize;
-                let new_rj = r_remap[old_rj];
+                let new_rj = col_remap[old_rj];
                 if new_rj != u32::MAX {
                     c_indices.push(new_rj);
                     c_data.push(self.c.data[idx]);
                 }
             }
-            c_indptr[new_qi + 1] = to_u32(c_indices.len());
+            c_indptr[new_row + 1] = to_u32(c_indices.len());
         }
 
         let c = CsrBlock {
             indptr: c_indptr,
             indices: c_indices,
             data: c_data,
-            nrows: n_q,
-            ncols: n_r,
+            nrows: n_rows,
+            ncols: n_cols,
         };
         let ct = c.transpose();
 
         // Reset only the touched entries so the buffers are all-`u32::MAX` again
         // for the next component.
-        for &old_idx in &comp.q_indices {
-            q_remap[old_idx] = u32::MAX;
+        for &old_idx in &comp.rows {
+            row_remap[old_idx] = u32::MAX;
         }
-        for &old_idx in &comp.r_indices {
-            r_remap[old_idx] = u32::MAX;
+        for &old_idx in &comp.cols {
+            col_remap[old_idx] = u32::MAX;
         }
 
         CrossTab { c, ct }

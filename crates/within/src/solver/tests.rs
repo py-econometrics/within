@@ -33,7 +33,7 @@ fn positive_slope_only_pair_grounds_beyond_dense_threshold() {
         domains.iter().any(|ld| {
             let ct = &ld.component.cross_tab;
             ld.component.reduction == Reduction::Direct(Grounding::Grounded)
-                && ct.n_q().min(ct.n_r()) > DEFAULT_DENSE_SCHUR_THRESHOLD
+                && ct.n_rows().min(ct.n_cols()) > DEFAULT_DENSE_SCHUR_THRESHOLD
         }),
         "fixture must ground a component past the dense threshold (warnings: {warnings:?})"
     );

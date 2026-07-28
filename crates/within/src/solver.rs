@@ -35,8 +35,8 @@ impl<'a> IntoDesign<'a> for ArrayView2<'a, u32> {
         // Borrow F-contiguous columns zero-copy; gather strided (C-order)
         // columns once here so every downstream read is a contiguous slice.
         let categorical = (0..self.ncols())
-            .map(|q| {
-                let col = self.index_axis_move(Axis(1), q);
+            .map(|factor| {
+                let col = self.index_axis_move(Axis(1), factor);
                 match col.to_slice() {
                     Some(s) => Cow::Borrowed(s),
                     None => Cow::Owned(col.to_vec()),

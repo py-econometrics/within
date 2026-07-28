@@ -34,8 +34,8 @@ pub(crate) struct LocalDomain {
 /// Build local subdomains (with pre-built CrossTabs) for cross-factor channel
 /// pairs.
 ///
-/// For each pair of distinct terms `q < r`, every channel of `q` is paired
-/// with every channel of `r` (same-factor channel pairs are exactly
+/// For each pair of distinct terms, every channel of the earlier is paired
+/// with every channel of the later (same-factor channel pairs are exactly
 /// orthogonal after whitening, so they are never enumerated). Each channel
 /// pair builds a fused CrossTab via one observation scan, detects connected
 /// components on the bipartite structure, and creates one subdomain per
@@ -58,11 +58,11 @@ pub(crate) fn build_local_domains(
     let pairs: Vec<ChannelPair> = channels
         .iter()
         .enumerate()
-        .flat_map(|(i, &q)| {
+        .flat_map(|(i, &rows)| {
             channels[i + 1..]
                 .iter()
-                .filter(move |r| r.term != q.term)
-                .map(move |&r| ChannelPair { q, r })
+                .filter(move |cols| cols.term != rows.term)
+                .map(move |&cols| ChannelPair { rows, cols })
         })
         .collect();
     let all_active = find_all_active_levels(design);
@@ -111,7 +111,7 @@ fn split_into_subdomains(
     l2g: &[u32],
     scaling: &ScalingConfig,
 ) -> Result<(Vec<LocalDomain>, Vec<BuildWarning>), BuildError> {
-    let n_q_full = full_ct.n_q();
+    let n_rows_full = full_ct.n_rows();
     let components = full_ct.bipartite_connected_components();
 
     let (cross_tabs, diagonals): (Vec<CrossTab>, Vec<BlockDiagonals>) = if components.len() == 1 {
@@ -119,11 +119,11 @@ fn split_into_subdomains(
     } else {
         // One reusable remap buffer pair for the whole parent; `extract_component`
         // resets it per component, avoiding a fresh parent-sized allocation each.
-        let mut q_remap = vec![u32::MAX; full_ct.n_q()];
-        let mut r_remap = vec![u32::MAX; full_ct.n_r()];
+        let mut row_remap = vec![u32::MAX; full_ct.n_rows()];
+        let mut col_remap = vec![u32::MAX; full_ct.n_cols()];
         let cross_tabs = components
             .iter()
-            .map(|comp| full_ct.extract_component(comp, &mut q_remap, &mut r_remap))
+            .map(|comp| full_ct.extract_component(comp, &mut row_remap, &mut col_remap))
             .collect();
         let diagonals = components
             .iter()
@@ -135,27 +135,32 @@ fn split_into_subdomains(
     let mut domains = Vec::with_capacity(components.len());
     let mut warnings = Vec::new();
     for ((comp, comp_ct), comp_diag) in components.iter().zip(cross_tabs).zip(diagonals) {
-        if comp_diag.q.iter().chain(&comp_diag.r).all(|&v| v == 0.0) {
+        if comp_diag
+            .rows
+            .iter()
+            .chain(&comp_diag.cols)
+            .all(|&v| v == 0.0)
+        {
             continue;
         }
-        let class = if matches!(pair.q.loading, Loading::Constant)
-            && matches!(pair.r.loading, Loading::Constant)
+        let class = if matches!(pair.rows.loading, Loading::Constant)
+            && matches!(pair.cols.loading, Loading::Constant)
         {
             ComponentClass::KnownLaplacian
         } else {
             ComponentClass::General
         };
         let signed_pair = SignedPair {
-            term_q: pair.q.term,
-            column_q: pair.q.column,
-            term_r: pair.r.term,
-            column_r: pair.r.column,
+            term_q: pair.rows.term,
+            column_q: pair.rows.column,
+            term_r: pair.cols.term,
+            column_r: pair.cols.column,
         };
         let comp_globals: Vec<u32> = comp
-            .q_indices
+            .rows
             .iter()
             .map(|&i| l2g[i])
-            .chain(comp.r_indices.iter().map(|&i| l2g[n_q_full + i]))
+            .chain(comp.cols.iter().map(|&i| l2g[n_rows_full + i]))
             .collect();
         let (comp_ct, comp_diag, comp_globals) =
             sddm::orient_for_elimination(comp_ct, comp_diag, comp_globals);

@@ -15,7 +15,7 @@ pub(crate) fn to_u32(x: usize) -> u32 {
 
 /// Rectangular CSR matrix used as the off-diagonal block in bipartite Gramians.
 ///
-/// Stores C (n_q × n_r) or C^T (n_r × n_q). All column indices within each
+/// Stores C (n_rows × n_cols) or C^T (n_cols × n_rows). All column indices within each
 /// row are sorted in ascending order.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct CsrBlock {

@@ -15,7 +15,7 @@ pub use schwarz_precond::ReductionStrategy;
 
 /// Default `n_keep` threshold for exact Schur factorization.
 ///
-/// Schur domains with `min(n_q, n_r) <= threshold` first try the exact Schur
+/// Schur domains with `min(n_rows, n_cols) <= threshold` first try the exact Schur
 /// complement under approx-chol's exact dense backend, falling back to a
 /// sampled Schur under approximate elimination.
 pub(crate) const DEFAULT_DENSE_SCHUR_THRESHOLD: usize = 24;
@@ -81,7 +81,7 @@ pub struct LocalSolverConfig {
     pub approx_chol: ApproxCholConfig,
     /// Schur-complement reduction mode (default: approximate).
     pub schur: SchurMode,
-    /// Exact-Schur threshold on reduced size `n_keep=min(n_q,n_r)`: at or below
+    /// Exact-Schur threshold on reduced size `n_keep=min(n_rows,n_cols)`: at or below
     /// it fill-in is affordable, so the exact Schur complement is factored
     /// exactly. `0` disables it.
     pub dense_threshold: usize,

@@ -120,8 +120,8 @@ pub(crate) struct Channel {
 /// A cross-factor channel pair: one Gramian cross-block per pair.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ChannelPair {
-    pub q: Channel,
-    pub r: Channel,
+    pub rows: Channel,
+    pub cols: Channel,
 }
 
 /// Fixed-effects design: observation columns plus coefficient-space layout.
@@ -171,7 +171,7 @@ impl<'a> Design<'a> {
         Self::build(frame, structure, false)
     }
 
-    /// `column_structure[q]` = term `q`'s coefficient columns, aligned with the
+    /// `column_structure[term]` = that term's coefficient columns, aligned with the
     /// frame's categorical columns.
     fn build(
         frame: ObservationFrame<'a>,

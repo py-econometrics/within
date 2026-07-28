@@ -541,20 +541,20 @@ mod schwarz_tests {
     }
 
     fn synthetic_sparse_cross_tab(n_keep: usize, elim_ratio: usize) -> (CrossTab, BlockDiagonals) {
-        let n_q = n_keep * elim_ratio;
-        let n_r = n_keep;
-        let mut indptr = Vec::with_capacity(n_q + 1);
-        let mut indices = Vec::with_capacity(n_q * 3);
-        let mut data = Vec::with_capacity(n_q * 3);
-        let mut diag_q = vec![0.0; n_q];
-        let mut diag_r = vec![0.0; n_r];
+        let n_rows = n_keep * elim_ratio;
+        let n_cols = n_keep;
+        let mut indptr = Vec::with_capacity(n_rows + 1);
+        let mut indices = Vec::with_capacity(n_rows * 3);
+        let mut data = Vec::with_capacity(n_rows * 3);
+        let mut row_diag = vec![0.0; n_rows];
+        let mut col_diag = vec![0.0; n_cols];
 
         indptr.push(0);
-        for (i, diag_q_i) in diag_q.iter_mut().enumerate().take(n_q) {
+        for (i, row_diag_i) in row_diag.iter_mut().enumerate().take(n_rows) {
             let mut row = [
-                (i % n_r, 1.0),
-                ((i + 1) % n_r, 0.8),
-                ((i.wrapping_mul(17).wrapping_add(3)) % n_r, 0.6),
+                (i % n_cols, 1.0),
+                ((i + 1) % n_cols, 0.8),
+                ((i.wrapping_mul(17).wrapping_add(3)) % n_cols, 0.6),
             ];
             row.sort_unstable_by_key(|&(col, _)| col);
 
@@ -572,10 +572,10 @@ mod schwarz_tests {
                 indices.push(col as u32);
                 data.push(value);
                 row_sum += value;
-                diag_r[col] += value;
+                col_diag[col] += value;
             }
 
-            *diag_q_i = row_sum;
+            *row_diag_i = row_sum;
             indptr.push(indices.len() as u32);
         }
 
@@ -583,15 +583,15 @@ mod schwarz_tests {
             indptr,
             indices,
             data,
-            nrows: n_q,
-            ncols: n_r,
+            nrows: n_rows,
+            ncols: n_cols,
         };
         let ct = c.transpose();
         (
             CrossTab { c, ct },
             BlockDiagonals {
-                q: diag_q,
-                r: diag_r,
+                rows: row_diag,
+                cols: col_diag,
             },
         )
     }
