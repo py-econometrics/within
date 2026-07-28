@@ -39,6 +39,13 @@ pub(crate) fn gather_apply(
                         [1.0, z0[i], z1[i]]
                     })
                 }
+                [Loading::Covariate(c0), Loading::Covariate(c1)] => {
+                    let z0 = frame.loading_column(*c0 as usize);
+                    let z1 = frame.loading_column(*c1 as usize);
+                    gather_term(chunk, row_start, levels, [col(0), col(1)], |i| {
+                        [z0[i], z1[i]]
+                    })
+                }
                 [Loading::Covariate(c0)] => {
                     let z0 = frame.loading_column(*c0 as usize);
                     gather_term(chunk, row_start, levels, [col(0)], |i| [z0[i]])
