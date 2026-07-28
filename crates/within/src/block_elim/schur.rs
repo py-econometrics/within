@@ -245,6 +245,7 @@ pub(super) fn build_explicit_laplacian(
 
 #[cfg(test)]
 mod tests {
+    use super::super::elimination::Orientation;
     use super::*;
     use crate::csr_block::CsrBlock;
     use crate::domain::{BlockDiagonals, CrossTab, GroundEdges};
@@ -369,7 +370,7 @@ mod tests {
         let surplus = surplus_of(&cross_tab, &diagonals);
         let elim = Elimination::new(&cross_tab, &diagonals, &surplus, Grounding::Grounded).unwrap();
 
-        assert!(elim.eliminate_q);
+        assert_eq!(elim.orientation, Orientation::EliminateQ);
         assert_eq!(elim.inv_diag_elim.len(), 3);
         for (&got, &expected) in elim
             .inv_diag_elim
@@ -424,7 +425,7 @@ mod tests {
         let a = sampled(&elim_a, &config);
         let b = sampled(&elim_b, &config);
 
-        assert_eq!(elim_a.eliminate_q, elim_b.eliminate_q);
+        assert_eq!(elim_a.orientation, elim_b.orientation);
         assert_eq!(elim_a.inv_diag_elim, elim_b.inv_diag_elim);
         assert_eq!(a.indptr(), b.indptr());
         assert_eq!(a.indices(), b.indices());
@@ -464,7 +465,7 @@ mod tests {
         let (cross_tab, diagonals) = make_cross_tab(&c_dense, 3, 2, diag_q.clone(), diag_r.clone());
         let surplus = surplus_of(&cross_tab, &diagonals);
         let elim = Elimination::new(&cross_tab, &diagonals, &surplus, Grounding::Grounded).unwrap();
-        assert!(elim.eliminate_q);
+        assert_eq!(elim.orientation, Orientation::EliminateQ);
 
         let sampled_dense = sparse_to_dense(&sampled(&elim, &Default::default()));
         let expected = dense_exact_schur(&c_dense, 3, 2, &diag_q, &diag_r, true);

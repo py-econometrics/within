@@ -33,7 +33,7 @@ fn test_subtract_mean_partial() {
     assert_eq!(data[2], 100.0); // unchanged
 }
 
-/// Build a CrossTab with `n_q < r` so that `eliminate_q == false`, plus its
+/// Build a CrossTab with `n_q < r` so the r-block is eliminated, plus its
 /// build-time diagonals.
 fn make_cross_tab_q_lt_r() -> (CrossTab, BlockDiagonals) {
     let c_dense = vec![
@@ -51,7 +51,7 @@ fn make_cross_tab_q_lt_r() -> (CrossTab, BlockDiagonals) {
 }
 
 #[test]
-fn test_block_elim_solver_eliminate_q_false() {
+fn test_block_elim_solver_eliminates_r() {
     let (cross_tab, diagonals) = make_cross_tab_q_lt_r();
     assert_eq!(cross_tab.n_q(), 2);
     assert_eq!(cross_tab.n_r(), 5);
@@ -65,9 +65,10 @@ fn test_block_elim_solver_eliminate_q_false() {
     let component = LocalComponent::general_for_test(cross_tab, diagonals);
     let solver = BlockElimSolver::build(component, &config).expect("block-elim build failed");
 
-    assert!(
-        !solver.eliminate_q,
-        "expected eliminate_q=false when n_q < n_r",
+    assert_eq!(
+        solver.orientation,
+        Orientation::EliminateR,
+        "expected the r-block eliminated when n_q < n_r",
     );
     let n_local = solver.n_local();
     assert_eq!(n_local, 7);
@@ -105,9 +106,10 @@ fn eliminate_r_explicit_ground_overlap_is_consumed_not_leaked() {
     let component = LocalComponent::general_for_test(cross_tab, diagonals);
     let solver = BlockElimSolver::build(component, &config).expect("block-elim build failed");
     let n_q = solver.cross_tab.n_q();
-    assert!(
-        !solver.eliminate_q,
-        "expected eliminate_q=false when n_q < n_r"
+    assert_eq!(
+        solver.orientation,
+        Orientation::EliminateR,
+        "expected the r-block eliminated when n_q < n_r"
     );
     assert_eq!(
         solver.explicit_ground_index(n_q),
@@ -253,7 +255,7 @@ fn grounded_backend_auxiliary_is_initialized_on_every_solve() {
         cross_tab,
         vec![1.0; 3],
         factor,
-        true,
+        Orientation::EliminateQ,
         CoordinateMap::default(),
     );
 

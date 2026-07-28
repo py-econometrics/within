@@ -12,7 +12,7 @@ use crate::domain::{
 use crate::BuildError;
 
 use super::compensated_sum;
-use super::elimination::Elimination;
+use super::elimination::{Elimination, Orientation};
 use super::factor::{factor_sparse, local_solver_build, ReducedFactor};
 use super::schur;
 
@@ -96,8 +96,8 @@ pub struct BlockElimSolver {
     inv_diag_elim: Vec<f64>,
     /// Reduced-system factor backend.
     reduced_factor: ReducedFactor,
-    /// True if the q-block was eliminated (n_q >= n_r).
-    eliminate_q: bool,
+    /// Which diagonal block was eliminated.
+    orientation: Orientation,
     /// Internal DOF count (`n_q + n_r`) — the operator is always single-sized;
     /// a frustrated component's cover lives inside `reduced_factor`.
     #[serde(skip)]
@@ -123,7 +123,7 @@ impl<'de> serde::Deserialize<'de> for BlockElimSolver {
             cross_tab: CrossTab,
             inv_diag_elim: Vec<f64>,
             reduced_factor: ReducedFactor,
-            eliminate_q: bool,
+            orientation: Orientation,
             coordinates: CoordinateMap,
         }
 
@@ -144,13 +144,9 @@ impl<'de> serde::Deserialize<'de> for BlockElimSolver {
         let (n_q, n_r) = (c.nrows, c.ncols);
         let n_internal = n_q + n_r;
 
-        // Roles are fixed by `eliminate_q`: the eliminated block is scaled by
-        // `inv_diag_elim`, the kept block is what the reduced factor solves.
-        let (elim_size, n_keep) = if h.eliminate_q {
-            (n_q, n_r)
-        } else {
-            (n_r, n_q)
-        };
+        // The eliminated block is scaled by `inv_diag_elim`; the kept block is
+        // what the reduced factor solves.
+        let (elim_size, n_keep) = h.orientation.roles(n_q, n_r);
         if h.inv_diag_elim.len() != elim_size {
             return Err(D::Error::custom(
                 "inv_diag_elim length disagrees with eliminated block",
@@ -181,7 +177,7 @@ impl<'de> serde::Deserialize<'de> for BlockElimSolver {
             CrossTab { c, ct },
             h.inv_diag_elim,
             h.reduced_factor,
-            h.eliminate_q,
+            h.orientation,
             h.coordinates,
         ))
     }
@@ -190,7 +186,7 @@ impl<'de> serde::Deserialize<'de> for BlockElimSolver {
 /// The q/r blocks assigned to their eliminated/kept roles for one solve.
 ///
 /// `BlockElimSolver` eliminates one diagonal block and solves a reduced system
-/// on the other; `eliminate_q` fixes which is which at construction. This bundles
+/// on the other; [`Orientation`] fixes which is which at construction. This bundles
 /// the per-orientation block ranges and cross operators under named roles —
 /// reusing [`super::elimination::Elimination`]'s `keep_to_elim` / `elim_to_keep`
 /// vocabulary — so [`BlockElimSolver::eliminate_and_recover`] stays
@@ -338,7 +334,7 @@ impl BlockElimSolver {
         cross_tab: impl Into<Arc<CrossTab>>,
         inv_diag_elim: Vec<f64>,
         reduced_factor: ReducedFactor,
-        eliminate_q: bool,
+        orientation: Orientation,
         coordinates: CoordinateMap,
     ) -> Self {
         let cross_tab = cross_tab.into();
@@ -348,7 +344,7 @@ impl BlockElimSolver {
             cross_tab,
             inv_diag_elim,
             reduced_factor,
-            eliminate_q,
+            orientation,
             n_internal,
             n_reduced,
             coordinates,
@@ -363,7 +359,7 @@ impl BlockElimSolver {
     /// component rebuilds its Gremban double cover transiently, factors the
     /// cover's reduced Schur, and keeps only that factor — the stored operator
     /// and `inv_diag_elim` stay single-sized (#91). The `Elimination` is
-    /// consumed at the end to produce `inv_diag_elim` and `eliminate_q`.
+    /// consumed at the end to produce `inv_diag_elim` and the [`Orientation`].
     ///
     /// `diagonals` are the build-time-only diagonal blocks; they are read by
     /// [`Elimination::new`] and dropped once the factor is built.
@@ -418,14 +414,14 @@ impl BlockElimSolver {
 
         let Elimination {
             inv_diag_elim,
-            eliminate_q,
+            orientation,
             ..
         } = elim;
         Ok(BlockElimSolver::new(
             cross_tab,
             inv_diag_elim,
             factor,
-            eliminate_q,
+            orientation,
             coordinates,
         ))
     }
@@ -553,21 +549,13 @@ impl LocalSolver for BlockElimSolver {
             subtract_mean(rhs, n);
         }
 
-        // The eliminated/kept roles are fixed by `eliminate_q`; name the swap once.
-        let roles = if self.eliminate_q {
-            BlockRoles {
-                elim: 0..n_q,
-                keep: n_q..n,
-                keep_to_elim: &ct.ct,
-                elim_to_keep: &ct.c,
-            }
-        } else {
-            BlockRoles {
-                elim: n_q..n,
-                keep: 0..n_q,
-                keep_to_elim: &ct.c,
-                elim_to_keep: &ct.ct,
-            }
+        let (elim, keep) = self.orientation.roles(0..n_q, n_q..n);
+        let (elim_to_keep, keep_to_elim) = self.orientation.roles(&ct.c, &ct.ct);
+        let roles = BlockRoles {
+            elim,
+            keep,
+            keep_to_elim,
+            elim_to_keep,
         };
         self.eliminate_and_recover(&roles, rhs, sol, allow_inner_parallelism)?;
 

@@ -80,12 +80,34 @@ fn sample_star(
 // Elimination — block selection + star iteration
 // ===========================================================================
 
+/// Which diagonal block the elimination removes; the other is kept and reduced.
+///
+/// Owns the q/r-to-role swap, so the build, the wire check and the solve all
+/// reorder through [`Self::roles`] rather than restating the rule.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum Orientation {
+    // Keep this order: postcard encodes enum discriminants by declaration
+    // order, and the wire pins EliminateQ = 1 from the `eliminate_q` bool.
+    EliminateR,
+    EliminateQ,
+}
+
+impl Orientation {
+    /// A `(q, r)` pair reordered into `(eliminated, kept)` roles.
+    pub(crate) fn roles<T>(self, q: T, r: T) -> (T, T) {
+        match self {
+            Self::EliminateQ => (q, r),
+            Self::EliminateR => (r, q),
+        }
+    }
+}
+
 /// Block-selection decision and star iteration for Schur elimination.
 ///
 /// Encapsulates which block to eliminate, precomputed inverse-diagonals,
 /// and provides zero-copy [`Star`] views for each eliminated vertex.
 pub(crate) struct Elimination<'a> {
-    pub(crate) eliminate_q: bool,
+    pub(crate) orientation: Orientation,
     pub(crate) n_keep: usize,
     pub(crate) n_elim: usize,
     pub(crate) inv_diag_elim: Vec<f64>,
@@ -112,14 +134,17 @@ impl<'a> Elimination<'a> {
         let n_q = cross_tab.n_q();
         let n_r = cross_tab.n_r();
         // Eliminate the larger block to minimize the reduced system size.
-        let eliminate_q = n_q >= n_r;
-        let (n_keep, n_elim) = if eliminate_q { (n_r, n_q) } else { (n_q, n_r) };
-
-        let diag_elim = if eliminate_q {
-            &diagonals.q
+        let orientation = if n_q >= n_r {
+            Orientation::EliminateQ
         } else {
-            &diagonals.r
+            Orientation::EliminateR
         };
+        let (n_elim, n_keep) = orientation.roles(n_q, n_r);
+        let (diag_elim, diag_keep) = orientation.roles(&diagonals.q[..], &diagonals.r[..]);
+        let (surplus_elim, surplus_keep) =
+            orientation.roles(&ground_edges.q[..], &ground_edges.r[..]);
+        let (elim_to_keep, keep_to_elim) = orientation.roles(&cross_tab.c, &cross_tab.ct);
+
         let inv_diag_elim = diag_elim
             .iter()
             .enumerate()
@@ -132,25 +157,8 @@ impl<'a> Elimination<'a> {
             })
             .collect::<Result<_, _>>()?;
 
-        let diag_keep = if eliminate_q {
-            &diagonals.r
-        } else {
-            &diagonals.q
-        };
-        let (surplus_keep, surplus_elim) = if eliminate_q {
-            (&ground_edges.r[..], &ground_edges.q[..])
-        } else {
-            (&ground_edges.q[..], &ground_edges.r[..])
-        };
-
-        let (keep_to_elim, elim_to_keep) = if eliminate_q {
-            (&cross_tab.ct, &cross_tab.c)
-        } else {
-            (&cross_tab.c, &cross_tab.ct)
-        };
-
         Ok(Self {
-            eliminate_q,
+            orientation,
             n_keep,
             n_elim,
             inv_diag_elim,
