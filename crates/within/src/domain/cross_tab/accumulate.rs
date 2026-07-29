@@ -46,8 +46,8 @@ impl Loading for &[f64] {
 /// One observation's contribution to the pair's Gram: the signed cell
 /// `w·l_row·l_col` plus the diagonals `w·l_row²` / `w·l_col²`, `l` the channel's loading.
 struct Contribution {
-    cj: u32,
-    ck: u32,
+    cj: usize,
+    ck: usize,
     cell: f64,
     row_diag: f64,
     col_diag: f64,
@@ -79,8 +79,8 @@ impl<Lq: Loading, Lr: Loading> PairColumns<'_, Lq, Lr> {
         let l_row = self.row_load.at(uid);
         let l_col = self.col_load.at(uid);
         Some(Contribution {
-            cj,
-            ck,
+            cj: cj as usize,
+            ck: ck as usize,
             cell: w * l_row * l_col,
             row_diag: w * l_row * l_row,
             col_diag: w * l_col * l_col,
@@ -208,10 +208,10 @@ pub(super) fn accumulate_dense_cross_block<Lq: Loading, Lr: Loading>(
         let Some(o) = cols.decode(active, uid) else {
             continue;
         };
-        debug_assert!((o.cj as usize) < n_rows && (o.ck as usize) < n_cols);
-        row_diag[o.cj as usize] += o.row_diag;
-        col_diag[o.ck as usize] += o.col_diag;
-        table[o.cj as usize * n_cols + o.ck as usize] += o.cell;
+        debug_assert!(o.cj < n_rows && o.ck < n_cols);
+        row_diag[o.cj] += o.row_diag;
+        col_diag[o.ck] += o.col_diag;
+        table[o.cj * n_cols + o.ck] += o.cell;
     }
 
     let c = CsrBlock::from_dense_table(&table, n_rows, n_cols);
@@ -239,9 +239,9 @@ pub(super) fn accumulate_sparse_cross_block<Lq: Loading, Lr: Loading>(
         let Some(o) = cols.decode(active, uid) else {
             continue;
         };
-        row_diag[o.cj as usize] += o.row_diag;
-        col_diag[o.ck as usize] += o.col_diag;
-        row_counts[o.cj as usize] += 1;
+        row_diag[o.cj] += o.row_diag;
+        col_diag[o.ck] += o.col_diag;
+        row_counts[o.cj] += 1;
     }
 
     // Build row-pointer array for the unsorted bucket CSR
@@ -259,10 +259,10 @@ pub(super) fn accumulate_sparse_cross_block<Lq: Loading, Lr: Loading>(
         let Some(o) = cols.decode(active, uid) else {
             continue;
         };
-        let pos = cursor[o.cj as usize] as usize;
-        bucket_cols[pos] = o.ck;
+        let pos = cursor[o.cj] as usize;
+        bucket_cols[pos] = to_u32(o.ck);
         bucket_vals[pos] = o.cell;
-        cursor[o.cj as usize] += 1;
+        cursor[o.cj] += 1;
     }
 
     // Pass 3: workspace-based dedup per row.
