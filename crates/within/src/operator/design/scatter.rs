@@ -211,18 +211,13 @@ fn scatter_sorted_coalesced<const C: usize>(
     atomic_buf: &[AtomicF64],
 ) {
     let buf = seed_scatter_scratch(atomic_buf, block);
-    // Each row-chunk coalesces its equal-level runs locally and commits one
-    // atomic add per distinct level per column. A run split across a chunk
-    // boundary is committed by both chunks — additive, so still correct —
-    // keeping chunks independent without a carry/fixup pass.
+    // A level run split across a chunk boundary is committed by both chunks — additive, so still correct — which keeps chunks independent without a carry pass.
     const CHUNK: usize = 65_536;
     levels
         .par_chunks(CHUNK)
         .enumerate()
         .for_each(|(c_idx, chunk)| {
             let start = c_idx * CHUNK;
-            // Single flat pass, one level load per row: accumulate the current
-            // run's per-column sums and commit them whenever the level changes.
             let mut level = chunk[0] as usize;
             let mut sums = values(start);
             for (i, &li) in (start + 1..).zip(&chunk[1..]) {

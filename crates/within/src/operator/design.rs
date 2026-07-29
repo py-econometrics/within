@@ -16,10 +16,6 @@ use scatter::scatter_apply;
 /// Minimum number of rows before scatter/gather loops are parallelized.
 const PAR_THRESHOLD: usize = 10_000;
 
-// ===========================================================================
-// DesignOperator — D, optionally rescaled by W^{1/2}
-// ===========================================================================
-
 /// Rectangular design operator `D` or `W^{1/2} D`, whose normal equations `AᵀA = DᵀWD = G` recover the Gramian so the same Schwarz preconditioner applies. The weights branch is hoisted out of the per-row loop, so there is no per-row scratch.
 pub(crate) struct DesignOperator<'a> {
     design: &'a Design<'a>,
@@ -108,10 +104,7 @@ impl Operator for DesignOperator<'_> {
         debug_assert_eq!(x.len(), self.design.n_obs);
         debug_assert_eq!(y.len(), self.design.n_dofs);
         y.fill(0.0);
-        // Reuse the per-operator atomic-scatter scratch across iterations. No
-        // lock needed: `AtomicF64` mutates through `&self`, and a single
-        // operator's `apply_adjoint` calls are sequential (`solve_batch` builds
-        // a distinct operator per RHS), so the shared buffer is never raced.
+        // No lock needed: `AtomicF64` mutates through `&self`, and one operator's `apply_adjoint` calls are sequential because `solve_batch` builds a distinct operator per RHS.
         match self.sqrt_weights {
             Some(sw) => scatter_apply(self.design, &self.scatter_scratch, y, &|i| sw[i] * x[i]),
             None => scatter_apply(self.design, &self.scatter_scratch, y, &|i| x[i]),
@@ -120,8 +113,7 @@ impl Operator for DesignOperator<'_> {
     }
 }
 
-// The guard's flag is a private, debug-gated field, so this test lives beside
-// it rather than in the crate's shared `operator/tests.rs`.
+// The guard's flag is a private, debug-gated field, so this test lives beside it rather than in `operator/tests.rs`.
 #[cfg(all(test, debug_assertions))]
 mod reentry_guard_tests {
     use std::sync::atomic::Ordering;
@@ -146,7 +138,7 @@ mod reentry_guard_tests {
     fn apply_adjoint_detects_in_flight_reentry() {
         let design = one_factor_design();
         let op = DesignOperator::new(&design, None);
-        // Simulate a sibling apply_adjoint already in flight on this operator.
+        // Simulate a sibling `apply_adjoint` already in flight on this operator.
         op.adjoint_active.store(true, Ordering::Release);
         op.apply_adjoint(
             &vec![0.0; op.design.n_obs],

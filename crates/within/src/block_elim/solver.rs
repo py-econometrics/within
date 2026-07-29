@@ -14,10 +14,6 @@ use super::elimination::invert_eliminated_diagonal;
 use super::factor::{factor_sparse, local_solver_build, ReducedFactor};
 use super::schur;
 
-// ===========================================================================
-// Solve helpers
-// ===========================================================================
-
 /// Minimum number of rows to trigger parallel back-substitution.
 const PAR_BACKSUB_THRESHOLD: usize = 10_000;
 const PAR_BACKSUB_CHUNK: usize = 4096;
@@ -80,10 +76,6 @@ fn backsub_block_from_scaled_rhs(
     }
 }
 
-// ===========================================================================
-// BlockElimSolver — local solver using block elimination
-// ===========================================================================
-
 /// Local subdomain solver using block elimination on the bipartite SDDM.
 #[derive(Clone, serde::Serialize)]
 pub struct BlockElimSolver {
@@ -118,9 +110,7 @@ impl<'de> serde::Deserialize<'de> for BlockElimSolver {
 
         let h = Helper::deserialize(deserializer)?;
 
-        // `c` bounds n_rows by its `indptr` length; the stored transpose's row
-        // count (validated the same way) is the only witness that bounds n_cols,
-        // without which recomputing the transpose below could allocate wildly.
+        // `ct`'s row count is the only witness bounding `c.ncols`; without it, recomputing the transpose below could allocate wildly.
         let CrossTab { c, ct } = h.cross_tab;
         if !c.is_structurally_valid() {
             return Err(D::Error::custom(
@@ -130,8 +120,7 @@ impl<'de> serde::Deserialize<'de> for BlockElimSolver {
         if ct.nrows != c.ncols || ct.ncols != c.nrows || !ct.is_structurally_valid() {
             return Err(D::Error::custom("cross_tab.ct shape disagrees with c"));
         }
-        // Components are eliminated-major: the first block is scaled by
-        // `inv_diag_elim` and the second is what the reduced factor solves.
+        // Components are eliminated-major: the first block is scaled by `inv_diag_elim`, the second is what the reduced factor solves.
         let (n_eliminated, n_kept) = (c.nrows, c.ncols);
         let n_internal = n_eliminated + n_kept;
 
@@ -154,8 +143,7 @@ impl<'de> serde::Deserialize<'de> for BlockElimSolver {
             ));
         }
 
-        // Rebuild the transpose from the validated `c` so it cannot disagree;
-        // `new` derives the counts, which never travel on the wire.
+        // Rebuild from the validated `c` so the transpose cannot disagree; `new` derives counts, which never travel on the wire.
         let ct = c.transpose();
         Ok(BlockElimSolver::new(
             CrossTab { c, ct },
@@ -199,9 +187,7 @@ fn assemble_bipartite_cover(matrix: &SddmMatrix) -> SddmMatrix {
     let n_rows = c.nrows;
     let n_cols = c.ncols;
     let n_cols_u32 = u32::try_from(n_cols).expect("cover columns exceed u32::MAX");
-    // The cover doubles both dimensions: transpose stores source rows (0..2*n_rows)
-    // as u32 indices and the cross-sheet shift emits columns up to 2*n_cols - 1, so
-    // both doubled sizes — not just n_cols — must fit the u32 index.
+    // Both doubled sizes must fit u32, not just n_cols: transpose stores source rows and the cross-sheet shift emits columns up to 2*n_cols - 1.
     u32::try_from(2 * n_rows).expect("doubled cover rows exceed u32::MAX");
     u32::try_from(2 * n_cols).expect("doubled cover columns exceed u32::MAX");
 
@@ -213,8 +199,7 @@ fn assemble_bipartite_cover(matrix: &SddmMatrix) -> SddmMatrix {
         for i in 0..n_rows {
             let start = c.indptr[i] as usize;
             let end = c.indptr[i + 1] as usize;
-            // Same-sheet columns (base 0) precede cross-sheet columns (base
-            // n_cols) so each output row stays column-sorted.
+            // Same-sheet columns precede cross-sheet ones so each output row stays column-sorted.
             for column_shifted in [false, true] {
                 let column_base = if column_shifted { n_cols_u32 } else { 0 };
                 let select_negative = column_shifted != copy_shifted;
@@ -307,10 +292,7 @@ impl BlockElimSolver {
                 debug_assert!(factor.solve_dimension() >= factor.input_dimension());
                 factor
             }
-            // Cover the single signed matrix, factor the cover's reduced
-            // Schur (now SDDM, hence sampleable), then discard the cover —
-            // only the factor is retained. Surplus survives the cover, so it
-            // grounds exactly as the signed matrix did.
+            // Surplus survives the cover, so it grounds exactly as the signed matrix did; only the factor is retained.
             MatrixForm::SignedPendingCover => {
                 let cover = assemble_bipartite_cover(&matrix);
                 let cover_inv_diagonal = invert_eliminated_diagonal(&cover)?;
@@ -341,10 +323,8 @@ impl BlockElimSolver {
         let (n_elim, n_keep) = (self.n_eliminated(), self.n_kept());
         let explicit_ground = self.reduced_factor.explicit_ground_index(n_keep);
 
-        // Scale the eliminated block by its inverse diagonal.
         scale_by_diag_in_place(&mut rhs[..n_elim], &self.inv_diag_elim);
 
-        // Apply `keep_to_elim` into the scratch tail to form the reduced RHS.
         {
             let (main, scratch) = rhs.split_at_mut(n);
             scratch[n_keep..self.n_reduced].fill(0.0);
@@ -359,9 +339,7 @@ impl BlockElimSolver {
             Some(Grounding::Floating) => {
                 subtract_mean(&mut rhs[n..], self.n_reduced);
             }
-            // Grounded-Laplacian reduction of the nonsingular SDD reduced
-            // system: the ground node absorbs the injected current, and its
-            // potential is the gauge subtracted after the solve.
+            // The ground node absorbs the injected current; its potential is the gauge subtracted after the solve.
             Some(Grounding::Grounded) => {
                 if let Some(ground) = explicit_ground {
                     rhs[n + ground] = -compensated_sum(&rhs[n..n + n_keep]);
@@ -371,10 +349,7 @@ impl BlockElimSolver {
             None => {}
         }
 
-        // Anchored at the kept block, the reduced solve spills past it into the
-        // eliminated block (eliminate-r) or scratch tail (eliminate-q); those slots
-        // are dead except the grounded gauge slot, a transient the subtraction below
-        // consumes. The `rhs` tail is the factor's embed scratch (unused unless Cover).
+        // The reduced solve spills past the kept block into slots that are dead except the grounded gauge, a transient the subtraction below consumes.
         let reduced = n_elim..n_elim + self.n_reduced;
         debug_assert!(
             n_keep <= self.n_reduced,
@@ -399,8 +374,7 @@ impl BlockElimSolver {
             }
         }
 
-        // Back-substitute for the eliminated block; it reads the gauged kept block,
-        // so the gauge subtraction above must run first.
+        // Back-substitution reads the gauged kept block, so the gauge subtraction above must run first.
         let (sol_output, sol_source) = sol.split_at_mut(n_elim);
         let sol_source = &sol_source[..n_keep];
         backsub_block_from_scaled_rhs(

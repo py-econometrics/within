@@ -14,10 +14,6 @@ use crate::error::SolveError;
 
 use super::planning::ResolvedReductionStrategy;
 
-// ============================================================================
-// Buffer pooling
-// ============================================================================
-
 pub(super) struct BufferPool {
     n_dofs: usize,
     max_scratch_size: usize,
@@ -62,15 +58,11 @@ impl BufferPool {
 
     /// Return a buffer to the pool. Infallible by design, since pool bookkeeping must never mask the caller's real `apply_result`; on an error path or poisoned lock the buffer is dropped instead.
     pub(super) fn put(&self, bufs: SchwarzBuffers, apply_result: &Result<(), SolveError>) {
-        // On error, the atomic backend's swap-zero readout pass is skipped,
-        // leaving stale partial-write values in the AtomicU64 vec. Drop the
-        // buffer rather than pooling it for the next caller to inherit dirty
-        // state.
+        // On error the atomic backend's swap-zero readout is skipped, leaving stale partial writes, so drop the buffer rather than pool dirty state.
         if apply_result.is_err() {
             return;
         }
-        // A poisoned lock means a worker panicked; just drop the buffer (the
-        // pool lazily re-allocates on the next `take`) instead of erroring.
+        // A poisoned lock means a worker panicked; drop the buffer (the pool re-allocates on the next `take`) rather than erroring.
         if let Ok(mut pool) = self.inner.lock() {
             if pool.len() < Self::MAX_POOL_SIZE {
                 pool.push(bufs);
@@ -229,21 +221,15 @@ impl WorkerReductionBuffers {
         z: &mut [f64],
         apply_result: &Result<(), SolveError>,
     ) -> Result<Vec<AdditiveSweepBuffers>, SolveError> {
-        // Always leave `z` fully written so a failed apply never exposes a
-        // partial accumulation. On the apply-error path zero `z` up front —
-        // there is nothing to reduce, and this also covers the case where the
-        // subsequent pool recovery fails.
+        // Always leave `z` fully written so a failed apply never exposes a partial accumulation; on the error path there is nothing to reduce.
         if apply_result.is_err() {
             z.fill(0.0);
         }
         let mut buffers = self.stack.into_pool("additive.reduction.pool.into_inner")?;
-        // On success, `reduce_into` zeroes-then-sums into `z`.
         if apply_result.is_ok() {
             Self::reduce_into(z, &buffers);
         }
-        // Re-zero each worker's accumulator for the next round. This is a
-        // `P × n_dofs` pass run on every apply, so spread it across workers
-        // (rayon already owns the thread pool) rather than zeroing serially.
+        // A `P × n_dofs` pass on every apply, so spread it across workers rather than zeroing serially.
         buffers
             .par_iter_mut()
             .for_each(|b| b.global_accum.fill(0.0));

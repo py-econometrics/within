@@ -50,8 +50,7 @@ pub(crate) fn gather_apply(
                     gather_term(chunk, row_start, levels, [col(0)], |i| [z0[i]])
                 }
                 columns => {
-                    // Cold path: a dynamic column count can't monomorphize a
-                    // fixed-arity `gather_term`, so accumulate by hand.
+                    // Cold path: a dynamic column count cannot monomorphize a fixed-arity `gather_term`, so accumulate by hand.
                     for (local, dst_val) in chunk.iter_mut().enumerate() {
                         let i = row_start + local;
                         let lev = levels[i] as usize;

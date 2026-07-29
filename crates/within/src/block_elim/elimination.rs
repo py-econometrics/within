@@ -16,16 +16,6 @@ use crate::BuildError;
 /// Undirected fill edge: `(lo_col, hi_col, weight)` with `lo_col < hi_col`.
 pub(crate) type Edge = (u32, u32, f64);
 
-// ===========================================================================
-// Star — zero-copy neighborhood view
-// ===========================================================================
-
-// Eliminating a diagonal vertex contributes a rank-1 clique (star) to the
-// Schur fill graph: every pair of its keep-block neighbors gets a fill edge.
-// `sample_star` approximates high-degree stars with GKS 2023 clique-tree
-// sampling — O(deg) edges instead of O(deg^2) — keeping the Schur complement
-// spectrally close to the exact (row-workspace) path.
-
 /// One eliminated vertex's neighbors in the keep-block, referencing the cross-tab's CSR arrays for zero-copy access.
 pub(crate) struct Star<'a> {
     /// Eliminated vertex index (used for deterministic seeding).
@@ -70,10 +60,6 @@ fn sample_star(
     }
 }
 
-// ===========================================================================
-// Star iteration over the eliminated block
-// ===========================================================================
-
 /// Fold the eliminated block's diagonal to its reciprocals, the one value Schur assembly needs that the matrix does not carry.
 pub(crate) fn invert_eliminated_diagonal(matrix: &SddmMatrix) -> Result<Vec<f64>, BuildError> {
     debug_assert!(
@@ -106,10 +92,7 @@ fn star(matrix: &SddmMatrix, k: usize) -> Star<'_> {
 }
 
 pub(crate) fn par_emit(matrix: &SddmMatrix, config: &ApproxSchurConfig) -> Vec<Edge> {
-    // Emit in parallel (one scratch buffer reused per fold chunk), concatenate,
-    // then a single total-order `sort_and_dedup`. The total order fixes the
-    // per-`(lo, hi)` weight summation order, so the result is independent of
-    // thread scheduling (the concatenation order no longer matters).
+    // The total order fixes per-`(lo, hi)` weight summation, so the result is independent of thread scheduling.
     let n_kept = matrix.n_kept();
     let surplus_eliminated = matrix.surplus_eliminated();
     let ground_vertex = (matrix.grounding == Grounding::Grounded)
@@ -151,8 +134,7 @@ fn sort_and_dedup(edges: &mut Vec<Edge>, n_kept: usize) {
     if edges.len() <= 1 {
         return;
     }
-    // Dense: linear counting sort by `lo` + parallel per-`lo`-run sorts by
-    // `(hi, weight)`. Sparse: one parallel comparison sort. Same total order.
+    // Dense counting sort or sparse comparison sort — both produce the same total order.
     if edges.len() >= n_kept {
         counting_sort_by_lo(edges, n_kept);
         let by_hi_weight = |a: &Edge, b: &Edge| a.1.cmp(&b.1).then_with(|| a.2.total_cmp(&b.2));
@@ -182,8 +164,7 @@ fn sort_and_dedup(edges: &mut Vec<Edge>, n_kept: usize) {
 fn counting_sort_by_lo(edges: &mut Vec<Edge>, n_kept: usize) {
     let mut cursors = vec![0usize; n_kept + 1];
     for e in edges.iter() {
-        // `lo < n_kept` always holds: the ground vertex (the only id that can
-        // equal `n_kept`) carries the maximum id and lands on `hi`.
+        // `lo < n_kept` always holds: the ground vertex carries the maximum id and lands on `hi`.
         debug_assert!(
             (e.0 as usize) < n_kept,
             "counting sort key `lo` must be a kept-block id (< n_kept)"

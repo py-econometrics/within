@@ -56,14 +56,11 @@ impl RotationStep {
 
 /// LSMR scalar state: `α̅` and `φ̄` for the LSQR-side rotation chain, `c̅, s̅, ζ̄` for the LSMR-side one.
 pub(super) struct LsmrRecurrenceState {
-    // P̂ chain
     alpha_bar: f64,
     phi_bar: f64,
-    // P̄ chain
     c_bar: f64,
     s_bar: f64,
     zeta_bar: f64,
-    // |ζ̄₀| snapshot (clamped), relativizes the reported normal-eq residual.
     zeta0: f64,
 }
 
@@ -82,38 +79,18 @@ impl LsmrRecurrenceState {
 
     /// Construct and apply both rotations for the current step.
     pub(super) fn step(&mut self, s: BidiagStep) -> RotationStep {
-        // Construct rotation P̂_k (Algorithm 2.8, LSQR side): eliminates
-        // β_{k+1} against α̅_k. Outputs:
-        //   * `p_hat.r` is the diagonal entry `ρ_k` of the upper-bidiagonal
-        //     factor (returned below as `RotationStep::rho`).
-        //   * `theta_new = ŝ_k · α_{k+1}` is the superdiagonal `θ_{k+1}`
-        //     carried forward into P̄_k and the next iteration's P̂.
-        //   * `alpha_bar_new = −ĉ_k · α_{k+1}` becomes `α̅_{k+1}`, the
-        //     diagonal seed consumed by the next P̂.
-        //   * `phi_bar_new = ŝ_k · φ̄_k` advances the LSQR transformed-RHS
-        //     scalar used by the residual estimate `|φ̄|`.
         let p_hat = Givens::new(self.alpha_bar, s.beta);
         let theta_new = p_hat.s * s.alpha;
         let alpha_bar_new = -p_hat.c * s.alpha;
         let phi_bar_new = p_hat.s * self.phi_bar;
 
-        // Construct rotation P̄_k (Algorithm 2.8, LSMR side): eliminates
-        // θ_{k+1} against c̅_{k-1}·ρ_k. The off-diagonal feeding this
-        // rotation is `θ̄_k = s̄_{k-1} · ρ_k`, which reads `self.s_bar` —
-        // the *previous* iteration's `s̄`. The read MUST happen before we
-        // commit `p_bar.s` into `self.s_bar` further down; otherwise we
-        // would mix s̄_k into θ̄_k and break the recurrence.
+        // `theta_bar` MUST be read before `p_bar.s` is committed to `self.s_bar` below, or s̄_k mixes into θ̄_k and breaks the recurrence.
         let theta_bar = self.s_bar * p_hat.r;
         let p_bar = Givens::new(self.c_bar * p_hat.r, theta_new);
-        // `p_bar.r` is `ρ̄_k`. `zeta = c̄_k · ζ̄_k` is the committed
-        // transformed-RHS scalar `ζ_k`.
         let zeta = p_bar.c * self.zeta_bar;
-        // Sign comes from applying P̄_k to the transformed RHS: the
-        // off-diagonal entry of `[[c̄, s̄], [−s̄, c̄]]` acting on `(ζ̄, 0)`
-        // yields `−s̄_k · ζ̄_k` as the new ζ̄.
+        // The minus comes from `[[c̄, s̄], [−s̄, c̄]]` acting on `(ζ̄, 0)`, which yields `−s̄_k · ζ̄_k`.
         let zeta_bar_new = -p_bar.s * self.zeta_bar;
 
-        // Commit chain state.
         self.alpha_bar = alpha_bar_new;
         self.phi_bar = phi_bar_new;
         self.c_bar = p_bar.c;
@@ -164,9 +141,7 @@ impl SolutionState {
 
     /// Apply one `(x, h, h̄)` recurrence step; `v` must be the normalized `v_{k+1}`, and `prev` carries `(ρ_{k-1}, ρ̄_{k-1})` seeded with [`RotationStep::initial`].
     pub(super) fn update(&mut self, v: &[f64], curr: RotationStep, prev: RotationStep) {
-        // Ratios consumed by the recurrence (Algorithm 2.8, "Update h̄, x, h").
-        // Denominators are O(1) Givens-rotation diagonals, so an absolute
-        // f64::EPSILON guard catches genuine loss of significance.
+        // Denominators are O(1) Givens diagonals, so an absolute `f64::EPSILON` guard catches genuine loss of significance.
         let t_x_denom = curr.rho * curr.rho_bar;
         let t_x = if t_x_denom.abs() > f64::EPSILON {
             curr.zeta / t_x_denom

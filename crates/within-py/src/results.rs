@@ -13,10 +13,6 @@ use within::{
 
 use crate::convert::{value_err, IntoPyErr};
 
-// ---------------------------------------------------------------------------
-// Result types
-// ---------------------------------------------------------------------------
-
 #[pyclass(module = "within._within")]
 #[pyo3(name = "SolveResult")]
 pub struct PySolveResult {
@@ -160,10 +156,6 @@ impl PyCoefficientLayout {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Result conversion helpers
-// ---------------------------------------------------------------------------
-
 pub(crate) fn into_py_result(py: Python<'_>, result: SolveResult) -> PySolveResult {
     PySolveResult {
         x: result.x.into_pyarray(py).unbind(),
@@ -195,8 +187,7 @@ pub(crate) fn into_py_batch_result(
 ) -> PyResult<PyBatchSolveResult> {
     let n_rhs = result.converged.len();
 
-    // Source dimensions from the result (not output lengths) so empty batches
-    // stay well-shaped at (n_dofs, 0) / (n_obs, 0).
+    // Source dimensions from the result, not the output lengths, so empty batches stay well-shaped at `(n_dofs, 0)`.
     let x = Array2::from_shape_vec((result.n_dofs, n_rhs).f(), result.x).map_err(value_err)?;
     let demeaned =
         Array2::from_shape_vec((result.n_obs, n_rhs).f(), result.demeaned).map_err(value_err)?;
@@ -224,10 +215,6 @@ pub(crate) fn into_py_batch_result(
         time_total: result.time_total,
     })
 }
-
-// ---------------------------------------------------------------------------
-// Off-GIL solve orchestration
-// ---------------------------------------------------------------------------
 
 /// Run a native single-response solve with the GIL released, mapping the native error to its Python exception class and the result to its wrapper.
 pub(crate) fn run_solve<E, F>(py: Python<'_>, solve: F) -> PyResult<PySolveResult>

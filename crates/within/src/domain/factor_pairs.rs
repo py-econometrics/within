@@ -80,11 +80,7 @@ pub(crate) fn build_local_domains(
         warnings.extend(pair_warnings);
     }
 
-    // 1/√c reweighting assumes every subdomain sharing a DOF is equally
-    // informative about it; a slope channel breaks that assumption and
-    // collapses convergence on weakly-connected designs (#94). Slope-carrying
-    // designs keep every subdomain at uniform weight instead — the plain path
-    // is measurably indifferent to this weighting, so this changes nothing there.
+    // `1/√c` assumes every subdomain sharing a DOF is equally informative about it; a slope channel breaks that and collapses convergence on weakly-connected designs (#94), so slope-carrying designs stay at uniform weight.
     if !channels
         .iter()
         .any(|&c| design.loading(c).covariate().is_some())
@@ -111,8 +107,6 @@ fn split_into_subdomains(
         let flat = full_diag.rows.into_iter().chain(full_diag.cols).collect();
         (vec![full_ct], vec![flat])
     } else {
-        // One reusable remap buffer pair for the whole parent; `extract_component`
-        // resets it per component, avoiding a fresh parent-sized allocation each.
         let mut row_remap = vec![u32::MAX; full_ct.n_rows()];
         let mut col_remap = vec![u32::MAX; full_ct.n_cols()];
         let cross_tabs = components
@@ -162,8 +156,7 @@ fn compute_partition_weights(domain_pairs: &mut [LocalDomain], n_dofs: usize) {
     use rayon::prelude::*;
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    // Pass 1: histogram how many subdomains each DOF appears in. Atomic
-    // increments commute, so the parallel accumulation matches the serial scan.
+    // Atomic increments commute, so the parallel accumulation matches the serial scan.
     let counts: Vec<AtomicU32> = (0..n_dofs).map(|_| AtomicU32::new(0)).collect();
     domain_pairs.par_iter().for_each(|ld| {
         for &idx in ld.core.global_indices() {
@@ -173,8 +166,7 @@ fn compute_partition_weights(domain_pairs: &mut [LocalDomain], n_dofs: usize) {
     });
     let counts: Vec<u32> = counts.into_iter().map(AtomicU32::into_inner).collect();
 
-    // Pass 2: each subdomain's weights depend only on the shared counts, so the
-    // per-domain work is independent.
+    // Each subdomain's weights depend only on the shared counts, so the per-domain work is independent.
     domain_pairs.par_iter_mut().for_each(|ld| {
         let all_unique = ld
             .core

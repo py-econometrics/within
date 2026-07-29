@@ -89,20 +89,7 @@ pub(super) fn accumulate_cross_block(
     pair: ChannelPair,
     active: &ActiveLevels,
 ) -> (CsrBlock, Vec<f64>, Vec<f64>) {
-    // Cost-based dispatch. Both paths produce a bit-identical CSR `C`, `row_diag`,
-    // and `col_diag`; only their peak transient allocation differs:
-    //   - dense path: a flat `n_rows * n_cols` f64 table -> ~8 * n_rows * n_cols bytes;
-    //   - sparse path: per-observation buckets of (u32 col, f64 weight) sized
-    //     by valid observations (approximated by n_obs) -> ~12 * n_obs bytes.
-    // Picking sparse purely on cell count makes the sparse path use MORE memory
-    // than the dense table it replaces whenever n_obs >> cells. So use the dense
-    // table unconditionally up to `DENSE_TABLE_MAX_ENTRIES` (for small tables
-    // memory is a non-issue and the flat table is the faster build); only past
-    // that cap do we consider sparse, and even then only when its bucket cost is
-    // actually below the dense table cost -- otherwise the large-n_obs blowup
-    // this guards against would make sparse the *more* expensive choice, so we
-    // keep dense. Saturating math keeps the comparison well-defined even for
-    // enormous level counts.
+    // Dense costs ~8·cells bytes, sparse ~12·n_obs, so dispatching on cell count alone would pick sparse where it uses MORE memory than the table it replaces. Stay dense up to the cap, then go sparse only when its bucket cost is genuinely lower.
     let table_size = active.n_rows.saturating_mul(active.n_cols);
     let dense_cost = table_size.saturating_mul(8);
     let sparse_cost = design.n_obs.saturating_mul(12);
@@ -114,8 +101,7 @@ pub(super) fn accumulate_cross_block(
         col.covariate()
             .map(|&c| design.frame.loading_column(c as usize))
     };
-    // One arm per monomorphized loading combination; a generic constructor
-    // can't express this (closures aren't generic), so the literals repeat.
+    // One arm per monomorphized loading combination; closures aren't generic, so the literals must repeat.
     match (
         load(design.loading(pair.rows)),
         load(design.loading(pair.cols)),
@@ -217,7 +203,6 @@ pub(super) fn accumulate_sparse_cross_block<Lq: Loading, Lr: Loading>(
     let mut row_diag = vec![0.0f64; n_rows];
     let mut col_diag = vec![0.0f64; n_cols];
 
-    // Pass 1: accumulate diags + count entries per row
     let mut row_counts = vec![0u32; n_rows];
     for uid in 0..n_obs {
         let Some(o) = cols.decode(active, uid) else {
@@ -228,14 +213,12 @@ pub(super) fn accumulate_sparse_cross_block<Lq: Loading, Lr: Loading>(
         row_counts[o.cj] += 1;
     }
 
-    // Build row-pointer array for the unsorted bucket CSR
     let mut bucket_indptr = vec![0u32; n_rows + 1];
     for i in 0..n_rows {
         bucket_indptr[i + 1] = bucket_indptr[i] + row_counts[i];
     }
     let total_entries = bucket_indptr[n_rows] as usize;
 
-    // Pass 2: fill per-row buckets (col + weight only, no row index)
     let mut bucket_cols = vec![0u32; total_entries];
     let mut bucket_vals = vec![0.0f64; total_entries];
     let mut cursor = bucket_indptr[..n_rows].to_vec();
@@ -249,12 +232,7 @@ pub(super) fn accumulate_sparse_cross_block<Lq: Loading, Lr: Loading>(
         cursor[o.cj] += 1;
     }
 
-    // Pass 3: workspace-based dedup per row.
-    // Accumulate into work[col], track touched columns, sort the touched
-    // set, then emit into final CSR. A signed cell cancelling to exactly 0.0
-    // mid-row re-pushes its column; the duplicate is harmless (first emit
-    // resets work[col], the second skips the 0.0) and exact-0 cells drop,
-    // matching the dense path.
+    // A signed cell cancelling to exactly 0.0 mid-row re-pushes its column; the duplicate is harmless and exact-0 cells drop, matching the dense path.
     let mut work = vec![0.0f64; n_cols];
     let mut touched: Vec<u32> = Vec::new();
     let mut c_indptr = vec![0u32; n_rows + 1];

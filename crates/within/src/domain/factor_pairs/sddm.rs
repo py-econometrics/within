@@ -27,15 +27,13 @@ impl RoundoffBudget {
 }
 
 const LAPLACIAN_VALIDATION_BUDGET: RoundoffBudget = RoundoffBudget { ulps: 64.0 };
-// A false Grounded classification retains noise-sized edges; a false Floating
-// classification deletes an identified direction.
+// A false Grounded classification retains noise-sized edges; a false Floating one deletes an identified direction.
 const FLOATING_CLASSIFICATION_BUDGET: RoundoffBudget = RoundoffBudget { ulps: 4.0 };
 
 /// Gauge of a reduced system: `Floating` anchors one node, `Grounded` factors the full complement.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Grounding {
-    // Keep this order: postcard encodes enum discriminants by declaration
-    // order, and the wire fixture pins Floating = 0.
+    // Keep this order: postcard encodes discriminants by declaration order and the wire fixture pins Floating = 0.
     #[default]
     Floating,
     Grounded,
@@ -53,8 +51,7 @@ pub(crate) enum MatrixForm {
 /// Map between original and SDDM coordinates, applied at the solve boundary. `Canonical` is the bipartite map (negate the col block), not the identity.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) enum CoordinateMap {
-    // Keep this order: postcard encodes enum discriminants by declaration
-    // order, and the wire fixture pins Canonical = 0.
+    // Keep this order: postcard encodes discriminants by declaration order and the wire fixture pins Canonical = 0.
     #[default]
     Canonical,
     /// Diagonal congruence factors (sign · scale): for a frustrated component, canonical bipartite signs (`+` eliminated, `−` kept) times the dominance scaling, leaving it signed.
@@ -271,10 +268,7 @@ fn assemble(
         .map(|(&entry, &factor)| entry * factor * factor)
         .collect();
 
-    // Canonical bipartite factors (`+1` on q, `−1` on r) need no stored map: the
-    // congruence is just the sign flip `fold` applies by default. This holds for
-    // a plain already-dominant component and equally for a frustrated one, so it
-    // is detected regardless of the reduction.
+    // Canonical bipartite factors (`+1` on q, `−1` on r) need no stored map: the congruence is the sign flip `fold` applies by default, for plain and frustrated components alike.
     let canonical = factors
         .iter()
         .enumerate()
@@ -441,9 +435,7 @@ fn dominance_scaling(
                 mu[i] = target;
             }
         }
-        // The certificate is invariant under a global rescale of μ; normalizing
-        // keeps a non-scalable component's geometric growth finite so budget
-        // exhaustion hands over a usable best-effort scaling.
+        // The certificate is invariant under a global rescale of μ, and normalizing keeps a non-scalable component's growth finite so budget exhaustion still hands over a usable scaling.
         let peak = mu.iter().copied().fold(0.0f64, f64::max);
         if !peak.is_finite() {
             return Err(NotScalable);

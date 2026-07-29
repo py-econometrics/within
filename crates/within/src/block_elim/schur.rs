@@ -17,9 +17,6 @@ use crate::domain::{Grounding, SddmMatrix};
 pub(crate) fn exact(matrix: &SddmMatrix, inv_diagonal_eliminated: &[f64]) -> CsrMatrix {
     let n_keep = matrix.n_kept();
 
-    // Per-row Schur complement accumulation, parallelized via map_init.
-    // The (work, touched) pair is allocated once per rayon task and reused
-    // across rows assigned to that task.
     let rows: Vec<(Vec<u32>, Vec<f64>)> = (0..n_keep)
         .into_par_iter()
         .map_init(
@@ -74,8 +71,6 @@ fn compute_schur_row_dense(
 /// Extract non-zeros from the dense workspace into sparse row arrays, preserving the diagonal even when numerically zero to keep SDDM structure, and clear the workspace.
 fn extract_sparse_row(i: usize, work: &mut [f64], touched: &mut [usize]) -> (Vec<u32>, Vec<f64>) {
     touched.sort_unstable();
-    // `touched.len()` is a tight upper bound on the emitted non-zeros
-    // (the diagonal plus every fill column), so size both buffers once.
     let mut row_indices = Vec::with_capacity(touched.len());
     let mut row_data = Vec::with_capacity(touched.len());
     for &j in touched.iter() {
@@ -92,7 +87,6 @@ fn extract_sparse_row(i: usize, work: &mut [f64], touched: &mut [usize]) -> (Vec
 /// Assemble a CSR matrix from per-row sparse results.
 fn assemble_schur_csr(rows: Vec<(Vec<u32>, Vec<f64>)>, n_keep: usize) -> CsrMatrix {
     let mut s_indptr = vec![0u32; n_keep + 1];
-    // Pre-count total NNZ so the value/index buffers allocate exactly once.
     let total_nnz: usize = rows.iter().map(|(ri, _)| ri.len()).sum();
     let mut s_indices = Vec::with_capacity(total_nnz);
     let mut s_data = Vec::with_capacity(total_nnz);
@@ -108,7 +102,6 @@ fn assemble_schur_csr(rows: Vec<(Vec<u32>, Vec<f64>)>, n_keep: usize) -> CsrMatr
 fn build_laplacian_csr(edges: &[Edge], n: usize) -> CsrMatrix {
     debug_assert!(edges.iter().all(|&(lo, hi, _)| lo < hi));
 
-    // Count lower/upper entries per row and accumulate diagonal weights.
     let mut lower_count = vec![0u32; n];
     let mut upper_count = vec![0u32; n];
     let mut diag = vec![0.0; n];
@@ -119,7 +112,7 @@ fn build_laplacian_csr(edges: &[Edge], n: usize) -> CsrMatrix {
         diag[hi as usize] += w;
     }
 
-    // Row layout: [lower entries | diagonal | upper entries]
+    // Row layout: [lower entries | diagonal | upper entries].
     let mut offsets = vec![0u32; n + 1];
     for i in 0..n {
         offsets[i + 1] = offsets[i] + lower_count[i] + 1 + upper_count[i];
@@ -128,7 +121,6 @@ fn build_laplacian_csr(edges: &[Edge], n: usize) -> CsrMatrix {
     let mut indices = vec![0u32; total_nnz];
     let mut data = vec![0.0f64; total_nnz];
 
-    // Place diagonals and initialize cursors.
     let mut lower_cursor: Vec<u32> = (0..n).map(|i| offsets[i]).collect();
     let mut upper_cursor: Vec<u32> = (0..n).map(|i| offsets[i] + lower_count[i] + 1).collect();
     for i in 0..n {
@@ -137,17 +129,15 @@ fn build_laplacian_csr(edges: &[Edge], n: usize) -> CsrMatrix {
         data[pos] = diag[i];
     }
 
-    // Single pass: edges sorted by (lo, hi) guarantees both lower and
-    // upper entries arrive in column-sorted order per row.
     for &(lo, hi, w) in edges {
         let lo_idx = lo as usize;
         let hi_idx = hi as usize;
-        // Upper triangle: row lo, column hi
+        // Upper triangle: row lo, column hi.
         let pos = upper_cursor[lo_idx] as usize;
         indices[pos] = hi;
         data[pos] = -w;
         upper_cursor[lo_idx] += 1;
-        // Lower triangle: row hi, column lo
+        // Lower triangle: row hi, column lo.
         let pos = lower_cursor[hi_idx] as usize;
         indices[pos] = lo;
         data[pos] = -w;

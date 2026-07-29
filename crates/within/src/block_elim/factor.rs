@@ -11,15 +11,10 @@ use super::csr_matrix::CsrMatrix;
 use crate::domain::Grounding;
 use crate::BuildError;
 
-// ===========================================================================
-// ReducedFactor — reduced-system factor backend for Schur-complement solves
-// ===========================================================================
-
 /// Reduced-system factor for Schur-complement local solves.
 #[derive(Clone, serde::Serialize)]
 pub(crate) enum ReducedFactor {
-    // Postcard encodes enum discriminants by declaration order; the wire
-    // fixture pins Direct = 0, so new variants append after it.
+    // Postcard encodes discriminants by declaration order and the wire fixture pins Direct = 0, so new variants append after it.
     /// Factor of the reduced Schur CSR itself, carrying the gauge the operator-level solve applies around it.
     Direct {
         /// Factor of the reduced Schur.
@@ -95,10 +90,7 @@ impl ReducedFactor {
                 debug_assert_eq!(*m, x.len());
                 let cover_n = inner.n();
                 let buf = &mut scratch[..cover_n];
-                // Embed the antisymmetric RHS [b, -b] into the cover. Any
-                // grounding vertex past the 2m cover nodes has zero RHS (it
-                // cancels in the antisymmetric sheet difference), so clear the
-                // reused scratch tail rather than assume it is zeroed.
+                // Any grounding vertex past the `2m` cover nodes has zero RHS, so clear the reused scratch tail rather than assume it is zeroed.
                 buf[..*m].copy_from_slice(x);
                 for (out, &v) in buf[*m..2 * *m].iter_mut().zip(x.iter()) {
                     *out = -v;
@@ -116,10 +108,6 @@ impl ReducedFactor {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Deserialize — validated reconstruction from untrusted bytes
-// ---------------------------------------------------------------------------
 
 /// Wire mirror of [`ReducedFactor`]. `Cover`'s `inner` is a bare [`Factor`], so a `Cover`-of-`Cover` is unrepresentable rather than a decode that recurses without bound.
 #[derive(serde::Deserialize)]
@@ -142,12 +130,7 @@ impl<'de> serde::Deserialize<'de> for ReducedFactor {
                 Ok(ReducedFactor::Direct { factor, grounding })
             }
             ReducedFactorWire::Cover { inner, m } => {
-                // `solve_in_place` embeds the antisymmetric `[b, -b]` RHS into
-                // the inner factor, whose dimension is the `2m` doubled cover
-                // nodes plus at most two augmentation vertices (the grounded
-                // complement's explicit ground and approx-chol's Gremban
-                // vertex). Anything outside `[2m, 2m + 2]` over- or under-runs
-                // that embed.
+                // The inner factor spans the `2m` cover nodes plus at most two augmentation vertices (explicit ground, approx-chol's Gremban vertex); outside `[2m, 2m + 2]` the embed over- or under-runs.
                 let two_m = m
                     .checked_mul(2)
                     .ok_or_else(|| D::Error::custom("Cover dimension m too large"))?;
@@ -170,10 +153,6 @@ fn solve_approx(f: &Factor, x: &mut [f64]) -> Result<(), LocalSolveError> {
             message: e.to_string(),
         })
 }
-
-// ===========================================================================
-// factor_sparse — bridge into approx_chol for sparse reduced Schur
-// ===========================================================================
 
 /// Factor a sparse (SDDM) reduced Schur complement, returning the `approx-chol` error unmapped so the caller can distinguish an unusable exact pivot from a rejected input.
 pub(crate) fn factor_sparse(

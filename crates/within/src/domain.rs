@@ -13,10 +13,6 @@ pub(crate) use factor_pairs::{
     SddmMatrix,
 };
 
-// ===========================================================================
-// Design — categorical fixed-effects design (data + layout)
-// ===========================================================================
-
 use std::borrow::Cow;
 
 use crate::channel::Channel;
@@ -184,28 +180,21 @@ impl<'a> Design<'a> {
             terms.push(meta);
         }
 
-        // DOFs index CSR columns as u32; a raw entity ID (or otherwise oversized
-        // level space) is rejected here rather than left to panic in to_u32.
+        // Rejected here rather than left to panic in `to_u32`.
         if u32::try_from(offset).is_err() {
             return Err(BuildError::DofSpaceExceedsU32 { n_dofs: offset });
         }
 
-        // Sort by the term contributing the most DOFs (for plain factors, the
-        // highest-cardinality one) so its gather/scatter runs sequentially.
-        // `obs_perm` indexes observations as u32; beyond u32::MAX rows skip
-        // the optimization — the solve itself has no such limit.
+        // Sort by the term contributing the most DOFs so its gather/scatter runs sequentially; `obs_perm` is u32, so beyond that many rows the optimization is skipped (the solve itself is not limited).
         let dominant = (0..terms.len()).max_by_key(|&q| terms[q].n_dofs());
         let (frame, obs_perm) = match dominant {
             Some(d) if locality_sort && !terms[d].sorted && u32::try_from(n_obs).is_ok() => {
-                // Stable argsort. Must be `sort_by_cached_key`, NOT `sort_by_key`:
-                // the latter re-gathers `key[i]` O(n log n) times and dominated
-                // setup at tens of millions of rows.
+                // Must be `sort_by_cached_key`, NOT `sort_by_key`: the latter re-gathers `key[i]` O(n log n) times and dominated setup at tens of millions of rows.
                 let key = frame.level_column(d);
                 let mut perm: Vec<u32> = (0..n_obs as u32).collect();
                 perm.sort_by_cached_key(|&i| key[i as usize]);
                 let sorted_frame = frame.permuted(&perm);
-                // Rescan sortedness: factors nested in (or duplicating) the
-                // dominant one come out sorted, keeping their coalesced scatter.
+                // Factors nested in or duplicating the dominant one come out sorted, keeping their coalesced scatter.
                 for (q, meta) in terms.iter_mut().enumerate() {
                     meta.sorted = sorted_frame.level_column(q).is_sorted();
                 }
@@ -243,10 +232,7 @@ impl<'a> Design<'a> {
                     got: w.len(),
                 });
             }
-            // `W^{1/2}` is applied to the design, so each weight must be finite and
-            // non-negative; otherwise `sqrt(w)` is NaN and the solution is silently
-            // corrupted. `wi >= 0.0` already rejects NaN (comparisons with NaN are
-            // false); `is_finite` additionally rejects `+∞`.
+            // `wi >= 0.0` already rejects NaN (NaN comparisons are false); `is_finite` additionally rejects `+∞`.
             if let Some((index, &value)) = w
                 .iter()
                 .enumerate()

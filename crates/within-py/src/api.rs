@@ -55,10 +55,6 @@ fn build_and_solve_batch<'a>(
     Ok((result, solver.warnings().to_vec()))
 }
 
-// ---------------------------------------------------------------------------
-// Public solve functions
-// ---------------------------------------------------------------------------
-
 #[pyfunction]
 #[pyo3(signature = (design, y, weights=None, options=None, preconditioner=None))]
 pub fn solve<'py>(
@@ -74,9 +70,7 @@ pub fn solve<'py>(
     let y = readonly_f64_1d("y", y)?;
     let weights = weights.map(|w| readonly_f64_1d("weights", w)).transpose()?;
 
-    // Borrow the array views while the GIL is held (`PyReadonlyArray` needs the
-    // token), but defer slice coercion -- and any copy of strided input -- into
-    // the GIL-released closures below, so the F-contiguous path copies nothing.
+    // Defer slice coercion into the GIL-released closures below, so the F-contiguous path copies nothing.
     let y_arr = y.as_array();
     let w_view = weights.as_ref().map(|w| w.as_array());
 
@@ -152,10 +146,6 @@ fn validate_batch_rows(y_rows: usize, n_obs: usize) -> PyResult<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Effect-term design
-// ---------------------------------------------------------------------------
-
 /// One factor's effect, holding its columns natively (copied out of numpy) so the borrowed [`Effect`] it lowers to can be rebuilt off-GIL where `Py` handles cannot reach.
 #[pyclass(frozen, skip_from_py_object, module = "within._within")]
 #[pyo3(name = "Effect")]
@@ -229,10 +219,6 @@ fn extract_design<'py>(py: Python<'_>, design: &Bound<'py, PyAny>) -> PyResult<D
     ))
 }
 
-// ---------------------------------------------------------------------------
-// Persistent Solver
-// ---------------------------------------------------------------------------
-
 /// Persistent solver that reuses preconditioners across solves: the expensive factorization happens once at construction.
 #[pyclass(frozen, module = "within._within")]
 #[pyo3(name = "Solver")]
@@ -254,9 +240,7 @@ impl PySolver {
         let weights_vec: Option<Vec<f64>> = weights.as_ref().map(|w| w.as_array().to_vec());
         let precond = resolve_precond_input(py, preconditioner)?;
 
-        // Release the GIL for the design copy/build and preconditioner
-        // factorisation; `BuildError` carries no Python types, so it is mapped
-        // to a Python exception only once the GIL is reacquired.
+        // `BuildError` carries no Python types, so it is mapped to an exception only once the GIL is reacquired.
         let solver = match extract_design(py, design)? {
             DesignSource::Categories(categories) => {
                 let cats = categories.as_array();
@@ -267,8 +251,7 @@ impl PySolver {
             DesignSource::Effects(terms) => {
                 py.detach(move || -> Result<Solver<'static>, BuildError> {
                     let effects: Vec<_> = terms.iter().map(PyEffect::as_effect).collect();
-                    // The design borrows the terms' buffers; the solver outlives
-                    // them, so lower to owned columns first.
+                    // The design borrows the terms' buffers but the solver outlives them, so lower to owned columns first.
                     let design = Design::new(effects)?.into_owned();
                     Solver::new(design, weights_vec, precond)
                 })

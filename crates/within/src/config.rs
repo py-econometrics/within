@@ -43,10 +43,6 @@ impl ApproxCholConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Local solver configuration
-// ---------------------------------------------------------------------------
-
 /// Schur-complement reduction mode: sampled keeps per-subdomain factorization cost bounded, exact trades speed for fidelity.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SchurMode {
@@ -89,10 +85,6 @@ impl Default for LocalSolverConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Signed-component scaling configuration
-// ---------------------------------------------------------------------------
-
 /// Certification policy for the diagonal scaling to SDDM form. Frustration is always a hard error; this governs only the dominance certificate.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ScalingConfig {
@@ -123,10 +115,6 @@ impl Default for ScalingConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Approximate Schur complement configuration
-// ---------------------------------------------------------------------------
-
 /// Approximate Schur via GKS 2023 Algorithm 3 clique-tree sampling: unbiased edge weights at O(deg) fill.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ApproxSchurConfig {
@@ -141,10 +129,6 @@ impl Default for ApproxSchurConfig {
         Self { seed: 0, split: 1 }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Preconditioner configuration
-// ---------------------------------------------------------------------------
 
 /// Preconditioner variant. `#[non_exhaustive]`, so external `match` sites need a wildcard arm.
 #[derive(Debug, Clone)]
@@ -171,10 +155,6 @@ impl Default for PreconditionerConfig {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// LSMR configuration
-// ---------------------------------------------------------------------------
 
 /// LSMR solver configuration: tolerances and reorthogonalization window.
 #[derive(Debug, Clone)]

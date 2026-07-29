@@ -16,10 +16,6 @@ use crate::Operator;
 use super::executor::AdditiveExecutor;
 use super::planning::{AdditiveScheduler, ReductionPlan, ReductionStrategy};
 
-// ---------------------------------------------------------------------------
-// Serde
-// ---------------------------------------------------------------------------
-
 /// Persists entries and `n_dofs`, the latter unrecoverable from entries alone when some columns are uncovered. Scratch size and metrics are re-derived on deserialize, the reduction strategy resets to `Auto`, and buffers are re-allocated.
 #[cfg(feature = "serde")]
 impl<S> serde::Serialize for SchwarzPreconditioner<S>
@@ -30,9 +26,6 @@ where
         use serde::ser::SerializeStruct;
         let mut state = serializer.serialize_struct("SchwarzPreconditioner", 2)?;
         state.serialize_field("subdomains", self.executor.subdomains())?;
-        // Persist the global DOF count: it is not recoverable from the
-        // subdomains alone when the operator has structural-null tail DOFs
-        // that no subdomain covers.
         state.serialize_field("n_dofs", &self.executor.n_dofs())?;
         state.end()
     }
@@ -54,12 +47,7 @@ where
         }
 
         let h: Helper<S> = Helper::deserialize(deserializer)?;
-        // The bytes may be untrusted (a cache, another machine, a tampered
-        // file). `n_dofs` below the covered subdomain index span is a caller
-        // bug for the infallible constructors — only debug-asserted there — but
-        // from arbitrary input it would let a subdomain scatter out of bounds
-        // at apply time, so reject it here as a typed error rather than build
-        // an unsound preconditioner.
+        // From arbitrary input, an `n_dofs` below the covered span would let a subdomain scatter out of bounds at apply time, so reject it as a typed error rather than build an unsound preconditioner.
         let covered_span = h
             .subdomains
             .iter()

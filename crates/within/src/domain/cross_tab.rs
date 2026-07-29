@@ -12,10 +12,6 @@ use crate::domain::Design;
 mod accumulate;
 use accumulate::accumulate_cross_block;
 
-// ---------------------------------------------------------------------------
-// BipartiteComponent / SchurData — supporting types for CrossTab
-// ---------------------------------------------------------------------------
-
 /// Compact mapping of active levels for a factor pair, plus the local-to-global vector for the combined domain.
 struct ActiveLevels {
     row_map: Vec<u32>,
@@ -32,9 +28,7 @@ pub(crate) fn find_all_active_levels(design: &Design<'_>) -> Vec<Vec<bool>> {
         .iter()
         .map(|f| vec![false; f.n_levels])
         .collect();
-    // Factor-outer / obs-inner: all writes for a factor land in one `active[f]`
-    // buffer before moving on, instead of hopping between `n_factors` buffers
-    // on every observation.
+    // Factor-outer / obs-inner: all writes for a factor land in one `active[f]` buffer instead of hopping between `n_factors` buffers per observation.
     for (f, col) in active.iter_mut().enumerate() {
         for &v in design.frame.level_column(f) {
             col[v as usize] = true;
@@ -96,10 +90,6 @@ pub(crate) struct BipartiteComponent {
     pub(crate) rows: Vec<usize>,
     pub(crate) cols: Vec<usize>,
 }
-
-// ---------------------------------------------------------------------------
-// CrossTab — bipartite block representation of a local Gramian
-// ---------------------------------------------------------------------------
 
 /// Bipartite block representation of a local Gramian for one factor pair: stores `C` and `Cᵀ` only, since the solve path never reads the diagonals of `G = [D_q, C; Cᵀ, D_r]`.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -211,7 +201,6 @@ impl CrossTab {
                 }
             }
 
-            // Sort for deterministic ordering
             rows.sort_unstable();
             cols.sort_unstable();
             components.push(BipartiteComponent { rows, cols });
@@ -232,7 +221,6 @@ impl CrossTab {
         debug_assert_eq!(row_remap.len(), self.n_rows());
         debug_assert_eq!(col_remap.len(), self.n_cols());
 
-        // Build reverse maps: parent compact index -> component compact index.
         for (new_idx, &old_idx) in comp.rows.iter().enumerate() {
             row_remap[old_idx] = to_u32(new_idx);
         }
@@ -240,7 +228,6 @@ impl CrossTab {
             col_remap[old_idx] = to_u32(new_idx);
         }
 
-        // Extract CSR(C): only rows in comp.rows, remap columns
         let mut c_indptr = vec![0u32; n_rows + 1];
         let mut c_indices = Vec::new();
         let mut c_data = Vec::new();
@@ -267,8 +254,6 @@ impl CrossTab {
         };
         let ct = c.transpose();
 
-        // Reset only the touched entries so the buffers are all-`u32::MAX` again
-        // for the next component.
         for &old_idx in &comp.rows {
             row_remap[old_idx] = u32::MAX;
         }

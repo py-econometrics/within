@@ -17,10 +17,6 @@ use std::sync::atomic::AtomicU64;
 use crate::domain::SubdomainCore;
 use crate::error::{BuildError, LocalSolveError};
 
-// ---------------------------------------------------------------------------
-// LocalSolver trait
-// ---------------------------------------------------------------------------
-
 /// The `Aᵢ⁻¹` operator in the Schwarz formula: solves the restricted system `Aᵢ = Rᵢ A Rᵢᵀ` exactly or approximately. Buffers are scratch-sized, so possibly larger than `n_local`.
 pub trait LocalSolver: Send + Sync {
     /// Number of DOFs in the subdomain (before augmentation).
@@ -42,10 +38,6 @@ pub trait LocalSolver: Send + Sync {
         0
     }
 }
-
-// ---------------------------------------------------------------------------
-// SubdomainEntry<S>
-// ---------------------------------------------------------------------------
 
 /// One term of the Schwarz sum `Rᵢᵀ D̃ᵢ Aᵢ⁻¹ D̃ᵢ Rᵢ`, bundling a [`SubdomainCore`] with a [`LocalSolver`].
 #[derive(Clone)]
@@ -123,14 +115,11 @@ impl<S: LocalSolver> SubdomainEntry<S> {
             return Ok(());
         }
 
-        // Gather with partition weights: r_scratch = D_i @ R_i @ r
         self.core.restrict_weighted(r, r_scratch);
 
-        // Local solve (strategy-specific transforms happen inside the solver)
         self.solver
             .solve_local(r_scratch, z_scratch, allow_inner_parallelism)?;
 
-        // Weighted scatter directly into output: out += R_i^T @ D_i @ z_local
         self.core.prolongate_weighted_add(z_scratch, out);
         Ok(())
     }
@@ -148,14 +137,11 @@ impl<S: LocalSolver> SubdomainEntry<S> {
             return Ok(());
         }
 
-        // Gather with partition weights: r_scratch = D_i @ R_i @ r
         self.core.restrict_weighted(r, r_scratch);
 
-        // Local solve (strategy-specific transforms happen inside the solver)
         self.solver
             .solve_local(r_scratch, z_scratch, allow_inner_parallelism)?;
 
-        // Weighted atomic scatter into output: out += R_i^T @ D_i @ z_local
         self.core.prolongate_weighted_add_atomic(z_scratch, out);
         Ok(())
     }
