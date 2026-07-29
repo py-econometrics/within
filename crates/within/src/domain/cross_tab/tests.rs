@@ -9,23 +9,15 @@ use super::accumulate::{
     accumulate_dense_cross_block, accumulate_sparse_cross_block, PairColumns, Unit,
 };
 use super::{build_compact_mapping, CrossTab};
+use crate::channel::{Channel, ChannelPair};
 use crate::domain::find_all_active_levels;
-use crate::domain::Loading;
-use crate::domain::{Channel, ChannelPair, Design, Effect};
+use crate::domain::{Design, Effect};
 use crate::observation::ObservationFrame;
 
 /// Terms 0 and 1 paired on their intercept channels (plain cross-tab).
 const INTERCEPT_PAIR: ChannelPair = ChannelPair {
-    rows: Channel {
-        term: 0,
-        column: 0,
-        loading: Loading::Constant,
-    },
-    cols: Channel {
-        term: 1,
-        column: 0,
-        loading: Loading::Constant,
-    },
+    rows: Channel { term: 0, column: 0 },
+    cols: Channel { term: 1, column: 0 },
 };
 
 fn design_of(columns: Vec<Vec<u32>>) -> Design<'static> {
@@ -351,16 +343,8 @@ fn dense_and_sparse_paths_agree_on_signed_data() {
     ];
     let design = Design::new(effects).unwrap();
     let pair = ChannelPair {
-        rows: Channel {
-            term: 0,
-            column: 1,
-            loading: Loading::Covariate(0),
-        },
-        cols: Channel {
-            term: 1,
-            column: 0,
-            loading: Loading::Constant,
-        },
+        rows: Channel { term: 0, column: 1 },
+        cols: Channel { term: 1, column: 0 },
     };
     let all_active = find_all_active_levels(&design);
     let active = build_compact_mapping(

@@ -5,8 +5,9 @@
 //! supports bipartite connected-components splitting and per-component extraction.
 //! Levels are stored compactly with a `local_to_global` map for active levels only.
 
+use crate::channel::ChannelPair;
 use crate::csr_block::{to_u32, CsrBlock};
-use crate::domain::{ChannelPair, Design};
+use crate::domain::Design;
 
 mod accumulate;
 use accumulate::accumulate_cross_block;

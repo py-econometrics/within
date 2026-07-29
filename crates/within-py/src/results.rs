@@ -7,7 +7,9 @@ use numpy::IntoPyArray;
 use pyo3::exceptions::{PyIndexError, PyUserWarning};
 use pyo3::prelude::*;
 
-use within::{BatchSolveResult, BuildWarning, CoefficientLayout, SolveResult};
+use within::{
+    BatchSolveResult, BuildWarning, Channel, CoefficientAddress, CoefficientLayout, SolveResult,
+};
 
 use crate::convert::{value_err, IntoPyErr};
 
@@ -118,7 +120,11 @@ impl PyCoefficientLayout {
     }
 
     fn index(&self, term: usize, level: usize, column: usize) -> PyResult<usize> {
-        self.inner.index(term, level, column).ok_or_else(|| {
+        let at = CoefficientAddress {
+            channel: Channel { term, column },
+            level,
+        };
+        self.inner.index(at).ok_or_else(|| {
             PyIndexError::new_err(format!(
                 "coefficient address (term={term}, level={level}, column={column}) out of range"
             ))
@@ -126,12 +132,15 @@ impl PyCoefficientLayout {
     }
 
     fn address(&self, index: usize) -> PyResult<(usize, usize, usize)> {
-        self.inner.address(index).ok_or_else(|| {
-            PyIndexError::new_err(format!(
-                "x index {index} out of range (n_dofs={})",
-                self.inner.n_dofs()
-            ))
-        })
+        self.inner
+            .address(index)
+            .map(|at| (at.channel.term, at.level, at.channel.column))
+            .ok_or_else(|| {
+                PyIndexError::new_err(format!(
+                    "x index {index} out of range (n_dofs={})",
+                    self.inner.n_dofs()
+                ))
+            })
     }
 
     fn __repr__(&self) -> String {
@@ -163,9 +172,9 @@ pub(crate) fn into_py_result(py: Python<'_>, result: SolveResult) -> PySolveResu
             .unidentified
             .iter()
             .map(|u| PyUnidentifiedDirection {
-                term: u.term,
+                term: u.channel.term,
                 level: u.level,
-                column: u.column,
+                column: u.channel.column,
             })
             .collect(),
         layout: PyCoefficientLayout {
@@ -199,9 +208,9 @@ pub(crate) fn into_py_batch_result(
             .unidentified
             .iter()
             .map(|u| PyUnidentifiedDirection {
-                term: u.term,
+                term: u.channel.term,
                 level: u.level,
-                column: u.column,
+                column: u.channel.column,
             })
             .collect(),
         layout: PyCoefficientLayout {

@@ -2,7 +2,8 @@
 
 use crate::domain::Design;
 
-use super::UnidentifiedDirection;
+use super::CoefficientAddress;
+use crate::channel::Channel;
 
 #[cfg(test)]
 mod tests;
@@ -17,7 +18,7 @@ const RANK_TOL: f64 = 1e-10;
 pub(crate) struct SlopeReparam {
     terms: Vec<TermReparam>,
     /// Directions the data cannot identify, ascending in `(term, level, column)`.
-    pub(crate) unidentified: Vec<UnidentifiedDirection>,
+    pub(crate) unidentified: Vec<CoefficientAddress>,
 }
 
 /// One slope-bearing term's whitening state.
@@ -78,7 +79,7 @@ impl TermReparam {
         design: &mut Design<'_>,
         term: usize,
         weights: Option<&[f64]>,
-        unidentified: &mut Vec<UnidentifiedDirection>,
+        unidentified: &mut Vec<CoefficientAddress>,
     ) -> Self {
         let meta = &design.terms[term];
         let (offset, n_levels) = (meta.offset, meta.n_levels);
@@ -117,18 +118,19 @@ impl TermReparam {
             moments.gram(level, intercept, &mut gram);
             let (w, kept) = pivoted_gram_schmidt(&gram, v, RANK_TOL);
             if intercept && moments.w_sum[level] == 0.0 {
-                unidentified.push(UnidentifiedDirection {
-                    term,
+                unidentified.push(CoefficientAddress {
+                    channel: Channel { term, column: 0 },
                     level,
-                    column: 0,
                 });
             }
             for (j, &kept_j) in kept.iter().enumerate() {
                 if !kept_j {
-                    unidentified.push(UnidentifiedDirection {
-                        term,
+                    unidentified.push(CoefficientAddress {
+                        channel: Channel {
+                            term,
+                            column: slope_columns[j],
+                        },
                         level,
-                        column: slope_columns[j],
                     });
                 }
             }

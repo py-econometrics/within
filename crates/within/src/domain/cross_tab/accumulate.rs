@@ -8,8 +8,9 @@
 //! whose `l ≡ 1` folds the loading math away, so plain pairs keep the
 //! pre-slope codegen.
 
+use crate::channel::ChannelPair;
 use crate::csr_block::CsrBlock;
-use crate::domain::{ChannelPair, Design};
+use crate::domain::Design;
 
 use super::{to_u32, ActiveLevels};
 use crate::domain::Loading as ColumnLoading;
@@ -127,7 +128,10 @@ pub(super) fn accumulate_cross_block(
     };
     // One arm per monomorphized loading combination; a generic constructor
     // can't express this (closures aren't generic), so the literals repeat.
-    match (load(pair.rows.loading), load(pair.cols.loading)) {
+    match (
+        load(design.loading(pair.rows)),
+        load(design.loading(pair.cols)),
+    ) {
         (None, None) => accumulate(
             PairColumns {
                 row_levels,

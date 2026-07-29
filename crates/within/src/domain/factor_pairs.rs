@@ -8,10 +8,11 @@
 
 use schwarz_precond::{PartitionWeights, SubdomainCore};
 
+use crate::channel::{Channel, ChannelPair};
 use crate::config::ScalingConfig;
-use crate::{BuildError, BuildWarning, SignedPair};
+use crate::{BuildError, BuildWarning};
 
-use super::{find_all_active_levels, BlockDiagonals, Channel, ChannelPair, CrossTab, Design};
+use super::{find_all_active_levels, BlockDiagonals, CrossTab, Design};
 
 mod sddm;
 use crate::domain::Loading;
@@ -75,7 +76,14 @@ pub(crate) fn build_local_domains(
             else {
                 return Ok((Vec::new(), Vec::new()));
             };
-            split_into_subdomains(pair, full_ct, full_diag, &l2g, scaling)
+            let class = if matches!(design.loading(pair.rows), Loading::Constant)
+                && matches!(design.loading(pair.cols), Loading::Constant)
+            {
+                ComponentClass::KnownLaplacian
+            } else {
+                ComponentClass::General
+            };
+            split_into_subdomains(pair, class, full_ct, full_diag, &l2g, scaling)
         })
         .collect::<Result<_, BuildError>>()?;
     let mut domain_pairs = Vec::new();
@@ -90,7 +98,10 @@ pub(crate) fn build_local_domains(
     // collapses convergence on weakly-connected designs (#94). Slope-carrying
     // designs keep every subdomain at uniform weight instead — the plain path
     // is measurably indifferent to this weighting, so this changes nothing there.
-    if !channels.iter().any(|c| c.loading.covariate().is_some()) {
+    if !channels
+        .iter()
+        .any(|&c| design.loading(c).covariate().is_some())
+    {
         compute_partition_weights(&mut domain_pairs, design.n_dofs);
     }
 
@@ -106,6 +117,7 @@ pub(crate) fn build_local_domains(
 /// subdomain, matching the uncovered-inactive-level invariant.
 fn split_into_subdomains(
     pair: ChannelPair,
+    class: ComponentClass,
     full_ct: CrossTab,
     full_diag: BlockDiagonals,
     l2g: &[u32],
@@ -139,19 +151,6 @@ fn split_into_subdomains(
         if comp_diag.iter().all(|&v| v == 0.0) {
             continue;
         }
-        let class = if matches!(pair.rows.loading, Loading::Constant)
-            && matches!(pair.cols.loading, Loading::Constant)
-        {
-            ComponentClass::KnownLaplacian
-        } else {
-            ComponentClass::General
-        };
-        let signed_pair = SignedPair {
-            term_q: pair.rows.term,
-            column_q: pair.rows.column,
-            term_r: pair.cols.term,
-            column_r: pair.cols.column,
-        };
         let comp_globals: Vec<u32> = comp
             .rows
             .iter()
@@ -161,10 +160,10 @@ fn split_into_subdomains(
         let (comp_ct, comp_diag, comp_globals) =
             sddm::orient_for_elimination(comp_ct, comp_diag, comp_globals);
         let (component, uncertified) = convert(comp_ct, comp_diag, class, scaling)
-            .map_err(|NotScalable| BuildError::UnscalableComponent { pair: signed_pair })?;
+            .map_err(|NotScalable| BuildError::UnscalableComponent { pair })?;
         if let Some(uncertified) = uncertified {
             warnings.push(BuildWarning::UnscalableComponent {
-                pair: signed_pair,
+                pair,
                 sweeps: uncertified.sweeps,
                 violation: uncertified.violation,
             });

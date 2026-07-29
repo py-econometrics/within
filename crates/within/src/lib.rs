@@ -30,19 +30,21 @@ pub mod error;
 pub mod observation;
 
 pub(crate) mod block_elim;
+pub(crate) mod channel;
 pub(crate) mod csr_block;
 pub(crate) mod domain;
 pub(crate) mod operator;
 pub(crate) mod solver;
 
+pub use channel::{Channel, ChannelPair};
 pub use config::{
     ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, LsmrOptions, PreconditionerConfig,
     ReductionStrategy, ScalingConfig, ScalingFailure, SchurMode,
 };
 pub use domain::{Design, Effect};
-pub use error::{BuildError, BuildWarning, SignedPair, SolveError, WithinError};
+pub use error::{BuildError, BuildWarning, SolveError, WithinError};
 pub use operator::schwarz::Preconditioner;
 pub use solver::{
-    solve, solve_batch, BatchSolveResult, CoefficientLayout, IntoDesign, PreconditionerInput,
-    SolveResult, Solver, UnidentifiedDirection,
+    solve, solve_batch, BatchSolveResult, CoefficientAddress, CoefficientLayout, IntoDesign,
+    PreconditionerInput, SolveResult, Solver,
 };

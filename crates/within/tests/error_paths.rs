@@ -149,7 +149,7 @@ fn test_non_finite_response_rejected() {
 #[test]
 fn test_collinear_finite_slope_is_unidentified_not_rejected() {
     // A duplicated (collinear) but FINITE slope is genuine rank deficiency, not
-    // malformed input: it must resolve to an UnidentifiedDirection, never an
+    // malformed input: it must resolve to an unidentified direction, never an
     // InvalidLoading. Guards against conflating the two (#122).
     let levels = [0u32, 0, 1, 1];
     let z = [1.0, 3.0, 2.0, 5.0];

@@ -1,9 +1,19 @@
 use proptest::prelude::*;
-use within::{solve, Effect, LsmrOptions, Preconditioner, PreconditionerConfig, Solver};
+use within::{
+    solve, Channel, CoefficientAddress, Effect, LsmrOptions, Preconditioner, PreconditionerConfig,
+    Solver,
+};
 
 #[path = "common/property_strategies.rs"]
 mod strategies;
 use strategies::{additive_precond, random_fe_problem_strategy, random_slopes_problem_strategy};
+
+fn at(term: usize, level: usize, column: usize) -> CoefficientAddress {
+    CoefficientAddress {
+        channel: Channel { term, column },
+        level,
+    }
+}
 
 fn default_params() -> LsmrOptions {
     LsmrOptions::default()
@@ -130,10 +140,10 @@ proptest! {
             for i in 0..n_obs {
                 let lvl = f.levels[i] as usize;
                 if f.intercept {
-                    fitted[i] += x[layout.index(t, lvl, 0).unwrap()];
+                    fitted[i] += x[layout.index(at(t, lvl, 0)).unwrap()];
                 }
                 for (s, col) in f.slopes.iter().enumerate() {
-                    fitted[i] += x[layout.index(t, lvl, slope_base + s).unwrap()] * col[i];
+                    fitted[i] += x[layout.index(at(t, lvl, slope_base + s)).unwrap()] * col[i];
                 }
             }
         }
@@ -149,12 +159,12 @@ proptest! {
                 let wr = weights[i] * (y[i] - fitted[i]);
                 let wy = weights[i] * y[i];
                 if f.intercept {
-                    let k = layout.index(t, lvl, 0).unwrap();
+                    let k = layout.index(at(t, lvl, 0)).unwrap();
                     g[k] += wr;
                     g0[k] += wy;
                 }
                 for (s, col) in f.slopes.iter().enumerate() {
-                    let k = layout.index(t, lvl, slope_base + s).unwrap();
+                    let k = layout.index(at(t, lvl, slope_base + s)).unwrap();
                     g[k] += wr * col[i];
                     g0[k] += wy * col[i];
                 }

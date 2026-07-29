@@ -19,6 +19,7 @@ pub(crate) use factor_pairs::{
 
 use std::borrow::Cow;
 
+use crate::channel::Channel;
 use crate::observation::ObservationFrame;
 use crate::BuildError;
 
@@ -107,21 +108,6 @@ impl TermMeta {
     pub fn column_base(&self, column: usize) -> usize {
         self.offset + column * self.n_levels
     }
-}
-
-/// One coefficient column of a term, located by `(term, column)`.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Channel {
-    pub term: usize,
-    pub column: usize,
-    pub loading: Loading<u32>,
-}
-
-/// A cross-factor channel pair: one Gramian cross-block per pair.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct ChannelPair {
-    pub rows: Channel,
-    pub cols: Channel,
 }
 
 /// Fixed-effects design: observation columns plus coefficient-space layout.
@@ -312,15 +298,12 @@ impl<'a> Design<'a> {
 
     /// The term's coefficient columns in layout order.
     pub(crate) fn channels(&self, term: usize) -> impl Iterator<Item = Channel> + '_ {
-        self.terms[term]
-            .columns
-            .iter()
-            .enumerate()
-            .map(move |(column, &loading)| Channel {
-                term,
-                column,
-                loading,
-            })
+        (0..self.terms[term].n_columns()).map(move |column| Channel { term, column })
+    }
+
+    /// How `channel` loads onto each observation.
+    pub(crate) fn loading(&self, channel: Channel) -> Loading<u32> {
+        self.terms[channel.term].columns[channel.column]
     }
 
     /// Number of observations (rows of D).

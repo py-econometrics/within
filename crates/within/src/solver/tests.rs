@@ -1,5 +1,6 @@
 use super::reparam::SlopeReparam;
-use super::CoefficientLayout;
+use super::{CoefficientAddress, CoefficientLayout};
+use crate::channel::Channel;
 use crate::config::{ScalingConfig, DEFAULT_DENSE_SCHUR_THRESHOLD};
 use crate::domain::{build_local_domains, Design, Grounding, MatrixForm};
 use crate::Effect;
@@ -8,6 +9,13 @@ use crate::Effect;
 /// in `tests/slopes_routing.rs`. A positive slope-only term is not centered by
 /// whitening, so the signed pair stays all-positive — balanced — while generic
 /// `z` keeps it strictly inside the PSD cone: genuine surplus, grounded.
+fn at(term: usize, level: usize, column: usize) -> CoefficientAddress {
+    CoefficientAddress {
+        channel: Channel { term, column },
+        level,
+    }
+}
+
 fn positive_slope_only_panel() -> (Vec<u32>, Vec<u32>, Vec<f64>) {
     let n = 8000usize;
     let f: Vec<u32> = (0..n).map(|i| (i % 80) as u32).collect();
@@ -66,20 +74,19 @@ fn coefficient_layout_translates_addresses_both_ways() {
     assert_eq!(layout.n_levels(2), None);
 
     // Forward matches the documented `offset + column * n_levels + level`.
-    assert_eq!(layout.index(0, 2, 0), Some(2));
-    assert_eq!(layout.index(1, 0, 0), Some(3)); // term-1 intercept, level 0
-    assert_eq!(layout.index(1, 1, 1), Some(6)); // term-1 slope, level 1
+    assert_eq!(layout.index(at(0, 2, 0)), Some(2));
+    assert_eq!(layout.index(at(1, 0, 0)), Some(3)); // term-1 intercept, level 0
+    assert_eq!(layout.index(at(1, 1, 1)), Some(6)); // term-1 slope, level 1
     assert_eq!(layout.n_dofs(), 7);
 
     // Out-of-range coordinates are rejected, not silently wrapped.
-    assert_eq!(layout.index(1, 2, 0), None); // level past n_levels
-    assert_eq!(layout.index(1, 0, 2), None); // column past n_columns
-    assert_eq!(layout.index(2, 0, 0), None); // term past n_terms
+    assert_eq!(layout.index(at(1, 2, 0)), None); // level past n_levels
+    assert_eq!(layout.index(at(1, 0, 2)), None); // column past n_columns
+    assert_eq!(layout.index(at(2, 0, 0)), None); // term past n_terms
     assert_eq!(layout.address(7), None);
 
     // `address` inverts `index` for every flat slot.
     for i in 0..layout.n_dofs() {
-        let (term, level, column) = layout.address(i).expect("address in range");
-        assert_eq!(layout.index(term, level, column), Some(i));
+        assert_eq!(layout.index(layout.address(i).expect("in range")), Some(i));
     }
 }

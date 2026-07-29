@@ -9,6 +9,7 @@ use ndarray::{ArrayView2, Axis};
 use rayon::prelude::*;
 use schwarz_precond::{lsmr as lsmr_solve, mlsmr};
 
+use crate::channel::Channel;
 use crate::config::{LsmrOptions, PreconditionerConfig};
 use crate::domain::{Design, Effect};
 use crate::observation::ObservationFrame;
@@ -109,21 +110,18 @@ impl From<&Preconditioner> for PreconditionerInput {
     }
 }
 
-/// A per-level direction of the design that the data cannot identify.
+/// One coefficient of the design: a [`Channel`] at one level of its term.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct UnidentifiedDirection {
-    /// Index into the design's term list.
-    pub term: usize,
+pub struct CoefficientAddress {
+    /// The coefficient column this address sits in.
+    pub channel: Channel,
     /// Level index within the term (`0..n_levels`).
     pub level: usize,
-    /// Column within the term's per-level block: intercept first (when
-    /// present), then slopes in declaration order.
-    pub column: usize,
 }
 
-/// Translates a `(term, level, column)` coefficient address to its flat index
-/// in [`SolveResult::x`] and back, so callers need not reconstruct the
-/// term-major offset formula (`offset + column * n_levels + level`) by hand.
+/// Translates a [`CoefficientAddress`] to its flat index in [`SolveResult::x`]
+/// and back, so callers need not reconstruct the term-major offset formula
+/// (`offset + column * n_levels + level`) by hand.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoefficientLayout {
     terms: Vec<TermLayout>,
@@ -175,16 +173,16 @@ impl CoefficientLayout {
         self.terms.get(term).map(|t| t.n_columns)
     }
 
-    /// Flat [`SolveResult::x`] index of coefficient `column` of `level` within
-    /// `term`, or `None` if any coordinate is out of range.
-    pub fn index(&self, term: usize, level: usize, column: usize) -> Option<usize> {
-        let t = self.terms.get(term)?;
-        (level < t.n_levels && column < t.n_columns).then(|| t.offset + column * t.n_levels + level)
+    /// Flat [`SolveResult::x`] index of `at`, or `None` if any coordinate is
+    /// out of range.
+    pub fn index(&self, at: CoefficientAddress) -> Option<usize> {
+        let t = self.terms.get(at.channel.term)?;
+        (at.level < t.n_levels && at.channel.column < t.n_columns)
+            .then(|| t.offset + at.channel.column * t.n_levels + at.level)
     }
 
-    /// The `(term, level, column)` address of flat index `i`, or `None` if
-    /// `i >= n_dofs`.
-    pub fn address(&self, i: usize) -> Option<(usize, usize, usize)> {
+    /// The address of flat index `i`, or `None` if `i >= n_dofs`.
+    pub fn address(&self, i: usize) -> Option<CoefficientAddress> {
         if i >= self.n_dofs {
             return None;
         }
@@ -193,7 +191,13 @@ impl CoefficientLayout {
         let term = self.terms.partition_point(|t| t.offset <= i) - 1;
         let t = &self.terms[term];
         let within = i - t.offset;
-        Some((term, within % t.n_levels, within / t.n_levels))
+        Some(CoefficientAddress {
+            channel: Channel {
+                term,
+                column: within / t.n_levels,
+            },
+            level: within % t.n_levels,
+        })
     }
 }
 
@@ -209,7 +213,7 @@ pub struct SolveResult {
     /// minimal-norm value `0`, never NaN; see [`SolveResult::unidentified`].
     pub x: Vec<f64>,
     /// Per-level directions the data cannot identify.
-    pub unidentified: Vec<UnidentifiedDirection>,
+    pub unidentified: Vec<CoefficientAddress>,
     /// Non-fatal preconditioner-build warnings (see [`Solver::warnings`]);
     /// empty when a pre-built preconditioner was reused.
     pub warnings: Vec<BuildWarning>,
@@ -250,7 +254,7 @@ pub struct BatchSolveResult {
     pub x: Vec<f64>,
     /// Per-level directions the data cannot identify, shared across all RHS:
     /// identification depends only on the design and weights, never on `y`.
-    pub unidentified: Vec<UnidentifiedDirection>,
+    pub unidentified: Vec<CoefficientAddress>,
     /// Non-fatal preconditioner-build warnings, shared across all RHS; see
     /// [`SolveResult::warnings`].
     pub warnings: Vec<BuildWarning>,
@@ -497,7 +501,7 @@ impl<'a> Solver<'a> {
 
     /// Per-level directions the data cannot identify, shared across all RHS:
     /// identification depends only on the design and weights, never on `y`.
-    fn unidentified(&self) -> Vec<UnidentifiedDirection> {
+    fn unidentified(&self) -> Vec<CoefficientAddress> {
         self.reparam
             .as_ref()
             .map(|rp| rp.unidentified.clone())

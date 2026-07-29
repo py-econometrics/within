@@ -10,9 +10,10 @@ and this project follows [Semantic Versioning](https://semver.org/).
 ### Added
 
 - **Varying slopes:** factor effects can carry continuous slope covariates via the new `Effect` term type (level codes, an intercept flag, and zero or more slope columns), accepted anywhere a categories matrix is — Rust `Solver::new` / `solve` / `solve_batch` and the Python first argument (#58–#63).
-- `SolveResult` / `BatchSolveResult` report unidentified directions as `UnidentifiedDirection` records (`term`, `level`, `column`) in both Rust and Python; those coefficient slots hold `0`, never NaN (#69).
+- `SolveResult` / `BatchSolveResult` report unidentified directions as coefficient addresses — Rust `CoefficientAddress` (a `Channel` plus a `level`), Python `UnidentifiedDirection(term, level, column)`; those coefficient slots hold `0`, never NaN (#69).
 - `BatchSolveResult.time_setup` (Rust and Python) reports the shared per-batch setup time — solver and preconditioner construction (`Solver::new`) — which the free `solve_batch` previously left only in `time_total` (#194).
-- `CoefficientLayout` (Rust and Python), reached via `SolveResult.layout` / `BatchSolveResult.layout`, translates a `(term, level, column)` address to its flat `x` index and back, so callers need not reconstruct term offsets by hand (#99).
+- `CoefficientLayout` (Rust and Python), reached via `SolveResult.layout` / `BatchSolveResult.layout`, translates a coefficient address to its flat `x` index and back, so callers need not reconstruct term offsets by hand (#99).
+- `Channel` and `ChannelPair` name a term's coefficient column and a cross-factor pair of them; `BuildError`/`BuildWarning::UnscalableComponent` carry a `ChannelPair` (#99).
 - `SolveResult.x` is term-major — coefficient column `c` of `level` sits at `term_offset + c * n_levels + level`; intercept-only designs keep the 0.2.0 ordering (#71).
 - `ScalingConfig` (in `within.config`) tunes certification of signed-component scaling; `Solver::warnings()` returns non-fatal `BuildWarning`s from the build (#61).
 - `SchurMode` (Rust) / `Schur` (Python, `Schur.approximate(...)` / `Schur.exact()`) names the local solver's Schur-reduction mode explicitly (#104).

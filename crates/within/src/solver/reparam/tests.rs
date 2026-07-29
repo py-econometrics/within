@@ -2,6 +2,7 @@
 //! rank-tolerance contract — neither reachable through the public API) and
 //! for the per-term independence of the multi-term whitening.
 
+use crate::channel::Channel;
 use crate::domain::Effect;
 
 use super::*;
@@ -111,15 +112,13 @@ fn unidentified_directions_ascend_across_terms() {
     assert_eq!(
         rp.unidentified,
         vec![
-            UnidentifiedDirection {
-                term: 0,
+            CoefficientAddress {
+                channel: Channel { term: 0, column: 1 },
                 level: 1,
-                column: 1,
             },
-            UnidentifiedDirection {
-                term: 1,
+            CoefficientAddress {
+                channel: Channel { term: 1, column: 1 },
                 level: 0,
-                column: 1,
             },
         ]
     );

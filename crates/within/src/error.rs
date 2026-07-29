@@ -2,6 +2,8 @@
 
 use thiserror::Error;
 
+use crate::channel::ChannelPair;
+
 pub use schwarz_precond::SolveError;
 
 /// Errors produced while validating inputs or building solver components.
@@ -69,7 +71,7 @@ pub enum BuildError {
     #[error("signed component between {pair} is not diagonally scalable to SDDM form")]
     UnscalableComponent {
         /// The offending channel pair.
-        pair: SignedPair,
+        pair: ChannelPair,
     },
     /// A zero (or non-finite-reciprocal) diagonal was encountered while
     /// building a preconditioner.
@@ -108,30 +110,6 @@ pub enum BuildError {
     },
 }
 
-/// The channel pair whose signed cross-factor component an error or warning
-/// refers to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SignedPair {
-    /// Term index of the pair's first channel.
-    pub term_q: usize,
-    /// Coefficient column of the first channel within its term.
-    pub column_q: usize,
-    /// Term index of the pair's second channel.
-    pub term_r: usize,
-    /// Coefficient column of the second channel within its term.
-    pub column_r: usize,
-}
-
-impl std::fmt::Display for SignedPair {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "term {} column {} and term {} column {}",
-            self.term_q, self.column_q, self.term_r, self.column_r
-        )
-    }
-}
-
 /// A non-fatal preconditioner-build event, surfaced via
 /// [`Solver::warnings`](crate::Solver::warnings).
 #[derive(Debug, Clone, PartialEq)]
@@ -142,7 +120,7 @@ pub enum BuildWarning {
     /// only preconditioner quality.
     UnscalableComponent {
         /// The offending channel pair.
-        pair: SignedPair,
+        pair: ChannelPair,
         /// Relaxation sweeps spent before handing the scaling over.
         sweeps: usize,
         /// Largest relative dominance violation at hand-over.
