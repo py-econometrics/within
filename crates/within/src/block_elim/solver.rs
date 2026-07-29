@@ -154,11 +154,7 @@ impl<'de> serde::Deserialize<'de> for BlockElimSolver {
             }
         }
 
-        // The reduced factor is driven over the kept block, plus the explicit
-        // ground slot a grounded complement appends.
-        let input_dim = h.reduced_factor.input_dimension();
-        let ground_slot = h.reduced_factor.grounding() == Some(Grounding::Grounded);
-        if input_dim != n_kept && !(ground_slot && input_dim == n_kept + 1) {
+        if !h.reduced_factor.spans_kept_block(n_kept) {
             return Err(D::Error::custom(
                 "reduced factor input dimension disagrees with the kept block",
             ));
@@ -289,13 +285,6 @@ impl BlockElimSolver {
         self.cross_tab.n_cols()
     }
 
-    fn explicit_ground_index(&self) -> Option<usize> {
-        let n_kept = self.n_kept();
-        (self.reduced_factor.grounding() == Some(Grounding::Grounded)
-            && self.reduced_factor.input_dimension() == n_kept + 1)
-            .then_some(n_kept)
-    }
-
     pub(crate) fn new(
         cross_tab: impl Into<Arc<CrossTab>>,
         inv_diag_elim: Vec<f64>,
@@ -303,6 +292,7 @@ impl BlockElimSolver {
         coordinates: CoordinateMap,
     ) -> Self {
         let cross_tab = cross_tab.into();
+        debug_assert!(reduced_factor.spans_kept_block(cross_tab.n_cols()));
         let n_internal = cross_tab.n_local();
         let n_reduced = reduced_factor.solve_dimension();
         Self {
@@ -343,13 +333,7 @@ impl BlockElimSolver {
                     factor: build_reduced_factor(&matrix, &inv_diagonal_eliminated, config)?,
                     grounding: matrix.grounding,
                 };
-                let reduced_input_dimension = factor.input_dimension();
-                debug_assert!(
-                    reduced_input_dimension == matrix.n_kept()
-                        || (matrix.grounding == Grounding::Grounded
-                            && reduced_input_dimension == matrix.n_kept() + 1)
-                );
-                debug_assert!(factor.solve_dimension() >= reduced_input_dimension);
+                debug_assert!(factor.solve_dimension() >= factor.input_dimension());
                 factor
             }
             // Cover the single signed matrix, factor the cover's reduced
@@ -386,7 +370,7 @@ impl BlockElimSolver {
     ) -> Result<(), LocalSolveError> {
         let n = self.n_internal;
         let (n_elim, n_keep) = (self.n_eliminated(), self.n_kept());
-        let explicit_ground = self.explicit_ground_index();
+        let explicit_ground = self.reduced_factor.explicit_ground_index(n_keep);
 
         // Scale the eliminated block by its inverse diagonal.
         scale_by_diag_in_place(&mut rhs[..n_elim], &self.inv_diag_elim);

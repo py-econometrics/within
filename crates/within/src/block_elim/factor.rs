@@ -51,6 +51,20 @@ impl ReducedFactor {
         }
     }
 
+    /// Index of the explicit ground vertex a grounded complement appends past
+    /// the kept block; `None` when the factor's input is the kept block alone.
+    /// Meaningful only where [`Self::spans_kept_block`] holds.
+    pub(crate) fn explicit_ground_index(&self, n_kept: usize) -> Option<usize> {
+        (self.grounding() == Some(Grounding::Grounded) && self.input_dimension() == n_kept + 1)
+            .then_some(n_kept)
+    }
+
+    /// Whether the factor was built over a kept block of this size: that block
+    /// alone, or with the one explicit ground vertex above it.
+    pub(crate) fn spans_kept_block(&self, n_kept: usize) -> bool {
+        self.input_dimension() == n_kept || self.explicit_ground_index(n_kept).is_some()
+    }
+
     /// Dimension of the system handed to the backend, which augments it with
     /// grounding vertices of its own — hence below [`Self::solve_dimension`].
     pub(crate) fn input_dimension(&self) -> usize {

@@ -434,3 +434,18 @@ fn scaled_coordinate_length_mismatch_is_rejected() {
     let bytes = postcard::to_stdvec(&bad).expect("serialize");
     assert!(postcard::from_bytes::<BlockElimSolver>(&bytes).is_err());
 }
+
+#[test]
+fn kept_block_wider_than_the_reduced_factor_is_rejected() {
+    let mut bad = valid_solver_for_deser();
+    // Widening the kept block leaves every earlier cross-field witness intact
+    // (`c` stays structurally valid, `ct` is rebuilt to match, `inv_diag_elim`
+    // sizes the untouched eliminated block), so the reduced factor's span is
+    // the check under test.
+    let mut c = bad.cross_tab.c.clone();
+    c.ncols += 2;
+    let ct = c.transpose();
+    bad.cross_tab = Arc::new(CrossTab { c, ct });
+    let bytes = postcard::to_stdvec(&bad).expect("serialize");
+    assert!(postcard::from_bytes::<BlockElimSolver>(&bytes).is_err());
+}
