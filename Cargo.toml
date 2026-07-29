@@ -23,7 +23,7 @@ postcard = { version = "1", features = ["use-std"] }
 thiserror = "2"
 
 [patch.crates-io]
-approx-chol = { git = "https://github.com/aai-institute/approx-chol.git", rev = "3198606" }
+approx-chol = { git = "https://github.com/aai-institute/approx-chol.git", rev = "dbec7c4" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
