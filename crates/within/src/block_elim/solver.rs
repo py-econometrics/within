@@ -191,7 +191,11 @@ impl Eliminated {
     fn factor_reduced(&self, config: &LocalSolverConfig) -> Result<Factor, BuildError> {
         let exact_below = config.dense_threshold;
         if exact_below > 0 && self.matrix.n_kept() <= exact_below {
-            let exact = schur::exact_for_factor(&self.matrix, &self.inv_diagonal);
+            let exact = schur::exact_for_factor(
+                &self.matrix,
+                &self.inv_diagonal,
+                schur::RowSplit::Sequential,
+            );
             let ac = config
                 .approx_chol
                 .to_approx_chol(exact_below, ExactFailure::Error);
@@ -202,7 +206,9 @@ impl Eliminated {
         }
         let schur_csr = match &config.schur {
             SchurMode::Approximate(cfg) => schur::sampled(&self.matrix, cfg),
-            SchurMode::Exact => schur::exact_for_factor(&self.matrix, &self.inv_diagonal),
+            SchurMode::Exact => {
+                schur::exact_for_factor(&self.matrix, &self.inv_diagonal, schur::RowSplit::Parallel)
+            }
         };
         let ac = config
             .approx_chol

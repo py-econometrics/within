@@ -121,10 +121,45 @@ fn exact_schur_matches_dense_reference_when_eliminating_rows() {
     );
     let inv_diagonal: Vec<f64> = row_diag.iter().map(|d| 1.0 / d).collect();
 
-    let matrix = exact(&matrix, &inv_diagonal);
+    let matrix = exact(&matrix, &inv_diagonal, RowSplit::Parallel);
     let expected = dense_exact_schur(&c_dense, 3, 2, &row_diag, &col_diag, true);
     let got = sparse_to_dense(&matrix);
     assert_dense_close(&got, &expected, 1e-12);
+}
+
+/// The sequential arm reuses one scatter workspace across rows, so a row that failed to
+/// reset it would read the previous row's entries.
+#[test]
+fn both_row_splits_produce_the_same_complement() {
+    let c_dense = vec![1.0, 2.0, 3.0, 0.0, 0.0, 4.0];
+    let row_diag = vec![5.0, 6.0, 8.0];
+    let col_diag = vec![7.0, 9.0];
+    let inv_diagonal: Vec<f64> = row_diag.iter().map(|d| 1.0 / d).collect();
+
+    for grounding in [Grounding::Grounded, Grounding::Floating] {
+        let operator = make_operator(
+            &c_dense,
+            3,
+            2,
+            row_diag.clone(),
+            col_diag.clone(),
+            grounding,
+        );
+        let parallel = exact_for_factor(&operator, &inv_diagonal, RowSplit::Parallel);
+        let sequential = exact_for_factor(&operator, &inv_diagonal, RowSplit::Sequential);
+
+        assert_eq!(
+            sequential.indptr(),
+            parallel.indptr(),
+            "{grounding:?} indptr"
+        );
+        assert_eq!(
+            sequential.indices(),
+            parallel.indices(),
+            "{grounding:?} indices"
+        );
+        assert_eq!(sequential.data(), parallel.data(), "{grounding:?} data");
+    }
 }
 
 #[test]

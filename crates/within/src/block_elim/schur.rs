@@ -13,22 +13,48 @@ use crate::config::ApproxSchurConfig;
 use crate::csr_block::to_u32;
 use crate::domain::{Grounding, SddmMatrix};
 
-/// Exact Schur complement `S = D_keep − keep_to_elim · diag(inv_diag_elim) · elim_to_keep`, accumulated per keep-row through a dense workspace without materializing intermediate edges.
-pub(crate) fn exact(matrix: &SddmMatrix, inv_diagonal_eliminated: &[f64]) -> CsrMatrix {
-    let n_keep = matrix.n_kept();
+/// Whether the kept rows are split across threads. Each row costs a pass over the
+/// eliminated block, so splitting them pays on a wide kept block and not on a narrow
+/// one: the subdomain loop reaching here is already parallel, and a handful of rows
+/// spawned inside it only adds tasks to steal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RowSplit {
+    Sequential,
+    Parallel,
+}
 
-    let rows: Vec<(Vec<u32>, Vec<f64>)> = (0..n_keep)
-        .into_par_iter()
-        .map_init(
-            || (vec![0.0f64; n_keep], Vec::new()),
-            |(work, touched), i| {
-                compute_schur_row_dense(matrix, inv_diagonal_eliminated, i, work, touched);
-                let result = extract_sparse_row(i, work, touched);
-                touched.clear();
-                result
-            },
-        )
-        .collect();
+/// Exact Schur complement `S = D_keep − keep_to_elim · diag(inv_diag_elim) · elim_to_keep`, accumulated per keep-row through a dense workspace without materializing intermediate edges.
+pub(crate) fn exact(
+    matrix: &SddmMatrix,
+    inv_diagonal_eliminated: &[f64],
+    split: RowSplit,
+) -> CsrMatrix {
+    let n_keep = matrix.n_kept();
+    // Reset per row by `extract_sparse_row` zeroing what it read, so one workspace
+    // serves a whole sequential run and both arms return the same rows.
+    let row = |i: usize, work: &mut Vec<f64>, touched: &mut Vec<usize>| {
+        compute_schur_row_dense(matrix, inv_diagonal_eliminated, i, work, touched);
+        let result = extract_sparse_row(i, work, touched);
+        touched.clear();
+        result
+    };
+
+    let rows: Vec<(Vec<u32>, Vec<f64>)> = match split {
+        RowSplit::Parallel => (0..n_keep)
+            .into_par_iter()
+            .map_init(
+                || (vec![0.0f64; n_keep], Vec::new()),
+                |(work, touched), i| row(i, work, touched),
+            )
+            .collect(),
+        RowSplit::Sequential => {
+            let mut work = vec![0.0f64; n_keep];
+            let mut touched = Vec::new();
+            (0..n_keep)
+                .map(|i| row(i, &mut work, &mut touched))
+                .collect()
+        }
+    };
 
     assemble_schur_csr(rows, n_keep)
 }
@@ -40,8 +66,12 @@ pub(crate) fn sampled(matrix: &SddmMatrix, config: &ApproxSchurConfig) -> CsrMat
     build_laplacian_csr(&edges, n)
 }
 
-pub(crate) fn exact_for_factor(matrix: &SddmMatrix, inv_diagonal_eliminated: &[f64]) -> CsrMatrix {
-    let principal = exact(matrix, inv_diagonal_eliminated);
+pub(crate) fn exact_for_factor(
+    matrix: &SddmMatrix,
+    inv_diagonal_eliminated: &[f64],
+    split: RowSplit,
+) -> CsrMatrix {
+    let principal = exact(matrix, inv_diagonal_eliminated, split);
     let surplus = reduced_surplus(matrix, inv_diagonal_eliminated);
     build_explicit_laplacian(&principal, &surplus, matrix.grounding)
 }
