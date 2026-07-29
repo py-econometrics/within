@@ -354,7 +354,7 @@ fn finalize(
         if !diagonal.is_finite() || *diagonal <= 0.0 {
             return Err(NotScalable);
         }
-        let deficit = (row_sum - *diagonal) / diagonal.max(row_sum);
+        let deficit = (row_sum - *diagonal) / *diagonal;
         if deficit > scaling.tolerance {
             if scaling.on_failure == ScalingFailure::Error {
                 return Err(NotScalable);
