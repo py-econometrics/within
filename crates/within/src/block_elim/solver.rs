@@ -10,7 +10,6 @@ use crate::domain::{CoordinateMap, CrossTab, Grounding, LocalComponent, MatrixFo
 use crate::BuildError;
 
 use super::compensated_sum;
-use super::elimination::invert_eliminated_diagonal;
 use super::factor::{factor_sparse, local_solver_build, ReducedFactor};
 use super::schur;
 
@@ -281,7 +280,7 @@ impl BlockElimSolver {
             form,
             coordinates,
         } = component;
-        let inv_diagonal_eliminated = invert_eliminated_diagonal(&matrix)?;
+        let inv_diagonal_eliminated = schur::invert_eliminated_diagonal(&matrix)?;
 
         let factor = match form {
             MatrixForm::Laplacian => {
@@ -295,7 +294,7 @@ impl BlockElimSolver {
             // Surplus survives the cover, so it grounds exactly as the signed matrix did; only the factor is retained.
             MatrixForm::SignedPendingCover => {
                 let cover = assemble_bipartite_cover(&matrix);
-                let cover_inv_diagonal = invert_eliminated_diagonal(&cover)?;
+                let cover_inv_diagonal = schur::invert_eliminated_diagonal(&cover)?;
                 let inner = build_reduced_factor(&cover, &cover_inv_diagonal, config)?;
                 ReducedFactor::Cover {
                     inner,

@@ -5,7 +5,6 @@
 //! via approximate or dense Cholesky (see [`schur`] and [`factor`]).
 
 pub(crate) mod csr_matrix;
-pub(crate) mod elimination;
 pub(crate) mod factor;
 pub(crate) mod schur;
 pub(crate) mod solver;
