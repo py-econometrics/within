@@ -24,10 +24,7 @@ pub(crate) fn value_err(e: impl std::fmt::Display) -> PyErr {
     PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string())
 }
 
-/// Maps a native solver error to the Python exception class matching its kind:
-/// caller input-validation failures become `ValueError`; runtime/environment
-/// failures (a poisoned lock, a diverged subdomain solve) become `RuntimeError`,
-/// so Python callers can branch on the distinction.
+/// Maps a native solver error to its Python exception class: input-validation failures become `ValueError`, runtime failures `RuntimeError`, so callers can branch on the distinction.
 pub(crate) trait IntoPyErr {
     fn into_py_err(self) -> PyErr;
 }
@@ -50,9 +47,7 @@ impl IntoPyErr for WithinError {
     }
 }
 
-/// A `TypeError` naming the dtype an input array must have (and the dtype it
-/// actually had, when the object exposes one) — the opaque PyO3 extraction
-/// failure names neither.
+/// A `TypeError` naming the dtype an input array must have, and the one it had — the opaque PyO3 extraction failure names neither.
 fn dtype_err(name: &str, expected: &str, obj: &Bound<'_, PyAny>) -> PyErr {
     let got = obj
         .getattr("dtype")
@@ -101,11 +96,7 @@ pub(crate) fn column_refs<'a>(columns: &'a [Cow<'_, [f64]>]) -> Vec<&'a [f64]> {
 // Misc helpers
 // ---------------------------------------------------------------------------
 
-/// Extract the columns of a 2-D array as borrowed-or-owned slices.
-///
-/// A column of an F-contiguous (column-major) array is contiguous in memory and
-/// is borrowed directly (`Cow::Borrowed`); a strided column (e.g. from C-order
-/// input) is copied (`Cow::Owned`). Borrows are tied to the view's data lifetime.
+/// Extract the columns of a 2-D array as borrowed-or-owned slices: an F-contiguous column is contiguous so it is borrowed, a strided one copied.
 pub(crate) fn extract_columns<'a>(
     arr: &numpy::ndarray::ArrayView2<'a, f64>,
 ) -> Vec<Cow<'a, [f64]>> {

@@ -1,8 +1,7 @@
 //! Coefficient-column addressing, shared by the design, the error payloads and
 //! the public solve result.
 
-/// One coefficient column of a term: `column` indexes the term's per-level
-/// block, intercept first (when present), then slopes in declaration order.
+/// One coefficient column of a term: `column` indexes the per-level block, intercept first when present, then slopes in declaration order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Channel {
     /// Index into the design's term list.

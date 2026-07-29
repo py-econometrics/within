@@ -5,18 +5,13 @@ pub(crate) const PAR_SPMV_THRESHOLD: usize = 10_000;
 /// Target number of non-zeros per parallel chunk.
 const TARGET_NNZ_PER_CHUNK: usize = 32_768;
 
-/// Checked `usize -> u32` for CSR index / compact-level values: a silent
-/// `as u32` truncation above `u32::MAX` would corrupt the structure with no
-/// diagnostic, and these are build-path invariants, so panic loudly instead.
+/// Checked `usize -> u32` for CSR index values: a silent `as` truncation would corrupt the structure with no diagnostic, so panic loudly on a build-path invariant.
 #[inline]
 pub(crate) fn to_u32(x: usize) -> u32 {
     u32::try_from(x).expect("CSR index exceeds u32::MAX")
 }
 
-/// Rectangular CSR matrix used as the off-diagonal block in bipartite Gramians.
-///
-/// Stores C (n_rows × n_cols) or C^T (n_cols × n_rows). All column indices within each
-/// row are sorted in ascending order.
+/// Rectangular CSR matrix used as the off-diagonal block in bipartite Gramians, storing `C` or `Cᵀ` with column indices sorted ascending within each row.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct CsrBlock {
     pub(crate) indptr: Vec<u32>,
@@ -32,14 +27,7 @@ impl CsrBlock {
         self.data.len()
     }
 
-    /// Whether the CSR arrays are self-consistent: `indptr` holds `nrows + 1`
-    /// entries starting at `0` and non-decreasing, its last entry equals
-    /// `indices.len() == data.len()`, and every column index is `< ncols`.
-    ///
-    /// `nrows`/`ncols` are stored beside the arrays, so untrusted bytes can set
-    /// them to disagree; [`crate::block_elim`] deserialization screens a block
-    /// with this before indexing it, since a block that passes cannot drive an
-    /// out-of-bounds gather, scatter, or transpose.
+    /// Whether the CSR arrays are self-consistent. `nrows`/`ncols` are stored beside the arrays so untrusted bytes can make them disagree; [`crate::block_elim`] deserialization screens with this first, since a block that passes cannot drive an out-of-bounds gather, scatter, or transpose.
     pub(crate) fn is_structurally_valid(&self) -> bool {
         if self.nrows.checked_add(1) != Some(self.indptr.len()) {
             return false;
@@ -67,10 +55,7 @@ impl CsrBlock {
             .map(|(&j, &w)| (j as usize, w))
     }
 
-    /// Transpose this CSR block: (nrows × ncols) → (ncols × nrows).
-    ///
-    /// O(nnz). Rows of the output are automatically sorted because we process
-    /// source rows in ascending order.
+    /// Transpose to (ncols × nrows) in O(nnz); output rows come out sorted because source rows are processed ascending.
     pub(crate) fn transpose(&self) -> CsrBlock {
         let nnz = self.nnz();
         let mut row_counts = vec![0u32; self.ncols];
@@ -104,9 +89,7 @@ impl CsrBlock {
         }
     }
 
-    /// Build a CSR block from a row-major dense table, skipping zeros.
-    ///
-    /// `table` has layout `table[i * ncols + j]` for row i, column j.
+    /// Build a CSR block from a row-major dense table (`table[i * ncols + j]`), skipping zeros.
     pub(crate) fn from_dense_table(table: &[f64], nrows: usize, ncols: usize) -> Self {
         debug_assert_eq!(table.len(), nrows * ncols);
         let mut indptr = vec![0u32; nrows + 1];
@@ -142,10 +125,7 @@ impl CsrBlock {
         }
     }
 
-    /// y = base + A * x (sparse matrix-vector multiply with explicit base).
-    ///
-    /// This fuses a `copy_from_slice(base)` with sparse accumulation to avoid an
-    /// extra pass over the output buffer in block-elimination solves.
+    /// `y = base + A x`, fusing the `copy_from_slice(base)` with sparse accumulation to avoid an extra pass over the output.
     pub(crate) fn spmv_assign_add(
         &self,
         x: &[f64],

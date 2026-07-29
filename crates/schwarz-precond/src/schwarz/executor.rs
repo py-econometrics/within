@@ -55,8 +55,7 @@ impl<S: LocalSolver> AdditiveExecutor<S> {
         self.subdomains.len()
     }
 
-    /// Dispatch entry point: take a buffer from the pool, run the backend,
-    /// return the buffer.
+    /// Dispatch entry point: take a buffer from the pool, run the backend, return the buffer.
     pub(super) fn apply(
         &self,
         plan: ReductionPlan,

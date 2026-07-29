@@ -16,11 +16,7 @@ use accumulate::accumulate_cross_block;
 // BipartiteComponent / SchurData — supporting types for CrossTab
 // ---------------------------------------------------------------------------
 
-/// Compact mapping of active levels for a factor pair.
-///
-/// Maps global level indices to local (compact) indices for the row and col
-/// channels,
-/// and provides the local-to-global index vector for the combined domain.
+/// Compact mapping of active levels for a factor pair, plus the local-to-global vector for the combined domain.
 struct ActiveLevels {
     row_map: Vec<u32>,
     n_rows: usize,
@@ -29,9 +25,7 @@ struct ActiveLevels {
     local_to_global: Vec<u32>,
 }
 
-/// Scan all observations once and mark which levels are active for each factor.
-///
-/// Returns `active[f][level]` = true if any observation uses that level of factor f.
+/// Scan observations once, marking `active[f][level]` for every level any observation uses.
 pub(crate) fn find_all_active_levels(design: &Design<'_>) -> Vec<Vec<bool>> {
     let mut active: Vec<Vec<bool>> = design
         .terms
@@ -49,9 +43,7 @@ pub(crate) fn find_all_active_levels(design: &Design<'_>) -> Vec<Vec<bool>> {
     active
 }
 
-/// Compact mapping of active levels: assigns each active level a 0-based compact
-/// index. Returns the global-to-compact map (`u32::MAX` for inactive levels) and
-/// the number of active levels.
+/// Assign each active level a 0-based compact index, returning the global-to-compact map (`u32::MAX` for inactive) and the active count.
 fn compact_map(active: &[bool]) -> (Vec<u32>, usize) {
     let mut map = vec![u32::MAX; active.len()];
     let mut n = 0u32;
@@ -64,9 +56,7 @@ fn compact_map(active: &[bool]) -> (Vec<u32>, usize) {
     (map, n as usize)
 }
 
-/// Build compact mapping for a channel pair using pre-computed active level
-/// flags; `base_rows`/`base_cols` are the channels' global DOF offsets
-/// ([`TermMeta::column_base`](crate::domain::TermMeta::column_base)).
+/// Build compact mapping for a channel pair; `base_rows`/`base_cols` are the channels' global DOF offsets.
 fn build_compact_mapping(
     active_rows: &[bool],
     active_cols: &[bool],
@@ -101,9 +91,7 @@ fn build_compact_mapping(
     })
 }
 
-/// A connected component in a bipartite factor-pair graph.
-///
-/// Indices are compact (0-based into the parent CrossTab's n_rows / n_cols).
+/// A connected component in a bipartite factor-pair graph, in compact 0-based parent indices.
 pub(crate) struct BipartiteComponent {
     pub(crate) rows: Vec<usize>,
     pub(crate) cols: Vec<usize>,
@@ -113,28 +101,16 @@ pub(crate) struct BipartiteComponent {
 // CrossTab — bipartite block representation of a local Gramian
 // ---------------------------------------------------------------------------
 
-/// Bipartite block representation of a local Gramian for a single factor pair.
-///
-/// Stores the cross-tabulation C (and its precomputed transpose C^T),
-/// avoiding construction of the full symmetric Gramian CSR. The Gramian has
-/// structure `G = [D_q, C; C^T, D_r]` where D_q and D_r are diagonal; those
-/// diagonals are build-time-only (see [`BlockDiagonals`]) and are not stored
-/// here, since the solve path never reads them.
+/// Bipartite block representation of a local Gramian for one factor pair: stores `C` and `Cᵀ` only, since the solve path never reads the diagonals of `G = [D_q, C; Cᵀ, D_r]`.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct CrossTab {
     /// CSR(C): row-block rows (n_rows) x col-block cols (n_cols).
     pub(crate) c: CsrBlock,
-    /// CSR(C^T): col-block rows (n_cols) x row-block cols (n_rows). Precomputed via
-    /// `c.transpose()`.
+    /// CSR(Cᵀ): `n_cols` x `n_rows`, precomputed via `c.transpose()`.
     pub(crate) ct: CsrBlock,
 }
 
-/// Diagonal blocks of a factor-pair Gramian, one per side of `C`.
-///
-/// These are consumed only during preconditioner assembly, which folds them
-/// into the reduced factor, after which they are never read again. They
-/// therefore travel alongside the [`CrossTab`] through the build step rather
-/// than being stored on (and serialized with) it.
+/// Diagonal blocks of a factor-pair Gramian. Folded into the reduced factor during assembly and never read again, so they travel beside the [`CrossTab`] rather than being serialized with it.
 #[derive(Clone)]
 pub(crate) struct BlockDiagonals {
     /// Diagonal block for the row factor (length n_rows).
@@ -144,9 +120,7 @@ pub(crate) struct BlockDiagonals {
 }
 
 impl BlockDiagonals {
-    /// Gather the diagonal for a single bipartite component into the flat
-    /// per-vertex order `[rows | cols]` that [`CrossTab::neighbors`] indexes,
-    /// mirroring the CSR extraction in [`CrossTab::extract_component`].
+    /// Gather one component's diagonal into the flat per-vertex `[rows | cols]` order that [`CrossTab::neighbors`] indexes.
     pub(crate) fn extract_component(&self, comp: &BipartiteComponent) -> Vec<f64> {
         comp.rows
             .iter()
@@ -172,13 +146,7 @@ impl CrossTab {
         self.c.nrows + self.c.ncols
     }
 
-    /// Build a CrossTab for one channel pair using pre-computed active level flags.
-    ///
-    /// Reuses active levels already determined via `find_all_active_levels`,
-    /// avoiding a redundant observation scan.
-    ///
-    /// Returns the diagonal blocks separately ([`BlockDiagonals`]): they are
-    /// build-time-only and so are not stored on the `CrossTab`.
+    /// Build a CrossTab for one channel pair from pre-computed active flags, reusing them instead of rescanning; the build-time-only diagonals come back separately.
     pub(crate) fn build_for_pair_with_active(
         design: &Design<'_>,
         weights: Option<&[f64]>,
@@ -202,9 +170,7 @@ impl CrossTab {
         Some((cross_tab, diagonals, active.local_to_global))
     }
 
-    /// Symmetric adjacency of the bipartite Gram over local `[q | r]` node
-    /// indexing: q-nodes walk `C`, r-nodes walk `Cᵀ`; neighbor indices come
-    /// back in the same `[q | r]` indexing.
+    /// Symmetric adjacency over local `[q | r]` node indexing: q-nodes walk `C`, r-nodes walk `Cᵀ`, neighbors come back in the same indexing.
     pub(crate) fn neighbors(&self, i: usize) -> impl Iterator<Item = (usize, f64)> + '_ {
         let n_rows = self.n_rows();
         let (block, row, off) = if i < n_rows {
@@ -215,10 +181,7 @@ impl CrossTab {
         block.row(row).map(move |(j, v)| (off + j, v))
     }
 
-    /// Find connected components in the bipartite graph defined by C.
-    ///
-    /// DFS over [`Self::neighbors`]; components as sorted compact row/col indices.
-    /// O(n_rows + n_cols + nnz_C).
+    /// Connected components of the bipartite graph of `C`, by DFS over [`Self::neighbors`]; O(n_rows + n_cols + nnz).
     pub(crate) fn bipartite_connected_components(&self) -> Vec<BipartiteComponent> {
         let n_rows = self.n_rows();
         let mut visited = vec![false; self.n_local()];
@@ -257,15 +220,7 @@ impl CrossTab {
         components
     }
 
-    /// Extract a sub-CrossTab for a single bipartite component.
-    ///
-    /// Remaps row/col indices to the component's local 0-based indexing.
-    /// O(nnz in the component).
-    ///
-    /// `row_remap`/`col_remap` are parent-sized scratch buffers (length `n_rows()` /
-    /// `n_cols()`). They must arrive all-`u32::MAX` and are reset to that on exit,
-    /// so a single pair can be reused across every component of one parent
-    /// instead of allocating fresh per component.
+    /// Extract a sub-CrossTab, remapping to component-local indices. `row_remap`/`col_remap` are parent-sized scratch that must arrive all-`u32::MAX` and are reset on exit, so one pair serves every component.
     pub(crate) fn extract_component(
         &self,
         comp: &BipartiteComponent,

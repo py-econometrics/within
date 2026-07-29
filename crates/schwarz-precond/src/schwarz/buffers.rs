@@ -60,10 +60,7 @@ impl BufferPool {
         ))
     }
 
-    /// Return a buffer to the pool. Infallible by design: pool bookkeeping
-    /// must never mask the caller's real `apply_result`. On the error path the
-    /// buffer is dropped (see below); on a poisoned pool lock the buffer is
-    /// likewise dropped rather than surfaced as a `Synchronization` error.
+    /// Return a buffer to the pool. Infallible by design, since pool bookkeeping must never mask the caller's real `apply_result`; on an error path or poisoned lock the buffer is dropped instead.
     pub(super) fn put(&self, bufs: SchwarzBuffers, apply_result: &Result<(), SolveError>) {
         // On error, the atomic backend's swap-zero readout pass is skipped,
         // leaving stale partial-write values in the AtomicU64 vec. Drop the
@@ -154,14 +151,7 @@ impl SchwarzBuffers {
     }
 }
 
-/// Thread-local stack of reusable per-worker buffers backed by a shared pool.
-///
-/// Each Rayon worker reuses its own buffers across sequential outer tasks via a
-/// `ThreadLocal` stack, with no cross-thread synchronization in the hot loop.
-/// Nested re-entry on the same worker allocates an extra buffer only when
-/// needed, so the number of retained buffers tracks re-entry depth rather than
-/// Rayon task splitting. At round end [`into_pool`](Self::into_pool) gathers the
-/// shared pool and every worker stack back into one vec for the next round.
+/// Thread-local stack of per-worker buffers over a shared pool: each Rayon worker reuses its own across sequential outer tasks with no hot-loop synchronization, so retained buffers track re-entry depth rather than task splitting.
 pub(super) struct WorkerBufferStack<T: Send> {
     shared_pool: Mutex<Vec<T>>,
     worker_stacks: ThreadLocal<RefCell<Vec<T>>>,
@@ -203,9 +193,7 @@ impl<T: Send> WorkerBufferStack<T> {
             .unwrap_or_else(|| (self.alloc)())
     }
 
-    /// Gather the shared pool and all worker stacks back into one vec so it can
-    /// be returned to its [`SchwarzBuffers`] home for the next round. `ctx`
-    /// labels the synchronization error if the pool lock was poisoned.
+    /// Gather the shared pool and all worker stacks into one vec for the next round; `ctx` labels the error if the pool lock was poisoned.
     pub(super) fn into_pool(mut self, ctx: &'static str) -> Result<Vec<T>, SolveError> {
         let mut pool = self
             .shared_pool
@@ -218,8 +206,7 @@ impl<T: Send> WorkerBufferStack<T> {
     }
 }
 
-/// Worker-local buffers for the parallel-reduction path: a [`WorkerBufferStack`]
-/// of per-worker accumulators plus the reduce-into-`z` step that sums them.
+/// Worker-local buffers for the parallel-reduction path: a [`WorkerBufferStack`] of accumulators plus the reduce-into-`z` step.
 pub(super) struct WorkerReductionBuffers {
     pub(super) stack: WorkerBufferStack<AdditiveSweepBuffers>,
 }

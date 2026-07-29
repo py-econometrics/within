@@ -90,8 +90,7 @@ impl PyUnidentifiedDirection {
     }
 }
 
-/// Translates a ``(term, level, column)`` coefficient address to its flat
-/// index in ``SolveResult.x`` and back.
+/// Translates a ``(term, level, column)`` coefficient address to its flat index in ``SolveResult.x`` and back.
 #[pyclass(frozen, skip_from_py_object, module = "within._within")]
 #[pyo3(name = "CoefficientLayout")]
 #[derive(Clone)]
@@ -230,12 +229,7 @@ pub(crate) fn into_py_batch_result(
 // Off-GIL solve orchestration
 // ---------------------------------------------------------------------------
 
-/// Run a native single-response solve with the GIL released, then convert.
-///
-/// The closure produces a [`SolveResult`] off-GIL (`detach`); its native error
-/// is mapped to the matching Python exception class (see [`IntoPyErr`]) and the
-/// result to its Python wrapper. Shared by the free `solve` function and the
-/// persistent `Solver.solve`.
+/// Run a native single-response solve with the GIL released, mapping the native error to its Python exception class and the result to its wrapper.
 pub(crate) fn run_solve<E, F>(py: Python<'_>, solve: F) -> PyResult<PySolveResult>
 where
     E: IntoPyErr + Send,
@@ -245,10 +239,7 @@ where
     Ok(into_py_result(py, result))
 }
 
-/// Run a native batch solve with the GIL released, then convert.
-///
-/// Batch counterpart to [`run_solve`]; the conversion itself is fallible
-/// (re-shaping the flat column buffers into 2-D arrays).
+/// Batch counterpart to [`run_solve`]; the conversion itself is fallible, re-shaping flat column buffers into 2-D arrays.
 pub(crate) fn run_batch<E, F>(py: Python<'_>, solve: F) -> PyResult<PyBatchSolveResult>
 where
     E: IntoPyErr + Send,
@@ -258,8 +249,7 @@ where
     into_py_batch_result(py, result)
 }
 
-/// Re-emit build-time warnings as Python `UserWarning`s. Shared by the
-/// persistent `Solver` (at construction) and the one-shot `solve` path.
+/// Re-emit build-time warnings as Python `UserWarning`s, shared by the persistent `Solver` and the one-shot path.
 pub(crate) fn emit_build_warnings(py: Python<'_>, warnings: &[BuildWarning]) -> PyResult<()> {
     for warning in warnings {
         let message =
@@ -269,8 +259,7 @@ pub(crate) fn emit_build_warnings(py: Python<'_>, warnings: &[BuildWarning]) -> 
     Ok(())
 }
 
-/// [`run_solve`] for the one-shot path: the off-GIL closure also returns the
-/// build warnings collected during construction, which are re-emitted on-GIL.
+/// [`run_solve`] for the one-shot path, whose off-GIL closure also returns build warnings to re-emit on-GIL.
 pub(crate) fn run_solve_with_warnings<E, F>(py: Python<'_>, solve: F) -> PyResult<PySolveResult>
 where
     E: IntoPyErr + Send,

@@ -13,11 +13,7 @@ use crate::config::ApproxSchurConfig;
 use crate::csr_block::to_u32;
 use crate::domain::{Grounding, SddmMatrix};
 
-/// Build the exact Schur complement via row-workspace accumulation.
-///
-/// Computes `S = D_keep − keep_to_elim · diag(inv_diag_elim) · elim_to_keep`
-/// directly, without materializing intermediate edges. Each keep-block row
-/// scatters into a dense workspace, then extracts non-zeros.
+/// Exact Schur complement `S = D_keep − keep_to_elim · diag(inv_diag_elim) · elim_to_keep`, accumulated per keep-row through a dense workspace without materializing intermediate edges.
 pub(crate) fn exact(matrix: &SddmMatrix, inv_diagonal_eliminated: &[f64]) -> CsrMatrix {
     let n_keep = matrix.n_kept();
 
@@ -40,8 +36,7 @@ pub(crate) fn exact(matrix: &SddmMatrix, inv_diagonal_eliminated: &[f64]) -> Csr
     assemble_schur_csr(rows, n_keep)
 }
 
-/// Build the sampled Schur complement as a Laplacian. Grounded systems retain
-/// the ground vertex as an ordinary final vertex.
+/// Build the sampled Schur complement as a Laplacian; grounded systems retain the ground vertex as an ordinary final vertex.
 pub(crate) fn sampled(matrix: &SddmMatrix, config: &ApproxSchurConfig) -> CsrMatrix {
     let edges = par_emit(matrix, config);
     let n = matrix.n_kept() + usize::from(matrix.grounding == Grounding::Grounded);
@@ -54,10 +49,7 @@ pub(crate) fn exact_for_factor(matrix: &SddmMatrix, inv_diagonal_eliminated: &[f
     build_explicit_laplacian(&principal, &surplus, matrix.grounding)
 }
 
-/// Scatter the Schur row `i` into a dense workspace.
-///
-/// Computes `work[j] = D_keep[i] δ_{ij} - Σ_k (keep_to_elim[i,k] / D_elim[k]) * elim_to_keep[k,j]`
-/// and records touched column indices.
+/// Scatter Schur row `i` into a dense workspace as `work[j] = D_keep[i] δ_ij − Σ_k (keep_to_elim[i,k] / D_elim[k]) · elim_to_keep[k,j]`, recording touched columns.
 fn compute_schur_row_dense(
     matrix: &SddmMatrix,
     inv_diagonal_eliminated: &[f64],
@@ -79,10 +71,7 @@ fn compute_schur_row_dense(
     }
 }
 
-/// Extract non-zero entries from the dense workspace into sparse row arrays.
-///
-/// Sorts touched columns, emits non-zero values (preserving the diagonal even
-/// if numerically zero for SDDM structure), and clears the workspace.
+/// Extract non-zeros from the dense workspace into sparse row arrays, preserving the diagonal even when numerically zero to keep SDDM structure, and clear the workspace.
 fn extract_sparse_row(i: usize, work: &mut [f64], touched: &mut [usize]) -> (Vec<u32>, Vec<f64>) {
     touched.sort_unstable();
     // `touched.len()` is a tight upper bound on the emitted non-zeros
@@ -115,11 +104,7 @@ fn assemble_schur_csr(rows: Vec<(Vec<u32>, Vec<f64>)>, n_keep: usize) -> CsrMatr
     CsrMatrix::new(s_indptr, s_indices, s_data, n_keep)
 }
 
-/// Build a symmetric Laplacian CSR from sorted upper-triangular edges.
-///
-/// Edges must be sorted by (lo, hi) with lo < hi, which lets lower-triangle,
-/// diagonal, and upper-triangle entries land in column order without per-row
-/// sorting.
+/// Build a symmetric Laplacian CSR from upper-triangular edges sorted by `(lo, hi)` with `lo < hi`, which lets both triangles and the diagonal land in column order without per-row sorting.
 fn build_laplacian_csr(edges: &[Edge], n: usize) -> CsrMatrix {
     debug_assert!(edges.iter().all(|&(lo, hi, _)| lo < hi));
 

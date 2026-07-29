@@ -21,8 +21,7 @@ use crate::results::{
     PyBatchSolveResult, PySolveResult,
 };
 
-/// Build a one-shot solver, run the solve (mirroring [`within::solve`]'s
-/// timing), and hand back the build warnings so the caller can re-emit them.
+/// Build a one-shot solver, run the solve mirroring [`within::solve`]'s timing, and hand back build warnings for the caller to re-emit.
 fn build_and_solve<'a>(
     design: impl IntoDesign<'a>,
     y: &[f64],
@@ -143,8 +142,7 @@ pub fn solve_batch<'py>(
     }
 }
 
-/// Validate `Y`'s row count up front: an empty batch (`Y.shape[1] == 0`) would
-/// otherwise silently skip the per-column length check inside `Solver::solve`.
+/// Validate `Y`'s row count up front: an empty batch would otherwise silently skip the per-column length check inside `Solver::solve`.
 fn validate_batch_rows(y_rows: usize, n_obs: usize) -> PyResult<()> {
     if y_rows != n_obs {
         return Err(value_err(format!(
@@ -158,10 +156,7 @@ fn validate_batch_rows(y_rows: usize, n_obs: usize) -> PyResult<()> {
 // Effect-term design
 // ---------------------------------------------------------------------------
 
-/// One factor's effect: level codes, an optional intercept, and slope covariates.
-///
-/// Holds its columns natively (copied out of numpy) so the borrowed [`Effect`]
-/// it lowers to can be rebuilt off-GIL, where `Py` handles can't reach.
+/// One factor's effect, holding its columns natively (copied out of numpy) so the borrowed [`Effect`] it lowers to can be rebuilt off-GIL where `Py` handles cannot reach.
 #[pyclass(frozen, skip_from_py_object, module = "within._within")]
 #[pyo3(name = "Effect")]
 #[derive(Clone)]
@@ -197,8 +192,7 @@ impl PyEffect {
 }
 
 impl PyEffect {
-    /// Rebuild the borrowed native [`Effect`]. Infallible: `PyEffect::new`
-    /// already validated these exact columns through `Effect::new`.
+    /// Rebuild the borrowed native [`Effect`]. Infallible, since `PyEffect::new` already validated these exact columns.
     fn as_effect(&self) -> Effect<'_> {
         Effect::new(
             &self.levels,
@@ -217,8 +211,7 @@ enum DesignSource<'py> {
     Effects(Vec<PyEffect>),
 }
 
-/// Interpret the Python `design` argument: a 2-D `uint32` categories matrix
-/// (borrowed) or a list of [`Effect`] terms (cloned out of Python).
+/// Interpret the Python `design` argument: a 2-D `uint32` categories matrix (borrowed) or a list of [`Effect`] terms (cloned out of Python).
 fn extract_design<'py>(py: Python<'_>, design: &Bound<'py, PyAny>) -> PyResult<DesignSource<'py>> {
     if design.cast::<PyUntypedArray>().is_ok() {
         let categories = readonly_u32_2d("design", design)?;
@@ -240,11 +233,7 @@ fn extract_design<'py>(py: Python<'_>, design: &Bound<'py, PyAny>) -> PyResult<D
 // Persistent Solver
 // ---------------------------------------------------------------------------
 
-/// Persistent solver that reuses preconditioners across multiple solves.
-///
-/// Build once with `Solver(categories, ...)`, then call `solve()` or
-/// `solve_batch()` repeatedly. The expensive preconditioner factorization
-/// happens only at construction time.
+/// Persistent solver that reuses preconditioners across solves: the expensive factorization happens once at construction.
 #[pyclass(frozen, module = "within._within")]
 #[pyo3(name = "Solver")]
 pub struct PySolver {
@@ -307,10 +296,7 @@ impl PySolver {
         run_solve(py, || self.solver.solve(&y_cow, &params))
     }
 
-    /// Solve for multiple response vectors in parallel.
-    ///
-    /// `Y` is a 2-D array of shape `(n_obs, k)` where each column is a
-    /// separate response vector.
+    /// Solve for multiple response vectors in parallel; `Y` is `(n_obs, k)` with one response per column.
     #[pyo3(name = "solve_batch", signature = (Y, options=None))]
     fn solve_batch_py<'py>(
         &self,
@@ -338,10 +324,7 @@ impl PySolver {
         run_batch(py, || self.solver.solve_batch(&col_refs, &params))
     }
 
-    /// Return the built preconditioner, or ``None`` if unconfigured.
-    ///
-    /// The returned object is picklable and can be passed to a new
-    /// ``Solver(…, preconditioner=p)`` to skip the expensive build step.
+    /// Return the built preconditioner, or ``None`` if unconfigured; it is picklable and can be passed to a new ``Solver`` to skip the build.
     #[getter]
     #[pyo3(name = "preconditioner")]
     fn preconditioner_py(&self) -> PyResult<Option<PyPreconditioner>> {

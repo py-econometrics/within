@@ -53,8 +53,7 @@ impl<T> std::ops::Deref for NonEmpty<T> {
     }
 }
 
-/// One coefficient column's per-observation loading: the intercept's implicit
-/// `1.0`, or a covariate column carried as `T`.
+/// One coefficient column's per-observation loading: the intercept's implicit `1.0`, or a covariate carried as `T`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Loading<T> {
     /// The intercept column; loading value `1.0` at every observation.
@@ -81,17 +80,14 @@ impl<T> Loading<T> {
     }
 }
 
-/// Per-term metadata: level count, coefficient-block offset, and column
-/// structure. Coefficient `c` of level `level` lives at
-/// `offset + c * n_levels + level`.
+/// Per-term metadata; coefficient `c` of `level` lives at `offset + c · n_levels + level`.
 #[derive(Debug, Clone)]
 pub(crate) struct TermMeta {
     pub n_levels: usize,
     pub offset: usize,
     /// Non-decreasing in the design's internal row order (fixed at construction).
     pub sorted: bool,
-    /// Coefficient columns in layout order; `Covariate` indexes the frame's
-    /// continuous columns.
+    /// Coefficient columns in layout order; `Covariate` indexes the frame's continuous columns.
     pub columns: NonEmpty<Loading<u32>>,
 }
 
@@ -123,8 +119,7 @@ pub struct Design<'a> {
 }
 
 impl<'a> Design<'a> {
-    /// Lower effect terms into a design: level columns plus each term's slope
-    /// loadings, laid out term-major (`offset[t] + c * L_t + level`).
+    /// Lower effect terms into a design: level columns plus slope loadings, laid out term-major (`offset[t] + c · L_t + level`).
     pub fn new(effects: impl IntoIterator<Item = Effect<'a>>) -> Result<Self, BuildError> {
         let mut categorical: Vec<Cow<'a, [u32]>> = Vec::new();
         let mut continuous: Vec<Cow<'a, [f64]>> = Vec::new();
@@ -142,9 +137,7 @@ impl<'a> Design<'a> {
         Self::build(frame, structure, true)
     }
 
-    /// Construct from a frame of plain factors (each an intercept-only term),
-    /// inferring each factor's level count (`max + 1`); locality-sorts all
-    /// columns when the dominant factor is unsorted.
+    /// Construct from plain intercept-only factors, inferring each level count as `max + 1`; locality-sorts all columns when the dominant factor is unsorted.
     pub fn from_frame(frame: ObservationFrame<'a>) -> Result<Self, BuildError> {
         let structure = vec![NonEmpty::of(Loading::Constant); frame.n_factors()];
         Self::build(frame, structure, true)
@@ -157,8 +150,7 @@ impl<'a> Design<'a> {
         Self::build(frame, structure, false)
     }
 
-    /// `column_structure[term]` = that term's coefficient columns, aligned with the
-    /// frame's categorical columns.
+    /// `column_structure[term]` = that term's coefficient columns, aligned with the frame's categorical columns.
     fn build(
         frame: ObservationFrame<'a>,
         column_structure: Vec<NonEmpty<Loading<u32>>>,

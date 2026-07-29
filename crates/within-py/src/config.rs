@@ -74,9 +74,7 @@ impl PyApproxSchurConfig {
     }
 }
 
-/// Schur-complement reduction mode for `LocalSolverConfig`: approximate (the
-/// library default) or exact. Build via `Schur.approximate(...)` or
-/// `Schur.exact()`.
+/// Schur-complement reduction mode: approximate (the library default) or exact, built via ``Schur.approximate(...)`` or ``Schur.exact()``.
 #[pyclass(frozen, skip_from_py_object, module = "within._within")]
 #[pyo3(name = "Schur")]
 #[derive(Clone)]
@@ -86,8 +84,7 @@ pub struct PySchur {
 
 #[pymethods]
 impl PySchur {
-    /// Approximate Schur via clique-tree sampling (the library default).
-    /// `config` tunes the sampler; omitted uses the default.
+    /// Approximate Schur via clique-tree sampling (the library default); `config` tunes the sampler, defaulting when omitted.
     #[staticmethod]
     #[pyo3(signature = (config=None))]
     fn approximate(py: Python<'_>, config: Option<Py<PyApproxSchurConfig>>) -> Self {
@@ -123,11 +120,7 @@ impl PySchur {
     }
 }
 
-/// Certification policy for the diagonal scaling of signed (varying-slope)
-/// components: relative ``tolerance`` for weak diagonal dominance, relaxation
-/// ``max_sweeps`` budget, and ``on_failure`` disposition (``"warn"`` clamps
-/// residual deficits — preconditioner quality only — and emits a
-/// ``UserWarning``; ``"error"`` fails the build).
+/// Certification policy for the diagonal scaling of signed components: relative ``tolerance``, relaxation ``max_sweeps``, and ``on_failure`` (``"warn"`` clamps deficits and emits a ``UserWarning``, ``"error"`` fails the build).
 #[pyclass(frozen, module = "within._within")]
 #[pyo3(name = "ScalingConfig")]
 pub struct PyScalingConfig {
@@ -184,11 +177,7 @@ impl PyScalingConfig {
     }
 }
 
-/// Preconditioner selection shortcut for the LSMR solver.
-///
-/// - ``PreconditionerConfig.Additive`` — additive Schwarz (default)
-/// - ``PreconditionerConfig.Off`` — no preconditioner
-/// - ``PreconditionerConfig.Diagonal`` — diagonal/Jacobi preconditioner
+/// Preconditioner selection shortcut for the LSMR solver: ``Additive`` (default), ``Off``, or ``Diagonal``.
 #[pyclass(frozen, eq, eq_int, from_py_object, module = "within._within")]
 #[pyo3(name = "PreconditionerConfig")]
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -321,10 +310,7 @@ impl PyLsmrOptions {
     }
 }
 
-/// A pre-built preconditioner that can be pickled and reused.
-///
-/// Obtained via ``Solver.preconditioner``. Pass it back to a new
-/// ``Solver(…, preconditioner=p)`` to skip the expensive factorisation.
+/// A pre-built preconditioner that can be pickled and reused. Obtained via ``Solver.preconditioner`` and passed back to skip the factorisation.
 #[pyclass(frozen, module = "within._within")]
 #[pyo3(name = "Preconditioner")]
 pub struct PyPreconditioner {
@@ -402,13 +388,7 @@ impl PyPreconditioner {
     }
 }
 
-/// Resolve the Python `preconditioner` argument into a [`PreconditionerInput`].
-///
-/// Must run while the GIL is held (it inspects Python objects). A pre-built
-/// `Preconditioner` is detected first and taken verbatim; anything else is
-/// parsed as a `PreconditionerConfig` via [`extract_preconditioner_config`],
-/// with `None` meaning the library default. The result holds only native data,
-/// so it is safe to move into a GIL-released closure.
+/// Resolve the Python `preconditioner` argument into a [`PreconditionerInput`]. Must run under the GIL; a pre-built `Preconditioner` is taken verbatim, anything else parsed as a config with `None` meaning the default. The result is all-native, so it can move into a GIL-released closure.
 pub(crate) fn resolve_precond_input(
     py: Python<'_>,
     preconditioner: Option<&Bound<'_, PyAny>>,

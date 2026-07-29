@@ -1,8 +1,7 @@
 use crate::domain::{Loading, NonEmpty};
 use crate::BuildError;
 
-/// One factor's contribution to a design: level codes plus the coefficient
-/// columns carried per level.
+/// One factor's contribution to a design: level codes plus the coefficient columns carried per level.
 #[derive(Clone, Debug)]
 pub struct Effect<'a> {
     levels: &'a [u32],
@@ -10,8 +9,7 @@ pub struct Effect<'a> {
 }
 
 impl<'a> Effect<'a> {
-    /// Validates the effect is non-empty and every slope has one finite value
-    /// per observation, yielding the term's coefficient columns.
+    /// Validates the effect is non-empty and every slope finite per observation, yielding the term's coefficient columns.
     pub fn new(
         levels: &'a [u32],
         intercept: bool,

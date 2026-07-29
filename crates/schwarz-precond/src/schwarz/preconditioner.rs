@@ -20,11 +20,7 @@ use super::planning::{AdditiveScheduler, ReductionPlan, ReductionStrategy};
 // Serde
 // ---------------------------------------------------------------------------
 
-/// Persists the subdomain entries and the global DOF count `n_dofs` — the
-/// latter is not recoverable from the entries alone when some operator columns
-/// are covered by no subdomain. `max_scratch_size` and the scheduling metrics
-/// are re-derived on deserialize; the reduction strategy resets to `Auto`;
-/// buffers are re-allocated fresh.
+/// Persists entries and `n_dofs`, the latter unrecoverable from entries alone when some columns are uncovered. Scratch size and metrics are re-derived on deserialize, the reduction strategy resets to `Auto`, and buffers are re-allocated.
 #[cfg(feature = "serde")]
 impl<S> serde::Serialize for SchwarzPreconditioner<S>
 where
@@ -84,12 +80,7 @@ where
     }
 }
 
-/// One-level additive Schwarz preconditioner, generic over the local solver.
-///
-/// Subdomains (factored matrices) are stored behind `Arc` so that cloning
-/// shares the heavy subdomain data. A pool of per-thread buffer sets enables
-/// safe concurrent `apply()` calls on the same instance — each caller grabs
-/// an independent buffer set from the pool for the duration of the call.
+/// One-level additive Schwarz preconditioner. Subdomains sit behind `Arc` so cloning shares them, and a pool of per-thread buffer sets makes concurrent `apply()` on one instance safe.
 pub struct SchwarzPreconditioner<S: LocalSolver> {
     reduction_strategy: ReductionStrategy,
     scheduler: AdditiveScheduler,
@@ -97,22 +88,12 @@ pub struct SchwarzPreconditioner<S: LocalSolver> {
 }
 
 impl<S: LocalSolver> SchwarzPreconditioner<S> {
-    /// Construct from pre-built subdomain entries, inferring the global DOF
-    /// count from the maximum global index across entries (or 0 if empty).
-    ///
-    /// Suitable only when every DOF is covered by a subdomain. An operator
-    /// with columns no subdomain touches (e.g. an unidentified direction kept
-    /// for shape) must state its true width via [`Self::with_n_dofs`], or the
-    /// inferred count falls short and the mismatch surfaces at apply time.
+    /// Construct from pre-built entries, inferring `n_dofs` from the maximum global index. Only valid when every DOF is covered — an operator with uncovered columns must state its width via [`Self::with_n_dofs`] or the mismatch surfaces at apply time.
     pub fn new(entries: Vec<SubdomainEntry<S>>, strategy: ReductionStrategy) -> Self {
         Self::build(entries, None, strategy)
     }
 
-    /// Construct with an explicit global DOF count: the operator's column
-    /// count, which may exceed the span of the subdomains' global indices. A
-    /// column no subdomain covers stays in the null space, so its apply output
-    /// is `0`. A count below the covered span is a caller bug (a subdomain
-    /// would scatter out of bounds), caught in debug builds.
+    /// Construct with an explicit global DOF count, which may exceed the subdomains' covered span; an uncovered column stays in the null space and applies to `0`, while a count below the span is a caller bug caught in debug.
     pub fn with_n_dofs(
         entries: Vec<SubdomainEntry<S>>,
         n_dofs: usize,
@@ -121,9 +102,7 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
         Self::build(entries, Some(n_dofs), strategy)
     }
 
-    /// Shared constructor: one pass over `entries` derives `max_scratch_size`,
-    /// the scheduling metrics, and the covered index span. `n_dofs` is taken
-    /// as given, or inferred from that span when `None`.
+    /// Shared constructor: one pass over `entries` derives `max_scratch_size`, the scheduling metrics, and the covered span, `n_dofs` being taken as given or inferred from that span.
     fn build(
         entries: Vec<SubdomainEntry<S>>,
         n_dofs: Option<usize>,
@@ -207,8 +186,7 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
 }
 
 impl<S: LocalSolver> Clone for SchwarzPreconditioner<S> {
-    /// Clone shares both the subdomain data and the buffer pool via `Arc`.
-    /// This is O(1) and the clone is fully interchangeable with the original.
+    /// Clone shares subdomain data and the buffer pool via `Arc`: O(1) and fully interchangeable.
     fn clone(&self) -> Self {
         Self {
             reduction_strategy: self.reduction_strategy,

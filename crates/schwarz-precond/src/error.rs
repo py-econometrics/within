@@ -16,10 +16,7 @@
 
 use thiserror::Error;
 
-/// Construction-time validation errors for the Schwarz building blocks.
-///
-/// Consolidates failures from subdomain core/entry construction and
-/// preconditioner-wide index checks into a single flat enum.
+/// Construction-time validation errors for the Schwarz building blocks, consolidating subdomain and preconditioner-wide index checks into one flat enum.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[non_exhaustive]
 pub enum BuildError {
@@ -49,12 +46,7 @@ pub enum BuildError {
     },
 }
 
-/// Runtime error emitted by a local subdomain solver during a solve call.
-///
-/// Returned by [`crate::LocalSolver::solve_local`].
-/// Backend-agnostic by design: backends report a `context` site and a
-/// free-form `message` rather than enumerating their internal error modes
-/// through this generic crate.
+/// Runtime error from a local subdomain solver. Backend-agnostic by design: backends report a `context` site and free-form `message` rather than enumerating internal modes through this generic crate.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[non_exhaustive]
 pub enum LocalSolveError {
@@ -68,10 +60,7 @@ pub enum LocalSolveError {
     },
 }
 
-/// Runtime failure while executing a solve.
-///
-/// Covers both operator/preconditioner application failures (e.g. a local
-/// solver diverges) and iterative-solver input validation.
+/// Runtime failure while executing a solve: operator or preconditioner application failures as well as iterative-solver input validation.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[non_exhaustive]
 pub enum SolveError {

@@ -15,9 +15,7 @@ use crate::domain::Design;
 use super::{to_u32, ActiveLevels};
 use crate::domain::Loading as ColumnLoading;
 
-/// Max entries in a flat dense cross-tab accumulator (~40 MB at 8 bytes each).
-/// Absolute hard cap on the dense path: tables larger than this always go
-/// sparse, regardless of the cost comparison in `accumulate_cross_block`.
+/// Hard cap on the dense cross-tab accumulator (~40 MB): larger tables always go sparse, regardless of the cost comparison.
 const DENSE_TABLE_MAX_ENTRIES: usize = 5_000_000;
 
 /// A channel's per-observation loading.
@@ -43,8 +41,7 @@ impl Loading for &[f64] {
     }
 }
 
-/// One observation's contribution to the pair's Gram: the signed cell
-/// `w·l_row·l_col` plus the diagonals `w·l_row²` / `w·l_col²`, `l` the channel's loading.
+/// One observation's contribution to the pair's Gram: signed cell `w·l_row·l_col` plus diagonals `w·l_row²` / `w·l_col²`.
 struct Contribution {
     cj: usize,
     ck: usize,
@@ -53,8 +50,7 @@ struct Contribution {
     col_diag: f64,
 }
 
-/// The per-observation input columns backing one channel pair: level codes,
-/// loadings, and observation weights.
+/// Per-observation input columns backing one channel pair: level codes, loadings, and weights.
 #[derive(Clone, Copy)]
 pub(super) struct PairColumns<'a, Lq: Loading, Lr: Loading> {
     pub(super) row_levels: &'a [u32],
@@ -65,9 +61,7 @@ pub(super) struct PairColumns<'a, Lq: Loading, Lr: Loading> {
 }
 
 impl<Lq: Loading, Lr: Loading> PairColumns<'_, Lq, Lr> {
-    /// Decode observation `uid` into its compact [`Contribution`], or `None`
-    /// if either factor level is inactive (compact index `u32::MAX`) and the
-    /// observation should be skipped.
+    /// Decode observation `uid` into its compact [`Contribution`], or `None` when either level is inactive (compact index `u32::MAX`) and the observation is skipped.
     #[inline]
     fn decode(&self, active: &ActiveLevels, uid: usize) -> Option<Contribution> {
         let cj = active.row_map[self.row_levels[uid] as usize];
@@ -88,13 +82,7 @@ impl<Lq: Loading, Lr: Loading> PairColumns<'_, Lq, Lr> {
     }
 }
 
-/// Accumulate observation weights into a cross-tabulation block C plus diagonals.
-///
-/// Used by `CrossTab::build_for_pair_with_active`. Observations whose compact
-/// index is `u32::MAX` are skipped.
-///
-/// Dispatches to a dense or sparse path by comparing their estimated peak
-/// transient memory, with a hard dense-table ceiling.
+/// Accumulate observations into a cross-tabulation block `C` plus diagonals, skipping inactive levels and dispatching dense or sparse by estimated peak transient memory under a hard dense-table ceiling.
 pub(super) fn accumulate_cross_block(
     design: &Design<'_>,
     weights: Option<&[f64]>,
@@ -218,11 +206,7 @@ pub(super) fn accumulate_dense_cross_block<Lq: Loading, Lr: Loading>(
     (c, row_diag, col_diag)
 }
 
-/// Sparse path: two-pass bucket + workspace-based dedup per row.
-///
-/// Bucket observations by row in two passes (count + fill), then use
-/// a dense workspace of size n_cols to accumulate and deduplicate each
-/// row. The workspace sort is on unique columns only (n_r_active << len).
+/// Sparse path: bucket observations by row in two passes, then dedup each row through a dense `n_cols` workspace, sorting only the unique columns touched.
 pub(super) fn accumulate_sparse_cross_block<Lq: Loading, Lr: Loading>(
     cols: PairColumns<'_, Lq, Lr>,
     active: &ActiveLevels,

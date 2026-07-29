@@ -26,9 +26,7 @@ pub(crate) type Edge = (u32, u32, f64);
 // sampling — O(deg) edges instead of O(deg^2) — keeping the Schur complement
 // spectrally close to the exact (row-workspace) path.
 
-/// One eliminated vertex's neighbors in the keep-block.
-///
-/// References into the cross-tab's CSR arrays for zero-copy access.
+/// One eliminated vertex's neighbors in the keep-block, referencing the cross-tab's CSR arrays for zero-copy access.
 pub(crate) struct Star<'a> {
     /// Eliminated vertex index (used for deterministic seeding).
     index: usize,
@@ -44,10 +42,7 @@ impl Star<'_> {
     }
 }
 
-/// Sample clique-tree fill edges for one eliminated star.
-///
-/// Ground surplus is one more incident edge, so the sampled star's capacity is
-/// exactly its eliminated diagonal.
+/// Sample clique-tree fill edges for one eliminated star; ground surplus is one more incident edge, so the sampled star's capacity is exactly its eliminated diagonal.
 fn sample_star(
     star: &Star,
     ground: Option<(u32, f64)>,
@@ -79,8 +74,7 @@ fn sample_star(
 // Star iteration over the eliminated block
 // ===========================================================================
 
-/// Fold the eliminated block's diagonal to its reciprocals, the one value
-/// Schur assembly needs that the matrix does not already carry.
+/// Fold the eliminated block's diagonal to its reciprocals, the one value Schur assembly needs that the matrix does not carry.
 pub(crate) fn invert_eliminated_diagonal(matrix: &SddmMatrix) -> Result<Vec<f64>, BuildError> {
     debug_assert!(
         matrix.n_eliminated() >= matrix.n_kept(),
@@ -152,10 +146,7 @@ pub(crate) fn par_emit(matrix: &SddmMatrix, config: &ApproxSchurConfig) -> Vec<E
     edges
 }
 
-/// Sort edges into a total `(lo, hi, weight)` order and merge duplicates by
-/// summing weights. The weight tiebreak fixes the per-`(lo, hi)` summation
-/// order, making the assembled Schur complement reproducible across runs and
-/// thread counts.
+/// Sort edges into total `(lo, hi, weight)` order, merging duplicates by summing. The weight tiebreak fixes per-`(lo, hi)` summation order, making the assembled Schur reproducible across runs and thread counts.
 fn sort_and_dedup(edges: &mut Vec<Edge>, n_kept: usize) {
     if edges.len() <= 1 {
         return;

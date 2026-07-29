@@ -32,20 +32,7 @@ pub(crate) struct LocalDomain {
     pub(crate) component: LocalComponent,
 }
 
-/// Build local subdomains (with pre-built CrossTabs) for cross-factor channel
-/// pairs.
-///
-/// For each pair of distinct terms, every channel of the earlier is paired
-/// with every channel of the later (same-factor channel pairs are exactly
-/// orthogonal after whitening, so they are never enumerated). Each channel
-/// pair builds a fused CrossTab via one observation scan, detects connected
-/// components on the bipartite structure, and creates one subdomain per
-/// component. The converted SDDM component travels with each subdomain to avoid
-/// rebuilding or re-inferring its numerical structure later.
-///
-/// Channel pairs are processed in parallel via Rayon. The
-/// `compute_partition_weights` step remains sequential after the parallel
-/// collect.
+/// Build local subdomains for cross-factor channel pairs. Same-factor channel pairs are exactly orthogonal after whitening, so they are never enumerated.
 pub(crate) fn build_local_domains(
     design: &Design<'_>,
     weights: Option<&[f64]>,
@@ -108,13 +95,7 @@ pub(crate) fn build_local_domains(
     Ok((domain_pairs, warnings))
 }
 
-/// Split a full CrossTab into per-component subdomains.
-///
-/// Finds bipartite connected components, extracts a sub-CrossTab and its
-/// sliced [`BlockDiagonals`] for each, and converts every component into a
-/// validated SDDM representation. Dead
-/// singletons (zero diagonal — an exact-zero design column) produce no
-/// subdomain, matching the uncovered-inactive-level invariant.
+/// Split a full CrossTab into per-component subdomains, each converted to validated SDDM form. Dead singletons (zero diagonal, an exact-zero design column) produce no subdomain.
 fn split_into_subdomains(
     pair: ChannelPair,
     class: ComponentClass,
@@ -176,16 +157,7 @@ fn split_into_subdomains(
     Ok((domains, warnings))
 }
 
-/// Compute partition-of-unity weights for overlapping Schwarz subdomains.
-///
-/// The two-sided additive Schwarz formula `M⁻¹ = Σ Rᵢᵀ D̃ᵢ Aᵢ⁻¹ D̃ᵢ Rᵢ`
-/// requires that the squared weights sum to identity at every DOF:
-/// `Σ Rᵢᵀ D̃ᵢ² Rᵢ = I`. For a DOF appearing in `c` subdomains, each weight
-/// is set to `1/√c`, so that `c × (1/√c)² = 1`.
-///
-/// In the common (non-overlapping) case where every DOF belongs to exactly one
-/// subdomain, all weights are 1.0 and the compact `PartitionWeights::Uniform`
-/// representation is used to avoid per-DOF storage.
+/// Partition-of-unity weights: the two-sided Schwarz sum needs `Σ Rᵢᵀ D̃ᵢ² Rᵢ = I`, so a DOF in `c` subdomains gets `1/√c`; the non-overlapping case stays `PartitionWeights::Uniform`.
 fn compute_partition_weights(domain_pairs: &mut [LocalDomain], n_dofs: usize) {
     use rayon::prelude::*;
     use std::sync::atomic::{AtomicU32, Ordering};

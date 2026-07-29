@@ -87,15 +87,13 @@ fn backsub_block_from_scaled_rhs(
 /// Local subdomain solver using block elimination on the bipartite SDDM.
 #[derive(Clone, serde::Serialize)]
 pub struct BlockElimSolver {
-    /// Bipartite Gramian structure: C and C^T (diagonals are folded into
-    /// `inv_diag_elim`/`reduced_factor` at build time and not retained).
+    /// Bipartite Gramian structure `C` and `Cᵀ`; diagonals are folded into `inv_diag_elim`/`reduced_factor` at build time and not retained.
     cross_tab: Arc<CrossTab>,
     /// `1 / D_elim[k]` for the eliminated (larger) diagonal block.
     inv_diag_elim: Vec<f64>,
     /// Reduced-system factor backend.
     reduced_factor: ReducedFactor,
-    /// Internal DOF count (`n_rows + n_cols`) — the matrix is always single-sized;
-    /// a frustrated component's cover lives inside `reduced_factor`.
+    /// Internal DOF count (`n_rows + n_cols`); the matrix is always single-sized, a frustrated component's cover living inside `reduced_factor`.
     #[serde(skip)]
     n_internal: usize,
     /// Internal factor dimension, including backend-added auxiliary vertices.
@@ -106,11 +104,7 @@ pub struct BlockElimSolver {
 }
 
 impl<'de> serde::Deserialize<'de> for BlockElimSolver {
-    /// Reconstruct from bytes that may be untrusted (a pickle cache, another
-    /// machine, a tampered file), validating every cross-field invariant the
-    /// infallible [`Self::new`] takes for granted. Each dimension is pinned to a
-    /// witness that is itself bounded by the input length, so no accepted solver
-    /// can overflow its scratch arithmetic or index out of bounds when applied.
+    /// Reconstruct from possibly untrusted bytes, validating every cross-field invariant infallible [`Self::new`] assumes. Each dimension is pinned to a witness itself bounded by the input length, so no accepted solver can overflow its scratch arithmetic.
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         use serde::de::Error;
 
@@ -172,12 +166,7 @@ impl<'de> serde::Deserialize<'de> for BlockElimSolver {
     }
 }
 
-/// Factor one matrix's reduced Schur complement. At or below
-/// `dense_threshold` the reduced system is small enough that fill-in does not
-/// matter, so the exact complement goes to approx-chol under an exact-only
-/// backend; a pivot it cannot use falls through to the sampled Schur, as does
-/// any larger system. approx-chol picks exact or approximate elimination per
-/// connected block either way.
+/// Factor one matrix's reduced Schur. At or below `dense_threshold` fill-in does not matter, so the exact complement goes to approx-chol exact-only; an unusable pivot or any larger system falls through to the sampled Schur.
 fn build_reduced_factor(
     matrix: &SddmMatrix,
     inv_diagonal_eliminated: &[f64],
@@ -204,13 +193,7 @@ fn build_reduced_factor(
     factor_sparse(&schur_csr, ac).map_err(local_solver_build)
 }
 
-/// Build the Gremban double cover of a signed subdomain matrix: each
-/// off-diagonal `M_ij` becomes a same-sheet copy when nonnegative and a
-/// cross-sheet copy when negative, both of magnitude `|M_ij|`, so the
-/// 2×-sized cover is SDDM and acts on the antisymmetric `[z, -z]` subspace as
-/// the original signed matrix. Diagonals (and the caller's ground edges)
-/// duplicate across sheets. Built transiently in [`BlockElimSolver::build`] to
-/// factor a [`MatrixForm::SignedPendingCover`] component, then discarded.
+/// Gremban double cover of a signed matrix: each off-diagonal becomes a same-sheet copy when nonnegative and a cross-sheet copy when negative, both `|M_ij|`, so the 2×-sized cover is SDDM and acts on the antisymmetric `[z, -z]` subspace as the original. Transient, discarded after factoring.
 fn assemble_bipartite_cover(matrix: &SddmMatrix) -> SddmMatrix {
     let c = &matrix.cross_tab.c;
     let n_rows = c.nrows;
@@ -266,16 +249,14 @@ fn assemble_bipartite_cover(matrix: &SddmMatrix) -> SddmMatrix {
     }
 }
 
-/// Each Gremban sheet carries a copy of every vertex, so a flat per-vertex
-/// array doubles within each side rather than end to end.
+/// Each Gremban sheet carries a copy of every vertex, so a flat per-vertex array doubles within each side rather than end to end.
 fn double_for_cover(values: &[f64], n_rows: usize) -> Vec<f64> {
     let (rows, cols) = values.split_at(n_rows);
     [rows, rows, cols, cols].concat()
 }
 
 impl BlockElimSolver {
-    /// Size of the block the elimination removes. Components are stored
-    /// eliminated-major, so it is the leading one.
+    /// Size of the block the elimination removes; components are eliminated-major, so it is the leading one.
     fn n_eliminated(&self) -> usize {
         self.cross_tab.n_rows()
     }
@@ -305,17 +286,7 @@ impl BlockElimSolver {
         }
     }
 
-    /// Build a `BlockElimSolver` from a [`LocalComponent`] and solver config.
-    ///
-    /// Pipeline: fold the eliminated diagonal on the single stored matrix,
-    /// then factor its reduced Schur per [`MatrixForm`]. A `Laplacian`
-    /// component factors the reduced Schur straight away; a signed one rebuilds
-    /// its Gremban double cover transiently, factors the cover's reduced Schur,
-    /// and keeps only that factor — the stored matrix and its inverse diagonal
-    /// stay single-sized (#91).
-    ///
-    /// The matrix's diagonal and ground edges are build-time-only inputs and
-    /// are dropped once the factor is built.
+    /// Build from a [`LocalComponent`]: fold the eliminated diagonal, then factor the reduced Schur per [`MatrixForm`] — a signed component factors a transient Gremban cover but keeps only that factor, so the stored matrix stays single-sized (#91). Diagonal and ground edges are build-time-only.
     pub(crate) fn build(
         component: LocalComponent,
         config: &LocalSolverConfig,
@@ -359,9 +330,7 @@ impl BlockElimSolver {
         ))
     }
 
-    /// Eliminate one diagonal block and recover it by back-substitution.
-    ///
-    /// Components arrive oriented, so the row block is the eliminated side.
+    /// Eliminate one diagonal block and recover it by back-substitution; components arrive oriented, so the row block is the eliminated side.
     fn eliminate_and_recover(
         &self,
         rhs: &mut [f64],

@@ -21,12 +21,7 @@ use crate::error::{BuildError, LocalSolveError};
 // LocalSolver trait
 // ---------------------------------------------------------------------------
 
-/// The `Aᵢ⁻¹` operator in the Schwarz formula: a local subdomain solver.
-///
-/// Each subdomain's restricted system `Aᵢ = Rᵢ A Rᵢᵀ` is solved (exactly or
-/// approximately) by an implementor of this trait. Given a right-hand side
-/// in `rhs`, it writes the solution into `sol`. Both buffers are scratch-sized
-/// (may be larger than `n_local` for augmented systems).
+/// The `Aᵢ⁻¹` operator in the Schwarz formula: solves the restricted system `Aᵢ = Rᵢ A Rᵢᵀ` exactly or approximately. Buffers are scratch-sized, so possibly larger than `n_local`.
 pub trait LocalSolver: Send + Sync {
     /// Number of DOFs in the subdomain (before augmentation).
     fn n_local(&self) -> usize;
@@ -34,15 +29,7 @@ pub trait LocalSolver: Send + Sync {
     /// Required scratch buffer size (may be > n_local for augmented systems).
     fn scratch_size(&self) -> usize;
 
-    /// Solve the local system: rhs → sol.
-    ///
-    /// Both `rhs` and `sol` have length >= `scratch_size()`.
-    /// The solver may read/write up to `scratch_size()` elements.
-    ///
-    /// `allow_inner_parallelism` is an execution-policy hint: implementations
-    /// with worthwhile inner parallel regions may consult it to decide whether
-    /// to engage nested Rayon. Implementations that have no nested-parallel
-    /// region can ignore the hint.
+    /// Solve the local system into `sol`. Both buffers are at least `scratch_size()` long, and `allow_inner_parallelism` is a hint an implementation without a nested-parallel region may ignore.
     fn solve_local(
         &self,
         rhs: &mut [f64],
@@ -50,9 +37,7 @@ pub trait LocalSolver: Send + Sync {
         allow_inner_parallelism: bool,
     ) -> Result<(), LocalSolveError>;
 
-    /// Estimated amount of local work that can benefit from nested Rayon.
-    ///
-    /// Return zero when the solver has no nested-parallel region worth enabling.
+    /// Estimated local work that can benefit from nested Rayon; zero when there is no such region.
     fn inner_parallelism_work_estimate(&self) -> usize {
         0
     }
@@ -62,12 +47,7 @@ pub trait LocalSolver: Send + Sync {
 // SubdomainEntry<S>
 // ---------------------------------------------------------------------------
 
-/// One term of the Schwarz sum: `Rᵢᵀ D̃ᵢ Aᵢ⁻¹ D̃ᵢ Rᵢ`.
-///
-/// Bundles a [`SubdomainCore`] (which provides `Rᵢ` and `D̃ᵢ`) with a
-/// [`LocalSolver`] (which provides `Aᵢ⁻¹`). The
-/// [`apply_weighted_into_with_scratch`](Self::apply_weighted_into_with_scratch)
-/// method computes the full contribution for this subdomain.
+/// One term of the Schwarz sum `Rᵢᵀ D̃ᵢ Aᵢ⁻¹ D̃ᵢ Rᵢ`, bundling a [`SubdomainCore`] with a [`LocalSolver`].
 #[derive(Clone)]
 pub struct SubdomainEntry<S: LocalSolver> {
     /// Subdomain core with restriction indices and partition-of-unity weights.
@@ -130,12 +110,7 @@ impl<S: LocalSolver> SubdomainEntry<S> {
         self.solver.scratch_size()
     }
 
-    /// Accumulate the two-sided PoU weighted local solve into a global buffer.
-    ///
-    /// out += R_i^T D_i A_i^{-1} D_i R_i r
-    ///
-    /// - `r_scratch` must have length >= `self.scratch_size()`
-    /// - `z_scratch` must have length >= `self.scratch_size()`
+    /// Accumulate `out += Rᵢᵀ D̃ᵢ Aᵢ⁻¹ D̃ᵢ Rᵢ r`; both scratch buffers must be at least `self.scratch_size()` long.
     pub fn apply_weighted_into_with_scratch(
         &self,
         r: &[f64],
@@ -160,9 +135,7 @@ impl<S: LocalSolver> SubdomainEntry<S> {
         Ok(())
     }
 
-    /// Accumulate the two-sided PoU weighted local solve into an atomic global buffer.
-    ///
-    /// out\[i\] += R_i^T D_i A_i^{-1} D_i R_i r  (via atomic f64 add)
+    /// Accumulate the two-sided PoU weighted local solve into an atomic global buffer via atomic f64 add.
     pub fn apply_weighted_into_atomic(
         &self,
         r: &[f64],

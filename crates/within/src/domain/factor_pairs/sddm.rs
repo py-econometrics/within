@@ -31,8 +31,7 @@ const LAPLACIAN_VALIDATION_BUDGET: RoundoffBudget = RoundoffBudget { ulps: 64.0 
 // classification deletes an identified direction.
 const FLOATING_CLASSIFICATION_BUDGET: RoundoffBudget = RoundoffBudget { ulps: 4.0 };
 
-/// Gauge of a reduced system: `Floating` anchors one node, `Grounded` factors
-/// the full complement.
+/// Gauge of a reduced system: `Floating` anchors one node, `Grounded` factors the full complement.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Grounding {
     // Keep this order: postcard encodes enum discriminants by declaration
@@ -42,36 +41,28 @@ pub(crate) enum Grounding {
     Grounded,
 }
 
-/// Which form a component's signature left its matrix in. Orthogonal to the
-/// [`Grounding`] classified from the same surplus and to [`CoordinateMap`], the
-/// congruence that produced it.
+/// Which form a component's signature left its matrix in. Orthogonal to the [`Grounding`] classified from the same surplus and to [`CoordinateMap`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MatrixForm {
     /// Folded to a Z-matrix: the minor reduces directly.
     Laplacian,
-    /// Kept signed, because no signature exists: a Gremban double cover is
-    /// built at factor time so the stored matrix never doubles.
+    /// Kept signed because no signature exists; a Gremban cover is built at factor time so the stored matrix never doubles.
     SignedPendingCover,
 }
 
-/// Map between original and SDDM coordinates, applied to vectors at the
-/// solve boundary. `Canonical` is the bipartite map (negate the col block) —
-/// not the identity.
+/// Map between original and SDDM coordinates, applied at the solve boundary. `Canonical` is the bipartite map (negate the col block), not the identity.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) enum CoordinateMap {
     // Keep this order: postcard encodes enum discriminants by declaration
     // order, and the wire fixture pins Canonical = 0.
     #[default]
     Canonical,
-    /// Diagonal congruence factors (sign · scale). For a frustrated component
-    /// these are the canonical bipartite signs (`+` on the eliminated block,
-    /// `−` on the kept one) times the dominance scaling, leaving it signed.
+    /// Diagonal congruence factors (sign · scale): for a frustrated component, canonical bipartite signs (`+` eliminated, `−` kept) times the dominance scaling, leaving it signed.
     Scaled(Box<[f64]>),
 }
 
 impl CoordinateMap {
-    /// Map an original-coordinate RHS into SDDM coordinates. `values` spans
-    /// the internal system, split at `n_eliminated`.
+    /// Map an original-coordinate RHS into SDDM coordinates; `values` spans the internal system, split at `n_eliminated`.
     pub(crate) fn fold(&self, values: &mut [f64], n_eliminated: usize) {
         match self {
             CoordinateMap::Canonical => {
@@ -88,17 +79,13 @@ impl CoordinateMap {
         }
     }
 
-    /// Map an SDDM-coordinate solution back to original coordinates; the
-    /// diagonal maps are involutions up to scale, so they re-apply `fold`.
+    /// Map an SDDM-coordinate solution back; the diagonal maps are involutions up to scale, so they re-apply `fold`.
     pub(crate) fn unfold(&self, values: &mut [f64], n_eliminated: usize) {
         self.fold(values, n_eliminated);
     }
 }
 
-/// Orient a component for elimination: the larger block becomes the eliminated
-/// side, which the block elimination always removes. Every per-vertex array
-/// arrives in `[rows | cols]` order and leaves in eliminated-major order, so a
-/// component and its restriction cannot disagree on vertex order.
+/// Orient a component so the larger block is eliminated. Per-vertex arrays arrive in `[rows | cols]` order and leave eliminated-major, so a component and its restriction cannot disagree on vertex order.
 pub(crate) fn orient_for_elimination(
     cross_tab: CrossTab,
     mut diagonal: Vec<f64>,
@@ -121,11 +108,7 @@ pub(crate) fn orient_for_elimination(
     )
 }
 
-/// A bipartite SDDM matrix in eliminated-major form, carrying the gauge its
-/// surplus implies. The per-vertex arrays are flat in the `[eliminated | kept]`
-/// order [`CrossTab::neighbors`] indexes, split at `n_eliminated`. A converted
-/// component holds one; so does the transient Gremban cover built from a signed
-/// one, which is why this is not simply part of [`LocalComponent`].
+/// A bipartite SDDM matrix in eliminated-major form carrying the gauge its surplus implies, per-vertex arrays flat in `[eliminated | kept]` order split at `n_eliminated`. Both a converted component and the transient Gremban cover hold one, which is why it is not part of [`LocalComponent`].
 #[derive(Clone)]
 pub(crate) struct SddmMatrix {
     pub(crate) cross_tab: CrossTab,
@@ -164,14 +147,11 @@ pub(crate) struct LocalComponent {
     pub(crate) coordinates: CoordinateMap,
 }
 
-/// The component admits no diagonal scaling to weak dominance (Boman); its
-/// comparison matrix is not PSD, so no SDDM form — direct or covered — exists.
+/// The component admits no diagonal scaling to weak dominance (Boman): its comparison matrix is not PSD, so no SDDM form — direct or covered — exists.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct NotScalable;
 
-/// Evidence that a component's dominance scaling exceeded tolerance or budget
-/// under [`ScalingFailure::Warn`]; the caller attaches pair context and
-/// surfaces it as a [`crate::BuildWarning`].
+/// Evidence that a dominance scaling exceeded tolerance or budget under [`ScalingFailure::Warn`]; the caller attaches pair context and surfaces a [`crate::BuildWarning`].
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct UncertifiedScaling {
     pub(crate) sweeps: usize,
@@ -192,9 +172,7 @@ pub(super) fn convert(
     }
 }
 
-/// Plain components are Laplacian by construction: validate that claim and
-/// adopt the canonical SDDM form. Skipping the signed machinery keeps the
-/// dominant plain path at two streaming passes over the cross data.
+/// Validate the Laplacian-by-construction claim and adopt canonical SDDM form; skipping the signed machinery keeps the dominant plain path at two streaming passes.
 fn convert_known_laplacian(
     cross_tab: CrossTab,
     diagonal: Vec<f64>,
@@ -263,16 +241,7 @@ fn convert_general(
     Ok((component, uncertified))
 }
 
-/// Fold the component through `factors` and assemble the validated SDDM form.
-/// The `form` fixes the fold contract: a [`MatrixForm::Laplacian`]
-/// component must fold to a true Z-matrix, so any off-diagonal the signature
-/// failed to drive nonnegative is an error; a [`MatrixForm::SignedPendingCover`]
-/// keeps its single *signed* matrix (negatives retained) and grounds through a
-/// Gremban double cover built at factor time (see [`crate::block_elim`]).
-/// Dominance is classified against *magnitude* row sums either way — after a
-/// Z-fold every off-diagonal is nonnegative, so magnitudes match the signed
-/// adjacency there. Returns the largest relative diagonal deficit that was
-/// clamped; deficits beyond tolerance are errors under [`ScalingFailure::Error`].
+/// Fold through `factors` and assemble the validated SDDM form. `form` fixes the contract: a [`MatrixForm::Laplacian`] must fold to a true Z-matrix so any surviving positive off-diagonal is an error, while [`MatrixForm::SignedPendingCover`] retains negatives and grounds through a Gremban cover built at factor time; dominance is classified against magnitude row sums either way.
 fn assemble(
     mut cross_tab: CrossTab,
     diagonal: Vec<f64>,
@@ -327,11 +296,7 @@ fn assemble(
     )
 }
 
-/// Validate weak dominance of an assembled matrix against `row_sums` (signed
-/// adjacency for a Z-matrix, magnitudes for a signed matrix): clamp roundoff
-/// deficits, retain surplus as ground edges, and classify the [`Grounding`].
-/// Returns the largest relative deficit that was clamped; deficits
-/// beyond tolerance are errors under [`ScalingFailure::Error`].
+/// Validate weak dominance against `row_sums`: clamp roundoff deficits, retain surplus as ground edges, classify the [`Grounding`], and return the largest clamped relative deficit.
 fn finalize(
     cross_tab: CrossTab,
     mut scaled_diagonal: Vec<f64>,
@@ -392,8 +357,7 @@ fn finalize(
     ))
 }
 
-/// A per-node signature folding every off-diagonal nonpositive, or `None`
-/// when the component is frustrated (a negative cycle admits no signature).
+/// Per-node signature folding every off-diagonal nonpositive, or `None` when the component is frustrated (a negative cycle admits no signature).
 fn folding_signs(cross_tab: &CrossTab) -> Option<Vec<f64>> {
     let n = cross_tab.n_local();
     let mut signs = vec![0.0; n];
@@ -424,8 +388,7 @@ fn folding_signs(cross_tab: &CrossTab) -> Option<Vec<f64>> {
 struct DominanceScaling {
     scales: Vec<f64>,
     sweeps: usize,
-    /// Largest relative dominance violation at hand-over, clamped at 0. It is
-    /// certified exactly when this is within the configured tolerance.
+    /// Largest relative dominance violation at hand-over, clamped at 0; certified exactly when within the configured tolerance.
     violation: f64,
 }
 

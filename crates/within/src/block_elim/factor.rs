@@ -20,21 +20,16 @@ use crate::BuildError;
 pub(crate) enum ReducedFactor {
     // Postcard encodes enum discriminants by declaration order; the wire
     // fixture pins Direct = 0, so new variants append after it.
-    /// Factor of the reduced Schur CSR itself, carrying the gauge the
-    /// operator-level solve applies around it.
+    /// Factor of the reduced Schur CSR itself, carrying the gauge the operator-level solve applies around it.
     Direct {
         /// Factor of the reduced Schur.
         factor: Factor,
         /// Gauge of the reduced system.
         grounding: Grounding,
     },
-    /// Gremban double cover of a signed (frustrated) reduced Schur: `inner`
-    /// factors the doubled cover system and `m` is the single signed dimension
-    /// the solve presents to the caller. The cover lives only here — the local
-    /// operator stays single-sized.
+    /// Gremban double cover of a signed reduced Schur: `inner` factors the doubled system, `m` is the single signed dimension shown to the caller, and the cover lives only here so the local operator stays single-sized.
     Cover {
-        /// Factor of the doubled cover (dimension `inner.n() >= 2*m`; the tail
-        /// past `2*m` is the cover's grounding augmentation).
+        /// Factor of the doubled cover; `inner.n() >= 2*m`, the tail past `2*m` being the cover's grounding augmentation.
         inner: Factor,
         /// Single signed reduced dimension exposed to the caller.
         m: usize,
@@ -42,8 +37,7 @@ pub(crate) enum ReducedFactor {
 }
 
 impl ReducedFactor {
-    /// The gauge the operator-level solve must apply; `None` for a cover, which
-    /// self-grounds through its antisymmetric embed.
+    /// The gauge the operator-level solve must apply; `None` for a cover, which self-grounds through its antisymmetric embed.
     pub(crate) fn grounding(&self) -> Option<Grounding> {
         match self {
             Self::Direct { grounding, .. } => Some(*grounding),
@@ -51,22 +45,18 @@ impl ReducedFactor {
         }
     }
 
-    /// Index of the explicit ground vertex a grounded complement appends past
-    /// the kept block; `None` when the factor's input is the kept block alone.
-    /// Meaningful only where [`Self::spans_kept_block`] holds.
+    /// Index of the explicit ground vertex a grounded complement appends past the kept block; `None` when the input is the kept block alone.
     pub(crate) fn explicit_ground_index(&self, n_kept: usize) -> Option<usize> {
         (self.grounding() == Some(Grounding::Grounded) && self.input_dimension() == n_kept + 1)
             .then_some(n_kept)
     }
 
-    /// Whether the factor was built over a kept block of this size: that block
-    /// alone, or with the one explicit ground vertex above it.
+    /// Whether the factor was built over a kept block of this size, alone or with the one explicit ground vertex above it.
     pub(crate) fn spans_kept_block(&self, n_kept: usize) -> bool {
         self.input_dimension() == n_kept || self.explicit_ground_index(n_kept).is_some()
     }
 
-    /// Dimension of the system handed to the backend, which augments it with
-    /// grounding vertices of its own — hence below [`Self::solve_dimension`].
+    /// Dimension handed to the backend, which augments it with grounding vertices of its own — hence below [`Self::solve_dimension`].
     pub(crate) fn input_dimension(&self) -> usize {
         match self {
             Self::Direct { factor, .. } => factor.original_n(),
@@ -82,8 +72,7 @@ impl ReducedFactor {
         }
     }
 
-    /// Extra scratch beyond the reduced buffers that [`Self::solve_in_place`]
-    /// needs. Only [`Self::Cover`] embeds into a larger system.
+    /// Extra scratch beyond the reduced buffers [`Self::solve_in_place`] needs; only [`Self::Cover`] embeds into a larger system.
     pub(crate) fn scratch_len(&self) -> usize {
         match self {
             Self::Direct { .. } => 0,
@@ -91,9 +80,7 @@ impl ReducedFactor {
         }
     }
 
-    /// Solve the reduced system in place. `x` has length [`Self::solve_dimension`];
-    /// `scratch` is at least [`Self::scratch_len`] long (the [`Self::Cover`]
-    /// embed buffer, reused across LSMR iterations).
+    /// Solve the reduced system in place; `x` spans [`Self::solve_dimension`] and `scratch` is at least [`Self::scratch_len`] long.
     pub(crate) fn solve_in_place(
         &self,
         x: &mut [f64],
@@ -134,9 +121,7 @@ impl ReducedFactor {
 // Deserialize — validated reconstruction from untrusted bytes
 // ---------------------------------------------------------------------------
 
-/// Wire mirror of [`ReducedFactor`]. `Cover`'s `inner` is a bare [`Factor`], so
-/// a `Cover`-of-`Cover` — which no real build produces — is unrepresentable
-/// rather than a decode that recurses without bound.
+/// Wire mirror of [`ReducedFactor`]. `Cover`'s `inner` is a bare [`Factor`], so a `Cover`-of-`Cover` is unrepresentable rather than a decode that recurses without bound.
 #[derive(serde::Deserialize)]
 enum ReducedFactorWire {
     Direct {
@@ -190,10 +175,7 @@ fn solve_approx(f: &Factor, x: &mut [f64]) -> Result<(), LocalSolveError> {
 // factor_sparse — bridge into approx_chol for sparse reduced Schur
 // ===========================================================================
 
-/// Factor a sparse (SDDM) reduced Schur complement.
-///
-/// Returns the `approx-chol` error unmapped so the caller can distinguish an
-/// unusable exact pivot from a rejected input.
+/// Factor a sparse (SDDM) reduced Schur complement, returning the `approx-chol` error unmapped so the caller can distinguish an unusable exact pivot from a rejected input.
 pub(crate) fn factor_sparse(
     matrix: &CsrMatrix,
     config: approx_chol::Config,

@@ -20,46 +20,19 @@ const PAR_THRESHOLD: usize = 10_000;
 // DesignOperator — D, optionally rescaled by W^{1/2}
 // ===========================================================================
 
-/// Rectangular design operator: `D` (unweighted) or `W^{1/2} D` (weighted).
-///
-/// `apply` = `D x` / `W^{1/2} D x` (gather), `apply_adjoint` = `D^T x` /
-/// `D^T W^{1/2} x` (scatter). For the weighted variant, the normal equations
-/// `A^T A = D^T W D = G` recover the Gramian, so the same Schwarz
-/// preconditioner approximating `G^{-1}` applies. Pass `None` to
-/// [`DesignOperator::new`] for `D`, or `Some(&sqrt_w)` for `W^{1/2} D`. The branch
-/// on weights is hoisted outside the per-row loop — the weighted gather applies
-/// `W^{1/2}` in a trailing per-chunk sweep, and the adjoint multiplies inline
-/// through a closure, so there is no per-row scratch buffer.
+/// Rectangular design operator `D` or `W^{1/2} D`, whose normal equations `AᵀA = DᵀWD = G` recover the Gramian so the same Schwarz preconditioner applies. The weights branch is hoisted out of the per-row loop, so there is no per-row scratch.
 pub(crate) struct DesignOperator<'a> {
     design: &'a Design<'a>,
     sqrt_weights: Option<&'a [f64]>,
-    /// Reusable atomic-scatter scratch, sized once to the largest term's
-    /// coefficient block and reused across terms and `apply_adjoint` calls so
-    /// it is allocated once per operator rather than once per LSMR iteration.
-    /// `apply_adjoint` takes `&self`, but `AtomicF64`'s load/store/fetch_add are
-    /// `&self` operations, so a plain `Vec<AtomicF64>` (already `Sync`) needs no
-    /// lock: each call re-seeds the buffer via `store` instead of resizing it.
+    /// Atomic-scatter scratch sized once to the largest term's coefficient block, so it is allocated per operator rather than per LSMR iteration; `AtomicF64`'s `&self` ops need no lock, each call re-seeding via `store`.
     scatter_scratch: Vec<AtomicF64>,
-    /// Debug-only reentry sentinel: a concurrent `apply_adjoint` would race the
-    /// `scatter_scratch` writes it makes through `&self`.
+    /// Debug-only reentry sentinel: a concurrent `apply_adjoint` would race the `scatter_scratch` writes it makes through `&self`.
     #[cfg(debug_assertions)]
     adjoint_active: AtomicBool,
 }
 
 impl<'a> DesignOperator<'a> {
-    /// Wrap a design matrix as a linear operator.
-    ///
-    /// Pass `None` for `D`, `Some(&sqrt_w)` for `W^{1/2} D` — the weights must
-    /// already be square-rooted (the `Solver` computes `sqrt(W)` once and
-    /// borrows it across every per-RHS operator), and `sqrt_w.len()` must equal
-    /// `design.n_obs`.
-    ///
-    /// # Panics
-    ///
-    /// Panics when `sqrt_weights.is_some()` and its length does not equal
-    /// `design.n_obs`. The `Solver` entry points perform fallible validation
-    /// against `BuildError::WeightCountMismatch` before construction, so callers
-    /// that go through `Solver::new` or `solve()` never trigger this panic.
+    /// Wrap a design matrix as an operator. `sqrt_weights` must be pre-square-rooted and `design.n_obs` long; the `Solver` entry points validate that fallibly first, so only a direct caller can hit the panic.
     pub(crate) fn new(design: &'a Design<'a>, sqrt_weights: Option<&'a [f64]>) -> Self {
         if let Some(sw) = sqrt_weights {
             assert_eq!(
@@ -80,10 +53,7 @@ impl<'a> DesignOperator<'a> {
         }
     }
 
-    /// Compute the observation-space RHS `b = W^{1/2} y`.
-    ///
-    /// For unweighted designs, borrows `y` (no allocation); the weighted
-    /// variant returns an owned scaled copy.
+    /// Observation-space RHS `b = W^{1/2} y`; borrows `y` unweighted, returns an owned scaled copy weighted.
     pub(crate) fn weighted_rhs<'y>(&self, y: &'y [f64]) -> Cow<'y, [f64]> {
         match self.sqrt_weights {
             None => Cow::Borrowed(y),
@@ -92,8 +62,7 @@ impl<'a> DesignOperator<'a> {
     }
 }
 
-/// RAII reentry guard: `acquire` asserts no call is in flight; `Drop` clears
-/// the flag on every exit path, panics included.
+/// RAII reentry guard: `acquire` asserts no call is in flight, `Drop` clears the flag on every exit path including panics.
 #[cfg(debug_assertions)]
 struct ReentryGuard<'a>(&'a AtomicBool);
 

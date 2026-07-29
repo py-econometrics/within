@@ -87,12 +87,7 @@ impl Operator for DiagonalPreconditioner {
 // Crate-internal builders
 // ---------------------------------------------------------------------------
 
-/// Build additive Schwarz with an explicit reduction strategy.
-///
-/// `n_dofs` is the operator's column count, which can exceed the span of the
-/// subdomains' indices: an unidentified direction (e.g. a singleton level's
-/// slope) is a structural-zero column no subdomain covers, yet must count
-/// toward the shape. Uncovered DOFs resolve to `0`, like `Off`/`Diagonal`.
+/// Build additive Schwarz with an explicit reduction strategy. `n_dofs` may exceed the span of subdomain indices — an unidentified direction is a structural-zero column no subdomain covers, yet still counts toward the shape, and resolves to `0`.
 pub(crate) fn build_additive_with_strategy(
     domains: Vec<LocalDomain>,
     config: &LocalSolverConfig,
@@ -118,10 +113,7 @@ pub(crate) fn build_entry(
     SubdomainEntry::try_new(core, solver).map_err(BuildError::Preconditioner)
 }
 
-/// Opaque handle to a pre-built fixed-effects preconditioner.
-///
-/// Cloning is O(1): the inner factorization is `Arc`-backed, so passing
-/// `&precond` to [`Solver::new`](crate::Solver::new) never duplicates it.
+/// Opaque handle to a pre-built fixed-effects preconditioner; cloning is O(1) because the inner factorization is `Arc`-backed.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Preconditioner {
@@ -248,8 +240,7 @@ fn build_diagonal(
     })
 }
 
-/// Build a [`Preconditioner`] from a design and optional observation weights,
-/// plus any non-fatal [`BuildWarning`]s the build produced.
+/// Build a [`Preconditioner`] from a design and optional weights, plus any non-fatal [`BuildWarning`]s.
 pub(crate) fn build_preconditioner(
     design: &Design<'_>,
     weights: Option<&[f64]>,

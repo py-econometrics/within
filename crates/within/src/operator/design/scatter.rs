@@ -10,8 +10,7 @@ use super::PAR_THRESHOLD;
 use crate::domain::Loading;
 use crate::domain::{Design, TermMeta};
 
-/// Adjoint scatter over all terms; `base(i)` is the row value (`x[i]`, or
-/// `sw[i]·x[i]` when weighted) that each column scales by its loading.
+/// Adjoint scatter over all terms; `base(i)` is the row value (`x[i]`, or `sw[i]·x[i]` weighted) that each column scales by its loading.
 pub(super) fn scatter_apply(
     design: &Design<'_>,
     scratch: &[AtomicF64],
@@ -94,12 +93,7 @@ fn scatter_term<const C: usize>(
     }
 }
 
-/// Coefficient-block threshold for choosing between fold and atomic scatter-add.
-///
-/// Blocks (a term's `n_columns * n_levels` coefficients) smaller than this use
-/// thread-local fold/reduce (O(block * n_threads) memory). Larger blocks use
-/// atomic CAS instead, which has low contention when bins vastly outnumber
-/// threads.
+/// Coefficient-block threshold for fold vs atomic scatter-add: below it thread-local fold costs O(block · n_threads) memory, above it atomic CAS wins because bins vastly outnumber threads.
 const SCATTER_LOCAL_THRESHOLD: usize = 100_000;
 
 /// Strategy for a single term's scatter-add loop.
@@ -110,16 +104,12 @@ enum ScatterStrategy {
     Fold,
     /// Parallel atomic CAS — for large blocks with low contention.
     Atomic,
-    /// Atomic path for a large sorted term: equal-level runs coalesce into
-    /// one atomic add per distinct level per chunk instead of one per row,
-    /// avoiding the atomic-CAS storm.
+    /// Atomic path for a large sorted term: equal-level runs coalesce into one atomic add per distinct level per chunk, avoiding the CAS storm.
     SortedCoalesced,
 }
 
 impl ScatterStrategy {
-    /// Pick the scatter strategy for one term; `block` is the coefficient
-    /// count written by the kernel call, `sorted` the term's level-column
-    /// sortedness (`TermMeta::sorted`).
+    /// Pick the scatter strategy for one term; `block` is the coefficient count the kernel writes, `sorted` the term's level-column sortedness.
     fn pick(parallel: bool, block: usize, sorted: bool) -> Self {
         match (parallel, block < SCATTER_LOCAL_THRESHOLD, sorted) {
             (false, _, _) => ScatterStrategy::Sequential,
@@ -145,8 +135,7 @@ fn scatter_sequential<const C: usize>(
     }
 }
 
-/// Parallel scatter-add via thread-local fold/reduce — best when the block
-/// (the term's coefficient count) is small relative to thread count.
+/// Parallel scatter-add via thread-local fold/reduce, best when the term's coefficient block is small relative to thread count.
 fn scatter_fold<const C: usize>(
     block: &mut [f64],
     n_levels: usize,
@@ -179,8 +168,7 @@ fn scatter_fold<const C: usize>(
     }
 }
 
-/// Seed the operator's atomic scratch with `block`'s current contents,
-/// returning the trimmed view the scatter accumulates into.
+/// Seed the operator's atomic scratch with `block`'s contents, returning the trimmed view the scatter accumulates into.
 fn seed_scatter_scratch<'b>(atomic_buf: &'b [AtomicF64], block: &[f64]) -> &'b [AtomicF64] {
     debug_assert!(atomic_buf.len() >= block.len());
     let buf = &atomic_buf[..block.len()];
@@ -197,10 +185,7 @@ fn writeback_scatter_scratch(block: &mut [f64], buf: &[AtomicF64]) {
     }
 }
 
-/// Parallel scatter-add via atomic CAS — best when the block is large
-/// relative to thread count (low contention). `atomic_buf` is the operator's
-/// reusable scratch (sized to the largest term's block); we use its first
-/// `block.len()` slots, re-seeding them via `store` so no allocation occurs.
+/// Parallel scatter-add via atomic CAS, best when the block is large relative to thread count; `atomic_buf` is the operator's reusable scratch, re-seeded via `store` so nothing allocates.
 fn scatter_atomic<const C: usize>(
     block: &mut [f64],
     n_levels: usize,
