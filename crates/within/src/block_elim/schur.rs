@@ -6,7 +6,7 @@
 
 use super::compensated_sum;
 use super::csr_matrix::CsrMatrix;
-use approx_chol::low_level::clique_tree_sample;
+use approx_chol::low_level::CliqueTreeSampler;
 use rayon::prelude::*;
 
 use crate::config::ApproxSchurConfig;
@@ -239,28 +239,40 @@ impl Star<'_> {
     }
 }
 
-/// Sample clique-tree fill edges for one eliminated star; ground surplus is one more incident edge, so the sampled star's capacity is exactly its eliminated diagonal.
-fn sample_star(
-    star: &Star,
-    ground: Option<(u32, f64)>,
-    config: &ApproxSchurConfig,
-    edges: &mut Vec<Edge>,
-    scratch: &mut Vec<(u32, f64)>,
-) {
-    scratch.clear();
-    for (&col, &w) in star.col_indices.iter().zip(star.weights) {
-        scratch.push((col, w));
-    }
-    if let Some((ground, surplus)) = ground {
-        if surplus > 0.0 {
-            scratch.push((ground, surplus));
+/// One rayon task's sampling state. The sampler carries scratch of its own, so it is
+/// built per task alongside the buffers rather than per star.
+struct StarWorkspace {
+    edges: Vec<Edge>,
+    entries: Vec<(u32, f64)>,
+    sampler: CliqueTreeSampler,
+}
+
+impl StarWorkspace {
+    fn new(config: &ApproxSchurConfig) -> Self {
+        Self {
+            edges: Vec::new(),
+            entries: Vec::new(),
+            sampler: CliqueTreeSampler::new(config.seed, Some(config.split)),
         }
     }
-    if scratch.len() <= 1 {
-        return;
+
+    /// Sample clique-tree fill edges for one eliminated star; ground surplus is one more incident edge, so the sampled star's capacity is exactly its eliminated diagonal.
+    fn sample_star(&mut self, star: &Star, ground: Option<(u32, f64)>) {
+        self.entries.clear();
+        for (&col, &w) in star.col_indices.iter().zip(star.weights) {
+            self.entries.push((col, w));
+        }
+        if let Some((ground, surplus)) = ground {
+            if surplus > 0.0 {
+                self.entries.push((ground, surplus));
+            }
+        }
+        if self.entries.len() <= 1 {
+            return;
+        }
+        self.sampler
+            .sample(star.index as u64, &self.entries, &mut self.edges);
     }
-    let seed = config.seed.wrapping_add(star.index as u64);
-    clique_tree_sample(scratch, Some(config.split), seed, edges);
 }
 
 /// Create a zero-copy [`Star`] view for eliminated vertex `k`.
@@ -284,17 +296,17 @@ fn par_emit(matrix: &SddmMatrix, config: &ApproxSchurConfig) -> Vec<Edge> {
     let mut edges = (0..matrix.n_eliminated())
         .into_par_iter()
         .fold(
-            || (Vec::new(), Vec::<(u32, f64)>::new()),
-            |(mut edges, mut scratch), k| {
+            || StarWorkspace::new(config),
+            |mut work, k| {
                 let star = star(matrix, k);
                 if star.degree() > 0 {
                     let ground = ground_vertex.map(|g| (g, surplus_eliminated[k]));
-                    sample_star(&star, ground, config, &mut edges, &mut scratch);
+                    work.sample_star(&star, ground);
                 }
-                (edges, scratch)
+                work
             },
         )
-        .map(|(edges, _)| edges)
+        .map(|work| work.edges)
         .reduce(Vec::new, |mut a, mut b| {
             a.append(&mut b);
             a
