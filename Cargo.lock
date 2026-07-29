@@ -26,7 +26,7 @@ checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
 [[package]]
 name = "approx-chol"
 version = "0.3.1"
-source = "git+ssh://git@github.com/aai-institute/approx-chol.git?branch=p3%2Fexact-dense-backend#d26a8c511882bf057038ebdeec8fb330c42388ac"
+source = "git+https://github.com/aai-institute/approx-chol.git?rev=3198606#319860604b1202a794e8f154941571aafcc4c13b"
 dependencies = [
  "num-traits",
  "rand 0.10.2",
