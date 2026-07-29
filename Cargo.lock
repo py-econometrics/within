@@ -26,7 +26,7 @@ checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
 [[package]]
 name = "approx-chol"
 version = "0.3.1"
-source = "git+ssh://git@github.com/aai-institute/approx-chol.git?branch=p3%2Fexact-dense-backend#56fca91d97249d5ef04992e6f78df995b7d6bd9c"
+source = "git+ssh://git@github.com/aai-institute/approx-chol.git?branch=p3%2Fexact-dense-backend#d26a8c511882bf057038ebdeec8fb330c42388ac"
 dependencies = [
  "num-traits",
  "rand 0.10.2",
@@ -1719,7 +1719,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

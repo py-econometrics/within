@@ -6,7 +6,7 @@
 //! is already made; this module owns the inverse-diagonal fold, zero-copy
 //! [`Star`] views, and the sampled fill edges on the explicit augmented graph.
 
-use approx_chol::low_level::{clique_tree_sample, clique_tree_sample_multi};
+use approx_chol::low_level::clique_tree_sample;
 use rayon::prelude::*;
 
 use crate::config::ApproxSchurConfig;
@@ -53,11 +53,7 @@ fn sample_star(
         return;
     }
     let seed = config.seed.wrapping_add(star.index as u64);
-    if config.split <= 1 {
-        clique_tree_sample(scratch, seed, edges);
-    } else {
-        clique_tree_sample_multi(scratch, config.split, seed, edges);
-    }
+    clique_tree_sample(scratch, Some(config.split), seed, edges);
 }
 
 /// Fold the eliminated block's diagonal to its reciprocals, the one value Schur assembly needs that the matrix does not carry.
