@@ -402,44 +402,24 @@ impl PyPreconditioner {
     }
 }
 
-/// Native interpretation of the Python `preconditioner` argument.
-///
-/// A pre-built [`Preconditioner`] takes the reuse path; everything else is a
-/// [`PreconditionerConfig`] (or `None` for the library default) to build from.
-/// Both variants hold only native data, so a resolved value is safe to move
-/// into a GIL-released closure (`Preconditioner` clones are `Arc`-cheap).
-pub(crate) enum PrecondInput {
-    Prebuilt(Preconditioner),
-    Config(Option<PreconditionerConfig>),
-}
-
-impl From<PrecondInput> for PreconditionerInput {
-    fn from(input: PrecondInput) -> Self {
-        match input {
-            PrecondInput::Prebuilt(p) => p.into(),
-            PrecondInput::Config(c) => c.as_ref().into(),
-        }
-    }
-}
-
-/// Resolve the Python `preconditioner` argument into a [`PrecondInput`].
+/// Resolve the Python `preconditioner` argument into a [`PreconditionerInput`].
 ///
 /// Must run while the GIL is held (it inspects Python objects). A pre-built
 /// `Preconditioner` is detected first and taken verbatim; anything else is
-/// parsed as a `PreconditionerConfig` via [`extract_preconditioner_config`].
+/// parsed as a `PreconditionerConfig` via [`extract_preconditioner_config`],
+/// with `None` meaning the library default. The result holds only native data,
+/// so it is safe to move into a GIL-released closure.
 pub(crate) fn resolve_precond_input(
     py: Python<'_>,
     preconditioner: Option<&Bound<'_, PyAny>>,
-) -> PyResult<PrecondInput> {
+) -> PyResult<PreconditionerInput> {
     if let Some(obj) = preconditioner {
         if let Ok(built) = obj.cast::<PyPreconditioner>() {
-            return Ok(PrecondInput::Prebuilt(built.get().inner.clone()));
+            return Ok(PreconditionerInput::Prebuilt(built.get().inner.clone()));
         }
     }
-    Ok(PrecondInput::Config(extract_preconditioner_config(
-        py,
-        preconditioner,
-    )?))
+    Ok(extract_preconditioner_config(py, preconditioner)?
+        .map_or(PreconditionerInput::Default, PreconditionerInput::Config))
 }
 
 fn extract_preconditioner_config(
