@@ -119,36 +119,12 @@ fn exact_schur_matches_dense_reference_when_eliminating_rows() {
         col_diag.clone(),
         Grounding::Grounded,
     );
-    let inv_diagonal = invert_eliminated_diagonal(&matrix).unwrap();
-
-    assert_eq!(inv_diagonal.len(), 3);
-    for (&got, &expected) in inv_diagonal
-        .iter()
-        .zip([1.0 / 5.0, 1.0 / 6.0, 1.0 / 8.0].iter())
-    {
-        assert!((got - expected).abs() < 1e-12);
-    }
+    let inv_diagonal: Vec<f64> = row_diag.iter().map(|d| 1.0 / d).collect();
 
     let matrix = exact(&matrix, &inv_diagonal);
     let expected = dense_exact_schur(&c_dense, 3, 2, &row_diag, &col_diag, true);
     let got = sparse_to_dense(&matrix);
     assert_dense_close(&got, &expected, 1e-12);
-}
-
-#[test]
-fn exact_schur_rejects_zero_eliminated_diagonal() {
-    // Last eliminated (row-block) diagonal is zero — the inverse-diagonal
-    // fold should return SingularDiagonal.
-    let c_dense = vec![2.0, 0.0, 0.0, 3.0, 1.0, 4.0];
-    let row_diag = vec![5.0, 6.0, 0.0];
-    let col_diag = vec![8.0, 9.0];
-    let matrix = make_operator(&c_dense, 3, 2, row_diag, col_diag, Grounding::Grounded);
-
-    match invert_eliminated_diagonal(&matrix) {
-        Err(crate::BuildError::SingularDiagonal { index: 2, .. }) => {}
-        Err(e) => panic!("expected SingularDiagonal at index 2, got: {e}"),
-        Ok(_) => panic!("expected SingularDiagonal error, got Ok"),
-    }
 }
 
 #[test]

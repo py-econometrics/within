@@ -12,26 +12,6 @@ use rayon::prelude::*;
 use crate::config::ApproxSchurConfig;
 use crate::csr_block::to_u32;
 use crate::domain::{Grounding, SddmMatrix};
-use crate::BuildError;
-
-/// Fold the eliminated block's diagonal to its reciprocals, the one value Schur assembly needs that the matrix does not carry.
-pub(crate) fn invert_eliminated_diagonal(matrix: &SddmMatrix) -> Result<Vec<f64>, BuildError> {
-    debug_assert!(
-        matrix.n_eliminated() >= matrix.n_kept(),
-        "component is not eliminated-major"
-    );
-    matrix.diagonal[..matrix.n_eliminated()]
-        .iter()
-        .enumerate()
-        .map(|(i, &d)| {
-            if d > 0.0 {
-                Ok(1.0 / d)
-            } else {
-                Err(BuildError::SingularDiagonal { index: i })
-            }
-        })
-        .collect()
-}
 
 /// Exact Schur complement `S = D_keep − keep_to_elim · diag(inv_diag_elim) · elim_to_keep`, accumulated per keep-row through a dense workspace without materializing intermediate edges.
 pub(crate) fn exact(matrix: &SddmMatrix, inv_diagonal_eliminated: &[f64]) -> CsrMatrix {

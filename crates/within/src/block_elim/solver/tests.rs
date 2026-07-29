@@ -32,6 +32,47 @@ fn test_subtract_mean_partial() {
     assert_eq!(data[2], 100.0); // unchanged
 }
 
+/// An eliminated-major SDDM with no cross entries: the fold reads the diagonal alone.
+fn make_eliminated_major(row_diag: Vec<f64>, col_diag: Vec<f64>) -> SddmMatrix {
+    let (n_rows, n_cols) = (row_diag.len(), col_diag.len());
+    let c = CsrBlock::from_dense_table(&vec![0.0; n_rows * n_cols], n_rows, n_cols);
+    let ct = c.transpose();
+    let diagonal: Vec<f64> = row_diag.into_iter().chain(col_diag).collect();
+    let ground_edges = vec![0.0; diagonal.len()];
+    SddmMatrix {
+        cross_tab: CrossTab { c, ct },
+        diagonal,
+        ground_edges,
+        grounding: Grounding::Floating,
+    }
+}
+
+#[test]
+fn fold_inverts_the_eliminated_diagonal() {
+    let matrix = make_eliminated_major(vec![5.0, 6.0, 8.0], vec![7.0, 9.0]);
+    let eliminated = Eliminated::new(matrix).expect("a positive diagonal must fold");
+
+    assert_eq!(eliminated.inv_diagonal.len(), 3);
+    for (&got, &expected) in eliminated
+        .inv_diagonal
+        .iter()
+        .zip([1.0 / 5.0, 1.0 / 6.0, 1.0 / 8.0].iter())
+    {
+        assert!((got - expected).abs() < 1e-12);
+    }
+}
+
+#[test]
+fn fold_rejects_a_zero_eliminated_diagonal() {
+    let matrix = make_eliminated_major(vec![5.0, 6.0, 0.0], vec![8.0, 9.0]);
+
+    match Eliminated::new(matrix) {
+        Err(BuildError::SingularDiagonal { index: 2, .. }) => {}
+        Err(e) => panic!("expected SingularDiagonal at index 2, got: {e}"),
+        Ok(_) => panic!("expected SingularDiagonal error, got Ok"),
+    }
+}
+
 /// Build an eliminated-major CrossTab (`n_rows > n_cols`, as orientation
 /// guarantees) whose two cross entries leave three isolated rows, plus its
 /// build-time diagonal.

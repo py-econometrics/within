@@ -153,31 +153,62 @@ impl<'de> serde::Deserialize<'de> for BlockElimSolver {
     }
 }
 
-/// Factor one matrix's reduced Schur. At or below `dense_threshold` fill-in does not matter, so the exact complement goes to approx-chol exact-only; an unusable pivot or any larger system falls through to the sampled Schur.
-fn build_reduced_factor(
-    matrix: &SddmMatrix,
-    inv_diagonal_eliminated: &[f64],
-    config: &LocalSolverConfig,
-) -> Result<Factor, BuildError> {
-    let exact_below = config.dense_threshold;
-    if exact_below > 0 && matrix.n_kept() <= exact_below {
-        let exact = schur::exact_for_factor(matrix, inv_diagonal_eliminated);
+/// An eliminated-major SDDM paired with the reciprocals of its eliminated diagonal — the one quantity the exact reduction and the solve-time recovery both need and the matrix does not carry.
+struct Eliminated {
+    matrix: SddmMatrix,
+    inv_diagonal: Vec<f64>,
+}
+
+impl Eliminated {
+    fn new(matrix: SddmMatrix) -> Result<Self, BuildError> {
+        debug_assert!(
+            matrix.n_eliminated() >= matrix.n_kept(),
+            "component is not eliminated-major"
+        );
+        let inv_diagonal = matrix.diagonal[..matrix.n_eliminated()]
+            .iter()
+            .enumerate()
+            .map(|(i, &d)| {
+                if d > 0.0 {
+                    Ok(1.0 / d)
+                } else {
+                    Err(BuildError::SingularDiagonal { index: i })
+                }
+            })
+            .collect::<Result<Vec<f64>, BuildError>>()?;
+        Ok(Self {
+            matrix,
+            inv_diagonal,
+        })
+    }
+
+    /// Fold of the signed matrix's Gremban cover; transient, dropped once its factor is built.
+    fn cover(&self) -> Result<Self, BuildError> {
+        Self::new(assemble_bipartite_cover(&self.matrix))
+    }
+
+    /// Factor this system's reduced Schur. At or below `dense_threshold` fill-in does not matter, so the exact complement goes to approx-chol exact-only; an unusable pivot or any larger system falls through to the sampled Schur.
+    fn factor_reduced(&self, config: &LocalSolverConfig) -> Result<Factor, BuildError> {
+        let exact_below = config.dense_threshold;
+        if exact_below > 0 && self.matrix.n_kept() <= exact_below {
+            let exact = schur::exact_for_factor(&self.matrix, &self.inv_diagonal);
+            let ac = config
+                .approx_chol
+                .to_approx_chol(exact_below, ExactFailure::Error);
+            match factor_sparse(&exact, ac) {
+                Err(approx_chol::Error::DenseFactorizationFailed { .. }) => {}
+                result => return result.map_err(local_solver_build),
+            }
+        }
+        let schur_csr = match &config.schur {
+            SchurMode::Approximate(cfg) => schur::sampled(&self.matrix, cfg),
+            SchurMode::Exact => schur::exact_for_factor(&self.matrix, &self.inv_diagonal),
+        };
         let ac = config
             .approx_chol
-            .to_approx_chol(exact_below, ExactFailure::Error);
-        match factor_sparse(&exact, ac) {
-            Err(approx_chol::Error::DenseFactorizationFailed { .. }) => {}
-            result => return result.map_err(local_solver_build),
-        }
+            .to_approx_chol(exact_below, ExactFailure::FallBackToApproximate);
+        factor_sparse(&schur_csr, ac).map_err(local_solver_build)
     }
-    let schur_csr = match &config.schur {
-        SchurMode::Approximate(cfg) => schur::sampled(matrix, cfg),
-        SchurMode::Exact => schur::exact_for_factor(matrix, inv_diagonal_eliminated),
-    };
-    let ac = config
-        .approx_chol
-        .to_approx_chol(exact_below, ExactFailure::FallBackToApproximate);
-    factor_sparse(&schur_csr, ac).map_err(local_solver_build)
 }
 
 /// Gremban double cover of a signed matrix: each off-diagonal becomes a same-sheet copy when nonnegative and a cross-sheet copy when negative, both `|M_ij|`, so the 2×-sized cover is SDDM and acts on the antisymmetric `[z, -z]` subspace as the original. Transient, discarded after factoring.
@@ -280,32 +311,30 @@ impl BlockElimSolver {
             form,
             coordinates,
         } = component;
-        let inv_diagonal_eliminated = schur::invert_eliminated_diagonal(&matrix)?;
+        let eliminated = Eliminated::new(matrix)?;
 
         let factor = match form {
             MatrixForm::Laplacian => {
                 let factor = ReducedFactor::Direct {
-                    factor: build_reduced_factor(&matrix, &inv_diagonal_eliminated, config)?,
-                    grounding: matrix.grounding,
+                    factor: eliminated.factor_reduced(config)?,
+                    grounding: eliminated.matrix.grounding,
                 };
                 debug_assert!(factor.solve_dimension() >= factor.input_dimension());
                 factor
             }
             // Surplus survives the cover, so it grounds exactly as the signed matrix did; only the factor is retained.
             MatrixForm::SignedPendingCover => {
-                let cover = assemble_bipartite_cover(&matrix);
-                let cover_inv_diagonal = schur::invert_eliminated_diagonal(&cover)?;
-                let inner = build_reduced_factor(&cover, &cover_inv_diagonal, config)?;
+                let cover = eliminated.cover()?;
                 ReducedFactor::Cover {
-                    inner,
-                    m: matrix.n_kept(),
+                    inner: cover.factor_reduced(config)?,
+                    m: eliminated.matrix.n_kept(),
                 }
             }
         };
 
         Ok(BlockElimSolver::new(
-            matrix.cross_tab,
-            inv_diagonal_eliminated,
+            eliminated.matrix.cross_tab,
+            eliminated.inv_diagonal,
             factor,
             coordinates,
         ))
