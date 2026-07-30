@@ -15,19 +15,19 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - `SolveResult.x` is term-major: coefficient column `c` of `level` sits at `term_offset + c * n_levels + level`. Intercept-only designs keep the 0.2.0 ordering (#71).
 - `BatchSolveResult.time_setup` reports the shared per-batch setup time (#194).
 - `ScalingConfig` tunes signed-component scaling certification; `Solver::warnings()` returns non-fatal `BuildWarning`s (#61).
-- `BuildError::{EmptyEffect, SlopeLengthMismatch, InvalidLoading, DofSpaceExceedsU32}` (#58, #125, #160).
+- `BuildError::{EmptyEffect, SlopeLengthMismatch, InvalidLoading, UnscalableComponent, DofSpaceExceedsU32}` (#58, #125, #160).
 - A `py.typed` marker, so type checkers pick up the shipped stubs (#142).
 
 ### Changed
 
-- **BREAKING:** The Python `solve` / `solve_batch` / `Solver` first parameter is renamed `categories` → `design`; positional calls are unaffected (#58).
+- **BREAKING:** The Python `solve` / `solve_batch` / `Solver` first parameter is renamed `categories` → `design` (#58).
 - **BREAKING:** The Python free `solve` / `solve_batch` take `(design, y, weights, options, preconditioner)`; `options` must now be passed by keyword (#101).
 - **BREAKING:** The serialized `Preconditioner` wire format changed (v3 → v12); 0.2.0 bytes no longer decode (#72, #98).
-- **BREAKING:** `LocalSolverConfig.approx_schur` becomes `schur: SchurMode` (Rust) / `Schur | None` (Python), where `None` means the default (approximate) and exact is `SchurMode::Exact` / `Schur.exact()`. The `within.config.LocalSolverConfig` compatibility subclass is removed (#104).
-- **BREAKING:** `SolveResult` / `BatchSolveResult` gain `unidentified` and `layout` and are no longer `#[non_exhaustive]` (#69, #99).
+- **BREAKING:** `LocalSolverConfig.approx_schur` becomes `schur: SchurMode` (Rust) / `Schur | None` (Python), where `None` means the default (approximate) and exact is `SchurMode::Exact` / `Schur.exact()`. The `within.config.LocalSolverConfig` compatibility subclass is removed, so `LocalSolverConfig` is no longer picklable (#104).
+- **BREAKING:** `SolveResult` / `BatchSolveResult` gain `unidentified` and `layout`, breaking struct literals and exhaustive destructuring (#69, #99).
 - **BREAKING:** `Design<'a>` / `Solver<'a>` take a lifetime instead of a storage type parameter, borrowing caller columns until a locality sort or `into_owned()` (#68).
 - **BREAKING:** `Design::from_store` → `Design::from_frame`, taking an `ObservationFrame` — columnar storage with each column independently borrowed or owned (#68).
-- **BREAKING:** `BuildError::ObservationCountMismatch` gains `column`; `SingularDiagonal` drops `block` (#68).
+- **BREAKING:** `BuildError::ObservationCountMismatch` renames `factor` → `column`; `SingularDiagonal` drops `block` (#68).
 - **BREAKING:** `ndarray` 0.16 → 0.17, which appears in the public API as `IntoDesign for ArrayView2<u32>`.
 - **BREAKING:** The minimum supported Rust version is 1.85 (#123).
 - Python wheels are stable-ABI: one `cp39-abi3` wheel per platform runs on any CPython ≥ 3.9 (#161).
@@ -50,6 +50,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - `scipy` is no longer a runtime dependency of `within-py` — the package never imported it.
 - **BREAKING:** The `Store` trait and its `ArrayStore` / `FactorMajorStore` backends, superseded by `ObservationFrame` (#68).
+- **BREAKING:** `schwarz_precond::LsmrStopReason::BidiagonalizationBreakdown`; the tolerance test now fires on the same step.
 
 ## [0.2.0] - 2026-06-04
 
