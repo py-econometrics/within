@@ -171,6 +171,40 @@ fn normal_equation_residual<O: Operator + ?Sized>(op: &O, x: &[f64], b: &[f64]) 
     vec_norm(&atr)
 }
 
+/// Diagonal operator, used as a stand-in preconditioner `M⁻¹`.
+struct DiagOp(Vec<f64>);
+impl Operator for DiagOp {
+    fn nrows(&self) -> usize {
+        self.0.len()
+    }
+    fn ncols(&self) -> usize {
+        self.0.len()
+    }
+    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+        for ((yi, &xi), &di) in y.iter_mut().zip(x).zip(self.0.iter()) {
+            *yi = di * xi;
+        }
+        Ok(())
+    }
+    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+        self.apply(x, y)
+    }
+}
+
+/// `M⁻¹ ≈ diag(AᵀA)⁻¹`.
+fn jacobi(op: &DenseOp) -> DiagOp {
+    let mut diag_inv = vec![0.0; op.cols];
+    for (j, di) in diag_inv.iter_mut().enumerate() {
+        let s: f64 = op
+            .data
+            .chunks_exact(op.cols)
+            .map(|row| row[j] * row[j])
+            .sum();
+        *di = if s > 0.0 { 1.0 / s } else { 1.0 };
+    }
+    DiagOp(diag_inv)
+}
+
 #[test]
 fn test_mlsmr_unpreconditioned() {
     let b = vec![1.0, 2.0, 3.0, 3.0];
@@ -540,40 +574,10 @@ fn test_mlsmr_local_reorth_unpreconditioned() {
 
 /// Same shape but preconditioned: the M-weighted MGS path needs to stay
 /// numerically consistent and not lose convergence vs the no-reorth case.
-/// Diagonal preconditioner approximating diag(AᵀA)⁻¹.
 #[test]
 fn test_mlsmr_local_reorth_preconditioned() {
     let op = DenseOp::vandermonde(30, 12);
-
-    // Build M⁻¹ ≈ diag(AᵀA)⁻¹.
-    let mut diag_inv = vec![0.0; op.cols];
-    for (j, di) in diag_inv.iter_mut().enumerate() {
-        let s: f64 = op
-            .data
-            .chunks_exact(op.cols)
-            .map(|row| row[j] * row[j])
-            .sum();
-        *di = if s > 0.0 { 1.0 / s } else { 1.0 };
-    }
-    struct DiagOp(Vec<f64>);
-    impl Operator for DiagOp {
-        fn nrows(&self) -> usize {
-            self.0.len()
-        }
-        fn ncols(&self) -> usize {
-            self.0.len()
-        }
-        fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-            for ((yi, &xi), &di) in y.iter_mut().zip(x).zip(self.0.iter()) {
-                *yi = di * xi;
-            }
-            Ok(())
-        }
-        fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-            self.apply(x, y)
-        }
-    }
-    let m = DiagOp(diag_inv);
+    let m = jacobi(&op);
 
     let b: Vec<f64> = (0..op.rows)
         .map(|i| {
@@ -875,4 +879,92 @@ fn test_mlsmr_rejects_indefinite_preconditioner() {
     let b = vec![3.0, 4.0];
     let result = mlsmr(&IdentityOp { n: 2 }, &b, &NegIdentity, 1e-10, 100, None);
     assert!(matches!(result, Err(SolveError::InvalidInput { .. })));
+}
+
+/// The point of the warm restart: an iterate built under one preconditioner is
+/// carried into a run under a different one and still reaches the least-squares
+/// solution, matching what a cold solve under the second preconditioner finds.
+#[test]
+fn test_mlsmr_warm_survives_preconditioner_change() {
+    let op = DenseOp::vandermonde(30, 12);
+    let b: Vec<f64> = (0..op.rows)
+        .map(|i| (1.0 + i as f64 / (op.rows - 1) as f64).ln())
+        .collect();
+    let tol = 1e-9;
+    let window = Some(12);
+
+    let cold = mlsmr(&op, &b, &jacobi(&op), tol, 200, window).expect("cold solve");
+    assert!(cold.converged);
+
+    let stalled =
+        mlsmr(&op, &b, &IdentityOp { n: op.cols }, tol, 5, window).expect("partial solve");
+    assert!(!stalled.converged, "the partial run must not have finished");
+
+    let warm = mlsmr_warm(&op, &b, &stalled.x, &jacobi(&op), tol, 200, window).expect("warm solve");
+    assert!(
+        warm.converged,
+        "warm restart failed after {} iters",
+        warm.iterations
+    );
+
+    let cold_resid = normal_equation_residual(&op, &cold.x, &b);
+    let warm_resid = normal_equation_residual(&op, &warm.x, &b);
+    assert!(
+        warm_resid <= 10.0 * cold_resid.max(1e-14),
+        "warm restart landed short: {warm_resid} vs cold {cold_resid}"
+    );
+}
+
+/// The restart keeps the residual tolerance tied to the original `‖b‖`. Handing
+/// the residual to a plain `mlsmr` instead retargets it at `tol · ‖b − A x0‖`, a
+/// far tighter goal that costs iterations the caller never asked for.
+#[test]
+fn test_mlsmr_warm_tolerance_is_relative_to_original_rhs() {
+    let op = DenseOp::vandermonde(30, 12);
+    let x_true: Vec<f64> = (0..op.cols).map(|j| 1.0 / (1.0 + j as f64)).collect();
+    // A consistent RHS keeps the residual criterion — the one the basis affects
+    // — in charge; `x0` starts a relative 1e-4 away from the exact solution.
+    let mut b = vec![0.0; op.rows];
+    op.apply(&x_true, &mut b).expect("apply");
+    let x0: Vec<f64> = x_true.iter().map(|v| v * 0.9999).collect();
+    let tol = 1e-6;
+    let window = Some(12);
+    let m = jacobi(&op);
+
+    let warm = mlsmr_warm(&op, &b, &x0, &m, tol, 200, window).expect("warm solve");
+    assert_eq!(warm.stop_reason, LsmrStopReason::ResidualTolerance);
+
+    let mut r = vec![0.0; op.rows];
+    op.apply(&x0, &mut r).expect("apply");
+    for (ri, bi) in r.iter_mut().zip(&b) {
+        *ri = bi - *ri;
+    }
+    let naive = mlsmr(&op, &r, &m, tol, 200, window).expect("naive restart");
+    assert!(
+        warm.iterations < naive.iterations,
+        "warm took {} iters, naive restart {} — the tolerance basis is not `‖b‖`",
+        warm.iterations,
+        naive.iterations
+    );
+
+    let cold = mlsmr(&op, &b, &m, tol, 200, window).expect("cold solve");
+    assert!(
+        warm.iterations <= cold.iterations,
+        "warm restart {} must not cost more than a cold solve {}",
+        warm.iterations,
+        cold.iterations
+    );
+}
+
+#[test]
+fn test_mlsmr_warm_rejects_bad_warm_start() {
+    let op = IdentityOp { n: 3 };
+    let m = IdentityOp { n: 3 };
+    let b = [1.0, 2.0, 3.0];
+
+    let bad_len = mlsmr_warm(&op, &b, &[0.0, 0.0], &m, 1e-8, 10, None);
+    assert!(matches!(bad_len, Err(SolveError::InvalidInput { .. })));
+
+    let bad_value = mlsmr_warm(&op, &b, &[0.0, f64::NAN, 0.0], &m, 1e-8, 10, None);
+    assert!(matches!(bad_value, Err(SolveError::InvalidInput { .. })));
 }

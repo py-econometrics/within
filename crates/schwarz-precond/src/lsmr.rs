@@ -4,6 +4,8 @@
 //! - [`lsmr`] — standard Golub-Kahan bidiagonalization, no preconditioner.
 //! - [`mlsmr`] — Modified Golub-Kahan variant preconditioned with `M ≈ AᵀA`;
 //!   requires a single `M⁻¹` application per iteration.
+//! - [`mlsmr_warm`] — [`mlsmr`] on the residual system of a warm start, so an
+//!   iterate survives a change of preconditioner.
 
 mod bidiag;
 mod recurrence;
@@ -95,7 +97,7 @@ pub fn lsmr<A: Operator + ?Sized>(
 
     let local_size = local_size.unwrap_or(0);
     let (bidiag, step1) = GolubKahan::init(operator, b, local_size)?;
-    lsmr_from_bidiag(bidiag, step1, b_norm, tol, maxiter)
+    lsmr_from_bidiag(bidiag, step1, b_norm, b_norm, tol, maxiter)
 }
 
 /// Preconditioned LSMR with `M ≈ AᵀA`.
@@ -112,16 +114,7 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
 ) -> Result<LsmrResult, SolveError> {
     validate_lsmr_inputs(operator, b, tol)?;
     let n = operator.ncols();
-    if preconditioner.nrows() != n || preconditioner.ncols() != n {
-        return Err(SolveError::InvalidInput {
-            context: "lsmr",
-            message: format!(
-                "preconditioner shape {}x{} must match operator column count {n}",
-                preconditioner.nrows(),
-                preconditioner.ncols(),
-            ),
-        });
-    }
+    validate_preconditioner_shape(preconditioner, n)?;
 
     let b_norm = vec_norm(b);
     if b_norm == 0.0 {
@@ -137,16 +130,79 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
 
     let local_size = local_size.unwrap_or(0);
     let (bidiag, step1) = ModifiedGolubKahan::init(operator, preconditioner, b, local_size)?;
-    lsmr_from_bidiag(bidiag, step1, b_norm, tol, maxiter)
+    lsmr_from_bidiag(bidiag, step1, b_norm, b_norm, tol, maxiter)
+}
+
+/// Preconditioned LSMR warm-started from `x0`.
+///
+/// Solves the residual system `min ‖(b − A x0) − A d‖` and returns `x0 + d`,
+/// which reaches the same `x*` as a cold [`mlsmr`]. The stopping tests stay
+/// measured against the original `‖b‖`, but `normal_eq_residual` is relative to
+/// `‖Aᵀ(b − A x0)‖`, so it reports progress since the warm start.
+pub fn mlsmr_warm<A: Operator + ?Sized, M: Operator + ?Sized>(
+    operator: &A,
+    b: &[f64],
+    x0: &[f64],
+    preconditioner: &M,
+    tol: f64,
+    maxiter: usize,
+    local_size: Option<usize>,
+) -> Result<LsmrResult, SolveError> {
+    validate_lsmr_inputs(operator, b, tol)?;
+    let n = operator.ncols();
+    validate_preconditioner_shape(preconditioner, n)?;
+    if x0.len() != n {
+        return Err(SolveError::InvalidInput {
+            context: "lsmr",
+            message: format!(
+                "warm-start length {} does not match operator column count {n}",
+                x0.len()
+            ),
+        });
+    }
+    if let Some((index, value)) = x0.iter().copied().enumerate().find(|(_, v)| !v.is_finite()) {
+        return Err(SolveError::InvalidInput {
+            context: "lsmr",
+            message: format!("warm-start entry {index} must be finite, got {value}"),
+        });
+    }
+
+    let mut r = vec![0.0; operator.nrows()];
+    operator.apply(x0, &mut r)?;
+    for (ri, &bi) in r.iter_mut().zip(b) {
+        *ri = bi - *ri;
+    }
+
+    let r_norm = vec_norm(&r);
+    if r_norm == 0.0 {
+        return Ok(LsmrResult {
+            x: x0.to_vec(),
+            converged: true,
+            iterations: 0,
+            residual_norm: 0.0,
+            normal_eq_residual: 0.0,
+            stop_reason: LsmrStopReason::ZeroRhs,
+        });
+    }
+
+    let local_size = local_size.unwrap_or(0);
+    let (bidiag, step1) = ModifiedGolubKahan::init(operator, preconditioner, &r, local_size)?;
+    let mut result = lsmr_from_bidiag(bidiag, step1, r_norm, vec_norm(b), tol, maxiter)?;
+    for (xi, &x0i) in result.x.iter_mut().zip(x0) {
+        *xi += x0i;
+    }
+    Ok(result)
 }
 
 /// Run the LSMR scalar/vector recurrences over a bidiagonalization stream.
 /// Generic over the bidiagonalization, which is the only place the choice
 /// of preconditioner enters.
+/// `tol_ref_norm` is `rhs_norm` except on a warm restart, which keeps the original `‖b‖`.
 fn lsmr_from_bidiag<B: Bidiagonalization>(
     mut bidiag: B,
     step1: BidiagStep,
-    b_norm: f64,
+    rhs_norm: f64,
+    tol_ref_norm: f64,
     tol: f64,
     maxiter: usize,
 ) -> Result<LsmrResult, SolveError> {
@@ -156,7 +212,7 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
             x: vec![0.0; n],
             converged: true,
             iterations: 0,
-            residual_norm: b_norm,
+            residual_norm: rhs_norm,
             normal_eq_residual: 0.0,
             stop_reason: LsmrStopReason::InitialNormalEquationResidualZero,
         });
@@ -164,7 +220,7 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
 
     let mut recurrence = LsmrRecurrenceState::init(step1);
     let mut solution = SolutionState::init(bidiag.v());
-    let mut convergence = ConvergenceState::new(b_norm, tol, step1.alpha);
+    let mut convergence = ConvergenceState::new(tol_ref_norm, tol, step1.alpha);
     let mut prev_rot = RotationStep::initial();
 
     for itn in 1..=maxiter {
@@ -230,6 +286,23 @@ fn validate_lsmr_inputs<A: Operator + ?Sized>(
         return Err(SolveError::InvalidInput {
             context: "lsmr",
             message: format!("rhs entry {index} must be finite, got {value}"),
+        });
+    }
+    Ok(())
+}
+
+fn validate_preconditioner_shape<M: Operator + ?Sized>(
+    preconditioner: &M,
+    n: usize,
+) -> Result<(), SolveError> {
+    if preconditioner.nrows() != n || preconditioner.ncols() != n {
+        return Err(SolveError::InvalidInput {
+            context: "lsmr",
+            message: format!(
+                "preconditioner shape {}x{} must match operator column count {n}",
+                preconditioner.nrows(),
+                preconditioner.ncols(),
+            ),
         });
     }
     Ok(())
