@@ -43,6 +43,14 @@ pub(super) fn scatter_apply(
                     [b, z0[i] * b, z1[i] * b]
                 })
             }
+            [Loading::Covariate(c0), Loading::Covariate(c1)] => {
+                let z0 = frame.loading_column(*c0 as usize);
+                let z1 = frame.loading_column(*c1 as usize);
+                scatter_term::<2>(block, t, levels, parallel, scratch, |i| {
+                    let b = base(i);
+                    [z0[i] * b, z1[i] * b]
+                })
+            }
             columns => {
                 for (c, loading) in columns.iter().enumerate() {
                     let start = c * t.n_levels;
