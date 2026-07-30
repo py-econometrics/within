@@ -9,38 +9,87 @@ pub(crate) use cross_tab::{find_all_active_levels, BlockDiagonals, CrossTab};
 pub use effect::Effect;
 
 pub(crate) use factor_pairs::{
-    build_local_domains, CoordinateMap, GroundEdges, Grounding, LocalComponent, LocalDomain,
-    Reduction, SolveSpace,
+    build_local_domains, CoordinateMap, Grounding, LocalComponent, LocalDomain, MatrixForm,
+    SddmMatrix,
 };
-
-// ===========================================================================
-// Design — categorical fixed-effects design (data + layout)
-// ===========================================================================
 
 use std::borrow::Cow;
 
+use crate::channel::Channel;
 use crate::observation::ObservationFrame;
 use crate::BuildError;
 
-/// Per-term metadata: level count, coefficient-block offset, and column
-/// structure. Columns are ordered `[intercept?, slopes…]`; coefficient `c` of
-/// level `level` lives at `offset + c * n_levels + level`.
+/// A slice that is guaranteed non-empty by construction.
+#[repr(transparent)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NonEmpty<T>(Box<[T]>);
+
+impl<T> NonEmpty<T> {
+    /// `None` if `items` is empty.
+    pub fn new(items: impl Into<Box<[T]>>) -> Option<Self> {
+        let items = items.into();
+        (!items.is_empty()).then(|| Self(items))
+    }
+
+    /// A single-element run.
+    pub fn of(item: T) -> Self {
+        Self(Box::new([item]))
+    }
+
+    /// Structure-preserving map; non-emptiness is carried over.
+    pub fn map<U>(&self, f: impl FnMut(&T) -> U) -> NonEmpty<U> {
+        NonEmpty(self.0.iter().map(f).collect())
+    }
+}
+
+impl<T> std::ops::Deref for NonEmpty<T> {
+    type Target = [T];
+    fn deref(&self) -> &[T] {
+        &self.0
+    }
+}
+
+/// A coefficient column's loading: the intercept's implicit `1.0`, or a covariate as `T`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Loading<T> {
+    /// The intercept column; loading value `1.0` at every observation.
+    Constant,
+    /// A slope column.
+    Covariate(T),
+}
+
+impl<T> Loading<T> {
+    /// The covariate payload; `None` for the constant column.
+    pub fn covariate(&self) -> Option<&T> {
+        match self {
+            Self::Constant => None,
+            Self::Covariate(t) => Some(t),
+        }
+    }
+
+    /// Replace the covariate payload, preserving which variant this is.
+    pub fn map<U>(&self, f: impl FnOnce(&T) -> U) -> Loading<U> {
+        match self {
+            Self::Constant => Loading::Constant,
+            Self::Covariate(t) => Loading::Covariate(f(t)),
+        }
+    }
+}
+
+/// Per-term metadata; coefficient `c` of `level` lives at `offset + c · n_levels + level`.
 #[derive(Debug, Clone)]
 pub(crate) struct TermMeta {
     pub n_levels: usize,
     pub offset: usize,
     /// Non-decreasing in the design's internal row order (fixed at construction).
     pub sorted: bool,
-    pub intercept: bool,
-    /// This term's slope loadings, as indices into the frame's continuous columns.
-    pub slopes: Vec<usize>,
+    /// Coefficient columns in layout order; `Covariate` indexes the frame's continuous columns.
+    pub columns: NonEmpty<Loading<u32>>,
 }
 
 impl TermMeta {
-    /// Coefficient-column count (`intercept? + slopes`), ordered
-    /// `[intercept?, slopes…]`.
     pub fn n_columns(&self) -> usize {
-        usize::from(self.intercept) + self.slopes.len()
+        self.columns.len()
     }
 
     pub fn n_dofs(&self) -> usize {
@@ -51,22 +100,6 @@ impl TermMeta {
     pub fn column_base(&self, column: usize) -> usize {
         self.offset + column * self.n_levels
     }
-}
-
-/// One coefficient column of a term: the intercept (`loading: None`, loading
-/// value 1) or one slope column (`loading` = frame continuous column index).
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Channel {
-    pub term: usize,
-    pub column: usize,
-    pub loading: Option<usize>,
-}
-
-/// A cross-factor channel pair: one Gramian cross-block per pair.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct ChannelPair {
-    pub q: Channel,
-    pub r: Channel,
 }
 
 /// Fixed-effects design: observation columns plus coefficient-space layout.
@@ -82,42 +115,41 @@ pub struct Design<'a> {
 }
 
 impl<'a> Design<'a> {
-    /// Lower effect terms into a design: level columns plus each term's slope
-    /// loadings, laid out term-major (`offset[t] + c * L_t + level`).
+    /// Lower effect terms into a design, laid out term-major (`offset[t] + c · L_t + level`).
     pub fn new(effects: impl IntoIterator<Item = Effect<'a>>) -> Result<Self, BuildError> {
         let mut categorical: Vec<Cow<'a, [u32]>> = Vec::new();
         let mut continuous: Vec<Cow<'a, [f64]>> = Vec::new();
-        let mut columns: Vec<(bool, Vec<usize>)> = Vec::new();
+        let mut structure: Vec<NonEmpty<Loading<u32>>> = Vec::new();
         for effect in effects {
-            let slots = (continuous.len()..continuous.len() + effect.slopes().len()).collect();
-            continuous.extend(effect.slopes().iter().map(|&z| Cow::Borrowed(z)));
-            columns.push((effect.intercept(), slots));
+            structure.push(effect.columns().map(|column| {
+                column.map(|&z| {
+                    continuous.push(Cow::Borrowed(z));
+                    (continuous.len() - 1) as u32
+                })
+            }));
             categorical.push(Cow::Borrowed(effect.levels()));
         }
         let frame = ObservationFrame::new(categorical, continuous)?;
-        Self::build(frame, columns, true)
+        Self::build(frame, structure, true)
     }
 
-    /// Construct from a frame of plain factors (each an intercept-only term),
-    /// inferring each factor's level count (`max + 1`); locality-sorts all
-    /// columns when the dominant factor is unsorted.
+    /// Intercept-only factors, level count `max + 1`; locality-sorts an unsorted dominant factor.
     pub fn from_frame(frame: ObservationFrame<'a>) -> Result<Self, BuildError> {
-        let columns = vec![(true, Vec::new()); frame.n_factors()];
-        Self::build(frame, columns, true)
+        let structure = vec![NonEmpty::of(Loading::Constant); frame.n_factors()];
+        Self::build(frame, structure, true)
     }
 
     /// [`from_frame`](Self::from_frame) without the locality sort — profiling escape hatch.
     #[doc(hidden)]
     pub fn from_frame_unsorted(frame: ObservationFrame<'a>) -> Result<Self, BuildError> {
-        let columns = vec![(true, Vec::new()); frame.n_factors()];
-        Self::build(frame, columns, false)
+        let structure = vec![NonEmpty::of(Loading::Constant); frame.n_factors()];
+        Self::build(frame, structure, false)
     }
 
-    /// `column_structure[q]` = the term's `(intercept, slope column indices)`,
-    /// aligned with the frame's categorical columns.
+    /// `column_structure[term]` = that term's coefficient columns, aligned with the frame.
     fn build(
         frame: ObservationFrame<'a>,
-        column_structure: Vec<(bool, Vec<usize>)>,
+        column_structure: Vec<NonEmpty<Loading<u32>>>,
         locality_sort: bool,
     ) -> Result<Self, BuildError> {
         if frame.n_obs() == 0 {
@@ -128,7 +160,7 @@ impl<'a> Design<'a> {
         let n_obs = frame.n_obs();
         let mut terms = Vec::with_capacity(frame.n_factors());
         let mut offset = 0;
-        for (q, (intercept, slopes)) in column_structure.into_iter().enumerate() {
+        for (q, columns) in column_structure.into_iter().enumerate() {
             let col = frame.level_column(q);
             let mut max = 0;
             let mut sorted = true;
@@ -142,35 +174,27 @@ impl<'a> Design<'a> {
                 n_levels: max as usize + 1,
                 offset,
                 sorted,
-                intercept,
-                slopes,
+                columns,
             };
             offset += meta.n_dofs();
             terms.push(meta);
         }
 
-        // DOFs index CSR columns as u32; a raw entity ID (or otherwise oversized
-        // level space) is rejected here rather than left to panic in to_u32.
+        // Rejected here rather than left to panic in `to_u32`.
         if u32::try_from(offset).is_err() {
             return Err(BuildError::DofSpaceExceedsU32 { n_dofs: offset });
         }
 
-        // Sort by the term contributing the most DOFs (for plain factors, the
-        // highest-cardinality one) so its gather/scatter runs sequentially.
-        // `obs_perm` indexes observations as u32; beyond u32::MAX rows skip
-        // the optimization — the solve itself has no such limit.
+        // Sort by the term contributing the most DOFs so its gather/scatter runs sequentially.
         let dominant = (0..terms.len()).max_by_key(|&q| terms[q].n_dofs());
         let (frame, obs_perm) = match dominant {
             Some(d) if locality_sort && !terms[d].sorted && u32::try_from(n_obs).is_ok() => {
-                // Stable argsort. Must be `sort_by_cached_key`, NOT `sort_by_key`:
-                // the latter re-gathers `key[i]` O(n log n) times and dominated
-                // setup at tens of millions of rows.
+                // MUST be `sort_by_cached_key`: `sort_by_key` re-gathers `key[i]` O(n log n) times.
                 let key = frame.level_column(d);
                 let mut perm: Vec<u32> = (0..n_obs as u32).collect();
                 perm.sort_by_cached_key(|&i| key[i as usize]);
                 let sorted_frame = frame.permuted(&perm);
-                // Rescan sortedness: factors nested in (or duplicating) the
-                // dominant one come out sorted, keeping their coalesced scatter.
+                // Factors nested in the dominant one come out sorted, keeping coalesced scatter.
                 for (q, meta) in terms.iter_mut().enumerate() {
                     meta.sorted = sorted_frame.level_column(q).is_sorted();
                 }
@@ -208,10 +232,7 @@ impl<'a> Design<'a> {
                     got: w.len(),
                 });
             }
-            // `W^{1/2}` is applied to the design, so each weight must be finite and
-            // non-negative; otherwise `sqrt(w)` is NaN and the solution is silently
-            // corrupted. `wi >= 0.0` already rejects NaN (comparisons with NaN are
-            // false); `is_finite` additionally rejects `+∞`.
+            // `wi >= 0.0` already rejects NaN; `is_finite` additionally rejects `+∞`.
             if let Some((index, &value)) = w
                 .iter()
                 .enumerate()
@@ -253,15 +274,14 @@ impl<'a> Design<'a> {
         self.terms.len()
     }
 
-    /// The term's coefficient columns in `[intercept?, slopes…]` order.
+    /// The term's coefficient columns in layout order.
     pub(crate) fn channels(&self, term: usize) -> impl Iterator<Item = Channel> + '_ {
-        let meta = &self.terms[term];
-        let first_slope = usize::from(meta.intercept);
-        (0..first_slope + meta.slopes.len()).map(move |column| Channel {
-            term,
-            column,
-            loading: (column >= first_slope).then(|| meta.slopes[column - first_slope]),
-        })
+        (0..self.terms[term].n_columns()).map(move |column| Channel { term, column })
+    }
+
+    /// How `channel` loads onto each observation.
+    pub(crate) fn loading(&self, channel: Channel) -> Loading<u32> {
+        self.terms[channel.term].columns[channel.column]
     }
 
     /// Number of observations (rows of D).
@@ -292,9 +312,7 @@ mod tests {
 
     #[test]
     fn build_rejects_dof_space_exceeding_u32() {
-        // A single code of u32::MAX implies u32::MAX + 1 levels — one past the
-        // CSR column-index width — the shape a raw entity ID takes. Rejected
-        // before any to_u32 conversion can panic.
+        // A single code of u32::MAX implies one level past the CSR column-index width.
         let err = Design::from_frame(frame(vec![vec![u32::MAX]], vec![])).unwrap_err();
         assert!(matches!(
             err,
@@ -348,8 +366,7 @@ mod tests {
 
     #[test]
     fn rescan_marks_nested_factor_sorted_after_permutation() {
-        // Factor 1 nested in dominant factor 0 (level = col0 / 2): sorting by
-        // factor 0 also sorts factor 1; the rescan must detect that.
+        // Factor 1 is nested in dominant factor 0, so the rescan must detect it stays sorted.
         let col0 = vec![3u32, 0, 2, 1];
         let col1: Vec<u32> = col0.iter().map(|&v| v / 2).collect();
         let design = Design::from_frame(frame(vec![col0, col1], vec![])).unwrap();
@@ -383,8 +400,7 @@ mod tests {
 
     #[test]
     fn new_lays_out_slope_terms_term_major() {
-        // Term 0 is dominant (most DOFs); sorted levels keep the locality
-        // sort a no-op so the frame columns stay in caller order.
+        // Sorted levels keep the locality sort a no-op, so frame columns stay in caller order.
         let f0 = [0u32, 0, 1, 1];
         let f1 = [0u32, 2, 1, 0];
         let z0 = [1.0, 2.0, 3.0, 4.0];
@@ -396,20 +412,26 @@ mod tests {
         ];
         let design = Design::new(effects).unwrap();
 
-        // term 0: [intercept, z0, z1] over 2 levels; term 1: intercept over 3;
-        // term 2: slope-only over 2.
+        // term 0: [intercept, z0, z1] over 2 levels; term 1: intercept over 3; term 2: slope.
         assert_eq!(design.terms[0].offset, 0);
         assert_eq!(design.terms[0].n_dofs(), 6);
         assert_eq!(design.terms[1].offset, 6);
         assert_eq!(design.terms[1].n_dofs(), 3);
         assert_eq!(design.terms[2].offset, 9);
-        assert!(!design.terms[2].intercept);
+        assert!(!matches!(design.terms[2].columns[0], Loading::Constant));
         assert_eq!(design.terms[2].n_dofs(), 2);
         assert_eq!(design.n_dofs, 11);
 
         // slope indices resolve to the effects' loading columns in the frame.
-        assert_eq!(design.terms[0].slopes, vec![0, 1]);
-        assert_eq!(design.terms[2].slopes, vec![2]);
+        assert_eq!(
+            &*design.terms[0].columns,
+            &[
+                Loading::Constant,
+                Loading::Covariate(0),
+                Loading::Covariate(1)
+            ]
+        );
+        assert_eq!(&*design.terms[2].columns, &[Loading::Covariate(2)]);
         assert_eq!(design.frame.loading_column(0), &z0[..]);
         assert_eq!(design.frame.loading_column(2), &z1[..]);
     }

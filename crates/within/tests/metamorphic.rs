@@ -1,15 +1,19 @@
 use ndarray::Array2;
 use proptest::prelude::*;
-use within::{solve, solve_batch, LsmrOptions};
+use within::{solve, solve_batch, Channel, CoefficientAddress, LsmrOptions};
 
 #[path = "common/property_strategies.rs"]
 mod strategies;
 use strategies::{additive_precond, random_fe_problem_strategy};
 
-// Drive both arms of each metamorphic pair to tight first-order optimality so
-// the gauge-invariant residual agrees to well below the assertion tolerance.
-// These are well-conditioned plain-FE designs, so convergence is asserted (not
-// assumed): a convergence regression here is a failure, never a silent skip.
+fn at(term: usize, level: usize, column: usize) -> CoefficientAddress {
+    CoefficientAddress {
+        channel: Channel { term, column },
+        level,
+    }
+}
+
+// Well-conditioned plain-FE designs, so convergence is asserted, never a silent skip.
 fn tight_params() -> LsmrOptions {
     LsmrOptions {
         tol: 1e-11,
@@ -136,14 +140,14 @@ proptest! {
         prop_assert!(result.converged);
 
         for u in &result.unidentified {
-            let slot = result.layout.index(u.term, u.level, u.column).unwrap();
+            let slot = result.layout.index(*u).unwrap();
             prop_assert_eq!(
                 result.x[slot],
                 0.0,
                 "unidentified slot (term {}, level {}, col {}) = {}, expected exactly 0",
-                u.term,
+                u.channel.term,
                 u.level,
-                u.column,
+                u.channel.column,
                 result.x[slot]
             );
         }
@@ -167,7 +171,7 @@ fn saturated_single_factor_recovers_level_means() {
     assert!(result.converged);
 
     for (level, &mean) in [2.0, 4.0, 5.0].iter().enumerate() {
-        let slot = result.layout.index(0, level, 0).unwrap();
+        let slot = result.layout.index(at(0, level, 0)).unwrap();
         assert!(
             (result.x[slot] - mean).abs() < 1e-6,
             "level {level}: coefficient {} != level mean {mean}",

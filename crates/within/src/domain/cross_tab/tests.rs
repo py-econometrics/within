@@ -1,30 +1,18 @@
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// CrossTab tests (extracted from cross_tab.rs)
-// ---------------------------------------------------------------------------
-
 use proptest::prelude::*;
 
 use super::accumulate::{
     accumulate_dense_cross_block, accumulate_sparse_cross_block, PairColumns, Unit,
 };
 use super::{build_compact_mapping, CrossTab};
+use crate::channel::{Channel, ChannelPair};
 use crate::domain::find_all_active_levels;
-use crate::domain::{Channel, ChannelPair, Design, Effect};
+use crate::domain::{Design, Effect};
 use crate::observation::ObservationFrame;
 
 /// Terms 0 and 1 paired on their intercept channels (plain cross-tab).
 const INTERCEPT_PAIR: ChannelPair = ChannelPair {
-    q: Channel {
-        term: 0,
-        column: 0,
-        loading: None,
-    },
-    r: Channel {
-        term: 1,
-        column: 0,
-        loading: None,
-    },
+    rows: Channel { term: 0, column: 0 },
+    cols: Channel { term: 1, column: 0 },
 };
 
 fn design_of(columns: Vec<Vec<u32>>) -> Design<'static> {
@@ -35,9 +23,7 @@ fn design_of(columns: Vec<Vec<u32>>) -> Design<'static> {
 
 #[test]
 fn test_cross_tab_sparse_accumulation_path() {
-    // n_q * n_r = 2237 * 2237 > 5_000_000 triggers accumulate_sparse_cross_block.
-    // We use a small number of observations so the two paths produce the same
-    // logical result but exercise different code paths.
+    // n_rows * n_cols > 5M triggers the sparse path; few observations keep both paths equal.
     let n_obs = 200usize;
     let n_lev = 2237usize;
 
@@ -55,8 +41,7 @@ fn test_cross_tab_sparse_accumulation_path() {
         CrossTab::build_for_pair_with_active(&design_sparse, None, INTERCEPT_PAIR, &active_sparse)
             .expect("sparse cross tab should build");
 
-    // Dense path reference: collapse levels to a small range so n_q * n_r <= 5M.
-    // Map each observation to level % 100 for both factors (100*100 = 10 000 <= 5M).
+    // Dense reference: collapse levels so n_rows * n_cols <= 5M.
     let fa_small: Vec<u32> = fa.iter().map(|&x| x % 100).collect();
     let fb_small: Vec<u32> = fb.iter().map(|&x| x % 100).collect();
     let design_dense = design_of(vec![fa_small.clone(), fb_small.clone()]);
@@ -65,44 +50,41 @@ fn test_cross_tab_sparse_accumulation_path() {
         CrossTab::build_for_pair_with_active(&design_dense, None, INTERCEPT_PAIR, &active_dense)
             .expect("dense cross tab should build");
 
-    // The sparse CrossTab for the large design should have identical diagonals
-    // to what we'd compute by hand (each observation appears exactly once in the
-    // corresponding row/col bucket).
+    // Each observation appears exactly once in its row/col bucket.
     assert_eq!(
-        diag_sparse.q.len(),
-        ct_sparse.n_q(),
-        "diag_q length matches n_q"
+        diag_sparse.rows.len(),
+        ct_sparse.n_rows(),
+        "row_diag length matches n_rows"
     );
     assert_eq!(
-        diag_sparse.r.len(),
-        ct_sparse.n_r(),
-        "diag_r length matches n_r"
+        diag_sparse.cols.len(),
+        ct_sparse.n_cols(),
+        "col_diag length matches n_cols"
     );
 
-    // diag_q[i] = number of observations with fa == i (those within the first n_obs % n_lev levels)
-    // All active diagonal entries must be positive.
-    for &v in &diag_sparse.q {
+    // row_diag[i] counts observations with fa == i; every active entry must be positive.
+    for &v in &diag_sparse.rows {
         assert!(v > 0.0, "all active q-diagonals must be positive");
     }
-    for &v in &diag_sparse.r {
+    for &v in &diag_sparse.cols {
         assert!(v > 0.0, "all active r-diagonals must be positive");
     }
 
     // Cross-verify: sum of sparse diagonals should equal n_obs.
-    let diag_q_sum: f64 = diag_sparse.q.iter().sum();
+    let row_diag_sum: f64 = diag_sparse.rows.iter().sum();
     assert!(
-        (diag_q_sum - n_obs as f64).abs() < 1e-12,
-        "diag_q sum should equal n_obs: {} vs {}",
-        diag_q_sum,
+        (row_diag_sum - n_obs as f64).abs() < 1e-12,
+        "row_diag sum should equal n_obs: {} vs {}",
+        row_diag_sum,
         n_obs
     );
 
     // Same cross-check for the dense path.
-    let diag_q_dense_sum: f64 = diag_dense.q.iter().sum();
+    let row_diag_dense_sum: f64 = diag_dense.rows.iter().sum();
     assert!(
-        (diag_q_dense_sum - n_obs as f64).abs() < 1e-12,
-        "dense diag_q sum should equal n_obs: {} vs {}",
-        diag_q_dense_sum,
+        (row_diag_dense_sum - n_obs as f64).abs() < 1e-12,
+        "dense row_diag sum should equal n_obs: {} vs {}",
+        row_diag_dense_sum,
         n_obs
     );
 
@@ -124,18 +106,9 @@ fn test_cross_tab_sparse_accumulation_path() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Test: extract_component correctness
-// ---------------------------------------------------------------------------
-
 #[test]
 fn test_extract_component_two_components() {
-    // Two disconnected bipartite components:
-    //   Component A: q-levels {0,1} <-> r-levels {0,1}
-    //   Component B: q-levels {2,3} <-> r-levels {2,3}
-    // Observations:
-    //   (q=0, r=0), (q=0, r=1), (q=1, r=0), (q=1, r=1),  <- component A
-    //   (q=2, r=2), (q=2, r=3), (q=3, r=2), (q=3, r=3)   <- component B
+    // Two disconnected bipartite components: q/r levels {0,1} and {2,3}.
     let fa = vec![0u32, 0, 1, 1, 2, 2, 3, 3];
     let fb = vec![0u32, 1, 0, 1, 2, 3, 2, 3];
     let design = design_of(vec![fa, fb]);
@@ -148,47 +121,47 @@ fn test_extract_component_two_components() {
     assert_eq!(components.len(), 2, "should have 2 connected components");
 
     // Reusable remap buffers, reset by `extract_component` between components.
-    let mut q_remap = vec![u32::MAX; ct.n_q()];
-    let mut r_remap = vec![u32::MAX; ct.n_r()];
+    let mut row_remap = vec![u32::MAX; ct.n_rows()];
+    let mut col_remap = vec![u32::MAX; ct.n_cols()];
 
     // Sort components by their smallest q-index for deterministic comparison.
     let mut comps: Vec<_> = components.iter().collect();
-    comps.sort_by_key(|c| c.q_indices[0]);
+    comps.sort_by_key(|c| c.rows[0]);
 
     let comp_a = comps[0];
     let comp_b = comps[1];
 
-    assert_eq!(comp_a.q_indices, vec![0, 1], "component A q-indices");
-    assert_eq!(comp_a.r_indices, vec![0, 1], "component A r-indices");
-    assert_eq!(comp_b.q_indices, vec![2, 3], "component B q-indices");
-    assert_eq!(comp_b.r_indices, vec![2, 3], "component B r-indices");
+    assert_eq!(comp_a.rows, vec![0, 1], "component A row indices");
+    assert_eq!(comp_a.cols, vec![0, 1], "component A col indices");
+    assert_eq!(comp_b.rows, vec![2, 3], "component B row indices");
+    assert_eq!(comp_b.cols, vec![2, 3], "component B col indices");
 
     // Extract component A and verify its sub-CrossTab.
-    let sub_a = ct.extract_component(comp_a, &mut q_remap, &mut r_remap);
-    assert_eq!(sub_a.n_q(), 2, "component A: n_q=2");
-    assert_eq!(sub_a.n_r(), 2, "component A: n_r=2");
+    let sub_a = ct.extract_component(comp_a, &mut row_remap, &mut col_remap);
+    assert_eq!(sub_a.n_rows(), 2, "component A: n_rows=2");
+    assert_eq!(sub_a.n_cols(), 2, "component A: n_cols=2");
 
-    // Component A's sliced diagonals should match the parent's at indices 0,1.
+    // Component A's diagonal matches the parent's at 0,1, flat as `[rows | cols]`.
     let sub_a_diag = parent_diag.extract_component(comp_a);
-    for (new_i, &old_i) in comp_a.q_indices.iter().enumerate() {
+    for (new_i, &old_i) in comp_a.rows.iter().enumerate() {
         assert!(
-            (sub_a_diag.q[new_i] - parent_diag.q[old_i]).abs() < 1e-12,
-            "sub_a diag q[{new_i}] should match parent diag q[{old_i}]"
+            (sub_a_diag[new_i] - parent_diag.rows[old_i]).abs() < 1e-12,
+            "sub_a diag row[{new_i}] should match parent diag row[{old_i}]"
         );
     }
-    for (new_i, &old_i) in comp_a.r_indices.iter().enumerate() {
+    for (new_i, &old_i) in comp_a.cols.iter().enumerate() {
         assert!(
-            (sub_a_diag.r[new_i] - parent_diag.r[old_i]).abs() < 1e-12,
-            "sub_a diag r[{new_i}] should match parent diag r[{old_i}]"
+            (sub_a_diag[comp_a.rows.len() + new_i] - parent_diag.cols[old_i]).abs() < 1e-12,
+            "sub_a diag col[{new_i}] should match parent diag col[{old_i}]"
         );
     }
 
-    // Column indices in sub_a.c should be 0-based (0..n_r for component A = 0..2).
+    // Column indices in sub_a.c should be 0-based (0..n_cols for component A = 0..2).
     let max_col_a = sub_a.c.indices.iter().copied().max().unwrap_or(0);
     assert!(
-        (max_col_a as usize) < sub_a.n_r(),
-        "sub_a C column indices should be 0-based < n_r={}",
-        sub_a.n_r()
+        (max_col_a as usize) < sub_a.n_cols(),
+        "sub_a C column indices should be 0-based < n_cols={}",
+        sub_a.n_cols()
     );
 
     // C^T of sub_a should equal the exact transpose of sub_a.c.
@@ -209,16 +182,16 @@ fn test_extract_component_two_components() {
     }
 
     // Extract component B and verify its sub-CrossTab.
-    let sub_b = ct.extract_component(comp_b, &mut q_remap, &mut r_remap);
-    assert_eq!(sub_b.n_q(), 2, "component B: n_q=2");
-    assert_eq!(sub_b.n_r(), 2, "component B: n_r=2");
+    let sub_b = ct.extract_component(comp_b, &mut row_remap, &mut col_remap);
+    assert_eq!(sub_b.n_rows(), 2, "component B: n_rows=2");
+    assert_eq!(sub_b.n_cols(), 2, "component B: n_cols=2");
 
     // Column indices in sub_b.c should be 0-based.
     let max_col_b = sub_b.c.indices.iter().copied().max().unwrap_or(0);
     assert!(
-        (max_col_b as usize) < sub_b.n_r(),
-        "sub_b C column indices should be 0-based < n_r={}",
-        sub_b.n_r()
+        (max_col_b as usize) < sub_b.n_cols(),
+        "sub_b C column indices should be 0-based < n_cols={}",
+        sub_b.n_cols()
     );
 
     // The two components should have the same structure (symmetric design).
@@ -228,17 +201,13 @@ fn test_extract_component_two_components() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Test: bipartite_connected_components partition property (proptest)
-// ---------------------------------------------------------------------------
-
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(10))]
 
     #[test]
     fn prop_bipartite_components_partition(
-        n_q in 2usize..=8,
-        n_r in 2usize..=8,
+        n_rows in 2usize..=8,
+        n_cols in 2usize..=8,
         n_obs in 4usize..=30,
         seed in 0u64..1000,
     ) {
@@ -249,9 +218,9 @@ proptest! {
         for _ in 0..n_obs {
             // LCG: x_{n+1} = (a * x_n + c) mod m
             s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            fa.push((s % n_q as u64) as u32);
+            fa.push((s % n_rows as u64) as u32);
             s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            fb.push((s % n_r as u64) as u32);
+            fb.push((s % n_cols as u64) as u32);
         }
 
         let design = design_of(vec![fa, fb]);
@@ -261,52 +230,47 @@ proptest! {
 
         let components = ct.bipartite_connected_components();
 
-        // Collect all q-indices and r-indices across components.
-        let mut all_q: Vec<usize> = components.iter().flat_map(|c| c.q_indices.iter().copied()).collect();
-        let mut all_r: Vec<usize> = components.iter().flat_map(|c| c.r_indices.iter().copied()).collect();
-        all_q.sort_unstable();
-        all_r.sort_unstable();
+        // Collect all row indices and col indices across components.
+        let mut all_rows: Vec<usize> = components.iter().flat_map(|c| c.rows.iter().copied()).collect();
+        let mut all_cols: Vec<usize> = components.iter().flat_map(|c| c.cols.iter().copied()).collect();
+        all_rows.sort_unstable();
+        all_cols.sort_unstable();
 
-        // Union should cover 0..n_q (compact active levels).
-        let expected_q: Vec<usize> = (0..ct.n_q()).collect();
-        let expected_r: Vec<usize> = (0..ct.n_r()).collect();
-        prop_assert_eq!(&all_q, &expected_q, "q-indices should cover 0..n_q={}", ct.n_q());
-        prop_assert_eq!(&all_r, &expected_r, "r-indices should cover 0..n_r={}", ct.n_r());
+        // Union should cover 0..n_rows (compact active levels).
+        let expected_rows: Vec<usize> = (0..ct.n_rows()).collect();
+        let expected_cols: Vec<usize> = (0..ct.n_cols()).collect();
+        prop_assert_eq!(&all_rows, &expected_rows, "row indices should cover 0..n_rows={}", ct.n_rows());
+        prop_assert_eq!(&all_cols, &expected_cols, "col indices should cover 0..n_cols={}", ct.n_cols());
 
         // Indices within each component should be sorted.
         for (ci, comp) in components.iter().enumerate() {
             prop_assert!(
-                comp.q_indices.windows(2).all(|w| w[0] < w[1]),
-                "component {ci}: q_indices should be sorted"
+                comp.rows.windows(2).all(|w| w[0] < w[1]),
+                "component {ci}: rows should be sorted"
             );
             prop_assert!(
-                comp.r_indices.windows(2).all(|w| w[0] < w[1]),
-                "component {ci}: r_indices should be sorted"
+                comp.cols.windows(2).all(|w| w[0] < w[1]),
+                "component {ci}: cols should be sorted"
             );
         }
 
         // Index sets should be disjoint between components.
-        let mut q_seen = std::collections::HashSet::new();
+        let mut rows_seen = std::collections::HashSet::new();
         let mut r_seen = std::collections::HashSet::new();
         for (ci, comp) in components.iter().enumerate() {
-            for &qi in &comp.q_indices {
-                prop_assert!(q_seen.insert(qi), "component {ci}: q-index {qi} appears in multiple components");
+            for &qi in &comp.rows {
+                prop_assert!(rows_seen.insert(qi), "component {ci}: q-index {qi} appears in multiple components");
             }
-            for &ri in &comp.r_indices {
+            for &ri in &comp.cols {
                 prop_assert!(r_seen.insert(ri), "component {ci}: r-index {ri} appears in multiple components");
             }
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Test: find_all_active_levels
-// ---------------------------------------------------------------------------
-
 #[test]
 fn test_find_all_active_levels_with_gaps() {
-    // Factor 0 has 5 levels (max value = 4), but only levels 0, 2, 4 appear.
-    // Factor 1 uses all 3 levels 0, 1, 2.
+    // Factor 0 has 5 levels but only 0, 2, 4 appear; factor 1 uses all 3.
     let fa = vec![0u32, 2, 4, 0, 2, 4];
     let fb = vec![0u32, 1, 2, 0, 1, 2];
     let design = design_of(vec![fa, fb]);
@@ -330,16 +294,9 @@ fn test_find_all_active_levels_with_gaps() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Test: dense/sparse accumulation parity on signed (slope-channel) data
-// ---------------------------------------------------------------------------
-
 #[test]
 fn dense_and_sparse_paths_agree_on_signed_data() {
-    // Slope channel of f against the intercept of g. Cell (f=0, g=0) crosses
-    // exactly 0.0 mid-row (+1, −1, +2) — the sparse path re-pushes the column
-    // into `touched` — and cell (f=0, g=1) cancels to exactly 0.0 (+3, −3),
-    // which both paths must drop.
+    // Cell (f=0,g=0) crosses 0.0 mid-row and (f=0,g=1) cancels to 0.0; both paths must drop it.
     let f = [0u32, 0, 0, 0, 0, 1];
     let z = [1.0, -1.0, 2.0, 3.0, -3.0, 4.0];
     let g = [0u32, 0, 0, 1, 1, 0];
@@ -349,31 +306,23 @@ fn dense_and_sparse_paths_agree_on_signed_data() {
     ];
     let design = Design::new(effects).unwrap();
     let pair = ChannelPair {
-        q: Channel {
-            term: 0,
-            column: 1,
-            loading: Some(0),
-        },
-        r: Channel {
-            term: 1,
-            column: 0,
-            loading: None,
-        },
+        rows: Channel { term: 0, column: 1 },
+        cols: Channel { term: 1, column: 0 },
     };
     let all_active = find_all_active_levels(&design);
     let active = build_compact_mapping(
         &all_active[0],
         &all_active[1],
-        design.terms[0].column_base(pair.q.column),
-        design.terms[1].column_base(pair.r.column),
+        design.terms[0].column_base(pair.rows.column),
+        design.terms[1].column_base(pair.cols.column),
     )
     .expect("both factors have active levels");
 
     let cols = PairColumns {
-        levels_q: design.frame.level_column(0),
-        levels_r: design.frame.level_column(1),
-        load_q: design.frame.loading_column(0),
-        load_r: Unit,
+        row_levels: design.frame.level_column(0),
+        col_levels: design.frame.level_column(1),
+        row_load: design.frame.loading_column(0),
+        col_load: Unit,
         weights: None,
     };
     let (c_dense, dq_dense, dr_dense) = accumulate_dense_cross_block(cols, &active);
@@ -390,8 +339,7 @@ fn dense_and_sparse_paths_agree_on_signed_data() {
     assert_eq!(&c_dense.indptr, &[0, 1, 2]);
     assert_eq!(c_dense.indices[0], 0);
     assert_eq!(c_dense.data[0], 2.0);
-    // Diagonals accumulate w·l²: z² sums on the slope side, plain counts on
-    // the intercept side (nonnegative even on signed channels).
+    // Diagonals accumulate w·l²: z² on the slope side, plain counts on the intercept side.
     assert_eq!(dq_dense, vec![1.0 + 1.0 + 4.0 + 9.0 + 9.0, 16.0]);
     assert_eq!(dr_dense, vec![4.0, 2.0]);
 }

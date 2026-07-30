@@ -59,9 +59,9 @@ impl<'a> ObservationFrame<'a> {
         self.categorical.len()
     }
 
-    /// Level codes of factor `q`.
-    pub fn level_column(&self, q: usize) -> &[u32] {
-        &self.categorical[q]
+    /// Level codes of factor `factor`.
+    pub fn level_column(&self, factor: usize) -> &[u32] {
+        &self.categorical[factor]
     }
 
     /// Loadings of continuous column `k`.

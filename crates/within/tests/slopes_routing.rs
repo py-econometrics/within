@@ -13,9 +13,7 @@ fn lcg(seed: &mut u64) -> u64 {
 
 #[test]
 fn two_factor_slope_solves_with_bounded_iterations() {
-    // f (~200 levels, intercept + slope) alongside a binary g: the signed
-    // (f-slope, g-int) pair is structurally balanced — centering makes each
-    // whitened slope row's two cells opposite-signed.
+    // The signed (f-slope, g-int) pair is structurally balanced after centering.
     let n = 50_000;
     let n_f = 200u64;
     let mut seed = 42u64;
@@ -50,9 +48,7 @@ fn two_factor_slope_solves_with_bounded_iterations() {
 
 #[test]
 fn unit_trends_plus_time_effects_boundary() {
-    // Balanced panel, unit trends + time effects. Odd T puts the whitened
-    // trend at exactly 0 for the middle period, so the signed pair keeps a
-    // live positive-diagonal singleton (trivial 1×1 route).
+    // Odd T zeroes the whitened trend mid-period, so the signed pair keeps a live 1×1 route.
     let (n_units, n_times) = (30usize, 9usize);
     let n = n_units * n_times;
     let unit: Vec<u32> = (0..n).map(|i| (i / n_times) as u32).collect();
@@ -84,11 +80,7 @@ fn unit_trends_plus_time_effects_boundary() {
 
 #[test]
 fn frustrated_component_solves_via_cover() {
-    // Per-level means are exactly 0, so whitening keeps the cell signs:
-    // rows (−,+,+) / (−,−,+) contain a negative 4-cycle — the minimal
-    // frustrated component. The cover path must reproduce the exact
-    // least-squares projection: residuals orthogonal to every design column,
-    // and the reported coefficients reconstruct the fit.
+    // Rows (−,+,+)/(−,−,+) contain a negative 4-cycle: the minimal frustrated component.
     let f = [0u32, 0, 0, 1, 1, 1];
     let g = [0u32, 1, 2, 0, 1, 2];
     let z = [-2.0, 1.0, 1.0, -1.0, -1.0, 2.0];
@@ -132,9 +124,7 @@ fn frustrated_component_solves_via_cover() {
 
 #[test]
 fn frustrated_two_factor_slope_solves_with_bounded_iterations() {
-    // Same shape as the balanced two-factor case, but g has five levels:
-    // whitened slope rows are zero-sum, so a ≥3-level partner generically
-    // closes negative cycles — the realistic frustrated regime.
+    // A ≥3-level partner generically closes negative cycles: the realistic frustrated regime.
     let n = 50_000;
     let n_f = 200u64;
     let mut seed = 47u64;
@@ -169,9 +159,7 @@ fn frustrated_two_factor_slope_solves_with_bounded_iterations() {
 
 #[test]
 fn near_collinear_cross_term_direction_survives_routing() {
-    // Relative surplus 5e-10 sat below the former 1e-9 SURPLUS_TOL; routing
-    // this PD component as singular projected out the identified [1, -1]
-    // direction, returning x ≈ 0 with converged = true.
+    // Relative surplus 5e-10 sat below the former 1e-9 SURPLUS_TOL, projecting out [1, -1].
     let c = 1.0 - 5e-10;
     let f = [0u32, 0];
     let z1 = [1.0, 0.0];
@@ -202,11 +190,7 @@ fn near_collinear_cross_term_direction_survives_routing() {
 
 #[test]
 fn surplus_component_sampled_matches_exact_reduction() {
-    // DGP in lockstep with `positive_slope_only_pair_grounds_beyond_dense_threshold`
-    // (src/solver/tests.rs), which pins that this design grounds a surplus-carrying
-    // component whose kept side exceeds the dense threshold: the default arm below
-    // exercises the sparse SAMPLED reduction on it; `SchurMode::Exact` is the
-    // exact-reduction reference (#83).
+    // The default arm exercises the sparse SAMPLED reduction; `Exact` is the reference (#83).
     let n = 8000usize;
     let f: Vec<u32> = (0..n).map(|i| (i % 80) as u32).collect();
     let g: Vec<u32> = (0..n).map(|i| ((i / 80) % 40) as u32).collect();
@@ -252,8 +236,7 @@ fn surplus_component_sampled_matches_exact_reduction() {
         "iterations = {}",
         sampled.iterations
     );
-    // The demeaned response is the kernel-invariant deliverable; both arms
-    // must land on the same one.
+    // The demeaned response is the kernel-invariant deliverable; both arms must match.
     for (i, ((&s, &e), &yi)) in sampled
         .demeaned
         .iter()
@@ -277,10 +260,7 @@ fn surplus_component_sampled_matches_exact_reduction() {
 /// fit the `Off`/`Diagonal` preconditioners already produce.
 #[test]
 fn singleton_level_in_non_first_slope_term_solves_under_default() {
-    // firm level 2 is observed exactly once (obs 0); the slope sits on the
-    // second (non-first) term. n_dofs = 3 (worker) + 3 + 3 (firm intercept +
-    // slope) = 9, and the firm-slope level-2 column (global index 8) is last,
-    // so an omitted preconditioner column shows up as a shape mismatch.
+    // The firm-slope level-2 column is last, so an omitted one shows up as a shape mismatch.
     let worker = [0u32, 0, 1, 1, 2, 2];
     let firm = [2u32, 0, 0, 1, 1, 0];
     let x = [0.5, -1.0, 0.3, 2.0, -0.7, 1.1];
@@ -296,8 +276,7 @@ fn singleton_level_in_non_first_slope_term_solves_under_default() {
     let solver = Solver::new(effects(), None, PreconditionerConfig::default())
         .expect("default preconditioner builds");
 
-    // The preconditioner must match the operator's column count, including the
-    // uncovered structural-zero singleton-slope direction.
+    // The preconditioner must match the operator's column count, uncovered ones included.
     let precond = solver
         .preconditioner()
         .expect("default has a preconditioner");
@@ -311,14 +290,12 @@ fn singleton_level_in_non_first_slope_term_solves_under_default() {
     assert_eq!(
         r.unidentified
             .iter()
-            .map(|d| (d.term, d.level, d.column))
+            .map(|d| (d.channel.term, d.level, d.channel.column))
             .collect::<Vec<_>>(),
         vec![(1, 2, 1)],
     );
 
-    // Same identified fit as Off/Diagonal: the demeaned residual y - Dx is
-    // gauge-invariant, so it agrees even though the raw coefficient vectors
-    // (with within-factor gauge freedom) need not.
+    // The demeaned residual is gauge-invariant, so it agrees though raw coefficients need not.
     for cfg in [PreconditionerConfig::Off, PreconditionerConfig::Diagonal] {
         let alt = Solver::new(effects(), None, cfg)
             .expect("alt preconditioner builds")
@@ -332,9 +309,7 @@ fn singleton_level_in_non_first_slope_term_solves_under_default() {
         }
     }
 
-    // Reuse-safe: the preconditioner round-trips through postcard and the
-    // reloaded copy carries the full dimension, so a fresh solver accepts it
-    // (a dropped n_dofs would trip Solver::new's dimension check).
+    // A dropped n_dofs would trip Solver::new's dimension check after the round-trip.
     let bytes = postcard::to_stdvec(precond).expect("serialize");
     let restored: Preconditioner = postcard::from_bytes(&bytes).expect("deserialize");
     assert_eq!(restored.ncols(), solver.n_dofs());

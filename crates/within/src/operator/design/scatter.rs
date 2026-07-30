@@ -7,10 +7,10 @@ use portable_atomic::AtomicF64;
 use rayon::prelude::*;
 
 use super::PAR_THRESHOLD;
+use crate::domain::Loading;
 use crate::domain::{Design, TermMeta};
 
-/// Adjoint scatter over all terms; `base(i)` is the row value (`x[i]`, or
-/// `sw[i]·x[i]` when weighted) that each column scales by its loading.
+/// Adjoint scatter over all terms; `base(i)` is the row value each column scales by its loading.
 pub(super) fn scatter_apply(
     design: &Design<'_>,
     scratch: &[AtomicF64],
@@ -24,46 +24,40 @@ pub(super) fn scatter_apply(
     for (q, t) in design.terms.iter().enumerate() {
         let levels = frame.level_column(q);
         let block = &mut dst[t.offset..t.offset + t.n_dofs()];
-        match (t.intercept, t.slopes.as_slice()) {
-            (true, []) => scatter_term::<1>(block, t, levels, parallel, scratch, |i| [base(i)]),
-            (true, &[c0]) => {
-                let z0 = frame.loading_column(c0);
+        match &*t.columns {
+            [Loading::Constant] => {
+                scatter_term::<1>(block, t, levels, parallel, scratch, |i| [base(i)])
+            }
+            [Loading::Constant, Loading::Covariate(c0)] => {
+                let z0 = frame.loading_column(*c0 as usize);
                 scatter_term::<2>(block, t, levels, parallel, scratch, |i| {
                     let b = base(i);
                     [b, z0[i] * b]
                 })
             }
-            (true, &[c0, c1]) => {
-                let z0 = frame.loading_column(c0);
-                let z1 = frame.loading_column(c1);
+            [Loading::Constant, Loading::Covariate(c0), Loading::Covariate(c1)] => {
+                let z0 = frame.loading_column(*c0 as usize);
+                let z1 = frame.loading_column(*c1 as usize);
                 scatter_term::<3>(block, t, levels, parallel, scratch, |i| {
                     let b = base(i);
                     [b, z0[i] * b, z1[i] * b]
                 })
             }
-            (intercept, slope_cols) => {
-                let zoff = usize::from(intercept);
-                if intercept {
-                    scatter_term::<1>(
-                        &mut block[..t.n_levels],
-                        t,
-                        levels,
-                        parallel,
-                        scratch,
-                        |i| [base(i)],
-                    );
-                }
-                for (v, &c) in slope_cols.iter().enumerate() {
-                    let z = frame.loading_column(c);
-                    let start = (zoff + v) * t.n_levels;
-                    scatter_term::<1>(
-                        &mut block[start..start + t.n_levels],
-                        t,
-                        levels,
-                        parallel,
-                        scratch,
-                        move |i| [z[i] * base(i)],
-                    );
+            columns => {
+                for (c, loading) in columns.iter().enumerate() {
+                    let start = c * t.n_levels;
+                    let slot = &mut block[start..start + t.n_levels];
+                    match loading {
+                        Loading::Constant => {
+                            scatter_term::<1>(slot, t, levels, parallel, scratch, |i| [base(i)]);
+                        }
+                        Loading::Covariate(k) => {
+                            let z = frame.loading_column(*k as usize);
+                            scatter_term::<1>(slot, t, levels, parallel, scratch, move |i| {
+                                [z[i] * base(i)]
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -91,12 +85,7 @@ fn scatter_term<const C: usize>(
     }
 }
 
-/// Coefficient-block threshold for choosing between fold and atomic scatter-add.
-///
-/// Blocks (a term's `n_columns * n_levels` coefficients) smaller than this use
-/// thread-local fold/reduce (O(block * n_threads) memory). Larger blocks use
-/// atomic CAS instead, which has low contention when bins vastly outnumber
-/// threads.
+/// Fold vs atomic scatter-add: below it fold costs O(block · n_threads) memory, above CAS wins.
 const SCATTER_LOCAL_THRESHOLD: usize = 100_000;
 
 /// Strategy for a single term's scatter-add loop.
@@ -107,16 +96,12 @@ enum ScatterStrategy {
     Fold,
     /// Parallel atomic CAS — for large blocks with low contention.
     Atomic,
-    /// Atomic path for a large sorted term: equal-level runs coalesce into
-    /// one atomic add per distinct level per chunk instead of one per row,
-    /// avoiding the atomic-CAS storm.
+    /// Equal-level runs coalesce into one atomic add per level per chunk, avoiding a CAS storm.
     SortedCoalesced,
 }
 
 impl ScatterStrategy {
-    /// Pick the scatter strategy for one term; `block` is the coefficient
-    /// count written by the kernel call, `sorted` the term's level-column
-    /// sortedness (`TermMeta::sorted`).
+    /// `block` is the coefficient count the kernel writes, `sorted` the level-column sortedness.
     fn pick(parallel: bool, block: usize, sorted: bool) -> Self {
         match (parallel, block < SCATTER_LOCAL_THRESHOLD, sorted) {
             (false, _, _) => ScatterStrategy::Sequential,
@@ -142,8 +127,7 @@ fn scatter_sequential<const C: usize>(
     }
 }
 
-/// Parallel scatter-add via thread-local fold/reduce — best when the block
-/// (the term's coefficient count) is small relative to thread count.
+/// Parallel scatter-add via thread-local fold/reduce, best when the block is small.
 fn scatter_fold<const C: usize>(
     block: &mut [f64],
     n_levels: usize,
@@ -176,8 +160,7 @@ fn scatter_fold<const C: usize>(
     }
 }
 
-/// Seed the operator's atomic scratch with `block`'s current contents,
-/// returning the trimmed view the scatter accumulates into.
+/// Seed the atomic scratch with `block`'s contents, returning the trimmed accumulation view.
 fn seed_scatter_scratch<'b>(atomic_buf: &'b [AtomicF64], block: &[f64]) -> &'b [AtomicF64] {
     debug_assert!(atomic_buf.len() >= block.len());
     let buf = &atomic_buf[..block.len()];
@@ -194,10 +177,7 @@ fn writeback_scatter_scratch(block: &mut [f64], buf: &[AtomicF64]) {
     }
 }
 
-/// Parallel scatter-add via atomic CAS — best when the block is large
-/// relative to thread count (low contention). `atomic_buf` is the operator's
-/// reusable scratch (sized to the largest term's block); we use its first
-/// `block.len()` slots, re-seeding them via `store` so no allocation occurs.
+/// Parallel scatter-add via atomic CAS, best when the block is large; the scratch is reused.
 fn scatter_atomic<const C: usize>(
     block: &mut [f64],
     n_levels: usize,
@@ -223,18 +203,13 @@ fn scatter_sorted_coalesced<const C: usize>(
     atomic_buf: &[AtomicF64],
 ) {
     let buf = seed_scatter_scratch(atomic_buf, block);
-    // Each row-chunk coalesces its equal-level runs locally and commits one
-    // atomic add per distinct level per column. A run split across a chunk
-    // boundary is committed by both chunks — additive, so still correct —
-    // keeping chunks independent without a carry/fixup pass.
+    // A run split across a chunk boundary is committed by both chunks — additive, so correct.
     const CHUNK: usize = 65_536;
     levels
         .par_chunks(CHUNK)
         .enumerate()
         .for_each(|(c_idx, chunk)| {
             let start = c_idx * CHUNK;
-            // Single flat pass, one level load per row: accumulate the current
-            // run's per-column sums and commit them whenever the level changes.
             let mut level = chunk[0] as usize;
             let mut sums = values(start);
             for (i, &li) in (start + 1..).zip(&chunk[1..]) {

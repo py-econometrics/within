@@ -5,15 +5,12 @@
 
 use within::{Effect, LsmrOptions, Preconditioner, PreconditionerConfig, Solver};
 
-const WIRE_FORMAT_VERSION: u32 = 6;
-const PRECOND_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v6.postcard");
-const PRE_BUMP_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v5.postcard");
+const WIRE_FORMAT_VERSION: u32 = 12;
+const PRECOND_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v12.postcard");
+const PRE_BUMP_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v11.postcard");
 
 fn fixture_problem() -> (Vec<u32>, Vec<u32>, Vec<f64>, Vec<f64>) {
-    // Slope term against a three-level factor: the (f-slope, g) pair is
-    // frustrated (negative 4-cycle), so the payload pins a single signed
-    // operator with Scaled coordinates and a Cover reduced factor, alongside
-    // the plain (f-int, g) pair's Canonical ones.
+    // The frustrated (f-slope, g) pair pins a signed operator with Scaled coords and a Cover.
     let f = vec![0u32, 0, 0, 1, 1, 1];
     let g = vec![0u32, 1, 2, 0, 1, 2];
     let z = vec![-2.0, 1.0, 1.0, -1.0, -1.0, 2.0];
@@ -99,7 +96,7 @@ fn pre_bump_fixture_no_longer_decodes() {
 }
 
 /// Generate the wire-format fixture. Run with `--ignored` to overwrite
-/// `crates/within/tests/fixtures/preconditioner_v6.postcard`. Intended for
+/// `crates/within/tests/fixtures/preconditioner_v12.postcard`. Intended for
 /// intentional wire-format bumps only; CI runs the non-ignored tests above.
 #[test]
 #[ignore]
@@ -120,7 +117,7 @@ fn regenerate_wire_format_fixture() {
     let bytes = postcard::to_stdvec(prec).expect("serialize");
 
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.push("tests/fixtures/preconditioner_v6.postcard");
+    path.push("tests/fixtures/preconditioner_v12.postcard");
     let mut out = std::fs::File::create(&path).expect("create fixture file");
     out.write_all(&bytes).expect("write fixture bytes");
     eprintln!("wrote {} bytes to {}", bytes.len(), path.display());

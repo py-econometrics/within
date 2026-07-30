@@ -1,9 +1,19 @@
 use proptest::prelude::*;
-use within::{solve, Effect, LsmrOptions, Preconditioner, PreconditionerConfig, Solver};
+use within::{
+    solve, Channel, CoefficientAddress, Effect, LsmrOptions, Preconditioner, PreconditionerConfig,
+    Solver,
+};
 
 #[path = "common/property_strategies.rs"]
 mod strategies;
 use strategies::{additive_precond, random_fe_problem_strategy, random_slopes_problem_strategy};
+
+fn at(term: usize, level: usize, column: usize) -> CoefficientAddress {
+    CoefficientAddress {
+        channel: Channel { term, column },
+        level,
+    }
+}
 
 fn default_params() -> LsmrOptions {
     LsmrOptions::default()
@@ -37,8 +47,7 @@ proptest! {
 
     #[test]
     fn prop_solver_convergence((cats, y) in random_fe_problem_strategy()) {
-        // LSMR converges on the least-squares system min ||y - Dx||^2 for any
-        // y, so we use the random y directly from the strategy.
+        // LSMR converges on min ||y - Dx||^2 for any y, so the random y is used directly.
         let params = LsmrOptions {
             tol: 1e-7,
             ..default_params()
@@ -106,9 +115,7 @@ proptest! {
             })
             .collect();
 
-        // Drive to tight first-order optimality; reorthogonalize for robustness
-        // on ill-conditioned slope designs. Non-converged draws are rejected, so
-        // proptest caps how many the strategy is allowed to produce.
+        // Non-converged draws are rejected, so proptest caps how many may be produced.
         let params = LsmrOptions {
             tol: 1e-10,
             maxiter: 2000,
@@ -120,8 +127,7 @@ proptest! {
             .expect("solve");
         prop_assume!(result.converged);
 
-        // Reconstruct r = y − D x from the returned coefficients ALONE (not from
-        // result.demeaned), so the check shares no code with within's operator.
+        // Reconstruct r = y − D x from the coefficients ALONE, sharing no code with within.
         let x = &result.x;
         let layout = &result.layout;
         let mut fitted = vec![0.0f64; n_obs];
@@ -130,16 +136,15 @@ proptest! {
             for i in 0..n_obs {
                 let lvl = f.levels[i] as usize;
                 if f.intercept {
-                    fitted[i] += x[layout.index(t, lvl, 0).unwrap()];
+                    fitted[i] += x[layout.index(at(t, lvl, 0)).unwrap()];
                 }
                 for (s, col) in f.slopes.iter().enumerate() {
-                    fitted[i] += x[layout.index(t, lvl, slope_base + s).unwrap()] * col[i];
+                    fitted[i] += x[layout.index(at(t, lvl, slope_base + s)).unwrap()] * col[i];
                 }
             }
         }
 
-        // g = Dᵀ W (y − D x) must vanish relative to g0 = Dᵀ W y; accumulate
-        // both by scatter into the coefficient layout.
+        // g = Dᵀ W (y − D x) must vanish relative to g0 = Dᵀ W y.
         let mut g = vec![0.0f64; layout.n_dofs()];
         let mut g0 = vec![0.0f64; layout.n_dofs()];
         for (t, f) in factors.iter().enumerate() {
@@ -149,12 +154,12 @@ proptest! {
                 let wr = weights[i] * (y[i] - fitted[i]);
                 let wy = weights[i] * y[i];
                 if f.intercept {
-                    let k = layout.index(t, lvl, 0).unwrap();
+                    let k = layout.index(at(t, lvl, 0)).unwrap();
                     g[k] += wr;
                     g0[k] += wy;
                 }
                 for (s, col) in f.slopes.iter().enumerate() {
-                    let k = layout.index(t, lvl, slope_base + s).unwrap();
+                    let k = layout.index(at(t, lvl, slope_base + s)).unwrap();
                     g[k] += wr * col[i];
                     g0[k] += wy * col[i];
                 }

@@ -1,13 +1,21 @@
 use super::reparam::SlopeReparam;
-use super::CoefficientLayout;
+use super::{CoefficientAddress, CoefficientLayout};
+use crate::channel::Channel;
 use crate::config::{ScalingConfig, DEFAULT_DENSE_SCHUR_THRESHOLD};
-use crate::domain::{build_local_domains, Design, SolveSpace};
+use crate::domain::{build_local_domains, Design, Grounding, MatrixForm};
 use crate::Effect;
 
 /// DGP kept in lockstep with `surplus_component_sampled_matches_exact_reduction`
 /// in `tests/slopes_routing.rs`. A positive slope-only term is not centered by
 /// whitening, so the signed pair stays all-positive — balanced — while generic
 /// `z` keeps it strictly inside the PSD cone: genuine surplus, grounded.
+fn at(term: usize, level: usize, column: usize) -> CoefficientAddress {
+    CoefficientAddress {
+        channel: Channel { term, column },
+        level,
+    }
+}
+
 fn positive_slope_only_panel() -> (Vec<u32>, Vec<u32>, Vec<f64>) {
     let n = 8000usize;
     let f: Vec<u32> = (0..n).map(|i| (i % 80) as u32).collect();
@@ -31,9 +39,10 @@ fn positive_slope_only_pair_grounds_beyond_dense_threshold() {
         build_local_domains(&design, None, &ScalingConfig::default()).expect("domains");
     assert!(
         domains.iter().any(|ld| {
-            let ct = &ld.component.cross_tab;
-            ld.component.reduction.solve_space() == SolveSpace::Grounded
-                && ct.n_q().min(ct.n_r()) > DEFAULT_DENSE_SCHUR_THRESHOLD
+            let ct = &ld.component.matrix.cross_tab;
+            ld.component.form == MatrixForm::Laplacian
+                && ld.component.matrix.grounding == Grounding::Grounded
+                && ct.n_rows().min(ct.n_cols()) > DEFAULT_DENSE_SCHUR_THRESHOLD
         }),
         "fixture must ground a component past the dense threshold (warnings: {warnings:?})"
     );
@@ -41,8 +50,7 @@ fn positive_slope_only_pair_grounds_beyond_dense_threshold() {
 
 #[test]
 fn coefficient_layout_translates_addresses_both_ways() {
-    // term 0: plain 3-level factor (1 column); term 1: 2-level factor with an
-    // intercept and one slope (2 columns).
+    // term 0: plain 3-level factor; term 1: 2-level factor with intercept and one slope.
     let f = [0u32, 1, 2, 0, 1, 2];
     let g = [0u32, 0, 1, 1, 0, 1];
     let z = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
@@ -65,20 +73,19 @@ fn coefficient_layout_translates_addresses_both_ways() {
     assert_eq!(layout.n_levels(2), None);
 
     // Forward matches the documented `offset + column * n_levels + level`.
-    assert_eq!(layout.index(0, 2, 0), Some(2));
-    assert_eq!(layout.index(1, 0, 0), Some(3)); // term-1 intercept, level 0
-    assert_eq!(layout.index(1, 1, 1), Some(6)); // term-1 slope, level 1
+    assert_eq!(layout.index(at(0, 2, 0)), Some(2));
+    assert_eq!(layout.index(at(1, 0, 0)), Some(3)); // term-1 intercept, level 0
+    assert_eq!(layout.index(at(1, 1, 1)), Some(6)); // term-1 slope, level 1
     assert_eq!(layout.n_dofs(), 7);
 
     // Out-of-range coordinates are rejected, not silently wrapped.
-    assert_eq!(layout.index(1, 2, 0), None); // level past n_levels
-    assert_eq!(layout.index(1, 0, 2), None); // column past n_columns
-    assert_eq!(layout.index(2, 0, 0), None); // term past n_terms
+    assert_eq!(layout.index(at(1, 2, 0)), None); // level past n_levels
+    assert_eq!(layout.index(at(1, 0, 2)), None); // column past n_columns
+    assert_eq!(layout.index(at(2, 0, 0)), None); // term past n_terms
     assert_eq!(layout.address(7), None);
 
     // `address` inverts `index` for every flat slot.
     for i in 0..layout.n_dofs() {
-        let (term, level, column) = layout.address(i).expect("address in range");
-        assert_eq!(layout.index(term, level, column), Some(i));
+        assert_eq!(layout.index(layout.address(i).expect("in range")), Some(i));
     }
 }
