@@ -7,13 +7,11 @@ use numpy::IntoPyArray;
 use pyo3::exceptions::{PyIndexError, PyUserWarning};
 use pyo3::prelude::*;
 
-use within::{BatchSolveResult, BuildWarning, CoefficientLayout, SolveResult};
+use within::{
+    BatchSolveResult, BuildWarning, Channel, CoefficientAddress, CoefficientLayout, SolveResult,
+};
 
 use crate::convert::{value_err, IntoPyErr};
-
-// ---------------------------------------------------------------------------
-// Result types
-// ---------------------------------------------------------------------------
 
 #[pyclass(module = "within._within")]
 #[pyo3(name = "SolveResult")]
@@ -88,8 +86,7 @@ impl PyUnidentifiedDirection {
     }
 }
 
-/// Translates a ``(term, level, column)`` coefficient address to its flat
-/// index in ``SolveResult.x`` and back.
+/// Translates a ``(term, level, column)`` address to its flat ``SolveResult.x`` index.
 #[pyclass(frozen, skip_from_py_object, module = "within._within")]
 #[pyo3(name = "CoefficientLayout")]
 #[derive(Clone)]
@@ -118,7 +115,11 @@ impl PyCoefficientLayout {
     }
 
     fn index(&self, term: usize, level: usize, column: usize) -> PyResult<usize> {
-        self.inner.index(term, level, column).ok_or_else(|| {
+        let at = CoefficientAddress {
+            channel: Channel { term, column },
+            level,
+        };
+        self.inner.index(at).ok_or_else(|| {
             PyIndexError::new_err(format!(
                 "coefficient address (term={term}, level={level}, column={column}) out of range"
             ))
@@ -126,12 +127,15 @@ impl PyCoefficientLayout {
     }
 
     fn address(&self, index: usize) -> PyResult<(usize, usize, usize)> {
-        self.inner.address(index).ok_or_else(|| {
-            PyIndexError::new_err(format!(
-                "x index {index} out of range (n_dofs={})",
-                self.inner.n_dofs()
-            ))
-        })
+        self.inner
+            .address(index)
+            .map(|at| (at.channel.term, at.level, at.channel.column))
+            .ok_or_else(|| {
+                PyIndexError::new_err(format!(
+                    "x index {index} out of range (n_dofs={})",
+                    self.inner.n_dofs()
+                ))
+            })
     }
 
     fn __repr__(&self) -> String {
@@ -152,10 +156,6 @@ impl PyCoefficientLayout {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Result conversion helpers
-// ---------------------------------------------------------------------------
-
 pub(crate) fn into_py_result(py: Python<'_>, result: SolveResult) -> PySolveResult {
     PySolveResult {
         x: result.x.into_pyarray(py).unbind(),
@@ -163,9 +163,9 @@ pub(crate) fn into_py_result(py: Python<'_>, result: SolveResult) -> PySolveResu
             .unidentified
             .iter()
             .map(|u| PyUnidentifiedDirection {
-                term: u.term,
+                term: u.channel.term,
                 level: u.level,
-                column: u.column,
+                column: u.channel.column,
             })
             .collect(),
         layout: PyCoefficientLayout {
@@ -187,8 +187,7 @@ pub(crate) fn into_py_batch_result(
 ) -> PyResult<PyBatchSolveResult> {
     let n_rhs = result.converged.len();
 
-    // Source dimensions from the result (not output lengths) so empty batches
-    // stay well-shaped at (n_dofs, 0) / (n_obs, 0).
+    // Source dimensions from the result, so empty batches stay well-shaped at `(n_dofs, 0)`.
     let x = Array2::from_shape_vec((result.n_dofs, n_rhs).f(), result.x).map_err(value_err)?;
     let demeaned =
         Array2::from_shape_vec((result.n_obs, n_rhs).f(), result.demeaned).map_err(value_err)?;
@@ -199,9 +198,9 @@ pub(crate) fn into_py_batch_result(
             .unidentified
             .iter()
             .map(|u| PyUnidentifiedDirection {
-                term: u.term,
+                term: u.channel.term,
                 level: u.level,
-                column: u.column,
+                column: u.channel.column,
             })
             .collect(),
         layout: PyCoefficientLayout {
@@ -217,16 +216,7 @@ pub(crate) fn into_py_batch_result(
     })
 }
 
-// ---------------------------------------------------------------------------
-// Off-GIL solve orchestration
-// ---------------------------------------------------------------------------
-
-/// Run a native single-response solve with the GIL released, then convert.
-///
-/// The closure produces a [`SolveResult`] off-GIL (`detach`); its native error
-/// is mapped to the matching Python exception class (see [`IntoPyErr`]) and the
-/// result to its Python wrapper. Shared by the free `solve` function and the
-/// persistent `Solver.solve`.
+/// Run a native single-response solve with the GIL released.
 pub(crate) fn run_solve<E, F>(py: Python<'_>, solve: F) -> PyResult<PySolveResult>
 where
     E: IntoPyErr + Send,
@@ -236,10 +226,7 @@ where
     Ok(into_py_result(py, result))
 }
 
-/// Run a native batch solve with the GIL released, then convert.
-///
-/// Batch counterpart to [`run_solve`]; the conversion itself is fallible
-/// (re-shaping the flat column buffers into 2-D arrays).
+/// Batch counterpart to [`run_solve`]; the conversion itself is fallible.
 pub(crate) fn run_batch<E, F>(py: Python<'_>, solve: F) -> PyResult<PyBatchSolveResult>
 where
     E: IntoPyErr + Send,
@@ -249,8 +236,7 @@ where
     into_py_batch_result(py, result)
 }
 
-/// Re-emit build-time warnings as Python `UserWarning`s. Shared by the
-/// persistent `Solver` (at construction) and the one-shot `solve` path.
+/// Re-emit build-time warnings as Python `UserWarning`s.
 pub(crate) fn emit_build_warnings(py: Python<'_>, warnings: &[BuildWarning]) -> PyResult<()> {
     for warning in warnings {
         let message =
@@ -260,8 +246,7 @@ pub(crate) fn emit_build_warnings(py: Python<'_>, warnings: &[BuildWarning]) -> 
     Ok(())
 }
 
-/// [`run_solve`] for the one-shot path: the off-GIL closure also returns the
-/// build warnings collected during construction, which are re-emitted on-GIL.
+/// [`run_solve`] for the one-shot path, whose closure also returns warnings to re-emit.
 pub(crate) fn run_solve_with_warnings<E, F>(py: Python<'_>, solve: F) -> PyResult<PySolveResult>
 where
     E: IntoPyErr + Send,

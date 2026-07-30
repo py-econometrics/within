@@ -1,27 +1,26 @@
+use crate::domain::{Loading, NonEmpty};
 use crate::BuildError;
 
-/// One factor's contribution to a design: level codes, an optional per-level
-/// intercept, and per-observation slope covariates.
+/// One factor's contribution to a design: level codes plus per-level coefficient columns.
 #[derive(Clone, Debug)]
 pub struct Effect<'a> {
     levels: &'a [u32],
-    intercept: bool,
-    slopes: Box<[&'a [f64]]>,
+    columns: NonEmpty<Loading<&'a [f64]>>,
 }
 
 impl<'a> Effect<'a> {
-    /// Validates the effect is non-empty and every slope has one value per observation.
+    /// Validates the effect is non-empty and every slope finite per observation.
     pub fn new(
         levels: &'a [u32],
         intercept: bool,
         slopes: impl IntoIterator<Item = &'a [f64]>,
     ) -> Result<Self, BuildError> {
-        let slopes: Box<[&[f64]]> = slopes.into_iter().collect();
-        if !intercept && slopes.is_empty() {
-            return Err(BuildError::EmptyEffect);
-        }
         let n = levels.len();
-        for (slope, s) in slopes.iter().enumerate() {
+        let mut columns = Vec::new();
+        if intercept {
+            columns.push(Loading::Constant);
+        }
+        for (slope, s) in slopes.into_iter().enumerate() {
             if s.len() != n {
                 return Err(BuildError::SlopeLengthMismatch {
                     slope,
@@ -36,24 +35,18 @@ impl<'a> Effect<'a> {
                     value,
                 });
             }
+            columns.push(Loading::Covariate(s));
         }
-        Ok(Self {
-            levels,
-            intercept,
-            slopes,
-        })
+        let columns = NonEmpty::new(columns).ok_or(BuildError::EmptyEffect)?;
+        Ok(Self { levels, columns })
     }
 
     pub(crate) fn levels(&self) -> &'a [u32] {
         self.levels
     }
 
-    pub(crate) fn intercept(&self) -> bool {
-        self.intercept
-    }
-
-    pub(crate) fn slopes(&self) -> &[&'a [f64]] {
-        &self.slopes
+    pub(crate) fn columns(&self) -> &NonEmpty<Loading<&'a [f64]>> {
+        &self.columns
     }
 }
 

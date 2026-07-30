@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::block_elim::BlockElimSolver;
 use crate::config::{LocalSolverConfig, PreconditionerConfig};
+use crate::domain::Loading;
 use crate::domain::{Design, LocalDomain};
 use crate::{BuildError, BuildWarning};
 
@@ -82,16 +83,7 @@ impl Operator for DiagonalPreconditioner {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Crate-internal builders
-// ---------------------------------------------------------------------------
-
-/// Build additive Schwarz with an explicit reduction strategy.
-///
-/// `n_dofs` is the operator's column count, which can exceed the span of the
-/// subdomains' indices: an unidentified direction (e.g. a singleton level's
-/// slope) is a structural-zero column no subdomain covers, yet must count
-/// toward the shape. Uncovered DOFs resolve to `0`, like `Off`/`Diagonal`.
+/// `n_dofs` may exceed the span of subdomain indices; an uncovered column resolves to `0`.
 pub(crate) fn build_additive_with_strategy(
     domains: Vec<LocalDomain>,
     config: &LocalSolverConfig,
@@ -117,10 +109,7 @@ pub(crate) fn build_entry(
     SubdomainEntry::try_new(core, solver).map_err(BuildError::Preconditioner)
 }
 
-/// Opaque handle to a pre-built fixed-effects preconditioner.
-///
-/// Cloning is O(1): the inner factorization is `Arc`-backed, so passing
-/// `&precond` to [`Solver::new`](crate::Solver::new) never duplicates it.
+/// Opaque handle to a pre-built preconditioner; cloning is O(1) via `Arc`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Preconditioner {
@@ -129,8 +118,7 @@ pub struct Preconditioner {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 enum Variant {
-    // Keep Additive first: postcard encodes enum discriminants by declaration order,
-    // and the wire fixture depends on Additive remaining discriminant 0.
+    // Keep Additive first: postcard encodes by declaration order and the fixture depends on it.
     Additive(FeSchwarz),
     Diagonal(DiagonalPreconditioner),
 }
@@ -144,9 +132,7 @@ impl Preconditioner {
         }
     }
 
-    // nrows/ncols/apply mirror the `Operator` impl deliberately: `within` does
-    // not re-export `schwarz_precond::Operator`, so these are the only public
-    // way to query or apply a `Preconditioner` returned by the API.
+    // `within` does not re-export `schwarz_precond::Operator`, so these are the only public way.
     /// Number of rows of the underlying linear operator.
     pub fn nrows(&self) -> usize {
         <Self as schwarz_precond::Operator>::nrows(self)
@@ -199,38 +185,30 @@ fn build_diagonal(
 ) -> Result<DiagonalPreconditioner, BuildError> {
     let mut diag = vec![0.0; design.n_dofs];
 
-    // diag(DᵀWD): each column contributes w·loading² per observation — the
-    // loading is 1 for an intercept column and the slope value otherwise.
     for (factor_idx, term) in design.terms.iter().enumerate() {
         let levels = design.frame.level_column(factor_idx);
         let w = |uid: usize| weights.map_or(1.0, |ws| ws[uid]);
-        let mut column = 0;
-        if term.intercept {
-            let slice = &mut diag[term.offset..term.offset + term.n_levels];
-            for (uid, &level) in levels.iter().enumerate() {
-                slice[level as usize] += w(uid);
-            }
-            column = 1;
-        }
-        for &z_col in &term.slopes {
-            let z = design.frame.loading_column(z_col);
+        for (column, loading) in term.columns.iter().enumerate() {
             let base = term.column_base(column);
             let slice = &mut diag[base..base + term.n_levels];
-            for (uid, &level) in levels.iter().enumerate() {
-                // Keep `w * z * z` left-to-right: a zero weight then kills a
-                // huge `z` before the square can overflow (0 * inf = NaN).
-                slice[level as usize] += w(uid) * z[uid] * z[uid];
+            match loading {
+                Loading::Constant => {
+                    for (uid, &level) in levels.iter().enumerate() {
+                        slice[level as usize] += w(uid);
+                    }
+                }
+                Loading::Covariate(z_col) => {
+                    let z = design.frame.loading_column(*z_col as usize);
+                    for (uid, &level) in levels.iter().enumerate() {
+                        // Keep `w * z * z` left-to-right: a zero weight kills a huge `z` first.
+                        slice[level as usize] += w(uid) * z[uid] * z[uid];
+                    }
+                }
             }
-            column += 1;
         }
     }
 
-    // Invert in place. A zero diagonal entry is an unidentified DOF — a
-    // structural zero column of `D` from an unobserved or fully zero-weighted
-    // level. Take the pseudo-inverse (`inv = 0`) so the coordinate stays in the
-    // preconditioner's null space and resolves to 0, matching the
-    // unpreconditioned path. A non-finite reciprocal (a diagonal so small that
-    // `1/d` overflows) is genuinely degenerate and still rejected.
+    // A zero diagonal is an unidentified DOF, so the pseudo-inverse keeps it in the null space.
     for (index, d) in diag.iter_mut().enumerate() {
         if *d == 0.0 {
             continue;
@@ -247,8 +225,7 @@ fn build_diagonal(
     })
 }
 
-/// Build a [`Preconditioner`] from a design and optional observation weights,
-/// plus any non-fatal [`BuildWarning`]s the build produced.
+/// Build a [`Preconditioner`] from a design and optional weights, plus any warnings.
 pub(crate) fn build_preconditioner(
     design: &Design<'_>,
     weights: Option<&[f64]>,
@@ -256,8 +233,7 @@ pub(crate) fn build_preconditioner(
 ) -> Result<(Option<Preconditioner>, Vec<BuildWarning>), BuildError> {
     use crate::domain::build_local_domains;
 
-    // Weights are pre-validated by the sole caller (`Solver::new`); its
-    // observation permutation preserves length, finiteness, and sign.
+    // Weights are pre-validated by the sole caller, whose permutation preserves length and sign.
     let default_cfg = PreconditionerConfig::default();
     let resolved = config.unwrap_or(&default_cfg);
     match resolved {
@@ -268,9 +244,7 @@ pub(crate) fn build_preconditioner(
         } => {
             let (domains, warnings) = build_local_domains(design, weights, &local_solver.scaling)?;
             if domains.is_empty() {
-                // Single-factor designs (and other configurations with no
-                // factor-pair subdomains) have no useful additive Schwarz
-                // preconditioner. Fall back to unpreconditioned LSMR.
+                // No factor-pair subdomains means no useful Schwarz; fall back to plain LSMR.
                 return Ok((None, warnings));
             }
             let p = build_additive_with_strategy(domains, local_solver, *reduction, design.n_dofs)?;

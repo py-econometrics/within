@@ -89,7 +89,7 @@ fn solve_single(
 fn drops(r: &SolveResult) -> Vec<(usize, usize, usize)> {
     r.unidentified
         .iter()
-        .map(|d| (d.term, d.level, d.column))
+        .map(|d| (d.channel.term, d.level, d.channel.column))
         .collect()
 }
 
@@ -156,8 +156,7 @@ fn slope_only_term_recovers_per_level_projection() {
 
 #[test]
 fn rank_drops_report_deterministically_with_exact_zeros() {
-    // Level 1 never occurs (drops every column); level 2's slope is constant
-    // (collinear with its intercept, drops the slope only); 0 and 3 are fine.
+    // Level 1 never occurs; level 2's slope is constant, so only its slope drops.
     let levels: Vec<u32> = vec![0, 0, 0, 2, 2, 2, 3, 3, 3];
     let z: Vec<f64> = vec![1.0, 2.0, -1.5, 2.5, 2.5, 2.5, -2.0, 0.7, 1.3];
     let y = synthetic_y(levels.len());
@@ -174,8 +173,7 @@ fn rank_drops_report_deterministically_with_exact_zeros() {
     }
     assert!(r.x.iter().all(|v| v.is_finite()));
 
-    // The constant level degrades to intercept-only: a = mean(y within level);
-    // identified levels still match the full reference.
+    // The constant level degrades to intercept-only: a = mean(y within level).
     assert_close(
         r.x[2],
         (y[3] + y[4] + y[5]) / 3.0,
@@ -187,8 +185,7 @@ fn rank_drops_report_deterministically_with_exact_zeros() {
         assert_close(r.x[4 + l], b[l], &format!("slope of level {l}"));
     }
 
-    // The explicit diagonal preconditioner (zero-diag pseudo-inverse at the
-    // dropped columns) agrees with the default path.
+    // The explicit diagonal preconditioner agrees with the default path.
     let diag = run(&PreconditionerConfig::Diagonal);
     assert_eq!(diag.unidentified, r.unidentified);
     for (i, (d, j)) in r.x.iter().zip(diag.x.iter()).enumerate() {
@@ -198,8 +195,7 @@ fn rank_drops_report_deterministically_with_exact_zeros() {
 
 #[test]
 fn weighted_solve_matches_closed_form_and_masks_zero_weight_rows() {
-    // Level 2's slope varies only on its zero-weight row: identification is
-    // judged over positive-weight rows, so it drops.
+    // Identification is judged over positive-weight rows, so level 2's slope drops.
     let levels: Vec<u32> = vec![0, 1, 0, 1, 0, 1, 2, 2, 2];
     let z: Vec<f64> = vec![0.5, -1.2, 3.3, 1.5, 0.7, -2.1, 5.0, 5.0, 7.0];
     let w: Vec<f64> = vec![1.0, 0.5, 2.0, 1.5, 3.0, 1.0, 1.0, 1.0, 0.0];
@@ -222,10 +218,7 @@ fn weighted_solve_matches_closed_form_and_masks_zero_weight_rows() {
 #[test]
 fn zero_weight_garbage_does_not_poison_identification() {
     let levels: Vec<u32> = vec![0, 0, 0, 1, 1, 1];
-    // The excluded row's loading is huge enough that squaring it overflows to
-    // inf. Identification skips zero-weight rows outright; the diagonal
-    // preconditioner build stays inert only because its `w * z * z` multiplies
-    // left-to-right (0 * z kills it before the square) — this pins that order.
+    // Pins the left-to-right `w * z * z`: `0 * z` kills it before the square overflows.
     let z: Vec<f64> = vec![1.0, 2.0, 3.0, 5.0, 7.0, 1e300];
     let w: Vec<f64> = vec![1.0, 1.0, 1.0, 1.0, 1.0, 0.0];
     let y = synthetic_y(levels.len());
@@ -265,7 +258,7 @@ fn batch_solve_shares_unidentified_and_back_transforms_each_rhs() {
     let batch_drops: Vec<_> = batch
         .unidentified
         .iter()
-        .map(|d| (d.term, d.level, d.column))
+        .map(|d| (d.channel.term, d.level, d.channel.column))
         .collect();
     assert_eq!(batch_drops, [(0, 1, 1)]);
     // Each RHS block is bit-identical to its single solve, back-transform included.
@@ -278,9 +271,7 @@ fn batch_solve_shares_unidentified_and_back_transforms_each_rhs() {
 
 #[test]
 fn three_slopes_solve_bounded_with_exact_rank_drops() {
-    // Strongly correlated slopes make the raw per-level Grams
-    // ill-conditioned (the ≥3-slope cliff scenario), and level 1's z2/z3
-    // are exactly collinear on top.
+    // Strongly correlated slopes, and level 1's z2/z3 are exactly collinear on top.
     let n = 24;
     let levels: Vec<u32> = (0..n).map(|i| (i % 3) as u32).collect();
     let z1: Vec<f64> = (0..n).map(|i| (i as f64 * 0.37).sin() * 2.0).collect();
@@ -313,15 +304,11 @@ fn three_slopes_solve_bounded_with_exact_rank_drops() {
         r.iterations
     );
 
-    // Level 1 drops exactly one direction — the pivot keeps the
-    // larger-variance z3, so z2's coordinate (column 2) reads exactly 0.
+    // The pivot keeps the larger-variance z3, so z2's column reads exactly 0.
     assert_eq!(drops(&r), [(0, 1, 2)]);
     assert_eq!(r.x[2 * 3 + 1], 0.0);
 
-    // The fit is the exact projection (residuals orthogonal to every design
-    // column within every level), and the reported user-basis coefficients
-    // reproduce it — together this pins the identified coefficients without
-    // an external solve.
+    // The exact projection and the reported coefficients together pin them with no oracle.
     for l in 0..3 {
         for col in [None, Some(&z1), Some(&z2), Some(&z3)] {
             let dot: f64 = (0..n)

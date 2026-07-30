@@ -74,9 +74,7 @@ impl PyApproxSchurConfig {
     }
 }
 
-/// Schur-complement reduction mode for `LocalSolverConfig`: approximate (the
-/// library default) or exact. Build via `Schur.approximate(...)` or
-/// `Schur.exact()`.
+/// Schur reduction mode: approximate (the library default) or exact.
 #[pyclass(frozen, skip_from_py_object, module = "within._within")]
 #[pyo3(name = "Schur")]
 #[derive(Clone)]
@@ -86,8 +84,7 @@ pub struct PySchur {
 
 #[pymethods]
 impl PySchur {
-    /// Approximate Schur via clique-tree sampling (the library default).
-    /// `config` tunes the sampler; omitted uses the default.
+    /// Approximate Schur via clique-tree sampling; `config` tunes the sampler.
     #[staticmethod]
     #[pyo3(signature = (config=None))]
     fn approximate(py: Python<'_>, config: Option<Py<PyApproxSchurConfig>>) -> Self {
@@ -123,11 +120,7 @@ impl PySchur {
     }
 }
 
-/// Certification policy for the diagonal scaling of signed (varying-slope)
-/// components: relative ``tolerance`` for weak diagonal dominance, relaxation
-/// ``max_sweeps`` budget, and ``on_failure`` disposition (``"warn"`` clamps
-/// residual deficits — preconditioner quality only — and emits a
-/// ``UserWarning``; ``"error"`` fails the build).
+/// Certification policy for the diagonal scaling of signed components.
 #[pyclass(frozen, module = "within._within")]
 #[pyo3(name = "ScalingConfig")]
 pub struct PyScalingConfig {
@@ -184,11 +177,7 @@ impl PyScalingConfig {
     }
 }
 
-/// Preconditioner selection shortcut for the LSMR solver.
-///
-/// - ``PreconditionerConfig.Additive`` — additive Schwarz (default)
-/// - ``PreconditionerConfig.Off`` — no preconditioner
-/// - ``PreconditionerConfig.Diagonal`` — diagonal/Jacobi preconditioner
+/// Preconditioner shortcut: ``Additive`` (default), ``Off``, or ``Diagonal``.
 #[pyclass(frozen, eq, eq_int, from_py_object, module = "within._within")]
 #[pyo3(name = "PreconditionerConfig")]
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -321,10 +310,7 @@ impl PyLsmrOptions {
     }
 }
 
-/// A pre-built preconditioner that can be pickled and reused.
-///
-/// Obtained via ``Solver.preconditioner``. Pass it back to a new
-/// ``Solver(…, preconditioner=p)`` to skip the expensive factorisation.
+/// A pre-built preconditioner; pass it back to skip the factorisation.
 #[pyclass(frozen, module = "within._within")]
 #[pyo3(name = "Preconditioner")]
 pub struct PyPreconditioner {
@@ -402,44 +388,18 @@ impl PyPreconditioner {
     }
 }
 
-/// Native interpretation of the Python `preconditioner` argument.
-///
-/// A pre-built [`Preconditioner`] takes the reuse path; everything else is a
-/// [`PreconditionerConfig`] (or `None` for the library default) to build from.
-/// Both variants hold only native data, so a resolved value is safe to move
-/// into a GIL-released closure (`Preconditioner` clones are `Arc`-cheap).
-pub(crate) enum PrecondInput {
-    Prebuilt(Preconditioner),
-    Config(Option<PreconditionerConfig>),
-}
-
-impl From<PrecondInput> for PreconditionerInput {
-    fn from(input: PrecondInput) -> Self {
-        match input {
-            PrecondInput::Prebuilt(p) => p.into(),
-            PrecondInput::Config(c) => c.as_ref().into(),
-        }
-    }
-}
-
-/// Resolve the Python `preconditioner` argument into a [`PrecondInput`].
-///
-/// Must run while the GIL is held (it inspects Python objects). A pre-built
-/// `Preconditioner` is detected first and taken verbatim; anything else is
-/// parsed as a `PreconditionerConfig` via [`extract_preconditioner_config`].
+/// Must run under the GIL; the result is all-native, so it can move into a released closure.
 pub(crate) fn resolve_precond_input(
     py: Python<'_>,
     preconditioner: Option<&Bound<'_, PyAny>>,
-) -> PyResult<PrecondInput> {
+) -> PyResult<PreconditionerInput> {
     if let Some(obj) = preconditioner {
         if let Ok(built) = obj.cast::<PyPreconditioner>() {
-            return Ok(PrecondInput::Prebuilt(built.get().inner.clone()));
+            return Ok(PreconditionerInput::Prebuilt(built.get().inner.clone()));
         }
     }
-    Ok(PrecondInput::Config(extract_preconditioner_config(
-        py,
-        preconditioner,
-    )?))
+    Ok(extract_preconditioner_config(py, preconditioner)?
+        .map_or(PreconditionerInput::Default, PreconditionerInput::Config))
 }
 
 fn extract_preconditioner_config(

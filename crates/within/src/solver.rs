@@ -9,6 +9,7 @@ use ndarray::{ArrayView2, Axis};
 use rayon::prelude::*;
 use schwarz_precond::{lsmr as lsmr_solve, mlsmr};
 
+use crate::channel::Channel;
 use crate::config::{LsmrOptions, PreconditionerConfig};
 use crate::domain::{Design, Effect};
 use crate::observation::ObservationFrame;
@@ -32,11 +33,10 @@ pub trait IntoDesign<'a> {
 
 impl<'a> IntoDesign<'a> for ArrayView2<'a, u32> {
     fn into_design(self) -> Result<Design<'a>, BuildError> {
-        // Borrow F-contiguous columns zero-copy; gather strided (C-order)
-        // columns once here so every downstream read is a contiguous slice.
+        // Gather strided (C-order) columns once so every downstream read is contiguous.
         let categorical = (0..self.ncols())
-            .map(|q| {
-                let col = self.index_axis_move(Axis(1), q);
+            .map(|factor| {
+                let col = self.index_axis_move(Axis(1), factor);
                 match col.to_slice() {
                     Some(s) => Cow::Borrowed(s),
                     None => Cow::Owned(col.to_vec()),
@@ -109,21 +109,18 @@ impl From<&Preconditioner> for PreconditionerInput {
     }
 }
 
-/// A per-level direction of the design that the data cannot identify.
+/// One coefficient of the design: a [`Channel`] at one level of its term.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct UnidentifiedDirection {
-    /// Index into the design's term list.
-    pub term: usize,
+pub struct CoefficientAddress {
+    /// The coefficient column this address sits in.
+    pub channel: Channel,
     /// Level index within the term (`0..n_levels`).
     pub level: usize,
-    /// Column within the term's per-level block: intercept first (when
-    /// present), then slopes in declaration order.
-    pub column: usize,
 }
 
-/// Translates a `(term, level, column)` coefficient address to its flat index
-/// in [`SolveResult::x`] and back, so callers need not reconstruct the
-/// term-major offset formula (`offset + column * n_levels + level`) by hand.
+/// Translates a [`CoefficientAddress`] to its flat index in [`SolveResult::x`]
+/// and back, so callers need not reconstruct the term-major offset formula
+/// (`offset + column * n_levels + level`) by hand.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoefficientLayout {
     terms: Vec<TermLayout>,
@@ -175,25 +172,30 @@ impl CoefficientLayout {
         self.terms.get(term).map(|t| t.n_columns)
     }
 
-    /// Flat [`SolveResult::x`] index of coefficient `column` of `level` within
-    /// `term`, or `None` if any coordinate is out of range.
-    pub fn index(&self, term: usize, level: usize, column: usize) -> Option<usize> {
-        let t = self.terms.get(term)?;
-        (level < t.n_levels && column < t.n_columns).then(|| t.offset + column * t.n_levels + level)
+    /// Flat [`SolveResult::x`] index of `at`, or `None` if any coordinate is
+    /// out of range.
+    pub fn index(&self, at: CoefficientAddress) -> Option<usize> {
+        let t = self.terms.get(at.channel.term)?;
+        (at.level < t.n_levels && at.channel.column < t.n_columns)
+            .then(|| t.offset + at.channel.column * t.n_levels + at.level)
     }
 
-    /// The `(term, level, column)` address of flat index `i`, or `None` if
-    /// `i >= n_dofs`.
-    pub fn address(&self, i: usize) -> Option<(usize, usize, usize)> {
+    /// The address of flat index `i`, or `None` if `i >= n_dofs`.
+    pub fn address(&self, i: usize) -> Option<CoefficientAddress> {
         if i >= self.n_dofs {
             return None;
         }
-        // Term blocks are contiguous in ascending offset order, so the owning
-        // term is the last one whose offset does not exceed `i`.
+        // Term blocks ascend by offset, so the owner is the last one not exceeding `i`.
         let term = self.terms.partition_point(|t| t.offset <= i) - 1;
         let t = &self.terms[term];
         let within = i - t.offset;
-        Some((term, within % t.n_levels, within / t.n_levels))
+        Some(CoefficientAddress {
+            channel: Channel {
+                term,
+                column: within / t.n_levels,
+            },
+            level: within % t.n_levels,
+        })
     }
 }
 
@@ -209,7 +211,7 @@ pub struct SolveResult {
     /// minimal-norm value `0`, never NaN; see [`SolveResult::unidentified`].
     pub x: Vec<f64>,
     /// Per-level directions the data cannot identify.
-    pub unidentified: Vec<UnidentifiedDirection>,
+    pub unidentified: Vec<CoefficientAddress>,
     /// Non-fatal preconditioner-build warnings (see [`Solver::warnings`]);
     /// empty when a pre-built preconditioner was reused.
     pub warnings: Vec<BuildWarning>,
@@ -250,7 +252,7 @@ pub struct BatchSolveResult {
     pub x: Vec<f64>,
     /// Per-level directions the data cannot identify, shared across all RHS:
     /// identification depends only on the design and weights, never on `y`.
-    pub unidentified: Vec<UnidentifiedDirection>,
+    pub unidentified: Vec<CoefficientAddress>,
     /// Non-fatal preconditioner-build warnings, shared across all RHS; see
     /// [`SolveResult::warnings`].
     pub warnings: Vec<BuildWarning>,
@@ -289,10 +291,6 @@ impl BatchSolveResult {
         &self.demeaned[i * self.n_obs..(i + 1) * self.n_obs]
     }
 }
-
-// ---------------------------------------------------------------------------
-// Solver
-// ---------------------------------------------------------------------------
 
 /// Persistent solver that owns its preconditioner for reuse across multiple solves.
 ///
@@ -351,7 +349,7 @@ impl<'a> Solver<'a> {
     /// - `&PreconditionerConfig` / `Some(&PreconditionerConfig)` — build from a tuned config
     /// - `PreconditionerConfig::Off` — solve unpreconditioned
     /// - `PreconditionerConfig::Diagonal` — use diagonal/Jacobi preconditioning
-    /// - [`Preconditioner`] or `&Preconditioner` — reuse a previously built (or deserialized) preconditioner
+    /// - [`Preconditioner`] or `&Preconditioner` — reuse a previously built one
     ///
     /// `weights` is `None` for unweighted, or an owned `Vec<f64>` that the
     /// solver takes ownership of (it re-reads the weights on every solve). To
@@ -368,9 +366,7 @@ impl<'a> Solver<'a> {
         let mut design = design.into_design()?;
         design.validate_weights(weights.as_deref())?;
 
-        // Align weights with the design's internal (possibly locality-sorted)
-        // observation order. The match keeps the unpermuted arm a plain move
-        // (`permute_obs_in` would borrow and `into_owned` would copy).
+        // The match keeps the unpermuted arm a plain move rather than a borrow-and-copy.
         let weights = match &design.obs_perm {
             Some(_) => weights.map(|w| design.permute_obs_in(&w).into_owned()),
             None => weights,
@@ -425,8 +421,7 @@ impl<'a> Solver<'a> {
     /// `unidentified`, which the public entry points attach once (see
     /// [`RhsSolution`]).
     fn solve_rhs(&self, y: &[f64], lsmr: &LsmrOptions) -> Result<RhsSolution, SolveError> {
-        // Guard the silent-truncation hole: weighted_rhs zips y with sqrt-weights,
-        // which would otherwise discard trailing values when y.len() > n_rows.
+        // `weighted_rhs` zips y with sqrt-weights, silently truncating when `y.len() > n_rows`.
         if y.len() != self.design.n_obs {
             return Err(SolveError::InvalidInput {
                 context: "Solver::solve",
@@ -446,10 +441,7 @@ impl<'a> Solver<'a> {
 
         let t_start = Instant::now();
 
-        // All matvecs run in the design's internal (possibly locality-sorted)
-        // observation order; `demeaned` is translated back on return. The
-        // gather is a recurring per-solve cost of the locality sort, so it
-        // counts toward `time_setup` (and `time_total`).
+        // The gather is a recurring per-solve cost of the locality sort, so it counts as setup.
         let y_internal = self.design.permute_obs_in(y);
         let y: &[f64] = &y_internal;
 
@@ -467,9 +459,7 @@ impl<'a> Solver<'a> {
 
         let time_solve = t_solve_start.elapsed().as_secs_f64();
 
-        // demeaned = y - D x. The bare unweighted `D x` matvec is `gather_apply`
-        // without a scale; shapes are guaranteed here, so it is infallible —
-        // no DesignOperator wrapper (and its scatter scratch) needed.
+        // Shapes are guaranteed here, so the bare `D x` matvec is infallible.
         let mut demeaned = vec![0.0; self.design.n_obs];
         gather_apply(&self.design, &r.x, &mut demeaned, None);
         for (d, &yi) in demeaned.iter_mut().zip(y.iter()) {
@@ -487,8 +477,7 @@ impl<'a> Solver<'a> {
             demeaned: self.design.permute_obs_out(demeaned),
             converged: r.converged,
             iterations: r.iterations,
-            // Relative normal-equation residual estimate, read from the LSMR
-            // recurrence at no extra cost; see `SolveResult::residual`.
+            // Read from the LSMR recurrence at no extra cost; see `SolveResult::residual`.
             residual: r.normal_eq_residual,
             time_setup,
             time_solve,
@@ -497,7 +486,7 @@ impl<'a> Solver<'a> {
 
     /// Per-level directions the data cannot identify, shared across all RHS:
     /// identification depends only on the design and weights, never on `y`.
-    fn unidentified(&self) -> Vec<UnidentifiedDirection> {
+    fn unidentified(&self) -> Vec<CoefficientAddress> {
         self.reparam
             .as_ref()
             .map(|rp| rp.unidentified.clone())
@@ -542,10 +531,7 @@ impl<'a> Solver<'a> {
         let lsmr = lsmr.into().unwrap_or(&default);
         let n_rhs = ys.len();
 
-        // Each worker returns only the per-RHS fields; the design-level `layout`
-        // / `warnings` / `unidentified` are built once below, not once per RHS.
-        // Collecting into `Result` fails fast on the first per-RHS error rather
-        // than surfacing it during the fold.
+        // Collecting into `Result` fails fast on the first per-RHS error, not during the fold.
         let solutions: Vec<RhsSolution> = ys
             .par_iter()
             .map(|y| self.solve_rhs(y, lsmr))
@@ -599,10 +585,6 @@ impl<'a> Solver<'a> {
         self.design.n_obs
     }
 }
-
-// ===========================================================================
-// High-level one-shot API
-// ===========================================================================
 
 /// Solve fixed-effects least squares for a design input.
 ///

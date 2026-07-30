@@ -2,15 +2,14 @@
 //! rank-tolerance contract — neither reachable through the public API) and
 //! for the per-term independence of the multi-term whitening.
 
+use crate::channel::Channel;
 use crate::domain::Effect;
 
 use super::*;
 
 #[test]
 fn gram_schmidt_orthonormalizes_under_a_non_monotonic_pivot_order() {
-    // Diagonals [2, 5, 3] force the pivot sequence 1 → 2 → 0: any
-    // bookkeeping that assumes natural or physically swapped order breaks
-    // the W·G·Wᵀ = I identity below (the prototype's ≥3-slope cliff).
+    // Diagonals [2, 5, 3] force the pivot sequence 1 → 2 → 0, breaking order assumptions.
     let g = [2.0, 1.0, 0.5, 1.0, 5.0, 2.0, 0.5, 2.0, 3.0];
     let (w, kept) = pivoted_gram_schmidt(&g, 3, RANK_TOL);
     assert_eq!(kept, [true; 3]);
@@ -68,9 +67,10 @@ fn build_whitens_each_slope_bearing_term() {
         let meta = &design.terms[term];
         let levels = design.frame.level_column(term);
         let us: Vec<&[f64]> = meta
-            .slopes
+            .columns
             .iter()
-            .map(|&c| design.frame.loading_column(c))
+            .filter_map(|c| c.covariate())
+            .map(|&k| design.frame.loading_column(k as usize))
             .collect();
         for level in 0..meta.n_levels {
             let obs: Vec<usize> = (0..levels.len())
@@ -94,9 +94,7 @@ fn build_whitens_each_slope_bearing_term() {
 
 #[test]
 fn unidentified_directions_ascend_across_terms() {
-    // Term 0 drops a slope at level 1, term 1 at the *earlier* level 0:
-    // index-order term iteration keeps the list ascending in
-    // (term, level, column) without any sort.
+    // Index-order term iteration keeps the list ascending without any sort.
     let f0 = [0u32, 0, 1, 1, 2, 2];
     let z0 = [1.0, 2.0, 5.0, 5.0, 3.0, 7.0];
     let f1 = [0u32, 1, 0, 1, 0, 1];
@@ -110,15 +108,13 @@ fn unidentified_directions_ascend_across_terms() {
     assert_eq!(
         rp.unidentified,
         vec![
-            UnidentifiedDirection {
-                term: 0,
+            CoefficientAddress {
+                channel: Channel { term: 0, column: 1 },
                 level: 1,
-                column: 1,
             },
-            UnidentifiedDirection {
-                term: 1,
+            CoefficientAddress {
+                channel: Channel { term: 1, column: 1 },
                 level: 0,
-                column: 1,
             },
         ]
     );

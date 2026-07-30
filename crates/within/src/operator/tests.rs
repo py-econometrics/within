@@ -14,9 +14,7 @@ mod design_tests {
     use schwarz_precond::Operator;
 
     fn make_test_design() -> Design<'static> {
-        // Sorted on the dominant factor (factor 1, 4 levels) so construction
-        // applies no locality permutation and rows stay where the hand-computed
-        // expectations below put them.
+        // Sorted on the dominant factor, so construction applies no locality permutation.
         design_of(vec![vec![0, 1, 1, 2, 0], vec![0, 0, 1, 2, 3]])
     }
 
@@ -78,8 +76,7 @@ mod design_tests {
     }
 
     fn make_large_design() -> Design<'static> {
-        // Block pattern (level = i / 300): sorted on both factors, 50 levels
-        // each, 300 rows per level — no construction-time permutation.
+        // Sorted on both factors, so there is no construction-time permutation.
         let n_obs = 15_000;
         let block = 300u32;
         let fa: Vec<u32> = (0..n_obs).map(|i| i as u32 / block).collect();
@@ -247,9 +244,7 @@ mod design_tests {
     fn assert_all_close(actual: &[f64], expected: &[f64], ctx: &str) {
         assert_eq!(actual.len(), expected.len(), "{ctx}: length mismatch");
         for (i, (&a, &e)) in actual.iter().zip(expected.iter()).enumerate() {
-            // Generous relative tolerance: parallel reductions may reorder FP
-            // adds (~1e-13), but stale-scratch contamination is an O(value)
-            // error, so this catches the bug class without flaking on FP noise.
+            // Stale-scratch contamination is O(value), so this cannot flake on FP noise.
             let tol = 1e-9 * e.abs().max(1.0);
             assert!(
                 (a - e).abs() <= tol,
@@ -260,18 +255,13 @@ mod design_tests {
 
     #[test]
     fn test_scatter_scratch_reuse_matches_fresh_operator() {
-        // Single-factor designs are sorted at construction, so the three pairs
-        // route Sequential (`n_obs <= PAR_THRESHOLD`), Fold (parallel,
-        // `n_levels < SCATTER_LOCAL_THRESHOLD`), and SortedCoalesced
-        // (`n_levels >= SCATTER_LOCAL_THRESHOLD`, sorted).
+        // The three pairs route Sequential, Fold and SortedCoalesced respectively.
         for (n_obs, n_levels) in [(200usize, 16usize), (15_000, 64), (150_000, 100_000)] {
             let dm = make_strategy_design(n_obs, n_levels);
             assert_scratch_reuse_matches_fresh(&dm, &format!("n_obs={n_obs}, n_levels={n_levels}"));
         }
 
-        // Atomic: a large *unsorted* factor that is not dominant (the already
-        // sorted dominant factor suppresses construction-time reordering), so
-        // it cannot coalesce.
+        // A large unsorted non-dominant factor cannot coalesce.
         let n_obs = 150_000usize;
         let fa: Vec<u32> = (0..n_obs as u32).collect();
         let fb: Vec<u32> = (0..n_obs).map(|i| ((i * 7919) % 100_000) as u32).collect();
@@ -296,8 +286,7 @@ mod design_tests {
             .apply_adjoint(&r, &mut baseline)
             .expect("apply_adjoint succeeds");
 
-        // Dirty the scratch with a first apply, then apply again on the same
-        // operator; the second result must equal the fresh baseline.
+        // The second apply on a dirtied operator must equal the fresh baseline.
         let op = DesignOperator::new(dm, None);
         let mut warmup = vec![0.0f64; dm.n_dofs];
         op.apply_adjoint(&r, &mut warmup)
@@ -311,7 +300,7 @@ mod design_tests {
 }
 
 mod slope_design_tests {
-    use crate::domain::{Design, Effect};
+    use crate::domain::{Design, Effect, Loading};
     use crate::operator::DesignOperator;
     use schwarz_precond::Operator;
 
@@ -330,17 +319,13 @@ mod slope_design_tests {
         let mut d = vec![vec![0.0; design.n_dofs]; design.n_obs];
         for (q, t) in design.terms.iter().enumerate() {
             let levels = design.frame.level_column(q);
-            let mut c = 0;
-            if t.intercept {
+            for (c, loading) in t.columns.iter().enumerate() {
+                let base = t.offset + c * t.n_levels;
                 for (i, &lev) in levels.iter().enumerate() {
-                    d[i][t.offset + lev as usize] = 1.0;
-                }
-                c = 1;
-            }
-            for (v, &z_idx) in t.slopes.iter().enumerate() {
-                let z = design.frame.loading_column(z_idx);
-                for (i, &lev) in levels.iter().enumerate() {
-                    d[i][t.offset + (c + v) * t.n_levels + lev as usize] = z[i];
+                    d[i][base + lev as usize] = match loading {
+                        Loading::Constant => 1.0,
+                        Loading::Covariate(k) => design.frame.loading_column(*k as usize)[i],
+                    };
                 }
             }
         }
@@ -442,10 +427,6 @@ mod slope_design_tests {
     }
 }
 
-// ===========================================================================
-// weighted adjoint property test
-// ===========================================================================
-
 mod weighted_adjoint_proptests {
     use super::design_of;
     use crate::operator::DesignOperator;
@@ -513,10 +494,6 @@ mod weighted_adjoint_proptests {
     }
 }
 
-// ===========================================================================
-// schwarz tests
-// ===========================================================================
-
 mod schwarz_tests {
     use std::env;
     use std::process::Command;
@@ -529,12 +506,11 @@ mod schwarz_tests {
     };
     use schwarz_precond::SubdomainCore;
 
-    use crate::block_elim::factor::ReducedFactor;
     use crate::csr_block::CsrBlock;
     use crate::domain::{build_local_domains, Design, LocalDomain};
-    use crate::domain::{BlockDiagonals, CrossTab, LocalComponent};
-    use crate::operator::schwarz::{build_additive_with_strategy, build_entry};
-    use schwarz_precond::{Operator, ReductionStrategy};
+    use crate::domain::{CrossTab, LocalComponent};
+    use crate::operator::schwarz::build_additive_with_strategy;
+    use schwarz_precond::{LocalSolver, Operator, ReductionStrategy};
 
     const BLOCK_ELIM_NESTED_RAYON_CHILD_ENV: &str = "WITHIN_TEST_BLOCK_ELIM_NESTED_RAYON_CHILD";
 
@@ -545,21 +521,21 @@ mod schwarz_tests {
         (design, domain_pairs)
     }
 
-    fn synthetic_sparse_cross_tab(n_keep: usize, elim_ratio: usize) -> (CrossTab, BlockDiagonals) {
-        let n_q = n_keep * elim_ratio;
-        let n_r = n_keep;
-        let mut indptr = Vec::with_capacity(n_q + 1);
-        let mut indices = Vec::with_capacity(n_q * 3);
-        let mut data = Vec::with_capacity(n_q * 3);
-        let mut diag_q = vec![0.0; n_q];
-        let mut diag_r = vec![0.0; n_r];
+    fn synthetic_sparse_cross_tab(n_keep: usize, elim_ratio: usize) -> (CrossTab, Vec<f64>) {
+        let n_rows = n_keep * elim_ratio;
+        let n_cols = n_keep;
+        let mut indptr = Vec::with_capacity(n_rows + 1);
+        let mut indices = Vec::with_capacity(n_rows * 3);
+        let mut data = Vec::with_capacity(n_rows * 3);
+        let mut row_diag = vec![0.0; n_rows];
+        let mut col_diag = vec![0.0; n_cols];
 
         indptr.push(0);
-        for (i, diag_q_i) in diag_q.iter_mut().enumerate().take(n_q) {
+        for (i, row_diag_i) in row_diag.iter_mut().enumerate().take(n_rows) {
             let mut row = [
-                (i % n_r, 1.0),
-                ((i + 1) % n_r, 0.8),
-                ((i.wrapping_mul(17).wrapping_add(3)) % n_r, 0.6),
+                (i % n_cols, 1.0),
+                ((i + 1) % n_cols, 0.8),
+                ((i.wrapping_mul(17).wrapping_add(3)) % n_cols, 0.6),
             ];
             row.sort_unstable_by_key(|&(col, _)| col);
 
@@ -577,10 +553,10 @@ mod schwarz_tests {
                 indices.push(col as u32);
                 data.push(value);
                 row_sum += value;
-                diag_r[col] += value;
+                col_diag[col] += value;
             }
 
-            *diag_q_i = row_sum;
+            *row_diag_i = row_sum;
             indptr.push(indices.len() as u32);
         }
 
@@ -588,16 +564,13 @@ mod schwarz_tests {
             indptr,
             indices,
             data,
-            nrows: n_q,
-            ncols: n_r,
+            nrows: n_rows,
+            ncols: n_cols,
         };
         let ct = c.transpose();
         (
             CrossTab { c, ct },
-            BlockDiagonals {
-                q: diag_q,
-                r: diag_r,
-            },
+            row_diag.into_iter().chain(col_diag).collect(),
         )
     }
 
@@ -739,60 +712,55 @@ mod schwarz_tests {
         schwarz.apply(&r, &mut z).expect("schwarz apply succeeds");
     }
 
-    #[test]
-    fn test_exact_schur_uses_dense_fast_path_for_tiny_reduced_system() {
-        let (_, mut domain_pairs) = make_test_data();
-        let domain = domain_pairs.swap_remove(0);
-
+    /// Three-entry eliminated stars, so clique sampling is not
+    /// deterministic-exact and the two routes are separable.
+    fn small_subdomain_solve(schur: SchurMode, dense_threshold: usize) -> Vec<f64> {
+        let (cross_tab, block_diagonals) = synthetic_sparse_cross_tab(8, 4);
+        let component = LocalComponent::plain_for_test(cross_tab, block_diagonals);
         let config = LocalSolverConfig {
             approx_chol: ApproxCholConfig::default(),
-            schur: SchurMode::Exact,
-            dense_threshold: DEFAULT_DENSE_SCHUR_THRESHOLD,
+            schur,
+            dense_threshold,
             scaling: Default::default(),
         };
-        let entry = build_entry(domain, &config).expect("exact Schur entry build failed");
-        assert!(matches!(
-            entry.solver().reduced_factor,
-            ReducedFactor::Dense(_)
-        ));
+        let solver = crate::block_elim::BlockElimSolver::build(component, &config)
+            .expect("block-elim build");
+        let mut rhs = vec![0.0; solver.scratch_size()];
+        for (i, slot) in rhs.iter_mut().take(solver.n_local()).enumerate() {
+            *slot = if i % 2 == 0 { 1.0 } else { -1.0 };
+        }
+        let mut solution = vec![0.0; solver.scratch_size()];
+        solver
+            .solve_local(&mut rhs, &mut solution, false)
+            .expect("local solve");
+        solution.truncate(solver.n_local());
+        solution
     }
 
     #[test]
-    fn test_approximate_schur_uses_dense_fast_path_for_tiny_reduced_system() {
-        let (_, mut domain_pairs) = make_test_data();
-        let domain = domain_pairs.swap_remove(0);
-
-        let config = LocalSolverConfig {
-            approx_chol: ApproxCholConfig::default(),
-            schur: SchurMode::Approximate(ApproxSchurConfig {
+    fn test_schur_mode_is_outranked_by_the_exact_route_for_small_reduced_system() {
+        // Agreeing is only possible if both took the exact route.
+        let exact = small_subdomain_solve(SchurMode::Exact, DEFAULT_DENSE_SCHUR_THRESHOLD);
+        let sampled_mode = small_subdomain_solve(
+            SchurMode::Approximate(ApproxSchurConfig {
                 seed: 7,
                 ..Default::default()
             }),
-            dense_threshold: DEFAULT_DENSE_SCHUR_THRESHOLD,
-            scaling: Default::default(),
-        };
-        let entry = build_entry(domain, &config).expect("approximate Schur entry build failed");
-        assert!(matches!(
-            entry.solver().reduced_factor,
-            ReducedFactor::Dense(_)
-        ));
+            DEFAULT_DENSE_SCHUR_THRESHOLD,
+        );
+        assert_eq!(exact, sampled_mode);
     }
 
     #[test]
-    fn test_dense_threshold_zero_disables_dense_fast_path() {
-        let (_, mut domain_pairs) = make_test_data();
-        let domain = domain_pairs.swap_remove(0);
-
-        let config = LocalSolverConfig {
-            approx_chol: ApproxCholConfig::default(),
-            schur: SchurMode::Exact,
-            dense_threshold: 0,
-            scaling: Default::default(),
-        };
-        let entry = build_entry(domain, &config).expect("exact Schur entry build failed");
-        assert!(!matches!(
-            entry.solver().reduced_factor,
-            ReducedFactor::Dense(_)
-        ));
+    fn test_dense_threshold_zero_disables_exact_route() {
+        let exact = small_subdomain_solve(SchurMode::Exact, DEFAULT_DENSE_SCHUR_THRESHOLD);
+        let approximate = small_subdomain_solve(
+            SchurMode::Approximate(ApproxSchurConfig {
+                seed: 7,
+                ..Default::default()
+            }),
+            0,
+        );
+        assert_ne!(exact, approximate);
     }
 }
