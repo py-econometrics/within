@@ -1,4 +1,4 @@
-// __reduce__ methods return noisy PyO3 tuple types; allow the lint crate-wide.
+// `__reduce__` methods return noisy PyO3 tuple types; allow the lint crate-wide.
 #![allow(clippy::type_complexity)]
 
 //! Thin PyO3 bridge exposing the [`within`] crate to Python as `within._within`.
@@ -19,10 +19,6 @@ use config::{
     PyPreconditioner, PyPreconditionerConfig, PyReductionStrategy, PyScalingConfig, PySchur,
 };
 use results::{PyBatchSolveResult, PyCoefficientLayout, PySolveResult, PyUnidentifiedDirection};
-
-// ---------------------------------------------------------------------------
-// Module
-// ---------------------------------------------------------------------------
 
 #[pymodule]
 fn _within(m: &Bound<'_, PyModule>) -> PyResult<()> {

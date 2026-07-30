@@ -17,12 +17,9 @@ pub enum ReductionStrategy {
     /// Choose a backend from build-time metrics and the current Rayon width.
     #[default]
     Auto,
-    /// Each subdomain atomically scatters into a shared accumulator.
-    /// Memory: O(n_dofs) shared + O(P * max_scratch) thread-local.
+    /// Atomic scatter into a shared accumulator; O(n_dofs) shared plus O(P · max_scratch) local.
     AtomicScatter,
-    /// Each task accumulates into a private buffer, then a parallel
-    /// chunk-based reduction combines them.
-    /// Memory: O(P * n_dofs) for task buffers.
+    /// Private per-task buffers combined by a parallel chunk reduction; O(P · n_dofs).
     ParallelReduction,
 }
 
@@ -47,12 +44,7 @@ pub(super) struct ReductionPlan {
     pub(super) allow_inner_parallelism: bool,
 }
 
-/// Build-time scheduling metrics + `Auto` resolution logic.
-///
-/// Holds only the metrics that require walking the subdomain entries
-/// (work distribution, scatter overlap). Sizes already known to the
-/// preconditioner (`n_subdomains`, `n_dofs`) are passed at call time
-/// rather than duplicated here.
+/// Build-time scheduling metrics and `Auto` resolution.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct AdditiveScheduler {
     pub(super) total_inner_parallel_work: usize,

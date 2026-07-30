@@ -8,9 +8,7 @@ use within::{
     WithinError,
 };
 
-// Behavior: a malformed input produces the right typed error. The Display /
-// source() / From plumbing is covered by a single wiring check per enum below,
-// not by pinning every message string.
+// The Display/source()/From plumbing has one wiring check per enum, not per message.
 
 #[test]
 fn test_empty_observations_error() {
@@ -75,8 +73,7 @@ fn test_empty_categories_via_solve() {
 
 #[test]
 fn test_preconditioner_dimension_mismatch_error() {
-    // Build a preconditioner against a larger design, then try to reuse it
-    // with a smaller design — the dim check in Solver::new should fire.
+    // Reusing a larger design's preconditioner must trip the dim check in Solver::new.
     let big = Array2::from_shape_vec((4, 2), vec![0u32, 0, 1, 1, 2, 0, 3, 1]).expect("big array");
     let small = Array2::from_shape_vec((3, 2), vec![0u32, 0, 1, 1, 0, 0]).expect("small array");
 
@@ -118,8 +115,7 @@ fn test_non_finite_response_rejected() {
         other => panic!("Expected Solve(InvalidInput) via solve(), got: {other:?}"),
     }
 
-    // The persistent Solver API funnels through the same Solver::solve guard, so
-    // the check cannot be bypassed by constructing a Solver and solving in place.
+    // The persistent Solver API funnels through the same guard, so it cannot be bypassed.
     let solver = Solver::new(cats.view(), None, &precond).expect("solver");
     match solver.solve(&y, &params).unwrap_err() {
         SolveError::InvalidInput { message, .. } => {
@@ -131,8 +127,7 @@ fn test_non_finite_response_rejected() {
         other => panic!("Expected InvalidInput via Solver::solve(), got: {other:?}"),
     }
 
-    // solve_batch funnels every column through Solver::solve; the bad value is
-    // in the 2nd RHS.
+    // solve_batch funnels every column through Solver::solve; the bad value is in the 2nd RHS.
     let good = [1.0, 2.0, 3.0];
     let bad = [1.0, 2.0, f64::INFINITY];
     match solve_batch(cats.view(), &[&good[..], &bad[..]], None, &params, &precond).unwrap_err() {
@@ -148,9 +143,7 @@ fn test_non_finite_response_rejected() {
 
 #[test]
 fn test_collinear_finite_slope_is_unidentified_not_rejected() {
-    // A duplicated (collinear) but FINITE slope is genuine rank deficiency, not
-    // malformed input: it must resolve to an UnidentifiedDirection, never an
-    // InvalidLoading. Guards against conflating the two (#122).
+    // A duplicated but FINITE slope is rank deficiency, not malformed input (#122).
     let levels = [0u32, 0, 1, 1];
     let z = [1.0, 3.0, 2.0, 5.0];
     let y = [1.0, 2.0, 3.0, 4.0];
@@ -178,10 +171,7 @@ fn test_solver_accepts_slope_bearing_design_alongside_other_terms() {
     Solver::new(design, None, None).expect("signed routing builds");
 }
 
-// ---------------------------------------------------------------------------
-// Error-type plumbing: one wiring check per enum (From conversions and the
-// transparent source() forward), not per-message pinning.
-// ---------------------------------------------------------------------------
+// One wiring check per enum: From conversions and the transparent source() forward.
 
 #[test]
 fn test_within_error_from_build_error() {
@@ -205,7 +195,7 @@ fn test_within_error_from_solve_error() {
 
 #[test]
 fn test_within_error_source_chains_through_transparent_wrapper() {
-    // Transparent: WithinError -> (BuildError::Preconditioner via #[source]) -> schwarz_precond::BuildError
+    // Transparent: WithinError -> BuildError::Preconditioner -> schwarz_precond::BuildError
     let inner = schwarz_precond::BuildError::ScratchSizeTooSmall {
         scratch_size: 1,
         required_min: 2,

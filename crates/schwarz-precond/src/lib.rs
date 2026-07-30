@@ -44,25 +44,15 @@
 #![deny(missing_docs)]
 #![warn(clippy::all)]
 
-/// A linear operator A: R^ncols -> R^nrows with its adjoint A^T.
-///
-/// Preconditioners are operators too (M^{-1} is a linear map).
-/// All implementors must be Send + Sync to enable Rayon parallelism.
-///
-/// Both apply methods are fallible: implementors that cannot fail in practice
-/// (matrices, identity operators) still return `Result<(), SolveError>` so
-/// callers can use a uniform `?` propagation path. Symmetric operators
-/// should delegate `apply_adjoint` to `apply`.
+/// A linear operator with its adjoint; both applies are fallible for one uniform `?` path.
 pub trait Operator: Send + Sync {
     /// Number of rows in the operator.
     fn nrows(&self) -> usize;
     /// Number of columns in the operator.
     fn ncols(&self) -> usize;
-    /// Computes y = A * x. Returns an error if the apply fails at runtime
-    /// (e.g. a local subdomain solver diverges).
+    /// Computes `y = A x`.
     fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), error::SolveError>;
-    /// Computes y = A^T * x. For symmetric operators, this should delegate to `apply`.
-    /// Returns an error under the same conditions as `apply`.
+    /// Computes `y = Aᵀ x`; symmetric operators should delegate to `apply`.
     fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), error::SolveError>;
 }
 

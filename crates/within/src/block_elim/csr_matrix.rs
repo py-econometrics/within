@@ -7,19 +7,7 @@
 //! carries the rectangular cross-factor coupling block produced in `domain` and
 //! consumed here.
 
-/// Square sparse matrix in Compressed Sparse Row (CSR) format.
-///
-/// # CSR Invariants
-///
-/// A well-formed `CsrMatrix` satisfies:
-/// - `indptr.len() == n + 1`
-/// - `indptr[0] == 0` and `indptr` is non-decreasing
-/// - `indices.len() == data.len() == indptr[n] as usize` (the number of non-zeros)
-/// - All column indices in `indices` are in `0..n`
-/// - Within each row, column indices are sorted ascending with no duplicates
-///
-/// Block elimination produces these by construction, so [`CsrMatrix::new`] is
-/// infallible and the invariants are guarded only in debug builds.
+/// Block elimination produces the CSR invariants, so [`CsrMatrix::new`] only debug-checks them.
 #[derive(Clone)]
 pub(crate) struct CsrMatrix {
     indptr: Vec<u32>,
@@ -29,12 +17,7 @@ pub(crate) struct CsrMatrix {
 }
 
 impl CsrMatrix {
-    /// Create a `CsrMatrix` from raw CSR components.
-    ///
-    /// The components must satisfy the CSR invariants documented on
-    /// [`CsrMatrix`]. Block elimination produces them by construction, so this
-    /// constructor is infallible; in debug builds the invariants are checked
-    /// with `assert!`, and in release builds they are trusted.
+    /// Trusted in release, `assert!`-checked in debug.
     pub(crate) fn new(indptr: Vec<u32>, indices: Vec<u32>, data: Vec<f64>, n: usize) -> Self {
         #[cfg(debug_assertions)]
         {

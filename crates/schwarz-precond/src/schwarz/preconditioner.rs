@@ -16,15 +16,7 @@ use crate::Operator;
 use super::executor::AdditiveExecutor;
 use super::planning::{AdditiveScheduler, ReductionPlan, ReductionStrategy};
 
-// ---------------------------------------------------------------------------
-// Serde
-// ---------------------------------------------------------------------------
-
-/// Persists the subdomain entries and the global DOF count `n_dofs` — the
-/// latter is not recoverable from the entries alone when some operator columns
-/// are covered by no subdomain. `max_scratch_size` and the scheduling metrics
-/// are re-derived on deserialize; the reduction strategy resets to `Auto`;
-/// buffers are re-allocated fresh.
+/// Persists `n_dofs`, which entries alone cannot recover when some columns are uncovered.
 #[cfg(feature = "serde")]
 impl<S> serde::Serialize for SchwarzPreconditioner<S>
 where
@@ -34,9 +26,6 @@ where
         use serde::ser::SerializeStruct;
         let mut state = serializer.serialize_struct("SchwarzPreconditioner", 2)?;
         state.serialize_field("subdomains", self.executor.subdomains())?;
-        // Persist the global DOF count: it is not recoverable from the
-        // subdomains alone when the operator has structural-null tail DOFs
-        // that no subdomain covers.
         state.serialize_field("n_dofs", &self.executor.n_dofs())?;
         state.end()
     }
@@ -58,12 +47,7 @@ where
         }
 
         let h: Helper<S> = Helper::deserialize(deserializer)?;
-        // The bytes may be untrusted (a cache, another machine, a tampered
-        // file). `n_dofs` below the covered subdomain index span is a caller
-        // bug for the infallible constructors — only debug-asserted there — but
-        // from arbitrary input it would let a subdomain scatter out of bounds
-        // at apply time, so reject it here as a typed error rather than build
-        // an unsound preconditioner.
+        // An `n_dofs` below the covered span would let a subdomain scatter out of bounds.
         let covered_span = h
             .subdomains
             .iter()
@@ -84,12 +68,7 @@ where
     }
 }
 
-/// One-level additive Schwarz preconditioner, generic over the local solver.
-///
-/// Subdomains (factored matrices) are stored behind `Arc` so that cloning
-/// shares the heavy subdomain data. A pool of per-thread buffer sets enables
-/// safe concurrent `apply()` calls on the same instance — each caller grabs
-/// an independent buffer set from the pool for the duration of the call.
+/// One-level additive Schwarz preconditioner; pooled per-thread buffers make `apply()` safe.
 pub struct SchwarzPreconditioner<S: LocalSolver> {
     reduction_strategy: ReductionStrategy,
     scheduler: AdditiveScheduler,
@@ -97,22 +76,12 @@ pub struct SchwarzPreconditioner<S: LocalSolver> {
 }
 
 impl<S: LocalSolver> SchwarzPreconditioner<S> {
-    /// Construct from pre-built subdomain entries, inferring the global DOF
-    /// count from the maximum global index across entries (or 0 if empty).
-    ///
-    /// Suitable only when every DOF is covered by a subdomain. An operator
-    /// with columns no subdomain touches (e.g. an unidentified direction kept
-    /// for shape) must state its true width via [`Self::with_n_dofs`], or the
-    /// inferred count falls short and the mismatch surfaces at apply time.
+    /// Infers `n_dofs` from the maximum global index; only valid when every DOF is covered.
     pub fn new(entries: Vec<SubdomainEntry<S>>, strategy: ReductionStrategy) -> Self {
         Self::build(entries, None, strategy)
     }
 
-    /// Construct with an explicit global DOF count: the operator's column
-    /// count, which may exceed the span of the subdomains' global indices. A
-    /// column no subdomain covers stays in the null space, so its apply output
-    /// is `0`. A count below the covered span is a caller bug (a subdomain
-    /// would scatter out of bounds), caught in debug builds.
+    /// Explicit global DOF count; an uncovered column stays in the null space and applies to `0`.
     pub fn with_n_dofs(
         entries: Vec<SubdomainEntry<S>>,
         n_dofs: usize,
@@ -121,9 +90,7 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
         Self::build(entries, Some(n_dofs), strategy)
     }
 
-    /// Shared constructor: one pass over `entries` derives `max_scratch_size`,
-    /// the scheduling metrics, and the covered index span. `n_dofs` is taken
-    /// as given, or inferred from that span when `None`.
+    /// One pass over `entries` derives `max_scratch_size`, the metrics, and the covered span.
     fn build(
         entries: Vec<SubdomainEntry<S>>,
         n_dofs: Option<usize>,
@@ -207,8 +174,7 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
 }
 
 impl<S: LocalSolver> Clone for SchwarzPreconditioner<S> {
-    /// Clone shares both the subdomain data and the buffer pool via `Arc`.
-    /// This is O(1) and the clone is fully interchangeable with the original.
+    /// Clone shares subdomain data and the buffer pool via `Arc`: O(1) and fully interchangeable.
     fn clone(&self) -> Self {
         Self {
             reduction_strategy: self.reduction_strategy,

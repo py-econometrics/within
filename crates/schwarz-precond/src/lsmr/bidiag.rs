@@ -11,16 +11,12 @@ use crate::{Operator, SolveError};
 use rayon::iter::{IndexedParallelIterator, ParallelIterator};
 use rayon::prelude::{ParallelSlice, ParallelSliceMut};
 
-/// Below this count the per-iteration vector kernels run sequentially —
-/// rayon wake/steal overhead would dominate otherwise.
+/// Below this count the vector kernels run sequentially; rayon wake/steal would dominate.
 pub(super) const LSMR_PAR_THRESHOLD: usize = 10_000;
-/// Per-worker chunk size for the parallel vector kernels: large enough to clear
-/// rayon dispatch overhead, small enough to stay L1-resident.
+/// Per-worker chunk size: large enough to clear rayon dispatch, small enough to stay L1-resident.
 pub(super) const LSMR_UPDATE_CHUNK: usize = 4096;
 
-/// Fused `y = x + scale * y` with `‖y_new‖²` returned. Parallel above the
-/// threshold; each chunk accumulates its own partial sum to avoid cross-thread
-/// traffic on the reduction.
+/// Fused `y = x + scale · y` returning `‖y_new‖²`; per-chunk partials avoid reduction traffic.
 #[inline]
 fn axpy_with_sq_norm(y: &mut [f64], x: &[f64], scale: f64) -> f64 {
     debug_assert_eq!(x.len(), y.len());
@@ -82,8 +78,7 @@ pub(super) fn dot(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b).map(|(a, b)| a * b).sum()
 }
 
-/// Parallel dot product; falls back to the sequential `dot` below
-/// the threshold.
+/// Parallel dot product, falling back to the sequential `dot` below the threshold.
 #[inline]
 fn par_dot(a: &[f64], b: &[f64]) -> f64 {
     debug_assert_eq!(a.len(), b.len());
@@ -97,9 +92,7 @@ fn par_dot(a: &[f64], b: &[f64]) -> f64 {
     }
 }
 
-/// `α = √⟨v, p̃⟩`. A near-breakdown negative `vp` (exact `‖v‖²_M ≥ 0` rounded
-/// below 0) within the relative floor `√ε·‖v‖‖p̃‖` clamps to `α = 0`; a genuinely
-/// indefinite preconditioner raises.
+/// `α = √⟨v, p̃⟩`; a `vp` negative within `√ε·‖v‖‖p̃‖` clamps to 0, an indefinite `M` raises.
 fn alpha_from_vp(v: &[f64], p_tilde: &[f64]) -> Result<f64, SolveError> {
     let vp = par_dot(v, p_tilde);
     if vp < 0.0 {
@@ -114,21 +107,9 @@ fn alpha_from_vp(v: &[f64], p_tilde: &[f64]) -> Result<f64, SolveError> {
     Ok(vp.max(0.0).sqrt())
 }
 
-/// Windowed ring of recent basis vectors for local (windowed) modified
-/// Gram-Schmidt reorthogonalization.
-///
-/// Stores up to `cap` slots, each holding `L` parallel length-`n` lanes in a
-/// flat per-lane buffer. The ring mechanics — capacity clamp, chronological
-/// (oldest-first) traversal, and wrap-around writes — live here; the inner
-/// product and MGS sweep are supplied by the `L`-specialized impls below
-/// ([`WindowRing<1>`] for Euclidean `v`, [`WindowRing<2>`] for the M-weighted
-/// `(v, p̃ = M v)` pair).
-///
-/// The disabled state is encoded as `Option<WindowRing<L>> = None` on the
-/// owning buffer; this type is only ever constructed with a positive capacity.
+/// Ring of recent basis vectors for windowed MGS; the disabled state is `None`, so `cap > 0`.
 struct WindowRing<const L: usize> {
-    /// `L` flat buffers, each `cap * n` long; lane `l`, slot `s` is the
-    /// length-`n` window `[s*n .. s*n + n]` of `lanes[l]`.
+    /// `L` flat buffers; lane `l`, slot `s` is `[s*n .. s*n + n]` of `lanes[l]`.
     lanes: [Vec<f64>; L],
     n: usize,
     next: usize,
@@ -136,10 +117,7 @@ struct WindowRing<const L: usize> {
 }
 
 impl<const L: usize> WindowRing<L> {
-    /// Returns `None` when no reorthogonalization is requested (the effective
-    /// capacity collapses to zero). The bidiagonalization can produce at most
-    /// `min(m, n)` linearly independent basis vectors before α or β hits zero,
-    /// so the ring is capped at `min(m, n)`.
+    /// `None` when no reorthogonalization is requested; capped at `min(m, n)`.
     fn new(m: usize, n: usize, local_size: usize) -> Option<Self> {
         let cap = local_size.min(m.min(n));
         if cap == 0 {
@@ -166,8 +144,7 @@ impl<const L: usize> WindowRing<L> {
         (0..count).map(move |i| (start + i) % cap)
     }
 
-    /// Reserve the next write slot, advancing the ring index and saturating the
-    /// count at capacity. Returns the slot to write into.
+    /// Reserve the next write slot, advancing the ring index and saturating the count at capacity.
     fn advance(&mut self) -> usize {
         let cap = self.capacity();
         let slot = self.next;
@@ -191,11 +168,9 @@ impl<const L: usize> WindowRing<L> {
     }
 }
 
-/// Euclidean windowed MGS over the single stored `v` lane. Used by
-/// [`GolubKahan`].
+/// Euclidean windowed MGS over the single stored `v` lane, used by [`GolubKahan`].
 impl WindowRing<1> {
-    /// Modified Gram-Schmidt sweep over stored slots in chronological order
-    /// (oldest first). Subtracts the projection of `y` onto each stored vector.
+    /// MGS sweep over stored slots oldest-first, subtracting each projection of `y`.
     fn reorthogonalize(&self, y: &mut [f64]) {
         for slot in self.chrono_slots() {
             let v_j = self.lane(0, slot);
@@ -211,15 +186,9 @@ impl WindowRing<1> {
     }
 }
 
-/// M-weighted windowed MGS over the paired `(v, p̃ = M v)` lanes. Used by
-/// [`ModifiedGolubKahan`]: `v` is M-orthogonal, not Euclidean, so the MGS
-/// coefficient is `⟨v_new, M v_j⟩ = ⟨v_new, p̃_j⟩`. Subtracting the same
-/// coefficient from both `v` and `p̃` in lockstep preserves the `p̃ = M v`
-/// invariant on the recurrence vectors.
+/// M-weighted windowed MGS: `v` is M-orthogonal, so the coefficient is `⟨v_new, p̃_j⟩`.
 impl WindowRing<2> {
-    /// M-weighted MGS over stored `(v_j, p̃_j)` pairs. The coefficient
-    /// `c = ⟨v, p̃_j⟩` is subtracted from `v` (against `v_j`) and from `p̃`
-    /// (against `p̃_j`), keeping `p̃ = M v` consistent.
+    /// Subtracts `c = ⟨v, p̃_j⟩` from both `v` and `p̃`, keeping `p̃ = M v` consistent.
     fn reorthogonalize(&self, v: &mut [f64], p_tilde: &mut [f64]) {
         for slot in self.chrono_slots() {
             let v_j = self.lane(0, slot);
@@ -230,8 +199,7 @@ impl WindowRing<2> {
         }
     }
 
-    /// Copy the normalized `v` and `p_tilde * inv_alpha` (= `M · v_norm`) into
-    /// the paired next slots, advancing the ring.
+    /// Copy normalized `v` and `p_tilde · inv_alpha` into the next slots, advancing the ring.
     fn push(&mut self, v: &[f64], p_tilde_unscaled: &[f64], inv_alpha: f64) {
         let slot = self.advance();
         self.lane_mut(0, slot).copy_from_slice(v);
@@ -245,16 +213,14 @@ impl WindowRing<2> {
     }
 }
 
-/// One step of the bidiagonal sequence: the freshly computed `(α_{k+1},
-/// β_{k+1})` scalars emitted by the bidiagonalization.
+/// One step of the bidiagonal sequence: the freshly computed `(α_{k+1}, β_{k+1})` scalars.
 #[derive(Clone, Copy)]
 pub(super) struct BidiagStep {
     pub(super) alpha: f64,
     pub(super) beta: f64,
 }
 
-/// A bidiagonalization stream feeding LSMR with `(α, β)` pairs and the
-/// matching normalized basis vector `v_k`.
+/// Stream feeding LSMR `(α, β)` pairs and the matching normalized `v_k`.
 pub(super) trait Bidiagonalization {
     /// Advance one step. After the call, `v()` is the normalized `v_{k+1}`.
     fn step(&mut self) -> Result<BidiagStep, SolveError>;
@@ -264,14 +230,11 @@ pub(super) trait Bidiagonalization {
 
 impl<A: Operator + ?Sized> Bidiagonalization for GolubKahan<'_, A> {
     fn step(&mut self) -> Result<BidiagStep, SolveError> {
-        // β_{k+1} u_{k+1} = A v_k − α_k u_k
         self.operator.apply(&self.bufs.v, &mut self.bufs.av)?;
         let beta_sq = axpy_with_sq_norm(&mut self.bufs.u, &self.bufs.av, -self.alpha);
         let beta = beta_sq.sqrt();
         if beta == 0.0 {
-            // Lucky breakdown: the Krylov space is exhausted. Zero v so the
-            // caller's `solution.update` produces no contribution this step;
-            // alpha = 0 in the rotation makes the recurrence well-defined.
+            // Lucky breakdown: zero `v` so `solution.update` contributes nothing.
             self.bufs.v.fill(0.0);
             self.alpha = 0.0;
             return Ok(BidiagStep { alpha: 0.0, beta });
@@ -279,13 +242,11 @@ impl<A: Operator + ?Sized> Bidiagonalization for GolubKahan<'_, A> {
         // beta > 0 here: the beta == 0 lucky breakdown returned above.
         scale_in_place(&mut self.bufs.u, 1.0 / beta);
 
-        // α_{k+1} v_{k+1} = Aᵀ u_{k+1} − β_{k+1} v_k
         self.operator
             .apply_adjoint(&self.bufs.u, &mut self.bufs.atu)?;
         let mut alpha_sq = axpy_with_sq_norm(&mut self.bufs.v, &self.bufs.atu, -beta);
 
-        // Windowed MGS in the standard inner product, before normalization.
-        // After the correction, α must be re-derived from the updated v.
+        // MGS runs before normalization, so α must be re-derived from the corrected `v`.
         if let Some(reorth) = &self.bufs.local_reorth {
             reorth.reorthogonalize(&mut self.bufs.v);
             alpha_sq = par_dot(&self.bufs.v, &self.bufs.v);
@@ -295,7 +256,6 @@ impl<A: Operator + ?Sized> Bidiagonalization for GolubKahan<'_, A> {
             scale_in_place(&mut self.bufs.v, 1.0 / alpha);
         }
 
-        // Push the normalized v_{k+1} into the ring.
         if let Some(reorth) = &mut self.bufs.local_reorth {
             reorth.push(&self.bufs.v);
         }
@@ -313,16 +273,12 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
     for ModifiedGolubKahan<'_, A, M>
 {
     fn step(&mut self) -> Result<BidiagStep, SolveError> {
-        // Phase 1 — ũ_{k+1} unnormalized: scale = −α_k / β_k.
-        // Compute ũ_{k+1} = A ṽ_k − (α_k / β_k) ũ_k, then β_{k+1} = ‖ũ_{k+1}‖.
         let scale = -(self.alpha * self.beta_prev_inv);
         self.operator.apply(&self.bufs.v, &mut self.bufs.av)?;
         let beta_sq = axpy_with_sq_norm(&mut self.bufs.u, &self.bufs.av, scale);
         let beta = beta_sq.sqrt();
         if beta == 0.0 {
-            // Lucky breakdown (preconditioned): same invariant as the
-            // unpreconditioned path — zero v (and the paired p̃) so
-            // `solution.update` is a no-op this step.
+            // Lucky breakdown: zero `v` and its paired `p̃` so the update contributes nothing.
             self.bufs.v.fill(0.0);
             self.bufs.p_tilde.fill(0.0);
             self.alpha = 0.0;
@@ -332,9 +288,7 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
         // beta > 0 here: the beta == 0 lucky breakdown returned above.
         let beta_inv = 1.0 / beta;
 
-        // Phase 2 — fold the adjoint matvec into the p̃ recurrence.
         self.update_p_tilde(beta, beta_inv)?;
-        // Phase 3 — recover v, M-weighted MGS, normalize, push to the ring.
         let alpha_new = self.reorthonormalize_v()?;
 
         self.alpha = alpha_new;
@@ -377,8 +331,7 @@ impl GolubKahanBuffers {
     }
 }
 
-/// Standard Golub-Kahan bidiagonalization. No preconditioner, no `p̃`
-/// buffer, two normalizations per step (`u` and `v`).
+/// Standard Golub-Kahan bidiagonalization: no preconditioner, two normalizations per step.
 pub(super) struct GolubKahan<'a, A: Operator + ?Sized> {
     operator: &'a A,
     bufs: GolubKahanBuffers,
@@ -387,8 +340,7 @@ pub(super) struct GolubKahan<'a, A: Operator + ?Sized> {
 }
 
 impl<'a, A: Operator + ?Sized> GolubKahan<'a, A> {
-    /// Initialize the bidiagonalization. Returns `Self` and the first step
-    /// `(α₁, β₁)`.
+    /// Initialize the bidiagonalization, returning `Self` and the first step `(α₁, β₁)`.
     pub(super) fn init(
         operator: &'a A,
         b: &[f64],
@@ -398,8 +350,7 @@ impl<'a, A: Operator + ?Sized> GolubKahan<'a, A> {
         let n = operator.ncols();
         let mut bufs = GolubKahanBuffers::new(m, n, local_size);
 
-        // β₁ = ‖b‖ via the max-scaled norm: par_dot(b, b).sqrt() overflows to ∞
-        // for large-magnitude b, zeroing u₁ into a silent x = 0 result.
+        // `par_dot(b, b).sqrt()` overflows to ∞ for large `b`, zeroing u₁ into a silent `x = 0`.
         let beta = super::vec_norm(b);
         if beta > 0.0 {
             let inv = 1.0 / beta;
@@ -408,14 +359,12 @@ impl<'a, A: Operator + ?Sized> GolubKahan<'a, A> {
             }
         }
 
-        // α₁ v₁ = Aᵀ u₁
         operator.apply_adjoint(&bufs.u, &mut bufs.v)?;
         let alpha = par_dot(&bufs.v, &bufs.v).sqrt();
         if alpha > 0.0 {
             scale_in_place(&mut bufs.v, 1.0 / alpha);
         }
 
-        // Seed the reorth buffer with v₁ so the next step's MGS sees it.
         if let Some(reorth) = &mut bufs.local_reorth {
             reorth.push(&bufs.v);
         }
@@ -433,15 +382,11 @@ impl<'a, A: Operator + ?Sized> GolubKahan<'a, A> {
 
 /// Workspaces used by [`ModifiedGolubKahan`].
 struct ModifiedGolubKahanBuffers {
-    /// `u` in observation space (length m). Left unnormalized between steps;
-    /// `‖u‖ = β_{k+1}` after the forward stage. The next step's adjoint matvec
-    /// produces `β · Aᵀ u_norm`, and the `β/α_prev` coefficient applied to
-    /// `p_tilde` cancels the unnormalization.
+    /// `u` left unnormalized between steps, so `‖u‖ = β_{k+1}`.
     u: Vec<f64>,
     /// `ṽ` in DOF space (length n). **Normalized** at the end of each step.
     v: Vec<f64>,
-    /// `p̃` recurrence vector (length n).
-    /// Invariant: `p_tilde_stored = α · M · v_normalized`.
+    /// `p̃` recurrence vector (length n); invariant `p_tilde_stored = α · M · v_normalized`.
     p_tilde: Vec<f64>,
     /// Scratch for `A · v` (length m).
     av: Vec<f64>,
@@ -464,9 +409,7 @@ impl ModifiedGolubKahanBuffers {
     }
 }
 
-/// Modified Golub-Kahan bidiagonalization with `M ≈ AᵀA`. Stores `p̃`
-/// scaled by `α` between steps so the preconditioner solve is a single
-/// `M⁻¹` application per iteration.
+/// Modified Golub-Kahan with `M ≈ AᵀA`, storing `p̃` scaled by `α` so a step costs one `M⁻¹`.
 pub(super) struct ModifiedGolubKahan<'a, A: Operator + ?Sized, M: Operator + ?Sized> {
     operator: &'a A,
     preconditioner: &'a M,
@@ -478,8 +421,7 @@ pub(super) struct ModifiedGolubKahan<'a, A: Operator + ?Sized, M: Operator + ?Si
 }
 
 impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M> {
-    /// Initialize the bidiagonalization. Returns `Self` and the first step
-    /// `(α₁, β₁)`.
+    /// Initialize the bidiagonalization, returning `Self` and the first step `(α₁, β₁)`.
     pub(super) fn init(
         operator: &'a A,
         preconditioner: &'a M,
@@ -490,8 +432,7 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M
         let n = operator.ncols();
         let mut bufs = ModifiedGolubKahanBuffers::new(m, n, local_size);
 
-        // β₁ = ‖b‖ via the max-scaled norm: par_dot(b, b).sqrt() overflows to ∞
-        // for large-magnitude b, zeroing u₁ into a silent x = 0 result.
+        // `par_dot(b, b).sqrt()` overflows to ∞ for large `b`, zeroing u₁ into a silent `x = 0`.
         let beta = super::vec_norm(b);
         if beta > 0.0 {
             let inv = 1.0 / beta;
@@ -500,21 +441,16 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M
             }
         }
 
-        // p̃ = Aᵀ u₁
         operator.apply_adjoint(&bufs.u, &mut bufs.p_tilde)?;
 
-        // ṽ₁ = M⁻¹ p̃
         preconditioner.apply(&bufs.p_tilde, &mut bufs.v)?;
 
-        // α₁ = √⟨ṽ₁, p̃⟩ via the M-norm dot product trick.
         let alpha = alpha_from_vp(&bufs.v, &bufs.p_tilde)?;
 
-        // Normalize v; leave p_tilde at α₁·p̃_norm.
         if alpha > 0.0 {
             scale_in_place(&mut bufs.v, 1.0 / alpha);
         }
 
-        // Seed the reorth buffer with the (v₁, p̃₁_norm = M v₁) pair.
         if let Some(reorth) = &mut bufs.local_reorth {
             let inv_alpha = if alpha > 0.0 { 1.0 / alpha } else { 0.0 };
             reorth.push(&bufs.v, &bufs.p_tilde, inv_alpha);
@@ -532,16 +468,7 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M
         ))
     }
 
-    /// Phase 2 of [`step`](Bidiagonalization::step): fold the adjoint matvec
-    /// into the `p̃` recurrence.
-    ///
-    /// `apply_adjoint` on the unnormalized `u` yields `β · Aᵀ u_norm`. The
-    /// `p̃ = α · M v` invariant is maintained by scaling the running `p̃` with
-    /// `β / α_k`: the `α_k` in the denominator cancels the `α_k` factor stored
-    /// in `p̃` from the previous step, so the updated `p̃` ends up as
-    /// `α_new · M v_new` (up to MGS) on completion of this iteration.
-    /// Precondition: `α_k > 0` (the outer loop guard in `lsmr_from_bidiag`
-    /// never calls `step()` once `α` has collapsed to zero).
+    /// Scaling by `β / α_k` cancels the stored `α_k`; requires `α_k > 0`.
     fn update_p_tilde(&mut self, beta: f64, beta_inv: f64) -> Result<(), SolveError> {
         self.operator
             .apply_adjoint(&self.bufs.u, &mut self.bufs.atu)?;
@@ -554,18 +481,7 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M
         Ok(())
     }
 
-    /// Phase 3 of [`step`](Bidiagonalization::step): recover `v` from `p̃`, run
-    /// M-weighted MGS, normalize, and push the pair to the ring. Returns the
-    /// corrected `α_{k+1}`.
-    ///
-    /// First recover `v` from `p̃` via the preconditioner: `ṽ_{k+1} = M⁻¹ p̃`
-    /// (equals `α_new · v_norm` before normalization). Then run modified
-    /// Gram-Schmidt against past `(v, p̃ = M v)` pairs, mutating `v` and
-    /// `p_tilde` in lockstep so the `p̃ = M v` invariant holds on the corrected
-    /// pair. After MGS, `α_{k+1} = √⟨ṽ, p̃⟩` is the corrected norm; we normalize
-    /// `v` in place (`p_tilde` stays at `α_new · p̃_norm` for the next step),
-    /// and push the normalized `v_{k+1}` and `p̃_{k+1,norm} = p_tilde / α_new`
-    /// into the ring for the next step's MGS.
+    /// Recover `ṽ = M⁻¹ p̃`, MGS in lockstep to hold `p̃ = M v`, normalize; returns `α_{k+1}`.
     fn reorthonormalize_v(&mut self) -> Result<f64, SolveError> {
         self.preconditioner
             .apply(&self.bufs.p_tilde, &mut self.bufs.v)?;

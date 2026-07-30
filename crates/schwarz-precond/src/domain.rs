@@ -9,10 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::error::BuildError;
 
-/// Partition-of-unity weights for a subdomain.
-///
-/// Most subdomains have uniform weights (all 1.0), so we avoid allocating
-/// a full `Vec<f64>` for them.
+/// PoU weights for a subdomain; the common uniform-1.0 case avoids allocating.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug)]
 pub enum PartitionWeights {
@@ -63,18 +60,7 @@ fn atomic_f64_add(target: &AtomicU64, val: f64) {
     }
 }
 
-/// A domain-agnostic subdomain core implementing `Rᵢ` and `D̃ᵢ` from the Schwarz formula.
-///
-/// Holds the sorted global DOF indices (defining the restriction operator `Rᵢ`)
-/// and partition-of-unity weights (defining `D̃ᵢ`). The two key operations map
-/// directly to the formula:
-///
-/// - [`restrict_weighted`](Self::restrict_weighted) computes `D̃ᵢ Rᵢ r` (gather + weight)
-/// - [`prolongate_weighted_add`](Self::prolongate_weighted_add) computes `out += Rᵢᵀ D̃ᵢ z` (weight + scatter)
-///
-/// Paired with a [`LocalSolver`](crate::local_solve::LocalSolver) (`Aᵢ⁻¹`)
-/// inside a [`SubdomainEntry`](crate::local_solve::SubdomainEntry), this
-/// yields the full per-subdomain term `Rᵢᵀ D̃ᵢ Aᵢ⁻¹ D̃ᵢ Rᵢ`.
+/// Subdomain `Rᵢ` and `D̃ᵢ`: sorted global DOF indices plus partition-of-unity weights.
 #[derive(Clone)]
 pub struct SubdomainCore {
     /// Global DOF indices belonging to this subdomain.

@@ -14,10 +14,6 @@ use crate::error::SolveError;
 
 use super::planning::ResolvedReductionStrategy;
 
-// ============================================================================
-// Buffer pooling
-// ============================================================================
-
 pub(super) struct BufferPool {
     n_dofs: usize,
     max_scratch_size: usize,
@@ -60,20 +56,13 @@ impl BufferPool {
         ))
     }
 
-    /// Return a buffer to the pool. Infallible by design: pool bookkeeping
-    /// must never mask the caller's real `apply_result`. On the error path the
-    /// buffer is dropped (see below); on a poisoned pool lock the buffer is
-    /// likewise dropped rather than surfaced as a `Synchronization` error.
+    /// Infallible: pool bookkeeping must never mask the caller's real `apply_result`.
     pub(super) fn put(&self, bufs: SchwarzBuffers, apply_result: &Result<(), SolveError>) {
-        // On error, the atomic backend's swap-zero readout pass is skipped,
-        // leaving stale partial-write values in the AtomicU64 vec. Drop the
-        // buffer rather than pooling it for the next caller to inherit dirty
-        // state.
+        // The swap-zero readout is skipped on error, so drop rather than pool dirty state.
         if apply_result.is_err() {
             return;
         }
-        // A poisoned lock means a worker panicked; just drop the buffer (the
-        // pool lazily re-allocates on the next `take`) instead of erroring.
+        // A poisoned lock means a worker panicked; drop it and let the next `take` re-allocate.
         if let Ok(mut pool) = self.inner.lock() {
             if pool.len() < Self::MAX_POOL_SIZE {
                 pool.push(bufs);
@@ -154,14 +143,7 @@ impl SchwarzBuffers {
     }
 }
 
-/// Thread-local stack of reusable per-worker buffers backed by a shared pool.
-///
-/// Each Rayon worker reuses its own buffers across sequential outer tasks via a
-/// `ThreadLocal` stack, with no cross-thread synchronization in the hot loop.
-/// Nested re-entry on the same worker allocates an extra buffer only when
-/// needed, so the number of retained buffers tracks re-entry depth rather than
-/// Rayon task splitting. At round end [`into_pool`](Self::into_pool) gathers the
-/// shared pool and every worker stack back into one vec for the next round.
+/// Thread-local buffer stack over a shared pool; retained buffers track re-entry depth.
 pub(super) struct WorkerBufferStack<T: Send> {
     shared_pool: Mutex<Vec<T>>,
     worker_stacks: ThreadLocal<RefCell<Vec<T>>>,
@@ -203,9 +185,7 @@ impl<T: Send> WorkerBufferStack<T> {
             .unwrap_or_else(|| (self.alloc)())
     }
 
-    /// Gather the shared pool and all worker stacks back into one vec so it can
-    /// be returned to its [`SchwarzBuffers`] home for the next round. `ctx`
-    /// labels the synchronization error if the pool lock was poisoned.
+    /// Gather pool and worker stacks for the next round; `ctx` labels a poisoned lock.
     pub(super) fn into_pool(mut self, ctx: &'static str) -> Result<Vec<T>, SolveError> {
         let mut pool = self
             .shared_pool
@@ -218,8 +198,7 @@ impl<T: Send> WorkerBufferStack<T> {
     }
 }
 
-/// Worker-local buffers for the parallel-reduction path: a [`WorkerBufferStack`]
-/// of per-worker accumulators plus the reduce-into-`z` step that sums them.
+/// Worker-local buffers for the parallel-reduction path, plus the reduce-into-`z` step.
 pub(super) struct WorkerReductionBuffers {
     pub(super) stack: WorkerBufferStack<AdditiveSweepBuffers>,
 }
@@ -242,21 +221,15 @@ impl WorkerReductionBuffers {
         z: &mut [f64],
         apply_result: &Result<(), SolveError>,
     ) -> Result<Vec<AdditiveSweepBuffers>, SolveError> {
-        // Always leave `z` fully written so a failed apply never exposes a
-        // partial accumulation. On the apply-error path zero `z` up front —
-        // there is nothing to reduce, and this also covers the case where the
-        // subsequent pool recovery fails.
+        // Leave `z` fully written so a failed apply never exposes a partial accumulation.
         if apply_result.is_err() {
             z.fill(0.0);
         }
         let mut buffers = self.stack.into_pool("additive.reduction.pool.into_inner")?;
-        // On success, `reduce_into` zeroes-then-sums into `z`.
         if apply_result.is_ok() {
             Self::reduce_into(z, &buffers);
         }
-        // Re-zero each worker's accumulator for the next round. This is a
-        // `P × n_dofs` pass run on every apply, so spread it across workers
-        // (rayon already owns the thread pool) rather than zeroing serially.
+        // A `P × n_dofs` pass on every apply, so spread it across workers.
         buffers
             .par_iter_mut()
             .for_each(|b| b.global_accum.fill(0.0));

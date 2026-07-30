@@ -22,10 +22,6 @@ use super::buffers::{
 };
 use super::planning::ReductionPlan;
 
-// ============================================================================
-// Additive executor
-// ============================================================================
-
 pub(super) struct AdditiveExecutor<S: LocalSolver> {
     subdomains: Arc<Vec<SubdomainEntry<S>>>,
     buf_pool: BufferPool,
@@ -55,8 +51,7 @@ impl<S: LocalSolver> AdditiveExecutor<S> {
         self.subdomains.len()
     }
 
-    /// Dispatch entry point: take a buffer from the pool, run the backend,
-    /// return the buffer.
+    /// Dispatch entry point: take a buffer from the pool, run the backend, return the buffer.
     pub(super) fn apply(
         &self,
         plan: ReductionPlan,
@@ -108,17 +103,13 @@ impl<S: LocalSolver> AdditiveExecutor<S> {
                     })
                 });
 
-        // Recover the scratch pool for the next round before propagating any
-        // apply error. A pool-recovery failure must not mask a real
-        // `LocalSolveFailed`, so prefer the original error when it is one.
+        // A pool-recovery failure must not mask a real `LocalSolveFailed`.
         match worker_scratch.into_pool("additive.atomic.scratch.into_inner") {
             Ok(recovered) => *scratch_pool = recovered,
             Err(into_err) => return apply_result.and(Err(into_err)),
         }
 
-        // On apply error the swap-zero readout is skipped, leaving `accum`
-        // dirty; `BufferPool::put` then drops the whole buffer (matching the
-        // pre-pooling behaviour), so the next caller starts from a clean accum.
+        // On apply error the swap-zero readout is skipped, so `put` drops the buffer.
         apply_result?;
 
         const READOUT_CHUNK: usize = 4096;
@@ -164,9 +155,7 @@ impl<S: LocalSolver> AdditiveExecutor<S> {
                     })
                 });
 
-        // `finish_round` writes `z` (zeroed on the apply-error path) and
-        // recovers the pool. A pool-recovery failure must not mask a real
-        // `LocalSolveFailed`, so prefer the original error when it is one.
+        // A pool-recovery failure must not mask a real `LocalSolveFailed`.
         match worker_buffers.finish_round(z, &apply_result) {
             Ok(recovered) => *pool = recovered,
             Err(finish_err) => return apply_result.and(Err(finish_err)),

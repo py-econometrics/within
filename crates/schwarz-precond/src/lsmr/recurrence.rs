@@ -9,9 +9,7 @@ use super::bidiag::{BidiagStep, LSMR_PAR_THRESHOLD, LSMR_UPDATE_CHUNK};
 use rayon::iter::{IndexedParallelIterator, ParallelIterator};
 use rayon::prelude::{ParallelSlice, ParallelSliceMut};
 
-/// Givens rotation `[[c, s], [-s, c]]` constructed from a column `(a, b)`
-/// such that the rotation applied to that column yields `(r, 0)` with
-/// `r = hypot(a, b)`.
+/// Givens rotation built from `(a, b)` so applying it yields `(r, 0)`, `r = hypot(a, b)`.
 #[derive(Clone, Copy)]
 struct Givens {
     c: f64,
@@ -28,9 +26,7 @@ impl Givens {
     }
 }
 
-/// Natural outputs of one rotation step. Carries the scalars that
-/// Algorithm 2.8 produces in the "construct rotation P̂_k / P̄_k" blocks
-/// and feeds straight into the `(x, h, h̄)` recurrence.
+/// Natural outputs of one rotation step, feeding straight into the `(x, h, h̄)` recurrence.
 #[derive(Clone, Copy)]
 pub(super) struct RotationStep {
     /// `ρ_k`, output of P̂_k.
@@ -46,9 +42,7 @@ pub(super) struct RotationStep {
 }
 
 impl RotationStep {
-    /// Seed value used as `prev` on the first iteration. With
-    /// `theta_bar = 0`, the `t_hbar` ratio in the solution recurrence
-    /// vanishes, matching the `h̄₀ = 0` initial condition in Algorithm 2.8.
+    /// First-iteration seed; `theta_bar = 0` vanishes the `t_hbar` ratio, matching `h̄₀ = 0`.
     pub(super) fn initial() -> Self {
         Self {
             rho: 1.0,
@@ -60,18 +54,13 @@ impl RotationStep {
     }
 }
 
-/// LSMR scalar state. Carries the state both Givens rotation chains need
-/// between iterations: `α̅` and `φ̄` for P̂_k (LSQR-side), and `c̅, s̅,
-/// ζ̄` for P̄_k (LSMR-side).
+/// LSMR scalar state: `α̅`/`φ̄` for the LSQR-side chain, `c̅, s̅, ζ̄` for the LSMR-side one.
 pub(super) struct LsmrRecurrenceState {
-    // P̂ chain
     alpha_bar: f64,
     phi_bar: f64,
-    // P̄ chain
     c_bar: f64,
     s_bar: f64,
     zeta_bar: f64,
-    // |ζ̄₀| snapshot (clamped), relativizes the reported normal-eq residual.
     zeta0: f64,
 }
 
@@ -90,38 +79,18 @@ impl LsmrRecurrenceState {
 
     /// Construct and apply both rotations for the current step.
     pub(super) fn step(&mut self, s: BidiagStep) -> RotationStep {
-        // Construct rotation P̂_k (Algorithm 2.8, LSQR side): eliminates
-        // β_{k+1} against α̅_k. Outputs:
-        //   * `p_hat.r` is the diagonal entry `ρ_k` of the upper-bidiagonal
-        //     factor (returned below as `RotationStep::rho`).
-        //   * `theta_new = ŝ_k · α_{k+1}` is the superdiagonal `θ_{k+1}`
-        //     carried forward into P̄_k and the next iteration's P̂.
-        //   * `alpha_bar_new = −ĉ_k · α_{k+1}` becomes `α̅_{k+1}`, the
-        //     diagonal seed consumed by the next P̂.
-        //   * `phi_bar_new = ŝ_k · φ̄_k` advances the LSQR transformed-RHS
-        //     scalar used by the residual estimate `|φ̄|`.
         let p_hat = Givens::new(self.alpha_bar, s.beta);
         let theta_new = p_hat.s * s.alpha;
         let alpha_bar_new = -p_hat.c * s.alpha;
         let phi_bar_new = p_hat.s * self.phi_bar;
 
-        // Construct rotation P̄_k (Algorithm 2.8, LSMR side): eliminates
-        // θ_{k+1} against c̅_{k-1}·ρ_k. The off-diagonal feeding this
-        // rotation is `θ̄_k = s̄_{k-1} · ρ_k`, which reads `self.s_bar` —
-        // the *previous* iteration's `s̄`. The read MUST happen before we
-        // commit `p_bar.s` into `self.s_bar` further down; otherwise we
-        // would mix s̄_k into θ̄_k and break the recurrence.
+        // `theta_bar` MUST be read before `p_bar.s` is committed, or s̄_k mixes into θ̄_k.
         let theta_bar = self.s_bar * p_hat.r;
         let p_bar = Givens::new(self.c_bar * p_hat.r, theta_new);
-        // `p_bar.r` is `ρ̄_k`. `zeta = c̄_k · ζ̄_k` is the committed
-        // transformed-RHS scalar `ζ_k`.
         let zeta = p_bar.c * self.zeta_bar;
-        // Sign comes from applying P̄_k to the transformed RHS: the
-        // off-diagonal entry of `[[c̄, s̄], [−s̄, c̄]]` acting on `(ζ̄, 0)`
-        // yields `−s̄_k · ζ̄_k` as the new ζ̄.
+        // The minus comes from `[[c̄, s̄], [−s̄, c̄]]` acting on `(ζ̄, 0)`.
         let zeta_bar_new = -p_bar.s * self.zeta_bar;
 
-        // Commit chain state.
         self.alpha_bar = alpha_bar_new;
         self.phi_bar = phi_bar_new;
         self.c_bar = p_bar.c;
@@ -137,8 +106,7 @@ impl LsmrRecurrenceState {
         }
     }
 
-    /// `|φ̄|` — conservative estimate of `‖r_k‖`. The LSMR residual is
-    /// bounded by the LSQR residual, which equals `|φ̄|`.
+    /// `|φ̄|` — conservative `‖r_k‖` estimate; LSMR's residual is bounded by LSQR's.
     pub(super) fn residual_estimate(&self) -> f64 {
         self.phi_bar.abs()
     }
@@ -148,17 +116,13 @@ impl LsmrRecurrenceState {
         self.zeta_bar.abs()
     }
 
-    /// `|ζ̄ₖ| / |ζ̄₀|` — normal-equation residual relative to its initial value
-    /// `‖Aᵀb‖` (Fong & Saunders); the clamp on `ζ̄₀` guards the ratio.
+    /// `|ζ̄ₖ| / |ζ̄₀|` — normal-equation residual relative to `‖Aᵀb‖`; the `ζ̄₀` clamp guards it.
     pub(super) fn relative_normal_eq_residual(&self) -> f64 {
         self.normal_eq_residual_estimate() / self.zeta0
     }
 }
 
-/// Vectors carried by the LSMR solution recurrence.
-///
-/// `(h, h̄)` are the auxiliary recurrence vectors that let us assemble `x`
-/// without storing the full `V_k` basis.
+/// Vectors carried by the recurrence; `(h, h̄)` let `x` be built without the full `V_k` basis.
 pub(super) struct SolutionState {
     x: Vec<f64>,
     h: Vec<f64>,
@@ -166,8 +130,7 @@ pub(super) struct SolutionState {
 }
 
 impl SolutionState {
-    /// Initialize from the first normalized basis vector: `h₁ = v₁`,
-    /// `x = 0`, `h̄₀ = 0`.
+    /// Initialize from the first normalized basis vector: `h₁ = v₁`, `x = 0`, `h̄₀ = 0`.
     pub(super) fn init(v1: &[f64]) -> Self {
         Self {
             x: vec![0.0; v1.len()],
@@ -176,14 +139,9 @@ impl SolutionState {
         }
     }
 
-    /// Apply one step of the `(x, h, h̄)` recurrence. `v` must be the
-    /// normalized `v_{k+1}` from the bidiagonalization. `prev` carries
-    /// `(ρ_{k-1}, ρ̄_{k-1})` from the previous rotation step (seeded with
-    /// [`RotationStep::initial`] on the first iteration).
+    /// One `(x, h, h̄)` step; `v` must be normalized `v_{k+1}` and `prev` carries `(ρ, ρ̄)_{k-1}`.
     pub(super) fn update(&mut self, v: &[f64], curr: RotationStep, prev: RotationStep) {
-        // Ratios consumed by the recurrence (Algorithm 2.8, "Update h̄, x, h").
-        // Denominators are O(1) Givens-rotation diagonals, so an absolute
-        // f64::EPSILON guard catches genuine loss of significance.
+        // Denominators are O(1) Givens diagonals, so an absolute `f64::EPSILON` guard suffices.
         let t_x_denom = curr.rho * curr.rho_bar;
         let t_x = if t_x_denom.abs() > f64::EPSILON {
             curr.zeta / t_x_denom
@@ -247,8 +205,7 @@ pub(super) enum Stop {
     NormalEquationTolerance,
 }
 
-/// Fong & Saunders' two stop criteria for LSMR plus the running `‖A‖_F²`
-/// accumulator that the second criterion needs.
+/// Fong & Saunders' two LSMR stop criteria plus the running `‖A‖_F²` accumulator the second needs.
 pub(super) struct ConvergenceState {
     /// `tol · ‖b‖`.
     abs_tol: f64,

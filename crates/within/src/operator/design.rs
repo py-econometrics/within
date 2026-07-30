@@ -16,50 +16,19 @@ use scatter::scatter_apply;
 /// Minimum number of rows before scatter/gather loops are parallelized.
 const PAR_THRESHOLD: usize = 10_000;
 
-// ===========================================================================
-// DesignOperator — D, optionally rescaled by W^{1/2}
-// ===========================================================================
-
-/// Rectangular design operator: `D` (unweighted) or `W^{1/2} D` (weighted).
-///
-/// `apply` = `D x` / `W^{1/2} D x` (gather), `apply_adjoint` = `D^T x` /
-/// `D^T W^{1/2} x` (scatter). For the weighted variant, the normal equations
-/// `A^T A = D^T W D = G` recover the Gramian, so the same Schwarz
-/// preconditioner approximating `G^{-1}` applies. Pass `None` to
-/// [`DesignOperator::new`] for `D`, or `Some(&sqrt_w)` for `W^{1/2} D`. The branch
-/// on weights is hoisted outside the per-row loop — the weighted gather applies
-/// `W^{1/2}` in a trailing per-chunk sweep, and the adjoint multiplies inline
-/// through a closure, so there is no per-row scratch buffer.
+/// Design operator `D` or `W^{1/2} D`, whose normal equations `AᵀA = DᵀWD` recover the Gramian.
 pub(crate) struct DesignOperator<'a> {
     design: &'a Design<'a>,
     sqrt_weights: Option<&'a [f64]>,
-    /// Reusable atomic-scatter scratch, sized once to the largest term's
-    /// coefficient block and reused across terms and `apply_adjoint` calls so
-    /// it is allocated once per operator rather than once per LSMR iteration.
-    /// `apply_adjoint` takes `&self`, but `AtomicF64`'s load/store/fetch_add are
-    /// `&self` operations, so a plain `Vec<AtomicF64>` (already `Sync`) needs no
-    /// lock: each call re-seeds the buffer via `store` instead of resizing it.
+    /// Sized once to the largest term's block, so it allocates per operator, not per iteration.
     scatter_scratch: Vec<AtomicF64>,
-    /// Debug-only reentry sentinel: a concurrent `apply_adjoint` would race the
-    /// `scatter_scratch` writes it makes through `&self`.
+    /// Debug-only reentry sentinel: a concurrent `apply_adjoint` would race the scratch writes.
     #[cfg(debug_assertions)]
     adjoint_active: AtomicBool,
 }
 
 impl<'a> DesignOperator<'a> {
-    /// Wrap a design matrix as a linear operator.
-    ///
-    /// Pass `None` for `D`, `Some(&sqrt_w)` for `W^{1/2} D` — the weights must
-    /// already be square-rooted (the `Solver` computes `sqrt(W)` once and
-    /// borrows it across every per-RHS operator), and `sqrt_w.len()` must equal
-    /// `design.n_obs`.
-    ///
-    /// # Panics
-    ///
-    /// Panics when `sqrt_weights.is_some()` and its length does not equal
-    /// `design.n_obs`. The `Solver` entry points perform fallible validation
-    /// against `BuildError::WeightCountMismatch` before construction, so callers
-    /// that go through `Solver::new` or `solve()` never trigger this panic.
+    /// `sqrt_weights` must be pre-square-rooted and `design.n_obs` long.
     pub(crate) fn new(design: &'a Design<'a>, sqrt_weights: Option<&'a [f64]>) -> Self {
         if let Some(sw) = sqrt_weights {
             assert_eq!(
@@ -80,10 +49,7 @@ impl<'a> DesignOperator<'a> {
         }
     }
 
-    /// Compute the observation-space RHS `b = W^{1/2} y`.
-    ///
-    /// For unweighted designs, borrows `y` (no allocation); the weighted
-    /// variant returns an owned scaled copy.
+    /// Observation-space RHS `b = W^{1/2} y`; borrows unweighted, owns weighted.
     pub(crate) fn weighted_rhs<'y>(&self, y: &'y [f64]) -> Cow<'y, [f64]> {
         match self.sqrt_weights {
             None => Cow::Borrowed(y),
@@ -92,8 +58,7 @@ impl<'a> DesignOperator<'a> {
     }
 }
 
-/// RAII reentry guard: `acquire` asserts no call is in flight; `Drop` clears
-/// the flag on every exit path, panics included.
+/// RAII reentry guard; `Drop` clears the flag on every exit path including panics.
 #[cfg(debug_assertions)]
 struct ReentryGuard<'a>(&'a AtomicBool);
 
@@ -139,10 +104,7 @@ impl Operator for DesignOperator<'_> {
         debug_assert_eq!(x.len(), self.design.n_obs);
         debug_assert_eq!(y.len(), self.design.n_dofs);
         y.fill(0.0);
-        // Reuse the per-operator atomic-scatter scratch across iterations. No
-        // lock needed: `AtomicF64` mutates through `&self`, and a single
-        // operator's `apply_adjoint` calls are sequential (`solve_batch` builds
-        // a distinct operator per RHS), so the shared buffer is never raced.
+        // No lock needed: `solve_batch` builds one operator per RHS, so calls are sequential.
         match self.sqrt_weights {
             Some(sw) => scatter_apply(self.design, &self.scatter_scratch, y, &|i| sw[i] * x[i]),
             None => scatter_apply(self.design, &self.scatter_scratch, y, &|i| x[i]),
@@ -151,8 +113,7 @@ impl Operator for DesignOperator<'_> {
     }
 }
 
-// The guard's flag is a private, debug-gated field, so this test lives beside
-// it rather than in the crate's shared `operator/tests.rs`.
+// The guard's flag is private and debug-gated, so this test lives beside it.
 #[cfg(all(test, debug_assertions))]
 mod reentry_guard_tests {
     use std::sync::atomic::Ordering;
@@ -177,7 +138,7 @@ mod reentry_guard_tests {
     fn apply_adjoint_detects_in_flight_reentry() {
         let design = one_factor_design();
         let op = DesignOperator::new(&design, None);
-        // Simulate a sibling apply_adjoint already in flight on this operator.
+        // Simulate a sibling `apply_adjoint` already in flight on this operator.
         op.adjoint_active.store(true, Ordering::Release);
         op.apply_adjoint(
             &vec![0.0; op.design.n_obs],
