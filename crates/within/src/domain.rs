@@ -102,6 +102,43 @@ impl TermMeta {
     }
 }
 
+/// Stable argsort of observations by a level column, ascending.
+///
+/// Dense counting sort in `O(n_obs + n_levels)` or sparse comparison sort — same
+/// permutation either way, gated as in `schur::sort_and_dedup`. Gappy caller codes
+/// can span far more levels than rows, where the bucket array outgrows the output.
+fn stable_argsort(key: &[u32], n_levels: usize) -> Vec<u32> {
+    let n_obs = key.len();
+    debug_assert!(
+        u32::try_from(n_obs).is_ok(),
+        "observation index must fit the u32 permutation"
+    );
+    if n_obs < n_levels {
+        // MUST be `sort_by_cached_key`: `sort_by_key` re-gathers `key[i]` O(n log n) times.
+        let mut perm: Vec<u32> = (0..n_obs as u32).collect();
+        perm.sort_by_cached_key(|&i| key[i as usize]);
+        return perm;
+    }
+    let mut cursors = vec![0usize; n_levels + 1];
+    for &k in key {
+        debug_assert!(
+            (k as usize) < n_levels,
+            "counting sort key must be a level id (< n_levels)"
+        );
+        cursors[k as usize + 1] += 1;
+    }
+    for i in 1..cursors.len() {
+        cursors[i] += cursors[i - 1];
+    }
+    let mut perm = vec![0u32; n_obs];
+    for (i, &k) in key.iter().enumerate() {
+        let cursor = &mut cursors[k as usize];
+        perm[*cursor] = i as u32;
+        *cursor += 1;
+    }
+    perm
+}
+
 /// Fixed-effects design: observation columns plus coefficient-space layout.
 #[derive(Clone, Debug)]
 pub struct Design<'a> {
@@ -189,10 +226,7 @@ impl<'a> Design<'a> {
         let dominant = (0..terms.len()).max_by_key(|&q| terms[q].n_dofs());
         let (frame, obs_perm) = match dominant {
             Some(d) if locality_sort && !terms[d].sorted && u32::try_from(n_obs).is_ok() => {
-                // MUST be `sort_by_cached_key`: `sort_by_key` re-gathers `key[i]` O(n log n) times.
-                let key = frame.level_column(d);
-                let mut perm: Vec<u32> = (0..n_obs as u32).collect();
-                perm.sort_by_cached_key(|&i| key[i as usize]);
+                let perm = stable_argsort(frame.level_column(d), terms[d].n_levels);
                 let sorted_frame = frame.permuted(&perm);
                 // Factors nested in the dominant one come out sorted, keeping coalesced scatter.
                 for (q, meta) in terms.iter_mut().enumerate() {
@@ -308,6 +342,47 @@ mod tests {
             continuous.into_iter().map(Into::into).collect(),
         )
         .unwrap()
+    }
+
+    /// Both `stable_argsort` branches must emit the SAME permutation, or the
+    /// gate silently changes summation order and every downstream result drifts.
+    #[test]
+    fn stable_argsort_branches_agree_with_a_stable_reference() {
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        // Straddles the gate: n_levels below, at, and above n_obs. `key_span`
+        // is decoupled so the dense branch also runs on a key that occupies a
+        // fraction of its declared level range, leaving empty buckets.
+        for (n_obs, n_levels, key_span) in [
+            (0usize, 0usize, 1usize),
+            (0, 4, 4),
+            (1, 1, 1),
+            (997, 1, 1),
+            (997, 16, 16),
+            (997, 996, 996),
+            (997, 997, 997),
+            (997, 998, 998),
+            (997, 50_000, 50_000),
+            (4096, 4096, 8),
+            (4096, 4096, 4096),
+        ] {
+            assert!(key_span <= n_levels.max(1), "keys must stay below n_levels");
+            let key: Vec<u32> = (0..n_obs)
+                .map(|_| (next() % key_span as u64) as u32)
+                .collect();
+            let mut expected: Vec<u32> = (0..n_obs as u32).collect();
+            expected.sort_by_key(|&i| key[i as usize]);
+            assert_eq!(
+                stable_argsort(&key, n_levels),
+                expected,
+                "n_obs={n_obs} n_levels={n_levels}"
+            );
+        }
     }
 
     #[test]
