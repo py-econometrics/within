@@ -18,6 +18,8 @@ use crate::operator::schwarz::{build_preconditioner, Preconditioner};
 use crate::operator::DesignOperator;
 use crate::{BuildError, BuildWarning, SolveError, WithinError};
 
+#[cfg(test)]
+mod hybrid_probe;
 mod reparam;
 #[cfg(test)]
 mod tests;

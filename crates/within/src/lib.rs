@@ -25,6 +25,11 @@
 //! [`ReductionStrategy`] rather than [`ReductionStrategy::Auto`], which selects
 //! its backend from the width.
 
+// `benches/shared` is written against the external crate name; the hybrid probe
+// includes it from inside the lib.
+#[cfg(test)]
+extern crate self as within;
+
 pub mod config;
 pub mod error;
 pub mod observation;
