@@ -43,20 +43,9 @@ multiple-versions = "deny"
 wildcards = "deny"
 allow-wildcard-paths = true
 skip = [
-    { crate = "equator@0.2.2", reason = "pre-existing transitive duplicate within faer's nano-gemm chain" },
-    { crate = "equator@0.4.2", reason = "pre-existing transitive duplicate within faer's nano-gemm chain" },
-    { crate = "equator-macro@0.2.1", reason = "pre-existing transitive duplicate within faer's nano-gemm chain" },
-    { crate = "equator-macro@0.4.2", reason = "pre-existing transitive duplicate within faer's nano-gemm chain" },
-    { crate = "getrandom@0.3.4", reason = "pre-existing transitive duplicate (rand 0.9 vs 0.10 chains)" },
     { crate = "rand@0.8.7", reason = "transitive duplicate; dev-dep is on rand 0.10, num-complex/faer pull the older line" },
-    { crate = "rand@0.9.5", reason = "transitive duplicate; dev-dep is on rand 0.10, faer/proptest pull the older line" },
     { crate = "rand_core@0.6.4", reason = "pre-existing transitive duplicate (criterion vs faer/approx-chol chains)" },
-    { crate = "rand_core@0.9.5", reason = "pre-existing transitive duplicate (criterion vs faer/approx-chol chains)" },
-    { crate = "syn@1.0.109", reason = "pre-existing transitive duplicate (older proc-macro crates not yet on syn 2)" },
     { crate = "syn@2.0.119", reason = "transitive duplicate; serde_derive is on syn 3, faer's enum-as-inner/sysctl chain still on syn 2" },
-    { crate = "thiserror@1.0.69", reason = "pre-existing transitive duplicate; workspace itself is on thiserror 2" },
-    { crate = "thiserror-impl@1.0.69", reason = "pre-existing transitive duplicate; workspace itself is on thiserror 2" },
-    { crate = "windows-sys@0.42.0", reason = "pre-existing transitive duplicate (older Windows-target crates)" },
 ]
 
 [sources]

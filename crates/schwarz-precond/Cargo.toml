@@ -15,10 +15,12 @@ serde = ["dep:serde"]
 
 [dependencies]
 rayon.workspace = true
-faer.workspace = true
 serde = { workspace = true, optional = true }
 thiserror.workspace = true
 thread_local = "1.1"
+
+[dev-dependencies]
+faer.workspace = true
 
 [lints]
 workspace = true

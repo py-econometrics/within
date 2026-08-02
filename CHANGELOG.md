@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Removed
+
+- `faer` is no longer a dependency of `schwarz-precond`; it is used only by the `custom_local_solver` example and moves to dev-dependencies.
+
 ## [0.3.0] - 2026-07-30
 
 ### Added
