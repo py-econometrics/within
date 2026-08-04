@@ -328,8 +328,8 @@ fn singleton_level_in_non_first_slope_term_solves_under_default() {
 /// One slope column per sloped factor, as a function of the year code.
 struct Loadings {
     what: &'static str,
-    worker: fn(f64) -> f64,
-    firm: fn(f64) -> f64,
+    worker_loading: fn(f64) -> f64,
+    firm_loading: fn(f64) -> f64,
 }
 
 /// Dual-factor slopes reduce through the exact dense Schur; the trigger is the loading values.
@@ -345,41 +345,44 @@ fn dual_factor_slopes_build_across_loading_shapes() {
     let firm: Vec<u32> = (0..n_obs).map(|i| (i % n_firm) as u32).collect();
     let t: Vec<f64> = year.iter().map(|&y| y as f64).collect();
 
-    for shape in [
+    for Loadings {
+        what,
+        worker_loading,
+        firm_loading,
+    } in [
         Loadings {
             what: "t / t^2",
-            worker: |t| t,
-            firm: |t| t * t,
+            worker_loading: |t| t,
+            firm_loading: |t| t * t,
         },
         Loadings {
             what: "t^2 / t",
-            worker: |t| t * t,
-            firm: |t| t,
+            worker_loading: |t| t * t,
+            firm_loading: |t| t,
         },
         Loadings {
             what: "exp / t^2",
-            worker: |t| (0.3 * t).exp(),
-            firm: |t| t * t,
+            worker_loading: |t| (0.3 * t).exp(),
+            firm_loading: |t| t * t,
         },
         Loadings {
             what: "t / log",
-            worker: |t| t,
-            firm: |t| (1.0 + t).ln(),
+            worker_loading: |t| t,
+            firm_loading: |t| (1.0 + t).ln(),
         },
     ] {
-        let what = shape.what;
-        let z0: Vec<f64> = t.iter().map(|&t| (shape.worker)(t)).collect();
-        let z2: Vec<f64> = t.iter().map(|&t| (shape.firm)(t)).collect();
+        let z_worker: Vec<f64> = t.iter().map(|&t| worker_loading(t)).collect();
+        let z_firm: Vec<f64> = t.iter().map(|&t| firm_loading(t)).collect();
         let y: Vec<f64> = (0..n_obs)
             .map(|i| {
-                (worker[i] as f64 * 0.017).sin() + 0.4 * z0[i] - 0.2 * z2[i]
+                (worker[i] as f64 * 0.017).sin() + 0.4 * z_worker[i] - 0.2 * z_firm[i]
                     + (i as f64 * 0.31).cos() * 0.1
             })
             .collect();
         let effects = vec![
-            Effect::new(&worker, true, [&z0[..]]).expect("worker slope"),
+            Effect::new(&worker, true, [&z_worker[..]]).expect("worker slope"),
             Effect::new(&year, true, []).expect("year effect"),
-            Effect::new(&firm, true, [&z2[..]]).expect("firm slope"),
+            Effect::new(&firm, true, [&z_firm[..]]).expect("firm slope"),
         ];
         let r = Solver::new(effects, None, PreconditionerConfig::default())
             .unwrap_or_else(|e| panic!("{what}: build failed: {e}"))
