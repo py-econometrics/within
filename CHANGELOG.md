@@ -7,6 +7,10 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A design carrying varying slopes on two distinct factors could fail preconditioner construction with `matrix is not symmetric`, when rounding left the two triangles of the exact Schur complement unequal (#229).
+
 ### Removed
 
 - `faer` is no longer a dependency of `schwarz-precond`; it is used only by the `custom_local_solver` example and moves to dev-dependencies.
