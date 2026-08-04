@@ -32,24 +32,16 @@ fn test_subtract_mean_partial() {
     assert_eq!(data[2], 100.0); // unchanged
 }
 
-/// An eliminated-major SDDM with no cross entries: the fold reads the diagonal alone.
-fn make_eliminated_major(row_diag: Vec<f64>, col_diag: Vec<f64>) -> SddmMatrix {
-    let (n_rows, n_cols) = (row_diag.len(), col_diag.len());
-    let c = CsrBlock::from_dense_table(&vec![0.0; n_rows * n_cols], n_rows, n_cols);
-    let ct = c.transpose();
-    let diagonal: Vec<f64> = row_diag.into_iter().chain(col_diag).collect();
-    let ground_edges = vec![0.0; diagonal.len()];
-    SddmMatrix {
-        cross_tab: CrossTab { c, ct },
-        diagonal,
-        ground_edges,
-        grounding: Grounding::Floating,
-    }
-}
-
 #[test]
 fn fold_inverts_the_eliminated_diagonal() {
-    let matrix = make_eliminated_major(vec![5.0, 6.0, 8.0], vec![7.0, 9.0]);
+    // No cross entries, so the fold reads the diagonal alone.
+    let matrix = SddmMatrix::from_dense_for_test(
+        &[0.0; 6],
+        3,
+        2,
+        vec![5.0, 6.0, 8.0, 7.0, 9.0],
+        Grounding::Grounded,
+    );
     let eliminated = Eliminated::new(matrix).expect("a positive diagonal must fold");
 
     assert_eq!(eliminated.inv_diagonal.len(), 3);
@@ -64,7 +56,13 @@ fn fold_inverts_the_eliminated_diagonal() {
 
 #[test]
 fn fold_rejects_a_zero_eliminated_diagonal() {
-    let matrix = make_eliminated_major(vec![5.0, 6.0, 0.0], vec![8.0, 9.0]);
+    let matrix = SddmMatrix::from_dense_for_test(
+        &[0.0; 6],
+        3,
+        2,
+        vec![5.0, 6.0, 0.0, 8.0, 9.0],
+        Grounding::Grounded,
+    );
 
     match Eliminated::new(matrix) {
         Err(BuildError::SingularDiagonal { index: 2, .. }) => {}
@@ -73,26 +71,12 @@ fn fold_rejects_a_zero_eliminated_diagonal() {
     }
 }
 
-/// The exact attempt only fails when weight spread costs the complement its definiteness.
-fn ill_scaled_laplacian() -> SddmMatrix {
-    let c = CsrBlock::from_dense_table(&[0.0, 1e-16, 1e2, 1e0, 1e5, 0.0, 0.0, 1e14, 0.0], 3, 3);
-    let ct = c.transpose();
-    let cross_tab = CrossTab { c, ct };
-    let diagonal: Vec<f64> = (0..cross_tab.n_local())
-        .map(|i| cross_tab.neighbors(i).map(|(_, v)| v).sum::<f64>())
-        .collect();
-    SddmMatrix {
-        ground_edges: vec![0.0; diagonal.len()],
-        cross_tab,
-        diagonal,
-        grounding: Grounding::Floating,
-    }
-}
-
 #[test]
 fn an_unusable_dense_pivot_is_retried_rather_than_fatal() {
-    let eliminated =
-        Eliminated::new(ill_scaled_laplacian()).expect("a positive diagonal must fold");
+    // The exact attempt only fails when weight spread costs the complement its definiteness.
+    let matrix =
+        SddmMatrix::laplacian_for_test(&[0.0, 1e-16, 1e2, 1e0, 1e5, 0.0, 0.0, 1e14, 0.0], 3, 3);
+    let eliminated = Eliminated::new(matrix).expect("a positive diagonal must fold");
     let exact = schur::exact_for_factor(&eliminated.matrix, &eliminated.inv_diagonal);
     let exact_only = ApproxCholConfig::default()
         .to_approx_chol(DEFAULT_DENSE_SCHUR_THRESHOLD, ExactFailure::Error);

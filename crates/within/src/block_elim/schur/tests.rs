@@ -1,29 +1,4 @@
 use super::*;
-use crate::csr_block::CsrBlock;
-use crate::domain::CrossTab;
-
-fn make_operator(
-    c_dense: &[f64],
-    n_rows: usize,
-    n_cols: usize,
-    row_diag: Vec<f64>,
-    col_diag: Vec<f64>,
-    grounding: Grounding,
-) -> SddmMatrix {
-    let c = CsrBlock::from_dense_table(c_dense, n_rows, n_cols);
-    let ct = c.transpose();
-    let cross_tab = CrossTab { c, ct };
-    let diagonal: Vec<f64> = row_diag.into_iter().chain(col_diag).collect();
-    let ground_edges = (0..cross_tab.n_local())
-        .map(|i| (diagonal[i] - cross_tab.neighbors(i).map(|(_, v)| v).sum::<f64>()).max(0.0))
-        .collect();
-    SddmMatrix {
-        cross_tab,
-        diagonal,
-        ground_edges,
-        grounding,
-    }
-}
 
 fn sparse_to_dense(matrix: &CsrMatrix) -> Vec<Vec<f64>> {
     let n = matrix.n();
@@ -109,21 +84,13 @@ fn assert_dense_close(lhs: &[Vec<f64>], rhs: &[Vec<f64>], tol: f64) {
 fn exact_schur_matches_dense_reference_when_eliminating_rows() {
     // C is 3x2, so the row block is eliminated (n_rows >= n_cols).
     let c_dense = vec![1.0, 2.0, 3.0, 0.0, 0.0, 4.0];
-    let row_diag = vec![5.0, 6.0, 8.0];
-    let col_diag = vec![7.0, 9.0];
-    let matrix = make_operator(
-        &c_dense,
-        3,
-        2,
-        row_diag.clone(),
-        col_diag.clone(),
-        Grounding::Grounded,
-    );
+    let diagonal = vec![5.0, 6.0, 8.0, 7.0, 9.0];
+    let (row_diag, col_diag) = diagonal.split_at(3);
     let inv_diagonal: Vec<f64> = row_diag.iter().map(|d| 1.0 / d).collect();
+    let expected = dense_exact_schur(&c_dense, 3, 2, row_diag, col_diag, true);
 
-    let matrix = exact(&matrix, &inv_diagonal, RowSplit::Parallel);
-    let expected = dense_exact_schur(&c_dense, 3, 2, &row_diag, &col_diag, true);
-    let got = sparse_to_dense(&matrix);
+    let matrix = SddmMatrix::from_dense_for_test(&c_dense, 3, 2, diagonal, Grounding::Grounded);
+    let got = sparse_to_dense(&exact(&matrix, &inv_diagonal, RowSplit::Parallel));
     assert_dense_close(&got, &expected, 1e-12);
 }
 
@@ -132,19 +99,12 @@ fn exact_schur_matches_dense_reference_when_eliminating_rows() {
 #[test]
 fn both_row_splits_produce_the_same_complement() {
     let c_dense = vec![1.0, 2.0, 3.0, 0.0, 0.0, 4.0];
-    let row_diag = vec![5.0, 6.0, 8.0];
-    let col_diag = vec![7.0, 9.0];
+    let diagonal = vec![5.0, 6.0, 8.0, 7.0, 9.0];
+    let (row_diag, _) = diagonal.split_at(3);
     let inv_diagonal: Vec<f64> = row_diag.iter().map(|d| 1.0 / d).collect();
 
     for grounding in [Grounding::Grounded, Grounding::Floating] {
-        let operator = make_operator(
-            &c_dense,
-            3,
-            2,
-            row_diag.clone(),
-            col_diag.clone(),
-            grounding,
-        );
+        let operator = SddmMatrix::from_dense_for_test(&c_dense, 3, 2, diagonal.clone(), grounding);
         let parallel = exact(&operator, &inv_diagonal, RowSplit::Parallel);
         let sequential = exact(&operator, &inv_diagonal, RowSplit::Sequential);
 
@@ -164,14 +124,13 @@ fn both_row_splits_produce_the_same_complement() {
 
 #[test]
 fn approximate_schur_is_seed_deterministic_and_laplacian_like() {
-    // Diagonals equal the adjacency row/column sums, so the reduced system is a Laplacian.
+    // Stating the sums the traversal must reproduce keeps the Laplacian assertion an independent check.
     let c_dense = vec![1.0, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
-    let matrix = make_operator(
+    let matrix = SddmMatrix::from_dense_for_test(
         &c_dense,
         3,
         3,
-        vec![6.0, 1.0, 1.0],
-        vec![2.0, 3.0, 3.0],
+        vec![6.0, 1.0, 1.0, 2.0, 3.0, 3.0],
         Grounding::Floating,
     );
     let config = crate::config::ApproxSchurConfig {
@@ -208,19 +167,12 @@ fn approximate_schur_is_seed_deterministic_and_laplacian_like() {
 fn sampled_schur_carries_surplus_exactly_on_low_degree_stars() {
     // Every eliminated star has at most two entries including ground, so sampling is exact.
     let c_dense = vec![1.0, 0.0, 2.0, 3.0, 0.0, 4.0];
-    let row_diag = vec![3.0, 5.0, 6.0];
-    let col_diag = vec![3.5, 7.0];
-    let matrix = make_operator(
-        &c_dense,
-        3,
-        2,
-        row_diag.clone(),
-        col_diag.clone(),
-        Grounding::Grounded,
-    );
+    let diagonal = vec![3.0, 5.0, 6.0, 3.5, 7.0];
+    let (row_diag, col_diag) = diagonal.split_at(3);
+    let expected = dense_exact_schur(&c_dense, 3, 2, row_diag, col_diag, true);
+    let matrix = SddmMatrix::from_dense_for_test(&c_dense, 3, 2, diagonal, Grounding::Grounded);
 
     let sampled_dense = sparse_to_dense(&sampled(&matrix, &Default::default()));
-    let expected = dense_exact_schur(&c_dense, 3, 2, &row_diag, &col_diag, true);
     let sampled_principal: Vec<Vec<f64>> = sampled_dense[..expected.len()]
         .iter()
         .map(|row| row[..expected.len()].to_vec())
@@ -243,19 +195,12 @@ fn exact_schur_triangles_agree_bitwise_on_signed_loadings() {
         -0.11, 3.3, 5.1, //
         1.9, 0.0, -2.3, //
     ];
-    let row_diag = vec![3.0, 7.0, 0.9, 11.0];
-    let col_diag = vec![13.7, 2.3, 19.1];
+    let diagonal = vec![3.0, 7.0, 0.9, 11.0, 13.7, 2.3, 19.1];
+    let (row_diag, _) = diagonal.split_at(4);
     let inv_diagonal: Vec<f64> = row_diag.iter().map(|d| 1.0 / d).collect();
 
     for grounding in [Grounding::Grounded, Grounding::Floating] {
-        let operator = make_operator(
-            &c_dense,
-            4,
-            3,
-            row_diag.clone(),
-            col_diag.clone(),
-            grounding,
-        );
+        let operator = SddmMatrix::from_dense_for_test(&c_dense, 4, 3, diagonal.clone(), grounding);
         let dense = sparse_to_dense(&exact_for_factor(&operator, &inv_diagonal));
         for (i, row) in dense.iter().enumerate() {
             for (j, &value) in row.iter().enumerate() {

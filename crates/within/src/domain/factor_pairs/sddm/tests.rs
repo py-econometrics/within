@@ -46,6 +46,35 @@ impl LocalComponent {
     }
 }
 
+impl SddmMatrix {
+    pub(crate) fn from_dense_for_test(
+        table: &[f64],
+        n_rows: usize,
+        n_cols: usize,
+        diagonal: Vec<f64>,
+        grounding: Grounding,
+    ) -> Self {
+        let cross_tab = cross_tab(table, n_rows, n_cols);
+        debug_assert_eq!(diagonal.len(), cross_tab.n_local());
+        let ground_edges = adjacency_sums(&cross_tab)
+            .iter()
+            .zip(&diagonal)
+            .map(|(sum, d)| (d - sum).max(0.0))
+            .collect();
+        Self {
+            cross_tab,
+            diagonal,
+            ground_edges,
+            grounding,
+        }
+    }
+
+    pub(crate) fn laplacian_for_test(table: &[f64], n_rows: usize, n_cols: usize) -> Self {
+        let diagonal = adjacency_sums(&cross_tab(table, n_rows, n_cols));
+        Self::from_dense_for_test(table, n_rows, n_cols, diagonal, Grounding::Floating)
+    }
+}
+
 fn cross_tab(table: &[f64], n_rows: usize, n_cols: usize) -> CrossTab {
     let c = CsrBlock::from_dense_table(table, n_rows, n_cols);
     let ct = c.transpose();
