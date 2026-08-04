@@ -10,6 +10,7 @@ use crate::domain::{CoordinateMap, CrossTab, Grounding, LocalComponent, MatrixFo
 use crate::BuildError;
 
 use super::compensated_sum;
+use super::csr_matrix::CsrMatrix;
 use super::factor::{factor_sparse, local_solver_build, ReducedFactor};
 use super::schur;
 
@@ -187,27 +188,32 @@ impl Eliminated {
         Self::new(assemble_bipartite_cover(&self.matrix))
     }
 
-    /// At or below `dense_threshold` fill-in does not matter, so the exact complement is used.
+    /// A dense Cholesky spends nothing on sparsity, so it entails the exact complement.
     fn factor_reduced(&self, config: &LocalSolverConfig) -> Result<Factor, BuildError> {
         let exact_below = config.dense_threshold;
-        if exact_below > 0 && self.matrix.n_kept() <= exact_below {
-            let exact = schur::exact_for_factor(&self.matrix, &self.inv_diagonal);
-            let ac = config
-                .approx_chol
-                .to_approx_chol(exact_below, ExactFailure::Error);
-            match factor_sparse(&exact, ac) {
+        let factor = |complement: &CsrMatrix, on_failure| {
+            factor_sparse(
+                complement,
+                config.approx_chol.to_approx_chol(exact_below, on_failure),
+            )
+        };
+
+        let exact = (exact_below > 0 && self.matrix.n_kept() <= exact_below)
+            .then(|| schur::exact_for_factor(&self.matrix, &self.inv_diagonal));
+        if let Some(exact) = &exact {
+            match factor(exact, ExactFailure::Error) {
                 Err(approx_chol::Error::DenseFactorizationFailed { .. }) => {}
                 result => return result.map_err(local_solver_build),
             }
         }
-        let schur_csr = match &config.schur {
+
+        let complement = match &config.schur {
             SchurMode::Approximate(cfg) => schur::sampled(&self.matrix, cfg),
-            SchurMode::Exact => schur::exact_for_factor(&self.matrix, &self.inv_diagonal),
+            SchurMode::Exact => {
+                exact.unwrap_or_else(|| schur::exact_for_factor(&self.matrix, &self.inv_diagonal))
+            }
         };
-        let ac = config
-            .approx_chol
-            .to_approx_chol(exact_below, ExactFailure::FallBackToApproximate);
-        factor_sparse(&schur_csr, ac).map_err(local_solver_build)
+        factor(&complement, ExactFailure::FallBackToApproximate).map_err(local_solver_build)
     }
 }
 

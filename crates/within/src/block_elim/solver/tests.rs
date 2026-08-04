@@ -73,6 +73,53 @@ fn fold_rejects_a_zero_eliminated_diagonal() {
     }
 }
 
+/// The exact attempt only fails when weight spread costs the complement its definiteness.
+fn ill_scaled_laplacian() -> SddmMatrix {
+    let c = CsrBlock::from_dense_table(&[0.0, 1e-16, 1e2, 1e0, 1e5, 0.0, 0.0, 1e14, 0.0], 3, 3);
+    let ct = c.transpose();
+    let cross_tab = CrossTab { c, ct };
+    let diagonal: Vec<f64> = (0..cross_tab.n_local())
+        .map(|i| cross_tab.neighbors(i).map(|(_, v)| v).sum::<f64>())
+        .collect();
+    SddmMatrix {
+        ground_edges: vec![0.0; diagonal.len()],
+        cross_tab,
+        diagonal,
+        grounding: Grounding::Floating,
+    }
+}
+
+#[test]
+fn an_unusable_dense_pivot_is_retried_rather_than_fatal() {
+    let eliminated =
+        Eliminated::new(ill_scaled_laplacian()).expect("a positive diagonal must fold");
+    let exact = schur::exact_for_factor(&eliminated.matrix, &eliminated.inv_diagonal);
+    let exact_only = ApproxCholConfig::default()
+        .to_approx_chol(DEFAULT_DENSE_SCHUR_THRESHOLD, ExactFailure::Error);
+    assert!(
+        matches!(
+            factor_sparse(&exact, exact_only),
+            Err(approx_chol::Error::DenseFactorizationFailed { .. })
+        ),
+        "the fixture no longer reaches the fall-through"
+    );
+
+    for schur in [SchurMode::Exact, SchurMode::Approximate(Default::default())] {
+        let config = LocalSolverConfig {
+            approx_chol: ApproxCholConfig::default(),
+            schur,
+            dense_threshold: DEFAULT_DENSE_SCHUR_THRESHOLD,
+            scaling: Default::default(),
+        };
+
+        assert!(
+            eliminated.factor_reduced(&config).is_ok(),
+            "{:?}: an unusable pivot must not be fatal",
+            config.schur
+        );
+    }
+}
+
 /// Build an eliminated-major CrossTab (`n_rows > n_cols`, as orientation
 /// guarantees) whose two cross entries leave three isolated rows, plus its
 /// build-time diagonal.
