@@ -233,3 +233,34 @@ fn sampled_schur_carries_surplus_exactly_on_low_degree_stars() {
         assert!(row_sum.abs() < 1e-12, "row {i} sum is {row_sum}");
     }
 }
+
+/// Signed loadings cancel past approx-chol's 8-ulp ingest tolerance, so this must be bitwise.
+#[test]
+fn exact_schur_triangles_agree_bitwise_on_signed_loadings() {
+    let c_dense = vec![
+        0.3, -1.7, 0.0, //
+        2.9, 0.7, 1.3, //
+        -0.11, 3.3, 5.1, //
+        1.9, 0.0, -2.3, //
+    ];
+    let row_diag = vec![3.0, 7.0, 0.9, 11.0];
+    let col_diag = vec![13.7, 2.3, 19.1];
+    let inv_diagonal: Vec<f64> = row_diag.iter().map(|d| 1.0 / d).collect();
+
+    for grounding in [Grounding::Grounded, Grounding::Floating] {
+        let operator = make_operator(
+            &c_dense,
+            4,
+            3,
+            row_diag.clone(),
+            col_diag.clone(),
+            grounding,
+        );
+        let dense = sparse_to_dense(&exact_for_factor(&operator, &inv_diagonal));
+        for (i, row) in dense.iter().enumerate() {
+            for (j, &value) in row.iter().enumerate() {
+                assert_eq!(value, dense[j][i], "{grounding:?} asymmetric at ({i}, {j})");
+            }
+        }
+    }
+}

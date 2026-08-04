@@ -324,3 +324,67 @@ fn singleton_level_in_non_first_slope_term_solves_under_default() {
         );
     }
 }
+
+/// One slope column per sloped factor, as a function of the year code.
+struct Loadings {
+    what: &'static str,
+    worker: fn(f64) -> f64,
+    firm: fn(f64) -> f64,
+}
+
+/// Dual-factor slopes reduce through the exact dense Schur; the trigger is the loading values.
+#[test]
+fn dual_factor_slopes_build_across_loading_shapes() {
+    const N_YEARS: usize = 10;
+    let n_obs = 50_000;
+    let n_indiv = n_obs / N_YEARS;
+    let n_firm = n_indiv / 23;
+
+    let worker: Vec<u32> = (0..n_obs).map(|i| (i / N_YEARS) as u32).collect();
+    let year: Vec<u32> = (0..n_obs).map(|i| (i % N_YEARS) as u32).collect();
+    let firm: Vec<u32> = (0..n_obs).map(|i| (i % n_firm) as u32).collect();
+    let t: Vec<f64> = year.iter().map(|&y| y as f64).collect();
+
+    for shape in [
+        Loadings {
+            what: "t / t^2",
+            worker: |t| t,
+            firm: |t| t * t,
+        },
+        Loadings {
+            what: "t^2 / t",
+            worker: |t| t * t,
+            firm: |t| t,
+        },
+        Loadings {
+            what: "exp / t^2",
+            worker: |t| (0.3 * t).exp(),
+            firm: |t| t * t,
+        },
+        Loadings {
+            what: "t / log",
+            worker: |t| t,
+            firm: |t| (1.0 + t).ln(),
+        },
+    ] {
+        let what = shape.what;
+        let z0: Vec<f64> = t.iter().map(|&t| (shape.worker)(t)).collect();
+        let z2: Vec<f64> = t.iter().map(|&t| (shape.firm)(t)).collect();
+        let y: Vec<f64> = (0..n_obs)
+            .map(|i| {
+                (worker[i] as f64 * 0.017).sin() + 0.4 * z0[i] - 0.2 * z2[i]
+                    + (i as f64 * 0.31).cos() * 0.1
+            })
+            .collect();
+        let effects = vec![
+            Effect::new(&worker, true, [&z0[..]]).expect("worker slope"),
+            Effect::new(&year, true, []).expect("year effect"),
+            Effect::new(&firm, true, [&z2[..]]).expect("firm slope"),
+        ];
+        let r = Solver::new(effects, None, PreconditionerConfig::default())
+            .unwrap_or_else(|e| panic!("{what}: build failed: {e}"))
+            .solve(&y, &LsmrOptions::default())
+            .unwrap_or_else(|e| panic!("{what}: solve failed: {e}"));
+        assert!(r.converged, "{what}: did not converge");
+    }
+}

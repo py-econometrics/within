@@ -104,12 +104,13 @@ fn compute_schur_row_dense(
     touched.push(i);
 
     for (k, w) in matrix.cross_tab.ct.row(i) {
-        let scale = w * inv_diagonal_eliminated[k];
+        let inv = inv_diagonal_eliminated[k];
         for (j, v) in matrix.cross_tab.c.row(k) {
             if work[j] == 0.0 && j != i {
                 touched.push(j);
             }
-            work[j] -= scale * v;
+            // Pairing the loadings before the reciprocal makes (i, j) and (j, i) bitwise equal.
+            work[j] -= (w * v) * inv;
         }
     }
 }
