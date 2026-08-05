@@ -1,0 +1,368 @@
+name: Wheels
+
+on:
+  workflow_call:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      matrix:
+        platform:
+          - runner: ubuntu-22.04
+            target: x86_64
+          - runner: ubuntu-22.04
+            target: x86
+          - runner: ubuntu-22.04
+            target: aarch64
+          - runner: ubuntu-22.04
+            target: armv7
+          - runner: ubuntu-22.04
+            target: s390x
+          - runner: ubuntu-22.04
+            target: ppc64le
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: 3.x
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.platform.target }}
+          args: --release --out dist -i python3.9
+          sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
+          manylinux: auto
+      - name: Upload wheels
+        uses: actions/upload-artifact@v7
+        with:
+          name: wheels-linux-${{ matrix.platform.target }}
+          path: dist
+
+  musllinux:
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      matrix:
+        platform:
+          - runner: ubuntu-22.04
+            target: x86_64
+          - runner: ubuntu-22.04
+            target: x86
+          - runner: ubuntu-22.04
+            target: aarch64
+          - runner: ubuntu-22.04
+            target: armv7
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: 3.x
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.platform.target }}
+          args: --release --out dist -i python3.9
+          sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
+          manylinux: musllinux_1_2
+      - name: Upload wheels
+        uses: actions/upload-artifact@v7
+        with:
+          name: wheels-musllinux-${{ matrix.platform.target }}
+          path: dist
+
+  windows:
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      matrix:
+        platform:
+          - runner: windows-latest
+            target: x64
+            python_arch: x64
+          - runner: windows-latest
+            target: x86
+            python_arch: x86
+          - runner: windows-11-arm
+            target: aarch64
+            python_arch: arm64
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: 3.13
+          architecture: ${{ matrix.platform.python_arch }}
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.platform.target }}
+          args: --release --out dist
+          sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
+      - name: Upload wheels
+        uses: actions/upload-artifact@v7
+        with:
+          name: wheels-windows-${{ matrix.platform.target }}
+          path: dist
+
+  macos:
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      matrix:
+        platform:
+          - runner: macos-15-intel
+            target: x86_64
+          - runner: macos-latest
+            target: aarch64
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: 3.x
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.platform.target }}
+          args: --release --out dist
+          sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
+      - name: Upload wheels
+        uses: actions/upload-artifact@v7
+        with:
+          name: wheels-macos-${{ matrix.platform.target }}
+          path: dist
+
+  linux-nonabi3:
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      matrix:
+        platform:
+          - runner: ubuntu-22.04
+            target: x86_64
+          - runner: ubuntu-22.04
+            target: aarch64
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: 3.x
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.platform.target }}
+          args: --release --out dist --interpreter python3.14t pypy3.11
+          sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
+          manylinux: auto
+      - name: Upload wheels
+        uses: actions/upload-artifact@v7
+        with:
+          name: wheels-linux-nonabi3-${{ matrix.platform.target }}
+          path: dist
+
+  musllinux-nonabi3:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: 3.x
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: x86_64
+          args: --release --out dist --interpreter python3.14t
+          sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
+          manylinux: musllinux_1_2
+      - name: Upload wheels
+        uses: actions/upload-artifact@v7
+        with:
+          name: wheels-musllinux-nonabi3-x86_64
+          path: dist
+
+  windows-nonabi3:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: |
+            3.14t
+            pypy3.10
+            pypy3.11
+          architecture: x64
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: x64
+          args: --release --out dist --interpreter python3.14t pypy3.10 pypy3.11
+          sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
+      - name: Upload wheels
+        uses: actions/upload-artifact@v7
+        with:
+          name: wheels-windows-nonabi3-x64
+          path: dist
+
+  macos-nonabi3:
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      matrix:
+        platform:
+          - runner: macos-15-intel
+            target: x86_64
+          - runner: macos-latest
+            target: aarch64
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: |
+            3.14t
+            pypy3.10
+            pypy3.11
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.platform.target }}
+          args: --release --out dist --interpreter python3.14t pypy3.10 pypy3.11
+          sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
+      - name: Upload wheels
+        uses: actions/upload-artifact@v7
+        with:
+          name: wheels-macos-nonabi3-${{ matrix.platform.target }}
+          path: dist
+
+  sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+      - name: Upload sdist
+        uses: actions/upload-artifact@v7
+        with:
+          name: wheels-sdist
+          path: dist
+
+  # Static check: the built wheel must use only the py3.9 limited API, so the
+  # single cp39-abi3 wheel is genuinely valid on every later CPython.
+  abi3audit:
+    name: abi3 compliance audit
+    runs-on: ubuntu-latest
+    needs: [linux]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: wheels-linux-x86_64
+          path: dist
+      - uses: prefix-dev/setup-pixi@v0.10.0
+        with:
+          environments: audit
+          cache: true
+      - run: pixi run -e audit abi3audit dist/*.whl
+
+  # Dynamic check: the one abi3 wheel installs and runs on every supported
+  # CPython, from the 3.9 floor through the latest release.
+  import-test:
+    name: Import + smoke solve (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    needs: [linux]
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: wheels-linux-x86_64
+          path: dist
+      - name: Install wheel and smoke-solve
+        run: |
+          python -m pip install --upgrade pip
+          pip install dist/*.whl
+          python .github/workflows/smoke_solve.py
+
+  import-test-nonabi3:
+    name: Import + smoke solve (${{ matrix.python-version }}, ${{ matrix.wheel-suffix }})
+    runs-on: ${{ matrix.runner }}
+    needs: [linux-nonabi3, macos-nonabi3, windows-nonabi3]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            wheel-suffix: linux-nonabi3-x86_64
+            python-version: "3.14t"
+            wheel-glob: "*cp314-cp314t*"
+          - runner: ubuntu-latest
+            wheel-suffix: linux-nonabi3-x86_64
+            python-version: "pypy3.11"
+            wheel-glob: "*pp311*"
+          - runner: ubuntu-24.04-arm
+            wheel-suffix: linux-nonabi3-aarch64
+            python-version: "3.14t"
+            wheel-glob: "*cp314-cp314t*"
+          - runner: ubuntu-24.04-arm
+            wheel-suffix: linux-nonabi3-aarch64
+            python-version: "pypy3.11"
+            wheel-glob: "*pp311*"
+          - runner: macos-15-intel
+            wheel-suffix: macos-nonabi3-x86_64
+            python-version: "3.14t"
+            wheel-glob: "*cp314-cp314t*"
+          - runner: macos-15-intel
+            wheel-suffix: macos-nonabi3-x86_64
+            python-version: "pypy3.10"
+            wheel-glob: "*pp310*"
+          - runner: macos-15-intel
+            wheel-suffix: macos-nonabi3-x86_64
+            python-version: "pypy3.11"
+            wheel-glob: "*pp311*"
+          - runner: macos-latest
+            wheel-suffix: macos-nonabi3-aarch64
+            python-version: "3.14t"
+            wheel-glob: "*cp314-cp314t*"
+          - runner: macos-latest
+            wheel-suffix: macos-nonabi3-aarch64
+            python-version: "pypy3.10"
+            wheel-glob: "*pp310*"
+          - runner: macos-latest
+            wheel-suffix: macos-nonabi3-aarch64
+            python-version: "pypy3.11"
+            wheel-glob: "*pp311*"
+          - runner: windows-latest
+            wheel-suffix: windows-nonabi3-x64
+            python-version: "3.14t"
+            wheel-glob: "*cp314-cp314t*"
+          - runner: windows-latest
+            wheel-suffix: windows-nonabi3-x64
+            python-version: "pypy3.10"
+            wheel-glob: "*pp310*"
+          - runner: windows-latest
+            wheel-suffix: windows-nonabi3-x64
+            python-version: "pypy3.11"
+            wheel-glob: "*pp311*"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: wheels-${{ matrix.wheel-suffix }}
+          path: dist
+      - name: Install wheel and smoke-solve
+        run: |
+          python -m pip install --upgrade pip
+          pip install dist/${{ matrix.wheel-glob }}.whl
+          python .github/workflows/smoke_solve.py
