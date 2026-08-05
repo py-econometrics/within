@@ -2,7 +2,6 @@ use super::*;
 
 use crate::block_elim::csr_matrix::CsrMatrix;
 use crate::config::{ApproxCholConfig, SchurMode, DEFAULT_DENSE_SCHUR_THRESHOLD};
-use crate::csr_block::CsrBlock;
 
 #[test]
 fn test_subtract_mean_empty() {
@@ -115,10 +114,8 @@ fn make_cross_tab() -> (CrossTab, Vec<f64>) {
         0.0, 0.0, // row 3
         0.0, 0.0, // row 4
     ];
-    let c = CsrBlock::from_dense_table(&c_dense, 5, 2);
-    let ct = c.transpose();
     let diagonal = vec![2.0, 3.0, 1.0, 1.0, 1.0, 2.0, 3.0];
-    (CrossTab { c, ct }, diagonal)
+    (CrossTab::from_dense_for_test(&c_dense, 5, 2), diagonal)
 }
 
 #[test]
@@ -218,10 +215,9 @@ fn trivial_singleton_component_solves_r_over_d() {
         scaling: Default::default(),
     };
     for (n_rows, n_cols) in [(1usize, 0usize), (0, 1)] {
-        let c = CsrBlock::from_dense_table(&[], n_rows, n_cols);
-        let ct = c.transpose();
+        let cross_tab = CrossTab::from_dense_for_test(&[], n_rows, n_cols);
         let diagonal = vec![4.0; n_rows + n_cols];
-        let component = LocalComponent::general_for_test(CrossTab { c, ct }, diagonal);
+        let component = LocalComponent::general_for_test(cross_tab, diagonal);
         let solver = BlockElimSolver::build(component, &config).expect("trivial 1×1 build");
         assert_eq!(solver.n_local(), 1);
 
@@ -241,9 +237,8 @@ fn trivial_singleton_component_solves_r_over_d() {
 #[test]
 fn sampled_sparse_preserves_barely_pd_direction() {
     let surplus = 5e-10;
-    let c = CsrBlock::from_dense_table(&[1.0], 1, 1);
-    let ct = c.transpose();
-    let component = LocalComponent::general_for_test(CrossTab { c, ct }, vec![1.0 + surplus, 1.0]);
+    let cross_tab = CrossTab::from_dense_for_test(&[1.0], 1, 1);
+    let component = LocalComponent::general_for_test(cross_tab, vec![1.0 + surplus, 1.0]);
     let config = LocalSolverConfig {
         approx_chol: ApproxCholConfig::default(),
         schur: SchurMode::Approximate(crate::config::ApproxSchurConfig::default()),
@@ -289,11 +284,7 @@ fn grounded_backend_auxiliary_is_initialized_on_every_solve() {
     // approx-chol declines to ground a surplus below its resolvable pivot scale.
     assert_eq!(factor.solve_dimension(), 3);
 
-    let c = CsrBlock::from_dense_table(&[0.0; 6], 3, 2);
-    let cross_tab = CrossTab {
-        ct: c.transpose(),
-        c,
-    };
+    let cross_tab = CrossTab::from_dense_for_test(&[0.0; 6], 3, 2);
     let solver = BlockElimSolver::new(cross_tab, vec![1.0; 3], factor, CoordinateMap::default());
 
     let solve_with_dirty_auxiliary = |dirty: f64| {
@@ -334,8 +325,7 @@ fn signed_component_realizes_congruence_transformed_solve() {
             SchurMode::Approximate(crate::config::ApproxSchurConfig::default()),
         ),
     ] {
-        let c = CsrBlock::from_dense_table(&c_raw, n_rows, n_cols);
-        let ct = c.transpose();
+        let cross_tab = CrossTab::from_dense_for_test(&c_raw, n_rows, n_cols);
         let diagonals: Vec<f64> = (0..n_rows + n_cols)
             .map(|k| diag_hat[k] / (d[k] * d[k]))
             .collect();
@@ -351,8 +341,7 @@ fn signed_component_realizes_congruence_transformed_solve() {
             .enumerate()
             .map(|(i, &v)| if i < n_rows { v } else { -v })
             .collect();
-        let component =
-            LocalComponent::with_factors_for_test(CrossTab { c, ct }, diagonals, &factors);
+        let component = LocalComponent::with_factors_for_test(cross_tab, diagonals, &factors);
         let solver =
             BlockElimSolver::build(component, &config).expect("signed block-elim build failed");
 
@@ -400,10 +389,8 @@ fn frustrated_component_solves_exactly_through_cover() {
         [1.5, -1.0, 0.0, 2.9],
     ];
 
-    let c = CsrBlock::from_dense_table(&c_raw, n_rows, n_cols);
-    let ct = c.transpose();
     let component = LocalComponent::general_for_test(
-        CrossTab { c, ct },
+        CrossTab::from_dense_for_test(&c_raw, n_rows, n_cols),
         vec![a[0][0], a[1][1], a[2][2], a[3][3]],
     );
     let config = LocalSolverConfig {

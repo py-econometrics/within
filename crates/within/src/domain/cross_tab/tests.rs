@@ -5,9 +5,18 @@ use super::accumulate::{
 };
 use super::{build_compact_mapping, CrossTab};
 use crate::channel::{Channel, ChannelPair};
+use crate::csr_block::CsrBlock;
 use crate::domain::find_all_active_levels;
 use crate::domain::{Design, Effect};
 use crate::observation::ObservationFrame;
+
+impl CrossTab {
+    pub(crate) fn from_dense_for_test(table: &[f64], n_rows: usize, n_cols: usize) -> Self {
+        let c = CsrBlock::from_dense_table(table, n_rows, n_cols);
+        let ct = c.transpose();
+        Self { c, ct }
+    }
+}
 
 /// Terms 0 and 1 paired on their intercept channels (plain cross-tab).
 const INTERCEPT_PAIR: ChannelPair = ChannelPair {

@@ -54,7 +54,7 @@ impl SddmMatrix {
         diagonal: Vec<f64>,
         grounding: Grounding,
     ) -> Self {
-        let cross_tab = cross_tab(table, n_rows, n_cols);
+        let cross_tab = CrossTab::from_dense_for_test(table, n_rows, n_cols);
         debug_assert_eq!(diagonal.len(), cross_tab.n_local());
         let ground_edges = adjacency_sums(&cross_tab)
             .iter()
@@ -70,15 +70,9 @@ impl SddmMatrix {
     }
 
     pub(crate) fn laplacian_for_test(table: &[f64], n_rows: usize, n_cols: usize) -> Self {
-        let diagonal = adjacency_sums(&cross_tab(table, n_rows, n_cols));
+        let diagonal = adjacency_sums(&CrossTab::from_dense_for_test(table, n_rows, n_cols));
         Self::from_dense_for_test(table, n_rows, n_cols, diagonal, Grounding::Floating)
     }
-}
-
-fn cross_tab(table: &[f64], n_rows: usize, n_cols: usize) -> CrossTab {
-    let c = CsrBlock::from_dense_table(table, n_rows, n_cols);
-    let ct = c.transpose();
-    CrossTab { c, ct }
 }
 
 fn assert_sddm(component: &LocalComponent) {
@@ -105,7 +99,7 @@ fn assert_sddm(component: &LocalComponent) {
 #[test]
 fn known_laplacian_has_canonical_coordinates_and_no_ground() {
     let (component, uncertified) = convert(
-        cross_tab(&[2.0, 1.0, 0.0, 3.0], 2, 2),
+        CrossTab::from_dense_for_test(&[2.0, 1.0, 0.0, 3.0], 2, 2),
         vec![3.0, 3.0, 2.0, 4.0],
         ComponentClass::KnownLaplacian,
         &ScalingConfig::default(),
@@ -122,7 +116,7 @@ fn known_laplacian_has_canonical_coordinates_and_no_ground() {
 fn known_laplacian_claim_is_checked() {
     // Structural surplus contradicts the Laplacian claim, so it must fail loudly.
     let result = convert(
-        cross_tab(&[2.0, 1.0, 0.0, 3.0], 2, 2),
+        CrossTab::from_dense_for_test(&[2.0, 1.0, 0.0, 3.0], 2, 2),
         vec![4.0, 3.0, 2.0, 4.0],
         ComponentClass::KnownLaplacian,
         &ScalingConfig::default(),
@@ -133,7 +127,7 @@ fn known_laplacian_claim_is_checked() {
 #[test]
 fn frustrated_component_stores_single_signed_operator() {
     let (component, uncertified) = convert(
-        cross_tab(&[1.0, 1.0, 1.0, -1.0], 2, 2),
+        CrossTab::from_dense_for_test(&[1.0, 1.0, 1.0, -1.0], 2, 2),
         vec![2.0, 2.0, 2.0, 2.0],
         ComponentClass::General,
         &ScalingConfig::default(),
@@ -169,7 +163,7 @@ fn scalable_signed_component_produces_valid_grounded_sddm() {
         }
     }
     let (component, uncertified) = convert(
-        cross_tab(&raw, 2, 3),
+        CrossTab::from_dense_for_test(&raw, 2, 3),
         (0..5).map(|i| diag_hat[i] / (d[i] * d[i])).collect(),
         ComponentClass::General,
         &ScalingConfig::default(),
@@ -184,7 +178,7 @@ fn scalable_signed_component_produces_valid_grounded_sddm() {
 #[test]
 fn singular_signed_boundary_remains_floating() {
     let (component, _) = convert(
-        cross_tab(&[0.5, -1.0], 2, 1),
+        CrossTab::from_dense_for_test(&[0.5, -1.0], 2, 1),
         vec![0.25, 1.0, 2.0],
         ComponentClass::General,
         &ScalingConfig::default(),
@@ -243,7 +237,7 @@ fn large_rescaled_singular_boundary_remains_floating() {
 #[test]
 fn non_scalable_component_errors_under_error_mode() {
     let result = convert(
-        cross_tab(&[1.0, -1.0, 2.0, -2.0], 2, 2),
+        CrossTab::from_dense_for_test(&[1.0, -1.0, 2.0, -2.0], 2, 2),
         vec![1.0, 2.0, 1.0, 2.0],
         ComponentClass::General,
         &ScalingConfig {
@@ -262,7 +256,7 @@ fn non_scalable_component_warns_and_clamps_under_warn_mode() {
     };
     assert_eq!(config.on_failure, ScalingFailure::Warn);
     let (component, uncertified) = convert(
-        cross_tab(&[1.0, -1.0, 2.0, -2.0], 2, 2),
+        CrossTab::from_dense_for_test(&[1.0, -1.0, 2.0, -2.0], 2, 2),
         vec![1.0, 2.0, 1.0, 2.0],
         ComponentClass::General,
         &config,
@@ -279,7 +273,7 @@ fn non_scalable_component_warns_and_clamps_under_warn_mode() {
 fn barely_pd_surplus_is_structural() {
     let surplus = 5e-10;
     let (component, _) = convert(
-        cross_tab(&[1.0], 1, 1),
+        CrossTab::from_dense_for_test(&[1.0], 1, 1),
         vec![1.0 + surplus, 1.0],
         ComponentClass::General,
         &ScalingConfig::default(),
