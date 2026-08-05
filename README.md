@@ -18,6 +18,8 @@ You can install Python bindings from PyPi by running
 pip install within_py
 ```
 
+Wheels ship for CPython 3.9+ (one `abi3` wheel per platform), free-threaded CPython 3.14+ (`cp314t`; PyO3 dropped experimental 3.13t support), and PyPy 3.10/3.11. CPython 3.15's `abi3t` (PEP 803, [PyO3/maturin#3064](https://github.com/PyO3/maturin/issues/3064)) will let the free-threaded build fold back into a single wheel per platform.
+
 ## Python Quickstart
 
 `within`'s main user-facing function is `solve`. Provide a 2-D `uint32` array of category codes (one column per fixed-effect factor) and a response vector `y`. The solver finds x in the normal equations **D'D x = D'y**, where D is the sparse categorical design matrix.

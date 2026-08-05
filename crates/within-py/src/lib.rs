@@ -5,6 +5,8 @@
 //! Converts Python/numpy types to the native API and delegates all computation
 //! to [`within`]; every heavy call releases the GIL via [`Python::detach`].
 //! Usage docs live in `python/within/` and the `within._within.pyi` stub.
+//!
+//! `gil_used = false`: audited safe (no `&mut self`, no global state, borrowed NumPy inputs only).
 
 use pyo3::prelude::*;
 
@@ -20,7 +22,7 @@ use config::{
 };
 use results::{PyBatchSolveResult, PyCoefficientLayout, PySolveResult, PyUnidentifiedDirection};
 
-#[pymodule]
+#[pymodule(gil_used = false)]
 fn _within(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySolveResult>()?;
     m.add_class::<PyBatchSolveResult>()?;
