@@ -160,7 +160,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist --interpreter python3.14t pypy3.11
+          args: --release --out dist --interpreter python3.14t python3.15t pypy3.11
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: auto
       - name: Upload wheels
@@ -181,7 +181,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: x86_64
-          args: --release --out dist --interpreter python3.14t
+          args: --release --out dist --interpreter python3.14t python3.15t
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: musllinux_1_2
       - name: Upload wheels
@@ -199,13 +199,14 @@ jobs:
         with:
           python-version: |
             3.14t
+            3.15t-dev
             pypy3.11
           architecture: x64
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: x64
-          args: --release --out dist --interpreter python3.14t pypy3.11
+          args: --release --out dist --interpreter python3.14t python3.15t pypy3.11
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
       - name: Upload wheels
         uses: actions/upload-artifact@v7
@@ -229,12 +230,13 @@ jobs:
         with:
           python-version: |
             3.14t
+            3.15t-dev
             pypy3.11
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist --interpreter python3.14t pypy3.11
+          args: --release --out dist --interpreter python3.14t python3.15t pypy3.11
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
       - name: Upload wheels
         uses: actions/upload-artifact@v7
@@ -286,7 +288,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.15-dev"]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -314,6 +316,12 @@ jobs:
             wheel-suffix: linux-nonabi3-x86_64
             python-version: "3.14t"
             wheel-glob: "*cp314-cp314t*"
+            free-threaded: true
+          - runner: ubuntu-latest
+            wheel-suffix: linux-nonabi3-x86_64
+            python-version: "3.15t-dev"
+            wheel-glob: "*cp315-cp315t*"
+            free-threaded: true
           - runner: ubuntu-latest
             wheel-suffix: linux-nonabi3-x86_64
             python-version: "pypy3.11"
@@ -322,6 +330,12 @@ jobs:
             wheel-suffix: linux-nonabi3-aarch64
             python-version: "3.14t"
             wheel-glob: "*cp314-cp314t*"
+            free-threaded: true
+          - runner: ubuntu-24.04-arm
+            wheel-suffix: linux-nonabi3-aarch64
+            python-version: "3.15t-dev"
+            wheel-glob: "*cp315-cp315t*"
+            free-threaded: true
           - runner: ubuntu-24.04-arm
             wheel-suffix: linux-nonabi3-aarch64
             python-version: "pypy3.11"
@@ -330,6 +344,12 @@ jobs:
             wheel-suffix: macos-nonabi3-x86_64
             python-version: "3.14t"
             wheel-glob: "*cp314-cp314t*"
+            free-threaded: true
+          - runner: macos-15-intel
+            wheel-suffix: macos-nonabi3-x86_64
+            python-version: "3.15t-dev"
+            wheel-glob: "*cp315-cp315t*"
+            free-threaded: true
           - runner: macos-15-intel
             wheel-suffix: macos-nonabi3-x86_64
             python-version: "pypy3.11"
@@ -338,6 +358,12 @@ jobs:
             wheel-suffix: macos-nonabi3-aarch64
             python-version: "3.14t"
             wheel-glob: "*cp314-cp314t*"
+            free-threaded: true
+          - runner: macos-latest
+            wheel-suffix: macos-nonabi3-aarch64
+            python-version: "3.15t-dev"
+            wheel-glob: "*cp315-cp315t*"
+            free-threaded: true
           - runner: macos-latest
             wheel-suffix: macos-nonabi3-aarch64
             python-version: "pypy3.11"
@@ -346,6 +372,12 @@ jobs:
             wheel-suffix: windows-nonabi3-x64
             python-version: "3.14t"
             wheel-glob: "*cp314-cp314t*"
+            free-threaded: true
+          - runner: windows-latest
+            wheel-suffix: windows-nonabi3-x64
+            python-version: "3.15t-dev"
+            wheel-glob: "*cp315-cp315t*"
+            free-threaded: true
           - runner: windows-latest
             wheel-suffix: windows-nonabi3-x64
             python-version: "pypy3.11"
@@ -365,3 +397,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install dist/${{ matrix.wheel-glob }}.whl
           python .github/workflows/smoke_solve.py
+      - name: Free-threaded correctness test
+        if: matrix.free-threaded
+        shell: bash
+        run: |
+          pip install pytest
+          WITHIN_EXPECT_FREE_THREADED=1 python -m pytest tests/test_free_threaded.py -v
