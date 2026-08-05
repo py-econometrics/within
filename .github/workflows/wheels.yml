@@ -302,10 +302,13 @@ jobs:
           pip install dist/*.whl
           python .github/workflows/smoke_solve.py
 
-  import-test-nonabi3:
+  # Each platform's import-test-nonabi3-* only needs that platform's own
+  # build job, so a slow or failing build on one platform can't delay or
+  # skip the (unrelated) tests for the other two.
+  import-test-nonabi3-linux:
     name: Import + smoke solve (${{ matrix.python-version }}, ${{ matrix.wheel-suffix }})
     runs-on: ${{ matrix.runner }}
-    needs: [linux-nonabi3, macos-nonabi3, windows-nonabi3]
+    needs: [linux-nonabi3]
     strategy:
       fail-fast: false
       matrix:
@@ -328,6 +331,36 @@ jobs:
             wheel-suffix: linux-nonabi3-aarch64
             python-version: "pypy3.11"
             wheel-glob: "*pp311*"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: wheels-${{ matrix.wheel-suffix }}
+          path: dist
+      - name: Install wheel and smoke-solve
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install dist/${{ matrix.wheel-glob }}.whl
+          python .github/workflows/smoke_solve.py
+      - name: Free-threaded correctness test
+        if: matrix.free-threaded
+        shell: bash
+        run: |
+          pip install pytest
+          WITHIN_EXPECT_FREE_THREADED=1 python -m pytest tests/test_free_threaded.py -v
+
+  import-test-nonabi3-macos:
+    name: Import + smoke solve (${{ matrix.python-version }}, ${{ matrix.wheel-suffix }})
+    runs-on: ${{ matrix.runner }}
+    needs: [macos-nonabi3]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
           - runner: macos-15-intel
             wheel-suffix: macos-nonabi3-x86_64
             python-version: "3.14t"
@@ -346,6 +379,36 @@ jobs:
             wheel-suffix: macos-nonabi3-aarch64
             python-version: "pypy3.11"
             wheel-glob: "*pp311*"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: wheels-${{ matrix.wheel-suffix }}
+          path: dist
+      - name: Install wheel and smoke-solve
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install dist/${{ matrix.wheel-glob }}.whl
+          python .github/workflows/smoke_solve.py
+      - name: Free-threaded correctness test
+        if: matrix.free-threaded
+        shell: bash
+        run: |
+          pip install pytest
+          WITHIN_EXPECT_FREE_THREADED=1 python -m pytest tests/test_free_threaded.py -v
+
+  import-test-nonabi3-windows:
+    name: Import + smoke solve (${{ matrix.python-version }}, ${{ matrix.wheel-suffix }})
+    runs-on: ${{ matrix.runner }}
+    needs: [windows-nonabi3]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
           - runner: windows-latest
             wheel-suffix: windows-nonabi3-x64
             python-version: "3.14t"
