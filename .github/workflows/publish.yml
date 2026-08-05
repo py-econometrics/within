@@ -10,13 +10,13 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    uses: ./.github/workflows/build-wheels.yml
+  wheels:
+    uses: ./.github/workflows/wheels.yml
 
   release:
     name: Release
     runs-on: ubuntu-latest
-    needs: [build]
+    needs: [wheels]
     permissions:
       # Use to sign the release artifacts
       id-token: write
