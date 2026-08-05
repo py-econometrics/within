@@ -301,6 +301,11 @@ jobs:
       - name: Install wheel and smoke-solve
         run: |
           python -m pip install --upgrade pip
+          if [[ "${{ matrix.python-version }}" == "3.15-dev" ]]; then
+            python -m pip install --pre \
+              --extra-index-url https://pypi.anaconda.org/scientific-python-nightly-wheels/simple \
+              numpy
+          fi
           pip install dist/*.whl
           python .github/workflows/smoke_solve.py
 
@@ -395,6 +400,11 @@ jobs:
         shell: bash
         run: |
           python -m pip install --upgrade pip
+          if [[ "${{ matrix.python-version }}" == "3.15t-dev" ]]; then
+            python -m pip install --pre \
+              --extra-index-url https://pypi.anaconda.org/scientific-python-nightly-wheels/simple \
+              numpy
+          fi
           pip install dist/${{ matrix.wheel-glob }}.whl
           python .github/workflows/smoke_solve.py
       - name: Free-threaded correctness test
