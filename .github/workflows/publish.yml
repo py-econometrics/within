@@ -152,7 +152,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist --interpreter python3.14t pypy3.10 pypy3.11
+          args: --release --out dist --interpreter python3.14t pypy3.11
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: auto
       - name: Upload wheels
@@ -172,7 +172,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: x86_64
-          args: --release --out dist --interpreter python3.14t pypy3.10 pypy3.11
+          args: --release --out dist --interpreter python3.14t
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: musllinux_1_2
       - name: Upload wheels
@@ -292,18 +292,64 @@ jobs:
           python .github/workflows/smoke_solve.py
 
   import-test-nonabi3:
-    name: Import + smoke solve (${{ matrix.python-version }})
-    runs-on: ubuntu-latest
-    needs: [linux-nonabi3]
+    name: Import + smoke solve (${{ matrix.interpreter.python-version }}, ${{ matrix.platform.wheel-suffix }})
+    runs-on: ${{ matrix.runner }}
+    needs: [linux-nonabi3, macos-nonabi3, windows-nonabi3]
     strategy:
       fail-fast: false
       matrix:
         include:
-          - python-version: "3.14t"
+          - runner: ubuntu-latest
+            wheel-suffix: linux-nonabi3-x86_64
+            python-version: "3.14t"
             wheel-glob: "*cp314-cp314t*"
-          - python-version: "pypy3.10"
+          - runner: ubuntu-latest
+            wheel-suffix: linux-nonabi3-x86_64
+            python-version: "pypy3.11"
+            wheel-glob: "*pp311*"
+          - runner: ubuntu-24.04-arm
+            wheel-suffix: linux-nonabi3-aarch64
+            python-version: "3.14t"
+            wheel-glob: "*cp314-cp314t*"
+          - runner: ubuntu-24.04-arm
+            wheel-suffix: linux-nonabi3-aarch64
+            python-version: "pypy3.11"
+            wheel-glob: "*pp311*"
+          - runner: macos-15-intel
+            wheel-suffix: macos-nonabi3-x86_64
+            python-version: "3.14t"
+            wheel-glob: "*cp314-cp314t*"
+          - runner: macos-15-intel
+            wheel-suffix: macos-nonabi3-x86_64
+            python-version: "pypy3.10"
             wheel-glob: "*pp310*"
-          - python-version: "pypy3.11"
+          - runner: macos-15-intel
+            wheel-suffix: macos-nonabi3-x86_64
+            python-version: "pypy3.11"
+            wheel-glob: "*pp311*"
+          - runner: macos-latest
+            wheel-suffix: macos-nonabi3-aarch64
+            python-version: "3.14t"
+            wheel-glob: "*cp314-cp314t*"
+          - runner: macos-latest
+            wheel-suffix: macos-nonabi3-aarch64
+            python-version: "pypy3.10"
+            wheel-glob: "*pp310*"
+          - runner: macos-latest
+            wheel-suffix: macos-nonabi3-aarch64
+            python-version: "pypy3.11"
+            wheel-glob: "*pp311*"
+          - runner: windows-latest
+            wheel-suffix: windows-nonabi3-x64
+            python-version: "3.14t"
+            wheel-glob: "*cp314-cp314t*"
+          - runner: windows-latest
+            wheel-suffix: windows-nonabi3-x64
+            python-version: "pypy3.10"
+            wheel-glob: "*pp310*"
+          - runner: windows-latest
+            wheel-suffix: windows-nonabi3-x64
+            python-version: "pypy3.11"
             wheel-glob: "*pp311*"
     steps:
       - uses: actions/checkout@v7
@@ -312,7 +358,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - uses: actions/download-artifact@v8
         with:
-          name: wheels-linux-nonabi3-x86_64
+          name: wheels-${{ matrix.wheel-suffix }}
           path: dist
       - name: Install wheel and smoke-solve
         run: |
