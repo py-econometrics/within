@@ -18,7 +18,7 @@ You can install Python bindings from PyPi by running
 pip install within_py
 ```
 
-Wheels ship for CPython 3.9+ (one `abi3` wheel per platform), free-threaded CPython 3.14+ (`cp314t`; PyO3 dropped experimental 3.13t support), and PyPy: 3.11 on Linux (manylinux and musllinux ship no `pypy3.10` build), and 3.10/3.11 on macOS and Windows. CPython 3.15's `abi3t` (PEP 803, [PyO3/maturin#3064](https://github.com/PyO3/maturin/issues/3064)) will let the free-threaded build fold back into a single wheel per platform.
+Wheels ship for CPython 3.9+ (one `abi3` wheel per platform), free-threaded CPython 3.14+ (`cp314t`; PyO3 dropped experimental 3.13t support), and PyPy 3.11 (PyO3's minimum supported PyPy version; earlier PyPy releases are rejected at build time). CPython 3.15's `abi3t` (PEP 803, [PyO3/maturin#3064](https://github.com/PyO3/maturin/issues/3064)) will let the free-threaded build fold back into a single wheel per platform.
 
 musllinux ships no PyPy wheel at all — the `musllinux_1_2` build image bundles no PyPy interpreter.
 
