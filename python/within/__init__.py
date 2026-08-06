@@ -40,6 +40,10 @@ Two-tier public API:
   (``AdditiveSchwarz``, ``LocalSolverConfig``, ``ApproxCholConfig``,
   ``ApproxSchurConfig``, ``ReductionStrategy``).
 
+Thread safety: the heavy work runs with the interpreter detached and reads the
+caller's arrays in place. As with NumPy itself, an input array must not be
+mutated from another thread while a ``within`` call is reading it.
+
 For Rust-level internals, build the API docs with ``cargo doc --open``.
 """
 

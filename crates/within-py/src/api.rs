@@ -25,12 +25,12 @@ use crate::results::{
 fn build_and_solve<'a>(
     design: impl IntoDesign<'a>,
     y: &[f64],
-    weights: Option<&[f64]>,
+    weights: Option<Vec<f64>>,
     lsmr: &LsmrOptions,
     precond: impl Into<PreconditionerInput>,
 ) -> Result<(SolveResult, Vec<BuildWarning>), WithinError> {
     let t_start = Instant::now();
-    let solver = Solver::new(design, weights.map(|w| w.to_vec()), precond)?;
+    let solver = Solver::new(design, weights, precond)?;
     let time_setup = t_start.elapsed().as_secs_f64();
     let mut result = solver.solve(y, lsmr)?;
     result.time_setup += time_setup;
@@ -42,12 +42,12 @@ fn build_and_solve<'a>(
 fn build_and_solve_batch<'a>(
     design: impl IntoDesign<'a>,
     ys: &[&[f64]],
-    weights: Option<&[f64]>,
+    weights: Option<Vec<f64>>,
     lsmr: &LsmrOptions,
     precond: impl Into<PreconditionerInput>,
 ) -> Result<(BatchSolveResult, Vec<BuildWarning>), WithinError> {
     let t_start = Instant::now();
-    let solver = Solver::new(design, weights.map(|w| w.to_vec()), precond)?;
+    let solver = Solver::new(design, weights, precond)?;
     let time_setup = t_start.elapsed().as_secs_f64();
     let mut result = solver.solve_batch(ys, lsmr)?;
     result.time_setup += time_setup;
@@ -79,15 +79,19 @@ pub fn solve<'py>(
             let cats = categories.as_array();
             run_solve_with_warnings(py, move || {
                 let y_cow = coerce_to_slice(&y_arr);
-                let w_cow = w_view.as_ref().map(coerce_to_slice);
-                build_and_solve(cats, &y_cow, w_cow.as_deref(), &params, precond)
+                build_and_solve(cats, &y_cow, w_view.map(|w| w.to_vec()), &params, precond)
             })
         }
         DesignSource::Effects(terms) => run_solve_with_warnings(py, move || {
             let effects: Vec<_> = terms.iter().map(PyEffect::as_effect).collect();
             let y_cow = coerce_to_slice(&y_arr);
-            let w_cow = w_view.as_ref().map(coerce_to_slice);
-            build_and_solve(effects, &y_cow, w_cow.as_deref(), &params, precond)
+            build_and_solve(
+                effects,
+                &y_cow,
+                w_view.map(|w| w.to_vec()),
+                &params,
+                precond,
+            )
         }),
     }
 }
@@ -117,8 +121,13 @@ pub fn solve_batch<'py>(
             run_batch_with_warnings(py, move || {
                 let columns = extract_columns(&y_arr);
                 let col_refs = column_refs(&columns);
-                let w_cow = w_view.as_ref().map(coerce_to_slice);
-                build_and_solve_batch(cats, &col_refs, w_cow.as_deref(), &params, precond)
+                build_and_solve_batch(
+                    cats,
+                    &col_refs,
+                    w_view.map(|w| w.to_vec()),
+                    &params,
+                    precond,
+                )
             })
         }
         DesignSource::Effects(terms) => {
@@ -129,8 +138,13 @@ pub fn solve_batch<'py>(
                 let effects: Vec<_> = terms.iter().map(PyEffect::as_effect).collect();
                 let columns = extract_columns(&y_arr);
                 let col_refs = column_refs(&columns);
-                let w_cow = w_view.as_ref().map(coerce_to_slice);
-                build_and_solve_batch(effects, &col_refs, w_cow.as_deref(), &params, precond)
+                build_and_solve_batch(
+                    effects,
+                    &col_refs,
+                    w_view.map(|w| w.to_vec()),
+                    &params,
+                    precond,
+                )
             })
         }
     }

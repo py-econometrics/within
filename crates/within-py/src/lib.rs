@@ -3,10 +3,11 @@
 
 //! Thin PyO3 bridge exposing the [`within`] crate to Python as `within._within`.
 //! Converts Python/numpy types to the native API and delegates all computation
-//! to [`within`]; every heavy call releases the GIL via [`Python::detach`].
+//! to [`within`]; every heavy call detaches from the interpreter via [`Python::detach`].
 //! Usage docs live in `python/within/` and the `within._within.pyi` stub.
 //!
-//! `gil_used = false`: audited safe (no `&mut self`, no global state, borrowed NumPy inputs only).
+//! `gil_used = false`: no `&mut self`, no global state; numpy inputs are read in place.
+//! Callers must not mutate an array from another thread while a call reads it.
 
 use pyo3::prelude::*;
 
