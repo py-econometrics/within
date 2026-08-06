@@ -10,6 +10,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - A design carrying varying slopes on two distinct factors could fail preconditioner construction with `matrix is not symmetric`, when rounding left the two triangles of the exact Schur complement unequal (#229).
+- A `design` that is neither a 2-D `uint32` array nor a list of `Effect` raised `ValueError` where the documented type is `TypeError`, and `AdditiveSchwarz` accepted a wrong-type `local_solver` at construction, deferring the `TypeError` to solve time (#248).
 
 ### Removed
 

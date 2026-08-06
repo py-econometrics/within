@@ -269,7 +269,7 @@ impl PyLocalSolverConfig {
 #[pyo3(name = "AdditiveSchwarz")]
 pub struct PyAdditiveSchwarz {
     #[pyo3(get)]
-    pub local_solver: Option<Py<PyAny>>,
+    pub local_solver: Option<Py<PyLocalSolverConfig>>,
     #[pyo3(get)]
     pub reduction: PyReductionStrategy,
 }
@@ -278,7 +278,7 @@ pub struct PyAdditiveSchwarz {
 impl PyAdditiveSchwarz {
     #[new]
     #[pyo3(signature = (local_solver=None, reduction=PyReductionStrategy::Auto))]
-    fn new(local_solver: Option<Py<PyAny>>, reduction: PyReductionStrategy) -> Self {
+    fn new(local_solver: Option<Py<PyLocalSolverConfig>>, reduction: PyReductionStrategy) -> Self {
         Self {
             local_solver,
             reduction,
@@ -420,18 +420,11 @@ fn extract_preconditioner_config(
 
     if let Ok(schwarz) = obj.cast::<PyAdditiveSchwarz>() {
         let s = schwarz.get();
-        let local = match &s.local_solver {
-            None => LocalSolverConfig::default(),
-            Some(obj) => {
-                let obj = obj.bind(py);
-                let Ok(sc) = obj.cast::<PyLocalSolverConfig>() else {
-                    return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-                        "local_solver must be LocalSolverConfig or None",
-                    ));
-                };
-                sc.get().to_native(py)
-            }
-        };
+        let local = s
+            .local_solver
+            .as_ref()
+            .map(|c| c.bind(py).get().to_native(py))
+            .unwrap_or_default();
         let reduction = s.reduction.to_native();
         return Ok(Some(PreconditionerConfig::Additive {
             local_solver: local,

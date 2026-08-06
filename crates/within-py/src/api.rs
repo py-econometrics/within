@@ -222,9 +222,11 @@ fn extract_design<'py>(py: Python<'_>, design: &Bound<'py, PyAny>) -> PyResult<D
         warn_c_contiguous(py, &categories.as_array())?;
         return Ok(DesignSource::Categories(categories));
     }
-    let effects: Vec<Py<PyEffect>> = design
-        .extract()
-        .map_err(|_| value_err("design must be a 2-D uint32 array or a list of Effect"))?;
+    let effects: Vec<Py<PyEffect>> = design.extract().map_err(|_| {
+        PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+            "design must be a 2-D uint32 array or a list of Effect",
+        )
+    })?;
     Ok(DesignSource::Effects(
         effects
             .iter()
