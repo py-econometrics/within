@@ -36,7 +36,7 @@ jobs:
           environments: ci
           cache: true
           cache-write: ${{ github.ref == 'refs/heads/main' }}
-      - uses: mozilla-actions/sccache-action@v0.0.10
+      - uses: mozilla-actions/sccache-action@v0.0.11
       - uses: Swatinem/rust-cache@v2
 
       - name: Time 1M-row 3FE solve (release, best-of-N)
