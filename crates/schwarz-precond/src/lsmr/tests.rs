@@ -420,18 +420,12 @@ fn test_mlsmr_none_matches_identity_precond_windowed() {
     // same minimum so the comparison isn't governed by rounding noise in
     // the convergence test.
     let none_result = lsmr(&op, &b, 1e-12, 50, local).expect("lsmr windowed solve");
-    let id_result = mlsmr(
-        &op,
-        &b,
-        &id,
-        1e-12,
-        50,
-        MlsmrOptions {
-            local_size: local,
-            ..Default::default()
-        },
-    )
-    .expect("preconditioned Identity windowed solve");
+    let opts = MlsmrOptions {
+        local_size: local,
+        ..Default::default()
+    };
+    let id_result =
+        mlsmr(&op, &b, &id, 1e-12, 50, opts).expect("preconditioned Identity windowed solve");
 
     assert!(none_result.converged && id_result.converged);
     // The two paths do the same algebra differently (par_dot on `v` vs on
@@ -597,18 +591,11 @@ fn test_mlsmr_local_reorth_preconditioned() {
     let tol = 1e-9;
     let maxiter = 30;
 
-    let r10 = mlsmr(
-        &op,
-        &b,
-        &m,
-        tol,
-        maxiter,
-        MlsmrOptions {
-            local_size: Some(10),
-            ..Default::default()
-        },
-    )
-    .expect("windowed preconditioned solve");
+    let opts = MlsmrOptions {
+        local_size: Some(10),
+        ..Default::default()
+    };
+    let r10 = mlsmr(&op, &b, &m, tol, maxiter, opts).expect("windowed preconditioned solve");
     assert!(
         r10.converged,
         "windowed preconditioned LSMR failed to converge (iters = {})",
@@ -938,19 +925,12 @@ fn test_mlsmr_warm_tolerance_is_relative_to_original_rhs() {
     let window = Some(12);
     let m = jacobi(&op);
 
-    let warm = mlsmr(
-        &op,
-        &b,
-        &m,
-        tol,
-        200,
-        MlsmrOptions {
-            warm_start: Some(&x0),
-            local_size: window,
-            ..Default::default()
-        },
-    )
-    .expect("warm solve");
+    let opts = MlsmrOptions {
+        warm_start: Some(&x0),
+        local_size: window,
+        ..Default::default()
+    };
+    let warm = mlsmr(&op, &b, &m, tol, 200, opts).expect("warm solve");
     assert_eq!(warm.stop_reason, LsmrStopReason::ResidualTolerance);
 
     let mut r = vec![0.0; op.rows];
@@ -958,18 +938,11 @@ fn test_mlsmr_warm_tolerance_is_relative_to_original_rhs() {
     for (ri, bi) in r.iter_mut().zip(&b) {
         *ri = bi - *ri;
     }
-    let naive = mlsmr(
-        &op,
-        &r,
-        &m,
-        tol,
-        200,
-        MlsmrOptions {
-            local_size: window,
-            ..Default::default()
-        },
-    )
-    .expect("naive restart");
+    let opts = MlsmrOptions {
+        local_size: window,
+        ..Default::default()
+    };
+    let naive = mlsmr(&op, &r, &m, tol, 200, opts).expect("naive restart");
     assert!(
         warm.iterations < naive.iterations,
         "warm took {} iters, naive restart {} — the tolerance basis is not `‖b‖`",
@@ -977,18 +950,11 @@ fn test_mlsmr_warm_tolerance_is_relative_to_original_rhs() {
         naive.iterations
     );
 
-    let cold = mlsmr(
-        &op,
-        &b,
-        &m,
-        tol,
-        200,
-        MlsmrOptions {
-            local_size: window,
-            ..Default::default()
-        },
-    )
-    .expect("cold solve");
+    let opts = MlsmrOptions {
+        local_size: window,
+        ..Default::default()
+    };
+    let cold = mlsmr(&op, &b, &m, tol, 200, opts).expect("cold solve");
     assert!(
         warm.iterations <= cold.iterations,
         "warm restart {} must not cost more than a cold solve {}",
@@ -1003,30 +969,18 @@ fn test_mlsmr_warm_rejects_bad_warm_start() {
     let m = IdentityOp { n: 3 };
     let b = [1.0, 2.0, 3.0];
 
-    let bad_len = mlsmr(
-        &op,
-        &b,
-        &m,
-        1e-8,
-        10,
-        MlsmrOptions {
-            warm_start: Some(&[0.0, 0.0]),
-            ..Default::default()
-        },
-    );
+    let opts = MlsmrOptions {
+        warm_start: Some(&[0.0, 0.0]),
+        ..Default::default()
+    };
+    let bad_len = mlsmr(&op, &b, &m, 1e-8, 10, opts);
     assert!(matches!(bad_len, Err(SolveError::InvalidInput { .. })));
 
-    let bad_value = mlsmr(
-        &op,
-        &b,
-        &m,
-        1e-8,
-        10,
-        MlsmrOptions {
-            warm_start: Some(&[0.0, f64::NAN, 0.0]),
-            ..Default::default()
-        },
-    );
+    let opts = MlsmrOptions {
+        warm_start: Some(&[0.0, f64::NAN, 0.0]),
+        ..Default::default()
+    };
+    let bad_value = mlsmr(&op, &b, &m, 1e-8, 10, opts);
     assert!(matches!(bad_value, Err(SolveError::InvalidInput { .. })));
 }
 
@@ -1035,16 +989,17 @@ fn test_mlsmr_warm_rejects_bad_warm_start() {
 #[test]
 fn test_mlsmr_exact_warm_start_has_its_own_stop_reason() {
     let b = [1.0, 2.0, 3.0];
+    let opts = MlsmrOptions {
+        warm_start: Some(&b),
+        ..Default::default()
+    };
     let result = mlsmr(
         &IdentityOp { n: 3 },
         &b,
         &IdentityOp { n: 3 },
         1e-10,
         50,
-        MlsmrOptions {
-            warm_start: Some(&b),
-            ..Default::default()
-        },
+        opts,
     )
     .expect("exact warm start");
     assert_eq!(result.stop_reason, LsmrStopReason::WarmStartExact);
@@ -1154,33 +1109,19 @@ fn test_mlsmr_ladder_warm_starts_and_escalates() {
     .expect("middle rung");
     assert_eq!(middle.stop_reason, LsmrStopReason::Escalated);
 
-    let last = mlsmr(
-        &op,
-        &b,
-        &jacobi(&op),
-        tol,
-        200,
-        MlsmrOptions {
-            warm_start: Some(&middle.x),
-            local_size: window,
-            ..Default::default()
-        },
-    )
-    .expect("last rung");
+    let opts = MlsmrOptions {
+        warm_start: Some(&middle.x),
+        local_size: window,
+        ..Default::default()
+    };
+    let last = mlsmr(&op, &b, &jacobi(&op), tol, 200, opts).expect("last rung");
     assert!(last.converged);
 
-    let cold = mlsmr(
-        &op,
-        &b,
-        &jacobi(&op),
-        tol,
-        200,
-        MlsmrOptions {
-            local_size: window,
-            ..Default::default()
-        },
-    )
-    .expect("cold solve");
+    let opts = MlsmrOptions {
+        local_size: window,
+        ..Default::default()
+    };
+    let cold = mlsmr(&op, &b, &jacobi(&op), tol, 200, opts).expect("cold solve");
     let ladder = normal_equation_residual(&op, &last.x, &b);
     assert!(
         ladder <= 10.0 * normal_equation_residual(&op, &cold.x, &b).max(1e-14),
