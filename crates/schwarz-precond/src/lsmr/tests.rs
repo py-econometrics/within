@@ -922,73 +922,6 @@ fn test_mlsmr_rejects_indefinite_preconditioner() {
     assert!(matches!(result, Err(SolveError::InvalidInput { .. })));
 }
 
-/// The point of the warm restart: an iterate built under one preconditioner is
-/// carried into a run under a different one and still reaches the least-squares
-/// solution, matching what a cold solve under the second preconditioner finds.
-#[test]
-fn test_mlsmr_warm_survives_preconditioner_change() {
-    let op = DenseOp::vandermonde(30, 12);
-    let b: Vec<f64> = (0..op.rows)
-        .map(|i| (1.0 + i as f64 / (op.rows - 1) as f64).ln())
-        .collect();
-    let tol = 1e-9;
-    let window = Some(12);
-
-    let cold = mlsmr(
-        &op,
-        &b,
-        &jacobi(&op),
-        tol,
-        200,
-        MlsmrOptions {
-            local_size: window,
-            ..Default::default()
-        },
-    )
-    .expect("cold solve");
-    assert!(cold.converged);
-
-    let stalled = mlsmr(
-        &op,
-        &b,
-        &IdentityOp { n: op.cols },
-        tol,
-        5,
-        MlsmrOptions {
-            local_size: window,
-            ..Default::default()
-        },
-    )
-    .expect("partial solve");
-    assert!(!stalled.converged, "the partial run must not have finished");
-
-    let warm = mlsmr(
-        &op,
-        &b,
-        &jacobi(&op),
-        tol,
-        200,
-        MlsmrOptions {
-            warm_start: Some(&stalled.x),
-            local_size: window,
-            ..Default::default()
-        },
-    )
-    .expect("warm solve");
-    assert!(
-        warm.converged,
-        "warm restart failed after {} iters",
-        warm.iterations
-    );
-
-    let cold_resid = normal_equation_residual(&op, &cold.x, &b);
-    let warm_resid = normal_equation_residual(&op, &warm.x, &b);
-    assert!(
-        warm_resid <= 10.0 * cold_resid.max(1e-14),
-        "warm restart landed short: {warm_resid} vs cold {cold_resid}"
-    );
-}
-
 /// The restart keeps the residual tolerance tied to the original `‖b‖`. Handing
 /// the residual to a plain `mlsmr` instead retargets it at `tol · ‖b − A x0‖`, a
 /// far tighter goal that costs iterations the caller never asked for.
@@ -1179,7 +1112,9 @@ fn test_mlsmr_converged_solve_is_never_escalated() {
 }
 
 /// The combination that motivates the options struct: the middle rung sets BOTH
-/// options at once, which no pre-unification entry point could express.
+/// options at once, which no pre-unification entry point could express. Also
+/// pins that an iterate carried across a change of preconditioner still lands
+/// where a cold solve under the last one does.
 #[test]
 fn test_mlsmr_ladder_warm_starts_and_escalates() {
     let op = DenseOp::vandermonde(30, 12);
@@ -1233,6 +1168,24 @@ fn test_mlsmr_ladder_warm_starts_and_escalates() {
     )
     .expect("last rung");
     assert!(last.converged);
+
+    let cold = mlsmr(
+        &op,
+        &b,
+        &jacobi(&op),
+        tol,
+        200,
+        MlsmrOptions {
+            local_size: window,
+            ..Default::default()
+        },
+    )
+    .expect("cold solve");
+    let ladder = normal_equation_residual(&op, &last.x, &b);
+    assert!(
+        ladder <= 10.0 * normal_equation_residual(&op, &cold.x, &b).max(1e-14),
+        "ladder landed short of a cold solve: {ladder}"
+    );
 }
 /// `Staleness` must separate the two regimes it exists to tell apart: it hands off
 /// a preconditioner that has stopped contracting and leaves a converging one alone.
