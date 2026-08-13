@@ -10,6 +10,9 @@ use crate::domain::Design;
 mod gather;
 mod scatter;
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) use gather::gather_apply;
 use scatter::scatter_apply;
 

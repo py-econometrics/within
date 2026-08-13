@@ -13,6 +13,9 @@ use crate::domain::Loading;
 use crate::domain::{Design, LocalDomain};
 use crate::{BuildError, BuildWarning};
 
+#[cfg(test)]
+mod tests;
+
 /// Concrete additive Schwarz type used in the parent crate.
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct FeSchwarz(SchwarzPreconditioner<BlockElimSolver>);

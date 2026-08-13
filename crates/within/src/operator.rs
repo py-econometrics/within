@@ -4,7 +4,4 @@
 pub(crate) mod design;
 pub(crate) mod schwarz;
 
-#[cfg(test)]
-mod tests;
-
 pub(crate) use design::DesignOperator;

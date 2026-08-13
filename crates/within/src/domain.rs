@@ -344,6 +344,12 @@ mod tests {
         .unwrap()
     }
 
+    impl Design<'static> {
+        pub(crate) fn from_levels_for_test(columns: Vec<Vec<u32>>) -> Self {
+            Design::from_frame(frame(columns, Vec::new())).expect("valid design")
+        }
+    }
+
     /// Both `stable_argsort` branches must emit the SAME permutation, or the
     /// gate silently changes summation order and every downstream result drifts.
     #[test]
