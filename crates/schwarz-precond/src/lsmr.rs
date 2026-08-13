@@ -68,6 +68,8 @@ pub enum LsmrStopReason {
     /// The normal-equation residual estimate met the relative tolerance:
     /// `‖Aᵀrₖ‖ / (‖A‖ ‖rₖ‖) ≤ tol`.
     NormalEquationTolerance,
+    /// The warm start already solved the system: `b − A x0` was exactly zero.
+    WarmStartExact,
     /// The iteration budget was exhausted before convergence.
     MaxIterations,
     /// The [`EscalationRule`] asked to hand off to a stronger preconditioner.
@@ -77,9 +79,7 @@ pub enum LsmrStopReason {
 }
 
 /// One iteration's numerical progress, handed to an [`EscalationRule`].
-///
-/// Wall-clock is deliberately absent: a rule that prices a switch in seconds
-/// holds its own `Instant`, and one that does not stays deterministic.
+/// Wall-clock is absent: a rule that prices a switch holds its own `Instant`.
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
 pub struct Progress {
@@ -87,8 +87,6 @@ pub struct Progress {
     pub iteration: usize,
     /// [`LsmrResult::normal_eq_residual`] as of this iteration.
     pub normal_eq_residual: f64,
-    /// Least-squares residual estimate `‖b − A xₖ‖`.
-    pub residual_norm: f64,
 }
 
 /// Decides when a preconditioner has stopped paying its way.
@@ -102,21 +100,18 @@ pub trait EscalationRule {
     fn should_escalate(&mut self, progress: Progress) -> bool;
 }
 
-/// Escalate once the trailing contraction window flattens.
-///
-/// Tracks per-iteration contractions of [`Progress::normal_eq_residual`] and
-/// gives up when the best of the last `window` exceeds `threshold`. Reads only
-/// the solver's own convergence history, so it needs no cost model for the
-/// preconditioner it would escalate to.
+/// Escalate once `window` consecutive contractions of
+/// [`Progress::normal_eq_residual`] all exceed `threshold`. Reads only the
+/// solver's own history, so it needs no cost model for what it escalates to.
 pub struct Staleness {
     window: usize,
     threshold: f64,
     previous: f64,
-    contractions: Vec<f64>,
+    stalled: usize,
 }
 
 impl Staleness {
-    /// `window` trailing contractions must all exceed `threshold` to escalate.
+    /// `window` consecutive contractions must all exceed `threshold` to escalate.
     #[must_use]
     pub fn new(window: usize, threshold: f64) -> Self {
         assert!(window > 0, "staleness window must be positive");
@@ -124,7 +119,7 @@ impl Staleness {
             window,
             threshold,
             previous: f64::NAN,
-            contractions: Vec::with_capacity(window),
+            stalled: 0,
         }
     }
 }
@@ -132,19 +127,15 @@ impl Staleness {
 impl EscalationRule for Staleness {
     fn should_escalate(&mut self, progress: Progress) -> bool {
         let current = progress.normal_eq_residual;
-        // The first iteration has no predecessor, and a zero reference has no ratio.
-        let escalate = if self.previous.is_finite() && self.previous > 0.0 {
-            self.contractions.push(current / self.previous);
-            if self.contractions.len() > self.window {
-                self.contractions.remove(0);
+        if self.previous.is_finite() && self.previous > 0.0 {
+            if current / self.previous > self.threshold {
+                self.stalled += 1;
+            } else {
+                self.stalled = 0;
             }
-            self.contractions.len() == self.window
-                && self.contractions.iter().copied().fold(f64::MAX, f64::min) > self.threshold
-        } else {
-            false
-        };
+        }
         self.previous = current;
-        escalate
+        self.stalled >= self.window
     }
 }
 
@@ -199,22 +190,9 @@ pub fn lsmr<A: Operator + ?Sized>(
 /// iteration. `M` is baked into the recurrence and cannot be swapped mid-run;
 /// [`MlsmrOptions::warm_start`] is how an iterate survives a change of
 /// preconditioner, and combining it with [`MlsmrOptions::escalation`] gives a
-/// ladder of arbitrary depth:
-///
-/// ```ignore
-/// let mut warm: Option<Vec<f64>> = None;
-/// for (preconditioner, mut rule) in ladder {
-///     let r = mlsmr(&a, &b, &preconditioner, tol, budget, MlsmrOptions {
-///         warm_start: warm.as_deref(),
-///         escalation: rule.as_deref_mut(),
-///         ..Default::default()
-///     })?;
-///     if r.stop_reason != LsmrStopReason::Escalated {
-///         return Ok(r);
-///     }
-///     warm = Some(r.x);
-/// }
-/// ```
+/// ladder of arbitrary depth: run each rung with the previous rung's `x` as
+/// `warm_start`, stopping at the first that does not report
+/// [`LsmrStopReason::Escalated`].
 pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
     operator: &A,
     b: &[f64],
@@ -225,7 +203,16 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
 ) -> Result<LsmrResult, SolveError> {
     validate_lsmr_inputs(operator, b, tol)?;
     let n = operator.ncols();
-    validate_preconditioner_shape(preconditioner, n)?;
+    if preconditioner.nrows() != n || preconditioner.ncols() != n {
+        return Err(SolveError::InvalidInput {
+            context: "lsmr",
+            message: format!(
+                "preconditioner shape {}x{} must match operator column count {n}",
+                preconditioner.nrows(),
+                preconditioner.ncols(),
+            ),
+        });
+    }
     let MlsmrOptions {
         warm_start,
         escalation,
@@ -233,16 +220,15 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
     } = options;
 
     let b_norm = vec_norm(b);
-    let zero_start = || LsmrResult {
-        x: vec![0.0; n],
-        converged: true,
-        iterations: 0,
-        residual_norm: 0.0,
-        normal_eq_residual: 0.0,
-        stop_reason: LsmrStopReason::ZeroRhs,
-    };
     if b_norm == 0.0 {
-        return Ok(zero_start());
+        return Ok(LsmrResult {
+            x: vec![0.0; n],
+            converged: true,
+            iterations: 0,
+            residual_norm: 0.0,
+            normal_eq_residual: 0.0,
+            stop_reason: LsmrStopReason::ZeroRhs,
+        });
     }
     let local_size = local_size.unwrap_or(0);
 
@@ -277,7 +263,11 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
     if r_norm == 0.0 {
         return Ok(LsmrResult {
             x: x0.to_vec(),
-            ..zero_start()
+            converged: true,
+            iterations: 0,
+            residual_norm: 0.0,
+            normal_eq_residual: 0.0,
+            stop_reason: LsmrStopReason::WarmStartExact,
         });
     }
 
@@ -348,14 +338,13 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
             let progress = Progress {
                 iteration: itn,
                 normal_eq_residual: recurrence.relative_normal_eq_residual(),
-                residual_norm: recurrence.residual_estimate(),
             };
             if rule.should_escalate(progress) {
                 return Ok(LsmrResult {
                     x: solution.into_x(),
                     converged: false,
                     iterations: itn,
-                    residual_norm: progress.residual_norm,
+                    residual_norm: recurrence.residual_estimate(),
                     normal_eq_residual: progress.normal_eq_residual,
                     stop_reason: LsmrStopReason::Escalated,
                 });
@@ -399,23 +388,6 @@ fn validate_lsmr_inputs<A: Operator + ?Sized>(
         return Err(SolveError::InvalidInput {
             context: "lsmr",
             message: format!("rhs entry {index} must be finite, got {value}"),
-        });
-    }
-    Ok(())
-}
-
-fn validate_preconditioner_shape<M: Operator + ?Sized>(
-    preconditioner: &M,
-    n: usize,
-) -> Result<(), SolveError> {
-    if preconditioner.nrows() != n || preconditioner.ncols() != n {
-        return Err(SolveError::InvalidInput {
-            context: "lsmr",
-            message: format!(
-                "preconditioner shape {}x{} must match operator column count {n}",
-                preconditioner.nrows(),
-                preconditioner.ncols(),
-            ),
         });
     }
     Ok(())

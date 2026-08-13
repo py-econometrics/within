@@ -113,28 +113,6 @@ impl Operator for OverdeterminedOp {
     }
 }
 
-/// Diagonal preconditioner: M⁻¹ = diag(1/2, 1/2, 1)
-/// Approximates (Aᵀ A)⁻¹ = diag(2, 2, 1)⁻¹
-struct DiagPrecond;
-
-impl Operator for DiagPrecond {
-    fn nrows(&self) -> usize {
-        3
-    }
-    fn ncols(&self) -> usize {
-        3
-    }
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        y[0] = x[0] / 2.0;
-        y[1] = x[1] / 2.0;
-        y[2] = x[2];
-        Ok(())
-    }
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        self.apply(x, y)
-    }
-}
-
 /// Degenerate 2×2 operator `A = [[1, 0], [0, 0]]` — zero second row and zero
 /// second column. Shared by the zero-row/column and mid-stream `beta == 0`
 /// breakdown tests.
@@ -226,7 +204,7 @@ fn test_mlsmr_preconditioned() {
     let result = mlsmr(
         &OverdeterminedOp,
         &b,
-        &DiagPrecond,
+        &DiagOp(vec![0.5, 0.5, 1.0]),
         1e-10,
         100,
         MlsmrOptions::default(),
@@ -1117,6 +1095,41 @@ fn test_mlsmr_warm_rejects_bad_warm_start() {
         },
     );
     assert!(matches!(bad_value, Err(SolveError::InvalidInput { .. })));
+}
+
+/// A rung handed an already-exact iterate must say so, not claim the caller
+/// passed a zero right-hand side — a ladder driver has to tell the two apart.
+#[test]
+fn test_mlsmr_exact_warm_start_is_not_reported_as_zero_rhs() {
+    let op = IdentityOp { n: 3 };
+    let b = [1.0, 2.0, 3.0];
+
+    let result = mlsmr(
+        &op,
+        &b,
+        &IdentityOp { n: 3 },
+        1e-10,
+        50,
+        MlsmrOptions {
+            warm_start: Some(&b),
+            ..Default::default()
+        },
+    )
+    .expect("exact warm start");
+    assert_eq!(result.stop_reason, LsmrStopReason::WarmStartExact);
+    assert!(result.converged);
+    assert_eq!(result.x, b);
+
+    let zero = mlsmr(
+        &op,
+        &[0.0; 3],
+        &IdentityOp { n: 3 },
+        1e-10,
+        50,
+        MlsmrOptions::default(),
+    )
+    .expect("zero rhs");
+    assert_eq!(zero.stop_reason, LsmrStopReason::ZeroRhs);
 }
 
 /// Deterministic trigger, so a ladder test measures the handoff machinery rather

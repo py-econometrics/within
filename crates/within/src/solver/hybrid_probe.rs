@@ -176,7 +176,7 @@ fn diagonal_stall_signal() {
         let schwarz_iters = iters(&schwarz);
         let diagonal_iters = iters(&diagonal);
 
-        // No per-iteration hook on `mlsmr`, so re-solve at each budget; the
+        // Re-solved per budget rather than recorded via `EscalationRule`; the
         // recurrence is deterministic, making the truncations one trajectory.
         let traj: Vec<f64> = (1..=PROBE)
             .map(|j| {
@@ -343,9 +343,8 @@ fn apply_rule(design: &Design<'_>, y: &[f64], probe: usize, stall: f64) -> Outco
     };
 
     // A stalling diagonal contracts steadily; one that will finish dips hard on
-    // some step, so the window minimum is what separates them. A real
-    // implementation reads the whole window from one run via a per-iteration
-    // hook, so only the full-length run is charged; the truncations are untimed.
+    // some step, so the window minimum is what separates them. `EscalationRule`
+    // reads that window from one run, so only the full-length run is charged.
     // Slope designs get no probe: the contraction classes overlap completely
     // there, so the window minimum carries no signal and the probe is pure cost.
     if has_slopes(design) {
