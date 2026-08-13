@@ -354,10 +354,9 @@ fn par_emit(matrix: &SddmMatrix, config: &ApproxSchurConfig) -> Vec<Edge> {
             },
         )
         .map(|work| work.edges)
-        .reduce(Vec::new, |mut a, mut b| {
-            a.append(&mut b);
-            a
-        });
+        // Pre-sized single copy; a `reduce` tree of `append`s recopies each edge per level.
+        .collect::<Vec<_>>()
+        .concat();
     if let Some(ground) = ground_vertex {
         edges.extend(
             matrix
