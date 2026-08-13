@@ -9,7 +9,12 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **BREAKING:** `schwarz_precond::mlsmr` takes an `MlsmrOptions` in place of its trailing `local_size`. A warm start and an escalation rule are options that compose, so a preconditioner ladder of any depth is one call per rung.
 - **BREAKING:** The serialized `Preconditioner` wire format changed (v12 → v13) with the `approx-chol` 0.4 → 0.5 bump; 0.3.0 bytes no longer decode.
+
+### Added
+
+- `schwarz_precond::EscalationRule` stops a solve early once its preconditioner stops paying its way, reporting `LsmrStopReason::Escalated` with an iterate that warm-starts the next one. `Staleness` implements it from the trailing contraction window.
 
 ### Fixed
 

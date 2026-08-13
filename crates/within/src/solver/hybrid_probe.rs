@@ -7,7 +7,7 @@ use crate::config::PreconditionerConfig;
 use crate::domain::{Design, Effect};
 use crate::operator::design::DesignOperator;
 use crate::operator::schwarz::build_preconditioner;
-use schwarz_precond::{mlsmr, mlsmr_warm};
+use schwarz_precond::{mlsmr, MlsmrOptions};
 use std::time::Instant;
 
 #[path = "../../benches/shared/fixest_dgp.rs"]
@@ -44,7 +44,7 @@ fn report(design: &Design<'_>, y: &[f64], budgets: &[usize]) {
 
     let run = |p: &_, budget: usize| {
         let t = Instant::now();
-        let r = mlsmr(&op, &b, p, TOL, budget, None).expect("solve");
+        let r = mlsmr(&op, &b, p, TOL, budget, MlsmrOptions::default()).expect("solve");
         (
             r.x,
             Leg {
@@ -81,7 +81,18 @@ fn report(design: &Design<'_>, y: &[f64], budgets: &[usize]) {
     for &budget in budgets {
         let (x0, warm_up) = run(&diagonal, budget);
         let t = Instant::now();
-        let restarted = mlsmr_warm(&op, &b, &x0, &schwarz, TOL, MAXITER, None).expect("restart");
+        let restarted = mlsmr(
+            &op,
+            &b,
+            &schwarz,
+            TOL,
+            MAXITER,
+            MlsmrOptions {
+                warm_start: Some(&x0),
+                ..Default::default()
+            },
+        )
+        .expect("restart");
         let total = diagonal_setup + warm_up.seconds + schwarz_setup + t.elapsed().as_secs_f64();
         assert!(
             restarted.converged,
@@ -158,7 +169,7 @@ fn diagonal_stall_signal() {
         let diagonal = build(PreconditionerConfig::Diagonal);
 
         let iters = |p: &_| {
-            mlsmr(&op, &b, p, TOL, MAXITER, None)
+            mlsmr(&op, &b, p, TOL, MAXITER, MlsmrOptions::default())
                 .expect("solve")
                 .iterations
         };
@@ -169,7 +180,7 @@ fn diagonal_stall_signal() {
         // recurrence is deterministic, making the truncations one trajectory.
         let traj: Vec<f64> = (1..=PROBE)
             .map(|j| {
-                mlsmr(&op, &b, &diagonal, TOL, j, None)
+                mlsmr(&op, &b, &diagonal, TOL, j, MlsmrOptions::default())
                     .expect("solve")
                     .normal_eq_residual
             })
@@ -310,7 +321,7 @@ fn apply_rule(design: &Design<'_>, y: &[f64], probe: usize, stall: f64) -> Outco
 
     let timed = |p: &_, budget: usize| {
         let t = Instant::now();
-        let r = mlsmr(&op, &b, p, TOL, budget, None).expect("solve");
+        let r = mlsmr(&op, &b, p, TOL, budget, MlsmrOptions::default()).expect("solve");
         (r, t.elapsed().as_secs_f64())
     };
 
@@ -354,7 +365,7 @@ fn apply_rule(design: &Design<'_>, y: &[f64], probe: usize, stall: f64) -> Outco
     let (probed, probe_solve) = timed(&diagonal, probe);
     let nq: Vec<f64> = (2..=probe)
         .map(|j| {
-            mlsmr(&op, &b, &diagonal, TOL, j, None)
+            mlsmr(&op, &b, &diagonal, TOL, j, MlsmrOptions::default())
                 .expect("solve")
                 .normal_eq_residual
         })
@@ -364,8 +375,18 @@ fn apply_rule(design: &Design<'_>, y: &[f64], probe: usize, stall: f64) -> Outco
 
     let (rule_iters, rule_total) = if switched {
         let t = Instant::now();
-        let restarted =
-            mlsmr_warm(&op, &b, &probed.x, &schwarz, TOL, MAXITER, None).expect("restart");
+        let restarted = mlsmr(
+            &op,
+            &b,
+            &schwarz,
+            TOL,
+            MAXITER,
+            MlsmrOptions {
+                warm_start: Some(&probed.x),
+                ..Default::default()
+            },
+        )
+        .expect("restart");
         let elapsed = if restarted.converged {
             diagonal_setup + probe_solve + schwarz_setup + t.elapsed().as_secs_f64()
         } else {
@@ -498,15 +519,28 @@ fn hard_case_loss() {
             let (diagonal, d_setup) = build(PreconditionerConfig::Diagonal);
 
             let t = Instant::now();
-            let cold = mlsmr(&op, &b, &schwarz, TOL, MAXITER, None).expect("cold");
+            let cold =
+                mlsmr(&op, &b, &schwarz, TOL, MAXITER, MlsmrOptions::default()).expect("cold");
             let cold_solve = t.elapsed().as_secs_f64();
 
             let t = Instant::now();
-            let probe = mlsmr(&op, &b, &diagonal, TOL, PROBE, None).expect("probe");
+            let probe =
+                mlsmr(&op, &b, &diagonal, TOL, PROBE, MlsmrOptions::default()).expect("probe");
             let probe_time = t.elapsed().as_secs_f64();
 
             let t = Instant::now();
-            let warm = mlsmr_warm(&op, &b, &probe.x, &schwarz, TOL, MAXITER, None).expect("warm");
+            let warm = mlsmr(
+                &op,
+                &b,
+                &schwarz,
+                TOL,
+                MAXITER,
+                MlsmrOptions {
+                    warm_start: Some(&probe.x),
+                    ..Default::default()
+                },
+            )
+            .expect("warm");
             let warm_solve = t.elapsed().as_secs_f64();
             assert!(cold.converged && warm.converged, "leg stalled");
 
@@ -519,7 +553,7 @@ fn hard_case_loss() {
             cold_iters = cold.iterations;
             warm_iters = warm.iterations;
             if diag_iters == 0 {
-                diag_iters = mlsmr(&op, &b, &diagonal, TOL, MAXITER, None)
+                diag_iters = mlsmr(&op, &b, &diagonal, TOL, MAXITER, MlsmrOptions::default())
                     .expect("diag")
                     .iterations;
             }
@@ -567,10 +601,12 @@ fn separating_statistic() {
             let (diagonal, d_setup) = build(PreconditionerConfig::Diagonal);
 
             let t = Instant::now();
-            let cold = mlsmr(&op, &b, &schwarz, TOL, MAXITER, None).expect("cold");
+            let cold =
+                mlsmr(&op, &b, &schwarz, TOL, MAXITER, MlsmrOptions::default()).expect("cold");
             let cold_total = s_setup + t.elapsed().as_secs_f64();
             let t = Instant::now();
-            let diag = mlsmr(&op, &b, &diagonal, TOL, DIAG_CAP, None).expect("diag");
+            let diag =
+                mlsmr(&op, &b, &diagonal, TOL, DIAG_CAP, MlsmrOptions::default()).expect("diag");
             let cold_total = if cold.converged {
                 cold_total
             } else {
@@ -584,7 +620,7 @@ fn separating_statistic() {
 
             let nq: Vec<f64> = (1..=DEPTH)
                 .map(|j| {
-                    mlsmr(&op, &b, &diagonal, TOL, j, None)
+                    mlsmr(&op, &b, &diagonal, TOL, j, MlsmrOptions::default())
                         .expect("probe")
                         .normal_eq_residual
                 })

@@ -3,9 +3,9 @@
 //! Two entry points:
 //! - [`lsmr`] — standard Golub-Kahan bidiagonalization, no preconditioner.
 //! - [`mlsmr`] — Modified Golub-Kahan variant preconditioned with `M ≈ AᵀA`;
-//!   requires a single `M⁻¹` application per iteration.
-//! - [`mlsmr_warm`] — [`mlsmr`] on the residual system of a warm start, so an
-//!   iterate survives a change of preconditioner.
+//!   requires a single `M⁻¹` application per iteration. [`MlsmrOptions`] adds a
+//!   warm start and an [`EscalationRule`], which compose into a preconditioner
+//!   ladder: run a cheap `M`, escalate when it stops paying, warm-start the next.
 
 mod bidiag;
 mod recurrence;
@@ -45,10 +45,12 @@ pub struct LsmrResult {
     pub iterations: usize,
     /// Final residual norm estimate `‖b − A x‖`.
     pub residual_norm: f64,
-    /// Relative normal-equation residual estimate `‖Aᵀrₖ‖ / ‖Aᵀb‖`, recovered
-    /// from the recurrence scalars (`|ζ̄ₖ| / |ζ̄₀|`, Fong & Saunders) at no extra
-    /// cost. For a preconditioned solve (via [`mlsmr`]) this is measured in the
-    /// preconditioner's metric.
+    /// Normal-equation residual estimate relative to the START OF THIS RUN,
+    /// recovered from the recurrence scalars (`|ζ̄ₖ| / |ζ̄₀|`, Fong & Saunders) at
+    /// no extra cost. Cold, that reference is `‖Aᵀb‖`; warm-started from `x0` it
+    /// is `‖Aᵀ(b − A x0)‖`, so each rung of a ladder reports its own progress.
+    /// Preconditioned, it is measured in `M`'s metric. It is NOT the quantity
+    /// `tol` is compared against — see [`LsmrStopReason::NormalEquationTolerance`].
     pub normal_eq_residual: f64,
     /// Reason the solver stopped.
     pub stop_reason: LsmrStopReason,
@@ -63,10 +65,101 @@ pub enum LsmrStopReason {
     InitialNormalEquationResidualZero,
     /// The least-squares residual estimate met the absolute tolerance.
     ResidualTolerance,
-    /// The normal-equation residual estimate met the relative tolerance.
+    /// The normal-equation residual estimate met the relative tolerance:
+    /// `‖Aᵀrₖ‖ / (‖A‖ ‖rₖ‖) ≤ tol`.
     NormalEquationTolerance,
     /// The iteration budget was exhausted before convergence.
     MaxIterations,
+    /// The [`EscalationRule`] asked to hand off to a stronger preconditioner.
+    /// Distinct from [`Self::MaxIterations`], which means the caller's whole
+    /// budget is gone rather than this rung's turn being over.
+    Escalated,
+}
+
+/// One iteration's numerical progress, handed to an [`EscalationRule`].
+///
+/// Wall-clock is deliberately absent: a rule that prices a switch in seconds
+/// holds its own `Instant`, and one that does not stays deterministic.
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+pub struct Progress {
+    /// 1-based index of the iteration just completed.
+    pub iteration: usize,
+    /// [`LsmrResult::normal_eq_residual`] as of this iteration.
+    pub normal_eq_residual: f64,
+    /// Least-squares residual estimate `‖b − A xₖ‖`.
+    pub residual_norm: f64,
+}
+
+/// Decides when a preconditioner has stopped paying its way.
+///
+/// Consulted once per iteration, always AFTER the convergence test, so a solve
+/// that finishes is never reported as escalated. Returning `true` stops the run
+/// with [`LsmrStopReason::Escalated`]; the returned `x` is a valid warm start
+/// for the next rung.
+pub trait EscalationRule {
+    /// Whether to hand off now.
+    fn should_escalate(&mut self, progress: Progress) -> bool;
+}
+
+/// Escalate once the trailing contraction window flattens.
+///
+/// Tracks per-iteration contractions of [`Progress::normal_eq_residual`] and
+/// gives up when the best of the last `window` exceeds `threshold`. Reads only
+/// the solver's own convergence history, so it needs no cost model for the
+/// preconditioner it would escalate to.
+pub struct Staleness {
+    window: usize,
+    threshold: f64,
+    previous: f64,
+    contractions: Vec<f64>,
+}
+
+impl Staleness {
+    /// `window` trailing contractions must all exceed `threshold` to escalate.
+    #[must_use]
+    pub fn new(window: usize, threshold: f64) -> Self {
+        assert!(window > 0, "staleness window must be positive");
+        Self {
+            window,
+            threshold,
+            previous: f64::NAN,
+            contractions: Vec::with_capacity(window),
+        }
+    }
+}
+
+impl EscalationRule for Staleness {
+    fn should_escalate(&mut self, progress: Progress) -> bool {
+        let current = progress.normal_eq_residual;
+        // The first iteration has no predecessor, and a zero reference has no ratio.
+        let escalate = if self.previous.is_finite() && self.previous > 0.0 {
+            self.contractions.push(current / self.previous);
+            if self.contractions.len() > self.window {
+                self.contractions.remove(0);
+            }
+            self.contractions.len() == self.window
+                && self.contractions.iter().copied().fold(f64::MAX, f64::min) > self.threshold
+        } else {
+            false
+        };
+        self.previous = current;
+        escalate
+    }
+}
+
+/// Optional behaviours of [`mlsmr`]; `..Default::default()` selects a plain
+/// cold solve run to convergence.
+#[derive(Default)]
+pub struct MlsmrOptions<'a> {
+    /// Initial iterate. The solve runs on the residual system `min ‖(b − A x0) − A d‖`
+    /// and returns `x0 + d`, reaching the same `x*` as a cold solve. Stopping
+    /// tolerances stay measured against the original `‖b‖`.
+    pub warm_start: Option<&'a [f64]>,
+    /// Hands off to a stronger preconditioner mid-run; see [`EscalationRule`].
+    pub escalation: Option<&'a mut dyn EscalationRule>,
+    /// Local reorthogonalization window; `None` disables it.
+    pub local_size: Option<usize>,
 }
 
 /// Unpreconditioned LSMR.
@@ -97,60 +190,67 @@ pub fn lsmr<A: Operator + ?Sized>(
 
     let local_size = local_size.unwrap_or(0);
     let (bidiag, step1) = GolubKahan::init(operator, b, local_size)?;
-    lsmr_from_bidiag(bidiag, step1, b_norm, b_norm, tol, maxiter)
+    lsmr_from_bidiag(bidiag, step1, b_norm, b_norm, tol, maxiter, None)
 }
 
 /// Preconditioned LSMR with `M ≈ AᵀA`.
 ///
 /// Uses the Modified Golub-Kahan variant requiring one `M⁻¹` application per
-/// iteration.
+/// iteration. `M` is baked into the recurrence and cannot be swapped mid-run;
+/// [`MlsmrOptions::warm_start`] is how an iterate survives a change of
+/// preconditioner, and combining it with [`MlsmrOptions::escalation`] gives a
+/// ladder of arbitrary depth:
+///
+/// ```ignore
+/// let mut warm: Option<Vec<f64>> = None;
+/// for (preconditioner, mut rule) in ladder {
+///     let r = mlsmr(&a, &b, &preconditioner, tol, budget, MlsmrOptions {
+///         warm_start: warm.as_deref(),
+///         escalation: rule.as_deref_mut(),
+///         ..Default::default()
+///     })?;
+///     if r.stop_reason != LsmrStopReason::Escalated {
+///         return Ok(r);
+///     }
+///     warm = Some(r.x);
+/// }
+/// ```
 pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
     operator: &A,
     b: &[f64],
     preconditioner: &M,
     tol: f64,
     maxiter: usize,
-    local_size: Option<usize>,
+    options: MlsmrOptions<'_>,
 ) -> Result<LsmrResult, SolveError> {
     validate_lsmr_inputs(operator, b, tol)?;
     let n = operator.ncols();
     validate_preconditioner_shape(preconditioner, n)?;
+    let MlsmrOptions {
+        warm_start,
+        escalation,
+        local_size,
+    } = options;
 
     let b_norm = vec_norm(b);
+    let zero_start = || LsmrResult {
+        x: vec![0.0; n],
+        converged: true,
+        iterations: 0,
+        residual_norm: 0.0,
+        normal_eq_residual: 0.0,
+        stop_reason: LsmrStopReason::ZeroRhs,
+    };
     if b_norm == 0.0 {
-        return Ok(LsmrResult {
-            x: vec![0.0; n],
-            converged: true,
-            iterations: 0,
-            residual_norm: 0.0,
-            normal_eq_residual: 0.0,
-            stop_reason: LsmrStopReason::ZeroRhs,
-        });
+        return Ok(zero_start());
     }
-
     let local_size = local_size.unwrap_or(0);
-    let (bidiag, step1) = ModifiedGolubKahan::init(operator, preconditioner, b, local_size)?;
-    lsmr_from_bidiag(bidiag, step1, b_norm, b_norm, tol, maxiter)
-}
 
-/// Preconditioned LSMR warm-started from `x0`.
-///
-/// Solves the residual system `min ‖(b − A x0) − A d‖` and returns `x0 + d`,
-/// which reaches the same `x*` as a cold [`mlsmr`]. The stopping tests stay
-/// measured against the original `‖b‖`, but `normal_eq_residual` is relative to
-/// `‖Aᵀ(b − A x0)‖`, so it reports progress since the warm start.
-pub fn mlsmr_warm<A: Operator + ?Sized, M: Operator + ?Sized>(
-    operator: &A,
-    b: &[f64],
-    x0: &[f64],
-    preconditioner: &M,
-    tol: f64,
-    maxiter: usize,
-    local_size: Option<usize>,
-) -> Result<LsmrResult, SolveError> {
-    validate_lsmr_inputs(operator, b, tol)?;
-    let n = operator.ncols();
-    validate_preconditioner_shape(preconditioner, n)?;
+    let Some(x0) = warm_start else {
+        let (bidiag, step1) = ModifiedGolubKahan::init(operator, preconditioner, b, local_size)?;
+        return lsmr_from_bidiag(bidiag, step1, b_norm, b_norm, tol, maxiter, escalation);
+    };
+
     if x0.len() != n {
         return Err(SolveError::InvalidInput {
             context: "lsmr",
@@ -177,17 +277,12 @@ pub fn mlsmr_warm<A: Operator + ?Sized, M: Operator + ?Sized>(
     if r_norm == 0.0 {
         return Ok(LsmrResult {
             x: x0.to_vec(),
-            converged: true,
-            iterations: 0,
-            residual_norm: 0.0,
-            normal_eq_residual: 0.0,
-            stop_reason: LsmrStopReason::ZeroRhs,
+            ..zero_start()
         });
     }
 
-    let local_size = local_size.unwrap_or(0);
     let (bidiag, step1) = ModifiedGolubKahan::init(operator, preconditioner, &r, local_size)?;
-    let mut result = lsmr_from_bidiag(bidiag, step1, r_norm, vec_norm(b), tol, maxiter)?;
+    let mut result = lsmr_from_bidiag(bidiag, step1, r_norm, b_norm, tol, maxiter, escalation)?;
     for (xi, &x0i) in result.x.iter_mut().zip(x0) {
         *xi += x0i;
     }
@@ -205,6 +300,7 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
     tol_ref_norm: f64,
     tol: f64,
     maxiter: usize,
+    mut escalation: Option<&mut dyn EscalationRule>,
 ) -> Result<LsmrResult, SolveError> {
     let n = bidiag.v().len();
     if step1.alpha == 0.0 {
@@ -247,6 +343,23 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
                 normal_eq_residual: recurrence.relative_normal_eq_residual(),
                 stop_reason,
             });
+        }
+        if let Some(rule) = escalation.as_deref_mut() {
+            let progress = Progress {
+                iteration: itn,
+                normal_eq_residual: recurrence.relative_normal_eq_residual(),
+                residual_norm: recurrence.residual_estimate(),
+            };
+            if rule.should_escalate(progress) {
+                return Ok(LsmrResult {
+                    x: solution.into_x(),
+                    converged: false,
+                    iterations: itn,
+                    residual_norm: progress.residual_norm,
+                    normal_eq_residual: progress.normal_eq_residual,
+                    stop_reason: LsmrStopReason::Escalated,
+                });
+            }
         }
         prev_rot = curr_rot;
     }

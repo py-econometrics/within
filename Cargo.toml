@@ -7,7 +7,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT"
@@ -15,7 +15,7 @@ repository = "https://github.com/py-econometrics/within"
 categories = ["mathematics", "science", "algorithms"]
 
 [workspace.dependencies]
-schwarz-precond = { version = "0.3.0", path = "crates/schwarz-precond" }
+schwarz-precond = { version = "0.4.0", path = "crates/schwarz-precond" }
 faer = "0.24.4"
 rayon = "1.12"
 serde = { version = "1", features = ["derive"] }

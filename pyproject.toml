@@ -1,6 +1,6 @@
 [project]
 name = "within-py"
-version = "0.3.0"
+version = "0.4.0"
 description = "High-performance fixed-effects solver for econometric panel data"
 readme = "README.md"
 authors = [

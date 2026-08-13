@@ -67,5 +67,7 @@ mod schwarz;
 pub use domain::{PartitionWeights, SubdomainCore};
 pub use error::{BuildError, LocalSolveError, SolveError};
 pub use local_solve::{LocalSolver, SubdomainEntry};
-pub use lsmr::{lsmr, mlsmr, mlsmr_warm, LsmrResult, LsmrStopReason};
+pub use lsmr::{
+    lsmr, mlsmr, EscalationRule, LsmrResult, LsmrStopReason, MlsmrOptions, Progress, Staleness,
+};
 pub use schwarz::{ReductionStrategy, SchwarzPreconditioner};
