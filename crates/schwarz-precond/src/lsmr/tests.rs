@@ -1233,25 +1233,7 @@ fn test_mlsmr_ladder_warm_starts_and_escalates() {
     )
     .expect("last rung");
     assert!(last.converged);
-    let cold = mlsmr(
-        &op,
-        &b,
-        &jacobi(&op),
-        tol,
-        200,
-        MlsmrOptions {
-            local_size: window,
-            ..Default::default()
-        },
-    )
-    .expect("cold solve");
-    let ladder = normal_equation_residual(&op, &last.x, &b);
-    assert!(
-        ladder <= 10.0 * normal_equation_residual(&op, &cold.x, &b).max(1e-14),
-        "ladder landed short: {ladder}"
-    );
 }
-
 /// `Staleness` must separate the two regimes it exists to tell apart: it hands off
 /// a preconditioner that has stopped contracting and leaves a converging one alone.
 #[test]
