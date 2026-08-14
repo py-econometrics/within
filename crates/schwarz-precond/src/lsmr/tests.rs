@@ -960,6 +960,41 @@ fn test_mlsmr_warm_rejects_bad_warm_start() {
     }
 }
 
+/// Regression: `A·x₀` overflowing made `b - A·x₀` norm to NaN, which `init` read
+/// as β₁ = 0 and reported as a converged solve with `x = x₀` and a NaN residual.
+#[test]
+fn test_mlsmr_warm_rejects_overflowing_warm_start_residual() {
+    let op = DiagOp(vec![1e200; 3]);
+    let m = IdentityOp { n: 3 };
+    let x0 = [1e200; 3];
+    let options = MlsmrOptions {
+        warm_start: Some(&x0),
+        ..Default::default()
+    };
+    assert!(matches!(
+        mlsmr(&op, &[1.0, 2.0, 3.0], &m, 1e-8, 10, options),
+        Err(SolveError::InvalidInput { .. })
+    ));
+}
+
+/// A zero RHS must not shadow warm-start validation: the same bad `x0` has to be
+/// rejected whether or not `b` short-circuits the solve.
+#[test]
+fn test_mlsmr_zero_rhs_still_validates_warm_start() {
+    let op = IdentityOp { n: 3 };
+    let b = [0.0, 0.0, 0.0];
+    for x0 in [&[0.0, 0.0][..], &[0.0, f64::NAN, 0.0]] {
+        let options = MlsmrOptions {
+            warm_start: Some(x0),
+            ..Default::default()
+        };
+        assert!(matches!(
+            mlsmr(&op, &b, &op, 1e-8, 10, options),
+            Err(SolveError::InvalidInput { .. })
+        ));
+    }
+}
+
 #[test]
 fn test_mlsmr_exact_warm_start_has_its_own_stop_reason() {
     let b = [1.0, 2.0, 3.0];

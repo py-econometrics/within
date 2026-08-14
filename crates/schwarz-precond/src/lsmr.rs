@@ -224,6 +224,20 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
         local_size,
     } = options;
 
+    if let Some(x0) = warm_start {
+        if x0.len() != n {
+            return Err(invalid_input(format!(
+                "warm-start length {} does not match operator column count {n}",
+                x0.len()
+            )));
+        }
+        if let Some((index, value)) = x0.iter().copied().enumerate().find(|(_, v)| !v.is_finite()) {
+            return Err(invalid_input(format!(
+                "warm-start entry {index} must be finite, got {value}"
+            )));
+        }
+    }
+
     let b_norm = vec_norm(b);
     if b_norm == 0.0 {
         return Ok(LsmrResult {
@@ -240,19 +254,6 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
     let rhs: Cow<'_, [f64]> = match warm_start {
         None => Cow::Borrowed(b),
         Some(x0) => {
-            if x0.len() != n {
-                return Err(invalid_input(format!(
-                    "warm-start length {} does not match operator column count {n}",
-                    x0.len()
-                )));
-            }
-            if let Some((index, value)) =
-                x0.iter().copied().enumerate().find(|(_, v)| !v.is_finite())
-            {
-                return Err(invalid_input(format!(
-                    "warm-start entry {index} must be finite, got {value}"
-                )));
-            }
             let mut residual = vec![0.0; operator.nrows()];
             operator.apply(x0, &mut residual)?;
             for (ri, &bi) in residual.iter_mut().zip(b) {
@@ -262,6 +263,12 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
         }
     };
     let rhs_norm = vec_norm(&rhs);
+    // Unlike `b`, `rhs` is computed: an ∞ entry norms to NaN, which reads as β₁ = 0 downstream.
+    if !rhs_norm.is_finite() {
+        return Err(invalid_input(format!(
+            "warm-start residual b - A·x0 has non-finite norm {rhs_norm}"
+        )));
+    }
     if rhs_norm == 0.0 {
         let x0 = warm_start.expect("zero RHS returned before warm-start handling");
         return Ok(LsmrResult {
