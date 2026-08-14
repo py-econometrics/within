@@ -1007,6 +1007,13 @@ fn test_mlsmr_exact_warm_start_has_its_own_stop_reason() {
     assert_eq!(result.x, b);
 }
 
+#[test]
+fn test_mlsmr_options_are_send_and_sync() {
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    assert_send_sync::<MlsmrOptions<'static>>();
+}
+
 /// Deterministic trigger, so a ladder test measures the handoff machinery rather
 /// than whether a numerical rule happened to fire. Stateless, so it is its own
 /// handler.
@@ -1131,7 +1138,7 @@ fn test_mlsmr_ladder_warm_starts_and_escalates() {
 fn test_staleness_escalates_only_the_stalling_preconditioner() {
     let op = DenseOp::vandermonde(30, 12);
     let b: Vec<f64> = (0..op.rows).map(|i| (i as f64).sin()).collect();
-    let rule = Staleness::new(4, 0.7);
+    let rule = Staleness::try_new(4, 0.7).expect("valid staleness policy");
 
     let opts = MlsmrOptions {
         escalation: Some(&rule),
@@ -1154,4 +1161,19 @@ fn test_staleness_escalates_only_the_stalling_preconditioner() {
     .expect("strong solve");
     assert!(finished.converged);
     assert_ne!(finished.stop_reason, LsmrStopReason::Escalated);
+}
+
+#[test]
+fn test_staleness_rejects_invalid_configuration() {
+    assert!(matches!(
+        Staleness::try_new(0, 0.7),
+        Err(StalenessError::ZeroWindow)
+    ));
+    for threshold in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.1] {
+        assert!(matches!(
+            Staleness::try_new(4, threshold),
+            Err(StalenessError::InvalidThreshold { threshold: value })
+                if value.to_bits() == threshold.to_bits()
+        ));
+    }
 }

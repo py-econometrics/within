@@ -205,25 +205,36 @@ pub(super) enum Stop {
     NormalEquationTolerance,
 }
 
-/// Fong & Saunders' two LSMR stop criteria plus the running `‖A‖_F²` accumulator the second needs.
-pub(super) struct ConvergenceState {
-    /// `tol · ‖b‖`.
+/// Immutable stopping criteria for one LSMR run.
+#[derive(Clone, Copy)]
+pub(super) struct ConvergenceCriteria {
     abs_tol: f64,
-    /// `tol`.
     rel_tol: f64,
-    /// Running `‖A‖_F²` from the bidiagonal entries.
+}
+
+impl ConvergenceCriteria {
+    pub(super) fn new(reference_norm: f64, tol: f64) -> Self {
+        Self {
+            abs_tol: tol * reference_norm,
+            rel_tol: tol,
+        }
+    }
+
+    pub(super) fn start(self, alpha1: f64) -> ConvergenceState {
+        ConvergenceState {
+            criteria: self,
+            a_norm_sq: alpha1 * alpha1,
+        }
+    }
+}
+
+/// Mutable convergence observations for one LSMR run.
+pub(super) struct ConvergenceState {
+    criteria: ConvergenceCriteria,
     a_norm_sq: f64,
 }
 
 impl ConvergenceState {
-    pub(super) fn new(b_norm: f64, tol: f64, alpha1: f64) -> Self {
-        Self {
-            abs_tol: tol * b_norm,
-            rel_tol: tol,
-            a_norm_sq: alpha1 * alpha1,
-        }
-    }
-
     /// Fold a fresh bidiagonal step into the `‖A‖_F²` estimate.
     pub(super) fn observe(&mut self, s: BidiagStep) {
         self.a_norm_sq += s.alpha * s.alpha + s.beta * s.beta;
@@ -232,12 +243,12 @@ impl ConvergenceState {
     /// Check both stop criteria against the current scalar state.
     pub(super) fn check(&self, r: &LsmrRecurrenceState) -> Stop {
         let residual = r.residual_estimate();
-        if residual <= self.abs_tol {
+        if residual <= self.criteria.abs_tol {
             return Stop::ResidualTolerance;
         }
         let a_norm = self.a_norm_sq.sqrt().max(f64::MIN_POSITIVE);
         let normar = r.normal_eq_residual_estimate();
-        if normar / (a_norm * residual.max(f64::MIN_POSITIVE)) <= self.rel_tol {
+        if normar / (a_norm * residual.max(f64::MIN_POSITIVE)) <= self.criteria.rel_tol {
             return Stop::NormalEquationTolerance;
         }
         Stop::Continue

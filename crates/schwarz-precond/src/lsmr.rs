@@ -14,7 +14,7 @@ mod tests;
 
 use crate::{Operator, SolveError};
 use bidiag::{BidiagStep, Bidiagonalization, GolubKahan, ModifiedGolubKahan};
-use recurrence::{ConvergenceState, LsmrRecurrenceState, RotationStep, SolutionState, Stop};
+use recurrence::{ConvergenceCriteria, LsmrRecurrenceState, RotationStep, SolutionState, Stop};
 
 /// Euclidean norm of a vector.
 ///
@@ -94,7 +94,7 @@ pub struct Progress {
 /// The solver builds a fresh [`EscalationHandler`] from this per run, so one
 /// policy value drives every rung of a ladder without carrying state between
 /// them — the same split as [`std::hash::BuildHasher`] and [`std::hash::Hasher`].
-pub trait EscalationPolicy {
+pub trait EscalationPolicy: Send + Sync {
     /// A handler holding this policy's per-run state.
     fn handler(&self) -> Box<dyn EscalationHandler>;
 }
@@ -119,12 +119,31 @@ pub struct Staleness {
     threshold: f64,
 }
 
+/// Invalid configuration for [`Staleness`].
+#[derive(Clone, Copy, Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum StalenessError {
+    /// The contraction window was empty.
+    #[error("staleness window must be positive")]
+    ZeroWindow,
+    /// The contraction threshold was negative or non-finite.
+    #[error("staleness threshold must be finite and nonnegative, got {threshold}")]
+    InvalidThreshold {
+        /// Rejected threshold value.
+        threshold: f64,
+    },
+}
+
 impl Staleness {
     /// `window` consecutive contractions must all exceed `threshold` to escalate.
-    #[must_use]
-    pub fn new(window: usize, threshold: f64) -> Self {
-        assert!(window > 0, "staleness window must be positive");
-        Self { window, threshold }
+    pub fn try_new(window: usize, threshold: f64) -> Result<Self, StalenessError> {
+        if window == 0 {
+            return Err(StalenessError::ZeroWindow);
+        }
+        if !threshold.is_finite() || threshold < 0.0 {
+            return Err(StalenessError::InvalidThreshold { threshold });
+        }
+        Ok(Self { window, threshold })
     }
 }
 
@@ -201,7 +220,8 @@ pub fn lsmr<A: Operator + ?Sized>(
 
     let local_size = local_size.unwrap_or(0);
     let (bidiag, step1) = GolubKahan::init(operator, b, local_size)?;
-    lsmr_from_bidiag(bidiag, step1, b_norm, b_norm, tol, maxiter, None)
+    let criteria = ConvergenceCriteria::new(b_norm, tol);
+    lsmr_from_bidiag(bidiag, step1, b_norm, criteria, maxiter, None)
 }
 
 /// Preconditioned LSMR with `M ≈ AᵀA`.
@@ -254,12 +274,12 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
 
     let Some(x0) = warm_start else {
         let (bidiag, step1) = ModifiedGolubKahan::init(operator, preconditioner, b, local_size)?;
+        let criteria = ConvergenceCriteria::new(b_norm, tol);
         return lsmr_from_bidiag(
             bidiag,
             step1,
             b_norm,
-            b_norm,
-            tol,
+            criteria,
             maxiter,
             escalation.map(|policy| policy.handler()),
         );
@@ -300,12 +320,12 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
     }
 
     let (bidiag, step1) = ModifiedGolubKahan::init(operator, preconditioner, &r, local_size)?;
+    let criteria = ConvergenceCriteria::new(b_norm, tol);
     let mut result = lsmr_from_bidiag(
         bidiag,
         step1,
         r_norm,
-        b_norm,
-        tol,
+        criteria,
         maxiter,
         escalation.map(|policy| policy.handler()),
     )?;
@@ -318,13 +338,11 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
 /// Run the LSMR scalar/vector recurrences over a bidiagonalization stream.
 /// Generic over the bidiagonalization, which is the only place the choice
 /// of preconditioner enters.
-/// `tol_ref_norm` is `rhs_norm` except on a warm restart, which keeps the original `‖b‖`.
 fn lsmr_from_bidiag<B: Bidiagonalization>(
     mut bidiag: B,
     step1: BidiagStep,
     rhs_norm: f64,
-    tol_ref_norm: f64,
-    tol: f64,
+    criteria: ConvergenceCriteria,
     maxiter: usize,
     mut escalation: Option<Box<dyn EscalationHandler>>,
 ) -> Result<LsmrResult, SolveError> {
@@ -340,9 +358,9 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
         });
     }
 
+    let mut convergence = criteria.start(step1.alpha);
     let mut recurrence = LsmrRecurrenceState::init(step1);
     let mut solution = SolutionState::init(bidiag.v());
-    let mut convergence = ConvergenceState::new(tol_ref_norm, tol, step1.alpha);
     let mut prev_rot = RotationStep::initial();
 
     for itn in 1..=maxiter {
