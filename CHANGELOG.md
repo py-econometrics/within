@@ -16,7 +16,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- `schwarz_precond::EscalationRule` stops a solve early once its preconditioner stops paying its way, reporting `LsmrStopReason::Escalated` with an iterate that warm-starts the next one. `Staleness` implements it from the trailing contraction window.
+- `schwarz_precond::EscalationPolicy` stops a solve early once its preconditioner stops paying its way, reporting `LsmrStopReason::Escalated` with an iterate that warm-starts the next one. A policy is an immutable value; the solver builds a fresh `EscalationHandler` from it per run, so one policy drives every rung of a ladder. `Staleness` implements it from the trailing contraction window.
 - `schwarz_precond::MlsmrOptions::warm_start` carries an initial iterate through a change of preconditioner.
 
 ### Fixed

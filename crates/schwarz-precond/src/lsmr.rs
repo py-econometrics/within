@@ -4,7 +4,7 @@
 //! - [`lsmr`] — standard Golub-Kahan bidiagonalization, no preconditioner.
 //! - [`mlsmr`] — Modified Golub-Kahan variant preconditioned with `M ≈ AᵀA`;
 //!   requires a single `M⁻¹` application per iteration. [`MlsmrOptions`] adds a
-//!   warm start and an [`EscalationRule`], which compose into a preconditioner
+//!   warm start and an [`EscalationPolicy`], which compose into a preconditioner
 //!   ladder: run a cheap `M`, escalate when it stops paying, warm-start the next.
 
 mod bidiag;
@@ -72,13 +72,13 @@ pub enum LsmrStopReason {
     WarmStartExact,
     /// The iteration budget was exhausted before convergence.
     MaxIterations,
-    /// The [`EscalationRule`] asked to hand off to a stronger preconditioner.
+    /// The [`EscalationHandler`] asked to hand off to a stronger preconditioner.
     /// Distinct from [`Self::MaxIterations`], which means the caller's whole
     /// budget is gone rather than this rung's turn being over.
     Escalated,
 }
 
-/// One iteration's numerical progress, handed to an [`EscalationRule`].
+/// One iteration's numerical progress, handed to an [`EscalationHandler`].
 /// Wall-clock is absent: a rule that prices a switch holds its own `Instant`.
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
@@ -89,13 +89,23 @@ pub struct Progress {
     pub normal_eq_residual: f64,
 }
 
-/// Decides when a preconditioner has stopped paying its way.
+/// Immutable description of when a preconditioner has stopped paying its way.
+///
+/// The solver builds a fresh [`EscalationHandler`] from this per run, so one
+/// policy value drives every rung of a ladder without carrying state between
+/// them — the same split as [`std::hash::BuildHasher`] and [`std::hash::Hasher`].
+pub trait EscalationPolicy {
+    /// A handler holding this policy's per-run state.
+    fn handler(&self) -> Box<dyn EscalationHandler>;
+}
+
+/// One run's escalation state.
 ///
 /// Consulted once per iteration, always AFTER the convergence test, so a solve
 /// that finishes is never reported as escalated. Returning `true` stops the run
 /// with [`LsmrStopReason::Escalated`]; the returned `x` is a valid warm start
 /// for the next rung.
-pub trait EscalationRule {
+pub trait EscalationHandler {
     /// Whether to hand off now.
     fn should_escalate(&mut self, progress: Progress) -> bool;
 }
@@ -103,11 +113,10 @@ pub trait EscalationRule {
 /// Escalate once `window` consecutive contractions of
 /// [`Progress::normal_eq_residual`] all exceed `threshold`. Reads only the
 /// solver's own history, so it needs no cost model for what it escalates to.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Staleness {
     window: usize,
     threshold: f64,
-    previous: f64,
-    stalled: usize,
 }
 
 impl Staleness {
@@ -115,40 +124,51 @@ impl Staleness {
     #[must_use]
     pub fn new(window: usize, threshold: f64) -> Self {
         assert!(window > 0, "staleness window must be positive");
-        Self {
-            window,
-            threshold,
-            previous: f64::NAN,
-            stalled: 0,
-        }
+        Self { window, threshold }
     }
 }
 
-impl EscalationRule for Staleness {
+impl EscalationPolicy for Staleness {
+    fn handler(&self) -> Box<dyn EscalationHandler> {
+        Box::new(StalenessRun {
+            policy: *self,
+            previous: f64::NAN,
+            stalled: 0,
+        })
+    }
+}
+
+struct StalenessRun {
+    policy: Staleness,
+    previous: f64,
+    stalled: usize,
+}
+
+impl EscalationHandler for StalenessRun {
     fn should_escalate(&mut self, progress: Progress) -> bool {
         let current = progress.normal_eq_residual;
         if self.previous.is_finite() && self.previous > 0.0 {
-            if current / self.previous > self.threshold {
+            if current / self.previous > self.policy.threshold {
                 self.stalled += 1;
             } else {
                 self.stalled = 0;
             }
         }
         self.previous = current;
-        self.stalled >= self.window
+        self.stalled >= self.policy.window
     }
 }
 
 /// Optional behaviours of [`mlsmr`]; `..Default::default()` selects a plain
 /// cold solve run to convergence.
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 pub struct MlsmrOptions<'a> {
     /// Initial iterate. The solve runs on the residual system `min ‖(b − A x0) − A d‖`
     /// and returns `x0 + d`, reaching the same `x*` as a cold solve. Stopping
     /// tolerances stay measured against the original `‖b‖`.
     pub warm_start: Option<&'a [f64]>,
-    /// Hands off to a stronger preconditioner mid-run; see [`EscalationRule`].
-    pub escalation: Option<&'a mut dyn EscalationRule>,
+    /// Hands off to a stronger preconditioner mid-run; see [`EscalationPolicy`].
+    pub escalation: Option<&'a dyn EscalationPolicy>,
     /// Local reorthogonalization window; `None` disables it.
     pub local_size: Option<usize>,
 }
@@ -234,7 +254,15 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
 
     let Some(x0) = warm_start else {
         let (bidiag, step1) = ModifiedGolubKahan::init(operator, preconditioner, b, local_size)?;
-        return lsmr_from_bidiag(bidiag, step1, b_norm, b_norm, tol, maxiter, escalation);
+        return lsmr_from_bidiag(
+            bidiag,
+            step1,
+            b_norm,
+            b_norm,
+            tol,
+            maxiter,
+            escalation.map(|policy| policy.handler()),
+        );
     };
 
     if x0.len() != n {
@@ -272,7 +300,15 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
     }
 
     let (bidiag, step1) = ModifiedGolubKahan::init(operator, preconditioner, &r, local_size)?;
-    let mut result = lsmr_from_bidiag(bidiag, step1, r_norm, b_norm, tol, maxiter, escalation)?;
+    let mut result = lsmr_from_bidiag(
+        bidiag,
+        step1,
+        r_norm,
+        b_norm,
+        tol,
+        maxiter,
+        escalation.map(|policy| policy.handler()),
+    )?;
     for (xi, &x0i) in result.x.iter_mut().zip(x0) {
         *xi += x0i;
     }
@@ -290,7 +326,7 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
     tol_ref_norm: f64,
     tol: f64,
     maxiter: usize,
-    mut escalation: Option<&mut dyn EscalationRule>,
+    mut escalation: Option<Box<dyn EscalationHandler>>,
 ) -> Result<LsmrResult, SolveError> {
     let n = bidiag.v().len();
     if step1.alpha == 0.0 {

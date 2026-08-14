@@ -1008,10 +1008,18 @@ fn test_mlsmr_exact_warm_start_has_its_own_stop_reason() {
 }
 
 /// Deterministic trigger, so a ladder test measures the handoff machinery rather
-/// than whether a numerical rule happened to fire.
+/// than whether a numerical rule happened to fire. Stateless, so it is its own
+/// handler.
+#[derive(Clone, Copy)]
 struct FixedIterations(usize);
 
-impl EscalationRule for FixedIterations {
+impl EscalationPolicy for FixedIterations {
+    fn handler(&self) -> Box<dyn EscalationHandler> {
+        Box::new(*self)
+    }
+}
+
+impl EscalationHandler for FixedIterations {
     fn should_escalate(&mut self, progress: Progress) -> bool {
         progress.iteration >= self.0
     }
@@ -1025,19 +1033,12 @@ fn test_mlsmr_escalation_is_distinct_from_maxiter() {
     let op = DenseOp::vandermonde(30, 12);
     let b: Vec<f64> = (0..op.rows).map(|i| (i as f64).sin()).collect();
     let m = IdentityOp { n: op.cols };
+    let opts = MlsmrOptions {
+        escalation: Some(&FixedIterations(3)),
+        ..Default::default()
+    };
 
-    let escalated = mlsmr(
-        &op,
-        &b,
-        &m,
-        1e-12,
-        50,
-        MlsmrOptions {
-            escalation: Some(&mut FixedIterations(3)),
-            ..Default::default()
-        },
-    )
-    .expect("escalating solve");
+    let escalated = mlsmr(&op, &b, &m, 1e-12, 50, opts).expect("escalating solve");
     assert_eq!(escalated.stop_reason, LsmrStopReason::Escalated);
     assert_eq!(escalated.iterations, 3);
 
@@ -1046,30 +1047,25 @@ fn test_mlsmr_escalation_is_distinct_from_maxiter() {
     assert_eq!(escalated.x, capped.x);
 }
 
-/// The rule runs only after the convergence test, so a finished solve is never
-/// reported as escalated however eager the rule.
+/// The handler runs only after the convergence test, so a finished solve is never
+/// reported as escalated however eager the policy.
 #[test]
 fn test_mlsmr_converged_solve_is_never_escalated() {
-    let result = mlsmr(
-        &IdentityOp { n: 3 },
-        &[1.0, 2.0, 3.0],
-        &IdentityOp { n: 3 },
-        1e-10,
-        50,
-        MlsmrOptions {
-            escalation: Some(&mut FixedIterations(1)),
-            ..Default::default()
-        },
-    )
-    .expect("solve");
+    let opts = MlsmrOptions {
+        escalation: Some(&FixedIterations(1)),
+        ..Default::default()
+    };
+    let m = IdentityOp { n: 3 };
+    let result = mlsmr(&IdentityOp { n: 3 }, &[1.0, 2.0, 3.0], &m, 1e-10, 50, opts).expect("solve");
     assert!(result.converged);
     assert_ne!(result.stop_reason, LsmrStopReason::Escalated);
 }
 
 /// The combination that motivates the options struct: the middle rung sets BOTH
-/// options at once, which no pre-unification entry point could express. Also
-/// pins that an iterate carried across a change of preconditioner still lands
-/// where a cold solve under the last one does.
+/// options at once, which no pre-unification entry point could express. One
+/// policy value drives every rung — each run builds its own handler — and pins
+/// that an iterate carried across a change of preconditioner still lands where a
+/// cold solve under the last one does.
 #[test]
 fn test_mlsmr_ladder_warm_starts_and_escalates() {
     let op = DenseOp::vandermonde(30, 12);
@@ -1078,20 +1074,13 @@ fn test_mlsmr_ladder_warm_starts_and_escalates() {
         .collect();
     let (tol, window) = (1e-9, Some(12));
     let weak = IdentityOp { n: op.cols };
+    let rung = MlsmrOptions {
+        escalation: Some(&FixedIterations(3)),
+        local_size: window,
+        ..Default::default()
+    };
 
-    let first = mlsmr(
-        &op,
-        &b,
-        &weak,
-        tol,
-        200,
-        MlsmrOptions {
-            escalation: Some(&mut FixedIterations(3)),
-            local_size: window,
-            ..Default::default()
-        },
-    )
-    .expect("first rung");
+    let first = mlsmr(&op, &b, &weak, tol, 200, rung).expect("first rung");
     assert_eq!(first.stop_reason, LsmrStopReason::Escalated);
 
     let middle = mlsmr(
@@ -1102,51 +1091,53 @@ fn test_mlsmr_ladder_warm_starts_and_escalates() {
         200,
         MlsmrOptions {
             warm_start: Some(&first.x),
-            escalation: Some(&mut FixedIterations(3)),
-            local_size: window,
+            ..rung
         },
     )
     .expect("middle rung");
     assert_eq!(middle.stop_reason, LsmrStopReason::Escalated);
 
-    let opts = MlsmrOptions {
-        warm_start: Some(&middle.x),
-        local_size: window,
-        ..Default::default()
-    };
-    let last = mlsmr(&op, &b, &jacobi(&op), tol, 200, opts).expect("last rung");
+    let last = mlsmr(
+        &op,
+        &b,
+        &jacobi(&op),
+        tol,
+        200,
+        MlsmrOptions {
+            warm_start: Some(&middle.x),
+            local_size: window,
+            ..Default::default()
+        },
+    )
+    .expect("last rung");
     assert!(last.converged);
 
-    let opts = MlsmrOptions {
+    let cold_opts = MlsmrOptions {
         local_size: window,
         ..Default::default()
     };
-    let cold = mlsmr(&op, &b, &jacobi(&op), tol, 200, opts).expect("cold solve");
+    let cold = mlsmr(&op, &b, &jacobi(&op), tol, 200, cold_opts).expect("cold solve");
     let ladder = normal_equation_residual(&op, &last.x, &b);
     assert!(
         ladder <= 10.0 * normal_equation_residual(&op, &cold.x, &b).max(1e-14),
         "ladder landed short of a cold solve: {ladder}"
     );
 }
+
 /// `Staleness` must separate the two regimes it exists to tell apart: it hands off
 /// a preconditioner that has stopped contracting and leaves a converging one alone.
+/// One policy value serves both solves; each gets a fresh handler.
 #[test]
 fn test_staleness_escalates_only_the_stalling_preconditioner() {
     let op = DenseOp::vandermonde(30, 12);
     let b: Vec<f64> = (0..op.rows).map(|i| (i as f64).sin()).collect();
+    let rule = Staleness::new(4, 0.7);
 
-    let stalled = mlsmr(
-        &op,
-        &b,
-        &IdentityOp { n: op.cols },
-        1e-10,
-        200,
-        MlsmrOptions {
-            escalation: Some(&mut Staleness::new(4, 0.7)),
-            ..Default::default()
-        },
-    )
-    .expect("weak solve");
+    let opts = MlsmrOptions {
+        escalation: Some(&rule),
+        ..Default::default()
+    };
+    let stalled = mlsmr(&op, &b, &IdentityOp { n: op.cols }, 1e-10, 200, opts).expect("weak solve");
     assert_eq!(stalled.stop_reason, LsmrStopReason::Escalated);
 
     let finished = mlsmr(
@@ -1156,9 +1147,8 @@ fn test_staleness_escalates_only_the_stalling_preconditioner() {
         1e-10,
         200,
         MlsmrOptions {
-            escalation: Some(&mut Staleness::new(4, 0.7)),
             local_size: Some(12),
-            ..Default::default()
+            ..opts
         },
     )
     .expect("strong solve");
