@@ -9,14 +9,14 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- **BREAKING:** `schwarz_precond::mlsmr` takes an `MlsmrOptions` in place of its trailing `local_size`. A warm start and an escalation rule are options that compose, so a preconditioner ladder of any depth is one call per rung. Build it with `..MlsmrOptions::default()` so a later option is not a breaking change.
-- **BREAKING:** `LsmrStopReason` gains `Escalated` and `WarmStartExact`. The enum stays exhaustive, so a `match` on it that misses a stop reason is a compile error rather than a silent fallthrough.
-- A warm start that already solves the system reports `WarmStartExact` instead of `ZeroRhs`, which claimed the caller passed a zero right-hand side.
+- **BREAKING:** `schwarz_precond::mlsmr` takes an `MlsmrOptions` in place of its trailing `local_size`.
+- **BREAKING:** `LsmrStopReason` gains `Escalated` and `WarmStartExact`, breaking exhaustive `match`es.
+- A warm start that already solves the system reports `WarmStartExact` instead of `ZeroRhs`.
 - **BREAKING:** The serialized `Preconditioner` wire format changed (v12 → v13) with the `approx-chol` 0.4 → 0.5 bump; 0.3.0 bytes no longer decode.
 
 ### Added
 
-- `schwarz_precond::EscalationPolicy` stops a solve early once its preconditioner stops paying its way, reporting `LsmrStopReason::Escalated` with an iterate that warm-starts the next one. A policy is an immutable value; the solver builds a fresh `EscalationHandler` from it per run, so one policy drives every rung of a ladder. `Staleness` implements it from the trailing contraction window.
+- `schwarz_precond::EscalationPolicy` builds a per-run `EscalationHandler` that ends a solve with `LsmrStopReason::Escalated` and an iterate that warm-starts the next preconditioner; `Staleness` implements it from the trailing contraction window.
 - `schwarz_precond::MlsmrOptions::warm_start` carries an initial iterate through a change of preconditioner.
 
 ### Fixed
