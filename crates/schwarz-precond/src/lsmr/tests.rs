@@ -45,7 +45,8 @@ fn test_lsmr_large_magnitude_rhs_not_silently_zero() {
 fn test_mlsmr_large_magnitude_rhs_not_silently_zero() {
     let b = vec![1e155, 2e155, 3e155];
     let op = IdentityOp { n: 3 };
-    let result = mlsmr(&op, &b, &op, 1e-10, 100, None.into()).expect("preconditioned mlsmr solve");
+    let result = mlsmr(&op, &b, &op, 1e-10, 100, MlsmrOptions::default())
+        .expect("preconditioned mlsmr solve");
 
     let all_zero = result.x.iter().all(|&xi| xi == 0.0);
     assert!(
@@ -201,7 +202,7 @@ fn test_mlsmr_preconditioned() {
         &preconditioner,
         1e-10,
         100,
-        None.into(),
+        MlsmrOptions::default(),
     )
     .expect("preconditioned mlsmr solve");
     assert!(result.converged, "Preconditioned MLSMR did not converge");
@@ -313,8 +314,15 @@ fn test_mlsmr_mid_stream_beta_zero_breakdown() {
     let identity = IdentityOp { n: 2 };
     for result in [
         lsmr(&ZeroSecondRow, &b, 1e-12, 100, None).expect("Golub-Kahan beta=0"),
-        mlsmr(&ZeroSecondRow, &b, &identity, 1e-12, 100, None.into())
-            .expect("modified Golub-Kahan beta=0"),
+        mlsmr(
+            &ZeroSecondRow,
+            &b,
+            &identity,
+            1e-12,
+            100,
+            MlsmrOptions::default(),
+        )
+        .expect("modified Golub-Kahan beta=0"),
     ] {
         assert!(result.converged);
         assert_eq!(result.iterations, 1);
@@ -348,8 +356,15 @@ fn test_mlsmr_none_matches_identity_precond() {
     let id = IdentityOp { n: 3 };
 
     let none_result = lsmr(&OverdeterminedOp, &b, 1e-12, 100, None).expect("lsmr solve");
-    let id_result = mlsmr(&OverdeterminedOp, &b, &id, 1e-12, 100, None.into())
-        .expect("preconditioned Identity solve");
+    let id_result = mlsmr(
+        &OverdeterminedOp,
+        &b,
+        &id,
+        1e-12,
+        100,
+        MlsmrOptions::default(),
+    )
+    .expect("preconditioned Identity solve");
 
     assert!(none_result.converged && id_result.converged);
     assert!(
@@ -700,8 +715,15 @@ fn test_mid_stream_breakdown_reports_convergence() {
     let identity = IdentityOp { n: 2 };
     for result in [
         lsmr(&ZeroSecondRow, &b, 1e-12, 100, None).expect("Golub-Kahan breakdown"),
-        mlsmr(&ZeroSecondRow, &b, &identity, 1e-12, 100, None.into())
-            .expect("modified Golub-Kahan breakdown"),
+        mlsmr(
+            &ZeroSecondRow,
+            &b,
+            &identity,
+            1e-12,
+            100,
+            MlsmrOptions::default(),
+        )
+        .expect("modified Golub-Kahan breakdown"),
     ] {
         assert!(result.converged);
         assert_eq!(result.stop_reason, LsmrStopReason::NormalEquationTolerance);
@@ -794,7 +816,14 @@ fn test_mlsmr_rejects_bad_preconditioner_shape() {
     }
 
     let b = vec![1.0, 2.0, 3.0, 3.0];
-    let result = mlsmr(&OverdeterminedOp, &b, &BadPrecond, 1e-10, 100, None.into());
+    let result = mlsmr(
+        &OverdeterminedOp,
+        &b,
+        &BadPrecond,
+        1e-10,
+        100,
+        MlsmrOptions::default(),
+    );
     assert!(matches!(result, Err(SolveError::InvalidInput { .. })));
 }
 
@@ -827,7 +856,14 @@ fn test_mlsmr_near_breakdown_vp_clamps_to_zero() {
 
     let b = vec![3.0, 4.0];
     let op = IdentityOp { n: 2 };
-    let result = mlsmr(&op, &b, &NearBreakdownPrecond, 1e-10, 100, None.into());
+    let result = mlsmr(
+        &op,
+        &b,
+        &NearBreakdownPrecond,
+        1e-10,
+        100,
+        MlsmrOptions::default(),
+    );
     assert!(
         result.is_ok(),
         "rounding-scale negative vp must clamp to breakdown, got err {:?}",
@@ -861,7 +897,7 @@ fn test_mlsmr_rejects_indefinite_preconditioner() {
 
     let b = vec![3.0, 4.0];
     let op = IdentityOp { n: 2 };
-    let result = mlsmr(&op, &b, &NegIdentity, 1e-10, 100, None.into());
+    let result = mlsmr(&op, &b, &NegIdentity, 1e-10, 100, MlsmrOptions::default());
     assert!(matches!(result, Err(SolveError::InvalidInput { .. })));
 }
 

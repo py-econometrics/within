@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 
 use rayon::prelude::*;
 use schwarz_precond::{
-    lsmr, mlsmr, LocalSolveError, LocalSolver, Operator, PartitionWeights, ReductionStrategy,
-    SchwarzPreconditioner, SubdomainCore, SubdomainEntry,
+    lsmr, mlsmr, LocalSolveError, LocalSolver, MlsmrOptions, Operator, PartitionWeights,
+    ReductionStrategy, SchwarzPreconditioner, SubdomainCore, SubdomainEntry,
 };
 
 use common::{make_schwarz_entries, FailingLocalSolver, TridiagOperator, UniformDiagLocalSolver};
@@ -219,7 +219,8 @@ fn test_additive_schwarz_reduces_iterations() {
     );
 
     let schwarz = SchwarzPreconditioner::new(make_schwarz_entries(n), ReductionStrategy::default());
-    let precond = mlsmr(&a, &rhs, &schwarz, 1e-8, 200, None.into()).expect("preconditioned lsmr");
+    let options = MlsmrOptions::default();
+    let precond = mlsmr(&a, &rhs, &schwarz, 1e-8, 200, options).expect("preconditioned lsmr");
     assert!(precond.converged, "Preconditioned LSMR did not converge");
 
     assert!(

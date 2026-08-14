@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use ndarray::{ArrayView2, Axis};
 use rayon::prelude::*;
-use schwarz_precond::{lsmr as lsmr_solve, mlsmr};
+use schwarz_precond::{lsmr as lsmr_solve, mlsmr, MlsmrOptions};
 
 use crate::channel::Channel;
 use crate::config::{LsmrOptions, PreconditionerConfig};
@@ -453,14 +453,13 @@ impl<'a> Solver<'a> {
         let time_setup = t_solve_start.duration_since(t_start).as_secs_f64();
 
         let r = match self.preconditioner.as_ref() {
-            Some(p) => mlsmr(
-                &rect_op,
-                b,
-                p,
-                lsmr.tol,
-                lsmr.maxiter,
-                lsmr.local_size.into(),
-            )?,
+            Some(p) => {
+                let options = MlsmrOptions {
+                    local_size: lsmr.local_size,
+                    ..Default::default()
+                };
+                mlsmr(&rect_op, b, p, lsmr.tol, lsmr.maxiter, options)?
+            }
             None => lsmr_solve(&rect_op, b, lsmr.tol, lsmr.maxiter, lsmr.local_size)?,
         };
 

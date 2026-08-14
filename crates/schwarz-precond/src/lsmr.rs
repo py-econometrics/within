@@ -168,15 +168,6 @@ pub struct MlsmrOptions<'a> {
     pub local_size: Option<usize>,
 }
 
-impl<'a> From<Option<usize>> for MlsmrOptions<'a> {
-    fn from(local_size: Option<usize>) -> Self {
-        Self {
-            local_size,
-            ..Default::default()
-        }
-    }
-}
-
 /// Unpreconditioned LSMR.
 ///
 /// Solves `min ‖b − A x‖₂` using the standard Golub-Kahan

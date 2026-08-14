@@ -6,8 +6,8 @@
 use faer::{MatRef, Side};
 
 use schwarz_precond::{
-    mlsmr, LocalSolveError, LocalSolver, Operator, ReductionStrategy, SchwarzPreconditioner,
-    SolveError, SubdomainCore, SubdomainEntry,
+    mlsmr, LocalSolveError, LocalSolver, MlsmrOptions, Operator, ReductionStrategy,
+    SchwarzPreconditioner, SolveError, SubdomainCore, SubdomainEntry,
 };
 // ---------------------------------------------------------------------------
 // Tridiagonal operator
@@ -174,7 +174,8 @@ fn main() {
     let a = TridiagOperator { n };
 
     let precond = SchwarzPreconditioner::new(build_entries(n), ReductionStrategy::default());
-    let result = mlsmr(&a, &rhs, &precond, 1e-10, 200, None.into()).expect("preconditioned lsmr");
+    let options = MlsmrOptions::default();
+    let result = mlsmr(&a, &rhs, &precond, 1e-10, 200, options).expect("preconditioned lsmr");
     println!(
         "Dense Cholesky Schwarz LSMR: converged={}, iterations={:>3}, residual={:.3e}",
         result.converged, result.iterations, result.residual_norm,
