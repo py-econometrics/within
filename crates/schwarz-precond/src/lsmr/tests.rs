@@ -996,6 +996,43 @@ fn test_mlsmr_zero_rhs_still_validates_warm_start() {
 }
 
 #[test]
+fn test_mlsmr_zero_rhs_preserves_exact_warm_start() {
+    let x0 = [0.0, 7.0];
+    let options = MlsmrOptions {
+        warm_start: Some(&x0),
+        ..Default::default()
+    };
+    let result = mlsmr(
+        &ZeroSecondRow,
+        &[0.0, 0.0],
+        &IdentityOp { n: 2 },
+        1e-10,
+        10,
+        options,
+    )
+    .expect("exact warm start");
+
+    assert_eq!(result.x, x0);
+    assert_eq!(result.stop_reason, LsmrStopReason::WarmStartExact);
+    assert_eq!(result.iterations, 0);
+}
+
+#[test]
+fn test_mlsmr_zero_rhs_corrects_non_exact_warm_start() {
+    let op = IdentityOp { n: 3 };
+    let x0 = [1.0, 2.0, 3.0];
+    let options = MlsmrOptions {
+        warm_start: Some(&x0),
+        ..Default::default()
+    };
+    let result = mlsmr(&op, &[0.0, 0.0, 0.0], &op, 1e-10, 10, options).expect("warm correction");
+
+    assert!(result.converged);
+    assert!(vec_norm(&result.x) < 1e-12);
+    assert!(result.iterations > 0);
+}
+
+#[test]
 fn test_mlsmr_exact_warm_start_has_its_own_stop_reason() {
     let b = [1.0, 2.0, 3.0];
     let op = IdentityOp { n: 3 };

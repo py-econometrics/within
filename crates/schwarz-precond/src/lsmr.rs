@@ -239,16 +239,6 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
     }
 
     let b_norm = vec_norm(b);
-    if b_norm == 0.0 {
-        return Ok(LsmrResult {
-            x: vec![0.0; n],
-            converged: true,
-            iterations: 0,
-            residual_norm: 0.0,
-            normal_eq_residual: 0.0,
-            stop_reason: LsmrStopReason::ZeroRhs,
-        });
-    }
     let local_size = local_size.unwrap_or(0);
 
     let rhs: Cow<'_, [f64]> = match warm_start {
@@ -270,14 +260,17 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
         )));
     }
     if rhs_norm == 0.0 {
-        let x0 = warm_start.expect("zero RHS returned before warm-start handling");
+        let (x, stop_reason) = match warm_start {
+            Some(x0) => (x0.to_vec(), LsmrStopReason::WarmStartExact),
+            None => (vec![0.0; n], LsmrStopReason::ZeroRhs),
+        };
         return Ok(LsmrResult {
-            x: x0.to_vec(),
+            x,
             converged: true,
             iterations: 0,
             residual_norm: 0.0,
             normal_eq_residual: 0.0,
-            stop_reason: LsmrStopReason::WarmStartExact,
+            stop_reason,
         });
     }
 
