@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use ndarray::{ArrayView2, Axis};
 use rayon::prelude::*;
-use schwarz_precond::{lsmr as lsmr_solve, mlsmr, MlsmrOptions};
+use schwarz_precond::{lsmr as lsmr_solve, mlsmr};
 
 use crate::channel::Channel;
 use crate::config::{LsmrOptions, PreconditionerConfig};
@@ -227,10 +227,8 @@ pub struct SolveResult {
     pub converged: bool,
     /// Number of LSMR iterations used.
     pub iterations: usize,
-    /// Normal-equation residual `||D^T W (y - Dx)||` relative to the start of the
-    /// LSMR run, estimated from its recurrence (Fong & Saunders) at no extra cost.
-    /// The reference is `||D^T W y||` for a solve run in one pass; a run
-    /// warm-started from a previous iterate reports progress since that iterate.
+    /// Relative normal-equation residual `||D^T W (y - Dx)|| / ||D^T W y||`,
+    /// estimated from the LSMR recurrence (Fong & Saunders) at no extra cost.
     /// Exact for an unpreconditioned solve; for a preconditioned solve it is
     /// measured in the preconditioner's metric and typically sits a modest
     /// factor below the true-metric value.
@@ -461,10 +459,7 @@ impl<'a> Solver<'a> {
                 p,
                 lsmr.tol,
                 lsmr.maxiter,
-                MlsmrOptions {
-                    local_size: lsmr.local_size,
-                    ..Default::default()
-                },
+                lsmr.local_size.into(),
             )?,
             None => lsmr_solve(&rect_op, b, lsmr.tol, lsmr.maxiter, lsmr.local_size)?,
         };
