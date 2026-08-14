@@ -23,8 +23,8 @@ cargo add schwarz-precond
 
 ```rust
 use schwarz_precond::{
-    mlsmr, LocalSolver, Operator, ReductionStrategy, SchwarzPreconditioner, SubdomainCore,
-    SubdomainEntry,
+    mlsmr, LocalSolver, MlsmrOptions, Operator, ReductionStrategy, SchwarzPreconditioner,
+    SolveError, SubdomainCore, SubdomainEntry,
 };
 
 // --- Tridiagonal SPD operator: A = tridiag(-1, 3, -1) ---
@@ -33,14 +33,17 @@ struct TridiagOp(usize);
 impl Operator for TridiagOp {
     fn nrows(&self) -> usize { self.0 }
     fn ncols(&self) -> usize { self.0 }
-    fn apply(&self, x: &[f64], y: &mut [f64]) {
+    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
         for i in 0..self.0 {
             y[i] = 3.0 * x[i];
             if i > 0          { y[i] -= x[i - 1]; }
             if i + 1 < self.0 { y[i] -= x[i + 1]; }
         }
+        Ok(())
     }
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) { self.apply(x, y); }
+    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+        self.apply(x, y)
+    }
 }
 
 // --- Diagonal local solver: sol = rhs / diag ---
@@ -53,6 +56,7 @@ impl LocalSolver for DiagSolver {
         &self,
         rhs: &mut [f64],
         sol: &mut [f64],
+        _allow_inner_parallelism: bool,
     ) -> Result<(), schwarz_precond::LocalSolveError> {
         for i in 0..self.0 { sol[i] = rhs[i] / self.1; }
         Ok(())
@@ -76,7 +80,8 @@ fn main() {
         .collect();
 
     let precond = SchwarzPreconditioner::new(entries, ReductionStrategy::default());
-    let result = mlsmr(&a, &b, &precond, 1e-10, 500, None).expect("lsmr should converge");
+    let result = mlsmr(&a, &b, &precond, 1e-10, 500, MlsmrOptions::default())
+        .expect("lsmr should converge");
 
     println!("converged={} iters={} res={:.3e}",
         result.converged, result.iterations, result.residual_norm);
