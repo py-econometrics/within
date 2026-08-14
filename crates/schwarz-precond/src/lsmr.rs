@@ -55,7 +55,7 @@ pub struct LsmrResult {
 pub enum LsmrStopReason {
     /// The right-hand side was exactly zero.
     ZeroRhs,
-    /// The initial normal-equation residual was exactly zero (`Aᵀb = 0`).
+    /// The initial normal-equation residual was exactly zero: `Aᵀ(b − A x0) = 0`, cold `Aᵀb = 0`.
     InitialNormalEquationResidualZero,
     /// The least-squares residual estimate met the absolute tolerance.
     ResidualTolerance,
@@ -71,7 +71,6 @@ pub enum LsmrStopReason {
 
 /// One completed iteration's progress.
 #[derive(Clone, Copy, Debug)]
-#[non_exhaustive]
 pub struct Progress {
     /// 1-based index of the iteration just completed.
     pub iteration: usize,
@@ -105,8 +104,8 @@ pub enum StalenessError {
     /// The contraction window was empty.
     #[error("staleness window must be positive")]
     ZeroWindow,
-    /// The contraction threshold was negative or non-finite.
-    #[error("staleness threshold must be finite and nonnegative, got {threshold}")]
+    /// The contraction threshold fell outside `[0, 1)`.
+    #[error("staleness threshold must be in [0, 1), got {threshold}")]
     InvalidThreshold {
         /// Rejected threshold value.
         threshold: f64,
@@ -114,12 +113,13 @@ pub enum StalenessError {
 }
 
 impl Staleness {
-    /// `window` consecutive contractions must all exceed `threshold` to escalate.
+    /// `window` consecutive contractions must all exceed `threshold`, which lies in `[0, 1)`.
     pub fn try_new(window: usize, threshold: f64) -> Result<Self, StalenessError> {
         if window == 0 {
             return Err(StalenessError::ZeroWindow);
         }
-        if !threshold.is_finite() || threshold < 0.0 {
+        // Ratios are `|s̄ₖ| ≤ 1` by construction, so a threshold of 1 or more never escalates.
+        if !(0.0..1.0).contains(&threshold) {
             return Err(StalenessError::InvalidThreshold { threshold });
         }
         Ok(Self { window, threshold })

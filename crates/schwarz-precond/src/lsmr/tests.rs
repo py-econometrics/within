@@ -1163,7 +1163,7 @@ fn test_staleness_rejects_invalid_configuration() {
         Staleness::try_new(0, 0.7),
         Err(StalenessError::ZeroWindow)
     ));
-    for threshold in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.1] {
+    for threshold in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.1, 1.0, 1.5] {
         assert!(matches!(
             Staleness::try_new(4, threshold),
             Err(StalenessError::InvalidThreshold { .. })
