@@ -7,6 +7,9 @@
 //! helpers — they are implementation detail of this stream, not an
 //! independent subsystem.
 
+#[cfg(test)]
+mod tests;
+
 use crate::{Operator, SolveError};
 use rayon::iter::{IndexedParallelIterator, ParallelIterator};
 use rayon::prelude::{ParallelSlice, ParallelSliceMut};

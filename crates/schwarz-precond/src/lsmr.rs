@@ -5,6 +5,8 @@
 //! - [`mlsmr`] — preconditioned variant with composable warm starts and escalation.
 
 mod bidiag;
+#[cfg(test)]
+mod fixtures;
 mod recurrence;
 #[cfg(test)]
 mod tests;
