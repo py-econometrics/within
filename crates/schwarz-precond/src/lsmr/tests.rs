@@ -943,20 +943,22 @@ fn test_mlsmr_warm_tolerance_is_relative_to_original_rhs() {
     );
 }
 
+/// A zero RHS must not shadow warm-start validation: the same bad `x0` has to be
+/// rejected whether or not `b` short-circuits the solve.
 #[test]
-fn test_mlsmr_warm_rejects_bad_warm_start() {
+fn test_mlsmr_rejects_bad_warm_start_for_any_rhs() {
     let op = IdentityOp { n: 3 };
-    let m = IdentityOp { n: 3 };
-    let b = [1.0, 2.0, 3.0];
-    for x0 in [&[0.0, 0.0][..], &[0.0, f64::NAN, 0.0]] {
-        let options = MlsmrOptions {
-            warm_start: Some(x0),
-            ..Default::default()
-        };
-        assert!(matches!(
-            mlsmr(&op, &b, &m, 1e-8, 10, options),
-            Err(SolveError::InvalidInput { .. })
-        ));
+    for b in [[1.0, 2.0, 3.0], [0.0, 0.0, 0.0]] {
+        for x0 in [&[0.0, 0.0][..], &[0.0, f64::NAN, 0.0]] {
+            let options = MlsmrOptions {
+                warm_start: Some(x0),
+                ..Default::default()
+            };
+            assert!(matches!(
+                mlsmr(&op, &b, &op, 1e-8, 10, options),
+                Err(SolveError::InvalidInput { .. })
+            ));
+        }
     }
 }
 
@@ -977,46 +979,6 @@ fn test_mlsmr_warm_rejects_overflowing_warm_start_residual() {
     ));
 }
 
-/// A zero RHS must not shadow warm-start validation: the same bad `x0` has to be
-/// rejected whether or not `b` short-circuits the solve.
-#[test]
-fn test_mlsmr_zero_rhs_still_validates_warm_start() {
-    let op = IdentityOp { n: 3 };
-    let b = [0.0, 0.0, 0.0];
-    for x0 in [&[0.0, 0.0][..], &[0.0, f64::NAN, 0.0]] {
-        let options = MlsmrOptions {
-            warm_start: Some(x0),
-            ..Default::default()
-        };
-        assert!(matches!(
-            mlsmr(&op, &b, &op, 1e-8, 10, options),
-            Err(SolveError::InvalidInput { .. })
-        ));
-    }
-}
-
-#[test]
-fn test_mlsmr_zero_rhs_preserves_exact_warm_start() {
-    let x0 = [0.0, 7.0];
-    let options = MlsmrOptions {
-        warm_start: Some(&x0),
-        ..Default::default()
-    };
-    let result = mlsmr(
-        &ZeroSecondRow,
-        &[0.0, 0.0],
-        &IdentityOp { n: 2 },
-        1e-10,
-        10,
-        options,
-    )
-    .expect("exact warm start");
-
-    assert_eq!(result.x, x0);
-    assert_eq!(result.stop_reason, LsmrStopReason::WarmStartExact);
-    assert_eq!(result.iterations, 0);
-}
-
 #[test]
 fn test_mlsmr_zero_rhs_corrects_non_exact_warm_start() {
     let op = IdentityOp { n: 3 };
@@ -1033,17 +995,23 @@ fn test_mlsmr_zero_rhs_corrects_non_exact_warm_start() {
 }
 
 #[test]
-fn test_mlsmr_exact_warm_start_has_its_own_stop_reason() {
-    let b = [1.0, 2.0, 3.0];
-    let op = IdentityOp { n: 3 };
-    let opts = MlsmrOptions {
-        warm_start: Some(&b),
-        ..Default::default()
-    };
-    let result = mlsmr(&op, &b, &op, 1e-10, 50, opts).expect("exact warm start");
-    assert_eq!(result.stop_reason, LsmrStopReason::WarmStartExact);
-    assert!(result.converged);
-    assert_eq!(result.x, b);
+fn test_mlsmr_exact_warm_start_is_returned_untouched() {
+    let cases: [(&dyn Operator, &[f64], &[f64]); 2] = [
+        (&IdentityOp { n: 3 }, &[1.0, 2.0, 3.0], &[1.0, 2.0, 3.0]),
+        (&ZeroSecondRow, &[0.0, 0.0], &[0.0, 7.0]),
+    ];
+    for (op, b, x0) in cases {
+        let options = MlsmrOptions {
+            warm_start: Some(x0),
+            ..Default::default()
+        };
+        let m = IdentityOp { n: op.ncols() };
+        let result = mlsmr(op, b, &m, 1e-10, 50, options).expect("exact warm start");
+        assert_eq!(result.stop_reason, LsmrStopReason::WarmStartExact);
+        assert!(result.converged);
+        assert_eq!(result.x, x0);
+        assert_eq!(result.iterations, 0);
+    }
 }
 
 #[test]
