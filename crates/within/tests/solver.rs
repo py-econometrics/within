@@ -238,8 +238,16 @@ fn test_additive_serde_roundtrip_preserves_config_and_solution() {
     // Deserialize and build new solver
     let precond2: Preconditioner = postcard::from_bytes(&bytes).expect("deserialize");
     assert_eq!(precond2.config(), &precond);
+    assert_eq!(precond2.build_duration(), precond_ref.build_duration());
     let solver2 =
         Solver::new(categories.view(), None, precond2).expect("solver from preconditioner");
+    assert_eq!(
+        solver2
+            .preconditioner()
+            .expect("reused preconditioner")
+            .build_duration(),
+        precond_ref.build_duration(),
+    );
     let r2 = solver2.solve(&y, &params).expect("solve 2");
 
     for (a, b) in r1.x.iter().zip(r2.x.iter()) {
@@ -261,6 +269,7 @@ fn test_diagonal_serde_roundtrip() {
     let deserialized: Preconditioner = postcard::from_bytes(&bytes).expect("deserialize");
     assert_eq!(deserialized.nrows(), precond_ref.nrows());
     assert_eq!(deserialized.ncols(), precond_ref.ncols());
+    assert_eq!(deserialized.build_duration(), precond_ref.build_duration());
 
     let x: Vec<f64> = (0..precond_ref.ncols()).map(|i| i as f64 + 0.25).collect();
     let mut y1 = vec![0.0; precond_ref.nrows()];

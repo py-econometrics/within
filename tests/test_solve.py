@@ -403,6 +403,10 @@ class TestSolverSerde:
 
         # Reuse in new solver
         solver2 = Solver(categories, preconditioner=precond)
+        assert (
+            solver2.preconditioner.build_time_seconds
+            == precond.build_time_seconds
+        )
         r2 = solver2.solve(y)
         np.testing.assert_allclose(r2.x, r1.x, atol=1e-10)
 
@@ -451,6 +455,7 @@ class TestSolverSerde:
 
         precond2 = pickle.loads(pickle.dumps(precond))
         np.testing.assert_array_equal(precond.apply(x), precond2.apply(x))
+        assert precond2.build_time_seconds == precond.build_time_seconds
 
         solver2 = Solver(categories, preconditioner=precond2)
         r2 = solver2.solve(y)

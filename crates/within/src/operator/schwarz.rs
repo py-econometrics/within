@@ -1,11 +1,11 @@
 //! Schwarz preconditioner: bridges FE domain types to the generic
 //! `schwarz-precond` API, plus the opaque public [`Preconditioner`] handle.
 
-use std::sync::Arc;
-
 use rayon::prelude::*;
 use schwarz_precond::{Operator, SchwarzPreconditioner, SubdomainEntry};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crate::block_elim::BlockElimSolver;
 use crate::config::{LocalSolverConfig, PreconditionerConfig};
@@ -128,9 +128,9 @@ pub(crate) fn build_entry(
 
 /// Opaque handle to a pre-built preconditioner; cloning is O(1) via `Arc`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(transparent)]
 pub struct Preconditioner {
     inner: Variant,
+    build_duration: Duration,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -172,6 +172,11 @@ impl Preconditioner {
     /// Apply the preconditioner: writes `M^{-1} x` into `y`.
     pub fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
         <Self as schwarz_precond::Operator>::apply(self, x, y)
+    }
+
+    /// Time spent building this preconditioner.
+    pub fn build_duration(&self) -> Duration {
+        self.build_duration
     }
 }
 
@@ -262,8 +267,12 @@ pub(crate) fn build_preconditioner(
     // Weights are pre-validated by the sole caller, whose permutation preserves length and sign.
     let default_cfg = PreconditionerConfig::default();
     let resolved = config.unwrap_or(&default_cfg);
-    match resolved {
-        PreconditionerConfig::Off => Ok((None, Vec::new())),
+    // Measure preconditioner build time
+    let build_started = Instant::now();
+    let (inner, warnings) = match resolved {
+        PreconditionerConfig::Off => {
+            return Ok((None, Vec::new()));
+        }
         PreconditionerConfig::Additive {
             local_solver,
             reduction,
@@ -273,22 +282,21 @@ pub(crate) fn build_preconditioner(
                 // No factor-pair subdomains means no useful Schwarz; fall back to plain LSMR.
                 return Ok((None, warnings));
             }
-            let p = build_additive_with_strategy(domains, local_solver, *reduction, design.n_dofs)?;
-            Ok((
-                Some(Preconditioner {
-                    inner: Variant::Additive(p),
-                }),
-                warnings,
-            ))
+            let preconditioner =
+                build_additive_with_strategy(domains, local_solver, *reduction, design.n_dofs)?;
+            (Variant::Additive(preconditioner), warnings)
         }
         PreconditionerConfig::Diagonal => {
-            let p = build_diagonal(design, weights)?;
-            Ok((
-                Some(Preconditioner {
-                    inner: Variant::Diagonal(p),
-                }),
-                Vec::new(),
-            ))
+            let preconditioner = build_diagonal(design, weights)?;
+            (Variant::Diagonal(preconditioner), Vec::new())
         }
-    }
+    };
+    let build_duration = build_started.elapsed();
+    Ok((
+        Some(Preconditioner {
+            inner,
+            build_duration,
+        }),
+        warnings,
+    ))
 }
