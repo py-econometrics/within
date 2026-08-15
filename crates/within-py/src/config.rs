@@ -177,14 +177,64 @@ impl PyScalingConfig {
     }
 }
 
-/// Preconditioner shortcut: ``Additive`` (default), ``Off``, or ``Diagonal``.
-#[pyclass(frozen, eq, eq_int, from_py_object, module = "within._within")]
+/// Complete construction configuration for a given preconditioner variant.
+#[pyclass(frozen, eq, module = "within._within")]
 #[pyo3(name = "PreconditionerConfig")]
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum PyPreconditionerConfig {
-    Additive = 0,
-    Off = 1,
-    Diagonal = 2,
+#[derive(PartialEq)]
+pub struct PyPreconditionerConfig {
+    inner: PreconditionerConfig,
+}
+
+impl PyPreconditionerConfig {
+    pub(crate) fn to_native(&self) -> PreconditionerConfig {
+        self.inner.clone()
+    }
+}
+
+#[pymethods]
+impl PyPreconditionerConfig {
+    #[classattr]
+    #[pyo3(name = "Additive")]
+    fn additive_default() -> Self {
+        Self {
+            inner: PreconditionerConfig::default(),
+        }
+    }
+
+    #[classattr]
+    #[pyo3(name = "Off")]
+    fn off() -> Self {
+        Self {
+            inner: PreconditionerConfig::Off,
+        }
+    }
+
+    #[classattr]
+    #[pyo3(name = "Diagonal")]
+    fn diagonal() -> Self {
+        Self {
+            inner: PreconditionerConfig::Diagonal,
+        }
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (local_solver=None, reduction=PyReductionStrategy::Auto))]
+    fn additive(
+        py: Python<'_>,
+        local_solver: Option<Py<PyLocalSolverConfig>>,
+        reduction: PyReductionStrategy,
+    ) -> Self {
+        let local_solver = local_solver
+            .map(|config| config.bind(py).get().to_native(py))
+            .unwrap_or_default();
+
+        Self {
+            inner: PreconditionerConfig::Additive {
+                local_solver,
+                reduction: reduction.to_native(),
+            },
+        }
+    }
 }
 
 #[pyclass(frozen, eq, eq_int, from_py_object, module = "within._within")]
@@ -386,6 +436,14 @@ impl PyPreconditioner {
         })?;
         Ok(Self { inner })
     }
+
+    /// Complete normalized configuration used to build this preconditioner.
+    #[getter]
+    fn config(&self) -> PyPreconditionerConfig {
+        PyPreconditionerConfig {
+            inner: self.inner.config().clone(),
+        }
+    }
 }
 
 /// Must run under the GIL; the result is all-native, so it can move into a released closure.
@@ -410,12 +468,8 @@ fn extract_preconditioner_config(
         return Ok(None);
     };
 
-    if let Ok(p) = obj.extract::<PyPreconditionerConfig>() {
-        return Ok(Some(match p {
-            PyPreconditionerConfig::Off => PreconditionerConfig::Off,
-            PyPreconditionerConfig::Additive => PreconditionerConfig::default(),
-            PyPreconditionerConfig::Diagonal => PreconditionerConfig::Diagonal,
-        }));
+    if let Ok(config) = obj.cast::<PyPreconditionerConfig>() {
+        return Ok(Some(config.get().to_native()));
     }
 
     if let Ok(schwarz) = obj.cast::<PyAdditiveSchwarz>() {

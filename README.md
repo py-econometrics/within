@@ -130,7 +130,7 @@ solver2 = Solver(fe, preconditioner=precond)   # skip re-factorization
 |---|---|
 | `LsmrOptions(tol=1e-8, maxiter=1000, local_size=None)` | Modified LSMR. `local_size` enables windowed reorthogonalization. |
 
-### Preconditioner (5-form Union)
+### Preconditioners
 
 The `preconditioner` argument accepts any of:
 
@@ -140,8 +140,13 @@ The `preconditioner` argument accepts any of:
 | `PreconditionerConfig.Off` | Explicit identity — solve unpreconditioned. |
 | `PreconditionerConfig.Additive` | Additive Schwarz shortcut, equivalent to `None`. |
 | `PreconditionerConfig.Diagonal` | Diagonal/Jacobi preconditioner using `diag(D^T W D)^{-1}`. |
-| `AdditiveSchwarz(local_solver?, reduction?)` | Tuned Schwarz config — import from `within.config`. |
+| `PreconditionerConfig.additive(local_solver?, reduction?)` | Tuned additive Schwarz configuration. Advanced argument types are available from `within.config`. |
+| `AdditiveSchwarz(local_solver?, reduction?)` | Existing tuned Schwarz configuration API — import from `within.config`. |
 | `Preconditioner` instance | Reuse a previously-built preconditioner across solvers. |
+
+`PreconditionerConfig` instances compare by value. A built preconditioner exposes
+the configuration used to construct it as `.config`, including after pickling,
+so cached preconditioners can be checked with `precond.config == requested_config`.
 
 ### Local solver configuration (advanced — `within.config`)
 
