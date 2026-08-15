@@ -16,7 +16,8 @@ use crate::Operator;
 use super::executor::AdditiveExecutor;
 use super::planning::{AdditiveScheduler, ReductionPlan, ReductionStrategy};
 
-/// Persists `n_dofs`, which entries alone cannot recover when some columns are uncovered.
+/// Persists `n_dofs`, which entries alone cannot recover when some columns are uncovered,
+/// plus the configured reduction strategy (including `Auto`, before runtime resolution).
 #[cfg(feature = "serde")]
 impl<S> serde::Serialize for SchwarzPreconditioner<S>
 where
@@ -24,9 +25,10 @@ where
 {
     fn serialize<Ser: serde::Serializer>(&self, serializer: Ser) -> Result<Ser::Ok, Ser::Error> {
         use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("SchwarzPreconditioner", 2)?;
+        let mut state = serializer.serialize_struct("SchwarzPreconditioner", 3)?;
         state.serialize_field("subdomains", self.executor.subdomains())?;
         state.serialize_field("n_dofs", &self.executor.n_dofs())?;
+        state.serialize_field("reduction_strategy", &self.reduction_strategy)?;
         state.end()
     }
 }
@@ -44,6 +46,7 @@ where
         struct Helper<S: LocalSolver> {
             subdomains: Vec<SubdomainEntry<S>>,
             n_dofs: usize,
+            reduction_strategy: ReductionStrategy,
         }
 
         let h: Helper<S> = Helper::deserialize(deserializer)?;
@@ -63,7 +66,7 @@ where
         Ok(SchwarzPreconditioner::with_n_dofs(
             h.subdomains,
             h.n_dofs,
-            ReductionStrategy::default(),
+            h.reduction_strategy,
         ))
     }
 }

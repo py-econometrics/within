@@ -1,5 +1,9 @@
 use ndarray::array;
-use within::{solve, Effect, LsmrOptions, Preconditioner, PreconditionerConfig, Solver};
+use within::{
+    solve, ApproxCholConfig, ApproxSchurConfig, Effect, LocalSolverConfig, LsmrOptions,
+    Preconditioner, PreconditionerConfig, ReductionStrategy, ScalingConfig, ScalingFailure,
+    SchurMode, Solver,
+};
 
 #[path = "common/orchestrate_helpers.rs"]
 mod common;
@@ -95,6 +99,7 @@ fn test_diagonal_preconditioner_single_factor_is_cached() {
         .expect("single-factor diagonal preconditioner should be cached");
     assert_eq!(cached.nrows(), 3);
     assert_eq!(cached.ncols(), 3);
+    assert_eq!(cached.config(), &precond);
 }
 
 #[test]
@@ -199,10 +204,25 @@ fn test_solver_properties() {
 }
 
 #[test]
-fn test_serde_roundtrip() {
+fn test_additive_serde_roundtrip_preserves_config_and_solution() {
     let (categories, y) = categories_and_y();
     let params = default_params();
-    let precond = additive_precond();
+    let precond = PreconditionerConfig::Additive {
+        local_solver: LocalSolverConfig {
+            approx_chol: ApproxCholConfig {
+                seed: 41,
+                split_merge: Some(3),
+            },
+            schur: SchurMode::Approximate(ApproxSchurConfig { seed: 17, split: 2 }),
+            dense_threshold: 0,
+            scaling: ScalingConfig {
+                tolerance: 1e-7,
+                max_sweeps: 123,
+                on_failure: ScalingFailure::Error,
+            },
+        },
+        reduction: ReductionStrategy::AtomicScatter,
+    };
 
     let solver1 = Solver::new(categories.view(), None, &precond).expect("solver build");
     let r1 = solver1.solve(&y, &params).expect("solve 1");
@@ -211,11 +231,13 @@ fn test_serde_roundtrip() {
     let precond_ref = solver1
         .preconditioner()
         .expect("should have preconditioner");
+    assert_eq!(precond_ref.config(), &precond);
     let bytes = postcard::to_stdvec(precond_ref).expect("serialize");
     assert!(!bytes.is_empty());
 
     // Deserialize and build new solver
     let precond2: Preconditioner = postcard::from_bytes(&bytes).expect("deserialize");
+    assert_eq!(precond2.config(), &precond);
     let solver2 =
         Solver::new(categories.view(), None, precond2).expect("solver from preconditioner");
     let r2 = solver2.solve(&y, &params).expect("solve 2");

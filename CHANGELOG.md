@@ -9,6 +9,9 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **BREAKING:** The serialized `Preconditioner` wire format changed (v13 → v14) to retain its complete construction config and configured reduction strategy; older additive payloads no longer decode.
+- Rust `Preconditioner` objects expose their normalized construction configuration through `Preconditioner::config()`.
+- Serialized `schwarz_precond::SchwarzPreconditioner` values now preserve the configured reduction strategy.
 - **BREAKING:** `schwarz_precond::mlsmr` takes an `MlsmrOptions` in place of its trailing `local_size`.
 - **BREAKING:** `LsmrStopReason` gains `Escalated` and `WarmStartExact`, breaking exhaustive `match`es.
 - A warm start that already solves the system reports `WarmStartExact` instead of `ZeroRhs`.
