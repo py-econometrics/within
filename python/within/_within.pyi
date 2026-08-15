@@ -12,8 +12,8 @@ class PreconditionerConfig:
     """Preconditioner selection shortcut for the LSMR solver.
 
     Not an ``Enum``: the members below are class attributes (not iterable, so
-    ``list(PreconditionerConfig)`` raises). Use them for defaults, or pass an
-    ``AdditiveSchwarz`` instance for fine-grained control.
+    ``list(PreconditionerConfig)`` raises). Use them for defaults, or call
+    :meth:`additive` for fine-grained control.
 
     Attributes:
         Additive: Additive Schwarz (default).
@@ -24,6 +24,11 @@ class PreconditionerConfig:
     Additive: PreconditionerConfig
     Off: PreconditionerConfig
     Diagonal: PreconditionerConfig
+    @staticmethod
+    def additive(
+        local_solver: LocalSolverConfig | None = None,
+        reduction: ReductionStrategy = ...,
+    ) -> PreconditionerConfig: ...
 
 class ReductionStrategy:
     """Strategy for combining subdomain contributions in additive Schwarz.
@@ -325,6 +330,8 @@ class Preconditioner:
     def nrows(self) -> int: ...
     @property
     def ncols(self) -> int: ...
+    @property
+    def config(self) -> PreconditionerConfig: ...
     def __repr__(self) -> str: ...
     def __reduce__(self) -> tuple: ...
 

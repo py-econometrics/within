@@ -11,6 +11,7 @@ from within._within import (
     ApproxCholConfig,
     ApproxSchurConfig,
     LocalSolverConfig,
+    ReductionStrategy,
     Schur,
 )
 
@@ -40,6 +41,17 @@ def solver_and_precond(problem):
 
 
 class TestAdvancedConfigs:
+    def test_preconditioner_config_additive_factory(self):
+        implicit = PreconditionerConfig.additive()
+        explicit = PreconditionerConfig.additive(
+            local_solver=LocalSolverConfig(),
+            reduction=ReductionStrategy.Auto,
+        )
+
+        assert implicit == explicit
+        assert implicit == PreconditionerConfig.Additive
+        assert implicit != PreconditionerConfig.Diagonal
+
     def test_approx_chol_config_defaults(self):
         cfg = ApproxCholConfig()
         assert cfg.seed == 0
@@ -119,6 +131,28 @@ class TestFePreconditioner:
         precond2 = pickle.loads(data)
         x = np.random.randn(precond.nrows)
         np.testing.assert_array_equal(precond.apply(x), precond2.apply(x))
+        assert precond2.config == precond.config
+
+    def test_preconditioner_exposes_default_config(self, solver_and_precond):
+        solver, precond, categories, y = solver_and_precond
+        assert precond.config == PreconditionerConfig.Additive
+
+    def test_preconditioner_exposes_tuned_config(self, problem):
+        cats, _ = problem
+        requested = PreconditionerConfig.additive(
+            local_solver=LocalSolverConfig(
+                approx_chol=ApproxCholConfig(seed=41, split_merge=3),
+                schur=Schur.approximate(ApproxSchurConfig(seed=17, split=2)),
+                dense_threshold=0,
+            ),
+            reduction=ReductionStrategy.AtomicScatter,
+        )
+
+        solver = Solver(as_solver_categories(cats), preconditioner=requested)
+        precond = solver.preconditioner
+
+        assert precond is not None
+        assert precond.config == requested
 
     def test_preconditioner_corrupt_bytes_raises(self):
         with pytest.raises(ValueError):
@@ -140,6 +174,7 @@ class TestFePreconditioner:
 
         assert precond is not None
         assert "Diagonal" in repr(precond)
+        assert precond.config == PreconditionerConfig.Diagonal
 
     def test_single_factor_diagonal_preconditioner_is_cached(self):
         categories = np.asfortranarray(
