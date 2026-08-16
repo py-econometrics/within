@@ -12,3 +12,11 @@ target
 .ruff_cache/
 mutants.out/
 *.profraw
+
+__pycache__/
+
+.vscode/
+.idea/
+.claude/
+.codex/
+.DS_Store
