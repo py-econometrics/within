@@ -56,6 +56,11 @@ pub trait Operator: Send + Sync {
     fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), error::SolveError>;
 }
 
+// Compiles the README usage example as a doctest so it cannot drift from the public API.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDoctests;
+
 /// Domain decomposition primitives: subdomain cores and partition weights.
 pub mod domain;
 /// Typed errors for build and runtime failures.

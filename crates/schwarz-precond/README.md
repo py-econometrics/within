@@ -15,7 +15,7 @@ schwarz-precond = "0.1"
 
 Or with Cargo:
 
-```
+```console
 cargo add schwarz-precond
 ```
 
