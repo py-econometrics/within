@@ -6,8 +6,8 @@ import numpy as np
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from within import Solver, solve
-from within.config import AdditiveSchwarz, ReductionStrategy
+from within import PreconditionerConfig, Solver, solve
+from within.config import ReductionStrategy
 
 
 @st.composite
@@ -67,10 +67,10 @@ class TestProperties:
 
 
 class TestAdvancedPreconditioners:
-    """Tests for AdditiveSchwarz preconditioner configs."""
+    """Tests for additive Schwarz preconditioner configs."""
 
     def test_additive_schwarz_object_converges(self):
-        """AdditiveSchwarz() as preconditioner object should converge."""
+        """PreconditionerConfig.Additive() as preconditioner object should converge."""
         rng = np.random.default_rng(42)
         categories = np.asfortranarray(
             np.column_stack(
@@ -78,11 +78,11 @@ class TestAdvancedPreconditioners:
             ).astype(np.uint32)
         )
         y = rng.standard_normal(500)
-        result = solve(categories, y, preconditioner=AdditiveSchwarz())
+        result = solve(categories, y, preconditioner=PreconditionerConfig.Additive())
         assert result.converged
 
     def test_reduction_strategy_atomic_scatter_converges(self):
-        """AdditiveSchwarz with AtomicScatter reduction should converge."""
+        """additive Schwarz with AtomicScatter reduction should converge."""
         rng = np.random.default_rng(10)
         categories = np.asfortranarray(
             np.column_stack(
@@ -93,12 +93,14 @@ class TestAdvancedPreconditioners:
         result = solve(
             categories,
             y,
-            preconditioner=AdditiveSchwarz(reduction=ReductionStrategy.AtomicScatter),
+            preconditioner=PreconditionerConfig.Additive(
+                reduction=ReductionStrategy.AtomicScatter
+            ),
         )
         assert result.converged
 
     def test_reduction_strategy_parallel_reduction_converges(self):
-        """AdditiveSchwarz with ParallelReduction strategy should converge."""
+        """additive Schwarz with ParallelReduction strategy should converge."""
         rng = np.random.default_rng(11)
         categories = np.asfortranarray(
             np.column_stack(
@@ -109,7 +111,7 @@ class TestAdvancedPreconditioners:
         result = solve(
             categories,
             y,
-            preconditioner=AdditiveSchwarz(
+            preconditioner=PreconditionerConfig.Additive(
                 reduction=ReductionStrategy.ParallelReduction
             ),
         )
@@ -127,12 +129,14 @@ class TestAdvancedPreconditioners:
         r_atomic = solve(
             categories,
             y,
-            preconditioner=AdditiveSchwarz(reduction=ReductionStrategy.AtomicScatter),
+            preconditioner=PreconditionerConfig.Additive(
+                reduction=ReductionStrategy.AtomicScatter
+            ),
         )
         r_parallel = solve(
             categories,
             y,
-            preconditioner=AdditiveSchwarz(
+            preconditioner=PreconditionerConfig.Additive(
                 reduction=ReductionStrategy.ParallelReduction
             ),
         )

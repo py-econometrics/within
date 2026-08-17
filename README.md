@@ -137,16 +137,15 @@ The `preconditioner` argument accepts any of:
 | Form | Meaning |
 |---|---|
 | `None` (default) | Library default — Additive Schwarz with sensible defaults. |
-| `PreconditionerConfig.Off` | Explicit identity — solve unpreconditioned. |
-| `PreconditionerConfig.Additive` | Additive Schwarz shortcut, equivalent to `None`. |
-| `PreconditionerConfig.Diagonal` | Diagonal/Jacobi preconditioner using `diag(D^T W D)^{-1}`. |
-| `PreconditionerConfig.additive(local_solver?, reduction?)` | Tuned additive Schwarz configuration. Advanced argument types are available from `within.config`. |
-| `AdditiveSchwarz(local_solver?, reduction?)` | Existing tuned Schwarz configuration API — import from `within.config`. |
+| `PreconditionerConfig.Off()` | Explicit identity — solve unpreconditioned. |
+| `PreconditionerConfig.Additive()` | Additive Schwarz shortcut, equivalent to `None`. |
+| `PreconditionerConfig.Diagonal()` | Diagonal/Jacobi preconditioner using `diag(D^T W D)^{-1}`. |
+| `PreconditionerConfig.Additive(local_solver?, reduction?)` | Tuned additive Schwarz. Argument types import from `within.config`. |
 | `Preconditioner` instance | Reuse a previously-built preconditioner across solvers. |
 
-`PreconditionerConfig` instances compare by value. A built preconditioner exposes
-the configuration used to construct it as `.config`, including after pickling,
-so cached preconditioners can be checked with `precond.config == requested_config`.
+`PreconditionerConfig` is a tagged union: each variant is a subclass, so instances
+support `match`/`case`, compare by value, and pickle. A built preconditioner exposes
+the configuration used to construct it as `.config` (preserved across pickling).
 
 ### Local solver configuration (advanced — `within.config`)
 

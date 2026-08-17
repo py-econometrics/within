@@ -15,7 +15,7 @@ from within import (
     Solver,
     solve,
 )
-from within.config import AdditiveSchwarz, LocalSolverConfig, ScalingConfig
+from within.config import LocalSolverConfig, ScalingConfig
 
 from conftest import as_solver_categories, generate_synthetic_data
 
@@ -112,7 +112,7 @@ def test_one_shot_solve_surfaces_build_warnings():
     from within import solve_batch
 
     design = [Effect(f, True, [z]), Effect(g, True)]
-    precond = AdditiveSchwarz(
+    precond = PreconditionerConfig.Additive(
         local_solver=LocalSolverConfig(scaling=ScalingConfig(max_iterations=0))
     )
 
@@ -160,7 +160,7 @@ class TestSolveDefaults:
             as_solver_categories(cats),
             y,
             options=LsmrOptions(),
-            preconditioner=PreconditionerConfig.Off,
+            preconditioner=PreconditionerConfig.Off(),
         )
         assert result.converged
 
@@ -180,18 +180,18 @@ class TestPreconditioners:
             as_solver_categories(cats),
             y,
             options=LsmrOptions(),
-            preconditioner=PreconditionerConfig.Additive,
+            preconditioner=PreconditionerConfig.Additive(),
         )
         assert result.converged
 
     def test_advanced_additive_schwarz(self, problem):
-        """Test advanced config via AdditiveSchwarz."""
+        """Test advanced config via additive Schwarz."""
         cats, y = problem
         result = solve(
             as_solver_categories(cats),
             y,
             options=LsmrOptions(),
-            preconditioner=AdditiveSchwarz(),
+            preconditioner=PreconditionerConfig.Additive(),
         )
         assert result.converged
 
@@ -205,7 +205,7 @@ class TestPreconditioners:
             categories,
             y,
             options=LsmrOptions(maxiter=2000),
-            preconditioner=PreconditionerConfig.Diagonal,
+            preconditioner=PreconditionerConfig.Diagonal(),
         )
         assert result.converged
         assert np.all(np.isfinite(result.x))
@@ -336,10 +336,10 @@ class TestSolver:
         np.testing.assert_array_equal(r1.x, r2.x)
 
     def test_solver_no_preconditioner(self, problem):
-        """Solver with PreconditionerConfig.Off works."""
+        """Solver with PreconditionerConfig.Off() works."""
         cats, y = problem
         solver = Solver(
-            as_solver_categories(cats), preconditioner=PreconditionerConfig.Off
+            as_solver_categories(cats), preconditioner=PreconditionerConfig.Off()
         )
         result = solver.solve(y)
         assert result.converged
@@ -427,7 +427,7 @@ class TestSolverSerde:
     def test_no_preconditioner_returns_none(self, problem):
         cats, y = problem
         solver = Solver(
-            as_solver_categories(cats), preconditioner=PreconditionerConfig.Off
+            as_solver_categories(cats), preconditioner=PreconditionerConfig.Off()
         )
         assert solver.preconditioner is None
 
@@ -439,7 +439,7 @@ class TestSolverSerde:
         )
         y = np.array([1.0, 2.0, 1.5, 2.5, 3.0, 3.5])
 
-        solver1 = Solver(categories, preconditioner=PreconditionerConfig.Diagonal)
+        solver1 = Solver(categories, preconditioner=PreconditionerConfig.Diagonal())
         r1 = solver1.solve(y)
         precond = solver1.preconditioner
 
@@ -465,7 +465,11 @@ class TestSolverSerde:
 class TestAliases:
     def test_additive_alias(self, problem):
         cats, y = problem
-        result = solve(as_solver_categories(cats), y, preconditioner=AdditiveSchwarz())
+        result = solve(
+            as_solver_categories(cats),
+            y,
+            preconditioner=PreconditionerConfig.Additive(),
+        )
         assert result.converged
 
 
