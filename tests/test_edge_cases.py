@@ -86,7 +86,7 @@ class TestDegenerateY:
         """All observations in one group per factor leaves no variation to explain."""
         cats = np.zeros((5, 2), dtype=np.uint32, order="F")
         y = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
-        result = solve(cats, y, preconditioner=PreconditionerConfig.Off)
+        result = solve(cats, y, preconditioner=PreconditionerConfig.Off())
         assert np.all(np.isfinite(result.x))
 
 
@@ -243,7 +243,7 @@ class TestNoPreconditioner:
             [rng.integers(0, 10, size=200), rng.integers(0, 10, size=200)]
         )
         y = rng.standard_normal(200)
-        result = solve(cats, y, preconditioner=PreconditionerConfig.Off)
+        result = solve(cats, y, preconditioner=PreconditionerConfig.Off())
         assert result.converged
         assert np.all(np.isfinite(result.x))
 
@@ -253,13 +253,13 @@ class TestNoPreconditioner:
             [np.array([0, 1, 0, 1, 2]), np.array([0, 0, 1, 1, 0])]
         )
         y = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
-        result = solve(cats, y, preconditioner=PreconditionerConfig.Off)
+        result = solve(cats, y, preconditioner=PreconditionerConfig.Off())
         assert np.all(np.isfinite(result.x))
 
     def test_solver_preconditioner_none_returns_none(self):
-        """Solver built with PreconditionerConfig.Off should return None from preconditioner()."""
+        """Solver built with PreconditionerConfig.Off() should return None from preconditioner()."""
         cats = as_solver_categories(
             [np.array([0, 1, 0, 1, 2]), np.array([0, 0, 1, 1, 0])]
         )
-        solver = Solver(cats, preconditioner=PreconditionerConfig.Off)
+        solver = Solver(cats, preconditioner=PreconditionerConfig.Off())
         assert solver.preconditioner is None

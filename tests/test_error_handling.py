@@ -3,9 +3,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from within import Effect, Solver, solve, solve_batch
+from within import Effect, PreconditionerConfig, Solver, solve, solve_batch
 from within._within import ApproxSchurConfig
-from within.config import AdditiveSchwarz
 
 from conftest import as_solver_categories
 
@@ -101,7 +100,7 @@ class TestErrorHandling:
     def test_additive_schwarz_rejects_local_solver_type(self):
         """A wrong-type local_solver should raise at construction, not at solve."""
         with pytest.raises(TypeError):
-            AdditiveSchwarz(local_solver="invalid")
+            PreconditionerConfig.Additive(local_solver="invalid")
 
     def test_approx_schur_config_split_zero_raises(self):
         """ApproxSchurConfig(split=0) should raise ValueError."""
