@@ -256,6 +256,19 @@ fn build_diagonal(
     })
 }
 
+/// The diagonal base used as the first rung of an [`Adaptive`](PreconditionerConfig::Adaptive) solve.
+pub(crate) fn build_diagonal_preconditioner(
+    design: &Design<'_>,
+    weights: Option<&[f64]>,
+) -> Result<Preconditioner, BuildError> {
+    let build_started = Instant::now();
+    let diagonal = build_diagonal(design, weights)?;
+    Ok(Preconditioner {
+        inner: Variant::Diagonal(diagonal),
+        build_duration: build_started.elapsed(),
+    })
+}
+
 /// Build a [`Preconditioner`] from a design and optional weights, plus any warnings.
 pub(crate) fn build_preconditioner(
     design: &Design<'_>,
@@ -267,15 +280,21 @@ pub(crate) fn build_preconditioner(
     // Weights are pre-validated by the sole caller, whose permutation preserves length and sign.
     let default_cfg = PreconditionerConfig::default();
     let resolved = config.unwrap_or(&default_cfg);
-    // Measure preconditioner build time
     let build_started = Instant::now();
     let (inner, warnings) = match resolved {
         PreconditionerConfig::Off => {
             return Ok((None, Vec::new()));
         }
+        // Adaptive's escalated rung is exactly an Additive build; `stall` is a
+        // solver concern and plays no part in constructing the map.
         PreconditionerConfig::Additive {
             local_solver,
             reduction,
+        }
+        | PreconditionerConfig::Adaptive {
+            local_solver,
+            reduction,
+            ..
         } => {
             let (domains, warnings) = build_local_domains(design, weights, local_solver)?;
             if domains.is_empty() {
