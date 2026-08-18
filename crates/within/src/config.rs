@@ -90,7 +90,7 @@ impl Default for LocalSolverConfig {
 pub struct ScalingConfig {
     /// Relative slack for weak dominance; PSD-boundary designs hover at ≈ 1e-12.
     pub tolerance: f64,
-    /// Matrix-vector iteration budget; the name is retained for API compatibility.
+    /// Reduced-CG iteration budget (2–4 matrix-vector passes each); the name predates the CG certificate.
     pub max_sweeps: usize,
     /// Disposition when certification fails.
     pub on_failure: ScalingFailure,

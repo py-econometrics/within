@@ -15,6 +15,7 @@ use super::ComponentClass;
 use crate::config::{ScalingConfig, ScalingFailure};
 use crate::csr_block::CsrBlock;
 use crate::domain::CrossTab;
+use crate::linalg::dot;
 
 #[derive(Clone, Copy)]
 struct RoundoffBudget {
@@ -523,7 +524,14 @@ impl<'a> NormalizedCrossOperator<'a> {
             BipartiteSide::Rows => small.iter().chain(large).copied().collect(),
             BipartiteSide::Columns => large.iter().chain(small).copied().collect(),
         };
-        if !normalize_positive(&mut mu) {
+        let peak = mu.iter().copied().fold(0.0f64, f64::max);
+        if !peak.is_finite() || peak <= 0.0 {
+            return Err(NotScalable);
+        }
+        for value in mu.iter_mut() {
+            *value /= peak;
+        }
+        if !mu.iter().all(|value| value.is_finite() && *value > 0.0) {
             return Err(NotScalable);
         }
         Ok(ScalingCandidate { mu, violation })
@@ -545,21 +553,6 @@ fn multiply_normalized(
             .map(|(j, entry)| entry.abs() * output_inv_sqrt[i] * input_inv_sqrt[j] * input[j])
             .sum();
     }
-}
-
-fn dot(left: &[f64], right: &[f64]) -> f64 {
-    left.iter().zip(right).map(|(&x, &y)| x * y).sum()
-}
-
-fn normalize_positive(values: &mut [f64]) -> bool {
-    let peak = values.iter().copied().fold(0.0f64, f64::max);
-    if !peak.is_finite() || peak <= 0.0 {
-        return false;
-    }
-    for value in values.iter_mut() {
-        *value /= peak;
-    }
-    values.iter().all(|value| value.is_finite() && *value > 0.0)
 }
 
 struct ScalingCandidate {
@@ -671,15 +664,12 @@ fn reduced_cg_scaling(
                 &mut large_work,
                 &mut small_image,
             ) {
-                if violation <= scaling.tolerance {
-                    return Ok(ScalingResult {
-                        candidate: operator.materialize_candidate(
-                            &boundary_small,
-                            &large_work,
-                            violation,
-                        )?,
-                        iterations: iteration,
-                    });
+                if violation < best.violation {
+                    if let Ok(candidate) =
+                        operator.materialize_candidate(&boundary_small, &large_work, violation)
+                    {
+                        best = candidate;
+                    }
                 }
             }
             return Ok(ScalingResult {
@@ -688,20 +678,29 @@ fn reduced_cg_scaling(
             });
         }
 
-        if let Some(violation) = operator.candidate_violation(
-            &cg.solution,
-            CandidateKind::Strict,
-            &mut large_work,
-            &mut small_image,
-        ) {
-            if violation < best.violation {
-                best = operator.materialize_candidate(&cg.solution, &large_work, violation)?;
-            }
-            if violation <= scaling.tolerance {
-                return Ok(ScalingResult {
-                    candidate: best,
-                    iterations: iteration,
-                });
+        // A certificate check costs two extra passes; past the cheap early exits, probe on a stride.
+        let last =
+            matches!(step, ReducedCgStep::ResidualExhausted) || iteration == scaling.max_sweeps;
+        if last || iteration <= 8 || iteration % 4 == 0 {
+            if let Some(violation) = operator.candidate_violation(
+                &cg.solution,
+                CandidateKind::Strict,
+                &mut large_work,
+                &mut small_image,
+            ) {
+                if violation < best.violation {
+                    if let Ok(candidate) =
+                        operator.materialize_candidate(&cg.solution, &large_work, violation)
+                    {
+                        best = candidate;
+                    }
+                }
+                if best.violation <= scaling.tolerance {
+                    return Ok(ScalingResult {
+                        candidate: best,
+                        iterations: iteration,
+                    });
+                }
             }
         }
 

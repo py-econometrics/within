@@ -103,7 +103,7 @@ it).
 | restrict | G∘ → P | principal submatrix, one factor pair | exact¹ | — |
 | split | P → {B} | one member per channel pair, per component; exact partition of coupling; members overlap on shared channels | exact | via recompose |
 | validate | plain B → L₊ | check row sums ≡ diagonals (roundoff); adopt $\sigma = (\mathbf{1}_q, -\mathbf{1}_r)$ | exact | $x = \sigma \circ \hat x$ |
-| scale | dominant B → S± | $A \mapsto SAS$, $S$ certified by monotone fixed point | exact | $x = S\hat x$ |
+| scale | dominant B → S± | $A \mapsto SAS$, $S$ certified by conjugate gradients on the reduced operator | exact | $x = S\hat x$ |
 | clamp | ¬dominant B → S± | diagonal lift $d_i \mapsto \max\bigl(d_i, \sum_j \lvert a_{ij}\rvert\bigr)$ — operator perturbation | quality | — |
 | switch | balanced S± → L₊ | $A \mapsto \sigma A \sigma$, fused with scale; surplus → ground edges; floating ⟺ total surplus ≤ roundoff | exact | $x = \sigma \circ \hat x$ |
 | cover | frustrated S± → L₊ ($2n$) | Gremban double cover; balanced ⟺ cover disconnects | exact | $x = (x^+ - x^-)/2$ |

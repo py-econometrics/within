@@ -33,6 +33,7 @@ pub(crate) mod block_elim;
 pub(crate) mod channel;
 pub(crate) mod csr_block;
 pub(crate) mod domain;
+pub(crate) mod linalg;
 pub(crate) mod operator;
 pub(crate) mod solver;
 
