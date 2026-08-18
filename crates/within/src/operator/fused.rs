@@ -22,6 +22,77 @@ use crate::operator::schwarz::Preconditioner;
 /// Factor-nnz budget above which the exact solve is declined (fill is set by graph topology).
 const FILL_CAP: usize = 40_000_000;
 
+/// The assembled (weighted, whitened) Gram of one warned term group, in sparse form.
+pub(crate) struct FusedGram {
+    /// Global DOF ranges of the fused terms, concatenated in local order.
+    pub(crate) spans: Vec<Range<usize>>,
+    pub(crate) n_local: usize,
+    pub(crate) diag: Vec<f64>,
+    /// Strict upper-triangular entries keyed by `(row, col)` with `row < col`.
+    pub(crate) off: HashMap<(u32, u32), f64>,
+}
+
+pub(crate) fn assemble_gram(
+    design: &Design<'_>,
+    weights: Option<&[f64]>,
+    terms: &[usize],
+) -> FusedGram {
+    let spans: Vec<Range<usize>> = terms
+        .iter()
+        .map(|&t| {
+            let meta = &design.terms[t];
+            meta.offset..meta.offset + meta.columns.len() * meta.n_levels
+        })
+        .collect();
+    let local_bases: Vec<usize> = spans
+        .iter()
+        .scan(0, |acc, span| {
+            let base = *acc;
+            *acc += span.len();
+            Some(base)
+        })
+        .collect();
+    let n_local = spans.iter().map(|s| s.len()).sum();
+
+    let mut diag = vec![0.0f64; n_local];
+    let mut off: HashMap<(u32, u32), f64> = HashMap::new();
+    let mut ents: Vec<(usize, f64)> = Vec::new();
+    for i in 0..design.n_obs {
+        let w = weights.map_or(1.0, |ws| ws[i]);
+        ents.clear();
+        for (span, &t) in terms.iter().enumerate() {
+            let meta = &design.terms[t];
+            let level = design.frame.level_column(t)[i] as usize;
+            for (c, loading) in meta.columns.iter().enumerate() {
+                let coef = match loading {
+                    Loading::Constant => 1.0,
+                    Loading::Covariate(k) => design.frame.loading_column(*k as usize)[i],
+                };
+                let local = local_bases[span] + meta.column_base(c) + level - meta.offset;
+                ents.push((local, coef));
+            }
+        }
+        for (p, &(dp, cp)) in ents.iter().enumerate() {
+            diag[dp] += w * cp * cp;
+            for &(dq, cq) in &ents[p + 1..] {
+                let key = if dp <= dq {
+                    (dp as u32, dq as u32)
+                } else {
+                    (dq as u32, dp as u32)
+                };
+                *off.entry(key).or_insert(0.0) += w * cp * cq;
+            }
+        }
+    }
+
+    FusedGram {
+        spans,
+        n_local,
+        diag,
+        off,
+    }
+}
+
 /// Exact sparse LDLᵀ of the Gram over one warned term group, applied additively
 /// on top of the base preconditioner and never serialized (see docs part 3, §5).
 pub(crate) struct FusedBlockSolve {
@@ -71,53 +142,12 @@ impl FusedBlockSolve {
     }
 
     fn build(design: &Design<'_>, weights: Option<&[f64]>, terms: &[usize]) -> Option<Self> {
-        let spans: Vec<Range<usize>> = terms
-            .iter()
-            .map(|&t| {
-                let meta = &design.terms[t];
-                meta.offset..meta.offset + meta.columns.len() * meta.n_levels
-            })
-            .collect();
-        let local_bases: Vec<usize> = spans
-            .iter()
-            .scan(0, |acc, span| {
-                let base = *acc;
-                *acc += span.len();
-                Some(base)
-            })
-            .collect();
-        let n_local = spans.iter().map(|s| s.len()).sum();
-
-        let mut diag = vec![0.0f64; n_local];
-        let mut off: HashMap<(u32, u32), f64> = HashMap::new();
-        let mut ents: Vec<(usize, f64)> = Vec::new();
-        for i in 0..design.n_obs {
-            let w = weights.map_or(1.0, |ws| ws[i]);
-            ents.clear();
-            for (span, &t) in terms.iter().enumerate() {
-                let meta = &design.terms[t];
-                let level = design.frame.level_column(t)[i] as usize;
-                for (c, loading) in meta.columns.iter().enumerate() {
-                    let coef = match loading {
-                        Loading::Constant => 1.0,
-                        Loading::Covariate(k) => design.frame.loading_column(*k as usize)[i],
-                    };
-                    let local = local_bases[span] + meta.column_base(c) + level - meta.offset;
-                    ents.push((local, coef));
-                }
-            }
-            for (p, &(dp, cp)) in ents.iter().enumerate() {
-                diag[dp] += w * cp * cp;
-                for &(dq, cq) in &ents[p + 1..] {
-                    let key = if dp <= dq {
-                        (dp as u32, dq as u32)
-                    } else {
-                        (dq as u32, dp as u32)
-                    };
-                    *off.entry(key).or_insert(0.0) += w * cp * cq;
-                }
-            }
-        }
+        let FusedGram {
+            spans,
+            n_local,
+            diag,
+            off,
+        } = assemble_gram(design, weights, terms);
 
         let mut triplets = Vec::with_capacity(n_local + off.len());
         for (d, &v) in diag.iter().enumerate() {
