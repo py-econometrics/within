@@ -184,7 +184,7 @@ impl PyScalingConfig {
     pub(crate) fn from_native(config: &ScalingConfig) -> Self {
         Self {
             tolerance: config.tolerance,
-            max_sweeps: config.max_sweeps,
+            max_iterations: config.max_iterations,
             on_failure: config.on_failure,
         }
     }
