@@ -13,6 +13,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - **BREAKING:** `LsmrStopReason` gains `Escalated` and `WarmStartExact`, breaking exhaustive `match`es.
 - A warm start that already solves the system reports `WarmStartExact` instead of `ZeroRhs`.
 - **BREAKING:** The serialized `Preconditioner` wire format changed (v12 → v13) with the `approx-chol` 0.4 → 0.5 bump; 0.3.0 bytes no longer decode.
+- The exact Schur complement computes one triangle and mirrors it, so the local factorization's symmetric-ingest contract holds by construction instead of by matched rounding (#282).
 
 ### Added
 

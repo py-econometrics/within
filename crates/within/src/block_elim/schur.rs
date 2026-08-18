@@ -78,7 +78,8 @@ pub(crate) fn exact_for_factor(matrix: &SddmMatrix, inv_diagonal_eliminated: &[f
     build_explicit_laplacian(&principal, &surplus, matrix.grounding)
 }
 
-/// Multiply-adds [`exact`] performs: `Σ_k nnz(k)²`, quadratic in a width `n_kept` cannot see.
+/// Multiply-adds [`exact`] performs: `Σ_k nnz(k)(nnz(k)+1)/2` for the upper triangles,
+/// quadratic in a width `n_kept` cannot see.
 fn exact_flops(matrix: &SddmMatrix) -> usize {
     matrix
         .cross_tab
@@ -87,12 +88,12 @@ fn exact_flops(matrix: &SddmMatrix) -> usize {
         .windows(2)
         .map(|bounds| {
             let width = (bounds[1] - bounds[0]) as usize;
-            width * width
+            width * (width + 1) / 2
         })
         .sum()
 }
 
-/// Scatter Schur row `i` into a dense workspace, recording touched columns.
+/// Scatter the diagonal-and-upper part of Schur row `i`, recording touched columns.
 fn compute_schur_row_dense(
     matrix: &SddmMatrix,
     inv_diagonal_eliminated: &[f64],
@@ -103,14 +104,22 @@ fn compute_schur_row_dense(
     work[i] = matrix.diagonal_kept()[i];
     touched.push(i);
 
+    let elim_to_keep = &matrix.cross_tab.c;
     for (k, w) in matrix.cross_tab.ct.row(i) {
         let inv = inv_diagonal_eliminated[k];
-        for (j, v) in matrix.cross_tab.c.row(k) {
+        let start = elim_to_keep.indptr[k] as usize;
+        let end = elim_to_keep.indptr[k + 1] as usize;
+        let columns = &elim_to_keep.indices[start..end];
+        let split = columns.partition_point(|&j| (j as usize) < i);
+        for (&j, &v) in columns[split..]
+            .iter()
+            .zip(&elim_to_keep.data[start + split..end])
+        {
+            let j = j as usize;
             if work[j] == 0.0 && j != i {
                 touched.push(j);
             }
-            // Pairing the loadings before the reciprocal makes (i, j) and (j, i) bitwise equal.
-            work[j] -= (w * v) * inv;
+            work[j] -= w * v * inv;
         }
     }
 }
@@ -131,16 +140,38 @@ fn extract_sparse_row(i: usize, work: &mut [f64], touched: &mut [usize]) -> (Vec
     (row_indices, row_data)
 }
 
-/// Assemble a CSR matrix from per-row sparse results.
+/// Assemble full rows from diagonal-and-upper parts; the strict upper mirrors into the lower.
 fn assemble_schur_csr(rows: Vec<(Vec<u32>, Vec<f64>)>, n_keep: usize) -> CsrMatrix {
     let mut s_indptr = vec![0u32; n_keep + 1];
-    let total_nnz: usize = rows.iter().map(|(ri, _)| ri.len()).sum();
-    let mut s_indices = Vec::with_capacity(total_nnz);
-    let mut s_data = Vec::with_capacity(total_nnz);
+    for (i, (ri, _)) in rows.iter().enumerate() {
+        s_indptr[i + 1] += to_u32(ri.len());
+        for &j in ri {
+            if j as usize != i {
+                s_indptr[j as usize + 1] += 1;
+            }
+        }
+    }
+    for i in 0..n_keep {
+        s_indptr[i + 1] += s_indptr[i];
+    }
+    let total_nnz = s_indptr[n_keep] as usize;
+    let mut s_indices = vec![0u32; total_nnz];
+    let mut s_data = vec![0.0f64; total_nnz];
+
+    // Row layout: [mirrored lower | diagonal and upper]; ascending source rows keep it sorted.
+    let mut lower_cursor: Vec<u32> = s_indptr[..n_keep].to_vec();
     for (i, (ri, rd)) in rows.into_iter().enumerate() {
-        s_indices.extend_from_slice(&ri);
-        s_data.extend_from_slice(&rd);
-        s_indptr[i + 1] = to_u32(s_indices.len());
+        let own = s_indptr[i + 1] as usize - ri.len();
+        s_indices[own..own + ri.len()].copy_from_slice(&ri);
+        s_data[own..own + rd.len()].copy_from_slice(&rd);
+        for (&j, &v) in ri.iter().zip(&rd) {
+            if j as usize != i {
+                let pos = lower_cursor[j as usize] as usize;
+                s_indices[pos] = to_u32(i);
+                s_data[pos] = v;
+                lower_cursor[j as usize] += 1;
+            }
+        }
     }
     CsrMatrix::new(s_indptr, s_indices, s_data, n_keep)
 }
