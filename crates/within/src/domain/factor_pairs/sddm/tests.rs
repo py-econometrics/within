@@ -91,42 +91,62 @@ fn chain_with_mid_deficit(m: usize) -> (CrossTab, Vec<f64>) {
 }
 
 #[test]
-fn budget_infeasible_relaxation_bails_early() {
+fn long_feasible_chain_certifies_with_reduced_cg() {
     let (cross_tab, diagonal) = chain_with_mid_deficit(200);
-    let scaling = ScalingConfig::default();
-    let result = dominance_scaling(&cross_tab, &diagonal, &scaling).expect("chain scales");
-    assert!(
-        result.violation > scaling.tolerance,
-        "chain must hand over uncertified, got violation {:.3e}",
-        result.violation
-    );
-    assert!(
-        result.sweeps <= scaling.max_sweeps / 2,
-        "stall detection must bail well before the {} budget, spent {}",
-        scaling.max_sweeps,
-        result.sweeps
-    );
-}
-
-#[test]
-fn multi_sweep_certification_survives_stall_detection() {
-    let (cross_tab, diagonal) = chain_with_mid_deficit(10);
     let scaling = ScalingConfig {
-        max_sweeps: 2048,
+        max_sweeps: 128,
         ..Default::default()
     };
     let result = dominance_scaling(&cross_tab, &diagonal, &scaling).expect("chain scales");
     assert!(
         result.violation <= scaling.tolerance,
-        "short chain must certify, got violation {:.3e} after {} sweeps",
+        "chain must certify, got violation {:.3e}",
         result.violation,
-        result.sweeps
     );
     assert!(
-        result.sweeps > STALL_WINDOW,
-        "test is vacuous below one stall window ({} sweeps)",
-        result.sweeps
+        result.sweeps < scaling.max_sweeps,
+        "reduced CG exhausted the {} iteration budget",
+        scaling.max_sweeps,
     );
+}
+
+#[test]
+fn accelerating_convergence_case_certifies_without_extrapolation() {
+    let table = [
+        0.04023094100803415,
+        0.9632989615043355,
+        0.003631923482738449,
+        0.0015750938044434863,
+        0.0006618152745868568,
+        0.039346817354759124,
+    ];
+    let cross_tab = CrossTab::from_dense_for_test(&table, 3, 2);
+    let scaling = ScalingConfig {
+        max_sweeps: 16,
+        ..Default::default()
+    };
+    let result = dominance_scaling(&cross_tab, &[1.0; 5], &scaling).expect("matrix scales");
+    assert!(
+        result.violation <= scaling.tolerance,
+        "matrix must certify, got violation {:.3e} after {} iterations",
+        result.violation,
+        result.sweeps,
+    );
+    assert!(result.sweeps <= 2);
+}
+
+#[test]
+fn indefinite_comparison_matrix_reports_negative_curvature() {
+    let cross_tab = CrossTab::from_dense_for_test(&[1.0, -1.0, 2.0, -2.0], 2, 2);
+    let diagonal: [f64; 4] = [1.0, 2.0, 1.0, 2.0];
+    let inv_sqrt: Vec<f64> = diagonal.iter().map(|value| 1.0 / (*value).sqrt()).collect();
+    let operator = NormalizedCrossOperator::new(&cross_tab, &inv_sqrt);
+    let initial = ScalingCandidate {
+        mu: vec![1.0; diagonal.len()],
+        violation: f64::INFINITY,
+    };
+    let attempt = reduced_cg_scaling(&operator, initial, &ScalingConfig::default()).unwrap();
+    assert!(matches!(attempt, ScalingAttempt::NegativeCurvature(_)));
 }
 
 fn assert_sddm(component: &LocalComponent) {
@@ -231,7 +251,7 @@ fn scalable_signed_component_produces_valid_grounded_sddm() {
 
 #[test]
 fn singular_signed_boundary_remains_floating() {
-    let (component, _) = convert(
+    let (component, uncertified) = convert(
         CrossTab::from_dense_for_test(&[0.5, -1.0], 2, 1),
         vec![0.25, 1.0, 2.0],
         ComponentClass::General,
@@ -240,6 +260,7 @@ fn singular_signed_boundary_remains_floating() {
     .unwrap();
     assert_eq!(component.form, MatrixForm::Laplacian);
     assert_eq!(component.matrix.grounding, Grounding::Floating);
+    assert!(uncertified.is_none());
     assert_sddm(&component);
 }
 

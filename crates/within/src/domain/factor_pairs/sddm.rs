@@ -13,6 +13,7 @@
 
 use super::ComponentClass;
 use crate::config::{ScalingConfig, ScalingFailure};
+use crate::csr_block::CsrBlock;
 use crate::domain::CrossTab;
 
 #[derive(Clone, Copy)]
@@ -379,14 +380,321 @@ fn folding_signs(cross_tab: &CrossTab) -> Option<Vec<f64>> {
     Some(signs)
 }
 
-/// Sweeps between infeasibility checks of the dominance relaxation.
-const STALL_WINDOW: usize = 16;
-
 struct DominanceScaling {
     scales: Vec<f64>,
     sweeps: usize,
     /// Largest relative dominance violation at hand-over, clamped at 0.
     violation: f64,
+}
+
+#[derive(Clone, Copy)]
+enum BipartiteSide {
+    Rows,
+    Columns,
+}
+
+struct NormalizedCrossOperator<'a> {
+    cross_tab: &'a CrossTab,
+    row_inv_sqrt: &'a [f64],
+    col_inv_sqrt: &'a [f64],
+    small_side: BipartiteSide,
+}
+
+#[derive(Clone, Copy)]
+enum CandidateKind {
+    Strict,
+    Boundary,
+}
+
+impl<'a> NormalizedCrossOperator<'a> {
+    fn new(cross_tab: &'a CrossTab, inv_sqrt: &'a [f64]) -> Self {
+        let (row_inv_sqrt, col_inv_sqrt) = inv_sqrt.split_at(cross_tab.n_rows());
+        let small_side = if cross_tab.n_rows() <= cross_tab.n_cols() {
+            BipartiteSide::Rows
+        } else {
+            BipartiteSide::Columns
+        };
+        Self {
+            cross_tab,
+            row_inv_sqrt,
+            col_inv_sqrt,
+            small_side,
+        }
+    }
+
+    fn small_len(&self) -> usize {
+        match self.small_side {
+            BipartiteSide::Rows => self.cross_tab.n_rows(),
+            BipartiteSide::Columns => self.cross_tab.n_cols(),
+        }
+    }
+
+    fn large_len(&self) -> usize {
+        self.cross_tab.n_local() - self.small_len()
+    }
+
+    fn apply_large(&self, input: &[f64], output: &mut [f64]) {
+        match self.small_side {
+            BipartiteSide::Rows => multiply_normalized(
+                &self.cross_tab.ct,
+                self.col_inv_sqrt,
+                self.row_inv_sqrt,
+                input,
+                output,
+            ),
+            BipartiteSide::Columns => multiply_normalized(
+                &self.cross_tab.c,
+                self.row_inv_sqrt,
+                self.col_inv_sqrt,
+                input,
+                output,
+            ),
+        }
+    }
+
+    fn apply_small(&self, input: &[f64], output: &mut [f64]) {
+        match self.small_side {
+            BipartiteSide::Rows => multiply_normalized(
+                &self.cross_tab.c,
+                self.row_inv_sqrt,
+                self.col_inv_sqrt,
+                input,
+                output,
+            ),
+            BipartiteSide::Columns => multiply_normalized(
+                &self.cross_tab.ct,
+                self.col_inv_sqrt,
+                self.row_inv_sqrt,
+                input,
+                output,
+            ),
+        }
+    }
+
+    fn apply_reduced(&self, input: &[f64], large_work: &mut [f64], output: &mut [f64]) {
+        // Eliminating the large side gives `I - MᵀM` on the cheaper side.
+        self.apply_large(input, large_work);
+        self.apply_small(large_work, output);
+        for (value, &input_value) in output.iter_mut().zip(input) {
+            *value = input_value - *value;
+        }
+    }
+
+    fn candidate_violation(
+        &self,
+        small: &[f64],
+        kind: CandidateKind,
+        large: &mut [f64],
+        small_image: &mut [f64],
+    ) -> Option<f64> {
+        if !small.iter().all(|value| value.is_finite() && *value > 0.0) {
+            return None;
+        }
+        self.apply_large(small, large);
+        if matches!(kind, CandidateKind::Strict) {
+            for value in large.iter_mut() {
+                *value += 1.0;
+            }
+        }
+        if !large.iter().all(|value| value.is_finite() && *value > 0.0) {
+            return None;
+        }
+        self.apply_small(large, small_image);
+        Some(
+            small_image
+                .iter()
+                .zip(small)
+                .map(|(&target, &value)| target / value - 1.0)
+                .fold(0.0f64, f64::max),
+        )
+    }
+
+    fn join(&self, small: &[f64], large: &[f64]) -> Vec<f64> {
+        match self.small_side {
+            BipartiteSide::Rows => small.iter().chain(large).copied().collect(),
+            BipartiteSide::Columns => large.iter().chain(small).copied().collect(),
+        }
+    }
+}
+
+fn multiply_normalized(
+    matrix: &CsrBlock,
+    output_inv_sqrt: &[f64],
+    input_inv_sqrt: &[f64],
+    input: &[f64],
+    output: &mut [f64],
+) {
+    debug_assert_eq!(matrix.nrows, output.len());
+    debug_assert_eq!(matrix.ncols, input.len());
+    for (i, value) in output.iter_mut().enumerate() {
+        *value = matrix
+            .row(i)
+            .map(|(j, entry)| entry.abs() * output_inv_sqrt[i] * input_inv_sqrt[j] * input[j])
+            .sum();
+    }
+}
+
+fn dot(left: &[f64], right: &[f64]) -> f64 {
+    left.iter().zip(right).map(|(&x, &y)| x * y).sum()
+}
+
+fn normalize_positive(values: &mut [f64]) -> bool {
+    let peak = values.iter().copied().fold(0.0f64, f64::max);
+    if !peak.is_finite() || peak <= 0.0 {
+        return false;
+    }
+    for value in values.iter_mut() {
+        *value /= peak;
+    }
+    values.iter().all(|value| value.is_finite() && *value > 0.0)
+}
+
+struct ScalingCandidate {
+    mu: Vec<f64>,
+    violation: f64,
+}
+
+struct ScalingResult {
+    candidate: ScalingCandidate,
+    iterations: usize,
+}
+
+enum ScalingAttempt {
+    Certified(ScalingResult),
+    NegativeCurvature(ScalingResult),
+    Breakdown(ScalingResult),
+    BudgetExhausted(ScalingResult),
+}
+
+impl ScalingAttempt {
+    fn into_result(self) -> ScalingResult {
+        match self {
+            Self::Certified(result)
+            | Self::NegativeCurvature(result)
+            | Self::Breakdown(result)
+            | Self::BudgetExhausted(result) => result,
+        }
+    }
+}
+
+fn reduced_cg_scaling(
+    operator: &NormalizedCrossOperator<'_>,
+    initial: ScalingCandidate,
+    scaling: &ScalingConfig,
+) -> Result<ScalingAttempt, NotScalable> {
+    let small_len = operator.small_len();
+    let mut large_work = vec![0.0; operator.large_len()];
+    let mut rhs = vec![0.0; small_len];
+    large_work.fill(1.0);
+    operator.apply_small(&large_work, &mut rhs);
+    for value in &mut rhs {
+        *value += 1.0;
+    }
+
+    let mut best = initial;
+    let mut small = vec![0.0; small_len];
+    let mut residual = rhs.clone();
+    let mut direction = rhs;
+    let mut reduced_image = vec![0.0; small_len];
+    let mut small_image = vec![0.0; small_len];
+    let mut residual_norm_squared = dot(&residual, &residual);
+    if !residual_norm_squared.is_finite() {
+        return Err(NotScalable);
+    }
+
+    for iteration in 1..=scaling.max_sweeps {
+        operator.apply_reduced(&direction, &mut large_work, &mut reduced_image);
+        let direction_norm_squared = dot(&direction, &direction);
+        let curvature = dot(&direction, &reduced_image);
+        if !direction_norm_squared.is_finite() || !curvature.is_finite() {
+            return Err(NotScalable);
+        }
+        let curvature_slack = 64.0 * f64::EPSILON * direction_norm_squared;
+        if curvature <= curvature_slack {
+            // A singular boundary exposes its Perron vector as the zero-curvature direction.
+            let boundary_small: Vec<f64> = direction.iter().map(|value| value.abs()).collect();
+            if let Some(violation) = operator.candidate_violation(
+                &boundary_small,
+                CandidateKind::Boundary,
+                &mut large_work,
+                &mut small_image,
+            ) {
+                if violation <= scaling.tolerance {
+                    let mut mu = operator.join(&boundary_small, &large_work);
+                    if !normalize_positive(&mut mu) {
+                        return Err(NotScalable);
+                    }
+                    return Ok(ScalingAttempt::Certified(ScalingResult {
+                        candidate: ScalingCandidate { mu, violation },
+                        iterations: iteration,
+                    }));
+                }
+            }
+            let result = ScalingResult {
+                candidate: best,
+                iterations: iteration,
+            };
+            return Ok(if curvature < -curvature_slack {
+                ScalingAttempt::NegativeCurvature(result)
+            } else {
+                ScalingAttempt::Breakdown(result)
+            });
+        }
+
+        let alpha = residual_norm_squared / curvature;
+        if !alpha.is_finite() {
+            return Err(NotScalable);
+        }
+        for ((value, residual_value), (&direction_value, &image_value)) in small
+            .iter_mut()
+            .zip(&mut residual)
+            .zip(direction.iter().zip(&reduced_image))
+        {
+            *value += alpha * direction_value;
+            *residual_value -= alpha * image_value;
+        }
+
+        if let Some(violation) = operator.candidate_violation(
+            &small,
+            CandidateKind::Strict,
+            &mut large_work,
+            &mut small_image,
+        ) {
+            if violation < best.violation {
+                let mut mu = operator.join(&small, &large_work);
+                if !normalize_positive(&mut mu) {
+                    return Err(NotScalable);
+                }
+                best = ScalingCandidate { mu, violation };
+            }
+            if violation <= scaling.tolerance {
+                return Ok(ScalingAttempt::Certified(ScalingResult {
+                    candidate: best,
+                    iterations: iteration,
+                }));
+            }
+        }
+
+        let next_residual_norm_squared = dot(&residual, &residual);
+        if !next_residual_norm_squared.is_finite() {
+            return Err(NotScalable);
+        }
+        if next_residual_norm_squared == 0.0 {
+            return Ok(ScalingAttempt::Breakdown(ScalingResult {
+                candidate: best,
+                iterations: iteration,
+            }));
+        }
+        let beta = next_residual_norm_squared / residual_norm_squared;
+        for (direction_value, &residual_value) in direction.iter_mut().zip(&residual) {
+            *direction_value = residual_value + beta * *direction_value;
+        }
+        residual_norm_squared = next_residual_norm_squared;
+    }
+    Ok(ScalingAttempt::BudgetExhausted(ScalingResult {
+        candidate: best,
+        iterations: scaling.max_sweeps,
+    }))
 }
 
 fn dominance_scaling(
@@ -425,45 +733,16 @@ fn dominance_scaling(
             .fold(0.0f64, f64::max)
     };
 
-    let mut mu = vec![1.0; n];
-    let mut violation = violation_of(&mu);
-    let mut sweeps = 0;
-    let mut anchor = violation;
-    while violation > scaling.tolerance && sweeps < scaling.max_sweeps {
-        for i in 0..n {
-            let target: f64 = cross_tab
-                .neighbors(i)
-                .map(|(j, value)| value.abs() * inv_sqrt[i] * inv_sqrt[j] * mu[j])
-                .sum();
-            if target > mu[i] {
-                mu[i] = target;
-            }
-        }
-        // Normalizing keeps growth finite, so budget exhaustion still yields a usable scaling.
-        let peak = mu.iter().copied().fold(0.0f64, f64::max);
-        if !peak.is_finite() {
-            return Err(NotScalable);
-        }
-        for value in &mut mu {
-            *value /= peak;
-        }
-        violation = violation_of(&mu);
-        sweeps += 1;
-        // Contraction only degrades, so the window rate lower-bounds the sweeps still needed (#280).
-        if sweeps % STALL_WINDOW == 0 && violation > scaling.tolerance {
-            let contraction = violation / anchor;
-            let remaining = (scaling.max_sweeps - sweeps) as f64;
-            if contraction >= 1.0
-                || (violation / scaling.tolerance).ln() * STALL_WINDOW as f64
-                    > -contraction.ln() * remaining
-            {
-                break;
-            }
-            anchor = violation;
-        }
-    }
-
-    let scales: Vec<f64> = mu
+    let initial_mu = vec![1.0; n];
+    let initial = ScalingCandidate {
+        violation: violation_of(&initial_mu),
+        mu: initial_mu,
+    };
+    let operator = NormalizedCrossOperator::new(cross_tab, &inv_sqrt);
+    let result = reduced_cg_scaling(&operator, initial, scaling)?.into_result();
+    let scales: Vec<f64> = result
+        .candidate
+        .mu
         .iter()
         .zip(inv_sqrt.iter())
         .map(|(&value, &normalizer)| value * normalizer)
@@ -473,8 +752,8 @@ fn dominance_scaling(
     }
     Ok(DominanceScaling {
         scales,
-        sweeps,
-        violation: violation.max(0.0),
+        sweeps: result.iterations,
+        violation: result.candidate.violation.max(0.0),
     })
 }
 

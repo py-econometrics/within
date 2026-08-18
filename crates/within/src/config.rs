@@ -90,7 +90,7 @@ impl Default for LocalSolverConfig {
 pub struct ScalingConfig {
     /// Relative slack for weak dominance; PSD-boundary designs hover at ≈ 1e-12.
     pub tolerance: f64,
-    /// Sweep budget for the dominance relaxation.
+    /// Matrix-vector iteration budget; the name is retained for API compatibility.
     pub max_sweeps: usize,
     /// Disposition when certification fails.
     pub on_failure: ScalingFailure,
@@ -109,8 +109,7 @@ impl Default for ScalingConfig {
     fn default() -> Self {
         Self {
             tolerance: 1e-9,
-            // Certifying components finish in ≲220 sweeps; larger budgets buy nothing (#280).
-            max_sweeps: 256,
+            max_sweeps: 2048,
             on_failure: ScalingFailure::Warn,
         }
     }

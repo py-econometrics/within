@@ -13,7 +13,6 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - **BREAKING:** `LsmrStopReason` gains `Escalated` and `WarmStartExact`, breaking exhaustive `match`es.
 - A warm start that already solves the system reports `WarmStartExact` instead of `ZeroRhs`.
 - **BREAKING:** The serialized `Preconditioner` wire format changed (v12 → v13) with the `approx-chol` 0.4 → 0.5 bump; 0.3.0 bytes no longer decode.
-- The default `ScalingConfig::max_sweeps` dropped from 2048 to 256: certifying components finish well below it, and larger budgets only fed near-degenerate slope components for no iteration benefit (#280).
 
 ### Added
 
@@ -22,7 +21,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- The dominance-scaling relaxation burned its whole sweep budget on near-degenerate slope components (several seconds of setup for zero iteration benefit); it now hands over early once the measured contraction rate proves the remaining budget cannot reach tolerance (#280).
+- Dominance scaling now solves a reduced comparison system with matrix-free conjugate gradients, so near-degenerate slope components certify without thousands of fixed-point sweeps (#280).
 - A design carrying varying slopes on two distinct factors could fail preconditioner construction with `matrix is not symmetric`, when rounding left the two triangles of the exact Schur complement unequal (#229).
 - A `design` that is neither a 2-D `uint32` array nor a list of `Effect` raised `ValueError` where the documented type is `TypeError`, and `AdditiveSchwarz` accepted a wrong-type `local_solver` at construction, deferring the `TypeError` to solve time (#248).
 
