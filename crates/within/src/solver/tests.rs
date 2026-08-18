@@ -231,6 +231,54 @@ fn akm_panel(move_prob: f64) -> AkmPanel {
     }
 }
 
+/// Middle-band stress through the real gate: fill 539M declines exact, the FSAI rung engages.
+#[test]
+#[ignore]
+fn fused_block_middle_band_stress() {
+    use super::Solver;
+    use crate::config::LsmrOptions;
+
+    let AkmPanel {
+        worker,
+        firm,
+        year,
+        z1,
+        fz,
+        y,
+    } = akm_panel(0.2);
+    let solver = Solver::new(
+        vec![
+            Effect::new(&worker, true, [&z1[..]]).unwrap(),
+            Effect::new(&firm, true, [&fz[..]]).unwrap(),
+            Effect::new(&year, true, []).unwrap(),
+        ],
+        None,
+        None,
+    )
+    .unwrap();
+    assert!(!solver.fused.is_empty(), "screen must arm the ladder");
+    assert!(
+        solver.fused.iter().all(|b| !b.is_exact_for_test()),
+        "fill gate must route to FSAI"
+    );
+    let opts = LsmrOptions {
+        tol: 1e-10,
+        maxiter: 3000,
+        ..Default::default()
+    };
+    let r = solver.solve(&y, &opts).unwrap();
+    eprintln!(
+        "fsai middle-band stress: it={} conv={} setup={:.2}s solve={:.2}s",
+        r.iterations, r.converged, r.time_setup, r.time_solve
+    );
+    assert!(r.converged);
+    assert!(
+        r.iterations < 200,
+        "expected healthy iteration count, got {}",
+        r.iterations
+    );
+}
+
 /// Low-mobility AKM stress: unfused this exhausts 3000 iterations; fused must stay healthy.
 #[test]
 #[ignore]
@@ -306,6 +354,117 @@ fn fused_block_restores_healthy_iteration_counts() {
     );
 }
 
+/// Runs mlsmr with an explicit preconditioner, replicating `solve_rhs`'s data path.
+fn probe_run<M: schwarz_precond::Operator>(
+    solver: &super::Solver<'_>,
+    y: &[f64],
+    m: &M,
+    tol: f64,
+    maxiter: usize,
+) -> (schwarz_precond::LsmrResult, f64) {
+    use schwarz_precond::{mlsmr, MlsmrOptions};
+
+    let y_int = solver.design.permute_obs_in(y);
+    let rect_op =
+        crate::operator::DesignOperator::new(&solver.design, solver.sqrt_weights.as_deref());
+    let b = rect_op.weighted_rhs(&y_int);
+    let t = std::time::Instant::now();
+    let r = mlsmr(&rect_op, &b, m, tol, maxiter, MlsmrOptions::default()).unwrap();
+    (r, t.elapsed().as_secs_f64())
+}
+
+fn demeaned_from(solver: &super::Solver<'_>, x: &[f64], y: &[f64]) -> Vec<f64> {
+    let y_int = solver.design.permute_obs_in(y);
+    let mut d = vec![0.0; solver.design.n_obs];
+    crate::operator::design::gather_apply(&solver.design, x, &mut d, None);
+    for (di, &yi) in d.iter_mut().zip(y_int.iter()) {
+        *di = yi - *di;
+    }
+    solver.design.permute_obs_out(d)
+}
+
+/// Forces the FSAI rung with a zero fill budget on a panel whose real gate arms the exact rung.
+fn assert_fsai_fallback_matches_reference(eps: f64) {
+    use super::Solver;
+    use crate::config::{LsmrOptions, PreconditionerConfig};
+    use crate::operator::fused::{FusedBlockSolve, FusedPreconditioner};
+
+    let SharedCovariatePanel { a, b, z, z2, y } = shared_covariate_panel(eps);
+    let effects = || {
+        vec![
+            crate::Effect::new(&a, true, [&z[..]]).unwrap(),
+            crate::Effect::new(&b, true, [&z2[..]]).unwrap(),
+        ]
+    };
+    let solver = Solver::new(effects(), None, None).unwrap();
+    let blocks = vec![FusedBlockSolve::build_for_test(&solver.design, &[0, 1], 0)];
+    assert!(!blocks[0].is_exact_for_test());
+    let op = FusedPreconditioner::new(solver.preconditioner.as_ref().unwrap(), &blocks);
+    let (r, _) = probe_run(&solver, &y, &op, 1e-12, 20_000);
+    assert!(r.converged);
+
+    let reference = Solver::new(effects(), None, PreconditionerConfig::Off)
+        .unwrap()
+        .solve(
+            &y,
+            &LsmrOptions {
+                tol: 1e-12,
+                maxiter: 20_000,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(reference.converged);
+    let demeaned = demeaned_from(&solver, &r.x, &y);
+    let scale = y.iter().map(|&v| v * v).sum::<f64>().sqrt();
+    let diff = demeaned
+        .iter()
+        .zip(&reference.demeaned)
+        .map(|(&p, &q)| (p - q) * (p - q))
+        .sum::<f64>()
+        .sqrt();
+    assert!(
+        diff <= 1e-6 * scale,
+        "demeaned mismatch: {diff:e} vs scale {scale:e} (eps = {eps:e})"
+    );
+}
+
+#[test]
+fn fsai_fallback_matches_unpreconditioned_reference() {
+    assert_fsai_fallback_matches_reference(1e-4);
+}
+
+#[test]
+fn fsai_fallback_grounds_exact_sharing() {
+    assert_fsai_fallback_matches_reference(0.0);
+}
+
+#[test]
+fn fsai_fallback_restores_healthy_iteration_counts() {
+    use super::Solver;
+    use crate::operator::fused::{FusedBlockSolve, FusedPreconditioner};
+
+    let SharedCovariatePanel { a, b, z, z2, y } = shared_covariate_panel(1e-4);
+    let solver = Solver::new(
+        vec![
+            crate::Effect::new(&a, true, [&z[..]]).unwrap(),
+            crate::Effect::new(&b, true, [&z2[..]]).unwrap(),
+        ],
+        None,
+        None,
+    )
+    .unwrap();
+    let blocks = vec![FusedBlockSolve::build_for_test(&solver.design, &[0, 1], 0)];
+    let op = FusedPreconditioner::new(solver.preconditioner.as_ref().unwrap(), &blocks);
+    let (r, _) = probe_run(&solver, &y, &op, 1e-10, 3000);
+    assert!(r.converged);
+    assert!(
+        r.iterations < 100,
+        "expected healthy iteration count, got {}",
+        r.iterations
+    );
+}
+
 /// Middle-band probes (#281): inexact fused-block candidates, fill scaling, BLR rank decay.
 mod middle_band_probe {
     use std::collections::HashMap;
@@ -318,14 +477,14 @@ mod middle_band_probe {
     };
     use faer::sparse::{SparseColMat, Triplet};
     use faer::Side;
-    use schwarz_precond::{mlsmr, LsmrResult, MlsmrOptions, Operator};
+    use schwarz_precond::Operator;
 
-    use super::{akm_panel, shared_covariate_panel, AkmPanel, SharedCovariatePanel};
+    use super::{
+        akm_panel, demeaned_from, probe_run, shared_covariate_panel, AkmPanel, SharedCovariatePanel,
+    };
     use crate::config::PreconditionerConfig;
-    use crate::operator::design::gather_apply;
     use crate::operator::fused::{assemble_gram, FusedGram};
     use crate::operator::schwarz::Preconditioner;
-    use crate::operator::DesignOperator;
     use crate::solver::Solver;
     use crate::Effect;
 
@@ -773,31 +932,6 @@ mod middle_band_probe {
         }
     }
 
-    fn probe_run<M: Operator>(
-        solver: &Solver<'_>,
-        y: &[f64],
-        m: &M,
-        tol: f64,
-        maxiter: usize,
-    ) -> (LsmrResult, f64) {
-        let y_int = solver.design.permute_obs_in(y);
-        let rect_op = DesignOperator::new(&solver.design, solver.sqrt_weights.as_deref());
-        let b = rect_op.weighted_rhs(&y_int);
-        let t = Instant::now();
-        let r = mlsmr(&rect_op, &b, m, tol, maxiter, MlsmrOptions::default()).unwrap();
-        (r, t.elapsed().as_secs_f64())
-    }
-
-    fn demeaned_from(solver: &Solver<'_>, x: &[f64], y: &[f64]) -> Vec<f64> {
-        let y_int = solver.design.permute_obs_in(y);
-        let mut d = vec![0.0; solver.design.n_obs];
-        gather_apply(&solver.design, x, &mut d, None);
-        for (di, &yi) in d.iter_mut().zip(y_int.iter()) {
-            *di = yi - *di;
-        }
-        solver.design.permute_obs_out(d)
-    }
-
     /// AMD order of the fused Gram (via faer's symbolic pass) plus the exact-fill count.
     fn amd_order(gram: &FusedGram) -> (Vec<u32>, Vec<u32>, usize) {
         let n = gram.n_local;
@@ -956,8 +1090,8 @@ mod middle_band_probe {
         )
         .unwrap();
         assert!(
-            !solver.fused.is_empty(),
-            "exact path must arm here (fill 11.4M < cap)"
+            solver.fused.iter().all(|b| b.is_exact_for_test()),
+            "exact rung must arm here (fill 11.4M < cap)"
         );
         let base = solver.preconditioner.as_ref().unwrap();
         let gram = assemble_gram(&solver.design, None, &[0, 1]);
