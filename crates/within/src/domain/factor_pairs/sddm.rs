@@ -480,6 +480,16 @@ impl<'a> NormalizedCrossOperator<'a> {
         }
     }
 
+    fn reduced_rhs(&self, large_work: &mut [f64]) -> Vec<f64> {
+        large_work.fill(1.0);
+        let mut rhs = vec![0.0; self.small_len()];
+        self.apply_small(large_work, &mut rhs);
+        for value in &mut rhs {
+            *value += 1.0;
+        }
+        rhs
+    }
+
     fn candidate_violation(
         &self,
         small: &[f64],
@@ -509,11 +519,20 @@ impl<'a> NormalizedCrossOperator<'a> {
         )
     }
 
-    fn join(&self, small: &[f64], large: &[f64]) -> Vec<f64> {
-        match self.small_side {
+    fn materialize_candidate(
+        &self,
+        small: &[f64],
+        large: &[f64],
+        violation: f64,
+    ) -> Result<ScalingCandidate, NotScalable> {
+        let mut mu: Vec<f64> = match self.small_side {
             BipartiteSide::Rows => small.iter().chain(large).copied().collect(),
             BipartiteSide::Columns => large.iter().chain(small).copied().collect(),
+        };
+        if !normalize_positive(&mut mu) {
+            return Err(NotScalable);
         }
+        Ok(ScalingCandidate { mu, violation })
     }
 }
 
@@ -577,42 +596,99 @@ impl ScalingAttempt {
     }
 }
 
+#[derive(Clone, Copy)]
+enum ReducedCgStep {
+    Advanced,
+    ResidualExhausted,
+    NonPositiveCurvature { curvature: f64, slack: f64 },
+}
+
+struct ReducedCg {
+    solution: Vec<f64>,
+    residual: Vec<f64>,
+    direction: Vec<f64>,
+    reduced_image: Vec<f64>,
+    residual_norm_squared: f64,
+}
+
+impl ReducedCg {
+    fn new(rhs: Vec<f64>) -> Result<Self, NotScalable> {
+        let dimension = rhs.len();
+        let residual_norm_squared = dot(&rhs, &rhs);
+        if !residual_norm_squared.is_finite() {
+            return Err(NotScalable);
+        }
+        Ok(Self {
+            solution: vec![0.0; dimension],
+            residual: rhs.clone(),
+            direction: rhs,
+            reduced_image: vec![0.0; dimension],
+            residual_norm_squared,
+        })
+    }
+
+    fn step(
+        &mut self,
+        operator: &NormalizedCrossOperator<'_>,
+        large_work: &mut [f64],
+    ) -> Result<ReducedCgStep, NotScalable> {
+        operator.apply_reduced(&self.direction, large_work, &mut self.reduced_image);
+        let direction_norm_squared = dot(&self.direction, &self.direction);
+        let curvature = dot(&self.direction, &self.reduced_image);
+        if !direction_norm_squared.is_finite() || !curvature.is_finite() {
+            return Err(NotScalable);
+        }
+        let slack = 64.0 * f64::EPSILON * direction_norm_squared;
+        if curvature <= slack {
+            return Ok(ReducedCgStep::NonPositiveCurvature { curvature, slack });
+        }
+
+        let alpha = self.residual_norm_squared / curvature;
+        if !alpha.is_finite() {
+            return Err(NotScalable);
+        }
+        for ((value, residual), (&direction, &image)) in self
+            .solution
+            .iter_mut()
+            .zip(&mut self.residual)
+            .zip(self.direction.iter().zip(&self.reduced_image))
+        {
+            *value += alpha * direction;
+            *residual -= alpha * image;
+        }
+
+        let next_residual_norm_squared = dot(&self.residual, &self.residual);
+        if !next_residual_norm_squared.is_finite() {
+            return Err(NotScalable);
+        }
+        if next_residual_norm_squared == 0.0 {
+            return Ok(ReducedCgStep::ResidualExhausted);
+        }
+        let beta = next_residual_norm_squared / self.residual_norm_squared;
+        for (direction, &residual) in self.direction.iter_mut().zip(&self.residual) {
+            *direction = residual + beta * *direction;
+        }
+        self.residual_norm_squared = next_residual_norm_squared;
+        Ok(ReducedCgStep::Advanced)
+    }
+}
+
 fn reduced_cg_scaling(
     operator: &NormalizedCrossOperator<'_>,
     initial: ScalingCandidate,
     scaling: &ScalingConfig,
 ) -> Result<ScalingAttempt, NotScalable> {
-    let small_len = operator.small_len();
     let mut large_work = vec![0.0; operator.large_len()];
-    let mut rhs = vec![0.0; small_len];
-    large_work.fill(1.0);
-    operator.apply_small(&large_work, &mut rhs);
-    for value in &mut rhs {
-        *value += 1.0;
-    }
-
+    let rhs = operator.reduced_rhs(&mut large_work);
+    let mut cg = ReducedCg::new(rhs)?;
     let mut best = initial;
-    let mut small = vec![0.0; small_len];
-    let mut residual = rhs.clone();
-    let mut direction = rhs;
-    let mut reduced_image = vec![0.0; small_len];
-    let mut small_image = vec![0.0; small_len];
-    let mut residual_norm_squared = dot(&residual, &residual);
-    if !residual_norm_squared.is_finite() {
-        return Err(NotScalable);
-    }
+    let mut small_image = vec![0.0; operator.small_len()];
 
     for iteration in 1..=scaling.max_sweeps {
-        operator.apply_reduced(&direction, &mut large_work, &mut reduced_image);
-        let direction_norm_squared = dot(&direction, &direction);
-        let curvature = dot(&direction, &reduced_image);
-        if !direction_norm_squared.is_finite() || !curvature.is_finite() {
-            return Err(NotScalable);
-        }
-        let curvature_slack = 64.0 * f64::EPSILON * direction_norm_squared;
-        if curvature <= curvature_slack {
+        let step = cg.step(operator, &mut large_work)?;
+        if let ReducedCgStep::NonPositiveCurvature { curvature, slack } = step {
             // A singular boundary exposes its Perron vector as the zero-curvature direction.
-            let boundary_small: Vec<f64> = direction.iter().map(|value| value.abs()).collect();
+            let boundary_small: Vec<f64> = cg.direction.iter().map(|value| value.abs()).collect();
             if let Some(violation) = operator.candidate_violation(
                 &boundary_small,
                 CandidateKind::Boundary,
@@ -620,12 +696,12 @@ fn reduced_cg_scaling(
                 &mut small_image,
             ) {
                 if violation <= scaling.tolerance {
-                    let mut mu = operator.join(&boundary_small, &large_work);
-                    if !normalize_positive(&mut mu) {
-                        return Err(NotScalable);
-                    }
                     return Ok(ScalingAttempt::Certified(ScalingResult {
-                        candidate: ScalingCandidate { mu, violation },
+                        candidate: operator.materialize_candidate(
+                            &boundary_small,
+                            &large_work,
+                            violation,
+                        )?,
                         iterations: iteration,
                     }));
                 }
@@ -634,38 +710,21 @@ fn reduced_cg_scaling(
                 candidate: best,
                 iterations: iteration,
             };
-            return Ok(if curvature < -curvature_slack {
+            return Ok(if curvature < -slack {
                 ScalingAttempt::NegativeCurvature(result)
             } else {
                 ScalingAttempt::Breakdown(result)
             });
         }
 
-        let alpha = residual_norm_squared / curvature;
-        if !alpha.is_finite() {
-            return Err(NotScalable);
-        }
-        for ((value, residual_value), (&direction_value, &image_value)) in small
-            .iter_mut()
-            .zip(&mut residual)
-            .zip(direction.iter().zip(&reduced_image))
-        {
-            *value += alpha * direction_value;
-            *residual_value -= alpha * image_value;
-        }
-
         if let Some(violation) = operator.candidate_violation(
-            &small,
+            &cg.solution,
             CandidateKind::Strict,
             &mut large_work,
             &mut small_image,
         ) {
             if violation < best.violation {
-                let mut mu = operator.join(&small, &large_work);
-                if !normalize_positive(&mut mu) {
-                    return Err(NotScalable);
-                }
-                best = ScalingCandidate { mu, violation };
+                best = operator.materialize_candidate(&cg.solution, &large_work, violation)?;
             }
             if violation <= scaling.tolerance {
                 return Ok(ScalingAttempt::Certified(ScalingResult {
@@ -675,21 +734,12 @@ fn reduced_cg_scaling(
             }
         }
 
-        let next_residual_norm_squared = dot(&residual, &residual);
-        if !next_residual_norm_squared.is_finite() {
-            return Err(NotScalable);
-        }
-        if next_residual_norm_squared == 0.0 {
+        if matches!(step, ReducedCgStep::ResidualExhausted) {
             return Ok(ScalingAttempt::Breakdown(ScalingResult {
                 candidate: best,
                 iterations: iteration,
             }));
         }
-        let beta = next_residual_norm_squared / residual_norm_squared;
-        for (direction_value, &residual_value) in direction.iter_mut().zip(&residual) {
-            *direction_value = residual_value + beta * *direction_value;
-        }
-        residual_norm_squared = next_residual_norm_squared;
     }
     Ok(ScalingAttempt::BudgetExhausted(ScalingResult {
         candidate: best,
