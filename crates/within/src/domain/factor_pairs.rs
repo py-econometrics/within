@@ -139,7 +139,7 @@ fn split_into_subdomains(
         if let Some(uncertified) = uncertified {
             warnings.push(BuildWarning::UnscalableComponent {
                 pair,
-                sweeps: uncertified.sweeps,
+                iterations: uncertified.iterations,
                 violation: uncertified.violation,
             });
         }

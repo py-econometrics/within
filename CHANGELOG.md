@@ -13,6 +13,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - **BREAKING:** `LsmrStopReason` gains `Escalated` and `WarmStartExact`, breaking exhaustive `match`es.
 - A warm start that already solves the system reports `WarmStartExact` instead of `ZeroRhs`.
 - **BREAKING:** The serialized `Preconditioner` wire format changed (v12 → v13) with the `approx-chol` 0.4 → 0.5 bump; 0.3.0 bytes no longer decode.
+- **BREAKING:** `ScalingConfig::max_sweeps` is now `max_iterations`, and `BuildWarning::UnscalableComponent` reports `iterations` in place of `sweeps`; the dominance certificate runs reduced CG, not relaxation sweeps.
 
 ### Added
 

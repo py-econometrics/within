@@ -113,7 +113,7 @@ def test_one_shot_solve_surfaces_build_warnings():
 
     design = [Effect(f, True, [z]), Effect(g, True)]
     precond = AdditiveSchwarz(
-        local_solver=LocalSolverConfig(scaling=ScalingConfig(max_sweeps=0))
+        local_solver=LocalSolverConfig(scaling=ScalingConfig(max_iterations=0))
     )
 
     def user_warnings(call):

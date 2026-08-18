@@ -154,7 +154,7 @@ pub(super) struct NotScalable;
 /// Evidence a dominance scaling exceeded tolerance or budget under [`ScalingFailure::Warn`].
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct UncertifiedScaling {
-    pub(crate) sweeps: usize,
+    pub(crate) iterations: usize,
     pub(crate) violation: f64,
 }
 
@@ -235,7 +235,7 @@ fn convert_general(
     };
     let violation = relaxation.violation.max(clamped_deficit);
     let uncertified = (violation > scaling.tolerance).then_some(UncertifiedScaling {
-        sweeps: relaxation.sweeps,
+        iterations: relaxation.iterations,
         violation,
     });
     Ok((component, uncertified))

@@ -6,7 +6,7 @@ use crate::linalg::dot;
 
 pub(super) struct DominanceScaling {
     pub(super) scales: Vec<f64>,
-    pub(super) sweeps: usize,
+    pub(super) iterations: usize,
     /// Largest relative dominance violation at hand-over, clamped at 0.
     pub(super) violation: f64,
 }
@@ -276,7 +276,7 @@ fn reduced_cg_scaling(
     let mut best = initial;
     let mut small_image = vec![0.0; operator.small_len()];
 
-    for iteration in 1..=scaling.max_sweeps {
+    for iteration in 1..=scaling.max_iterations {
         let step = cg.step(operator, &mut large_work)?;
         if matches!(step, ReducedCgStep::NonPositiveCurvature) {
             // A singular boundary exposes its Perron vector as the zero-curvature direction.
@@ -303,7 +303,7 @@ fn reduced_cg_scaling(
 
         // A certificate check costs two extra passes; past the cheap early exits, probe on a stride.
         let last =
-            matches!(step, ReducedCgStep::ResidualExhausted) || iteration == scaling.max_sweeps;
+            matches!(step, ReducedCgStep::ResidualExhausted) || iteration == scaling.max_iterations;
         if last || iteration <= 8 || iteration % 4 == 0 {
             if let Some(violation) = operator.candidate_violation(
                 &cg.solution,
@@ -336,7 +336,7 @@ fn reduced_cg_scaling(
     }
     Ok(ScalingResult {
         candidate: best,
-        iterations: scaling.max_sweeps,
+        iterations: scaling.max_iterations,
     })
 }
 
@@ -358,7 +358,7 @@ pub(super) fn dominance_scaling(
     if already_dominant {
         return Ok(DominanceScaling {
             scales: vec![1.0; n],
-            sweeps: 0,
+            iterations: 0,
             violation: 0.0,
         });
     }
@@ -395,7 +395,7 @@ pub(super) fn dominance_scaling(
     }
     Ok(DominanceScaling {
         scales,
-        sweeps: result.iterations,
+        iterations: result.iterations,
         violation: result.candidate.violation.max(0.0),
     })
 }

@@ -110,7 +110,7 @@ pub enum BuildWarning {
         /// The offending channel pair.
         pair: ChannelPair,
         /// Scaling iterations spent before handing the result over.
-        sweeps: usize,
+        iterations: usize,
         /// Largest relative dominance violation at hand-over.
         violation: f64,
     },
@@ -121,12 +121,12 @@ impl std::fmt::Display for BuildWarning {
         match self {
             Self::UnscalableComponent {
                 pair,
-                sweeps,
+                iterations,
                 violation,
             } => write!(
                 f,
                 "signed component between {pair}: dominance scaling uncertified after \
-                 {sweeps} iterations (max relative violation {violation:.2e}); deficits \
+                 {iterations} iterations (max relative violation {violation:.2e}); deficits \
                  clamped, preconditioner quality may degrade"
             ),
         }

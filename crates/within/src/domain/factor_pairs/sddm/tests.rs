@@ -75,7 +75,7 @@ impl SddmMatrix {
     }
 }
 
-/// Chain: row k joins cols k and k+1; one mid-chain deficit makes certification need O(m²) sweeps.
+/// Chain: row k joins cols k and k+1; one mid-chain deficit makes certification need O(m²) iterations.
 fn chain_with_mid_deficit(m: usize) -> (CrossTab, Vec<f64>) {
     let c = CsrBlock {
         indptr: (0..=m as u32).map(|k| 2 * k).collect(),
@@ -94,7 +94,7 @@ fn chain_with_mid_deficit(m: usize) -> (CrossTab, Vec<f64>) {
 fn long_feasible_chain_certifies_with_reduced_cg() {
     let (cross_tab, diagonal) = chain_with_mid_deficit(200);
     let scaling = ScalingConfig {
-        max_sweeps: 128,
+        max_iterations: 128,
         ..Default::default()
     };
     let result = dominance_scaling(&cross_tab, &diagonal, &scaling).expect("chain scales");
@@ -104,9 +104,9 @@ fn long_feasible_chain_certifies_with_reduced_cg() {
         result.violation,
     );
     assert!(
-        result.sweeps < scaling.max_sweeps,
+        result.iterations < scaling.max_iterations,
         "reduced CG exhausted the {} iteration budget",
-        scaling.max_sweeps,
+        scaling.max_iterations,
     );
 }
 
@@ -122,7 +122,7 @@ fn accelerating_convergence_case_certifies_without_extrapolation() {
     ];
     let cross_tab = CrossTab::from_dense_for_test(&table, 3, 2);
     let scaling = ScalingConfig {
-        max_sweeps: 16,
+        max_iterations: 16,
         ..Default::default()
     };
     let result = dominance_scaling(&cross_tab, &[1.0; 5], &scaling).expect("matrix scales");
@@ -130,9 +130,9 @@ fn accelerating_convergence_case_certifies_without_extrapolation() {
         result.violation <= scaling.tolerance,
         "matrix must certify, got violation {:.3e} after {} iterations",
         result.violation,
-        result.sweeps,
+        result.iterations,
     );
-    assert!(result.sweeps <= 2);
+    assert!(result.iterations <= 2);
 }
 
 #[test]
@@ -142,7 +142,7 @@ fn indefinite_comparison_matrix_remains_uncertified() {
     let scaling = ScalingConfig::default();
     let result = dominance_scaling(&cross_tab, &diagonal, &scaling).unwrap();
     assert!(result.violation > scaling.tolerance);
-    assert!(result.sweeps < scaling.max_sweeps);
+    assert!(result.iterations < scaling.max_iterations);
 }
 
 fn assert_sddm(component: &LocalComponent) {
@@ -322,7 +322,7 @@ fn non_scalable_component_errors_under_error_mode() {
 #[test]
 fn non_scalable_component_warns_and_clamps_under_warn_mode() {
     let config = ScalingConfig {
-        max_sweeps: 32,
+        max_iterations: 32,
         ..Default::default()
     };
     assert_eq!(config.on_failure, ScalingFailure::Warn);
