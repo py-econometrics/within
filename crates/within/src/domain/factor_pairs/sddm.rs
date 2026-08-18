@@ -15,6 +15,9 @@ use super::ComponentClass;
 use crate::config::{ScalingConfig, ScalingFailure};
 use crate::domain::CrossTab;
 
+mod scaling;
+use scaling::dominance_scaling;
+
 #[derive(Clone, Copy)]
 struct RoundoffBudget {
     ulps: f64,
@@ -151,7 +154,7 @@ pub(super) struct NotScalable;
 /// Evidence a dominance scaling exceeded tolerance or budget under [`ScalingFailure::Warn`].
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct UncertifiedScaling {
-    pub(crate) sweeps: usize,
+    pub(crate) iterations: usize,
     pub(crate) violation: f64,
 }
 
@@ -232,7 +235,7 @@ fn convert_general(
     };
     let violation = relaxation.violation.max(clamped_deficit);
     let uncertified = (violation > scaling.tolerance).then_some(UncertifiedScaling {
-        sweeps: relaxation.sweeps,
+        iterations: relaxation.iterations,
         violation,
     });
     Ok((component, uncertified))
@@ -377,89 +380,6 @@ fn folding_signs(cross_tab: &CrossTab) -> Option<Vec<f64>> {
         }
     }
     Some(signs)
-}
-
-struct DominanceScaling {
-    scales: Vec<f64>,
-    sweeps: usize,
-    /// Largest relative dominance violation at hand-over, clamped at 0.
-    violation: f64,
-}
-
-fn dominance_scaling(
-    cross_tab: &CrossTab,
-    diagonal: &[f64],
-    scaling: &ScalingConfig,
-) -> Result<DominanceScaling, NotScalable> {
-    let n = cross_tab.n_local();
-    debug_assert_eq!(diagonal.len(), n);
-    if diagonal.iter().any(|d| !d.is_finite() || *d <= 0.0) {
-        return Err(NotScalable);
-    }
-
-    let already_dominant = (0..n).all(|i| {
-        let row_sum: f64 = cross_tab.neighbors(i).map(|(_, value)| value.abs()).sum();
-        row_sum <= diagonal[i] * (1.0 + scaling.tolerance)
-    });
-    if already_dominant {
-        return Ok(DominanceScaling {
-            scales: vec![1.0; n],
-            sweeps: 0,
-            violation: 0.0,
-        });
-    }
-
-    let inv_sqrt: Vec<f64> = diagonal.iter().map(|d| 1.0 / d.sqrt()).collect();
-    let violation_of = |mu: &[f64]| {
-        (0..n)
-            .map(|i| {
-                let target: f64 = cross_tab
-                    .neighbors(i)
-                    .map(|(j, value)| value.abs() * inv_sqrt[i] * inv_sqrt[j] * mu[j])
-                    .sum();
-                target / mu[i] - 1.0
-            })
-            .fold(0.0f64, f64::max)
-    };
-
-    let mut mu = vec![1.0; n];
-    let mut violation = violation_of(&mu);
-    let mut sweeps = 0;
-    while violation > scaling.tolerance && sweeps < scaling.max_sweeps {
-        for i in 0..n {
-            let target: f64 = cross_tab
-                .neighbors(i)
-                .map(|(j, value)| value.abs() * inv_sqrt[i] * inv_sqrt[j] * mu[j])
-                .sum();
-            if target > mu[i] {
-                mu[i] = target;
-            }
-        }
-        // Normalizing keeps growth finite, so budget exhaustion still yields a usable scaling.
-        let peak = mu.iter().copied().fold(0.0f64, f64::max);
-        if !peak.is_finite() {
-            return Err(NotScalable);
-        }
-        for value in &mut mu {
-            *value /= peak;
-        }
-        violation = violation_of(&mu);
-        sweeps += 1;
-    }
-
-    let scales: Vec<f64> = mu
-        .iter()
-        .zip(inv_sqrt.iter())
-        .map(|(&value, &normalizer)| value * normalizer)
-        .collect();
-    if !scales.iter().all(|value| value.is_finite() && *value > 0.0) {
-        return Err(NotScalable);
-    }
-    Ok(DominanceScaling {
-        scales,
-        sweeps,
-        violation: violation.max(0.0),
-    })
 }
 
 fn adjacency_sums(cross_tab: &CrossTab) -> Vec<f64> {

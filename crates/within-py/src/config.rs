@@ -127,17 +127,17 @@ pub struct PyScalingConfig {
     #[pyo3(get)]
     pub tolerance: f64,
     #[pyo3(get)]
-    pub max_sweeps: usize,
+    pub max_iterations: usize,
     pub on_failure: ScalingFailure,
 }
 
 #[pymethods]
 impl PyScalingConfig {
     #[new]
-    #[pyo3(signature = (tolerance=None, max_sweeps=None, on_failure=None))]
+    #[pyo3(signature = (tolerance=None, max_iterations=None, on_failure=None))]
     fn new(
         tolerance: Option<f64>,
-        max_sweeps: Option<usize>,
+        max_iterations: Option<usize>,
         on_failure: Option<&str>,
     ) -> PyResult<Self> {
         let default = ScalingConfig::default();
@@ -153,7 +153,7 @@ impl PyScalingConfig {
         };
         Ok(Self {
             tolerance: tolerance.unwrap_or(default.tolerance),
-            max_sweeps: max_sweeps.unwrap_or(default.max_sweeps),
+            max_iterations: max_iterations.unwrap_or(default.max_iterations),
             on_failure,
         })
     }
@@ -171,7 +171,7 @@ impl PyScalingConfig {
     pub(crate) fn to_native(&self) -> ScalingConfig {
         ScalingConfig {
             tolerance: self.tolerance,
-            max_sweeps: self.max_sweeps,
+            max_iterations: self.max_iterations,
             on_failure: self.on_failure,
         }
     }

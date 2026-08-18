@@ -75,6 +75,76 @@ impl SddmMatrix {
     }
 }
 
+/// Chain: row k joins cols k and k+1; one mid-chain deficit makes certification need O(m²) iterations.
+fn chain_with_mid_deficit(m: usize) -> (CrossTab, Vec<f64>) {
+    let c = CsrBlock {
+        indptr: (0..=m as u32).map(|k| 2 * k).collect(),
+        indices: (0..m as u32).flat_map(|k| [k, k + 1]).collect(),
+        data: vec![1.0; 2 * m],
+        nrows: m,
+        ncols: m + 1,
+    };
+    let ct = c.transpose();
+    let mut diagonal = vec![2.0; 2 * m + 1];
+    diagonal[m + m / 2] = 2.0 * (1.0 - 1e-3);
+    (CrossTab { c, ct }, diagonal)
+}
+
+#[test]
+fn long_feasible_chain_certifies_with_reduced_cg() {
+    let (cross_tab, diagonal) = chain_with_mid_deficit(200);
+    let scaling = ScalingConfig {
+        max_iterations: 128,
+        ..Default::default()
+    };
+    let result = dominance_scaling(&cross_tab, &diagonal, &scaling).expect("chain scales");
+    assert!(
+        result.violation <= scaling.tolerance,
+        "chain must certify, got violation {:.3e}",
+        result.violation,
+    );
+    assert!(
+        result.iterations < scaling.max_iterations,
+        "reduced CG exhausted the {} iteration budget",
+        scaling.max_iterations,
+    );
+}
+
+#[test]
+fn accelerating_convergence_case_certifies_without_extrapolation() {
+    let table = [
+        0.04023094100803415,
+        0.9632989615043355,
+        0.003631923482738449,
+        0.0015750938044434863,
+        0.0006618152745868568,
+        0.039346817354759124,
+    ];
+    let cross_tab = CrossTab::from_dense_for_test(&table, 3, 2);
+    let scaling = ScalingConfig {
+        max_iterations: 16,
+        ..Default::default()
+    };
+    let result = dominance_scaling(&cross_tab, &[1.0; 5], &scaling).expect("matrix scales");
+    assert!(
+        result.violation <= scaling.tolerance,
+        "matrix must certify, got violation {:.3e} after {} iterations",
+        result.violation,
+        result.iterations,
+    );
+    assert!(result.iterations <= 2);
+}
+
+#[test]
+fn indefinite_comparison_matrix_remains_uncertified() {
+    let cross_tab = CrossTab::from_dense_for_test(&[1.0, -1.0, 2.0, -2.0], 2, 2);
+    let diagonal: [f64; 4] = [1.0, 2.0, 1.0, 2.0];
+    let scaling = ScalingConfig::default();
+    let result = dominance_scaling(&cross_tab, &diagonal, &scaling).unwrap();
+    assert!(result.violation > scaling.tolerance);
+    assert!(result.iterations < scaling.max_iterations);
+}
+
 fn assert_sddm(component: &LocalComponent) {
     assert!(component
         .matrix
@@ -177,7 +247,7 @@ fn scalable_signed_component_produces_valid_grounded_sddm() {
 
 #[test]
 fn singular_signed_boundary_remains_floating() {
-    let (component, _) = convert(
+    let (component, uncertified) = convert(
         CrossTab::from_dense_for_test(&[0.5, -1.0], 2, 1),
         vec![0.25, 1.0, 2.0],
         ComponentClass::General,
@@ -186,6 +256,7 @@ fn singular_signed_boundary_remains_floating() {
     .unwrap();
     assert_eq!(component.form, MatrixForm::Laplacian);
     assert_eq!(component.matrix.grounding, Grounding::Floating);
+    assert!(uncertified.is_none());
     assert_sddm(&component);
 }
 
@@ -251,7 +322,7 @@ fn non_scalable_component_errors_under_error_mode() {
 #[test]
 fn non_scalable_component_warns_and_clamps_under_warn_mode() {
     let config = ScalingConfig {
-        max_sweeps: 32,
+        max_iterations: 32,
         ..Default::default()
     };
     assert_eq!(config.on_failure, ScalingFailure::Warn);
@@ -263,7 +334,6 @@ fn non_scalable_component_warns_and_clamps_under_warn_mode() {
     )
     .unwrap();
     let uncertified = uncertified.expect("no dominant scaling exists");
-    assert_eq!(uncertified.sweeps, 32);
     assert!(uncertified.violation > config.tolerance);
     // Clamping restores the SDDM invariant, so the hand-over is usable.
     assert_sddm(&component);

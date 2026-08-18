@@ -7,7 +7,7 @@ use within::{
 };
 
 // Two crossed slope-only factors: their signed slope cross-block is not
-// diagonally dominant. A zero-tolerance / zero-sweep scaling policy reports
+// diagonally dominant. A zero-tolerance / zero-iteration scaling policy reports
 // that as an uncertified-scaling warning deterministically, without relying on
 // the (deliberately rare) default-tolerance path.
 const LA: [u32; 4] = [0, 0, 1, 1];
@@ -27,7 +27,7 @@ fn strict_scaling() -> PreconditionerConfig {
         local_solver: LocalSolverConfig {
             scaling: ScalingConfig {
                 tolerance: 0.0,
-                max_sweeps: 0,
+                max_iterations: 0,
                 on_failure: ScalingFailure::Warn,
             },
             ..LocalSolverConfig::default()

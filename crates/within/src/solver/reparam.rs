@@ -4,6 +4,7 @@ use crate::domain::Design;
 
 use super::CoefficientAddress;
 use crate::channel::Channel;
+use crate::linalg::dot;
 
 #[cfg(test)]
 mod tests;
@@ -313,8 +314,4 @@ fn pivoted_gram_schmidt(g: &[f64], v: usize, tol: f64) -> (Vec<f64>, Vec<bool>) 
         basis.extend_from_slice(&q);
     }
     (basis, kept)
-}
-
-fn dot(a: &[f64], b: &[f64]) -> f64 {
-    a.iter().zip(b).map(|(x, y)| x * y).sum()
 }

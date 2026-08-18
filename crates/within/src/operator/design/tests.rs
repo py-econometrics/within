@@ -1,5 +1,6 @@
 mod design_tests {
     use crate::domain::Design;
+    use crate::linalg::dot;
     use crate::operator::DesignOperator;
     use schwarz_precond::Operator;
 
@@ -54,10 +55,6 @@ mod design_tests {
         op.apply_adjoint(&r, &mut x)
             .expect("apply_adjoint succeeds");
         assert_eq!(x, vec![6.0, 5.0, 4.0, 3.0, 3.0, 4.0, 5.0]);
-    }
-
-    fn dot(a: &[f64], b: &[f64]) -> f64 {
-        a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
     }
 
     fn make_single_factor_design() -> Design<'static> {
