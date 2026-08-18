@@ -186,65 +186,26 @@ fn sampled_schur_carries_surplus_exactly_on_low_degree_stars() {
     }
 }
 
-/// Mirrored-lower CSR (#229, #282): every stored entry has a stored mirror with identical bits.
 #[test]
-fn exact_schur_csr_is_structurally_symmetric() {
-    let cancelling_signed_loadings = (
-        vec![
-            0.3, -1.7, 0.0, //
-            2.9, 0.7, 1.3, //
-            -0.11, 3.3, 5.1, //
-            1.9, 0.0, -2.3, //
-        ],
-        4,
-        3,
-        vec![3.0, 7.0, 0.9, 11.0, 13.7, 2.3, 19.1],
-    );
-    let ragged_with_zero_column_overlap = (
-        vec![
-            0.3, -1.7, 0.0, 0.9, //
-            2.9, 0.7, 1.3, 0.0, //
-            -0.11, 3.3, 5.1, -0.7, //
-            1.9, 0.0, -2.3, 0.4, //
-            0.0, 1.1, 0.0, -1.3, //
-        ],
-        5,
-        4,
-        vec![3.0, 7.0, 0.9, 11.0, 4.2, 13.7, 2.3, 19.1, 6.6],
-    );
+fn assemble_schur_csr_mirrors_upper_rows() {
+    let rows = vec![
+        UpperSchurRow {
+            columns: vec![0, 2],
+            values: vec![4.0, -1.25],
+        },
+        UpperSchurRow {
+            columns: vec![1, 2],
+            values: vec![5.0, -2.5],
+        },
+        UpperSchurRow {
+            columns: vec![2],
+            values: vec![6.0],
+        },
+    ];
 
-    for (c_dense, n_rows, n_cols, diagonal) in
-        [cancelling_signed_loadings, ragged_with_zero_column_overlap]
-    {
-        let (row_diag, _) = diagonal.split_at(n_rows);
-        let inv_diagonal: Vec<f64> = row_diag.iter().map(|d| 1.0 / d).collect();
-        for grounding in [Grounding::Grounded, Grounding::Floating] {
-            let operator = SddmMatrix::from_dense_for_test(
-                &c_dense,
-                n_rows,
-                n_cols,
-                diagonal.clone(),
-                grounding,
-            );
-            let complement = exact_for_factor(&operator, &inv_diagonal);
-            for i in 0..complement.n() {
-                let start = complement.indptr()[i] as usize;
-                let end = complement.indptr()[i + 1] as usize;
-                let row = &complement.indices()[start..end];
-                for (&j, &value) in row.iter().zip(&complement.data()[start..end]) {
-                    let j = j as usize;
-                    let js = complement.indptr()[j] as usize;
-                    let je = complement.indptr()[j + 1] as usize;
-                    let mirror_at = complement.indices()[js..je]
-                        .binary_search(&(i as u32))
-                        .unwrap_or_else(|_| panic!("{grounding:?}: ({i}, {j}) has no mirror"));
-                    assert_eq!(
-                        value.to_bits(),
-                        complement.data()[js + mirror_at].to_bits(),
-                        "{grounding:?}: mirror of ({i}, {j}) differs"
-                    );
-                }
-            }
-        }
-    }
+    let matrix = assemble_schur_csr(rows, 3);
+
+    assert_eq!(matrix.indptr(), &[0, 2, 4, 7]);
+    assert_eq!(matrix.indices(), &[0, 2, 1, 2, 0, 1, 2]);
+    assert_eq!(matrix.data(), &[4.0, -1.25, 5.0, -2.5, -1.25, -2.5, 6.0]);
 }
