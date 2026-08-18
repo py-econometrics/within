@@ -217,7 +217,7 @@ fn test_additive_serde_roundtrip_preserves_config_and_solution() {
             dense_threshold: 0,
             scaling: ScalingConfig {
                 tolerance: 1e-7,
-                max_sweeps: 123,
+                max_iterations: 123,
                 on_failure: ScalingFailure::Error,
             },
         },
