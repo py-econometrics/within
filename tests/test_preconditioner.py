@@ -49,6 +49,10 @@ class TestAdvancedConfigs:
 
         assert implicit == explicit
         assert implicit != PreconditionerConfig.Diagonal()
+        assert implicit.local_solver == LocalSolverConfig()
+
+        with pytest.raises(TypeError):
+            PreconditionerConfig.Additive(local_solver=None)
 
     def test_preconditioner_config_variant_introspection(self):
         # Each variant is a subclass of PreconditionerConfig (the 3.9-safe
@@ -95,8 +99,10 @@ class TestAdvancedConfigs:
     def test_schur_complement_defaults(self):
         sc = LocalSolverConfig()
         assert sc.dense_threshold == 24
-        # Omitted schur means the library default (approximate), not exact.
-        assert sc.schur is None
+        assert sc.approx_chol.seed == 0
+        assert sc.approx_chol.split_merge == 2
+        assert repr(sc.schur) == "Schur.approximate(seed=0, split=1)"
+        assert sc.scaling.on_failure == "warn"
 
     def test_schur_mode_spellings(self):
         # Omission and Schur.approximate() are the default; Schur.exact() is the
@@ -108,7 +114,8 @@ class TestAdvancedConfigs:
         y = rng.standard_normal(600)
         for schur in (None, Schur.approximate(), Schur.exact()):
             local = LocalSolverConfig(schur=schur)
-            assert local.schur is schur
+            expected = Schur.approximate() if schur is None else schur
+            assert repr(local.schur) == repr(expected)
             result = solve(
                 cats,
                 y,
@@ -179,7 +186,15 @@ class TestFePreconditioner:
         precond = solver.preconditioner
 
         assert precond is not None
-        assert precond.config == requested
+        actual = precond.config
+        assert actual == requested
+        assert isinstance(actual, PreconditionerConfig.Additive)
+        assert actual.reduction == ReductionStrategy.AtomicScatter
+        assert actual.local_solver.approx_chol.seed == 41
+        assert actual.local_solver.approx_chol.split_merge == 3
+        assert repr(actual.local_solver.schur) == "Schur.approximate(seed=17, split=2)"
+        assert actual.local_solver.dense_threshold == 0
+        assert actual.local_solver.scaling.on_failure == "warn"
 
     def test_preconditioner_corrupt_bytes_raises(self):
         with pytest.raises(ValueError):
