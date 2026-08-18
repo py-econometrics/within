@@ -145,7 +145,8 @@ The `preconditioner` argument accepts any of:
 
 `PreconditionerConfig` is a tagged union: each variant is a subclass, so instances
 support `match`/`case` and compare by value. A built preconditioner exposes
-the configuration used to construct it as `.config` (preserved across pickling).
+the configuration used to construct it as `.config` and its original build time in seconds
+as `.build_time_seconds`; both are preserved across pickling and reuse.
 
 ### Local solver configuration (advanced — `within.config`)
 

@@ -4,7 +4,7 @@ import pickle
 
 import numpy as np
 import pytest
-
+from conftest import as_solver_categories
 from within import LsmrOptions, Preconditioner, PreconditionerConfig, Solver, solve
 from within._within import (
     ApproxCholConfig,
@@ -13,8 +13,6 @@ from within._within import (
     ReductionStrategy,
     Schur,
 )
-
-from conftest import as_solver_categories
 
 
 @pytest.fixture()
@@ -153,8 +151,8 @@ class TestFePreconditioner:
         )
 
         for config in (
-            PreconditionerConfig.Additive,
-            PreconditionerConfig.Diagonal,
+            PreconditionerConfig.Additive(),
+            PreconditionerConfig.Diagonal(),
         ):
             precond = Solver(categories, preconditioner=config).preconditioner
             assert precond is not None
