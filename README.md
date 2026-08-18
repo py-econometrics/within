@@ -48,7 +48,7 @@ result = solve(fe, y, options=LsmrOptions(tol=1e-10, maxiter=2000))
 result = solve(fe, y, weights=np.ones(n))
 
 # Opt into diagonal/Jacobi preconditioning
-result = solve(fe, y, preconditioner=PreconditionerConfig.Diagonal)
+result = solve(fe, y, preconditioner=PreconditionerConfig.Diagonal())
 ```
 
 ### FWL regression example

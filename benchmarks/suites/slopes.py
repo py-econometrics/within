@@ -14,8 +14,7 @@ from typing import Callable
 
 import numpy as np
 from numpy.typing import NDArray
-
-from within import Effect, solve
+from within import Effect, PreconditionerConfig, solve
 
 from .._framework import (
     BenchmarkResult,
@@ -23,7 +22,6 @@ from .._framework import (
     SolverConfig,
     SuiteOptions,
     benchmark_lsmr,
-    make_additive_schwarz,
     max_abs_group_mean,
     suite,
 )
@@ -162,7 +160,7 @@ def run_slopes(opts: SuiteOptions) -> list[BenchmarkResult]:
     cfg = SolverConfig(
         "LSMR(Schwarz)",
         benchmark_lsmr(opts),
-        preconditioner=make_additive_schwarz(local_solver=None),
+        preconditioner=PreconditionerConfig.Additive(),
     )
 
     results: list[BenchmarkResult] = []
