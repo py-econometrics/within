@@ -5,9 +5,9 @@
 
 use within::{Effect, LsmrOptions, Preconditioner, PreconditionerConfig, Solver};
 
-const WIRE_FORMAT_VERSION: u32 = 13;
-const PRECOND_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v13.postcard");
-const PRE_BUMP_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v12.postcard");
+const WIRE_FORMAT_VERSION: u32 = 14;
+const PRECOND_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v14.postcard");
+const PRE_BUMP_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v13.postcard");
 
 fn fixture_problem() -> (Vec<u32>, Vec<u32>, Vec<f64>, Vec<f64>) {
     // The frustrated (f-slope, g) pair pins a signed operator with Scaled coords and a Cover.
@@ -75,6 +75,7 @@ fn signed_route_preconditioner_round_trips() {
     let bytes = postcard::to_stdvec(solver1.preconditioner().expect("has preconditioner"))
         .expect("serialize");
     let restored: Preconditioner = postcard::from_bytes(&bytes).expect("deserialize");
+    assert_eq!(restored.config(), &PreconditionerConfig::default());
 
     let solver2 =
         Solver::new(fixture_effects(&f, &g, &z), None, restored).expect("solver from round-trip");
@@ -96,7 +97,7 @@ fn pre_bump_fixture_no_longer_decodes() {
 }
 
 /// Generate the wire-format fixture. Run with `--ignored` to overwrite
-/// `crates/within/tests/fixtures/preconditioner_v13.postcard`. Intended for
+/// `crates/within/tests/fixtures/preconditioner_v14.postcard`. Intended for
 /// intentional wire-format bumps only; CI runs the non-ignored tests above.
 #[test]
 #[ignore]
@@ -117,7 +118,7 @@ fn regenerate_wire_format_fixture() {
     let bytes = postcard::to_stdvec(prec).expect("serialize");
 
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.push("tests/fixtures/preconditioner_v13.postcard");
+    path.push("tests/fixtures/preconditioner_v14.postcard");
     let mut out = std::fs::File::create(&path).expect("create fixture file");
     out.write_all(&bytes).expect("write fixture bytes");
     eprintln!("wrote {} bytes to {}", bytes.len(), path.display());

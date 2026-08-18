@@ -13,6 +13,7 @@
 
 /// Strategy for combining per-subdomain results in additive Schwarz apply.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ReductionStrategy {
     /// Choose a backend from build-time metrics and the current Rayon width.
     #[default]

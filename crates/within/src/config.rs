@@ -11,13 +11,15 @@
 //! change, caught mechanically by the cargo-semver-checks CI gate rather than
 //! slipping through silently.
 
+use serde::{Deserialize, Serialize};
+
 pub use schwarz_precond::ReductionStrategy;
 
 /// Default `n_keep` threshold below which a Schur domain tries the exact dense backend.
 pub(crate) const DEFAULT_DENSE_SCHUR_THRESHOLD: usize = 24;
 
 /// Configuration for approximate Cholesky factorization.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApproxCholConfig {
     /// Random seed for the factorization sampler.
     pub seed: u64,
@@ -44,7 +46,7 @@ impl ApproxCholConfig {
 }
 
 /// Schur reduction mode: sampled bounds per-subdomain cost, exact trades speed for fidelity.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SchurMode {
     /// Approximate Schur via clique-tree sampling.
     Approximate(ApproxSchurConfig),
@@ -59,7 +61,7 @@ impl Default for SchurMode {
 }
 
 /// Local solver configuration for Schwarz subdomains.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LocalSolverConfig {
     /// ApproxChol config for the reduced system.
     pub approx_chol: ApproxCholConfig,
@@ -86,7 +88,7 @@ impl Default for LocalSolverConfig {
 }
 
 /// Frustration is always a hard error; this governs only the dominance certificate.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ScalingConfig {
     /// Relative slack for weak dominance; PSD-boundary designs hover at ≈ 1e-12.
     pub tolerance: f64,
@@ -97,7 +99,7 @@ pub struct ScalingConfig {
 }
 
 /// What to do when a component's dominance scaling cannot be certified.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ScalingFailure {
     /// Clamp residual deficits and record a [`BuildWarning`](crate::BuildWarning).
     Warn,
@@ -116,7 +118,7 @@ impl Default for ScalingConfig {
 }
 
 /// Approximate Schur via GKS 2023 Algorithm 3: unbiased edge weights at O(deg) fill.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApproxSchurConfig {
     /// Random seed for the clique-tree sampler.
     pub seed: u64,
@@ -131,7 +133,7 @@ impl Default for ApproxSchurConfig {
 }
 
 /// Preconditioner variant. `#[non_exhaustive]`, so external `match` sites need a wildcard arm.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum PreconditionerConfig {
     /// Identity preconditioner. Solves the unpreconditioned normal equations.
