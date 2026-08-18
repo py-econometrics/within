@@ -75,6 +75,60 @@ impl SddmMatrix {
     }
 }
 
+/// Chain: row k joins cols k and k+1; one mid-chain deficit makes certification need O(m²) sweeps.
+fn chain_with_mid_deficit(m: usize) -> (CrossTab, Vec<f64>) {
+    let c = CsrBlock {
+        indptr: (0..=m as u32).map(|k| 2 * k).collect(),
+        indices: (0..m as u32).flat_map(|k| [k, k + 1]).collect(),
+        data: vec![1.0; 2 * m],
+        nrows: m,
+        ncols: m + 1,
+    };
+    let ct = c.transpose();
+    let mut diagonal = vec![2.0; 2 * m + 1];
+    diagonal[m + m / 2] = 2.0 * (1.0 - 1e-3);
+    (CrossTab { c, ct }, diagonal)
+}
+
+#[test]
+fn budget_infeasible_relaxation_bails_early() {
+    let (cross_tab, diagonal) = chain_with_mid_deficit(200);
+    let scaling = ScalingConfig::default();
+    let result = dominance_scaling(&cross_tab, &diagonal, &scaling).expect("chain scales");
+    assert!(
+        result.violation > scaling.tolerance,
+        "chain must hand over uncertified, got violation {:.3e}",
+        result.violation
+    );
+    assert!(
+        result.sweeps <= scaling.max_sweeps / 2,
+        "stall detection must bail well before the {} budget, spent {}",
+        scaling.max_sweeps,
+        result.sweeps
+    );
+}
+
+#[test]
+fn multi_sweep_certification_survives_stall_detection() {
+    let (cross_tab, diagonal) = chain_with_mid_deficit(10);
+    let scaling = ScalingConfig {
+        max_sweeps: 2048,
+        ..Default::default()
+    };
+    let result = dominance_scaling(&cross_tab, &diagonal, &scaling).expect("chain scales");
+    assert!(
+        result.violation <= scaling.tolerance,
+        "short chain must certify, got violation {:.3e} after {} sweeps",
+        result.violation,
+        result.sweeps
+    );
+    assert!(
+        result.sweeps > STALL_WINDOW,
+        "test is vacuous below one stall window ({} sweeps)",
+        result.sweeps
+    );
+}
+
 fn assert_sddm(component: &LocalComponent) {
     assert!(component
         .matrix
@@ -263,7 +317,6 @@ fn non_scalable_component_warns_and_clamps_under_warn_mode() {
     )
     .unwrap();
     let uncertified = uncertified.expect("no dominant scaling exists");
-    assert_eq!(uncertified.sweeps, 32);
     assert!(uncertified.violation > config.tolerance);
     // Clamping restores the SDDM invariant, so the hand-over is usable.
     assert_sddm(&component);

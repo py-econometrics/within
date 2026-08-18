@@ -109,7 +109,8 @@ impl Default for ScalingConfig {
     fn default() -> Self {
         Self {
             tolerance: 1e-9,
-            max_sweeps: 2048,
+            // Certifying components finish in ≲220 sweeps; larger budgets buy nothing (#280).
+            max_sweeps: 256,
             on_failure: ScalingFailure::Warn,
         }
     }

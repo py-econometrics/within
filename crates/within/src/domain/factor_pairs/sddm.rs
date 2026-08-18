@@ -379,6 +379,9 @@ fn folding_signs(cross_tab: &CrossTab) -> Option<Vec<f64>> {
     Some(signs)
 }
 
+/// Sweeps between infeasibility checks of the dominance relaxation.
+const STALL_WINDOW: usize = 16;
+
 struct DominanceScaling {
     scales: Vec<f64>,
     sweeps: usize,
@@ -425,6 +428,7 @@ fn dominance_scaling(
     let mut mu = vec![1.0; n];
     let mut violation = violation_of(&mu);
     let mut sweeps = 0;
+    let mut anchor = violation;
     while violation > scaling.tolerance && sweeps < scaling.max_sweeps {
         for i in 0..n {
             let target: f64 = cross_tab
@@ -445,6 +449,18 @@ fn dominance_scaling(
         }
         violation = violation_of(&mu);
         sweeps += 1;
+        // Contraction only degrades, so the window rate lower-bounds the sweeps still needed (#280).
+        if sweeps % STALL_WINDOW == 0 && violation > scaling.tolerance {
+            let contraction = violation / anchor;
+            let remaining = (scaling.max_sweeps - sweeps) as f64;
+            if contraction >= 1.0
+                || (violation / scaling.tolerance).ln() * STALL_WINDOW as f64
+                    > -contraction.ln() * remaining
+            {
+                break;
+            }
+            anchor = violation;
+        }
     }
 
     let scales: Vec<f64> = mu
