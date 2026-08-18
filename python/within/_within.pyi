@@ -27,13 +27,13 @@ class PreconditionerConfig:
         def __init__(self) -> None: ...
 
     class Additive(PreconditionerConfig):
-        """Additive Schwarz (the default). ``local_solver=None`` uses defaults."""
+        """Additive Schwarz with a normalized local-solver configuration."""
 
-        local_solver: LocalSolverConfig | None
+        local_solver: LocalSolverConfig
         reduction: ReductionStrategy
         def __init__(
             self,
-            local_solver: LocalSolverConfig | None = None,
+            local_solver: LocalSolverConfig = ...,
             reduction: ReductionStrategy = ...,
         ) -> None: ...
 
@@ -436,13 +436,13 @@ class LocalSolverConfig:
     """
 
     @property
-    def approx_chol(self) -> ApproxCholConfig | None: ...
+    def approx_chol(self) -> ApproxCholConfig: ...
     @property
-    def schur(self) -> Schur | None: ...
+    def schur(self) -> Schur: ...
     @property
     def dense_threshold(self) -> int: ...
     @property
-    def scaling(self) -> ScalingConfig | None: ...
+    def scaling(self) -> ScalingConfig: ...
     def __init__(
         self,
         approx_chol: ApproxCholConfig | None = None,
