@@ -186,26 +186,26 @@ fn sampled_schur_carries_surplus_exactly_on_low_degree_stars() {
     }
 }
 
-/// Signed loadings cancel past approx-chol's 8-ulp ingest tolerance, so this must be bitwise.
 #[test]
-fn exact_schur_triangles_agree_bitwise_on_signed_loadings() {
-    let c_dense = vec![
-        0.3, -1.7, 0.0, //
-        2.9, 0.7, 1.3, //
-        -0.11, 3.3, 5.1, //
-        1.9, 0.0, -2.3, //
+fn assemble_schur_csr_mirrors_upper_rows() {
+    let rows = vec![
+        UpperSchurRow {
+            columns: vec![0, 2],
+            values: vec![4.0, -1.25],
+        },
+        UpperSchurRow {
+            columns: vec![1, 2],
+            values: vec![5.0, -2.5],
+        },
+        UpperSchurRow {
+            columns: vec![2],
+            values: vec![6.0],
+        },
     ];
-    let diagonal = vec![3.0, 7.0, 0.9, 11.0, 13.7, 2.3, 19.1];
-    let (row_diag, _) = diagonal.split_at(4);
-    let inv_diagonal: Vec<f64> = row_diag.iter().map(|d| 1.0 / d).collect();
 
-    for grounding in [Grounding::Grounded, Grounding::Floating] {
-        let operator = SddmMatrix::from_dense_for_test(&c_dense, 4, 3, diagonal.clone(), grounding);
-        let dense = sparse_to_dense(&exact_for_factor(&operator, &inv_diagonal));
-        for (i, row) in dense.iter().enumerate() {
-            for (j, &value) in row.iter().enumerate() {
-                assert_eq!(value, dense[j][i], "{grounding:?} asymmetric at ({i}, {j})");
-            }
-        }
-    }
+    let matrix = assemble_schur_csr(rows, 3);
+
+    assert_eq!(matrix.indptr(), &[0, 2, 4, 7]);
+    assert_eq!(matrix.indices(), &[0, 2, 1, 2, 0, 1, 2]);
+    assert_eq!(matrix.data(), &[4.0, -1.25, 5.0, -2.5, -1.25, -2.5, 6.0]);
 }

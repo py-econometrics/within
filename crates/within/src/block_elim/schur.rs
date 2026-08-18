@@ -22,6 +22,11 @@ pub(crate) enum RowSplit {
     Parallel,
 }
 
+struct UpperSchurRow {
+    columns: Vec<u32>,
+    values: Vec<f64>,
+}
+
 /// Multiply-adds below which splitting the kept rows costs more than it saves.
 const PAR_ROW_SPLIT_THRESHOLD: usize = 100_000;
 
@@ -40,7 +45,7 @@ pub(crate) fn exact(
         result
     };
 
-    let rows: Vec<(Vec<u32>, Vec<f64>)> = match split {
+    let rows: Vec<UpperSchurRow> = match split {
         RowSplit::Parallel => (0..n_keep)
             .into_par_iter()
             .map_init(
@@ -78,7 +83,7 @@ pub(crate) fn exact_for_factor(matrix: &SddmMatrix, inv_diagonal_eliminated: &[f
     build_explicit_laplacian(&principal, &surplus, matrix.grounding)
 }
 
-/// Multiply-adds [`exact`] performs: `Σ_k nnz(k)²`, quadratic in a width `n_kept` cannot see.
+/// Upper-triangle multiply-adds: `Σ_k nnz(k)(nnz(k)+1)/2`.
 fn exact_flops(matrix: &SddmMatrix) -> usize {
     matrix
         .cross_tab
@@ -87,12 +92,12 @@ fn exact_flops(matrix: &SddmMatrix) -> usize {
         .windows(2)
         .map(|bounds| {
             let width = (bounds[1] - bounds[0]) as usize;
-            width * width
+            width * (width + 1) / 2
         })
         .sum()
 }
 
-/// Scatter Schur row `i` into a dense workspace, recording touched columns.
+/// Scatter the diagonal-and-upper part of Schur row `i`, recording touched columns.
 fn compute_schur_row_dense(
     matrix: &SddmMatrix,
     inv_diagonal_eliminated: &[f64],
@@ -103,46 +108,74 @@ fn compute_schur_row_dense(
     work[i] = matrix.diagonal_kept()[i];
     touched.push(i);
 
+    let elim_to_keep = &matrix.cross_tab.c;
     for (k, w) in matrix.cross_tab.ct.row(i) {
         let inv = inv_diagonal_eliminated[k];
-        for (j, v) in matrix.cross_tab.c.row(k) {
+        let start = elim_to_keep.indptr[k] as usize;
+        let end = elim_to_keep.indptr[k + 1] as usize;
+        let columns = &elim_to_keep.indices[start..end];
+        let upper_start = columns.partition_point(|&j| (j as usize) < i);
+        for position in start + upper_start..end {
+            let j = elim_to_keep.indices[position] as usize;
+            let v = elim_to_keep.data[position];
             if work[j] == 0.0 && j != i {
                 touched.push(j);
             }
-            // Pairing the loadings before the reciprocal makes (i, j) and (j, i) bitwise equal.
-            work[j] -= (w * v) * inv;
+            work[j] -= w * v * inv;
         }
     }
 }
 
 /// Extract non-zeros, keeping a numerically-zero diagonal so SDDM structure survives.
-fn extract_sparse_row(i: usize, work: &mut [f64], touched: &mut [usize]) -> (Vec<u32>, Vec<f64>) {
+fn extract_sparse_row(i: usize, work: &mut [f64], touched: &mut [usize]) -> UpperSchurRow {
     touched.sort_unstable();
-    let mut row_indices = Vec::with_capacity(touched.len());
-    let mut row_data = Vec::with_capacity(touched.len());
+    let mut columns = Vec::with_capacity(touched.len());
+    let mut values = Vec::with_capacity(touched.len());
     for &j in touched.iter() {
         let v = work[j];
         if v != 0.0 || j == i {
-            row_indices.push(to_u32(j));
-            row_data.push(v);
+            columns.push(to_u32(j));
+            values.push(v);
         }
         work[j] = 0.0;
     }
-    (row_indices, row_data)
+    UpperSchurRow { columns, values }
 }
 
-/// Assemble a CSR matrix from per-row sparse results.
-fn assemble_schur_csr(rows: Vec<(Vec<u32>, Vec<f64>)>, n_keep: usize) -> CsrMatrix {
-    let mut s_indptr = vec![0u32; n_keep + 1];
-    let total_nnz: usize = rows.iter().map(|(ri, _)| ri.len()).sum();
-    let mut s_indices = Vec::with_capacity(total_nnz);
-    let mut s_data = Vec::with_capacity(total_nnz);
-    for (i, (ri, rd)) in rows.into_iter().enumerate() {
-        s_indices.extend_from_slice(&ri);
-        s_data.extend_from_slice(&rd);
-        s_indptr[i + 1] = to_u32(s_indices.len());
+/// Assemble full rows from diagonal-and-upper parts; the strict upper mirrors into the lower.
+fn assemble_schur_csr(rows: Vec<UpperSchurRow>, n_keep: usize) -> CsrMatrix {
+    let mut row_offsets = vec![0u32; n_keep + 1];
+    for (i, row) in rows.iter().enumerate() {
+        row_offsets[i + 1] += to_u32(row.columns.len());
+        for &j in &row.columns {
+            if j as usize != i {
+                row_offsets[j as usize + 1] += 1;
+            }
+        }
     }
-    CsrMatrix::new(s_indptr, s_indices, s_data, n_keep)
+    for i in 0..n_keep {
+        row_offsets[i + 1] += row_offsets[i];
+    }
+    let total_nnz = row_offsets[n_keep] as usize;
+    let mut column_indices = vec![0u32; total_nnz];
+    let mut values = vec![0.0f64; total_nnz];
+
+    // Row layout: [mirrored lower | diagonal and upper]; ascending source rows keep it sorted.
+    let mut lower_write_positions = row_offsets[..n_keep].to_vec();
+    for (i, row) in rows.into_iter().enumerate() {
+        let upper_start = row_offsets[i + 1] as usize - row.columns.len();
+        column_indices[upper_start..upper_start + row.columns.len()].copy_from_slice(&row.columns);
+        values[upper_start..upper_start + row.values.len()].copy_from_slice(&row.values);
+        for (&j, &v) in row.columns.iter().zip(&row.values) {
+            if j as usize != i {
+                let position = lower_write_positions[j as usize] as usize;
+                column_indices[position] = to_u32(i);
+                values[position] = v;
+                lower_write_positions[j as usize] += 1;
+            }
+        }
+    }
+    CsrMatrix::new(row_offsets, column_indices, values, n_keep)
 }
 
 /// Edges sorted by `(lo, hi)` land both triangles in column order without per-row sorting.
