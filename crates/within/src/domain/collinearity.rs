@@ -191,17 +191,7 @@ mod tests {
         (a, b)
     }
 
-    fn pseudo_noise(n: usize, seed: u64) -> Vec<f64> {
-        let mut state = seed;
-        (0..n)
-            .map(|_| {
-                state = state
-                    .wrapping_mul(6364136223846793005)
-                    .wrapping_add(1442695040888963407);
-                (state >> 11) as f64 / (1u64 << 53) as f64 - 0.5
-            })
-            .collect()
-    }
+    use crate::test_rng::pseudo_noise;
 
     #[test]
     fn shared_covariate_across_two_terms_warns_both_ways() {

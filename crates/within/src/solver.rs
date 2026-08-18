@@ -16,6 +16,7 @@ use crate::domain::level_moments::TermMoments;
 use crate::domain::{Design, Effect};
 use crate::observation::ObservationFrame;
 use crate::operator::design::gather_apply;
+use crate::operator::fused::{FusedBlockSolve, FusedPreconditioner};
 use crate::operator::schwarz::{build_preconditioner, Preconditioner};
 use crate::operator::DesignOperator;
 use crate::{BuildError, BuildWarning, SolveError, WithinError};
@@ -310,6 +311,8 @@ pub struct Solver<'a> {
     /// during construction).
     sqrt_weights: Option<Vec<f64>>,
     preconditioner: Option<Preconditioner>,
+    /// Exact fused-block corrections for the collinearity screen's warned term groups.
+    fused: Vec<FusedBlockSolve>,
     reparam: Option<SlopeReparam>,
     warnings: Vec<BuildWarning>,
 }
@@ -405,6 +408,11 @@ impl<'a> Solver<'a> {
 
         warnings.extend(build_warnings);
 
+        let fused = match preconditioner {
+            Some(_) => FusedBlockSolve::build_all(&design, weights.as_deref(), &warnings),
+            None => Vec::new(),
+        };
+
         let sqrt_weights = weights.map(|mut w| {
             for wi in &mut w {
                 *wi = wi.sqrt();
@@ -416,6 +424,7 @@ impl<'a> Solver<'a> {
             design,
             sqrt_weights,
             preconditioner,
+            fused,
             reparam,
             warnings,
         })
@@ -469,7 +478,12 @@ impl<'a> Solver<'a> {
                     local_size: lsmr.local_size,
                     ..Default::default()
                 };
-                mlsmr(&rect_op, b, p, lsmr.tol, lsmr.maxiter, options)?
+                if self.fused.is_empty() {
+                    mlsmr(&rect_op, b, p, lsmr.tol, lsmr.maxiter, options)?
+                } else {
+                    let augmented = FusedPreconditioner::new(p, &self.fused);
+                    mlsmr(&rect_op, b, &augmented, lsmr.tol, lsmr.maxiter, options)?
+                }
             }
             None => lsmr_solve(&rect_op, b, lsmr.tol, lsmr.maxiter, lsmr.local_size)?,
         };

@@ -13,6 +13,7 @@ categories.workspace = true
 [dependencies]
 schwarz-precond = { workspace = true, features = ["serde"] }
 approx-chol = { version = "0.5.0", features = ["serde"] }
+faer.workspace = true
 serde = { workspace = true, features = ["rc"] }
 postcard.workspace = true
 ndarray = "0.17"

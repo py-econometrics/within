@@ -36,6 +36,8 @@ pub(crate) mod domain;
 pub(crate) mod linalg;
 pub(crate) mod operator;
 pub(crate) mod solver;
+#[cfg(test)]
+pub(crate) mod test_rng;
 
 pub use channel::{Channel, ChannelPair};
 pub use config::{
