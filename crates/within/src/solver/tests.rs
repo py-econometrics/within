@@ -306,6 +306,10 @@ fn fused_block_low_mobility_stress() {
     )
     .unwrap();
     assert!(!solver.fused.is_empty(), "screen must arm the fused block");
+    assert!(
+        solver.fused.iter().all(|b| b.is_exact_for_test()),
+        "fill gate must arm the exact rung"
+    );
     let opts = LsmrOptions {
         tol: 1e-10,
         maxiter: 3000,
@@ -384,12 +388,12 @@ fn demeaned_from(solver: &super::Solver<'_>, x: &[f64], y: &[f64]) -> Vec<f64> {
 }
 
 /// Forces the FSAI rung with a zero fill budget on a panel whose real gate arms the exact rung.
-fn assert_fsai_fallback_matches_reference(eps: f64) {
+fn assert_fsai_fallback_matches_reference(panel: SharedCovariatePanel) {
     use super::Solver;
     use crate::config::{LsmrOptions, PreconditionerConfig};
     use crate::operator::fused::{FusedBlockSolve, FusedPreconditioner};
 
-    let SharedCovariatePanel { a, b, z, z2, y } = shared_covariate_panel(eps);
+    let SharedCovariatePanel { a, b, z, z2, y } = panel;
     let effects = || {
         vec![
             crate::Effect::new(&a, true, [&z[..]]).unwrap(),
@@ -425,18 +429,34 @@ fn assert_fsai_fallback_matches_reference(eps: f64) {
         .sqrt();
     assert!(
         diff <= 1e-6 * scale,
-        "demeaned mismatch: {diff:e} vs scale {scale:e} (eps = {eps:e})"
+        "demeaned mismatch: {diff:e} vs scale {scale:e}"
     );
 }
 
 #[test]
 fn fsai_fallback_matches_unpreconditioned_reference() {
-    assert_fsai_fallback_matches_reference(1e-4);
+    assert_fsai_fallback_matches_reference(shared_covariate_panel(1e-4));
 }
 
 #[test]
 fn fsai_fallback_grounds_exact_sharing() {
-    assert_fsai_fallback_matches_reference(0.0);
+    assert_fsai_fallback_matches_reference(shared_covariate_panel(0.0));
+}
+
+/// An exclusively co-occurring level pair puts an exactly singular fiber inside one
+/// FSAI row's neighborhood; the null response must stay bounded, not clamp-amplified.
+#[test]
+fn fsai_fallback_bounds_row_local_aliasing() {
+    let mut panel = shared_covariate_panel(1e-4);
+    let extra = pseudo_noise(8, 41);
+    for (k, &e) in extra.iter().enumerate() {
+        panel.a.push(200);
+        panel.b.push(100);
+        panel.z.push(e);
+        panel.z2.push(e + 1e-4 * (k as f64 / 8.0 - 0.5));
+        panel.y.push(1.0 + e);
+    }
+    assert_fsai_fallback_matches_reference(panel);
 }
 
 #[test]

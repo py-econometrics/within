@@ -11,7 +11,7 @@ use faer::sparse::linalg::cholesky::{
     factorize_symbolic_cholesky, CholeskySymbolicParams, LdltRef, SymbolicCholesky,
     SymmetricOrdering,
 };
-use faer::sparse::{SparseColMat, Triplet};
+use faer::sparse::{Pair, SparseColMat, SymbolicSparseColMat, Triplet};
 use faer::{Conj, MatMut, Par, Side};
 use schwarz_precond::Operator;
 
@@ -26,20 +26,16 @@ const FILL_CAP: usize = 40_000_000;
 const FSAI_ROW_CAP: usize = 48;
 
 /// The assembled (weighted, whitened) Gram of one warned term group, in sparse form.
-pub(crate) struct FusedGram {
+struct FusedGram {
     /// Global DOF ranges of the fused terms, concatenated in local order.
-    pub(crate) spans: Vec<Range<usize>>,
-    pub(crate) n_local: usize,
-    pub(crate) diag: Vec<f64>,
+    spans: Vec<Range<usize>>,
+    n_local: usize,
+    diag: Vec<f64>,
     /// Strict upper-triangular entries keyed by `(row, col)` with `row < col`.
-    pub(crate) off: HashMap<(u32, u32), f64>,
+    off: HashMap<(u32, u32), f64>,
 }
 
-pub(crate) fn assemble_gram(
-    design: &Design<'_>,
-    weights: Option<&[f64]>,
-    terms: &[usize],
-) -> FusedGram {
+fn assemble_gram(design: &Design<'_>, weights: Option<&[f64]>, terms: &[usize]) -> FusedGram {
     let spans: Vec<Range<usize>> = terms
         .iter()
         .map(|&t| {
@@ -114,6 +110,31 @@ enum FusedFactor {
 
 fn exact_factor(gram: &FusedGram, fill_cap: usize) -> Option<FusedFactor> {
     let n_local = gram.n_local;
+    // Gate on the pattern alone; numeric staging is paid only once accepted.
+    let mut pairs = Vec::with_capacity(n_local + gram.off.len());
+    for d in 0..n_local {
+        pairs.push(Pair { row: d, col: d });
+    }
+    for &(r, c) in gram.off.keys() {
+        pairs.push(Pair {
+            row: r as usize,
+            col: c as usize,
+        });
+    }
+    let (pattern, _) =
+        SymbolicSparseColMat::<usize>::try_new_from_indices(n_local, n_local, &pairs).ok()?;
+    drop(pairs);
+    let symbolic = factorize_symbolic_cholesky(
+        pattern.as_ref(),
+        Side::Upper,
+        SymmetricOrdering::Amd,
+        CholeskySymbolicParams::default(),
+    )
+    .ok()?;
+    if symbolic.len_val() > fill_cap {
+        return None;
+    }
+
     let mut triplets = Vec::with_capacity(n_local + gram.off.len());
     for (d, &v) in gram.diag.iter().enumerate() {
         triplets.push(Triplet::new(d, d, v));
@@ -123,17 +144,6 @@ fn exact_factor(gram: &FusedGram, fill_cap: usize) -> Option<FusedFactor> {
     }
     let a_upper =
         SparseColMat::<usize, f64>::try_new_from_triplets(n_local, n_local, &triplets).ok()?;
-
-    let symbolic = factorize_symbolic_cholesky(
-        a_upper.symbolic(),
-        Side::Upper,
-        SymmetricOrdering::Amd,
-        CholeskySymbolicParams::default(),
-    )
-    .ok()?;
-    if symbolic.len_val() > fill_cap {
-        return None;
-    }
 
     // Null pivots become LARGE; tiny ones amplify nulls ~1e12x and fake convergence.
     let d_max = gram.diag.iter().copied().fold(0.0, f64::max);
@@ -170,18 +180,10 @@ fn fsai_factor(gram: &FusedGram) -> FusedFactor {
         .iter()
         .map(|&d| if d > 0.0 { 1.0 / d.sqrt() } else { 1.0 })
         .collect();
-    let mut entries: HashMap<(u32, u32), f64> = HashMap::with_capacity(gram.off.len());
     let mut lower_adj: Vec<Vec<(u32, f64)>> = vec![Vec::new(); n];
     for (&(r, c), &v) in &gram.off {
-        let sv = v * scale[r as usize] * scale[c as usize];
-        entries.insert((r.min(c), r.max(c)), sv);
-        lower_adj[r.max(c) as usize].push((r.min(c), sv));
+        lower_adj[c as usize].push((r, v * scale[r as usize] * scale[c as usize]));
     }
-    let unit_diag: Vec<f64> = gram
-        .diag
-        .iter()
-        .map(|&d| if d > 0.0 { 1.0 } else { 0.0 })
-        .collect();
 
     let mut row_ptr = Vec::with_capacity(n + 1);
     let mut col_idx: Vec<u32> = Vec::new();
@@ -192,7 +194,8 @@ fn fsai_factor(gram: &FusedGram) -> FusedFactor {
     let mut idx: Vec<u32> = Vec::with_capacity(FSAI_ROW_CAP + 1);
     for (i, adj) in lower_adj.iter_mut().enumerate() {
         if adj.len() > FSAI_ROW_CAP {
-            adj.sort_unstable_by(|a, b| b.1.abs().total_cmp(&a.1.abs()));
+            // Total order (|value| desc, then column) keeps single-thread runs bitwise.
+            adj.sort_unstable_by(|a, b| b.1.abs().total_cmp(&a.1.abs()).then(a.0.cmp(&b.0)));
             adj.truncate(FSAI_ROW_CAP);
         }
         idx.clear();
@@ -204,9 +207,15 @@ fn fsai_factor(gram: &FusedGram) -> FusedFactor {
             for b in 0..=a {
                 let (r, c) = (idx[b].min(idx[a]), idx[b].max(idx[a]));
                 let v = if r == c {
-                    unit_diag[r as usize] + 1e-10
+                    if gram.diag[r as usize] > 0.0 {
+                        1.0
+                    } else {
+                        0.0
+                    }
                 } else {
-                    entries.get(&(r, c)).copied().unwrap_or(0.0)
+                    gram.off
+                        .get(&(r, c))
+                        .map_or(0.0, |&v| v * scale[r as usize] * scale[c as usize])
                 };
                 small[a * m + b] = v;
                 small[b * m + a] = v;
@@ -241,8 +250,9 @@ fn dense_spd_solve(a: &mut [f64], m: usize, rhs: &mut [f64]) {
         for k in 0..j {
             d -= a[j * m + k] * a[j * m + k];
         }
-        if d <= 1e-14 {
-            d = 1e-12;
+        // Unidentified pivots become LARGE (bounded response), mirroring the exact rung.
+        if d <= 1e-12 {
+            d = 1.0;
         }
         let sd = d.sqrt();
         a[j * m + j] = sd;
