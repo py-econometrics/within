@@ -4,7 +4,7 @@
 use rayon::prelude::*;
 
 use super::level_moments::{BasisScratch, TermMoments};
-use super::{Design, Loading};
+use super::Design;
 use crate::channel::Channel;
 use crate::BuildWarning;
 
@@ -22,10 +22,7 @@ pub(crate) fn detect_collinear_slopes(
             let targets: Vec<(Channel, u32)> = (0..design.n_factors())
                 .filter(|&t| t != term)
                 .flat_map(|t| design.channels(t))
-                .filter_map(|slope| match design.loading(slope) {
-                    Loading::Covariate(column) => Some((slope, column)),
-                    Loading::Constant => None,
-                })
+                .filter_map(|slope| design.loading(slope).covariate().map(|&c| (slope, c)))
                 .collect();
             residual_shares(design, weights, moments, term, &targets)
                 .into_iter()
@@ -172,6 +169,7 @@ fn residual_shares(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_rng::pseudo_noise;
     use crate::Effect;
 
     fn warn_pairs(design: &Design<'_>, weights: Option<&[f64]>) -> Vec<(Channel, usize)> {
@@ -190,8 +188,6 @@ mod tests {
         let b = (0..n).map(|i| ((i / 40) % 25) as u32).collect();
         (a, b)
     }
-
-    use crate::test_rng::pseudo_noise;
 
     #[test]
     fn shared_covariate_across_two_terms_warns_both_ways() {

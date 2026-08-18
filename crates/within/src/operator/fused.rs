@@ -15,7 +15,7 @@ use faer::sparse::{Pair, SparseColMat, SymbolicSparseColMat, Triplet};
 use faer::{Conj, MatMut, Par, Side};
 use schwarz_precond::Operator;
 
-use crate::domain::{Design, Loading};
+use crate::domain::Design;
 use crate::error::BuildWarning;
 use crate::operator::schwarz::Preconditioner;
 
@@ -40,18 +40,31 @@ fn assemble_gram(design: &Design<'_>, weights: Option<&[f64]>, terms: &[usize]) 
         .iter()
         .map(|&t| {
             let meta = &design.terms[t];
-            meta.offset..meta.offset + meta.columns.len() * meta.n_levels
-        })
-        .collect();
-    let local_bases: Vec<usize> = spans
-        .iter()
-        .scan(0, |acc, span| {
-            let base = *acc;
-            *acc += span.len();
-            Some(base)
+            meta.offset..meta.offset + meta.n_dofs()
         })
         .collect();
     let n_local = spans.iter().map(|s| s.len()).sum();
+
+    // Per term: local base, n_levels, level codes, per-column loadings (None = intercept).
+    let mut base = 0;
+    let cols: Vec<_> = terms
+        .iter()
+        .zip(&spans)
+        .map(|(&t, span)| {
+            let meta = &design.terms[t];
+            let loadings: Vec<Option<&[f64]>> = meta
+                .columns
+                .iter()
+                .map(|l| {
+                    l.covariate()
+                        .map(|&k| design.frame.loading_column(k as usize))
+                })
+                .collect();
+            let entry = (base, meta.n_levels, design.frame.level_column(t), loadings);
+            base += span.len();
+            entry
+        })
+        .collect();
 
     let mut diag = vec![0.0f64; n_local];
     let mut off: HashMap<(u32, u32), f64> = HashMap::new();
@@ -59,16 +72,11 @@ fn assemble_gram(design: &Design<'_>, weights: Option<&[f64]>, terms: &[usize]) 
     for i in 0..design.n_obs {
         let w = weights.map_or(1.0, |ws| ws[i]);
         ents.clear();
-        for (span, &t) in terms.iter().enumerate() {
-            let meta = &design.terms[t];
-            let level = design.frame.level_column(t)[i] as usize;
-            for (c, loading) in meta.columns.iter().enumerate() {
-                let coef = match loading {
-                    Loading::Constant => 1.0,
-                    Loading::Covariate(k) => design.frame.loading_column(*k as usize)[i],
-                };
-                let local = local_bases[span] + meta.column_base(c) + level - meta.offset;
-                ents.push((local, coef));
+        for (base, n_levels, levels, loadings) in &cols {
+            let level = levels[i] as usize;
+            for (c, loading) in loadings.iter().enumerate() {
+                let coef = loading.map_or(1.0, |s| s[i]);
+                ents.push((base + c * n_levels + level, coef));
             }
         }
         for (p, &(dp, cp)) in ents.iter().enumerate() {
@@ -96,12 +104,11 @@ fn assemble_gram(design: &Design<'_>, weights: Option<&[f64]>, terms: &[usize]) 
 enum FusedFactor {
     /// Sparse LDLᵀ of the whole fused Gram; cures any topology but pays the fill.
     Exact {
-        symbolic: SymbolicCholesky<usize>,
+        symbolic: Box<SymbolicCholesky<usize>>,
         l_values: Vec<f64>,
     },
-    /// `A⁻¹ ≈ S GᵀG S` on the prescaled Gram, pattern capped lower(A); fill-free.
+    /// `A⁻¹ ≈ GᵀG` with the diagonal prescaling folded into G; pattern capped lower(A); fill-free.
     Fsai {
-        scale: Vec<f64>,
         row_ptr: Vec<usize>,
         col_idx: Vec<u32>,
         values: Vec<f64>,
@@ -169,7 +176,10 @@ fn exact_factor(gram: &FusedGram, fill_cap: usize) -> Option<FusedFactor> {
         )
         .ok()?;
 
-    Some(FusedFactor::Exact { symbolic, l_values })
+    Some(FusedFactor::Exact {
+        symbolic: Box::new(symbolic),
+        l_values,
+    })
 }
 
 /// Infallible bottom rung; each row solves a small principal subsystem, so no shift is needed.
@@ -204,8 +214,9 @@ fn fsai_factor(gram: &FusedGram) -> FusedFactor {
         idx.push(i as u32);
         let m = idx.len();
         for a in 0..m {
+            // idx is sorted ascending, so (idx[b], idx[a]) is already an upper-triangle key.
             for b in 0..=a {
-                let (r, c) = (idx[b].min(idx[a]), idx[b].max(idx[a]));
+                let (r, c) = (idx[b], idx[a]);
                 let v = if r == c {
                     if gram.diag[r as usize] > 0.0 {
                         1.0
@@ -218,7 +229,6 @@ fn fsai_factor(gram: &FusedGram) -> FusedFactor {
                         .map_or(0.0, |&v| v * scale[r as usize] * scale[c as usize])
                 };
                 small[a * m + b] = v;
-                small[b * m + a] = v;
             }
         }
         rhs[..m].fill(0.0);
@@ -226,7 +236,8 @@ fn fsai_factor(gram: &FusedGram) -> FusedFactor {
         dense_spd_solve(&mut small[..m * m], m, &mut rhs[..m]);
         let inv_sqrt = 1.0 / rhs[m - 1].max(1e-30).sqrt();
         for (&col, &v) in idx.iter().zip(&rhs[..m]) {
-            let g = v * inv_sqrt;
+            // The prescaling S folds into G: (GS)ᵀ(GS) = S·GᵀG·S, saving two sweeps per apply.
+            let g = v * inv_sqrt * scale[col as usize];
             if g != 0.0 {
                 col_idx.push(col);
                 values.push(g);
@@ -236,7 +247,6 @@ fn fsai_factor(gram: &FusedGram) -> FusedFactor {
     }
 
     FusedFactor::Fsai {
-        scale,
         row_ptr,
         col_idx,
         values,
@@ -315,13 +325,12 @@ impl FusedBlockSolve {
                 parent[a] = b;
             }
         }
-        let mut components: HashMap<usize, Vec<usize>> = HashMap::new();
+        let mut components: Vec<Vec<usize>> = vec![Vec::new(); n_terms];
         for t in (0..n_terms).filter(|&t| warned[t]) {
-            components.entry(root(&mut parent, t)).or_default().push(t);
+            components[root(&mut parent, t)].push(t);
         }
-        let mut groups: Vec<Vec<usize>> = components.into_values().collect();
-        groups.sort();
-        groups
+        components.retain(|g| !g.is_empty());
+        components
             .into_iter()
             .map(|terms| Self::build(design, weights, &terms, FILL_CAP))
             .collect()
@@ -362,15 +371,11 @@ impl FusedBlockSolve {
                 );
             }
             FusedFactor::Fsai {
-                scale,
                 row_ptr,
                 col_idx,
                 values,
             } => {
                 let work = &mut scratch.work[..self.n_local];
-                for (l, &s) in local.iter_mut().zip(scale) {
-                    *l *= s;
-                }
                 for (i, wi) in work.iter_mut().enumerate() {
                     let mut z = 0.0;
                     for p in row_ptr[i]..row_ptr[i + 1] {
@@ -383,9 +388,6 @@ impl FusedBlockSolve {
                     for p in row_ptr[i]..row_ptr[i + 1] {
                         local[col_idx[p] as usize] += values[p] * zi;
                     }
-                }
-                for (l, &s) in local.iter_mut().zip(scale) {
-                    *l *= s;
                 }
             }
         }

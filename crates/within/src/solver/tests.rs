@@ -102,6 +102,15 @@ struct SharedCovariatePanel {
     y: Vec<f64>,
 }
 
+impl SharedCovariatePanel {
+    fn effects(&self) -> Vec<Effect<'_>> {
+        vec![
+            Effect::new(&self.a, true, [&self.z[..]]).unwrap(),
+            Effect::new(&self.b, true, [&self.z2[..]]).unwrap(),
+        ]
+    }
+}
+
 fn shared_covariate_panel(eps: f64) -> SharedCovariatePanel {
     let n = 20_000usize;
     let a: Vec<u32> = (0..n).map(|i| (i % 200) as u32).collect();
@@ -117,38 +126,41 @@ fn shared_covariate_panel(eps: f64) -> SharedCovariatePanel {
 
 fn assert_fused_solve_matches_reference(eps: f64) {
     use super::Solver;
-    use crate::config::{LsmrOptions, PreconditionerConfig};
+    use crate::config::LsmrOptions;
 
-    let SharedCovariatePanel { a, b, z, z2, y } = shared_covariate_panel(eps);
-    let effects = || {
-        vec![
-            crate::Effect::new(&a, true, [&z[..]]).unwrap(),
-            crate::Effect::new(&b, true, [&z2[..]]).unwrap(),
-        ]
-    };
+    let panel = shared_covariate_panel(eps);
+    let solver = Solver::new(panel.effects(), None, None).unwrap();
+    assert!(
+        !solver.fused.is_empty(),
+        "screen must arm the fused block (eps = {eps:e})"
+    );
     let opts = LsmrOptions {
         tol: 1e-12,
         maxiter: 20_000,
         ..Default::default()
     };
-
-    let solver = Solver::new(effects(), None, None).unwrap();
-    assert!(
-        !solver.fused.is_empty(),
-        "screen must arm the fused block (eps = {eps:e})"
-    );
-    let got = solver.solve(&y, &opts).unwrap();
+    let got = solver.solve(&panel.y, &opts).unwrap();
     assert!(got.converged);
+    assert_demeaned_matches_reference(&panel, &got.demeaned, &format!("eps = {eps:e}"));
+}
 
-    let reference = Solver::new(effects(), None, PreconditionerConfig::Off)
+/// Compares `demeaned` against a `PreconditionerConfig::Off` solve of the same panel.
+fn assert_demeaned_matches_reference(panel: &SharedCovariatePanel, demeaned: &[f64], ctx: &str) {
+    use super::Solver;
+    use crate::config::{LsmrOptions, PreconditionerConfig};
+
+    let opts = LsmrOptions {
+        tol: 1e-12,
+        maxiter: 20_000,
+        ..Default::default()
+    };
+    let reference = Solver::new(panel.effects(), None, PreconditionerConfig::Off)
         .unwrap()
-        .solve(&y, &opts)
+        .solve(&panel.y, &opts)
         .unwrap();
     assert!(reference.converged);
-
-    let scale = y.iter().map(|&v| v * v).sum::<f64>().sqrt();
-    let diff = got
-        .demeaned
+    let scale = panel.y.iter().map(|&v| v * v).sum::<f64>().sqrt();
+    let diff = demeaned
         .iter()
         .zip(&reference.demeaned)
         .map(|(&p, &q)| (p - q) * (p - q))
@@ -156,7 +168,7 @@ fn assert_fused_solve_matches_reference(eps: f64) {
         .sqrt();
     assert!(
         diff <= 1e-6 * scale,
-        "demeaned mismatch: {diff:e} vs scale {scale:e} (eps = {eps:e})"
+        "demeaned mismatch: {diff:e} vs scale {scale:e} ({ctx})"
     );
 }
 
@@ -231,101 +243,62 @@ fn akm_panel(move_prob: f64) -> AkmPanel {
     }
 }
 
-/// Middle-band stress through the real gate: fill 539M declines exact, the FSAI rung engages.
-#[test]
-#[ignore]
-fn fused_block_middle_band_stress() {
+impl AkmPanel {
+    fn effects(&self) -> Vec<Effect<'_>> {
+        vec![
+            Effect::new(&self.worker, true, [&self.z1[..]]).unwrap(),
+            Effect::new(&self.firm, true, [&self.fz[..]]).unwrap(),
+            Effect::new(&self.year, true, []).unwrap(),
+        ]
+    }
+}
+
+/// Solves one AKM stress panel through the real gate and pins the rung and iteration health.
+fn assert_akm_stress(move_prob: f64, expect_exact: bool, max_iters: usize, label: &str) {
     use super::Solver;
     use crate::config::LsmrOptions;
 
-    let AkmPanel {
-        worker,
-        firm,
-        year,
-        z1,
-        fz,
-        y,
-    } = akm_panel(0.2);
-    let solver = Solver::new(
-        vec![
-            Effect::new(&worker, true, [&z1[..]]).unwrap(),
-            Effect::new(&firm, true, [&fz[..]]).unwrap(),
-            Effect::new(&year, true, []).unwrap(),
-        ],
-        None,
-        None,
-    )
-    .unwrap();
+    let panel = akm_panel(move_prob);
+    let solver = Solver::new(panel.effects(), None, None).unwrap();
     assert!(!solver.fused.is_empty(), "screen must arm the ladder");
     assert!(
-        solver.fused.iter().all(|b| !b.is_exact_for_test()),
-        "fill gate must route to FSAI"
+        solver
+            .fused
+            .iter()
+            .all(|b| b.is_exact_for_test() == expect_exact),
+        "fill gate must arm the {} rung",
+        if expect_exact { "exact" } else { "FSAI" }
     );
     let opts = LsmrOptions {
         tol: 1e-10,
         maxiter: 3000,
         ..Default::default()
     };
-    let r = solver.solve(&y, &opts).unwrap();
+    let r = solver.solve(&panel.y, &opts).unwrap();
     eprintln!(
-        "fsai middle-band stress: it={} conv={} setup={:.2}s solve={:.2}s",
+        "{label}: it={} conv={} setup={:.2}s solve={:.2}s",
         r.iterations, r.converged, r.time_setup, r.time_solve
     );
     assert!(r.converged);
     assert!(
-        r.iterations < 200,
+        r.iterations < max_iters,
         "expected healthy iteration count, got {}",
         r.iterations
     );
+}
+
+/// Middle-band stress through the real gate: fill 539M declines exact, the FSAI rung engages.
+#[test]
+#[ignore]
+fn fused_block_middle_band_stress() {
+    assert_akm_stress(0.2, false, 200, "fsai middle-band stress");
 }
 
 /// Low-mobility AKM stress: unfused this exhausts 3000 iterations; fused must stay healthy.
 #[test]
 #[ignore]
 fn fused_block_low_mobility_stress() {
-    use super::Solver;
-    use crate::config::LsmrOptions;
-
-    let AkmPanel {
-        worker,
-        firm,
-        year,
-        z1,
-        fz,
-        y,
-    } = akm_panel(0.05);
-
-    let solver = Solver::new(
-        vec![
-            Effect::new(&worker, true, [&z1[..]]).unwrap(),
-            Effect::new(&firm, true, [&fz[..]]).unwrap(),
-            Effect::new(&year, true, []).unwrap(),
-        ],
-        None,
-        None,
-    )
-    .unwrap();
-    assert!(!solver.fused.is_empty(), "screen must arm the fused block");
-    assert!(
-        solver.fused.iter().all(|b| b.is_exact_for_test()),
-        "fill gate must arm the exact rung"
-    );
-    let opts = LsmrOptions {
-        tol: 1e-10,
-        maxiter: 3000,
-        ..Default::default()
-    };
-    let r = solver.solve(&y, &opts).unwrap();
-    eprintln!(
-        "fused low-mobility stress: it={} conv={} setup={:.2}s solve={:.2}s",
-        r.iterations, r.converged, r.time_setup, r.time_solve
-    );
-    assert!(r.converged);
-    assert!(
-        r.iterations < 100,
-        "expected healthy iteration count, got {}",
-        r.iterations
-    );
+    assert_akm_stress(0.05, true, 100, "fused low-mobility stress");
 }
 
 #[test]
@@ -333,22 +306,14 @@ fn fused_block_restores_healthy_iteration_counts() {
     use super::Solver;
     use crate::config::LsmrOptions;
 
-    let SharedCovariatePanel { a, b, z, z2, y } = shared_covariate_panel(1e-4);
-    let solver = Solver::new(
-        vec![
-            crate::Effect::new(&a, true, [&z[..]]).unwrap(),
-            crate::Effect::new(&b, true, [&z2[..]]).unwrap(),
-        ],
-        None,
-        None,
-    )
-    .unwrap();
+    let panel = shared_covariate_panel(1e-4);
+    let solver = Solver::new(panel.effects(), None, None).unwrap();
     let opts = LsmrOptions {
         tol: 1e-10,
         maxiter: 3000,
         ..Default::default()
     };
-    let r = solver.solve(&y, &opts).unwrap();
+    let r = solver.solve(&panel.y, &opts).unwrap();
     assert!(r.converged);
     // Without the fused block this design sits orders of magnitude higher.
     assert!(
@@ -365,72 +330,36 @@ fn probe_run<M: schwarz_precond::Operator>(
     m: &M,
     tol: f64,
     maxiter: usize,
-) -> (schwarz_precond::LsmrResult, f64) {
+) -> schwarz_precond::LsmrResult {
     use schwarz_precond::{mlsmr, MlsmrOptions};
 
     let y_int = solver.design.permute_obs_in(y);
     let rect_op =
         crate::operator::DesignOperator::new(&solver.design, solver.sqrt_weights.as_deref());
     let b = rect_op.weighted_rhs(&y_int);
-    let t = std::time::Instant::now();
-    let r = mlsmr(&rect_op, &b, m, tol, maxiter, MlsmrOptions::default()).unwrap();
-    (r, t.elapsed().as_secs_f64())
-}
-
-fn demeaned_from(solver: &super::Solver<'_>, x: &[f64], y: &[f64]) -> Vec<f64> {
-    let y_int = solver.design.permute_obs_in(y);
-    let mut d = vec![0.0; solver.design.n_obs];
-    crate::operator::design::gather_apply(&solver.design, x, &mut d, None);
-    for (di, &yi) in d.iter_mut().zip(y_int.iter()) {
-        *di = yi - *di;
-    }
-    solver.design.permute_obs_out(d)
+    mlsmr(&rect_op, &b, m, tol, maxiter, MlsmrOptions::default()).unwrap()
 }
 
 /// Forces the FSAI rung with a zero fill budget on a panel whose real gate arms the exact rung.
 fn assert_fsai_fallback_matches_reference(panel: SharedCovariatePanel) {
     use super::Solver;
-    use crate::config::{LsmrOptions, PreconditionerConfig};
     use crate::operator::fused::{FusedBlockSolve, FusedPreconditioner};
 
-    let SharedCovariatePanel { a, b, z, z2, y } = panel;
-    let effects = || {
-        vec![
-            crate::Effect::new(&a, true, [&z[..]]).unwrap(),
-            crate::Effect::new(&b, true, [&z2[..]]).unwrap(),
-        ]
-    };
-    let solver = Solver::new(effects(), None, None).unwrap();
+    let solver = Solver::new(panel.effects(), None, None).unwrap();
     let blocks = vec![FusedBlockSolve::build_for_test(&solver.design, &[0, 1], 0)];
     assert!(!blocks[0].is_exact_for_test());
     let op = FusedPreconditioner::new(solver.preconditioner.as_ref().unwrap(), &blocks);
-    let (r, _) = probe_run(&solver, &y, &op, 1e-12, 20_000);
+    let r = probe_run(&solver, &panel.y, &op, 1e-12, 20_000);
     assert!(r.converged);
 
-    let reference = Solver::new(effects(), None, PreconditionerConfig::Off)
-        .unwrap()
-        .solve(
-            &y,
-            &LsmrOptions {
-                tol: 1e-12,
-                maxiter: 20_000,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    assert!(reference.converged);
-    let demeaned = demeaned_from(&solver, &r.x, &y);
-    let scale = y.iter().map(|&v| v * v).sum::<f64>().sqrt();
-    let diff = demeaned
-        .iter()
-        .zip(&reference.demeaned)
-        .map(|(&p, &q)| (p - q) * (p - q))
-        .sum::<f64>()
-        .sqrt();
-    assert!(
-        diff <= 1e-6 * scale,
-        "demeaned mismatch: {diff:e} vs scale {scale:e}"
-    );
+    let y_int = solver.design.permute_obs_in(&panel.y);
+    let mut d = vec![0.0; solver.design.n_obs];
+    crate::operator::design::gather_apply(&solver.design, &r.x, &mut d, None);
+    for (di, &yi) in d.iter_mut().zip(y_int.iter()) {
+        *di = yi - *di;
+    }
+    let demeaned = solver.design.permute_obs_out(d);
+    assert_demeaned_matches_reference(&panel, &demeaned, "fsai fallback");
 }
 
 #[test]
@@ -464,19 +393,11 @@ fn fsai_fallback_restores_healthy_iteration_counts() {
     use super::Solver;
     use crate::operator::fused::{FusedBlockSolve, FusedPreconditioner};
 
-    let SharedCovariatePanel { a, b, z, z2, y } = shared_covariate_panel(1e-4);
-    let solver = Solver::new(
-        vec![
-            crate::Effect::new(&a, true, [&z[..]]).unwrap(),
-            crate::Effect::new(&b, true, [&z2[..]]).unwrap(),
-        ],
-        None,
-        None,
-    )
-    .unwrap();
+    let panel = shared_covariate_panel(1e-4);
+    let solver = Solver::new(panel.effects(), None, None).unwrap();
     let blocks = vec![FusedBlockSolve::build_for_test(&solver.design, &[0, 1], 0)];
     let op = FusedPreconditioner::new(solver.preconditioner.as_ref().unwrap(), &blocks);
-    let (r, _) = probe_run(&solver, &y, &op, 1e-10, 3000);
+    let r = probe_run(&solver, &panel.y, &op, 1e-10, 3000);
     assert!(r.converged);
     assert!(
         r.iterations < 100,
