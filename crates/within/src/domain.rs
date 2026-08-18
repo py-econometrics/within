@@ -1,5 +1,6 @@
 //! Domain layer: [`Design`] (design-matrix metadata) and factor-pair [`Subdomain`] construction.
 
+pub(crate) mod collinearity;
 pub(crate) mod cross_tab;
 mod effect;
 pub(crate) mod factor_pairs;
