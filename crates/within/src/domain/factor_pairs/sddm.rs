@@ -394,9 +394,10 @@ enum BipartiteSide {
 }
 
 struct NormalizedCrossOperator<'a> {
-    cross_tab: &'a CrossTab,
-    row_inv_sqrt: &'a [f64],
-    col_inv_sqrt: &'a [f64],
+    small_to_large: &'a CsrBlock,
+    large_to_small: &'a CsrBlock,
+    small_inv_sqrt: &'a [f64],
+    large_inv_sqrt: &'a [f64],
     small_side: BipartiteSide,
 }
 
@@ -409,66 +410,59 @@ enum CandidateKind {
 impl<'a> NormalizedCrossOperator<'a> {
     fn new(cross_tab: &'a CrossTab, inv_sqrt: &'a [f64]) -> Self {
         let (row_inv_sqrt, col_inv_sqrt) = inv_sqrt.split_at(cross_tab.n_rows());
-        let small_side = if cross_tab.n_rows() <= cross_tab.n_cols() {
-            BipartiteSide::Rows
-        } else {
-            BipartiteSide::Columns
-        };
+        let (small_to_large, large_to_small, small_inv_sqrt, large_inv_sqrt, small_side) =
+            if cross_tab.n_rows() <= cross_tab.n_cols() {
+                (
+                    &cross_tab.ct,
+                    &cross_tab.c,
+                    row_inv_sqrt,
+                    col_inv_sqrt,
+                    BipartiteSide::Rows,
+                )
+            } else {
+                (
+                    &cross_tab.c,
+                    &cross_tab.ct,
+                    col_inv_sqrt,
+                    row_inv_sqrt,
+                    BipartiteSide::Columns,
+                )
+            };
         Self {
-            cross_tab,
-            row_inv_sqrt,
-            col_inv_sqrt,
+            small_to_large,
+            large_to_small,
+            small_inv_sqrt,
+            large_inv_sqrt,
             small_side,
         }
     }
 
     fn small_len(&self) -> usize {
-        match self.small_side {
-            BipartiteSide::Rows => self.cross_tab.n_rows(),
-            BipartiteSide::Columns => self.cross_tab.n_cols(),
-        }
+        self.small_inv_sqrt.len()
     }
 
     fn large_len(&self) -> usize {
-        self.cross_tab.n_local() - self.small_len()
+        self.large_inv_sqrt.len()
     }
 
     fn apply_large(&self, input: &[f64], output: &mut [f64]) {
-        match self.small_side {
-            BipartiteSide::Rows => multiply_normalized(
-                &self.cross_tab.ct,
-                self.col_inv_sqrt,
-                self.row_inv_sqrt,
-                input,
-                output,
-            ),
-            BipartiteSide::Columns => multiply_normalized(
-                &self.cross_tab.c,
-                self.row_inv_sqrt,
-                self.col_inv_sqrt,
-                input,
-                output,
-            ),
-        }
+        multiply_normalized(
+            self.small_to_large,
+            self.large_inv_sqrt,
+            self.small_inv_sqrt,
+            input,
+            output,
+        );
     }
 
     fn apply_small(&self, input: &[f64], output: &mut [f64]) {
-        match self.small_side {
-            BipartiteSide::Rows => multiply_normalized(
-                &self.cross_tab.c,
-                self.row_inv_sqrt,
-                self.col_inv_sqrt,
-                input,
-                output,
-            ),
-            BipartiteSide::Columns => multiply_normalized(
-                &self.cross_tab.ct,
-                self.col_inv_sqrt,
-                self.row_inv_sqrt,
-                input,
-                output,
-            ),
-        }
+        multiply_normalized(
+            self.large_to_small,
+            self.small_inv_sqrt,
+            self.large_inv_sqrt,
+            input,
+            output,
+        );
     }
 
     fn apply_reduced(&self, input: &[f64], large_work: &mut [f64], output: &mut [f64]) {
@@ -578,29 +572,11 @@ struct ScalingResult {
     iterations: usize,
 }
 
-enum ScalingAttempt {
-    Certified(ScalingResult),
-    NegativeCurvature(ScalingResult),
-    Breakdown(ScalingResult),
-    BudgetExhausted(ScalingResult),
-}
-
-impl ScalingAttempt {
-    fn into_result(self) -> ScalingResult {
-        match self {
-            Self::Certified(result)
-            | Self::NegativeCurvature(result)
-            | Self::Breakdown(result)
-            | Self::BudgetExhausted(result) => result,
-        }
-    }
-}
-
 #[derive(Clone, Copy)]
 enum ReducedCgStep {
     Advanced,
     ResidualExhausted,
-    NonPositiveCurvature { curvature: f64, slack: f64 },
+    NonPositiveCurvature,
 }
 
 struct ReducedCg {
@@ -640,7 +616,7 @@ impl ReducedCg {
         }
         let slack = 64.0 * f64::EPSILON * direction_norm_squared;
         if curvature <= slack {
-            return Ok(ReducedCgStep::NonPositiveCurvature { curvature, slack });
+            return Ok(ReducedCgStep::NonPositiveCurvature);
         }
 
         let alpha = self.residual_norm_squared / curvature;
@@ -677,7 +653,7 @@ fn reduced_cg_scaling(
     operator: &NormalizedCrossOperator<'_>,
     initial: ScalingCandidate,
     scaling: &ScalingConfig,
-) -> Result<ScalingAttempt, NotScalable> {
+) -> Result<ScalingResult, NotScalable> {
     let mut large_work = vec![0.0; operator.large_len()];
     let rhs = operator.reduced_rhs(&mut large_work);
     let mut cg = ReducedCg::new(rhs)?;
@@ -686,7 +662,7 @@ fn reduced_cg_scaling(
 
     for iteration in 1..=scaling.max_sweeps {
         let step = cg.step(operator, &mut large_work)?;
-        if let ReducedCgStep::NonPositiveCurvature { curvature, slack } = step {
+        if matches!(step, ReducedCgStep::NonPositiveCurvature) {
             // A singular boundary exposes its Perron vector as the zero-curvature direction.
             let boundary_small: Vec<f64> = cg.direction.iter().map(|value| value.abs()).collect();
             if let Some(violation) = operator.candidate_violation(
@@ -696,24 +672,19 @@ fn reduced_cg_scaling(
                 &mut small_image,
             ) {
                 if violation <= scaling.tolerance {
-                    return Ok(ScalingAttempt::Certified(ScalingResult {
+                    return Ok(ScalingResult {
                         candidate: operator.materialize_candidate(
                             &boundary_small,
                             &large_work,
                             violation,
                         )?,
                         iterations: iteration,
-                    }));
+                    });
                 }
             }
-            let result = ScalingResult {
+            return Ok(ScalingResult {
                 candidate: best,
                 iterations: iteration,
-            };
-            return Ok(if curvature < -slack {
-                ScalingAttempt::NegativeCurvature(result)
-            } else {
-                ScalingAttempt::Breakdown(result)
             });
         }
 
@@ -727,24 +698,24 @@ fn reduced_cg_scaling(
                 best = operator.materialize_candidate(&cg.solution, &large_work, violation)?;
             }
             if violation <= scaling.tolerance {
-                return Ok(ScalingAttempt::Certified(ScalingResult {
+                return Ok(ScalingResult {
                     candidate: best,
                     iterations: iteration,
-                }));
+                });
             }
         }
 
         if matches!(step, ReducedCgStep::ResidualExhausted) {
-            return Ok(ScalingAttempt::Breakdown(ScalingResult {
+            return Ok(ScalingResult {
                 candidate: best,
                 iterations: iteration,
-            }));
+            });
         }
     }
-    Ok(ScalingAttempt::BudgetExhausted(ScalingResult {
+    Ok(ScalingResult {
         candidate: best,
         iterations: scaling.max_sweeps,
-    }))
+    })
 }
 
 fn dominance_scaling(
@@ -789,7 +760,7 @@ fn dominance_scaling(
         mu: initial_mu,
     };
     let operator = NormalizedCrossOperator::new(cross_tab, &inv_sqrt);
-    let result = reduced_cg_scaling(&operator, initial, scaling)?.into_result();
+    let result = reduced_cg_scaling(&operator, initial, scaling)?;
     let scales: Vec<f64> = result
         .candidate
         .mu

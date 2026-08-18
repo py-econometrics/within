@@ -136,17 +136,13 @@ fn accelerating_convergence_case_certifies_without_extrapolation() {
 }
 
 #[test]
-fn indefinite_comparison_matrix_reports_negative_curvature() {
+fn indefinite_comparison_matrix_remains_uncertified() {
     let cross_tab = CrossTab::from_dense_for_test(&[1.0, -1.0, 2.0, -2.0], 2, 2);
     let diagonal: [f64; 4] = [1.0, 2.0, 1.0, 2.0];
-    let inv_sqrt: Vec<f64> = diagonal.iter().map(|value| 1.0 / (*value).sqrt()).collect();
-    let operator = NormalizedCrossOperator::new(&cross_tab, &inv_sqrt);
-    let initial = ScalingCandidate {
-        mu: vec![1.0; diagonal.len()],
-        violation: f64::INFINITY,
-    };
-    let attempt = reduced_cg_scaling(&operator, initial, &ScalingConfig::default()).unwrap();
-    assert!(matches!(attempt, ScalingAttempt::NegativeCurvature(_)));
+    let scaling = ScalingConfig::default();
+    let result = dominance_scaling(&cross_tab, &diagonal, &scaling).unwrap();
+    assert!(result.violation > scaling.tolerance);
+    assert!(result.sweeps < scaling.max_sweeps);
 }
 
 fn assert_sddm(component: &LocalComponent) {
