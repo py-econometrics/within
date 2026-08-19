@@ -10,7 +10,6 @@ varying-slopes conditioning is known to bite.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Callable
 
 import numpy as np
@@ -20,6 +19,7 @@ from within import Effect, solve
 
 from .._framework import (
     BenchmarkResult,
+    SlopeCase,
     SolverConfig,
     SuiteOptions,
     benchmark_lsmr,
@@ -38,18 +38,7 @@ from .._problems import (
 from .._table import print_pivot, print_table
 
 
-@dataclass(frozen=True)
-class _SlopeCase:
-    """A varying-slopes benchmark problem: the ``Effect`` design to solve, the
-    response, and the bare factor codes the group-mean demean check needs."""
-
-    effects: list[Effect]
-    y: NDArray[np.float64]
-    categories: list[NDArray[np.uint32]]
-    n_levels: list[int]
-
-
-def _fixest_slopes(n_obs: int, dgp_type: str, n_slopes: int, seed: int) -> _SlopeCase:
+def _fixest_slopes(n_obs: int, dgp_type: str, n_slopes: int, seed: int) -> SlopeCase:
     """Worker×year×firm panel; the worker factor carries ``n_slopes`` slopes.
 
     ``dgp_type`` is ``"simple"`` (i.i.d. firms, well-connected) or
@@ -70,10 +59,10 @@ def _fixest_slopes(n_obs: int, dgp_type: str, n_slopes: int, seed: int) -> _Slop
         Effect(codes[1], True, None),
         Effect(codes[2], True, None),
     ]
-    return _SlopeCase(effects, y, codes, n_levels)
+    return SlopeCase(effects, y, codes, n_levels)
 
 
-def _akm_slopes(n_obs: int, slope_vars: str, seed: int) -> _SlopeCase:
+def _akm_slopes(n_obs: int, slope_vars: str, seed: int) -> SlopeCase:
     """AKM mobility panel (Zipf firms, clustered low mobility, largest component)
     with structured slopes derived from the mobility process:
 
@@ -146,10 +135,10 @@ def _akm_slopes(n_obs: int, slope_vars: str, seed: int) -> _SlopeCase:
         Effect(codes[1], True, [ten_obs] if with_ten else None),
         Effect(codes[2], True, None),
     ]
-    return _SlopeCase(effects, y, codes, n_levels)
+    return SlopeCase(effects, y, codes, n_levels)
 
 
-_CASES: list[tuple[str, Callable[[int, int], _SlopeCase]]] = [
+_CASES: list[tuple[str, Callable[[int, int], SlopeCase]]] = [
     ("fixest_simple_v1", lambda n, s: _fixest_slopes(n, "simple", 1, s)),
     ("fixest_simple_v3", lambda n, s: _fixest_slopes(n, "simple", 3, s)),
     ("fixest_difficult_v1", lambda n, s: _fixest_slopes(n, "difficult", 1, s)),
