@@ -21,7 +21,7 @@ from typing import Any, Callable, Literal, TypeVar
 import numpy as np
 from numpy.typing import NDArray
 
-from within import LsmrOptions, solve
+from within import Effect, LsmrOptions, solve
 from within._within import (
     AdditiveSchwarz,
     ApproxCholConfig,
@@ -75,6 +75,17 @@ class BenchmarkResult:
     demeaning_error: float = 0.0
     converged: bool = False
     passed: bool | None = None  # For correctness suites
+
+
+@dataclass(frozen=True)
+class SlopeCase:
+    """A varying-slopes benchmark problem: the ``Effect`` design to solve, the response,
+    and the bare factor codes the group-mean demean check needs."""
+
+    effects: list[Effect]
+    y: NDArray[np.float64]
+    categories: list[NDArray[np.uint32]]
+    n_levels: list[int]
 
 
 def max_abs_group_mean(

@@ -7,6 +7,7 @@ Register new generators with ``@register_generator("key")``.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Callable
 
 import numpy as np
@@ -537,6 +538,114 @@ def simulate_mobility(
         assignments[:, t] = new_firms
 
     return assignments
+
+
+@dataclass(frozen=True)
+class AssortativeMobility:
+    """AKM assignment process: Pareto firm sizes rank-coupled to firm effects, assortative
+    worker-firm matching at strength ``sorting``, and job transitions at rate ``mobility``.
+
+    Adapted from bipartitepandas by Thibaut Lamadon, under the MIT License.
+    """
+
+    n_workers: int = 100_000
+    n_firms: int = 50_000
+    n_years: int = 10
+    n_industries: int = 5
+    var_alpha: float = 1.0
+    var_psi: float = 0.5
+    size_tail: float = 1.0
+    size_correlation: float = 0.6
+    sorting: float = 1.0
+    mobility: float = 0.1
+    own_industry_share: float = 0.8
+    # The match table is n_industries x n_match_bins x n_firms floats; 2048 bins is 2 GB.
+    n_match_bins: int = 64
+
+    def simulate(self, rng: np.random.Generator) -> NDArray[np.intp]:
+        """Firm id per worker-year, shape ``(n_workers, n_years)``."""
+        draws = np.clip(rng.random(self.n_firms), 1e-12, 1 - 1e-12)
+        sizes = np.exp(-np.log(draws) / self.size_tail)
+        psi = rng.normal(scale=np.sqrt(self.var_psi), size=self.n_firms)
+
+        rank = rng.standard_normal(self.n_firms)
+        size_rank = self.size_correlation * rank + np.sqrt(
+            max(0.0, 1 - self.size_correlation**2)
+        ) * rng.standard_normal(self.n_firms)
+        psi[np.argsort(rank)] = np.sort(psi)
+        firm_weights = np.empty(self.n_firms)
+        firm_weights[np.argsort(size_rank)] = np.sort(sizes)
+        firm_weights /= firm_weights.sum()
+
+        firm_industries = rng.permutation(np.arange(self.n_firms) % self.n_industries)
+        industry_weights = np.full(
+            (self.n_industries, self.n_firms),
+            (1 - self.own_industry_share) / (self.n_industries - 1),
+        )
+        for industry in range(self.n_industries):
+            industry_weights[industry, firm_industries == industry] = (
+                self.own_industry_share
+            )
+
+        alpha = rng.normal(scale=np.sqrt(self.var_alpha), size=self.n_workers)
+        n_bins = min(self.n_match_bins, self.n_workers)
+        match_bin = np.empty(self.n_workers, dtype=np.intp)
+        match_bin[np.argsort(alpha, kind="mergesort")] = (
+            np.arange(self.n_workers) * n_bins // self.n_workers
+        )
+        centers = np.array([alpha[match_bin == b].mean() for b in range(n_bins)])
+
+        tau2 = max(self.var_alpha + self.var_psi, 1e-12)
+        log_sizes = np.log(firm_weights)
+        cdfs = np.empty((self.n_industries, n_bins, self.n_firms), dtype=np.float32)
+        for industry in range(self.n_industries):
+            log_weights = log_sizes + np.log(industry_weights[industry])
+            for b, center in enumerate(centers):
+                log_scores = (
+                    -0.5 * self.sorting * (center - psi) ** 2 / tau2 + log_weights
+                )
+                # Strong sorting underflows every score, so shift before exponentiating.
+                scores = np.exp(log_scores - log_scores.max())
+                cdf = np.cumsum(scores / scores.sum(), dtype=np.float64)
+                cdf[-1] = 1.0
+                cdfs[industry, b] = cdf
+
+        worker_industries = rng.integers(0, self.n_industries, size=self.n_workers)
+        groups = {
+            (industry, b): np.flatnonzero(
+                (worker_industries == industry) & (match_bin == b)
+            )
+            for industry in range(self.n_industries)
+            for b in range(n_bins)
+        }
+
+        paths = np.empty((self.n_workers, self.n_years), dtype=np.intp)
+        for (industry, b), workers in groups.items():
+            paths[workers, 0] = np.searchsorted(
+                cdfs[industry, b], rng.random(len(workers)), side="right"
+            )
+        moves = rng.random((self.n_workers, self.n_years - 1)) < self.mobility
+        for year in range(1, self.n_years):
+            paths[:, year] = paths[:, year - 1]
+            for (industry, b), workers in groups.items():
+                movers = workers[moves[workers, year - 1]]
+                if not movers.size:
+                    continue
+                cdf = cdfs[industry, b]
+                current = paths[movers, year - 1]
+                drawn = np.searchsorted(cdf, rng.random(len(movers)), side="right")
+                for _ in range(8):
+                    stayed = drawn == current
+                    if not stayed.any():
+                        break
+                    drawn[stayed] = np.searchsorted(
+                        cdf, rng.random(int(stayed.sum())), side="right"
+                    )
+                # A transition must change firm; after eight rejections take the neighbour.
+                stayed = drawn == current
+                drawn[stayed] = (current[stayed] + 1) % self.n_firms
+                paths[movers, year] = drawn
+        return paths
 
 
 def find_largest_component(
