@@ -1,12 +1,13 @@
-"""AKM sorting/mobility ladder crossed with how two factors share a slope covariate.
+"""AKM sorting/mobility ladder crossed with how two factors' slope covariates relate.
 
 The worker-firm mover graph is swept along the two axes the AKM literature parameterizes —
 assortative sorting strength at full mobility, and the per-year move rate — and each panel is
-solved under four slope specifications: none, independent covariates, one covariate shared by
-both large factors, and that same covariate perturbed by 1e-3 on one side. A shared covariate
-puts a null direction across both terms' intercept and slope channels, so no factor-pair
-subdomain contains it; perturbing it trades that exact kernel for a tiny singular value, which
-is the harder regime.
+solved under five slope specifications: none, independent covariates, one covariate shared by
+both large factors, that covariate perturbed on one side, and the experience/tenure pair.
+Sharing a covariate puts a null direction across both terms' intercept and slope channels, so
+no factor-pair subdomain contains it. The last two arms sit just off that exact kernel by
+different routes: an injected epsilon fixes the offset directly, while experience minus tenure
+is constant within a job spell and differs only on movers, so mobility sets the offset.
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ from .._problems import AssortativeMobility, _make_response, _reindex
 from .._table import print_pivot, print_table
 
 SlopeColumns = Callable[
-    [NDArray[np.float64], np.random.Generator],
+    ["_MoverPanel", np.random.Generator],
     tuple[list[NDArray[np.float64]] | None, list[NDArray[np.float64]] | None],
 ]
 
@@ -43,30 +44,34 @@ CONDITIONING_TOL = 1e-12
 
 @dataclass(frozen=True)
 class _MoverPanel:
-    """One connected worker/firm/year panel, plus the year column used as a slope."""
+    """One worker/firm/year panel and the covariates the slope specifications draw on:
+    calendar year, experience (entry cohort + year), and tenure (years since the last move)."""
 
     codes: list[NDArray[np.uint32]]
     n_levels: list[int]
     year: NDArray[np.float64]
+    experience: NDArray[np.float64]
+    tenure: NDArray[np.float64]
 
 
 _SPECS: list[tuple[str, SlopeColumns]] = [
-    ("intercepts", lambda year, rng: (None, None)),
+    ("intercepts", lambda panel, rng: (None, None)),
     (
         "independent",
-        lambda year, rng: (
-            [rng.standard_normal(len(year))],
-            [rng.standard_normal(len(year))],
+        lambda panel, rng: (
+            [rng.standard_normal(len(panel.year))],
+            [rng.standard_normal(len(panel.year))],
         ),
     ),
-    ("shared_year", lambda year, rng: ([year], [year])),
+    ("shared_year", lambda panel, rng: ([panel.year], [panel.year])),
     (
         "near_shared_year",
-        lambda year, rng: (
-            [year],
-            [year + NEAR_SHARED_EPS * rng.standard_normal(len(year))],
+        lambda panel, rng: (
+            [panel.year],
+            [panel.year + NEAR_SHARED_EPS * rng.standard_normal(len(panel.year))],
         ),
     ),
+    ("experience_tenure", lambda panel, rng: ([panel.experience], [panel.tenure])),
 ]
 
 _LADDER: dict[str, AssortativeMobility] = {
@@ -81,7 +86,14 @@ def _mover_panel(n_obs: int, design: AssortativeMobility, seed: int) -> _MoverPa
     """Simulate *design* at roughly *n_obs* rows, keeping every component as the paper does."""
     n_workers = max(1, n_obs // design.n_years)
     sized = replace(design, n_workers=n_workers, n_firms=max(2, n_workers // 2))
-    assignments = sized.simulate(np.random.default_rng(seed))
+    rng = np.random.default_rng(seed)
+    assignments = sized.simulate(rng)
+
+    tenure = np.zeros((n_workers, sized.n_years))
+    for year in range(1, sized.n_years):
+        stayed = assignments[:, year] == assignments[:, year - 1]
+        tenure[:, year] = (tenure[:, year - 1] + 1.0) * stayed
+    entry_cohort = rng.integers(0, 30, size=n_workers)
 
     worker_ids = np.repeat(np.arange(n_workers, dtype=np.intp), sized.n_years)
     year_ids = np.tile(np.arange(sized.n_years, dtype=np.intp), n_workers)
@@ -89,10 +101,13 @@ def _mover_panel(n_obs: int, design: AssortativeMobility, seed: int) -> _MoverPa
         _reindex(ids).astype(np.uint32)
         for ids in (worker_ids, assignments.ravel(), year_ids)
     ]
+    year = year_ids.astype(np.float64)
     return _MoverPanel(
         codes,
         [int(c.max()) + 1 for c in codes],
-        year_ids.astype(np.float64),
+        year,
+        entry_cohort[worker_ids] + year,
+        tenure.ravel(),
     )
 
 
@@ -100,7 +115,7 @@ def _slope_case(panel: _MoverPanel, columns: SlopeColumns, seed: int) -> SlopeCa
     """Apply one slope specification to *panel*, generating a matching response."""
     rng = np.random.default_rng(seed)
     y = _make_response(panel.codes, panel.n_levels, rng)
-    worker_slopes, firm_slopes = columns(panel.year, rng)
+    worker_slopes, firm_slopes = columns(panel, rng)
     for factor, slopes in ((0, worker_slopes), (1, firm_slopes)):
         for z in slopes or ():
             gamma = 0.5 * rng.standard_normal(panel.n_levels[factor])
