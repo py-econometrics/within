@@ -223,12 +223,22 @@ pub(super) struct BidiagStep {
     pub(super) beta: f64,
 }
 
+/// True residual norms of a candidate solution, recomputed outside the recurrences.
+pub(super) struct Certificate {
+    /// `‖rhs − A x‖`.
+    pub(super) normr: f64,
+    /// `‖Âᵀ(rhs − A x)‖` in the stream's metric (`√(zᵀM⁻¹z)` when preconditioned).
+    pub(super) normar: f64,
+}
+
 /// Stream feeding LSMR `(α, β)` pairs and the matching normalized `v_k`.
 pub(super) trait Bidiagonalization {
     /// Advance one step. After the call, `v()` is the normalized `v_{k+1}`.
     fn step(&mut self) -> Result<BidiagStep, SolveError>;
     /// Most recent normalized basis vector.
     fn v(&self) -> &[f64];
+    /// Recompute the true residual pair for `x`; clobbers the stream's buffers.
+    fn certify(&mut self, x: &[f64], rhs: &[f64]) -> Result<Certificate, SolveError>;
 }
 
 impl<A: Operator + ?Sized> Bidiagonalization for GolubKahan<'_, A> {
@@ -270,6 +280,20 @@ impl<A: Operator + ?Sized> Bidiagonalization for GolubKahan<'_, A> {
     fn v(&self) -> &[f64] {
         &self.bufs.v
     }
+
+    fn certify(&mut self, x: &[f64], rhs: &[f64]) -> Result<Certificate, SolveError> {
+        self.operator.apply(x, &mut self.bufs.av)?;
+        for (ri, &bi) in self.bufs.av.iter_mut().zip(rhs) {
+            *ri = bi - *ri;
+        }
+        let normr = super::vec_norm(&self.bufs.av);
+        self.operator
+            .apply_adjoint(&self.bufs.av, &mut self.bufs.atu)?;
+        Ok(Certificate {
+            normr,
+            normar: super::vec_norm(&self.bufs.atu),
+        })
+    }
 }
 
 impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
@@ -305,6 +329,22 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
 
     fn v(&self) -> &[f64] {
         &self.bufs.v
+    }
+
+    fn certify(&mut self, x: &[f64], rhs: &[f64]) -> Result<Certificate, SolveError> {
+        self.operator.apply(x, &mut self.bufs.av)?;
+        for (ri, &bi) in self.bufs.av.iter_mut().zip(rhs) {
+            *ri = bi - *ri;
+        }
+        let normr = super::vec_norm(&self.bufs.av);
+        self.operator
+            .apply_adjoint(&self.bufs.av, &mut self.bufs.atu)?;
+        self.preconditioner
+            .apply(&self.bufs.atu, &mut self.bufs.v)?;
+        Ok(Certificate {
+            normr,
+            normar: alpha_from_vp(&self.bufs.v, &self.bufs.atu)?,
+        })
     }
 }
 

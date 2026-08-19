@@ -65,6 +65,8 @@ pub enum LsmrStopReason {
     NormalEquationTolerance,
     /// The warm start already solved the system: `b − A x0` was exactly zero.
     WarmStartExact,
+    /// A tolerance stop refuted by the true-residual audit; the recurrence estimates had collapsed.
+    FalseConvergence,
     /// The iteration budget was exhausted before convergence.
     MaxIterations,
     /// The [`EscalationHandler`] requested a handoff to a stronger preconditioner.
@@ -199,7 +201,7 @@ pub fn lsmr<A: Operator + ?Sized>(
     let local_size = local_size.unwrap_or(0);
     let (bidiag, step1) = GolubKahan::init(operator, b, local_size)?;
     let criteria = ConvergenceCriteria::new(b_norm, tol);
-    lsmr_from_bidiag(bidiag, step1, b_norm, criteria, maxiter, None)
+    lsmr_from_bidiag(bidiag, step1, b, b_norm, criteria, maxiter, None)
 }
 
 /// Preconditioned LSMR with `M ≈ AᵀA` and one `M⁻¹` application per iteration.
@@ -281,6 +283,7 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
     let mut result = lsmr_from_bidiag(
         bidiag,
         step1,
+        &rhs,
         rhs_norm,
         criteria,
         maxiter,
@@ -298,6 +301,7 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
 fn lsmr_from_bidiag<B: Bidiagonalization>(
     mut bidiag: B,
     step1: BidiagStep,
+    rhs: &[f64],
     rhs_norm: f64,
     criteria: ConvergenceCriteria,
     maxiter: usize,
@@ -332,13 +336,26 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
             Stop::ResidualTolerance => Some(LsmrStopReason::ResidualTolerance),
             Stop::NormalEquationTolerance => Some(LsmrStopReason::NormalEquationTolerance),
         } {
+            let x = solution.into_x();
+            let cert = bidiag.certify(&x, rhs)?;
+            if convergence.certified(&cert, recurrence.zeta0) {
+                return Ok(LsmrResult {
+                    x,
+                    converged: true,
+                    iterations: itn,
+                    residual_norm: recurrence.residual_estimate(),
+                    normal_eq_residual: recurrence.relative_normal_eq_residual(),
+                    stop_reason,
+                });
+            }
+            // Report the audited truth, not the collapsed estimates the stop was based on.
             return Ok(LsmrResult {
-                x: solution.into_x(),
-                converged: true,
+                x,
+                converged: false,
                 iterations: itn,
-                residual_norm: recurrence.residual_estimate(),
-                normal_eq_residual: recurrence.relative_normal_eq_residual(),
-                stop_reason,
+                residual_norm: cert.normr,
+                normal_eq_residual: cert.normar / recurrence.zeta0,
+                stop_reason: LsmrStopReason::FalseConvergence,
             });
         }
         if let Some(rule) = escalation.as_deref_mut() {

@@ -5,7 +5,7 @@
 //! that yield Algorithm 2.8 of Fong & Saunders, advances the `(x, h, h̄)`
 //! solution recurrence, and tracks the dual stopping criterion.
 
-use super::bidiag::{BidiagStep, LSMR_PAR_THRESHOLD, LSMR_UPDATE_CHUNK};
+use super::bidiag::{BidiagStep, Certificate, LSMR_PAR_THRESHOLD, LSMR_UPDATE_CHUNK};
 use rayon::iter::{IndexedParallelIterator, ParallelIterator};
 use rayon::prelude::{ParallelSlice, ParallelSliceMut};
 
@@ -61,7 +61,8 @@ pub(super) struct LsmrRecurrenceState {
     c_bar: f64,
     s_bar: f64,
     zeta_bar: f64,
-    zeta0: f64,
+    /// `|ζ̄₀| = ‖Âᵀb‖`, clamped positive; the reference for relative NE residuals.
+    pub(super) zeta0: f64,
 }
 
 impl LsmrRecurrenceState {
@@ -253,4 +254,21 @@ impl ConvergenceState {
         }
         Stop::Continue
     }
+
+    /// True-residual audit of a tolerance stop (cf. van der Vorst & Ye, SISC 22(3), 2000).
+    pub(super) fn certified(&self, cert: &Certificate, zeta0: f64) -> bool {
+        if cert.normr <= CERTIFICATION_SLACK * self.criteria.abs_tol {
+            return true;
+        }
+        // `normr → 0` degenerates the ratio test; the drop of `‖Âᵀr‖` vs its start certifies instead.
+        if cert.normar <= CERTIFICATION_SLACK * self.criteria.rel_tol * zeta0 {
+            return true;
+        }
+        let a_norm = self.a_norm_sq.sqrt().max(f64::MIN_POSITIVE);
+        cert.normar / (a_norm * cert.normr.max(f64::MIN_POSITIVE))
+            <= CERTIFICATION_SLACK * self.criteria.rel_tol
+    }
 }
+
+/// Collapsed recurrences miss by orders of magnitude; the slack absorbs ordinary estimate drift.
+const CERTIFICATION_SLACK: f64 = 100.0;
