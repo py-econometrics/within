@@ -13,7 +13,7 @@ class PreconditionerConfig:
 
     A tagged union: each variant is a subclass. Construct with ``Off()``,
     ``Diagonal()``, or ``Additive(local_solver=..., reduction=...)``. Instances
-    compare by value, support ``match``/``case``, and pickle.
+    compare by value and support ``match``/``case``.
     """
 
     class Off(PreconditionerConfig):

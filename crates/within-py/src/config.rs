@@ -253,34 +253,6 @@ impl PyPreconditionerConfig {
     }
 }
 
-#[pymethods]
-impl PyPreconditionerConfig {
-    /// Complex enums have no default pickle support; round-trip via native serde.
-    fn __reduce__<'py>(
-        &self,
-        py: Python<'py>,
-    ) -> PyResult<(Bound<'py, PyAny>, (Bound<'py, pyo3::types::PyBytes>,))> {
-        let bytes = postcard::to_stdvec(&self.to_native())
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
-        let ctor = py
-            .import("within._within")?
-            .getattr("_preconditioner_config_from_postcard")?;
-        Ok((ctor, (pyo3::types::PyBytes::new(py, &bytes),)))
-    }
-}
-
-#[pyfunction]
-pub(crate) fn _preconditioner_config_from_postcard(
-    data: &[u8],
-) -> PyResult<PyPreconditionerConfig> {
-    let native: PreconditionerConfig = postcard::from_bytes(data).map_err(|e| {
-        pyo3::exceptions::PyValueError::new_err(format!(
-            "failed to deserialize preconditioner config: {e}"
-        ))
-    })?;
-    PyPreconditionerConfig::from_native(&native)
-}
-
 #[pyclass(frozen, eq, eq_int, from_py_object, module = "within._within")]
 #[pyo3(name = "ReductionStrategy")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

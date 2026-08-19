@@ -69,18 +69,6 @@ class TestAdvancedConfigs:
         assert tuned.reduction == ReductionStrategy.AtomicScatter
         assert tuned.local_solver.dense_threshold == 0
 
-    def test_preconditioner_config_pickle_roundtrip(self):
-        for config in (
-            PreconditionerConfig.Off(),
-            PreconditionerConfig.Diagonal(),
-            PreconditionerConfig.Additive(),
-            PreconditionerConfig.Additive(
-                local_solver=LocalSolverConfig(dense_threshold=0),
-                reduction=ReductionStrategy.AtomicScatter,
-            ),
-        ):
-            assert pickle.loads(pickle.dumps(config)) == config
-
     def test_approx_chol_config_defaults(self):
         cfg = ApproxCholConfig()
         assert cfg.seed == 0

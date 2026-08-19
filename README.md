@@ -144,7 +144,7 @@ The `preconditioner` argument accepts any of:
 | `Preconditioner` instance | Reuse a previously-built preconditioner across solvers. |
 
 `PreconditionerConfig` is a tagged union: each variant is a subclass, so instances
-support `match`/`case`, compare by value, and pickle. A built preconditioner exposes
+support `match`/`case` and compare by value. A built preconditioner exposes
 the configuration used to construct it as `.config` (preserved across pickling).
 
 ### Local solver configuration (advanced — `within.config`)
