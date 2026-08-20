@@ -18,14 +18,13 @@ from typing import Callable
 import numpy as np
 from numpy.typing import NDArray
 
-from within import Effect, LsmrOptions, solve
+from within import Effect, LsmrOptions, PreconditionerConfig, solve
 
 from .._framework import (
     BenchmarkResult,
     SlopeCase,
     SolverConfig,
     SuiteOptions,
-    make_additive_schwarz,
     max_abs_group_mean,
     suite,
 )
@@ -148,7 +147,7 @@ def run_akm_slopes(opts: SuiteOptions) -> list[BenchmarkResult]:
         LsmrOptions(
             tol=min(opts.tol, CONDITIONING_TOL), maxiter=max(opts.maxiter, 20_000)
         ),
-        preconditioner=make_additive_schwarz(local_solver=None),
+        preconditioner=PreconditionerConfig.Additive(),
     )
 
     results: list[BenchmarkResult] = []
