@@ -9,7 +9,7 @@
 use schwarz_precond::{PartitionWeights, SubdomainCore};
 
 use crate::channel::{Channel, ChannelPair};
-use crate::config::ScalingConfig;
+use crate::config::LocalSolverConfig;
 use crate::{BuildError, BuildWarning};
 
 use super::{find_all_active_levels, BlockDiagonals, CrossTab, Design};
@@ -36,9 +36,15 @@ pub(crate) struct LocalDomain {
 pub(crate) fn build_local_domains(
     design: &Design<'_>,
     weights: Option<&[f64]>,
-    scaling: &ScalingConfig,
+    config: &LocalSolverConfig,
 ) -> Result<(Vec<LocalDomain>, Vec<BuildWarning>), BuildError> {
     use rayon::prelude::*;
+
+    if !config.ridge.is_finite() || config.ridge < 0.0 {
+        return Err(BuildError::InvalidRidge {
+            value: config.ridge,
+        });
+    }
 
     let channels: Vec<Channel> = (0..design.n_factors())
         .flat_map(|term| design.channels(term))
@@ -70,7 +76,7 @@ pub(crate) fn build_local_domains(
             } else {
                 ComponentClass::General
             };
-            split_into_subdomains(pair, class, full_ct, full_diag, &l2g, scaling)
+            split_into_subdomains(pair, class, full_ct, full_diag, &l2g, config)
         })
         .collect::<Result<_, BuildError>>()?;
     let mut domain_pairs = Vec::new();
@@ -98,7 +104,7 @@ fn split_into_subdomains(
     full_ct: CrossTab,
     full_diag: BlockDiagonals,
     l2g: &[u32],
-    scaling: &ScalingConfig,
+    config: &LocalSolverConfig,
 ) -> Result<(Vec<LocalDomain>, Vec<BuildWarning>), BuildError> {
     let n_rows_full = full_ct.n_rows();
     let components = full_ct.bipartite_connected_components();
@@ -134,8 +140,11 @@ fn split_into_subdomains(
             .collect();
         let (comp_ct, comp_diag, comp_globals) =
             sddm::orient_for_elimination(comp_ct, comp_diag, comp_globals);
-        let (component, uncertified) = convert(comp_ct, comp_diag, class, scaling)
+        let (mut component, uncertified) = convert(comp_ct, comp_diag, class, &config.scaling)
             .map_err(|NotScalable| BuildError::UnscalableComponent { pair })?;
+        if class == ComponentClass::General && component.matrix.grounding == Grounding::Grounded {
+            sddm::add_relative_ridge(&mut component.matrix, config.ridge);
+        }
         if let Some(uncertified) = uncertified {
             warnings.push(BuildWarning::UnscalableComponent {
                 pair,
@@ -216,8 +225,8 @@ mod tests {
     #[test]
     fn test_full_cover_domain_count() {
         let dm = make_test_design();
-        let (domain_pairs, _) =
-            build_local_domains(&dm, None, &ScalingConfig::default()).expect("plain domains build");
+        let (domain_pairs, _) = build_local_domains(&dm, None, &LocalSolverConfig::default())
+            .expect("plain domains build");
         // 3 factor pairs; each pair may produce multiple components
         assert!(domain_pairs.len() >= 3);
     }
@@ -225,8 +234,8 @@ mod tests {
     #[test]
     fn test_partition_of_unity() {
         let dm = make_test_design();
-        let (domain_pairs, _) =
-            build_local_domains(&dm, None, &ScalingConfig::default()).expect("plain domains build");
+        let (domain_pairs, _) = build_local_domains(&dm, None, &LocalSolverConfig::default())
+            .expect("plain domains build");
         let n_dofs = dm.n_dofs;
         // Two-sided PoU: squared weights must sum to 1 at every DOF.
         let mut weight_sq_sum = vec![0.0; n_dofs];
@@ -257,7 +266,7 @@ mod tests {
         ])
         .expect("valid slope design");
 
-        let (domain_pairs, _) = build_local_domains(&design, None, &ScalingConfig::default())
+        let (domain_pairs, _) = build_local_domains(&design, None, &LocalSolverConfig::default())
             .expect("slope domains build");
 
         for ld in &domain_pairs {
@@ -286,8 +295,8 @@ mod tests {
     #[test]
     fn test_domains_cover_all_dofs() {
         let dm = make_test_design();
-        let (domain_pairs, _) =
-            build_local_domains(&dm, None, &ScalingConfig::default()).expect("plain domains build");
+        let (domain_pairs, _) = build_local_domains(&dm, None, &LocalSolverConfig::default())
+            .expect("plain domains build");
         let mut covered = vec![false; dm.n_dofs];
         for ld in &domain_pairs {
             for &idx in ld.core.global_indices() {

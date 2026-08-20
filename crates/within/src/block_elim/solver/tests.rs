@@ -92,7 +92,7 @@ fn an_unusable_dense_pivot_is_retried_rather_than_fatal() {
             approx_chol: ApproxCholConfig::default(),
             schur,
             dense_threshold: DEFAULT_DENSE_SCHUR_THRESHOLD,
-            scaling: Default::default(),
+            ..Default::default()
         };
 
         assert!(
@@ -128,7 +128,7 @@ fn block_elim_solver_solves_a_two_block_component() {
         approx_chol: ApproxCholConfig::default(),
         schur: SchurMode::Exact,
         dense_threshold: 0, // disable dense fast path to ensure sparse path is covered
-        scaling: Default::default(),
+        ..Default::default()
     };
     let component = LocalComponent::general_for_test(cross_tab, diagonals);
     let solver = BlockElimSolver::build(component, &config).expect("block-elim build failed");
@@ -162,7 +162,7 @@ fn grounded_two_block_solve_is_leak_free() {
         approx_chol: ApproxCholConfig::default(),
         schur: SchurMode::Exact,
         dense_threshold: 0, // force the sparse grounded path → explicit ground vertex
-        scaling: Default::default(),
+        ..Default::default()
     };
     let component = LocalComponent::general_for_test(cross_tab, diagonals);
     let solver = BlockElimSolver::build(component, &config).expect("block-elim build failed");
@@ -212,7 +212,7 @@ fn trivial_singleton_component_solves_r_over_d() {
         approx_chol: ApproxCholConfig::default(),
         schur: SchurMode::Exact,
         dense_threshold: 0,
-        scaling: Default::default(),
+        ..Default::default()
     };
     for (n_rows, n_cols) in [(1usize, 0usize), (0, 1)] {
         let cross_tab = CrossTab::from_dense_for_test(&[], n_rows, n_cols);
@@ -243,7 +243,7 @@ fn sampled_sparse_preserves_barely_pd_direction() {
         approx_chol: ApproxCholConfig::default(),
         schur: SchurMode::Approximate(crate::config::ApproxSchurConfig::default()),
         dense_threshold: 0,
-        scaling: Default::default(),
+        ..Default::default()
     };
     let solver = BlockElimSolver::build(component, &config).unwrap();
     let mut rhs = vec![0.0; solver.scratch_size()];
@@ -333,7 +333,7 @@ fn signed_component_realizes_congruence_transformed_solve() {
             approx_chol: ApproxCholConfig::default(),
             schur,
             dense_threshold,
-            scaling: Default::default(),
+            ..Default::default()
         };
         // SDDM factors fold the bipartite negation in: f = d on q, -d on r.
         let factors: Vec<f64> = d
@@ -397,7 +397,7 @@ fn frustrated_component_solves_exactly_through_cover() {
         approx_chol: ApproxCholConfig::default(),
         schur: SchurMode::Exact,
         dense_threshold: 8,
-        scaling: Default::default(),
+        ..Default::default()
     };
     let solver =
         BlockElimSolver::build(component, &config).expect("covered block-elim build failed");
@@ -440,7 +440,7 @@ fn valid_solver_for_deser() -> BlockElimSolver {
         approx_chol: ApproxCholConfig::default(),
         schur: SchurMode::Exact,
         dense_threshold: 0,
-        scaling: Default::default(),
+        ..Default::default()
     };
     let component = LocalComponent::general_for_test(cross_tab, diagonals);
     BlockElimSolver::build(component, &config).expect("block-elim build failed")

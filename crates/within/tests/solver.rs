@@ -220,6 +220,7 @@ fn test_additive_serde_roundtrip_preserves_config_and_solution() {
                 max_iterations: 123,
                 on_failure: ScalingFailure::Error,
             },
+            ridge: 1e-5,
         },
         reduction: ReductionStrategy::AtomicScatter,
     };

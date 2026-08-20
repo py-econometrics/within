@@ -110,6 +110,23 @@ fn alpha_from_vp(v: &[f64], p_tilde: &[f64]) -> Result<f64, SolveError> {
     Ok(vp.max(0.0).sqrt())
 }
 
+/// Fills `r = rhs − A x` and `atr = Aᵀ r`, returning `‖r‖`.
+fn true_residual<A: Operator + ?Sized>(
+    operator: &A,
+    x: &[f64],
+    rhs: &[f64],
+    r: &mut [f64],
+    atr: &mut [f64],
+) -> Result<f64, SolveError> {
+    operator.apply(x, r)?;
+    for (ri, &bi) in r.iter_mut().zip(rhs) {
+        *ri = bi - *ri;
+    }
+    let normr = super::vec_norm(r);
+    operator.apply_adjoint(r, atr)?;
+    Ok(normr)
+}
+
 /// Ring of recent basis vectors for windowed MGS; the disabled state is `None`, so `cap > 0`.
 struct WindowRing<const L: usize> {
     /// `L` flat buffers; lane `l`, slot `s` is `[s*n .. s*n + n]` of `lanes[l]`.
@@ -223,12 +240,22 @@ pub(super) struct BidiagStep {
     pub(super) beta: f64,
 }
 
+/// True residual norms of a candidate solution, recomputed outside the recurrences.
+pub(super) struct Certificate {
+    /// `‖rhs − A x‖`.
+    pub(super) normr: f64,
+    /// `‖Âᵀ(rhs − A x)‖` in the stream's metric (`√(zᵀM⁻¹z)` when preconditioned).
+    pub(super) normar: f64,
+}
+
 /// Stream feeding LSMR `(α, β)` pairs and the matching normalized `v_k`.
 pub(super) trait Bidiagonalization {
     /// Advance one step. After the call, `v()` is the normalized `v_{k+1}`.
     fn step(&mut self) -> Result<BidiagStep, SolveError>;
     /// Most recent normalized basis vector.
     fn v(&self) -> &[f64];
+    /// Clobbers the stream's buffers, so call it only on a terminating path.
+    fn certify(&mut self, x: &[f64], rhs: &[f64]) -> Result<Certificate, SolveError>;
 }
 
 impl<A: Operator + ?Sized> Bidiagonalization for GolubKahan<'_, A> {
@@ -270,6 +297,14 @@ impl<A: Operator + ?Sized> Bidiagonalization for GolubKahan<'_, A> {
     fn v(&self) -> &[f64] {
         &self.bufs.v
     }
+
+    fn certify(&mut self, x: &[f64], rhs: &[f64]) -> Result<Certificate, SolveError> {
+        let normr = true_residual(self.operator, x, rhs, &mut self.bufs.av, &mut self.bufs.atu)?;
+        Ok(Certificate {
+            normr,
+            normar: super::vec_norm(&self.bufs.atu),
+        })
+    }
 }
 
 impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
@@ -305,6 +340,16 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
 
     fn v(&self) -> &[f64] {
         &self.bufs.v
+    }
+
+    fn certify(&mut self, x: &[f64], rhs: &[f64]) -> Result<Certificate, SolveError> {
+        let normr = true_residual(self.operator, x, rhs, &mut self.bufs.av, &mut self.bufs.atu)?;
+        self.preconditioner
+            .apply(&self.bufs.atu, &mut self.bufs.v)?;
+        Ok(Certificate {
+            normr,
+            normar: alpha_from_vp(&self.bufs.v, &self.bufs.atu)?,
+        })
     }
 }
 

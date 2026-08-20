@@ -277,7 +277,7 @@ pub(crate) fn build_preconditioner(
             local_solver,
             reduction,
         } => {
-            let (domains, warnings) = build_local_domains(design, weights, &local_solver.scaling)?;
+            let (domains, warnings) = build_local_domains(design, weights, local_solver)?;
             if domains.is_empty() {
                 // No factor-pair subdomains means no useful Schwarz; fall back to plain LSMR.
                 return Ok((None, warnings));

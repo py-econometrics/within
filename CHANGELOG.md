@@ -16,18 +16,20 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - **BREAKING:** `LsmrStopReason` gains `Escalated` and `WarmStartExact`, breaking exhaustive `match`es.
 - A warm start that already solves the system reports `WarmStartExact` instead of `ZeroRhs`.
 - **BREAKING:** `ScalingConfig::max_sweeps` is now `max_iterations`, and `BuildWarning::UnscalableComponent` reports `iterations` in place of `sweeps`; the dominance certificate runs reduced CG, not relaxation sweeps.
-- **BREAKING:** The serialized `Preconditioner` wire format changed with the `approx-chol` 0.4 → 0.5 bump (v12 → v13), retention of the complete construction config (v13 → v14), retention of its original build duration (v14 → v15); 0.3.0 bytes no longer decode.
+- **BREAKING:** The serialized `Preconditioner` wire format changed with the `approx-chol` 0.4 → 0.5 bump (v12 → v13), retention of the complete construction config (v13 → v14), retention of its original build duration (v14 → v15), and the new `LocalSolverConfig::ridge` field (v15 → v16); 0.3.0 bytes no longer decode.
 
 ### Added
 
 - Python `Preconditioner.build_duration_seconds` and Rust `Preconditioner::build_duration()` expose the original preconditioner build duration, preserved across serialization and reuse.
 - `schwarz_precond::EscalationPolicy` builds a per-run `EscalationHandler` that ends a solve with `LsmrStopReason::Escalated` and an iterate that warm-starts the next preconditioner; `Staleness` implements it from the trailing contraction window.
 - `schwarz_precond::MlsmrOptions::warm_start` carries an initial iterate through a change of preconditioner.
+- `LocalSolverConfig::ridge` (Python `LocalSolverConfig(ridge=...)`) floors the local spectrum of grounded slope-pair components at a fraction of their largest diagonal; `0` disables it (#290).
 
 ### Fixed
 
 - A design carrying varying slopes on two distinct factors could fail preconditioner construction with `matrix is not symmetric`, when rounding left the two triangles of the exact Schur complement unequal (#229).
 - A `design` that is neither a 2-D `uint32` array nor a list of `Effect` raised `ValueError` where the documented type is `TypeError`, and `AdditiveSchwarz` accepted a wrong-type `local_solver` at construction, deferring the `TypeError` to solve time (#248).
+- A slope covariate collinear with another term could make LSMR report convergence on a solve that had not demeaned the response; tolerance stops are now audited against the true residual and a failed check reports `LsmrStopReason::FalseConvergence` with `converged = false` (#290).
 
 ### Removed
 
