@@ -145,7 +145,7 @@ class TestFePreconditioner:
         solver, precond, categories, y = solver_and_precond
         assert precond.nrows == precond.ncols == solver.n_dofs
 
-    def test_preconditioner_exposes_build_time(self):
+    def test_preconditioner_exposes_build_duration(self):
         categories = as_solver_categories(
             [np.array([0, 1, 0, 1, 2, 2]), np.array([0, 0, 1, 1, 0, 1])]
         )
@@ -156,9 +156,9 @@ class TestFePreconditioner:
         ):
             precond = Solver(categories, preconditioner=config).preconditioner
             assert precond is not None
-            assert isinstance(precond.build_time_seconds, float)
-            assert np.isfinite(precond.build_time_seconds)
-            assert precond.build_time_seconds >= 0.0
+            assert isinstance(precond.build_duration_seconds, float)
+            assert np.isfinite(precond.build_duration_seconds)
+            assert precond.build_duration_seconds >= 0.0
 
     def test_preconditioner_constructor_roundtrip(self, solver_and_precond):
         solver, precond, categories, y = solver_and_precond
@@ -167,7 +167,7 @@ class TestFePreconditioner:
         x = np.random.randn(precond.nrows)
         np.testing.assert_array_equal(precond.apply(x), precond2.apply(x))
         assert precond2.config == precond.config
-        assert precond2.build_time_seconds == precond.build_time_seconds
+        assert precond2.build_duration_seconds == precond.build_duration_seconds
 
     def test_preconditioner_exposes_default_config(self, solver_and_precond):
         solver, precond, categories, y = solver_and_precond
