@@ -338,24 +338,19 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
         } {
             let x = solution.into_x();
             let cert = bidiag.certify(&x, rhs)?;
-            if convergence.certified(&cert, recurrence.zeta0) {
-                return Ok(LsmrResult {
-                    x,
-                    converged: true,
-                    iterations: itn,
-                    residual_norm: recurrence.residual_estimate(),
-                    normal_eq_residual: recurrence.relative_normal_eq_residual(),
-                    stop_reason,
-                });
-            }
-            // Report the audited truth, not the collapsed estimates the stop was based on.
+            let converged = convergence.certified(&cert, recurrence.zeta0);
+            // Report the audited truth, not the estimates the stop was based on.
             return Ok(LsmrResult {
                 x,
-                converged: false,
+                converged,
                 iterations: itn,
                 residual_norm: cert.normr,
                 normal_eq_residual: cert.normar / recurrence.zeta0,
-                stop_reason: LsmrStopReason::FalseConvergence,
+                stop_reason: if converged {
+                    stop_reason
+                } else {
+                    LsmrStopReason::FalseConvergence
+                },
             });
         }
         if let Some(rule) = escalation.as_deref_mut() {
