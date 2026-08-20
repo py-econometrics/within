@@ -93,6 +93,12 @@ pub enum BuildError {
         /// Actual column count of the supplied preconditioner.
         actual_cols: usize,
     },
+    /// A negative floor breaks the dominance invariant; a non-finite one poisons every solve.
+    #[error("local solver ridge must be finite and non-negative, got {value}")]
+    InvalidRidge {
+        /// The offending value.
+        value: f64,
+    },
     /// Usually raw entity IDs passed as factor codes, inflating `n_levels = max code + 1`.
     #[error("design has {n_dofs} degrees of freedom, exceeding the u32 column-index limit")]
     DofSpaceExceedsU32 {

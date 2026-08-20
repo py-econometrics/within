@@ -290,13 +290,14 @@ pub struct PyLocalSolverConfig {
 #[pymethods]
 impl PyLocalSolverConfig {
     #[new]
-    #[pyo3(signature = (approx_chol=None, schur=None, dense_threshold=None, scaling=None))]
+    #[pyo3(signature = (approx_chol=None, schur=None, dense_threshold=None, scaling=None, ridge=None))]
     fn new(
         py: Python<'_>,
         approx_chol: Option<Py<PyApproxCholConfig>>,
         schur: Option<Py<PySchur>>,
         dense_threshold: Option<usize>,
         scaling: Option<Py<PyScalingConfig>>,
+        ridge: Option<f64>,
     ) -> Self {
         let defaults = LocalSolverConfig::default();
         Self {
@@ -311,6 +312,7 @@ impl PyLocalSolverConfig {
                 scaling: scaling
                     .map(|config| config.bind(py).get().to_native())
                     .unwrap_or(defaults.scaling),
+                ridge: ridge.unwrap_or(defaults.ridge),
             },
         }
     }
@@ -333,6 +335,11 @@ impl PyLocalSolverConfig {
     #[getter]
     fn scaling(&self) -> PyScalingConfig {
         PyScalingConfig::from_native(&self.inner.scaling)
+    }
+
+    #[getter]
+    fn ridge(&self) -> f64 {
+        self.inner.ridge
     }
 }
 

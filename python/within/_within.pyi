@@ -445,10 +445,13 @@ class LocalSolverConfig:
     def dense_threshold(self) -> int: ...
     @property
     def scaling(self) -> ScalingConfig: ...
+    @property
+    def ridge(self) -> float: ...
     def __init__(
         self,
         approx_chol: ApproxCholConfig | None = None,
         schur: Schur | None = None,
         dense_threshold: int | None = None,
         scaling: ScalingConfig | None = None,
+        ridge: float | None = None,
     ) -> None: ...

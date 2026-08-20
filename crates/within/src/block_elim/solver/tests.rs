@@ -93,6 +93,7 @@ fn an_unusable_dense_pivot_is_retried_rather_than_fatal() {
             schur,
             dense_threshold: DEFAULT_DENSE_SCHUR_THRESHOLD,
             scaling: Default::default(),
+            ridge: 0.0,
         };
 
         assert!(
@@ -129,6 +130,7 @@ fn block_elim_solver_solves_a_two_block_component() {
         schur: SchurMode::Exact,
         dense_threshold: 0, // disable dense fast path to ensure sparse path is covered
         scaling: Default::default(),
+        ridge: 0.0,
     };
     let component = LocalComponent::general_for_test(cross_tab, diagonals);
     let solver = BlockElimSolver::build(component, &config).expect("block-elim build failed");
@@ -163,6 +165,7 @@ fn grounded_two_block_solve_is_leak_free() {
         schur: SchurMode::Exact,
         dense_threshold: 0, // force the sparse grounded path → explicit ground vertex
         scaling: Default::default(),
+        ridge: 0.0,
     };
     let component = LocalComponent::general_for_test(cross_tab, diagonals);
     let solver = BlockElimSolver::build(component, &config).expect("block-elim build failed");
@@ -213,6 +216,7 @@ fn trivial_singleton_component_solves_r_over_d() {
         schur: SchurMode::Exact,
         dense_threshold: 0,
         scaling: Default::default(),
+        ridge: 0.0,
     };
     for (n_rows, n_cols) in [(1usize, 0usize), (0, 1)] {
         let cross_tab = CrossTab::from_dense_for_test(&[], n_rows, n_cols);
@@ -244,6 +248,7 @@ fn sampled_sparse_preserves_barely_pd_direction() {
         schur: SchurMode::Approximate(crate::config::ApproxSchurConfig::default()),
         dense_threshold: 0,
         scaling: Default::default(),
+        ridge: 0.0,
     };
     let solver = BlockElimSolver::build(component, &config).unwrap();
     let mut rhs = vec![0.0; solver.scratch_size()];
@@ -334,6 +339,7 @@ fn signed_component_realizes_congruence_transformed_solve() {
             schur,
             dense_threshold,
             scaling: Default::default(),
+            ridge: 0.0,
         };
         // SDDM factors fold the bipartite negation in: f = d on q, -d on r.
         let factors: Vec<f64> = d
@@ -398,6 +404,7 @@ fn frustrated_component_solves_exactly_through_cover() {
         schur: SchurMode::Exact,
         dense_threshold: 8,
         scaling: Default::default(),
+        ridge: 0.0,
     };
     let solver =
         BlockElimSolver::build(component, &config).expect("covered block-elim build failed");
@@ -441,6 +448,7 @@ fn valid_solver_for_deser() -> BlockElimSolver {
         schur: SchurMode::Exact,
         dense_threshold: 0,
         scaling: Default::default(),
+        ridge: 0.0,
     };
     let component = LocalComponent::general_for_test(cross_tab, diagonals);
     BlockElimSolver::build(component, &config).expect("block-elim build failed")

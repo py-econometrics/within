@@ -9,7 +9,7 @@
 use schwarz_precond::{PartitionWeights, SubdomainCore};
 
 use crate::channel::{Channel, ChannelPair};
-use crate::config::ScalingConfig;
+use crate::config::LocalSolverConfig;
 use crate::{BuildError, BuildWarning};
 
 use super::{find_all_active_levels, BlockDiagonals, CrossTab, Design};
@@ -36,9 +36,15 @@ pub(crate) struct LocalDomain {
 pub(crate) fn build_local_domains(
     design: &Design<'_>,
     weights: Option<&[f64]>,
-    scaling: &ScalingConfig,
+    config: &LocalSolverConfig,
 ) -> Result<(Vec<LocalDomain>, Vec<BuildWarning>), BuildError> {
     use rayon::prelude::*;
+
+    if !config.ridge.is_finite() || config.ridge < 0.0 {
+        return Err(BuildError::InvalidRidge {
+            value: config.ridge,
+        });
+    }
 
     let channels: Vec<Channel> = (0..design.n_factors())
         .flat_map(|term| design.channels(term))
@@ -70,7 +76,7 @@ pub(crate) fn build_local_domains(
             } else {
                 ComponentClass::General
             };
-            split_into_subdomains(pair, class, full_ct, full_diag, &l2g, scaling)
+            split_into_subdomains(pair, class, full_ct, full_diag, &l2g, config)
         })
         .collect::<Result<_, BuildError>>()?;
     let mut domain_pairs = Vec::new();
@@ -91,32 +97,6 @@ pub(crate) fn build_local_domains(
     Ok((domain_pairs, warnings))
 }
 
-/// Relative spectral floor for grounded slope-pair components.
-///
-/// Near-shared slope covariates produce slope-pair components whose local λmin is genuinely
-/// ~ε²-tiny; the grounded exact solve then responds with 1/λ (up to ~4e11 measured). In exact
-/// arithmetic that response is provably harmless — with exact principal-submatrix local solves
-/// each additive-Schwarz term of M⁻¹A is an A-orthogonal projection, so λmax(M⁻¹A) ≤ #colors
-/// (Toselli & Widlund, *Domain Decomposition Methods — Algorithms and Theory*, Springer 2005,
-/// ch. 2; measured here: λmax(M⁻¹A) ≈ 4.3 while λmax(M⁻¹) ≈ 1e8, ridge off). The hazard is
-/// finite precision: applying M⁻¹ with dynamic range κ feeds ε_mach·κ noise per iteration into
-/// LSMR's recurrence-based `‖Aᵀr‖` stopping estimate (Fong & Saunders, SIAM J. Sci. Comput.
-/// 33(5), 2011), which then reports false convergence. The floor is the modified-Cholesky move —
-/// perturb the near-singular factorization so the solve's norm is bounded, trading an O(τ)
-/// operator perturbation for κ(M⁻¹) ≤ 1/τ (Gill & Murray, Math. Programming 7, 1974; Higham,
-/// *Accuracy and Stability of Numerical Algorithms*, 2nd ed., SIAM 2002, ch. 10). τ balances
-/// recurrence noise ~ε_mach/τ against perturbation ~τ: √ε_mach ≈ 1.5e-8 is the balance point,
-/// 1e-7 adds margin (measured: 1e-6 costs ~3% iterations; 0 fake-converges).
-const SLOPE_PAIR_RIDGE_RELATIVE: f64 = 1e-7;
-
-/// Probe override for the slope-pair spectrum floor; the constant is the shipped value.
-fn slope_pair_ridge_relative() -> f64 {
-    std::env::var("WITHIN_SLOPE_RIDGE")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(SLOPE_PAIR_RIDGE_RELATIVE)
-}
-
 /// Dead singletons (zero diagonal, an exact-zero design column) produce no subdomain.
 fn split_into_subdomains(
     pair: ChannelPair,
@@ -124,7 +104,7 @@ fn split_into_subdomains(
     full_ct: CrossTab,
     full_diag: BlockDiagonals,
     l2g: &[u32],
-    scaling: &ScalingConfig,
+    config: &LocalSolverConfig,
 ) -> Result<(Vec<LocalDomain>, Vec<BuildWarning>), BuildError> {
     let n_rows_full = full_ct.n_rows();
     let components = full_ct.bipartite_connected_components();
@@ -160,13 +140,12 @@ fn split_into_subdomains(
             .collect();
         let (comp_ct, comp_diag, comp_globals) =
             sddm::orient_for_elimination(comp_ct, comp_diag, comp_globals);
-        let (mut component, uncertified) = convert(comp_ct, comp_diag, class, scaling)
+        let (mut component, uncertified) = convert(comp_ct, comp_diag, class, &config.scaling)
             .map_err(|NotScalable| BuildError::UnscalableComponent { pair })?;
-        // Cap the local solve's dynamic range; see SLOPE_PAIR_RIDGE_RELATIVE for the full story.
         if matches!(class, ComponentClass::General)
             && component.matrix.grounding == Grounding::Grounded
         {
-            sddm::add_relative_ridge(&mut component.matrix, slope_pair_ridge_relative());
+            sddm::add_relative_ridge(&mut component.matrix, config.ridge);
         }
         if let Some(uncertified) = uncertified {
             warnings.push(BuildWarning::UnscalableComponent {
@@ -248,8 +227,8 @@ mod tests {
     #[test]
     fn test_full_cover_domain_count() {
         let dm = make_test_design();
-        let (domain_pairs, _) =
-            build_local_domains(&dm, None, &ScalingConfig::default()).expect("plain domains build");
+        let (domain_pairs, _) = build_local_domains(&dm, None, &LocalSolverConfig::default())
+            .expect("plain domains build");
         // 3 factor pairs; each pair may produce multiple components
         assert!(domain_pairs.len() >= 3);
     }
@@ -257,8 +236,8 @@ mod tests {
     #[test]
     fn test_partition_of_unity() {
         let dm = make_test_design();
-        let (domain_pairs, _) =
-            build_local_domains(&dm, None, &ScalingConfig::default()).expect("plain domains build");
+        let (domain_pairs, _) = build_local_domains(&dm, None, &LocalSolverConfig::default())
+            .expect("plain domains build");
         let n_dofs = dm.n_dofs;
         // Two-sided PoU: squared weights must sum to 1 at every DOF.
         let mut weight_sq_sum = vec![0.0; n_dofs];
@@ -289,7 +268,7 @@ mod tests {
         ])
         .expect("valid slope design");
 
-        let (domain_pairs, _) = build_local_domains(&design, None, &ScalingConfig::default())
+        let (domain_pairs, _) = build_local_domains(&design, None, &LocalSolverConfig::default())
             .expect("slope domains build");
 
         for ld in &domain_pairs {
@@ -318,8 +297,8 @@ mod tests {
     #[test]
     fn test_domains_cover_all_dofs() {
         let dm = make_test_design();
-        let (domain_pairs, _) =
-            build_local_domains(&dm, None, &ScalingConfig::default()).expect("plain domains build");
+        let (domain_pairs, _) = build_local_domains(&dm, None, &LocalSolverConfig::default())
+            .expect("plain domains build");
         let mut covered = vec![false; dm.n_dofs];
         for ld in &domain_pairs {
             for &idx in ld.core.global_indices() {
