@@ -37,8 +37,8 @@ Two-tier public API:
   (``solve``, ``Solver``, ``LsmrOptions``, ``PreconditionerConfig``,
   ``Preconditioner``).
 - :mod:`within.config` re-exports the advanced configuration objects
-  (``AdditiveSchwarz``, ``LocalSolverConfig``, ``ApproxCholConfig``,
-  ``ApproxSchurConfig``, ``ReductionStrategy``).
+  (``LocalSolverConfig``, ``ApproxCholConfig``, ``ApproxSchurConfig``,
+  ``ReductionStrategy``, ``ScalingConfig``, ``Schur``).
 
 Thread safety: the heavy work runs with the interpreter detached and reads the
 caller's arrays in place. As with NumPy itself, an input array must not be

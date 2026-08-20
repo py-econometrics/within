@@ -66,7 +66,7 @@ pub fn solve<'py>(
     preconditioner: Option<&Bound<'py, PyAny>>,
 ) -> PyResult<PySolveResult> {
     let params = resolve_lsmr_config(options)?;
-    let precond = resolve_precond_input(py, preconditioner)?;
+    let precond = resolve_precond_input(preconditioner)?;
     let y = readonly_f64_1d("y", y)?;
     let weights = weights.map(|w| readonly_f64_1d("weights", w)).transpose()?;
 
@@ -107,7 +107,7 @@ pub fn solve_batch<'py>(
     preconditioner: Option<&Bound<'py, PyAny>>,
 ) -> PyResult<PyBatchSolveResult> {
     let params = resolve_lsmr_config(options)?;
-    let precond = resolve_precond_input(py, preconditioner)?;
+    let precond = resolve_precond_input(preconditioner)?;
     let y = readonly_f64_2d("Y", Y)?;
     let weights = weights.map(|w| readonly_f64_1d("weights", w)).transpose()?;
 
@@ -254,7 +254,7 @@ impl PySolver {
     ) -> PyResult<Self> {
         let weights = weights.map(|w| readonly_f64_1d("weights", w)).transpose()?;
         let weights_vec: Option<Vec<f64>> = weights.as_ref().map(|w| w.as_array().to_vec());
-        let precond = resolve_precond_input(py, preconditioner)?;
+        let precond = resolve_precond_input(preconditioner)?;
 
         // `BuildError` carries no Python types, so it maps to an exception once the GIL is back.
         let solver = match extract_design(py, design)? {

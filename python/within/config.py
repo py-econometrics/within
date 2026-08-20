@@ -7,9 +7,8 @@ preconditioner live in this submodule.
 
 Typical usage::
 
-    from within import solve, LsmrOptions
+    from within import solve, LsmrOptions, PreconditionerConfig
     from within.config import (
-        AdditiveSchwarz,
         ApproxCholConfig,
         ApproxSchurConfig,
         LocalSolverConfig,
@@ -17,7 +16,7 @@ Typical usage::
         Schur,
     )
 
-    schwarz = AdditiveSchwarz(
+    schwarz = PreconditionerConfig.Additive(
         local_solver=LocalSolverConfig(
             approx_chol=ApproxCholConfig(split_merge=2),
             schur=Schur.approximate(ApproxSchurConfig(split=2)),
@@ -31,7 +30,6 @@ Schur); pass ``Schur.exact()`` for the exact complement.
 """
 
 from within._within import (
-    AdditiveSchwarz,
     ApproxCholConfig,
     ApproxSchurConfig,
     LocalSolverConfig,
@@ -41,7 +39,6 @@ from within._within import (
 )
 
 __all__ = [
-    "AdditiveSchwarz",
     "ApproxCholConfig",
     "ApproxSchurConfig",
     "LocalSolverConfig",

@@ -32,7 +32,7 @@ y = np.random.randn(n)
 
 result = solve(fe, y)                          # Schwarz-preconditioned LSMR
 result = solve(fe, y, weights=np.ones(n))      # weighted solve
-result = solve(fe, y, preconditioner=PreconditionerConfig.Diagonal)
+result = solve(fe, y, preconditioner=PreconditionerConfig.Diagonal())
 ```
 
 ### FWL regression example
@@ -92,13 +92,16 @@ solver2 = Solver(fe, preconditioner=precond)   # skip re-factorization
 
 | Class | Description |
 |---|---|
-| `AdditiveSchwarz(local_solver?)` | Additive one-level Schwarz (import from `within.config`). |
-| `PreconditionerConfig.Off` | Disable preconditioning. |
-| `PreconditionerConfig.Additive` | Additive Schwarz shortcut (equivalent to `None`). |
-| `PreconditionerConfig.Diagonal` | Diagonal/Jacobi preconditioner using `diag(D^T W D)^{-1}`. |
+| `PreconditionerConfig.Off()` | Disable preconditioning. |
+| `PreconditionerConfig.Additive()` | Additive Schwarz shortcut (equivalent to `None`). |
+| `PreconditionerConfig.Additive(local_solver?, reduction?)` | Tuned additive Schwarz. Argument types import from `within.config`. |
+| `PreconditionerConfig.Diagonal()` | Diagonal/Jacobi preconditioner using `diag(D^T W D)^{-1}`. |
 | `Preconditioner` (built) | Reuse a previously-built preconditioner across solvers. |
 
 Pass `None` (the default) to use additive Schwarz with the default local solver.
+`PreconditionerConfig` is a tagged union: each variant is a subclass, so instances
+support `match`/`case` and compare by value. A built preconditioner exposes
+the configuration used to construct it as `.config` (preserved across pickling).
 
 ### Local solver configuration (advanced)
 

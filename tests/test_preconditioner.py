@@ -7,10 +7,10 @@ import pytest
 
 from within import LsmrOptions, Preconditioner, PreconditionerConfig, Solver, solve
 from within._within import (
-    AdditiveSchwarz,
     ApproxCholConfig,
     ApproxSchurConfig,
     LocalSolverConfig,
+    ReductionStrategy,
     Schur,
 )
 
@@ -40,6 +40,35 @@ def solver_and_precond(problem):
 
 
 class TestAdvancedConfigs:
+    def test_preconditioner_config_additive_constructor(self):
+        implicit = PreconditionerConfig.Additive()
+        explicit = PreconditionerConfig.Additive(
+            local_solver=LocalSolverConfig(),
+            reduction=ReductionStrategy.Auto,
+        )
+
+        assert implicit == explicit
+        assert implicit != PreconditionerConfig.Diagonal()
+        assert implicit.local_solver == LocalSolverConfig()
+
+        with pytest.raises(TypeError):
+            PreconditionerConfig.Additive(local_solver=None)
+
+    def test_preconditioner_config_variant_introspection(self):
+        # Each variant is a subclass of PreconditionerConfig (the 3.9-safe
+        # equivalent of ``match``), and Additive exposes its fields as getters.
+        off = PreconditionerConfig.Off()
+        tuned = PreconditionerConfig.Additive(
+            local_solver=LocalSolverConfig(dense_threshold=0),
+            reduction=ReductionStrategy.AtomicScatter,
+        )
+
+        assert isinstance(off, PreconditionerConfig)
+        assert isinstance(tuned, PreconditionerConfig.Additive)
+        assert not isinstance(off, PreconditionerConfig.Additive)
+        assert tuned.reduction == ReductionStrategy.AtomicScatter
+        assert tuned.local_solver.dense_threshold == 0
+
     def test_approx_chol_config_defaults(self):
         cfg = ApproxCholConfig()
         assert cfg.seed == 0
@@ -58,8 +87,10 @@ class TestAdvancedConfigs:
     def test_schur_complement_defaults(self):
         sc = LocalSolverConfig()
         assert sc.dense_threshold == 24
-        # Omitted schur means the library default (approximate), not exact.
-        assert sc.schur is None
+        assert sc.approx_chol.seed == 0
+        assert sc.approx_chol.split_merge == 2
+        assert repr(sc.schur) == "Schur.approximate(seed=0, split=1)"
+        assert sc.scaling.on_failure == "warn"
 
     def test_schur_mode_spellings(self):
         # Omission and Schur.approximate() are the default; Schur.exact() is the
@@ -71,12 +102,13 @@ class TestAdvancedConfigs:
         y = rng.standard_normal(600)
         for schur in (None, Schur.approximate(), Schur.exact()):
             local = LocalSolverConfig(schur=schur)
-            assert local.schur is schur
+            expected = Schur.approximate() if schur is None else schur
+            assert repr(local.schur) == repr(expected)
             result = solve(
                 cats,
                 y,
                 options=LsmrOptions(maxiter=2000),
-                preconditioner=AdditiveSchwarz(local_solver=local),
+                preconditioner=PreconditionerConfig.Additive(local_solver=local),
             )
             assert result.converged
 
@@ -86,7 +118,9 @@ class TestAdvancedConfigs:
             as_solver_categories(cats),
             y,
             options=LsmrOptions(),
-            preconditioner=AdditiveSchwarz(local_solver=LocalSolverConfig()),
+            preconditioner=PreconditionerConfig.Additive(
+                local_solver=LocalSolverConfig()
+            ),
         )
         assert result.converged
 
@@ -119,6 +153,36 @@ class TestFePreconditioner:
         precond2 = pickle.loads(data)
         x = np.random.randn(precond.nrows)
         np.testing.assert_array_equal(precond.apply(x), precond2.apply(x))
+        assert precond2.config == precond.config
+
+    def test_preconditioner_exposes_default_config(self, solver_and_precond):
+        solver, precond, categories, y = solver_and_precond
+        assert precond.config == PreconditionerConfig.Additive()
+
+    def test_preconditioner_exposes_tuned_config(self, problem):
+        cats, _ = problem
+        requested = PreconditionerConfig.Additive(
+            local_solver=LocalSolverConfig(
+                approx_chol=ApproxCholConfig(seed=41, split_merge=3),
+                schur=Schur.approximate(ApproxSchurConfig(seed=17, split=2)),
+                dense_threshold=0,
+            ),
+            reduction=ReductionStrategy.AtomicScatter,
+        )
+
+        solver = Solver(as_solver_categories(cats), preconditioner=requested)
+        precond = solver.preconditioner
+
+        assert precond is not None
+        actual = precond.config
+        assert actual == requested
+        assert isinstance(actual, PreconditionerConfig.Additive)
+        assert actual.reduction == ReductionStrategy.AtomicScatter
+        assert actual.local_solver.approx_chol.seed == 41
+        assert actual.local_solver.approx_chol.split_merge == 3
+        assert repr(actual.local_solver.schur) == "Schur.approximate(seed=17, split=2)"
+        assert actual.local_solver.dense_threshold == 0
+        assert actual.local_solver.scaling.on_failure == "warn"
 
     def test_preconditioner_corrupt_bytes_raises(self):
         with pytest.raises(ValueError):
@@ -135,17 +199,18 @@ class TestFePreconditioner:
         categories = as_solver_categories(
             [np.array([0, 1, 0, 1, 2, 2]), np.array([0, 0, 1, 1, 0, 1])]
         )
-        solver = Solver(categories, preconditioner=PreconditionerConfig.Diagonal)
+        solver = Solver(categories, preconditioner=PreconditionerConfig.Diagonal())
         precond = solver.preconditioner
 
         assert precond is not None
         assert "Diagonal" in repr(precond)
+        assert precond.config == PreconditionerConfig.Diagonal()
 
     def test_single_factor_diagonal_preconditioner_is_cached(self):
         categories = np.asfortranarray(
             np.array([[0], [1], [0], [2], [1]], dtype=np.uint32)
         )
-        solver = Solver(categories, preconditioner=PreconditionerConfig.Diagonal)
+        solver = Solver(categories, preconditioner=PreconditionerConfig.Diagonal())
         precond = solver.preconditioner
 
         assert precond is not None
