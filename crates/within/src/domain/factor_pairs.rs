@@ -142,9 +142,7 @@ fn split_into_subdomains(
             sddm::orient_for_elimination(comp_ct, comp_diag, comp_globals);
         let (mut component, uncertified) = convert(comp_ct, comp_diag, class, &config.scaling)
             .map_err(|NotScalable| BuildError::UnscalableComponent { pair })?;
-        if matches!(class, ComponentClass::General)
-            && component.matrix.grounding == Grounding::Grounded
-        {
+        if class == ComponentClass::General && component.matrix.grounding == Grounding::Grounded {
             sddm::add_relative_ridge(&mut component.matrix, config.ridge);
         }
         if let Some(uncertified) = uncertified {

@@ -339,7 +339,6 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
             let x = solution.into_x();
             let cert = bidiag.certify(&x, rhs)?;
             let converged = convergence.certified(&cert, recurrence.zeta0);
-            // Report the audited truth, not the estimates the stop was based on.
             return Ok(LsmrResult {
                 x,
                 converged,

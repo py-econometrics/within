@@ -109,8 +109,7 @@ fn run_block_elim_parallel_reduction_regression_case() {
             ..Default::default()
         }),
         dense_threshold: DEFAULT_DENSE_SCHUR_THRESHOLD,
-        scaling: Default::default(),
-        ridge: 0.0,
+        ..Default::default()
     };
     let rhs: Vec<f64> = (0..n_dofs).map(|i| ((i % 29) as f64) - 14.0).collect();
 
@@ -222,8 +221,7 @@ fn small_subdomain_solve(schur: SchurMode, dense_threshold: usize) -> Vec<f64> {
         approx_chol: ApproxCholConfig::default(),
         schur,
         dense_threshold,
-        scaling: Default::default(),
-        ridge: 0.0,
+        ..Default::default()
     };
     let solver =
         crate::block_elim::BlockElimSolver::build(component, &config).expect("block-elim build");

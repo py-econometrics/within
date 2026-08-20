@@ -74,12 +74,7 @@ pub struct LocalSolverConfig {
     pub dense_threshold: usize,
     /// Certification policy for the diagonal scaling of signed components.
     pub scaling: ScalingConfig,
-    /// Spectral floor on grounded signed components, as a fraction of the largest diagonal.
-    ///
-    /// Near-shared slope covariates leave a component's local λmin ~ε²-tiny, and the exact
-    /// local solve then responds with 1/λ; applying a preconditioner of that dynamic range
-    /// feeds enough noise into LSMR's recurrence estimates to fake convergence. Shifting by
-    /// `ridge · max(diagonal)` bounds the local solve's norm. `0` disables the floor.
+    /// Spectral floor on grounded signed components, as a fraction of the largest diagonal; `0` off.
     pub ridge: f64,
 }
 

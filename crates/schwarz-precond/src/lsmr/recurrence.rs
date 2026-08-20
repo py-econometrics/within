@@ -241,15 +241,19 @@ impl ConvergenceState {
         self.a_norm_sq += s.alpha * s.alpha + s.beta * s.beta;
     }
 
+    /// `‖Âᵀr‖ / (‖A‖‖r‖)`; the `max` guards a collapsed residual, not a physical scale.
+    fn ne_ratio(&self, residual: f64, normar: f64) -> f64 {
+        let a_norm = self.a_norm_sq.sqrt().max(f64::MIN_POSITIVE);
+        normar / (a_norm * residual.max(f64::MIN_POSITIVE))
+    }
+
     /// Check both stop criteria against the current scalar state.
     pub(super) fn check(&self, r: &LsmrRecurrenceState) -> Stop {
         let residual = r.residual_estimate();
         if residual <= self.criteria.abs_tol {
             return Stop::ResidualTolerance;
         }
-        let a_norm = self.a_norm_sq.sqrt().max(f64::MIN_POSITIVE);
-        let normar = r.normal_eq_residual_estimate();
-        if normar / (a_norm * residual.max(f64::MIN_POSITIVE)) <= self.criteria.rel_tol {
+        if self.ne_ratio(residual, r.normal_eq_residual_estimate()) <= self.criteria.rel_tol {
             return Stop::NormalEquationTolerance;
         }
         Stop::Continue
@@ -257,16 +261,11 @@ impl ConvergenceState {
 
     /// True-residual audit of a tolerance stop (cf. van der Vorst & Ye, SISC 22(3), 2000).
     pub(super) fn certified(&self, cert: &Certificate, zeta0: f64) -> bool {
-        if cert.normr <= CERTIFICATION_SLACK * self.criteria.abs_tol {
-            return true;
-        }
-        // `normr → 0` degenerates the ratio test; the drop of `‖Âᵀr‖` vs its start certifies instead.
-        if cert.normar <= CERTIFICATION_SLACK * self.criteria.rel_tol * zeta0 {
-            return true;
-        }
-        let a_norm = self.a_norm_sq.sqrt().max(f64::MIN_POSITIVE);
-        cert.normar / (a_norm * cert.normr.max(f64::MIN_POSITIVE))
-            <= CERTIFICATION_SLACK * self.criteria.rel_tol
+        let rel = CERTIFICATION_SLACK * self.criteria.rel_tol;
+        cert.normr <= CERTIFICATION_SLACK * self.criteria.abs_tol
+            // `normr → 0` degenerates the ratio test; the drop of `‖Âᵀr‖` vs its start certifies.
+            || cert.normar <= rel * zeta0
+            || self.ne_ratio(cert.normr, cert.normar) <= rel
     }
 }
 

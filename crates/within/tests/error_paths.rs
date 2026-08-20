@@ -208,7 +208,6 @@ fn test_within_error_source_chains_through_transparent_wrapper() {
 fn test_invalid_ridge_rejected() {
     let f = [0u32, 0, 1, 1];
     let g = [0u32, 1, 0, 1];
-    // A negative shift drops the diagonal below its row sum; NaN poisons every local solve.
     for ridge in [-1e-9, f64::NAN, f64::INFINITY] {
         let precond = PreconditionerConfig::Additive {
             local_solver: LocalSolverConfig {
@@ -222,9 +221,7 @@ fn test_invalid_ridge_rejected() {
             Effect::new(&g, true, []).expect("g"),
         ];
         match Solver::new(effects, None, &precond) {
-            Err(BuildError::InvalidRidge { value }) => {
-                assert_eq!(value.is_nan(), ridge.is_nan());
-            }
+            Err(BuildError::InvalidRidge { value }) => assert_eq!(value.to_bits(), ridge.to_bits()),
             other => panic!("expected InvalidRidge for {ridge}, got {other:?}"),
         }
     }

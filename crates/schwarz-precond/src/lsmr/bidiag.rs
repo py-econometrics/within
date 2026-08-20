@@ -110,6 +110,23 @@ fn alpha_from_vp(v: &[f64], p_tilde: &[f64]) -> Result<f64, SolveError> {
     Ok(vp.max(0.0).sqrt())
 }
 
+/// Fills `r = rhs − A x` and `atr = Aᵀ r`, returning `‖r‖`.
+fn true_residual<A: Operator + ?Sized>(
+    operator: &A,
+    x: &[f64],
+    rhs: &[f64],
+    r: &mut [f64],
+    atr: &mut [f64],
+) -> Result<f64, SolveError> {
+    operator.apply(x, r)?;
+    for (ri, &bi) in r.iter_mut().zip(rhs) {
+        *ri = bi - *ri;
+    }
+    let normr = super::vec_norm(r);
+    operator.apply_adjoint(r, atr)?;
+    Ok(normr)
+}
+
 /// Ring of recent basis vectors for windowed MGS; the disabled state is `None`, so `cap > 0`.
 struct WindowRing<const L: usize> {
     /// `L` flat buffers; lane `l`, slot `s` is `[s*n .. s*n + n]` of `lanes[l]`.
@@ -237,7 +254,7 @@ pub(super) trait Bidiagonalization {
     fn step(&mut self) -> Result<BidiagStep, SolveError>;
     /// Most recent normalized basis vector.
     fn v(&self) -> &[f64];
-    /// Recompute the true residual pair for `x`; clobbers the stream's buffers.
+    /// Clobbers the stream's buffers, so call it only on a terminating path.
     fn certify(&mut self, x: &[f64], rhs: &[f64]) -> Result<Certificate, SolveError>;
 }
 
@@ -282,13 +299,7 @@ impl<A: Operator + ?Sized> Bidiagonalization for GolubKahan<'_, A> {
     }
 
     fn certify(&mut self, x: &[f64], rhs: &[f64]) -> Result<Certificate, SolveError> {
-        self.operator.apply(x, &mut self.bufs.av)?;
-        for (ri, &bi) in self.bufs.av.iter_mut().zip(rhs) {
-            *ri = bi - *ri;
-        }
-        let normr = super::vec_norm(&self.bufs.av);
-        self.operator
-            .apply_adjoint(&self.bufs.av, &mut self.bufs.atu)?;
+        let normr = true_residual(self.operator, x, rhs, &mut self.bufs.av, &mut self.bufs.atu)?;
         Ok(Certificate {
             normr,
             normar: super::vec_norm(&self.bufs.atu),
@@ -332,13 +343,7 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
     }
 
     fn certify(&mut self, x: &[f64], rhs: &[f64]) -> Result<Certificate, SolveError> {
-        self.operator.apply(x, &mut self.bufs.av)?;
-        for (ri, &bi) in self.bufs.av.iter_mut().zip(rhs) {
-            *ri = bi - *ri;
-        }
-        let normr = super::vec_norm(&self.bufs.av);
-        self.operator
-            .apply_adjoint(&self.bufs.av, &mut self.bufs.atu)?;
+        let normr = true_residual(self.operator, x, rhs, &mut self.bufs.av, &mut self.bufs.atu)?;
         self.preconditioner
             .apply(&self.bufs.atu, &mut self.bufs.v)?;
         Ok(Certificate {

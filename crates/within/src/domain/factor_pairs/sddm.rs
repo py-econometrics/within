@@ -183,7 +183,6 @@ pub(super) fn add_relative_ridge(matrix: &mut SddmMatrix, relative: f64) {
         *diagonal += ridge;
         *ground_edge += ridge;
     }
-    matrix.grounding = Grounding::Grounded;
 }
 
 /// Skipping the signed machinery keeps the dominant plain path at two streaming passes.
