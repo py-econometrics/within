@@ -101,7 +101,8 @@ solver2 = Solver(fe, preconditioner=precond)   # skip re-factorization
 Pass `None` (the default) to use additive Schwarz with the default local solver.
 `PreconditionerConfig` is a tagged union: each variant is a subclass, so instances
 support `match`/`case` and compare by value. A built preconditioner exposes
-the configuration used to construct it as `.config` (preserved across pickling).
+the configuration used to construct it as `.config` and its original build duration in
+seconds as `.build_duration_seconds`; both are preserved across pickling and reuse.
 
 ### Local solver configuration (advanced)
 

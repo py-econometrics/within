@@ -417,6 +417,12 @@ impl PyPreconditioner {
         self.inner.ncols()
     }
 
+    /// Time in seconds spent building this preconditioner.
+    #[getter]
+    fn build_duration_seconds(&self) -> f64 {
+        self.inner.build_duration().as_secs_f64()
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "Preconditioner({}, n={})",

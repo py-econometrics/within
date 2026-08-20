@@ -16,10 +16,11 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - **BREAKING:** `LsmrStopReason` gains `Escalated` and `WarmStartExact`, breaking exhaustive `match`es.
 - A warm start that already solves the system reports `WarmStartExact` instead of `ZeroRhs`.
 - **BREAKING:** `ScalingConfig::max_sweeps` is now `max_iterations`, and `BuildWarning::UnscalableComponent` reports `iterations` in place of `sweeps`; the dominance certificate runs reduced CG, not relaxation sweeps.
-- **BREAKING:** The serialized `Preconditioner` wire format changed with the `approx-chol` 0.4 → 0.5 bump (v12 → v13) and retention of the complete construction config (v13 → v14); 0.3.0 bytes no longer decode.
+- **BREAKING:** The serialized `Preconditioner` wire format changed with the `approx-chol` 0.4 → 0.5 bump (v12 → v13), retention of the complete construction config (v13 → v14), retention of its original build duration (v14 → v15); 0.3.0 bytes no longer decode.
 
 ### Added
 
+- Python `Preconditioner.build_duration_seconds` and Rust `Preconditioner::build_duration()` expose the original preconditioner build duration, preserved across serialization and reuse.
 - `schwarz_precond::EscalationPolicy` builds a per-run `EscalationHandler` that ends a solve with `LsmrStopReason::Escalated` and an iterate that warm-starts the next preconditioner; `Staleness` implements it from the trailing contraction window.
 - `schwarz_precond::MlsmrOptions::warm_start` carries an initial iterate through a change of preconditioner.
 
