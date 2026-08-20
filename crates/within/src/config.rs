@@ -18,8 +18,8 @@ pub use schwarz_precond::ReductionStrategy;
 /// Default `n_keep` threshold below which a Schur domain tries the exact dense backend.
 pub(crate) const DEFAULT_DENSE_SCHUR_THRESHOLD: usize = 24;
 
-/// Default spectral floor; measured to sit well inside the flat plateau above the failure cliff.
-pub(crate) const DEFAULT_SLOPE_PAIR_RIDGE: f64 = 1e-7;
+/// Default spectral floor; centred between the measured failure cliff (1e-13) and iteration cost (1e-7).
+pub(crate) const DEFAULT_SLOPE_PAIR_RIDGE: f64 = 1e-10;
 
 /// Configuration for approximate Cholesky factorization.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
