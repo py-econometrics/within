@@ -1,9 +1,11 @@
 //! Cross-term collinearity screen (#281): a slope covariate that is (nearly) a per-level
 //! combination of another term's columns adds a null direction whitening cannot see.
 
+use std::ops::Range;
+
 use rayon::prelude::*;
 
-use super::level_moments::{BasisScratch, TermMoments};
+use super::level_moments::{BasisScratch, LevelMoments, TermMoments};
 use super::{Design, Loading};
 use crate::channel::Channel;
 use crate::BuildWarning;
@@ -11,23 +13,23 @@ use crate::BuildWarning;
 /// Residual share below which a covariate counts as reproduced by the other term.
 const COLLINEARITY_TOL: f64 = 1e-3;
 
+/// Cross-moment table bytes the screen may hold at once, over all terms together.
+const TABLE_BUDGET_BYTES: usize = 64 << 20;
+
 pub(crate) fn detect_collinear_slopes(
     design: &Design<'_>,
     weights: Option<&[f64]>,
     moments: &TermMoments,
 ) -> Vec<BuildWarning> {
+    if design.n_factors() < 2 {
+        return Vec::new();
+    }
+    let budget = TABLE_BUDGET_BYTES / std::mem::size_of::<f64>() / design.n_factors();
     (0..design.n_factors())
         .into_par_iter()
-        .flat_map_iter(|term| {
-            let targets: Vec<(Channel, u32)> = (0..design.n_factors())
-                .filter(|&t| t != term)
-                .flat_map(|t| design.channels(t))
-                .filter_map(|slope| match design.loading(slope) {
-                    Loading::Covariate(column) => Some((slope, column)),
-                    Loading::Constant => None,
-                })
-                .collect();
-            residual_shares(design, weights, moments, term, &targets)
+        .flat_map_iter(move |term| {
+            let targets = screened_covariates(design, term);
+            residual_shares(design, weights, &moments[term], term, &targets, budget)
                 .into_iter()
                 .zip(targets)
                 .filter(|&(share, _)| share <= COLLINEARITY_TOL)
@@ -42,137 +44,330 @@ pub(crate) fn detect_collinear_slopes(
         .collect()
 }
 
-/// Each target's share of (weighted) variation outside `term`'s column span.
-///
-/// One pass accumulates only the per-level cross moments `Σw·c` and `Σw·z·c`; the
-/// span's own geometry comes from the shared [`TermMoments`], so the projection is
-/// `Σ_q (W_q·d)²` against an orthonormal basis rather than a per-level solve.
+/// Every other term's slope covariates, as `(channel, frame column)`.
+fn screened_covariates(design: &Design<'_>, term: usize) -> Vec<(Channel, u32)> {
+    (0..design.n_factors())
+        .filter(|&t| t != term)
+        .flat_map(|t| design.channels(t))
+        .filter_map(|slope| match design.loading(slope) {
+            Loading::Covariate(column) => Some((slope, column)),
+            Loading::Constant => None,
+        })
+        .collect()
+}
+
+/// Each target's share of (weighted) variation outside `term`'s span, in two passes so it
+/// resolves below the `1e-16` a subtraction floors at.
 fn residual_shares(
     design: &Design<'_>,
     weights: Option<&[f64]>,
-    moments: &TermMoments,
+    moments: &LevelMoments,
     term: usize,
     targets: &[(Channel, u32)],
+    budget: usize,
 ) -> Vec<f64> {
-    let moments = &moments[term];
     let m = targets.len();
-    let v = moments.n_slopes();
-    let intercept = moments.intercept();
-    if m == 0 || (v == 0 && !intercept) {
-        return vec![1.0; m];
+    if m == 0 {
+        return Vec::new();
     }
-
+    let v = moments.n_slopes();
+    let levels = design.frame.level_column(term);
+    let screen = Screen {
+        levels,
+        weights,
+        zs: moments
+            .covariates()
+            .iter()
+            .map(|&c| design.frame.loading_column(c as usize))
+            .collect(),
+        zeros: vec![0.0; v],
+        moments,
+    };
     let columns: Vec<&[f64]> = targets
         .iter()
         .map(|&(_, c)| design.frame.loading_column(c as usize))
         .collect();
-    let zs: Vec<&[f64]> = moments
-        .covariates()
-        .iter()
-        .map(|&c| design.frame.loading_column(c as usize))
-        .collect();
 
-    // Per level and target: [Σw·c, Σw·z·c].
-    let stride = m * (v + 1);
-    let mut cross = vec![0.0f64; moments.n_levels() * stride];
-    let mut ss_total = vec![0.0f64; m];
-    for (obs, &level) in design.frame.level_column(term).iter().enumerate() {
-        let w = weights.map_or(1.0, |w| w[obs]);
-        if w <= 0.0 {
-            continue;
-        }
-        let level = &mut cross[level as usize * stride..][..stride];
-        for ((slot, column), ss) in level
-            .chunks_exact_mut(v + 1)
-            .zip(&columns)
-            .zip(&mut ss_total)
-        {
-            let wc = w * column[obs];
-            *ss += wc * column[obs];
-            slot[0] += wc;
-            for (s, z) in slot[1..].iter_mut().zip(&zs) {
-                *s += wc * z[obs];
+    let plan = ScreenPlan::new(budget, moments.n_levels(), m, v);
+    let mut table = vec![0.0f64; plan.levels * m * (v + 1)];
+    let mut residual = vec![0.0f64; m];
+    let mut variations = Variations::new(m);
+    for block in plan.blocks(levels, design.terms[term].sorted) {
+        let table = &mut table[..block.levels.len() * m * (v + 1)];
+        table.fill(0.0);
+        match block.exact {
+            true => screen.screen_block::<false>(
+                &block,
+                &columns,
+                table,
+                &mut variations,
+                &mut residual,
+            ),
+            false => {
+                screen.screen_block::<true>(&block, &columns, table, &mut variations, &mut residual)
             }
         }
     }
 
-    let ss_projected = cross
-        .par_chunks_exact(stride)
-        .enumerate()
-        .fold(
-            || (vec![0.0f64; m], BasisScratch::new(v), vec![0.0f64; v]),
-            |(mut ss_projected, mut scratch, mut d), (level, cross)| {
-                let w_sum = moments.w_sum(level);
-                if w_sum > 0.0 {
-                    if v > 0 {
-                        moments.basis(level, &mut scratch);
-                    }
-                    let mean = moments.mean(level);
-                    for (slot, ss) in cross.chunks_exact(v + 1).zip(&mut ss_projected) {
-                        if intercept {
-                            *ss += slot[0] * slot[0] / w_sum;
-                            for ((dj, &xj), &mj) in d.iter_mut().zip(&slot[1..]).zip(mean) {
-                                *dj = xj - slot[0] * mj;
-                            }
-                        } else {
-                            d.copy_from_slice(&slot[1..]);
-                        }
-                        if v > 0 {
-                            for row in scratch.basis.chunks_exact(v) {
-                                let projection = crate::linalg::dot(row, &d);
-                                *ss += projection * projection;
-                            }
-                        }
-                    }
-                }
-                (ss_projected, scratch, d)
+    let intercept = moments.intercept();
+    residual
+        .iter()
+        .zip(&variations.stats)
+        .map(
+            |(&residual, stat)| match stat.total(variations.w_sum, intercept) {
+                // No variation means no slope: a within-term degeneracy the rank test reports.
+                total if total > 0.0 => residual / total,
+                _ => 1.0,
             },
         )
-        .map(|(ss_projected, ..)| ss_projected)
-        .reduce(
-            || vec![0.0f64; m],
-            |mut a, b| {
-                for (aj, bj) in a.iter_mut().zip(b) {
-                    *aj += bj;
-                }
-                a
-            },
-        );
+        .collect()
+}
 
-    // An intercept puts every level's constant in the span, so the share has to be
-    // measured against the covariate's variation — against `Σw·c²` it would only
-    // report how far the covariate's mean sits from zero.
-    let (mut sum_wc, mut w_total) = (vec![0.0f64; m], 0.0);
-    for (level, chunk) in cross.chunks_exact(stride).enumerate() {
-        w_total += moments.w_sum(level);
-        for (slot, sum) in chunk.chunks_exact(v + 1).zip(&mut sum_wc) {
-            *sum += slot[0];
+struct Screen<'a> {
+    levels: &'a [u32],
+    weights: Option<&'a [f64]>,
+    zs: Vec<&'a [f64]>,
+    zeros: Vec<f64>,
+    moments: &'a LevelMoments,
+}
+
+impl Screen<'_> {
+    fn weight(&self, obs: usize) -> f64 {
+        self.weights.map_or(1.0, |w| w[obs])
+    }
+
+    /// Without an intercept the level's span holds no constant, so `z` enters uncentered.
+    fn center(&self, level: usize) -> &[f64] {
+        match self.moments.intercept() {
+            true => self.moments.mean(level),
+            false => &self.zeros,
         }
     }
 
-    ss_projected
-        .into_iter()
-        .zip(ss_total)
-        .zip(sum_wc)
-        .map(|((projected, total), sum_wc)| {
-            let variation = match intercept {
-                true => total - sum_wc * sum_wc / w_total,
-                false => total,
-            };
-            // A covariate with no variation carries no slope at all; that is a
-            // within-term degeneracy the whitening's rank test already reports.
-            match variation > 0.0 {
-                true => ((total - projected) / variation).max(0.0),
-                false => 1.0,
+    /// `RESCAN` marks the one path whose rows outrun their block: an unsorted term rescans.
+    fn screen_block<const RESCAN: bool>(
+        &self,
+        block: &Block,
+        columns: &[&[f64]],
+        table: &mut [f64],
+        variations: &mut Variations,
+        residual: &mut [f64],
+    ) {
+        self.accumulate_cross::<RESCAN>(block, columns, table, variations);
+        self.to_coefficients(block, columns.len(), table);
+        self.accumulate_residual::<RESCAN>(block, columns, table, residual);
+    }
+
+    /// Adds `[Σw·c, Σw·z·c]` per level and target, plus each target's total variation.
+    fn accumulate_cross<const RESCAN: bool>(
+        &self,
+        block: &Block,
+        columns: &[&[f64]],
+        table: &mut [f64],
+        variations: &mut Variations,
+    ) {
+        let v = self.zs.len();
+        let stride = columns.len() * (v + 1);
+        let (first, span) = (block.levels.start, block.levels.len());
+        let Variations { w_sum, stats } = variations;
+        let mut running = *w_sum;
+        for obs in block.rows.clone() {
+            let w = self.weight(obs);
+            if w <= 0.0 {
+                continue;
+            }
+            let row = (self.levels[obs] as usize).wrapping_sub(first);
+            if RESCAN && row >= span {
+                continue;
+            }
+            running += w;
+            // Every target shares the running weight, so the Welford ratio is taken once.
+            let ratio = w / running;
+            for ((slot, column), stat) in table[row * stride..][..stride]
+                .chunks_exact_mut(v + 1)
+                .zip(columns)
+                .zip(&mut *stats)
+            {
+                let c = column[obs];
+                stat.observe(c, w, ratio);
+                let wc = w * c;
+                slot[0] += wc;
+                for (s, z) in slot[1..].iter_mut().zip(&self.zs) {
+                    *s += wc * z[obs];
+                }
+            }
+        }
+        *w_sum = running;
+    }
+
+    /// Rewrites a level's cross moments as the coefficients `[c̄, β]` of `c`'s fit on its span.
+    fn to_coefficients(&self, block: &Block, targets: usize, table: &mut [f64]) {
+        let v = self.zs.len();
+        let intercept = self.moments.intercept();
+        table
+            .par_chunks_exact_mut(targets * (v + 1))
+            .enumerate()
+            .for_each_init(
+                || (BasisScratch::new(v), vec![0.0f64; v]),
+                |(scratch, d), (offset, row)| {
+                    let level = block.levels.start + offset;
+                    let w_sum = self.moments.w_sum(level);
+                    if w_sum <= 0.0 {
+                        return;
+                    }
+                    if v > 0 {
+                        self.moments.basis(level, scratch);
+                    }
+                    let center = self.center(level);
+                    for slot in row.chunks_exact_mut(v + 1) {
+                        let sum_wc = slot[0];
+                        for ((dj, &xj), &cj) in d.iter_mut().zip(&slot[1..]).zip(center) {
+                            *dj = xj - sum_wc * cj;
+                        }
+                        slot[0] = match intercept {
+                            true => sum_wc / w_sum,
+                            false => 0.0,
+                        };
+                        slot[1..].fill(0.0);
+                        if v > 0 {
+                            for q in scratch.basis.chunks_exact(v) {
+                                let projection = crate::linalg::dot(q, d);
+                                for (b, &qj) in slot[1..].iter_mut().zip(q) {
+                                    *b += projection * qj;
+                                }
+                            }
+                        }
+                    }
+                },
+            );
+    }
+
+    /// Adds each target's `Σw·(c − ĉ)²` from the coefficients left in `table`.
+    fn accumulate_residual<const RESCAN: bool>(
+        &self,
+        block: &Block,
+        columns: &[&[f64]],
+        table: &[f64],
+        residual: &mut [f64],
+    ) {
+        let v = self.zs.len();
+        let stride = columns.len() * (v + 1);
+        let (first, span) = (block.levels.start, block.levels.len());
+        let mut dz = vec![0.0f64; v];
+        for obs in block.rows.clone() {
+            let w = self.weight(obs);
+            if w <= 0.0 {
+                continue;
+            }
+            let row = (self.levels[obs] as usize).wrapping_sub(first);
+            if RESCAN && row >= span {
+                continue;
+            }
+            for (dzj, (z, &cj)) in dz
+                .iter_mut()
+                .zip(self.zs.iter().zip(self.center(first + row)))
+            {
+                *dzj = z[obs] - cj;
+            }
+            for ((slot, column), residual) in table[row * stride..][..stride]
+                .chunks_exact(v + 1)
+                .zip(columns)
+                .zip(&mut *residual)
+            {
+                let r = column[obs] - slot[0] - crate::linalg::dot(&slot[1..], &dz);
+                *residual += w * r * r;
+            }
+        }
+    }
+}
+
+/// One slice of a term's work: the levels the table holds and the rows offered for them.
+struct Block {
+    levels: Range<usize>,
+    rows: Range<usize>,
+    /// Whether every offered row reaches a level the block holds.
+    exact: bool,
+}
+
+/// How a term's levels are cut to fit the table budget; one level's row is the floor.
+#[derive(Clone, Copy)]
+struct ScreenPlan {
+    levels: usize,
+    n_levels: usize,
+}
+
+impl ScreenPlan {
+    /// `budget` counts doubles; the table needs `v + 1` of them per level and target.
+    fn new(budget: usize, n_levels: usize, targets: usize, v: usize) -> Self {
+        Self {
+            levels: (budget / (targets * (v + 1))).clamp(1, n_levels),
+            n_levels,
+        }
+    }
+
+    fn blocks(self, levels: &[u32], sorted: bool) -> impl Iterator<Item = Block> + '_ {
+        (0..self.n_levels).step_by(self.levels).map(move |start| {
+            let end = (start + self.levels).min(self.n_levels);
+            Block {
+                rows: match sorted {
+                    true => {
+                        levels.partition_point(|&l| (l as usize) < start)
+                            ..levels.partition_point(|&l| (l as usize) < end)
+                    }
+                    false => 0..levels.len(),
+                },
+                exact: sorted || self.levels >= self.n_levels,
+                levels: start..end,
             }
         })
-        .collect()
+    }
+}
+
+/// The targets' total variation; they share one running weight, so the ratio is taken once.
+struct Variations {
+    w_sum: f64,
+    stats: Vec<Variation>,
+}
+
+impl Variations {
+    fn new(targets: usize) -> Self {
+        Self {
+            w_sum: 0.0,
+            stats: vec![Variation::default(); targets],
+        }
+    }
+}
+
+/// Welford, so the share's denominator survives a covariate whose mean dwarfs its spread.
+#[derive(Clone, Default)]
+struct Variation {
+    mean: f64,
+    m2: f64,
+}
+
+impl Variation {
+    fn observe(&mut self, c: f64, w: f64, ratio: f64) {
+        let delta = c - self.mean;
+        self.mean += ratio * delta;
+        self.m2 += w * delta * (c - self.mean);
+    }
+
+    /// An intercept puts a constant in every level's span; without one, against `Σw·c²`.
+    fn total(&self, w_sum: f64, intercept: bool) -> f64 {
+        match intercept {
+            true => self.m2,
+            false => self.m2 + w_sum * self.mean * self.mean,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::Effect;
+
+    /// Wide enough that no design in these tests splits its table.
+    const FULL_TABLE: usize = 1 << 24;
 
     fn warn_pairs(design: &Design<'_>, weights: Option<&[f64]>) -> Vec<(Channel, usize)> {
         let moments = TermMoments::build(design, weights).expect("design carries slopes");
@@ -183,6 +378,13 @@ mod tests {
                 other => panic!("unexpected warning {other:?}"),
             })
             .collect()
+    }
+
+    /// The shares `term`'s screen reports, in target-channel order.
+    fn shares(design: &Design<'_>, term: usize, budget: usize) -> Vec<f64> {
+        let moments = TermMoments::build(design, None).expect("design carries slopes");
+        let targets = screened_covariates(design, term);
+        residual_shares(design, None, &moments[term], term, &targets, budget)
     }
 
     fn two_factor_levels(n: usize) -> (Vec<u32>, Vec<u32>) {
@@ -331,5 +533,145 @@ mod tests {
         let weights = design.permute_obs_in(&weights).into_owned();
         assert!(!warn_pairs(&design, Some(&weights)).is_empty());
         assert_eq!(warn_pairs(&design, None), Vec::new());
+    }
+
+    /// Severity peaks where a covariate is *nearly* shared: `eps²` down to 1e-24.
+    #[test]
+    fn the_share_resolves_a_perturbation_of_a_shared_covariate() {
+        let n = 4000;
+        let (a, b) = two_factor_levels(n);
+        let z = pseudo_noise(n, 3);
+        let noise = pseudo_noise(n, 17);
+        let share_at = |eps: f64| {
+            let perturbed: Vec<f64> = z.iter().zip(&noise).map(|(&v, &e)| v + eps * e).collect();
+            let design = Design::new(vec![
+                Effect::new(&a, true, [&z[..]]).unwrap(),
+                Effect::new(&b, true, [&perturbed[..]]).unwrap(),
+            ])
+            .unwrap();
+            shares(&design, 1, FULL_TABLE)[0]
+        };
+
+        // An exactly shared covariate is reproduced to the last bit of the fit itself.
+        assert!(share_at(0.0) < 1e-28, "{:e}", share_at(0.0));
+        for eps in [1e-12, 1e-9, 1e-6, 1e-3] {
+            let share = share_at(eps);
+            let ratio = share / (eps * eps);
+            assert!((0.2..5.0).contains(&ratio), "eps {eps:e}: share {share:e}");
+        }
+    }
+
+    /// Without an intercept both the fit and the denominator must read the covariate raw.
+    #[test]
+    fn a_shared_covariate_warns_against_a_term_without_an_intercept() {
+        let n = 4000;
+        let (a, b) = two_factor_levels(n);
+        let z = pseudo_noise(n, 3);
+        let other = pseudo_noise(n, 19);
+        let design = Design::new(vec![
+            Effect::new(&a, false, [&z[..]]).unwrap(),
+            Effect::new(&b, true, [&z[..], &other[..]]).unwrap(),
+        ])
+        .unwrap();
+        let (shared, independent) = (
+            shares(&design, 0, FULL_TABLE)[0],
+            shares(&design, 0, FULL_TABLE)[1],
+        );
+        assert!(shared < 1e-28, "{shared:e}");
+        assert!(independent > 0.5, "{independent:e}");
+    }
+
+    /// Splitting the table changes what it holds, never the arithmetic — to rounding for an
+    /// unsorted term, whose rows are revisited level-major.
+    #[test]
+    fn a_minimal_table_budget_reproduces_the_full_table_shares() {
+        let n = 4000;
+        let (a, b) = two_factor_levels(n);
+        let z1 = pseudo_noise(n, 7);
+        let z2 = pseudo_noise(n, 11);
+        let design = Design::new(vec![
+            Effect::new(&a, true, [&z1[..], &z2[..]]).unwrap(),
+            Effect::new(&b, true, [&z1[..]]).unwrap(),
+        ])
+        .unwrap();
+        // Only term 0's rows come out sorted, so the two terms take the two blocking paths.
+        assert!(design.terms[0].sorted && !design.terms[1].sorted);
+        assert_eq!(shares(&design, 0, 1), shares(&design, 0, FULL_TABLE));
+        for (split, whole) in shares(&design, 1, 1)
+            .into_iter()
+            .zip(shares(&design, 1, FULL_TABLE))
+        {
+            assert!(
+                (split - whole).abs() <= 1e-12 * split.max(whole),
+                "{split:e} vs {whole:e}"
+            );
+        }
+    }
+
+    /// The table stays inside its budget however many levels an unsorted term carries.
+    #[test]
+    fn an_unsorted_many_level_term_still_warns_under_a_minimal_budget() {
+        let n = 4000;
+        let a: Vec<u32> = (0..n as u32).collect();
+        let b: Vec<u32> = (0..n).map(|i| ((i * 7) % 1500) as u32).collect();
+        let z = pseudo_noise(n, 13);
+        let other = pseudo_noise(n, 23);
+        let design = Design::new(vec![
+            Effect::new(&a, true, [&other[..]]).unwrap(),
+            Effect::new(&b, true, [&z[..]]).unwrap(),
+        ])
+        .unwrap();
+        assert!(!design.terms[1].sorted);
+        // Term 1's own covariate is a per-level constant of term 0, whose levels are singletons.
+        assert!(shares(&design, 0, 1)[0] < 1e-20);
+    }
+
+    /// 8 targets and 4 doubles per level and target, so 4000 doubles buys 125 levels.
+    #[test]
+    fn the_plan_keeps_the_table_inside_the_budget() {
+        let table = |plan: ScreenPlan| plan.levels * 8 * 4;
+        let fits = ScreenPlan::new(4000, 125, 8, 3);
+        assert_eq!((fits.levels, table(fits)), (125, 4000));
+        // A level count the budget cannot hold whole is cut, however large it is.
+        for n_levels in [1_000, 1_000_000, 100_000_000] {
+            let plan = ScreenPlan::new(4000, n_levels, 8, 3);
+            assert_eq!(plan.levels, 125, "{n_levels}");
+            assert!(table(plan) <= 4000, "{n_levels}");
+        }
+        // One level's row is the floor: `targets · (v + 1)` doubles, independent of the levels.
+        let starved = ScreenPlan::new(0, 100_000_000, 8, 3);
+        assert_eq!((starved.levels, table(starved)), (1, 32));
+    }
+
+    #[test]
+    fn level_blocks_cover_every_row_exactly_once() {
+        let levels: Vec<u32> = (0..100u32).flat_map(|l| [l; 3]).collect();
+        let plan = ScreenPlan::new(7 * 3, 100, 1, 2);
+        assert_eq!(plan.levels, 7);
+        let mut next = 0;
+        for block in plan.blocks(&levels, true) {
+            assert_eq!(block.rows.start, next);
+            assert_eq!(block.rows.end, block.levels.end.min(100) * 3);
+            next = block.rows.end;
+        }
+        assert_eq!(next, levels.len());
+    }
+
+    /// An unsorted term rescans per block, so each row still lands in exactly one block.
+    #[test]
+    fn unsorted_blocks_reach_every_row_exactly_once() {
+        let levels: Vec<u32> = (0..300u32).map(|i| (i * 7) % 100).collect();
+        let plan = ScreenPlan::new(7, 100, 1, 6);
+        assert_eq!(plan.levels, 1);
+        let mut seen = vec![0u32; levels.len()];
+        for block in plan.blocks(&levels, false) {
+            assert_eq!(block.rows, 0..levels.len());
+            for (obs, &l) in levels.iter().enumerate() {
+                if block.levels.contains(&(l as usize)) {
+                    seen[obs] += 1;
+                }
+            }
+        }
+        assert!(seen.iter().all(|&n| n == 1), "{seen:?}");
     }
 }
