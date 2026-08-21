@@ -127,7 +127,7 @@ pub enum BuildWarning {
         slope: Channel,
         /// The term whose columns (nearly) reproduce the covariate.
         term: usize,
-        /// Share of the covariate's sum of squares outside that term's span.
+        /// Share of the covariate's weighted variation outside that term's span.
         relative_residual: f64,
     },
 }
