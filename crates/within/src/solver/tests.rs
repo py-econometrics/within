@@ -2,6 +2,7 @@ use super::reparam::SlopeReparam;
 use super::{CoefficientAddress, CoefficientLayout};
 use crate::channel::Channel;
 use crate::config::{LocalSolverConfig, DEFAULT_DENSE_SCHUR_THRESHOLD};
+use crate::domain::level_moments::TermMoments;
 use crate::domain::{build_local_domains, Design, Grounding, MatrixForm};
 use crate::Effect;
 
@@ -34,7 +35,8 @@ fn positive_slope_only_pair_grounds_beyond_dense_threshold() {
         Effect::new(&g, true, []).expect("plain effect"),
     ];
     let mut design = Design::new(effects).expect("design");
-    let _reparam = SlopeReparam::build(&mut design, None);
+    let moments = TermMoments::build(&design, None).expect("slopes");
+    let _reparam = SlopeReparam::build(&mut design, &moments);
     let (domains, warnings) =
         build_local_domains(&design, None, &LocalSolverConfig::default()).expect("domains");
     assert!(

@@ -1,44 +1,11 @@
-//! Seam tests for the per-level pivoted Gram–Schmidt (pivot bookkeeping,
-//! rank-tolerance contract — neither reachable through the public API) and
-//! for the per-term independence of the multi-term whitening.
+//! Seam tests for the per-term independence of the multi-term whitening,
+//! not reachable through the public API.
 
 use crate::channel::Channel;
+use crate::domain::level_moments::TermMoments;
 use crate::domain::Effect;
 
 use super::*;
-
-#[test]
-fn gram_schmidt_orthonormalizes_under_a_non_monotonic_pivot_order() {
-    // Diagonals [2, 5, 3] force the pivot sequence 1 → 2 → 0, breaking order assumptions.
-    let g = [2.0, 1.0, 0.5, 1.0, 5.0, 2.0, 0.5, 2.0, 3.0];
-    let (w, kept) = pivoted_gram_schmidt(&g, 3, RANK_TOL);
-    assert_eq!(kept, [true; 3]);
-    assert_eq!(w.len(), 9);
-
-    for r in 0..3 {
-        for s in 0..3 {
-            let wgw: f64 = (0..3)
-                .flat_map(|j| (0..3).map(move |k| (j, k)))
-                .map(|(j, k)| w[r * 3 + j] * g[j * 3 + k] * w[s * 3 + k])
-                .sum();
-            let expected = if r == s { 1.0 } else { 0.0 };
-            assert!(
-                (wgw - expected).abs() < 1e-12,
-                "(W·G·Wᵀ)[{r}][{s}] = {wgw}, expected {expected}"
-            );
-        }
-    }
-}
-
-#[test]
-fn zero_tolerance_keeps_a_near_degenerate_direction_the_default_drops() {
-    let eps = 1e-12;
-    let g = [1.0, 1.0 - eps, 1.0 - eps, 1.0];
-    let (_, kept) = pivoted_gram_schmidt(&g, 2, RANK_TOL);
-    assert_eq!(kept.iter().filter(|&&k| k).count(), 1);
-    let (_, kept) = pivoted_gram_schmidt(&g, 2, 0.0);
-    assert_eq!(kept, [true, true]);
-}
 
 const F0: [u32; 6] = [0, 0, 0, 1, 1, 1];
 const Z0: [f64; 6] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
@@ -60,7 +27,8 @@ fn three_term_effects() -> Vec<Effect<'static>> {
 #[test]
 fn build_whitens_each_slope_bearing_term() {
     let mut design = Design::new(three_term_effects()).unwrap();
-    let rp = SlopeReparam::build(&mut design, None).unwrap();
+    let moments = TermMoments::build(&design, None).unwrap();
+    let rp = SlopeReparam::build(&mut design, &moments).unwrap();
     assert!(rp.unidentified.is_empty());
 
     for term in [0, 2] {
@@ -104,7 +72,8 @@ fn unidentified_directions_ascend_across_terms() {
         Effect::new(&f1, true, [&z1[..]]).unwrap(),
     ];
     let mut design = Design::new(effects).unwrap();
-    let rp = SlopeReparam::build(&mut design, None).unwrap();
+    let moments = TermMoments::build(&design, None).unwrap();
+    let rp = SlopeReparam::build(&mut design, &moments).unwrap();
     assert_eq!(
         rp.unidentified,
         vec![
@@ -123,7 +92,8 @@ fn unidentified_directions_ascend_across_terms() {
 #[test]
 fn back_transform_leaves_other_terms_untouched() {
     let mut design = Design::new(three_term_effects()).unwrap();
-    let rp = SlopeReparam::build(&mut design, None).unwrap();
+    let moments = TermMoments::build(&design, None).unwrap();
+    let rp = SlopeReparam::build(&mut design, &moments).unwrap();
 
     let mut x: Vec<f64> = (0..design.n_dofs).map(|i| 1.0 + i as f64).collect();
     let before = x.clone();

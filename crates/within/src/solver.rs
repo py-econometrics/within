@@ -12,6 +12,7 @@ use schwarz_precond::{lsmr as lsmr_solve, mlsmr, MlsmrOptions};
 use crate::channel::Channel;
 use crate::config::{LsmrOptions, PreconditionerConfig};
 use crate::domain::collinearity::detect_collinear_slopes;
+use crate::domain::level_moments::TermMoments;
 use crate::domain::{Design, Effect};
 use crate::observation::ObservationFrame;
 use crate::operator::design::gather_apply;
@@ -371,11 +372,17 @@ impl<'a> Solver<'a> {
             None => weights,
         };
 
-        // The screen reads raw loadings, so it runs before whitening rewrites them.
-        let mut warnings = detect_collinear_slopes(&design, weights.as_deref());
+        // Both readers below need the raw loadings, so the moments precede whitening.
+        let moments = TermMoments::build(&design, weights.as_deref());
+        let mut warnings = moments
+            .as_ref()
+            .map(|m| detect_collinear_slopes(&design, weights.as_deref(), m))
+            .unwrap_or_default();
 
         // Reparametrize the slope columns (if any) before the preconditioner reads the frame.
-        let reparam = SlopeReparam::build(&mut design, weights.as_deref());
+        let reparam = moments
+            .as_ref()
+            .and_then(|m| SlopeReparam::build(&mut design, m));
 
         let (preconditioner, build_warnings) = match preconditioner.into() {
             PreconditionerInput::Default => {

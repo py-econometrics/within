@@ -3,6 +3,7 @@
 
 use rayon::prelude::*;
 
+use super::level_moments::{BasisScratch, TermMoments};
 use super::{Design, Loading};
 use crate::channel::Channel;
 use crate::BuildWarning;
@@ -10,122 +11,145 @@ use crate::BuildWarning;
 /// Residual share below which a covariate counts as reproduced by the other term.
 const COLLINEARITY_TOL: f64 = 1e-3;
 
-/// Pivots below this share of the largest diagonal count as a dependent column.
-const PIVOT_FLOOR: f64 = 1e-12;
-
 pub(crate) fn detect_collinear_slopes(
     design: &Design<'_>,
     weights: Option<&[f64]>,
+    moments: &TermMoments,
 ) -> Vec<BuildWarning> {
-    let mut pairs: Vec<(Channel, u32, usize)> = Vec::new();
-    for term in 0..design.n_factors() {
-        for slope in design.channels(term) {
-            let Loading::Covariate(column) = design.loading(slope) else {
-                continue;
-            };
-            pairs.extend(
-                (0..design.n_factors())
-                    .filter(|&t| t != term)
-                    .map(|t| (slope, column, t)),
-            );
-        }
-    }
-    pairs
-        .par_iter()
-        .filter_map(|&(slope, covariate, term)| {
-            let relative_residual = relative_residual(design, weights, covariate, term);
-            (relative_residual <= COLLINEARITY_TOL).then_some(
-                BuildWarning::CollinearSlopeCovariate {
-                    slope,
-                    term,
-                    relative_residual,
-                },
-            )
+    (0..design.n_factors())
+        .into_par_iter()
+        .flat_map_iter(|term| {
+            let targets: Vec<(Channel, u32)> = (0..design.n_factors())
+                .filter(|&t| t != term)
+                .flat_map(|t| design.channels(t))
+                .filter_map(|slope| match design.loading(slope) {
+                    Loading::Covariate(column) => Some((slope, column)),
+                    Loading::Constant => None,
+                })
+                .collect();
+            residual_shares(design, weights, moments, term, &targets)
+                .into_iter()
+                .zip(targets)
+                .filter(|&(share, _)| share <= COLLINEARITY_TOL)
+                .map(
+                    move |(relative_residual, (slope, _))| BuildWarning::CollinearSlopeCovariate {
+                        slope,
+                        term,
+                        relative_residual,
+                    },
+                )
         })
         .collect()
 }
 
-/// Share of the covariate's (weighted) sum of squares outside `term`'s column span.
-fn relative_residual(
+/// Each target's share of (weighted) sum of squares outside `term`'s column span.
+///
+/// One pass accumulates only the per-level cross moments `Σw·c` and `Σw·z·c`; the
+/// span's own geometry comes from the shared [`TermMoments`], so the projection is
+/// `Σ_q (W_q·d)²` against an orthonormal basis rather than a per-level solve.
+fn residual_shares(
     design: &Design<'_>,
     weights: Option<&[f64]>,
-    covariate: u32,
+    moments: &TermMoments,
     term: usize,
-) -> f64 {
-    let target = design.frame.loading_column(covariate as usize);
-    let levels = design.frame.level_column(term);
-    let columns = &design.terms[term].columns;
-    let p = columns.len();
-    let stride = p * p + p;
+    targets: &[(Channel, u32)],
+) -> Vec<f64> {
+    let moments = &moments[term];
+    let m = targets.len();
+    let v = moments.n_slopes();
+    let intercept = moments.intercept();
+    if m == 0 || (v == 0 && !intercept) {
+        return vec![1.0; m];
+    }
 
-    let covariate_slots: Vec<(usize, &[f64])> = columns
+    let columns: Vec<&[f64]> = targets
         .iter()
-        .enumerate()
-        .filter_map(|(slot, c)| {
-            c.covariate()
-                .map(|&k| (slot, design.frame.loading_column(k as usize)))
-        })
+        .map(|&(_, c)| design.frame.loading_column(c as usize))
+        .collect();
+    let zs: Vec<&[f64]> = moments
+        .covariates()
+        .iter()
+        .map(|&c| design.frame.loading_column(c as usize))
         .collect();
 
-    let mut per_level = vec![0.0f64; design.terms[term].n_levels * stride];
-    let mut ss_total = 0.0;
-    let mut x = vec![1.0f64; p];
-    for (obs, (&value, &level)) in target.iter().zip(levels).enumerate() {
+    // Per level and target: [Σw·c, Σw·z·c].
+    let stride = m * (v + 1);
+    let mut cross = vec![0.0f64; moments.n_levels() * stride];
+    let mut ss_total = vec![0.0f64; m];
+    for (obs, &level) in design.frame.level_column(term).iter().enumerate() {
         let w = weights.map_or(1.0, |w| w[obs]);
-        ss_total += w * value * value;
-        for &(slot, loadings) in &covariate_slots {
-            x[slot] = loadings[obs];
+        if w <= 0.0 {
+            continue;
         }
-        let (gram, cross) =
-            per_level[level as usize * stride..(level as usize + 1) * stride].split_at_mut(p * p);
-        for q in 0..p {
-            let wx = w * x[q];
-            cross[q] += wx * value;
-            for r in 0..p {
-                gram[q * p + r] += wx * x[r];
+        let level = &mut cross[level as usize * stride..][..stride];
+        for ((slot, column), ss) in level
+            .chunks_exact_mut(v + 1)
+            .zip(&columns)
+            .zip(&mut ss_total)
+        {
+            let wc = w * column[obs];
+            *ss += wc * column[obs];
+            slot[0] += wc;
+            for (s, z) in slot[1..].iter_mut().zip(&zs) {
+                *s += wc * z[obs];
             }
         }
     }
-    if ss_total <= 0.0 {
-        return 1.0;
-    }
 
-    let mut ss_projected = 0.0;
-    let mut active = Vec::with_capacity(p);
-    for level in per_level.chunks_exact_mut(stride) {
-        let (gram, cross) = level.split_at_mut(p * p);
-        ss_projected += projected_ss(gram, cross, &mut active);
-    }
-    ((ss_total - ss_projected) / ss_total).max(0.0)
-}
-
-/// `cᵀ G⁺ c` for one level's tiny PSD Gram, by pivoted outer-product Cholesky.
-fn projected_ss(gram: &mut [f64], cross: &mut [f64], active: &mut Vec<usize>) -> f64 {
-    let p = cross.len();
-    let floor = PIVOT_FLOOR * (0..p).map(|q| gram[q * p + q]).fold(0.0f64, f64::max);
-    active.clear();
-    active.extend(0..p);
-    let mut ss = 0.0;
-    while let Some((position, &pivot)) = active
-        .iter()
+    let ss_projected = cross
+        .par_chunks_exact(stride)
         .enumerate()
-        .max_by(|a, b| gram[a.1 * p + a.1].total_cmp(&gram[b.1 * p + b.1]))
-    {
-        let diagonal = gram[pivot * p + pivot];
-        if diagonal <= floor {
-            break;
-        }
-        active.swap_remove(position);
-        ss += cross[pivot] * cross[pivot] / diagonal;
-        for &row in active.iter() {
-            let multiplier = gram[row * p + pivot] / diagonal;
-            cross[row] -= multiplier * cross[pivot];
-            for &col in active.iter() {
-                gram[row * p + col] -= multiplier * gram[pivot * p + col];
+        .fold(
+            || (vec![0.0f64; m], BasisScratch::new(v), vec![0.0f64; v]),
+            |(mut ss_projected, mut scratch, mut d), (level, cross)| {
+                let w_sum = moments.w_sum(level);
+                if w_sum > 0.0 {
+                    if v > 0 {
+                        moments.basis(level, &mut scratch);
+                    }
+                    let mean = moments.mean(level);
+                    for (slot, ss) in cross.chunks_exact(v + 1).zip(&mut ss_projected) {
+                        if intercept {
+                            *ss += slot[0] * slot[0] / w_sum;
+                            for ((dj, &xj), &mj) in d.iter_mut().zip(&slot[1..]).zip(mean) {
+                                *dj = xj - slot[0] * mj;
+                            }
+                        } else {
+                            d.copy_from_slice(&slot[1..]);
+                        }
+                        if v > 0 {
+                            for row in scratch.basis.chunks_exact(v) {
+                                let projection = crate::linalg::dot(row, &d);
+                                *ss += projection * projection;
+                            }
+                        }
+                    }
+                }
+                (ss_projected, scratch, d)
+            },
+        )
+        .map(|(ss_projected, ..)| ss_projected)
+        .reduce(
+            || vec![0.0f64; m],
+            |mut a, b| {
+                for (aj, bj) in a.iter_mut().zip(b) {
+                    *aj += bj;
+                }
+                a
+            },
+        );
+
+    ss_projected
+        .into_iter()
+        .zip(ss_total)
+        .map(|(projected, total)| {
+            if total <= 0.0 {
+                1.0
+            } else {
+                ((total - projected) / total).max(0.0)
             }
-        }
-    }
-    ss
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -134,7 +158,8 @@ mod tests {
     use crate::Effect;
 
     fn warn_pairs(design: &Design<'_>, weights: Option<&[f64]>) -> Vec<(Channel, usize)> {
-        detect_collinear_slopes(design, weights)
+        let moments = TermMoments::build(design, weights).expect("design carries slopes");
+        detect_collinear_slopes(design, weights, &moments)
             .into_iter()
             .map(|w| match w {
                 BuildWarning::CollinearSlopeCovariate { slope, term, .. } => (slope, term),
@@ -180,6 +205,24 @@ mod tests {
             pairs.contains(&(Channel { term: 1, column: 1 }, 0)),
             "{pairs:?}"
         );
+    }
+
+    /// The disease is scale-invariant, so the screen must be too: the raw Gram's
+    /// intercept diagonal dwarfs a small covariate's.
+    #[test]
+    fn a_rescaled_shared_covariate_still_warns_both_ways() {
+        let n = 4000;
+        let (a, b) = two_factor_levels(n);
+        let z = pseudo_noise(n, 3);
+        for scale in [1.0, 1e-6, 1e-9] {
+            let scaled: Vec<f64> = z.iter().map(|v| v * scale).collect();
+            let design = Design::new(vec![
+                Effect::new(&a, true, [&scaled[..]]).unwrap(),
+                Effect::new(&b, true, [&scaled[..]]).unwrap(),
+            ])
+            .unwrap();
+            assert_eq!(warn_pairs(&design, None).len(), 2, "scale {scale:e}");
+        }
     }
 
     #[test]
