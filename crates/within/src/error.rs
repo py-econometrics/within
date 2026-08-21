@@ -2,7 +2,7 @@
 
 use thiserror::Error;
 
-use crate::channel::ChannelPair;
+use crate::channel::{Channel, ChannelPair};
 
 pub use schwarz_precond::SolveError;
 
@@ -107,7 +107,7 @@ pub enum BuildError {
     },
 }
 
-/// A non-fatal preconditioner-build event.
+/// A non-fatal solver-build event.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum BuildWarning {
@@ -119,6 +119,16 @@ pub enum BuildWarning {
         iterations: usize,
         /// Largest relative dominance violation at hand-over.
         violation: f64,
+    },
+    /// A slope covariate is (nearly) a per-level combination of another term's
+    /// columns, so the design has a (near-)null direction spanning both terms.
+    CollinearSlopeCovariate {
+        /// The slope channel carrying the covariate.
+        slope: Channel,
+        /// The term whose columns (nearly) reproduce the covariate.
+        term: usize,
+        /// Share of the covariate's weighted variation outside that term's span.
+        relative_residual: f64,
     },
 }
 
@@ -134,6 +144,16 @@ impl std::fmt::Display for BuildWarning {
                 "signed component between {pair}: dominance scaling uncertified after \
                  {iterations} iterations (max relative violation {violation:.2e}); deficits \
                  clamped, preconditioner quality may degrade"
+            ),
+            Self::CollinearSlopeCovariate {
+                slope,
+                term,
+                relative_residual,
+            } => write!(
+                f,
+                "slope covariate of {slope} is nearly collinear with the columns of term \
+                 {term} (relative residual {relative_residual:.2e}); the near-null direction \
+                 spanning both terms can inflate iteration counts by orders of magnitude"
             ),
         }
     }

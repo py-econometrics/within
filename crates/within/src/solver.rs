@@ -11,6 +11,8 @@ use schwarz_precond::{lsmr as lsmr_solve, mlsmr, MlsmrOptions};
 
 use crate::channel::Channel;
 use crate::config::{LsmrOptions, PreconditionerConfig};
+use crate::domain::collinearity::detect_collinear_slopes;
+use crate::domain::level_moments::TermMoments;
 use crate::domain::{Design, Effect};
 use crate::observation::ObservationFrame;
 use crate::operator::design::gather_apply;
@@ -212,8 +214,7 @@ pub struct SolveResult {
     pub x: Vec<f64>,
     /// Per-level directions the data cannot identify.
     pub unidentified: Vec<CoefficientAddress>,
-    /// Non-fatal preconditioner-build warnings (see [`Solver::warnings`]);
-    /// empty when a pre-built preconditioner was reused.
+    /// Non-fatal build warnings (see [`Solver::warnings`]).
     pub warnings: Vec<BuildWarning>,
     /// Address ↔ flat-`x`-index translation for this design's coefficients.
     pub layout: CoefficientLayout,
@@ -253,8 +254,7 @@ pub struct BatchSolveResult {
     /// Per-level directions the data cannot identify, shared across all RHS:
     /// identification depends only on the design and weights, never on `y`.
     pub unidentified: Vec<CoefficientAddress>,
-    /// Non-fatal preconditioner-build warnings, shared across all RHS; see
-    /// [`SolveResult::warnings`].
+    /// Non-fatal build warnings, shared across all RHS; see [`SolveResult::warnings`].
     pub warnings: Vec<BuildWarning>,
     /// Address ↔ flat-`x`-index translation for this design's coefficients.
     pub layout: CoefficientLayout,
@@ -372,10 +372,19 @@ impl<'a> Solver<'a> {
             None => weights,
         };
 
-        // Reparametrize the slope columns (if any) before the preconditioner reads the frame.
-        let reparam = SlopeReparam::build(&mut design, weights.as_deref());
+        // Both readers below need the raw loadings, so the moments precede whitening.
+        let moments = TermMoments::build(&design, weights.as_deref());
+        let mut warnings = moments
+            .as_ref()
+            .map(|m| detect_collinear_slopes(&design, weights.as_deref(), m))
+            .unwrap_or_default();
 
-        let (preconditioner, warnings) = match preconditioner.into() {
+        // Reparametrize the slope columns (if any) before the preconditioner reads the frame.
+        let reparam = moments
+            .as_ref()
+            .and_then(|m| SlopeReparam::build(&mut design, m));
+
+        let (preconditioner, build_warnings) = match preconditioner.into() {
             PreconditionerInput::Default => {
                 build_preconditioner(&design, weights.as_deref(), None)?
             }
@@ -394,6 +403,8 @@ impl<'a> Solver<'a> {
             }
         };
 
+        warnings.extend(build_warnings);
+
         let sqrt_weights = weights.map(|mut w| {
             for wi in &mut w {
                 *wi = wi.sqrt();
@@ -410,8 +421,8 @@ impl<'a> Solver<'a> {
         })
     }
 
-    /// Non-fatal events from the preconditioner build; empty when reusing a
-    /// pre-built preconditioner (its warnings were reported when it was built).
+    /// Non-fatal events from design screening and the preconditioner build; a reused
+    /// pre-built preconditioner contributes none (its own were reported when built).
     pub fn warnings(&self) -> &[BuildWarning] {
         &self.warnings
     }
