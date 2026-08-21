@@ -42,7 +42,7 @@ pub(crate) fn detect_collinear_slopes(
         .collect()
 }
 
-/// Each target's share of (weighted) sum of squares outside `term`'s column span.
+/// Each target's share of (weighted) variation outside `term`'s column span.
 ///
 /// One pass accumulates only the per-level cross moments `Σw·c` and `Σw·z·c`; the
 /// span's own geometry comes from the shared [`TermMoments`], so the projection is
@@ -139,14 +139,31 @@ fn residual_shares(
             },
         );
 
+    // An intercept puts every level's constant in the span, so the share has to be
+    // measured against the covariate's variation — against `Σw·c²` it would only
+    // report how far the covariate's mean sits from zero.
+    let (mut sum_wc, mut w_total) = (vec![0.0f64; m], 0.0);
+    for (level, chunk) in cross.chunks_exact(stride).enumerate() {
+        w_total += moments.w_sum(level);
+        for (slot, sum) in chunk.chunks_exact(v + 1).zip(&mut sum_wc) {
+            *sum += slot[0];
+        }
+    }
+
     ss_projected
         .into_iter()
         .zip(ss_total)
-        .map(|(projected, total)| {
-            if total <= 0.0 {
-                1.0
-            } else {
-                ((total - projected) / total).max(0.0)
+        .zip(sum_wc)
+        .map(|((projected, total), sum_wc)| {
+            let variation = match intercept {
+                true => total - sum_wc * sum_wc / w_total,
+                false => total,
+            };
+            // A covariate with no variation carries no slope at all; that is a
+            // within-term degeneracy the whitening's rank test already reports.
+            match variation > 0.0 {
+                true => ((total - projected) / variation).max(0.0),
+                false => 1.0,
             }
         })
         .collect()
@@ -259,6 +276,24 @@ mod tests {
         .unwrap();
         let pairs = warn_pairs(&design, None);
         assert_eq!(pairs, vec![(Channel { term: 0, column: 1 }, 1)]);
+    }
+
+    /// The span holds every level's constant, so a covariate's offset must not
+    /// enter the share: measured against `Σw·c²`, `mean=2005, sd=6` reads 7.6e-7.
+    #[test]
+    fn an_independent_covariate_stays_silent_at_any_offset() {
+        let n = 4000;
+        let (a, b) = two_factor_levels(n);
+        let z = pseudo_noise(n, 5);
+        for mean in [0.0, 1.0, 100.0, 2005.0, 1e6] {
+            let shifted: Vec<f64> = z.iter().map(|v| mean + 6.0 * v).collect();
+            let design = Design::new(vec![
+                Effect::new(&a, true, [&shifted[..]]).unwrap(),
+                Effect::new(&b, true, []).unwrap(),
+            ])
+            .unwrap();
+            assert_eq!(warn_pairs(&design, None), Vec::new(), "mean {mean:e}");
+        }
     }
 
     #[test]
