@@ -23,7 +23,6 @@ use crate::operator::schwarz::Preconditioner;
 struct FusedGram {
     /// Global DOF ranges of the fused terms, concatenated in local order.
     spans: Vec<Range<usize>>,
-    n_local: usize,
     diag: Vec<f64>,
     /// Strict upper-triangular entries keyed by `(row, col)` with `row < col`.
     off: HashMap<(u32, u32), f64>,
@@ -39,7 +38,6 @@ fn assemble_gram(design: &Design<'_>, weights: Option<&[f64]>, terms: &[usize]) 
         .collect();
     let n_local = spans.iter().map(|s| s.len()).sum();
 
-    // Per term: local base, n_levels, level codes, per-column loadings (None = intercept).
     let mut base = 0;
     let cols: Vec<_> = terms
         .iter()
@@ -86,22 +84,17 @@ fn assemble_gram(design: &Design<'_>, weights: Option<&[f64]>, terms: &[usize]) 
         }
     }
 
-    FusedGram {
-        spans,
-        n_local,
-        diag,
-        off,
-    }
+    FusedGram { spans, diag, off }
 }
 
 /// Sparse LDLᵀ of one fused Gram, under a fill-reducing ordering.
 struct FusedFactor {
-    symbolic: Box<SymbolicCholesky<usize>>,
+    symbolic: SymbolicCholesky<usize>,
     l_values: Vec<f64>,
 }
 
 fn exact_factor(gram: &FusedGram, budget: usize) -> Option<FusedFactor> {
-    let n_local = gram.n_local;
+    let n_local = gram.diag.len();
     // Gate on the pattern alone; numeric staging is paid only once accepted.
     let mut pairs = Vec::with_capacity(n_local + gram.off.len());
     for d in 0..n_local {
@@ -162,10 +155,7 @@ fn exact_factor(gram: &FusedGram, budget: usize) -> Option<FusedFactor> {
         )
         .ok()?;
 
-    Some(FusedFactor {
-        symbolic: Box::new(symbolic),
-        l_values,
-    })
+    Some(FusedFactor { symbolic, l_values })
 }
 
 /// Local solve over one warned term group, applied additively on top of the base
@@ -225,8 +215,8 @@ impl FusedBlockSolve {
         let gram = assemble_gram(design, weights, terms);
         Some(Self {
             factor: exact_factor(&gram, budget)?,
+            n_local: gram.diag.len(),
             spans: gram.spans,
-            n_local: gram.n_local,
         })
     }
 
@@ -304,7 +294,7 @@ impl Operator for FusedPreconditioner<'_> {
     }
 
     fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
-        self.base.apply(x, y)?;
+        <Preconditioner as Operator>::apply(self.base, x, y)?;
         self.solve_add_all(x, y);
         Ok(())
     }

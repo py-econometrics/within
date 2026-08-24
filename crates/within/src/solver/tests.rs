@@ -137,43 +137,33 @@ fn fused_precond(budget: usize) -> crate::config::PreconditionerConfig {
     }
 }
 
+/// Compares the fused solve against a `PreconditionerConfig::Off` solve of the same panel.
 fn assert_fused_solve_matches_reference(eps: f64) {
     use super::Solver;
-    use crate::config::LsmrOptions;
+    use crate::config::{LsmrOptions, PreconditionerConfig};
 
     let panel = shared_covariate_panel(eps);
+    let opts = LsmrOptions {
+        tol: 1e-12,
+        maxiter: 20_000,
+        ..Default::default()
+    };
     let solver = Solver::new(panel.effects(), None, fused_precond(1 << 30)).unwrap();
     assert!(
         !solver.fused.is_empty(),
         "screen must arm the fused block (eps = {eps:e})"
     );
-    let opts = LsmrOptions {
-        tol: 1e-12,
-        maxiter: 20_000,
-        ..Default::default()
-    };
     let got = solver.solve(&panel.y, &opts).unwrap();
     assert!(got.converged);
-    assert_demeaned_matches_reference(&panel, &got.demeaned, &format!("eps = {eps:e}"));
-}
 
-/// Compares `demeaned` against a `PreconditionerConfig::Off` solve of the same panel.
-fn assert_demeaned_matches_reference(panel: &SharedCovariatePanel, demeaned: &[f64], ctx: &str) {
-    use super::Solver;
-    use crate::config::{LsmrOptions, PreconditionerConfig};
-
-    let opts = LsmrOptions {
-        tol: 1e-12,
-        maxiter: 20_000,
-        ..Default::default()
-    };
     let reference = Solver::new(panel.effects(), None, PreconditionerConfig::Off)
         .unwrap()
         .solve(&panel.y, &opts)
         .unwrap();
     assert!(reference.converged);
     let scale = panel.y.iter().map(|&v| v * v).sum::<f64>().sqrt();
-    let diff = demeaned
+    let diff = got
+        .demeaned
         .iter()
         .zip(&reference.demeaned)
         .map(|(&p, &q)| (p - q) * (p - q))
@@ -181,7 +171,7 @@ fn assert_demeaned_matches_reference(panel: &SharedCovariatePanel, demeaned: &[f
         .sqrt();
     assert!(
         diff <= 1e-6 * scale,
-        "demeaned mismatch: {diff:e} vs scale {scale:e} ({ctx})"
+        "demeaned mismatch: {diff:e} vs scale {scale:e} (eps = {eps:e})"
     );
 }
 
@@ -193,6 +183,21 @@ fn fused_solve_matches_unpreconditioned_reference() {
 #[test]
 fn fused_solve_grounds_exact_sharing() {
     assert_fused_solve_matches_reference(0.0);
+}
+
+#[test]
+fn a_prebuilt_preconditioner_arms_the_block_from_its_own_config() {
+    use super::Solver;
+
+    let panel = shared_covariate_panel(0.0);
+    let built = Solver::new(panel.effects(), None, fused_precond(1 << 30)).unwrap();
+    let reused = Solver::new(
+        panel.effects(),
+        None,
+        built.preconditioner().unwrap().clone(),
+    )
+    .unwrap();
+    assert!(!reused.fused.is_empty());
 }
 
 #[test]

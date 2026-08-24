@@ -387,21 +387,12 @@ impl<'a> Solver<'a> {
             .as_ref()
             .and_then(|m| SlopeReparam::build(&mut design, m));
 
-        let (preconditioner, build_warnings, fused_budget) = match preconditioner.into() {
+        let (preconditioner, build_warnings) = match preconditioner.into() {
             PreconditionerInput::Default => {
-                let (p, w) = build_preconditioner(&design, weights.as_deref(), None)?;
-                (p, w, None)
+                build_preconditioner(&design, weights.as_deref(), None)?
             }
             PreconditionerInput::Config(c) => {
-                // A prebuilt preconditioner carries no config, so it never arms the block.
-                let budget = match &c {
-                    PreconditionerConfig::Additive { local_solver, .. } => {
-                        local_solver.fused_block_budget
-                    }
-                    _ => None,
-                };
-                let (p, w) = build_preconditioner(&design, weights.as_deref(), Some(&c))?;
-                (p, w, budget)
+                build_preconditioner(&design, weights.as_deref(), Some(&c))?
             }
             PreconditionerInput::Prebuilt(p) => {
                 if p.nrows() != design.n_dofs || p.ncols() != design.n_dofs {
@@ -411,16 +402,18 @@ impl<'a> Solver<'a> {
                         actual_cols: p.ncols(),
                     });
                 }
-                (Some(p), Vec::new(), None)
+                (Some(p), Vec::new())
             }
         };
 
         warnings.extend(build_warnings);
 
-        let fused = match (&preconditioner, fused_budget) {
-            (Some(_), Some(budget)) => {
-                FusedBlockSolve::build_all(&design, weights.as_deref(), &warnings, budget)
-            }
+        // Read off the built preconditioner, so a deserialized one honours its own budget.
+        let fused = match preconditioner.as_ref().map(Preconditioner::config) {
+            Some(PreconditionerConfig::Additive { local_solver, .. }) => local_solver
+                .fused_block_budget
+                .map(|b| FusedBlockSolve::build_all(&design, weights.as_deref(), &warnings, b))
+                .unwrap_or_default(),
             _ => Vec::new(),
         };
 
