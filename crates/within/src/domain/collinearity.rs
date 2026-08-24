@@ -204,6 +204,10 @@ impl Screen<'_> {
                     let level = block.levels.start + offset;
                     let w_sum = self.moments.w_sum(level);
                     if w_sum <= 0.0 {
+                        debug_assert!(
+                            row.iter().all(|&x| x == 0.0),
+                            "level {level} carries cross moments the term's weights deny"
+                        );
                         return;
                     }
                     if v > 0 {
