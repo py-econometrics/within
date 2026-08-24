@@ -19,9 +19,6 @@ use crate::domain::Design;
 use crate::error::BuildWarning;
 use crate::operator::schwarz::Preconditioner;
 
-/// Factor-nnz budget above which the exact solve is declined (fill is set by graph topology).
-const FILL_CAP: usize = 40_000_000;
-
 /// The assembled (weighted, whitened) Gram of one warned term group, in sparse form.
 struct FusedGram {
     /// Global DOF ranges of the fused terms, concatenated in local order.
@@ -103,7 +100,7 @@ struct FusedFactor {
     l_values: Vec<f64>,
 }
 
-fn exact_factor(gram: &FusedGram, fill_cap: usize) -> Option<FusedFactor> {
+fn exact_factor(gram: &FusedGram, budget: usize) -> Option<FusedFactor> {
     let n_local = gram.n_local;
     // Gate on the pattern alone; numeric staging is paid only once accepted.
     let mut pairs = Vec::with_capacity(n_local + gram.off.len());
@@ -126,7 +123,8 @@ fn exact_factor(gram: &FusedGram, fill_cap: usize) -> Option<FusedFactor> {
         CholeskySymbolicParams::default(),
     )
     .ok()?;
-    if symbolic.len_val() > fill_cap {
+    let factor_bytes = size_of::<f64>() + size_of::<usize>();
+    if symbolic.len_val().saturating_mul(factor_bytes) > budget {
         return None;
     }
 
@@ -186,6 +184,7 @@ impl FusedBlockSolve {
         design: &Design<'_>,
         weights: Option<&[f64]>,
         warnings: &[BuildWarning],
+        budget: usize,
     ) -> Vec<Self> {
         let n_terms = design.terms.len();
         let mut parent: Vec<usize> = (0..n_terms).collect();
@@ -212,20 +211,20 @@ impl FusedBlockSolve {
         components.retain(|g| !g.is_empty());
         components
             .into_iter()
-            .filter_map(|terms| Self::build(design, weights, &terms, FILL_CAP))
+            .filter_map(|terms| Self::build(design, weights, &terms, budget))
             .collect()
     }
 
-    /// `None` where the symbolic factor exceeds the fill budget; the group then goes uncorrected.
+    /// `None` where the symbolic factor exceeds the budget; the group then goes uncorrected.
     fn build(
         design: &Design<'_>,
         weights: Option<&[f64]>,
         terms: &[usize],
-        fill_cap: usize,
+        budget: usize,
     ) -> Option<Self> {
         let gram = assemble_gram(design, weights, terms);
         Some(Self {
-            factor: exact_factor(&gram, fill_cap)?,
+            factor: exact_factor(&gram, budget)?,
             spans: gram.spans,
             n_local: gram.n_local,
         })
@@ -325,9 +324,9 @@ mod tests {
         pub(crate) fn build_for_test(
             design: &Design<'_>,
             terms: &[usize],
-            fill_cap: usize,
+            budget: usize,
         ) -> Option<Self> {
-            Self::build(design, None, terms, fill_cap)
+            Self::build(design, None, terms, budget)
         }
     }
 }

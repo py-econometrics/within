@@ -387,12 +387,21 @@ impl<'a> Solver<'a> {
             .as_ref()
             .and_then(|m| SlopeReparam::build(&mut design, m));
 
-        let (preconditioner, build_warnings) = match preconditioner.into() {
+        let (preconditioner, build_warnings, fused_budget) = match preconditioner.into() {
             PreconditionerInput::Default => {
-                build_preconditioner(&design, weights.as_deref(), None)?
+                let (p, w) = build_preconditioner(&design, weights.as_deref(), None)?;
+                (p, w, None)
             }
             PreconditionerInput::Config(c) => {
-                build_preconditioner(&design, weights.as_deref(), Some(&c))?
+                // A prebuilt preconditioner carries no config, so it never arms the block.
+                let budget = match &c {
+                    PreconditionerConfig::Additive { local_solver, .. } => {
+                        local_solver.fused_block_budget
+                    }
+                    _ => None,
+                };
+                let (p, w) = build_preconditioner(&design, weights.as_deref(), Some(&c))?;
+                (p, w, budget)
             }
             PreconditionerInput::Prebuilt(p) => {
                 if p.nrows() != design.n_dofs || p.ncols() != design.n_dofs {
@@ -402,15 +411,17 @@ impl<'a> Solver<'a> {
                         actual_cols: p.ncols(),
                     });
                 }
-                (Some(p), Vec::new())
+                (Some(p), Vec::new(), None)
             }
         };
 
         warnings.extend(build_warnings);
 
-        let fused = match preconditioner {
-            Some(_) => FusedBlockSolve::build_all(&design, weights.as_deref(), &warnings),
-            None => Vec::new(),
+        let fused = match (&preconditioner, fused_budget) {
+            (Some(_), Some(budget)) => {
+                FusedBlockSolve::build_all(&design, weights.as_deref(), &warnings, budget)
+            }
+            _ => Vec::new(),
         };
 
         let sqrt_weights = weights.map(|mut w| {

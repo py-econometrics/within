@@ -76,6 +76,8 @@ pub struct LocalSolverConfig {
     pub scaling: ScalingConfig,
     /// Spectral floor on grounded signed components, as a fraction of the largest diagonal; `0` off.
     pub ridge: f64,
+    /// Factor bytes the fused exact block may hold per warned term group; `None` declines them all.
+    pub fused_block_budget: Option<usize>,
 }
 
 impl Default for LocalSolverConfig {
@@ -89,6 +91,7 @@ impl Default for LocalSolverConfig {
             dense_threshold: DEFAULT_DENSE_SCHUR_THRESHOLD,
             scaling: ScalingConfig::default(),
             ridge: DEFAULT_SLOPE_PAIR_RIDGE,
+            fused_block_budget: None,
         }
     }
 }
