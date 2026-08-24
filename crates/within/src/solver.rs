@@ -143,7 +143,7 @@ impl CoefficientLayout {
             .iter()
             .map(|t| TermLayout {
                 offset: t.offset,
-                n_levels: t.n_levels,
+                n_levels: t.n_levels(),
                 n_columns: t.n_columns(),
             })
             .collect();
@@ -606,8 +606,8 @@ impl<'a> Solver<'a> {
 /// Solve fixed-effects least squares for a design input.
 ///
 /// `design` is anything implementing [`IntoDesign`]: an observation-major
-/// `(n_obs, n_factors)` categories array (levels `0..max_level` per factor,
-/// count inferred) or a list of [`Effect`] terms.
+/// `(n_obs, n_factors)` categories array (observed `u32` labels are compacted in
+/// ascending numeric order within each factor) or a list of [`Effect`] terms.
 /// `y` is the response vector (length = n_obs).
 ///
 /// Zero-copy for F-order category arrays whose dominant factor is already

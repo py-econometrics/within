@@ -278,29 +278,19 @@ proptest! {
 }
 
 #[test]
-fn test_find_all_active_levels_with_gaps() {
-    // Factor 0 has 5 levels but only 0, 2, 4 appear; factor 1 uses all 3.
+fn caller_label_gaps_do_not_create_inactive_internal_levels() {
     let fa = vec![0u32, 2, 4, 0, 2, 4];
     let fb = vec![0u32, 1, 2, 0, 1, 2];
     let design = design_of(vec![fa, fb]);
 
     let active = find_all_active_levels(&design);
 
-    // Factor 0: 5 levels, only 0, 2, 4 active.
-    assert_eq!(active[0].len(), 5, "factor 0 should have 5 levels");
-    assert_eq!(
-        active[0],
-        vec![true, false, true, false, true],
-        "factor 0 active pattern: [true, false, true, false, true]"
-    );
+    // Caller labels are retained in compact-code order.
+    assert_eq!(&*design.terms[0].level_labels, &[0, 2, 4]);
 
-    // Factor 1: all 3 levels active.
-    assert_eq!(active[1].len(), 3, "factor 1 should have 3 levels");
-    assert_eq!(
-        active[1],
-        vec![true, true, true],
-        "factor 1 active pattern: all true"
-    );
+    // Internal codes are 0, 1, 2, and every internal level occurs.
+    assert_eq!(active[0], vec![true, true, true]);
+    assert_eq!(active[1], vec![true, true, true]);
 }
 
 #[test]

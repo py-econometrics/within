@@ -99,7 +99,7 @@ pub enum BuildError {
         /// The offending value.
         value: f64,
     },
-    /// Usually raw entity IDs passed as factor codes, inflating `n_levels = max code + 1`.
+    /// The compact coefficient space does not fit the internal `u32` column indices.
     #[error("design has {n_dofs} degrees of freedom, exceeding the u32 column-index limit")]
     DofSpaceExceedsU32 {
         /// Total degrees of freedom implied by the design.

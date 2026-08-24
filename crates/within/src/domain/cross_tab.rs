@@ -26,7 +26,7 @@ pub(crate) fn find_all_active_levels(design: &Design<'_>) -> Vec<Vec<bool>> {
     let mut active: Vec<Vec<bool>> = design
         .terms
         .iter()
-        .map(|f| vec![false; f.n_levels])
+        .map(|f| vec![false; f.n_levels()])
         .collect();
     // Factor-outer/obs-inner: all writes for a factor land in one `active[f]` buffer.
     for (f, col) in active.iter_mut().enumerate() {

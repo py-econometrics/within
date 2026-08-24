@@ -15,11 +15,10 @@ pub(crate) use factor_pairs::{
     SddmMatrix,
 };
 
-use std::borrow::Cow;
-
 use crate::channel::Channel;
 use crate::observation::ObservationFrame;
 use crate::BuildError;
+use std::borrow::Cow;
 
 /// A slice that is guaranteed non-empty by construction.
 #[repr(transparent)]
@@ -81,7 +80,8 @@ impl<T> Loading<T> {
 /// Per-term metadata; coefficient `c` of `level` lives at `offset + c · n_levels + level`.
 #[derive(Debug, Clone)]
 pub(crate) struct TermMeta {
-    pub n_levels: usize,
+    /// Caller-visible labels indexed by compact internal level code.
+    pub level_labels: Box<[u32]>,
     pub offset: usize,
     /// Non-decreasing in the design's internal row order (fixed at construction).
     pub sorted: bool,
@@ -90,25 +90,73 @@ pub(crate) struct TermMeta {
 }
 
 impl TermMeta {
+    pub fn n_levels(&self) -> usize {
+        self.level_labels.len()
+    }
+
     pub fn n_columns(&self) -> usize {
         self.columns.len()
     }
 
     pub fn n_dofs(&self) -> usize {
-        self.n_columns() * self.n_levels
+        self.n_columns() * self.n_levels()
     }
 
     /// Global DOF base of coefficient column `column`.
     pub fn column_base(&self, column: usize) -> usize {
-        self.offset + column * self.n_levels
+        self.offset + column * self.n_levels()
+    }
+}
+
+struct FactorEncoding {
+    /// `None` when the caller codes are already contiguous and need no rewrite
+    codes: Option<Vec<u32>>,
+    /// Caller-visible labels in compact-code order.
+    labels: Box<[u32]>,
+}
+
+impl FactorEncoding {
+    fn new(levels: &[u32]) -> Self {
+        let mut labels = levels.to_vec();
+        labels.sort_unstable();
+        labels.dedup();
+
+        // Check whether labels are already compact
+        let is_compact = labels
+            .iter()
+            .enumerate()
+            .all(|(code, &label)| label == code as u32);
+
+        let codes = if is_compact {
+            // Nothing to encode
+            None
+        } else {
+            // Encode
+            let mut codes = Vec::with_capacity(levels.len());
+
+            for label in levels {
+                let code = labels
+                    .binary_search(label)
+                    .expect("labels were collected from this factor");
+                let code = u32::try_from(code)
+                    .expect("a u32-labelled factor cannot have an unrepresentable compact code");
+                codes.push(code);
+            }
+            Some(codes)
+        };
+
+        FactorEncoding {
+            codes,
+            labels: labels.into_boxed_slice(),
+        }
     }
 }
 
 /// Stable argsort of observations by a level column, ascending.
 ///
 /// Dense counting sort in `O(n_obs + n_levels)` or sparse comparison sort — same
-/// permutation either way, gated as in `schur::sort_and_dedup`. Gappy caller codes
-/// can span far more levels than rows, where the bucket array outgrows the output.
+/// permutation either way, gated as in `schur::sort_and_dedup`. Preprocessing can
+/// leave more encoded levels than rows, where the bucket array outgrows the output.
 fn stable_argsort(key: &[u32], n_levels: usize) -> Vec<u32> {
     let n_obs = key.len();
     debug_assert!(
@@ -172,7 +220,8 @@ impl<'a> Design<'a> {
         Self::build(frame, structure, true)
     }
 
-    /// Intercept-only factors, level count `max + 1`; locality-sorts an unsorted dominant factor.
+    /// Intercept-only factors, compacted in ascending label order; locality-sorts
+    /// an unsorted dominant factor.
     pub fn from_frame(frame: ObservationFrame<'a>) -> Result<Self, BuildError> {
         let structure = vec![NonEmpty::of(Loading::Constant); frame.n_factors()];
         Self::build(frame, structure, true)
@@ -196,25 +245,35 @@ impl<'a> Design<'a> {
         }
         debug_assert_eq!(column_structure.len(), frame.n_factors());
 
+        let mut encoded_factors = Vec::with_capacity(frame.n_factors());
+        let mut labels_by_factor = Vec::with_capacity(frame.n_factors());
+
+        for factor in 0..frame.n_factors() {
+            let FactorEncoding { codes, labels } = FactorEncoding::new(frame.level_column(factor));
+
+            encoded_factors.push(codes);
+            labels_by_factor.push(labels);
+        }
+
+        let frame = frame.with_encoded_factors(encoded_factors);
+
         let n_obs = frame.n_obs();
         let mut terms = Vec::with_capacity(frame.n_factors());
         let mut offset = 0;
-        for (q, columns) in column_structure.into_iter().enumerate() {
+        for ((q, columns), level_labels) in column_structure
+            .into_iter()
+            .enumerate()
+            .zip(labels_by_factor)
+        {
             let col = frame.level_column(q);
-            let mut max = 0;
-            let mut sorted = true;
-            let mut prev = 0;
-            for &v in col {
-                max = max.max(v);
-                sorted &= v >= prev;
-                prev = v;
-            }
+
             let meta = TermMeta {
-                n_levels: max as usize + 1,
+                level_labels,
                 offset,
-                sorted,
+                sorted: col.is_sorted(),
                 columns,
             };
+
             offset += meta.n_dofs();
             terms.push(meta);
         }
@@ -228,7 +287,7 @@ impl<'a> Design<'a> {
         let dominant = (0..terms.len()).max_by_key(|&q| terms[q].n_dofs());
         let (frame, obs_perm) = match dominant {
             Some(d) if locality_sort && !terms[d].sorted && u32::try_from(n_obs).is_ok() => {
-                let perm = stable_argsort(frame.level_column(d), terms[d].n_levels);
+                let perm = stable_argsort(frame.level_column(d), terms[d].n_levels());
                 let sorted_frame = frame.permuted(&perm);
                 // Factors nested in the dominant one come out sorted, keeping coalesced scatter.
                 for (q, meta) in terms.iter_mut().enumerate() {
@@ -409,13 +468,28 @@ mod tests {
     }
 
     #[test]
-    fn build_rejects_dof_space_exceeding_u32() {
-        // A single code of u32::MAX implies one level past the CSR column-index width.
-        let err = Design::from_frame(frame(vec![vec![u32::MAX]], vec![])).unwrap_err();
-        assert!(matches!(
-            err,
-            BuildError::DofSpaceExceedsU32 { n_dofs } if n_dofs == u32::MAX as usize + 1
-        ));
+    fn gappy_codes_are_compacted_in_numeric_label_order() {
+        // Caller labels [10, 20, 30] map to compact codes [0, 1, 2].
+        // The raw observation codes are therefore [2, 0, 1, 0].
+        let design = Design::from_frame(frame(vec![vec![30, 10, 20, 10]], vec![])).unwrap();
+
+        assert_eq!(design.terms[0].n_levels(), 3);
+        assert_eq!(&*design.terms[0].level_labels, &[10, 20, 30]);
+        assert_eq!(design.n_dofs(), 3);
+
+        // Locality sorting by the compact codes uses original rows [1, 3, 2, 0].
+        assert_eq!(design.obs_perm.as_deref(), Some(&[1u32, 3, 2, 0][..]));
+        assert_eq!(design.level_column(0), [0, 0, 1, 2]);
+    }
+
+    #[test]
+    fn maximum_u32_is_a_valid_factor_label() {
+        let design = Design::from_frame(frame(vec![vec![u32::MAX, u32::MAX]], vec![])).unwrap();
+
+        assert_eq!(design.terms[0].n_levels(), 1);
+        assert_eq!(&*design.terms[0].level_labels, &[u32::MAX]);
+        assert_eq!(design.n_dofs(), 1);
+        assert_eq!(design.level_column(0), [0, 0]);
     }
 
     #[test]

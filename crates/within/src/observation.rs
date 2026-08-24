@@ -47,6 +47,34 @@ impl<'a> ObservationFrame<'a> {
         })
     }
 
+    pub(crate) fn with_encoded_factors(self, encoded: Vec<Option<Vec<u32>>>) -> Self {
+        debug_assert_eq!(encoded.len(), self.categorical.len());
+
+        let Self {
+            categorical,
+            continuous,
+            n_obs,
+        } = self;
+
+        let categorical = categorical
+            .into_iter()
+            .zip(encoded)
+            .map(|(original, encoded)| match encoded {
+                Some(encoded) => {
+                    debug_assert_eq!(encoded.len(), n_obs);
+                    Cow::Owned(encoded)
+                }
+                None => original,
+            })
+            .collect();
+
+        Self {
+            categorical,
+            continuous,
+            n_obs,
+        }
+    }
+
     /// Number of observations (rows).
     #[inline]
     pub fn n_obs(&self) -> usize {

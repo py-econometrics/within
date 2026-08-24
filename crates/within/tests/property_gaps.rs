@@ -6,6 +6,13 @@ use within::{solve, LsmrOptions, Solver};
 mod strategies;
 use strategies::{additive_precond, random_fe_problem_strategy};
 
+fn factor_labels(cats: &Array2<u32>, factor: usize) -> Vec<u32> {
+    let mut labels: Vec<u32> = cats.column(factor).iter().copied().collect();
+    labels.sort_unstable();
+    labels.dedup();
+    labels
+}
+
 /// 4-factor problem: 2–10 levels each, 100–500 observations.
 fn random_4_factor_problem_strategy() -> impl Strategy<Value = (Array2<u32>, Vec<f64>)> {
     proptest::collection::vec(2..=10u32, 4usize).prop_flat_map(|n_levels| {
@@ -129,18 +136,22 @@ proptest! {
         let n_obs = y.len();
         let n_factors = cats.ncols();
 
-        // Compute factor offsets (same ordering as Design)
+        // Reproduce Design's numeric-label encoding and term offsets.
+        let labels_by_factor: Vec<Vec<u32>> = (0..n_factors)
+            .map(|factor| factor_labels(&cats, factor))
+            .collect();
         let mut offsets = vec![0usize; n_factors];
         for f in 1..n_factors {
-            let n_levels_prev = *cats.column(f - 1).iter().max().unwrap() as usize + 1;
-            offsets[f] = offsets[f - 1] + n_levels_prev;
+            offsets[f] = offsets[f - 1] + labels_by_factor[f - 1].len();
         }
 
         for i in 0..n_obs {
             let dx_i: f64 = (0..n_factors)
                 .map(|f| {
-                    let level = cats[[i, f]] as usize;
-                    result.x[offsets[f] + level]
+                    let code = labels_by_factor[f]
+                        .binary_search(&cats[[i, f]])
+                        .expect("factor label was collected from this column");
+                    result.x[offsets[f] + code]
                 })
                 .sum();
             let expected_demeaned = y[i] - dx_i;
@@ -157,7 +168,7 @@ proptest! {
     /// distinct singular value); in practice far fewer are needed.
     #[test]
     fn prop_single_factor_converges((cats, y) in single_factor_strategy()) {
-        let n_levels = *cats.column(0).iter().max().unwrap() as usize + 1;
+        let n_levels = factor_labels(&cats, 0).len();
         let params = LsmrOptions {
             tol: 1e-8,
             maxiter: n_levels + 10,

@@ -179,15 +179,11 @@ fn test_diagonal_matches_unpreconditioned_solution() {
     common::assert_solutions_close(&diagonal.x, &unpreconditioned.x, 1e-6);
 }
 
-/// A factor whose observed levels leave interior gaps (`n_levels = max + 1`)
-/// produces structural zero columns of `D` — unidentified DOFs whose diagonal
-/// is zero. The unpreconditioned and additive paths both pin those coefficients
-/// to 0 and solve fine; with the pseudo-inverse of a zero diagonal, the diagonal
-/// preconditioner now matches rather than failing with `SingularDiagonal`.
+/// Gaps between caller labels do not create structural zero columns because the
+/// design compacts its observed labels before solving.
 #[test]
-fn test_diagonal_matches_unpreconditioned_on_gap_design() {
-    // Single factor observed only at levels {0, 2, 4} => n_levels = 5, so global
-    // DOFs 1 and 3 have no observations.
+fn test_diagonal_matches_unpreconditioned_on_compacted_gap_design() {
+    // Caller labels {0, 2, 4} become internal codes {0, 1, 2}.
     let cats = array![[0u32], [2], [4]];
     let y = vec![1.0, 2.0, 3.0];
     let params = LsmrOptions::default();
@@ -199,15 +195,14 @@ fn test_diagonal_matches_unpreconditioned_on_gap_design() {
         &params,
         &PreconditionerConfig::Diagonal,
     )
-    .expect("diagonal solve must succeed on a gap design (pseudo-inverse of zero diagonal)");
+    .expect("diagonal solve must succeed on a compacted gap design");
     let unpreconditioned = solve(cats.view(), &y, None, &params, &PreconditionerConfig::Off)
         .expect("unpreconditioned solve");
 
     assert!(diagonal.converged, "diagonal solve must converge");
+    assert_eq!(diagonal.layout.n_levels(0), Some(3));
+    assert_eq!(diagonal.x.len(), 3);
     common::assert_solutions_close(&diagonal.x, &unpreconditioned.x, 1e-6);
-    // The unobserved DOFs are unidentified and must be pinned to exactly 0.
-    assert_eq!(diagonal.x[1], 0.0, "unobserved DOF 1 must be 0");
-    assert_eq!(diagonal.x[3], 0.0, "unobserved DOF 3 must be 0");
 }
 
 // ---------------------------------------------------------------------------
