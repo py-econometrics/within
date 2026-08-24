@@ -44,7 +44,7 @@ wildcards = "deny"
 allow-wildcard-paths = true
 skip = [
     { crate = "syn@2.0.119", reason = "transitive duplicate; serde_derive is on syn 3, faer's enum-as-inner/sysctl chain still on syn 2" },
-    { crate = "equator@0.2.2", reason = "faer's tree spans three equator lines; in the normal graph since faer became a dep of within (#288)" },
+    { crate = "equator@0.2.2", reason = "faer's tree spans two equator lines; in the normal graph since faer became a dep of within (#288)" },
     { crate = "equator-macro@0.2.1", reason = "companion to the equator skips" },
     { crate = "syn@1.0.109", reason = "faer's sysctl/thiserror-1 chain is still on syn 1 (#288)" },
     { crate = "thiserror@1.0.69", reason = "faer's gemm/sysctl chain is on thiserror 1, workspace is on 2 (#288)" },

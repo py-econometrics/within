@@ -147,7 +147,7 @@ pub enum FusedBlockDecline {
     Budget,
     /// Resolving the group's null directions overflowed the double range.
     NonFinite,
-    /// The sparse factorization itself failed, most likely for want of memory.
+    /// Building the sparse structure failed, most likely for want of memory.
     Factorization,
 }
 

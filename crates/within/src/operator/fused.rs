@@ -165,7 +165,8 @@ fn exact_factor(gram: &FusedGram, max_values: usize) -> Result<FusedFactor, Fuse
             MemStack::new(&mut mem),
             Default::default(),
         )
-        .map_err(|_| FusedBlockDecline::Factorization)?;
+        // faer's only numeric failure is a zero-or-non-finite pivot; zero is regularized away.
+        .map_err(|_| FusedBlockDecline::NonFinite)?;
 
     // Null resolution grows |L| with the dimension; past the double range, decline.
     if l_values.iter().any(|v| !v.is_finite()) {
