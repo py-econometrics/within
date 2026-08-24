@@ -81,7 +81,8 @@ fn residual_shares(
         .map(|&(_, c)| design.frame.loading_column(c as usize))
         .collect();
     let stride = columns.len() * (zs.len() + 1);
-    let plan = ScreenPlan::new(budget, moments.n_levels(), stride);
+    let n_levels = moments.n_levels();
+    let plan = ScreenPlan::new(budget, n_levels, stride);
     let screen = Screen {
         levels,
         weights,
@@ -91,9 +92,9 @@ fn residual_shares(
         moments,
         stride,
         // Grouping gathers every column, so it must buy back more than the one block.
-        order: match design.terms[term].sorted || plan.per_block == moments.n_levels() {
+        order: match design.terms[term].sorted || plan.per_block == n_levels {
             true => RowOrder::AsIs,
-            false => RowOrder::Grouped(super::stable_argsort(levels, moments.n_levels())),
+            false => RowOrder::Grouped(super::stable_argsort(levels, n_levels)),
         },
     };
 
@@ -108,7 +109,7 @@ fn residual_shares(
             rows: screen.order.rows(levels, &levels_block),
             levels: levels_block,
         };
-        let table = &mut table[..block.levels.len() * screen.stride];
+        let table = &mut table[..block.levels.len() * stride];
         table.fill(0.0);
         screen.accumulate_cross(&block, table, &mut variations);
         screen.to_coefficients(&block, table);
@@ -288,7 +289,7 @@ struct Block {
 
 /// The order a term's rows are walked in, grouping each level's rows into one run.
 enum RowOrder {
-    /// The term's own row order already groups its levels.
+    /// The term's rows already run in level order, or the one block spans every level.
     AsIs,
     /// Row ids counting-sorted by level, for a term whose own order scatters them.
     Grouped(Vec<u32>),
