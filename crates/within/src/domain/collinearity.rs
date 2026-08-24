@@ -56,8 +56,7 @@ fn screened_covariates(design: &Design<'_>, term: usize) -> Vec<(Channel, u32)> 
         .collect()
 }
 
-/// Each target's share of (weighted) variation outside `term`'s span, in two passes so it
-/// resolves below the `1e-16` a subtraction floors at.
+/// Two passes, so the share resolves below the `1e-16` a subtraction floors at.
 fn residual_shares(
     design: &Design<'_>,
     weights: Option<&[f64]>,
@@ -91,22 +90,16 @@ fn residual_shares(
     let plan = ScreenPlan::new(budget, moments.n_levels(), m, v);
     let mut table = vec![0.0f64; plan.levels * m * (v + 1)];
     let mut residual = vec![0.0f64; m];
-    let mut variations = Variations::new(m);
+    let mut variations = Variations {
+        w_sum: 0.0,
+        stats: vec![Variation::default(); m],
+    };
     for block in plan.blocks(levels, design.terms[term].sorted) {
         let table = &mut table[..block.levels.len() * m * (v + 1)];
         table.fill(0.0);
-        match block.exact {
-            true => screen.screen_block::<false>(
-                &block,
-                &columns,
-                table,
-                &mut variations,
-                &mut residual,
-            ),
-            false => {
-                screen.screen_block::<true>(&block, &columns, table, &mut variations, &mut residual)
-            }
-        }
+        screen.accumulate_cross(&block, &columns, table, &mut variations);
+        screen.to_coefficients(&block, m, table);
+        screen.accumulate_residual(&block, &columns, table, &mut residual);
     }
 
     let intercept = moments.intercept();
@@ -136,6 +129,19 @@ impl Screen<'_> {
         self.weights.map_or(1.0, |w| w[obs])
     }
 
+    /// The block's `(row, weight, table row)`; an unsorted term is offered rows it must skip.
+    fn active_rows<'b>(
+        &'b self,
+        block: &'b Block,
+    ) -> impl Iterator<Item = (usize, f64, usize)> + 'b {
+        let (first, span) = (block.levels.start, block.levels.len());
+        block.rows.clone().filter_map(move |obs| {
+            let w = self.weight(obs);
+            let row = (self.levels[obs] as usize).wrapping_sub(first);
+            (w > 0.0 && row < span).then_some((obs, w, row))
+        })
+    }
+
     /// Without an intercept the level's span holds no constant, so `z` enters uncentered.
     fn center(&self, level: usize) -> &[f64] {
         match self.moments.intercept() {
@@ -144,22 +150,8 @@ impl Screen<'_> {
         }
     }
 
-    /// `RESCAN` marks the one path whose rows outrun their block: an unsorted term rescans.
-    fn screen_block<const RESCAN: bool>(
-        &self,
-        block: &Block,
-        columns: &[&[f64]],
-        table: &mut [f64],
-        variations: &mut Variations,
-        residual: &mut [f64],
-    ) {
-        self.accumulate_cross::<RESCAN>(block, columns, table, variations);
-        self.to_coefficients(block, columns.len(), table);
-        self.accumulate_residual::<RESCAN>(block, columns, table, residual);
-    }
-
-    /// Adds `[Σw·c, Σw·z·c]` per level and target, plus each target's total variation.
-    fn accumulate_cross<const RESCAN: bool>(
+    /// Each target's total variation rides this pass, since the rows are already loaded.
+    fn accumulate_cross(
         &self,
         block: &Block,
         columns: &[&[f64]],
@@ -168,18 +160,9 @@ impl Screen<'_> {
     ) {
         let v = self.zs.len();
         let stride = columns.len() * (v + 1);
-        let (first, span) = (block.levels.start, block.levels.len());
         let Variations { w_sum, stats } = variations;
         let mut running = *w_sum;
-        for obs in block.rows.clone() {
-            let w = self.weight(obs);
-            if w <= 0.0 {
-                continue;
-            }
-            let row = (self.levels[obs] as usize).wrapping_sub(first);
-            if RESCAN && row >= span {
-                continue;
-            }
+        for (obs, w, row) in self.active_rows(block) {
             running += w;
             // Every target shares the running weight, so the Welford ratio is taken once.
             let ratio = w / running;
@@ -243,7 +226,7 @@ impl Screen<'_> {
     }
 
     /// Adds each target's `Σw·(c − ĉ)²` from the coefficients left in `table`.
-    fn accumulate_residual<const RESCAN: bool>(
+    fn accumulate_residual(
         &self,
         block: &Block,
         columns: &[&[f64]],
@@ -252,30 +235,22 @@ impl Screen<'_> {
     ) {
         let v = self.zs.len();
         let stride = columns.len() * (v + 1);
-        let (first, span) = (block.levels.start, block.levels.len());
+        let first = block.levels.start;
         let mut dz = vec![0.0f64; v];
-        for obs in block.rows.clone() {
-            let w = self.weight(obs);
-            if w <= 0.0 {
-                continue;
-            }
-            let row = (self.levels[obs] as usize).wrapping_sub(first);
-            if RESCAN && row >= span {
-                continue;
-            }
+        for (obs, w, row) in self.active_rows(block) {
             for (dzj, (z, &cj)) in dz
                 .iter_mut()
                 .zip(self.zs.iter().zip(self.center(first + row)))
             {
                 *dzj = z[obs] - cj;
             }
-            for ((slot, column), residual) in table[row * stride..][..stride]
+            for ((slot, column), total) in table[row * stride..][..stride]
                 .chunks_exact(v + 1)
                 .zip(columns)
                 .zip(&mut *residual)
             {
                 let r = column[obs] - slot[0] - crate::linalg::dot(&slot[1..], &dz);
-                *residual += w * r * r;
+                *total += w * r * r;
             }
         }
     }
@@ -285,8 +260,6 @@ impl Screen<'_> {
 struct Block {
     levels: Range<usize>,
     rows: Range<usize>,
-    /// Whether every offered row reaches a level the block holds.
-    exact: bool,
 }
 
 /// How a term's levels are cut to fit the table budget; one level's row is the floor.
@@ -316,26 +289,16 @@ impl ScreenPlan {
                     }
                     false => 0..levels.len(),
                 },
-                exact: sorted || self.levels >= self.n_levels,
                 levels: start..end,
             }
         })
     }
 }
 
-/// The targets' total variation; they share one running weight, so the ratio is taken once.
+/// The targets' total variation, against the one running weight they all share.
 struct Variations {
     w_sum: f64,
     stats: Vec<Variation>,
-}
-
-impl Variations {
-    fn new(targets: usize) -> Self {
-        Self {
-            w_sum: 0.0,
-            stats: vec![Variation::default(); targets],
-        }
-    }
 }
 
 /// Welford, so the share's denominator survives a covariate whose mean dwarfs its spread.
@@ -553,7 +516,8 @@ mod tests {
         };
 
         // An exactly shared covariate is reproduced to the last bit of the fit itself.
-        assert!(share_at(0.0) < 1e-28, "{:e}", share_at(0.0));
+        let exact = share_at(0.0);
+        assert!(exact < 1e-28, "{exact:e}");
         for eps in [1e-12, 1e-9, 1e-6, 1e-3] {
             let share = share_at(eps);
             let ratio = share / (eps * eps);
@@ -573,16 +537,12 @@ mod tests {
             Effect::new(&b, true, [&z[..], &other[..]]).unwrap(),
         ])
         .unwrap();
-        let (shared, independent) = (
-            shares(&design, 0, FULL_TABLE)[0],
-            shares(&design, 0, FULL_TABLE)[1],
-        );
-        assert!(shared < 1e-28, "{shared:e}");
-        assert!(independent > 0.5, "{independent:e}");
+        let shares = shares(&design, 0, FULL_TABLE);
+        assert!(shares[0] < 1e-28, "{:e}", shares[0]);
+        assert!(shares[1] > 0.5, "{:e}", shares[1]);
     }
 
-    /// Splitting the table changes what it holds, never the arithmetic — to rounding for an
-    /// unsorted term, whose rows are revisited level-major.
+    /// Splitting the table changes what it holds, never the arithmetic — to rounding.
     #[test]
     fn a_minimal_table_budget_reproduces_the_full_table_shares() {
         let n = 4000;
@@ -608,9 +568,9 @@ mod tests {
         }
     }
 
-    /// The table stays inside its budget however many levels an unsorted term carries.
+    /// One level per block, 4000 blocks: the screen still warns however finely it is cut.
     #[test]
-    fn an_unsorted_many_level_term_still_warns_under_a_minimal_budget() {
+    fn a_term_cut_to_one_level_per_block_still_warns() {
         let n = 4000;
         let a: Vec<u32> = (0..n as u32).collect();
         let b: Vec<u32> = (0..n).map(|i| ((i * 7) % 1500) as u32).collect();
@@ -621,7 +581,6 @@ mod tests {
             Effect::new(&b, true, [&z[..]]).unwrap(),
         ])
         .unwrap();
-        assert!(!design.terms[1].sorted);
         // Term 1's own covariate is a per-level constant of term 0, whose levels are singletons.
         assert!(shares(&design, 0, 1)[0] < 1e-20);
     }
