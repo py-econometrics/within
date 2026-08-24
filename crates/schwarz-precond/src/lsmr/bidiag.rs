@@ -102,7 +102,7 @@ fn alpha_from_vp(v: &[f64], p_tilde: &[f64]) -> Result<f64, SolveError> {
     if !vp.is_finite() {
         return Err(SolveError::InvalidInput {
             context: "mlsmr",
-            message: format!("preconditioner produced a non-finite ⟨v, Mv⟩ ({vp})"),
+            message: format!("non-finite ⟨v, Mv⟩ ({vp}) from the operator or preconditioner"),
         });
     }
     if vp < 0.0 {

@@ -409,13 +409,14 @@ impl<'a> Solver<'a> {
         warnings.extend(build_warnings);
 
         // Read off the built preconditioner, so a deserialized one honours its own budget.
-        let fused = match preconditioner.as_ref().map(Preconditioner::config) {
+        let (fused, declined) = match preconditioner.as_ref().map(Preconditioner::config) {
             Some(PreconditionerConfig::Additive { local_solver, .. }) => local_solver
-                .fused_block_max_fill
-                .map(|f| FusedBlockSolve::build_all(&design, weights.as_deref(), &warnings, f))
+                .fused_block_max_values
+                .map(|b| FusedBlockSolve::build_all(&design, weights.as_deref(), &warnings, b))
                 .unwrap_or_default(),
-            _ => Vec::new(),
+            _ => Default::default(),
         };
+        warnings.extend(declined);
 
         let sqrt_weights = weights.map(|mut w| {
             for wi in &mut w {

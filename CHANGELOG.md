@@ -16,22 +16,24 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - **BREAKING:** `LsmrStopReason` gains `Escalated` and `WarmStartExact`, breaking exhaustive `match`es.
 - A warm start that already solves the system reports `WarmStartExact` instead of `ZeroRhs`.
 - **BREAKING:** `ScalingConfig::max_sweeps` is now `max_iterations`, and `BuildWarning::UnscalableComponent` reports `iterations` in place of `sweeps`; the dominance certificate runs reduced CG, not relaxation sweeps.
-- **BREAKING:** The serialized `Preconditioner` wire format changed with the `approx-chol` 0.4 → 0.5 bump (v12 → v13), retention of the complete construction config (v13 → v14), retention of its original build duration (v14 → v15), the new `LocalSolverConfig::ridge` field (v15 → v16), and the new `LocalSolverConfig::fused_block_max_fill` field (v16 → v17); 0.3.0 bytes no longer decode.
+- **BREAKING:** The serialized `Preconditioner` wire format changed with the `approx-chol` 0.4 → 0.5 bump (v12 → v13), retention of the complete construction config (v13 → v14), retention of its original build duration (v14 → v15), the new `LocalSolverConfig::ridge` field (v15 → v16), and the new `LocalSolverConfig::fused_block_max_values` field (v16 → v17); 0.3.0 bytes no longer decode.
 
 ### Added
 
 - Python `Preconditioner.build_duration_seconds` and Rust `Preconditioner::build_duration()` expose the original preconditioner build duration, preserved across serialization and reuse.
 - `BuildWarning::CollinearSlopeCovariate` reports a slope covariate that is (nearly) a per-level combination of another term's columns — a cross-term near-null direction that per-term whitening cannot see and that can inflate iteration counts by orders of magnitude (#281).
-- `LocalSolverConfig::fused_block_max_fill` (Python `LocalSolverConfig(fused_block_max_fill=...)`) opts a design into an exact sparse LDLᵀ solve over the terms the collinearity screen warns about, applied additively on top of the base preconditioner; low-mobility shared-covariate panels that exhausted a 3000-iteration budget converge in ~25 iterations. The limit caps `nnz(L)/nnz(triu(A))` per warned term group — the fill ratio bounds both the factor's memory and its per-iteration solve cost — and a group whose factor exceeds it is left to the pairwise decomposition. `None` (the default) declines every group. `within` gains a `faer` dependency for the factorization (#281, #302, #303).
+- `LocalSolverConfig::fused_block_max_values` (Python `LocalSolverConfig(fused_block_max_values=...)`) opts a design into an exact sparse LDLᵀ solve over the terms the collinearity screen warns about, applied additively on top of the base preconditioner; low-mobility shared-covariate panels that exhausted a 3000-iteration budget converge in ~25 iterations. The budget caps the LDLᵀ values stored per warned term group, bounding both the factor's memory and its per-iteration solve cost; it binds during assembly as well, since `|L| >= nnz(triu(A))`. A group over budget is left to the pairwise decomposition and reported as `BuildWarning::FusedBlockDeclined`. `None` (the default) declines every group. `within` gains a `faer` dependency for the factorization (#281, #302, #303).
 - `schwarz_precond::EscalationPolicy` builds a per-run `EscalationHandler` that ends a solve with `LsmrStopReason::Escalated` and an iterate that warm-starts the next preconditioner; `Staleness` implements it from the trailing contraction window.
 - `schwarz_precond::MlsmrOptions::warm_start` carries an initial iterate through a change of preconditioner.
 - `LocalSolverConfig::ridge` (Python `LocalSolverConfig(ridge=...)`) floors the local spectrum of grounded slope-pair components at a fraction of their largest diagonal; `0` disables it (#290).
+- `BuildWarning::FusedBlockDeclined` reports a warned term group the exact fused block did not cover, and the `FusedBlockDecline` reason: over budget, a null resolution that overflowed the double range, or a failed factorization (#303).
 
 ### Fixed
 
 - A design carrying varying slopes on two distinct factors could fail preconditioner construction with `matrix is not symmetric`, when rounding left the two triangles of the exact Schur complement unequal (#229).
 - A `design` that is neither a 2-D `uint32` array nor a list of `Effect` raised `ValueError` where the documented type is `TypeError`, and `AdditiveSchwarz` accepted a wrong-type `local_solver` at construction, deferring the `TypeError` to solve time (#248).
 - A slope covariate collinear with another term could make LSMR report convergence on a solve that had not demeaned the response; tolerance stops are now audited against the true residual and a failed check reports `LsmrStopReason::FalseConvergence` with `converged = false` (#290).
+- **BREAKING:** A non-finite `⟨v, Mv⟩` from the operator or preconditioner now fails the solve with `SolveError::InvalidInput`. `f64::max` returns the non-NaN operand, so it previously read as `α = 0` and reported `LsmrStopReason::InitialNormalEquationResidualZero` — an exact solve at `x = 0` — on a system that had not been solved at all (#303).
 
 ### Removed
 

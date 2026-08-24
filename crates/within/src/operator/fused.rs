@@ -16,7 +16,7 @@ use faer::{Conj, MatMut, Par, Side};
 use schwarz_precond::Operator;
 
 use crate::domain::Design;
-use crate::error::BuildWarning;
+use crate::error::{BuildWarning, FusedBlockDecline};
 use crate::operator::schwarz::Preconditioner;
 
 /// The assembled (weighted, whitened) Gram of one warned term group, in sparse form.
@@ -28,7 +28,15 @@ struct FusedGram {
     off: HashMap<(u32, u32), f64>,
 }
 
-fn assemble_gram(design: &Design<'_>, weights: Option<&[f64]>, terms: &[usize]) -> FusedGram {
+/// `None` once the Gram alone is over budget: `|L| >= nnz(triu(A))`, so no factor can fit.
+/// Checked as it accumulates — the map is the build's peak allocation, and on the
+/// well-connected graphs where fill explodes it is also its largest.
+fn assemble_gram(
+    design: &Design<'_>,
+    weights: Option<&[f64]>,
+    terms: &[usize],
+    max_values: usize,
+) -> Option<FusedGram> {
     let spans: Vec<Range<usize>> = terms
         .iter()
         .map(|&t| {
@@ -36,7 +44,10 @@ fn assemble_gram(design: &Design<'_>, weights: Option<&[f64]>, terms: &[usize]) 
             meta.offset..meta.offset + meta.n_dofs()
         })
         .collect();
-    let n_local = spans.iter().map(|s| s.len()).sum();
+    let n_local: usize = spans.iter().map(|s| s.len()).sum();
+    if n_local > max_values {
+        return None;
+    }
 
     let mut base = 0;
     let cols: Vec<_> = terms
@@ -74,7 +85,7 @@ fn assemble_gram(design: &Design<'_>, weights: Option<&[f64]>, terms: &[usize]) 
         for (p, &(dp, cp)) in ents.iter().enumerate() {
             diag[dp] += w * cp * cp;
             for &(dq, cq) in &ents[p + 1..] {
-                let key = if dp <= dq {
+                let key = if dp < dq {
                     (dp as u32, dq as u32)
                 } else {
                     (dq as u32, dp as u32)
@@ -82,9 +93,12 @@ fn assemble_gram(design: &Design<'_>, weights: Option<&[f64]>, terms: &[usize]) 
                 *off.entry(key).or_insert(0.0) += w * cp * cq;
             }
         }
+        if n_local + off.len() > max_values {
+            return None;
+        }
     }
 
-    FusedGram { spans, diag, off }
+    Some(FusedGram { spans, diag, off })
 }
 
 /// Sparse LDLᵀ of one fused Gram, under a fill-reducing ordering.
@@ -93,7 +107,7 @@ struct FusedFactor {
     l_values: Vec<f64>,
 }
 
-fn exact_factor(gram: &FusedGram, max_fill: f64) -> Option<FusedFactor> {
+fn exact_factor(gram: &FusedGram, max_values: usize) -> Result<FusedFactor, FusedBlockDecline> {
     let n_local = gram.diag.len();
     // Gate on the pattern alone; numeric staging is paid only once accepted.
     let mut pairs = Vec::with_capacity(n_local + gram.off.len());
@@ -107,7 +121,8 @@ fn exact_factor(gram: &FusedGram, max_fill: f64) -> Option<FusedFactor> {
         });
     }
     let (pattern, _) =
-        SymbolicSparseColMat::<usize>::try_new_from_indices(n_local, n_local, &pairs).ok()?;
+        SymbolicSparseColMat::<usize>::try_new_from_indices(n_local, n_local, &pairs)
+            .map_err(|_| FusedBlockDecline::Factorization)?;
     drop(pairs);
     let symbolic = factorize_symbolic_cholesky(
         pattern.as_ref(),
@@ -115,10 +130,9 @@ fn exact_factor(gram: &FusedGram, max_fill: f64) -> Option<FusedFactor> {
         SymmetricOrdering::Amd,
         CholeskySymbolicParams::default(),
     )
-    .ok()?;
-    let nnz_a = n_local + gram.off.len();
-    if symbolic.len_val() as f64 > max_fill * nnz_a as f64 {
-        return None;
+    .map_err(|_| FusedBlockDecline::Factorization)?;
+    if symbolic.len_val() > max_values {
+        return Err(FusedBlockDecline::Budget { budget: max_values });
     }
 
     let mut triplets = Vec::with_capacity(n_local + gram.off.len());
@@ -128,8 +142,8 @@ fn exact_factor(gram: &FusedGram, max_fill: f64) -> Option<FusedFactor> {
     for (&(r, c), &v) in &gram.off {
         triplets.push(Triplet::new(r as usize, c as usize, v));
     }
-    let a_upper =
-        SparseColMat::<usize, f64>::try_new_from_triplets(n_local, n_local, &triplets).ok()?;
+    let a_upper = SparseColMat::<usize, f64>::try_new_from_triplets(n_local, n_local, &triplets)
+        .map_err(|_| FusedBlockDecline::Factorization)?;
 
     // Null pivots become LARGE; tiny ones amplify nulls ~1e12x and fake convergence.
     let d_max = gram.diag.iter().copied().fold(0.0, f64::max);
@@ -153,15 +167,15 @@ fn exact_factor(gram: &FusedGram, max_fill: f64) -> Option<FusedFactor> {
             MemStack::new(&mut mem),
             Default::default(),
         )
-        .ok()?;
+        .map_err(|_| FusedBlockDecline::Factorization)?;
 
     // Null resolution grows |L| with the dimension; past the double range the group goes
     // uncorrected rather than feeding the solver a non-finite preconditioner.
     if l_values.iter().any(|v| !v.is_finite()) {
-        return None;
+        return Err(FusedBlockDecline::NonFinite);
     }
 
-    Some(FusedFactor { symbolic, l_values })
+    Ok(FusedFactor { symbolic, l_values })
 }
 
 /// Local solve over one warned term group, applied additively on top of the base
@@ -180,8 +194,8 @@ impl FusedBlockSolve {
         design: &Design<'_>,
         weights: Option<&[f64]>,
         warnings: &[BuildWarning],
-        max_fill: f64,
-    ) -> Vec<Self> {
+        max_values: usize,
+    ) -> (Vec<Self>, Vec<BuildWarning>) {
         let n_terms = design.terms.len();
         let mut parent: Vec<usize> = (0..n_terms).collect();
         fn root(parent: &mut [usize], mut i: usize) -> usize {
@@ -205,22 +219,29 @@ impl FusedBlockSolve {
             components[root(&mut parent, t)].push(t);
         }
         components.retain(|g| !g.is_empty());
-        components
-            .into_iter()
-            .filter_map(|terms| Self::build(design, weights, &terms, max_fill))
-            .collect()
+        let mut blocks = Vec::new();
+        let mut declined = Vec::new();
+        for terms in components {
+            match Self::build(design, weights, &terms, max_values) {
+                Ok(block) => blocks.push(block),
+                Err(reason) => declined.push(BuildWarning::FusedBlockDeclined { terms, reason }),
+            }
+        }
+        (blocks, declined)
     }
 
-    /// `None` where the factor's fill exceeds the limit; the group then goes uncorrected.
+    /// `Err` where the group does not fit its budget or cannot be factored; it then
+    /// goes uncorrected.
     fn build(
         design: &Design<'_>,
         weights: Option<&[f64]>,
         terms: &[usize],
-        max_fill: f64,
-    ) -> Option<Self> {
-        let gram = assemble_gram(design, weights, terms);
-        Some(Self {
-            factor: exact_factor(&gram, max_fill)?,
+        max_values: usize,
+    ) -> Result<Self, FusedBlockDecline> {
+        let budget = FusedBlockDecline::Budget { budget: max_values };
+        let gram = assemble_gram(design, weights, terms, max_values).ok_or(budget)?;
+        Ok(Self {
+            factor: exact_factor(&gram, max_values)?,
             n_local: gram.diag.len(),
             spans: gram.spans,
         })
@@ -320,9 +341,19 @@ mod tests {
         pub(crate) fn build_for_test(
             design: &Design<'_>,
             terms: &[usize],
-            max_fill: f64,
-        ) -> Option<Self> {
-            Self::build(design, None, terms, max_fill)
+            max_values: usize,
+        ) -> Result<Self, FusedBlockDecline> {
+            Self::build(design, None, terms, max_values)
+        }
+
+        /// `nnz(triu(A))` of the assembled Gram, or `None` where the budget stopped the
+        /// assembly — the only way to see that bail, since declining later reports the same.
+        pub(crate) fn assemble_for_test(
+            design: &Design<'_>,
+            terms: &[usize],
+            max_values: usize,
+        ) -> Option<usize> {
+            assemble_gram(design, None, terms, max_values).map(|g| g.diag.len() + g.off.len())
         }
     }
 }
