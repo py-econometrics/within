@@ -43,20 +43,12 @@ multiple-versions = "deny"
 wildcards = "deny"
 allow-wildcard-paths = true
 skip = [
-    { crate = "rand@0.8.7", reason = "transitive duplicate; dev-dep is on rand 0.10, num-complex/faer pull the older line" },
-    { crate = "rand_core@0.6.4", reason = "pre-existing transitive duplicate (criterion vs faer/approx-chol chains)" },
     { crate = "syn@2.0.119", reason = "transitive duplicate; serde_derive is on syn 3, faer's enum-as-inner/sysctl chain still on syn 2" },
     { crate = "equator@0.2.2", reason = "faer's tree spans three equator lines; in the normal graph since faer became a dep of within (#288)" },
-    { crate = "equator@0.4.2", reason = "faer's tree spans three equator lines; in the normal graph since faer became a dep of within (#288)" },
     { crate = "equator-macro@0.2.1", reason = "companion to the equator skips" },
-    { crate = "equator-macro@0.4.2", reason = "companion to the equator skips" },
-    { crate = "getrandom@0.3.4", reason = "faer's rand 0.9 line vs the rand 0.10 line (#288)" },
-    { crate = "rand@0.9.5", reason = "faer is on rand 0.9, dev-deps on rand 0.10 (#288)" },
-    { crate = "rand_core@0.9.5", reason = "companion to the rand 0.9 skip (#288)" },
     { crate = "syn@1.0.109", reason = "faer's sysctl/thiserror-1 chain is still on syn 1 (#288)" },
     { crate = "thiserror@1.0.69", reason = "faer's gemm/sysctl chain is on thiserror 1, workspace is on 2 (#288)" },
     { crate = "thiserror-impl@1.0.69", reason = "companion to the thiserror 1 skip (#288)" },
-    { crate = "windows-sys@0.42.0", reason = "faer's gemm/raw-cpuid chain pins the old line (#288)" },
 ]
 
 [sources]
