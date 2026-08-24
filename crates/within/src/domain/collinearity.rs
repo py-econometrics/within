@@ -16,6 +16,9 @@ const COLLINEARITY_TOL: f64 = 1e-3;
 /// Cross-moment table bytes the screen may hold at once, over all terms together.
 const TABLE_BUDGET_BYTES: usize = 64 << 20;
 
+/// Rows one residual task claims; small enough that work stealing balances the tail.
+const ROWS_PER_TASK: usize = 1 << 16;
+
 pub(crate) fn detect_collinear_slopes(
     design: &Design<'_>,
     weights: Option<&[f64]>,
@@ -222,25 +225,48 @@ impl Screen<'_> {
     }
 
     /// Adds each target's `Σw·(c − ĉ)²` from the coefficients left in `table`.
+    ///
+    /// Read-only on `table`, so the rows split freely; only the `m` sums reduce.
     fn accumulate_residual(&self, block: &Block, table: &[f64], residual: &mut [f64]) {
         let v = self.zs.len();
         let stride = self.stride();
         let first = block.levels.start;
-        let mut dz = vec![0.0f64; v];
-        for (obs, w, row) in self.active_rows(block) {
-            for (dzj, (z, &cj)) in dz
-                .iter_mut()
-                .zip(self.zs.iter().zip(self.center(first + row)))
-            {
-                *dzj = z[obs] - cj;
-            }
-            for ((slot, column), total) in table[row * stride..][..stride]
-                .chunks_exact(v + 1)
-                .zip(&self.columns)
-                .zip(&mut *residual)
-            {
-                let r = column[obs] - slot[0] - crate::linalg::dot(&slot[1..], &dz);
-                *total += w * r * r;
+        let tasks = block.rows.len().div_ceil(ROWS_PER_TASK).max(1);
+        let sums: Vec<Vec<f64>> = (0..tasks)
+            .into_par_iter()
+            .map_init(
+                || vec![0.0f64; v],
+                |dz, task| {
+                    let mut totals = vec![0.0f64; self.columns.len()];
+                    let start = block.rows.start + task * ROWS_PER_TASK;
+                    let task = Block {
+                        levels: block.levels.clone(),
+                        rows: start..(start + ROWS_PER_TASK).min(block.rows.end),
+                    };
+                    for (obs, w, row) in self.active_rows(&task) {
+                        for (dzj, (z, &cj)) in dz
+                            .iter_mut()
+                            .zip(self.zs.iter().zip(self.center(first + row)))
+                        {
+                            *dzj = z[obs] - cj;
+                        }
+                        for ((slot, column), total) in table[row * stride..][..stride]
+                            .chunks_exact(v + 1)
+                            .zip(&self.columns)
+                            .zip(&mut totals)
+                        {
+                            let r = column[obs] - slot[0] - crate::linalg::dot(&slot[1..], dz);
+                            *total += w * r * r;
+                        }
+                    }
+                    totals
+                },
+            )
+            .collect();
+        // Combined in task order, so the sum does not depend on how rayon split the rows.
+        for task_sums in sums {
+            for (total, sum) in residual.iter_mut().zip(task_sums) {
+                *total += sum;
             }
         }
     }
@@ -532,6 +558,46 @@ mod tests {
         let shares = shares(&design, 0, FULL_TABLE);
         assert!(shares[0] < 1e-28, "{:e}", shares[0]);
         assert!(shares[1] > 0.5, "{:e}", shares[1]);
+    }
+
+    /// More rows than one residual task, checked against a direct within-level sum so a
+    /// partition that drops or repeats even a few rows cannot pass.
+    #[test]
+    fn shares_hold_across_several_residual_tasks() {
+        let n = 3 * ROWS_PER_TASK;
+        let n_levels = 1000;
+        let a: Vec<u32> = (0..n).map(|i| (i % n_levels) as u32).collect();
+        let b: Vec<u32> = (0..n).map(|i| ((i / 7) % 137) as u32).collect();
+        let c = pseudo_noise(n, 31);
+        let design = Design::new(vec![
+            Effect::new(&a, true, []).unwrap(),
+            Effect::new(&b, true, [&c[..]]).unwrap(),
+        ])
+        .unwrap();
+
+        // Term 0 carries no slope, so `c`'s fit on a level's span is that level's mean.
+        let (mut sums, mut counts) = (vec![0.0f64; n_levels], vec![0.0f64; n_levels]);
+        for (&level, &cv) in a.iter().zip(&c) {
+            sums[level as usize] += cv;
+            counts[level as usize] += 1.0;
+        }
+        let within: f64 = a
+            .iter()
+            .zip(&c)
+            .map(|(&l, &cv)| {
+                let d = cv - sums[l as usize] / counts[l as usize];
+                d * d
+            })
+            .sum();
+        let mean = c.iter().sum::<f64>() / n as f64;
+        let total: f64 = c.iter().map(|&cv| (cv - mean) * (cv - mean)).sum();
+
+        let share = shares(&design, 0, FULL_TABLE)[0];
+        let expected = within / total;
+        assert!(
+            (share - expected).abs() <= 1e-9 * expected,
+            "{share:e} vs {expected:e}"
+        );
     }
 
     /// Splitting the table changes what it holds, never the arithmetic — to rounding.
