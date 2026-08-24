@@ -6,7 +6,7 @@ use std::ops::Range;
 use rayon::prelude::*;
 
 use super::level_moments::{BasisScratch, LevelMoments, TermMoments};
-use super::{Design, Loading};
+use super::Design;
 use crate::channel::Channel;
 use crate::BuildWarning;
 
@@ -52,10 +52,7 @@ fn screened_covariates(design: &Design<'_>, term: usize) -> Vec<(Channel, u32)> 
     (0..design.n_factors())
         .filter(|&t| t != term)
         .flat_map(|t| design.channels(t))
-        .filter_map(|slope| match design.loading(slope) {
-            Loading::Covariate(column) => Some((slope, column)),
-            Loading::Constant => None,
-        })
+        .filter_map(|slope| Some((slope, *design.loading(slope).covariate()?)))
         .collect()
 }
 
@@ -134,13 +131,14 @@ impl Screen<'_> {
         self.columns.len() * (self.zs.len() + 1)
     }
 
-    /// The block's `(row, weight, table row)`; an unsorted term is offered rows it must skip.
-    fn active_rows<'b>(
-        &'b self,
-        block: &'b Block,
-    ) -> impl Iterator<Item = (usize, f64, usize)> + 'b {
-        let (first, span) = (block.levels.start, block.levels.len());
-        block.rows.clone().filter_map(move |obs| {
+    /// `(row, weight, table row)` for `rows`; an unsorted term is offered rows it must skip.
+    fn active_rows(
+        &self,
+        levels: &Range<usize>,
+        rows: Range<usize>,
+    ) -> impl Iterator<Item = (usize, f64, usize)> + '_ {
+        let (first, span) = (levels.start, levels.len());
+        rows.filter_map(move |obs| {
             let w = self.weights.map_or(1.0, |w| w[obs]);
             let row = (self.levels[obs] as usize).wrapping_sub(first);
             (w > 0.0 && row < span).then_some((obs, w, row))
@@ -161,7 +159,7 @@ impl Screen<'_> {
         let stride = self.stride();
         let Variations { w_sum, stats } = variations;
         let mut running = *w_sum;
-        for (obs, w, row) in self.active_rows(block) {
+        for (obs, w, row) in self.active_rows(&block.levels, block.rows.clone()) {
             running += w;
             // Every target shares the running weight, so the Welford ratio is taken once.
             let ratio = w / running;
@@ -228,10 +226,13 @@ impl Screen<'_> {
     ///
     /// Read-only on `table`, so the rows split freely; only the `m` sums reduce.
     fn accumulate_residual(&self, block: &Block, table: &[f64], residual: &mut [f64]) {
+        if block.rows.is_empty() {
+            return;
+        }
         let v = self.zs.len();
         let stride = self.stride();
         let first = block.levels.start;
-        let tasks = block.rows.len().div_ceil(ROWS_PER_TASK).max(1);
+        let tasks = block.rows.len().div_ceil(ROWS_PER_TASK);
         let sums: Vec<Vec<f64>> = (0..tasks)
             .into_par_iter()
             .map_init(
@@ -239,11 +240,8 @@ impl Screen<'_> {
                 |dz, task| {
                     let mut totals = vec![0.0f64; self.columns.len()];
                     let start = block.rows.start + task * ROWS_PER_TASK;
-                    let task = Block {
-                        levels: block.levels.clone(),
-                        rows: start..(start + ROWS_PER_TASK).min(block.rows.end),
-                    };
-                    for (obs, w, row) in self.active_rows(&task) {
+                    let rows = start..(start + ROWS_PER_TASK).min(block.rows.end);
+                    for (obs, w, row) in self.active_rows(&block.levels, rows) {
                         for (dzj, (z, &cj)) in dz
                             .iter_mut()
                             .zip(self.zs.iter().zip(self.center(first + row)))
