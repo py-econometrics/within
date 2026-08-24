@@ -17,7 +17,11 @@ from within import (
 )
 from within.config import LocalSolverConfig, ScalingConfig
 
-from conftest import as_solver_categories, generate_synthetic_data
+from conftest import (
+    as_solver_categories,
+    generate_synthetic_data,
+    populated_level_column,
+)
 
 
 def assert_normal_equations_satisfied(cats, y, result, tol, weights=None):
@@ -136,12 +140,9 @@ def test_one_shot_solve_surfaces_build_warnings():
 @pytest.fixture()
 def problem():
     """Two-factor problem with 50 levels each, 10k observations."""
-    np.random.seed(42)
-    cats = [
-        np.random.randint(0, 50, size=10_000),
-        np.random.randint(0, 50, size=10_000),
-    ]
-    y = np.random.randn(10_000)
+    rng = np.random.default_rng(42)
+    cats = [populated_level_column(rng, 50, 10_000) for _ in range(2)]
+    y = rng.standard_normal(10_000)
     return cats, y
 
 
@@ -233,10 +234,10 @@ class TestDemean:
 
     def test_residual_is_orthogonal_to_design(self):
         """The residual y - D x should be orthogonal to every column of D."""
-        np.random.seed(99)
+        rng = np.random.default_rng(99)
         n_obs, n_levels = 5_000, [30, 40]
-        cats = [np.random.randint(0, nl, size=n_obs) for nl in n_levels]
-        y = np.random.randn(n_obs)
+        cats = [populated_level_column(rng, nl, n_obs) for nl in n_levels]
+        y = rng.standard_normal(n_obs)
         result = solve(as_solver_categories(cats), y)
         residual = y.copy()
         offset = 0

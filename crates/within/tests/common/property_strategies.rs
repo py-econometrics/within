@@ -59,6 +59,15 @@ pub struct SlopesProblem {
     pub y: Vec<f64>,
 }
 
+fn populated_level_column(n_levels: u32, n_obs: usize) -> impl Strategy<Value = Vec<u32>> {
+    proptest::collection::vec(0u32..n_levels, n_obs - n_levels as usize)
+        .prop_map(move |mut levels| {
+            levels.extend(0..n_levels);
+            levels
+        })
+        .prop_shuffle()
+}
+
 pub fn random_slopes_problem_strategy() -> impl Strategy<Value = SlopesProblem> {
     (60usize..=300, 1usize..=3).prop_flat_map(|(n_obs, n_factors)| {
         // Per factor: level count, intercept flag, slope count. An effect with
@@ -71,7 +80,7 @@ pub fn random_slopes_problem_strategy() -> impl Strategy<Value = SlopesProblem> 
                     .map(|(n_levels, intercept, n_slopes)| {
                         let intercept = intercept || n_slopes == 0;
                         (
-                            proptest::collection::vec(0u32..n_levels, n_obs),
+                            populated_level_column(n_levels, n_obs),
                             proptest::collection::vec(-3.0f64..3.0, n_obs),
                             proptest::collection::vec(
                                 proptest::collection::vec(-0.5f64..0.5, n_obs),

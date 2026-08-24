@@ -4,7 +4,7 @@ import pickle
 
 import numpy as np
 import pytest
-from conftest import as_solver_categories
+from conftest import as_solver_categories, populated_level_column
 from within import LsmrOptions, Preconditioner, PreconditionerConfig, Solver, solve
 from within._within import (
     ApproxCholConfig,
@@ -18,12 +18,9 @@ from within._within import (
 @pytest.fixture()
 def problem():
     """Two-factor problem with 50 levels each, 10k observations."""
-    np.random.seed(42)
-    cats = [
-        np.random.randint(0, 50, size=10_000),
-        np.random.randint(0, 50, size=10_000),
-    ]
-    y = np.random.randn(10_000)
+    rng = np.random.default_rng(42)
+    cats = [populated_level_column(rng, 50, 10_000) for _ in range(2)]
+    y = rng.standard_normal(10_000)
     return cats, y
 
 

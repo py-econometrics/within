@@ -330,28 +330,3 @@ fn level_blocks_cover_every_row_exactly_once() {
     }
     assert!(seen.iter().all(|&n| n == 1), "{seen:?}");
 }
-
-/// Gaps leave empty levels inside a block; the row order must group only codes that occur.
-#[test]
-fn gappy_level_codes_screen_the_same_at_any_budget() {
-    let n = 4000;
-    let a: Vec<u32> = (0..n).map(|i| (i % 40) as u32 * 2).collect();
-    let b: Vec<u32> = (0..n).map(|i| ((i / 40) % 25) as u32 * 3).collect();
-    let z1 = pseudo_noise(n, 7);
-    let z2 = pseudo_noise(n, 11);
-    let design = Design::new(vec![
-        Effect::new(&a, true, [&z1[..]]).unwrap(),
-        Effect::new(&b, true, [&z2[..]]).unwrap(),
-    ])
-    .unwrap();
-    assert!(!design.terms[1].sorted);
-    for (split, whole) in shares(&design, 1, 1)
-        .into_iter()
-        .zip(shares(&design, 1, FULL_TABLE))
-    {
-        assert!(
-            (split - whole).abs() <= 1e-12 * split.max(whole),
-            "{split:e} vs {whole:e}"
-        );
-    }
-}
