@@ -1,7 +1,7 @@
 //! White-box checks on the bidiagonalization itself.
 
 use super::{alpha_from_vp, dot, Bidiagonalization, GolubKahan};
-use crate::lsmr::fixtures::DenseOp;
+use crate::lsmr::fixtures::{DenseOp, DiagOp};
 
 /// `f64::max` returns the non-NaN operand, so a non-finite `M⁻¹p̃` would read as α = 0.
 #[test]
@@ -69,4 +69,19 @@ fn local_reorth_keeps_the_window_vectors_orthogonal() {
         drift_yes < 1e-10,
         "last {local_size} v's not mutually orthogonal: {drift_yes:e}"
     );
+}
+
+/// `beta == 0.0` and `alpha > 0.0` are both false for NaN, so an unguarded operator overflow
+/// leaves the vector unscaled and the recurrence silently poisoned.
+#[test]
+fn a_non_finite_operator_norm_is_an_error() {
+    let b = [1.0, 1.0];
+    for bad in [f64::NAN, f64::MAX] {
+        let op = DiagOp(vec![bad, 1.0]);
+        assert!(
+            crate::lsmr::lsmr(&op, &b, 1e-10, 50, None).is_err(),
+            "{bad:e} accepted"
+        );
+    }
+    assert!(crate::lsmr::lsmr(&DiagOp(vec![1.0, 1.0]), &b, 1e-10, 50, None).is_ok());
 }

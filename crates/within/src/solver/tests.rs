@@ -482,4 +482,11 @@ fn a_budget_the_factor_exceeds_declines_the_group() {
         FusedBlockSolve::assemble_for_test(&solver.design, &[0, 1], nnz_a),
         Some(nnz_a)
     );
+
+    // At exactly `nnz_a` the assembly fits and only the fill can exceed the budget, so this
+    // is the one budget that reaches the factor gate.
+    assert_eq!(
+        FusedBlockSolve::build_for_test(&solver.design, &[0, 1], nnz_a).err(),
+        Some(FusedBlockDecline::Budget)
+    );
 }

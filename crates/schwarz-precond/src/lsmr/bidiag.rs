@@ -95,6 +95,18 @@ fn par_dot(a: &[f64], b: &[f64]) -> f64 {
     }
 }
 
+/// `√sq`; NaN is silent downstream — `beta == 0.0` and `alpha > 0.0` are both false for it,
+/// leaving the vector unscaled and the recurrence poisoned.
+fn norm_from_sq(sq: f64, what: &str) -> Result<f64, SolveError> {
+    if !sq.is_finite() {
+        return Err(SolveError::InvalidInput {
+            context: "lsmr",
+            message: format!("non-finite {what} ({sq}) from the operator or preconditioner"),
+        });
+    }
+    Ok(sq.sqrt())
+}
+
 /// `α = √⟨v, p̃⟩`; a `vp` negative within `√ε·‖v‖‖p̃‖` clamps to 0, an indefinite `M` raises.
 fn alpha_from_vp(v: &[f64], p_tilde: &[f64]) -> Result<f64, SolveError> {
     let vp = par_dot(v, p_tilde);
@@ -269,7 +281,7 @@ impl<A: Operator + ?Sized> Bidiagonalization for GolubKahan<'_, A> {
     fn step(&mut self) -> Result<BidiagStep, SolveError> {
         self.operator.apply(&self.bufs.v, &mut self.bufs.av)?;
         let beta_sq = axpy_with_sq_norm(&mut self.bufs.u, &self.bufs.av, -self.alpha);
-        let beta = beta_sq.sqrt();
+        let beta = norm_from_sq(beta_sq, "β")?;
         if beta == 0.0 {
             // Lucky breakdown: zero `v` so `solution.update` contributes nothing.
             self.bufs.v.fill(0.0);
@@ -288,7 +300,7 @@ impl<A: Operator + ?Sized> Bidiagonalization for GolubKahan<'_, A> {
             reorth.reorthogonalize(&mut self.bufs.v);
             alpha_sq = par_dot(&self.bufs.v, &self.bufs.v);
         }
-        let alpha = alpha_sq.sqrt();
+        let alpha = norm_from_sq(alpha_sq, "α")?;
         if alpha > 0.0 {
             scale_in_place(&mut self.bufs.v, 1.0 / alpha);
         }
@@ -321,7 +333,7 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
         let scale = -(self.alpha * self.beta_prev_inv);
         self.operator.apply(&self.bufs.v, &mut self.bufs.av)?;
         let beta_sq = axpy_with_sq_norm(&mut self.bufs.u, &self.bufs.av, scale);
-        let beta = beta_sq.sqrt();
+        let beta = norm_from_sq(beta_sq, "β")?;
         if beta == 0.0 {
             // Lucky breakdown: zero `v` and its paired `p̃` so the update contributes nothing.
             self.bufs.v.fill(0.0);
@@ -415,7 +427,7 @@ impl<'a, A: Operator + ?Sized> GolubKahan<'a, A> {
         }
 
         operator.apply_adjoint(&bufs.u, &mut bufs.v)?;
-        let alpha = par_dot(&bufs.v, &bufs.v).sqrt();
+        let alpha = norm_from_sq(par_dot(&bufs.v, &bufs.v), "α")?;
         if alpha > 0.0 {
             scale_in_place(&mut bufs.v, 1.0 / alpha);
         }
