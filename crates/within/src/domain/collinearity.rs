@@ -29,7 +29,7 @@ pub(crate) fn detect_collinear_slopes(
         .into_par_iter()
         .flat_map_iter(move |term| {
             let targets = screened_covariates(design, term);
-            residual_shares(design, weights, &moments[term], term, &targets, budget)
+            residual_shares(design, weights, moments, term, &targets, budget)
                 .into_iter()
                 .zip(targets)
                 .filter(|&(share, _)| share <= COLLINEARITY_TOL)
@@ -60,7 +60,7 @@ fn screened_covariates(design: &Design<'_>, term: usize) -> Vec<(Channel, u32)> 
 fn residual_shares(
     design: &Design<'_>,
     weights: Option<&[f64]>,
-    moments: &LevelMoments,
+    moments: &TermMoments,
     term: usize,
     targets: &[(Channel, u32)],
     budget: usize,
@@ -69,7 +69,7 @@ fn residual_shares(
     if m == 0 {
         return Vec::new();
     }
-    let v = moments.n_slopes();
+    let moments = &moments[term];
     let levels = design.frame.level_column(term);
     let screen = Screen {
         levels,
@@ -79,27 +79,27 @@ fn residual_shares(
             .iter()
             .map(|&c| design.frame.loading_column(c as usize))
             .collect(),
-        zeros: vec![0.0; v],
+        columns: targets
+            .iter()
+            .map(|&(_, c)| design.frame.loading_column(c as usize))
+            .collect(),
+        zeros: vec![0.0; moments.n_slopes()],
         moments,
     };
-    let columns: Vec<&[f64]> = targets
-        .iter()
-        .map(|&(_, c)| design.frame.loading_column(c as usize))
-        .collect();
 
-    let plan = ScreenPlan::new(budget, moments.n_levels(), m, v);
-    let mut table = vec![0.0f64; plan.levels * m * (v + 1)];
+    let plan = ScreenPlan::new(budget, moments.n_levels(), screen.stride());
+    let mut table = vec![0.0f64; plan.per_block * screen.stride()];
     let mut residual = vec![0.0f64; m];
     let mut variations = Variations {
         w_sum: 0.0,
         stats: vec![Variation::default(); m],
     };
     for block in plan.blocks(levels, design.terms[term].sorted) {
-        let table = &mut table[..block.levels.len() * m * (v + 1)];
+        let table = &mut table[..block.levels.len() * screen.stride()];
         table.fill(0.0);
-        screen.accumulate_cross(&block, &columns, table, &mut variations);
-        screen.to_coefficients(&block, m, table);
-        screen.accumulate_residual(&block, &columns, table, &mut residual);
+        screen.accumulate_cross(&block, table, &mut variations);
+        screen.to_coefficients(&block, table);
+        screen.accumulate_residual(&block, table, &mut residual);
     }
 
     let intercept = moments.intercept();
@@ -120,13 +120,15 @@ struct Screen<'a> {
     levels: &'a [u32],
     weights: Option<&'a [f64]>,
     zs: Vec<&'a [f64]>,
+    columns: Vec<&'a [f64]>,
     zeros: Vec<f64>,
     moments: &'a LevelMoments,
 }
 
 impl Screen<'_> {
-    fn weight(&self, obs: usize) -> f64 {
-        self.weights.map_or(1.0, |w| w[obs])
+    /// One level's row of the table: `[Σw·c, Σw·z·c]` per target.
+    fn stride(&self) -> usize {
+        self.columns.len() * (self.zs.len() + 1)
     }
 
     /// The block's `(row, weight, table row)`; an unsorted term is offered rows it must skip.
@@ -136,7 +138,7 @@ impl Screen<'_> {
     ) -> impl Iterator<Item = (usize, f64, usize)> + 'b {
         let (first, span) = (block.levels.start, block.levels.len());
         block.rows.clone().filter_map(move |obs| {
-            let w = self.weight(obs);
+            let w = self.weights.map_or(1.0, |w| w[obs]);
             let row = (self.levels[obs] as usize).wrapping_sub(first);
             (w > 0.0 && row < span).then_some((obs, w, row))
         })
@@ -151,15 +153,9 @@ impl Screen<'_> {
     }
 
     /// Each target's total variation rides this pass, since the rows are already loaded.
-    fn accumulate_cross(
-        &self,
-        block: &Block,
-        columns: &[&[f64]],
-        table: &mut [f64],
-        variations: &mut Variations,
-    ) {
+    fn accumulate_cross(&self, block: &Block, table: &mut [f64], variations: &mut Variations) {
         let v = self.zs.len();
-        let stride = columns.len() * (v + 1);
+        let stride = self.stride();
         let Variations { w_sum, stats } = variations;
         let mut running = *w_sum;
         for (obs, w, row) in self.active_rows(block) {
@@ -168,7 +164,7 @@ impl Screen<'_> {
             let ratio = w / running;
             for ((slot, column), stat) in table[row * stride..][..stride]
                 .chunks_exact_mut(v + 1)
-                .zip(columns)
+                .zip(&self.columns)
                 .zip(&mut *stats)
             {
                 let c = column[obs];
@@ -184,11 +180,11 @@ impl Screen<'_> {
     }
 
     /// Rewrites a level's cross moments as the coefficients `[c̄, β]` of `c`'s fit on its span.
-    fn to_coefficients(&self, block: &Block, targets: usize, table: &mut [f64]) {
+    fn to_coefficients(&self, block: &Block, table: &mut [f64]) {
         let v = self.zs.len();
         let intercept = self.moments.intercept();
         table
-            .par_chunks_exact_mut(targets * (v + 1))
+            .par_chunks_exact_mut(self.stride())
             .enumerate()
             .for_each_init(
                 || (BasisScratch::new(v), vec![0.0f64; v]),
@@ -226,15 +222,9 @@ impl Screen<'_> {
     }
 
     /// Adds each target's `Σw·(c − ĉ)²` from the coefficients left in `table`.
-    fn accumulate_residual(
-        &self,
-        block: &Block,
-        columns: &[&[f64]],
-        table: &[f64],
-        residual: &mut [f64],
-    ) {
+    fn accumulate_residual(&self, block: &Block, table: &[f64], residual: &mut [f64]) {
         let v = self.zs.len();
-        let stride = columns.len() * (v + 1);
+        let stride = self.stride();
         let first = block.levels.start;
         let mut dz = vec![0.0f64; v];
         for (obs, w, row) in self.active_rows(block) {
@@ -246,7 +236,7 @@ impl Screen<'_> {
             }
             for ((slot, column), total) in table[row * stride..][..stride]
                 .chunks_exact(v + 1)
-                .zip(columns)
+                .zip(&self.columns)
                 .zip(&mut *residual)
             {
                 let r = column[obs] - slot[0] - crate::linalg::dot(&slot[1..], &dz);
@@ -265,33 +255,35 @@ struct Block {
 /// How a term's levels are cut to fit the table budget; one level's row is the floor.
 #[derive(Clone, Copy)]
 struct ScreenPlan {
-    levels: usize,
+    per_block: usize,
     n_levels: usize,
 }
 
 impl ScreenPlan {
-    /// `budget` counts doubles; the table needs `v + 1` of them per level and target.
-    fn new(budget: usize, n_levels: usize, targets: usize, v: usize) -> Self {
+    /// `budget` and `stride` both count doubles.
+    fn new(budget: usize, n_levels: usize, stride: usize) -> Self {
         Self {
-            levels: (budget / (targets * (v + 1))).clamp(1, n_levels),
+            per_block: (budget / stride).clamp(1, n_levels),
             n_levels,
         }
     }
 
     fn blocks(self, levels: &[u32], sorted: bool) -> impl Iterator<Item = Block> + '_ {
-        (0..self.n_levels).step_by(self.levels).map(move |start| {
-            let end = (start + self.levels).min(self.n_levels);
-            Block {
-                rows: match sorted {
-                    true => {
-                        levels.partition_point(|&l| (l as usize) < start)
-                            ..levels.partition_point(|&l| (l as usize) < end)
-                    }
-                    false => 0..levels.len(),
-                },
-                levels: start..end,
-            }
-        })
+        (0..self.n_levels)
+            .step_by(self.per_block)
+            .map(move |start| {
+                let end = (start + self.per_block).min(self.n_levels);
+                Block {
+                    rows: match sorted {
+                        true => {
+                            levels.partition_point(|&l| (l as usize) < start)
+                                ..levels.partition_point(|&l| (l as usize) < end)
+                        }
+                        false => 0..levels.len(),
+                    },
+                    levels: start..end,
+                }
+            })
     }
 }
 
@@ -347,7 +339,7 @@ mod tests {
     fn shares(design: &Design<'_>, term: usize, budget: usize) -> Vec<f64> {
         let moments = TermMoments::build(design, None).expect("design carries slopes");
         let targets = screened_covariates(design, term);
-        residual_shares(design, None, &moments[term], term, &targets, budget)
+        residual_shares(design, None, &moments, term, &targets, budget)
     }
 
     fn two_factor_levels(n: usize) -> (Vec<u32>, Vec<u32>) {
@@ -585,28 +577,28 @@ mod tests {
         assert!(shares(&design, 0, 1)[0] < 1e-20);
     }
 
-    /// 8 targets and 4 doubles per level and target, so 4000 doubles buys 125 levels.
+    /// A 32-double level row, so 4000 doubles buys 125 levels.
     #[test]
     fn the_plan_keeps_the_table_inside_the_budget() {
-        let table = |plan: ScreenPlan| plan.levels * 8 * 4;
-        let fits = ScreenPlan::new(4000, 125, 8, 3);
-        assert_eq!((fits.levels, table(fits)), (125, 4000));
+        let table = |plan: ScreenPlan| plan.per_block * 32;
+        let fits = ScreenPlan::new(4000, 125, 32);
+        assert_eq!((fits.per_block, table(fits)), (125, 4000));
         // A level count the budget cannot hold whole is cut, however large it is.
         for n_levels in [1_000, 1_000_000, 100_000_000] {
-            let plan = ScreenPlan::new(4000, n_levels, 8, 3);
-            assert_eq!(plan.levels, 125, "{n_levels}");
+            let plan = ScreenPlan::new(4000, n_levels, 32);
+            assert_eq!(plan.per_block, 125, "{n_levels}");
             assert!(table(plan) <= 4000, "{n_levels}");
         }
-        // One level's row is the floor: `targets · (v + 1)` doubles, independent of the levels.
-        let starved = ScreenPlan::new(0, 100_000_000, 8, 3);
-        assert_eq!((starved.levels, table(starved)), (1, 32));
+        // One level's row is the floor: the stride, however many levels the term has.
+        let starved = ScreenPlan::new(0, 100_000_000, 32);
+        assert_eq!((starved.per_block, table(starved)), (1, 32));
     }
 
     #[test]
     fn level_blocks_cover_every_row_exactly_once() {
         let levels: Vec<u32> = (0..100u32).flat_map(|l| [l; 3]).collect();
-        let plan = ScreenPlan::new(7 * 3, 100, 1, 2);
-        assert_eq!(plan.levels, 7);
+        let plan = ScreenPlan::new(7 * 3, 100, 3);
+        assert_eq!(plan.per_block, 7);
         let mut next = 0;
         for block in plan.blocks(&levels, true) {
             assert_eq!(block.rows.start, next);
@@ -620,8 +612,8 @@ mod tests {
     #[test]
     fn unsorted_blocks_reach_every_row_exactly_once() {
         let levels: Vec<u32> = (0..300u32).map(|i| (i * 7) % 100).collect();
-        let plan = ScreenPlan::new(7, 100, 1, 6);
-        assert_eq!(plan.levels, 1);
+        let plan = ScreenPlan::new(7, 100, 7);
+        assert_eq!(plan.per_block, 1);
         let mut seen = vec![0u32; levels.len()];
         for block in plan.blocks(&levels, false) {
             assert_eq!(block.rows, 0..levels.len());
