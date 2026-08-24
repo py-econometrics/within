@@ -71,31 +71,44 @@ fn residual_shares(
     }
     let moments = &moments[term];
     let levels = design.frame.level_column(term);
+    let zs: Vec<&[f64]> = moments
+        .covariates()
+        .iter()
+        .map(|&c| design.frame.loading_column(c as usize))
+        .collect();
+    let columns: Vec<&[f64]> = targets
+        .iter()
+        .map(|&(_, c)| design.frame.loading_column(c as usize))
+        .collect();
+    let stride = columns.len() * (zs.len() + 1);
+    let plan = ScreenPlan::new(budget, moments.n_levels(), stride);
     let screen = Screen {
         levels,
         weights,
-        zs: moments
-            .covariates()
-            .iter()
-            .map(|&c| design.frame.loading_column(c as usize))
-            .collect(),
-        columns: targets
-            .iter()
-            .map(|&(_, c)| design.frame.loading_column(c as usize))
-            .collect(),
+        zs,
+        columns,
         zeros: vec![0.0; moments.n_slopes()],
         moments,
+        stride,
+        // Grouping gathers every column, so it must buy back more than the one block.
+        order: match design.terms[term].sorted || plan.per_block == moments.n_levels() {
+            true => RowOrder::AsIs,
+            false => RowOrder::Grouped(super::stable_argsort(levels, moments.n_levels())),
+        },
     };
 
-    let plan = ScreenPlan::new(budget, moments.n_levels(), screen.stride());
-    let mut table = vec![0.0f64; plan.per_block * screen.stride()];
+    let mut table = vec![0.0f64; plan.per_block * stride];
     let mut residual = vec![0.0f64; m];
     let mut variations = Variations {
         w_sum: 0.0,
         stats: vec![Variation::default(); m],
     };
-    for block in plan.blocks(levels, design.terms[term].sorted) {
-        let table = &mut table[..block.levels.len() * screen.stride()];
+    for levels_block in plan.blocks() {
+        let block = Block {
+            rows: screen.order.rows(levels, &levels_block),
+            levels: levels_block,
+        };
+        let table = &mut table[..block.levels.len() * screen.stride];
         table.fill(0.0);
         screen.accumulate_cross(&block, table, &mut variations);
         screen.to_coefficients(&block, table);
@@ -123,25 +136,22 @@ struct Screen<'a> {
     columns: Vec<&'a [f64]>,
     zeros: Vec<f64>,
     moments: &'a LevelMoments,
+    order: RowOrder,
+    /// One level's row of the table: `[Σw·c, Σw·z·c]` per target.
+    stride: usize,
 }
 
 impl Screen<'_> {
-    /// One level's row of the table: `[Σw·c, Σw·z·c]` per target.
-    fn stride(&self) -> usize {
-        self.columns.len() * (self.zs.len() + 1)
-    }
-
-    /// `(row, weight, table row)` for `rows`; an unsorted term is offered rows it must skip.
+    /// `(row, weight, table row)` for positions `rows` of the term's row order.
     fn active_rows(
         &self,
-        levels: &Range<usize>,
+        first: usize,
         rows: Range<usize>,
     ) -> impl Iterator<Item = (usize, f64, usize)> + '_ {
-        let (first, span) = (levels.start, levels.len());
-        rows.filter_map(move |obs| {
+        rows.filter_map(move |i| {
+            let obs = self.order.obs(i);
             let w = self.weights.map_or(1.0, |w| w[obs]);
-            let row = (self.levels[obs] as usize).wrapping_sub(first);
-            (w > 0.0 && row < span).then_some((obs, w, row))
+            (w > 0.0).then(|| (obs, w, self.levels[obs] as usize - first))
         })
     }
 
@@ -156,10 +166,10 @@ impl Screen<'_> {
     /// Each target's total variation rides this pass, since the rows are already loaded.
     fn accumulate_cross(&self, block: &Block, table: &mut [f64], variations: &mut Variations) {
         let v = self.zs.len();
-        let stride = self.stride();
+        let stride = self.stride;
         let Variations { w_sum, stats } = variations;
         let mut running = *w_sum;
-        for (obs, w, row) in self.active_rows(&block.levels, block.rows.clone()) {
+        for (obs, w, row) in self.active_rows(block.levels.start, block.rows.clone()) {
             running += w;
             // Every target shares the running weight, so the Welford ratio is taken once.
             let ratio = w / running;
@@ -185,7 +195,7 @@ impl Screen<'_> {
         let v = self.zs.len();
         let intercept = self.moments.intercept();
         table
-            .par_chunks_exact_mut(self.stride())
+            .par_chunks_exact_mut(self.stride)
             .enumerate()
             .for_each_init(
                 || (BasisScratch::new(v), vec![0.0f64; v]),
@@ -230,7 +240,7 @@ impl Screen<'_> {
             return;
         }
         let v = self.zs.len();
-        let stride = self.stride();
+        let stride = self.stride;
         let first = block.levels.start;
         let tasks = block.rows.len().div_ceil(ROWS_PER_TASK);
         let sums: Vec<Vec<f64>> = (0..tasks)
@@ -241,7 +251,7 @@ impl Screen<'_> {
                     let mut totals = vec![0.0f64; self.columns.len()];
                     let start = block.rows.start + task * ROWS_PER_TASK;
                     let rows = start..(start + ROWS_PER_TASK).min(block.rows.end);
-                    for (obs, w, row) in self.active_rows(&block.levels, rows) {
+                    for (obs, w, row) in self.active_rows(first, rows) {
                         for (dzj, (z, &cj)) in dz
                             .iter_mut()
                             .zip(self.zs.iter().zip(self.center(first + row)))
@@ -270,10 +280,38 @@ impl Screen<'_> {
     }
 }
 
-/// One slice of a term's work: the levels the table holds and the rows offered for them.
+/// One slice of a term's work: the levels the table holds and the rows they own.
 struct Block {
     levels: Range<usize>,
     rows: Range<usize>,
+}
+
+/// The order a term's rows are walked in, grouping each level's rows into one run.
+enum RowOrder {
+    /// The term's own row order already groups its levels.
+    AsIs,
+    /// Row ids counting-sorted by level, for a term whose own order scatters them.
+    Grouped(Vec<u32>),
+}
+
+impl RowOrder {
+    fn obs(&self, i: usize) -> usize {
+        match self {
+            Self::AsIs => i,
+            Self::Grouped(perm) => perm[i] as usize,
+        }
+    }
+
+    /// The positions `block`'s levels own — one contiguous run, so each row is walked once.
+    fn rows(&self, levels: &[u32], block: &Range<usize>) -> Range<usize> {
+        let bound = |level: usize| match self {
+            Self::AsIs => levels.partition_point(|&l| (l as usize) < level),
+            Self::Grouped(perm) => {
+                perm.partition_point(|&obs| (levels[obs as usize] as usize) < level)
+            }
+        };
+        bound(block.start)..bound(block.end)
+    }
 }
 
 /// How a term's levels are cut to fit the table budget; one level's row is the floor.
@@ -292,22 +330,10 @@ impl ScreenPlan {
         }
     }
 
-    fn blocks(self, levels: &[u32], sorted: bool) -> impl Iterator<Item = Block> + '_ {
+    fn blocks(self) -> impl Iterator<Item = Range<usize>> {
         (0..self.n_levels)
             .step_by(self.per_block)
-            .map(move |start| {
-                let end = (start + self.per_block).min(self.n_levels);
-                Block {
-                    rows: match sorted {
-                        true => {
-                            levels.partition_point(|&l| (l as usize) < start)
-                                ..levels.partition_point(|&l| (l as usize) < end)
-                        }
-                        false => 0..levels.len(),
-                    },
-                    levels: start..end,
-                }
-            })
+            .map(move |start| start..(start + self.per_block).min(self.n_levels))
     }
 }
 
@@ -645,31 +671,58 @@ mod tests {
         assert_eq!((starved.per_block, table(starved)), (1, 32));
     }
 
-    /// Every row lands in exactly one block: a sorted term slices its rows, an unsorted
-    /// term is offered all of them and skips the ones outside the block.
+    /// Every row is walked in exactly one block, under either row order.
     #[test]
     fn level_blocks_cover_every_row_exactly_once() {
         let sorted: Vec<u32> = (0..100u32).flat_map(|l| [l; 3]).collect();
         let plan = ScreenPlan::new(7 * 3, 100, 3);
         assert_eq!(plan.per_block, 7);
         let mut next = 0;
-        for block in plan.blocks(&sorted, true) {
-            assert_eq!(block.rows.start, next);
-            assert_eq!(block.rows.end, block.levels.end.min(100) * 3);
-            next = block.rows.end;
+        for levels in plan.blocks() {
+            let rows = RowOrder::AsIs.rows(&sorted, &levels);
+            assert_eq!(rows.start, next);
+            assert_eq!(rows.end, levels.end.min(100) * 3);
+            next = rows.end;
         }
         assert_eq!(next, sorted.len());
 
         let scattered: Vec<u32> = (0..300u32).map(|i| (i * 7) % 100).collect();
         let plan = ScreenPlan::new(7, 100, 7);
         assert_eq!(plan.per_block, 1);
+        let order = RowOrder::Grouped(super::super::stable_argsort(&scattered, 100));
         let mut seen = vec![0u32; scattered.len()];
-        for block in plan.blocks(&scattered, false) {
-            assert_eq!(block.rows, 0..scattered.len());
-            for (obs, &l) in scattered.iter().enumerate() {
-                seen[obs] += u32::from(block.levels.contains(&(l as usize)));
+        for levels in plan.blocks() {
+            for i in order.rows(&scattered, &levels) {
+                let obs = order.obs(i);
+                assert!(levels.contains(&(scattered[obs] as usize)), "{obs}");
+                seen[obs] += 1;
             }
         }
         assert!(seen.iter().all(|&n| n == 1), "{seen:?}");
+    }
+
+    /// Gaps leave empty levels inside a block; the row order must group only codes that occur.
+    #[test]
+    fn gappy_level_codes_screen_the_same_at_any_budget() {
+        let n = 4000;
+        let a: Vec<u32> = (0..n).map(|i| (i % 40) as u32 * 2).collect();
+        let b: Vec<u32> = (0..n).map(|i| ((i / 40) % 25) as u32 * 3).collect();
+        let z1 = pseudo_noise(n, 7);
+        let z2 = pseudo_noise(n, 11);
+        let design = Design::new(vec![
+            Effect::new(&a, true, [&z1[..]]).unwrap(),
+            Effect::new(&b, true, [&z2[..]]).unwrap(),
+        ])
+        .unwrap();
+        assert!(!design.terms[1].sorted);
+        for (split, whole) in shares(&design, 1, 1)
+            .into_iter()
+            .zip(shares(&design, 1, FULL_TABLE))
+        {
+            assert!(
+                (split - whole).abs() <= 1e-12 * split.max(whole),
+                "{split:e} vs {whole:e}"
+            );
+        }
     }
 }
