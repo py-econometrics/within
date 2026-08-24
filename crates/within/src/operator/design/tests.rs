@@ -305,13 +305,13 @@ mod slope_design_tests {
     fn dense_matrix(design: &Design<'_>) -> Vec<Vec<f64>> {
         let mut d = vec![vec![0.0; design.n_dofs]; design.n_obs];
         for (q, t) in design.terms.iter().enumerate() {
-            let levels = design.frame.level_column(q);
+            let levels = design.level_column(q);
             for (c, loading) in t.columns.iter().enumerate() {
                 let base = t.offset + c * t.n_levels;
                 for (i, &lev) in levels.iter().enumerate() {
                     d[i][base + lev as usize] = match loading {
                         Loading::Constant => 1.0,
-                        Loading::Covariate(k) => design.frame.loading_column(*k as usize)[i],
+                        Loading::Covariate(k) => design.loading_column(*k as usize)[i],
                     };
                 }
             }

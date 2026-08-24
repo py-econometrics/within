@@ -78,11 +78,11 @@ impl LevelMoments {
         let zs: Vec<&[f64]> = moments
             .covariates
             .iter()
-            .map(|&c| design.frame.loading_column(c as usize))
+            .map(|&c| design.loading_column(c as usize))
             .collect();
         let mut z_row = vec![0.0; v];
         let mut delta = vec![0.0; v];
-        for (obs, &level) in design.frame.level_column(term).iter().enumerate() {
+        for (obs, &level) in design.level_column(term).iter().enumerate() {
             for (zr, col) in z_row.iter_mut().zip(&zs) {
                 *zr = col[obs];
             }
