@@ -124,13 +124,13 @@ fn shared_covariate_panel(eps: f64) -> SharedCovariatePanel {
     SharedCovariatePanel { a, b, z, z2, y }
 }
 
-/// The block is opt-in, so every test that wants it declares a budget the factor fits under.
-fn fused_precond(budget: usize) -> crate::config::PreconditionerConfig {
+/// The block is opt-in, so every test that wants it declares a fill limit the factor fits under.
+fn fused_precond(max_fill: f64) -> crate::config::PreconditionerConfig {
     use crate::config::{LocalSolverConfig, PreconditionerConfig};
 
     PreconditionerConfig::Additive {
         local_solver: LocalSolverConfig {
-            fused_block_budget: Some(budget),
+            fused_block_max_fill: Some(max_fill),
             ..Default::default()
         },
         reduction: Default::default(),
@@ -148,7 +148,7 @@ fn assert_fused_solve_matches_reference(eps: f64) {
         maxiter: 20_000,
         ..Default::default()
     };
-    let solver = Solver::new(panel.effects(), None, fused_precond(1 << 30)).unwrap();
+    let solver = Solver::new(panel.effects(), None, fused_precond(100.0)).unwrap();
     assert!(
         !solver.fused.is_empty(),
         "screen must arm the fused block (eps = {eps:e})"
@@ -190,7 +190,7 @@ fn a_prebuilt_preconditioner_arms_the_block_from_its_own_config() {
     use super::Solver;
 
     let panel = shared_covariate_panel(0.0);
-    let built = Solver::new(panel.effects(), None, fused_precond(1 << 30)).unwrap();
+    let built = Solver::new(panel.effects(), None, fused_precond(100.0)).unwrap();
     let reused = Solver::new(
         panel.effects(),
         None,
@@ -222,7 +222,7 @@ fn independent_covariates_build_no_fused_block() {
             crate::Effect::new(&b, true, [&z_other[..]]).unwrap(),
         ],
         None,
-        fused_precond(1 << 30),
+        fused_precond(100.0),
     )
     .unwrap();
     assert!(solver.fused.is_empty());
@@ -286,7 +286,7 @@ fn assert_akm_stress(move_prob: f64, max_iters: usize, label: &str) {
     use crate::config::LsmrOptions;
 
     let panel = akm_panel(move_prob);
-    let solver = Solver::new(panel.effects(), None, fused_precond(1 << 33)).unwrap();
+    let solver = Solver::new(panel.effects(), None, fused_precond(100.0)).unwrap();
     assert!(!solver.fused.is_empty(), "the screen must arm the block");
     let opts = LsmrOptions {
         tol: 1e-10,
@@ -319,7 +319,7 @@ fn fused_block_restores_healthy_iteration_counts() {
     use crate::config::LsmrOptions;
 
     let panel = shared_covariate_panel(1e-4);
-    let solver = Solver::new(panel.effects(), None, fused_precond(1 << 30)).unwrap();
+    let solver = Solver::new(panel.effects(), None, fused_precond(100.0)).unwrap();
     assert!(!solver.fused.is_empty());
     let opts = LsmrOptions {
         tol: 1e-10,
@@ -337,12 +337,12 @@ fn fused_block_restores_healthy_iteration_counts() {
 }
 
 #[test]
-fn a_fill_budget_the_factor_exceeds_declines_the_group() {
+fn a_fill_limit_the_factor_exceeds_declines_the_group() {
     use super::Solver;
     use crate::operator::fused::FusedBlockSolve;
 
     let panel = shared_covariate_panel(1e-4);
     let solver = Solver::new(panel.effects(), None, None).unwrap();
-    assert!(FusedBlockSolve::build_for_test(&solver.design, &[0, 1], 0).is_none());
-    assert!(FusedBlockSolve::build_for_test(&solver.design, &[0, 1], 1 << 30).is_some());
+    assert!(FusedBlockSolve::build_for_test(&solver.design, &[0, 1], 1.0).is_none());
+    assert!(FusedBlockSolve::build_for_test(&solver.design, &[0, 1], 100.0).is_some());
 }

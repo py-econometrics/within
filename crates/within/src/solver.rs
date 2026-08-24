@@ -411,8 +411,8 @@ impl<'a> Solver<'a> {
         // Read off the built preconditioner, so a deserialized one honours its own budget.
         let fused = match preconditioner.as_ref().map(Preconditioner::config) {
             Some(PreconditionerConfig::Additive { local_solver, .. }) => local_solver
-                .fused_block_budget
-                .map(|b| FusedBlockSolve::build_all(&design, weights.as_deref(), &warnings, b))
+                .fused_block_max_fill
+                .map(|f| FusedBlockSolve::build_all(&design, weights.as_deref(), &warnings, f))
                 .unwrap_or_default(),
             _ => Vec::new(),
         };

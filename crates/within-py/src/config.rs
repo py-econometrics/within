@@ -290,7 +290,7 @@ pub struct PyLocalSolverConfig {
 #[pymethods]
 impl PyLocalSolverConfig {
     #[new]
-    #[pyo3(signature = (approx_chol=None, schur=None, dense_threshold=None, scaling=None, ridge=None, fused_block_budget=None))]
+    #[pyo3(signature = (approx_chol=None, schur=None, dense_threshold=None, scaling=None, ridge=None, fused_block_max_fill=None))]
     fn new(
         py: Python<'_>,
         approx_chol: Option<Py<PyApproxCholConfig>>,
@@ -298,7 +298,7 @@ impl PyLocalSolverConfig {
         dense_threshold: Option<usize>,
         scaling: Option<Py<PyScalingConfig>>,
         ridge: Option<f64>,
-        fused_block_budget: Option<usize>,
+        fused_block_max_fill: Option<f64>,
     ) -> Self {
         let defaults = LocalSolverConfig::default();
         Self {
@@ -314,7 +314,7 @@ impl PyLocalSolverConfig {
                     .map(|config| config.bind(py).get().to_native())
                     .unwrap_or(defaults.scaling),
                 ridge: ridge.unwrap_or(defaults.ridge),
-                fused_block_budget: fused_block_budget.or(defaults.fused_block_budget),
+                fused_block_max_fill: fused_block_max_fill.or(defaults.fused_block_max_fill),
             },
         }
     }
@@ -345,8 +345,8 @@ impl PyLocalSolverConfig {
     }
 
     #[getter]
-    fn fused_block_budget(&self) -> Option<usize> {
-        self.inner.fused_block_budget
+    fn fused_block_max_fill(&self) -> Option<f64> {
+        self.inner.fused_block_max_fill
     }
 }
 

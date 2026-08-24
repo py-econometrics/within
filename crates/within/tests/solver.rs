@@ -221,7 +221,7 @@ fn test_additive_serde_roundtrip_preserves_config_and_solution() {
                 on_failure: ScalingFailure::Error,
             },
             ridge: 1e-5,
-            fused_block_budget: Some(1 << 20),
+            fused_block_max_fill: Some(50.0),
         },
         reduction: ReductionStrategy::AtomicScatter,
     };

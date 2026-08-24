@@ -93,7 +93,7 @@ struct FusedFactor {
     l_values: Vec<f64>,
 }
 
-fn exact_factor(gram: &FusedGram, budget: usize) -> Option<FusedFactor> {
+fn exact_factor(gram: &FusedGram, max_fill: f64) -> Option<FusedFactor> {
     let n_local = gram.diag.len();
     // Gate on the pattern alone; numeric staging is paid only once accepted.
     let mut pairs = Vec::with_capacity(n_local + gram.off.len());
@@ -116,8 +116,8 @@ fn exact_factor(gram: &FusedGram, budget: usize) -> Option<FusedFactor> {
         CholeskySymbolicParams::default(),
     )
     .ok()?;
-    let factor_bytes = size_of::<f64>() + size_of::<usize>();
-    if symbolic.len_val().saturating_mul(factor_bytes) > budget {
+    let nnz_a = n_local + gram.off.len();
+    if symbolic.len_val() as f64 > max_fill * nnz_a as f64 {
         return None;
     }
 
@@ -174,7 +174,7 @@ impl FusedBlockSolve {
         design: &Design<'_>,
         weights: Option<&[f64]>,
         warnings: &[BuildWarning],
-        budget: usize,
+        max_fill: f64,
     ) -> Vec<Self> {
         let n_terms = design.terms.len();
         let mut parent: Vec<usize> = (0..n_terms).collect();
@@ -201,20 +201,20 @@ impl FusedBlockSolve {
         components.retain(|g| !g.is_empty());
         components
             .into_iter()
-            .filter_map(|terms| Self::build(design, weights, &terms, budget))
+            .filter_map(|terms| Self::build(design, weights, &terms, max_fill))
             .collect()
     }
 
-    /// `None` where the symbolic factor exceeds the budget; the group then goes uncorrected.
+    /// `None` where the factor's fill exceeds the limit; the group then goes uncorrected.
     fn build(
         design: &Design<'_>,
         weights: Option<&[f64]>,
         terms: &[usize],
-        budget: usize,
+        max_fill: f64,
     ) -> Option<Self> {
         let gram = assemble_gram(design, weights, terms);
         Some(Self {
-            factor: exact_factor(&gram, budget)?,
+            factor: exact_factor(&gram, max_fill)?,
             n_local: gram.diag.len(),
             spans: gram.spans,
         })
@@ -314,9 +314,9 @@ mod tests {
         pub(crate) fn build_for_test(
             design: &Design<'_>,
             terms: &[usize],
-            budget: usize,
+            max_fill: f64,
         ) -> Option<Self> {
-            Self::build(design, None, terms, budget)
+            Self::build(design, None, terms, max_fill)
         }
     }
 }
