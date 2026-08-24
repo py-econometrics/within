@@ -253,22 +253,14 @@ impl AkmPanel {
     }
 }
 
-/// Solves one AKM stress panel through the real gate and pins the rung and iteration health.
-fn assert_akm_stress(move_prob: f64, expect_exact: bool, max_iters: usize, label: &str) {
+/// Solves one AKM stress panel through the real gate and pins its iteration health.
+fn assert_akm_stress(move_prob: f64, max_iters: usize, label: &str) {
     use super::Solver;
     use crate::config::LsmrOptions;
 
     let panel = akm_panel(move_prob);
     let solver = Solver::new(panel.effects(), None, None).unwrap();
-    assert!(!solver.fused.is_empty(), "screen must arm the ladder");
-    assert!(
-        solver
-            .fused
-            .iter()
-            .all(|b| b.is_exact_for_test() == expect_exact),
-        "fill gate must arm the {} rung",
-        if expect_exact { "exact" } else { "FSAI" }
-    );
+    assert!(!solver.fused.is_empty(), "the screen must arm the block");
     let opts = LsmrOptions {
         tol: 1e-10,
         maxiter: 3000,
@@ -287,18 +279,11 @@ fn assert_akm_stress(move_prob: f64, expect_exact: bool, max_iters: usize, label
     );
 }
 
-/// Middle-band stress through the real gate: fill 539M declines exact, the FSAI rung engages.
-#[test]
-#[ignore]
-fn fused_block_middle_band_stress() {
-    assert_akm_stress(0.2, false, 200, "fsai middle-band stress");
-}
-
 /// Low-mobility AKM stress: unfused this exhausts 3000 iterations; fused must stay healthy.
 #[test]
 #[ignore]
 fn fused_block_low_mobility_stress() {
-    assert_akm_stress(0.05, true, 100, "fused low-mobility stress");
+    assert_akm_stress(0.05, 100, "fused low-mobility stress");
 }
 
 #[test]
@@ -323,85 +308,12 @@ fn fused_block_restores_healthy_iteration_counts() {
     );
 }
 
-/// Runs mlsmr with an explicit preconditioner, replicating `solve_rhs`'s data path.
-fn probe_run<M: schwarz_precond::Operator>(
-    solver: &super::Solver<'_>,
-    y: &[f64],
-    m: &M,
-    tol: f64,
-    maxiter: usize,
-) -> schwarz_precond::LsmrResult {
-    use schwarz_precond::{mlsmr, MlsmrOptions};
-
-    let y_int = solver.design.permute_obs_in(y);
-    let rect_op =
-        crate::operator::DesignOperator::new(&solver.design, solver.sqrt_weights.as_deref());
-    let b = rect_op.weighted_rhs(&y_int);
-    mlsmr(&rect_op, &b, m, tol, maxiter, MlsmrOptions::default()).unwrap()
-}
-
-/// Forces the FSAI rung with a zero fill budget on a panel whose real gate arms the exact rung.
-fn assert_fsai_fallback_matches_reference(panel: SharedCovariatePanel) {
+#[test]
+fn a_fill_budget_the_factor_exceeds_declines_the_group() {
     use super::Solver;
-    use crate::operator::fused::{FusedBlockSolve, FusedPreconditioner};
-
-    let solver = Solver::new(panel.effects(), None, None).unwrap();
-    let blocks = vec![FusedBlockSolve::build_for_test(&solver.design, &[0, 1], 0)];
-    assert!(!blocks[0].is_exact_for_test());
-    let op = FusedPreconditioner::new(solver.preconditioner.as_ref().unwrap(), &blocks);
-    let r = probe_run(&solver, &panel.y, &op, 1e-12, 20_000);
-    assert!(r.converged);
-
-    let y_int = solver.design.permute_obs_in(&panel.y);
-    let mut d = vec![0.0; solver.design.n_obs];
-    crate::operator::design::gather_apply(&solver.design, &r.x, &mut d, None);
-    for (di, &yi) in d.iter_mut().zip(y_int.iter()) {
-        *di = yi - *di;
-    }
-    let demeaned = solver.design.permute_obs_out(d);
-    assert_demeaned_matches_reference(&panel, &demeaned, "fsai fallback");
-}
-
-#[test]
-fn fsai_fallback_matches_unpreconditioned_reference() {
-    assert_fsai_fallback_matches_reference(shared_covariate_panel(1e-4));
-}
-
-#[test]
-fn fsai_fallback_grounds_exact_sharing() {
-    assert_fsai_fallback_matches_reference(shared_covariate_panel(0.0));
-}
-
-/// An exclusively co-occurring level pair puts an exactly singular fiber inside one
-/// FSAI row's neighborhood; the null response must stay bounded, not clamp-amplified.
-#[test]
-fn fsai_fallback_bounds_row_local_aliasing() {
-    let mut panel = shared_covariate_panel(1e-4);
-    let extra = pseudo_noise(8, 41);
-    for (k, &e) in extra.iter().enumerate() {
-        panel.a.push(200);
-        panel.b.push(100);
-        panel.z.push(e);
-        panel.z2.push(e + 1e-4 * (k as f64 / 8.0 - 0.5));
-        panel.y.push(1.0 + e);
-    }
-    assert_fsai_fallback_matches_reference(panel);
-}
-
-#[test]
-fn fsai_fallback_restores_healthy_iteration_counts() {
-    use super::Solver;
-    use crate::operator::fused::{FusedBlockSolve, FusedPreconditioner};
+    use crate::operator::fused::FusedBlockSolve;
 
     let panel = shared_covariate_panel(1e-4);
     let solver = Solver::new(panel.effects(), None, None).unwrap();
-    let blocks = vec![FusedBlockSolve::build_for_test(&solver.design, &[0, 1], 0)];
-    let op = FusedPreconditioner::new(solver.preconditioner.as_ref().unwrap(), &blocks);
-    let r = probe_run(&solver, &panel.y, &op, 1e-10, 3000);
-    assert!(r.converged);
-    assert!(
-        r.iterations < 100,
-        "expected healthy iteration count, got {}",
-        r.iterations
-    );
+    assert!(FusedBlockSolve::build_for_test(&solver.design, &[0, 1], 0).is_none());
 }

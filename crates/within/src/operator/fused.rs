@@ -1,4 +1,4 @@
-//! Fused-block correction ladder for collinearity-warned term groups (#281).
+//! Fused-block correction for collinearity-warned term groups (#281).
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -21,9 +21,6 @@ use crate::operator::schwarz::Preconditioner;
 
 /// Factor-nnz budget above which the exact solve is declined (fill is set by graph topology).
 const FILL_CAP: usize = 40_000_000;
-
-/// FSAI row-pattern cap: keeps setup O(nnz · cap²) under heavy-tailed level degrees.
-const FSAI_ROW_CAP: usize = 48;
 
 /// The assembled (weighted, whitened) Gram of one warned term group, in sparse form.
 struct FusedGram {
@@ -100,19 +97,10 @@ fn assemble_gram(design: &Design<'_>, weights: Option<&[f64]>, terms: &[usize]) 
     }
 }
 
-/// Ladder rung chosen by the fill gate: exact where affordable, approximate inverse otherwise.
-enum FusedFactor {
-    /// Sparse LDLᵀ of the whole fused Gram; cures any topology but pays the fill.
-    Exact {
-        symbolic: Box<SymbolicCholesky<usize>>,
-        l_values: Vec<f64>,
-    },
-    /// `A⁻¹ ≈ GᵀG` with the diagonal prescaling folded into G; pattern capped lower(A); fill-free.
-    Fsai {
-        row_ptr: Vec<usize>,
-        col_idx: Vec<u32>,
-        values: Vec<f64>,
-    },
+/// Sparse LDLᵀ of one fused Gram, under a fill-reducing ordering.
+struct FusedFactor {
+    symbolic: Box<SymbolicCholesky<usize>>,
+    l_values: Vec<f64>,
 }
 
 fn exact_factor(gram: &FusedGram, fill_cap: usize) -> Option<FusedFactor> {
@@ -176,118 +164,10 @@ fn exact_factor(gram: &FusedGram, fill_cap: usize) -> Option<FusedFactor> {
         )
         .ok()?;
 
-    Some(FusedFactor::Exact {
+    Some(FusedFactor {
         symbolic: Box::new(symbolic),
         l_values,
     })
-}
-
-/// Infallible bottom rung; each row solves a small principal subsystem, so no shift is needed.
-fn fsai_factor(gram: &FusedGram) -> FusedFactor {
-    let n = gram.n_local;
-    let scale: Vec<f64> = gram
-        .diag
-        .iter()
-        .map(|&d| if d > 0.0 { 1.0 / d.sqrt() } else { 1.0 })
-        .collect();
-    let mut lower_adj: Vec<Vec<(u32, f64)>> = vec![Vec::new(); n];
-    for (&(r, c), &v) in &gram.off {
-        lower_adj[c as usize].push((r, v * scale[r as usize] * scale[c as usize]));
-    }
-
-    let mut row_ptr = Vec::with_capacity(n + 1);
-    let mut col_idx: Vec<u32> = Vec::new();
-    let mut values: Vec<f64> = Vec::new();
-    row_ptr.push(0);
-    let mut small = vec![0.0f64; (FSAI_ROW_CAP + 1) * (FSAI_ROW_CAP + 1)];
-    let mut rhs = vec![0.0f64; FSAI_ROW_CAP + 1];
-    let mut idx: Vec<u32> = Vec::with_capacity(FSAI_ROW_CAP + 1);
-    for (i, adj) in lower_adj.iter_mut().enumerate() {
-        if adj.len() > FSAI_ROW_CAP {
-            // Total order (|value| desc, then column) keeps single-thread runs bitwise.
-            adj.sort_unstable_by(|a, b| b.1.abs().total_cmp(&a.1.abs()).then(a.0.cmp(&b.0)));
-            adj.truncate(FSAI_ROW_CAP);
-        }
-        idx.clear();
-        idx.extend(adj.iter().map(|&(c, _)| c));
-        idx.sort_unstable();
-        idx.push(i as u32);
-        let m = idx.len();
-        for a in 0..m {
-            // idx is sorted ascending, so (idx[b], idx[a]) is already an upper-triangle key.
-            for b in 0..=a {
-                let (r, c) = (idx[b], idx[a]);
-                let v = if r == c {
-                    if gram.diag[r as usize] > 0.0 {
-                        1.0
-                    } else {
-                        0.0
-                    }
-                } else {
-                    gram.off
-                        .get(&(r, c))
-                        .map_or(0.0, |&v| v * scale[r as usize] * scale[c as usize])
-                };
-                small[a * m + b] = v;
-            }
-        }
-        rhs[..m].fill(0.0);
-        rhs[m - 1] = 1.0;
-        dense_spd_solve(&mut small[..m * m], m, &mut rhs[..m]);
-        let inv_sqrt = 1.0 / rhs[m - 1].max(1e-30).sqrt();
-        for (&col, &v) in idx.iter().zip(&rhs[..m]) {
-            // The prescaling S folds into G: (GS)ᵀ(GS) = S·GᵀG·S, saving two sweeps per apply.
-            let g = v * inv_sqrt * scale[col as usize];
-            if g != 0.0 {
-                col_idx.push(col);
-                values.push(g);
-            }
-        }
-        row_ptr.push(values.len());
-    }
-
-    FusedFactor::Fsai {
-        row_ptr,
-        col_idx,
-        values,
-    }
-}
-
-/// In-place Cholesky solve; near-null pivots get a jitter floor instead of failing.
-fn dense_spd_solve(a: &mut [f64], m: usize, rhs: &mut [f64]) {
-    for j in 0..m {
-        let mut d = a[j * m + j];
-        for k in 0..j {
-            d -= a[j * m + k] * a[j * m + k];
-        }
-        // Unidentified pivots become LARGE (bounded response), mirroring the exact rung.
-        if d <= 1e-12 {
-            d = 1.0;
-        }
-        let sd = d.sqrt();
-        a[j * m + j] = sd;
-        for i in j + 1..m {
-            let mut v = a[i * m + j];
-            for k in 0..j {
-                v -= a[i * m + k] * a[j * m + k];
-            }
-            a[i * m + j] = v / sd;
-        }
-    }
-    for i in 0..m {
-        let mut v = rhs[i];
-        for k in 0..i {
-            v -= a[i * m + k] * rhs[k];
-        }
-        rhs[i] = v / a[i * m + i];
-    }
-    for i in (0..m).rev() {
-        let mut v = rhs[i];
-        for k in i + 1..m {
-            v -= a[k * m + i] * rhs[k];
-        }
-        rhs[i] = v / a[i * m + i];
-    }
 }
 
 /// Local solve over one warned term group, applied additively on top of the base
@@ -332,26 +212,26 @@ impl FusedBlockSolve {
         components.retain(|g| !g.is_empty());
         components
             .into_iter()
-            .map(|terms| Self::build(design, weights, &terms, FILL_CAP))
+            .filter_map(|terms| Self::build(design, weights, &terms, FILL_CAP))
             .collect()
     }
 
+    /// `None` where the symbolic factor exceeds the fill budget; the group then goes uncorrected.
     fn build(
         design: &Design<'_>,
         weights: Option<&[f64]>,
         terms: &[usize],
         fill_cap: usize,
-    ) -> Self {
+    ) -> Option<Self> {
         let gram = assemble_gram(design, weights, terms);
-        let factor = exact_factor(&gram, fill_cap).unwrap_or_else(|| fsai_factor(&gram));
-        Self {
-            factor,
+        Some(Self {
+            factor: exact_factor(&gram, fill_cap)?,
             spans: gram.spans,
             n_local: gram.n_local,
-        }
+        })
     }
 
-    /// `y[spans] += A_fused⁻¹ x[spans]` (approximately on the FSAI rung).
+    /// `y[spans] += A_fused⁻¹ x[spans]`.
     fn solve_add(&self, x: &[f64], y: &mut [f64], scratch: &mut FusedScratch) {
         let local = &mut scratch.local[..self.n_local];
         let mut base = 0;
@@ -359,38 +239,14 @@ impl FusedBlockSolve {
             local[base..base + span.len()].copy_from_slice(&x[span.clone()]);
             base += span.len();
         }
-        match &self.factor {
-            FusedFactor::Exact { symbolic, l_values } => {
-                let ldlt = LdltRef::new(symbolic, l_values);
-                let mut rhs = MatMut::from_column_major_slice_mut(local, self.n_local, 1);
-                ldlt.solve_in_place_with_conj(
-                    Conj::No,
-                    rhs.rb_mut(),
-                    Par::Seq,
-                    MemStack::new(&mut scratch.mem),
-                );
-            }
-            FusedFactor::Fsai {
-                row_ptr,
-                col_idx,
-                values,
-            } => {
-                let work = &mut scratch.work[..self.n_local];
-                for (i, wi) in work.iter_mut().enumerate() {
-                    let mut z = 0.0;
-                    for p in row_ptr[i]..row_ptr[i + 1] {
-                        z += values[p] * local[col_idx[p] as usize];
-                    }
-                    *wi = z;
-                }
-                local.fill(0.0);
-                for (i, &zi) in work.iter().enumerate() {
-                    for p in row_ptr[i]..row_ptr[i + 1] {
-                        local[col_idx[p] as usize] += values[p] * zi;
-                    }
-                }
-            }
-        }
+        let ldlt = LdltRef::new(&self.factor.symbolic, &self.factor.l_values);
+        let mut rhs = MatMut::from_column_major_slice_mut(local, self.n_local, 1);
+        ldlt.solve_in_place_with_conj(
+            Conj::No,
+            rhs.rb_mut(),
+            Par::Seq,
+            MemStack::new(&mut scratch.mem),
+        );
         let mut base = 0;
         for span in &self.spans {
             for (yi, &li) in y[span.clone()].iter_mut().zip(&local[base..]) {
@@ -404,7 +260,6 @@ impl FusedBlockSolve {
 /// Reused per-apply buffers: the solve sits in the LSMR hot loop.
 struct FusedScratch {
     local: Vec<f64>,
-    work: Vec<f64>,
     mem: MemBuffer,
 }
 
@@ -420,19 +275,13 @@ impl<'a> FusedPreconditioner<'a> {
         let n_max = blocks.iter().map(|b| b.n_local).max().unwrap_or(0);
         let req = blocks
             .iter()
-            .filter_map(|b| match &b.factor {
-                FusedFactor::Exact { symbolic, .. } => {
-                    Some(symbolic.solve_in_place_scratch::<f64>(1, Par::Seq))
-                }
-                FusedFactor::Fsai { .. } => None,
-            })
+            .map(|b| b.factor.symbolic.solve_in_place_scratch::<f64>(1, Par::Seq))
             .fold(StackReq::empty(), StackReq::or);
         Self {
             base,
             blocks,
             scratch: Mutex::new(FusedScratch {
                 local: vec![0.0; n_max],
-                work: vec![0.0; n_max],
                 mem: MemBuffer::new(req),
             }),
         }
@@ -477,12 +326,8 @@ mod tests {
             design: &Design<'_>,
             terms: &[usize],
             fill_cap: usize,
-        ) -> Self {
+        ) -> Option<Self> {
             Self::build(design, None, terms, fill_cap)
-        }
-
-        pub(crate) fn is_exact_for_test(&self) -> bool {
-            matches!(self.factor, FusedFactor::Exact { .. })
         }
     }
 }

@@ -311,7 +311,7 @@ pub struct Solver<'a> {
     /// during construction).
     sqrt_weights: Option<Vec<f64>>,
     preconditioner: Option<Preconditioner>,
-    /// Fused-block corrections (exact or FSAI) for the collinearity screen's warned term groups.
+    /// Fused-block corrections for the collinearity screen's warned term groups.
     fused: Vec<FusedBlockSolve>,
     reparam: Option<SlopeReparam>,
     warnings: Vec<BuildWarning>,
