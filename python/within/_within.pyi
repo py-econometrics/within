@@ -447,6 +447,8 @@ class LocalSolverConfig:
     def scaling(self) -> ScalingConfig: ...
     @property
     def ridge(self) -> float: ...
+    @property
+    def fused_block_max_values(self) -> int | None: ...
     def __init__(
         self,
         approx_chol: ApproxCholConfig | None = None,
@@ -454,4 +456,5 @@ class LocalSolverConfig:
         dense_threshold: int | None = None,
         scaling: ScalingConfig | None = None,
         ridge: float | None = None,
+        fused_block_max_values: int | None = None,
     ) -> None: ...

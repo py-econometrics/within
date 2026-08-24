@@ -223,13 +223,10 @@ proptest! {
         // Generate observations using a deterministic pseudo-random pattern.
         let mut fa: Vec<u32> = Vec::with_capacity(n_obs);
         let mut fb: Vec<u32> = Vec::with_capacity(n_obs);
-        let mut s = seed;
+        let mut rng = crate::test_rng::Lcg(seed);
         for _ in 0..n_obs {
-            // LCG: x_{n+1} = (a * x_n + c) mod m
-            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            fa.push((s % n_rows as u64) as u32);
-            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            fb.push((s % n_cols as u64) as u32);
+            fa.push((rng.next_u64() % n_rows as u64) as u32);
+            fb.push((rng.next_u64() % n_cols as u64) as u32);
         }
 
         let design = design_of(vec![fa, fb]);

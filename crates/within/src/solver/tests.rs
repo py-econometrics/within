@@ -4,6 +4,7 @@ use crate::channel::Channel;
 use crate::config::{LocalSolverConfig, DEFAULT_DENSE_SCHUR_THRESHOLD};
 use crate::domain::level_moments::TermMoments;
 use crate::domain::{build_local_domains, Design, Grounding, MatrixForm};
+use crate::test_rng::{pseudo_noise, Lcg};
 use crate::Effect;
 
 /// DGP kept in lockstep with `surplus_component_sampled_matches_exact_reduction`
@@ -90,4 +91,402 @@ fn coefficient_layout_translates_addresses_both_ways() {
     for i in 0..layout.n_dofs() {
         assert_eq!(layout.index(layout.address(i).expect("in range")), Some(i));
     }
+}
+
+/// The second term's slope covariate is `z + eps * noise`; `eps = 0.0` is exact sharing.
+struct SharedCovariatePanel {
+    a: Vec<u32>,
+    b: Vec<u32>,
+    z: Vec<f64>,
+    z2: Vec<f64>,
+    y: Vec<f64>,
+}
+
+impl SharedCovariatePanel {
+    fn effects(&self) -> Vec<Effect<'_>> {
+        vec![
+            Effect::new(&self.a, true, [&self.z[..]]).unwrap(),
+            Effect::new(&self.b, true, [&self.z2[..]]).unwrap(),
+        ]
+    }
+}
+
+fn shared_covariate_panel(eps: f64) -> SharedCovariatePanel {
+    let n = 20_000usize;
+    let a: Vec<u32> = (0..n).map(|i| (i % 200) as u32).collect();
+    let b: Vec<u32> = (0..n).map(|i| ((i * 7 / 200) % 100) as u32).collect();
+    let z = pseudo_noise(n, 3);
+    let noise = pseudo_noise(n, 17);
+    let z2: Vec<f64> = z.iter().zip(&noise).map(|(&v, &e)| v + eps * e).collect();
+    let y: Vec<f64> = (0..n)
+        .map(|i| (a[i] as f64) * 0.1 + (b[i] as f64) * z[i] * 0.05 + noise[i])
+        .collect();
+    SharedCovariatePanel { a, b, z, z2, y }
+}
+
+/// The block is opt-in, so every test that wants it declares a budget the factor fits under.
+fn fused_precond(max_values: usize) -> crate::config::PreconditionerConfig {
+    use crate::config::{LocalSolverConfig, PreconditionerConfig};
+
+    PreconditionerConfig::Additive {
+        local_solver: LocalSolverConfig {
+            fused_block_max_values: Some(max_values),
+            ..Default::default()
+        },
+        reduction: Default::default(),
+    }
+}
+
+/// The unpreconditioned solve of the same panel is the reference for `demeaned`.
+fn assert_demeaned_matches_unpreconditioned(
+    effects: Vec<Effect<'_>>,
+    y: &[f64],
+    opts: &crate::config::LsmrOptions,
+    got: &[f64],
+    context: &str,
+) {
+    use super::Solver;
+    use crate::config::PreconditionerConfig;
+
+    let reference = Solver::new(effects, None, PreconditionerConfig::Off)
+        .unwrap()
+        .solve(y, opts)
+        .unwrap();
+    assert!(
+        reference.converged,
+        "reference did not converge ({context})"
+    );
+    let scale = y.iter().map(|&v| v * v).sum::<f64>().sqrt();
+    let diff = got
+        .iter()
+        .zip(&reference.demeaned)
+        .map(|(&p, &q)| (p - q) * (p - q))
+        .sum::<f64>()
+        .sqrt();
+    assert!(
+        diff <= 1e-6 * scale,
+        "demeaned mismatch: {diff:e} vs scale {scale:e} ({context})"
+    );
+}
+
+/// Compares the fused solve against a `PreconditionerConfig::Off` solve of the same panel.
+fn assert_fused_solve_matches_reference(eps: f64) {
+    use super::Solver;
+    use crate::config::LsmrOptions;
+
+    let panel = shared_covariate_panel(eps);
+    let opts = LsmrOptions {
+        tol: 1e-12,
+        maxiter: 20_000,
+        ..Default::default()
+    };
+    let solver = Solver::new(panel.effects(), None, fused_precond(1 << 20)).unwrap();
+    assert!(
+        !solver.fused.is_empty(),
+        "screen must arm the fused block (eps = {eps:e})"
+    );
+    let got = solver.solve(&panel.y, &opts).unwrap();
+    assert!(got.converged);
+
+    assert_demeaned_matches_unpreconditioned(
+        panel.effects(),
+        &panel.y,
+        &opts,
+        &got.demeaned,
+        &format!("eps = {eps:e}"),
+    );
+}
+
+#[test]
+fn fused_solve_matches_unpreconditioned_reference() {
+    assert_fused_solve_matches_reference(1e-4);
+}
+
+#[test]
+fn fused_solve_grounds_exact_sharing() {
+    assert_fused_solve_matches_reference(0.0);
+}
+
+/// Two slope covariates, each an exact per-level function of a different term: `|L|` overflows.
+struct OverflowingFactorPanel {
+    a: Vec<u32>,
+    b: Vec<u32>,
+    c: Vec<u32>,
+    z1: Vec<f64>,
+    z2: Vec<f64>,
+    y: Vec<f64>,
+}
+
+impl OverflowingFactorPanel {
+    fn effects(&self) -> Vec<Effect<'_>> {
+        vec![
+            Effect::new(&self.a, true, [&self.z1[..], &self.z2[..]]).unwrap(),
+            Effect::new(&self.b, true, []).unwrap(),
+            Effect::new(&self.c, true, []).unwrap(),
+        ]
+    }
+}
+
+fn overflowing_factor_panel() -> OverflowingFactorPanel {
+    let n_levels = 500u32;
+    let (mut a, mut b, mut c) = (Vec::new(), Vec::new(), Vec::new());
+    for i in 0..n_levels {
+        for (da, db, dc) in [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)] {
+            if i + da.max(db).max(dc) >= n_levels {
+                continue;
+            }
+            a.push(i + da);
+            b.push(i + db);
+            c.push(i + dc);
+        }
+    }
+    let n = a.len();
+    let nl = n_levels as usize;
+    let per_c = pseudo_noise(nl, 7);
+    let per_b = pseudo_noise(nl, 11);
+    let z1: Vec<f64> = c.iter().map(|&l| per_c[l as usize]).collect();
+    let z2: Vec<f64> = b.iter().map(|&l| 0.5 * per_b[l as usize]).collect();
+    let noise = pseudo_noise(n, 5);
+    let g1 = pseudo_noise(nl, 13);
+    let g2 = pseudo_noise(nl, 17);
+    let y: Vec<f64> = (0..n)
+        .map(|i| {
+            (a[i] as f64) * 0.1
+                + (b[i] as f64) * 0.05
+                + z1[i] * g1[a[i] as usize]
+                + z2[i] * g2[a[i] as usize]
+                + noise[i]
+        })
+        .collect();
+    OverflowingFactorPanel { a, b, c, z1, z2, y }
+}
+
+#[test]
+fn a_factor_whose_null_resolution_overflows_is_declined() {
+    use super::Solver;
+    use crate::config::LsmrOptions;
+
+    let panel = overflowing_factor_panel();
+    let opts = LsmrOptions {
+        tol: 1e-10,
+        maxiter: 3000,
+        ..Default::default()
+    };
+    let solver = Solver::new(panel.effects(), None, fused_precond(usize::MAX)).unwrap();
+    assert!(
+        solver.fused.is_empty(),
+        "a factor with non-finite values must be declined, not applied"
+    );
+    assert!(
+        solver.warnings().iter().any(|w| matches!(
+            w,
+            crate::BuildWarning::FusedBlockDeclined {
+                reason: crate::FusedBlockDecline::NonFinite,
+                ..
+            }
+        )),
+        "a decline must be reported, not silent: {:?}",
+        solver.warnings()
+    );
+
+    // A non-finite preconditioner used to surface as `converged` with `x = 0`.
+    let got = solver.solve(&panel.y, &opts).unwrap();
+    assert!(got.converged);
+    assert_demeaned_matches_unpreconditioned(
+        panel.effects(),
+        &panel.y,
+        &opts,
+        &got.demeaned,
+        "null-resolution overflow",
+    );
+}
+
+#[test]
+fn a_prebuilt_preconditioner_arms_the_block_from_its_own_config() {
+    use super::Solver;
+
+    let panel = shared_covariate_panel(0.0);
+    let built = Solver::new(panel.effects(), None, fused_precond(1 << 20)).unwrap();
+    let reused = Solver::new(
+        panel.effects(),
+        None,
+        built.preconditioner().unwrap().clone(),
+    )
+    .unwrap();
+    assert!(!reused.fused.is_empty());
+}
+
+#[test]
+fn the_default_config_arms_no_fused_block() {
+    use super::Solver;
+
+    let panel = shared_covariate_panel(0.0);
+    let solver = Solver::new(panel.effects(), None, None).unwrap();
+    assert!(solver.fused.is_empty());
+}
+
+#[test]
+fn independent_covariates_build_no_fused_block() {
+    use super::Solver;
+
+    let SharedCovariatePanel { a, b, .. } = shared_covariate_panel(0.0);
+    let z = pseudo_noise(a.len(), 3);
+    let z_other = pseudo_noise(a.len(), 29);
+    let solver = Solver::new(
+        vec![
+            crate::Effect::new(&a, true, [&z[..]]).unwrap(),
+            crate::Effect::new(&b, true, [&z_other[..]]).unwrap(),
+        ],
+        None,
+        fused_precond(1 << 20),
+    )
+    .unwrap();
+    assert!(solver.fused.is_empty());
+}
+
+/// AKM panel with a near-shared firm slope covariate (`fz = z1 + 1e-3 * z2`).
+struct AkmPanel {
+    worker: Vec<u32>,
+    firm: Vec<u32>,
+    year: Vec<u32>,
+    z1: Vec<f64>,
+    fz: Vec<f64>,
+    y: Vec<f64>,
+}
+
+fn akm_panel(move_prob: f64) -> AkmPanel {
+    let (n_workers, n_firms, n_time) = (50_000usize, 21_000usize, 10usize);
+    let n = n_workers * n_time;
+    let mut rng = Lcg(0xC0FFEE);
+    let mut worker = Vec::with_capacity(n);
+    let mut firm = Vec::with_capacity(n);
+    let mut year = Vec::with_capacity(n);
+    for wi in 0..n_workers {
+        let mut current = (rng.next_u64() as usize) % n_firms;
+        for t in 0..n_time {
+            if t > 0 && rng.uniform() < move_prob {
+                current = (rng.next_u64() as usize) % n_firms;
+            }
+            worker.push(wi as u32);
+            firm.push(current as u32);
+            year.push(t as u32);
+        }
+    }
+    let z1: Vec<f64> = (0..n).map(|_| rng.normal()).collect();
+    let z2: Vec<f64> = (0..n).map(|_| rng.normal()).collect();
+    let fz: Vec<f64> = z1.iter().zip(&z2).map(|(&a, &b)| a + 1e-3 * b).collect();
+    let y: Vec<f64> = (0..n).map(|_| rng.normal()).collect();
+    AkmPanel {
+        worker,
+        firm,
+        year,
+        z1,
+        fz,
+        y,
+    }
+}
+
+impl AkmPanel {
+    fn effects(&self) -> Vec<Effect<'_>> {
+        vec![
+            Effect::new(&self.worker, true, [&self.z1[..]]).unwrap(),
+            Effect::new(&self.firm, true, [&self.fz[..]]).unwrap(),
+            Effect::new(&self.year, true, []).unwrap(),
+        ]
+    }
+}
+
+/// Solves one AKM stress panel through the real gate and pins its iteration health.
+fn assert_akm_stress(move_prob: f64, max_iters: usize, label: &str) {
+    use super::Solver;
+    use crate::config::LsmrOptions;
+
+    let panel = akm_panel(move_prob);
+    let solver = Solver::new(panel.effects(), None, fused_precond(1 << 20)).unwrap();
+    assert!(!solver.fused.is_empty(), "the screen must arm the block");
+    let opts = LsmrOptions {
+        tol: 1e-10,
+        maxiter: 3000,
+        ..Default::default()
+    };
+    let r = solver.solve(&panel.y, &opts).unwrap();
+    eprintln!(
+        "{label}: it={} conv={} setup={:.2}s solve={:.2}s",
+        r.iterations, r.converged, r.time_setup, r.time_solve
+    );
+    assert!(r.converged);
+    assert!(
+        r.iterations < max_iters,
+        "expected healthy iteration count, got {}",
+        r.iterations
+    );
+}
+
+/// Low-mobility AKM stress: unfused this exhausts 3000 iterations; fused must stay healthy.
+#[test]
+#[ignore]
+fn fused_block_low_mobility_stress() {
+    assert_akm_stress(0.05, 100, "fused low-mobility stress");
+}
+
+#[test]
+fn fused_block_restores_healthy_iteration_counts() {
+    use super::Solver;
+    use crate::config::LsmrOptions;
+
+    let panel = shared_covariate_panel(1e-4);
+    let solver = Solver::new(panel.effects(), None, fused_precond(1 << 20)).unwrap();
+    assert!(!solver.fused.is_empty());
+    let opts = LsmrOptions {
+        tol: 1e-10,
+        maxiter: 3000,
+        ..Default::default()
+    };
+    let r = solver.solve(&panel.y, &opts).unwrap();
+    assert!(r.converged);
+    // Without the fused block this design sits orders of magnitude higher.
+    assert!(
+        r.iterations < 100,
+        "expected healthy iteration count, got {}",
+        r.iterations
+    );
+}
+
+/// The budget must bind on the assembly too, not just the finished factor.
+#[test]
+fn a_budget_the_factor_exceeds_declines_the_group() {
+    use super::Solver;
+    use crate::error::FusedBlockDecline;
+    use crate::operator::fused::FusedBlockSolve;
+
+    let panel = shared_covariate_panel(1e-4);
+    let solver = Solver::new(panel.effects(), None, None).unwrap();
+    assert!(FusedBlockSolve::build_for_test(&solver.design, &[0, 1], 1 << 20).is_ok());
+    let n_local: usize = [0, 1]
+        .iter()
+        .map(|&t| solver.design.terms[t].n_dofs())
+        .sum();
+    assert_eq!(
+        FusedBlockSolve::build_for_test(&solver.design, &[0, 1], n_local - 1).err(),
+        Some(FusedBlockDecline::Budget)
+    );
+
+    let nnz_a = FusedBlockSolve::assemble_for_test(&solver.design, &[0, 1], 1 << 20)
+        .expect("a generous budget assembles");
+    assert!(nnz_a > n_local, "the group has off-diagonal entries");
+    assert_eq!(
+        FusedBlockSolve::assemble_for_test(&solver.design, &[0, 1], nnz_a - 1),
+        None
+    );
+    assert_eq!(
+        FusedBlockSolve::assemble_for_test(&solver.design, &[0, 1], nnz_a),
+        Some(nnz_a)
+    );
+
+    // At exactly `nnz_a` the assembly fits and only the fill can exceed the budget, so this
+    // is the one budget that reaches the factor gate.
+    assert_eq!(
+        FusedBlockSolve::build_for_test(&solver.design, &[0, 1], nnz_a).err(),
+        Some(FusedBlockDecline::Budget)
+    );
 }

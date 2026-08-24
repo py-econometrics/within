@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_rng::pseudo_noise;
 use crate::Effect;
 
 /// Wide enough that no design in these tests splits its table.
@@ -26,18 +27,6 @@ fn two_factor_levels(n: usize) -> (Vec<u32>, Vec<u32>) {
     let a = (0..n).map(|i| (i % 40) as u32).collect();
     let b = (0..n).map(|i| ((i / 40) % 25) as u32).collect();
     (a, b)
-}
-
-fn pseudo_noise(n: usize, seed: u64) -> Vec<f64> {
-    let mut state = seed;
-    (0..n)
-        .map(|_| {
-            state = state
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
-            (state >> 11) as f64 / (1u64 << 53) as f64 - 0.5
-        })
-        .collect()
 }
 
 #[test]

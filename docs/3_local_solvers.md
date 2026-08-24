@@ -121,6 +121,18 @@ The key property is that $\mathbb{E}[\tilde{L}\tilde{L}^\top] = S$ (unbiased). T
 
 ---
 
+## 5. Fused Solve for Collinear Slope Covariates
+
+Every local solver above works on one channel pair at a time. That decomposition has a blind spot: when a slope covariate is (nearly) a per-level combination of another term's columns, the design gains a near-null direction that spans **all** channels of both terms at once — after whitening, no single pair subdomain contains it, and the preconditioned spectrum grows a heavy tail of slow modes that no pair-local fix (and no low-dimensional coarse space) can remove.
+
+The remedy is to change the decomposition where the screen detects this: the Gram block over the full set of implicated terms is solved **exactly**, by a sparse LDLᵀ factorization under a fill-reducing ordering, and added on top of the pairwise Schwarz sum. Because whitening keeps within-term blocks diagonal, this block is a bipartite-structured sparse matrix whose off-diagonal fibers follow the level co-occurrence graph; the ordering eliminates the low-degree side first, so the factor stays sparse exactly in the low-mobility regimes where the pairwise decomposition degrades most.
+
+The factor's storage is known from a symbolic pass before any numeric work, which acts as the gate: when the co-occurrence topology would push it beyond the budget, the group is declined and goes uncorrected, falling back on the pairwise decomposition alone. Because the factor is never smaller than the Gram it comes from, the same budget bounds the assembly, so a group that cannot be used is abandoned before its Gram is complete. Fill explodes precisely on well-connected co-occurrence graphs, which are also the graphs where the pairwise decomposition holds up — so the gate declines where the correction matters least.
+
+Exactly-null pivots (e.g. the intercept aliasing between the fused terms, or an exactly shared covariate) are replaced by a large pivot, bounding the solve's response along directions the data does not identify while leaving the near-null continuum — the reason the block exists — exactly resolved.
+
+---
+
 ## References
 
 **Gao, Y., Kyng, R., & Spielman, D. A.** (2025). *Robust and Practical Solution of Laplacian Equations by Approximate Gaussian Elimination*. arXiv:2303.00709. Primary reference for the approximate Cholesky factorization via clique-tree sampling (AC(k) algorithm), Schur complement approximation, and Gremban augmentation.

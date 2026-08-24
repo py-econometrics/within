@@ -36,6 +36,8 @@ pub(crate) mod domain;
 pub(crate) mod linalg;
 pub(crate) mod operator;
 pub(crate) mod solver;
+#[cfg(test)]
+pub(crate) mod test_rng;
 
 pub use channel::{Channel, ChannelPair};
 pub use config::{
@@ -43,7 +45,7 @@ pub use config::{
     ReductionStrategy, ScalingConfig, ScalingFailure, SchurMode,
 };
 pub use domain::{Design, Effect};
-pub use error::{BuildError, BuildWarning, SolveError, WithinError};
+pub use error::{BuildError, BuildWarning, FusedBlockDecline, SolveError, WithinError};
 pub use operator::schwarz::Preconditioner;
 pub use solver::{
     solve, solve_batch, BatchSolveResult, CoefficientAddress, CoefficientLayout, IntoDesign,

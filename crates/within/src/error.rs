@@ -130,6 +130,35 @@ pub enum BuildWarning {
         /// Share of the covariate's weighted variation outside that term's span.
         relative_residual: f64,
     },
+    /// A warned term group went uncorrected, leaving its near-null direction to the pairs.
+    FusedBlockDeclined {
+        /// The warned terms that would have been solved together.
+        terms: Vec<usize>,
+        /// Why the exact block was not applied.
+        reason: FusedBlockDecline,
+    },
+}
+
+/// Why an exact fused block was not applied to a warned term group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FusedBlockDecline {
+    /// The factor's stored values would exceed the configured budget.
+    Budget,
+    /// Resolving the group's null directions overflowed the double range.
+    NonFinite,
+    /// Building the sparse structure failed, most likely for want of memory.
+    Factorization,
+}
+
+impl std::fmt::Display for FusedBlockDecline {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Budget => write!(f, "over the configured value budget"),
+            Self::NonFinite => write!(f, "null resolution overflowed the double range"),
+            Self::Factorization => write!(f, "the sparse factorization failed"),
+        }
+    }
 }
 
 impl std::fmt::Display for BuildWarning {
@@ -154,6 +183,11 @@ impl std::fmt::Display for BuildWarning {
                 "slope covariate of {slope} is nearly collinear with the columns of term \
                  {term} (relative residual {relative_residual:.2e}); the near-null direction \
                  spanning both terms can inflate iteration counts by orders of magnitude"
+            ),
+            Self::FusedBlockDeclined { terms, reason } => write!(
+                f,
+                "exact fused block over terms {terms:?} not applied ({reason}); the group is \
+                 left to the pairwise decomposition"
             ),
         }
     }
