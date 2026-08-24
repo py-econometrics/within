@@ -155,6 +155,12 @@ fn exact_factor(gram: &FusedGram, max_fill: f64) -> Option<FusedFactor> {
         )
         .ok()?;
 
+    // Null resolution grows |L| with the dimension; past the double range the group goes
+    // uncorrected rather than feeding the solver a non-finite preconditioner.
+    if l_values.iter().any(|v| !v.is_finite()) {
+        return None;
+    }
+
     Some(FusedFactor { symbolic, l_values })
 }
 

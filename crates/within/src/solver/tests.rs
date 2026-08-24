@@ -185,6 +185,97 @@ fn fused_solve_grounds_exact_sharing() {
     assert_fused_solve_matches_reference(0.0);
 }
 
+/// Path-like bipartite graphs in every factor pair, carrying two slope covariates that are each
+/// an exact per-level function of a *different* other term. Resolving the resulting nulls drives
+/// `|L|` past the double range at this dimension.
+struct OverflowingFactorPanel {
+    a: Vec<u32>,
+    b: Vec<u32>,
+    c: Vec<u32>,
+    z1: Vec<f64>,
+    z2: Vec<f64>,
+    y: Vec<f64>,
+}
+
+impl OverflowingFactorPanel {
+    fn effects(&self) -> Vec<Effect<'_>> {
+        vec![
+            Effect::new(&self.a, true, [&self.z1[..], &self.z2[..]]).unwrap(),
+            Effect::new(&self.b, true, []).unwrap(),
+            Effect::new(&self.c, true, []).unwrap(),
+        ]
+    }
+}
+
+fn overflowing_factor_panel() -> OverflowingFactorPanel {
+    let n_levels = 500u32;
+    let (mut a, mut b, mut c) = (Vec::new(), Vec::new(), Vec::new());
+    for i in 0..n_levels {
+        for (da, db, dc) in [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)] {
+            if i + da.max(db).max(dc) >= n_levels {
+                continue;
+            }
+            a.push(i + da);
+            b.push(i + db);
+            c.push(i + dc);
+        }
+    }
+    let n = a.len();
+    let nl = n_levels as usize;
+    let per_c = pseudo_noise(nl, 7);
+    let per_b = pseudo_noise(nl, 11);
+    let z1: Vec<f64> = c.iter().map(|&l| per_c[l as usize]).collect();
+    let z2: Vec<f64> = b.iter().map(|&l| 0.5 * per_b[l as usize]).collect();
+    let noise = pseudo_noise(n, 5);
+    let g1 = pseudo_noise(nl, 13);
+    let g2 = pseudo_noise(nl, 17);
+    let y: Vec<f64> = (0..n)
+        .map(|i| {
+            (a[i] as f64) * 0.1
+                + (b[i] as f64) * 0.05
+                + z1[i] * g1[a[i] as usize]
+                + z2[i] * g2[a[i] as usize]
+                + noise[i]
+        })
+        .collect();
+    OverflowingFactorPanel { a, b, c, z1, z2, y }
+}
+
+#[test]
+fn a_factor_whose_null_resolution_overflows_is_declined() {
+    use super::Solver;
+    use crate::config::{LsmrOptions, PreconditionerConfig};
+
+    let panel = overflowing_factor_panel();
+    let opts = LsmrOptions {
+        tol: 1e-10,
+        maxiter: 3000,
+        ..Default::default()
+    };
+    let solver = Solver::new(panel.effects(), None, fused_precond(1e12)).unwrap();
+    assert!(
+        solver.fused.is_empty(),
+        "a factor with non-finite values must be declined, not applied"
+    );
+
+    // A non-finite preconditioner used to surface as `converged` with `x = 0`.
+    let got = solver.solve(&panel.y, &opts).unwrap();
+    assert!(got.converged);
+    let reference = Solver::new(panel.effects(), None, PreconditionerConfig::Off)
+        .unwrap()
+        .solve(&panel.y, &opts)
+        .unwrap();
+    let scale = panel.y.iter().map(|&v| v * v).sum::<f64>().sqrt();
+    let diff = got
+        .demeaned
+        .iter()
+        .zip(&reference.demeaned)
+        .map(|(&p, &q)| (p - q) * (p - q))
+        .sum::<f64>()
+        .sqrt();
+    assert!(diff <= 1e-6 * scale, "demeaned mismatch: {diff:e}");
+}
+
 #[test]
 fn a_prebuilt_preconditioner_arms_the_block_from_its_own_config() {
     use super::Solver;

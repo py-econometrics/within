@@ -98,6 +98,13 @@ fn par_dot(a: &[f64], b: &[f64]) -> f64 {
 /// `α = √⟨v, p̃⟩`; a `vp` negative within `√ε·‖v‖‖p̃‖` clamps to 0, an indefinite `M` raises.
 fn alpha_from_vp(v: &[f64], p_tilde: &[f64]) -> Result<f64, SolveError> {
     let vp = par_dot(v, p_tilde);
+    // `vp.max(0.0)` returns 0 for NaN, which α = 0 reports as an exact solve at x = 0.
+    if !vp.is_finite() {
+        return Err(SolveError::InvalidInput {
+            context: "mlsmr",
+            message: format!("preconditioner produced a non-finite ⟨v, Mv⟩ ({vp})"),
+        });
+    }
     if vp < 0.0 {
         let bound = f64::EPSILON.sqrt() * (par_dot(v, v) * par_dot(p_tilde, p_tilde)).sqrt();
         if vp < -bound {
