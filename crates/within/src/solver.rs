@@ -414,7 +414,7 @@ impl<'a> Solver<'a> {
                 .fused_block_max_values
                 .map(|b| FusedBlockSolve::build_all(&design, weights.as_deref(), &warnings, b))
                 .unwrap_or_default(),
-            _ => Default::default(),
+            _ => (Vec::new(), Vec::new()),
         };
         warnings.extend(declined);
 

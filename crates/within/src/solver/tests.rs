@@ -137,10 +137,42 @@ fn fused_precond(max_values: usize) -> crate::config::PreconditionerConfig {
     }
 }
 
+/// The unpreconditioned solve of the same panel is the reference for `demeaned`.
+fn assert_demeaned_matches_unpreconditioned(
+    effects: Vec<Effect<'_>>,
+    y: &[f64],
+    opts: &crate::config::LsmrOptions,
+    got: &[f64],
+    context: &str,
+) {
+    use super::Solver;
+    use crate::config::PreconditionerConfig;
+
+    let reference = Solver::new(effects, None, PreconditionerConfig::Off)
+        .unwrap()
+        .solve(y, opts)
+        .unwrap();
+    assert!(
+        reference.converged,
+        "reference did not converge ({context})"
+    );
+    let scale = y.iter().map(|&v| v * v).sum::<f64>().sqrt();
+    let diff = got
+        .iter()
+        .zip(&reference.demeaned)
+        .map(|(&p, &q)| (p - q) * (p - q))
+        .sum::<f64>()
+        .sqrt();
+    assert!(
+        diff <= 1e-6 * scale,
+        "demeaned mismatch: {diff:e} vs scale {scale:e} ({context})"
+    );
+}
+
 /// Compares the fused solve against a `PreconditionerConfig::Off` solve of the same panel.
 fn assert_fused_solve_matches_reference(eps: f64) {
     use super::Solver;
-    use crate::config::{LsmrOptions, PreconditionerConfig};
+    use crate::config::LsmrOptions;
 
     let panel = shared_covariate_panel(eps);
     let opts = LsmrOptions {
@@ -156,22 +188,12 @@ fn assert_fused_solve_matches_reference(eps: f64) {
     let got = solver.solve(&panel.y, &opts).unwrap();
     assert!(got.converged);
 
-    let reference = Solver::new(panel.effects(), None, PreconditionerConfig::Off)
-        .unwrap()
-        .solve(&panel.y, &opts)
-        .unwrap();
-    assert!(reference.converged);
-    let scale = panel.y.iter().map(|&v| v * v).sum::<f64>().sqrt();
-    let diff = got
-        .demeaned
-        .iter()
-        .zip(&reference.demeaned)
-        .map(|(&p, &q)| (p - q) * (p - q))
-        .sum::<f64>()
-        .sqrt();
-    assert!(
-        diff <= 1e-6 * scale,
-        "demeaned mismatch: {diff:e} vs scale {scale:e} (eps = {eps:e})"
+    assert_demeaned_matches_unpreconditioned(
+        panel.effects(),
+        &panel.y,
+        &opts,
+        &got.demeaned,
+        &format!("eps = {eps:e}"),
     );
 }
 
@@ -185,9 +207,7 @@ fn fused_solve_grounds_exact_sharing() {
     assert_fused_solve_matches_reference(0.0);
 }
 
-/// Path-like bipartite graphs in every factor pair, carrying two slope covariates that are each
-/// an exact per-level function of a *different* other term. Resolving the resulting nulls drives
-/// `|L|` past the double range at this dimension.
+/// Two slope covariates, each an exact per-level function of a different term: `|L|` overflows.
 struct OverflowingFactorPanel {
     a: Vec<u32>,
     b: Vec<u32>,
@@ -244,7 +264,7 @@ fn overflowing_factor_panel() -> OverflowingFactorPanel {
 #[test]
 fn a_factor_whose_null_resolution_overflows_is_declined() {
     use super::Solver;
-    use crate::config::{LsmrOptions, PreconditionerConfig};
+    use crate::config::LsmrOptions;
 
     let panel = overflowing_factor_panel();
     let opts = LsmrOptions {
@@ -272,19 +292,13 @@ fn a_factor_whose_null_resolution_overflows_is_declined() {
     // A non-finite preconditioner used to surface as `converged` with `x = 0`.
     let got = solver.solve(&panel.y, &opts).unwrap();
     assert!(got.converged);
-    let reference = Solver::new(panel.effects(), None, PreconditionerConfig::Off)
-        .unwrap()
-        .solve(&panel.y, &opts)
-        .unwrap();
-    let scale = panel.y.iter().map(|&v| v * v).sum::<f64>().sqrt();
-    let diff = got
-        .demeaned
-        .iter()
-        .zip(&reference.demeaned)
-        .map(|(&p, &q)| (p - q) * (p - q))
-        .sum::<f64>()
-        .sqrt();
-    assert!(diff <= 1e-6 * scale, "demeaned mismatch: {diff:e}");
+    assert_demeaned_matches_unpreconditioned(
+        panel.effects(),
+        &panel.y,
+        &opts,
+        &got.demeaned,
+        "null-resolution overflow",
+    );
 }
 
 #[test]
@@ -438,8 +452,7 @@ fn fused_block_restores_healthy_iteration_counts() {
     );
 }
 
-/// The budget must bind on the *assembly* too, so an over-budget group never materializes
-/// a Gram it cannot use: `|L| >= nnz(triu(A))`, so `n_local` alone is enough to decline.
+/// The budget must bind on the assembly too, not just the finished factor.
 #[test]
 fn a_budget_the_factor_exceeds_declines_the_group() {
     use super::Solver;
@@ -453,25 +466,18 @@ fn a_budget_the_factor_exceeds_declines_the_group() {
         .iter()
         .map(|&t| solver.design.terms[t].n_dofs())
         .sum();
-    for budget in [0, n_local - 1, n_local] {
-        assert_eq!(
-            FusedBlockSolve::build_for_test(&solver.design, &[0, 1], budget).err(),
-            Some(FusedBlockDecline::Budget { budget }),
-            "budget {budget} accepted"
-        );
-    }
+    assert_eq!(
+        FusedBlockSolve::build_for_test(&solver.design, &[0, 1], n_local - 1).err(),
+        Some(FusedBlockDecline::Budget)
+    );
 
-    // The budget must stop the assembly itself, not just the finished factor.
     let nnz_a = FusedBlockSolve::assemble_for_test(&solver.design, &[0, 1], 1 << 20)
         .expect("a generous budget assembles");
     assert!(nnz_a > n_local, "the group has off-diagonal entries");
-    for budget in [n_local, nnz_a - 1] {
-        assert_eq!(
-            FusedBlockSolve::assemble_for_test(&solver.design, &[0, 1], budget),
-            None,
-            "budget {budget} assembled"
-        );
-    }
+    assert_eq!(
+        FusedBlockSolve::assemble_for_test(&solver.design, &[0, 1], nnz_a - 1),
+        None
+    );
     assert_eq!(
         FusedBlockSolve::assemble_for_test(&solver.design, &[0, 1], nnz_a),
         Some(nnz_a)

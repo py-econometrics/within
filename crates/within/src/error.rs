@@ -130,8 +130,7 @@ pub enum BuildWarning {
         /// Share of the covariate's weighted variation outside that term's span.
         relative_residual: f64,
     },
-    /// A warned term group went uncorrected, leaving the near-null direction to the
-    /// pairwise decomposition alone.
+    /// A warned term group went uncorrected, leaving its near-null direction to the pairs.
     FusedBlockDeclined {
         /// The warned terms that would have been solved together.
         terms: Vec<usize>,
@@ -145,10 +144,7 @@ pub enum BuildWarning {
 #[non_exhaustive]
 pub enum FusedBlockDecline {
     /// The factor's stored values would exceed the configured budget.
-    Budget {
-        /// Values the budget allows.
-        budget: usize,
-    },
+    Budget,
     /// Resolving the group's null directions overflowed the double range.
     NonFinite,
     /// The sparse factorization itself failed, most likely for want of memory.
@@ -158,9 +154,7 @@ pub enum FusedBlockDecline {
 impl std::fmt::Display for FusedBlockDecline {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Budget { budget } => {
-                write!(f, "factor exceeds the {budget}-value budget")
-            }
+            Self::Budget => write!(f, "over the configured value budget"),
             Self::NonFinite => write!(f, "null resolution overflowed the double range"),
             Self::Factorization => write!(f, "the sparse factorization failed"),
         }

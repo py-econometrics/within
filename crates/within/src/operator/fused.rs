@@ -28,9 +28,7 @@ struct FusedGram {
     off: HashMap<(u32, u32), f64>,
 }
 
-/// `None` once the Gram alone is over budget: `|L| >= nnz(triu(A))`, so no factor can fit.
-/// Checked as it accumulates — the map is the build's peak allocation, and on the
-/// well-connected graphs where fill explodes it is also its largest.
+/// `None` once over budget: `|L| >= nnz(triu(A))`, and the map is the build's peak allocation.
 fn assemble_gram(
     design: &Design<'_>,
     weights: Option<&[f64]>,
@@ -132,7 +130,7 @@ fn exact_factor(gram: &FusedGram, max_values: usize) -> Result<FusedFactor, Fuse
     )
     .map_err(|_| FusedBlockDecline::Factorization)?;
     if symbolic.len_val() > max_values {
-        return Err(FusedBlockDecline::Budget { budget: max_values });
+        return Err(FusedBlockDecline::Budget);
     }
 
     let mut triplets = Vec::with_capacity(n_local + gram.off.len());
@@ -169,8 +167,7 @@ fn exact_factor(gram: &FusedGram, max_values: usize) -> Result<FusedFactor, Fuse
         )
         .map_err(|_| FusedBlockDecline::Factorization)?;
 
-    // Null resolution grows |L| with the dimension; past the double range the group goes
-    // uncorrected rather than feeding the solver a non-finite preconditioner.
+    // Null resolution grows |L| with the dimension; past the double range, decline.
     if l_values.iter().any(|v| !v.is_finite()) {
         return Err(FusedBlockDecline::NonFinite);
     }
@@ -230,16 +227,15 @@ impl FusedBlockSolve {
         (blocks, declined)
     }
 
-    /// `Err` where the group does not fit its budget or cannot be factored; it then
-    /// goes uncorrected.
+    /// A declined group goes uncorrected.
     fn build(
         design: &Design<'_>,
         weights: Option<&[f64]>,
         terms: &[usize],
         max_values: usize,
     ) -> Result<Self, FusedBlockDecline> {
-        let budget = FusedBlockDecline::Budget { budget: max_values };
-        let gram = assemble_gram(design, weights, terms, max_values).ok_or(budget)?;
+        let gram =
+            assemble_gram(design, weights, terms, max_values).ok_or(FusedBlockDecline::Budget)?;
         Ok(Self {
             factor: exact_factor(&gram, max_values)?,
             n_local: gram.diag.len(),
@@ -346,8 +342,7 @@ mod tests {
             Self::build(design, None, terms, max_values)
         }
 
-        /// `nnz(triu(A))` of the assembled Gram, or `None` where the budget stopped the
-        /// assembly — the only way to see that bail, since declining later reports the same.
+        /// The only way to see the assembly bail: declining later reports the same error.
         pub(crate) fn assemble_for_test(
             design: &Design<'_>,
             terms: &[usize],

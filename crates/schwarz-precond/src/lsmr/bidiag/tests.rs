@@ -3,8 +3,7 @@
 use super::{alpha_from_vp, dot, Bidiagonalization, GolubKahan};
 use crate::lsmr::fixtures::DenseOp;
 
-/// `f64::max` returns the non-NaN operand, so a non-finite `M⁻¹p̃` would read as α = 0 —
-/// which the caller reports as an exact solve at `x = 0`.
+/// `f64::max` returns the non-NaN operand, so a non-finite `M⁻¹p̃` would read as α = 0.
 #[test]
 fn a_non_finite_preconditioner_output_is_an_error() {
     let p = [1.0, 1.0];
