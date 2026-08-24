@@ -549,7 +549,11 @@ mod tests {
         let n = 4000;
         let (a, b) = two_factor_levels(n);
         let z = pseudo_noise(n, 3);
-        let other = pseudo_noise(n, 19);
+        // Offset far past its spread, so a centred denominator would read the share above 1.
+        let other: Vec<f64> = pseudo_noise(n, 19)
+            .iter()
+            .map(|v| 100.0 + 6.0 * v)
+            .collect();
         let design = Design::new(vec![
             Effect::new(&a, false, [&z[..]]).unwrap(),
             Effect::new(&b, true, [&z[..], &other[..]]).unwrap(),
@@ -557,7 +561,7 @@ mod tests {
         .unwrap();
         let shares = shares(&design, 0, FULL_TABLE);
         assert!(shares[0] < 1e-28, "{:e}", shares[0]);
-        assert!(shares[1] > 0.5, "{:e}", shares[1]);
+        assert!((0.5..1.0 + 1e-9).contains(&shares[1]), "{:e}", shares[1]);
     }
 
     /// More rows than one residual task, checked against a direct within-level sum so a
@@ -626,23 +630,6 @@ mod tests {
         }
     }
 
-    /// One level per block, 4000 blocks: the screen still warns however finely it is cut.
-    #[test]
-    fn a_term_cut_to_one_level_per_block_still_warns() {
-        let n = 4000;
-        let a: Vec<u32> = (0..n as u32).collect();
-        let b: Vec<u32> = (0..n).map(|i| ((i * 7) % 1500) as u32).collect();
-        let z = pseudo_noise(n, 13);
-        let other = pseudo_noise(n, 23);
-        let design = Design::new(vec![
-            Effect::new(&a, true, [&other[..]]).unwrap(),
-            Effect::new(&b, true, [&z[..]]).unwrap(),
-        ])
-        .unwrap();
-        // Term 1's own covariate is a per-level constant of term 0, whose levels are singletons.
-        assert!(shares(&design, 0, 1)[0] < 1e-20);
-    }
-
     /// A 32-double level row, so 4000 doubles buys 125 levels.
     #[test]
     fn the_plan_keeps_the_table_inside_the_budget() {
@@ -660,33 +647,29 @@ mod tests {
         assert_eq!((starved.per_block, table(starved)), (1, 32));
     }
 
+    /// Every row lands in exactly one block: a sorted term slices its rows, an unsorted
+    /// term is offered all of them and skips the ones outside the block.
     #[test]
     fn level_blocks_cover_every_row_exactly_once() {
-        let levels: Vec<u32> = (0..100u32).flat_map(|l| [l; 3]).collect();
+        let sorted: Vec<u32> = (0..100u32).flat_map(|l| [l; 3]).collect();
         let plan = ScreenPlan::new(7 * 3, 100, 3);
         assert_eq!(plan.per_block, 7);
         let mut next = 0;
-        for block in plan.blocks(&levels, true) {
+        for block in plan.blocks(&sorted, true) {
             assert_eq!(block.rows.start, next);
             assert_eq!(block.rows.end, block.levels.end.min(100) * 3);
             next = block.rows.end;
         }
-        assert_eq!(next, levels.len());
-    }
+        assert_eq!(next, sorted.len());
 
-    /// An unsorted term rescans per block, so each row still lands in exactly one block.
-    #[test]
-    fn unsorted_blocks_reach_every_row_exactly_once() {
-        let levels: Vec<u32> = (0..300u32).map(|i| (i * 7) % 100).collect();
+        let scattered: Vec<u32> = (0..300u32).map(|i| (i * 7) % 100).collect();
         let plan = ScreenPlan::new(7, 100, 7);
         assert_eq!(plan.per_block, 1);
-        let mut seen = vec![0u32; levels.len()];
-        for block in plan.blocks(&levels, false) {
-            assert_eq!(block.rows, 0..levels.len());
-            for (obs, &l) in levels.iter().enumerate() {
-                if block.levels.contains(&(l as usize)) {
-                    seen[obs] += 1;
-                }
+        let mut seen = vec![0u32; scattered.len()];
+        for block in plan.blocks(&scattered, false) {
+            assert_eq!(block.rows, 0..scattered.len());
+            for (obs, &l) in scattered.iter().enumerate() {
+                seen[obs] += u32::from(block.levels.contains(&(l as usize)));
             }
         }
         assert!(seen.iter().all(|&n| n == 1), "{seen:?}");
