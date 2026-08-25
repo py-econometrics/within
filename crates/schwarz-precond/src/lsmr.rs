@@ -337,8 +337,9 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
             Stop::NormalEquationTolerance => Some(LsmrStopReason::NormalEquationTolerance),
         } {
             let x = solution.into_x();
+            let normar_raw0 = bidiag.initial_normar_raw();
             let cert = bidiag.certify(&x, rhs)?;
-            let converged = convergence.certified(&cert, recurrence.zeta0);
+            let converged = convergence.certified(&cert, recurrence.zeta0, normar_raw0);
             return Ok(LsmrResult {
                 x,
                 converged,

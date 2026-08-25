@@ -172,11 +172,25 @@ We conclude with a summary of the full algorithm.
 
 5. **Assemble** Schwarz preconditioner $M^{-1}$ from subdomain factors.
 
+6. **Constrain cross-term aliasing.** A covariate that another term reproduces per level puts a
+   null in the design: with $v$ the difference of the two per-level fits, taken against the
+   whitening basis and net of the constant every term already shares, $Dv = 0$. The screen only
+   proposes such a $v$; the design decides. Orthonormalize the proposals by descending residual
+   share, dropping any whose share is spent against the rows already taken, then certify each
+   surviving row $n$ against the backward error of evaluating $An$, with $A = \sqrt{W}D$:
+
+   $$\|An\| \le \tau \sqrt{n^\top \operatorname{diag}(A^\top A)\, n}.$$
+
+   Scaling by the operator's own columns holds the verdict fixed under a uniform change of
+   weights, which $\|n\|$ alone does not. Certified rows form $V$, and the solve runs on
+   $\operatorname{range}(I - VV^\top)$, so no subdomain inverts a roundoff-scale null. A row that
+   fails stays in the solve space, where the iteration must resolve it.
+
 ### 5.2 Solve phase
 
 1. **Form the rectangular operator and right-hand side**: $A = \sqrt{W} D$, $b = \sqrt{W} y$ (both implicit — never materialized).
 
-2. **Run modified LSMR** on $(A, b)$ with preconditioner $M^{-1}$:
+2. **Run modified LSMR** on $(A, b)$ with preconditioner $PM^{-1}P$, $P = I - VV^\top$:
    - Each iteration: one $Av$, one $A^\top u$, one $M^{-1}\tilde{p}$ application, plus a constant number of vector updates.
    - Optionally reorthogonalize against the last `local_size` basis vectors.
    - Converge when $\|A^\top r_k\|_2 \leq \text{tol} \cdot \|A^\top b\|_2$.

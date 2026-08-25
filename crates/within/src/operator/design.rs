@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use portable_atomic::AtomicF64;
 use schwarz_precond::Operator;
 
-use crate::domain::Design;
+use crate::domain::{Design, Loading};
 
 mod gather;
 mod scatter;
@@ -50,6 +50,34 @@ impl<'a> DesignOperator<'a> {
             #[cfg(debug_assertions)]
             adjoint_active: AtomicBool::new(false),
         }
+    }
+
+    /// Squared column norms `diag(AᵀA)`: the operator's own scale for a coefficient direction,
+    /// which a whitened parameterization makes weight-dependent in a way `‖x‖` is not.
+    pub(crate) fn column_norms_squared(&self) -> Vec<f64> {
+        let mut diag = vec![0.0; self.design.n_dofs];
+        for (index, term) in self.design.terms.iter().enumerate() {
+            let levels = self.design.level_column(index);
+            let w = |obs: usize| self.sqrt_weights.map_or(1.0, |sw| sw[obs] * sw[obs]);
+            for (column, loading) in term.columns.iter().enumerate() {
+                let base = term.column_base(column);
+                let slice = &mut diag[base..base + term.n_levels()];
+                match loading {
+                    Loading::Constant => {
+                        for (obs, &level) in levels.iter().enumerate() {
+                            slice[level as usize] += w(obs);
+                        }
+                    }
+                    Loading::Covariate(z_col) => {
+                        let z = self.design.loading_column(*z_col as usize);
+                        for (obs, &level) in levels.iter().enumerate() {
+                            slice[level as usize] += w(obs) * z[obs] * z[obs];
+                        }
+                    }
+                }
+            }
+        }
+        diag
     }
 
     /// Observation-space RHS `b = W^{1/2} y`; borrows unweighted, owns weighted.

@@ -7,7 +7,7 @@ use super::Design;
 
 /// Relative rank tolerance: a slope direction drops once its remaining
 /// within-level variance falls to `RANK_TOL` × its own initial variance.
-pub(crate) const RANK_TOL: f64 = 1e-10;
+const RANK_TOL: f64 = 1e-10;
 
 /// Every term's [`LevelMoments`], indexed by term.
 pub(crate) struct TermMoments(Vec<LevelMoments>);
@@ -48,6 +48,8 @@ pub(crate) struct LevelMoments {
     mean: Vec<f64>,
     /// Per level, `Σ w (z−μ)(z−μ)ᵀ` packed as a row-major lower triangle.
     comoment: Vec<f64>,
+    /// Returned by [`Self::center`] for an intercept-free term.
+    zeros: Box<[f64]>,
 }
 
 /// Index of `(j, k)`, `k ≤ j`, in a packed row-major lower triangle.
@@ -73,6 +75,7 @@ impl LevelMoments {
             w_sum: vec![0.0; meta.n_levels()],
             mean: vec![0.0; meta.n_levels() * v],
             comoment: vec![0.0; meta.n_levels() * tri_len(v)],
+            zeros: vec![0.0; v].into(),
             covariates,
         };
         let zs: Vec<&[f64]> = moments
@@ -134,9 +137,17 @@ impl LevelMoments {
         self.w_sum[level]
     }
 
-    pub(crate) fn mean(&self, level: usize) -> &[f64] {
+    fn mean(&self, level: usize) -> &[f64] {
         let v = self.n_slopes();
         &self.mean[level * v..][..v]
+    }
+
+    /// What a fit on the level's span centers against; no intercept, no constant to remove.
+    pub(crate) fn center(&self, level: usize) -> &[f64] {
+        match self.intercept {
+            true => self.mean(level),
+            false => &self.zeros,
+        }
     }
 
     /// The level's orthonormal rows `w` (`w·G·wᵀ = I`) and kept-column mask,

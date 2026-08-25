@@ -10,6 +10,7 @@ struct ScriptedStream {
     v: Vec<f64>,
     normr: f64,
     normar: f64,
+    normar_raw: f64,
 }
 
 impl Bidiagonalization for ScriptedStream {
@@ -27,15 +28,20 @@ impl Bidiagonalization for ScriptedStream {
         Ok(Certificate {
             normr: self.normr,
             normar: self.normar,
+            normar_raw: self.normar_raw,
         })
+    }
+    fn initial_normar_raw(&self) -> f64 {
+        1.0
     }
 }
 
-fn scripted_run(normr: f64, normar: f64) -> super::super::LsmrResult {
+fn scripted_run(normr: f64, normar: f64, normar_raw: f64) -> super::super::LsmrResult {
     let stream = ScriptedStream {
         v: vec![0.0; 2],
         normr,
         normar,
+        normar_raw,
     };
     let step1 = BidiagStep {
         alpha: 1.0,
@@ -47,7 +53,7 @@ fn scripted_run(normr: f64, normar: f64) -> super::super::LsmrResult {
 
 #[test]
 fn collapsed_stop_is_refused_by_the_audit() {
-    let r = scripted_run(1.0, 1.0);
+    let r = scripted_run(1.0, 1.0, 1.0);
     assert!(!r.converged);
     assert_eq!(r.stop_reason, LsmrStopReason::FalseConvergence);
     assert_eq!(r.residual_norm, 1.0);
@@ -56,7 +62,7 @@ fn collapsed_stop_is_refused_by_the_audit() {
 
 #[test]
 fn honest_stop_passes_the_audit() {
-    let r = scripted_run(1e-12, 1e-12);
+    let r = scripted_run(1e-12, 1e-12, 1e-12);
     assert!(r.converged);
     assert_eq!(r.stop_reason, LsmrStopReason::ResidualTolerance);
 }
@@ -64,7 +70,15 @@ fn honest_stop_passes_the_audit() {
 #[test]
 fn near_consistent_stop_certifies_via_the_initial_ne_drop() {
     // Ratio leg would refuse (1e-12/1e-6 ≫ 100·tol); the drop vs ζ̄₀ = 1 certifies.
-    let r = scripted_run(1e-6, 1e-12);
+    let r = scripted_run(1e-6, 1e-12, 1e-12);
     assert!(r.converged);
     assert_eq!(r.stop_reason, LsmrStopReason::ResidualTolerance);
+}
+
+/// A metric that annihilates part of `Aᵀr` reports it as zero, so the plain norm has to refuse.
+#[test]
+fn a_stop_the_metric_cannot_see_is_refused() {
+    let r = scripted_run(1e-6, 1e-12, 1e-6);
+    assert!(!r.converged);
+    assert_eq!(r.stop_reason, LsmrStopReason::FalseConvergence);
 }

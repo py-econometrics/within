@@ -4,6 +4,7 @@ pub(crate) mod collinearity;
 pub(crate) mod cross_tab;
 mod effect;
 pub(crate) mod factor_pairs;
+pub(crate) mod gauge;
 pub(crate) mod level_moments;
 
 pub(crate) use cross_tab::{find_all_active_levels, BlockDiagonals, CrossTab};
@@ -166,6 +167,11 @@ impl TermMeta {
     /// Global DOF base of coefficient column `column`.
     pub fn column_base(&self, column: usize) -> usize {
         self.offset + column * self.n_levels()
+    }
+
+    /// The constant's coefficient column, if the term carries one.
+    pub fn intercept_column(&self) -> Option<usize> {
+        self.columns.iter().position(|c| c.covariate().is_none())
     }
 }
 

@@ -2,6 +2,7 @@
 //! Schwarz preconditioner construction in [`schwarz`].
 
 pub(crate) mod design;
+pub(crate) mod gauge;
 pub(crate) mod schwarz;
 
 pub(crate) use design::DesignOperator;

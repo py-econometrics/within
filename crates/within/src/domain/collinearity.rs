@@ -88,7 +88,6 @@ fn residual_shares(
         weights,
         zs,
         columns,
-        zeros: vec![0.0; moments.n_slopes()],
         moments,
         stride,
         // Grouping gathers every column, so it must buy back more than the one block.
@@ -135,7 +134,6 @@ struct Screen<'a> {
     weights: Option<&'a [f64]>,
     zs: Vec<&'a [f64]>,
     columns: Vec<&'a [f64]>,
-    zeros: Vec<f64>,
     moments: &'a LevelMoments,
     order: RowOrder,
     /// One level's row of the table: `[Σw·c, Σw·z·c]` per target.
@@ -154,14 +152,6 @@ impl Screen<'_> {
             let w = self.weights.map_or(1.0, |w| w[obs]);
             (w > 0.0).then(|| (obs, w, self.levels[obs] as usize - first))
         })
-    }
-
-    /// Without an intercept the level's span holds no constant, so `z` enters uncentered.
-    fn center(&self, level: usize) -> &[f64] {
-        match self.moments.intercept() {
-            true => self.moments.mean(level),
-            false => &self.zeros,
-        }
     }
 
     /// Each target's total variation rides this pass, since the rows are already loaded.
@@ -213,7 +203,7 @@ impl Screen<'_> {
                     if v > 0 {
                         self.moments.basis(level, scratch);
                     }
-                    let center = self.center(level);
+                    let center = self.moments.center(level);
                     for slot in row.chunks_exact_mut(v + 1) {
                         let sum_wc = slot[0];
                         for ((dj, &xj), &cj) in d.iter_mut().zip(&slot[1..]).zip(center) {
@@ -259,7 +249,7 @@ impl Screen<'_> {
                     for (obs, w, row) in self.active_rows(first, rows) {
                         for (dzj, (z, &cj)) in dz
                             .iter_mut()
-                            .zip(self.zs.iter().zip(self.center(first + row)))
+                            .zip(self.zs.iter().zip(self.moments.center(first + row)))
                         {
                             *dzj = z[obs] - cj;
                         }

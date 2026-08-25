@@ -152,8 +152,9 @@ impl std::fmt::Display for BuildWarning {
             } => write!(
                 f,
                 "slope covariate of {slope} is nearly collinear with the columns of term \
-                 {term} (relative residual {relative_residual:.2e}); the near-null direction \
-                 spanning both terms can inflate iteration counts by orders of magnitude"
+                 {term} (relative residual {relative_residual:.2e}); unless the direction \
+                 spanning both terms certifies as null it stays in the solve space, where \
+                 iteration counts can inflate by orders of magnitude"
             ),
         }
     }

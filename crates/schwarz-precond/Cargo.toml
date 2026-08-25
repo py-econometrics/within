@@ -21,6 +21,7 @@ thread_local = "1.1"
 
 [dev-dependencies]
 faer.workspace = true
+rstest.workspace = true
 
 [lints]
 workspace = true

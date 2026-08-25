@@ -81,14 +81,13 @@ impl TermReparam {
     ) -> Self {
         let meta = &design.terms[term];
         let (offset, n_levels) = (meta.offset, meta.n_levels());
-        let mut intercept_column = None;
-        let mut slope_columns = Vec::new();
-        for (column, loading) in meta.columns.iter().enumerate() {
-            match loading.covariate() {
-                Some(_) => slope_columns.push(column),
-                None => intercept_column = Some(column),
-            }
-        }
+        let intercept_column = meta.intercept_column();
+        let slope_columns: Vec<usize> = meta
+            .columns
+            .iter()
+            .enumerate()
+            .filter_map(|(column, loading)| loading.covariate().map(|_| column))
+            .collect();
         let intercept = intercept_column.is_some();
         let moments = &moments[term];
         let v = moments.n_slopes();
@@ -119,14 +118,9 @@ impl TermReparam {
                     });
                 }
             }
-            let center = if intercept {
-                moments.mean(level).into()
-            } else {
-                vec![0.0; v].into()
-            };
             transforms.push(LevelTransform {
                 w: w.clone().into(),
-                center,
+                center: moments.center(level).into(),
             });
         }
 
