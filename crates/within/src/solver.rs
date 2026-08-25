@@ -13,12 +13,12 @@ use crate::channel::Channel;
 use crate::config::{LsmrOptions, PreconditionerConfig};
 use crate::domain::collinearity::detect_collinear_slopes;
 use crate::domain::level_moments::TermMoments;
-use crate::domain::{Design, Effect};
+use crate::domain::{Design, Effect, FactorEncoding};
 use crate::observation::ObservationFrame;
 use crate::operator::design::gather_apply;
 use crate::operator::schwarz::{build_preconditioner, Preconditioner};
 use crate::operator::DesignOperator;
-use crate::{BuildError, BuildWarning, SolveError, WithinError};
+use crate::{BuildError, BuildWarning, FactorLabel, SolveError, WithinError};
 
 mod reparam;
 #[cfg(test)]
@@ -112,27 +112,47 @@ impl From<&Preconditioner> for PreconditionerInput {
 }
 
 /// One coefficient of the design: a [`Channel`] at one level of its term.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoefficientAddress {
     /// The coefficient column this address sits in.
     pub channel: Channel,
-    /// Level index within the term (`0..n_levels`).
-    pub level: usize,
+    /// Caller-visible factor label.
+    pub level: FactorLabel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CoefficientPosition {
+    channel: Channel,
+    level: usize,
+}
+
+impl CoefficientPosition {
+    fn to_caller_address(self, design: &Design) -> CoefficientAddress {
+        let level = design.terms[self.channel.term]
+            .encoding
+            .label(self.level)
+            .expect("coefficient position belongs to its term");
+
+        CoefficientAddress {
+            channel: self.channel,
+            level,
+        }
+    }
 }
 
 /// Translates a [`CoefficientAddress`] to its flat index in [`SolveResult::x`]
-/// and back, so callers need not reconstruct the term-major offset formula
-/// (`offset + column * n_levels + level`) by hand.
+/// and back, including the translation between caller-visible labels and
+/// internal compact level positions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoefficientLayout {
     terms: Vec<TermLayout>,
     n_dofs: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct TermLayout {
     offset: usize,
-    n_levels: usize,
+    encoding: FactorEncoding,
     n_columns: usize,
 }
 
@@ -143,7 +163,7 @@ impl CoefficientLayout {
             .iter()
             .map(|t| TermLayout {
                 offset: t.offset,
-                n_levels: t.n_levels(),
+                encoding: t.encoding.clone(),
                 n_columns: t.n_columns(),
             })
             .collect();
@@ -165,7 +185,7 @@ impl CoefficientLayout {
 
     /// Level count of `term`, or `None` if `term` is out of range.
     pub fn n_levels(&self, term: usize) -> Option<usize> {
-        self.terms.get(term).map(|t| t.n_levels)
+        self.terms.get(term).map(|t| t.encoding.n_levels())
     }
 
     /// Coefficient-column count of `term` (`intercept? + slopes`, ordered
@@ -174,12 +194,18 @@ impl CoefficientLayout {
         self.terms.get(term).map(|t| t.n_columns)
     }
 
-    /// Flat [`SolveResult::x`] index of `at`, or `None` if any coordinate is
-    /// out of range.
-    pub fn index(&self, at: CoefficientAddress) -> Option<usize> {
-        let t = self.terms.get(at.channel.term)?;
-        (at.level < t.n_levels && at.channel.column < t.n_columns)
-            .then(|| t.offset + at.channel.column * t.n_levels + at.level)
+    /// Flat [`SolveResult::x`] index of `at`, or `None` if its term,
+    /// column, or caller-visible level label is out of range.
+    pub fn index(&self, at: &CoefficientAddress) -> Option<usize> {
+        let term = self.terms.get(at.channel.term)?;
+
+        if at.channel.column >= term.n_columns {
+            return None;
+        }
+
+        let position = term.encoding.position(&at.level)?;
+
+        Some(term.offset + at.channel.column * term.encoding.n_levels() + position)
     }
 
     /// The address of flat index `i`, or `None` if `i >= n_dofs`.
@@ -191,12 +217,18 @@ impl CoefficientLayout {
         let term = self.terms.partition_point(|t| t.offset <= i) - 1;
         let t = &self.terms[term];
         let within = i - t.offset;
+        let n_levels = t.encoding.n_levels();
+        let level = t
+            .encoding
+            .label(within % n_levels)
+            .expect("coefficient position belongs to the term encoding");
+
         Some(CoefficientAddress {
             channel: Channel {
                 term,
-                column: within / t.n_levels,
+                column: within / n_levels,
             },
-            level: within % t.n_levels,
+            level,
         })
     }
 }
@@ -207,9 +239,10 @@ impl CoefficientLayout {
 pub struct SolveResult {
     /// Fixed-effect coefficients (length = total DOFs across all factors).
     ///
-    /// Term-major: coefficient column `c` of level `level` sits at
-    /// `term_offset + c * n_levels + level`, columns ordered
-    /// `[intercept?, slopes…]`. Slots for unidentified directions hold the
+    /// Term-major by compact level position `p`: coefficient column `c` sits at
+    /// `term_offset + c * n_levels + p`, with columns ordered
+    /// `[intercept?, slopes…]`. Use [`SolveResult::layout`] to translate caller
+    /// labels to these slots. Slots for unidentified directions hold the
     /// minimal-norm value `0`, never NaN; see [`SolveResult::unidentified`].
     pub x: Vec<f64>,
     /// Per-level directions the data cannot identify.
@@ -504,10 +537,15 @@ impl<'a> Solver<'a> {
     /// Per-level directions the data cannot identify, shared across all RHS:
     /// identification depends only on the design and weights, never on `y`.
     fn unidentified(&self) -> Vec<CoefficientAddress> {
-        self.reparam
-            .as_ref()
-            .map(|rp| rp.unidentified.clone())
-            .unwrap_or_default()
+        let Some(reparam) = &self.reparam else {
+            return Vec::new();
+        };
+        reparam
+            .unidentified
+            .iter()
+            .copied()
+            .map(|position| position.to_caller_address(&self.design))
+            .collect()
     }
 
     /// Solve for a single RHS vector with the given LSMR tuning.

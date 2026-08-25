@@ -71,7 +71,7 @@ pub struct PyUnidentifiedDirection {
     #[pyo3(get)]
     pub term: usize,
     #[pyo3(get)]
-    pub level: usize,
+    pub level: u32,
     #[pyo3(get)]
     pub column: usize,
 }
@@ -114,22 +114,28 @@ impl PyCoefficientLayout {
             .ok_or_else(|| self.term_oob(term))
     }
 
-    fn index(&self, term: usize, level: usize, column: usize) -> PyResult<usize> {
+    fn index(&self, term: usize, level: u32, column: usize) -> PyResult<usize> {
         let at = CoefficientAddress {
             channel: Channel { term, column },
-            level,
+            level: level.into(),
         };
-        self.inner.index(at).ok_or_else(|| {
+        self.inner.index(&at).ok_or_else(|| {
             PyIndexError::new_err(format!(
                 "coefficient address (term={term}, level={level}, column={column}) out of range"
             ))
         })
     }
 
-    fn address(&self, index: usize) -> PyResult<(usize, usize, usize)> {
+    fn address(&self, index: usize) -> PyResult<(usize, u32, usize)> {
         self.inner
             .address(index)
-            .map(|at| (at.channel.term, at.level, at.channel.column))
+            .map(|at| {
+                (
+                    at.channel.term,
+                    at.level.try_as_u32().expect("u32 factor label"),
+                    at.channel.column,
+                )
+            })
             .ok_or_else(|| {
                 PyIndexError::new_err(format!(
                     "x index {index} out of range (n_dofs={})",
@@ -164,7 +170,7 @@ pub(crate) fn into_py_result(py: Python<'_>, result: SolveResult) -> PySolveResu
             .iter()
             .map(|u| PyUnidentifiedDirection {
                 term: u.channel.term,
-                level: u.level,
+                level: u.level.try_as_u32().expect("u32 factor label"),
                 column: u.channel.column,
             })
             .collect(),
@@ -199,7 +205,7 @@ pub(crate) fn into_py_batch_result(
             .iter()
             .map(|u| PyUnidentifiedDirection {
                 term: u.channel.term,
-                level: u.level,
+                level: u.level.try_as_u32().expect("u32 factor label"),
                 column: u.channel.column,
             })
             .collect(),
