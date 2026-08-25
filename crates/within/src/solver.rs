@@ -2,10 +2,9 @@
 //! multiple solves on the same design) and the one-shot [`solve`] / [`solve_batch`]
 //! convenience wrappers built on top of it.
 
-use std::borrow::Cow;
 use std::time::Instant;
 
-use ndarray::{ArrayView2, Axis};
+use ndarray::ArrayView2;
 use rayon::prelude::*;
 use schwarz_precond::{lsmr as lsmr_solve, mlsmr, MlsmrOptions};
 
@@ -14,7 +13,6 @@ use crate::config::{LsmrOptions, PreconditionerConfig};
 use crate::domain::collinearity::detect_collinear_slopes;
 use crate::domain::level_moments::TermMoments;
 use crate::domain::{Design, Effect, FactorEncoding, SolverDesign};
-use crate::observation::ObservationFrame;
 use crate::operator::design::gather_apply;
 use crate::operator::schwarz::{build_preconditioner, Preconditioner};
 use crate::operator::DesignOperator;
@@ -35,17 +33,7 @@ pub trait IntoDesign<'a> {
 
 impl<'a> IntoDesign<'a> for ArrayView2<'a, u32> {
     fn into_design(self) -> Result<Design<'a>, BuildError> {
-        // Gather strided (C-order) columns once so every downstream read is contiguous.
-        let categorical = (0..self.ncols())
-            .map(|factor| {
-                let col = self.index_axis_move(Axis(1), factor);
-                match col.to_slice() {
-                    Some(s) => Cow::Borrowed(s),
-                    None => Cow::Owned(col.to_vec()),
-                }
-            })
-            .collect();
-        Design::from_frame(ObservationFrame::new(categorical, Vec::new())?)
+        Design::from_categories(self)
     }
 }
 
