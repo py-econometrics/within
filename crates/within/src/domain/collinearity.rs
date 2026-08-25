@@ -8,7 +8,7 @@ use rayon::prelude::*;
 use super::level_moments::{BasisScratch, LevelMoments, TermMoments};
 use super::Design;
 use crate::channel::Channel;
-use crate::BuildWarning;
+use crate::{AliasVerdict, BuildWarning};
 
 /// Residual share below which a covariate counts as reproduced by the other term.
 const COLLINEARITY_TOL: f64 = 1e-3;
@@ -41,6 +41,7 @@ pub(crate) fn detect_collinear_slopes(
                         slope,
                         term,
                         relative_residual,
+                        verdict: AliasVerdict::Kept,
                     },
                 )
         })

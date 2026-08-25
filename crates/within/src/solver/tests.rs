@@ -10,7 +10,6 @@ use crate::config::{
 };
 use crate::domain::level_moments::TermMoments;
 use crate::domain::{build_local_domains, Design, Grounding, MatrixForm};
-use crate::operator::gauge::GaugeConstraint;
 use crate::Effect;
 use crate::Solver;
 
@@ -44,7 +43,7 @@ fn positive_slope_only_pair_grounds_beyond_dense_threshold() {
     ];
     let mut design = Design::new(effects).expect("design");
     let moments = TermMoments::build(&design, None).expect("slopes");
-    let _reparam = SlopeReparam::build(&mut design, &moments);
+    let _reparam = SlopeReparam::build(&mut design, &moments, None, None, &mut []);
     let (domains, warnings) =
         build_local_domains(&design, None, &LocalSolverConfig::default()).expect("domains");
     assert!(
@@ -209,6 +208,27 @@ fn max_abs_group_mean(design: &Design<'_>, demeaned: &[f64]) -> f64 {
         .fold(0.0f64, f64::max)
 }
 
+/// Rows the solve space excludes beyond whitening's drops, `None` when there are none.
+fn constrained_rank(solver: &Solver<'_>) -> Option<usize> {
+    solver
+        .reparam
+        .as_ref()
+        .map(|rp| rp.null.rank())
+        .filter(|&k| k > 0)
+}
+
+/// Every collinearity warning's verdict, in the order the screen raised them.
+fn verdicts(solver: &Solver<'_>) -> Vec<crate::AliasVerdict> {
+    solver
+        .warnings()
+        .iter()
+        .filter_map(|w| match w {
+            crate::BuildWarning::CollinearSlopeCovariate { verdict, .. } => Some(*verdict),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Every collinearity warning's residual, in the order the screen raised them.
 fn residuals(solver: &Solver<'_>) -> Vec<f64> {
     solver
@@ -287,9 +307,15 @@ fn a_warned_direction_is_removed_only_when_it_carries_nothing(
         "{residuals:?} outside {residual:?}"
     );
     // Two warnings can name one direction, so the second is absorbed by the first.
-    assert_eq!(
-        solver.gauge.as_ref().map(GaugeConstraint::rank_for_test),
-        rank
+    assert_eq!(constrained_rank(&solver), rank);
+    let expected = match rank {
+        Some(_) => crate::AliasVerdict::Constrained,
+        None => crate::AliasVerdict::Kept,
+    };
+    assert!(
+        verdicts(&solver).iter().all(|&v| v == expected),
+        "{:?}",
+        verdicts(&solver)
     );
 }
 
@@ -311,7 +337,11 @@ fn shrinking_the_perturbation_does_not_move_the_fit(#[case] delta: f64) {
         "converged={}, rss={fit:.12e} against {reference:.12e}",
         out.converged
     );
-    assert!(solver.gauge.is_none(), "{:?}", residuals(&solver));
+    assert!(
+        constrained_rank(&solver).is_none(),
+        "{:?}",
+        residuals(&solver)
+    );
 }
 
 /// The covariate is the response most aligned with the cancellation, and its unexplained
@@ -322,7 +352,11 @@ fn an_aligned_response_is_still_recovered() {
     let share = |delta: f64| {
         let panel = akm_panel(4_000, 200, 10, 0.15, SlopeSpec::NearYearIndex(delta));
         let solver = Solver::new(panel.effects(), None, unfloored()).expect("solver");
-        assert!(solver.gauge.is_none(), "{:?}", residuals(&solver));
+        assert!(
+            constrained_rank(&solver).is_none(),
+            "{:?}",
+            residuals(&solver)
+        );
         rss(&solve_tight(&solver, &panel.z).demeaned) / rss(&panel.z)
     };
     let (coarse, fine) = (share(1e-6), share(1e-8));
@@ -346,11 +380,7 @@ fn the_verdict_does_not_depend_on_the_preconditioner(
     for config in [PreconditionerConfig::Diagonal, unfloored()] {
         let solver = Solver::new(panel.effects(), None, &config).expect("solver");
         assert_eq!(residuals(&solver), reference, "{config:?}");
-        assert_eq!(
-            solver.gauge.as_ref().map(GaugeConstraint::rank_for_test),
-            rank,
-            "{config:?}"
-        );
+        assert_eq!(constrained_rank(&solver), rank, "{config:?}");
     }
 }
 
@@ -364,7 +394,7 @@ fn the_verdict_survives_weight_scaling(#[case] spec: SlopeSpec, #[case] rank: Op
         let w = vec![beta; panel.y.len()];
         let solver = Solver::new(panel.effects(), Some(w), unfloored()).expect("solver");
         assert_eq!(
-            solver.gauge.as_ref().map(GaugeConstraint::rank_for_test),
+            constrained_rank(&solver),
             rank,
             "beta={beta:e}, {:?}",
             residuals(&solver)
@@ -384,7 +414,7 @@ fn the_exact_alias_floor_stays_under_the_tolerance_at_scale() {
     )
     .expect("solver");
     assert_eq!(
-        solver.gauge.as_ref().map(GaugeConstraint::rank_for_test),
+        constrained_rank(&solver),
         Some(1),
         "{:?}",
         residuals(&solver)
@@ -393,5 +423,9 @@ fn the_exact_alias_floor_stays_under_the_tolerance_at_scale() {
     // The same panel's recoverable neighbour must survive where the shipped product did not.
     let panel = akm_panel(200_000, 10_000, 40, 0.15, SlopeSpec::NearYearIndex(3e-5));
     let solver = Solver::new(panel.effects(), None, unfloored()).expect("solver");
-    assert!(solver.gauge.is_none(), "{:?}", residuals(&solver));
+    assert!(
+        constrained_rank(&solver).is_none(),
+        "{:?}",
+        residuals(&solver)
+    );
 }

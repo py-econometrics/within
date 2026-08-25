@@ -12,19 +12,19 @@ use schwarz_precond::{lsmr as lsmr_solve, mlsmr, MlsmrOptions, Operator};
 use crate::channel::Channel;
 use crate::config::{LsmrOptions, PreconditionerConfig};
 use crate::domain::collinearity::detect_collinear_slopes;
-use crate::domain::gauge::gauge_candidates;
 use crate::domain::level_moments::TermMoments;
 use crate::domain::{Design, Effect, FactorEncoding};
 use crate::observation::ObservationFrame;
 use crate::operator::design::gather_apply;
-use crate::operator::gauge::{GaugeConstraint, GaugePreconditioner};
 use crate::operator::schwarz::{build_preconditioner, Preconditioner};
 use crate::operator::DesignOperator;
 use crate::{BuildError, BuildWarning, FactorLabel, SolveError, WithinError};
 
+mod null_space;
 mod reparam;
 #[cfg(test)]
 mod tests;
+use null_space::ProjectedPreconditioner;
 use reparam::SlopeReparam;
 
 /// Fallible conversion into a [`Design`] for [`Solver::new`]: a categories
@@ -345,8 +345,6 @@ pub struct Solver<'a> {
     /// during construction).
     sqrt_weights: Option<Vec<f64>>,
     preconditioner: Option<Preconditioner>,
-    /// Gauge directions the solve space excludes, one row each.
-    gauge: Option<GaugeConstraint>,
     reparam: Option<SlopeReparam>,
     warnings: Vec<BuildWarning>,
 }
@@ -416,12 +414,20 @@ impl<'a> Solver<'a> {
             .map(|m| detect_collinear_slopes(&design, weights.as_deref(), m))
             .unwrap_or_default();
 
-        let candidates = gauge_candidates(&design, weights.as_deref(), &warnings);
+        let sqrt_weights: Option<Vec<f64>> = weights
+            .as_ref()
+            .map(|w| w.iter().map(|&wi| wi.sqrt()).collect());
 
         // Reparametrize the slope columns (if any) before the preconditioner reads the frame.
-        let reparam = moments
-            .as_ref()
-            .and_then(|m| SlopeReparam::build(&mut design, m));
+        let reparam = moments.as_ref().and_then(|m| {
+            SlopeReparam::build(
+                &mut design,
+                m,
+                weights.as_deref(),
+                sqrt_weights.as_deref(),
+                &mut warnings,
+            )
+        });
 
         let (preconditioner, build_warnings) = match preconditioner.into() {
             PreconditionerInput::Default => {
@@ -444,26 +450,10 @@ impl<'a> Solver<'a> {
 
         warnings.extend(build_warnings);
 
-        let sqrt_weights = weights.map(|mut w| {
-            for wi in &mut w {
-                *wi = wi.sqrt();
-            }
-            w
-        });
-
-        // Only a preconditioned solve can carry the constraint, and it reads the whitened design.
-        let gauge = match (&preconditioner, &moments) {
-            (Some(_), Some(m)) if !candidates.is_empty() => {
-                GaugeConstraint::new(candidates, &design, m, sqrt_weights.as_deref(), &warnings)
-            }
-            _ => None,
-        };
-
         Ok(Self {
             design,
             sqrt_weights,
             preconditioner,
-            gauge,
             reparam,
             warnings,
         })
@@ -517,8 +507,12 @@ impl<'a> Solver<'a> {
                     local_size: lsmr.local_size,
                     ..Default::default()
                 };
-                let gauged = self.gauge.as_ref().map(|g| GaugePreconditioner::new(p, g));
-                let m: &dyn Operator = match &gauged {
+                let projected = self
+                    .reparam
+                    .as_ref()
+                    .filter(|rp| rp.null.rank() > 0)
+                    .map(|rp| ProjectedPreconditioner::new(p, &rp.null));
+                let m: &dyn Operator = match &projected {
                     Some(g) => g,
                     None => p,
                 };
@@ -561,7 +555,8 @@ impl<'a> Solver<'a> {
             return Vec::new();
         };
         reparam
-            .unidentified
+            .null
+            .dropped
             .iter()
             .copied()
             .map(|position| position.to_caller_address(&self.design))

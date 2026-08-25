@@ -4,7 +4,6 @@ pub(crate) mod collinearity;
 pub(crate) mod cross_tab;
 mod effect;
 pub(crate) mod factor_pairs;
-pub(crate) mod gauge;
 pub(crate) mod level_moments;
 
 pub(crate) use cross_tab::{find_all_active_levels, BlockDiagonals, CrossTab};

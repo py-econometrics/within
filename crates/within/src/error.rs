@@ -129,7 +129,18 @@ pub enum BuildWarning {
         term: usize,
         /// Share of the covariate's weighted variation outside that term's span.
         relative_residual: f64,
+        /// Whether the direction spanning both terms left the solve space.
+        verdict: AliasVerdict,
     },
+}
+
+/// What became of a warned cross-term direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AliasVerdict {
+    /// Certified null against the design and removed from the solve space.
+    Constrained,
+    /// Carries information the data can still resolve, so the iteration keeps it.
+    Kept,
 }
 
 impl std::fmt::Display for BuildWarning {
@@ -149,13 +160,22 @@ impl std::fmt::Display for BuildWarning {
                 slope,
                 term,
                 relative_residual,
-            } => write!(
-                f,
-                "slope covariate of {slope} is nearly collinear with the columns of term \
-                 {term} (relative residual {relative_residual:.2e}); unless the direction \
-                 spanning both terms certifies as null it stays in the solve space, where \
-                 iteration counts can inflate by orders of magnitude"
-            ),
+                verdict,
+            } => {
+                let fate = match verdict {
+                    AliasVerdict::Constrained => "was removed from the solve space",
+                    AliasVerdict::Kept => {
+                        "stays in the solve space, where iteration counts can inflate by orders \
+                         of magnitude"
+                    }
+                };
+                write!(
+                    f,
+                    "slope covariate of {slope} is nearly collinear with the columns of term \
+                     {term} (relative residual {relative_residual:.2e}); the direction spanning \
+                     both terms {fate}"
+                )
+            }
         }
     }
 }
