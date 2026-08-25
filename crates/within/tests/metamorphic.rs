@@ -6,10 +6,10 @@ use within::{solve, solve_batch, Channel, CoefficientAddress, LsmrOptions};
 mod strategies;
 use strategies::{additive_precond, random_fe_problem_strategy};
 
-fn at(term: usize, level: usize, column: usize) -> CoefficientAddress {
+fn at(term: usize, level: u32, column: usize) -> CoefficientAddress {
     CoefficientAddress {
         channel: Channel { term, column },
-        level,
+        level: level.into(),
     }
 }
 
@@ -140,11 +140,11 @@ proptest! {
         prop_assert!(result.converged);
 
         for u in &result.unidentified {
-            let slot = result.layout.index(*u).unwrap();
+            let slot = result.layout.index(u).unwrap();
             prop_assert_eq!(
                 result.x[slot],
                 0.0,
-                "unidentified slot (term {}, level {}, col {}) = {}, expected exactly 0",
+                "unidentified slot (term {}, level {:?}, col {}) = {}, expected exactly 0",
                 u.channel.term,
                 u.level,
                 u.channel.column,
@@ -171,7 +171,8 @@ fn saturated_single_factor_recovers_level_means() {
     assert!(result.converged);
 
     for (level, &mean) in [2.0, 4.0, 5.0].iter().enumerate() {
-        let slot = result.layout.index(at(0, level, 0)).unwrap();
+        let label = u32::try_from(level).expect("fixture level fits u32");
+        let slot = result.layout.index(&at(0, label, 0)).unwrap();
         assert!(
             (result.x[slot] - mean).abs() < 1e-6,
             "level {level}: coefficient {} != level mean {mean}",

@@ -290,7 +290,13 @@ fn singleton_level_in_non_first_slope_term_solves_under_default() {
     assert_eq!(
         r.unidentified
             .iter()
-            .map(|d| (d.channel.term, d.level, d.channel.column))
+            .map(|d| {
+                (
+                    d.channel.term,
+                    d.level.try_as_u32().expect("u32 factor label"),
+                    d.channel.column,
+                )
+            })
             .collect::<Vec<_>>(),
         vec![(1, 2, 1)],
     );
