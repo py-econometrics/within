@@ -20,6 +20,7 @@ use crate::observation::ObservationFrame;
 use crate::BuildError;
 use ndarray::{ArrayView2, Axis};
 use std::borrow::Cow;
+use std::sync::Arc;
 
 /// A slice that is guaranteed non-empty by construction.
 #[repr(transparent)]
@@ -206,16 +207,35 @@ fn stable_argsort(key: &[u32], n_levels: usize) -> Vec<u32> {
     perm
 }
 
-/// Fixed-effects design: observation columns plus coefficient-space layout.
 #[derive(Clone, Debug)]
-pub struct Design<'a> {
+struct DesignInner<'a> {
     /// Columns in internal row order (caller's, or an owned locality-sorted copy).
     frame: ObservationFrame<'a>,
-    pub(crate) terms: Vec<TermMeta>,
-    pub(crate) n_obs: usize,
-    pub(crate) n_dofs: usize,
+    terms: Vec<TermMeta>,
+    n_obs: usize,
+    n_dofs: usize,
     /// `obs_perm[k]` = caller's original index of the observation at internal position `k`.
-    pub(crate) obs_perm: Option<Vec<u32>>,
+    obs_perm: Option<Vec<u32>>,
+}
+
+impl DesignInner<'_> {
+    fn into_owned(self) -> DesignInner<'static> {
+        DesignInner {
+            frame: self.frame.into_owned(),
+            terms: self.terms,
+            n_obs: self.n_obs,
+            n_dofs: self.n_dofs,
+            obs_perm: self.obs_perm,
+        }
+    }
+}
+
+/// Fixed-effects design: observation columns plus coefficient-space layout.
+///
+/// Cloning a design is O(1); clones share the same immutable backing data.
+#[derive(Clone, Debug)]
+pub struct Design<'a> {
+    inner: Arc<DesignInner<'a>>,
 }
 
 impl<'a> Design<'a> {
@@ -321,31 +341,38 @@ impl<'a> Design<'a> {
         };
 
         Ok(Design {
-            frame,
-            terms,
-            n_obs,
-            n_dofs: offset,
-            obs_perm,
+            inner: Arc::new(DesignInner {
+                frame,
+                terms,
+                n_obs,
+                n_dofs: offset,
+                obs_perm,
+            }),
         })
     }
 
     /// Convert the frame's columns to owned, dropping ties to caller buffers.
     pub fn into_owned(self) -> Design<'static> {
+        let inner = Arc::unwrap_or_clone(self.inner).into_owned();
         Design {
-            frame: self.frame.into_owned(),
-            terms: self.terms,
-            n_obs: self.n_obs,
-            n_dofs: self.n_dofs,
-            obs_perm: self.obs_perm,
+            inner: Arc::new(inner),
         }
+    }
+
+    pub(crate) fn terms(&self) -> &[TermMeta] {
+        &self.inner.terms
+    }
+
+    pub(crate) fn obs_perm(&self) -> Option<&[u32]> {
+        self.inner.obs_perm.as_deref()
     }
 
     /// Validate that an optional weight slice matches this design's observation count.
     pub(crate) fn validate_weights(&self, weights: Option<&[f64]>) -> Result<(), BuildError> {
         if let Some(w) = weights {
-            if w.len() != self.n_obs {
+            if w.len() != self.inner.n_obs {
                 return Err(BuildError::WeightCountMismatch {
-                    expected: self.n_obs,
+                    expected: self.inner.n_obs,
                     got: w.len(),
                 });
             }
@@ -363,8 +390,8 @@ impl<'a> Design<'a> {
 
     /// Caller order → internal order: `out[k] = v[obs_perm[k]]`; borrows when unpermuted.
     pub(crate) fn permute_obs_in<'v>(&self, v: &'v [f64]) -> Cow<'v, [f64]> {
-        debug_assert_eq!(v.len(), self.n_obs);
-        match &self.obs_perm {
+        debug_assert_eq!(v.len(), self.inner.n_obs);
+        match &self.inner.obs_perm {
             None => Cow::Borrowed(v),
             Some(perm) => Cow::Owned(perm.iter().map(|&i| v[i as usize]).collect()),
         }
@@ -372,8 +399,8 @@ impl<'a> Design<'a> {
 
     /// Internal order → caller order: `out[obs_perm[k]] = v[k]`.
     pub(crate) fn permute_obs_out(&self, v: Vec<f64>) -> Vec<f64> {
-        debug_assert_eq!(v.len(), self.n_obs);
-        match &self.obs_perm {
+        debug_assert_eq!(v.len(), self.inner.n_obs);
+        match &self.inner.obs_perm {
             None => v,
             Some(perm) => {
                 let mut out = vec![0.0; v.len()];
@@ -388,43 +415,43 @@ impl<'a> Design<'a> {
     /// Number of categorical factors in the design.
     #[inline]
     pub fn n_factors(&self) -> usize {
-        self.terms.len()
+        self.inner.terms.len()
     }
 
     fn n_loading_columns(&self) -> usize {
-        self.frame.n_loading_columns()
+        self.inner.frame.n_loading_columns()
     }
 
     /// The term's coefficient columns in layout order.
     pub(crate) fn channels(&self, term: usize) -> impl Iterator<Item = Channel> + '_ {
-        (0..self.terms[term].n_columns()).map(move |column| Channel { term, column })
+        (0..self.inner.terms[term].n_columns()).map(move |column| Channel { term, column })
     }
 
     /// How `channel` loads onto each observation.
     pub(crate) fn loading(&self, channel: Channel) -> Loading<u32> {
-        self.terms[channel.term].columns[channel.column]
+        self.inner.terms[channel.term].columns[channel.column]
     }
 
     /// Level codes for one term, in internal observation order.
     pub(crate) fn level_column(&self, term: usize) -> &[u32] {
-        self.frame.level_column(term)
+        self.inner.frame.level_column(term)
     }
 
     /// Continuous loading column in internal observation order.
     pub(crate) fn loading_column(&self, column: usize) -> &[f64] {
-        self.frame.loading_column(column)
+        self.inner.frame.loading_column(column)
     }
 
     /// Number of observations (rows of D).
     #[inline]
     pub fn n_obs(&self) -> usize {
-        self.n_obs
+        self.inner.n_obs
     }
 
     /// Total degrees of freedom (columns of D).
     #[inline]
     pub fn n_dofs(&self) -> usize {
-        self.n_dofs
+        self.inner.n_dofs
     }
 }
 
@@ -537,6 +564,19 @@ mod tests {
     }
 
     #[test]
+    fn shared_design_can_be_converted_to_owned() {
+        let owned = {
+            let levels = vec![0, 1, 0];
+            let design = Design::new([Effect::new(&levels, true, []).unwrap()]).unwrap();
+
+            design.clone().into_owned()
+        };
+
+        assert_eq!(owned.n_obs(), 3);
+        assert_eq!(owned.level_column(0), [0, 0, 1]);
+    }
+
+    #[test]
     fn validate_weights_checks_count_and_finiteness() {
         let design = Design::from_frame(frame(vec![vec![0, 0, 0, 0, 0]], vec![])).unwrap();
         assert!(design.validate_weights(None).is_ok());
@@ -571,10 +611,10 @@ mod tests {
             Design::from_frame(frame(vec![vec![2, 0, 1, 0], vec![0, 0, 1, 1]], vec![])).unwrap();
 
         // Stable argsort of [2,0,1,0] → original indices [1,3,2,0].
-        assert_eq!(design.obs_perm.as_deref(), Some(&[1u32, 3, 2, 0][..]));
-        assert!(design.terms[0].sorted);
+        assert_eq!(design.obs_perm(), Some(&[1u32, 3, 2, 0][..]));
+        assert!(design.terms()[0].sorted);
         // Factor 1's permuted column [0,1,1,0] is no longer non-decreasing.
-        assert!(!design.terms[1].sorted);
+        assert!(!design.terms()[1].sorted);
 
         assert_eq!(design.level_column(0), [0, 0, 1, 2]);
         assert_eq!(design.level_column(1), [0, 1, 1, 0]);
@@ -586,18 +626,18 @@ mod tests {
         let col0 = vec![3u32, 0, 2, 1];
         let col1: Vec<u32> = col0.iter().map(|&v| v / 2).collect();
         let design = Design::from_frame(frame(vec![col0, col1], vec![])).unwrap();
-        assert!(design.obs_perm.is_some());
-        assert!(design.terms[0].sorted);
-        assert!(design.terms[1].sorted);
+        assert!(design.obs_perm().is_some());
+        assert!(design.terms()[0].sorted);
+        assert!(design.terms()[1].sorted);
     }
 
     #[test]
     fn from_frame_keeps_sorted_input() {
         let design =
             Design::from_frame(frame(vec![vec![0, 0, 1, 2], vec![1, 0, 1, 0]], vec![])).unwrap();
-        assert!(design.obs_perm.is_none());
-        assert!(design.terms[0].sorted);
-        assert!(!design.terms[1].sorted);
+        assert!(design.obs_perm().is_none());
+        assert!(design.terms()[0].sorted);
+        assert!(!design.terms()[1].sorted);
     }
 
     #[test]
@@ -608,7 +648,7 @@ mod tests {
         ))
         .unwrap();
 
-        let perm = design.obs_perm.as_ref().expect("permutation applied");
+        let perm = design.obs_perm().expect("permutation applied");
         assert_eq!(perm, &[1, 3, 2, 0]);
         assert_eq!(design.level_column(0), [0, 0, 1, 2]);
         assert_eq!(design.loading_column(0), [20.0, 40.0, 30.0, 10.0]);
@@ -629,25 +669,25 @@ mod tests {
         let design = Design::new(effects).unwrap();
 
         // term 0: [intercept, z0, z1] over 2 levels; term 1: intercept over 3; term 2: slope.
-        assert_eq!(design.terms[0].offset, 0);
-        assert_eq!(design.terms[0].n_dofs(), 6);
-        assert_eq!(design.terms[1].offset, 6);
-        assert_eq!(design.terms[1].n_dofs(), 3);
-        assert_eq!(design.terms[2].offset, 9);
-        assert!(!matches!(design.terms[2].columns[0], Loading::Constant));
-        assert_eq!(design.terms[2].n_dofs(), 2);
-        assert_eq!(design.n_dofs, 11);
+        assert_eq!(design.terms()[0].offset, 0);
+        assert_eq!(design.terms()[0].n_dofs(), 6);
+        assert_eq!(design.terms()[1].offset, 6);
+        assert_eq!(design.terms()[1].n_dofs(), 3);
+        assert_eq!(design.terms()[2].offset, 9);
+        assert!(!matches!(design.terms()[2].columns[0], Loading::Constant));
+        assert_eq!(design.terms()[2].n_dofs(), 2);
+        assert_eq!(design.n_dofs(), 11);
 
         // slope indices resolve to the effects' loading columns in the frame.
         assert_eq!(
-            &*design.terms[0].columns,
+            &*design.terms()[0].columns,
             &[
                 Loading::Constant,
                 Loading::Covariate(0),
                 Loading::Covariate(1)
             ]
         );
-        assert_eq!(&*design.terms[2].columns, &[Loading::Covariate(2)]);
+        assert_eq!(&*design.terms()[2].columns, &[Loading::Covariate(2)]);
         assert_eq!(design.loading_column(0), &z0[..]);
         assert_eq!(design.loading_column(2), &z1[..]);
     }

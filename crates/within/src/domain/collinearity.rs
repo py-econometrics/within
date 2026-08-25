@@ -92,7 +92,7 @@ fn residual_shares(
         moments,
         stride,
         // Grouping gathers every column, so it must buy back more than the one block.
-        order: match design.terms[term].sorted || plan.per_block == n_levels {
+        order: match design.terms()[term].sorted || plan.per_block == n_levels {
             true => RowOrder::AsIs,
             false => RowOrder::Grouped(super::stable_argsort(levels, n_levels)),
         },

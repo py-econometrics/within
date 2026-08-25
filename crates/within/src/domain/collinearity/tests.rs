@@ -271,7 +271,7 @@ fn a_minimal_table_budget_reproduces_the_full_table_shares() {
     ])
     .unwrap();
     // Only term 0's rows come out sorted, so the two terms take the two blocking paths.
-    assert!(design.terms[0].sorted && !design.terms[1].sorted);
+    assert!(design.terms()[0].sorted && !design.terms()[1].sorted);
     assert_eq!(shares(&design, 0, 1), shares(&design, 0, FULL_TABLE));
     for (split, whole) in shares(&design, 1, 1)
         .into_iter()
@@ -344,7 +344,7 @@ fn gappy_level_codes_screen_the_same_at_any_budget() {
         Effect::new(&b, true, [&z2[..]]).unwrap(),
     ])
     .unwrap();
-    assert!(!design.terms[1].sorted);
+    assert!(!design.terms()[1].sorted);
     for (split, whole) in shares(&design, 1, 1)
         .into_iter()
         .zip(shares(&design, 1, FULL_TABLE))

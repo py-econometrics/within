@@ -14,14 +14,14 @@ pub(crate) fn gather_apply(
     scale: Option<&[f64]>,
 ) {
     let design = solver_design.design();
-    debug_assert!(scale.is_none_or(|s| s.len() == design.n_obs));
-    debug_assert_eq!(src.len(), design.n_dofs);
-    debug_assert_eq!(dst.len(), design.n_obs);
+    debug_assert!(scale.is_none_or(|s| s.len() == design.n_obs()));
+    debug_assert_eq!(src.len(), design.n_dofs());
+    debug_assert_eq!(dst.len(), design.n_obs());
 
     dst.fill(0.0);
 
     for_each_chunk(dst, |chunk, row_start| {
-        for (q, t) in design.terms.iter().enumerate() {
+        for (q, t) in design.terms().iter().enumerate() {
             let (offset, n_levels) = (t.offset, t.n_levels());
             let levels = design.level_column(q);
             let col = |c: usize| &src[offset + c * n_levels..offset + (c + 1) * n_levels];

@@ -116,7 +116,7 @@ struct CoefficientPosition {
 
 impl CoefficientPosition {
     fn to_caller_address(self, design: &Design) -> CoefficientAddress {
-        let level = design.terms[self.channel.term]
+        let level = design.terms()[self.channel.term]
             .encoding
             .label(self.level)
             .expect("coefficient position belongs to its term");
@@ -147,7 +147,7 @@ struct TermLayout {
 impl CoefficientLayout {
     pub(crate) fn from_design(design: &Design) -> Self {
         let terms = design
-            .terms
+            .terms()
             .iter()
             .map(|t| TermLayout {
                 offset: t.offset,
@@ -157,7 +157,7 @@ impl CoefficientLayout {
             .collect();
         Self {
             terms,
-            n_dofs: design.n_dofs,
+            n_dofs: design.n_dofs(),
         }
     }
 
@@ -338,8 +338,8 @@ pub struct Solver<'a> {
 impl std::fmt::Debug for Solver<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Solver")
-            .field("n_obs", &self.solver_design.design().n_obs)
-            .field("n_dofs", &self.solver_design.design().n_dofs)
+            .field("n_obs", &self.solver_design.design().n_obs())
+            .field("n_dofs", &self.solver_design.design().n_dofs())
             .field("has_weights", &self.sqrt_weights.is_some())
             .field("has_preconditioner", &self.preconditioner.is_some())
             .finish()
@@ -388,7 +388,7 @@ impl<'a> Solver<'a> {
         design.validate_weights(weights.as_deref())?;
 
         // The match keeps the unpermuted arm a plain move rather than a borrow-and-copy.
-        let weights = match &design.obs_perm {
+        let weights = match design.obs_perm() {
             Some(_) => weights.map(|w| design.permute_obs_in(&w).into_owned()),
             None => weights,
         };
@@ -414,7 +414,7 @@ impl<'a> Solver<'a> {
                 build_preconditioner(&solver_design, weights.as_deref(), Some(&c))?
             }
             PreconditionerInput::Prebuilt(p) => {
-                let n_dofs = solver_design.design().n_dofs;
+                let n_dofs = solver_design.design().n_dofs();
                 if p.nrows() != n_dofs || p.ncols() != n_dofs {
                     return Err(BuildError::PreconditionerDimensionMismatch {
                         expected: n_dofs,
@@ -457,13 +457,13 @@ impl<'a> Solver<'a> {
     fn solve_rhs(&self, y: &[f64], lsmr: &LsmrOptions) -> Result<RhsSolution, SolveError> {
         let design = self.solver_design.design();
         // `weighted_rhs` zips y with sqrt-weights, silently truncating when `y.len() > n_rows`.
-        if y.len() != design.n_obs {
+        if y.len() != design.n_obs() {
             return Err(SolveError::InvalidInput {
                 context: "Solver::solve",
                 message: format!(
                     "response vector length ({}) does not match number of observations ({})",
                     y.len(),
-                    design.n_obs
+                    design.n_obs()
                 ),
             });
         }
@@ -501,7 +501,7 @@ impl<'a> Solver<'a> {
         let time_solve = t_solve_start.elapsed().as_secs_f64();
 
         // Shapes are guaranteed here, so the bare `D x` matvec is infallible.
-        let mut demeaned = vec![0.0; design.n_obs];
+        let mut demeaned = vec![0.0; design.n_obs()];
         gather_apply(&self.solver_design, &r.x, &mut demeaned, None);
         for (d, &yi) in demeaned.iter_mut().zip(y.iter()) {
             *d = yi - *d;
@@ -585,8 +585,8 @@ impl<'a> Solver<'a> {
             .collect::<Result<Vec<_>, _>>()?;
 
         let design = self.solver_design.design();
-        let mut x = Vec::with_capacity(design.n_dofs * n_rhs);
-        let mut demeaned = Vec::with_capacity(design.n_obs * n_rhs);
+        let mut x = Vec::with_capacity(design.n_dofs() * n_rhs);
+        let mut demeaned = Vec::with_capacity(design.n_obs() * n_rhs);
         let mut converged = Vec::with_capacity(n_rhs);
         let mut iterations = Vec::with_capacity(n_rhs);
         let mut residual = Vec::with_capacity(n_rhs);
@@ -613,8 +613,8 @@ impl<'a> Solver<'a> {
             time_solve,
             time_setup: 0.0,
             time_total: t_start.elapsed().as_secs_f64(),
-            n_dofs: design.n_dofs,
-            n_obs: design.n_obs,
+            n_dofs: design.n_dofs(),
+            n_obs: design.n_obs(),
         })
     }
 
@@ -625,12 +625,12 @@ impl<'a> Solver<'a> {
 
     /// Number of DOFs (coefficients).
     pub fn n_dofs(&self) -> usize {
-        self.solver_design.design().n_dofs
+        self.solver_design.design().n_dofs()
     }
 
     /// Number of observations.
     pub fn n_obs(&self) -> usize {
-        self.solver_design.design().n_obs
+        self.solver_design.design().n_obs()
     }
 }
 

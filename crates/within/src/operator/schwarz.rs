@@ -214,9 +214,9 @@ fn build_diagonal(
     weights: Option<&[f64]>,
 ) -> Result<DiagonalPreconditioner, BuildError> {
     let design = solver_design.design();
-    let mut diag = vec![0.0; design.n_dofs];
+    let mut diag = vec![0.0; design.n_dofs()];
 
-    for (factor_idx, term) in design.terms.iter().enumerate() {
+    for (factor_idx, term) in design.terms().iter().enumerate() {
         let levels = design.level_column(factor_idx);
         let w = |uid: usize| weights.map_or(1.0, |ws| ws[uid]);
         for (column, loading) in term.columns.iter().enumerate() {
@@ -284,7 +284,7 @@ pub(crate) fn build_preconditioner(
                 return Ok((None, warnings));
             }
             let preconditioner =
-                build_additive_with_strategy(domains, local_solver, *reduction, design.n_dofs)?;
+                build_additive_with_strategy(domains, local_solver, *reduction, design.n_dofs())?;
             (Variant::Additive(preconditioner), warnings)
         }
         PreconditionerConfig::Diagonal => {

@@ -339,8 +339,8 @@ fn dense_and_sparse_paths_agree_on_signed_data() {
     let active = build_compact_mapping(
         &all_active[0],
         &all_active[1],
-        design.terms[0].column_base(pair.rows.column),
-        design.terms[1].column_base(pair.cols.column),
+        design.terms()[0].column_base(pair.rows.column),
+        design.terms()[1].column_base(pair.cols.column),
     )
     .expect("both factors have active levels");
 

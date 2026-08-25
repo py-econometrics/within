@@ -40,13 +40,13 @@ impl<'a> DesignOperator<'a> {
         if let Some(sw) = sqrt_weights {
             assert_eq!(
                 sw.len(),
-                design.n_obs,
+                design.n_obs(),
                 "sqrt-weights length {} does not match design.n_obs {}",
                 sw.len(),
-                design.n_obs
+                design.n_obs()
             );
         }
-        let max_block = design.terms.iter().map(|t| t.n_dofs()).max().unwrap_or(0);
+        let max_block = design.terms().iter().map(|t| t.n_dofs()).max().unwrap_or(0);
         Self {
             solver_design,
             sqrt_weights,
@@ -91,17 +91,17 @@ impl Drop for ReentryGuard<'_> {
 
 impl Operator for DesignOperator<'_> {
     fn nrows(&self) -> usize {
-        self.solver_design.design().n_obs
+        self.solver_design.design().n_obs()
     }
 
     fn ncols(&self) -> usize {
-        self.solver_design.design().n_dofs
+        self.solver_design.design().n_dofs()
     }
 
     fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
         let design = self.solver_design.design();
-        debug_assert_eq!(x.len(), design.n_dofs);
-        debug_assert_eq!(y.len(), design.n_obs);
+        debug_assert_eq!(x.len(), design.n_dofs());
+        debug_assert_eq!(y.len(), design.n_obs());
         gather_apply(self.solver_design, x, y, self.sqrt_weights);
         Ok(())
     }
@@ -110,8 +110,8 @@ impl Operator for DesignOperator<'_> {
         #[cfg(debug_assertions)]
         let _guard = ReentryGuard::acquire(&self.adjoint_active);
         let design = self.solver_design.design();
-        debug_assert_eq!(x.len(), design.n_obs);
-        debug_assert_eq!(y.len(), design.n_dofs);
+        debug_assert_eq!(x.len(), design.n_obs());
+        debug_assert_eq!(y.len(), design.n_dofs());
         y.fill(0.0);
         // No lock needed: `solve_batch` builds one operator per RHS, so calls are sequential.
         match self.sqrt_weights {

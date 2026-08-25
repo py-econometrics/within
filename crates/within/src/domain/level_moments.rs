@@ -16,12 +16,12 @@ impl TermMoments {
     /// `None` when no term carries a covariate, so nothing downstream has work.
     pub(crate) fn build(design: &Design<'_>, weights: Option<&[f64]>) -> Option<Self> {
         let has_slopes = design
-            .terms
+            .terms()
             .iter()
             .any(|t| t.columns.iter().any(|c| c.covariate().is_some()));
         has_slopes.then(|| {
             Self(
-                (0..design.terms.len())
+                (0..design.terms().len())
                     .into_par_iter()
                     .map(|term| LevelMoments::build(design, term, weights))
                     .collect(),
@@ -61,7 +61,7 @@ fn tri_len(v: usize) -> usize {
 
 impl LevelMoments {
     fn build(design: &Design<'_>, term: usize, weights: Option<&[f64]>) -> Self {
-        let meta = &design.terms[term];
+        let meta = &design.terms()[term];
         let covariates: Box<[u32]> = meta
             .columns
             .iter()

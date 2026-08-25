@@ -19,7 +19,7 @@ const BLOCK_ELIM_NESTED_RAYON_CHILD_ENV: &str = "WITHIN_TEST_BLOCK_ELIM_NESTED_R
 
 fn make_test_data() -> (usize, Vec<LocalDomain>) {
     let design = Design::from_levels_for_test(vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]]);
-    let n_dofs = design.n_dofs;
+    let n_dofs = design.n_dofs();
     let solver_design = SolverDesign::new(design);
     let (domain_pairs, _) =
         build_local_domains(&solver_design, None, &LocalSolverConfig::default())

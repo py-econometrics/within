@@ -92,7 +92,7 @@ pub(crate) fn build_local_domains(
         .iter()
         .any(|&c| design.loading(c).covariate().is_some())
     {
-        compute_partition_weights(&mut domain_pairs, design.n_dofs);
+        compute_partition_weights(&mut domain_pairs, design.n_dofs());
     }
 
     Ok((domain_pairs, warnings))
@@ -237,7 +237,7 @@ mod tests {
     #[test]
     fn test_partition_of_unity() {
         let dm = make_test_design();
-        let n_dofs = dm.n_dofs;
+        let n_dofs = dm.n_dofs();
         let solver_design = SolverDesign::new(dm);
         let (domain_pairs, _) =
             build_local_domains(&solver_design, None, &LocalSolverConfig::default())
@@ -270,7 +270,7 @@ mod tests {
             Effect::new(&levels_c, true, []).expect("effect c"),
         ])
         .expect("valid slope design");
-        let n_dofs = design.n_dofs;
+        let n_dofs = design.n_dofs();
         let solver_design = SolverDesign::new(design);
         let (domain_pairs, _) =
             build_local_domains(&solver_design, None, &LocalSolverConfig::default())
@@ -302,7 +302,7 @@ mod tests {
     #[test]
     fn test_domains_cover_all_dofs() {
         let dm = make_test_design();
-        let n_dofs = dm.n_dofs;
+        let n_dofs = dm.n_dofs();
         let solver_design = SolverDesign::new(dm);
         let (domain_pairs, _) =
             build_local_domains(&solver_design, None, &LocalSolverConfig::default())

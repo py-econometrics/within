@@ -29,7 +29,7 @@ fn three_term_effects() -> Vec<Effect<'static>> {
 fn build_whitens_each_slope_bearing_term() {
     let design = Design::new(three_term_effects()).unwrap();
     let raw_loadings: Vec<(usize, Vec<f64>)> = design
-        .terms
+        .terms()
         .iter()
         .flat_map(|term| term.columns.iter())
         .filter_map(|loading| loading.covariate())
@@ -52,7 +52,7 @@ fn build_whitens_each_slope_bearing_term() {
 
     let design = solver_design.design();
     for term in [0, 2] {
-        let meta = &design.terms[term];
+        let meta = &design.terms()[term];
         let levels = design.level_column(term);
         let us: Vec<&[f64]> = meta
             .columns
@@ -118,12 +118,12 @@ fn back_transform_leaves_other_terms_untouched() {
     let rp = SlopeReparam::build(&mut solver_design, &moments).unwrap();
 
     let design = solver_design.design();
-    let mut x: Vec<f64> = (0..design.n_dofs).map(|i| 1.0 + i as f64).collect();
+    let mut x: Vec<f64> = (0..design.n_dofs()).map(|i| 1.0 + i as f64).collect();
     let before = x.clone();
     rp.back_transform(&mut x);
 
     // Plain term 1 sits between the two slope-bearing blocks.
-    let (t1, t2) = (design.terms[1].offset, design.terms[2].offset);
+    let (t1, t2) = (design.terms()[1].offset, design.terms()[2].offset);
     assert_eq!(x[t1..t2], before[t1..t2]);
     assert_ne!(x[..t1], before[..t1]);
     assert_ne!(x[t2..], before[t2..]);

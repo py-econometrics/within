@@ -24,7 +24,7 @@ struct ActiveLevels {
 /// Scan observations once, marking `active[f][level]` for every level any observation uses.
 pub(crate) fn find_all_active_levels(design: &Design<'_>) -> Vec<Vec<bool>> {
     let mut active: Vec<Vec<bool>> = design
-        .terms
+        .terms()
         .iter()
         .map(|f| vec![false; f.n_levels()])
         .collect();
@@ -147,8 +147,8 @@ impl CrossTab {
         let active = build_compact_mapping(
             &all_active[pair.rows.term],
             &all_active[pair.cols.term],
-            design.terms[pair.rows.term].column_base(pair.rows.column),
-            design.terms[pair.cols.term].column_base(pair.cols.column),
+            design.terms()[pair.rows.term].column_base(pair.rows.column),
+            design.terms()[pair.cols.term].column_base(pair.cols.column),
         )?;
 
         let (c, row_diag, col_diag) = accumulate_cross_block(solver_design, weights, pair, &active);

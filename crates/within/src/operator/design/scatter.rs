@@ -18,10 +18,10 @@ pub(super) fn scatter_apply(
     base: &(impl Fn(usize) -> f64 + Sync),
 ) {
     let design = solver_design.design();
-    debug_assert_eq!(dst.len(), design.n_dofs);
-    let parallel = design.n_obs > PAR_THRESHOLD;
+    debug_assert_eq!(dst.len(), design.n_dofs());
+    let parallel = design.n_obs() > PAR_THRESHOLD;
 
-    for (q, t) in design.terms.iter().enumerate() {
+    for (q, t) in design.terms().iter().enumerate() {
         let levels = design.level_column(q);
         let block = &mut dst[t.offset..t.offset + t.n_dofs()];
         match &*t.columns {

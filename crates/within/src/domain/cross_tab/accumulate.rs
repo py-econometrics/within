@@ -93,7 +93,7 @@ pub(super) fn accumulate_cross_block(
     // Dispatching on cell count alone would pick sparse where it uses MORE memory.
     let table_size = active.n_rows.saturating_mul(active.n_cols);
     let dense_cost = table_size.saturating_mul(8);
-    let sparse_cost = design.n_obs.saturating_mul(12);
+    let sparse_cost = design.n_obs().saturating_mul(12);
     let go_sparse = table_size > DENSE_TABLE_MAX_ENTRIES && sparse_cost < dense_cost;
 
     let row_levels = design.level_column(pair.rows.term);

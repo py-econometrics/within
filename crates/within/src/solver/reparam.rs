@@ -49,8 +49,8 @@ impl SlopeReparam {
     ) -> Option<Self> {
         let mut terms = Vec::new();
         let mut unidentified = Vec::new();
-        for term in 0..solver_design.design().terms.len() {
-            if !solver_design.design().terms[term]
+        for term in 0..solver_design.design().terms().len() {
+            if !solver_design.design().terms()[term]
                 .columns
                 .iter()
                 .any(|c| c.covariate().is_some())
@@ -88,7 +88,7 @@ impl TermReparam {
         unidentified: &mut Vec<CoefficientPosition>,
     ) -> Self {
         let design = solver_design.design();
-        let meta = &design.terms[term];
+        let meta = &design.terms()[term];
         let (offset, n_levels) = (meta.offset, meta.n_levels());
         let mut intercept_column = None;
         let mut slope_columns = Vec::new();
