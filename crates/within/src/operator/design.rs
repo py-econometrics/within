@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use portable_atomic::AtomicF64;
 use schwarz_precond::Operator;
 
-use crate::domain::{Design, Loading};
+use crate::domain::Design;
 
 mod gather;
 mod scatter;
@@ -62,18 +62,11 @@ impl<'a> DesignOperator<'a> {
             for (column, loading) in term.columns.iter().enumerate() {
                 let base = term.column_base(column);
                 let slice = &mut diag[base..base + term.n_levels()];
-                match loading {
-                    Loading::Constant => {
-                        for (obs, &level) in levels.iter().enumerate() {
-                            slice[level as usize] += w(obs);
-                        }
-                    }
-                    Loading::Covariate(z_col) => {
-                        let z = self.design.loading_column(*z_col as usize);
-                        for (obs, &level) in levels.iter().enumerate() {
-                            slice[level as usize] += w(obs) * z[obs] * z[obs];
-                        }
-                    }
+                let z = loading
+                    .covariate()
+                    .map(|&c| self.design.loading_column(c as usize));
+                for (obs, &level) in levels.iter().enumerate() {
+                    slice[level as usize] += w(obs) * z.map_or(1.0, |z| z[obs] * z[obs]);
                 }
             }
         }

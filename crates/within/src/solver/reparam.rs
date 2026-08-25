@@ -49,7 +49,6 @@ impl SlopeReparam {
         design: &mut Design<'_>,
         moments: &TermMoments,
         weights: Option<&[f64]>,
-        sqrt_weights: Option<&[f64]>,
         warnings: &mut [BuildWarning],
     ) -> Option<Self> {
         let candidates = AliasCandidate::capture(design, weights, warnings);
@@ -68,8 +67,12 @@ impl SlopeReparam {
         if terms.is_empty() {
             return None;
         }
-        let mut null = NullSpace::new(unidentified, design.n_dofs);
-        null.constrain(candidates, design, sqrt_weights, warnings);
+        let mut null = NullSpace {
+            dropped: unidentified,
+            rows: Vec::new(),
+            n_dofs: design.n_dofs,
+        };
+        null.constrain(candidates, design, weights, warnings);
         Some(Self { terms, null })
     }
 

@@ -260,14 +260,14 @@ impl ConvergenceState {
     }
 
     /// True-residual audit of a tolerance stop (cf. van der Vorst & Ye, SISC 22(3), 2000).
-    pub(super) fn certified(&self, cert: &Certificate, zeta0: f64, normar_raw0: f64) -> bool {
+    pub(super) fn certified(&self, cert: &Certificate, zeta0: f64) -> bool {
         let rel = CERTIFICATION_SLACK * self.criteria.rel_tol;
         let in_metric = cert.normr <= CERTIFICATION_SLACK * self.criteria.abs_tol
             // `normr → 0` degenerates the ratio test; the drop of `‖Âᵀr‖` vs its start certifies.
             || cert.normar <= rel * zeta0
             || self.ne_ratio(cert.normr, cert.normar) <= rel;
         // A metric that annihilates a direction cannot audit it, so the plain norm must also drop.
-        in_metric && cert.normar_raw <= rel * normar_raw0.max(f64::MIN_POSITIVE)
+        in_metric && cert.normar_raw <= rel * cert.normar_raw0.max(f64::MIN_POSITIVE)
     }
 }
 

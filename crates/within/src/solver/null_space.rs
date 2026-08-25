@@ -25,8 +25,8 @@ pub(crate) struct NullSpace {
     /// Exact-zero whitened columns, ascending in `(term, level, column)`.
     pub(super) dropped: Vec<CoefficientPosition>,
     /// Certified cross-term directions, orthonormal; `k × n_dofs`, row-major.
-    rows: Vec<f64>,
-    n_dofs: usize,
+    pub(super) rows: Vec<f64>,
+    pub(super) n_dofs: usize,
 }
 
 /// One warned covariate, centered so the two per-level fits differ by the aliasing alone and
@@ -81,14 +81,6 @@ impl AliasCandidate {
 }
 
 impl NullSpace {
-    pub(super) fn new(dropped: Vec<CoefficientPosition>, n_dofs: usize) -> Self {
-        Self {
-            dropped,
-            rows: Vec::new(),
-            n_dofs,
-        }
-    }
-
     pub(crate) fn rank(&self) -> usize {
         self.rows.len() / self.n_dofs
     }
@@ -98,14 +90,16 @@ impl NullSpace {
         &mut self,
         candidates: Vec<AliasCandidate>,
         design: &Design<'_>,
-        sqrt_weights: Option<&[f64]>,
+        weights: Option<&[f64]>,
         warnings: &mut [BuildWarning],
     ) {
         if candidates.is_empty() {
             return;
         }
         let n_dofs = self.n_dofs;
-        let design_op = DesignOperator::new(design, sqrt_weights);
+        let sqrt_weights: Option<Vec<f64>> =
+            weights.map(|w| w.iter().map(|&wi| wi.sqrt()).collect());
+        let design_op = DesignOperator::new(design, sqrt_weights.as_deref());
         // Whitening leaves a level's columns orthogonal, so `Aᵀc / diag(AᵀA)` is its per-level fit.
         let scale = design_op.column_norms_squared();
         let mut fit = vec![0.0f64; n_dofs];
@@ -180,9 +174,9 @@ impl NullSpace {
         let budget = NULL_TOL / (k as f64).sqrt();
         let mut obs = vec![0.0f64; design_op.nrows()];
         for row in rows.chunks_exact(n_dofs) {
-            if design_op.apply(row, &mut obs).is_err() {
-                return;
-            }
+            design_op
+                .apply(row, &mut obs)
+                .expect("the design operator cannot fail");
             let reference: f64 = row.iter().zip(&scale).map(|(&r, &s)| r * r * s).sum();
             if dot(&obs, &obs).sqrt() <= budget * reference.sqrt() {
                 self.rows.extend_from_slice(row);

@@ -28,7 +28,7 @@ fn three_term_effects() -> Vec<Effect<'static>> {
 fn build_whitens_each_slope_bearing_term() {
     let mut design = Design::new(three_term_effects()).unwrap();
     let moments = TermMoments::build(&design, None).unwrap();
-    let rp = SlopeReparam::build(&mut design, &moments, None, None, &mut []).unwrap();
+    let rp = SlopeReparam::build(&mut design, &moments, None, &mut []).unwrap();
     assert!(rp.null.dropped.is_empty());
 
     for term in [0, 2] {
@@ -73,7 +73,7 @@ fn unidentified_directions_ascend_across_terms() {
     ];
     let mut design = Design::new(effects).unwrap();
     let moments = TermMoments::build(&design, None).unwrap();
-    let rp = SlopeReparam::build(&mut design, &moments, None, None, &mut []).unwrap();
+    let rp = SlopeReparam::build(&mut design, &moments, None, &mut []).unwrap();
     assert_eq!(
         rp.null.dropped,
         vec![
@@ -93,7 +93,7 @@ fn unidentified_directions_ascend_across_terms() {
 fn back_transform_leaves_other_terms_untouched() {
     let mut design = Design::new(three_term_effects()).unwrap();
     let moments = TermMoments::build(&design, None).unwrap();
-    let rp = SlopeReparam::build(&mut design, &moments, None, None, &mut []).unwrap();
+    let rp = SlopeReparam::build(&mut design, &moments, None, &mut []).unwrap();
 
     let mut x: Vec<f64> = (0..design.n_dofs).map(|i| 1.0 + i as f64).collect();
     let before = x.clone();

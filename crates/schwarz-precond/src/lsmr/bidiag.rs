@@ -246,8 +246,10 @@ pub(super) struct Certificate {
     pub(super) normr: f64,
     /// `‖Âᵀ(rhs − A x)‖` in the stream's metric (`√(zᵀM⁻¹z)` when preconditioned).
     pub(super) normar: f64,
-    /// The same residual in the plain metric, which a singular `M⁻¹` cannot hide a component in.
+    /// The same residual in the plain metric, which a singular `M⁻¹` cannot hide a component in,
+    /// and its reference `‖Aᵀ rhs‖`.
     pub(super) normar_raw: f64,
+    pub(super) normar_raw0: f64,
 }
 
 /// Stream feeding LSMR `(α, β)` pairs and the matching normalized `v_k`.
@@ -258,8 +260,6 @@ pub(super) trait Bidiagonalization {
     fn v(&self) -> &[f64];
     /// Clobbers the stream's buffers, so call it only on a terminating path.
     fn certify(&mut self, x: &[f64], rhs: &[f64]) -> Result<Certificate, SolveError>;
-    /// `‖Aᵀ rhs‖`, the plain-metric reference [`Certificate::normar_raw`] is measured against.
-    fn initial_normar_raw(&self) -> f64;
 }
 
 impl<A: Operator + ?Sized> Bidiagonalization for GolubKahan<'_, A> {
@@ -309,11 +309,8 @@ impl<A: Operator + ?Sized> Bidiagonalization for GolubKahan<'_, A> {
             normr,
             normar,
             normar_raw: normar,
+            normar_raw0: self.normar_raw0,
         })
-    }
-
-    fn initial_normar_raw(&self) -> f64 {
-        self.normar_raw0
     }
 }
 
@@ -362,11 +359,8 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
             normr,
             normar: alpha_from_vp(&self.bufs.v, &self.bufs.atu)?,
             normar_raw,
+            normar_raw0: self.normar_raw0,
         })
-    }
-
-    fn initial_normar_raw(&self) -> f64 {
-        self.normar_raw0
     }
 }
 

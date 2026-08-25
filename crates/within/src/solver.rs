@@ -414,20 +414,10 @@ impl<'a> Solver<'a> {
             .map(|m| detect_collinear_slopes(&design, weights.as_deref(), m))
             .unwrap_or_default();
 
-        let sqrt_weights: Option<Vec<f64>> = weights
-            .as_ref()
-            .map(|w| w.iter().map(|&wi| wi.sqrt()).collect());
-
         // Reparametrize the slope columns (if any) before the preconditioner reads the frame.
-        let reparam = moments.as_ref().and_then(|m| {
-            SlopeReparam::build(
-                &mut design,
-                m,
-                weights.as_deref(),
-                sqrt_weights.as_deref(),
-                &mut warnings,
-            )
-        });
+        let reparam = moments
+            .as_ref()
+            .and_then(|m| SlopeReparam::build(&mut design, m, weights.as_deref(), &mut warnings));
 
         let (preconditioner, build_warnings) = match preconditioner.into() {
             PreconditionerInput::Default => {
@@ -449,6 +439,13 @@ impl<'a> Solver<'a> {
         };
 
         warnings.extend(build_warnings);
+
+        let sqrt_weights = weights.map(|mut w| {
+            for wi in &mut w {
+                *wi = wi.sqrt();
+            }
+            w
+        });
 
         Ok(Self {
             design,

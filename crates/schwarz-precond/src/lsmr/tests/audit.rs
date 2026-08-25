@@ -29,10 +29,8 @@ impl Bidiagonalization for ScriptedStream {
             normr: self.normr,
             normar: self.normar,
             normar_raw: self.normar_raw,
+            normar_raw0: 1.0,
         })
-    }
-    fn initial_normar_raw(&self) -> f64 {
-        1.0
     }
 }
 
