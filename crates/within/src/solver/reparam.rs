@@ -1,7 +1,7 @@
 //! Within-level reparametrization of a design's varying-slope terms.
 
 use crate::domain::level_moments::{BasisScratch, TermMoments};
-use crate::domain::Design;
+use crate::domain::SolverDesign;
 
 use super::CoefficientPosition;
 use crate::channel::Channel;
@@ -39,22 +39,30 @@ struct LevelTransform {
 }
 
 impl SlopeReparam {
-    /// Orthonormalize every slope-bearing term's loading columns in place;
+    /// Install orthonormalized loading overrides for every slope-bearing term;
     /// `None` for slope-free designs. Unidentified directions become
     /// exact-zero columns, so the minimal-norm solve leaves exact-`0`
     /// coefficients.
-    pub(crate) fn build(design: &mut Design<'_>, moments: &TermMoments) -> Option<Self> {
+    pub(crate) fn build(
+        solver_design: &mut SolverDesign<'_>,
+        moments: &TermMoments,
+    ) -> Option<Self> {
         let mut terms = Vec::new();
         let mut unidentified = Vec::new();
-        for term in 0..design.terms.len() {
-            if !design.terms[term]
+        for term in 0..solver_design.design().terms.len() {
+            if !solver_design.design().terms[term]
                 .columns
                 .iter()
                 .any(|c| c.covariate().is_some())
             {
                 continue;
             }
-            terms.push(TermReparam::build(design, term, moments, &mut unidentified));
+            terms.push(TermReparam::build(
+                solver_design,
+                term,
+                moments,
+                &mut unidentified,
+            ));
         }
         (!terms.is_empty()).then_some(Self {
             terms,
@@ -71,14 +79,15 @@ impl SlopeReparam {
 }
 
 impl TermReparam {
-    /// Whiten one term's loading columns in place, appending its unidentified
+    /// Whiten one term's solver-local loading columns, appending its unidentified
     /// directions ascending in `(level, column)`.
     fn build(
-        design: &mut Design<'_>,
+        solver_design: &mut SolverDesign<'_>,
         term: usize,
         moments: &TermMoments,
         unidentified: &mut Vec<CoefficientPosition>,
     ) -> Self {
+        let design = solver_design.design();
         let meta = &design.terms[term];
         let (offset, n_levels) = (meta.offset, meta.n_levels());
         let mut intercept_column = None;
@@ -141,7 +150,7 @@ impl TermReparam {
             }
         }
         for (out, &c) in u_cols.into_iter().zip(&z_cols) {
-            design.replace_loading_column(c, out);
+            solver_design.replace_loading_column(c, out);
         }
 
         Self {

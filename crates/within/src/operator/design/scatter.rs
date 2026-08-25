@@ -8,15 +8,16 @@ use rayon::prelude::*;
 
 use super::PAR_THRESHOLD;
 use crate::domain::Loading;
-use crate::domain::{Design, TermMeta};
+use crate::domain::{SolverDesign, TermMeta};
 
 /// Adjoint scatter over all terms; `base(i)` is the row value each column scales by its loading.
 pub(super) fn scatter_apply(
-    design: &Design<'_>,
+    solver_design: &SolverDesign<'_>,
     scratch: &[AtomicF64],
     dst: &mut [f64],
     base: &(impl Fn(usize) -> f64 + Sync),
 ) {
+    let design = solver_design.design();
     debug_assert_eq!(dst.len(), design.n_dofs);
     let parallel = design.n_obs > PAR_THRESHOLD;
 
@@ -28,23 +29,23 @@ pub(super) fn scatter_apply(
                 scatter_term::<1>(block, t, levels, parallel, scratch, |i| [base(i)])
             }
             [Loading::Constant, Loading::Covariate(c0)] => {
-                let z0 = design.loading_column(*c0 as usize);
+                let z0 = solver_design.loading_column(*c0 as usize);
                 scatter_term::<2>(block, t, levels, parallel, scratch, |i| {
                     let b = base(i);
                     [b, z0[i] * b]
                 })
             }
             [Loading::Constant, Loading::Covariate(c0), Loading::Covariate(c1)] => {
-                let z0 = design.loading_column(*c0 as usize);
-                let z1 = design.loading_column(*c1 as usize);
+                let z0 = solver_design.loading_column(*c0 as usize);
+                let z1 = solver_design.loading_column(*c1 as usize);
                 scatter_term::<3>(block, t, levels, parallel, scratch, |i| {
                     let b = base(i);
                     [b, z0[i] * b, z1[i] * b]
                 })
             }
             [Loading::Covariate(c0), Loading::Covariate(c1)] => {
-                let z0 = design.loading_column(*c0 as usize);
-                let z1 = design.loading_column(*c1 as usize);
+                let z0 = solver_design.loading_column(*c0 as usize);
+                let z1 = solver_design.loading_column(*c1 as usize);
                 scatter_term::<2>(block, t, levels, parallel, scratch, |i| {
                     let b = base(i);
                     [z0[i] * b, z1[i] * b]
@@ -59,7 +60,7 @@ pub(super) fn scatter_apply(
                             scatter_term::<1>(slot, t, levels, parallel, scratch, |i| [base(i)]);
                         }
                         Loading::Covariate(k) => {
-                            let z = design.loading_column(*k as usize);
+                            let z = solver_design.loading_column(*k as usize);
                             scatter_term::<1>(slot, t, levels, parallel, scratch, move |i| {
                                 [z[i] * base(i)]
                             });
