@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use ndarray::{ArrayView2, Axis};
 use rayon::prelude::*;
-use schwarz_precond::{lsmr as lsmr_solve, mlsmr, MlsmrOptions};
+use schwarz_precond::{lsmr as lsmr_solve, mlsmr, MlsmrOptions, Operator};
 
 use crate::channel::Channel;
 use crate::config::{LsmrOptions, PreconditionerConfig};
@@ -20,9 +20,11 @@ use crate::operator::schwarz::{build_preconditioner, Preconditioner};
 use crate::operator::DesignOperator;
 use crate::{BuildError, BuildWarning, FactorLabel, SolveError, WithinError};
 
+mod null_space;
 mod reparam;
 #[cfg(test)]
 mod tests;
+use null_space::ProjectedPreconditioner;
 use reparam::SlopeReparam;
 
 /// Fallible conversion into a [`Design`] for [`Solver::new`]: a categories
@@ -415,7 +417,7 @@ impl<'a> Solver<'a> {
         // Reparametrize the slope columns (if any) before the preconditioner reads the frame.
         let reparam = moments
             .as_ref()
-            .and_then(|m| SlopeReparam::build(&mut design, m));
+            .and_then(|m| SlopeReparam::build(&mut design, m, weights.as_deref(), &mut warnings));
 
         let (preconditioner, build_warnings) = match preconditioner.into() {
             PreconditionerInput::Default => {
@@ -502,7 +504,16 @@ impl<'a> Solver<'a> {
                     local_size: lsmr.local_size,
                     ..Default::default()
                 };
-                mlsmr(&rect_op, b, p, lsmr.tol, lsmr.maxiter, options)?
+                let projected = self
+                    .reparam
+                    .as_ref()
+                    .filter(|rp| rp.null.rank() > 0)
+                    .map(|rp| ProjectedPreconditioner::new(p, &rp.null));
+                let m: &dyn Operator = match &projected {
+                    Some(g) => g,
+                    None => p,
+                };
+                mlsmr(&rect_op, b, m, lsmr.tol, lsmr.maxiter, options)?
             }
             None => lsmr_solve(&rect_op, b, lsmr.tol, lsmr.maxiter, lsmr.local_size)?,
         };
@@ -541,7 +552,8 @@ impl<'a> Solver<'a> {
             return Vec::new();
         };
         reparam
-            .unidentified
+            .null
+            .dropped
             .iter()
             .copied()
             .map(|position| position.to_caller_address(&self.design))

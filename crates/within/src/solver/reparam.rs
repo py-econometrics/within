@@ -3,9 +3,11 @@
 use crate::domain::level_moments::{BasisScratch, TermMoments};
 use crate::domain::Design;
 
+use super::null_space::{AliasCandidate, NullSpace};
 use super::CoefficientPosition;
 use crate::channel::Channel;
 use crate::linalg::dot;
+use crate::BuildWarning;
 
 #[cfg(test)]
 mod tests;
@@ -15,8 +17,8 @@ mod tests;
 /// parametrization.
 pub(crate) struct SlopeReparam {
     terms: Vec<TermReparam>,
-    /// Directions the data cannot identify, ascending in `(term, level, column)`.
-    pub(super) unidentified: Vec<CoefficientPosition>,
+    /// Every direction the solve space excludes.
+    pub(super) null: NullSpace,
 }
 
 /// One slope-bearing term's whitening state.
@@ -39,11 +41,17 @@ struct LevelTransform {
 }
 
 impl SlopeReparam {
-    /// Orthonormalize every slope-bearing term's loading columns in place;
-    /// `None` for slope-free designs. Unidentified directions become
-    /// exact-zero columns, so the minimal-norm solve leaves exact-`0`
-    /// coefficients.
-    pub(crate) fn build(design: &mut Design<'_>, moments: &TermMoments) -> Option<Self> {
+    /// Orthonormalize every slope-bearing term's loading columns in place and certify the
+    /// screen's aliasing proposals against the result; `None` for slope-free designs.
+    /// Unidentified directions become exact-zero columns, so the minimal-norm solve leaves
+    /// exact-`0` coefficients.
+    pub(crate) fn build(
+        design: &mut Design<'_>,
+        moments: &TermMoments,
+        weights: Option<&[f64]>,
+        warnings: &mut [BuildWarning],
+    ) -> Option<Self> {
+        let candidates = AliasCandidate::capture(design, weights, warnings);
         let mut terms = Vec::new();
         let mut unidentified = Vec::new();
         for term in 0..design.terms.len() {
@@ -56,10 +64,16 @@ impl SlopeReparam {
             }
             terms.push(TermReparam::build(design, term, moments, &mut unidentified));
         }
-        (!terms.is_empty()).then_some(Self {
-            terms,
-            unidentified,
-        })
+        if terms.is_empty() {
+            return None;
+        }
+        let mut null = NullSpace {
+            dropped: unidentified,
+            rows: Vec::new(),
+            n_dofs: design.n_dofs,
+        };
+        null.constrain(candidates, design, weights, warnings);
+        Some(Self { terms, null })
     }
 
     /// Map solve-basis coefficients back to the user's parametrization.
@@ -81,14 +95,13 @@ impl TermReparam {
     ) -> Self {
         let meta = &design.terms[term];
         let (offset, n_levels) = (meta.offset, meta.n_levels());
-        let mut intercept_column = None;
-        let mut slope_columns = Vec::new();
-        for (column, loading) in meta.columns.iter().enumerate() {
-            match loading.covariate() {
-                Some(_) => slope_columns.push(column),
-                None => intercept_column = Some(column),
-            }
-        }
+        let intercept_column = meta.intercept_column();
+        let slope_columns: Vec<usize> = meta
+            .columns
+            .iter()
+            .enumerate()
+            .filter_map(|(column, loading)| loading.covariate().map(|_| column))
+            .collect();
         let intercept = intercept_column.is_some();
         let moments = &moments[term];
         let v = moments.n_slopes();
@@ -119,14 +132,9 @@ impl TermReparam {
                     });
                 }
             }
-            let center = if intercept {
-                moments.mean(level).into()
-            } else {
-                vec![0.0; v].into()
-            };
             transforms.push(LevelTransform {
                 w: w.clone().into(),
-                center,
+                center: moments.center(level).into(),
             });
         }
 

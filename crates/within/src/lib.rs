@@ -43,7 +43,7 @@ pub use config::{
     ReductionStrategy, ScalingConfig, ScalingFailure, SchurMode,
 };
 pub use domain::{Design, Effect, FactorLabel};
-pub use error::{BuildError, BuildWarning, SolveError, WithinError};
+pub use error::{AliasVerdict, BuildError, BuildWarning, SolveError, WithinError};
 pub use operator::schwarz::Preconditioner;
 pub use solver::{
     solve, solve_batch, BatchSolveResult, CoefficientAddress, CoefficientLayout, IntoDesign,
