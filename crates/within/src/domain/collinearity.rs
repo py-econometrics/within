@@ -76,7 +76,7 @@ fn residual_shares(
         .map(|&(_, c)| design.frame.loading_column(c as usize))
         .collect();
     let stride = columns.len() * (us.len() + 1);
-    let n_levels = meta.n_levels;
+    let n_levels = meta.n_levels();
     let plan = ScreenPlan::new(budget, n_levels, stride);
     let screen = Screen {
         prepared,

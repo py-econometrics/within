@@ -219,7 +219,7 @@ fn build_diagonal(prepared: &PreparedDesign<'_>) -> Result<DiagonalPreconditione
         let w = |uid: usize| prepared.row_weight(uid);
         for (column, loading) in term.columns.iter().enumerate() {
             let base = term.column_base(column);
-            let slice = &mut diag[base..base + term.n_levels];
+            let slice = &mut diag[base..base + term.n_levels()];
             match loading {
                 Loading::Constant => {
                     for (uid, &level) in levels.iter().enumerate() {

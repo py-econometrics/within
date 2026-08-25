@@ -31,11 +31,17 @@ impl std::fmt::Display for ChannelPair {
     }
 }
 
-/// One coefficient of the design: a [`Channel`] at one level of its term.
+/// One coefficient of the design: a [`Channel`] at a level in space `L`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CoefficientAddress {
+pub struct Coefficient<L> {
     /// The coefficient column this address sits in.
     pub channel: Channel,
-    /// Level index within the term (`0..n_levels`).
-    pub level: usize,
+    /// The level, in whichever space `L` names.
+    pub level: L,
 }
+
+/// A coefficient addressed by the caller's own factor label.
+pub type CoefficientAddress = Coefficient<u32>;
+
+/// A coefficient addressed by its internal compact position.
+pub(crate) type CoefficientPosition = Coefficient<usize>;

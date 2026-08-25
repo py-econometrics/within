@@ -36,7 +36,7 @@ fn build_whitens_each_slope_bearing_term() {
             .covariates()
             .map(|k| basis.loading_column(k as usize))
             .collect();
-        for level in 0..meta.n_levels {
+        for level in 0..meta.n_levels() {
             let obs: Vec<usize> = (0..levels.len())
                 .filter(|&i| levels[i] as usize == level)
                 .collect();
@@ -78,11 +78,11 @@ fn unidentified_directions_ascend_across_terms() {
     assert_eq!(
         basis.unidentified,
         vec![
-            CoefficientAddress {
+            CoefficientPosition {
                 channel: Channel { term: 0, column: 1 },
                 level: 1,
             },
-            CoefficientAddress {
+            CoefficientPosition {
                 channel: Channel { term: 1, column: 1 },
                 level: 0,
             },
