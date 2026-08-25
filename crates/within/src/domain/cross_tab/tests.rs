@@ -46,7 +46,7 @@ fn test_cross_tab_sparse_accumulation_path() {
     // Sparse path (large level counts)
     let design_sparse = design_of(vec![fa.clone(), fb.clone()]);
     let active_sparse = find_all_active_levels(&design_sparse);
-    let sparse_solver_design = SolverDesign::new(design_sparse);
+    let sparse_solver_design = SolverDesign::new(&design_sparse);
     let (ct_sparse, diag_sparse, _) = CrossTab::build_for_pair_with_active(
         &sparse_solver_design,
         None,
@@ -60,7 +60,7 @@ fn test_cross_tab_sparse_accumulation_path() {
     let fb_small: Vec<u32> = fb.iter().map(|&x| x % 100).collect();
     let design_dense = design_of(vec![fa_small.clone(), fb_small.clone()]);
     let active_dense = find_all_active_levels(&design_dense);
-    let dense_solver_design = SolverDesign::new(design_dense);
+    let dense_solver_design = SolverDesign::new(&design_dense);
     let (_ct_dense, diag_dense, _) = CrossTab::build_for_pair_with_active(
         &dense_solver_design,
         None,
@@ -132,7 +132,7 @@ fn test_extract_component_two_components() {
     let fb = vec![0u32, 1, 0, 1, 2, 3, 2, 3];
     let design = design_of(vec![fa, fb]);
     let all_active = find_all_active_levels(&design);
-    let solver_design = SolverDesign::new(design);
+    let solver_design = SolverDesign::new(&design);
     let (ct, parent_diag, _) =
         CrossTab::build_for_pair_with_active(&solver_design, None, INTERCEPT_PAIR, &all_active)
             .expect("cross tab should build");
@@ -245,7 +245,7 @@ proptest! {
 
         let design = design_of(vec![fa, fb]);
         let all_active = find_all_active_levels(&design);
-        let solver_design = SolverDesign::new(design);
+        let solver_design = SolverDesign::new(&design);
         let (ct, _, _) = CrossTab::build_for_pair_with_active(
             &solver_design,
             None,

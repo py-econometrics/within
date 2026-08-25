@@ -196,9 +196,10 @@ let r = solve(categories.view(), &y, None, &lsmr, &diagonal)?;
 Persistent solver — build once, solve many:
 
 ```rust
-use within::Solver;
+use within::{Design, Solver};
 
-let solver = Solver::new(categories.view(), None, None)?;
+let design = Design::from_categories(categories.view())?;
+let solver = Solver::new(&design, None, None)?;
 let r1 = solver.solve(&y, &LsmrOptions::default())?;
 let r2 = solver.solve(&another_y, &LsmrOptions::default())?;  // reuses preconditioner
 ```
@@ -245,8 +246,8 @@ let at = CoefficientAddress { channel: Channel { term: 0, column: 1 }, level: 3.
 println!("{}", r.x[r.layout.index(&at).unwrap()]);
 ```
 
-`Solver::new` takes the same `Vec<Effect>`, so a slope design can be reused
-across solves like any other.
+Build a persistent slope design with `Design::new(terms)`, then pass `&design`
+to each `Solver::new` call that should reuse it.
 
 ### Lower-level access
 

@@ -46,7 +46,7 @@ fn test_weight_count_mismatch_error() {
     )
     .expect("frame ok");
     let design = Design::from_frame(frame).expect("valid design");
-    let result = Solver::new(design, Some(vec![1.0, 2.0]), None);
+    let result = Solver::new(&design, Some(vec![1.0, 2.0]), None);
     let err = result.expect_err("expected WeightCountMismatch error, got Ok");
     match err {
         BuildError::WeightCountMismatch { .. } => {}
@@ -76,14 +76,16 @@ fn test_preconditioner_dimension_mismatch_error() {
     // Reusing a larger design's preconditioner must trip the dim check in Solver::new.
     let big = Array2::from_shape_vec((4, 2), vec![0u32, 0, 1, 1, 2, 0, 3, 1]).expect("big array");
     let small = Array2::from_shape_vec((3, 2), vec![0u32, 0, 1, 1, 0, 0]).expect("small array");
+    let big_design = Design::from_categories(big.view()).expect("big design");
+    let small_design = Design::from_categories(small.view()).expect("small design");
 
-    let big_solver = Solver::new(big.view(), None, None).expect("big solver");
+    let big_solver = Solver::new(&big_design, None, None).expect("big solver");
     let prebuilt = big_solver
         .preconditioner()
         .expect("default solver has a preconditioner")
         .clone();
 
-    let result = Solver::new(small.view(), None, prebuilt);
+    let result = Solver::new(&small_design, None, prebuilt);
     let err = result.expect_err("expected PreconditionerDimensionMismatch, got Ok");
     match err {
         BuildError::PreconditionerDimensionMismatch {
@@ -116,7 +118,8 @@ fn test_non_finite_response_rejected() {
     }
 
     // The persistent Solver API funnels through the same guard, so it cannot be bypassed.
-    let solver = Solver::new(cats.view(), None, &precond).expect("solver");
+    let design = Design::from_categories(cats.view()).expect("design");
+    let solver = Solver::new(&design, None, &precond).expect("solver");
     match solver.solve(&y, &params).unwrap_err() {
         SolveError::InvalidInput { message, .. } => {
             assert!(
@@ -168,7 +171,7 @@ fn test_solver_accepts_slope_bearing_design_alongside_other_terms() {
     ];
     // Cross-factor routing (#61): slope terms alongside other terms build.
     let design = Design::new(effects).expect("slope design builds");
-    Solver::new(design, None, None).expect("signed routing builds");
+    Solver::new(&design, None, None).expect("signed routing builds");
 }
 
 // One wiring check per enum: From conversions and the transparent source() forward.
@@ -220,7 +223,7 @@ fn test_invalid_ridge_rejected() {
             Effect::new(&f, true, []).expect("f"),
             Effect::new(&g, true, []).expect("g"),
         ];
-        match Solver::new(effects, None, &precond) {
+        match Solver::new(&Design::new(effects).expect("design"), None, &precond) {
             Err(BuildError::InvalidRidge { value }) => assert_eq!(value.to_bits(), ridge.to_bits()),
             other => panic!("expected InvalidRidge for {ridge}, got {other:?}"),
         }

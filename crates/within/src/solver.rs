@@ -23,9 +23,9 @@ mod reparam;
 mod tests;
 use reparam::SlopeReparam;
 
-/// Fallible conversion into a [`Design`] for [`Solver::new`]: a categories
-/// matrix (`ArrayView2<u32>`), a list of [`Effect`] terms, or a pass-through
-/// [`Design`].
+/// Fallible conversion into a [`Design`] for [`solve`] and [`solve_batch`]: a
+/// categories matrix (`ArrayView2<u32>`), a list of [`Effect`] terms, or a
+/// borrowed or owned [`Design`].
 pub trait IntoDesign<'a> {
     /// Build the [`Design`], validating inputs along the way.
     fn into_design(self) -> Result<Design<'a>, BuildError>;
@@ -40,6 +40,12 @@ impl<'a> IntoDesign<'a> for ArrayView2<'a, u32> {
 impl<'a> IntoDesign<'a> for Design<'a> {
     fn into_design(self) -> Result<Design<'a>, BuildError> {
         Ok(self)
+    }
+}
+
+impl<'a> IntoDesign<'a> for &Design<'a> {
+    fn into_design(self) -> Result<Design<'a>, BuildError> {
+        Ok(self.clone())
     }
 }
 
@@ -320,10 +326,10 @@ impl BatchSolveResult {
 /// preconditioner factorization happens only at construction time; LSMR tuning
 /// ([`LsmrOptions`]) is supplied per call.
 ///
-/// Ownership: each observation column is borrowed or owned independently
-/// (`Cow`); a solver that outlives its inputs — e.g. one returned across the
-/// Python boundary — uses owned columns. Weights are always owned; for a
-/// one-shot weighted solve from a borrowed slice, use the free [`solve`] function.
+/// The solver retains an O(1) clone of the immutable [`Design`] handle. Its
+/// lifetime is therefore still constrained by any data borrowed by the design.
+/// Weights are always owned; for a one-shot weighted solve from a borrowed
+/// slice, use the free [`solve`] function.
 pub struct Solver<'a> {
     solver_design: SolverDesign<'a>,
     /// `sqrt(W)` in the design's internal observation order, computed once and
@@ -364,8 +370,8 @@ struct RhsSolution {
 impl<'a> Solver<'a> {
     /// Construct a solver.
     ///
-    /// `design` accepts raw categories (`ArrayView2<u32>`) or a pre-built
-    /// [`Design`]. `preconditioner` accepts:
+    /// `design` is a pre-built [`Design`] that can be reused across solvers.
+    /// `preconditioner` accepts:
     /// - `None` — build the library default Schwarz preconditioner
     /// - `&PreconditionerConfig` / `Some(&PreconditionerConfig)` — build from a tuned config
     /// - `PreconditionerConfig::Off` — solve unpreconditioned
@@ -373,18 +379,17 @@ impl<'a> Solver<'a> {
     /// - [`Preconditioner`] or `&Preconditioner` — reuse a previously built one
     ///
     /// `weights` is `None` for unweighted, or an owned `Vec<f64>` that the
-    /// solver takes ownership of (it re-reads the weights on every solve). To
-    /// solve once from a borrowed slice, use the free [`solve`] function.
+    /// solver takes ownership of. To solve once from a borrowed slice, use the
+    /// free [`solve`] function.
     ///
     /// LSMR tuning ([`LsmrOptions`]) is supplied per call to [`Solver::solve`] /
     /// [`Solver::solve_batch`], not at construction; preconditioner factorization
     /// state is the only expensive thing built here.
     pub fn new(
-        design: impl IntoDesign<'a>,
+        design: &Design<'a>,
         weights: Option<Vec<f64>>,
         preconditioner: impl Into<PreconditionerInput>,
     ) -> Result<Self, BuildError> {
-        let design = design.into_design()?;
         design.validate_weights(weights.as_deref())?;
 
         // The match keeps the unpermuted arm a plain move rather than a borrow-and-copy.
@@ -394,10 +399,10 @@ impl<'a> Solver<'a> {
         };
 
         // Both readers below need the raw loadings, so the moments precede whitening.
-        let moments = TermMoments::build(&design, weights.as_deref());
+        let moments = TermMoments::build(design, weights.as_deref());
         let mut warnings = moments
             .as_ref()
-            .map(|m| detect_collinear_slopes(&design, weights.as_deref(), m))
+            .map(|m| detect_collinear_slopes(design, weights.as_deref(), m))
             .unwrap_or_default();
 
         let mut solver_design = SolverDesign::new(design);
@@ -658,7 +663,8 @@ pub fn solve<'a, 'o>(
     preconditioner: impl Into<PreconditionerInput>,
 ) -> Result<SolveResult, WithinError> {
     let t_start = Instant::now();
-    let solver = Solver::new(design, weights.map(|w| w.to_vec()), preconditioner)?;
+    let design = design.into_design()?;
+    let solver = Solver::new(&design, weights.map(|w| w.to_vec()), preconditioner)?;
     let time_setup = t_start.elapsed().as_secs_f64();
     let mut result = solver.solve(y, lsmr)?;
     // Include solver construction (preconditioner build) in setup time
@@ -679,7 +685,8 @@ pub fn solve_batch<'a, 'o>(
     preconditioner: impl Into<PreconditionerInput>,
 ) -> Result<BatchSolveResult, WithinError> {
     let t_start = Instant::now();
-    let solver = Solver::new(design, weights.map(|w| w.to_vec()), preconditioner)?;
+    let design = design.into_design()?;
+    let solver = Solver::new(&design, weights.map(|w| w.to_vec()), preconditioner)?;
     let time_setup = t_start.elapsed().as_secs_f64();
     let mut result = solver.solve_batch(ys, lsmr)?;
     result.time_setup += time_setup;

@@ -1,7 +1,7 @@
 use proptest::prelude::*;
 use within::{
-    solve, Channel, CoefficientAddress, Effect, LsmrOptions, Preconditioner, PreconditionerConfig,
-    Solver,
+    solve, Channel, CoefficientAddress, Design, Effect, LsmrOptions, Preconditioner,
+    PreconditionerConfig, Solver,
 };
 
 #[path = "common/property_strategies.rs"]
@@ -26,7 +26,8 @@ proptest! {
     fn prop_preconditioner_serde_roundtrip((cats, _y) in random_fe_problem_strategy()) {
         let precond = additive_precond();
 
-        let solver = within::Solver::new(cats.view(), None, &precond).unwrap();
+        let design = within::Design::from_categories(cats.view()).unwrap();
+        let solver = within::Solver::new(&design, None, &precond).unwrap();
         let fe_precond = solver.preconditioner().unwrap();
 
         let bytes = postcard::to_stdvec(fe_precond).unwrap();
@@ -121,7 +122,7 @@ proptest! {
             maxiter: 2000,
             local_size: Some(10),
         };
-        let result = Solver::new(effects, Some(weights.clone()), PreconditionerConfig::default())
+        let result = Solver::new(&Design::new(effects).expect("design"), Some(weights.clone()), PreconditionerConfig::default())
             .expect("build solver")
             .solve(y.as_slice(), &params)
             .expect("solve");

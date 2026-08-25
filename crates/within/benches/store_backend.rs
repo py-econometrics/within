@@ -96,7 +96,8 @@ fn bench_store_backends(c: &mut Criterion) {
         // C-order view: ingest copies each strided column once.
         group.bench_function(BenchmarkId::new("Array(C)", &p.label), |b| {
             b.iter(|| {
-                let solver = Solver::new(p.categories_c.view(), None, precond_ref).unwrap();
+                let design = within::Design::from_categories(p.categories_c.view()).unwrap();
+                let solver = Solver::new(&design, None, precond_ref).unwrap();
                 let r = solver.solve(&p.y, &p.params).unwrap();
                 assert!(r.converged);
             });
@@ -105,7 +106,8 @@ fn bench_store_backends(c: &mut Criterion) {
         // F-order view: contiguous columns borrowed zero-copy.
         group.bench_function(BenchmarkId::new("Array(F)", &p.label), |b| {
             b.iter(|| {
-                let solver = Solver::new(p.categories_f.view(), None, precond_ref).unwrap();
+                let design = within::Design::from_categories(p.categories_f.view()).unwrap();
+                let solver = Solver::new(&design, None, precond_ref).unwrap();
                 let r = solver.solve(&p.y, &p.params).unwrap();
                 assert!(r.converged);
             });

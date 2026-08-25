@@ -36,7 +36,7 @@ fn positive_slope_only_pair_grounds_beyond_dense_threshold() {
     ];
     let design = Design::new(effects).expect("design");
     let moments = TermMoments::build(&design, None).expect("slopes");
-    let mut solver_design = SolverDesign::new(design);
+    let mut solver_design = SolverDesign::new(&design);
     let _reparam = SlopeReparam::build(&mut solver_design, &moments);
     let (domains, warnings) =
         build_local_domains(&solver_design, None, &LocalSolverConfig::default()).expect("domains");

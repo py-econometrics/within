@@ -461,10 +461,10 @@ pub(crate) struct SolverDesign<'a> {
 }
 
 impl<'a> SolverDesign<'a> {
-    pub(crate) fn new(design: Design<'a>) -> Self {
+    pub(crate) fn new(design: &Design<'a>) -> Self {
         let loading_overrides = (0..design.n_loading_columns()).map(|_| None).collect();
         Self {
-            design,
+            design: design.clone(),
             loading_overrides,
         }
     }

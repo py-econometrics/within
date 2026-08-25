@@ -30,7 +30,8 @@ fn build_and_solve<'a>(
     precond: impl Into<PreconditionerInput>,
 ) -> Result<(SolveResult, Vec<BuildWarning>), WithinError> {
     let t_start = Instant::now();
-    let solver = Solver::new(design, weights, precond)?;
+    let design = design.into_design()?;
+    let solver = Solver::new(&design, weights, precond)?;
     let time_setup = t_start.elapsed().as_secs_f64();
     let mut result = solver.solve(y, lsmr)?;
     result.time_setup += time_setup;
@@ -47,7 +48,8 @@ fn build_and_solve_batch<'a>(
     precond: impl Into<PreconditionerInput>,
 ) -> Result<(BatchSolveResult, Vec<BuildWarning>), WithinError> {
     let t_start = Instant::now();
-    let solver = Solver::new(design, weights, precond)?;
+    let design = design.into_design()?;
+    let solver = Solver::new(&design, weights, precond)?;
     let time_setup = t_start.elapsed().as_secs_f64();
     let mut result = solver.solve_batch(ys, lsmr)?;
     result.time_setup += time_setup;
@@ -261,7 +263,8 @@ impl PySolver {
             DesignSource::Categories(categories) => {
                 let cats = categories.as_array();
                 py.detach(move || -> Result<Solver<'static>, BuildError> {
-                    Solver::new(cats.into_design()?.into_owned(), weights_vec, precond)
+                    let design = cats.into_design()?.into_owned();
+                    Solver::new(&design, weights_vec, precond)
                 })
             }
             DesignSource::Effects(terms) => {
@@ -269,7 +272,7 @@ impl PySolver {
                     let effects: Vec<_> = terms.iter().map(PyEffect::as_effect).collect();
                     // The solver outlives the terms' buffers, so lower to owned columns first.
                     let design = Design::new(effects)?.into_owned();
-                    Solver::new(design, weights_vec, precond)
+                    Solver::new(&design, weights_vec, precond)
                 })
             }
         }

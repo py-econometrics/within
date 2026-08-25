@@ -77,9 +77,9 @@ proptest! {
 
     /// `solve()` and `Solver::new().solve(, &params)` must produce bit-identical
     /// results given the same design and RHS: the wrappers differ only in
-    /// timing accounting. Both ingest the raw view into a frame design,
-    /// so they share the same locality sort (or its absence) and run in
-    /// identical internal row order on any input.
+    /// timing accounting. Both build the design from the same raw view, so they
+    /// share the same locality sort (or its absence) and run in identical
+    /// internal row order on any input.
     #[test]
     fn prop_solve_vs_solver_identical((cats, y) in random_fe_problem_strategy()) {
         let params = LsmrOptions {
@@ -92,7 +92,8 @@ proptest! {
         let result_a = solve(cats.view(), &y, None, &params, &precond).unwrap();
 
         // Path B: Solver::new() — identical to solve() but without timing wrapper
-        let solver_b = Solver::new(cats.view(), None, &precond).unwrap();
+        let design = within::Design::from_categories(cats.view()).unwrap();
+        let solver_b = Solver::new(&design, None, &precond).unwrap();
         let result_b = solver_b.solve(&y, &params).unwrap();
 
         prop_assert_eq!(

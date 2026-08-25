@@ -226,7 +226,7 @@ mod tests {
     #[test]
     fn test_full_cover_domain_count() {
         let dm = make_test_design();
-        let solver_design = SolverDesign::new(dm);
+        let solver_design = SolverDesign::new(&dm);
         let (domain_pairs, _) =
             build_local_domains(&solver_design, None, &LocalSolverConfig::default())
                 .expect("plain domains build");
@@ -238,7 +238,7 @@ mod tests {
     fn test_partition_of_unity() {
         let dm = make_test_design();
         let n_dofs = dm.n_dofs();
-        let solver_design = SolverDesign::new(dm);
+        let solver_design = SolverDesign::new(&dm);
         let (domain_pairs, _) =
             build_local_domains(&solver_design, None, &LocalSolverConfig::default())
                 .expect("plain domains build");
@@ -271,7 +271,7 @@ mod tests {
         ])
         .expect("valid slope design");
         let n_dofs = design.n_dofs();
-        let solver_design = SolverDesign::new(design);
+        let solver_design = SolverDesign::new(&design);
         let (domain_pairs, _) =
             build_local_domains(&solver_design, None, &LocalSolverConfig::default())
                 .expect("slope domains build");
@@ -303,7 +303,7 @@ mod tests {
     fn test_domains_cover_all_dofs() {
         let dm = make_test_design();
         let n_dofs = dm.n_dofs();
-        let solver_design = SolverDesign::new(dm);
+        let solver_design = SolverDesign::new(&dm);
         let (domain_pairs, _) =
             build_local_domains(&solver_design, None, &LocalSolverConfig::default())
                 .expect("plain domains build");

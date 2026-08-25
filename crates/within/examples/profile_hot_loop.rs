@@ -50,7 +50,7 @@ fn main() {
     };
 
     let t_build = Instant::now();
-    let solver = Solver::new(design, None, &precond).expect("solver build");
+    let solver = Solver::new(&design, None, &precond).expect("solver build");
     eprintln!(
         "preconditioner build: {:.3}s",
         t_build.elapsed().as_secs_f64()

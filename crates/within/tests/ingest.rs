@@ -54,7 +54,7 @@ fn f_order_view_matches_owned_columns() {
         .map(|f| cats.column(f).iter().copied().collect())
         .collect();
     let design = common::make_design(factor_cols).expect("valid design");
-    let solver = within::Solver::new(design, None, additive_precond()).expect("solver");
+    let solver = within::Solver::new(&design, None, additive_precond()).expect("solver");
     let result_owned = solver.solve(&y, &default_params()).expect("owned solve");
 
     assert!(result_view.converged);
@@ -111,7 +111,7 @@ fn column_reversed_view_ingests_in_logical_order() {
     // Oracle: the same columns handed over owned, in swapped order.
     let design =
         common::make_design(vec![vec![1, 0, 1, 0, 2], vec![0, 1, 0, 1, 2]]).expect("valid design");
-    let solver = within::Solver::new(design, None, additive_precond()).expect("solver");
+    let solver = within::Solver::new(&design, None, additive_precond()).expect("solver");
     let result_owned = solver.solve(&y, &default_params()).expect("owned solve");
 
     assert_eq!(result_rev.x, result_owned.x, "must be bit-identical");

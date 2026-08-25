@@ -96,7 +96,7 @@ fn run_lsmr_one_level(design: &Design<'_>, y: &[f64], ac2: bool) {
         local_solver: cfg,
         reduction: ReductionStrategy::Auto,
     };
-    let solver = Solver::new(design.clone(), None, &precond).expect("solver build");
+    let solver = Solver::new(design, None, &precond).expect("solver build");
     let _ = solver.solve(y, &params).expect("solve");
 }
 

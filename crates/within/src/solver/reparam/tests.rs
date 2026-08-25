@@ -39,7 +39,7 @@ fn build_whitens_each_slope_bearing_term() {
         })
         .collect();
     let moments = TermMoments::build(&design, None).unwrap();
-    let mut solver_design = SolverDesign::new(design);
+    let mut solver_design = SolverDesign::new(&design);
     let rp = SlopeReparam::build(&mut solver_design, &moments).unwrap();
     assert!(rp.unidentified.is_empty());
     for (column, expected) in raw_loadings {
@@ -93,7 +93,7 @@ fn unidentified_directions_ascend_across_terms() {
     ];
     let design = Design::new(effects).unwrap();
     let moments = TermMoments::build(&design, None).unwrap();
-    let mut solver_design = SolverDesign::new(design);
+    let mut solver_design = SolverDesign::new(&design);
     let rp = SlopeReparam::build(&mut solver_design, &moments).unwrap();
     assert_eq!(
         rp.unidentified,
@@ -114,7 +114,7 @@ fn unidentified_directions_ascend_across_terms() {
 fn back_transform_leaves_other_terms_untouched() {
     let design = Design::new(three_term_effects()).unwrap();
     let moments = TermMoments::build(&design, None).unwrap();
-    let mut solver_design = SolverDesign::new(design);
+    let mut solver_design = SolverDesign::new(&design);
     let rp = SlopeReparam::build(&mut solver_design, &moments).unwrap();
 
     let design = solver_design.design();

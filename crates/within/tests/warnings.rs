@@ -2,7 +2,7 @@
 //! [`BuildWarning`]s, not just [`Solver::warnings`] (#165).
 
 use within::{
-    solve, solve_batch, BuildWarning, Effect, LocalSolverConfig, PreconditionerConfig,
+    solve, solve_batch, BuildWarning, Design, Effect, LocalSolverConfig, PreconditionerConfig,
     ReductionStrategy, ScalingConfig, ScalingFailure, Solver,
 };
 
@@ -55,7 +55,8 @@ fn free_solve_surfaces_build_warnings() {
     );
 
     // The result field mirrors the solver accessor exactly.
-    let solver = Solver::new(warning_effects(), None, &cfg).expect("solver");
+    let design = Design::new(warning_effects()).expect("design");
+    let solver = Solver::new(&design, None, &cfg).expect("solver");
     assert_eq!(result.warnings.as_slice(), solver.warnings());
 }
 
@@ -74,6 +75,7 @@ fn free_solve_batch_surfaces_build_warnings() {
     );
 
     // The result field mirrors the solver accessor exactly.
-    let solver = Solver::new(warning_effects(), None, &cfg).expect("solver");
+    let design = Design::new(warning_effects()).expect("design");
+    let solver = Solver::new(&design, None, &cfg).expect("solver");
     assert_eq!(result.warnings.as_slice(), solver.warnings());
 }

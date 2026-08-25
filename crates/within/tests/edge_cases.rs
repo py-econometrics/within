@@ -234,7 +234,7 @@ fn test_maxiter_1_partial_result() {
         maxiter: 1,
         ..LsmrOptions::default()
     };
-    let solver = Solver::new(design, None, None).expect("solver build");
+    let solver = Solver::new(&design, None, None).expect("solver build");
     let result = solver.solve(&y, &params).expect("solve with maxiter=1");
 
     // Convergence is not expected (tolerance is unreachable in 1 iteration),
@@ -279,7 +279,7 @@ fn test_large_design_convergence() {
         ..LsmrOptions::default()
     };
     let precond = additive_precond();
-    let solver = Solver::new(design, None, &precond).expect("solver build");
+    let solver = Solver::new(&design, None, &precond).expect("solver build");
     let result = solver.solve(&y, &params).expect("large design solve");
 
     assert!(
@@ -302,7 +302,7 @@ fn test_zero_rhs_zero_solution() {
     let y = vec![0.0f64; design.n_obs()];
 
     let params = LsmrOptions::default();
-    let solver = Solver::new(design, None, None).expect("solver build");
+    let solver = Solver::new(&design, None, None).expect("solver build");
     let result = solver.solve(&y, &params).expect("zero RHS solve");
 
     assert!(result.converged, "zero RHS should trivially converge");
@@ -357,7 +357,7 @@ fn test_repeated_solve_is_deterministic() {
 
     let params = LsmrOptions::default();
     let precond = additive_precond();
-    let solver = Solver::new(design, None, &precond).expect("solver build");
+    let solver = Solver::new(&design, None, &precond).expect("solver build");
 
     let r1 = solver.solve(&y, &params).expect("first solve");
     let r2 = solver.solve(&y, &params).expect("second solve");

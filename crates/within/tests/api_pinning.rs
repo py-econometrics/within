@@ -2,41 +2,53 @@
 //! argument shapes: if any call form below stops compiling, the public surface shifted.
 
 use ndarray::Array2;
-use within::{solve, solve_batch, LsmrOptions, PreconditionerConfig, Solver};
+use within::{solve, solve_batch, Design, LsmrOptions, PreconditionerConfig, Solver};
 
 fn cats() -> Array2<u32> {
     Array2::from_shape_vec((4, 2), vec![0u32, 0, 1, 1, 2, 0, 3, 1]).expect("cats")
 }
 
 #[test]
+fn design_handle_is_reusable_across_solvers() {
+    let categories = cats();
+    let design = Design::from_categories(categories.view()).unwrap();
+
+    let unweighted = Solver::new(&design, None, None).unwrap();
+    let weighted = Solver::new(&design, Some(vec![1.0; design.n_obs()]), None).unwrap();
+
+    assert_eq!(unweighted.n_dofs(), weighted.n_dofs());
+}
+
+#[test]
 fn precond_input_call_shapes_compile() {
     let categories = cats();
+    let design = Design::from_categories(categories.view()).unwrap();
     let cfg = PreconditionerConfig::default();
 
     // Obtain a prebuilt preconditioner through the public path.
-    let setup = Solver::new(categories.view(), None, &cfg).unwrap();
+    let setup = Solver::new(&design, None, &cfg).unwrap();
     let prec = setup
         .preconditioner()
         .expect("default solver has a preconditioner")
         .clone();
 
     // Shape 1: bare `None` — resolves through `From<Option<&PreconditionerConfig>>`.
-    let _ = Solver::new(categories.view(), None, None).expect("None form");
+    let _ = Solver::new(&design, None, None).expect("None form");
 
     // Shape 2: `&PreconditionerConfig` — resolves through `From<&PreconditionerConfig>`.
-    let _ = Solver::new(categories.view(), None, &cfg).expect("&Cfg form");
+    let _ = Solver::new(&design, None, &cfg).expect("&Cfg form");
 
     // Shape 3: `Option<&PreconditionerConfig>` — explicit `Some(&cfg)`.
-    let _ = Solver::new(categories.view(), None, Some(&cfg)).expect("Some(&Cfg) form");
+    let _ = Solver::new(&design, None, Some(&cfg)).expect("Some(&Cfg) form");
 
     // Shape 4: owned `Preconditioner` — resolves through `From<Preconditioner>`.
-    let _ = Solver::new(categories.view(), None, prec.clone()).expect("owned Prec form");
+    let _ = Solver::new(&design, None, prec.clone()).expect("owned Prec form");
 
     // Shape 5: `&Preconditioner` — resolves through `From<&Preconditioner>` (cheap clone).
-    let _ = Solver::new(categories.view(), None, &prec).expect("&Prec form");
+    let _ = Solver::new(&design, None, &prec).expect("&Prec form");
 
     // Shape 6: owned `Preconditioner` again, consumed last so `prec` is moved here.
-    let _ = Solver::new(categories.view(), None, prec).expect("owned Prec form (move)");
+    let _ = Solver::new(&design, None, prec).expect("owned Prec form (move)");
 }
 
 #[test]
@@ -44,24 +56,26 @@ fn precond_input_owned_config_form() {
     // Owned `PreconditionerConfig` resolves through `From<PreconditionerConfig>`.
     // Kept separate so the main shape sweep stays focused on the &/None variants.
     let categories = cats();
+    let design = Design::from_categories(categories.view()).unwrap();
     let cfg = PreconditionerConfig::default();
-    let _ = Solver::new(categories.view(), None, cfg).expect("owned Cfg form");
+    let _ = Solver::new(&design, None, cfg).expect("owned Cfg form");
 }
 
 #[test]
 fn solve_free_function_precond_call_shapes_compile() {
     let categories = cats();
+    let design = Design::from_categories(categories.view()).unwrap();
     let y = vec![0.0; 4];
     let lsmr = LsmrOptions::default();
     let cfg = PreconditionerConfig::default();
 
-    let setup = Solver::new(categories.view(), None, &cfg).unwrap();
+    let setup = Solver::new(&design, None, &cfg).unwrap();
     let prec = setup
         .preconditioner()
         .expect("default solver has a preconditioner")
         .clone();
 
-    let _ = solve(categories.view(), &y, None, &lsmr, None).expect("None form");
+    let _ = solve(&design, &y, None, &lsmr, None).expect("borrowed Design form");
     let _ = solve(categories.view(), &y, None, &lsmr, &cfg).expect("&Cfg form");
     let _ = solve(categories.view(), &y, None, &lsmr, Some(&cfg)).expect("Some(&Cfg) form");
     let _ = solve(categories.view(), &y, None, &lsmr, prec.clone()).expect("owned Prec form");
@@ -83,15 +97,16 @@ fn solve_free_function_precond_call_shapes_compile() {
 #[test]
 fn solver_new_weights_call_shapes_compile() {
     let categories = cats();
+    let design = Design::from_categories(categories.view()).unwrap();
     let w_vec: Vec<f64> = vec![1.0; 4];
 
     // Bare `None` — infers, because `weights` is the concrete `Option<Vec<f64>>`
     // (no turbofish needed). The persistent solver owns its weights; borrow-based
     // one-shot weighting lives on the free `solve` function instead.
-    let _ = Solver::new(categories.view(), None, None).expect("None weights");
+    let _ = Solver::new(&design, None, None).expect("None weights");
 
     // Owned `Vec<f64>` weights — moved into the solver.
-    let _ = Solver::new(categories.view(), Some(w_vec), None).expect("Vec<f64> weights");
+    let _ = Solver::new(&design, Some(w_vec), None).expect("Vec<f64> weights");
 }
 
 #[test]
@@ -104,6 +119,7 @@ fn options_are_optional_and_tuned_additive_builds_from_crate_root() {
     };
 
     let categories = cats();
+    let design = Design::from_categories(categories.view()).unwrap();
     let y = vec![0.0; 4];
     let opts = LsmrOptions::default();
 
@@ -115,7 +131,7 @@ fn options_are_optional_and_tuned_additive_builds_from_crate_root() {
         },
         reduction: ReductionStrategy::Auto,
     };
-    let solver = Solver::new(categories.view(), None, tuned).expect("tuned Additive builds");
+    let solver = Solver::new(&design, None, tuned).expect("tuned Additive builds");
 
     // `None` accepts the default options; `&opts` still works.
     let _ = solver.solve(&y, None).expect("solve, default options");

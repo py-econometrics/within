@@ -40,7 +40,7 @@ fn main() {
     let mut best = u128::MAX;
     for _ in 0..RUNS {
         let start = Instant::now();
-        let solver = Solver::new(design.clone(), None, &precond).expect("solver build");
+        let solver = Solver::new(&design, None, &precond).expect("solver build");
         let result = solver.solve(&y, &params).expect("solve");
         best = best.min(start.elapsed().as_nanos());
         black_box(&result);
