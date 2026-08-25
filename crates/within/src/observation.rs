@@ -59,6 +59,10 @@ impl<'a> ObservationFrame<'a> {
         self.categorical.len()
     }
 
+    pub(crate) fn n_loading_columns(&self) -> usize {
+        self.continuous.len()
+    }
+
     /// Level codes of factor `factor`.
     pub fn level_column(&self, factor: usize) -> &[u32] {
         &self.categorical[factor]
@@ -67,12 +71,6 @@ impl<'a> ObservationFrame<'a> {
     /// Loadings of continuous column `k`.
     pub fn loading_column(&self, k: usize) -> &[f64] {
         &self.continuous[k]
-    }
-
-    /// Replace loading column `i` with an owned column of matching row count.
-    pub(crate) fn set_loading_column(&mut self, i: usize, column: Vec<f64>) {
-        debug_assert_eq!(column.len(), self.n_obs);
-        self.continuous[i] = Cow::Owned(column);
     }
 
     /// Convert every column to owned, dropping ties to caller buffers.

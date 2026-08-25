@@ -7,7 +7,7 @@ use super::{build_compact_mapping, CrossTab};
 use crate::channel::{Channel, ChannelPair};
 use crate::csr_block::CsrBlock;
 use crate::domain::find_all_active_levels;
-use crate::domain::{Design, Effect};
+use crate::domain::{Design, Effect, SolverDesign};
 use crate::observation::ObservationFrame;
 
 impl CrossTab {
@@ -46,18 +46,28 @@ fn test_cross_tab_sparse_accumulation_path() {
     // Sparse path (large level counts)
     let design_sparse = design_of(vec![fa.clone(), fb.clone()]);
     let active_sparse = find_all_active_levels(&design_sparse);
-    let (ct_sparse, diag_sparse, _) =
-        CrossTab::build_for_pair_with_active(&design_sparse, None, INTERCEPT_PAIR, &active_sparse)
-            .expect("sparse cross tab should build");
+    let sparse_solver_design = SolverDesign::new(design_sparse);
+    let (ct_sparse, diag_sparse, _) = CrossTab::build_for_pair_with_active(
+        &sparse_solver_design,
+        None,
+        INTERCEPT_PAIR,
+        &active_sparse,
+    )
+    .expect("sparse cross tab should build");
 
     // Dense reference: collapse levels so n_rows * n_cols <= 5M.
     let fa_small: Vec<u32> = fa.iter().map(|&x| x % 100).collect();
     let fb_small: Vec<u32> = fb.iter().map(|&x| x % 100).collect();
     let design_dense = design_of(vec![fa_small.clone(), fb_small.clone()]);
     let active_dense = find_all_active_levels(&design_dense);
-    let (_ct_dense, diag_dense, _) =
-        CrossTab::build_for_pair_with_active(&design_dense, None, INTERCEPT_PAIR, &active_dense)
-            .expect("dense cross tab should build");
+    let dense_solver_design = SolverDesign::new(design_dense);
+    let (_ct_dense, diag_dense, _) = CrossTab::build_for_pair_with_active(
+        &dense_solver_design,
+        None,
+        INTERCEPT_PAIR,
+        &active_dense,
+    )
+    .expect("dense cross tab should build");
 
     // Each observation appears exactly once in its row/col bucket.
     assert_eq!(
@@ -122,8 +132,9 @@ fn test_extract_component_two_components() {
     let fb = vec![0u32, 1, 0, 1, 2, 3, 2, 3];
     let design = design_of(vec![fa, fb]);
     let all_active = find_all_active_levels(&design);
+    let solver_design = SolverDesign::new(design);
     let (ct, parent_diag, _) =
-        CrossTab::build_for_pair_with_active(&design, None, INTERCEPT_PAIR, &all_active)
+        CrossTab::build_for_pair_with_active(&solver_design, None, INTERCEPT_PAIR, &all_active)
             .expect("cross tab should build");
 
     let components = ct.bipartite_connected_components();
@@ -234,8 +245,14 @@ proptest! {
 
         let design = design_of(vec![fa, fb]);
         let all_active = find_all_active_levels(&design);
-        let (ct, _, _) = CrossTab::build_for_pair_with_active(&design, None, INTERCEPT_PAIR, &all_active)
-            .expect("cross tab should build");
+        let solver_design = SolverDesign::new(design);
+        let (ct, _, _) = CrossTab::build_for_pair_with_active(
+            &solver_design,
+            None,
+            INTERCEPT_PAIR,
+            &all_active,
+        )
+        .expect("cross tab should build");
 
         let components = ct.bipartite_connected_components();
 
