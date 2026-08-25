@@ -4,7 +4,7 @@ use rayon::prelude::*;
 
 use super::level_moments::{BasisScratch, LevelMoments};
 use super::Design;
-use crate::channel::{Channel, CoefficientAddress};
+use crate::channel::{Channel, CoefficientPosition};
 use crate::linalg::dot;
 
 #[cfg(test)]
@@ -18,7 +18,7 @@ pub(crate) struct SlopeReparam {
     /// The frame's loading columns in the solve basis, indexed like the frame's.
     loadings: Vec<Vec<f64>>,
     /// Directions the data cannot identify, ascending in `(term, level, column)`.
-    pub(crate) unidentified: Vec<CoefficientAddress>,
+    pub(crate) unidentified: Vec<CoefficientPosition>,
 }
 
 /// One slope-bearing term's whitening state.
@@ -87,10 +87,10 @@ impl TermReparam {
         term: usize,
         moments: &LevelMoments,
         loadings: &mut [Vec<f64>],
-        unidentified: &mut Vec<CoefficientAddress>,
+        unidentified: &mut Vec<CoefficientPosition>,
     ) -> Self {
         let meta = &design.terms[term];
-        let (offset, n_levels) = (meta.offset, meta.n_levels);
+        let (offset, n_levels) = (meta.offset, meta.n_levels());
         let intercept = meta.has_intercept();
         let z_cols: Vec<usize> = meta.covariates().map(|c| c as usize).collect();
         let v = z_cols.len();
@@ -107,14 +107,14 @@ impl TermReparam {
             moments.basis(level, &mut scratch);
             let (w, kept) = (&scratch.basis, &scratch.kept);
             if intercept && moments.w_sum(level) == 0.0 {
-                unidentified.push(CoefficientAddress {
+                unidentified.push(CoefficientPosition {
                     channel: Channel { term, column: 0 },
                     level,
                 });
             }
             for (j, &kept_j) in kept.iter().enumerate() {
                 if !kept_j {
-                    unidentified.push(CoefficientAddress {
+                    unidentified.push(CoefficientPosition {
                         channel: Channel {
                             term,
                             column: j + intercept as usize,

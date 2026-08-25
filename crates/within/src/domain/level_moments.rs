@@ -37,9 +37,9 @@ impl LevelMoments {
         let mut moments = Self {
             v,
             intercept: meta.has_intercept(),
-            w_sum: vec![0.0; meta.n_levels],
-            mean: vec![0.0; meta.n_levels * v],
-            comoment: vec![0.0; meta.n_levels * tri_len(v)],
+            w_sum: vec![0.0; meta.n_levels()],
+            mean: vec![0.0; meta.n_levels() * v],
+            comoment: vec![0.0; meta.n_levels() * tri_len(v)],
         };
         let mut z_row = vec![0.0; v];
         let mut delta = vec![0.0; v];

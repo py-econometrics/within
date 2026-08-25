@@ -9,7 +9,7 @@ use std::sync::Arc;
 /// in `tests/slopes_routing.rs`. A positive slope-only term is not centered by
 /// whitening, so the signed pair stays all-positive — balanced — while generic
 /// `z` keeps it strictly inside the PSD cone: genuine surplus, grounded.
-fn at(term: usize, level: usize, column: usize) -> CoefficientAddress {
+fn at(term: usize, level: u32, column: usize) -> CoefficientAddress {
     CoefficientAddress {
         channel: Channel { term, column },
         level,

@@ -217,7 +217,7 @@ let r2 = solver.solve(&another_y, &LsmrOptions::default())?;  // reuses precondi
 | `SchurMode` | `Approximate(ApproxSchurConfig)` \| `Exact` |
 | `Preconditioner` | Opaque built handle — reuse via `Solver::new(.., precond)` (owned or `&`) |
 | `Effect` | `Effect::new(levels: &[u32], intercept: bool, slopes: impl IntoIterator<Item = &[f64]>) -> Result<Self, BuildError>` |
-| `CoefficientAddress` | `{ channel: Channel { term, column }, level: usize }` |
+| `CoefficientAddress` | `{ channel: Channel { term, column }, level: u32 }` |
 | `CoefficientLayout` | `index(CoefficientAddress) -> Option<usize>`, `address(usize) -> Option<CoefficientAddress>`, `n_dofs()`, `n_terms()`, `n_levels(term)`, `n_columns(term)` |
 
 ### Varying slopes

@@ -90,7 +90,7 @@ class UnidentifiedDirection:
 
     Attributes:
         term: Index into the design's term list.
-        level: Level index within the term (``0..n_levels``).
+        level: Caller-visible factor label.
         column: Column within the term's per-level block — intercept first
             (when present), then slopes in declaration order.
     """
@@ -122,12 +122,12 @@ class SolveResult:
     """Result of a single fixed-effects solve.
 
     Attributes:
-        x: Fixed-effect coefficients, shape ``(n_dofs,)``. Term-major:
-            coefficient column ``c`` of level ``level`` sits at
-            ``term_offset + c * n_levels + level``, columns ordered
-            ``[intercept?, slopes...]`` (for plain factors: all levels of
-            factor 0 first, then factor 1, etc.). Slots for unidentified
-            directions hold the minimal-norm value ``0``, never NaN.
+        x: Fixed-effect coefficients, shape ``(n_dofs,)``. Term-major by
+            compact level position ``p``: coefficient column ``c`` sits at
+            ``term_offset + c * n_levels + p``, with columns ordered
+            ``[intercept?, slopes...]``. Use ``layout`` to translate caller
+            labels to these slots. Slots for unidentified directions hold the
+            minimal-norm value ``0``, never NaN.
         unidentified: Per-level directions the data cannot identify, as
             :class:`UnidentifiedDirection` records.
         layout: Address <-> flat-``x``-index translation for the coefficients.
