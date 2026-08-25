@@ -246,6 +246,10 @@ pub(super) struct Certificate {
     pub(super) normr: f64,
     /// `‖Âᵀ(rhs − A x)‖` in the stream's metric (`√(zᵀM⁻¹z)` when preconditioned).
     pub(super) normar: f64,
+    /// The same residual in the plain metric, which a singular `M⁻¹` cannot hide a component in,
+    /// and its reference `‖Aᵀ rhs‖`.
+    pub(super) normar_raw: f64,
+    pub(super) normar_raw0: f64,
 }
 
 /// Stream feeding LSMR `(α, β)` pairs and the matching normalized `v_k`.
@@ -300,9 +304,12 @@ impl<A: Operator + ?Sized> Bidiagonalization for GolubKahan<'_, A> {
 
     fn certify(&mut self, x: &[f64], rhs: &[f64]) -> Result<Certificate, SolveError> {
         let normr = true_residual(self.operator, x, rhs, &mut self.bufs.av, &mut self.bufs.atu)?;
+        let normar = super::vec_norm(&self.bufs.atu);
         Ok(Certificate {
             normr,
-            normar: super::vec_norm(&self.bufs.atu),
+            normar,
+            normar_raw: normar,
+            normar_raw0: self.normar_raw0,
         })
     }
 }
@@ -344,11 +351,15 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
 
     fn certify(&mut self, x: &[f64], rhs: &[f64]) -> Result<Certificate, SolveError> {
         let normr = true_residual(self.operator, x, rhs, &mut self.bufs.av, &mut self.bufs.atu)?;
+        // Read before `M⁻¹`, whose null space is exactly what the metric norm cannot see.
+        let normar_raw = super::vec_norm(&self.bufs.atu);
         self.preconditioner
             .apply(&self.bufs.atu, &mut self.bufs.v)?;
         Ok(Certificate {
             normr,
             normar: alpha_from_vp(&self.bufs.v, &self.bufs.atu)?,
+            normar_raw,
+            normar_raw0: self.normar_raw0,
         })
     }
 }
@@ -385,6 +396,7 @@ pub(super) struct GolubKahan<'a, A: Operator + ?Sized> {
     bufs: GolubKahanBuffers,
     /// Last `α` emitted; needed by the next step's u-update.
     alpha: f64,
+    normar_raw0: f64,
 }
 
 impl<'a, A: Operator + ?Sized> GolubKahan<'a, A> {
@@ -422,6 +434,7 @@ impl<'a, A: Operator + ?Sized> GolubKahan<'a, A> {
                 operator,
                 bufs,
                 alpha,
+                normar_raw0: beta * alpha,
             },
             BidiagStep { alpha, beta },
         ))
@@ -466,6 +479,7 @@ pub(super) struct ModifiedGolubKahan<'a, A: Operator + ?Sized, M: Operator + ?Si
     alpha: f64,
     /// `1/β_k`; cancels the unnormalization of `u` in the next step.
     beta_prev_inv: f64,
+    normar_raw0: f64,
 }
 
 impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M> {
@@ -490,6 +504,7 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M
         }
 
         operator.apply_adjoint(&bufs.u, &mut bufs.p_tilde)?;
+        let normar_raw0 = beta * super::vec_norm(&bufs.p_tilde);
 
         preconditioner.apply(&bufs.p_tilde, &mut bufs.v)?;
 
@@ -511,6 +526,7 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M
                 bufs,
                 alpha,
                 beta_prev_inv: 1.0, // u was normalized by init
+                normar_raw0,
             },
             BidiagStep { alpha, beta },
         ))

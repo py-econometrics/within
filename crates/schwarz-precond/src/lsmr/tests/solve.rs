@@ -3,6 +3,7 @@
 use super::super::*;
 use crate::lsmr::fixtures::*;
 use crate::{Operator, SolveError};
+use rstest::rstest;
 
 #[test]
 fn vec_norm_is_overflow_safe_and_propagates_nan() {
@@ -195,29 +196,50 @@ fn test_mlsmr_maxiter_exhaustion() {
     assert_eq!(result.stop_reason, LsmrStopReason::MaxIterations);
 }
 
-/// `lsmr` (GolubKahan path) and `mlsmr` with `M = I`
-/// (ModifiedGolubKahan with the identity) are mathematically the same
-/// algorithm.
-/// They should produce numerically equivalent solutions and iteration
-/// counts; this guards against future drift between the two
-/// bidiagonalization implementations.
-#[test]
-fn test_mlsmr_none_matches_identity_precond() {
-    let b = vec![1.0, 2.0, 3.0, 3.0];
-    let id = IdentityOp { n: 3 };
+/// `lsmr` (GolubKahan path) and `mlsmr` with `M = I` (ModifiedGolubKahan with
+/// the identity) are the same algorithm and must not drift apart. The windowed
+/// case also covers the M-weighted MGS path, which dots against `p̃ = M v` and
+/// scales by `1/α`; with `M = I` that must reduce to the Euclidean MGS the
+/// unpreconditioned path uses, guarding `WindowRing<2>::push` against drift.
+#[rstest]
+#[case::unwindowed(Box::new(OverdeterminedOp), vec![1.0, 2.0, 3.0, 3.0], 100, None, 1e-10)]
+// 30x12 Vandermonde, cond(A) ~ 1e10, stresses the windowed reorth path; its agreement bound
+// is set by what that path converges to (its normal-equation residual assertion is 1e-6).
+#[case::windowed(
+    Box::new(DenseOp::vandermonde(30, 12)),
+    (0..30).map(|i| (1.0 + i as f64 / 29.0).ln()).collect(),
+    50,
+    Some(10),
+    1e-7
+)]
+fn mlsmr_with_identity_matches_unpreconditioned_lsmr(
+    #[case] op: Box<dyn Operator>,
+    #[case] b: Vec<f64>,
+    #[case] maxiter: usize,
+    #[case] local: Option<usize>,
+    #[case] agreement: f64,
+) {
+    let id = IdentityOp { n: op.ncols() };
 
-    let none_result = lsmr(&OverdeterminedOp, &b, 1e-12, 100, None).expect("lsmr solve");
+    // Tight tol with headroom in maxiter drives both paths to the same minimum, so the
+    // comparison is not governed by rounding noise in the convergence test.
+    let none_result = lsmr(op.as_ref(), &b, 1e-12, maxiter, local).expect("lsmr solve");
     let id_result = mlsmr(
-        &OverdeterminedOp,
+        op.as_ref(),
         &b,
         &id,
         1e-12,
-        100,
-        MlsmrOptions::default(),
+        maxiter,
+        MlsmrOptions {
+            local_size: local,
+            ..Default::default()
+        },
     )
     .expect("preconditioned Identity solve");
 
     assert!(none_result.converged && id_result.converged);
+    // The two paths do the same algebra in a different order, so rounding can shift the
+    // convergence test by one step; the solve must still land on the same answer.
     assert!(
         (none_result.iterations as isize - id_result.iterations as isize).abs() <= 1,
         "iteration counts disagree: {} vs {}",
@@ -233,76 +255,12 @@ fn test_mlsmr_none_matches_identity_precond() {
         .sum::<f64>()
         .sqrt();
     assert!(
-        diff < 1e-10,
+        diff < agreement,
         "GolubKahan vs ModifiedGolubKahan-with-identity solutions disagree: {diff}"
     );
     assert!(
-        (none_result.residual_norm - id_result.residual_norm).abs() < 1e-10,
+        (none_result.residual_norm - id_result.residual_norm).abs() < agreement,
         "residual norm estimates disagree: {} vs {}",
-        none_result.residual_norm,
-        id_result.residual_norm
-    );
-}
-
-/// Same equivalence guarantee as above but with windowed reorthogonalization
-/// active. The M-weighted MGS path uses dot products against `p̃ = M v` and
-/// scales `p̃` by `1/α`; with `M = I` this must reduce to the Euclidean
-/// MGS used by the unpreconditioned path. Guards the windowed scaling
-/// logic in `WindowRing<2>::push` against drift.
-#[test]
-fn test_mlsmr_none_matches_identity_precond_windowed() {
-    // 30×12 Vandermonde, cond(A) ≈ 1e10 — chosen to stress the windowed reorth
-    // path (see test_mlsmr_local_reorth_unpreconditioned for rationale).
-    let op = DenseOp::vandermonde(30, 12);
-    let b: Vec<f64> = (0..op.rows)
-        .map(|i| {
-            let x = i as f64 / (op.rows - 1) as f64;
-            (1.0 + x).ln()
-        })
-        .collect();
-    let id = IdentityOp { n: op.cols };
-    let local = Some(10);
-
-    // Tight tolerance with headroom in maxiter: drives both paths to the
-    // same minimum so the comparison isn't governed by rounding noise in
-    // the convergence test.
-    let none_result = lsmr(&op, &b, 1e-12, 50, local).expect("lsmr windowed solve");
-    let opts = MlsmrOptions {
-        local_size: local,
-        ..Default::default()
-    };
-    let id_result =
-        mlsmr(&op, &b, &id, 1e-12, 50, opts).expect("preconditioned Identity windowed solve");
-
-    assert!(none_result.converged && id_result.converged);
-    // The two paths do the same algebra differently (par_dot on `v` vs on
-    // `p̃ = M v`), so rounding can shift the convergence test by one step.
-    // The solve must still land on the same answer.
-    assert!(
-        (none_result.iterations as isize - id_result.iterations as isize).abs() <= 1,
-        "iteration counts disagree: {} vs {}",
-        none_result.iterations,
-        id_result.iterations,
-    );
-
-    // Agreement bound is governed by what each path is converging to —
-    // the windowed Vandermonde test asserts a normal-equation residual of
-    // 1e-6, so 1e-7 here cleanly catches scaling drift in the M-weighted
-    // reorth without flagging algebra-order rounding.
-    let diff: f64 = none_result
-        .x
-        .iter()
-        .zip(id_result.x.iter())
-        .map(|(a, b)| (a - b).powi(2))
-        .sum::<f64>()
-        .sqrt();
-    assert!(
-        diff < 1e-7,
-        "windowed GolubKahan vs ModifiedGolubKahan-with-identity disagree: {diff}"
-    );
-    assert!(
-        (none_result.residual_norm - id_result.residual_norm).abs() < 1e-7,
-        "windowed residual norm estimates disagree: {} vs {}",
         none_result.residual_norm,
         id_result.residual_norm
     );

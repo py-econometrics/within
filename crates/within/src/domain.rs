@@ -167,6 +167,11 @@ impl TermMeta {
     pub fn column_base(&self, column: usize) -> usize {
         self.offset + column * self.n_levels()
     }
+
+    /// The constant's coefficient column, if the term carries one.
+    pub fn intercept_column(&self) -> Option<usize> {
+        self.columns.iter().position(|c| c.covariate().is_none())
+    }
 }
 
 /// Stable argsort of observations by a level column, ascending.

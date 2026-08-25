@@ -21,7 +21,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 ### Added
 
 - Python `Preconditioner.build_duration_seconds` and Rust `Preconditioner::build_duration()` expose the original preconditioner build duration, preserved across serialization and reuse.
-- `BuildWarning::CollinearSlopeCovariate` reports a slope covariate that is (nearly) a per-level combination of another term's columns — a cross-term near-null direction that per-term whitening cannot see and that can inflate iteration counts by orders of magnitude (#281).
+- `BuildWarning::CollinearSlopeCovariate` reports a slope covariate that is (nearly) a per-level combination of another term's columns — a cross-term near-null direction that per-term whitening cannot see (#281). It carries the slope channel, the reproducing term, the covariate's relative residual outside that term's span, and an `AliasVerdict` saying whether the direction was constrained out of the solve space or kept.
+- A cross-term aliasing direction is constrained out of the solve space when it certifies as null against the design — `‖A n‖ ≤ 1e-11 · ‖ |A| |n| ‖` on each row of the orthonormal basis — so no local block is left inverting a roundoff-scale null. A direction that fails the certificate stays in the solve space and is only warned about (#297).
 - `schwarz_precond::EscalationPolicy` builds a per-run `EscalationHandler` that ends a solve with `LsmrStopReason::Escalated` and an iterate that warm-starts the next preconditioner; `Staleness` implements it from the trailing contraction window.
 - `schwarz_precond::MlsmrOptions::warm_start` carries an initial iterate through a change of preconditioner.
 - `LocalSolverConfig::ridge` (Python `LocalSolverConfig(ridge=...)`) floors the local spectrum of grounded slope-pair components at a fraction of their largest diagonal; `0` disables it (#290).
@@ -31,6 +32,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - A design carrying varying slopes on two distinct factors could fail preconditioner construction with `matrix is not symmetric`, when rounding left the two triangles of the exact Schur complement unequal (#229).
 - A `design` that is neither a 2-D `uint32` array nor a list of `Effect` raised `ValueError` where the documented type is `TypeError`, and `AdditiveSchwarz` accepted a wrong-type `local_solver` at construction, deferring the `TypeError` to solve time (#248).
 - A slope covariate collinear with another term could make LSMR report convergence on a solve that had not demeaned the response; tolerance stops are now audited against the true residual and a failed check reports `LsmrStopReason::FalseConvergence` with `converged = false` (#290).
+- That audit measured `Aᵀr` in the preconditioner's own metric, so a component the preconditioner annihilates stayed invisible to it and a solve missing that direction still reported `converged = true`. The audit now also requires the plain `‖Aᵀr‖` to have dropped against its initial value (#297).
 
 ### Removed
 
