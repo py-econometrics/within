@@ -23,7 +23,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Python `Preconditioner.build_duration_seconds` and Rust `Preconditioner::build_duration()` expose the original preconditioner build duration, preserved across serialization and reuse.
 - `BuildWarning::CollinearSlopeCovariate` reports a slope covariate that is (nearly) a per-level combination of another term's columns — a cross-term near-null direction that per-term whitening cannot see and that can inflate iteration counts by orders of magnitude (#281).
-- `PreconditionerConfig::Adaptive` starts on the diagonal and escalates to additive Schwarz on a stalled contraction, building the Schwarz factorization only on escalation; `Solver::has_escalated()` reports whether a handoff occurred (#260).
+- `PreconditionerConfig::Adaptive` (Python `PreconditionerConfig.Adaptive(local_solver=..., reduction=..., stall=...)`) starts on the diagonal and escalates to additive Schwarz on a stalled contraction, building the Schwarz factorization only on escalation; `Solver::has_escalated()` / Python `Solver.has_escalated` reports whether a handoff occurred (#260).
+- Python `within.config.Staleness(window=..., threshold=...)` tunes the contraction stall that triggers an `Adaptive` escalation (#260).
 - `schwarz_precond::EscalationPolicy` builds a per-run `EscalationHandler` that ends a solve with `LsmrStopReason::Escalated` and an iterate that warm-starts the next preconditioner; `Staleness` implements it from the trailing contraction window.
 - `schwarz_precond::Staleness` gains `Default` (window 4, threshold 0.7), `window()`/`threshold()` accessors, and serde support validated through `try_new` (#260).
 - `schwarz_precond::MlsmrOptions::warm_start` carries an initial iterate through a change of preconditioner.

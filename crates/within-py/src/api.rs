@@ -292,7 +292,9 @@ impl PySolver {
         let y_cow = coerce_to_slice(&y_arr);
         let params = resolve_lsmr_config(options)?;
 
-        run_solve(py, || self.solver.solve(&y_cow, &params))
+        self.reporting_deferred_warnings(py, || {
+            run_solve(py, || self.solver.solve(&y_cow, &params))
+        })
     }
 
     /// `Y` is `(n_obs, k)` with one response per column.
@@ -320,7 +322,9 @@ impl PySolver {
 
         let params = resolve_lsmr_config(options)?;
 
-        run_batch(py, || self.solver.solve_batch(&col_refs, &params))
+        self.reporting_deferred_warnings(py, || {
+            run_batch(py, || self.solver.solve_batch(&col_refs, &params))
+        })
     }
 
     /// The built preconditioner, or ``None`` if unconfigured; picklable and reusable.
@@ -343,5 +347,29 @@ impl PySolver {
     #[getter]
     fn n_obs(&self) -> usize {
         self.solver.n_obs()
+    }
+
+    /// Whether an ``Adaptive`` solve has handed off to Schwarz; always ``False`` otherwise.
+    #[getter]
+    fn has_escalated(&self) -> bool {
+        self.solver.has_escalated()
+    }
+}
+
+impl PySolver {
+    /// An `Adaptive` solve builds its Schwarz rung mid-flight, so warnings the constructor
+    /// could not have seen surface here — once, on the solve that appends them.
+    fn reporting_deferred_warnings<T>(
+        &self,
+        py: Python<'_>,
+        solve: impl FnOnce() -> PyResult<T>,
+    ) -> PyResult<T> {
+        let before = self.solver.warnings().len();
+        let result = solve();
+        let warnings = self.solver.warnings();
+        if warnings.len() > before {
+            emit_build_warnings(py, &warnings[before..])?;
+        }
+        result
     }
 }
