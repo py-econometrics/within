@@ -313,19 +313,7 @@ impl BatchSolveResult {
     }
 }
 
-/// Persistent solver that owns its preconditioner for reuse across multiple solves.
-///
-/// Build once with [`Solver::new`], then call [`Solver::solve`] or
-/// [`Solver::solve_batch`] repeatedly with different RHS vectors. The expensive
-/// preconditioner factorization happens only at construction time; LSMR tuning
-/// ([`LsmrOptions`]) is supplied per call.
-///
-/// Ownership: each observation column is borrowed or owned independently
-/// (`Cow`); a solver that outlives its inputs — e.g. one returned across the
-/// Python boundary — uses owned columns. Weights are always owned; for a
-/// one-shot weighted solve from a borrowed slice, use the free [`solve`] function.
-pub struct Solver<'a> {
-    design: Design<'a>,
+struct SolverState {
     loading_overrides: LoadingOverrides,
     /// `sqrt(W)` in the design's internal observation order, computed once and
     /// borrowed by the per-RHS [`DesignOperator`]s (raw weights are needed only
@@ -336,56 +324,12 @@ pub struct Solver<'a> {
     warnings: Vec<BuildWarning>,
 }
 
-impl std::fmt::Debug for Solver<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Solver")
-            .field("n_obs", &self.design.n_obs)
-            .field("n_dofs", &self.design.n_dofs)
-            .field("has_weights", &self.sqrt_weights.is_some())
-            .field("has_preconditioner", &self.preconditioner.is_some())
-            .finish()
-    }
-}
-
-/// Per-RHS solve output shared by [`Solver::solve`] and [`Solver::solve_batch`].
-///
-/// The design-level fields (`layout`, `warnings`, `unidentified`) are identical
-/// across RHS, so the batch path attaches them once instead of cloning them per
-/// RHS as it would if each worker returned a full [`SolveResult`].
-struct RhsSolution {
-    x: Vec<f64>,
-    demeaned: Vec<f64>,
-    converged: bool,
-    iterations: usize,
-    residual: f64,
-    time_setup: f64,
-    time_solve: f64,
-}
-
-impl<'a> Solver<'a> {
-    /// Construct a solver.
-    ///
-    /// `design` accepts raw categories (`ArrayView2<u32>`) or a pre-built
-    /// [`Design`]. `preconditioner` accepts:
-    /// - `None` — build the library default Schwarz preconditioner
-    /// - `&PreconditionerConfig` / `Some(&PreconditionerConfig)` — build from a tuned config
-    /// - `PreconditionerConfig::Off` — solve unpreconditioned
-    /// - `PreconditionerConfig::Diagonal` — use diagonal/Jacobi preconditioning
-    /// - [`Preconditioner`] or `&Preconditioner` — reuse a previously built one
-    ///
-    /// `weights` is `None` for unweighted, or an owned `Vec<f64>` that the
-    /// solver takes ownership of (it re-reads the weights on every solve). To
-    /// solve once from a borrowed slice, use the free [`solve`] function.
-    ///
-    /// LSMR tuning ([`LsmrOptions`]) is supplied per call to [`Solver::solve`] /
-    /// [`Solver::solve_batch`], not at construction; preconditioner factorization
-    /// state is the only expensive thing built here.
-    pub fn new(
-        design: impl IntoDesign<'a>,
+impl SolverState {
+    fn new(
+        design: &Design,
         weights: Option<Vec<f64>>,
         preconditioner: impl Into<PreconditionerInput>,
     ) -> Result<Self, BuildError> {
-        let design = design.into_design()?;
         design.validate_weights(weights.as_deref())?;
 
         // The match keeps the unpermuted arm a plain move rather than a borrow-and-copy.
@@ -395,19 +339,19 @@ impl<'a> Solver<'a> {
         };
 
         // Both readers below need the raw loadings, so the moments precede whitening.
-        let moments = TermMoments::build(&design, weights.as_deref());
+        let moments = TermMoments::build(design, weights.as_deref());
         let mut warnings = moments
             .as_ref()
-            .map(|m| detect_collinear_slopes(&design, weights.as_deref(), m))
+            .map(|m| detect_collinear_slopes(design, weights.as_deref(), m))
             .unwrap_or_default();
 
-        let mut loading_overrides = LoadingOverrides::new(&design);
+        let mut loading_overrides = LoadingOverrides::new(design);
         // Reparametrize the slope columns (if any) before the preconditioner reads the frame.
         let reparam = moments
             .as_ref()
-            .and_then(|m| SlopeReparam::build(&design, &mut loading_overrides, m));
+            .and_then(|m| SlopeReparam::build(design, &mut loading_overrides, m));
 
-        let solver_design = SolverDesign::with_loading_overrides(&design, &loading_overrides);
+        let solver_design = SolverDesign::with_loading_overrides(design, &loading_overrides);
 
         let (preconditioner, build_warnings) = match preconditioner.into() {
             PreconditionerInput::Default => {
@@ -437,9 +381,7 @@ impl<'a> Solver<'a> {
             }
             w
         });
-
         Ok(Self {
-            design,
             loading_overrides,
             sqrt_weights,
             preconditioner,
@@ -448,18 +390,16 @@ impl<'a> Solver<'a> {
         })
     }
 
-    /// Non-fatal events from design screening and the preconditioner build; a reused
-    /// pre-built preconditioner contributes none (its own were reported when built).
-    pub fn warnings(&self) -> &[BuildWarning] {
-        &self.warnings
-    }
-
     /// Shared per-RHS solve: validate `y`, run (m)lsmr, demean, and
     /// back-transform slopes. Excludes the design-level `layout` / `warnings` /
     /// `unidentified`, which the public entry points attach once (see
     /// [`RhsSolution`]).
-    fn solve_rhs(&self, y: &[f64], lsmr: &LsmrOptions) -> Result<RhsSolution, SolveError> {
-        let design = &self.design;
+    fn solve_rhs(
+        &self,
+        design: &Design,
+        y: &[f64],
+        lsmr: &LsmrOptions,
+    ) -> Result<RhsSolution, SolveError> {
         let solver_design = SolverDesign::with_loading_overrides(design, &self.loading_overrides);
         // `weighted_rhs` zips y with sqrt-weights, silently truncating when `y.len() > n_rows`.
         if y.len() != design.n_obs {
@@ -532,8 +472,7 @@ impl<'a> Solver<'a> {
 
     /// Per-level directions the data cannot identify, shared across all RHS:
     /// identification depends only on the design and weights, never on `y`.
-    fn unidentified(&self) -> Vec<CoefficientAddress> {
-        let design = &self.design;
+    fn unidentified(&self, design: &Design) -> Vec<CoefficientAddress> {
         let Some(reparam) = &self.reparam else {
             return Vec::new();
         };
@@ -546,8 +485,9 @@ impl<'a> Solver<'a> {
     }
 
     /// Solve for a single RHS vector with the given LSMR tuning.
-    pub fn solve<'o>(
+    fn solve<'o>(
         &self,
+        design: &Design,
         y: &[f64],
         lsmr: impl Into<Option<&'o LsmrOptions>>,
     ) -> Result<SolveResult, SolveError> {
@@ -555,13 +495,13 @@ impl<'a> Solver<'a> {
         let lsmr = lsmr.into().unwrap_or(&default);
 
         let t_start = Instant::now();
-        let solution = self.solve_rhs(y, lsmr)?;
+        let solution = self.solve_rhs(design, y, lsmr)?;
 
         Ok(SolveResult {
             x: solution.x,
-            unidentified: self.unidentified(),
+            unidentified: self.unidentified(design),
             warnings: self.warnings.clone(),
-            layout: CoefficientLayout::from_design(&self.design),
+            layout: CoefficientLayout::from_design(design),
             demeaned: solution.demeaned,
             converged: solution.converged,
             iterations: solution.iterations,
@@ -571,10 +511,10 @@ impl<'a> Solver<'a> {
             time_solve: solution.time_solve,
         })
     }
-
     /// Solve for multiple RHS vectors in parallel.
-    pub fn solve_batch<'o>(
+    fn solve_batch<'o>(
         &self,
+        design: &Design,
         ys: &[&[f64]],
         lsmr: impl Into<Option<&'o LsmrOptions>>,
     ) -> Result<BatchSolveResult, SolveError> {
@@ -586,10 +526,9 @@ impl<'a> Solver<'a> {
         // Collecting into `Result` fails fast on the first per-RHS error, not during the fold.
         let solutions: Vec<RhsSolution> = ys
             .par_iter()
-            .map(|y| self.solve_rhs(y, lsmr))
+            .map(|y| self.solve_rhs(design, y, lsmr))
             .collect::<Result<Vec<_>, _>>()?;
 
-        let design = &self.design;
         let mut x = Vec::with_capacity(design.n_dofs * n_rhs);
         let mut demeaned = Vec::with_capacity(design.n_obs * n_rhs);
         let mut converged = Vec::with_capacity(n_rhs);
@@ -608,7 +547,7 @@ impl<'a> Solver<'a> {
 
         Ok(BatchSolveResult {
             x,
-            unidentified: self.unidentified(),
+            unidentified: self.unidentified(design),
             warnings: self.warnings.clone(),
             layout: CoefficientLayout::from_design(design),
             demeaned,
@@ -622,10 +561,105 @@ impl<'a> Solver<'a> {
             n_obs: design.n_obs,
         })
     }
+}
+
+/// Persistent solver that owns its preconditioner for reuse across multiple solves.
+///
+/// Build once with [`Solver::new`], then call [`Solver::solve`] or
+/// [`Solver::solve_batch`] repeatedly with different RHS vectors. The expensive
+/// preconditioner factorization happens only at construction time; LSMR tuning
+/// ([`LsmrOptions`]) is supplied per call.
+///
+/// Ownership: each observation column is borrowed or owned independently
+/// (`Cow`); a solver that outlives its inputs — e.g. one returned across the
+/// Python boundary — uses owned columns. Weights are always owned; for a
+/// one-shot weighted solve from a borrowed slice, use the free [`solve`] function.
+pub struct Solver<'a> {
+    design: Design<'a>,
+    state: SolverState,
+}
+
+impl std::fmt::Debug for Solver<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Solver")
+            .field("n_obs", &self.design.n_obs)
+            .field("n_dofs", &self.design.n_dofs)
+            .field("has_weights", &self.state.sqrt_weights.is_some())
+            .field("has_preconditioner", &self.state.preconditioner.is_some())
+            .finish()
+    }
+}
+
+/// Per-RHS solve output shared by [`Solver::solve`] and [`Solver::solve_batch`].
+///
+/// The design-level fields (`layout`, `warnings`, `unidentified`) are identical
+/// across RHS, so the batch path attaches them once instead of cloning them per
+/// RHS as it would if each worker returned a full [`SolveResult`].
+struct RhsSolution {
+    x: Vec<f64>,
+    demeaned: Vec<f64>,
+    converged: bool,
+    iterations: usize,
+    residual: f64,
+    time_setup: f64,
+    time_solve: f64,
+}
+
+impl<'a> Solver<'a> {
+    /// Construct a solver.
+    ///
+    /// `design` accepts raw categories (`ArrayView2<u32>`) or a pre-built
+    /// [`Design`]. `preconditioner` accepts:
+    /// - `None` — build the library default Schwarz preconditioner
+    /// - `&PreconditionerConfig` / `Some(&PreconditionerConfig)` — build from a tuned config
+    /// - `PreconditionerConfig::Off` — solve unpreconditioned
+    /// - `PreconditionerConfig::Diagonal` — use diagonal/Jacobi preconditioning
+    /// - [`Preconditioner`] or `&Preconditioner` — reuse a previously built one
+    ///
+    /// `weights` is `None` for unweighted, or an owned `Vec<f64>` that the
+    /// solver takes ownership of (it re-reads the weights on every solve). To
+    /// solve once from a borrowed slice, use the free [`solve`] function.
+    ///
+    /// LSMR tuning ([`LsmrOptions`]) is supplied per call to [`Solver::solve`] /
+    /// [`Solver::solve_batch`], not at construction; preconditioner factorization
+    /// state is the only expensive thing built here.
+    pub fn new(
+        design: impl IntoDesign<'a>,
+        weights: Option<Vec<f64>>,
+        preconditioner: impl Into<PreconditionerInput>,
+    ) -> Result<Self, BuildError> {
+        let design = design.into_design()?;
+        let state = SolverState::new(&design, weights, preconditioner)?;
+        Ok(Self { design, state })
+    }
+
+    /// Non-fatal events from design screening and the preconditioner build; a reused
+    /// pre-built preconditioner contributes none (its own were reported when built).
+    pub fn warnings(&self) -> &[BuildWarning] {
+        &self.state.warnings
+    }
+
+    /// Solve for a single RHS vector with the given LSMR tuning.
+    pub fn solve<'o>(
+        &self,
+        y: &[f64],
+        lsmr: impl Into<Option<&'o LsmrOptions>>,
+    ) -> Result<SolveResult, SolveError> {
+        self.state.solve(&self.design, y, lsmr)
+    }
+
+    /// Solve for multiple RHS vectors in parallel.
+    pub fn solve_batch<'o>(
+        &self,
+        ys: &[&[f64]],
+        lsmr: impl Into<Option<&'o LsmrOptions>>,
+    ) -> Result<BatchSolveResult, SolveError> {
+        self.state.solve_batch(&self.design, ys, lsmr)
+    }
 
     /// Access the preconditioner (for serialization or reuse across solvers).
     pub fn preconditioner(&self) -> Option<&Preconditioner> {
-        self.preconditioner.as_ref()
+        self.state.preconditioner.as_ref()
     }
 
     /// Number of DOFs (coefficients).
