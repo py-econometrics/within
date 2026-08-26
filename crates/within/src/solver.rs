@@ -575,8 +575,27 @@ impl SolverState {
 /// Python boundary — uses owned columns. Weights are always owned; for a
 /// one-shot weighted solve from a borrowed slice, use the free [`solve`] function.
 pub struct Solver<'a> {
-    design: Design<'a>,
+    design: SolverDesignStorage<'a>,
     state: SolverState,
+}
+
+// A compatibility layer to support the existing [`Solver::new`] constructor for a solver with
+// an owned Design. This prevents having to update all existing call-sites and keeps
+// the diff in this PR small. Consider removing this and enforce strict borrowing
+enum SolverDesignStorage<'a> {
+    Owned(Design<'a>),
+    Borrowed(&'a Design<'a>),
+}
+
+impl<'a> std::ops::Deref for SolverDesignStorage<'a> {
+    type Target = Design<'a>;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Owned(design) => design,
+            Self::Borrowed(design) => design,
+        }
+    }
 }
 
 impl std::fmt::Debug for Solver<'_> {
@@ -630,7 +649,26 @@ impl<'a> Solver<'a> {
     ) -> Result<Self, BuildError> {
         let design = design.into_design()?;
         let state = SolverState::new(&design, weights, preconditioner)?;
-        Ok(Self { design, state })
+        Ok(Self {
+            design: SolverDesignStorage::Owned(design),
+            state,
+        })
+    }
+
+    /// Construct a solver from a borrowed design.
+    ///
+    /// The returned solver borrows `design` and cannot outlive it.
+    pub fn from_design(
+        design: &'a Design<'a>,
+        weights: Option<Vec<f64>>,
+        preconditioner: impl Into<PreconditionerInput>,
+    ) -> Result<Self, BuildError> {
+        let state = SolverState::new(design, weights, preconditioner)?;
+
+        Ok(Self {
+            design: SolverDesignStorage::Borrowed(design),
+            state,
+        })
     }
 
     /// Non-fatal events from design screening and the preconditioner build; a reused
