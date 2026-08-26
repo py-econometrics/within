@@ -256,19 +256,6 @@ fn build_diagonal(
     })
 }
 
-/// The diagonal base used as the first rung of an [`Adaptive`](PreconditionerConfig::Adaptive) solve.
-pub(crate) fn build_diagonal_preconditioner(
-    design: &Design<'_>,
-    weights: Option<&[f64]>,
-) -> Result<Preconditioner, BuildError> {
-    let build_started = Instant::now();
-    let diagonal = build_diagonal(design, weights)?;
-    Ok(Preconditioner {
-        inner: Variant::Diagonal(diagonal),
-        build_duration: build_started.elapsed(),
-    })
-}
-
 /// Build a [`Preconditioner`] from a design and optional weights, plus any warnings.
 pub(crate) fn build_preconditioner(
     design: &Design<'_>,

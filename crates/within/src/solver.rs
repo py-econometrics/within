@@ -21,9 +21,7 @@ use crate::domain::level_moments::TermMoments;
 use crate::domain::{Design, Effect};
 use crate::observation::ObservationFrame;
 use crate::operator::design::gather_apply;
-use crate::operator::schwarz::{
-    build_diagonal_preconditioner, build_preconditioner, Preconditioner,
-};
+use crate::operator::schwarz::{build_preconditioner, Preconditioner};
 use crate::operator::DesignOperator;
 use crate::{BuildError, BuildWarning, SolveError, WithinError};
 
@@ -308,8 +306,9 @@ impl BatchSolveResult {
 ///
 /// Build once with [`Solver::new`], then call [`Solver::solve`] or
 /// [`Solver::solve_batch`] repeatedly with different RHS vectors. The expensive
-/// preconditioner factorization happens only at construction time; LSMR tuning
-/// ([`LsmrOptions`]) is supplied per call.
+/// preconditioner factorization happens at construction time, except under
+/// [`PreconditionerConfig::Adaptive`], which defers it to the first stalled solve;
+/// LSMR tuning ([`LsmrOptions`]) is supplied per call.
 ///
 /// Ownership: each observation column is borrowed or owned independently
 /// (`Cow`); a solver that outlives its inputs — e.g. one returned across the
@@ -355,22 +354,12 @@ impl std::fmt::Debug for PrecondSlot {
 }
 
 thread_local! {
-    /// Set while this thread runs a deferred Schwarz build. That build is itself rayon-parallel,
-    /// and a worker blocked inside it executes whatever sits on its own deque — including a
-    /// sibling RHS from `solve_batch`'s fan-out, which would re-enter the build lock it already
-    /// holds and hang. Such a re-entrant RHS finishes on the diagonal instead.
+    /// A rayon worker inside the parallel build can steal a sibling RHS that re-enters the build
+    /// lock it already holds; such an RHS finishes on the diagonal instead of deadlocking.
     static BUILDING: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Sets [`BUILDING`] for the duration of a build, clearing it even if the build unwinds.
 struct BuildingGuard;
-
-impl BuildingGuard {
-    fn enter() -> Self {
-        BUILDING.set(true);
-        Self
-    }
-}
 
 impl Drop for BuildingGuard {
     fn drop(&mut self) {
@@ -399,20 +388,21 @@ struct AdaptiveBuild {
 }
 
 impl AdaptivePrecond {
-    /// Build the escalated rung once (double-checked), or `None` when this thread is already
+    /// The rung a solve should run on: the escalated Schwarz map once built, else the diagonal.
+    fn rung(&self) -> &Preconditioner {
+        self.built
+            .get()
+            .and_then(|b| b.schwarz.as_ref())
+            .unwrap_or(&self.base)
+    }
+
+    /// Build the escalated rung once (double-checked); a no-op when this thread is already
     /// building it — see [`BUILDING`].
     ///
     /// `screening` is prepended so [`Solver::warnings`] only ever grows by append.
-    fn escalated(
-        &self,
-        design: &Design<'_>,
-        screening: &[BuildWarning],
-    ) -> Result<Option<&AdaptiveBuild>, BuildError> {
-        if let Some(built) = self.built.get() {
-            return Ok(Some(built));
-        }
-        if BUILDING.get() {
-            return Ok(None);
+    fn escalate(&self, design: &Design<'_>, screening: &[BuildWarning]) -> Result<(), BuildError> {
+        if self.built.get().is_some() || BUILDING.get() {
+            return Ok(());
         }
         // Waiting parks a rayon worker mid-fan-out, but `rayon::yield_now` spinning measured
         // worse: the spinners compete for the bandwidth the build itself needs.
@@ -420,10 +410,11 @@ impl AdaptivePrecond {
             .build_lock
             .lock()
             .expect("adaptive build lock poisoned");
-        if let Some(built) = self.built.get() {
-            return Ok(Some(built));
+        if self.built.get().is_some() {
+            return Ok(());
         }
-        let _building = BuildingGuard::enter();
+        BUILDING.set(true);
+        let _building = BuildingGuard;
         let (schwarz, build_warnings) = build_preconditioner(
             design,
             self.weights.as_deref(),
@@ -431,10 +422,8 @@ impl AdaptivePrecond {
         )?;
         let mut warnings = screening.to_vec();
         warnings.extend(build_warnings);
-        Ok(Some(
-            self.built
-                .get_or_init(|| AdaptiveBuild { schwarz, warnings }),
-        ))
+        let _ = self.built.set(AdaptiveBuild { schwarz, warnings });
+        Ok(())
     }
 }
 
@@ -465,6 +454,7 @@ impl<'a> Solver<'a> {
     /// - `&PreconditionerConfig` / `Some(&PreconditionerConfig)` — build from a tuned config
     /// - `PreconditionerConfig::Off` — solve unpreconditioned
     /// - `PreconditionerConfig::Diagonal` — use diagonal/Jacobi preconditioning
+    /// - `PreconditionerConfig::Adaptive` — diagonal, escalating to Schwarz on a stalled solve
     /// - [`Preconditioner`] or `&Preconditioner` — reuse a previously built one
     ///
     /// `weights` is `None` for unweighted, or an owned `Vec<f64>` that the
@@ -510,7 +500,13 @@ impl<'a> Solver<'a> {
                 reduction,
                 stall,
             }) => {
-                let base = build_diagonal_preconditioner(&design, weights.as_deref())?;
+                let base = build_preconditioner(
+                    &design,
+                    weights.as_deref(),
+                    Some(&PreconditionerConfig::Diagonal),
+                )?
+                .0
+                .expect("the Diagonal arm always yields a map");
                 (
                     PrecondSlot::Adaptive(Box::new(AdaptivePrecond {
                         base,
@@ -646,29 +642,29 @@ impl<'a> Solver<'a> {
         })
     }
 
-    /// Runs the configured preconditioner strategy, returning the LSMR result and the
-    /// wall-clock seconds spent on any deferred build (which callers charge to setup).
+    /// Seconds spent on any deferred build come back separately: callers charge them to setup.
     fn run_strategy(
         &self,
         op: &DesignOperator<'_>,
         b: &[f64],
         lsmr: &LsmrOptions,
     ) -> Result<(LsmrResult, f64), WithinError> {
-        match &self.slot {
+        let fixed = match &self.slot {
             PrecondSlot::Static(None) => {
                 let r = lsmr_solve(op, b, lsmr.tol, lsmr.maxiter, lsmr.local_size)?;
-                Ok((r, 0.0))
+                return Ok((r, 0.0));
             }
-            PrecondSlot::Static(Some(p)) => {
-                let options = MlsmrOptions {
-                    local_size: lsmr.local_size,
-                    ..Default::default()
-                };
-                let r = mlsmr(op, b, p, lsmr.tol, lsmr.maxiter, options)?;
-                Ok((r, 0.0))
-            }
-            PrecondSlot::Adaptive(a) => self.run_adaptive(a, op, b, lsmr),
-        }
+            PrecondSlot::Static(Some(p)) => p,
+            // A completed build settles the rung for every later solve: re-probing the diagonal
+            // would burn a fresh stall streak only to reach the map already sitting here.
+            PrecondSlot::Adaptive(a) if a.built.get().is_some() => a.rung(),
+            PrecondSlot::Adaptive(a) => return self.run_adaptive(a, op, b, lsmr),
+        };
+        let options = MlsmrOptions {
+            local_size: lsmr.local_size,
+            ..Default::default()
+        };
+        Ok((mlsmr(op, b, fixed, lsmr.tol, lsmr.maxiter, options)?, 0.0))
     }
 
     /// Diagonal first; on a stalled contraction, build Schwarz and resume from the stalled iterate.
@@ -679,18 +675,6 @@ impl<'a> Solver<'a> {
         b: &[f64],
         lsmr: &LsmrOptions,
     ) -> Result<(LsmrResult, f64), WithinError> {
-        // A completed build settles the rung for every later solve: re-probing the diagonal
-        // would burn a fresh stall streak only to reach the map already sitting here.
-        if let Some(built) = a.built.get() {
-            let options = MlsmrOptions {
-                local_size: lsmr.local_size,
-                ..Default::default()
-            };
-            let rung = built.schwarz.as_ref().unwrap_or(&a.base);
-            let r = mlsmr(op, b, rung, lsmr.tol, lsmr.maxiter, options)?;
-            return Ok((r, 0.0));
-        }
-
         let run1 = mlsmr(
             op,
             b,
@@ -703,28 +687,22 @@ impl<'a> Solver<'a> {
                 ..Default::default()
             },
         )?;
-        if run1.stop_reason != LsmrStopReason::Escalated {
-            return Ok((run1, 0.0));
-        }
-        // The stall window can complete on the last permitted iteration, leaving rung 2 nothing
-        // to spend; building the map to run zero iterations is pure waste.
-        if run1.iterations >= lsmr.maxiter {
+        // A stall completing on the last permitted iteration leaves rung 2 nothing to spend,
+        // and building the map to run zero iterations is pure waste.
+        if run1.stop_reason != LsmrStopReason::Escalated || run1.iterations >= lsmr.maxiter {
             return Ok((run1, 0.0));
         }
 
         let t_build = Instant::now();
-        let build = a.escalated(&self.design, &self.warnings)?;
+        a.escalate(&self.design, &self.warnings)?;
         let build_secs = t_build.elapsed().as_secs_f64();
 
         // The whole ladder shares the caller's budget; the second rung gets what rung 1 left.
         let remaining = lsmr.maxiter - run1.iterations;
-        // No factor-pair target, or a build this thread is already inside: transparently finish
-        // on the diagonal from the stalled iterate.
-        let rung2 = build.and_then(|b| b.schwarz.as_ref()).unwrap_or(&a.base);
         let mut run2 = mlsmr(
             op,
             b,
-            rung2,
+            a.rung(),
             lsmr.tol,
             remaining,
             MlsmrOptions {
@@ -741,9 +719,7 @@ impl<'a> Solver<'a> {
     /// Schwarz. This is a property of the solver's lifecycle: the deferred build fires once and
     /// is shared across every subsequent solve. Always `false` for the fixed strategies.
     ///
-    /// On the handoff solve alone, a converged [`SolveResult::residual`] is anchored at the
-    /// escalation point (the diagonal iterate at handoff) rather than the original right-hand
-    /// side; later solves run the built rung outright and report against `b`.
+    /// The handoff solve alone reports a rebased [`SolveResult::residual`].
     pub fn has_escalated(&self) -> bool {
         match &self.slot {
             PrecondSlot::Adaptive(a) => a.built.get().is_some_and(|b| b.schwarz.is_some()),
@@ -850,12 +826,7 @@ impl<'a> Solver<'a> {
     pub fn preconditioner(&self) -> Option<&Preconditioner> {
         match &self.slot {
             PrecondSlot::Static(p) => p.as_ref(),
-            PrecondSlot::Adaptive(a) => Some(
-                a.built
-                    .get()
-                    .and_then(|b| b.schwarz.as_ref())
-                    .unwrap_or(&a.base),
-            ),
+            PrecondSlot::Adaptive(a) => Some(a.rung()),
         }
     }
 

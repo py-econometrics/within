@@ -19,13 +19,6 @@ fn adaptive(stall: Staleness) -> PreconditionerConfig {
     }
 }
 
-fn additive() -> PreconditionerConfig {
-    PreconditionerConfig::Additive {
-        local_solver: LocalSolverConfig::default(),
-        reduction: ReductionStrategy::Auto,
-    }
-}
-
 fn params() -> LsmrOptions {
     LsmrOptions {
         tol: 1e-8,
@@ -50,7 +43,7 @@ fn the_escalated_answer_matches_a_cold_additive_solve() {
         let cold = Solver::new(
             common::make_design(cats.clone()).expect("design"),
             weights.clone(),
-            additive(),
+            PreconditionerConfig::default(),
         )
         .expect("solver");
         let reference = cold.solve(&y, &params()).expect("additive solve");
@@ -219,7 +212,7 @@ fn later_solves_cost_the_same_as_a_cold_schwarz_solver() {
     assert!(solver.has_escalated(), "the ladder must hand off");
     let later = solver.solve(&y, &lsmr).expect("later solve");
 
-    let cold = Solver::new(design(), None, additive())
+    let cold = Solver::new(design(), None, PreconditionerConfig::default())
         .expect("solver")
         .solve(&y, &lsmr)
         .expect("cold schwarz solve");
