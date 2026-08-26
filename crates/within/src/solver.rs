@@ -3,8 +3,8 @@
 //! convenience wrappers built on top of it.
 
 use std::borrow::Cow;
-use std::cell::Cell;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, PoisonError};
+use std::thread::ThreadId;
 use std::time::Instant;
 
 use ndarray::{ArrayView2, Axis};
@@ -353,17 +353,12 @@ impl std::fmt::Debug for PrecondSlot {
     }
 }
 
-thread_local! {
-    /// A rayon worker inside the parallel build can steal a sibling RHS that re-enters the build
-    /// lock it already holds; such an RHS finishes on the diagonal instead of deadlocking.
-    static BUILDING: Cell<bool> = const { Cell::new(false) };
-}
+/// Clears [`AdaptivePrecond::builder`] even if the build unwinds.
+struct BuildingGuard<'a>(&'a Mutex<Option<ThreadId>>);
 
-struct BuildingGuard;
-
-impl Drop for BuildingGuard {
+impl Drop for BuildingGuard<'_> {
     fn drop(&mut self) {
-        BUILDING.set(false);
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = None;
     }
 }
 
@@ -378,6 +373,11 @@ struct AdaptivePrecond {
     built: OnceLock<AdaptiveBuild>,
     /// Serializes the one-time build so concurrent solves escalate exactly once.
     build_lock: Mutex<()>,
+    /// The thread inside *this* instance's build. That build is rayon-parallel, and a worker
+    /// blocked in it can be handed a sibling RHS that would re-enter the lock it already holds;
+    /// such an RHS finishes on the diagonal rather than deadlocking. Scoped per instance, so a
+    /// thread building one solver's rung never suppresses escalation in another's.
+    builder: Mutex<Option<ThreadId>>,
 }
 
 /// Outcome of the deferred build: the Schwarz map, or `None` when no factor-pair target exists.
@@ -397,11 +397,14 @@ impl AdaptivePrecond {
     }
 
     /// Build the escalated rung once (double-checked); a no-op when this thread is already
-    /// building it — see [`BUILDING`].
+    /// building it — see [`AdaptivePrecond::builder`].
     ///
     /// `screening` is prepended so [`Solver::warnings`] only ever grows by append.
     fn escalate(&self, design: &Design<'_>, screening: &[BuildWarning]) -> Result<(), BuildError> {
-        if self.built.get().is_some() || BUILDING.get() {
+        let me = std::thread::current().id();
+        if self.built.get().is_some()
+            || *self.builder.lock().unwrap_or_else(PoisonError::into_inner) == Some(me)
+        {
             return Ok(());
         }
         // Waiting parks a rayon worker mid-fan-out, but `rayon::yield_now` spinning measured
@@ -413,8 +416,8 @@ impl AdaptivePrecond {
         if self.built.get().is_some() {
             return Ok(());
         }
-        BUILDING.set(true);
-        let _building = BuildingGuard;
+        *self.builder.lock().unwrap_or_else(PoisonError::into_inner) = Some(me);
+        let _building = BuildingGuard(&self.builder);
         let (schwarz, build_warnings) = build_preconditioner(
             design,
             self.weights.as_deref(),
@@ -507,7 +510,11 @@ impl<'a> Solver<'a> {
                 )?
                 .0
                 .expect("the Diagonal arm always yields a map");
-                (
+                // A factor pair needs two terms, so a single-term design can never escalate.
+                // Settling that here spares it the probing solve the ladder would otherwise run.
+                let slot = if design.n_factors() < 2 {
+                    PrecondSlot::Static(Some(base))
+                } else {
                     PrecondSlot::Adaptive(Box::new(AdaptivePrecond {
                         base,
                         stall,
@@ -518,9 +525,10 @@ impl<'a> Solver<'a> {
                         weights: weights.clone(),
                         built: OnceLock::new(),
                         build_lock: Mutex::new(()),
-                    })),
-                    Vec::new(),
-                )
+                        builder: Mutex::new(None),
+                    }))
+                };
+                (slot, Vec::new())
             }
             PreconditionerInput::Config(c) => {
                 let (p, w) = build_preconditioner(&design, weights.as_deref(), Some(&c))?;
@@ -697,12 +705,19 @@ impl<'a> Solver<'a> {
         a.escalate(&self.design, &self.warnings)?;
         let build_secs = t_build.elapsed().as_secs_f64();
 
-        // The whole ladder shares the caller's budget; the second rung gets what rung 1 left.
-        let remaining = lsmr.maxiter - run1.iterations;
+        // A rung still equal to the base means the probe found nothing to hand off to, so rung 2
+        // restarts the very same map: those iterations were overhead we imposed and must not eat
+        // the caller's budget. A real handoff shares it — the second rung gets what rung 1 left.
+        let rung = a.rung();
+        let remaining = if std::ptr::eq(rung, &a.base) {
+            lsmr.maxiter
+        } else {
+            lsmr.maxiter - run1.iterations
+        };
         let mut run2 = mlsmr(
             op,
             b,
-            a.rung(),
+            rung,
             lsmr.tol,
             remaining,
             MlsmrOptions {

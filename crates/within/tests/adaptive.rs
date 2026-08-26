@@ -68,7 +68,11 @@ fn without_a_target_it_behaves_like_diagonal() {
     let y = common::make_deterministic_y(&design());
 
     let solver = Solver::new(design(), None, adaptive(eager_stall())).expect("solver");
-    // Two solves: the first probes and caches "no target"; the second takes the fast path.
+    // Settled at construction, so even the first solve is plain diagonal rather than a probe.
+    assert_eq!(
+        solver.preconditioner().expect("a base map").variant_name(),
+        "Diagonal"
+    );
     let first = solver.solve(&y, &params()).expect("first solve");
     let second = solver.solve(&y, &params()).expect("second solve");
     let diagonal = Solver::new(design(), None, &PreconditionerConfig::Diagonal)
@@ -80,6 +84,9 @@ fn without_a_target_it_behaves_like_diagonal() {
         !solver.has_escalated(),
         "no factor-pair target means no escalation"
     );
+    // No probe means no restart: the answer and the iteration count match `Diagonal` outright.
+    assert_eq!(first.iterations, diagonal.iterations);
+    assert_eq!(second.iterations, diagonal.iterations);
     common::assert_solutions_close(&first.demeaned, &diagonal.demeaned, 1e-6);
     common::assert_solutions_close(&second.demeaned, &diagonal.demeaned, 1e-6);
 }

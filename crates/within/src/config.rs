@@ -157,8 +157,8 @@ pub enum PreconditionerConfig {
     ///
     /// The Schwarz factorization is built lazily at the moment of escalation, so a
     /// design whose diagonal solve never stalls never pays to construct it. A design
-    /// with no factor-pair subdomains has nothing to escalate to and, after a first
-    /// probing solve, behaves like [`Diagonal`](Self::Diagonal).
+    /// with no factor-pair subdomains has nothing to escalate to and is
+    /// [`Diagonal`](Self::Diagonal) throughout.
     Adaptive {
         /// Local solver configuration for the escalated Schwarz factorization.
         local_solver: LocalSolverConfig,
