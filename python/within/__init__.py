@@ -25,16 +25,18 @@ Quick start::
     print(result.converged) # True
 
 For repeated solves on the same panel structure, use the persistent
-``Solver`` class to amortise the preconditioner setup::
+``Design`` and ``Solver`` classes to amortise design construction and
+preconditioner setup::
 
-    solver = within.Solver(categories)
+    design = within.Design(categories)
+    solver = within.Solver(design)
     r1 = solver.solve(y1)
     r2 = solver.solve(y2)
 
 Two-tier public API:
 
 - The top-level ``within`` namespace exposes the call-site essentials
-  (``solve``, ``Solver``, ``LsmrOptions``, ``PreconditionerConfig``,
+  (``solve``, ``Design``, ``Solver``, ``LsmrOptions``, ``PreconditionerConfig``,
   ``Preconditioner``).
 - :mod:`within.config` re-exports the advanced configuration objects
   (``LocalSolverConfig``, ``ApproxCholConfig``, ``ApproxSchurConfig``,
@@ -47,20 +49,21 @@ mutated from another thread while a ``within`` call is reading it.
 For Rust-level internals, build the API docs with ``cargo doc --open``.
 """
 
+from within import config  # noqa: F401 — expose submodule on `within.config`
 from within._within import (
     BatchSolveResult,
     CoefficientLayout,
+    Design,
     Effect,
     LsmrOptions,
     Preconditioner,
     PreconditionerConfig,
-    SolveResult,
     Solver,
+    SolveResult,
     UnidentifiedDirection,
     solve,
     solve_batch,
 )
-from within import config  # noqa: F401 — expose submodule on `within.config`
 
 __all__ = [
     "BatchSolveResult",
@@ -71,6 +74,7 @@ __all__ = [
     "PreconditionerConfig",
     "SolveResult",
     "Solver",
+    "Design",
     "UnidentifiedDirection",
     "solve",
     "solve_batch",
