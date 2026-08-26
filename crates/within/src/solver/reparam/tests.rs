@@ -3,7 +3,7 @@
 
 use crate::channel::Channel;
 use crate::domain::level_moments::TermMoments;
-use crate::domain::Effect;
+use crate::domain::{Effect, LoadingOverrides, SolverDesign};
 use crate::Design;
 
 use super::*;
@@ -39,8 +39,9 @@ fn build_whitens_each_slope_bearing_term() {
         })
         .collect();
     let moments = TermMoments::build(&design, None).unwrap();
-    let mut solver_design = SolverDesign::new(design);
-    let rp = SlopeReparam::build(&mut solver_design, &moments).unwrap();
+    let mut loading_overrides = LoadingOverrides::new(&design);
+    let rp = SlopeReparam::build(&design, &mut loading_overrides, &moments).unwrap();
+    let solver_design = SolverDesign::with_loading_overrides(&design, &loading_overrides);
     assert!(rp.unidentified.is_empty());
     for (column, expected) in raw_loadings {
         assert_eq!(
@@ -50,7 +51,6 @@ fn build_whitens_each_slope_bearing_term() {
         );
     }
 
-    let design = solver_design.design();
     for term in [0, 2] {
         let meta = &design.terms[term];
         let levels = design.level_column(term);
@@ -93,8 +93,8 @@ fn unidentified_directions_ascend_across_terms() {
     ];
     let design = Design::new(effects).unwrap();
     let moments = TermMoments::build(&design, None).unwrap();
-    let mut solver_design = SolverDesign::new(design);
-    let rp = SlopeReparam::build(&mut solver_design, &moments).unwrap();
+    let mut loading_overrides = LoadingOverrides::new(&design);
+    let rp = SlopeReparam::build(&design, &mut loading_overrides, &moments).unwrap();
     assert_eq!(
         rp.unidentified,
         vec![
@@ -114,10 +114,9 @@ fn unidentified_directions_ascend_across_terms() {
 fn back_transform_leaves_other_terms_untouched() {
     let design = Design::new(three_term_effects()).unwrap();
     let moments = TermMoments::build(&design, None).unwrap();
-    let mut solver_design = SolverDesign::new(design);
-    let rp = SlopeReparam::build(&mut solver_design, &moments).unwrap();
+    let mut loading_overrides = LoadingOverrides::new(&design);
+    let rp = SlopeReparam::build(&design, &mut loading_overrides, &moments).unwrap();
 
-    let design = solver_design.design();
     let mut x: Vec<f64> = (0..design.n_dofs).map(|i| 1.0 + i as f64).collect();
     let before = x.clone();
     rp.back_transform(&mut x);

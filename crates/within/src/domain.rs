@@ -398,33 +398,52 @@ impl<'a> Design<'a> {
     }
 }
 
+pub(crate) struct LoadingOverrides(Vec<Option<Vec<f64>>>);
+
+impl LoadingOverrides {
+    pub(crate) fn new(design: &Design<'_>) -> Self {
+        Self((0..design.n_loading_columns()).map(|_| None).collect())
+    }
+
+    pub(crate) fn replace(&mut self, design: &Design<'_>, column: usize, values: Vec<f64>) {
+        debug_assert_eq!(values.len(), design.n_obs());
+        self.0[column] = Some(values);
+    }
+}
+
+/// Read-only solver-specific view of a design, including any transformed loadings.
 pub(crate) struct SolverDesign<'a> {
-    design: Design<'a>,
-    loading_overrides: Vec<Option<Vec<f64>>>,
+    design: &'a Design<'a>,
+    loading_overrides: Option<&'a LoadingOverrides>,
 }
 
 impl<'a> SolverDesign<'a> {
-    pub(crate) fn new(design: Design<'a>) -> Self {
-        let loading_overrides = (0..design.n_loading_columns()).map(|_| None).collect();
+    #[cfg(test)]
+    pub(crate) fn new(design: &'a Design<'a>) -> Self {
         Self {
             design,
-            loading_overrides,
+            loading_overrides: None,
         }
     }
 
-    pub(crate) fn design(&self) -> &Design<'a> {
-        &self.design
+    pub(crate) fn with_loading_overrides(
+        design: &'a Design<'a>,
+        loading_overrides: &'a LoadingOverrides,
+    ) -> Self {
+        Self {
+            design,
+            loading_overrides: Some(loading_overrides),
+        }
+    }
+
+    pub(crate) fn design(&self) -> &'a Design<'a> {
+        self.design
     }
 
     pub(crate) fn loading_column(&self, column: usize) -> &[f64] {
-        self.loading_overrides[column]
-            .as_deref()
+        self.loading_overrides
+            .and_then(|overrides| overrides.0[column].as_deref())
             .unwrap_or_else(|| self.design.loading_column(column))
-    }
-
-    pub(crate) fn replace_loading_column(&mut self, column: usize, values: Vec<f64>) {
-        debug_assert_eq!(values.len(), self.design.n_obs());
-        self.loading_overrides[column] = Some(values);
     }
 }
 

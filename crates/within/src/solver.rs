@@ -12,7 +12,7 @@ use crate::channel::Channel;
 use crate::config::{LsmrOptions, PreconditionerConfig};
 use crate::domain::collinearity::detect_collinear_slopes;
 use crate::domain::level_moments::TermMoments;
-use crate::domain::{Design, Effect, FactorEncoding, SolverDesign};
+use crate::domain::{Design, Effect, FactorEncoding, LoadingOverrides, SolverDesign};
 use crate::operator::design::gather_apply;
 use crate::operator::schwarz::{build_preconditioner, Preconditioner};
 use crate::operator::DesignOperator;
@@ -325,7 +325,8 @@ impl BatchSolveResult {
 /// Python boundary — uses owned columns. Weights are always owned; for a
 /// one-shot weighted solve from a borrowed slice, use the free [`solve`] function.
 pub struct Solver<'a> {
-    solver_design: SolverDesign<'a>,
+    design: Design<'a>,
+    loading_overrides: LoadingOverrides,
     /// `sqrt(W)` in the design's internal observation order, computed once and
     /// borrowed by the per-RHS [`DesignOperator`]s (raw weights are needed only
     /// during construction).
@@ -338,8 +339,8 @@ pub struct Solver<'a> {
 impl std::fmt::Debug for Solver<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Solver")
-            .field("n_obs", &self.solver_design.design().n_obs)
-            .field("n_dofs", &self.solver_design.design().n_dofs)
+            .field("n_obs", &self.design.n_obs)
+            .field("n_dofs", &self.design.n_dofs)
             .field("has_weights", &self.sqrt_weights.is_some())
             .field("has_preconditioner", &self.preconditioner.is_some())
             .finish()
@@ -400,11 +401,13 @@ impl<'a> Solver<'a> {
             .map(|m| detect_collinear_slopes(&design, weights.as_deref(), m))
             .unwrap_or_default();
 
-        let mut solver_design = SolverDesign::new(design);
+        let mut loading_overrides = LoadingOverrides::new(&design);
         // Reparametrize the slope columns (if any) before the preconditioner reads the frame.
         let reparam = moments
             .as_ref()
-            .and_then(|m| SlopeReparam::build(&mut solver_design, m));
+            .and_then(|m| SlopeReparam::build(&design, &mut loading_overrides, m));
+
+        let solver_design = SolverDesign::with_loading_overrides(&design, &loading_overrides);
 
         let (preconditioner, build_warnings) = match preconditioner.into() {
             PreconditionerInput::Default => {
@@ -414,7 +417,7 @@ impl<'a> Solver<'a> {
                 build_preconditioner(&solver_design, weights.as_deref(), Some(&c))?
             }
             PreconditionerInput::Prebuilt(p) => {
-                let n_dofs = solver_design.design().n_dofs;
+                let n_dofs = design.n_dofs;
                 if p.nrows() != n_dofs || p.ncols() != n_dofs {
                     return Err(BuildError::PreconditionerDimensionMismatch {
                         expected: n_dofs,
@@ -436,7 +439,8 @@ impl<'a> Solver<'a> {
         });
 
         Ok(Self {
-            solver_design,
+            design,
+            loading_overrides,
             sqrt_weights,
             preconditioner,
             reparam,
@@ -455,7 +459,8 @@ impl<'a> Solver<'a> {
     /// `unidentified`, which the public entry points attach once (see
     /// [`RhsSolution`]).
     fn solve_rhs(&self, y: &[f64], lsmr: &LsmrOptions) -> Result<RhsSolution, SolveError> {
-        let design = self.solver_design.design();
+        let design = &self.design;
+        let solver_design = SolverDesign::with_loading_overrides(design, &self.loading_overrides);
         // `weighted_rhs` zips y with sqrt-weights, silently truncating when `y.len() > n_rows`.
         if y.len() != design.n_obs {
             return Err(SolveError::InvalidInput {
@@ -480,7 +485,7 @@ impl<'a> Solver<'a> {
         let y_internal = design.permute_obs_in(y);
         let y: &[f64] = &y_internal;
 
-        let rect_op = DesignOperator::new(&self.solver_design, self.sqrt_weights.as_deref());
+        let rect_op = DesignOperator::new(&solver_design, self.sqrt_weights.as_deref());
         let b = rect_op.weighted_rhs(y);
         let b: &[f64] = &b;
 
@@ -502,7 +507,7 @@ impl<'a> Solver<'a> {
 
         // Shapes are guaranteed here, so the bare `D x` matvec is infallible.
         let mut demeaned = vec![0.0; design.n_obs];
-        gather_apply(&self.solver_design, &r.x, &mut demeaned, None);
+        gather_apply(&solver_design, &r.x, &mut demeaned, None);
         for (d, &yi) in demeaned.iter_mut().zip(y.iter()) {
             *d = yi - *d;
         }
@@ -528,7 +533,7 @@ impl<'a> Solver<'a> {
     /// Per-level directions the data cannot identify, shared across all RHS:
     /// identification depends only on the design and weights, never on `y`.
     fn unidentified(&self) -> Vec<CoefficientAddress> {
-        let design = self.solver_design.design();
+        let design = &self.design;
         let Some(reparam) = &self.reparam else {
             return Vec::new();
         };
@@ -556,7 +561,7 @@ impl<'a> Solver<'a> {
             x: solution.x,
             unidentified: self.unidentified(),
             warnings: self.warnings.clone(),
-            layout: CoefficientLayout::from_design(self.solver_design.design()),
+            layout: CoefficientLayout::from_design(&self.design),
             demeaned: solution.demeaned,
             converged: solution.converged,
             iterations: solution.iterations,
@@ -584,7 +589,7 @@ impl<'a> Solver<'a> {
             .map(|y| self.solve_rhs(y, lsmr))
             .collect::<Result<Vec<_>, _>>()?;
 
-        let design = self.solver_design.design();
+        let design = &self.design;
         let mut x = Vec::with_capacity(design.n_dofs * n_rhs);
         let mut demeaned = Vec::with_capacity(design.n_obs * n_rhs);
         let mut converged = Vec::with_capacity(n_rhs);
@@ -625,12 +630,12 @@ impl<'a> Solver<'a> {
 
     /// Number of DOFs (coefficients).
     pub fn n_dofs(&self) -> usize {
-        self.solver_design.design().n_dofs
+        self.design.n_dofs
     }
 
     /// Number of observations.
     pub fn n_obs(&self) -> usize {
-        self.solver_design.design().n_obs
+        self.design.n_obs
     }
 }
 

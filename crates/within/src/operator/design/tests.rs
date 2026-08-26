@@ -12,7 +12,7 @@ mod design_tests {
     #[test]
     fn test_design_operator_dimensions() {
         let schema = make_test_design();
-        let solver_design = SolverDesign::new(schema);
+        let solver_design = SolverDesign::new(&schema);
         let op = DesignOperator::new(&solver_design, None);
         assert_eq!(op.nrows(), 5);
         assert_eq!(op.ncols(), 7);
@@ -21,7 +21,7 @@ mod design_tests {
     #[test]
     fn test_design_operator_adjoint() {
         let schema = make_test_design();
-        let solver_design = SolverDesign::new(schema);
+        let solver_design = SolverDesign::new(&schema);
         let op = DesignOperator::new(&solver_design, None);
 
         let x = vec![1.0, -0.5, 2.0, 0.3, -1.0, 0.7, 1.5];
@@ -41,7 +41,7 @@ mod design_tests {
     #[test]
     fn test_apply_unweighted_values() {
         let schema = make_test_design();
-        let solver_design = SolverDesign::new(schema);
+        let solver_design = SolverDesign::new(&schema);
         let op = DesignOperator::new(&solver_design, None);
         let x = vec![1.0, 2.0, 3.0, 10.0, 20.0, 30.0, 40.0];
         let mut y = vec![0.0; 5];
@@ -52,7 +52,7 @@ mod design_tests {
     #[test]
     fn test_apply_adjoint_unweighted_values() {
         let schema = make_test_design();
-        let solver_design = SolverDesign::new(schema);
+        let solver_design = SolverDesign::new(&schema);
         let op = DesignOperator::new(&solver_design, None);
         let r = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         let mut x = vec![0.0; 7];
@@ -82,7 +82,7 @@ mod design_tests {
         let dm = make_large_design();
         let n_dofs = dm.n_dofs;
         let n_rows = dm.n_obs;
-        let solver_design = SolverDesign::new(dm);
+        let solver_design = SolverDesign::new(&dm);
         let op = DesignOperator::new(&solver_design, None);
 
         let x: Vec<f64> = (0..n_dofs).map(|i| (i as f64 * 0.17 + 1.0).sin()).collect();
@@ -118,7 +118,7 @@ mod design_tests {
         let dm = Design::from_levels_for_test(vec![fa, fb]);
         assert!(dm.obs_perm.is_none(), "dominant factor is sorted; no perm");
 
-        let solver_design = SolverDesign::new(dm);
+        let solver_design = SolverDesign::new(&dm);
         let dm = solver_design.design();
         let op = DesignOperator::new(&solver_design, None);
         let x: Vec<f64> = (0..dm.n_dofs)
@@ -147,7 +147,7 @@ mod design_tests {
     #[test]
     fn test_large_design_matvec_correctness() {
         let dm = make_large_design();
-        let solver_design = SolverDesign::new(dm);
+        let solver_design = SolverDesign::new(&dm);
         let dm = solver_design.design();
         let op = DesignOperator::new(&solver_design, None);
 
@@ -168,7 +168,7 @@ mod design_tests {
     #[test]
     fn test_large_design_apply_adjoint_correctness() {
         let dm = make_large_design();
-        let solver_design = SolverDesign::new(dm);
+        let solver_design = SolverDesign::new(&dm);
         let dm = solver_design.design();
         let op = DesignOperator::new(&solver_design, None);
 
@@ -189,7 +189,7 @@ mod design_tests {
     #[test]
     fn test_single_factor_design_adjoint_property() {
         let dm = make_single_factor_design();
-        let solver_design = SolverDesign::new(dm);
+        let solver_design = SolverDesign::new(&dm);
         let dm = solver_design.design();
         let op = DesignOperator::new(&solver_design, None);
 
@@ -215,7 +215,7 @@ mod design_tests {
     #[test]
     fn test_single_factor_apply_values() {
         let dm = make_single_factor_design();
-        let solver_design = SolverDesign::new(dm);
+        let solver_design = SolverDesign::new(&dm);
         let op = DesignOperator::new(&solver_design, None);
         let x = vec![10.0, 20.0, 30.0];
         let mut y = vec![0.0f64; 5];
@@ -226,7 +226,7 @@ mod design_tests {
     #[test]
     fn test_single_factor_apply_adjoint_values() {
         let dm = make_single_factor_design();
-        let solver_design = SolverDesign::new(dm);
+        let solver_design = SolverDesign::new(&dm);
         let op = DesignOperator::new(&solver_design, None);
         let r = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         let mut x = vec![0.0f64; 3];
@@ -260,7 +260,7 @@ mod design_tests {
         // The three pairs route Sequential, Fold and SortedCoalesced respectively.
         for (n_obs, n_levels) in [(200usize, 16usize), (15_000, 64), (150_000, 100_000)] {
             let dm = make_strategy_design(n_obs, n_levels);
-            let solver_design = SolverDesign::new(dm);
+            let solver_design = SolverDesign::new(&dm);
             assert_scratch_reuse_matches_fresh(
                 &solver_design,
                 &format!("n_obs={n_obs}, n_levels={n_levels}"),
@@ -273,7 +273,7 @@ mod design_tests {
         let fb: Vec<u32> = (0..n_obs).map(|i| ((i * 7919) % 100_000) as u32).collect();
         let dm = Design::from_levels_for_test(vec![fa, fb]);
         assert!(dm.obs_perm.is_none(), "dominant factor is sorted; no perm");
-        let solver_design = SolverDesign::new(dm);
+        let solver_design = SolverDesign::new(&dm);
         assert_scratch_reuse_matches_fresh(
             &solver_design,
             "atomic: non-dominant unsorted 100K levels",
@@ -374,7 +374,7 @@ mod slope_design_tests {
         ];
         let design = Design::new(effects).unwrap();
         let dense = dense_matrix(&design);
-        let solver_design = SolverDesign::new(design);
+        let solver_design = SolverDesign::new(&design);
         let design = solver_design.design();
         let op = DesignOperator::new(&solver_design, None);
 
@@ -421,7 +421,7 @@ mod slope_design_tests {
         ];
         let design = Design::new(effects).unwrap();
         let sqrt_weights: Vec<f64> = (0..n).map(|i| (0.5 + noise(i).abs()).sqrt()).collect();
-        let solver_design = SolverDesign::new(design);
+        let solver_design = SolverDesign::new(&design);
         let design = solver_design.design();
         let op = DesignOperator::new(&solver_design, Some(&sqrt_weights));
 
@@ -473,7 +473,7 @@ mod weighted_adjoint_proptests {
                 .collect();
 
             let dm = Design::from_levels_for_test(vec![fa, fb]);
-            let solver_design = SolverDesign::new(dm);
+            let solver_design = SolverDesign::new(&dm);
             let dm = solver_design.design();
 
             let n_dofs = dm.n_dofs;

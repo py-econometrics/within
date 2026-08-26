@@ -148,7 +148,7 @@ mod reentry_guard_tests {
     #[should_panic(expected = "concurrently")]
     fn apply_adjoint_detects_in_flight_reentry() {
         let design = one_factor_design();
-        let solver_design = SolverDesign::new(design);
+        let solver_design = SolverDesign::new(&design);
         let op = DesignOperator::new(&solver_design, None);
         // Simulate a sibling `apply_adjoint` already in flight on this operator.
         op.adjoint_active.store(true, Ordering::Release);
