@@ -20,6 +20,8 @@ use crate::observation::ObservationFrame;
 use crate::BuildError;
 use ndarray::{ArrayView2, Axis};
 use std::borrow::Cow;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 /// A slice that is guaranteed non-empty by construction.
 #[repr(transparent)]
@@ -78,34 +80,165 @@ impl<T> Loading<T> {
     }
 }
 
-/// Mapping between caller-visible factor labels and numerical level positions.
-///
-/// This is an identity mapping for the existing dense `u32` API. Later
-/// encodings can store an explicit mapping without changing `TermMeta`.
+/// Mapping between caller-visible factor labels and compact numerical positions.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct FactorEncoding {
-    n_levels: usize,
+pub(crate) enum FactorEncoding {
+    /// Caller label `k` is internal position `k`.
+    Identity { n_levels: usize },
+    /// Arbitrary integer caller labels, ordered by internal position.
+    Integer { labels: Arc<[u32]> },
+}
+
+struct EncodedFactor {
+    encoding: FactorEncoding,
+    positions: Option<Vec<u32>>,
+    sorted: bool,
 }
 
 impl FactorEncoding {
     fn identity(n_levels: usize) -> Self {
-        Self { n_levels }
+        Self::Identity { n_levels }
+    }
+
+    fn integer(labels: Vec<u32>) -> Self {
+        debug_assert!(labels.windows(2).all(|pair| pair[0] < pair[1]));
+        Self::Integer {
+            labels: labels.into(),
+        }
+    }
+
+    fn encode_labels(labels: &[u32]) -> EncodedFactor {
+        let Some((&first, remaining)) = labels.split_first() else {
+            return EncodedFactor {
+                encoding: Self::identity(0),
+                positions: None,
+                sorted: true,
+            };
+        };
+
+        let mut min = first;
+        let mut max = first;
+        let mut previous = first;
+        let mut sorted = true;
+        for &label in remaining {
+            min = min.min(label);
+            max = max.max(label);
+            sorted &= label >= previous;
+            previous = label;
+        }
+
+        let range_width = u64::from(max) - u64::from(min) + 1;
+        let presence_by_label = usize::try_from(range_width)
+            .ok()
+            .filter(|&width| width <= labels.len())
+            .map(|width| {
+                let mut present = vec![false; width];
+                for &label in labels {
+                    present[(label - min) as usize] = true;
+                }
+                present
+            });
+
+        match presence_by_label {
+            // Path 1: labels already form the zero-based identity range.
+            Some(present) if min == 0 && present.iter().all(|&is_present| is_present) => {
+                EncodedFactor {
+                    encoding: Self::identity(present.len()),
+                    positions: None,
+                    sorted,
+                }
+            }
+            // Path 2: the observed label range is bounded by the observation count.
+            Some(present) => {
+                let range_width = present.len();
+                let caller_labels: Vec<u32> = present
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(offset, &present)| present.then_some(min + offset as u32))
+                    .collect();
+
+                let mut position_by_label = vec![0u32; range_width];
+                for (position, &label) in caller_labels.iter().enumerate() {
+                    position_by_label[(label - min) as usize] = position as u32;
+                }
+
+                let positions = labels
+                    .iter()
+                    .map(|&label| position_by_label[(label - min) as usize])
+                    .collect();
+                EncodedFactor {
+                    encoding: Self::integer(caller_labels),
+                    positions: Some(positions),
+                    sorted,
+                }
+            }
+            // Path 3: the observed label range is too wide for an indexed table.
+            None => {
+                // Collect distinct caller labels
+                let mut position_by_label = HashMap::<u32, u32>::new();
+                for &label in labels {
+                    position_by_label.entry(label).or_default();
+                }
+                // Internal positions follow ascending caller-label order
+                let mut caller_labels: Vec<u32> = position_by_label.keys().copied().collect();
+                caller_labels.sort_unstable();
+                // Populate the caller-label to internal-position map
+                for (position, &label) in caller_labels.iter().enumerate() {
+                    let position =
+                        u32::try_from(position).expect("an internal label position fits in u32");
+
+                    *position_by_label
+                        .get_mut(&label)
+                        .expect("label was collected from this map") = position;
+                }
+
+                let positions = labels
+                    .iter()
+                    .map(|label| {
+                        *position_by_label
+                            .get(label)
+                            .expect("every input label was inserted")
+                    })
+                    .collect();
+
+                EncodedFactor {
+                    encoding: Self::integer(caller_labels),
+                    positions: Some(positions),
+                    sorted,
+                }
+            }
+        }
     }
 
     pub(crate) fn n_levels(&self) -> usize {
-        self.n_levels
+        match self {
+            Self::Identity { n_levels } => *n_levels,
+            Self::Integer { labels } => labels.len(),
+        }
     }
 
     pub(crate) fn position(&self, label: u32) -> Option<usize> {
-        let position = label as usize;
-        (position < self.n_levels).then_some(position)
+        match self {
+            Self::Identity { n_levels } => {
+                let position = label as usize;
+                (position < *n_levels).then_some(position)
+            }
+            Self::Integer { labels } => labels.binary_search(&label).ok(),
+        }
     }
 
     pub(crate) fn label(&self, position: usize) -> Option<u32> {
-        if position >= self.n_levels {
-            return None;
+        match self {
+            Self::Identity { n_levels } => {
+                if position >= *n_levels {
+                    return None;
+                }
+
+                u32::try_from(position).ok()
+            }
+
+            Self::Integer { labels } => labels.get(position).copied(),
         }
-        u32::try_from(position).ok()
     }
 }
 
@@ -207,7 +340,7 @@ impl<'a> Design<'a> {
         Self::build(frame, structure, true)
     }
 
-    /// Intercept-only factors, level count `max + 1`; locality-sorts an unsorted dominant factor.
+    /// Intercept-only factors; compacts observed labels and locality-sorts an unsorted dominant factor.
     pub fn from_frame(frame: ObservationFrame<'a>) -> Result<Self, BuildError> {
         let structure = vec![NonEmpty::of(Loading::Constant); frame.n_factors()];
         Self::build(frame, structure, true)
@@ -237,7 +370,7 @@ impl<'a> Design<'a> {
 
     /// `column_structure[term]` = that term's coefficient columns, aligned with the frame.
     fn build(
-        frame: ObservationFrame<'a>,
+        mut frame: ObservationFrame<'a>,
         column_structure: Vec<NonEmpty<Loading<u32>>>,
         locality_sort: bool,
     ) -> Result<Self, BuildError> {
@@ -250,16 +383,14 @@ impl<'a> Design<'a> {
         let mut terms = Vec::with_capacity(frame.n_factors());
         let mut offset = 0;
         for (q, columns) in column_structure.into_iter().enumerate() {
-            let col = frame.level_column(q);
-            let mut max = 0;
-            let mut sorted = true;
-            let mut prev = 0;
-            for &v in col {
-                max = max.max(v);
-                sorted &= v >= prev;
-                prev = v;
+            let EncodedFactor {
+                encoding,
+                positions,
+                sorted,
+            } = FactorEncoding::encode_labels(frame.level_column(q));
+            if let Some(positions) = positions {
+                frame.replace_level_column(q, positions);
             }
-            let encoding = FactorEncoding::identity(max as usize + 1);
             let meta = TermMeta {
                 encoding,
                 offset,
@@ -508,13 +639,84 @@ mod tests {
     }
 
     #[test]
-    fn build_rejects_dof_space_exceeding_u32() {
-        // A single code of u32::MAX implies one level past the CSR column-index width.
-        let err = Design::from_frame(frame(vec![vec![u32::MAX]], vec![])).unwrap_err();
-        assert!(matches!(
-            err,
-            BuildError::DofSpaceExceedsU32 { n_dofs } if n_dofs == u32::MAX as usize + 1
-        ));
+    fn build_compacts_large_integer_label() {
+        let design = Design::from_frame(frame(vec![vec![u32::MAX]], vec![])).unwrap();
+
+        assert_eq!(design.n_dofs, 1);
+        assert_eq!(design.level_column(0), &[0]);
+        assert_eq!(design.terms[0].encoding.label(0), Some(u32::MAX));
+    }
+
+    #[test]
+    fn integer_factor_encoding_round_trips() {
+        let encoding = FactorEncoding::integer(vec![10, 100, 500]);
+
+        assert_eq!(encoding.n_levels(), 3);
+        assert_eq!(encoding.position(10), Some(0));
+        assert_eq!(encoding.position(100), Some(1));
+        assert_eq!(encoding.position(500), Some(2));
+        assert_eq!(encoding.position(99), None);
+
+        assert_eq!(encoding.label(0), Some(10));
+        assert_eq!(encoding.label(1), Some(100));
+        assert_eq!(encoding.label(2), Some(500));
+        assert_eq!(encoding.label(3), None);
+    }
+
+    #[test]
+    fn encode_labels_preserves_identity_encoding() {
+        let EncodedFactor {
+            encoding,
+            positions,
+            sorted,
+        } = FactorEncoding::encode_labels(&[2, 0, 1, 2]);
+
+        assert_eq!(encoding, FactorEncoding::identity(3));
+        assert!(positions.is_none());
+        assert!(!sorted);
+    }
+
+    #[test]
+    fn encode_labels_compacts_bounded_gappy_labels() {
+        // Range width = 3 and n_obs = 3, so this exercises the presence-table path.
+        let EncodedFactor {
+            encoding,
+            positions,
+            sorted,
+        } = FactorEncoding::encode_labels(&[2, 0, 2]);
+
+        assert_eq!(encoding, FactorEncoding::integer(vec![0, 2]));
+        assert_eq!(positions.as_deref(), Some(&[1u32, 0, 1][..]));
+        assert!(!sorted);
+    }
+
+    #[test]
+    fn encode_labels_compacts_shifted_bounded_range() {
+        let EncodedFactor {
+            encoding,
+            positions,
+            sorted,
+        } = FactorEncoding::encode_labels(&[1_000_000, 1_000_001, 1_000_002]);
+
+        assert_eq!(
+            encoding,
+            FactorEncoding::integer(vec![1_000_000, 1_000_001, 1_000_002])
+        );
+        assert_eq!(positions.as_deref(), Some(&[0u32, 1, 2][..]));
+        assert!(sorted);
+    }
+
+    #[test]
+    fn encode_labels_compacts_large_span_without_span_allocation() {
+        let EncodedFactor {
+            encoding,
+            positions,
+            sorted,
+        } = FactorEncoding::encode_labels(&[u32::MAX, 7, u32::MAX]);
+
+        assert_eq!(encoding, FactorEncoding::integer(vec![7, u32::MAX]));
+        assert_eq!(positions.as_deref(), Some(&[1u32, 0, 1][..]));
+        assert!(!sorted);
     }
 
     #[test]
