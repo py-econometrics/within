@@ -9,6 +9,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Categorical `u32` labels no longer need to be zero-based or contiguous: `Design` compacts observed labels to internal positions, while `CoefficientLayout` and `CoefficientAddress` translate coefficients back to caller-visible labels. This avoids allocating and solving for gaps in sparse label ranges (#228, #268).
 - **BREAKING:** Python `PreconditionerConfig` is now a tagged union: construct variants as `PreconditionerConfig.Off()`, `.Diagonal()`, or `.Additive(local_solver=..., reduction=...)` (previously class-attribute singletons plus an `.additive()` factory). Instances compare by value and support `match`/`case` on Python ≥3.10.
 - Rust `Preconditioner` objects expose their normalized construction configuration through `Preconditioner::config()`.
 - Serialized `schwarz_precond::SchwarzPreconditioner` values now preserve the configured reduction strategy.
@@ -21,6 +22,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Persistent designs can be built once and shared across solves: Python adds `Design`, accepted by `Solver`, `solve`, and `solve_batch`; Rust adds `Design::from_categories`, `Solver::from_design`, and the design-specific `SolverState`. This lets callers reuse design construction while independently rebuilding weight-dependent solver state (#269).
 - Python `Preconditioner.build_duration_seconds` and Rust `Preconditioner::build_duration()` expose the original preconditioner build duration, preserved across serialization and reuse.
 - `BuildWarning::CollinearSlopeCovariate` reports a slope covariate that is (nearly) a per-level combination of another term's columns — a cross-term near-null direction that per-term whitening cannot see and that can inflate iteration counts by orders of magnitude (#281).
 - `schwarz_precond::EscalationPolicy` builds a per-run `EscalationHandler` that ends a solve with `LsmrStopReason::Escalated` and an iterate that warm-starts the next preconditioner; `Staleness` implements it from the trailing contraction window.
