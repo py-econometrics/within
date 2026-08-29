@@ -11,7 +11,7 @@ use strategies::{additive_precond, random_fe_problem_strategy, random_slopes_pro
 fn at(term: usize, level: u32, column: usize) -> CoefficientAddress {
     CoefficientAddress {
         channel: Channel { term, column },
-        level: level.into(),
+        level,
     }
 }
 
@@ -136,11 +136,11 @@ proptest! {
             for i in 0..n_obs {
                 let level = f.levels[i];
                 if f.intercept {
-                    fitted[i] += x[layout.index(&at(t, level, 0)).unwrap()];
+                    fitted[i] += x[layout.index(at(t, level, 0)).unwrap()];
                 }
                 for (s, col) in f.slopes.iter().enumerate() {
                     fitted[i] +=
-                        x[layout.index(&at(t, level, slope_base + s)).unwrap()] * col[i];
+                        x[layout.index(at(t, level, slope_base + s)).unwrap()] * col[i];
                 }
             }
         }
@@ -155,12 +155,12 @@ proptest! {
                 let wr = weights[i] * (y[i] - fitted[i]);
                 let wy = weights[i] * y[i];
                 if f.intercept {
-                    let k = layout.index(&at(t, level, 0)).unwrap();
+                    let k = layout.index(at(t, level, 0)).unwrap();
                     g[k] += wr;
                     g0[k] += wy;
                 }
                 for (s, col) in f.slopes.iter().enumerate() {
-                    let k = layout.index(&at(t, level, slope_base + s)).unwrap();
+                    let k = layout.index(at(t, level, slope_base + s)).unwrap();
                     g[k] += wr * col[i];
                     g0[k] += wy * col[i];
                 }

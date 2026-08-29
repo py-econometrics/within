@@ -78,36 +78,6 @@ impl<T> Loading<T> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum FactorLabelValue {
-    U32(u32),
-}
-
-/// A caller-visible factor label.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct FactorLabel(FactorLabelValue);
-
-impl FactorLabel {
-    /// Return the label as `u32`, or `None` when it has another representation.
-    pub fn try_as_u32(&self) -> Option<u32> {
-        match self.0 {
-            FactorLabelValue::U32(value) => Some(value),
-        }
-    }
-}
-
-impl From<u32> for FactorLabel {
-    fn from(value: u32) -> Self {
-        Self(FactorLabelValue::U32(value))
-    }
-}
-
-impl From<&FactorLabel> for FactorLabel {
-    fn from(value: &FactorLabel) -> Self {
-        value.clone()
-    }
-}
-
 /// Mapping between caller-visible factor labels and numerical level positions.
 ///
 /// This is an identity mapping for the existing dense `u32` API. Later
@@ -126,16 +96,16 @@ impl FactorEncoding {
         self.n_levels
     }
 
-    pub(crate) fn position(&self, label: &FactorLabel) -> Option<usize> {
-        let position = label.try_as_u32()? as usize;
+    pub(crate) fn position(&self, label: u32) -> Option<usize> {
+        let position = label as usize;
         (position < self.n_levels).then_some(position)
     }
 
-    pub(crate) fn label(&self, position: usize) -> Option<FactorLabel> {
+    pub(crate) fn label(&self, position: usize) -> Option<u32> {
         if position >= self.n_levels {
             return None;
         }
-        u32::try_from(position).ok().map(FactorLabel::from)
+        u32::try_from(position).ok()
     }
 }
 
@@ -482,14 +452,6 @@ mod tests {
             err,
             BuildError::DofSpaceExceedsU32 { n_dofs } if n_dofs == u32::MAX as usize + 1
         ));
-    }
-
-    #[test]
-    fn u32_factor_label_round_trips() {
-        let label = FactorLabel::from(u32::MAX);
-
-        assert_eq!(label.try_as_u32(), Some(u32::MAX));
-        assert_eq!(FactorLabel::from(&label), label);
     }
 
     #[test]

@@ -42,7 +42,7 @@ pub use config::{
     ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, LsmrOptions, PreconditionerConfig,
     ReductionStrategy, ScalingConfig, ScalingFailure, SchurMode,
 };
-pub use domain::{Design, Effect, FactorLabel};
+pub use domain::{Design, Effect};
 pub use error::{BuildError, BuildWarning, SolveError, WithinError};
 pub use operator::schwarz::Preconditioner;
 pub use solver::{
