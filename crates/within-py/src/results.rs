@@ -117,9 +117,9 @@ impl PyCoefficientLayout {
     fn index(&self, term: usize, level: u32, column: usize) -> PyResult<usize> {
         let at = CoefficientAddress {
             channel: Channel { term, column },
-            level: level.into(),
+            level,
         };
-        self.inner.index(&at).ok_or_else(|| {
+        self.inner.index(at).ok_or_else(|| {
             PyIndexError::new_err(format!(
                 "coefficient address (term={term}, level={level}, column={column}) out of range"
             ))
@@ -129,13 +129,7 @@ impl PyCoefficientLayout {
     fn address(&self, index: usize) -> PyResult<(usize, u32, usize)> {
         self.inner
             .address(index)
-            .map(|at| {
-                (
-                    at.channel.term,
-                    at.level.try_as_u32().expect("u32 factor label"),
-                    at.channel.column,
-                )
-            })
+            .map(|at| (at.channel.term, at.level, at.channel.column))
             .ok_or_else(|| {
                 PyIndexError::new_err(format!(
                     "x index {index} out of range (n_dofs={})",
@@ -170,7 +164,7 @@ pub(crate) fn into_py_result(py: Python<'_>, result: SolveResult) -> PySolveResu
             .iter()
             .map(|u| PyUnidentifiedDirection {
                 term: u.channel.term,
-                level: u.level.try_as_u32().expect("u32 factor label"),
+                level: u.level,
                 column: u.channel.column,
             })
             .collect(),
@@ -205,7 +199,7 @@ pub(crate) fn into_py_batch_result(
             .iter()
             .map(|u| PyUnidentifiedDirection {
                 term: u.channel.term,
-                level: u.level.try_as_u32().expect("u32 factor label"),
+                level: u.level,
                 column: u.channel.column,
             })
             .collect(),

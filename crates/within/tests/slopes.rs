@@ -89,13 +89,7 @@ fn solve_single(
 fn drops(r: &SolveResult) -> Vec<(usize, u32, usize)> {
     r.unidentified
         .iter()
-        .map(|d| {
-            (
-                d.channel.term,
-                d.level.try_as_u32().expect("u32 factor label"),
-                d.channel.column,
-            )
-        })
+        .map(|d| (d.channel.term, d.level, d.channel.column))
         .collect()
 }
 
@@ -264,13 +258,7 @@ fn batch_solve_shares_unidentified_and_back_transforms_each_rhs() {
     let batch_drops: Vec<_> = batch
         .unidentified
         .iter()
-        .map(|d| {
-            (
-                d.channel.term,
-                d.level.try_as_u32().expect("u32 factor label"),
-                d.channel.column,
-            )
-        })
+        .map(|d| (d.channel.term, d.level, d.channel.column))
         .collect();
     assert_eq!(batch_drops, [(0, 1, 1)]);
     // Each RHS block is bit-identical to its single solve, back-transform included.

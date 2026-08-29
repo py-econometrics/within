@@ -13,7 +13,7 @@ use crate::Effect;
 fn at(term: usize, level: u32, column: usize) -> CoefficientAddress {
     CoefficientAddress {
         channel: Channel { term, column },
-        level: level.into(),
+        level,
     }
 }
 
@@ -75,19 +75,19 @@ fn coefficient_layout_translates_addresses_both_ways() {
     assert_eq!(layout.n_levels(2), None);
 
     // Forward matches the documented `offset + column * n_levels + level`.
-    assert_eq!(layout.index(&at(0, 2, 0)), Some(2));
-    assert_eq!(layout.index(&at(1, 0, 0)), Some(3)); // term-1 intercept, level 0
-    assert_eq!(layout.index(&at(1, 1, 1)), Some(6)); // term-1 slope, level 1
+    assert_eq!(layout.index(at(0, 2, 0)), Some(2));
+    assert_eq!(layout.index(at(1, 0, 0)), Some(3)); // term-1 intercept, level 0
+    assert_eq!(layout.index(at(1, 1, 1)), Some(6)); // term-1 slope, level 1
     assert_eq!(layout.n_dofs(), 7);
 
     // Out-of-range coordinates are rejected, not silently wrapped.
-    assert_eq!(layout.index(&at(1, 2, 0)), None); // level past n_levels
-    assert_eq!(layout.index(&at(1, 0, 2)), None); // column past n_columns
-    assert_eq!(layout.index(&at(2, 0, 0)), None); // term past n_terms
+    assert_eq!(layout.index(at(1, 2, 0)), None); // level past n_levels
+    assert_eq!(layout.index(at(1, 0, 2)), None); // column past n_columns
+    assert_eq!(layout.index(at(2, 0, 0)), None); // term past n_terms
     assert_eq!(layout.address(7), None);
 
     // `address` inverts `index` for every flat slot.
     for i in 0..layout.n_dofs() {
-        assert_eq!(layout.index(&layout.address(i).expect("in range")), Some(i));
+        assert_eq!(layout.index(layout.address(i).expect("in range")), Some(i));
     }
 }

@@ -18,7 +18,7 @@ use crate::observation::ObservationFrame;
 use crate::operator::design::gather_apply;
 use crate::operator::schwarz::{build_preconditioner, Preconditioner};
 use crate::operator::DesignOperator;
-use crate::{BuildError, BuildWarning, FactorLabel, SolveError, WithinError};
+use crate::{BuildError, BuildWarning, SolveError, WithinError};
 
 mod reparam;
 #[cfg(test)]
@@ -112,21 +112,21 @@ impl From<&Preconditioner> for PreconditionerInput {
 }
 
 /// One coefficient of the design: a [`Channel`] at one level of its term.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CoefficientAddress {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Coefficient<L> {
     /// The coefficient column this address sits in.
     pub channel: Channel,
-    /// Caller-visible factor label.
-    pub level: FactorLabel,
+    /// The level, in whichever space `L` names.
+    pub level: L,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct CoefficientPosition {
-    channel: Channel,
-    level: usize,
-}
+/// A coefficient addressed by the caller's own factor label.
+pub type CoefficientAddress = Coefficient<u32>;
 
-impl CoefficientPosition {
+/// A coefficient addressed by its internal compact position.
+type CoefficientPosition = Coefficient<usize>;
+
+impl Coefficient<usize> {
     fn to_caller_address(self, design: &Design) -> CoefficientAddress {
         let level = design.terms[self.channel.term]
             .encoding
@@ -196,14 +196,14 @@ impl CoefficientLayout {
 
     /// Flat [`SolveResult::x`] index of `at`, or `None` if its term,
     /// column, or caller-visible level label is out of range.
-    pub fn index(&self, at: &CoefficientAddress) -> Option<usize> {
+    pub fn index(&self, at: CoefficientAddress) -> Option<usize> {
         let term = self.terms.get(at.channel.term)?;
 
         if at.channel.column >= term.n_columns {
             return None;
         }
 
-        let position = term.encoding.position(&at.level)?;
+        let position = term.encoding.position(at.level)?;
 
         Some(term.offset + at.channel.column * term.encoding.n_levels() + position)
     }

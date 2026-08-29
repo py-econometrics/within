@@ -217,9 +217,8 @@ let r2 = solver.solve(&another_y, &LsmrOptions::default())?;  // reuses precondi
 | `SchurMode` | `Approximate(ApproxSchurConfig)` \| `Exact` |
 | `Preconditioner` | Opaque built handle — reuse via `Solver::new(.., precond)` (owned or `&`) |
 | `Effect` | `Effect::new(levels: &[u32], intercept: bool, slopes: impl IntoIterator<Item = &[f64]>) -> Result<Self, BuildError>` |
-| `FactorLabel` | Opaque caller-visible label; currently constructible from `u32` and readable with `try_as_u32()` |
-| `CoefficientAddress` | `{ channel: Channel { term, column }, level: FactorLabel }` |
-| `CoefficientLayout` | `index(&CoefficientAddress) -> Option<usize>`, `address(usize) -> Option<CoefficientAddress>`, `n_dofs()`, `n_terms()`, `n_levels(term)`, `n_columns(term)` |
+| `CoefficientAddress` | `{ channel: Channel { term, column }, level: u32 }` |
+| `CoefficientLayout` | `index(CoefficientAddress) -> Option<usize>`, `address(usize) -> Option<CoefficientAddress>`, `n_dofs()`, `n_terms()`, `n_levels(term)`, `n_columns(term)` |
 
 ### Varying slopes
 
@@ -241,8 +240,8 @@ let terms = vec![
 let r = solve(terms, &y, None, None, None)?;
 
 // Read firm level 3's x-slope via the layout map (column 0 = intercept, 1 = first slope):
-let at = CoefficientAddress { channel: Channel { term: 0, column: 1 }, level: 3.into() };
-println!("{}", r.x[r.layout.index(&at).unwrap()]);
+let at = CoefficientAddress { channel: Channel { term: 0, column: 1 }, level: 3 };
+println!("{}", r.x[r.layout.index(at).unwrap()]);
 ```
 
 `Solver::new` takes the same `Vec<Effect>`, so a slope design can be reused
