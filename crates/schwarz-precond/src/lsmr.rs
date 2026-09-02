@@ -96,6 +96,7 @@ pub trait EscalationHandler {
 
 /// Escalates after `window` consecutive contraction ratios exceed `threshold`.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Staleness {
     window: usize,
     threshold: f64,
@@ -127,6 +128,43 @@ impl Staleness {
             return Err(StalenessError::InvalidThreshold { threshold });
         }
         Ok(Self { window, threshold })
+    }
+
+    /// Consecutive stalled iterations required before escalating.
+    pub fn window(&self) -> usize {
+        self.window
+    }
+
+    /// Contraction ratio above which an iteration counts as stalled.
+    pub fn threshold(&self) -> f64 {
+        self.threshold
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for Staleness {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        struct Helper {
+            window: usize,
+            threshold: f64,
+        }
+
+        let helper = Helper::deserialize(deserializer)?;
+        Self::try_new(helper.window, helper.threshold).map_err(serde::de::Error::custom)
+    }
+}
+
+impl Default for Staleness {
+    /// Four contractions above 0.7 (< 30% residual reduction each) signal a stalled solve.
+    fn default() -> Self {
+        Self {
+            window: 4,
+            threshold: 0.7,
+        }
     }
 }
 

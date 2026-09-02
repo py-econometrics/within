@@ -214,6 +214,17 @@ fn test_staleness_escalates_only_the_stalling_preconditioner() {
 }
 
 #[test]
+fn test_staleness_default_exposes_its_fields() {
+    let default = Staleness::default();
+    assert_eq!(default.window(), 4);
+    assert_eq!(default.threshold(), 0.7);
+    assert_eq!(
+        default,
+        Staleness::try_new(default.window(), default.threshold()).expect("default is valid")
+    );
+}
+
+#[test]
 fn test_staleness_rejects_invalid_configuration() {
     assert!(matches!(
         Staleness::try_new(0, 0.7),
