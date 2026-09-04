@@ -1,7 +1,4 @@
-//! Per-level weighted moments of a term's loading columns, built once and read
-//! by both the collinearity screen and the slope whitening.
-
-use rayon::prelude::*;
+//! Per-level weighted moments of a term's loading columns, the input to slope whitening.
 
 use super::Design;
 
@@ -9,40 +6,10 @@ use super::Design;
 /// within-level variance falls to `RANK_TOL` × its own initial variance.
 pub(crate) const RANK_TOL: f64 = 1e-10;
 
-/// Every term's [`LevelMoments`], indexed by term.
-pub(crate) struct TermMoments(Vec<LevelMoments>);
-
-impl TermMoments {
-    /// `None` when no term carries a covariate, so nothing downstream has work.
-    pub(crate) fn build(design: &Design<'_>, weights: Option<&[f64]>) -> Option<Self> {
-        let has_slopes = design
-            .terms
-            .iter()
-            .any(|t| t.columns.iter().any(|c| c.covariate().is_some()));
-        has_slopes.then(|| {
-            Self(
-                (0..design.terms.len())
-                    .into_par_iter()
-                    .map(|term| LevelMoments::build(design, term, weights))
-                    .collect(),
-            )
-        })
-    }
-}
-
-impl std::ops::Index<usize> for TermMoments {
-    type Output = LevelMoments;
-
-    fn index(&self, term: usize) -> &LevelMoments {
-        &self.0[term]
-    }
-}
-
 /// One-pass weighted within-level moments (multivariate Welford); structural
 /// zeros stay exact, so rank drops survive a zero tolerance.
 pub(crate) struct LevelMoments {
-    /// Frame columns of the term's covariates, in coefficient-column order.
-    covariates: Box<[u32]>,
+    v: usize,
     intercept: bool,
     w_sum: Vec<f64>,
     mean: Vec<f64>,
@@ -60,26 +27,20 @@ fn tri_len(v: usize) -> usize {
 }
 
 impl LevelMoments {
-    fn build(design: &Design<'_>, term: usize, weights: Option<&[f64]>) -> Self {
+    pub(crate) fn build(design: &Design<'_>, term: usize, weights: Option<&[f64]>) -> Self {
         let meta = &design.terms[term];
-        let covariates: Box<[u32]> = meta
-            .columns
-            .iter()
-            .filter_map(|c| c.covariate().copied())
+        let zs: Vec<&[f64]> = meta
+            .covariates()
+            .map(|c| design.frame.loading_column(c as usize))
             .collect();
-        let v = covariates.len();
+        let v = zs.len();
         let mut moments = Self {
-            intercept: v < meta.columns.len(),
+            v,
+            intercept: meta.has_intercept(),
             w_sum: vec![0.0; meta.n_levels],
             mean: vec![0.0; meta.n_levels * v],
             comoment: vec![0.0; meta.n_levels * tri_len(v)],
-            covariates,
         };
-        let zs: Vec<&[f64]> = moments
-            .covariates
-            .iter()
-            .map(|&c| design.frame.loading_column(c as usize))
-            .collect();
         let mut z_row = vec![0.0; v];
         let mut delta = vec![0.0; v];
         for (obs, &level) in design.frame.level_column(term).iter().enumerate() {
@@ -96,7 +57,7 @@ impl LevelMoments {
         if w <= 0.0 {
             return;
         }
-        let v = self.n_slopes();
+        let v = self.v;
         self.w_sum[level] += w;
         let ratio = w / self.w_sum[level];
         let mean = &mut self.mean[level * v..][..v];
@@ -113,29 +74,12 @@ impl LevelMoments {
         }
     }
 
-    pub(crate) fn n_slopes(&self) -> usize {
-        self.covariates.len()
-    }
-
-    /// Frame columns of the term's covariates, in coefficient-column order.
-    pub(crate) fn covariates(&self) -> &[u32] {
-        &self.covariates
-    }
-
-    pub(crate) fn intercept(&self) -> bool {
-        self.intercept
-    }
-
-    pub(crate) fn n_levels(&self) -> usize {
-        self.w_sum.len()
-    }
-
     pub(crate) fn w_sum(&self, level: usize) -> f64 {
         self.w_sum[level]
     }
 
     pub(crate) fn mean(&self, level: usize) -> &[f64] {
-        let v = self.n_slopes();
+        let v = self.v;
         &self.mean[level * v..][..v]
     }
 
@@ -143,7 +87,7 @@ impl LevelMoments {
     /// left in `scratch` so a sweep over levels allocates nothing. `G` is
     /// centered against a pinned intercept, raw (`M2 + w·μμᵀ`) without one.
     pub(crate) fn basis(&self, level: usize, scratch: &mut BasisScratch) {
-        let v = self.n_slopes();
+        let v = self.v;
         let com = &self.comoment[level * tri_len(v)..][..tri_len(v)];
         let mean = self.mean(level);
         let w = self.w_sum[level];

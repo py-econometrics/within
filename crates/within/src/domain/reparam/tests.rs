@@ -2,7 +2,6 @@
 //! not reachable through the public API.
 
 use crate::channel::Channel;
-use crate::domain::level_moments::TermMoments;
 use crate::domain::Effect;
 
 use super::*;
@@ -27,18 +26,15 @@ fn three_term_effects() -> Vec<Effect<'static>> {
 #[test]
 fn build_whitens_each_slope_bearing_term() {
     let design = Design::new(three_term_effects()).unwrap();
-    let moments = TermMoments::build(&design, None).unwrap();
-    let rp = SlopeReparam::build(&design, &moments).unwrap();
-    assert!(rp.unidentified.is_empty());
+    let basis = SlopeReparam::build(&design, None).unwrap();
+    assert!(basis.unidentified.is_empty());
 
     for term in [0, 2] {
         let meta = &design.terms[term];
         let levels = design.frame.level_column(term);
         let us: Vec<&[f64]> = meta
-            .columns
-            .iter()
-            .filter_map(|c| c.covariate())
-            .map(|&k| rp.loading_column(k as usize))
+            .covariates()
+            .map(|k| basis.loading_column(k as usize))
             .collect();
         for level in 0..meta.n_levels {
             let obs: Vec<usize> = (0..levels.len())
@@ -61,6 +57,12 @@ fn build_whitens_each_slope_bearing_term() {
 }
 
 #[test]
+fn slope_free_design_has_no_reparam() {
+    let design = Design::from_levels_for_test(vec![vec![0, 1, 0], vec![0, 0, 1]]);
+    assert!(SlopeReparam::build(&design, None).is_none());
+}
+
+#[test]
 fn unidentified_directions_ascend_across_terms() {
     // Index-order term iteration keeps the list ascending without any sort.
     let f0 = [0u32, 0, 1, 1, 2, 2];
@@ -72,10 +74,9 @@ fn unidentified_directions_ascend_across_terms() {
         Effect::new(&f1, true, [&z1[..]]).unwrap(),
     ];
     let design = Design::new(effects).unwrap();
-    let moments = TermMoments::build(&design, None).unwrap();
-    let rp = SlopeReparam::build(&design, &moments).unwrap();
+    let basis = SlopeReparam::build(&design, None).unwrap();
     assert_eq!(
-        rp.unidentified,
+        basis.unidentified,
         vec![
             CoefficientAddress {
                 channel: Channel { term: 0, column: 1 },
@@ -92,12 +93,11 @@ fn unidentified_directions_ascend_across_terms() {
 #[test]
 fn back_transform_leaves_other_terms_untouched() {
     let design = Design::new(three_term_effects()).unwrap();
-    let moments = TermMoments::build(&design, None).unwrap();
-    let rp = SlopeReparam::build(&design, &moments).unwrap();
+    let basis = SlopeReparam::build(&design, None).unwrap();
 
     let mut x: Vec<f64> = (0..design.n_dofs).map(|i| 1.0 + i as f64).collect();
     let before = x.clone();
-    rp.back_transform(&mut x);
+    basis.back_transform(&mut x);
 
     // Plain term 1 sits between the two slope-bearing blocks.
     let (t1, t2) = (design.terms[1].offset, design.terms[2].offset);

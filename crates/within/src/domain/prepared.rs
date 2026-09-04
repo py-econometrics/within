@@ -1,4 +1,3 @@
-use super::level_moments::TermMoments;
 use super::{Design, SlopeReparam};
 
 /// A [`Design`] plus the whitened slope basis one weight vector determines.
@@ -9,8 +8,8 @@ pub(crate) struct PreparedDesign<'a> {
 }
 
 impl<'a> PreparedDesign<'a> {
-    pub(crate) fn new(design: Design<'a>, moments: Option<&TermMoments>) -> Self {
-        let reparam = moments.and_then(|m| SlopeReparam::build(&design, m));
+    pub(crate) fn new(design: Design<'a>, weights: Option<&[f64]>) -> Self {
+        let reparam = SlopeReparam::build(&design, weights);
         Self { design, reparam }
     }
 
@@ -31,8 +30,7 @@ mod tests {
     impl<'a> PreparedDesign<'a> {
         /// Unweighted, whitened like a solver would.
         pub(crate) fn unweighted_for_test(design: Design<'a>) -> Self {
-            let moments = TermMoments::build(&design, None);
-            Self::new(design, moments.as_ref())
+            Self::new(design, None)
         }
     }
 
