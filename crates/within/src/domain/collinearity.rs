@@ -5,7 +5,7 @@ use std::ops::Range;
 
 use rayon::prelude::*;
 
-use super::{Design, PreparedDesign};
+use super::{Design, PreparedDesign, TermMeta};
 use crate::channel::Channel;
 use crate::BuildWarning;
 
@@ -20,7 +20,7 @@ const ROWS_PER_TASK: usize = 1 << 16;
 
 pub(crate) fn detect_collinear_slopes(prepared: &PreparedDesign<'_>) -> Vec<BuildWarning> {
     let design = &prepared.design;
-    if design.n_factors() < 2 || design.frame.n_loading_columns() == 0 {
+    if design.n_factors() < 2 || !design.terms.iter().any(TermMeta::has_slopes) {
         return Vec::new();
     }
     let budget = TABLE_BUDGET_BYTES / std::mem::size_of::<f64>() / design.n_factors();
@@ -186,7 +186,7 @@ impl Screen<'_> {
         *w_sum = running;
     }
 
-    /// `Σw·c` becomes the fit's constant `c̄`; `Σw·u·c` already is its slope, `u` being orthonormal.
+    /// `Σw·c` becomes the constant `c̄`; `Σw·u·c` is already the slope since `u` is orthonormal.
     fn to_coefficients(&self, table: &mut [f64], level_weight: &[f64]) {
         let v = self.us.len();
         for (row, &w_sum) in table.chunks_exact_mut(self.stride).zip(level_weight) {

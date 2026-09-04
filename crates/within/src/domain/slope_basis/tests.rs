@@ -33,10 +33,8 @@ fn build_whitens_each_slope_bearing_term() {
         let meta = &design.terms[term];
         let levels = design.frame.level_column(term);
         let us: Vec<&[f64]> = meta
-            .columns
-            .iter()
-            .filter_map(|c| c.covariate())
-            .map(|&k| basis.loading_column(k as usize))
+            .covariates()
+            .map(|k| basis.loading_column(k as usize))
             .collect();
         for level in 0..meta.n_levels {
             let obs: Vec<usize> = (0..levels.len())
