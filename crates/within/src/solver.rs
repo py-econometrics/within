@@ -301,8 +301,7 @@ impl BatchSolveResult {
 ///
 /// Ownership: each observation column is borrowed or owned independently
 /// (`Cow`); a solver that outlives its inputs — e.g. one returned across the
-/// Python boundary — uses owned columns. Weights are always owned; for a
-/// one-shot weighted solve from a borrowed slice, use the free [`solve`] function.
+/// Python boundary — uses owned columns.
 pub struct Solver<'a> {
     design: Design<'a>,
     /// `sqrt(W)` in the design's internal observation order, computed once and
@@ -351,26 +350,19 @@ impl<'a> Solver<'a> {
     /// - `PreconditionerConfig::Diagonal` — use diagonal/Jacobi preconditioning
     /// - [`Preconditioner`] or `&Preconditioner` — reuse a previously built one
     ///
-    /// `weights` is `None` for unweighted, or an owned `Vec<f64>` that the
-    /// solver takes ownership of (it re-reads the weights on every solve). To
-    /// solve once from a borrowed slice, use the free [`solve`] function.
+    /// `weights` is `None` for unweighted; the solver keeps only `√w` in its own order.
     ///
     /// LSMR tuning ([`LsmrOptions`]) is supplied per call to [`Solver::solve`] /
     /// [`Solver::solve_batch`], not at construction; preconditioner factorization
     /// state is the only expensive thing built here.
     pub fn new(
         design: impl IntoDesign<'a>,
-        weights: Option<Vec<f64>>,
+        weights: Option<&[f64]>,
         preconditioner: impl Into<PreconditionerInput>,
     ) -> Result<Self, BuildError> {
         let mut design = design.into_design()?;
-        design.validate_weights(weights.as_deref())?;
-
-        // The match keeps the unpermuted arm a plain move rather than a borrow-and-copy.
-        let weights = match &design.obs_perm {
-            Some(_) => weights.map(|w| design.permute_obs_in(&w).into_owned()),
-            None => weights,
-        };
+        design.validate_weights(weights)?;
+        let weights = weights.map(|w| design.permute_obs_in(w));
 
         // Both readers below need the raw loadings, so the moments precede whitening.
         let moments = TermMoments::build(&design, weights.as_deref());
@@ -405,12 +397,7 @@ impl<'a> Solver<'a> {
 
         warnings.extend(build_warnings);
 
-        let sqrt_weights = weights.map(|mut w| {
-            for wi in &mut w {
-                *wi = wi.sqrt();
-            }
-            w
-        });
+        let sqrt_weights = weights.map(|w| w.iter().map(|wi| wi.sqrt()).collect());
 
         Ok(Self {
             design,
@@ -627,7 +614,7 @@ pub fn solve<'a, 'o>(
     preconditioner: impl Into<PreconditionerInput>,
 ) -> Result<SolveResult, WithinError> {
     let t_start = Instant::now();
-    let solver = Solver::new(design, weights.map(|w| w.to_vec()), preconditioner)?;
+    let solver = Solver::new(design, weights, preconditioner)?;
     let time_setup = t_start.elapsed().as_secs_f64();
     let mut result = solver.solve(y, lsmr)?;
     // Include solver construction (preconditioner build) in setup time
@@ -648,7 +635,7 @@ pub fn solve_batch<'a, 'o>(
     preconditioner: impl Into<PreconditionerInput>,
 ) -> Result<BatchSolveResult, WithinError> {
     let t_start = Instant::now();
-    let solver = Solver::new(design, weights.map(|w| w.to_vec()), preconditioner)?;
+    let solver = Solver::new(design, weights, preconditioner)?;
     let time_setup = t_start.elapsed().as_secs_f64();
     let mut result = solver.solve_batch(ys, lsmr)?;
     result.time_setup += time_setup;

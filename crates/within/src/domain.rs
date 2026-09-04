@@ -219,6 +219,18 @@ impl<'a> Design<'a> {
             terms.push(meta);
         }
 
+        let claimed: usize = terms
+            .iter()
+            .flat_map(|t| t.columns.iter())
+            .filter(|c| c.covariate().is_some())
+            .count();
+        if claimed != frame.n_loading_columns() {
+            return Err(BuildError::UnclaimedLoadingColumns {
+                claimed,
+                provided: frame.n_loading_columns(),
+            });
+        }
+
         // Rejected here rather than left to panic in `to_u32`.
         if u32::try_from(offset).is_err() {
             return Err(BuildError::DofSpaceExceedsU32 { n_dofs: offset });
@@ -468,17 +480,15 @@ mod tests {
     }
 
     #[test]
-    fn continuous_column_stays_row_aligned_after_locality_sort() {
-        let design = Design::from_frame(frame(
-            vec![vec![2, 0, 1, 0]],
-            vec![vec![10.0, 20.0, 30.0, 40.0]],
-        ))
-        .unwrap();
-
-        let perm = design.obs_perm.as_ref().expect("permutation applied");
-        assert_eq!(perm, &[1, 3, 2, 0]);
-        assert_eq!(design.frame.level_column(0), [0, 0, 1, 2]);
-        assert_eq!(design.frame.loading_column(0), [20.0, 40.0, 30.0, 10.0]);
+    fn from_frame_rejects_unclaimed_loading_columns() {
+        let err = Design::from_frame(frame(vec![vec![0, 1]], vec![vec![1.0, 2.0]])).unwrap_err();
+        assert!(matches!(
+            err,
+            BuildError::UnclaimedLoadingColumns {
+                claimed: 0,
+                provided: 1
+            }
+        ));
     }
 
     #[test]
