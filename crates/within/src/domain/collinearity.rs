@@ -5,7 +5,7 @@ use std::ops::Range;
 
 use rayon::prelude::*;
 
-use super::{Design, PreparedDesign, TermMeta};
+use super::{row_weight, Design, PreparedDesign, TermMeta};
 use crate::channel::Channel;
 use crate::BuildWarning;
 
@@ -63,7 +63,7 @@ fn residual_shares(
     if m == 0 {
         return Vec::new();
     }
-    let (design, weights) = (&prepared.design, prepared.weights.as_deref());
+    let (design, sqrt_weights) = (&prepared.design, prepared.sqrt_weights.as_deref());
     let meta = &design.terms[term];
     let levels = design.frame.level_column(term);
     let us: Vec<&[f64]> = meta
@@ -80,7 +80,7 @@ fn residual_shares(
     let plan = ScreenPlan::new(budget, n_levels, stride);
     let screen = Screen {
         levels,
-        weights,
+        sqrt_weights,
         us,
         columns,
         intercept,
@@ -128,7 +128,7 @@ fn residual_shares(
 
 struct Screen<'a> {
     levels: &'a [u32],
-    weights: Option<&'a [f64]>,
+    sqrt_weights: Option<&'a [f64]>,
     /// The term's slope columns in the solve basis.
     us: Vec<&'a [f64]>,
     columns: Vec<&'a [f64]>,
@@ -147,7 +147,7 @@ impl Screen<'_> {
     ) -> impl Iterator<Item = (usize, f64, usize)> + '_ {
         rows.filter_map(move |i| {
             let obs = self.order.obs(i);
-            let w = self.weights.map_or(1.0, |w| w[obs]);
+            let w = row_weight(self.sqrt_weights, obs);
             (w > 0.0).then(|| (obs, w, self.levels[obs] as usize - first))
         })
     }

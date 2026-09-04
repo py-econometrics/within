@@ -39,14 +39,14 @@ struct LevelTransform {
 }
 
 impl SlopeBasis {
-    pub(crate) fn build(design: &Design<'_>, weights: Option<&[f64]>) -> Self {
+    pub(crate) fn build(design: &Design<'_>, sqrt_weights: Option<&[f64]>) -> Self {
         let mut loadings = vec![Vec::new(); design.frame.n_loading_columns()];
         let slope_terms: Vec<usize> = (0..design.terms.len())
             .filter(|&t| design.terms[t].has_slopes())
             .collect();
         let moments: Vec<LevelMoments> = slope_terms
             .par_iter()
-            .map(|&term| LevelMoments::build(design, term, weights))
+            .map(|&term| LevelMoments::build(design, term, sqrt_weights))
             .collect();
         let mut unidentified = Vec::new();
         let terms = slope_terms
