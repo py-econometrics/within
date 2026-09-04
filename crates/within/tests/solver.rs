@@ -314,11 +314,11 @@ fn test_internal_locality_sort_is_transparent() {
     let params = default_params();
     let precond = additive_precond();
 
-    let make_solver = |weights: Option<Vec<f64>>| {
+    let make_solver = |weights: Option<&[f64]>| {
         let design = common::make_design(vec![col0.clone(), col1.clone()]).expect("design");
         Solver::new(design, weights, &precond).expect("solver")
     };
-    let make_oracle = |weights: Option<Vec<f64>>| {
+    let make_oracle = |weights: Option<&[f64]>| {
         let frame =
             ObservationFrame::new(vec![col0.clone().into(), col1.clone().into()], Vec::new())
                 .expect("frame");
@@ -327,10 +327,8 @@ fn test_internal_locality_sort_is_transparent() {
     };
 
     // The weighted run also exercises the weights-permutation path.
-    for weights in [None, Some(w)] {
-        let oracle = make_oracle(weights.clone())
-            .solve(&y, &params)
-            .expect("oracle");
+    for weights in [None, Some(&w[..])] {
+        let oracle = make_oracle(weights).solve(&y, &params).expect("oracle");
         let sorted = make_solver(weights).solve(&y, &params).expect("sorted");
         common::assert_solutions_close(&sorted.x, &oracle.x, 1e-7);
         common::assert_solutions_close(&sorted.demeaned, &oracle.demeaned, 1e-7);

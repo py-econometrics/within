@@ -289,8 +289,7 @@ impl BatchSolveResult {
 ///
 /// Ownership: each observation column is borrowed or owned independently
 /// (`Cow`); a solver that outlives its inputs — e.g. one returned across the
-/// Python boundary — uses owned columns. Weights are always owned; for a
-/// one-shot weighted solve from a borrowed slice, use the free [`solve`] function.
+/// Python boundary — uses owned columns.
 pub struct Solver<'a> {
     prepared: PreparedDesign<'a>,
     preconditioner: Option<Preconditioner>,
@@ -334,16 +333,14 @@ impl<'a> Solver<'a> {
     /// - `PreconditionerConfig::Diagonal` — use diagonal/Jacobi preconditioning
     /// - [`Preconditioner`] or `&Preconditioner` — reuse a previously built one
     ///
-    /// `weights` is `None` for unweighted, or an owned `Vec<f64>` that the
-    /// solver takes ownership of (it re-reads the weights on every solve). To
-    /// solve once from a borrowed slice, use the free [`solve`] function.
+    /// `weights` is `None` for unweighted; the solver keeps only `√w` in its own order.
     ///
     /// LSMR tuning ([`LsmrOptions`]) is supplied per call to [`Solver::solve`] /
     /// [`Solver::solve_batch`], not at construction; preconditioner factorization
     /// state is the only expensive thing built here.
     pub fn new(
         design: impl IntoDesign<'a>,
-        weights: Option<Vec<f64>>,
+        weights: Option<&[f64]>,
         preconditioner: impl Into<PreconditionerInput>,
     ) -> Result<Self, BuildError> {
         let prepared = PreparedDesign::new(design.into_design()?, weights)?;
@@ -453,12 +450,6 @@ impl<'a> Solver<'a> {
         })
     }
 
-    /// Per-level directions the data cannot identify, shared across all RHS:
-    /// identification depends only on the design and weights, never on `y`.
-    fn unidentified(&self) -> Vec<CoefficientAddress> {
-        self.prepared.basis.unidentified.clone()
-    }
-
     /// Solve for a single RHS vector with the given LSMR tuning.
     pub fn solve<'o>(
         &self,
@@ -473,7 +464,7 @@ impl<'a> Solver<'a> {
 
         Ok(SolveResult {
             x: solution.x,
-            unidentified: self.unidentified(),
+            unidentified: self.prepared.basis.unidentified.clone(),
             warnings: self.warnings.clone(),
             layout: CoefficientLayout::from_design(&self.prepared.design),
             demeaned: solution.demeaned,
@@ -522,7 +513,7 @@ impl<'a> Solver<'a> {
 
         Ok(BatchSolveResult {
             x,
-            unidentified: self.unidentified(),
+            unidentified: self.prepared.basis.unidentified.clone(),
             warnings: self.warnings.clone(),
             layout: CoefficientLayout::from_design(design),
             demeaned,
@@ -577,7 +568,7 @@ pub fn solve<'a, 'o>(
     preconditioner: impl Into<PreconditionerInput>,
 ) -> Result<SolveResult, WithinError> {
     let t_start = Instant::now();
-    let solver = Solver::new(design, weights.map(|w| w.to_vec()), preconditioner)?;
+    let solver = Solver::new(design, weights, preconditioner)?;
     let time_setup = t_start.elapsed().as_secs_f64();
     let mut result = solver.solve(y, lsmr)?;
     // Include solver construction (preconditioner build) in setup time
@@ -598,7 +589,7 @@ pub fn solve_batch<'a, 'o>(
     preconditioner: impl Into<PreconditionerInput>,
 ) -> Result<BatchSolveResult, WithinError> {
     let t_start = Instant::now();
-    let solver = Solver::new(design, weights.map(|w| w.to_vec()), preconditioner)?;
+    let solver = Solver::new(design, weights, preconditioner)?;
     let time_setup = t_start.elapsed().as_secs_f64();
     let mut result = solver.solve_batch(ys, lsmr)?;
     result.time_setup += time_setup;

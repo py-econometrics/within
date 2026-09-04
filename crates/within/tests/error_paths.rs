@@ -46,7 +46,7 @@ fn test_weight_count_mismatch_error() {
     )
     .expect("frame ok");
     let design = Design::from_frame(frame).expect("valid design");
-    let result = Solver::new(design, Some(vec![1.0, 2.0]), None);
+    let result = Solver::new(design, Some(&[1.0, 2.0]), None);
     let err = result.expect_err("expected WeightCountMismatch error, got Ok");
     match err {
         BuildError::WeightCountMismatch { .. } => {}

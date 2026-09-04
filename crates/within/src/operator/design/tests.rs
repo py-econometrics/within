@@ -407,7 +407,7 @@ mod slope_design_tests {
             Effect::new(&small, true, [&z[2][..], &z[3][..]]).unwrap(),
         ];
         let weights: Vec<f64> = (0..n).map(|i| 0.5 + noise(i).abs()).collect();
-        let prepared = PreparedDesign::new(Design::new(effects).unwrap(), Some(weights)).unwrap();
+        let prepared = PreparedDesign::new(Design::new(effects).unwrap(), Some(&weights)).unwrap();
         let op = DesignOperator::new(&prepared);
 
         let x: Vec<f64> = (0..prepared.design.n_dofs)
@@ -460,7 +460,7 @@ mod weighted_adjoint_proptests {
                 .collect();
 
             let dm = PreparedDesign::from_levels_for_test(vec![fa, fb]);
-            let dm_weighted = PreparedDesign::new(dm.design.clone(), Some(weights)).unwrap();
+            let dm_weighted = PreparedDesign::new(dm.design.clone(), Some(&weights)).unwrap();
             // Internal row order, like `dx` and `r` below.
             let sqrt_weights = dm_weighted.sqrt_weights.as_deref().unwrap();
 

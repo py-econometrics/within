@@ -121,7 +121,7 @@ proptest! {
             maxiter: 2000,
             local_size: Some(10),
         };
-        let result = Solver::new(effects, Some(weights.clone()), PreconditionerConfig::default())
+        let result = Solver::new(effects, Some(weights), PreconditionerConfig::default())
             .expect("build solver")
             .solve(y.as_slice(), &params)
             .expect("solve");
