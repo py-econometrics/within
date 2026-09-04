@@ -1,26 +1,24 @@
-//! Within-level reparametrization of a design's varying-slope terms.
+//! Within-level orthonormal basis of a design's varying-slope terms.
 
-use crate::domain::level_moments::{BasisScratch, TermMoments};
-use crate::domain::Design;
-
-use super::CoefficientAddress;
-use crate::channel::Channel;
+use super::level_moments::{BasisScratch, TermMoments};
+use super::Design;
+use crate::channel::{Channel, CoefficientAddress};
 use crate::linalg::dot;
 
 #[cfg(test)]
 mod tests;
 
-/// Per-level change of basis making each slope-bearing term's within-level
-/// Gram the identity; [`Self::back_transform`] restores the user's
-/// parametrization.
-pub(crate) struct SlopeReparam {
-    terms: Vec<TermReparam>,
+/// Per-level basis making each slope term's within-level Gram the identity; empty without slopes.
+pub(crate) struct SlopeBasis {
+    terms: Vec<TermBasis>,
+    /// The frame's loading columns in the solve basis, indexed like the frame's.
+    loadings: Vec<Vec<f64>>,
     /// Directions the data cannot identify, ascending in `(term, level, column)`.
     pub(crate) unidentified: Vec<CoefficientAddress>,
 }
 
 /// One slope-bearing term's whitening state.
-struct TermReparam {
+struct TermBasis {
     offset: usize,
     n_levels: usize,
     /// Coefficient column of the term's constant, if it has one.
@@ -38,28 +36,34 @@ struct LevelTransform {
     center: Box<[f64]>,
 }
 
-impl SlopeReparam {
-    /// Orthonormalize every slope-bearing term's loading columns in place;
-    /// `None` for slope-free designs. Unidentified directions become
-    /// exact-zero columns, so the minimal-norm solve leaves exact-`0`
-    /// coefficients.
-    pub(crate) fn build(design: &mut Design<'_>, moments: &TermMoments) -> Option<Self> {
+impl SlopeBasis {
+    pub(crate) fn build(design: &Design<'_>, weights: Option<&[f64]>) -> Self {
+        let mut loadings = vec![Vec::new(); design.frame.n_loading_columns()];
         let mut terms = Vec::new();
         let mut unidentified = Vec::new();
-        for term in 0..design.terms.len() {
-            if !design.terms[term]
-                .columns
-                .iter()
-                .any(|c| c.covariate().is_some())
-            {
-                continue;
+        if let Some(moments) = TermMoments::build(design, weights) {
+            for term in (0..design.terms.len()).filter(|&t| design.terms[t].has_slopes()) {
+                terms.push(TermBasis::build(
+                    design,
+                    term,
+                    &moments,
+                    &mut loadings,
+                    &mut unidentified,
+                ));
             }
-            terms.push(TermReparam::build(design, term, moments, &mut unidentified));
         }
-        (!terms.is_empty()).then_some(Self {
+        // `Design::new` claims every loading column, so whitening leaves none unwritten.
+        debug_assert!(loadings.iter().all(|l| l.len() == design.n_obs));
+        Self {
             terms,
+            loadings,
             unidentified,
-        })
+        }
+    }
+
+    /// Loading column `column` in the solve basis.
+    pub(crate) fn loading_column(&self, column: usize) -> &[f64] {
+        &self.loadings[column]
     }
 
     /// Map solve-basis coefficients back to the user's parametrization.
@@ -70,13 +74,13 @@ impl SlopeReparam {
     }
 }
 
-impl TermReparam {
-    /// Whiten one term's loading columns in place, appending its unidentified
-    /// directions ascending in `(level, column)`.
+impl TermBasis {
+    /// Whiten one term into `loadings`; unidentified directions append ascending in `(level, column)`.
     fn build(
-        design: &mut Design<'_>,
+        design: &Design<'_>,
         term: usize,
         moments: &TermMoments,
+        loadings: &mut [Vec<f64>],
         unidentified: &mut Vec<CoefficientAddress>,
     ) -> Self {
         let meta = &design.terms[term];
@@ -144,7 +148,7 @@ impl TermReparam {
             }
         }
         for (out, &c) in u_cols.into_iter().zip(&z_cols) {
-            design.frame.set_loading_column(c, out);
+            loadings[c] = out;
         }
 
         Self {

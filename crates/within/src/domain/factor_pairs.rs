@@ -12,7 +12,7 @@ use crate::channel::{Channel, ChannelPair};
 use crate::config::LocalSolverConfig;
 use crate::{BuildError, BuildWarning};
 
-use super::{find_all_active_levels, BlockDiagonals, CrossTab, Design};
+use super::{find_all_active_levels, BlockDiagonals, CrossTab, PreparedDesign};
 
 mod sddm;
 use crate::domain::Loading;
@@ -34,11 +34,12 @@ pub(crate) struct LocalDomain {
 
 /// Same-factor channel pairs are exactly orthogonal after whitening, so never enumerated.
 pub(crate) fn build_local_domains(
-    design: &Design<'_>,
-    weights: Option<&[f64]>,
+    prepared: &PreparedDesign<'_>,
     config: &LocalSolverConfig,
 ) -> Result<(Vec<LocalDomain>, Vec<BuildWarning>), BuildError> {
     use rayon::prelude::*;
+
+    let design = &prepared.design;
 
     if !config.ridge.is_finite() || config.ridge < 0.0 {
         return Err(BuildError::InvalidRidge {
@@ -59,13 +60,13 @@ pub(crate) fn build_local_domains(
                 .map(move |&cols| ChannelPair { rows, cols })
         })
         .collect();
-    let all_active = find_all_active_levels(design);
 
+    let all_active = find_all_active_levels(design);
     let per_pair: Vec<(Vec<LocalDomain>, Vec<BuildWarning>)> = pairs
         .par_iter()
         .map(|&pair| {
             let Some((full_ct, full_diag, l2g)) =
-                CrossTab::build_for_pair_with_active(design, weights, pair, &all_active)
+                CrossTab::build_for_pair_with_active(prepared, pair, &all_active)
             else {
                 return Ok((Vec::new(), Vec::new()));
             };
@@ -205,11 +206,11 @@ fn compute_partition_weights(domain_pairs: &mut [LocalDomain], n_dofs: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::Design;
+    use crate::domain::{Design, PreparedDesign};
     use crate::observation::ObservationFrame;
     use crate::Effect;
 
-    fn make_test_design() -> Design<'static> {
+    fn make_test_design() -> PreparedDesign<'static> {
         let frame = ObservationFrame::new(
             vec![
                 vec![0u32, 1, 2, 0, 1, 2].into(),
@@ -219,14 +220,14 @@ mod tests {
             Vec::new(),
         )
         .expect("valid frame");
-        Design::from_frame(frame).expect("valid test design")
+        PreparedDesign::unweighted_for_test(Design::from_frame(frame).expect("valid test design"))
     }
 
     #[test]
     fn test_full_cover_domain_count() {
         let dm = make_test_design();
-        let (domain_pairs, _) = build_local_domains(&dm, None, &LocalSolverConfig::default())
-            .expect("plain domains build");
+        let (domain_pairs, _) =
+            build_local_domains(&dm, &LocalSolverConfig::default()).expect("plain domains build");
         // 3 factor pairs; each pair may produce multiple components
         assert!(domain_pairs.len() >= 3);
     }
@@ -234,9 +235,9 @@ mod tests {
     #[test]
     fn test_partition_of_unity() {
         let dm = make_test_design();
-        let (domain_pairs, _) = build_local_domains(&dm, None, &LocalSolverConfig::default())
-            .expect("plain domains build");
-        let n_dofs = dm.n_dofs;
+        let (domain_pairs, _) =
+            build_local_domains(&dm, &LocalSolverConfig::default()).expect("plain domains build");
+        let n_dofs = dm.design.n_dofs;
         // Two-sided PoU: squared weights must sum to 1 at every DOF.
         let mut weight_sq_sum = vec![0.0; n_dofs];
         for ld in &domain_pairs {
@@ -265,8 +266,10 @@ mod tests {
             Effect::new(&levels_c, true, []).expect("effect c"),
         ])
         .expect("valid slope design");
+        let n_dofs = design.n_dofs;
+        let design = PreparedDesign::unweighted_for_test(design);
 
-        let (domain_pairs, _) = build_local_domains(&design, None, &LocalSolverConfig::default())
+        let (domain_pairs, _) = build_local_domains(&design, &LocalSolverConfig::default())
             .expect("slope domains build");
 
         for ld in &domain_pairs {
@@ -280,7 +283,7 @@ mod tests {
         }
 
         // Non-vacuity: without a shared DOF, uniform vs 1/√c weights are indistinguishable.
-        let mut counts = vec![0u32; design.n_dofs];
+        let mut counts = vec![0u32; n_dofs];
         for ld in &domain_pairs {
             for &idx in ld.core.global_indices() {
                 counts[idx as usize] += 1;
@@ -295,9 +298,9 @@ mod tests {
     #[test]
     fn test_domains_cover_all_dofs() {
         let dm = make_test_design();
-        let (domain_pairs, _) = build_local_domains(&dm, None, &LocalSolverConfig::default())
-            .expect("plain domains build");
-        let mut covered = vec![false; dm.n_dofs];
+        let (domain_pairs, _) =
+            build_local_domains(&dm, &LocalSolverConfig::default()).expect("plain domains build");
+        let mut covered = vec![false; dm.design.n_dofs];
         for ld in &domain_pairs {
             for &idx in ld.core.global_indices() {
                 covered[idx as usize] = true;

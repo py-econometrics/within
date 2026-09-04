@@ -5,8 +5,12 @@ pub(crate) mod cross_tab;
 mod effect;
 pub(crate) mod factor_pairs;
 pub(crate) mod level_moments;
+mod prepared;
+mod slope_basis;
 
 pub(crate) use cross_tab::{find_all_active_levels, BlockDiagonals, CrossTab};
+pub(crate) use prepared::PreparedDesign;
+pub(crate) use slope_basis::SlopeBasis;
 
 pub use effect::Effect;
 
@@ -16,6 +20,7 @@ pub(crate) use factor_pairs::{
 };
 
 use std::borrow::Cow;
+use std::sync::Arc;
 
 use crate::channel::Channel;
 use crate::observation::ObservationFrame;
@@ -90,6 +95,19 @@ pub(crate) struct TermMeta {
 }
 
 impl TermMeta {
+    /// Frame columns of the term's covariates, in coefficient-column order.
+    pub(crate) fn covariates(&self) -> impl Iterator<Item = u32> + '_ {
+        self.columns.iter().filter_map(|c| c.covariate().copied())
+    }
+
+    pub(crate) fn has_slopes(&self) -> bool {
+        self.covariates().next().is_some()
+    }
+
+    pub(crate) fn has_intercept(&self) -> bool {
+        self.columns.iter().any(|c| c.covariate().is_none())
+    }
+
     pub fn n_columns(&self) -> usize {
         self.columns.len()
     }
@@ -141,16 +159,16 @@ fn stable_argsort(key: &[u32], n_levels: usize) -> Vec<u32> {
     perm
 }
 
-/// Fixed-effects design: observation columns plus coefficient-space layout.
+/// Fixed-effects design: observation columns plus coefficient-space layout; clones share rows.
 #[derive(Clone, Debug)]
 pub struct Design<'a> {
     /// Columns in internal row order (caller's, or an owned locality-sorted copy).
-    pub(crate) frame: ObservationFrame<'a>,
+    pub(crate) frame: Arc<ObservationFrame<'a>>,
     pub(crate) terms: Vec<TermMeta>,
     pub(crate) n_obs: usize,
     pub(crate) n_dofs: usize,
     /// `obs_perm[k]` = caller's original index of the observation at internal position `k`.
-    pub(crate) obs_perm: Option<Vec<u32>>,
+    pub(crate) obs_perm: Option<Arc<[u32]>>,
 }
 
 impl<'a> Design<'a> {
@@ -234,13 +252,13 @@ impl<'a> Design<'a> {
                 for (q, meta) in terms.iter_mut().enumerate() {
                     meta.sorted = sorted_frame.level_column(q).is_sorted();
                 }
-                (sorted_frame, Some(perm))
+                (sorted_frame, Some(perm.into()))
             }
             _ => (frame, None),
         };
 
         Ok(Design {
-            frame,
+            frame: Arc::new(frame),
             terms,
             n_obs,
             n_dofs: offset,
@@ -251,7 +269,7 @@ impl<'a> Design<'a> {
     /// Convert the frame's columns to owned, dropping ties to caller buffers.
     pub fn into_owned(self) -> Design<'static> {
         Design {
-            frame: self.frame.into_owned(),
+            frame: Arc::new(Arc::unwrap_or_clone(self.frame).into_owned()),
             terms: self.terms,
             n_obs: self.n_obs,
             n_dofs: self.n_dofs,
@@ -259,9 +277,12 @@ impl<'a> Design<'a> {
         }
     }
 
-    /// Validate that an optional weight slice matches this design's observation count.
-    pub(crate) fn validate_weights(&self, weights: Option<&[f64]>) -> Result<(), BuildError> {
-        if let Some(w) = weights {
+    /// Validated weights in internal observation order.
+    pub(crate) fn permute_weights(
+        &self,
+        weights: Option<Vec<f64>>,
+    ) -> Result<Option<Vec<f64>>, BuildError> {
+        if let Some(w) = &weights {
             if w.len() != self.n_obs {
                 return Err(BuildError::WeightCountMismatch {
                     expected: self.n_obs,
@@ -277,7 +298,11 @@ impl<'a> Design<'a> {
                 return Err(BuildError::InvalidWeight { index, value });
             }
         }
-        Ok(())
+        // The match keeps the unpermuted arm a plain move rather than a borrow-and-copy.
+        Ok(match &self.obs_perm {
+            Some(_) => weights.map(|w| self.permute_obs_in(&w).into_owned()),
+            None => weights,
+        })
     }
 
     /// Caller order → internal order: `out[k] = v[obs_perm[k]]`; borrows when unpermuted.
@@ -404,29 +429,26 @@ mod tests {
     }
 
     #[test]
-    fn validate_weights_checks_count_and_finiteness() {
+    fn permute_weights_checks_count_and_finiteness() {
         let design = Design::from_frame(frame(vec![vec![0, 0, 0, 0, 0]], vec![])).unwrap();
-        assert!(design.validate_weights(None).is_ok());
-        assert!(design
-            .validate_weights(Some(&[1.0, 2.0, 3.0, 4.0, 5.0]))
-            .is_ok());
+        let check = |w: &[f64]| design.permute_weights(Some(w.to_vec()));
+        assert!(design.permute_weights(None).is_ok());
+        assert!(check(&[1.0, 2.0, 3.0, 4.0, 5.0]).is_ok());
         // Zero weights are valid (an excluded observation).
-        assert!(design
-            .validate_weights(Some(&[0.0, 1.0, 2.0, 3.0, 4.0]))
-            .is_ok());
+        assert!(check(&[0.0, 1.0, 2.0, 3.0, 4.0]).is_ok());
         // Length mismatch.
-        assert!(design.validate_weights(Some(&[1.0, 2.0])).is_err());
+        assert!(check(&[1.0, 2.0]).is_err());
         // Negative / non-finite weights are rejected with the offending index.
         assert!(matches!(
-            design.validate_weights(Some(&[1.0, -2.0, 3.0, 4.0, 5.0])),
+            check(&[1.0, -2.0, 3.0, 4.0, 5.0]),
             Err(BuildError::InvalidWeight { index: 1, .. })
         ));
         assert!(matches!(
-            design.validate_weights(Some(&[1.0, 2.0, f64::NAN, 4.0, 5.0])),
+            check(&[1.0, 2.0, f64::NAN, 4.0, 5.0]),
             Err(BuildError::InvalidWeight { index: 2, .. })
         ));
         assert!(matches!(
-            design.validate_weights(Some(&[1.0, 2.0, 3.0, f64::INFINITY, 5.0])),
+            check(&[1.0, 2.0, 3.0, f64::INFINITY, 5.0]),
             Err(BuildError::InvalidWeight { index: 3, .. })
         ));
     }
@@ -475,8 +497,8 @@ mod tests {
         ))
         .unwrap();
 
-        let perm = design.obs_perm.as_ref().expect("permutation applied");
-        assert_eq!(perm, &[1, 3, 2, 0]);
+        let perm = design.obs_perm.as_deref().expect("permutation applied");
+        assert_eq!(perm, [1, 3, 2, 0]);
         assert_eq!(design.frame.level_column(0), [0, 0, 1, 2]);
         assert_eq!(design.frame.loading_column(0), [20.0, 40.0, 30.0, 10.0]);
     }
