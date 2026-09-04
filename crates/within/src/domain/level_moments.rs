@@ -57,7 +57,7 @@ impl LevelMoments {
         if w <= 0.0 {
             return;
         }
-        let v = self.n_slopes();
+        let v = self.v;
         self.w_sum[level] += w;
         let ratio = w / self.w_sum[level];
         let mean = &mut self.mean[level * v..][..v];
@@ -74,16 +74,12 @@ impl LevelMoments {
         }
     }
 
-    pub(crate) fn n_slopes(&self) -> usize {
-        self.v
-    }
-
     pub(crate) fn w_sum(&self, level: usize) -> f64 {
         self.w_sum[level]
     }
 
     pub(crate) fn mean(&self, level: usize) -> &[f64] {
-        let v = self.n_slopes();
+        let v = self.v;
         &self.mean[level * v..][..v]
     }
 
@@ -91,7 +87,7 @@ impl LevelMoments {
     /// left in `scratch` so a sweep over levels allocates nothing. `G` is
     /// centered against a pinned intercept, raw (`M2 + w·μμᵀ`) without one.
     pub(crate) fn basis(&self, level: usize, scratch: &mut BasisScratch) {
-        let v = self.n_slopes();
+        let v = self.v;
         let com = &self.comoment[level * tri_len(v)..][..tri_len(v)];
         let mean = self.mean(level);
         let w = self.w_sum[level];

@@ -335,7 +335,6 @@ mod slope_design_tests {
 
     /// Covers every kernel arm on the sequential path: plain, fused V=1/V=2,
     /// slope-only, and the generic V=3 fallback — against the dense reference.
-    /// Four rows per level keep every whitened column nonzero, so each arm's addressing counts.
     #[test]
     fn slope_matvec_and_adjoint_match_dense_reference() {
         let n = 12;
