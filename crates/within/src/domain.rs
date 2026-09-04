@@ -8,7 +8,7 @@ pub(crate) mod level_moments;
 mod prepared;
 mod slope_basis;
 
-pub(crate) use cross_tab::{find_all_active_levels, BlockDiagonals, CrossTab};
+pub(crate) use cross_tab::{BlockDiagonals, CrossTab};
 pub(crate) use prepared::PreparedDesign;
 pub(crate) use slope_basis::SlopeBasis;
 
@@ -192,6 +192,8 @@ pub struct Design<'a> {
     pub(crate) n_dofs: usize,
     /// `obs_perm[k]` = caller's original index of the observation at internal position `k`.
     pub(crate) obs_perm: Option<Vec<u32>>,
+    /// `active_levels[term][level]`: whether any observation carries that level.
+    pub(crate) active_levels: Vec<Vec<bool>>,
 }
 
 impl<'a> Design<'a> {
@@ -296,12 +298,25 @@ impl<'a> Design<'a> {
             _ => (frame, None),
         };
 
+        let active_levels = terms
+            .iter()
+            .enumerate()
+            .map(|(q, t)| {
+                let mut active = vec![false; t.n_levels()];
+                for &v in frame.level_column(q) {
+                    active[v as usize] = true;
+                }
+                active
+            })
+            .collect();
+
         Ok(Design {
             frame,
             terms,
             n_obs,
             n_dofs: offset,
             obs_perm,
+            active_levels,
         })
     }
 
@@ -313,6 +328,7 @@ impl<'a> Design<'a> {
             n_obs: self.n_obs,
             n_dofs: self.n_dofs,
             obs_perm: self.obs_perm,
+            active_levels: self.active_levels,
         }
     }
 
