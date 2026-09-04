@@ -10,7 +10,7 @@
 
 use crate::channel::ChannelPair;
 use crate::csr_block::CsrBlock;
-use crate::domain::{row_weight, PreparedDesign};
+use crate::domain::PreparedDesign;
 
 use super::{to_u32, ActiveLevels};
 use crate::domain::Loading as ColumnLoading;
@@ -57,7 +57,7 @@ pub(super) struct PairColumns<'a, Lq: Loading, Lr: Loading> {
     pub(super) col_levels: &'a [u32],
     pub(super) row_load: Lq,
     pub(super) col_load: Lr,
-    pub(super) sqrt_weights: Option<&'a [f64]>,
+    pub(super) weights: Option<&'a [f64]>,
 }
 
 impl<Lq: Loading, Lr: Loading> PairColumns<'_, Lq, Lr> {
@@ -69,7 +69,7 @@ impl<Lq: Loading, Lr: Loading> PairColumns<'_, Lq, Lr> {
         if cj == u32::MAX || ck == u32::MAX {
             return None;
         }
-        let w = row_weight(self.sqrt_weights, uid);
+        let w = self.weights.map_or(1.0, |w| w[uid]);
         let l_row = self.row_load.at(uid);
         let l_col = self.col_load.at(uid);
         Some(Contribution {
@@ -85,11 +85,11 @@ impl<Lq: Loading, Lr: Loading> PairColumns<'_, Lq, Lr> {
 /// Accumulate into `C` plus diagonals, dispatching dense or sparse by peak transient memory.
 pub(super) fn accumulate_cross_block(
     prepared: &PreparedDesign<'_>,
+    weights: Option<&[f64]>,
     pair: ChannelPair,
     active: &ActiveLevels,
 ) -> (CsrBlock, Vec<f64>, Vec<f64>) {
     let design = &prepared.design;
-    let sqrt_weights = prepared.sqrt_weights.as_deref();
     // Dispatching on cell count alone would pick sparse where it uses MORE memory.
     let table_size = active.n_rows.saturating_mul(active.n_cols);
     let dense_cost = table_size.saturating_mul(8);
@@ -100,7 +100,7 @@ pub(super) fn accumulate_cross_block(
     let col_levels = design.frame.level_column(pair.cols.term);
     let load = |col: ColumnLoading<u32>| {
         col.covariate()
-            .map(|&c| prepared.basis.loading_column(c as usize))
+            .map(|&c| prepared.loading_column(c as usize))
     };
     // One arm per loading combination; closures aren't generic, so the literals repeat.
     match (
@@ -113,7 +113,7 @@ pub(super) fn accumulate_cross_block(
                 col_levels,
                 row_load: Unit,
                 col_load: Unit,
-                sqrt_weights,
+                weights,
             },
             active,
             go_sparse,
@@ -124,7 +124,7 @@ pub(super) fn accumulate_cross_block(
                 col_levels,
                 row_load: zq,
                 col_load: Unit,
-                sqrt_weights,
+                weights,
             },
             active,
             go_sparse,
@@ -135,7 +135,7 @@ pub(super) fn accumulate_cross_block(
                 col_levels,
                 row_load: Unit,
                 col_load: zr,
-                sqrt_weights,
+                weights,
             },
             active,
             go_sparse,
@@ -146,7 +146,7 @@ pub(super) fn accumulate_cross_block(
                 col_levels,
                 row_load: zq,
                 col_load: zr,
-                sqrt_weights,
+                weights,
             },
             active,
             go_sparse,

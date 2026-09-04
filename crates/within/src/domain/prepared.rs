@@ -1,37 +1,27 @@
-use super::{Design, SlopeBasis};
-use crate::BuildError;
+use super::level_moments::TermMoments;
+use super::{Design, SlopeReparam};
 
-/// A [`Design`] plus what one weight vector determines: the row scaling and the slope basis.
+/// A [`Design`] plus the whitened slope basis one weight vector determines.
 pub(crate) struct PreparedDesign<'a> {
     pub(crate) design: Design<'a>,
-    /// `W^{1/2}` in internal observation order; `None` is unweighted.
-    pub(crate) sqrt_weights: Option<Vec<f64>>,
-    pub(crate) basis: SlopeBasis,
+    /// `None` for slope-free designs.
+    pub(crate) reparam: Option<SlopeReparam>,
 }
 
 impl<'a> PreparedDesign<'a> {
-    pub(crate) fn new(design: Design<'a>, weights: Option<Vec<f64>>) -> Result<Self, BuildError> {
-        design.validate_weights(weights.as_deref())?;
-        let sqrt_weights = weights.map(|w| {
-            let mut w = match &design.obs_perm {
-                Some(_) => design.permute_obs_in(&w).into_owned(),
-                None => w,
-            };
-            w.iter_mut().for_each(|wi| *wi = wi.sqrt());
-            w
-        });
-        let basis = SlopeBasis::build(&design, sqrt_weights.as_deref());
-        Ok(Self {
-            design,
-            sqrt_weights,
-            basis,
-        })
+    pub(crate) fn new(design: Design<'a>, moments: Option<&TermMoments>) -> Self {
+        let reparam = moments.and_then(|m| SlopeReparam::build(&design, m));
+        Self { design, reparam }
     }
-}
 
-/// The Gram weight of row `obs`: the operator applies `s`, so its normal matrix carries `s²`.
-pub(crate) fn row_weight(sqrt_weights: Option<&[f64]>, obs: usize) -> f64 {
-    sqrt_weights.map_or(1.0, |s| s[obs] * s[obs])
+    /// Loading column `column` in the solve basis.
+    pub(crate) fn loading_column(&self, column: usize) -> &[f64] {
+        // Only slope terms reference loading columns, and any slope term makes `reparam` `Some`.
+        self.reparam
+            .as_ref()
+            .expect("loading column on a slope-free design")
+            .loading_column(column)
+    }
 }
 
 #[cfg(test)]
@@ -41,7 +31,8 @@ mod tests {
     impl<'a> PreparedDesign<'a> {
         /// Unweighted, whitened like a solver would.
         pub(crate) fn unweighted_for_test(design: Design<'a>) -> Self {
-            Self::new(design, None).expect("unweighted preparation cannot fail")
+            let moments = TermMoments::build(&design, None);
+            Self::new(design, moments.as_ref())
         }
     }
 

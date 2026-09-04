@@ -4,13 +4,13 @@ pub(crate) mod collinearity;
 pub(crate) mod cross_tab;
 mod effect;
 pub(crate) mod factor_pairs;
-mod level_moments;
+pub(crate) mod level_moments;
 mod prepared;
-mod slope_basis;
+mod reparam;
 
 pub(crate) use cross_tab::{find_all_active_levels, BlockDiagonals, CrossTab};
-pub(crate) use prepared::{row_weight, PreparedDesign};
-use slope_basis::SlopeBasis;
+pub(crate) use prepared::PreparedDesign;
+use reparam::SlopeReparam;
 
 pub use effect::Effect;
 
@@ -95,19 +95,6 @@ pub(crate) struct TermMeta {
 }
 
 impl TermMeta {
-    /// Frame columns of the term's covariates, in coefficient-column order.
-    pub(crate) fn covariates(&self) -> impl Iterator<Item = u32> + '_ {
-        self.columns.iter().filter_map(|c| c.covariate().copied())
-    }
-
-    pub(crate) fn has_slopes(&self) -> bool {
-        self.covariates().next().is_some()
-    }
-
-    pub(crate) fn has_intercept(&self) -> bool {
-        self.columns.iter().any(|c| c.covariate().is_none())
-    }
-
     pub fn n_columns(&self) -> usize {
         self.columns.len()
     }

@@ -3,9 +3,10 @@ use proptest::prelude::*;
 use super::accumulate::{
     accumulate_dense_cross_block, accumulate_sparse_cross_block, PairColumns, Unit,
 };
-use super::{build_compact_mapping, find_all_active_levels, CrossTab};
+use super::{build_compact_mapping, CrossTab};
 use crate::channel::{Channel, ChannelPair};
 use crate::csr_block::CsrBlock;
+use crate::domain::find_all_active_levels;
 use crate::domain::{Design, Effect, PreparedDesign};
 
 impl CrossTab {
@@ -22,6 +23,10 @@ const INTERCEPT_PAIR: ChannelPair = ChannelPair {
     cols: Channel { term: 1, column: 0 },
 };
 
+fn design_of(columns: Vec<Vec<u32>>) -> PreparedDesign<'static> {
+    PreparedDesign::from_levels_for_test(columns)
+}
+
 #[test]
 fn test_cross_tab_sparse_accumulation_path() {
     // n_rows * n_cols > 5M triggers the sparse path; few observations keep both paths equal.
@@ -36,20 +41,19 @@ fn test_cross_tab_sparse_accumulation_path() {
     }
 
     // Sparse path (large level counts)
-    let design_sparse = PreparedDesign::from_levels_for_test(vec![fa.clone(), fb.clone()]);
+    let design_sparse = design_of(vec![fa.clone(), fb.clone()]);
     let active_sparse = find_all_active_levels(&design_sparse.design);
     let (ct_sparse, diag_sparse, _) =
-        CrossTab::build_for_pair_with_active(&design_sparse, INTERCEPT_PAIR, &active_sparse)
+        CrossTab::build_for_pair_with_active(&design_sparse, None, INTERCEPT_PAIR, &active_sparse)
             .expect("sparse cross tab should build");
 
     // Dense reference: collapse levels so n_rows * n_cols <= 5M.
     let fa_small: Vec<u32> = fa.iter().map(|&x| x % 100).collect();
     let fb_small: Vec<u32> = fb.iter().map(|&x| x % 100).collect();
-    let design_dense =
-        PreparedDesign::from_levels_for_test(vec![fa_small.clone(), fb_small.clone()]);
+    let design_dense = design_of(vec![fa_small.clone(), fb_small.clone()]);
     let active_dense = find_all_active_levels(&design_dense.design);
     let (_ct_dense, diag_dense, _) =
-        CrossTab::build_for_pair_with_active(&design_dense, INTERCEPT_PAIR, &active_dense)
+        CrossTab::build_for_pair_with_active(&design_dense, None, INTERCEPT_PAIR, &active_dense)
             .expect("dense cross tab should build");
 
     // Each observation appears exactly once in its row/col bucket.
@@ -113,10 +117,10 @@ fn test_extract_component_two_components() {
     // Two disconnected bipartite components: q/r levels {0,1} and {2,3}.
     let fa = vec![0u32, 0, 1, 1, 2, 2, 3, 3];
     let fb = vec![0u32, 1, 0, 1, 2, 3, 2, 3];
-    let design = PreparedDesign::from_levels_for_test(vec![fa, fb]);
+    let design = design_of(vec![fa, fb]);
     let all_active = find_all_active_levels(&design.design);
     let (ct, parent_diag, _) =
-        CrossTab::build_for_pair_with_active(&design, INTERCEPT_PAIR, &all_active)
+        CrossTab::build_for_pair_with_active(&design, None, INTERCEPT_PAIR, &all_active)
             .expect("cross tab should build");
 
     let components = ct.bipartite_connected_components();
@@ -225,9 +229,9 @@ proptest! {
             fb.push((s % n_cols as u64) as u32);
         }
 
-        let design = PreparedDesign::from_levels_for_test(vec![fa, fb]);
+        let design = design_of(vec![fa, fb]);
         let all_active = find_all_active_levels(&design.design);
-        let (ct, _, _) = CrossTab::build_for_pair_with_active(&design, INTERCEPT_PAIR, &all_active)
+        let (ct, _, _) = CrossTab::build_for_pair_with_active(&design, None, INTERCEPT_PAIR, &all_active)
             .expect("cross tab should build");
 
         let components = ct.bipartite_connected_components();
@@ -275,7 +279,7 @@ fn test_find_all_active_levels_with_gaps() {
     // Factor 0 has 5 levels but only 0, 2, 4 appear; factor 1 uses all 3.
     let fa = vec![0u32, 2, 4, 0, 2, 4];
     let fb = vec![0u32, 1, 2, 0, 1, 2];
-    let design = PreparedDesign::from_levels_for_test(vec![fa, fb]);
+    let design = design_of(vec![fa, fb]);
 
     let active = find_all_active_levels(&design.design);
 
@@ -325,7 +329,7 @@ fn dense_and_sparse_paths_agree_on_signed_data() {
         col_levels: design.frame.level_column(1),
         row_load: design.frame.loading_column(0),
         col_load: Unit,
-        sqrt_weights: None,
+        weights: None,
     };
     let (c_dense, dq_dense, dr_dense) = accumulate_dense_cross_block(cols, &active);
     let (c_sparse, dq_sparse, dr_sparse) = accumulate_sparse_cross_block(cols, &active);
