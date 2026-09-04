@@ -5,8 +5,12 @@ pub(crate) mod cross_tab;
 mod effect;
 pub(crate) mod factor_pairs;
 pub(crate) mod level_moments;
+mod prepared;
+mod slope_basis;
 
 pub(crate) use cross_tab::{find_all_active_levels, BlockDiagonals, CrossTab};
+pub(crate) use prepared::PreparedDesign;
+pub(crate) use slope_basis::SlopeBasis;
 
 pub use effect::Effect;
 
@@ -16,6 +20,8 @@ pub(crate) use factor_pairs::{
 };
 
 use std::borrow::Cow;
+
+use ndarray::{ArrayView2, Axis};
 
 use crate::channel::Channel;
 use crate::observation::ObservationFrame;
@@ -207,6 +213,21 @@ impl<'a> Design<'a> {
         Self::build(frame, structure, true)
     }
 
+    /// Intercept-only factors from an observation-major `(n_obs, n_factors)` categories array.
+    pub fn from_categories(categories: ArrayView2<'a, u32>) -> Result<Self, BuildError> {
+        // Gather strided (C-order) columns once so every downstream read is contiguous.
+        let categorical = (0..categories.ncols())
+            .map(|factor| {
+                let col = categories.index_axis_move(Axis(1), factor);
+                match col.to_slice() {
+                    Some(s) => Cow::Borrowed(s),
+                    None => Cow::Owned(col.to_vec()),
+                }
+            })
+            .collect();
+        Self::from_frame(ObservationFrame::new(categorical, Vec::new())?)
+    }
+
     /// Intercept-only factors, level count `max + 1`; locality-sorts an unsorted dominant factor.
     pub fn from_frame(frame: ObservationFrame<'a>) -> Result<Self, BuildError> {
         let structure = vec![NonEmpty::of(Loading::Constant); frame.n_factors()];
@@ -316,6 +337,19 @@ impl<'a> Design<'a> {
         Ok(())
     }
 
+    /// Validated weights in internal observation order.
+    pub(crate) fn permute_weights(
+        &self,
+        weights: Option<Vec<f64>>,
+    ) -> Result<Option<Vec<f64>>, BuildError> {
+        self.validate_weights(weights.as_deref())?;
+        // The match keeps the unpermuted arm a plain move rather than a borrow-and-copy.
+        Ok(match &self.obs_perm {
+            Some(_) => weights.map(|w| self.permute_obs_in(&w).into_owned()),
+            None => weights,
+        })
+    }
+
     /// Caller order → internal order: `out[k] = v[obs_perm[k]]`; borrows when unpermuted.
     pub(crate) fn permute_obs_in<'v>(&self, v: &'v [f64]) -> Cow<'v, [f64]> {
         debug_assert_eq!(v.len(), self.n_obs);
@@ -346,6 +380,10 @@ impl<'a> Design<'a> {
         self.terms.len()
     }
 
+    pub(crate) fn n_loading_columns(&self) -> usize {
+        self.frame.n_loading_columns()
+    }
+
     /// The term's coefficient columns in layout order.
     pub(crate) fn channels(&self, term: usize) -> impl Iterator<Item = Channel> + '_ {
         (0..self.terms[term].n_columns()).map(move |column| Channel { term, column })
@@ -364,11 +402,6 @@ impl<'a> Design<'a> {
     /// Continuous loading column in internal observation order.
     pub(crate) fn loading_column(&self, column: usize) -> &[f64] {
         self.frame.loading_column(column)
-    }
-
-    /// Replace one loading column during solver-local preparation.
-    pub(crate) fn replace_loading_column(&mut self, column: usize, values: Vec<f64>) {
-        self.frame.set_loading_column(column, values);
     }
 
     /// Number of observations (rows of D).

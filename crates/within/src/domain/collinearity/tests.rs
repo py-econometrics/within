@@ -5,8 +5,8 @@ use crate::Effect;
 const FULL_TABLE: usize = 1 << 24;
 
 fn warn_pairs(design: &Design<'_>, weights: Option<&[f64]>) -> Vec<(Channel, usize)> {
-    let moments = TermMoments::build(design, weights).expect("design carries slopes");
-    detect_collinear_slopes(design, weights, &moments)
+    let basis = SlopeBasis::build(design, weights);
+    detect_collinear_slopes(design, weights, &basis)
         .into_iter()
         .map(|w| match w {
             BuildWarning::CollinearSlopeCovariate { slope, term, .. } => (slope, term),
@@ -17,9 +17,9 @@ fn warn_pairs(design: &Design<'_>, weights: Option<&[f64]>) -> Vec<(Channel, usi
 
 /// The shares `term`'s screen reports, in target-channel order.
 fn shares(design: &Design<'_>, term: usize, budget: usize) -> Vec<f64> {
-    let moments = TermMoments::build(design, None).expect("design carries slopes");
+    let basis = SlopeBasis::build(design, None);
     let targets = screened_covariates(design, term);
-    residual_shares(design, None, &moments, term, &targets, budget)
+    residual_shares(design, None, &basis, term, &targets, budget)
 }
 
 fn two_factor_levels(n: usize) -> (Vec<u32>, Vec<u32>) {

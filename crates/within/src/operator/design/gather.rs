@@ -3,16 +3,17 @@
 use rayon::prelude::*;
 
 use super::PAR_THRESHOLD;
-use crate::domain::Design;
 use crate::domain::Loading;
+use crate::domain::PreparedDesign;
 
 /// Gather-apply `dst[i] = Σ_t Σ_c src[…] · loading_c(i)`, times `scale[i]` when given.
 pub(crate) fn gather_apply(
-    design: &Design<'_>,
+    prepared: &PreparedDesign<'_>,
     src: &[f64],
     dst: &mut [f64],
     scale: Option<&[f64]>,
 ) {
+    let design = &prepared.design;
     debug_assert!(scale.is_none_or(|s| s.len() == design.n_obs));
     debug_assert_eq!(src.len(), design.n_dofs);
     debug_assert_eq!(dst.len(), design.n_obs);
@@ -27,25 +28,25 @@ pub(crate) fn gather_apply(
             match &*t.columns {
                 [Loading::Constant] => gather_term(chunk, row_start, levels, [col(0)], |_| [1.0]),
                 [Loading::Constant, Loading::Covariate(c0)] => {
-                    let z0 = design.loading_column(*c0 as usize);
+                    let z0 = prepared.basis.loading_column(*c0 as usize);
                     gather_term(chunk, row_start, levels, [col(0), col(1)], |i| [1.0, z0[i]])
                 }
                 [Loading::Constant, Loading::Covariate(c0), Loading::Covariate(c1)] => {
-                    let z0 = design.loading_column(*c0 as usize);
-                    let z1 = design.loading_column(*c1 as usize);
+                    let z0 = prepared.basis.loading_column(*c0 as usize);
+                    let z1 = prepared.basis.loading_column(*c1 as usize);
                     gather_term(chunk, row_start, levels, [col(0), col(1), col(2)], |i| {
                         [1.0, z0[i], z1[i]]
                     })
                 }
                 [Loading::Covariate(c0), Loading::Covariate(c1)] => {
-                    let z0 = design.loading_column(*c0 as usize);
-                    let z1 = design.loading_column(*c1 as usize);
+                    let z0 = prepared.basis.loading_column(*c0 as usize);
+                    let z1 = prepared.basis.loading_column(*c1 as usize);
                     gather_term(chunk, row_start, levels, [col(0), col(1)], |i| {
                         [z0[i], z1[i]]
                     })
                 }
                 [Loading::Covariate(c0)] => {
-                    let z0 = design.loading_column(*c0 as usize);
+                    let z0 = prepared.basis.loading_column(*c0 as usize);
                     gather_term(chunk, row_start, levels, [col(0)], |i| [z0[i]])
                 }
                 columns => {
@@ -59,7 +60,7 @@ pub(crate) fn gather_apply(
                             acc += match loading {
                                 Loading::Constant => coef,
                                 Loading::Covariate(k) => {
-                                    coef * design.loading_column(*k as usize)[i]
+                                    coef * prepared.basis.loading_column(*k as usize)[i]
                                 }
                             };
                         }

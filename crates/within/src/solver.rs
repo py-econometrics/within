@@ -2,62 +2,53 @@
 //! multiple solves on the same design) and the one-shot [`solve`] / [`solve_batch`]
 //! convenience wrappers built on top of it.
 
-use std::borrow::Cow;
+use std::sync::Arc;
 use std::time::Instant;
 
-use ndarray::{ArrayView2, Axis};
+use ndarray::ArrayView2;
 use rayon::prelude::*;
 use schwarz_precond::{lsmr as lsmr_solve, mlsmr, MlsmrOptions};
 
-use crate::channel::Channel;
+use crate::channel::{Channel, CoefficientAddress, CoefficientPosition};
 use crate::config::{LsmrOptions, PreconditionerConfig};
-use crate::domain::collinearity::detect_collinear_slopes;
-use crate::domain::level_moments::TermMoments;
-use crate::domain::{Design, Effect, FactorEncoding};
-use crate::observation::ObservationFrame;
+use crate::domain::{Design, Effect, FactorEncoding, PreparedDesign};
 use crate::operator::design::gather_apply;
 use crate::operator::schwarz::{build_preconditioner, Preconditioner};
 use crate::operator::DesignOperator;
 use crate::{BuildError, BuildWarning, SolveError, WithinError};
 
-mod reparam;
 #[cfg(test)]
 mod tests;
-use reparam::SlopeReparam;
 
-/// Fallible conversion into a [`Design`] for [`Solver::new`]: a categories
-/// matrix (`ArrayView2<u32>`), a list of [`Effect`] terms, or a pass-through
-/// [`Design`].
+/// Fallible conversion into a shared [`Design`] for [`Solver::new`]: a
+/// categories matrix (`ArrayView2<u32>`), a list of [`Effect`] terms, a
+/// [`Design`], or an `Arc<Design>` already shared with other solvers.
 pub trait IntoDesign<'a> {
     /// Build the [`Design`], validating inputs along the way.
-    fn into_design(self) -> Result<Design<'a>, BuildError>;
+    fn into_design(self) -> Result<Arc<Design<'a>>, BuildError>;
 }
 
 impl<'a> IntoDesign<'a> for ArrayView2<'a, u32> {
-    fn into_design(self) -> Result<Design<'a>, BuildError> {
-        // Gather strided (C-order) columns once so every downstream read is contiguous.
-        let categorical = (0..self.ncols())
-            .map(|factor| {
-                let col = self.index_axis_move(Axis(1), factor);
-                match col.to_slice() {
-                    Some(s) => Cow::Borrowed(s),
-                    None => Cow::Owned(col.to_vec()),
-                }
-            })
-            .collect();
-        Design::from_frame(ObservationFrame::new(categorical, Vec::new())?)
+    fn into_design(self) -> Result<Arc<Design<'a>>, BuildError> {
+        Design::from_categories(self).map(Arc::new)
     }
 }
 
 impl<'a> IntoDesign<'a> for Design<'a> {
-    fn into_design(self) -> Result<Design<'a>, BuildError> {
+    fn into_design(self) -> Result<Arc<Design<'a>>, BuildError> {
+        Ok(Arc::new(self))
+    }
+}
+
+impl<'a> IntoDesign<'a> for Arc<Design<'a>> {
+    fn into_design(self) -> Result<Arc<Design<'a>>, BuildError> {
         Ok(self)
     }
 }
 
 impl<'a> IntoDesign<'a> for Vec<Effect<'a>> {
-    fn into_design(self) -> Result<Design<'a>, BuildError> {
-        Design::new(self)
+    fn into_design(self) -> Result<Arc<Design<'a>>, BuildError> {
+        Design::new(self).map(Arc::new)
     }
 }
 
@@ -111,22 +102,7 @@ impl From<&Preconditioner> for PreconditionerInput {
     }
 }
 
-/// One coefficient of the design: a [`Channel`] at one level of its term.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Coefficient<L> {
-    /// The coefficient column this address sits in.
-    pub channel: Channel,
-    /// The level, in whichever space `L` names.
-    pub level: L,
-}
-
-/// A coefficient addressed by the caller's own factor label.
-pub type CoefficientAddress = Coefficient<u32>;
-
-/// A coefficient addressed by its internal compact position.
-type CoefficientPosition = Coefficient<usize>;
-
-impl Coefficient<usize> {
+impl CoefficientPosition {
     fn to_caller_address(self, design: &Design) -> CoefficientAddress {
         let level = design.terms[self.channel.term]
             .encoding
@@ -337,22 +313,18 @@ impl BatchSolveResult {
 /// Python boundary — uses owned columns. Weights are always owned; for a
 /// one-shot weighted solve from a borrowed slice, use the free [`solve`] function.
 pub struct Solver<'a> {
-    design: Design<'a>,
-    /// `sqrt(W)` in the design's internal observation order, computed once and
-    /// borrowed by the per-RHS [`DesignOperator`]s (raw weights are needed only
-    /// during construction).
-    sqrt_weights: Option<Vec<f64>>,
+    prepared: PreparedDesign<'a>,
     preconditioner: Option<Preconditioner>,
-    reparam: Option<SlopeReparam>,
-    warnings: Vec<BuildWarning>,
+    /// From the preconditioner build; a reused pre-built one contributes none.
+    preconditioner_warnings: Vec<BuildWarning>,
 }
 
 impl std::fmt::Debug for Solver<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Solver")
-            .field("n_obs", &self.design.n_obs)
-            .field("n_dofs", &self.design.n_dofs)
-            .field("has_weights", &self.sqrt_weights.is_some())
+            .field("n_obs", &self.prepared.design.n_obs)
+            .field("n_dofs", &self.prepared.design.n_dofs)
+            .field("has_weights", &self.prepared.weights.is_some())
             .field("has_preconditioner", &self.preconditioner.is_some())
             .finish()
     }
@@ -396,38 +368,16 @@ impl<'a> Solver<'a> {
         weights: Option<Vec<f64>>,
         preconditioner: impl Into<PreconditionerInput>,
     ) -> Result<Self, BuildError> {
-        let mut design = design.into_design()?;
-        design.validate_weights(weights.as_deref())?;
+        let prepared = PreparedDesign::new(design.into_design()?, weights)?;
+        let n_dofs = prepared.design.n_dofs;
 
-        // The match keeps the unpermuted arm a plain move rather than a borrow-and-copy.
-        let weights = match &design.obs_perm {
-            Some(_) => weights.map(|w| design.permute_obs_in(&w).into_owned()),
-            None => weights,
-        };
-
-        // Both readers below need the raw loadings, so the moments precede whitening.
-        let moments = TermMoments::build(&design, weights.as_deref());
-        let mut warnings = moments
-            .as_ref()
-            .map(|m| detect_collinear_slopes(&design, weights.as_deref(), m))
-            .unwrap_or_default();
-
-        // Reparametrize the slope columns (if any) before the preconditioner reads the frame.
-        let reparam = moments
-            .as_ref()
-            .and_then(|m| SlopeReparam::build(&mut design, m));
-
-        let (preconditioner, build_warnings) = match preconditioner.into() {
-            PreconditionerInput::Default => {
-                build_preconditioner(&design, weights.as_deref(), None)?
-            }
-            PreconditionerInput::Config(c) => {
-                build_preconditioner(&design, weights.as_deref(), Some(&c))?
-            }
+        let (preconditioner, preconditioner_warnings) = match preconditioner.into() {
+            PreconditionerInput::Default => build_preconditioner(&prepared, None)?,
+            PreconditionerInput::Config(c) => build_preconditioner(&prepared, Some(&c))?,
             PreconditionerInput::Prebuilt(p) => {
-                if p.nrows() != design.n_dofs || p.ncols() != design.n_dofs {
+                if p.nrows() != n_dofs || p.ncols() != n_dofs {
                     return Err(BuildError::PreconditionerDimensionMismatch {
-                        expected: design.n_dofs,
+                        expected: n_dofs,
                         actual_rows: p.nrows(),
                         actual_cols: p.ncols(),
                     });
@@ -436,43 +386,43 @@ impl<'a> Solver<'a> {
             }
         };
 
-        warnings.extend(build_warnings);
-
-        let sqrt_weights = weights.map(|mut w| {
-            for wi in &mut w {
-                *wi = wi.sqrt();
-            }
-            w
-        });
-
         Ok(Self {
-            design,
-            sqrt_weights,
+            prepared,
             preconditioner,
-            reparam,
-            warnings,
+            preconditioner_warnings,
         })
     }
 
     /// Non-fatal events from design screening and the preconditioner build; a reused
     /// pre-built preconditioner contributes none (its own were reported when built).
-    pub fn warnings(&self) -> &[BuildWarning] {
-        &self.warnings
+    pub fn warnings(&self) -> Vec<BuildWarning> {
+        self.prepared
+            .warnings
+            .iter()
+            .chain(&self.preconditioner_warnings)
+            .cloned()
+            .collect()
     }
 
     /// Shared per-RHS solve: validate `y`, run (m)lsmr, demean, and
     /// back-transform slopes. Excludes the design-level `layout` / `warnings` /
     /// `unidentified`, which the public entry points attach once (see
     /// [`RhsSolution`]).
-    fn solve_rhs(&self, y: &[f64], lsmr: &LsmrOptions) -> Result<RhsSolution, SolveError> {
+    fn solve_rhs(
+        &self,
+        y: &[f64],
+        sqrt_weights: Option<&[f64]>,
+        lsmr: &LsmrOptions,
+    ) -> Result<RhsSolution, SolveError> {
+        let design = &self.prepared.design;
         // `weighted_rhs` zips y with sqrt-weights, silently truncating when `y.len() > n_rows`.
-        if y.len() != self.design.n_obs {
+        if y.len() != design.n_obs {
             return Err(SolveError::InvalidInput {
                 context: "Solver::solve",
                 message: format!(
                     "response vector length ({}) does not match number of observations ({})",
                     y.len(),
-                    self.design.n_obs
+                    design.n_obs
                 ),
             });
         }
@@ -486,10 +436,10 @@ impl<'a> Solver<'a> {
         let t_start = Instant::now();
 
         // The gather is a recurring per-solve cost of the locality sort, so it counts as setup.
-        let y_internal = self.design.permute_obs_in(y);
+        let y_internal = design.permute_obs_in(y);
         let y: &[f64] = &y_internal;
 
-        let rect_op = DesignOperator::new(&self.design, self.sqrt_weights.as_deref());
+        let rect_op = DesignOperator::new(&self.prepared, sqrt_weights);
         let b = rect_op.weighted_rhs(y);
         let b: &[f64] = &b;
 
@@ -510,21 +460,19 @@ impl<'a> Solver<'a> {
         let time_solve = t_solve_start.elapsed().as_secs_f64();
 
         // Shapes are guaranteed here, so the bare `D x` matvec is infallible.
-        let mut demeaned = vec![0.0; self.design.n_obs];
-        gather_apply(&self.design, &r.x, &mut demeaned, None);
+        let mut demeaned = vec![0.0; design.n_obs];
+        gather_apply(&self.prepared, &r.x, &mut demeaned, None);
         for (d, &yi) in demeaned.iter_mut().zip(y.iter()) {
             *d = yi - *d;
         }
 
         let mut x = r.x;
-        if let Some(rp) = &self.reparam {
-            rp.back_transform(&mut x);
-        }
+        self.prepared.basis.back_transform(&mut x);
 
         Ok(RhsSolution {
             x,
             // Back to the caller's observation order (no-op if not reordered).
-            demeaned: self.design.permute_obs_out(demeaned),
+            demeaned: design.permute_obs_out(demeaned),
             converged: r.converged,
             iterations: r.iterations,
             // Read from the LSMR recurrence at no extra cost; see `SolveResult::residual`.
@@ -537,14 +485,11 @@ impl<'a> Solver<'a> {
     /// Per-level directions the data cannot identify, shared across all RHS:
     /// identification depends only on the design and weights, never on `y`.
     fn unidentified(&self) -> Vec<CoefficientAddress> {
-        let Some(reparam) = &self.reparam else {
-            return Vec::new();
-        };
-        reparam
+        self.prepared
+            .basis
             .unidentified
             .iter()
-            .copied()
-            .map(|position| position.to_caller_address(&self.design))
+            .map(|position| position.to_caller_address(&self.prepared.design))
             .collect()
     }
 
@@ -558,13 +503,14 @@ impl<'a> Solver<'a> {
         let lsmr = lsmr.into().unwrap_or(&default);
 
         let t_start = Instant::now();
-        let solution = self.solve_rhs(y, lsmr)?;
+        let sqrt_weights = self.prepared.sqrt_weights();
+        let solution = self.solve_rhs(y, sqrt_weights.as_deref(), lsmr)?;
 
         Ok(SolveResult {
             x: solution.x,
             unidentified: self.unidentified(),
-            warnings: self.warnings.clone(),
-            layout: CoefficientLayout::from_design(&self.design),
+            warnings: self.warnings(),
+            layout: CoefficientLayout::from_design(&self.prepared.design),
             demeaned: solution.demeaned,
             converged: solution.converged,
             iterations: solution.iterations,
@@ -586,14 +532,17 @@ impl<'a> Solver<'a> {
         let lsmr = lsmr.into().unwrap_or(&default);
         let n_rhs = ys.len();
 
+        // One `W^{1/2}` shared by every RHS's operator, computed once per batch.
+        let sqrt_weights = self.prepared.sqrt_weights();
         // Collecting into `Result` fails fast on the first per-RHS error, not during the fold.
         let solutions: Vec<RhsSolution> = ys
             .par_iter()
-            .map(|y| self.solve_rhs(y, lsmr))
+            .map(|y| self.solve_rhs(y, sqrt_weights.as_deref(), lsmr))
             .collect::<Result<Vec<_>, _>>()?;
 
-        let mut x = Vec::with_capacity(self.design.n_dofs * n_rhs);
-        let mut demeaned = Vec::with_capacity(self.design.n_obs * n_rhs);
+        let design = &self.prepared.design;
+        let mut x = Vec::with_capacity(design.n_dofs * n_rhs);
+        let mut demeaned = Vec::with_capacity(design.n_obs * n_rhs);
         let mut converged = Vec::with_capacity(n_rhs);
         let mut iterations = Vec::with_capacity(n_rhs);
         let mut residual = Vec::with_capacity(n_rhs);
@@ -611,8 +560,8 @@ impl<'a> Solver<'a> {
         Ok(BatchSolveResult {
             x,
             unidentified: self.unidentified(),
-            warnings: self.warnings.clone(),
-            layout: CoefficientLayout::from_design(&self.design),
+            warnings: self.warnings(),
+            layout: CoefficientLayout::from_design(design),
             demeaned,
             converged,
             iterations,
@@ -620,8 +569,8 @@ impl<'a> Solver<'a> {
             time_solve,
             time_setup: 0.0,
             time_total: t_start.elapsed().as_secs_f64(),
-            n_dofs: self.design.n_dofs,
-            n_obs: self.design.n_obs,
+            n_dofs: design.n_dofs,
+            n_obs: design.n_obs,
         })
     }
 
@@ -632,12 +581,12 @@ impl<'a> Solver<'a> {
 
     /// Number of DOFs (coefficients).
     pub fn n_dofs(&self) -> usize {
-        self.design.n_dofs
+        self.prepared.design.n_dofs
     }
 
     /// Number of observations.
     pub fn n_obs(&self) -> usize {
-        self.design.n_obs
+        self.prepared.design.n_obs
     }
 }
 

@@ -10,17 +10,20 @@ use crate::config::{
 use schwarz_precond::SubdomainCore;
 
 use crate::csr_block::CsrBlock;
-use crate::domain::{build_local_domains, Design, LocalDomain};
+use crate::domain::{build_local_domains, Design, LocalDomain, PreparedDesign};
 use crate::domain::{CrossTab, LocalComponent};
 use crate::operator::schwarz::build_additive_with_strategy;
 use schwarz_precond::{LocalSolver, Operator, ReductionStrategy};
 
 const BLOCK_ELIM_NESTED_RAYON_CHILD_ENV: &str = "WITHIN_TEST_BLOCK_ELIM_NESTED_RAYON_CHILD";
 
-fn make_test_data() -> (Design<'static>, Vec<LocalDomain>) {
-    let design = Design::from_levels_for_test(vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]]);
-    let (domain_pairs, _) = build_local_domains(&design, None, &LocalSolverConfig::default())
-        .expect("plain domains build");
+fn make_test_data() -> (PreparedDesign<'static>, Vec<LocalDomain>) {
+    let design = PreparedDesign::unweighted_for_test(Design::from_levels_for_test(vec![
+        vec![0, 1, 0, 1, 2],
+        vec![0, 0, 1, 1, 0],
+    ]));
+    let (domain_pairs, _) =
+        build_local_domains(&design, &LocalSolverConfig::default()).expect("plain domains build");
     (design, domain_pairs)
 }
 
@@ -205,10 +208,11 @@ fn test_build_additive_with_strategy() {
     let (design, domain_pairs) = make_test_data();
     let config = LocalSolverConfig::default();
     let strategy = schwarz_precond::ReductionStrategy::default();
-    let schwarz = build_additive_with_strategy(domain_pairs, &config, strategy, design.n_dofs)
+    let n_dofs = design.design.n_dofs;
+    let schwarz = build_additive_with_strategy(domain_pairs, &config, strategy, n_dofs)
         .expect("build schwarz with explicit domains");
-    let r = vec![1.0; design.n_dofs];
-    let mut z = vec![0.0; design.n_dofs];
+    let r = vec![1.0; n_dofs];
+    let mut z = vec![0.0; n_dofs];
     schwarz.apply(&r, &mut z).expect("schwarz apply succeeds");
 }
 

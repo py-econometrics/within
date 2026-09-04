@@ -1,5 +1,4 @@
-//! Per-level weighted moments of a term's loading columns, built once and read
-//! by both the collinearity screen and the slope whitening.
+//! Per-level weighted moments of a term's loading columns, the input to slope whitening.
 
 use rayon::prelude::*;
 
@@ -120,14 +119,6 @@ impl LevelMoments {
     /// Frame columns of the term's covariates, in coefficient-column order.
     pub(crate) fn covariates(&self) -> &[u32] {
         &self.covariates
-    }
-
-    pub(crate) fn intercept(&self) -> bool {
-        self.intercept
-    }
-
-    pub(crate) fn n_levels(&self) -> usize {
-        self.w_sum.len()
     }
 
     pub(crate) fn w_sum(&self, level: usize) -> f64 {
