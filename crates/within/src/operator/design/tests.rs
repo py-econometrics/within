@@ -332,12 +332,12 @@ mod slope_design_tests {
     /// slope-only, and the generic V=3 fallback — against the dense reference.
     #[test]
     fn slope_matvec_and_adjoint_match_dense_reference() {
-        let n = 6;
-        let f0 = [0u32, 1, 2, 0, 1, 2];
-        let f1 = [0u32, 0, 1, 1, 2, 2];
-        let f2 = [0u32, 1, 0, 1, 0, 1];
-        let f3 = [0u32, 0, 0, 1, 1, 1];
-        let f4 = [1u32, 0, 2, 1, 0, 2];
+        let n = 12;
+        let f0: Vec<u32> = (0..n).map(|i| (i % 3) as u32).collect();
+        let f1: Vec<u32> = (0..n).map(|i| ((i / 2) % 3) as u32).collect();
+        let f2: Vec<u32> = (0..n).map(|i| (i % 2) as u32).collect();
+        let f3: Vec<u32> = (0..n).map(|i| (i / 6) as u32).collect();
+        let f4: Vec<u32> = (0..n).map(|i| [1u32, 0, 2, 1, 0, 2][i % 6]).collect();
         let zs: Vec<Vec<f64>> = (0..6)
             .map(|k| (0..n).map(|i| noise(k * 100 + i)).collect())
             .collect();
@@ -350,6 +350,10 @@ mod slope_design_tests {
         ];
         let design = Design::new(effects).unwrap();
         let dense = dense_matrix(&design);
+        assert!(
+            (0..design.n_dofs).all(|j| dense.iter().any(|row| row[j] != 0.0)),
+            "whitening zeroed a column; the arm's addressing would go untested"
+        );
         let op = DesignOperator::new(&design, None);
 
         let x: Vec<f64> = (0..design.n_dofs).map(|j| noise(7_000 + j)).collect();
