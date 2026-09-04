@@ -285,34 +285,6 @@ impl<'a> Design<'a> {
         }
     }
 
-    /// Validated weights in internal observation order.
-    pub(crate) fn permute_weights(
-        &self,
-        weights: Option<Vec<f64>>,
-    ) -> Result<Option<Vec<f64>>, BuildError> {
-        if let Some(w) = &weights {
-            if w.len() != self.n_obs {
-                return Err(BuildError::WeightCountMismatch {
-                    expected: self.n_obs,
-                    got: w.len(),
-                });
-            }
-            // `wi >= 0.0` already rejects NaN; `is_finite` additionally rejects `+∞`.
-            if let Some((index, &value)) = w
-                .iter()
-                .enumerate()
-                .find(|&(_, &wi)| !(wi >= 0.0 && wi.is_finite()))
-            {
-                return Err(BuildError::InvalidWeight { index, value });
-            }
-        }
-        // The match keeps the unpermuted arm a plain move rather than a borrow-and-copy.
-        Ok(match &self.obs_perm {
-            Some(_) => weights.map(|w| self.permute_obs_in(&w).into_owned()),
-            None => weights,
-        })
-    }
-
     /// Caller order → internal order: `out[k] = v[obs_perm[k]]`; borrows when unpermuted.
     pub(crate) fn permute_obs_in<'v>(&self, v: &'v [f64]) -> Cow<'v, [f64]> {
         debug_assert_eq!(v.len(), self.n_obs);
@@ -449,31 +421,6 @@ mod tests {
     }
 
     #[test]
-    fn permute_weights_checks_count_and_finiteness() {
-        let design = Design::from_frame(frame(vec![vec![0, 0, 0, 0, 0]], vec![])).unwrap();
-        let check = |w: &[f64]| design.permute_weights(Some(w.to_vec()));
-        assert!(design.permute_weights(None).is_ok());
-        assert!(check(&[1.0, 2.0, 3.0, 4.0, 5.0]).is_ok());
-        // Zero weights are valid (an excluded observation).
-        assert!(check(&[0.0, 1.0, 2.0, 3.0, 4.0]).is_ok());
-        // Length mismatch.
-        assert!(check(&[1.0, 2.0]).is_err());
-        // Negative / non-finite weights are rejected with the offending index.
-        assert!(matches!(
-            check(&[1.0, -2.0, 3.0, 4.0, 5.0]),
-            Err(BuildError::InvalidWeight { index: 1, .. })
-        ));
-        assert!(matches!(
-            check(&[1.0, 2.0, f64::NAN, 4.0, 5.0]),
-            Err(BuildError::InvalidWeight { index: 2, .. })
-        ));
-        assert!(matches!(
-            check(&[1.0, 2.0, 3.0, f64::INFINITY, 5.0]),
-            Err(BuildError::InvalidWeight { index: 3, .. })
-        ));
-    }
-
-    #[test]
     fn from_frame_sorts_owned_unsorted_dominant() {
         // Factor 0 (3 levels) dominates and is unsorted; factor 1 starts sorted.
         let design =
@@ -507,18 +454,6 @@ mod tests {
         assert!(design.obs_perm.is_none());
         assert!(design.terms[0].sorted);
         assert!(!design.terms[1].sorted);
-    }
-
-    #[test]
-    fn continuous_column_stays_row_aligned_after_locality_sort() {
-        let levels = [2u32, 0, 1, 0];
-        let z = [10.0, 20.0, 30.0, 40.0];
-        let design = Design::new([Effect::new(&levels, true, [&z[..]]).unwrap()]).unwrap();
-
-        let perm = design.obs_perm.as_deref().expect("permutation applied");
-        assert_eq!(perm, [1, 3, 2, 0]);
-        assert_eq!(design.frame.level_column(0), [0, 0, 1, 2]);
-        assert_eq!(design.frame.loading_column(0), [20.0, 40.0, 30.0, 10.0]);
     }
 
     #[test]

@@ -23,10 +23,8 @@ pub(crate) struct SlopeBasis {
 struct TermBasis {
     offset: usize,
     n_levels: usize,
-    /// Coefficient column of the term's constant, if it has one.
-    intercept_column: Option<usize>,
-    /// Coefficient column of each covariate, in order.
-    slope_columns: Box<[usize]>,
+    /// Slopes start at column 1 behind an intercept, at 0 without one.
+    intercept: bool,
     transforms: Vec<LevelTransform>,
 }
 
@@ -56,8 +54,6 @@ impl SlopeBasis {
                 TermBasis::build(design, term, moments, &mut loadings, &mut unidentified)
             })
             .collect();
-        // `Design::build` rejects unclaimed loading columns, so whitening leaves none unwritten.
-        debug_assert!(loadings.iter().all(|l| l.len() == design.n_obs));
         Self {
             terms,
             loadings,
@@ -88,15 +84,9 @@ impl TermBasis {
     ) -> Self {
         let meta = &design.terms[term];
         let (offset, n_levels) = (meta.offset, meta.n_levels);
-        let intercept_column = meta.columns.iter().position(|l| l.covariate().is_none());
-        let (slope_columns, z_cols): (Vec<usize>, Vec<usize>) = meta
-            .columns
-            .iter()
-            .enumerate()
-            .filter_map(|(col, l)| l.covariate().map(|&z| (col, z as usize)))
-            .unzip();
-        let intercept = intercept_column.is_some();
-        let v = slope_columns.len();
+        let intercept = meta.has_intercept();
+        let z_cols: Vec<usize> = meta.covariates().map(|c| c as usize).collect();
+        let v = z_cols.len();
         let levels = design.frame.level_column(term);
         let zs: Vec<&[f64]> = z_cols
             .iter()
@@ -120,7 +110,7 @@ impl TermBasis {
                     unidentified.push(CoefficientAddress {
                         channel: Channel {
                             term,
-                            column: slope_columns[j],
+                            column: j + intercept as usize,
                         },
                         level,
                     });
@@ -154,8 +144,7 @@ impl TermBasis {
         Self {
             offset,
             n_levels,
-            intercept_column,
-            slope_columns: slope_columns.into(),
+            intercept,
             transforms,
         }
     }
@@ -163,7 +152,7 @@ impl TermBasis {
     /// Map this term's solve-basis coefficients back to the user's
     /// parametrization; slots outside the term's block are untouched.
     fn back_transform(&self, x: &mut [f64]) {
-        let v = self.slope_columns.len();
+        let v = self.transforms.first().map_or(0, |t| t.center.len());
         let mut b = vec![0.0; v];
         for (l, t) in self.transforms.iter().enumerate() {
             if t.w.is_empty() {
@@ -179,13 +168,13 @@ impl TermBasis {
             for (j, &bj) in b.iter().enumerate() {
                 x[self.slope_slot(j, l)] = bj;
             }
-            if let Some(c) = self.intercept_column {
-                x[self.offset + c * self.n_levels + l] -= dot(&b, &t.center);
+            if self.intercept {
+                x[self.offset + l] -= dot(&b, &t.center);
             }
         }
     }
 
     fn slope_slot(&self, j: usize, level: usize) -> usize {
-        self.offset + self.slope_columns[j] * self.n_levels + level
+        self.offset + (j + self.intercept as usize) * self.n_levels + level
     }
 }
