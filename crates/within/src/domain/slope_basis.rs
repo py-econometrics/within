@@ -56,7 +56,7 @@ impl SlopeBasis {
                 TermBasis::build(design, term, moments, &mut loadings, &mut unidentified)
             })
             .collect();
-        // `Design::new` claims every loading column, so whitening leaves none unwritten.
+        // `Design::build` rejects unclaimed loading columns, so whitening leaves none unwritten.
         debug_assert!(loadings.iter().all(|l| l.len() == design.n_obs));
         Self {
             terms,
@@ -65,7 +65,6 @@ impl SlopeBasis {
         }
     }
 
-    /// Loading column `column` in the solve basis.
     pub(crate) fn loading_column(&self, column: usize) -> &[f64] {
         &self.loadings[column]
     }
@@ -90,12 +89,14 @@ impl TermBasis {
         let meta = &design.terms[term];
         let (offset, n_levels) = (meta.offset, meta.n_levels);
         let intercept_column = meta.columns.iter().position(|l| l.covariate().is_none());
-        let slope_columns: Box<[usize]> = (0..meta.columns.len())
-            .filter(|&c| meta.columns[c].covariate().is_some())
-            .collect();
+        let (slope_columns, z_cols): (Vec<usize>, Vec<usize>) = meta
+            .columns
+            .iter()
+            .enumerate()
+            .filter_map(|(col, l)| l.covariate().map(|&z| (col, z as usize)))
+            .unzip();
         let intercept = intercept_column.is_some();
         let v = slope_columns.len();
-        let z_cols: Vec<usize> = meta.covariates().map(|c| c as usize).collect();
         let levels = design.frame.level_column(term);
         let zs: Vec<&[f64]> = z_cols
             .iter()
@@ -154,7 +155,7 @@ impl TermBasis {
             offset,
             n_levels,
             intercept_column,
-            slope_columns,
+            slope_columns: slope_columns.into(),
             transforms,
         }
     }

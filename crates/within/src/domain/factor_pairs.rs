@@ -204,20 +204,14 @@ fn compute_partition_weights(domain_pairs: &mut [LocalDomain], n_dofs: usize) {
 mod tests {
     use super::*;
     use crate::domain::{Design, PreparedDesign};
-    use crate::observation::ObservationFrame;
     use crate::Effect;
 
     fn make_test_design() -> PreparedDesign<'static> {
-        let frame = ObservationFrame::new(
-            vec![
-                vec![0u32, 1, 2, 0, 1, 2].into(),
-                vec![0u32, 1, 0, 1, 0, 1].into(),
-                vec![0u32, 0, 1, 1, 0, 1].into(),
-            ],
-            Vec::new(),
-        )
-        .expect("valid frame");
-        PreparedDesign::unweighted_for_test(Design::from_frame(frame).expect("valid test design"))
+        PreparedDesign::from_levels_for_test(vec![
+            vec![0, 1, 2, 0, 1, 2],
+            vec![0, 1, 0, 1, 0, 1],
+            vec![0, 0, 1, 1, 0, 1],
+        ])
     }
 
     #[test]
