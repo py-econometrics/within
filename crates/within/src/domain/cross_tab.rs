@@ -7,7 +7,7 @@
 
 use crate::channel::ChannelPair;
 use crate::csr_block::{to_u32, CsrBlock};
-use crate::domain::Design;
+use crate::domain::{Design, PreparedDesign};
 
 mod accumulate;
 use accumulate::accumulate_cross_block;
@@ -138,11 +138,11 @@ impl CrossTab {
 
     /// Reuses pre-computed active flags instead of rescanning; diagonals come back separately.
     pub(crate) fn build_for_pair_with_active(
-        design: &Design<'_>,
-        weights: Option<&[f64]>,
+        prepared: &PreparedDesign<'_>,
         pair: ChannelPair,
         all_active: &[Vec<bool>],
     ) -> Option<(Self, BlockDiagonals, Vec<u32>)> {
+        let design = &prepared.design;
         let active = build_compact_mapping(
             &all_active[pair.rows.term],
             &all_active[pair.cols.term],
@@ -150,7 +150,7 @@ impl CrossTab {
             design.terms[pair.cols.term].column_base(pair.cols.column),
         )?;
 
-        let (c, row_diag, col_diag) = accumulate_cross_block(design, weights, pair, &active);
+        let (c, row_diag, col_diag) = accumulate_cross_block(prepared, pair, &active);
         let ct = c.transpose();
         let cross_tab = CrossTab { c, ct };
         let diagonals = BlockDiagonals {

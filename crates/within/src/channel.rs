@@ -30,3 +30,12 @@ impl std::fmt::Display for ChannelPair {
         write!(f, "{} and {}", self.rows, self.cols)
     }
 }
+
+/// One coefficient of the design: a [`Channel`] at one level of its term.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoefficientAddress {
+    /// The coefficient column this address sits in.
+    pub channel: Channel,
+    /// Level index within the term (`0..n_levels`).
+    pub level: usize,
+}

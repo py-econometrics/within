@@ -3,11 +3,10 @@ use proptest::prelude::*;
 use super::accumulate::{
     accumulate_dense_cross_block, accumulate_sparse_cross_block, PairColumns, Unit,
 };
-use super::{build_compact_mapping, CrossTab};
+use super::{build_compact_mapping, find_all_active_levels, CrossTab};
 use crate::channel::{Channel, ChannelPair};
 use crate::csr_block::CsrBlock;
-use crate::domain::find_all_active_levels;
-use crate::domain::{Design, Effect};
+use crate::domain::{Design, Effect, PreparedDesign};
 use crate::observation::ObservationFrame;
 
 impl CrossTab {
@@ -24,10 +23,10 @@ const INTERCEPT_PAIR: ChannelPair = ChannelPair {
     cols: Channel { term: 1, column: 0 },
 };
 
-fn design_of(columns: Vec<Vec<u32>>) -> Design<'static> {
+fn design_of(columns: Vec<Vec<u32>>) -> PreparedDesign<'static> {
     let frame = ObservationFrame::new(columns.into_iter().map(Into::into).collect(), Vec::new())
         .expect("valid frame");
-    Design::from_frame(frame).expect("valid design")
+    PreparedDesign::unweighted_for_test(Design::from_frame(frame).expect("valid design"))
 }
 
 #[test]
@@ -45,18 +44,18 @@ fn test_cross_tab_sparse_accumulation_path() {
 
     // Sparse path (large level counts)
     let design_sparse = design_of(vec![fa.clone(), fb.clone()]);
-    let active_sparse = find_all_active_levels(&design_sparse);
+    let active_sparse = find_all_active_levels(&design_sparse.design);
     let (ct_sparse, diag_sparse, _) =
-        CrossTab::build_for_pair_with_active(&design_sparse, None, INTERCEPT_PAIR, &active_sparse)
+        CrossTab::build_for_pair_with_active(&design_sparse, INTERCEPT_PAIR, &active_sparse)
             .expect("sparse cross tab should build");
 
     // Dense reference: collapse levels so n_rows * n_cols <= 5M.
     let fa_small: Vec<u32> = fa.iter().map(|&x| x % 100).collect();
     let fb_small: Vec<u32> = fb.iter().map(|&x| x % 100).collect();
     let design_dense = design_of(vec![fa_small.clone(), fb_small.clone()]);
-    let active_dense = find_all_active_levels(&design_dense);
+    let active_dense = find_all_active_levels(&design_dense.design);
     let (_ct_dense, diag_dense, _) =
-        CrossTab::build_for_pair_with_active(&design_dense, None, INTERCEPT_PAIR, &active_dense)
+        CrossTab::build_for_pair_with_active(&design_dense, INTERCEPT_PAIR, &active_dense)
             .expect("dense cross tab should build");
 
     // Each observation appears exactly once in its row/col bucket.
@@ -121,9 +120,9 @@ fn test_extract_component_two_components() {
     let fa = vec![0u32, 0, 1, 1, 2, 2, 3, 3];
     let fb = vec![0u32, 1, 0, 1, 2, 3, 2, 3];
     let design = design_of(vec![fa, fb]);
-    let all_active = find_all_active_levels(&design);
+    let all_active = find_all_active_levels(&design.design);
     let (ct, parent_diag, _) =
-        CrossTab::build_for_pair_with_active(&design, None, INTERCEPT_PAIR, &all_active)
+        CrossTab::build_for_pair_with_active(&design, INTERCEPT_PAIR, &all_active)
             .expect("cross tab should build");
 
     let components = ct.bipartite_connected_components();
@@ -233,8 +232,8 @@ proptest! {
         }
 
         let design = design_of(vec![fa, fb]);
-        let all_active = find_all_active_levels(&design);
-        let (ct, _, _) = CrossTab::build_for_pair_with_active(&design, None, INTERCEPT_PAIR, &all_active)
+        let all_active = find_all_active_levels(&design.design);
+        let (ct, _, _) = CrossTab::build_for_pair_with_active(&design, INTERCEPT_PAIR, &all_active)
             .expect("cross tab should build");
 
         let components = ct.bipartite_connected_components();
@@ -284,7 +283,7 @@ fn test_find_all_active_levels_with_gaps() {
     let fb = vec![0u32, 1, 2, 0, 1, 2];
     let design = design_of(vec![fa, fb]);
 
-    let active = find_all_active_levels(&design);
+    let active = find_all_active_levels(&design.design);
 
     // Factor 0: 5 levels, only 0, 2, 4 active.
     assert_eq!(active[0].len(), 5, "factor 0 should have 5 levels");

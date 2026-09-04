@@ -1,9 +1,7 @@
-use super::reparam::SlopeReparam;
 use super::{CoefficientAddress, CoefficientLayout};
 use crate::channel::Channel;
 use crate::config::{LocalSolverConfig, DEFAULT_DENSE_SCHUR_THRESHOLD};
-use crate::domain::level_moments::TermMoments;
-use crate::domain::{build_local_domains, Design, Grounding, MatrixForm};
+use crate::domain::{build_local_domains, Design, Grounding, MatrixForm, PreparedDesign};
 use crate::Effect;
 
 /// DGP kept in lockstep with `surplus_component_sampled_matches_exact_reduction`
@@ -34,11 +32,9 @@ fn positive_slope_only_pair_grounds_beyond_dense_threshold() {
         Effect::new(&f, false, [&z[..]]).expect("slope effect"),
         Effect::new(&g, true, []).expect("plain effect"),
     ];
-    let mut design = Design::new(effects).expect("design");
-    let moments = TermMoments::build(&design, None).expect("slopes");
-    let _reparam = SlopeReparam::build(&mut design, &moments);
+    let prepared = PreparedDesign::unweighted_for_test(Design::new(effects).expect("design"));
     let (domains, warnings) =
-        build_local_domains(&design, None, &LocalSolverConfig::default()).expect("domains");
+        build_local_domains(&prepared, &LocalSolverConfig::default()).expect("domains");
     assert!(
         domains.iter().any(|ld| {
             let ct = &ld.component.matrix.cross_tab;
