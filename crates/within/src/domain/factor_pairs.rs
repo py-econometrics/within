@@ -35,7 +35,7 @@ pub(crate) struct LocalDomain {
 /// Same-factor channel pairs are exactly orthogonal after whitening, so never enumerated.
 pub(crate) fn build_local_domains(
     design: &Design<'_>,
-    weights: Option<&[f64]>,
+    sqrt_weights: Option<&[f64]>,
     config: &LocalSolverConfig,
 ) -> Result<(Vec<LocalDomain>, Vec<BuildWarning>), BuildError> {
     use rayon::prelude::*;
@@ -65,7 +65,7 @@ pub(crate) fn build_local_domains(
         .par_iter()
         .map(|&pair| {
             let Some((full_ct, full_diag, l2g)) =
-                CrossTab::build_for_pair_with_active(design, weights, pair, &all_active)
+                CrossTab::build_for_pair_with_active(design, sqrt_weights, pair, &all_active)
             else {
                 return Ok((Vec::new(), Vec::new()));
             };

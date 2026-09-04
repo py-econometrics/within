@@ -304,9 +304,7 @@ impl BatchSolveResult {
 /// Python boundary — uses owned columns.
 pub struct Solver<'a> {
     design: Design<'a>,
-    /// `sqrt(W)` in the design's internal observation order, computed once and
-    /// borrowed by the per-RHS [`DesignOperator`]s (raw weights are needed only
-    /// during construction).
+    /// `W^{1/2}` in the design's internal observation order; the only form of the weights kept.
     sqrt_weights: Option<Vec<f64>>,
     preconditioner: Option<Preconditioner>,
     reparam: Option<SlopeReparam>,
@@ -362,13 +360,17 @@ impl<'a> Solver<'a> {
     ) -> Result<Self, BuildError> {
         let mut design = design.into_design()?;
         design.validate_weights(weights)?;
-        let weights = weights.map(|w| design.permute_obs_in(w));
+        let sqrt_weights: Option<Vec<f64>> = weights.map(|w| {
+            let w = design.permute_obs_in(w);
+            w.iter().map(|wi| wi.sqrt()).collect()
+        });
+        let sw = sqrt_weights.as_deref();
 
         // Both readers below need the raw loadings, so the moments precede whitening.
-        let moments = TermMoments::build(&design, weights.as_deref());
+        let moments = TermMoments::build(&design, sw);
         let mut warnings = moments
             .as_ref()
-            .map(|m| detect_collinear_slopes(&design, weights.as_deref(), m))
+            .map(|m| detect_collinear_slopes(&design, sw, m))
             .unwrap_or_default();
 
         // Reparametrize the slope columns (if any) before the preconditioner reads the frame.
@@ -377,12 +379,8 @@ impl<'a> Solver<'a> {
             .and_then(|m| SlopeReparam::build(&mut design, m));
 
         let (preconditioner, build_warnings) = match preconditioner.into() {
-            PreconditionerInput::Default => {
-                build_preconditioner(&design, weights.as_deref(), None)?
-            }
-            PreconditionerInput::Config(c) => {
-                build_preconditioner(&design, weights.as_deref(), Some(&c))?
-            }
+            PreconditionerInput::Default => build_preconditioner(&design, sw, None)?,
+            PreconditionerInput::Config(c) => build_preconditioner(&design, sw, Some(&c))?,
             PreconditionerInput::Prebuilt(p) => {
                 if p.nrows() != design.n_dofs || p.ncols() != design.n_dofs {
                     return Err(BuildError::PreconditionerDimensionMismatch {
@@ -396,8 +394,6 @@ impl<'a> Solver<'a> {
         };
 
         warnings.extend(build_warnings);
-
-        let sqrt_weights = weights.map(|w| w.iter().map(|wi| wi.sqrt()).collect());
 
         Ok(Self {
             design,

@@ -332,7 +332,7 @@ fn dense_and_sparse_paths_agree_on_signed_data() {
         col_levels: design.frame.level_column(1),
         row_load: design.frame.loading_column(0),
         col_load: Unit,
-        weights: None,
+        sqrt_weights: None,
     };
     let (c_dense, dq_dense, dr_dense) = accumulate_dense_cross_block(cols, &active);
     let (c_sparse, dq_sparse, dr_sparse) = accumulate_sparse_cross_block(cols, &active);

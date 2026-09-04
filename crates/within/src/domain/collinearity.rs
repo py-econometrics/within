@@ -6,7 +6,7 @@ use std::ops::Range;
 use rayon::prelude::*;
 
 use super::level_moments::{BasisScratch, LevelMoments, TermMoments};
-use super::Design;
+use super::{row_weight, Design};
 use crate::channel::Channel;
 use crate::BuildWarning;
 
@@ -21,7 +21,7 @@ const ROWS_PER_TASK: usize = 1 << 16;
 
 pub(crate) fn detect_collinear_slopes(
     design: &Design<'_>,
-    weights: Option<&[f64]>,
+    sqrt_weights: Option<&[f64]>,
     moments: &TermMoments,
 ) -> Vec<BuildWarning> {
     if design.n_factors() < 2 {
@@ -32,7 +32,7 @@ pub(crate) fn detect_collinear_slopes(
         .into_par_iter()
         .flat_map_iter(move |term| {
             let targets = screened_covariates(design, term);
-            residual_shares(design, weights, moments, term, &targets, budget)
+            residual_shares(design, sqrt_weights, moments, term, &targets, budget)
                 .into_iter()
                 .zip(targets)
                 .filter(|&(share, _)| share <= COLLINEARITY_TOL)
@@ -59,7 +59,7 @@ fn screened_covariates(design: &Design<'_>, term: usize) -> Vec<(Channel, u32)> 
 /// Two passes, so the share resolves below the `1e-16` a subtraction floors at.
 fn residual_shares(
     design: &Design<'_>,
-    weights: Option<&[f64]>,
+    sqrt_weights: Option<&[f64]>,
     moments: &TermMoments,
     term: usize,
     targets: &[(Channel, u32)],
@@ -85,7 +85,7 @@ fn residual_shares(
     let plan = ScreenPlan::new(budget, n_levels, stride);
     let screen = Screen {
         levels,
-        weights,
+        sqrt_weights,
         zs,
         columns,
         zeros: vec![0.0; moments.n_slopes()],
@@ -132,7 +132,7 @@ fn residual_shares(
 
 struct Screen<'a> {
     levels: &'a [u32],
-    weights: Option<&'a [f64]>,
+    sqrt_weights: Option<&'a [f64]>,
     zs: Vec<&'a [f64]>,
     columns: Vec<&'a [f64]>,
     zeros: Vec<f64>,
@@ -151,7 +151,7 @@ impl Screen<'_> {
     ) -> impl Iterator<Item = (usize, f64, usize)> + '_ {
         rows.filter_map(move |i| {
             let obs = self.order.obs(i);
-            let w = self.weights.map_or(1.0, |w| w[obs]);
+            let w = row_weight(self.sqrt_weights, obs);
             (w > 0.0).then(|| (obs, w, self.levels[obs] as usize - first))
         })
     }

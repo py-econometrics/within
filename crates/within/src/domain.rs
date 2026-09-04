@@ -104,6 +104,11 @@ impl TermMeta {
     }
 }
 
+/// The Gram weight of row `obs`: the operator applies `s`, so its normal matrix carries `s²`.
+pub(crate) fn row_weight(sqrt_weights: Option<&[f64]>, obs: usize) -> f64 {
+    sqrt_weights.map_or(1.0, |s| s[obs] * s[obs])
+}
+
 /// Stable argsort of observations by a level column, ascending.
 ///
 /// Dense counting sort in `O(n_obs + n_levels)` or sparse comparison sort — same

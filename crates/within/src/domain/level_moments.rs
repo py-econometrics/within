@@ -3,7 +3,7 @@
 
 use rayon::prelude::*;
 
-use super::Design;
+use super::{row_weight, Design};
 
 /// Relative rank tolerance: a slope direction drops once its remaining
 /// within-level variance falls to `RANK_TOL` × its own initial variance.
@@ -14,7 +14,7 @@ pub(crate) struct TermMoments(Vec<LevelMoments>);
 
 impl TermMoments {
     /// `None` when no term carries a covariate, so nothing downstream has work.
-    pub(crate) fn build(design: &Design<'_>, weights: Option<&[f64]>) -> Option<Self> {
+    pub(crate) fn build(design: &Design<'_>, sqrt_weights: Option<&[f64]>) -> Option<Self> {
         let has_slopes = design
             .terms
             .iter()
@@ -23,7 +23,7 @@ impl TermMoments {
             Self(
                 (0..design.terms.len())
                     .into_par_iter()
-                    .map(|term| LevelMoments::build(design, term, weights))
+                    .map(|term| LevelMoments::build(design, term, sqrt_weights))
                     .collect(),
             )
         })
@@ -60,7 +60,7 @@ fn tri_len(v: usize) -> usize {
 }
 
 impl LevelMoments {
-    fn build(design: &Design<'_>, term: usize, weights: Option<&[f64]>) -> Self {
+    fn build(design: &Design<'_>, term: usize, sqrt_weights: Option<&[f64]>) -> Self {
         let meta = &design.terms[term];
         let covariates: Box<[u32]> = meta
             .columns
@@ -86,7 +86,7 @@ impl LevelMoments {
             for (zr, col) in z_row.iter_mut().zip(&zs) {
                 *zr = col[obs];
             }
-            let w = weights.map_or(1.0, |w| w[obs]);
+            let w = row_weight(sqrt_weights, obs);
             moments.observe(level as usize, &z_row, w, &mut delta);
         }
         moments
