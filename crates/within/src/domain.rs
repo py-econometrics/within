@@ -4,7 +4,7 @@ pub(crate) mod collinearity;
 pub(crate) mod cross_tab;
 mod effect;
 pub(crate) mod factor_pairs;
-pub(crate) mod level_moments;
+mod level_moments;
 mod prepared;
 mod reparam;
 
@@ -95,6 +95,19 @@ pub(crate) struct TermMeta {
 }
 
 impl TermMeta {
+    /// Frame columns of the term's covariates, in coefficient-column order.
+    pub(crate) fn covariates(&self) -> impl Iterator<Item = u32> + '_ {
+        self.columns.iter().filter_map(|c| c.covariate().copied())
+    }
+
+    pub(crate) fn has_slopes(&self) -> bool {
+        self.covariates().next().is_some()
+    }
+
+    pub(crate) fn has_intercept(&self) -> bool {
+        self.columns.iter().any(|c| c.covariate().is_none())
+    }
+
     pub fn n_columns(&self) -> usize {
         self.columns.len()
     }

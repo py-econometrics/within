@@ -1,6 +1,8 @@
 //! Within-level reparametrization of a design's varying-slope terms.
 
-use super::level_moments::{BasisScratch, TermMoments};
+use rayon::prelude::*;
+
+use super::level_moments::{BasisScratch, LevelMoments};
 use super::Design;
 use crate::channel::{Channel, CoefficientAddress};
 use crate::linalg::dot;
@@ -41,26 +43,23 @@ impl SlopeReparam {
     /// `None` for slope-free designs. Unidentified directions become
     /// exact-zero columns, so the minimal-norm solve leaves exact-`0`
     /// coefficients.
-    pub(crate) fn build(design: &Design<'_>, moments: &TermMoments) -> Option<Self> {
+    pub(crate) fn build(design: &Design<'_>, sqrt_weights: Option<&[f64]>) -> Option<Self> {
         let mut loadings = vec![Vec::new(); design.frame.n_loading_columns()];
-        let mut terms = Vec::new();
+        let slope_terms: Vec<usize> = (0..design.terms.len())
+            .filter(|&t| design.terms[t].has_slopes())
+            .collect();
+        let moments: Vec<LevelMoments> = slope_terms
+            .par_iter()
+            .map(|&term| LevelMoments::build(design, term, sqrt_weights))
+            .collect();
         let mut unidentified = Vec::new();
-        for term in 0..design.terms.len() {
-            if !design.terms[term]
-                .columns
-                .iter()
-                .any(|c| c.covariate().is_some())
-            {
-                continue;
-            }
-            terms.push(TermReparam::build(
-                design,
-                term,
-                moments,
-                &mut loadings,
-                &mut unidentified,
-            ));
-        }
+        let terms: Vec<TermReparam> = slope_terms
+            .iter()
+            .zip(&moments)
+            .map(|(&term, moments)| {
+                TermReparam::build(design, term, moments, &mut loadings, &mut unidentified)
+            })
+            .collect();
         (!terms.is_empty()).then_some(Self {
             terms,
             loadings,
@@ -82,21 +81,19 @@ impl SlopeReparam {
 }
 
 impl TermReparam {
-    /// Whiten one term's loading columns into `loadings`, appending its
-    /// unidentified directions ascending in `(level, column)`.
+    /// Whitens one term into `loadings`; unidentified directions append in `(level, column)` order.
     fn build(
         design: &Design<'_>,
         term: usize,
-        moments: &TermMoments,
+        moments: &LevelMoments,
         loadings: &mut [Vec<f64>],
         unidentified: &mut Vec<CoefficientAddress>,
     ) -> Self {
         let meta = &design.terms[term];
         let (offset, n_levels) = (meta.offset, meta.n_levels);
-        let intercept = meta.columns.iter().any(|l| l.covariate().is_none());
-        let moments = &moments[term];
-        let v = moments.n_slopes();
-        let z_cols: Vec<usize> = moments.covariates().iter().map(|&c| c as usize).collect();
+        let intercept = meta.has_intercept();
+        let z_cols: Vec<usize> = meta.covariates().map(|c| c as usize).collect();
+        let v = z_cols.len();
         let levels = design.frame.level_column(term);
         let zs: Vec<&[f64]> = z_cols
             .iter()
