@@ -7,8 +7,7 @@ use crate::domain::Effect;
 use super::*;
 
 impl SlopeBasis {
-    /// The caller's own loading columns, for tests that drive a consumer
-    /// without the whitening a solver always runs.
+    /// The caller's own loading columns, unwhitened.
     pub(crate) fn with_caller_loadings_for_test(design: &Design<'_>) -> Self {
         Self {
             terms: Vec::new(),

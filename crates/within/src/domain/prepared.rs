@@ -6,9 +6,7 @@ use super::collinearity::detect_collinear_slopes;
 use super::{Design, SlopeBasis};
 use crate::{BuildError, BuildWarning};
 
-/// A [`Design`] plus everything one weight vector determines about it: the
-/// weights in internal observation order, the slope basis the solve runs in,
-/// and the screening warnings. Solvers on the same weights share one.
+/// A [`Design`] plus everything one weight vector determines: weights, slope basis, screening.
 pub(crate) struct PreparedDesign<'a> {
     pub(crate) design: Arc<Design<'a>>,
     /// Raw weights in internal observation order; `None` is unweighted.
@@ -46,8 +44,7 @@ mod tests {
     use super::*;
 
     impl<'a> PreparedDesign<'a> {
-        /// Unweighted, on the caller's own loading columns; see
-        /// [`SlopeBasis::with_caller_loadings_for_test`].
+        /// Unweighted, on the caller's own loading columns.
         pub(crate) fn with_caller_loadings_for_test(design: Design<'a>) -> Self {
             let basis = SlopeBasis::with_caller_loadings_for_test(&design);
             Self {

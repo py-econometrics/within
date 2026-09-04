@@ -8,11 +8,7 @@ use crate::linalg::dot;
 #[cfg(test)]
 mod tests;
 
-/// Per-level change of basis making each slope-bearing term's within-level
-/// Gram the identity, holding every loading column in that basis;
-/// [`Self::back_transform`] restores the user's parametrization. Unidentified
-/// directions become exact-zero columns, so the minimal-norm solve leaves
-/// exact-`0` coefficients. A slope-free design gets an empty basis.
+/// Per-level basis making each slope term's within-level Gram the identity; empty without slopes.
 pub(crate) struct SlopeBasis {
     terms: Vec<TermBasis>,
     /// The frame's loading columns in the solve basis, indexed like the frame's.
@@ -86,8 +82,7 @@ impl SlopeBasis {
 }
 
 impl TermBasis {
-    /// Whiten one term's loading columns into `loadings`, appending its unidentified
-    /// directions ascending in `(level, column)`.
+    /// Whiten one term into `loadings`; unidentified directions append ascending in `(level, column)`.
     fn build(
         design: &Design<'_>,
         term: usize,

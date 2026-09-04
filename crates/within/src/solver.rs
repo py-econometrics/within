@@ -20,9 +20,7 @@ use crate::{BuildError, BuildWarning, SolveError, WithinError};
 #[cfg(test)]
 mod tests;
 
-/// Fallible conversion into a shared [`Design`] for [`Solver::new`]: a
-/// categories matrix (`ArrayView2<u32>`), a list of [`Effect`] terms, a
-/// [`Design`], or an `Arc<Design>` already shared with other solvers.
+/// Fallible conversion into a shared [`Design`] for [`Solver::new`].
 pub trait IntoDesign<'a> {
     /// Build the [`Design`], validating inputs along the way.
     fn into_design(self) -> Result<Arc<Design<'a>>, BuildError>;

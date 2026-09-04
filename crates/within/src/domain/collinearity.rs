@@ -56,10 +56,6 @@ fn screened_covariates(design: &Design<'_>, term: usize) -> Vec<(Channel, u32)> 
 }
 
 /// Two passes, so the share resolves below the `1e-16` a subtraction floors at.
-///
-/// The term's span is read in the solve basis: its whitened columns are
-/// weight-orthonormal within each level, so a target's fit is `Σw·c·u` per
-/// column with no decomposition of its own.
 fn residual_shares(
     design: &Design<'_>,
     weights: Option<&[f64]>,
@@ -196,8 +192,7 @@ impl Screen<'_> {
         *w_sum = running;
     }
 
-    /// Rewrites each level's `Σw·c` as the constant `c̄` of `c`'s fit; the `Σw·u·c`
-    /// beside it already are the slope coefficients, `u` being orthonormal.
+    /// `Σw·c` becomes the fit's constant `c̄`; `Σw·u·c` already is its slope, `u` being orthonormal.
     fn to_coefficients(&self, table: &mut [f64], level_weight: &[f64]) {
         let v = self.us.len();
         for (row, &w_sum) in table.chunks_exact_mut(self.stride).zip(level_weight) {
