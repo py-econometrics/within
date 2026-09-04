@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use crate::block_elim::BlockElimSolver;
 use crate::config::{LocalSolverConfig, PreconditionerConfig};
 use crate::domain::Loading;
-use crate::domain::{LocalDomain, PreparedDesign};
+use crate::domain::{row_weight, LocalDomain, PreparedDesign};
 use crate::{BuildError, BuildWarning};
 
 #[cfg(test)]
@@ -212,12 +212,12 @@ impl Operator for Preconditioner {
 
 fn build_diagonal(prepared: &PreparedDesign<'_>) -> Result<DiagonalPreconditioner, BuildError> {
     let design = &prepared.design;
-    let weights = prepared.weights.as_deref();
+    let sqrt_weights = prepared.sqrt_weights.as_deref();
     let mut diag = vec![0.0; design.n_dofs];
 
     for (factor_idx, term) in design.terms.iter().enumerate() {
         let levels = design.frame.level_column(factor_idx);
-        let w = |uid: usize| weights.map_or(1.0, |ws| ws[uid]);
+        let w = |uid: usize| row_weight(sqrt_weights, uid);
         for (column, loading) in term.columns.iter().enumerate() {
             let base = term.column_base(column);
             let slice = &mut diag[base..base + term.n_levels];

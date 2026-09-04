@@ -1,6 +1,6 @@
 //! Per-level weighted moments of a term's loading columns, the input to slope whitening.
 
-use super::Design;
+use super::{row_weight, Design};
 
 /// Relative rank tolerance: a slope direction drops once its remaining
 /// within-level variance falls to `RANK_TOL` × its own initial variance.
@@ -27,7 +27,7 @@ fn tri_len(v: usize) -> usize {
 }
 
 impl LevelMoments {
-    pub(crate) fn build(design: &Design<'_>, term: usize, weights: Option<&[f64]>) -> Self {
+    pub(crate) fn build(design: &Design<'_>, term: usize, sqrt_weights: Option<&[f64]>) -> Self {
         let meta = &design.terms[term];
         let zs: Vec<&[f64]> = meta
             .covariates()
@@ -47,7 +47,7 @@ impl LevelMoments {
             for (zr, col) in z_row.iter_mut().zip(&zs) {
                 *zr = col[obs];
             }
-            let w = weights.map_or(1.0, |w| w[obs]);
+            let w = row_weight(sqrt_weights, obs);
             moments.observe(level as usize, &z_row, w, &mut delta);
         }
         moments

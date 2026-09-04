@@ -9,7 +9,7 @@ mod prepared;
 mod slope_basis;
 
 pub(crate) use cross_tab::{find_all_active_levels, BlockDiagonals, CrossTab};
-pub(crate) use prepared::PreparedDesign;
+pub(crate) use prepared::{row_weight, PreparedDesign};
 use slope_basis::SlopeBasis;
 
 pub use effect::Effect;

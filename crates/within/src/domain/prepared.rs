@@ -1,30 +1,32 @@
 use super::{Design, SlopeBasis};
 use crate::BuildError;
 
-/// A [`Design`] plus what one weight vector determines: the weights and the slope basis.
+/// A [`Design`] plus what one weight vector determines: the row scaling and the slope basis.
 pub(crate) struct PreparedDesign<'a> {
     pub(crate) design: Design<'a>,
-    /// Raw weights in internal observation order; `None` is unweighted.
-    pub(crate) weights: Option<Vec<f64>>,
-    /// `W^{1/2}`, the operator's row scaling; kept since `s·s` is not bitwise `w`.
+    /// `W^{1/2}` in internal observation order; `None` is unweighted.
     pub(crate) sqrt_weights: Option<Vec<f64>>,
     pub(crate) basis: SlopeBasis,
 }
 
 impl<'a> PreparedDesign<'a> {
     pub(crate) fn new(design: Design<'a>, weights: Option<Vec<f64>>) -> Result<Self, BuildError> {
-        let weights = design.permute_weights(weights)?;
-        let basis = SlopeBasis::build(&design, weights.as_deref());
-        let sqrt_weights = weights
-            .as_ref()
-            .map(|w| w.iter().map(|wi| wi.sqrt()).collect());
+        let sqrt_weights = design.permute_weights(weights)?.map(|mut w| {
+            w.iter_mut().for_each(|wi| *wi = wi.sqrt());
+            w
+        });
+        let basis = SlopeBasis::build(&design, sqrt_weights.as_deref());
         Ok(Self {
             design,
-            weights,
             sqrt_weights,
             basis,
         })
     }
+}
+
+/// The Gram weight of row `obs`: the operator applies `s`, so its normal matrix carries `s²`.
+pub(crate) fn row_weight(sqrt_weights: Option<&[f64]>, obs: usize) -> f64 {
+    sqrt_weights.map_or(1.0, |s| s[obs] * s[obs])
 }
 
 #[cfg(test)]

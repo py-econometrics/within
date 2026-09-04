@@ -462,7 +462,7 @@ mod weighted_adjoint_proptests {
             let dm = PreparedDesign::from_levels_for_test(vec![fa, fb]);
             let dm_weighted = PreparedDesign::new(dm.design.clone(), Some(weights)).unwrap();
             // Internal row order, like `dx` and `r` below.
-            let weights = dm_weighted.weights.as_deref().unwrap();
+            let sqrt_weights = dm_weighted.sqrt_weights.as_deref().unwrap();
 
             let n_dofs = dm.design.n_dofs;
             let n_rows = dm.design.n_obs;
@@ -481,7 +481,7 @@ mod weighted_adjoint_proptests {
                 .iter()
                 .zip(r.iter())
                 .enumerate()
-                .map(|(i, (dxi, ri))| weights[i] * dxi * ri)
+                .map(|(i, (dxi, ri))| sqrt_weights[i] * sqrt_weights[i] * dxi * ri)
                 .sum();
 
             let op_weighted = DesignOperator::new(&dm_weighted);
