@@ -25,7 +25,7 @@ use crate::results::{
 fn build_and_solve<'a>(
     design: impl IntoDesign<'a>,
     y: &[f64],
-    weights: Option<&[f64]>,
+    weights: Option<Vec<f64>>,
     lsmr: &LsmrOptions,
     precond: impl Into<PreconditionerInput>,
 ) -> Result<(SolveResult, Vec<BuildWarning>), WithinError> {
@@ -42,7 +42,7 @@ fn build_and_solve<'a>(
 fn build_and_solve_batch<'a>(
     design: impl IntoDesign<'a>,
     ys: &[&[f64]],
-    weights: Option<&[f64]>,
+    weights: Option<Vec<f64>>,
     lsmr: &LsmrOptions,
     precond: impl Into<PreconditionerInput>,
 ) -> Result<(BatchSolveResult, Vec<BuildWarning>), WithinError> {
@@ -79,15 +79,19 @@ pub fn solve<'py>(
             let cats = categories.as_array();
             run_solve_with_warnings(py, move || {
                 let y_cow = coerce_to_slice(&y_arr);
-                let w_cow = w_view.as_ref().map(coerce_to_slice);
-                build_and_solve(cats, &y_cow, w_cow.as_deref(), &params, precond)
+                build_and_solve(cats, &y_cow, w_view.map(|w| w.to_vec()), &params, precond)
             })
         }
         DesignSource::Effects(terms) => run_solve_with_warnings(py, move || {
             let effects: Vec<_> = terms.iter().map(PyEffect::as_effect).collect();
             let y_cow = coerce_to_slice(&y_arr);
-            let w_cow = w_view.as_ref().map(coerce_to_slice);
-            build_and_solve(effects, &y_cow, w_cow.as_deref(), &params, precond)
+            build_and_solve(
+                effects,
+                &y_cow,
+                w_view.map(|w| w.to_vec()),
+                &params,
+                precond,
+            )
         }),
     }
 }
@@ -117,8 +121,13 @@ pub fn solve_batch<'py>(
             run_batch_with_warnings(py, move || {
                 let columns = extract_columns(&y_arr);
                 let col_refs = column_refs(&columns);
-                let w_cow = w_view.as_ref().map(coerce_to_slice);
-                build_and_solve_batch(cats, &col_refs, w_cow.as_deref(), &params, precond)
+                build_and_solve_batch(
+                    cats,
+                    &col_refs,
+                    w_view.map(|w| w.to_vec()),
+                    &params,
+                    precond,
+                )
             })
         }
         DesignSource::Effects(terms) => {
@@ -129,8 +138,13 @@ pub fn solve_batch<'py>(
                 let effects: Vec<_> = terms.iter().map(PyEffect::as_effect).collect();
                 let columns = extract_columns(&y_arr);
                 let col_refs = column_refs(&columns);
-                let w_cow = w_view.as_ref().map(coerce_to_slice);
-                build_and_solve_batch(effects, &col_refs, w_cow.as_deref(), &params, precond)
+                build_and_solve_batch(
+                    effects,
+                    &col_refs,
+                    w_view.map(|w| w.to_vec()),
+                    &params,
+                    precond,
+                )
             })
         }
     }
@@ -239,7 +253,7 @@ impl PySolver {
         preconditioner: Option<&Bound<'py, PyAny>>,
     ) -> PyResult<Self> {
         let weights = weights.map(|w| readonly_f64_1d("weights", w)).transpose()?;
-        let w_view = weights.as_ref().map(|w| w.as_array());
+        let weights_vec: Option<Vec<f64>> = weights.as_ref().map(|w| w.as_array().to_vec());
         let precond = resolve_precond_input(preconditioner)?;
 
         // `BuildError` carries no Python types, so it maps to an exception once the GIL is back.
@@ -247,8 +261,7 @@ impl PySolver {
             DesignSource::Categories(categories) => {
                 let cats = categories.as_array();
                 py.detach(move || -> Result<Solver<'static>, BuildError> {
-                    let w_cow = w_view.as_ref().map(coerce_to_slice);
-                    Solver::new(cats.into_design()?.into_owned(), w_cow.as_deref(), precond)
+                    Solver::new(cats.into_design()?.into_owned(), weights_vec, precond)
                 })
             }
             DesignSource::Effects(terms) => {
@@ -256,8 +269,7 @@ impl PySolver {
                     let effects: Vec<_> = terms.iter().map(PyEffect::as_effect).collect();
                     // The solver outlives the terms' buffers, so lower to owned columns first.
                     let design = Design::new(effects)?.into_owned();
-                    let w_cow = w_view.as_ref().map(coerce_to_slice);
-                    Solver::new(design, w_cow.as_deref(), precond)
+                    Solver::new(design, weights_vec, precond)
                 })
             }
         }

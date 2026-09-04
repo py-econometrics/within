@@ -5,7 +5,8 @@ use crate::Effect;
 const FULL_TABLE: usize = 1 << 24;
 
 fn warn_pairs(design: &Design<'_>, weights: Option<&[f64]>) -> Vec<(Channel, usize)> {
-    let prepared = PreparedDesign::new(design.clone(), weights).expect("valid weights");
+    let prepared =
+        PreparedDesign::new(design.clone(), weights.map(<[f64]>::to_vec)).expect("valid weights");
     detect_collinear_slopes(&prepared)
         .into_iter()
         .map(|w| match w {

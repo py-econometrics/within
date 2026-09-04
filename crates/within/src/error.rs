@@ -99,14 +99,6 @@ pub enum BuildError {
         /// The offending value.
         value: f64,
     },
-    /// The frame carries continuous columns that no term uses as a slope.
-    #[error("frame has {provided} loading columns but the terms claim {claimed}")]
-    UnclaimedLoadingColumns {
-        /// Loading columns referenced by the terms.
-        claimed: usize,
-        /// Continuous columns in the frame.
-        provided: usize,
-    },
     /// Usually raw entity IDs passed as factor codes, inflating `n_levels = max code + 1`.
     #[error("design has {n_dofs} degrees of freedom, exceeding the u32 column-index limit")]
     DofSpaceExceedsU32 {
