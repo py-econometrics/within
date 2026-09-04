@@ -35,7 +35,7 @@ fn build_and_solve<'a>(
     let mut result = solver.solve(y, lsmr)?;
     result.time_setup += time_setup;
     result.time_total = t_start.elapsed().as_secs_f64();
-    Ok((result, solver.warnings()))
+    Ok((result, solver.warnings().to_vec()))
 }
 
 /// Batch counterpart to [`build_and_solve`], mirroring [`within::solve_batch`].
@@ -52,7 +52,7 @@ fn build_and_solve_batch<'a>(
     let mut result = solver.solve_batch(ys, lsmr)?;
     result.time_setup += time_setup;
     result.time_total = t_start.elapsed().as_secs_f64();
-    Ok((result, solver.warnings()))
+    Ok((result, solver.warnings().to_vec()))
 }
 
 #[pyfunction]
@@ -261,11 +261,7 @@ impl PySolver {
             DesignSource::Categories(categories) => {
                 let cats = categories.as_array();
                 py.detach(move || -> Result<Solver<'static>, BuildError> {
-                    Solver::new(
-                        Design::from_categories(cats)?.into_owned(),
-                        weights_vec,
-                        precond,
-                    )
+                    Solver::new(cats.into_design()?.into_owned(), weights_vec, precond)
                 })
             }
             DesignSource::Effects(terms) => {
@@ -279,7 +275,7 @@ impl PySolver {
         }
         .map_err(value_err)?;
 
-        emit_build_warnings(py, &solver.warnings())?;
+        emit_build_warnings(py, solver.warnings())?;
         Ok(Self { solver })
     }
 

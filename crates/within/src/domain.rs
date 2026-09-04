@@ -20,8 +20,7 @@ pub(crate) use factor_pairs::{
 };
 
 use std::borrow::Cow;
-
-use ndarray::{ArrayView2, Axis};
+use std::sync::Arc;
 
 use crate::channel::Channel;
 use crate::observation::ObservationFrame;
@@ -183,15 +182,16 @@ fn stable_argsort(key: &[u32], n_levels: usize) -> Vec<u32> {
 }
 
 /// Fixed-effects design: observation columns plus coefficient-space layout.
+/// Cloning shares the per-observation data, so solvers on one design share it.
 #[derive(Clone, Debug)]
 pub struct Design<'a> {
     /// Columns in internal row order (caller's, or an owned locality-sorted copy).
-    frame: ObservationFrame<'a>,
+    frame: Arc<ObservationFrame<'a>>,
     pub(crate) terms: Vec<TermMeta>,
     pub(crate) n_obs: usize,
     pub(crate) n_dofs: usize,
     /// `obs_perm[k]` = caller's original index of the observation at internal position `k`.
-    pub(crate) obs_perm: Option<Vec<u32>>,
+    pub(crate) obs_perm: Option<Arc<[u32]>>,
     /// `active_levels[term][level]`: whether any observation carries that level.
     pub(crate) active_levels: Vec<Vec<bool>>,
 }
@@ -213,21 +213,6 @@ impl<'a> Design<'a> {
         }
         let frame = ObservationFrame::new(categorical, continuous)?;
         Self::build(frame, structure, true)
-    }
-
-    /// Intercept-only factors from an observation-major `(n_obs, n_factors)` categories array.
-    pub fn from_categories(categories: ArrayView2<'a, u32>) -> Result<Self, BuildError> {
-        // Gather strided (C-order) columns once so every downstream read is contiguous.
-        let categorical = (0..categories.ncols())
-            .map(|factor| {
-                let col = categories.index_axis_move(Axis(1), factor);
-                match col.to_slice() {
-                    Some(s) => Cow::Borrowed(s),
-                    None => Cow::Owned(col.to_vec()),
-                }
-            })
-            .collect();
-        Self::from_frame(ObservationFrame::new(categorical, Vec::new())?)
     }
 
     /// Intercept-only factors, level count `max + 1`; locality-sorts an unsorted dominant factor.
@@ -293,7 +278,7 @@ impl<'a> Design<'a> {
                 for (q, meta) in terms.iter_mut().enumerate() {
                     meta.sorted = sorted_frame.level_column(q).is_sorted();
                 }
-                (sorted_frame, Some(perm))
+                (sorted_frame, Some(perm.into()))
             }
             _ => (frame, None),
         };
@@ -311,7 +296,7 @@ impl<'a> Design<'a> {
             .collect();
 
         Ok(Design {
-            frame,
+            frame: Arc::new(frame),
             terms,
             n_obs,
             n_dofs: offset,
@@ -322,8 +307,10 @@ impl<'a> Design<'a> {
 
     /// Convert the frame's columns to owned, dropping ties to caller buffers.
     pub fn into_owned(self) -> Design<'static> {
+        // A frame other clones still hold is copied; a sole owner converts in place.
+        let frame = Arc::try_unwrap(self.frame).unwrap_or_else(|shared| (*shared).clone());
         Design {
-            frame: self.frame.into_owned(),
+            frame: Arc::new(frame.into_owned()),
             terms: self.terms,
             n_obs: self.n_obs,
             n_dofs: self.n_dofs,
@@ -332,9 +319,12 @@ impl<'a> Design<'a> {
         }
     }
 
-    /// Validate that an optional weight slice matches this design's observation count.
-    pub(crate) fn validate_weights(&self, weights: Option<&[f64]>) -> Result<(), BuildError> {
-        if let Some(w) = weights {
+    /// Validated weights in internal observation order.
+    pub(crate) fn permute_weights(
+        &self,
+        weights: Option<Vec<f64>>,
+    ) -> Result<Option<Vec<f64>>, BuildError> {
+        if let Some(w) = &weights {
             if w.len() != self.n_obs {
                 return Err(BuildError::WeightCountMismatch {
                     expected: self.n_obs,
@@ -350,15 +340,6 @@ impl<'a> Design<'a> {
                 return Err(BuildError::InvalidWeight { index, value });
             }
         }
-        Ok(())
-    }
-
-    /// Validated weights in internal observation order.
-    pub(crate) fn permute_weights(
-        &self,
-        weights: Option<Vec<f64>>,
-    ) -> Result<Option<Vec<f64>>, BuildError> {
-        self.validate_weights(weights.as_deref())?;
         // The match keeps the unpermuted arm a plain move rather than a borrow-and-copy.
         Ok(match &self.obs_perm {
             Some(_) => weights.map(|w| self.permute_obs_in(&w).into_owned()),
@@ -504,29 +485,26 @@ mod tests {
     }
 
     #[test]
-    fn validate_weights_checks_count_and_finiteness() {
+    fn permute_weights_checks_count_and_finiteness() {
         let design = Design::from_frame(frame(vec![vec![0, 0, 0, 0, 0]], vec![])).unwrap();
-        assert!(design.validate_weights(None).is_ok());
-        assert!(design
-            .validate_weights(Some(&[1.0, 2.0, 3.0, 4.0, 5.0]))
-            .is_ok());
+        let check = |w: &[f64]| design.permute_weights(Some(w.to_vec()));
+        assert!(design.permute_weights(None).is_ok());
+        assert!(check(&[1.0, 2.0, 3.0, 4.0, 5.0]).is_ok());
         // Zero weights are valid (an excluded observation).
-        assert!(design
-            .validate_weights(Some(&[0.0, 1.0, 2.0, 3.0, 4.0]))
-            .is_ok());
+        assert!(check(&[0.0, 1.0, 2.0, 3.0, 4.0]).is_ok());
         // Length mismatch.
-        assert!(design.validate_weights(Some(&[1.0, 2.0])).is_err());
+        assert!(check(&[1.0, 2.0]).is_err());
         // Negative / non-finite weights are rejected with the offending index.
         assert!(matches!(
-            design.validate_weights(Some(&[1.0, -2.0, 3.0, 4.0, 5.0])),
+            check(&[1.0, -2.0, 3.0, 4.0, 5.0]),
             Err(BuildError::InvalidWeight { index: 1, .. })
         ));
         assert!(matches!(
-            design.validate_weights(Some(&[1.0, 2.0, f64::NAN, 4.0, 5.0])),
+            check(&[1.0, 2.0, f64::NAN, 4.0, 5.0]),
             Err(BuildError::InvalidWeight { index: 2, .. })
         ));
         assert!(matches!(
-            design.validate_weights(Some(&[1.0, 2.0, 3.0, f64::INFINITY, 5.0])),
+            check(&[1.0, 2.0, 3.0, f64::INFINITY, 5.0]),
             Err(BuildError::InvalidWeight { index: 3, .. })
         ));
     }
@@ -575,8 +553,8 @@ mod tests {
         ))
         .unwrap();
 
-        let perm = design.obs_perm.as_ref().expect("permutation applied");
-        assert_eq!(perm, &[1, 3, 2, 0]);
+        let perm = design.obs_perm.as_deref().expect("permutation applied");
+        assert_eq!(perm, [1, 3, 2, 0]);
         assert_eq!(design.level_column(0), [0, 0, 1, 2]);
         assert_eq!(design.loading_column(0), [20.0, 40.0, 30.0, 10.0]);
     }

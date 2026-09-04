@@ -5,7 +5,7 @@ use std::ops::Range;
 
 use rayon::prelude::*;
 
-use super::{Design, SlopeBasis};
+use super::{Design, PreparedDesign, SlopeBasis};
 use crate::channel::Channel;
 use crate::BuildWarning;
 
@@ -18,11 +18,12 @@ const TABLE_BUDGET_BYTES: usize = 64 << 20;
 /// Rows one residual task claims; small enough that work stealing balances the tail.
 const ROWS_PER_TASK: usize = 1 << 16;
 
-pub(crate) fn detect_collinear_slopes(
-    design: &Design<'_>,
-    weights: Option<&[f64]>,
-    basis: &SlopeBasis,
-) -> Vec<BuildWarning> {
+pub(crate) fn detect_collinear_slopes(prepared: &PreparedDesign<'_>) -> Vec<BuildWarning> {
+    let (design, weights, basis) = (
+        &prepared.design,
+        prepared.weights.as_deref(),
+        &prepared.basis,
+    );
     if design.n_factors() < 2 {
         return Vec::new();
     }

@@ -5,8 +5,13 @@ use crate::Effect;
 const FULL_TABLE: usize = 1 << 24;
 
 fn warn_pairs(design: &Design<'_>, weights: Option<&[f64]>) -> Vec<(Channel, usize)> {
-    let basis = SlopeBasis::build(design, weights);
-    detect_collinear_slopes(design, weights, &basis)
+    // Built directly: these weights are already in the design's internal order.
+    let prepared = PreparedDesign {
+        design: design.clone(),
+        weights: weights.map(<[f64]>::to_vec),
+        basis: SlopeBasis::build(design, weights),
+    };
+    detect_collinear_slopes(&prepared)
         .into_iter()
         .map(|w| match w {
             BuildWarning::CollinearSlopeCovariate { slope, term, .. } => (slope, term),

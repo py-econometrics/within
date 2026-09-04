@@ -1,33 +1,24 @@
 //! A design fixed to one weight vector: the state every solve on it shares.
 
-use std::sync::Arc;
-
-use super::collinearity::detect_collinear_slopes;
 use super::{Design, SlopeBasis};
-use crate::{BuildError, BuildWarning};
+use crate::BuildError;
 
-/// A [`Design`] plus everything one weight vector determines: weights, slope basis, screening.
+/// A [`Design`] plus what one weight vector determines: the weights and the slope basis.
 pub(crate) struct PreparedDesign<'a> {
-    pub(crate) design: Arc<Design<'a>>,
+    pub(crate) design: Design<'a>,
     /// Raw weights in internal observation order; `None` is unweighted.
     pub(crate) weights: Option<Vec<f64>>,
     pub(crate) basis: SlopeBasis,
-    pub(crate) warnings: Vec<BuildWarning>,
 }
 
 impl<'a> PreparedDesign<'a> {
-    pub(crate) fn new(
-        design: Arc<Design<'a>>,
-        weights: Option<Vec<f64>>,
-    ) -> Result<Self, BuildError> {
+    pub(crate) fn new(design: Design<'a>, weights: Option<Vec<f64>>) -> Result<Self, BuildError> {
         let weights = design.permute_weights(weights)?;
         let basis = SlopeBasis::build(&design, weights.as_deref());
-        let warnings = detect_collinear_slopes(&design, weights.as_deref(), &basis);
         Ok(Self {
             design,
             weights,
             basis,
-            warnings,
         })
     }
 
@@ -48,16 +39,15 @@ mod tests {
         pub(crate) fn with_caller_loadings_for_test(design: Design<'a>) -> Self {
             let basis = SlopeBasis::with_caller_loadings_for_test(&design);
             Self {
-                design: Arc::new(design),
+                design,
                 weights: None,
                 basis,
-                warnings: Vec::new(),
             }
         }
 
         /// Unweighted, whitened like a solver would.
         pub(crate) fn unweighted_for_test(design: Design<'a>) -> Self {
-            Self::new(Arc::new(design), None).expect("unweighted preparation cannot fail")
+            Self::new(design, None).expect("unweighted preparation cannot fail")
         }
     }
 }

@@ -2,16 +2,18 @@
 //! multiple solves on the same design) and the one-shot [`solve`] / [`solve_batch`]
 //! convenience wrappers built on top of it.
 
-use std::sync::Arc;
+use std::borrow::Cow;
 use std::time::Instant;
 
-use ndarray::ArrayView2;
+use ndarray::{ArrayView2, Axis};
 use rayon::prelude::*;
 use schwarz_precond::{lsmr as lsmr_solve, mlsmr, MlsmrOptions};
 
 use crate::channel::{Channel, CoefficientAddress, CoefficientPosition};
 use crate::config::{LsmrOptions, PreconditionerConfig};
+use crate::domain::collinearity::detect_collinear_slopes;
 use crate::domain::{Design, Effect, FactorEncoding, PreparedDesign};
+use crate::observation::ObservationFrame;
 use crate::operator::design::gather_apply;
 use crate::operator::schwarz::{build_preconditioner, Preconditioner};
 use crate::operator::DesignOperator;
@@ -20,33 +22,39 @@ use crate::{BuildError, BuildWarning, SolveError, WithinError};
 #[cfg(test)]
 mod tests;
 
-/// Fallible conversion into a shared [`Design`] for [`Solver::new`].
+/// Fallible conversion into a [`Design`] for [`Solver::new`]: a categories
+/// matrix (`ArrayView2<u32>`), a list of [`Effect`] terms, or a pass-through
+/// [`Design`].
 pub trait IntoDesign<'a> {
     /// Build the [`Design`], validating inputs along the way.
-    fn into_design(self) -> Result<Arc<Design<'a>>, BuildError>;
+    fn into_design(self) -> Result<Design<'a>, BuildError>;
 }
 
 impl<'a> IntoDesign<'a> for ArrayView2<'a, u32> {
-    fn into_design(self) -> Result<Arc<Design<'a>>, BuildError> {
-        Design::from_categories(self).map(Arc::new)
+    fn into_design(self) -> Result<Design<'a>, BuildError> {
+        // Gather strided (C-order) columns once so every downstream read is contiguous.
+        let categorical = (0..self.ncols())
+            .map(|factor| {
+                let col = self.index_axis_move(Axis(1), factor);
+                match col.to_slice() {
+                    Some(s) => Cow::Borrowed(s),
+                    None => Cow::Owned(col.to_vec()),
+                }
+            })
+            .collect();
+        Design::from_frame(ObservationFrame::new(categorical, Vec::new())?)
     }
 }
 
 impl<'a> IntoDesign<'a> for Design<'a> {
-    fn into_design(self) -> Result<Arc<Design<'a>>, BuildError> {
-        Ok(Arc::new(self))
-    }
-}
-
-impl<'a> IntoDesign<'a> for Arc<Design<'a>> {
-    fn into_design(self) -> Result<Arc<Design<'a>>, BuildError> {
+    fn into_design(self) -> Result<Design<'a>, BuildError> {
         Ok(self)
     }
 }
 
 impl<'a> IntoDesign<'a> for Vec<Effect<'a>> {
-    fn into_design(self) -> Result<Arc<Design<'a>>, BuildError> {
-        Design::new(self).map(Arc::new)
+    fn into_design(self) -> Result<Design<'a>, BuildError> {
+        Design::new(self)
     }
 }
 
@@ -313,8 +321,7 @@ impl BatchSolveResult {
 pub struct Solver<'a> {
     prepared: PreparedDesign<'a>,
     preconditioner: Option<Preconditioner>,
-    /// From the preconditioner build; a reused pre-built one contributes none.
-    preconditioner_warnings: Vec<BuildWarning>,
+    warnings: Vec<BuildWarning>,
 }
 
 impl std::fmt::Debug for Solver<'_> {
@@ -368,8 +375,9 @@ impl<'a> Solver<'a> {
     ) -> Result<Self, BuildError> {
         let prepared = PreparedDesign::new(design.into_design()?, weights)?;
         let n_dofs = prepared.design.n_dofs;
+        let mut warnings = detect_collinear_slopes(&prepared);
 
-        let (preconditioner, preconditioner_warnings) = match preconditioner.into() {
+        let (preconditioner, build_warnings) = match preconditioner.into() {
             PreconditionerInput::Default => build_preconditioner(&prepared, None)?,
             PreconditionerInput::Config(c) => build_preconditioner(&prepared, Some(&c))?,
             PreconditionerInput::Prebuilt(p) => {
@@ -384,22 +392,19 @@ impl<'a> Solver<'a> {
             }
         };
 
+        warnings.extend(build_warnings);
+
         Ok(Self {
             prepared,
             preconditioner,
-            preconditioner_warnings,
+            warnings,
         })
     }
 
     /// Non-fatal events from design screening and the preconditioner build; a reused
     /// pre-built preconditioner contributes none (its own were reported when built).
-    pub fn warnings(&self) -> Vec<BuildWarning> {
-        self.prepared
-            .warnings
-            .iter()
-            .chain(&self.preconditioner_warnings)
-            .cloned()
-            .collect()
+    pub fn warnings(&self) -> &[BuildWarning] {
+        &self.warnings
     }
 
     /// Shared per-RHS solve: validate `y`, run (m)lsmr, demean, and
@@ -507,7 +512,7 @@ impl<'a> Solver<'a> {
         Ok(SolveResult {
             x: solution.x,
             unidentified: self.unidentified(),
-            warnings: self.warnings(),
+            warnings: self.warnings.clone(),
             layout: CoefficientLayout::from_design(&self.prepared.design),
             demeaned: solution.demeaned,
             converged: solution.converged,
@@ -558,7 +563,7 @@ impl<'a> Solver<'a> {
         Ok(BatchSolveResult {
             x,
             unidentified: self.unidentified(),
-            warnings: self.warnings(),
+            warnings: self.warnings.clone(),
             layout: CoefficientLayout::from_design(design),
             demeaned,
             converged,
