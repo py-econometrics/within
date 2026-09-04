@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use portable_atomic::AtomicF64;
 use schwarz_precond::Operator;
 
-use crate::domain::Design;
+use crate::domain::SolverDesign;
 
 mod gather;
 mod scatter;
@@ -21,7 +21,7 @@ const PAR_THRESHOLD: usize = 10_000;
 
 /// Design operator `D` or `W^{1/2} D`, whose normal equations `AᵀA = DᵀWD` recover the Gramian.
 pub(crate) struct DesignOperator<'a> {
-    design: &'a Design<'a>,
+    solver_design: &'a SolverDesign<'a>,
     sqrt_weights: Option<&'a [f64]>,
     /// Sized once to the largest term's block, so it allocates per operator, not per iteration.
     scatter_scratch: Vec<AtomicF64>,
@@ -32,7 +32,11 @@ pub(crate) struct DesignOperator<'a> {
 
 impl<'a> DesignOperator<'a> {
     /// `sqrt_weights` must be pre-square-rooted and `design.n_obs` long.
-    pub(crate) fn new(design: &'a Design<'a>, sqrt_weights: Option<&'a [f64]>) -> Self {
+    pub(crate) fn new(
+        solver_design: &'a SolverDesign<'a>,
+        sqrt_weights: Option<&'a [f64]>,
+    ) -> Self {
+        let design = solver_design.design();
         if let Some(sw) = sqrt_weights {
             assert_eq!(
                 sw.len(),
@@ -44,7 +48,7 @@ impl<'a> DesignOperator<'a> {
         }
         let max_block = design.terms.iter().map(|t| t.n_dofs()).max().unwrap_or(0);
         Self {
-            design,
+            solver_design,
             sqrt_weights,
             scatter_scratch: (0..max_block).map(|_| AtomicF64::new(0.0)).collect(),
             #[cfg(debug_assertions)]
@@ -87,30 +91,34 @@ impl Drop for ReentryGuard<'_> {
 
 impl Operator for DesignOperator<'_> {
     fn nrows(&self) -> usize {
-        self.design.n_obs
+        self.solver_design.design().n_obs
     }
 
     fn ncols(&self) -> usize {
-        self.design.n_dofs
+        self.solver_design.design().n_dofs
     }
 
     fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
-        debug_assert_eq!(x.len(), self.design.n_dofs);
-        debug_assert_eq!(y.len(), self.design.n_obs);
-        gather_apply(self.design, x, y, self.sqrt_weights);
+        let design = self.solver_design.design();
+        debug_assert_eq!(x.len(), design.n_dofs);
+        debug_assert_eq!(y.len(), design.n_obs);
+        gather_apply(self.solver_design, x, y, self.sqrt_weights);
         Ok(())
     }
 
     fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
         #[cfg(debug_assertions)]
         let _guard = ReentryGuard::acquire(&self.adjoint_active);
-        debug_assert_eq!(x.len(), self.design.n_obs);
-        debug_assert_eq!(y.len(), self.design.n_dofs);
+        let design = self.solver_design.design();
+        debug_assert_eq!(x.len(), design.n_obs);
+        debug_assert_eq!(y.len(), design.n_dofs);
         y.fill(0.0);
         // No lock needed: `solve_batch` builds one operator per RHS, so calls are sequential.
         match self.sqrt_weights {
-            Some(sw) => scatter_apply(self.design, &self.scatter_scratch, y, &|i| sw[i] * x[i]),
-            None => scatter_apply(self.design, &self.scatter_scratch, y, &|i| x[i]),
+            Some(sw) => scatter_apply(self.solver_design, &self.scatter_scratch, y, &|i| {
+                sw[i] * x[i]
+            }),
+            None => scatter_apply(self.solver_design, &self.scatter_scratch, y, &|i| x[i]),
         }
         Ok(())
     }
@@ -124,7 +132,7 @@ mod reentry_guard_tests {
     use schwarz_precond::Operator;
 
     use super::DesignOperator;
-    use crate::domain::Design;
+    use crate::domain::{Design, SolverDesign};
     use crate::observation::ObservationFrame;
 
     fn one_factor_design() -> Design<'static> {
@@ -140,13 +148,11 @@ mod reentry_guard_tests {
     #[should_panic(expected = "concurrently")]
     fn apply_adjoint_detects_in_flight_reentry() {
         let design = one_factor_design();
-        let op = DesignOperator::new(&design, None);
+        let solver_design = SolverDesign::new(&design);
+        let op = DesignOperator::new(&solver_design, None);
         // Simulate a sibling `apply_adjoint` already in flight on this operator.
         op.adjoint_active.store(true, Ordering::Release);
-        op.apply_adjoint(
-            &vec![0.0; op.design.n_obs],
-            &mut vec![0.0; op.design.n_dofs],
-        )
-        .expect("unreachable: the guard panics before returning");
+        op.apply_adjoint(&vec![0.0; op.nrows()], &mut vec![0.0; op.ncols()])
+            .expect("unreachable: the guard panics before returning");
     }
 }
