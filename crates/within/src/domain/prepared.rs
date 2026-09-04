@@ -1,5 +1,3 @@
-//! A design fixed to one weight vector: the state every solve on it shares.
-
 use super::{Design, SlopeBasis};
 use crate::BuildError;
 
@@ -8,7 +6,7 @@ pub(crate) struct PreparedDesign<'a> {
     pub(crate) design: Design<'a>,
     /// Raw weights in internal observation order; `None` is unweighted.
     pub(crate) weights: Option<Vec<f64>>,
-    /// `W^{1/2}`, the operator's row scaling; kept beside `weights` since `s·s` is not bitwise `w`.
+    /// `W^{1/2}`, the operator's row scaling; kept since `s·s` is not bitwise `w`.
     pub(crate) sqrt_weights: Option<Vec<f64>>,
     pub(crate) basis: SlopeBasis,
 }

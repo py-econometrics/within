@@ -12,7 +12,7 @@ use crate::channel::{Channel, ChannelPair};
 use crate::config::LocalSolverConfig;
 use crate::{BuildError, BuildWarning};
 
-use super::{find_all_active_levels, BlockDiagonals, CrossTab, PreparedDesign};
+use super::{find_all_active_levels, BlockDiagonals, CrossTab, PreparedDesign, TermMeta};
 
 mod sddm;
 use crate::domain::Loading;
@@ -88,10 +88,7 @@ pub(crate) fn build_local_domains(
     }
 
     // A slope channel breaks `1/√c`'s equal-informativeness assumption (#94), so stay uniform.
-    if !channels
-        .iter()
-        .any(|&c| design.loading(c).covariate().is_some())
-    {
+    if !design.terms.iter().any(TermMeta::has_slopes) {
         compute_partition_weights(&mut domain_pairs, design.n_dofs);
     }
 

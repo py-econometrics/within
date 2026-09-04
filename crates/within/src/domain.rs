@@ -4,13 +4,13 @@ pub(crate) mod collinearity;
 pub(crate) mod cross_tab;
 mod effect;
 pub(crate) mod factor_pairs;
-pub(crate) mod level_moments;
+mod level_moments;
 mod prepared;
 mod slope_basis;
 
 pub(crate) use cross_tab::{find_all_active_levels, BlockDiagonals, CrossTab};
 pub(crate) use prepared::PreparedDesign;
-pub(crate) use slope_basis::SlopeBasis;
+use slope_basis::SlopeBasis;
 
 pub use effect::Effect;
 
