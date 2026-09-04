@@ -12,7 +12,6 @@ use schwarz_precond::{lsmr as lsmr_solve, mlsmr, MlsmrOptions};
 use crate::channel::{Channel, CoefficientAddress};
 use crate::config::{LsmrOptions, PreconditionerConfig};
 use crate::domain::collinearity::detect_collinear_slopes;
-use crate::domain::level_moments::TermMoments;
 use crate::domain::{Design, Effect, PreparedDesign};
 use crate::observation::ObservationFrame;
 use crate::operator::design::gather_apply;
@@ -354,15 +353,9 @@ impl<'a> Solver<'a> {
         });
         let sw = sqrt_weights.as_deref();
 
-        // Both readers below need the raw loadings, so the moments precede whitening.
-        let moments = TermMoments::build(&design, sw);
-        let mut warnings = moments
-            .as_ref()
-            .map(|m| detect_collinear_slopes(&design, sw, m))
-            .unwrap_or_default();
-
         // Whiten the slope columns (if any) before the preconditioner reads them.
-        let prepared = PreparedDesign::new(design, moments.as_ref());
+        let prepared = PreparedDesign::new(design, sw);
+        let mut warnings = detect_collinear_slopes(&prepared, sw);
         let n_dofs = prepared.design.n_dofs;
 
         let (preconditioner, build_warnings) = match preconditioner.into() {
