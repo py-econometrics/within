@@ -2,7 +2,7 @@
 
 use rayon::prelude::*;
 
-use super::Design;
+use super::{Design, TermMeta};
 
 /// Relative rank tolerance: a slope direction drops once its remaining
 /// within-level variance falls to `RANK_TOL` × its own initial variance.
@@ -14,11 +14,7 @@ pub(crate) struct TermMoments(Vec<LevelMoments>);
 impl TermMoments {
     /// `None` when no term carries a covariate, so nothing downstream has work.
     pub(crate) fn build(design: &Design<'_>, weights: Option<&[f64]>) -> Option<Self> {
-        let has_slopes = design
-            .terms
-            .iter()
-            .any(|t| t.columns.iter().any(|c| c.covariate().is_some()));
-        has_slopes.then(|| {
+        design.terms.iter().any(TermMeta::has_slopes).then(|| {
             Self(
                 (0..design.terms.len())
                     .into_par_iter()
@@ -61,14 +57,10 @@ fn tri_len(v: usize) -> usize {
 impl LevelMoments {
     fn build(design: &Design<'_>, term: usize, weights: Option<&[f64]>) -> Self {
         let meta = &design.terms[term];
-        let covariates: Box<[u32]> = meta
-            .columns
-            .iter()
-            .filter_map(|c| c.covariate().copied())
-            .collect();
+        let covariates: Box<[u32]> = meta.covariates().collect();
         let v = covariates.len();
         let mut moments = Self {
-            intercept: v < meta.columns.len(),
+            intercept: meta.has_intercept(),
             w_sum: vec![0.0; meta.n_levels()],
             mean: vec![0.0; meta.n_levels() * v],
             comoment: vec![0.0; meta.n_levels() * tri_len(v)],

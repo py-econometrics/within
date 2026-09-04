@@ -42,14 +42,7 @@ impl SlopeBasis {
         let mut terms = Vec::new();
         let mut unidentified = Vec::new();
         if let Some(moments) = TermMoments::build(design, weights) {
-            for term in 0..design.terms.len() {
-                if !design.terms[term]
-                    .columns
-                    .iter()
-                    .any(|c| c.covariate().is_some())
-                {
-                    continue;
-                }
+            for term in (0..design.terms.len()).filter(|&t| design.terms[t].has_slopes()) {
                 terms.push(TermBasis::build(
                     design,
                     term,

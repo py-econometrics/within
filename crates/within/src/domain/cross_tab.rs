@@ -7,7 +7,7 @@
 
 use crate::channel::ChannelPair;
 use crate::csr_block::{to_u32, CsrBlock};
-use crate::domain::PreparedDesign;
+use crate::domain::{Design, PreparedDesign};
 
 mod accumulate;
 use accumulate::accumulate_cross_block;
@@ -19,6 +19,22 @@ struct ActiveLevels {
     col_map: Vec<u32>,
     n_cols: usize,
     local_to_global: Vec<u32>,
+}
+
+/// Scan observations once, marking `active[f][level]` for every level any observation uses.
+pub(crate) fn find_all_active_levels(design: &Design<'_>) -> Vec<Vec<bool>> {
+    let mut active: Vec<Vec<bool>> = design
+        .terms
+        .iter()
+        .map(|f| vec![false; f.n_levels()])
+        .collect();
+    // Factor-outer/obs-inner: all writes for a factor land in one `active[f]` buffer.
+    for (f, col) in active.iter_mut().enumerate() {
+        for &v in design.level_column(f) {
+            col[v as usize] = true;
+        }
+    }
+    active
 }
 
 /// Compact-index each active level, returning the global-to-compact map and active count.

@@ -12,7 +12,7 @@ use crate::channel::{Channel, ChannelPair};
 use crate::config::LocalSolverConfig;
 use crate::{BuildError, BuildWarning};
 
-use super::{BlockDiagonals, CrossTab, PreparedDesign};
+use super::{find_all_active_levels, BlockDiagonals, CrossTab, PreparedDesign};
 
 mod sddm;
 use crate::domain::Loading;
@@ -61,11 +61,12 @@ pub(crate) fn build_local_domains(
         })
         .collect();
 
+    let all_active = find_all_active_levels(design);
     let per_pair: Vec<(Vec<LocalDomain>, Vec<BuildWarning>)> = pairs
         .par_iter()
         .map(|&pair| {
             let Some((full_ct, full_diag, l2g)) =
-                CrossTab::build_for_pair_with_active(prepared, pair, &design.active_levels)
+                CrossTab::build_for_pair_with_active(prepared, pair, &all_active)
             else {
                 return Ok((Vec::new(), Vec::new()));
             };
@@ -266,7 +267,7 @@ mod tests {
         ])
         .expect("valid slope design");
         let n_dofs = design.n_dofs;
-        let design = PreparedDesign::with_caller_loadings_for_test(design);
+        let design = PreparedDesign::unweighted_for_test(design);
 
         let (domain_pairs, _) = build_local_domains(&design, &LocalSolverConfig::default())
             .expect("slope domains build");

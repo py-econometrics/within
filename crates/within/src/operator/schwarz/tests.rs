@@ -10,7 +10,7 @@ use crate::config::{
 use schwarz_precond::SubdomainCore;
 
 use crate::csr_block::CsrBlock;
-use crate::domain::{build_local_domains, Design, LocalDomain, PreparedDesign};
+use crate::domain::{build_local_domains, LocalDomain, PreparedDesign};
 use crate::domain::{CrossTab, LocalComponent};
 use crate::operator::schwarz::build_additive_with_strategy;
 use schwarz_precond::{LocalSolver, Operator, ReductionStrategy};
@@ -18,10 +18,8 @@ use schwarz_precond::{LocalSolver, Operator, ReductionStrategy};
 const BLOCK_ELIM_NESTED_RAYON_CHILD_ENV: &str = "WITHIN_TEST_BLOCK_ELIM_NESTED_RAYON_CHILD";
 
 fn make_test_data() -> (PreparedDesign<'static>, Vec<LocalDomain>) {
-    let design = PreparedDesign::unweighted_for_test(Design::from_levels_for_test(vec![
-        vec![0, 1, 0, 1, 2],
-        vec![0, 0, 1, 1, 0],
-    ]));
+    let design =
+        PreparedDesign::from_levels_for_test(vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]]);
     let (domain_pairs, _) =
         build_local_domains(&design, &LocalSolverConfig::default()).expect("plain domains build");
     (design, domain_pairs)

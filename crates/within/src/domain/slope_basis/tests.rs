@@ -6,19 +6,6 @@ use crate::domain::Effect;
 
 use super::*;
 
-impl SlopeBasis {
-    /// The caller's own loading columns, unwhitened.
-    pub(crate) fn with_caller_loadings_for_test(design: &Design<'_>) -> Self {
-        Self {
-            terms: Vec::new(),
-            loadings: (0..design.n_loading_columns())
-                .map(|c| design.loading_column(c).to_vec())
-                .collect(),
-            unidentified: Vec::new(),
-        }
-    }
-}
-
 const F0: [u32; 6] = [0, 0, 0, 1, 1, 1];
 const Z0: [f64; 6] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
 const Z1: [f64; 6] = [1.0, 4.0, 9.0, 16.0, 25.0, 36.0];

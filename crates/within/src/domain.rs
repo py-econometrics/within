@@ -8,7 +8,7 @@ pub(crate) mod level_moments;
 mod prepared;
 mod slope_basis;
 
-pub(crate) use cross_tab::{BlockDiagonals, CrossTab};
+pub(crate) use cross_tab::{find_all_active_levels, BlockDiagonals, CrossTab};
 pub(crate) use prepared::PreparedDesign;
 pub(crate) use slope_basis::SlopeBasis;
 
@@ -130,6 +130,19 @@ impl TermMeta {
         self.encoding.n_levels()
     }
 
+    /// Frame columns of the term's covariates, in coefficient-column order.
+    pub(crate) fn covariates(&self) -> impl Iterator<Item = u32> + '_ {
+        self.columns.iter().filter_map(|c| c.covariate().copied())
+    }
+
+    pub(crate) fn has_slopes(&self) -> bool {
+        self.covariates().next().is_some()
+    }
+
+    pub(crate) fn has_intercept(&self) -> bool {
+        self.columns.iter().any(|c| c.covariate().is_none())
+    }
+
     pub fn n_columns(&self) -> usize {
         self.columns.len()
     }
@@ -181,8 +194,7 @@ fn stable_argsort(key: &[u32], n_levels: usize) -> Vec<u32> {
     perm
 }
 
-/// Fixed-effects design: observation columns plus coefficient-space layout.
-/// Cloning shares the per-observation data, so solvers on one design share it.
+/// Fixed-effects design: observation columns plus coefficient-space layout; clones share rows.
 #[derive(Clone, Debug)]
 pub struct Design<'a> {
     /// Columns in internal row order (caller's, or an owned locality-sorted copy).
@@ -192,8 +204,6 @@ pub struct Design<'a> {
     pub(crate) n_dofs: usize,
     /// `obs_perm[k]` = caller's original index of the observation at internal position `k`.
     pub(crate) obs_perm: Option<Arc<[u32]>>,
-    /// `active_levels[term][level]`: whether any observation carries that level.
-    pub(crate) active_levels: Vec<Vec<bool>>,
 }
 
 impl<'a> Design<'a> {
@@ -283,39 +293,23 @@ impl<'a> Design<'a> {
             _ => (frame, None),
         };
 
-        let active_levels = terms
-            .iter()
-            .enumerate()
-            .map(|(q, t)| {
-                let mut active = vec![false; t.n_levels()];
-                for &v in frame.level_column(q) {
-                    active[v as usize] = true;
-                }
-                active
-            })
-            .collect();
-
         Ok(Design {
             frame: Arc::new(frame),
             terms,
             n_obs,
             n_dofs: offset,
             obs_perm,
-            active_levels,
         })
     }
 
     /// Convert the frame's columns to owned, dropping ties to caller buffers.
     pub fn into_owned(self) -> Design<'static> {
-        // A frame other clones still hold is copied; a sole owner converts in place.
-        let frame = Arc::try_unwrap(self.frame).unwrap_or_else(|shared| (*shared).clone());
         Design {
-            frame: Arc::new(frame.into_owned()),
+            frame: Arc::new(Arc::unwrap_or_clone(self.frame).into_owned()),
             terms: self.terms,
             n_obs: self.n_obs,
             n_dofs: self.n_dofs,
             obs_perm: self.obs_perm,
-            active_levels: self.active_levels,
         }
     }
 

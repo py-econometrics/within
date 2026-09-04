@@ -411,12 +411,7 @@ impl<'a> Solver<'a> {
     /// back-transform slopes. Excludes the design-level `layout` / `warnings` /
     /// `unidentified`, which the public entry points attach once (see
     /// [`RhsSolution`]).
-    fn solve_rhs(
-        &self,
-        y: &[f64],
-        sqrt_weights: Option<&[f64]>,
-        lsmr: &LsmrOptions,
-    ) -> Result<RhsSolution, SolveError> {
+    fn solve_rhs(&self, y: &[f64], lsmr: &LsmrOptions) -> Result<RhsSolution, SolveError> {
         let design = &self.prepared.design;
         // `weighted_rhs` zips y with sqrt-weights, silently truncating when `y.len() > n_rows`.
         if y.len() != design.n_obs {
@@ -442,7 +437,7 @@ impl<'a> Solver<'a> {
         let y_internal = design.permute_obs_in(y);
         let y: &[f64] = &y_internal;
 
-        let rect_op = DesignOperator::new(&self.prepared, sqrt_weights);
+        let rect_op = DesignOperator::new(&self.prepared);
         let b = rect_op.weighted_rhs(y);
         let b: &[f64] = &b;
 
@@ -506,8 +501,7 @@ impl<'a> Solver<'a> {
         let lsmr = lsmr.into().unwrap_or(&default);
 
         let t_start = Instant::now();
-        let sqrt_weights = self.prepared.sqrt_weights();
-        let solution = self.solve_rhs(y, sqrt_weights.as_deref(), lsmr)?;
+        let solution = self.solve_rhs(y, lsmr)?;
 
         Ok(SolveResult {
             x: solution.x,
@@ -535,12 +529,10 @@ impl<'a> Solver<'a> {
         let lsmr = lsmr.into().unwrap_or(&default);
         let n_rhs = ys.len();
 
-        // One `W^{1/2}` shared by every RHS's operator, computed once per batch.
-        let sqrt_weights = self.prepared.sqrt_weights();
         // Collecting into `Result` fails fast on the first per-RHS error, not during the fold.
         let solutions: Vec<RhsSolution> = ys
             .par_iter()
-            .map(|y| self.solve_rhs(y, sqrt_weights.as_deref(), lsmr))
+            .map(|y| self.solve_rhs(y, lsmr))
             .collect::<Result<Vec<_>, _>>()?;
 
         let design = &self.prepared.design;

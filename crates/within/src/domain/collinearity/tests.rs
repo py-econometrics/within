@@ -5,12 +5,8 @@ use crate::Effect;
 const FULL_TABLE: usize = 1 << 24;
 
 fn warn_pairs(design: &Design<'_>, weights: Option<&[f64]>) -> Vec<(Channel, usize)> {
-    // Built directly: these weights are already in the design's internal order.
-    let prepared = PreparedDesign {
-        design: design.clone(),
-        weights: weights.map(<[f64]>::to_vec),
-        basis: SlopeBasis::build(design, weights),
-    };
+    let prepared =
+        PreparedDesign::new(design.clone(), weights.map(<[f64]>::to_vec)).expect("valid weights");
     detect_collinear_slopes(&prepared)
         .into_iter()
         .map(|w| match w {
@@ -22,9 +18,13 @@ fn warn_pairs(design: &Design<'_>, weights: Option<&[f64]>) -> Vec<(Channel, usi
 
 /// The shares `term`'s screen reports, in target-channel order.
 fn shares(design: &Design<'_>, term: usize, budget: usize) -> Vec<f64> {
-    let basis = SlopeBasis::build(design, None);
     let targets = screened_covariates(design, term);
-    residual_shares(design, None, &basis, term, &targets, budget)
+    residual_shares(
+        &PreparedDesign::unweighted_for_test(design.clone()),
+        term,
+        &targets,
+        budget,
+    )
 }
 
 fn two_factor_levels(n: usize) -> (Vec<u32>, Vec<u32>) {
@@ -169,8 +169,6 @@ fn zero_weight_rows_are_excluded_from_the_screen() {
         Effect::new(&b, true, [&spoiled[..]]).unwrap(),
     ])
     .unwrap();
-    // The screen reads frame order, so caller weights go through the locality permutation.
-    let weights = design.permute_obs_in(&weights).into_owned();
     assert!(!warn_pairs(&design, Some(&weights)).is_empty());
     assert_eq!(warn_pairs(&design, None), Vec::new());
 }

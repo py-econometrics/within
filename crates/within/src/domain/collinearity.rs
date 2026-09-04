@@ -5,7 +5,7 @@ use std::ops::Range;
 
 use rayon::prelude::*;
 
-use super::{Design, PreparedDesign, SlopeBasis};
+use super::{Design, PreparedDesign};
 use crate::channel::Channel;
 use crate::BuildWarning;
 
@@ -19,12 +19,8 @@ const TABLE_BUDGET_BYTES: usize = 64 << 20;
 const ROWS_PER_TASK: usize = 1 << 16;
 
 pub(crate) fn detect_collinear_slopes(prepared: &PreparedDesign<'_>) -> Vec<BuildWarning> {
-    let (design, weights, basis) = (
-        &prepared.design,
-        prepared.weights.as_deref(),
-        &prepared.basis,
-    );
-    if design.n_factors() < 2 {
+    let design = &prepared.design;
+    if design.n_factors() < 2 || design.n_loading_columns() == 0 {
         return Vec::new();
     }
     let budget = TABLE_BUDGET_BYTES / std::mem::size_of::<f64>() / design.n_factors();
@@ -32,7 +28,7 @@ pub(crate) fn detect_collinear_slopes(prepared: &PreparedDesign<'_>) -> Vec<Buil
         .into_par_iter()
         .flat_map_iter(move |term| {
             let targets = screened_covariates(design, term);
-            residual_shares(design, weights, basis, term, &targets, budget)
+            residual_shares(prepared, term, &targets, budget)
                 .into_iter()
                 .zip(targets)
                 .filter(|&(share, _)| share <= COLLINEARITY_TOL)
@@ -58,9 +54,7 @@ fn screened_covariates(design: &Design<'_>, term: usize) -> Vec<(Channel, u32)> 
 
 /// Two passes, so the share resolves below the `1e-16` a subtraction floors at.
 fn residual_shares(
-    design: &Design<'_>,
-    weights: Option<&[f64]>,
-    basis: &SlopeBasis,
+    prepared: &PreparedDesign<'_>,
     term: usize,
     targets: &[(Channel, u32)],
     budget: usize,
@@ -69,15 +63,14 @@ fn residual_shares(
     if m == 0 {
         return Vec::new();
     }
+    let (design, weights) = (&prepared.design, prepared.weights.as_deref());
     let meta = &design.terms[term];
     let levels = design.level_column(term);
     let us: Vec<&[f64]> = meta
-        .columns
-        .iter()
-        .filter_map(|c| c.covariate())
-        .map(|&c| basis.loading_column(c as usize))
+        .covariates()
+        .map(|c| prepared.basis.loading_column(c as usize))
         .collect();
-    let intercept = us.len() < meta.columns.len();
+    let intercept = meta.has_intercept();
     let columns: Vec<&[f64]> = targets
         .iter()
         .map(|&(_, c)| design.loading_column(c as usize))
