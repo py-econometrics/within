@@ -253,10 +253,10 @@ impl PySolver {
             }
             DesignSource::Effects(terms) => {
                 py.detach(move || -> Result<Solver<'static>, BuildError> {
+                    let w_cow = w_view.as_ref().map(coerce_to_slice);
                     let effects: Vec<_> = terms.iter().map(PyEffect::as_effect).collect();
                     // The solver outlives the terms' buffers, so lower to owned columns first.
                     let design = Design::new(effects)?.into_owned();
-                    let w_cow = w_view.as_ref().map(coerce_to_slice);
                     Solver::new(design, w_cow.as_deref(), precond)
                 })
             }

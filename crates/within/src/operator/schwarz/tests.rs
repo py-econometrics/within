@@ -20,8 +20,8 @@ const BLOCK_ELIM_NESTED_RAYON_CHILD_ENV: &str = "WITHIN_TEST_BLOCK_ELIM_NESTED_R
 fn make_test_data() -> (PreparedDesign<'static>, Vec<LocalDomain>) {
     let design =
         PreparedDesign::from_levels_for_test(vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]]);
-    let (domain_pairs, _) =
-        build_local_domains(&design, &LocalSolverConfig::default()).expect("plain domains build");
+    let (domain_pairs, _) = build_local_domains(&design, None, &LocalSolverConfig::default())
+        .expect("plain domains build");
     (design, domain_pairs)
 }
 
@@ -206,11 +206,11 @@ fn test_build_additive_with_strategy() {
     let (design, domain_pairs) = make_test_data();
     let config = LocalSolverConfig::default();
     let strategy = schwarz_precond::ReductionStrategy::default();
-    let n_dofs = design.design.n_dofs;
-    let schwarz = build_additive_with_strategy(domain_pairs, &config, strategy, n_dofs)
-        .expect("build schwarz with explicit domains");
-    let r = vec![1.0; n_dofs];
-    let mut z = vec![0.0; n_dofs];
+    let schwarz =
+        build_additive_with_strategy(domain_pairs, &config, strategy, design.design.n_dofs)
+            .expect("build schwarz with explicit domains");
+    let r = vec![1.0; design.design.n_dofs];
+    let mut z = vec![0.0; design.design.n_dofs];
     schwarz.apply(&r, &mut z).expect("schwarz apply succeeds");
 }
 

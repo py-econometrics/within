@@ -1,8 +1,6 @@
-//! Within-level orthonormal basis of a design's varying-slope terms.
+//! Within-level reparametrization of a design's varying-slope terms.
 
-use rayon::prelude::*;
-
-use super::level_moments::{BasisScratch, LevelMoments};
+use super::level_moments::{BasisScratch, TermMoments};
 use super::Design;
 use crate::channel::{Channel, CoefficientAddress};
 use crate::linalg::dot;
@@ -10,9 +8,11 @@ use crate::linalg::dot;
 #[cfg(test)]
 mod tests;
 
-/// Per-level basis making each slope term's within-level Gram the identity; empty without slopes.
-pub(crate) struct SlopeBasis {
-    terms: Vec<TermBasis>,
+/// Per-level change of basis making each slope-bearing term's within-level
+/// Gram the identity; [`Self::back_transform`] restores the user's
+/// parametrization.
+pub(crate) struct SlopeReparam {
+    terms: Vec<TermReparam>,
     /// The frame's loading columns in the solve basis, indexed like the frame's.
     loadings: Vec<Vec<f64>>,
     /// Directions the data cannot identify, ascending in `(term, level, column)`.
@@ -20,7 +20,7 @@ pub(crate) struct SlopeBasis {
 }
 
 /// One slope-bearing term's whitening state.
-struct TermBasis {
+struct TermReparam {
     offset: usize,
     n_levels: usize,
     /// Slopes start at column 1 behind an intercept, at 0 without one.
@@ -36,31 +36,39 @@ struct LevelTransform {
     center: Box<[f64]>,
 }
 
-impl SlopeBasis {
-    pub(crate) fn build(design: &Design<'_>, sqrt_weights: Option<&[f64]>) -> Self {
+impl SlopeReparam {
+    /// Orthonormalize every slope-bearing term's loading columns into `loadings`;
+    /// `None` for slope-free designs. Unidentified directions become
+    /// exact-zero columns, so the minimal-norm solve leaves exact-`0`
+    /// coefficients.
+    pub(crate) fn build(design: &Design<'_>, moments: &TermMoments) -> Option<Self> {
         let mut loadings = vec![Vec::new(); design.frame.n_loading_columns()];
-        let slope_terms: Vec<usize> = (0..design.terms.len())
-            .filter(|&t| design.terms[t].has_slopes())
-            .collect();
-        let moments: Vec<LevelMoments> = slope_terms
-            .par_iter()
-            .map(|&term| LevelMoments::build(design, term, sqrt_weights))
-            .collect();
+        let mut terms = Vec::new();
         let mut unidentified = Vec::new();
-        let terms = slope_terms
-            .iter()
-            .zip(&moments)
-            .map(|(&term, moments)| {
-                TermBasis::build(design, term, moments, &mut loadings, &mut unidentified)
-            })
-            .collect();
-        Self {
+        for term in 0..design.terms.len() {
+            if !design.terms[term]
+                .columns
+                .iter()
+                .any(|c| c.covariate().is_some())
+            {
+                continue;
+            }
+            terms.push(TermReparam::build(
+                design,
+                term,
+                moments,
+                &mut loadings,
+                &mut unidentified,
+            ));
+        }
+        (!terms.is_empty()).then_some(Self {
             terms,
             loadings,
             unidentified,
-        }
+        })
     }
 
+    /// Loading column `column` in the solve basis.
     pub(crate) fn loading_column(&self, column: usize) -> &[f64] {
         &self.loadings[column]
     }
@@ -73,20 +81,22 @@ impl SlopeBasis {
     }
 }
 
-impl TermBasis {
-    /// Whitens one term into `loadings`; unidentified directions append in `(level, column)` order.
+impl TermReparam {
+    /// Whiten one term's loading columns into `loadings`, appending its
+    /// unidentified directions ascending in `(level, column)`.
     fn build(
         design: &Design<'_>,
         term: usize,
-        moments: &LevelMoments,
+        moments: &TermMoments,
         loadings: &mut [Vec<f64>],
         unidentified: &mut Vec<CoefficientAddress>,
     ) -> Self {
         let meta = &design.terms[term];
         let (offset, n_levels) = (meta.offset, meta.n_levels);
-        let intercept = meta.has_intercept();
-        let z_cols: Vec<usize> = meta.covariates().map(|c| c as usize).collect();
-        let v = z_cols.len();
+        let intercept = meta.columns.iter().any(|l| l.covariate().is_none());
+        let moments = &moments[term];
+        let v = moments.n_slopes();
+        let z_cols: Vec<usize> = moments.covariates().iter().map(|&c| c as usize).collect();
         let levels = design.frame.level_column(term);
         let zs: Vec<&[f64]> = z_cols
             .iter()

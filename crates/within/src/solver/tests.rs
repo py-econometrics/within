@@ -34,7 +34,7 @@ fn positive_slope_only_pair_grounds_beyond_dense_threshold() {
     ];
     let prepared = PreparedDesign::unweighted_for_test(Design::new(effects).expect("design"));
     let (domains, warnings) =
-        build_local_domains(&prepared, &LocalSolverConfig::default()).expect("domains");
+        build_local_domains(&prepared, None, &LocalSolverConfig::default()).expect("domains");
     assert!(
         domains.iter().any(|ld| {
             let ct = &ld.component.matrix.cross_tab;
