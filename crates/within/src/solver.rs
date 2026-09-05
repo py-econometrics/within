@@ -313,7 +313,11 @@ impl BatchSolveResult {
     }
 }
 
-struct SolverState {
+/// Prepared, design-specific solver data that does not own its design.
+///
+/// A state must be used with the same [`Design`] from which it was
+/// constructed. Compatibility checking is not currently performed.
+pub struct SolverState {
     loading_overrides: LoadingOverrides,
     /// `sqrt(W)` in the design's internal observation order, computed once and
     /// borrowed by the per-RHS [`DesignOperator`]s (raw weights are needed only
@@ -325,7 +329,8 @@ struct SolverState {
 }
 
 impl SolverState {
-    fn new(
+    /// Prepare design-specific solver state for the given weights and preconditioner.
+    pub fn new(
         design: &Design,
         weights: Option<Vec<f64>>,
         preconditioner: impl Into<PreconditionerInput>,
@@ -485,7 +490,7 @@ impl SolverState {
     }
 
     /// Solve for a single RHS vector with the given LSMR tuning.
-    fn solve<'o>(
+    pub fn solve<'o>(
         &self,
         design: &Design,
         y: &[f64],
@@ -512,7 +517,7 @@ impl SolverState {
         })
     }
     /// Solve for multiple RHS vectors in parallel.
-    fn solve_batch<'o>(
+    pub fn solve_batch<'o>(
         &self,
         design: &Design,
         ys: &[&[f64]],
@@ -560,6 +565,17 @@ impl SolverState {
             n_dofs: design.n_dofs,
             n_obs: design.n_obs,
         })
+    }
+
+    /// Non-fatal events from design screening and the preconditioner build; a reused
+    /// pre-built preconditioner contributes none (its own were reported when built).
+    pub fn warnings(&self) -> &[BuildWarning] {
+        &self.warnings
+    }
+
+    /// Access the preconditioner (for serialization or reuse across solvers).
+    pub fn preconditioner(&self) -> Option<&Preconditioner> {
+        self.preconditioner.as_ref()
     }
 }
 
@@ -674,7 +690,7 @@ impl<'a> Solver<'a> {
     /// Non-fatal events from design screening and the preconditioner build; a reused
     /// pre-built preconditioner contributes none (its own were reported when built).
     pub fn warnings(&self) -> &[BuildWarning] {
-        &self.state.warnings
+        self.state.warnings()
     }
 
     /// Solve for a single RHS vector with the given LSMR tuning.
@@ -697,7 +713,7 @@ impl<'a> Solver<'a> {
 
     /// Access the preconditioner (for serialization or reuse across solvers).
     pub fn preconditioner(&self) -> Option<&Preconditioner> {
-        self.state.preconditioner.as_ref()
+        self.state.preconditioner()
     }
 
     /// Number of DOFs (coefficients).
