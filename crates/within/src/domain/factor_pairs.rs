@@ -12,7 +12,7 @@ use crate::channel::{Channel, ChannelPair};
 use crate::config::LocalSolverConfig;
 use crate::{BuildError, BuildWarning};
 
-use super::{find_all_active_levels, BlockDiagonals, CrossTab, SolverDesign};
+use super::{BlockDiagonals, CrossTab, SolverDesign};
 
 mod sddm;
 use crate::domain::Loading;
@@ -60,16 +60,10 @@ pub(crate) fn build_local_domains(
                 .map(move |&cols| ChannelPair { rows, cols })
         })
         .collect();
-    let all_active = find_all_active_levels(design);
-
     let per_pair: Vec<(Vec<LocalDomain>, Vec<BuildWarning>)> = pairs
         .par_iter()
         .map(|&pair| {
-            let Some((full_ct, full_diag, l2g)) =
-                CrossTab::build_for_pair_with_active(solver_design, weights, pair, &all_active)
-            else {
-                return Ok((Vec::new(), Vec::new()));
-            };
+            let (full_ct, full_diag, l2g) = CrossTab::build_for_pair(solver_design, weights, pair);
             let class = if matches!(design.loading(pair.rows), Loading::Constant)
                 && matches!(design.loading(pair.cols), Loading::Constant)
             {
