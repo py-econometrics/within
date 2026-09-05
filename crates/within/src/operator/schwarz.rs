@@ -217,7 +217,7 @@ fn build_diagonal(
     let mut diag = vec![0.0; design.n_dofs];
 
     for (factor_idx, term) in design.terms.iter().enumerate() {
-        let levels = design.frame.level_column(factor_idx);
+        let levels = design.level_column(factor_idx);
         let w = |uid: usize| weights.map_or(1.0, |ws| ws[uid]);
         for (column, loading) in term.columns.iter().enumerate() {
             let base = term.column_base(column);
@@ -229,7 +229,7 @@ fn build_diagonal(
                     }
                 }
                 Loading::Covariate(z_col) => {
-                    let z = design.frame.loading_column(*z_col as usize);
+                    let z = design.loading_column(*z_col as usize);
                     for (uid, &level) in levels.iter().enumerate() {
                         // Keep `w * z * z` left-to-right: a zero weight kills a huge `z` first.
                         slice[level as usize] += w(uid) * z[uid] * z[uid];

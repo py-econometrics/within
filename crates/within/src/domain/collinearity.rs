@@ -70,15 +70,15 @@ fn residual_shares(
         return Vec::new();
     }
     let moments = &moments[term];
-    let levels = design.frame.level_column(term);
+    let levels = design.level_column(term);
     let zs: Vec<&[f64]> = moments
         .covariates()
         .iter()
-        .map(|&c| design.frame.loading_column(c as usize))
+        .map(|&c| design.loading_column(c as usize))
         .collect();
     let columns: Vec<&[f64]> = targets
         .iter()
-        .map(|&(_, c)| design.frame.loading_column(c as usize))
+        .map(|&(_, c)| design.loading_column(c as usize))
         .collect();
     let stride = columns.len() * (zs.len() + 1);
     let n_levels = moments.n_levels();

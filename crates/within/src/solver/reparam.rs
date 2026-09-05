@@ -93,11 +93,8 @@ impl TermReparam {
         let moments = &moments[term];
         let v = moments.n_slopes();
         let z_cols: Vec<usize> = moments.covariates().iter().map(|&c| c as usize).collect();
-        let levels = design.frame.level_column(term);
-        let zs: Vec<&[f64]> = z_cols
-            .iter()
-            .map(|&c| design.frame.loading_column(c))
-            .collect();
+        let levels = design.level_column(term);
+        let zs: Vec<&[f64]> = z_cols.iter().map(|&c| design.loading_column(c)).collect();
 
         let mut z_row = vec![0.0; v];
         let mut transforms = Vec::with_capacity(n_levels);
@@ -144,7 +141,7 @@ impl TermReparam {
             }
         }
         for (out, &c) in u_cols.into_iter().zip(&z_cols) {
-            design.frame.set_loading_column(c, out);
+            design.replace_loading_column(c, out);
         }
 
         Self {

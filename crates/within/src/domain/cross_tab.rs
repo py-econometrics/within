@@ -30,7 +30,7 @@ pub(crate) fn find_all_active_levels(design: &Design<'_>) -> Vec<Vec<bool>> {
         .collect();
     // Factor-outer/obs-inner: all writes for a factor land in one `active[f]` buffer.
     for (f, col) in active.iter_mut().enumerate() {
-        for &v in design.frame.level_column(f) {
+        for &v in design.level_column(f) {
             col[v as usize] = true;
         }
     }

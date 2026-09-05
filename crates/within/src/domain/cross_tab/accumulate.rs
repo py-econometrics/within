@@ -95,12 +95,10 @@ pub(super) fn accumulate_cross_block(
     let sparse_cost = design.n_obs.saturating_mul(12);
     let go_sparse = table_size > DENSE_TABLE_MAX_ENTRIES && sparse_cost < dense_cost;
 
-    let row_levels = design.frame.level_column(pair.rows.term);
-    let col_levels = design.frame.level_column(pair.cols.term);
-    let load = |col: ColumnLoading<u32>| {
-        col.covariate()
-            .map(|&c| design.frame.loading_column(c as usize))
-    };
+    let row_levels = design.level_column(pair.rows.term);
+    let col_levels = design.level_column(pair.cols.term);
+    let load =
+        |col: ColumnLoading<u32>| col.covariate().map(|&c| design.loading_column(c as usize));
     // One arm per loading combination; closures aren't generic, so the literals repeat.
     match (
         load(design.loading(pair.rows)),
