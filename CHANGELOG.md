@@ -15,7 +15,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - **BREAKING:** `schwarz_precond::mlsmr` takes an `MlsmrOptions` in place of its trailing `local_size`.
 - **BREAKING:** `LsmrStopReason` gains `Escalated` and `WarmStartExact`, breaking exhaustive `match`es.
 - A warm start that already solves the system reports `WarmStartExact` instead of `ZeroRhs`.
-- **BREAKING:** `LsmrStopReason` gains `NormalEquationFloor`: LSMR stops once `‖Aᵀr‖` reaches its roundoff floor `ε‖A‖‖b‖`, where near-consistent systems put the requested tolerance below what f64 resolves. The true-residual audit certifies against that floor instead of a relative drop from the initial normal-equation residual, and a warm start with `b = 0` measures its residual tolerance against `‖b − A x₀‖`.
+- The LSMR true-residual audit certifies a stop whose `‖Aᵀr‖` lies below `tol·‖b‖·σ_min`, which bounds the residual within tolerance of the least-squares optimum, in place of a relative drop from the initial normal-equation residual. A warm start with `b = 0` measures its tolerances against `‖b − A x₀‖`.
 - **BREAKING:** `ScalingConfig::max_sweeps` is now `max_iterations`, and `BuildWarning::UnscalableComponent` reports `iterations` in place of `sweeps`; the dominance certificate runs reduced CG, not relaxation sweeps.
 - **BREAKING:** The serialized `Preconditioner` wire format changed with the `approx-chol` 0.4 → 0.5 bump (v12 → v13), retention of the complete construction config (v13 → v14), retention of its original build duration (v14 → v15), and the new `LocalSolverConfig::ridge` field (v15 → v16); 0.3.0 bytes no longer decode.
 

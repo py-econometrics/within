@@ -133,7 +133,7 @@ class SolveResult:
         layout: Address <-> flat-``x``-index translation for the coefficients.
         demeaned: Response vector after subtracting estimated fixed effects,
             shape ``(n_obs,)``.
-        converged: Whether the LSMR solver met the convergence tolerance.
+        converged: Whether the true-residual audit certified the LSMR stop.
         iterations: Total number of LSMR iterations performed.
         residual: Relative normal-equation residual
             ``||D^T W (y - Dx)|| / ||D^T W y||`` estimated from the LSMR

@@ -40,7 +40,7 @@ pub(crate) fn vec_norm(v: &[f64]) -> f64 {
 pub struct LsmrResult {
     /// Solution vector.
     pub x: Vec<f64>,
-    /// Whether the solver converged within the tolerance.
+    /// Whether the true-residual audit certified the stop.
     pub converged: bool,
     /// Total number of iterations performed.
     pub iterations: usize,
@@ -63,9 +63,6 @@ pub enum LsmrStopReason {
     ResidualTolerance,
     /// The estimate `‖Aᵀrₖ‖ / (‖A‖ ‖rₖ‖)` met the relative tolerance.
     NormalEquationTolerance,
-    /// The estimate `‖Aᵀrₖ‖` reached its roundoff floor `ε‖A‖‖b‖`, below which the tolerance cannot
-    /// be resolved; the iterate is as accurate as f64 allows.
-    NormalEquationFloor,
     /// The warm start already solved the system: `b − A x0` was exactly zero.
     WarmStartExact,
     /// A tolerance stop refuted by the true-residual audit; the recurrence estimates had collapsed.
@@ -167,8 +164,7 @@ impl EscalationHandler for StalenessRun {
 /// Optional behaviors for [`mlsmr`].
 #[derive(Clone, Copy, Default)]
 pub struct MlsmrOptions<'a> {
-    /// Initial iterate for a residual correction; tolerances remain relative to the original `‖b‖`
-    /// (to `‖b − A x₀‖` when `b = 0`, the only scale that problem has).
+    /// Residual-correction start; tolerances stay relative to `‖b‖` (`‖b − A x₀‖` if `b = 0`).
     pub warm_start: Option<&'a [f64]>,
     /// Hands off to a stronger preconditioner mid-run; see [`EscalationPolicy`].
     pub escalation: Option<&'a dyn EscalationPolicy>,
@@ -340,11 +336,10 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
             Stop::Continue => None,
             Stop::ResidualTolerance => Some(LsmrStopReason::ResidualTolerance),
             Stop::NormalEquationTolerance => Some(LsmrStopReason::NormalEquationTolerance),
-            Stop::NormalEquationFloor => Some(LsmrStopReason::NormalEquationFloor),
         } {
             let x = solution.into_x();
             let cert = bidiag.certify(&x, rhs)?;
-            let converged = convergence.certified(&cert);
+            let converged = convergence.certified(&recurrence, &cert);
             return Ok(LsmrResult {
                 x,
                 converged,

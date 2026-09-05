@@ -63,6 +63,10 @@ pub(super) struct LsmrRecurrenceState {
     zeta_bar: f64,
     /// `|ζ̄₀| = ‖Âᵀb‖`, clamped positive; the reference for relative NE residuals.
     pub(super) zeta0: f64,
+    /// `min ρ̄_j` over the committed diagonal of `R̄`; with `rho_temp` it estimates `σ_min(Â)`.
+    min_rho_bar: f64,
+    /// `|c̄_{k-1} ρ_k|`, the trailing diagonal of `R̄_k` before `θ_{k+1}` rotates into it.
+    rho_temp: f64,
 }
 
 impl LsmrRecurrenceState {
@@ -75,6 +79,8 @@ impl LsmrRecurrenceState {
             s_bar: 0.0,
             zeta_bar,
             zeta0: zeta_bar.abs().max(f64::MIN_POSITIVE),
+            min_rho_bar: f64::INFINITY,
+            rho_temp: s1.alpha,
         }
     }
 
@@ -87,7 +93,8 @@ impl LsmrRecurrenceState {
 
         // `theta_bar` MUST be read before `p_bar.s` is committed, or s̄_k mixes into θ̄_k.
         let theta_bar = self.s_bar * p_hat.r;
-        let p_bar = Givens::new(self.c_bar * p_hat.r, theta_new);
+        let rho_temp = self.c_bar * p_hat.r;
+        let p_bar = Givens::new(rho_temp, theta_new);
         let zeta = p_bar.c * self.zeta_bar;
         // The minus comes from `[[c̄, s̄], [−s̄, c̄]]` acting on `(ζ̄, 0)`.
         let zeta_bar_new = -p_bar.s * self.zeta_bar;
@@ -97,6 +104,8 @@ impl LsmrRecurrenceState {
         self.c_bar = p_bar.c;
         self.s_bar = p_bar.s;
         self.zeta_bar = zeta_bar_new;
+        self.rho_temp = rho_temp.abs();
+        self.min_rho_bar = self.min_rho_bar.min(p_bar.r);
 
         RotationStep {
             rho: p_hat.r,
@@ -120,6 +129,11 @@ impl LsmrRecurrenceState {
     /// `|ζ̄ₖ| / |ζ̄₀|` — normal-equation residual relative to `‖Aᵀb‖`; the `ζ̄₀` clamp guards it.
     pub(super) fn relative_normal_eq_residual(&self) -> f64 {
         self.normal_eq_residual_estimate() / self.zeta0
+    }
+
+    /// Smallest diagonal of `R̄_k`, Fong & Saunders' running estimate of `σ_min(Â)`.
+    fn sigma_min_estimate(&self) -> f64 {
+        self.min_rho_bar.min(self.rho_temp)
     }
 }
 
@@ -204,17 +218,13 @@ pub(super) enum Stop {
     ResidualTolerance,
     /// `‖Aᵀ r_k‖` estimate fell below relative tolerance.
     NormalEquationTolerance,
-    /// `‖Aᵀ r_k‖` estimate reached the roundoff floor `ε‖A‖‖b‖`.
-    NormalEquationFloor,
 }
 
-/// Immutable stopping criteria for one LSMR run (Fong & Saunders S1, S2, and S2 at roundoff).
+/// Immutable stopping criteria for one LSMR run (Fong & Saunders S1 and S2).
 #[derive(Clone, Copy)]
 pub(super) struct ConvergenceCriteria {
     abs_tol: f64,
     rel_tol: f64,
-    /// `ε‖b‖`; times `‖A‖` this is the floor below which `‖Aᵀr‖` cannot be resolved.
-    ne_floor: f64,
 }
 
 impl ConvergenceCriteria {
@@ -222,7 +232,6 @@ impl ConvergenceCriteria {
         Self {
             abs_tol: tol * reference_norm,
             rel_tol: tol,
-            ne_floor: f64::EPSILON * reference_norm,
         }
     }
 
@@ -248,34 +257,27 @@ impl ConvergenceState {
 
     /// `‖Âᵀr‖ / (‖A‖‖r‖)`; the `max` guards a collapsed residual, not a physical scale.
     fn ne_ratio(&self, residual: f64, normar: f64) -> f64 {
-        normar / (self.a_norm() * residual.max(f64::MIN_POSITIVE))
+        let a_norm = self.a_norm_sq.sqrt().max(f64::MIN_POSITIVE);
+        normar / (a_norm * residual.max(f64::MIN_POSITIVE))
     }
 
-    fn a_norm(&self) -> f64 {
-        self.a_norm_sq.sqrt().max(f64::MIN_POSITIVE)
-    }
-
-    /// Check the stop criteria against the current scalar state; the tolerance stops take precedence.
+    /// Check the stop criteria against the current scalar state; the residual leg takes precedence.
     pub(super) fn check(&self, r: &LsmrRecurrenceState) -> Stop {
         let residual = r.residual_estimate();
-        let normar = r.normal_eq_residual_estimate();
         if residual <= self.criteria.abs_tol {
             return Stop::ResidualTolerance;
         }
-        if self.ne_ratio(residual, normar) <= self.criteria.rel_tol {
+        if self.ne_ratio(residual, r.normal_eq_residual_estimate()) <= self.criteria.rel_tol {
             return Stop::NormalEquationTolerance;
-        }
-        // Near-consistent systems put `tol·‖A‖‖r‖` below what `Aᵀ(b − Ax)` resolves in f64.
-        if normar <= self.a_norm() * self.criteria.ne_floor {
-            return Stop::NormalEquationFloor;
         }
         Stop::Continue
     }
 
     /// True-residual audit of a stop (cf. van der Vorst & Ye, SISC 22(3), 2000).
-    pub(super) fn certified(&self, cert: &Certificate) -> bool {
+    pub(super) fn certified(&self, r: &LsmrRecurrenceState, cert: &Certificate) -> bool {
+        // `‖r − r*‖ ≤ ‖Aᵀr‖/σ_min`: the middle leg admits a residual within `tol·‖b‖` of optimal.
         cert.normr <= CERTIFICATION_SLACK * self.criteria.abs_tol
-            || cert.normar <= CERTIFICATION_SLACK * self.a_norm() * self.criteria.ne_floor
+            || cert.normar <= CERTIFICATION_SLACK * self.criteria.abs_tol * r.sigma_min_estimate()
             || self.ne_ratio(cert.normr, cert.normar) <= CERTIFICATION_SLACK * self.criteria.rel_tol
     }
 }
