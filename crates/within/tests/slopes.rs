@@ -86,7 +86,7 @@ fn solve_single(
 }
 
 /// `unidentified` as comparable `(term, level, column)` triples.
-fn drops(r: &SolveResult) -> Vec<(usize, usize, usize)> {
+fn drops(r: &SolveResult) -> Vec<(usize, u32, usize)> {
     r.unidentified
         .iter()
         .map(|d| (d.channel.term, d.level, d.channel.column))

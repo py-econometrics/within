@@ -3,7 +3,7 @@
 use crate::domain::level_moments::{BasisScratch, TermMoments};
 use crate::domain::Design;
 
-use super::CoefficientAddress;
+use super::CoefficientPosition;
 use crate::channel::Channel;
 use crate::linalg::dot;
 
@@ -16,7 +16,7 @@ mod tests;
 pub(crate) struct SlopeReparam {
     terms: Vec<TermReparam>,
     /// Directions the data cannot identify, ascending in `(term, level, column)`.
-    pub(crate) unidentified: Vec<CoefficientAddress>,
+    pub(super) unidentified: Vec<CoefficientPosition>,
 }
 
 /// One slope-bearing term's whitening state.
@@ -77,7 +77,7 @@ impl TermReparam {
         design: &mut Design<'_>,
         term: usize,
         moments: &TermMoments,
-        unidentified: &mut Vec<CoefficientAddress>,
+        unidentified: &mut Vec<CoefficientPosition>,
     ) -> Self {
         let meta = &design.terms[term];
         let (offset, n_levels) = (meta.offset, meta.n_levels());
@@ -103,14 +103,14 @@ impl TermReparam {
             moments.basis(level, &mut scratch);
             let (w, kept) = (&scratch.basis, &scratch.kept);
             if intercept && moments.w_sum(level) == 0.0 {
-                unidentified.push(CoefficientAddress {
+                unidentified.push(CoefficientPosition {
                     channel: Channel { term, column: 0 },
                     level,
                 });
             }
             for (j, &kept_j) in kept.iter().enumerate() {
                 if !kept_j {
-                    unidentified.push(CoefficientAddress {
+                    unidentified.push(CoefficientPosition {
                         channel: Channel {
                             term,
                             column: slope_columns[j],

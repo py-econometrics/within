@@ -71,7 +71,7 @@ pub struct PyUnidentifiedDirection {
     #[pyo3(get)]
     pub term: usize,
     #[pyo3(get)]
-    pub level: usize,
+    pub level: u32,
     #[pyo3(get)]
     pub column: usize,
 }
@@ -114,7 +114,7 @@ impl PyCoefficientLayout {
             .ok_or_else(|| self.term_oob(term))
     }
 
-    fn index(&self, term: usize, level: usize, column: usize) -> PyResult<usize> {
+    fn index(&self, term: usize, level: u32, column: usize) -> PyResult<usize> {
         let at = CoefficientAddress {
             channel: Channel { term, column },
             level,
@@ -126,7 +126,7 @@ impl PyCoefficientLayout {
         })
     }
 
-    fn address(&self, index: usize) -> PyResult<(usize, usize, usize)> {
+    fn address(&self, index: usize) -> PyResult<(usize, u32, usize)> {
         self.inner
             .address(index)
             .map(|at| (at.channel.term, at.level, at.channel.column))
