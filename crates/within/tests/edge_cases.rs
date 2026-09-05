@@ -179,35 +179,48 @@ fn test_diagonal_matches_unpreconditioned_solution() {
     common::assert_solutions_close(&diagonal.x, &unpreconditioned.x, 1e-6);
 }
 
-/// A factor whose observed levels leave interior gaps (`n_levels = max + 1`)
-/// produces structural zero columns of `D` — unidentified DOFs whose diagonal
-/// is zero. The unpreconditioned and additive paths both pin those coefficients
-/// to 0 and solve fine; with the pseudo-inverse of a zero diagonal, the diagonal
-/// preconditioner now matches rather than failing with `SingularDiagonal`.
+/// Gappy caller labels are compacted internally without changing the solve,
+/// while the result layout retains the original labels.
 #[test]
-fn test_diagonal_matches_unpreconditioned_on_gap_design() {
-    // Single factor observed only at levels {0, 2, 4} => n_levels = 5, so global
-    // DOFs 1 and 3 have no observations.
-    let cats = array![[0u32], [2], [4]];
+fn test_gappy_labels_match_manually_compacted_design() {
+    let gappy_categories = array![[0u32], [2], [4]];
+    let compact_categories = array![[0u32], [1], [2]];
     let y = vec![1.0, 2.0, 3.0];
     let params = LsmrOptions::default();
 
-    let diagonal = solve(
-        cats.view(),
+    let gappy = solve(
+        gappy_categories.view(),
         &y,
         None,
         &params,
         &PreconditionerConfig::Diagonal,
     )
-    .expect("diagonal solve must succeed on a gap design (pseudo-inverse of zero diagonal)");
-    let unpreconditioned = solve(cats.view(), &y, None, &params, &PreconditionerConfig::Off)
-        .expect("unpreconditioned solve");
+    .expect("gappy-label solve");
 
-    assert!(diagonal.converged, "diagonal solve must converge");
-    common::assert_solutions_close(&diagonal.x, &unpreconditioned.x, 1e-6);
-    // The unobserved DOFs are unidentified and must be pinned to exactly 0.
-    assert_eq!(diagonal.x[1], 0.0, "unobserved DOF 1 must be 0");
-    assert_eq!(diagonal.x[3], 0.0, "unobserved DOF 3 must be 0");
+    let compact = solve(
+        compact_categories.view(),
+        &y,
+        None,
+        &params,
+        &PreconditionerConfig::Diagonal,
+    )
+    .expect("manually compacted solve");
+
+    assert!(gappy.converged);
+    assert_eq!(gappy.x.len(), 3);
+    assert_eq!(gappy.layout.n_levels(0), Some(3));
+    common::assert_solutions_close(&gappy.x, &compact.x, 1e-6);
+    common::assert_solutions_close(&gappy.demeaned, &compact.demeaned, 1e-6);
+
+    for (index, caller_label) in [0u32, 2, 4].into_iter().enumerate() {
+        let address = gappy
+            .layout
+            .address(index)
+            .expect("coefficient has an address");
+
+        assert_eq!(address.level, caller_label);
+        assert_eq!(gappy.layout.index(address), Some(index));
+    }
 }
 
 // ---------------------------------------------------------------------------

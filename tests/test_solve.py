@@ -624,6 +624,31 @@ class TestDesign:
         assert design.n_obs == 5
         assert design.n_dofs == 5
 
+    def test_compacts_gappy_integer_labels(self):
+        categories = np.asfortranarray(
+            np.array([[100], [10], [500], [100]], dtype=np.uint32)
+        )
+        design = Design(categories)
+
+        assert design.n_obs == 4
+        assert design.n_dofs == 3
+
+        result = solve(design, np.array([1.0, 2.0, 3.0, 4.0]))
+        layout = result.layout
+
+        assert result.x.shape == (3,)
+        assert layout.n_levels(0) == 3
+        assert [layout.address(i) for i in range(3)] == [
+            (0, 10, 0),
+            (0, 100, 0),
+            (0, 500, 0),
+        ]
+        assert [layout.index(0, label, 0) for label in [10, 100, 500]] == [
+            0,
+            1,
+            2,
+        ]
+
     def test_owns_category_data(self, problem):
         cats, y = problem
         categories = as_solver_categories(cats)
