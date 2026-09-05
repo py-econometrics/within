@@ -85,11 +85,11 @@ impl<Lq: Loading, Lr: Loading> PairColumns<'_, Lq, Lr> {
 /// Accumulate into `C` plus diagonals, dispatching dense or sparse by peak transient memory.
 pub(super) fn accumulate_cross_block(
     prepared: &PreparedDesign<'_>,
+    sqrt_weights: Option<&[f64]>,
     pair: ChannelPair,
     active: &ActiveLevels,
 ) -> (CsrBlock, Vec<f64>, Vec<f64>) {
     let design = &prepared.design;
-    let sqrt_weights = prepared.sqrt_weights.as_deref();
     // Dispatching on cell count alone would pick sparse where it uses MORE memory.
     let table_size = active.n_rows.saturating_mul(active.n_cols);
     let dense_cost = table_size.saturating_mul(8);
@@ -100,7 +100,7 @@ pub(super) fn accumulate_cross_block(
     let col_levels = design.frame.level_column(pair.cols.term);
     let load = |col: ColumnLoading<u32>| {
         col.covariate()
-            .map(|&c| prepared.basis.loading_column(c as usize))
+            .map(|&c| prepared.loading_column(c as usize))
     };
     // One arm per loading combination; closures aren't generic, so the literals repeat.
     match (

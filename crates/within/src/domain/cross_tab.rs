@@ -203,6 +203,7 @@ impl CrossTab {
     /// Reuses pre-computed active flags instead of rescanning; diagonals come back separately.
     pub(crate) fn build_for_pair_with_active(
         prepared: &PreparedDesign<'_>,
+        sqrt_weights: Option<&[f64]>,
         pair: ChannelPair,
         all_active: &[Vec<bool>],
     ) -> Option<(Self, BlockDiagonals, Vec<u32>)> {
@@ -214,7 +215,7 @@ impl CrossTab {
             design.terms[pair.cols.term].column_base(pair.cols.column),
         )?;
 
-        let (c, row_diag, col_diag) = accumulate_cross_block(prepared, pair, &active);
+        let (c, row_diag, col_diag) = accumulate_cross_block(prepared, sqrt_weights, pair, &active);
         let cross_tab = CrossTab::eager(c);
         let diagonals = BlockDiagonals {
             rows: row_diag,

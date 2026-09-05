@@ -22,6 +22,7 @@ const PAR_THRESHOLD: usize = 10_000;
 /// Design operator `D` or `W^{1/2} D`, whose normal equations `AᵀA = DᵀWD` recover the Gramian.
 pub(crate) struct DesignOperator<'a> {
     prepared: &'a PreparedDesign<'a>,
+    sqrt_weights: Option<&'a [f64]>,
     /// Sized once to the largest term's block, so it allocates per operator, not per iteration.
     scatter_scratch: Vec<AtomicF64>,
     /// Debug-only reentry sentinel: a concurrent `apply_adjoint` would race the scratch writes.
@@ -30,11 +31,22 @@ pub(crate) struct DesignOperator<'a> {
 }
 
 impl<'a> DesignOperator<'a> {
-    pub(crate) fn new(prepared: &'a PreparedDesign<'a>) -> Self {
+    /// `sqrt_weights` must be pre-square-rooted and `design.n_obs` long.
+    pub(crate) fn new(prepared: &'a PreparedDesign<'a>, sqrt_weights: Option<&'a [f64]>) -> Self {
         let design = &prepared.design;
+        if let Some(sw) = sqrt_weights {
+            assert_eq!(
+                sw.len(),
+                design.n_obs,
+                "sqrt-weights length {} does not match design.n_obs {}",
+                sw.len(),
+                design.n_obs
+            );
+        }
         let max_block = design.terms.iter().map(|t| t.n_dofs()).max().unwrap_or(0);
         Self {
             prepared,
+            sqrt_weights,
             scatter_scratch: (0..max_block).map(|_| AtomicF64::new(0.0)).collect(),
             #[cfg(debug_assertions)]
             adjoint_active: AtomicBool::new(false),
@@ -43,7 +55,7 @@ impl<'a> DesignOperator<'a> {
 
     /// Observation-space RHS `b = W^{1/2} y`; borrows unweighted, owns weighted.
     pub(crate) fn weighted_rhs<'y>(&self, y: &'y [f64]) -> Cow<'y, [f64]> {
-        match self.prepared.sqrt_weights.as_deref() {
+        match self.sqrt_weights {
             None => Cow::Borrowed(y),
             Some(sw) => Cow::Owned(y.iter().zip(sw).map(|(&yi, &swi)| swi * yi).collect()),
         }
@@ -84,20 +96,20 @@ impl Operator for DesignOperator<'_> {
     }
 
     fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
-        debug_assert_eq!(x.len(), self.ncols());
-        debug_assert_eq!(y.len(), self.nrows());
-        gather_apply(self.prepared, x, y, self.prepared.sqrt_weights.as_deref());
+        debug_assert_eq!(x.len(), self.prepared.design.n_dofs);
+        debug_assert_eq!(y.len(), self.prepared.design.n_obs);
+        gather_apply(self.prepared, x, y, self.sqrt_weights);
         Ok(())
     }
 
     fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
         #[cfg(debug_assertions)]
         let _guard = ReentryGuard::acquire(&self.adjoint_active);
-        debug_assert_eq!(x.len(), self.nrows());
-        debug_assert_eq!(y.len(), self.ncols());
+        debug_assert_eq!(x.len(), self.prepared.design.n_obs);
+        debug_assert_eq!(y.len(), self.prepared.design.n_dofs);
         y.fill(0.0);
         // No lock needed: `solve_batch` builds one operator per RHS, so calls are sequential.
-        match self.prepared.sqrt_weights.as_deref() {
+        match self.sqrt_weights {
             Some(sw) => scatter_apply(self.prepared, &self.scatter_scratch, y, &|i| sw[i] * x[i]),
             None => scatter_apply(self.prepared, &self.scatter_scratch, y, &|i| x[i]),
         }
@@ -118,11 +130,14 @@ mod reentry_guard_tests {
     #[test]
     #[should_panic(expected = "concurrently")]
     fn apply_adjoint_detects_in_flight_reentry() {
-        let prepared = PreparedDesign::from_levels_for_test(vec![vec![0, 1, 0]]);
-        let op = DesignOperator::new(&prepared);
+        let design = PreparedDesign::from_levels_for_test(vec![vec![0, 1, 0]]);
+        let op = DesignOperator::new(&design, None);
         // Simulate a sibling `apply_adjoint` already in flight on this operator.
         op.adjoint_active.store(true, Ordering::Release);
-        op.apply_adjoint(&vec![0.0; op.nrows()], &mut vec![0.0; op.ncols()])
-            .expect("unreachable: the guard panics before returning");
+        op.apply_adjoint(
+            &vec![0.0; op.prepared.design.n_obs],
+            &mut vec![0.0; op.prepared.design.n_dofs],
+        )
+        .expect("unreachable: the guard panics before returning");
     }
 }

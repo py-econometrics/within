@@ -4,13 +4,13 @@ pub(crate) mod collinearity;
 pub(crate) mod cross_tab;
 mod effect;
 pub(crate) mod factor_pairs;
-mod level_moments;
+pub(crate) mod level_moments;
 mod prepared;
-mod slope_basis;
+mod reparam;
 
 pub(crate) use cross_tab::{find_all_active_levels, BlockDiagonals, CrossTab};
-pub(crate) use prepared::{row_weight, PreparedDesign};
-use slope_basis::SlopeBasis;
+pub(crate) use prepared::PreparedDesign;
+use reparam::SlopeReparam;
 
 pub use effect::Effect;
 
@@ -95,19 +95,6 @@ pub(crate) struct TermMeta {
 }
 
 impl TermMeta {
-    /// Frame columns of the term's covariates, in coefficient-column order.
-    pub(crate) fn covariates(&self) -> impl Iterator<Item = u32> + '_ {
-        self.columns.iter().filter_map(|c| c.covariate().copied())
-    }
-
-    pub(crate) fn has_slopes(&self) -> bool {
-        self.covariates().next().is_some()
-    }
-
-    pub(crate) fn has_intercept(&self) -> bool {
-        self.columns.iter().any(|c| c.covariate().is_none())
-    }
-
     pub fn n_columns(&self) -> usize {
         self.columns.len()
     }
@@ -120,6 +107,11 @@ impl TermMeta {
     pub fn column_base(&self, column: usize) -> usize {
         self.offset + column * self.n_levels
     }
+}
+
+/// The Gram weight of row `obs`: the operator applies `s`, so its normal matrix carries `s²`.
+pub(crate) fn row_weight(sqrt_weights: Option<&[f64]>, obs: usize) -> f64 {
+    sqrt_weights.map_or(1.0, |s| s[obs] * s[obs])
 }
 
 /// Stable argsort of observations by a level column, ascending.
@@ -237,7 +229,11 @@ impl<'a> Design<'a> {
             terms.push(meta);
         }
 
-        let claimed: usize = terms.iter().map(|t| t.covariates().count()).sum();
+        let claimed: usize = terms
+            .iter()
+            .flat_map(|t| t.columns.iter())
+            .filter(|c| c.covariate().is_some())
+            .count();
         if claimed != frame.n_loading_columns() {
             return Err(BuildError::UnclaimedLoadingColumns {
                 claimed,
@@ -283,6 +279,27 @@ impl<'a> Design<'a> {
             n_dofs: self.n_dofs,
             obs_perm: self.obs_perm,
         }
+    }
+
+    /// Validate that an optional weight slice matches this design's observation count.
+    pub(crate) fn validate_weights(&self, weights: Option<&[f64]>) -> Result<(), BuildError> {
+        if let Some(w) = weights {
+            if w.len() != self.n_obs {
+                return Err(BuildError::WeightCountMismatch {
+                    expected: self.n_obs,
+                    got: w.len(),
+                });
+            }
+            // `wi >= 0.0` already rejects NaN; `is_finite` additionally rejects `+∞`.
+            if let Some((index, &value)) = w
+                .iter()
+                .enumerate()
+                .find(|&(_, &wi)| !(wi >= 0.0 && wi.is_finite()))
+            {
+                return Err(BuildError::InvalidWeight { index, value });
+            }
+        }
+        Ok(())
     }
 
     /// Caller order → internal order: `out[k] = v[obs_perm[k]]`; borrows when unpermuted.
@@ -409,14 +426,30 @@ mod tests {
     }
 
     #[test]
-    fn from_frame_rejects_unclaimed_loading_columns() {
-        let err = Design::from_frame(frame(vec![vec![0, 1]], vec![vec![1.0, 2.0]])).unwrap_err();
+    fn validate_weights_checks_count_and_finiteness() {
+        let design = Design::from_frame(frame(vec![vec![0, 0, 0, 0, 0]], vec![])).unwrap();
+        assert!(design.validate_weights(None).is_ok());
+        assert!(design
+            .validate_weights(Some(&[1.0, 2.0, 3.0, 4.0, 5.0]))
+            .is_ok());
+        // Zero weights are valid (an excluded observation).
+        assert!(design
+            .validate_weights(Some(&[0.0, 1.0, 2.0, 3.0, 4.0]))
+            .is_ok());
+        // Length mismatch.
+        assert!(design.validate_weights(Some(&[1.0, 2.0])).is_err());
+        // Negative / non-finite weights are rejected with the offending index.
         assert!(matches!(
-            err,
-            BuildError::UnclaimedLoadingColumns {
-                claimed: 0,
-                provided: 1
-            }
+            design.validate_weights(Some(&[1.0, -2.0, 3.0, 4.0, 5.0])),
+            Err(BuildError::InvalidWeight { index: 1, .. })
+        ));
+        assert!(matches!(
+            design.validate_weights(Some(&[1.0, 2.0, f64::NAN, 4.0, 5.0])),
+            Err(BuildError::InvalidWeight { index: 2, .. })
+        ));
+        assert!(matches!(
+            design.validate_weights(Some(&[1.0, 2.0, 3.0, f64::INFINITY, 5.0])),
+            Err(BuildError::InvalidWeight { index: 3, .. })
         ));
     }
 
@@ -454,6 +487,18 @@ mod tests {
         assert!(design.obs_perm.is_none());
         assert!(design.terms[0].sorted);
         assert!(!design.terms[1].sorted);
+    }
+
+    #[test]
+    fn from_frame_rejects_unclaimed_loading_columns() {
+        let err = Design::from_frame(frame(vec![vec![0, 1]], vec![vec![1.0, 2.0]])).unwrap_err();
+        assert!(matches!(
+            err,
+            BuildError::UnclaimedLoadingColumns {
+                claimed: 0,
+                provided: 1
+            }
+        ));
     }
 
     #[test]
