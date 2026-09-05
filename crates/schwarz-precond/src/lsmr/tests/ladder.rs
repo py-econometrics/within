@@ -93,6 +93,8 @@ fn test_mlsmr_zero_rhs_corrects_non_exact_warm_start() {
     let result = mlsmr(&op, &[0.0, 0.0, 0.0], &op, 1e-10, 10, options).expect("warm correction");
 
     assert!(result.converged);
+    // `b = 0` leaves `‖b − A x₀‖` as the only scale, so the residual leg is satisfiable.
+    assert_eq!(result.stop_reason, LsmrStopReason::ResidualTolerance);
     assert!(vec_norm(&result.x) < 1e-12);
     assert!(result.iterations > 0);
 }
