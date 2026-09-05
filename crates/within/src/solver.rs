@@ -23,8 +23,8 @@ use crate::{BuildError, BuildWarning, SolveError, WithinError};
 mod tests;
 
 /// Fallible conversion into a [`Design`] for [`Solver::new`]: a categories
-/// matrix (`ArrayView2<u32>`), a list of [`Effect`] terms, or a pass-through
-/// [`Design`].
+/// matrix (`ArrayView2<u32>`), a list of [`Effect`] terms, a pass-through
+/// [`Design`], or a `&Design` whose storage the solver then shares.
 pub trait IntoDesign<'a> {
     /// Build the [`Design`], validating inputs along the way.
     fn into_design(self) -> Result<Design<'a>, BuildError>;
@@ -49,6 +49,12 @@ impl<'a> IntoDesign<'a> for ArrayView2<'a, u32> {
 impl<'a> IntoDesign<'a> for Design<'a> {
     fn into_design(self) -> Result<Design<'a>, BuildError> {
         Ok(self)
+    }
+}
+
+impl<'a> IntoDesign<'a> for &Design<'a> {
+    fn into_design(self) -> Result<Design<'a>, BuildError> {
+        Ok(self.clone())
     }
 }
 
@@ -327,8 +333,9 @@ struct RhsSolution {
 impl<'a> Solver<'a> {
     /// Construct a solver.
     ///
-    /// `design` accepts raw categories (`ArrayView2<u32>`) or a pre-built
-    /// [`Design`]. `preconditioner` accepts:
+    /// `design` accepts raw categories (`ArrayView2<u32>`), a pre-built
+    /// [`Design`], or `&Design` to share one design across solvers (an O(1)
+    /// clone of its storage). `preconditioner` accepts:
     /// - `None` — build the library default Schwarz preconditioner
     /// - `&PreconditionerConfig` / `Some(&PreconditionerConfig)` — build from a tuned config
     /// - `PreconditionerConfig::Off` — solve unpreconditioned
