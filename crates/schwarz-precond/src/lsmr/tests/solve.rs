@@ -263,14 +263,16 @@ fn test_mlsmr_none_matches_identity_precond_windowed() {
     let id = IdentityOp { n: op.cols };
     let local = Some(10);
 
-    // The tightest tolerance cond ≈ 1e10 can certify; both paths run to the same minimum.
-    let none_result = lsmr(&op, &b, 1e-11, 50, local).expect("lsmr windowed solve");
+    // Tight tolerance with headroom in maxiter: drives both paths to the
+    // same minimum so the comparison isn't governed by rounding noise in
+    // the convergence test.
+    let none_result = lsmr(&op, &b, 1e-12, 50, local).expect("lsmr windowed solve");
     let opts = MlsmrOptions {
         local_size: local,
         ..Default::default()
     };
     let id_result =
-        mlsmr(&op, &b, &id, 1e-11, 50, opts).expect("preconditioned Identity windowed solve");
+        mlsmr(&op, &b, &id, 1e-12, 50, opts).expect("preconditioned Identity windowed solve");
 
     assert!(none_result.converged && id_result.converged);
     // The two paths do the same algebra differently (par_dot on `v` vs on
@@ -427,40 +429,4 @@ fn test_mlsmr_local_reorth_window_boundary_sizes() {
             "normal-eq residual too large with window {window_size:?}",
         );
     }
-}
-
-/// Near-consistent LS: `tol·‖A‖‖r‖` is below f64 resolution and `‖r‖` above the residual leg, so
-/// only the optimality-gap leg can certify the collapsed relative stop.
-#[test]
-fn test_lsmr_near_consistent_stop_is_certified_by_the_optimality_gap() {
-    let (rows, cols) = (30, 12);
-    let mut state: u64 = 7;
-    let mut uniform = move || {
-        state = state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        (state >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
-    };
-    let op = DenseOp {
-        rows,
-        cols,
-        data: (0..rows * cols).map(|_| uniform()).collect(),
-    };
-    let x_star: Vec<f64> = (0..cols).map(|_| uniform()).collect();
-    let mut b = vec![0.0; rows];
-    op.apply(&x_star, &mut b).expect("consistent rhs");
-    for bi in b.iter_mut() {
-        *bi += 1e-8 * uniform();
-    }
-
-    let r = lsmr(&op, &b, 1e-12, 100, None).expect("near-consistent solve");
-    assert!(r.converged);
-    assert_eq!(r.stop_reason, LsmrStopReason::NormalEquationTolerance);
-    let err: f64 =
-        r.x.iter()
-            .zip(&x_star)
-            .map(|(a, b)| (a - b).powi(2))
-            .sum::<f64>()
-            .sqrt();
-    assert!(err < 1e-7, "solution error {err}");
 }

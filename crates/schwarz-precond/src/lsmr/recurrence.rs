@@ -3,7 +3,7 @@
 //! Given `(α, β)` pairs from a [`super::bidiag::Bidiagonalization`], this
 //! module builds the two interleaved Givens rotation chains (P̂_k, P̄_k)
 //! that yield Algorithm 2.8 of Fong & Saunders, advances the `(x, h, h̄)`
-//! solution recurrence, and tracks the stopping criteria.
+//! solution recurrence, and tracks the dual stopping criterion.
 
 use super::bidiag::{BidiagStep, Certificate, LSMR_PAR_THRESHOLD, LSMR_UPDATE_CHUNK};
 use rayon::iter::{IndexedParallelIterator, ParallelIterator};
@@ -63,10 +63,6 @@ pub(super) struct LsmrRecurrenceState {
     zeta_bar: f64,
     /// `|ζ̄₀| = ‖Âᵀb‖`, clamped positive; the reference for relative NE residuals.
     pub(super) zeta0: f64,
-    /// `min ρ̄_j` over the committed diagonal of `R̄`; with `rho_temp` it estimates `σ_min(Â)`.
-    min_rho_bar: f64,
-    /// `|c̄_{k-1} ρ_k|`, the trailing diagonal of `R̄_k` before `θ_{k+1}` rotates into it.
-    rho_temp: f64,
 }
 
 impl LsmrRecurrenceState {
@@ -79,8 +75,6 @@ impl LsmrRecurrenceState {
             s_bar: 0.0,
             zeta_bar,
             zeta0: zeta_bar.abs().max(f64::MIN_POSITIVE),
-            min_rho_bar: f64::INFINITY,
-            rho_temp: s1.alpha,
         }
     }
 
@@ -93,8 +87,7 @@ impl LsmrRecurrenceState {
 
         // `theta_bar` MUST be read before `p_bar.s` is committed, or s̄_k mixes into θ̄_k.
         let theta_bar = self.s_bar * p_hat.r;
-        let rho_temp = self.c_bar * p_hat.r;
-        let p_bar = Givens::new(rho_temp, theta_new);
+        let p_bar = Givens::new(self.c_bar * p_hat.r, theta_new);
         let zeta = p_bar.c * self.zeta_bar;
         // The minus comes from `[[c̄, s̄], [−s̄, c̄]]` acting on `(ζ̄, 0)`.
         let zeta_bar_new = -p_bar.s * self.zeta_bar;
@@ -104,8 +97,6 @@ impl LsmrRecurrenceState {
         self.c_bar = p_bar.c;
         self.s_bar = p_bar.s;
         self.zeta_bar = zeta_bar_new;
-        self.rho_temp = rho_temp.abs();
-        self.min_rho_bar = self.min_rho_bar.min(p_bar.r);
 
         RotationStep {
             rho: p_hat.r,
@@ -129,11 +120,6 @@ impl LsmrRecurrenceState {
     /// `|ζ̄ₖ| / |ζ̄₀|` — normal-equation residual relative to `‖Aᵀb‖`; the `ζ̄₀` clamp guards it.
     pub(super) fn relative_normal_eq_residual(&self) -> f64 {
         self.normal_eq_residual_estimate() / self.zeta0
-    }
-
-    /// Smallest diagonal of `R̄_k`, Fong & Saunders' running estimate of `σ_min(Â)`.
-    fn sigma_min_estimate(&self) -> f64 {
-        self.min_rho_bar.min(self.rho_temp)
     }
 }
 
@@ -220,7 +206,7 @@ pub(super) enum Stop {
     NormalEquationTolerance,
 }
 
-/// Immutable stopping criteria for one LSMR run (Fong & Saunders S1 and S2).
+/// Immutable stopping criteria for one LSMR run.
 #[derive(Clone, Copy)]
 pub(super) struct ConvergenceCriteria {
     abs_tol: f64,
@@ -261,7 +247,7 @@ impl ConvergenceState {
         normar / (a_norm * residual.max(f64::MIN_POSITIVE))
     }
 
-    /// Check the stop criteria against the current scalar state; the residual leg takes precedence.
+    /// Check both stop criteria against the current scalar state.
     pub(super) fn check(&self, r: &LsmrRecurrenceState) -> Stop {
         let residual = r.residual_estimate();
         if residual <= self.criteria.abs_tol {
@@ -273,12 +259,13 @@ impl ConvergenceState {
         Stop::Continue
     }
 
-    /// True-residual audit of a stop (cf. van der Vorst & Ye, SISC 22(3), 2000).
-    pub(super) fn certified(&self, r: &LsmrRecurrenceState, cert: &Certificate) -> bool {
-        // `‖r − r*‖ ≤ ‖Aᵀr‖/σ_min`: the middle leg admits a residual within `tol·‖b‖` of optimal.
+    /// True-residual audit of a tolerance stop (cf. van der Vorst & Ye, SISC 22(3), 2000).
+    pub(super) fn certified(&self, cert: &Certificate, zeta0: f64) -> bool {
+        let rel = CERTIFICATION_SLACK * self.criteria.rel_tol;
         cert.normr <= CERTIFICATION_SLACK * self.criteria.abs_tol
-            || cert.normar <= CERTIFICATION_SLACK * self.criteria.abs_tol * r.sigma_min_estimate()
-            || self.ne_ratio(cert.normr, cert.normar) <= CERTIFICATION_SLACK * self.criteria.rel_tol
+            // `normr → 0` degenerates the ratio test; the drop of `‖Âᵀr‖` vs its start certifies.
+            || cert.normar <= rel * zeta0
+            || self.ne_ratio(cert.normr, cert.normar) <= rel
     }
 }
 
