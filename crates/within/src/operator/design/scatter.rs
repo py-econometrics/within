@@ -52,8 +52,8 @@ pub(super) fn scatter_apply(
             }
             columns => {
                 for (c, loading) in columns.iter().enumerate() {
-                    let start = c * t.n_levels;
-                    let slot = &mut block[start..start + t.n_levels];
+                    let start = c * t.n_levels();
+                    let slot = &mut block[start..start + t.n_levels()];
                     match loading {
                         Loading::Constant => {
                             scatter_term::<1>(slot, t, levels, parallel, scratch, |i| [base(i)]);
@@ -80,7 +80,7 @@ fn scatter_term<const C: usize>(
     scratch: &[AtomicF64],
     values: impl Fn(usize) -> [f64; C] + Sync,
 ) {
-    let n_levels = meta.n_levels;
+    let n_levels = meta.n_levels();
     debug_assert_eq!(block.len(), C * n_levels);
     match ScatterStrategy::pick(parallel, C * n_levels, meta.sorted) {
         ScatterStrategy::Sequential => scatter_sequential::<C>(block, n_levels, levels, &values),

@@ -80,7 +80,7 @@ impl TermReparam {
         unidentified: &mut Vec<CoefficientAddress>,
     ) -> Self {
         let meta = &design.terms[term];
-        let (offset, n_levels) = (meta.offset, meta.n_levels);
+        let (offset, n_levels) = (meta.offset, meta.n_levels());
         let mut intercept_column = None;
         let mut slope_columns = Vec::new();
         for (column, loading) in meta.columns.iter().enumerate() {

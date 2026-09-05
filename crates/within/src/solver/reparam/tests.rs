@@ -40,7 +40,7 @@ fn build_whitens_each_slope_bearing_term() {
             .filter_map(|c| c.covariate())
             .map(|&k| design.loading_column(k as usize))
             .collect();
-        for level in 0..meta.n_levels {
+        for level in 0..meta.n_levels() {
             let obs: Vec<usize> = (0..levels.len())
                 .filter(|&i| levels[i] as usize == level)
                 .collect();
