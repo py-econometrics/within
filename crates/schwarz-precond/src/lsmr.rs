@@ -63,6 +63,9 @@ pub enum LsmrStopReason {
     ResidualTolerance,
     /// The estimate `‖Aᵀrₖ‖ / (‖A‖ ‖rₖ‖)` met the relative tolerance.
     NormalEquationTolerance,
+    /// The estimate `‖Aᵀrₖ‖` reached its roundoff floor `ε‖A‖‖b‖`, below which the tolerance cannot
+    /// be resolved; the iterate is as accurate as f64 allows.
+    NormalEquationFloor,
     /// The warm start already solved the system: `b − A x0` was exactly zero.
     WarmStartExact,
     /// A tolerance stop refuted by the true-residual audit; the recurrence estimates had collapsed.
@@ -164,7 +167,8 @@ impl EscalationHandler for StalenessRun {
 /// Optional behaviors for [`mlsmr`].
 #[derive(Clone, Copy, Default)]
 pub struct MlsmrOptions<'a> {
-    /// Initial iterate for a residual correction; tolerances remain relative to the original `‖b‖`.
+    /// Initial iterate for a residual correction; tolerances remain relative to the original `‖b‖`
+    /// (to `‖b − A x₀‖` when `b = 0`, the only scale that problem has).
     pub warm_start: Option<&'a [f64]>,
     /// Hands off to a stronger preconditioner mid-run; see [`EscalationPolicy`].
     pub escalation: Option<&'a dyn EscalationPolicy>,
@@ -279,7 +283,8 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
     }
 
     let (bidiag, step1) = ModifiedGolubKahan::init(operator, preconditioner, &rhs, local_size)?;
-    let criteria = ConvergenceCriteria::new(b_norm, tol);
+    let reference_norm = if b_norm > 0.0 { b_norm } else { rhs_norm };
+    let criteria = ConvergenceCriteria::new(reference_norm, tol);
     let mut result = lsmr_from_bidiag(
         bidiag,
         step1,
@@ -335,10 +340,11 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
             Stop::Continue => None,
             Stop::ResidualTolerance => Some(LsmrStopReason::ResidualTolerance),
             Stop::NormalEquationTolerance => Some(LsmrStopReason::NormalEquationTolerance),
+            Stop::NormalEquationFloor => Some(LsmrStopReason::NormalEquationFloor),
         } {
             let x = solution.into_x();
             let cert = bidiag.certify(&x, rhs)?;
-            let converged = convergence.certified(&cert, recurrence.zeta0);
+            let converged = convergence.certified(&cert);
             return Ok(LsmrResult {
                 x,
                 converged,

@@ -263,9 +263,8 @@ fn test_mlsmr_none_matches_identity_precond_windowed() {
     let id = IdentityOp { n: op.cols };
     let local = Some(10);
 
-    // Tight tolerance with headroom in maxiter: drives both paths to the
-    // same minimum so the comparison isn't governed by rounding noise in
-    // the convergence test.
+    // Tight tolerance with headroom in maxiter: both paths run until `‖Aᵀr‖`
+    // reaches its roundoff floor, so the stop is not governed by tolerance noise.
     let none_result = lsmr(&op, &b, 1e-12, 50, local).expect("lsmr windowed solve");
     let opts = MlsmrOptions {
         local_size: local,
@@ -275,6 +274,8 @@ fn test_mlsmr_none_matches_identity_precond_windowed() {
         mlsmr(&op, &b, &id, 1e-12, 50, opts).expect("preconditioned Identity windowed solve");
 
     assert!(none_result.converged && id_result.converged);
+    assert_eq!(none_result.stop_reason, LsmrStopReason::NormalEquationFloor);
+    assert_eq!(id_result.stop_reason, LsmrStopReason::NormalEquationFloor);
     // The two paths do the same algebra differently (par_dot on `v` vs on
     // `p̃ = M v`), so rounding can shift the convergence test by one step.
     // The solve must still land on the same answer.
@@ -285,14 +286,15 @@ fn test_mlsmr_none_matches_identity_precond_windowed() {
         id_result.iterations,
     );
 
-    // Agreement bound is governed by what each path is converging to —
-    // the windowed Vandermonde test asserts a normal-equation residual of
-    // 1e-6, so 1e-7 here cleanly catches scaling drift in the M-weighted
-    // reorth without flagging algebra-order rounding.
-    let diff: f64 = none_result
-        .x
+    // Compare fitted values, not coefficients: at cond ≈ 1e10 a one-step shift
+    // moves `x` by ~1e-5 along near-null directions that `A x` does not see.
+    let mut fit_none = vec![0.0; op.rows];
+    let mut fit_id = vec![0.0; op.rows];
+    op.apply(&none_result.x, &mut fit_none).expect("fit");
+    op.apply(&id_result.x, &mut fit_id).expect("fit");
+    let diff: f64 = fit_none
         .iter()
-        .zip(id_result.x.iter())
+        .zip(&fit_id)
         .map(|(a, b)| (a - b).powi(2))
         .sum::<f64>()
         .sqrt();
@@ -429,4 +431,40 @@ fn test_mlsmr_local_reorth_window_boundary_sizes() {
             "normal-eq residual too large with window {window_size:?}",
         );
     }
+}
+
+/// Near-consistent least squares: the minimum residual is far below `‖b‖`, so `tol·‖A‖‖r‖`
+/// asks for a `‖Aᵀr‖` that `Aᵀ(b − Ax)` cannot resolve in f64. The floor stop ends the run.
+#[test]
+fn test_lsmr_near_consistent_system_stops_at_the_roundoff_floor() {
+    let (rows, cols) = (30, 12);
+    let mut state: u64 = 7;
+    let mut uniform = move || {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (state >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
+    };
+    let op = DenseOp {
+        rows,
+        cols,
+        data: (0..rows * cols).map(|_| uniform()).collect(),
+    };
+    let x_star: Vec<f64> = (0..cols).map(|_| uniform()).collect();
+    let mut b = vec![0.0; rows];
+    op.apply(&x_star, &mut b).expect("consistent rhs");
+    for bi in b.iter_mut() {
+        *bi += 1e-10 * uniform();
+    }
+
+    let r = lsmr(&op, &b, 1e-12, 100, None).expect("near-consistent solve");
+    assert!(r.converged);
+    assert_eq!(r.stop_reason, LsmrStopReason::NormalEquationFloor);
+    let err: f64 =
+        r.x.iter()
+            .zip(&x_star)
+            .map(|(a, b)| (a - b).powi(2))
+            .sum::<f64>()
+            .sqrt();
+    assert!(err < 1e-8, "solution error {err}");
 }

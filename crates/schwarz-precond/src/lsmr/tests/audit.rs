@@ -62,9 +62,17 @@ fn honest_stop_passes_the_audit() {
 }
 
 #[test]
-fn near_consistent_stop_certifies_via_the_initial_ne_drop() {
-    // Ratio leg would refuse (1e-12/1e-6 ≫ 100·tol); the drop vs ζ̄₀ = 1 certifies.
-    let r = scripted_run(1e-6, 1e-12);
+fn near_consistent_stop_certifies_at_the_roundoff_floor() {
+    // Ratio leg refuses (1e-15/1e-6 ≫ 100·tol); `‖Aᵀr‖` at `ε‖A‖‖b‖` with ‖A‖ = ‖b‖ = 1 certifies.
+    let r = scripted_run(1e-6, 1e-15);
     assert!(r.converged);
     assert_eq!(r.stop_reason, LsmrStopReason::ResidualTolerance);
+}
+
+#[test]
+fn a_relative_drop_alone_no_longer_certifies() {
+    // Formerly accepted as `normar ≤ 100·tol·ζ̄₀`; 1e-12 is 4e3 floors above what f64 resolves.
+    let r = scripted_run(1e-6, 1e-12);
+    assert!(!r.converged);
+    assert_eq!(r.stop_reason, LsmrStopReason::FalseConvergence);
 }

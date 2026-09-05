@@ -3,7 +3,7 @@
 //! Given `(α, β)` pairs from a [`super::bidiag::Bidiagonalization`], this
 //! module builds the two interleaved Givens rotation chains (P̂_k, P̄_k)
 //! that yield Algorithm 2.8 of Fong & Saunders, advances the `(x, h, h̄)`
-//! solution recurrence, and tracks the dual stopping criterion.
+//! solution recurrence, and tracks the stopping criteria.
 
 use super::bidiag::{BidiagStep, Certificate, LSMR_PAR_THRESHOLD, LSMR_UPDATE_CHUNK};
 use rayon::iter::{IndexedParallelIterator, ParallelIterator};
@@ -204,13 +204,17 @@ pub(super) enum Stop {
     ResidualTolerance,
     /// `‖Aᵀ r_k‖` estimate fell below relative tolerance.
     NormalEquationTolerance,
+    /// `‖Aᵀ r_k‖` estimate reached the roundoff floor `ε‖A‖‖b‖`.
+    NormalEquationFloor,
 }
 
-/// Immutable stopping criteria for one LSMR run.
+/// Immutable stopping criteria for one LSMR run (Fong & Saunders S1, S2, and S2 at roundoff).
 #[derive(Clone, Copy)]
 pub(super) struct ConvergenceCriteria {
     abs_tol: f64,
     rel_tol: f64,
+    /// `ε‖b‖`; times `‖A‖` this is the floor below which `‖Aᵀr‖` cannot be resolved.
+    ne_floor: f64,
 }
 
 impl ConvergenceCriteria {
@@ -218,6 +222,7 @@ impl ConvergenceCriteria {
         Self {
             abs_tol: tol * reference_norm,
             rel_tol: tol,
+            ne_floor: f64::EPSILON * reference_norm,
         }
     }
 
@@ -243,29 +248,35 @@ impl ConvergenceState {
 
     /// `‖Âᵀr‖ / (‖A‖‖r‖)`; the `max` guards a collapsed residual, not a physical scale.
     fn ne_ratio(&self, residual: f64, normar: f64) -> f64 {
-        let a_norm = self.a_norm_sq.sqrt().max(f64::MIN_POSITIVE);
-        normar / (a_norm * residual.max(f64::MIN_POSITIVE))
+        normar / (self.a_norm() * residual.max(f64::MIN_POSITIVE))
     }
 
-    /// Check both stop criteria against the current scalar state.
+    fn a_norm(&self) -> f64 {
+        self.a_norm_sq.sqrt().max(f64::MIN_POSITIVE)
+    }
+
+    /// Check the stop criteria against the current scalar state; the tolerance stops take precedence.
     pub(super) fn check(&self, r: &LsmrRecurrenceState) -> Stop {
         let residual = r.residual_estimate();
+        let normar = r.normal_eq_residual_estimate();
         if residual <= self.criteria.abs_tol {
             return Stop::ResidualTolerance;
         }
-        if self.ne_ratio(residual, r.normal_eq_residual_estimate()) <= self.criteria.rel_tol {
+        if self.ne_ratio(residual, normar) <= self.criteria.rel_tol {
             return Stop::NormalEquationTolerance;
+        }
+        // Near-consistent systems put `tol·‖A‖‖r‖` below what `Aᵀ(b − Ax)` resolves in f64.
+        if normar <= self.a_norm() * self.criteria.ne_floor {
+            return Stop::NormalEquationFloor;
         }
         Stop::Continue
     }
 
-    /// True-residual audit of a tolerance stop (cf. van der Vorst & Ye, SISC 22(3), 2000).
-    pub(super) fn certified(&self, cert: &Certificate, zeta0: f64) -> bool {
-        let rel = CERTIFICATION_SLACK * self.criteria.rel_tol;
+    /// True-residual audit of a stop (cf. van der Vorst & Ye, SISC 22(3), 2000).
+    pub(super) fn certified(&self, cert: &Certificate) -> bool {
         cert.normr <= CERTIFICATION_SLACK * self.criteria.abs_tol
-            // `normr → 0` degenerates the ratio test; the drop of `‖Âᵀr‖` vs its start certifies.
-            || cert.normar <= rel * zeta0
-            || self.ne_ratio(cert.normr, cert.normar) <= rel
+            || cert.normar <= CERTIFICATION_SLACK * self.a_norm() * self.criteria.ne_floor
+            || self.ne_ratio(cert.normr, cert.normar) <= CERTIFICATION_SLACK * self.criteria.rel_tol
     }
 }
 
