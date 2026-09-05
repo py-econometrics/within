@@ -1,10 +1,9 @@
-use super::reparam::SlopeReparam;
 use super::{CoefficientAddress, CoefficientLayout};
 use crate::channel::Channel;
 use crate::config::{LocalSolverConfig, DEFAULT_DENSE_SCHUR_THRESHOLD};
-use crate::domain::level_moments::TermMoments;
-use crate::domain::{build_local_domains, Design, Grounding, MatrixForm};
-use crate::Effect;
+use crate::domain::{build_local_domains, Design, Grounding, MatrixForm, PreparedDesign};
+use crate::{Effect, PreconditionerConfig, Solver};
+use std::sync::Arc;
 
 /// DGP kept in lockstep with `surplus_component_sampled_matches_exact_reduction`
 /// in `tests/slopes_routing.rs`. A positive slope-only term is not centered by
@@ -34,11 +33,9 @@ fn positive_slope_only_pair_grounds_beyond_dense_threshold() {
         Effect::new(&f, false, [&z[..]]).expect("slope effect"),
         Effect::new(&g, true, []).expect("plain effect"),
     ];
-    let mut design = Design::new(effects).expect("design");
-    let moments = TermMoments::build(&design, None).expect("slopes");
-    let _reparam = SlopeReparam::build(&mut design, &moments);
+    let prepared = PreparedDesign::unweighted_for_test(Design::new(effects).expect("design"));
     let (domains, warnings) =
-        build_local_domains(&design, None, &LocalSolverConfig::default()).expect("domains");
+        build_local_domains(&prepared, None, &LocalSolverConfig::default()).expect("domains");
     assert!(
         domains.iter().any(|ld| {
             let ct = &ld.component.matrix.cross_tab;
@@ -90,4 +87,30 @@ fn coefficient_layout_translates_addresses_both_ways() {
     for i in 0..layout.n_dofs() {
         assert_eq!(layout.index(layout.address(i).expect("in range")), Some(i));
     }
+}
+
+#[test]
+fn solvers_built_from_a_borrowed_design_share_its_storage() {
+    let (f, g, z) = positive_slope_only_panel();
+    let design = Design::new(vec![
+        Effect::new(&f, true, []).unwrap(),
+        Effect::new(&g, false, [&z[..]]).unwrap(),
+    ])
+    .unwrap();
+    let n = f.len();
+    let w: Vec<f64> = (0..n).map(|i| 1.0 + (i % 5) as f64).collect();
+    let y: Vec<f64> = (0..n).map(|i| (i % 7) as f64).collect();
+
+    let unweighted = Solver::new(&design, None, &PreconditionerConfig::Diagonal).unwrap();
+    let weighted = Solver::new(&design, Some(&w), &PreconditionerConfig::Diagonal).unwrap();
+
+    assert!(Arc::ptr_eq(
+        &unweighted.prepared.design.frame,
+        &design.frame
+    ));
+    assert!(Arc::ptr_eq(&weighted.prepared.design.frame, &design.frame));
+    let a = unweighted.solve(&y, None).unwrap();
+    let b = weighted.solve(&y, None).unwrap();
+    assert!(a.converged && b.converged);
+    assert_ne!(a.x, b.x);
 }

@@ -9,25 +9,22 @@ use ndarray::{ArrayView2, Axis};
 use rayon::prelude::*;
 use schwarz_precond::{lsmr as lsmr_solve, mlsmr, MlsmrOptions};
 
-use crate::channel::Channel;
+use crate::channel::{Channel, CoefficientAddress};
 use crate::config::{LsmrOptions, PreconditionerConfig};
 use crate::domain::collinearity::detect_collinear_slopes;
-use crate::domain::level_moments::TermMoments;
-use crate::domain::{Design, Effect};
+use crate::domain::{Design, Effect, PreparedDesign};
 use crate::observation::ObservationFrame;
 use crate::operator::design::gather_apply;
 use crate::operator::schwarz::{build_preconditioner, Preconditioner};
 use crate::operator::DesignOperator;
 use crate::{BuildError, BuildWarning, SolveError, WithinError};
 
-mod reparam;
 #[cfg(test)]
 mod tests;
-use reparam::SlopeReparam;
 
 /// Fallible conversion into a [`Design`] for [`Solver::new`]: a categories
-/// matrix (`ArrayView2<u32>`), a list of [`Effect`] terms, or a pass-through
-/// [`Design`].
+/// matrix (`ArrayView2<u32>`), a list of [`Effect`] terms, a pass-through
+/// [`Design`], or a `&Design` whose storage the solver then shares.
 pub trait IntoDesign<'a> {
     /// Build the [`Design`], validating inputs along the way.
     fn into_design(self) -> Result<Design<'a>, BuildError>;
@@ -52,6 +49,12 @@ impl<'a> IntoDesign<'a> for ArrayView2<'a, u32> {
 impl<'a> IntoDesign<'a> for Design<'a> {
     fn into_design(self) -> Result<Design<'a>, BuildError> {
         Ok(self)
+    }
+}
+
+impl<'a> IntoDesign<'a> for &Design<'a> {
+    fn into_design(self) -> Result<Design<'a>, BuildError> {
+        Ok(self.clone())
     }
 }
 
@@ -109,15 +112,6 @@ impl From<&Preconditioner> for PreconditionerInput {
     fn from(p: &Preconditioner) -> Self {
         Self::Prebuilt(p.clone())
     }
-}
-
-/// One coefficient of the design: a [`Channel`] at one level of its term.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CoefficientAddress {
-    /// The coefficient column this address sits in.
-    pub channel: Channel,
-    /// Level index within the term (`0..n_levels`).
-    pub level: usize,
 }
 
 /// Translates a [`CoefficientAddress`] to its flat index in [`SolveResult::x`]
@@ -301,24 +295,20 @@ impl BatchSolveResult {
 ///
 /// Ownership: each observation column is borrowed or owned independently
 /// (`Cow`); a solver that outlives its inputs — e.g. one returned across the
-/// Python boundary — uses owned columns. Weights are always owned; for a
-/// one-shot weighted solve from a borrowed slice, use the free [`solve`] function.
+/// Python boundary — uses owned columns.
 pub struct Solver<'a> {
-    design: Design<'a>,
-    /// `sqrt(W)` in the design's internal observation order, computed once and
-    /// borrowed by the per-RHS [`DesignOperator`]s (raw weights are needed only
-    /// during construction).
+    prepared: PreparedDesign<'a>,
+    /// `W^{1/2}` in the design's internal observation order; the only form of the weights kept.
     sqrt_weights: Option<Vec<f64>>,
     preconditioner: Option<Preconditioner>,
-    reparam: Option<SlopeReparam>,
     warnings: Vec<BuildWarning>,
 }
 
 impl std::fmt::Debug for Solver<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Solver")
-            .field("n_obs", &self.design.n_obs)
-            .field("n_dofs", &self.design.n_dofs)
+            .field("n_obs", &self.prepared.design.n_obs)
+            .field("n_dofs", &self.prepared.design.n_dofs)
             .field("has_weights", &self.sqrt_weights.is_some())
             .field("has_preconditioner", &self.preconditioner.is_some())
             .finish()
@@ -343,58 +333,45 @@ struct RhsSolution {
 impl<'a> Solver<'a> {
     /// Construct a solver.
     ///
-    /// `design` accepts raw categories (`ArrayView2<u32>`) or a pre-built
-    /// [`Design`]. `preconditioner` accepts:
+    /// `design` accepts raw categories (`ArrayView2<u32>`), a pre-built
+    /// [`Design`], or `&Design` to share one design across solvers (an O(1)
+    /// clone of its storage). `preconditioner` accepts:
     /// - `None` — build the library default Schwarz preconditioner
     /// - `&PreconditionerConfig` / `Some(&PreconditionerConfig)` — build from a tuned config
     /// - `PreconditionerConfig::Off` — solve unpreconditioned
     /// - `PreconditionerConfig::Diagonal` — use diagonal/Jacobi preconditioning
     /// - [`Preconditioner`] or `&Preconditioner` — reuse a previously built one
     ///
-    /// `weights` is `None` for unweighted, or an owned `Vec<f64>` that the
-    /// solver takes ownership of (it re-reads the weights on every solve). To
-    /// solve once from a borrowed slice, use the free [`solve`] function.
+    /// `weights` is `None` for unweighted; the solver keeps only `√w` in its own order.
     ///
     /// LSMR tuning ([`LsmrOptions`]) is supplied per call to [`Solver::solve`] /
     /// [`Solver::solve_batch`], not at construction; preconditioner factorization
     /// state is the only expensive thing built here.
     pub fn new(
         design: impl IntoDesign<'a>,
-        weights: Option<Vec<f64>>,
+        weights: Option<&[f64]>,
         preconditioner: impl Into<PreconditionerInput>,
     ) -> Result<Self, BuildError> {
-        let mut design = design.into_design()?;
-        design.validate_weights(weights.as_deref())?;
+        let design = design.into_design()?;
+        design.validate_weights(weights)?;
+        let sqrt_weights: Option<Vec<f64>> = weights.map(|w| {
+            let w = design.permute_obs_in(w);
+            w.iter().map(|wi| wi.sqrt()).collect()
+        });
+        let sw = sqrt_weights.as_deref();
 
-        // The match keeps the unpermuted arm a plain move rather than a borrow-and-copy.
-        let weights = match &design.obs_perm {
-            Some(_) => weights.map(|w| design.permute_obs_in(&w).into_owned()),
-            None => weights,
-        };
-
-        // Both readers below need the raw loadings, so the moments precede whitening.
-        let moments = TermMoments::build(&design, weights.as_deref());
-        let mut warnings = moments
-            .as_ref()
-            .map(|m| detect_collinear_slopes(&design, weights.as_deref(), m))
-            .unwrap_or_default();
-
-        // Reparametrize the slope columns (if any) before the preconditioner reads the frame.
-        let reparam = moments
-            .as_ref()
-            .and_then(|m| SlopeReparam::build(&mut design, m));
+        // Whiten the slope columns (if any) before the preconditioner reads them.
+        let prepared = PreparedDesign::new(design, sw);
+        let mut warnings = detect_collinear_slopes(&prepared, sw);
+        let n_dofs = prepared.design.n_dofs;
 
         let (preconditioner, build_warnings) = match preconditioner.into() {
-            PreconditionerInput::Default => {
-                build_preconditioner(&design, weights.as_deref(), None)?
-            }
-            PreconditionerInput::Config(c) => {
-                build_preconditioner(&design, weights.as_deref(), Some(&c))?
-            }
+            PreconditionerInput::Default => build_preconditioner(&prepared, sw, None)?,
+            PreconditionerInput::Config(c) => build_preconditioner(&prepared, sw, Some(&c))?,
             PreconditionerInput::Prebuilt(p) => {
-                if p.nrows() != design.n_dofs || p.ncols() != design.n_dofs {
+                if p.nrows() != n_dofs || p.ncols() != n_dofs {
                     return Err(BuildError::PreconditionerDimensionMismatch {
-                        expected: design.n_dofs,
+                        expected: n_dofs,
                         actual_rows: p.nrows(),
                         actual_cols: p.ncols(),
                     });
@@ -405,18 +382,10 @@ impl<'a> Solver<'a> {
 
         warnings.extend(build_warnings);
 
-        let sqrt_weights = weights.map(|mut w| {
-            for wi in &mut w {
-                *wi = wi.sqrt();
-            }
-            w
-        });
-
         Ok(Self {
-            design,
+            prepared,
             sqrt_weights,
             preconditioner,
-            reparam,
             warnings,
         })
     }
@@ -433,13 +402,13 @@ impl<'a> Solver<'a> {
     /// [`RhsSolution`]).
     fn solve_rhs(&self, y: &[f64], lsmr: &LsmrOptions) -> Result<RhsSolution, SolveError> {
         // `weighted_rhs` zips y with sqrt-weights, silently truncating when `y.len() > n_rows`.
-        if y.len() != self.design.n_obs {
+        if y.len() != self.prepared.design.n_obs {
             return Err(SolveError::InvalidInput {
                 context: "Solver::solve",
                 message: format!(
                     "response vector length ({}) does not match number of observations ({})",
                     y.len(),
-                    self.design.n_obs
+                    self.prepared.design.n_obs
                 ),
             });
         }
@@ -453,10 +422,10 @@ impl<'a> Solver<'a> {
         let t_start = Instant::now();
 
         // The gather is a recurring per-solve cost of the locality sort, so it counts as setup.
-        let y_internal = self.design.permute_obs_in(y);
+        let y_internal = self.prepared.design.permute_obs_in(y);
         let y: &[f64] = &y_internal;
 
-        let rect_op = DesignOperator::new(&self.design, self.sqrt_weights.as_deref());
+        let rect_op = DesignOperator::new(&self.prepared, self.sqrt_weights.as_deref());
         let b = rect_op.weighted_rhs(y);
         let b: &[f64] = &b;
 
@@ -477,21 +446,21 @@ impl<'a> Solver<'a> {
         let time_solve = t_solve_start.elapsed().as_secs_f64();
 
         // Shapes are guaranteed here, so the bare `D x` matvec is infallible.
-        let mut demeaned = vec![0.0; self.design.n_obs];
-        gather_apply(&self.design, &r.x, &mut demeaned, None);
+        let mut demeaned = vec![0.0; self.prepared.design.n_obs];
+        gather_apply(&self.prepared, &r.x, &mut demeaned, None);
         for (d, &yi) in demeaned.iter_mut().zip(y.iter()) {
             *d = yi - *d;
         }
 
         let mut x = r.x;
-        if let Some(rp) = &self.reparam {
+        if let Some(rp) = &self.prepared.reparam {
             rp.back_transform(&mut x);
         }
 
         Ok(RhsSolution {
             x,
             // Back to the caller's observation order (no-op if not reordered).
-            demeaned: self.design.permute_obs_out(demeaned),
+            demeaned: self.prepared.design.permute_obs_out(demeaned),
             converged: r.converged,
             iterations: r.iterations,
             // Read from the LSMR recurrence at no extra cost; see `SolveResult::residual`.
@@ -504,7 +473,8 @@ impl<'a> Solver<'a> {
     /// Per-level directions the data cannot identify, shared across all RHS:
     /// identification depends only on the design and weights, never on `y`.
     fn unidentified(&self) -> Vec<CoefficientAddress> {
-        self.reparam
+        self.prepared
+            .reparam
             .as_ref()
             .map(|rp| rp.unidentified.clone())
             .unwrap_or_default()
@@ -526,7 +496,7 @@ impl<'a> Solver<'a> {
             x: solution.x,
             unidentified: self.unidentified(),
             warnings: self.warnings.clone(),
-            layout: CoefficientLayout::from_design(&self.design),
+            layout: CoefficientLayout::from_design(&self.prepared.design),
             demeaned: solution.demeaned,
             converged: solution.converged,
             iterations: solution.iterations,
@@ -554,8 +524,8 @@ impl<'a> Solver<'a> {
             .map(|y| self.solve_rhs(y, lsmr))
             .collect::<Result<Vec<_>, _>>()?;
 
-        let mut x = Vec::with_capacity(self.design.n_dofs * n_rhs);
-        let mut demeaned = Vec::with_capacity(self.design.n_obs * n_rhs);
+        let mut x = Vec::with_capacity(self.prepared.design.n_dofs * n_rhs);
+        let mut demeaned = Vec::with_capacity(self.prepared.design.n_obs * n_rhs);
         let mut converged = Vec::with_capacity(n_rhs);
         let mut iterations = Vec::with_capacity(n_rhs);
         let mut residual = Vec::with_capacity(n_rhs);
@@ -574,7 +544,7 @@ impl<'a> Solver<'a> {
             x,
             unidentified: self.unidentified(),
             warnings: self.warnings.clone(),
-            layout: CoefficientLayout::from_design(&self.design),
+            layout: CoefficientLayout::from_design(&self.prepared.design),
             demeaned,
             converged,
             iterations,
@@ -582,8 +552,8 @@ impl<'a> Solver<'a> {
             time_solve,
             time_setup: 0.0,
             time_total: t_start.elapsed().as_secs_f64(),
-            n_dofs: self.design.n_dofs,
-            n_obs: self.design.n_obs,
+            n_dofs: self.prepared.design.n_dofs,
+            n_obs: self.prepared.design.n_obs,
         })
     }
 
@@ -594,12 +564,12 @@ impl<'a> Solver<'a> {
 
     /// Number of DOFs (coefficients).
     pub fn n_dofs(&self) -> usize {
-        self.design.n_dofs
+        self.prepared.design.n_dofs
     }
 
     /// Number of observations.
     pub fn n_obs(&self) -> usize {
-        self.design.n_obs
+        self.prepared.design.n_obs
     }
 }
 
@@ -627,7 +597,7 @@ pub fn solve<'a, 'o>(
     preconditioner: impl Into<PreconditionerInput>,
 ) -> Result<SolveResult, WithinError> {
     let t_start = Instant::now();
-    let solver = Solver::new(design, weights.map(|w| w.to_vec()), preconditioner)?;
+    let solver = Solver::new(design, weights, preconditioner)?;
     let time_setup = t_start.elapsed().as_secs_f64();
     let mut result = solver.solve(y, lsmr)?;
     // Include solver construction (preconditioner build) in setup time
@@ -648,7 +618,7 @@ pub fn solve_batch<'a, 'o>(
     preconditioner: impl Into<PreconditionerInput>,
 ) -> Result<BatchSolveResult, WithinError> {
     let t_start = Instant::now();
-    let solver = Solver::new(design, weights.map(|w| w.to_vec()), preconditioner)?;
+    let solver = Solver::new(design, weights, preconditioner)?;
     let time_setup = t_start.elapsed().as_secs_f64();
     let mut result = solver.solve_batch(ys, lsmr)?;
     result.time_setup += time_setup;

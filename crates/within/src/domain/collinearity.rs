@@ -5,8 +5,7 @@ use std::ops::Range;
 
 use rayon::prelude::*;
 
-use super::level_moments::{BasisScratch, LevelMoments, TermMoments};
-use super::Design;
+use super::{row_weight, Design, PreparedDesign, TermMeta};
 use crate::channel::Channel;
 use crate::BuildWarning;
 
@@ -20,11 +19,11 @@ const TABLE_BUDGET_BYTES: usize = 64 << 20;
 const ROWS_PER_TASK: usize = 1 << 16;
 
 pub(crate) fn detect_collinear_slopes(
-    design: &Design<'_>,
-    weights: Option<&[f64]>,
-    moments: &TermMoments,
+    prepared: &PreparedDesign<'_>,
+    sqrt_weights: Option<&[f64]>,
 ) -> Vec<BuildWarning> {
-    if design.n_factors() < 2 {
+    let design = &prepared.design;
+    if design.n_factors() < 2 || !design.terms.iter().any(TermMeta::has_slopes) {
         return Vec::new();
     }
     let budget = TABLE_BUDGET_BYTES / std::mem::size_of::<f64>() / design.n_factors();
@@ -32,7 +31,7 @@ pub(crate) fn detect_collinear_slopes(
         .into_par_iter()
         .flat_map_iter(move |term| {
             let targets = screened_covariates(design, term);
-            residual_shares(design, weights, moments, term, &targets, budget)
+            residual_shares(prepared, sqrt_weights, term, &targets, budget)
                 .into_iter()
                 .zip(targets)
                 .filter(|&(share, _)| share <= COLLINEARITY_TOL)
@@ -58,9 +57,8 @@ fn screened_covariates(design: &Design<'_>, term: usize) -> Vec<(Channel, u32)> 
 
 /// Two passes, so the share resolves below the `1e-16` a subtraction floors at.
 fn residual_shares(
-    design: &Design<'_>,
-    weights: Option<&[f64]>,
-    moments: &TermMoments,
+    prepared: &PreparedDesign<'_>,
+    sqrt_weights: Option<&[f64]>,
     term: usize,
     targets: &[(Channel, u32)],
     budget: usize,
@@ -69,36 +67,37 @@ fn residual_shares(
     if m == 0 {
         return Vec::new();
     }
-    let moments = &moments[term];
+    let design = &prepared.design;
+    let meta = &design.terms[term];
     let levels = design.frame.level_column(term);
-    let zs: Vec<&[f64]> = moments
+    let us: Vec<&[f64]> = meta
         .covariates()
-        .iter()
-        .map(|&c| design.frame.loading_column(c as usize))
+        .map(|c| prepared.loading_column(c as usize))
         .collect();
+    let intercept = meta.has_intercept();
     let columns: Vec<&[f64]> = targets
         .iter()
         .map(|&(_, c)| design.frame.loading_column(c as usize))
         .collect();
-    let stride = columns.len() * (zs.len() + 1);
-    let n_levels = moments.n_levels();
+    let stride = columns.len() * (us.len() + 1);
+    let n_levels = meta.n_levels;
     let plan = ScreenPlan::new(budget, n_levels, stride);
     let screen = Screen {
         levels,
-        weights,
-        zs,
+        sqrt_weights,
+        us,
         columns,
-        zeros: vec![0.0; moments.n_slopes()],
-        moments,
+        intercept,
         stride,
         // Grouping gathers every column, so it must buy back more than the one block.
-        order: match design.terms[term].sorted || plan.per_block == n_levels {
+        order: match meta.sorted || plan.per_block == n_levels {
             true => RowOrder::AsIs,
             false => RowOrder::Grouped(super::stable_argsort(levels, n_levels)),
         },
     };
 
     let mut table = vec![0.0f64; plan.per_block * stride];
+    let mut level_weight = vec![0.0f64; plan.per_block];
     let mut residual = vec![0.0f64; m];
     let mut variations = Variations {
         w_sum: 0.0,
@@ -110,13 +109,14 @@ fn residual_shares(
             levels: levels_block,
         };
         let table = &mut table[..block.levels.len() * stride];
+        let level_weight = &mut level_weight[..block.levels.len()];
         table.fill(0.0);
-        screen.accumulate_cross(&block, table, &mut variations);
-        screen.to_coefficients(&block, table);
+        level_weight.fill(0.0);
+        screen.accumulate_cross(&block, table, level_weight, &mut variations);
+        screen.to_coefficients(table, level_weight);
         screen.accumulate_residual(&block, table, &mut residual);
     }
 
-    let intercept = moments.intercept();
     residual
         .iter()
         .zip(&variations.stats)
@@ -132,13 +132,13 @@ fn residual_shares(
 
 struct Screen<'a> {
     levels: &'a [u32],
-    weights: Option<&'a [f64]>,
-    zs: Vec<&'a [f64]>,
+    sqrt_weights: Option<&'a [f64]>,
+    /// The term's slope columns in the solve basis.
+    us: Vec<&'a [f64]>,
     columns: Vec<&'a [f64]>,
-    zeros: Vec<f64>,
-    moments: &'a LevelMoments,
+    intercept: bool,
     order: RowOrder,
-    /// One level's row of the table: `[Σw·c, Σw·z·c]` per target.
+    /// One level's row of the table: `[Σw·c, Σw·u·c]` per target.
     stride: usize,
 }
 
@@ -151,27 +151,26 @@ impl Screen<'_> {
     ) -> impl Iterator<Item = (usize, f64, usize)> + '_ {
         rows.filter_map(move |i| {
             let obs = self.order.obs(i);
-            let w = self.weights.map_or(1.0, |w| w[obs]);
+            let w = row_weight(self.sqrt_weights, obs);
             (w > 0.0).then(|| (obs, w, self.levels[obs] as usize - first))
         })
     }
 
-    /// Without an intercept the level's span holds no constant, so `z` enters uncentered.
-    fn center(&self, level: usize) -> &[f64] {
-        match self.moments.intercept() {
-            true => self.moments.mean(level),
-            false => &self.zeros,
-        }
-    }
-
     /// Each target's total variation rides this pass, since the rows are already loaded.
-    fn accumulate_cross(&self, block: &Block, table: &mut [f64], variations: &mut Variations) {
-        let v = self.zs.len();
+    fn accumulate_cross(
+        &self,
+        block: &Block,
+        table: &mut [f64],
+        level_weight: &mut [f64],
+        variations: &mut Variations,
+    ) {
+        let v = self.us.len();
         let stride = self.stride;
         let Variations { w_sum, stats } = variations;
         let mut running = *w_sum;
         for (obs, w, row) in self.active_rows(block.levels.start, block.rows.clone()) {
             running += w;
+            level_weight[row] += w;
             // Every target shares the running weight, so the Welford ratio is taken once.
             let ratio = w / running;
             for ((slot, column), stat) in table[row * stride..][..stride]
@@ -183,58 +182,25 @@ impl Screen<'_> {
                 stat.observe(c, w, ratio);
                 let wc = w * c;
                 slot[0] += wc;
-                for (s, z) in slot[1..].iter_mut().zip(&self.zs) {
-                    *s += wc * z[obs];
+                for (s, u) in slot[1..].iter_mut().zip(&self.us) {
+                    *s += wc * u[obs];
                 }
             }
         }
         *w_sum = running;
     }
 
-    /// Rewrites a level's cross moments as the coefficients `[c̄, β]` of `c`'s fit on its span.
-    fn to_coefficients(&self, block: &Block, table: &mut [f64]) {
-        let v = self.zs.len();
-        let intercept = self.moments.intercept();
-        table
-            .par_chunks_exact_mut(self.stride)
-            .enumerate()
-            .for_each_init(
-                || (BasisScratch::new(v), vec![0.0f64; v]),
-                |(scratch, d), (offset, row)| {
-                    let level = block.levels.start + offset;
-                    let w_sum = self.moments.w_sum(level);
-                    if w_sum <= 0.0 {
-                        debug_assert!(
-                            row.iter().all(|&x| x == 0.0),
-                            "level {level} carries cross moments the term's weights deny"
-                        );
-                        return;
-                    }
-                    if v > 0 {
-                        self.moments.basis(level, scratch);
-                    }
-                    let center = self.center(level);
-                    for slot in row.chunks_exact_mut(v + 1) {
-                        let sum_wc = slot[0];
-                        for ((dj, &xj), &cj) in d.iter_mut().zip(&slot[1..]).zip(center) {
-                            *dj = xj - sum_wc * cj;
-                        }
-                        slot[0] = match intercept {
-                            true => sum_wc / w_sum,
-                            false => 0.0,
-                        };
-                        slot[1..].fill(0.0);
-                        if v > 0 {
-                            for q in scratch.basis.chunks_exact(v) {
-                                let projection = crate::linalg::dot(q, d);
-                                for (b, &qj) in slot[1..].iter_mut().zip(q) {
-                                    *b += projection * qj;
-                                }
-                            }
-                        }
-                    }
-                },
-            );
+    /// `Σw·c` becomes the constant `c̄`; `Σw·u·c` is already the slope since `u` is orthonormal.
+    fn to_coefficients(&self, table: &mut [f64], level_weight: &[f64]) {
+        let v = self.us.len();
+        for (row, &w_sum) in table.chunks_exact_mut(self.stride).zip(level_weight) {
+            for slot in row.chunks_exact_mut(v + 1) {
+                slot[0] = match self.intercept && w_sum > 0.0 {
+                    true => slot[0] / w_sum,
+                    false => 0.0,
+                };
+            }
+        }
     }
 
     /// Adds each target's `Σw·(c − ĉ)²` from the coefficients left in `table`.
@@ -244,7 +210,7 @@ impl Screen<'_> {
         if block.rows.is_empty() {
             return;
         }
-        let v = self.zs.len();
+        let v = self.us.len();
         let stride = self.stride;
         let first = block.levels.start;
         let tasks = block.rows.len().div_ceil(ROWS_PER_TASK);
@@ -252,23 +218,20 @@ impl Screen<'_> {
             .into_par_iter()
             .map_init(
                 || vec![0.0f64; v],
-                |dz, task| {
+                |u_row, task| {
                     let mut totals = vec![0.0f64; self.columns.len()];
                     let start = block.rows.start + task * ROWS_PER_TASK;
                     let rows = start..(start + ROWS_PER_TASK).min(block.rows.end);
                     for (obs, w, row) in self.active_rows(first, rows) {
-                        for (dzj, (z, &cj)) in dz
-                            .iter_mut()
-                            .zip(self.zs.iter().zip(self.center(first + row)))
-                        {
-                            *dzj = z[obs] - cj;
+                        for (uj, u) in u_row.iter_mut().zip(&self.us) {
+                            *uj = u[obs];
                         }
                         for ((slot, column), total) in table[row * stride..][..stride]
                             .chunks_exact(v + 1)
                             .zip(&self.columns)
                             .zip(&mut totals)
                         {
-                            let r = column[obs] - slot[0] - crate::linalg::dot(&slot[1..], dz);
+                            let r = column[obs] - slot[0] - crate::linalg::dot(&slot[1..], u_row);
                             *total += w * r * r;
                         }
                     }

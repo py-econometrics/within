@@ -1,12 +1,12 @@
 mod design_tests {
-    use crate::domain::Design;
+    use crate::domain::PreparedDesign;
     use crate::linalg::dot;
     use crate::operator::DesignOperator;
     use schwarz_precond::Operator;
 
-    fn make_test_design() -> Design<'static> {
+    fn make_test_design() -> PreparedDesign<'static> {
         // Sorted on the dominant factor, so construction applies no locality permutation.
-        Design::from_levels_for_test(vec![vec![0, 1, 1, 2, 0], vec![0, 0, 1, 2, 3]])
+        PreparedDesign::from_levels_for_test(vec![vec![0, 1, 1, 2, 0], vec![0, 0, 1, 2, 3]])
     }
 
     #[test]
@@ -57,18 +57,18 @@ mod design_tests {
         assert_eq!(x, vec![6.0, 5.0, 4.0, 3.0, 3.0, 4.0, 5.0]);
     }
 
-    fn make_single_factor_design() -> Design<'static> {
+    fn make_single_factor_design() -> PreparedDesign<'static> {
         // Sorted: a single-factor store is always dominated by its only factor.
-        Design::from_levels_for_test(vec![vec![0u32, 0, 1, 1, 2]])
+        PreparedDesign::from_levels_for_test(vec![vec![0u32, 0, 1, 1, 2]])
     }
 
-    fn make_large_design() -> Design<'static> {
+    fn make_large_design() -> PreparedDesign<'static> {
         // Sorted on both factors, so there is no construction-time permutation.
         let n_obs = 15_000;
         let block = 300u32;
         let fa: Vec<u32> = (0..n_obs).map(|i| i as u32 / block).collect();
         let fb = fa.clone();
-        Design::from_levels_for_test(vec![fa, fb])
+        PreparedDesign::from_levels_for_test(vec![fa, fb])
     }
 
     /// Verify <D·x, r> == <x, D^T·r> on a large design exercising the parallel
@@ -76,8 +76,8 @@ mod design_tests {
     #[test]
     fn test_large_design_adjoint_property() {
         let dm = make_large_design();
-        let n_dofs = dm.n_dofs;
-        let n_rows = dm.n_obs;
+        let n_dofs = dm.design.n_dofs;
+        let n_rows = dm.design.n_obs;
         let op = DesignOperator::new(&dm, None);
 
         let x: Vec<f64> = (0..n_dofs).map(|i| (i as f64 * 0.17 + 1.0).sin()).collect();
@@ -110,20 +110,23 @@ mod design_tests {
         let n_obs = 15_000;
         let fa: Vec<u32> = (0..n_obs as u32).collect();
         let fb: Vec<u32> = (0..n_obs).map(|i| (i % 50) as u32).collect();
-        let dm = Design::from_levels_for_test(vec![fa, fb]);
-        assert!(dm.obs_perm.is_none(), "dominant factor is sorted; no perm");
+        let dm = PreparedDesign::from_levels_for_test(vec![fa, fb]);
+        assert!(
+            dm.design.obs_perm.is_none(),
+            "dominant factor is sorted; no perm"
+        );
 
         let op = DesignOperator::new(&dm, None);
-        let x: Vec<f64> = (0..dm.n_dofs)
+        let x: Vec<f64> = (0..dm.design.n_dofs)
             .map(|i| (i as f64 * 0.17 + 1.0).sin())
             .collect();
-        let r: Vec<f64> = (0..dm.n_obs)
+        let r: Vec<f64> = (0..dm.design.n_obs)
             .map(|i| (i as f64 * 0.23 + 2.0).cos())
             .collect();
 
-        let mut dx = vec![0.0f64; dm.n_obs];
+        let mut dx = vec![0.0f64; dm.design.n_obs];
         op.apply(&x, &mut dx).expect("apply succeeds");
-        let mut dtr = vec![0.0f64; dm.n_dofs];
+        let mut dtr = vec![0.0f64; dm.design.n_dofs];
         op.apply_adjoint(&r, &mut dtr)
             .expect("apply_adjoint succeeds");
 
@@ -142,9 +145,9 @@ mod design_tests {
         let dm = make_large_design();
         let op = DesignOperator::new(&dm, None);
 
-        let mut ej = vec![0.0f64; dm.n_dofs];
+        let mut ej = vec![0.0f64; dm.design.n_dofs];
         ej[0] = 1.0;
-        let mut y = vec![0.0f64; dm.n_obs];
+        let mut y = vec![0.0f64; dm.design.n_obs];
         op.apply(&ej, &mut y).expect("apply succeeds");
 
         for (i, &yi) in y.iter().enumerate() {
@@ -161,12 +164,12 @@ mod design_tests {
         let dm = make_large_design();
         let op = DesignOperator::new(&dm, None);
 
-        let ones = vec![1.0f64; dm.n_obs];
-        let mut x = vec![0.0f64; dm.n_dofs];
+        let ones = vec![1.0f64; dm.design.n_obs];
+        let mut x = vec![0.0f64; dm.design.n_dofs];
         op.apply_adjoint(&ones, &mut x)
             .expect("apply_adjoint succeeds");
 
-        let expected_count = (dm.n_obs / 50) as f64;
+        let expected_count = (dm.design.n_obs / 50) as f64;
         for (j, &xj) in x.iter().enumerate() {
             assert!(
                 (xj - expected_count).abs() < 1e-10,
@@ -183,10 +186,10 @@ mod design_tests {
         let x: Vec<f64> = vec![1.0, 2.0, 3.0];
         let r: Vec<f64> = vec![0.5, 1.5, -0.5, 2.0, -1.0];
 
-        let mut dx = vec![0.0f64; dm.n_obs];
+        let mut dx = vec![0.0f64; dm.design.n_obs];
         op.apply(&x, &mut dx).expect("apply succeeds");
 
-        let mut dtr = vec![0.0f64; dm.n_dofs];
+        let mut dtr = vec![0.0f64; dm.design.n_dofs];
         op.apply_adjoint(&r, &mut dtr)
             .expect("apply_adjoint succeeds");
 
@@ -223,9 +226,9 @@ mod design_tests {
     /// Single-factor design with `level(i) = i % n_levels`; when
     /// `n_obs >= n_levels` every level is populated so the inferred level count
     /// is exactly `n_levels` (which selects the scatter strategy).
-    fn make_strategy_design(n_obs: usize, n_levels: usize) -> Design<'static> {
+    fn make_strategy_design(n_obs: usize, n_levels: usize) -> PreparedDesign<'static> {
         let f: Vec<u32> = (0..n_obs).map(|i| (i % n_levels) as u32).collect();
-        Design::from_levels_for_test(vec![f])
+        PreparedDesign::from_levels_for_test(vec![f])
     }
 
     fn assert_all_close(actual: &[f64], expected: &[f64], ctx: &str) {
@@ -252,8 +255,11 @@ mod design_tests {
         let n_obs = 150_000usize;
         let fa: Vec<u32> = (0..n_obs as u32).collect();
         let fb: Vec<u32> = (0..n_obs).map(|i| ((i * 7919) % 100_000) as u32).collect();
-        let dm = Design::from_levels_for_test(vec![fa, fb]);
-        assert!(dm.obs_perm.is_none(), "dominant factor is sorted; no perm");
+        let dm = PreparedDesign::from_levels_for_test(vec![fa, fb]);
+        assert!(
+            dm.design.obs_perm.is_none(),
+            "dominant factor is sorted; no perm"
+        );
         assert_scratch_reuse_matches_fresh(&dm, "atomic: non-dominant unsorted 100K levels");
     }
 
@@ -261,24 +267,24 @@ mod design_tests {
     /// calls (cf. the removed `SCATTER_FOLD_POOL` leak): a second call on the
     /// *same* operator must match a freshly built operator — stale values from
     /// the first call must not bleed into the second.
-    fn assert_scratch_reuse_matches_fresh(dm: &Design<'_>, ctx: &str) {
-        let r: Vec<f64> = (0..dm.n_obs)
+    fn assert_scratch_reuse_matches_fresh(dm: &PreparedDesign<'_>, ctx: &str) {
+        let r: Vec<f64> = (0..dm.design.n_obs)
             .map(|i| (i as f64 * 0.37 + 1.0).sin())
             .collect();
 
         // Baseline: a fresh operator that has never applied before.
         let fresh = DesignOperator::new(dm, None);
-        let mut baseline = vec![0.0f64; dm.n_dofs];
+        let mut baseline = vec![0.0f64; dm.design.n_dofs];
         fresh
             .apply_adjoint(&r, &mut baseline)
             .expect("apply_adjoint succeeds");
 
         // The second apply on a dirtied operator must equal the fresh baseline.
         let op = DesignOperator::new(dm, None);
-        let mut warmup = vec![0.0f64; dm.n_dofs];
+        let mut warmup = vec![0.0f64; dm.design.n_dofs];
         op.apply_adjoint(&r, &mut warmup)
             .expect("apply_adjoint succeeds");
-        let mut reused = vec![0.0f64; dm.n_dofs];
+        let mut reused = vec![0.0f64; dm.design.n_dofs];
         op.apply_adjoint(&r, &mut reused)
             .expect("apply_adjoint succeeds");
 
@@ -287,7 +293,7 @@ mod design_tests {
 }
 
 mod slope_design_tests {
-    use crate::domain::{Design, Effect, Loading};
+    use crate::domain::{Design, Effect, Loading, PreparedDesign};
     use crate::operator::DesignOperator;
     use schwarz_precond::Operator;
 
@@ -302,7 +308,8 @@ mod slope_design_tests {
     /// Dense design matrix from the design's internal (post-sort) columns —
     /// the reference the operator must agree with regardless of the locality
     /// permutation.
-    fn dense_matrix(design: &Design<'_>) -> Vec<Vec<f64>> {
+    fn dense_matrix(prepared: &PreparedDesign<'_>) -> Vec<Vec<f64>> {
+        let design = &prepared.design;
         let mut d = vec![vec![0.0; design.n_dofs]; design.n_obs];
         for (q, t) in design.terms.iter().enumerate() {
             let levels = design.frame.level_column(q);
@@ -311,7 +318,7 @@ mod slope_design_tests {
                 for (i, &lev) in levels.iter().enumerate() {
                     d[i][base + lev as usize] = match loading {
                         Loading::Constant => 1.0,
-                        Loading::Covariate(k) => design.frame.loading_column(*k as usize)[i],
+                        Loading::Covariate(k) => prepared.loading_column(*k as usize)[i],
                     };
                 }
             }
@@ -332,12 +339,12 @@ mod slope_design_tests {
     /// slope-only, and the generic V=3 fallback — against the dense reference.
     #[test]
     fn slope_matvec_and_adjoint_match_dense_reference() {
-        let n = 6;
-        let f0 = [0u32, 1, 2, 0, 1, 2];
-        let f1 = [0u32, 0, 1, 1, 2, 2];
-        let f2 = [0u32, 1, 0, 1, 0, 1];
-        let f3 = [0u32, 0, 0, 1, 1, 1];
-        let f4 = [1u32, 0, 2, 1, 0, 2];
+        let n = 12;
+        let f0: Vec<u32> = (0..n).map(|i| (i % 3) as u32).collect();
+        let f1: Vec<u32> = (0..n).map(|i| ((i / 2) % 3) as u32).collect();
+        let f2: Vec<u32> = (0..n).map(|i| (i % 2) as u32).collect();
+        let f3: Vec<u32> = (0..n).map(|i| (i / 6) as u32).collect();
+        let f4: Vec<u32> = (0..n).map(|i| [1u32, 0, 2, 1, 0, 2][i % 6]).collect();
         let zs: Vec<Vec<f64>> = (0..6)
             .map(|k| (0..n).map(|i| noise(k * 100 + i)).collect())
             .collect();
@@ -348,12 +355,18 @@ mod slope_design_tests {
             Effect::new(&f3, true, []).unwrap(),
             Effect::new(&f4, true, [&zs[5][..], &zs[4][..]]).unwrap(),
         ];
-        let design = Design::new(effects).unwrap();
+        let design = PreparedDesign::unweighted_for_test(Design::new(effects).unwrap());
         let dense = dense_matrix(&design);
+        assert!(
+            (0..design.design.n_dofs).all(|j| dense.iter().any(|row| row[j] != 0.0)),
+            "whitening zeroed a column; the arm's addressing would go untested"
+        );
         let op = DesignOperator::new(&design, None);
 
-        let x: Vec<f64> = (0..design.n_dofs).map(|j| noise(7_000 + j)).collect();
-        let mut got = vec![0.0; design.n_obs];
+        let x: Vec<f64> = (0..design.design.n_dofs)
+            .map(|j| noise(7_000 + j))
+            .collect();
+        let mut got = vec![0.0; design.design.n_obs];
         op.apply(&x, &mut got).unwrap();
         let expect: Vec<f64> = dense
             .iter()
@@ -361,10 +374,10 @@ mod slope_design_tests {
             .collect();
         assert_close(&got, &expect);
 
-        let r: Vec<f64> = (0..design.n_obs).map(|i| noise(9_000 + i)).collect();
-        let mut got_t = vec![0.0; design.n_dofs];
+        let r: Vec<f64> = (0..design.design.n_obs).map(|i| noise(9_000 + i)).collect();
+        let mut got_t = vec![0.0; design.design.n_dofs];
         op.apply_adjoint(&r, &mut got_t).unwrap();
-        let mut expect_t = vec![0.0; design.n_dofs];
+        let mut expect_t = vec![0.0; design.design.n_dofs];
         for (row, &ri) in dense.iter().zip(&r) {
             for (e, d) in expect_t.iter_mut().zip(row) {
                 *e += d * ri;
@@ -393,16 +406,18 @@ mod slope_design_tests {
             Effect::new(&unsorted, true, [&z[1][..]]).unwrap(),
             Effect::new(&small, true, [&z[2][..], &z[3][..]]).unwrap(),
         ];
-        let design = Design::new(effects).unwrap();
+        let design = PreparedDesign::unweighted_for_test(Design::new(effects).unwrap());
         let sqrt_weights: Vec<f64> = (0..n).map(|i| (0.5 + noise(i).abs()).sqrt()).collect();
         let op = DesignOperator::new(&design, Some(&sqrt_weights));
 
-        let x: Vec<f64> = (0..design.n_dofs).map(|j| noise(13 * j + 1)).collect();
+        let x: Vec<f64> = (0..design.design.n_dofs)
+            .map(|j| noise(13 * j + 1))
+            .collect();
         let r: Vec<f64> = (0..n).map(|i| noise(29 * i + 5)).collect();
 
         let mut dx = vec![0.0; n];
         op.apply(&x, &mut dx).unwrap();
-        let mut dtr = vec![0.0; design.n_dofs];
+        let mut dtr = vec![0.0; design.design.n_dofs];
         op.apply_adjoint(&r, &mut dtr).unwrap();
 
         let lhs: f64 = dx.iter().zip(&r).map(|(a, b)| a * b).sum();
@@ -415,7 +430,7 @@ mod slope_design_tests {
 }
 
 mod weighted_adjoint_proptests {
-    use crate::domain::Design;
+    use crate::domain::PreparedDesign;
     use crate::operator::DesignOperator;
     use proptest::prelude::*;
     use schwarz_precond::Operator;
@@ -444,10 +459,10 @@ mod weighted_adjoint_proptests {
                 .map(|i| 0.5 + (i as f64 * 0.13 + seed as f64 * 0.41).sin().abs())
                 .collect();
 
-            let dm = Design::from_levels_for_test(vec![fa, fb]);
+            let dm = PreparedDesign::from_levels_for_test(vec![fa, fb]);
 
-            let n_dofs = dm.n_dofs;
-            let n_rows = dm.n_obs;
+            let n_dofs = dm.design.n_dofs;
+            let n_rows = dm.design.n_obs;
 
             let x: Vec<f64> = (0..n_dofs)
                 .map(|i| (i as f64 * 0.37 + seed as f64 * 0.13).sin())

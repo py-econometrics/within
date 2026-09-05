@@ -4,9 +4,13 @@ pub(crate) mod collinearity;
 pub(crate) mod cross_tab;
 mod effect;
 pub(crate) mod factor_pairs;
-pub(crate) mod level_moments;
+mod level_moments;
+mod prepared;
+mod reparam;
 
 pub(crate) use cross_tab::{find_all_active_levels, BlockDiagonals, CrossTab};
+pub(crate) use prepared::PreparedDesign;
+use reparam::SlopeReparam;
 
 pub use effect::Effect;
 
@@ -16,6 +20,7 @@ pub(crate) use factor_pairs::{
 };
 
 use std::borrow::Cow;
+use std::sync::Arc;
 
 use crate::channel::Channel;
 use crate::observation::ObservationFrame;
@@ -90,6 +95,19 @@ pub(crate) struct TermMeta {
 }
 
 impl TermMeta {
+    /// Frame columns of the term's covariates, in coefficient-column order.
+    pub(crate) fn covariates(&self) -> impl Iterator<Item = u32> + '_ {
+        self.columns.iter().filter_map(|c| c.covariate().copied())
+    }
+
+    pub(crate) fn has_slopes(&self) -> bool {
+        self.covariates().next().is_some()
+    }
+
+    pub(crate) fn has_intercept(&self) -> bool {
+        self.columns.iter().any(|c| c.covariate().is_none())
+    }
+
     pub fn n_columns(&self) -> usize {
         self.columns.len()
     }
@@ -102,6 +120,11 @@ impl TermMeta {
     pub fn column_base(&self, column: usize) -> usize {
         self.offset + column * self.n_levels
     }
+}
+
+/// The Gram weight of row `obs`: the operator applies `s`, so its normal matrix carries `s²`.
+pub(crate) fn row_weight(sqrt_weights: Option<&[f64]>, obs: usize) -> f64 {
+    sqrt_weights.map_or(1.0, |s| s[obs] * s[obs])
 }
 
 /// Stable argsort of observations by a level column, ascending.
@@ -141,16 +164,16 @@ fn stable_argsort(key: &[u32], n_levels: usize) -> Vec<u32> {
     perm
 }
 
-/// Fixed-effects design: observation columns plus coefficient-space layout.
+/// Fixed-effects design: observation columns plus coefficient-space layout; clones share rows.
 #[derive(Clone, Debug)]
 pub struct Design<'a> {
     /// Columns in internal row order (caller's, or an owned locality-sorted copy).
-    pub(crate) frame: ObservationFrame<'a>,
+    pub(crate) frame: Arc<ObservationFrame<'a>>,
     pub(crate) terms: Vec<TermMeta>,
     pub(crate) n_obs: usize,
     pub(crate) n_dofs: usize,
     /// `obs_perm[k]` = caller's original index of the observation at internal position `k`.
-    pub(crate) obs_perm: Option<Vec<u32>>,
+    pub(crate) obs_perm: Option<Arc<[u32]>>,
 }
 
 impl<'a> Design<'a> {
@@ -219,6 +242,18 @@ impl<'a> Design<'a> {
             terms.push(meta);
         }
 
+        let claimed: usize = terms
+            .iter()
+            .flat_map(|t| t.columns.iter())
+            .filter(|c| c.covariate().is_some())
+            .count();
+        if claimed != frame.n_loading_columns() {
+            return Err(BuildError::UnclaimedLoadingColumns {
+                claimed,
+                provided: frame.n_loading_columns(),
+            });
+        }
+
         // Rejected here rather than left to panic in `to_u32`.
         if u32::try_from(offset).is_err() {
             return Err(BuildError::DofSpaceExceedsU32 { n_dofs: offset });
@@ -234,13 +269,13 @@ impl<'a> Design<'a> {
                 for (q, meta) in terms.iter_mut().enumerate() {
                     meta.sorted = sorted_frame.level_column(q).is_sorted();
                 }
-                (sorted_frame, Some(perm))
+                (sorted_frame, Some(perm.into()))
             }
             _ => (frame, None),
         };
 
         Ok(Design {
-            frame,
+            frame: Arc::new(frame),
             terms,
             n_obs,
             n_dofs: offset,
@@ -251,7 +286,7 @@ impl<'a> Design<'a> {
     /// Convert the frame's columns to owned, dropping ties to caller buffers.
     pub fn into_owned(self) -> Design<'static> {
         Design {
-            frame: self.frame.into_owned(),
+            frame: Arc::new(Arc::unwrap_or_clone(self.frame).into_owned()),
             terms: self.terms,
             n_obs: self.n_obs,
             n_dofs: self.n_dofs,
@@ -468,17 +503,15 @@ mod tests {
     }
 
     #[test]
-    fn continuous_column_stays_row_aligned_after_locality_sort() {
-        let design = Design::from_frame(frame(
-            vec![vec![2, 0, 1, 0]],
-            vec![vec![10.0, 20.0, 30.0, 40.0]],
-        ))
-        .unwrap();
-
-        let perm = design.obs_perm.as_ref().expect("permutation applied");
-        assert_eq!(perm, &[1, 3, 2, 0]);
-        assert_eq!(design.frame.level_column(0), [0, 0, 1, 2]);
-        assert_eq!(design.frame.loading_column(0), [20.0, 40.0, 30.0, 10.0]);
+    fn from_frame_rejects_unclaimed_loading_columns() {
+        let err = Design::from_frame(frame(vec![vec![0, 1]], vec![vec![1.0, 2.0]])).unwrap_err();
+        assert!(matches!(
+            err,
+            BuildError::UnclaimedLoadingColumns {
+                claimed: 0,
+                provided: 1
+            }
+        ));
     }
 
     #[test]
