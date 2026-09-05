@@ -346,6 +346,10 @@ impl<'a> Design<'a> {
         self.terms.len()
     }
 
+    fn n_loading_columns(&self) -> usize {
+        self.frame.n_loading_columns()
+    }
+
     /// The term's coefficient columns in layout order.
     pub(crate) fn channels(&self, term: usize) -> impl Iterator<Item = Channel> + '_ {
         (0..self.terms[term].n_columns()).map(move |column| Channel { term, column })
@@ -366,11 +370,6 @@ impl<'a> Design<'a> {
         self.frame.loading_column(column)
     }
 
-    /// Replace one loading column during solver-local preparation.
-    pub(crate) fn replace_loading_column(&mut self, column: usize, values: Vec<f64>) {
-        self.frame.set_loading_column(column, values);
-    }
-
     /// Number of observations (rows of D).
     #[inline]
     pub fn n_obs(&self) -> usize {
@@ -381,6 +380,55 @@ impl<'a> Design<'a> {
     #[inline]
     pub fn n_dofs(&self) -> usize {
         self.n_dofs
+    }
+}
+
+pub(crate) struct LoadingOverrides(Vec<Option<Vec<f64>>>);
+
+impl LoadingOverrides {
+    pub(crate) fn new(design: &Design<'_>) -> Self {
+        Self((0..design.n_loading_columns()).map(|_| None).collect())
+    }
+
+    pub(crate) fn replace(&mut self, design: &Design<'_>, column: usize, values: Vec<f64>) {
+        debug_assert_eq!(values.len(), design.n_obs());
+        self.0[column] = Some(values);
+    }
+}
+
+/// Read-only solver-specific view of a design, including any transformed loadings.
+pub(crate) struct SolverDesign<'a> {
+    design: &'a Design<'a>,
+    loading_overrides: Option<&'a LoadingOverrides>,
+}
+
+impl<'a> SolverDesign<'a> {
+    #[cfg(test)]
+    pub(crate) fn new(design: &'a Design<'a>) -> Self {
+        Self {
+            design,
+            loading_overrides: None,
+        }
+    }
+
+    pub(crate) fn with_loading_overrides(
+        design: &'a Design<'a>,
+        loading_overrides: &'a LoadingOverrides,
+    ) -> Self {
+        Self {
+            design,
+            loading_overrides: Some(loading_overrides),
+        }
+    }
+
+    pub(crate) fn design(&self) -> &'a Design<'a> {
+        self.design
+    }
+
+    pub(crate) fn loading_column(&self, column: usize) -> &[f64] {
+        self.loading_overrides
+            .and_then(|overrides| overrides.0[column].as_deref())
+            .unwrap_or_else(|| self.design.loading_column(column))
     }
 }
 

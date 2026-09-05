@@ -12,7 +12,7 @@ use crate::channel::{Channel, ChannelPair};
 use crate::config::LocalSolverConfig;
 use crate::{BuildError, BuildWarning};
 
-use super::{find_all_active_levels, BlockDiagonals, CrossTab, Design};
+use super::{find_all_active_levels, BlockDiagonals, CrossTab, SolverDesign};
 
 mod sddm;
 use crate::domain::Loading;
@@ -34,7 +34,7 @@ pub(crate) struct LocalDomain {
 
 /// Same-factor channel pairs are exactly orthogonal after whitening, so never enumerated.
 pub(crate) fn build_local_domains(
-    design: &Design<'_>,
+    solver_design: &SolverDesign<'_>,
     weights: Option<&[f64]>,
     config: &LocalSolverConfig,
 ) -> Result<(Vec<LocalDomain>, Vec<BuildWarning>), BuildError> {
@@ -46,6 +46,7 @@ pub(crate) fn build_local_domains(
         });
     }
 
+    let design = solver_design.design();
     let channels: Vec<Channel> = (0..design.n_factors())
         .flat_map(|term| design.channels(term))
         .collect();
@@ -65,7 +66,7 @@ pub(crate) fn build_local_domains(
         .par_iter()
         .map(|&pair| {
             let Some((full_ct, full_diag, l2g)) =
-                CrossTab::build_for_pair_with_active(design, weights, pair, &all_active)
+                CrossTab::build_for_pair_with_active(solver_design, weights, pair, &all_active)
             else {
                 return Ok((Vec::new(), Vec::new()));
             };
@@ -225,8 +226,10 @@ mod tests {
     #[test]
     fn test_full_cover_domain_count() {
         let dm = make_test_design();
-        let (domain_pairs, _) = build_local_domains(&dm, None, &LocalSolverConfig::default())
-            .expect("plain domains build");
+        let solver_design = SolverDesign::new(&dm);
+        let (domain_pairs, _) =
+            build_local_domains(&solver_design, None, &LocalSolverConfig::default())
+                .expect("plain domains build");
         // 3 factor pairs; each pair may produce multiple components
         assert!(domain_pairs.len() >= 3);
     }
@@ -234,9 +237,11 @@ mod tests {
     #[test]
     fn test_partition_of_unity() {
         let dm = make_test_design();
-        let (domain_pairs, _) = build_local_domains(&dm, None, &LocalSolverConfig::default())
-            .expect("plain domains build");
         let n_dofs = dm.n_dofs;
+        let solver_design = SolverDesign::new(&dm);
+        let (domain_pairs, _) =
+            build_local_domains(&solver_design, None, &LocalSolverConfig::default())
+                .expect("plain domains build");
         // Two-sided PoU: squared weights must sum to 1 at every DOF.
         let mut weight_sq_sum = vec![0.0; n_dofs];
         for ld in &domain_pairs {
@@ -265,9 +270,11 @@ mod tests {
             Effect::new(&levels_c, true, []).expect("effect c"),
         ])
         .expect("valid slope design");
-
-        let (domain_pairs, _) = build_local_domains(&design, None, &LocalSolverConfig::default())
-            .expect("slope domains build");
+        let n_dofs = design.n_dofs;
+        let solver_design = SolverDesign::new(&design);
+        let (domain_pairs, _) =
+            build_local_domains(&solver_design, None, &LocalSolverConfig::default())
+                .expect("slope domains build");
 
         for ld in &domain_pairs {
             for i in 0..ld.core.global_indices().len() {
@@ -280,7 +287,7 @@ mod tests {
         }
 
         // Non-vacuity: without a shared DOF, uniform vs 1/√c weights are indistinguishable.
-        let mut counts = vec![0u32; design.n_dofs];
+        let mut counts = vec![0u32; n_dofs];
         for ld in &domain_pairs {
             for &idx in ld.core.global_indices() {
                 counts[idx as usize] += 1;
@@ -295,9 +302,12 @@ mod tests {
     #[test]
     fn test_domains_cover_all_dofs() {
         let dm = make_test_design();
-        let (domain_pairs, _) = build_local_domains(&dm, None, &LocalSolverConfig::default())
-            .expect("plain domains build");
-        let mut covered = vec![false; dm.n_dofs];
+        let n_dofs = dm.n_dofs;
+        let solver_design = SolverDesign::new(&dm);
+        let (domain_pairs, _) =
+            build_local_domains(&solver_design, None, &LocalSolverConfig::default())
+                .expect("plain domains build");
+        let mut covered = vec![false; n_dofs];
         for ld in &domain_pairs {
             for &idx in ld.core.global_indices() {
                 covered[idx as usize] = true;
