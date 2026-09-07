@@ -164,7 +164,7 @@ impl EscalationHandler for StalenessRun {
 /// Optional behaviors for [`mlsmr`].
 #[derive(Clone, Copy, Default)]
 pub struct MlsmrOptions<'a> {
-    /// Initial iterate for a residual correction; tolerances remain relative to the original `‖b‖`.
+    /// Residual-correction start; tolerances stay relative to `‖b‖` (`‖b − A x₀‖` if `b = 0`).
     pub warm_start: Option<&'a [f64]>,
     /// Hands off to a stronger preconditioner mid-run; see [`EscalationPolicy`].
     pub escalation: Option<&'a dyn EscalationPolicy>,
@@ -201,7 +201,7 @@ pub fn lsmr<A: Operator + ?Sized>(
     let local_size = local_size.unwrap_or(0);
     let (bidiag, step1) = GolubKahan::init(operator, b, local_size)?;
     let criteria = ConvergenceCriteria::new(b_norm, tol);
-    lsmr_from_bidiag(bidiag, step1, b, b_norm, criteria, maxiter, None)
+    lsmr_from_bidiag(bidiag, step1, b, None, criteria, maxiter, None)
 }
 
 /// Preconditioned LSMR with `M ≈ AᵀA` and one `M⁻¹` application per iteration.
@@ -279,41 +279,46 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
     }
 
     let (bidiag, step1) = ModifiedGolubKahan::init(operator, preconditioner, &rhs, local_size)?;
-    let criteria = ConvergenceCriteria::new(b_norm, tol);
-    let mut result = lsmr_from_bidiag(
+    let reference_norm = if b_norm > 0.0 { b_norm } else { rhs_norm };
+    let criteria = ConvergenceCriteria::new(reference_norm, tol);
+    lsmr_from_bidiag(
         bidiag,
         step1,
-        &rhs,
-        rhs_norm,
+        b,
+        warm_start,
         criteria,
         maxiter,
         escalation.map(|policy| policy.handler()),
-    )?;
-    if let Some(x0) = warm_start {
-        for (xi, &x0i) in result.x.iter_mut().zip(x0) {
-            *xi += x0i;
-        }
-    }
-    Ok(result)
+    )
 }
 
 /// Runs the LSMR recurrences over a preconditioner-specific bidiagonalization stream.
+///
+/// The stream solves for the correction to `x0`; results and the audit are in terms of `b`.
 fn lsmr_from_bidiag<B: Bidiagonalization>(
     mut bidiag: B,
     step1: BidiagStep,
-    rhs: &[f64],
-    rhs_norm: f64,
+    b: &[f64],
+    x0: Option<&[f64]>,
     criteria: ConvergenceCriteria,
     maxiter: usize,
     mut escalation: Option<Box<dyn EscalationHandler>>,
 ) -> Result<LsmrResult, SolveError> {
     let n = bidiag.v().len();
+    let total = |mut x: Vec<f64>| {
+        if let Some(x0) = x0 {
+            for (xi, &x0i) in x.iter_mut().zip(x0) {
+                *xi += x0i;
+            }
+        }
+        x
+    };
     if step1.alpha == 0.0 {
         return Ok(LsmrResult {
-            x: vec![0.0; n],
+            x: total(vec![0.0; n]),
             converged: true,
             iterations: 0,
-            residual_norm: rhs_norm,
+            residual_norm: step1.beta,
             normal_eq_residual: 0.0,
             stop_reason: LsmrStopReason::InitialNormalEquationResidualZero,
         });
@@ -336,15 +341,25 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
             Stop::ResidualTolerance => Some(LsmrStopReason::ResidualTolerance),
             Stop::NormalEquationTolerance => Some(LsmrStopReason::NormalEquationTolerance),
         } {
-            let x = solution.into_x();
-            let cert = bidiag.certify(&x, rhs)?;
-            let converged = convergence.certified(&cert, recurrence.zeta0);
+            // A warm start re-bases `ζ̄₀`; auditing `x = 0` against `b` recovers the cold `‖Âᵀb‖`.
+            let ne_reference = match x0 {
+                Some(_) => bidiag.certify(&vec![0.0; n], b)?.normar,
+                None => 0.0,
+            };
+            let ne_reference = if ne_reference > 0.0 {
+                ne_reference
+            } else {
+                recurrence.zeta0
+            };
+            let x = total(solution.into_x());
+            let cert = bidiag.certify(&x, b)?;
+            let converged = convergence.certified(&cert, ne_reference);
             return Ok(LsmrResult {
                 x,
                 converged,
                 iterations: itn,
                 residual_norm: cert.normr,
-                normal_eq_residual: cert.normar / recurrence.zeta0,
+                normal_eq_residual: cert.normar / ne_reference,
                 stop_reason: if converged {
                     stop_reason
                 } else {
@@ -359,7 +374,7 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
             };
             if rule.should_escalate(progress) {
                 return Ok(LsmrResult {
-                    x: solution.into_x(),
+                    x: total(solution.into_x()),
                     converged: false,
                     iterations: itn,
                     residual_norm: recurrence.residual_estimate(),
@@ -372,7 +387,7 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
     }
 
     Ok(LsmrResult {
-        x: solution.into_x(),
+        x: total(solution.into_x()),
         converged: false,
         iterations: maxiter,
         residual_norm: recurrence.residual_estimate(),
