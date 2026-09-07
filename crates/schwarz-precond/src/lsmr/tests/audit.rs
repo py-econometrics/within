@@ -42,7 +42,7 @@ fn scripted_run(normr: f64, normar: f64) -> super::super::LsmrResult {
         beta: 1.0,
     };
     let criteria = ConvergenceCriteria::new(1.0, 1e-10);
-    lsmr_from_bidiag(stream, step1, &[1.0, 1.0], 1.0, criteria, 5, None).expect("scripted run")
+    lsmr_from_bidiag(stream, step1, &[1.0, 1.0], None, criteria, 5, None).expect("scripted run")
 }
 
 #[test]
