@@ -164,7 +164,7 @@ impl EscalationHandler for StalenessRun {
 /// Optional behaviors for [`mlsmr`].
 #[derive(Clone, Copy, Default)]
 pub struct MlsmrOptions<'a> {
-    /// Initial iterate for a residual correction; tolerances remain relative to the original `‖b‖`.
+    /// Residual-correction start; tolerances stay relative to `‖b‖` (`‖b − A x₀‖` if `b = 0`).
     pub warm_start: Option<&'a [f64]>,
     /// Hands off to a stronger preconditioner mid-run; see [`EscalationPolicy`].
     pub escalation: Option<&'a dyn EscalationPolicy>,
@@ -279,7 +279,8 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
     }
 
     let (bidiag, step1) = ModifiedGolubKahan::init(operator, preconditioner, &rhs, local_size)?;
-    let criteria = ConvergenceCriteria::new(b_norm, tol);
+    let reference_norm = if b_norm > 0.0 { b_norm } else { rhs_norm };
+    let criteria = ConvergenceCriteria::new(reference_norm, tol);
     lsmr_from_bidiag(
         bidiag,
         step1,
