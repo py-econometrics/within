@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::sync::Arc;
 
 use approx_chol::{ExactFailure, Factor};
@@ -182,38 +183,48 @@ impl Eliminated {
         })
     }
 
-    /// Fold of the signed matrix's Gremban cover; transient, dropped once its factor is built.
+    /// Fold of the signed matrix's Gremban cover; transient, dropped once its complement is built.
     fn cover(&self) -> Result<Self, BuildError> {
         Self::new(assemble_bipartite_cover(&self.matrix))
     }
 
     /// A dense Cholesky spends nothing on sparsity, so it entails the exact complement.
-    fn factor_reduced(&self, config: &LocalSolverConfig) -> Result<Factor, BuildError> {
+    fn factor_reduced(
+        fold: impl Borrow<Self>,
+        config: &LocalSolverConfig,
+    ) -> Result<Factor, BuildError> {
+        let this = fold.borrow();
         let exact_below = config.dense_threshold;
-        let factor = |complement: &CsrMatrix, on_failure| {
-            factor_sparse(
-                complement,
-                config.approx_chol.to_approx_chol(exact_below, on_failure),
-            )
-        };
-
-        let exact = (exact_below > 0 && self.matrix.n_kept() <= exact_below)
-            .then(|| schur::exact_for_factor(&self.matrix, &self.inv_diagonal));
+        let exact = (exact_below > 0 && this.matrix.n_kept() <= exact_below)
+            .then(|| schur::exact_for_factor(&this.matrix, &this.inv_diagonal));
         if let Some(exact) = &exact {
-            match factor(exact, ExactFailure::Error) {
+            match factor_complement(exact, config, ExactFailure::Error) {
                 Err(approx_chol::Error::DenseFactorizationFailed { .. }) => {}
                 result => return result.map_err(local_solver_build),
             }
         }
-
         let complement = match &config.schur {
-            SchurMode::Approximate(cfg) => schur::sampled(&self.matrix, cfg),
+            SchurMode::Approximate(cfg) => schur::sampled(&this.matrix, cfg),
             SchurMode::Exact => {
-                exact.unwrap_or_else(|| schur::exact_for_factor(&self.matrix, &self.inv_diagonal))
+                exact.unwrap_or_else(|| schur::exact_for_factor(&this.matrix, &this.inv_diagonal))
             }
         };
-        factor(&complement, ExactFailure::FallBackToApproximate).map_err(local_solver_build)
+        // An owned fold is the transient cover; it is freed before the factor's fill is allocated.
+        drop(fold);
+        factor_complement(&complement, config, ExactFailure::FallBackToApproximate)
+            .map_err(local_solver_build)
     }
+}
+
+fn factor_complement(
+    complement: &CsrMatrix,
+    config: &LocalSolverConfig,
+    on_failure: ExactFailure,
+) -> Result<Factor, approx_chol::Error> {
+    let approx_chol = config
+        .approx_chol
+        .to_approx_chol(config.dense_threshold, on_failure);
+    factor_sparse(complement, approx_chol)
 }
 
 /// Gremban cover: SDDM, and acts on the antisymmetric `[z, -z]` subspace as the original.
@@ -319,20 +330,17 @@ impl BlockElimSolver {
         let factor = match form {
             MatrixForm::Laplacian => {
                 let factor = ReducedFactor::Direct {
-                    factor: eliminated.factor_reduced(config)?,
+                    factor: Eliminated::factor_reduced(&eliminated, config)?,
                     grounding: eliminated.matrix.grounding,
                 };
                 debug_assert!(factor.solve_dimension() >= factor.input_dimension());
                 factor
             }
             // Surplus survives the cover, so it grounds as the signed matrix did.
-            MatrixForm::SignedPendingCover => {
-                let cover = eliminated.cover()?;
-                ReducedFactor::Cover {
-                    inner: cover.factor_reduced(config)?,
-                    m: eliminated.matrix.n_kept(),
-                }
-            }
+            MatrixForm::SignedPendingCover => ReducedFactor::Cover {
+                inner: Eliminated::factor_reduced(eliminated.cover()?, config)?,
+                m: eliminated.matrix.n_kept(),
+            },
         };
 
         Ok(BlockElimSolver::new(

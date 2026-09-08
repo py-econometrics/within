@@ -96,7 +96,7 @@ fn an_unusable_dense_pivot_is_retried_rather_than_fatal() {
         };
 
         assert!(
-            eliminated.factor_reduced(&config).is_ok(),
+            Eliminated::factor_reduced(&eliminated, &config).is_ok(),
             "{:?}: an unusable pivot must not be fatal",
             config.schur
         );
