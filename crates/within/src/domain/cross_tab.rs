@@ -1,9 +1,13 @@
 //! Cross-tabulation of a channel pair: the bipartite local Gramian.
 //!
-//! [`CrossTab`] holds `C` as a [`CsrBlock`] plus its precomputed transpose and
-//! the two diagonals (rather than assembling the symmetric block matrix), and
+//! [`CrossTab`] holds `C` as a [`CsrBlock`] plus its transpose, built on first use,
+//! and the two diagonals (rather than assembling the symmetric block matrix), and
 //! supports bipartite connected-components splitting and per-component extraction.
 //! Levels are stored compactly with a `local_to_global` map for active levels only.
+
+use std::sync::OnceLock;
+
+use serde::ser::SerializeStruct;
 
 use crate::channel::ChannelPair;
 use crate::csr_block::{to_u32, CsrBlock};
@@ -92,12 +96,72 @@ pub(crate) struct BipartiteComponent {
 }
 
 /// Stores `C` and `Cᵀ` only; the solve path never reads the diagonals of `G`.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone)]
 pub(crate) struct CrossTab {
     /// CSR(C): row-block rows (n_rows) x col-block cols (n_cols).
     pub(crate) c: CsrBlock,
-    /// CSR(Cᵀ): `n_cols` x `n_rows`, precomputed via `c.transpose()`.
-    pub(crate) ct: CsrBlock,
+    /// CSR(Cᵀ), built on first use so a cover that only reads rows of `C` never pays for it.
+    ct: OnceLock<CsrBlock>,
+}
+
+impl CrossTab {
+    pub(crate) fn new(c: CsrBlock) -> Self {
+        Self {
+            c,
+            ct: OnceLock::new(),
+        }
+    }
+
+    pub(crate) fn with_transpose(c: CsrBlock, ct: CsrBlock) -> Self {
+        debug_assert!(ct.nrows == c.ncols && ct.ncols == c.nrows);
+        Self {
+            c,
+            ct: OnceLock::from(ct),
+        }
+    }
+
+    /// Both blocks up front, for a cross-tab the solve will read on every iteration.
+    pub(crate) fn eager(c: CsrBlock) -> Self {
+        let ct = c.transpose();
+        Self::with_transpose(c, ct)
+    }
+
+    pub(crate) fn ct(&self) -> &CsrBlock {
+        self.ct.get_or_init(|| self.c.transpose())
+    }
+
+    pub(crate) fn into_parts(self) -> (CsrBlock, CsrBlock) {
+        self.ct();
+        let ct = self.ct.into_inner().expect("transpose was just built");
+        (self.c, ct)
+    }
+}
+
+// The wire carries both blocks, as the derive did, so the format is unchanged.
+impl serde::Serialize for CrossTab {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut state = serializer.serialize_struct("CrossTab", 2)?;
+        state.serialize_field("c", &self.c)?;
+        state.serialize_field("ct", self.ct())?;
+        state.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for CrossTab {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename = "CrossTab")]
+        struct Wire {
+            c: CsrBlock,
+            ct: CsrBlock,
+        }
+        // Shapes are the owning solver's decoder's to reject; corrupt bytes must not panic here.
+        let Wire { c, ct } = Wire::deserialize(deserializer)?;
+        Ok(Self {
+            c,
+            ct: OnceLock::from(ct),
+        })
+    }
 }
 
 /// Folded into the reduced factor during assembly and never read again, so not serialized.
@@ -151,8 +215,7 @@ impl CrossTab {
         )?;
 
         let (c, row_diag, col_diag) = accumulate_cross_block(design, weights, pair, &active);
-        let ct = c.transpose();
-        let cross_tab = CrossTab { c, ct };
+        let cross_tab = CrossTab::eager(c);
         let diagonals = BlockDiagonals {
             rows: row_diag,
             cols: col_diag,
@@ -166,7 +229,7 @@ impl CrossTab {
         let (block, row, off) = if i < n_rows {
             (&self.c, i, n_rows)
         } else {
-            (&self.ct, i - n_rows, 0)
+            (self.ct(), i - n_rows, 0)
         };
         block.row(row).map(move |(j, v)| (off + j, v))
     }
@@ -252,8 +315,6 @@ impl CrossTab {
             nrows: n_rows,
             ncols: n_cols,
         };
-        let ct = c.transpose();
-
         for &old_idx in &comp.rows {
             row_remap[old_idx] = u32::MAX;
         }
@@ -261,7 +322,7 @@ impl CrossTab {
             col_remap[old_idx] = u32::MAX;
         }
 
-        CrossTab { c, ct }
+        CrossTab::eager(c)
     }
 }
 

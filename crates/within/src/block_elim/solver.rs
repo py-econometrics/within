@@ -111,7 +111,7 @@ impl<'de> serde::Deserialize<'de> for BlockElimSolver {
         let h = Helper::deserialize(deserializer)?;
 
         // `ct`'s row count is the only witness bounding `c.ncols`.
-        let CrossTab { c, ct } = h.cross_tab;
+        let (c, ct) = h.cross_tab.into_parts();
         if !c.is_structurally_valid() {
             return Err(D::Error::custom(
                 "cross_tab.c is not a structurally valid CSR block",
@@ -144,9 +144,8 @@ impl<'de> serde::Deserialize<'de> for BlockElimSolver {
         }
 
         // Rebuild from the validated `c` so the transpose cannot disagree.
-        let ct = c.transpose();
         Ok(BlockElimSolver::new(
-            CrossTab { c, ct },
+            CrossTab::eager(c),
             h.inv_diag_elim,
             h.reduced_factor,
             h.coordinates,
@@ -258,12 +257,8 @@ fn assemble_bipartite_cover(matrix: &SddmMatrix) -> SddmMatrix {
         nrows: 2 * n_rows,
         ncols: 2 * n_cols,
     };
-    let cover_ct = cover_c.transpose();
     SddmMatrix {
-        cross_tab: CrossTab {
-            c: cover_c,
-            ct: cover_ct,
-        },
+        cross_tab: CrossTab::new(cover_c),
         diagonal: double_for_cover(&matrix.diagonal, n_rows),
         ground_edges: double_for_cover(&matrix.ground_edges, n_rows),
         grounding: matrix.grounding,
@@ -294,6 +289,8 @@ impl BlockElimSolver {
         coordinates: CoordinateMap,
     ) -> Self {
         let cross_tab = cross_tab.into();
+        // Every solve reads the transpose, so it is built here rather than inside the first.
+        cross_tab.ct();
         debug_assert!(reduced_factor.spans_kept_block(cross_tab.n_cols()));
         let n_internal = cross_tab.n_local();
         let n_reduced = reduced_factor.solve_dimension();
@@ -362,7 +359,7 @@ impl BlockElimSolver {
         {
             let (main, scratch) = rhs.split_at_mut(n);
             scratch[n_keep..self.n_reduced].fill(0.0);
-            self.cross_tab.ct.spmv_assign_add(
+            self.cross_tab.ct().spmv_assign_add(
                 &main[..n_elim],
                 &main[n_elim..],
                 &mut scratch[..n_keep],

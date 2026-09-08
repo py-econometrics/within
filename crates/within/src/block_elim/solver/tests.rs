@@ -477,8 +477,7 @@ fn kept_block_wider_than_the_reduced_factor_is_rejected() {
     // Earlier cross-field witnesses stay intact, so the factor's span is the check under test.
     let mut c = bad.cross_tab.c.clone();
     c.ncols += 2;
-    let ct = c.transpose();
-    bad.cross_tab = Arc::new(CrossTab { c, ct });
+    bad.cross_tab = Arc::new(CrossTab::eager(c));
     let bytes = postcard::to_stdvec(&bad).expect("serialize");
     assert!(postcard::from_bytes::<BlockElimSolver>(&bytes).is_err());
 }

@@ -109,7 +109,7 @@ fn compute_schur_row_dense(
     touched.push(i);
 
     let elim_to_keep = &matrix.cross_tab.c;
-    for (k, w) in matrix.cross_tab.ct.row(i) {
+    for (k, w) in matrix.cross_tab.ct().row(i) {
         let inv = inv_diagonal_eliminated[k];
         let start = elim_to_keep.indptr[k] as usize;
         let end = elim_to_keep.indptr[k + 1] as usize;
@@ -239,7 +239,7 @@ fn reduced_surplus(matrix: &SddmMatrix, inv_diagonal_eliminated: &[f64]) -> Vec<
     let mut surplus = vec![0.0; matrix.n_kept()];
     matrix
         .cross_tab
-        .ct
+        .ct()
         .spmv_assign_add(&scaled, matrix.surplus_kept(), &mut surplus, false);
     surplus
 }
