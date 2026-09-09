@@ -2,7 +2,7 @@ use ndarray::array;
 use within::{
     solve, ApproxCholConfig, ApproxSchurConfig, Design, Effect, LocalSolverConfig, LsmrOptions,
     Preconditioner, PreconditionerConfig, ReductionStrategy, ScalingConfig, ScalingFailure,
-    SchurMode, Solver,
+    SchurMode, Solver, SolverState,
 };
 
 #[path = "common/orchestrate_helpers.rs"]
@@ -66,6 +66,31 @@ fn test_solver_matches_design_reuse() {
 
     assert_eq!(weighted_result.x.len(), expected.x.len());
     for (actual, expected) in weighted_result.x.iter().zip(expected.x.iter()) {
+        assert!((actual - expected).abs() < 1e-12);
+    }
+}
+
+#[test]
+fn test_state_matches_solver() {
+    let (categories, y) = categories_and_y();
+    let params = default_params();
+    let precond = additive_precond();
+    let design = Design::from_categories(categories.view()).expect("design build");
+
+    let state = SolverState::new(&design, None, &precond).expect("state build");
+    let actual = state.solve(&design, &y, &params).expect("state solve");
+
+    let solver = Solver::from_design(&design, None, &precond).expect("solver build");
+    let expected = solver.solve(&y, &params).expect("solver solve");
+
+    assert_eq!(actual.converged, expected.converged);
+    assert_eq!(actual.iterations, expected.iterations);
+    assert_eq!(actual.x.len(), expected.x.len());
+    for (actual, expected) in actual.x.iter().zip(expected.x.iter()) {
+        assert!((actual - expected).abs() < 1e-12);
+    }
+    assert_eq!(actual.demeaned.len(), expected.demeaned.len());
+    for (actual, expected) in actual.demeaned.iter().zip(expected.demeaned.iter()) {
         assert!((actual - expected).abs() < 1e-12);
     }
 }
