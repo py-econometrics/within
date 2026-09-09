@@ -328,9 +328,9 @@ fn dense_and_sparse_paths_agree_on_signed_data() {
     .expect("both factors have active levels");
 
     let cols = PairColumns {
-        row_levels: design.frame.level_column(0),
-        col_levels: design.frame.level_column(1),
-        row_load: design.frame.loading_column(0),
+        row_levels: design.level_column(0),
+        col_levels: design.level_column(1),
+        row_load: design.loading_column(0),
         col_load: Unit,
         weights: None,
     };

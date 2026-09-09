@@ -145,7 +145,7 @@ fn stable_argsort(key: &[u32], n_levels: usize) -> Vec<u32> {
 #[derive(Clone, Debug)]
 pub struct Design<'a> {
     /// Columns in internal row order (caller's, or an owned locality-sorted copy).
-    pub(crate) frame: ObservationFrame<'a>,
+    frame: ObservationFrame<'a>,
     pub(crate) terms: Vec<TermMeta>,
     pub(crate) n_obs: usize,
     pub(crate) n_dofs: usize,
@@ -320,6 +320,21 @@ impl<'a> Design<'a> {
         self.terms[channel.term].columns[channel.column]
     }
 
+    /// Level codes for one term, in internal observation order.
+    pub(crate) fn level_column(&self, term: usize) -> &[u32] {
+        self.frame.level_column(term)
+    }
+
+    /// Continuous loading column in internal observation order.
+    pub(crate) fn loading_column(&self, column: usize) -> &[f64] {
+        self.frame.loading_column(column)
+    }
+
+    /// Replace one loading column during solver-local preparation.
+    pub(crate) fn replace_loading_column(&mut self, column: usize, values: Vec<f64>) {
+        self.frame.set_loading_column(column, values);
+    }
+
     /// Number of observations (rows of D).
     #[inline]
     pub fn n_obs(&self) -> usize {
@@ -443,8 +458,8 @@ mod tests {
         // Factor 1's permuted column [0,1,1,0] is no longer non-decreasing.
         assert!(!design.terms[1].sorted);
 
-        assert_eq!(design.frame.level_column(0), [0, 0, 1, 2]);
-        assert_eq!(design.frame.level_column(1), [0, 1, 1, 0]);
+        assert_eq!(design.level_column(0), [0, 0, 1, 2]);
+        assert_eq!(design.level_column(1), [0, 1, 1, 0]);
     }
 
     #[test]
@@ -477,8 +492,8 @@ mod tests {
 
         let perm = design.obs_perm.as_ref().expect("permutation applied");
         assert_eq!(perm, &[1, 3, 2, 0]);
-        assert_eq!(design.frame.level_column(0), [0, 0, 1, 2]);
-        assert_eq!(design.frame.loading_column(0), [20.0, 40.0, 30.0, 10.0]);
+        assert_eq!(design.level_column(0), [0, 0, 1, 2]);
+        assert_eq!(design.loading_column(0), [20.0, 40.0, 30.0, 10.0]);
     }
 
     #[test]
@@ -515,7 +530,7 @@ mod tests {
             ]
         );
         assert_eq!(&*design.terms[2].columns, &[Loading::Covariate(2)]);
-        assert_eq!(design.frame.loading_column(0), &z0[..]);
-        assert_eq!(design.frame.loading_column(2), &z1[..]);
+        assert_eq!(design.loading_column(0), &z0[..]);
+        assert_eq!(design.loading_column(2), &z1[..]);
     }
 }
