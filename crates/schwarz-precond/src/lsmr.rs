@@ -186,7 +186,7 @@ pub fn lsmr<A: Operator + ?Sized>(
     validate_lsmr_inputs(operator, b, tol)?;
     let n = operator.ncols();
 
-    let b_norm = vec_norm(b);
+    let b_norm = finite(vec_norm(b), "rhs norm")?;
     if b_norm == 0.0 {
         return Ok(LsmrResult {
             x: vec![0.0; n],
@@ -242,7 +242,8 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
         }
     }
 
-    let b_norm = vec_norm(b);
+    // `b` is finite entrywise, but its norm sets the tolerance and an ∞ there certifies anything.
+    let b_norm = finite(vec_norm(b), "rhs norm")?;
     let local_size = local_size.unwrap_or(0);
 
     let rhs: Cow<'_, [f64]> = match warm_start {
@@ -256,13 +257,8 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
             Cow::Owned(residual)
         }
     };
-    let rhs_norm = vec_norm(&rhs);
     // Unlike `b`, `rhs` is computed: an ∞ entry norms to NaN, which reads as β₁ = 0 downstream.
-    if !rhs_norm.is_finite() {
-        return Err(invalid_input(format!(
-            "warm-start residual b - A·x0 has non-finite norm {rhs_norm}"
-        )));
-    }
+    let rhs_norm = finite(vec_norm(&rhs), "warm-start residual norm")?;
     if rhs_norm == 0.0 {
         let (x, stop_reason) = match warm_start {
             Some(x0) => (x0.to_vec(), LsmrStopReason::WarmStartExact),
@@ -419,6 +415,14 @@ fn validate_lsmr_inputs<A: Operator + ?Sized>(
         )));
     }
     Ok(())
+}
+
+/// Every comparison against a non-finite value is false, so it reads as a breakdown downstream.
+fn finite(value: f64, what: &str) -> Result<f64, SolveError> {
+    if !value.is_finite() {
+        return Err(invalid_input(format!("non-finite {what} ({value})")));
+    }
+    Ok(value)
 }
 
 fn invalid_input(message: String) -> SolveError {

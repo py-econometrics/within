@@ -32,6 +32,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - A design carrying varying slopes on two distinct factors could fail preconditioner construction with `matrix is not symmetric`, when rounding left the two triangles of the exact Schur complement unequal (#229).
 - A `design` that is neither a 2-D `uint32` array nor a list of `Effect` raised `ValueError` where the documented type is `TypeError`, and `AdditiveSchwarz` accepted a wrong-type `local_solver` at construction, deferring the `TypeError` to solve time (#248).
 - A slope covariate collinear with another term could make LSMR report convergence on a solve that had not demeaned the response; tolerance stops are now audited against the true residual and a failed check reports `LsmrStopReason::FalseConvergence` with `converged = false` (#290).
+- A non-finite `α`, `β`, `⟨v, Mv⟩`, or `‖b‖` in LSMR fails the solve with `SolveError::InvalidInput`; a NaN previously read as `α = 0` and reported a converged `x = 0`, and an overflowing `‖b‖` certified any result. The preconditioner-indefiniteness test no longer over- or underflows at extreme magnitudes (#303).
 
 ### Removed
 

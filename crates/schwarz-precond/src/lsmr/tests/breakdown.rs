@@ -179,6 +179,13 @@ fn test_mlsmr_rejects_invalid_inputs() {
         None,
     );
     assert!(matches!(bad_rhs, Err(SolveError::InvalidInput { .. })));
+
+    // Finite entrywise, but `‖b‖` overflows and would scale u₁ to zero, reading as α₁ = 0.
+    let overflowing_rhs = lsmr(&OverdeterminedOp, &[f64::MAX; 4], 1e-10, 100, None);
+    assert!(matches!(
+        overflowing_rhs,
+        Err(SolveError::InvalidInput { .. })
+    ));
 }
 
 #[test]

@@ -10,6 +10,7 @@
 #[cfg(test)]
 mod tests;
 
+use super::finite;
 use crate::{Operator, SolveError};
 use rayon::iter::{IndexedParallelIterator, ParallelIterator};
 use rayon::prelude::{ParallelSlice, ParallelSliceMut};
@@ -97,10 +98,14 @@ fn par_dot(a: &[f64], b: &[f64]) -> f64 {
 
 /// `α = √⟨v, p̃⟩`; a `vp` negative within `√ε·‖v‖‖p̃‖` clamps to 0, an indefinite `M` raises.
 fn alpha_from_vp(v: &[f64], p_tilde: &[f64]) -> Result<f64, SolveError> {
-    let vp = par_dot(v, p_tilde);
+    // `vp.max(0.0)` returns 0 for NaN, which α = 0 reports as an exact solve at x = 0.
+    let vp = finite(par_dot(v, p_tilde), "⟨v, Mv⟩")?;
     if vp < 0.0 {
-        let bound = f64::EPSILON.sqrt() * (par_dot(v, v) * par_dot(p_tilde, p_tilde)).sqrt();
-        if vp < -bound {
+        let norm_v = finite(super::vec_norm(v), "‖v‖")?;
+        let norm_p = finite(super::vec_norm(p_tilde), "‖p̃‖")?;
+        // Dividing by the smaller norm first keeps the sign decision exact where a product fails.
+        let (small, large) = (norm_v.min(norm_p), norm_v.max(norm_p));
+        if vp / small / large < -f64::EPSILON.sqrt() {
             return Err(SolveError::InvalidInput {
                 context: "mlsmr",
                 message: "preconditioner not positive definite (⟨v, Mv⟩ < 0)".to_string(),
@@ -262,7 +267,7 @@ impl<A: Operator + ?Sized> Bidiagonalization for GolubKahan<'_, A> {
     fn step(&mut self) -> Result<BidiagStep, SolveError> {
         self.operator.apply(&self.bufs.v, &mut self.bufs.av)?;
         let beta_sq = axpy_with_sq_norm(&mut self.bufs.u, &self.bufs.av, -self.alpha);
-        let beta = beta_sq.sqrt();
+        let beta = finite(beta_sq.sqrt(), "β")?;
         if beta == 0.0 {
             // Lucky breakdown: zero `v` so `solution.update` contributes nothing.
             self.bufs.v.fill(0.0);
@@ -281,7 +286,7 @@ impl<A: Operator + ?Sized> Bidiagonalization for GolubKahan<'_, A> {
             reorth.reorthogonalize(&mut self.bufs.v);
             alpha_sq = par_dot(&self.bufs.v, &self.bufs.v);
         }
-        let alpha = alpha_sq.sqrt();
+        let alpha = finite(alpha_sq.sqrt(), "α")?;
         if alpha > 0.0 {
             scale_in_place(&mut self.bufs.v, 1.0 / alpha);
         }
@@ -314,7 +319,7 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
         let scale = -(self.alpha * self.beta_prev_inv);
         self.operator.apply(&self.bufs.v, &mut self.bufs.av)?;
         let beta_sq = axpy_with_sq_norm(&mut self.bufs.u, &self.bufs.av, scale);
-        let beta = beta_sq.sqrt();
+        let beta = finite(beta_sq.sqrt(), "β")?;
         if beta == 0.0 {
             // Lucky breakdown: zero `v` and its paired `p̃` so the update contributes nothing.
             self.bufs.v.fill(0.0);
@@ -408,7 +413,7 @@ impl<'a, A: Operator + ?Sized> GolubKahan<'a, A> {
         }
 
         operator.apply_adjoint(&bufs.u, &mut bufs.v)?;
-        let alpha = par_dot(&bufs.v, &bufs.v).sqrt();
+        let alpha = finite(par_dot(&bufs.v, &bufs.v).sqrt(), "α")?;
         if alpha > 0.0 {
             scale_in_place(&mut bufs.v, 1.0 / alpha);
         }
