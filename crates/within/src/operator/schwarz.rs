@@ -267,15 +267,21 @@ pub(crate) fn build_preconditioner(
     // Weights are pre-validated by the sole caller, whose permutation preserves length and sign.
     let default_cfg = PreconditionerConfig::default();
     let resolved = config.unwrap_or(&default_cfg);
-    // Measure preconditioner build time
     let build_started = Instant::now();
     let (inner, warnings) = match resolved {
         PreconditionerConfig::Off => {
             return Ok((None, Vec::new()));
         }
+        // Adaptive's escalated rung is exactly an Additive build; `stall` is a
+        // solver concern and plays no part in constructing the map.
         PreconditionerConfig::Additive {
             local_solver,
             reduction,
+        }
+        | PreconditionerConfig::Adaptive {
+            local_solver,
+            reduction,
+            ..
         } => {
             let (domains, warnings) = build_local_domains(design, weights, local_solver)?;
             if domains.is_empty() {

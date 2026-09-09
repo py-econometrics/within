@@ -1,8 +1,8 @@
 //! Solver and preconditioner configuration types.
 //!
 //! `Option<&PreconditionerConfig>` accepts `None` (default Additive Schwarz),
-//! `Some(Off)` (identity), `Some(Additive(_))` (tuned), or
-//! `Some(Diagonal)` (Jacobi).
+//! `Some(Off)` (identity), `Some(Additive(_))` (tuned), `Some(Diagonal)`
+//! (Jacobi), or `Some(Adaptive(_))` (diagonal escalating to Schwarz on stall).
 //!
 //! Stability policy: enums that may gain variants (the preconditioner strategy
 //! set) stay `#[non_exhaustive]`, so adding a variant is non-breaking — external
@@ -13,7 +13,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub use schwarz_precond::ReductionStrategy;
+pub use schwarz_precond::{ReductionStrategy, Staleness, StalenessError};
 
 /// Default `n_keep` threshold below which a Schur domain tries the exact dense backend.
 pub(crate) const DEFAULT_DENSE_SCHUR_THRESHOLD: usize = 24;
@@ -153,6 +153,20 @@ pub enum PreconditionerConfig {
     },
     /// Diagonal/Jacobi; a zero diagonal takes the pseudo-inverse, pinning that coordinate to 0.
     Diagonal,
+    /// Start diagonal, escalate to additive Schwarz on a stalled contraction.
+    ///
+    /// The Schwarz factorization is built lazily at the moment of escalation, so a
+    /// design whose diagonal solve never stalls never pays to construct it. A design
+    /// with no factor-pair subdomains has nothing to escalate to and is
+    /// [`Diagonal`](Self::Diagonal) throughout.
+    Adaptive {
+        /// Local solver configuration for the escalated Schwarz factorization.
+        local_solver: LocalSolverConfig,
+        /// Strategy for combining overlapping subdomain contributions.
+        reduction: ReductionStrategy,
+        /// Contraction-stall condition that triggers escalation.
+        stall: Staleness,
+    },
 }
 
 impl Default for PreconditionerConfig {

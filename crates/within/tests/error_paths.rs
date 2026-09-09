@@ -118,13 +118,13 @@ fn test_non_finite_response_rejected() {
     // The persistent Solver API funnels through the same guard, so it cannot be bypassed.
     let solver = Solver::new(cats.view(), None, &precond).expect("solver");
     match solver.solve(&y, &params).unwrap_err() {
-        SolveError::InvalidInput { message, .. } => {
+        WithinError::Solve(SolveError::InvalidInput { message, .. }) => {
             assert!(
                 message.contains("index 1"),
                 "message names the index: {message}"
             );
         }
-        other => panic!("Expected InvalidInput via Solver::solve(), got: {other:?}"),
+        other => panic!("Expected Solve(InvalidInput) via Solver::solve(), got: {other:?}"),
     }
 
     // solve_batch funnels every column through Solver::solve; the bad value is in the 2nd RHS.
