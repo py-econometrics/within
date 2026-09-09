@@ -408,8 +408,8 @@ fn sort_and_dedup(chunks: Vec<Vec<Edge>>, n_kept: usize) -> Vec<Edge> {
     if total <= 1 {
         return chunks.concat();
     }
-    // Dense counting sort or sparse comparison sort — both produce the same total order.
-    let dense = total >= n_kept;
+    // Same order either way; under two edges per kept vertex the parallel comparison sort wins.
+    let dense = total >= 2 * n_kept;
     let mut edges = if dense {
         counting_sort_by_lo(&chunks, n_kept)
     } else {
