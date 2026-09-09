@@ -21,6 +21,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `schwarz_precond::Staleness` gains `Default` (window 4, threshold 0.7), `window()`/`threshold()` accessors, and serde support validated through `try_new` (#260).
 - Python `Preconditioner.build_duration_seconds` and Rust `Preconditioner::build_duration()` expose the original preconditioner build duration, preserved across serialization and reuse.
 - `BuildWarning::CollinearSlopeCovariate` reports a slope covariate that is (nearly) a per-level combination of another term's columns — a cross-term near-null direction that per-term whitening cannot see and that can inflate iteration counts by orders of magnitude (#281).
 - `schwarz_precond::EscalationPolicy` builds a per-run `EscalationHandler` that ends a solve with `LsmrStopReason::Escalated` and an iterate that warm-starts the next preconditioner; `Staleness` implements it from the trailing contraction window.

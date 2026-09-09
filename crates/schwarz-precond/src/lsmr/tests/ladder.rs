@@ -235,6 +235,31 @@ fn test_staleness_escalates_only_the_stalling_preconditioner() {
 }
 
 #[test]
+fn test_staleness_default_exposes_its_fields() {
+    let default = Staleness::default();
+    assert_eq!(default.window(), 4);
+    assert_eq!(default.threshold(), 0.7);
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_staleness_serde_round_trips_and_validates() {
+    let default = Staleness::default();
+    let bytes = postcard::to_stdvec(&default).expect("serialize");
+    assert_eq!(
+        postcard::from_bytes::<Staleness>(&bytes).expect("deserialize"),
+        default
+    );
+    for invalid in [(0usize, 0.7f64), (4, 1.0)] {
+        let bytes = postcard::to_stdvec(&invalid).expect("serialize");
+        assert!(
+            postcard::from_bytes::<Staleness>(&bytes).is_err(),
+            "{invalid:?}"
+        );
+    }
+}
+
+#[test]
 fn test_staleness_rejects_invalid_configuration() {
     assert!(matches!(
         Staleness::try_new(0, 0.7),
