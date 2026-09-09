@@ -7,8 +7,8 @@ use numpy::{PyReadonlyArray1, PyReadonlyArray2, PyUntypedArray};
 use pyo3::prelude::*;
 
 use within::{
-    BatchSolveResult, BuildError, BuildWarning, Design, Effect, IntoDesign, LsmrOptions,
-    PreconditionerInput, SolveResult, Solver, WithinError,
+    BatchSolveResult, BuildWarning, Design, Effect, IntoDesign, LsmrOptions, PreconditionerInput,
+    SolveResult, Solver, SolverState, WithinError,
 };
 
 use crate::config::{resolve_lsmr_config, resolve_precond_input, PyPreconditioner};
@@ -235,11 +235,66 @@ fn extract_design<'py>(py: Python<'_>, design: &Bound<'py, PyAny>) -> PyResult<D
     ))
 }
 
+fn extract_owned_design(py: Python<'_>, design: &Bound<'_, PyAny>) -> PyResult<Design<'static>> {
+    match extract_design(py, design)? {
+        DesignSource::Categories(categories) => {
+            let categories = categories.as_array();
+            py.detach(move || categories.into_design().map(Design::into_owned))
+                .map_err(value_err)
+        }
+        DesignSource::Effects(terms) => py
+            .detach(move || {
+                let effects: Vec<_> = terms.iter().map(PyEffect::as_effect).collect();
+                Design::new(effects).map(Design::into_owned)
+            })
+            .map_err(value_err),
+    }
+}
+
+/// Persistent fixed-effects design.
+#[pyclass(frozen, module = "within._within")]
+#[pyo3(name = "Design")]
+pub struct PyDesign {
+    design: Design<'static>,
+}
+
+#[pymethods]
+impl PyDesign {
+    #[new]
+    fn new(py: Python<'_>, design: &Bound<'_, PyAny>) -> PyResult<Self> {
+        Ok(Self {
+            design: extract_owned_design(py, design)?,
+        })
+    }
+    #[getter]
+    fn n_obs(&self) -> usize {
+        self.design.n_obs()
+    }
+
+    #[getter]
+    fn n_dofs(&self) -> usize {
+        self.design.n_dofs()
+    }
+}
+
+impl PyDesign {
+    fn as_design(&self) -> &Design<'static> {
+        &self.design
+    }
+}
+
 /// Persistent solver reusing preconditioners; the factorization happens once at construction.
 #[pyclass(frozen, module = "within._within")]
 #[pyo3(name = "Solver")]
 pub struct PySolver {
-    solver: Solver<'static>,
+    design: Py<PyDesign>,
+    state: SolverState,
+}
+
+impl PySolver {
+    fn design(&self) -> &Design<'static> {
+        self.design.get().as_design()
+    }
 }
 
 #[pymethods]
@@ -256,27 +311,24 @@ impl PySolver {
         let weights_vec: Option<Vec<f64>> = weights.as_ref().map(|w| w.as_array().to_vec());
         let precond = resolve_precond_input(preconditioner)?;
 
-        // `BuildError` carries no Python types, so it maps to an exception once the GIL is back.
-        let solver = match extract_design(py, design)? {
-            DesignSource::Categories(categories) => {
-                let cats = categories.as_array();
-                py.detach(move || -> Result<Solver<'static>, BuildError> {
-                    Solver::new(cats.into_design()?.into_owned(), weights_vec, precond)
-                })
-            }
-            DesignSource::Effects(terms) => {
-                py.detach(move || -> Result<Solver<'static>, BuildError> {
-                    let effects: Vec<_> = terms.iter().map(PyEffect::as_effect).collect();
-                    // The solver outlives the terms' buffers, so lower to owned columns first.
-                    let design = Design::new(effects)?.into_owned();
-                    Solver::new(design, weights_vec, precond)
-                })
-            }
+        let design = match design.extract::<Py<PyDesign>>() {
+            Ok(design) => design,
+            Err(_) => Py::new(
+                py,
+                PyDesign {
+                    design: extract_owned_design(py, design)?,
+                },
+            )?,
+        };
+
+        let state = {
+            let design_ref = design.get().as_design();
+            py.detach(move || SolverState::new(design_ref, weights_vec, precond))
         }
         .map_err(value_err)?;
 
-        emit_build_warnings(py, solver.warnings())?;
-        Ok(Self { solver })
+        emit_build_warnings(py, state.warnings())?;
+        Ok(Self { design, state })
     }
 
     /// Solve for a single response vector with the given LSMR tuning.
@@ -292,7 +344,7 @@ impl PySolver {
         let y_cow = coerce_to_slice(&y_arr);
         let params = resolve_lsmr_config(options)?;
 
-        run_solve(py, || self.solver.solve(&y_cow, &params))
+        run_solve(py, || self.state.solve(self.design(), &y_cow, &params))
     }
 
     /// `Y` is `(n_obs, k)` with one response per column.
@@ -306,7 +358,7 @@ impl PySolver {
         let y = readonly_f64_2d("Y", Y)?;
         let y_arr = y.as_array();
 
-        let n_obs = self.solver.n_obs();
+        let n_obs = self.design().n_obs();
         if y_arr.nrows() != n_obs {
             return Err(value_err(format!(
                 "Y has {} rows but solver has {} observations",
@@ -320,14 +372,16 @@ impl PySolver {
 
         let params = resolve_lsmr_config(options)?;
 
-        run_batch(py, || self.solver.solve_batch(&col_refs, &params))
+        run_batch(py, || {
+            self.state.solve_batch(self.design(), &col_refs, &params)
+        })
     }
 
     /// The built preconditioner, or ``None`` if unconfigured; picklable and reusable.
     #[getter]
     #[pyo3(name = "preconditioner")]
     fn preconditioner_py(&self) -> PyResult<Option<PyPreconditioner>> {
-        match self.solver.preconditioner() {
+        match self.state.preconditioner() {
             None => Ok(None),
             Some(p) => Ok(Some(PyPreconditioner { inner: p.clone() })),
         }
@@ -336,12 +390,12 @@ impl PySolver {
     /// Number of DOFs (coefficients) in the model.
     #[getter]
     fn n_dofs(&self) -> usize {
-        self.solver.n_dofs()
+        self.design().n_dofs()
     }
 
     /// Number of observations.
     #[getter]
     fn n_obs(&self) -> usize {
-        self.solver.n_obs()
+        self.design().n_obs()
     }
 }
