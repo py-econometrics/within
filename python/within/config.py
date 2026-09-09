@@ -14,6 +14,7 @@ Typical usage::
         LocalSolverConfig,
         ReductionStrategy,
         Schur,
+        Staleness,
     )
 
     schwarz = PreconditionerConfig.Additive(
@@ -36,6 +37,7 @@ from within._within import (
     ReductionStrategy,
     ScalingConfig,
     Schur,
+    Staleness,
 )
 
 __all__ = [
@@ -45,4 +47,5 @@ __all__ = [
     "ReductionStrategy",
     "ScalingConfig",
     "Schur",
+    "Staleness",
 ]

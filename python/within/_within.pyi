@@ -12,7 +12,8 @@ class PreconditionerConfig:
     """Preconditioner configuration for the LSMR solver.
 
     A tagged union: each variant is a subclass. Construct with ``Off()``,
-    ``Diagonal()``, or ``Additive(local_solver=..., reduction=...)``. Instances
+    ``Diagonal()``, ``Additive(local_solver=..., reduction=...)``, or
+    ``Adaptive(local_solver=..., reduction=..., stall=...)``. Instances
     compare by value and support ``match``/``case``.
     """
 
@@ -36,6 +37,38 @@ class PreconditionerConfig:
             local_solver: LocalSolverConfig = ...,
             reduction: ReductionStrategy = ...,
         ) -> None: ...
+
+    class Adaptive(PreconditionerConfig):
+        """Diagonal first, escalating to additive Schwarz on a stalled contraction.
+
+        The factorization is built only at the moment of escalation, so a design
+        whose diagonal solve never stalls never pays to construct it.
+        """
+
+        local_solver: LocalSolverConfig
+        reduction: ReductionStrategy
+        stall: Staleness
+        def __init__(
+            self,
+            local_solver: LocalSolverConfig = ...,
+            reduction: ReductionStrategy = ...,
+            stall: Staleness = ...,
+        ) -> None: ...
+
+class Staleness:
+    """Escalates after ``window`` consecutive contraction ratios exceed ``threshold``.
+
+    Defaults to ``window=4``, ``threshold=0.7``. Raises ``ValueError`` for a zero
+    window or a threshold outside ``[0, 1)``.
+    """
+
+    window: int
+    threshold: float
+    def __init__(
+        self,
+        window: int | None = None,
+        threshold: float | None = None,
+    ) -> None: ...
 
 class ReductionStrategy:
     """Strategy for combining subdomain contributions in additive Schwarz.
@@ -138,7 +171,10 @@ class SolveResult:
         residual: Relative normal-equation residual
             ``||D^T W (y - Dx)|| / ||D^T W y||`` estimated from the LSMR
             recurrence at no extra cost. Exact for an unpreconditioned solve;
-            measured in the preconditioner's metric otherwise.
+            measured in the preconditioner's metric otherwise. On the single
+            solve where an ``Adaptive`` preconditioner hands off to Schwarz it
+            is relative to the escalation point instead, so it can far exceed
+            ``tol`` on a converged answer; gate on ``converged``.
         time_total: Wall-clock time for the entire solve (setup + solve), in seconds.
         time_setup: Wall-clock time for the setup phase (operator + preconditioner
             construction), in seconds.
@@ -370,6 +406,10 @@ class Solver:
     @property
     def preconditioner(self) -> Preconditioner | None:
         """Access the cached preconditioner (for serialization or reuse)."""
+        ...
+    @property
+    def has_escalated(self) -> bool:
+        """Whether an ``Adaptive`` solve has handed off to Schwarz."""
         ...
     @property
     def n_dofs(self) -> int: ...
