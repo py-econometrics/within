@@ -373,7 +373,7 @@ fn par_emit(matrix: &SddmMatrix, config: &ApproxSchurConfig) -> Vec<Edge> {
     let surplus_eliminated = matrix.surplus_eliminated();
     let ground_vertex = (matrix.grounding == Grounding::Grounded)
         .then(|| u32::try_from(n_kept).expect("ground vertex exceeds u32::MAX"));
-    let mut edges = (0..matrix.n_eliminated())
+    let mut chunks = (0..matrix.n_eliminated())
         .into_par_iter()
         .fold(
             || StarWorkspace::new(config),
@@ -387,31 +387,36 @@ fn par_emit(matrix: &SddmMatrix, config: &ApproxSchurConfig) -> Vec<Edge> {
             },
         )
         .map(|work| work.edges)
-        // Pre-sized single copy; a `reduce` tree of `append`s recopies each edge per level.
-        .collect::<Vec<_>>()
-        .concat();
+        .collect::<Vec<_>>();
     if let Some(ground) = ground_vertex {
-        edges.extend(
+        chunks.push(
             matrix
                 .surplus_kept()
                 .iter()
                 .enumerate()
                 .filter(|(_, surplus)| **surplus > 0.0)
-                .map(|(i, &surplus)| (i as u32, ground, surplus)),
+                .map(|(i, &surplus)| (i as u32, ground, surplus))
+                .collect(),
         );
     }
-    sort_and_dedup(&mut edges, n_kept);
-    edges
+    sort_and_dedup(chunks, n_kept)
 }
 
 /// Sort into total `(lo, hi, weight)` order; the weight tiebreak makes the Schur reproducible.
-fn sort_and_dedup(edges: &mut Vec<Edge>, n_kept: usize) {
-    if edges.len() <= 1 {
-        return;
+fn sort_and_dedup(chunks: Vec<Vec<Edge>>, n_kept: usize) -> Vec<Edge> {
+    let total = chunks.iter().map(Vec::len).sum::<usize>();
+    if total <= 1 {
+        return chunks.concat();
     }
-    // Dense counting sort or sparse comparison sort — both produce the same total order.
-    if edges.len() >= n_kept {
-        counting_sort_by_lo(edges, n_kept);
+    // Same order either way; under two edges per kept vertex the parallel comparison sort wins.
+    let dense = total >= 2 * n_kept;
+    let mut edges = if dense {
+        counting_sort_by_lo(&chunks, n_kept)
+    } else {
+        chunks.concat()
+    };
+    drop(chunks);
+    if dense {
         let by_hi_weight = |a: &Edge, b: &Edge| a.1.cmp(&b.1).then_with(|| a.2.total_cmp(&b.2));
         edges
             .par_chunk_by_mut(|a, b| a.0 == b.0)
@@ -433,29 +438,35 @@ fn sort_and_dedup(edges: &mut Vec<Edge>, n_kept: usize) {
         }
     }
     edges.truncate(write + 1);
+    edges
 }
 
-/// Stable counting sort of `edges` by `lo` in O(E + n_kept).
-fn counting_sort_by_lo(edges: &mut Vec<Edge>, n_kept: usize) {
+/// Stable counting sort by `lo` in O(E + n_kept), scattered once from the per-task chunks.
+fn counting_sort_by_lo(chunks: &[Vec<Edge>], n_kept: usize) -> Vec<Edge> {
     let mut cursors = vec![0usize; n_kept + 1];
-    for e in edges.iter() {
-        // `lo < n_kept` always holds: the ground vertex carries the maximum id and lands on `hi`.
-        debug_assert!(
-            (e.0 as usize) < n_kept,
-            "counting sort key `lo` must be a kept-block id (< n_kept)"
-        );
-        cursors[e.0 as usize + 1] += 1;
+    // Nested loops, not `flatten()`: the flat iterator cost ~10% on both passes at 1M+ edges.
+    for chunk in chunks {
+        for e in chunk {
+            // `lo < n_kept` always holds: the ground vertex has the maximum id and lands on `hi`.
+            debug_assert!(
+                (e.0 as usize) < n_kept,
+                "counting sort key `lo` must be a kept-block id (< n_kept)"
+            );
+            cursors[e.0 as usize + 1] += 1;
+        }
     }
     for i in 1..cursors.len() {
         cursors[i] += cursors[i - 1];
     }
-    let mut out = vec![(0u32, 0u32, 0.0f64); edges.len()];
-    for &e in edges.iter() {
-        let cursor = &mut cursors[e.0 as usize];
-        out[*cursor] = e;
-        *cursor += 1;
+    let mut out = vec![(0u32, 0u32, 0.0f64); cursors[n_kept]];
+    for chunk in chunks {
+        for &e in chunk {
+            let cursor = &mut cursors[e.0 as usize];
+            out[*cursor] = e;
+            *cursor += 1;
+        }
     }
-    *edges = out;
+    out
 }
 
 #[cfg(test)]
