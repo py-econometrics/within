@@ -274,21 +274,18 @@ impl TermMeta {
 
 /// Stable argsort of observations by a level column, ascending.
 ///
-/// Dense counting sort in `O(n_obs + n_levels)` or sparse comparison sort — same
-/// permutation either way, gated as in `schur::sort_and_dedup`. Gappy caller codes
-/// can span far more levels than rows, where the bucket array outgrows the output.
+/// Compact internal positions guarantee `n_levels <= key.len()`, so counting sort
+/// takes `O(n_obs + n_levels)` time and `O(n_levels)` temporary memory.
 fn stable_argsort(key: &[u32], n_levels: usize) -> Vec<u32> {
     let n_obs = key.len();
     debug_assert!(
         u32::try_from(n_obs).is_ok(),
         "observation index must fit the u32 permutation"
     );
-    if n_obs < n_levels {
-        // MUST be `sort_by_cached_key`: `sort_by_key` re-gathers `key[i]` O(n log n) times.
-        let mut perm: Vec<u32> = (0..n_obs as u32).collect();
-        perm.sort_by_cached_key(|&i| key[i as usize]);
-        return perm;
-    }
+    debug_assert!(
+        n_levels <= n_obs,
+        "compact level count cannot exceed observation count"
+    );
     let mut cursors = vec![0usize; n_levels + 1];
     for &k in key {
         debug_assert!(
@@ -597,10 +594,10 @@ mod tests {
         }
     }
 
-    /// Both `stable_argsort` branches must emit the SAME permutation, or the
-    /// gate silently changes summation order and every downstream result drifts.
+    /// Counting sort must preserve caller order within each level so locality
+    /// sorting does not change downstream summation order.
     #[test]
-    fn stable_argsort_branches_agree_with_a_stable_reference() {
+    fn stable_argsort_agrees_with_a_stable_reference() {
         let mut state = 0x2545_f491_4f6c_dd1du64;
         let mut next = move || {
             state ^= state << 13;
@@ -608,19 +605,14 @@ mod tests {
             state ^= state << 17;
             state
         };
-        // Straddles the gate: n_levels below, at, and above n_obs. `key_span`
-        // is decoupled so the dense branch also runs on a key that occupies a
-        // fraction of its declared level range, leaving empty buckets.
+        // `key_span` is decoupled so the counting sort also covers empty buckets.
         for (n_obs, n_levels, key_span) in [
             (0usize, 0usize, 1usize),
-            (0, 4, 4),
             (1, 1, 1),
             (997, 1, 1),
             (997, 16, 16),
             (997, 996, 996),
             (997, 997, 997),
-            (997, 998, 998),
-            (997, 50_000, 50_000),
             (4096, 4096, 8),
             (4096, 4096, 4096),
         ] {
