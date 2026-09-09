@@ -1,5 +1,5 @@
 mod design_tests {
-    use crate::domain::Design;
+    use crate::domain::{Design, SolverDesign};
     use crate::linalg::dot;
     use crate::operator::DesignOperator;
     use schwarz_precond::Operator;
@@ -12,7 +12,8 @@ mod design_tests {
     #[test]
     fn test_design_operator_dimensions() {
         let schema = make_test_design();
-        let op = DesignOperator::new(&schema, None);
+        let solver_design = SolverDesign::new(&schema);
+        let op = DesignOperator::new(&solver_design, None);
         assert_eq!(op.nrows(), 5);
         assert_eq!(op.ncols(), 7);
     }
@@ -20,7 +21,8 @@ mod design_tests {
     #[test]
     fn test_design_operator_adjoint() {
         let schema = make_test_design();
-        let op = DesignOperator::new(&schema, None);
+        let solver_design = SolverDesign::new(&schema);
+        let op = DesignOperator::new(&solver_design, None);
 
         let x = vec![1.0, -0.5, 2.0, 0.3, -1.0, 0.7, 1.5];
         let r = vec![0.1, 0.2, -0.3, 0.4, -0.5];
@@ -39,7 +41,8 @@ mod design_tests {
     #[test]
     fn test_apply_unweighted_values() {
         let schema = make_test_design();
-        let op = DesignOperator::new(&schema, None);
+        let solver_design = SolverDesign::new(&schema);
+        let op = DesignOperator::new(&solver_design, None);
         let x = vec![1.0, 2.0, 3.0, 10.0, 20.0, 30.0, 40.0];
         let mut y = vec![0.0; 5];
         op.apply(&x, &mut y).expect("apply succeeds");
@@ -49,7 +52,8 @@ mod design_tests {
     #[test]
     fn test_apply_adjoint_unweighted_values() {
         let schema = make_test_design();
-        let op = DesignOperator::new(&schema, None);
+        let solver_design = SolverDesign::new(&schema);
+        let op = DesignOperator::new(&solver_design, None);
         let r = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         let mut x = vec![0.0; 7];
         op.apply_adjoint(&r, &mut x)
@@ -78,7 +82,8 @@ mod design_tests {
         let dm = make_large_design();
         let n_dofs = dm.n_dofs;
         let n_rows = dm.n_obs;
-        let op = DesignOperator::new(&dm, None);
+        let solver_design = SolverDesign::new(&dm);
+        let op = DesignOperator::new(&solver_design, None);
 
         let x: Vec<f64> = (0..n_dofs).map(|i| (i as f64 * 0.17 + 1.0).sin()).collect();
         let r: Vec<f64> = (0..n_rows).map(|i| (i as f64 * 0.23 + 2.0).cos()).collect();
@@ -113,7 +118,9 @@ mod design_tests {
         let dm = Design::from_levels_for_test(vec![fa, fb]);
         assert!(dm.obs_perm.is_none(), "dominant factor is sorted; no perm");
 
-        let op = DesignOperator::new(&dm, None);
+        let solver_design = SolverDesign::new(&dm);
+        let dm = solver_design.design();
+        let op = DesignOperator::new(&solver_design, None);
         let x: Vec<f64> = (0..dm.n_dofs)
             .map(|i| (i as f64 * 0.17 + 1.0).sin())
             .collect();
@@ -134,13 +141,15 @@ mod design_tests {
             "Adjoint property violated: <D·x, r>={lhs} vs <x, D^T·r>={rhs}"
         );
 
-        assert_scratch_reuse_matches_fresh(&dm, "fold: non-dominant unsorted 50 levels");
+        assert_scratch_reuse_matches_fresh(&solver_design, "fold: non-dominant unsorted 50 levels");
     }
 
     #[test]
     fn test_large_design_matvec_correctness() {
         let dm = make_large_design();
-        let op = DesignOperator::new(&dm, None);
+        let solver_design = SolverDesign::new(&dm);
+        let dm = solver_design.design();
+        let op = DesignOperator::new(&solver_design, None);
 
         let mut ej = vec![0.0f64; dm.n_dofs];
         ej[0] = 1.0;
@@ -159,7 +168,9 @@ mod design_tests {
     #[test]
     fn test_large_design_apply_adjoint_correctness() {
         let dm = make_large_design();
-        let op = DesignOperator::new(&dm, None);
+        let solver_design = SolverDesign::new(&dm);
+        let dm = solver_design.design();
+        let op = DesignOperator::new(&solver_design, None);
 
         let ones = vec![1.0f64; dm.n_obs];
         let mut x = vec![0.0f64; dm.n_dofs];
@@ -178,7 +189,9 @@ mod design_tests {
     #[test]
     fn test_single_factor_design_adjoint_property() {
         let dm = make_single_factor_design();
-        let op = DesignOperator::new(&dm, None);
+        let solver_design = SolverDesign::new(&dm);
+        let dm = solver_design.design();
+        let op = DesignOperator::new(&solver_design, None);
 
         let x: Vec<f64> = vec![1.0, 2.0, 3.0];
         let r: Vec<f64> = vec![0.5, 1.5, -0.5, 2.0, -1.0];
@@ -202,7 +215,8 @@ mod design_tests {
     #[test]
     fn test_single_factor_apply_values() {
         let dm = make_single_factor_design();
-        let op = DesignOperator::new(&dm, None);
+        let solver_design = SolverDesign::new(&dm);
+        let op = DesignOperator::new(&solver_design, None);
         let x = vec![10.0, 20.0, 30.0];
         let mut y = vec![0.0f64; 5];
         op.apply(&x, &mut y).expect("apply succeeds");
@@ -212,7 +226,8 @@ mod design_tests {
     #[test]
     fn test_single_factor_apply_adjoint_values() {
         let dm = make_single_factor_design();
-        let op = DesignOperator::new(&dm, None);
+        let solver_design = SolverDesign::new(&dm);
+        let op = DesignOperator::new(&solver_design, None);
         let r = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         let mut x = vec![0.0f64; 3];
         op.apply_adjoint(&r, &mut x)
@@ -245,7 +260,11 @@ mod design_tests {
         // The three pairs route Sequential, Fold and SortedCoalesced respectively.
         for (n_obs, n_levels) in [(200usize, 16usize), (15_000, 64), (150_000, 100_000)] {
             let dm = make_strategy_design(n_obs, n_levels);
-            assert_scratch_reuse_matches_fresh(&dm, &format!("n_obs={n_obs}, n_levels={n_levels}"));
+            let solver_design = SolverDesign::new(&dm);
+            assert_scratch_reuse_matches_fresh(
+                &solver_design,
+                &format!("n_obs={n_obs}, n_levels={n_levels}"),
+            );
         }
 
         // A large unsorted non-dominant factor cannot coalesce.
@@ -254,27 +273,32 @@ mod design_tests {
         let fb: Vec<u32> = (0..n_obs).map(|i| ((i * 7919) % 100_000) as u32).collect();
         let dm = Design::from_levels_for_test(vec![fa, fb]);
         assert!(dm.obs_perm.is_none(), "dominant factor is sorted; no perm");
-        assert_scratch_reuse_matches_fresh(&dm, "atomic: non-dominant unsorted 100K levels");
+        let solver_design = SolverDesign::new(&dm);
+        assert_scratch_reuse_matches_fresh(
+            &solver_design,
+            "atomic: non-dominant unsorted 100K levels",
+        );
     }
 
     /// `apply_adjoint` reuses the operator's atomic scatter scratch across
     /// calls (cf. the removed `SCATTER_FOLD_POOL` leak): a second call on the
     /// *same* operator must match a freshly built operator — stale values from
     /// the first call must not bleed into the second.
-    fn assert_scratch_reuse_matches_fresh(dm: &Design<'_>, ctx: &str) {
+    fn assert_scratch_reuse_matches_fresh(solver_design: &SolverDesign<'_>, ctx: &str) {
+        let dm = solver_design.design();
         let r: Vec<f64> = (0..dm.n_obs)
             .map(|i| (i as f64 * 0.37 + 1.0).sin())
             .collect();
 
         // Baseline: a fresh operator that has never applied before.
-        let fresh = DesignOperator::new(dm, None);
+        let fresh = DesignOperator::new(solver_design, None);
         let mut baseline = vec![0.0f64; dm.n_dofs];
         fresh
             .apply_adjoint(&r, &mut baseline)
             .expect("apply_adjoint succeeds");
 
         // The second apply on a dirtied operator must equal the fresh baseline.
-        let op = DesignOperator::new(dm, None);
+        let op = DesignOperator::new(solver_design, None);
         let mut warmup = vec![0.0f64; dm.n_dofs];
         op.apply_adjoint(&r, &mut warmup)
             .expect("apply_adjoint succeeds");
@@ -287,7 +311,7 @@ mod design_tests {
 }
 
 mod slope_design_tests {
-    use crate::domain::{Design, Effect, Loading};
+    use crate::domain::{Design, Effect, Loading, SolverDesign};
     use crate::operator::DesignOperator;
     use schwarz_precond::Operator;
 
@@ -350,7 +374,9 @@ mod slope_design_tests {
         ];
         let design = Design::new(effects).unwrap();
         let dense = dense_matrix(&design);
-        let op = DesignOperator::new(&design, None);
+        let solver_design = SolverDesign::new(&design);
+        let design = solver_design.design();
+        let op = DesignOperator::new(&solver_design, None);
 
         let x: Vec<f64> = (0..design.n_dofs).map(|j| noise(7_000 + j)).collect();
         let mut got = vec![0.0; design.n_obs];
@@ -395,7 +421,9 @@ mod slope_design_tests {
         ];
         let design = Design::new(effects).unwrap();
         let sqrt_weights: Vec<f64> = (0..n).map(|i| (0.5 + noise(i).abs()).sqrt()).collect();
-        let op = DesignOperator::new(&design, Some(&sqrt_weights));
+        let solver_design = SolverDesign::new(&design);
+        let design = solver_design.design();
+        let op = DesignOperator::new(&solver_design, Some(&sqrt_weights));
 
         let x: Vec<f64> = (0..design.n_dofs).map(|j| noise(13 * j + 1)).collect();
         let r: Vec<f64> = (0..n).map(|i| noise(29 * i + 5)).collect();
@@ -415,7 +443,7 @@ mod slope_design_tests {
 }
 
 mod weighted_adjoint_proptests {
-    use crate::domain::Design;
+    use crate::domain::{Design, SolverDesign};
     use crate::operator::DesignOperator;
     use proptest::prelude::*;
     use schwarz_precond::Operator;
@@ -445,6 +473,8 @@ mod weighted_adjoint_proptests {
                 .collect();
 
             let dm = Design::from_levels_for_test(vec![fa, fb]);
+            let solver_design = SolverDesign::new(&dm);
+            let dm = solver_design.design();
 
             let n_dofs = dm.n_dofs;
             let n_rows = dm.n_obs;
@@ -456,7 +486,7 @@ mod weighted_adjoint_proptests {
                 .map(|i| (i as f64 * 0.29 + seed as f64 * 0.07).cos())
                 .collect();
 
-            let op_unweighted = DesignOperator::new(&dm, None);
+            let op_unweighted = DesignOperator::new(&solver_design, None);
             let mut dx = vec![0.0f64; n_rows];
             op_unweighted.apply(&x, &mut dx).unwrap();
             let lhs: f64 = dx
@@ -467,7 +497,7 @@ mod weighted_adjoint_proptests {
                 .sum();
 
             let sqrt_weights: Vec<f64> = weights.iter().map(|w| w.sqrt()).collect();
-            let op_weighted = DesignOperator::new(&dm, Some(&sqrt_weights));
+            let op_weighted = DesignOperator::new(&solver_design, Some(&sqrt_weights));
             let wr = op_weighted.weighted_rhs(&r);
             let mut wdtr = vec![0.0f64; n_dofs];
             op_weighted.apply_adjoint(&wr, &mut wdtr).unwrap();

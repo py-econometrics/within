@@ -1,7 +1,7 @@
 //! Within-level reparametrization of a design's varying-slope terms.
 
 use crate::domain::level_moments::{BasisScratch, TermMoments};
-use crate::domain::Design;
+use crate::domain::{Design, LoadingOverrides};
 
 use super::CoefficientPosition;
 use crate::channel::Channel;
@@ -39,11 +39,15 @@ struct LevelTransform {
 }
 
 impl SlopeReparam {
-    /// Orthonormalize every slope-bearing term's loading columns in place;
+    /// Install orthonormalized loading overrides for every slope-bearing term;
     /// `None` for slope-free designs. Unidentified directions become
     /// exact-zero columns, so the minimal-norm solve leaves exact-`0`
     /// coefficients.
-    pub(crate) fn build(design: &mut Design<'_>, moments: &TermMoments) -> Option<Self> {
+    pub(crate) fn build(
+        design: &Design<'_>,
+        loading_overrides: &mut LoadingOverrides,
+        moments: &TermMoments,
+    ) -> Option<Self> {
         let mut terms = Vec::new();
         let mut unidentified = Vec::new();
         for term in 0..design.terms.len() {
@@ -54,7 +58,13 @@ impl SlopeReparam {
             {
                 continue;
             }
-            terms.push(TermReparam::build(design, term, moments, &mut unidentified));
+            terms.push(TermReparam::build(
+                design,
+                loading_overrides,
+                term,
+                moments,
+                &mut unidentified,
+            ));
         }
         (!terms.is_empty()).then_some(Self {
             terms,
@@ -71,10 +81,11 @@ impl SlopeReparam {
 }
 
 impl TermReparam {
-    /// Whiten one term's loading columns in place, appending its unidentified
+    /// Whiten one term's solver-local loading columns, appending its unidentified
     /// directions ascending in `(level, column)`.
     fn build(
-        design: &mut Design<'_>,
+        design: &Design<'_>,
+        loading_overrides: &mut LoadingOverrides,
         term: usize,
         moments: &TermMoments,
         unidentified: &mut Vec<CoefficientPosition>,
@@ -141,7 +152,7 @@ impl TermReparam {
             }
         }
         for (out, &c) in u_cols.into_iter().zip(&z_cols) {
-            design.replace_loading_column(c, out);
+            loading_overrides.replace(design, c, out);
         }
 
         Self {
