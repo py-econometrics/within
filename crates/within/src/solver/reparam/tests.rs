@@ -77,11 +77,11 @@ fn unidentified_directions_ascend_across_terms() {
     assert_eq!(
         rp.unidentified,
         vec![
-            CoefficientAddress {
+            CoefficientPosition {
                 channel: Channel { term: 0, column: 1 },
                 level: 1,
             },
-            CoefficientAddress {
+            CoefficientPosition {
                 channel: Channel { term: 1, column: 1 },
                 level: 0,
             },

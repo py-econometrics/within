@@ -82,7 +82,7 @@ impl<T> Loading<T> {
 ///
 /// This is an identity mapping for the existing dense `u32` API. Later
 /// encodings can store an explicit mapping without changing `TermMeta`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FactorEncoding {
     n_levels: usize,
 }
@@ -94,6 +94,18 @@ impl FactorEncoding {
 
     pub(crate) fn n_levels(&self) -> usize {
         self.n_levels
+    }
+
+    pub(crate) fn position(&self, label: u32) -> Option<usize> {
+        let position = label as usize;
+        (position < self.n_levels).then_some(position)
+    }
+
+    pub(crate) fn label(&self, position: usize) -> Option<u32> {
+        if position >= self.n_levels {
+            return None;
+        }
+        u32::try_from(position).ok()
     }
 }
 
