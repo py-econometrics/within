@@ -1,3 +1,5 @@
+use rstest::rstest;
+
 use super::*;
 
 fn sparse_to_dense(matrix: &CsrMatrix) -> Vec<Vec<f64>> {
@@ -96,30 +98,22 @@ fn exact_schur_matches_dense_reference_when_eliminating_rows() {
 
 /// The sequential arm reuses one scatter workspace across rows, so a row that failed to
 /// reset it would read the previous row's entries.
-#[test]
-fn both_row_splits_produce_the_same_complement() {
+#[rstest]
+fn both_row_splits_produce_the_same_complement(
+    #[values(Grounding::Grounded, Grounding::Floating)] grounding: Grounding,
+) {
     let c_dense = vec![1.0, 2.0, 3.0, 0.0, 0.0, 4.0];
     let diagonal = vec![5.0, 6.0, 8.0, 7.0, 9.0];
     let (row_diag, _) = diagonal.split_at(3);
     let inv_diagonal: Vec<f64> = row_diag.iter().map(|d| 1.0 / d).collect();
 
-    for grounding in [Grounding::Grounded, Grounding::Floating] {
-        let operator = SddmMatrix::from_dense_for_test(&c_dense, 3, 2, diagonal.clone(), grounding);
-        let parallel = exact(&operator, &inv_diagonal, RowSplit::Parallel);
-        let sequential = exact(&operator, &inv_diagonal, RowSplit::Sequential);
+    let operator = SddmMatrix::from_dense_for_test(&c_dense, 3, 2, diagonal, grounding);
+    let parallel = exact(&operator, &inv_diagonal, RowSplit::Parallel);
+    let sequential = exact(&operator, &inv_diagonal, RowSplit::Sequential);
 
-        assert_eq!(
-            sequential.indptr(),
-            parallel.indptr(),
-            "{grounding:?} indptr"
-        );
-        assert_eq!(
-            sequential.indices(),
-            parallel.indices(),
-            "{grounding:?} indices"
-        );
-        assert_eq!(sequential.data(), parallel.data(), "{grounding:?} data");
-    }
+    assert_eq!(sequential.indptr(), parallel.indptr());
+    assert_eq!(sequential.indices(), parallel.indices());
+    assert_eq!(sequential.data(), parallel.data());
 }
 
 #[test]

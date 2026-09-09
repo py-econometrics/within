@@ -1,3 +1,5 @@
+use rstest::rstest;
+
 use super::*;
 use crate::Effect;
 
@@ -63,20 +65,17 @@ fn shared_covariate_across_two_terms_warns_both_ways() {
 
 /// The disease is scale-invariant, so the screen must be too: the raw Gram's
 /// intercept diagonal dwarfs a small covariate's.
-#[test]
-fn a_rescaled_shared_covariate_still_warns_both_ways() {
+#[rstest]
+fn a_rescaled_shared_covariate_still_warns_both_ways(#[values(1.0, 1e-6, 1e-9)] scale: f64) {
     let n = 4000;
     let (a, b) = two_factor_levels(n);
-    let z = pseudo_noise(n, 3);
-    for scale in [1.0, 1e-6, 1e-9] {
-        let scaled: Vec<f64> = z.iter().map(|v| v * scale).collect();
-        let design = Design::new(vec![
-            Effect::new(&a, true, [&scaled[..]]).unwrap(),
-            Effect::new(&b, true, [&scaled[..]]).unwrap(),
-        ])
-        .unwrap();
-        assert_eq!(warn_pairs(&design, None).len(), 2, "scale {scale:e}");
-    }
+    let scaled: Vec<f64> = pseudo_noise(n, 3).iter().map(|v| v * scale).collect();
+    let design = Design::new(vec![
+        Effect::new(&a, true, [&scaled[..]]).unwrap(),
+        Effect::new(&b, true, [&scaled[..]]).unwrap(),
+    ])
+    .unwrap();
+    assert_eq!(warn_pairs(&design, None).len(), 2);
 }
 
 #[test]
@@ -117,20 +116,19 @@ fn factor_measurable_covariate_warns_against_the_intercept_term() {
 
 /// The span holds every level's constant, so a covariate's offset must not
 /// enter the share: measured against `Σw·c²`, `mean=2005, sd=6` reads 7.6e-7.
-#[test]
-fn an_independent_covariate_stays_silent_at_any_offset() {
+#[rstest]
+fn an_independent_covariate_stays_silent_at_any_offset(
+    #[values(0.0, 1.0, 100.0, 2005.0, 1e6)] mean: f64,
+) {
     let n = 4000;
     let (a, b) = two_factor_levels(n);
-    let z = pseudo_noise(n, 5);
-    for mean in [0.0, 1.0, 100.0, 2005.0, 1e6] {
-        let shifted: Vec<f64> = z.iter().map(|v| mean + 6.0 * v).collect();
-        let design = Design::new(vec![
-            Effect::new(&a, true, [&shifted[..]]).unwrap(),
-            Effect::new(&b, true, []).unwrap(),
-        ])
-        .unwrap();
-        assert_eq!(warn_pairs(&design, None), Vec::new(), "mean {mean:e}");
-    }
+    let shifted: Vec<f64> = pseudo_noise(n, 5).iter().map(|v| mean + 6.0 * v).collect();
+    let design = Design::new(vec![
+        Effect::new(&a, true, [&shifted[..]]).unwrap(),
+        Effect::new(&b, true, []).unwrap(),
+    ])
+    .unwrap();
+    assert_eq!(warn_pairs(&design, None), Vec::new());
 }
 
 #[test]
@@ -170,31 +168,36 @@ fn zero_weight_rows_are_excluded_from_the_screen() {
     assert_eq!(warn_pairs(&design, None), Vec::new());
 }
 
-/// Severity peaks where a covariate is *nearly* shared: `eps²` down to 1e-24.
-#[test]
-fn the_share_resolves_a_perturbation_of_a_shared_covariate() {
+/// Term 1's share when its covariate is term 0's plus `eps` times independent noise.
+fn perturbed_share(eps: f64) -> f64 {
     let n = 4000;
     let (a, b) = two_factor_levels(n);
     let z = pseudo_noise(n, 3);
     let noise = pseudo_noise(n, 17);
-    let share_at = |eps: f64| {
-        let perturbed: Vec<f64> = z.iter().zip(&noise).map(|(&v, &e)| v + eps * e).collect();
-        let design = Design::new(vec![
-            Effect::new(&a, true, [&z[..]]).unwrap(),
-            Effect::new(&b, true, [&perturbed[..]]).unwrap(),
-        ])
-        .unwrap();
-        shares(&design, 1, FULL_TABLE)[0]
-    };
+    let perturbed: Vec<f64> = z.iter().zip(&noise).map(|(&v, &e)| v + eps * e).collect();
+    let design = Design::new(vec![
+        Effect::new(&a, true, [&z[..]]).unwrap(),
+        Effect::new(&b, true, [&perturbed[..]]).unwrap(),
+    ])
+    .unwrap();
+    shares(&design, 1, FULL_TABLE)[0]
+}
 
-    // An exactly shared covariate is reproduced to the last bit of the fit itself.
-    let exact = share_at(0.0);
+/// An exactly shared covariate is reproduced to the last bit of the fit itself.
+#[test]
+fn the_share_of_an_exactly_shared_covariate_is_at_the_fit_s_bits() {
+    let exact = perturbed_share(0.0);
     assert!(exact < 1e-28, "{exact:e}");
-    for eps in [1e-12, 1e-9, 1e-6, 1e-3] {
-        let share = share_at(eps);
-        let ratio = share / (eps * eps);
-        assert!((0.2..5.0).contains(&ratio), "eps {eps:e}: share {share:e}");
-    }
+}
+
+/// Severity peaks where a covariate is *nearly* shared: `eps²` down to 1e-24.
+#[rstest]
+fn the_share_resolves_a_perturbation_of_a_shared_covariate(
+    #[values(1e-12, 1e-9, 1e-6, 1e-3)] eps: f64,
+) {
+    let share = perturbed_share(eps);
+    let ratio = share / (eps * eps);
+    assert!((0.2..5.0).contains(&ratio), "share {share:e}");
 }
 
 /// Without an intercept both the fit and the denominator must read the covariate raw.
@@ -290,15 +293,19 @@ fn the_plan_keeps_the_table_inside_the_budget() {
     let table = |plan: ScreenPlan| plan.per_block * 32;
     let fits = ScreenPlan::new(4000, 125, 32);
     assert_eq!((fits.per_block, table(fits)), (125, 4000));
-    // A level count the budget cannot hold whole is cut, however large it is.
-    for n_levels in [1_000, 1_000_000, 100_000_000] {
-        let plan = ScreenPlan::new(4000, n_levels, 32);
-        assert_eq!(plan.per_block, 125, "{n_levels}");
-        assert!(table(plan) <= 4000, "{n_levels}");
-    }
     // One level's row is the floor: the stride, however many levels the term has.
     let starved = ScreenPlan::new(0, 100_000_000, 32);
     assert_eq!((starved.per_block, table(starved)), (1, 32));
+}
+
+/// A level count the budget cannot hold whole is cut, however large it is.
+#[rstest]
+fn the_plan_cuts_a_level_count_over_budget(
+    #[values(1_000, 1_000_000, 100_000_000)] n_levels: usize,
+) {
+    let plan = ScreenPlan::new(4000, n_levels, 32);
+    assert_eq!(plan.per_block, 125);
+    assert!(plan.per_block * 32 <= 4000);
 }
 
 /// Every row is walked in exactly one block, under either row order.

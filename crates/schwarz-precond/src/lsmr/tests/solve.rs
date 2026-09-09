@@ -1,5 +1,7 @@
 //! Solve behaviors: preconditioning, rank, and local reorthogonalization.
 
+use rstest::rstest;
+
 use super::super::*;
 use crate::lsmr::fixtures::*;
 use crate::{Operator, SolveError};
@@ -402,11 +404,13 @@ fn test_mlsmr_local_reorth_preconditioned() {
     );
 }
 
-/// Window sizes at the boundaries of useful values: `Some(1)` (degenerate
-/// ring of one), `Some(12)` (= number of columns), `Some(13)` (= cols + 1).
-/// All three must converge and produce a small normal-equation residual.
-#[test]
-fn test_mlsmr_local_reorth_window_boundary_sizes() {
+/// Window sizes at the boundaries of useful values; each must converge to a small
+/// normal-equation residual.
+#[rstest]
+#[case::ring_of_one(1)]
+#[case::cols(12)]
+#[case::cols_plus_one(13)]
+fn test_mlsmr_local_reorth_window_boundary_sizes(#[case] window_size: usize) {
     let op = DenseOp::vandermonde(30, 12);
     let b: Vec<f64> = (0..op.rows)
         .map(|i| {
@@ -415,18 +419,11 @@ fn test_mlsmr_local_reorth_window_boundary_sizes() {
         })
         .collect();
 
-    // Budget of 200 iterations gives `Some(1)` (which degenerates to no real
-    // reorthogonalization) enough room to converge on this cond ≈ 1e10 system,
-    // while still being a small bounded budget for the larger window sizes.
-    for window_size in [Some(1usize), Some(12), Some(13)] {
-        let result = lsmr(&op, &b, 1e-9, 200, window_size).expect("lsmr boundary-window solve");
-        assert!(
-            result.converged,
-            "did not converge with window {window_size:?}"
-        );
-        assert!(
-            normal_equation_residual(&op, &result.x, &b) < 1e-6,
-            "normal-eq residual too large with window {window_size:?}",
-        );
-    }
+    // 200 iterations lets a ring of one (no real reorthogonalization) converge at cond ≈ 1e10.
+    let result = lsmr(&op, &b, 1e-9, 200, Some(window_size)).expect("lsmr boundary-window solve");
+    assert!(result.converged);
+    assert!(
+        normal_equation_residual(&op, &result.x, &b) < 1e-6,
+        "normal-eq residual too large with window {window_size}",
+    );
 }

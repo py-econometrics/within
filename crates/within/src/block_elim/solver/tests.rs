@@ -1,3 +1,5 @@
+use rstest::rstest;
+
 use super::*;
 
 use crate::block_elim::csr_matrix::CsrMatrix;
@@ -70,8 +72,10 @@ fn fold_rejects_a_zero_eliminated_diagonal() {
     }
 }
 
-#[test]
-fn an_unusable_dense_pivot_is_retried_rather_than_fatal() {
+#[rstest]
+fn an_unusable_dense_pivot_is_retried_rather_than_fatal(
+    #[values(SchurMode::Exact, SchurMode::Approximate(Default::default()))] schur: SchurMode,
+) {
     // The exact attempt only fails when weight spread costs the complement its definiteness.
     let matrix =
         SddmMatrix::laplacian_for_test(&[0.0, 1e-16, 1e2, 1e0, 1e5, 0.0, 0.0, 1e14, 0.0], 3, 3);
@@ -87,20 +91,16 @@ fn an_unusable_dense_pivot_is_retried_rather_than_fatal() {
         "the fixture no longer reaches the fall-through"
     );
 
-    for schur in [SchurMode::Exact, SchurMode::Approximate(Default::default())] {
-        let config = LocalSolverConfig {
-            approx_chol: ApproxCholConfig::default(),
-            schur,
-            dense_threshold: DEFAULT_DENSE_SCHUR_THRESHOLD,
-            ..Default::default()
-        };
-
-        assert!(
-            Eliminated::factor_reduced(&eliminated, &config).is_ok(),
-            "{:?}: an unusable pivot must not be fatal",
-            config.schur
-        );
-    }
+    let config = LocalSolverConfig {
+        approx_chol: ApproxCholConfig::default(),
+        schur,
+        dense_threshold: DEFAULT_DENSE_SCHUR_THRESHOLD,
+        ..Default::default()
+    };
+    assert!(
+        Eliminated::factor_reduced(&eliminated, &config).is_ok(),
+        "an unusable pivot must not be fatal"
+    );
 }
 
 /// Build an eliminated-major CrossTab (`n_rows > n_cols`, as orientation
@@ -205,33 +205,30 @@ fn grounded_two_block_solve_is_leak_free() {
     }
 }
 
-#[test]
-fn trivial_singleton_component_solves_r_over_d() {
-    // Live 1×1 components keep n_keep = 0, so the solve degenerates to x = r/d exactly.
+/// Live 1×1 components keep n_keep = 0, so the solve degenerates to x = r/d exactly.
+#[rstest]
+#[case::row_singleton(1, 0)]
+#[case::column_singleton(0, 1)]
+fn trivial_singleton_component_solves_r_over_d(#[case] n_rows: usize, #[case] n_cols: usize) {
     let config = LocalSolverConfig {
         approx_chol: ApproxCholConfig::default(),
         schur: SchurMode::Exact,
         dense_threshold: 0,
         ..Default::default()
     };
-    for (n_rows, n_cols) in [(1usize, 0usize), (0, 1)] {
-        let cross_tab = CrossTab::from_dense_for_test(&[], n_rows, n_cols);
-        let diagonal = vec![4.0; n_rows + n_cols];
-        let component = LocalComponent::general_for_test(cross_tab, diagonal);
-        let solver = BlockElimSolver::build(component, &config).expect("trivial 1×1 build");
-        assert_eq!(solver.n_local(), 1);
+    let cross_tab = CrossTab::from_dense_for_test(&[], n_rows, n_cols);
+    let diagonal = vec![4.0; n_rows + n_cols];
+    let component = LocalComponent::general_for_test(cross_tab, diagonal);
+    let solver = BlockElimSolver::build(component, &config).expect("trivial 1×1 build");
+    assert_eq!(solver.n_local(), 1);
 
-        let mut rhs = vec![0.0; solver.scratch_size()];
-        rhs[0] = 2.0;
-        let mut sol = vec![0.0; solver.scratch_size()];
-        solver
-            .solve_local(&mut rhs, &mut sol, false)
-            .expect("trivial solve");
-        assert_eq!(
-            sol[0], 0.5,
-            "n_rows={n_rows}, n_cols={n_cols}: expected r/d"
-        );
-    }
+    let mut rhs = vec![0.0; solver.scratch_size()];
+    rhs[0] = 2.0;
+    let mut sol = vec![0.0; solver.scratch_size()];
+    solver
+        .solve_local(&mut rhs, &mut sol, false)
+        .expect("trivial solve");
+    assert_eq!(sol[0], 0.5, "expected r/d");
 }
 
 #[test]
@@ -301,9 +298,15 @@ fn grounded_backend_auxiliary_is_initialized_on_every_solve() {
     assert_eq!(first[..solver.n_local()], second[..solver.n_local()]);
 }
 
-#[test]
-fn signed_component_realizes_congruence_transformed_solve() {
-    // Stars of ≤2 entries sample deterministically-exact, so all three arms share one oracle.
+/// Stars of ≤2 entries sample deterministically-exact, so all three arms share one oracle.
+#[rstest]
+#[case::dense_full_minor(8, SchurMode::Exact)]
+#[case::exact_sparse(0, SchurMode::Exact)]
+#[case::sampled_sparse(0, SchurMode::Approximate(crate::config::ApproxSchurConfig::default()))]
+fn signed_component_realizes_congruence_transformed_solve(
+    #[case] dense_threshold: usize,
+    #[case] schur: SchurMode,
+) {
     let (n_rows, n_cols) = (3usize, 2usize);
     let d: Vec<f64> = vec![-1.0, 4.0, 0.25, 2.0, -0.5];
     let c_hat = [[1.0, 3.0], [2.0, 0.0], [0.5, 1.5]];
@@ -316,64 +319,54 @@ fn signed_component_realizes_congruence_transformed_solve() {
         }
     }
 
-    for (label, dense_threshold, schur) in [
-        ("dense full minor", 8, SchurMode::Exact),
-        ("exact sparse", 0, SchurMode::Exact),
-        (
-            "sampled sparse",
-            0,
-            SchurMode::Approximate(crate::config::ApproxSchurConfig::default()),
-        ),
-    ] {
-        let cross_tab = CrossTab::from_dense_for_test(&c_raw, n_rows, n_cols);
-        let diagonals: Vec<f64> = (0..n_rows + n_cols)
-            .map(|k| diag_hat[k] / (d[k] * d[k]))
-            .collect();
-        let config = LocalSolverConfig {
-            approx_chol: ApproxCholConfig::default(),
-            schur,
-            dense_threshold,
-            ..Default::default()
-        };
-        // SDDM factors fold the bipartite negation in: f = d on q, -d on r.
-        let factors: Vec<f64> = d
-            .iter()
-            .enumerate()
-            .map(|(i, &v)| if i < n_rows { v } else { -v })
-            .collect();
-        let component = LocalComponent::with_factors_for_test(cross_tab, diagonals, &factors);
-        let solver =
-            BlockElimSolver::build(component, &config).expect("signed block-elim build failed");
+    let cross_tab = CrossTab::from_dense_for_test(&c_raw, n_rows, n_cols);
+    let diagonals: Vec<f64> = (0..n_rows + n_cols)
+        .map(|k| diag_hat[k] / (d[k] * d[k]))
+        .collect();
+    let config = LocalSolverConfig {
+        approx_chol: ApproxCholConfig::default(),
+        schur,
+        dense_threshold,
+        ..Default::default()
+    };
+    // SDDM factors fold the bipartite negation in: f = d on q, -d on r.
+    let factors: Vec<f64> = d
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| if i < n_rows { v } else { -v })
+        .collect();
+    let component = LocalComponent::with_factors_for_test(cross_tab, diagonals, &factors);
+    let solver =
+        BlockElimSolver::build(component, &config).expect("signed block-elim build failed");
 
-        let n = n_rows + n_cols;
-        let r = [0.5, 3.0, -1.25, 1.0, -2.0];
-        let mut rhs = vec![0.0; solver.scratch_size()];
-        rhs[..n].copy_from_slice(&r);
-        let mut sol = vec![0.0; solver.scratch_size()];
-        solver
-            .solve_local(&mut rhs, &mut sol, false)
-            .expect("solve_local failed");
+    let n = n_rows + n_cols;
+    let r = [0.5, 3.0, -1.25, 1.0, -2.0];
+    let mut rhs = vec![0.0; solver.scratch_size()];
+    rhs[..n].copy_from_slice(&r);
+    let mut sol = vec![0.0; solver.scratch_size()];
+    solver
+        .solve_local(&mut rhs, &mut sol, false)
+        .expect("solve_local failed");
 
-        for i in 0..n {
-            let mut ax = 0.0;
-            for j in 0..n {
-                let a_ij = if i == j {
-                    diag_hat[i] / (d[i] * d[i])
-                } else if i < n_rows && j >= n_rows {
-                    c_raw[i * n_cols + (j - n_rows)]
-                } else if j < n_rows && i >= n_rows {
-                    c_raw[j * n_cols + (i - n_rows)]
-                } else {
-                    0.0
-                };
-                ax += a_ij * sol[j];
-            }
-            assert!(
-                (ax - r[i]).abs() < 1e-9,
-                "{label}: row {i}: A·x = {ax}, expected {}",
-                r[i]
-            );
+    for i in 0..n {
+        let mut ax = 0.0;
+        for j in 0..n {
+            let a_ij = if i == j {
+                diag_hat[i] / (d[i] * d[i])
+            } else if i < n_rows && j >= n_rows {
+                c_raw[i * n_cols + (j - n_rows)]
+            } else if j < n_rows && i >= n_rows {
+                c_raw[j * n_cols + (i - n_rows)]
+            } else {
+                0.0
+            };
+            ax += a_ij * sol[j];
         }
+        assert!(
+            (ax - r[i]).abs() < 1e-9,
+            "row {i}: A·x = {ax}, expected {}",
+            r[i]
+        );
     }
 }
 

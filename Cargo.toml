@@ -21,6 +21,7 @@ rayon = "1.12"
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["use-std"] }
 thiserror = "2"
+rstest = { version = "0.26.1", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

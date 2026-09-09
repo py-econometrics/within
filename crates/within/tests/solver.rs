@@ -1,4 +1,5 @@
 use ndarray::array;
+use rstest::rstest;
 use within::{
     solve, ApproxCholConfig, ApproxSchurConfig, Effect, LocalSolverConfig, LsmrOptions,
     Preconditioner, PreconditionerConfig, ReductionStrategy, ScalingConfig, ScalingFailure,
@@ -297,9 +298,11 @@ fn test_solver_accepts_prebuilt_design() {
 /// is applied to every frame by `Design::from_frame`, so the oracle is built
 /// via `from_frame_unsorted`, the explicit caller-order escape hatch. Results
 /// agree within solver tolerance, not bitwise: the paths sum in different
-/// row orders.
-#[test]
-fn test_internal_locality_sort_is_transparent() {
+/// row orders. The weighted run also exercises the weights-permutation path.
+#[rstest]
+#[case::unweighted(false)]
+#[case::weighted(true)]
+fn test_internal_locality_sort_is_transparent(#[case] weighted: bool) {
     use within::observation::ObservationFrame;
     use within::Design;
 
@@ -310,7 +313,11 @@ fn test_internal_locality_sort_is_transparent() {
     let y: Vec<f64> = (0..n_obs)
         .map(|i| (i as f64 * 1.3 - 2.0).sin() + 0.5)
         .collect();
-    let w: Vec<f64> = (0..n_obs).map(|i| 0.5 + 0.1 * i as f64).collect();
+    let weights = weighted.then(|| {
+        (0..n_obs)
+            .map(|i| 0.5 + 0.1 * i as f64)
+            .collect::<Vec<f64>>()
+    });
     let params = default_params();
     let precond = additive_precond();
 
@@ -326,13 +333,10 @@ fn test_internal_locality_sort_is_transparent() {
         Solver::new(design, weights, &precond).expect("oracle solver")
     };
 
-    // The weighted run also exercises the weights-permutation path.
-    for weights in [None, Some(w)] {
-        let oracle = make_oracle(weights.clone())
-            .solve(&y, &params)
-            .expect("oracle");
-        let sorted = make_solver(weights).solve(&y, &params).expect("sorted");
-        common::assert_solutions_close(&sorted.x, &oracle.x, 1e-7);
-        common::assert_solutions_close(&sorted.demeaned, &oracle.demeaned, 1e-7);
-    }
+    let oracle = make_oracle(weights.clone())
+        .solve(&y, &params)
+        .expect("oracle");
+    let sorted = make_solver(weights).solve(&y, &params).expect("sorted");
+    common::assert_solutions_close(&sorted.x, &oracle.x, 1e-7);
+    common::assert_solutions_close(&sorted.demeaned, &oracle.demeaned, 1e-7);
 }

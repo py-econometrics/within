@@ -1,6 +1,7 @@
 use std::error::Error;
 
 use ndarray::Array2;
+use rstest::rstest;
 use schwarz_precond::SolveError;
 use within::observation::ObservationFrame;
 use within::{
@@ -204,25 +205,23 @@ fn test_within_error_source_chains_through_transparent_wrapper() {
     assert!(e.source().is_some());
 }
 
-#[test]
-fn test_invalid_ridge_rejected() {
+#[rstest]
+fn test_invalid_ridge_rejected(#[values(-1e-9, f64::NAN, f64::INFINITY)] ridge: f64) {
     let f = [0u32, 0, 1, 1];
     let g = [0u32, 1, 0, 1];
-    for ridge in [-1e-9, f64::NAN, f64::INFINITY] {
-        let precond = PreconditionerConfig::Additive {
-            local_solver: LocalSolverConfig {
-                ridge,
-                ..Default::default()
-            },
-            reduction: Default::default(),
-        };
-        let effects = vec![
-            Effect::new(&f, true, []).expect("f"),
-            Effect::new(&g, true, []).expect("g"),
-        ];
-        match Solver::new(effects, None, &precond) {
-            Err(BuildError::InvalidRidge { value }) => assert_eq!(value.to_bits(), ridge.to_bits()),
-            other => panic!("expected InvalidRidge for {ridge}, got {other:?}"),
-        }
+    let precond = PreconditionerConfig::Additive {
+        local_solver: LocalSolverConfig {
+            ridge,
+            ..Default::default()
+        },
+        reduction: Default::default(),
+    };
+    let effects = vec![
+        Effect::new(&f, true, []).expect("f"),
+        Effect::new(&g, true, []).expect("g"),
+    ];
+    match Solver::new(effects, None, &precond) {
+        Err(BuildError::InvalidRidge { value }) => assert_eq!(value.to_bits(), ridge.to_bits()),
+        other => panic!("expected InvalidRidge, got {other:?}"),
     }
 }
