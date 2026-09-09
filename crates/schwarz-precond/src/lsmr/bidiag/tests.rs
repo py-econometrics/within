@@ -4,12 +4,15 @@ use super::{alpha_from_vp, dot, Bidiagonalization, GolubKahan};
 use crate::lsmr::fixtures::{DenseOp, DiagOp};
 use crate::{Operator, SolveError};
 
-/// A NaN `vp` clamped to α = 0 via `f64::max`, which the driver reports as an exact solve at x = 0.
+/// A NaN `vp` clamped to α = 0 via `f64::max`; a product bound overflowed to ∞ or underflowed to 0.
 #[test]
 fn alpha_from_vp_rejects_non_finite_and_indefinite_pairs() {
     let rejected = [
         (vec![1.0, f64::NAN], vec![1.0, 1.0]),
         (vec![1.0, f64::INFINITY], vec![1.0, 1.0]),
+        (vec![-1e100], vec![1e100]),
+        (vec![-1e302, f64::MAX, f64::MAX], vec![1.0, 0.0, 0.0]),
+        (vec![-2e300, 1e308], vec![1e-316, 0.0]),
     ];
     for (v, p) in &rejected {
         assert!(
@@ -17,7 +20,11 @@ fn alpha_from_vp_rejects_non_finite_and_indefinite_pairs() {
             "{v:?}·{p:?} accepted"
         );
     }
-    let clamped = [(vec![1.0, 1.0], vec![1.0, -1.0 - 1e-12])];
+    let clamped = [
+        (vec![1.0, 1.0], vec![1.0, -1.0 - 1e-12]),
+        (vec![1e-100, 1e-100], vec![1e-100, -1.000000000001e-100]),
+        (vec![1e-316, 1e-316], vec![1e308, -1.000000000001e308]),
+    ];
     for (v, p) in &clamped {
         assert_eq!(alpha_from_vp(v, p).expect("within √ε"), 0.0, "{v:?}·{p:?}");
     }

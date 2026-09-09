@@ -101,8 +101,11 @@ fn alpha_from_vp(v: &[f64], p_tilde: &[f64]) -> Result<f64, SolveError> {
     // `vp.max(0.0)` returns 0 for NaN, which α = 0 reports as an exact solve at x = 0.
     let vp = finite(par_dot(v, p_tilde), "⟨v, Mv⟩")?;
     if vp < 0.0 {
-        let bound = f64::EPSILON.sqrt() * (par_dot(v, v) * par_dot(p_tilde, p_tilde)).sqrt();
-        if vp < -bound {
+        let norm_v = finite(super::vec_norm(v), "‖v‖")?;
+        let norm_p = finite(super::vec_norm(p_tilde), "‖p̃‖")?;
+        // Dividing by the smaller norm first keeps the sign decision exact where a product fails.
+        let (small, large) = (norm_v.min(norm_p), norm_v.max(norm_p));
+        if vp / small / large < -f64::EPSILON.sqrt() {
             return Err(SolveError::InvalidInput {
                 context: "mlsmr",
                 message: "preconditioner not positive definite (⟨v, Mv⟩ < 0)".to_string(),
