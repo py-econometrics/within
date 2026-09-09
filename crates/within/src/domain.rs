@@ -15,11 +15,11 @@ pub(crate) use factor_pairs::{
     SddmMatrix,
 };
 
-use std::borrow::Cow;
-
 use crate::channel::Channel;
 use crate::observation::ObservationFrame;
 use crate::BuildError;
+use ndarray::{ArrayView2, Axis};
+use std::borrow::Cow;
 
 /// A slice that is guaranteed non-empty by construction.
 #[repr(transparent)]
@@ -211,6 +211,21 @@ impl<'a> Design<'a> {
     pub fn from_frame(frame: ObservationFrame<'a>) -> Result<Self, BuildError> {
         let structure = vec![NonEmpty::of(Loading::Constant); frame.n_factors()];
         Self::build(frame, structure, true)
+    }
+
+    /// Build an intercept-only design from an observation-major categories matrix.
+    pub fn from_categories(categories: ArrayView2<'a, u32>) -> Result<Self, BuildError> {
+        // Gather strided (C-order) columns once so every downstream read is contiguous.
+        let categorical = (0..categories.ncols())
+            .map(|factor| {
+                let column = categories.index_axis_move(Axis(1), factor);
+                match column.to_slice() {
+                    Some(values) => Cow::Borrowed(values),
+                    None => Cow::Owned(column.to_vec()),
+                }
+            })
+            .collect();
+        Self::from_frame(ObservationFrame::new(categorical, Vec::new())?)
     }
 
     /// [`from_frame`](Self::from_frame) without the locality sort — profiling escape hatch.
