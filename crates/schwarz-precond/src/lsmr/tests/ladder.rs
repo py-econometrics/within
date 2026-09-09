@@ -82,6 +82,25 @@ fn test_mlsmr_warm_rejects_overflowing_warm_start_residual() {
     ));
 }
 
+/// `‖b‖` sets the tolerance even when the warm-start residual it is measured against is finite.
+#[test]
+fn test_mlsmr_warm_rejects_overflowing_rhs_norm() {
+    let op = DiagOp(vec![1.0, 1.1]);
+    let m = DiagOp(vec![1e-310; 2]);
+    let x0 = [1.2e308, 1.1e308];
+    let options = MlsmrOptions {
+        warm_start: Some(&x0),
+        ..Default::default()
+    };
+    let err = mlsmr(&op, &[1.3e308; 2], &m, 1e-10, 10, options)
+        .err()
+        .expect("an infinite ‖b‖ certified the warm start");
+    assert!(
+        matches!(&err, SolveError::InvalidInput { message, .. } if message.contains("rhs norm")),
+        "{err}"
+    );
+}
+
 #[test]
 fn test_mlsmr_zero_rhs_corrects_non_exact_warm_start() {
     let op = IdentityOp { n: 3 };

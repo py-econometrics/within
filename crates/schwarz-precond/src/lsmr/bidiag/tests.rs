@@ -1,7 +1,69 @@
 //! White-box checks on the bidiagonalization itself.
 
-use super::{dot, Bidiagonalization, GolubKahan};
-use crate::lsmr::fixtures::DenseOp;
+use super::{alpha_from_vp, dot, Bidiagonalization, GolubKahan};
+use crate::lsmr::fixtures::{DenseOp, DiagOp};
+use crate::{Operator, SolveError};
+
+/// A NaN `vp` clamped to α = 0 via `f64::max`, which the driver reports as an exact solve at x = 0.
+#[test]
+fn alpha_from_vp_rejects_non_finite_and_indefinite_pairs() {
+    let rejected = [
+        (vec![1.0, f64::NAN], vec![1.0, 1.0]),
+        (vec![1.0, f64::INFINITY], vec![1.0, 1.0]),
+    ];
+    for (v, p) in &rejected {
+        assert!(
+            matches!(alpha_from_vp(v, p), Err(SolveError::InvalidInput { .. })),
+            "{v:?}·{p:?} accepted"
+        );
+    }
+    let clamped = [(vec![1.0, 1.0], vec![1.0, -1.0 - 1e-12])];
+    for (v, p) in &clamped {
+        assert_eq!(alpha_from_vp(v, p).expect("within √ε"), 0.0, "{v:?}·{p:?}");
+    }
+}
+
+/// `beta == 0.0` and `alpha > 0.0` are both false for NaN; unguarded, an overflow poisons the run.
+#[test]
+fn a_non_finite_operator_norm_is_an_error() {
+    for bad in [f64::NAN, f64::MAX] {
+        let result = crate::lsmr::lsmr(&DiagOp(vec![bad, 1.0]), &[1.0, 1.0], 1e-10, 50, None);
+        assert!(
+            matches!(result, Err(SolveError::InvalidInput { .. })),
+            "{bad:e} accepted"
+        );
+    }
+}
+
+/// A finite adjoint keeps `init` clean, so the overflow reaches the `step` guard on β.
+#[test]
+fn an_overflow_after_initialization_is_an_error() {
+    struct OverflowingForward;
+    impl Operator for OverflowingForward {
+        fn nrows(&self) -> usize {
+            2
+        }
+        fn ncols(&self) -> usize {
+            2
+        }
+        fn apply(&self, _x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+            y.fill(f64::MAX);
+            Ok(())
+        }
+        fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+            y.copy_from_slice(x);
+            Ok(())
+        }
+    }
+    let (mut bidiag, first) =
+        GolubKahan::init(&OverflowingForward, &[1.0, 1.0], 0).expect("finite init");
+    assert!(first.alpha > 0.0);
+    let err = bidiag.step().err().expect("an overflowing β was accepted");
+    assert!(
+        matches!(&err, SolveError::InvalidInput { message, .. } if message.contains("β")),
+        "{err}"
+    );
+}
 
 /// Window smaller than the iteration count: the ring must wrap correctly.
 /// We re-run the bidiagonalization manually with the same window and
