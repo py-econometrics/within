@@ -1,6 +1,6 @@
 use ndarray::array;
 use within::{
-    solve, ApproxCholConfig, ApproxSchurConfig, Effect, LocalSolverConfig, LsmrOptions,
+    solve, ApproxCholConfig, ApproxSchurConfig, Design, Effect, LocalSolverConfig, LsmrOptions,
     Preconditioner, PreconditionerConfig, ReductionStrategy, ScalingConfig, ScalingFailure,
     SchurMode, Solver,
 };
@@ -37,6 +37,36 @@ fn test_solver_matches_oneshot() {
     assert_eq!(result.x.len(), oneshot.x.len());
     for (a, b) in result.x.iter().zip(oneshot.x.iter()) {
         assert!((a - b).abs() < 1e-12, "x mismatch: {} vs {}", a, b);
+    }
+}
+
+#[test]
+fn test_solver_matches_design_reuse() {
+    let (categories, y) = categories_and_y();
+    let params = default_params();
+    let precond = additive_precond();
+    let weights = vec![1.0; y.len()];
+
+    let design = Design::from_categories(categories.view()).expect("design build");
+
+    let unweighted = Solver::from_design(&design, None, &precond).expect("unweighted solver build");
+    let weighted = Solver::from_design(&design, Some(weights.clone()), &precond)
+        .expect("weighted solver build");
+
+    let unweighted_result = unweighted.solve(&y, &params).expect("unweighted solve");
+    let weighted_result = weighted.solve(&y, &params).expect("weighted solve");
+
+    assert!(unweighted_result.converged);
+    assert!(weighted_result.converged);
+
+    let expected = Solver::new(categories.view(), Some(weights), &precond)
+        .expect("owning solver build")
+        .solve(&y, &params)
+        .expect("owning solve");
+
+    assert_eq!(weighted_result.x.len(), expected.x.len());
+    for (actual, expected) in weighted_result.x.iter().zip(expected.x.iter()) {
+        assert!((actual - expected).abs() < 1e-12);
     }
 }
 
