@@ -2,6 +2,7 @@ mod design_tests {
     use crate::domain::Design;
     use crate::linalg::dot;
     use crate::operator::DesignOperator;
+    use rstest::rstest;
     use schwarz_precond::Operator;
 
     fn make_test_design() -> Design<'static> {
@@ -240,15 +241,21 @@ mod design_tests {
         }
     }
 
-    #[test]
-    fn test_scatter_scratch_reuse_matches_fresh_operator() {
-        // The three pairs route Sequential, Fold and SortedCoalesced respectively.
-        for (n_obs, n_levels) in [(200usize, 16usize), (15_000, 64), (150_000, 100_000)] {
-            let dm = make_strategy_design(n_obs, n_levels);
-            assert_scratch_reuse_matches_fresh(&dm, &format!("n_obs={n_obs}, n_levels={n_levels}"));
-        }
+    #[rstest]
+    #[case::sequential(200, 16)]
+    #[case::fold(15_000, 64)]
+    #[case::sorted_coalesced(150_000, 100_000)]
+    fn test_scatter_scratch_reuse_matches_fresh_operator(
+        #[case] n_obs: usize,
+        #[case] n_levels: usize,
+    ) {
+        let dm = make_strategy_design(n_obs, n_levels);
+        assert_scratch_reuse_matches_fresh(&dm, &format!("n_obs={n_obs}, n_levels={n_levels}"));
+    }
 
-        // A large unsorted non-dominant factor cannot coalesce.
+    /// A large unsorted non-dominant factor cannot coalesce.
+    #[test]
+    fn test_atomic_scatter_scratch_reuse_matches_fresh_operator() {
         let n_obs = 150_000usize;
         let fa: Vec<u32> = (0..n_obs as u32).collect();
         let fb: Vec<u32> = (0..n_obs).map(|i| ((i * 7919) % 100_000) as u32).collect();

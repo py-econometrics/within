@@ -1,36 +1,41 @@
 //! Breakdown, early-exit and input-validation paths.
 
+use rstest::rstest;
+
 use super::super::*;
 use crate::lsmr::fixtures::*;
 use crate::{Operator, SolveError};
 
-#[test]
-fn test_mlsmr_mid_stream_beta_zero_breakdown() {
-    // Consistent rank-1 system: b lies in A's range, so A v_1 - alpha_1 u_1
-    // collapses and beta_2 == 0, driving the mid-stream beta == 0 branch in
-    // both bidiagonalizations (ModifiedGolubKahan also zeroes the paired p̃).
-    // The residual estimate is then exactly zero — reported as a converged
-    // ResidualTolerance solve, not a distinct breakdown reason.
-    let b = vec![5.0, 0.0];
-    let identity = IdentityOp { n: 2 };
-    for result in [
-        lsmr(&ZeroSecondRow, &b, 1e-12, 100, None).expect("Golub-Kahan beta=0"),
+/// `ZeroSecondRow` under either bidiagonalization; the modified one also zeroes the paired p̃.
+fn zero_second_row_solve(b: &[f64], modified: bool) -> LsmrResult {
+    if modified {
+        let identity = IdentityOp { n: 2 };
         mlsmr(
             &ZeroSecondRow,
-            &b,
+            b,
             &identity,
             1e-12,
             100,
             MlsmrOptions::default(),
         )
-        .expect("modified Golub-Kahan beta=0"),
-    ] {
-        assert!(result.converged);
-        assert_eq!(result.iterations, 1);
-        assert_eq!(result.stop_reason, LsmrStopReason::ResidualTolerance);
-        assert!((result.x[0] - 5.0).abs() < 1e-12);
-        assert!(result.x[1].abs() < 1e-12);
+        .expect("modified Golub-Kahan")
+    } else {
+        lsmr(&ZeroSecondRow, b, 1e-12, 100, None).expect("Golub-Kahan")
     }
+}
+
+/// b lies in A's range, so `A v₁ − α₁ u₁` collapses and β₂ = 0; the residual estimate is then
+/// exactly zero — a converged ResidualTolerance solve, not a distinct breakdown reason.
+#[rstest]
+#[case::golub_kahan(false)]
+#[case::modified_golub_kahan(true)]
+fn test_mlsmr_mid_stream_beta_zero_breakdown(#[case] modified: bool) {
+    let result = zero_second_row_solve(&[5.0, 0.0], modified);
+    assert!(result.converged);
+    assert_eq!(result.iterations, 1);
+    assert_eq!(result.stop_reason, LsmrStopReason::ResidualTolerance);
+    assert!((result.x[0] - 5.0).abs() < 1e-12);
+    assert!(result.x[1].abs() < 1e-12);
 }
 
 /// `Aᵀb = 0` with `b ≠ 0` triggers the `step1.alpha == 0` early-exit:
@@ -79,28 +84,16 @@ fn test_mlsmr_step1_alpha_zero_early_exit() {
 ///
 /// `ZeroSecondRow` with `b = [5, 3]` reaches `alpha_2 = 0` while leaving a
 /// residual of 3, exercising exactly this path on both bidiagonalizations.
-#[test]
-fn test_mid_stream_breakdown_reports_convergence() {
-    let b = vec![5.0, 3.0];
-    let identity = IdentityOp { n: 2 };
-    for result in [
-        lsmr(&ZeroSecondRow, &b, 1e-12, 100, None).expect("Golub-Kahan breakdown"),
-        mlsmr(
-            &ZeroSecondRow,
-            &b,
-            &identity,
-            1e-12,
-            100,
-            MlsmrOptions::default(),
-        )
-        .expect("modified Golub-Kahan breakdown"),
-    ] {
-        assert!(result.converged);
-        assert_eq!(result.stop_reason, LsmrStopReason::NormalEquationTolerance);
-        // x_0 = 5 fits row 0; row 1 is unmatchable, leaving residual 3.
-        assert!((result.x[0] - 5.0).abs() < 1e-10);
-        assert!((result.residual_norm - 3.0).abs() < 1e-10);
-    }
+#[rstest]
+#[case::golub_kahan(false)]
+#[case::modified_golub_kahan(true)]
+fn test_mid_stream_breakdown_reports_convergence(#[case] modified: bool) {
+    let result = zero_second_row_solve(&[5.0, 3.0], modified);
+    assert!(result.converged);
+    assert_eq!(result.stop_reason, LsmrStopReason::NormalEquationTolerance);
+    // x_0 = 5 fits row 0; row 1 is unmatchable, leaving residual 3.
+    assert!((result.x[0] - 5.0).abs() < 1e-10);
+    assert!((result.residual_norm - 3.0).abs() < 1e-10);
 }
 
 #[test]

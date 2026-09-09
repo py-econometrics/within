@@ -1,45 +1,41 @@
 //! White-box checks on the bidiagonalization itself.
 
+use rstest::rstest;
+
 use super::{alpha_from_vp, dot, Bidiagonalization, GolubKahan};
 use crate::lsmr::fixtures::{DenseOp, DiagOp};
 use crate::{Operator, SolveError};
 
 /// A NaN `vp` clamped to α = 0 via `f64::max`; a product bound overflowed to ∞ or underflowed to 0.
-#[test]
-fn alpha_from_vp_rejects_non_finite_and_indefinite_pairs() {
-    let rejected = [
-        (vec![1.0, f64::NAN], vec![1.0, 1.0]),
-        (vec![1.0, f64::INFINITY], vec![1.0, 1.0]),
-        (vec![-1e100], vec![1e100]),
-        (vec![-1e302, f64::MAX, f64::MAX], vec![1.0, 0.0, 0.0]),
-        (vec![-2e300, 1e308], vec![1e-316, 0.0]),
-    ];
-    for (v, p) in &rejected {
-        assert!(
-            matches!(alpha_from_vp(v, p), Err(SolveError::InvalidInput { .. })),
-            "{v:?}·{p:?} accepted"
-        );
-    }
-    let clamped = [
-        (vec![1.0, 1.0], vec![1.0, -1.0 - 1e-12]),
-        (vec![1e-100, 1e-100], vec![1e-100, -1.000000000001e-100]),
-        (vec![1e-316, 1e-316], vec![1e308, -1.000000000001e308]),
-    ];
-    for (v, p) in &clamped {
-        assert_eq!(alpha_from_vp(v, p).expect("within √ε"), 0.0, "{v:?}·{p:?}");
-    }
+#[rstest]
+#[case::nan(&[1.0, f64::NAN], &[1.0, 1.0])]
+#[case::infinity(&[1.0, f64::INFINITY], &[1.0, 1.0])]
+#[case::indefinite(&[-1e100], &[1e100])]
+#[case::overflowing_bound(&[-1e302, f64::MAX, f64::MAX], &[1.0, 0.0, 0.0])]
+#[case::underflowing_bound(&[-2e300, 1e308], &[1e-316, 0.0])]
+fn alpha_from_vp_rejects_non_finite_and_indefinite_pairs(#[case] v: &[f64], #[case] p: &[f64]) {
+    assert!(
+        matches!(alpha_from_vp(v, p), Err(SolveError::InvalidInput { .. })),
+        "{v:?}·{p:?} accepted"
+    );
+}
+
+#[rstest]
+#[case::unit_scale(&[1.0, 1.0], &[1.0, -1.0 - 1e-12])]
+#[case::tiny_scale(&[1e-100, 1e-100], &[1e-100, -1.000000000001e-100])]
+#[case::extreme_scales(&[1e-316, 1e-316], &[1e308, -1.000000000001e308])]
+fn alpha_from_vp_clamps_a_pair_within_root_epsilon(#[case] v: &[f64], #[case] p: &[f64]) {
+    assert_eq!(alpha_from_vp(v, p).expect("within √ε"), 0.0, "{v:?}·{p:?}");
 }
 
 /// `beta == 0.0` and `alpha > 0.0` are both false for NaN; unguarded, an overflow poisons the run.
-#[test]
-fn a_non_finite_operator_norm_is_an_error() {
-    for bad in [f64::NAN, f64::MAX] {
-        let result = crate::lsmr::lsmr(&DiagOp(vec![bad, 1.0]), &[1.0, 1.0], 1e-10, 50, None);
-        assert!(
-            matches!(result, Err(SolveError::InvalidInput { .. })),
-            "{bad:e} accepted"
-        );
-    }
+#[rstest]
+fn a_non_finite_operator_norm_is_an_error(#[values(f64::NAN, f64::MAX)] bad: f64) {
+    let result = crate::lsmr::lsmr(&DiagOp(vec![bad, 1.0]), &[1.0, 1.0], 1e-10, 50, None);
+    assert!(
+        matches!(result, Err(SolveError::InvalidInput { .. })),
+        "{bad:e} accepted"
+    );
 }
 
 /// A finite adjoint keeps `init` clean, so the overflow reaches the `step` guard on β.

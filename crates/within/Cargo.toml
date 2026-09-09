@@ -24,6 +24,7 @@ thiserror.workspace = true
 criterion = { version = "0.7", features = ["html_reports"] }
 rand = "0.10"
 proptest = "1"
+rstest.workspace = true
 
 [[bench]]
 name = "fixest"

@@ -6,6 +6,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use rayon::prelude::*;
+use rstest::rstest;
 use schwarz_precond::{
     lsmr, mlsmr, LocalSolveError, LocalSolver, MlsmrOptions, Operator, PartitionWeights,
     ReductionStrategy, SchwarzPreconditioner, SubdomainCore, SubdomainEntry,
@@ -366,37 +367,34 @@ fn test_additive_backends_match_on_overlapping_subdomains() {
     });
 }
 
-#[test]
-fn test_additive_auto_matches_resolved_backend() {
+#[rstest]
+fn test_additive_auto_matches_resolved_backend(#[values(1, 4)] n_threads: usize) {
     let n = 66;
     let rhs: Vec<f64> = (0..n).map(|i| ((3 * i) % 17) as f64 - 8.0).collect();
 
-    for &n_threads in &[1usize, 4usize] {
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(n_threads)
-            .build()
-            .expect("test rayon pool");
-        pool.install(|| {
-            let auto =
-                SchwarzPreconditioner::new(make_overlapping_entries(n), ReductionStrategy::Auto);
-            let resolved = auto.reduction_strategy();
-            assert_ne!(
-                resolved,
-                ReductionStrategy::Auto,
-                "auto must resolve to a concrete backend"
-            );
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(n_threads)
+        .build()
+        .expect("test rayon pool");
+    pool.install(|| {
+        let auto = SchwarzPreconditioner::new(make_overlapping_entries(n), ReductionStrategy::Auto);
+        let resolved = auto.reduction_strategy();
+        assert_ne!(
+            resolved,
+            ReductionStrategy::Auto,
+            "auto must resolve to a concrete backend"
+        );
 
-            let explicit = SchwarzPreconditioner::new(make_overlapping_entries(n), resolved);
+        let explicit = SchwarzPreconditioner::new(make_overlapping_entries(n), resolved);
 
-            let mut z_auto = vec![0.0; n];
-            let mut z_explicit = vec![0.0; n];
-            auto.apply(&rhs, &mut z_auto).expect("auto apply succeeds");
-            explicit
-                .apply(&rhs, &mut z_explicit)
-                .expect("explicit apply succeeds");
-            assert_vec_close(&z_auto, &z_explicit, 1e-12);
-        });
-    }
+        let mut z_auto = vec![0.0; n];
+        let mut z_explicit = vec![0.0; n];
+        auto.apply(&rhs, &mut z_auto).expect("auto apply succeeds");
+        explicit
+            .apply(&rhs, &mut z_explicit)
+            .expect("explicit apply succeeds");
+        assert_vec_close(&z_auto, &z_explicit, 1e-12);
+    });
 }
 
 use schwarz_precond::{BuildError, SolveError};

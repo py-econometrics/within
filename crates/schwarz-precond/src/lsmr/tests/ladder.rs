@@ -1,5 +1,7 @@
 //! Warm starts and escalation: the preconditioner ladder.
 
+use rstest::rstest;
+
 use super::super::*;
 use crate::lsmr::fixtures::*;
 use crate::{Operator, SolveError};
@@ -48,21 +50,21 @@ fn test_mlsmr_warm_tolerance_is_relative_to_original_rhs() {
 
 /// A zero RHS must not shadow warm-start validation: the same bad `x0` has to be
 /// rejected whether or not `b` short-circuits the solve.
-#[test]
-fn test_mlsmr_rejects_bad_warm_start_for_any_rhs() {
+#[rstest]
+#[case::short_x0(&[1.0, 2.0, 3.0], &[0.0, 0.0])]
+#[case::nan_x0(&[1.0, 2.0, 3.0], &[0.0, f64::NAN, 0.0])]
+#[case::short_x0_zero_rhs(&[0.0, 0.0, 0.0], &[0.0, 0.0])]
+#[case::nan_x0_zero_rhs(&[0.0, 0.0, 0.0], &[0.0, f64::NAN, 0.0])]
+fn test_mlsmr_rejects_bad_warm_start_for_any_rhs(#[case] b: &[f64], #[case] x0: &[f64]) {
     let op = IdentityOp { n: 3 };
-    for b in [[1.0, 2.0, 3.0], [0.0, 0.0, 0.0]] {
-        for x0 in [&[0.0, 0.0][..], &[0.0, f64::NAN, 0.0]] {
-            let options = MlsmrOptions {
-                warm_start: Some(x0),
-                ..Default::default()
-            };
-            assert!(matches!(
-                mlsmr(&op, &b, &op, 1e-8, 10, options),
-                Err(SolveError::InvalidInput { .. })
-            ));
-        }
-    }
+    let options = MlsmrOptions {
+        warm_start: Some(x0),
+        ..Default::default()
+    };
+    assert!(matches!(
+        mlsmr(&op, b, &op, 1e-8, 10, options),
+        Err(SolveError::InvalidInput { .. })
+    ));
 }
 
 /// Regression: `A·x₀` overflowing made `b - A·x₀` norm to NaN, which `init` read
@@ -118,24 +120,24 @@ fn test_mlsmr_zero_rhs_corrects_non_exact_warm_start() {
     assert!(result.iterations > 0);
 }
 
-#[test]
-fn test_mlsmr_exact_warm_start_is_returned_untouched() {
-    let cases: [(&dyn Operator, &[f64], &[f64]); 2] = [
-        (&IdentityOp { n: 3 }, &[1.0, 2.0, 3.0], &[1.0, 2.0, 3.0]),
-        (&ZeroSecondRow, &[0.0, 0.0], &[0.0, 7.0]),
-    ];
-    for (op, b, x0) in cases {
-        let options = MlsmrOptions {
-            warm_start: Some(x0),
-            ..Default::default()
-        };
-        let m = IdentityOp { n: op.ncols() };
-        let result = mlsmr(op, b, &m, 1e-10, 50, options).expect("exact warm start");
-        assert_eq!(result.stop_reason, LsmrStopReason::WarmStartExact);
-        assert!(result.converged);
-        assert_eq!(result.x, x0);
-        assert_eq!(result.iterations, 0);
-    }
+#[rstest]
+#[case::identity(&IdentityOp { n: 3 }, &[1.0, 2.0, 3.0], &[1.0, 2.0, 3.0])]
+#[case::null_direction(&ZeroSecondRow, &[0.0, 0.0], &[0.0, 7.0])]
+fn test_mlsmr_exact_warm_start_is_returned_untouched(
+    #[case] op: &dyn Operator,
+    #[case] b: &[f64],
+    #[case] x0: &[f64],
+) {
+    let options = MlsmrOptions {
+        warm_start: Some(x0),
+        ..Default::default()
+    };
+    let m = IdentityOp { n: op.ncols() };
+    let result = mlsmr(op, b, &m, 1e-10, 50, options).expect("exact warm start");
+    assert_eq!(result.stop_reason, LsmrStopReason::WarmStartExact);
+    assert!(result.converged);
+    assert_eq!(result.x, x0);
+    assert_eq!(result.iterations, 0);
 }
 
 #[test]
@@ -243,32 +245,38 @@ fn test_staleness_default_exposes_its_fields() {
 
 #[cfg(feature = "serde")]
 #[test]
-fn test_staleness_serde_round_trips_and_validates() {
+fn test_staleness_serde_round_trips() {
     let default = Staleness::default();
     let bytes = postcard::to_stdvec(&default).expect("serialize");
     assert_eq!(
         postcard::from_bytes::<Staleness>(&bytes).expect("deserialize"),
         default
     );
-    for invalid in [(0usize, 0.7f64), (4, 1.0)] {
-        let bytes = postcard::to_stdvec(&invalid).expect("serialize");
-        assert!(
-            postcard::from_bytes::<Staleness>(&bytes).is_err(),
-            "{invalid:?}"
-        );
-    }
+}
+
+#[cfg(feature = "serde")]
+#[rstest]
+#[case::zero_window(0, 0.7)]
+#[case::threshold_one(4, 1.0)]
+fn test_staleness_serde_validates(#[case] window: usize, #[case] threshold: f64) {
+    let bytes = postcard::to_stdvec(&(window, threshold)).expect("serialize");
+    assert!(postcard::from_bytes::<Staleness>(&bytes).is_err());
 }
 
 #[test]
-fn test_staleness_rejects_invalid_configuration() {
+fn test_staleness_rejects_a_zero_window() {
     assert!(matches!(
         Staleness::try_new(0, 0.7),
         Err(StalenessError::ZeroWindow)
     ));
-    for threshold in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.1, 1.0, 1.5] {
-        assert!(matches!(
-            Staleness::try_new(4, threshold),
-            Err(StalenessError::InvalidThreshold { .. })
-        ));
-    }
+}
+
+#[rstest]
+fn test_staleness_rejects_an_invalid_threshold(
+    #[values(f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.1, 1.0, 1.5)] threshold: f64,
+) {
+    assert!(matches!(
+        Staleness::try_new(4, threshold),
+        Err(StalenessError::InvalidThreshold { .. })
+    ));
 }
