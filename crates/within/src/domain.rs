@@ -78,10 +78,29 @@ impl<T> Loading<T> {
     }
 }
 
+/// Mapping between caller-visible factor labels and numerical level positions.
+///
+/// This is an identity mapping for the existing dense `u32` API. Later
+/// encodings can store an explicit mapping without changing `TermMeta`.
+#[derive(Debug, Clone)]
+pub(crate) struct FactorEncoding {
+    n_levels: usize,
+}
+
+impl FactorEncoding {
+    fn identity(n_levels: usize) -> Self {
+        Self { n_levels }
+    }
+
+    pub(crate) fn n_levels(&self) -> usize {
+        self.n_levels
+    }
+}
+
 /// Per-term metadata; coefficient `c` of `level` lives at `offset + c · n_levels + level`.
 #[derive(Debug, Clone)]
 pub(crate) struct TermMeta {
-    pub n_levels: usize,
+    pub(crate) encoding: FactorEncoding,
     pub offset: usize,
     /// Non-decreasing in the design's internal row order (fixed at construction).
     pub sorted: bool,
@@ -90,17 +109,21 @@ pub(crate) struct TermMeta {
 }
 
 impl TermMeta {
+    pub fn n_levels(&self) -> usize {
+        self.encoding.n_levels()
+    }
+
     pub fn n_columns(&self) -> usize {
         self.columns.len()
     }
 
     pub fn n_dofs(&self) -> usize {
-        self.n_columns() * self.n_levels
+        self.n_columns() * self.n_levels()
     }
 
     /// Global DOF base of coefficient column `column`.
     pub fn column_base(&self, column: usize) -> usize {
-        self.offset + column * self.n_levels
+        self.offset + column * self.n_levels()
     }
 }
 
@@ -209,8 +232,9 @@ impl<'a> Design<'a> {
                 sorted &= v >= prev;
                 prev = v;
             }
+            let encoding = FactorEncoding::identity(max as usize + 1);
             let meta = TermMeta {
-                n_levels: max as usize + 1,
+                encoding,
                 offset,
                 sorted,
                 columns,
@@ -228,7 +252,7 @@ impl<'a> Design<'a> {
         let dominant = (0..terms.len()).max_by_key(|&q| terms[q].n_dofs());
         let (frame, obs_perm) = match dominant {
             Some(d) if locality_sort && !terms[d].sorted && u32::try_from(n_obs).is_ok() => {
-                let perm = stable_argsort(frame.level_column(d), terms[d].n_levels);
+                let perm = stable_argsort(frame.level_column(d), terms[d].n_levels());
                 let sorted_frame = frame.permuted(&perm);
                 // Factors nested in the dominant one come out sorted, keeping coalesced scatter.
                 for (q, meta) in terms.iter_mut().enumerate() {

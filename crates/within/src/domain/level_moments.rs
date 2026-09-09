@@ -70,9 +70,9 @@ impl LevelMoments {
         let v = covariates.len();
         let mut moments = Self {
             intercept: v < meta.columns.len(),
-            w_sum: vec![0.0; meta.n_levels],
-            mean: vec![0.0; meta.n_levels * v],
-            comoment: vec![0.0; meta.n_levels * tri_len(v)],
+            w_sum: vec![0.0; meta.n_levels()],
+            mean: vec![0.0; meta.n_levels() * v],
+            comoment: vec![0.0; meta.n_levels() * tri_len(v)],
             covariates,
         };
         let zs: Vec<&[f64]> = moments

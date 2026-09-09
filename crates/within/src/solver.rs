@@ -143,7 +143,7 @@ impl CoefficientLayout {
             .iter()
             .map(|t| TermLayout {
                 offset: t.offset,
-                n_levels: t.n_levels,
+                n_levels: t.n_levels(),
                 n_columns: t.n_columns(),
             })
             .collect();

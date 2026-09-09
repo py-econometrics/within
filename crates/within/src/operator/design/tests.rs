@@ -307,7 +307,7 @@ mod slope_design_tests {
         for (q, t) in design.terms.iter().enumerate() {
             let levels = design.level_column(q);
             for (c, loading) in t.columns.iter().enumerate() {
-                let base = t.offset + c * t.n_levels;
+                let base = t.offset + c * t.n_levels();
                 for (i, &lev) in levels.iter().enumerate() {
                     d[i][base + lev as usize] = match loading {
                         Loading::Constant => 1.0,
