@@ -6,7 +6,7 @@ mod effect;
 pub(crate) mod factor_pairs;
 pub(crate) mod level_moments;
 
-pub(crate) use cross_tab::{find_all_active_levels, BlockDiagonals, CrossTab};
+pub(crate) use cross_tab::{BlockDiagonals, CrossTab};
 
 pub use effect::Effect;
 

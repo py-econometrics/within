@@ -3,10 +3,9 @@ use proptest::prelude::*;
 use super::accumulate::{
     accumulate_dense_cross_block, accumulate_sparse_cross_block, PairColumns, Unit,
 };
-use super::{build_compact_mapping, CrossTab};
+use super::CrossTab;
 use crate::channel::{Channel, ChannelPair};
 use crate::csr_block::CsrBlock;
-use crate::domain::find_all_active_levels;
 use crate::domain::{Design, Effect, SolverDesign};
 use crate::observation::ObservationFrame;
 
@@ -45,29 +44,17 @@ fn test_cross_tab_sparse_accumulation_path() {
 
     // Sparse path (large level counts)
     let design_sparse = design_of(vec![fa.clone(), fb.clone()]);
-    let active_sparse = find_all_active_levels(&design_sparse);
     let sparse_solver_design = SolverDesign::new(&design_sparse);
-    let (ct_sparse, diag_sparse, _) = CrossTab::build_for_pair_with_active(
-        &sparse_solver_design,
-        None,
-        INTERCEPT_PAIR,
-        &active_sparse,
-    )
-    .expect("sparse cross tab should build");
+    let (ct_sparse, diag_sparse, _) =
+        CrossTab::build_for_pair(&sparse_solver_design, None, INTERCEPT_PAIR);
 
     // Dense reference: collapse levels so n_rows * n_cols <= 5M.
     let fa_small: Vec<u32> = fa.iter().map(|&x| x % 100).collect();
     let fb_small: Vec<u32> = fb.iter().map(|&x| x % 100).collect();
     let design_dense = design_of(vec![fa_small.clone(), fb_small.clone()]);
-    let active_dense = find_all_active_levels(&design_dense);
     let dense_solver_design = SolverDesign::new(&design_dense);
-    let (_ct_dense, diag_dense, _) = CrossTab::build_for_pair_with_active(
-        &dense_solver_design,
-        None,
-        INTERCEPT_PAIR,
-        &active_dense,
-    )
-    .expect("dense cross tab should build");
+    let (_ct_dense, diag_dense, _) =
+        CrossTab::build_for_pair(&dense_solver_design, None, INTERCEPT_PAIR);
 
     // Each observation appears exactly once in its row/col bucket.
     assert_eq!(
@@ -131,11 +118,8 @@ fn test_extract_component_two_components() {
     let fa = vec![0u32, 0, 1, 1, 2, 2, 3, 3];
     let fb = vec![0u32, 1, 0, 1, 2, 3, 2, 3];
     let design = design_of(vec![fa, fb]);
-    let all_active = find_all_active_levels(&design);
     let solver_design = SolverDesign::new(&design);
-    let (ct, parent_diag, _) =
-        CrossTab::build_for_pair_with_active(&solver_design, None, INTERCEPT_PAIR, &all_active)
-            .expect("cross tab should build");
+    let (ct, parent_diag, _) = CrossTab::build_for_pair(&solver_design, None, INTERCEPT_PAIR);
 
     let components = ct.bipartite_connected_components();
     assert_eq!(components.len(), 2, "should have 2 connected components");
@@ -244,15 +228,8 @@ proptest! {
         }
 
         let design = design_of(vec![fa, fb]);
-        let all_active = find_all_active_levels(&design);
         let solver_design = SolverDesign::new(&design);
-        let (ct, _, _) = CrossTab::build_for_pair_with_active(
-            &solver_design,
-            None,
-            INTERCEPT_PAIR,
-            &all_active,
-        )
-        .expect("cross tab should build");
+        let (ct, _, _) = CrossTab::build_for_pair(&solver_design, None, INTERCEPT_PAIR);
 
         let components = ct.bipartite_connected_components();
 
@@ -262,7 +239,7 @@ proptest! {
         all_rows.sort_unstable();
         all_cols.sort_unstable();
 
-        // Union should cover 0..n_rows (compact active levels).
+        // Union should cover every compact level position.
         let expected_rows: Vec<usize> = (0..ct.n_rows()).collect();
         let expected_cols: Vec<usize> = (0..ct.n_cols()).collect();
         prop_assert_eq!(&all_rows, &expected_rows, "row indices should cover 0..n_rows={}", ct.n_rows());
@@ -295,27 +272,6 @@ proptest! {
 }
 
 #[test]
-fn test_find_all_active_levels_after_label_compaction() {
-    // Caller labels 0, 2, and 4 become internal positions 0, 1, and 2.
-    let fa = vec![0u32, 2, 4, 0, 2, 4];
-    let fb = vec![0u32, 1, 2, 0, 1, 2];
-    let design = design_of(vec![fa, fb]);
-
-    let active = find_all_active_levels(&design);
-
-    assert_eq!(
-        active[0],
-        vec![true, true, true],
-        "factor 0 should contain only its three observed levels"
-    );
-    assert_eq!(
-        active[1],
-        vec![true, true, true],
-        "factor 1 should retain its identity encoding"
-    );
-}
-
-#[test]
 fn dense_and_sparse_paths_agree_on_signed_data() {
     // Cell (f=0,g=0) crosses 0.0 mid-row and (f=0,g=1) cancels to 0.0; both paths must drop it.
     let f = [0u32, 0, 0, 0, 0, 1];
@@ -330,14 +286,8 @@ fn dense_and_sparse_paths_agree_on_signed_data() {
         rows: Channel { term: 0, column: 1 },
         cols: Channel { term: 1, column: 0 },
     };
-    let all_active = find_all_active_levels(&design);
-    let active = build_compact_mapping(
-        &all_active[0],
-        &all_active[1],
-        design.terms[0].column_base(pair.rows.column),
-        design.terms[1].column_base(pair.cols.column),
-    )
-    .expect("both factors have active levels");
+    let n_rows = design.terms[pair.rows.term].n_levels();
+    let n_cols = design.terms[pair.cols.term].n_levels();
 
     let cols = PairColumns {
         row_levels: design.level_column(0),
@@ -346,8 +296,8 @@ fn dense_and_sparse_paths_agree_on_signed_data() {
         col_load: Unit,
         weights: None,
     };
-    let (c_dense, dq_dense, dr_dense) = accumulate_dense_cross_block(cols, &active);
-    let (c_sparse, dq_sparse, dr_sparse) = accumulate_sparse_cross_block(cols, &active);
+    let (c_dense, dq_dense, dr_dense) = accumulate_dense_cross_block(cols, n_rows, n_cols);
+    let (c_sparse, dq_sparse, dr_sparse) = accumulate_sparse_cross_block(cols, n_rows, n_cols);
 
     // Bit-exact parity: identical per-cell addition order in both paths.
     assert_eq!(c_dense.indptr, c_sparse.indptr);

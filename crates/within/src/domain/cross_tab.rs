@@ -3,87 +3,15 @@
 //! [`CrossTab`] holds `C` as a [`CsrBlock`] plus its precomputed transpose and
 //! the two diagonals (rather than assembling the symmetric block matrix), and
 //! supports bipartite connected-components splitting and per-component extraction.
-//! Levels are stored compactly with a `local_to_global` map for active levels only.
+//! Levels use the design's compact positions, with a `local_to_global` map into
+//! the full coefficient space.
 
 use crate::channel::ChannelPair;
 use crate::csr_block::{to_u32, CsrBlock};
-use crate::domain::{Design, SolverDesign};
+use crate::domain::SolverDesign;
 
 mod accumulate;
 use accumulate::accumulate_cross_block;
-
-/// Compact mapping of active levels for a factor pair, plus its local-to-global vector.
-struct ActiveLevels {
-    row_map: Vec<u32>,
-    n_rows: usize,
-    col_map: Vec<u32>,
-    n_cols: usize,
-    local_to_global: Vec<u32>,
-}
-
-/// Scan observations once, marking `active[f][level]` for every level any observation uses.
-pub(crate) fn find_all_active_levels(design: &Design<'_>) -> Vec<Vec<bool>> {
-    let mut active: Vec<Vec<bool>> = design
-        .terms
-        .iter()
-        .map(|f| vec![false; f.n_levels()])
-        .collect();
-    // Factor-outer/obs-inner: all writes for a factor land in one `active[f]` buffer.
-    for (f, col) in active.iter_mut().enumerate() {
-        for &v in design.level_column(f) {
-            col[v as usize] = true;
-        }
-    }
-    active
-}
-
-/// Compact-index each active level, returning the global-to-compact map and active count.
-fn compact_map(active: &[bool]) -> (Vec<u32>, usize) {
-    let mut map = vec![u32::MAX; active.len()];
-    let mut n = 0u32;
-    for (j, &a) in active.iter().enumerate() {
-        if a {
-            map[j] = n;
-            n += 1;
-        }
-    }
-    (map, n as usize)
-}
-
-/// `base_rows`/`base_cols` are the channels' global DOF offsets.
-fn build_compact_mapping(
-    active_rows: &[bool],
-    active_cols: &[bool],
-    base_rows: usize,
-    base_cols: usize,
-) -> Option<ActiveLevels> {
-    let (row_map, n_rows) = compact_map(active_rows);
-    let (col_map, n_cols) = compact_map(active_cols);
-
-    if n_rows == 0 || n_cols == 0 {
-        return None;
-    }
-
-    let mut local_to_global = Vec::with_capacity(n_rows + n_cols);
-    for (j, &a) in active_rows.iter().enumerate() {
-        if a {
-            local_to_global.push(to_u32(base_rows + j));
-        }
-    }
-    for (k, &a) in active_cols.iter().enumerate() {
-        if a {
-            local_to_global.push(to_u32(base_cols + k));
-        }
-    }
-
-    Some(ActiveLevels {
-        row_map,
-        n_rows,
-        col_map,
-        n_cols,
-        local_to_global,
-    })
-}
 
 /// A connected component in a bipartite factor-pair graph, in compact 0-based parent indices.
 pub(crate) struct BipartiteComponent {
@@ -136,29 +64,32 @@ impl CrossTab {
         self.c.nrows + self.c.ncols
     }
 
-    /// Reuses pre-computed active flags instead of rescanning; diagonals come back separately.
-    pub(crate) fn build_for_pair_with_active(
+    /// Build one channel pair; diagonals come back separately.
+    pub(crate) fn build_for_pair(
         solver_design: &SolverDesign<'_>,
         weights: Option<&[f64]>,
         pair: ChannelPair,
-        all_active: &[Vec<bool>],
-    ) -> Option<(Self, BlockDiagonals, Vec<u32>)> {
+    ) -> (Self, BlockDiagonals, Vec<u32>) {
         let design = solver_design.design();
-        let active = build_compact_mapping(
-            &all_active[pair.rows.term],
-            &all_active[pair.cols.term],
-            design.terms[pair.rows.term].column_base(pair.rows.column),
-            design.terms[pair.cols.term].column_base(pair.cols.column),
-        )?;
+        let n_rows = design.terms[pair.rows.term].n_levels();
+        let n_cols = design.terms[pair.cols.term].n_levels();
 
-        let (c, row_diag, col_diag) = accumulate_cross_block(solver_design, weights, pair, &active);
+        let (c, row_diag, col_diag) =
+            accumulate_cross_block(solver_design, weights, pair, n_rows, n_cols);
         let ct = c.transpose();
         let cross_tab = CrossTab { c, ct };
         let diagonals = BlockDiagonals {
             rows: row_diag,
             cols: col_diag,
         };
-        Some((cross_tab, diagonals, active.local_to_global))
+        let row_base = design.terms[pair.rows.term].column_base(pair.rows.column);
+        let col_base = design.terms[pair.cols.term].column_base(pair.cols.column);
+        let local_to_global = (0..n_rows)
+            .map(|level| to_u32(row_base + level))
+            .chain((0..n_cols).map(|level| to_u32(col_base + level)))
+            .collect();
+
+        (cross_tab, diagonals, local_to_global)
     }
 
     /// Symmetric adjacency over local `[q | r]` indexing: q-nodes walk `C`, r-nodes walk `Cᵀ`.
