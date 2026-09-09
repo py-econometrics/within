@@ -529,6 +529,18 @@ class TestSolveBatchFreeFunction:
         np.testing.assert_allclose(batch.x[:, 0], r1.x, atol=1e-10)
         np.testing.assert_allclose(batch.x[:, 1], r2.x, atol=1e-10)
 
+    def test_persistent_design_matches_raw_input(self, problem):
+        cats, y = problem
+        categories = as_solver_categories(cats)
+        Y = np.column_stack([y, -y])
+        from within import solve_batch
+
+        expected = solve_batch(categories, Y)
+        actual = solve_batch(Design(categories), Y)
+
+        np.testing.assert_allclose(actual.x, expected.x, atol=1e-10)
+        np.testing.assert_allclose(actual.demeaned, expected.demeaned, atol=1e-10)
+
     def test_solve_batch_effect_terms_match_individual(self):
         f = np.array([0, 0, 0, 1, 1, 1], dtype=np.uint32)
         g = np.array([0, 1, 2, 0, 1, 2], dtype=np.uint32)
@@ -615,12 +627,13 @@ class TestDesign:
     def test_owns_category_data(self, problem):
         cats, y = problem
         categories = as_solver_categories(cats)
-        expected = solve(categories, y)
+        weights = np.linspace(0.5, 1.5, len(y))
+        expected = solve(categories, y, weights=weights)
 
         design = Design(categories)
         categories.fill(0)
 
-        actual = Solver(design).solve(y)
+        actual = solve(design, y, weights=weights)
 
         np.testing.assert_allclose(actual.x, expected.x, atol=1e-10)
         np.testing.assert_allclose(actual.demeaned, expected.demeaned, atol=1e-10)

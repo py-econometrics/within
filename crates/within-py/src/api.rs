@@ -74,6 +74,23 @@ pub fn solve<'py>(
     let y_arr = y.as_array();
     let w_view = weights.as_ref().map(|w| w.as_array());
 
+    if let Ok(design) = design.extract::<Py<PyDesign>>() {
+        return run_solve_with_warnings(py, move || -> Result<_, WithinError> {
+            let y_cow = coerce_to_slice(&y_arr);
+            let t_start = Instant::now();
+            let solver = Solver::from_design(
+                design.get().as_design(),
+                w_view.map(|w| w.to_vec()),
+                precond,
+            )?;
+            let time_setup = t_start.elapsed().as_secs_f64();
+            let mut result = solver.solve(&y_cow, &params)?;
+            result.time_setup += time_setup;
+            result.time_total = t_start.elapsed().as_secs_f64();
+            Ok((result, solver.warnings().to_vec()))
+        });
+    }
+
     match extract_design(py, design)? {
         DesignSource::Categories(categories) => {
             let cats = categories.as_array();
@@ -113,6 +130,25 @@ pub fn solve_batch<'py>(
 
     let y_arr = y.as_array();
     let w_view = weights.as_ref().map(|w| w.as_array());
+
+    if let Ok(design) = design.extract::<Py<PyDesign>>() {
+        validate_batch_rows(y_arr.nrows(), design.get().as_design().n_obs())?;
+        return run_batch_with_warnings(py, move || -> Result<_, WithinError> {
+            let columns = extract_columns(&y_arr);
+            let col_refs = column_refs(&columns);
+            let t_start = Instant::now();
+            let solver = Solver::from_design(
+                design.get().as_design(),
+                w_view.map(|w| w.to_vec()),
+                precond,
+            )?;
+            let time_setup = t_start.elapsed().as_secs_f64();
+            let mut result = solver.solve_batch(&col_refs, &params)?;
+            result.time_setup += time_setup;
+            result.time_total = t_start.elapsed().as_secs_f64();
+            Ok((result, solver.warnings().to_vec()))
+        });
+    }
 
     match extract_design(py, design)? {
         DesignSource::Categories(categories) => {

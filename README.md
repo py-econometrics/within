@@ -99,29 +99,34 @@ print(result.x[i])
 | `solve(design, y, weights?, options?, preconditioner?)` | Solve a single right-hand side. Returns `SolveResult`. |
 | `solve_batch(design, Y, weights?, options?, preconditioner?)` | Solve multiple RHS vectors in parallel. `Y` has shape `(n_obs, k)`. Returns `BatchSolveResult`. |
 
-`design` is either a 2-D `uint32` array of shape `(n_obs, n_factors)` or a list of `Effect` terms (see [Varying slopes](#varying-slopes)). A `UserWarning` is emitted when a C-contiguous categories array is passed — use `np.asfortranarray(design)` for best performance.
+`design` is a persistent `Design`, a 2-D `uint32` array of shape `(n_obs, n_factors)`, or a list of `Effect` terms (see [Varying slopes](#varying-slopes)). A `UserWarning` is emitted when a C-contiguous categories array is passed — use `np.asfortranarray(design)` for best performance.
 
 ### Persistent solver
 
-For repeated solves with the same design matrix, `Solver` builds the preconditioner once and reuses it.
+For repeated solves with the same design matrix, `Design` stores the native design once and `Solver` builds the preconditioner once and reuses it.
 
 ```python
-from within import Solver
+from within import Design, Solver, solve
 
-solver = Solver(fe)
+design = Design(fe)
+solver = Solver(design)
 r = solver.solve(y)                            # reuses preconditioner
 r = solver.solve_batch(np.column_stack([y, X]))
 
 precond = solver.preconditioner                # picklable property
-solver2 = Solver(fe, preconditioner=precond)   # skip re-factorization
+solver2 = Solver(design, preconditioner=precond)  # skip re-factorization
+
+# Reuse the design while rebuilding weight-dependent solver state.
+weighted = solve(design, y, weights=np.ones(n))
 ```
 
 | Property / Method | Description |
 |---|---|
+| `Design(design)` | Build an owned native design for reuse across solves and solvers. |
 | `Solver(design, weights?, preconditioner?)` | Build solver. Factorizes the preconditioner at construction. |
 | `.solve(y, options?)` | Solve a single RHS with the given LSMR tuning. Returns `SolveResult`. |
 | `.solve_batch(Y, options?)` | Solve multiple RHS columns in parallel. Returns `BatchSolveResult`. |
-| `.preconditioner` | Return the built `Preconditioner` (picklable), or `None`. Reuse via `Solver(fe, preconditioner=p)`. |
+| `.preconditioner` | Return the built `Preconditioner` (picklable), or `None`. Reuse via `Solver(design, preconditioner=p)`. |
 
 
 ### Solver configuration
