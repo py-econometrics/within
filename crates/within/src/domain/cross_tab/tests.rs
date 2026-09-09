@@ -32,9 +32,9 @@ fn design_of(columns: Vec<Vec<u32>>) -> Design<'static> {
 
 #[test]
 fn test_cross_tab_sparse_accumulation_path() {
-    // n_rows * n_cols > 5M triggers the sparse path; few observations keep both paths equal.
-    let n_obs = 200usize;
-    let n_lev = 2237usize;
+    // 2,500 observed levels per factor make n_rows * n_cols exceed the 5M threshold.
+    let n_obs = 2500usize;
+    let n_lev = n_obs;
 
     let mut fa: Vec<u32> = Vec::with_capacity(n_obs);
     let mut fb: Vec<u32> = Vec::with_capacity(n_obs);
@@ -295,28 +295,23 @@ proptest! {
 }
 
 #[test]
-fn test_find_all_active_levels_with_gaps() {
-    // Factor 0 has 5 levels but only 0, 2, 4 appear; factor 1 uses all 3.
+fn test_find_all_active_levels_after_label_compaction() {
+    // Caller labels 0, 2, and 4 become internal positions 0, 1, and 2.
     let fa = vec![0u32, 2, 4, 0, 2, 4];
     let fb = vec![0u32, 1, 2, 0, 1, 2];
     let design = design_of(vec![fa, fb]);
 
     let active = find_all_active_levels(&design);
 
-    // Factor 0: 5 levels, only 0, 2, 4 active.
-    assert_eq!(active[0].len(), 5, "factor 0 should have 5 levels");
     assert_eq!(
         active[0],
-        vec![true, false, true, false, true],
-        "factor 0 active pattern: [true, false, true, false, true]"
+        vec![true, true, true],
+        "factor 0 should contain only its three observed levels"
     );
-
-    // Factor 1: all 3 levels active.
-    assert_eq!(active[1].len(), 3, "factor 1 should have 3 levels");
     assert_eq!(
         active[1],
         vec![true, true, true],
-        "factor 1 active pattern: all true"
+        "factor 1 should retain its identity encoding"
     );
 }
 
