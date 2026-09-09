@@ -98,14 +98,8 @@ pub(crate) fn orient_for_elimination(
     }
     diagonal.rotate_left(cross_tab.n_rows());
     globals.rotate_left(cross_tab.n_rows());
-    (
-        CrossTab {
-            c: cross_tab.ct,
-            ct: cross_tab.c,
-        },
-        diagonal,
-        globals,
-    )
+    let (c, ct) = cross_tab.into_parts();
+    (CrossTab::with_transpose(ct, c), diagonal, globals)
 }
 
 /// Bipartite SDDM in eliminated-major form; arrays are flat, split at `n_eliminated`.
@@ -256,7 +250,7 @@ fn convert_general(
 
 /// A [`MatrixForm::Laplacian`] must fold to a Z-matrix, so a positive off-diagonal is an error.
 fn assemble(
-    mut cross_tab: CrossTab,
+    cross_tab: CrossTab,
     diagonal: Vec<f64>,
     factors: Vec<f64>,
     form: MatrixForm,
@@ -264,11 +258,13 @@ fn assemble(
 ) -> Result<(LocalComponent, f64), NotScalable> {
     let n_rows = cross_tab.n_rows();
     let enforce_z = form == MatrixForm::Laplacian;
+    // The transpose is stale once `c` is folded; `_` drops it here, `..` would keep it to the end.
+    let (mut c, _) = cross_tab.into_parts();
     for i in 0..n_rows {
-        let start = cross_tab.c.indptr[i] as usize;
-        let end = cross_tab.c.indptr[i + 1] as usize;
-        let columns = &cross_tab.c.indices[start..end];
-        for (&j, value) in columns.iter().zip(&mut cross_tab.c.data[start..end]) {
+        let start = c.indptr[i] as usize;
+        let end = c.indptr[i + 1] as usize;
+        let columns = &c.indices[start..end];
+        for (&j, value) in columns.iter().zip(&mut c.data[start..end]) {
             let folded = -factors[i] * factors[n_rows + j as usize] * *value;
             if !folded.is_finite() || (enforce_z && folded < 0.0) {
                 return Err(NotScalable);
@@ -276,7 +272,7 @@ fn assemble(
             *value = folded;
         }
     }
-    cross_tab.ct = cross_tab.c.transpose();
+    let cross_tab = CrossTab::eager(c);
 
     let scaled_diagonal: Vec<f64> = diagonal
         .iter()

@@ -37,7 +37,7 @@ impl<'a> NormalizedCrossOperator<'a> {
         let (small_to_large, large_to_small, small_inv_sqrt, large_inv_sqrt, small_side) =
             if cross_tab.n_rows() <= cross_tab.n_cols() {
                 (
-                    &cross_tab.ct,
+                    cross_tab.ct(),
                     &cross_tab.c,
                     row_inv_sqrt,
                     col_inv_sqrt,
@@ -46,7 +46,7 @@ impl<'a> NormalizedCrossOperator<'a> {
             } else {
                 (
                     &cross_tab.c,
-                    &cross_tab.ct,
+                    cross_tab.ct(),
                     col_inv_sqrt,
                     row_inv_sqrt,
                     BipartiteSide::Columns,

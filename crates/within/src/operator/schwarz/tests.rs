@@ -70,9 +70,8 @@ fn synthetic_sparse_cross_tab(n_keep: usize, elim_ratio: usize) -> (CrossTab, Ve
         nrows: n_rows,
         ncols: n_cols,
     };
-    let ct = c.transpose();
     (
-        CrossTab { c, ct },
+        CrossTab::eager(c),
         row_diag.into_iter().chain(col_diag).collect(),
     )
 }

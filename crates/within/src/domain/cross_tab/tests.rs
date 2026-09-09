@@ -13,8 +13,7 @@ use crate::observation::ObservationFrame;
 impl CrossTab {
     pub(crate) fn from_dense_for_test(table: &[f64], n_rows: usize, n_cols: usize) -> Self {
         let c = CsrBlock::from_dense_table(table, n_rows, n_cols);
-        let ct = c.transpose();
-        Self { c, ct }
+        Self::eager(c)
     }
 }
 
@@ -100,14 +99,16 @@ fn test_cross_tab_sparse_accumulation_path() {
     // C^T must equal the transpose of C for both paths.
     let ct_t = ct_sparse.c.transpose();
     assert_eq!(
-        ct_t.indptr, ct_sparse.ct.indptr,
+        ct_t.indptr,
+        ct_sparse.ct().indptr,
         "sparse: C^T indptr should equal transpose(C)"
     );
     assert_eq!(
-        ct_t.indices, ct_sparse.ct.indices,
+        ct_t.indices,
+        ct_sparse.ct().indices,
         "sparse: C^T indices should equal transpose(C)"
     );
-    for (a, b) in ct_t.data.iter().zip(&ct_sparse.ct.data) {
+    for (a, b) in ct_t.data.iter().zip(&ct_sparse.ct().data) {
         assert!(
             (a - b).abs() < 1e-12,
             "sparse: C^T data should equal transpose(C)"
@@ -176,14 +177,16 @@ fn test_extract_component_two_components() {
     // C^T of sub_a should equal the exact transpose of sub_a.c.
     let ct_t = sub_a.c.transpose();
     assert_eq!(
-        ct_t.indptr, sub_a.ct.indptr,
+        ct_t.indptr,
+        sub_a.ct().indptr,
         "sub_a: ct.indptr should equal transpose(c).indptr"
     );
     assert_eq!(
-        ct_t.indices, sub_a.ct.indices,
+        ct_t.indices,
+        sub_a.ct().indices,
         "sub_a: ct.indices should equal transpose(c).indices"
     );
-    for (a, b) in ct_t.data.iter().zip(&sub_a.ct.data) {
+    for (a, b) in ct_t.data.iter().zip(&sub_a.ct().data) {
         assert!(
             (a - b).abs() < 1e-12,
             "sub_a: ct.data should equal transpose(c).data"

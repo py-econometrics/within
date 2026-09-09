@@ -84,10 +84,9 @@ fn chain_with_mid_deficit(m: usize) -> (CrossTab, Vec<f64>) {
         nrows: m,
         ncols: m + 1,
     };
-    let ct = c.transpose();
     let mut diagonal = vec![2.0; 2 * m + 1];
     diagonal[m + m / 2] = 2.0 * (1.0 - 1e-3);
-    (CrossTab { c, ct }, diagonal)
+    (CrossTab::eager(c), diagonal)
 }
 
 #[test]
@@ -277,10 +276,7 @@ fn large_rescaled_singular_boundary_remains_floating() {
         nrows: 1,
         ncols: n_cols,
     };
-    let cross_tab = CrossTab {
-        ct: c.transpose(),
-        c,
-    };
+    let cross_tab = CrossTab::eager(c);
     let diagonal: Vec<f64> = std::iter::once(weights.iter().sum::<f64>() / row_factor.powi(2))
         .chain(
             weights
