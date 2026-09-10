@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::block_elim::{BlockElimSolver, DomainRoute, SchurRoute};
+use crate::block_elim::{BlockElimSolver, SchurRoute};
 use crate::config::{LocalSolverConfig, PreconditionerConfig};
 use crate::domain::Loading;
 use crate::domain::{LocalDomain, PreparedDesign};
@@ -103,31 +103,32 @@ pub(crate) fn build_additive_with_strategy(
     strategy: schwarz_precond::ReductionStrategy,
     n_dofs: usize,
 ) -> Result<FeSchwarz, BuildError> {
-    let (entries, routes): (Vec<_>, Vec<_>) = domains
+    let (entries, complements): (Vec<SubdomainEntry<BlockElimSolver>>, Vec<SchurRoute>) = domains
         .into_par_iter()
         .map(|domain| build_entry(domain, config))
         .collect::<Result<Vec<_>, BuildError>>()?
         .into_iter()
         .unzip();
     // Routing is decided inside the parallel build; it is reported here, from the driving thread.
-    let count = |complement| routes.iter().filter(|r| r.complement == complement).count();
+    let count = |complement| complements.iter().filter(|&&c| c == complement).count();
+    let solvers = || entries.iter().map(SubdomainEntry::solver);
     tracing::debug!(
-        n_domains = routes.len(),
+        n_domains = entries.len(),
         exact_dense = count(SchurRoute::ExactDense),
         exact = count(SchurRoute::Exact),
         sampled = count(SchurRoute::Sampled),
-        covers = routes.iter().filter(|r| r.cover).count(),
-        fallbacks = routes.iter().map(|r| r.fallbacks).sum::<usize>(),
+        covers = solvers().filter(|s| s.is_cover()).count(),
+        fallbacks = solvers().map(BlockElimSolver::fallbacks).sum::<usize>(),
         "domain routing"
     );
-    for (domain, route) in routes.iter().enumerate() {
+    for (domain, (solver, complement)) in solvers().zip(&complements).enumerate() {
         tracing::trace!(
             domain,
-            n_eliminated = route.n_eliminated,
-            n_kept = route.n_kept,
-            cover = route.cover,
-            complement = ?route.complement,
-            fallbacks = route.fallbacks
+            n_eliminated = solver.n_eliminated(),
+            n_kept = solver.n_kept(),
+            cover = solver.is_cover(),
+            complement = ?complement,
+            fallbacks = solver.fallbacks()
         );
     }
     Ok(FeSchwarz {
@@ -143,11 +144,11 @@ pub(crate) fn build_additive_with_strategy(
 pub(crate) fn build_entry(
     domain: LocalDomain,
     config: &LocalSolverConfig,
-) -> Result<(SubdomainEntry<BlockElimSolver>, DomainRoute), BuildError> {
+) -> Result<(SubdomainEntry<BlockElimSolver>, SchurRoute), BuildError> {
     let LocalDomain { core, component } = domain;
-    let (solver, route) = BlockElimSolver::build(component, config)?;
+    let (solver, complement) = BlockElimSolver::build(component, config)?;
     SubdomainEntry::try_new(core, solver)
-        .map(|entry| (entry, route))
+        .map(|entry| (entry, complement))
         .map_err(BuildError::Preconditioner)
 }
 
@@ -171,6 +172,14 @@ impl Preconditioner {
         match &self.inner {
             Variant::Additive(_) => "Additive",
             Variant::Diagonal(_) => "Diagonal",
+        }
+    }
+
+    /// Number of Schwarz subdomains; zero for the diagonal variant.
+    pub fn n_domains(&self) -> usize {
+        match &self.inner {
+            Variant::Additive(p) => p.inner.subdomains().len(),
+            Variant::Diagonal(_) => 0,
         }
     }
 
@@ -320,10 +329,7 @@ pub(crate) fn build_preconditioner(
     };
     tracing::info!(
         variant = preconditioner.variant_name(),
-        n_domains = match &preconditioner.inner {
-            Variant::Additive(p) => p.inner.subdomains().len(),
-            Variant::Diagonal(_) => 0,
-        },
+        n_domains = preconditioner.n_domains(),
         config = ?resolved,
         build_secs = preconditioner.build_duration.as_secs_f64(),
         "preconditioner built"

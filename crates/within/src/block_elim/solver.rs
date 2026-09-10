@@ -233,17 +233,6 @@ pub(crate) enum SchurRoute {
     Sampled,
 }
 
-/// What the build decided for one domain; emitted on the diagnostics channel after the parallel build.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct DomainRoute {
-    pub(crate) n_eliminated: usize,
-    pub(crate) n_kept: usize,
-    pub(crate) cover: bool,
-    pub(crate) complement: SchurRoute,
-    /// Blocks approx-chol routed to dense Cholesky but factored approximately after all.
-    pub(crate) fallbacks: usize,
-}
-
 fn factor_complement(
     complement: &CsrMatrix,
     config: &LocalSolverConfig,
@@ -312,13 +301,23 @@ fn double_for_cover(values: &[f64], n_rows: usize) -> Vec<f64> {
 
 impl BlockElimSolver {
     /// Size of the block the elimination removes, the leading one.
-    fn n_eliminated(&self) -> usize {
+    pub(crate) fn n_eliminated(&self) -> usize {
         self.cross_tab.n_rows()
     }
 
     /// Size of the block the reduced factor solves.
-    fn n_kept(&self) -> usize {
+    pub(crate) fn n_kept(&self) -> usize {
         self.cross_tab.n_cols()
+    }
+
+    /// Whether the reduced factor is of a Gremban cover rather than the signed matrix itself.
+    pub(crate) fn is_cover(&self) -> bool {
+        matches!(self.reduced_factor, ReducedFactor::Cover { .. })
+    }
+
+    /// Blocks approx-chol routed to dense Cholesky but factored approximately after all.
+    pub(crate) fn fallbacks(&self) -> usize {
+        self.reduced_factor.factor().fallbacks().len()
     }
 
     pub(crate) fn new(
@@ -347,43 +346,34 @@ impl BlockElimSolver {
     pub(crate) fn build(
         component: LocalComponent,
         config: &LocalSolverConfig,
-    ) -> Result<(Self, DomainRoute), BuildError> {
+    ) -> Result<(Self, SchurRoute), BuildError> {
         let LocalComponent {
             matrix,
             form,
             coordinates,
         } = component;
         let eliminated = Eliminated::new(matrix)?;
-        let (n_eliminated, n_kept) = (eliminated.matrix.n_eliminated(), eliminated.matrix.n_kept());
 
-        let (factor, complement, fallbacks) = match form {
+        let (inner, complement) = match form {
+            MatrixForm::Laplacian => Eliminated::factor_reduced(&eliminated, config)?,
+            MatrixForm::SignedPendingCover => {
+                Eliminated::factor_reduced(eliminated.cover()?, config)?
+            }
+        };
+        let factor = match form {
             MatrixForm::Laplacian => {
-                let (inner, complement) = Eliminated::factor_reduced(&eliminated, config)?;
-                let fallbacks = inner.fallbacks().len();
                 let factor = ReducedFactor::Direct {
                     factor: inner,
                     grounding: eliminated.matrix.grounding,
                 };
                 debug_assert!(factor.solve_dimension() >= factor.input_dimension());
-                (factor, complement, fallbacks)
+                factor
             }
             // Surplus survives the cover, so it grounds as the signed matrix did.
-            MatrixForm::SignedPendingCover => {
-                let (inner, complement) = Eliminated::factor_reduced(eliminated.cover()?, config)?;
-                let fallbacks = inner.fallbacks().len();
-                (
-                    ReducedFactor::Cover { inner, m: n_kept },
-                    complement,
-                    fallbacks,
-                )
-            }
-        };
-        let route = DomainRoute {
-            n_eliminated,
-            n_kept,
-            cover: matches!(form, MatrixForm::SignedPendingCover),
-            complement,
-            fallbacks,
+            MatrixForm::SignedPendingCover => ReducedFactor::Cover {
+                inner,
+                m: eliminated.matrix.n_kept(),
+            },
         };
 
         Ok((
@@ -393,7 +383,7 @@ impl BlockElimSolver {
                 factor,
                 coordinates,
             ),
-            route,
+            complement,
         ))
     }
 

@@ -431,16 +431,13 @@ impl<'a> Solver<'a> {
     /// back-transform slopes. Excludes the design-level `layout` / `warnings` /
     /// `unidentified`, which the public entry points attach once (see
     /// [`RhsSolution`]).
+    /// `rhs` is the position in a batch; a batch worker emits exactly one record, `solved`.
     fn solve_rhs(
         &self,
-        rhs: usize,
-        in_batch: bool,
+        rhs: Option<usize>,
         y: &[f64],
         lsmr: &LsmrOptions,
     ) -> Result<RhsSolution, SolveError> {
-        // A batch worker emits exactly one record, `solved`; the batch announces itself once.
-        let span = (!in_batch).then(|| tracing::debug_span!("solve", rhs));
-        let _entered = span.as_ref().map(tracing::Span::enter);
         // `weighted_rhs` zips y with sqrt-weights, silently truncating when `y.len() > n_rows`.
         if y.len() != self.prepared.design.n_obs {
             return Err(SolveError::InvalidInput {
@@ -459,14 +456,6 @@ impl<'a> Solver<'a> {
             });
         }
 
-        if !in_batch {
-            tracing::info!(
-                rhs,
-                tol = lsmr.tol,
-                max_iterations = lsmr.maxiter,
-                "solving"
-            );
-        }
         let t_start = Instant::now();
 
         // The gather is a recurring per-solve cost of the locality sort, so it counts as setup.
@@ -480,10 +469,10 @@ impl<'a> Solver<'a> {
         let t_solve_start = Instant::now();
         let time_setup = t_solve_start.duration_since(t_start).as_secs_f64();
 
-        // A batch reports once per RHS from its worker; per-iteration records stay single-solve.
+        // Per-iteration records stay single-solve.
         let options = MlsmrOptions {
             local_size: lsmr.local_size,
-            quiet: in_batch,
+            quiet: rhs.is_some(),
             ..Default::default()
         };
         let r = match self.preconditioner.as_ref() {
@@ -552,7 +541,10 @@ impl<'a> Solver<'a> {
         let lsmr = lsmr.into().unwrap_or(&default);
 
         let t_start = Instant::now();
-        let solution = self.solve_rhs(0, false, y, lsmr)?;
+        let span = tracing::debug_span!("solve");
+        let _entered = span.enter();
+        tracing::info!(tol = lsmr.tol, max_iterations = lsmr.maxiter, "solving");
+        let solution = self.solve_rhs(None, y, lsmr)?;
 
         Ok(SolveResult {
             x: solution.x,
@@ -590,7 +582,7 @@ impl<'a> Solver<'a> {
         let solutions: Vec<RhsSolution> = ys
             .par_iter()
             .enumerate()
-            .map(|(rhs, y)| self.solve_rhs(rhs, true, y, lsmr))
+            .map(|(rhs, y)| self.solve_rhs(Some(rhs), y, lsmr))
             .collect::<Result<Vec<_>, _>>()?;
 
         let mut x = Vec::with_capacity(self.prepared.design.n_dofs * n_rhs);

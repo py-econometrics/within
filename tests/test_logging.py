@@ -52,10 +52,7 @@ def test_batch_reports_per_rhs_and_never_per_iteration(
 ) -> None:
     categories, y = _problem()
     Y = np.stack([y, 2.0 * y], axis=1)
-    with (
-        caplog.at_level(5, logger="within"),
-        caplog.at_level(5, logger="schwarz_precond"),
-    ):
+    with caplog.at_level(5):
         within.solve_batch(categories, Y)
     solved = [
         r.getMessage() for r in caplog.records if r.getMessage().startswith("solved")
@@ -66,10 +63,7 @@ def test_batch_reports_per_rhs_and_never_per_iteration(
 
 def test_single_solve_reports_every_iteration(caplog: pytest.LogCaptureFixture) -> None:
     categories, y = _problem()
-    with (
-        caplog.at_level(5, logger="within"),
-        caplog.at_level(5, logger="schwarz_precond"),
-    ):
+    with caplog.at_level(5):
         result = within.solve(categories, y)
     iterations = [r for r in caplog.records if r.name == "schwarz_precond.lsmr"]
     assert len(iterations) == result.iterations

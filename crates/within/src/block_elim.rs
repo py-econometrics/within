@@ -9,7 +9,7 @@ pub(crate) mod factor;
 pub(crate) mod schur;
 pub(crate) mod solver;
 
-pub(crate) use solver::{BlockElimSolver, DomainRoute, SchurRoute};
+pub(crate) use solver::{BlockElimSolver, SchurRoute};
 
 /// Neumaier compensated sum: a flat `iter().sum()` biases the mean for large `n`.
 #[inline]
