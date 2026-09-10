@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::block_elim::BlockElimSolver;
+use crate::block_elim::{BlockElimSolver, DomainRoute, SchurRoute};
 use crate::config::{LocalSolverConfig, PreconditionerConfig};
 use crate::domain::Loading;
 use crate::domain::{LocalDomain, PreparedDesign};
@@ -103,10 +103,33 @@ pub(crate) fn build_additive_with_strategy(
     strategy: schwarz_precond::ReductionStrategy,
     n_dofs: usize,
 ) -> Result<FeSchwarz, BuildError> {
-    let entries = domains
+    let (entries, routes): (Vec<_>, Vec<_>) = domains
         .into_par_iter()
         .map(|domain| build_entry(domain, config))
-        .collect::<Result<Vec<_>, BuildError>>()?;
+        .collect::<Result<Vec<_>, BuildError>>()?
+        .into_iter()
+        .unzip();
+    // Routing is decided inside the parallel build; it is reported here, from the driving thread.
+    let count = |complement| routes.iter().filter(|r| r.complement == complement).count();
+    tracing::debug!(
+        n_domains = routes.len(),
+        exact_dense = count(SchurRoute::ExactDense),
+        exact = count(SchurRoute::Exact),
+        sampled = count(SchurRoute::Sampled),
+        covers = routes.iter().filter(|r| r.cover).count(),
+        fallbacks = routes.iter().map(|r| r.fallbacks).sum::<usize>(),
+        "domain routing"
+    );
+    for (domain, route) in routes.iter().enumerate() {
+        tracing::trace!(
+            domain,
+            n_eliminated = route.n_eliminated,
+            n_kept = route.n_kept,
+            cover = route.cover,
+            complement = ?route.complement,
+            fallbacks = route.fallbacks
+        );
+    }
     Ok(FeSchwarz {
         inner: SchwarzPreconditioner::with_n_dofs(entries, n_dofs, strategy),
         config: PreconditionerConfig::Additive {
@@ -120,10 +143,12 @@ pub(crate) fn build_additive_with_strategy(
 pub(crate) fn build_entry(
     domain: LocalDomain,
     config: &LocalSolverConfig,
-) -> Result<SubdomainEntry<BlockElimSolver>, BuildError> {
+) -> Result<(SubdomainEntry<BlockElimSolver>, DomainRoute), BuildError> {
     let LocalDomain { core, component } = domain;
-    let solver = BlockElimSolver::build(component, config)?;
-    SubdomainEntry::try_new(core, solver).map_err(BuildError::Preconditioner)
+    let (solver, route) = BlockElimSolver::build(component, config)?;
+    SubdomainEntry::try_new(core, solver)
+        .map(|entry| (entry, route))
+        .map_err(BuildError::Preconditioner)
 }
 
 /// Opaque handle to a pre-built preconditioner; cloning is O(1) via `Arc`.
@@ -289,12 +314,19 @@ pub(crate) fn build_preconditioner(
             (Variant::Diagonal(preconditioner), Vec::new())
         }
     };
-    let build_duration = build_started.elapsed();
-    Ok((
-        Some(Preconditioner {
-            inner,
-            build_duration,
-        }),
-        warnings,
-    ))
+    let preconditioner = Preconditioner {
+        inner,
+        build_duration: build_started.elapsed(),
+    };
+    tracing::info!(
+        variant = preconditioner.variant_name(),
+        n_domains = match &preconditioner.inner {
+            Variant::Additive(p) => p.inner.subdomains().len(),
+            Variant::Diagonal(_) => 0,
+        },
+        config = ?resolved,
+        build_secs = preconditioner.build_duration.as_secs_f64(),
+        "preconditioner built"
+    );
+    Ok((Some(preconditioner), warnings))
 }

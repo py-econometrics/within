@@ -192,7 +192,7 @@ impl Eliminated {
     fn factor_reduced(
         fold: impl Borrow<Self>,
         config: &LocalSolverConfig,
-    ) -> Result<Factor, BuildError> {
+    ) -> Result<(Factor, SchurRoute), BuildError> {
         let this = fold.borrow();
         let exact_below = config.dense_threshold;
         let exact = (exact_below > 0 && this.matrix.n_kept() <= exact_below)
@@ -200,20 +200,48 @@ impl Eliminated {
         if let Some(exact) = &exact {
             match factor_complement(exact, config, ExactFailure::Error) {
                 Err(approx_chol::Error::DenseFactorizationFailed { .. }) => {}
-                result => return result.map_err(local_solver_build),
+                result => {
+                    return result
+                        .map(|factor| (factor, SchurRoute::ExactDense))
+                        .map_err(local_solver_build)
+                }
             }
         }
-        let complement = match &config.schur {
-            SchurMode::Approximate(cfg) => schur::sampled(&this.matrix, cfg),
-            SchurMode::Exact => {
-                exact.unwrap_or_else(|| schur::exact_for_factor(&this.matrix, &this.inv_diagonal))
-            }
+        let (complement, route) = match &config.schur {
+            SchurMode::Approximate(cfg) => (schur::sampled(&this.matrix, cfg), SchurRoute::Sampled),
+            SchurMode::Exact => (
+                exact.unwrap_or_else(|| schur::exact_for_factor(&this.matrix, &this.inv_diagonal)),
+                SchurRoute::Exact,
+            ),
         };
         // An owned fold is the transient cover; it is freed before the factor's fill is allocated.
         drop(fold);
         factor_complement(&complement, config, ExactFailure::FallBackToApproximate)
+            .map(|factor| (factor, route))
             .map_err(local_solver_build)
     }
+}
+
+/// Which Schur complement fed a domain's reduced factor; approx-chol picks the backend per block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SchurRoute {
+    /// Exact complement, factored densely here without consulting approx-chol.
+    ExactDense,
+    /// Exact complement handed to approx-chol.
+    Exact,
+    /// Sampled complement handed to approx-chol.
+    Sampled,
+}
+
+/// What the build decided for one domain; emitted on the diagnostics channel after the parallel build.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DomainRoute {
+    pub(crate) n_eliminated: usize,
+    pub(crate) n_kept: usize,
+    pub(crate) cover: bool,
+    pub(crate) complement: SchurRoute,
+    /// Blocks approx-chol routed to dense Cholesky but factored approximately after all.
+    pub(crate) fallbacks: usize,
 }
 
 fn factor_complement(
@@ -319,35 +347,53 @@ impl BlockElimSolver {
     pub(crate) fn build(
         component: LocalComponent,
         config: &LocalSolverConfig,
-    ) -> Result<Self, BuildError> {
+    ) -> Result<(Self, DomainRoute), BuildError> {
         let LocalComponent {
             matrix,
             form,
             coordinates,
         } = component;
         let eliminated = Eliminated::new(matrix)?;
+        let (n_eliminated, n_kept) = (eliminated.matrix.n_eliminated(), eliminated.matrix.n_kept());
 
-        let factor = match form {
+        let (factor, complement, fallbacks) = match form {
             MatrixForm::Laplacian => {
+                let (inner, complement) = Eliminated::factor_reduced(&eliminated, config)?;
+                let fallbacks = inner.fallbacks().len();
                 let factor = ReducedFactor::Direct {
-                    factor: Eliminated::factor_reduced(&eliminated, config)?,
+                    factor: inner,
                     grounding: eliminated.matrix.grounding,
                 };
                 debug_assert!(factor.solve_dimension() >= factor.input_dimension());
-                factor
+                (factor, complement, fallbacks)
             }
             // Surplus survives the cover, so it grounds as the signed matrix did.
-            MatrixForm::SignedPendingCover => ReducedFactor::Cover {
-                inner: Eliminated::factor_reduced(eliminated.cover()?, config)?,
-                m: eliminated.matrix.n_kept(),
-            },
+            MatrixForm::SignedPendingCover => {
+                let (inner, complement) = Eliminated::factor_reduced(eliminated.cover()?, config)?;
+                let fallbacks = inner.fallbacks().len();
+                (
+                    ReducedFactor::Cover { inner, m: n_kept },
+                    complement,
+                    fallbacks,
+                )
+            }
+        };
+        let route = DomainRoute {
+            n_eliminated,
+            n_kept,
+            cover: matches!(form, MatrixForm::SignedPendingCover),
+            complement,
+            fallbacks,
         };
 
-        Ok(BlockElimSolver::new(
-            eliminated.matrix.cross_tab,
-            eliminated.inv_diagonal,
-            factor,
-            coordinates,
+        Ok((
+            BlockElimSolver::new(
+                eliminated.matrix.cross_tab,
+                eliminated.inv_diagonal,
+                factor,
+                coordinates,
+            ),
+            route,
         ))
     }
 

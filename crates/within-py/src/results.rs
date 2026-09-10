@@ -222,7 +222,7 @@ where
     E: IntoPyErr + Send,
     F: Send + FnOnce() -> Result<SolveResult, E>,
 {
-    let result = py.detach(solve).map_err(IntoPyErr::into_py_err)?;
+    let result = crate::detach(py, solve)?;
     Ok(into_py_result(py, result))
 }
 
@@ -232,7 +232,7 @@ where
     E: IntoPyErr + Send,
     F: Send + FnOnce() -> Result<BatchSolveResult, E>,
 {
-    let result = py.detach(solve).map_err(IntoPyErr::into_py_err)?;
+    let result = crate::detach(py, solve)?;
     into_py_batch_result(py, result)
 }
 
@@ -252,7 +252,7 @@ where
     E: IntoPyErr + Send,
     F: Send + FnOnce() -> Result<(SolveResult, Vec<BuildWarning>), E>,
 {
-    let (result, warnings) = py.detach(solve).map_err(IntoPyErr::into_py_err)?;
+    let (result, warnings) = crate::detach(py, solve)?;
     emit_build_warnings(py, &warnings)?;
     Ok(into_py_result(py, result))
 }
@@ -266,7 +266,7 @@ where
     E: IntoPyErr + Send,
     F: Send + FnOnce() -> Result<(BatchSolveResult, Vec<BuildWarning>), E>,
 {
-    let (result, warnings) = py.detach(solve).map_err(IntoPyErr::into_py_err)?;
+    let (result, warnings) = crate::detach(py, solve)?;
     emit_build_warnings(py, &warnings)?;
     into_py_batch_result(py, result)
 }

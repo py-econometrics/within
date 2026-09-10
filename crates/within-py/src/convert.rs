@@ -5,7 +5,7 @@ use std::borrow::Cow;
 
 use numpy::{PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
-use within::{SolveError, WithinError};
+use within::{BuildError, SolveError, WithinError};
 
 /// Convert a numpy array view to a contiguous slice, copying only if non-contiguous.
 pub(crate) fn coerce_to_slice<'a>(arr: &'a numpy::ndarray::ArrayView1<'_, f64>) -> Cow<'a, [f64]> {
@@ -31,6 +31,12 @@ impl IntoPyErr for SolveError {
             SolveError::InvalidInput { .. } => value_err(self),
             _ => PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(self.to_string()),
         }
+    }
+}
+
+impl IntoPyErr for BuildError {
+    fn into_py_err(self) -> PyErr {
+        value_err(self)
     }
 }
 

@@ -13,7 +13,7 @@
 //! preconditioner required:
 //!
 //! ```
-//! use schwarz_precond::{lsmr, Operator, SolveError};
+//! use schwarz_precond::{lsmr, MlsmrOptions, Operator, SolveError};
 //!
 //! struct Diag(Vec<f64>);
 //! impl Operator for Diag {
@@ -35,7 +35,7 @@
 //! }
 //!
 //! let a = Diag(vec![2.0, 3.0]);
-//! let r = lsmr(&a, &[4.0, 9.0], 1e-10, 50, None).unwrap();
+//! let r = lsmr(&a, &[4.0, 9.0], 1e-10, 50, MlsmrOptions::default()).unwrap();
 //! assert!(r.converged);
 //! assert!((r.x[0] - 2.0).abs() < 1e-6);
 //! assert!((r.x[1] - 3.0).abs() < 1e-6);
