@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use crate::block_elim::BlockElimSolver;
 use crate::config::{LocalSolverConfig, PreconditionerConfig};
 use crate::domain::Loading;
-use crate::domain::{row_weight, LocalDomain, PreparedDesign};
+use crate::domain::{LocalDomain, PreparedDesign};
 use crate::{BuildError, BuildWarning};
 
 #[cfg(test)]
@@ -210,16 +210,13 @@ impl Operator for Preconditioner {
     }
 }
 
-fn build_diagonal(
-    prepared: &PreparedDesign<'_>,
-    sqrt_weights: Option<&[f64]>,
-) -> Result<DiagonalPreconditioner, BuildError> {
+fn build_diagonal(prepared: &PreparedDesign<'_>) -> Result<DiagonalPreconditioner, BuildError> {
     let design = &prepared.design;
     let mut diag = vec![0.0; design.n_dofs];
 
     for (factor_idx, term) in design.terms.iter().enumerate() {
         let levels = design.frame.level_column(factor_idx);
-        let w = |uid: usize| row_weight(sqrt_weights, uid);
+        let w = |uid: usize| prepared.row_weight(uid);
         for (column, loading) in term.columns.iter().enumerate() {
             let base = term.column_base(column);
             let slice = &mut diag[base..base + term.n_levels];
@@ -257,10 +254,9 @@ fn build_diagonal(
     })
 }
 
-/// Build a [`Preconditioner`] for a prepared design and optional `√w`, plus any warnings.
+/// Build a [`Preconditioner`] for a prepared design, plus any warnings.
 pub(crate) fn build_preconditioner(
     prepared: &PreparedDesign<'_>,
-    sqrt_weights: Option<&[f64]>,
     config: Option<&PreconditionerConfig>,
 ) -> Result<(Option<Preconditioner>, Vec<BuildWarning>), BuildError> {
     use crate::domain::build_local_domains;
@@ -279,7 +275,7 @@ pub(crate) fn build_preconditioner(
             local_solver,
             reduction,
         } => {
-            let (domains, warnings) = build_local_domains(prepared, sqrt_weights, local_solver)?;
+            let (domains, warnings) = build_local_domains(prepared, local_solver)?;
             if domains.is_empty() {
                 // No factor-pair subdomains means no useful Schwarz; fall back to plain LSMR.
                 return Ok((None, warnings));
@@ -289,7 +285,7 @@ pub(crate) fn build_preconditioner(
             (Variant::Additive(preconditioner), warnings)
         }
         PreconditionerConfig::Diagonal => {
-            let preconditioner = build_diagonal(prepared, sqrt_weights)?;
+            let preconditioner = build_diagonal(prepared)?;
             (Variant::Diagonal(preconditioner), Vec::new())
         }
     };

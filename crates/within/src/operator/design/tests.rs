@@ -13,7 +13,7 @@ mod design_tests {
     #[test]
     fn test_design_operator_dimensions() {
         let schema = make_test_design();
-        let op = DesignOperator::new(&schema, None);
+        let op = DesignOperator::new(&schema);
         assert_eq!(op.nrows(), 5);
         assert_eq!(op.ncols(), 7);
     }
@@ -21,7 +21,7 @@ mod design_tests {
     #[test]
     fn test_design_operator_adjoint() {
         let schema = make_test_design();
-        let op = DesignOperator::new(&schema, None);
+        let op = DesignOperator::new(&schema);
 
         let x = vec![1.0, -0.5, 2.0, 0.3, -1.0, 0.7, 1.5];
         let r = vec![0.1, 0.2, -0.3, 0.4, -0.5];
@@ -40,7 +40,7 @@ mod design_tests {
     #[test]
     fn test_apply_unweighted_values() {
         let schema = make_test_design();
-        let op = DesignOperator::new(&schema, None);
+        let op = DesignOperator::new(&schema);
         let x = vec![1.0, 2.0, 3.0, 10.0, 20.0, 30.0, 40.0];
         let mut y = vec![0.0; 5];
         op.apply(&x, &mut y).expect("apply succeeds");
@@ -50,7 +50,7 @@ mod design_tests {
     #[test]
     fn test_apply_adjoint_unweighted_values() {
         let schema = make_test_design();
-        let op = DesignOperator::new(&schema, None);
+        let op = DesignOperator::new(&schema);
         let r = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         let mut x = vec![0.0; 7];
         op.apply_adjoint(&r, &mut x)
@@ -79,7 +79,7 @@ mod design_tests {
         let dm = make_large_design();
         let n_dofs = dm.design.n_dofs;
         let n_rows = dm.design.n_obs;
-        let op = DesignOperator::new(&dm, None);
+        let op = DesignOperator::new(&dm);
 
         let x: Vec<f64> = (0..n_dofs).map(|i| (i as f64 * 0.17 + 1.0).sin()).collect();
         let r: Vec<f64> = (0..n_rows).map(|i| (i as f64 * 0.23 + 2.0).cos()).collect();
@@ -117,7 +117,7 @@ mod design_tests {
             "dominant factor is sorted; no perm"
         );
 
-        let op = DesignOperator::new(&dm, None);
+        let op = DesignOperator::new(&dm);
         let x: Vec<f64> = (0..dm.design.n_dofs)
             .map(|i| (i as f64 * 0.17 + 1.0).sin())
             .collect();
@@ -144,7 +144,7 @@ mod design_tests {
     #[test]
     fn test_large_design_matvec_correctness() {
         let dm = make_large_design();
-        let op = DesignOperator::new(&dm, None);
+        let op = DesignOperator::new(&dm);
 
         let mut ej = vec![0.0f64; dm.design.n_dofs];
         ej[0] = 1.0;
@@ -163,7 +163,7 @@ mod design_tests {
     #[test]
     fn test_large_design_apply_adjoint_correctness() {
         let dm = make_large_design();
-        let op = DesignOperator::new(&dm, None);
+        let op = DesignOperator::new(&dm);
 
         let ones = vec![1.0f64; dm.design.n_obs];
         let mut x = vec![0.0f64; dm.design.n_dofs];
@@ -182,7 +182,7 @@ mod design_tests {
     #[test]
     fn test_single_factor_design_adjoint_property() {
         let dm = make_single_factor_design();
-        let op = DesignOperator::new(&dm, None);
+        let op = DesignOperator::new(&dm);
 
         let x: Vec<f64> = vec![1.0, 2.0, 3.0];
         let r: Vec<f64> = vec![0.5, 1.5, -0.5, 2.0, -1.0];
@@ -206,7 +206,7 @@ mod design_tests {
     #[test]
     fn test_single_factor_apply_values() {
         let dm = make_single_factor_design();
-        let op = DesignOperator::new(&dm, None);
+        let op = DesignOperator::new(&dm);
         let x = vec![10.0, 20.0, 30.0];
         let mut y = vec![0.0f64; 5];
         op.apply(&x, &mut y).expect("apply succeeds");
@@ -216,7 +216,7 @@ mod design_tests {
     #[test]
     fn test_single_factor_apply_adjoint_values() {
         let dm = make_single_factor_design();
-        let op = DesignOperator::new(&dm, None);
+        let op = DesignOperator::new(&dm);
         let r = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         let mut x = vec![0.0f64; 3];
         op.apply_adjoint(&r, &mut x)
@@ -280,14 +280,14 @@ mod design_tests {
             .collect();
 
         // Baseline: a fresh operator that has never applied before.
-        let fresh = DesignOperator::new(dm, None);
+        let fresh = DesignOperator::new(dm);
         let mut baseline = vec![0.0f64; dm.design.n_dofs];
         fresh
             .apply_adjoint(&r, &mut baseline)
             .expect("apply_adjoint succeeds");
 
         // The second apply on a dirtied operator must equal the fresh baseline.
-        let op = DesignOperator::new(dm, None);
+        let op = DesignOperator::new(dm);
         let mut warmup = vec![0.0f64; dm.design.n_dofs];
         op.apply_adjoint(&r, &mut warmup)
             .expect("apply_adjoint succeeds");
@@ -368,7 +368,7 @@ mod slope_design_tests {
             (0..design.design.n_dofs).all(|j| dense.iter().any(|row| row[j] != 0.0)),
             "whitening zeroed a column; the arm's addressing would go untested"
         );
-        let op = DesignOperator::new(&design, None);
+        let op = DesignOperator::new(&design);
 
         let x: Vec<f64> = (0..design.design.n_dofs)
             .map(|j| noise(7_000 + j))
@@ -413,9 +413,9 @@ mod slope_design_tests {
             Effect::new(&unsorted, true, [&z[1][..]]).unwrap(),
             Effect::new(&small, true, [&z[2][..], &z[3][..]]).unwrap(),
         ];
-        let design = PreparedDesign::unweighted_for_test(Design::new(effects).unwrap());
-        let sqrt_weights: Vec<f64> = (0..n).map(|i| (0.5 + noise(i).abs()).sqrt()).collect();
-        let op = DesignOperator::new(&design, Some(&sqrt_weights));
+        let weights: Vec<f64> = (0..n).map(|i| 0.5 + noise(i).abs()).collect();
+        let design = PreparedDesign::new(Design::new(effects).unwrap(), Some(&weights)).unwrap();
+        let op = DesignOperator::new(&design);
 
         let x: Vec<f64> = (0..design.design.n_dofs)
             .map(|j| noise(13 * j + 1))
@@ -445,9 +445,8 @@ mod weighted_adjoint_proptests {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(10))]
 
-        /// The adjoint property must hold for random weighted designs:
-        /// <D·x, W·r> == <x, D^T·W·r>, with D^T·W·r computed via
-        /// DesignOperator::apply_adjoint(W^{1/2} r) = D^T W^{1/2} (W^{1/2} r) = D^T W r.
+        /// The weighted normal-equation identity must hold for random designs:
+        /// <W^{1/2}D·x, W^{1/2}r> == <x, D^T W·r>.
         #[test]
         fn prop_weighted_adjoint_property(
             n_obs in 20usize..=200,
@@ -466,7 +465,8 @@ mod weighted_adjoint_proptests {
                 .map(|i| 0.5 + (i as f64 * 0.13 + seed as f64 * 0.41).sin().abs())
                 .collect();
 
-            let dm = PreparedDesign::from_levels_for_test(vec![fa, fb]);
+            let design = crate::domain::Design::from_levels_for_test(vec![fa, fb]);
+            let dm = PreparedDesign::new(design, Some(&weights)).unwrap();
 
             let n_dofs = dm.design.n_dofs;
             let n_rows = dm.design.n_obs;
@@ -478,26 +478,19 @@ mod weighted_adjoint_proptests {
                 .map(|i| (i as f64 * 0.29 + seed as f64 * 0.07).cos())
                 .collect();
 
-            let op_unweighted = DesignOperator::new(&dm, None);
+            let op = DesignOperator::new(&dm);
             let mut dx = vec![0.0f64; n_rows];
-            op_unweighted.apply(&x, &mut dx).unwrap();
-            let lhs: f64 = dx
-                .iter()
-                .zip(r.iter())
-                .enumerate()
-                .map(|(i, (dxi, ri))| weights[i] * dxi * ri)
-                .sum();
+            op.apply(&x, &mut dx).unwrap();
+            let weighted_r = op.weighted_rhs(&r);
+            let lhs: f64 = dx.iter().zip(&*weighted_r).map(|(dxi, ri)| dxi * ri).sum();
 
-            let sqrt_weights: Vec<f64> = weights.iter().map(|w| w.sqrt()).collect();
-            let op_weighted = DesignOperator::new(&dm, Some(&sqrt_weights));
-            let wr = op_weighted.weighted_rhs(&r);
             let mut wdtr = vec![0.0f64; n_dofs];
-            op_weighted.apply_adjoint(&wr, &mut wdtr).unwrap();
+            op.apply_adjoint(&weighted_r, &mut wdtr).unwrap();
             let rhs: f64 = x.iter().zip(wdtr.iter()).map(|(xi, wi)| xi * wi).sum();
 
             prop_assert!(
                 (lhs - rhs).abs() < 1e-8,
-                "<D·x, W·r>={lhs} != <x, D^T·W·r>={rhs}"
+                "<W^1/2 D·x, W^1/2 r>={lhs} != <x, D^T W·r>={rhs}"
             );
         }
     }

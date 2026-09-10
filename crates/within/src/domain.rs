@@ -294,27 +294,6 @@ impl<'a> Design<'a> {
         }
     }
 
-    /// Validate that an optional weight slice matches this design's observation count.
-    pub(crate) fn validate_weights(&self, weights: Option<&[f64]>) -> Result<(), BuildError> {
-        if let Some(w) = weights {
-            if w.len() != self.n_obs {
-                return Err(BuildError::WeightCountMismatch {
-                    expected: self.n_obs,
-                    got: w.len(),
-                });
-            }
-            // `wi >= 0.0` already rejects NaN; `is_finite` additionally rejects `+∞`.
-            if let Some((index, &value)) = w
-                .iter()
-                .enumerate()
-                .find(|&(_, &wi)| !(wi >= 0.0 && wi.is_finite()))
-            {
-                return Err(BuildError::InvalidWeight { index, value });
-            }
-        }
-        Ok(())
-    }
-
     /// Caller order → internal order: `out[k] = v[obs_perm[k]]`; borrows when unpermuted.
     pub(crate) fn permute_obs_in<'v>(&self, v: &'v [f64]) -> Cow<'v, [f64]> {
         debug_assert_eq!(v.len(), self.n_obs);
@@ -435,34 +414,6 @@ mod tests {
         assert!(matches!(
             err,
             BuildError::DofSpaceExceedsU32 { n_dofs } if n_dofs == u32::MAX as usize + 1
-        ));
-    }
-
-    #[test]
-    fn validate_weights_checks_count_and_finiteness() {
-        let design = Design::from_frame(frame(vec![vec![0, 0, 0, 0, 0]], vec![])).unwrap();
-        assert!(design.validate_weights(None).is_ok());
-        assert!(design
-            .validate_weights(Some(&[1.0, 2.0, 3.0, 4.0, 5.0]))
-            .is_ok());
-        // Zero weights are valid (an excluded observation).
-        assert!(design
-            .validate_weights(Some(&[0.0, 1.0, 2.0, 3.0, 4.0]))
-            .is_ok());
-        // Length mismatch.
-        assert!(design.validate_weights(Some(&[1.0, 2.0])).is_err());
-        // Negative / non-finite weights are rejected with the offending index.
-        assert!(matches!(
-            design.validate_weights(Some(&[1.0, -2.0, 3.0, 4.0, 5.0])),
-            Err(BuildError::InvalidWeight { index: 1, .. })
-        ));
-        assert!(matches!(
-            design.validate_weights(Some(&[1.0, 2.0, f64::NAN, 4.0, 5.0])),
-            Err(BuildError::InvalidWeight { index: 2, .. })
-        ));
-        assert!(matches!(
-            design.validate_weights(Some(&[1.0, 2.0, 3.0, f64::INFINITY, 5.0])),
-            Err(BuildError::InvalidWeight { index: 3, .. })
         ));
     }
 

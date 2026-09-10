@@ -5,7 +5,7 @@ use std::ops::Range;
 
 use rayon::prelude::*;
 
-use super::{row_weight, Design, PreparedDesign, TermMeta};
+use super::{Design, PreparedDesign, TermMeta};
 use crate::channel::Channel;
 use crate::BuildWarning;
 
@@ -18,10 +18,7 @@ const TABLE_BUDGET_BYTES: usize = 64 << 20;
 /// Rows one residual task claims; small enough that work stealing balances the tail.
 const ROWS_PER_TASK: usize = 1 << 16;
 
-pub(crate) fn detect_collinear_slopes(
-    prepared: &PreparedDesign<'_>,
-    sqrt_weights: Option<&[f64]>,
-) -> Vec<BuildWarning> {
+pub(crate) fn detect_collinear_slopes(prepared: &PreparedDesign<'_>) -> Vec<BuildWarning> {
     let design = &prepared.design;
     if design.n_factors() < 2 || !design.terms.iter().any(TermMeta::has_slopes) {
         return Vec::new();
@@ -31,7 +28,7 @@ pub(crate) fn detect_collinear_slopes(
         .into_par_iter()
         .flat_map_iter(move |term| {
             let targets = screened_covariates(design, term);
-            residual_shares(prepared, sqrt_weights, term, &targets, budget)
+            residual_shares(prepared, term, &targets, budget)
                 .into_iter()
                 .zip(targets)
                 .filter(|&(share, _)| share <= COLLINEARITY_TOL)
@@ -58,7 +55,6 @@ fn screened_covariates(design: &Design<'_>, term: usize) -> Vec<(Channel, u32)> 
 /// Two passes, so the share resolves below the `1e-16` a subtraction floors at.
 fn residual_shares(
     prepared: &PreparedDesign<'_>,
-    sqrt_weights: Option<&[f64]>,
     term: usize,
     targets: &[(Channel, u32)],
     budget: usize,
@@ -83,8 +79,8 @@ fn residual_shares(
     let n_levels = meta.n_levels;
     let plan = ScreenPlan::new(budget, n_levels, stride);
     let screen = Screen {
+        prepared,
         levels,
-        sqrt_weights,
         us,
         columns,
         intercept,
@@ -131,8 +127,8 @@ fn residual_shares(
 }
 
 struct Screen<'a> {
+    prepared: &'a PreparedDesign<'a>,
     levels: &'a [u32],
-    sqrt_weights: Option<&'a [f64]>,
     /// The term's slope columns in the solve basis.
     us: Vec<&'a [f64]>,
     columns: Vec<&'a [f64]>,
@@ -151,7 +147,7 @@ impl Screen<'_> {
     ) -> impl Iterator<Item = (usize, f64, usize)> + '_ {
         rows.filter_map(move |i| {
             let obs = self.order.obs(i);
-            let w = row_weight(self.sqrt_weights, obs);
+            let w = self.prepared.row_weight(obs);
             (w > 0.0).then(|| (obs, w, self.levels[obs] as usize - first))
         })
     }

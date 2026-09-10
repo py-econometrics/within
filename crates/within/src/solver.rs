@@ -298,8 +298,6 @@ impl BatchSolveResult {
 /// Python boundary — uses owned columns.
 pub struct Solver<'a> {
     prepared: PreparedDesign<'a>,
-    /// `W^{1/2}` in the design's internal observation order; the only form of the weights kept.
-    sqrt_weights: Option<Vec<f64>>,
     preconditioner: Option<Preconditioner>,
     warnings: Vec<BuildWarning>,
 }
@@ -309,7 +307,7 @@ impl std::fmt::Debug for Solver<'_> {
         f.debug_struct("Solver")
             .field("n_obs", &self.prepared.design.n_obs)
             .field("n_dofs", &self.prepared.design.n_dofs)
-            .field("has_weights", &self.sqrt_weights.is_some())
+            .field("has_weights", &self.prepared.sqrt_weights().is_some())
             .field("has_preconditioner", &self.preconditioner.is_some())
             .finish()
     }
@@ -342,7 +340,9 @@ impl<'a> Solver<'a> {
     /// - `PreconditionerConfig::Diagonal` — use diagonal/Jacobi preconditioning
     /// - [`Preconditioner`] or `&Preconditioner` — reuse a previously built one
     ///
-    /// `weights` is `None` for unweighted; the solver keeps only `√w` in its own order.
+    /// `weights` is `None` for an unweighted solve. Supplied weights are validated
+    /// in caller observation order, then retained internally only as `√w` in the
+    /// design's internal observation order.
     ///
     /// LSMR tuning ([`LsmrOptions`]) is supplied per call to [`Solver::solve`] /
     /// [`Solver::solve_batch`], not at construction; preconditioner factorization
@@ -352,22 +352,14 @@ impl<'a> Solver<'a> {
         weights: Option<&[f64]>,
         preconditioner: impl Into<PreconditionerInput>,
     ) -> Result<Self, BuildError> {
-        let design = design.into_design()?;
-        design.validate_weights(weights)?;
-        let sqrt_weights: Option<Vec<f64>> = weights.map(|w| {
-            let w = design.permute_obs_in(w);
-            w.iter().map(|wi| wi.sqrt()).collect()
-        });
-        let sw = sqrt_weights.as_deref();
-
         // Whiten the slope columns (if any) before the preconditioner reads them.
-        let prepared = PreparedDesign::new(design, sw);
-        let mut warnings = detect_collinear_slopes(&prepared, sw);
+        let prepared = PreparedDesign::new(design.into_design()?, weights)?;
+        let mut warnings = detect_collinear_slopes(&prepared);
         let n_dofs = prepared.design.n_dofs;
 
         let (preconditioner, build_warnings) = match preconditioner.into() {
-            PreconditionerInput::Default => build_preconditioner(&prepared, sw, None)?,
-            PreconditionerInput::Config(c) => build_preconditioner(&prepared, sw, Some(&c))?,
+            PreconditionerInput::Default => build_preconditioner(&prepared, None)?,
+            PreconditionerInput::Config(c) => build_preconditioner(&prepared, Some(&c))?,
             PreconditionerInput::Prebuilt(p) => {
                 if p.nrows() != n_dofs || p.ncols() != n_dofs {
                     return Err(BuildError::PreconditionerDimensionMismatch {
@@ -384,7 +376,6 @@ impl<'a> Solver<'a> {
 
         Ok(Self {
             prepared,
-            sqrt_weights,
             preconditioner,
             warnings,
         })
@@ -425,7 +416,7 @@ impl<'a> Solver<'a> {
         let y_internal = self.prepared.design.permute_obs_in(y);
         let y: &[f64] = &y_internal;
 
-        let rect_op = DesignOperator::new(&self.prepared, self.sqrt_weights.as_deref());
+        let rect_op = DesignOperator::new(&self.prepared);
         let b = rect_op.weighted_rhs(y);
         let b: &[f64] = &b;
 

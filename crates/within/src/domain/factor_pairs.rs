@@ -35,7 +35,6 @@ pub(crate) struct LocalDomain {
 /// Same-factor channel pairs are exactly orthogonal after whitening, so never enumerated.
 pub(crate) fn build_local_domains(
     prepared: &PreparedDesign<'_>,
-    sqrt_weights: Option<&[f64]>,
     config: &LocalSolverConfig,
 ) -> Result<(Vec<LocalDomain>, Vec<BuildWarning>), BuildError> {
     use rayon::prelude::*;
@@ -67,7 +66,7 @@ pub(crate) fn build_local_domains(
         .par_iter()
         .map(|&pair| {
             let Some((full_ct, full_diag, l2g)) =
-                CrossTab::build_for_pair_with_active(prepared, sqrt_weights, pair, &all_active)
+                CrossTab::build_for_pair_with_active(prepared, pair, &all_active)
             else {
                 return Ok((Vec::new(), Vec::new()));
             };
@@ -221,8 +220,8 @@ mod tests {
     #[test]
     fn test_full_cover_domain_count() {
         let dm = make_test_design();
-        let (domain_pairs, _) = build_local_domains(&dm, None, &LocalSolverConfig::default())
-            .expect("plain domains build");
+        let (domain_pairs, _) =
+            build_local_domains(&dm, &LocalSolverConfig::default()).expect("plain domains build");
         // 3 factor pairs; each pair may produce multiple components
         assert!(domain_pairs.len() >= 3);
     }
@@ -230,8 +229,8 @@ mod tests {
     #[test]
     fn test_partition_of_unity() {
         let dm = make_test_design();
-        let (domain_pairs, _) = build_local_domains(&dm, None, &LocalSolverConfig::default())
-            .expect("plain domains build");
+        let (domain_pairs, _) =
+            build_local_domains(&dm, &LocalSolverConfig::default()).expect("plain domains build");
         let n_dofs = dm.design.n_dofs;
         // Two-sided PoU: squared weights must sum to 1 at every DOF.
         let mut weight_sq_sum = vec![0.0; n_dofs];
@@ -263,7 +262,7 @@ mod tests {
         .expect("valid slope design");
         let design = PreparedDesign::unweighted_for_test(design);
 
-        let (domain_pairs, _) = build_local_domains(&design, None, &LocalSolverConfig::default())
+        let (domain_pairs, _) = build_local_domains(&design, &LocalSolverConfig::default())
             .expect("slope domains build");
 
         for ld in &domain_pairs {
@@ -292,8 +291,8 @@ mod tests {
     #[test]
     fn test_domains_cover_all_dofs() {
         let dm = make_test_design();
-        let (domain_pairs, _) = build_local_domains(&dm, None, &LocalSolverConfig::default())
-            .expect("plain domains build");
+        let (domain_pairs, _) =
+            build_local_domains(&dm, &LocalSolverConfig::default()).expect("plain domains build");
         let mut covered = vec![false; dm.design.n_dofs];
         for ld in &domain_pairs {
             for &idx in ld.core.global_indices() {

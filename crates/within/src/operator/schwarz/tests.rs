@@ -20,8 +20,8 @@ const BLOCK_ELIM_NESTED_RAYON_CHILD_ENV: &str = "WITHIN_TEST_BLOCK_ELIM_NESTED_R
 fn make_test_data() -> (PreparedDesign<'static>, Vec<LocalDomain>) {
     let design =
         PreparedDesign::from_levels_for_test(vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]]);
-    let (domain_pairs, _) = build_local_domains(&design, None, &LocalSolverConfig::default())
-        .expect("plain domains build");
+    let (domain_pairs, _) =
+        build_local_domains(&design, &LocalSolverConfig::default()).expect("plain domains build");
     (design, domain_pairs)
 }
 
