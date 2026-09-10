@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use ndarray::ArrayView2;
 use rayon::prelude::*;
-use schwarz_precond::{lsmr as lsmr_solve, mlsmr, MlsmrOptions};
+use schwarz_precond::{lsmr_with, mlsmr, MlsmrOptions};
 
 use crate::channel::{Channel, Coefficient, CoefficientAddress};
 use crate::config::{LsmrOptions, PreconditionerConfig};
@@ -438,8 +438,9 @@ impl<'a> Solver<'a> {
         y: &[f64],
         lsmr: &LsmrOptions,
     ) -> Result<RhsSolution, SolveError> {
-        let span = tracing::debug_span!("solve", rhs);
-        let _entered = span.enter();
+        // A batch worker emits exactly one record, `solved`; the batch announces itself once.
+        let span = (!in_batch).then(|| tracing::debug_span!("solve", rhs));
+        let _entered = span.as_ref().map(tracing::Span::enter);
         // `weighted_rhs` zips y with sqrt-weights, silently truncating when `y.len() > n_rows`.
         if y.len() != self.prepared.design.n_obs {
             return Err(SolveError::InvalidInput {
@@ -458,12 +459,14 @@ impl<'a> Solver<'a> {
             });
         }
 
-        tracing::info!(
-            rhs,
-            tol = lsmr.tol,
-            max_iterations = lsmr.maxiter,
-            "solving"
-        );
+        if !in_batch {
+            tracing::info!(
+                rhs,
+                tol = lsmr.tol,
+                max_iterations = lsmr.maxiter,
+                "solving"
+            );
+        }
         let t_start = Instant::now();
 
         // The gather is a recurring per-solve cost of the locality sort, so it counts as setup.
@@ -485,7 +488,7 @@ impl<'a> Solver<'a> {
         };
         let r = match self.preconditioner.as_ref() {
             Some(p) => mlsmr(&rect_op, b, p, lsmr.tol, lsmr.maxiter, options)?,
-            None => lsmr_solve(&rect_op, b, lsmr.tol, lsmr.maxiter, options)?,
+            None => lsmr_with(&rect_op, b, lsmr.tol, lsmr.maxiter, options)?,
         };
 
         let time_solve = t_solve_start.elapsed().as_secs_f64();
@@ -576,6 +579,12 @@ impl<'a> Solver<'a> {
         let default = LsmrOptions::default();
         let lsmr = lsmr.into().unwrap_or(&default);
         let n_rhs = ys.len();
+        tracing::info!(
+            n_rhs,
+            tol = lsmr.tol,
+            max_iterations = lsmr.maxiter,
+            "solving batch"
+        );
 
         // Collecting into `Result` fails fast on the first per-RHS error, not during the fold.
         let solutions: Vec<RhsSolution> = ys

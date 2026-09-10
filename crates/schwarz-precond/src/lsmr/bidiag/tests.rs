@@ -31,13 +31,7 @@ fn alpha_from_vp_clamps_a_pair_within_root_epsilon(#[case] v: &[f64], #[case] p:
 /// `beta == 0.0` and `alpha > 0.0` are both false for NaN; unguarded, an overflow poisons the run.
 #[rstest]
 fn a_non_finite_operator_norm_is_an_error(#[values(f64::NAN, f64::MAX)] bad: f64) {
-    let result = crate::lsmr::lsmr(
-        &DiagOp(vec![bad, 1.0]),
-        &[1.0, 1.0],
-        1e-10,
-        50,
-        crate::lsmr::MlsmrOptions::default(),
-    );
+    let result = crate::lsmr::lsmr(&DiagOp(vec![bad, 1.0]), &[1.0, 1.0], 1e-10, 50, None);
     assert!(
         matches!(result, Err(SolveError::InvalidInput { .. })),
         "{bad:e} accepted"

@@ -76,20 +76,38 @@ def test_single_solve_reports_every_iteration(caplog: pytest.LogCaptureFixture) 
     assert any(r.getMessage().startswith("solving") for r in caplog.records)
 
 
-def test_raising_handler_surfaces_as_its_own_exception() -> None:
-    class Raising(logging.Handler):
-        def emit(self, record: logging.LogRecord) -> None:
+class _RaiseOnSolved(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.getMessage().startswith("solved"):
             raise RuntimeError("handler failed")
 
-    categories, y = _problem()
+
+@pytest.fixture
+def raising_on_solved() -> logging.Handler:
     logger = logging.getLogger("within")
-    handler = Raising(level=logging.INFO)
-    logger.addHandler(handler)
+    handler = _RaiseOnSolved(level=logging.INFO)
     previous = logger.level
+    logger.addHandler(handler)
     logger.setLevel(logging.INFO)
-    try:
-        with pytest.raises(RuntimeError, match="handler failed"):
-            within.solve(categories, y)
-    finally:
-        logger.removeHandler(handler)
-        logger.setLevel(previous)
+    yield handler
+    logger.removeHandler(handler)
+    logger.setLevel(previous)
+
+
+def test_raising_handler_surfaces_as_its_own_exception(
+    raising_on_solved: logging.Handler,
+) -> None:
+    categories, y = _problem()
+    solver = within.Solver(categories)
+    with pytest.raises(RuntimeError, match="handler failed"):
+        solver.solve(y)
+
+
+def test_raising_handler_on_a_batch_worker_is_not_lost(
+    raising_on_solved: logging.Handler,
+) -> None:
+    categories, y = _problem()
+    solver = within.Solver(categories)
+    Y = np.stack([y, 2.0 * y], axis=1)
+    with pytest.raises(RuntimeError, match="handler failed"):
+        solver.solve_batch(Y)
