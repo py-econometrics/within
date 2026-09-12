@@ -37,7 +37,7 @@ pub(crate) mod linalg;
 pub(crate) mod operator;
 pub(crate) mod solver;
 
-pub use channel::{Channel, ChannelPair};
+pub use channel::{Channel, ChannelPair, CoefficientAddress};
 pub use config::{
     ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, LsmrOptions, PreconditionerConfig,
     ReductionStrategy, ScalingConfig, ScalingFailure, SchurMode,
@@ -46,6 +46,6 @@ pub use domain::{Design, Effect};
 pub use error::{BuildError, BuildWarning, SolveError, WithinError};
 pub use operator::schwarz::Preconditioner;
 pub use solver::{
-    solve, solve_batch, BatchSolveResult, CoefficientAddress, CoefficientLayout, IntoDesign,
-    PreconditionerInput, SolveResult, Solver,
+    solve, solve_batch, BatchSolveResult, CoefficientLayout, IntoDesign, PreconditionerInput,
+    SolveResult, Solver,
 };

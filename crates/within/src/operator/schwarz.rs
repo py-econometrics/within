@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use crate::block_elim::BlockElimSolver;
 use crate::config::{LocalSolverConfig, PreconditionerConfig};
 use crate::domain::Loading;
-use crate::domain::{Design, LocalDomain};
+use crate::domain::{LocalDomain, PreparedDesign};
 use crate::{BuildError, BuildWarning};
 
 #[cfg(test)]
@@ -210,15 +210,13 @@ impl Operator for Preconditioner {
     }
 }
 
-fn build_diagonal(
-    design: &Design<'_>,
-    weights: Option<&[f64]>,
-) -> Result<DiagonalPreconditioner, BuildError> {
+fn build_diagonal(prepared: &PreparedDesign<'_>) -> Result<DiagonalPreconditioner, BuildError> {
+    let design = &prepared.design;
     let mut diag = vec![0.0; design.n_dofs];
 
     for (factor_idx, term) in design.terms.iter().enumerate() {
         let levels = design.frame.level_column(factor_idx);
-        let w = |uid: usize| weights.map_or(1.0, |ws| ws[uid]);
+        let w = |uid: usize| prepared.row_weight(uid);
         for (column, loading) in term.columns.iter().enumerate() {
             let base = term.column_base(column);
             let slice = &mut diag[base..base + term.n_levels];
@@ -229,7 +227,7 @@ fn build_diagonal(
                     }
                 }
                 Loading::Covariate(z_col) => {
-                    let z = design.frame.loading_column(*z_col as usize);
+                    let z = prepared.loading_column(*z_col as usize);
                     for (uid, &level) in levels.iter().enumerate() {
                         // Keep `w * z * z` left-to-right: a zero weight kills a huge `z` first.
                         slice[level as usize] += w(uid) * z[uid] * z[uid];
@@ -256,14 +254,14 @@ fn build_diagonal(
     })
 }
 
-/// Build a [`Preconditioner`] from a design and optional weights, plus any warnings.
+/// Build a [`Preconditioner`] for a prepared design, plus any warnings.
 pub(crate) fn build_preconditioner(
-    design: &Design<'_>,
-    weights: Option<&[f64]>,
+    prepared: &PreparedDesign<'_>,
     config: Option<&PreconditionerConfig>,
 ) -> Result<(Option<Preconditioner>, Vec<BuildWarning>), BuildError> {
     use crate::domain::build_local_domains;
 
+    let design = &prepared.design;
     // Weights are pre-validated by the sole caller, whose permutation preserves length and sign.
     let default_cfg = PreconditionerConfig::default();
     let resolved = config.unwrap_or(&default_cfg);
@@ -277,7 +275,7 @@ pub(crate) fn build_preconditioner(
             local_solver,
             reduction,
         } => {
-            let (domains, warnings) = build_local_domains(design, weights, local_solver)?;
+            let (domains, warnings) = build_local_domains(prepared, local_solver)?;
             if domains.is_empty() {
                 // No factor-pair subdomains means no useful Schwarz; fall back to plain LSMR.
                 return Ok((None, warnings));
@@ -287,7 +285,7 @@ pub(crate) fn build_preconditioner(
             (Variant::Additive(preconditioner), warnings)
         }
         PreconditionerConfig::Diagonal => {
-            let preconditioner = build_diagonal(design, weights)?;
+            let preconditioner = build_diagonal(prepared)?;
             (Variant::Diagonal(preconditioner), Vec::new())
         }
     };

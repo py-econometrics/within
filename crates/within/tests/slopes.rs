@@ -54,7 +54,7 @@ fn solve_with(
     levels: &[u32],
     z: &[f64],
     intercept: bool,
-    weights: Option<Vec<f64>>,
+    weights: Option<&[f64]>,
     y: &[f64],
     config: &PreconditionerConfig,
 ) -> SolveResult {
@@ -72,7 +72,7 @@ fn solve_single(
     levels: &[u32],
     z: &[f64],
     intercept: bool,
-    weights: Option<Vec<f64>>,
+    weights: Option<&[f64]>,
     y: &[f64],
 ) -> SolveResult {
     solve_with(
@@ -201,7 +201,7 @@ fn weighted_solve_matches_closed_form_and_masks_zero_weight_rows() {
     let w: Vec<f64> = vec![1.0, 0.5, 2.0, 1.5, 3.0, 1.0, 1.0, 1.0, 0.0];
     let y = synthetic_y(levels.len());
 
-    let r = solve_single(&levels, &z, true, Some(w.clone()), &y);
+    let r = solve_single(&levels, &z, true, Some(&w), &y);
     assert!(r.converged);
     assert_eq!(drops(&r), [(0, 2, 1)]);
     assert_eq!(r.x[3 + 2], 0.0);
@@ -222,8 +222,7 @@ fn zero_weight_garbage_does_not_poison_identification() {
     let z: Vec<f64> = vec![1.0, 2.0, 3.0, 5.0, 7.0, 1e300];
     let w: Vec<f64> = vec![1.0, 1.0, 1.0, 1.0, 1.0, 0.0];
     let y = synthetic_y(levels.len());
-    let run =
-        |config: &PreconditionerConfig| solve_with(&levels, &z, true, Some(w.clone()), &y, config);
+    let run = |config: &PreconditionerConfig| solve_with(&levels, &z, true, Some(&w), &y, config);
 
     let r = run(&PreconditionerConfig::default());
     assert!(r.unidentified.is_empty());
