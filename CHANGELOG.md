@@ -9,6 +9,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Categorical `u32` labels no longer need to be zero-based or contiguous: `Design` compacts observed labels to internal positions, while `CoefficientLayout` and `CoefficientAddress` translate coefficients back to caller-visible labels. This avoids allocating and solving for gaps in sparse label ranges (#228, #268).
 - **BREAKING:** Rust `Solver::new` now takes `weights: Option<&[f64]>` instead of `Option<Vec<f64>>`; pass `Some(&weights)` to build a weighted persistent solver. The solver prepares and retains only `W^{1/2}` in its internal observation order. The one-shot `solve` and `solve_batch` weight arguments remain borrowed and are unchanged.
 - `Design::from_frame` rejects continuous columns that no effect term claims, reporting `BuildError::UnclaimedLoadingColumns` instead of silently retaining unused data.
 - **BREAKING:** Python `PreconditionerConfig` is now a tagged union: construct variants as `PreconditionerConfig.Off()`, `.Diagonal()`, or `.Additive(local_solver=..., reduction=...)` (previously class-attribute singletons plus an `.additive()` factory). Instances compare by value and support `match`/`case` on Python ≥3.10.
