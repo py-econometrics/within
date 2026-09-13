@@ -340,6 +340,18 @@ class Preconditioner:
     def __repr__(self) -> str: ...
     def __reduce__(self) -> tuple: ...
 
+class Design:
+    """Persistent fixed-effects design.
+
+    Constructs and owns the native observation storage for reuse across solvers.
+    """
+
+    def __init__(self, design: NDArray[np.uint32] | list[Effect]) -> None: ...
+    @property
+    def n_obs(self) -> int: ...
+    @property
+    def n_dofs(self) -> int: ...
+
 class Solver:
     """Persistent solver with cached preconditioner.
 
@@ -349,7 +361,7 @@ class Solver:
 
     def __init__(
         self,
-        design: NDArray[np.uint32] | list[Effect],
+        design: Design | NDArray[np.uint32] | list[Effect],
         weights: NDArray[np.float64] | None = None,
         preconditioner: (PreconditionerConfig | Preconditioner | None) = None,
     ) -> None: ...

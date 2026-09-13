@@ -221,6 +221,55 @@ fn extract_design<'py>(py: Python<'_>, design: &Bound<'py, PyAny>) -> PyResult<D
     ))
 }
 
+fn extract_owned_design(py: Python<'_>, design: &Bound<'_, PyAny>) -> PyResult<Design<'static>> {
+    match extract_design(py, design)? {
+        DesignSource::Categories(categories) => {
+            let categories = categories.as_array();
+            py.detach(move || Design::from_categories(categories).map(Design::into_owned))
+                .map_err(value_err)
+        }
+        DesignSource::Effects(terms) => py
+            .detach(move || {
+                let effects: Vec<_> = terms.iter().map(PyEffect::as_effect).collect();
+                Design::new(effects).map(Design::into_owned)
+            })
+            .map_err(value_err),
+    }
+}
+
+/// Persistent fixed-effects design with owned observation storage.
+#[pyclass(frozen, skip_from_py_object, module = "within._within")]
+#[pyo3(name = "Design")]
+pub struct PyDesign {
+    design: Design<'static>,
+}
+
+#[pymethods]
+impl PyDesign {
+    #[new]
+    fn new(py: Python<'_>, design: &Bound<'_, PyAny>) -> PyResult<Self> {
+        Ok(Self {
+            design: extract_owned_design(py, design)?,
+        })
+    }
+
+    #[getter]
+    fn n_obs(&self) -> usize {
+        self.design.n_obs()
+    }
+
+    #[getter]
+    fn n_dofs(&self) -> usize {
+        self.design.n_dofs()
+    }
+}
+
+impl PyDesign {
+    fn as_design(&self) -> &Design<'static> {
+        &self.design
+    }
+}
+
 /// Persistent solver reusing preconditioners; the factorization happens once at construction.
 #[pyclass(frozen, module = "within._within")]
 #[pyo3(name = "Solver")]
@@ -242,26 +291,18 @@ impl PySolver {
         let w_view = weights.as_ref().map(|w| w.as_array());
         let precond = resolve_precond_input(preconditioner)?;
 
+        let design = match design.extract::<Py<PyDesign>>() {
+            Ok(design) => design.get().as_design().clone(),
+            Err(_) => extract_owned_design(py, design)?,
+        };
+
         // `BuildError` carries no Python types, so it maps to an exception once the GIL is back.
-        let solver = match extract_design(py, design)? {
-            DesignSource::Categories(categories) => {
-                let cats = categories.as_array();
-                py.detach(move || -> Result<Solver<'static>, BuildError> {
-                    let w_cow = w_view.as_ref().map(coerce_to_slice);
-                    Solver::new(cats.into_design()?.into_owned(), w_cow.as_deref(), precond)
-                })
-            }
-            DesignSource::Effects(terms) => {
-                py.detach(move || -> Result<Solver<'static>, BuildError> {
-                    let w_cow = w_view.as_ref().map(coerce_to_slice);
-                    let effects: Vec<_> = terms.iter().map(PyEffect::as_effect).collect();
-                    // The solver outlives the terms' buffers, so lower to owned columns first.
-                    let design = Design::new(effects)?.into_owned();
-                    Solver::new(design, w_cow.as_deref(), precond)
-                })
-            }
-        }
-        .map_err(value_err)?;
+        let solver = py
+            .detach(move || -> Result<Solver<'static>, BuildError> {
+                let w_cow = w_view.as_ref().map(coerce_to_slice);
+                Solver::new(design, w_cow.as_deref(), precond)
+            })
+            .map_err(value_err)?;
 
         emit_build_warnings(py, solver.warnings())?;
         Ok(Self { solver })
