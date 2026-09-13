@@ -222,8 +222,20 @@ class Effect:
         slopes: list[NDArray[np.float64]] | None = None,
     ) -> None: ...
 
+class Design:
+    """Persistent fixed-effects design.
+
+    Constructs and owns the native observation storage for reuse across solvers.
+    """
+
+    def __init__(self, design: Design | NDArray[np.uint32] | list[Effect]) -> None: ...
+    @property
+    def n_obs(self) -> int: ...
+    @property
+    def n_dofs(self) -> int: ...
+
 def solve(
-    design: NDArray[np.uint32] | list[Effect],
+    design: Design | NDArray[np.uint32] | list[Effect],
     y: NDArray[np.float64],
     weights: NDArray[np.float64] | None = None,
     options: LsmrOptions | None = None,
@@ -236,9 +248,10 @@ def solve(
     implied by ``categories`` and ``W`` is the diagonal weight matrix.
 
     Args:
-        design: Either a ``(n_obs, n_factors)`` ``uint32`` array of factor
-            assignments (F-contiguous for best performance; a ``UserWarning``
-            is emitted otherwise), or a list of :class:`Effect` terms.
+        design: A persistent :class:`Design`, a ``(n_obs, n_factors)``
+            ``uint32`` array of factor assignments (F-contiguous for best
+            performance; a ``UserWarning`` is emitted otherwise), or a list of
+            :class:`Effect` terms.
         y: Response vector, shape ``(n_obs,)``, dtype ``float64``.
         weights: Observation weights, shape ``(n_obs,)``, dtype ``float64``.
             Default: unit weights (unweighted).
@@ -283,7 +296,7 @@ def solve(
     ...
 
 def solve_batch(
-    design: NDArray[np.uint32] | list[Effect],
+    design: Design | NDArray[np.uint32] | list[Effect],
     Y: NDArray[np.float64],
     weights: NDArray[np.float64] | None = None,
     options: LsmrOptions | None = None,
@@ -295,9 +308,10 @@ def solve_batch(
     the setup phase (preconditioner construction).
 
     Args:
-        design: Either a ``(n_obs, n_factors)`` ``uint32`` array of factor
-            assignments (F-contiguous for best performance; a ``UserWarning``
-            is emitted otherwise), or a list of :class:`Effect` terms.
+        design: A persistent :class:`Design`, a ``(n_obs, n_factors)``
+            ``uint32`` array of factor assignments (F-contiguous for best
+            performance; a ``UserWarning`` is emitted otherwise), or a list of
+            :class:`Effect` terms.
         Y: Response matrix, shape ``(n_obs, k)``, dtype ``float64``. Each column
             is a separate response vector.
         weights: Observation weights. Default: unit weights.
@@ -339,18 +353,6 @@ class Preconditioner:
     def build_duration_seconds(self) -> float: ...
     def __repr__(self) -> str: ...
     def __reduce__(self) -> tuple: ...
-
-class Design:
-    """Persistent fixed-effects design.
-
-    Constructs and owns the native observation storage for reuse across solvers.
-    """
-
-    def __init__(self, design: NDArray[np.uint32] | list[Effect]) -> None: ...
-    @property
-    def n_obs(self) -> int: ...
-    @property
-    def n_dofs(self) -> int: ...
 
 class Solver:
     """Persistent solver with cached preconditioner.

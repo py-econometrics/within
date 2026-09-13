@@ -537,6 +537,19 @@ class TestSolveBatchFreeFunction:
         np.testing.assert_allclose(batch.x[:, 0], r1.x, atol=1e-10)
         np.testing.assert_allclose(batch.x[:, 1], r2.x, atol=1e-10)
 
+    def test_persistent_design_matches_raw_input(self, problem):
+        cats, y = problem
+        categories = as_solver_categories(cats)
+        weights = np.linspace(0.5, 1.5, len(y))
+        Y = np.column_stack([y, -y])
+        from within import solve_batch
+
+        expected = solve_batch(categories, Y, weights=weights)
+        actual = solve_batch(Design(categories), Y, weights=weights)
+
+        np.testing.assert_allclose(actual.x, expected.x, atol=1e-10)
+        np.testing.assert_allclose(actual.demeaned, expected.demeaned, atol=1e-10)
+
     def test_solve_batch_effect_terms_match_individual(self):
         f = np.array([0, 0, 0, 1, 1, 1], dtype=np.uint32)
         g = np.array([0, 1, 2, 0, 1, 2], dtype=np.uint32)
@@ -620,15 +633,33 @@ class TestDesign:
         assert design.n_obs == 4
         assert design.n_dofs == 4
 
+    def test_copy_from_existing_design_survives_original(self):
+        categories = np.asfortranarray(
+            np.array([[10, 100], [20, 100], [10, 900], [20, 900]], np.uint32)
+        )
+        y = np.array([1.0, 2.0, 3.0, 4.0])
+        expected = solve(categories, y)
+        original = Design(categories)
+
+        copied = Design(original)
+        del original
+
+        assert copied.n_obs == 4
+        assert copied.n_dofs == 4
+        actual = Solver(copied).solve(y)
+        np.testing.assert_allclose(actual.x, expected.x, atol=1e-10)
+        np.testing.assert_allclose(actual.demeaned, expected.demeaned, atol=1e-10)
+
     def test_owns_category_data(self, problem):
         cats, y = problem
         categories = as_solver_categories(cats)
-        expected = solve(categories, y)
+        weights = np.linspace(0.5, 1.5, len(y))
+        expected = solve(categories, y, weights=weights)
 
         design = Design(categories)
         categories.fill(0)
 
-        actual = Solver(design).solve(y)
+        actual = solve(design, y, weights=weights)
         np.testing.assert_allclose(actual.x, expected.x, atol=1e-10)
         np.testing.assert_allclose(actual.demeaned, expected.demeaned, atol=1e-10)
 

@@ -75,6 +75,11 @@ pub fn solve<'py>(
     let w_view = weights.as_ref().map(|w| w.as_array());
 
     match extract_design(py, design)? {
+        DesignSource::Persistent(design) => run_solve_with_warnings(py, move || {
+            let y_cow = coerce_to_slice(&y_arr);
+            let w_cow = w_view.as_ref().map(coerce_to_slice);
+            build_and_solve(design, &y_cow, w_cow.as_deref(), &params, precond)
+        }),
         DesignSource::Categories(categories) => {
             let cats = categories.as_array();
             run_solve_with_warnings(py, move || {
@@ -111,6 +116,15 @@ pub fn solve_batch<'py>(
     let w_view = weights.as_ref().map(|w| w.as_array());
 
     match extract_design(py, design)? {
+        DesignSource::Persistent(design) => {
+            validate_batch_rows(y_arr.nrows(), design.n_obs())?;
+            run_batch_with_warnings(py, move || {
+                let columns = extract_columns(&y_arr);
+                let col_refs = column_refs(&columns);
+                let w_cow = w_view.as_ref().map(coerce_to_slice);
+                build_and_solve_batch(design, &col_refs, w_cow.as_deref(), &params, precond)
+            })
+        }
         DesignSource::Categories(categories) => {
             let cats = categories.as_array();
             validate_batch_rows(y_arr.nrows(), cats.nrows())?;
@@ -193,16 +207,20 @@ impl PyEffect {
     }
 }
 
-/// A solve's design, as interpreted from the Python `design` argument.
+/// A native, categorical, or effect-based design supplied at the Python boundary.
 enum DesignSource<'py> {
+    /// A cheap native clone of an existing persistent Python [`PyDesign`].
+    Persistent(Design<'static>),
     /// An `(n_obs, n_factors)` categories matrix, borrowed from numpy.
     Categories(PyReadonlyArray2<'py, u32>),
     /// Effect terms, cloned out of Python so they can be rebuilt off-GIL.
     Effects(Vec<PyEffect>),
 }
 
-/// A 2-D `uint32` categories matrix (borrowed) or a list of [`Effect`] terms (cloned).
 fn extract_design<'py>(py: Python<'_>, design: &Bound<'py, PyAny>) -> PyResult<DesignSource<'py>> {
+    if let Ok(design) = design.cast::<PyDesign>() {
+        return Ok(DesignSource::Persistent(design.get().as_design().clone()));
+    }
     if design.cast::<PyUntypedArray>().is_ok() {
         let categories = readonly_u32_2d("design", design)?;
         warn_c_contiguous(py, &categories.as_array())?;
@@ -210,7 +228,7 @@ fn extract_design<'py>(py: Python<'_>, design: &Bound<'py, PyAny>) -> PyResult<D
     }
     let effects: Vec<Py<PyEffect>> = design.extract().map_err(|_| {
         PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-            "design must be a 2-D uint32 array or a list of Effect",
+            "design must be a Design, a 2-D uint32 array, or a list of Effect",
         )
     })?;
     Ok(DesignSource::Effects(
@@ -223,6 +241,7 @@ fn extract_design<'py>(py: Python<'_>, design: &Bound<'py, PyAny>) -> PyResult<D
 
 fn extract_owned_design(py: Python<'_>, design: &Bound<'_, PyAny>) -> PyResult<Design<'static>> {
     match extract_design(py, design)? {
+        DesignSource::Persistent(design) => Ok(design),
         DesignSource::Categories(categories) => {
             let categories = categories.as_array();
             py.detach(move || Design::from_categories(categories).map(Design::into_owned))
@@ -291,10 +310,7 @@ impl PySolver {
         let w_view = weights.as_ref().map(|w| w.as_array());
         let precond = resolve_precond_input(preconditioner)?;
 
-        let design = match design.extract::<Py<PyDesign>>() {
-            Ok(design) => design.get().as_design().clone(),
-            Err(_) => extract_owned_design(py, design)?,
-        };
+        let design = extract_owned_design(py, design)?;
 
         // `BuildError` carries no Python types, so it maps to an exception once the GIL is back.
         let solver = py
