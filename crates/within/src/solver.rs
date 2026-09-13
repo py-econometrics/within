@@ -583,7 +583,8 @@ impl<'a> Solver<'a> {
 ///
 /// `design` is anything implementing [`IntoDesign`]: an observation-major
 /// `(n_obs, n_factors)` categories array (arbitrary `u32` labels per factor,
-/// compacted internally) or a list of [`Effect`] terms.
+/// compacted internally), a list of [`Effect`] terms, or an owned or borrowed
+/// [`Design`].
 /// `y` is the response vector (length = n_obs).
 ///
 /// Zero-copy for F-order category arrays whose dominant factor is already

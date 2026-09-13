@@ -201,11 +201,37 @@ let r = solve(categories.view(), &y, None, &lsmr, &diagonal)?;
 Persistent solver — build once, solve many:
 
 ```rust
-use within::Solver;
+use ndarray::array;
+use within::{solve, Channel, CoefficientAddress, Design, Solver};
 
-let solver = Solver::new(categories.view(), None, None)?;
-let r1 = solver.solve(&y, &LsmrOptions::default())?;
-let r2 = solver.solve(&another_y, &LsmrOptions::default())?;  // reuses preconditioner
+// Caller labels are deliberately non-contiguous.
+let categories = array![
+    [10_u32, 100],
+    [20, 100],
+    [10, 900],
+    [20, 900],
+];
+let y = [1.0, 2.0, 3.0, 4.0];
+
+// Build and compact the design once, then share it across solvers.
+let design = Design::from_categories(categories.view())?;
+let unweighted = Solver::new(&design, None, None)?;
+let weights = [1.0, 2.0, 1.0, 2.0];
+let weighted = Solver::new(&design, Some(&weights), None)?;
+
+let result = unweighted.solve(&y, None)?;
+let weighted_result = weighted.solve(&y, None)?;
+let one_shot_result = solve(&design, &y, None, None, None)?;
+assert!(weighted_result.converged && one_shot_result.converged);
+
+// Internal factor positions stay private; result lookup uses caller labels.
+let address = CoefficientAddress {
+    channel: Channel { term: 1, column: 0 },
+    level: 900,
+};
+let slot = result.layout.index(address).expect("observed label");
+assert_eq!(result.layout.address(slot), Some(address));
+assert_eq!(result.x.len(), 4); // two observed levels in each of two factors
 ```
 
 `solve` and `Solver::new` take the preconditioner as `impl Into<PreconditionerInput>`:
@@ -216,6 +242,7 @@ let r2 = solver.solve(&another_y, &LsmrOptions::default())?;  // reuses precondi
 
 | Type | Variants / Fields |
 |---|---|
+| `Design` | Reusable immutable design; build with `Design::from_categories` or `Design::new`, then share via `Solver::new(&design, ...)` or `solve(&design, ...)`. |
 | `LsmrOptions` | `{ tol: f64, maxiter: usize, local_size: Option<usize> }` |
 | `PreconditionerConfig` | `Off` \| `Additive { local_solver: LocalSolverConfig, reduction: ReductionStrategy }` \| `Diagonal` (`#[non_exhaustive]`) |
 | `LocalSolverConfig` | `{ approx_chol, schur: SchurMode, dense_threshold, scaling }` |
