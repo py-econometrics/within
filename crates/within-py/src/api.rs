@@ -89,7 +89,7 @@ pub fn solve<'py>(
             })
         }
         DesignSource::Effects(terms) => run_solve_with_warnings(py, move || {
-            let effects: Vec<_> = terms.iter().map(PyEffect::as_effect).collect();
+            let effects: Vec<_> = terms.iter().map(|term| term.get().as_effect()).collect();
             let y_cow = coerce_to_slice(&y_arr);
             let w_cow = w_view.as_ref().map(coerce_to_slice);
             build_and_solve(effects, &y_cow, w_cow.as_deref(), &params, precond)
@@ -137,10 +137,10 @@ pub fn solve_batch<'py>(
         }
         DesignSource::Effects(terms) => {
             if let Some(first) = terms.first() {
-                validate_batch_rows(y_arr.nrows(), first.levels.len())?;
+                validate_batch_rows(y_arr.nrows(), first.get().levels.len())?;
             }
             run_batch_with_warnings(py, move || {
-                let effects: Vec<_> = terms.iter().map(PyEffect::as_effect).collect();
+                let effects: Vec<_> = terms.iter().map(|term| term.get().as_effect()).collect();
                 let columns = extract_columns(&y_arr);
                 let col_refs = column_refs(&columns);
                 let w_cow = w_view.as_ref().map(coerce_to_slice);
@@ -163,7 +163,6 @@ fn validate_batch_rows(y_rows: usize, n_obs: usize) -> PyResult<()> {
 /// Holds its columns natively so the borrowed [`Effect`] can be rebuilt off-GIL.
 #[pyclass(frozen, skip_from_py_object, module = "within._within")]
 #[pyo3(name = "Effect")]
-#[derive(Clone)]
 pub struct PyEffect {
     levels: Vec<u32>,
     intercept: bool,
@@ -213,8 +212,8 @@ enum DesignSource<'py> {
     Persistent(Design<'static>),
     /// An `(n_obs, n_factors)` categories matrix, borrowed from numpy.
     Categories(PyReadonlyArray2<'py, u32>),
-    /// Effect terms, cloned out of Python so they can be rebuilt off-GIL.
-    Effects(Vec<PyEffect>),
+    /// Python-owned effect terms, retained so their native buffers can be borrowed off-GIL.
+    Effects(Vec<Py<PyEffect>>),
 }
 
 fn extract_design<'py>(py: Python<'_>, design: &Bound<'py, PyAny>) -> PyResult<DesignSource<'py>> {
@@ -231,12 +230,7 @@ fn extract_design<'py>(py: Python<'_>, design: &Bound<'py, PyAny>) -> PyResult<D
             "design must be a Design, a 2-D uint32 array, or a list of Effect",
         )
     })?;
-    Ok(DesignSource::Effects(
-        effects
-            .iter()
-            .map(|e| e.bind(py).borrow().clone())
-            .collect(),
-    ))
+    Ok(DesignSource::Effects(effects))
 }
 
 fn extract_owned_design(py: Python<'_>, design: &Bound<'_, PyAny>) -> PyResult<Design<'static>> {
@@ -249,7 +243,7 @@ fn extract_owned_design(py: Python<'_>, design: &Bound<'_, PyAny>) -> PyResult<D
         }
         DesignSource::Effects(terms) => py
             .detach(move || {
-                let effects: Vec<_> = terms.iter().map(PyEffect::as_effect).collect();
+                let effects: Vec<_> = terms.iter().map(|term| term.get().as_effect()).collect();
                 Design::new(effects).map(Design::into_owned)
             })
             .map_err(value_err),
