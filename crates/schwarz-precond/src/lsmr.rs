@@ -379,14 +379,10 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
         convergence.observe(step);
         let curr_rot = recurrence.step(step);
         solution.update(bidiag.v(), curr_rot, prev_rot);
-        let progress = Progress {
-            iteration: itn,
-            normal_eq_residual: recurrence.relative_normal_eq_residual(),
-        };
         if !quiet {
             tracing::trace!(
-                iteration = progress.iteration,
-                normal_eq_residual_estimate = progress.normal_eq_residual
+                iteration = itn,
+                normal_eq_residual_estimate = recurrence.relative_normal_eq_residual()
             );
         }
 
@@ -423,6 +419,10 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
             });
         }
         if let Some(rule) = escalation.as_deref_mut() {
+            let progress = Progress {
+                iteration: itn,
+                normal_eq_residual: recurrence.relative_normal_eq_residual(),
+            };
             if rule.should_escalate(progress) {
                 return Ok(LsmrResult {
                     x: total(solution.into_x()),

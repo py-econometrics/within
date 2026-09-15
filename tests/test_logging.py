@@ -61,20 +61,15 @@ def test_batch_reports_per_rhs_and_never_per_iteration(
     assert not [r for r in caplog.records if r.name.startswith("schwarz_precond")]
 
 
-def test_single_solve_reports_every_iteration(caplog: pytest.LogCaptureFixture) -> None:
-    categories, y = _problem()
-    with caplog.at_level(5):
-        result = within.solve(categories, y)
-    iterations = [r for r in caplog.records if r.name == "schwarz_precond.lsmr"]
-    assert len(iterations) == result.iterations
-
-
-def test_observed_solve_is_bitwise_identical(caplog: pytest.LogCaptureFixture) -> None:
+def test_single_solve_reports_every_iteration_and_stays_bitwise_identical(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     categories, y = _problem()
     quiet = within.solve(categories, y)
     with caplog.at_level(5):
         observed = within.solve(categories, y)
-    assert observed.iterations == quiet.iterations
+    iterations = [r for r in caplog.records if r.name == "schwarz_precond.lsmr"]
+    assert len(iterations) == observed.iterations == quiet.iterations
     assert np.array_equal(observed.x.view(np.uint64), quiet.x.view(np.uint64))
     assert np.array_equal(
         observed.demeaned.view(np.uint64), quiet.demeaned.view(np.uint64)
@@ -87,17 +82,16 @@ class _RaiseOnSolved(logging.Handler):
             raise RuntimeError("handler failed")
 
 
-def test_raising_handler_surfaces_as_its_own_exception() -> None:
+def test_raising_handler_surfaces_as_its_own_exception(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     categories, y = _problem()
-    solver = within.Solver(categories)
     logger = logging.getLogger("within")
-    handler = _RaiseOnSolved(level=logging.INFO)
+    handler = _RaiseOnSolved()
     logger.addHandler(handler)
-    previous = logger.level
-    logger.setLevel(logging.INFO)
     try:
-        with pytest.raises(RuntimeError, match="handler failed"):
-            solver.solve(y)
+        with caplog.at_level(logging.INFO, logger="within"):
+            with pytest.raises(RuntimeError, match="handler failed"):
+                within.solve(categories, y)
     finally:
         logger.removeHandler(handler)
-        logger.setLevel(previous)

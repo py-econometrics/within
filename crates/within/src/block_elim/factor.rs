@@ -60,12 +60,6 @@ impl ReducedFactor {
         }
     }
 
-    pub(crate) fn factor(&self) -> &Factor {
-        match self {
-            Self::Direct { factor, .. } | Self::Cover { inner: factor, .. } => factor,
-        }
-    }
-
     pub(crate) fn solve_dimension(&self) -> usize {
         match self {
             Self::Direct { factor, .. } => factor.n(),

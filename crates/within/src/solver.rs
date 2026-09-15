@@ -560,6 +560,7 @@ impl<'a> Solver<'a> {
         let default = LsmrOptions::default();
         let lsmr = lsmr.into().unwrap_or(&default);
         let n_rhs = ys.len();
+
         // Collecting into `Result` fails fast on the first per-RHS error, not during the fold.
         let solutions: Vec<RhsSolution> = ys
             .par_iter()
