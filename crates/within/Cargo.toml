@@ -19,6 +19,7 @@ ndarray = "0.17"
 portable-atomic = { version = "1", features = ["float"] }
 rayon.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 criterion = { version = "0.7", features = ["html_reports"] }

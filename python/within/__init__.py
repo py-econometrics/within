@@ -46,6 +46,11 @@ Thread safety: the heavy work runs with the interpreter detached and reads the
 caller's arrays in place. As with NumPy itself, an input array must not be
 mutated from another thread while a ``within`` call is reading it.
 
+Diagnostics: design shape, preconditioner routing, and per-solve outcomes are
+emitted through :mod:`logging` under the ``within`` logger (INFO for phases and
+timings, DEBUG for routing, TRACE-equivalent level 5 for one record per LSMR
+iteration from the ``schwarz_precond`` logger).
+
 For Rust-level internals, build the API docs with ``cargo doc --open``.
 """
 

@@ -199,7 +199,7 @@ impl EscalationHandler for StalenessRun {
     }
 }
 
-/// Optional behaviors for [`mlsmr`].
+/// Optional behaviors for [`lsmr`] and [`mlsmr`].
 #[derive(Clone, Copy, Default)]
 pub struct MlsmrOptions<'a> {
     /// Residual-correction start; tolerances stay relative to `‖b‖` (`‖b − A x₀‖` if `b = 0`).
@@ -208,6 +208,76 @@ pub struct MlsmrOptions<'a> {
     pub escalation: Option<&'a dyn EscalationPolicy>,
     /// Local reorthogonalization window; `None` disables it.
     pub local_size: Option<usize>,
+    /// Skips the per-iteration trace record, for runs that are one of many executing concurrently.
+    pub quiet: bool,
+}
+
+/// What both entry points establish before bidiagonalization starts.
+enum Start<'a> {
+    /// `b − A x₀ = 0`: nothing to iterate on.
+    Solved(LsmrResult),
+    Iterate {
+        rhs: Cow<'a, [f64]>,
+        criteria: ConvergenceCriteria,
+    },
+}
+
+fn start<'a, A: Operator + ?Sized>(
+    operator: &A,
+    b: &'a [f64],
+    tol: f64,
+    warm_start: Option<&[f64]>,
+) -> Result<Start<'a>, SolveError> {
+    let n = operator.ncols();
+    if let Some(x0) = warm_start {
+        if x0.len() != n {
+            return Err(invalid_input(format!(
+                "warm-start length {} does not match operator column count {n}",
+                x0.len()
+            )));
+        }
+        if let Some((index, value)) = x0.iter().copied().enumerate().find(|(_, v)| !v.is_finite()) {
+            return Err(invalid_input(format!(
+                "warm-start entry {index} must be finite, got {value}"
+            )));
+        }
+    }
+
+    // `b` is finite entrywise, but its norm sets the tolerance and an ∞ there certifies anything.
+    let b_norm = finite(vec_norm(b), "rhs norm")?;
+
+    let rhs: Cow<'a, [f64]> = match warm_start {
+        None => Cow::Borrowed(b),
+        Some(x0) => {
+            let mut residual = vec![0.0; operator.nrows()];
+            operator.apply(x0, &mut residual)?;
+            for (ri, &bi) in residual.iter_mut().zip(b) {
+                *ri = bi - *ri;
+            }
+            Cow::Owned(residual)
+        }
+    };
+    // Unlike `b`, `rhs` is computed: an ∞ entry norms to NaN, which reads as β₁ = 0 downstream.
+    let rhs_norm = finite(vec_norm(&rhs), "warm-start residual norm")?;
+    if rhs_norm == 0.0 {
+        let (x, stop_reason) = match warm_start {
+            Some(x0) => (x0.to_vec(), LsmrStopReason::WarmStartExact),
+            None => (vec![0.0; n], LsmrStopReason::ZeroRhs),
+        };
+        return Ok(Start::Solved(LsmrResult {
+            x,
+            converged: true,
+            iterations: 0,
+            residual_norm: 0.0,
+            normal_eq_residual: 0.0,
+            stop_reason,
+        }));
+    }
+    let reference_norm = if b_norm > 0.0 { b_norm } else { rhs_norm };
+    Ok(Start::Iterate {
+        rhs,
+        criteria: ConvergenceCriteria::new(reference_norm, tol),
+    })
 }
 
 /// Unpreconditioned LSMR.
@@ -219,27 +289,15 @@ pub fn lsmr<A: Operator + ?Sized>(
     b: &[f64],
     tol: f64,
     maxiter: usize,
-    local_size: Option<usize>,
+    options: MlsmrOptions<'_>,
 ) -> Result<LsmrResult, SolveError> {
     validate_lsmr_inputs(operator, b, tol)?;
-    let n = operator.ncols();
-
-    let b_norm = finite(vec_norm(b), "rhs norm")?;
-    if b_norm == 0.0 {
-        return Ok(LsmrResult {
-            x: vec![0.0; n],
-            converged: true,
-            iterations: 0,
-            residual_norm: 0.0,
-            normal_eq_residual: 0.0,
-            stop_reason: LsmrStopReason::ZeroRhs,
-        });
-    }
-
-    let local_size = local_size.unwrap_or(0);
-    let (bidiag, step1) = GolubKahan::init(operator, b, local_size)?;
-    let criteria = ConvergenceCriteria::new(b_norm, tol);
-    lsmr_from_bidiag(bidiag, step1, b, None, criteria, maxiter, None)
+    let (rhs, criteria) = match start(operator, b, tol, options.warm_start)? {
+        Start::Solved(result) => return Ok(result),
+        Start::Iterate { rhs, criteria } => (rhs, criteria),
+    };
+    let (bidiag, step1) = GolubKahan::init(operator, &rhs, options.local_size.unwrap_or(0))?;
+    lsmr_from_bidiag(bidiag, step1, b, criteria, maxiter, options)
 }
 
 /// Preconditioned LSMR with `M ≈ AᵀA` and one `M⁻¹` application per iteration.
@@ -260,70 +318,17 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
             preconditioner.ncols(),
         )));
     }
-    let MlsmrOptions {
-        warm_start,
-        escalation,
-        local_size,
-    } = options;
-
-    if let Some(x0) = warm_start {
-        if x0.len() != n {
-            return Err(invalid_input(format!(
-                "warm-start length {} does not match operator column count {n}",
-                x0.len()
-            )));
-        }
-        if let Some((index, value)) = x0.iter().copied().enumerate().find(|(_, v)| !v.is_finite()) {
-            return Err(invalid_input(format!(
-                "warm-start entry {index} must be finite, got {value}"
-            )));
-        }
-    }
-
-    // `b` is finite entrywise, but its norm sets the tolerance and an ∞ there certifies anything.
-    let b_norm = finite(vec_norm(b), "rhs norm")?;
-    let local_size = local_size.unwrap_or(0);
-
-    let rhs: Cow<'_, [f64]> = match warm_start {
-        None => Cow::Borrowed(b),
-        Some(x0) => {
-            let mut residual = vec![0.0; operator.nrows()];
-            operator.apply(x0, &mut residual)?;
-            for (ri, &bi) in residual.iter_mut().zip(b) {
-                *ri = bi - *ri;
-            }
-            Cow::Owned(residual)
-        }
+    let (rhs, criteria) = match start(operator, b, tol, options.warm_start)? {
+        Start::Solved(result) => return Ok(result),
+        Start::Iterate { rhs, criteria } => (rhs, criteria),
     };
-    // Unlike `b`, `rhs` is computed: an ∞ entry norms to NaN, which reads as β₁ = 0 downstream.
-    let rhs_norm = finite(vec_norm(&rhs), "warm-start residual norm")?;
-    if rhs_norm == 0.0 {
-        let (x, stop_reason) = match warm_start {
-            Some(x0) => (x0.to_vec(), LsmrStopReason::WarmStartExact),
-            None => (vec![0.0; n], LsmrStopReason::ZeroRhs),
-        };
-        return Ok(LsmrResult {
-            x,
-            converged: true,
-            iterations: 0,
-            residual_norm: 0.0,
-            normal_eq_residual: 0.0,
-            stop_reason,
-        });
-    }
-
-    let (bidiag, step1) = ModifiedGolubKahan::init(operator, preconditioner, &rhs, local_size)?;
-    let reference_norm = if b_norm > 0.0 { b_norm } else { rhs_norm };
-    let criteria = ConvergenceCriteria::new(reference_norm, tol);
-    lsmr_from_bidiag(
-        bidiag,
-        step1,
-        b,
-        warm_start,
-        criteria,
-        maxiter,
-        escalation.map(|policy| policy.handler()),
-    )
+    let (bidiag, step1) = ModifiedGolubKahan::init(
+        operator,
+        preconditioner,
+        &rhs,
+        options.local_size.unwrap_or(0),
+    )?;
+    lsmr_from_bidiag(bidiag, step1, b, criteria, maxiter, options)
 }
 
 /// Runs the LSMR recurrences over a preconditioner-specific bidiagonalization stream.
@@ -333,11 +338,17 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
     mut bidiag: B,
     step1: BidiagStep,
     b: &[f64],
-    x0: Option<&[f64]>,
     criteria: ConvergenceCriteria,
     maxiter: usize,
-    mut escalation: Option<Box<dyn EscalationHandler>>,
+    options: MlsmrOptions<'_>,
 ) -> Result<LsmrResult, SolveError> {
+    let MlsmrOptions {
+        warm_start: x0,
+        escalation,
+        quiet,
+        ..
+    } = options;
+    let mut escalation = escalation.map(|policy| policy.handler());
     let n = bidiag.v().len();
     let total = |mut x: Vec<f64>| {
         if let Some(x0) = x0 {
@@ -368,6 +379,12 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
         convergence.observe(step);
         let curr_rot = recurrence.step(step);
         solution.update(bidiag.v(), curr_rot, prev_rot);
+        if !quiet {
+            tracing::trace!(
+                iteration = itn,
+                normal_eq_residual_estimate = recurrence.relative_normal_eq_residual()
+            );
+        }
 
         // The tolerance test catches breakdown when the residual recurrences collapse.
         if let Some(stop_reason) = match convergence.check(&recurrence) {
