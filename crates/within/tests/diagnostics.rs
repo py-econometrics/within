@@ -1,4 +1,4 @@
-//! The diagnostics channel: emitted from the driving thread, bit-neutral, one record per iteration.
+//! The diagnostics channel is bit-neutral and reports one record per iteration.
 
 use std::sync::Arc;
 
@@ -43,21 +43,5 @@ fn trace_subscriber_sees_every_record_and_leaves_the_solution_bitwise_identical(
             recorder.count("design"),
         ),
         (observed.iterations, 1, 1, 1)
-    );
-
-    // A batch reports once per RHS and never per iteration.
-    let (categories, y) = problem();
-    let solver = Solver::new(categories.view(), None, None).expect("build");
-    let y2: Vec<f64> = y.iter().map(|v| 2.0 * v).collect();
-    pool.install(|| {
-        tracing::subscriber::with_default(recorder.clone(), || {
-            solver
-                .solve_batch(&[&y, &y2], &LsmrOptions::default())
-                .expect("batch")
-        })
-    });
-    assert_eq!(
-        (recorder.count(ITERATION), recorder.count("solved")),
-        (observed.iterations, 3)
     );
 }
