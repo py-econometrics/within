@@ -85,13 +85,9 @@ fn solver_new_weights_call_shapes_compile() {
     let categories = cats();
     let w_vec: Vec<f64> = vec![1.0; 4];
 
-    // Bare `None` — infers, because `weights` is the concrete `Option<Vec<f64>>`
-    // (no turbofish needed). The persistent solver owns its weights; borrow-based
-    // one-shot weighting lives on the free `solve` function instead.
+    // Bare `None` infers, because `weights` is the concrete `Option<&[f64]>`.
     let _ = Solver::new(categories.view(), None, None).expect("None weights");
-
-    // Owned `Vec<f64>` weights — moved into the solver.
-    let _ = Solver::new(categories.view(), Some(w_vec), None).expect("Vec<f64> weights");
+    let _ = Solver::new(categories.view(), Some(&w_vec), None).expect("borrowed weights");
 }
 
 #[test]

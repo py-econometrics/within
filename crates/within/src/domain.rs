@@ -4,9 +4,13 @@ pub(crate) mod collinearity;
 pub(crate) mod cross_tab;
 mod effect;
 pub(crate) mod factor_pairs;
-pub(crate) mod level_moments;
+mod level_moments;
+mod prepared;
+mod reparam;
 
-pub(crate) use cross_tab::{find_all_active_levels, BlockDiagonals, CrossTab};
+pub(crate) use cross_tab::{BlockDiagonals, CrossTab};
+pub(crate) use prepared::PreparedDesign;
+use reparam::SlopeReparam;
 
 pub use effect::Effect;
 
@@ -16,6 +20,10 @@ pub(crate) use factor_pairs::{
 };
 
 use std::borrow::Cow;
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use ndarray::{ArrayView2, Axis};
 
 use crate::channel::Channel;
 use crate::observation::ObservationFrame;
@@ -78,10 +86,172 @@ impl<T> Loading<T> {
     }
 }
 
+/// Mapping between caller-visible factor labels and compact numerical positions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FactorEncoding {
+    /// Caller label `k` is internal position `k`.
+    Identity { n_levels: usize },
+    /// Arbitrary integer caller labels, ordered by internal position.
+    Integer { labels: Arc<[u32]> },
+}
+
+struct EncodedFactor {
+    encoding: FactorEncoding,
+    positions: Option<Vec<u32>>,
+    sorted: bool,
+}
+
+impl FactorEncoding {
+    fn identity(n_levels: usize) -> Self {
+        Self::Identity { n_levels }
+    }
+
+    fn integer(labels: Vec<u32>) -> Self {
+        debug_assert!(labels.windows(2).all(|pair| pair[0] < pair[1]));
+        Self::Integer {
+            labels: labels.into(),
+        }
+    }
+
+    fn encode_labels(labels: &[u32]) -> EncodedFactor {
+        let Some((&first, remaining)) = labels.split_first() else {
+            return EncodedFactor {
+                encoding: Self::identity(0),
+                positions: None,
+                sorted: true,
+            };
+        };
+
+        let mut min = first;
+        let mut max = first;
+        let mut previous = first;
+        let mut sorted = true;
+        for &label in remaining {
+            min = min.min(label);
+            max = max.max(label);
+            sorted &= label >= previous;
+            previous = label;
+        }
+
+        let range_width = u64::from(max) - u64::from(min) + 1;
+        let presence_by_label = usize::try_from(range_width)
+            .ok()
+            .filter(|&width| width <= labels.len())
+            .map(|width| {
+                let mut present = vec![false; width];
+                for &label in labels {
+                    present[(label - min) as usize] = true;
+                }
+                present
+            });
+
+        match presence_by_label {
+            // Path 1: labels already form the zero-based identity range.
+            Some(present) if min == 0 && present.iter().all(|&is_present| is_present) => {
+                EncodedFactor {
+                    encoding: Self::identity(present.len()),
+                    positions: None,
+                    sorted,
+                }
+            }
+            // Path 2: the observed label range is bounded by the observation count.
+            Some(present) => {
+                let range_width = present.len();
+                let caller_labels: Vec<u32> = present
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(offset, &present)| present.then_some(min + offset as u32))
+                    .collect();
+
+                let mut position_by_label = vec![0u32; range_width];
+                for (position, &label) in caller_labels.iter().enumerate() {
+                    position_by_label[(label - min) as usize] = position as u32;
+                }
+
+                let positions = labels
+                    .iter()
+                    .map(|&label| position_by_label[(label - min) as usize])
+                    .collect();
+                EncodedFactor {
+                    encoding: Self::integer(caller_labels),
+                    positions: Some(positions),
+                    sorted,
+                }
+            }
+            // Path 3: the observed label range is too wide for an indexed table.
+            None => {
+                // Collect distinct caller labels
+                let mut position_by_label = HashMap::<u32, u32>::new();
+                for &label in labels {
+                    position_by_label.entry(label).or_default();
+                }
+                // Internal positions follow ascending caller-label order
+                let mut caller_labels: Vec<u32> = position_by_label.keys().copied().collect();
+                caller_labels.sort_unstable();
+                // Populate the caller-label to internal-position map
+                for (position, &label) in caller_labels.iter().enumerate() {
+                    let position =
+                        u32::try_from(position).expect("an internal label position fits in u32");
+
+                    *position_by_label
+                        .get_mut(&label)
+                        .expect("label was collected from this map") = position;
+                }
+
+                let positions = labels
+                    .iter()
+                    .map(|label| {
+                        *position_by_label
+                            .get(label)
+                            .expect("every input label was inserted")
+                    })
+                    .collect();
+
+                EncodedFactor {
+                    encoding: Self::integer(caller_labels),
+                    positions: Some(positions),
+                    sorted,
+                }
+            }
+        }
+    }
+
+    pub(crate) fn n_levels(&self) -> usize {
+        match self {
+            Self::Identity { n_levels } => *n_levels,
+            Self::Integer { labels } => labels.len(),
+        }
+    }
+
+    pub(crate) fn position(&self, label: u32) -> Option<usize> {
+        match self {
+            Self::Identity { n_levels } => {
+                let position = label as usize;
+                (position < *n_levels).then_some(position)
+            }
+            Self::Integer { labels } => labels.binary_search(&label).ok(),
+        }
+    }
+
+    pub(crate) fn label(&self, position: usize) -> Option<u32> {
+        match self {
+            Self::Identity { n_levels } => {
+                if position >= *n_levels {
+                    return None;
+                }
+
+                u32::try_from(position).ok()
+            }
+
+            Self::Integer { labels } => labels.get(position).copied(),
+        }
+    }
+}
+
 /// Per-term metadata; coefficient `c` of `level` lives at `offset + c · n_levels + level`.
 #[derive(Debug, Clone)]
 pub(crate) struct TermMeta {
-    pub n_levels: usize,
+    pub(crate) encoding: FactorEncoding,
     pub offset: usize,
     /// Non-decreasing in the design's internal row order (fixed at construction).
     pub sorted: bool,
@@ -90,37 +260,56 @@ pub(crate) struct TermMeta {
 }
 
 impl TermMeta {
+    /// Frame columns of the term's covariates, in coefficient-column order.
+    pub(crate) fn covariates(&self) -> impl Iterator<Item = u32> + '_ {
+        self.columns.iter().filter_map(|c| c.covariate().copied())
+    }
+
+    pub(crate) fn has_slopes(&self) -> bool {
+        self.covariates().next().is_some()
+    }
+
+    pub(crate) fn has_intercept(&self) -> bool {
+        self.columns.iter().any(|c| c.covariate().is_none())
+    }
+
+    pub fn n_levels(&self) -> usize {
+        self.encoding.n_levels()
+    }
+
     pub fn n_columns(&self) -> usize {
         self.columns.len()
     }
 
     pub fn n_dofs(&self) -> usize {
-        self.n_columns() * self.n_levels
+        self.n_columns() * self.n_levels()
     }
 
     /// Global DOF base of coefficient column `column`.
     pub fn column_base(&self, column: usize) -> usize {
-        self.offset + column * self.n_levels
+        self.offset + column * self.n_levels()
     }
+}
+
+/// The Gram weight of row `obs`: the operator applies `s`, so its normal matrix carries `s²`.
+pub(crate) fn row_weight(sqrt_weights: Option<&[f64]>, obs: usize) -> f64 {
+    sqrt_weights.map_or(1.0, |s| s[obs] * s[obs])
 }
 
 /// Stable argsort of observations by a level column, ascending.
 ///
-/// Dense counting sort in `O(n_obs + n_levels)` or sparse comparison sort — same
-/// permutation either way, gated as in `schur::sort_and_dedup`. Gappy caller codes
-/// can span far more levels than rows, where the bucket array outgrows the output.
+/// Compact internal positions guarantee `n_levels <= key.len()`, so counting sort
+/// takes `O(n_obs + n_levels)` time and `O(n_levels)` temporary memory.
 fn stable_argsort(key: &[u32], n_levels: usize) -> Vec<u32> {
     let n_obs = key.len();
     debug_assert!(
         u32::try_from(n_obs).is_ok(),
         "observation index must fit the u32 permutation"
     );
-    if n_obs < n_levels {
-        // MUST be `sort_by_cached_key`: `sort_by_key` re-gathers `key[i]` O(n log n) times.
-        let mut perm: Vec<u32> = (0..n_obs as u32).collect();
-        perm.sort_by_cached_key(|&i| key[i as usize]);
-        return perm;
-    }
+    debug_assert!(
+        n_levels <= n_obs,
+        "compact level count cannot exceed observation count"
+    );
     let mut cursors = vec![0usize; n_levels + 1];
     for &k in key {
         debug_assert!(
@@ -141,16 +330,16 @@ fn stable_argsort(key: &[u32], n_levels: usize) -> Vec<u32> {
     perm
 }
 
-/// Fixed-effects design: observation columns plus coefficient-space layout.
+/// Fixed-effects design: observation columns plus coefficient-space layout; clones share rows.
 #[derive(Clone, Debug)]
 pub struct Design<'a> {
     /// Columns in internal row order (caller's, or an owned locality-sorted copy).
-    pub(crate) frame: ObservationFrame<'a>,
+    pub(crate) frame: Arc<ObservationFrame<'a>>,
     pub(crate) terms: Vec<TermMeta>,
     pub(crate) n_obs: usize,
     pub(crate) n_dofs: usize,
     /// `obs_perm[k]` = caller's original index of the observation at internal position `k`.
-    pub(crate) obs_perm: Option<Vec<u32>>,
+    pub(crate) obs_perm: Option<Arc<[u32]>>,
 }
 
 impl<'a> Design<'a> {
@@ -172,10 +361,25 @@ impl<'a> Design<'a> {
         Self::build(frame, structure, true)
     }
 
-    /// Intercept-only factors, level count `max + 1`; locality-sorts an unsorted dominant factor.
+    /// Intercept-only factors; compacts observed labels and locality-sorts an unsorted dominant factor.
     pub fn from_frame(frame: ObservationFrame<'a>) -> Result<Self, BuildError> {
         let structure = vec![NonEmpty::of(Loading::Constant); frame.n_factors()];
         Self::build(frame, structure, true)
+    }
+
+    /// Build an intercept-only design from an observation-major categories matrix.
+    pub fn from_categories(categories: ArrayView2<'a, u32>) -> Result<Self, BuildError> {
+        // Gather strided (C-order) columns once so every downstream read is contiguous.
+        let categorical = (0..categories.ncols())
+            .map(|factor| {
+                let column = categories.index_axis_move(Axis(1), factor);
+                match column.to_slice() {
+                    Some(values) => Cow::Borrowed(values),
+                    None => Cow::Owned(column.to_vec()),
+                }
+            })
+            .collect();
+        Self::from_frame(ObservationFrame::new(categorical, Vec::new())?)
     }
 
     /// [`from_frame`](Self::from_frame) without the locality sort — profiling escape hatch.
@@ -187,7 +391,7 @@ impl<'a> Design<'a> {
 
     /// `column_structure[term]` = that term's coefficient columns, aligned with the frame.
     fn build(
-        frame: ObservationFrame<'a>,
+        mut frame: ObservationFrame<'a>,
         column_structure: Vec<NonEmpty<Loading<u32>>>,
         locality_sort: bool,
     ) -> Result<Self, BuildError> {
@@ -200,23 +404,34 @@ impl<'a> Design<'a> {
         let mut terms = Vec::with_capacity(frame.n_factors());
         let mut offset = 0;
         for (q, columns) in column_structure.into_iter().enumerate() {
-            let col = frame.level_column(q);
-            let mut max = 0;
-            let mut sorted = true;
-            let mut prev = 0;
-            for &v in col {
-                max = max.max(v);
-                sorted &= v >= prev;
-                prev = v;
+            let EncodedFactor {
+                encoding,
+                positions,
+                sorted,
+            } = FactorEncoding::encode_labels(frame.level_column(q));
+            if let Some(positions) = positions {
+                frame.replace_level_column(q, positions);
             }
             let meta = TermMeta {
-                n_levels: max as usize + 1,
+                encoding,
                 offset,
                 sorted,
                 columns,
             };
             offset += meta.n_dofs();
             terms.push(meta);
+        }
+
+        let claimed: usize = terms
+            .iter()
+            .flat_map(|t| t.columns.iter())
+            .filter(|c| c.covariate().is_some())
+            .count();
+        if claimed != frame.n_loading_columns() {
+            return Err(BuildError::UnclaimedLoadingColumns {
+                claimed,
+                provided: frame.n_loading_columns(),
+            });
         }
 
         // Rejected here rather than left to panic in `to_u32`.
@@ -228,19 +443,19 @@ impl<'a> Design<'a> {
         let dominant = (0..terms.len()).max_by_key(|&q| terms[q].n_dofs());
         let (frame, obs_perm) = match dominant {
             Some(d) if locality_sort && !terms[d].sorted && u32::try_from(n_obs).is_ok() => {
-                let perm = stable_argsort(frame.level_column(d), terms[d].n_levels);
+                let perm = stable_argsort(frame.level_column(d), terms[d].n_levels());
                 let sorted_frame = frame.permuted(&perm);
                 // Factors nested in the dominant one come out sorted, keeping coalesced scatter.
                 for (q, meta) in terms.iter_mut().enumerate() {
                     meta.sorted = sorted_frame.level_column(q).is_sorted();
                 }
-                (sorted_frame, Some(perm))
+                (sorted_frame, Some(perm.into()))
             }
             _ => (frame, None),
         };
 
         Ok(Design {
-            frame,
+            frame: Arc::new(frame),
             terms,
             n_obs,
             n_dofs: offset,
@@ -251,33 +466,12 @@ impl<'a> Design<'a> {
     /// Convert the frame's columns to owned, dropping ties to caller buffers.
     pub fn into_owned(self) -> Design<'static> {
         Design {
-            frame: self.frame.into_owned(),
+            frame: Arc::new(Arc::unwrap_or_clone(self.frame).into_owned()),
             terms: self.terms,
             n_obs: self.n_obs,
             n_dofs: self.n_dofs,
             obs_perm: self.obs_perm,
         }
-    }
-
-    /// Validate that an optional weight slice matches this design's observation count.
-    pub(crate) fn validate_weights(&self, weights: Option<&[f64]>) -> Result<(), BuildError> {
-        if let Some(w) = weights {
-            if w.len() != self.n_obs {
-                return Err(BuildError::WeightCountMismatch {
-                    expected: self.n_obs,
-                    got: w.len(),
-                });
-            }
-            // `wi >= 0.0` already rejects NaN; `is_finite` additionally rejects `+∞`.
-            if let Some((index, &value)) = w
-                .iter()
-                .enumerate()
-                .find(|&(_, &wi)| !(wi >= 0.0 && wi.is_finite()))
-            {
-                return Err(BuildError::InvalidWeight { index, value });
-            }
-        }
-        Ok(())
     }
 
     /// Caller order → internal order: `out[k] = v[obs_perm[k]]`; borrows when unpermuted.
@@ -352,10 +546,10 @@ mod tests {
         }
     }
 
-    /// Both `stable_argsort` branches must emit the SAME permutation, or the
-    /// gate silently changes summation order and every downstream result drifts.
+    /// Counting sort must preserve caller order within each level so locality
+    /// sorting does not change downstream summation order.
     #[test]
-    fn stable_argsort_branches_agree_with_a_stable_reference() {
+    fn stable_argsort_agrees_with_a_stable_reference() {
         let mut state = 0x2545_f491_4f6c_dd1du64;
         let mut next = move || {
             state ^= state << 13;
@@ -363,19 +557,14 @@ mod tests {
             state ^= state << 17;
             state
         };
-        // Straddles the gate: n_levels below, at, and above n_obs. `key_span`
-        // is decoupled so the dense branch also runs on a key that occupies a
-        // fraction of its declared level range, leaving empty buckets.
+        // `key_span` is decoupled so the counting sort also covers empty buckets.
         for (n_obs, n_levels, key_span) in [
             (0usize, 0usize, 1usize),
-            (0, 4, 4),
             (1, 1, 1),
             (997, 1, 1),
             (997, 16, 16),
             (997, 996, 996),
             (997, 997, 997),
-            (997, 998, 998),
-            (997, 50_000, 50_000),
             (4096, 4096, 8),
             (4096, 4096, 4096),
         ] {
@@ -394,41 +583,84 @@ mod tests {
     }
 
     #[test]
-    fn build_rejects_dof_space_exceeding_u32() {
-        // A single code of u32::MAX implies one level past the CSR column-index width.
-        let err = Design::from_frame(frame(vec![vec![u32::MAX]], vec![])).unwrap_err();
-        assert!(matches!(
-            err,
-            BuildError::DofSpaceExceedsU32 { n_dofs } if n_dofs == u32::MAX as usize + 1
-        ));
+    fn build_compacts_large_integer_label() {
+        let design = Design::from_frame(frame(vec![vec![u32::MAX]], vec![])).unwrap();
+
+        assert_eq!(design.n_dofs, 1);
+        assert_eq!(design.frame.level_column(0), &[0]);
+        assert_eq!(design.terms[0].encoding.label(0), Some(u32::MAX));
     }
 
     #[test]
-    fn validate_weights_checks_count_and_finiteness() {
-        let design = Design::from_frame(frame(vec![vec![0, 0, 0, 0, 0]], vec![])).unwrap();
-        assert!(design.validate_weights(None).is_ok());
-        assert!(design
-            .validate_weights(Some(&[1.0, 2.0, 3.0, 4.0, 5.0]))
-            .is_ok());
-        // Zero weights are valid (an excluded observation).
-        assert!(design
-            .validate_weights(Some(&[0.0, 1.0, 2.0, 3.0, 4.0]))
-            .is_ok());
-        // Length mismatch.
-        assert!(design.validate_weights(Some(&[1.0, 2.0])).is_err());
-        // Negative / non-finite weights are rejected with the offending index.
-        assert!(matches!(
-            design.validate_weights(Some(&[1.0, -2.0, 3.0, 4.0, 5.0])),
-            Err(BuildError::InvalidWeight { index: 1, .. })
-        ));
-        assert!(matches!(
-            design.validate_weights(Some(&[1.0, 2.0, f64::NAN, 4.0, 5.0])),
-            Err(BuildError::InvalidWeight { index: 2, .. })
-        ));
-        assert!(matches!(
-            design.validate_weights(Some(&[1.0, 2.0, 3.0, f64::INFINITY, 5.0])),
-            Err(BuildError::InvalidWeight { index: 3, .. })
-        ));
+    fn integer_factor_encoding_round_trips() {
+        let encoding = FactorEncoding::integer(vec![10, 100, 500]);
+
+        assert_eq!(encoding.n_levels(), 3);
+        assert_eq!(encoding.position(10), Some(0));
+        assert_eq!(encoding.position(100), Some(1));
+        assert_eq!(encoding.position(500), Some(2));
+        assert_eq!(encoding.position(99), None);
+
+        assert_eq!(encoding.label(0), Some(10));
+        assert_eq!(encoding.label(1), Some(100));
+        assert_eq!(encoding.label(2), Some(500));
+        assert_eq!(encoding.label(3), None);
+    }
+
+    #[test]
+    fn encode_labels_preserves_identity_encoding() {
+        let EncodedFactor {
+            encoding,
+            positions,
+            sorted,
+        } = FactorEncoding::encode_labels(&[2, 0, 1, 2]);
+
+        assert_eq!(encoding, FactorEncoding::identity(3));
+        assert!(positions.is_none());
+        assert!(!sorted);
+    }
+
+    #[test]
+    fn encode_labels_compacts_bounded_gappy_labels() {
+        // Range width = 3 and n_obs = 3, so this exercises the presence-table path.
+        let EncodedFactor {
+            encoding,
+            positions,
+            sorted,
+        } = FactorEncoding::encode_labels(&[2, 0, 2]);
+
+        assert_eq!(encoding, FactorEncoding::integer(vec![0, 2]));
+        assert_eq!(positions.as_deref(), Some(&[1u32, 0, 1][..]));
+        assert!(!sorted);
+    }
+
+    #[test]
+    fn encode_labels_compacts_shifted_bounded_range() {
+        let EncodedFactor {
+            encoding,
+            positions,
+            sorted,
+        } = FactorEncoding::encode_labels(&[1_000_000, 1_000_001, 1_000_002]);
+
+        assert_eq!(
+            encoding,
+            FactorEncoding::integer(vec![1_000_000, 1_000_001, 1_000_002])
+        );
+        assert_eq!(positions.as_deref(), Some(&[0u32, 1, 2][..]));
+        assert!(sorted);
+    }
+
+    #[test]
+    fn encode_labels_compacts_large_span_without_span_allocation() {
+        let EncodedFactor {
+            encoding,
+            positions,
+            sorted,
+        } = FactorEncoding::encode_labels(&[u32::MAX, 7, u32::MAX]);
+
+        assert_eq!(encoding, FactorEncoding::integer(vec![7, u32::MAX]));
+        assert_eq!(positions.as_deref(), Some(&[1u32, 0, 1][..]));
+        assert!(!sorted);
     }
 
     #[test]
@@ -468,17 +700,15 @@ mod tests {
     }
 
     #[test]
-    fn continuous_column_stays_row_aligned_after_locality_sort() {
-        let design = Design::from_frame(frame(
-            vec![vec![2, 0, 1, 0]],
-            vec![vec![10.0, 20.0, 30.0, 40.0]],
-        ))
-        .unwrap();
-
-        let perm = design.obs_perm.as_ref().expect("permutation applied");
-        assert_eq!(perm, &[1, 3, 2, 0]);
-        assert_eq!(design.frame.level_column(0), [0, 0, 1, 2]);
-        assert_eq!(design.frame.loading_column(0), [20.0, 40.0, 30.0, 10.0]);
+    fn from_frame_rejects_unclaimed_loading_columns() {
+        let err = Design::from_frame(frame(vec![vec![0, 1]], vec![vec![1.0, 2.0]])).unwrap_err();
+        assert!(matches!(
+            err,
+            BuildError::UnclaimedLoadingColumns {
+                claimed: 0,
+                provided: 1
+            }
+        ));
     }
 
     #[test]

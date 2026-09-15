@@ -90,7 +90,7 @@ class UnidentifiedDirection:
 
     Attributes:
         term: Index into the design's term list.
-        level: Level index within the term (``0..n_levels``).
+        level: Caller-visible factor label.
         column: Column within the term's per-level block — intercept first
             (when present), then slopes in declaration order.
     """
@@ -122,12 +122,12 @@ class SolveResult:
     """Result of a single fixed-effects solve.
 
     Attributes:
-        x: Fixed-effect coefficients, shape ``(n_dofs,)``. Term-major:
-            coefficient column ``c`` of level ``level`` sits at
-            ``term_offset + c * n_levels + level``, columns ordered
-            ``[intercept?, slopes...]`` (for plain factors: all levels of
-            factor 0 first, then factor 1, etc.). Slots for unidentified
-            directions hold the minimal-norm value ``0``, never NaN.
+        x: Fixed-effect coefficients, shape ``(n_dofs,)``. Term-major by
+            compact level position ``p``: coefficient column ``c`` sits at
+            ``term_offset + c * n_levels + p``, with columns ordered
+            ``[intercept?, slopes...]``. Use ``layout`` to translate caller
+            labels to these slots. Slots for unidentified directions hold the
+            minimal-norm value ``0``, never NaN.
         unidentified: Per-level directions the data cannot identify, as
             :class:`UnidentifiedDirection` records.
         layout: Address <-> flat-``x``-index translation for the coefficients.
@@ -222,8 +222,20 @@ class Effect:
         slopes: list[NDArray[np.float64]] | None = None,
     ) -> None: ...
 
+class Design:
+    """Persistent fixed-effects design.
+
+    Constructs and owns the native observation storage for reuse across solvers.
+    """
+
+    def __init__(self, design: Design | NDArray[np.uint32] | list[Effect]) -> None: ...
+    @property
+    def n_obs(self) -> int: ...
+    @property
+    def n_dofs(self) -> int: ...
+
 def solve(
-    design: NDArray[np.uint32] | list[Effect],
+    design: Design | NDArray[np.uint32] | list[Effect],
     y: NDArray[np.float64],
     weights: NDArray[np.float64] | None = None,
     options: LsmrOptions | None = None,
@@ -236,9 +248,10 @@ def solve(
     implied by ``categories`` and ``W`` is the diagonal weight matrix.
 
     Args:
-        design: Either a ``(n_obs, n_factors)`` ``uint32`` array of factor
-            assignments (F-contiguous for best performance; a ``UserWarning``
-            is emitted otherwise), or a list of :class:`Effect` terms.
+        design: A persistent :class:`Design`, a ``(n_obs, n_factors)``
+            ``uint32`` array of factor assignments (F-contiguous for best
+            performance; a ``UserWarning`` is emitted otherwise), or a list of
+            :class:`Effect` terms.
         y: Response vector, shape ``(n_obs,)``, dtype ``float64``.
         weights: Observation weights, shape ``(n_obs,)``, dtype ``float64``.
             Default: unit weights (unweighted).
@@ -283,7 +296,7 @@ def solve(
     ...
 
 def solve_batch(
-    design: NDArray[np.uint32] | list[Effect],
+    design: Design | NDArray[np.uint32] | list[Effect],
     Y: NDArray[np.float64],
     weights: NDArray[np.float64] | None = None,
     options: LsmrOptions | None = None,
@@ -295,9 +308,10 @@ def solve_batch(
     the setup phase (preconditioner construction).
 
     Args:
-        design: Either a ``(n_obs, n_factors)`` ``uint32`` array of factor
-            assignments (F-contiguous for best performance; a ``UserWarning``
-            is emitted otherwise), or a list of :class:`Effect` terms.
+        design: A persistent :class:`Design`, a ``(n_obs, n_factors)``
+            ``uint32`` array of factor assignments (F-contiguous for best
+            performance; a ``UserWarning`` is emitted otherwise), or a list of
+            :class:`Effect` terms.
         Y: Response matrix, shape ``(n_obs, k)``, dtype ``float64``. Each column
             is a separate response vector.
         weights: Observation weights. Default: unit weights.
@@ -349,7 +363,7 @@ class Solver:
 
     def __init__(
         self,
-        design: NDArray[np.uint32] | list[Effect],
+        design: Design | NDArray[np.uint32] | list[Effect],
         weights: NDArray[np.float64] | None = None,
         preconditioner: (PreconditionerConfig | Preconditioner | None) = None,
     ) -> None: ...

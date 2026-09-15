@@ -8,15 +8,16 @@ use rayon::prelude::*;
 
 use super::PAR_THRESHOLD;
 use crate::domain::Loading;
-use crate::domain::{Design, TermMeta};
+use crate::domain::{PreparedDesign, TermMeta};
 
 /// Adjoint scatter over all terms; `base(i)` is the row value each column scales by its loading.
 pub(super) fn scatter_apply(
-    design: &Design<'_>,
+    prepared: &PreparedDesign<'_>,
     scratch: &[AtomicF64],
     dst: &mut [f64],
     base: &(impl Fn(usize) -> f64 + Sync),
 ) {
+    let design = &prepared.design;
     debug_assert_eq!(dst.len(), design.n_dofs);
     let parallel = design.n_obs > PAR_THRESHOLD;
     let frame = &design.frame;
@@ -29,23 +30,23 @@ pub(super) fn scatter_apply(
                 scatter_term::<1>(block, t, levels, parallel, scratch, |i| [base(i)])
             }
             [Loading::Constant, Loading::Covariate(c0)] => {
-                let z0 = frame.loading_column(*c0 as usize);
+                let z0 = prepared.loading_column(*c0 as usize);
                 scatter_term::<2>(block, t, levels, parallel, scratch, |i| {
                     let b = base(i);
                     [b, z0[i] * b]
                 })
             }
             [Loading::Constant, Loading::Covariate(c0), Loading::Covariate(c1)] => {
-                let z0 = frame.loading_column(*c0 as usize);
-                let z1 = frame.loading_column(*c1 as usize);
+                let z0 = prepared.loading_column(*c0 as usize);
+                let z1 = prepared.loading_column(*c1 as usize);
                 scatter_term::<3>(block, t, levels, parallel, scratch, |i| {
                     let b = base(i);
                     [b, z0[i] * b, z1[i] * b]
                 })
             }
             [Loading::Covariate(c0), Loading::Covariate(c1)] => {
-                let z0 = frame.loading_column(*c0 as usize);
-                let z1 = frame.loading_column(*c1 as usize);
+                let z0 = prepared.loading_column(*c0 as usize);
+                let z1 = prepared.loading_column(*c1 as usize);
                 scatter_term::<2>(block, t, levels, parallel, scratch, |i| {
                     let b = base(i);
                     [z0[i] * b, z1[i] * b]
@@ -53,14 +54,14 @@ pub(super) fn scatter_apply(
             }
             columns => {
                 for (c, loading) in columns.iter().enumerate() {
-                    let start = c * t.n_levels;
-                    let slot = &mut block[start..start + t.n_levels];
+                    let start = c * t.n_levels();
+                    let slot = &mut block[start..start + t.n_levels()];
                     match loading {
                         Loading::Constant => {
                             scatter_term::<1>(slot, t, levels, parallel, scratch, |i| [base(i)]);
                         }
                         Loading::Covariate(k) => {
-                            let z = frame.loading_column(*k as usize);
+                            let z = prepared.loading_column(*k as usize);
                             scatter_term::<1>(slot, t, levels, parallel, scratch, move |i| {
                                 [z[i] * base(i)]
                             });
@@ -81,7 +82,7 @@ fn scatter_term<const C: usize>(
     scratch: &[AtomicF64],
     values: impl Fn(usize) -> [f64; C] + Sync,
 ) {
-    let n_levels = meta.n_levels;
+    let n_levels = meta.n_levels();
     debug_assert_eq!(block.len(), C * n_levels);
     match ScatterStrategy::pick(parallel, C * n_levels, meta.sorted) {
         ScatterStrategy::Sequential => scatter_sequential::<C>(block, n_levels, levels, &values),

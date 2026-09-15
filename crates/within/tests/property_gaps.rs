@@ -1,6 +1,6 @@
 use ndarray::Array2;
 use proptest::prelude::*;
-use within::{solve, LsmrOptions, Solver};
+use within::{solve, Channel, CoefficientAddress, LsmrOptions, Solver};
 
 #[path = "common/property_strategies.rs"]
 mod strategies;
@@ -129,18 +129,19 @@ proptest! {
         let n_obs = y.len();
         let n_factors = cats.ncols();
 
-        // Compute factor offsets (same ordering as Design)
-        let mut offsets = vec![0usize; n_factors];
-        for f in 1..n_factors {
-            let n_levels_prev = *cats.column(f - 1).iter().max().unwrap() as usize + 1;
-            offsets[f] = offsets[f - 1] + n_levels_prev;
-        }
-
         for i in 0..n_obs {
             let dx_i: f64 = (0..n_factors)
-                .map(|f| {
-                    let level = cats[[i, f]] as usize;
-                    result.x[offsets[f] + level]
+                .map(|term| {
+                    let address = CoefficientAddress {
+                        channel: Channel { term, column: 0 },
+                        level: cats[[i, term]],
+                    };
+                    let index = result
+                        .layout
+                        .index(address)
+                        .expect("an observed caller label has a coefficient");
+
+                    result.x[index]
                 })
                 .sum();
             let expected_demeaned = y[i] - dx_i;

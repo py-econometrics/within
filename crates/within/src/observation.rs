@@ -59,6 +59,10 @@ impl<'a> ObservationFrame<'a> {
         self.categorical.len()
     }
 
+    pub(crate) fn n_loading_columns(&self) -> usize {
+        self.continuous.len()
+    }
+
     /// Level codes of factor `factor`.
     pub fn level_column(&self, factor: usize) -> &[u32] {
         &self.categorical[factor]
@@ -67,12 +71,6 @@ impl<'a> ObservationFrame<'a> {
     /// Loadings of continuous column `k`.
     pub fn loading_column(&self, k: usize) -> &[f64] {
         &self.continuous[k]
-    }
-
-    /// Replace loading column `i` with an owned column of matching row count.
-    pub(crate) fn set_loading_column(&mut self, i: usize, column: Vec<f64>) {
-        debug_assert_eq!(column.len(), self.n_obs);
-        self.continuous[i] = Cow::Owned(column);
     }
 
     /// Convert every column to owned, dropping ties to caller buffers.
@@ -108,6 +106,12 @@ impl<'a> ObservationFrame<'a> {
             n_obs: perm.len(),
         }
     }
+
+    /// Replace one categorical column with owned internal level positions.
+    pub(crate) fn replace_level_column(&mut self, factor: usize, levels: Vec<u32>) {
+        debug_assert_eq!(levels.len(), self.n_obs);
+        self.categorical[factor] = Cow::Owned(levels);
+    }
 }
 
 #[cfg(test)]
@@ -138,5 +142,22 @@ mod tests {
             result,
             Err(BuildError::ObservationCountMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn categorical_column_can_be_replaced() {
+        let mut frame = ObservationFrame::new(
+            vec![
+                Cow::Borrowed(&[10u32, 100, 10]),
+                Cow::Borrowed(&[0u32, 1, 2]),
+            ],
+            vec![],
+        )
+        .unwrap();
+
+        frame.replace_level_column(0, vec![0, 1, 0]);
+
+        assert_eq!(frame.level_column(0), &[0, 1, 0]);
+        assert_eq!(frame.level_column(1), &[0, 1, 2]);
     }
 }

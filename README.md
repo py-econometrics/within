@@ -8,7 +8,7 @@ By the Frisch-Waugh-Lovell theorem, estimating a regression of the form *y = Xβ
 
 ## Scope
 
-`within` is a low-level fixed-effects kernel. Callers pass pre-factorized categorical codes: contiguous 0-based `uint32` level codes in F-order (column-major) arrays. Formula-level convenience — DataFrames, string/object categoricals, `pandas.factorize`, and formula parsing — is intentionally out of scope and belongs to a frontend layer built on top. The pyfixest-style workflow is served by such a frontend calling `within` underneath.
+`within` is a low-level fixed-effects kernel. Callers pass categorical labels as `uint32` F-order (column-major) arrays. Labels need not be contiguous: observed labels are compacted internally, while result layouts retain the caller-visible labels. Formula-level convenience — DataFrames, string/object categoricals, `pandas.factorize`, and formula parsing — is intentionally out of scope and belongs to a frontend layer built on top. The pyfixest-style workflow is served by such a frontend calling `within` underneath.
 
 ## Installation
 
@@ -99,29 +99,34 @@ print(result.x[i])
 | `solve(design, y, weights?, options?, preconditioner?)` | Solve a single right-hand side. Returns `SolveResult`. |
 | `solve_batch(design, Y, weights?, options?, preconditioner?)` | Solve multiple RHS vectors in parallel. `Y` has shape `(n_obs, k)`. Returns `BatchSolveResult`. |
 
-`design` is either a 2-D `uint32` array of shape `(n_obs, n_factors)` or a list of `Effect` terms (see [Varying slopes](#varying-slopes)). A `UserWarning` is emitted when a C-contiguous categories array is passed — use `np.asfortranarray(design)` for best performance.
+`design` is a persistent `Design`, a 2-D `uint32` array of shape `(n_obs, n_factors)`, or a list of `Effect` terms (see [Varying slopes](#varying-slopes)). A `UserWarning` is emitted when a C-contiguous categories array is passed — use `np.asfortranarray(design)` for best performance.
 
 ### Persistent solver
 
-For repeated solves with the same design matrix, `Solver` builds the preconditioner once and reuses it.
+For repeated solves with the same design matrix, `Design` reuses the preprocessed observation storage and `Solver` builds the weight-dependent state and preconditioner once.
 
 ```python
-from within import Solver
+from within import Design, Solver, solve
 
-solver = Solver(fe)
+design = Design(fe)
+solver = Solver(design)
 r = solver.solve(y)                            # reuses preconditioner
 r = solver.solve_batch(np.column_stack([y, X]))
 
 precond = solver.preconditioner                # picklable property
-solver2 = Solver(fe, preconditioner=precond)   # skip re-factorization
+solver2 = Solver(design, preconditioner=precond)  # skip re-factorization
+
+# Reuse design preprocessing while rebuilding weight-dependent solver state.
+weighted = solve(design, y, weights=np.ones(n))
 ```
 
 | Property / Method | Description |
 |---|---|
+| `Design(design)` | Build an owned native design for reuse across solves and solvers. |
 | `Solver(design, weights?, preconditioner?)` | Build solver. Factorizes the preconditioner at construction. |
 | `.solve(y, options?)` | Solve a single RHS with the given LSMR tuning. Returns `SolveResult`. |
 | `.solve_batch(Y, options?)` | Solve multiple RHS columns in parallel. Returns `BatchSolveResult`. |
-| `.preconditioner` | Return the built `Preconditioner` (picklable), or `None`. Reuse via `Solver(fe, preconditioner=p)`. |
+| `.preconditioner` | Return the built `Preconditioner` (picklable), or `None`. Reuse via `Solver(design, preconditioner=p)`. |
 
 
 ### Solver configuration
@@ -196,11 +201,37 @@ let r = solve(categories.view(), &y, None, &lsmr, &diagonal)?;
 Persistent solver — build once, solve many:
 
 ```rust
-use within::Solver;
+use ndarray::array;
+use within::{solve, Channel, CoefficientAddress, Design, Solver};
 
-let solver = Solver::new(categories.view(), None, None)?;
-let r1 = solver.solve(&y, &LsmrOptions::default())?;
-let r2 = solver.solve(&another_y, &LsmrOptions::default())?;  // reuses preconditioner
+// Caller labels are deliberately non-contiguous.
+let categories = array![
+    [10_u32, 100],
+    [20, 100],
+    [10, 900],
+    [20, 900],
+];
+let y = [1.0, 2.0, 3.0, 4.0];
+
+// Build and compact the design once, then share it across solvers.
+let design = Design::from_categories(categories.view())?;
+let unweighted = Solver::new(&design, None, None)?;
+let weights = [1.0, 2.0, 1.0, 2.0];
+let weighted = Solver::new(&design, Some(&weights), None)?;
+
+let result = unweighted.solve(&y, None)?;
+let weighted_result = weighted.solve(&y, None)?;
+let one_shot_result = solve(&design, &y, None, None, None)?;
+assert!(weighted_result.converged && one_shot_result.converged);
+
+// Internal factor positions stay private; result lookup uses caller labels.
+let address = CoefficientAddress {
+    channel: Channel { term: 1, column: 0 },
+    level: 900,
+};
+let slot = result.layout.index(address).expect("observed label");
+assert_eq!(result.layout.address(slot), Some(address));
+assert_eq!(result.x.len(), 4); // two observed levels in each of two factors
 ```
 
 `solve` and `Solver::new` take the preconditioner as `impl Into<PreconditionerInput>`:
@@ -211,13 +242,14 @@ let r2 = solver.solve(&another_y, &LsmrOptions::default())?;  // reuses precondi
 
 | Type | Variants / Fields |
 |---|---|
+| `Design` | Reusable immutable design; build with `Design::from_categories` or `Design::new`, then share via `Solver::new(&design, ...)` or `solve(&design, ...)`. |
 | `LsmrOptions` | `{ tol: f64, maxiter: usize, local_size: Option<usize> }` |
 | `PreconditionerConfig` | `Off` \| `Additive { local_solver: LocalSolverConfig, reduction: ReductionStrategy }` \| `Diagonal` (`#[non_exhaustive]`) |
 | `LocalSolverConfig` | `{ approx_chol, schur: SchurMode, dense_threshold, scaling }` |
 | `SchurMode` | `Approximate(ApproxSchurConfig)` \| `Exact` |
 | `Preconditioner` | Opaque built handle — reuse via `Solver::new(.., precond)` (owned or `&`) |
 | `Effect` | `Effect::new(levels: &[u32], intercept: bool, slopes: impl IntoIterator<Item = &[f64]>) -> Result<Self, BuildError>` |
-| `CoefficientAddress` | `{ channel: Channel { term, column }, level: usize }` |
+| `CoefficientAddress` | `{ channel: Channel { term, column }, level: u32 }` |
 | `CoefficientLayout` | `index(CoefficientAddress) -> Option<usize>`, `address(usize) -> Option<CoefficientAddress>`, `n_dofs()`, `n_terms()`, `n_levels(term)`, `n_columns(term)` |
 
 ### Varying slopes

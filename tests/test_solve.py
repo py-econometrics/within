@@ -8,6 +8,7 @@ import pytest
 from within import (
     BatchSolveResult,
     CoefficientLayout,
+    Design,
     Effect,
     LsmrOptions,
     Preconditioner,
@@ -335,6 +336,35 @@ class TestSolver:
         r2 = solver.solve(y)
         np.testing.assert_array_equal(r1.x, r2.x)
 
+    def test_multiple_solvers_share_persistent_slope_design(self):
+        f = np.array([0, 0, 0, 1, 1, 1], dtype=np.uint32)
+        g = np.array([0, 1, 2, 0, 1, 2], dtype=np.uint32)
+        z = np.array([-2.0, 1.0, 1.0, -1.0, -1.0, 2.0])
+        y = np.array([1.0, -2.0, 0.5, 3.0, -1.5, 2.5])
+        weights = np.array([0.5, 2.0, 1.0, 3.0, 1.5, 0.75])
+        effects = [Effect(f, True, [z]), Effect(g, True)]
+
+        expected_unweighted = solve(effects, y)
+        expected_weighted = solve(effects, y, weights=weights)
+
+        design = Design(effects)
+        unweighted = Solver(design)
+        weighted = Solver(design, weights=weights)
+        del design
+
+        actual_unweighted = unweighted.solve(y)
+        actual_weighted = weighted.solve(y)
+        np.testing.assert_allclose(
+            actual_unweighted.x, expected_unweighted.x, atol=1e-10
+        )
+        np.testing.assert_allclose(
+            actual_unweighted.demeaned, expected_unweighted.demeaned, atol=1e-10
+        )
+        np.testing.assert_allclose(actual_weighted.x, expected_weighted.x, atol=1e-10)
+        np.testing.assert_allclose(
+            actual_weighted.demeaned, expected_weighted.demeaned, atol=1e-10
+        )
+
     def test_solver_no_preconditioner(self, problem):
         """Solver with PreconditionerConfig.Off() works."""
         cats, y = problem
@@ -507,6 +537,19 @@ class TestSolveBatchFreeFunction:
         np.testing.assert_allclose(batch.x[:, 0], r1.x, atol=1e-10)
         np.testing.assert_allclose(batch.x[:, 1], r2.x, atol=1e-10)
 
+    def test_persistent_design_matches_raw_input(self, problem):
+        cats, y = problem
+        categories = as_solver_categories(cats)
+        weights = np.linspace(0.5, 1.5, len(y))
+        Y = np.column_stack([y, -y])
+        from within import solve_batch
+
+        expected = solve_batch(categories, Y, weights=weights)
+        actual = solve_batch(Design(categories), Y, weights=weights)
+
+        np.testing.assert_allclose(actual.x, expected.x, atol=1e-10)
+        np.testing.assert_allclose(actual.demeaned, expected.demeaned, atol=1e-10)
+
     def test_solve_batch_effect_terms_match_individual(self):
         f = np.array([0, 0, 0, 1, 1, 1], dtype=np.uint32)
         g = np.array([0, 1, 2, 0, 1, 2], dtype=np.uint32)
@@ -574,6 +617,51 @@ class TestGenerateSyntheticData:
         np.testing.assert_array_equal(c1, c2)
         np.testing.assert_array_equal(x1, x2)
         np.testing.assert_array_equal(y1, y2)
+
+
+class TestDesign:
+    def test_persistent_design_metadata_compacts_labels(self):
+        categories = np.asfortranarray(
+            np.array(
+                [[10, 7], [1_000_000, 7], [10, 42], [1_000_000, 42]],
+                dtype=np.uint32,
+            )
+        )
+
+        design = Design(categories)
+
+        assert design.n_obs == 4
+        assert design.n_dofs == 4
+
+    def test_copy_from_existing_design_survives_original(self):
+        categories = np.asfortranarray(
+            np.array([[10, 100], [20, 100], [10, 900], [20, 900]], np.uint32)
+        )
+        y = np.array([1.0, 2.0, 3.0, 4.0])
+        expected = solve(categories, y)
+        original = Design(categories)
+
+        copied = Design(original)
+        del original
+
+        assert copied.n_obs == 4
+        assert copied.n_dofs == 4
+        actual = Solver(copied).solve(y)
+        np.testing.assert_allclose(actual.x, expected.x, atol=1e-10)
+        np.testing.assert_allclose(actual.demeaned, expected.demeaned, atol=1e-10)
+
+    def test_owns_category_data(self, problem):
+        cats, y = problem
+        categories = as_solver_categories(cats)
+        weights = np.linspace(0.5, 1.5, len(y))
+        expected = solve(categories, y, weights=weights)
+
+        design = Design(categories)
+        categories.fill(0)
+
+        actual = solve(design, y, weights=weights)
+        np.testing.assert_allclose(actual.x, expected.x, atol=1e-10)
+        np.testing.assert_allclose(actual.demeaned, expected.demeaned, atol=1e-10)
 
 
 class TestEffectDesign:

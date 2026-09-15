@@ -88,7 +88,7 @@ fn test_lsmr_least_squares_weighted_preconditioned() {
         ..Default::default()
     };
     let precond = PreconditionerConfig::default();
-    let solver = Solver::new(design, Some(weights.clone()), &precond).expect("build solver");
+    let solver = Solver::new(design, Some(&weights), &precond).expect("build solver");
     let result = solver.solve(&y, &params).expect("solve");
     common::assert_converged_with_small_residual(&result, 1e-6);
     common::assert_solution_finite(&result);

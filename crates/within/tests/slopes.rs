@@ -2,7 +2,9 @@
 //! user's parametrization, fitted-value invariance under the internal
 //! reparametrization, and deterministic rank-drop reporting.
 
-use within::{Effect, LsmrOptions, PreconditionerConfig, SolveResult, Solver};
+use within::{
+    Channel, CoefficientAddress, Effect, LsmrOptions, PreconditionerConfig, SolveResult, Solver,
+};
 
 const TOL: f64 = 1e-6;
 
@@ -54,7 +56,7 @@ fn solve_with(
     levels: &[u32],
     z: &[f64],
     intercept: bool,
-    weights: Option<Vec<f64>>,
+    weights: Option<&[f64]>,
     y: &[f64],
     config: &PreconditionerConfig,
 ) -> SolveResult {
@@ -72,7 +74,7 @@ fn solve_single(
     levels: &[u32],
     z: &[f64],
     intercept: bool,
-    weights: Option<Vec<f64>>,
+    weights: Option<&[f64]>,
     y: &[f64],
 ) -> SolveResult {
     solve_with(
@@ -86,11 +88,23 @@ fn solve_single(
 }
 
 /// `unidentified` as comparable `(term, level, column)` triples.
-fn drops(r: &SolveResult) -> Vec<(usize, usize, usize)> {
+fn drops(r: &SolveResult) -> Vec<(usize, u32, usize)> {
     r.unidentified
         .iter()
         .map(|d| (d.channel.term, d.level, d.channel.column))
         .collect()
+}
+
+fn coefficient(r: &SolveResult, level: u32, column: usize) -> f64 {
+    let index = r
+        .layout
+        .index(CoefficientAddress {
+            channel: Channel { term: 0, column },
+            level,
+        })
+        .expect("observed level has a coefficient");
+
+    r.x[index]
 }
 
 #[test]
@@ -156,7 +170,8 @@ fn slope_only_term_recovers_per_level_projection() {
 
 #[test]
 fn rank_drops_report_deterministically_with_exact_zeros() {
-    // Level 1 never occurs; level 2's slope is constant, so only its slope drops.
+    // Level 1 never occurs and is compacted away. Level 2's slope is constant,
+    // so only that slope is unidentified.
     let levels: Vec<u32> = vec![0, 0, 0, 2, 2, 2, 3, 3, 3];
     let z: Vec<f64> = vec![1.0, 2.0, -1.5, 2.5, 2.5, 2.5, -2.0, 0.7, 1.3];
     let y = synthetic_y(levels.len());
@@ -165,24 +180,31 @@ fn rank_drops_report_deterministically_with_exact_zeros() {
     let r = run(&PreconditionerConfig::default());
     assert!(r.converged);
     // Ascending (level, column) order.
-    assert_eq!(drops(&r), [(0, 1, 0), (0, 1, 1), (0, 2, 1)]);
+    assert_eq!(drops(&r), [(0, 2, 1)]);
 
-    // Minimal-norm 0 at exactly the dropped slots; everything else finite.
-    for slot in [1, 4 + 1, 4 + 2] {
-        assert_eq!(r.x[slot], 0.0);
-    }
+    // Minimal-norm 0 at exactly the dropped slot; everything else finite.
+    assert_eq!(r.x.len(), 6);
+    assert_eq!(coefficient(&r, 2, 1), 0.0);
     assert!(r.x.iter().all(|v| v.is_finite()));
 
     // The constant level degrades to intercept-only: a = mean(y within level).
     assert_close(
-        r.x[2],
+        coefficient(&r, 2, 0),
         (y[3] + y[4] + y[5]) / 3.0,
         "constant level intercept",
     );
     let (a, b) = per_level_intercept_slope(&levels, &z, &y, None, 4);
-    for l in [0usize, 3] {
-        assert_close(r.x[l], a[l], &format!("intercept of level {l}"));
-        assert_close(r.x[4 + l], b[l], &format!("slope of level {l}"));
+    for l in [0u32, 3] {
+        assert_close(
+            coefficient(&r, l, 0),
+            a[l as usize],
+            &format!("intercept of level {l}"),
+        );
+        assert_close(
+            coefficient(&r, l, 1),
+            b[l as usize],
+            &format!("slope of level {l}"),
+        );
     }
 
     // The explicit diagonal preconditioner agrees with the default path.
@@ -201,7 +223,7 @@ fn weighted_solve_matches_closed_form_and_masks_zero_weight_rows() {
     let w: Vec<f64> = vec![1.0, 0.5, 2.0, 1.5, 3.0, 1.0, 1.0, 1.0, 0.0];
     let y = synthetic_y(levels.len());
 
-    let r = solve_single(&levels, &z, true, Some(w.clone()), &y);
+    let r = solve_single(&levels, &z, true, Some(&w), &y);
     assert!(r.converged);
     assert_eq!(drops(&r), [(0, 2, 1)]);
     assert_eq!(r.x[3 + 2], 0.0);
@@ -222,8 +244,7 @@ fn zero_weight_garbage_does_not_poison_identification() {
     let z: Vec<f64> = vec![1.0, 2.0, 3.0, 5.0, 7.0, 1e300];
     let w: Vec<f64> = vec![1.0, 1.0, 1.0, 1.0, 1.0, 0.0];
     let y = synthetic_y(levels.len());
-    let run =
-        |config: &PreconditionerConfig| solve_with(&levels, &z, true, Some(w.clone()), &y, config);
+    let run = |config: &PreconditionerConfig| solve_with(&levels, &z, true, Some(&w), &y, config);
 
     let r = run(&PreconditionerConfig::default());
     assert!(r.unidentified.is_empty());

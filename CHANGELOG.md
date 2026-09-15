@@ -9,6 +9,10 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Python `Effect` lists no longer deep-copy every level and slope buffer during design extraction; the binding retains the frozen Python effects and borrows their native buffers while building off-GIL (#358).
+- Categorical `u32` labels no longer need to be zero-based or contiguous: `Design` compacts observed labels to internal positions, while `CoefficientLayout` and `CoefficientAddress` translate coefficients back to caller-visible labels. This avoids allocating and solving for gaps in sparse label ranges (#228, #268).
+- **BREAKING:** Rust `Solver::new` now takes `weights: Option<&[f64]>` instead of `Option<Vec<f64>>`; pass `Some(&weights)` to build a weighted persistent solver. The solver prepares and retains only `W^{1/2}` in its internal observation order. The one-shot `solve` and `solve_batch` weight arguments remain borrowed and are unchanged.
+- `Design::from_frame` rejects continuous columns that no effect term claims, reporting `BuildError::UnclaimedLoadingColumns` instead of silently retaining unused data.
 - **BREAKING:** Python `PreconditionerConfig` is now a tagged union: construct variants as `PreconditionerConfig.Off()`, `.Diagonal()`, or `.Additive(local_solver=..., reduction=...)` (previously class-attribute singletons plus an `.additive()` factory). Instances compare by value and support `match`/`case` on Python ≥3.10.
 - Rust `Preconditioner` objects expose their normalized construction configuration through `Preconditioner::config()`.
 - Serialized `schwarz_precond::SchwarzPreconditioner` values now preserve the configured reduction strategy.
@@ -18,9 +22,11 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - The LSMR true-residual audit of a warm-started stop measures the total solution against the original `b` and anchors its normal-equation leg to `‖Aᵀb‖` rather than the restart's own initial residual. A warm start with `b = 0` measures its tolerances against `‖b − A x₀‖`.
 - **BREAKING:** `ScalingConfig::max_sweeps` is now `max_iterations`, and `BuildWarning::UnscalableComponent` reports `iterations` in place of `sweeps`; the dominance certificate runs reduced CG, not relaxation sweeps.
 - **BREAKING:** The serialized `Preconditioner` wire format changed with the `approx-chol` 0.4 → 0.5 bump (v12 → v13), retention of the complete construction config (v13 → v14), retention of its original build duration (v14 → v15), and the new `LocalSolverConfig::ridge` field (v15 → v16); 0.3.0 bytes no longer decode.
+- **BREAKING:** Coefficient addresses now use caller-visible `u32` factor labels rather than internal `usize` level positions. This affects Rust `CoefficientAddress::level` and the accepted range of Python coefficient layout and unidentified-direction levels.
 
 ### Added
 
+- Persistent designs can be built once and shared across solves: Python adds `Design`, accepted by `Solver`, `solve`, and `solve_batch`; Rust adds `Design::from_categories` and accepts `&Design` in `Solver::new`, sharing immutable design storage while keeping weight-dependent preparation solver-local (#269).
 - `schwarz_precond::Staleness` gains `Default` (window 4, threshold 0.7), `window()`/`threshold()` accessors, and serde support validated through `try_new` (#260).
 - Python `Preconditioner.build_duration_seconds` and Rust `Preconditioner::build_duration()` expose the original preconditioner build duration, preserved across serialization and reuse.
 - `BuildWarning::CollinearSlopeCovariate` reports a slope covariate that is (nearly) a per-level combination of another term's columns — a cross-term near-null direction that per-term whitening cannot see and that can inflate iteration counts by orders of magnitude (#281).

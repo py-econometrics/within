@@ -93,8 +93,10 @@ class TestErrorHandling:
         ids=["solve", "solve_batch", "Solver"],
     )
     def test_invalid_design_type_raises(self, call):
-        """A design that is neither array nor list of Effect should raise TypeError."""
-        with pytest.raises(TypeError, match="2-D uint32 array or a list of Effect"):
+        """An unsupported design input should raise TypeError naming the accepted forms."""
+        with pytest.raises(
+            TypeError, match="Design, a 2-D uint32 array, or a list of Effect"
+        ):
             call("invalid")
 
     def test_additive_schwarz_rejects_local_solver_type(self):
