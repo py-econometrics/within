@@ -16,7 +16,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - **BREAKING:** Python `PreconditionerConfig` is now a tagged union: construct variants as `PreconditionerConfig.Off()`, `.Diagonal()`, or `.Additive(local_solver=..., reduction=...)` (previously class-attribute singletons plus an `.additive()` factory). Instances compare by value and support `match`/`case` on Python ≥3.10.
 - Rust `Preconditioner` objects expose their normalized construction configuration through `Preconditioner::config()`.
 - Serialized `schwarz_precond::SchwarzPreconditioner` values now preserve the configured reduction strategy.
-- **BREAKING:** `schwarz_precond::mlsmr` and `lsmr` take an `MlsmrOptions` in place of their trailing `local_size`.
+- **BREAKING:** `schwarz_precond::mlsmr` and `lsmr` take an `MlsmrOptions` in place of their trailing `local_size`; `MlsmrOptions` gains a `quiet` field, so build it with `..Default::default()`.
 - **BREAKING:** `LsmrStopReason` gains `Escalated` and `WarmStartExact`, breaking exhaustive `match`es.
 - A warm start that already solves the system reports `WarmStartExact` instead of `ZeroRhs`.
 - The LSMR true-residual audit of a warm-started stop measures the total solution against the original `b` and anchors its normal-equation leg to `‖Aᵀb‖` rather than the restart's own initial residual. A warm start with `b = 0` measures its tolerances against `‖b − A x₀‖`.
