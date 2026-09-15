@@ -131,9 +131,7 @@ fn block_elim_solver_solves_a_two_block_component() {
         ..Default::default()
     };
     let component = LocalComponent::general_for_test(cross_tab, diagonals);
-    let solver = BlockElimSolver::build(component, &config)
-        .expect("block-elim build failed")
-        .0;
+    let solver = BlockElimSolver::build(component, &config).expect("block-elim build failed");
 
     let n_local = solver.n_local();
     assert_eq!(n_local, 7);
@@ -167,9 +165,7 @@ fn grounded_two_block_solve_is_leak_free() {
         ..Default::default()
     };
     let component = LocalComponent::general_for_test(cross_tab, diagonals);
-    let solver = BlockElimSolver::build(component, &config)
-        .expect("block-elim build failed")
-        .0;
+    let solver = BlockElimSolver::build(component, &config).expect("block-elim build failed");
     // Original bipartite Gram A the solver inverts (diagonals + the two cross entries).
     let n = solver.n_local();
     let mut a = vec![vec![0.0; n]; n];
@@ -223,9 +219,7 @@ fn trivial_singleton_component_solves_r_over_d(#[case] n_rows: usize, #[case] n_
     let cross_tab = CrossTab::from_dense_for_test(&[], n_rows, n_cols);
     let diagonal = vec![4.0; n_rows + n_cols];
     let component = LocalComponent::general_for_test(cross_tab, diagonal);
-    let solver = BlockElimSolver::build(component, &config)
-        .expect("trivial 1×1 build")
-        .0;
+    let solver = BlockElimSolver::build(component, &config).expect("trivial 1×1 build");
     assert_eq!(solver.n_local(), 1);
 
     let mut rhs = vec![0.0; solver.scratch_size()];
@@ -248,7 +242,7 @@ fn sampled_sparse_preserves_barely_pd_direction() {
         dense_threshold: 0,
         ..Default::default()
     };
-    let solver = BlockElimSolver::build(component, &config).unwrap().0;
+    let solver = BlockElimSolver::build(component, &config).unwrap();
     let mut rhs = vec![0.0; solver.scratch_size()];
     rhs[..2].copy_from_slice(&[1.0, -1.0]);
     let mut solution = vec![0.0; solver.scratch_size()];
@@ -342,9 +336,8 @@ fn signed_component_realizes_congruence_transformed_solve(
         .map(|(i, &v)| if i < n_rows { v } else { -v })
         .collect();
     let component = LocalComponent::with_factors_for_test(cross_tab, diagonals, &factors);
-    let solver = BlockElimSolver::build(component, &config)
-        .expect("signed block-elim build failed")
-        .0;
+    let solver =
+        BlockElimSolver::build(component, &config).expect("signed block-elim build failed");
 
     let n = n_rows + n_cols;
     let r = [0.5, 3.0, -1.25, 1.0, -2.0];
@@ -399,9 +392,8 @@ fn frustrated_component_solves_exactly_through_cover() {
         dense_threshold: 8,
         ..Default::default()
     };
-    let solver = BlockElimSolver::build(component, &config)
-        .expect("covered block-elim build failed")
-        .0;
+    let solver =
+        BlockElimSolver::build(component, &config).expect("covered block-elim build failed");
     let n = n_rows + n_cols;
     // #91: the stored operator stays single-sized; the cover lives inside the reduced factor.
     assert_eq!(solver.n_local(), n, "operator stays single-sized");
@@ -444,9 +436,7 @@ fn valid_solver_for_deser() -> BlockElimSolver {
         ..Default::default()
     };
     let component = LocalComponent::general_for_test(cross_tab, diagonals);
-    BlockElimSolver::build(component, &config)
-        .expect("block-elim build failed")
-        .0
+    BlockElimSolver::build(component, &config).expect("block-elim build failed")
 }
 
 #[test]

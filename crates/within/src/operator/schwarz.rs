@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::block_elim::{BlockElimSolver, SchurRoute};
+use crate::block_elim::BlockElimSolver;
 use crate::config::{LocalSolverConfig, PreconditionerConfig};
 use crate::domain::Loading;
 use crate::domain::{LocalDomain, PreparedDesign};
@@ -103,34 +103,10 @@ pub(crate) fn build_additive_with_strategy(
     strategy: schwarz_precond::ReductionStrategy,
     n_dofs: usize,
 ) -> Result<FeSchwarz, BuildError> {
-    let (entries, complements): (Vec<SubdomainEntry<BlockElimSolver>>, Vec<SchurRoute>) = domains
+    let entries = domains
         .into_par_iter()
         .map(|domain| build_entry(domain, config))
-        .collect::<Result<Vec<_>, BuildError>>()?
-        .into_iter()
-        .unzip();
-    // Routing is decided inside the parallel build; it is reported here, from the driving thread.
-    let count = |complement| complements.iter().filter(|&&c| c == complement).count();
-    let solvers = || entries.iter().map(SubdomainEntry::solver);
-    tracing::debug!(
-        n_domains = entries.len(),
-        exact_dense = count(SchurRoute::ExactDense),
-        exact = count(SchurRoute::Exact),
-        sampled = count(SchurRoute::Sampled),
-        covers = solvers().filter(|s| s.is_cover()).count(),
-        fallbacks = solvers().map(BlockElimSolver::fallbacks).sum::<usize>(),
-        "domain routing"
-    );
-    for (domain, (solver, complement)) in solvers().zip(&complements).enumerate() {
-        tracing::trace!(
-            domain,
-            n_eliminated = solver.n_eliminated(),
-            n_kept = solver.n_kept(),
-            cover = solver.is_cover(),
-            complement = ?complement,
-            fallbacks = solver.fallbacks()
-        );
-    }
+        .collect::<Result<Vec<_>, BuildError>>()?;
     Ok(FeSchwarz {
         inner: SchwarzPreconditioner::with_n_dofs(entries, n_dofs, strategy),
         config: PreconditionerConfig::Additive {
@@ -144,12 +120,10 @@ pub(crate) fn build_additive_with_strategy(
 pub(crate) fn build_entry(
     domain: LocalDomain,
     config: &LocalSolverConfig,
-) -> Result<(SubdomainEntry<BlockElimSolver>, SchurRoute), BuildError> {
+) -> Result<SubdomainEntry<BlockElimSolver>, BuildError> {
     let LocalDomain { core, component } = domain;
-    let (solver, complement) = BlockElimSolver::build(component, config)?;
-    SubdomainEntry::try_new(core, solver)
-        .map(|entry| (entry, complement))
-        .map_err(BuildError::Preconditioner)
+    let solver = BlockElimSolver::build(component, config)?;
+    SubdomainEntry::try_new(core, solver).map_err(BuildError::Preconditioner)
 }
 
 /// Opaque handle to a pre-built preconditioner; cloning is O(1) via `Arc`.
@@ -172,14 +146,6 @@ impl Preconditioner {
         match &self.inner {
             Variant::Additive(_) => "Additive",
             Variant::Diagonal(_) => "Diagonal",
-        }
-    }
-
-    /// Number of Schwarz subdomains; zero for the diagonal variant.
-    pub fn n_domains(&self) -> usize {
-        match &self.inner {
-            Variant::Additive(p) => p.inner.subdomains().len(),
-            Variant::Diagonal(_) => 0,
         }
     }
 
@@ -323,13 +289,17 @@ pub(crate) fn build_preconditioner(
             (Variant::Diagonal(preconditioner), Vec::new())
         }
     };
+    let n_domains = match &inner {
+        Variant::Additive(p) => p.inner.subdomains().len(),
+        Variant::Diagonal(_) => 0,
+    };
     let preconditioner = Preconditioner {
         inner,
         build_duration: build_started.elapsed(),
     };
     tracing::info!(
         variant = preconditioner.variant_name(),
-        n_domains = preconditioner.n_domains(),
+        n_domains,
         config = ?resolved,
         build_secs = preconditioner.build_duration.as_secs_f64(),
         "preconditioner built"

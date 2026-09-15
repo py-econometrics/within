@@ -7,12 +7,10 @@ use std::thread::{self, ThreadId};
 use tracing::span::{Attributes, Id, Record};
 use tracing::{Event, Metadata, Subscriber};
 
-/// Every event and span callback, tagged with the thread that made it.
-/// An event is labelled by its message, or by its target when it has none.
+/// Every event, tagged with the emitting thread and labelled by its message (its target if none).
 #[derive(Default)]
 pub struct Recorder {
     pub events: Mutex<Vec<(ThreadId, String)>>,
-    pub span_callbacks: Mutex<Vec<ThreadId>>,
     spans: AtomicUsize,
 }
 
@@ -28,14 +26,6 @@ impl Recorder {
 
     pub fn clear(&self) {
         self.events.lock().unwrap().clear();
-        self.span_callbacks.lock().unwrap().clear();
-    }
-
-    fn span_callback(&self) {
-        self.span_callbacks
-            .lock()
-            .unwrap()
-            .push(thread::current().id());
     }
 }
 
@@ -54,7 +44,6 @@ impl Subscriber for Recorder {
         true
     }
     fn new_span(&self, _: &Attributes<'_>) -> Id {
-        self.span_callback();
         Id::from_u64(1 + self.spans.fetch_add(1, Ordering::Relaxed) as u64)
     }
     fn record(&self, _: &Id, _: &Record<'_>) {}
@@ -70,12 +59,8 @@ impl Subscriber for Recorder {
             .unwrap()
             .push((thread::current().id(), label));
     }
-    fn enter(&self, _: &Id) {
-        self.span_callback();
-    }
-    fn exit(&self, _: &Id) {
-        self.span_callback();
-    }
+    fn enter(&self, _: &Id) {}
+    fn exit(&self, _: &Id) {}
 }
 
 /// Three crossed factors with a deterministic congruential pattern: takes several LSMR iterations.

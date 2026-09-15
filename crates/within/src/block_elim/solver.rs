@@ -223,13 +223,10 @@ impl Eliminated {
 }
 
 /// Which Schur complement fed a domain's reduced factor; approx-chol picks the backend per block.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SchurRoute {
-    /// Exact complement, factored densely here without consulting approx-chol.
+#[derive(Clone, Copy, Debug)]
+enum SchurRoute {
     ExactDense,
-    /// Exact complement handed to approx-chol.
     Exact,
-    /// Sampled complement handed to approx-chol.
     Sampled,
 }
 
@@ -301,23 +298,13 @@ fn double_for_cover(values: &[f64], n_rows: usize) -> Vec<f64> {
 
 impl BlockElimSolver {
     /// Size of the block the elimination removes, the leading one.
-    pub(crate) fn n_eliminated(&self) -> usize {
+    fn n_eliminated(&self) -> usize {
         self.cross_tab.n_rows()
     }
 
     /// Size of the block the reduced factor solves.
-    pub(crate) fn n_kept(&self) -> usize {
+    fn n_kept(&self) -> usize {
         self.cross_tab.n_cols()
-    }
-
-    /// Whether the reduced factor is of a Gremban cover rather than the signed matrix itself.
-    pub(crate) fn is_cover(&self) -> bool {
-        matches!(self.reduced_factor, ReducedFactor::Cover { .. })
-    }
-
-    /// Blocks approx-chol routed to dense Cholesky but factored approximately after all.
-    pub(crate) fn fallbacks(&self) -> usize {
-        self.reduced_factor.factor().fallbacks().len()
     }
 
     pub(crate) fn new(
@@ -346,7 +333,7 @@ impl BlockElimSolver {
     pub(crate) fn build(
         component: LocalComponent,
         config: &LocalSolverConfig,
-    ) -> Result<(Self, SchurRoute), BuildError> {
+    ) -> Result<Self, BuildError> {
         let LocalComponent {
             matrix,
             form,
@@ -354,37 +341,42 @@ impl BlockElimSolver {
         } = component;
         let eliminated = Eliminated::new(matrix)?;
 
-        let (inner, complement) = match form {
-            MatrixForm::Laplacian => Eliminated::factor_reduced(&eliminated, config)?,
-            MatrixForm::SignedPendingCover => {
-                Eliminated::factor_reduced(eliminated.cover()?, config)?
-            }
-        };
-        let factor = match form {
+        let (factor, route) = match form {
             MatrixForm::Laplacian => {
+                let (factor, route) = Eliminated::factor_reduced(&eliminated, config)?;
                 let factor = ReducedFactor::Direct {
-                    factor: inner,
+                    factor,
                     grounding: eliminated.matrix.grounding,
                 };
                 debug_assert!(factor.solve_dimension() >= factor.input_dimension());
-                factor
+                (factor, route)
             }
             // Surplus survives the cover, so it grounds as the signed matrix did.
-            MatrixForm::SignedPendingCover => ReducedFactor::Cover {
-                inner,
-                m: eliminated.matrix.n_kept(),
-            },
+            MatrixForm::SignedPendingCover => {
+                let (inner, route) = Eliminated::factor_reduced(eliminated.cover()?, config)?;
+                let factor = ReducedFactor::Cover {
+                    inner,
+                    m: eliminated.matrix.n_kept(),
+                };
+                (factor, route)
+            }
         };
 
-        Ok((
-            BlockElimSolver::new(
-                eliminated.matrix.cross_tab,
-                eliminated.inv_diagonal,
-                factor,
-                coordinates,
-            ),
-            complement,
-        ))
+        let solver = BlockElimSolver::new(
+            eliminated.matrix.cross_tab,
+            eliminated.inv_diagonal,
+            factor,
+            coordinates,
+        );
+        tracing::debug!(
+            n_eliminated = solver.n_eliminated(),
+            n_kept = solver.n_kept(),
+            cover = matches!(solver.reduced_factor, ReducedFactor::Cover { .. }),
+            complement = ?route,
+            fallbacks = solver.reduced_factor.factor().fallbacks().len(),
+            "domain"
+        );
+        Ok(solver)
     }
 
     /// Components arrive oriented, so the row block is the eliminated side.

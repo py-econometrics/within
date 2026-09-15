@@ -224,9 +224,8 @@ fn small_subdomain_solve(schur: SchurMode, dense_threshold: usize) -> Vec<f64> {
         dense_threshold,
         ..Default::default()
     };
-    let solver = crate::block_elim::BlockElimSolver::build(component, &config)
-        .expect("block-elim build")
-        .0;
+    let solver =
+        crate::block_elim::BlockElimSolver::build(component, &config).expect("block-elim build");
     let mut rhs = vec![0.0; solver.scratch_size()];
     for (i, slot) in rhs.iter_mut().take(solver.n_local()).enumerate() {
         *slot = if i % 2 == 0 { 1.0 } else { -1.0 };

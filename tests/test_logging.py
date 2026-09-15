@@ -76,32 +76,17 @@ class _RaiseOnSolved(logging.Handler):
             raise RuntimeError("handler failed")
 
 
-@pytest.fixture
-def raising_on_solved() -> logging.Handler:
+def test_raising_handler_surfaces_as_its_own_exception() -> None:
+    categories, y = _problem()
+    solver = within.Solver(categories)
     logger = logging.getLogger("within")
     handler = _RaiseOnSolved(level=logging.INFO)
-    previous = logger.level
     logger.addHandler(handler)
+    previous = logger.level
     logger.setLevel(logging.INFO)
-    yield handler
-    logger.removeHandler(handler)
-    logger.setLevel(previous)
-
-
-def test_raising_handler_surfaces_as_its_own_exception(
-    raising_on_solved: logging.Handler,
-) -> None:
-    categories, y = _problem()
-    solver = within.Solver(categories)
-    with pytest.raises(RuntimeError, match="handler failed"):
-        solver.solve(y)
-
-
-def test_raising_handler_on_a_batch_worker_is_not_lost(
-    raising_on_solved: logging.Handler,
-) -> None:
-    categories, y = _problem()
-    solver = within.Solver(categories)
-    Y = np.stack([y, 2.0 * y], axis=1)
-    with pytest.raises(RuntimeError, match="handler failed"):
-        solver.solve_batch(Y)
+    try:
+        with pytest.raises(RuntimeError, match="handler failed"):
+            solver.solve(y)
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(previous)
