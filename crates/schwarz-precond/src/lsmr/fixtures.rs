@@ -190,3 +190,11 @@ impl EscalationHandler for FixedIterations {
         progress.iteration >= self.0
     }
 }
+
+/// Options that only set the local reorthogonalization window.
+pub fn window(local_size: Option<usize>) -> MlsmrOptions<'static> {
+    MlsmrOptions {
+        local_size,
+        ..Default::default()
+    }
+}

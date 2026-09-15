@@ -20,7 +20,7 @@ fn zero_second_row_solve(b: &[f64], modified: bool) -> LsmrResult {
         )
         .expect("modified Golub-Kahan")
     } else {
-        lsmr(&ZeroSecondRow, b, 1e-12, 100, MlsmrOptions::default()).expect("Golub-Kahan")
+        lsmr(&ZeroSecondRow, b, 1e-12, 100, Default::default()).expect("Golub-Kahan")
     }
 }
 
@@ -65,8 +65,7 @@ fn test_mlsmr_step1_alpha_zero_early_exit() {
     }
 
     let b = vec![0.0, 1.0];
-    let result =
-        lsmr(&ColE1, &b, 1e-12, 100, MlsmrOptions::default()).expect("lsmr alpha=0 early exit");
+    let result = lsmr(&ColE1, &b, 1e-12, 100, Default::default()).expect("lsmr alpha=0 early exit");
     assert!(result.converged);
     assert_eq!(result.iterations, 0);
     assert_eq!(result.x, vec![0.0; 1]);
@@ -101,7 +100,7 @@ fn test_mid_stream_breakdown_reports_convergence(#[case] modified: bool) {
 fn test_mlsmr_zero_rhs_stop_reason() {
     let b = vec![0.0; 4];
     let result =
-        lsmr(&OverdeterminedOp, &b, 1e-12, 100, MlsmrOptions::default()).expect("zero-rhs solve");
+        lsmr(&OverdeterminedOp, &b, 1e-12, 100, Default::default()).expect("zero-rhs solve");
     assert!(result.converged);
     assert_eq!(result.iterations, 0);
     assert_eq!(result.stop_reason, LsmrStopReason::ZeroRhs);
@@ -159,7 +158,7 @@ fn test_mlsmr_rejects_invalid_inputs() {
         &[1.0, 2.0],
         1e-10,
         100,
-        MlsmrOptions::default(),
+        Default::default(),
     );
     assert!(matches!(bad_len, Err(SolveError::InvalidInput { .. })));
 
@@ -168,7 +167,7 @@ fn test_mlsmr_rejects_invalid_inputs() {
         &[1.0, 2.0, 3.0, 4.0],
         f64::NAN,
         100,
-        MlsmrOptions::default(),
+        Default::default(),
     );
     assert!(matches!(bad_tol, Err(SolveError::InvalidInput { .. })));
 
@@ -177,7 +176,7 @@ fn test_mlsmr_rejects_invalid_inputs() {
         &[1.0, f64::INFINITY, 3.0, 4.0],
         1e-10,
         100,
-        MlsmrOptions::default(),
+        Default::default(),
     );
     assert!(matches!(bad_rhs, Err(SolveError::InvalidInput { .. })));
 
@@ -187,7 +186,7 @@ fn test_mlsmr_rejects_invalid_inputs() {
         &[f64::MAX; 4],
         1e-10,
         100,
-        MlsmrOptions::default(),
+        Default::default(),
     );
     assert!(matches!(
         overflowing_rhs,

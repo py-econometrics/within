@@ -36,7 +36,7 @@ fn a_non_finite_operator_norm_is_an_error(#[values(f64::NAN, f64::MAX)] bad: f64
         &[1.0, 1.0],
         1e-10,
         50,
-        crate::lsmr::MlsmrOptions::default(),
+        Default::default(),
     );
     assert!(
         matches!(result, Err(SolveError::InvalidInput { .. })),
