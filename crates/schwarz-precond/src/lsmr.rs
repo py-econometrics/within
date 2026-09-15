@@ -289,26 +289,6 @@ pub fn lsmr<A: Operator + ?Sized>(
     b: &[f64],
     tol: f64,
     maxiter: usize,
-    local_size: Option<usize>,
-) -> Result<LsmrResult, SolveError> {
-    lsmr_with(
-        operator,
-        b,
-        tol,
-        maxiter,
-        MlsmrOptions {
-            local_size,
-            ..Default::default()
-        },
-    )
-}
-
-/// [`lsmr`] with the full option set [`mlsmr`] accepts.
-pub fn lsmr_with<A: Operator + ?Sized>(
-    operator: &A,
-    b: &[f64],
-    tol: f64,
-    maxiter: usize,
     options: MlsmrOptions<'_>,
 ) -> Result<LsmrResult, SolveError> {
     validate_lsmr_inputs(operator, b, tol)?;

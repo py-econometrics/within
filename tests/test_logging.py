@@ -67,7 +67,18 @@ def test_single_solve_reports_every_iteration(caplog: pytest.LogCaptureFixture) 
         result = within.solve(categories, y)
     iterations = [r for r in caplog.records if r.name == "schwarz_precond.lsmr"]
     assert len(iterations) == result.iterations
-    assert any(r.getMessage().startswith("solving") for r in caplog.records)
+
+
+def test_observed_solve_is_bitwise_identical(caplog: pytest.LogCaptureFixture) -> None:
+    categories, y = _problem()
+    quiet = within.solve(categories, y)
+    with caplog.at_level(5):
+        observed = within.solve(categories, y)
+    assert observed.iterations == quiet.iterations
+    assert np.array_equal(observed.x.view(np.uint64), quiet.x.view(np.uint64))
+    assert np.array_equal(
+        observed.demeaned.view(np.uint64), quiet.demeaned.view(np.uint64)
+    )
 
 
 class _RaiseOnSolved(logging.Handler):

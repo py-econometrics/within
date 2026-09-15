@@ -36,7 +36,7 @@ fn workers_emit_only_the_per_rhs_completion_record() {
     // Domain builds run on the pool; everything else in a single solve stays here.
     assert!(off_thread(caller).is_subset(&HashSet::from(["domain".to_owned()])));
     assert_eq!(RECORDER.count("schwarz_precond::lsmr"), result.iterations);
-    assert_eq!(RECORDER.count("solving"), 1);
+    assert_eq!(RECORDER.count("solved"), 1);
     RECORDER.clear();
 
     // Called from outside the global pool, so every RHS solve runs on a worker, not here.

@@ -16,7 +16,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - **BREAKING:** Python `PreconditionerConfig` is now a tagged union: construct variants as `PreconditionerConfig.Off()`, `.Diagonal()`, or `.Additive(local_solver=..., reduction=...)` (previously class-attribute singletons plus an `.additive()` factory). Instances compare by value and support `match`/`case` on Python ≥3.10.
 - Rust `Preconditioner` objects expose their normalized construction configuration through `Preconditioner::config()`.
 - Serialized `schwarz_precond::SchwarzPreconditioner` values now preserve the configured reduction strategy.
-- **BREAKING:** `schwarz_precond::mlsmr` takes an `MlsmrOptions` in place of its trailing `local_size`.
+- **BREAKING:** `schwarz_precond::mlsmr` and `lsmr` take an `MlsmrOptions` in place of their trailing `local_size`.
 - **BREAKING:** `LsmrStopReason` gains `Escalated` and `WarmStartExact`, breaking exhaustive `match`es.
 - A warm start that already solves the system reports `WarmStartExact` instead of `ZeroRhs`.
 - The LSMR true-residual audit of a warm-started stop measures the total solution against the original `b` and anchors its normal-equation leg to `‖Aᵀb‖` rather than the restart's own initial residual. A warm start with `b = 0` measures its tolerances against `‖b − A x₀‖`.
@@ -25,6 +25,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - **BREAKING:** Coefficient addresses now use caller-visible `u32` factor labels rather than internal `usize` level positions. This affects Rust `CoefficientAddress::level` and the accepted range of Python coefficient layout and unidentified-direction levels.
 
 ### Added
+
+- Design shape, preconditioner routing, and per-solve outcomes are reported on an ambient `tracing` channel; Python receives them through `logging` under the `within` and `schwarz_precond` loggers (#307).
 
 - Persistent designs can be built once and shared across solves: Python adds `Design`, accepted by `Solver`, `solve`, and `solve_batch`; Rust adds `Design::from_categories` and accepts `&Design` in `Solver::new`, sharing immutable design storage while keeping weight-dependent preparation solver-local (#269).
 - `schwarz_precond::Staleness` gains `Default` (window 4, threshold 0.7), `window()`/`threshold()` accessors, and serde support validated through `try_new` (#260).
