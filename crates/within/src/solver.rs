@@ -399,7 +399,7 @@ impl<'a> Solver<'a> {
 
         warnings.extend(build_warnings);
         for warning in &warnings {
-            tracing::warn!(%warning);
+            tracing::warn!("{warning}");
         }
         tracing::info!(
             build_secs = build_started.elapsed().as_secs_f64(),
