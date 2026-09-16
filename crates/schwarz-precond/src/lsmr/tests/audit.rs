@@ -1,6 +1,6 @@
 //! True-residual audit of tolerance stops.
 
-use super::super::bidiag::{BidiagStep, Bidiagonalization, Certificate};
+use super::super::bidiag::{BidiagStep, Bidiagonalization, Certificate, NormalEquationResidual};
 use super::super::recurrence::ConvergenceCriteria;
 use super::super::{lsmr_from_bidiag, LsmrStopReason};
 use crate::SolveError;
@@ -27,8 +27,14 @@ impl Bidiagonalization for ScriptedStream {
     fn certify(&mut self, _x: &[f64], _rhs: &[f64]) -> Result<Certificate, SolveError> {
         Ok(Certificate {
             normr: self.normr,
-            normar: (self.normar, 1.0),
-            normar_raw: self.normar_raw.map(|norm| (norm, 1.0)),
+            normar: NormalEquationResidual {
+                norm: self.normar,
+                reference: 1.0,
+            },
+            normar_raw: self.normar_raw.map(|norm| NormalEquationResidual {
+                norm,
+                reference: 1.0,
+            }),
         })
     }
 }
@@ -78,4 +84,29 @@ fn a_stop_the_metric_cannot_see_is_refused() {
     let r = scripted_run(1e-6, 1e-12, Some(1e-6));
     assert!(!r.converged);
     assert_eq!(r.stop_reason, LsmrStopReason::FalseConvergence);
+}
+
+/// A zero or overflowed cold reference cannot replace the stream's own, and never divides.
+#[test]
+fn a_reference_only_moves_to_a_usable_cold_value() {
+    let certificate = |norm: f64, reference: f64| Certificate {
+        normr: 0.0,
+        normar: NormalEquationResidual { norm, reference },
+        normar_raw: None,
+    };
+    for cold in [0.0, -1.0, f64::INFINITY] {
+        let mut cert = certificate(1.0, 4.0);
+        cert.rebase(&certificate(cold, 0.0));
+        assert_eq!(cert.normar.reference, 4.0, "cold reference {cold:e}");
+    }
+    let mut cert = certificate(1.0, 4.0);
+    cert.rebase(&certificate(9.0, 0.0));
+    assert_eq!(cert.normar.reference, 9.0);
+
+    assert!(NormalEquationResidual {
+        norm: 1.0,
+        reference: 0.0
+    }
+    .relative()
+    .is_finite());
 }

@@ -388,7 +388,7 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
                 converged,
                 iterations: itn,
                 residual_norm: cert.normr,
-                normal_eq_residual: cert.normar.0 / cert.normar.1,
+                normal_eq_residual: cert.normar.relative(),
                 stop_reason: if converged {
                     stop_reason
                 } else {
