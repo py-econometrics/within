@@ -382,13 +382,9 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
             let reference =
                 |cold: Option<f64>, initial: f64| cold.filter(|&c| c > 0.0).unwrap_or(initial);
             let ne_reference = reference(cold.as_ref().map(|c| c.normar), recurrence.zeta0);
-            let cold_raw = cold
-                .as_ref()
-                .and_then(|c| c.normar_raw)
-                .map(|(norm, _)| norm);
-            cert.normar_raw = cert
-                .normar_raw
-                .map(|(norm, initial)| (norm, reference(cold_raw, initial)));
+            if let Some((_, initial)) = &mut cert.normar_raw {
+                *initial = reference(cold.and_then(|c| c.normar_raw).map(|raw| raw.0), *initial);
+            }
             let converged = convergence.certified(&cert, ne_reference);
             return Ok(LsmrResult {
                 x,
