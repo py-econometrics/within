@@ -10,8 +10,7 @@ struct ScriptedStream {
     v: Vec<f64>,
     normr: f64,
     normar: f64,
-    normar_raw: f64,
-    normar_raw0: Option<f64>,
+    normar_raw: Option<f64>,
 }
 
 impl Bidiagonalization for ScriptedStream {
@@ -29,23 +28,17 @@ impl Bidiagonalization for ScriptedStream {
         Ok(Certificate {
             normr: self.normr,
             normar: self.normar,
-            normar_raw: self.normar_raw,
+            normar_raw: self.normar_raw.map(|norm| (norm, 1.0)),
         })
-    }
-
-    fn normar_raw0(&self) -> Option<f64> {
-        self.normar_raw0
     }
 }
 
-/// `normar_raw` is `Some` exactly when the stream has a metric; its reference `‖Aᵀ rhs‖` is 1.
 fn scripted_run(normr: f64, normar: f64, normar_raw: Option<f64>) -> super::super::LsmrResult {
     let stream = ScriptedStream {
         v: vec![0.0; 2],
         normr,
         normar,
-        normar_raw: normar_raw.unwrap_or(normar),
-        normar_raw0: normar_raw.map(|_| 1.0),
+        normar_raw,
     };
     let step1 = BidiagStep {
         alpha: 1.0,

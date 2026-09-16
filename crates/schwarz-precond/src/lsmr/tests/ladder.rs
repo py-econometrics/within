@@ -125,17 +125,16 @@ fn test_mlsmr_zero_rhs_corrects_non_exact_warm_start() {
 #[test]
 fn a_far_warm_start_does_not_inflate_the_plain_audit_bound() {
     let x0 = [1.0 + f64::from(1u32 << 20) * f64::from(1u32 << 20), 0.0];
-    let options = MlsmrOptions {
-        warm_start: Some(&x0),
-        ..Default::default()
-    };
     let result = mlsmr(
         &IdentityOp { n: 2 },
         &[1.0, 1.0],
         &DiagOp(vec![1.0, 0.0]),
         1e-10,
         100,
-        options,
+        MlsmrOptions {
+            warm_start: Some(&x0),
+            ..Default::default()
+        },
     )
     .expect("warm-started singular-preconditioner solve");
 
@@ -310,17 +309,16 @@ fn test_staleness_rejects_an_invalid_threshold(
 fn a_near_exact_warm_start_is_not_rejected_by_the_plain_audit() {
     // Near 1/169 but not equal to it: an exact warm start would return before the audit.
     let x0 = [0.0059171597633136085];
-    let options = MlsmrOptions {
-        warm_start: Some(&x0),
-        ..Default::default()
-    };
     let result = mlsmr(
         &DiagOp(vec![169.0]),
         &[1.0],
         &IdentityOp { n: 1 },
         1e-10,
         50,
-        options,
+        MlsmrOptions {
+            warm_start: Some(&x0),
+            ..Default::default()
+        },
     )
     .expect("near-exact warm start");
 

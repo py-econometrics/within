@@ -457,8 +457,7 @@ fn test_mlsmr_local_reorth_window_boundary_sizes(#[case] window_size: usize) {
 #[test]
 fn an_overflowing_operator_norm_estimate_does_not_certify_a_stop() {
     let a = DiagOp(vec![1.2e154, 1e154]);
-    let b = vec![1.0, 1.0];
-    let result = lsmr(&a, &b, 1e-10, 100, None).expect("extreme-scale solve");
+    let result = lsmr(&a, &[1.0, 1.0], 1e-10, 100, None).expect("extreme-scale solve");
 
     assert!(result.converged);
     // The refused stop sat at 0.254 after one iteration.
