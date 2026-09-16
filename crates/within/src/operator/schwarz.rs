@@ -289,12 +289,20 @@ pub(crate) fn build_preconditioner(
             (Variant::Diagonal(preconditioner), Vec::new())
         }
     };
-    let build_duration = build_started.elapsed();
-    Ok((
-        Some(Preconditioner {
-            inner,
-            build_duration,
-        }),
-        warnings,
-    ))
+    let n_domains = match &inner {
+        Variant::Additive(p) => p.inner.subdomains().len(),
+        Variant::Diagonal(_) => 0,
+    };
+    let preconditioner = Preconditioner {
+        inner,
+        build_duration: build_started.elapsed(),
+    };
+    tracing::info!(
+        variant = preconditioner.variant_name(),
+        n_domains,
+        config = ?resolved,
+        build_secs = preconditioner.build_duration.as_secs_f64(),
+        "preconditioner built"
+    );
+    Ok((Some(preconditioner), warnings))
 }

@@ -307,12 +307,10 @@ impl PySolver {
         let design = extract_owned_design(py, design)?;
 
         // `BuildError` carries no Python types, so it maps to an exception once the GIL is back.
-        let solver = py
-            .detach(move || -> Result<Solver<'static>, BuildError> {
-                let w_cow = w_view.as_ref().map(coerce_to_slice);
-                Solver::new(design, w_cow.as_deref(), precond)
-            })
-            .map_err(value_err)?;
+        let solver = crate::detach(py, move || -> Result<Solver<'static>, BuildError> {
+            let w_cow = w_view.as_ref().map(coerce_to_slice);
+            Solver::new(design, w_cow.as_deref(), precond)
+        })?;
 
         emit_build_warnings(py, solver.warnings())?;
         Ok(Self { solver })

@@ -1,0 +1,97 @@
+from __future__ import annotations
+
+import logging
+
+import numpy as np
+import pytest
+
+import within
+
+
+def _problem() -> tuple[np.ndarray, np.ndarray]:
+    categories = np.asfortranarray(
+        np.array(
+            [[0, 0], [1, 0], [0, 1], [1, 1], [2, 0], [2, 1], [3, 2], [0, 2], [3, 0]],
+            dtype=np.uint32,
+        )
+    )
+    y = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 2.5, 7.0, 0.5, 4.5])
+    return categories, y
+
+
+def _messages(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [r.getMessage().split(" ", 1)[0] for r in caplog.records]
+
+
+def test_solve_reports_phases_on_the_within_logger(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    categories, y = _problem()
+    with caplog.at_level(logging.INFO, logger="within"):
+        within.solve(categories, y)
+    messages = _messages(caplog)
+    assert {"design", "preconditioner", "solver", "solved"} <= set(messages)
+    assert all(r.name.startswith("within") for r in caplog.records)
+
+
+def test_level_raised_after_first_call_takes_effect(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    categories, y = _problem()
+    solver = within.Solver(categories)
+    with caplog.at_level(logging.WARNING, logger="within"):
+        solver.solve(y)
+        assert "solved" not in _messages(caplog)
+        with caplog.at_level(logging.INFO, logger="within"):
+            solver.solve(y)
+    assert "solved" in _messages(caplog)
+
+
+def test_batch_reports_per_rhs_and_never_per_iteration(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    categories, y = _problem()
+    Y = np.stack([y, 2.0 * y], axis=1)
+    with caplog.at_level(5):
+        within.solve_batch(categories, Y)
+    solved = [
+        r.getMessage() for r in caplog.records if r.getMessage().startswith("solved")
+    ]
+    assert sorted(m.split(" rhs=")[1].split(" ")[0] for m in solved) == ["0", "1"]
+    assert not [r for r in caplog.records if r.name.startswith("schwarz_precond")]
+
+
+def test_single_solve_reports_every_iteration_and_stays_bitwise_identical(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    categories, y = _problem()
+    quiet = within.solve(categories, y)
+    with caplog.at_level(5):
+        observed = within.solve(categories, y)
+    iterations = [r for r in caplog.records if r.name == "schwarz_precond.lsmr"]
+    assert len(iterations) == observed.iterations == quiet.iterations
+    assert np.array_equal(observed.x.view(np.uint64), quiet.x.view(np.uint64))
+    assert np.array_equal(
+        observed.demeaned.view(np.uint64), quiet.demeaned.view(np.uint64)
+    )
+
+
+class _RaiseOnSolved(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.getMessage().startswith("solved"):
+            raise RuntimeError("handler failed")
+
+
+def test_raising_handler_surfaces_as_its_own_exception(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    categories, y = _problem()
+    logger = logging.getLogger("within")
+    handler = _RaiseOnSolved()
+    logger.addHandler(handler)
+    try:
+        with caplog.at_level(logging.INFO, logger="within"):
+            with pytest.raises(RuntimeError, match="handler failed"):
+                within.solve(categories, y)
+    finally:
+        logger.removeHandler(handler)

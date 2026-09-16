@@ -194,24 +194,36 @@ impl Eliminated {
         config: &LocalSolverConfig,
     ) -> Result<Factor, BuildError> {
         let this = fold.borrow();
+        let n_kept = this.matrix.n_kept();
+        let report = |factor: Factor, complement: &str| {
+            let fallbacks = factor.fallbacks().len();
+            tracing::debug!(n_kept, complement, fallbacks, "reduced factor");
+            factor
+        };
         let exact_below = config.dense_threshold;
-        let exact = (exact_below > 0 && this.matrix.n_kept() <= exact_below)
+        let exact = (exact_below > 0 && n_kept <= exact_below)
             .then(|| schur::exact_for_factor(&this.matrix, &this.inv_diagonal));
         if let Some(exact) = &exact {
             match factor_complement(exact, config, ExactFailure::Error) {
                 Err(approx_chol::Error::DenseFactorizationFailed { .. }) => {}
-                result => return result.map_err(local_solver_build),
+                result => {
+                    return result
+                        .map(|factor| report(factor, "exact_dense"))
+                        .map_err(local_solver_build)
+                }
             }
         }
-        let complement = match &config.schur {
-            SchurMode::Approximate(cfg) => schur::sampled(&this.matrix, cfg),
-            SchurMode::Exact => {
-                exact.unwrap_or_else(|| schur::exact_for_factor(&this.matrix, &this.inv_diagonal))
-            }
+        let (complement, route) = match &config.schur {
+            SchurMode::Approximate(cfg) => (schur::sampled(&this.matrix, cfg), "sampled"),
+            SchurMode::Exact => (
+                exact.unwrap_or_else(|| schur::exact_for_factor(&this.matrix, &this.inv_diagonal)),
+                "exact",
+            ),
         };
         // An owned fold is the transient cover; it is freed before the factor's fill is allocated.
         drop(fold);
         factor_complement(&complement, config, ExactFailure::FallBackToApproximate)
+            .map(|factor| report(factor, route))
             .map_err(local_solver_build)
     }
 }

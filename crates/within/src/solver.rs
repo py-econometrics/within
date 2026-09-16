@@ -363,8 +363,22 @@ impl<'a> Solver<'a> {
         weights: Option<&[f64]>,
         preconditioner: impl Into<PreconditionerInput>,
     ) -> Result<Self, BuildError> {
+        let design = design.into_design()?;
+        let build_started = Instant::now();
+        tracing::info!(
+            n_obs = design.n_obs,
+            n_dofs = design.n_dofs,
+            n_terms = design.n_factors(),
+            n_channels = (0..design.n_factors())
+                .map(|term| design.channels(term).count())
+                .sum::<usize>(),
+            weighted = weights.is_some(),
+            locality_sorted = design.obs_perm.is_some(),
+            "design"
+        );
+
         // Whiten the slope columns (if any) before the preconditioner reads them.
-        let prepared = PreparedDesign::new(design.into_design()?, weights)?;
+        let prepared = PreparedDesign::new(design, weights)?;
         let mut warnings = detect_collinear_slopes(&prepared);
         let n_dofs = prepared.design.n_dofs;
 
@@ -384,6 +398,13 @@ impl<'a> Solver<'a> {
         };
 
         warnings.extend(build_warnings);
+        for warning in &warnings {
+            tracing::warn!("{warning}");
+        }
+        tracing::info!(
+            build_secs = build_started.elapsed().as_secs_f64(),
+            "solver built"
+        );
 
         Ok(Self {
             prepared,
@@ -402,7 +423,13 @@ impl<'a> Solver<'a> {
     /// back-transform slopes. Excludes the design-level `layout` / `warnings` /
     /// `unidentified`, which the public entry points attach once (see
     /// [`RhsSolution`]).
-    fn solve_rhs(&self, y: &[f64], lsmr: &LsmrOptions) -> Result<RhsSolution, SolveError> {
+    /// `rhs` is the position in a batch; a batch worker emits exactly one record, `solved`.
+    fn solve_rhs(
+        &self,
+        rhs: Option<usize>,
+        y: &[f64],
+        lsmr: &LsmrOptions,
+    ) -> Result<RhsSolution, SolveError> {
         // `weighted_rhs` zips y with sqrt-weights, silently truncating when `y.len() > n_rows`.
         if y.len() != self.prepared.design.n_obs {
             return Err(SolveError::InvalidInput {
@@ -434,18 +461,28 @@ impl<'a> Solver<'a> {
         let t_solve_start = Instant::now();
         let time_setup = t_solve_start.duration_since(t_start).as_secs_f64();
 
+        // Per-iteration records stay single-solve.
+        let options = MlsmrOptions {
+            local_size: lsmr.local_size,
+            quiet: rhs.is_some(),
+            ..Default::default()
+        };
         let r = match self.preconditioner.as_ref() {
-            Some(p) => {
-                let options = MlsmrOptions {
-                    local_size: lsmr.local_size,
-                    ..Default::default()
-                };
-                mlsmr(&rect_op, b, p, lsmr.tol, lsmr.maxiter, options)?
-            }
-            None => lsmr_solve(&rect_op, b, lsmr.tol, lsmr.maxiter, lsmr.local_size)?,
+            Some(p) => mlsmr(&rect_op, b, p, lsmr.tol, lsmr.maxiter, options)?,
+            None => lsmr_solve(&rect_op, b, lsmr.tol, lsmr.maxiter, options)?,
         };
 
         let time_solve = t_solve_start.elapsed().as_secs_f64();
+        tracing::info!(
+            rhs,
+            iterations = r.iterations,
+            converged = r.converged,
+            stop_reason = ?r.stop_reason,
+            normal_eq_residual = r.normal_eq_residual,
+            rhs_setup_secs = time_setup,
+            solve_secs = time_solve,
+            "solved"
+        );
 
         // Shapes are guaranteed here, so the bare `D x` matvec is infallible.
         let mut demeaned = vec![0.0; self.prepared.design.n_obs];
@@ -496,7 +533,7 @@ impl<'a> Solver<'a> {
         let lsmr = lsmr.into().unwrap_or(&default);
 
         let t_start = Instant::now();
-        let solution = self.solve_rhs(y, lsmr)?;
+        let solution = self.solve_rhs(None, y, lsmr)?;
 
         Ok(SolveResult {
             x: solution.x,
@@ -527,7 +564,8 @@ impl<'a> Solver<'a> {
         // Collecting into `Result` fails fast on the first per-RHS error, not during the fold.
         let solutions: Vec<RhsSolution> = ys
             .par_iter()
-            .map(|y| self.solve_rhs(y, lsmr))
+            .enumerate()
+            .map(|(rhs, y)| self.solve_rhs(Some(rhs), y, lsmr))
             .collect::<Result<Vec<_>, _>>()?;
 
         let mut x = Vec::with_capacity(self.prepared.design.n_dofs * n_rhs);
