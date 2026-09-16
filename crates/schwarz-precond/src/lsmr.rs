@@ -347,14 +347,22 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
         }
         x
     };
+    // A metric reporting no gradient at all may be hiding one outside itself.
     if step1.alpha == 0.0 {
+        let x = total(vec![0.0; n]);
+        let cert = bidiag.certify(&x, b)?;
+        let converged = criteria.corroborated(&cert, || bidiag.operator_norm_below(b))?;
         return Ok(LsmrResult {
-            x: total(vec![0.0; n]),
-            converged: true,
+            x,
+            converged,
             iterations: 0,
-            residual_norm: step1.beta,
-            normal_eq_residual: 0.0,
-            stop_reason: LsmrStopReason::InitialNormalEquationResidualZero,
+            residual_norm: cert.normr,
+            normal_eq_residual: cert.normar.relative(),
+            stop_reason: if converged {
+                LsmrStopReason::InitialNormalEquationResidualZero
+            } else {
+                LsmrStopReason::FalseConvergence
+            },
         });
     }
 

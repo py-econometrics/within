@@ -5,6 +5,8 @@
 //! that yield Algorithm 2.8 of Fong & Saunders, advances the `(x, h, h̄)`
 //! solution recurrence, and tracks the dual stopping criterion.
 
+use crate::SolveError;
+
 use super::bidiag::{
     BidiagStep, Certificate, NormalEquationResidual, LSMR_PAR_THRESHOLD, LSMR_UPDATE_CHUNK,
 };
@@ -229,6 +231,31 @@ impl ConvergenceCriteria {
             a_norm_sq: alpha1 * alpha1,
         }
     }
+
+    /// The audit left once a stream reports no gradient at all, where the only drop measurable is
+    /// between the two metrics: the reference within each is the numerator itself, or a clamp.
+    /// `a_norm_below` replaces the `‖A‖` the stream never got to estimate; being a lower bound it
+    /// can only overstate the backward error, so it never certifies one the true norm would not.
+    pub(super) fn corroborated(
+        &self,
+        cert: &Certificate,
+        a_norm_below: impl FnOnce() -> Result<f64, SolveError>,
+    ) -> Result<bool, SolveError> {
+        if self.solved(cert) || drops_agree(cert) {
+            return Ok(true);
+        }
+        // Only a metric can hide a direction, and only then is the bound worth an apply.
+        let Some(raw) = cert.normar_raw else {
+            return Ok(false);
+        };
+        Ok(backward_error(raw.norm, a_norm_below()?, cert.normr)
+            <= CERTIFICATION_SLACK * self.rel_tol)
+    }
+
+    /// The residual alone meets the tolerance, whatever the normal-equation legs report.
+    fn solved(&self, cert: &Certificate) -> bool {
+        cert.normr <= CERTIFICATION_SLACK * self.abs_tol
+    }
 }
 
 /// Mutable convergence observations for one LSMR run.
@@ -243,14 +270,9 @@ impl ConvergenceState {
         self.a_norm_sq += s.alpha * s.alpha + s.beta * s.beta;
     }
 
-    /// `‖Âᵀr‖ / (‖A‖‖r‖)`; the `max` guards a collapsed residual, not a physical scale.
+    /// The stream's own backward error, from its accumulated `‖A‖_F` estimate.
     fn ne_ratio(&self, residual: f64, normar: f64) -> f64 {
-        // An overflowed `‖A‖` estimate would divide the ratio to zero and certify any residual.
-        if !self.a_norm_sq.is_finite() {
-            return f64::INFINITY;
-        }
-        let a_norm = self.a_norm_sq.sqrt().max(f64::MIN_POSITIVE);
-        normar / (a_norm * residual.max(f64::MIN_POSITIVE))
+        backward_error(normar, self.a_norm_sq.sqrt(), residual)
     }
 
     /// Check both stop criteria against the current scalar state.
@@ -267,20 +289,38 @@ impl ConvergenceState {
 
     /// True-residual audit of a tolerance stop (cf. van der Vorst & Ye, SISC 22(3), 2000).
     pub(super) fn certified(&self, cert: &Certificate) -> bool {
+        if self.criteria.solved(cert) {
+            return true;
+        }
         let rel = CERTIFICATION_SLACK * self.criteria.rel_tol;
+        let dropped = |ne: &NormalEquationResidual| ne.norm <= rel * ne.reference;
         // `normr → 0` degenerates the ratio test; the drop of `‖Âᵀr‖` vs its start certifies.
-        let dropped = |ne: &NormalEquationResidual| {
-            cert.normr <= CERTIFICATION_SLACK * self.criteria.abs_tol
-                || ne.norm <= rel * ne.reference
-        };
         let metric = dropped(&cert.normar) || self.ne_ratio(cert.normr, cert.normar.norm) <= rel;
         // A metric that annihilates a direction cannot audit it, so the plain norm must also pass.
         // `ne_ratio` cannot audit it: its `‖A‖` is preconditioned, so `M⁻¹`'s scale deflates it.
-        metric
-            && cert.normar_raw.as_ref().is_none_or(|raw| {
-                dropped(raw) || raw.relative() <= CERTIFICATION_SLACK * cert.normar.relative()
-            })
+        metric && (cert.normar_raw.is_none_or(|raw| dropped(&raw)) || drops_agree(cert))
     }
+}
+
+/// `‖Aᵀr‖ / (‖A‖‖r‖)`, refusing outright on a denominator carrying no information: clamping one
+/// up would flatter the ratio into certifying an unsolved stop. The product is the accurate form,
+/// rounding once; only where it leaves the float range does dividing in turn beat it.
+pub(super) fn backward_error(normar: f64, a_norm: f64, residual: f64) -> f64 {
+    if !(a_norm > 0.0 && a_norm.is_finite() && residual > 0.0 && residual.is_finite()) {
+        return f64::INFINITY;
+    }
+    let denominator = a_norm * residual;
+    if denominator > 0.0 && denominator.is_finite() {
+        return normar / denominator;
+    }
+    normar / a_norm / residual
+}
+
+/// The drop outside the stream's metric against the drop inside it, carrying neither the `A` nor
+/// the `M` scale; vacuous for a stream with no metric to corroborate.
+fn drops_agree(cert: &Certificate) -> bool {
+    cert.normar_raw
+        .is_none_or(|raw| raw.relative() <= CERTIFICATION_SLACK * cert.normar.relative())
 }
 
 /// Collapsed recurrences miss by orders of magnitude; the slack absorbs ordinary estimate drift.
