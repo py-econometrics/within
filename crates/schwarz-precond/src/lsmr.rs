@@ -375,19 +375,25 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
             Stop::ResidualTolerance => Some(LsmrStopReason::ResidualTolerance),
             Stop::NormalEquationTolerance => Some(LsmrStopReason::NormalEquationTolerance),
         } {
-            // A warm start re-bases `ζ̄₀`; auditing `x = 0` against `b` recovers the cold `‖Âᵀb‖`.
-            let ne_reference = match x0 {
-                Some(_) => bidiag.certify(&vec![0.0; n], b)?.normar,
-                None => 0.0,
+            // A warm start re-bases both references; auditing `x = 0` against `b` recovers them.
+            let cold = match x0 {
+                Some(_) => Some(bidiag.certify(&vec![0.0; n], b)?),
+                None => None,
             };
-            let ne_reference = if ne_reference > 0.0 {
-                ne_reference
-            } else {
-                recurrence.zeta0
+            let ne_reference = match cold.as_ref().map(|c| c.normar) {
+                Some(normar) if normar > 0.0 => normar,
+                _ => recurrence.zeta0,
             };
+            let raw_reference =
+                bidiag
+                    .normar_raw0()
+                    .map(|stream| match cold.as_ref().map(|c| c.normar_raw) {
+                        Some(raw) if raw > 0.0 => raw,
+                        _ => stream,
+                    });
             let x = total(solution.into_x());
             let cert = bidiag.certify(&x, b)?;
-            let converged = convergence.certified(&cert, ne_reference);
+            let converged = convergence.certified(&cert, ne_reference, raw_reference);
             return Ok(LsmrResult {
                 x,
                 converged,

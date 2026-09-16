@@ -11,6 +11,7 @@ struct ScriptedStream {
     normr: f64,
     normar: f64,
     normar_raw: f64,
+    normar_raw0: Option<f64>,
 }
 
 impl Bidiagonalization for ScriptedStream {
@@ -29,17 +30,22 @@ impl Bidiagonalization for ScriptedStream {
             normr: self.normr,
             normar: self.normar,
             normar_raw: self.normar_raw,
-            normar_raw0: 1.0,
         })
+    }
+
+    fn normar_raw0(&self) -> Option<f64> {
+        self.normar_raw0
     }
 }
 
-fn scripted_run(normr: f64, normar: f64, normar_raw: f64) -> super::super::LsmrResult {
+/// `normar_raw` is `Some` exactly when the stream has a metric; its reference `‖Aᵀ rhs‖` is 1.
+fn scripted_run(normr: f64, normar: f64, normar_raw: Option<f64>) -> super::super::LsmrResult {
     let stream = ScriptedStream {
         v: vec![0.0; 2],
         normr,
         normar,
-        normar_raw,
+        normar_raw: normar_raw.unwrap_or(normar),
+        normar_raw0: normar_raw.map(|_| 1.0),
     };
     let step1 = BidiagStep {
         alpha: 1.0,
@@ -51,7 +57,7 @@ fn scripted_run(normr: f64, normar: f64, normar_raw: f64) -> super::super::LsmrR
 
 #[test]
 fn collapsed_stop_is_refused_by_the_audit() {
-    let r = scripted_run(1.0, 1.0, 1.0);
+    let r = scripted_run(1.0, 1.0, None);
     assert!(!r.converged);
     assert_eq!(r.stop_reason, LsmrStopReason::FalseConvergence);
     assert_eq!(r.residual_norm, 1.0);
@@ -60,7 +66,7 @@ fn collapsed_stop_is_refused_by_the_audit() {
 
 #[test]
 fn honest_stop_passes_the_audit() {
-    let r = scripted_run(1e-12, 1e-12, 1e-12);
+    let r = scripted_run(1e-12, 1e-12, None);
     assert!(r.converged);
     assert_eq!(r.stop_reason, LsmrStopReason::ResidualTolerance);
 }
@@ -68,7 +74,7 @@ fn honest_stop_passes_the_audit() {
 #[test]
 fn near_consistent_stop_certifies_via_the_initial_ne_drop() {
     // Ratio leg would refuse (1e-12/1e-6 ≫ 100·tol); the drop vs ζ̄₀ = 1 certifies.
-    let r = scripted_run(1e-6, 1e-12, 1e-12);
+    let r = scripted_run(1e-6, 1e-12, None);
     assert!(r.converged);
     assert_eq!(r.stop_reason, LsmrStopReason::ResidualTolerance);
 }
@@ -76,7 +82,7 @@ fn near_consistent_stop_certifies_via_the_initial_ne_drop() {
 /// A metric that annihilates part of `Aᵀr` reports it as zero, so the plain norm has to refuse.
 #[test]
 fn a_stop_the_metric_cannot_see_is_refused() {
-    let r = scripted_run(1e-6, 1e-12, 1e-6);
+    let r = scripted_run(1e-6, 1e-12, Some(1e-6));
     assert!(!r.converged);
     assert_eq!(r.stop_reason, LsmrStopReason::FalseConvergence);
 }

@@ -120,6 +120,29 @@ fn test_mlsmr_zero_rhs_corrects_non_exact_warm_start() {
     assert!(result.iterations > 0);
 }
 
+/// The plain-norm audit must reference `‖Aᵀb‖`, not the warm start's own residual: a far-off `x₀`
+/// inflates that residual without limit, and the bound it buys certifies anything.
+#[test]
+fn a_far_warm_start_does_not_inflate_the_plain_audit_bound() {
+    let x0 = [1.0 + f64::from(1u32 << 20) * f64::from(1u32 << 20), 0.0];
+    let options = MlsmrOptions {
+        warm_start: Some(&x0),
+        ..Default::default()
+    };
+    let result = mlsmr(
+        &IdentityOp { n: 2 },
+        &[1.0, 1.0],
+        &DiagOp(vec![1.0, 0.0]),
+        1e-10,
+        100,
+        options,
+    )
+    .expect("warm-started singular-preconditioner solve");
+
+    assert!(!result.converged);
+    assert_eq!(result.stop_reason, LsmrStopReason::FalseConvergence);
+}
+
 #[rstest]
 #[case::identity(&IdentityOp { n: 3 }, &[1.0, 2.0, 3.0], &[1.0, 2.0, 3.0])]
 #[case::null_direction(&ZeroSecondRow, &[0.0, 0.0], &[0.0, 7.0])]
@@ -279,4 +302,39 @@ fn test_staleness_rejects_an_invalid_threshold(
         Staleness::try_new(4, threshold),
         Err(StalenessError::InvalidThreshold { .. })
     ));
+}
+
+/// The same reference, from the other side: a warm start that is already nearly exact leaves a
+/// tiny `‖Aᵀ(b − A x₀)‖`, and referencing that instead of `‖Aᵀb‖` rejects a correct solve.
+#[test]
+fn a_near_exact_warm_start_is_not_rejected_by_the_plain_audit() {
+    struct Scaled;
+    impl Operator for Scaled {
+        fn nrows(&self) -> usize {
+            1
+        }
+        fn ncols(&self) -> usize {
+            1
+        }
+        fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+            y[0] = 169.0 * x[0];
+            Ok(())
+        }
+        fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) -> Result<(), SolveError> {
+            x[0] = 169.0 * u[0];
+            Ok(())
+        }
+    }
+
+    // Near 1/169 but not equal to it: an exact warm start would return before the audit.
+    let x0 = [0.0059171597633136085];
+    let options = MlsmrOptions {
+        warm_start: Some(&x0),
+        ..Default::default()
+    };
+    let result = mlsmr(&Scaled, &[1.0], &IdentityOp { n: 1 }, 1e-10, 50, options)
+        .expect("near-exact warm start");
+
+    assert!(result.converged);
+    assert_ne!(result.stop_reason, LsmrStopReason::WarmStartExact);
 }
