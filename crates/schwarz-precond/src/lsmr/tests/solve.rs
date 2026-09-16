@@ -176,23 +176,28 @@ fn test_mlsmr_rank_deficient_system() {
 }
 
 /// A preconditioner with a null direction reports `Aᵀr` as zero along it, so the metric audit
-/// alone certifies a stop that still carries a full unit of normal-equation residual.
-#[test]
-fn a_singular_preconditioner_cannot_certify_the_direction_it_annihilates() {
-    let b = vec![1.0, 1.0, 1.0];
+/// alone certifies a stop that still carries a full unit of normal-equation residual. Scaling
+/// `M⁻¹` must not buy certification either: the plain leg has to be free of that scale.
+#[rstest]
+#[case::three_dim(&[1.0, 1.0, 0.0])]
+#[case::two_dim(&[1.0, 0.0])]
+#[case::two_dim_scaled(&[1e20, 0.0])]
+fn a_singular_preconditioner_cannot_certify_the_direction_it_annihilates(#[case] m: &[f64]) {
+    let a = IdentityOp { n: m.len() };
+    let b = vec![1.0; m.len()];
     let result = mlsmr(
-        &IdentityOp { n: 3 },
+        &a,
         &b,
-        &DiagOp(vec![1.0, 1.0, 0.0]),
+        &DiagOp(m.to_vec()),
         1e-10,
         100,
         MlsmrOptions::default(),
     )
     .expect("singular-preconditioner solve");
 
-    assert!(!result.converged);
+    assert!(!result.converged, "{:?}", result.stop_reason);
     assert_eq!(result.stop_reason, LsmrStopReason::FalseConvergence);
-    let residual = normal_equation_residual(&IdentityOp { n: 3 }, &result.x, &b);
+    let residual = normal_equation_residual(&a, &result.x, &b);
     assert!(
         (residual - 1.0).abs() < 1e-9,
         "normal-equation residual: {residual}"
@@ -511,23 +516,4 @@ fn a_rescaling_preconditioner_does_not_deflate_the_plain_audit_reference() {
     )
     .expect("rescaled solve");
     assert!(r.converged, "stop_reason: {:?}", r.stop_reason);
-}
-
-/// Scaling `M⁻¹` must not buy certification: the audit's plain leg has to be free of that scale.
-#[rstest]
-#[case::unscaled(1.0)]
-#[case::scaled(1e20)]
-fn a_scaled_singular_preconditioner_still_cannot_certify_its_null_direction(#[case] scale: f64) {
-    let r = mlsmr(
-        &IdentityOp { n: 2 },
-        &[1.0, 1.0],
-        &DiagOp(vec![scale, 0.0]),
-        1e-10,
-        100,
-        MlsmrOptions::default(),
-    )
-    .expect("singular-preconditioner solve");
-
-    assert!(!r.converged, "scale {scale:e}: {:?}", r.stop_reason);
-    assert_eq!(r.stop_reason, LsmrStopReason::FalseConvergence);
 }
