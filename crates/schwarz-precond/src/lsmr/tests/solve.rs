@@ -175,6 +175,30 @@ fn test_mlsmr_rank_deficient_system() {
     assert!(normal_equation_residual(&RankDeficientOp, &result.x, &b) < 1e-10);
 }
 
+/// A preconditioner with a null direction reports `Aᵀr` as zero along it, so the metric audit
+/// alone certifies a stop that still carries a full unit of normal-equation residual.
+#[test]
+fn a_singular_preconditioner_cannot_certify_the_direction_it_annihilates() {
+    let b = vec![1.0, 1.0, 1.0];
+    let result = mlsmr(
+        &IdentityOp { n: 3 },
+        &b,
+        &DiagOp(vec![1.0, 1.0, 0.0]),
+        1e-10,
+        100,
+        MlsmrOptions::default(),
+    )
+    .expect("singular-preconditioner solve");
+
+    assert!(!result.converged);
+    assert_eq!(result.stop_reason, LsmrStopReason::FalseConvergence);
+    let residual = normal_equation_residual(&IdentityOp { n: 3 }, &result.x, &b);
+    assert!(
+        (residual - 1.0).abs() < 1e-9,
+        "normal-equation residual: {residual}"
+    );
+}
+
 #[test]
 fn test_mlsmr_zero_column_and_zero_row() {
     let b = vec![2.0, 3.0];
