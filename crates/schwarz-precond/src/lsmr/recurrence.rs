@@ -5,7 +5,9 @@
 //! that yield Algorithm 2.8 of Fong & Saunders, advances the `(x, h, h̄)`
 //! solution recurrence, and tracks the dual stopping criterion.
 
-use super::bidiag::{BidiagStep, Certificate, LSMR_PAR_THRESHOLD, LSMR_UPDATE_CHUNK};
+use super::bidiag::{
+    BidiagStep, Certificate, NormalEquationResidual, LSMR_PAR_THRESHOLD, LSMR_UPDATE_CHUNK,
+};
 use rayon::iter::{IndexedParallelIterator, ParallelIterator};
 use rayon::prelude::{ParallelSlice, ParallelSliceMut};
 
@@ -62,7 +64,7 @@ pub(super) struct LsmrRecurrenceState {
     s_bar: f64,
     zeta_bar: f64,
     /// `|ζ̄₀| = ‖Âᵀb‖`, clamped positive; the reference for relative NE residuals.
-    pub(super) zeta0: f64,
+    zeta0: f64,
 }
 
 impl LsmrRecurrenceState {
@@ -74,7 +76,7 @@ impl LsmrRecurrenceState {
             c_bar: 1.0,
             s_bar: 0.0,
             zeta_bar,
-            zeta0: zeta_bar.abs().max(f64::MIN_POSITIVE),
+            zeta0: super::bidiag::reference_norm(s1.alpha, s1.beta),
         }
     }
 
@@ -243,6 +245,10 @@ impl ConvergenceState {
 
     /// `‖Âᵀr‖ / (‖A‖‖r‖)`; the `max` guards a collapsed residual, not a physical scale.
     fn ne_ratio(&self, residual: f64, normar: f64) -> f64 {
+        // An overflowed `‖A‖` estimate would divide the ratio to zero and certify any residual.
+        if !self.a_norm_sq.is_finite() {
+            return f64::INFINITY;
+        }
         let a_norm = self.a_norm_sq.sqrt().max(f64::MIN_POSITIVE);
         normar / (a_norm * residual.max(f64::MIN_POSITIVE))
     }
@@ -260,12 +266,20 @@ impl ConvergenceState {
     }
 
     /// True-residual audit of a tolerance stop (cf. van der Vorst & Ye, SISC 22(3), 2000).
-    pub(super) fn certified(&self, cert: &Certificate, zeta0: f64) -> bool {
+    pub(super) fn certified(&self, cert: &Certificate) -> bool {
         let rel = CERTIFICATION_SLACK * self.criteria.rel_tol;
-        cert.normr <= CERTIFICATION_SLACK * self.criteria.abs_tol
-            // `normr → 0` degenerates the ratio test; the drop of `‖Âᵀr‖` vs its start certifies.
-            || cert.normar <= rel * zeta0
-            || self.ne_ratio(cert.normr, cert.normar) <= rel
+        // `normr → 0` degenerates the ratio test; the drop of `‖Âᵀr‖` vs its start certifies.
+        let dropped = |ne: &NormalEquationResidual| {
+            cert.normr <= CERTIFICATION_SLACK * self.criteria.abs_tol
+                || ne.norm <= rel * ne.reference
+        };
+        let metric = dropped(&cert.normar) || self.ne_ratio(cert.normr, cert.normar.norm) <= rel;
+        // A metric that annihilates a direction cannot audit it, so the plain norm must also pass.
+        // `ne_ratio` cannot audit it: its `‖A‖` is preconditioned, so `M⁻¹`'s scale deflates it.
+        metric
+            && cert.normar_raw.as_ref().is_none_or(|raw| {
+                dropped(raw) || raw.relative() <= CERTIFICATION_SLACK * cert.normar.relative()
+            })
     }
 }
 

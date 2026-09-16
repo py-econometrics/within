@@ -117,7 +117,31 @@ fn test_mlsmr_zero_rhs_corrects_non_exact_warm_start() {
     // `b = 0` leaves `‖b − A x₀‖` as the only scale, so the residual leg is satisfiable.
     assert_eq!(result.stop_reason, LsmrStopReason::ResidualTolerance);
     assert!(vec_norm(&result.x) < 1e-12);
+    // `‖Aᵀb‖ = 0` here, so the audit's reference falls back to the stream's own.
+    assert!(result.normal_eq_residual.is_finite());
     assert!(result.iterations > 0);
+}
+
+/// The plain-norm audit must reference `‖Aᵀb‖`, not the warm start's own residual: a far-off `x₀`
+/// inflates that residual without limit, and the bound it buys certifies anything.
+#[test]
+fn a_far_warm_start_does_not_inflate_the_plain_audit_bound() {
+    let x0 = [1.0 + f64::from(1u32 << 20) * f64::from(1u32 << 20), 0.0];
+    let result = mlsmr(
+        &IdentityOp { n: 2 },
+        &[1.0, 1.0],
+        &DiagOp(vec![1.0, 0.0]),
+        1e-10,
+        100,
+        MlsmrOptions {
+            warm_start: Some(&x0),
+            ..Default::default()
+        },
+    )
+    .expect("warm-started singular-preconditioner solve");
+
+    assert!(!result.converged);
+    assert_eq!(result.stop_reason, LsmrStopReason::FalseConvergence);
 }
 
 #[rstest]

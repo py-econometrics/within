@@ -1,6 +1,6 @@
 //! True-residual audit of tolerance stops.
 
-use super::super::bidiag::{BidiagStep, Bidiagonalization, Certificate};
+use super::super::bidiag::{BidiagStep, Bidiagonalization, Certificate, NormalEquationResidual};
 use super::super::recurrence::ConvergenceCriteria;
 use super::super::{lsmr_from_bidiag, LsmrStopReason};
 use crate::SolveError;
@@ -10,6 +10,7 @@ struct ScriptedStream {
     v: Vec<f64>,
     normr: f64,
     normar: f64,
+    normar_raw: Option<f64>,
 }
 
 impl Bidiagonalization for ScriptedStream {
@@ -26,16 +27,24 @@ impl Bidiagonalization for ScriptedStream {
     fn certify(&mut self, _x: &[f64], _rhs: &[f64]) -> Result<Certificate, SolveError> {
         Ok(Certificate {
             normr: self.normr,
-            normar: self.normar,
+            normar: NormalEquationResidual {
+                norm: self.normar,
+                reference: 1.0,
+            },
+            normar_raw: self.normar_raw.map(|norm| NormalEquationResidual {
+                norm,
+                reference: 1.0,
+            }),
         })
     }
 }
 
-fn scripted_run(normr: f64, normar: f64) -> super::super::LsmrResult {
+fn scripted_run(normr: f64, normar: f64, normar_raw: Option<f64>) -> super::super::LsmrResult {
     let stream = ScriptedStream {
         v: vec![0.0; 2],
         normr,
         normar,
+        normar_raw,
     };
     let step1 = BidiagStep {
         alpha: 1.0,
@@ -47,7 +56,7 @@ fn scripted_run(normr: f64, normar: f64) -> super::super::LsmrResult {
 
 #[test]
 fn collapsed_stop_is_refused_by_the_audit() {
-    let r = scripted_run(1.0, 1.0);
+    let r = scripted_run(1.0, 1.0, None);
     assert!(!r.converged);
     assert_eq!(r.stop_reason, LsmrStopReason::FalseConvergence);
     assert_eq!(r.residual_norm, 1.0);
@@ -56,7 +65,7 @@ fn collapsed_stop_is_refused_by_the_audit() {
 
 #[test]
 fn honest_stop_passes_the_audit() {
-    let r = scripted_run(1e-12, 1e-12);
+    let r = scripted_run(1e-12, 1e-12, None);
     assert!(r.converged);
     assert_eq!(r.stop_reason, LsmrStopReason::ResidualTolerance);
 }
@@ -64,7 +73,40 @@ fn honest_stop_passes_the_audit() {
 #[test]
 fn near_consistent_stop_certifies_via_the_initial_ne_drop() {
     // Ratio leg would refuse (1e-12/1e-6 ≫ 100·tol); the drop vs ζ̄₀ = 1 certifies.
-    let r = scripted_run(1e-6, 1e-12);
+    let r = scripted_run(1e-6, 1e-12, None);
     assert!(r.converged);
     assert_eq!(r.stop_reason, LsmrStopReason::ResidualTolerance);
+}
+
+/// A metric that annihilates part of `Aᵀr` reports it as zero, so the plain norm has to refuse.
+#[test]
+fn a_stop_the_metric_cannot_see_is_refused() {
+    let r = scripted_run(1e-6, 1e-12, Some(1e-6));
+    assert!(!r.converged);
+    assert_eq!(r.stop_reason, LsmrStopReason::FalseConvergence);
+}
+
+/// A zero or overflowed cold reference cannot replace the stream's own, and never divides.
+#[test]
+fn a_reference_only_moves_to_a_usable_cold_value() {
+    let certificate = |norm: f64, reference: f64| Certificate {
+        normr: 0.0,
+        normar: NormalEquationResidual { norm, reference },
+        normar_raw: None,
+    };
+    for cold in [0.0, -1.0, f64::INFINITY] {
+        let mut cert = certificate(1.0, 4.0);
+        cert.rebase(&certificate(cold, 0.0));
+        assert_eq!(cert.normar.reference, 4.0, "cold reference {cold:e}");
+    }
+    let mut cert = certificate(1.0, 4.0);
+    cert.rebase(&certificate(9.0, 0.0));
+    assert_eq!(cert.normar.reference, 9.0);
+
+    assert!(NormalEquationResidual {
+        norm: 1.0,
+        reference: 0.0
+    }
+    .relative()
+    .is_finite());
 }

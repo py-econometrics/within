@@ -245,12 +245,50 @@ pub(super) struct BidiagStep {
     pub(super) beta: f64,
 }
 
+/// A normal-equation residual `‖Âᵀ(rhs − A x)‖` and the `‖Âᵀ rhs‖` it is judged against.
+#[derive(Clone, Copy)]
+pub(super) struct NormalEquationResidual {
+    pub(super) norm: f64,
+    pub(super) reference: f64,
+}
+
+impl NormalEquationResidual {
+    /// The drop since `x = 0`; the clamp guards a reference that underflowed to zero.
+    pub(super) fn relative(&self) -> f64 {
+        self.norm / self.reference.max(f64::MIN_POSITIVE)
+    }
+
+    /// An overflowed reference makes the drop vacuous, so keep the stream's own instead.
+    fn rebase(&mut self, cold: f64) {
+        if cold > 0.0 && cold.is_finite() {
+            self.reference = cold;
+        }
+    }
+}
+
 /// True residual norms of a candidate solution, recomputed outside the recurrences.
 pub(super) struct Certificate {
     /// `‖rhs − A x‖`.
     pub(super) normr: f64,
-    /// `‖Âᵀ(rhs − A x)‖` in the stream's metric (`√(zᵀM⁻¹z)` when preconditioned).
-    pub(super) normar: f64,
+    /// In the stream's metric (`√(zᵀM⁻¹z)` when preconditioned).
+    pub(super) normar: NormalEquationResidual,
+    /// The same outside that metric; `None` when the stream has no metric.
+    pub(super) normar_raw: Option<NormalEquationResidual>,
+}
+
+impl Certificate {
+    /// Take the references from `cold`, an audit of `x = 0` against the warm start's original `b`.
+    pub(super) fn rebase(&mut self, cold: &Certificate) {
+        self.normar.rebase(cold.normar.norm);
+        if let (Some(raw), Some(cold_raw)) = (&mut self.normar_raw, cold.normar_raw) {
+            raw.rebase(cold_raw.norm);
+        }
+    }
+}
+
+/// `|ζ̄₀| = ‖Âᵀ rhs‖`, clamped positive so it can divide a relative normal-equation residual.
+pub(super) fn reference_norm(alpha: f64, beta: f64) -> f64 {
+    (alpha * beta).abs().max(f64::MIN_POSITIVE)
 }
 
 /// Stream feeding LSMR `(α, β)` pairs and the matching normalized `v_k`.
@@ -307,7 +345,11 @@ impl<A: Operator + ?Sized> Bidiagonalization for GolubKahan<'_, A> {
         let normr = true_residual(self.operator, x, rhs, &mut self.bufs.av, &mut self.bufs.atu)?;
         Ok(Certificate {
             normr,
-            normar: super::vec_norm(&self.bufs.atu),
+            normar: NormalEquationResidual {
+                norm: super::vec_norm(&self.bufs.atu),
+                reference: self.normar0,
+            },
+            normar_raw: None,
         })
     }
 }
@@ -353,7 +395,14 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
             .apply(&self.bufs.atu, &mut self.bufs.v)?;
         Ok(Certificate {
             normr,
-            normar: alpha_from_vp(&self.bufs.v, &self.bufs.atu)?,
+            normar: NormalEquationResidual {
+                norm: alpha_from_vp(&self.bufs.v, &self.bufs.atu)?,
+                reference: self.normar0,
+            },
+            normar_raw: Some(NormalEquationResidual {
+                norm: super::vec_norm(&self.bufs.atu),
+                reference: self.normar_raw0,
+            }),
         })
     }
 }
@@ -390,6 +439,7 @@ pub(super) struct GolubKahan<'a, A: Operator + ?Sized> {
     bufs: GolubKahanBuffers,
     /// Last `α` emitted; needed by the next step's u-update.
     alpha: f64,
+    normar0: f64,
 }
 
 impl<'a, A: Operator + ?Sized> GolubKahan<'a, A> {
@@ -427,6 +477,7 @@ impl<'a, A: Operator + ?Sized> GolubKahan<'a, A> {
                 operator,
                 bufs,
                 alpha,
+                normar0: reference_norm(alpha, beta),
             },
             BidiagStep { alpha, beta },
         ))
@@ -471,6 +522,8 @@ pub(super) struct ModifiedGolubKahan<'a, A: Operator + ?Sized, M: Operator + ?Si
     alpha: f64,
     /// `1/β_k`; cancels the unnormalization of `u` in the next step.
     beta_prev_inv: f64,
+    normar0: f64,
+    normar_raw0: f64,
 }
 
 impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M> {
@@ -495,6 +548,7 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M
         }
 
         operator.apply_adjoint(&bufs.u, &mut bufs.p_tilde)?;
+        let normar_raw0 = beta * super::vec_norm(&bufs.p_tilde);
 
         preconditioner.apply(&bufs.p_tilde, &mut bufs.v)?;
 
@@ -516,6 +570,8 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M
                 bufs,
                 alpha,
                 beta_prev_inv: 1.0, // u was normalized by init
+                normar0: reference_norm(alpha, beta),
+                normar_raw0,
             },
             BidiagStep { alpha, beta },
         ))

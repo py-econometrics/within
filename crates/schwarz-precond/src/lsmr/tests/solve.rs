@@ -175,6 +175,35 @@ fn test_mlsmr_rank_deficient_system() {
     assert!(normal_equation_residual(&RankDeficientOp, &result.x, &b) < 1e-10);
 }
 
+/// A preconditioner with a null direction reports `Aᵀr` as zero along it, so the metric audit
+/// alone certifies a stop that still carries a full unit of normal-equation residual. Scaling
+/// `M⁻¹` must not buy certification either: the plain leg has to be free of that scale.
+#[rstest]
+#[case::three_dim(&[1.0, 1.0, 0.0])]
+#[case::two_dim(&[1.0, 0.0])]
+#[case::two_dim_scaled(&[1e20, 0.0])]
+fn a_singular_preconditioner_cannot_certify_the_direction_it_annihilates(#[case] m: &[f64]) {
+    let a = IdentityOp { n: m.len() };
+    let b = vec![1.0; m.len()];
+    let result = mlsmr(
+        &a,
+        &b,
+        &DiagOp(m.to_vec()),
+        1e-10,
+        100,
+        MlsmrOptions::default(),
+    )
+    .expect("singular-preconditioner solve");
+
+    assert!(!result.converged, "{:?}", result.stop_reason);
+    assert_eq!(result.stop_reason, LsmrStopReason::FalseConvergence);
+    let residual = normal_equation_residual(&a, &result.x, &b);
+    assert!(
+        (residual - 1.0).abs() < 1e-9,
+        "normal-equation residual: {residual}"
+    );
+}
+
 #[test]
 fn test_mlsmr_zero_column_and_zero_row() {
     let b = vec![2.0, 3.0];
@@ -426,4 +455,65 @@ fn test_mlsmr_local_reorth_window_boundary_sizes(#[case] window_size: usize) {
         normal_equation_residual(&op, &result.x, &b) < 1e-6,
         "normal-eq residual too large with window {window_size}",
     );
+}
+
+/// `α² + β²` overflows for an operator this large, and an infinite `‖A‖` estimate divides the
+/// normal-equation ratio to zero, which certifies any residual.
+#[test]
+fn an_overflowing_operator_norm_estimate_does_not_certify_a_stop() {
+    let a = DiagOp(vec![1.2e154, 1e154]);
+    let result = lsmr(&a, &[1.0, 1.0], 1e-10, 100, None).expect("extreme-scale solve");
+
+    assert!(result.converged);
+    // The refused stop sat at 0.254 after one iteration.
+    assert!(
+        result.residual_norm < 1e-10,
+        "residual norm: {}",
+        result.residual_norm
+    );
+}
+
+/// `‖Aᵀb‖` far below `‖b‖` leaves only the backward-error leg; the plain audit must use it too.
+#[test]
+fn a_response_nearly_orthogonal_to_the_design_certifies_under_an_identity_preconditioner() {
+    let op = DenseOp {
+        rows: 3,
+        cols: 2,
+        data: vec![1.0, 0.0, 0.0, 1e-2, 0.0, 0.0],
+    };
+    let b = vec![1e-12, 1e-12, 1.0];
+    let plain = lsmr(&op, &b, 1e-10, 50, None).expect("lsmr solve");
+    let id = mlsmr(
+        &op,
+        &b,
+        &IdentityOp { n: op.cols },
+        1e-10,
+        50,
+        MlsmrOptions::default(),
+    )
+    .expect("identity-preconditioned solve");
+    assert!(plain.converged);
+    assert_eq!(id.converged, plain.converged);
+    assert_eq!(id.stop_reason, plain.stop_reason);
+}
+
+/// The plain audit's reference is `‖Aᵀb‖`; a metric one rescales it and refuses an honest stop.
+#[test]
+fn a_rescaling_preconditioner_does_not_deflate_the_plain_audit_reference() {
+    let op = DenseOp {
+        rows: 3,
+        cols: 2,
+        data: vec![1e6, 0.0, 0.0, 1e-3, 0.0, 0.0],
+    };
+    let m = DiagOp(vec![1e-12, 1e-16]);
+    let r = mlsmr(
+        &op,
+        &[1.0, 1.0, 1.0],
+        &m,
+        1e-10,
+        50,
+        MlsmrOptions::default(),
+    )
+    .expect("rescaled solve");
+    assert!(r.converged, "stop_reason: {:?}", r.stop_reason);
 }
