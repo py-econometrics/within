@@ -41,6 +41,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - A slope covariate collinear with another term could make LSMR report convergence on a solve that had not demeaned the response; tolerance stops are now audited against the true residual and a failed check reports `LsmrStopReason::FalseConvergence` with `converged = false` (#290).
 - An `‖A‖_F` estimate that overflowed to infinity zeroed LSMR's normal-equation ratio and certified any residual; `A = diag(1.2e154, 1e154)` stopped after one iteration and now solves (#297).
 - A preconditioner with a null direction reported that part of `Aᵀr` as zero and certified a stop that had not solved along it; tolerance stops are now audited outside the preconditioner's metric as well as inside it (#297).
+- LSMR's zero-initial-gradient exit returned `x = x₀` as converged unaudited, which the preconditioner metric reports for any `Aᵀb` in `ker(M⁻¹)` (#362).
+- LSMR's normal-equation ratio certified unsolved stops at the ends of the float range, where a subnormal `‖A‖` was clamped up or `‖A‖‖r‖` overflowed (#362).
 - A non-finite `α`, `β`, `⟨v, Mv⟩`, or `‖b‖` in LSMR fails the solve with `SolveError::InvalidInput`; a NaN previously read as `α = 0` and reported a converged `x = 0`, and an overflowing `‖b‖` certified any result. The preconditioner-indefiniteness test no longer over- or underflows at extreme magnitudes (#303).
 
 ### Removed

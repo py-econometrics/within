@@ -76,6 +76,87 @@ fn test_mlsmr_step1_alpha_zero_early_exit() {
     assert!((result.residual_norm - vec_norm(&b)).abs() < 1e-15);
 }
 
+/// Every case below reaches the `α₁ = 0` exit: `diag(m)` annihilates `Aᵀ rhs`, or squaring an
+/// already-tiny gradient underflows. `None` runs the unpreconditioned stream instead.
+fn zero_initial_gradient(
+    a: &[f64],
+    m: Option<&[f64]>,
+    b: &[f64],
+    x0: Option<&[f64]>,
+) -> LsmrResult {
+    let a = DiagOp(a.to_vec());
+    match m {
+        Some(m) => mlsmr(
+            &a,
+            b,
+            &DiagOp(m.to_vec()),
+            1e-10,
+            100,
+            MlsmrOptions {
+                warm_start: x0,
+                ..Default::default()
+            },
+        ),
+        None => lsmr(&a, b, 1e-10, 100, None),
+    }
+    .expect("α₁ = 0 exit")
+}
+
+/// `α₁ = √(p̃ᵀ M⁻¹ p̃)` vanishes whenever `Aᵀb` lies in `ker(M⁻¹)`, however large it is there, so
+/// the exit must be audited outside the metric — from a warm start too, where a zero correction
+/// does not mean a zero `x`. The last three are ways to flatter the backward-error leg into
+/// certifying anyway: a bound that overflowed although every entry of `Aᵀb` is finite, a
+/// denominator that overflows although both factors are finite, and a subnormal bound a clamp
+/// would raise by eight orders. `scaled_design` separates `‖Aᵀb‖ / ‖b‖` from its reciprocal,
+/// which certifies it: only a bound that understates `‖A‖` overstates the error.
+#[rstest]
+#[case::kernel_cold(&[1.0, 1.0], &[0.0, 1.0], None, 1.0)]
+#[case::kernel_warm(&[1.0, 1.0], &[1.0, 1.0], Some(&[1.0, 0.0][..]), 1.0)]
+#[case::scaled_design(&[1e-6, 1e-6], &[1.0, 1.0], Some(&[1e6, 0.0][..]), 1e-6)]
+#[case::overflowed_bound(&[2.0, 2.0], &[8e307, 8e307], Some(&[4e307, 0.0][..]), 1.6e308)]
+#[case::overflowed_denominator(&[2.0, 1.0], &[5e307, 0.0], Some(&[2.5e307, -1e308][..]), 1e308)]
+#[case::subnormal_bound(&[1.8e-316, 1.8e-316], &[0.0, 3e-8], None, 5.4e-324)]
+fn a_zero_initial_gradient_the_metric_cannot_see_is_refused(
+    #[case] a: &[f64],
+    #[case] b: &[f64],
+    #[case] x0: Option<&[f64]>,
+    #[case] unsolved: f64,
+) {
+    let result = zero_initial_gradient(a, Some(&[1.0, 0.0]), b, x0);
+    let residual = normal_equation_residual(&DiagOp(a.to_vec()), &result.x, b);
+
+    assert!(!result.converged, "{:?}", result.stop_reason);
+    assert_eq!(result.stop_reason, LsmrStopReason::FalseConvergence);
+    assert_eq!(result.iterations, 0);
+    assert!((residual / unsolved - 1.0).abs() < 1e-3, "{residual:e}");
+}
+
+/// The exit must not refuse what it cannot measure a drop for. `underflowed_alpha` is converged
+/// by the normal-equation criterion and nothing outside the metric contradicts it — nor may the
+/// metric's own scale decide it, which `scaled_metric` would flip. `inside_residual_tolerance` is
+/// carried by `‖b‖`, which the correction does not touch, and `‖b‖ = 1e6` separates that leg from
+/// the relative tolerance. `meets_normal_equation_tolerance` has only the `‖A‖` bound to go on,
+/// and `exact_warm_start` fails outright if the audit reaches for a cold certificate it cannot
+/// square.
+#[rstest]
+#[case::underflowed_alpha(&[0.0, 1.0], None, &[1e100, 1e-100], None)]
+#[case::underflowed_alpha_identity(&[0.0, 1.0], Some(&[1.0, 1.0][..]), &[1e100, 1e-100], None)]
+#[case::scaled_metric(&[0.0, 1.0], Some(&[1e-10, 1e-10][..]), &[1e100, 1e-100], None)]
+#[case::inside_residual_tolerance(&[1.0, 1.0], Some(&[1.0, 0.0][..]), &[1e6, 1e-5], Some(&[1e6, 0.0][..]))]
+#[case::meets_normal_equation_tolerance(&[1.0, 1e-12], Some(&[1.0, 0.0][..]), &[1.0, 1e-4], Some(&[1.0, 0.0][..]))]
+#[case::exact_warm_start(&[1.0, 0.0], Some(&[1.0, 1.0][..]), &[1e200, 1.0], Some(&[1e200, 0.0][..]))]
+fn a_zero_initial_gradient_nothing_contradicts_certifies(
+    #[case] a: &[f64],
+    #[case] m: Option<&[f64]>,
+    #[case] b: &[f64],
+    #[case] x0: Option<&[f64]>,
+) {
+    let result = zero_initial_gradient(a, m, b, x0);
+
+    assert!(result.converged, "{:?}", result.stop_reason);
+    assert_eq!(result.iterations, 0);
+}
+
 /// A mid-stream bidiagonalization breakdown surfaces as a converged solve, not
 /// a distinct stop reason. Whenever a step returns `alpha == 0`, that same
 /// rotation step drives `zeta_bar` (the ‖Aᵀr‖ estimate) to exactly zero, so

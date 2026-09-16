@@ -299,6 +299,22 @@ pub(super) trait Bidiagonalization {
     fn v(&self) -> &[f64];
     /// Clobbers the stream's buffers, so call it only on a terminating path.
     fn certify(&mut self, x: &[f64], rhs: &[f64]) -> Result<Certificate, SolveError>;
+    /// `‖Aᵀ rhs‖ / ‖rhs‖`, also clobbering. See [`operator_norm_below`]. A stream with no metric
+    /// has no direction to corroborate, so the default offers no bound and certifies nothing.
+    fn operator_norm_below(&mut self, _rhs: &[f64]) -> Result<f64, SolveError> {
+        Ok(0.0)
+    }
+}
+
+/// A lower bound on `‖A‖`, for auditing a stop reached before the stream could estimate one.
+/// Plain norms throughout: squaring `‖Aᵀ rhs‖` overflows at scales where this does not.
+fn operator_norm_below<A: Operator + ?Sized>(
+    operator: &A,
+    rhs: &[f64],
+    atr: &mut [f64],
+) -> Result<f64, SolveError> {
+    operator.apply_adjoint(rhs, atr)?;
+    Ok(super::vec_norm(atr) / super::vec_norm(rhs).max(f64::MIN_POSITIVE))
 }
 
 impl<A: Operator + ?Sized> Bidiagonalization for GolubKahan<'_, A> {
@@ -404,6 +420,10 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
                 reference: self.normar_raw0,
             }),
         })
+    }
+
+    fn operator_norm_below(&mut self, rhs: &[f64]) -> Result<f64, SolveError> {
+        operator_norm_below(self.operator, rhs, &mut self.bufs.atu)
     }
 }
 
