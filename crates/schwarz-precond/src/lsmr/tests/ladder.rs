@@ -308,32 +308,21 @@ fn test_staleness_rejects_an_invalid_threshold(
 /// tiny `‖Aᵀ(b − A x₀)‖`, and referencing that instead of `‖Aᵀb‖` rejects a correct solve.
 #[test]
 fn a_near_exact_warm_start_is_not_rejected_by_the_plain_audit() {
-    struct Scaled;
-    impl Operator for Scaled {
-        fn nrows(&self) -> usize {
-            1
-        }
-        fn ncols(&self) -> usize {
-            1
-        }
-        fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-            y[0] = 169.0 * x[0];
-            Ok(())
-        }
-        fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) -> Result<(), SolveError> {
-            x[0] = 169.0 * u[0];
-            Ok(())
-        }
-    }
-
     // Near 1/169 but not equal to it: an exact warm start would return before the audit.
     let x0 = [0.0059171597633136085];
     let options = MlsmrOptions {
         warm_start: Some(&x0),
         ..Default::default()
     };
-    let result = mlsmr(&Scaled, &[1.0], &IdentityOp { n: 1 }, 1e-10, 50, options)
-        .expect("near-exact warm start");
+    let result = mlsmr(
+        &DiagOp(vec![169.0]),
+        &[1.0],
+        &IdentityOp { n: 1 },
+        1e-10,
+        50,
+        options,
+    )
+    .expect("near-exact warm start");
 
     assert!(result.converged);
     assert_ne!(result.stop_reason, LsmrStopReason::WarmStartExact);

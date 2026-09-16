@@ -243,6 +243,10 @@ impl ConvergenceState {
 
     /// `‖Âᵀr‖ / (‖A‖‖r‖)`; the `max` guards a collapsed residual, not a physical scale.
     fn ne_ratio(&self, residual: f64, normar: f64) -> f64 {
+        // An overflowed `‖A‖` estimate would divide the ratio to zero and certify any residual.
+        if !self.a_norm_sq.is_finite() {
+            return f64::INFINITY;
+        }
         let a_norm = self.a_norm_sq.sqrt().max(f64::MIN_POSITIVE);
         normar / (a_norm * residual.max(f64::MIN_POSITIVE))
     }

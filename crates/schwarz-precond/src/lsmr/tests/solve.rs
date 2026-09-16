@@ -451,3 +451,20 @@ fn test_mlsmr_local_reorth_window_boundary_sizes(#[case] window_size: usize) {
         "normal-eq residual too large with window {window_size}",
     );
 }
+
+/// `α² + β²` overflows for an operator this large, and an infinite `‖A‖` estimate divides the
+/// normal-equation ratio to zero, which certifies any residual.
+#[test]
+fn an_overflowing_operator_norm_estimate_does_not_certify_a_stop() {
+    let a = DiagOp(vec![1.2e154, 1e154]);
+    let b = vec![1.0, 1.0];
+    let result = lsmr(&a, &b, 1e-10, 100, None).expect("extreme-scale solve");
+
+    assert!(result.converged);
+    // The refused stop sat at 0.254 after one iteration.
+    assert!(
+        result.residual_norm < 1e-10,
+        "residual norm: {}",
+        result.residual_norm
+    );
+}

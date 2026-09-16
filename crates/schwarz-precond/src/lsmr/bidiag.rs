@@ -513,8 +513,7 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M
         }
 
         operator.apply_adjoint(&bufs.u, &mut bufs.p_tilde)?;
-        // Clamped once here, so `certify` divides by it unguarded.
-        let normar_raw0 = (beta * super::vec_norm(&bufs.p_tilde)).max(f64::MIN_POSITIVE);
+        let normar_raw0 = beta * super::vec_norm(&bufs.p_tilde);
 
         preconditioner.apply(&bufs.p_tilde, &mut bufs.v)?;
 
