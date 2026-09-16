@@ -9,6 +9,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **BREAKING:** `BuildWarning::CollinearSlopeCovariate` carries a new `verdict` field, breaking exhaustive struct-variant patterns; the new `AliasVerdict` enum is exported from the crate root.
 - Python `Effect` lists no longer deep-copy every level and slope buffer during design extraction; the binding retains the frozen Python effects and borrows their native buffers while building off-GIL (#358).
 - Categorical `u32` labels no longer need to be zero-based or contiguous: `Design` compacts observed labels to internal positions, while `CoefficientLayout` and `CoefficientAddress` translate coefficients back to caller-visible labels. This avoids allocating and solving for gaps in sparse label ranges (#228, #268).
 - **BREAKING:** Rust `Solver::new` now takes `weights: Option<&[f64]>` instead of `Option<Vec<f64>>`; pass `Some(&weights)` to build a weighted persistent solver. The solver prepares and retains only `W^{1/2}` in its internal observation order. The one-shot `solve` and `solve_batch` weight arguments remain borrowed and are unchanged.
@@ -25,6 +26,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - **BREAKING:** Coefficient addresses now use caller-visible `u32` factor labels rather than internal `usize` level positions. This affects Rust `CoefficientAddress::level` and the accepted range of Python coefficient layout and unidentified-direction levels.
 
 ### Added
+
+- Cross-term gauge aliasing that the collinearity screen detects is now certified against the design and, when it carries no information, removed from the solve space rather than left for the preconditioner to amplify. `BuildWarning::CollinearSlopeCovariate` gains a `verdict: AliasVerdict` recording whether the direction was `Constrained` or `Kept` (#297).
 
 - Persistent designs can be built once and shared across solves: Python adds `Design`, accepted by `Solver`, `solve`, and `solve_batch`; Rust adds `Design::from_categories` and accepts `&Design` in `Solver::new`, sharing immutable design storage while keeping weight-dependent preparation solver-local (#269).
 - `schwarz_precond::Staleness` gains `Default` (window 4, threshold 0.7), `window()`/`threshold()` accessors, and serde support validated through `try_new` (#260).

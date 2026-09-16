@@ -15,10 +15,13 @@ use crate::domain::{Design, Effect, FactorEncoding, PreparedDesign};
 use crate::operator::design::gather_apply;
 use crate::operator::schwarz::{build_preconditioner, Preconditioner};
 use crate::operator::DesignOperator;
-use crate::{BuildError, BuildWarning, SolveError, WithinError};
+use crate::{AliasVerdict, BuildError, BuildWarning, SolveError, WithinError};
 
+mod gauge;
 #[cfg(test)]
 mod tests;
+
+use gauge::{ConstrainedPreconditioner, GaugeConstraint};
 
 /// Fallible conversion into a [`Design`] for [`Solver::new`]: a categories
 /// matrix (`ArrayView2<u32>`), a list of [`Effect`] terms, a pass-through
@@ -310,6 +313,8 @@ impl BatchSolveResult {
 pub struct Solver<'a> {
     prepared: PreparedDesign<'a>,
     preconditioner: Option<Preconditioner>,
+    /// Cross-term directions certified null and removed from the solve space.
+    gauge: Option<GaugeConstraint>,
     warnings: Vec<BuildWarning>,
 }
 
@@ -365,7 +370,7 @@ impl<'a> Solver<'a> {
     ) -> Result<Self, BuildError> {
         // Whiten the slope columns (if any) before the preconditioner reads them.
         let prepared = PreparedDesign::new(design.into_design()?, weights)?;
-        let mut warnings = detect_collinear_slopes(&prepared);
+        let screened = detect_collinear_slopes(&prepared);
         let n_dofs = prepared.design.n_dofs;
 
         let (preconditioner, build_warnings) = match preconditioner.into() {
@@ -383,11 +388,23 @@ impl<'a> Solver<'a> {
             }
         };
 
+        // With no `M⁻¹` to amplify it, an aliased direction costs nothing and stays in the space.
+        let (gauge, mut warnings) = match preconditioner.is_some() {
+            true => GaugeConstraint::build(&prepared, &screened),
+            false => (
+                None,
+                screened
+                    .iter()
+                    .map(|s| s.warn(AliasVerdict::Kept))
+                    .collect(),
+            ),
+        };
         warnings.extend(build_warnings);
 
         Ok(Self {
             prepared,
             preconditioner,
+            gauge,
             warnings,
         })
     }
@@ -434,15 +451,17 @@ impl<'a> Solver<'a> {
         let t_solve_start = Instant::now();
         let time_setup = t_solve_start.duration_since(t_start).as_secs_f64();
 
-        let r = match self.preconditioner.as_ref() {
-            Some(p) => {
-                let options = MlsmrOptions {
-                    local_size: lsmr.local_size,
-                    ..Default::default()
-                };
-                mlsmr(&rect_op, b, p, lsmr.tol, lsmr.maxiter, options)?
+        let options = || MlsmrOptions {
+            local_size: lsmr.local_size,
+            ..Default::default()
+        };
+        let r = match (self.preconditioner.as_ref(), self.gauge.as_ref()) {
+            (Some(p), Some(gauge)) => {
+                let m = ConstrainedPreconditioner::new(p, gauge);
+                mlsmr(&rect_op, b, &m, lsmr.tol, lsmr.maxiter, options())?
             }
-            None => lsmr_solve(&rect_op, b, lsmr.tol, lsmr.maxiter, lsmr.local_size)?,
+            (Some(p), None) => mlsmr(&rect_op, b, p, lsmr.tol, lsmr.maxiter, options())?,
+            (None, _) => lsmr_solve(&rect_op, b, lsmr.tol, lsmr.maxiter, lsmr.local_size)?,
         };
 
         let time_solve = t_solve_start.elapsed().as_secs_f64();

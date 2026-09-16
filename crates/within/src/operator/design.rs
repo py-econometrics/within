@@ -41,6 +41,28 @@ impl<'a> DesignOperator<'a> {
         }
     }
 
+    /// Squared column norms `diag(AᵀA)`: the operator's own scale for a coefficient direction,
+    /// which a whitened parameterization makes weight-dependent in a way `‖x‖` is not.
+    pub(crate) fn column_norms_squared(&self) -> Vec<f64> {
+        let design = &self.prepared.design;
+        let mut diag = vec![0.0; design.n_dofs];
+        for (index, term) in design.terms.iter().enumerate() {
+            let levels = design.frame.level_column(index);
+            for (column, loading) in term.columns.iter().enumerate() {
+                let base = term.column_base(column);
+                let slice = &mut diag[base..base + term.n_levels()];
+                let z = loading
+                    .covariate()
+                    .map(|&c| self.prepared.loading_column(c as usize));
+                for (obs, &level) in levels.iter().enumerate() {
+                    let scale = z.map_or(1.0, |z| z[obs] * z[obs]);
+                    slice[level as usize] += self.prepared.row_weight(obs) * scale;
+                }
+            }
+        }
+        diag
+    }
+
     /// Observation-space RHS `b = W^{1/2} y`; borrows unweighted, owns weighted.
     pub(crate) fn weighted_rhs<'y>(&self, y: &'y [f64]) -> Cow<'y, [f64]> {
         match self.prepared.sqrt_weights() {

@@ -7,7 +7,7 @@ use rayon::prelude::*;
 
 use super::{Design, PreparedDesign, TermMeta};
 use crate::channel::Channel;
-use crate::BuildWarning;
+use crate::{AliasVerdict, BuildWarning};
 
 /// Residual share below which a covariate counts as reproduced by the other term.
 const COLLINEARITY_TOL: f64 = 1e-3;
@@ -18,7 +18,29 @@ const TABLE_BUDGET_BYTES: usize = 64 << 20;
 /// Rows one residual task claims; small enough that work stealing balances the tail.
 const ROWS_PER_TASK: usize = 1 << 16;
 
-pub(crate) fn detect_collinear_slopes(prepared: &PreparedDesign<'_>) -> Vec<BuildWarning> {
+/// A slope covariate the screen found (nearly) inside another term's per-level span.
+pub(crate) struct CollinearSlope {
+    /// The slope channel carrying the covariate.
+    pub(crate) slope: Channel,
+    /// The term whose columns (nearly) reproduce it.
+    pub(crate) term: usize,
+    /// Share of the covariate's weighted variation outside that term's span.
+    pub(crate) relative_residual: f64,
+}
+
+impl CollinearSlope {
+    /// Report this proposal with what the gauge constraint decided about it.
+    pub(crate) fn warn(&self, verdict: AliasVerdict) -> BuildWarning {
+        BuildWarning::CollinearSlopeCovariate {
+            slope: self.slope,
+            term: self.term,
+            relative_residual: self.relative_residual,
+            verdict,
+        }
+    }
+}
+
+pub(crate) fn detect_collinear_slopes(prepared: &PreparedDesign<'_>) -> Vec<CollinearSlope> {
     let design = &prepared.design;
     if design.n_factors() < 2 || !design.terms.iter().any(TermMeta::has_slopes) {
         return Vec::new();
@@ -32,13 +54,11 @@ pub(crate) fn detect_collinear_slopes(prepared: &PreparedDesign<'_>) -> Vec<Buil
                 .into_iter()
                 .zip(targets)
                 .filter(|&(share, _)| share <= COLLINEARITY_TOL)
-                .map(
-                    move |(relative_residual, (slope, _))| BuildWarning::CollinearSlopeCovariate {
-                        slope,
-                        term,
-                        relative_residual,
-                    },
-                )
+                .map(move |(relative_residual, (slope, _))| CollinearSlope {
+                    slope,
+                    term,
+                    relative_residual,
+                })
         })
         .collect()
 }
