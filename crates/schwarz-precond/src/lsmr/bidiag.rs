@@ -258,13 +258,15 @@ pub(super) struct Certificate {
 impl Certificate {
     /// Take the references from `cold`, an audit of `x = 0` against the warm start's original `b`.
     pub(super) fn rebase(&mut self, cold: &Certificate) {
-        if cold.normar.0 > 0.0 {
-            self.normar.1 = cold.normar.0;
-        }
-        if let (Some(raw), Some(cold_raw)) = (&mut self.normar_raw, cold.normar_raw) {
-            if cold_raw.0 > 0.0 {
-                raw.1 = cold_raw.0;
+        // An overflowed reference makes the drop test vacuous, so keep the stream's own instead.
+        let take = |slot: &mut f64, cold: f64| {
+            if cold > 0.0 && cold.is_finite() {
+                *slot = cold;
             }
+        };
+        take(&mut self.normar.1, cold.normar.0);
+        if let (Some(raw), Some(cold_raw)) = (&mut self.normar_raw, cold.normar_raw) {
+            take(&mut raw.1, cold_raw.0);
         }
     }
 }

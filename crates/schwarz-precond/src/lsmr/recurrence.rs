@@ -265,21 +265,28 @@ impl ConvergenceState {
 
     /// True-residual audit of a tolerance stop (cf. van der Vorst & Ye, SISC 22(3), 2000).
     pub(super) fn certified(&self, cert: &Certificate) -> bool {
+        let rel = CERTIFICATION_SLACK * self.criteria.rel_tol;
+        // `normr → 0` degenerates the ratio test; the drop of `‖Âᵀr‖` vs its start certifies.
+        let dropped = |(normar, reference): (f64, f64)| {
+            cert.normr <= CERTIFICATION_SLACK * self.criteria.abs_tol || normar <= rel * reference
+        };
+        let metric = dropped(cert.normar) || self.ne_ratio(cert.normr, cert.normar.0) <= rel;
         // A metric that annihilates a direction cannot audit it, so the plain norm must also pass.
-        self.audits(cert.normr, cert.normar)
+        metric
             && cert
                 .normar_raw
-                .is_none_or(|raw| self.audits(cert.normr, raw))
+                .is_none_or(|raw| dropped(raw) || drops_agree(raw, cert.normar))
     }
+}
 
-    /// One normal-equation audit of `(‖Âᵀr‖, ‖Âᵀ rhs‖)`: small residual, drop, or backward error.
-    fn audits(&self, normr: f64, (normar, reference): (f64, f64)) -> bool {
-        let rel = CERTIFICATION_SLACK * self.criteria.rel_tol;
-        normr <= CERTIFICATION_SLACK * self.criteria.abs_tol
-            // `normr → 0` degenerates the ratio test; the drop of `‖Âᵀr‖` vs its start certifies.
-            || normar <= rel * reference
-            || self.ne_ratio(normr, normar) <= rel
-    }
+/// Whether the plain residual fell as far as the metric one, each relative to its own start.
+///
+/// This replaces the backward-error test on the plain norm: `ne_ratio` divides by the
+/// preconditioned `‖Â‖`, so scaling `M⁻¹` deflates it at will. A ratio of drops has neither scale.
+fn drops_agree((normar, reference): (f64, f64), (metric, metric_reference): (f64, f64)) -> bool {
+    // Dividing first keeps both sides O(1); the products overflow to `inf <= inf` at large norms.
+    let drop = |norm: f64, reference: f64| norm / reference.max(f64::MIN_POSITIVE);
+    drop(normar, reference) <= CERTIFICATION_SLACK * drop(metric, metric_reference)
 }
 
 /// Collapsed recurrences miss by orders of magnitude; the slack absorbs ordinary estimate drift.

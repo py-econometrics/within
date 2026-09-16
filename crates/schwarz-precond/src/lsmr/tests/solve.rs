@@ -512,3 +512,22 @@ fn a_rescaling_preconditioner_does_not_deflate_the_plain_audit_reference() {
     .expect("rescaled solve");
     assert!(r.converged, "stop_reason: {:?}", r.stop_reason);
 }
+
+/// Scaling `M⁻¹` must not buy certification: the audit's plain leg has to be free of that scale.
+#[rstest]
+#[case::unscaled(1.0)]
+#[case::scaled(1e20)]
+fn a_scaled_singular_preconditioner_still_cannot_certify_its_null_direction(#[case] scale: f64) {
+    let r = mlsmr(
+        &IdentityOp { n: 2 },
+        &[1.0, 1.0],
+        &DiagOp(vec![scale, 0.0]),
+        1e-10,
+        100,
+        MlsmrOptions::default(),
+    )
+    .expect("singular-preconditioner solve");
+
+    assert!(!r.converged, "scale {scale:e}: {:?}", r.stop_reason);
+    assert_eq!(r.stop_reason, LsmrStopReason::FalseConvergence);
+}
