@@ -467,3 +467,48 @@ fn an_overflowing_operator_norm_estimate_does_not_certify_a_stop() {
         result.residual_norm
     );
 }
+
+/// `‖Aᵀb‖` far below `‖b‖` leaves only the backward-error leg; the plain audit must use it too.
+#[test]
+fn a_response_nearly_orthogonal_to_the_design_certifies_under_an_identity_preconditioner() {
+    let op = DenseOp {
+        rows: 3,
+        cols: 2,
+        data: vec![1.0, 0.0, 0.0, 1e-2, 0.0, 0.0],
+    };
+    let b = vec![1e-12, 1e-12, 1.0];
+    let plain = lsmr(&op, &b, 1e-10, 50, None).expect("lsmr solve");
+    let id = mlsmr(
+        &op,
+        &b,
+        &IdentityOp { n: op.cols },
+        1e-10,
+        50,
+        MlsmrOptions::default(),
+    )
+    .expect("identity-preconditioned solve");
+    assert!(plain.converged);
+    assert_eq!(id.converged, plain.converged);
+    assert_eq!(id.stop_reason, plain.stop_reason);
+}
+
+/// The plain audit's reference is `‖Aᵀb‖`; a metric one rescales it and refuses an honest stop.
+#[test]
+fn a_rescaling_preconditioner_does_not_deflate_the_plain_audit_reference() {
+    let op = DenseOp {
+        rows: 3,
+        cols: 2,
+        data: vec![1e6, 0.0, 0.0, 1e-3, 0.0, 0.0],
+    };
+    let m = DiagOp(vec![1e-12, 1e-16]);
+    let r = mlsmr(
+        &op,
+        &[1.0, 1.0, 1.0],
+        &m,
+        1e-10,
+        50,
+        MlsmrOptions::default(),
+    )
+    .expect("rescaled solve");
+    assert!(r.converged, "stop_reason: {:?}", r.stop_reason);
+}
