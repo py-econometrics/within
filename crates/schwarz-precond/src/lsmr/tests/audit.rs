@@ -27,7 +27,7 @@ impl Bidiagonalization for ScriptedStream {
     fn certify(&mut self, _x: &[f64], _rhs: &[f64]) -> Result<Certificate, SolveError> {
         Ok(Certificate {
             normr: self.normr,
-            normar: self.normar,
+            normar: (self.normar, 1.0),
             normar_raw: self.normar_raw.map(|norm| (norm, 1.0)),
         })
     }

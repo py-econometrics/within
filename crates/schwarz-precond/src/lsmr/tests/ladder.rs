@@ -117,6 +117,8 @@ fn test_mlsmr_zero_rhs_corrects_non_exact_warm_start() {
     // `b = 0` leaves `‖b − A x₀‖` as the only scale, so the residual leg is satisfiable.
     assert_eq!(result.stop_reason, LsmrStopReason::ResidualTolerance);
     assert!(vec_norm(&result.x) < 1e-12);
+    // `‖Aᵀb‖ = 0` here, so the audit's reference falls back to the stream's own.
+    assert!(result.normal_eq_residual.is_finite());
     assert!(result.iterations > 0);
 }
 

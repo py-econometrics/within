@@ -62,7 +62,7 @@ pub(super) struct LsmrRecurrenceState {
     s_bar: f64,
     zeta_bar: f64,
     /// `|ζ̄₀| = ‖Âᵀb‖`, clamped positive; the reference for relative NE residuals.
-    pub(super) zeta0: f64,
+    zeta0: f64,
 }
 
 impl LsmrRecurrenceState {
@@ -74,7 +74,7 @@ impl LsmrRecurrenceState {
             c_bar: 1.0,
             s_bar: 0.0,
             zeta_bar,
-            zeta0: zeta_bar.abs().max(f64::MIN_POSITIVE),
+            zeta0: super::bidiag::reference_norm(s1.alpha, s1.beta),
         }
     }
 
@@ -264,16 +264,16 @@ impl ConvergenceState {
     }
 
     /// True-residual audit of a tolerance stop (cf. van der Vorst & Ye, SISC 22(3), 2000).
-    pub(super) fn certified(&self, cert: &Certificate, zeta0: f64) -> bool {
+    pub(super) fn certified(&self, cert: &Certificate) -> bool {
         // A metric that annihilates a direction cannot audit it, so the plain norm must also pass.
-        self.audits(cert.normr, cert.normar, zeta0)
+        self.audits(cert.normr, cert.normar)
             && cert
                 .normar_raw
-                .is_none_or(|(norm, raw0)| self.audits(cert.normr, norm, raw0))
+                .is_none_or(|raw| self.audits(cert.normr, raw))
     }
 
-    /// One normal-equation audit: small residual, drop against `reference`, or backward error.
-    fn audits(&self, normr: f64, normar: f64, reference: f64) -> bool {
+    /// One normal-equation audit of `(‖Âᵀr‖, ‖Âᵀ rhs‖)`: small residual, drop, or backward error.
+    fn audits(&self, normr: f64, (normar, reference): (f64, f64)) -> bool {
         let rel = CERTIFICATION_SLACK * self.criteria.rel_tol;
         normr <= CERTIFICATION_SLACK * self.criteria.abs_tol
             // `normr → 0` degenerates the ratio test; the drop of `‖Âᵀr‖` vs its start certifies.
