@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use ndarray::ArrayView2;
 use rayon::prelude::*;
-use schwarz_precond::{lsmr as lsmr_solve, mlsmr, MlsmrOptions};
+use schwarz_precond::{lsmr as lsmr_solve, mlsmr, MlsmrOptions, Operator};
 
 use crate::channel::{Channel, Coefficient, CoefficientAddress};
 use crate::config::{LsmrOptions, PreconditionerConfig};
@@ -313,7 +313,7 @@ impl BatchSolveResult {
 pub struct Solver<'a> {
     prepared: PreparedDesign<'a>,
     preconditioner: Option<Preconditioner>,
-    /// Cross-term directions certified null and removed from the solve space.
+    /// Cross-term null directions removed from the solve space.
     gauge: Option<GaugeConstraint>,
     warnings: Vec<BuildWarning>,
 }
@@ -451,17 +451,23 @@ impl<'a> Solver<'a> {
         let t_solve_start = Instant::now();
         let time_setup = t_solve_start.duration_since(t_start).as_secs_f64();
 
-        let options = || MlsmrOptions {
-            local_size: lsmr.local_size,
-            ..Default::default()
-        };
-        let r = match (self.preconditioner.as_ref(), self.gauge.as_ref()) {
-            (Some(p), Some(gauge)) => {
-                let m = ConstrainedPreconditioner::new(p, gauge);
-                mlsmr(&rect_op, b, &m, lsmr.tol, lsmr.maxiter, options())?
+        let r = match self.preconditioner.as_ref() {
+            Some(p) => {
+                let constrained = self
+                    .gauge
+                    .as_ref()
+                    .map(|gauge| ConstrainedPreconditioner::new(p, gauge));
+                let m: &dyn Operator = match &constrained {
+                    Some(constrained) => constrained,
+                    None => p,
+                };
+                let options = MlsmrOptions {
+                    local_size: lsmr.local_size,
+                    ..Default::default()
+                };
+                mlsmr(&rect_op, b, m, lsmr.tol, lsmr.maxiter, options)?
             }
-            (Some(p), None) => mlsmr(&rect_op, b, p, lsmr.tol, lsmr.maxiter, options())?,
-            (None, _) => lsmr_solve(&rect_op, b, lsmr.tol, lsmr.maxiter, lsmr.local_size)?,
+            None => lsmr_solve(&rect_op, b, lsmr.tol, lsmr.maxiter, lsmr.local_size)?,
         };
 
         let time_solve = t_solve_start.elapsed().as_secs_f64();

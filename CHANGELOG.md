@@ -27,7 +27,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- Cross-term gauge aliasing that the collinearity screen detects is now certified against the design and, when it carries no information, removed from the solve space rather than left for the preconditioner to amplify. `BuildWarning::CollinearSlopeCovariate` gains a `verdict: AliasVerdict` recording whether the direction was `Constrained` or `Kept` (#297).
+- A slope covariate that the collinearity screen finds another term reproduces to roundoff is a null of the design; it is now removed from the solve space rather than left for the preconditioner to amplify. `BuildWarning::CollinearSlopeCovariate` gains a `verdict: AliasVerdict` recording whether the direction was `Constrained` or `Kept` (#297).
 
 - Persistent designs can be built once and shared across solves: Python adds `Design`, accepted by `Solver`, `solve`, and `solve_batch`; Rust adds `Design::from_categories` and accepts `&Design` in `Solver::new`, sharing immutable design storage while keeping weight-dependent preparation solver-local (#269).
 - `schwarz_precond::Staleness` gains `Default` (window 4, threshold 0.7), `window()`/`threshold()` accessors, and serde support validated through `try_new` (#260).

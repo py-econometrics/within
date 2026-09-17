@@ -41,8 +41,7 @@ impl<'a> DesignOperator<'a> {
         }
     }
 
-    /// Squared column norms `diag(AᵀA)`: the operator's own scale for a coefficient direction,
-    /// which a whitened parameterization makes weight-dependent in a way `‖x‖` is not.
+    /// Squared column norms `diag(AᵀA)`.
     pub(crate) fn column_norms_squared(&self) -> Vec<f64> {
         let design = &self.prepared.design;
         let mut diag = vec![0.0; design.n_dofs];

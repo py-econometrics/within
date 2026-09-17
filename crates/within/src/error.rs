@@ -145,7 +145,7 @@ pub enum BuildWarning {
 /// What became of a warned cross-term direction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AliasVerdict {
-    /// Certified null against the design and removed from the solve space.
+    /// A null of the design, removed from the solve space.
     Constrained,
     /// Carries information the data can still resolve, so the iteration keeps it.
     Kept,

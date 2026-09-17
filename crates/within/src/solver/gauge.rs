@@ -1,5 +1,5 @@
-//! Cross-term gauge directions (#297): the collinearity screen proposes them, a backward-error
-//! test against the whitened design certifies them, and certified rows leave the solve space.
+//! Cross-term gauge directions (#297): a covariate another term reproduces to roundoff is a null
+//! of the design, and nulls leave the solve space rather than wait for the preconditioner.
 
 use std::sync::Mutex;
 
@@ -12,62 +12,52 @@ use crate::operator::schwarz::Preconditioner;
 use crate::operator::DesignOperator;
 use crate::{AliasVerdict, BuildWarning};
 
+/// Residual share at or below which a screened covariate is a null, not data: an exact alias
+/// cancels to roundoff, a direction the data can still resolve sits orders above.
+const GAUGE_NULL_TOL: f64 = 1e-20;
+
 /// Share of a unit-norm proposal that must survive the rows already taken to become one.
-/// Below it the proposal is a rescaled duplicate, and normalizing would amplify its image.
+/// Below it the proposal is a rescaled duplicate, and normalizing would amplify its roundoff.
 const RANK_SHARE_TOL: f64 = 1e-6;
 
-/// `‖A n‖ ≤ NULL_TOL · ‖ |A| |n| ‖` certifies a row as null: a backward error, so a uniform
-/// weight change cannot move the verdict. An alias lands at roundoff, a real direction far above.
-const NULL_TOL: f64 = 1e-11;
-
-/// Certified cross-term null directions, orthonormal; `k × n_dofs`, row-major.
+/// Cross-term null directions, orthonormal; `k × n_dofs`, row-major.
 pub(crate) struct GaugeConstraint {
     rows: Vec<f64>,
     n_dofs: usize,
 }
 
 impl GaugeConstraint {
-    /// Certify the screen's proposals against the whitened design, reporting each verdict.
+    /// Take the screen's null proposals out of the solve space, reporting each verdict.
     pub(crate) fn build(
         prepared: &PreparedDesign<'_>,
         screened: &[CollinearSlope],
     ) -> (Option<Self>, Vec<BuildWarning>) {
-        if screened.is_empty() {
-            return (None, Vec::new());
+        let is_null = |slope: &CollinearSlope| slope.relative_residual <= GAUGE_NULL_TOL;
+        let warnings = screened
+            .iter()
+            .map(|slope| {
+                slope.warn(match is_null(slope) {
+                    true => AliasVerdict::Constrained,
+                    false => AliasVerdict::Kept,
+                })
+            })
+            .collect();
+        if !screened.iter().any(is_null) {
+            return (None, warnings);
         }
         let n_dofs = prepared.design.n_dofs;
         let operator = DesignOperator::new(prepared);
         // Whitening leaves a level's columns orthogonal, so `Aᵀc ./ diag(AᵀA)` is its per-level fit.
         let scale = operator.column_norms_squared();
-        let proposed: Vec<(usize, Vec<f64>)> = screened
+        let proposed = screened
             .iter()
-            .enumerate()
-            .filter_map(|(index, slope)| {
-                Some((index, propose(prepared, &operator, &scale, slope)?))
-            })
+            .filter(|slope| is_null(slope))
+            .map(|slope| propose(prepared, &operator, &scale, slope))
             .collect();
-
         let gauge = Self {
-            rows: certify(&operator, &scale, &proposed, n_dofs),
+            rows: orthonormalize(proposed, n_dofs),
             n_dofs,
         };
-
-        // A proposal is constrained exactly when the certified rows span it.
-        let mut verdicts = vec![AliasVerdict::Kept; screened.len()];
-        let mut residual = vec![0.0f64; n_dofs];
-        for (index, direction) in &proposed {
-            residual.copy_from_slice(direction);
-            gauge.project(&mut residual);
-            if dot(&residual, &residual).sqrt() <= RANK_SHARE_TOL {
-                verdicts[*index] = AliasVerdict::Constrained;
-            }
-        }
-        let warnings = screened
-            .iter()
-            .zip(verdicts)
-            .map(|(slope, verdict)| slope.warn(verdict))
-            .collect();
-
         match gauge.rank() {
             0 => (None, warnings),
             _ => (Some(gauge), warnings),
@@ -96,9 +86,12 @@ fn propose(
     operator: &DesignOperator<'_>,
     scale: &[f64],
     screened: &CollinearSlope,
-) -> Option<Vec<f64>> {
+) -> Vec<f64> {
     let design = &prepared.design;
-    let covariate = *design.loading(screened.slope).covariate()?;
+    let covariate = *design
+        .loading(screened.slope)
+        .covariate()
+        .expect("a screened slope carries a covariate");
     let c = design.frame.loading_column(covariate as usize);
     // Two intercepts alias through the ordinary FE gauge, not through the covariate.
     let (mut sum, mut total) = (0.0, 0.0);
@@ -142,24 +135,15 @@ fn propose(
         }
     }
     let norm = dot(&values, &values).sqrt();
-    (norm > 0.0 && norm.is_finite()).then(|| {
-        for value in &mut values {
-            *value /= norm;
-        }
-        values
-    })
+    for value in &mut values {
+        *value /= norm;
+    }
+    values
 }
 
-/// Orthonormalize the proposals, then keep the rows the design agrees carry nothing.
-fn certify(
-    operator: &DesignOperator<'_>,
-    scale: &[f64],
-    proposed: &[(usize, Vec<f64>)],
-    n_dofs: usize,
-) -> Vec<f64> {
-    // Pivoted, so a near-duplicate is spent against the row it duplicates, never rescaled.
-    let mut directions: Vec<Vec<f64>> = proposed.iter().map(|(_, d)| d.clone()).collect();
-    let mut basis: Vec<f64> = Vec::new();
+/// Pivoted Gram-Schmidt, so a near-duplicate is spent against the row it duplicates, never rescaled.
+fn orthonormalize(mut directions: Vec<Vec<f64>>, n_dofs: usize) -> Vec<f64> {
+    let mut basis: Vec<f64> = Vec::with_capacity(directions.len() * n_dofs);
     while let Some((next, share)) = directions
         .iter()
         .map(|d| dot(d, d).sqrt())
@@ -181,21 +165,7 @@ fn certify(
         }
         basis.extend_from_slice(&row);
     }
-
-    // Per row against the share of the Frobenius budget it may spend, so `‖A N‖_F` holds.
-    let budget = NULL_TOL / ((basis.len() / n_dofs).max(1) as f64).sqrt();
-    let mut obs = vec![0.0f64; operator.nrows()];
-    let mut rows = Vec::new();
-    for row in basis.chunks_exact(n_dofs) {
-        operator
-            .apply(row, &mut obs)
-            .expect("the design operator cannot fail");
-        let reference: f64 = row.iter().zip(scale).map(|(&r, &s)| r * r * s).sum();
-        if dot(&obs, &obs).sqrt() <= budget * reference.sqrt() {
-            rows.extend_from_slice(row);
-        }
-    }
-    rows
+    basis
 }
 
 /// The base preconditioner restricted to the constrained solve space: `P M⁻¹ P`.

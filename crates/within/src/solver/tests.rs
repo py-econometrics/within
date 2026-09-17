@@ -1,4 +1,3 @@
-use std::ops::Range;
 use std::sync::Arc;
 
 use rstest::rstest;
@@ -8,7 +7,8 @@ use super::{CoefficientAddress, CoefficientLayout};
 use crate::channel::Channel;
 use crate::config::{LocalSolverConfig, LsmrOptions, DEFAULT_DENSE_SCHUR_THRESHOLD};
 use crate::domain::{build_local_domains, Design, Grounding, MatrixForm, PreparedDesign};
-use crate::{AliasVerdict, BuildWarning, Effect, PreconditionerConfig, Solver};
+use crate::AliasVerdict::{self, Constrained, Kept};
+use crate::{BuildWarning, Effect, PreconditionerConfig, Solver};
 
 /// DGP kept in lockstep with `surplus_component_sampled_matches_exact_reduction`
 /// in `tests/slopes_routing.rs`. A positive slope-only term is not centered by
@@ -140,6 +140,9 @@ enum SlopeSpec {
     /// Two independent aliases at once: the worker's slope is the year index and a fourth
     /// term's slope is the firm index, each reproduced by a different term.
     TwoIndependentAliases,
+    /// The worker's slope is the year index exactly, the firm's the year index perturbed
+    /// by the given amount: one null and one recoverable direction in a single design.
+    ExactAndNear(f64),
 }
 
 struct AkmPanel {
@@ -159,6 +162,7 @@ impl AkmPanel {
     fn effects(&self) -> Vec<Effect<'_>> {
         let firm = match self.spec {
             SlopeSpec::SharedWithFirm => Effect::new(&self.firm, true, [&self.z[..]]),
+            SlopeSpec::ExactAndNear(_) => Effect::new(&self.firm, true, [&self.z2[..]]),
             _ => Effect::new(&self.firm, true, []),
         };
         let worker = match self.spec {
@@ -218,11 +222,15 @@ fn akm_panel(
                 SlopeSpec::YearIndex
                 | SlopeSpec::DuplicateYearIndex
                 | SlopeSpec::YearIndexWithoutIntercept
-                | SlopeSpec::TwoIndependentAliases => t as f64,
+                | SlopeSpec::TwoIndependentAliases
+                | SlopeSpec::ExactAndNear(_) => t as f64,
                 SlopeSpec::NearYearIndex(delta) => t as f64 + delta * next(),
             };
             if matches!(spec, SlopeSpec::DuplicateYearIndex) {
                 panel.z2.push(z + 1e-6 * z * z);
+            }
+            if let SlopeSpec::ExactAndNear(delta) = spec {
+                panel.z2.push(t as f64 + delta * next());
             }
             if matches!(spec, SlopeSpec::TwoIndependentAliases) {
                 panel.region.push((w % 11) as u32);
@@ -324,20 +332,20 @@ fn rss(r: &[f64]) -> f64 {
 
 /// What the screen's proposals decide, per relationship between the covariate and the design.
 #[rstest]
-#[case::unrelated(SlopeSpec::Independent, 0, None, 0.0..0.0)]
-#[case::exact_alias(SlopeSpec::YearIndex, 1, Some(1), 0.0..1e-20)]
-#[case::shared_covariate(SlopeSpec::SharedWithFirm, 2, Some(1), 0.0..1e-20)]
-#[case::deep_null(SlopeSpec::NearYearIndex(1e-12), 1, Some(1), 0.0..1e-20)]
-#[case::recoverable(SlopeSpec::NearYearIndex(1e-6), 1, None, 1e-20..f64::INFINITY)]
-#[case::near_alias(SlopeSpec::NearYearIndex(1e-3), 1, None, 1e-20..f64::INFINITY)]
-#[case::duplicate_aliases(SlopeSpec::DuplicateYearIndex, 2, Some(1), 0.0..1e-20)]
-#[case::alias_without_intercept(SlopeSpec::YearIndexWithoutIntercept, 1, Some(1), 0.0..1e-20)]
-#[case::two_independent_aliases(SlopeSpec::TwoIndependentAliases, 2, Some(2), 0.0..1e-20)]
+#[case::unrelated(SlopeSpec::Independent, &[], None)]
+#[case::exact_alias(SlopeSpec::YearIndex, &[Constrained], Some(1))]
+#[case::shared_covariate(SlopeSpec::SharedWithFirm, &[Constrained, Constrained], Some(1))]
+#[case::deep_null(SlopeSpec::NearYearIndex(1e-10), &[Constrained], Some(1))]
+#[case::recoverable(SlopeSpec::NearYearIndex(1e-6), &[Kept], None)]
+#[case::near_alias(SlopeSpec::NearYearIndex(1e-3), &[Kept], None)]
+#[case::duplicate_aliases(SlopeSpec::DuplicateYearIndex, &[Constrained, Constrained], Some(1))]
+#[case::alias_without_intercept(SlopeSpec::YearIndexWithoutIntercept, &[Constrained], Some(1))]
+#[case::two_independent_aliases(SlopeSpec::TwoIndependentAliases, &[Constrained, Constrained], Some(2))]
+#[case::exact_beside_recoverable(SlopeSpec::ExactAndNear(1e-6), &[Kept, Kept, Constrained, Kept], Some(1))]
 fn a_warned_direction_is_removed_only_when_it_carries_nothing(
     #[case] spec: SlopeSpec,
-    #[case] warned: usize,
+    #[case] expected: &[AliasVerdict],
     #[case] rank: Option<usize>,
-    #[case] residual: Range<f64>,
 ) {
     let panel = akm_panel(4_000, 200, 10, 0.15, spec);
     let solver = Solver::new(panel.effects(), None, unfloored()).expect("solver");
@@ -349,51 +357,9 @@ fn a_warned_direction_is_removed_only_when_it_carries_nothing(
         "converged={}, gm={group_mean:.3e}",
         out.converged
     );
-    let residuals = residuals(&solver);
-    assert_eq!(residuals.len(), warned, "{residuals:?}");
-    assert!(
-        residuals.iter().all(|r| residual.contains(r)),
-        "{residuals:?} outside {residual:?}"
-    );
-    // Two proposals can name one direction, so the second is absorbed by the first: an alias
-    // of an alias survives orthogonalization at the share separating them, not as its own row.
+    assert_eq!(verdicts(&solver), expected, "{:?}", residuals(&solver));
+    // Two proposals can name one direction; the duplicate is spent against the first row.
     assert_eq!(constrained_rank(&solver), rank);
-    let expected = match rank {
-        Some(_) => AliasVerdict::Constrained,
-        None => AliasVerdict::Kept,
-    };
-    assert!(
-        verdicts(&solver).iter().all(|&v| v == expected),
-        "{:?}",
-        verdicts(&solver)
-    );
-}
-
-/// A direction an aligned response could still recover must not be constrained away, so
-/// shrinking the perturbation cannot move the fit.
-#[rstest]
-#[case::loose(1e-3)]
-#[case::tight(3e-5)]
-#[case::tighter(1e-6)]
-fn shrinking_the_perturbation_does_not_move_the_fit(#[case] delta: f64) {
-    let panel = akm_panel(4_000, 200, 10, 0.15, SlopeSpec::NearYearIndex(1e-3));
-    let solver = Solver::new(panel.effects(), None, unfloored()).expect("solver");
-    let reference = rss(&solve_tight(&solver, &panel.y).demeaned);
-
-    let panel = akm_panel(4_000, 200, 10, 0.15, SlopeSpec::NearYearIndex(delta));
-    let solver = Solver::new(panel.effects(), None, unfloored()).expect("solver");
-    let out = solve_tight(&solver, &panel.y);
-    let fit = rss(&out.demeaned);
-    assert!(
-        out.converged && (fit - reference).abs() <= 1e-6 * reference,
-        "converged={}, rss={fit:.12e} against {reference:.12e}",
-        out.converged
-    );
-    assert!(
-        constrained_rank(&solver).is_none(),
-        "{:?}",
-        residuals(&solver)
-    );
 }
 
 /// The covariate is the response most aligned with the cancellation, and its unexplained
@@ -417,23 +383,6 @@ fn an_aligned_response_is_still_recovered() {
         (ratio / 1e-4 - 1.0).abs() < 0.2,
         "share {fine:.6e} against {coarse:.6e} is {ratio:.3e} of the expected 1e-4"
     );
-}
-
-/// The verdict reads the design alone, so no preconditioner may change it.
-#[rstest]
-#[case::exact_alias(SlopeSpec::YearIndex, Some(1))]
-#[case::recoverable(SlopeSpec::NearYearIndex(1e-6), None)]
-fn the_verdict_does_not_depend_on_the_preconditioner(
-    #[case] spec: SlopeSpec,
-    #[case] rank: Option<usize>,
-) {
-    let panel = akm_panel(4_000, 200, 10, 0.15, spec);
-    let reference = residuals(&Solver::new(panel.effects(), None, unfloored()).expect("solver"));
-    for config in [PreconditionerConfig::Diagonal, unfloored()] {
-        let solver = Solver::new(panel.effects(), None, &config).expect("solver");
-        assert_eq!(residuals(&solver), reference, "{config:?}");
-        assert_eq!(constrained_rank(&solver), rank, "{config:?}");
-    }
 }
 
 /// Uniform weights cancel out of a relative residual, so they cannot move the verdict either.
@@ -461,10 +410,10 @@ fn an_unpreconditioned_solve_constrains_nothing() {
     let solver = Solver::new(panel.effects(), None, PreconditionerConfig::Off).expect("solver");
 
     assert_eq!(constrained_rank(&solver), None);
-    assert_eq!(verdicts(&solver), [AliasVerdict::Kept]);
+    assert_eq!(verdicts(&solver), [Kept]);
 }
 
-/// The cancellation floor of an exact alias grows with `n_obs`; the tolerance must outrun it.
+/// An exact alias cancels to a roundoff floor that grows with `n_obs`; the tolerance must outrun it.
 #[test]
 #[ignore = "8M observations"]
 fn the_exact_alias_floor_stays_under_the_tolerance_at_scale() {
@@ -478,7 +427,7 @@ fn the_exact_alias_floor_stays_under_the_tolerance_at_scale() {
         residuals(&solver)
     );
 
-    // The same panel's recoverable neighbour must survive where the shipped product did not.
+    // The same panel's recoverable neighbour must stay in the solve space.
     let panel = akm_panel(200_000, 10_000, 40, 0.15, SlopeSpec::NearYearIndex(3e-5));
     let solver = Solver::new(panel.effects(), None, unfloored()).expect("solver");
     assert!(

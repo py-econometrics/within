@@ -174,17 +174,13 @@ We conclude with a summary of the full algorithm.
 
 6. **Constrain cross-term aliasing.** A covariate that another term reproduces per level puts a
    null in the design: with $v$ the difference of the two per-level fits, taken against the
-   whitening basis and net of the constant every term already shares, $Dv = 0$. The screen only
-   proposes such a $v$; the design decides. Orthonormalize the proposals by descending residual
-   share, dropping any whose share is spent against the rows already taken, then certify each
-   surviving row $n$ against the backward error of evaluating $An$, with $A = \sqrt{W}D$:
-
-   $$\|An\| \le \tau \sqrt{n^\top \operatorname{diag}(A^\top A)\, n}.$$
-
-   Scaling by the operator's own columns holds the verdict fixed under a uniform change of
-   weights, which $\|n\|$ alone does not. Certified rows form $V$, and the solve runs on
-   $\operatorname{range}(I - V^\top V)$, so no subdomain inverts a roundoff-scale null. A row
-   that fails stays in the solve space, where the iteration must resolve it.
+   whitening basis and net of the constant every term already shares, $Dv = 0$. The collinearity
+   screen's relative residual says which proposals are nulls rather than data: an exact alias
+   cancels to roundoff, a direction the data can still resolve sits orders of magnitude above.
+   The null proposals are orthonormalized by pivoted Gram-Schmidt, dropping any whose share is
+   spent against the rows already taken, and form $V$. The solve runs on
+   $\operatorname{range}(I - V^\top V)$, so no subdomain inverts a roundoff-scale null. A
+   proposal above the tolerance stays in the solve space, where the iteration must resolve it.
 
 ### 5.2 Solve phase
 
