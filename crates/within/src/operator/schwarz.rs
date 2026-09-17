@@ -135,7 +135,7 @@ pub struct Preconditioner {
     /// Cross-term nulls every apply keeps out of the solve space, `P M⁻¹ P`; a property of the
     /// design the solver attaches, so it is rebuilt rather than serialized.
     #[serde(skip)]
-    pub(crate) gauge: Option<GaugeConstraint>,
+    pub(crate) gauge: Option<Arc<GaugeConstraint>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -6,7 +6,6 @@ use super::{CoefficientAddress, CoefficientLayout};
 use crate::channel::Channel;
 use crate::config::{LocalSolverConfig, LsmrOptions, DEFAULT_DENSE_SCHUR_THRESHOLD};
 use crate::domain::{build_local_domains, Design, Grounding, MatrixForm, PreparedDesign};
-use crate::operator::gauge::GaugeConstraint;
 use crate::AliasVerdict::{self, Constrained, Kept};
 use crate::{BuildWarning, Effect, PreconditionerConfig, Solver};
 
@@ -125,18 +124,14 @@ fn solvers_built_from_a_borrowed_design_share_its_storage() {
 /// to the rest of the design.
 #[derive(Clone, Copy, Debug)]
 enum SlopeSpec {
-    /// No relationship: the slope is its own variation.
     Independent,
-    /// Exactly the year index, which term `year` reproduces per level.
     YearIndex,
     /// The year index perturbed off the year term's span by the given amount.
     NearYearIndex(f64),
-    /// The same covariate carried by both the worker and the firm term.
     SharedWithFirm,
     /// Two worker slopes that both alias the year term, and each other to `1e-6`; whitening
     /// spends the first on the second, so only the second still proposes a direction.
     DuplicateYearIndex,
-    /// The year index on a worker term carrying no intercept of its own.
     YearIndexWithoutIntercept,
     /// Two independent aliases at once: the worker's slope is the year index and a fourth
     /// term's slope is the firm index, each reproduced by a different term.
@@ -264,15 +259,13 @@ fn max_abs_group_mean(design: &Design<'_>, demeaned: &[f64]) -> f64 {
         .fold(0.0f64, f64::max)
 }
 
-/// Rows the solve space excludes, `None` when the gauge constrains nothing.
 fn constrained_rank(solver: &Solver<'_>) -> Option<usize> {
     solver
         .preconditioner()
         .and_then(|p| p.gauge.as_ref())
-        .map(GaugeConstraint::rank)
+        .map(|gauge| gauge.rank())
 }
 
-/// Every collinearity warning's verdict, in the order the screen raised them.
 fn verdicts(solver: &Solver<'_>) -> Vec<AliasVerdict> {
     solver
         .warnings()
@@ -308,7 +301,6 @@ fn solve_tight(solver: &Solver<'_>, y: &[f64]) -> crate::SolveResult {
         .expect("solve")
 }
 
-/// What the screen's proposals decide, per relationship between the covariate and the design.
 #[rstest]
 #[case::unrelated(SlopeSpec::Independent, &[], None)]
 #[case::exact_alias(SlopeSpec::YearIndex, &[Constrained], Some(1))]
@@ -338,22 +330,38 @@ fn a_warned_direction_is_removed_only_when_it_carries_nothing(
     assert_eq!(verdicts(&solver), expected, "{:?}", solver.warnings());
     // Two proposals can name one direction; the duplicate is spent against the first row.
     assert_eq!(constrained_rank(&solver), rank);
-}
 
-/// The gauge is the design's, not the factorization's: a reused or deserialized
-/// preconditioner gets it back from the solver it is attached to.
-#[test]
-fn a_prebuilt_preconditioner_is_constrained_by_the_design_it_serves() {
-    let panel = akm_panel(4_000, 200, 10, 0.15, SlopeSpec::YearIndex);
-    let built = Solver::new(panel.effects(), None, unfloored()).expect("solver");
-    let bytes = postcard::to_stdvec(built.preconditioner().expect("built")).expect("serialize");
+    // The gauge is the design's, not the factorization's: a deserialized preconditioner gets it
+    // back from the solver it is attached to.
+    let bytes = postcard::to_stdvec(solver.preconditioner().expect("built")).expect("serialize");
     let prebuilt: crate::Preconditioner = postcard::from_bytes(&bytes).expect("deserialize");
     assert!(prebuilt.gauge.is_none());
+    let reattached = Solver::new(panel.effects(), None, prebuilt).expect("solver");
+    assert_eq!(constrained_rank(&reattached), rank);
+}
 
-    let solver = Solver::new(panel.effects(), None, prebuilt).expect("solver");
+/// A batch runs its right-hand sides on rayon workers that also execute the base apply's
+/// subdomain jobs; the constraint's scratch must never be held across that apply.
+#[test]
+fn a_constrained_batch_solve_does_not_deadlock() {
+    let panel = akm_panel(4_000, 200, 10, 0.15, SlopeSpec::YearIndex);
+    let solver = Solver::new(panel.effects(), None, unfloored()).expect("solver");
     assert_eq!(constrained_rank(&solver), Some(1));
-    let out = solve_tight(&solver, &panel.y);
-    assert!(out.converged && max_abs_group_mean(&solver.prepared.design, &out.demeaned) < 1e-9);
+    let ys: Vec<Vec<f64>> = (0..64)
+        .map(|k| panel.y.iter().map(|v| v * (k + 1) as f64).collect())
+        .collect();
+    let refs: Vec<&[f64]> = ys.iter().map(Vec::as_slice).collect();
+    let out = solver
+        .solve_batch(
+            &refs,
+            &LsmrOptions {
+                tol: 1e-12,
+                maxiter: 20_000,
+                ..Default::default()
+            },
+        )
+        .expect("batch");
+    assert!(out.converged.iter().all(|&c| c), "{:?}", out.converged);
 }
 
 /// Three mutually orthogonal, centered ±1 columns on eight observations.

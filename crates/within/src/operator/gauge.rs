@@ -1,8 +1,6 @@
 //! Cross-term gauge directions (#297): a covariate another term reproduces to roundoff is a null
 //! of the design, and nulls leave the solve space rather than wait for the preconditioner.
 
-use std::sync::Mutex;
-
 use schwarz_precond::{Operator, SolveError};
 
 use crate::channel::Channel;
@@ -16,18 +14,6 @@ use crate::AliasVerdict;
 pub(crate) struct GaugeConstraint {
     rows: Vec<f64>,
     n_dofs: usize,
-    /// The projected input of an apply; the base preconditioner needs distinct in and out buffers.
-    scratch: Mutex<Vec<f64>>,
-}
-
-impl Clone for GaugeConstraint {
-    fn clone(&self) -> Self {
-        Self {
-            rows: self.rows.clone(),
-            n_dofs: self.n_dofs,
-            scratch: Mutex::new(vec![0.0; self.n_dofs]),
-        }
-    }
 }
 
 impl GaugeConstraint {
@@ -58,7 +44,6 @@ impl GaugeConstraint {
         let gauge = Self {
             rows: orthonormalize(proposed, n_dofs, rank_tol),
             n_dofs,
-            scratch: Mutex::new(vec![0.0; n_dofs]),
         };
         (gauge.rank() > 0).then_some(gauge)
     }
@@ -74,8 +59,12 @@ impl GaugeConstraint {
         y: &mut [f64],
         m: impl FnOnce(&[f64], &mut [f64]) -> Result<(), SolveError>,
     ) -> Result<(), SolveError> {
-        let mut projected = self.scratch.lock().expect("uncontended scratch lock");
-        projected.copy_from_slice(x);
+        if x.len() != self.n_dofs || y.len() != self.n_dofs {
+            return m(x, y);
+        }
+        // One copy per apply: a shared scratch needs a lock, and a batch applies from rayon workers
+        // whose join can steal another apply that waits on it.
+        let mut projected = x.to_vec();
         self.project(&mut projected);
         m(&projected, y)?;
         self.project(y);

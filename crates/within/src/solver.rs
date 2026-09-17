@@ -2,6 +2,7 @@
 //! multiple solves on the same design) and the one-shot [`solve`] / [`solve_batch`]
 //! convenience wrappers built on top of it.
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use ndarray::ArrayView2;
@@ -387,7 +388,7 @@ impl<'a> Solver<'a> {
 
         // Only `M⁻¹` can inject a null of `A`; unpreconditioned LSMR never leaves `range(Aᵀ)`.
         if let Some(p) = preconditioner.as_mut() {
-            p.gauge = GaugeConstraint::build(&prepared, &screened);
+            p.gauge = GaugeConstraint::build(&prepared, &screened).map(Arc::new);
         }
         warnings.extend(build_warnings);
 
