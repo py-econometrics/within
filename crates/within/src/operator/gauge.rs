@@ -1,7 +1,7 @@
 //! Cross-term gauge directions (#297): a covariate another term reproduces to roundoff is a null
 //! of the design, and nulls leave the solve space rather than wait for the preconditioner.
 
-use std::cell::RefCell;
+use std::sync::Mutex;
 
 use schwarz_precond::{Operator, SolveError};
 
@@ -12,16 +12,22 @@ use crate::linalg::dot;
 use crate::operator::DesignOperator;
 use crate::AliasVerdict;
 
-thread_local! {
-    /// The projected input of a constrained apply; the base preconditioner needs distinct buffers.
-    static PROJECTED: RefCell<Vec<f64>> = const { RefCell::new(Vec::new()) };
-}
-
 /// Cross-term null directions, orthonormal; `k × n_dofs`, row-major.
-#[derive(Clone)]
 pub(crate) struct GaugeConstraint {
     rows: Vec<f64>,
     n_dofs: usize,
+    /// The projected input of an apply; the base preconditioner needs distinct in and out buffers.
+    scratch: Mutex<Vec<f64>>,
+}
+
+impl Clone for GaugeConstraint {
+    fn clone(&self) -> Self {
+        Self {
+            rows: self.rows.clone(),
+            n_dofs: self.n_dofs,
+            scratch: Mutex::new(vec![0.0; self.n_dofs]),
+        }
+    }
 }
 
 impl GaugeConstraint {
@@ -52,6 +58,7 @@ impl GaugeConstraint {
         let gauge = Self {
             rows: orthonormalize(proposed, n_dofs, rank_tol),
             n_dofs,
+            scratch: Mutex::new(vec![0.0; n_dofs]),
         };
         (gauge.rank() > 0).then_some(gauge)
     }
@@ -60,19 +67,17 @@ impl GaugeConstraint {
         self.rows.len() / self.n_dofs
     }
 
-    /// `y ← P M⁻¹ P x`, with `m` the base apply.
+    /// `y ← P M⁻¹ P x`, with `m` the base apply; both sides keep the operator self-adjoint.
     pub(crate) fn constrain(
         &self,
         x: &[f64],
         y: &mut [f64],
         m: impl FnOnce(&[f64], &mut [f64]) -> Result<(), SolveError>,
     ) -> Result<(), SolveError> {
-        PROJECTED.with_borrow_mut(|projected| {
-            projected.clear();
-            projected.extend_from_slice(x);
-            self.project(projected);
-            m(projected, y)
-        })?;
+        let mut projected = self.scratch.lock().expect("uncontended scratch lock");
+        projected.copy_from_slice(x);
+        self.project(&mut projected);
+        m(&projected, y)?;
         self.project(y);
         Ok(())
     }
