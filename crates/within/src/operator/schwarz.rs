@@ -9,7 +9,6 @@ use std::time::{Duration, Instant};
 
 use crate::block_elim::BlockElimSolver;
 use crate::config::{LocalSolverConfig, PreconditionerConfig};
-use crate::domain::collinearity::CollinearSlope;
 use crate::domain::{LocalDomain, PreparedDesign};
 use crate::operator::gauge::GaugeConstraint;
 use crate::operator::DesignOperator;
@@ -133,7 +132,9 @@ pub(crate) fn build_entry(
 pub struct Preconditioner {
     inner: Variant,
     build_duration: Duration,
-    /// Cross-term nulls every apply keeps out of the solve space: `P M⁻¹ P`.
+    /// Cross-term nulls every apply keeps out of the solve space, `P M⁻¹ P`; a property of the
+    /// design the solver attaches, so it is rebuilt rather than serialized.
+    #[serde(skip)]
     pub(crate) gauge: Option<GaugeConstraint>,
 }
 
@@ -262,7 +263,6 @@ fn build_diagonal(prepared: &PreparedDesign<'_>) -> Result<DiagonalPreconditione
 pub(crate) fn build_preconditioner(
     prepared: &PreparedDesign<'_>,
     config: Option<&PreconditionerConfig>,
-    screened: &[CollinearSlope],
 ) -> Result<(Option<Preconditioner>, Vec<BuildWarning>), BuildError> {
     use crate::domain::build_local_domains;
 
@@ -294,13 +294,12 @@ pub(crate) fn build_preconditioner(
             (Variant::Diagonal(preconditioner), Vec::new())
         }
     };
-    let gauge = GaugeConstraint::build(prepared, screened);
     let build_duration = build_started.elapsed();
     Ok((
         Some(Preconditioner {
             inner,
             build_duration,
-            gauge,
+            gauge: None,
         }),
         warnings,
     ))

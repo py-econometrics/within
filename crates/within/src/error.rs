@@ -145,22 +145,10 @@ pub enum BuildWarning {
 /// What became of a warned cross-term direction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AliasVerdict {
-    /// A null of the design, removed from the solve space.
+    /// A null of the design, kept out of the solve space.
     Constrained,
     /// Carries information the data can still resolve, so the iteration keeps it.
     Kept,
-}
-
-impl std::fmt::Display for AliasVerdict {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Constrained => "was removed from the solve space",
-            Self::Kept => {
-                "stays in the solve space, where iteration counts can inflate by \
-                           orders of magnitude"
-            }
-        })
-    }
 }
 
 impl std::fmt::Display for BuildWarning {
@@ -181,12 +169,21 @@ impl std::fmt::Display for BuildWarning {
                 term,
                 relative_residual,
                 verdict,
-            } => write!(
-                f,
-                "slope covariate of {slope} is nearly collinear with the columns of term \
-                 {term} (relative residual {relative_residual:.2e}); the direction spanning \
-                 both terms {verdict}"
-            ),
+            } => {
+                let fate = match verdict {
+                    AliasVerdict::Constrained => "was removed from the solve space",
+                    AliasVerdict::Kept => {
+                        "stays in the solve space, where iteration counts can inflate by \
+                         orders of magnitude"
+                    }
+                };
+                write!(
+                    f,
+                    "slope covariate of {slope} is nearly collinear with the columns of term \
+                     {term} (relative residual {relative_residual:.2e}); the direction spanning \
+                     both terms {fate}"
+                )
+            }
         }
     }
 }

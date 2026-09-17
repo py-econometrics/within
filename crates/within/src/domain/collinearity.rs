@@ -11,6 +11,9 @@ use crate::{AliasVerdict, BuildWarning};
 
 /// Residual share below which a covariate counts as reproduced by the other term.
 const COLLINEARITY_TOL: f64 = 1e-3;
+/// Residual share at or below which the covariate is a null of the design, not data: an exact
+/// alias cancels to roundoff, a direction the data can still resolve sits orders above.
+const GAUGE_NULL_TOL: f64 = 1e-20;
 
 /// Cross-moment table bytes the screen may hold at once, over all terms together.
 const TABLE_BUDGET_BYTES: usize = 64 << 20;
@@ -18,29 +21,7 @@ const TABLE_BUDGET_BYTES: usize = 64 << 20;
 /// Rows one residual task claims; small enough that work stealing balances the tail.
 const ROWS_PER_TASK: usize = 1 << 16;
 
-/// A slope covariate the screen found (nearly) inside another term's per-level span.
-pub(crate) struct CollinearSlope {
-    /// The slope channel carrying the covariate.
-    pub(crate) slope: Channel,
-    /// The term whose columns (nearly) reproduce it.
-    pub(crate) term: usize,
-    /// Share of the covariate's weighted variation outside that term's span.
-    pub(crate) relative_residual: f64,
-}
-
-impl CollinearSlope {
-    /// Report this proposal with what the gauge constraint decided about it.
-    pub(crate) fn warn(&self, verdict: AliasVerdict) -> BuildWarning {
-        BuildWarning::CollinearSlopeCovariate {
-            slope: self.slope,
-            term: self.term,
-            relative_residual: self.relative_residual,
-            verdict,
-        }
-    }
-}
-
-pub(crate) fn detect_collinear_slopes(prepared: &PreparedDesign<'_>) -> Vec<CollinearSlope> {
+pub(crate) fn detect_collinear_slopes(prepared: &PreparedDesign<'_>) -> Vec<BuildWarning> {
     let design = &prepared.design;
     if design.n_factors() < 2 || !design.terms.iter().any(TermMeta::has_slopes) {
         return Vec::new();
@@ -54,11 +35,17 @@ pub(crate) fn detect_collinear_slopes(prepared: &PreparedDesign<'_>) -> Vec<Coll
                 .into_iter()
                 .zip(targets)
                 .filter(|&(share, _)| share <= COLLINEARITY_TOL)
-                .map(move |(relative_residual, (slope, _))| CollinearSlope {
-                    slope,
-                    term,
-                    relative_residual,
-                })
+                .map(
+                    move |(relative_residual, (slope, _))| BuildWarning::CollinearSlopeCovariate {
+                        slope,
+                        term,
+                        relative_residual,
+                        verdict: match relative_residual <= GAUGE_NULL_TOL {
+                            true => AliasVerdict::Constrained,
+                            false => AliasVerdict::Kept,
+                        },
+                    },
+                )
         })
         .collect()
 }

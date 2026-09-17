@@ -174,13 +174,11 @@ We conclude with a summary of the full algorithm.
 
 6. **Constrain cross-term aliasing.** A covariate that another term reproduces per level puts a
    null in the design: with $v$ the difference of the two per-level fits, taken against the
-   whitening basis and net of the constant every term already shares, $Dv = 0$. The collinearity
-   screen's relative residual says which proposals are nulls rather than data: an exact alias
-   cancels to roundoff, a direction the data can still resolve sits orders of magnitude above.
-   The null proposals are orthonormalized by pivoted Gram-Schmidt, dropping any whose share is
-   spent against the rows already taken, and form $V$. The solve runs on
-   $\operatorname{range}(I - V^\top V)$, so no subdomain inverts a roundoff-scale null. A
-   proposal above the tolerance stays in the solve space, where the iteration must resolve it.
+   whitening basis and net of the constant both terms share, $Dv = 0$. The collinearity screen's
+   relative residual separates such nulls (cancelling to roundoff) from directions the data can
+   still resolve (orders of magnitude above). The nulls are orthonormalized by pivoted
+   Gram-Schmidt into $V$, and the solve runs on $\operatorname{range}(I - V^\top V)$, so no
+   subdomain inverts a roundoff-scale null.
 
 ### 5.2 Solve phase
 

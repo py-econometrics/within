@@ -4,47 +4,39 @@
 use std::cell::RefCell;
 
 use schwarz_precond::{Operator, SolveError};
-use serde::{Deserialize, Serialize};
 
-use crate::domain::collinearity::CollinearSlope;
+use crate::channel::Channel;
 use crate::domain::{BasisScratch, PreparedDesign, RANK_TOL};
 use crate::linalg::dot;
 use crate::operator::DesignOperator;
-use crate::AliasVerdict;
-
-/// Residual share at or below which a screened covariate is a null, not data: an exact alias
-/// cancels to roundoff, a direction the data can still resolve sits orders above.
-const GAUGE_NULL_TOL: f64 = 1e-20;
+use crate::{AliasVerdict, BuildWarning};
 
 thread_local! {
     /// The projected input of a constrained apply; the base preconditioner needs distinct buffers.
     static PROJECTED: RefCell<Vec<f64>> = const { RefCell::new(Vec::new()) };
 }
 
-/// What the screen's residual says a warned direction is.
-pub(crate) fn verdict(slope: &CollinearSlope) -> AliasVerdict {
-    match slope.relative_residual <= GAUGE_NULL_TOL {
-        true => AliasVerdict::Constrained,
-        false => AliasVerdict::Kept,
-    }
-}
-
 /// Cross-term null directions, orthonormal; `k × n_dofs`, row-major.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone)]
 pub(crate) struct GaugeConstraint {
     rows: Vec<f64>,
     n_dofs: usize,
 }
 
 impl GaugeConstraint {
-    /// The screen's null proposals, `None` when no independent direction survives.
-    pub(crate) fn build(
-        prepared: &PreparedDesign<'_>,
-        screened: &[CollinearSlope],
-    ) -> Option<Self> {
-        let nulls: Vec<&CollinearSlope> = screened
+    /// The screen's null verdicts as one constraint, `None` when no independent direction survives.
+    pub(crate) fn build(prepared: &PreparedDesign<'_>, warnings: &[BuildWarning]) -> Option<Self> {
+        let nulls: Vec<(Channel, usize)> = warnings
             .iter()
-            .filter(|slope| verdict(slope) == AliasVerdict::Constrained)
+            .filter_map(|w| match w {
+                BuildWarning::CollinearSlopeCovariate {
+                    slope,
+                    term,
+                    verdict: AliasVerdict::Constrained,
+                    ..
+                } => Some((*slope, *term)),
+                _ => None,
+            })
             .collect();
         if nulls.is_empty() {
             return None;
@@ -55,7 +47,7 @@ impl GaugeConstraint {
         let scale = operator.column_norms_squared();
         let proposed = nulls
             .iter()
-            .map(|slope| propose(prepared, &operator, &scale, slope))
+            .map(|&(slope, term)| propose(prepared, &operator, &scale, slope, term))
             .collect();
         let gauge = Self {
             rows: orthonormalize(proposed, n_dofs),
@@ -111,11 +103,12 @@ fn propose(
     prepared: &PreparedDesign<'_>,
     operator: &DesignOperator<'_>,
     scale: &[f64],
-    screened: &CollinearSlope,
+    slope: Channel,
+    term: usize,
 ) -> Vec<f64> {
     let design = &prepared.design;
     let covariate = *design
-        .loading(screened.slope)
+        .loading(slope)
         .covariate()
         .expect("a screened slope carries a covariate");
     let c = design.frame.loading_column(covariate as usize);
@@ -127,7 +120,7 @@ fn propose(
         total += w;
     }
     let centered = total > 0.0
-        && [screened.slope.term, screened.term]
+        && [slope.term, term]
             .iter()
             .all(|&t| design.terms[t].has_intercept());
     let origin = match centered {
@@ -146,7 +139,7 @@ fn propose(
         .expect("the design operator cannot fail");
 
     let mut values = vec![0.0f64; design.n_dofs];
-    for (term, sign) in [(screened.slope.term, 1.0), (screened.term, -1.0)] {
+    for (term, sign) in [(slope.term, 1.0), (term, -1.0)] {
         let meta = &design.terms[term];
         let block = meta.offset..meta.offset + meta.n_dofs();
         for ((v, &f), &s) in values[block.clone()]

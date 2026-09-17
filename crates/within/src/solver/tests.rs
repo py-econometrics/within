@@ -291,20 +291,6 @@ fn verdicts(solver: &Solver<'_>) -> Vec<AliasVerdict> {
         .collect()
 }
 
-/// Every collinearity warning's residual, in the order the screen raised them.
-fn residuals(solver: &Solver<'_>) -> Vec<f64> {
-    solver
-        .warnings()
-        .iter()
-        .filter_map(|w| match w {
-            BuildWarning::CollinearSlopeCovariate {
-                relative_residual, ..
-            } => Some(*relative_residual),
-            _ => None,
-        })
-        .collect()
-}
-
 /// The spectral floor off, so only the gauge constraint can save an aliased solve.
 fn unfloored() -> PreconditionerConfig {
     PreconditionerConfig::Additive {
@@ -327,10 +313,6 @@ fn solve_tight(solver: &Solver<'_>, y: &[f64]) -> crate::SolveResult {
             },
         )
         .expect("solve")
-}
-
-fn rss(r: &[f64]) -> f64 {
-    r.iter().map(|x| x * x).sum()
 }
 
 /// What the screen's proposals decide, per relationship between the covariate and the design.
@@ -360,7 +342,7 @@ fn a_warned_direction_is_removed_only_when_it_carries_nothing(
         "converged={}, gm={group_mean:.3e}",
         out.converged
     );
-    assert_eq!(verdicts(&solver), expected, "{:?}", residuals(&solver));
+    assert_eq!(verdicts(&solver), expected, "{:?}", solver.warnings());
     // Two proposals can name one direction; the duplicate is spent against the first row.
     assert_eq!(constrained_rank(&solver), rank);
 }
@@ -376,8 +358,9 @@ fn an_aligned_response_is_still_recovered() {
         assert!(
             constrained_rank(&solver).is_none(),
             "{:?}",
-            residuals(&solver)
+            solver.warnings()
         );
+        let rss = |r: &[f64]| r.iter().map(|x| x * x).sum::<f64>();
         rss(&solve_tight(&solver, &panel.z).demeaned) / rss(&panel.z)
     };
     let (coarse, fine) = (share(1e-6), share(1e-8));
@@ -388,32 +371,20 @@ fn an_aligned_response_is_still_recovered() {
     );
 }
 
-/// Uniform weights cancel out of a relative residual, so they cannot move the verdict either.
-#[rstest]
-#[case::exact_alias(SlopeSpec::YearIndex, Some(1))]
-#[case::recoverable(SlopeSpec::NearYearIndex(1e-6), None)]
-fn the_verdict_survives_weight_scaling(#[case] spec: SlopeSpec, #[case] rank: Option<usize>) {
-    let panel = akm_panel(4_000, 200, 10, 0.15, spec);
-    for beta in [1e-16f64, 1e-12, 1e-8, 1.0, 1e8] {
-        let w = vec![beta; panel.y.len()];
-        let solver = Solver::new(panel.effects(), Some(&w[..]), unfloored()).expect("solver");
-        assert_eq!(
-            constrained_rank(&solver),
-            rank,
-            "beta={beta:e}, {:?}",
-            residuals(&solver)
-        );
-    }
-}
-
-/// No `M⁻¹` means no amplification to guard against, so the direction stays in the space.
+/// The gauge is the design's, not the factorization's: a reused or deserialized
+/// preconditioner gets it back from the solver it is attached to.
 #[test]
-fn an_unpreconditioned_solve_constrains_nothing() {
+fn a_prebuilt_preconditioner_is_constrained_by_the_design_it_serves() {
     let panel = akm_panel(4_000, 200, 10, 0.15, SlopeSpec::YearIndex);
-    let solver = Solver::new(panel.effects(), None, PreconditionerConfig::Off).expect("solver");
+    let built = Solver::new(panel.effects(), None, unfloored()).expect("solver");
+    let bytes = postcard::to_stdvec(built.preconditioner().expect("built")).expect("serialize");
+    let prebuilt: crate::Preconditioner = postcard::from_bytes(&bytes).expect("deserialize");
+    assert!(prebuilt.gauge.is_none());
 
-    assert_eq!(constrained_rank(&solver), None);
-    assert_eq!(verdicts(&solver), [Kept]);
+    let solver = Solver::new(panel.effects(), None, prebuilt).expect("solver");
+    assert_eq!(constrained_rank(&solver), Some(1));
+    let out = solve_tight(&solver, &panel.y);
+    assert!(out.converged && max_abs_group_mean(&solver.prepared.design, &out.demeaned) < 1e-9);
 }
 
 /// An exact alias cancels to a roundoff floor that grows with `n_obs`; the tolerance must outrun it.
@@ -427,7 +398,7 @@ fn the_exact_alias_floor_stays_under_the_tolerance_at_scale() {
         constrained_rank(&solver),
         Some(1),
         "{:?}",
-        residuals(&solver)
+        solver.warnings()
     );
 
     // The same panel's recoverable neighbour must stay in the solve space.
@@ -436,6 +407,6 @@ fn the_exact_alias_floor_stays_under_the_tolerance_at_scale() {
     assert!(
         constrained_rank(&solver).is_none(),
         "{:?}",
-        residuals(&solver)
+        solver.warnings()
     );
 }

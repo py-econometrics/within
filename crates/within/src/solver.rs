@@ -13,10 +13,10 @@ use crate::config::{LsmrOptions, PreconditionerConfig};
 use crate::domain::collinearity::detect_collinear_slopes;
 use crate::domain::{Design, Effect, FactorEncoding, PreparedDesign};
 use crate::operator::design::gather_apply;
-use crate::operator::gauge;
+use crate::operator::gauge::GaugeConstraint;
 use crate::operator::schwarz::{build_preconditioner, Preconditioner};
 use crate::operator::DesignOperator;
-use crate::{AliasVerdict, BuildError, BuildWarning, SolveError, WithinError};
+use crate::{BuildError, BuildWarning, SolveError, WithinError};
 
 #[cfg(test)]
 mod tests;
@@ -366,12 +366,12 @@ impl<'a> Solver<'a> {
     ) -> Result<Self, BuildError> {
         // Whiten the slope columns (if any) before the preconditioner reads them.
         let prepared = PreparedDesign::new(design.into_design()?, weights)?;
-        let screened = detect_collinear_slopes(&prepared);
+        let mut warnings = detect_collinear_slopes(&prepared);
         let n_dofs = prepared.design.n_dofs;
 
-        let (preconditioner, build_warnings) = match preconditioner.into() {
-            PreconditionerInput::Default => build_preconditioner(&prepared, None, &screened)?,
-            PreconditionerInput::Config(c) => build_preconditioner(&prepared, Some(&c), &screened)?,
+        let (mut preconditioner, build_warnings) = match preconditioner.into() {
+            PreconditionerInput::Default => build_preconditioner(&prepared, None)?,
+            PreconditionerInput::Config(c) => build_preconditioner(&prepared, Some(&c))?,
             PreconditionerInput::Prebuilt(p) => {
                 if p.nrows() != n_dofs || p.ncols() != n_dofs {
                     return Err(BuildError::PreconditionerDimensionMismatch {
@@ -384,16 +384,10 @@ impl<'a> Solver<'a> {
             }
         };
 
-        // With no `M⁻¹` to amplify it, an aliased direction costs nothing and stays in the space.
-        let mut warnings: Vec<BuildWarning> = screened
-            .iter()
-            .map(|slope| {
-                slope.warn(match preconditioner {
-                    Some(_) => gauge::verdict(slope),
-                    None => AliasVerdict::Kept,
-                })
-            })
-            .collect();
+        // Only `M⁻¹` can inject a null of `A`; unpreconditioned LSMR never leaves `range(Aᵀ)`.
+        if let Some(p) = preconditioner.as_mut() {
+            p.gauge = GaugeConstraint::build(&prepared, &warnings);
+        }
         warnings.extend(build_warnings);
 
         Ok(Self {
