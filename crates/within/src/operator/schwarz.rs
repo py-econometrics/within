@@ -185,57 +185,33 @@ impl Preconditioner {
     }
 }
 
-impl Operator for Preconditioner {
-    fn nrows(&self) -> usize {
-        self.inner.nrows()
-    }
-
-    fn ncols(&self) -> usize {
-        self.inner.ncols()
-    }
-
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
-        match &self.gauge {
-            Some(gauge) => gauge.constrain(x, y, |p, y| self.inner.apply(p, y)),
-            None => self.inner.apply(x, y),
-        }
-    }
-
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
-        match &self.gauge {
-            Some(gauge) => gauge.constrain(x, y, |p, y| self.inner.apply_adjoint(p, y)),
-            None => self.inner.apply_adjoint(x, y),
+impl Preconditioner {
+    fn base(&self) -> &dyn Operator {
+        match &self.inner {
+            Variant::Additive(p) => p,
+            Variant::Diagonal(p) => p,
         }
     }
 }
 
-impl Operator for Variant {
+impl Operator for Preconditioner {
     fn nrows(&self) -> usize {
-        match self {
-            Self::Additive(p) => p.nrows(),
-            Self::Diagonal(p) => p.nrows(),
-        }
+        self.base().nrows()
     }
 
     fn ncols(&self) -> usize {
-        match self {
-            Self::Additive(p) => p.ncols(),
-            Self::Diagonal(p) => p.ncols(),
-        }
+        self.base().ncols()
     }
 
     fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
-        match self {
-            Self::Additive(p) => p.apply(x, y),
-            Self::Diagonal(p) => p.apply(x, y),
+        match &self.gauge {
+            Some(gauge) => gauge.constrain(x, y, |p, y| self.base().apply(p, y)),
+            None => self.base().apply(x, y),
         }
     }
 
     fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
-        match self {
-            Self::Additive(p) => p.apply_adjoint(x, y),
-            Self::Diagonal(p) => p.apply_adjoint(x, y),
-        }
+        self.apply(x, y)
     }
 }
 

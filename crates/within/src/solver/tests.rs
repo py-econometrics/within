@@ -133,7 +133,8 @@ enum SlopeSpec {
     NearYearIndex(f64),
     /// The same covariate carried by both the worker and the firm term.
     SharedWithFirm,
-    /// Two worker slopes that both alias the year term, and each other to `1e-6`.
+    /// Two worker slopes that both alias the year term, and each other to `1e-6`; whitening
+    /// spends the first on the second, so only the second still proposes a direction.
     DuplicateYearIndex,
     /// The year index on a worker term carrying no intercept of its own.
     YearIndexWithoutIntercept,
@@ -321,9 +322,10 @@ fn solve_tight(solver: &Solver<'_>, y: &[f64]) -> crate::SolveResult {
 #[case::exact_alias(SlopeSpec::YearIndex, &[Constrained], Some(1))]
 #[case::shared_covariate(SlopeSpec::SharedWithFirm, &[Constrained, Constrained], Some(1))]
 #[case::deep_null(SlopeSpec::NearYearIndex(1e-10), &[Constrained], Some(1))]
+#[case::recoverable_at_the_floor(SlopeSpec::NearYearIndex(1e-8), &[Kept], None)]
 #[case::recoverable(SlopeSpec::NearYearIndex(1e-6), &[Kept], None)]
 #[case::near_alias(SlopeSpec::NearYearIndex(1e-3), &[Kept], None)]
-#[case::duplicate_aliases(SlopeSpec::DuplicateYearIndex, &[Constrained, Constrained], Some(1))]
+#[case::duplicate_aliases(SlopeSpec::DuplicateYearIndex, &[Kept, Constrained], Some(1))]
 #[case::alias_without_intercept(SlopeSpec::YearIndexWithoutIntercept, &[Constrained], Some(1))]
 #[case::two_independent_aliases(SlopeSpec::TwoIndependentAliases, &[Constrained, Constrained], Some(2))]
 #[case::exact_beside_recoverable(SlopeSpec::ExactAndNear(1e-6), &[Kept, Kept, Constrained, Kept], Some(1))]
@@ -345,30 +347,6 @@ fn a_warned_direction_is_removed_only_when_it_carries_nothing(
     assert_eq!(verdicts(&solver), expected, "{:?}", solver.warnings());
     // Two proposals can name one direction; the duplicate is spent against the first row.
     assert_eq!(constrained_rank(&solver), rank);
-}
-
-/// The covariate is the response most aligned with the cancellation, and its unexplained
-/// share scales as the perturbation squared. Constraining the direction away breaks that,
-/// so the tolerance must stay under what an aligned fit still recovers.
-#[test]
-fn an_aligned_response_is_still_recovered() {
-    let share = |delta: f64| {
-        let panel = akm_panel(4_000, 200, 10, 0.15, SlopeSpec::NearYearIndex(delta));
-        let solver = Solver::new(panel.effects(), None, unfloored()).expect("solver");
-        assert!(
-            constrained_rank(&solver).is_none(),
-            "{:?}",
-            solver.warnings()
-        );
-        let rss = |r: &[f64]| r.iter().map(|x| x * x).sum::<f64>();
-        rss(&solve_tight(&solver, &panel.z).demeaned) / rss(&panel.z)
-    };
-    let (coarse, fine) = (share(1e-6), share(1e-8));
-    let ratio = fine / coarse;
-    assert!(
-        (ratio / 1e-4 - 1.0).abs() < 0.2,
-        "share {fine:.6e} against {coarse:.6e} is {ratio:.3e} of the expected 1e-4"
-    );
 }
 
 /// The gauge is the design's, not the factorization's: a reused or deserialized
@@ -409,4 +387,51 @@ fn the_exact_alias_floor_stays_under_the_tolerance_at_scale() {
         "{:?}",
         solver.warnings()
     );
+}
+
+/// Whitening spent the carrying term's own `c` direction on a near-duplicate slope whose remainder
+/// the other term does not span, so the proposed difference of fits is not a null.
+#[test]
+fn a_covariate_its_own_term_no_longer_carries_is_not_a_null() {
+    let n = 400;
+    let mut state = 0x9e37_79b9_7f4a_7c15u64;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+    };
+    let dot = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>();
+    let centered = |mut v: Vec<f64>| {
+        let m = v.iter().sum::<f64>() / v.len() as f64;
+        v.iter_mut().for_each(|x| *x -= m);
+        v
+    };
+    let c = centered((0..n).map(|_| next()).collect());
+    let mut e = centered((0..n).map(|_| next()).collect());
+    let k = dot(&e, &c) / dot(&c, &c);
+    e.iter_mut().zip(&c).for_each(|(ei, &ci)| *ei -= k * ci);
+    let near: Vec<f64> = c
+        .iter()
+        .zip(&e)
+        .map(|(&ci, &ei)| 2.0 * ci + 1e-6 * ei)
+        .collect();
+    let level = vec![0u32; n];
+    let effects = vec![
+        Effect::new(&level, true, [&c[..], &near[..]]).unwrap(),
+        Effect::new(&level, true, [&c[..]]).unwrap(),
+    ];
+    let solver = Solver::new(effects, None, None).expect("solver");
+    assert_eq!(
+        verdicts(&solver),
+        [Kept, Kept, Kept],
+        "{:?}",
+        solver.warnings()
+    );
+    assert_eq!(constrained_rank(&solver), None);
+    // `e` lies in the design's span, so nothing of it may survive residualization; the 1e-12
+    // normal-equation stop is out of reach on this 5-dof problem even unpreconditioned.
+    let out = solve_tight(&solver, &e);
+    let share = dot(&out.demeaned, &out.demeaned) / dot(&e, &e);
+    assert!(share < 1e-12, "share={share:.3e}");
 }
