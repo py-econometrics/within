@@ -13,7 +13,7 @@ use crate::{AliasVerdict, BuildWarning};
 const COLLINEARITY_TOL: f64 = 1e-3;
 /// Residual share at or below which a term reproduces the covariate exactly: an alias cancels
 /// to roundoff, a direction the data can still resolve sits orders above.
-const GAUGE_NULL_TOL: f64 = 1e-20;
+pub(crate) const GAUGE_NULL_TOL: f64 = 1e-20;
 
 /// Cross-moment table bytes the screen may hold at once, over all terms together.
 const TABLE_BUDGET_BYTES: usize = 64 << 20;
@@ -21,23 +21,46 @@ const TABLE_BUDGET_BYTES: usize = 64 << 20;
 /// Rows one residual task claims; small enough that work stealing balances the tail.
 const ROWS_PER_TASK: usize = 1 << 16;
 
-pub(crate) fn detect_collinear_slopes(prepared: &PreparedDesign<'_>) -> Vec<BuildWarning> {
+/// A slope covariate the screen found (nearly) inside another term's per-level span.
+pub(crate) struct CollinearSlope {
+    pub(crate) slope: Channel,
+    pub(crate) term: usize,
+    /// Share of the covariate's weighted variation outside that term's span.
+    pub(crate) relative_residual: f64,
+    /// The same share against the covariate's own term, whose whitening may have spent its
+    /// direction on a sibling slope.
+    pub(crate) self_residual: f64,
+}
+
+impl CollinearSlope {
+    /// Bounds the energy the difference of the two per-level fits still carries.
+    pub(crate) fn certificate(&self) -> f64 {
+        self.relative_residual.max(self.self_residual)
+    }
+
+    pub(crate) fn verdict(&self) -> AliasVerdict {
+        match self.certificate() <= GAUGE_NULL_TOL {
+            true => AliasVerdict::Constrained,
+            false => AliasVerdict::Kept,
+        }
+    }
+
+    pub(crate) fn warn(&self) -> BuildWarning {
+        BuildWarning::CollinearSlopeCovariate {
+            slope: self.slope,
+            term: self.term,
+            relative_residual: self.relative_residual,
+            verdict: self.verdict(),
+        }
+    }
+}
+
+pub(crate) fn detect_collinear_slopes(prepared: &PreparedDesign<'_>) -> Vec<CollinearSlope> {
     let design = &prepared.design;
     if design.n_factors() < 2 || !design.terms.iter().any(TermMeta::has_slopes) {
         return Vec::new();
     }
     let budget = TABLE_BUDGET_BYTES / std::mem::size_of::<f64>() / design.n_factors();
-    // A null needs BOTH terms to reproduce the covariate: whitening may have spent its own
-    // term's direction on a sibling slope, leaving a remainder the other term does not carry.
-    let verdict = |slope: Channel, covariate: u32, share: f64| {
-        let null = share <= GAUGE_NULL_TOL
-            && residual_shares(prepared, slope.term, &[(slope, covariate)], budget)[0]
-                <= GAUGE_NULL_TOL;
-        match null {
-            true => AliasVerdict::Constrained,
-            false => AliasVerdict::Kept,
-        }
-    };
     (0..design.n_factors())
         .into_par_iter()
         .flat_map_iter(move |term| {
@@ -46,14 +69,19 @@ pub(crate) fn detect_collinear_slopes(prepared: &PreparedDesign<'_>) -> Vec<Buil
                 .into_iter()
                 .zip(targets)
                 .filter(|&(share, _)| share <= COLLINEARITY_TOL)
-                .map(move |(relative_residual, (slope, covariate))| {
-                    BuildWarning::CollinearSlopeCovariate {
+                .map(
+                    move |(relative_residual, (slope, covariate))| CollinearSlope {
                         slope,
                         term,
                         relative_residual,
-                        verdict: verdict(slope, covariate, relative_residual),
-                    }
-                })
+                        self_residual: residual_shares(
+                            prepared,
+                            slope.term,
+                            &[(slope, covariate)],
+                            budget,
+                        )[0],
+                    },
+                )
         })
         .collect()
 }

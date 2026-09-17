@@ -10,7 +10,7 @@ use schwarz_precond::{lsmr as lsmr_solve, mlsmr, MlsmrOptions};
 
 use crate::channel::{Channel, Coefficient, CoefficientAddress};
 use crate::config::{LsmrOptions, PreconditionerConfig};
-use crate::domain::collinearity::detect_collinear_slopes;
+use crate::domain::collinearity::{detect_collinear_slopes, CollinearSlope};
 use crate::domain::{Design, Effect, FactorEncoding, PreparedDesign};
 use crate::operator::design::gather_apply;
 use crate::operator::gauge::GaugeConstraint;
@@ -366,7 +366,8 @@ impl<'a> Solver<'a> {
     ) -> Result<Self, BuildError> {
         // Whiten the slope columns (if any) before the preconditioner reads them.
         let prepared = PreparedDesign::new(design.into_design()?, weights)?;
-        let mut warnings = detect_collinear_slopes(&prepared);
+        let screened = detect_collinear_slopes(&prepared);
+        let mut warnings: Vec<BuildWarning> = screened.iter().map(CollinearSlope::warn).collect();
         let n_dofs = prepared.design.n_dofs;
 
         let (mut preconditioner, build_warnings) = match preconditioner.into() {
@@ -386,7 +387,7 @@ impl<'a> Solver<'a> {
 
         // Only `M⁻¹` can inject a null of `A`; unpreconditioned LSMR never leaves `range(Aᵀ)`.
         if let Some(p) = preconditioner.as_mut() {
-            p.gauge = GaugeConstraint::build(&prepared, &warnings);
+            p.gauge = GaugeConstraint::build(&prepared, &screened);
         }
         warnings.extend(build_warnings);
 

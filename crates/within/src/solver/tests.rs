@@ -389,39 +389,37 @@ fn the_exact_alias_floor_stays_under_the_tolerance_at_scale() {
     );
 }
 
+/// Three mutually orthogonal, centered ±1 columns on eight observations.
+fn walsh_columns() -> ([f64; 8], [f64; 8], [f64; 8]) {
+    (
+        [1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0],
+        [1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0],
+        [1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0],
+    )
+}
+
+/// Share of `y` left after residualizing on `effects` under the default preconditioner.
+fn residual_share<'a>(effects: Vec<Effect<'a>>, y: &[f64]) -> (Solver<'a>, f64) {
+    let solver = Solver::new(effects, None, None).expect("solver");
+    let out = solve_tight(&solver, y);
+    let energy = |v: &[f64]| v.iter().map(|x| x * x).sum::<f64>();
+    let share = energy(&out.demeaned) / energy(y);
+    (solver, share)
+}
+
 /// Whitening spent the carrying term's own `c` direction on a near-duplicate slope whose remainder
 /// the other term does not span, so the proposed difference of fits is not a null.
 #[test]
 fn a_covariate_its_own_term_no_longer_carries_is_not_a_null() {
-    let n = 400;
-    let mut state = 0x9e37_79b9_7f4a_7c15u64;
-    let mut next = move || {
-        state ^= state << 13;
-        state ^= state >> 7;
-        state ^= state << 17;
-        (state >> 11) as f64 / (1u64 << 53) as f64 - 0.5
-    };
-    let dot = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>();
-    let centered = |mut v: Vec<f64>| {
-        let m = v.iter().sum::<f64>() / v.len() as f64;
-        v.iter_mut().for_each(|x| *x -= m);
-        v
-    };
-    let c = centered((0..n).map(|_| next()).collect());
-    let mut e = centered((0..n).map(|_| next()).collect());
-    let k = dot(&e, &c) / dot(&c, &c);
-    e.iter_mut().zip(&c).for_each(|(ei, &ci)| *ei -= k * ci);
-    let near: Vec<f64> = c
-        .iter()
-        .zip(&e)
-        .map(|(&ci, &ei)| 2.0 * ci + 1e-6 * ei)
-        .collect();
-    let level = vec![0u32; n];
+    let (c, _, e) = walsh_columns();
+    let near: [f64; 8] = std::array::from_fn(|i| 2.0 * c[i] + 1e-6 * e[i]);
+    let level = [0u32; 8];
     let effects = vec![
         Effect::new(&level, true, [&c[..], &near[..]]).unwrap(),
         Effect::new(&level, true, [&c[..]]).unwrap(),
     ];
-    let solver = Solver::new(effects, None, None).expect("solver");
+    // `e` lies in the design's span, so nothing of it may survive residualization.
+    let (solver, share) = residual_share(effects, &e);
     assert_eq!(
         verdicts(&solver),
         [Kept, Kept, Kept],
@@ -429,9 +427,26 @@ fn a_covariate_its_own_term_no_longer_carries_is_not_a_null() {
         solver.warnings()
     );
     assert_eq!(constrained_rank(&solver), None);
-    // `e` lies in the design's span, so nothing of it may survive residualization; the 1e-12
-    // normal-equation stop is out of reach on this 5-dof problem even unpreconditioned.
-    let out = solve_tight(&solver, &e);
-    let share = dot(&out.demeaned, &out.demeaned) / dot(&e, &e);
+    assert!(share < 1e-12, "share={share:.3e}");
+}
+
+/// Two certified proposals `c` and `c + 1e-3·d + 5e-11·e` name one null and a contrast whose
+/// unexplained `e` part is divided by the contrast's `1e-3` share: the contrast is not certified.
+#[test]
+fn a_contrast_of_certified_proposals_is_not_itself_certified() {
+    let (c, d, e) = walsh_columns();
+    let near: [f64; 8] = std::array::from_fn(|i| c[i] + 1e-3 * d[i] + 5e-11 * e[i]);
+    let level = [0u32; 8];
+    let effects = vec![
+        Effect::new(&level, true, [&c[..], &near[..]]).unwrap(),
+        Effect::new(&level, true, [&c[..], &d[..]]).unwrap(),
+    ];
+    let (solver, share) = residual_share(effects, &e);
+    assert_eq!(
+        constrained_rank(&solver),
+        Some(1),
+        "{:?}",
+        solver.warnings()
+    );
     assert!(share < 1e-12, "share={share:.3e}");
 }

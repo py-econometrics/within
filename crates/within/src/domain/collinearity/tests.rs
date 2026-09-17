@@ -10,10 +10,7 @@ fn warn_pairs(design: &Design<'_>, weights: Option<&[f64]>) -> Vec<(Channel, usi
     let prepared = PreparedDesign::new(design.clone(), weights).expect("valid weights");
     detect_collinear_slopes(&prepared)
         .into_iter()
-        .map(|w| match w {
-            BuildWarning::CollinearSlopeCovariate { slope, term, .. } => (slope, term),
-            other => panic!("unexpected warning {other:?}"),
-        })
+        .map(|s| (s.slope, s.term))
         .collect()
 }
 

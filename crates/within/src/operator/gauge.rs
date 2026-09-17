@@ -6,10 +6,11 @@ use std::cell::RefCell;
 use schwarz_precond::{Operator, SolveError};
 
 use crate::channel::Channel;
+use crate::domain::collinearity::{CollinearSlope, GAUGE_NULL_TOL};
 use crate::domain::{BasisScratch, PreparedDesign, RANK_TOL};
 use crate::linalg::dot;
 use crate::operator::DesignOperator;
-use crate::{AliasVerdict, BuildWarning};
+use crate::AliasVerdict;
 
 thread_local! {
     /// The projected input of a constrained apply; the base preconditioner needs distinct buffers.
@@ -25,18 +26,13 @@ pub(crate) struct GaugeConstraint {
 
 impl GaugeConstraint {
     /// The screen's null verdicts as one constraint, `None` when no independent direction survives.
-    pub(crate) fn build(prepared: &PreparedDesign<'_>, warnings: &[BuildWarning]) -> Option<Self> {
-        let nulls: Vec<(Channel, usize)> = warnings
+    pub(crate) fn build(
+        prepared: &PreparedDesign<'_>,
+        screened: &[CollinearSlope],
+    ) -> Option<Self> {
+        let nulls: Vec<&CollinearSlope> = screened
             .iter()
-            .filter_map(|w| match w {
-                BuildWarning::CollinearSlopeCovariate {
-                    slope,
-                    term,
-                    verdict: AliasVerdict::Constrained,
-                    ..
-                } => Some((*slope, *term)),
-                _ => None,
-            })
+            .filter(|slope| slope.verdict() == AliasVerdict::Constrained)
             .collect();
         if nulls.is_empty() {
             return None;
@@ -47,10 +43,14 @@ impl GaugeConstraint {
         let scale = operator.column_norms_squared();
         let proposed = nulls
             .iter()
-            .map(|&(slope, term)| propose(prepared, &operator, &scale, slope, term))
+            .map(|slope| propose(prepared, &operator, &scale, slope.slope, slope.term))
             .collect();
+        // A contrast of near-parallel proposals divides their certified energy by its residual
+        // share, so a share under certificate/tolerance is not itself a certified null.
+        let certificate = nulls.iter().map(|s| s.certificate()).fold(0.0, f64::max);
+        let rank_tol = (certificate / GAUGE_NULL_TOL).max(RANK_TOL);
         let gauge = Self {
-            rows: orthonormalize(proposed, n_dofs),
+            rows: orthonormalize(proposed, n_dofs, rank_tol),
             n_dofs,
         };
         (gauge.rank() > 0).then_some(gauge)
@@ -156,8 +156,8 @@ fn propose(
     values
 }
 
-/// Pivoted Gram-Schmidt in the proposals' Gram, by the rank rule a slope column already obeys.
-fn orthonormalize(proposed: Vec<Vec<f64>>, n_dofs: usize) -> Vec<f64> {
+/// Pivoted Gram-Schmidt in the proposals' Gram; `tol` is the residual share a new row must keep.
+fn orthonormalize(proposed: Vec<Vec<f64>>, n_dofs: usize, tol: f64) -> Vec<f64> {
     let k = proposed.len();
     let mut scratch = BasisScratch::new(k);
     for (j, a) in proposed.iter().enumerate() {
@@ -165,7 +165,7 @@ fn orthonormalize(proposed: Vec<Vec<f64>>, n_dofs: usize) -> Vec<f64> {
             scratch.gram[j * k + i] = dot(a, b);
         }
     }
-    scratch.orthonormalize(k, RANK_TOL);
+    scratch.orthonormalize(k, tol);
     let mut rows = vec![0.0; scratch.basis.len() / k * n_dofs];
     for (row, coefficients) in rows
         .chunks_exact_mut(n_dofs)

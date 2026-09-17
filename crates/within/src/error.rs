@@ -147,7 +147,7 @@ pub enum BuildWarning {
 pub enum AliasVerdict {
     /// A null of the design, kept out of the solve space.
     Constrained,
-    /// Carries information the data can still resolve, so the iteration keeps it.
+    /// Not certified as a null, so the iteration keeps it.
     Kept,
 }
 
@@ -173,8 +173,8 @@ impl std::fmt::Display for BuildWarning {
                 let fate = match verdict {
                     AliasVerdict::Constrained => "was removed from the solve space",
                     AliasVerdict::Kept => {
-                        "stays in the solve space, where iteration counts can inflate by \
-                         orders of magnitude"
+                        "was not certified as a null and stays in the solve space, where \
+                         iteration counts can inflate by orders of magnitude"
                     }
                 };
                 write!(

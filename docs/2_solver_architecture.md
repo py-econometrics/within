@@ -178,7 +178,9 @@ We conclude with a summary of the full algorithm.
    relative residual separates such nulls (cancelling to roundoff) from directions the data can
    still resolve (orders of magnitude above); both terms must reproduce the covariate, since
    whitening may have spent its own term's direction on a sibling slope. The nulls are
-   orthonormalized by pivoted Gram-Schmidt into $V$, and the solve runs on
+   orthonormalized by pivoted Gram-Schmidt into $V$, admitting a contrast of near-parallel
+   proposals only while its residual share keeps their certified energy under the tolerance, and
+   the solve runs on
    $\operatorname{range}(I - V^\top V)$, so no subdomain inverts a roundoff-scale null.
 
 ### 5.2 Solve phase
