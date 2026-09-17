@@ -172,11 +172,16 @@ We conclude with a summary of the full algorithm.
 
 5. **Assemble** Schwarz preconditioner $M^{-1}$ from subdomain factors.
 
+6. **Constrain cross-term aliasing:**
+   - A slope covariate another term reproduces per level is a null of $D$: $v$, the difference of its two per-level fits in the whitening basis net of the shared constant, has $Dv = 0$.
+   - A candidate is certified when its relative residual against both terms cancels to roundoff; certified candidates are orthonormalized by pivoted Gram-Schmidt into $V$, admitting a contrast only while its residual share keeps the certificate under tolerance.
+   - The solve runs on $\operatorname{range}(I - V^\top V)$.
+
 ### 5.2 Solve phase
 
 1. **Form the rectangular operator and right-hand side**: $A = \sqrt{W} D$, $b = \sqrt{W} y$ (both implicit — never materialized).
 
-2. **Run modified LSMR** on $(A, b)$ with preconditioner $M^{-1}$:
+2. **Run modified LSMR** on $(A, b)$ with preconditioner $PM^{-1}P$, $P = I - V^\top V$:
    - Each iteration: one $Av$, one $A^\top u$, one $M^{-1}\tilde{p}$ application, plus a constant number of vector updates.
    - Optionally reorthogonalize against the last `local_size` basis vectors.
    - Converge when $\|A^\top r_k\|_2 \leq \text{tol} \cdot \|A^\top b\|_2$.

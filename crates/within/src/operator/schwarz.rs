@@ -9,8 +9,9 @@ use std::time::{Duration, Instant};
 
 use crate::block_elim::BlockElimSolver;
 use crate::config::{LocalSolverConfig, PreconditionerConfig};
-use crate::domain::Loading;
 use crate::domain::{LocalDomain, PreparedDesign};
+use crate::operator::gauge::GaugeConstraint;
+use crate::operator::DesignOperator;
 use crate::{BuildError, BuildWarning};
 
 #[cfg(test)]
@@ -131,6 +132,10 @@ pub(crate) fn build_entry(
 pub struct Preconditioner {
     inner: Variant,
     build_duration: Duration,
+    /// Cross-term nulls every apply keeps out of the solve space, `P M⁻¹ P`; a property of the
+    /// design the solver attaches, so it is rebuilt rather than serialized.
+    #[serde(skip)]
+    pub(crate) gauge: Option<Arc<GaugeConstraint>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -180,62 +185,38 @@ impl Preconditioner {
     }
 }
 
-impl Operator for Preconditioner {
-    fn nrows(&self) -> usize {
+impl Preconditioner {
+    fn base(&self) -> &dyn Operator {
         match &self.inner {
-            Variant::Additive(p) => p.nrows(),
-            Variant::Diagonal(p) => p.nrows(),
-        }
-    }
-
-    fn ncols(&self) -> usize {
-        match &self.inner {
-            Variant::Additive(p) => p.ncols(),
-            Variant::Diagonal(p) => p.ncols(),
-        }
-    }
-
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
-        match &self.inner {
-            Variant::Additive(p) => p.apply(x, y),
-            Variant::Diagonal(p) => p.apply(x, y),
-        }
-    }
-
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
-        match &self.inner {
-            Variant::Additive(p) => p.apply_adjoint(x, y),
-            Variant::Diagonal(p) => p.apply_adjoint(x, y),
+            Variant::Additive(p) => p,
+            Variant::Diagonal(p) => p,
         }
     }
 }
 
-fn build_diagonal(prepared: &PreparedDesign<'_>) -> Result<DiagonalPreconditioner, BuildError> {
-    let design = &prepared.design;
-    let mut diag = vec![0.0; design.n_dofs];
+impl Operator for Preconditioner {
+    fn nrows(&self) -> usize {
+        self.base().nrows()
+    }
 
-    for (factor_idx, term) in design.terms.iter().enumerate() {
-        let levels = design.frame.level_column(factor_idx);
-        let w = |uid: usize| prepared.row_weight(uid);
-        for (column, loading) in term.columns.iter().enumerate() {
-            let base = term.column_base(column);
-            let slice = &mut diag[base..base + term.n_levels()];
-            match loading {
-                Loading::Constant => {
-                    for (uid, &level) in levels.iter().enumerate() {
-                        slice[level as usize] += w(uid);
-                    }
-                }
-                Loading::Covariate(z_col) => {
-                    let z = prepared.loading_column(*z_col as usize);
-                    for (uid, &level) in levels.iter().enumerate() {
-                        // Keep `w * z * z` left-to-right: a zero weight kills a huge `z` first.
-                        slice[level as usize] += w(uid) * z[uid] * z[uid];
-                    }
-                }
-            }
+    fn ncols(&self) -> usize {
+        self.base().ncols()
+    }
+
+    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
+        match &self.gauge {
+            Some(gauge) => gauge.constrain(x, y, |p, y| self.base().apply(p, y)),
+            None => self.base().apply(x, y),
         }
     }
+
+    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
+        self.apply(x, y)
+    }
+}
+
+fn build_diagonal(prepared: &PreparedDesign<'_>) -> Result<DiagonalPreconditioner, BuildError> {
+    let mut diag = DesignOperator::new(prepared).column_norms_squared();
 
     // A zero diagonal is an unidentified DOF, so the pseudo-inverse keeps it in the null space.
     for (index, d) in diag.iter_mut().enumerate() {
@@ -294,6 +275,7 @@ pub(crate) fn build_preconditioner(
         Some(Preconditioner {
             inner,
             build_duration,
+            gauge: None,
         }),
         warnings,
     ))
