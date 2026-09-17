@@ -6,22 +6,20 @@ use std::time::Instant;
 
 use ndarray::ArrayView2;
 use rayon::prelude::*;
-use schwarz_precond::{lsmr as lsmr_solve, mlsmr, MlsmrOptions, Operator};
+use schwarz_precond::{lsmr as lsmr_solve, mlsmr, MlsmrOptions};
 
 use crate::channel::{Channel, Coefficient, CoefficientAddress};
 use crate::config::{LsmrOptions, PreconditionerConfig};
 use crate::domain::collinearity::detect_collinear_slopes;
 use crate::domain::{Design, Effect, FactorEncoding, PreparedDesign};
 use crate::operator::design::gather_apply;
+use crate::operator::gauge;
 use crate::operator::schwarz::{build_preconditioner, Preconditioner};
 use crate::operator::DesignOperator;
 use crate::{AliasVerdict, BuildError, BuildWarning, SolveError, WithinError};
 
-mod gauge;
 #[cfg(test)]
 mod tests;
-
-use gauge::{ConstrainedPreconditioner, GaugeConstraint};
 
 /// Fallible conversion into a [`Design`] for [`Solver::new`]: a categories
 /// matrix (`ArrayView2<u32>`), a list of [`Effect`] terms, a pass-through
@@ -313,8 +311,6 @@ impl BatchSolveResult {
 pub struct Solver<'a> {
     prepared: PreparedDesign<'a>,
     preconditioner: Option<Preconditioner>,
-    /// Cross-term null directions removed from the solve space.
-    gauge: Option<GaugeConstraint>,
     warnings: Vec<BuildWarning>,
 }
 
@@ -374,8 +370,8 @@ impl<'a> Solver<'a> {
         let n_dofs = prepared.design.n_dofs;
 
         let (preconditioner, build_warnings) = match preconditioner.into() {
-            PreconditionerInput::Default => build_preconditioner(&prepared, None)?,
-            PreconditionerInput::Config(c) => build_preconditioner(&prepared, Some(&c))?,
+            PreconditionerInput::Default => build_preconditioner(&prepared, None, &screened)?,
+            PreconditionerInput::Config(c) => build_preconditioner(&prepared, Some(&c), &screened)?,
             PreconditionerInput::Prebuilt(p) => {
                 if p.nrows() != n_dofs || p.ncols() != n_dofs {
                     return Err(BuildError::PreconditionerDimensionMismatch {
@@ -389,22 +385,20 @@ impl<'a> Solver<'a> {
         };
 
         // With no `M⁻¹` to amplify it, an aliased direction costs nothing and stays in the space.
-        let (gauge, mut warnings) = match preconditioner.is_some() {
-            true => GaugeConstraint::build(&prepared, &screened),
-            false => (
-                None,
-                screened
-                    .iter()
-                    .map(|s| s.warn(AliasVerdict::Kept))
-                    .collect(),
-            ),
-        };
+        let mut warnings: Vec<BuildWarning> = screened
+            .iter()
+            .map(|slope| {
+                slope.warn(match preconditioner {
+                    Some(_) => gauge::verdict(slope),
+                    None => AliasVerdict::Kept,
+                })
+            })
+            .collect();
         warnings.extend(build_warnings);
 
         Ok(Self {
             prepared,
             preconditioner,
-            gauge,
             warnings,
         })
     }
@@ -453,19 +447,11 @@ impl<'a> Solver<'a> {
 
         let r = match self.preconditioner.as_ref() {
             Some(p) => {
-                let constrained = self
-                    .gauge
-                    .as_ref()
-                    .map(|gauge| ConstrainedPreconditioner::new(p, gauge));
-                let m: &dyn Operator = match &constrained {
-                    Some(constrained) => constrained,
-                    None => p,
-                };
                 let options = MlsmrOptions {
                     local_size: lsmr.local_size,
                     ..Default::default()
                 };
-                mlsmr(&rect_op, b, m, lsmr.tol, lsmr.maxiter, options)?
+                mlsmr(&rect_op, b, p, lsmr.tol, lsmr.maxiter, options)?
             }
             None => lsmr_solve(&rect_op, b, lsmr.tol, lsmr.maxiter, lsmr.local_size)?,
         };

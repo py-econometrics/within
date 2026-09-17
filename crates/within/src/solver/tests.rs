@@ -2,11 +2,11 @@ use std::sync::Arc;
 
 use rstest::rstest;
 
-use super::gauge::GaugeConstraint;
 use super::{CoefficientAddress, CoefficientLayout};
 use crate::channel::Channel;
 use crate::config::{LocalSolverConfig, LsmrOptions, DEFAULT_DENSE_SCHUR_THRESHOLD};
 use crate::domain::{build_local_domains, Design, Grounding, MatrixForm, PreparedDesign};
+use crate::operator::gauge::GaugeConstraint;
 use crate::AliasVerdict::{self, Constrained, Kept};
 use crate::{BuildWarning, Effect, PreconditionerConfig, Solver};
 
@@ -273,7 +273,10 @@ fn max_abs_group_mean(design: &Design<'_>, demeaned: &[f64]) -> f64 {
 
 /// Rows the solve space excludes, `None` when the gauge constrains nothing.
 fn constrained_rank(solver: &Solver<'_>) -> Option<usize> {
-    solver.gauge.as_ref().map(GaugeConstraint::rank)
+    solver
+        .preconditioner()
+        .and_then(|p| p.gauge.as_ref())
+        .map(GaugeConstraint::rank)
 }
 
 /// Every collinearity warning's verdict, in the order the screen raised them.

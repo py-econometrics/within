@@ -54,8 +54,9 @@ impl<'a> DesignOperator<'a> {
                     .covariate()
                     .map(|&c| self.prepared.loading_column(c as usize));
                 for (obs, &level) in levels.iter().enumerate() {
-                    let scale = z.map_or(1.0, |z| z[obs] * z[obs]);
-                    slice[level as usize] += self.prepared.row_weight(obs) * scale;
+                    let w = self.prepared.row_weight(obs);
+                    // Keep `w * z * z` left-to-right: a zero weight kills a huge `z` first.
+                    slice[level as usize] += z.map_or(w, |z| w * z[obs] * z[obs]);
                 }
             }
         }

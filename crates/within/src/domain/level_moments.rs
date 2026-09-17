@@ -107,7 +107,7 @@ impl LevelMoments {
 
 /// Reusable buffers for a sweep of [`LevelMoments::basis`] over many levels.
 pub(crate) struct BasisScratch {
-    gram: Vec<f64>,
+    pub(crate) gram: Vec<f64>,
     residual: Vec<f64>,
     q: Vec<f64>,
     /// The last level's `rank × v` orthonormal rows.
@@ -136,7 +136,7 @@ impl BasisScratch {
     /// kept-column mask. A column drops once its residual variance falls to
     /// `tol` × its initial variance; pivots keep their original column indices
     /// — nothing is swapped.
-    fn orthonormalize(&mut self, v: usize, tol: f64) {
+    pub(crate) fn orthonormalize(&mut self, v: usize, tol: f64) {
         let Self {
             gram: g,
             residual,

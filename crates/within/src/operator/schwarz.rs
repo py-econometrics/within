@@ -9,8 +9,10 @@ use std::time::{Duration, Instant};
 
 use crate::block_elim::BlockElimSolver;
 use crate::config::{LocalSolverConfig, PreconditionerConfig};
-use crate::domain::Loading;
+use crate::domain::collinearity::CollinearSlope;
 use crate::domain::{LocalDomain, PreparedDesign};
+use crate::operator::gauge::GaugeConstraint;
+use crate::operator::DesignOperator;
 use crate::{BuildError, BuildWarning};
 
 #[cfg(test)]
@@ -131,6 +133,8 @@ pub(crate) fn build_entry(
 pub struct Preconditioner {
     inner: Variant,
     build_duration: Duration,
+    /// Cross-term nulls every apply keeps out of the solve space: `P M⁻¹ P`.
+    pub(crate) gauge: Option<GaugeConstraint>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -182,60 +186,60 @@ impl Preconditioner {
 
 impl Operator for Preconditioner {
     fn nrows(&self) -> usize {
-        match &self.inner {
-            Variant::Additive(p) => p.nrows(),
-            Variant::Diagonal(p) => p.nrows(),
-        }
+        self.inner.nrows()
     }
 
     fn ncols(&self) -> usize {
-        match &self.inner {
-            Variant::Additive(p) => p.ncols(),
-            Variant::Diagonal(p) => p.ncols(),
-        }
+        self.inner.ncols()
     }
 
     fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
-        match &self.inner {
-            Variant::Additive(p) => p.apply(x, y),
-            Variant::Diagonal(p) => p.apply(x, y),
+        match &self.gauge {
+            Some(gauge) => gauge.constrain(x, y, |p, y| self.inner.apply(p, y)),
+            None => self.inner.apply(x, y),
         }
     }
 
     fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
-        match &self.inner {
-            Variant::Additive(p) => p.apply_adjoint(x, y),
-            Variant::Diagonal(p) => p.apply_adjoint(x, y),
+        match &self.gauge {
+            Some(gauge) => gauge.constrain(x, y, |p, y| self.inner.apply_adjoint(p, y)),
+            None => self.inner.apply_adjoint(x, y),
+        }
+    }
+}
+
+impl Operator for Variant {
+    fn nrows(&self) -> usize {
+        match self {
+            Self::Additive(p) => p.nrows(),
+            Self::Diagonal(p) => p.nrows(),
+        }
+    }
+
+    fn ncols(&self) -> usize {
+        match self {
+            Self::Additive(p) => p.ncols(),
+            Self::Diagonal(p) => p.ncols(),
+        }
+    }
+
+    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
+        match self {
+            Self::Additive(p) => p.apply(x, y),
+            Self::Diagonal(p) => p.apply(x, y),
+        }
+    }
+
+    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
+        match self {
+            Self::Additive(p) => p.apply_adjoint(x, y),
+            Self::Diagonal(p) => p.apply_adjoint(x, y),
         }
     }
 }
 
 fn build_diagonal(prepared: &PreparedDesign<'_>) -> Result<DiagonalPreconditioner, BuildError> {
-    let design = &prepared.design;
-    let mut diag = vec![0.0; design.n_dofs];
-
-    for (factor_idx, term) in design.terms.iter().enumerate() {
-        let levels = design.frame.level_column(factor_idx);
-        let w = |uid: usize| prepared.row_weight(uid);
-        for (column, loading) in term.columns.iter().enumerate() {
-            let base = term.column_base(column);
-            let slice = &mut diag[base..base + term.n_levels()];
-            match loading {
-                Loading::Constant => {
-                    for (uid, &level) in levels.iter().enumerate() {
-                        slice[level as usize] += w(uid);
-                    }
-                }
-                Loading::Covariate(z_col) => {
-                    let z = prepared.loading_column(*z_col as usize);
-                    for (uid, &level) in levels.iter().enumerate() {
-                        // Keep `w * z * z` left-to-right: a zero weight kills a huge `z` first.
-                        slice[level as usize] += w(uid) * z[uid] * z[uid];
-                    }
-                }
-            }
-        }
-    }
+    let mut diag = DesignOperator::new(prepared).column_norms_squared();
 
     // A zero diagonal is an unidentified DOF, so the pseudo-inverse keeps it in the null space.
     for (index, d) in diag.iter_mut().enumerate() {
@@ -258,6 +262,7 @@ fn build_diagonal(prepared: &PreparedDesign<'_>) -> Result<DiagonalPreconditione
 pub(crate) fn build_preconditioner(
     prepared: &PreparedDesign<'_>,
     config: Option<&PreconditionerConfig>,
+    screened: &[CollinearSlope],
 ) -> Result<(Option<Preconditioner>, Vec<BuildWarning>), BuildError> {
     use crate::domain::build_local_domains;
 
@@ -289,11 +294,13 @@ pub(crate) fn build_preconditioner(
             (Variant::Diagonal(preconditioner), Vec::new())
         }
     };
+    let gauge = GaugeConstraint::build(prepared, screened);
     let build_duration = build_started.elapsed();
     Ok((
         Some(Preconditioner {
             inner,
             build_duration,
+            gauge,
         }),
         warnings,
     ))
