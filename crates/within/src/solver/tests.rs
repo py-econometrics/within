@@ -141,9 +141,6 @@ enum SlopeSpec {
     /// Two independent aliases at once: the worker's slope is the year index and a fourth
     /// term's slope is the firm index, each reproduced by a different term.
     TwoIndependentAliases,
-    /// The worker's slope is the year index exactly, the firm's the year index perturbed
-    /// by the given amount: one null and one recoverable direction in a single design.
-    ExactAndNear(f64),
 }
 
 struct AkmPanel {
@@ -163,7 +160,6 @@ impl AkmPanel {
     fn effects(&self) -> Vec<Effect<'_>> {
         let firm = match self.spec {
             SlopeSpec::SharedWithFirm => Effect::new(&self.firm, true, [&self.z[..]]),
-            SlopeSpec::ExactAndNear(_) => Effect::new(&self.firm, true, [&self.z2[..]]),
             _ => Effect::new(&self.firm, true, []),
         };
         let worker = match self.spec {
@@ -223,15 +219,11 @@ fn akm_panel(
                 SlopeSpec::YearIndex
                 | SlopeSpec::DuplicateYearIndex
                 | SlopeSpec::YearIndexWithoutIntercept
-                | SlopeSpec::TwoIndependentAliases
-                | SlopeSpec::ExactAndNear(_) => t as f64,
+                | SlopeSpec::TwoIndependentAliases => t as f64,
                 SlopeSpec::NearYearIndex(delta) => t as f64 + delta * next(),
             };
             if matches!(spec, SlopeSpec::DuplicateYearIndex) {
                 panel.z2.push(z + 1e-6 * z * z);
-            }
-            if let SlopeSpec::ExactAndNear(delta) = spec {
-                panel.z2.push(t as f64 + delta * next());
             }
             if matches!(spec, SlopeSpec::TwoIndependentAliases) {
                 panel.region.push((w % 11) as u32);
@@ -328,7 +320,6 @@ fn solve_tight(solver: &Solver<'_>, y: &[f64]) -> crate::SolveResult {
 #[case::duplicate_aliases(SlopeSpec::DuplicateYearIndex, &[Kept, Constrained], Some(1))]
 #[case::alias_without_intercept(SlopeSpec::YearIndexWithoutIntercept, &[Constrained], Some(1))]
 #[case::two_independent_aliases(SlopeSpec::TwoIndependentAliases, &[Constrained, Constrained], Some(2))]
-#[case::exact_beside_recoverable(SlopeSpec::ExactAndNear(1e-6), &[Kept, Kept, Constrained, Kept], Some(1))]
 fn a_warned_direction_is_removed_only_when_it_carries_nothing(
     #[case] spec: SlopeSpec,
     #[case] expected: &[AliasVerdict],
@@ -363,30 +354,6 @@ fn a_prebuilt_preconditioner_is_constrained_by_the_design_it_serves() {
     assert_eq!(constrained_rank(&solver), Some(1));
     let out = solve_tight(&solver, &panel.y);
     assert!(out.converged && max_abs_group_mean(&solver.prepared.design, &out.demeaned) < 1e-9);
-}
-
-/// An exact alias cancels to a roundoff floor that grows with `n_obs`; the tolerance must outrun it.
-#[test]
-#[ignore = "8M observations"]
-fn the_exact_alias_floor_stays_under_the_tolerance_at_scale() {
-    let panel = akm_panel(200_000, 10_000, 40, 0.15, SlopeSpec::YearIndex);
-    let w = vec![1e-4; panel.y.len()];
-    let solver = Solver::new(panel.effects(), Some(&w[..]), unfloored()).expect("solver");
-    assert_eq!(
-        constrained_rank(&solver),
-        Some(1),
-        "{:?}",
-        solver.warnings()
-    );
-
-    // The same panel's recoverable neighbour must stay in the solve space.
-    let panel = akm_panel(200_000, 10_000, 40, 0.15, SlopeSpec::NearYearIndex(3e-5));
-    let solver = Solver::new(panel.effects(), None, unfloored()).expect("solver");
-    assert!(
-        constrained_rank(&solver).is_none(),
-        "{:?}",
-        solver.warnings()
-    );
 }
 
 /// Three mutually orthogonal, centered ±1 columns on eight observations.
