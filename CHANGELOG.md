@@ -9,7 +9,6 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- **BREAKING:** `BuildWarning::CollinearSlopeCovariate` gains `verdict: AliasVerdict` (#297).
 - Python `Effect` lists no longer deep-copy every level and slope buffer during design extraction; the binding retains the frozen Python effects and borrows their native buffers while building off-GIL (#358).
 - Categorical `u32` labels no longer need to be zero-based or contiguous: `Design` compacts observed labels to internal positions, while `CoefficientLayout` and `CoefficientAddress` translate coefficients back to caller-visible labels. This avoids allocating and solving for gaps in sparse label ranges (#228, #268).
 - **BREAKING:** Rust `Solver::new` now takes `weights: Option<&[f64]>` instead of `Option<Vec<f64>>`; pass `Some(&weights)` to build a weighted persistent solver. The solver prepares and retains only `W^{1/2}` in its internal observation order. The one-shot `solve` and `solve_batch` weight arguments remain borrowed and are unchanged.
@@ -32,7 +31,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - Persistent designs can be built once and shared across solves: Python adds `Design`, accepted by `Solver`, `solve`, and `solve_batch`; Rust adds `Design::from_categories` and accepts `&Design` in `Solver::new`, sharing immutable design storage while keeping weight-dependent preparation solver-local (#269).
 - `schwarz_precond::Staleness` gains `Default` (window 4, threshold 0.7), `window()`/`threshold()` accessors, and serde support validated through `try_new` (#260).
 - Python `Preconditioner.build_duration_seconds` and Rust `Preconditioner::build_duration()` expose the original preconditioner build duration, preserved across serialization and reuse.
-- `BuildWarning::CollinearSlopeCovariate` reports a slope covariate that is (nearly) a per-level combination of another term's columns — a cross-term near-null direction that per-term whitening cannot see and that can inflate iteration counts by orders of magnitude (#281).
+- `BuildWarning::CollinearSlopeCovariate` reports a slope covariate that is (nearly) a per-level combination of another term's columns — a cross-term near-null direction that per-term whitening cannot see and that can inflate iteration counts by orders of magnitude (#281); its `verdict: AliasVerdict` records whether the direction was constrained out of the solve space (#297).
 - `schwarz_precond::EscalationPolicy` builds a per-run `EscalationHandler` that ends a solve with `LsmrStopReason::Escalated` and an iterate that warm-starts the next preconditioner; `Staleness` implements it from the trailing contraction window.
 - `schwarz_precond::MlsmrOptions::warm_start` carries an initial iterate through a change of preconditioner.
 - `LocalSolverConfig::ridge` (Python `LocalSolverConfig(ridge=...)`) floors the local spectrum of grounded slope-pair components at a fraction of their largest diagonal; `0` disables it (#290).
