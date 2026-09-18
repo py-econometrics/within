@@ -340,6 +340,83 @@ fn a_warned_direction_is_removed_only_when_it_carries_nothing(
     assert_eq!(constrained_rank(&reattached), rank);
 }
 
+/// The escalated rung is built after the gauge, so it has to inherit it: an aliased design that
+/// hands off would otherwise run its second rung unconstrained.
+#[test]
+fn an_escalated_rung_keeps_the_constrained_directions_out() {
+    let panel = akm_panel(4_000, 200, 10, 0.15, SlopeSpec::YearIndex);
+    let ladder = PreconditionerConfig::Adaptive {
+        local_solver: LocalSolverConfig {
+            ridge: 0.0,
+            ..Default::default()
+        },
+        reduction: Default::default(),
+        stall: crate::Staleness::try_new(1, 0.0).expect("valid staleness"),
+    };
+    let solver = Solver::new(panel.effects(), None, ladder).expect("solver");
+    let out = solve_tight(&solver, &panel.y);
+
+    assert!(solver.has_escalated(), "eager stall must hand off");
+    assert_eq!(constrained_rank(&solver), Some(1));
+    let group_mean = max_abs_group_mean(&solver.prepared.design, &out.demeaned);
+    assert!(
+        out.converged && group_mean < 1e-9,
+        "converged={}, gm={group_mean:.3e}",
+        out.converged
+    );
+}
+
+/// A deferred build that fails is settled like one that succeeds: the second solve reports the
+/// same error without the ladder rebuilding, and re-failing, the same map.
+#[test]
+fn a_failed_deferred_build_is_kept_and_reported_again() {
+    use super::ladder::PrecondSlot;
+    use crate::config::{ScalingConfig, ScalingFailure};
+    use crate::{BuildError, WithinError};
+
+    // Two crossed slope pairs large enough for the diagonal to stall; a zero-tolerance,
+    // zero-iteration certificate then rejects the signed cross-block deterministically.
+    let n = 4000;
+    let a: Vec<u32> = (0..n).map(|i| (i % 40) as u32).collect();
+    let b: Vec<u32> = (0..n).map(|i| ((i / 40) % 25) as u32).collect();
+    let z: Vec<f64> = (0..n).map(|i| (i as f64 * 0.17 + 1.0).sin()).collect();
+    let effects = vec![
+        Effect::new(&a, true, [&z[..]]).unwrap(),
+        Effect::new(&b, true, [&z[..]]).unwrap(),
+    ];
+    let precond = PreconditionerConfig::Adaptive {
+        local_solver: LocalSolverConfig {
+            scaling: ScalingConfig {
+                tolerance: 0.0,
+                max_iterations: 0,
+                on_failure: ScalingFailure::Error,
+            },
+            ..LocalSolverConfig::default()
+        },
+        reduction: Default::default(),
+        stall: crate::Staleness::try_new(1, 0.0).unwrap(),
+    };
+    let solver = Solver::new(effects, None, precond).unwrap();
+    let y: Vec<f64> = (0..n).map(|i| z[i] + (i % 7) as f64).collect();
+    let unscalable = |r: &Result<crate::SolveResult, WithinError>| {
+        matches!(
+            r,
+            Err(WithinError::Build(BuildError::UnscalableComponent { .. }))
+        )
+    };
+    let first = solver.solve(&y, None);
+    assert!(unscalable(&first), "{first:?}");
+    let PrecondSlot::Adaptive(a) = &solver.slot else {
+        panic!("the ladder")
+    };
+    assert!(matches!(
+        a.built.get(),
+        Some(Err(BuildError::UnscalableComponent { .. }))
+    ));
+    assert!(unscalable(&solver.solve(&y, None)));
+    assert!(!solver.has_escalated());
+}
+
 /// A batch runs its right-hand sides on rayon workers that also execute the base apply's
 /// subdomain jobs; the constraint's scratch must never be held across that apply.
 #[test]
