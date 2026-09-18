@@ -15,7 +15,7 @@ use crate::domain::collinearity::{detect_collinear_slopes, CollinearSlope};
 use crate::domain::{Design, Effect, FactorEncoding, PreparedDesign};
 use crate::operator::design::gather_apply;
 use crate::operator::gauge::GaugeConstraint;
-use crate::operator::schwarz::{build_preconditioner, Preconditioner};
+use crate::operator::schwarz::{build_diagonal, build_schwarz, Preconditioner, SchwarzConfig};
 use crate::operator::DesignOperator;
 use crate::{BuildError, BuildWarning, SolveError, WithinError};
 
@@ -207,6 +207,27 @@ impl CoefficientLayout {
     }
 }
 
+/// Build the map a strategy names; `None` is unpreconditioned LSMR.
+fn build_map(
+    prepared: &PreparedDesign<'_>,
+    config: PreconditionerConfig,
+) -> Result<(Option<Preconditioner>, Vec<BuildWarning>), BuildError> {
+    Ok(match config {
+        PreconditionerConfig::Off => (None, Vec::new()),
+        PreconditionerConfig::Diagonal => (Some(build_diagonal(prepared)?), Vec::new()),
+        PreconditionerConfig::Additive {
+            local_solver,
+            reduction,
+        } => build_schwarz(
+            prepared,
+            &SchwarzConfig {
+                local_solver,
+                reduction,
+            },
+        )?,
+    })
+}
+
 /// Common solve output for all orchestration entry points.
 #[derive(Debug, Clone)]
 #[must_use]
@@ -372,8 +393,8 @@ impl<'a> Solver<'a> {
         let n_dofs = prepared.design.n_dofs;
 
         let (mut preconditioner, build_warnings) = match preconditioner.into() {
-            PreconditionerInput::Default => build_preconditioner(&prepared, None)?,
-            PreconditionerInput::Config(c) => build_preconditioner(&prepared, Some(&c))?,
+            PreconditionerInput::Default => build_map(&prepared, PreconditionerConfig::default())?,
+            PreconditionerInput::Config(c) => build_map(&prepared, c)?,
             PreconditionerInput::Prebuilt(p) => {
                 if p.nrows() != n_dofs || p.ncols() != n_dofs {
                     return Err(BuildError::PreconditionerDimensionMismatch {
