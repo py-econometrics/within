@@ -6,7 +6,7 @@ use schwarz_precond::SolveError;
 use within::observation::ObservationFrame;
 use within::{
     solve, solve_batch, BuildError, Design, Effect, LocalSolverConfig, LsmrOptions,
-    PreconditionerConfig, ScalingConfig, Solver, WithinError,
+    PreconditionerConfig, Solver, Staleness, WithinError,
 };
 
 // The Display/source()/From plumbing has one wiring check per enum, not per message.
@@ -205,53 +205,50 @@ fn test_within_error_source_chains_through_transparent_wrapper() {
     assert!(e.source().is_some());
 }
 
-#[rstest]
-fn test_invalid_ridge_rejected(#[values(-1e-9, f64::NAN, f64::INFINITY)] ridge: f64) {
-    let f = [0u32, 0, 1, 1];
-    let g = [0u32, 1, 0, 1];
-    let precond = PreconditionerConfig::Additive {
-        local_solver: LocalSolverConfig {
-            ridge,
-            ..Default::default()
-        },
-        reduction: Default::default(),
-    };
-    let effects = vec![
-        Effect::new(&f, true, []).expect("f"),
-        Effect::new(&g, true, []).expect("g"),
-    ];
-    match Solver::new(effects, None, &precond) {
-        Err(BuildError::InvalidRidge { value }) => assert_eq!(value.to_bits(), ridge.to_bits()),
-        other => panic!("expected InvalidRidge, got {other:?}"),
-    }
+#[derive(Debug, Clone, Copy)]
+enum InvalidField {
+    Ridge,
+    Tolerance,
 }
 
-/// Every dominance comparison is `>`, so an unvalidated NaN slack certifies each component
+/// Adaptive defers the build that would reject these, and with a single factor never runs it.
+/// Every dominance comparison is `>`, so an unvalidated NaN tolerance certifies each component
 /// silently — no `UnscalableComponent` under `Error`, and no `BuildWarning` under `Warn` either.
 #[rstest]
-fn test_invalid_scaling_tolerance_rejected(
-    #[values(-1e-9, f64::NAN, f64::INFINITY)] tolerance: f64,
+fn test_invalid_local_solver_rejected(
+    #[values(-1e-9, f64::NAN, f64::INFINITY)] value: f64,
+    #[values(InvalidField::Ridge, InvalidField::Tolerance)] field: InvalidField,
+    #[values(false, true)] adaptive: bool,
+    #[values(1, 2)] n_factors: usize,
 ) {
     let f = [0u32, 0, 1, 1];
     let g = [0u32, 1, 0, 1];
-    let precond = PreconditionerConfig::Additive {
-        local_solver: LocalSolverConfig {
-            scaling: ScalingConfig {
-                tolerance,
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-        reduction: Default::default(),
-    };
-    let effects = vec![
-        Effect::new(&f, true, []).expect("f"),
-        Effect::new(&g, true, []).expect("g"),
-    ];
-    match Solver::new(effects, None, &precond) {
-        Err(BuildError::InvalidScalingTolerance { value }) => {
-            assert_eq!(value.to_bits(), tolerance.to_bits())
-        }
-        other => panic!("expected InvalidScalingTolerance, got {other:?}"),
+    let mut local_solver = LocalSolverConfig::default();
+    match field {
+        InvalidField::Ridge => local_solver.ridge = value,
+        InvalidField::Tolerance => local_solver.scaling.tolerance = value,
     }
+    let precond = if adaptive {
+        PreconditionerConfig::Adaptive {
+            local_solver,
+            reduction: Default::default(),
+            stall: Staleness::try_new(4, 0.9).expect("stall"),
+        }
+    } else {
+        PreconditionerConfig::Additive {
+            local_solver,
+            reduction: Default::default(),
+        }
+    };
+    let mut effects = vec![Effect::new(&f, true, []).expect("f")];
+    if n_factors == 2 {
+        effects.push(Effect::new(&g, true, []).expect("g"));
+    }
+    let err = Solver::new(effects, None, &precond).expect_err("rejected");
+    let rejected = match (field, &err) {
+        (InvalidField::Ridge, BuildError::InvalidRidge { value }) => *value,
+        (InvalidField::Tolerance, BuildError::InvalidScalingTolerance { value }) => *value,
+        _ => panic!("expected an invalid {field:?}, got {err:?}"),
+    };
+    assert_eq!(rejected.to_bits(), value.to_bits());
 }
