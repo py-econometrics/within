@@ -38,10 +38,10 @@ def problem():
 
 @pytest.fixture()
 def solver_and_precond(problem):
-    """Build a Solver and extract its preconditioner."""
+    """Build a Schwarz Solver and extract its preconditioner."""
     cats, y = problem
     categories = as_solver_categories(cats)
-    solver = Solver(categories)
+    solver = Solver(categories, preconditioner=PreconditionerConfig.Additive())
     precond = solver.preconditioner
     return solver, precond, categories, y
 
@@ -178,9 +178,15 @@ class TestFePreconditioner:
         assert precond2.config == precond.config
         assert precond2.build_duration_seconds == precond.build_duration_seconds
 
-    def test_preconditioner_exposes_default_config(self, solver_and_precond):
+    def test_preconditioner_exposes_requested_config(self, solver_and_precond):
         solver, precond, categories, y = solver_and_precond
         assert precond.config == PreconditionerConfig.Additive()
+
+    def test_default_solver_starts_on_the_diagonal_rung(self, problem):
+        cats, _ = problem
+        solver = Solver(as_solver_categories(cats))
+        assert solver.preconditioner.config == PreconditionerConfig.Diagonal()
+        assert not solver.has_escalated
 
     def test_preconditioner_exposes_tuned_config(self, problem):
         cats, _ = problem

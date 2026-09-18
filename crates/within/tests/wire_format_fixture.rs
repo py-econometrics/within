@@ -3,11 +3,21 @@
 //! cross-version encoding shifts the same-build round-trip test cannot.
 //! Regenerate via the `#[ignore]`d `regenerate_wire_format_fixture` test.
 
+use within::config::{LocalSolverConfig, ReductionStrategy};
 use within::{Effect, LsmrOptions, Preconditioner, PreconditionerConfig, Solver};
 
 const WIRE_FORMAT_VERSION: u32 = 17;
 const PRECOND_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v17.postcard");
 const PRE_BUMP_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v16.postcard");
+
+/// The fixture pins the Schwarz signed route, so every site names it rather than
+/// riding on the library default.
+fn additive() -> PreconditionerConfig {
+    PreconditionerConfig::Additive {
+        local_solver: LocalSolverConfig::default(),
+        reduction: ReductionStrategy::Auto,
+    }
+}
 
 fn fixture_problem() -> (Vec<u32>, Vec<u32>, Vec<f64>, Vec<f64>) {
     // The frustrated (f-slope, g) pair pins a signed operator with Scaled coords and a Cover.
@@ -42,12 +52,7 @@ fn wire_format_fixture_deserializes_and_solves() {
     assert!(result.converged, "fixture-built solver should converge");
 
     // Compare against a fresh build to detect any semantic regression.
-    let fresh = Solver::new(
-        fixture_effects(&f, &g, &z),
-        None,
-        PreconditionerConfig::default(),
-    )
-    .expect("fresh solver");
+    let fresh = Solver::new(fixture_effects(&f, &g, &z), None, additive()).expect("fresh solver");
     let fresh_result = fresh
         .solve(&y, &LsmrOptions::default())
         .expect("fresh solve");
@@ -64,18 +69,13 @@ fn wire_format_fixture_deserializes_and_solves() {
 #[test]
 fn signed_route_preconditioner_round_trips() {
     let (f, g, z, y) = fixture_problem();
-    let solver1 = Solver::new(
-        fixture_effects(&f, &g, &z),
-        None,
-        PreconditionerConfig::default(),
-    )
-    .expect("build solver");
+    let solver1 = Solver::new(fixture_effects(&f, &g, &z), None, additive()).expect("build solver");
     let r1 = solver1.solve(&y, &LsmrOptions::default()).expect("solve 1");
 
     let bytes = postcard::to_stdvec(solver1.preconditioner().expect("has preconditioner"))
         .expect("serialize");
     let restored: Preconditioner = postcard::from_bytes(&bytes).expect("deserialize");
-    assert_eq!(restored.config(), PreconditionerConfig::default());
+    assert_eq!(restored.config(), additive());
 
     let solver2 =
         Solver::new(fixture_effects(&f, &g, &z), None, restored).expect("solver from round-trip");
@@ -106,15 +106,10 @@ fn regenerate_wire_format_fixture() {
     use std::path::PathBuf;
 
     let (f, g, z, _) = fixture_problem();
-    let solver = Solver::new(
-        fixture_effects(&f, &g, &z),
-        None,
-        PreconditionerConfig::default(),
-    )
-    .expect("build solver");
+    let solver = Solver::new(fixture_effects(&f, &g, &z), None, additive()).expect("build solver");
     let prec = solver
         .preconditioner()
-        .expect("default solver has a preconditioner");
+        .expect("Schwarz solver has a preconditioner");
     let bytes = postcard::to_stdvec(prec).expect("serialize");
 
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));

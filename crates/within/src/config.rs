@@ -1,8 +1,8 @@
 //! Solver and preconditioner configuration types.
 //!
-//! `Option<&PreconditionerConfig>` accepts `None` (default Additive Schwarz),
-//! `Some(Off)` (identity), `Some(Additive(_))` (tuned), `Some(Diagonal)`
-//! (Jacobi), or `Some(Adaptive(_))` (diagonal escalating to Schwarz on stall).
+//! `Option<&PreconditionerConfig>` accepts `None` (default Adaptive: diagonal
+//! escalating to Schwarz on stall), `Some(Off)` (identity), `Some(Additive(_))`
+//! (tuned Schwarz), or `Some(Diagonal)` (Jacobi).
 //!
 //! Stability policy: enums that may gain variants (the preconditioner strategy
 //! set) stay `#[non_exhaustive]`, so adding a variant is non-breaking — external
@@ -182,9 +182,10 @@ pub enum PreconditionerConfig {
 
 impl Default for PreconditionerConfig {
     fn default() -> Self {
-        Self::Additive {
+        Self::Adaptive {
             local_solver: LocalSolverConfig::default(),
             reduction: ReductionStrategy::default(),
+            stall: Staleness::default(),
         }
     }
 }
