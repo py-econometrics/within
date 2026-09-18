@@ -1,6 +1,7 @@
 //! Free `#[pyfunction]`s exposed via `within._within`: [`solve`] and
 //! [`solve_batch`].
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use numpy::{PyReadonlyArray1, PyReadonlyArray2, PyUntypedArray};
@@ -283,11 +284,14 @@ impl PyDesign {
     }
 }
 
-/// Persistent solver reusing preconditioners; the factorization happens once at construction.
+/// Persistent solver reusing preconditioners; the factorization happens once, at construction
+/// or, under `Adaptive`, at escalation.
 #[pyclass(frozen, module = "within._within")]
 #[pyo3(name = "Solver")]
 pub struct PySolver {
     solver: Solver<'static>,
+    /// How many of `solver.warnings()` have been handed to Python.
+    reported_warnings: AtomicUsize,
 }
 
 #[pymethods]
@@ -315,7 +319,10 @@ impl PySolver {
             .map_err(value_err)?;
 
         emit_build_warnings(py, solver.warnings())?;
-        Ok(Self { solver })
+        Ok(Self {
+            reported_warnings: AtomicUsize::new(solver.warnings().len()),
+            solver,
+        })
     }
 
     /// Solve for a single response vector with the given LSMR tuning.
@@ -331,7 +338,9 @@ impl PySolver {
         let y_cow = coerce_to_slice(&y_arr);
         let params = resolve_lsmr_config(options)?;
 
-        run_solve(py, || self.solver.solve(&y_cow, &params))
+        let result = run_solve(py, || self.solver.solve(&y_cow, &params))?;
+        self.emit_deferred_warnings(py)?;
+        Ok(result)
     }
 
     /// `Y` is `(n_obs, k)` with one response per column.
@@ -359,10 +368,13 @@ impl PySolver {
 
         let params = resolve_lsmr_config(options)?;
 
-        run_batch(py, || self.solver.solve_batch(&col_refs, &params))
+        let result = run_batch(py, || self.solver.solve_batch(&col_refs, &params))?;
+        self.emit_deferred_warnings(py)?;
+        Ok(result)
     }
 
-    /// The built preconditioner, or ``None`` if unconfigured; picklable and reusable.
+    /// The preconditioner in use, or ``None`` if unconfigured; picklable and reusable. Under
+    /// ``Adaptive`` it is the Schwarz map once built, else the diagonal base; a reused map is fixed.
     #[getter]
     #[pyo3(name = "preconditioner")]
     fn preconditioner_py(&self) -> PyResult<Option<PyPreconditioner>> {
@@ -382,5 +394,25 @@ impl PySolver {
     #[getter]
     fn n_obs(&self) -> usize {
         self.solver.n_obs()
+    }
+
+    /// Whether an ``Adaptive`` solve has handed off to Schwarz; always ``False`` otherwise.
+    #[getter]
+    fn has_escalated(&self) -> bool {
+        self.solver.has_escalated()
+    }
+}
+
+impl PySolver {
+    /// The Schwarz rung is built mid-solve, so the cursor hands each new warning to one caller.
+    fn emit_deferred_warnings(&self, py: Python<'_>) -> PyResult<()> {
+        let warnings = self.solver.warnings();
+        let claimed_from = self
+            .reported_warnings
+            .fetch_max(warnings.len(), Ordering::AcqRel);
+        if claimed_from < warnings.len() {
+            emit_build_warnings(py, &warnings[claimed_from..])?;
+        }
+        Ok(())
     }
 }

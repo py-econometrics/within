@@ -5,13 +5,22 @@ import pickle
 import numpy as np
 import pytest
 from conftest import as_solver_categories
-from within import LsmrOptions, Preconditioner, PreconditionerConfig, Solver, solve
+from within import (
+    Effect,
+    LsmrOptions,
+    Preconditioner,
+    PreconditionerConfig,
+    Solver,
+    solve,
+)
 from within._within import (
     ApproxCholConfig,
     ApproxSchurConfig,
     LocalSolverConfig,
     ReductionStrategy,
+    ScalingConfig,
     Schur,
+    Staleness,
 )
 
 
@@ -229,3 +238,75 @@ class TestFePreconditioner:
 
         assert precond is not None
         assert precond.nrows == precond.ncols == 3
+
+
+class TestAdaptive:
+    """Binding surface only; escalation behaviour is covered in crates/within/tests/adaptive.rs."""
+
+    def test_staleness_exposes_its_fields_and_rejects_invalid(self):
+        assert (Staleness().window, Staleness().threshold) == (4, 0.7)
+        assert Staleness(window=3, threshold=0.25) != Staleness()
+        assert repr(Staleness()) == "Staleness(window=4, threshold=0.7)"
+        # StalenessError must arrive as ValueError, not a bare RuntimeError.
+        with pytest.raises(ValueError):
+            Staleness(window=0)
+
+    def test_adaptive_config_round_trips_through_getters(self):
+        config = PreconditionerConfig.Adaptive(
+            local_solver=LocalSolverConfig(dense_threshold=8),
+            reduction=ReductionStrategy.AtomicScatter,
+            stall=Staleness(window=3, threshold=0.25),
+        )
+        assert isinstance(config, PreconditionerConfig)
+        assert config.reduction == ReductionStrategy.AtomicScatter
+        assert config.local_solver.dense_threshold == 8
+        assert config.stall == Staleness(window=3, threshold=0.25)
+
+    def test_escalation_is_reachable_and_reported(self, problem):
+        cats, y = problem
+        solver = Solver(
+            as_solver_categories(cats),
+            preconditioner=PreconditionerConfig.Adaptive(
+                stall=Staleness(window=1, threshold=0.0)
+            ),
+        )
+        assert not solver.has_escalated
+        assert solver.solve(y, LsmrOptions(tol=1e-10, maxiter=2000)).converged
+        assert solver.has_escalated
+
+    def test_deferred_build_warnings_surface_on_the_escalating_solve(self, recwarn):
+        """The constructor cannot see them: the Schwarz build happens mid-solve."""
+        f = np.array([0, 0, 0, 1, 1, 1], np.uint32)
+        g = np.array([0, 1, 2, 0, 1, 2], np.uint32)
+        z = np.array([-2.0, 1.0, 1.0, -1.0, -1.0, 2.0])
+        y = np.array([1.0, -2.0, 0.5, 3.0, -1.5, 2.5])
+        effects = [Effect(f, True, [z]), Effect(g, True)]
+        local_solver = LocalSolverConfig(scaling=ScalingConfig(max_iterations=0))
+        options = LsmrOptions(tol=1e-12, maxiter=100)
+
+        def unscalable(ws):
+            return [w for w in ws if "dominance" in str(w.message)]
+
+        Solver(
+            effects,
+            preconditioner=PreconditionerConfig.Additive(local_solver=local_solver),
+        )
+        assert unscalable(recwarn.list), "fixture no longer warns under Additive"
+
+        recwarn.clear()
+        solver = Solver(
+            effects,
+            preconditioner=PreconditionerConfig.Adaptive(
+                local_solver=local_solver, stall=Staleness(window=1, threshold=0.0)
+            ),
+        )
+        assert not unscalable(recwarn.list), "the build has not happened yet"
+
+        recwarn.clear()
+        solver.solve(y, options)
+        assert solver.has_escalated
+        assert len(unscalable(recwarn.list)) == 1
+
+        recwarn.clear()
+        solver.solve(y, options)
+        assert not recwarn.list, "a built rung must not re-warn on later solves"

@@ -12,7 +12,8 @@ class PreconditionerConfig:
     """Preconditioner configuration for the LSMR solver.
 
     A tagged union: each variant is a subclass. Construct with ``Off()``,
-    ``Diagonal()``, or ``Additive(local_solver=..., reduction=...)``. Instances
+    ``Diagonal()``, ``Additive(local_solver=..., reduction=...)``, or
+    ``Adaptive(local_solver=..., reduction=..., stall=...)``. Instances
     compare by value and support ``match``/``case``.
     """
 
@@ -36,6 +37,42 @@ class PreconditionerConfig:
             local_solver: LocalSolverConfig = ...,
             reduction: ReductionStrategy = ...,
         ) -> None: ...
+
+    class Adaptive(PreconditionerConfig):
+        """Diagonal first, escalating to additive Schwarz on a stalled contraction.
+
+        The factorization is built only at the moment of escalation, so a design
+        whose diagonal solve never stalls never pays to construct it. A build
+        error therefore surfaces from :meth:`Solver.solve`, not the constructor.
+        """
+
+        local_solver: LocalSolverConfig
+        reduction: ReductionStrategy
+        stall: Staleness
+        def __init__(
+            self,
+            local_solver: LocalSolverConfig = ...,
+            reduction: ReductionStrategy = ...,
+            stall: Staleness = ...,
+        ) -> None: ...
+
+class Staleness:
+    """Escalates after ``window`` consecutive contraction ratios exceed ``threshold``.
+
+    Defaults to ``window=4``, ``threshold=0.7``. Raises ``ValueError`` for a zero
+    window or a threshold outside ``[0, 1)``.
+    """
+
+    @property
+    def window(self) -> int: ...
+    @property
+    def threshold(self) -> float: ...
+    def __init__(
+        self,
+        window: int | None = None,
+        threshold: float | None = None,
+    ) -> None: ...
+    def __repr__(self) -> str: ...
 
 class ReductionStrategy:
     """Strategy for combining subdomain contributions in additive Schwarz.
@@ -138,7 +175,9 @@ class SolveResult:
         residual: Relative normal-equation residual
             ``||D^T W (y - Dx)|| / ||D^T W y||`` estimated from the LSMR
             recurrence at no extra cost. Exact for an unpreconditioned solve;
-            measured in the preconditioner's metric otherwise.
+            measured in the preconditioner's metric otherwise. An ``Adaptive``
+            hand-off is rebased onto the original response, so the escalating
+            solve reports on the same footing as a cold one.
         time_total: Wall-clock time for the entire solve (setup + solve), in seconds.
         time_setup: Wall-clock time for the setup phase (operator + preconditioner
             construction), in seconds.
@@ -262,8 +301,10 @@ def solve(
             default settings. ``PreconditionerConfig.Off()`` disables it.
             ``PreconditionerConfig.Diagonal()`` uses diagonal/Jacobi scaling.
             ``PreconditionerConfig.Additive(...)`` overrides the local-solver /
-            reduction settings. A previously-built ``Preconditioner`` instance
-            reuses an existing factorisation.
+            reduction settings. ``PreconditionerConfig.Adaptive(...)`` starts
+            diagonal and escalates to Schwarz on a stalled contraction. A
+            previously-built ``Preconditioner`` instance reuses an existing
+            factorisation.
 
     Returns:
         A ``SolveResult`` with coefficients, demeaned response, convergence
@@ -333,7 +374,8 @@ def solve_batch(
 class Preconditioner:
     """Pre-built fixed-effects preconditioner.
 
-    Built once per design and reused across solves via the persistent
+    Built once per design, at construction or (under ``Adaptive``) at
+    escalation, and reused across solves via the persistent
     :class:`Solver`. Pickleable for offline construction; can also be
     deserialised manually via ``Preconditioner(bytes_payload)`` (the same
     payload produced by ``__reduce__`` / ``pickle.dumps``).
@@ -383,7 +425,15 @@ class Solver:
         ...
     @property
     def preconditioner(self) -> Preconditioner | None:
-        """Access the cached preconditioner (for serialization or reuse)."""
+        """The preconditioner in use, for serialization or reuse.
+
+        Under ``Adaptive`` this is the Schwarz map once built and the diagonal
+        base before; a reused map is fixed and never escalates.
+        """
+        ...
+    @property
+    def has_escalated(self) -> bool:
+        """Whether an ``Adaptive`` solve has handed off to Schwarz."""
         ...
     @property
     def n_dofs(self) -> int: ...
