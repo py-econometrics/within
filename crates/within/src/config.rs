@@ -13,6 +13,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::BuildError;
+
 pub use schwarz_precond::ReductionStrategy;
 
 /// Default `n_keep` threshold below which a Schur domain tries the exact dense backend.
@@ -78,6 +80,20 @@ pub struct LocalSolverConfig {
     pub ridge: f64,
 }
 
+impl LocalSolverConfig {
+    /// Separate from any build so a deferred escalation can reject the config at construction.
+    pub(crate) fn validate(&self) -> Result<(), BuildError> {
+        if !self.ridge.is_finite() || self.ridge < 0.0 {
+            return Err(BuildError::InvalidRidge { value: self.ridge });
+        }
+        let tolerance = self.scaling.tolerance;
+        if !tolerance.is_finite() || tolerance < 0.0 {
+            return Err(BuildError::InvalidScalingTolerance { value: tolerance });
+        }
+        Ok(())
+    }
+}
+
 impl Default for LocalSolverConfig {
     fn default() -> Self {
         Self {
@@ -109,7 +125,7 @@ pub struct ScalingConfig {
 pub enum ScalingFailure {
     /// Clamp residual deficits and record a [`BuildWarning`](crate::BuildWarning).
     Warn,
-    /// Fail with [`BuildError::UnscalableComponent`](crate::BuildError::UnscalableComponent).
+    /// Fail with [`BuildError::UnscalableComponent`].
     Error,
 }
 

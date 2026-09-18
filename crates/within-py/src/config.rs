@@ -465,7 +465,7 @@ impl PyPreconditioner {
     /// Complete normalized configuration used to build this preconditioner.
     #[getter]
     fn config(&self) -> PyResult<PyPreconditionerConfig> {
-        PyPreconditionerConfig::from_native(self.inner.config())
+        PyPreconditionerConfig::from_native(&self.inner.config())
     }
 }
 

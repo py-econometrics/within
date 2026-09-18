@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::block_elim::BlockElimSolver;
-use crate::config::{LocalSolverConfig, PreconditionerConfig};
+use crate::config::{LocalSolverConfig, PreconditionerConfig, ReductionStrategy};
 use crate::domain::{LocalDomain, PreparedDesign};
 use crate::operator::gauge::GaugeConstraint;
 use crate::operator::DesignOperator;
@@ -17,17 +17,18 @@ use crate::{BuildError, BuildWarning};
 #[cfg(test)]
 mod tests;
 
+/// The additive Schwarz map's description: what the builder builds and a built map records.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct SchwarzConfig {
+    pub(crate) local_solver: LocalSolverConfig,
+    pub(crate) reduction: ReductionStrategy,
+}
+
 /// Concrete additive Schwarz type used in the parent crate.
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct FeSchwarz {
     inner: SchwarzPreconditioner<BlockElimSolver>,
-    config: PreconditionerConfig,
-}
-
-impl FeSchwarz {
-    fn config(&self) -> &PreconditionerConfig {
-        &self.config
-    }
+    config: SchwarzConfig,
 }
 
 impl std::fmt::Debug for FeSchwarz {
@@ -98,22 +99,18 @@ impl Operator for DiagonalPreconditioner {
 }
 
 /// `n_dofs` may exceed the span of subdomain indices; an uncovered column resolves to `0`.
-pub(crate) fn build_additive_with_strategy(
+pub(crate) fn build_additive(
     domains: Vec<LocalDomain>,
-    config: &LocalSolverConfig,
-    strategy: schwarz_precond::ReductionStrategy,
+    config: &SchwarzConfig,
     n_dofs: usize,
 ) -> Result<FeSchwarz, BuildError> {
     let entries = domains
         .into_par_iter()
-        .map(|domain| build_entry(domain, config))
+        .map(|domain| build_entry(domain, &config.local_solver))
         .collect::<Result<Vec<_>, BuildError>>()?;
     Ok(FeSchwarz {
-        inner: SchwarzPreconditioner::with_n_dofs(entries, n_dofs, strategy),
-        config: PreconditionerConfig::Additive {
-            local_solver: config.clone(),
-            reduction: strategy,
-        },
+        inner: SchwarzPreconditioner::with_n_dofs(entries, n_dofs, config.reduction),
+        config: config.clone(),
     })
 }
 
@@ -154,12 +151,14 @@ impl Preconditioner {
         }
     }
 
-    /// Complete configuration used to build this preconditioner.
-    pub fn config(&self) -> &PreconditionerConfig {
-        const DIAGONAL: PreconditionerConfig = PreconditionerConfig::Diagonal;
+    /// The configuration that rebuilds this map.
+    pub fn config(&self) -> PreconditionerConfig {
         match &self.inner {
-            Variant::Additive(p) => p.config(),
-            Variant::Diagonal(_) => &DIAGONAL,
+            Variant::Additive(p) => PreconditionerConfig::Additive {
+                local_solver: p.config.local_solver.clone(),
+                reduction: p.config.reduction,
+            },
+            Variant::Diagonal(_) => PreconditionerConfig::Diagonal,
         }
     }
 
@@ -215,7 +214,9 @@ impl Operator for Preconditioner {
     }
 }
 
-fn build_diagonal(prepared: &PreparedDesign<'_>) -> Result<DiagonalPreconditioner, BuildError> {
+/// Build the diagonal/Jacobi map.
+pub(crate) fn build_diagonal(prepared: &PreparedDesign<'_>) -> Result<Preconditioner, BuildError> {
+    let build_started = Instant::now();
     let mut diag = DesignOperator::new(prepared).column_norms_squared();
 
     // A zero diagonal is an unidentified DOF, so the pseudo-inverse keeps it in the null space.
@@ -230,53 +231,31 @@ fn build_diagonal(prepared: &PreparedDesign<'_>) -> Result<DiagonalPreconditione
         *d = inv;
     }
 
-    Ok(DiagonalPreconditioner {
-        inv_diag: Arc::from(diag),
+    Ok(Preconditioner {
+        inner: Variant::Diagonal(DiagonalPreconditioner {
+            inv_diag: Arc::from(diag),
+        }),
+        build_duration: build_started.elapsed(),
+        gauge: None,
     })
 }
 
-/// Build a [`Preconditioner`] for a prepared design, plus any warnings.
-pub(crate) fn build_preconditioner(
+/// Build the additive Schwarz map plus its warnings; `None` when the design has no factor-pair
+/// subdomain to build on, where plain LSMR is the fallback.
+pub(crate) fn build_schwarz(
     prepared: &PreparedDesign<'_>,
-    config: Option<&PreconditionerConfig>,
+    config: &SchwarzConfig,
 ) -> Result<(Option<Preconditioner>, Vec<BuildWarning>), BuildError> {
-    use crate::domain::build_local_domains;
-
-    let design = &prepared.design;
-    // Weights are pre-validated by the sole caller, whose permutation preserves length and sign.
-    let default_cfg = PreconditionerConfig::default();
-    let resolved = config.unwrap_or(&default_cfg);
-    // Measure preconditioner build time
     let build_started = Instant::now();
-    let (inner, warnings) = match resolved {
-        PreconditionerConfig::Off => {
-            return Ok((None, Vec::new()));
-        }
-        PreconditionerConfig::Additive {
-            local_solver,
-            reduction,
-        } => {
-            let (domains, warnings) = build_local_domains(prepared, local_solver)?;
-            if domains.is_empty() {
-                // No factor-pair subdomains means no useful Schwarz; fall back to plain LSMR.
-                return Ok((None, warnings));
-            }
-            let preconditioner =
-                build_additive_with_strategy(domains, local_solver, *reduction, design.n_dofs)?;
-            (Variant::Additive(preconditioner), warnings)
-        }
-        PreconditionerConfig::Diagonal => {
-            let preconditioner = build_diagonal(prepared)?;
-            (Variant::Diagonal(preconditioner), Vec::new())
-        }
+    let (domains, warnings) = crate::domain::build_local_domains(prepared, &config.local_solver)?;
+    if domains.is_empty() {
+        return Ok((None, warnings));
+    }
+    let schwarz = build_additive(domains, config, prepared.design.n_dofs)?;
+    let preconditioner = Preconditioner {
+        inner: Variant::Additive(schwarz),
+        build_duration: build_started.elapsed(),
+        gauge: None,
     };
-    let build_duration = build_started.elapsed();
-    Ok((
-        Some(Preconditioner {
-            inner,
-            build_duration,
-            gauge: None,
-        }),
-        warnings,
-    ))
+    Ok((Some(preconditioner), warnings))
 }
