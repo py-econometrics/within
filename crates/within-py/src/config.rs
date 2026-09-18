@@ -13,7 +13,7 @@ use within::config::{
 };
 use within::{Preconditioner, PreconditionerInput};
 
-use crate::convert::IntoPyErr;
+use crate::convert::{value_err, IntoPyErr};
 
 #[pyclass(frozen, module = "within._within")]
 #[pyo3(name = "ApproxCholConfig")]
@@ -291,7 +291,7 @@ impl PyStaleness {
                 window.unwrap_or(defaults.window()),
                 threshold.unwrap_or(defaults.threshold()),
             )
-            .map_err(crate::convert::value_err)?,
+            .map_err(value_err)?,
         })
     }
 

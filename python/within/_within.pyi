@@ -42,7 +42,8 @@ class PreconditionerConfig:
         """Diagonal first, escalating to additive Schwarz on a stalled contraction.
 
         The factorization is built only at the moment of escalation, so a design
-        whose diagonal solve never stalls never pays to construct it.
+        whose diagonal solve never stalls never pays to construct it. A build
+        error therefore surfaces from :meth:`Solver.solve`, not the constructor.
         """
 
         local_solver: LocalSolverConfig
@@ -62,8 +63,10 @@ class Staleness:
     window or a threshold outside ``[0, 1)``.
     """
 
-    window: int
-    threshold: float
+    @property
+    def window(self) -> int: ...
+    @property
+    def threshold(self) -> float: ...
     def __init__(
         self,
         window: int | None = None,
@@ -172,10 +175,9 @@ class SolveResult:
         residual: Relative normal-equation residual
             ``||D^T W (y - Dx)|| / ||D^T W y||`` estimated from the LSMR
             recurrence at no extra cost. Exact for an unpreconditioned solve;
-            measured in the preconditioner's metric otherwise. On the single
-            solve where an ``Adaptive`` preconditioner hands off to Schwarz it
-            is relative to the escalation point instead, so it can far exceed
-            ``tol`` on a converged answer; gate on ``converged``.
+            measured in the preconditioner's metric otherwise. An ``Adaptive``
+            hand-off is rebased onto the original response, so the escalating
+            solve reports on the same footing as a cold one.
         time_total: Wall-clock time for the entire solve (setup + solve), in seconds.
         time_setup: Wall-clock time for the setup phase (operator + preconditioner
             construction), in seconds.
@@ -299,8 +301,10 @@ def solve(
             default settings. ``PreconditionerConfig.Off()`` disables it.
             ``PreconditionerConfig.Diagonal()`` uses diagonal/Jacobi scaling.
             ``PreconditionerConfig.Additive(...)`` overrides the local-solver /
-            reduction settings. A previously-built ``Preconditioner`` instance
-            reuses an existing factorisation.
+            reduction settings. ``PreconditionerConfig.Adaptive(...)`` starts
+            diagonal and escalates to Schwarz on a stalled contraction. A
+            previously-built ``Preconditioner`` instance reuses an existing
+            factorisation.
 
     Returns:
         A ``SolveResult`` with coefficients, demeaned response, convergence

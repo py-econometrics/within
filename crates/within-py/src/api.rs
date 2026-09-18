@@ -319,10 +319,9 @@ impl PySolver {
             .map_err(value_err)?;
 
         emit_build_warnings(py, solver.warnings())?;
-        let reported_warnings = AtomicUsize::new(solver.warnings().len());
         Ok(Self {
+            reported_warnings: AtomicUsize::new(solver.warnings().len()),
             solver,
-            reported_warnings,
         })
     }
 
@@ -405,8 +404,7 @@ impl PySolver {
 }
 
 impl PySolver {
-    /// An `Adaptive` solve builds its Schwarz rung mid-flight, so warnings the constructor
-    /// could not have seen surface here; the cursor hands each new warning to exactly one caller.
+    /// The Schwarz rung is built mid-solve, so the cursor hands each new warning to one caller.
     fn emit_deferred_warnings(&self, py: Python<'_>) -> PyResult<()> {
         let warnings = self.solver.warnings();
         let claimed_from = self

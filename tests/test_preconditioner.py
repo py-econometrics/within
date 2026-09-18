@@ -241,20 +241,7 @@ class TestFePreconditioner:
 
 
 class TestAdaptive:
-    """The `Adaptive` binding surface: construction, conversion, and warning delivery.
-
-    Escalation behaviour itself is covered in Rust (`crates/within/tests/adaptive.rs`);
-    these cover only what the bindings add on top.
-    """
-
-    @staticmethod
-    def _panel():
-        rng = np.random.default_rng(0)
-        n = 20_000
-        cats = as_solver_categories(
-            [np.arange(n) % 500, (np.arange(n) // 500) % 40, rng.integers(0, 12, n)]
-        )
-        return cats, rng.standard_normal(n)
+    """Binding surface only; escalation behaviour is covered in crates/within/tests/adaptive.rs."""
 
     def test_staleness_exposes_its_fields_and_rejects_invalid(self):
         assert (Staleness().window, Staleness().threshold) == (4, 0.7)
@@ -275,10 +262,10 @@ class TestAdaptive:
         assert config.local_solver.dense_threshold == 8
         assert config.stall == Staleness(window=3, threshold=0.25)
 
-    def test_escalation_is_reachable_and_reported(self):
-        cats, y = self._panel()
+    def test_escalation_is_reachable_and_reported(self, problem):
+        cats, y = problem
         solver = Solver(
-            cats,
+            as_solver_categories(cats),
             preconditioner=PreconditionerConfig.Adaptive(
                 stall=Staleness(window=1, threshold=0.0)
             ),
@@ -289,16 +276,13 @@ class TestAdaptive:
 
     def test_deferred_build_warnings_surface_on_the_escalating_solve(self, recwarn):
         """The constructor cannot see them: the Schwarz build happens mid-solve."""
-        n = 5000
-        la = (np.arange(n) % 120).astype(np.uint32)
-        lb = ((np.arange(n) // 120) % 90).astype(np.uint32)
-        zb = np.where(np.arange(n) % 2 == 0, 1.0, -1.0) * (1.0 + (np.arange(n) % 3))
-        effects = [Effect(la, False, [np.ones(n)]), Effect(lb, False, [zb])]
-        local_solver = LocalSolverConfig(
-            scaling=ScalingConfig(tolerance=0.0, max_iterations=0, on_failure="warn")
-        )
-        y = np.random.default_rng(7).standard_normal(n)
-        options = LsmrOptions(tol=1e-12, maxiter=2000)
+        f = np.array([0, 0, 0, 1, 1, 1], np.uint32)
+        g = np.array([0, 1, 2, 0, 1, 2], np.uint32)
+        z = np.array([-2.0, 1.0, 1.0, -1.0, -1.0, 2.0])
+        y = np.array([1.0, -2.0, 0.5, 3.0, -1.5, 2.5])
+        effects = [Effect(f, True, [z]), Effect(g, True)]
+        local_solver = LocalSolverConfig(scaling=ScalingConfig(max_iterations=0))
+        options = LsmrOptions(tol=1e-12, maxiter=100)
 
         def unscalable(ws):
             return [w for w in ws if "dominance" in str(w.message)]
