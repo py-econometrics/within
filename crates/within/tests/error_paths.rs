@@ -205,13 +205,19 @@ fn test_within_error_source_chains_through_transparent_wrapper() {
     assert!(e.source().is_some());
 }
 
+#[derive(Debug, Clone, Copy)]
+enum InvalidField {
+    Ridge,
+    Tolerance,
+}
+
 /// Adaptive defers the build that would reject these, and with a single factor never runs it.
 /// Every dominance comparison is `>`, so an unvalidated NaN tolerance certifies each component
 /// silently — no `UnscalableComponent` under `Error`, and no `BuildWarning` under `Warn` either.
 #[rstest]
 fn test_invalid_local_solver_rejected(
     #[values(-1e-9, f64::NAN, f64::INFINITY)] value: f64,
-    #[values("ridge", "tolerance")] field: &str,
+    #[values(InvalidField::Ridge, InvalidField::Tolerance)] field: InvalidField,
     #[values(false, true)] adaptive: bool,
     #[values(1, 2)] n_factors: usize,
 ) {
@@ -219,8 +225,8 @@ fn test_invalid_local_solver_rejected(
     let g = [0u32, 1, 0, 1];
     let mut local_solver = LocalSolverConfig::default();
     match field {
-        "ridge" => local_solver.ridge = value,
-        _ => local_solver.scaling.tolerance = value,
+        InvalidField::Ridge => local_solver.ridge = value,
+        InvalidField::Tolerance => local_solver.scaling.tolerance = value,
     }
     let precond = if adaptive {
         PreconditionerConfig::Adaptive {
@@ -240,9 +246,9 @@ fn test_invalid_local_solver_rejected(
     }
     let err = Solver::new(effects, None, &precond).expect_err("rejected");
     let rejected = match (field, &err) {
-        ("ridge", BuildError::InvalidRidge { value }) => *value,
-        ("tolerance", BuildError::InvalidScalingTolerance { value }) => *value,
-        _ => panic!("expected an invalid {field}, got {err:?}"),
+        (InvalidField::Ridge, BuildError::InvalidRidge { value }) => *value,
+        (InvalidField::Tolerance, BuildError::InvalidScalingTolerance { value }) => *value,
+        _ => panic!("expected an invalid {field:?}, got {err:?}"),
     };
     assert_eq!(rejected.to_bits(), value.to_bits());
 }

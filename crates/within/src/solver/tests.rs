@@ -340,19 +340,24 @@ fn a_warned_direction_is_removed_only_when_it_carries_nothing(
     assert_eq!(constrained_rank(&reattached), rank);
 }
 
+/// Escalates after any single non-vanishing contraction, so a handoff is deterministic.
+fn eager_ladder(local_solver: LocalSolverConfig) -> PreconditionerConfig {
+    PreconditionerConfig::Adaptive {
+        local_solver,
+        reduction: Default::default(),
+        stall: crate::Staleness::try_new(1, 0.0).expect("valid staleness"),
+    }
+}
+
 /// The escalated rung is built after the gauge, so it has to inherit it: an aliased design that
 /// hands off would otherwise run its second rung unconstrained.
 #[test]
 fn an_escalated_rung_keeps_the_constrained_directions_out() {
     let panel = akm_panel(4_000, 200, 10, 0.15, SlopeSpec::YearIndex);
-    let ladder = PreconditionerConfig::Adaptive {
-        local_solver: LocalSolverConfig {
-            ridge: 0.0,
-            ..Default::default()
-        },
-        reduction: Default::default(),
-        stall: crate::Staleness::try_new(1, 0.0).expect("valid staleness"),
-    };
+    let ladder = eager_ladder(LocalSolverConfig {
+        ridge: 0.0,
+        ..Default::default()
+    });
     let solver = Solver::new(panel.effects(), None, ladder).expect("solver");
     let out = solve_tight(&solver, &panel.y);
 
@@ -366,6 +371,67 @@ fn an_escalated_rung_keeps_the_constrained_directions_out() {
     );
 }
 
+/// Two crossed slope terms on one covariate: large enough for the diagonal to stall, and
+/// screened as collinear at construction.
+struct SharedCovariatePair {
+    a: Vec<u32>,
+    b: Vec<u32>,
+    z: Vec<f64>,
+    y: Vec<f64>,
+}
+
+impl SharedCovariatePair {
+    fn new() -> Self {
+        let n = 4000;
+        let z: Vec<f64> = (0..n).map(|i| (i as f64 * 0.17 + 1.0).sin()).collect();
+        Self {
+            a: (0..n).map(|i| (i % 40) as u32).collect(),
+            b: (0..n).map(|i| ((i / 40) % 25) as u32).collect(),
+            y: (0..n).map(|i| z[i] + (i % 7) as f64).collect(),
+            z,
+        }
+    }
+
+    fn effects(&self) -> Vec<Effect<'_>> {
+        vec![
+            Effect::new(&self.a, true, [&self.z[..]]).expect("a"),
+            Effect::new(&self.b, true, [&self.z[..]]).expect("b"),
+        ]
+    }
+}
+
+/// Design screening runs at construction, so its warnings must survive the deferred
+/// Schwarz build rather than being replaced by it (#260 over #283).
+#[test]
+fn screening_warnings_survive_escalation() {
+    let panel = SharedCovariatePair::new();
+    let collinear = |solver: &Solver<'_>| {
+        solver
+            .warnings()
+            .iter()
+            .filter(|w| matches!(w, BuildWarning::CollinearSlopeCovariate { .. }))
+            .count()
+    };
+
+    let solver =
+        Solver::new(panel.effects(), None, eager_ladder(Default::default())).expect("solver");
+    let before = collinear(&solver);
+    assert!(
+        before > 0,
+        "shared covariate must warn: {:?}",
+        solver.warnings()
+    );
+
+    let _ = solver.solve(&panel.y, None).expect("adaptive solve");
+    assert!(solver.has_escalated(), "eager stall must hand off");
+    assert_eq!(
+        collinear(&solver),
+        before,
+        "escalation dropped screening warnings: {:?}",
+        solver.warnings()
+    );
+}
+
 /// A deferred build that fails is settled like one that succeeds: the second solve reports the
 /// same error without the ladder rebuilding, and re-failing, the same map.
 #[test]
@@ -374,37 +440,24 @@ fn a_failed_deferred_build_is_kept_and_reported_again() {
     use crate::config::{ScalingConfig, ScalingFailure};
     use crate::{BuildError, WithinError};
 
-    // Two crossed slope pairs large enough for the diagonal to stall; a zero-tolerance,
-    // zero-iteration certificate then rejects the signed cross-block deterministically.
-    let n = 4000;
-    let a: Vec<u32> = (0..n).map(|i| (i % 40) as u32).collect();
-    let b: Vec<u32> = (0..n).map(|i| ((i / 40) % 25) as u32).collect();
-    let z: Vec<f64> = (0..n).map(|i| (i as f64 * 0.17 + 1.0).sin()).collect();
-    let effects = vec![
-        Effect::new(&a, true, [&z[..]]).unwrap(),
-        Effect::new(&b, true, [&z[..]]).unwrap(),
-    ];
-    let precond = PreconditionerConfig::Adaptive {
-        local_solver: LocalSolverConfig {
-            scaling: ScalingConfig {
-                tolerance: 0.0,
-                max_iterations: 0,
-                on_failure: ScalingFailure::Error,
-            },
-            ..LocalSolverConfig::default()
+    // A zero-tolerance, zero-iteration certificate rejects the signed cross-block deterministically.
+    let panel = SharedCovariatePair::new();
+    let precond = eager_ladder(LocalSolverConfig {
+        scaling: ScalingConfig {
+            tolerance: 0.0,
+            max_iterations: 0,
+            on_failure: ScalingFailure::Error,
         },
-        reduction: Default::default(),
-        stall: crate::Staleness::try_new(1, 0.0).unwrap(),
-    };
-    let solver = Solver::new(effects, None, precond).unwrap();
-    let y: Vec<f64> = (0..n).map(|i| z[i] + (i % 7) as f64).collect();
+        ..LocalSolverConfig::default()
+    });
+    let solver = Solver::new(panel.effects(), None, precond).unwrap();
     let unscalable = |r: &Result<crate::SolveResult, WithinError>| {
         matches!(
             r,
             Err(WithinError::Build(BuildError::UnscalableComponent { .. }))
         )
     };
-    let first = solver.solve(&y, None);
+    let first = solver.solve(&panel.y, None);
     assert!(unscalable(&first), "{first:?}");
     let PrecondSlot::Adaptive(a) = &solver.slot else {
         panic!("the ladder")
@@ -413,7 +466,7 @@ fn a_failed_deferred_build_is_kept_and_reported_again() {
         a.built.get(),
         Some(Err(BuildError::UnscalableComponent { .. }))
     ));
-    assert!(unscalable(&solver.solve(&y, None)));
+    assert!(unscalable(&solver.solve(&panel.y, None)));
     assert!(!solver.has_escalated());
 }
 
