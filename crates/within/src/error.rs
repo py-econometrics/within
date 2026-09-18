@@ -99,6 +99,12 @@ pub enum BuildError {
         /// The offending value.
         value: f64,
     },
+    /// Every dominance comparison is `>`, so a NaN or infinite slack silently certifies anything.
+    #[error("scaling tolerance must be finite and non-negative, got {value}")]
+    InvalidScalingTolerance {
+        /// The offending value.
+        value: f64,
+    },
     /// The frame carries continuous columns that no term uses as a slope.
     #[error("frame has {provided} loading columns but the terms claim {claimed}")]
     UnclaimedLoadingColumns {

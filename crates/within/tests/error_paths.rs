@@ -6,7 +6,7 @@ use schwarz_precond::SolveError;
 use within::observation::ObservationFrame;
 use within::{
     solve, solve_batch, BuildError, Design, Effect, LocalSolverConfig, LsmrOptions,
-    PreconditionerConfig, Solver, WithinError,
+    PreconditionerConfig, ScalingConfig, Solver, WithinError,
 };
 
 // The Display/source()/From plumbing has one wiring check per enum, not per message.
@@ -223,5 +223,35 @@ fn test_invalid_ridge_rejected(#[values(-1e-9, f64::NAN, f64::INFINITY)] ridge: 
     match Solver::new(effects, None, &precond) {
         Err(BuildError::InvalidRidge { value }) => assert_eq!(value.to_bits(), ridge.to_bits()),
         other => panic!("expected InvalidRidge, got {other:?}"),
+    }
+}
+
+/// Every dominance comparison is `>`, so an unvalidated NaN slack certifies each component
+/// silently — no `UnscalableComponent` under `Error`, and no `BuildWarning` under `Warn` either.
+#[rstest]
+fn test_invalid_scaling_tolerance_rejected(
+    #[values(-1e-9, f64::NAN, f64::INFINITY)] tolerance: f64,
+) {
+    let f = [0u32, 0, 1, 1];
+    let g = [0u32, 1, 0, 1];
+    let precond = PreconditionerConfig::Additive {
+        local_solver: LocalSolverConfig {
+            scaling: ScalingConfig {
+                tolerance,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        reduction: Default::default(),
+    };
+    let effects = vec![
+        Effect::new(&f, true, []).expect("f"),
+        Effect::new(&g, true, []).expect("g"),
+    ];
+    match Solver::new(effects, None, &precond) {
+        Err(BuildError::InvalidScalingTolerance { value }) => {
+            assert_eq!(value.to_bits(), tolerance.to_bits())
+        }
+        other => panic!("expected InvalidScalingTolerance, got {other:?}"),
     }
 }
