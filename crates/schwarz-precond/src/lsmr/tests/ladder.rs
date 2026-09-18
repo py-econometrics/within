@@ -304,3 +304,44 @@ fn test_staleness_rejects_an_invalid_threshold(
         Err(StalenessError::InvalidThreshold { .. })
     ));
 }
+
+/// A budget-exhausted warm start reports against `‖Aᵀb‖` like every other exit. `x₀ = 0.9 x*`
+/// makes `rhs = 0.1 b` exactly, so the un-rebased stream reference is 10× too small.
+#[test]
+fn test_mlsmr_maxiter_residuals_are_rebased_onto_the_original_rhs() {
+    let op = DenseOp::vandermonde(30, 12);
+    let x_true: Vec<f64> = (0..op.cols).map(|j| 1.0 / (1.0 + j as f64)).collect();
+    let mut b = vec![0.0; op.rows];
+    op.apply(&x_true, &mut b).expect("apply");
+    let x0: Vec<f64> = x_true.iter().map(|v| v * 0.9).collect();
+
+    let result = mlsmr(
+        &op,
+        &b,
+        &IdentityOp { n: op.cols },
+        1e-15,
+        3,
+        MlsmrOptions {
+            warm_start: Some(&x0),
+            ..Default::default()
+        },
+    )
+    .expect("warm solve");
+
+    assert_eq!(result.stop_reason, LsmrStopReason::MaxIterations);
+    assert!(!result.converged);
+
+    let expected = normal_equation_residual(&op, &result.x, &b)
+        / normal_equation_residual(&op, &vec![0.0; op.cols], &b);
+    assert!(
+        (result.normal_eq_residual - expected).abs() <= 1e-9 * expected,
+        "reported {} vs true relative {expected}",
+        result.normal_eq_residual,
+    );
+
+    let mut ax = vec![0.0; op.rows];
+    op.apply(&result.x, &mut ax).expect("apply");
+    let r: Vec<f64> = b.iter().zip(&ax).map(|(bi, ai)| bi - ai).collect();
+    let true_normr = vec_norm(&r);
+    assert!((result.residual_norm - true_normr).abs() <= 1e-9 * true_normr);
+}

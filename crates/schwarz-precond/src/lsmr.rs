@@ -14,7 +14,7 @@ mod tests;
 use std::borrow::Cow;
 
 use crate::{Operator, SolveError};
-use bidiag::{BidiagStep, Bidiagonalization, GolubKahan, ModifiedGolubKahan};
+use bidiag::{BidiagStep, Bidiagonalization, Certificate, GolubKahan, ModifiedGolubKahan};
 use recurrence::{ConvergenceCriteria, LsmrRecurrenceState, RotationStep, SolutionState, Stop};
 
 /// Euclidean norm of a vector.
@@ -326,6 +326,24 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
     )
 }
 
+/// A warm-started stream measures its references from the correction's own residual, so a cold
+/// certificate restores them in terms of `rhs`.
+fn audit_against_rhs<B: Bidiagonalization>(
+    bidiag: &mut B,
+    x: &[f64],
+    rhs: &[f64],
+    x0: Option<&[f64]>,
+) -> Result<Certificate, SolveError> {
+    let cold = x0
+        .map(|_| bidiag.certify(&vec![0.0; x.len()], rhs))
+        .transpose()?;
+    let mut cert = bidiag.certify(x, rhs)?;
+    if let Some(cold) = &cold {
+        cert.rebase(cold);
+    }
+    Ok(cert)
+}
+
 /// Runs the LSMR recurrences over a preconditioner-specific bidiagonalization stream.
 ///
 /// The stream solves for the correction to `x0`; results and the audit are in terms of `b`.
@@ -383,13 +401,8 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
             Stop::ResidualTolerance => Some(LsmrStopReason::ResidualTolerance),
             Stop::NormalEquationTolerance => Some(LsmrStopReason::NormalEquationTolerance),
         } {
-            let cold = x0.map(|_| bidiag.certify(&vec![0.0; n], b)).transpose()?;
             let x = total(solution.into_x());
-            let mut cert = bidiag.certify(&x, b)?;
-            // A warm start re-bases the references; the cold audit against `b` restores them.
-            if let Some(cold) = &cold {
-                cert.rebase(cold);
-            }
+            let cert = audit_against_rhs(&mut bidiag, &x, b, x0)?;
             let converged = convergence.certified(&cert);
             return Ok(LsmrResult {
                 x,
@@ -423,12 +436,23 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
         prev_rot = curr_rot;
     }
 
+    let x = total(solution.into_x());
+    let cert = x0
+        .map(|_| audit_against_rhs(&mut bidiag, &x, b, x0))
+        .transpose()?;
+    let (residual_norm, normal_eq_residual) = match cert {
+        Some(cert) => (cert.normr, cert.normar.relative()),
+        None => (
+            recurrence.residual_estimate(),
+            recurrence.relative_normal_eq_residual(),
+        ),
+    };
     Ok(LsmrResult {
-        x: total(solution.into_x()),
+        x,
         converged: false,
         iterations: maxiter,
-        residual_norm: recurrence.residual_estimate(),
-        normal_eq_residual: recurrence.relative_normal_eq_residual(),
+        residual_norm,
+        normal_eq_residual,
         stop_reason: LsmrStopReason::MaxIterations,
     })
 }
