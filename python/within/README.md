@@ -30,7 +30,7 @@ fe = np.asfortranarray(np.column_stack([
 ]))
 y = np.random.randn(n)
 
-result = solve(fe, y)                          # Schwarz-preconditioned LSMR
+result = solve(fe, y)                          # LSMR + the adaptive ladder
 result = solve(fe, y, weights=np.ones(n))      # weighted solve
 result = solve(fe, y, preconditioner=PreconditionerConfig.Diagonal())
 ```

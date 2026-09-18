@@ -17,7 +17,7 @@ fn precond_input_call_shapes_compile() {
     let setup = Solver::new(categories.view(), None, &cfg).unwrap();
     let prec = setup
         .preconditioner()
-        .expect("default solver has a preconditioner")
+        .expect("solver has a preconditioner")
         .clone();
 
     // Shape 1: bare `None` — resolves through `From<Option<&PreconditionerConfig>>`.
@@ -58,7 +58,7 @@ fn solve_free_function_precond_call_shapes_compile() {
     let setup = Solver::new(categories.view(), None, &cfg).unwrap();
     let prec = setup
         .preconditioner()
-        .expect("default solver has a preconditioner")
+        .expect("solver has a preconditioner")
         .clone();
 
     let _ = solve(categories.view(), &y, None, &lsmr, None).expect("None form");

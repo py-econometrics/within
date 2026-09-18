@@ -33,7 +33,7 @@ let result = solve(categories.view(), &y, None, &LsmrOptions::default(), None)
 assert!(result.converged);
 println!("LSMR converged in {} iterations", result.iterations);
 
-// Tighter tolerance with an explicit preconditioner config
+// Tighter tolerance, library-default preconditioner
 let lsmr = LsmrOptions { tol: 1e-10, ..LsmrOptions::default() };
 let precond = PreconditionerConfig::default();
 let result = solve(categories.view(), &y, None, &lsmr, &precond)
