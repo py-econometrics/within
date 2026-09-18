@@ -47,6 +47,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - LSMR's normal-equation ratio certified unsolved stops at the ends of the float range, where a subnormal `‖A‖` was clamped up or `‖A‖‖r‖` overflowed (#362).
 - A non-finite `α`, `β`, `⟨v, Mv⟩`, or `‖b‖` in LSMR fails the solve with `SolveError::InvalidInput`; a NaN previously read as `α = 0` and reported a converged `x = 0`, and an overflowing `‖b‖` certified any result. The preconditioner-indefiniteness test no longer over- or underflows at extreme magnitudes (#303).
 - A warm-started LSMR solve that exhausted its iteration budget reported its residuals against the warm start's residual rather than `b`.
+- The cold audit's metric product overflowed for `‖Aᵀb‖ ≳ 1e154`, failing a converged warm-started solve at that scale.
 
 ### Removed
 

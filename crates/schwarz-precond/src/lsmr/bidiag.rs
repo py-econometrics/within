@@ -407,16 +407,20 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
 
     fn certify(&mut self, x: &[f64], rhs: &[f64]) -> Result<Certificate, SolveError> {
         let normr = true_residual(self.operator, x, rhs, &mut self.bufs.av, &mut self.bufs.atu)?;
+        let raw = super::vec_norm(&self.bufs.atu);
+        // `M⁻¹` is linear; the raw gradient's metric product overflows past `‖Aᵀr‖ ≈ 1e154`.
+        let scale = if raw.is_normal() { raw } else { 1.0 };
+        self.bufs.atu.iter_mut().for_each(|g| *g /= scale);
         self.preconditioner
             .apply(&self.bufs.atu, &mut self.bufs.v)?;
         Ok(Certificate {
             normr,
             normar: NormalEquationResidual {
-                norm: alpha_from_vp(&self.bufs.v, &self.bufs.atu)?,
+                norm: scale * alpha_from_vp(&self.bufs.v, &self.bufs.atu)?,
                 reference: self.normar0,
             },
             normar_raw: Some(NormalEquationResidual {
-                norm: super::vec_norm(&self.bufs.atu),
+                norm: raw,
                 reference: self.normar_raw0,
             }),
         })

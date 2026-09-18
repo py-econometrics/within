@@ -345,3 +345,26 @@ fn test_mlsmr_maxiter_residuals_are_rebased_onto_the_original_rhs() {
     let true_normr = vec_norm(&r);
     assert!((result.residual_norm - true_normr).abs() <= 1e-9 * true_normr);
 }
+
+/// The cold audit's metric product `⟨Aᵀb, M⁻¹Aᵀb⟩` overflows at `‖b‖ ≳ 1e154` unless the
+/// gradient is scaled first, which failed every warm-started solve at that scale as soon as it
+/// converged.
+#[test]
+fn test_mlsmr_warm_start_audits_at_extreme_magnitude() {
+    let b = [1e160, 5e159];
+    let x0 = [9e159, 4.5e159];
+    let result = mlsmr(
+        &IdentityOp { n: 2 },
+        &b,
+        &IdentityOp { n: 2 },
+        1e-15,
+        5,
+        MlsmrOptions {
+            warm_start: Some(&x0),
+            ..Default::default()
+        },
+    )
+    .expect("the audit must stay representable");
+
+    assert!(result.converged, "{:?}", result.stop_reason);
+}
