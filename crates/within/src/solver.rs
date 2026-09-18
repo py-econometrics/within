@@ -462,7 +462,7 @@ impl<'a> Solver<'a> {
         &self,
         y: &[f64],
         lsmr: impl Into<Option<&'o LsmrOptions>>,
-    ) -> Result<SolveResult, SolveError> {
+    ) -> Result<SolveResult, WithinError> {
         let default = LsmrOptions::default();
         let lsmr = lsmr.into().unwrap_or(&default);
 
@@ -493,7 +493,7 @@ impl<'a> Solver<'a> {
         &self,
         ys: &[&[f64]],
         lsmr: impl Into<Option<&'o LsmrOptions>>,
-    ) -> Result<BatchSolveResult, SolveError> {
+    ) -> Result<BatchSolveResult, WithinError> {
         let t_start = Instant::now();
         let default = LsmrOptions::default();
         let lsmr = lsmr.into().unwrap_or(&default);
