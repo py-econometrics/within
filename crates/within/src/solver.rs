@@ -2,12 +2,13 @@
 //! multiple solves on the same design) and the one-shot [`solve`] / [`solve_batch`]
 //! convenience wrappers built on top of it.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Instant;
 
 use ndarray::ArrayView2;
 use rayon::prelude::*;
-use schwarz_precond::{lsmr as lsmr_solve, mlsmr, MlsmrOptions};
+use schwarz_precond::{lsmr as lsmr_solve, mlsmr, LsmrResult, MlsmrOptions};
 
 use crate::channel::CoefficientAddress;
 use crate::config::{LsmrOptions, PreconditionerConfig};
@@ -258,8 +259,41 @@ struct RhsSolution {
     converged: bool,
     iterations: usize,
     residual: f64,
-    time_setup: f64,
+    gather_secs: f64,
     time_solve: f64,
+}
+
+/// One RHS in the internal observation frame: `y` to subtract the fit from, `b` for LSMR.
+struct PreparedRhs<'s> {
+    op: DesignOperator<'s>,
+    y: Cow<'s, [f64]>,
+    /// `W^{1/2} y`; `None` when unweighted, where `b` is `y` itself.
+    weighted: Option<Vec<f64>>,
+    /// The gather is a recurring per-solve cost of the locality sort, so it counts as setup.
+    gather_secs: f64,
+}
+
+impl PreparedRhs<'_> {
+    fn b(&self) -> &[f64] {
+        self.weighted.as_deref().unwrap_or(&self.y)
+    }
+}
+
+/// One finished LSMR run and the seconds it alone took.
+struct Run {
+    result: LsmrResult,
+    solve_secs: f64,
+}
+
+impl Run {
+    fn timed(run: impl FnOnce() -> Result<LsmrResult, SolveError>) -> Result<Self, SolveError> {
+        let t_start = Instant::now();
+        let result = run()?;
+        Ok(Self {
+            result,
+            solve_secs: t_start.elapsed().as_secs_f64(),
+        })
+    }
 }
 
 impl<'a> Solver<'a> {
@@ -326,11 +360,8 @@ impl<'a> Solver<'a> {
         &self.warnings
     }
 
-    /// Shared per-RHS solve: validate `y`, run (m)lsmr, demean, and
-    /// back-transform slopes. Excludes the design-level `layout` / `warnings` /
-    /// `unidentified`, which the public entry points attach once (see
-    /// [`RhsSolution`]).
-    fn solve_rhs(&self, y: &[f64], lsmr: &LsmrOptions) -> Result<RhsSolution, SolveError> {
+    /// Validate `y` and move it into the internal observation frame.
+    fn prepare<'s>(&'s self, y: &'s [f64]) -> Result<PreparedRhs<'s>, SolveError> {
         // `weighted_rhs` zips y with sqrt-weights, silently truncating when `y.len() > n_rows`.
         if y.len() != self.prepared.design.n_obs {
             return Err(SolveError::InvalidInput {
@@ -350,35 +381,28 @@ impl<'a> Solver<'a> {
         }
 
         let t_start = Instant::now();
-
-        // The gather is a recurring per-solve cost of the locality sort, so it counts as setup.
-        let y_internal = self.prepared.design.permute_obs_in(y);
-        let y: &[f64] = &y_internal;
-
-        let rect_op = DesignOperator::new(&self.prepared);
-        let b = rect_op.weighted_rhs(y);
-        let b: &[f64] = &b;
-
-        let t_solve_start = Instant::now();
-        let time_setup = t_solve_start.duration_since(t_start).as_secs_f64();
-
-        let r = match self.preconditioner.as_ref() {
-            Some(p) => {
-                let options = MlsmrOptions {
-                    local_size: lsmr.local_size,
-                    ..Default::default()
-                };
-                mlsmr(&rect_op, b, p, lsmr.tol, lsmr.maxiter, options)?
-            }
-            None => lsmr_solve(&rect_op, b, lsmr.tol, lsmr.maxiter, lsmr.local_size)?,
+        let y = self.prepared.design.permute_obs_in(y);
+        let op = DesignOperator::new(&self.prepared);
+        let weighted = match op.weighted_rhs(&y) {
+            Cow::Borrowed(_) => None,
+            Cow::Owned(b) => Some(b),
         };
+        Ok(PreparedRhs {
+            op,
+            y,
+            weighted,
+            gather_secs: t_start.elapsed().as_secs_f64(),
+        })
+    }
 
-        let time_solve = t_solve_start.elapsed().as_secs_f64();
-
+    /// Demean and back-transform one finished run. Excludes the design-level `layout` /
+    /// `warnings` / `unidentified`, which the public entry points attach once.
+    fn finish(&self, rhs: PreparedRhs<'_>, run: Run) -> RhsSolution {
+        let r = run.result;
         // Shapes are guaranteed here, so the bare `D x` matvec is infallible.
         let mut demeaned = vec![0.0; self.prepared.design.n_obs];
         gather_apply(&self.prepared, &r.x, &mut demeaned, None);
-        for (d, &yi) in demeaned.iter_mut().zip(y.iter()) {
+        for (d, &yi) in demeaned.iter_mut().zip(rhs.y.iter()) {
             *d = yi - *d;
         }
 
@@ -387,7 +411,7 @@ impl<'a> Solver<'a> {
             rp.back_transform(&mut x);
         }
 
-        Ok(RhsSolution {
+        RhsSolution {
             x,
             // Back to the caller's observation order (no-op if not reordered).
             demeaned: self.prepared.design.permute_obs_out(demeaned),
@@ -395,9 +419,28 @@ impl<'a> Solver<'a> {
             iterations: r.iterations,
             // Read from the LSMR recurrence at no extra cost; see `SolveResult::residual`.
             residual: r.normal_eq_residual,
-            time_setup,
-            time_solve,
-        })
+            gather_secs: rhs.gather_secs,
+            time_solve: run.solve_secs,
+        }
+    }
+
+    /// Every RHS in one pass on the preconditioner; both entry points come through here.
+    fn solve_all(&self, ys: &[&[f64]], lsmr: &LsmrOptions) -> Result<Vec<RhsSolution>, SolveError> {
+        // Collecting into `Result` fails fast on the first per-RHS error, not during the fold.
+        ys.par_iter()
+            .map(|y| {
+                let rhs = self.prepare(y)?;
+                let options = MlsmrOptions {
+                    local_size: lsmr.local_size,
+                    ..Default::default()
+                };
+                let run = Run::timed(|| match self.preconditioner.as_ref() {
+                    Some(m) => mlsmr(&rhs.op, rhs.b(), m, lsmr.tol, lsmr.maxiter, options),
+                    None => lsmr_solve(&rhs.op, rhs.b(), lsmr.tol, lsmr.maxiter, lsmr.local_size),
+                })?;
+                Ok(self.finish(rhs, run))
+            })
+            .collect()
     }
 
     /// Per-level directions the data cannot identify, shared across all RHS:
@@ -424,7 +467,11 @@ impl<'a> Solver<'a> {
         let lsmr = lsmr.into().unwrap_or(&default);
 
         let t_start = Instant::now();
-        let solution = self.solve_rhs(y, lsmr)?;
+        let solution = self
+            .solve_all(&[y], lsmr)?
+            .into_iter()
+            .next()
+            .expect("one RHS yields one solution");
 
         Ok(SolveResult {
             x: solution.x,
@@ -436,7 +483,7 @@ impl<'a> Solver<'a> {
             iterations: solution.iterations,
             residual: solution.residual,
             time_total: t_start.elapsed().as_secs_f64(),
-            time_setup: solution.time_setup,
+            time_setup: solution.gather_secs,
             time_solve: solution.time_solve,
         })
     }
@@ -452,11 +499,7 @@ impl<'a> Solver<'a> {
         let lsmr = lsmr.into().unwrap_or(&default);
         let n_rhs = ys.len();
 
-        // Collecting into `Result` fails fast on the first per-RHS error, not during the fold.
-        let solutions: Vec<RhsSolution> = ys
-            .par_iter()
-            .map(|y| self.solve_rhs(y, lsmr))
-            .collect::<Result<Vec<_>, _>>()?;
+        let solutions = self.solve_all(ys, lsmr)?;
 
         let mut x = Vec::with_capacity(self.prepared.design.n_dofs * n_rhs);
         let mut demeaned = Vec::with_capacity(self.prepared.design.n_obs * n_rhs);
