@@ -24,6 +24,9 @@
 //! case is a guarantee); when the width may vary, also pin an explicit
 //! [`ReductionStrategy`] rather than [`ReductionStrategy::Auto`], which selects
 //! its backend from the width.
+//!
+//! [`PreconditionerConfig::Adaptive`] reproduces raw coefficients per solve, not
+//! across solves; fitted values agree.
 
 pub mod config;
 pub mod error;
@@ -40,7 +43,7 @@ pub(crate) mod solver;
 pub use channel::{Channel, ChannelPair, CoefficientAddress};
 pub use config::{
     ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, LsmrOptions, PreconditionerConfig,
-    ReductionStrategy, ScalingConfig, ScalingFailure, SchurMode,
+    ReductionStrategy, ScalingConfig, ScalingFailure, SchurMode, Staleness, StalenessError,
 };
 pub use domain::{Design, Effect};
 pub use error::{AliasVerdict, BuildError, BuildWarning, SolveError, WithinError};

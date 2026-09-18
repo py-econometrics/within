@@ -7,7 +7,7 @@ use crate::channel::{Channel, ChannelPair};
 pub use schwarz_precond::SolveError;
 
 /// Errors produced while validating inputs or building solver components.
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Error)]
 #[non_exhaustive]
 pub enum BuildError {
     /// No observations provided.
