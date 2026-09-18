@@ -304,6 +304,14 @@ impl PyStaleness {
     fn threshold(&self) -> f64 {
         self.inner.threshold()
     }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Staleness(window={}, threshold={})",
+            self.inner.window(),
+            self.inner.threshold()
+        )
+    }
 }
 
 impl PyStaleness {

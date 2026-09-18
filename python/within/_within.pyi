@@ -69,6 +69,7 @@ class Staleness:
         window: int | None = None,
         threshold: float | None = None,
     ) -> None: ...
+    def __repr__(self) -> str: ...
 
 class ReductionStrategy:
     """Strategy for combining subdomain contributions in additive Schwarz.
@@ -369,7 +370,8 @@ def solve_batch(
 class Preconditioner:
     """Pre-built fixed-effects preconditioner.
 
-    Built once per design and reused across solves via the persistent
+    Built once per design, at construction or (under ``Adaptive``) at
+    escalation, and reused across solves via the persistent
     :class:`Solver`. Pickleable for offline construction; can also be
     deserialised manually via ``Preconditioner(bytes_payload)`` (the same
     payload produced by ``__reduce__`` / ``pickle.dumps``).
@@ -419,7 +421,11 @@ class Solver:
         ...
     @property
     def preconditioner(self) -> Preconditioner | None:
-        """Access the cached preconditioner (for serialization or reuse)."""
+        """The preconditioner in use, for serialization or reuse.
+
+        Under ``Adaptive`` this is the Schwarz map once built and the diagonal
+        base before; a reused map is fixed and never escalates.
+        """
         ...
     @property
     def has_escalated(self) -> bool:

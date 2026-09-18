@@ -259,6 +259,7 @@ class TestAdaptive:
     def test_staleness_exposes_its_fields_and_rejects_invalid(self):
         assert (Staleness().window, Staleness().threshold) == (4, 0.7)
         assert Staleness(window=3, threshold=0.25) != Staleness()
+        assert repr(Staleness()) == "Staleness(window=4, threshold=0.7)"
         # StalenessError must arrive as ValueError, not a bare RuntimeError.
         with pytest.raises(ValueError):
             Staleness(window=0)
