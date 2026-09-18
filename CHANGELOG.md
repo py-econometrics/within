@@ -9,48 +9,37 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- Python `Effect` lists no longer deep-copy every level and slope buffer during design extraction; the binding retains the frozen Python effects and borrows their native buffers while building off-GIL (#358).
-- Categorical `u32` labels no longer need to be zero-based or contiguous: `Design` compacts observed labels to internal positions, while `CoefficientLayout` and `CoefficientAddress` translate coefficients back to caller-visible labels. This avoids allocating and solving for gaps in sparse label ranges (#228, #268).
-- **BREAKING:** Rust `Solver::new` now takes `weights: Option<&[f64]>` instead of `Option<Vec<f64>>`; pass `Some(&weights)` to build a weighted persistent solver. The solver prepares and retains only `W^{1/2}` in its internal observation order. The one-shot `solve` and `solve_batch` weight arguments remain borrowed and are unchanged.
+- Python `Effect` lists no longer deep-copy their level and slope buffers during design extraction; the binding borrows them while building off-GIL (#358).
+- Categorical `u32` labels need not be zero-based or contiguous: `Design` compacts observed labels to internal positions and `CoefficientLayout`/`CoefficientAddress` translate back, so gaps in sparse label ranges are neither allocated nor solved for (#228, #268).
+- **BREAKING:** Rust `Solver::new` takes `weights: Option<&[f64]>` instead of `Option<Vec<f64>>`, retaining only `W^{1/2}` in internal observation order. One-shot `solve`/`solve_batch` weights are unchanged.
 - `Design::from_frame` rejects continuous columns that no effect term claims, reporting `BuildError::UnclaimedLoadingColumns` instead of silently retaining unused data.
-- **BREAKING:** Python `PreconditionerConfig` is now a tagged union: construct variants as `PreconditionerConfig.Off()`, `.Diagonal()`, or `.Additive(local_solver=..., reduction=...)` (previously class-attribute singletons plus an `.additive()` factory). Instances compare by value and support `match`/`case` on Python ≥3.10.
+- **BREAKING:** Python `PreconditionerConfig` is now a tagged union — `Off()`, `Diagonal()`, `Additive(local_solver=..., reduction=...)` — replacing the class-attribute singletons and `.additive()` factory. Variants compare by value and support `match`/`case` on Python ≥3.10.
 - Rust `Preconditioner` objects expose their normalized construction configuration through `Preconditioner::config()`.
-- Serialized `schwarz_precond::SchwarzPreconditioner` values now preserve the configured reduction strategy.
 - **BREAKING:** `schwarz_precond::mlsmr` takes an `MlsmrOptions` in place of its trailing `local_size`.
 - **BREAKING:** `LsmrStopReason` gains `Escalated` and `WarmStartExact`, breaking exhaustive `match`es.
 - A warm start that already solves the system reports `WarmStartExact` instead of `ZeroRhs`.
-- The LSMR true-residual audit of a warm-started stop measures the total solution against the original `b` and anchors its normal-equation leg to `‖Aᵀb‖` rather than the restart's own initial residual. A warm start with `b = 0` measures its tolerances against `‖b − A x₀‖`.
+- The LSMR true-residual audit of a warm-started stop measures the total solution against the original `b`, anchoring its normal-equation leg to `‖Aᵀb‖` rather than the restart's initial residual; with `b = 0`, tolerances measure against `‖b − A x₀‖`.
 - **BREAKING:** `ScalingConfig::max_sweeps` is now `max_iterations`, and `BuildWarning::UnscalableComponent` reports `iterations` in place of `sweeps`; the dominance certificate runs reduced CG, not relaxation sweeps.
-- **BREAKING:** The serialized `Preconditioner` wire format changed with the `approx-chol` 0.4 → 0.5 bump (v12 → v13), retention of the complete construction config (v13 → v14), retention of its original build duration (v14 → v15), the new `LocalSolverConfig::ridge` field (v15 → v16), and the built map recording its own Schwarz description in place of the strategy enum (v16 → v17); 0.3.0 bytes no longer decode.
-- **BREAKING:** Coefficient addresses now use caller-visible `u32` factor labels rather than internal `usize` level positions. This affects Rust `CoefficientAddress::level` and the accepted range of Python coefficient layout and unidentified-direction levels.
+- **BREAKING:** The serialized `Preconditioner` wire format moved v12 → v17 (approx-chol 0.5, full construction config, build duration, `LocalSolverConfig::ridge`, and the built map's own Schwarz description in place of the strategy enum); 0.3.0 bytes no longer decode.
+- **BREAKING:** Coefficient addresses use caller-visible `u32` factor labels rather than internal `usize` level positions, affecting `CoefficientAddress::level` and the accepted range of Python coefficient-layout and unidentified-direction levels.
 - **BREAKING:** `Solver::solve` and `Solver::solve_batch` return `WithinError` (was `SolveError`), so a deferred preconditioner build surfaces its failure through the solve path (#260).
 
 ### Added
 
 - A slope covariate another term reproduces to roundoff is removed from the solve space instead of amplified by the preconditioner (#297).
-
-- Persistent designs can be built once and shared across solves: Python adds `Design`, accepted by `Solver`, `solve`, and `solve_batch`; Rust adds `Design::from_categories` and accepts `&Design` in `Solver::new`, sharing immutable design storage while keeping weight-dependent preparation solver-local (#269).
-- `schwarz_precond::Staleness` gains `Default` (window 4, threshold 0.7), `window()`/`threshold()` accessors, and serde support validated through `try_new` (#260).
+- Persistent designs build once and share across solves: Python adds `Design`, accepted by `Solver`, `solve`, and `solve_batch`; Rust adds `Design::from_categories` and accepts `&Design` in `Solver::new`, keeping weight-dependent preparation solver-local (#269).
 - Python `Preconditioner.build_duration_seconds` and Rust `Preconditioner::build_duration()` expose the original preconditioner build duration, preserved across serialization and reuse.
-- `BuildWarning::CollinearSlopeCovariate` reports a slope covariate that is (nearly) a per-level combination of another term's columns — a cross-term near-null direction that per-term whitening cannot see and that can inflate iteration counts by orders of magnitude (#281); its `verdict: AliasVerdict` records whether the direction was constrained out of the solve space (#297).
+- `BuildWarning::CollinearSlopeCovariate` reports a slope covariate that is (nearly) a per-level combination of another term's columns — a near-null direction per-term whitening cannot see, which can inflate iteration counts by orders of magnitude (#281); its `verdict: AliasVerdict` records whether that direction was constrained out of the solve space (#297).
 - `PreconditionerConfig::Adaptive` starts on the diagonal and escalates to additive Schwarz on a stalled contraction, building the Schwarz factorization only on escalation; `Solver::has_escalated()` reports whether the Schwarz map was built (#260).
 - Python exposes it as `PreconditionerConfig.Adaptive(local_solver=..., reduction=..., stall=...)`, with `Solver.has_escalated` and `within.config.Staleness(window=..., threshold=...)` (#260).
-- `schwarz_precond::EscalationPolicy` builds a per-run `EscalationHandler` that ends a solve with `LsmrStopReason::Escalated` and an iterate that warm-starts the next preconditioner; `Staleness` implements it from the trailing contraction window.
-- `schwarz_precond::MlsmrOptions::warm_start` carries an initial iterate through a change of preconditioner.
 - `LocalSolverConfig::ridge` (Python `LocalSolverConfig(ridge=...)`) floors the local spectrum of grounded slope-pair components at a fraction of their largest diagonal; `0` disables it (#290).
 
 ### Fixed
 
 - A design carrying varying slopes on two distinct factors could fail preconditioner construction with `matrix is not symmetric`, when rounding left the two triangles of the exact Schur complement unequal (#229).
 - A `design` that is neither a 2-D `uint32` array nor a list of `Effect` raised `ValueError` where the documented type is `TypeError`, and `AdditiveSchwarz` accepted a wrong-type `local_solver` at construction, deferring the `TypeError` to solve time (#248).
-- A slope covariate collinear with another term could make LSMR report convergence on a solve that had not demeaned the response; tolerance stops are now audited against the true residual and a failed check reports `LsmrStopReason::FalseConvergence` with `converged = false` (#290).
-- An `‖A‖_F` estimate that overflowed to infinity zeroed LSMR's normal-equation ratio and certified any residual; `A = diag(1.2e154, 1e154)` stopped after one iteration and now solves (#297).
-- A preconditioner with a null direction reported that part of `Aᵀr` as zero and certified a stop that had not solved along it; tolerance stops are now audited outside the preconditioner's metric as well as inside it (#297).
-- LSMR's zero-initial-gradient exit returned `x = x₀` as converged unaudited, which the preconditioner metric reports for any `Aᵀb` in `ker(M⁻¹)` (#362).
-- LSMR's normal-equation ratio certified unsolved stops at the ends of the float range, where a subnormal `‖A‖` was clamped up or `‖A‖‖r‖` overflowed (#362).
-- A non-finite `α`, `β`, `⟨v, Mv⟩`, or `‖b‖` in LSMR fails the solve with `SolveError::InvalidInput`; a NaN previously read as `α = 0` and reported a converged `x = 0`, and an overflowing `‖b‖` certified any result. The preconditioner-indefiniteness test no longer over- or underflows at extreme magnitudes (#303).
-- A warm-started LSMR solve that exhausted its iteration budget reported its residuals against the warm start's residual rather than `b`.
-- The cold audit's metric product overflowed for `‖Aᵀb‖ ≳ 1e154`, failing a converged warm-started solve at that scale.
+- LSMR no longer certifies a stop it has not solved. Tolerance stops are audited against the true residual and outside the preconditioner's metric, a non-finite `α`, `β`, `⟨v, Mv⟩`, or `‖b‖` fails with `SolveError::InvalidInput`, and an overflowing or subnormal `‖A‖` no longer zeroes the normal-equation ratio; a failed check reports `LsmrStopReason::FalseConvergence` with `converged = false` (#290, #297, #303, #362).
+- A warm-started solve measures its residuals against the original `b`, including when it exhausts its iteration budget, and no longer fails a converged solve when the cold audit's metric product overflows at `‖Aᵀb‖ ≳ 1e154`.
 - A non-finite or negative `ScalingConfig::tolerance` silently disabled the dominance certificate under both failure policies, since every comparison against it is `>`; it is now rejected as `BuildError::InvalidScalingTolerance`.
 
 ### Removed
