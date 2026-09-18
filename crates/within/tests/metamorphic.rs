@@ -4,7 +4,7 @@ use within::{solve, solve_batch, Channel, CoefficientAddress, LsmrOptions};
 
 #[path = "common/property_strategies.rs"]
 mod strategies;
-use strategies::{additive_precond, random_fe_problem_strategy};
+use strategies::{default_precond, random_fe_problem_strategy};
 
 fn at(term: usize, level: u32, column: usize) -> CoefficientAddress {
     CoefficientAddress {
@@ -51,7 +51,7 @@ proptest! {
         c in prop_oneof![-8.0f64..=-0.25, 0.25f64..=8.0],
     ) {
         let params = tight_params();
-        let precond = additive_precond();
+        let precond = default_precond();
 
         let base = solve(cats.view(), &y, None, &params, &precond).unwrap();
         prop_assert!(base.converged);
@@ -80,7 +80,7 @@ proptest! {
         k in 0.25f64..=6.0,
     ) {
         let params = tight_params();
-        let precond = additive_precond();
+        let precond = default_precond();
 
         let base = solve(cats.view(), &y, Some(w.as_slice()), &params, &precond).unwrap();
         prop_assert!(base.converged);
@@ -110,7 +110,7 @@ proptest! {
         }),
     ) {
         let params = tight_params();
-        let precond = additive_precond();
+        let precond = default_precond();
 
         let refs: Vec<&[f64]> = ys.iter().map(Vec::as_slice).collect();
         let batch = solve_batch(cats.view(), &refs, None, &params, &precond).unwrap();
@@ -135,7 +135,7 @@ proptest! {
     #[test]
     fn prop_unidentified_slots_are_zero((cats, y) in random_fe_problem_strategy()) {
         let params = tight_params();
-        let precond = additive_precond();
+        let precond = default_precond();
         let result = solve(cats.view(), &y, None, &params, &precond).unwrap();
         prop_assert!(result.converged);
 
@@ -166,7 +166,7 @@ fn saturated_single_factor_recovers_level_means() {
     let cats = Array2::from_shape_vec((6, 1), vec![0u32, 0, 1, 1, 1, 2]).unwrap();
     let y = vec![1.0, 3.0, 2.0, 4.0, 6.0, 5.0];
     let params = tight_params();
-    let precond = additive_precond();
+    let precond = default_precond();
     let result = solve(cats.view(), &y, None, &params, &precond).unwrap();
     assert!(result.converged);
 

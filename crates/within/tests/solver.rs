@@ -13,7 +13,7 @@ fn default_params() -> LsmrOptions {
     LsmrOptions::default()
 }
 
-fn additive_precond() -> PreconditionerConfig {
+fn default_precond() -> PreconditionerConfig {
     PreconditionerConfig::default()
 }
 
@@ -27,7 +27,7 @@ fn categories_and_y() -> (ndarray::Array2<u32>, Vec<f64>) {
 fn test_solver_matches_oneshot() {
     let (categories, y) = categories_and_y();
     let params = default_params();
-    let precond = additive_precond();
+    let precond = default_precond();
 
     let oneshot = solve(categories.view(), &y, None, &params, &precond).expect("oneshot");
 
@@ -45,7 +45,7 @@ fn test_solver_matches_oneshot() {
 fn test_solver_demeaned() {
     let (categories, y) = categories_and_y();
     let params = default_params();
-    let precond = additive_precond();
+    let precond = default_precond();
 
     let solver = Solver::new(categories.view(), None, &precond).expect("solver build");
     let result = solver.solve(&y, &params).expect("solver solve");
@@ -111,7 +111,7 @@ fn test_solver_batch() {
     let y3 = vec![1.0, 1.0, 1.0, 1.0, 1.0];
 
     let params = default_params();
-    let precond = additive_precond();
+    let precond = default_precond();
 
     let solver = Solver::new(categories.view(), None, &precond).expect("solver build");
 
@@ -160,7 +160,7 @@ fn test_solver_batch_term_design_shares_drop_report() {
     ];
     let params = default_params();
 
-    let solver = Solver::new(effects, None, additive_precond()).expect("solver build");
+    let solver = Solver::new(effects, None, default_precond()).expect("solver build");
     let batch = solver
         .solve_batch(&[&ys[0], &ys[1]], &params)
         .expect("solve batch");
@@ -182,7 +182,7 @@ fn test_solver_batch_term_design_shares_drop_report() {
 fn test_unidentified_empty_for_plain_factors() {
     let (categories, y) = categories_and_y();
     let params = default_params();
-    let precond = additive_precond();
+    let precond = default_precond();
 
     let solver = Solver::new(categories.view(), None, &precond).expect("solver build");
 
@@ -286,7 +286,7 @@ fn test_solver_accepts_prebuilt_design() {
     let design = common::make_test_design();
     let y = vec![1.0; design.n_obs()];
     let params = default_params();
-    let precond = additive_precond();
+    let precond = default_precond();
 
     let solver = Solver::new(design, None, &precond).expect("prebuilt design");
     let result = solver.solve(&y, &params).expect("solve");
@@ -319,7 +319,7 @@ fn test_internal_locality_sort_is_transparent(#[case] weighted: bool) {
             .collect::<Vec<f64>>()
     });
     let params = default_params();
-    let precond = additive_precond();
+    let precond = default_precond();
 
     let make_solver = |weights: Option<&[f64]>| {
         let design = common::make_design(vec![col0.clone(), col1.clone()]).expect("design");

@@ -10,8 +10,6 @@ const WIRE_FORMAT_VERSION: u32 = 17;
 const PRECOND_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v17.postcard");
 const PRE_BUMP_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v16.postcard");
 
-/// The fixture pins the Schwarz signed route, so every site names it rather than
-/// riding on the library default.
 fn additive() -> PreconditionerConfig {
     PreconditionerConfig::Additive {
         local_solver: LocalSolverConfig::default(),

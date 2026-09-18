@@ -35,8 +35,8 @@ pub fn random_fe_problem_strategy() -> impl Strategy<Value = (Array2<u32>, Vec<f
     })
 }
 
-/// Default additive Schwarz preconditioner config for property tests.
-pub fn additive_precond() -> PreconditionerConfig {
+/// The library default preconditioner config for property tests.
+pub fn default_precond() -> PreconditionerConfig {
     PreconditionerConfig::default()
 }
 

@@ -4,7 +4,7 @@ use within::{solve, Channel, CoefficientAddress, LsmrOptions, Solver};
 
 #[path = "common/property_strategies.rs"]
 mod strategies;
-use strategies::{additive_precond, random_fe_problem_strategy};
+use strategies::{default_precond, random_fe_problem_strategy};
 
 /// 4-factor problem: 2–10 levels each, 100–500 observations.
 fn random_4_factor_problem_strategy() -> impl Strategy<Value = (Array2<u32>, Vec<f64>)> {
@@ -64,7 +64,7 @@ proptest! {
             tol: 1e-7,
             ..LsmrOptions::default()
         };
-        let precond = additive_precond();
+        let precond = default_precond();
         // LSMR converges on the least-squares system min ||y - Dx||^2 for any y.
         let result = solve(cats.view(), &y, None, &params, &precond).unwrap();
         prop_assert!(
@@ -86,7 +86,7 @@ proptest! {
             tol: 1e-7,
             ..LsmrOptions::default()
         };
-        let precond = additive_precond();
+        let precond = default_precond();
 
         // Path A: convenience `solve()` (ingests the view internally)
         let result_a = solve(cats.view(), &y, None, &params, &precond).unwrap();
@@ -117,7 +117,7 @@ proptest! {
             tol: 1e-7,
             ..LsmrOptions::default()
         };
-        let precond = additive_precond();
+        let precond = default_precond();
         let result = solve(cats.view(), &y, None, &params, &precond).unwrap();
 
         if !result.converged {

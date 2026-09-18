@@ -6,7 +6,7 @@ use within::{solve, LsmrOptions, PreconditionerConfig, Solver};
 #[path = "common/orchestrate_helpers.rs"]
 mod common;
 
-fn additive_precond() -> PreconditionerConfig {
+fn default_precond() -> PreconditionerConfig {
     PreconditionerConfig::default()
 }
 
@@ -47,7 +47,7 @@ fn test_trivial_factor_all_same_level() {
     let cats = array![[0u32, 0], [0u32, 1], [0u32, 2], [0u32, 0], [0u32, 1]];
     let y = vec![1.0, 2.0, 3.0, 4.0, 5.0];
     let params = LsmrOptions::default();
-    let precond = additive_precond();
+    let precond = default_precond();
 
     let result = solve(cats.view(), &y, None, &params, &precond).expect("trivial-factor solve");
     assert!(
@@ -71,11 +71,11 @@ fn test_trivial_factor_all_same_level() {
 /// back to unpreconditioned LSMR — which, like the diagonal and
 /// unpreconditioned paths, solves the zero system and returns x=0.
 #[test]
-fn test_zero_weight_additive_preconditioner_returns_zero() {
+fn test_zero_weight_default_preconditioner_returns_zero() {
     let cats = array![[0u32, 0], [1u32, 0], [0u32, 1], [1u32, 1], [2u32, 0]];
     let y = vec![1.0f64; 5];
     let weights = vec![0.0f64; 5];
-    let precond = additive_precond();
+    let precond = default_precond();
 
     let result = solve(
         cats.view(),
@@ -291,7 +291,7 @@ fn test_large_design_convergence() {
         tol: 1e-7,
         ..LsmrOptions::default()
     };
-    let precond = additive_precond();
+    let precond = default_precond();
     let solver = Solver::new(design, None, &precond).expect("solver build");
     let result = solver.solve(&y, &params).expect("large design solve");
 
@@ -339,7 +339,7 @@ fn test_uniform_weights_matches_unweighted() {
     let uniform_weights = vec![2.0f64; 5]; // constant — equivalent to unit weights
 
     let params = LsmrOptions::default();
-    let precond = additive_precond();
+    let precond = default_precond();
 
     let r_unit = solve(cats.view(), &y, None, &params, &precond).expect("unweighted solve");
     let r_uniform = solve(cats.view(), &y, Some(&uniform_weights), &params, &precond)
@@ -369,7 +369,7 @@ fn test_repeated_solve_is_deterministic() {
     let y = common::make_deterministic_y(&design);
 
     let params = LsmrOptions::default();
-    let precond = additive_precond();
+    let precond = default_precond();
     let solver = Solver::new(design, None, &precond).expect("solver build");
 
     let r1 = solver.solve(&y, &params).expect("first solve");

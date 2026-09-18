@@ -297,8 +297,9 @@ def solve(
         options: LSMR solver tuning. Pass ``LsmrOptions(...)`` to override
             defaults. Default: ``LsmrOptions(tol=1e-8, maxiter=1000)``.
         preconditioner: Controls preconditioning. Accepted forms:
-            ``None`` (default) builds the additive Schwarz preconditioner with
-            default settings. ``PreconditionerConfig.Off()`` disables it.
+            ``None`` (default) starts on the diagonal and escalates to
+            additive Schwarz on a stalled contraction.
+            ``PreconditionerConfig.Off()`` disables it.
             ``PreconditionerConfig.Diagonal()`` uses diagonal/Jacobi scaling.
             ``PreconditionerConfig.Additive(...)`` overrides the local-solver /
             reduction settings. ``PreconditionerConfig.Adaptive(...)`` starts

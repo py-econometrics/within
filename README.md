@@ -146,7 +146,7 @@ The `preconditioner` argument accepts any of:
 | `PreconditionerConfig.Additive()` | Additive Schwarz shortcut, built up front. |
 | `PreconditionerConfig.Diagonal()` | Diagonal/Jacobi preconditioner using `diag(D^T W D)^{-1}`. |
 | `PreconditionerConfig.Additive(local_solver?, reduction?)` | Tuned additive Schwarz. Argument types import from `within.config`. |
-| `PreconditionerConfig.Adaptive(local_solver?, reduction?, stall?)` | Tuned form of the default: diagonal first, escalating to additive Schwarz on a stalled contraction; the factorization is built only on escalation. |
+| `PreconditionerConfig.Adaptive(local_solver?, reduction?, stall?)` | Tuned form of the default; the factorization is built only on escalation. |
 | `Preconditioner` instance | Reuse a previously-built preconditioner across solvers. |
 
 `PreconditionerConfig` is a tagged union: each variant is a subclass, so instances

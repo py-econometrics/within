@@ -6,7 +6,7 @@ use within::{
 
 #[path = "common/property_strategies.rs"]
 mod strategies;
-use strategies::{additive_precond, random_fe_problem_strategy, random_slopes_problem_strategy};
+use strategies::{default_precond, random_fe_problem_strategy, random_slopes_problem_strategy};
 
 fn at(term: usize, level: u32, column: usize) -> CoefficientAddress {
     CoefficientAddress {
@@ -24,7 +24,7 @@ proptest! {
 
 #[test]
     fn prop_preconditioner_serde_roundtrip((cats, _y) in random_fe_problem_strategy()) {
-        let precond = additive_precond();
+        let precond = default_precond();
 
         let solver = within::Solver::new(cats.view(), None, &precond).unwrap();
         let fe_precond = solver.preconditioner().unwrap();
@@ -52,7 +52,7 @@ proptest! {
             tol: 1e-7,
             ..default_params()
         };
-        let precond = additive_precond();
+        let precond = default_precond();
         let result = solve(cats.view(), &y, None, &params, &precond).unwrap();
 
         prop_assert!(
@@ -65,7 +65,7 @@ proptest! {
     #[test]
     fn prop_demeaned_orthogonality((cats, y) in random_fe_problem_strategy()) {
         let params = default_params();
-        let precond = additive_precond();
+        let precond = default_precond();
         let result = solve(cats.view(), &y, None, &params, &precond).unwrap();
 
         prop_assume!(result.converged);

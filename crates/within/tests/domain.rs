@@ -2,15 +2,23 @@
 //! public `solve` API for designs that exercise partition-of-unity weights
 //! and disconnected bipartite structure.
 
+use within::config::{LocalSolverConfig, ReductionStrategy};
 use within::observation::ObservationFrame;
-use within::Design;
+use within::{Design, PreconditionerConfig};
+
+fn additive() -> PreconditionerConfig {
+    PreconditionerConfig::Additive {
+        local_solver: LocalSolverConfig::default(),
+        reduction: ReductionStrategy::Auto,
+    }
+}
 
 // Three-factor design: shared DOFs across factor pairs force NonUniform
 // partition weights; verified via the public solve API.
 
 #[test]
 fn test_three_factor_design_solve_converges() {
-    use within::{solve, LsmrOptions, PreconditionerConfig};
+    use within::{solve, LsmrOptions};
 
     let n_obs = 60;
     let n_lev = 5usize;
@@ -39,7 +47,7 @@ fn test_three_factor_design_solve_converges() {
         maxiter: 500,
         ..LsmrOptions::default()
     };
-    let precond = PreconditionerConfig::default();
+    let precond = additive();
     let result = solve(cats.view(), &y, None, &params, &precond).expect("solve should not error");
 
     assert!(
@@ -58,7 +66,7 @@ fn test_three_factor_design_solve_converges() {
 /// 2 subdomains — correctness is validated indirectly through convergence.
 #[test]
 fn test_disconnected_design_larger_converges() {
-    use within::{solve, LsmrOptions, PreconditionerConfig};
+    use within::{solve, LsmrOptions};
 
     let fa = vec![0u32, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3];
     let fb = vec![0u32, 1, 2, 0, 1, 2, 3, 4, 5, 3, 4, 5];
@@ -77,7 +85,7 @@ fn test_disconnected_design_larger_converges() {
         maxiter: 500,
         ..LsmrOptions::default()
     };
-    let precond = PreconditionerConfig::default();
+    let precond = additive();
     let result = solve(cats.view(), &y, None, &params, &precond).expect("solve should not error");
 
     assert!(
@@ -89,7 +97,7 @@ fn test_disconnected_design_larger_converges() {
 
 #[test]
 fn test_disconnected_design_solve_converges() {
-    use within::{solve, LsmrOptions, PreconditionerConfig};
+    use within::{solve, LsmrOptions};
 
     let n_obs = 4;
     let mut cats = ndarray::Array2::<u32>::zeros((n_obs, 2));
@@ -109,7 +117,7 @@ fn test_disconnected_design_solve_converges() {
         maxiter: 500,
         ..LsmrOptions::default()
     };
-    let precond = PreconditionerConfig::default();
+    let precond = additive();
     let result = solve(cats.view(), &y, None, &params, &precond).expect("solve should not error");
 
     assert!(
@@ -173,7 +181,7 @@ fn test_single_factor_design_solve_without_precond() {
 /// is bit-identical — hence the exact `assert_eq`, not a tolerance.
 #[test]
 fn test_intercept_only_effects_match_categories_bitwise() {
-    use within::{Effect, LsmrOptions, PreconditionerConfig, Solver};
+    use within::{Effect, LsmrOptions, Solver};
 
     // Non-monotonic dominant factor so the locality sort is genuinely exercised.
     let col0: Vec<u32> = vec![3, 0, 2, 1, 3, 0, 2, 1, 3, 0, 2, 1];
@@ -183,7 +191,7 @@ fn test_intercept_only_effects_match_categories_bitwise() {
         .map(|i| (i as f64 * 1.3 - 2.0).sin() + 0.5)
         .collect();
     let params = LsmrOptions::default();
-    let precond = PreconditionerConfig::default();
+    let precond = additive();
 
     let categories = Design::from_frame(
         ObservationFrame::new(vec![col0.clone().into(), col1.clone().into()], Vec::new())
@@ -230,7 +238,7 @@ fn test_intercept_only_effects_match_categories_bitwise() {
 /// converges in a few dozen. Regression guard for the slope-chain blind spot.
 #[test]
 fn test_slope_chain_design_converges_fast() {
-    use within::{Effect, LsmrOptions, PreconditionerConfig, Solver};
+    use within::{Effect, LsmrOptions, Solver};
 
     let (n_firms, wpf, t) = (60usize, 3usize, 4usize);
     let n_workers = n_firms * wpf;
@@ -254,7 +262,7 @@ fn test_slope_chain_design_converges_fast() {
         Effect::new(&worker, true, [&z[..]]).expect("slope effect"),
         Effect::new(&firm, true, []).expect("plain effect"),
     ];
-    let solver = Solver::new(effects, None, PreconditionerConfig::default()).expect("solver build");
+    let solver = Solver::new(effects, None, additive()).expect("solver build");
     let params = LsmrOptions {
         tol: 1e-8,
         maxiter: 500,

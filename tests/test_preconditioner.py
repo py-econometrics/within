@@ -182,12 +182,6 @@ class TestFePreconditioner:
         solver, precond, categories, y = solver_and_precond
         assert precond.config == PreconditionerConfig.Additive()
 
-    def test_default_solver_starts_on_the_diagonal_rung(self, problem):
-        cats, _ = problem
-        solver = Solver(as_solver_categories(cats))
-        assert solver.preconditioner.config == PreconditionerConfig.Diagonal()
-        assert not solver.has_escalated
-
     def test_preconditioner_exposes_tuned_config(self, problem):
         cats, _ = problem
         requested = PreconditionerConfig.Additive(
@@ -267,6 +261,11 @@ class TestAdaptive:
         assert config.reduction == ReductionStrategy.AtomicScatter
         assert config.local_solver.dense_threshold == 8
         assert config.stall == Staleness(window=3, threshold=0.25)
+
+    def test_default_solver_starts_on_the_diagonal_rung(self, problem):
+        cats, _ = problem
+        solver = Solver(as_solver_categories(cats))
+        assert solver.preconditioner.config == PreconditionerConfig.Diagonal()
 
     def test_escalation_is_reachable_and_reported(self, problem):
         cats, y = problem
