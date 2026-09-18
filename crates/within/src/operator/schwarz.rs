@@ -24,12 +24,6 @@ pub(crate) struct FeSchwarz {
     config: PreconditionerConfig,
 }
 
-impl FeSchwarz {
-    fn config(&self) -> &PreconditionerConfig {
-        &self.config
-    }
-}
-
 impl std::fmt::Debug for FeSchwarz {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FeSchwarz")
@@ -158,7 +152,7 @@ impl Preconditioner {
     pub fn config(&self) -> &PreconditionerConfig {
         const DIAGONAL: PreconditionerConfig = PreconditionerConfig::Diagonal;
         match &self.inner {
-            Variant::Additive(p) => p.config(),
+            Variant::Additive(p) => &p.config,
             Variant::Diagonal(_) => &DIAGONAL,
         }
     }
