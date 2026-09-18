@@ -41,15 +41,7 @@ pub(crate) fn build_local_domains(
 
     let design = &prepared.design;
 
-    if !config.ridge.is_finite() || config.ridge < 0.0 {
-        return Err(BuildError::InvalidRidge {
-            value: config.ridge,
-        });
-    }
-    let tolerance = config.scaling.tolerance;
-    if !tolerance.is_finite() || tolerance < 0.0 {
-        return Err(BuildError::InvalidScalingTolerance { value: tolerance });
-    }
+    config.validate()?;
 
     let channels: Vec<Channel> = (0..design.n_factors())
         .flat_map(|term| design.channels(term))
