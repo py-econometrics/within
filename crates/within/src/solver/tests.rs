@@ -9,6 +9,28 @@ use crate::domain::{build_local_domains, Design, Grounding, MatrixForm, Prepared
 use crate::AliasVerdict::{self, Constrained, Kept};
 use crate::{BuildWarning, Effect, PreconditionerConfig, Solver};
 
+#[test]
+fn preconditioner_signature_is_stamped_only_when_exported() {
+    let design = Design::from_levels_for_test(vec![vec![0, 1, 0]]);
+    let solver = Solver::new(design, None, PreconditionerConfig::Diagonal).unwrap();
+    let super::PrecondSlot::Static(Some(p)) = &solver.slot else {
+        panic!("expected diagonal preconditioner");
+    };
+    assert!(p.design_signature.get().is_none());
+    let exported = solver.preconditioner().unwrap();
+    let signature = solver.prepared.design.signature();
+    assert_eq!(exported.design_signature.get(), Some(&signature));
+}
+
+#[test]
+fn prebuilt_preconditioner_accepts_new_weights_on_same_design() {
+    let design = Design::from_levels_for_test(vec![vec![0, 1, 0]]);
+    let first = Solver::new(&design, None, PreconditionerConfig::Diagonal).unwrap();
+    let prebuilt = first.preconditioner().unwrap();
+    let second = Solver::new(&design, Some(&[2.0, 3.0, 4.0]), prebuilt).unwrap();
+    assert!(second.preconditioner().is_some());
+}
+
 /// DGP kept in lockstep with `surplus_component_sampled_matches_exact_reduction`
 /// in `tests/slopes_routing.rs`. A positive slope-only term is not centered by
 /// whitening, so the signed pair stays all-positive — balanced — while generic

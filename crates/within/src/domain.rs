@@ -22,13 +22,22 @@ pub(crate) use factor_pairs::{
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use ndarray::{ArrayView2, Axis};
+use sha2::{Digest, Sha256};
 
 use crate::channel::Channel;
 use crate::observation::ObservationFrame;
 use crate::BuildError;
+
+fn hash_usize(hash: &mut Sha256, value: usize) {
+    hash.update(
+        u64::try_from(value)
+            .expect("design size fits u64")
+            .to_le_bytes(),
+    );
+}
 
 /// A slice that is guaranteed non-empty by construction.
 #[repr(transparent)]
@@ -341,6 +350,8 @@ pub struct Design<'a> {
     pub(crate) n_dofs: usize,
     /// `obs_perm[k]` = caller's original index of the observation at internal position `k`.
     pub(crate) obs_perm: Option<Arc<[u32]>>,
+    /// Shared by clones; populated only when a preconditioner is cached or reused.
+    signature: Arc<OnceLock<[u8; 32]>>,
 }
 
 impl<'a> Design<'a> {
@@ -461,6 +472,7 @@ impl<'a> Design<'a> {
             n_obs,
             n_dofs: offset,
             obs_perm,
+            signature: Arc::new(OnceLock::new()),
         })
     }
 
@@ -472,7 +484,65 @@ impl<'a> Design<'a> {
             n_obs: self.n_obs,
             n_dofs: self.n_dofs,
             obs_perm: self.obs_perm,
+            signature: self.signature,
         }
+    }
+
+    /// Stable digest of the encoded design and coefficient layout, excluding weights.
+    pub(crate) fn signature(&self) -> [u8; 32] {
+        *self.signature.get_or_init(|| {
+            let mut hash = Sha256::new();
+            hash.update(b"within-design-signature-v1");
+            hash_usize(&mut hash, self.n_obs);
+            hash_usize(&mut hash, self.n_dofs);
+            hash_usize(&mut hash, self.terms.len());
+            for (q, term) in self.terms.iter().enumerate() {
+                hash_usize(&mut hash, term.offset);
+                match &term.encoding {
+                    FactorEncoding::Identity { n_levels } => {
+                        hash.update([0]);
+                        hash_usize(&mut hash, *n_levels);
+                    }
+                    FactorEncoding::Integer { labels } => {
+                        hash.update([1]);
+                        hash_usize(&mut hash, labels.len());
+                        for label in labels.iter() {
+                            hash.update(label.to_le_bytes());
+                        }
+                    }
+                }
+                hash_usize(&mut hash, term.columns.len());
+                for column in term.columns.iter() {
+                    match column {
+                        Loading::Constant => hash.update([0]),
+                        Loading::Covariate(index) => {
+                            hash.update([1]);
+                            hash.update(index.to_le_bytes());
+                        }
+                    }
+                }
+                for &level in self.frame.level_column(q) {
+                    hash.update(level.to_le_bytes());
+                }
+            }
+            hash_usize(&mut hash, self.frame.n_loading_columns());
+            for q in 0..self.frame.n_loading_columns() {
+                for &value in self.frame.loading_column(q) {
+                    let bits = if value == 0.0 { 0 } else { value.to_bits() };
+                    hash.update(bits.to_le_bytes());
+                }
+            }
+            match &self.obs_perm {
+                None => hash.update([0]),
+                Some(perm) => {
+                    hash.update([1]);
+                    for &obs in perm.iter() {
+                        hash.update(obs.to_le_bytes());
+                    }
+                }
+            }
+            hash.finalize().into()
+        })
     }
 
     /// Caller order → internal order: `out[k] = v[obs_perm[k]]`; borrows when unpermuted.
@@ -532,6 +602,17 @@ impl<'a> Design<'a> {
 mod tests {
     use super::*;
     use crate::observation::ObservationFrame;
+
+    #[test]
+    fn signature_is_lazy_and_shared_by_design_clones() {
+        let design = Design::from_levels_for_test(vec![vec![1, 0, 1]]);
+        let clone = design.clone();
+        assert!(Arc::ptr_eq(&design.signature, &clone.signature));
+        assert!(design.signature.get().is_none());
+        let signature = clone.signature();
+        assert_eq!(design.signature.get(), Some(&signature));
+        assert_eq!(design.into_owned().signature(), signature);
+    }
 
     fn frame(categorical: Vec<Vec<u32>>, continuous: Vec<Vec<f64>>) -> ObservationFrame<'static> {
         ObservationFrame::new(

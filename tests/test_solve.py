@@ -412,6 +412,15 @@ class TestSolverSerde:
         r2 = solver2.solve(y)
         np.testing.assert_allclose(r2.x, r1.x, atol=1e-10)
 
+    def test_preconditioner_rejects_same_size_different_design(self):
+        a = np.asfortranarray(np.array([[0, 0], [0, 1], [1, 0], [1, 1]], np.uint32))
+        b = np.asfortranarray(np.array([[0, 0], [0, 1], [1, 1], [1, 0]], np.uint32))
+        precond = Solver(
+            Design(a), preconditioner=PreconditionerConfig.Diagonal()
+        ).preconditioner
+        with pytest.raises(ValueError, match="design signature"):
+            Solver(Design(b), preconditioner=precond)
+
     @every_preconditioner_map
     def test_preconditioner_pickle_and_reuse(self, problem, precond):
         """A pickled map applies identically and rebuilds a Solver with the same solution."""
