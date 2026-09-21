@@ -1,9 +1,10 @@
 """High-performance fixed-effects solver for econometric panel data.
 
 ``within`` solves the normal equations arising from multi-way fixed-effect
-models (D^T W D x = D^T W y) using modified LSMR with a domain-decomposition
-(Schwarz) preconditioner. The heavy lifting is done in Rust; this package
-provides the Python API.
+models (D^T W D x = D^T W y) using modified LSMR, preconditioned by default
+with a diagonal that escalates to a domain-decomposition (Schwarz)
+preconditioner on a stalled contraction. The heavy lifting is done in Rust;
+this package provides the Python API.
 
 Quick start::
 
