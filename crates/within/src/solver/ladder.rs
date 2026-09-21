@@ -142,3 +142,33 @@ fn isolated<R: Send>(f: impl FnOnce() -> R + Send) -> Result<R, BuildError> {
     })
 }
 
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use super::isolated;
+
+    thread_local! {
+        static ON_CALLER_POOL: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// A build handed to [`isolated`] runs off the caller's pool, so it can steal none of its jobs.
+    #[test]
+    fn isolated_leaves_the_callers_pool() {
+        let caller = rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .start_handler(|_| ON_CALLER_POOL.with(|f| f.set(true)))
+            .build()
+            .expect("caller pool");
+        assert!(
+            caller.install(|| ON_CALLER_POOL.with(Cell::get)),
+            "the marker never reached the caller pool's workers"
+        );
+        assert!(
+            !caller
+                .install(|| isolated(|| ON_CALLER_POOL.with(Cell::get)))
+                .expect("isolated build"),
+            "the build ran on the caller's pool"
+        );
+    }
+}
