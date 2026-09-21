@@ -109,8 +109,9 @@ impl AdaptivePrecond {
         let mut build_secs = 0.0;
         let built = self.built.get_or_init(|| {
             let t_build = Instant::now();
-            let outcome = isolated(|| build_schwarz(prepared, &self.escalated)).map(
-                |(schwarz, build_warnings)| {
+            let outcome = isolated(|| build_schwarz(prepared, &self.escalated))
+                .and_then(|built| built)
+                .map(|(schwarz, build_warnings)| {
                     let schwarz = schwarz.map(|mut p| {
                         p.gauge = self.base.gauge.clone();
                         p
@@ -118,8 +119,7 @@ impl AdaptivePrecond {
                     let mut warnings = screening.to_vec();
                     warnings.extend(build_warnings);
                     AdaptiveBuild { schwarz, warnings }
-                },
-            );
+                });
             build_secs = t_build.elapsed().as_secs_f64();
             outcome
         });
@@ -129,15 +129,16 @@ impl AdaptivePrecond {
 
 /// Run `f` on a pool of its own, entered from a thread outside every pool, so no wait inside it can
 /// steal a solve off the shared pool; a stolen solve blocking on this build is the #371 deadlock.
-/// Nothing run here may wait on the shared pool. Thread exhaustion panics, as `thread::spawn` does.
-fn isolated<R: Send>(f: impl FnOnce() -> R + Send) -> R {
+/// Nothing run here may wait on the shared pool.
+fn isolated<R: Send>(f: impl FnOnce() -> R + Send) -> Result<R, BuildError> {
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(rayon::current_num_threads())
         .build()
-        .expect("build pool");
+        .map_err(|e| BuildError::ThreadPool(e.to_string()))?;
     std::thread::scope(|s| match s.spawn(|| pool.install(f)).join() {
-        Ok(r) => r,
+        Ok(r) => Ok(r),
         // Carry the build's own panic, not `Any { .. }` from formatting the payload.
         Err(payload) => std::panic::resume_unwind(payload),
     })
 }
+
