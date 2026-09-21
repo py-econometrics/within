@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use ndarray::Array2;
-use within::config::{LocalSolverConfig, ReductionStrategy};
+use within::config::{LocalSolverConfig, ReductionStrategy, Staleness};
 use within::observation::ObservationFrame;
 use within::{Design, PreconditionerConfig, SolveResult};
 
@@ -10,6 +10,15 @@ pub fn additive() -> PreconditionerConfig {
     PreconditionerConfig::Additive {
         local_solver: LocalSolverConfig::default(),
         reduction: ReductionStrategy::default(),
+    }
+}
+
+/// The diagonal→Schwarz ladder, named rather than reached through `default()`.
+pub fn adaptive() -> PreconditionerConfig {
+    PreconditionerConfig::Adaptive {
+        local_solver: LocalSolverConfig::default(),
+        reduction: ReductionStrategy::default(),
+        stall: Staleness::default(),
     }
 }
 
