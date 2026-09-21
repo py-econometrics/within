@@ -228,8 +228,3 @@ class TestNonContiguousInputs:
             solve_batch(cats_c, Y)
         contiguity = [w for w in record if "F-contiguous" in str(w.message)]
         assert len(contiguity) == 1
-
-
-# ---------------------------------------------------------------------------
-# PreconditionerConfig.Off (no preconditioner)
-# ---------------------------------------------------------------------------

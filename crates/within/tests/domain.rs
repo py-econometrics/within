@@ -2,16 +2,12 @@
 //! public `solve` API for designs that exercise partition-of-unity weights
 //! and disconnected bipartite structure.
 
-use within::config::{LocalSolverConfig, ReductionStrategy};
 use within::observation::ObservationFrame;
-use within::{Design, PreconditionerConfig};
+use within::Design;
 
-fn additive() -> PreconditionerConfig {
-    PreconditionerConfig::Additive {
-        local_solver: LocalSolverConfig::default(),
-        reduction: ReductionStrategy::Auto,
-    }
-}
+#[path = "common/orchestrate_helpers.rs"]
+mod common;
+use common::additive;
 
 // Three-factor design: shared DOFs across factor pairs force NonUniform
 // partition weights; verified via the public solve API.

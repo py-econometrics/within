@@ -3,19 +3,15 @@
 //! cross-version encoding shifts the same-build round-trip test cannot.
 //! Regenerate via the `#[ignore]`d `regenerate_wire_format_fixture` test.
 
-use within::config::{LocalSolverConfig, ReductionStrategy};
-use within::{Effect, LsmrOptions, Preconditioner, PreconditionerConfig, Solver};
+use within::{Effect, LsmrOptions, Preconditioner, Solver};
+
+#[path = "common/orchestrate_helpers.rs"]
+mod common;
+use common::additive;
 
 const WIRE_FORMAT_VERSION: u32 = 17;
 const PRECOND_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v17.postcard");
 const PRE_BUMP_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v16.postcard");
-
-fn additive() -> PreconditionerConfig {
-    PreconditionerConfig::Additive {
-        local_solver: LocalSolverConfig::default(),
-        reduction: ReductionStrategy::Auto,
-    }
-}
 
 fn fixture_problem() -> (Vec<u32>, Vec<u32>, Vec<f64>, Vec<f64>) {
     // The frustrated (f-slope, g) pair pins a signed operator with Scaled coords and a Cover.

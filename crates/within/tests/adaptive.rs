@@ -6,13 +6,12 @@ use within::{Design, LsmrOptions, PreconditionerConfig, Solver, Staleness};
 
 #[path = "common/orchestrate_helpers.rs"]
 mod common;
+use common::additive;
 
 /// Escalates after any single non-vanishing contraction, so a handoff is deterministic.
 fn eager_stall() -> Staleness {
     Staleness::try_new(1, 0.0).expect("valid staleness")
 }
-
-use common::additive;
 
 fn adaptive(stall: Staleness) -> PreconditionerConfig {
     PreconditionerConfig::Adaptive {

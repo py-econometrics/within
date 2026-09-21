@@ -7,8 +7,7 @@ use within::{
 #[path = "common/property_strategies.rs"]
 mod strategies;
 use strategies::{
-    any_preconditioner, any_preconditioner_map, random_fe_problem_strategy,
-    random_slopes_problem_strategy,
+    additive, any_preconditioner, random_fe_problem_strategy, random_slopes_problem_strategy,
 };
 
 fn at(term: usize, level: u32, column: usize) -> CoefficientAddress {
@@ -25,10 +24,11 @@ fn default_params() -> LsmrOptions {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(10))]
 
+    // No solve runs first, so the ladder would just hand back its diagonal base.
     #[test]
     fn prop_preconditioner_serde_roundtrip(
         (cats, _y) in random_fe_problem_strategy(),
-        precond in any_preconditioner_map(),
+        precond in prop_oneof![Just(PreconditionerConfig::Diagonal), Just(additive())],
     ) {
         let solver = within::Solver::new(cats.view(), None, &precond).unwrap();
         let fe_precond = solver.preconditioner().unwrap();

@@ -7,10 +7,6 @@ use within::{solve, LsmrOptions, PreconditionerConfig, Solver};
 #[path = "common/orchestrate_helpers.rs"]
 mod common;
 
-fn default_precond() -> PreconditionerConfig {
-    PreconditionerConfig::default()
-}
-
 // ---------------------------------------------------------------------------
 // Test 1: single observation
 // ---------------------------------------------------------------------------
@@ -48,7 +44,7 @@ fn test_trivial_factor_all_same_level() {
     let cats = array![[0u32, 0], [0u32, 1], [0u32, 2], [0u32, 0], [0u32, 1]];
     let y = vec![1.0, 2.0, 3.0, 4.0, 5.0];
     let params = LsmrOptions::default();
-    let precond = default_precond();
+    let precond = PreconditionerConfig::default();
 
     let result = solve(cats.view(), &y, None, &params, &precond).expect("trivial-factor solve");
     assert!(
@@ -244,7 +240,7 @@ fn test_large_design_convergence() {
         tol: 1e-7,
         ..LsmrOptions::default()
     };
-    let precond = default_precond();
+    let precond = PreconditionerConfig::default();
     let solver = Solver::new(design, None, &precond).expect("solver build");
     let result = solver.solve(&y, &params).expect("large design solve");
 
@@ -292,7 +288,7 @@ fn test_uniform_weights_matches_unweighted() {
     let uniform_weights = vec![2.0f64; 5]; // constant — equivalent to unit weights
 
     let params = LsmrOptions::default();
-    let precond = default_precond();
+    let precond = PreconditionerConfig::default();
 
     let r_unit = solve(cats.view(), &y, None, &params, &precond).expect("unweighted solve");
     let r_uniform = solve(cats.view(), &y, Some(&uniform_weights), &params, &precond)
@@ -322,7 +318,7 @@ fn test_repeated_solve_is_deterministic() {
     let y = common::make_deterministic_y(&design);
 
     let params = LsmrOptions::default();
-    let precond = default_precond();
+    let precond = PreconditionerConfig::default();
     let solver = Solver::new(design, None, &precond).expect("solver build");
 
     let r1 = solver.solve(&y, &params).expect("first solve");

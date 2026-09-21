@@ -3,15 +3,11 @@
 //! components solving through their Gremban double cover (#62).
 
 use rstest::rstest;
-use within::config::{LocalSolverConfig, ReductionStrategy};
 use within::{Effect, LsmrOptions, Preconditioner, PreconditionerConfig, SchurMode, Solver};
 
-fn additive() -> PreconditionerConfig {
-    PreconditionerConfig::Additive {
-        local_solver: LocalSolverConfig::default(),
-        reduction: ReductionStrategy::Auto,
-    }
-}
+#[path = "common/orchestrate_helpers.rs"]
+mod common;
+use common::additive;
 
 fn lcg(seed: &mut u64) -> u64 {
     *seed = seed

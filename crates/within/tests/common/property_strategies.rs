@@ -36,22 +36,22 @@ pub fn random_fe_problem_strategy() -> impl Strategy<Value = (Array2<u32>, Vec<f
     })
 }
 
-/// Every preconditioner variant, so a property is checked across all of them within one case budget.
+/// One-level additive Schwarz, pinned so a test names the rung the ladder would escalate to.
+pub fn additive() -> PreconditionerConfig {
+    PreconditionerConfig::Additive {
+        local_solver: LocalSolverConfig::default(),
+        reduction: ReductionStrategy::default(),
+    }
+}
+
+/// Draws one variant per case, so the case budget is spread over them rather than run on each.
 pub fn any_preconditioner() -> impl Strategy<Value = PreconditionerConfig> {
     prop_oneof![
         Just(PreconditionerConfig::Off),
         Just(PreconditionerConfig::Diagonal),
-        Just(PreconditionerConfig::Additive {
-            local_solver: LocalSolverConfig::default(),
-            reduction: ReductionStrategy::Auto,
-        }),
+        Just(additive()),
         Just(PreconditionerConfig::default()),
     ]
-}
-
-/// Variants that hold a map a solver can hand back.
-pub fn any_preconditioner_map() -> impl Strategy<Value = PreconditionerConfig> {
-    any_preconditioner().prop_filter("Off holds no map", |p| *p != PreconditionerConfig::Off)
 }
 
 /// One factor's owned inputs, from which the test body borrows to build an

@@ -9,7 +9,7 @@ use within::{Design, PreconditionerConfig, SolveResult};
 pub fn additive() -> PreconditionerConfig {
     PreconditionerConfig::Additive {
         local_solver: LocalSolverConfig::default(),
-        reduction: ReductionStrategy::Auto,
+        reduction: ReductionStrategy::default(),
     }
 }
 

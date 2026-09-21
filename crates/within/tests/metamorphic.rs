@@ -168,10 +168,7 @@ fn saturated_single_factor_recovers_level_means(
     #[values(
         PreconditionerConfig::Off,
         PreconditionerConfig::Diagonal,
-        PreconditionerConfig::Additive {
-            local_solver: within::LocalSolverConfig::default(),
-            reduction: within::ReductionStrategy::Auto,
-        },
+        strategies::additive(),
         PreconditionerConfig::default()
     )]
     precond: PreconditionerConfig,
