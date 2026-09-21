@@ -218,10 +218,15 @@ fn every_batch_rhs_resumes_on_the_escalated_rung() {
     );
 }
 
-/// Two plain threads stalling at once: one builds, the other blocks on the build lock rather
-/// than finishing on the diagonal, so both beat a diagonal-only solve whichever wins the build.
-#[test]
-fn two_concurrent_first_solves_both_finish_on_the_map() {
+/// Concurrent first solves all beat a diagonal-only solve, whichever of them wins the build.
+#[rstest]
+#[case::plain_threads(2, None)]
+// Workers wait too: the build runs on a pool of its own, so no worker can be holding a build job.
+#[case::rayon_workers(4, Some(4))]
+fn concurrent_first_solves_all_finish_on_the_map(
+    #[case] solves: usize,
+    #[case] pool_threads: Option<usize>,
+) {
     let y = common::make_deterministic_y(&crossed_panel());
     let diagonal = Solver::new(crossed_panel(), None, &PreconditionerConfig::Diagonal)
         .expect("solver")
@@ -229,13 +234,24 @@ fn two_concurrent_first_solves_both_finish_on_the_map() {
         .expect("diagonal solve");
 
     let solver = Solver::new(crossed_panel(), None, adaptive(eager_stall())).expect("solver");
-    let gate = std::sync::Barrier::new(2);
+    let pool = pool_threads.map(|threads| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .expect("pool")
+    });
+    // The gate blocks plain threads only; `install` is what puts a solve on a worker.
+    let gate = std::sync::Barrier::new(solves);
     let results = std::thread::scope(|s| {
-        let handles: Vec<_> = (0..2)
+        let handles: Vec<_> = (0..solves)
             .map(|_| {
                 s.spawn(|| {
                     gate.wait();
-                    solver.solve(&y, &tight()).expect("concurrent solve")
+                    let solve = || solver.solve(&y, &tight()).expect("concurrent solve");
+                    match &pool {
+                        Some(pool) => pool.install(solve),
+                        None => solve(),
+                    }
                 })
             })
             .collect();

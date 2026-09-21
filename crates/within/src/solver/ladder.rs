@@ -1,7 +1,7 @@
 //! The solver's preconditioner slot: a fixed map, or the diagonal→Schwarz ladder that
 //! [`PreconditionerConfig::Adaptive`] builds on a stalled solve.
 
-use std::sync::{Mutex, OnceLock, PoisonError, TryLockError};
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use schwarz_precond::Staleness;
@@ -61,7 +61,6 @@ impl PrecondSlot {
                             reduction,
                         },
                         built: OnceLock::new(),
-                        building: Mutex::new(()),
                     }))
                 };
                 (slot, Vec::new())
@@ -78,8 +77,6 @@ pub(super) struct AdaptivePrecond {
     pub(super) escalated: SchwarzConfig,
     /// A failed build is kept too, so later solves report it instead of paying for it again.
     pub(super) built: OnceLock<Result<AdaptiveBuild, BuildError>>,
-    /// Serialises the build; a rayon worker never waits, its stack may hold a build job (#365).
-    pub(super) building: Mutex<()>,
 }
 
 /// Outcome of the deferred build: the Schwarz map, or `None` when no factor-pair target exists.
@@ -103,27 +100,17 @@ impl AdaptivePrecond {
         self.schwarz().unwrap_or(&self.base)
     }
 
-    /// Build once and return this call's build seconds; a waiter gets `0.0`, a rayon worker skips.
+    /// Build once and return this call's build seconds; every other caller waits for it.
     pub(super) fn escalate(
         &self,
         prepared: &PreparedDesign<'_>,
         screening: &[BuildWarning],
     ) -> Result<f64, BuildError> {
-        let _building = if rayon::current_thread_index().is_some() {
-            match self.building.try_lock() {
-                Ok(guard) => guard,
-                Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
-                Err(TryLockError::WouldBlock) => return Ok(0.0),
-            }
-        } else {
-            self.building.lock().unwrap_or_else(PoisonError::into_inner)
-        };
-        // Only the lock holder can find the cell empty, so nobody ever blocks inside `get_or_init`.
         let mut build_secs = 0.0;
         let built = self.built.get_or_init(|| {
             let t_build = Instant::now();
-            let outcome =
-                build_schwarz(prepared, &self.escalated).map(|(schwarz, build_warnings)| {
+            let outcome = isolated(|| build_schwarz(prepared, &self.escalated)).map(
+                |(schwarz, build_warnings)| {
                     let schwarz = schwarz.map(|mut p| {
                         p.gauge = self.base.gauge.clone();
                         p
@@ -131,10 +118,22 @@ impl AdaptivePrecond {
                     let mut warnings = screening.to_vec();
                     warnings.extend(build_warnings);
                     AdaptiveBuild { schwarz, warnings }
-                });
+                },
+            );
             build_secs = t_build.elapsed().as_secs_f64();
             outcome
         });
         built.as_ref().map(|_| build_secs).map_err(Clone::clone)
     }
+}
+
+/// Run `f` on a pool of its own, entered from a thread outside every pool, so no wait inside it can
+/// steal a solve off the shared pool; a stolen solve blocking on this build is the #371 deadlock.
+/// Nothing run here may wait on the shared pool. Thread exhaustion panics, as `thread::spawn` does.
+fn isolated<R: Send>(f: impl FnOnce() -> R + Send) -> R {
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(rayon::current_num_threads())
+        .build()
+        .expect("build pool");
+    std::thread::scope(|s| s.spawn(|| pool.install(f)).join().expect("build thread"))
 }
