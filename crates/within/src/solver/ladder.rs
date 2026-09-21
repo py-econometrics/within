@@ -135,5 +135,9 @@ fn isolated<R: Send>(f: impl FnOnce() -> R + Send) -> R {
         .num_threads(rayon::current_num_threads())
         .build()
         .expect("build pool");
-    std::thread::scope(|s| s.spawn(|| pool.install(f)).join().expect("build thread"))
+    std::thread::scope(|s| match s.spawn(|| pool.install(f)).join() {
+        Ok(r) => r,
+        // Carry the build's own panic, not `Any { .. }` from formatting the payload.
+        Err(payload) => std::panic::resume_unwind(payload),
+    })
 }
