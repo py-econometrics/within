@@ -6,7 +6,9 @@ use within::{
 
 #[path = "common/property_strategies.rs"]
 mod strategies;
-use strategies::{additive_precond, random_fe_problem_strategy, random_slopes_problem_strategy};
+use strategies::{
+    additive, any_preconditioner, random_fe_problem_strategy, random_slopes_problem_strategy,
+};
 
 fn at(term: usize, level: u32, column: usize) -> CoefficientAddress {
     CoefficientAddress {
@@ -22,10 +24,12 @@ fn default_params() -> LsmrOptions {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(10))]
 
-#[test]
-    fn prop_preconditioner_serde_roundtrip((cats, _y) in random_fe_problem_strategy()) {
-        let precond = additive_precond();
-
+    // No solve runs first, so the ladder would just hand back its diagonal base.
+    #[test]
+    fn prop_preconditioner_serde_roundtrip(
+        (cats, _y) in random_fe_problem_strategy(),
+        precond in prop_oneof![Just(PreconditionerConfig::Diagonal), Just(additive())],
+    ) {
         let solver = within::Solver::new(cats.view(), None, &precond).unwrap();
         let fe_precond = solver.preconditioner().unwrap();
 
@@ -46,13 +50,15 @@ proptest! {
     }
 
     #[test]
-    fn prop_solver_convergence((cats, y) in random_fe_problem_strategy()) {
+    fn prop_solver_convergence(
+        (cats, y) in random_fe_problem_strategy(),
+        precond in any_preconditioner(),
+    ) {
         // LSMR converges on min ||y - Dx||^2 for any y, so the random y is used directly.
         let params = LsmrOptions {
             tol: 1e-7,
             ..default_params()
         };
-        let precond = additive_precond();
         let result = solve(cats.view(), &y, None, &params, &precond).unwrap();
 
         prop_assert!(
@@ -63,9 +69,11 @@ proptest! {
     }
 
     #[test]
-    fn prop_demeaned_orthogonality((cats, y) in random_fe_problem_strategy()) {
+    fn prop_demeaned_orthogonality(
+        (cats, y) in random_fe_problem_strategy(),
+        precond in any_preconditioner(),
+    ) {
         let params = default_params();
-        let precond = additive_precond();
         let result = solve(cats.view(), &y, None, &params, &precond).unwrap();
 
         prop_assume!(result.converged);

@@ -1,14 +1,11 @@
 use ndarray::array;
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
+use rstest::rstest;
 use within::{solve, LsmrOptions, PreconditionerConfig, Solver};
 
 #[path = "common/orchestrate_helpers.rs"]
 mod common;
-
-fn additive_precond() -> PreconditionerConfig {
-    PreconditionerConfig::default()
-}
 
 // ---------------------------------------------------------------------------
 // Test 1: single observation
@@ -47,7 +44,7 @@ fn test_trivial_factor_all_same_level() {
     let cats = array![[0u32, 0], [0u32, 1], [0u32, 2], [0u32, 0], [0u32, 1]];
     let y = vec![1.0, 2.0, 3.0, 4.0, 5.0];
     let params = LsmrOptions::default();
-    let precond = additive_precond();
+    let precond = PreconditionerConfig::default();
 
     let result = solve(cats.view(), &y, None, &params, &precond).expect("trivial-factor solve");
     assert!(
@@ -66,16 +63,23 @@ fn test_trivial_factor_all_same_level() {
 // Test 3: all-zero weights solve the zero system to x=0
 // ---------------------------------------------------------------------------
 
-/// All-zero weights zero every Gramian cell and diagonal. Routing skips the
-/// resulting dead DOFs, so no additive subdomain remains and the solve falls
-/// back to unpreconditioned LSMR — which, like the diagonal and
-/// unpreconditioned paths, solves the zero system and returns x=0.
-#[test]
-fn test_zero_weight_additive_preconditioner_returns_zero() {
+/// All-zero weights zero every Gramian cell and diagonal. Every preconditioner
+/// then solves the zero system and returns x=0: unpreconditioned LSMR starts at
+/// residual zero, the diagonal takes the pseudo-inverse of each zero entry, and
+/// Schwarz routing skips the dead DOFs and falls back to unpreconditioned LSMR.
+#[rstest]
+fn test_zero_weight_returns_zero(
+    #[values(
+        PreconditionerConfig::Off,
+        PreconditionerConfig::Diagonal,
+        common::additive(),
+        PreconditionerConfig::default()
+    )]
+    precond: PreconditionerConfig,
+) {
     let cats = array![[0u32, 0], [1u32, 0], [0u32, 1], [1u32, 1], [2u32, 0]];
     let y = vec![1.0f64; 5];
     let weights = vec![0.0f64; 5];
-    let precond = additive_precond();
 
     let result = solve(
         cats.view(),
@@ -84,7 +88,7 @@ fn test_zero_weight_additive_preconditioner_returns_zero() {
         &LsmrOptions::default(),
         &precond,
     )
-    .expect("zero weights with additive preconditioner should succeed");
+    .expect("zero weights should succeed");
     assert!(
         result.converged,
         "zero-Gramian system should trivially converge"
@@ -95,88 +99,33 @@ fn test_zero_weight_additive_preconditioner_returns_zero() {
     );
 }
 
-/// All-zero weights make every diagonal entry zero. The diagonal
-/// preconditioner takes the pseudo-inverse of each zero entry, so — like the
-/// additive and unpreconditioned paths — it solves the resulting zero system
-/// and returns x=0.
-#[test]
-fn test_zero_weight_diagonal_preconditioner_returns_zero() {
-    let cats = array![[0u32, 0], [1u32, 0], [0u32, 1], [1u32, 1], [2u32, 0]];
-    let y = vec![1.0f64; 5];
-    let weights = vec![0.0f64; 5];
-
-    let result = solve(
-        cats.view(),
-        &y,
-        Some(&weights),
-        &LsmrOptions::default(),
-        &PreconditionerConfig::Diagonal,
-    )
-    .expect("zero weights with diagonal preconditioner should succeed");
-
-    assert!(
-        result.converged,
-        "zero-Gramian system should trivially converge"
-    );
-    assert!(
-        result.x.iter().all(|&v| v == 0.0),
-        "zero-Gramian solution must be the zero vector"
-    );
-}
-
-/// Without a preconditioner, all-zero weights produce a zero system and a
-/// zero RHS. LSMR starts with residual zero and converges immediately to x=0.
-#[test]
-fn test_zero_weight_no_preconditioner_returns_zero() {
-    let cats = array![[0u32, 0], [1u32, 0], [0u32, 1], [1u32, 1], [2u32, 0]];
-    let y = vec![1.0f64; 5];
-    let weights = vec![0.0f64; 5];
-
-    let result = solve(
-        cats.view(),
-        &y,
-        Some(&weights),
-        &LsmrOptions::default(),
-        &PreconditionerConfig::Off,
-    )
-    .expect("zero weights with no preconditioner should succeed");
-
-    assert!(
-        result.converged,
-        "zero-Gramian system should trivially converge"
-    );
-    assert!(
-        result.x.iter().all(|&v| v == 0.0),
-        "zero-Gramian solution must be the zero vector"
-    );
-}
-
-/// A preconditioner changes convergence, not the answer: the diagonal and
-/// unpreconditioned solves must agree on the same least-squares solution.
+/// A preconditioner changes convergence, not the answer: every preconditioned
+/// solve must agree with the unpreconditioned least-squares solution.
 ///
 /// Uses a single full-rank factor so the solution is unique. A multi-factor FE
 /// design is rank-deficient (the additive constant is unidentified), so the
 /// minimum-norm coefficient vector LSMR returns depends on the preconditioned
 /// metric — only the fitted values, not the raw coefficients, are invariant.
-#[test]
-fn test_diagonal_matches_unpreconditioned_solution() {
+#[rstest]
+fn test_preconditioner_matches_unpreconditioned_solution(
+    #[values(
+        PreconditionerConfig::Diagonal,
+        common::additive(),
+        PreconditionerConfig::default()
+    )]
+    precond: PreconditionerConfig,
+) {
     let cats = array![[0u32], [0], [1], [1], [2], [2]];
     let y = vec![1.0, 3.0, 2.0, 4.0, 5.0, 7.0];
     let params = LsmrOptions::default();
 
-    let diagonal = solve(
-        cats.view(),
-        &y,
-        None,
-        &params,
-        &PreconditionerConfig::Diagonal,
-    )
-    .expect("diagonal solve");
+    let preconditioned =
+        solve(cats.view(), &y, None, &params, &precond).expect("preconditioned solve");
     let unpreconditioned = solve(cats.view(), &y, None, &params, &PreconditionerConfig::Off)
         .expect("unpreconditioned solve");
 
-    common::assert_solution_finite(&diagonal);
-    common::assert_solutions_close(&diagonal.x, &unpreconditioned.x, 1e-6);
+    common::assert_solution_finite(&preconditioned);
+    common::assert_solutions_close(&preconditioned.x, &unpreconditioned.x, 1e-6);
 }
 
 /// Gappy caller labels are compacted internally without changing the solve,
@@ -291,7 +240,7 @@ fn test_large_design_convergence() {
         tol: 1e-7,
         ..LsmrOptions::default()
     };
-    let precond = additive_precond();
+    let precond = PreconditionerConfig::default();
     let solver = Solver::new(design, None, &precond).expect("solver build");
     let result = solver.solve(&y, &params).expect("large design solve");
 
@@ -339,7 +288,7 @@ fn test_uniform_weights_matches_unweighted() {
     let uniform_weights = vec![2.0f64; 5]; // constant — equivalent to unit weights
 
     let params = LsmrOptions::default();
-    let precond = additive_precond();
+    let precond = PreconditionerConfig::default();
 
     let r_unit = solve(cats.view(), &y, None, &params, &precond).expect("unweighted solve");
     let r_uniform = solve(cats.view(), &y, Some(&uniform_weights), &params, &precond)
@@ -369,7 +318,7 @@ fn test_repeated_solve_is_deterministic() {
     let y = common::make_deterministic_y(&design);
 
     let params = LsmrOptions::default();
-    let precond = additive_precond();
+    let precond = PreconditionerConfig::default();
     let solver = Solver::new(design, None, &precond).expect("solver build");
 
     let r1 = solver.solve(&y, &params).expect("first solve");

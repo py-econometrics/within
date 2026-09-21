@@ -30,7 +30,7 @@ fe = np.asfortranarray(np.column_stack([
 ]))
 y = np.random.randn(n)
 
-result = solve(fe, y)                          # Schwarz-preconditioned LSMR
+result = solve(fe, y)                          # LSMR + the adaptive ladder
 result = solve(fe, y, weights=np.ones(n))      # weighted solve
 result = solve(fe, y, preconditioner=PreconditionerConfig.Diagonal())
 ```
@@ -93,13 +93,13 @@ solver2 = Solver(fe, preconditioner=precond)   # skip re-factorization
 | Class | Description |
 |---|---|
 | `PreconditionerConfig.Off()` | Disable preconditioning. |
-| `PreconditionerConfig.Additive()` | Additive Schwarz shortcut (equivalent to `None`). |
+| `PreconditionerConfig.Additive()` | Additive Schwarz shortcut, built up front. |
 | `PreconditionerConfig.Additive(local_solver?, reduction?)` | Tuned additive Schwarz. Argument types import from `within.config`. |
-| `PreconditionerConfig.Adaptive(local_solver?, reduction?, stall?)` | Diagonal first, escalating to additive Schwarz on a stalled contraction; the factorization is built only on escalation. |
+| `PreconditionerConfig.Adaptive(local_solver?, reduction?, stall?)` | Tuned form of the default; the factorization is built only on escalation. |
 | `PreconditionerConfig.Diagonal()` | Diagonal/Jacobi preconditioner using `diag(D^T W D)^{-1}`. |
 | `Preconditioner` (built) | Reuse a previously-built preconditioner across solvers. |
 
-Pass `None` (the default) to use additive Schwarz with the default local solver.
+Pass `None` (the default) for the adaptive ladder: diagonal, escalating to additive Schwarz on a stalled contraction.
 `PreconditionerConfig` is a tagged union: each variant is a subclass, so instances
 support `match`/`case` and compare by value. A built preconditioner exposes
 the configuration used to construct it as `.config` and its original build duration in

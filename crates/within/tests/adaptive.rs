@@ -6,6 +6,7 @@ use within::{Design, LsmrOptions, PreconditionerConfig, Solver, Staleness};
 
 #[path = "common/orchestrate_helpers.rs"]
 mod common;
+use common::additive;
 
 /// Escalates after any single non-vanishing contraction, so a handoff is deterministic.
 fn eager_stall() -> Staleness {
@@ -57,7 +58,7 @@ fn the_escalated_answer_matches_a_cold_additive_solve(
     let cold = Solver::new(
         common::make_design(cats.clone()).expect("design"),
         weights.as_deref(),
-        PreconditionerConfig::default(),
+        additive(),
     )
     .expect("solver");
     let reference = cold.solve(&y, None).expect("additive solve");
@@ -146,7 +147,7 @@ fn later_solves_cost_the_same_as_a_cold_schwarz_solver() {
     assert!(solver.has_escalated(), "the ladder must hand off");
     let later = solver.solve(&y, &tight()).expect("later solve");
 
-    let cold = Solver::new(crossed_panel(), None, PreconditionerConfig::default())
+    let cold = Solver::new(crossed_panel(), None, additive())
         .expect("solver")
         .solve(&y, &tight())
         .expect("cold schwarz solve");

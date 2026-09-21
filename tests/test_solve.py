@@ -18,7 +18,12 @@ from within import (
 )
 from within.config import LocalSolverConfig, ScalingConfig
 
-from conftest import as_solver_categories, generate_synthetic_data
+from conftest import (
+    as_solver_categories,
+    every_preconditioner,
+    every_preconditioner_map,
+    generate_synthetic_data,
+)
 
 
 def assert_normal_equations_satisfied(cats, y, result, tol, weights=None):
@@ -155,16 +160,6 @@ class TestSolveDefaults:
         assert result.residual < 1e-6
         assert_normal_equations_satisfied(cats, y, result, 1e-6)
 
-    def test_unpreconditioned(self, problem):
-        cats, y = problem
-        result = solve(
-            as_solver_categories(cats),
-            y,
-            options=LsmrOptions(),
-            preconditioner=PreconditionerConfig.Off(),
-        )
-        assert result.converged
-
 
 class TestSolveWeighted:
     def test_weighted(self, problem):
@@ -175,41 +170,18 @@ class TestSolveWeighted:
 
 
 class TestPreconditioners:
-    def test_additive_schwarz(self, problem):
+    @every_preconditioner
+    def test_converges(self, problem, precond):
         cats, y = problem
         result = solve(
             as_solver_categories(cats),
             y,
             options=LsmrOptions(),
-            preconditioner=PreconditionerConfig.Additive(),
-        )
-        assert result.converged
-
-    def test_advanced_additive_schwarz(self, problem):
-        """Test advanced config via additive Schwarz."""
-        cats, y = problem
-        result = solve(
-            as_solver_categories(cats),
-            y,
-            options=LsmrOptions(),
-            preconditioner=PreconditionerConfig.Additive(),
-        )
-        assert result.converged
-
-    def test_diagonal_preconditioner(self):
-        rng = np.random.default_rng(123)
-        categories = as_solver_categories(
-            [rng.integers(0, 10, size=400), rng.integers(0, 8, size=400)]
-        )
-        y = rng.standard_normal(400)
-        result = solve(
-            categories,
-            y,
-            options=LsmrOptions(maxiter=2000),
-            preconditioner=PreconditionerConfig.Diagonal(),
+            preconditioner=precond,
         )
         assert result.converged
         assert np.all(np.isfinite(result.x))
+        assert_normal_equations_satisfied(cats, y, result, 1e-6)
 
 
 class TestDemean:
@@ -365,14 +337,14 @@ class TestSolver:
             actual_weighted.demeaned, expected_weighted.demeaned, atol=1e-10
         )
 
-    def test_solver_no_preconditioner(self, problem):
-        """Solver with PreconditionerConfig.Off() works."""
+    @every_preconditioner
+    def test_solver_holds_a_map_exactly_when_requested(self, problem, precond):
         cats, y = problem
-        solver = Solver(
-            as_solver_categories(cats), preconditioner=PreconditionerConfig.Off()
+        solver = Solver(as_solver_categories(cats), preconditioner=precond)
+        assert (solver.preconditioner is None) == isinstance(
+            precond, PreconditionerConfig.Off
         )
-        result = solver.solve(y)
-        assert result.converged
+        assert solver.solve(y).converged
 
     def test_solver_properties(self, problem):
         cats, y = problem
@@ -419,93 +391,49 @@ class TestSolverBatch:
 
 
 class TestSolverSerde:
-    def test_preconditioner_roundtrip(self, problem):
-        """Extract preconditioner object, reuse in new solver."""
+    @every_preconditioner_map
+    def test_preconditioner_reuse(self, problem, precond):
+        """Extract the map, hand it to a new Solver, and get the same solution."""
         cats, y = problem
         categories = as_solver_categories(cats)
 
-        solver1 = Solver(categories)
+        solver1 = Solver(categories, preconditioner=precond)
         r1 = solver1.solve(y)
 
-        precond = solver1.preconditioner
-        assert isinstance(precond, Preconditioner)
-        assert precond.nrows > 0
+        built = solver1.preconditioner
+        assert isinstance(built, Preconditioner)
+        assert built.nrows > 0
 
-        # Reuse in new solver
-        solver2 = Solver(categories, preconditioner=precond)
+        solver2 = Solver(categories, preconditioner=built)
         assert (
             solver2.preconditioner.build_duration_seconds
-            == precond.build_duration_seconds
+            == built.build_duration_seconds
         )
         r2 = solver2.solve(y)
         np.testing.assert_allclose(r2.x, r1.x, atol=1e-10)
 
-    def test_preconditioner_pickle(self, problem):
-        """Pickle roundtrip of Preconditioner."""
+    @every_preconditioner_map
+    def test_preconditioner_pickle_and_reuse(self, problem, precond):
+        """A pickled map applies identically and rebuilds a Solver with the same solution."""
         import pickle
 
         cats, y = problem
         categories = as_solver_categories(cats)
 
-        solver1 = Solver(categories)
+        solver1 = Solver(categories, preconditioner=precond)
         r1 = solver1.solve(y)
+        built = solver1.preconditioner
 
-        precond = solver1.preconditioner
-        data = pickle.dumps(precond)
-        precond2 = pickle.loads(data)
+        x = np.arange(built.ncols, dtype=np.float64) + 0.25
+        np.testing.assert_array_equal(built.apply(x), built.apply(x))
 
-        solver2 = Solver(categories, preconditioner=precond2)
+        built2 = pickle.loads(pickle.dumps(built))
+        np.testing.assert_array_equal(built.apply(x), built2.apply(x))
+        assert built2.build_duration_seconds == built.build_duration_seconds
+
+        solver2 = Solver(categories, preconditioner=built2)
         r2 = solver2.solve(y)
         np.testing.assert_allclose(r2.x, r1.x, atol=1e-10)
-
-    def test_no_preconditioner_returns_none(self, problem):
-        cats, y = problem
-        solver = Solver(
-            as_solver_categories(cats), preconditioner=PreconditionerConfig.Off()
-        )
-        assert solver.preconditioner is None
-
-    def test_diagonal_preconditioner_pickle_and_reuse(self):
-        import pickle
-
-        categories = as_solver_categories(
-            [np.array([0, 1, 0, 1, 2, 2]), np.array([0, 0, 1, 1, 0, 1])]
-        )
-        y = np.array([1.0, 2.0, 1.5, 2.5, 3.0, 3.5])
-
-        solver1 = Solver(categories, preconditioner=PreconditionerConfig.Diagonal())
-        r1 = solver1.solve(y)
-        precond = solver1.preconditioner
-
-        assert precond is not None
-        assert "Diagonal" in repr(precond)
-
-        x = np.arange(precond.ncols, dtype=np.float64) + 0.25
-        np.testing.assert_array_equal(precond.apply(x), precond.apply(x))
-
-        precond2 = pickle.loads(pickle.dumps(precond))
-        np.testing.assert_array_equal(precond.apply(x), precond2.apply(x))
-        assert precond2.build_duration_seconds == precond.build_duration_seconds
-
-        solver2 = Solver(categories, preconditioner=precond2)
-        r2 = solver2.solve(y)
-        np.testing.assert_allclose(r2.x, r1.x, atol=1e-10)
-
-
-# ---------------------------------------------------------------------------
-# Convenience alias tests
-# ---------------------------------------------------------------------------
-
-
-class TestAliases:
-    def test_additive_alias(self, problem):
-        cats, y = problem
-        result = solve(
-            as_solver_categories(cats),
-            y,
-            preconditioner=PreconditionerConfig.Additive(),
-        )
-        assert result.converged
 
 
 class TestSolveBatchFreeFunction:

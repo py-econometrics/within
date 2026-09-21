@@ -6,6 +6,10 @@ use within::{
     Channel, CoefficientAddress, Effect, LsmrOptions, PreconditionerConfig, SolveResult, Solver,
 };
 
+#[path = "common/orchestrate_helpers.rs"]
+mod common;
+use common::additive;
+
 const TOL: f64 = 1e-6;
 
 fn assert_close(actual: f64, expected: f64, what: &str) {
@@ -177,7 +181,7 @@ fn rank_drops_report_deterministically_with_exact_zeros() {
     let y = synthetic_y(levels.len());
     let run = |config: &PreconditionerConfig| solve_with(&levels, &z, true, None, &y, config);
 
-    let r = run(&PreconditionerConfig::default());
+    let r = run(&additive());
     assert!(r.converged);
     // Ascending (level, column) order.
     assert_eq!(drops(&r), [(0, 2, 1)]);
@@ -207,7 +211,7 @@ fn rank_drops_report_deterministically_with_exact_zeros() {
         );
     }
 
-    // The explicit diagonal preconditioner agrees with the default path.
+    // The diagonal preconditioner agrees with Schwarz.
     let diag = run(&PreconditionerConfig::Diagonal);
     assert_eq!(diag.unidentified, r.unidentified);
     for (i, (d, j)) in r.x.iter().zip(diag.x.iter()).enumerate() {
@@ -246,7 +250,7 @@ fn zero_weight_garbage_does_not_poison_identification() {
     let y = synthetic_y(levels.len());
     let run = |config: &PreconditionerConfig| solve_with(&levels, &z, true, Some(&w), &y, config);
 
-    let r = run(&PreconditionerConfig::default());
+    let r = run(&additive());
     assert!(r.unidentified.is_empty());
     let (a, b) = per_level_intercept_slope(&levels, &z, &y, Some(&w), 2);
     for l in 0..2 {

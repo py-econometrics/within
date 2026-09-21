@@ -65,7 +65,7 @@ impl<'a> IntoDesign<'a> for Vec<Effect<'a>> {
 /// Preconditioner input for [`Solver::new`].
 ///
 /// Constructed implicitly via `From`/`Into` from any of:
-/// - bare `None` — build the library default Schwarz preconditioner
+/// - bare `None` — build the library default preconditioner
 /// - `&PreconditionerConfig` or `Some(&PreconditionerConfig)` — build from a tuned config
 /// - `PreconditionerConfig` (owned) — same as above
 /// - [`Preconditioner`] (owned or `&`) — reuse a previously built (or deserialized) preconditioner
@@ -73,7 +73,7 @@ impl<'a> IntoDesign<'a> for Vec<Effect<'a>> {
 /// `None` resolves unambiguously because there is exactly one `From<Option<X>>`
 /// impl (with `X = &PreconditionerConfig`).
 pub enum PreconditionerInput {
-    /// Library default: an additive Schwarz preconditioner with default tuning.
+    /// Library default: diagonal, escalating to additive Schwarz on a stalled solve.
     Default,
     /// Build from this config (`PreconditionerConfig::Off` ⇒ unpreconditioned).
     Config(PreconditionerConfig),
@@ -291,11 +291,9 @@ impl<'a> Solver<'a> {
     /// `design` accepts raw categories (`ArrayView2<u32>`), a pre-built
     /// [`Design`], or `&Design` to share one design across solvers (an O(1)
     /// clone of its storage). `preconditioner` accepts:
-    /// - `None` — build the library default Schwarz preconditioner
-    /// - `&PreconditionerConfig` / `Some(&PreconditionerConfig)` — build from a tuned config
-    /// - `PreconditionerConfig::Off` — solve unpreconditioned
-    /// - `PreconditionerConfig::Diagonal` — use diagonal/Jacobi preconditioning
-    /// - `PreconditionerConfig::Adaptive` — diagonal, escalating to Schwarz on a stalled solve
+    /// - `None` — build the library default preconditioner
+    /// - `&PreconditionerConfig` / `Some(&PreconditionerConfig)` — build from a
+    ///   [`PreconditionerConfig`] variant
     /// - [`Preconditioner`] or `&Preconditioner` — reuse a previously built one
     ///
     /// `weights` is `None` for an unweighted solve. Supplied weights are validated

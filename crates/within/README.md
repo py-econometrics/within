@@ -27,13 +27,13 @@ for i in 0..n_obs {
 }
 let y: Vec<f64> = (0..n_obs).map(|i| i as f64 * 0.01).collect();
 
-// Solve with library defaults: LSMR + additive Schwarz
+// Solve with library defaults: LSMR + the adaptive diagonal→Schwarz ladder
 let result = solve(categories.view(), &y, None, &LsmrOptions::default(), None)
     .expect("solve should succeed");
 assert!(result.converged);
 println!("LSMR converged in {} iterations", result.iterations);
 
-// Tighter tolerance with an explicit preconditioner config
+// Tighter tolerance, library-default preconditioner
 let lsmr = LsmrOptions { tol: 1e-10, ..LsmrOptions::default() };
 let precond = PreconditionerConfig::default();
 let result = solve(categories.view(), &y, None, &lsmr, &precond)

@@ -1,7 +1,8 @@
 #![deny(missing_docs)]
 //! Fixed-effects normal-equation solver. Solves `G x = D^T W y` (with
-//! `G = D^T W D`) for a sparse categorical design `D` via modified LSMR with a
-//! Schwarz preconditioner over factor-pair subdomains.
+//! `G = D^T W D`) for a sparse categorical design `D` via modified LSMR,
+//! preconditioned by default with a diagonal that escalates to additive
+//! Schwarz over factor-pair subdomains on a stalled contraction.
 //!
 //! ```
 //! use ndarray::Array2;

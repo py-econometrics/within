@@ -11,10 +11,6 @@ fn default_params() -> LsmrOptions {
     LsmrOptions::default()
 }
 
-fn additive_precond() -> PreconditionerConfig {
-    PreconditionerConfig::default()
-}
-
 /// Build a larger problem for more meaningful convergence tests.
 fn larger_problem() -> (Array2<u32>, Vec<f64>) {
     use rand::rngs::SmallRng;
@@ -46,7 +42,7 @@ fn f_order_view_matches_owned_columns() {
         &y,
         None,
         &default_params(),
-        additive_precond(),
+        PreconditionerConfig::default(),
     )
     .expect("view solve");
 
@@ -54,7 +50,8 @@ fn f_order_view_matches_owned_columns() {
         .map(|f| cats.column(f).iter().copied().collect())
         .collect();
     let design = common::make_design(factor_cols).expect("valid design");
-    let solver = within::Solver::new(design, None, additive_precond()).expect("solver");
+    let solver =
+        within::Solver::new(design, None, PreconditionerConfig::default()).expect("solver");
     let result_owned = solver.solve(&y, &default_params()).expect("owned solve");
 
     assert!(result_view.converged);
@@ -74,14 +71,20 @@ fn c_order_view_matches_f_order_bitwise() {
         f
     };
 
-    let result_c =
-        solve(cats.view(), &y, None, &default_params(), additive_precond()).expect("C-order solve");
+    let result_c = solve(
+        cats.view(),
+        &y,
+        None,
+        &default_params(),
+        PreconditionerConfig::default(),
+    )
+    .expect("C-order solve");
     let result_f = solve(
         cats_f.view(),
         &y,
         None,
         &default_params(),
-        additive_precond(),
+        PreconditionerConfig::default(),
     )
     .expect("F-order solve");
 
@@ -105,13 +108,20 @@ fn column_reversed_view_ingests_in_logical_order() {
     assert!(reversed.strides()[1] < 1, "column stride must be negative");
 
     let y = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-    let result_rev =
-        solve(reversed, &y, None, &default_params(), additive_precond()).expect("reversed solve");
+    let result_rev = solve(
+        reversed,
+        &y,
+        None,
+        &default_params(),
+        PreconditionerConfig::default(),
+    )
+    .expect("reversed solve");
 
     // Oracle: the same columns handed over owned, in swapped order.
     let design =
         common::make_design(vec![vec![1, 0, 1, 0, 2], vec![0, 1, 0, 1, 2]]).expect("valid design");
-    let solver = within::Solver::new(design, None, additive_precond()).expect("solver");
+    let solver =
+        within::Solver::new(design, None, PreconditionerConfig::default()).expect("solver");
     let result_owned = solver.solve(&y, &default_params()).expect("owned solve");
 
     assert_eq!(result_rev.x, result_owned.x, "must be bit-identical");
@@ -127,7 +137,7 @@ fn weighted_view_solve_converges() {
         &y,
         Some(&weights),
         &default_params(),
-        additive_precond(),
+        PreconditionerConfig::default(),
     )
     .expect("weighted view solve");
 

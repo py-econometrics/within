@@ -1,7 +1,24 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from numpy.typing import NDArray
+
+from within import PreconditionerConfig
+
+_MAPS = [
+    PreconditionerConfig.Diagonal(),
+    PreconditionerConfig.Additive(),
+    PreconditionerConfig.Adaptive(),
+]
+
+# Variants that hold a map a Solver can hand back, and every variant including Off.
+every_preconditioner_map = pytest.mark.parametrize(
+    "precond", _MAPS, ids=lambda p: type(p).__name__
+)
+every_preconditioner = pytest.mark.parametrize(
+    "precond", [PreconditionerConfig.Off(), *_MAPS], ids=lambda p: type(p).__name__
+)
 
 
 def generate_synthetic_data(

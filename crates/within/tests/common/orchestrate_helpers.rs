@@ -1,8 +1,17 @@
 #![allow(dead_code)]
 
 use ndarray::Array2;
+use within::config::{LocalSolverConfig, ReductionStrategy};
 use within::observation::ObservationFrame;
-use within::{Design, SolveResult};
+use within::{Design, PreconditionerConfig, SolveResult};
+
+/// One-level additive Schwarz, pinned so a test names the rung the ladder would escalate to.
+pub fn additive() -> PreconditionerConfig {
+    PreconditionerConfig::Additive {
+        local_solver: LocalSolverConfig::default(),
+        reduction: ReductionStrategy::default(),
+    }
+}
 
 /// The canonical 2-factor, 5-observation categorical structure used across the
 /// orchestration tests. `categories[f][i]` is observation `i`'s level in factor `f`.

@@ -13,7 +13,7 @@ import warnings
 import numpy as np
 import pytest
 
-from within import LsmrOptions, PreconditionerConfig, Solver, solve, solve_batch
+from within import LsmrOptions, PreconditionerConfig, solve, solve_batch
 
 from conftest import as_solver_categories
 
@@ -228,38 +228,3 @@ class TestNonContiguousInputs:
             solve_batch(cats_c, Y)
         contiguity = [w for w in record if "F-contiguous" in str(w.message)]
         assert len(contiguity) == 1
-
-
-# ---------------------------------------------------------------------------
-# PreconditionerConfig.Off (no preconditioner)
-# ---------------------------------------------------------------------------
-
-
-class TestNoPreconditioner:
-    def test_preconditioner_off_converges_on_easy_problem(self):
-        """Unpreconditioned LsmrOptions should still converge on a simple problem."""
-        rng = np.random.default_rng(99)
-        cats = as_solver_categories(
-            [rng.integers(0, 10, size=200), rng.integers(0, 10, size=200)]
-        )
-        y = rng.standard_normal(200)
-        result = solve(cats, y, preconditioner=PreconditionerConfig.Off())
-        assert result.converged
-        assert np.all(np.isfinite(result.x))
-
-    def test_preconditioner_off_result_finite(self):
-        """Without preconditioner, result should at least be finite."""
-        cats = as_solver_categories(
-            [np.array([0, 1, 0, 1, 2]), np.array([0, 0, 1, 1, 0])]
-        )
-        y = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
-        result = solve(cats, y, preconditioner=PreconditionerConfig.Off())
-        assert np.all(np.isfinite(result.x))
-
-    def test_solver_preconditioner_none_returns_none(self):
-        """Solver built with PreconditionerConfig.Off() should return None from preconditioner()."""
-        cats = as_solver_categories(
-            [np.array([0, 1, 0, 1, 2]), np.array([0, 0, 1, 1, 0])]
-        )
-        solver = Solver(cats, preconditioner=PreconditionerConfig.Off())
-        assert solver.preconditioner is None

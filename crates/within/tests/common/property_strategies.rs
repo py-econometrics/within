@@ -3,6 +3,7 @@
 
 use ndarray::Array2;
 use proptest::prelude::*;
+use within::config::{LocalSolverConfig, ReductionStrategy};
 use within::PreconditionerConfig;
 
 /// Generate a random FE problem: (categories Array2<u32>, y Vec<f64>).
@@ -35,9 +36,22 @@ pub fn random_fe_problem_strategy() -> impl Strategy<Value = (Array2<u32>, Vec<f
     })
 }
 
-/// Default additive Schwarz preconditioner config for property tests.
-pub fn additive_precond() -> PreconditionerConfig {
-    PreconditionerConfig::default()
+/// One-level additive Schwarz, pinned so a test names the rung the ladder would escalate to.
+pub fn additive() -> PreconditionerConfig {
+    PreconditionerConfig::Additive {
+        local_solver: LocalSolverConfig::default(),
+        reduction: ReductionStrategy::default(),
+    }
+}
+
+/// Draws one variant per case, so the case budget is spread over them rather than run on each.
+pub fn any_preconditioner() -> impl Strategy<Value = PreconditionerConfig> {
+    prop_oneof![
+        Just(PreconditionerConfig::Off),
+        Just(PreconditionerConfig::Diagonal),
+        Just(additive()),
+        Just(PreconditionerConfig::default()),
+    ]
 }
 
 /// One factor's owned inputs, from which the test body borrows to build an

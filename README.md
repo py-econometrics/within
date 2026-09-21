@@ -38,7 +38,7 @@ fe = np.asfortranarray(np.column_stack([
 ]))
 y = np.random.randn(n)
 
-# Default: additive Schwarz + LSMR
+# Default: the adaptive diagonal→Schwarz ladder + LSMR
 result = solve(fe, y)
 
 # Custom tolerance / iteration cap
@@ -141,12 +141,12 @@ The `preconditioner` argument accepts any of:
 
 | Form | Meaning |
 |---|---|
-| `None` (default) | Library default — Additive Schwarz with sensible defaults. |
+| `None` (default) | Library default — Adaptive: diagonal, escalating to additive Schwarz on a stalled contraction. |
 | `PreconditionerConfig.Off()` | Explicit identity — solve unpreconditioned. |
-| `PreconditionerConfig.Additive()` | Additive Schwarz shortcut, equivalent to `None`. |
+| `PreconditionerConfig.Additive()` | Additive Schwarz shortcut, built up front. |
 | `PreconditionerConfig.Diagonal()` | Diagonal/Jacobi preconditioner using `diag(D^T W D)^{-1}`. |
 | `PreconditionerConfig.Additive(local_solver?, reduction?)` | Tuned additive Schwarz. Argument types import from `within.config`. |
-| `PreconditionerConfig.Adaptive(local_solver?, reduction?, stall?)` | Diagonal first, escalating to additive Schwarz on a stalled contraction; the factorization is built only on escalation. |
+| `PreconditionerConfig.Adaptive(local_solver?, reduction?, stall?)` | Tuned form of the default; the factorization is built only on escalation. |
 | `Preconditioner` instance | Reuse a previously-built preconditioner across solvers. |
 
 `PreconditionerConfig` is a tagged union: each variant is a subclass, so instances
@@ -182,7 +182,7 @@ use within::config::{LocalSolverConfig, ReductionStrategy};
 let categories = /* Array2<u32> of shape (n_obs, n_factors) */;
 let y: &[f64] = /* response vector */;
 
-// Default: LSMR + additive Schwarz (None → library default)
+// Default: LSMR + the adaptive ladder (None → library default)
 let r = solve(categories.view(), &y, None, &LsmrOptions::default(), None)?;
 assert!(r.converged);
 

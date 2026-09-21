@@ -1,4 +1,3 @@
-use within::config::{LocalSolverConfig, ReductionStrategy};
 use within::{LsmrOptions, PreconditionerConfig, Solver};
 
 #[path = "common/orchestrate_helpers.rs"]
@@ -30,10 +29,7 @@ fn test_lsmr_preconditioned() {
         maxiter: 1000,
         ..Default::default()
     };
-    let precond = PreconditionerConfig::Additive {
-        local_solver: LocalSolverConfig::default(),
-        reduction: ReductionStrategy::Auto,
-    };
+    let precond = common::additive();
     let solver = Solver::new(design, None, &precond).expect("build solver");
     let result = solver.solve(&y, &params).expect("solve");
     common::assert_converged_with_small_residual(&result, 1e-6);
