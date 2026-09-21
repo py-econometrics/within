@@ -169,7 +169,7 @@ fn saturated_single_factor_recovers_level_means(
         PreconditionerConfig::Off,
         PreconditionerConfig::Diagonal,
         strategies::additive(),
-        PreconditionerConfig::default()
+        strategies::adaptive()
     )]
     precond: PreconditionerConfig,
 ) {

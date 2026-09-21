@@ -27,7 +27,7 @@ fn test_solver_matches_oneshot(
         PreconditionerConfig::Off,
         PreconditionerConfig::Diagonal,
         common::additive(),
-        PreconditionerConfig::default()
+        common::adaptive()
     )]
     precond: PreconditionerConfig,
 ) {

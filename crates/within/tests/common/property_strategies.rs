@@ -3,7 +3,7 @@
 
 use ndarray::Array2;
 use proptest::prelude::*;
-use within::config::{LocalSolverConfig, ReductionStrategy};
+use within::config::{LocalSolverConfig, ReductionStrategy, Staleness};
 use within::PreconditionerConfig;
 
 /// Generate a random FE problem: (categories Array2<u32>, y Vec<f64>).
@@ -44,13 +44,22 @@ pub fn additive() -> PreconditionerConfig {
     }
 }
 
+/// The diagonal→Schwarz ladder, named rather than reached through `default()`.
+pub fn adaptive() -> PreconditionerConfig {
+    PreconditionerConfig::Adaptive {
+        local_solver: LocalSolverConfig::default(),
+        reduction: ReductionStrategy::default(),
+        stall: Staleness::default(),
+    }
+}
+
 /// Draws one variant per case, so the case budget is spread over them rather than run on each.
 pub fn any_preconditioner() -> impl Strategy<Value = PreconditionerConfig> {
     prop_oneof![
         Just(PreconditionerConfig::Off),
         Just(PreconditionerConfig::Diagonal),
         Just(additive()),
-        Just(PreconditionerConfig::default()),
+        Just(adaptive()),
     ]
 }
 
