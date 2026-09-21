@@ -370,12 +370,13 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
         let x = total(vec![0.0; n]);
         let cert = bidiag.certify(&x, b)?;
         let converged = criteria.corroborated(&cert, || bidiag.operator_norm_below(b))?;
+        let (residual_norm, normal_eq_residual) = cert.residuals();
         return Ok(LsmrResult {
             x,
             converged,
             iterations: 0,
-            residual_norm: cert.normr,
-            normal_eq_residual: cert.normar.relative(),
+            residual_norm,
+            normal_eq_residual,
             stop_reason: if converged {
                 LsmrStopReason::InitialNormalEquationResidualZero
             } else {
@@ -388,6 +389,7 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
     let mut recurrence = LsmrRecurrenceState::init(step1);
     let mut solution = SolutionState::init(bidiag.v());
     let mut prev_rot = RotationStep::initial();
+    let mut escalated_at = None;
 
     for itn in 1..=maxiter {
         let step = bidiag.step()?;
@@ -404,12 +406,13 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
             let x = total(solution.into_x());
             let cert = audit_against_rhs(&mut bidiag, &x, b, x0)?;
             let converged = convergence.certified(&cert);
+            let (residual_norm, normal_eq_residual) = cert.residuals();
             return Ok(LsmrResult {
                 x,
                 converged,
                 iterations: itn,
-                residual_norm: cert.normr,
-                normal_eq_residual: cert.normar.relative(),
+                residual_norm,
+                normal_eq_residual,
                 stop_reason: if converged {
                     stop_reason
                 } else {
@@ -423,25 +426,21 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
                 normal_eq_residual: recurrence.relative_normal_eq_residual(),
             };
             if rule.should_escalate(progress) {
-                return Ok(LsmrResult {
-                    x: total(solution.into_x()),
-                    converged: false,
-                    iterations: itn,
-                    residual_norm: recurrence.residual_estimate(),
-                    normal_eq_residual: progress.normal_eq_residual,
-                    stop_reason: LsmrStopReason::Escalated,
-                });
+                escalated_at = Some(itn);
+                break;
             }
         }
         prev_rot = curr_rot;
     }
 
+    let (iterations, stop_reason) = match escalated_at {
+        Some(itn) => (itn, LsmrStopReason::Escalated),
+        None => (maxiter, LsmrStopReason::MaxIterations),
+    };
     let x = total(solution.into_x());
-    let cert = x0
-        .map(|_| audit_against_rhs(&mut bidiag, &x, b, x0))
-        .transpose()?;
-    let (residual_norm, normal_eq_residual) = match cert {
-        Some(cert) => (cert.normr, cert.normar.relative()),
+    // A warm run's recurrence measures the restart, so only an audit reports against `b`.
+    let (residual_norm, normal_eq_residual) = match x0 {
+        Some(_) => audit_against_rhs(&mut bidiag, &x, b, x0)?.residuals(),
         None => (
             recurrence.residual_estimate(),
             recurrence.relative_normal_eq_residual(),
@@ -450,10 +449,10 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
     Ok(LsmrResult {
         x,
         converged: false,
-        iterations: maxiter,
+        iterations,
         residual_norm,
         normal_eq_residual,
-        stop_reason: LsmrStopReason::MaxIterations,
+        stop_reason,
     })
 }
 

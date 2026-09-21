@@ -183,12 +183,49 @@ fn test_mlsmr_converged_solve_is_never_escalated() {
     assert_ne!(result.stop_reason, LsmrStopReason::Escalated);
 }
 
+/// An escalation is a stop like any other: a warm-started one reports its residuals against the
+/// original `b`, not against the restart's own initial residual.
+#[test]
+fn test_warm_escalated_stop_is_measured_against_the_original_rhs() {
+    let (op, b) = vandermonde_ls();
+    let (tol, window) = (1e-12, Some(12));
+    let m = jacobi(&op);
+    let cold = mlsmr(&op, &b, &m, tol, 4, MlsmrOptions::default()).expect("cold rung");
+
+    let warm = |escalation| {
+        mlsmr(
+            &op,
+            &b,
+            &m,
+            tol,
+            3,
+            MlsmrOptions {
+                warm_start: Some(&cold.x),
+                escalation,
+                local_size: window,
+            },
+        )
+        .expect("warm rung")
+    };
+    // Same three iterations either way; only the exit taken differs.
+    let escalated = warm(Some(&FixedIterations(3)));
+    let exhausted = warm(None);
+
+    assert_eq!(escalated.stop_reason, LsmrStopReason::Escalated);
+    assert_eq!(exhausted.stop_reason, LsmrStopReason::MaxIterations);
+    assert_eq!(escalated.iterations, exhausted.iterations);
+    assert!(
+        (escalated.normal_eq_residual - exhausted.normal_eq_residual).abs()
+            <= 1e-12 * exhausted.normal_eq_residual,
+        "escalated stop reported {} against the restart's base, not {}",
+        escalated.normal_eq_residual,
+        exhausted.normal_eq_residual
+    );
+}
+
 #[test]
 fn test_mlsmr_ladder_warm_starts_and_escalates() {
-    let op = DenseOp::vandermonde(30, 12);
-    let b: Vec<f64> = (0..op.rows)
-        .map(|i| (1.0 + i as f64 / (op.rows - 1) as f64).ln())
-        .collect();
+    let (op, b) = vandermonde_ls();
     let (tol, window) = (1e-9, Some(12));
     let weak = IdentityOp { n: op.cols };
     let strong = jacobi(&op);

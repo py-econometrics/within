@@ -176,6 +176,15 @@ impl Operator for DenseOp {
     }
 }
 
+/// The ill-conditioned least-squares problem the ladder tests run on, with a smooth RHS.
+pub(crate) fn vandermonde_ls() -> (DenseOp, Vec<f64>) {
+    let op = DenseOp::vandermonde(30, 12);
+    let b = (0..op.rows)
+        .map(|i| (1.0 + i as f64 / (op.rows - 1) as f64).ln())
+        .collect();
+    (op, b)
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct FixedIterations(pub(crate) usize);
 
