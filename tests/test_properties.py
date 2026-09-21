@@ -3,11 +3,14 @@ from __future__ import annotations
 import pickle
 
 import numpy as np
+import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from within import PreconditionerConfig, Solver, solve
 from within.config import ReductionStrategy
+
+from conftest import every_preconditioner_map
 
 
 @st.composite
@@ -44,24 +47,21 @@ class TestProperties:
         r2 = solve(categories, y)
         np.testing.assert_allclose(r1.x, r2.x, atol=1e-14)
 
+    @every_preconditioner_map
     @given(data=random_fe_problem())
     @settings(
         max_examples=10, deadline=30000, suppress_health_check=[HealthCheck.too_slow]
     )
-    def test_preconditioner_pickle_preserves_apply(self, data):
+    def test_preconditioner_pickle_preserves_apply(self, data, precond):
         """Pickle roundtrip of preconditioner preserves apply()."""
         categories, y = data
-        solver = Solver(categories)
-        precond = solver.preconditioner
-        if precond is None:
-            return
+        built = Solver(categories, preconditioner=precond).preconditioner
 
-        x = np.random.randn(precond.nrows)
-        result_before = precond.apply(x)
+        x = np.random.randn(built.nrows)
+        result_before = built.apply(x)
 
-        data_bytes = pickle.dumps(precond)
-        precond2 = pickle.loads(data_bytes)
-        result_after = precond2.apply(x)
+        built2 = pickle.loads(pickle.dumps(built))
+        result_after = built2.apply(x)
 
         np.testing.assert_array_equal(result_before, result_after)
 
@@ -69,20 +69,16 @@ class TestProperties:
 class TestAdvancedPreconditioners:
     """Tests for additive Schwarz preconditioner configs."""
 
-    def test_additive_schwarz_object_converges(self):
-        """PreconditionerConfig.Additive() as preconditioner object should converge."""
-        rng = np.random.default_rng(42)
-        categories = np.asfortranarray(
-            np.column_stack(
-                [rng.integers(0, 20, size=500), rng.integers(0, 20, size=500)]
-            ).astype(np.uint32)
-        )
-        y = rng.standard_normal(500)
-        result = solve(categories, y, preconditioner=PreconditionerConfig.Additive())
-        assert result.converged
-
-    def test_reduction_strategy_atomic_scatter_converges(self):
-        """additive Schwarz with AtomicScatter reduction should converge."""
+    @pytest.mark.parametrize(
+        "reduction",
+        [
+            ReductionStrategy.Auto,
+            ReductionStrategy.AtomicScatter,
+            ReductionStrategy.ParallelReduction,
+        ],
+        ids=["Auto", "AtomicScatter", "ParallelReduction"],
+    )
+    def test_reduction_strategy_converges(self, reduction):
         rng = np.random.default_rng(10)
         categories = np.asfortranarray(
             np.column_stack(
@@ -93,27 +89,7 @@ class TestAdvancedPreconditioners:
         result = solve(
             categories,
             y,
-            preconditioner=PreconditionerConfig.Additive(
-                reduction=ReductionStrategy.AtomicScatter
-            ),
-        )
-        assert result.converged
-
-    def test_reduction_strategy_parallel_reduction_converges(self):
-        """additive Schwarz with ParallelReduction strategy should converge."""
-        rng = np.random.default_rng(11)
-        categories = np.asfortranarray(
-            np.column_stack(
-                [rng.integers(0, 20, size=500), rng.integers(0, 20, size=500)]
-            ).astype(np.uint32)
-        )
-        y = rng.standard_normal(500)
-        result = solve(
-            categories,
-            y,
-            preconditioner=PreconditionerConfig.Additive(
-                reduction=ReductionStrategy.ParallelReduction
-            ),
+            preconditioner=PreconditionerConfig.Additive(reduction=reduction),
         )
         assert result.converged
 

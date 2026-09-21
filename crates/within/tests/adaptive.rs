@@ -12,12 +12,7 @@ fn eager_stall() -> Staleness {
     Staleness::try_new(1, 0.0).expect("valid staleness")
 }
 
-fn additive() -> PreconditionerConfig {
-    PreconditionerConfig::Additive {
-        local_solver: LocalSolverConfig::default(),
-        reduction: ReductionStrategy::Auto,
-    }
-}
+use common::additive;
 
 fn adaptive(stall: Staleness) -> PreconditionerConfig {
     PreconditionerConfig::Adaptive {

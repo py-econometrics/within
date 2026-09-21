@@ -23,18 +23,33 @@ fn categories_and_y() -> (ndarray::Array2<u32>, Vec<f64>) {
     (categories, y)
 }
 
-#[test]
-fn test_solver_matches_oneshot() {
+/// `Solver::new().solve()` and one-shot `solve()` agree under every preconditioner, and the
+/// solver holds a map exactly when one was requested.
+#[rstest]
+fn test_solver_matches_oneshot(
+    #[values(
+        PreconditionerConfig::Off,
+        PreconditionerConfig::Diagonal,
+        common::additive(),
+        PreconditionerConfig::default()
+    )]
+    precond: PreconditionerConfig,
+) {
     let (categories, y) = categories_and_y();
     let params = default_params();
-    let precond = default_precond();
 
     let oneshot = solve(categories.view(), &y, None, &params, &precond).expect("oneshot");
 
     let solver = Solver::new(categories.view(), None, &precond).expect("solver build");
+    assert_eq!(
+        solver.preconditioner().is_some(),
+        precond != PreconditionerConfig::Off,
+        "a map is cached exactly when a preconditioner was requested"
+    );
     let result = solver.solve(&y, &params).expect("solver solve");
 
     assert!(result.converged);
+    common::assert_solution_finite(&result);
     assert_eq!(result.x.len(), oneshot.x.len());
     for (a, b) in result.x.iter().zip(oneshot.x.iter()) {
         assert!((a - b).abs() < 1e-12, "x mismatch: {} vs {}", a, b);
@@ -57,35 +72,6 @@ fn test_solver_demeaned() {
         result.demeaned.iter().all(|v| v.is_finite()),
         "demeaned should be finite"
     );
-}
-
-#[test]
-fn test_solver_no_preconditioner() {
-    let (categories, y) = categories_and_y();
-    let params = default_params();
-
-    let solver = Solver::new(categories.view(), None, None).expect("solver build");
-    let result = solver.solve(&y, &params).expect("solver solve");
-
-    assert!(result.converged);
-    common::assert_solution_finite(&result);
-}
-
-#[test]
-fn test_solver_diagonal_preconditioner() {
-    let (categories, y) = categories_and_y();
-    let params = default_params();
-    let precond = PreconditionerConfig::Diagonal;
-
-    let solver = Solver::new(categories.view(), None, &precond).expect("solver build");
-    assert!(
-        solver.preconditioner().is_some(),
-        "diagonal preconditioner should be cached"
-    );
-    let result = solver.solve(&y, &params).expect("solver solve");
-
-    assert!(result.converged);
-    common::assert_solution_finite(&result);
 }
 
 #[test]
@@ -204,11 +190,9 @@ fn test_solver_properties() {
     assert_eq!(solver.n_obs(), 5);
 }
 
-#[test]
-fn test_additive_serde_roundtrip_preserves_config_and_solution() {
-    let (categories, y) = categories_and_y();
-    let params = default_params();
-    let precond = PreconditionerConfig::Additive {
+/// Every non-default field set, so a roundtrip that silently reset one would be caught.
+fn fully_specified_additive() -> PreconditionerConfig {
+    PreconditionerConfig::Additive {
         local_solver: LocalSolverConfig {
             approx_chol: ApproxCholConfig {
                 seed: 41,
@@ -224,12 +208,22 @@ fn test_additive_serde_roundtrip_preserves_config_and_solution() {
             ridge: 1e-5,
         },
         reduction: ReductionStrategy::AtomicScatter,
-    };
+    }
+}
+
+/// A serialized map round-trips its config, shape, build duration, action, and the solution
+/// a solver rebuilt from it produces. The ladder is not a map: its serialized form is
+/// whichever rung it currently holds, so the axis here is the two map variants.
+#[rstest]
+#[case::diagonal(PreconditionerConfig::Diagonal)]
+#[case::additive(fully_specified_additive())]
+fn test_preconditioner_serde_roundtrip(#[case] precond: PreconditionerConfig) {
+    let (categories, y) = categories_and_y();
+    let params = default_params();
 
     let solver1 = Solver::new(categories.view(), None, &precond).expect("solver build");
     let r1 = solver1.solve(&y, &params).expect("solve 1");
 
-    // Serialize preconditioner
     let precond_ref = solver1
         .preconditioner()
         .expect("should have preconditioner");
@@ -237,10 +231,19 @@ fn test_additive_serde_roundtrip_preserves_config_and_solution() {
     let bytes = postcard::to_stdvec(precond_ref).expect("serialize");
     assert!(!bytes.is_empty());
 
-    // Deserialize and build new solver
     let precond2: Preconditioner = postcard::from_bytes(&bytes).expect("deserialize");
     assert_eq!(precond2.config(), precond);
+    assert_eq!(precond2.nrows(), precond_ref.nrows());
+    assert_eq!(precond2.ncols(), precond_ref.ncols());
     assert_eq!(precond2.build_duration(), precond_ref.build_duration());
+
+    let x: Vec<f64> = (0..precond_ref.ncols()).map(|i| i as f64 + 0.25).collect();
+    let mut y1 = vec![0.0; precond_ref.nrows()];
+    let mut y2 = vec![0.0; precond2.nrows()];
+    precond_ref.apply(&x, &mut y1).expect("apply original");
+    precond2.apply(&x, &mut y2).expect("apply deserialized");
+    assert_eq!(y1, y2);
+
     let solver2 =
         Solver::new(categories.view(), None, precond2).expect("solver from preconditioner");
     assert_eq!(
@@ -251,34 +254,9 @@ fn test_additive_serde_roundtrip_preserves_config_and_solution() {
         precond_ref.build_duration(),
     );
     let r2 = solver2.solve(&y, &params).expect("solve 2");
-
     for (a, b) in r1.x.iter().zip(r2.x.iter()) {
         assert!((a - b).abs() < 1e-12, "serde roundtrip x mismatch");
     }
-}
-
-#[test]
-fn test_diagonal_serde_roundtrip() {
-    let (categories, _) = categories_and_y();
-    let precond = PreconditionerConfig::Diagonal;
-    let solver = Solver::new(categories.view(), None, &precond).expect("solver build");
-    let precond_ref = solver
-        .preconditioner()
-        .expect("should have diagonal preconditioner");
-    let bytes = postcard::to_stdvec(precond_ref).expect("serialize");
-    assert!(!bytes.is_empty());
-
-    let deserialized: Preconditioner = postcard::from_bytes(&bytes).expect("deserialize");
-    assert_eq!(deserialized.nrows(), precond_ref.nrows());
-    assert_eq!(deserialized.ncols(), precond_ref.ncols());
-    assert_eq!(deserialized.build_duration(), precond_ref.build_duration());
-
-    let x: Vec<f64> = (0..precond_ref.ncols()).map(|i| i as f64 + 0.25).collect();
-    let mut y1 = vec![0.0; precond_ref.nrows()];
-    let mut y2 = vec![0.0; deserialized.nrows()];
-    precond_ref.apply(&x, &mut y1).expect("apply original");
-    deserialized.apply(&x, &mut y2).expect("apply deserialized");
-    assert_eq!(y1, y2);
 }
 
 #[test]

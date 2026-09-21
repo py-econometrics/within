@@ -1,10 +1,11 @@
 use ndarray::Array2;
 use proptest::prelude::*;
-use within::{solve, solve_batch, Channel, CoefficientAddress, LsmrOptions};
+use rstest::rstest;
+use within::{solve, solve_batch, Channel, CoefficientAddress, LsmrOptions, PreconditionerConfig};
 
 #[path = "common/property_strategies.rs"]
 mod strategies;
-use strategies::{default_precond, random_fe_problem_strategy};
+use strategies::{any_preconditioner, random_fe_problem_strategy};
 
 fn at(term: usize, level: u32, column: usize) -> CoefficientAddress {
     CoefficientAddress {
@@ -49,9 +50,9 @@ proptest! {
     fn prop_response_scaling_equivariance(
         (cats, y) in random_fe_problem_strategy(),
         c in prop_oneof![-8.0f64..=-0.25, 0.25f64..=8.0],
+        precond in any_preconditioner(),
     ) {
         let params = tight_params();
-        let precond = default_precond();
 
         let base = solve(cats.view(), &y, None, &params, &precond).unwrap();
         prop_assert!(base.converged);
@@ -78,9 +79,9 @@ proptest! {
             (Just(cats), Just(y), proptest::collection::vec(0.2f64..3.0, n))
         }),
         k in 0.25f64..=6.0,
+        precond in any_preconditioner(),
     ) {
         let params = tight_params();
-        let precond = default_precond();
 
         let base = solve(cats.view(), &y, Some(w.as_slice()), &params, &precond).unwrap();
         prop_assert!(base.converged);
@@ -108,9 +109,9 @@ proptest! {
                 proptest::collection::vec(proptest::collection::vec(-10.0f64..10.0, n), 2..=4),
             )
         }),
+        precond in any_preconditioner(),
     ) {
         let params = tight_params();
-        let precond = default_precond();
 
         let refs: Vec<&[f64]> = ys.iter().map(Vec::as_slice).collect();
         let batch = solve_batch(cats.view(), &refs, None, &params, &precond).unwrap();
@@ -133,9 +134,11 @@ proptest! {
     /// exactly `0` — so assert that directly (the equivariance and residual
     /// checks are gauge-invariant and cannot see it).
     #[test]
-    fn prop_unidentified_slots_are_zero((cats, y) in random_fe_problem_strategy()) {
+    fn prop_unidentified_slots_are_zero(
+        (cats, y) in random_fe_problem_strategy(),
+        precond in any_preconditioner(),
+    ) {
         let params = tight_params();
-        let precond = default_precond();
         let result = solve(cats.view(), &y, None, &params, &precond).unwrap();
         prop_assert!(result.converged);
 
@@ -160,13 +163,23 @@ proptest! {
 /// thing the gauge-invariant optimality and residual checks cannot verify, and
 /// the cheap guard against a weighting/labeling misconception shared between the
 /// solver and a self-referential oracle.
-#[test]
-fn saturated_single_factor_recovers_level_means() {
+#[rstest]
+fn saturated_single_factor_recovers_level_means(
+    #[values(
+        PreconditionerConfig::Off,
+        PreconditionerConfig::Diagonal,
+        PreconditionerConfig::Additive {
+            local_solver: within::LocalSolverConfig::default(),
+            reduction: within::ReductionStrategy::Auto,
+        },
+        PreconditionerConfig::default()
+    )]
+    precond: PreconditionerConfig,
+) {
     // Level means: {1,3}→2, {2,4,6}→4, {5}→5.
     let cats = Array2::from_shape_vec((6, 1), vec![0u32, 0, 1, 1, 1, 2]).unwrap();
     let y = vec![1.0, 3.0, 2.0, 4.0, 6.0, 5.0];
     let params = tight_params();
-    let precond = default_precond();
     let result = solve(cats.view(), &y, None, &params, &precond).unwrap();
     assert!(result.converged);
 

@@ -3,6 +3,7 @@
 
 use ndarray::Array2;
 use proptest::prelude::*;
+use within::config::{LocalSolverConfig, ReductionStrategy};
 use within::PreconditionerConfig;
 
 /// Generate a random FE problem: (categories Array2<u32>, y Vec<f64>).
@@ -35,9 +36,22 @@ pub fn random_fe_problem_strategy() -> impl Strategy<Value = (Array2<u32>, Vec<f
     })
 }
 
-/// The library default preconditioner config for property tests.
-pub fn default_precond() -> PreconditionerConfig {
-    PreconditionerConfig::default()
+/// Every preconditioner variant, so a property is checked across all of them within one case budget.
+pub fn any_preconditioner() -> impl Strategy<Value = PreconditionerConfig> {
+    prop_oneof![
+        Just(PreconditionerConfig::Off),
+        Just(PreconditionerConfig::Diagonal),
+        Just(PreconditionerConfig::Additive {
+            local_solver: LocalSolverConfig::default(),
+            reduction: ReductionStrategy::Auto,
+        }),
+        Just(PreconditionerConfig::default()),
+    ]
+}
+
+/// Variants that hold a map a solver can hand back.
+pub fn any_preconditioner_map() -> impl Strategy<Value = PreconditionerConfig> {
+    any_preconditioner().prop_filter("Off holds no map", |p| *p != PreconditionerConfig::Off)
 }
 
 /// One factor's owned inputs, from which the test body borrows to build an
