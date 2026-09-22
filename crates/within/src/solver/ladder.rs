@@ -150,6 +150,9 @@ fn isolated<R: Send>(f: impl FnOnce() -> R + Send) -> Result<R, BuildError> {
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
 
     use super::isolated;
 
@@ -175,5 +178,25 @@ mod tests {
                 .expect("isolated build"),
             "the build ran on the caller's pool"
         );
+    }
+
+    /// A worker waiting on the build must not steal: running a queued solve above the build frame
+    /// is the #371 deadlock, so entering the build pool from the worker itself is not enough.
+    #[test]
+    fn a_worker_waiting_on_the_build_runs_nothing_else() {
+        let caller = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .expect("caller pool");
+        let ran = Arc::new(AtomicBool::new(false));
+        let queued = Arc::clone(&ran);
+        caller.install(move || {
+            rayon::spawn(move || queued.store(true, Ordering::SeqCst));
+            isolated(|| std::thread::sleep(Duration::from_millis(50))).expect("isolated build");
+            assert!(
+                !ran.load(Ordering::SeqCst),
+                "the waiting worker stole a queued job while the build ran"
+            );
+        });
     }
 }
