@@ -2090,6 +2090,7 @@ dependencies = [
  "approx-chol",
  "criterion",
  "ndarray",
+ "once_cell",
  "portable-atomic",
  "postcard",
  "proptest",

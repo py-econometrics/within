@@ -1,9 +1,9 @@
 //! The solver's preconditioner slot: a fixed map, or the diagonal→Schwarz ladder that
 //! [`PreconditionerConfig::Adaptive`] builds on a stalled solve.
 
-use std::sync::OnceLock;
 use std::time::Instant;
 
+use once_cell::sync::OnceCell;
 use schwarz_precond::Staleness;
 
 use crate::config::PreconditionerConfig;
@@ -60,7 +60,7 @@ impl PrecondSlot {
                             local_solver,
                             reduction,
                         },
-                        built: OnceLock::new(),
+                        built: OnceCell::new(),
                     }))
                 };
                 (slot, Vec::new())
@@ -75,8 +75,8 @@ pub(super) struct AdaptivePrecond {
     pub(super) stall: Staleness,
     /// The map built on escalation; `stall` is a solve concern it never sees.
     pub(super) escalated: SchwarzConfig,
-    /// A failed build is kept too, so later solves report it instead of paying for it again.
-    pub(super) built: OnceLock<Result<AdaptiveBuild, BuildError>>,
+    /// A design's own build failure settles here too; a failed isolation pool retries instead.
+    pub(super) built: OnceCell<Result<AdaptiveBuild, BuildError>>,
 }
 
 /// Outcome of the deferred build: the Schwarz map, or `None` when no factor-pair target exists.
@@ -107,11 +107,10 @@ impl AdaptivePrecond {
         screening: &[BuildWarning],
     ) -> Result<f64, BuildError> {
         let mut build_secs = 0.0;
-        let built = self.built.get_or_init(|| {
+        let built = self.built.get_or_try_init(|| {
             let t_build = Instant::now();
-            let outcome = isolated(|| build_schwarz(prepared, &self.escalated))
-                .and_then(|built| built)
-                .map(|(schwarz, build_warnings)| {
+            let outcome = isolated(|| build_schwarz(prepared, &self.escalated))?.map(
+                |(schwarz, build_warnings)| {
                     let schwarz = schwarz.map(|mut p| {
                         p.gauge = self.base.gauge.clone();
                         p
@@ -119,10 +118,11 @@ impl AdaptivePrecond {
                     let mut warnings = screening.to_vec();
                     warnings.extend(build_warnings);
                     AdaptiveBuild { schwarz, warnings }
-                });
+                },
+            );
             build_secs = t_build.elapsed().as_secs_f64();
-            outcome
-        });
+            Ok(outcome)
+        })?;
         built.as_ref().map(|_| build_secs).map_err(Clone::clone)
     }
 }
@@ -135,10 +135,15 @@ fn isolated<R: Send>(f: impl FnOnce() -> R + Send) -> Result<R, BuildError> {
         .num_threads(rayon::current_num_threads())
         .build()
         .map_err(|e| BuildError::ThreadPool(e.to_string()))?;
-    std::thread::scope(|s| match s.spawn(|| pool.install(f)).join() {
-        Ok(r) => Ok(r),
-        // Carry the build's own panic, not `Any { .. }` from formatting the payload.
-        Err(payload) => std::panic::resume_unwind(payload),
+    std::thread::scope(|s| {
+        let bridge = std::thread::Builder::new()
+            .spawn_scoped(s, || pool.install(f))
+            .map_err(|e| BuildError::ThreadPool(e.to_string()))?;
+        match bridge.join() {
+            Ok(r) => Ok(r),
+            // Carry the build's own panic, not `Any { .. }` from formatting the payload.
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
     })
 }
 
