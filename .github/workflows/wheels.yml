@@ -142,6 +142,7 @@ jobs:
           path: dist
           retention-days: 1
 
+  # PyPy pinned to 7.3.x: manylinux2014 ships no PyPy 8.0, so pp311 wheels are pp73. Unpin: #386
   linux-nonabi3:
     runs-on: ${{ matrix.platform.runner }}
     strategy:
@@ -199,7 +200,7 @@ jobs:
         with:
           python-version: |
             3.14t
-            pypy3.11
+            pypy-3.11-v7.3.23
           architecture: x64
       - name: Build wheels
         uses: PyO3/maturin-action@v1
@@ -229,7 +230,7 @@ jobs:
         with:
           python-version: |
             3.14t
-            pypy3.11
+            pypy-3.11-v7.3.23
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -320,7 +321,7 @@ jobs:
             free-threaded: true
           - runner: ubuntu-latest
             wheel-suffix: linux-nonabi3-x86_64
-            python-version: "pypy3.11"
+            python-version: "pypy-3.11-v7.3.23"
             wheel-glob: "*pp311*"
           - runner: ubuntu-24.04-arm
             wheel-suffix: linux-nonabi3-aarch64
@@ -329,7 +330,7 @@ jobs:
             free-threaded: true
           - runner: ubuntu-24.04-arm
             wheel-suffix: linux-nonabi3-aarch64
-            python-version: "pypy3.11"
+            python-version: "pypy-3.11-v7.3.23"
             wheel-glob: "*pp311*"
     steps:
       - uses: actions/checkout@v7
@@ -368,7 +369,7 @@ jobs:
             free-threaded: true
           - runner: macos-15-intel
             wheel-suffix: macos-nonabi3-x86_64
-            python-version: "pypy3.11"
+            python-version: "pypy-3.11-v7.3.23"
             wheel-glob: "*pp311*"
           - runner: macos-latest
             wheel-suffix: macos-nonabi3-aarch64
@@ -377,7 +378,7 @@ jobs:
             free-threaded: true
           - runner: macos-latest
             wheel-suffix: macos-nonabi3-aarch64
-            python-version: "pypy3.11"
+            python-version: "pypy-3.11-v7.3.23"
             wheel-glob: "*pp311*"
     steps:
       - uses: actions/checkout@v7
@@ -416,7 +417,7 @@ jobs:
             free-threaded: true
           - runner: windows-latest
             wheel-suffix: windows-nonabi3-x64
-            python-version: "pypy3.11"
+            python-version: "pypy-3.11-v7.3.23"
             wheel-glob: "*pp311*"
     steps:
       - uses: actions/checkout@v7
