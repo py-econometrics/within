@@ -1,9 +1,9 @@
 //! The solver's preconditioner slot: a fixed map, or the diagonal→Schwarz ladder that
 //! [`PreconditionerConfig::Adaptive`] builds on a stalled solve.
 
-use std::sync::{Mutex, OnceLock, PoisonError, TryLockError};
 use std::time::Instant;
 
+use once_cell::sync::OnceCell;
 use schwarz_precond::Staleness;
 
 use crate::config::PreconditionerConfig;
@@ -60,8 +60,7 @@ impl PrecondSlot {
                             local_solver,
                             reduction,
                         },
-                        built: OnceLock::new(),
-                        building: Mutex::new(()),
+                        built: OnceCell::new(),
                     }))
                 };
                 (slot, Vec::new())
@@ -76,10 +75,8 @@ pub(super) struct AdaptivePrecond {
     pub(super) stall: Staleness,
     /// The map built on escalation; `stall` is a solve concern it never sees.
     pub(super) escalated: SchwarzConfig,
-    /// A failed build is kept too, so later solves report it instead of paying for it again.
-    pub(super) built: OnceLock<Result<AdaptiveBuild, BuildError>>,
-    /// Serialises the build; a rayon worker never waits, its stack may hold a build job (#365).
-    pub(super) building: Mutex<()>,
+    /// A design's own build failure settles here too; a failed isolation pool retries instead.
+    pub(super) built: OnceCell<Result<AdaptiveBuild, BuildError>>,
 }
 
 /// Outcome of the deferred build: the Schwarz map, or `None` when no factor-pair target exists.
@@ -103,27 +100,17 @@ impl AdaptivePrecond {
         self.schwarz().unwrap_or(&self.base)
     }
 
-    /// Build once and return this call's build seconds; a waiter gets `0.0`, a rayon worker skips.
+    /// Build once and return this call's build seconds; every other caller waits for it.
     pub(super) fn escalate(
         &self,
         prepared: &PreparedDesign<'_>,
         screening: &[BuildWarning],
     ) -> Result<f64, BuildError> {
-        let _building = if rayon::current_thread_index().is_some() {
-            match self.building.try_lock() {
-                Ok(guard) => guard,
-                Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
-                Err(TryLockError::WouldBlock) => return Ok(0.0),
-            }
-        } else {
-            self.building.lock().unwrap_or_else(PoisonError::into_inner)
-        };
-        // Only the lock holder can find the cell empty, so nobody ever blocks inside `get_or_init`.
         let mut build_secs = 0.0;
-        let built = self.built.get_or_init(|| {
+        let built = self.built.get_or_try_init(|| {
             let t_build = Instant::now();
-            let outcome =
-                build_schwarz(prepared, &self.escalated).map(|(schwarz, build_warnings)| {
+            let outcome = isolated(|| build_schwarz(prepared, &self.escalated))?.map(
+                |(schwarz, build_warnings)| {
                     let schwarz = schwarz.map(|mut p| {
                         p.gauge = self.base.gauge.clone();
                         p
@@ -131,10 +118,85 @@ impl AdaptivePrecond {
                     let mut warnings = screening.to_vec();
                     warnings.extend(build_warnings);
                     AdaptiveBuild { schwarz, warnings }
-                });
+                },
+            );
             build_secs = t_build.elapsed().as_secs_f64();
-            outcome
-        });
+            Ok(outcome)
+        })?;
         built.as_ref().map(|_| build_secs).map_err(Clone::clone)
+    }
+}
+
+/// Run `f` on a pool of its own, entered from a thread outside every pool, so no wait inside it can
+/// steal a solve off the shared pool; a stolen solve blocking on this build is the #371 deadlock.
+/// Nothing run here may wait on the shared pool.
+fn isolated<R: Send>(f: impl FnOnce() -> R + Send) -> Result<R, BuildError> {
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(rayon::current_num_threads())
+        .build()
+        .map_err(|e| BuildError::ThreadPool(e.to_string()))?;
+    std::thread::scope(|s| {
+        let bridge = std::thread::Builder::new()
+            .spawn_scoped(s, || pool.install(f))
+            .map_err(|e| BuildError::ThreadPool(e.to_string()))?;
+        match bridge.join() {
+            Ok(r) => Ok(r),
+            // Carry the build's own panic, not `Any { .. }` from formatting the payload.
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use super::isolated;
+
+    thread_local! {
+        static ON_CALLER_POOL: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// A build handed to [`isolated`] runs off the caller's pool, so it can steal none of its jobs.
+    #[test]
+    fn isolated_leaves_the_callers_pool() {
+        let caller = rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .start_handler(|_| ON_CALLER_POOL.with(|f| f.set(true)))
+            .build()
+            .expect("caller pool");
+        assert!(
+            caller.install(|| ON_CALLER_POOL.with(Cell::get)),
+            "the marker never reached the caller pool's workers"
+        );
+        assert!(
+            !caller
+                .install(|| isolated(|| ON_CALLER_POOL.with(Cell::get)))
+                .expect("isolated build"),
+            "the build ran on the caller's pool"
+        );
+    }
+
+    /// A worker waiting on the build must not steal: running a queued solve above the build frame
+    /// is the #371 deadlock, so entering the build pool from the worker itself is not enough.
+    #[test]
+    fn a_worker_waiting_on_the_build_runs_nothing_else() {
+        let caller = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .expect("caller pool");
+        let ran = Arc::new(AtomicBool::new(false));
+        let queued = Arc::clone(&ran);
+        caller.install(move || {
+            rayon::spawn(move || queued.store(true, Ordering::SeqCst));
+            isolated(|| std::thread::sleep(Duration::from_millis(50))).expect("isolated build");
+            assert!(
+                !ran.load(Ordering::SeqCst),
+                "the waiting worker stole a queued job while the build ran"
+            );
+        });
     }
 }

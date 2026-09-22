@@ -277,6 +277,11 @@ pub(super) struct Certificate {
 }
 
 impl Certificate {
+    /// The pair every [`LsmrResult`](super::LsmrResult) reports: `(‖rhs − A x‖, relative ‖Aᵀr‖)`.
+    pub(super) fn residuals(&self) -> (f64, f64) {
+        (self.normr, self.normar.relative())
+    }
+
     /// Take the references from `cold`, an audit of `x = 0` against the warm start's original `b`.
     pub(super) fn rebase(&mut self, cold: &Certificate) {
         self.normar.rebase(cold.normar.norm);

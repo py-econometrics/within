@@ -77,6 +77,9 @@ pub enum BuildError {
     /// Local solver construction failed.
     #[error("local solver build failed: {0}")]
     LocalSolverBuild(String),
+    /// The thread pool a deferred preconditioner build runs on could not be created.
+    #[error("thread pool build failed: {0}")]
+    ThreadPool(String),
     /// Schwarz preconditioner structural validation failed.
     #[error("preconditioner build failed: {0}")]
     Preconditioner(#[source] schwarz_precond::BuildError),
