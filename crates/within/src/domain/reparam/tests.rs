@@ -97,7 +97,7 @@ fn back_transform_leaves_other_terms_untouched() {
 
     let mut x: Vec<f64> = (0..design.n_dofs).map(|i| 1.0 + i as f64).collect();
     let before = x.clone();
-    basis.back_transform(&mut x);
+    basis.back_transform(&design, &mut x);
 
     // Plain term 1 sits between the two slope-bearing blocks.
     let (t1, t2) = (design.terms[1].offset, design.terms[2].offset);

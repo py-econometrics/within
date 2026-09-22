@@ -413,8 +413,9 @@ impl<'a> Solver<'a> {
 
         let mut x = r.x;
         if let Some(rp) = &self.prepared.reparam {
-            rp.back_transform(&mut x);
+            rp.back_transform(&self.prepared.design, &mut x);
         }
+        let x = self.prepared.design.coefficients_out(x);
 
         RhsSolution {
             x,

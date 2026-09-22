@@ -23,8 +23,7 @@ pub(crate) struct SlopeReparam {
 
 /// One slope-bearing term's whitening state.
 struct TermReparam {
-    offset: usize,
-    n_levels: usize,
+    term: usize,
     /// Slopes start at column 1 behind an intercept, at 0 without one.
     intercept: bool,
     transforms: Vec<LevelTransform>,
@@ -73,9 +72,9 @@ impl SlopeReparam {
     }
 
     /// Map solve-basis coefficients back to the user's parametrization.
-    pub(crate) fn back_transform(&self, x: &mut [f64]) {
+    pub(crate) fn back_transform(&self, design: &Design<'_>, x: &mut [f64]) {
         for term in &self.terms {
-            term.back_transform(x);
+            term.back_transform(&design.terms[term.term], x);
         }
     }
 }
@@ -90,7 +89,7 @@ impl TermReparam {
         unidentified: &mut Vec<CoefficientPosition>,
     ) -> Self {
         let meta = &design.terms[term];
-        let (offset, n_levels) = (meta.offset, meta.n_levels());
+        let n_levels = meta.n_levels();
         let intercept = meta.has_intercept();
         let z_cols: Vec<usize> = meta.covariates().map(|c| c as usize).collect();
         let v = z_cols.len();
@@ -149,8 +148,7 @@ impl TermReparam {
         }
 
         Self {
-            offset,
-            n_levels,
+            term,
             intercept,
             transforms,
         }
@@ -158,7 +156,7 @@ impl TermReparam {
 
     /// Map this term's solve-basis coefficients back to the user's
     /// parametrization; slots outside the term's block are untouched.
-    fn back_transform(&self, x: &mut [f64]) {
+    fn back_transform(&self, meta: &super::TermMeta, x: &mut [f64]) {
         let v = self.transforms.first().map_or(0, |t| t.center.len());
         let mut b = vec![0.0; v];
         for (l, t) in self.transforms.iter().enumerate() {
@@ -167,21 +165,21 @@ impl TermReparam {
             }
             b.fill(0.0);
             for (k, w_row) in t.w.chunks_exact(v).enumerate() {
-                let bk = x[self.slope_slot(k, l)];
+                let bk = x[self.slope_slot(meta, k, l)];
                 for (bj, wj) in b.iter_mut().zip(w_row) {
                     *bj += wj * bk;
                 }
             }
             for (j, &bj) in b.iter().enumerate() {
-                x[self.slope_slot(j, l)] = bj;
+                x[self.slope_slot(meta, j, l)] = bj;
             }
             if self.intercept {
-                x[self.offset + l] -= dot(&b, &t.center);
+                x[meta.dof_index(0, l)] -= dot(&b, &t.center);
             }
         }
     }
 
-    fn slope_slot(&self, j: usize, level: usize) -> usize {
-        self.offset + (j + self.intercept as usize) * self.n_levels + level
+    fn slope_slot(&self, meta: &super::TermMeta, j: usize, level: usize) -> usize {
+        meta.dof_index(j + self.intercept as usize, level)
     }
 }

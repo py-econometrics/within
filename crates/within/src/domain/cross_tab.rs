@@ -143,11 +143,11 @@ impl CrossTab {
             rows: row_diag,
             cols: col_diag,
         };
-        let row_base = design.terms[pair.rows.term].column_base(pair.rows.column);
-        let col_base = design.terms[pair.cols.term].column_base(pair.cols.column);
+        let row_term = &design.terms[pair.rows.term];
+        let col_term = &design.terms[pair.cols.term];
         let local_to_global = (0..n_rows)
-            .map(|level| to_u32(row_base + level))
-            .chain((0..n_cols).map(|level| to_u32(col_base + level)))
+            .map(|level| to_u32(row_term.dof_index(pair.rows.column, level)))
+            .chain((0..n_cols).map(|level| to_u32(col_term.dof_index(pair.cols.column, level))))
             .collect();
 
         (cross_tab, diagonals, local_to_global)
