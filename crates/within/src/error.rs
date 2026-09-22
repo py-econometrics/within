@@ -80,8 +80,8 @@ pub enum BuildError {
     /// Schwarz preconditioner structural validation failed.
     #[error("preconditioner build failed: {0}")]
     Preconditioner(#[source] schwarz_precond::BuildError),
-    /// A cached preconditioner was built from a different design.
-    #[error("prebuilt preconditioner design signature does not match the supplied design")]
+    /// A cached preconditioner was built for a different design layout.
+    #[error("prebuilt preconditioner layout signature does not match the supplied design")]
     PreconditionerDesignMismatch,
     /// A negative floor breaks the dominance invariant; a non-finite one poisons every solve.
     #[error("local solver ridge must be finite and non-negative, got {value}")]

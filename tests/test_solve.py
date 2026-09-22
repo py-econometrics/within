@@ -412,14 +412,26 @@ class TestSolverSerde:
         r2 = solver2.solve(y)
         np.testing.assert_allclose(r2.x, r1.x, atol=1e-10)
 
-    def test_preconditioner_rejects_same_size_different_design(self):
+    def test_preconditioner_accepts_same_layout_different_data(self):
         a = np.asfortranarray(np.array([[0, 0], [0, 1], [1, 0], [1, 1]], np.uint32))
         b = np.asfortranarray(np.array([[0, 0], [0, 1], [1, 1], [1, 0]], np.uint32))
         precond = Solver(
             Design(a), preconditioner=PreconditionerConfig.Diagonal()
         ).preconditioner
-        with pytest.raises(ValueError, match="design signature"):
-            Solver(Design(b), preconditioner=precond)
+        assert Solver(Design(b), preconditioner=precond).preconditioner is not None
+
+    def test_preconditioner_rejects_same_size_different_layout(self):
+        two_level_term = np.array([0, 0, 0, 0, 1, 1], np.uint32)
+        three_level_term = np.array([10, 10, 20, 30, 20, 30], np.uint32)
+        a = Design([Effect(two_level_term, True), Effect(three_level_term, True)])
+        b = Design([Effect(three_level_term, True), Effect(two_level_term, True)])
+
+        # Both have five DOFs, but their term boundaries are [2, 3] and [3, 2].
+        precond = Solver(
+            a, preconditioner=PreconditionerConfig.Diagonal()
+        ).preconditioner
+        with pytest.raises(ValueError, match="layout signature"):
+            Solver(b, preconditioner=precond)
 
     @every_preconditioner_map
     def test_preconditioner_pickle_and_reuse(self, problem, precond):

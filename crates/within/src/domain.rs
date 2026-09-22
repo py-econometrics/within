@@ -488,56 +488,26 @@ impl<'a> Design<'a> {
         }
     }
 
-    /// Stable digest of the encoded design and coefficient layout, excluding weights.
+    /// Stable digest of the coefficient and solver-coordinate layouts.
+    ///
+    /// Observation assignments, loading values, row order, and weights do not
+    /// participate: preconditioners may be reused across samples with the same
+    /// compact coefficient space. Caller labels and their [`FactorEncoding`]
+    /// representation are likewise data semantics, not solver coordinates.
     pub(crate) fn signature(&self) -> [u8; 32] {
         *self.signature.get_or_init(|| {
             let mut hash = Sha256::new();
-            hash.update(b"within-design-signature-v1");
-            hash_usize(&mut hash, self.n_obs);
+            hash.update(b"within-design-layout-signature-v1");
             hash_usize(&mut hash, self.n_dofs);
             hash_usize(&mut hash, self.terms.len());
-            for (q, term) in self.terms.iter().enumerate() {
+            for term in &self.terms {
                 hash_usize(&mut hash, term.offset);
-                match &term.encoding {
-                    FactorEncoding::Identity { n_levels } => {
-                        hash.update([0]);
-                        hash_usize(&mut hash, *n_levels);
-                    }
-                    FactorEncoding::Integer { labels } => {
-                        hash.update([1]);
-                        hash_usize(&mut hash, labels.len());
-                        for label in labels.iter() {
-                            hash.update(label.to_le_bytes());
-                        }
-                    }
-                }
+                hash_usize(&mut hash, term.n_levels());
                 hash_usize(&mut hash, term.columns.len());
                 for column in term.columns.iter() {
                     match column {
                         Loading::Constant => hash.update([0]),
-                        Loading::Covariate(index) => {
-                            hash.update([1]);
-                            hash.update(index.to_le_bytes());
-                        }
-                    }
-                }
-                for &level in self.frame.level_column(q) {
-                    hash.update(level.to_le_bytes());
-                }
-            }
-            hash_usize(&mut hash, self.frame.n_loading_columns());
-            for q in 0..self.frame.n_loading_columns() {
-                for &value in self.frame.loading_column(q) {
-                    let bits = if value == 0.0 { 0 } else { value.to_bits() };
-                    hash.update(bits.to_le_bytes());
-                }
-            }
-            match &self.obs_perm {
-                None => hash.update([0]),
-                Some(perm) => {
-                    hash.update([1]);
-                    for &obs in perm.iter() {
-                        hash.update(obs.to_le_bytes());
+                        Loading::Covariate(_) => hash.update([1]),
                     }
                 }
             }
@@ -612,6 +582,51 @@ mod tests {
         let signature = clone.signature();
         assert_eq!(design.signature.get(), Some(&signature));
         assert_eq!(design.into_owned().signature(), signature);
+    }
+
+    #[test]
+    fn signature_ignores_observation_and_loading_data() {
+        let levels_a = [10, 10, 20, 20];
+        let levels_b = [20, 10, 20];
+        let identity_levels = [1, 0, 1];
+        let slope_a = [1.0, 2.0, 3.0, 4.0];
+        let slope_b = [-5.0, 0.0, 8.0];
+        let slope_c = [3.0, 2.0, 1.0];
+        let a = Design::new([Effect::new(&levels_a, true, [&slope_a[..]]).expect("valid effect")])
+            .expect("valid design");
+        let b = Design::new([Effect::new(&levels_b, true, [&slope_b[..]]).expect("valid effect")])
+            .expect("valid design");
+        let c = Design::new([
+            Effect::new(&identity_levels, true, [&slope_c[..]]).expect("valid effect")
+        ])
+        .expect("valid design");
+
+        assert_ne!(a.n_obs(), b.n_obs());
+        assert_eq!(a.signature(), b.signature());
+        assert_eq!(a.signature(), c.signature());
+    }
+
+    #[test]
+    fn signature_covers_coefficient_layout() {
+        let labels_a = [10, 20];
+        let labels_b = [20, 30];
+        let slope = [1.0, 2.0];
+        let intercept = Design::new([
+            Effect::new(&labels_a, true, std::iter::empty::<&[f64]>()).expect("valid effect")
+        ])
+        .expect("valid design");
+        let relabeled = Design::new([
+            Effect::new(&labels_b, true, std::iter::empty::<&[f64]>()).expect("valid effect")
+        ])
+        .expect("valid design");
+        let slope_only =
+            Design::new([Effect::new(&labels_a, false, [&slope[..]]).expect("valid effect")])
+                .expect("valid design");
+
+        assert_eq!(intercept.n_dofs(), relabeled.n_dofs());
+        assert_eq!(intercept.n_dofs(), slope_only.n_dofs());
+        assert_eq!(intercept.signature(), relabeled.signature());
+        assert_ne!(intercept.signature(), slope_only.signature());
     }
 
     fn frame(categorical: Vec<Vec<u32>>, continuous: Vec<Vec<f64>>) -> ObservationFrame<'static> {
