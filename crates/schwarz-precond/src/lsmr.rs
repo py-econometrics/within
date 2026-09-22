@@ -284,19 +284,19 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
     let b_norm = finite(vec_norm(b), "rhs norm")?;
     let local_size = local_size.unwrap_or(0);
 
-    let rhs: Cow<'_, [f64]> = match warm_start {
-        None => Cow::Borrowed(b),
+    let (rhs, rhs_norm): (Cow<'_, [f64]>, f64) = match warm_start {
+        None => (Cow::Borrowed(b), b_norm),
         Some(x0) => {
             let mut residual = vec![0.0; operator.nrows()];
             operator.apply(x0, &mut residual)?;
             for (ri, &bi) in residual.iter_mut().zip(b) {
                 *ri = bi - *ri;
             }
-            Cow::Owned(residual)
+            // Unlike `b`, the residual is computed: an ∞ entry norms to NaN, read as β₁ = 0 downstream.
+            let norm = finite(vec_norm(&residual), "warm-start residual norm")?;
+            (Cow::Owned(residual), norm)
         }
     };
-    // Unlike `b`, `rhs` is computed: an ∞ entry norms to NaN, which reads as β₁ = 0 downstream.
-    let rhs_norm = finite(vec_norm(&rhs), "warm-start residual norm")?;
     if rhs_norm == 0.0 {
         let (x, stop_reason) = match warm_start {
             Some(x0) => (x0.to_vec(), LsmrStopReason::WarmStartExact),
