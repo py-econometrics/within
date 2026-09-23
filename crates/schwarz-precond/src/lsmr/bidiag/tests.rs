@@ -2,7 +2,7 @@
 
 use rstest::rstest;
 
-use super::{alpha_from_vp, dot, Bidiagonalization, GolubKahan};
+use super::{alpha_from_vp, dot, par_dot, Bidiagonalization, GolubKahan};
 use crate::lsmr::fixtures::{DenseOp, DiagOp};
 use crate::{Operator, SolveError};
 
@@ -29,6 +29,35 @@ fn alpha_from_vp_rejects_non_finite_and_indefinite_pairs(#[case] v: &[f64], #[ca
 #[case::extreme_scales(&[1e-316, 1e-316], &[1e308, -1.000000000001e308])]
 fn alpha_from_vp_clamps_a_pair_within_root_epsilon(#[case] v: &[f64], #[case] p: &[f64]) {
     assert_eq!(alpha_from_vp(v, p).expect("within √ε"), 0.0, "{v:?}·{p:?}");
+}
+
+/// `cos(v, p̃) ≈ 1e-328` underflows a re-sum normalized to 1, though `α ≈ 1e-158` does not.
+#[test]
+fn a_tiny_cosine_keeps_its_gradient_length() {
+    let alpha = alpha_from_vp(&[1e-158, 0.0], &[1e-158, 1e170]).expect("positive pair");
+    assert!((alpha / 1e-158 - 1.0).abs() < 1e-12, "{alpha:e}");
+}
+
+/// A `vp` rounded below zero is 0 however the fallback's normalized re-sum rounds.
+#[test]
+fn a_negatively_rounded_pair_clamps_however_the_resum_rounds() {
+    let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+    let mut draw = || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+    };
+    for _ in 0..40 {
+        // Past the parallel threshold, so `vp` and the re-sum associate differently.
+        let v: Vec<f64> = (0..20_000).map(|_| draw()).collect();
+        let mut p: Vec<f64> = (0..20_000).map(|_| draw()).collect();
+        let c = dot(&v, &p) / dot(&v, &v);
+        p.iter_mut().zip(&v).for_each(|(pi, vi)| *pi -= c * vi);
+        if par_dot(&v, &p) < 0.0 {
+            assert_eq!(alpha_from_vp(&v, &p).expect("within √ε"), 0.0);
+        }
+    }
 }
 
 /// `beta == 0.0` and `alpha > 0.0` are both false for NaN; unguarded, it poisons the run.

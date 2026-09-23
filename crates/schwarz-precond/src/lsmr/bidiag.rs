@@ -11,6 +11,7 @@
 mod tests;
 
 use super::finite;
+use super::magnitude::{exponent, ldexp};
 use crate::{Operator, SolveError};
 use rayon::iter::{IndexedParallelIterator, ParallelIterator};
 use rayon::prelude::{ParallelSlice, ParallelSliceMut};
@@ -130,7 +131,8 @@ impl From<AlphaError> for SolveError {
 
 /// `α = √⟨v, p̃⟩`; a `vp` negative within `√ε·‖v‖‖p̃‖` clamps to 0, an indefinite `M` raises.
 fn alpha_from_vp(v: &[f64], p_tilde: &[f64]) -> Result<f64, AlphaError> {
-    let vp = finite(par_dot(v, p_tilde), "⟨v, Mv⟩")?;
+    // A NaN `vp` may be `∞ − ∞` from finite vectors; the norms below reject a NaN entry.
+    let vp = par_dot(v, p_tilde);
     if vp.is_normal() && vp > 0.0 {
         return Ok(vp.sqrt());
     }
@@ -140,17 +142,27 @@ fn alpha_from_vp(v: &[f64], p_tilde: &[f64]) -> Result<f64, AlphaError> {
     if norm_v == 0.0 || norm_p == 0.0 {
         return Ok(0.0);
     }
-    // Cauchy–Schwarz bounds the normalized product by 1 however the raw one scales.
-    let unit: f64 = v
+    // Norms scaled to `2^500` cap the sum at `2^1002` (Cauchy–Schwarz), leaving a tiny cosine room.
+    let (kv, kp) = (500 - exponent(norm_v), 500 - exponent(norm_p));
+    let scaled: f64 = v
         .iter()
         .zip(p_tilde)
-        .map(|(x, y)| (x / norm_v) * (y / norm_p))
+        .map(|(&x, &y)| ldexp(x, kv) * ldexp(y, kp))
         .sum();
-    if unit < -f64::EPSILON.sqrt() {
+    if scaled < -f64::EPSILON.sqrt() * ldexp(norm_v, kv) * ldexp(norm_p, kp) {
         return Err(AlphaError::NegativeMetric);
     }
-    // `unit.max(0.0)` returns 0 for NaN, which α = 0 reports as an exact solve at x = 0.
-    Ok(norm_v.sqrt() * norm_p.sqrt() * unit.max(0.0).sqrt())
+    // Only an overflowed `vp` needs the re-sum's sign; a finite one rounded fewer times.
+    if vp < 0.0 && vp.is_finite() {
+        return Ok(0.0);
+    }
+    // `max(0.0)` returns 0 for NaN, which α = 0 reports as an exact solve at x = 0.
+    let (scaled, k) = if (kv + kp) % 2 == 0 {
+        (scaled.max(0.0), kv + kp)
+    } else {
+        (2.0 * scaled.max(0.0), kv + kp + 1)
+    };
+    Ok(ldexp(scaled.sqrt(), -k / 2))
 }
 
 /// `‖v‖` from an unscaled `‖v‖²`; an over/underflowed or subnormal sum pays the max-scaled pass.
@@ -407,7 +419,7 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
     for ModifiedGolubKahan<'_, A, M>
 {
     fn step(&mut self) -> Result<BidiagStep, SolveError> {
-        let scale = -(self.alpha * self.beta_prev_inv);
+        let scale = -(self.alpha * self.u_norm_inv);
         self.operator.apply(&self.bufs.v, &mut self.bufs.av)?;
         let beta = finite(axpy_with_norm(&mut self.bufs.u, &self.bufs.av, scale), "β")?;
         if beta == 0.0 {
@@ -415,17 +427,22 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
             self.bufs.v.fill(0.0);
             self.bufs.p_tilde.fill(0.0);
             self.alpha = 0.0;
-            self.beta_prev_inv = 0.0;
+            self.u_norm_inv = 0.0;
             return Ok(BidiagStep { alpha: 0.0, beta });
         }
-        // beta > 0 here: the beta == 0 lucky breakdown returned above.
         let beta_inv = 1.0 / beta;
+        // `Aᵀu` scales with `‖A‖β`; only a `β` far from 1 carries it off `p̃`'s own `‖A‖` scale.
+        self.u_norm_inv = if RAW_U_NORMS.contains(&beta) {
+            beta_inv
+        } else {
+            normalize(&mut self.bufs.u, beta);
+            1.0
+        };
 
-        self.update_p_tilde(beta, beta_inv)?;
+        self.update_p_tilde(beta)?;
         let alpha_new = self.reorthonormalize_v()?;
 
         self.alpha = alpha_new;
-        self.beta_prev_inv = beta_inv;
 
         Ok(BidiagStep {
             alpha: alpha_new,
@@ -458,7 +475,7 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
             reorth.push(&self.bufs.v, &self.bufs.p_tilde, alpha);
         }
         self.alpha = alpha;
-        self.beta_prev_inv = 1.0; // u was normalized
+        self.u_norm_inv = 1.0; // u was normalized
         Ok(BidiagStep { alpha, beta })
     }
 
@@ -530,7 +547,7 @@ impl<'a, A: Operator + ?Sized> GolubKahan<'a, A> {
 
 /// Workspaces used by [`ModifiedGolubKahan`].
 struct ModifiedGolubKahanBuffers {
-    /// `u` left unnormalized between steps, so `‖u‖ = β_{k+1}`.
+    /// `u` left unnormalized between steps while `β_{k+1}` stays inside [`RAW_U_NORMS`].
     u: Vec<f64>,
     /// `ṽ` in DOF space (length n). **Normalized** at the end of each step.
     v: Vec<f64>,
@@ -557,6 +574,9 @@ impl ModifiedGolubKahanBuffers {
     }
 }
 
+/// `‖u‖` left unnormalized to skip a pass over `m`; `‖Aᵀu‖ ≤ 1e64 ‖A‖` caps raw `‖A‖` at `1e244`.
+const RAW_U_NORMS: std::ops::RangeInclusive<f64> = 1e-64..=1e64;
+
 /// Modified Golub-Kahan with `M ≈ AᵀA`, storing `p̃` scaled by `α` so a step costs one `M⁻¹`.
 pub(super) struct ModifiedGolubKahan<'a, A: Operator + ?Sized, M: Operator + ?Sized> {
     operator: &'a A,
@@ -564,8 +584,8 @@ pub(super) struct ModifiedGolubKahan<'a, A: Operator + ?Sized, M: Operator + ?Si
     bufs: ModifiedGolubKahanBuffers,
     /// Last `α` emitted; needed by the next step to scale `p_tilde`.
     alpha: f64,
-    /// `1/β_k`; cancels the unnormalization of `u` in the next step.
-    beta_prev_inv: f64,
+    /// `1/‖u‖` as stored: `1/β_k`, or 1 once `u` was normalized in place.
+    u_norm_inv: f64,
 }
 
 impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M> {
@@ -585,14 +605,14 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M
             preconditioner,
             bufs,
             alpha: 0.0,
-            beta_prev_inv: 1.0,
+            u_norm_inv: 1.0,
         };
         let step1 = stream.restart(b_norm)?;
         Ok((stream, step1))
     }
 
     /// Scaling by `β / α_k` cancels the stored `α_k`; requires `α_k > 0`.
-    fn update_p_tilde(&mut self, beta: f64, beta_inv: f64) -> Result<(), SolveError> {
+    fn update_p_tilde(&mut self, beta: f64) -> Result<(), SolveError> {
         self.operator
             .apply_adjoint(&self.bufs.u, &mut self.bufs.atu)?;
         debug_assert!(
@@ -605,7 +625,12 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M
             normalize(&mut self.bufs.p_tilde, self.alpha);
             p_coeff = beta;
         }
-        axpby(&mut self.bufs.p_tilde, &self.bufs.atu, beta_inv, -p_coeff);
+        axpby(
+            &mut self.bufs.p_tilde,
+            &self.bufs.atu,
+            self.u_norm_inv,
+            -p_coeff,
+        );
         Ok(())
     }
 

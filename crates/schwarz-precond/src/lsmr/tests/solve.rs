@@ -581,8 +581,16 @@ fn the_residual_estimate_is_the_iterates_own(#[values(2, 4, 8)] maxiter: usize) 
 fn a_power_of_two_scaling_reproduces_the_unit_scale_solve(
     #[case] design_exp: i32,
     #[case] rhs_exp: i32,
+    #[values(false, true)] metric: bool,
 ) {
-    let solve = |op: &DenseOp, b: &[f64]| lsmr(op, b, 1e-4, 100, None).expect("scaled solve");
+    let solve = |op: &DenseOp, b: &[f64]| {
+        let identity = IdentityOp { n: op.cols };
+        match metric {
+            false => lsmr(op, b, 1e-4, 100, None),
+            true => mlsmr(op, b, &identity, 1e-4, 100, MlsmrOptions::default()),
+        }
+        .expect("scaled solve")
+    };
     // Conditioned well enough that one rounding apart stays far below the checked agreement.
     let op = DenseOp::vandermonde(30, 6);
     // A sawtooth no low-degree polynomial fits keeps the residual far above the tolerance.

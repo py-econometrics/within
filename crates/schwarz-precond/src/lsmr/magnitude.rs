@@ -71,7 +71,17 @@ impl Div for Magnitude {
     }
 }
 
-/// `2^e` for a normal exponent, built from its bits since `powi`'s precision is unspecified.
+/// `⌊log₂ x⌋` of a positive finite `x`, subnormal included.
+pub(super) fn exponent(x: f64) -> i32 {
+    Magnitude::from(x).e
+}
+
+/// `x · 2^k` for `|k| ≤ 2044`, in two steps since `2^k` alone may not be a double.
+pub(super) fn ldexp(x: f64, k: i32) -> f64 {
+    x * pow2(k / 2) * pow2(k - k / 2)
+}
+
+/// `2^e` for a normal exponent, built from its bits since `powi` underflows on the way there.
 fn pow2(e: i32) -> f64 {
     debug_assert!((f64::MIN_EXP - 1..f64::MAX_EXP).contains(&e));
     f64::from_bits(((e + 1023) as u64) << 52)
