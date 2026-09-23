@@ -4,14 +4,13 @@ use rstest::rstest;
 use super::super::bidiag::{BidiagStep, Bidiagonalization};
 use super::super::recurrence::ConvergenceCriteria;
 use super::super::{
-    lsmr_from_bidiag, EscalationHandler, EscalationPolicy, LsmrResult, LsmrStopReason,
-    NormalEqReference,
+    lsmr_from_bidiag, mlsmr, EscalationHandler, EscalationPolicy, LsmrResult, LsmrStopReason,
+    MlsmrOptions, NormalEqReference,
 };
-use crate::lsmr::fixtures::FixedIterations;
+use crate::lsmr::fixtures::{DenseOp, DiagOp, FixedIterations};
 use crate::SolveError;
 
-/// Stops on ResidualTolerance at the first step of every pass; `true_residuals` scripts what
-/// the check then sees, one entry per pass.
+/// Stops on ResidualTolerance at every pass's first step; `true_residuals` scripts each check.
 struct ScriptedStream<'a> {
     v: Vec<f64>,
     true_residuals: std::iter::Copied<std::slice::Iter<'a, f64>>,
@@ -94,8 +93,7 @@ fn a_stop_the_true_residual_confirms_is_certified(#[case] true_residual: f64) {
     assert_eq!(r.residual_norm, true_residual);
 }
 
-/// The stream's `v` is constant, so each pass adds the same correction: the restart's pass
-/// builds on the refuted iterate rather than starting over.
+/// `v` is constant, so each pass adds the same correction on top of the refuted iterate.
 #[test]
 fn a_refuted_stop_restarts_from_its_iterate() {
     let r = scripted_run(&[1.0, 1e-12], 5, None);
@@ -113,11 +111,11 @@ fn restarts_are_capped_before_the_stop_is_refused() {
     assert_eq!(r.stop_reason, LsmrStopReason::FalseConvergence);
     assert_eq!(r.iterations, 3);
     assert_eq!(r.residual_norm, 1.0);
+    assert_eq!(r.normal_eq_residual, 1.0);
     assert_eq!(r.x, vec![3.0, 6.0]);
 }
 
-/// A refuted stop on the last permitted iteration, or a residual that is not a number at all,
-/// has nothing to restart with.
+/// A spent budget or a non-numeric residual leaves nothing to restart with.
 #[rstest]
 #[case::budget_exhausted(1.0, 1)]
 #[case::non_finite_residual(f64::NAN, 5)]
@@ -126,10 +124,34 @@ fn a_refuted_stop_without_a_restart_is_refused(#[case] true_residual: f64, #[cas
     assert!(!r.converged);
     assert_eq!(r.stop_reason, LsmrStopReason::FalseConvergence);
     assert_eq!(r.iterations, 1);
+    // The scripted restart seeds `(1, 1)`: the refuted iterate's `‖Âᵀr‖`, not the claimed 0.
+    let expected = if true_residual.is_finite() {
+        1.0
+    } else {
+        true_residual
+    };
+    assert_eq!(r.normal_eq_residual.to_bits(), expected.to_bits());
 }
 
-/// A zero or overflowed `‖Aᵀb‖` cannot replace the stream's own `ζ̄₀`, and never divides.
-/// `step1 = (2, 1)` makes that fallback `2`, so an unusable reference reports `1.0 / 2`.
+/// `x₀ + Δx` cancels to `x = 0` on the only step allowed, so the stop is refused unrestarted.
+#[rstest]
+fn a_refused_stop_reports_its_iterates_normal_equation_residual(#[values(1.0, 4.0)] m_inv: f64) {
+    let op = DenseOp {
+        rows: 1,
+        cols: 1,
+        data: vec![1.0],
+    };
+    let options = MlsmrOptions {
+        warm_start: Some(&[1e20]),
+        ..Default::default()
+    };
+    let r = mlsmr(&op, &[1.0], &DiagOp(vec![m_inv]), 1e-12, 1, options).expect("solve");
+    assert_eq!(r.stop_reason, LsmrStopReason::FalseConvergence);
+    assert_eq!(r.x, vec![0.0]);
+    assert_eq!(r.normal_eq_residual, 1.0);
+}
+
+/// An unusable `‖Aᵀb‖` falls back to `ζ̄₀ = 2` from `step1 = (2, 1)`, reporting `1.0 / 2`.
 #[rstest]
 #[case::usable(4.0, 0.25)]
 #[case::zero(0.0, 0.5)]
@@ -179,8 +201,7 @@ fn the_backward_error_survives_the_ends_of_the_range(
     }
 }
 
-/// A restarted pass re-seeds `ζ̄₀`, so the drops it reports are not comparable to the refuted
-/// pass's: it takes a fresh handler rather than inheriting a `previous` from before the restart.
+/// A restart re-seeds `ζ̄₀`, so its drops need a fresh handler, not the refuted pass's `previous`.
 #[test]
 fn a_restarted_pass_gets_its_own_escalation_handler() {
     let policy = CountingPolicy::default();

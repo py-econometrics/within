@@ -40,7 +40,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - A design carrying varying slopes on two distinct factors could fail preconditioner construction with `matrix is not symmetric`, when rounding left the two triangles of the exact Schur complement unequal (#229).
 - A `design` that is neither a 2-D `uint32` array nor a list of `Effect` raised `ValueError` where the documented type is `TypeError`, and `AdditiveSchwarz` accepted a wrong-type `local_solver` at construction, deferring the `TypeError` to solve time (#248).
-- LSMR no longer certifies a stop it has not solved. Tolerance stops are audited against the true residual, a non-finite `α`, `β`, `⟨v, Mv⟩`, or `‖b‖` fails with `SolveError::InvalidInput`, and an overflowing or subnormal `‖A‖` no longer zeroes the normal-equation ratio; a failed check reports `LsmrStopReason::FalseConvergence` with `converged = false` (#290, #297, #303, #362).
+- LSMR no longer certifies a stop whose recurrence estimates collapsed. Tolerance stops are checked against `‖b − A x‖`, a non-finite `α`, `β`, `⟨v, Mv⟩`, or `‖b‖` fails with `SolveError::InvalidInput`, and an overflowing or subnormal `‖A‖` no longer zeroes the normal-equation ratio; a failed check reports `LsmrStopReason::FalseConvergence` with `converged = false` and the returned iterate's normal-equation residual (#290, #297, #303, #362).
 - A warm-started solve measures its residuals against the original `b`, including at a budget stop and where `‖Aᵀb‖²` overflows.
 - An `α` or `β` whose square underflows is recovered from a scaled norm, where LSMR reported `x = 0` converged.
 - LSMR's solution update no longer drops out when `‖A‖` is small (`≈ 1e-9`) or beyond `1e±154`, where it reported `x = 0` converged.

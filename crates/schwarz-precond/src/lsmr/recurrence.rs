@@ -312,8 +312,7 @@ impl ConvergenceCriteria {
         }
     }
 
-    /// The widest `|‖b − A x‖ − ‖r_k‖|` an honest tolerance stop shows: estimate drift is O(ε),
-    /// a collapsed recurrence misses by orders (cf. van der Vorst & Ye, SISC 22(3), 2000).
+    /// Honest estimate drift is O(ε); a collapsed one misses by orders (van der Vorst & Ye 2000).
     fn residual_gap(&self) -> f64 {
         CERTIFICATION_SLACK * self.abs_tol
     }
@@ -323,9 +322,7 @@ impl ConvergenceCriteria {
         (recomputed - estimate).abs() <= self.residual_gap()
     }
 
-    /// At `α₁ = 0` the metric reports no gradient. One it annihilated certifies the start only
-    /// through the residual, or the backward error against a lower bound on `‖A‖`, which can
-    /// only overstate it.
+    /// An annihilated `α₁` certifies via the residual, or via a lower `‖A‖` bound that overstates.
     pub(super) fn corroborates(&self, normr: f64, normar: f64, a_norm_below: f64) -> bool {
         normr <= self.residual_gap()
             || backward_error(normar, a_norm_below, normr) <= CERTIFICATION_SLACK * self.rel_tol

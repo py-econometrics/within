@@ -303,11 +303,9 @@ pub(super) trait Bidiagonalization {
     fn v(&self) -> &[f64];
     /// `‖rhs − A x‖`, staging `rhs − A x` for [`restart`](Self::restart); clobbers the stream.
     fn residual_norm(&mut self, x: &[f64], rhs: &[f64]) -> Result<f64, SolveError>;
-    /// Seed a fresh sequence from the staged residual and the `β₁` that
-    /// [`residual_norm`](Self::residual_norm) returned for it.
+    /// Seed a fresh sequence from the staged residual and the `β₁` `residual_norm` returned.
     fn restart(&mut self, beta: f64) -> Result<BidiagStep, SolveError>;
-    /// After `α₁ = 0`: `Some(‖Aᵀ rhs‖ / ‖rhs‖)` when the metric annihilated a nonzero gradient.
-    /// A stream with no metric has nowhere to hide one.
+    /// After `α₁ = 0`: `Some(‖Aᵀ rhs‖ / ‖rhs‖)` when a metric annihilated a nonzero gradient.
     fn hidden_gradient(&mut self) -> Result<Option<f64>, SolveError> {
         Ok(None)
     }

@@ -43,8 +43,7 @@ pub(crate) fn vec_norm(v: &[f64]) -> f64 {
 pub struct LsmrResult {
     /// Solution vector.
     pub x: Vec<f64>,
-    /// Whether the solver converged within the tolerance. A tolerance stop is held against
-    /// `‖b − A x‖`, which audits the recurrence and not `M`'s nonsingularity.
+    /// Whether a tolerance stop matched `‖b − A x‖`, which misses drift within `range(A)`.
     pub converged: bool,
     /// Total number of iterations performed.
     pub iterations: usize,
@@ -69,8 +68,7 @@ pub enum LsmrStopReason {
     NormalEquationTolerance,
     /// The warm start already solved the system: `b − A x0` was exactly zero.
     WarmStartExact,
-    /// A tolerance stop the true residual refuted, as were the restarts from it: the recurrence
-    /// estimates had collapsed.
+    /// A tolerance stop, and each restart from it, that `‖b − A x‖` refuted.
     FalseConvergence,
     /// The iteration budget was exhausted before convergence.
     MaxIterations,
@@ -247,9 +245,7 @@ pub fn lsmr<A: Operator + ?Sized>(
     lsmr_from_bidiag(bidiag, step1, b, None, criteria, maxiter, None)
 }
 
-/// Preconditioned LSMR with `M ≈ AᵀA` and one `M⁻¹` application per iteration.
-///
-/// `M⁻¹` must be nonsingular; a direction it annihilates can be reported converged unsolved.
+/// Preconditioned LSMR with `M ≈ AᵀA`, one `M⁻¹` apply per iteration; `M⁻¹` must be nonsingular.
 pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
     operator: &A,
     b: &[f64],
@@ -343,8 +339,7 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
 /// Restarts from a refuted tolerance stop before the solve is refused outright.
 const MAX_RESTARTS: usize = 2;
 
-/// `‖Aᵀb‖` in the stream's metric: the denominator every reported normal-equation residual
-/// divides by, fixed for the solve so a restart reports against the same quantity as pass 1.
+/// `‖Aᵀb‖` in the stream's metric, fixed for the solve so every pass reports against it.
 #[derive(Clone, Copy)]
 struct NormalEqReference(f64);
 
@@ -368,17 +363,13 @@ impl NormalEqReference {
     }
 }
 
-/// A warm start, paired with the `‖Aᵀb‖` it costs the solve: the stream is seeded from
-/// `b − A x₀`, so the first `(α₁, β₁)` measures that residual and not `b`.
+/// A warm start and its `‖Aᵀb‖`, since the stream's `(α₁, β₁)` measures `b − A x₀` instead.
 struct WarmStart<'a> {
     x0: &'a [f64],
     reference: NormalEqReference,
 }
 
-/// Runs the LSMR recurrences over a preconditioner-specific bidiagonalization stream.
-///
-/// The stream solves for the correction to `x0`; results are in terms of `b`. A tolerance stop
-/// is held against the true residual, and a stop it refutes restarts the stream from the iterate.
+/// Runs LSMR on the correction to `x0`, restarting from any tolerance stop `b − A x` refutes.
 fn lsmr_from_bidiag<B: Bidiagonalization>(
     mut bidiag: B,
     mut step1: BidiagStep,
@@ -493,6 +484,13 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
             }
             if !result.converged {
                 result.stop_reason = LsmrStopReason::FalseConvergence;
+                // The estimate is the refuted claim; a seed from the staged residual measures `x`.
+                result.normal_eq_residual = if residual_norm.is_finite() {
+                    let step = bidiag.restart(residual_norm)?;
+                    reference.relative(step.alpha * step.beta)
+                } else {
+                    residual_norm
+                };
             }
             result.residual_norm = residual_norm;
         }
