@@ -351,12 +351,13 @@ impl ConvergenceState {
 
     /// Check both stop criteria against the current scalar state.
     pub(super) fn check(&self, r: &LsmrRecurrenceState) -> Stop {
-        if r.residual_estimate() <= self.criteria.abs_tol {
+        let unit_residual = r.unit_residual();
+        if r.rhs_norm * unit_residual <= self.criteria.abs_tol {
             return Stop::ResidualTolerance;
         }
         // The stream's own backward error; `β₁` cancels, so the `u₁` form stays in range.
         let normar = Magnitude::from(r.normal_eq_qr.normar());
-        let ratio = backward_error(normar, self.a_norm, r.unit_residual());
+        let ratio = backward_error(normar, self.a_norm, unit_residual);
         if ratio <= self.criteria.rel_tol {
             return Stop::NormalEquationTolerance;
         }
@@ -364,8 +365,7 @@ impl ConvergenceState {
     }
 }
 
-/// `‖Aᵀr‖ / (‖A‖‖r‖)`, refusing outright on a denominator carrying no information: clamping one
-/// up would flatter the ratio into certifying an unsolved stop.
+/// `‖Aᵀr‖ / (‖A‖‖r‖)`; an uninformative denominator refuses, since clamping it would certify.
 pub(super) fn backward_error(normar: Magnitude, a_norm: f64, residual: f64) -> f64 {
     if !(a_norm > 0.0 && a_norm.is_finite() && residual > 0.0 && residual.is_finite()) {
         return f64::INFINITY;

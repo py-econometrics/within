@@ -366,7 +366,7 @@ impl NormalEqReference {
 
     /// A vanished reference divides as the smallest normal instead.
     fn relative(self, estimate: Magnitude) -> f64 {
-        let reference = if self.0 > Magnitude::ZERO {
+        let reference = if self.0.is_normal() {
             self.0
         } else {
             Magnitude::from(f64::MIN_POSITIVE)

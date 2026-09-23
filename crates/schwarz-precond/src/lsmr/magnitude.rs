@@ -1,31 +1,28 @@
 //! Norms as `m · 2^e`, for comparing gradients of problems whose scales share no range.
 
-use std::cmp::Ordering;
-use std::ops::{Div, Mul};
+use std::ops::Div;
 
 /// A nonnegative `m · 2^e`, `m ∈ [1, 2)`, zero or non-finite, for expressions a few factors deep.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy)]
 pub(super) struct Magnitude {
     m: f64,
     e: i32,
 }
 
 impl Magnitude {
-    pub(super) const ZERO: Self = Self { m: 0.0, e: 0 };
-
     /// `a · b`, exact in exponent where the `f64` product would over- or underflow.
     pub(super) fn product(a: f64, b: f64) -> Self {
-        Self::from(a) * Self::from(b)
+        let (a, b) = (Self::from(a), Self::from(b));
+        Self::normalized(a.m * b.m, a.e + b.e)
     }
 
     /// The nearest `f64`, saturating to 0 or ∞; a subnormal result rounds a second time.
     pub(super) fn to_f64(self) -> f64 {
-        if !self.m.is_normal() || self.e >= f64::MAX_EXP {
-            return if self.m.is_normal() {
-                f64::INFINITY
-            } else {
-                self.m
-            };
+        if !self.m.is_normal() {
+            return self.m;
+        }
+        if self.e >= f64::MAX_EXP {
+            return f64::INFINITY;
         }
         if self.e >= f64::MIN_EXP - 1 {
             return self.m * pow2(self.e);
@@ -67,27 +64,10 @@ impl From<f64> for Magnitude {
     }
 }
 
-impl Mul for Magnitude {
-    type Output = Self;
-    fn mul(self, rhs: Self) -> Self {
-        Self::normalized(self.m * rhs.m, self.e + rhs.e)
-    }
-}
-
 impl Div for Magnitude {
     type Output = Self;
     fn div(self, rhs: Self) -> Self {
         Self::normalized(self.m / rhs.m, self.e - rhs.e)
-    }
-}
-
-impl PartialOrd for Magnitude {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        if self.m.is_normal() && other.m.is_normal() {
-            return Some(self.e.cmp(&other.e).then(self.m.total_cmp(&other.m)));
-        }
-        // 0, ∞ and NaN order against any `m ∈ [1, 2)` as they do against its value.
-        self.m.partial_cmp(&other.m)
     }
 }
 
@@ -144,16 +124,10 @@ mod tests {
     }
 
     #[test]
-    fn the_order_is_the_value_order() {
-        let tiny = Magnitude::product(1e-300, 1e-300);
-        let huge = Magnitude::product(1e300, 1e300);
-        assert!(Magnitude::ZERO < tiny && tiny < Magnitude::from(1.0));
-        assert!(Magnitude::from(1.0) < huge && huge < Magnitude::from(f64::INFINITY));
-        assert!(Magnitude::from(1.5) > Magnitude::from(1.25));
-        assert_eq!(tiny.to_f64(), 0.0);
-        assert_eq!(huge.to_f64(), f64::INFINITY);
-        assert!(Magnitude::from(f64::NAN)
-            .partial_cmp(&Magnitude::ZERO)
-            .is_none());
+    fn an_out_of_range_value_saturates() {
+        assert!(Magnitude::product(1e-300, 1e-300).is_normal());
+        assert_eq!(Magnitude::product(1e-300, 1e-300).to_f64(), 0.0);
+        assert_eq!(Magnitude::product(1e300, 1e300).to_f64(), f64::INFINITY);
+        assert!(Magnitude::from(f64::NAN).to_f64().is_nan());
     }
 }
