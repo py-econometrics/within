@@ -15,7 +15,8 @@ use std::borrow::Cow;
 
 use crate::{Operator, SolveError};
 use bidiag::{
-    residual_into, BidiagStep, Bidiagonalization, Certificate, GolubKahan, ModifiedGolubKahan,
+    axpby, metric_gradient_norm, residual_into, BidiagStep, Bidiagonalization, GolubKahan,
+    ModifiedGolubKahan,
 };
 use recurrence::{ConvergenceCriteria, LsmrRecurrenceState, RotationStep, SolutionState, Stop};
 
@@ -42,13 +43,14 @@ pub(crate) fn vec_norm(v: &[f64]) -> f64 {
 pub struct LsmrResult {
     /// Solution vector.
     pub x: Vec<f64>,
-    /// Whether the solver converged within the tolerance.
+    /// Whether the solver converged within the tolerance. A tolerance stop is held against
+    /// `‖b − A x‖`, which audits the recurrence and not `M`'s nonsingularity.
     pub converged: bool,
     /// Total number of iterations performed.
     pub iterations: usize,
-    /// Final residual norm estimate `‖b − A x‖`.
+    /// `‖b − A x‖`: recomputed at a tolerance stop, the recurrence's estimate at any other.
     pub residual_norm: f64,
-    /// Per-run relative normal-equation residual, measured in `M`'s metric when preconditioned.
+    /// `‖Âᵀ(b − A x)‖ / ‖Âᵀb‖`, measured in `M`'s metric when preconditioned.
     pub normal_eq_residual: f64,
     /// Reason the solver stopped.
     pub stop_reason: LsmrStopReason,
@@ -67,7 +69,8 @@ pub enum LsmrStopReason {
     NormalEquationTolerance,
     /// The warm start already solved the system: `b − A x0` was exactly zero.
     WarmStartExact,
-    /// A tolerance stop refuted by the true-residual audit; the recurrence estimates had collapsed.
+    /// A tolerance stop the true residual refuted, as were the restarts from it: the recurrence
+    /// estimates had collapsed.
     FalseConvergence,
     /// The iteration budget was exhausted before convergence.
     MaxIterations,
@@ -245,6 +248,8 @@ pub fn lsmr<A: Operator + ?Sized>(
 }
 
 /// Preconditioned LSMR with `M ≈ AᵀA` and one `M⁻¹` application per iteration.
+///
+/// `M⁻¹` must be nonsingular; a direction it annihilates can be reported converged unsolved.
 pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
     operator: &A,
     b: &[f64],
@@ -313,145 +318,186 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
         });
     }
 
+    // `‖Aᵀb‖` must be taken before the stream exists: the stream's own query clobbers `v₁`.
+    let metric = match warm_start {
+        None => None,
+        Some(_) => Some(metric_gradient_norm(
+            operator,
+            preconditioner,
+            b,
+            &mut vec![0.0; n],
+            &mut vec![0.0; n],
+        )?),
+    };
     let (bidiag, step1) =
         ModifiedGolubKahan::init(operator, preconditioner, &rhs, rhs_norm, local_size)?;
+    let warm_start = warm_start.zip(metric).map(|(x0, metric)| WarmStart {
+        x0,
+        reference: NormalEqReference::warm(metric, step1),
+    });
     let reference_norm = if b_norm > 0.0 { b_norm } else { rhs_norm };
     let criteria = ConvergenceCriteria::new(reference_norm, tol);
-    lsmr_from_bidiag(
-        bidiag,
-        step1,
-        b,
-        warm_start,
-        criteria,
-        maxiter,
-        escalation.map(|policy| policy.handler()),
-    )
+    lsmr_from_bidiag(bidiag, step1, b, warm_start, criteria, maxiter, escalation)
 }
 
-/// A warm-started stream measures its references from the correction's own residual, so a cold
-/// certificate restores them in terms of `rhs`.
-fn audit_against_rhs<B: Bidiagonalization>(
-    bidiag: &mut B,
-    x: &[f64],
-    rhs: &[f64],
-    x0: Option<&[f64]>,
-) -> Result<Certificate, SolveError> {
-    let cold = x0
-        .map(|_| bidiag.certify(&vec![0.0; x.len()], rhs))
-        .transpose()?;
-    let mut cert = bidiag.certify(x, rhs)?;
-    if let Some(cold) = &cold {
-        cert.rebase(cold);
+/// Restarts from a refuted tolerance stop before the solve is refused outright.
+const MAX_RESTARTS: usize = 2;
+
+/// `‖Aᵀb‖` in the stream's metric: the denominator every reported normal-equation residual
+/// divides by, fixed for the solve so a restart reports against the same quantity as pass 1.
+#[derive(Clone, Copy)]
+struct NormalEqReference(f64);
+
+impl NormalEqReference {
+    /// A cold stream's first `(α₁, β₁)` is `‖Aᵀb‖` already.
+    fn cold(step1: BidiagStep) -> Self {
+        Self((step1.alpha * step1.beta).abs().max(f64::MIN_POSITIVE))
     }
-    Ok(cert)
+
+    /// A reference that carries no information leaves the stream's own `ζ̄₀` to divide.
+    fn warm(metric: f64, step1: BidiagStep) -> Self {
+        if metric > 0.0 && metric.is_finite() {
+            Self(metric)
+        } else {
+            Self::cold(step1)
+        }
+    }
+
+    fn relative(self, estimate: f64) -> f64 {
+        estimate / self.0
+    }
+}
+
+/// A warm start, paired with the `‖Aᵀb‖` it costs the solve: the stream is seeded from
+/// `b − A x₀`, so the first `(α₁, β₁)` measures that residual and not `b`.
+struct WarmStart<'a> {
+    x0: &'a [f64],
+    reference: NormalEqReference,
 }
 
 /// Runs the LSMR recurrences over a preconditioner-specific bidiagonalization stream.
 ///
-/// The stream solves for the correction to `x0`; results and the audit are in terms of `b`.
+/// The stream solves for the correction to `x0`; results are in terms of `b`. A tolerance stop
+/// is held against the true residual, and a stop it refutes restarts the stream from the iterate.
 fn lsmr_from_bidiag<B: Bidiagonalization>(
     mut bidiag: B,
-    step1: BidiagStep,
+    mut step1: BidiagStep,
     b: &[f64],
-    x0: Option<&[f64]>,
+    warm_start: Option<WarmStart<'_>>,
     criteria: ConvergenceCriteria,
     maxiter: usize,
-    mut escalation: Option<Box<dyn EscalationHandler>>,
+    escalation: Option<&dyn EscalationPolicy>,
 ) -> Result<LsmrResult, SolveError> {
     let n = bidiag.v().len();
-    let total = |mut x: Vec<f64>| {
-        if let Some(x0) = x0 {
-            for (xi, &x0i) in x.iter_mut().zip(x0) {
-                *xi += x0i;
-            }
-        }
-        x
-    };
-    // A metric reporting no gradient at all may be hiding one outside itself.
-    if step1.alpha == 0.0 {
-        let x = total(vec![0.0; n]);
-        let cert = bidiag.certify(&x, b)?;
-        let converged = criteria.corroborated(&cert, || bidiag.operator_norm_below(b))?;
-        let (residual_norm, normal_eq_residual) = cert.residuals();
-        return Ok(LsmrResult {
-            x,
-            converged,
-            iterations: 0,
-            residual_norm,
-            normal_eq_residual,
-            stop_reason: if converged {
-                LsmrStopReason::InitialNormalEquationResidualZero
-            } else {
-                LsmrStopReason::FalseConvergence
-            },
-        });
-    }
-
-    let mut convergence = criteria.start(step1.alpha);
-    let mut recurrence = LsmrRecurrenceState::init(step1);
-    let mut solution = SolutionState::init(bidiag.v());
-    let mut prev_rot = RotationStep::initial();
-
-    let (iterations, stop_reason) = 'run: {
-        for itn in 1..=maxiter {
-            let step = bidiag.step()?;
-            convergence.observe(step);
-            let curr_rot = recurrence.step(step);
-            solution.update(bidiag.v(), curr_rot, prev_rot);
-
-            // The tolerance test catches breakdown when the residual recurrences collapse.
-            if let Some(stop_reason) = match convergence.check(&recurrence) {
-                Stop::Continue => None,
-                Stop::ResidualTolerance => Some(LsmrStopReason::ResidualTolerance),
-                Stop::NormalEquationTolerance => Some(LsmrStopReason::NormalEquationTolerance),
-            } {
-                let x = total(solution.into_x());
-                let cert = audit_against_rhs(&mut bidiag, &x, b, x0)?;
-                let converged = convergence.certified(&cert);
-                let (residual_norm, normal_eq_residual) = cert.residuals();
-                return Ok(LsmrResult {
-                    x,
-                    converged,
-                    iterations: itn,
-                    residual_norm,
-                    normal_eq_residual,
-                    stop_reason: if converged {
-                        stop_reason
-                    } else {
-                        LsmrStopReason::FalseConvergence
-                    },
-                });
-            }
-            if let Some(rule) = escalation.as_deref_mut() {
-                let progress = Progress {
-                    iteration: itn,
-                    normal_eq_residual: recurrence.relative_normal_eq_residual(),
-                };
-                if rule.should_escalate(progress) {
-                    break 'run (itn, LsmrStopReason::Escalated);
+    let reference = warm_start
+        .as_ref()
+        .map_or_else(|| NormalEqReference::cold(step1), |w| w.reference);
+    let mut base: Option<Cow<'_, [f64]>> = warm_start.map(|w| Cow::Borrowed(w.x0));
+    let mut iterations = 0;
+    let mut restarts = 0;
+    loop {
+        // A metric reporting no gradient at all may be hiding one outside itself.
+        if step1.alpha == 0.0 {
+            let x = base.map_or_else(|| vec![0.0; n], Cow::into_owned);
+            let (converged, normal_eq_residual) = match bidiag.hidden_gradient()? {
+                None => (true, 0.0),
+                Some(per_unit_residual) => {
+                    let normar = step1.beta * per_unit_residual;
+                    let plain = bidiag.plain_gradient(b)?;
+                    let a_norm_below = plain / vec_norm(b).max(f64::MIN_POSITIVE);
+                    let informative = plain > 0.0 && plain.is_finite();
+                    (
+                        criteria.corroborates(step1.beta, normar, a_norm_below),
+                        if informative { normar / plain } else { 1.0 },
+                    )
                 }
-            }
-            prev_rot = curr_rot;
+            };
+            return Ok(LsmrResult {
+                x,
+                converged,
+                iterations,
+                residual_norm: step1.beta,
+                normal_eq_residual,
+                stop_reason: if converged {
+                    LsmrStopReason::InitialNormalEquationResidualZero
+                } else {
+                    LsmrStopReason::FalseConvergence
+                },
+            });
         }
-        (maxiter, LsmrStopReason::MaxIterations)
-    };
-    let x = total(solution.into_x());
-    // A warm run's recurrence measures the restart, so only an audit reports against `b`.
-    let (residual_norm, normal_eq_residual) = match x0 {
-        Some(_) => audit_against_rhs(&mut bidiag, &x, b, x0)?.residuals(),
-        None => (
-            recurrence.residual_estimate(),
-            recurrence.relative_normal_eq_residual(),
-        ),
-    };
-    Ok(LsmrResult {
-        x,
-        converged: false,
-        iterations,
-        residual_norm,
-        normal_eq_residual,
-        stop_reason,
-    })
+
+        // A pass reports its drop from its own ζ̄₀, so a restarted one needs a handler that agrees.
+        let mut escalation = escalation.map(EscalationPolicy::handler);
+        let mut convergence = criteria.start(step1.alpha);
+        let mut recurrence = LsmrRecurrenceState::init(step1);
+        let mut solution = SolutionState::init(bidiag.v());
+        let mut prev_rot = RotationStep::initial();
+        let stop_reason = 'pass: {
+            while iterations < maxiter {
+                iterations += 1;
+                let step = bidiag.step()?;
+                convergence.observe(step);
+                let curr_rot = recurrence.step(step);
+                solution.update(bidiag.v(), curr_rot, prev_rot);
+
+                // The tolerance test catches breakdown when the residual recurrences collapse.
+                match convergence.check(&recurrence) {
+                    Stop::Continue => {}
+                    Stop::ResidualTolerance => break 'pass LsmrStopReason::ResidualTolerance,
+                    Stop::NormalEquationTolerance => {
+                        break 'pass LsmrStopReason::NormalEquationTolerance
+                    }
+                }
+                if let Some(rule) = escalation.as_deref_mut() {
+                    let progress = Progress {
+                        iteration: iterations,
+                        normal_eq_residual: recurrence.relative_normal_eq_residual(),
+                    };
+                    if rule.should_escalate(progress) {
+                        break 'pass LsmrStopReason::Escalated;
+                    }
+                }
+                prev_rot = curr_rot;
+            }
+            LsmrStopReason::MaxIterations
+        };
+
+        let mut x = solution.into_x();
+        if let Some(base) = &base {
+            axpby(&mut x, base, 1.0, 1.0);
+        }
+        let mut result = LsmrResult {
+            x,
+            converged: false,
+            iterations,
+            residual_norm: recurrence.residual_estimate(),
+            normal_eq_residual: reference.relative(recurrence.normal_eq_residual_estimate()),
+            stop_reason,
+        };
+        // Only a tolerance stop claims convergence, so only it is worth a true-residual evaluation.
+        if matches!(
+            stop_reason,
+            LsmrStopReason::ResidualTolerance | LsmrStopReason::NormalEquationTolerance
+        ) {
+            let residual_norm = bidiag.residual_norm(&result.x, b)?;
+            result.converged = criteria.corroborates_residual(residual_norm, result.residual_norm);
+            if !result.converged
+                && residual_norm.is_finite()
+                && restarts < MAX_RESTARTS
+                && iterations < maxiter
+            {
+                restarts += 1;
+                step1 = bidiag.restart(residual_norm)?;
+                base = Some(Cow::Owned(result.x));
+                continue;
+            }
+            if !result.converged {
+                result.stop_reason = LsmrStopReason::FalseConvergence;
+            }
+            result.residual_norm = residual_norm;
+        }
+        return Ok(result);
+    }
 }
 
 fn validate_lsmr_inputs<A: Operator + ?Sized>(

@@ -5,11 +5,7 @@
 //! that yield Algorithm 2.8 of Fong & Saunders, advances the `(x, h, h̄)`
 //! solution recurrence, and tracks the dual stopping criterion.
 
-use crate::SolveError;
-
-use super::bidiag::{
-    BidiagStep, Certificate, NormalEquationResidual, LSMR_PAR_THRESHOLD, LSMR_UPDATE_CHUNK,
-};
+use super::bidiag::{BidiagStep, LSMR_PAR_THRESHOLD, LSMR_UPDATE_CHUNK};
 use rayon::iter::{IndexedParallelIterator, ParallelIterator};
 use rayon::prelude::{ParallelSlice, ParallelSliceMut};
 
@@ -76,7 +72,7 @@ impl LsmrRecurrenceState {
                 c_bar: 1.0,
                 s_bar: 0.0,
                 zeta_bar: s1.alpha * s1.beta,
-                zeta0: super::bidiag::reference_norm(s1.alpha, s1.beta),
+                zeta0: (s1.alpha * s1.beta).abs().max(f64::MIN_POSITIVE),
             },
             residual: ResidualChain {
                 beta_d: 0.0,
@@ -101,7 +97,7 @@ impl LsmrRecurrenceState {
         self.residual.normr(self.bidiag_qr.beta_dd)
     }
 
-    fn normal_eq_residual_estimate(&self) -> f64 {
+    pub(super) fn normal_eq_residual_estimate(&self) -> f64 {
         self.normal_eq_qr.normar()
     }
 
@@ -316,29 +312,23 @@ impl ConvergenceCriteria {
         }
     }
 
-    /// The audit left once a stream reports no gradient at all, where the only drop measurable is
-    /// between the two metrics: the reference within each is the numerator itself, or a clamp.
-    /// `a_norm_below` replaces the `‖A‖` the stream never got to estimate; being a lower bound it
-    /// can only overstate the backward error, so it never certifies one the true norm would not.
-    pub(super) fn corroborated(
-        &self,
-        cert: &Certificate,
-        a_norm_below: impl FnOnce() -> Result<f64, SolveError>,
-    ) -> Result<bool, SolveError> {
-        if self.solved(cert) || drops_agree(cert) {
-            return Ok(true);
-        }
-        // Only a metric can hide a direction, and only then is the bound worth an apply.
-        let Some(raw) = cert.normar_raw else {
-            return Ok(false);
-        };
-        Ok(backward_error(raw.norm, a_norm_below()?, cert.normr)
-            <= CERTIFICATION_SLACK * self.rel_tol)
+    /// The widest `|‖b − A x‖ − ‖r_k‖|` an honest tolerance stop shows: estimate drift is O(ε),
+    /// a collapsed recurrence misses by orders (cf. van der Vorst & Ye, SISC 22(3), 2000).
+    fn residual_gap(&self) -> f64 {
+        CERTIFICATION_SLACK * self.abs_tol
     }
 
-    /// The residual alone meets the tolerance, whatever the normal-equation legs report.
-    fn solved(&self, cert: &Certificate) -> bool {
-        cert.normr <= CERTIFICATION_SLACK * self.abs_tol
+    /// Whether the recomputed residual corroborates the recurrence's own estimate.
+    pub(super) fn corroborates_residual(&self, recomputed: f64, estimate: f64) -> bool {
+        (recomputed - estimate).abs() <= self.residual_gap()
+    }
+
+    /// At `α₁ = 0` the metric reports no gradient. One it annihilated certifies the start only
+    /// through the residual, or the backward error against a lower bound on `‖A‖`, which can
+    /// only overstate it.
+    pub(super) fn corroborates(&self, normr: f64, normar: f64, a_norm_below: f64) -> bool {
+        normr <= self.residual_gap()
+            || backward_error(normar, a_norm_below, normr) <= CERTIFICATION_SLACK * self.rel_tol
     }
 }
 
@@ -354,35 +344,22 @@ impl ConvergenceState {
         self.a_norm_sq += s.alpha * s.alpha + s.beta * s.beta;
     }
 
-    /// The stream's own backward error, from its accumulated `‖A‖_F` estimate.
-    fn ne_ratio(&self, residual: f64, normar: f64) -> f64 {
-        backward_error(normar, self.a_norm_sq.sqrt(), residual)
-    }
-
     /// Check both stop criteria against the current scalar state.
     pub(super) fn check(&self, r: &LsmrRecurrenceState) -> Stop {
         let residual = r.residual_estimate();
         if residual <= self.criteria.abs_tol {
             return Stop::ResidualTolerance;
         }
-        if self.ne_ratio(residual, r.normal_eq_residual_estimate()) <= self.criteria.rel_tol {
+        // The stream's own backward error, from its accumulated `‖A‖_F` estimate.
+        let ratio = backward_error(
+            r.normal_eq_residual_estimate(),
+            self.a_norm_sq.sqrt(),
+            residual,
+        );
+        if ratio <= self.criteria.rel_tol {
             return Stop::NormalEquationTolerance;
         }
         Stop::Continue
-    }
-
-    /// True-residual audit of a tolerance stop (cf. van der Vorst & Ye, SISC 22(3), 2000).
-    pub(super) fn certified(&self, cert: &Certificate) -> bool {
-        if self.criteria.solved(cert) {
-            return true;
-        }
-        let rel = CERTIFICATION_SLACK * self.criteria.rel_tol;
-        let dropped = |ne: &NormalEquationResidual| ne.norm <= rel * ne.reference;
-        // `normr → 0` degenerates the ratio test; the drop of `‖Âᵀr‖` vs its start certifies.
-        let metric = dropped(&cert.normar) || self.ne_ratio(cert.normr, cert.normar.norm) <= rel;
-        // A metric that annihilates a direction cannot audit it, so the plain norm must also pass.
-        // `ne_ratio` cannot audit it: its `‖A‖` is preconditioned, so `M⁻¹`'s scale deflates it.
-        metric && (cert.normar_raw.is_none_or(|raw| dropped(&raw)) || drops_agree(cert))
     }
 }
 
@@ -398,13 +375,6 @@ pub(super) fn backward_error(normar: f64, a_norm: f64, residual: f64) -> f64 {
         return normar / denominator;
     }
     normar / a_norm / residual
-}
-
-/// The drop outside the stream's metric against the drop inside it, carrying neither the `A` nor
-/// the `M` scale; vacuous for a stream with no metric to corroborate.
-fn drops_agree(cert: &Certificate) -> bool {
-    cert.normar_raw
-        .is_none_or(|raw| raw.relative() <= CERTIFICATION_SLACK * cert.normar.relative())
 }
 
 /// Collapsed recurrences miss by orders of magnitude; the slack absorbs ordinary estimate drift.

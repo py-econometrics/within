@@ -1,20 +1,23 @@
-//! True-residual audit of tolerance stops.
+//! The true-residual check of tolerance stops, and the restarts it triggers.
 use rstest::rstest;
 
-use super::super::bidiag::{BidiagStep, Bidiagonalization, Certificate, NormalEquationResidual};
+use super::super::bidiag::{BidiagStep, Bidiagonalization};
 use super::super::recurrence::ConvergenceCriteria;
-use super::super::{lsmr_from_bidiag, LsmrStopReason};
+use super::super::{
+    lsmr_from_bidiag, EscalationHandler, EscalationPolicy, LsmrResult, LsmrStopReason,
+    NormalEqReference,
+};
+use crate::lsmr::fixtures::FixedIterations;
 use crate::SolveError;
 
-/// Stream whose first step stops on ResidualTolerance and whose audit is scripted.
-struct ScriptedStream {
+/// Stops on ResidualTolerance at the first step of every pass; `true_residuals` scripts what
+/// the check then sees, one entry per pass.
+struct ScriptedStream<'a> {
     v: Vec<f64>,
-    normr: f64,
-    normar: f64,
-    normar_raw: Option<f64>,
+    true_residuals: std::iter::Copied<std::slice::Iter<'a, f64>>,
 }
 
-impl Bidiagonalization for ScriptedStream {
+impl Bidiagonalization for ScriptedStream<'_> {
     fn step(&mut self) -> Result<BidiagStep, SolveError> {
         // β = 0 zeroes φ̄, so the recurrence claims a converged residual immediately.
         Ok(BidiagStep {
@@ -25,100 +28,122 @@ impl Bidiagonalization for ScriptedStream {
     fn v(&self) -> &[f64] {
         &self.v
     }
-    fn certify(&mut self, _x: &[f64], _rhs: &[f64]) -> Result<Certificate, SolveError> {
-        Ok(Certificate {
-            normr: self.normr,
-            normar: NormalEquationResidual {
-                norm: self.normar,
-                reference: 1.0,
-            },
-            normar_raw: self.normar_raw.map(|norm| NormalEquationResidual {
-                norm,
-                reference: 1.0,
-            }),
+    fn residual_norm(&mut self, _x: &[f64], _rhs: &[f64]) -> Result<f64, SolveError> {
+        Ok(self
+            .true_residuals
+            .next()
+            .expect("a scripted residual per pass"))
+    }
+    fn restart(&mut self, _beta: f64) -> Result<BidiagStep, SolveError> {
+        Ok(BidiagStep {
+            alpha: 1.0,
+            beta: 1.0,
         })
+    }
+    fn plain_gradient(&mut self, _rhs: &[f64]) -> Result<f64, SolveError> {
+        Ok(1.0)
     }
 }
 
-fn scripted_run(normr: f64, normar: f64, normar_raw: Option<f64>) -> super::super::LsmrResult {
+/// Counts the handlers a run asks for, one per pass.
+#[derive(Default)]
+struct CountingPolicy(std::sync::atomic::AtomicUsize);
+
+impl EscalationPolicy for CountingPolicy {
+    fn handler(&self) -> Box<dyn EscalationHandler> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Box::new(FixedIterations(usize::MAX))
+    }
+}
+
+/// `tol = 1e-10` against `‖b‖ = 1`, so the gap an honest stop may show is `1e-8`.
+fn scripted_run(
+    true_residuals: &[f64],
+    maxiter: usize,
+    escalation: Option<&dyn EscalationPolicy>,
+) -> LsmrResult {
     let stream = ScriptedStream {
-        v: vec![0.0; 2],
-        normr,
-        normar,
-        normar_raw,
+        v: vec![1.0, 2.0],
+        true_residuals: true_residuals.iter().copied(),
     };
     let step1 = BidiagStep {
         alpha: 1.0,
         beta: 1.0,
     };
     let criteria = ConvergenceCriteria::new(1.0, 1e-10);
-    lsmr_from_bidiag(stream, step1, &[1.0, 1.0], None, criteria, 5, None).expect("scripted run")
+    lsmr_from_bidiag(
+        stream,
+        step1,
+        &[1.0, 1.0],
+        None,
+        criteria,
+        maxiter,
+        escalation,
+    )
+    .expect("scripted run")
+}
+
+#[rstest]
+#[case::exact(1e-12)]
+#[case::inside_the_gap(1e-9)]
+fn a_stop_the_true_residual_confirms_is_certified(#[case] true_residual: f64) {
+    let r = scripted_run(&[true_residual], 5, None);
+    assert!(r.converged);
+    assert_eq!(r.stop_reason, LsmrStopReason::ResidualTolerance);
+    assert_eq!(r.iterations, 1);
+    assert_eq!(r.residual_norm, true_residual);
+}
+
+/// The stream's `v` is constant, so each pass adds the same correction: the restart's pass
+/// builds on the refuted iterate rather than starting over.
+#[test]
+fn a_refuted_stop_restarts_from_its_iterate() {
+    let r = scripted_run(&[1.0, 1e-12], 5, None);
+    assert!(r.converged);
+    assert_eq!(r.stop_reason, LsmrStopReason::ResidualTolerance);
+    assert_eq!(r.iterations, 2);
+    assert_eq!(r.residual_norm, 1e-12);
+    assert_eq!(r.x, vec![2.0, 4.0]);
 }
 
 #[test]
-fn collapsed_stop_is_refused_by_the_audit() {
-    let r = scripted_run(1.0, 1.0, None);
+fn restarts_are_capped_before_the_stop_is_refused() {
+    let r = scripted_run(&[1.0, 1.0, 1.0], 5, None);
     assert!(!r.converged);
     assert_eq!(r.stop_reason, LsmrStopReason::FalseConvergence);
+    assert_eq!(r.iterations, 3);
     assert_eq!(r.residual_norm, 1.0);
-    assert_eq!(r.normal_eq_residual, 1.0);
+    assert_eq!(r.x, vec![3.0, 6.0]);
 }
 
-#[test]
-fn honest_stop_passes_the_audit() {
-    let r = scripted_run(1e-12, 1e-12, None);
-    assert!(r.converged);
-    assert_eq!(r.stop_reason, LsmrStopReason::ResidualTolerance);
-}
-
-#[test]
-fn near_consistent_stop_certifies_via_the_initial_ne_drop() {
-    // Ratio leg would refuse (1e-12/1e-6 ≫ 100·tol); the drop vs ζ̄₀ = 1 certifies.
-    let r = scripted_run(1e-6, 1e-12, None);
-    assert!(r.converged);
-    assert_eq!(r.stop_reason, LsmrStopReason::ResidualTolerance);
-}
-
-/// A residual already inside the tolerance certifies on its own: here both gradient legs refuse,
-/// the drop being 1e-3 against a reference of 1 and the ratio 1e6.
-#[test]
-fn a_residual_inside_the_tolerance_certifies_without_the_gradient() {
-    let r = scripted_run(1e-9, 1e-3, None);
-    assert!(r.converged);
-    assert_eq!(r.stop_reason, LsmrStopReason::ResidualTolerance);
-}
-
-/// A metric that annihilates part of `Aᵀr` reports it as zero, so the plain norm has to refuse.
-#[test]
-fn a_stop_the_metric_cannot_see_is_refused() {
-    let r = scripted_run(1e-6, 1e-12, Some(1e-6));
+/// A refuted stop on the last permitted iteration, or a residual that is not a number at all,
+/// has nothing to restart with.
+#[rstest]
+#[case::budget_exhausted(1.0, 1)]
+#[case::non_finite_residual(f64::NAN, 5)]
+fn a_refuted_stop_without_a_restart_is_refused(#[case] true_residual: f64, #[case] maxiter: usize) {
+    let r = scripted_run(&[true_residual], maxiter, None);
     assert!(!r.converged);
     assert_eq!(r.stop_reason, LsmrStopReason::FalseConvergence);
+    assert_eq!(r.iterations, 1);
 }
 
-/// A zero or overflowed cold reference cannot replace the stream's own, and never divides.
-#[test]
-fn a_reference_only_moves_to_a_usable_cold_value() {
-    let certificate = |norm: f64, reference: f64| Certificate {
-        normr: 0.0,
-        normar: NormalEquationResidual { norm, reference },
-        normar_raw: None,
+/// A zero or overflowed `‖Aᵀb‖` cannot replace the stream's own `ζ̄₀`, and never divides.
+/// `step1 = (2, 1)` makes that fallback `2`, so an unusable reference reports `1.0 / 2`.
+#[rstest]
+#[case::usable(4.0, 0.25)]
+#[case::zero(0.0, 0.5)]
+#[case::negative(-1.0, 0.5)]
+#[case::overflowed(f64::INFINITY, 0.5)]
+fn a_report_only_moves_to_a_usable_reference(#[case] metric: f64, #[case] expected: f64) {
+    let step1 = BidiagStep {
+        alpha: 2.0,
+        beta: 1.0,
     };
-    for cold in [0.0, -1.0, f64::INFINITY] {
-        let mut cert = certificate(1.0, 4.0);
-        cert.rebase(&certificate(cold, 0.0));
-        assert_eq!(cert.normar.reference, 4.0, "cold reference {cold:e}");
-    }
-    let mut cert = certificate(1.0, 4.0);
-    cert.rebase(&certificate(9.0, 0.0));
-    assert_eq!(cert.normar.reference, 9.0);
-
-    assert!(NormalEquationResidual {
-        norm: 1.0,
-        reference: 0.0
-    }
-    .relative()
-    .is_finite());
+    assert_eq!(
+        NormalEqReference::warm(metric, step1).relative(1.0),
+        expected
+    );
 }
 
 /// `‖Aᵀr‖ / (‖A‖‖r‖)` at the ends of the float range, where the obvious spellings certify an
@@ -152,4 +177,16 @@ fn the_backward_error_survives_the_ends_of_the_range(
             "{ratio:e} vs {expected:e}"
         );
     }
+}
+
+/// A restarted pass re-seeds `ζ̄₀`, so the drops it reports are not comparable to the refuted
+/// pass's: it takes a fresh handler rather than inheriting a `previous` from before the restart.
+#[test]
+fn a_restarted_pass_gets_its_own_escalation_handler() {
+    let policy = CountingPolicy::default();
+    let r = scripted_run(&[1.0, 1e-12], 5, Some(&policy));
+
+    assert!(r.converged);
+    assert_eq!(r.iterations, 2);
+    assert_eq!(policy.0.load(std::sync::atomic::Ordering::Relaxed), 2);
 }
