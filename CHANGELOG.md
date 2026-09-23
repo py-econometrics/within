@@ -43,6 +43,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - A warm-started solve measures its residuals against the original `b`, including when it exhausts its iteration budget, and no longer fails a converged solve when the cold audit's metric product overflows at `‖Aᵀb‖ ≳ 1e154`.
 - An `α` or `β` whose squared form underflows no longer ends the solve: the norm is recovered from its max-scaled form, so `α₁ = √(p̃ᵀ M⁻¹ p̃)` at a representable magnitude is a scale rather than a breakdown, where it previously reported `x = 0` converged at zero iterations.
 - The `(x, h, h̄)` update is no longer suppressed by an absolute `f64::EPSILON` floor on its Givens diagonals, which scale with `‖A‖`; a design with `‖A‖ ≈ 1e-9` dropped the update entirely and reported the resulting `x = 0` as a converged solve. The step factors also divide one diagonal at a time, so a design with `‖A‖` beyond `1e±154`, where `ρρ̄` leaves the double range, is still solved.
+- LSMR's residual estimate, which decides `LsmrStopReason::ResidualTolerance` and is reported at a budget stop, is its own `‖r_k‖` (Fong & Saunders §3.4) rather than LSQR's `|φ̄_k|`. LSQR minimizes `‖r‖` over the same Krylov space, so `|φ̄_k|` understated the residual and a residual-tolerance stop could fire before the iterate met it.
 - A non-finite or negative `ScalingConfig::tolerance` silently disabled the dominance certificate under both failure policies, since every comparison against it is `>`; it is now rejected as `BuildError::InvalidScalingTolerance`.
 
 ### Removed

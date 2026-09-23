@@ -58,10 +58,11 @@ impl RotationStep {
     }
 }
 
-/// LSMR scalar state: the two rotation sequences of Fong & Saunders.
+/// LSMR scalar state: the three rotation sequences of Fong & Saunders.
 pub(super) struct LsmrRecurrenceState {
     bidiag_qr: BidiagQr,
     normal_eq_qr: NormalEqQr,
+    residual: ResidualChain,
 }
 
 impl LsmrRecurrenceState {
@@ -69,7 +70,7 @@ impl LsmrRecurrenceState {
         Self {
             bidiag_qr: BidiagQr {
                 alpha_bar: s1.alpha,
-                phi_bar: s1.beta,
+                beta_dd: s1.beta,
             },
             normal_eq_qr: NormalEqQr {
                 c_bar: 1.0,
@@ -77,18 +78,27 @@ impl LsmrRecurrenceState {
                 zeta_bar: s1.alpha * s1.beta,
                 zeta0: super::bidiag::reference_norm(s1.alpha, s1.beta),
             },
+            residual: ResidualChain {
+                beta_d: 0.0,
+                rho_d: 1.0,
+                tau_tilde: 0.0,
+                theta_tilde: 0.0,
+                zeta: 0.0,
+            },
         }
     }
 
-    /// Advance both rotation sequences by one bidiagonal step.
+    /// Advance all three rotation sequences by one bidiagonal step.
     pub(super) fn step(&mut self, s: BidiagStep) -> RotationStep {
         let qr = self.bidiag_qr.advance(s);
-        self.normal_eq_qr.advance(qr)
+        let rot = self.normal_eq_qr.advance(qr);
+        self.residual.advance(qr.beta_hat, rot);
+        rot
     }
 
-    /// `|φ̄|` — conservative `‖r_k‖` estimate; LSMR's residual is bounded by LSQR's.
+    /// Running estimate of LSMR's own `‖r_k‖`.
     pub(super) fn residual_estimate(&self) -> f64 {
-        self.bidiag_qr.phi_bar.abs()
+        self.residual.normr(self.bidiag_qr.beta_dd)
     }
 
     fn normal_eq_residual_estimate(&self) -> f64 {
@@ -100,28 +110,32 @@ impl LsmrRecurrenceState {
     }
 }
 
-/// `P̂_k`: QR of the lower-bidiagonal `B_k` into `R_k`, carrying `ᾱ_k` and the rotated RHS `φ̄_k`.
+/// `P̂_k`: QR of the lower-bidiagonal `B_k` into `R_k`, carrying `ᾱ_k` and the rotated RHS `β̈_k`.
 struct BidiagQr {
     alpha_bar: f64,
-    /// `φ̄_k`: LSQR's residual, the part of `β₁e₁` that `R_k` leaves unexplained.
-    phi_bar: f64,
+    /// `β̈_k`: LSQR's `φ̄_k`, the part of `β₁e₁` that `R_k` leaves unexplained.
+    beta_dd: f64,
 }
 
-/// One `P̂_k`: the `R_k` column `(ρ_k, θ_{k+1})`.
+/// One `P̂_k`: the `R_k` column `(ρ_k, θ_{k+1})` and the rotated RHS entry `β̂_k`.
 #[derive(Clone, Copy)]
 struct BidiagQrStep {
     rho: f64,
     theta_new: f64,
+    beta_hat: f64,
 }
 
 impl BidiagQr {
     fn advance(&mut self, s: BidiagStep) -> BidiagQrStep {
         let p_hat = Givens::new(self.alpha_bar, s.beta);
-        self.alpha_bar = -p_hat.c * s.alpha;
-        self.phi_bar *= p_hat.s;
+        // Fong & Saunders' sign for `ᾱ`; LSQR's `−c α` would flip `β̂` on every other step.
+        self.alpha_bar = p_hat.c * s.alpha;
+        let beta_hat = p_hat.c * self.beta_dd;
+        self.beta_dd *= -p_hat.s;
         BidiagQrStep {
             rho: p_hat.r,
             theta_new: p_hat.s * s.alpha,
+            beta_hat,
         }
     }
 }
@@ -137,7 +151,7 @@ struct NormalEqQr {
 
 impl NormalEqQr {
     fn advance(&mut self, qr: BidiagQrStep) -> RotationStep {
-        let BidiagQrStep { rho, theta_new } = qr;
+        let BidiagQrStep { rho, theta_new, .. } = qr;
         // `theta_bar` MUST be read before `s̄` is committed, or s̄_k mixes into θ̄_k.
         let theta_bar = self.s_bar * rho;
         let p_bar = Givens::new(self.c_bar * rho, theta_new);
@@ -163,6 +177,42 @@ impl NormalEqQr {
     /// `|ζ̄ₖ| / |ζ̄₀|` — normal-equation residual relative to `‖Aᵀb‖`; the `ζ̄₀` clamp guards it.
     fn relative_normar(&self) -> f64 {
         self.normar() / self.zeta0
+    }
+}
+
+/// Fong & Saunders' third rotation chain `Q̃` (§3.4, as in SciPy's `lsmr`), tracking `‖r_k‖`.
+struct ResidualChain {
+    beta_d: f64,
+    rho_d: f64,
+    tau_tilde: f64,
+    theta_tilde: f64,
+    zeta: f64,
+}
+
+impl ResidualChain {
+    /// `Q̃` triangularizes the second column of `R̄ₖ`; `τ̃` solves the new triangle forward.
+    fn advance(&mut self, beta_hat: f64, rot: RotationStep) {
+        let RotationStep {
+            rho_bar,
+            theta_bar,
+            zeta,
+            ..
+        } = rot;
+
+        let theta_tilde_prev = self.theta_tilde;
+        let q_tilde = Givens::new(self.rho_d, theta_bar);
+        self.theta_tilde = q_tilde.s * rho_bar;
+        self.rho_d = q_tilde.c * rho_bar;
+        self.beta_d = -q_tilde.s * self.beta_d + q_tilde.c * beta_hat;
+
+        self.tau_tilde = ratio(self.zeta - theta_tilde_prev * self.tau_tilde, q_tilde.r);
+        self.zeta = zeta;
+    }
+
+    /// `‖r_k‖ = ‖(β̈ₖ, β̇ₖ − τ̇ₖ)‖`.
+    fn normr(&self, beta_dd: f64) -> f64 {
+        let tau_d = ratio(self.zeta - self.theta_tilde * self.tau_tilde, self.rho_d);
+        f64::hypot(self.beta_d - tau_d, beta_dd)
     }
 }
 

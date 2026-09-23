@@ -542,3 +542,23 @@ fn an_extreme_scale_design_still_gets_its_solution_update(#[case] s: f64) {
         assert!((xi / want - 1.0).abs() < 1e-12, "{:?}", r.x);
     }
 }
+
+/// A budget stop's `‖r_k‖` is the returned iterate's own, not LSQR's `|φ̄_k|`.
+#[rstest]
+fn the_residual_estimate_is_the_iterates_own(#[values(2, 4, 8)] maxiter: usize) {
+    let (op, b) = vandermonde_ls();
+    let r = lsmr(&op, &b, 1e-14, maxiter, None).expect("budget solve");
+    assert_eq!(r.stop_reason, LsmrStopReason::MaxIterations);
+
+    let mut residual = vec![0.0; b.len()];
+    op.apply(&r.x, &mut residual).expect("apply");
+    for (ri, &bi) in residual.iter_mut().zip(&b) {
+        *ri = bi - *ri;
+    }
+    let recomputed = vec_norm(&residual);
+    assert!(
+        (r.residual_norm / recomputed - 1.0).abs() < 1e-8,
+        "estimate {:e} vs recomputed {recomputed:e}",
+        r.residual_norm
+    );
+}
