@@ -166,6 +166,15 @@ impl NormalEqQr {
     }
 }
 
+/// `a / b`, reading an exactly vanished denominator as an empty chain rather than a NaN one.
+fn ratio(a: f64, b: f64) -> f64 {
+    if b == 0.0 {
+        0.0
+    } else {
+        a / b
+    }
+}
+
 /// Vectors carried by the recurrence; `(h, h̄)` let `x` be built without the full `V_k` basis.
 pub(super) struct SolutionState {
     x: Vec<f64>,
@@ -185,24 +194,10 @@ impl SolutionState {
 
     /// One `(x, h, h̄)` step; `v` must be normalized `v_{k+1}` and `prev` carries `(ρ, ρ̄)_{k-1}`.
     pub(super) fn update(&mut self, v: &[f64], curr: RotationStep, prev: RotationStep) {
-        // Denominators are O(1) Givens diagonals, so an absolute `f64::EPSILON` guard suffices.
-        let t_x_denom = curr.rho * curr.rho_bar;
-        let t_x = if t_x_denom.abs() > f64::EPSILON {
-            curr.zeta / t_x_denom
-        } else {
-            0.0
-        };
-        let t_hbar_denom = prev.rho * prev.rho_bar;
-        let t_hbar = if t_hbar_denom.abs() > f64::EPSILON {
-            curr.theta_bar * curr.rho / t_hbar_denom
-        } else {
-            0.0
-        };
-        let t_h = if curr.rho.abs() > f64::EPSILON {
-            curr.theta_new / curr.rho
-        } else {
-            0.0
-        };
+        // One diagonal at a time: `ρρ̄` scales with `‖A‖²` and leaves the double range first.
+        let t_x = ratio(ratio(curr.zeta, curr.rho), curr.rho_bar);
+        let t_hbar = ratio(curr.theta_bar, prev.rho) * ratio(curr.rho, prev.rho_bar);
+        let t_h = ratio(curr.theta_new, curr.rho);
 
         let n = self.x.len();
         debug_assert_eq!(v.len(), n);

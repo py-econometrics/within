@@ -517,3 +517,28 @@ fn a_rescaling_preconditioner_does_not_deflate_the_plain_audit_reference() {
     .expect("rescaled solve");
     assert!(r.converged, "stop_reason: {:?}", r.stop_reason);
 }
+
+/// An absolute `ε` floor on `ρρ̄` would drop the whole update on a design with `‖A‖ ≈ 1e-9`.
+#[test]
+fn a_small_normed_design_still_gets_its_solution_update() {
+    let op = DenseOp {
+        rows: 2,
+        cols: 1,
+        data: vec![1e-9, 0.0],
+    };
+    let r = lsmr(&op, &[1e-5, 1.0], 1e-10, 1, None).expect("small-normed solve");
+    assert!(r.converged, "stop_reason: {:?}", r.stop_reason);
+    assert!((r.x[0] / 1e4 - 1.0).abs() < 1e-9, "{:?}", r.x);
+}
+
+/// `ρρ̄` scales with `‖A‖²`, so it leaves the double range long before `‖A‖` itself does.
+#[rstest]
+#[case::underflowing(1e-163)]
+#[case::overflowing(1e160)]
+fn an_extreme_scale_design_still_gets_its_solution_update(#[case] s: f64) {
+    let r = lsmr(&DiagOp(vec![s, 2.0 * s]), &[1.0, 1.0], 1e-10, 50, None).expect("extreme solve");
+    assert!(r.converged, "stop_reason: {:?}", r.stop_reason);
+    for (xi, want) in r.x.iter().zip([1.0 / s, 0.5 / s]) {
+        assert!((xi / want - 1.0).abs() < 1e-12, "{:?}", r.x);
+    }
+}
