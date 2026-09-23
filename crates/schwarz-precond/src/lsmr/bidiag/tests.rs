@@ -58,8 +58,13 @@ fn an_overflow_after_initialization_is_an_error() {
             Ok(())
         }
     }
-    let (mut bidiag, first) =
-        GolubKahan::init(&OverflowingForward, &[1.0, 1.0], 0).expect("finite init");
+    let (mut bidiag, first) = GolubKahan::init(
+        &OverflowingForward,
+        &[1.0, 1.0],
+        crate::lsmr::vec_norm(&[1.0, 1.0]),
+        0,
+    )
+    .expect("finite init");
     assert!(first.alpha > 0.0);
     let err = bidiag.step().err().expect("an overflowing β was accepted");
     assert!(
@@ -88,7 +93,8 @@ fn local_reorth_keeps_the_window_vectors_orthogonal() {
     // Run the bidiagonalization directly so we can capture v_k after each
     // step. Mirrors the body of `lsmr_from_bidiag` minus the recurrence.
     let collect_vs = |window_size: usize| -> Vec<Vec<f64>> {
-        let (mut bidiag, _) = GolubKahan::init(&op, &b, window_size).expect("init");
+        let (mut bidiag, _) =
+            GolubKahan::init(&op, &b, crate::lsmr::vec_norm(&b), window_size).expect("init");
         let mut vs = vec![bidiag.v().to_vec()];
         for _ in 0..n_iters {
             bidiag.step().expect("step");

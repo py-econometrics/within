@@ -14,7 +14,9 @@ mod tests;
 use std::borrow::Cow;
 
 use crate::{Operator, SolveError};
-use bidiag::{BidiagStep, Bidiagonalization, Certificate, GolubKahan, ModifiedGolubKahan};
+use bidiag::{
+    residual_into, BidiagStep, Bidiagonalization, Certificate, GolubKahan, ModifiedGolubKahan,
+};
 use recurrence::{ConvergenceCriteria, LsmrRecurrenceState, RotationStep, SolutionState, Stop};
 
 /// Euclidean norm of a vector.
@@ -237,7 +239,7 @@ pub fn lsmr<A: Operator + ?Sized>(
     }
 
     let local_size = local_size.unwrap_or(0);
-    let (bidiag, step1) = GolubKahan::init(operator, b, local_size)?;
+    let (bidiag, step1) = GolubKahan::init(operator, b, b_norm, local_size)?;
     let criteria = ConvergenceCriteria::new(b_norm, tol);
     lsmr_from_bidiag(bidiag, step1, b, None, criteria, maxiter, None)
 }
@@ -288,12 +290,11 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
         None => (Cow::Borrowed(b), b_norm),
         Some(x0) => {
             let mut residual = vec![0.0; operator.nrows()];
-            operator.apply(x0, &mut residual)?;
-            for (ri, &bi) in residual.iter_mut().zip(b) {
-                *ri = bi - *ri;
-            }
             // Unlike `b`, the residual is computed: an ∞ entry norms to NaN, read as β₁ = 0 downstream.
-            let norm = finite(vec_norm(&residual), "warm-start residual norm")?;
+            let norm = finite(
+                residual_into(operator, x0, b, &mut residual)?,
+                "warm-start residual norm",
+            )?;
             (Cow::Owned(residual), norm)
         }
     };
@@ -312,7 +313,8 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
         });
     }
 
-    let (bidiag, step1) = ModifiedGolubKahan::init(operator, preconditioner, &rhs, local_size)?;
+    let (bidiag, step1) =
+        ModifiedGolubKahan::init(operator, preconditioner, &rhs, rhs_norm, local_size)?;
     let reference_norm = if b_norm > 0.0 { b_norm } else { rhs_norm };
     let criteria = ConvergenceCriteria::new(reference_norm, tol);
     lsmr_from_bidiag(
