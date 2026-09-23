@@ -23,13 +23,20 @@ fn tight_params() -> LsmrOptions {
     }
 }
 
-/// L2 agreement with a mixed absolute+relative tolerance: returns the actual
-/// discrepancy and the tolerance it must stay under. A near-saturated design
-/// drives the residual (hence `expected`) toward zero, where a purely relative
-/// check amplifies machine-precision noise into a spurious failure; the `atol`
-/// floor absorbs that regime while `rtol` still catches real divergence.
-fn l2_close(actual: &[f64], expected: &[f64]) -> (f64, f64) {
-    const ATOL: f64 = 1e-9;
+/// The stop contract `‖√w r‖ ≤ tol ‖√w y‖` as a bound on the unweighted `‖r‖` a solve may leave.
+fn residual_bound(y: &[f64], w: Option<&[f64]>) -> f64 {
+    let (norm_sq, min_w) = match w {
+        None => (y.iter().map(|v| v * v).sum::<f64>(), 1.0),
+        Some(w) => (
+            y.iter().zip(w).map(|(v, w)| w * v * v).sum::<f64>(),
+            w.iter().copied().fold(f64::INFINITY, f64::min),
+        ),
+    };
+    tight_params().tol * (norm_sq / min_w).sqrt()
+}
+
+/// `(|Δ|, tol)`: two solves agree within their residual bounds `floor`, plus `RTOL` relative.
+fn l2_close(actual: &[f64], expected: &[f64], floor: f64) -> (f64, f64) {
     const RTOL: f64 = 1e-6;
     let num = actual
         .iter()
@@ -38,7 +45,7 @@ fn l2_close(actual: &[f64], expected: &[f64]) -> (f64, f64) {
         .sum::<f64>()
         .sqrt();
     let expected_norm = expected.iter().map(|e| e * e).sum::<f64>().sqrt();
-    (num, ATOL + RTOL * expected_norm)
+    (num, floor + RTOL * expected_norm)
 }
 
 proptest! {
@@ -62,7 +69,8 @@ proptest! {
         prop_assert!(scaled.converged);
 
         let expected: Vec<f64> = base.demeaned.iter().map(|v| c * v).collect();
-        let (num, tol) = l2_close(&scaled.demeaned, &expected);
+        let floor = residual_bound(&y_scaled, None) + c.abs() * residual_bound(&y, None);
+        let (num, tol) = l2_close(&scaled.demeaned, &expected, floor);
         prop_assert!(
             num <= tol,
             "response-scaling equivariance violated: |Δ| = {num:.3e} > tol {tol:.3e} (c={c})"
@@ -90,7 +98,8 @@ proptest! {
         let scaled = solve(cats.view(), &y, Some(w_scaled.as_slice()), &params, &precond).unwrap();
         prop_assert!(scaled.converged);
 
-        let (num, tol) = l2_close(&scaled.demeaned, &base.demeaned);
+        let floor = residual_bound(&y, Some(&w_scaled)) + residual_bound(&y, Some(&w));
+        let (num, tol) = l2_close(&scaled.demeaned, &base.demeaned, floor);
         prop_assert!(
             num <= tol,
             "weight-scaling invariance violated: |Δ| = {num:.3e} > tol {tol:.3e} (k={k})"
@@ -120,7 +129,7 @@ proptest! {
         for (j, y) in ys.iter().enumerate() {
             let single = solve(cats.view(), y, None, &params, &precond).unwrap();
             prop_assert!(single.converged);
-            let (num, tol) = l2_close(batch.demeaned(j), &single.demeaned);
+            let (num, tol) = l2_close(batch.demeaned(j), &single.demeaned, 2.0 * residual_bound(y, None));
             prop_assert!(
                 num <= tol,
                 "batch vs column-wise residual mismatch (column {j}): |Δ| = {num:.3e} > tol {tol:.3e}"
