@@ -1,9 +1,9 @@
 #![allow(dead_code)]
 
-use ndarray::Array2;
+use ndarray::{Array2, ArrayView2};
 use within::config::{LocalSolverConfig, ReductionStrategy, Staleness};
 use within::observation::ObservationFrame;
-use within::{Design, PreconditionerConfig, SolveResult};
+use within::{Channel, CoefficientAddress, Design, PreconditionerConfig, SolveResult};
 
 /// One-level additive Schwarz, pinned so a test names the rung the ladder would escalate to.
 pub fn additive() -> PreconditionerConfig {
@@ -115,6 +115,34 @@ pub fn assert_solutions_close(a: &[f64], b: &[f64], tol: f64) {
         assert!(
             (ai - bi).abs() <= tol,
             "solutions differ at index {i}: {ai} vs {bi} (tol {tol})"
+        );
+    }
+}
+
+/// `demeaned[i] == y[i] − Σ_q x[dof(i, q)]`, the identity every solve path owes its caller.
+pub fn assert_demeaned_is_residual(
+    categories: ArrayView2<u32>,
+    y: &[f64],
+    result: &SolveResult,
+    tol: f64,
+) {
+    for (i, (&yi, &di)) in y.iter().zip(result.demeaned.iter()).enumerate() {
+        let dx: f64 = (0..result.layout.n_terms())
+            .map(|term| {
+                let at = CoefficientAddress {
+                    channel: Channel { term, column: 0 },
+                    level: categories[[i, term]],
+                };
+                result.x[result
+                    .layout
+                    .index(at)
+                    .expect("an observed label has a coefficient")]
+            })
+            .sum();
+        assert!(
+            (di - (yi - dx)).abs() <= tol,
+            "row {i}: demeaned {di} but y − D x is {}",
+            yi - dx
         );
     }
 }

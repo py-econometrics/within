@@ -1,7 +1,9 @@
 use ndarray::Array2;
 use proptest::prelude::*;
-use within::{solve, Channel, CoefficientAddress, LsmrOptions, Solver};
+use within::{solve, LsmrOptions, Solver};
 
+#[path = "common/orchestrate_helpers.rs"]
+mod common;
 #[path = "common/property_strategies.rs"]
 mod strategies;
 use strategies::{any_preconditioner, random_fe_problem_strategy};
@@ -130,33 +132,7 @@ proptest! {
             return Ok(());
         }
 
-        // Manually reconstruct D*x: for each observation, sum the DOF values
-        // for each factor's level.
-        let n_obs = y.len();
-        let n_factors = cats.ncols();
-
-        for i in 0..n_obs {
-            let dx_i: f64 = (0..n_factors)
-                .map(|term| {
-                    let address = CoefficientAddress {
-                        channel: Channel { term, column: 0 },
-                        level: cats[[i, term]],
-                    };
-                    let index = result
-                        .layout
-                        .index(address)
-                        .expect("an observed caller label has a coefficient");
-
-                    result.x[index]
-                })
-                .sum();
-            let expected_demeaned = y[i] - dx_i;
-            prop_assert!(
-                (result.demeaned[i] - expected_demeaned).abs() < 1e-8,
-                "demeaned[{}]: got {}, expected {} (y={}, Dx={})",
-                i, result.demeaned[i], expected_demeaned, y[i], dx_i
-            );
-        }
+        common::assert_demeaned_is_residual(cats.view(), &y, &result, 1e-8);
     }
 
     /// Single-factor problems have a diagonal Gramian. Unpreconditioned LSMR
