@@ -78,6 +78,16 @@ pub(crate) fn gather_apply(
     });
 }
 
+/// Divide an observation-space vector row-wise, undoing the `scale` [`gather_apply`] applied.
+pub(crate) fn unscale(dst: &mut [f64], scale: &[f64]) {
+    debug_assert_eq!(dst.len(), scale.len());
+    for_each_chunk(dst, |chunk, row_start| {
+        for (d, &s) in chunk.iter_mut().zip(&scale[row_start..]) {
+            *d /= s;
+        }
+    });
+}
+
 /// Sweep `dst` in cache-sized chunks, parallel above [`PAR_THRESHOLD`] rows.
 fn for_each_chunk(dst: &mut [f64], kernel: impl Fn(&mut [f64], usize) + Sync) {
     if dst.len() > PAR_THRESHOLD {

@@ -407,7 +407,7 @@ impl<'a> Solver<'a> {
     /// `warnings` / `unidentified`, which the public entry points attach once.
     fn finish(&self, rhs: PreparedRhs<'_>, run: Run) -> RhsSolution {
         let r = run.result;
-        let demeaned = rhs.op.demeaned(&r.x, &rhs.y);
+        let demeaned = rhs.op.demeaned(&r.x, &rhs.y, r.true_residual);
 
         let mut x = r.x;
         if let Some(rp) = &self.prepared.reparam {

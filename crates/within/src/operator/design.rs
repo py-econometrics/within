@@ -13,7 +13,7 @@ mod scatter;
 #[cfg(test)]
 mod tests;
 
-use gather::gather_apply;
+use gather::{gather_apply, unscale};
 use scatter::scatter_apply;
 
 /// Minimum number of rows before scatter/gather loops are parallelized.
@@ -63,14 +63,23 @@ impl<'a> DesignOperator<'a> {
         diag
     }
 
-    /// `y − D x`, unweighted whatever this operator's weights.
-    pub(crate) fn demeaned(&self, x: &[f64], y: &[f64]) -> Vec<f64> {
-        let mut demeaned = vec![0.0; y.len()];
-        gather_apply(self.prepared, x, &mut demeaned, None);
-        for (d, &yi) in demeaned.iter_mut().zip(y) {
-            *d = yi - *d;
+    /// `y − D x`, read off this operator's measured `b − A x` unless a zero weight erased a row.
+    pub(crate) fn demeaned(&self, x: &[f64], y: &[f64], measured: Option<Vec<f64>>) -> Vec<f64> {
+        match (measured, self.prepared.sqrt_weights()) {
+            (Some(residual), None) => residual,
+            (Some(mut residual), Some(sw)) if !sw.contains(&0.0) => {
+                unscale(&mut residual, sw);
+                residual
+            }
+            (measured, _) => {
+                let mut demeaned = measured.unwrap_or_else(|| vec![0.0; y.len()]);
+                gather_apply(self.prepared, x, &mut demeaned, None);
+                for (d, &yi) in demeaned.iter_mut().zip(y) {
+                    *d = yi - *d;
+                }
+                demeaned
+            }
         }
-        demeaned
     }
 
     /// Observation-space RHS `b = W^{1/2} y`; borrows unweighted, owns weighted.
