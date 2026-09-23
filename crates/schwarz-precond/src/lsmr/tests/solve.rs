@@ -528,18 +528,6 @@ fn a_small_normed_design_still_gets_its_solution_update() {
     assert!((r.x[0] / 1e4 - 1.0).abs() < 1e-9, "{:?}", r.x);
 }
 
-/// `ρρ̄` scales with `‖A‖²`, so it leaves the double range long before `‖A‖` itself does.
-#[rstest]
-#[case::underflowing(1e-163)]
-#[case::overflowing(1e160)]
-fn an_extreme_scale_design_still_gets_its_solution_update(#[case] s: f64) {
-    let r = lsmr(&DiagOp(vec![s, 2.0 * s]), &[1.0, 1.0], 1e-10, 50, None).expect("extreme solve");
-    assert!(r.converged, "stop_reason: {:?}", r.stop_reason);
-    for (xi, want) in r.x.iter().zip([1.0 / s, 0.5 / s]) {
-        assert!((xi / want - 1.0).abs() < 1e-12, "{:?}", r.x);
-    }
-}
-
 /// A budget stop's `‖r_k‖` is the returned iterate's own, not LSQR's `|φ̄_k|`.
 #[rstest]
 fn the_residual_estimate_is_the_iterates_own(#[values(2, 4, 8)] maxiter: usize) {
@@ -558,4 +546,58 @@ fn the_residual_estimate_is_the_iterates_own(#[values(2, 4, 8)] maxiter: usize) 
         "estimate {:e} vs recomputed {recomputed:e}",
         r.residual_norm
     );
+}
+
+/// Power-of-two scaling is exact, so an extreme `‖A‖` or `‖b‖` must reproduce the unit-scale solve.
+#[rstest]
+#[case::small_design(-560, 0)]
+#[case::small_product(-560, -470)]
+#[case::large_design(530, 0)]
+#[case::large_product(530, 500)]
+fn a_power_of_two_scaling_reproduces_the_unit_scale_solve(
+    #[case] design_exp: i32,
+    #[case] rhs_exp: i32,
+    #[values(false)] metric: bool,
+) {
+    let solve = |op: &DenseOp, b: &[f64]| {
+        let identity = IdentityOp { n: op.cols };
+        match metric {
+            false => lsmr(op, b, 1e-4, 100, None),
+            true => mlsmr(op, b, &identity, 1e-4, 100, MlsmrOptions::default()),
+        }
+        .expect("scaled solve")
+    };
+    // Conditioned well enough that one rounding apart stays far below the checked agreement.
+    let op = DenseOp::vandermonde(30, 6);
+    // A sawtooth no low-degree polynomial fits keeps the residual far above the tolerance.
+    let b: Vec<f64> = (0..op.rows)
+        .map(|i| (1.0 + i as f64 / 29.0).ln() + 0.1 * (-1f64).powi(i as i32))
+        .collect();
+    let unit = solve(&op, &b);
+    assert_eq!(unit.stop_reason, LsmrStopReason::NormalEquationTolerance);
+
+    let (s, t) = (2f64.powi(design_exp), 2f64.powi(rhs_exp));
+    let scaled_op = DenseOp {
+        data: op.data.iter().map(|a| a * s).collect(),
+        ..op
+    };
+    let scaled_b: Vec<f64> = b.iter().map(|bi| bi * t).collect();
+    let r = solve(&scaled_op, &scaled_b);
+
+    assert_eq!(
+        (r.stop_reason, r.iterations),
+        (unit.stop_reason, unit.iterations)
+    );
+    assert!(r.converged);
+    assert!((r.residual_norm / t / unit.residual_norm - 1.0).abs() < 1e-10);
+    assert!(
+        (r.normal_eq_residual / unit.normal_eq_residual - 1.0).abs() < 1e-6,
+        "{:e} vs {:e}",
+        r.normal_eq_residual,
+        unit.normal_eq_residual
+    );
+    let x_max = unit.x.iter().fold(0.0f64, |m, x| m.max(x.abs()));
+    for (xi, ui) in r.x.iter().zip(&unit.x) {
+        assert!((xi * s / t - ui).abs() < 1e-8 * x_max, "{:?}", r.x);
+    }
 }
