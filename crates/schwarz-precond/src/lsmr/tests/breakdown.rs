@@ -131,17 +131,27 @@ fn a_zero_initial_gradient_the_metric_cannot_see_is_refused(
     assert!((residual / unsolved - 1.0).abs() < 1e-3, "{residual:e}");
 }
 
-/// The exit must not refuse what it cannot measure a drop for. `underflowed_alpha` is converged
-/// by the normal-equation criterion and nothing outside the metric contradicts it — nor may the
-/// metric's own scale decide it, which `scaled_metric` would flip. `inside_residual_tolerance` is
+/// An `α₁` whose product form underflows is a scale to recover, not a breakdown at `x = 0`.
+#[rstest]
+#[case::no_metric(None)]
+#[case::identity_metric(Some(&[1.0, 1.0][..]))]
+#[case::scaled_metric(Some(&[1e-10, 1e-10][..]))]
+fn an_underflowed_alpha_is_a_scale_not_a_breakdown(#[case] m: Option<&[f64]>) {
+    let a = &[0.0, 1.0];
+    let b = &[1e100, 1e-100];
+    let result = zero_initial_gradient(a, m, b, None);
+
+    assert!(result.converged, "{:?}", result.stop_reason);
+    assert_eq!(result.iterations, 1);
+    assert!((result.x[1] / 1e-100 - 1.0).abs() < 1e-9, "{:?}", result.x);
+}
+
+/// The exit must not refuse what it cannot measure a drop for. `inside_residual_tolerance` is
 /// carried by `‖b‖`, which the correction does not touch, and `‖b‖ = 1e6` separates that leg from
 /// the relative tolerance. `meets_normal_equation_tolerance` has only the `‖A‖` bound to go on,
 /// and `exact_warm_start` fails outright if the audit reaches for a cold certificate it cannot
 /// square.
 #[rstest]
-#[case::underflowed_alpha(&[0.0, 1.0], None, &[1e100, 1e-100], None)]
-#[case::underflowed_alpha_identity(&[0.0, 1.0], Some(&[1.0, 1.0][..]), &[1e100, 1e-100], None)]
-#[case::scaled_metric(&[0.0, 1.0], Some(&[1e-10, 1e-10][..]), &[1e100, 1e-100], None)]
 #[case::inside_residual_tolerance(&[1.0, 1.0], Some(&[1.0, 0.0][..]), &[1e6, 1e-5], Some(&[1e6, 0.0][..]))]
 #[case::meets_normal_equation_tolerance(&[1.0, 1e-12], Some(&[1.0, 0.0][..]), &[1.0, 1e-4], Some(&[1.0, 0.0][..]))]
 #[case::exact_warm_start(&[1.0, 0.0], Some(&[1.0, 1.0][..]), &[1e200, 1.0], Some(&[1e200, 0.0][..]))]
