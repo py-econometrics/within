@@ -58,10 +58,76 @@ impl RotationStep {
     }
 }
 
-/// LSMR scalar state: `α̅`/`φ̄` for the LSQR-side chain, `c̅, s̅, ζ̄` for the LSMR-side one.
+/// LSMR scalar state: the two rotation sequences of Fong & Saunders.
 pub(super) struct LsmrRecurrenceState {
+    bidiag_qr: BidiagQr,
+    normal_eq_qr: NormalEqQr,
+}
+
+impl LsmrRecurrenceState {
+    pub(super) fn init(s1: BidiagStep) -> Self {
+        Self {
+            bidiag_qr: BidiagQr {
+                alpha_bar: s1.alpha,
+                phi_bar: s1.beta,
+            },
+            normal_eq_qr: NormalEqQr {
+                c_bar: 1.0,
+                s_bar: 0.0,
+                zeta_bar: s1.alpha * s1.beta,
+                zeta0: super::bidiag::reference_norm(s1.alpha, s1.beta),
+            },
+        }
+    }
+
+    /// Advance both rotation sequences by one bidiagonal step.
+    pub(super) fn step(&mut self, s: BidiagStep) -> RotationStep {
+        let qr = self.bidiag_qr.advance(s);
+        self.normal_eq_qr.advance(qr)
+    }
+
+    /// `|φ̄|` — conservative `‖r_k‖` estimate; LSMR's residual is bounded by LSQR's.
+    pub(super) fn residual_estimate(&self) -> f64 {
+        self.bidiag_qr.phi_bar.abs()
+    }
+
+    fn normal_eq_residual_estimate(&self) -> f64 {
+        self.normal_eq_qr.normar()
+    }
+
+    pub(super) fn relative_normal_eq_residual(&self) -> f64 {
+        self.normal_eq_qr.relative_normar()
+    }
+}
+
+/// `P̂_k`: QR of the lower-bidiagonal `B_k` into `R_k`, carrying `ᾱ_k` and the rotated RHS `φ̄_k`.
+struct BidiagQr {
     alpha_bar: f64,
+    /// `φ̄_k`: LSQR's residual, the part of `β₁e₁` that `R_k` leaves unexplained.
     phi_bar: f64,
+}
+
+/// One `P̂_k`: the `R_k` column `(ρ_k, θ_{k+1})`.
+#[derive(Clone, Copy)]
+struct BidiagQrStep {
+    rho: f64,
+    theta_new: f64,
+}
+
+impl BidiagQr {
+    fn advance(&mut self, s: BidiagStep) -> BidiagQrStep {
+        let p_hat = Givens::new(self.alpha_bar, s.beta);
+        self.alpha_bar = -p_hat.c * s.alpha;
+        self.phi_bar *= p_hat.s;
+        BidiagQrStep {
+            rho: p_hat.r,
+            theta_new: p_hat.s * s.alpha,
+        }
+    }
+}
+
+/// `P̄_k`: QR of `R_kᵀ`, carrying `(c̄, s̄)` and the rotated RHS `ζ̄_k`, `|ζ̄_k| ≈ ‖Aᵀr_k‖`.
+struct NormalEqQr {
     c_bar: f64,
     s_bar: f64,
     zeta_bar: f64,
@@ -69,41 +135,19 @@ pub(super) struct LsmrRecurrenceState {
     zeta0: f64,
 }
 
-impl LsmrRecurrenceState {
-    pub(super) fn init(s1: BidiagStep) -> Self {
-        let zeta_bar = s1.alpha * s1.beta;
-        Self {
-            alpha_bar: s1.alpha,
-            phi_bar: s1.beta,
-            c_bar: 1.0,
-            s_bar: 0.0,
-            zeta_bar,
-            zeta0: super::bidiag::reference_norm(s1.alpha, s1.beta),
-        }
-    }
-
-    /// Construct and apply both rotations for the current step.
-    pub(super) fn step(&mut self, s: BidiagStep) -> RotationStep {
-        let p_hat = Givens::new(self.alpha_bar, s.beta);
-        let theta_new = p_hat.s * s.alpha;
-        let alpha_bar_new = -p_hat.c * s.alpha;
-        let phi_bar_new = p_hat.s * self.phi_bar;
-
-        // `theta_bar` MUST be read before `p_bar.s` is committed, or s̄_k mixes into θ̄_k.
-        let theta_bar = self.s_bar * p_hat.r;
-        let p_bar = Givens::new(self.c_bar * p_hat.r, theta_new);
+impl NormalEqQr {
+    fn advance(&mut self, qr: BidiagQrStep) -> RotationStep {
+        let BidiagQrStep { rho, theta_new } = qr;
+        // `theta_bar` MUST be read before `s̄` is committed, or s̄_k mixes into θ̄_k.
+        let theta_bar = self.s_bar * rho;
+        let p_bar = Givens::new(self.c_bar * rho, theta_new);
         let zeta = p_bar.c * self.zeta_bar;
         // The minus comes from `[[c̄, s̄], [−s̄, c̄]]` acting on `(ζ̄, 0)`.
-        let zeta_bar_new = -p_bar.s * self.zeta_bar;
-
-        self.alpha_bar = alpha_bar_new;
-        self.phi_bar = phi_bar_new;
+        self.zeta_bar *= -p_bar.s;
         self.c_bar = p_bar.c;
         self.s_bar = p_bar.s;
-        self.zeta_bar = zeta_bar_new;
-
         RotationStep {
-            rho: p_hat.r,
+            rho,
             rho_bar: p_bar.r,
             theta_new,
             theta_bar,
@@ -111,19 +155,14 @@ impl LsmrRecurrenceState {
         }
     }
 
-    /// `|φ̄|` — conservative `‖r_k‖` estimate; LSMR's residual is bounded by LSQR's.
-    pub(super) fn residual_estimate(&self) -> f64 {
-        self.phi_bar.abs()
-    }
-
-    /// `|ζ̄|` — running estimate of `‖Aᵀ r_k‖` (Fong & Saunders).
-    fn normal_eq_residual_estimate(&self) -> f64 {
+    /// `|ζ̄ₖ|` — running estimate of `‖Aᵀ r_k‖` (Fong & Saunders).
+    fn normar(&self) -> f64 {
         self.zeta_bar.abs()
     }
 
     /// `|ζ̄ₖ| / |ζ̄₀|` — normal-equation residual relative to `‖Aᵀb‖`; the `ζ̄₀` clamp guards it.
-    pub(super) fn relative_normal_eq_residual(&self) -> f64 {
-        self.normal_eq_residual_estimate() / self.zeta0
+    fn relative_normar(&self) -> f64 {
+        self.normar() / self.zeta0
     }
 }
 
