@@ -315,3 +315,34 @@ fn test_internal_locality_sort_is_transparent(#[case] weighted: bool) {
     common::assert_solutions_close(&sorted.x, &oracle.x, 1e-7);
     common::assert_solutions_close(&sorted.demeaned, &oracle.demeaned, 1e-7);
 }
+
+/// `demeaned` is `y − D x` for the returned `x`, whichever exit produced it.
+#[rstest]
+fn test_demeaned_equals_residual_of_returned_x(
+    #[values(
+        PreconditionerConfig::Off,
+        PreconditionerConfig::Diagonal,
+        common::additive(),
+        common::adaptive()
+    )]
+    precond: PreconditionerConfig,
+    #[values(
+        None,
+        Some(vec![1.0; 5]),
+        Some(vec![0.5, 2.0, 1.0, 3.0, 0.25]),
+        Some(vec![0.0, 2.0, 1.0, 3.0, 0.25])
+    )]
+    weights: Option<Vec<f64>>,
+) {
+    let (categories, y) = categories_and_y();
+    let result = solve(
+        categories.view(),
+        &y,
+        weights.as_deref(),
+        &default_params(),
+        &precond,
+    )
+    .expect("solve");
+
+    common::assert_demeaned_is_residual(categories.view(), &y, &result, 1e-12);
+}

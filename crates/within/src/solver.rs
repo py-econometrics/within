@@ -16,7 +16,6 @@ use crate::channel::CoefficientAddress;
 use crate::config::{LsmrOptions, PreconditionerConfig};
 use crate::domain::collinearity::{detect_collinear_slopes, CollinearSlope};
 use crate::domain::{Design, Effect, PreparedDesign};
-use crate::operator::design::gather_apply;
 use crate::operator::gauge::GaugeConstraint;
 use crate::operator::schwarz::Preconditioner;
 use crate::operator::DesignOperator;
@@ -408,12 +407,7 @@ impl<'a> Solver<'a> {
     /// `warnings` / `unidentified`, which the public entry points attach once.
     fn finish(&self, rhs: PreparedRhs<'_>, run: Run) -> RhsSolution {
         let r = run.result;
-        // Shapes are guaranteed here, so the bare `D x` matvec is infallible.
-        let mut demeaned = vec![0.0; self.prepared.design.n_obs];
-        gather_apply(&self.prepared, &r.x, &mut demeaned, None);
-        for (d, &yi) in demeaned.iter_mut().zip(rhs.y.iter()) {
-            *d = yi - *d;
-        }
+        let demeaned = rhs.op.demeaned(&r.x, &rhs.y);
 
         let mut x = r.x;
         if let Some(rp) = &self.prepared.reparam {
