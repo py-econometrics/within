@@ -39,6 +39,9 @@ impl Bidiagonalization for ScriptedStream<'_> {
             beta: 1.0,
         })
     }
+    fn into_residual(self) -> Vec<f64> {
+        Vec::new()
+    }
     fn plain_gradient(&mut self, _rhs: &[f64]) -> Result<f64, SolveError> {
         Ok(1.0)
     }
@@ -113,6 +116,7 @@ fn restarts_are_capped_before_the_stop_is_refused() {
     assert_eq!(r.residual_norm, 1.0);
     assert_eq!(r.normal_eq_residual, 1.0);
     assert_eq!(r.x, vec![3.0, 6.0]);
+    assert!(r.true_residual.is_none());
 }
 
 /// A spent budget or a non-numeric residual leaves nothing to restart with.
@@ -131,6 +135,7 @@ fn a_refuted_stop_without_a_restart_is_refused(#[case] true_residual: f64, #[cas
         true_residual
     };
     assert_eq!(r.normal_eq_residual.to_bits(), expected.to_bits());
+    assert!(r.true_residual.is_none());
 }
 
 /// `x₀ + Δx` cancels to `x = 0` on the only step allowed, so the stop is refused unrestarted.

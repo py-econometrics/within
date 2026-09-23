@@ -305,6 +305,8 @@ pub(super) trait Bidiagonalization {
     fn residual_norm(&mut self, x: &[f64], rhs: &[f64]) -> Result<f64, SolveError>;
     /// Seed a fresh sequence from the staged residual and the `β₁` `residual_norm` returned.
     fn restart(&mut self, beta: f64) -> Result<BidiagStep, SolveError>;
+    /// Spend the stream for the `rhs − A x` that [`residual_norm`](Self::residual_norm) staged.
+    fn into_residual(self) -> Vec<f64>;
     /// After `α₁ = 0`: `Some(‖Aᵀ rhs‖ / ‖rhs‖)` when a metric annihilated a nonzero gradient.
     fn hidden_gradient(&mut self) -> Result<Option<f64>, SolveError> {
         Ok(None)
@@ -357,6 +359,10 @@ impl<A: Operator + ?Sized> Bidiagonalization for GolubKahan<'_, A> {
 
     fn residual_norm(&mut self, x: &[f64], rhs: &[f64]) -> Result<f64, SolveError> {
         residual_into(self.operator, x, rhs, &mut self.bufs.u)
+    }
+
+    fn into_residual(self) -> Vec<f64> {
+        self.bufs.u
     }
 
     fn restart(&mut self, beta: f64) -> Result<BidiagStep, SolveError> {
@@ -417,6 +423,10 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
 
     fn residual_norm(&mut self, x: &[f64], rhs: &[f64]) -> Result<f64, SolveError> {
         residual_into(self.operator, x, rhs, &mut self.bufs.u)
+    }
+
+    fn into_residual(self) -> Vec<f64> {
+        self.bufs.u
     }
 
     fn restart(&mut self, beta: f64) -> Result<BidiagStep, SolveError> {

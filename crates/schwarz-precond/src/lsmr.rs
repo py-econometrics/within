@@ -53,6 +53,8 @@ pub struct LsmrResult {
     pub normal_eq_residual: f64,
     /// Reason the solver stopped.
     pub stop_reason: LsmrStopReason,
+    /// `b − A x` itself, present only where a tolerance stop recomputed it.
+    pub true_residual: Option<Vec<f64>>,
 }
 
 /// Reason an LSMR solve stopped.
@@ -236,6 +238,7 @@ pub fn lsmr<A: Operator + ?Sized>(
             residual_norm: 0.0,
             normal_eq_residual: 0.0,
             stop_reason: LsmrStopReason::ZeroRhs,
+            true_residual: None,
         });
     }
 
@@ -311,6 +314,7 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
             residual_norm: 0.0,
             normal_eq_residual: 0.0,
             stop_reason,
+            true_residual: None,
         });
     }
 
@@ -414,6 +418,7 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
                 } else {
                     LsmrStopReason::FalseConvergence
                 },
+                true_residual: None,
             });
         }
 
@@ -464,6 +469,7 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
             residual_norm: recurrence.residual_estimate(),
             normal_eq_residual: reference.relative(recurrence.normal_eq_residual_estimate()),
             stop_reason,
+            true_residual: None,
         };
         // Only a tolerance stop claims convergence, so only it is worth a true-residual evaluation.
         if matches!(
@@ -493,6 +499,10 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
                 };
             }
             result.residual_norm = residual_norm;
+            // A refused stop's reseed normalized the staged residual in place.
+            if result.converged {
+                result.true_residual = Some(bidiag.into_residual());
+            }
         }
         return Ok(result);
     }
