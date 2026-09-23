@@ -3,4 +3,5 @@
 mod audit;
 mod breakdown;
 mod ladder;
+mod range;
 mod solve;
