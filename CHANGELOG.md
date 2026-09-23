@@ -41,6 +41,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - A `design` that is neither a 2-D `uint32` array nor a list of `Effect` raised `ValueError` where the documented type is `TypeError`, and `AdditiveSchwarz` accepted a wrong-type `local_solver` at construction, deferring the `TypeError` to solve time (#248).
 - LSMR no longer certifies a stop it has not solved. Tolerance stops are audited against the true residual and outside the preconditioner's metric, a non-finite `α`, `β`, `⟨v, Mv⟩`, or `‖b‖` fails with `SolveError::InvalidInput`, and an overflowing or subnormal `‖A‖` no longer zeroes the normal-equation ratio; a failed check reports `LsmrStopReason::FalseConvergence` with `converged = false` (#290, #297, #303, #362).
 - A warm-started solve measures its residuals against the original `b`, including when it exhausts its iteration budget, and no longer fails a converged solve when the cold audit's metric product overflows at `‖Aᵀb‖ ≳ 1e154`.
+- An `α` or `β` whose squared form underflows no longer ends the solve: the norm is recovered from its max-scaled form, so `α₁ = √(p̃ᵀ M⁻¹ p̃)` at a representable magnitude is a scale rather than a breakdown, where it previously reported `x = 0` converged at zero iterations.
 - A non-finite or negative `ScalingConfig::tolerance` silently disabled the dominance certificate under both failure policies, since every comparison against it is `>`; it is now rejected as `BuildError::InvalidScalingTolerance`.
 
 ### Removed

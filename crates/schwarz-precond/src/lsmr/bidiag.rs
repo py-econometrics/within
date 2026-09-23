@@ -20,9 +20,9 @@ pub(super) const LSMR_PAR_THRESHOLD: usize = 10_000;
 /// Per-worker chunk size: large enough to clear rayon dispatch, small enough to stay L1-resident.
 pub(super) const LSMR_UPDATE_CHUNK: usize = 4096;
 
-/// Fused `y = x + scale · y` returning `‖y_new‖²`; per-chunk partials avoid reduction traffic.
+/// Fused `y = x + scale · y` returning `‖y_new‖`; per-chunk partials avoid reduction traffic.
 #[inline]
-fn axpy_with_sq_norm(y: &mut [f64], x: &[f64], scale: f64) -> f64 {
+fn axpy_with_norm(y: &mut [f64], x: &[f64], scale: f64) -> f64 {
     debug_assert_eq!(x.len(), y.len());
     let seq = |y_c: &mut [f64], x_c: &[f64]| -> f64 {
         let mut s = 0.0;
@@ -33,14 +33,15 @@ fn axpy_with_sq_norm(y: &mut [f64], x: &[f64], scale: f64) -> f64 {
         }
         s
     };
-    if y.len() >= LSMR_PAR_THRESHOLD {
+    let sq = if y.len() >= LSMR_PAR_THRESHOLD {
         y.par_chunks_mut(LSMR_UPDATE_CHUNK)
             .zip(x.par_chunks(LSMR_UPDATE_CHUNK))
             .map(|(y_c, x_c)| seq(y_c, x_c))
             .sum()
     } else {
         seq(y, x)
-    }
+    };
+    norm_from_sq(y, sq)
 }
 
 /// `y = alpha * x + beta * y`. Parallel above the threshold.
@@ -98,21 +99,43 @@ fn par_dot(a: &[f64], b: &[f64]) -> f64 {
 
 /// `α = √⟨v, p̃⟩`; a `vp` negative within `√ε·‖v‖‖p̃‖` clamps to 0, an indefinite `M` raises.
 fn alpha_from_vp(v: &[f64], p_tilde: &[f64]) -> Result<f64, SolveError> {
-    // `vp.max(0.0)` returns 0 for NaN, which α = 0 reports as an exact solve at x = 0.
     let vp = finite(par_dot(v, p_tilde), "⟨v, Mv⟩")?;
-    if vp < 0.0 {
-        let norm_v = finite(super::vec_norm(v), "‖v‖")?;
-        let norm_p = finite(super::vec_norm(p_tilde), "‖p̃‖")?;
-        // Dividing by the smaller norm first keeps the sign decision exact where a product fails.
-        let (small, large) = (norm_v.min(norm_p), norm_v.max(norm_p));
-        if vp / small / large < -f64::EPSILON.sqrt() {
-            return Err(SolveError::InvalidInput {
-                context: "mlsmr",
-                message: "preconditioner not positive definite (⟨v, Mv⟩ < 0)".to_string(),
-            });
-        }
+    if vp.is_normal() && vp > 0.0 {
+        return Ok(vp.sqrt());
     }
-    Ok(vp.max(0.0).sqrt())
+    // `vp` is a product of two norms, so it vanishes and overflows at magnitudes α itself holds.
+    let norm_v = finite(super::vec_norm(v), "‖v‖")?;
+    let norm_p = finite(super::vec_norm(p_tilde), "‖p̃‖")?;
+    if norm_v == 0.0 || norm_p == 0.0 {
+        return Ok(0.0);
+    }
+    // Cauchy–Schwarz bounds the normalized product by 1 however the raw one scales.
+    let unit: f64 = v
+        .iter()
+        .zip(p_tilde)
+        .map(|(x, y)| (x / norm_v) * (y / norm_p))
+        .sum();
+    if unit < -f64::EPSILON.sqrt() {
+        return Err(SolveError::InvalidInput {
+            context: "mlsmr",
+            message: "preconditioner not positive definite (⟨v, Mv⟩ < 0)".to_string(),
+        });
+    }
+    // `unit.max(0.0)` returns 0 for NaN, which α = 0 reports as an exact solve at x = 0.
+    Ok(norm_v.sqrt() * norm_p.sqrt() * unit.max(0.0).sqrt())
+}
+
+/// `‖v‖` from an unscaled `‖v‖²`; an over/underflowed or subnormal sum pays the max-scaled pass.
+fn norm_from_sq(v: &[f64], sq: f64) -> f64 {
+    if sq.is_normal() {
+        sq.sqrt()
+    } else {
+        super::vec_norm(v)
+    }
+}
+
+fn par_norm(v: &[f64]) -> f64 {
+    norm_from_sq(v, par_dot(v, v))
 }
 
 /// Fills `r = rhs − A x` and `atr = Aᵀ r`, returning `‖r‖`.
@@ -325,8 +348,10 @@ fn operator_norm_below<A: Operator + ?Sized>(
 impl<A: Operator + ?Sized> Bidiagonalization for GolubKahan<'_, A> {
     fn step(&mut self) -> Result<BidiagStep, SolveError> {
         self.operator.apply(&self.bufs.v, &mut self.bufs.av)?;
-        let beta_sq = axpy_with_sq_norm(&mut self.bufs.u, &self.bufs.av, -self.alpha);
-        let beta = finite(beta_sq.sqrt(), "β")?;
+        let beta = finite(
+            axpy_with_norm(&mut self.bufs.u, &self.bufs.av, -self.alpha),
+            "β",
+        )?;
         if beta == 0.0 {
             // Lucky breakdown: zero `v` so `solution.update` contributes nothing.
             self.bufs.v.fill(0.0);
@@ -338,14 +363,14 @@ impl<A: Operator + ?Sized> Bidiagonalization for GolubKahan<'_, A> {
 
         self.operator
             .apply_adjoint(&self.bufs.u, &mut self.bufs.atu)?;
-        let mut alpha_sq = axpy_with_sq_norm(&mut self.bufs.v, &self.bufs.atu, -beta);
+        let mut alpha = axpy_with_norm(&mut self.bufs.v, &self.bufs.atu, -beta);
 
         // MGS runs before normalization, so α must be re-derived from the corrected `v`.
         if let Some(reorth) = &self.bufs.local_reorth {
             reorth.reorthogonalize(&mut self.bufs.v);
-            alpha_sq = par_dot(&self.bufs.v, &self.bufs.v);
+            alpha = par_norm(&self.bufs.v);
         }
-        let alpha = finite(alpha_sq.sqrt(), "α")?;
+        let alpha = finite(alpha, "α")?;
         if alpha > 0.0 {
             scale_in_place(&mut self.bufs.v, 1.0 / alpha);
         }
@@ -381,8 +406,7 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
     fn step(&mut self) -> Result<BidiagStep, SolveError> {
         let scale = -(self.alpha * self.beta_prev_inv);
         self.operator.apply(&self.bufs.v, &mut self.bufs.av)?;
-        let beta_sq = axpy_with_sq_norm(&mut self.bufs.u, &self.bufs.av, scale);
-        let beta = finite(beta_sq.sqrt(), "β")?;
+        let beta = finite(axpy_with_norm(&mut self.bufs.u, &self.bufs.av, scale), "β")?;
         if beta == 0.0 {
             // Lucky breakdown: zero `v` and its paired `p̃` so the update contributes nothing.
             self.bufs.v.fill(0.0);
@@ -492,7 +516,7 @@ impl<'a, A: Operator + ?Sized> GolubKahan<'a, A> {
         }
 
         operator.apply_adjoint(&bufs.u, &mut bufs.v)?;
-        let alpha = finite(par_dot(&bufs.v, &bufs.v).sqrt(), "α")?;
+        let alpha = finite(par_norm(&bufs.v), "α")?;
         if alpha > 0.0 {
             scale_in_place(&mut bufs.v, 1.0 / alpha);
         }
