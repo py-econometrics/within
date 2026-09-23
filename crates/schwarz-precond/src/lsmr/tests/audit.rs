@@ -43,7 +43,7 @@ impl Bidiagonalization for ScriptedStream<'_> {
     fn into_residual(self) -> Vec<f64> {
         Vec::new()
     }
-    fn plain_gradient(&mut self, _rhs: &[f64]) -> Result<f64, SolveError> {
+    fn operator_norm_below(&mut self, _rhs: &[f64], _rhs_norm: f64) -> Result<f64, SolveError> {
         Ok(1.0)
     }
 }

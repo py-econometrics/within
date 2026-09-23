@@ -1,6 +1,6 @@
 //! Norms as `m · 2^e`, for comparing gradients of problems whose scales share no range.
 
-use std::ops::Div;
+use std::ops::{Div, Mul};
 
 /// A nonnegative `m · 2^e`, `m ∈ [1, 2)`, zero or non-finite, for expressions a few factors deep.
 #[derive(Clone, Copy)]
@@ -12,8 +12,7 @@ pub(super) struct Magnitude {
 impl Magnitude {
     /// `a · b`, exact in exponent where the `f64` product would over- or underflow.
     pub(super) fn product(a: f64, b: f64) -> Self {
-        let (a, b) = (Self::from(a), Self::from(b));
-        Self::normalized(a.m * b.m, a.e + b.e)
+        Self::from(a) * Self::from(b)
     }
 
     /// The nearest `f64`, saturating to 0 or ∞; a subnormal result rounds a second time.
@@ -54,6 +53,13 @@ impl From<f64> for Magnitude {
         let e = ((bits >> 52) & 0x7ff) as i32 - 1023;
         let m = f64::from_bits((bits & ((1 << 52) - 1)) | (1023 << 52));
         Self { m, e: e + bias }
+    }
+}
+
+impl Mul for Magnitude {
+    type Output = Self;
+    fn mul(self, rhs: Self) -> Self {
+        Self::normalized(self.m * rhs.m, self.e + rhs.e)
     }
 }
 

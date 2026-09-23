@@ -71,6 +71,29 @@ fn a_subnormal_rhs_normalizes_its_first_vector(
     assert_eq!(r.x[1], 0.0);
 }
 
+/// Auditing `x = 0` meets a residual `2^(p−q)` times the correction's, `2^1040` at the corner.
+#[rstest]
+fn a_warm_start_far_below_the_rhs_scale_certifies(
+    #[values(-1000, 0, 1000)] p: i32,
+    #[values(-40, 0)] q: i32,
+    #[values(0.0, 1.0)] rho: f64,
+    #[values(Metric::Identity, Metric::Diagonal)] metric: Metric,
+) {
+    let a = DenseOp {
+        rows: 3,
+        cols: 2,
+        data: vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+    };
+    let (big, small) = (2f64.powi(p), 2f64.powi(q));
+    let b = [big, small, rho * small];
+    let r = solve(&a, &b, metric, None, Some(&[big, 0.0])).expect("warm solve");
+
+    assert!(r.converged, "{:?}", r.stop_reason);
+    assert!((r.x[0] / big - 1.0).abs() < 1e-12, "{:?}", r.x);
+    assert!((r.x[1] / small - 1.0).abs() < 1e-9, "{:?}", r.x);
+    assert!((r.residual_norm - rho * small).abs() <= 1e-9 * small);
+}
+
 /// `⟨v, M⁻¹v⟩` is positive, but its raw terms overflow to `+∞` and `−∞`, which sum to NaN.
 #[test]
 fn a_definite_metric_whose_raw_dot_product_overflows_is_rescaled() {
@@ -163,4 +186,58 @@ fn a_run_past_krylov_exhaustion_never_returns_a_non_finite_x(
             r.x
         );
     }
+}
+
+/// The metric-blind audit bounds `‖A‖` by `Aᵀ(b/‖b‖)`, which a clamped subnormal `‖b‖` deflates.
+#[test]
+fn a_subnormal_rhs_bounds_the_operator_by_its_own_norm() {
+    let a = DenseOp {
+        rows: 3,
+        cols: 2,
+        data: vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+    };
+    let r = mlsmr(
+        &a,
+        &[1e-310, 0.0, 1e-310],
+        &DiagOp(vec![1.0, 0.0]),
+        1e-10,
+        50,
+        MlsmrOptions {
+            warm_start: Some(&[1e-310, 1e-320]),
+            ..Default::default()
+        },
+    )
+    .expect("subnormal-rhs warm solve");
+
+    assert!(r.converged, "{:?}", r.stop_reason);
+    assert_eq!(
+        r.stop_reason,
+        LsmrStopReason::InitialNormalEquationResidualZero
+    );
+}
+
+/// A warm start's reference `‖Aᵀb‖` leaves the double range while `‖A‖` and `‖b‖` do not.
+#[test]
+fn a_warm_reference_past_the_double_range_reports_against_b() {
+    let solve = |s: f64, t: f64| {
+        mlsmr(
+            &DiagOp(vec![s, 2.0 * s]),
+            &[t, t],
+            &IdentityOp { n: 2 },
+            1e-10,
+            1,
+            MlsmrOptions {
+                warm_start: Some(&[0.5 * t / s, 0.0]),
+                ..Default::default()
+            },
+        )
+        .expect("warm solve")
+    };
+    let (unit, scaled) = (solve(1.0, 1.0), solve(2f64.powi(600), 2f64.powi(500)));
+    assert!(
+        (scaled.normal_eq_residual / unit.normal_eq_residual - 1.0).abs() < 1e-12,
+        "{:e} vs {:e}",
+        scaled.normal_eq_residual,
+        unit.normal_eq_residual
+    );
 }

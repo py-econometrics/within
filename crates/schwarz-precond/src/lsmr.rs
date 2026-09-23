@@ -327,6 +327,7 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
             operator,
             preconditioner,
             b,
+            b_norm,
             &mut vec![0.0; n],
             &mut vec![0.0; n],
         )?),
@@ -335,7 +336,7 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
         ModifiedGolubKahan::init(operator, preconditioner, &rhs, rhs_norm, local_size)?;
     let warm_start = warm_start.zip(metric).map(|(x0, metric)| WarmStart {
         x0,
-        reference: NormalEqReference::warm(Magnitude::from(metric), step1),
+        reference: NormalEqReference::warm(metric, step1),
     });
     let reference_norm = if b_norm > 0.0 { b_norm } else { rhs_norm };
     let criteria = ConvergenceCriteria::new(reference_norm, tol);
@@ -401,13 +402,13 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
                 None => (true, 0.0),
                 Some(per_unit_residual) => {
                     let normar = Magnitude::product(step1.beta, per_unit_residual);
-                    let plain = bidiag.plain_gradient(b)?;
-                    let a_norm_below = plain / vec_norm(b).max(f64::MIN_POSITIVE);
-                    let informative = plain > 0.0 && plain.is_finite();
+                    let b_norm = vec_norm(b);
+                    let a_norm_below = bidiag.operator_norm_below(b, b_norm)?;
+                    let plain = Magnitude::product(b_norm, a_norm_below);
                     (
                         criteria.corroborates(step1.beta, normar, a_norm_below),
-                        if informative {
-                            (normar / Magnitude::from(plain)).to_f64()
+                        if plain.is_normal() {
+                            (normar / plain).to_f64()
                         } else {
                             1.0
                         },
