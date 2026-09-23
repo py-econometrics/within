@@ -9,6 +9,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- A tolerance stop is checked with one true-residual evaluation; a refuted one restarts from its iterate, at most twice, before `LsmrStopReason::FalseConvergence`.
 - Python `Effect` lists no longer deep-copy their level and slope buffers during design extraction; the binding borrows them while building off-GIL (#358).
 - Categorical `u32` labels need not be zero-based or contiguous: `Design` compacts observed labels to internal positions and `CoefficientLayout`/`CoefficientAddress` translate back, so gaps in sparse label ranges are neither allocated nor solved for (#228, #268).
 - **BREAKING:** Rust `Solver::new` takes `weights: Option<&[f64]>` instead of `Option<Vec<f64>>`, retaining only `W^{1/2}` in internal observation order. One-shot `solve`/`solve_batch` weights are unchanged.
@@ -18,7 +19,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - **BREAKING:** `schwarz_precond::mlsmr` takes an `MlsmrOptions` in place of its trailing `local_size`.
 - **BREAKING:** `LsmrStopReason` gains `Escalated` and `WarmStartExact`, breaking exhaustive `match`es.
 - A warm start that already solves the system reports `WarmStartExact` instead of `ZeroRhs`.
-- The LSMR true-residual audit of a warm-started stop measures the total solution against the original `b`, anchoring its normal-equation leg to `‖Aᵀb‖` rather than the restart's initial residual; with `b = 0`, tolerances measure against `‖b − A x₀‖`.
+- A warm-started LSMR stop measures the total solution against the original `b`; with `b = 0`, tolerances measure against `‖b − A x₀‖`.
 - **BREAKING:** `ScalingConfig::max_sweeps` is now `max_iterations`, and `BuildWarning::UnscalableComponent` reports `iterations` in place of `sweeps`; the dominance certificate runs reduced CG, not relaxation sweeps.
 - **BREAKING:** The serialized `Preconditioner` wire format moved v12 → v17 (approx-chol 0.5, full construction config, build duration, `LocalSolverConfig::ridge`, and the built map's own Schwarz description in place of the strategy enum); 0.3.0 bytes no longer decode.
 - **BREAKING:** Coefficient addresses use caller-visible `u32` factor labels rather than internal `usize` level positions, affecting `CoefficientAddress::level` and the accepted range of Python coefficient-layout and unidentified-direction levels.
@@ -39,8 +40,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - A design carrying varying slopes on two distinct factors could fail preconditioner construction with `matrix is not symmetric`, when rounding left the two triangles of the exact Schur complement unequal (#229).
 - A `design` that is neither a 2-D `uint32` array nor a list of `Effect` raised `ValueError` where the documented type is `TypeError`, and `AdditiveSchwarz` accepted a wrong-type `local_solver` at construction, deferring the `TypeError` to solve time (#248).
-- LSMR no longer certifies a stop it has not solved. Tolerance stops are audited against the true residual and outside the preconditioner's metric, a non-finite `α`, `β`, `⟨v, Mv⟩`, or `‖b‖` fails with `SolveError::InvalidInput`, and an overflowing or subnormal `‖A‖` no longer zeroes the normal-equation ratio; a failed check reports `LsmrStopReason::FalseConvergence` with `converged = false` (#290, #297, #303, #362).
-- A warm-started solve measures its residuals against the original `b`, including when it exhausts its iteration budget, and no longer fails a converged solve when the cold audit's metric product overflows at `‖Aᵀb‖ ≳ 1e154`.
+- LSMR no longer certifies a stop whose recurrence estimates collapsed. Tolerance stops are checked against `‖b − A x‖`, a non-finite `α`, `β`, `⟨v, Mv⟩`, or `‖b‖` fails with `SolveError::InvalidInput`, and an overflowing or subnormal `‖A‖` no longer zeroes the normal-equation ratio; a failed check reports `LsmrStopReason::FalseConvergence` with `converged = false` and the returned iterate's normal-equation residual (#290, #297, #303, #362).
+- A warm-started solve measures its residuals against the original `b`, including at a budget stop and where `‖Aᵀb‖²` overflows.
 - An `α` or `β` whose square underflows is recovered from a scaled norm, where LSMR reported `x = 0` converged.
 - LSMR's solution update no longer drops out when `‖A‖` is small (`≈ 1e-9`) or beyond `1e±154`, where it reported `x = 0` converged.
 - LSMR's residual estimate is its own `‖r_k‖` rather than LSQR's smaller `|φ̄_k|`, which let `ResidualTolerance` fire before the tolerance was met.

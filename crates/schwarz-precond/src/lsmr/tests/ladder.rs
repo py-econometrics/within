@@ -122,28 +122,6 @@ fn test_mlsmr_zero_rhs_corrects_non_exact_warm_start() {
     assert!(result.iterations > 0);
 }
 
-/// The plain-norm audit must reference `‖Aᵀb‖`, not the warm start's own residual: a far-off `x₀`
-/// inflates that residual without limit, and the bound it buys certifies anything.
-#[test]
-fn a_far_warm_start_does_not_inflate_the_plain_audit_bound() {
-    let x0 = [1.0 + f64::from(1u32 << 20) * f64::from(1u32 << 20), 0.0];
-    let result = mlsmr(
-        &IdentityOp { n: 2 },
-        &[1.0, 1.0],
-        &DiagOp(vec![1.0, 0.0]),
-        1e-10,
-        100,
-        MlsmrOptions {
-            warm_start: Some(&x0),
-            ..Default::default()
-        },
-    )
-    .expect("warm-started singular-preconditioner solve");
-
-    assert!(!result.converged);
-    assert_eq!(result.stop_reason, LsmrStopReason::FalseConvergence);
-}
-
 #[rstest]
 #[case::identity(&IdentityOp { n: 3 }, &[1.0, 2.0, 3.0], &[1.0, 2.0, 3.0])]
 #[case::null_direction(&ZeroSecondRow, &[0.0, 0.0], &[0.0, 7.0])]
