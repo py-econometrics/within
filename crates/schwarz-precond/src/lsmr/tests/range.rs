@@ -263,3 +263,49 @@ fn a_warm_reference_keeps_an_rhs_entry_far_below_its_norm() {
         r.normal_eq_residual
     );
 }
+
+/// A subnormal `Aᵀb` made unit meets a metric near `f64::MAX`, overflowing `M⁻¹g` the raw one fits.
+#[test]
+fn a_subnormal_warm_gradient_stays_raw_under_a_huge_metric() {
+    let r = mlsmr(
+        &DiagOp(vec![1e-310, 1e-310]),
+        &[1.0, 1.0],
+        &DenseOp {
+            rows: 2,
+            cols: 2,
+            data: vec![1.6e308, 8e307, 8e307, 1.6e308],
+        },
+        1e-10,
+        0,
+        MlsmrOptions {
+            warm_start: Some(&[1.0, 1.0]),
+            ..Default::default()
+        },
+    )
+    .expect("warm solve");
+    assert!(
+        (r.normal_eq_residual - 1.0).abs() < 1e-9,
+        "{:e}",
+        r.normal_eq_residual
+    );
+}
+
+/// `‖[ε, ε]‖` rounds to `ε`, so `b / ‖b‖` is `[1, 1]` and would bound `‖A‖ = 1` by `1.118`.
+#[test]
+fn a_rounded_subnormal_rhs_norm_does_not_overstate_the_operator() {
+    let eps = f64::from_bits(1);
+    let r = mlsmr(
+        &DiagOp(vec![1.0, 0.5]),
+        &[eps, eps],
+        &DiagOp(vec![eps, eps]),
+        0.0046,
+        50,
+        MlsmrOptions {
+            warm_start: Some(&[0.0, 2.0]),
+            ..Default::default()
+        },
+    )
+    .expect("warm solve");
+    assert!(!r.converged, "{:?}", r.stop_reason);
+    assert_eq!(r.stop_reason, LsmrStopReason::FalseConvergence);
+}

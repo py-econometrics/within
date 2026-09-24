@@ -394,12 +394,11 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
             let b_norm = vec_norm(b);
             let (converged, normal_eq_residual) = match bidiag.hidden_gradient(b, b_norm)? {
                 None => (true, 0.0),
-                Some((per_unit_residual, plain)) => {
+                Some((per_unit_residual, b_image)) => {
                     let normar = Magnitude::product(step1.beta, per_unit_residual);
-                    // `b = 0` divides to NaN, which `backward_error` rejects like a zero bound.
-                    let a_norm_below = (plain / Magnitude::from(b_norm)).to_f64();
+                    let plain = b_image.norm();
                     (
-                        criteria.corroborates(step1.beta, normar, a_norm_below),
+                        criteria.corroborates(step1.beta, normar, b_image.per_unit()),
                         if plain.is_normal() {
                             (normar / plain).to_f64()
                         } else {
