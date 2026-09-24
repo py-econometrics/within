@@ -43,9 +43,6 @@ impl Bidiagonalization for ScriptedStream<'_> {
     fn into_residual(self) -> Vec<f64> {
         Vec::new()
     }
-    fn plain_gradient(&mut self, _rhs: &[f64]) -> Result<f64, SolveError> {
-        Ok(1.0)
-    }
 }
 
 /// Counts the handlers a run asks for, one per pass.

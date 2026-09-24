@@ -11,7 +11,7 @@
 mod tests;
 
 use super::finite;
-use super::magnitude::{exponent, ldexp};
+use super::magnitude::{exponent, ldexp, Magnitude};
 use crate::{Operator, SolveError};
 use rayon::iter::{IndexedParallelIterator, ParallelIterator};
 use rayon::prelude::{ParallelSlice, ParallelSliceMut};
@@ -303,24 +303,81 @@ pub(super) struct BidiagStep {
     pub(super) beta: f64,
 }
 
-/// `√(gᵀ M⁻¹ g)` for `g = Aᵀ rhs`, scaled so the product survives `‖g‖ ≳ 1e154`.
+/// `‖Âᵀ rhs‖ = ‖Aᵀ rhs‖·√(ĝᵀM⁻¹ĝ)` for unit `ĝ ∥ Aᵀ rhs`; the raw product may not be a double.
 pub(super) fn metric_gradient_norm<A: Operator + ?Sized, M: Operator + ?Sized>(
     operator: &A,
     preconditioner: &M,
     rhs: &[f64],
-    g: &mut [f64],
-    mv: &mut [f64],
-) -> Result<f64, SolveError> {
-    operator.apply_adjoint(rhs, g)?;
-    let plain = par_norm(g);
-    if !plain.is_finite() {
-        return Ok(plain);
+    rhs_norm: f64,
+) -> Result<Magnitude, SolveError> {
+    let (mut g, mut mv) = (vec![0.0; operator.ncols()], vec![0.0; operator.ncols()]);
+    let image = adjoint_image(operator, rhs, rhs_norm, &mut vec![0.0; rhs.len()], &mut g)?;
+    if !image.g_norm.is_finite() {
+        return Ok(Magnitude::from(image.g_norm));
     }
-    // `M⁻¹` is linear; the raw gradient's metric product overflows past `‖Aᵀr‖ ≈ 1e154`.
-    let scale = if plain.is_normal() { plain } else { 1.0 };
-    normalize(g, scale);
-    preconditioner.apply(g, mv)?;
-    Ok(scale * alpha_from_vp(mv, g)?)
+    // `gᵀM⁻¹g` overflows past `‖g‖ ≈ 1e154`, but `M⁻¹` of a subnormal `g` made unit may too.
+    let scale = if image.g_norm.is_normal() {
+        image.g_norm
+    } else {
+        1.0
+    };
+    normalize(&mut g, scale);
+    preconditioner.apply(&g, &mut mv)?;
+    let alpha = alpha_from_vp(&mv, &g)?;
+    Ok(Magnitude::product(ldexp(1.0, image.k), scale) * Magnitude::from(alpha))
+}
+
+/// `Aᵀ rhs = 2ᵏ·g` and `‖rhs‖ = 2ᵏ·unit_norm` for the `g` that [`adjoint_image`] leaves.
+#[derive(Clone, Copy)]
+pub(super) struct AdjointImage {
+    k: i32,
+    g_norm: f64,
+    unit_norm: f64,
+}
+
+impl AdjointImage {
+    /// `‖Aᵀ rhs‖`, which may not be a double.
+    pub(super) fn norm(self) -> Magnitude {
+        Magnitude::product(self.g_norm, ldexp(1.0, self.k))
+    }
+
+    /// `‖Aᵀ rhs‖ / ‖rhs‖ ≤ ‖A‖`; NaN at `rhs = 0`, which `backward_error` rejects like a zero.
+    pub(super) fn per_unit(self) -> f64 {
+        self.g_norm / self.unit_norm
+    }
+}
+
+/// `Aᵀ` of `rhs`, or of `rhs·2⁻ᵏ` in `unit` where `‖rhs‖` or the raw image is not normal.
+fn adjoint_image<A: Operator + ?Sized>(
+    operator: &A,
+    rhs: &[f64],
+    rhs_norm: f64,
+    unit: &mut [f64],
+    g: &mut [f64],
+) -> Result<AdjointImage, SolveError> {
+    // Scaling first flushes the entries far below `‖rhs‖`, which `Aᵀ` may amplify back into range.
+    let k = exponent(rhs_norm);
+    if rhs_norm.is_normal() {
+        operator.apply_adjoint(rhs, g)?;
+        let g_norm = par_norm(g);
+        if k == 0 || g_norm.is_normal() {
+            return Ok(AdjointImage {
+                k: 0,
+                g_norm,
+                unit_norm: rhs_norm,
+            });
+        }
+    }
+    // A power of two scales exactly, so `unit` is measured afresh instead of trusting `‖rhs‖`.
+    unit.iter_mut()
+        .zip(rhs)
+        .for_each(|(u, &r)| *u = ldexp(r, -k));
+    operator.apply_adjoint(unit, g)?;
+    Ok(AdjointImage {
+        k,
+        g_norm: par_norm(g),
+        unit_norm: par_norm(unit),
+    })
 }
 
 /// Stream feeding LSMR `(α, β)` pairs and the matching normalized `v_k`.
@@ -335,12 +392,14 @@ pub(super) trait Bidiagonalization {
     fn restart(&mut self, beta: f64) -> Result<BidiagStep, SolveError>;
     /// Spend the stream for the `rhs − A x` that [`residual_norm`](Self::residual_norm) staged.
     fn into_residual(self) -> Vec<f64>;
-    /// After `α₁ = 0`: `Some(‖Aᵀ rhs‖ / ‖rhs‖)` when a metric annihilated a nonzero gradient.
-    fn hidden_gradient(&mut self) -> Result<Option<f64>, SolveError> {
+    /// After `α₁ = 0`, a gradient the metric hid: `‖Aᵀ rhs‖ / ‖rhs‖` and `Aᵀ b`.
+    fn hidden_gradient(
+        &mut self,
+        _b: &[f64],
+        _b_norm: f64,
+    ) -> Result<Option<(f64, AdjointImage)>, SolveError> {
         Ok(None)
     }
-    /// `‖Aᵀ rhs‖` as a plain norm; clobbers the stream.
-    fn plain_gradient(&mut self, rhs: &[f64]) -> Result<f64, SolveError>;
 }
 
 impl<A: Operator + ?Sized> Bidiagonalization for GolubKahan<'_, A> {
@@ -402,11 +461,6 @@ impl<A: Operator + ?Sized> Bidiagonalization for GolubKahan<'_, A> {
         }
         self.alpha = alpha;
         Ok(BidiagStep { alpha, beta })
-    }
-
-    fn plain_gradient(&mut self, rhs: &[f64]) -> Result<f64, SolveError> {
-        self.operator.apply_adjoint(rhs, &mut self.bufs.atu)?;
-        Ok(par_norm(&self.bufs.atu))
     }
 }
 
@@ -472,15 +526,19 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
         Ok(BidiagStep { alpha, beta })
     }
 
-    fn hidden_gradient(&mut self) -> Result<Option<f64>, SolveError> {
+    fn hidden_gradient(
+        &mut self,
+        b: &[f64],
+        b_norm: f64,
+    ) -> Result<Option<(f64, AdjointImage)>, SolveError> {
         // At `α₁ = 0` the stream holds `p̃ = Aᵀu` for the unit `u`, so `‖p̃‖ = ‖Aᵀ rhs‖ / ‖rhs‖`.
         let plain = par_norm(&self.bufs.p_tilde);
-        Ok((plain != 0.0).then_some(plain))
-    }
-
-    fn plain_gradient(&mut self, rhs: &[f64]) -> Result<f64, SolveError> {
-        self.operator.apply_adjoint(rhs, &mut self.bufs.atu)?;
-        Ok(par_norm(&self.bufs.atu))
+        if plain == 0.0 {
+            return Ok(None);
+        }
+        let bufs = &mut self.bufs;
+        let b_image = adjoint_image(self.operator, b, b_norm, &mut bufs.u, &mut bufs.atu)?;
+        Ok(Some((plain, b_image)))
     }
 }
 
