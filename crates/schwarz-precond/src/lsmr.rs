@@ -7,6 +7,7 @@
 mod bidiag;
 #[cfg(test)]
 mod fixtures;
+mod magnitude;
 mod recurrence;
 #[cfg(test)]
 mod tests;
@@ -18,6 +19,7 @@ use bidiag::{
     axpby, metric_gradient_norm, residual_into, BidiagStep, Bidiagonalization, GolubKahan,
     ModifiedGolubKahan,
 };
+use magnitude::Magnitude;
 use recurrence::{ConvergenceCriteria, LsmrRecurrenceState, RotationStep, SolutionState, Stop};
 
 /// Euclidean norm of a vector.
@@ -333,7 +335,7 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
         ModifiedGolubKahan::init(operator, preconditioner, &rhs, rhs_norm, local_size)?;
     let warm_start = warm_start.zip(metric).map(|(x0, metric)| WarmStart {
         x0,
-        reference: NormalEqReference::warm(metric, step1),
+        reference: NormalEqReference::warm(Magnitude::from(metric), step1),
     });
     let reference_norm = if b_norm > 0.0 { b_norm } else { rhs_norm };
     let criteria = ConvergenceCriteria::new(reference_norm, tol);
@@ -345,25 +347,26 @@ const MAX_RESTARTS: usize = 2;
 
 /// `‖Aᵀb‖` in the stream's metric, fixed for the solve so every pass reports against it.
 #[derive(Clone, Copy)]
-struct NormalEqReference(f64);
+struct NormalEqReference(Magnitude);
 
 impl NormalEqReference {
-    /// A cold stream's first `(α₁, β₁)` is `‖Aᵀb‖` already.
+    /// A cold stream's first `(α₁, β₁)` is `‖Aᵀb‖` already, though the product may not be a double.
     fn cold(step1: BidiagStep) -> Self {
-        Self((step1.alpha * step1.beta).abs().max(f64::MIN_POSITIVE))
+        Self(Magnitude::product(step1.alpha, step1.beta))
     }
 
-    /// A reference that carries no information leaves the stream's own `ζ̄₀` to divide.
-    fn warm(metric: f64, step1: BidiagStep) -> Self {
-        if metric > 0.0 && metric.is_finite() {
+    /// A reference that carries no information falls back to the cold `α₁β₁`.
+    fn warm(metric: Magnitude, step1: BidiagStep) -> Self {
+        if metric.is_normal() {
             Self(metric)
         } else {
             Self::cold(step1)
         }
     }
 
-    fn relative(self, estimate: f64) -> f64 {
-        estimate / self.0
+    fn relative(self, estimate: Magnitude) -> f64 {
+        debug_assert!(self.0.is_normal(), "a zero α₁ returns before any report");
+        (estimate / self.0).to_f64()
     }
 }
 
@@ -397,13 +400,17 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
             let (converged, normal_eq_residual) = match bidiag.hidden_gradient()? {
                 None => (true, 0.0),
                 Some(per_unit_residual) => {
-                    let normar = step1.beta * per_unit_residual;
+                    let normar = Magnitude::product(step1.beta, per_unit_residual);
                     let plain = bidiag.plain_gradient(b)?;
                     let a_norm_below = plain / vec_norm(b).max(f64::MIN_POSITIVE);
                     let informative = plain > 0.0 && plain.is_finite();
                     (
                         criteria.corroborates(step1.beta, normar, a_norm_below),
-                        if informative { normar / plain } else { 1.0 },
+                        if informative {
+                            (normar / Magnitude::from(plain)).to_f64()
+                        } else {
+                            1.0
+                        },
                     )
                 }
             };
@@ -426,7 +433,7 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
         let mut escalation = escalation.map(EscalationPolicy::handler);
         let mut convergence = criteria.start(step1.alpha);
         let mut recurrence = LsmrRecurrenceState::init(step1);
-        let mut solution = SolutionState::init(bidiag.v());
+        let mut solution = SolutionState::init(bidiag.v(), step1.beta);
         let mut prev_rot = RotationStep::initial();
         let stop_reason = 'pass: {
             while iterations < maxiter {
@@ -493,7 +500,7 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
                 // The estimate is the refuted claim; a seed from the staged residual measures `x`.
                 result.normal_eq_residual = if residual_norm.is_finite() {
                     let step = bidiag.restart(residual_norm)?;
-                    reference.relative(step.alpha * step.beta)
+                    reference.relative(Magnitude::product(step.alpha, step.beta))
                 } else {
                     residual_norm
                 };

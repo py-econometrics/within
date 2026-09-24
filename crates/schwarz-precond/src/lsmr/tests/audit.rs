@@ -2,6 +2,7 @@
 use rstest::rstest;
 
 use super::super::bidiag::{BidiagStep, Bidiagonalization};
+use super::super::magnitude::Magnitude;
 use super::super::recurrence::ConvergenceCriteria;
 use super::super::{
     lsmr_from_bidiag, mlsmr, EscalationHandler, EscalationPolicy, LsmrResult, LsmrStopReason,
@@ -160,15 +161,15 @@ fn a_refused_stop_reports_its_iterates_normal_equation_residual(#[values(1.0, 4.
 #[rstest]
 #[case::usable(4.0, 0.25)]
 #[case::zero(0.0, 0.5)]
-#[case::negative(-1.0, 0.5)]
 #[case::overflowed(f64::INFINITY, 0.5)]
+#[case::nan(f64::NAN, 0.5)]
 fn a_report_only_moves_to_a_usable_reference(#[case] metric: f64, #[case] expected: f64) {
     let step1 = BidiagStep {
         alpha: 2.0,
         beta: 1.0,
     };
     assert_eq!(
-        NormalEqReference::warm(metric, step1).relative(1.0),
+        NormalEqReference::warm(Magnitude::from(metric), step1).relative(Magnitude::from(1.0)),
         expected
     );
 }
@@ -195,9 +196,11 @@ fn the_backward_error_survives_the_ends_of_the_range(
     #[case] residual: f64,
     #[case] expected: f64,
 ) {
-    let ratio = super::super::recurrence::backward_error(normar, a_norm, residual);
+    let ratio = super::super::recurrence::backward_error(Magnitude::from(normar), a_norm, residual);
     if expected.is_infinite() {
         assert_eq!(ratio, expected);
+    } else if expected < f64::MIN_POSITIVE {
+        assert_eq!(ratio.to_bits(), expected.to_bits());
     } else {
         assert!(
             (ratio - expected).abs() <= 1e-3 * expected.max(f64::MIN_POSITIVE),

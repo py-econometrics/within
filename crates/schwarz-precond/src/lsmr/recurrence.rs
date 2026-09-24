@@ -1,11 +1,12 @@
 //! LSMR scalar/vector recurrence consuming the bidiagonalization stream.
 //!
 //! Given `(α, β)` pairs from a [`super::bidiag::Bidiagonalization`], this
-//! module builds the two interleaved Givens rotation chains (P̂_k, P̄_k)
+//! module builds the three Givens rotation chains (P̂_k, P̄_k, Q̃_k)
 //! that yield Algorithm 2.8 of Fong & Saunders, advances the `(x, h, h̄)`
 //! solution recurrence, and tracks the dual stopping criterion.
 
 use super::bidiag::{BidiagStep, LSMR_PAR_THRESHOLD, LSMR_UPDATE_CHUNK};
+use super::magnitude::Magnitude;
 use rayon::iter::{IndexedParallelIterator, ParallelIterator};
 use rayon::prelude::{ParallelSlice, ParallelSliceMut};
 
@@ -54,8 +55,10 @@ impl RotationStep {
     }
 }
 
-/// LSMR scalar state: the three rotation sequences of Fong & Saunders.
+/// LSMR scalar state: the three rotation sequences of Fong & Saunders, run on `u₁ = b / β₁`.
 pub(super) struct LsmrRecurrenceState {
+    /// `β₁`; on `b` itself `ζ̄₁ = α₁β₁` leaves the double range while `α₁` and `β₁` do not.
+    rhs_norm: f64,
     bidiag_qr: BidiagQr,
     normal_eq_qr: NormalEqQr,
     residual: ResidualChain,
@@ -64,15 +67,16 @@ pub(super) struct LsmrRecurrenceState {
 impl LsmrRecurrenceState {
     pub(super) fn init(s1: BidiagStep) -> Self {
         Self {
+            rhs_norm: s1.beta,
             bidiag_qr: BidiagQr {
                 alpha_bar: s1.alpha,
-                beta_dd: s1.beta,
+                beta_dd: 1.0,
             },
             normal_eq_qr: NormalEqQr {
                 c_bar: 1.0,
                 s_bar: 0.0,
-                zeta_bar: s1.alpha * s1.beta,
-                zeta0: (s1.alpha * s1.beta).abs().max(f64::MIN_POSITIVE),
+                zeta_bar: s1.alpha,
+                zeta0: s1.alpha,
             },
             residual: ResidualChain {
                 beta_d: 0.0,
@@ -94,15 +98,21 @@ impl LsmrRecurrenceState {
 
     /// Running estimate of LSMR's own `‖r_k‖`.
     pub(super) fn residual_estimate(&self) -> f64 {
+        self.rhs_norm * self.unit_residual()
+    }
+
+    /// `‖r_k‖` for `u₁`, where `‖r_k‖ ≤ 1`.
+    fn unit_residual(&self) -> f64 {
         self.residual.normr(self.bidiag_qr.beta_dd)
     }
 
-    pub(super) fn normal_eq_residual_estimate(&self) -> f64 {
-        self.normal_eq_qr.normar()
+    /// Running estimate of `‖Âᵀ r_k‖` for `b`, a product that may leave the double range.
+    pub(super) fn normal_eq_residual_estimate(&self) -> Magnitude {
+        Magnitude::product(self.rhs_norm, self.normal_eq_qr.normar())
     }
 
     pub(super) fn relative_normal_eq_residual(&self) -> f64 {
-        self.normal_eq_qr.relative_normar()
+        self.normal_eq_qr.normar() / self.normal_eq_qr.zeta0
     }
 }
 
@@ -141,7 +151,7 @@ struct NormalEqQr {
     c_bar: f64,
     s_bar: f64,
     zeta_bar: f64,
-    /// `|ζ̄₀| = ‖Âᵀb‖`, clamped positive; the reference for relative NE residuals.
+    /// `|ζ̄₀| = α₁ = ‖Âᵀu₁‖`, positive since a zero `α₁` never reaches the recurrence.
     zeta0: f64,
 }
 
@@ -165,14 +175,9 @@ impl NormalEqQr {
         }
     }
 
-    /// `|ζ̄ₖ|` — running estimate of `‖Aᵀ r_k‖` (Fong & Saunders).
+    /// `|ζ̄ₖ|` — running estimate of `‖Aᵀ r_k‖` for `u₁` (Fong & Saunders).
     fn normar(&self) -> f64 {
         self.zeta_bar.abs()
-    }
-
-    /// `|ζ̄ₖ| / |ζ̄₀|` — normal-equation residual relative to `‖Aᵀb‖`; the `ζ̄₀` clamp guards it.
-    fn relative_normar(&self) -> f64 {
-        self.normar() / self.zeta0
     }
 }
 
@@ -223,6 +228,8 @@ fn ratio(a: f64, b: f64) -> f64 {
 
 /// Vectors carried by the recurrence; `(h, h̄)` let `x` be built without the full `V_k` basis.
 pub(super) struct SolutionState {
+    /// `β₁`, restoring to `x` the scale the recurrence divided out of `b`.
+    rhs_norm: f64,
     x: Vec<f64>,
     h: Vec<f64>,
     h_bar: Vec<f64>,
@@ -230,8 +237,9 @@ pub(super) struct SolutionState {
 
 impl SolutionState {
     /// Initialize from the first normalized basis vector: `h₁ = v₁`, `x = 0`, `h̄₀ = 0`.
-    pub(super) fn init(v1: &[f64]) -> Self {
+    pub(super) fn init(v1: &[f64], rhs_norm: f64) -> Self {
         Self {
+            rhs_norm,
             x: vec![0.0; v1.len()],
             h: v1.to_vec(),
             h_bar: vec![0.0; v1.len()],
@@ -240,8 +248,14 @@ impl SolutionState {
 
     /// One `(x, h, h̄)` step; `v` must be normalized `v_{k+1}` and `prev` carries `(ρ, ρ̄)_{k-1}`.
     pub(super) fn update(&mut self, v: &[f64], curr: RotationStep, prev: RotationStep) {
-        // One diagonal at a time: `ρρ̄` scales with `‖A‖²` and leaves the double range first.
-        let t_x = ratio(ratio(curr.zeta, curr.rho), curr.rho_bar);
+        // `ρρ̄` scales with `‖A‖²`, and `ζ/(ρρ̄)` can underflow where `β₁ζ/(ρρ̄)` does not.
+        let t_x = if curr.rho == 0.0 || curr.rho_bar == 0.0 {
+            0.0
+        } else {
+            let unsigned = Magnitude::product(self.rhs_norm, curr.zeta.abs())
+                / Magnitude::product(curr.rho, curr.rho_bar);
+            curr.zeta.signum() * unsigned.to_f64()
+        };
         let t_hbar = ratio(curr.theta_bar, prev.rho) * ratio(curr.rho, prev.rho_bar);
         let t_h = ratio(curr.theta_new, curr.rho);
 
@@ -308,7 +322,7 @@ impl ConvergenceCriteria {
     pub(super) fn start(self, alpha1: f64) -> ConvergenceState {
         ConvergenceState {
             criteria: self,
-            a_norm_sq: alpha1 * alpha1,
+            a_norm: alpha1,
         }
     }
 
@@ -323,7 +337,7 @@ impl ConvergenceCriteria {
     }
 
     /// An annihilated `α₁` certifies via the residual, or via a lower `‖A‖` bound that overstates.
-    pub(super) fn corroborates(&self, normr: f64, normar: f64, a_norm_below: f64) -> bool {
+    pub(super) fn corroborates(&self, normr: f64, normar: Magnitude, a_norm_below: f64) -> bool {
         normr <= self.residual_gap()
             || backward_error(normar, a_norm_below, normr) <= CERTIFICATION_SLACK * self.rel_tol
     }
@@ -332,27 +346,24 @@ impl ConvergenceCriteria {
 /// Mutable convergence observations for one LSMR run.
 pub(super) struct ConvergenceState {
     criteria: ConvergenceCriteria,
-    a_norm_sq: f64,
+    /// `‖A‖_F` estimate, never squared: `‖A‖²` leaves the double range from `‖A‖ ≈ 1e±154`.
+    a_norm: f64,
 }
 
 impl ConvergenceState {
-    /// Fold a fresh bidiagonal step into the `‖A‖_F²` estimate.
     pub(super) fn observe(&mut self, s: BidiagStep) {
-        self.a_norm_sq += s.alpha * s.alpha + s.beta * s.beta;
+        self.a_norm = self.a_norm.hypot(s.alpha).hypot(s.beta);
     }
 
     /// Check both stop criteria against the current scalar state.
     pub(super) fn check(&self, r: &LsmrRecurrenceState) -> Stop {
-        let residual = r.residual_estimate();
-        if residual <= self.criteria.abs_tol {
+        let unit_residual = r.unit_residual();
+        if r.rhs_norm * unit_residual <= self.criteria.abs_tol {
             return Stop::ResidualTolerance;
         }
-        // The stream's own backward error, from its accumulated `‖A‖_F` estimate.
-        let ratio = backward_error(
-            r.normal_eq_residual_estimate(),
-            self.a_norm_sq.sqrt(),
-            residual,
-        );
+        // The stream's own backward error; `β₁` cancels, so the `u₁` form stays in range.
+        let normar = Magnitude::from(r.normal_eq_qr.normar());
+        let ratio = backward_error(normar, self.a_norm, unit_residual);
         if ratio <= self.criteria.rel_tol {
             return Stop::NormalEquationTolerance;
         }
@@ -360,18 +371,12 @@ impl ConvergenceState {
     }
 }
 
-/// `‖Aᵀr‖ / (‖A‖‖r‖)`, refusing outright on a denominator carrying no information: clamping one
-/// up would flatter the ratio into certifying an unsolved stop. The product is the accurate form,
-/// rounding once; only where it leaves the float range does dividing in turn beat it.
-pub(super) fn backward_error(normar: f64, a_norm: f64, residual: f64) -> f64 {
+/// `‖Aᵀr‖ / (‖A‖‖r‖)`; an uninformative denominator refuses, since clamping it would certify.
+pub(super) fn backward_error(normar: Magnitude, a_norm: f64, residual: f64) -> f64 {
     if !(a_norm > 0.0 && a_norm.is_finite() && residual > 0.0 && residual.is_finite()) {
         return f64::INFINITY;
     }
-    let denominator = a_norm * residual;
-    if denominator > 0.0 && denominator.is_finite() {
-        return normar / denominator;
-    }
-    normar / a_norm / residual
+    (normar / Magnitude::product(a_norm, residual)).to_f64()
 }
 
 /// Collapsed recurrences miss by orders of magnitude; the slack absorbs ordinary estimate drift.
