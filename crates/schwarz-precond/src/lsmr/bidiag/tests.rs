@@ -31,14 +31,11 @@ fn alpha_from_vp_clamps_a_pair_within_root_epsilon(#[case] v: &[f64], #[case] p:
     assert_eq!(alpha_from_vp(v, p).expect("within √ε"), 0.0, "{v:?}·{p:?}");
 }
 
-/// `beta == 0.0` and `alpha > 0.0` are both false for NaN; unguarded, an overflow poisons the run.
-#[rstest]
-fn a_non_finite_operator_norm_is_an_error(#[values(f64::NAN, f64::MAX)] bad: f64) {
-    let result = crate::lsmr::lsmr(&DiagOp(vec![bad, 1.0]), &[1.0, 1.0], 1e-10, 50, None);
-    assert!(
-        matches!(result, Err(SolveError::InvalidInput { .. })),
-        "{bad:e} accepted"
-    );
+/// `beta == 0.0` and `alpha > 0.0` are both false for NaN; unguarded, it poisons the run.
+#[test]
+fn a_non_finite_operator_norm_is_an_error() {
+    let result = crate::lsmr::lsmr(&DiagOp(vec![f64::NAN, 1.0]), &[1.0, 1.0], 1e-10, 50, None);
+    assert!(matches!(result, Err(SolveError::InvalidInput { .. })));
 }
 
 /// A finite adjoint keeps `init` clean, so the overflow reaches the `step` guard on β.

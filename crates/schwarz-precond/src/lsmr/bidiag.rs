@@ -62,18 +62,23 @@ pub(super) fn axpby(y: &mut [f64], x: &[f64], alpha: f64, beta: f64) {
     }
 }
 
-/// In-place scalar multiply `y *= s`. Parallel above the threshold.
+/// `y /= d` without over/underflow unless `y / d` does, to one rounding at `f64::MAX` (`drscl`).
 #[inline]
-fn scale_in_place(y: &mut [f64], s: f64) {
-    let seq = |c: &mut [f64]| {
-        for yi in c {
-            *yi *= s;
+fn normalize(y: &mut [f64], d: f64) {
+    if d > 0.0 {
+        let inv = 1.0 / d;
+        let seq = |c: &mut [f64]| {
+            if inv.is_normal() {
+                c.iter_mut().for_each(|yi| *yi *= inv);
+            } else {
+                c.iter_mut().for_each(|yi| *yi /= d);
+            }
+        };
+        if y.len() >= LSMR_PAR_THRESHOLD {
+            y.par_chunks_mut(LSMR_UPDATE_CHUNK).for_each(seq);
+        } else {
+            seq(y);
         }
-    };
-    if y.len() >= LSMR_PAR_THRESHOLD {
-        y.par_chunks_mut(LSMR_UPDATE_CHUNK).for_each(seq);
-    } else {
-        seq(y);
     }
 }
 
@@ -170,13 +175,6 @@ pub(super) fn residual_into<A: Operator + ?Sized>(
 ) -> Result<f64, SolveError> {
     operator.apply(x, u)?;
     Ok(axpy_with_norm(u, rhs, -1.0))
-}
-
-/// Scales `u` to unit length given its already-computed `β = ‖u‖`; a zero `u` stays zero.
-fn scale_to_unit(u: &mut [f64], beta: f64) {
-    if beta > 0.0 {
-        scale_in_place(u, 1.0 / beta);
-    }
 }
 
 /// Ring of recent basis vectors for windowed MGS; the disabled state is `None`, so `cap > 0`.
@@ -277,16 +275,16 @@ impl WindowRing<2> {
         }
     }
 
-    /// Copy normalized `v` and `p_tilde · inv_alpha` into the next slots, advancing the ring.
-    fn push(&mut self, v: &[f64], p_tilde_unscaled: &[f64], inv_alpha: f64) {
+    /// Copy normalized `v` and `p_tilde / alpha` into the next slots, advancing the ring.
+    fn push(&mut self, v: &[f64], p_tilde_unscaled: &[f64], alpha: f64) {
         let slot = self.advance();
         self.lane_mut(0, slot).copy_from_slice(v);
-        for (dst, &src) in self
-            .lane_mut(1, slot)
-            .iter_mut()
-            .zip(p_tilde_unscaled.iter())
-        {
-            *dst = src * inv_alpha;
+        let p = self.lane_mut(1, slot);
+        if alpha > 0.0 {
+            p.copy_from_slice(p_tilde_unscaled);
+            normalize(p, alpha);
+        } else {
+            p.fill(0.0);
         }
     }
 }
@@ -313,7 +311,7 @@ pub(super) fn metric_gradient_norm<A: Operator + ?Sized, M: Operator + ?Sized>(
     }
     // `M⁻¹` is linear; the raw gradient's metric product overflows past `‖Aᵀr‖ ≈ 1e154`.
     let scale = if plain.is_normal() { plain } else { 1.0 };
-    scale_in_place(g, 1.0 / scale);
+    normalize(g, scale);
     preconditioner.apply(g, mv)?;
     Ok(scale * alpha_from_vp(mv, g)?)
 }
@@ -351,8 +349,7 @@ impl<A: Operator + ?Sized> Bidiagonalization for GolubKahan<'_, A> {
             self.alpha = 0.0;
             return Ok(BidiagStep { alpha: 0.0, beta });
         }
-        // beta > 0 here: the beta == 0 lucky breakdown returned above.
-        scale_in_place(&mut self.bufs.u, 1.0 / beta);
+        normalize(&mut self.bufs.u, beta);
 
         self.operator
             .apply_adjoint(&self.bufs.u, &mut self.bufs.atu)?;
@@ -364,9 +361,7 @@ impl<A: Operator + ?Sized> Bidiagonalization for GolubKahan<'_, A> {
             alpha = par_norm(&self.bufs.v);
         }
         let alpha = finite(alpha, "α")?;
-        if alpha > 0.0 {
-            scale_in_place(&mut self.bufs.v, 1.0 / alpha);
-        }
+        normalize(&mut self.bufs.v, alpha);
 
         if let Some(reorth) = &mut self.bufs.local_reorth {
             reorth.push(&self.bufs.v);
@@ -389,13 +384,11 @@ impl<A: Operator + ?Sized> Bidiagonalization for GolubKahan<'_, A> {
     }
 
     fn restart(&mut self, beta: f64) -> Result<BidiagStep, SolveError> {
-        scale_to_unit(&mut self.bufs.u, beta);
+        normalize(&mut self.bufs.u, beta);
         self.operator
             .apply_adjoint(&self.bufs.u, &mut self.bufs.v)?;
         let alpha = finite(par_norm(&self.bufs.v), "α")?;
-        if alpha > 0.0 {
-            scale_in_place(&mut self.bufs.v, 1.0 / alpha);
-        }
+        normalize(&mut self.bufs.v, alpha);
         if let Some(reorth) = &mut self.bufs.local_reorth {
             reorth.clear();
             reorth.push(&self.bufs.v);
@@ -453,19 +446,16 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
     }
 
     fn restart(&mut self, beta: f64) -> Result<BidiagStep, SolveError> {
-        scale_to_unit(&mut self.bufs.u, beta);
+        normalize(&mut self.bufs.u, beta);
         self.operator
             .apply_adjoint(&self.bufs.u, &mut self.bufs.p_tilde)?;
         self.preconditioner
             .apply(&self.bufs.p_tilde, &mut self.bufs.v)?;
         let alpha = alpha_from_vp(&self.bufs.v, &self.bufs.p_tilde)?;
-        if alpha > 0.0 {
-            scale_in_place(&mut self.bufs.v, 1.0 / alpha);
-        }
+        normalize(&mut self.bufs.v, alpha);
         if let Some(reorth) = &mut self.bufs.local_reorth {
             reorth.clear();
-            let inv_alpha = if alpha > 0.0 { 1.0 / alpha } else { 0.0 };
-            reorth.push(&self.bufs.v, &self.bufs.p_tilde, inv_alpha);
+            reorth.push(&self.bufs.v, &self.bufs.p_tilde, alpha);
         }
         self.alpha = alpha;
         self.beta_prev_inv = 1.0; // u was normalized
@@ -609,7 +599,12 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M
             self.alpha > 0.0,
             "self.alpha must be > 0; lsmr_from_bidiag's loop guard prevents step() after alpha=0",
         );
-        let p_coeff = beta / self.alpha;
+        let mut p_coeff = beta / self.alpha;
+        if !p_coeff.is_normal() {
+            // `β/α` can leave the range while `p̃ / α = M v` does not, so divide first (`dlascl`).
+            normalize(&mut self.bufs.p_tilde, self.alpha);
+            p_coeff = beta;
+        }
         axpby(&mut self.bufs.p_tilde, &self.bufs.atu, beta_inv, -p_coeff);
         Ok(())
     }
@@ -633,17 +628,10 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M
             alpha => alpha?,
         };
 
-        if alpha_new > 0.0 {
-            scale_in_place(&mut self.bufs.v, 1.0 / alpha_new);
-        }
+        normalize(&mut self.bufs.v, alpha_new);
 
         if let Some(reorth) = &mut self.bufs.local_reorth {
-            let inv_alpha = if alpha_new > 0.0 {
-                1.0 / alpha_new
-            } else {
-                0.0
-            };
-            reorth.push(&self.bufs.v, &self.bufs.p_tilde, inv_alpha);
+            reorth.push(&self.bufs.v, &self.bufs.p_tilde, alpha_new);
         }
 
         Ok(alpha_new)
