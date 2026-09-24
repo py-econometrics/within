@@ -38,6 +38,17 @@ fn a_tiny_cosine_keeps_its_gradient_length() {
     assert!((alpha / 1e-158 - 1.0).abs() < 1e-12, "{alpha:e}");
 }
 
+/// A `vp` whose terms round to subnormals takes its sign from the scaled re-sum.
+#[test]
+fn a_negative_subnormal_pair_keeps_its_gradient_length() {
+    let t = 2f64.powi(-537);
+    let alpha = alpha_from_vp(&[t; 3], &[1.49 * t, 1.49 * t, -2.9 * t]).expect("positive pair");
+    assert!(
+        (alpha / (0.08f64.sqrt() * t) - 1.0).abs() < 1e-10,
+        "{alpha:e}"
+    );
+}
+
 /// A `vp` rounded below zero is 0 however the fallback's normalized re-sum rounds.
 #[test]
 fn a_negatively_rounded_pair_clamps_however_the_resum_rounds() {

@@ -154,8 +154,8 @@ fn alpha_from_vp(v: &[f64], p_tilde: &[f64]) -> Result<f64, AlphaError> {
     if scaled < -f64::EPSILON.sqrt() * ldexp(norm_v, kv) * ldexp(norm_p, kp) {
         return Err(AlphaError::NegativeMetric);
     }
-    // Only an overflowed `vp` needs the re-sum's sign; a finite one rounded fewer times.
-    if vp < 0.0 && vp.is_finite() {
+    // A normal `vp` rounded fewer times than the re-sum; a subnormal or overflowed one did not.
+    if vp < 0.0 && vp.is_normal() {
         return Ok(0.0);
     }
     Ok(ldexp(scaled.max(0.0).sqrt(), -(kv + kp) / 2))
