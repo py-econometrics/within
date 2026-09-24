@@ -241,3 +241,25 @@ fn a_warm_reference_past_the_double_range_reports_against_b() {
         unit.normal_eq_residual
     );
 }
+
+/// `b / ‖b‖` flushes `b₂ = 2^-500`, whose `2^300` column carries the metric reference.
+#[test]
+fn a_warm_reference_keeps_an_rhs_entry_far_below_its_norm() {
+    let r = mlsmr(
+        &DiagOp(vec![1.0, 2f64.powi(300)]),
+        &[2f64.powi(600), 2f64.powi(-500)],
+        &DiagOp(vec![2f64.powi(-1000), 2f64.powi(700)]),
+        1e-10,
+        0,
+        MlsmrOptions {
+            warm_start: Some(&[2f64.powi(600), 0.0]),
+            ..Default::default()
+        },
+    )
+    .expect("warm solve");
+    assert!(
+        (r.normal_eq_residual - 1.0).abs() < 1e-12,
+        "{:e}",
+        r.normal_eq_residual
+    );
+}

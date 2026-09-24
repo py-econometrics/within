@@ -303,39 +303,42 @@ pub(super) struct BidiagStep {
     pub(super) beta: f64,
 }
 
-/// `‖Âᵀ rhs‖ = ‖rhs‖·√(gᵀM⁻¹g)` for `g = Aᵀ(rhs / ‖rhs‖)`, whose raw product may not be a double.
+/// `‖Âᵀ rhs‖ = ‖Aᵀ rhs‖·√(ĝᵀM⁻¹ĝ)` for unit `ĝ ∥ Aᵀ rhs`; the raw product may not be a double.
 pub(super) fn metric_gradient_norm<A: Operator + ?Sized, M: Operator + ?Sized>(
     operator: &A,
     preconditioner: &M,
     rhs: &[f64],
     rhs_norm: f64,
-    g: &mut [f64],
-    mv: &mut [f64],
 ) -> Result<Magnitude, SolveError> {
-    let mut unit = rhs.to_vec();
-    normalize(&mut unit, rhs_norm);
-    operator.apply_adjoint(&unit, g)?;
-    let plain = par_norm(g);
+    let (mut g, mut mv) = (vec![0.0; operator.ncols()], vec![0.0; operator.ncols()]);
+    let image = adjoint_norm(operator, rhs, rhs_norm, &mut vec![0.0; rhs.len()], &mut g)?;
+    let plain = par_norm(&g);
     if !plain.is_finite() {
         return Ok(Magnitude::from(plain));
     }
-    normalize(g, plain);
-    preconditioner.apply(g, mv)?;
-    Ok(Magnitude::product(rhs_norm, plain) * Magnitude::from(alpha_from_vp(mv, g)?))
+    normalize(&mut g, plain);
+    preconditioner.apply(&g, &mut mv)?;
+    Ok(image * Magnitude::from(alpha_from_vp(&mv, &g)?))
 }
 
-/// `‖Aᵀ rhs‖ / ‖rhs‖`, a lower bound on `‖A‖`; `Aᵀ` meets `rhs / ‖rhs‖` so neither is formed raw.
-fn operator_norm_below<A: Operator + ?Sized>(
+/// `‖Aᵀ rhs‖`, leaving the image in `g` up to scale; `rhs / ‖rhs‖` stands in past the normal range.
+fn adjoint_norm<A: Operator + ?Sized>(
     operator: &A,
     rhs: &[f64],
     rhs_norm: f64,
     unit: &mut [f64],
-    atu: &mut [f64],
-) -> Result<f64, SolveError> {
+    g: &mut [f64],
+) -> Result<Magnitude, SolveError> {
+    // Scaling first flushes the entries far below `‖rhs‖`, which `Aᵀ` may amplify back into range.
+    operator.apply_adjoint(rhs, g)?;
+    let raw = par_norm(g);
+    if raw.is_normal() {
+        return Ok(Magnitude::from(raw));
+    }
     unit.copy_from_slice(rhs);
     normalize(unit, rhs_norm);
-    operator.apply_adjoint(unit, atu)?;
-    Ok(par_norm(atu))
+    operator.apply_adjoint(unit, g)?;
+    Ok(Magnitude::product(rhs_norm, par_norm(g)))
 }
 
 /// Stream feeding LSMR `(α, β)` pairs and the matching normalized `v_k`.
@@ -350,12 +353,14 @@ pub(super) trait Bidiagonalization {
     fn restart(&mut self, beta: f64) -> Result<BidiagStep, SolveError>;
     /// Spend the stream for the `rhs − A x` that [`residual_norm`](Self::residual_norm) staged.
     fn into_residual(self) -> Vec<f64>;
-    /// After `α₁ = 0`: `Some(‖Aᵀ rhs‖ / ‖rhs‖)` when a metric annihilated a nonzero gradient.
-    fn hidden_gradient(&mut self) -> Result<Option<f64>, SolveError> {
+    /// After `α₁ = 0`, a gradient the metric hid: `‖Aᵀ rhs‖ / ‖rhs‖` and `‖Aᵀ b‖`.
+    fn hidden_gradient(
+        &mut self,
+        _b: &[f64],
+        _b_norm: f64,
+    ) -> Result<Option<(f64, Magnitude)>, SolveError> {
         Ok(None)
     }
-    /// [`operator_norm_below`] for `rhs` and its norm; clobbers the stream.
-    fn operator_norm_below(&mut self, rhs: &[f64], rhs_norm: f64) -> Result<f64, SolveError>;
 }
 
 impl<A: Operator + ?Sized> Bidiagonalization for GolubKahan<'_, A> {
@@ -417,11 +422,6 @@ impl<A: Operator + ?Sized> Bidiagonalization for GolubKahan<'_, A> {
         }
         self.alpha = alpha;
         Ok(BidiagStep { alpha, beta })
-    }
-
-    fn operator_norm_below(&mut self, rhs: &[f64], rhs_norm: f64) -> Result<f64, SolveError> {
-        let bufs = &mut self.bufs;
-        operator_norm_below(self.operator, rhs, rhs_norm, &mut bufs.u, &mut bufs.atu)
     }
 }
 
@@ -487,15 +487,19 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
         Ok(BidiagStep { alpha, beta })
     }
 
-    fn hidden_gradient(&mut self) -> Result<Option<f64>, SolveError> {
+    fn hidden_gradient(
+        &mut self,
+        b: &[f64],
+        b_norm: f64,
+    ) -> Result<Option<(f64, Magnitude)>, SolveError> {
         // At `α₁ = 0` the stream holds `p̃ = Aᵀu` for the unit `u`, so `‖p̃‖ = ‖Aᵀ rhs‖ / ‖rhs‖`.
         let plain = par_norm(&self.bufs.p_tilde);
-        Ok((plain != 0.0).then_some(plain))
-    }
-
-    fn operator_norm_below(&mut self, rhs: &[f64], rhs_norm: f64) -> Result<f64, SolveError> {
+        if plain == 0.0 {
+            return Ok(None);
+        }
         let bufs = &mut self.bufs;
-        operator_norm_below(self.operator, rhs, rhs_norm, &mut bufs.u, &mut bufs.atu)
+        let b_image = adjoint_norm(self.operator, b, b_norm, &mut bufs.u, &mut bufs.atu)?;
+        Ok(Some((plain, b_image)))
     }
 }
 

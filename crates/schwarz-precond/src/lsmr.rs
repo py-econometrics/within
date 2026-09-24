@@ -323,14 +323,7 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
     // `‖Aᵀb‖` must be taken before the stream exists: the stream's own query clobbers `v₁`.
     let metric = match warm_start {
         None => None,
-        Some(_) => Some(metric_gradient_norm(
-            operator,
-            preconditioner,
-            b,
-            b_norm,
-            &mut vec![0.0; n],
-            &mut vec![0.0; n],
-        )?),
+        Some(_) => Some(metric_gradient_norm(operator, preconditioner, b, b_norm)?),
     };
     let (bidiag, step1) =
         ModifiedGolubKahan::init(operator, preconditioner, &rhs, rhs_norm, local_size)?;
@@ -398,13 +391,13 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
         // A metric reporting no gradient at all may be hiding one outside itself.
         if step1.alpha == 0.0 {
             let x = base.map_or_else(|| vec![0.0; n], Cow::into_owned);
-            let (converged, normal_eq_residual) = match bidiag.hidden_gradient()? {
+            let b_norm = vec_norm(b);
+            let (converged, normal_eq_residual) = match bidiag.hidden_gradient(b, b_norm)? {
                 None => (true, 0.0),
-                Some(per_unit_residual) => {
+                Some((per_unit_residual, plain)) => {
                     let normar = Magnitude::product(step1.beta, per_unit_residual);
-                    let b_norm = vec_norm(b);
-                    let a_norm_below = bidiag.operator_norm_below(b, b_norm)?;
-                    let plain = Magnitude::product(b_norm, a_norm_below);
+                    // `b = 0` divides to NaN, which `backward_error` rejects like a zero bound.
+                    let a_norm_below = (plain / Magnitude::from(b_norm)).to_f64();
                     (
                         criteria.corroborates(step1.beta, normar, a_norm_below),
                         if plain.is_normal() {
