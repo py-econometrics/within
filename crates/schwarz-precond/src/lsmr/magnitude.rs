@@ -21,14 +21,7 @@ impl Magnitude {
         if !self.m.is_normal() {
             return self.m;
         }
-        if self.e >= f64::MAX_EXP {
-            return f64::INFINITY;
-        }
-        if self.e >= f64::MIN_EXP - 1 {
-            return self.m * pow2(self.e);
-        }
-        // A subnormal result: the first factor is exact, so only the second rounds.
-        self.m * pow2((self.e + 64).max(f64::MIN_EXP - 1)) * pow2(-64)
+        ldexp(self.m, self.e)
     }
 
     /// Neither zero, infinite nor NaN.
@@ -69,6 +62,17 @@ impl Div for Magnitude {
     fn div(self, rhs: Self) -> Self {
         Self::normalized(self.m / rhs.m, self.e - rhs.e)
     }
+}
+
+/// `⌊log₂ x⌋` of a positive finite `x`, subnormal included.
+pub(super) fn exponent(x: f64) -> i32 {
+    Magnitude::from(x).e
+}
+
+/// `x · 2^k`, saturating; in two steps since `2^k` alone may not be a double.
+pub(super) fn ldexp(x: f64, k: i32) -> f64 {
+    let k = k.clamp(-2044, 2044);
+    x * pow2(k / 2) * pow2(k - k / 2)
 }
 
 /// `2^e` for a normal exponent, built from its bits since `powi`'s precision is unspecified.

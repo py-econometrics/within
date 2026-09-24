@@ -469,6 +469,12 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
         if let Some(base) = &base {
             axpby(&mut x, base, 1.0, 1.0);
         }
+        // Only tolerance stops measure `x`, and a non-finite entry never recovers.
+        if let Some((index, value)) = x.iter().copied().enumerate().find(|(_, v)| !v.is_finite()) {
+            return Err(invalid_input(format!(
+                "non-finite solution entry {index} ({value})"
+            )));
+        }
         let mut result = LsmrResult {
             x,
             converged: false,

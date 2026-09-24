@@ -71,6 +71,29 @@ fn a_subnormal_rhs_normalizes_its_first_vector(
     assert_eq!(r.x[1], 0.0);
 }
 
+/// `⟨v, M⁻¹v⟩` is positive, but its raw terms overflow to `+∞` and `−∞`, which sum to NaN.
+#[test]
+fn a_definite_metric_whose_raw_dot_product_overflows_is_rescaled() {
+    let m = DenseOp {
+        rows: 2,
+        cols: 2,
+        data: vec![1.0, -1.0, -1.0, 1.5],
+    };
+    let r = mlsmr(
+        &DiagOp(vec![2e200, 1e200]),
+        &[1.0, 1.0],
+        &m,
+        1e-10,
+        50,
+        MlsmrOptions::default(),
+    )
+    .expect("overflowing-dot solve");
+
+    assert!(r.converged, "{:?}", r.stop_reason);
+    assert!((r.x[0] / 5e-201 - 1.0).abs() < 1e-8, "{:?}", r.x);
+    assert!((r.x[1] / 1e-200 - 1.0).abs() < 1e-8, "{:?}", r.x);
+}
+
 /// `‖A‖ = f64::MAX` leaves `1/α₁` subnormal; a stop dropping column 2 must hold its backward error.
 #[test]
 fn an_operator_at_the_top_of_the_range_solves_to_its_backward_error() {
@@ -83,4 +106,61 @@ fn an_operator_at_the_top_of_the_range_solves_to_its_backward_error() {
     let normr = vec_norm(&[b[0] - f64::MAX * r.x[0], b[1] - r.x[1]]);
     let backward_error = normal_equation_residual(&a, &r.x, &b) / f64::MAX / normr;
     assert!(backward_error <= 1e-10, "{backward_error:e}");
+}
+
+/// Past raw `‖A‖ ≈ 1e244` the unnormalized-`u` products overflow, which the solve reports.
+#[rstest]
+#[case::adjoint_product(&[1e300, 0.0, 1e50, 1e300])]
+#[case::next_step_coefficient(&[1.0, 0.0, 1e-50, 1e300])]
+fn an_operator_past_the_unnormalized_headroom_fails_loudly(#[case] data: &[f64]) {
+    let a = DenseOp {
+        rows: 2,
+        cols: 2,
+        data: data.to_vec(),
+    };
+    let r = mlsmr(
+        &a,
+        &[1.0, 0.0],
+        &IdentityOp { n: 2 },
+        0.0,
+        2,
+        MlsmrOptions::default(),
+    );
+    assert!(r.is_err(), "{:?}", r.map(|r| r.x));
+}
+
+/// Past Krylov exhaustion `h̄` grows by `~1/ε` a step; once it overflows, `x += t_x·h̄` is `0·∞`.
+#[rstest]
+#[case::budget_stop(true, 1e244)]
+#[case::refuted_stop(false, 1e300)]
+fn a_run_past_krylov_exhaustion_never_returns_a_non_finite_x(
+    #[case] metric: bool,
+    #[case] scale: f64,
+) {
+    let a = DenseOp {
+        rows: 2,
+        cols: 2,
+        data: vec![1.0, 0.0, 1e-36, scale],
+    };
+    let b = [1.0, 0.0];
+    let r = if metric {
+        mlsmr(
+            &a,
+            &b,
+            &IdentityOp { n: 2 },
+            0.0,
+            5,
+            MlsmrOptions::default(),
+        )
+    } else {
+        lsmr(&a, &b, 0.0, 5, None)
+    };
+    if let Ok(r) = r {
+        assert!(
+            r.x.iter().all(|x| x.is_finite()),
+            "{:?}: {:?}",
+            r.stop_reason,
+            r.x
+        );
+    }
 }
