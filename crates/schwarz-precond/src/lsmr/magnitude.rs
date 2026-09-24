@@ -21,7 +21,7 @@ impl Magnitude {
         if !self.m.is_normal() {
             return self.m;
         }
-        ldexp(self.m, self.e.clamp(-2044, 2044))
+        ldexp(self.m, self.e)
     }
 
     /// Neither zero, infinite nor NaN.
@@ -69,8 +69,9 @@ pub(super) fn exponent(x: f64) -> i32 {
     Magnitude::from(x).e
 }
 
-/// `x · 2^k` for `|k| ≤ 2044`, in two steps since `2^k` alone may not be a double.
+/// `x · 2^k`, saturating; in two steps since `2^k` alone may not be a double.
 pub(super) fn ldexp(x: f64, k: i32) -> f64 {
+    let k = k.clamp(-2044, 2044);
     x * pow2(k / 2) * pow2(k - k / 2)
 }
 
