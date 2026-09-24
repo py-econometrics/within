@@ -142,8 +142,10 @@ fn alpha_from_vp(v: &[f64], p_tilde: &[f64]) -> Result<f64, AlphaError> {
     if norm_v == 0.0 || norm_p == 0.0 {
         return Ok(0.0);
     }
-    // Norms scaled to `2^500` cap the sum at `2^1002` (Cauchy–Schwarz), leaving a tiny cosine room.
+    // Norms scaled to `2^500` cap the sum at `2^1003` (Cauchy–Schwarz), leaving a tiny cosine room.
     let (kv, kp) = (500 - exponent(norm_v), 500 - exponent(norm_p));
+    // An even total lets `√` halve it exactly.
+    let kv = kv + ((kv + kp) & 1);
     let scaled: f64 = v
         .iter()
         .zip(p_tilde)
@@ -156,13 +158,7 @@ fn alpha_from_vp(v: &[f64], p_tilde: &[f64]) -> Result<f64, AlphaError> {
     if vp < 0.0 && vp.is_finite() {
         return Ok(0.0);
     }
-    // `max(0.0)` returns 0 for NaN, which α = 0 reports as an exact solve at x = 0.
-    let (scaled, k) = if (kv + kp) % 2 == 0 {
-        (scaled.max(0.0), kv + kp)
-    } else {
-        (2.0 * scaled.max(0.0), kv + kp + 1)
-    };
-    Ok(ldexp(scaled.sqrt(), -k / 2))
+    Ok(ldexp(scaled.max(0.0).sqrt(), -(kv + kp) / 2))
 }
 
 /// `‖v‖` from an unscaled `‖v‖²`; an over/underflowed or subnormal sum pays the max-scaled pass.
@@ -427,13 +423,11 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
             self.bufs.v.fill(0.0);
             self.bufs.p_tilde.fill(0.0);
             self.alpha = 0.0;
-            self.u_norm_inv = 0.0;
             return Ok(BidiagStep { alpha: 0.0, beta });
         }
-        let beta_inv = 1.0 / beta;
         // `Aᵀu` scales with `‖A‖β`; only a `β` far from 1 carries it off `p̃`'s own `‖A‖` scale.
         self.u_norm_inv = if RAW_U_NORMS.contains(&beta) {
-            beta_inv
+            1.0 / beta
         } else {
             normalize(&mut self.bufs.u, beta);
             1.0
