@@ -15,7 +15,10 @@ use crate::{Operator, SolveError};
 #[case::underflowing_bound(&[-2e300, 1e308], &[1e-316, 0.0])]
 fn alpha_from_vp_rejects_non_finite_and_indefinite_pairs(#[case] v: &[f64], #[case] p: &[f64]) {
     assert!(
-        matches!(alpha_from_vp(v, p), Err(SolveError::InvalidInput { .. })),
+        matches!(
+            alpha_from_vp(v, p).map_err(SolveError::from),
+            Err(SolveError::InvalidInput { .. })
+        ),
         "{v:?}·{p:?} accepted"
     );
 }

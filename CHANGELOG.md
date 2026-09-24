@@ -44,6 +44,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - A warm-started solve measures its residuals against the original `b`, including at a budget stop and where `‖Aᵀb‖²` overflows.
 - An `α` or `β` whose square underflows is recovered from a scaled norm, where LSMR reported `x = 0` converged.
 - LSMR's solution update no longer drops out when `‖A‖` is small (`≈ 1e-9`) or beyond `1e±154`, where it reported `x = 0` converged.
+- A preconditioned solve with local reorthogonalization (`local_size`) could fail with `SolveError::InvalidInput` ("preconditioner not positive definite") on a positive definite preconditioner, once reorthogonalization cancelled the last Krylov direction to rounding noise; the pair is now recomputed before the check.
 - LSMR's residual estimate is its own `‖r_k‖` rather than LSQR's smaller `|φ̄_k|`, which let `ResidualTolerance` fire before the tolerance was met.
 - A non-finite or negative `ScalingConfig::tolerance` silently disabled the dominance certificate under both failure policies, since every comparison against it is `>`; it is now rejected as `BuildError::InvalidScalingTolerance`.
 
