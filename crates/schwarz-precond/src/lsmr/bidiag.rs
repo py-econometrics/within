@@ -65,18 +65,20 @@ pub(super) fn axpby(y: &mut [f64], x: &[f64], alpha: f64, beta: f64) {
 /// `y /= d` without over/underflow unless `y / d` does, to one rounding at `f64::MAX` (`drscl`).
 #[inline]
 fn normalize(y: &mut [f64], d: f64) {
-    let inv = 1.0 / d;
-    let seq = |c: &mut [f64]| {
-        if inv.is_normal() {
-            c.iter_mut().for_each(|yi| *yi *= inv);
+    if d > 0.0 {
+        let inv = 1.0 / d;
+        let seq = |c: &mut [f64]| {
+            if inv.is_normal() {
+                c.iter_mut().for_each(|yi| *yi *= inv);
+            } else {
+                c.iter_mut().for_each(|yi| *yi /= d);
+            }
+        };
+        if y.len() >= LSMR_PAR_THRESHOLD {
+            y.par_chunks_mut(LSMR_UPDATE_CHUNK).for_each(seq);
         } else {
-            c.iter_mut().for_each(|yi| *yi /= d);
+            seq(y);
         }
-    };
-    if y.len() >= LSMR_PAR_THRESHOLD {
-        y.par_chunks_mut(LSMR_UPDATE_CHUNK).for_each(seq);
-    } else {
-        seq(y);
     }
 }
 
@@ -173,13 +175,6 @@ pub(super) fn residual_into<A: Operator + ?Sized>(
 ) -> Result<f64, SolveError> {
     operator.apply(x, u)?;
     Ok(axpy_with_norm(u, rhs, -1.0))
-}
-
-/// Scales `u` to unit length given its already-computed `β = ‖u‖`; a zero `u` stays zero.
-fn scale_to_unit(u: &mut [f64], beta: f64) {
-    if beta > 0.0 {
-        normalize(u, beta);
-    }
 }
 
 /// Ring of recent basis vectors for windowed MGS; the disabled state is `None`, so `cap > 0`.
@@ -366,9 +361,7 @@ impl<A: Operator + ?Sized> Bidiagonalization for GolubKahan<'_, A> {
             alpha = par_norm(&self.bufs.v);
         }
         let alpha = finite(alpha, "α")?;
-        if alpha > 0.0 {
-            normalize(&mut self.bufs.v, alpha);
-        }
+        normalize(&mut self.bufs.v, alpha);
 
         if let Some(reorth) = &mut self.bufs.local_reorth {
             reorth.push(&self.bufs.v);
@@ -391,13 +384,11 @@ impl<A: Operator + ?Sized> Bidiagonalization for GolubKahan<'_, A> {
     }
 
     fn restart(&mut self, beta: f64) -> Result<BidiagStep, SolveError> {
-        scale_to_unit(&mut self.bufs.u, beta);
+        normalize(&mut self.bufs.u, beta);
         self.operator
             .apply_adjoint(&self.bufs.u, &mut self.bufs.v)?;
         let alpha = finite(par_norm(&self.bufs.v), "α")?;
-        if alpha > 0.0 {
-            normalize(&mut self.bufs.v, alpha);
-        }
+        normalize(&mut self.bufs.v, alpha);
         if let Some(reorth) = &mut self.bufs.local_reorth {
             reorth.clear();
             reorth.push(&self.bufs.v);
@@ -455,15 +446,13 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
     }
 
     fn restart(&mut self, beta: f64) -> Result<BidiagStep, SolveError> {
-        scale_to_unit(&mut self.bufs.u, beta);
+        normalize(&mut self.bufs.u, beta);
         self.operator
             .apply_adjoint(&self.bufs.u, &mut self.bufs.p_tilde)?;
         self.preconditioner
             .apply(&self.bufs.p_tilde, &mut self.bufs.v)?;
         let alpha = alpha_from_vp(&self.bufs.v, &self.bufs.p_tilde)?;
-        if alpha > 0.0 {
-            normalize(&mut self.bufs.v, alpha);
-        }
+        normalize(&mut self.bufs.v, alpha);
         if let Some(reorth) = &mut self.bufs.local_reorth {
             reorth.clear();
             reorth.push(&self.bufs.v, &self.bufs.p_tilde, alpha);
@@ -639,9 +628,7 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M
             alpha => alpha?,
         };
 
-        if alpha_new > 0.0 {
-            normalize(&mut self.bufs.v, alpha_new);
-        }
+        normalize(&mut self.bufs.v, alpha_new);
 
         if let Some(reorth) = &mut self.bufs.local_reorth {
             reorth.push(&self.bufs.v, &self.bufs.p_tilde, alpha_new);
