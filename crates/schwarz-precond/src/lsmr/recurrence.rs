@@ -248,8 +248,14 @@ impl SolutionState {
 
     /// One `(x, h, h̄)` step; `v` must be normalized `v_{k+1}` and `prev` carries `(ρ, ρ̄)_{k-1}`.
     pub(super) fn update(&mut self, v: &[f64], curr: RotationStep, prev: RotationStep) {
-        // One diagonal at a time: `ρρ̄` scales with `‖A‖²` and leaves the double range first.
-        let t_x = self.rhs_norm * ratio(ratio(curr.zeta, curr.rho), curr.rho_bar);
+        // `ρρ̄` scales with `‖A‖²`, and `ζ/(ρρ̄)` can underflow where `β₁ζ/(ρρ̄)` does not.
+        let t_x = if curr.rho == 0.0 || curr.rho_bar == 0.0 {
+            0.0
+        } else {
+            let unsigned = Magnitude::product(self.rhs_norm, curr.zeta.abs())
+                / Magnitude::product(curr.rho, curr.rho_bar);
+            curr.zeta.signum() * unsigned.to_f64()
+        };
         let t_hbar = ratio(curr.theta_bar, prev.rho) * ratio(curr.rho, prev.rho_bar);
         let t_h = ratio(curr.theta_new, curr.rho);
 

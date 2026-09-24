@@ -528,6 +528,30 @@ fn a_small_normed_design_still_gets_its_solution_update() {
     assert!((r.x[0] / 1e4 - 1.0).abs() < 1e-9, "{:?}", r.x);
 }
 
+/// `ζ/(ρρ̄)` rounds to zero below `2^-1074` although `β₁` scales it back to a normal `x`.
+#[rstest]
+#[case::overflowing_rhs(960, 1023)]
+#[case::dominant_miss(23, 80)]
+fn the_solution_update_survives_its_unit_rhs_underflowing(
+    #[case] fit_exp: i32,
+    #[case] miss_exp: i32,
+) {
+    let op = DenseOp {
+        rows: 2,
+        cols: 1,
+        data: vec![2f64.powi(1023), 0.0],
+    };
+    let b = [2f64.powi(fit_exp), 2f64.powi(miss_exp)];
+    let r = lsmr(&op, &b, 1e-10, 10, None).expect("extreme solve");
+    assert!(r.converged, "stop_reason: {:?}", r.stop_reason);
+    let want = 2f64.powi(fit_exp - 1023);
+    assert!(
+        (r.x[0] / want - 1.0).abs() < 1e-12,
+        "{:e} vs {want:e}",
+        r.x[0]
+    );
+}
+
 /// A budget stop's `‖r_k‖` is the returned iterate's own, not LSQR's `|φ̄_k|`.
 #[rstest]
 fn the_residual_estimate_is_the_iterates_own(#[values(2, 4, 8)] maxiter: usize) {
