@@ -97,8 +97,34 @@ fn par_dot(a: &[f64], b: &[f64]) -> f64 {
     }
 }
 
+/// Why [`alpha_from_vp`] refused a pair.
+#[derive(Debug)]
+enum AlphaError {
+    /// `⟨v, p̃⟩ < −√ε·‖v‖‖p̃‖`: an indefinite `M`, or a `v` that drifted from `M⁻¹ p̃`.
+    NegativeMetric,
+    Invalid(SolveError),
+}
+
+impl From<SolveError> for AlphaError {
+    fn from(err: SolveError) -> Self {
+        Self::Invalid(err)
+    }
+}
+
+impl From<AlphaError> for SolveError {
+    fn from(err: AlphaError) -> Self {
+        match err {
+            AlphaError::NegativeMetric => SolveError::InvalidInput {
+                context: "mlsmr",
+                message: "preconditioner not positive definite (⟨v, Mv⟩ < 0)".to_string(),
+            },
+            AlphaError::Invalid(err) => err,
+        }
+    }
+}
+
 /// `α = √⟨v, p̃⟩`; a `vp` negative within `√ε·‖v‖‖p̃‖` clamps to 0, an indefinite `M` raises.
-fn alpha_from_vp(v: &[f64], p_tilde: &[f64]) -> Result<f64, SolveError> {
+fn alpha_from_vp(v: &[f64], p_tilde: &[f64]) -> Result<f64, AlphaError> {
     let vp = finite(par_dot(v, p_tilde), "⟨v, Mv⟩")?;
     if vp.is_normal() && vp > 0.0 {
         return Ok(vp.sqrt());
@@ -116,10 +142,7 @@ fn alpha_from_vp(v: &[f64], p_tilde: &[f64]) -> Result<f64, SolveError> {
         .map(|(x, y)| (x / norm_v) * (y / norm_p))
         .sum();
     if unit < -f64::EPSILON.sqrt() {
-        return Err(SolveError::InvalidInput {
-            context: "mlsmr",
-            message: "preconditioner not positive definite (⟨v, Mv⟩ < 0)".to_string(),
-        });
+        return Err(AlphaError::NegativeMetric);
     }
     // `unit.max(0.0)` returns 0 for NaN, which α = 0 reports as an exact solve at x = 0.
     Ok(norm_v.sqrt() * norm_p.sqrt() * unit.max(0.0).sqrt())
@@ -600,7 +623,15 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M
             reorth.reorthogonalize(&mut self.bufs.v, &mut self.bufs.p_tilde);
         }
 
-        let alpha_new = alpha_from_vp(&self.bufs.v, &self.bufs.p_tilde)?;
+        let alpha_new = match alpha_from_vp(&self.bufs.v, &self.bufs.p_tilde) {
+            // MGS updates `v` and `p̃` apart, so near breakdown `v` drifts from `M⁻¹ p̃`.
+            Err(AlphaError::NegativeMetric) if self.bufs.local_reorth.is_some() => {
+                self.preconditioner
+                    .apply(&self.bufs.p_tilde, &mut self.bufs.v)?;
+                alpha_from_vp(&self.bufs.v, &self.bufs.p_tilde)?
+            }
+            alpha => alpha?,
+        };
 
         if alpha_new > 0.0 {
             scale_in_place(&mut self.bufs.v, 1.0 / alpha_new);

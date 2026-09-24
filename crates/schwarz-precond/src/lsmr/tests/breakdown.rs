@@ -332,3 +332,101 @@ fn test_mlsmr_rejects_indefinite_preconditioner() {
     let result = mlsmr(&op, &b, &NegIdentity, 1e-10, 100, MlsmrOptions::default());
     assert!(matches!(result, Err(SolveError::InvalidInput { .. })));
 }
+
+/// Reorthogonalization cancels the last Krylov direction to noise whose `⟨v, p̃⟩` rounds negative.
+#[rstest]
+#[case::jacobi(
+    DenseOp {
+        rows: 4,
+        cols: 3,
+        data: vec![
+            -0.16929096530790788, -0.4984562277653519, 0.13072317043406312,
+            0.13009772651294826, 0.05618700961392087, -0.2772395553399575,
+            -0.03358570159357288, 0.3721462377814392, -0.06825699516078332,
+            0.0945669171117478, -0.3058591259616409, -0.037184894934893964,
+        ],
+    },
+    &[0.040795682335399985, 0.4534654228284515, -0.07445456668775552, 0.22621989036785384],
+    // Jacobi: `1 / ‖a_j‖²`.
+    DenseOp {
+        rows: 3,
+        cols: 3,
+        data: vec![17.967595266556337, 0.0, 0.0, 0.0, 2.0675757429778487, 0.0, 0.0, 0.0, 10.000794849860734],
+    },
+    10,
+)]
+#[case::ill_conditioned_dense(
+    DenseOp {
+        rows: 5,
+        cols: 2,
+        data: vec![
+            -0.13472791693601827, -0.4850321710037593,
+            0.8182735477289922, -0.8988020854355594,
+            -0.5527756975109148, 0.6831246540331621,
+            -0.5254968366620636, 0.7268238608110611,
+            0.8935718535267778, -0.11936140914510718,
+        ],
+    },
+    &[
+        0.12656882841955985, 0.22982262397321862, 0.01944542907009761,
+        0.05913717014335362, -0.32647238073075635,
+    ],
+    DenseOp { rows: 2, cols: 2, data: vec![1.0, 1.0, 1.0, 1.00000001] },
+    2,
+)]
+fn a_reorthogonalized_breakdown_is_not_an_indefinite_metric(
+    #[case] a: DenseOp,
+    #[case] b: &[f64],
+    #[case] metric: DenseOp,
+    #[case] local_size: usize,
+) {
+    let options = MlsmrOptions {
+        local_size: Some(local_size),
+        ..Default::default()
+    };
+    let r = mlsmr(&a, b, &metric, 1e-10, 50, options).expect("SPD metric");
+
+    assert!(r.converged, "{:?}", r.stop_reason);
+    let zero = vec![0.0; a.cols];
+    let ratio = normal_equation_residual(&a, &r.x, b) / normal_equation_residual(&a, &zero, b);
+    assert!(ratio <= 1e-12, "{ratio:e}");
+}
+
+/// Recomputing `v = M⁻¹ p̃` keeps a negative direction negative: the refresh never absorbs it.
+#[rstest]
+#[case::one_negative_entry(
+    DenseOp {
+        rows: 4,
+        cols: 3,
+        data: vec![1.0, 0.3, 0.0, 0.2, 1.0, 0.1, 0.0, 0.4, 1.0, 0.5, 0.5, 0.5],
+    },
+    &[1.0, 2.0, -1.0, 0.5],
+    &[1.0, 1.0, -0.5],
+)]
+// The window cancels the positive direction, leaving a remainder of `vp ≈ −1.6e-49` to refresh.
+#[case::negative_remainder(
+    DenseOp {
+        rows: 3,
+        cols: 2,
+        data: vec![
+            -1.2991112911427987, 1e-24,
+            -0.6591885378662519, -1e-24,
+            0.8763697896531903, 0.0,
+        ],
+    },
+    &[1.0, 1.0, 1.0],
+    &[1.0, -1.0],
+)]
+fn an_indefinite_metric_is_refused_after_reorthogonalization(
+    #[case] a: DenseOp,
+    #[case] b: &[f64],
+    #[case] m: &[f64],
+    #[values(None, Some(1), Some(2), Some(10))] local_size: Option<usize>,
+) {
+    let options = MlsmrOptions {
+        local_size,
+        ..Default::default()
+    };
+    let r = mlsmr(&a, b, &DiagOp(m.to_vec()), 1e-12, 50, options);
+    assert!(matches!(r, Err(SolveError::InvalidInput { .. })), "{m:?}");
+}
