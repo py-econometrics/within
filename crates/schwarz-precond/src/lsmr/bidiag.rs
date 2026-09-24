@@ -266,7 +266,7 @@ impl WindowRing<1> {
 
 /// M-weighted windowed MGS: `v` is M-orthogonal, so the coefficient is `⟨v_new, p̃_j⟩`.
 impl WindowRing<2> {
-    /// Subtracts `c = ⟨v, p̃_j⟩` from both `v` and `p̃`, keeping `p̃ = M v` consistent.
+    /// Subtracts `c = ⟨v, p̃_j⟩` from both `v` and `p̃`.
     fn reorthogonalize(&self, v: &mut [f64], p_tilde: &mut [f64]) {
         for slot in self.chrono_slots() {
             let v_j = self.lane(0, slot);
@@ -544,7 +544,7 @@ struct ModifiedGolubKahanBuffers {
     u: Vec<f64>,
     /// `ṽ` in DOF space (length n). **Normalized** at the end of each step.
     v: Vec<f64>,
-    /// `p̃` recurrence vector (length n); invariant `p_tilde_stored = α · M · v_normalized`.
+    /// `p̃` recurrence vector (length n); `p_tilde_stored ≈ α · M · v_normalized`.
     p_tilde: Vec<f64>,
     /// Scratch for `A · v` (length m).
     av: Vec<f64>,
@@ -614,7 +614,7 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M
         Ok(())
     }
 
-    /// Recover `ṽ = M⁻¹ p̃`, MGS in lockstep to hold `p̃ = M v`, normalize; returns `α_{k+1}`.
+    /// Recover `ṽ = M⁻¹ p̃`, MGS both in lockstep, normalize; returns `α_{k+1}`.
     fn reorthonormalize_v(&mut self) -> Result<f64, SolveError> {
         self.preconditioner
             .apply(&self.bufs.p_tilde, &mut self.bufs.v)?;
