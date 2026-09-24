@@ -355,7 +355,7 @@ impl NormalEqReference {
         Self(Magnitude::product(step1.alpha, step1.beta))
     }
 
-    /// A reference that carries no information leaves the stream's own `ζ̄₀` to divide.
+    /// A reference that carries no information falls back to the cold `α₁β₁`.
     fn warm(metric: Magnitude, step1: BidiagStep) -> Self {
         if metric.is_normal() {
             Self(metric)
@@ -364,14 +364,9 @@ impl NormalEqReference {
         }
     }
 
-    /// A vanished reference divides as the smallest normal instead.
     fn relative(self, estimate: Magnitude) -> f64 {
-        let reference = if self.0.is_normal() {
-            self.0
-        } else {
-            Magnitude::from(f64::MIN_POSITIVE)
-        };
-        (estimate / reference).to_f64()
+        debug_assert!(self.0.is_normal(), "a zero α₁ returns before any report");
+        (estimate / self.0).to_f64()
     }
 }
 

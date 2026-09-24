@@ -71,7 +71,7 @@ impl Div for Magnitude {
     }
 }
 
-/// `2^e` for a normal exponent, built from its bits since `powi` underflows on the way there.
+/// `2^e` for a normal exponent, built from its bits since `powi`'s precision is unspecified.
 fn pow2(e: i32) -> f64 {
     debug_assert!((f64::MIN_EXP - 1..f64::MAX_EXP).contains(&e));
     f64::from_bits(((e + 1023) as u64) << 52)

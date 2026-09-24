@@ -587,7 +587,7 @@ fn a_power_of_two_scaling_reproduces_the_unit_scale_solve(
     let op = DenseOp::vandermonde(30, 6);
     // A sawtooth no low-degree polynomial fits keeps the residual far above the tolerance.
     let b: Vec<f64> = (0..op.rows)
-        .map(|i| (1.0 + i as f64 / 29.0).ln() + 0.1 * (-1f64).powi(i as i32))
+        .map(|i| (1.0 + i as f64 / (op.rows - 1) as f64).ln() + 0.1 * (-1f64).powi(i as i32))
         .collect();
     let unit = solve(&op, &b);
     assert_eq!(unit.stop_reason, LsmrStopReason::NormalEquationTolerance);
