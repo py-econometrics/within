@@ -128,3 +128,39 @@ fn an_operator_past_the_unnormalized_headroom_fails_loudly(#[case] data: &[f64])
     );
     assert!(r.is_err(), "{:?}", r.map(|r| r.x));
 }
+
+/// Past Krylov exhaustion `h̄` grows by `~1/ε` a step; once it overflows, `x += t_x·h̄` is `0·∞`.
+#[rstest]
+#[case::budget_stop(true, 1e244)]
+#[case::refuted_stop(false, 1e300)]
+fn a_run_past_krylov_exhaustion_never_returns_a_non_finite_x(
+    #[case] metric: bool,
+    #[case] scale: f64,
+) {
+    let a = DenseOp {
+        rows: 2,
+        cols: 2,
+        data: vec![1.0, 0.0, 1e-36, scale],
+    };
+    let b = [1.0, 0.0];
+    let r = if metric {
+        mlsmr(
+            &a,
+            &b,
+            &IdentityOp { n: 2 },
+            0.0,
+            5,
+            MlsmrOptions::default(),
+        )
+    } else {
+        lsmr(&a, &b, 0.0, 5, None)
+    };
+    if let Ok(r) = r {
+        assert!(
+            r.x.iter().all(|x| x.is_finite()),
+            "{:?}: {:?}",
+            r.stop_reason,
+            r.x
+        );
+    }
+}
