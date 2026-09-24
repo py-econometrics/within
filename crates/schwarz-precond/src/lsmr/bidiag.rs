@@ -142,10 +142,9 @@ fn alpha_from_vp(v: &[f64], p_tilde: &[f64]) -> Result<f64, AlphaError> {
     if norm_v == 0.0 || norm_p == 0.0 {
         return Ok(0.0);
     }
-    // Norms scaled to `2^500` cap the sum at `2^1003` (Cauchy–Schwarz), leaving a tiny cosine room.
-    let (kv, kp) = (500 - exponent(norm_v), 500 - exponent(norm_p));
-    // An even total lets `√` halve it exactly.
-    let kv = kv + ((kv + kp) & 1);
+    // Even shifts to near `2^500` keep the re-sum below `2^1003` and let `√` halve the total exactly.
+    let shift = |norm: f64| (500 - exponent(norm)) & !1;
+    let (kv, kp) = (shift(norm_v), shift(norm_p));
     let scaled: f64 = v
         .iter()
         .zip(p_tilde)
