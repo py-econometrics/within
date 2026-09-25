@@ -13,7 +13,6 @@ use crate::csr_block::CsrBlock;
 use crate::domain::{row_weight, PreparedDesign};
 
 use super::to_u32;
-use crate::domain::Loading as ColumnLoading;
 
 /// Hard cap on the dense accumulator (~40 MB); larger tables always go sparse.
 const DENSE_TABLE_MAX_ENTRIES: usize = 5_000_000;
@@ -93,14 +92,10 @@ pub(super) fn accumulate_cross_block(
 
     let row_levels = design.frame.level_column(pair.rows.term);
     let col_levels = design.frame.level_column(pair.cols.term);
-    let load = |col: ColumnLoading<u32>| {
-        col.covariate()
-            .map(|&c| prepared.loading_column(c as usize))
-    };
     // One arm per loading combination; closures aren't generic, so the literals repeat.
     match (
-        load(design.loading(pair.rows)),
-        load(design.loading(pair.cols)),
+        prepared.channel_loading(pair.rows),
+        prepared.channel_loading(pair.cols),
     ) {
         (None, None) => accumulate(
             PairColumns {

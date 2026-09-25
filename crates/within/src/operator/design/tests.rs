@@ -300,7 +300,8 @@ mod design_tests {
 }
 
 mod slope_design_tests {
-    use crate::domain::{Design, Effect, Loading, PreparedDesign};
+    use crate::channel::Channel;
+    use crate::domain::{Design, Effect, PreparedDesign};
     use crate::operator::DesignOperator;
     use schwarz_precond::Operator;
 
@@ -320,13 +321,11 @@ mod slope_design_tests {
         let mut d = vec![vec![0.0; design.n_dofs]; design.n_obs];
         for (q, t) in design.terms.iter().enumerate() {
             let levels = design.frame.level_column(q);
-            for (c, loading) in t.columns.iter().enumerate() {
+            for c in 0..t.columns.len() {
                 let base = t.offset + c * t.n_levels();
+                let z = prepared.channel_loading(Channel { term: q, column: c });
                 for (i, &lev) in levels.iter().enumerate() {
-                    d[i][base + lev as usize] = match loading {
-                        Loading::Constant => 1.0,
-                        Loading::Covariate(k) => prepared.loading_column(*k as usize)[i],
-                    };
+                    d[i][base + lev as usize] = z.map_or(1.0, |z| z[i]);
                 }
             }
         }

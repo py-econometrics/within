@@ -7,6 +7,7 @@ use portable_atomic::AtomicF64;
 use rayon::prelude::*;
 
 use super::PAR_THRESHOLD;
+use crate::channel::Channel;
 use crate::domain::Loading;
 use crate::domain::{PreparedDesign, TermMeta};
 
@@ -29,39 +30,38 @@ pub(super) fn scatter_apply(
             [Loading::Constant] => {
                 scatter_term::<1>(block, t, levels, parallel, scratch, |i| [base(i)])
             }
-            [Loading::Constant, Loading::Covariate(c0)] => {
-                let z0 = prepared.loading_column(*c0 as usize);
+            [Loading::Constant, Loading::Covariate(_)] => {
+                let z0: &[f64] = &prepared.term_loadings(q)[0];
                 scatter_term::<2>(block, t, levels, parallel, scratch, |i| {
                     let b = base(i);
                     [b, z0[i] * b]
                 })
             }
-            [Loading::Constant, Loading::Covariate(c0), Loading::Covariate(c1)] => {
-                let z0 = prepared.loading_column(*c0 as usize);
-                let z1 = prepared.loading_column(*c1 as usize);
+            [Loading::Constant, Loading::Covariate(_), Loading::Covariate(_)] => {
+                let z0: &[f64] = &prepared.term_loadings(q)[0];
+                let z1: &[f64] = &prepared.term_loadings(q)[1];
                 scatter_term::<3>(block, t, levels, parallel, scratch, |i| {
                     let b = base(i);
                     [b, z0[i] * b, z1[i] * b]
                 })
             }
-            [Loading::Covariate(c0), Loading::Covariate(c1)] => {
-                let z0 = prepared.loading_column(*c0 as usize);
-                let z1 = prepared.loading_column(*c1 as usize);
+            [Loading::Covariate(_), Loading::Covariate(_)] => {
+                let z0: &[f64] = &prepared.term_loadings(q)[0];
+                let z1: &[f64] = &prepared.term_loadings(q)[1];
                 scatter_term::<2>(block, t, levels, parallel, scratch, |i| {
                     let b = base(i);
                     [z0[i] * b, z1[i] * b]
                 })
             }
             columns => {
-                for (c, loading) in columns.iter().enumerate() {
+                for c in 0..columns.len() {
                     let start = c * t.n_levels();
                     let slot = &mut block[start..start + t.n_levels()];
-                    match loading {
-                        Loading::Constant => {
+                    match prepared.channel_loading(Channel { term: q, column: c }) {
+                        None => {
                             scatter_term::<1>(slot, t, levels, parallel, scratch, |i| [base(i)]);
                         }
-                        Loading::Covariate(k) => {
-                            let z = prepared.loading_column(*k as usize);
+                        Some(z) => {
                             scatter_term::<1>(slot, t, levels, parallel, scratch, move |i| {
                                 [z[i] * base(i)]
                             });

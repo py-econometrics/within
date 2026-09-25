@@ -410,9 +410,7 @@ impl<'a> Solver<'a> {
         let demeaned = rhs.op.demeaned(&r.x, &rhs.y, r.true_residual);
 
         let mut x = r.x;
-        if let Some(rp) = &self.prepared.reparam {
-            rp.back_transform(&mut x);
-        }
+        self.prepared.back_transform(&mut x);
 
         RhsSolution {
             x,
@@ -504,13 +502,8 @@ impl<'a> Solver<'a> {
     /// Per-level directions the data cannot identify, shared across all RHS:
     /// identification depends only on the design and weights, never on `y`.
     fn unidentified(&self) -> Vec<CoefficientAddress> {
-        let Some(reparam) = &self.prepared.reparam else {
-            return Vec::new();
-        };
-        reparam
-            .unidentified
-            .iter()
-            .copied()
+        self.prepared
+            .unidentified()
             .map(|position| position.to_caller_address(&self.prepared.design))
             .collect()
     }

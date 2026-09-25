@@ -11,7 +11,7 @@ mod reparam;
 pub(crate) use cross_tab::{BlockDiagonals, CrossTab};
 pub(crate) use level_moments::{BasisScratch, RANK_TOL};
 pub(crate) use prepared::PreparedDesign;
-use reparam::SlopeReparam;
+use reparam::WhitenedTerm;
 
 pub use effect::Effect;
 

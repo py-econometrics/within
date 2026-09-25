@@ -1,4 +1,7 @@
-use super::{row_weight, Design, SlopeReparam};
+use rayon::prelude::*;
+
+use super::{row_weight, Design, WhitenedTerm};
+use crate::channel::{Channel, CoefficientPosition};
 use crate::BuildError;
 
 /// A [`Design`] plus all state one weight vector determines.
@@ -6,8 +9,15 @@ pub(crate) struct PreparedDesign<'a> {
     pub(crate) design: Design<'a>,
     /// `W^{1/2}` in the design's internal observation order; `None` is unweighted.
     sqrt_weights: Option<Vec<f64>>,
-    /// `None` for slope-free designs.
-    pub(crate) reparam: Option<SlopeReparam>,
+    /// Indexed like `design.terms`.
+    terms: Vec<PreparedTerm>,
+}
+
+/// One term's weight-dependent state.
+enum PreparedTerm {
+    /// Slope-free: nothing beyond the shared `sqrt_weights`.
+    Plain,
+    Whitened(WhitenedTerm),
 }
 
 impl<'a> PreparedDesign<'a> {
@@ -15,12 +25,64 @@ impl<'a> PreparedDesign<'a> {
         let sqrt_weights = weights
             .map(|weights| prepare_sqrt_weights(&design, weights))
             .transpose()?;
-        let reparam = SlopeReparam::build(&design, sqrt_weights.as_deref());
+        let terms = (0..design.terms.len())
+            .into_par_iter()
+            .map(|term| {
+                if design.terms[term].has_slopes() {
+                    PreparedTerm::Whitened(WhitenedTerm::build(
+                        &design,
+                        term,
+                        sqrt_weights.as_deref(),
+                    ))
+                } else {
+                    PreparedTerm::Plain
+                }
+            })
+            .collect();
         Ok(Self {
             design,
             sqrt_weights,
-            reparam,
+            terms,
         })
+    }
+
+    /// A term's loading columns in the solve basis, in slope-column order; empty if slope-free.
+    pub(crate) fn term_loadings(&self, term: usize) -> &[Vec<f64>] {
+        match &self.terms[term] {
+            PreparedTerm::Whitened(whitened) => &whitened.loadings,
+            PreparedTerm::Plain => &[],
+        }
+    }
+
+    /// A channel's loading column in the solve basis; `None` for an intercept.
+    pub(crate) fn channel_loading(&self, channel: Channel) -> Option<&[f64]> {
+        let meta = &self.design.terms[channel.term];
+        meta.columns[channel.column].covariate().map(|_| {
+            &*self.term_loadings(channel.term)[channel.column - meta.has_intercept() as usize]
+        })
+    }
+
+    /// Directions the data cannot identify, ascending in `(term, level, column)`.
+    pub(crate) fn unidentified(&self) -> impl Iterator<Item = CoefficientPosition> + '_ {
+        self.whitened_terms()
+            .flat_map(|(_, whitened)| whitened.unidentified.iter().copied())
+    }
+
+    /// Map solve-basis coefficients back to the user's parametrization.
+    pub(crate) fn back_transform(&self, x: &mut [f64]) {
+        for (term, whitened) in self.whitened_terms() {
+            whitened.back_transform(&self.design.terms[term], x);
+        }
+    }
+
+    fn whitened_terms(&self) -> impl Iterator<Item = (usize, &WhitenedTerm)> {
+        self.terms
+            .iter()
+            .enumerate()
+            .filter_map(|(term, prepared)| match prepared {
+                PreparedTerm::Whitened(whitened) => Some((term, whitened)),
+                PreparedTerm::Plain => None,
+            })
     }
 
     /// `W^{1/2}` in internal observation order; `None` is unweighted.
@@ -33,15 +95,6 @@ impl<'a> PreparedDesign<'a> {
     #[inline]
     pub(crate) fn row_weight(&self, obs: usize) -> f64 {
         row_weight(self.sqrt_weights(), obs)
-    }
-
-    /// Loading column `column` in the solve basis.
-    pub(crate) fn loading_column(&self, column: usize) -> &[f64] {
-        // Only slope terms reference loading columns, and any slope term makes `reparam` `Some`.
-        self.reparam
-            .as_ref()
-            .expect("loading column on a slope-free design")
-            .loading_column(column)
     }
 }
 

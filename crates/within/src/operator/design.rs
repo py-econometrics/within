@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use portable_atomic::AtomicF64;
 use schwarz_precond::Operator;
 
+use crate::channel::Channel;
 use crate::domain::PreparedDesign;
 
 mod gather;
@@ -47,12 +48,13 @@ impl<'a> DesignOperator<'a> {
         let mut diag = vec![0.0; design.n_dofs];
         for (index, term) in design.terms.iter().enumerate() {
             let levels = design.frame.level_column(index);
-            for (column, loading) in term.columns.iter().enumerate() {
+            for column in 0..term.columns.len() {
                 let base = term.column_base(column);
                 let slice = &mut diag[base..base + term.n_levels()];
-                let z = loading
-                    .covariate()
-                    .map(|&c| self.prepared.loading_column(c as usize));
+                let z = self.prepared.channel_loading(Channel {
+                    term: index,
+                    column,
+                });
                 for (obs, &level) in levels.iter().enumerate() {
                     let w = self.prepared.row_weight(obs);
                     // Keep `w * z * z` left-to-right: a zero weight kills a huge `z` first.

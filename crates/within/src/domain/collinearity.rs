@@ -109,9 +109,10 @@ fn residual_shares(
     let design = &prepared.design;
     let meta = &design.terms[term];
     let levels = design.frame.level_column(term);
-    let us: Vec<&[f64]> = meta
-        .covariates()
-        .map(|c| prepared.loading_column(c as usize))
+    let us: Vec<&[f64]> = prepared
+        .term_loadings(term)
+        .iter()
+        .map(Vec::as_slice)
         .collect();
     let intercept = meta.has_intercept();
     let columns: Vec<&[f64]> = targets

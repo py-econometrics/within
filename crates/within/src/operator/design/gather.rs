@@ -3,6 +3,7 @@
 use rayon::prelude::*;
 
 use super::PAR_THRESHOLD;
+use crate::channel::Channel;
 use crate::domain::Loading;
 use crate::domain::PreparedDesign;
 
@@ -28,41 +29,42 @@ pub(crate) fn gather_apply(
             let col = |c: usize| &src[offset + c * n_levels..offset + (c + 1) * n_levels];
             match &*t.columns {
                 [Loading::Constant] => gather_term(chunk, row_start, levels, [col(0)], |_| [1.0]),
-                [Loading::Constant, Loading::Covariate(c0)] => {
-                    let z0 = prepared.loading_column(*c0 as usize);
+                [Loading::Constant, Loading::Covariate(_)] => {
+                    let z0: &[f64] = &prepared.term_loadings(q)[0];
                     gather_term(chunk, row_start, levels, [col(0), col(1)], |i| [1.0, z0[i]])
                 }
-                [Loading::Constant, Loading::Covariate(c0), Loading::Covariate(c1)] => {
-                    let z0 = prepared.loading_column(*c0 as usize);
-                    let z1 = prepared.loading_column(*c1 as usize);
+                [Loading::Constant, Loading::Covariate(_), Loading::Covariate(_)] => {
+                    let z0: &[f64] = &prepared.term_loadings(q)[0];
+                    let z1: &[f64] = &prepared.term_loadings(q)[1];
                     gather_term(chunk, row_start, levels, [col(0), col(1), col(2)], |i| {
                         [1.0, z0[i], z1[i]]
                     })
                 }
-                [Loading::Covariate(c0), Loading::Covariate(c1)] => {
-                    let z0 = prepared.loading_column(*c0 as usize);
-                    let z1 = prepared.loading_column(*c1 as usize);
+                [Loading::Covariate(_), Loading::Covariate(_)] => {
+                    let z0: &[f64] = &prepared.term_loadings(q)[0];
+                    let z1: &[f64] = &prepared.term_loadings(q)[1];
                     gather_term(chunk, row_start, levels, [col(0), col(1)], |i| {
                         [z0[i], z1[i]]
                     })
                 }
-                [Loading::Covariate(c0)] => {
-                    let z0 = prepared.loading_column(*c0 as usize);
+                [Loading::Covariate(_)] => {
+                    let z0: &[f64] = &prepared.term_loadings(q)[0];
                     gather_term(chunk, row_start, levels, [col(0)], |i| [z0[i]])
                 }
                 columns => {
                     // A dynamic column count cannot monomorphize a fixed arity.
+                    let loads: Vec<Option<&[f64]>> = (0..columns.len())
+                        .map(|column| prepared.channel_loading(Channel { term: q, column }))
+                        .collect();
                     for (local, dst_val) in chunk.iter_mut().enumerate() {
                         let i = row_start + local;
                         let lev = levels[i] as usize;
                         let mut acc = 0.0;
-                        for (c, loading) in columns.iter().enumerate() {
+                        for (c, load) in loads.iter().enumerate() {
                             let coef = src[offset + c * n_levels + lev];
-                            acc += match loading {
-                                Loading::Constant => coef,
-                                Loading::Covariate(k) => {
-                                    coef * prepared.loading_column(*k as usize)[i]
-                                }
+                            acc += match load {
+                                None => coef,
+                                Some(z) => coef * z[i],
                             };
                         }
                         *dst_val += acc;
