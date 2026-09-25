@@ -39,7 +39,7 @@ impl LevelMoments {
         };
         let mut z_row = vec![0.0; v];
         let mut delta = vec![0.0; v];
-        for (obs, &level) in design.frame.level_column(term).iter().enumerate() {
+        for (obs, &level) in design.frame.factor(term).levels().iter().enumerate() {
             for (zr, col) in z_row.iter_mut().zip(&zs) {
                 *zr = col[obs];
             }

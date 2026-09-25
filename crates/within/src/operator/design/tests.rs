@@ -319,7 +319,7 @@ mod slope_design_tests {
         let design = &prepared.design;
         let mut d = vec![vec![0.0; design.n_dofs]; design.n_obs];
         for (q, t) in design.terms.iter().enumerate() {
-            let levels = design.frame.level_column(q);
+            let levels = design.frame.factor(q).levels();
             for (c, loading) in t.columns.iter().enumerate() {
                 let base = t.offset + c * t.n_levels();
                 for (i, &lev) in levels.iter().enumerate() {

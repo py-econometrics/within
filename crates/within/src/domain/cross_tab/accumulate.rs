@@ -91,8 +91,8 @@ pub(super) fn accumulate_cross_block(
     let sparse_cost = design.n_obs.saturating_mul(12);
     let go_sparse = table_size > DENSE_TABLE_MAX_ENTRIES && sparse_cost < dense_cost;
 
-    let row_levels = design.frame.level_column(pair.rows.term);
-    let col_levels = design.frame.level_column(pair.cols.term);
+    let row_levels = design.frame.factor(pair.rows.term).levels();
+    let col_levels = design.frame.factor(pair.cols.term).levels();
     let load = |col: ColumnLoading<u32>| {
         col.covariate()
             .map(|&c| prepared.loading_column(c as usize))

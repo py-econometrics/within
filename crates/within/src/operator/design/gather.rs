@@ -24,7 +24,7 @@ pub(crate) fn gather_apply(
     for_each_chunk(dst, |chunk, row_start| {
         for (q, t) in design.terms.iter().enumerate() {
             let (offset, n_levels) = (t.offset, t.n_levels());
-            let levels = frame.level_column(q);
+            let levels = frame.factor(q).levels();
             let col = |c: usize| &src[offset + c * n_levels..offset + (c + 1) * n_levels];
             match &*t.columns {
                 [Loading::Constant] => gather_term(chunk, row_start, levels, [col(0)], |_| [1.0]),

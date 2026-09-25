@@ -46,7 +46,7 @@ impl<'a> DesignOperator<'a> {
         let design = &self.prepared.design;
         let mut diag = vec![0.0; design.n_dofs];
         for (index, term) in design.terms.iter().enumerate() {
-            let levels = design.frame.level_column(index);
+            let levels = design.frame.factor(index).levels();
             for (column, loading) in term.columns.iter().enumerate() {
                 let base = term.column_base(column);
                 let slice = &mut diag[base..base + term.n_levels()];

@@ -276,7 +276,7 @@ fn design_contains_every_compact_level_position() {
 
     for (term, meta) in design.design.terms.iter().enumerate() {
         let mut observed = vec![false; meta.n_levels()];
-        for &level in design.design.frame.level_column(term) {
+        for &level in design.design.frame.factor(term).levels() {
             observed[level as usize] = true;
         }
         assert!(
@@ -302,8 +302,8 @@ fn dense_and_sparse_paths_agree_on_signed_data() {
         cols: Channel { term: 1, column: 0 },
     };
     let cols = PairColumns {
-        row_levels: design.frame.level_column(0),
-        col_levels: design.frame.level_column(1),
+        row_levels: design.frame.factor(0).levels(),
+        col_levels: design.frame.factor(1).levels(),
         row_load: design.frame.loading_column(0),
         col_load: Unit,
         sqrt_weights: None,

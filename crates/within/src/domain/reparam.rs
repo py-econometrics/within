@@ -94,7 +94,7 @@ impl TermReparam {
         let intercept = meta.has_intercept();
         let z_cols: Vec<usize> = meta.covariates().map(|c| c as usize).collect();
         let v = z_cols.len();
-        let levels = design.frame.level_column(term);
+        let levels = design.frame.factor(term).levels();
         let zs: Vec<&[f64]> = z_cols
             .iter()
             .map(|&c| design.frame.loading_column(c))
