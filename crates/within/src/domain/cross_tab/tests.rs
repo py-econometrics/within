@@ -26,6 +26,28 @@ fn design_of(columns: Vec<Vec<u32>>) -> PreparedDesign<'static> {
 }
 
 #[test]
+fn channel_pair_maps_levels_to_interleaved_solver_dofs() {
+    let f = [0u32, 0, 1, 1, 0, 1];
+    let g = [0u32, 1, 2, 0, 1, 2];
+    let z = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let design = Design::new([
+        Effect::new(&f, true, [&z[..]]).unwrap(),
+        Effect::new(&g, true, []).unwrap(),
+    ])
+    .unwrap();
+    let prepared = PreparedDesign::unweighted_for_test(design);
+    let pair = ChannelPair {
+        rows: Channel { term: 0, column: 1 },
+        cols: Channel { term: 1, column: 0 },
+    };
+
+    let (_, _, local_to_global) = CrossTab::build_for_pair(&prepared, pair);
+
+    // Term 0 is [level-0 intercept, level-0 slope, level-1 intercept, level-1 slope].
+    assert_eq!(local_to_global, vec![1, 3, 4, 5, 6]);
+}
+
+#[test]
 fn test_cross_tab_sparse_accumulation_path() {
     // 2,500 observed levels per factor make n_rows * n_cols exceed the 5M threshold.
     let n_obs = 2500usize;

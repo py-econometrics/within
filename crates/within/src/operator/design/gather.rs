@@ -3,8 +3,7 @@
 use rayon::prelude::*;
 
 use super::PAR_THRESHOLD;
-use crate::domain::Loading;
-use crate::domain::PreparedDesign;
+use crate::domain::{Loading, PreparedDesign, TermMeta};
 
 /// Gather-apply `dst[i] = Σ_t Σ_c src[…] · loading_c(i)`, times `scale[i]` when given.
 pub(crate) fn gather_apply(
@@ -23,41 +22,37 @@ pub(crate) fn gather_apply(
     let frame = &design.frame;
     for_each_chunk(dst, |chunk, row_start| {
         for (q, t) in design.terms.iter().enumerate() {
-            let (offset, n_levels) = (t.offset, t.n_levels());
             let levels = frame.level_column(q);
-            let col = |c: usize| &src[offset + c * n_levels..offset + (c + 1) * n_levels];
+            let block = &src[t.offset..t.offset + t.n_dofs()];
             match &*t.columns {
-                [Loading::Constant] => gather_term(chunk, row_start, levels, [col(0)], |_| [1.0]),
+                [Loading::Constant] => gather_term(chunk, row_start, t, levels, block, |_| [1.0]),
                 [Loading::Constant, Loading::Covariate(c0)] => {
                     let z0 = prepared.loading_column(*c0 as usize);
-                    gather_term(chunk, row_start, levels, [col(0), col(1)], |i| [1.0, z0[i]])
+                    gather_term(chunk, row_start, t, levels, block, |i| [1.0, z0[i]])
                 }
                 [Loading::Constant, Loading::Covariate(c0), Loading::Covariate(c1)] => {
                     let z0 = prepared.loading_column(*c0 as usize);
                     let z1 = prepared.loading_column(*c1 as usize);
-                    gather_term(chunk, row_start, levels, [col(0), col(1), col(2)], |i| {
-                        [1.0, z0[i], z1[i]]
-                    })
+                    gather_term(chunk, row_start, t, levels, block, |i| [1.0, z0[i], z1[i]])
                 }
                 [Loading::Covariate(c0), Loading::Covariate(c1)] => {
                     let z0 = prepared.loading_column(*c0 as usize);
                     let z1 = prepared.loading_column(*c1 as usize);
-                    gather_term(chunk, row_start, levels, [col(0), col(1)], |i| {
-                        [z0[i], z1[i]]
-                    })
+                    gather_term(chunk, row_start, t, levels, block, |i| [z0[i], z1[i]])
                 }
                 [Loading::Covariate(c0)] => {
                     let z0 = prepared.loading_column(*c0 as usize);
-                    gather_term(chunk, row_start, levels, [col(0)], |i| [z0[i]])
+                    gather_term(chunk, row_start, t, levels, block, |i| [z0[i]])
                 }
                 columns => {
                     // A dynamic column count cannot monomorphize a fixed arity.
                     for (local, dst_val) in chunk.iter_mut().enumerate() {
                         let i = row_start + local;
                         let lev = levels[i] as usize;
+                        let start = t.dof_index(0, lev) - t.offset;
+                        let coefficients = &block[start..][..columns.len()];
                         let mut acc = 0.0;
-                        for (c, loading) in columns.iter().enumerate() {
-                            let coef = src[offset + c * n_levels + lev];
+                        for (&coef, loading) in coefficients.iter().zip(columns) {
                             acc += match loading {
                                 Loading::Constant => coef,
                                 Loading::Covariate(k) => {
@@ -106,14 +101,20 @@ fn for_each_chunk(dst: &mut [f64], kernel: impl Fn(&mut [f64], usize) + Sync) {
 fn gather_term<const N: usize>(
     chunk: &mut [f64],
     row_start: usize,
+    meta: &TermMeta,
     levels: &[u32],
-    cols: [&[f64]; N],
+    block: &[f64],
     weights: impl Fn(usize) -> [f64; N],
 ) {
     for (local, dst_val) in chunk.iter_mut().enumerate() {
         let i = row_start + local;
         let lev = levels[i] as usize;
-        let row = cols.iter().zip(weights(i)).map(|(col, w)| col[lev] * w);
+        let start = meta.dof_index(0, lev) - meta.offset;
+        let coefficients = &block[start..][..N];
+        let row = coefficients
+            .iter()
+            .zip(weights(i))
+            .map(|(&coef, w)| coef * w);
         // Fold from -0.0, not 0.0: the true additive identity, folds away.
         *dst_val += row.fold(-0.0, |acc, term| acc + term);
     }

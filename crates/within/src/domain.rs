@@ -258,7 +258,7 @@ impl FactorEncoding {
     }
 }
 
-/// Per-term metadata; coefficient `c` of `level` lives at `offset + c · n_levels + level`.
+/// Per-term metadata; a level's coefficient columns are adjacent in solver coordinates.
 #[derive(Debug, Clone)]
 pub(crate) struct TermMeta {
     pub(crate) encoding: FactorEncoding,
@@ -295,9 +295,12 @@ impl TermMeta {
         self.n_columns() * self.n_levels()
     }
 
-    /// Global DOF base of coefficient column `column`.
-    pub fn column_base(&self, column: usize) -> usize {
-        self.offset + column * self.n_levels()
+    /// Global solver DOF of coefficient `column` at compact `level` position.
+    #[inline]
+    pub fn dof_index(&self, column: usize, level: usize) -> usize {
+        debug_assert!(column < self.n_columns());
+        debug_assert!(level < self.n_levels());
+        self.offset + level * self.n_columns() + column
     }
 }
 
@@ -504,10 +507,13 @@ impl<'a> Design<'a> {
                 hash_usize(&mut hash, term.offset);
                 hash_usize(&mut hash, term.n_levels());
                 hash_usize(&mut hash, term.columns.len());
-                for column in term.columns.iter() {
+                for (column_index, column) in term.columns.iter().enumerate() {
                     match column {
                         Loading::Constant => hash.update([0]),
                         Loading::Covariate(_) => hash.update([1]),
+                    }
+                    for level in 0..term.n_levels() {
+                        hash_usize(&mut hash, term.dof_index(column_index, level));
                     }
                 }
             }
@@ -537,6 +543,25 @@ impl<'a> Design<'a> {
                 out
             }
         }
+    }
+
+    /// Internal level-major solver coordinates → public column-major coefficient order.
+    pub(crate) fn coefficients_out(&self, solver: Vec<f64>) -> Vec<f64> {
+        debug_assert_eq!(solver.len(), self.n_dofs);
+        if self.terms.iter().all(|term| term.n_columns() == 1) {
+            return solver;
+        }
+
+        let mut public = vec![0.0; solver.len()];
+        for term in &self.terms {
+            for column in 0..term.n_columns() {
+                for level in 0..term.n_levels() {
+                    let public_index = term.offset + column * term.n_levels() + level;
+                    public[public_index] = solver[term.dof_index(column, level)];
+                }
+            }
+        }
+        public
     }
 
     /// Number of categorical factors in the design.
@@ -825,6 +850,10 @@ mod tests {
         // term 0: [intercept, z0, z1] over 2 levels; term 1: intercept over 3; term 2: slope.
         assert_eq!(design.terms[0].offset, 0);
         assert_eq!(design.terms[0].n_dofs(), 6);
+        assert_eq!(design.terms[0].dof_index(0, 0), 0);
+        assert_eq!(design.terms[0].dof_index(1, 0), 1);
+        assert_eq!(design.terms[0].dof_index(2, 0), 2);
+        assert_eq!(design.terms[0].dof_index(0, 1), 3);
         assert_eq!(design.terms[1].offset, 6);
         assert_eq!(design.terms[1].n_dofs(), 3);
         assert_eq!(design.terms[2].offset, 9);
@@ -844,5 +873,13 @@ mod tests {
         assert_eq!(&*design.terms[2].columns, &[Loading::Covariate(2)]);
         assert_eq!(design.frame.loading_column(0), &z0[..]);
         assert_eq!(design.frame.loading_column(2), &z1[..]);
+
+        let solver_order = vec![
+            10.0, 11.0, 12.0, 20.0, 21.0, 22.0, 30.0, 31.0, 32.0, 40.0, 41.0,
+        ];
+        assert_eq!(
+            design.coefficients_out(solver_order),
+            vec![10.0, 20.0, 11.0, 21.0, 12.0, 22.0, 30.0, 31.0, 32.0, 40.0, 41.0]
+        );
     }
 }
