@@ -5,8 +5,8 @@ use schwarz_precond::{Operator, SolveError};
 
 use crate::channel::Channel;
 use crate::domain::collinearity::{CollinearSlope, GAUGE_NULL_TOL};
-use crate::domain::{BasisScratch, PreparedDesign, RANK_TOL};
-use crate::linalg::dot;
+use crate::domain::PreparedDesign;
+use crate::linalg::{dot, GramBasisWorkspace, RANK_TOL};
 use crate::operator::DesignOperator;
 use crate::AliasVerdict;
 
@@ -33,18 +33,34 @@ impl GaugeConstraint {
         let operator = DesignOperator::new(prepared);
         // Whitening leaves a level's columns orthogonal, so `Aᵀc ./ diag(AᵀA)` is its per-level fit.
         let scale = operator.column_norms_squared();
-        let proposed = nulls
+        let proposed: Vec<Vec<f64>> = nulls
             .iter()
             .map(|slope| propose(prepared, &operator, &scale, slope.slope, slope.term))
             .collect();
         // A contrast of near-parallel proposals divides their certified energy by its residual
         // share, so a share under certificate/tolerance is not itself a certified null.
         let certificate = nulls.iter().map(|s| s.certificate()).fold(0.0, f64::max);
-        let rank_tol = (certificate / GAUGE_NULL_TOL).max(RANK_TOL);
-        let gauge = Self {
-            rows: orthonormalize(proposed, n_dofs, rank_tol),
-            n_dofs,
-        };
+        let k = proposed.len();
+        let mut workspace =
+            GramBasisWorkspace::new(k, (certificate / GAUGE_NULL_TOL).max(RANK_TOL));
+        let w = workspace
+            .orthonormalize(|gram| {
+                for (j, a) in proposed.iter().enumerate() {
+                    for (i, b) in proposed.iter().enumerate() {
+                        gram[j * k + i] = dot(a, b);
+                    }
+                }
+            })
+            .rows;
+        let mut rows = vec![0.0; w.len() / k * n_dofs];
+        for (row, coefficients) in rows.chunks_exact_mut(n_dofs).zip(w.chunks_exact(k)) {
+            for (&c, p) in coefficients.iter().zip(&proposed) {
+                for (r, &pi) in row.iter_mut().zip(p) {
+                    *r += c * pi;
+                }
+            }
+        }
+        let gauge = Self { rows, n_dofs };
         (gauge.rank() > 0).then_some(gauge)
     }
 
@@ -148,28 +164,4 @@ fn propose(
         }
     }
     values
-}
-
-/// Pivoted Gram-Schmidt in the proposals' Gram; `tol` is the residual share a new row must keep.
-fn orthonormalize(proposed: Vec<Vec<f64>>, n_dofs: usize, tol: f64) -> Vec<f64> {
-    let k = proposed.len();
-    let mut scratch = BasisScratch::new(k);
-    for (j, a) in proposed.iter().enumerate() {
-        for (i, b) in proposed.iter().enumerate() {
-            scratch.gram[j * k + i] = dot(a, b);
-        }
-    }
-    scratch.orthonormalize(k, tol);
-    let mut rows = vec![0.0; scratch.basis.len() / k * n_dofs];
-    for (row, coefficients) in rows
-        .chunks_exact_mut(n_dofs)
-        .zip(scratch.basis.chunks_exact(k))
-    {
-        for (&c, p) in coefficients.iter().zip(&proposed) {
-            for (r, &pi) in row.iter_mut().zip(p) {
-                *r += c * pi;
-            }
-        }
-    }
-    rows
 }
