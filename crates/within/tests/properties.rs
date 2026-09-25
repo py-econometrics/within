@@ -24,17 +24,21 @@ fn default_params() -> LsmrOptions {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(10))]
 
-    // No solve runs first, so the ladder would just hand back its diagonal base.
     #[test]
     fn prop_preconditioner_serde_roundtrip(
         (cats, _y) in random_fe_problem_strategy(),
-        precond in prop_oneof![Just(PreconditionerConfig::Diagonal), Just(additive())],
+        precond in prop_oneof![
+            Just(PreconditionerConfig::Diagonal),
+            Just(additive()),
+            Just(PreconditionerConfig::default()),
+        ],
     ) {
         let solver = within::Solver::new(cats.view(), None, &precond).unwrap();
         let fe_precond = solver.preconditioner().unwrap();
 
         let bytes = postcard::to_stdvec(fe_precond).unwrap();
         let deserialized: Preconditioner = postcard::from_bytes(&bytes).unwrap();
+        prop_assert_eq!(deserialized.config(), fe_precond.config());
 
         let n = fe_precond.nrows();
         let x: Vec<f64> = (0..n).map(|i| (i as f64 * 0.5).sin()).collect();

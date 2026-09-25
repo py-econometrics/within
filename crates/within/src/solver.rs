@@ -326,7 +326,7 @@ impl<'a> Solver<'a> {
                         actual_cols: p.ncols(),
                     });
                 }
-                (PrecondSlot::Static(Some(p)), Vec::new())
+                (PrecondSlot::reuse(&prepared, p)?, Vec::new())
             }
         };
 
@@ -452,7 +452,7 @@ impl<'a> Solver<'a> {
             .map(|y| {
                 let rhs = self.prepare(y)?;
                 let options = MlsmrOptions {
-                    escalation: ladder.map(|a| &a.stall as &dyn EscalationPolicy),
+                    escalation: ladder.map(|a| &a.ladder().stall as &dyn EscalationPolicy),
                     local_size: lsmr.local_size,
                     ..Default::default()
                 };
@@ -597,8 +597,8 @@ impl<'a> Solver<'a> {
     }
 
     /// Access the preconditioner (for serialization or reuse across solvers).
-    /// Under Adaptive: the Schwarz map once built, otherwise the diagonal base; a reused map is
-    /// fixed and carries no escalation policy.
+    /// Under Adaptive: the Schwarz map once built, otherwise the diagonal base carrying the
+    /// ladder, so a solver reusing it escalates the same way.
     pub fn preconditioner(&self) -> Option<&Preconditioner> {
         match &self.slot {
             PrecondSlot::Static(p) => p.as_ref(),

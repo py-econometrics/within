@@ -263,6 +263,15 @@ impl PyPreconditionerConfig {
                 local_solver: PyLocalSolverConfig::from_native(local_solver),
                 reduction: PyReductionStrategy::from_native(*reduction),
             },
+            PreconditionerConfig::Adaptive {
+                local_solver,
+                reduction,
+                stall,
+            } => Self::Adaptive {
+                local_solver: PyLocalSolverConfig::from_native(local_solver),
+                reduction: PyReductionStrategy::from_native(*reduction),
+                stall: PyStaleness { inner: *stall },
+            },
             _ => {
                 return Err(pyo3::exceptions::PyRuntimeError::new_err(
                     "unsupported preconditioner configuration",

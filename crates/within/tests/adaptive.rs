@@ -165,6 +165,34 @@ fn later_solves_cost_the_same_as_a_cold_schwarz_solver() {
     );
 }
 
+/// A map taken before any solve keeps the strategy: reused in memory or off the wire, it
+/// escalates exactly as the solver it came from.
+#[rstest]
+fn an_unescalated_map_reuses_as_the_ladder(#[values(false, true)] through_wire: bool) {
+    let y = common::make_deterministic_y(&crossed_panel());
+    let source = Solver::new(crossed_panel(), None, adaptive(eager_stall())).expect("solver");
+    let taken = source.preconditioner().expect("a base map").clone();
+    assert_eq!(taken.variant_name(), "Adaptive");
+    assert_eq!(taken.config(), adaptive(eager_stall()));
+    let taken = if through_wire {
+        let bytes = postcard::to_allocvec(&taken).expect("serialize");
+        postcard::from_bytes(&bytes).expect("deserialize")
+    } else {
+        taken
+    };
+
+    let reused = Solver::new(crossed_panel(), None, taken).expect("solver");
+    let resumed = reused.solve(&y, &tight()).expect("reused solve");
+    let original = source.solve(&y, &tight()).expect("source solve");
+
+    assert!(
+        reused.has_escalated(),
+        "a reused ladder must still hand off"
+    );
+    assert_eq!(resumed.iterations, original.iterations);
+    common::assert_solutions_close(&resumed.demeaned, &original.demeaned, 1e-12);
+}
+
 /// The batch builds once, between passes, and every stalled RHS resumes on the map; the build
 /// is charged to that batch's `time_setup` and never again to a later one.
 #[test]

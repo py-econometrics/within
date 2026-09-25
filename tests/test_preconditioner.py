@@ -262,10 +262,10 @@ class TestAdaptive:
         assert config.local_solver.dense_threshold == 8
         assert config.stall == Staleness(window=3, threshold=0.25)
 
-    def test_default_solver_starts_on_the_diagonal_rung(self, problem):
+    def test_default_solver_hands_out_the_ladder_before_escalating(self, problem):
         cats, _ = problem
         solver = Solver(as_solver_categories(cats))
-        assert solver.preconditioner.config == PreconditionerConfig.Diagonal()
+        assert solver.preconditioner.config == PreconditionerConfig.Adaptive()
 
     def test_escalation_is_reachable_and_reported(self, problem):
         cats, y = problem
