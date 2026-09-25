@@ -262,10 +262,16 @@ class TestAdaptive:
         assert config.local_solver.dense_threshold == 8
         assert config.stall == Staleness(window=3, threshold=0.25)
 
-    def test_default_solver_hands_out_the_ladder_before_escalating(self, problem):
+    def test_solver_hands_out_the_tuned_ladder_before_escalating(self, problem):
         cats, _ = problem
-        solver = Solver(as_solver_categories(cats))
-        assert solver.preconditioner.config == PreconditionerConfig.Adaptive()
+        requested = PreconditionerConfig.Adaptive(
+            local_solver=LocalSolverConfig(dense_threshold=8),
+            reduction=ReductionStrategy.AtomicScatter,
+            stall=Staleness(window=3, threshold=0.25),
+        )
+        solver = Solver(as_solver_categories(cats), preconditioner=requested)
+        assert solver.preconditioner.config == requested
+        assert pickle.loads(pickle.dumps(solver.preconditioner)).config == requested
 
     def test_escalation_is_reachable_and_reported(self, problem):
         cats, y = problem

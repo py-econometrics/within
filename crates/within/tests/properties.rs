@@ -7,7 +7,8 @@ use within::{
 #[path = "common/property_strategies.rs"]
 mod strategies;
 use strategies::{
-    additive, any_preconditioner, random_fe_problem_strategy, random_slopes_problem_strategy,
+    adaptive, additive, any_preconditioner, random_fe_problem_strategy,
+    random_slopes_problem_strategy,
 };
 
 fn at(term: usize, level: u32, column: usize) -> CoefficientAddress {
@@ -30,7 +31,7 @@ proptest! {
         precond in prop_oneof![
             Just(PreconditionerConfig::Diagonal),
             Just(additive()),
-            Just(PreconditionerConfig::default()),
+            Just(adaptive()),
         ],
     ) {
         let solver = within::Solver::new(cats.view(), None, &precond).unwrap();

@@ -137,14 +137,13 @@ pub struct Preconditioner {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 enum Variant {
-    // Keep Additive first: postcard encodes by declaration order and the fixture depends on it.
+    // Append only: postcard encodes by declaration order and the fixtures depend on it.
     Additive(FeSchwarz),
     Diagonal(DiagonalPreconditioner),
     Adaptive(AdaptiveLadder),
 }
 
-/// An unescalated `Adaptive` strategy: applies the diagonal and keeps what escalation needs, so a
-/// solver that reuses it can still hand off to Schwarz.
+/// An unescalated `Adaptive` map: the diagonal plus what a reusing solver needs to escalate.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct AdaptiveLadder {
     base: DiagonalPreconditioner,
@@ -167,6 +166,17 @@ impl Preconditioner {
         match &self.inner {
             Variant::Adaptive(ladder) => Some(ladder),
             Variant::Additive(_) | Variant::Diagonal(_) => None,
+        }
+    }
+
+    /// Drop the ladder for a design with no factor pair to escalate to, keeping its diagonal.
+    pub(crate) fn settle(self) -> Self {
+        match self.inner {
+            Variant::Adaptive(ladder) => Self {
+                inner: Variant::Diagonal(ladder.base),
+                ..self
+            },
+            Variant::Additive(_) | Variant::Diagonal(_) => self,
         }
     }
 

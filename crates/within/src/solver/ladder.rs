@@ -47,24 +47,19 @@ impl PrecondSlot {
                 reduction,
                 stall,
             } => {
-                // The escalated build is deferred, so nothing else checks its local solver here.
+                // Fail before the diagonal pass; `reuse` repeats this for a deserialized ladder.
                 local_solver.validate()?;
-                // One term has no factor pair to escalate to; settle now and skip the probe.
-                let slot = if prepared.design.n_factors() < 2 {
-                    Self::Static(Some(build_diagonal(prepared)?))
-                } else {
-                    let escalated = SchwarzConfig {
-                        local_solver,
-                        reduction,
-                    };
-                    Self::reuse(prepared, build_adaptive(prepared, stall, escalated)?)?
+                let escalated = SchwarzConfig {
+                    local_solver,
+                    reduction,
                 };
-                (slot, Vec::new())
+                let base = build_adaptive(prepared, stall, escalated)?;
+                (Self::reuse(prepared, base)?, Vec::new())
             }
         })
     }
 
-    /// A reused unescalated ladder resumes as a ladder; any other map stays fixed.
+    /// An unescalated ladder resumes, or settles on one term; any other map stays fixed.
     pub(super) fn reuse(
         prepared: &PreparedDesign<'_>,
         preconditioner: Preconditioner,
@@ -75,7 +70,7 @@ impl PrecondSlot {
         // A deserialized ladder skipped `Adaptive`'s build-time check, and a one-term design settles.
         ladder.escalated.local_solver.validate()?;
         Ok(if prepared.design.n_factors() < 2 {
-            Self::Static(Some(preconditioner))
+            Self::Static(Some(preconditioner.settle()))
         } else {
             Self::Adaptive(Box::new(AdaptivePrecond {
                 base: preconditioner,

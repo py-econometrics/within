@@ -597,8 +597,7 @@ impl<'a> Solver<'a> {
     }
 
     /// Access the preconditioner (for serialization or reuse across solvers).
-    /// Under Adaptive: the Schwarz map once built, otherwise the diagonal base carrying the
-    /// ladder, so a solver reusing it escalates the same way.
+    /// Under Adaptive: the Schwarz map once built, otherwise the diagonal base carrying the ladder.
     pub fn preconditioner(&self) -> Option<&Preconditioner> {
         match &self.slot {
             PrecondSlot::Static(p) => p.as_ref(),
