@@ -27,7 +27,8 @@ struct LevelTransform {
 
 impl TermReparam {
     /// Unidentified directions become zero columns, so they solve to `0`.
-    pub(crate) fn build(design: &Design<'_>, term: usize, moments: &LevelMoments) -> Self {
+    pub(crate) fn build(design: &Design<'_>, term: usize, sqrt_weights: Option<&[f64]>) -> Self {
+        let moments = LevelMoments::build(design, term, sqrt_weights);
         let t = &design.terms[term];
         let (layout, levels) = (&t.layout, t.levels());
         let n_levels = layout.n_levels();

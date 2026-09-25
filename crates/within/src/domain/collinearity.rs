@@ -109,7 +109,7 @@ fn residual_shares(
     let design = &prepared.design;
     let t = prepared.term(term);
     let (layout, levels) = (t.layout, t.levels);
-    let us: Vec<&[f64]> = t.slopes.iter().map(Vec::as_slice).collect();
+    let us = t.slopes;
     let intercept = layout.has_intercept();
     let columns: Vec<&[f64]> = targets
         .iter()
@@ -170,7 +170,7 @@ struct Screen<'a> {
     prepared: &'a PreparedDesign<'a>,
     levels: &'a [u32],
     /// The term's slope columns in the solve basis.
-    us: Vec<&'a [f64]>,
+    us: &'a [Vec<f64>],
     columns: Vec<&'a [f64]>,
     intercept: bool,
     order: RowOrder,
@@ -218,7 +218,7 @@ impl Screen<'_> {
                 stat.observe(c, w, ratio);
                 let wc = w * c;
                 slot[0] += wc;
-                for (s, u) in slot[1..].iter_mut().zip(&self.us) {
+                for (s, u) in slot[1..].iter_mut().zip(self.us) {
                     *s += wc * u[obs];
                 }
             }
@@ -259,7 +259,7 @@ impl Screen<'_> {
                     let start = block.rows.start + task * ROWS_PER_TASK;
                     let rows = start..(start + ROWS_PER_TASK).min(block.rows.end);
                     for (obs, w, row) in self.active_rows(first, rows) {
-                        for (uj, u) in u_row.iter_mut().zip(&self.us) {
+                        for (uj, u) in u_row.iter_mut().zip(self.us) {
                             *uj = u[obs];
                         }
                         for ((slot, column), total) in table[row * stride..][..stride]

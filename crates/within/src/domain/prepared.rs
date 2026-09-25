@@ -1,6 +1,5 @@
 use rayon::prelude::*;
 
-use super::level_moments::LevelMoments;
 use super::{row_weight, Design, TermLayout, TermReparam};
 use crate::channel::CoefficientPosition;
 use crate::BuildError;
@@ -15,7 +14,6 @@ pub(crate) struct PreparedDesign<'a> {
 }
 
 /// A term in the solve basis: the design's rows plus this preparation's whitened slopes.
-#[derive(Clone, Copy)]
 pub(crate) struct PreparedTerm<'p> {
     pub(crate) layout: &'p TermLayout,
     pub(crate) levels: &'p [u32],
@@ -37,21 +35,16 @@ impl<'a> PreparedDesign<'a> {
         let sqrt_weights = weights
             .map(|weights| prepare_sqrt_weights(&design, weights))
             .transpose()?;
-        let slope_terms: Vec<usize> = (0..design.n_factors())
-            .filter(|&t| design.terms[t].layout.has_slopes())
-            .collect();
-        let whitened: Vec<TermReparam> = slope_terms
+        let reparams: Vec<Option<TermReparam>> = design
+            .terms
             .par_iter()
-            .map(|&t| {
-                let moments = LevelMoments::build(&design, t, sqrt_weights.as_deref());
-                TermReparam::build(&design, t, &moments)
+            .enumerate()
+            .map(|(t, term)| {
+                term.layout
+                    .has_slopes()
+                    .then(|| TermReparam::build(&design, t, sqrt_weights.as_deref()))
             })
             .collect();
-        let mut reparams: Vec<Option<TermReparam>> =
-            (0..design.n_factors()).map(|_| None).collect();
-        for (&t, reparam) in slope_terms.iter().zip(whitened) {
-            reparams[t] = Some(reparam);
-        }
         Ok(Self {
             design,
             sqrt_weights,
