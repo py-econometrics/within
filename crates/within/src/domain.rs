@@ -767,6 +767,17 @@ mod tests {
     }
 
     #[test]
+    fn clone_shares_sorted_row_storage() {
+        // The locality sort owns both levels and loadings; a solver's clone must not copy them.
+        let (f, z) = ([2u32, 0, 1, 0], [1.0, 2.0, 3.0, 4.0]);
+        let design = Design::new(vec![Effect::new(&f, true, [&z[..]]).unwrap()]).unwrap();
+        assert!(design.obs_perm.is_some());
+        let clone = design.clone();
+        assert!(Arc::ptr_eq(&clone.terms, &design.terms));
+        assert!(Arc::ptr_eq(&clone.loadings, &design.loadings));
+    }
+
+    #[test]
     fn from_frame_rejects_unclaimed_loading_columns() {
         let err = Design::from_frame(frame(vec![vec![0, 1]], vec![vec![1.0, 2.0]])).unwrap_err();
         assert!(matches!(
