@@ -48,17 +48,14 @@ impl<'a> DesignOperator<'a> {
 
     /// Squared column norms `diag(AᵀA)`.
     pub(crate) fn column_norms_squared(&self) -> Vec<f64> {
-        let design = &self.prepared.design;
-        let mut diag = vec![0.0; design.n_dofs];
-        for term in design.terms.iter() {
-            let (layout, levels) = (&term.layout, term.levels());
-            for (column, loading) in layout.columns.iter().enumerate() {
+        let mut diag = vec![0.0; self.prepared.design.n_dofs];
+        for term in self.prepared.terms() {
+            let layout = term.layout;
+            for column in 0..layout.n_columns() {
                 let base = layout.column_base(column);
                 let slice = &mut diag[base..base + layout.n_levels()];
-                let z = loading
-                    .covariate()
-                    .map(|&c| self.prepared.loading_column(c as usize));
-                for (obs, &level) in levels.iter().enumerate() {
+                let z = term.loading(column);
+                for (obs, &level) in term.levels.iter().enumerate() {
                     let w = self.prepared.row_weight(obs);
                     // Keep `w * z * z` left-to-right: a zero weight kills a huge `z` first.
                     slice[level as usize] += z.map_or(w, |z| w * z[obs] * z[obs]);

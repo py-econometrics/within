@@ -9,8 +9,8 @@ mod prepared;
 mod reparam;
 
 pub(crate) use cross_tab::{BlockDiagonals, CrossTab};
-pub(crate) use prepared::PreparedDesign;
-use reparam::SlopeReparam;
+pub(crate) use prepared::{PreparedDesign, PreparedTerm};
+use reparam::TermReparam;
 
 pub use effect::Effect;
 
@@ -579,10 +579,6 @@ impl<'a> Design<'a> {
     /// Loading column `k` in internal row order, before whitening.
     pub(crate) fn raw_loading_column(&self, k: usize) -> &[f64] {
         &self.loadings[k]
-    }
-
-    pub(crate) fn n_loading_columns(&self) -> usize {
-        self.loadings.len()
     }
 
     /// Number of observations (rows of D).

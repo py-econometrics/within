@@ -300,7 +300,7 @@ mod design_tests {
 }
 
 mod slope_design_tests {
-    use crate::domain::{Design, Effect, Loading, PreparedDesign};
+    use crate::domain::{Design, Effect, PreparedDesign};
     use crate::operator::DesignOperator;
     use schwarz_precond::Operator;
 
@@ -318,15 +318,12 @@ mod slope_design_tests {
     fn dense_matrix(prepared: &PreparedDesign<'_>) -> Vec<Vec<f64>> {
         let design = &prepared.design;
         let mut d = vec![vec![0.0; design.n_dofs]; design.n_obs];
-        for t in design.terms.iter() {
-            let levels = t.levels();
-            for (c, loading) in t.layout.columns.iter().enumerate() {
-                let base = t.layout.offset + c * t.layout.n_levels();
-                for (i, &lev) in levels.iter().enumerate() {
-                    d[i][base + lev as usize] = match loading {
-                        Loading::Constant => 1.0,
-                        Loading::Covariate(k) => prepared.loading_column(*k as usize)[i],
-                    };
+        for t in prepared.terms() {
+            for c in 0..t.layout.n_columns() {
+                let base = t.layout.column_base(c);
+                let z = t.loading(c);
+                for (i, &lev) in t.levels.iter().enumerate() {
+                    d[i][base + lev as usize] = z.map_or(1.0, |z| z[i]);
                 }
             }
         }

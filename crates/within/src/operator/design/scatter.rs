@@ -7,8 +7,7 @@ use portable_atomic::AtomicF64;
 use rayon::prelude::*;
 
 use super::PAR_THRESHOLD;
-use crate::domain::Loading;
-use crate::domain::{PreparedDesign, Term};
+use crate::domain::{PreparedDesign, PreparedTerm};
 
 /// Adjoint scatter over all terms; `base(i)` is the row value each column scales by its loading.
 pub(super) fn scatter_apply(
@@ -21,51 +20,46 @@ pub(super) fn scatter_apply(
     debug_assert_eq!(dst.len(), design.n_dofs);
     let parallel = design.n_obs > PAR_THRESHOLD;
 
-    for t in design.terms.iter() {
-        let layout = &t.layout;
+    for t in prepared.terms() {
+        let layout = t.layout;
         let block = &mut dst[layout.offset..layout.offset + layout.n_dofs()];
-        match &*layout.columns {
-            [Loading::Constant] => scatter_term::<1>(block, t, parallel, scratch, |i| [base(i)]),
-            [Loading::Constant, Loading::Covariate(c0)] => {
-                let z0 = prepared.loading_column(*c0 as usize);
-                scatter_term::<2>(block, t, parallel, scratch, |i| {
+        match (layout.has_intercept(), t.slopes) {
+            (true, []) => scatter_term::<1>(block, &t, parallel, scratch, |i| [base(i)]),
+            (true, [z0]) => {
+                let z0 = &z0[..];
+                scatter_term::<2>(block, &t, parallel, scratch, |i| {
                     let b = base(i);
                     [b, z0[i] * b]
                 })
             }
-            [Loading::Constant, Loading::Covariate(c0), Loading::Covariate(c1)] => {
-                let z0 = prepared.loading_column(*c0 as usize);
-                let z1 = prepared.loading_column(*c1 as usize);
-                scatter_term::<3>(block, t, parallel, scratch, |i| {
+            (true, [z0, z1]) => {
+                let (z0, z1) = (&z0[..], &z1[..]);
+                scatter_term::<3>(block, &t, parallel, scratch, |i| {
                     let b = base(i);
                     [b, z0[i] * b, z1[i] * b]
                 })
             }
-            [Loading::Covariate(c0), Loading::Covariate(c1)] => {
-                let z0 = prepared.loading_column(*c0 as usize);
-                let z1 = prepared.loading_column(*c1 as usize);
-                scatter_term::<2>(block, t, parallel, scratch, |i| {
+            (false, [z0, z1]) => {
+                let (z0, z1) = (&z0[..], &z1[..]);
+                scatter_term::<2>(block, &t, parallel, scratch, |i| {
                     let b = base(i);
                     [z0[i] * b, z1[i] * b]
                 })
             }
-            columns => {
-                for (c, loading) in columns.iter().enumerate() {
+            _ => {
+                for c in 0..layout.n_columns() {
                     let start = c * layout.n_levels();
                     let slot = &mut block[start..start + layout.n_levels()];
-                    match loading {
-                        Loading::Constant => {
-                            scatter_term::<1>(slot, t, parallel, scratch, |i| [base(i)]);
-                        }
-                        Loading::Covariate(k) => {
-                            let z = prepared.loading_column(*k as usize);
+                    match t.loading(c) {
+                        None => scatter_term::<1>(slot, &t, parallel, scratch, |i| [base(i)]),
+                        Some(z) => {
                             scatter_term::<1>(
                                 slot,
-                                t,
+                                &t,
                                 parallel,
                                 scratch,
                                 move |i| [z[i] * base(i)],
-                            );
+                            )
                         }
                     }
                 }
@@ -77,14 +71,14 @@ pub(super) fn scatter_apply(
 /// Scatter one term's coefficient block: `block[c·L + level(i)] += values(i)[c]`.
 fn scatter_term<const C: usize>(
     block: &mut [f64],
-    term: &Term<'_>,
+    term: &PreparedTerm<'_>,
     parallel: bool,
     scratch: &[AtomicF64],
     values: impl Fn(usize) -> [f64; C] + Sync,
 ) {
-    let (n_levels, levels) = (term.layout.n_levels(), term.levels());
+    let (n_levels, levels) = (term.layout.n_levels(), term.levels);
     debug_assert_eq!(block.len(), C * n_levels);
-    match ScatterStrategy::pick(parallel, C * n_levels, term.sorted()) {
+    match ScatterStrategy::pick(parallel, C * n_levels, term.sorted) {
         ScatterStrategy::Sequential => scatter_sequential::<C>(block, n_levels, levels, &values),
         ScatterStrategy::Fold => scatter_fold::<C>(block, n_levels, levels, &values),
         ScatterStrategy::Atomic => scatter_atomic::<C>(block, n_levels, levels, &values, scratch),
