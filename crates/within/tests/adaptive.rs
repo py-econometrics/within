@@ -165,6 +165,61 @@ fn later_solves_cost_the_same_as_a_cold_schwarz_solver() {
     );
 }
 
+/// A map taken before any solve, reused in memory or off the wire, escalates like its source.
+#[rstest]
+fn an_unescalated_map_reuses_as_the_ladder(#[values(false, true)] through_wire: bool) {
+    let y = common::make_deterministic_y(&crossed_panel());
+    let source = Solver::new(crossed_panel(), None, adaptive(eager_stall())).expect("solver");
+    let taken = source.preconditioner().expect("a base map").clone();
+    assert_eq!(taken.variant_name(), "Adaptive");
+    assert_eq!(taken.config(), adaptive(eager_stall()));
+    let taken = if through_wire {
+        let bytes = postcard::to_stdvec(&taken).expect("serialize");
+        postcard::from_bytes(&bytes).expect("deserialize")
+    } else {
+        taken
+    };
+
+    let reused = Solver::new(crossed_panel(), None, taken).expect("solver");
+    // Only a single thread is bitwise reproducible, so the iteration counts can match exactly.
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build()
+        .expect("pool");
+    let (resumed, original) = pool.install(|| {
+        (
+            reused.solve(&y, &tight()).expect("reused solve"),
+            source.solve(&y, &tight()).expect("source solve"),
+        )
+    });
+
+    assert!(
+        reused.has_escalated(),
+        "a reused ladder must still hand off"
+    );
+    assert_eq!(resumed.iterations, original.iterations);
+    common::assert_solutions_close(&resumed.demeaned, &original.demeaned, 1e-12);
+}
+
+/// A ladder reused on a one-term design settles to its diagonal, as a fresh build there does.
+#[test]
+fn a_reused_ladder_settles_on_one_term() {
+    let crossed = common::make_design(vec![vec![0, 1, 2, 0, 1, 2], vec![0, 0, 1, 1, 2, 2]]);
+    let source = Solver::new(crossed.expect("design"), None, adaptive(eager_stall()));
+    let ladder = source
+        .expect("solver")
+        .preconditioner()
+        .expect("a base map")
+        .clone();
+    let one_term = common::make_design(vec![vec![0, 1, 2, 3, 4, 5]]).expect("design");
+
+    let reused = Solver::new(one_term, None, ladder).expect("solver");
+
+    let map = reused.preconditioner().expect("a settled map");
+    assert_eq!(map.variant_name(), "Diagonal");
+    assert_eq!(map.config(), PreconditionerConfig::Diagonal);
+}
+
 /// The batch builds once, between passes, and every stalled RHS resumes on the map; the build
 /// is charged to that batch's `time_setup` and never again to a later one.
 #[test]

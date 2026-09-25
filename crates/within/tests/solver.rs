@@ -207,8 +207,7 @@ fn fully_specified_additive() -> PreconditionerConfig {
     }
 }
 
-/// The ladder is not a map — its serialized form is whichever rung it holds — so the axis is
-/// the two variants that build one eagerly.
+/// A solved ladder hands out whichever rung it reached, so the axis is the two eager variants.
 #[rstest]
 #[case::diagonal(PreconditionerConfig::Diagonal)]
 #[case::additive(fully_specified_additive())]

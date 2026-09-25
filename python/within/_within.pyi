@@ -427,8 +427,8 @@ class Solver:
     def preconditioner(self) -> Preconditioner | None:
         """The preconditioner in use, for serialization or reuse.
 
-        Under ``Adaptive`` this is the Schwarz map once built and the diagonal
-        base before; a reused map is fixed and never escalates.
+        Under ``Adaptive`` this is the Schwarz map once built, and before that
+        the diagonal base carrying the ladder, which escalates when reused.
         """
         ...
     @property

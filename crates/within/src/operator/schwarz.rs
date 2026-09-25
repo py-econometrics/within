@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::block_elim::BlockElimSolver;
-use crate::config::{LocalSolverConfig, PreconditionerConfig, ReductionStrategy};
+use crate::config::{LocalSolverConfig, PreconditionerConfig, ReductionStrategy, Staleness};
 use crate::domain::{LocalDomain, PreparedDesign};
 use crate::operator::gauge::GaugeConstraint;
 use crate::operator::DesignOperator;
@@ -137,9 +137,18 @@ pub struct Preconditioner {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 enum Variant {
-    // Keep Additive first: postcard encodes by declaration order and the fixture depends on it.
+    // Append only: postcard encodes by declaration order and the fixtures depend on it.
     Additive(FeSchwarz),
     Diagonal(DiagonalPreconditioner),
+    Adaptive(AdaptiveLadder),
+}
+
+/// An unescalated `Adaptive` map: the diagonal plus what a reusing solver needs to escalate.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct AdaptiveLadder {
+    base: DiagonalPreconditioner,
+    pub(crate) stall: Staleness,
+    pub(crate) escalated: SchwarzConfig,
 }
 
 impl Preconditioner {
@@ -148,6 +157,26 @@ impl Preconditioner {
         match &self.inner {
             Variant::Additive(_) => "Additive",
             Variant::Diagonal(_) => "Diagonal",
+            Variant::Adaptive(_) => "Adaptive",
+        }
+    }
+
+    /// The ladder a reusing solver resumes, while this map has not escalated.
+    pub(crate) fn ladder(&self) -> Option<&AdaptiveLadder> {
+        match &self.inner {
+            Variant::Adaptive(ladder) => Some(ladder),
+            Variant::Additive(_) | Variant::Diagonal(_) => None,
+        }
+    }
+
+    /// Drop the ladder for a design with no factor pair to escalate to, keeping its diagonal.
+    pub(crate) fn settle(self) -> Self {
+        match self.inner {
+            Variant::Adaptive(ladder) => Self {
+                inner: Variant::Diagonal(ladder.base),
+                ..self
+            },
+            Variant::Additive(_) | Variant::Diagonal(_) => self,
         }
     }
 
@@ -159,6 +188,11 @@ impl Preconditioner {
                 reduction: p.config.reduction,
             },
             Variant::Diagonal(_) => PreconditionerConfig::Diagonal,
+            Variant::Adaptive(ladder) => PreconditionerConfig::Adaptive {
+                local_solver: ladder.escalated.local_solver.clone(),
+                reduction: ladder.escalated.reduction,
+                stall: ladder.stall,
+            },
         }
     }
 
@@ -189,6 +223,7 @@ impl Preconditioner {
         match &self.inner {
             Variant::Additive(p) => p,
             Variant::Diagonal(p) => p,
+            Variant::Adaptive(ladder) => &ladder.base,
         }
     }
 }
@@ -217,6 +252,34 @@ impl Operator for Preconditioner {
 /// Build the diagonal/Jacobi map.
 pub(crate) fn build_diagonal(prepared: &PreparedDesign<'_>) -> Result<Preconditioner, BuildError> {
     let build_started = Instant::now();
+    let diagonal = diagonal_map(prepared)?;
+    Ok(Preconditioner {
+        inner: Variant::Diagonal(diagonal),
+        build_duration: build_started.elapsed(),
+        gauge: None,
+    })
+}
+
+/// Build the diagonal base of an `Adaptive` strategy; the Schwarz rung is left to a stalled solve.
+pub(crate) fn build_adaptive(
+    prepared: &PreparedDesign<'_>,
+    stall: Staleness,
+    escalated: SchwarzConfig,
+) -> Result<Preconditioner, BuildError> {
+    let build_started = Instant::now();
+    let base = diagonal_map(prepared)?;
+    Ok(Preconditioner {
+        inner: Variant::Adaptive(AdaptiveLadder {
+            base,
+            stall,
+            escalated,
+        }),
+        build_duration: build_started.elapsed(),
+        gauge: None,
+    })
+}
+
+fn diagonal_map(prepared: &PreparedDesign<'_>) -> Result<DiagonalPreconditioner, BuildError> {
     let mut diag = DesignOperator::new(prepared).column_norms_squared();
 
     // A zero diagonal is an unidentified DOF, so the pseudo-inverse keeps it in the null space.
@@ -231,12 +294,8 @@ pub(crate) fn build_diagonal(prepared: &PreparedDesign<'_>) -> Result<Preconditi
         *d = inv;
     }
 
-    Ok(Preconditioner {
-        inner: Variant::Diagonal(DiagonalPreconditioner {
-            inv_diag: Arc::from(diag),
-        }),
-        build_duration: build_started.elapsed(),
-        gauge: None,
+    Ok(DiagonalPreconditioner {
+        inv_diag: Arc::from(diag),
     })
 }
 
