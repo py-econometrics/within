@@ -83,10 +83,8 @@ impl LevelMoments {
         &self.mean[level * v..][..v]
     }
 
-    /// The level's orthonormal rows `w` (`w·G·wᵀ = I`) and kept-column mask,
-    /// left in `scratch` so a sweep over levels allocates nothing. `G` is
-    /// centered against a pinned intercept, raw (`M2 + w·μμᵀ`) without one.
-    pub(crate) fn basis(&self, level: usize, scratch: &mut BasisScratch) {
+    /// The level's row-major `v×v` Gramian: centered with an intercept, `M2 + w·μμᵀ` without one.
+    pub(crate) fn fill_gram(&self, level: usize, gram: &mut [f64]) {
         let v = self.v;
         let com = &self.comoment[level * tri_len(v)..][..tri_len(v)];
         let mean = self.mean(level);
@@ -97,15 +95,14 @@ impl LevelMoments {
                 if !self.intercept {
                     g += w * mean[j] * mean[k];
                 }
-                scratch.gram[j * v + k] = g;
-                scratch.gram[k * v + j] = g;
+                gram[j * v + k] = g;
+                gram[k * v + j] = g;
             }
         }
-        scratch.orthonormalize(v, RANK_TOL);
     }
 }
 
-/// Reusable buffers for a sweep of [`LevelMoments::basis`] over many levels.
+/// Reusable buffers for a pivoted Gram–Schmidt over many Gramians.
 pub(crate) struct BasisScratch {
     pub(crate) gram: Vec<f64>,
     residual: Vec<f64>,

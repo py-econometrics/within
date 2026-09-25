@@ -2,10 +2,10 @@
 
 use rayon::prelude::*;
 
-use super::level_moments::{BasisScratch, LevelMoments};
+use super::level_moments::LevelMoments;
 use super::Design;
 use crate::channel::{Channel, CoefficientPosition};
-use crate::linalg::dot;
+use crate::linalg::{dot, GramBasis, GramBasisWorkspace, RANK_TOL};
 
 #[cfg(test)]
 mod tests;
@@ -102,10 +102,10 @@ impl TermReparam {
 
         let mut z_row = vec![0.0; v];
         let mut transforms = Vec::with_capacity(n_levels);
-        let mut scratch = BasisScratch::new(v);
+        let mut workspace = GramBasisWorkspace::new(v, RANK_TOL);
         for level in 0..n_levels {
-            moments.basis(level, &mut scratch);
-            let (w, kept) = (&scratch.basis, &scratch.kept);
+            let GramBasis { rows: w, kept } =
+                workspace.orthonormalize(|gram| moments.fill_gram(level, gram));
             if intercept && moments.w_sum(level) == 0.0 {
                 unidentified.push(CoefficientPosition {
                     channel: Channel { term, column: 0 },
@@ -129,7 +129,7 @@ impl TermReparam {
                 vec![0.0; v].into()
             };
             transforms.push(LevelTransform {
-                w: w.clone().into(),
+                w: w.into(),
                 center,
             });
         }
