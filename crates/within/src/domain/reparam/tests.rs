@@ -2,7 +2,7 @@
 //! not reachable through the public API.
 
 use crate::channel::Channel;
-use crate::domain::Effect;
+use crate::domain::{Effect, PreparedDesign};
 
 use super::*;
 
@@ -25,19 +25,13 @@ fn three_term_effects() -> Vec<Effect<'static>> {
 
 #[test]
 fn build_whitens_each_slope_bearing_term() {
-    let design = Design::new(three_term_effects()).unwrap();
-    let basis = SlopeReparam::build(&design, None).unwrap();
-    assert!(basis.unidentified.is_empty());
+    let prepared = PreparedDesign::unweighted_for_test(Design::new(three_term_effects()).unwrap());
+    assert!(prepared.unidentified().next().is_none());
 
     for term in [0, 2] {
-        let meta = &design.terms[term];
-        let levels = meta.levels();
-        let us: Vec<&[f64]> = meta
-            .layout
-            .covariates()
-            .map(|k| basis.loading_column(k as usize))
-            .collect();
-        for level in 0..meta.layout.n_levels() {
+        let t = prepared.term(term);
+        let (levels, us) = (t.levels, t.slopes);
+        for level in 0..t.layout.n_levels() {
             let obs: Vec<usize> = (0..levels.len())
                 .filter(|&i| levels[i] as usize == level)
                 .collect();
@@ -58,9 +52,9 @@ fn build_whitens_each_slope_bearing_term() {
 }
 
 #[test]
-fn slope_free_design_has_no_reparam() {
-    let design = Design::from_levels_for_test(vec![vec![0, 1, 0], vec![0, 0, 1]]);
-    assert!(SlopeReparam::build(&design, None).is_none());
+fn slope_free_term_has_no_reparam() {
+    let prepared = PreparedDesign::from_levels_for_test(vec![vec![0, 1, 0], vec![0, 0, 1]]);
+    assert!(prepared.terms().all(|t| t.slopes.is_empty()));
 }
 
 #[test]
@@ -74,10 +68,9 @@ fn unidentified_directions_ascend_across_terms() {
         Effect::new(&f0, true, [&z0[..]]).unwrap(),
         Effect::new(&f1, true, [&z1[..]]).unwrap(),
     ];
-    let design = Design::new(effects).unwrap();
-    let basis = SlopeReparam::build(&design, None).unwrap();
+    let prepared = PreparedDesign::unweighted_for_test(Design::new(effects).unwrap());
     assert_eq!(
-        basis.unidentified,
+        prepared.unidentified().collect::<Vec<_>>(),
         vec![
             CoefficientPosition {
                 channel: Channel { term: 0, column: 1 },
@@ -93,12 +86,12 @@ fn unidentified_directions_ascend_across_terms() {
 
 #[test]
 fn back_transform_leaves_other_terms_untouched() {
-    let design = Design::new(three_term_effects()).unwrap();
-    let basis = SlopeReparam::build(&design, None).unwrap();
+    let prepared = PreparedDesign::unweighted_for_test(Design::new(three_term_effects()).unwrap());
+    let design = &prepared.design;
 
     let mut x: Vec<f64> = (0..design.n_dofs).map(|i| 1.0 + i as f64).collect();
     let before = x.clone();
-    basis.back_transform(&mut x);
+    prepared.back_transform(&mut x);
 
     // Plain term 1 sits between the two slope-bearing blocks.
     let (t1, t2) = (design.terms[1].layout.offset, design.terms[2].layout.offset);

@@ -107,12 +107,9 @@ fn residual_shares(
         return Vec::new();
     }
     let design = &prepared.design;
-    let t = &design.terms[term];
-    let (layout, levels) = (&t.layout, t.levels());
-    let us: Vec<&[f64]> = layout
-        .covariates()
-        .map(|c| prepared.loading_column(c as usize))
-        .collect();
+    let t = prepared.term(term);
+    let (layout, levels) = (t.layout, t.levels);
+    let us: Vec<&[f64]> = t.slopes.iter().map(Vec::as_slice).collect();
     let intercept = layout.has_intercept();
     let columns: Vec<&[f64]> = targets
         .iter()
@@ -129,7 +126,7 @@ fn residual_shares(
         intercept,
         stride,
         // Grouping gathers every column, so it must buy back more than the one block.
-        order: match t.sorted() || plan.per_block == n_levels {
+        order: match t.sorted || plan.per_block == n_levels {
             true => RowOrder::AsIs,
             false => RowOrder::Grouped(super::stable_argsort(levels, n_levels)),
         },

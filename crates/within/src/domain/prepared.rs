@@ -1,4 +1,8 @@
-use super::{row_weight, Design, SlopeReparam};
+use rayon::prelude::*;
+
+use super::level_moments::LevelMoments;
+use super::{row_weight, Design, TermLayout, TermReparam};
+use crate::channel::CoefficientPosition;
 use crate::BuildError;
 
 /// A [`Design`] plus all state one weight vector determines.
@@ -6,8 +10,26 @@ pub(crate) struct PreparedDesign<'a> {
     pub(crate) design: Design<'a>,
     /// `W^{1/2}` in the design's internal observation order; `None` is unweighted.
     sqrt_weights: Option<Vec<f64>>,
-    /// `None` for slope-free designs.
-    pub(crate) reparam: Option<SlopeReparam>,
+    /// Per design term, in order; `None` for a slope-free term.
+    reparams: Vec<Option<TermReparam>>,
+}
+
+/// A term in the solve basis: the design's rows plus this preparation's whitened slopes.
+#[derive(Clone, Copy)]
+pub(crate) struct PreparedTerm<'p> {
+    pub(crate) layout: &'p TermLayout,
+    pub(crate) levels: &'p [u32],
+    pub(crate) sorted: bool,
+    /// Solve-basis slopes in coefficient-column order; empty for a slope-free term.
+    pub(crate) slopes: &'p [Vec<f64>],
+}
+
+impl<'p> PreparedTerm<'p> {
+    /// Column `column`'s solve-basis loading; `None` is the intercept.
+    pub(crate) fn loading(&self, column: usize) -> Option<&'p [f64]> {
+        let j = column.checked_sub(self.layout.has_intercept() as usize)?;
+        Some(&self.slopes[j])
+    }
 }
 
 impl<'a> PreparedDesign<'a> {
@@ -15,11 +37,25 @@ impl<'a> PreparedDesign<'a> {
         let sqrt_weights = weights
             .map(|weights| prepare_sqrt_weights(&design, weights))
             .transpose()?;
-        let reparam = SlopeReparam::build(&design, sqrt_weights.as_deref());
+        let slope_terms: Vec<usize> = (0..design.n_factors())
+            .filter(|&t| design.terms[t].layout.has_slopes())
+            .collect();
+        let whitened: Vec<TermReparam> = slope_terms
+            .par_iter()
+            .map(|&t| {
+                let moments = LevelMoments::build(&design, t, sqrt_weights.as_deref());
+                TermReparam::build(&design, t, &moments)
+            })
+            .collect();
+        let mut reparams: Vec<Option<TermReparam>> =
+            (0..design.n_factors()).map(|_| None).collect();
+        for (&t, reparam) in slope_terms.iter().zip(whitened) {
+            reparams[t] = Some(reparam);
+        }
         Ok(Self {
             design,
             sqrt_weights,
-            reparam,
+            reparams,
         })
     }
 
@@ -35,13 +71,41 @@ impl<'a> PreparedDesign<'a> {
         row_weight(self.sqrt_weights(), obs)
     }
 
-    /// Loading column `column` in the solve basis.
-    pub(crate) fn loading_column(&self, column: usize) -> &[f64] {
-        // Only slope terms reference loading columns, and any slope term makes `reparam` `Some`.
-        self.reparam
-            .as_ref()
-            .expect("loading column on a slope-free design")
-            .loading_column(column)
+    pub(crate) fn term(&self, term: usize) -> PreparedTerm<'_> {
+        let (t, reparam) = (&self.design.terms[term], &self.reparams[term]);
+        let slopes: &[Vec<f64>] = reparam.as_ref().map_or(&[], |r| &r.slopes);
+        // Kernels read column `c` as slope `c - has_intercept`.
+        debug_assert_eq!(slopes.len(), t.layout.covariates().count());
+        debug_assert!(t.layout.columns[1..]
+            .iter()
+            .all(|c| c.covariate().is_some()));
+        PreparedTerm {
+            layout: &t.layout,
+            levels: t.levels(),
+            sorted: t.sorted(),
+            slopes,
+        }
+    }
+
+    pub(crate) fn terms(&self) -> impl ExactSizeIterator<Item = PreparedTerm<'_>> {
+        (0..self.design.n_factors()).map(|term| self.term(term))
+    }
+
+    /// Map solve-basis coefficients back to the user's parametrization.
+    pub(crate) fn back_transform(&self, x: &mut [f64]) {
+        for (t, reparam) in self.design.terms.iter().zip(&self.reparams) {
+            if let Some(reparam) = reparam {
+                reparam.back_transform(&t.layout, x);
+            }
+        }
+    }
+
+    /// Directions the data cannot identify, ascending in `(term, level, column)`.
+    pub(crate) fn unidentified(&self) -> impl Iterator<Item = CoefficientPosition> + '_ {
+        self.reparams
+            .iter()
+            .flatten()
+            .flat_map(|r| r.unidentified.iter().copied())
     }
 }
 

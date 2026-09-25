@@ -1,33 +1,20 @@
 //! Within-level reparametrization of a design's varying-slope terms.
 
-use rayon::prelude::*;
-
 use super::level_moments::LevelMoments;
-use super::Design;
+use super::{Design, TermLayout};
 use crate::channel::{Channel, CoefficientPosition};
 use crate::linalg::{dot, GramBasis, GramBasisWorkspace, RANK_TOL};
 
 #[cfg(test)]
 mod tests;
 
-/// Per-level change of basis making each slope-bearing term's within-level
-/// Gram the identity; [`Self::back_transform`] restores the user's
-/// parametrization.
-pub(crate) struct SlopeReparam {
-    terms: Vec<TermReparam>,
-    /// The design's loading columns in the solve basis, indexed like the design's.
-    loadings: Vec<Vec<f64>>,
-    /// Directions the data cannot identify, ascending in `(term, level, column)`.
-    pub(crate) unidentified: Vec<CoefficientPosition>,
-}
-
-/// One slope-bearing term's whitening state.
-struct TermReparam {
-    offset: usize,
-    n_levels: usize,
-    /// Slopes start at column 1 behind an intercept, at 0 without one.
-    intercept: bool,
+/// One slope-bearing term's change of basis to an identity within-level Gram.
+pub(crate) struct TermReparam {
+    /// The term's slopes in the solve basis, in coefficient-column order.
+    pub(super) slopes: Vec<Vec<f64>>,
     transforms: Vec<LevelTransform>,
+    /// Directions the data cannot identify, ascending in `(level, column)`.
+    pub(super) unidentified: Vec<CoefficientPosition>,
 }
 
 /// One level's `u = W·(z − center)`, `W` row-major `rank × V`; an empty `w`
@@ -38,69 +25,21 @@ struct LevelTransform {
     center: Box<[f64]>,
 }
 
-impl SlopeReparam {
-    /// Orthonormalize every slope-bearing term's loading columns into `loadings`;
-    /// `None` for slope-free designs. Unidentified directions become
-    /// exact-zero columns, so the minimal-norm solve leaves exact-`0`
-    /// coefficients.
-    pub(crate) fn build(design: &Design<'_>, sqrt_weights: Option<&[f64]>) -> Option<Self> {
-        let mut loadings = vec![Vec::new(); design.n_loading_columns()];
-        let slope_terms: Vec<usize> = (0..design.terms.len())
-            .filter(|&t| design.terms[t].layout.has_slopes())
-            .collect();
-        let moments: Vec<LevelMoments> = slope_terms
-            .par_iter()
-            .map(|&term| LevelMoments::build(design, term, sqrt_weights))
-            .collect();
-        let mut unidentified = Vec::new();
-        let terms: Vec<TermReparam> = slope_terms
-            .iter()
-            .zip(&moments)
-            .map(|(&term, moments)| {
-                TermReparam::build(design, term, moments, &mut loadings, &mut unidentified)
-            })
-            .collect();
-        (!terms.is_empty()).then_some(Self {
-            terms,
-            loadings,
-            unidentified,
-        })
-    }
-
-    /// Loading column `column` in the solve basis.
-    pub(crate) fn loading_column(&self, column: usize) -> &[f64] {
-        &self.loadings[column]
-    }
-
-    /// Map solve-basis coefficients back to the user's parametrization.
-    pub(crate) fn back_transform(&self, x: &mut [f64]) {
-        for term in &self.terms {
-            term.back_transform(x);
-        }
-    }
-}
-
 impl TermReparam {
-    /// Whitens one term into `loadings`; unidentified directions append in `(level, column)` order.
-    fn build(
-        design: &Design<'_>,
-        term: usize,
-        moments: &LevelMoments,
-        loadings: &mut [Vec<f64>],
-        unidentified: &mut Vec<CoefficientPosition>,
-    ) -> Self {
+    /// Unidentified directions become zero columns, so they solve to `0`.
+    pub(crate) fn build(design: &Design<'_>, term: usize, moments: &LevelMoments) -> Self {
         let t = &design.terms[term];
         let (layout, levels) = (&t.layout, t.levels());
-        let (offset, n_levels) = (layout.offset, layout.n_levels());
+        let n_levels = layout.n_levels();
         let intercept = layout.has_intercept();
-        let z_cols: Vec<usize> = layout.covariates().map(|c| c as usize).collect();
-        let v = z_cols.len();
-        let zs: Vec<&[f64]> = z_cols
-            .iter()
-            .map(|&c| design.raw_loading_column(c))
+        let zs: Vec<&[f64]> = layout
+            .covariates()
+            .map(|c| design.raw_loading_column(c as usize))
             .collect();
+        let v = zs.len();
 
         let mut z_row = vec![0.0; v];
+        let mut unidentified = Vec::new();
         let mut transforms = Vec::with_capacity(n_levels);
         let mut workspace = GramBasisWorkspace::new(v, RANK_TOL);
         for level in 0..n_levels {
@@ -134,32 +73,31 @@ impl TermReparam {
             });
         }
 
-        let mut u_cols = vec![vec![0.0; levels.len()]; v];
+        let mut slopes = vec![vec![0.0; levels.len()]; v];
         for (i, &level) in levels.iter().enumerate() {
             let t = &transforms[level as usize];
             for ((zr, col), cj) in z_row.iter_mut().zip(&zs).zip(&*t.center) {
                 *zr = col[i] - cj;
             }
-            for (w_row, out) in t.w.chunks_exact(v).zip(&mut u_cols) {
+            for (w_row, out) in t.w.chunks_exact(v).zip(&mut slopes) {
                 out[i] = dot(w_row, &z_row);
             }
         }
-        for (out, &c) in u_cols.into_iter().zip(&z_cols) {
-            loadings[c] = out;
-        }
 
         Self {
-            offset,
-            n_levels,
-            intercept,
+            slopes,
             transforms,
+            unidentified,
         }
     }
 
-    /// Map this term's solve-basis coefficients back to the user's
-    /// parametrization; slots outside the term's block are untouched.
-    fn back_transform(&self, x: &mut [f64]) {
-        let v = self.transforms.first().map_or(0, |t| t.center.len());
+    /// Map this term's solve-basis coefficients back; slots outside its block are untouched.
+    pub(crate) fn back_transform(&self, layout: &TermLayout, x: &mut [f64]) {
+        let intercept = layout.has_intercept();
+        // Slopes start at column 1 behind an intercept, at 0 without one.
+        let slope_slot =
+            |j: usize, level: usize| layout.column_base(j + intercept as usize) + level;
+        let v = self.slopes.len();
         let mut b = vec![0.0; v];
         for (l, t) in self.transforms.iter().enumerate() {
             if t.w.is_empty() {
@@ -167,21 +105,17 @@ impl TermReparam {
             }
             b.fill(0.0);
             for (k, w_row) in t.w.chunks_exact(v).enumerate() {
-                let bk = x[self.slope_slot(k, l)];
+                let bk = x[slope_slot(k, l)];
                 for (bj, wj) in b.iter_mut().zip(w_row) {
                     *bj += wj * bk;
                 }
             }
             for (j, &bj) in b.iter().enumerate() {
-                x[self.slope_slot(j, l)] = bj;
+                x[slope_slot(j, l)] = bj;
             }
-            if self.intercept {
-                x[self.offset + l] -= dot(&b, &t.center);
+            if intercept {
+                x[layout.offset + l] -= dot(&b, &t.center);
             }
         }
-    }
-
-    fn slope_slot(&self, j: usize, level: usize) -> usize {
-        self.offset + (j + self.intercept as usize) * self.n_levels + level
     }
 }
