@@ -32,7 +32,12 @@ pub(crate) struct DesignOperator<'a> {
 impl<'a> DesignOperator<'a> {
     pub(crate) fn new(prepared: &'a PreparedDesign<'a>) -> Self {
         let design = &prepared.design;
-        let max_block = design.terms.iter().map(|t| t.n_dofs()).max().unwrap_or(0);
+        let max_block = design
+            .terms
+            .iter()
+            .map(|t| t.layout.n_dofs())
+            .max()
+            .unwrap_or(0);
         Self {
             prepared,
             scatter_scratch: (0..max_block).map(|_| AtomicF64::new(0.0)).collect(),
@@ -45,11 +50,11 @@ impl<'a> DesignOperator<'a> {
     pub(crate) fn column_norms_squared(&self) -> Vec<f64> {
         let design = &self.prepared.design;
         let mut diag = vec![0.0; design.n_dofs];
-        for (index, term) in design.terms.iter().enumerate() {
-            let levels = design.frame.level_column(index);
-            for (column, loading) in term.columns.iter().enumerate() {
-                let base = term.column_base(column);
-                let slice = &mut diag[base..base + term.n_levels()];
+        for term in design.terms.iter() {
+            let (layout, levels) = (&term.layout, term.levels());
+            for (column, loading) in layout.columns.iter().enumerate() {
+                let base = layout.column_base(column);
+                let slice = &mut diag[base..base + layout.n_levels()];
                 let z = loading
                     .covariate()
                     .map(|&c| self.prepared.loading_column(c as usize));

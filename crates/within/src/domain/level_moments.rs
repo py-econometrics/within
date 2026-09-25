@@ -24,22 +24,23 @@ fn tri_len(v: usize) -> usize {
 
 impl LevelMoments {
     pub(crate) fn build(design: &Design<'_>, term: usize, sqrt_weights: Option<&[f64]>) -> Self {
-        let meta = &design.terms[term];
-        let zs: Vec<&[f64]> = meta
+        let t = &design.terms[term];
+        let (layout, levels) = (&t.layout, t.levels());
+        let zs: Vec<&[f64]> = layout
             .covariates()
-            .map(|c| design.frame.loading_column(c as usize))
+            .map(|c| design.raw_loading_column(c as usize))
             .collect();
         let v = zs.len();
         let mut moments = Self {
             v,
-            intercept: meta.has_intercept(),
-            w_sum: vec![0.0; meta.n_levels()],
-            mean: vec![0.0; meta.n_levels() * v],
-            comoment: vec![0.0; meta.n_levels() * tri_len(v)],
+            intercept: layout.has_intercept(),
+            w_sum: vec![0.0; layout.n_levels()],
+            mean: vec![0.0; layout.n_levels() * v],
+            comoment: vec![0.0; layout.n_levels() * tri_len(v)],
         };
         let mut z_row = vec![0.0; v];
         let mut delta = vec![0.0; v];
-        for (obs, &level) in design.frame.level_column(term).iter().enumerate() {
+        for (obs, &level) in levels.iter().enumerate() {
             for (zr, col) in z_row.iter_mut().zip(&zs) {
                 *zr = col[obs];
             }

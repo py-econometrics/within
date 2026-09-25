@@ -6,6 +6,7 @@ use crate::domain::{Design, FactorEncoding};
 impl Coefficient<usize> {
     pub(super) fn to_caller_address(self, design: &Design) -> CoefficientAddress {
         let level = design.terms[self.channel.term]
+            .layout
             .encoding
             .label(self.level)
             .expect("coefficient position belongs to its term");
@@ -38,6 +39,7 @@ impl CoefficientLayout {
         let terms = design
             .terms
             .iter()
+            .map(|t| &t.layout)
             .map(|t| TermLayout {
                 offset: t.offset,
                 encoding: t.encoding.clone(),

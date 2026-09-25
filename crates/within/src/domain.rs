@@ -26,7 +26,7 @@ use std::sync::Arc;
 use ndarray::{ArrayView2, Axis};
 
 use crate::channel::Channel;
-use crate::observation::ObservationFrame;
+use crate::observation::{gather, Columns, ObservationFrame};
 use crate::BuildError;
 
 /// A slice that is guaranteed non-empty by construction.
@@ -95,10 +95,10 @@ pub(crate) enum FactorEncoding {
     Integer { labels: Arc<[u32]> },
 }
 
-struct EncodedFactor {
+/// A factor's level encoding and rows (the input itself if already positions).
+struct EncodedFactor<'a> {
     encoding: FactorEncoding,
-    positions: Option<Vec<u32>>,
-    sorted: bool,
+    rows: TermRows<'a>,
 }
 
 impl FactorEncoding {
@@ -113,12 +113,14 @@ impl FactorEncoding {
         }
     }
 
-    fn encode_labels(labels: &[u32]) -> EncodedFactor {
+    fn encode_labels(labels: Cow<'_, [u32]>) -> EncodedFactor<'_> {
         let Some((&first, remaining)) = labels.split_first() else {
             return EncodedFactor {
                 encoding: Self::identity(0),
-                positions: None,
-                sorted: true,
+                rows: TermRows {
+                    levels: labels,
+                    sorted: true,
+                },
             };
         };
 
@@ -139,7 +141,7 @@ impl FactorEncoding {
             .filter(|&width| width <= labels.len())
             .map(|width| {
                 let mut present = vec![false; width];
-                for &label in labels {
+                for &label in labels.iter() {
                     present[(label - min) as usize] = true;
                 }
                 present
@@ -150,8 +152,10 @@ impl FactorEncoding {
             Some(present) if min == 0 && present.iter().all(|&is_present| is_present) => {
                 EncodedFactor {
                     encoding: Self::identity(present.len()),
-                    positions: None,
-                    sorted,
+                    rows: TermRows {
+                        levels: labels,
+                        sorted,
+                    },
                 }
             }
             // Path 2: the observed label range is bounded by the observation count.
@@ -174,15 +178,17 @@ impl FactorEncoding {
                     .collect();
                 EncodedFactor {
                     encoding: Self::integer(caller_labels),
-                    positions: Some(positions),
-                    sorted,
+                    rows: TermRows {
+                        levels: Cow::Owned(positions),
+                        sorted,
+                    },
                 }
             }
             // Path 3: the observed label range is too wide for an indexed table.
             None => {
                 // Collect distinct caller labels
                 let mut position_by_label = HashMap::<u32, u32>::new();
-                for &label in labels {
+                for &label in labels.iter() {
                     position_by_label.entry(label).or_default();
                 }
                 // Internal positions follow ascending caller-label order
@@ -209,8 +215,10 @@ impl FactorEncoding {
 
                 EncodedFactor {
                     encoding: Self::integer(caller_labels),
-                    positions: Some(positions),
-                    sorted,
+                    rows: TermRows {
+                        levels: Cow::Owned(positions),
+                        sorted,
+                    },
                 }
             }
         }
@@ -248,19 +256,17 @@ impl FactorEncoding {
     }
 }
 
-/// Per-term metadata; coefficient `c` of `level` lives at `offset + c · n_levels + level`.
+/// Coefficient `c` of `level` lives at `offset + c · n_levels + level`.
 #[derive(Debug, Clone)]
-pub(crate) struct TermMeta {
+pub(crate) struct TermLayout {
     pub(crate) encoding: FactorEncoding,
     pub offset: usize,
-    /// Non-decreasing in the design's internal row order (fixed at construction).
-    pub sorted: bool,
-    /// Coefficient columns in layout order; `Covariate` indexes the frame's continuous columns.
+    /// Coefficient columns in layout order; `Covariate` indexes the design's loading columns.
     pub columns: NonEmpty<Loading<u32>>,
 }
 
-impl TermMeta {
-    /// Frame columns of the term's covariates, in coefficient-column order.
+impl TermLayout {
+    /// Loading columns of the term's covariates, in coefficient-column order.
     pub(crate) fn covariates(&self) -> impl Iterator<Item = u32> + '_ {
         self.columns.iter().filter_map(|c| c.covariate().copied())
     }
@@ -288,6 +294,54 @@ impl TermMeta {
     /// Global DOF base of coefficient column `column`.
     pub fn column_base(&self, column: usize) -> usize {
         self.offset + column * self.n_levels()
+    }
+}
+
+/// A term's observation rows, in the design's row order.
+#[derive(Debug, Clone)]
+struct TermRows<'a> {
+    /// Internal level position of every observation.
+    levels: Cow<'a, [u32]>,
+    /// `levels` is non-decreasing.
+    sorted: bool,
+}
+
+impl TermRows<'_> {
+    /// Row `i` takes observation `perm[i]` (matches `Design::obs_perm`).
+    fn permute(&mut self, perm: &[u32]) {
+        let levels = gather(&self.levels, perm);
+        self.sorted = levels.is_sorted();
+        self.levels = Cow::Owned(levels);
+    }
+
+    fn into_owned(self) -> TermRows<'static> {
+        TermRows {
+            levels: Cow::Owned(self.levels.into_owned()),
+            sorted: self.sorted,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct Term<'a> {
+    pub(crate) layout: TermLayout,
+    rows: TermRows<'a>,
+}
+
+impl Term<'_> {
+    pub(crate) fn levels(&self) -> &[u32] {
+        &self.rows.levels
+    }
+
+    pub(crate) fn sorted(&self) -> bool {
+        self.rows.sorted
+    }
+
+    fn into_owned(self) -> Term<'static> {
+        Term {
+            layout: self.layout,
+            rows: self.rows.into_owned(),
+        }
     }
 }
 
@@ -330,12 +384,13 @@ fn stable_argsort(key: &[u32], n_levels: usize) -> Vec<u32> {
     perm
 }
 
-/// Fixed-effects design: observation columns plus coefficient-space layout; clones share rows.
+/// Fixed-effects design: its terms plus their loading columns; clones share rows.
 #[derive(Clone, Debug)]
 pub struct Design<'a> {
-    /// Columns in internal row order (caller's, or an owned locality-sorted copy).
-    pub(crate) frame: Arc<ObservationFrame<'a>>,
-    pub(crate) terms: Vec<TermMeta>,
+    /// Rows in internal order (caller's, or an owned locality-sorted copy).
+    pub(crate) terms: Arc<Vec<Term<'a>>>,
+    /// Same row order as every term's levels.
+    loadings: Arc<Columns<'a, f64>>,
     pub(crate) n_obs: usize,
     pub(crate) n_dofs: usize,
     /// `obs_perm[k]` = caller's original index of the observation at internal position `k`.
@@ -345,8 +400,8 @@ pub struct Design<'a> {
 impl<'a> Design<'a> {
     /// Lower effect terms into a design, laid out term-major (`offset[t] + c · L_t + level`).
     pub fn new(effects: impl IntoIterator<Item = Effect<'a>>) -> Result<Self, BuildError> {
-        let mut categorical: Vec<Cow<'a, [u32]>> = Vec::new();
-        let mut continuous: Vec<Cow<'a, [f64]>> = Vec::new();
+        let mut categorical: Columns<'a, u32> = Vec::new();
+        let mut continuous: Columns<'a, f64> = Vec::new();
         let mut structure: Vec<NonEmpty<Loading<u32>>> = Vec::new();
         for effect in effects {
             structure.push(effect.columns().map(|column| {
@@ -391,7 +446,7 @@ impl<'a> Design<'a> {
 
     /// `column_structure[term]` = that term's coefficient columns, aligned with the frame.
     fn build(
-        mut frame: ObservationFrame<'a>,
+        frame: ObservationFrame<'a>,
         column_structure: Vec<NonEmpty<Loading<u32>>>,
         locality_sort: bool,
     ) -> Result<Self, BuildError> {
@@ -401,36 +456,32 @@ impl<'a> Design<'a> {
         debug_assert_eq!(column_structure.len(), frame.n_factors());
 
         let n_obs = frame.n_obs();
-        let mut terms = Vec::with_capacity(frame.n_factors());
+        let (categorical, mut loadings) = frame.into_columns();
+        let mut terms = Vec::with_capacity(categorical.len());
         let mut offset = 0;
-        for (q, columns) in column_structure.into_iter().enumerate() {
-            let EncodedFactor {
-                encoding,
-                positions,
-                sorted,
-            } = FactorEncoding::encode_labels(frame.level_column(q));
-            if let Some(positions) = positions {
-                frame.replace_level_column(q, positions);
-            }
-            let meta = TermMeta {
-                encoding,
-                offset,
-                sorted,
-                columns,
+        for (labels, columns) in categorical.into_iter().zip(column_structure) {
+            let EncodedFactor { encoding, rows } = FactorEncoding::encode_labels(labels);
+            let term = Term {
+                layout: TermLayout {
+                    encoding,
+                    offset,
+                    columns,
+                },
+                rows,
             };
-            offset += meta.n_dofs();
-            terms.push(meta);
+            offset += term.layout.n_dofs();
+            terms.push(term);
         }
 
         let claimed: usize = terms
             .iter()
-            .flat_map(|t| t.columns.iter())
+            .flat_map(|t| t.layout.columns.iter())
             .filter(|c| c.covariate().is_some())
             .count();
-        if claimed != frame.n_loading_columns() {
+        if claimed != loadings.len() {
             return Err(BuildError::UnclaimedLoadingColumns {
                 claimed,
-                provided: frame.n_loading_columns(),
+                provided: loadings.len(),
             });
         }
 
@@ -440,34 +491,43 @@ impl<'a> Design<'a> {
         }
 
         // Sort by the term contributing the most DOFs so its gather/scatter runs sequentially.
-        let dominant = (0..terms.len()).max_by_key(|&q| terms[q].n_dofs());
-        let (frame, obs_perm) = match dominant {
-            Some(d) if locality_sort && !terms[d].sorted && u32::try_from(n_obs).is_ok() => {
-                let perm = stable_argsort(frame.level_column(d), terms[d].n_levels());
-                let sorted_frame = frame.permuted(&perm);
+        let dominant = terms.iter().max_by_key(|t| t.layout.n_dofs());
+        let obs_perm = match dominant {
+            Some(d) if locality_sort && !d.sorted() && u32::try_from(n_obs).is_ok() => {
+                let perm = stable_argsort(d.levels(), d.layout.n_levels());
                 // Factors nested in the dominant one come out sorted, keeping coalesced scatter.
-                for (q, meta) in terms.iter_mut().enumerate() {
-                    meta.sorted = sorted_frame.level_column(q).is_sorted();
+                for term in &mut terms {
+                    term.rows.permute(&perm);
                 }
-                (sorted_frame, Some(perm.into()))
+                for column in &mut loadings {
+                    *column = Cow::Owned(gather(column, &perm));
+                }
+                Some(perm.into())
             }
-            _ => (frame, None),
+            _ => None,
         };
 
         Ok(Design {
-            frame: Arc::new(frame),
-            terms,
+            terms: Arc::new(terms),
+            loadings: Arc::new(loadings),
             n_obs,
             n_dofs: offset,
             obs_perm,
         })
     }
 
-    /// Convert the frame's columns to owned, dropping ties to caller buffers.
+    /// Convert every column to owned, dropping ties to caller buffers.
     pub fn into_owned(self) -> Design<'static> {
+        let terms = Arc::unwrap_or_clone(self.terms);
+        let loadings = Arc::unwrap_or_clone(self.loadings);
         Design {
-            frame: Arc::new(Arc::unwrap_or_clone(self.frame).into_owned()),
-            terms: self.terms,
+            terms: Arc::new(terms.into_iter().map(Term::into_owned).collect()),
+            loadings: Arc::new(
+                loadings
+                    .into_iter()
+                    .map(|c| Cow::Owned(c.into_owned()))
+                    .collect(),
+            ),
             n_obs: self.n_obs,
             n_dofs: self.n_dofs,
             obs_perm: self.obs_perm,
@@ -479,7 +539,7 @@ impl<'a> Design<'a> {
         debug_assert_eq!(v.len(), self.n_obs);
         match &self.obs_perm {
             None => Cow::Borrowed(v),
-            Some(perm) => Cow::Owned(perm.iter().map(|&i| v[i as usize]).collect()),
+            Some(perm) => Cow::Owned(gather(v, perm)),
         }
     }
 
@@ -506,12 +566,21 @@ impl<'a> Design<'a> {
 
     /// The term's coefficient columns in layout order.
     pub(crate) fn channels(&self, term: usize) -> impl Iterator<Item = Channel> + '_ {
-        (0..self.terms[term].n_columns()).map(move |column| Channel { term, column })
+        (0..self.terms[term].layout.n_columns()).map(move |column| Channel { term, column })
     }
 
     /// How `channel` loads onto each observation.
     pub(crate) fn loading(&self, channel: Channel) -> Loading<u32> {
-        self.terms[channel.term].columns[channel.column]
+        self.terms[channel.term].layout.columns[channel.column]
+    }
+
+    /// Loading column `k` in internal row order, before whitening.
+    pub(crate) fn raw_loading_column(&self, k: usize) -> &[f64] {
+        &self.loadings[k]
+    }
+
+    pub(crate) fn n_loading_columns(&self) -> usize {
+        self.loadings.len()
     }
 
     /// Number of observations (rows of D).
@@ -587,8 +656,8 @@ mod tests {
         let design = Design::from_frame(frame(vec![vec![u32::MAX]], vec![])).unwrap();
 
         assert_eq!(design.n_dofs, 1);
-        assert_eq!(design.frame.level_column(0), &[0]);
-        assert_eq!(design.terms[0].encoding.label(0), Some(u32::MAX));
+        assert_eq!(design.terms[0].levels(), &[0]);
+        assert_eq!(design.terms[0].layout.encoding.label(0), Some(u32::MAX));
     }
 
     #[test]
@@ -611,12 +680,11 @@ mod tests {
     fn encode_labels_preserves_identity_encoding() {
         let EncodedFactor {
             encoding,
-            positions,
-            sorted,
-        } = FactorEncoding::encode_labels(&[2, 0, 1, 2]);
+            rows: TermRows { levels, sorted },
+        } = FactorEncoding::encode_labels(Cow::Borrowed(&[2, 0, 1, 2]));
 
         assert_eq!(encoding, FactorEncoding::identity(3));
-        assert!(positions.is_none());
+        assert!(matches!(levels, Cow::Borrowed([2, 0, 1, 2])));
         assert!(!sorted);
     }
 
@@ -625,12 +693,11 @@ mod tests {
         // Range width = 3 and n_obs = 3, so this exercises the presence-table path.
         let EncodedFactor {
             encoding,
-            positions,
-            sorted,
-        } = FactorEncoding::encode_labels(&[2, 0, 2]);
+            rows: TermRows { levels, sorted },
+        } = FactorEncoding::encode_labels(Cow::Borrowed(&[2, 0, 2]));
 
         assert_eq!(encoding, FactorEncoding::integer(vec![0, 2]));
-        assert_eq!(positions.as_deref(), Some(&[1u32, 0, 1][..]));
+        assert_eq!(*levels, [1, 0, 1]);
         assert!(!sorted);
     }
 
@@ -638,15 +705,14 @@ mod tests {
     fn encode_labels_compacts_shifted_bounded_range() {
         let EncodedFactor {
             encoding,
-            positions,
-            sorted,
-        } = FactorEncoding::encode_labels(&[1_000_000, 1_000_001, 1_000_002]);
+            rows: TermRows { levels, sorted },
+        } = FactorEncoding::encode_labels(Cow::Borrowed(&[1_000_000, 1_000_001, 1_000_002]));
 
         assert_eq!(
             encoding,
             FactorEncoding::integer(vec![1_000_000, 1_000_001, 1_000_002])
         );
-        assert_eq!(positions.as_deref(), Some(&[0u32, 1, 2][..]));
+        assert_eq!(*levels, [0, 1, 2]);
         assert!(sorted);
     }
 
@@ -654,12 +720,11 @@ mod tests {
     fn encode_labels_compacts_large_span_without_span_allocation() {
         let EncodedFactor {
             encoding,
-            positions,
-            sorted,
-        } = FactorEncoding::encode_labels(&[u32::MAX, 7, u32::MAX]);
+            rows: TermRows { levels, sorted },
+        } = FactorEncoding::encode_labels(Cow::Borrowed(&[u32::MAX, 7, u32::MAX]));
 
         assert_eq!(encoding, FactorEncoding::integer(vec![7, u32::MAX]));
-        assert_eq!(positions.as_deref(), Some(&[1u32, 0, 1][..]));
+        assert_eq!(*levels, [1, 0, 1]);
         assert!(!sorted);
     }
 
@@ -671,12 +736,12 @@ mod tests {
 
         // Stable argsort of [2,0,1,0] → original indices [1,3,2,0].
         assert_eq!(design.obs_perm.as_deref(), Some(&[1u32, 3, 2, 0][..]));
-        assert!(design.terms[0].sorted);
+        assert!(design.terms[0].sorted());
         // Factor 1's permuted column [0,1,1,0] is no longer non-decreasing.
-        assert!(!design.terms[1].sorted);
+        assert!(!design.terms[1].sorted());
 
-        assert_eq!(design.frame.level_column(0), [0, 0, 1, 2]);
-        assert_eq!(design.frame.level_column(1), [0, 1, 1, 0]);
+        assert_eq!(design.terms[0].levels(), [0, 0, 1, 2]);
+        assert_eq!(design.terms[1].levels(), [0, 1, 1, 0]);
     }
 
     #[test]
@@ -686,8 +751,8 @@ mod tests {
         let col1: Vec<u32> = col0.iter().map(|&v| v / 2).collect();
         let design = Design::from_frame(frame(vec![col0, col1], vec![])).unwrap();
         assert!(design.obs_perm.is_some());
-        assert!(design.terms[0].sorted);
-        assert!(design.terms[1].sorted);
+        assert!(design.terms[0].sorted());
+        assert!(design.terms[1].sorted());
     }
 
     #[test]
@@ -695,8 +760,8 @@ mod tests {
         let design =
             Design::from_frame(frame(vec![vec![0, 0, 1, 2], vec![1, 0, 1, 0]], vec![])).unwrap();
         assert!(design.obs_perm.is_none());
-        assert!(design.terms[0].sorted);
-        assert!(!design.terms[1].sorted);
+        assert!(design.terms[0].sorted());
+        assert!(!design.terms[1].sorted());
     }
 
     #[test]
@@ -713,7 +778,7 @@ mod tests {
 
     #[test]
     fn new_lays_out_slope_terms_term_major() {
-        // Sorted levels keep the locality sort a no-op, so frame columns stay in caller order.
+        // Sorted levels keep the locality sort a no-op, so columns stay in caller order.
         let f0 = [0u32, 0, 1, 1];
         let f1 = [0u32, 2, 1, 0];
         let z0 = [1.0, 2.0, 3.0, 4.0];
@@ -726,26 +791,29 @@ mod tests {
         let design = Design::new(effects).unwrap();
 
         // term 0: [intercept, z0, z1] over 2 levels; term 1: intercept over 3; term 2: slope.
-        assert_eq!(design.terms[0].offset, 0);
-        assert_eq!(design.terms[0].n_dofs(), 6);
-        assert_eq!(design.terms[1].offset, 6);
-        assert_eq!(design.terms[1].n_dofs(), 3);
-        assert_eq!(design.terms[2].offset, 9);
-        assert!(!matches!(design.terms[2].columns[0], Loading::Constant));
-        assert_eq!(design.terms[2].n_dofs(), 2);
+        assert_eq!(design.terms[0].layout.offset, 0);
+        assert_eq!(design.terms[0].layout.n_dofs(), 6);
+        assert_eq!(design.terms[1].layout.offset, 6);
+        assert_eq!(design.terms[1].layout.n_dofs(), 3);
+        assert_eq!(design.terms[2].layout.offset, 9);
+        assert!(!matches!(
+            design.terms[2].layout.columns[0],
+            Loading::Constant
+        ));
+        assert_eq!(design.terms[2].layout.n_dofs(), 2);
         assert_eq!(design.n_dofs, 11);
 
-        // slope indices resolve to the effects' loading columns in the frame.
+        // slope indices resolve to the effects' loading columns in the design.
         assert_eq!(
-            &*design.terms[0].columns,
+            &*design.terms[0].layout.columns,
             &[
                 Loading::Constant,
                 Loading::Covariate(0),
                 Loading::Covariate(1)
             ]
         );
-        assert_eq!(&*design.terms[2].columns, &[Loading::Covariate(2)]);
-        assert_eq!(design.frame.loading_column(0), &z0[..]);
-        assert_eq!(design.frame.loading_column(2), &z1[..]);
+        assert_eq!(&*design.terms[2].layout.columns, &[Loading::Covariate(2)]);
+        assert_eq!(design.raw_loading_column(0), &z0[..]);
+        assert_eq!(design.raw_loading_column(2), &z1[..]);
     }
 }

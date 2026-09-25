@@ -5,7 +5,7 @@ use std::ops::Range;
 
 use rayon::prelude::*;
 
-use super::{Design, PreparedDesign, TermMeta};
+use super::{Design, PreparedDesign};
 use crate::channel::Channel;
 use crate::{AliasVerdict, BuildWarning};
 
@@ -57,7 +57,7 @@ impl CollinearSlope {
 
 pub(crate) fn detect_collinear_slopes(prepared: &PreparedDesign<'_>) -> Vec<CollinearSlope> {
     let design = &prepared.design;
-    if design.n_factors() < 2 || !design.terms.iter().any(TermMeta::has_slopes) {
+    if design.n_factors() < 2 || !design.terms.iter().any(|t| t.layout.has_slopes()) {
         return Vec::new();
     }
     let budget = TABLE_BUDGET_BYTES / std::mem::size_of::<f64>() / design.n_factors();
@@ -86,7 +86,7 @@ pub(crate) fn detect_collinear_slopes(prepared: &PreparedDesign<'_>) -> Vec<Coll
         .collect()
 }
 
-/// Every other term's slope covariates, as `(channel, frame column)`.
+/// Every other term's slope covariates, as `(channel, loading column)`.
 fn screened_covariates(design: &Design<'_>, term: usize) -> Vec<(Channel, u32)> {
     (0..design.n_factors())
         .filter(|&t| t != term)
@@ -107,19 +107,19 @@ fn residual_shares(
         return Vec::new();
     }
     let design = &prepared.design;
-    let meta = &design.terms[term];
-    let levels = design.frame.level_column(term);
-    let us: Vec<&[f64]> = meta
+    let t = &design.terms[term];
+    let (layout, levels) = (&t.layout, t.levels());
+    let us: Vec<&[f64]> = layout
         .covariates()
         .map(|c| prepared.loading_column(c as usize))
         .collect();
-    let intercept = meta.has_intercept();
+    let intercept = layout.has_intercept();
     let columns: Vec<&[f64]> = targets
         .iter()
-        .map(|&(_, c)| design.frame.loading_column(c as usize))
+        .map(|&(_, c)| design.raw_loading_column(c as usize))
         .collect();
     let stride = columns.len() * (us.len() + 1);
-    let n_levels = meta.n_levels();
+    let n_levels = layout.n_levels();
     let plan = ScreenPlan::new(budget, n_levels, stride);
     let screen = Screen {
         prepared,
@@ -129,7 +129,7 @@ fn residual_shares(
         intercept,
         stride,
         // Grouping gathers every column, so it must buy back more than the one block.
-        order: match meta.sorted || plan.per_block == n_levels {
+        order: match t.sorted() || plan.per_block == n_levels {
             true => RowOrder::AsIs,
             false => RowOrder::Grouped(super::stable_argsort(levels, n_levels)),
         },
