@@ -83,19 +83,9 @@ pub enum BuildError {
     /// Schwarz preconditioner structural validation failed.
     #[error("preconditioner build failed: {0}")]
     Preconditioner(#[source] schwarz_precond::BuildError),
-    /// A pre-built preconditioner's shape does not match the design's DOF count.
-    #[error(
-        "prebuilt preconditioner shape ({actual_rows}x{actual_cols}) does not match \
-         design DOF count {expected}"
-    )]
-    PreconditionerDimensionMismatch {
-        /// Expected number of rows and columns (design `n_dofs`).
-        expected: usize,
-        /// Actual row count of the supplied preconditioner.
-        actual_rows: usize,
-        /// Actual column count of the supplied preconditioner.
-        actual_cols: usize,
-    },
+    /// A cached preconditioner was built for a different design layout.
+    #[error("prebuilt preconditioner layout signature does not match the supplied design")]
+    PreconditionerDesignMismatch,
     /// A negative floor breaks the dominance invariant; a non-finite one poisons every solve.
     #[error("local solver ridge must be finite and non-negative, got {value}")]
     InvalidRidge {

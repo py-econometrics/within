@@ -22,13 +22,22 @@ pub(crate) use factor_pairs::{
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use ndarray::{ArrayView2, Axis};
+use sha2::{Digest, Sha256};
 
 use crate::channel::Channel;
 use crate::observation::ObservationFrame;
 use crate::BuildError;
+
+fn hash_usize(hash: &mut Sha256, value: usize) {
+    hash.update(
+        u64::try_from(value)
+            .expect("design size fits u64")
+            .to_le_bytes(),
+    );
+}
 
 /// A slice that is guaranteed non-empty by construction.
 #[repr(transparent)]
@@ -341,6 +350,8 @@ pub struct Design<'a> {
     pub(crate) n_dofs: usize,
     /// `obs_perm[k]` = caller's original index of the observation at internal position `k`.
     pub(crate) obs_perm: Option<Arc<[u32]>>,
+    /// Shared by clones; populated only when a preconditioner is cached or reused.
+    signature: Arc<OnceLock<[u8; 32]>>,
 }
 
 impl<'a> Design<'a> {
@@ -461,6 +472,7 @@ impl<'a> Design<'a> {
             n_obs,
             n_dofs: offset,
             obs_perm,
+            signature: Arc::new(OnceLock::new()),
         })
     }
 
@@ -472,7 +484,35 @@ impl<'a> Design<'a> {
             n_obs: self.n_obs,
             n_dofs: self.n_dofs,
             obs_perm: self.obs_perm,
+            signature: self.signature,
         }
+    }
+
+    /// Stable digest of the coefficient and solver-coordinate layouts.
+    ///
+    /// Observation assignments, loading values, row order, and weights do not
+    /// participate: preconditioners may be reused across samples with the same
+    /// compact coefficient space. Caller labels and their [`FactorEncoding`]
+    /// representation are likewise data semantics, not solver coordinates.
+    pub(crate) fn signature(&self) -> [u8; 32] {
+        *self.signature.get_or_init(|| {
+            let mut hash = Sha256::new();
+            hash.update(b"within-design-layout-signature-v1");
+            hash_usize(&mut hash, self.n_dofs);
+            hash_usize(&mut hash, self.terms.len());
+            for term in &self.terms {
+                hash_usize(&mut hash, term.offset);
+                hash_usize(&mut hash, term.n_levels());
+                hash_usize(&mut hash, term.columns.len());
+                for column in term.columns.iter() {
+                    match column {
+                        Loading::Constant => hash.update([0]),
+                        Loading::Covariate(_) => hash.update([1]),
+                    }
+                }
+            }
+            hash.finalize().into()
+        })
     }
 
     /// Caller order → internal order: `out[k] = v[obs_perm[k]]`; borrows when unpermuted.
@@ -532,6 +572,62 @@ impl<'a> Design<'a> {
 mod tests {
     use super::*;
     use crate::observation::ObservationFrame;
+
+    #[test]
+    fn signature_is_lazy_and_shared_by_design_clones() {
+        let design = Design::from_levels_for_test(vec![vec![1, 0, 1]]);
+        let clone = design.clone();
+        assert!(Arc::ptr_eq(&design.signature, &clone.signature));
+        assert!(design.signature.get().is_none());
+        let signature = clone.signature();
+        assert_eq!(design.signature.get(), Some(&signature));
+        assert_eq!(design.into_owned().signature(), signature);
+    }
+
+    #[test]
+    fn signature_ignores_observation_and_loading_data() {
+        let levels_a = [10, 10, 20, 20];
+        let levels_b = [20, 10, 20];
+        let identity_levels = [1, 0, 1];
+        let slope_a = [1.0, 2.0, 3.0, 4.0];
+        let slope_b = [-5.0, 0.0, 8.0];
+        let slope_c = [3.0, 2.0, 1.0];
+        let a = Design::new([Effect::new(&levels_a, true, [&slope_a[..]]).expect("valid effect")])
+            .expect("valid design");
+        let b = Design::new([Effect::new(&levels_b, true, [&slope_b[..]]).expect("valid effect")])
+            .expect("valid design");
+        let c = Design::new([
+            Effect::new(&identity_levels, true, [&slope_c[..]]).expect("valid effect")
+        ])
+        .expect("valid design");
+
+        assert_ne!(a.n_obs(), b.n_obs());
+        assert_eq!(a.signature(), b.signature());
+        assert_eq!(a.signature(), c.signature());
+    }
+
+    #[test]
+    fn signature_covers_coefficient_layout() {
+        let labels_a = [10, 20];
+        let labels_b = [20, 30];
+        let slope = [1.0, 2.0];
+        let intercept = Design::new([
+            Effect::new(&labels_a, true, std::iter::empty::<&[f64]>()).expect("valid effect")
+        ])
+        .expect("valid design");
+        let relabeled = Design::new([
+            Effect::new(&labels_b, true, std::iter::empty::<&[f64]>()).expect("valid effect")
+        ])
+        .expect("valid design");
+        let slope_only =
+            Design::new([Effect::new(&labels_a, false, [&slope[..]]).expect("valid effect")])
+                .expect("valid design");
+
+        assert_eq!(intercept.n_dofs(), relabeled.n_dofs());
+        assert_eq!(intercept.n_dofs(), slope_only.n_dofs());
+        assert_eq!(intercept.signature(), relabeled.signature());
+        assert_ne!(intercept.signature(), slope_only.signature());
+    }
 
     fn frame(categorical: Vec<Vec<u32>>, continuous: Vec<Vec<f64>>) -> ObservationFrame<'static> {
         ObservationFrame::new(

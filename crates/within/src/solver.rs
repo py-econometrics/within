@@ -309,25 +309,21 @@ impl<'a> Solver<'a> {
     ) -> Result<Self, BuildError> {
         // Whiten the slope columns (if any) before the preconditioner reads them.
         let prepared = PreparedDesign::new(design.into_design()?, weights)?;
+        let preconditioner = preconditioner.into();
+        if let PreconditionerInput::Prebuilt(p) = &preconditioner {
+            if p.design_signature.get().copied() != Some(prepared.design.signature()) {
+                return Err(BuildError::PreconditionerDesignMismatch);
+            }
+        }
         let screened = detect_collinear_slopes(&prepared);
         let mut warnings: Vec<BuildWarning> = screened.iter().map(CollinearSlope::warn).collect();
-        let n_dofs = prepared.design.n_dofs;
 
-        let (mut slot, build_warnings) = match preconditioner.into() {
+        let (mut slot, build_warnings) = match preconditioner {
             PreconditionerInput::Default => {
                 PrecondSlot::build(&prepared, PreconditionerConfig::default())?
             }
             PreconditionerInput::Config(c) => PrecondSlot::build(&prepared, c)?,
-            PreconditionerInput::Prebuilt(p) => {
-                if p.nrows() != n_dofs || p.ncols() != n_dofs {
-                    return Err(BuildError::PreconditionerDimensionMismatch {
-                        expected: n_dofs,
-                        actual_rows: p.nrows(),
-                        actual_cols: p.ncols(),
-                    });
-                }
-                (PrecondSlot::Static(Some(p)), Vec::new())
-            }
+            PreconditionerInput::Prebuilt(p) => (PrecondSlot::Static(Some(p)), Vec::new()),
         };
 
         let base = match &mut slot {
@@ -600,10 +596,14 @@ impl<'a> Solver<'a> {
     /// Under Adaptive: the Schwarz map once built, otherwise the diagonal base; a reused map is
     /// fixed and carries no escalation policy.
     pub fn preconditioner(&self) -> Option<&Preconditioner> {
-        match &self.slot {
+        let preconditioner = match &self.slot {
             PrecondSlot::Static(p) => p.as_ref(),
             PrecondSlot::Adaptive(a) => Some(a.rung()),
-        }
+        }?;
+        preconditioner
+            .design_signature
+            .get_or_init(|| self.prepared.design.signature());
+        Some(preconditioner)
     }
 
     /// Number of DOFs (coefficients).

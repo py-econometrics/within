@@ -4,7 +4,7 @@
 use rayon::prelude::*;
 use schwarz_precond::{Operator, SchwarzPreconditioner, SubdomainEntry};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::block_elim::BlockElimSolver;
@@ -133,6 +133,34 @@ pub struct Preconditioner {
     /// design the solver attaches, so it is rebuilt rather than serialized.
     #[serde(skip)]
     pub(crate) gauge: Option<Arc<GaugeConstraint>>,
+    /// Filled when exported from a solver; serialized with the cached map.
+    #[serde(with = "signature_serde")]
+    pub(crate) design_signature: Arc<OnceLock<[u8; 32]>>,
+}
+
+// The lock lets clones share a signature that is stamped lazily through a shared reference.
+// Serialize only the 32-byte digest; serialization fails if the signature is unset.
+mod signature_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::sync::{Arc, OnceLock};
+
+    pub(super) fn serialize<S: Serializer>(
+        signature: &Arc<OnceLock<[u8; 32]>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        signature
+            .get()
+            .ok_or_else(|| serde::ser::Error::custom("preconditioner has no design signature"))?
+            .serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Arc<OnceLock<[u8; 32]>>, D::Error> {
+        Ok(Arc::new(OnceLock::from(<[u8; 32]>::deserialize(
+            deserializer,
+        )?)))
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -237,6 +265,7 @@ pub(crate) fn build_diagonal(prepared: &PreparedDesign<'_>) -> Result<Preconditi
         }),
         build_duration: build_started.elapsed(),
         gauge: None,
+        design_signature: Arc::new(OnceLock::new()),
     })
 }
 
@@ -256,6 +285,7 @@ pub(crate) fn build_schwarz(
         inner: Variant::Additive(schwarz),
         build_duration: build_started.elapsed(),
         gauge: None,
+        design_signature: Arc::new(OnceLock::new()),
     };
     Ok((Some(preconditioner), warnings))
 }

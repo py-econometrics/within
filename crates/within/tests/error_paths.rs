@@ -73,8 +73,8 @@ fn test_empty_categories_via_solve() {
 }
 
 #[test]
-fn test_preconditioner_dimension_mismatch_error() {
-    // Reusing a larger design's preconditioner must trip the dim check in Solver::new.
+fn test_preconditioner_design_mismatch_error() {
+    // A preconditioner built for another design is rejected, even if both have the same DOFs.
     let big = Array2::from_shape_vec((4, 2), vec![0u32, 0, 1, 1, 2, 0, 3, 1]).expect("big array");
     let small = Array2::from_shape_vec((3, 2), vec![0u32, 0, 1, 1, 0, 0]).expect("small array");
 
@@ -85,18 +85,64 @@ fn test_preconditioner_dimension_mismatch_error() {
         .clone();
 
     let result = Solver::new(small.view(), None, prebuilt);
-    let err = result.expect_err("expected PreconditionerDimensionMismatch, got Ok");
-    match err {
-        BuildError::PreconditionerDimensionMismatch {
-            expected,
-            actual_rows,
-            actual_cols,
-        } => {
-            assert_ne!(expected, actual_rows);
-            assert_eq!(actual_rows, actual_cols);
-        }
-        other => panic!("Expected PreconditionerDimensionMismatch, got: {:?}", other),
-    }
+    assert!(matches!(
+        result,
+        Err(BuildError::PreconditionerDesignMismatch)
+    ));
+}
+
+#[test]
+fn test_preconditioner_accepts_same_layout_different_data() {
+    let a = Array2::from_shape_vec((4, 2), vec![0, 0, 0, 1, 1, 0, 1, 1]).unwrap();
+    let b = Array2::from_shape_vec((4, 2), vec![0, 0, 0, 1, 1, 1, 1, 0]).unwrap();
+    let built = Solver::new(a.view(), None, PreconditionerConfig::Diagonal).unwrap();
+    let prebuilt = built.preconditioner().unwrap();
+    assert_eq!(
+        built.n_dofs(),
+        Design::from_categories(b.view()).unwrap().n_dofs()
+    );
+    Solver::new(b.view(), None, prebuilt).expect("same layout accepts changed assignments");
+
+    let bytes = postcard::to_stdvec(prebuilt).unwrap();
+    let restored = postcard::from_bytes::<within::Preconditioner>(&bytes).unwrap();
+    Solver::new(b.view(), None, restored).expect("serialized map keeps its layout signature");
+}
+
+#[test]
+fn test_preconditioner_rejects_same_size_different_layout() {
+    let two_level_term = [0u32, 0, 0, 0, 1, 1];
+    let three_level_term = [10u32, 10, 20, 30, 20, 30];
+    let a = Design::new([
+        Effect::new(&two_level_term, true, []).unwrap(),
+        Effect::new(&three_level_term, true, []).unwrap(),
+    ])
+    .unwrap();
+    let b = Design::new([
+        Effect::new(&three_level_term, true, []).unwrap(),
+        Effect::new(&two_level_term, true, []).unwrap(),
+    ])
+    .unwrap();
+
+    // Both designs have five DOFs, but their term boundaries are [2, 3] and [3, 2].
+    let built = Solver::new(a, None, PreconditionerConfig::Diagonal).unwrap();
+    let prebuilt = built.preconditioner().unwrap();
+    assert_eq!(built.n_dofs(), b.n_dofs());
+    assert!(matches!(
+        Solver::new(b, None, prebuilt),
+        Err(BuildError::PreconditionerDesignMismatch)
+    ));
+}
+
+#[test]
+fn test_preconditioner_accepts_changed_slope_values() {
+    let levels = [0u32, 0, 1, 1];
+    let first_slope = [1.0, 2.0, 3.0, 4.0];
+    let second_slope = [1.0, 2.0, 3.0, 5.0];
+    let first = Effect::new(&levels, true, [&first_slope[..]]).unwrap();
+    let second = Effect::new(&levels, true, [&second_slope[..]]).unwrap();
+    let solver = Solver::new(vec![first], None, PreconditionerConfig::Diagonal).unwrap();
+    Solver::new(vec![second], None, solver.preconditioner().unwrap())
+        .expect("same coefficient layout accepts changed loading values");
 }
 
 #[test]
