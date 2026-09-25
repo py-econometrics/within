@@ -108,7 +108,8 @@ fn residual_shares(
     }
     let design = &prepared.design;
     let meta = &design.terms[term];
-    let levels = design.frame.factor(term).levels();
+    let rows = design.frame.factor(term);
+    let levels = rows.levels();
     let us: Vec<&[f64]> = meta
         .covariates()
         .map(|c| prepared.loading_column(c as usize))
@@ -129,7 +130,7 @@ fn residual_shares(
         intercept,
         stride,
         // Grouping gathers every column, so it must buy back more than the one block.
-        order: match design.frame.factor(term).sorted() || plan.per_block == n_levels {
+        order: match rows.sorted() || plan.per_block == n_levels {
             true => RowOrder::AsIs,
             false => RowOrder::Grouped(super::stable_argsort(levels, n_levels)),
         },

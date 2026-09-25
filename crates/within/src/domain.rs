@@ -186,8 +186,6 @@ impl FactorEncoding {
         }
     }
 
-    /// One pass yields the encoding, the internal positions (the input itself if already
-    /// positions), and their sortedness, which compaction preserves.
     // Inlined into `build`, the label loops ran ~18% slower (measured); a call per factor is free.
     #[inline(never)]
     fn encode_labels(labels: Cow<'_, [u32]>) -> (Self, FactorRows<'_>) {
@@ -225,14 +223,11 @@ impl FactorEncoding {
         match presence_by_label {
             // Path 1: labels already form the zero-based identity range.
             Some(present) if min == 0 && present.iter().all(|&is_present| is_present) => {
-                let encoding = Self::identity(present.len());
-                (
-                    encoding,
-                    FactorRows {
-                        levels: labels,
-                        sorted,
-                    },
-                )
+                let rows = FactorRows {
+                    levels: labels,
+                    sorted,
+                };
+                (Self::identity(present.len()), rows)
             }
             // Path 2: the observed label range is bounded by the observation count.
             Some(present) => {
