@@ -31,12 +31,13 @@ fn build_whitens_each_slope_bearing_term() {
 
     for term in [0, 2] {
         let meta = &design.terms[term];
-        let levels = design.frame.level_column(term);
+        let levels = meta.levels();
         let us: Vec<&[f64]> = meta
+            .layout
             .covariates()
             .map(|k| basis.loading_column(k as usize))
             .collect();
-        for level in 0..meta.n_levels() {
+        for level in 0..meta.layout.n_levels() {
             let obs: Vec<usize> = (0..levels.len())
                 .filter(|&i| levels[i] as usize == level)
                 .collect();
@@ -100,7 +101,7 @@ fn back_transform_leaves_other_terms_untouched() {
     basis.back_transform(&mut x);
 
     // Plain term 1 sits between the two slope-bearing blocks.
-    let (t1, t2) = (design.terms[1].offset, design.terms[2].offset);
+    let (t1, t2) = (design.terms[1].layout.offset, design.terms[2].layout.offset);
     assert_eq!(x[t1..t2], before[t1..t2]);
     assert_ne!(x[..t1], before[..t1]);
     assert_ne!(x[t2..], before[t2..]);

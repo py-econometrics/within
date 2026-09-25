@@ -4,15 +4,18 @@ use std::borrow::Cow;
 
 use crate::error::BuildError;
 
+/// Row-aligned columns, each borrowed from the caller or owned.
+pub(crate) type Columns<'a, T> = Vec<Cow<'a, [T]>>;
+
 /// Row-aligned observation columns: per-factor level codes and per-slope loadings.
 #[derive(Clone, Debug)]
 pub struct ObservationFrame<'a> {
-    categorical: Vec<Cow<'a, [u32]>>,
-    continuous: Vec<Cow<'a, [f64]>>,
+    categorical: Columns<'a, u32>,
+    continuous: Columns<'a, f64>,
     n_obs: usize,
 }
 
-fn gather<T: Copy>(col: &[T], perm: &[u32]) -> Vec<T> {
+pub(crate) fn gather<T: Copy>(col: &[T], perm: &[u32]) -> Vec<T> {
     perm.iter().map(|&k| col[k as usize]).collect()
 }
 
@@ -59,10 +62,6 @@ impl<'a> ObservationFrame<'a> {
         self.categorical.len()
     }
 
-    pub(crate) fn n_loading_columns(&self) -> usize {
-        self.continuous.len()
-    }
-
     /// Level codes of factor `factor`.
     pub fn level_column(&self, factor: usize) -> &[u32] {
         &self.categorical[factor]
@@ -107,10 +106,9 @@ impl<'a> ObservationFrame<'a> {
         }
     }
 
-    /// Replace one categorical column with owned internal level positions.
-    pub(crate) fn replace_level_column(&mut self, factor: usize, levels: Vec<u32>) {
-        debug_assert_eq!(levels.len(), self.n_obs);
-        self.categorical[factor] = Cow::Owned(levels);
+    /// The level and loading columns, moved out without copying.
+    pub(crate) fn into_columns(self) -> (Columns<'a, u32>, Columns<'a, f64>) {
+        (self.categorical, self.continuous)
     }
 }
 
@@ -142,22 +140,5 @@ mod tests {
             result,
             Err(BuildError::ObservationCountMismatch { .. })
         ));
-    }
-
-    #[test]
-    fn categorical_column_can_be_replaced() {
-        let mut frame = ObservationFrame::new(
-            vec![
-                Cow::Borrowed(&[10u32, 100, 10]),
-                Cow::Borrowed(&[0u32, 1, 2]),
-            ],
-            vec![],
-        )
-        .unwrap();
-
-        frame.replace_level_column(0, vec![0, 1, 0]);
-
-        assert_eq!(frame.level_column(0), &[0, 1, 0]);
-        assert_eq!(frame.level_column(1), &[0, 1, 2]);
     }
 }

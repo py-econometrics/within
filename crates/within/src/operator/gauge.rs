@@ -121,7 +121,7 @@ fn propose(
         .loading(slope)
         .covariate()
         .expect("a screened slope carries a covariate");
-    let c = design.frame.loading_column(covariate as usize);
+    let c = design.raw_loading_column(covariate as usize);
     // Two intercepts alias through the ordinary FE gauge, not through the covariate.
     let (mut sum, mut total) = (0.0, 0.0);
     for (obs, &ci) in c.iter().enumerate() {
@@ -132,7 +132,7 @@ fn propose(
     let centered = total > 0.0
         && [slope.term, term]
             .iter()
-            .all(|&t| design.terms[t].has_intercept());
+            .all(|&t| design.terms[t].layout.has_intercept());
     let origin = match centered {
         true => sum / total,
         false => 0.0,
@@ -150,8 +150,8 @@ fn propose(
 
     let mut values = vec![0.0f64; design.n_dofs];
     for (term, sign) in [(slope.term, 1.0), (term, -1.0)] {
-        let meta = &design.terms[term];
-        let block = meta.offset..meta.offset + meta.n_dofs();
+        let layout = &design.terms[term].layout;
+        let block = layout.offset..layout.offset + layout.n_dofs();
         for ((v, &f), &s) in values[block.clone()]
             .iter_mut()
             .zip(&fit[block.clone()])

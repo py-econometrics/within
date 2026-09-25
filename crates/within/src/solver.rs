@@ -624,9 +624,9 @@ impl<'a> Solver<'a> {
 /// [`Design`].
 /// `y` is the response vector (length = n_obs).
 ///
-/// Zero-copy for F-order category arrays whose dominant factor is already
-/// sorted; otherwise columns are copied once (per column at ingest, or
-/// whole-frame by the locality sort).
+/// Zero-copy for F-order category arrays with labels `0..n_levels` whose dominant
+/// factor is already sorted. Label compaction copies a factor's column at ingest;
+/// the locality sort copies every column once more.
 ///
 /// `preconditioner` accepts the same input shapes as [`Solver::new`]:
 /// `None`, a [`crate::PreconditionerConfig`] by reference or value, an owned

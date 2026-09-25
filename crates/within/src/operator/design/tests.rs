@@ -318,10 +318,10 @@ mod slope_design_tests {
     fn dense_matrix(prepared: &PreparedDesign<'_>) -> Vec<Vec<f64>> {
         let design = &prepared.design;
         let mut d = vec![vec![0.0; design.n_dofs]; design.n_obs];
-        for (q, t) in design.terms.iter().enumerate() {
-            let levels = design.frame.level_column(q);
-            for (c, loading) in t.columns.iter().enumerate() {
-                let base = t.offset + c * t.n_levels();
+        for t in design.terms.iter() {
+            let levels = t.levels();
+            for (c, loading) in t.layout.columns.iter().enumerate() {
+                let base = t.layout.offset + c * t.layout.n_levels();
                 for (i, &lev) in levels.iter().enumerate() {
                     d[i][base + lev as usize] = match loading {
                         Loading::Constant => 1.0,

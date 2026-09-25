@@ -15,7 +15,7 @@ mod tests;
 /// parametrization.
 pub(crate) struct SlopeReparam {
     terms: Vec<TermReparam>,
-    /// The frame's loading columns in the solve basis, indexed like the frame's.
+    /// The design's loading columns in the solve basis, indexed like the design's.
     loadings: Vec<Vec<f64>>,
     /// Directions the data cannot identify, ascending in `(term, level, column)`.
     pub(crate) unidentified: Vec<CoefficientPosition>,
@@ -44,9 +44,9 @@ impl SlopeReparam {
     /// exact-zero columns, so the minimal-norm solve leaves exact-`0`
     /// coefficients.
     pub(crate) fn build(design: &Design<'_>, sqrt_weights: Option<&[f64]>) -> Option<Self> {
-        let mut loadings = vec![Vec::new(); design.frame.n_loading_columns()];
+        let mut loadings = vec![Vec::new(); design.n_loading_columns()];
         let slope_terms: Vec<usize> = (0..design.terms.len())
-            .filter(|&t| design.terms[t].has_slopes())
+            .filter(|&t| design.terms[t].layout.has_slopes())
             .collect();
         let moments: Vec<LevelMoments> = slope_terms
             .par_iter()
@@ -89,15 +89,15 @@ impl TermReparam {
         loadings: &mut [Vec<f64>],
         unidentified: &mut Vec<CoefficientPosition>,
     ) -> Self {
-        let meta = &design.terms[term];
-        let (offset, n_levels) = (meta.offset, meta.n_levels());
-        let intercept = meta.has_intercept();
-        let z_cols: Vec<usize> = meta.covariates().map(|c| c as usize).collect();
+        let t = &design.terms[term];
+        let (layout, levels) = (&t.layout, t.levels());
+        let (offset, n_levels) = (layout.offset, layout.n_levels());
+        let intercept = layout.has_intercept();
+        let z_cols: Vec<usize> = layout.covariates().map(|c| c as usize).collect();
         let v = z_cols.len();
-        let levels = design.frame.level_column(term);
         let zs: Vec<&[f64]> = z_cols
             .iter()
-            .map(|&c| design.frame.loading_column(c))
+            .map(|&c| design.raw_loading_column(c))
             .collect();
 
         let mut z_row = vec![0.0; v];

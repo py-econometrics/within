@@ -275,8 +275,8 @@ fn design_contains_every_compact_level_position() {
     ]);
 
     for (term, meta) in design.design.terms.iter().enumerate() {
-        let mut observed = vec![false; meta.n_levels()];
-        for &level in design.design.frame.level_column(term) {
+        let mut observed = vec![false; meta.layout.n_levels()];
+        for &level in meta.levels() {
             observed[level as usize] = true;
         }
         assert!(
@@ -302,14 +302,14 @@ fn dense_and_sparse_paths_agree_on_signed_data() {
         cols: Channel { term: 1, column: 0 },
     };
     let cols = PairColumns {
-        row_levels: design.frame.level_column(0),
-        col_levels: design.frame.level_column(1),
-        row_load: design.frame.loading_column(0),
+        row_levels: design.terms[0].levels(),
+        col_levels: design.terms[1].levels(),
+        row_load: design.raw_loading_column(0),
         col_load: Unit,
         sqrt_weights: None,
     };
-    let n_rows = design.terms[pair.rows.term].n_levels();
-    let n_cols = design.terms[pair.cols.term].n_levels();
+    let n_rows = design.terms[pair.rows.term].layout.n_levels();
+    let n_cols = design.terms[pair.cols.term].layout.n_levels();
     let (c_dense, dq_dense, dr_dense) = accumulate_dense_cross_block(cols, n_rows, n_cols);
     let (c_sparse, dq_sparse, dr_sparse) = accumulate_sparse_cross_block(cols, n_rows, n_cols);
 

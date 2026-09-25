@@ -109,10 +109,10 @@ fn solvers_built_from_a_borrowed_design_share_its_storage() {
     let weighted = Solver::new(&design, Some(&w), &PreconditionerConfig::Diagonal).unwrap();
 
     assert!(Arc::ptr_eq(
-        &unweighted.prepared.design.frame,
-        &design.frame
+        &unweighted.prepared.design.terms,
+        &design.terms
     ));
-    assert!(Arc::ptr_eq(&weighted.prepared.design.frame, &design.frame));
+    assert!(Arc::ptr_eq(&weighted.prepared.design.terms, &design.terms));
     let a = unweighted.solve(&y, None).unwrap();
     let b = weighted.solve(&y, None).unwrap();
     assert!(a.converged && b.converged);
@@ -240,12 +240,14 @@ fn akm_panel(
 /// normal equations force one: only an intercept makes the within-level sum a residual leg.
 fn max_abs_group_mean(design: &Design<'_>, demeaned: &[f64]) -> f64 {
     let demeaned = design.permute_obs_in(demeaned);
-    (0..design.terms.len())
-        .filter(|&term| design.terms[term].has_intercept())
-        .map(|term| {
-            let levels = design.frame.level_column(term);
-            let mut sums = vec![0.0f64; design.terms[term].n_levels()];
-            let mut counts = vec![0.0f64; design.terms[term].n_levels()];
+    design
+        .terms
+        .iter()
+        .filter(|t| t.layout.has_intercept())
+        .map(|t| {
+            let levels = t.levels();
+            let mut sums = vec![0.0f64; t.layout.n_levels()];
+            let mut counts = vec![0.0f64; t.layout.n_levels()];
             for (obs, &level) in levels.iter().enumerate() {
                 sums[level as usize] += demeaned[obs];
                 counts[level as usize] += 1.0;
