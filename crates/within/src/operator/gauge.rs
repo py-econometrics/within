@@ -32,7 +32,7 @@ impl GaugeConstraint {
         let n_dofs = prepared.design.n_dofs;
         let operator = DesignOperator::new(prepared);
         // Whitening leaves a level's columns orthogonal, so `Aᵀc ./ diag(AᵀA)` is its per-level fit.
-        let scale = operator.column_norms_squared();
+        let scale = prepared.gram_diagonal();
         let proposed = nulls
             .iter()
             .map(|slope| propose(prepared, &operator, &scale, slope.slope, slope.term))

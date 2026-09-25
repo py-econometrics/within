@@ -5,7 +5,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use portable_atomic::AtomicF64;
 use schwarz_precond::Operator;
 
-use crate::channel::Channel;
 use crate::domain::PreparedDesign;
 
 mod gather;
@@ -40,29 +39,6 @@ impl<'a> DesignOperator<'a> {
             #[cfg(debug_assertions)]
             adjoint_active: AtomicBool::new(false),
         }
-    }
-
-    /// Squared column norms `diag(AᵀA)`.
-    pub(crate) fn column_norms_squared(&self) -> Vec<f64> {
-        let design = &self.prepared.design;
-        let mut diag = vec![0.0; design.n_dofs];
-        for (index, term) in design.terms.iter().enumerate() {
-            let levels = design.frame.level_column(index);
-            for column in 0..term.columns.len() {
-                let base = term.column_base(column);
-                let slice = &mut diag[base..base + term.n_levels()];
-                let z = self.prepared.channel_loading(Channel {
-                    term: index,
-                    column,
-                });
-                for (obs, &level) in levels.iter().enumerate() {
-                    let w = self.prepared.row_weight(obs);
-                    // Keep `w * z * z` left-to-right: a zero weight kills a huge `z` first.
-                    slice[level as usize] += z.map_or(w, |z| w * z[obs] * z[obs]);
-                }
-            }
-        }
-        diag
     }
 
     /// `y − D x`, read off this operator's measured `b − A x` unless a zero weight erased a row.

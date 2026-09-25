@@ -1,7 +1,7 @@
 //! Within-level reparametrization of a design's varying-slope terms.
 
 use super::level_moments::{BasisScratch, LevelMoments};
-use super::{Design, TermMeta};
+use super::{row_weight, Design, TermMeta};
 use crate::channel::{Channel, CoefficientPosition};
 use crate::linalg::dot;
 
@@ -14,6 +14,8 @@ pub(crate) struct WhitenedTerm {
     transforms: Vec<LevelTransform>,
     /// Solve columns in slope-column order; column `k` is the `k`-th basis row, not covariate.
     pub(crate) loadings: Vec<Vec<f64>>,
+    /// This term's block of `diag(AᵀA)`.
+    pub(crate) diagonal: Vec<f64>,
     /// Directions the data cannot identify, ascending in `(level, column)`.
     pub(crate) unidentified: Vec<CoefficientPosition>,
 }
@@ -44,9 +46,15 @@ impl WhitenedTerm {
         let mut transforms = Vec::with_capacity(n_levels);
         let mut unidentified = Vec::new();
         let mut scratch = BasisScratch::new(v);
+        let mut diagonal = vec![0.0; meta.n_dofs()];
+        let (intercept_diagonal, slope_diagonal) =
+            diagonal.split_at_mut(intercept as usize * n_levels);
         for level in 0..n_levels {
             moments.basis(level, &mut scratch);
             let (w, kept) = (&scratch.basis, &scratch.kept);
+            if let Some(d) = intercept_diagonal.get_mut(level) {
+                *d = moments.w_sum(level);
+            }
             if intercept && moments.w_sum(level) == 0.0 {
                 unidentified.push(CoefficientPosition {
                     channel: Channel { term, column: 0 },
@@ -81,14 +89,22 @@ impl WhitenedTerm {
             for ((zr, col), cj) in z_row.iter_mut().zip(&zs).zip(&*t.center) {
                 *zr = col[i] - cj;
             }
-            for (w_row, out) in t.w.chunks_exact(v).zip(&mut loadings) {
-                out[i] = dot(w_row, &z_row);
+            let w = row_weight(sqrt_weights, i);
+            for ((w_row, out), d) in
+                t.w.chunks_exact(v)
+                    .zip(&mut loadings)
+                    .zip(slope_diagonal.chunks_exact_mut(n_levels))
+            {
+                let u = dot(w_row, &z_row);
+                out[i] = u;
+                d[level as usize] += w * u * u;
             }
         }
 
         Self {
             transforms,
             loadings,
+            diagonal,
             unidentified,
         }
     }

@@ -2,10 +2,9 @@
 //!
 //! Both the dense and sparse paths scan observations once, decoding each into
 //! its compact [`Contribution`] via [`PairColumns::decode`]: `w·l_row·l_col` to its
-//! cell and `w·l_row²` / `w·l_col²` to the diagonals, where `l` is the channel's
-//! loading, so slope channels yield signed cells. Paths are generic over
-//! [`Loading`] and monomorphized per pair: intercept channels pass [`Unit`],
-//! whose `l ≡ 1` folds the loading math away, so plain pairs keep the
+//! cell, where `l` is the channel's loading, so slope channels yield signed cells.
+//! Paths are generic over [`Loading`] and monomorphized per pair: intercept channels
+//! pass [`Unit`], whose `l ≡ 1` folds the loading math away, so plain pairs keep the
 //! pre-slope codegen.
 
 use crate::channel::ChannelPair;
@@ -40,13 +39,11 @@ impl Loading for &[f64] {
     }
 }
 
-/// One observation's Gram contribution: signed cell `w·l_row·l_col` plus its diagonals.
+/// One observation's Gram contribution: signed cell `w·l_row·l_col`.
 struct Contribution {
     cj: usize,
     ck: usize,
     cell: f64,
-    row_diag: f64,
-    col_diag: f64,
 }
 
 /// Per-observation input columns backing one channel pair: level codes, loadings, and weights.
@@ -63,25 +60,21 @@ impl<Lq: Loading, Lr: Loading> PairColumns<'_, Lq, Lr> {
     #[inline]
     fn decode(&self, uid: usize) -> Contribution {
         let w = row_weight(self.sqrt_weights, uid);
-        let l_row = self.row_load.at(uid);
-        let l_col = self.col_load.at(uid);
         Contribution {
             cj: self.row_levels[uid] as usize,
             ck: self.col_levels[uid] as usize,
-            cell: w * l_row * l_col,
-            row_diag: w * l_row * l_row,
-            col_diag: w * l_col * l_col,
+            cell: w * self.row_load.at(uid) * self.col_load.at(uid),
         }
     }
 }
 
-/// Accumulate into `C` plus diagonals, dispatching dense or sparse by peak transient memory.
+/// Accumulate into `C`, dispatching dense or sparse by peak transient memory.
 pub(super) fn accumulate_cross_block(
     prepared: &PreparedDesign<'_>,
     pair: ChannelPair,
     n_rows: usize,
     n_cols: usize,
-) -> (CsrBlock, Vec<f64>, Vec<f64>) {
+) -> CsrBlock {
     let design = &prepared.design;
     let sqrt_weights = prepared.sqrt_weights();
     // Dispatching on cell count alone would pick sparse where it uses MORE memory.
@@ -154,7 +147,7 @@ fn accumulate<Lq: Loading, Lr: Loading>(
     n_rows: usize,
     n_cols: usize,
     go_sparse: bool,
-) -> (CsrBlock, Vec<f64>, Vec<f64>) {
+) -> CsrBlock {
     if go_sparse {
         accumulate_sparse_cross_block(cols, n_rows, n_cols)
     } else {
@@ -167,22 +160,17 @@ pub(super) fn accumulate_dense_cross_block<Lq: Loading, Lr: Loading>(
     cols: PairColumns<'_, Lq, Lr>,
     n_rows: usize,
     n_cols: usize,
-) -> (CsrBlock, Vec<f64>, Vec<f64>) {
+) -> CsrBlock {
     let n_obs = cols.row_levels.len();
-    let mut row_diag = vec![0.0f64; n_rows];
-    let mut col_diag = vec![0.0f64; n_cols];
     let mut table = vec![0.0f64; n_rows * n_cols];
 
     for uid in 0..n_obs {
         let o = cols.decode(uid);
         debug_assert!(o.cj < n_rows && o.ck < n_cols);
-        row_diag[o.cj] += o.row_diag;
-        col_diag[o.ck] += o.col_diag;
         table[o.cj * n_cols + o.ck] += o.cell;
     }
 
-    let c = CsrBlock::from_dense_table(&table, n_rows, n_cols);
-    (c, row_diag, col_diag)
+    CsrBlock::from_dense_table(&table, n_rows, n_cols)
 }
 
 /// Sparse path: bucket by row, then dedup each row through a dense `n_cols` workspace.
@@ -190,17 +178,12 @@ pub(super) fn accumulate_sparse_cross_block<Lq: Loading, Lr: Loading>(
     cols: PairColumns<'_, Lq, Lr>,
     n_rows: usize,
     n_cols: usize,
-) -> (CsrBlock, Vec<f64>, Vec<f64>) {
+) -> CsrBlock {
     let n_obs = cols.row_levels.len();
-    let mut row_diag = vec![0.0f64; n_rows];
-    let mut col_diag = vec![0.0f64; n_cols];
 
     let mut row_counts = vec![0u32; n_rows];
-    for uid in 0..n_obs {
-        let o = cols.decode(uid);
-        row_diag[o.cj] += o.row_diag;
-        col_diag[o.ck] += o.col_diag;
-        row_counts[o.cj] += 1;
+    for &level in cols.row_levels {
+        row_counts[level as usize] += 1;
     }
 
     let mut bucket_indptr = vec![0u32; n_rows + 1];
@@ -250,12 +233,11 @@ pub(super) fn accumulate_sparse_cross_block<Lq: Loading, Lr: Loading>(
         touched.clear();
     }
 
-    let c = CsrBlock {
+    CsrBlock {
         indptr: c_indptr,
         indices: c_indices,
         data: c_data,
         nrows: n_rows,
         ncols: n_cols,
-    };
-    (c, row_diag, col_diag)
+    }
 }
