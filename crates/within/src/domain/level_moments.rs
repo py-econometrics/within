@@ -2,10 +2,6 @@
 
 use super::{row_weight, Design};
 
-/// Relative rank tolerance: a slope direction drops once its remaining
-/// within-level variance falls to `RANK_TOL` × its own initial variance.
-pub(crate) const RANK_TOL: f64 = 1e-10;
-
 /// One-pass weighted within-level moments (multivariate Welford); structural
 /// zeros stay exact, so rank drops survive a zero tolerance.
 pub(crate) struct LevelMoments {
@@ -83,10 +79,8 @@ impl LevelMoments {
         &self.mean[level * v..][..v]
     }
 
-    /// The level's orthonormal rows `w` (`w·G·wᵀ = I`) and kept-column mask,
-    /// left in `scratch` so a sweep over levels allocates nothing. `G` is
-    /// centered against a pinned intercept, raw (`M2 + w·μμᵀ`) without one.
-    pub(crate) fn basis(&self, level: usize, scratch: &mut BasisScratch) {
+    /// The level's row-major `v×v` Gramian: centered with an intercept, `M2 + w·μμᵀ` without one.
+    pub(crate) fn fill_gram(&self, level: usize, gram: &mut [f64]) {
         let v = self.v;
         let com = &self.comoment[level * tri_len(v)..][..tri_len(v)];
         let mean = self.mean(level);
@@ -97,129 +91,9 @@ impl LevelMoments {
                 if !self.intercept {
                     g += w * mean[j] * mean[k];
                 }
-                scratch.gram[j * v + k] = g;
-                scratch.gram[k * v + j] = g;
+                gram[j * v + k] = g;
+                gram[k * v + j] = g;
             }
         }
-        scratch.orthonormalize(v, RANK_TOL);
-    }
-}
-
-/// Reusable buffers for a sweep of [`LevelMoments::basis`] over many levels.
-pub(crate) struct BasisScratch {
-    pub(crate) gram: Vec<f64>,
-    residual: Vec<f64>,
-    q: Vec<f64>,
-    /// The last level's `rank × v` orthonormal rows.
-    pub(crate) basis: Vec<f64>,
-    /// The last level's kept-column mask.
-    pub(crate) kept: Vec<bool>,
-}
-
-impl BasisScratch {
-    pub(crate) fn new(v: usize) -> Self {
-        Self {
-            gram: vec![0.0; v * v],
-            residual: vec![0.0; v],
-            q: vec![0.0; v],
-            basis: Vec::with_capacity(v * v),
-            kept: vec![false; v],
-        }
-    }
-}
-
-impl BasisScratch {
-    /// Pivoted Gram–Schmidt on the raw slope columns, run in coordinates:
-    /// column `j` enters as `e_j` and all geometry goes through the dense
-    /// row-major `v×v` level Gram in `self.gram`, `⟨a, b⟩ = a·g·bᵀ`. Leaves the
-    /// `rank × v` orthonormal rows in `self.basis` — `w·g·wᵀ = I` — plus the
-    /// kept-column mask. A column drops once its residual variance falls to
-    /// `tol` × its initial variance; pivots keep their original column indices
-    /// — nothing is swapped.
-    pub(crate) fn orthonormalize(&mut self, v: usize, tol: f64) {
-        let Self {
-            gram: g,
-            residual,
-            q,
-            basis,
-            kept,
-        } = self;
-        for (r, j) in residual.iter_mut().zip(0..v) {
-            *r = g[j * v + j];
-        }
-        kept.fill(false);
-        basis.clear();
-        while let Some(p) = (0..v)
-            .filter(|&j| !kept[j] && residual[j].is_finite() && residual[j] > tol * g[j * v + j])
-            .max_by(|&a, &b| residual[a].total_cmp(&residual[b]))
-        {
-            kept[p] = true;
-
-            // q = e_p − Σₜ ⟨e_p, qₜ⟩·qₜ, whose norm is already √residual[p].
-            q.fill(0.0);
-            q[p] = 1.0;
-            for q_t in basis.chunks_exact(v) {
-                let c = crate::linalg::dot(&g[p * v..][..v], q_t);
-                for (qj, &qtj) in q.iter_mut().zip(q_t) {
-                    *qj -= c * qtj;
-                }
-            }
-            let norm = residual[p].sqrt();
-            for qj in q.iter_mut() {
-                *qj /= norm;
-            }
-
-            // Pythagoras: projecting out q costs every column ⟨e_j, q⟩² of variance.
-            for (r, g_row) in residual.iter_mut().zip(g.chunks_exact(v)) {
-                let c = crate::linalg::dot(g_row, q);
-                *r -= c * c;
-            }
-            basis.extend_from_slice(q);
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn pivoted_gram_schmidt(g: &[f64], v: usize, tol: f64) -> (Vec<f64>, Vec<bool>) {
-        let mut scratch = BasisScratch::new(v);
-        scratch.gram.copy_from_slice(g);
-        scratch.orthonormalize(v, tol);
-        (scratch.basis, scratch.kept)
-    }
-
-    #[test]
-    fn gram_schmidt_orthonormalizes_under_a_non_monotonic_pivot_order() {
-        // Diagonals [2, 5, 3] force the pivot sequence 1 → 2 → 0, breaking order assumptions.
-        let g = [2.0, 1.0, 0.5, 1.0, 5.0, 2.0, 0.5, 2.0, 3.0];
-        let (w, kept) = pivoted_gram_schmidt(&g, 3, RANK_TOL);
-        assert_eq!(kept, [true; 3]);
-        assert_eq!(w.len(), 9);
-
-        for r in 0..3 {
-            for s in 0..3 {
-                let wgw: f64 = (0..3)
-                    .flat_map(|j| (0..3).map(move |k| (j, k)))
-                    .map(|(j, k)| w[r * 3 + j] * g[j * 3 + k] * w[s * 3 + k])
-                    .sum();
-                let expected = if r == s { 1.0 } else { 0.0 };
-                assert!(
-                    (wgw - expected).abs() < 1e-12,
-                    "(W·G·Wᵀ)[{r}][{s}] = {wgw}, expected {expected}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn zero_tolerance_keeps_a_near_degenerate_direction_the_default_drops() {
-        let eps = 1e-12;
-        let g = [1.0, 1.0 - eps, 1.0 - eps, 1.0];
-        let (_, kept) = pivoted_gram_schmidt(&g, 2, RANK_TOL);
-        assert_eq!(kept.iter().filter(|&&k| k).count(), 1);
-        let (_, kept) = pivoted_gram_schmidt(&g, 2, 0.0);
-        assert_eq!(kept, [true, true]);
     }
 }
