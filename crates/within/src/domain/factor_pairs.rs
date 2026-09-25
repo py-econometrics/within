@@ -12,7 +12,7 @@ use crate::channel::{Channel, ChannelPair};
 use crate::config::LocalSolverConfig;
 use crate::{BuildError, BuildWarning};
 
-use super::{BlockDiagonals, CrossTab, PreparedDesign};
+use super::{CrossTab, PreparedDesign};
 
 mod sddm;
 use crate::domain::Loading;
@@ -59,7 +59,7 @@ pub(crate) fn build_local_domains(
     let per_pair: Vec<(Vec<LocalDomain>, Vec<BuildWarning>)> = pairs
         .par_iter()
         .map(|&pair| {
-            let (full_ct, full_diag, l2g) = CrossTab::build_for_pair(prepared, pair);
+            let (full_ct, l2g) = CrossTab::build_for_pair(prepared, pair);
             let class = if matches!(design.loading(pair.rows), Loading::Constant)
                 && matches!(design.loading(pair.cols), Loading::Constant)
             {
@@ -67,7 +67,7 @@ pub(crate) fn build_local_domains(
             } else {
                 ComponentClass::General
             };
-            split_into_subdomains(pair, class, full_ct, full_diag, &l2g, config)
+            split_into_subdomains(prepared, pair, class, full_ct, &l2g, config)
         })
         .collect::<Result<_, BuildError>>()?;
     let mut domain_pairs = Vec::new();
@@ -90,36 +90,38 @@ pub(crate) fn build_local_domains(
 
 /// Dead singletons (zero diagonal, an exact-zero design column) produce no subdomain.
 fn split_into_subdomains(
+    prepared: &PreparedDesign<'_>,
     pair: ChannelPair,
     class: ComponentClass,
     full_ct: CrossTab,
-    full_diag: BlockDiagonals,
     l2g: &[u32],
     config: &LocalSolverConfig,
 ) -> Result<(Vec<LocalDomain>, Vec<BuildWarning>), BuildError> {
+    let row_diag = prepared.channel_diagonal(pair.rows);
+    let col_diag = prepared.channel_diagonal(pair.cols);
     let n_rows_full = full_ct.n_rows();
     let components = full_ct.bipartite_connected_components();
 
-    let (cross_tabs, diagonals): (Vec<CrossTab>, Vec<Vec<f64>>) = if components.len() == 1 {
-        let flat = full_diag.rows.into_iter().chain(full_diag.cols).collect();
-        (vec![full_ct], vec![flat])
+    let cross_tabs: Vec<CrossTab> = if components.len() == 1 {
+        vec![full_ct]
     } else {
         let mut row_remap = vec![u32::MAX; full_ct.n_rows()];
         let mut col_remap = vec![u32::MAX; full_ct.n_cols()];
-        let cross_tabs = components
+        components
             .iter()
             .map(|comp| full_ct.extract_component(comp, &mut row_remap, &mut col_remap))
-            .collect();
-        let diagonals = components
-            .iter()
-            .map(|comp| full_diag.extract_component(comp))
-            .collect();
-        (cross_tabs, diagonals)
+            .collect()
     };
 
     let mut domains = Vec::with_capacity(components.len());
     let mut warnings = Vec::new();
-    for ((comp, comp_ct), comp_diag) in components.iter().zip(cross_tabs).zip(diagonals) {
+    for (comp, comp_ct) in components.iter().zip(cross_tabs) {
+        let comp_diag: Vec<f64> = comp
+            .rows
+            .iter()
+            .map(|&i| row_diag[i])
+            .chain(comp.cols.iter().map(|&i| col_diag[i]))
+            .collect();
         if comp_diag.iter().all(|&v| v == 0.0) {
             continue;
         }
