@@ -113,6 +113,8 @@ impl FactorEncoding {
         }
     }
 
+    // Inlined into `build`, its label loops lose registers and reload pointers from the stack.
+    #[inline(never)]
     fn encode_labels(labels: Cow<'_, [u32]>) -> EncodedFactor<'_> {
         let Some((&first, remaining)) = labels.split_first() else {
             return EncodedFactor {
