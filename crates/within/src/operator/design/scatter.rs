@@ -145,7 +145,7 @@ fn scatter_sequential<const C: usize>(
     }
 }
 
-/// Parallel scatter-add via thread-local fold/reduce, best when the block is small.
+/// Parallel scatter-add into per-thread accumulators merged by a reduce.
 fn scatter_fold<const C: usize>(
     block: &mut [f64],
     n_levels: usize,
@@ -195,7 +195,7 @@ fn writeback_scatter_scratch(block: &mut [f64], buf: &[AtomicF64]) {
     }
 }
 
-/// Parallel scatter-add via atomic CAS, best when the block is large; the scratch is reused.
+/// Parallel scatter-add via atomic CAS into the reused scratch.
 fn scatter_atomic<const C: usize>(
     block: &mut [f64],
     n_levels: usize,

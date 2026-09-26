@@ -340,8 +340,7 @@ mod slope_design_tests {
         }
     }
 
-    /// Covers every kernel arm on the sequential path: plain, fused V=1..3,
-    /// slope-only V=1..3, and the generic V=4 fallback — against the dense reference.
+    /// Every kernel arm on the sequential path, against the dense reference.
     #[test]
     fn slope_matvec_and_adjoint_match_dense_reference() {
         let n = 12;
@@ -395,19 +394,17 @@ mod slope_design_tests {
         assert_close(&got_t, &expect_t);
     }
 
-    /// Adjoint identity ⟨Dx, r⟩ = ⟨x, Dᵀr⟩ on a design large enough to take
-    /// the parallel strategies — sorted-coalesced (C=2), atomic (C=2), fold on
-    /// a fused unsorted block past the atomic threshold (C=2), and fold (C=3) —
-    /// with weights in play. Gather and scatter share the layout logic but not
-    /// the kernels, so a per-strategy addressing bug breaks the identity.
+    /// ⟨Dx, r⟩ = ⟨x, Dᵀr⟩, weighted, with each parallel scatter strategy on each fused arity.
     #[test]
     fn slope_adjoint_property_parallel_strategies() {
         let n = 300_000;
-        let sorted: Vec<u32> = (0..n).map(|i| (i * 120_000 / n) as u32).collect();
+        // Largest term and already sorted, so the locality sort leaves every fixture as built.
+        let sorted: Vec<u32> = (0..n).map(|i| (i * 160_000 / n) as u32).collect();
+        let sorted_small: Vec<u32> = (0..n).map(|i| (i * 30_000 / n) as u32).collect();
         let unsorted: Vec<u32> = (0..n).map(|i| ((i * 7919) % 100_000) as u32).collect();
         let unsorted_fused: Vec<u32> = (0..n).map(|i| ((i * 7919) % 60_000) as u32).collect();
         let small: Vec<u32> = (0..n).map(|i| (i % 10) as u32).collect();
-        let z: Vec<Vec<f64>> = (0..5)
+        let z: Vec<Vec<f64>> = (0..14)
             .map(|k| (0..n).map(|i| noise(k * n + i)).collect())
             .collect();
         let effects = vec![
@@ -415,6 +412,9 @@ mod slope_design_tests {
             Effect::new(&unsorted, true, [&z[1][..]]).unwrap(),
             Effect::new(&unsorted_fused, true, [&z[4][..]]).unwrap(),
             Effect::new(&small, true, [&z[2][..], &z[3][..]]).unwrap(),
+            Effect::new(&sorted_small, true, [&z[5][..], &z[6][..], &z[7][..]]).unwrap(),
+            Effect::new(&unsorted, false, [&z[8][..], &z[9][..], &z[10][..]]).unwrap(),
+            Effect::new(&small, true, [&z[11][..], &z[12][..], &z[13][..]]).unwrap(),
         ];
         let weights: Vec<f64> = (0..n).map(|i| 0.5 + noise(i).abs()).collect();
         let design = PreparedDesign::new(Design::new(effects).unwrap(), Some(&weights)).unwrap();
@@ -434,8 +434,12 @@ mod slope_design_tests {
                 ScatterStrategy::Atomic,
                 ScatterStrategy::Fold,
                 ScatterStrategy::Fold,
+                ScatterStrategy::SortedCoalesced,
+                ScatterStrategy::Atomic,
+                ScatterStrategy::Fold,
             ]
         );
+        assert!(design.design.obs_perm.is_none());
 
         let x: Vec<f64> = (0..design.design.n_dofs)
             .map(|j| noise(13 * j + 1))
