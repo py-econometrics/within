@@ -92,12 +92,13 @@ fn scatter_term<const C: usize>(
 const SCATTER_LOCAL_THRESHOLD: usize = 100_000;
 
 /// Strategy for a single term's scatter-add loop.
-enum ScatterStrategy {
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum ScatterStrategy {
     /// Plain sequential loop — used when n_rows is below `PAR_THRESHOLD`.
     Sequential,
-    /// Parallel fold/reduce with thread-local accumulators — for small blocks.
+    /// Parallel fold/reduce with thread-local accumulators — O(block · n_threads) memory.
     Fold,
-    /// Parallel atomic CAS — for large blocks with low contention.
+    /// Parallel atomic CAS into the reused scratch — for unsorted columns with many levels.
     Atomic,
     /// Equal-level runs coalesce into one atomic add per level per chunk, avoiding a CAS storm.
     SortedCoalesced,
@@ -105,7 +106,7 @@ enum ScatterStrategy {
 
 impl ScatterStrategy {
     /// Atomic gates on one column's `n_levels`: a fused unsorted CAS loses to fold below it.
-    fn pick(parallel: bool, block: usize, n_levels: usize, sorted: bool) -> Self {
+    pub(super) fn pick(parallel: bool, block: usize, n_levels: usize, sorted: bool) -> Self {
         match (parallel, sorted) {
             (false, _) => ScatterStrategy::Sequential,
             (true, true) if block >= SCATTER_LOCAL_THRESHOLD => ScatterStrategy::SortedCoalesced,
