@@ -91,7 +91,8 @@ impl TermReparam {
 
     /// Map this term's solve-basis coefficients back; slots outside its block are untouched.
     pub(crate) fn back_transform(&self, term: &Term<'_>, x: &mut [f64]) {
-        let slope_slot = |j: usize, level: usize| term.column_base(term.slope_column(j)) + level;
+        let slope_slot =
+            |j: usize, level: usize| term.column_dofs(term.slope_column(j)).start + level;
         let v = self.slopes.len();
         let mut b = vec![0.0; v];
         for (l, t) in self.transforms.iter().enumerate() {
@@ -109,7 +110,7 @@ impl TermReparam {
                 x[slope_slot(j, l)] = bj;
             }
             if term.intercept {
-                x[term.offset + l] -= dot(&b, &t.center);
+                x[term.column_dofs(0).start + l] -= dot(&b, &t.center);
             }
         }
     }

@@ -47,8 +47,7 @@ impl<'a> DesignOperator<'a> {
         for prepared in self.prepared.terms() {
             let term = prepared.term;
             for column in 0..term.n_columns() {
-                let base = term.column_base(column);
-                let slice = &mut diag[base..base + term.n_levels()];
+                let slice = &mut diag[term.column_dofs(column)];
                 let z = prepared.loading(column);
                 for (obs, &level) in term.levels().iter().enumerate() {
                     let w = self.prepared.row_weight(obs);

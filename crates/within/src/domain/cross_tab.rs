@@ -144,8 +144,8 @@ impl CrossTab {
             rows: row_diag,
             cols: col_diag,
         };
-        let row_base = row_term.column_base(pair.rows.column);
-        let col_base = col_term.column_base(pair.cols.column);
+        let row_base = row_term.column_dofs(pair.rows.column).start;
+        let col_base = col_term.column_dofs(pair.cols.column).start;
         let local_to_global = (0..n_rows)
             .map(|level| to_u32(row_base + level))
             .chain((0..n_cols).map(|level| to_u32(col_base + level)))

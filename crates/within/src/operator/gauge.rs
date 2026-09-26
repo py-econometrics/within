@@ -149,7 +149,7 @@ fn propose(
     let mut values = vec![0.0f64; design.n_dofs];
     for (term, sign) in [(slope.term, 1.0), (term, -1.0)] {
         let t = &design.terms[term];
-        let block = t.offset..t.offset + t.n_dofs();
+        let block = t.dofs();
         for ((v, &f), &s) in values[block.clone()]
             .iter_mut()
             .zip(&fit[block.clone()])

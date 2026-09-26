@@ -22,7 +22,7 @@ pub(super) fn scatter_apply(
 
     for t in prepared.terms() {
         let term = t.term;
-        let block = &mut dst[term.offset..term.offset + term.n_dofs()];
+        let block = &mut dst[term.dofs()];
         match (term.intercept, t.slopes) {
             (true, []) => scatter_term::<1>(block, &t, parallel, scratch, |i| [base(i)]),
             (true, [z0]) => {

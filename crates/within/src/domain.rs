@@ -21,6 +21,7 @@ pub(crate) use factor_pairs::{
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::ops::Range;
 use std::sync::Arc;
 
 use ndarray::{ArrayView2, Axis};
@@ -234,9 +235,15 @@ impl Term<'_> {
         self.n_columns() * self.n_levels()
     }
 
-    /// Global DOF base of coefficient column `column`.
-    pub(crate) fn column_base(&self, column: usize) -> usize {
-        self.offset + column * self.n_levels()
+    /// This term's coefficients in the global DOF vector.
+    pub(crate) fn dofs(&self) -> Range<usize> {
+        self.offset..self.offset + self.n_dofs()
+    }
+
+    /// Coefficient column `column`'s `n_levels` slots in the global DOF vector.
+    pub(crate) fn column_dofs(&self, column: usize) -> Range<usize> {
+        let start = self.offset + column * self.n_levels();
+        start..start + self.n_levels()
     }
 
     /// Coefficient column of slope `j`; the intercept, when present, comes first.
