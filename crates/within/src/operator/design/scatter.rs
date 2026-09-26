@@ -78,7 +78,7 @@ fn scatter_term<const C: usize>(
 ) {
     let (n_levels, levels) = (term.term.n_levels(), term.term.levels());
     debug_assert_eq!(block.len(), C * n_levels);
-    match ScatterStrategy::pick(parallel, C * n_levels, term.term.sorted()) {
+    match ScatterStrategy::pick(parallel, C * n_levels, n_levels, term.term.sorted()) {
         ScatterStrategy::Sequential => scatter_sequential::<C>(block, n_levels, levels, &values),
         ScatterStrategy::Fold => scatter_fold::<C>(block, n_levels, levels, &values),
         ScatterStrategy::Atomic => scatter_atomic::<C>(block, n_levels, levels, &values, scratch),
@@ -88,29 +88,30 @@ fn scatter_term<const C: usize>(
     }
 }
 
-/// Fold vs atomic scatter-add: below it fold costs O(block · n_threads) memory, above CAS wins.
+/// Size above which a sorted block coalesces and an unsorted column goes atomic instead of fold.
 const SCATTER_LOCAL_THRESHOLD: usize = 100_000;
 
 /// Strategy for a single term's scatter-add loop.
-enum ScatterStrategy {
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum ScatterStrategy {
     /// Plain sequential loop — used when n_rows is below `PAR_THRESHOLD`.
     Sequential,
-    /// Parallel fold/reduce with thread-local accumulators — for small blocks.
+    /// Parallel fold/reduce with thread-local accumulators — O(block · n_threads) memory.
     Fold,
-    /// Parallel atomic CAS — for large blocks with low contention.
+    /// Parallel atomic CAS into the reused scratch — for unsorted columns with many levels.
     Atomic,
     /// Equal-level runs coalesce into one atomic add per level per chunk, avoiding a CAS storm.
     SortedCoalesced,
 }
 
 impl ScatterStrategy {
-    /// `block` is the coefficient count the kernel writes, `sorted` the level-column sortedness.
-    fn pick(parallel: bool, block: usize, sorted: bool) -> Self {
-        match (parallel, block < SCATTER_LOCAL_THRESHOLD, sorted) {
-            (false, _, _) => ScatterStrategy::Sequential,
-            (true, true, _) => ScatterStrategy::Fold,
-            (true, false, true) => ScatterStrategy::SortedCoalesced,
-            (true, false, false) => ScatterStrategy::Atomic,
+    /// Atomic gates on one column's `n_levels`: a fused unsorted CAS loses to fold below it.
+    pub(super) fn pick(parallel: bool, block: usize, n_levels: usize, sorted: bool) -> Self {
+        match (parallel, sorted) {
+            (false, _) => ScatterStrategy::Sequential,
+            (true, true) if block >= SCATTER_LOCAL_THRESHOLD => ScatterStrategy::SortedCoalesced,
+            (true, false) if n_levels >= SCATTER_LOCAL_THRESHOLD => ScatterStrategy::Atomic,
+            (true, _) => ScatterStrategy::Fold,
         }
     }
 }
@@ -264,5 +265,22 @@ mod tests {
         for (g, e) in got.iter().zip(expect.iter()) {
             assert!((g - e).abs() < 1e-9, "{g} vs {e}");
         }
+    }
+
+    #[test]
+    fn atomic_gates_on_one_columns_levels() {
+        let pick = ScatterStrategy::pick;
+        assert!(matches!(
+            pick(true, 3 * 40_000, 40_000, false),
+            ScatterStrategy::Fold
+        ));
+        assert!(matches!(
+            pick(true, 100_000, 100_000, false),
+            ScatterStrategy::Atomic
+        ));
+        assert!(matches!(
+            pick(true, 3 * 40_000, 40_000, true),
+            ScatterStrategy::SortedCoalesced
+        ));
     }
 }
