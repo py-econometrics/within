@@ -22,7 +22,7 @@ pub(crate) fn gather_apply(
     for_each_chunk(dst, |chunk, row_start| {
         for t in prepared.terms() {
             let (offset, n_levels, levels) = (t.term.offset, t.term.n_levels(), t.term.levels());
-            let col = |c: usize| &src[offset + c * n_levels..offset + (c + 1) * n_levels];
+            let col = |c: usize| &src[t.term.column_dofs(c)];
             match (t.term.intercept, t.slopes) {
                 (true, []) => gather_term(chunk, row_start, levels, [col(0)], |_| [1.0]),
                 (true, [z0]) => {
