@@ -105,15 +105,34 @@ impl<'a> PreparedDesign<'a> {
 /// One term's squared column norms, each accumulated in observation order.
 fn term_gram_diagonal(prepared: PreparedTerm<'_>, sqrt_weights: Option<&[f64]>) -> Vec<f64> {
     let term = prepared.term;
-    let n_levels = term.n_levels();
+    let levels = term.levels();
     let mut diag = vec![0.0; term.n_dofs()];
-    for column in 0..term.n_columns() {
-        let block = &mut diag[column * n_levels..][..n_levels];
-        let z = prepared.loading(column);
-        for (obs, &level) in term.levels().iter().enumerate() {
+    if !prepared.slopes.is_empty() {
+        let n_levels = term.n_levels();
+        let loadings: Vec<Option<&[f64]>> =
+            (0..term.n_columns()).map(|c| prepared.loading(c)).collect();
+        for (obs, &level) in levels.iter().enumerate() {
             let w = row_weight(sqrt_weights, obs);
-            // Keep `w * z * z` left-to-right: a zero weight kills a huge `z` first.
-            block[level as usize] += z.map_or(w, |z| w * z[obs] * z[obs]);
+            for (column, z) in loadings.iter().enumerate() {
+                // Keep `w * z * z` left-to-right: a zero weight kills a huge `z` first.
+                diag[column * n_levels + level as usize] += z.map_or(w, |z| w * z[obs] * z[obs]);
+            }
+        }
+    } else if term.sorted() {
+        // A sorted level is one run, so a register sum keeps its order without a store per row.
+        let mut start = 0;
+        for run in levels.chunk_by(|a, b| a == b) {
+            let rows = start..start + run.len();
+            start = rows.end;
+            // A sum of ones is exact, so the unweighted run sum is its length.
+            diag[run[0] as usize] += match sqrt_weights {
+                None => run.len() as f64,
+                Some(s) => s[rows].iter().fold(0.0, |sum, &si| sum + si * si),
+            };
+        }
+    } else {
+        for (obs, &level) in levels.iter().enumerate() {
+            diag[level as usize] += row_weight(sqrt_weights, obs);
         }
     }
     diag
@@ -172,6 +191,54 @@ mod tests {
                 .collect::<Vec<_>>(),
             [4.0, 16.0, 9.0, 1.0]
         );
+    }
+
+    /// `Σ w·z·z` per column and level, one column at a time in observation order.
+    fn observation_sums(prepared: &PreparedDesign<'_>) -> Vec<f64> {
+        let mut diag = vec![0.0; prepared.design.n_dofs];
+        for term in prepared.terms() {
+            for column in 0..term.term.n_columns() {
+                let block = &mut diag[term.term.column_dofs(column)];
+                let z = term.loading(column);
+                for (obs, &level) in term.term.levels().iter().enumerate() {
+                    let w = prepared.row_weight(obs);
+                    block[level as usize] += z.map_or(w, |z| w * z[obs] * z[obs]);
+                }
+            }
+        }
+        diag
+    }
+
+    #[test]
+    fn gram_diagonal_is_the_observation_sums_bitwise() {
+        // Level 1 of `f` has z1 = 2·z0 (a rank drop).
+        let f = [0u32, 1, 0, 1, 0, 1, 2, 2];
+        let z0 = [1.0, 2.0, 3.0, 4.0, 5.5, 6.0, 0.3, 0.7];
+        let z1 = [9.0, 4.0, 1.0, 8.0, 2.0, 12.0, 5.0, 1.1];
+        let g = [2u32, 0, 1, 1, 0, 2, 0, 1];
+        let h = [1u32, 0, 0, 1, 1, 0, 1, 0];
+        let zh = [0.5, 1.5, -2.0, 3.0, 0.25, -1.0, 7.0, 2.0];
+        // Nested in `f`, so it comes out sorted and is summed by runs.
+        let p = [0u32, 1, 0, 1, 0, 1, 1, 1];
+        let weights = [2.0, 0.0, 3.0, 0.1, 1.0, 7.0, 0.3, 5.0];
+        for weights in [None, Some(&weights[..])] {
+            let effects = vec![
+                crate::Effect::new(&f, true, [&z0[..], &z1[..]]).unwrap(),
+                crate::Effect::new(&g, true, []).unwrap(),
+                crate::Effect::new(&h, false, [&zh[..]]).unwrap(),
+                crate::Effect::new(&p, true, []).unwrap(),
+            ];
+            let prepared = PreparedDesign::new(Design::new(effects).unwrap(), weights).unwrap();
+            let terms = &prepared.design.terms;
+            assert!(terms[3].sorted() && !terms[1].sorted());
+            assert!(prepared.unidentified().next().is_some());
+            let bits = |v: &[f64]| v.iter().map(|d| d.to_bits()).collect::<Vec<_>>();
+            assert_eq!(
+                bits(&prepared.gram_diagonal()),
+                bits(&observation_sums(&prepared)),
+                "weights {weights:?}"
+            );
+        }
     }
 
     #[test]
