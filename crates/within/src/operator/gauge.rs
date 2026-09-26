@@ -145,12 +145,12 @@ fn propose(
 
     let mut values = vec![0.0f64; design.n_dofs];
     // Whitening leaves a level's columns orthogonal, so `Aᵀc ./ diag(AᵀA)` is its per-level fit.
-    for (term, sign) in [(slope.term, 1.0), (term, -1.0)] {
-        let block = design.terms[term].dofs();
+    for (block_term, sign) in [(slope.term, 1.0), (term, -1.0)] {
+        let block = design.terms[block_term].dofs();
         for ((v, &f), &s) in values[block.clone()]
             .iter_mut()
             .zip(&fit[block])
-            .zip(prepared.term_diagonal(term))
+            .zip(prepared.term(block_term).diagonal())
         {
             *v = match s > 0.0 {
                 true => sign * f / s,

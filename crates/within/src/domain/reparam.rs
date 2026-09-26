@@ -1,7 +1,5 @@
 //! Within-level reparametrization of a design's varying-slope terms.
 
-use std::sync::OnceLock;
-
 use super::level_moments::LevelMoments;
 use super::{Design, Term};
 use crate::channel::{Channel, CoefficientPosition};
@@ -10,15 +8,13 @@ use crate::linalg::{dot, GramBasis, GramBasisWorkspace, RANK_TOL};
 #[cfg(test)]
 mod tests;
 
-/// One term's change of basis to an identity within-level Gram; the identity for a slope-free term.
+/// A slope term's change of basis to an identity within-level Gram.
 pub(crate) struct TermReparam {
     /// The term's slopes in the solve basis, in coefficient-column order.
     pub(super) slopes: Vec<Vec<f64>>,
     transforms: Vec<LevelTransform>,
     /// Directions the data cannot identify, ascending in `(level, column)`.
     pub(super) unidentified: Vec<CoefficientPosition>,
-    /// The term's block of `diag(AᵀA)` in this basis, filled on first read.
-    pub(super) diagonal: OnceLock<Vec<f64>>,
 }
 
 /// One level's `u = W·(z − center)`, `W` row-major `rank × V`; an empty `w`
@@ -30,16 +26,15 @@ struct LevelTransform {
 }
 
 impl TermReparam {
-    /// Unidentified directions become zero columns, so they solve to `0`.
-    pub(crate) fn build(design: &Design<'_>, term: usize, sqrt_weights: Option<&[f64]>) -> Self {
+    /// `None` without slopes; unidentified directions become zero columns, so they solve to `0`.
+    pub(crate) fn build(
+        design: &Design<'_>,
+        term: usize,
+        sqrt_weights: Option<&[f64]>,
+    ) -> Option<Self> {
         let t = &design.terms[term];
         if !t.has_slopes() {
-            return Self {
-                slopes: Vec::new(),
-                transforms: Vec::new(),
-                unidentified: Vec::new(),
-                diagonal: OnceLock::new(),
-            };
+            return None;
         }
         let moments = LevelMoments::build(design, term, sqrt_weights);
         let levels = t.levels();
@@ -94,12 +89,11 @@ impl TermReparam {
             }
         }
 
-        Self {
+        Some(Self {
             slopes,
             transforms,
             unidentified,
-            diagonal: OnceLock::new(),
-        }
+        })
     }
 
     /// Map this term's solve-basis coefficients back; slots outside its block are untouched.

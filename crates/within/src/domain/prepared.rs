@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 use rayon::prelude::*;
 
 use super::{row_weight, Column, Design, Term, TermReparam};
@@ -9,8 +11,10 @@ pub(crate) struct PreparedDesign<'a> {
     pub(crate) design: Design<'a>,
     /// `W^{1/2}` in the design's internal observation order; `None` is unweighted.
     sqrt_weights: Option<Vec<f64>>,
-    /// Per design term, in order.
-    reparams: Vec<TermReparam>,
+    /// Per design term, its change of basis; `None` is the identity.
+    reparams: Vec<Option<TermReparam>>,
+    /// Per design term, its block of [`Self::gram_diagonal`], filled on first read.
+    diagonals: Vec<OnceLock<Vec<f64>>>,
 }
 
 /// A term in the solve basis: the design's rows plus this preparation's whitened slopes.
@@ -18,6 +22,8 @@ pub(crate) struct PreparedTerm<'p> {
     pub(crate) term: &'p Term<'p>,
     /// Solve-basis slopes in coefficient-column order; empty for a slope-free term.
     pub(crate) slopes: &'p [Vec<f64>],
+    diagonal: &'p OnceLock<Vec<f64>>,
+    sqrt_weights: Option<&'p [f64]>,
 }
 
 impl<'p> PreparedTerm<'p> {
@@ -28,6 +34,45 @@ impl<'p> PreparedTerm<'p> {
             Column::Slope(j) => Some(&self.slopes[j]),
         }
     }
+
+    /// This term's squared column norms as laid out by `dofs()`, summed in observation order.
+    pub(crate) fn diagonal(&self) -> &'p [f64] {
+        // Serial fill: a rayon job stolen inside it could re-enter this cell and deadlock.
+        self.diagonal.get_or_init(|| {
+            let (term, sqrt_weights) = (self.term, self.sqrt_weights);
+            let levels = term.levels();
+            let mut diag = vec![0.0; term.n_dofs()];
+            if !self.slopes.is_empty() {
+                let columns: Vec<(usize, Option<&[f64]>)> = (0..term.n_columns())
+                    .map(|c| (term.column_dofs(c).start - term.offset, self.loading(c)))
+                    .collect();
+                for (obs, &level) in levels.iter().enumerate() {
+                    let w = row_weight(sqrt_weights, obs);
+                    for &(base, z) in &columns {
+                        // Keep `w * z * z` left-to-right: a zero weight kills a huge `z` first.
+                        diag[base + level as usize] += z.map_or(w, |z| w * z[obs] * z[obs]);
+                    }
+                }
+            } else if term.sorted() {
+                // A sorted level is one run: a register sum keeps its order with no store per row.
+                let mut start = 0;
+                for run in levels.chunk_by(|a, b| a == b) {
+                    let rows = start..start + run.len();
+                    start = rows.end;
+                    // A sum of ones is exact, so the unweighted run sum is its length.
+                    diag[run[0] as usize] += match sqrt_weights {
+                        None => run.len() as f64,
+                        Some(s) => s[rows].iter().fold(0.0, |sum, &si| sum + si * si),
+                    };
+                }
+            } else {
+                for (obs, &level) in levels.iter().enumerate() {
+                    diag[level as usize] += row_weight(sqrt_weights, obs);
+                }
+            }
+            diag
+        })
+    }
 }
 
 impl<'a> PreparedDesign<'a> {
@@ -35,14 +80,16 @@ impl<'a> PreparedDesign<'a> {
         let sqrt_weights = weights
             .map(|weights| prepare_sqrt_weights(&design, weights))
             .transpose()?;
-        let reparams: Vec<TermReparam> = (0..design.n_factors())
+        let reparams: Vec<Option<TermReparam>> = (0..design.n_factors())
             .into_par_iter()
             .map(|t| TermReparam::build(&design, t, sqrt_weights.as_deref()))
             .collect();
+        let diagonals = (0..design.n_factors()).map(|_| OnceLock::new()).collect();
         Ok(Self {
             design,
             sqrt_weights,
             reparams,
+            diagonals,
         })
     }
 
@@ -59,28 +106,26 @@ impl<'a> PreparedDesign<'a> {
     }
 
     pub(crate) fn term(&self, term: usize) -> PreparedTerm<'_> {
-        let (t, slopes) = (&self.design.terms[term], &self.reparams[term].slopes);
+        let t = &self.design.terms[term];
+        let slopes = self.reparams[term].as_ref().map_or(&[][..], |r| &r.slopes);
         debug_assert_eq!(slopes.len(), t.raw_slopes().len());
-        PreparedTerm { term: t, slopes }
+        PreparedTerm {
+            term: t,
+            slopes,
+            diagonal: &self.diagonals[term],
+            sqrt_weights: self.sqrt_weights(),
+        }
     }
 
     pub(crate) fn terms(&self) -> impl ExactSizeIterator<Item = PreparedTerm<'_>> {
         (0..self.design.n_factors()).map(|term| self.term(term))
     }
 
-    /// Term `term`'s block of [`Self::gram_diagonal`], laid out as its `dofs()`.
-    pub(crate) fn term_diagonal(&self, term: usize) -> &[f64] {
-        // Serial fill: a rayon job stolen inside it could re-enter this cell and deadlock.
-        self.reparams[term]
-            .diagonal
-            .get_or_init(|| term_gram_diagonal(self.term(term), self.sqrt_weights()))
-    }
-
     /// `diag(AᵀA)` in solve coordinates.
     pub(crate) fn gram_diagonal(&self) -> Vec<f64> {
         let blocks: Vec<&[f64]> = (0..self.design.n_factors())
             .into_par_iter()
-            .map(|term| self.term_diagonal(term))
+            .map(|term| self.term(term).diagonal())
             .collect();
         let diag = blocks.concat();
         debug_assert_eq!(diag.len(), self.design.n_dofs);
@@ -90,7 +135,9 @@ impl<'a> PreparedDesign<'a> {
     /// Map solve-basis coefficients back to the user's parametrization.
     pub(crate) fn back_transform(&self, x: &mut [f64]) {
         for (t, reparam) in self.design.terms.iter().zip(&self.reparams) {
-            reparam.back_transform(t, x);
+            if let Some(reparam) = reparam {
+                reparam.back_transform(t, x);
+            }
         }
     }
 
@@ -98,44 +145,9 @@ impl<'a> PreparedDesign<'a> {
     pub(crate) fn unidentified(&self) -> impl Iterator<Item = CoefficientPosition> + '_ {
         self.reparams
             .iter()
+            .flatten()
             .flat_map(|r| r.unidentified.iter().copied())
     }
-}
-
-/// One term's squared column norms, each accumulated in observation order.
-fn term_gram_diagonal(prepared: PreparedTerm<'_>, sqrt_weights: Option<&[f64]>) -> Vec<f64> {
-    let term = prepared.term;
-    let levels = term.levels();
-    let mut diag = vec![0.0; term.n_dofs()];
-    if !prepared.slopes.is_empty() {
-        let n_levels = term.n_levels();
-        let loadings: Vec<Option<&[f64]>> =
-            (0..term.n_columns()).map(|c| prepared.loading(c)).collect();
-        for (obs, &level) in levels.iter().enumerate() {
-            let w = row_weight(sqrt_weights, obs);
-            for (column, z) in loadings.iter().enumerate() {
-                // Keep `w * z * z` left-to-right: a zero weight kills a huge `z` first.
-                diag[column * n_levels + level as usize] += z.map_or(w, |z| w * z[obs] * z[obs]);
-            }
-        }
-    } else if term.sorted() {
-        // A sorted level is one run, so a register sum keeps its order without a store per row.
-        let mut start = 0;
-        for run in levels.chunk_by(|a, b| a == b) {
-            let rows = start..start + run.len();
-            start = rows.end;
-            // A sum of ones is exact, so the unweighted run sum is its length.
-            diag[run[0] as usize] += match sqrt_weights {
-                None => run.len() as f64,
-                Some(s) => s[rows].iter().fold(0.0, |sum, &si| sum + si * si),
-            };
-        }
-    } else {
-        for (obs, &level) in levels.iter().enumerate() {
-            diag[level as usize] += row_weight(sqrt_weights, obs);
-        }
-    }
-    diag
 }
 
 /// Validate caller-order weights, then return `√w` in the design's internal order.
