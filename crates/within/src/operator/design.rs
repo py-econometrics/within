@@ -41,24 +41,6 @@ impl<'a> DesignOperator<'a> {
         }
     }
 
-    /// Squared column norms `diag(AᵀA)`.
-    pub(crate) fn column_norms_squared(&self) -> Vec<f64> {
-        let mut diag = vec![0.0; self.prepared.design.n_dofs];
-        for prepared in self.prepared.terms() {
-            let term = prepared.term;
-            for column in 0..term.n_columns() {
-                let slice = &mut diag[term.column_dofs(column)];
-                let z = prepared.loading(column);
-                for (obs, &level) in term.levels().iter().enumerate() {
-                    let w = self.prepared.row_weight(obs);
-                    // Keep `w * z * z` left-to-right: a zero weight kills a huge `z` first.
-                    slice[level as usize] += z.map_or(w, |z| w * z[obs] * z[obs]);
-                }
-            }
-        }
-        diag
-    }
-
     /// `y − D x`, read off this operator's measured `b − A x` unless a zero weight erased a row.
     pub(crate) fn demeaned(&self, x: &[f64], y: &[f64], measured: Option<Vec<f64>>) -> Vec<f64> {
         match (measured, self.prepared.sqrt_weights()) {

@@ -1,5 +1,7 @@
 //! Within-level reparametrization of a design's varying-slope terms.
 
+use std::sync::OnceLock;
+
 use super::level_moments::LevelMoments;
 use super::{Design, Term};
 use crate::channel::{Channel, CoefficientPosition};
@@ -8,13 +10,15 @@ use crate::linalg::{dot, GramBasis, GramBasisWorkspace, RANK_TOL};
 #[cfg(test)]
 mod tests;
 
-/// One slope-bearing term's change of basis to an identity within-level Gram.
+/// One term's change of basis to an identity within-level Gram; the identity for a slope-free term.
 pub(crate) struct TermReparam {
     /// The term's slopes in the solve basis, in coefficient-column order.
     pub(super) slopes: Vec<Vec<f64>>,
     transforms: Vec<LevelTransform>,
     /// Directions the data cannot identify, ascending in `(level, column)`.
     pub(super) unidentified: Vec<CoefficientPosition>,
+    /// The term's block of `diag(AᵀA)` in this basis, filled on first read.
+    pub(super) diagonal: OnceLock<Vec<f64>>,
 }
 
 /// One level's `u = W·(z − center)`, `W` row-major `rank × V`; an empty `w`
@@ -28,8 +32,16 @@ struct LevelTransform {
 impl TermReparam {
     /// Unidentified directions become zero columns, so they solve to `0`.
     pub(crate) fn build(design: &Design<'_>, term: usize, sqrt_weights: Option<&[f64]>) -> Self {
-        let moments = LevelMoments::build(design, term, sqrt_weights);
         let t = &design.terms[term];
+        if !t.has_slopes() {
+            return Self {
+                slopes: Vec::new(),
+                transforms: Vec::new(),
+                unidentified: Vec::new(),
+                diagonal: OnceLock::new(),
+            };
+        }
+        let moments = LevelMoments::build(design, term, sqrt_weights);
         let levels = t.levels();
         let n_levels = t.n_levels();
         let intercept = t.intercept;
@@ -86,6 +98,7 @@ impl TermReparam {
             slopes,
             transforms,
             unidentified,
+            diagonal: OnceLock::new(),
         }
     }
 

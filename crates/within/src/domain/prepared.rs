@@ -9,8 +9,8 @@ pub(crate) struct PreparedDesign<'a> {
     pub(crate) design: Design<'a>,
     /// `W^{1/2}` in the design's internal observation order; `None` is unweighted.
     sqrt_weights: Option<Vec<f64>>,
-    /// Per design term, in order; `None` for a slope-free term.
-    reparams: Vec<Option<TermReparam>>,
+    /// Per design term, in order.
+    reparams: Vec<TermReparam>,
 }
 
 /// A term in the solve basis: the design's rows plus this preparation's whitened slopes.
@@ -35,14 +35,9 @@ impl<'a> PreparedDesign<'a> {
         let sqrt_weights = weights
             .map(|weights| prepare_sqrt_weights(&design, weights))
             .transpose()?;
-        let reparams: Vec<Option<TermReparam>> = design
-            .terms
-            .par_iter()
-            .enumerate()
-            .map(|(t, term)| {
-                term.has_slopes()
-                    .then(|| TermReparam::build(&design, t, sqrt_weights.as_deref()))
-            })
+        let reparams: Vec<TermReparam> = (0..design.n_factors())
+            .into_par_iter()
+            .map(|t| TermReparam::build(&design, t, sqrt_weights.as_deref()))
             .collect();
         Ok(Self {
             design,
@@ -64,8 +59,7 @@ impl<'a> PreparedDesign<'a> {
     }
 
     pub(crate) fn term(&self, term: usize) -> PreparedTerm<'_> {
-        let (t, reparam) = (&self.design.terms[term], &self.reparams[term]);
-        let slopes: &[Vec<f64>] = reparam.as_ref().map_or(&[], |r| &r.slopes);
+        let (t, slopes) = (&self.design.terms[term], &self.reparams[term].slopes);
         debug_assert_eq!(slopes.len(), t.raw_slopes().len());
         PreparedTerm { term: t, slopes }
     }
@@ -74,12 +68,29 @@ impl<'a> PreparedDesign<'a> {
         (0..self.design.n_factors()).map(|term| self.term(term))
     }
 
+    /// Term `term`'s block of [`Self::gram_diagonal`], laid out as its `dofs()`.
+    pub(crate) fn term_diagonal(&self, term: usize) -> &[f64] {
+        // Serial fill: a rayon job stolen inside it could re-enter this cell and deadlock.
+        self.reparams[term]
+            .diagonal
+            .get_or_init(|| term_gram_diagonal(self.term(term), self.sqrt_weights()))
+    }
+
+    /// `diag(AᵀA)` in solve coordinates.
+    pub(crate) fn gram_diagonal(&self) -> Vec<f64> {
+        let blocks: Vec<&[f64]> = (0..self.design.n_factors())
+            .into_par_iter()
+            .map(|term| self.term_diagonal(term))
+            .collect();
+        let diag = blocks.concat();
+        debug_assert_eq!(diag.len(), self.design.n_dofs);
+        diag
+    }
+
     /// Map solve-basis coefficients back to the user's parametrization.
     pub(crate) fn back_transform(&self, x: &mut [f64]) {
         for (t, reparam) in self.design.terms.iter().zip(&self.reparams) {
-            if let Some(reparam) = reparam {
-                reparam.back_transform(t, x);
-            }
+            reparam.back_transform(t, x);
         }
     }
 
@@ -87,9 +98,25 @@ impl<'a> PreparedDesign<'a> {
     pub(crate) fn unidentified(&self) -> impl Iterator<Item = CoefficientPosition> + '_ {
         self.reparams
             .iter()
-            .flatten()
             .flat_map(|r| r.unidentified.iter().copied())
     }
+}
+
+/// One term's squared column norms, each accumulated in observation order.
+fn term_gram_diagonal(prepared: PreparedTerm<'_>, sqrt_weights: Option<&[f64]>) -> Vec<f64> {
+    let term = prepared.term;
+    let n_levels = term.n_levels();
+    let mut diag = vec![0.0; term.n_dofs()];
+    for column in 0..term.n_columns() {
+        let block = &mut diag[column * n_levels..][..n_levels];
+        let z = prepared.loading(column);
+        for (obs, &level) in term.levels().iter().enumerate() {
+            let w = row_weight(sqrt_weights, obs);
+            // Keep `w * z * z` left-to-right: a zero weight kills a huge `z` first.
+            block[level as usize] += z.map_or(w, |z| w * z[obs] * z[obs]);
+        }
+    }
+    diag
 }
 
 /// Validate caller-order weights, then return `√w` in the design's internal order.
@@ -145,6 +172,40 @@ mod tests {
                 .collect::<Vec<_>>(),
             [4.0, 16.0, 9.0, 1.0]
         );
+    }
+
+    #[test]
+    fn gram_diagonal_matches_hand_computed_values() {
+        // `z` is constant in level 1 of `f`, so that level's slope is dropped.
+        let f = [0u32, 0, 0, 1, 1, 2, 2];
+        let z = [1.0, 2.0, 4.0, 3.0, 3.0, 5.0, 7.0];
+        let g = [0u32, 1, 0, 1, 0, 1, 1];
+        // Perfect squares, so `(√w)²` is exact.
+        let weights = [1.0, 4.0, 9.0, 0.25, 4.0, 1.0, 16.0];
+        for (weights, f_sums, g_sums) in [
+            (None, [3.0, 2.0, 2.0], [3.0, 4.0]),
+            (Some(&weights[..]), [14.0, 4.25, 17.0], [14.0, 21.25]),
+        ] {
+            let effects = vec![
+                crate::Effect::new(&f, true, [&z[..]]).unwrap(),
+                crate::Effect::new(&g, true, []).unwrap(),
+            ];
+            let prepared = PreparedDesign::new(Design::new(effects).unwrap(), weights).unwrap();
+            let diag = prepared.gram_diagonal();
+            let block =
+                |term: usize, column| &diag[prepared.design.terms[term].column_dofs(column)];
+            assert_eq!(block(0, 0), f_sums);
+            assert_eq!(block(1, 0), g_sums);
+            // A kept whitened slope has unit weighted norm; a dropped one is an exact-zero column.
+            let slope = block(0, 1);
+            assert_eq!(slope[1], 0.0, "weights {weights:?}");
+            for level in [0, 2] {
+                assert!(
+                    (slope[level] - 1.0).abs() < 1e-12,
+                    "{slope:?}, weights {weights:?}"
+                );
+            }
+        }
     }
 
     #[test]

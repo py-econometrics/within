@@ -31,11 +31,9 @@ impl GaugeConstraint {
         }
         let n_dofs = prepared.design.n_dofs;
         let operator = DesignOperator::new(prepared);
-        // Whitening leaves a level's columns orthogonal, so `Aᵀc ./ diag(AᵀA)` is its per-level fit.
-        let scale = operator.column_norms_squared();
         let proposed: Vec<Vec<f64>> = nulls
             .iter()
-            .map(|slope| propose(prepared, &operator, &scale, slope.slope, slope.term))
+            .map(|slope| propose(prepared, &operator, slope.slope, slope.term))
             .collect();
         // A contrast of near-parallel proposals divides their certified energy by its residual
         // share, so a share under certificate/tolerance is not itself a certified null.
@@ -112,7 +110,6 @@ impl std::fmt::Debug for GaugeConstraint {
 fn propose(
     prepared: &PreparedDesign<'_>,
     operator: &DesignOperator<'_>,
-    scale: &[f64],
     slope: Channel,
     term: usize,
 ) -> Vec<f64> {
@@ -147,13 +144,13 @@ fn propose(
         .expect("the design operator cannot fail");
 
     let mut values = vec![0.0f64; design.n_dofs];
+    // Whitening leaves a level's columns orthogonal, so `Aᵀc ./ diag(AᵀA)` is its per-level fit.
     for (term, sign) in [(slope.term, 1.0), (term, -1.0)] {
-        let t = &design.terms[term];
-        let block = t.dofs();
+        let block = design.terms[term].dofs();
         for ((v, &f), &s) in values[block.clone()]
             .iter_mut()
-            .zip(&fit[block.clone()])
-            .zip(&scale[block])
+            .zip(&fit[block])
+            .zip(prepared.term_diagonal(term))
         {
             *v = match s > 0.0 {
                 true => sign * f / s,
