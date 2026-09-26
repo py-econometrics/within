@@ -8,7 +8,7 @@ use crate::linalg::{dot, GramBasis, GramBasisWorkspace, RANK_TOL};
 #[cfg(test)]
 mod tests;
 
-/// One slope-bearing term's change of basis to an identity within-level Gram.
+/// A slope term's change of basis to an identity within-level Gram.
 pub(crate) struct TermReparam {
     /// The term's slopes in the solve basis, in coefficient-column order.
     pub(super) slopes: Vec<Vec<f64>>,
@@ -26,10 +26,17 @@ struct LevelTransform {
 }
 
 impl TermReparam {
-    /// Unidentified directions become zero columns, so they solve to `0`.
-    pub(crate) fn build(design: &Design<'_>, term: usize, sqrt_weights: Option<&[f64]>) -> Self {
-        let moments = LevelMoments::build(design, term, sqrt_weights);
+    /// `None` without slopes; unidentified directions become zero columns, so they solve to `0`.
+    pub(crate) fn build(
+        design: &Design<'_>,
+        term: usize,
+        sqrt_weights: Option<&[f64]>,
+    ) -> Option<Self> {
         let t = &design.terms[term];
+        if !t.has_slopes() {
+            return None;
+        }
+        let moments = LevelMoments::build(design, term, sqrt_weights);
         let levels = t.levels();
         let n_levels = t.n_levels();
         let intercept = t.intercept;
@@ -82,11 +89,11 @@ impl TermReparam {
             }
         }
 
-        Self {
+        Some(Self {
             slopes,
             transforms,
             unidentified,
-        }
+        })
     }
 
     /// Map this term's solve-basis coefficients back; slots outside its block are untouched.

@@ -11,7 +11,6 @@ use crate::block_elim::BlockElimSolver;
 use crate::config::{LocalSolverConfig, PreconditionerConfig, ReductionStrategy, Staleness};
 use crate::domain::{LocalDomain, PreparedDesign};
 use crate::operator::gauge::GaugeConstraint;
-use crate::operator::DesignOperator;
 use crate::{BuildError, BuildWarning};
 
 #[cfg(test)]
@@ -280,7 +279,7 @@ pub(crate) fn build_adaptive(
 }
 
 fn diagonal_map(prepared: &PreparedDesign<'_>) -> Result<DiagonalPreconditioner, BuildError> {
-    let mut diag = DesignOperator::new(prepared).column_norms_squared();
+    let mut diag = prepared.gram_diagonal();
 
     // A zero diagonal is an unidentified DOF, so the pseudo-inverse keeps it in the null space.
     for (index, d) in diag.iter_mut().enumerate() {
