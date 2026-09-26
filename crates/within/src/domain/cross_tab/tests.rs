@@ -26,6 +26,32 @@ fn design_of(columns: Vec<Vec<u32>>) -> PreparedDesign<'static> {
 }
 
 #[test]
+fn over_threshold_pair_matches_the_dense_kernel() {
+    // 2,500 × 2,500 levels exceed the dense cap; unsorted rows see each column twice, descending.
+    let n_levels = 2500usize;
+    let fa: Vec<u32> = (0..8 * n_levels).map(|i| (i % n_levels) as u32).collect();
+    let fb: Vec<u32> = (0..8 * n_levels)
+        .map(|i| ((i % n_levels * 7 + (3 - i / n_levels % 4) * 13) % n_levels) as u32)
+        .collect();
+    let effects = [&fa, &fb].map(|levels| Effect::new(levels, true, []).unwrap());
+    let design = PreparedDesign::unweighted_for_test(Design::new_unsorted(effects).unwrap());
+    let (ct, _) = CrossTab::build_for_pair(&design, INTERCEPT_PAIR);
+
+    let terms = &design.design.terms;
+    let cols = PairColumns {
+        row_levels: terms[0].levels(),
+        col_levels: terms[1].levels(),
+        row_load: Unit,
+        col_load: Unit,
+        sqrt_weights: None,
+    };
+    let dense = accumulate_dense_cross_block(cols, terms[0].n_levels(), terms[1].n_levels());
+    assert_eq!(ct.c.indptr, dense.indptr);
+    assert_eq!(ct.c.indices, dense.indices);
+    assert_eq!(ct.c.data, dense.data);
+}
+
+#[test]
 fn test_extract_component_two_components() {
     // Two disconnected bipartite components: q/r levels {0,1} and {2,3}.
     let fa = vec![0u32, 0, 1, 1, 2, 2, 3, 3];

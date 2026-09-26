@@ -99,6 +99,10 @@ fn split_into_subdomains(
 ) -> Result<(Vec<LocalDomain>, Vec<BuildWarning>), BuildError> {
     let row_diag = prepared.channel_diagonal(pair.rows);
     let col_diag = prepared.channel_diagonal(pair.cols);
+    debug_assert_eq!(
+        (row_diag.len(), col_diag.len()),
+        (full_ct.n_rows(), full_ct.n_cols())
+    );
     let n_rows_full = full_ct.n_rows();
     let components = full_ct.bipartite_connected_components();
 

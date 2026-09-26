@@ -23,7 +23,7 @@ pub(crate) struct BipartiteComponent {
     pub(crate) cols: Vec<usize>,
 }
 
-/// Stores `C` and `Cᵀ` only; the solve path never reads the diagonals of `G`.
+/// The off-diagonal block `C` of a channel pair's local Gramian, plus `Cᵀ`.
 #[derive(Clone)]
 pub(crate) struct CrossTab {
     /// CSR(C): row-block rows (n_rows) x col-block cols (n_cols).
