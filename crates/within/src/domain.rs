@@ -19,15 +19,17 @@ pub(crate) use factor_pairs::{
     SddmMatrix,
 };
 
-use std::borrow::Cow;
-use std::collections::HashMap;
-use std::ops::Range;
-use std::sync::Arc;
-
-use ndarray::{ArrayView2, Axis};
-
 use crate::channel::Channel;
 use crate::BuildError;
+use ndarray::{ArrayView2, Axis};
+use rayon::prelude::*;
+use rustc_hash::FxBuildHasher;
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
+use std::ops::Range;
+use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize};
+use std::sync::Arc;
 
 /// What one coefficient column of a term multiplies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,14 +48,6 @@ pub(crate) enum FactorEncoding {
     Integer { labels: Arc<[u32]> },
 }
 
-/// A factor's level encoding and level column (the input itself if already positions).
-struct EncodedFactor<'a> {
-    encoding: FactorEncoding,
-    levels: Cow<'a, [u32]>,
-    /// `levels` is non-decreasing.
-    sorted: bool,
-}
-
 impl FactorEncoding {
     fn identity(n_levels: usize) -> Self {
         Self::Identity { n_levels }
@@ -69,106 +63,57 @@ impl FactorEncoding {
     // Inlined into `build`, its label loops lose registers and reload pointers from the stack.
     #[inline(never)]
     fn encode_labels(labels: Cow<'_, [u32]>) -> EncodedFactor<'_> {
-        let Some((&first, remaining)) = labels.split_first() else {
+        let (Some(&first), Some(&last)) = (labels.first(), labels.last()) else {
             return EncodedFactor {
                 encoding: Self::identity(0),
                 levels: labels,
                 sorted: true,
             };
         };
-
-        let mut min = first;
-        let mut max = first;
-        let mut previous = first;
-        let mut sorted = true;
-        for &label in remaining {
-            min = min.min(label);
-            max = max.max(label);
-            sorted &= label >= previous;
-            previous = label;
+        let sorted = match is_non_decreasing_with_gaps(&labels) {
+            // Non-decreasing in steps of 0 or 1, hence no gaps and no compaction needed.
+            Some(false) => return EncodedFactor::contiguous(labels, first, last, true),
+            // Non-decreasing with gaps
+            Some(true) => true,
+            // Not non-decreasing but potentially without gaps
+            None => false,
+        };
+        // Get min and max label
+        let (min, max) = if sorted {
+            // Min and max of a sorted range are its first and last entry.
+            (first, last)
+        } else {
+            labels.par_iter().map(|&label| (label, label)).reduce(
+                || (u32::MAX, u32::MIN),
+                |(lo, hi), (a, b)| (lo.min(a), hi.max(b)),
+            )
+        };
+        // Go straight to sparse encoding if label range does not fit within labels' length
+        if (max - min) as usize >= labels.len() {
+            return EncodedFactor::sparse(&labels, sorted);
         }
+        // Get distinct labels for compaction to distinguish the remaining three cases:
+        // (1) sorted with gaps; (2) unsorted with gaps; (3) unsorted without gaps
+        let distinct_labels: Vec<u32> = if sorted {
+            // Sorted, so equal labels sit next to each other: taking the first label of each
+            // group of equal labels lists every distinct label once, in ascending order.
+            labels
+                .par_chunk_by(|a, b| a == b)
+                .map(|run| run[0])
+                .collect()
+        } else if let Some(is_gap) = find_gaps(&labels, min, max) {
+            // Unsorted with gaps; need to find gaps
+            is_gap
+                .par_iter()
+                .positions(|&gap| !gap)
+                .map(|offset| min + offset as u32)
+                .collect()
+        } else {
+            // No gaps, labels are unsorted but already contiguous
+            return EncodedFactor::contiguous(labels, min, max, false);
+        };
 
-        let range_width = u64::from(max) - u64::from(min) + 1;
-        let presence_by_label = usize::try_from(range_width)
-            .ok()
-            .filter(|&width| width <= labels.len())
-            .map(|width| {
-                let mut present = vec![false; width];
-                for &label in labels.iter() {
-                    present[(label - min) as usize] = true;
-                }
-                present
-            });
-
-        match presence_by_label {
-            // Path 1: labels already form the zero-based identity range.
-            Some(present) if min == 0 && present.iter().all(|&is_present| is_present) => {
-                EncodedFactor {
-                    encoding: Self::identity(present.len()),
-                    levels: labels,
-                    sorted,
-                }
-            }
-            // Path 2: the observed label range is bounded by the observation count.
-            Some(present) => {
-                let range_width = present.len();
-                let caller_labels: Vec<u32> = present
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(offset, &present)| present.then_some(min + offset as u32))
-                    .collect();
-
-                let mut position_by_label = vec![0u32; range_width];
-                for (position, &label) in caller_labels.iter().enumerate() {
-                    position_by_label[(label - min) as usize] = position as u32;
-                }
-
-                let positions = labels
-                    .iter()
-                    .map(|&label| position_by_label[(label - min) as usize])
-                    .collect();
-                EncodedFactor {
-                    encoding: Self::integer(caller_labels),
-                    levels: Cow::Owned(positions),
-                    sorted,
-                }
-            }
-            // Path 3: the observed label range is too wide for an indexed table.
-            None => {
-                // Collect distinct caller labels
-                let mut position_by_label = HashMap::<u32, u32>::new();
-                for &label in labels.iter() {
-                    position_by_label.entry(label).or_default();
-                }
-                // Internal positions follow ascending caller-label order
-                let mut caller_labels: Vec<u32> = position_by_label.keys().copied().collect();
-                caller_labels.sort_unstable();
-                // Populate the caller-label to internal-position map
-                for (position, &label) in caller_labels.iter().enumerate() {
-                    let position =
-                        u32::try_from(position).expect("an internal label position fits in u32");
-
-                    *position_by_label
-                        .get_mut(&label)
-                        .expect("label was collected from this map") = position;
-                }
-
-                let positions = labels
-                    .iter()
-                    .map(|label| {
-                        *position_by_label
-                            .get(label)
-                            .expect("every input label was inserted")
-                    })
-                    .collect();
-
-                EncodedFactor {
-                    encoding: Self::integer(caller_labels),
-                    levels: Cow::Owned(positions),
-                    sorted,
-                }
-            }
-        }
+        EncodedFactor::dense(&labels, distinct_labels, sorted)
     }
 
     pub(crate) fn n_levels(&self) -> usize {
@@ -199,6 +144,121 @@ impl FactorEncoding {
             }
 
             Self::Integer { labels } => labels.get(position).copied(),
+        }
+    }
+}
+
+/// A factor's level encoding and level column (the input itself if already positions).
+struct EncodedFactor<'a> {
+    encoding: FactorEncoding,
+    levels: Cow<'a, [u32]>,
+    /// `levels` is non-decreasing.
+    sorted: bool,
+}
+
+impl<'a> EncodedFactor<'a> {
+    /// Every value in `min..=max` occurs, so a label's internal position is `label - min`.
+    fn contiguous(labels: Cow<'a, [u32]>, min: u32, max: u32, sorted: bool) -> Self {
+        if min == 0 {
+            return Self {
+                encoding: FactorEncoding::identity(max as usize + 1),
+                levels: labels,
+                sorted,
+            };
+        }
+        Self {
+            encoding: FactorEncoding::integer((min..=max).into_par_iter().collect()),
+            levels: Cow::Owned(labels.par_iter().map(|&label| label - min).collect()),
+            sorted,
+        }
+    }
+}
+
+impl EncodedFactor<'static> {
+    /// Each label's internal position is its index in `distinct_labels`,
+    /// which must hold the column's distinct labels in ascending order.
+    fn dense(labels: &[u32], distinct_labels: Vec<u32>, sorted: bool) -> Self {
+        let min = distinct_labels[0];
+        let range_width = (distinct_labels[distinct_labels.len() - 1] - min) as usize + 1;
+        // Each slot is written by exactly one label, so relaxed atomics are plain stores.
+        let position_by_offset: Vec<AtomicU32> = (0..range_width)
+            .into_par_iter()
+            .map(|_| AtomicU32::new(0))
+            .collect();
+        distinct_labels
+            .par_iter()
+            .enumerate()
+            .for_each(|(position, &label)| {
+                position_by_offset[(label - min) as usize].store(position as u32, Relaxed);
+            });
+        let positions = labels
+            .par_iter()
+            .map(|&label| position_by_offset[(label - min) as usize].load(Relaxed))
+            .collect();
+
+        EncodedFactor {
+            encoding: FactorEncoding::integer(distinct_labels),
+            levels: Cow::Owned(positions),
+            sorted,
+        }
+    }
+
+    /// Each rayon task numbers its labels in the order it first sees them,
+    /// one hash per label; only distinct labels are sorted, and their ranks
+    /// replace the task-local numbers through a small array per task.
+    fn sparse(labels: &[u32], sorted: bool) -> Self {
+        let mut positions = vec![0u32; labels.len()];
+        let pieces: Vec<(&mut [u32], Vec<u32>)> =
+            rayon::iter::split((labels, &mut positions[..]), |(labels, positions)| {
+                if labels.len() < 2 {
+                    return ((labels, positions), None);
+                }
+                let mid = labels.len() / 2;
+                let (left, right) = labels.split_at(mid);
+                let (left_positions, right_positions) = positions.split_at_mut(mid);
+                ((left, left_positions), Some((right, right_positions)))
+            })
+            .map(|(labels, positions)| {
+                let mut local_id = HashMap::<u32, u32, FxBuildHasher>::default();
+                let mut first_seen = Vec::new();
+                for (&label, position) in labels.iter().zip(positions.iter_mut()) {
+                    *position = *local_id.entry(label).or_insert_with(|| {
+                        first_seen.push(label);
+                        (first_seen.len() - 1) as u32
+                    });
+                }
+                (positions, first_seen)
+            })
+            .collect();
+
+        // Internal positions follow ascending caller-label order.
+        let mut caller_labels: Vec<u32> = pieces
+            .iter()
+            .flat_map(|(_, first_seen)| first_seen.iter().copied())
+            .collect::<HashSet<u32, FxBuildHasher>>()
+            .into_iter()
+            .collect();
+        caller_labels.par_sort_unstable();
+        let rank: HashMap<u32, u32, FxBuildHasher> = caller_labels
+            .iter()
+            .enumerate()
+            .map(|(position, &label)| {
+                let position =
+                    u32::try_from(position).expect("an internal label position fits in u32");
+                (label, position)
+            })
+            .collect();
+        pieces.into_par_iter().for_each(|(positions, first_seen)| {
+            let rank_by_local_id: Vec<u32> = first_seen.iter().map(|label| rank[label]).collect();
+            for position in positions {
+                *position = rank_by_local_id[*position as usize];
+            }
+        });
+
+        EncodedFactor {
+            encoding: FactorEncoding::integer(caller_labels),
+            levels: Cow::Owned(positions),
+            sorted,
         }
     }
 }
@@ -292,6 +352,86 @@ impl Term<'_> {
 /// The Gram weight of row `obs`: the operator applies `s`, so its normal matrix carries `s²`.
 pub(crate) fn row_weight(sqrt_weights: Option<&[f64]>, obs: usize) -> f64 {
     sqrt_weights.map_or(1.0, |s| s[obs] * s[obs])
+}
+
+// Inspired by [within::operator::design::scatter::scatter_sorted_coalesced]
+const LABEL_CHUNK: usize = 65_536;
+
+/// Checks if `labels` are in non-decreasing order and whether there are gaps.
+///
+/// Returns `None` if not non-decreasing; `true` if non-decreasing without gaps; `false` otherwise.
+/// Each chunk is scanned to the end with no early exit, so the comparisons vectorise;
+/// once a chunk descends, rayon skips the chunks not yet started.
+fn is_non_decreasing_with_gaps(labels: &[u32]) -> Option<bool> {
+    labels
+        .par_chunks(LABEL_CHUNK)
+        .enumerate()
+        .map(|(c_idx, chunk)| {
+            let start = c_idx * LABEL_CHUNK;
+            // Reach back one label so the pair across the chunk boundary is compared too.
+            let pairs = &labels[start.saturating_sub(1)..start + chunk.len()];
+            let (descends, skips) = pairs.windows(2).fold((false, false), |(d, s), pair| {
+                (
+                    d | (pair[1] < pair[0]),
+                    s | (pair[1].wrapping_sub(pair[0]) > 1),
+                )
+            });
+            (!descends).then_some(skips)
+        })
+        .try_reduce(|| false, |a, b| Some(a | b))
+}
+
+/// Finds the values in `min..=max` that do not occur in `labels`, indexed by `value - min`.
+/// Stops reading labels as soon as every value has been seen, so a column without
+/// gaps often costs only a prefix; with a gap it reads every label.
+///
+/// Every label must lie in `min..=max`, and the range must be no wider than the column.
+fn find_gaps(labels: &[u32], min: u32, max: u32) -> Option<Vec<bool>> {
+    let width = (max - min) as usize + 1;
+    debug_assert!(
+        width <= labels.len(),
+        "a table over the range would outgrow the column"
+    );
+    let present: Vec<AtomicBool> = (0..width)
+        .into_par_iter()
+        .map(|_| AtomicBool::new(false))
+        .collect();
+    // Every slot below the watermark is known to be filled.
+    let watermark = AtomicUsize::new(0);
+    // Moves the watermark past the slots seen filled and returns where it stops.
+    let advance = || {
+        let start = watermark.load(Relaxed);
+        let end = present[start..]
+            .iter()
+            .position(|slot| !slot.load(Relaxed))
+            .map_or(width, |offset| start + offset);
+        watermark.fetch_max(end, Relaxed);
+        end
+    };
+    let filled_early = labels.par_chunks(LABEL_CHUNK).any(|chunk| {
+        let mut filled_any = false;
+        for &label in chunk {
+            let slot = &present[(label - min) as usize];
+            // Loading first keeps repeated labels from bouncing a cache line between threads.
+            if !slot.load(Relaxed) {
+                slot.store(true, Relaxed);
+                filled_any = true;
+            }
+        }
+        // Only a chunk that filled a slot can have completed the table.
+        filled_any && advance() == width
+    });
+    // After the join every store is visible, so this last scan sees the final table.
+    if filled_early || advance() == width {
+        return None;
+    }
+    // A gap is not filled, hence `!slot.into_inner()`
+    Some(
+        present
+            .into_par_iter()
+            .map(|slot| !slot.into_inner())
+            .collect(),
+    )
 }
 
 /// Stable argsort of observations by a level column, ascending.
