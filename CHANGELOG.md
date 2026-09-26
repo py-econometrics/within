@@ -13,7 +13,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - Python `Effect` lists no longer deep-copy their level and slope buffers during design extraction; the binding borrows them while building off-GIL (#358).
 - Categorical `u32` labels need not be zero-based or contiguous: `Design` compacts observed labels to internal positions and `CoefficientLayout`/`CoefficientAddress` translate back, so gaps in sparse label ranges are neither allocated nor solved for (#228, #268).
 - **BREAKING:** Rust `Solver::new` takes `weights: Option<&[f64]>` instead of `Option<Vec<f64>>`, retaining only `W^{1/2}` in internal observation order. One-shot `solve`/`solve_batch` weights are unchanged.
-- `Design::from_frame` rejects continuous columns that no effect term claims, reporting `BuildError::UnclaimedLoadingColumns` instead of silently retaining unused data.
+- **BREAKING:** `ObservationFrame` holds level columns only: `ObservationFrame::new` takes the categorical columns alone and `loading_column` is gone. Slopes enter a design through `Effect`.
 - **BREAKING:** Python `PreconditionerConfig` is now a tagged union — `Off()`, `Diagonal()`, `Additive(local_solver=..., reduction=...)` — replacing the class-attribute singletons and `.additive()` factory. Variants compare by value and support `match`/`case` on Python ≥3.10.
 - Rust `Preconditioner` objects expose their normalized construction configuration through `Preconditioner::config()`.
 - **BREAKING:** `schwarz_precond::mlsmr` takes an `MlsmrOptions` in place of its trailing `local_size`.

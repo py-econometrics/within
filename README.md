@@ -285,7 +285,7 @@ across solves like any other.
 | Module | Visibility | Key types |
 |---|---|---|
 | `within::config` | public | `LsmrOptions`, `PreconditionerConfig`, `LocalSolverConfig`, `SchurMode`, `ApproxCholConfig`, `ApproxSchurConfig`, `ScalingConfig`, `ReductionStrategy` |
-| `within::observation` | public | `ObservationFrame` (columnar level-code + loading columns) |
+| `within::observation` | public | `ObservationFrame` (columnar level codes) |
 | `within::error` | public | `WithinError`, `BuildError`, `SolveError` |
 | `block_elim` / `channel` / `csr_block` / `domain` / `operator` / `solver` | `pub(crate)` | implementation layers — public items are re-exported at the crate root |
 

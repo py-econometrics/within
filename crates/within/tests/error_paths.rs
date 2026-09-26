@@ -14,8 +14,7 @@ use within::{
 #[test]
 fn test_empty_observations_error() {
     // A zero-row frame is valid; EmptyObservations is raised by Design::from_frame.
-    let frame =
-        ObservationFrame::new(vec![vec![].into(), vec![].into()], Vec::new()).expect("frame ok");
+    let frame = ObservationFrame::new(vec![vec![].into(), vec![].into()]).expect("frame ok");
     let result = Design::from_frame(frame);
     assert!(result.is_err());
     match result.unwrap_err() {
@@ -27,10 +26,7 @@ fn test_empty_observations_error() {
 #[test]
 fn test_observation_count_mismatch_error() {
     // Factor columns have different lengths
-    let result = ObservationFrame::new(
-        vec![vec![0u32, 1, 2].into(), vec![0u32, 1].into()],
-        Vec::new(),
-    );
+    let result = ObservationFrame::new(vec![vec![0u32, 1, 2].into(), vec![0u32, 1].into()]);
     assert!(result.is_err());
     match result.unwrap_err() {
         BuildError::ObservationCountMismatch { .. } => {}
@@ -41,11 +37,8 @@ fn test_observation_count_mismatch_error() {
 #[test]
 fn test_weight_count_mismatch_error() {
     // Weights of wrong length are caught at Solver construction time.
-    let frame = ObservationFrame::new(
-        vec![vec![0u32, 1, 2].into(), vec![0u32, 1, 0].into()],
-        Vec::new(),
-    )
-    .expect("frame ok");
+    let frame = ObservationFrame::new(vec![vec![0u32, 1, 2].into(), vec![0u32, 1, 0].into()])
+        .expect("frame ok");
     let design = Design::from_frame(frame).expect("valid design");
     let result = Solver::new(design, Some(&[1.0, 2.0]), None);
     let err = result.expect_err("expected WeightCountMismatch error, got Ok");

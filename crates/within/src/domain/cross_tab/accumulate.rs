@@ -91,7 +91,7 @@ pub(super) fn accumulate_cross_block(
     let go_sparse = table_size > DENSE_TABLE_MAX_ENTRIES && sparse_cost < dense_cost;
 
     let (rows, cols) = (prepared.term(pair.rows.term), prepared.term(pair.cols.term));
-    let (row_levels, col_levels) = (rows.levels, cols.levels);
+    let (row_levels, col_levels) = (rows.term.levels(), cols.term.levels());
     // One arm per loading combination; closures aren't generic, so the literals repeat.
     match (
         rows.loading(pair.rows.column),

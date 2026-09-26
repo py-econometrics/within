@@ -21,9 +21,9 @@ pub(crate) fn gather_apply(
 
     for_each_chunk(dst, |chunk, row_start| {
         for t in prepared.terms() {
-            let (offset, n_levels, levels) = (t.layout.offset, t.layout.n_levels(), t.levels);
+            let (offset, n_levels, levels) = (t.term.offset, t.term.n_levels(), t.term.levels());
             let col = |c: usize| &src[offset + c * n_levels..offset + (c + 1) * n_levels];
-            match (t.layout.has_intercept(), t.slopes) {
+            match (t.term.intercept, t.slopes) {
                 (true, []) => gather_term(chunk, row_start, levels, [col(0)], |_| [1.0]),
                 (true, [z0]) => {
                     let z0 = &z0[..];
@@ -52,7 +52,7 @@ pub(crate) fn gather_apply(
                         let i = row_start + local;
                         let lev = levels[i] as usize;
                         let mut acc = 0.0;
-                        for c in 0..t.layout.n_columns() {
+                        for c in 0..t.term.n_columns() {
                             let coef = src[offset + c * n_levels + lev];
                             acc += match c.checked_sub(first) {
                                 None => coef,

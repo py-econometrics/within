@@ -1,6 +1,6 @@
 use rayon::prelude::*;
 
-use super::{row_weight, Design, TermLayout, TermReparam};
+use super::{row_weight, Column, Design, Term, TermReparam};
 use crate::channel::CoefficientPosition;
 use crate::BuildError;
 
@@ -15,9 +15,7 @@ pub(crate) struct PreparedDesign<'a> {
 
 /// A term in the solve basis: the design's rows plus this preparation's whitened slopes.
 pub(crate) struct PreparedTerm<'p> {
-    pub(crate) layout: &'p TermLayout,
-    pub(crate) levels: &'p [u32],
-    pub(crate) sorted: bool,
+    pub(crate) term: &'p Term<'p>,
     /// Solve-basis slopes in coefficient-column order; empty for a slope-free term.
     pub(crate) slopes: &'p [Vec<f64>],
 }
@@ -25,8 +23,10 @@ pub(crate) struct PreparedTerm<'p> {
 impl<'p> PreparedTerm<'p> {
     /// Column `column`'s solve-basis loading; `None` is the intercept.
     pub(crate) fn loading(&self, column: usize) -> Option<&'p [f64]> {
-        let j = column.checked_sub(self.layout.has_intercept() as usize)?;
-        Some(&self.slopes[j])
+        match self.term.column(column) {
+            Column::Intercept => None,
+            Column::Slope(j) => Some(&self.slopes[j]),
+        }
     }
 }
 
@@ -40,8 +40,7 @@ impl<'a> PreparedDesign<'a> {
             .par_iter()
             .enumerate()
             .map(|(t, term)| {
-                term.layout
-                    .has_slopes()
+                term.has_slopes()
                     .then(|| TermReparam::build(&design, t, sqrt_weights.as_deref()))
             })
             .collect();
@@ -67,17 +66,8 @@ impl<'a> PreparedDesign<'a> {
     pub(crate) fn term(&self, term: usize) -> PreparedTerm<'_> {
         let (t, reparam) = (&self.design.terms[term], &self.reparams[term]);
         let slopes: &[Vec<f64>] = reparam.as_ref().map_or(&[], |r| &r.slopes);
-        // Kernels read column `c` as slope `c - has_intercept`.
-        debug_assert_eq!(slopes.len(), t.layout.covariates().count());
-        debug_assert!(t.layout.columns[1..]
-            .iter()
-            .all(|c| c.covariate().is_some()));
-        PreparedTerm {
-            layout: &t.layout,
-            levels: t.levels(),
-            sorted: t.sorted(),
-            slopes,
-        }
+        debug_assert_eq!(slopes.len(), t.raw_slopes().len());
+        PreparedTerm { term: t, slopes }
     }
 
     pub(crate) fn terms(&self) -> impl ExactSizeIterator<Item = PreparedTerm<'_>> {
@@ -88,7 +78,7 @@ impl<'a> PreparedDesign<'a> {
     pub(crate) fn back_transform(&self, x: &mut [f64]) {
         for (t, reparam) in self.design.terms.iter().zip(&self.reparams) {
             if let Some(reparam) = reparam {
-                reparam.back_transform(&t.layout, x);
+                reparam.back_transform(t, x);
             }
         }
     }

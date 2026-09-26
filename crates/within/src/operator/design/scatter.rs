@@ -21,9 +21,9 @@ pub(super) fn scatter_apply(
     let parallel = design.n_obs > PAR_THRESHOLD;
 
     for t in prepared.terms() {
-        let layout = t.layout;
-        let block = &mut dst[layout.offset..layout.offset + layout.n_dofs()];
-        match (layout.has_intercept(), t.slopes) {
+        let term = t.term;
+        let block = &mut dst[term.offset..term.offset + term.n_dofs()];
+        match (term.intercept, t.slopes) {
             (true, []) => scatter_term::<1>(block, &t, parallel, scratch, |i| [base(i)]),
             (true, [z0]) => {
                 let z0 = &z0[..];
@@ -47,9 +47,9 @@ pub(super) fn scatter_apply(
                 })
             }
             _ => {
-                for c in 0..layout.n_columns() {
-                    let start = c * layout.n_levels();
-                    let slot = &mut block[start..start + layout.n_levels()];
+                for c in 0..term.n_columns() {
+                    let start = c * term.n_levels();
+                    let slot = &mut block[start..start + term.n_levels()];
                     match t.loading(c) {
                         None => scatter_term::<1>(slot, &t, parallel, scratch, |i| [base(i)]),
                         Some(z) => {
@@ -76,9 +76,9 @@ fn scatter_term<const C: usize>(
     scratch: &[AtomicF64],
     values: impl Fn(usize) -> [f64; C] + Sync,
 ) {
-    let (n_levels, levels) = (term.layout.n_levels(), term.levels);
+    let (n_levels, levels) = (term.term.n_levels(), term.term.levels());
     debug_assert_eq!(block.len(), C * n_levels);
-    match ScatterStrategy::pick(parallel, C * n_levels, term.sorted) {
+    match ScatterStrategy::pick(parallel, C * n_levels, term.term.sorted()) {
         ScatterStrategy::Sequential => scatter_sequential::<C>(block, n_levels, levels, &values),
         ScatterStrategy::Fold => scatter_fold::<C>(block, n_levels, levels, &values),
         ScatterStrategy::Atomic => scatter_atomic::<C>(block, n_levels, levels, &values, scratch),

@@ -1,11 +1,13 @@
-use crate::domain::{Loading, NonEmpty};
+use std::borrow::Cow;
+
 use crate::BuildError;
 
 /// One factor's contribution to a design: level codes plus per-level coefficient columns.
 #[derive(Clone, Debug)]
 pub struct Effect<'a> {
-    levels: &'a [u32],
-    columns: NonEmpty<Loading<&'a [f64]>>,
+    pub(super) levels: Cow<'a, [u32]>,
+    pub(super) intercept: bool,
+    pub(super) slopes: Vec<Cow<'a, [f64]>>,
 }
 
 impl<'a> Effect<'a> {
@@ -16,11 +18,8 @@ impl<'a> Effect<'a> {
         slopes: impl IntoIterator<Item = &'a [f64]>,
     ) -> Result<Self, BuildError> {
         let n = levels.len();
-        let mut columns = Vec::new();
-        if intercept {
-            columns.push(Loading::Constant);
-        }
-        for (slope, s) in slopes.into_iter().enumerate() {
+        let slopes: Vec<Cow<'a, [f64]>> = slopes.into_iter().map(Cow::Borrowed).collect();
+        for (slope, s) in slopes.iter().enumerate() {
             if s.len() != n {
                 return Err(BuildError::SlopeLengthMismatch {
                     slope,
@@ -35,18 +34,15 @@ impl<'a> Effect<'a> {
                     value,
                 });
             }
-            columns.push(Loading::Covariate(s));
         }
-        let columns = NonEmpty::new(columns).ok_or(BuildError::EmptyEffect)?;
-        Ok(Self { levels, columns })
-    }
-
-    pub(crate) fn levels(&self) -> &'a [u32] {
-        self.levels
-    }
-
-    pub(crate) fn columns(&self) -> &NonEmpty<Loading<&'a [f64]>> {
-        &self.columns
+        if !intercept && slopes.is_empty() {
+            return Err(BuildError::EmptyEffect);
+        }
+        Ok(Self {
+            levels: Cow::Borrowed(levels),
+            intercept,
+            slopes,
+        })
     }
 }
 

@@ -44,11 +44,8 @@ pub fn generate_fixest_like_case(
         vec![indiv_id, year, firm_id]
     };
 
-    let frame = ObservationFrame::new(
-        factor_levels.into_iter().map(Into::into).collect(),
-        Vec::new(),
-    )
-    .expect("valid frame");
+    let frame = ObservationFrame::new(factor_levels.into_iter().map(Into::into).collect())
+        .expect("valid frame");
     let design = Design::from_frame(frame).expect("valid design");
 
     // Random y — callers measure iteration time on an arbitrary RHS, not

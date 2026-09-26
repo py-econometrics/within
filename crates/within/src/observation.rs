@@ -1,53 +1,39 @@
-//! Columnar observation storage: categorical + continuous columns, row-aligned.
+//! Columnar observation storage: row-aligned categorical columns.
 
 use std::borrow::Cow;
 
 use crate::error::BuildError;
 
 /// Row-aligned columns, each borrowed from the caller or owned.
-pub(crate) type Columns<'a, T> = Vec<Cow<'a, [T]>>;
+pub(crate) type Columns<'a> = Vec<Cow<'a, [u32]>>;
 
-/// Row-aligned observation columns: per-factor level codes and per-slope loadings.
+/// Row-aligned per-factor level codes; slopes enter a design through `Effect`.
 #[derive(Clone, Debug)]
 pub struct ObservationFrame<'a> {
-    categorical: Columns<'a, u32>,
-    continuous: Columns<'a, f64>,
+    categorical: Columns<'a>,
     n_obs: usize,
 }
 
+// Inlined into `Design::build`, its loop measured +3–8% on slope designs.
+#[inline(never)]
 pub(crate) fn gather<T: Copy>(col: &[T], perm: &[u32]) -> Vec<T> {
     perm.iter().map(|&k| col[k as usize]).collect()
 }
 
 impl<'a> ObservationFrame<'a> {
     /// Build a frame, validating that all columns share one length.
-    pub fn new(
-        categorical: Vec<Cow<'a, [u32]>>,
-        continuous: Vec<Cow<'a, [f64]>>,
-    ) -> Result<Self, BuildError> {
-        let n_obs = categorical
-            .first()
-            .map(|c| c.len())
-            .or_else(|| continuous.first().map(|c| c.len()))
-            .unwrap_or(0);
-        let lens = categorical
-            .iter()
-            .map(|c| c.len())
-            .chain(continuous.iter().map(|c| c.len()));
-        for (column, len) in lens.enumerate() {
-            if len != n_obs {
+    pub fn new(categorical: Vec<Cow<'a, [u32]>>) -> Result<Self, BuildError> {
+        let n_obs = categorical.first().map_or(0, |c| c.len());
+        for (column, c) in categorical.iter().enumerate() {
+            if c.len() != n_obs {
                 return Err(BuildError::ObservationCountMismatch {
                     column,
                     expected: n_obs,
-                    got: len,
+                    got: c.len(),
                 });
             }
         }
-        Ok(ObservationFrame {
-            categorical,
-            continuous,
-            n_obs,
-        })
+        Ok(ObservationFrame { categorical, n_obs })
     }
 
     /// Number of observations (rows).
@@ -67,21 +53,11 @@ impl<'a> ObservationFrame<'a> {
         &self.categorical[factor]
     }
 
-    /// Loadings of continuous column `k`.
-    pub fn loading_column(&self, k: usize) -> &[f64] {
-        &self.continuous[k]
-    }
-
     /// Convert every column to owned, dropping ties to caller buffers.
     pub fn into_owned(self) -> ObservationFrame<'static> {
         ObservationFrame {
             categorical: self
                 .categorical
-                .into_iter()
-                .map(|c| Cow::Owned(c.into_owned()))
-                .collect(),
-            continuous: self
-                .continuous
                 .into_iter()
                 .map(|c| Cow::Owned(c.into_owned()))
                 .collect(),
@@ -97,18 +73,13 @@ impl<'a> ObservationFrame<'a> {
                 .iter()
                 .map(|col| gather(col, perm).into())
                 .collect(),
-            continuous: self
-                .continuous
-                .iter()
-                .map(|col| gather(col, perm).into())
-                .collect(),
             n_obs: perm.len(),
         }
     }
 
-    /// The level and loading columns, moved out without copying.
-    pub(crate) fn into_columns(self) -> (Columns<'a, u32>, Columns<'a, f64>) {
-        (self.categorical, self.continuous)
+    /// The level columns, moved out without copying.
+    pub(crate) fn into_columns(self) -> Columns<'a> {
+        self.categorical
     }
 }
 
@@ -118,24 +89,19 @@ mod tests {
 
     #[test]
     fn columns_stay_row_aligned_under_permutation() {
-        let frame = ObservationFrame::new(
-            vec![vec![2u32, 0, 1, 0].into()],
-            vec![vec![10.0f64, 20.0, 30.0, 40.0].into()],
-        )
-        .unwrap();
+        let frame =
+            ObservationFrame::new(vec![vec![2u32, 0, 1, 0].into(), vec![5u32, 6, 7, 8].into()])
+                .unwrap();
 
         let sorted = frame.permuted(&[1, 3, 2, 0]);
 
         assert_eq!(sorted.level_column(0), &[0, 0, 1, 2]);
-        assert_eq!(sorted.loading_column(0), &[20.0, 40.0, 30.0, 10.0]);
+        assert_eq!(sorted.level_column(1), &[6, 8, 7, 5]);
     }
 
     #[test]
     fn mismatched_column_lengths_rejected() {
-        let result = ObservationFrame::new(
-            vec![vec![0u32, 1, 0].into()],
-            vec![vec![1.0f64, 2.0].into()],
-        );
+        let result = ObservationFrame::new(vec![vec![0u32, 1, 0].into(), vec![0u32, 1].into()]);
         assert!(matches!(
             result,
             Err(BuildError::ObservationCountMismatch { .. })

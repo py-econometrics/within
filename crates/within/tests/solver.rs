@@ -299,8 +299,7 @@ fn test_internal_locality_sort_is_transparent(#[case] weighted: bool) {
     };
     let make_oracle = |weights: Option<&[f64]>| {
         let frame =
-            ObservationFrame::new(vec![col0.clone().into(), col1.clone().into()], Vec::new())
-                .expect("frame");
+            ObservationFrame::new(vec![col0.clone().into(), col1.clone().into()]).expect("frame");
         let design = Design::from_frame_unsorted(frame).expect("oracle design");
         Solver::new(design, weights, &precond).expect("oracle solver")
     };

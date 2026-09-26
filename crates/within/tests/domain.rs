@@ -22,8 +22,8 @@ fn test_three_factor_design_solve_converges() {
     let fb: Vec<u32> = (0..n_obs).map(|i| ((i / n_lev) % n_lev) as u32).collect();
     let fc: Vec<u32> = (0..n_obs).map(|i| ((i * 3) % n_lev) as u32).collect();
 
-    let frame = ObservationFrame::new(vec![fa.into(), fb.into(), fc.into()], Vec::new())
-        .expect("valid 3-factor frame");
+    let frame =
+        ObservationFrame::new(vec![fa.into(), fb.into(), fc.into()]).expect("valid 3-factor frame");
     let dm = Design::from_frame(frame).expect("valid 3-factor design");
 
     assert_eq!(dm.n_factors(), 3);
@@ -129,8 +129,7 @@ fn test_disconnected_design_solve_converges() {
 
 #[test]
 fn test_single_factor_design_construction() {
-    let frame = ObservationFrame::new(vec![vec![0u32, 1, 2, 0, 1].into()], Vec::new())
-        .expect("valid frame");
+    let frame = ObservationFrame::new(vec![vec![0u32, 1, 2, 0, 1].into()]).expect("valid frame");
     let dm = Design::from_frame(frame).expect("valid single-factor design");
 
     assert_eq!(dm.n_factors(), 1, "expected 1 factor");
@@ -190,8 +189,7 @@ fn test_intercept_only_effects_match_categories_bitwise() {
     let precond = additive();
 
     let categories = Design::from_frame(
-        ObservationFrame::new(vec![col0.clone().into(), col1.clone().into()], Vec::new())
-            .expect("frame"),
+        ObservationFrame::new(vec![col0.clone().into(), col1.clone().into()]).expect("frame"),
     )
     .expect("categories design");
     let cat = Solver::new(categories, None, &precond)

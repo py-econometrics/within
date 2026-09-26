@@ -134,9 +134,9 @@ impl CrossTab {
         pair: ChannelPair,
     ) -> (Self, BlockDiagonals, Vec<u32>) {
         let design = &prepared.design;
-        let row_layout = &design.terms[pair.rows.term].layout;
-        let col_layout = &design.terms[pair.cols.term].layout;
-        let (n_rows, n_cols) = (row_layout.n_levels(), col_layout.n_levels());
+        let row_term = &design.terms[pair.rows.term];
+        let col_term = &design.terms[pair.cols.term];
+        let (n_rows, n_cols) = (row_term.n_levels(), col_term.n_levels());
 
         let (c, row_diag, col_diag) = accumulate_cross_block(prepared, pair, n_rows, n_cols);
         let cross_tab = CrossTab::eager(c);
@@ -144,8 +144,8 @@ impl CrossTab {
             rows: row_diag,
             cols: col_diag,
         };
-        let row_base = row_layout.column_base(pair.rows.column);
-        let col_base = col_layout.column_base(pair.cols.column);
+        let row_base = row_term.column_base(pair.rows.column);
+        let col_base = col_term.column_base(pair.cols.column);
         let local_to_global = (0..n_rows)
             .map(|level| to_u32(row_base + level))
             .chain((0..n_cols).map(|level| to_u32(col_base + level)))

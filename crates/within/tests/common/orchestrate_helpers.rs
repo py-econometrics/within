@@ -41,8 +41,7 @@ pub fn make_test_design() -> Design<'static> {
 }
 
 pub fn make_design(categories: Vec<Vec<u32>>) -> Result<Design<'static>, within::BuildError> {
-    let frame =
-        ObservationFrame::new(categories.into_iter().map(Into::into).collect(), Vec::new())?;
+    let frame = ObservationFrame::new(categories.into_iter().map(Into::into).collect())?;
     Design::from_frame(frame)
 }
 
