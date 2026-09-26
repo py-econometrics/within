@@ -20,6 +20,7 @@ once_cell.workspace = true
 portable-atomic = { version = "1", features = ["float"] }
 rayon.workspace = true
 thiserror.workspace = true
+rustc-hash = "2"
 
 [dev-dependencies]
 criterion = { version = "0.7", features = ["html_reports"] }

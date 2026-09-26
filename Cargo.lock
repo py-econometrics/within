@@ -2097,6 +2097,7 @@ dependencies = [
  "rand 0.10.2",
  "rayon",
  "rstest",
+ "rustc-hash",
  "schwarz-precond",
  "serde",
  "thiserror 2.0.20",
