@@ -26,7 +26,6 @@ use std::sync::Arc;
 use ndarray::{ArrayView2, Axis};
 
 use crate::channel::Channel;
-use crate::observation::{gather, ObservationFrame};
 use crate::BuildError;
 
 /// What one coefficient column of a term multiplies.
@@ -322,17 +321,10 @@ fn stable_argsort(key: &[u32], n_levels: usize) -> Vec<u32> {
     perm
 }
 
-fn intercept_only(frame: ObservationFrame<'_>) -> Vec<Effect<'_>> {
-    let intercept_effect = |levels| Effect {
-        levels,
-        intercept: true,
-        slopes: Vec::new(),
-    };
-    frame
-        .into_columns()
-        .into_iter()
-        .map(intercept_effect)
-        .collect()
+// Inlined into `Design::build`, its loop measured +3–8% on slope designs.
+#[inline(never)]
+fn gather<T: Copy>(col: &[T], perm: &[u32]) -> Vec<T> {
+    perm.iter().map(|&k| col[k as usize]).collect()
 }
 
 /// Fixed-effects design: its terms; clones share rows.
@@ -352,38 +344,38 @@ impl<'a> Design<'a> {
         Self::build(effects.into_iter().collect(), true)
     }
 
-    /// Intercept-only factors; compacts observed labels and locality-sorts an unsorted dominant factor.
-    pub fn from_frame(frame: ObservationFrame<'a>) -> Result<Self, BuildError> {
-        Self::build(intercept_only(frame), true)
+    /// [`new`](Self::new) without the locality sort — profiling escape hatch.
+    #[doc(hidden)]
+    pub fn new_unsorted(effects: impl IntoIterator<Item = Effect<'a>>) -> Result<Self, BuildError> {
+        Self::build(effects.into_iter().collect(), false)
     }
 
     /// Build an intercept-only design from an observation-major categories matrix.
     pub fn from_categories(categories: ArrayView2<'a, u32>) -> Result<Self, BuildError> {
         // Gather strided (C-order) columns once so every downstream read is contiguous.
-        let categorical = (0..categories.ncols())
+        let effects = (0..categories.ncols())
             .map(|factor| {
                 let column = categories.index_axis_move(Axis(1), factor);
-                match column.to_slice() {
+                let levels = match column.to_slice() {
                     Some(values) => Cow::Borrowed(values),
                     None => Cow::Owned(column.to_vec()),
+                };
+                Effect {
+                    levels,
+                    intercept: true,
+                    slopes: Vec::new(),
                 }
             })
             .collect();
-        Self::from_frame(ObservationFrame::new(categorical)?)
-    }
-
-    /// [`from_frame`](Self::from_frame) without the locality sort — profiling escape hatch.
-    #[doc(hidden)]
-    pub fn from_frame_unsorted(frame: ObservationFrame<'a>) -> Result<Self, BuildError> {
-        Self::build(intercept_only(frame), false)
+        Self::build(effects, true)
     }
 
     fn build(effects: Vec<Effect<'a>>, locality_sort: bool) -> Result<Self, BuildError> {
         let n_obs = effects.first().map_or(0, |e| e.levels.len());
-        for (column, e) in effects.iter().enumerate() {
+        for (effect, e) in effects.iter().enumerate() {
             if e.levels.len() != n_obs {
                 return Err(BuildError::ObservationCountMismatch {
-                    column,
+                    effect,
                     expected: n_obs,
                     got: e.levels.len(),
                 });
@@ -401,6 +393,10 @@ impl<'a> Design<'a> {
             slopes,
         } in effects
         {
+            debug_assert!(
+                slopes.iter().all(|s| s.len() == levels.len()) && (intercept || !slopes.is_empty()),
+                "effect bypassed Effect::new validation"
+            );
             let EncodedFactor {
                 encoding,
                 levels,

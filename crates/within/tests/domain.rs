@@ -2,7 +2,6 @@
 //! public `solve` API for designs that exercise partition-of-unity weights
 //! and disconnected bipartite structure.
 
-use within::observation::ObservationFrame;
 use within::Design;
 
 #[path = "common/orchestrate_helpers.rs"]
@@ -22,9 +21,7 @@ fn test_three_factor_design_solve_converges() {
     let fb: Vec<u32> = (0..n_obs).map(|i| ((i / n_lev) % n_lev) as u32).collect();
     let fc: Vec<u32> = (0..n_obs).map(|i| ((i * 3) % n_lev) as u32).collect();
 
-    let frame =
-        ObservationFrame::new(vec![fa.into(), fb.into(), fc.into()]).expect("valid 3-factor frame");
-    let dm = Design::from_frame(frame).expect("valid 3-factor design");
+    let dm = common::make_design(vec![fa, fb, fc]).expect("valid 3-factor design");
 
     assert_eq!(dm.n_factors(), 3);
 
@@ -129,8 +126,7 @@ fn test_disconnected_design_solve_converges() {
 
 #[test]
 fn test_single_factor_design_construction() {
-    let frame = ObservationFrame::new(vec![vec![0u32, 1, 2, 0, 1].into()]).expect("valid frame");
-    let dm = Design::from_frame(frame).expect("valid single-factor design");
+    let dm = common::make_design(vec![vec![0, 1, 2, 0, 1]]).expect("valid single-factor design");
 
     assert_eq!(dm.n_factors(), 1, "expected 1 factor");
     assert_eq!(dm.n_dofs(), 3, "expected 3 DOFs (levels 0,1,2)");
@@ -171,9 +167,7 @@ fn test_single_factor_design_solve_without_precond() {
 // 4. Effect-term design API (issue #58)
 // ---------------------------------------------------------------------------
 
-/// Intercept-only `Effect` design vs. the categories path. Both run through the
-/// same `from_frame` locality sort, so rows sum in the same order and the result
-/// is bit-identical — hence the exact `assert_eq`, not a tolerance.
+/// Intercept-only effects and the categories matrix share one row order, so results are bitwise.
 #[test]
 fn test_intercept_only_effects_match_categories_bitwise() {
     use within::{Effect, LsmrOptions, Solver};
@@ -188,10 +182,8 @@ fn test_intercept_only_effects_match_categories_bitwise() {
     let params = LsmrOptions::default();
     let precond = additive();
 
-    let categories = Design::from_frame(
-        ObservationFrame::new(vec![col0.clone().into(), col1.clone().into()]).expect("frame"),
-    )
-    .expect("categories design");
+    let matrix = ndarray::Array2::from_shape_fn((n_obs, 2), |(i, f)| [&col0, &col1][f][i]);
+    let categories = Design::from_categories(matrix.view()).expect("categories design");
     let cat = Solver::new(categories, None, &precond)
         .expect("categories solver")
         .solve(&y, &params)

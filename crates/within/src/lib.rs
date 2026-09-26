@@ -31,7 +31,6 @@
 
 pub mod config;
 pub mod error;
-pub mod observation;
 
 pub(crate) mod block_elim;
 pub(crate) mod channel;

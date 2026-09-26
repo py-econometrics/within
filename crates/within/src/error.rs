@@ -13,14 +13,14 @@ pub enum BuildError {
     /// No observations provided.
     #[error("no observations provided")]
     EmptyObservations,
-    /// One column does not match the expected observation count.
-    #[error("column {column} has {got} observations, expected {expected}")]
+    /// One effect does not match the first effect's observation count.
+    #[error("effect {effect} has {got} observations, expected {expected}")]
     ObservationCountMismatch {
-        /// Index of the mismatched column.
-        column: usize,
+        /// Index of the mismatched effect.
+        effect: usize,
         /// Expected number of observations.
         expected: usize,
-        /// Actual number of observations in this column.
+        /// Actual number of observations in this effect.
         got: usize,
     },
     /// An effect with neither an intercept nor a slope.
