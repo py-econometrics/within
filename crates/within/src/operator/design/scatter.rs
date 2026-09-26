@@ -39,11 +39,25 @@ pub(super) fn scatter_apply(
                     [b, z0[i] * b, z1[i] * b]
                 })
             }
+            (true, [z0, z1, z2]) => {
+                let (z0, z1, z2) = (&z0[..], &z1[..], &z2[..]);
+                scatter_term::<4>(block, &t, parallel, scratch, |i| {
+                    let b = base(i);
+                    [b, z0[i] * b, z1[i] * b, z2[i] * b]
+                })
+            }
             (false, [z0, z1]) => {
                 let (z0, z1) = (&z0[..], &z1[..]);
                 scatter_term::<2>(block, &t, parallel, scratch, |i| {
                     let b = base(i);
                     [z0[i] * b, z1[i] * b]
+                })
+            }
+            (false, [z0, z1, z2]) => {
+                let (z0, z1, z2) = (&z0[..], &z1[..], &z2[..]);
+                scatter_term::<3>(block, &t, parallel, scratch, |i| {
+                    let b = base(i);
+                    [z0[i] * b, z1[i] * b, z2[i] * b]
                 })
             }
             _ => {

@@ -35,10 +35,23 @@ pub(crate) fn gather_apply(
                         [1.0, z0[i], z1[i]]
                     })
                 }
+                (true, [z0, z1, z2]) => {
+                    let (z0, z1, z2) = (&z0[..], &z1[..], &z2[..]);
+                    let cols = [col(0), col(1), col(2), col(3)];
+                    gather_term(chunk, row_start, levels, cols, |i| {
+                        [1.0, z0[i], z1[i], z2[i]]
+                    })
+                }
                 (false, [z0, z1]) => {
                     let (z0, z1) = (&z0[..], &z1[..]);
                     gather_term(chunk, row_start, levels, [col(0), col(1)], |i| {
                         [z0[i], z1[i]]
+                    })
+                }
+                (false, [z0, z1, z2]) => {
+                    let (z0, z1, z2) = (&z0[..], &z1[..], &z2[..]);
+                    gather_term(chunk, row_start, levels, [col(0), col(1), col(2)], |i| {
+                        [z0[i], z1[i], z2[i]]
                     })
                 }
                 (false, [z0]) => {

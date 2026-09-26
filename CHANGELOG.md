@@ -50,6 +50,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 ### Performance
 
 - The adjoint scatter of a slope term on an unsorted factor with fewer than 100k levels no longer switches to atomic updates once its combined coefficient block reaches 100k; that path ran up to 7× slower per iteration at 8 threads than the parallel fold it replaces.
+- Terms with three slopes take fused gather and scatter kernels instead of the per-column fallback, 13–64% faster per iteration on the measured designs.
 
 ### Removed
 

@@ -339,8 +339,8 @@ mod slope_design_tests {
         }
     }
 
-    /// Covers every kernel arm on the sequential path: plain, fused V=1/V=2,
-    /// slope-only, and the generic V=3 fallback — against the dense reference.
+    /// Covers every kernel arm on the sequential path: plain, fused V=1..3,
+    /// slope-only V=1..3, and the generic V=4 fallback — against the dense reference.
     #[test]
     fn slope_matvec_and_adjoint_match_dense_reference() {
         let n = 12;
@@ -349,7 +349,8 @@ mod slope_design_tests {
         let f2: Vec<u32> = (0..n).map(|i| (i % 2) as u32).collect();
         let f3: Vec<u32> = (0..n).map(|i| (i / 6) as u32).collect();
         let f4: Vec<u32> = (0..n).map(|i| [1u32, 0, 2, 1, 0, 2][i % 6]).collect();
-        let zs: Vec<Vec<f64>> = (0..6)
+        let f5: Vec<u32> = (0..n).map(|i| ((i / 3) % 2) as u32).collect();
+        let zs: Vec<Vec<f64>> = (0..15)
             .map(|k| (0..n).map(|i| noise(k * 100 + i)).collect())
             .collect();
         let effects = vec![
@@ -358,6 +359,9 @@ mod slope_design_tests {
             Effect::new(&f2, false, [&zs[4][..]]).unwrap(),
             Effect::new(&f3, true, []).unwrap(),
             Effect::new(&f4, true, [&zs[5][..], &zs[4][..]]).unwrap(),
+            Effect::new(&f4, false, [&zs[6][..], &zs[7][..]]).unwrap(),
+            Effect::new(&f1, false, [&zs[8][..], &zs[9][..], &zs[10][..]]).unwrap(),
+            Effect::new(&f5, true, zs[11..15].iter().map(|z| &z[..])).unwrap(),
         ];
         let design = PreparedDesign::unweighted_for_test(Design::new(effects).unwrap());
         let dense = dense_matrix(&design);
