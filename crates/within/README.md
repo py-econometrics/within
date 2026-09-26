@@ -47,18 +47,13 @@ let result = solve(categories.view(), &y, None, &lsmr, &diagonal)
 assert!(result.converged);
 ```
 
-## Feature flags
-
-| Feature   | Default | Effect                                                                 |
-|-----------|---------|------------------------------------------------------------------------|
-| `ndarray` | yes     | Enables `from_array` constructors on observation stores for interop with `ndarray::ArrayView2`. |
-
 ## Architecture
 
 The crate is organized in three layers:
 
-1. **`domain`** — Domain decomposition. `Design` lowers `Effect`s into
-   per-term level codes and slope columns, each borrowed or owned;
+1. **`domain`** — Domain decomposition. `Design` lowers `Effect`s
+   (`Design::new`) or an observation-major category matrix
+   (`Design::from_categories`) into per-term level codes and slope columns;
    `build_local_domains` constructs factor-pair subdomains with
    partition-of-unity weights for the Schwarz preconditioner.
    `PreparedDesign` owns the weight-dependent state: `sqrt(W)` in internal
@@ -69,7 +64,8 @@ The crate is organized in three layers:
    that wire approximate Cholesky local solvers into the generic
    `schwarz-precond` framework.
 
-3. **`orchestrate`** — End-to-end solve entry points (`solve`, `solve_batch`)
+3. **`solver`** — `Solver` (a design and its preconditioner, reused across
+   right-hand sides) and the one-shot entry points `solve` and `solve_batch`,
    with typed configuration (`LsmrOptions`, `PreconditionerConfig`).
 
 ## License
