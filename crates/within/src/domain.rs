@@ -70,50 +70,34 @@ impl FactorEncoding {
                 sorted: true,
             };
         };
-        let sorted = match is_non_decreasing_with_gaps(&labels) {
-            // Non-decreasing in steps of 0 or 1, hence no gaps and no compaction needed.
-            Some(false) => return EncodedFactor::contiguous(labels, first, last, true),
-            // Non-decreasing with gaps
-            Some(true) => true,
-            // Not non-decreasing but potentially without gaps
-            None => false,
-        };
-        // Get min and max label
-        let (min, max) = if sorted {
-            // Min and max of a sorted range are its first and last entry.
-            (first, last)
-        } else {
-            labels.par_iter().map(|&label| (label, label)).reduce(
-                || (u32::MAX, u32::MIN),
-                |(lo, hi), (a, b)| (lo.min(a), hi.max(b)),
-            )
-        };
-        // Go straight to sparse encoding if label range does not fit within labels' length
-        if (max - min) as usize >= labels.len() {
-            return EncodedFactor::sparse(&labels, sorted);
+        match is_non_decreasing_with_gaps(&labels) {
+            // Non-decreasing and contiguous.
+            Some(false) => EncodedFactor::contiguous(labels, first, last, true),
+            // Non-decreasing with gaps, regardless of range width.
+            Some(true) => EncodedFactor::sorted_gaps(&labels),
+            // Not non-decreasing: distinguish sparse gaps, dense gaps, and contiguous.
+            None => {
+                let (min, max) = labels.par_iter().map(|&label| (label, label)).reduce(
+                    || (u32::MAX, u32::MIN),
+                    |(lo, hi), (a, b)| (lo.min(a), hi.max(b)),
+                );
+                if (max - min) as usize >= labels.len() {
+                    // Unsorted labels with sparse gaps
+                    EncodedFactor::sparse(&labels)
+                } else if let Some(is_gap) = find_gaps(&labels, min, max) {
+                    // Unsorted labels with dense gaps
+                    let distinct_labels = is_gap
+                        .par_iter()
+                        .positions(|&gap| !gap)
+                        .map(|offset| min + offset as u32)
+                        .collect();
+                    EncodedFactor::dense(&labels, distinct_labels)
+                } else {
+                    // Unsorted contiguous labels
+                    EncodedFactor::contiguous(labels, min, max, false)
+                }
+            }
         }
-        // Get distinct labels for compaction to distinguish the remaining three cases:
-        // (1) sorted with gaps; (2) unsorted with gaps; (3) unsorted without gaps
-        let distinct_labels: Vec<u32> = if sorted {
-            // Sorted, so equal labels sit next to each other: taking the first label of each
-            // group of equal labels lists every distinct label once, in ascending order.
-            labels
-                .par_chunk_by(|a, b| a == b)
-                .map(|run| run[0])
-                .collect()
-        } else if let Some(is_gap) = find_gaps(&labels, min, max) {
-            // Unsorted with gaps; need to find gaps
-            is_gap
-                .par_iter()
-                .positions(|&gap| !gap)
-                .map(|offset| min + offset as u32)
-                .collect()
-        } else {
-            // No gaps, labels are unsorted but already contiguous
-            return EncodedFactor::contiguous(labels, min, max, false);
-        };
-
-        EncodedFactor::dense(&labels, distinct_labels, sorted)
     }
 
     pub(crate) fn n_levels(&self) -> usize {
@@ -175,9 +159,63 @@ impl<'a> EncodedFactor<'a> {
 }
 
 impl EncodedFactor<'static> {
-    /// Each label's internal position is its index in `distinct_labels`,
+    /// Compact sorted labels with gaps by numbering runs, regardless of range width.
+    fn sorted_gaps(labels: &[u32]) -> Self {
+        let counts: Vec<usize> = labels
+            .par_chunks(LABEL_CHUNK)
+            .enumerate()
+            .map(|(chunk_idx, chunk)| {
+                let start = chunk_idx * LABEL_CHUNK;
+                // A run crossing a chunk boundary is counted only where it starts.
+                usize::from(start == 0 || chunk[0] != labels[start - 1])
+                    + chunk.windows(2).filter(|pair| pair[0] != pair[1]).count()
+            })
+            .collect();
+        let mut caller_labels = vec![0u32; counts.iter().sum()];
+        let mut positions = vec![0u32; labels.len()];
+        let mut remaining_labels = caller_labels.as_mut_slice();
+        let mut next_level = 0;
+        // Prefix the run counts and give each task disjoint output slices.
+        let chunks: Vec<_> = positions
+            .chunks_mut(LABEL_CHUNK)
+            .zip(counts)
+            .enumerate()
+            .map(|(chunk_idx, (positions, count))| {
+                let (distinct, rest) = std::mem::take(&mut remaining_labels).split_at_mut(count);
+                remaining_labels = rest;
+                let first_new_level = next_level;
+                next_level += count;
+                (chunk_idx, positions, distinct, first_new_level)
+            })
+            .collect();
+        chunks
+            .into_par_iter()
+            .for_each(|(chunk_idx, positions, distinct, mut next_level)| {
+                let start = chunk_idx * LABEL_CHUNK;
+                let chunk = &labels[start..start + positions.len()];
+                let mut previous = start.checked_sub(1).map(|i| labels[i]);
+                let mut distinct = distinct.iter_mut();
+                for (&label, position) in chunk.iter().zip(positions) {
+                    if previous != Some(label) {
+                        *distinct.next().expect("each run was counted") = label;
+                        next_level += 1;
+                        previous = Some(label);
+                    }
+                    // A continuing run retains the previous chunk's final ID.
+                    *position = (next_level - 1) as u32;
+                }
+            });
+
+        Self {
+            encoding: FactorEncoding::integer(caller_labels),
+            levels: Cow::Owned(positions),
+            sorted: true,
+        }
+    }
+
+    /// Encode unsorted labels using their indices in `distinct_labels`,
     /// which must hold the column's distinct labels in ascending order.
-    fn dense(labels: &[u32], distinct_labels: Vec<u32>, sorted: bool) -> Self {
+    fn dense(labels: &[u32], distinct_labels: Vec<u32>) -> Self {
         let min = distinct_labels[0];
         let range_width = (distinct_labels[distinct_labels.len() - 1] - min) as usize + 1;
         // Each slot is written by exactly one label, so relaxed atomics are plain stores.
@@ -199,14 +237,14 @@ impl EncodedFactor<'static> {
         EncodedFactor {
             encoding: FactorEncoding::integer(distinct_labels),
             levels: Cow::Owned(positions),
-            sorted,
+            sorted: false,
         }
     }
 
-    /// Each rayon task numbers its labels in the order it first sees them,
+    /// Encode unsorted labels: each rayon task numbers them in first-seen order,
     /// one hash per label; only distinct labels are sorted, and their ranks
     /// replace the task-local numbers through a small array per task.
-    fn sparse(labels: &[u32], sorted: bool) -> Self {
+    fn sparse(labels: &[u32]) -> Self {
         let mut positions = vec![0u32; labels.len()];
         let pieces: Vec<(&mut [u32], Vec<u32>)> =
             rayon::iter::split((labels, &mut positions[..]), |(labels, positions)| {
@@ -258,7 +296,7 @@ impl EncodedFactor<'static> {
         EncodedFactor {
             encoding: FactorEncoding::integer(caller_labels),
             levels: Cow::Owned(positions),
-            sorted,
+            sorted: false,
         }
     }
 }
@@ -359,7 +397,8 @@ const LABEL_CHUNK: usize = 65_536;
 
 /// Checks if `labels` are in non-decreasing order and whether there are gaps.
 ///
-/// Returns `None` if not non-decreasing; `true` if non-decreasing without gaps; `false` otherwise.
+/// Returns `None` if not non-decreasing, `Some(true)` if non-decreasing with gaps,
+/// and `Some(false)` if non-decreasing without gaps.
 /// Each chunk is scanned to the end with no early exit, so the comparisons vectorise;
 /// once a chunk descends, rayon skips the chunks not yet started.
 fn is_non_decreasing_with_gaps(labels: &[u32]) -> Option<bool> {
