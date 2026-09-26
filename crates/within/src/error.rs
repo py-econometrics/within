@@ -13,14 +13,14 @@ pub enum BuildError {
     /// No observations provided.
     #[error("no observations provided")]
     EmptyObservations,
-    /// One column does not match the expected observation count.
-    #[error("column {column} has {got} observations, expected {expected}")]
+    /// One effect does not match the first effect's observation count.
+    #[error("effect {effect} has {got} observations, expected {expected}")]
     ObservationCountMismatch {
-        /// Index of the mismatched column (categorical first, then continuous).
-        column: usize,
+        /// Index of the mismatched effect.
+        effect: usize,
         /// Expected number of observations.
         expected: usize,
-        /// Actual number of observations in this column.
+        /// Actual number of observations in this effect.
         got: usize,
     },
     /// An effect with neither an intercept nor a slope.
@@ -107,14 +107,6 @@ pub enum BuildError {
     InvalidScalingTolerance {
         /// The offending value.
         value: f64,
-    },
-    /// The frame carries continuous columns that no term uses as a slope.
-    #[error("frame has {provided} loading columns but the terms claim {claimed}")]
-    UnclaimedLoadingColumns {
-        /// Loading columns referenced by the terms.
-        claimed: usize,
-        /// Continuous columns in the frame.
-        provided: usize,
     },
     /// The compact coefficient space exceeds the internal `u32` index width.
     #[error("design has {n_dofs} degrees of freedom, exceeding the u32 column-index limit")]

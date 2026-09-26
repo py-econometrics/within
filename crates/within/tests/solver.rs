@@ -265,18 +265,12 @@ fn test_solver_accepts_prebuilt_design() {
     assert!(result.converged);
 }
 
-/// The construction-time locality sort must be transparent: coefficients are
-/// permutation-invariant and `demeaned` comes back in caller order. The sort
-/// is applied to every frame by `Design::from_frame`, so the oracle is built
-/// via `from_frame_unsorted`, the explicit caller-order escape hatch. Results
-/// agree within solver tolerance, not bitwise: the paths sum in different
-/// row orders. The weighted run also exercises the weights-permutation path.
+/// Locality sort vs. the `new_unsorted` oracle: equal within tolerance, as row order differs.
 #[rstest]
 #[case::unweighted(false)]
 #[case::weighted(true)]
 fn test_internal_locality_sort_is_transparent(#[case] weighted: bool) {
-    use within::observation::ObservationFrame;
-    use within::Design;
+    use within::{Design, Effect};
 
     // Factor 0 (4 levels) is the dominant factor and is non-monotonic.
     let col0: Vec<u32> = vec![3, 0, 2, 1, 3, 0, 2, 1, 3, 0, 2, 1];
@@ -298,10 +292,11 @@ fn test_internal_locality_sort_is_transparent(#[case] weighted: bool) {
         Solver::new(design, weights, &precond).expect("solver")
     };
     let make_oracle = |weights: Option<&[f64]>| {
-        let frame =
-            ObservationFrame::new(vec![col0.clone().into(), col1.clone().into()], Vec::new())
-                .expect("frame");
-        let design = Design::from_frame_unsorted(frame).expect("oracle design");
+        let design = Design::new_unsorted(vec![
+            Effect::new(&col0, true, []).expect("effect 0"),
+            Effect::new(&col1, true, []).expect("effect 1"),
+        ])
+        .expect("oracle design");
         Solver::new(design, weights, &precond).expect("oracle solver")
     };
 

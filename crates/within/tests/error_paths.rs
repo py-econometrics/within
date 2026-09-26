@@ -3,7 +3,6 @@ use std::error::Error;
 use ndarray::Array2;
 use rstest::rstest;
 use schwarz_precond::SolveError;
-use within::observation::ObservationFrame;
 use within::{
     solve, solve_batch, BuildError, Design, Effect, LocalSolverConfig, LsmrOptions,
     PreconditionerConfig, Solver, Staleness, WithinError,
@@ -13,10 +12,8 @@ use within::{
 
 #[test]
 fn test_empty_observations_error() {
-    // A zero-row frame is valid; EmptyObservations is raised by Design::from_frame.
-    let frame =
-        ObservationFrame::new(vec![vec![].into(), vec![].into()], Vec::new()).expect("frame ok");
-    let result = Design::from_frame(frame);
+    let empty = Effect::new(&[], true, []).expect("zero-row effect ok");
+    let result = Design::new(vec![empty.clone(), empty]);
     assert!(result.is_err());
     match result.unwrap_err() {
         BuildError::EmptyObservations => {}
@@ -26,14 +23,16 @@ fn test_empty_observations_error() {
 
 #[test]
 fn test_observation_count_mismatch_error() {
-    // Factor columns have different lengths
-    let result = ObservationFrame::new(
-        vec![vec![0u32, 1, 2].into(), vec![0u32, 1].into()],
-        Vec::new(),
-    );
-    assert!(result.is_err());
+    let result = Design::new(vec![
+        Effect::new(&[0, 1, 2], true, []).expect("effect 0"),
+        Effect::new(&[0, 1], true, []).expect("effect 1"),
+    ]);
     match result.unwrap_err() {
-        BuildError::ObservationCountMismatch { .. } => {}
+        BuildError::ObservationCountMismatch {
+            effect: 1,
+            expected: 3,
+            got: 2,
+        } => {}
         other => panic!("Expected ObservationCountMismatch, got: {:?}", other),
     }
 }
@@ -41,12 +40,11 @@ fn test_observation_count_mismatch_error() {
 #[test]
 fn test_weight_count_mismatch_error() {
     // Weights of wrong length are caught at Solver construction time.
-    let frame = ObservationFrame::new(
-        vec![vec![0u32, 1, 2].into(), vec![0u32, 1, 0].into()],
-        Vec::new(),
-    )
-    .expect("frame ok");
-    let design = Design::from_frame(frame).expect("valid design");
+    let design = Design::new(vec![
+        Effect::new(&[0, 1, 2], true, []).expect("effect 0"),
+        Effect::new(&[0, 1, 0], true, []).expect("effect 1"),
+    ])
+    .expect("valid design");
     let result = Solver::new(design, Some(&[1.0, 2.0]), None);
     let err = result.expect_err("expected WeightCountMismatch error, got Ok");
     match err {

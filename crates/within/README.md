@@ -47,31 +47,25 @@ let result = solve(categories.view(), &y, None, &lsmr, &diagonal)
 assert!(result.converged);
 ```
 
-## Feature flags
-
-| Feature   | Default | Effect                                                                 |
-|-----------|---------|------------------------------------------------------------------------|
-| `ndarray` | yes     | Enables `from_array` constructors on observation stores for interop with `ndarray::ArrayView2`. |
-
 ## Architecture
 
-The crate is organized in four layers:
+The crate is organized in three layers:
 
-1. **`observation`** — Row-aligned observation columns via the
-   `ObservationFrame` (categorical level codes plus continuous loadings,
-   each borrowed or owned per column). Observation weights are not owned
-   here — they flow as `Option<&[f64]>` to the operator layer.
+1. **`domain`** — Domain decomposition. `Design` lowers `Effect`s
+   (`Design::new`) or an observation-major category matrix
+   (`Design::from_categories`) into per-term level codes and slope columns;
+   `build_local_domains` constructs factor-pair subdomains with
+   partition-of-unity weights for the Schwarz preconditioner.
+   `PreparedDesign` owns the weight-dependent state: `sqrt(W)` in internal
+   row order and each term's whitened slopes.
 
-2. **`domain`** — Domain decomposition. `Design` wraps a frame with
-   factor metadata; `build_local_domains` constructs factor-pair subdomains
-   with partition-of-unity weights for the Schwarz preconditioner.
-
-3. **`operator`** — Linear algebra primitives. Internal rectangular
+2. **`operator`** — Linear algebra primitives. Internal rectangular
    `sqrt(W) D` operator for LSMR and Schwarz preconditioner builders
    that wire approximate Cholesky local solvers into the generic
    `schwarz-precond` framework.
 
-4. **`orchestrate`** — End-to-end solve entry points (`solve`, `solve_batch`)
+3. **`solver`** — `Solver` (a design and its preconditioner, reused across
+   right-hand sides) and the one-shot entry points `solve` and `solve_batch`,
    with typed configuration (`LsmrOptions`, `PreconditionerConfig`).
 
 ## License

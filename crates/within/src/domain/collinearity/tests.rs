@@ -17,8 +17,11 @@ fn warn_pairs(design: &Design<'_>, weights: Option<&[f64]>) -> Vec<(Channel, usi
 /// The shares `term`'s screen reports, in target-channel order.
 fn shares(design: &Design<'_>, term: usize, budget: usize) -> Vec<f64> {
     let prepared = PreparedDesign::unweighted_for_test(design.clone());
-    let targets = screened_covariates(design, term);
-    residual_shares(&prepared, term, &targets, budget)
+    let columns = screened_covariates(design, term)
+        .into_iter()
+        .map(|(_, z)| z)
+        .collect();
+    residual_shares(&prepared, term, columns, budget)
 }
 
 fn two_factor_levels(n: usize) -> (Vec<u32>, Vec<u32>) {

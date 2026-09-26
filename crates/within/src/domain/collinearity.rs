@@ -57,7 +57,7 @@ impl CollinearSlope {
 
 pub(crate) fn detect_collinear_slopes(prepared: &PreparedDesign<'_>) -> Vec<CollinearSlope> {
     let design = &prepared.design;
-    if design.n_factors() < 2 || !design.terms.iter().any(|t| t.layout.has_slopes()) {
+    if design.n_factors() < 2 || !design.terms.iter().any(|t| t.has_slopes()) {
         return Vec::new();
     }
     let budget = TABLE_BUDGET_BYTES / std::mem::size_of::<f64>() / design.n_factors();
@@ -65,7 +65,8 @@ pub(crate) fn detect_collinear_slopes(prepared: &PreparedDesign<'_>) -> Vec<Coll
         .into_par_iter()
         .flat_map_iter(move |term| {
             let targets = screened_covariates(design, term);
-            residual_shares(prepared, term, &targets, budget)
+            let columns = targets.iter().map(|&(_, z)| z).collect();
+            residual_shares(prepared, term, columns, budget)
                 .into_iter()
                 .zip(targets)
                 .filter(|&(share, _)| share <= COLLINEARITY_TOL)
@@ -77,7 +78,7 @@ pub(crate) fn detect_collinear_slopes(prepared: &PreparedDesign<'_>) -> Vec<Coll
                         self_residual: residual_shares(
                             prepared,
                             slope.term,
-                            &[(slope, covariate)],
+                            vec![covariate],
                             budget,
                         )[0],
                     },
@@ -86,12 +87,12 @@ pub(crate) fn detect_collinear_slopes(prepared: &PreparedDesign<'_>) -> Vec<Coll
         .collect()
 }
 
-/// Every other term's slope covariates, as `(channel, loading column)`.
-fn screened_covariates(design: &Design<'_>, term: usize) -> Vec<(Channel, u32)> {
+/// Every other term's slope covariates, as `(channel, raw slope)`.
+fn screened_covariates<'d>(design: &'d Design<'_>, term: usize) -> Vec<(Channel, &'d [f64])> {
     (0..design.n_factors())
         .filter(|&t| t != term)
         .flat_map(|t| design.channels(t))
-        .filter_map(|slope| Some((slope, *design.loading(slope).covariate()?)))
+        .filter_map(|slope| Some((slope, design.raw_slope(slope)?)))
         .collect()
 }
 
@@ -99,24 +100,19 @@ fn screened_covariates(design: &Design<'_>, term: usize) -> Vec<(Channel, u32)> 
 fn residual_shares(
     prepared: &PreparedDesign<'_>,
     term: usize,
-    targets: &[(Channel, u32)],
+    columns: Vec<&[f64]>,
     budget: usize,
 ) -> Vec<f64> {
-    let m = targets.len();
+    let m = columns.len();
     if m == 0 {
         return Vec::new();
     }
-    let design = &prepared.design;
     let t = prepared.term(term);
-    let (layout, levels) = (t.layout, t.levels);
+    let levels = t.term.levels();
     let us = t.slopes;
-    let intercept = layout.has_intercept();
-    let columns: Vec<&[f64]> = targets
-        .iter()
-        .map(|&(_, c)| design.raw_loading_column(c as usize))
-        .collect();
+    let intercept = t.term.intercept;
     let stride = columns.len() * (us.len() + 1);
-    let n_levels = layout.n_levels();
+    let n_levels = t.term.n_levels();
     let plan = ScreenPlan::new(budget, n_levels, stride);
     let screen = Screen {
         prepared,
@@ -126,7 +122,7 @@ fn residual_shares(
         intercept,
         stride,
         // Grouping gathers every column, so it must buy back more than the one block.
-        order: match t.sorted || plan.per_block == n_levels {
+        order: match t.term.sorted() || plan.per_block == n_levels {
             true => RowOrder::AsIs,
             false => RowOrder::Grouped(super::stable_argsort(levels, n_levels)),
         },

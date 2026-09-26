@@ -319,10 +319,10 @@ mod slope_design_tests {
         let design = &prepared.design;
         let mut d = vec![vec![0.0; design.n_dofs]; design.n_obs];
         for t in prepared.terms() {
-            for c in 0..t.layout.n_columns() {
-                let base = t.layout.column_base(c);
+            for c in 0..t.term.n_columns() {
+                let base = t.term.column_base(c);
                 let z = t.loading(c);
-                for (i, &lev) in t.levels.iter().enumerate() {
+                for (i, &lev) in t.term.levels().iter().enumerate() {
                     d[i][base + lev as usize] = z.map_or(1.0, |z| z[i]);
                 }
             }

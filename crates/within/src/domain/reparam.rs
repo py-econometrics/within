@@ -1,7 +1,7 @@
 //! Within-level reparametrization of a design's varying-slope terms.
 
 use super::level_moments::LevelMoments;
-use super::{Design, TermLayout};
+use super::{Design, Term};
 use crate::channel::{Channel, CoefficientPosition};
 use crate::linalg::{dot, GramBasis, GramBasisWorkspace, RANK_TOL};
 
@@ -30,13 +30,10 @@ impl TermReparam {
     pub(crate) fn build(design: &Design<'_>, term: usize, sqrt_weights: Option<&[f64]>) -> Self {
         let moments = LevelMoments::build(design, term, sqrt_weights);
         let t = &design.terms[term];
-        let (layout, levels) = (&t.layout, t.levels());
-        let n_levels = layout.n_levels();
-        let intercept = layout.has_intercept();
-        let zs: Vec<&[f64]> = layout
-            .covariates()
-            .map(|c| design.raw_loading_column(c as usize))
-            .collect();
+        let levels = t.levels();
+        let n_levels = t.n_levels();
+        let intercept = t.intercept;
+        let zs: Vec<&[f64]> = t.raw_slopes().collect();
         let v = zs.len();
 
         let mut z_row = vec![0.0; v];
@@ -57,7 +54,7 @@ impl TermReparam {
                     unidentified.push(CoefficientPosition {
                         channel: Channel {
                             term,
-                            column: j + intercept as usize,
+                            column: t.slope_column(j),
                         },
                         level,
                     });
@@ -93,11 +90,8 @@ impl TermReparam {
     }
 
     /// Map this term's solve-basis coefficients back; slots outside its block are untouched.
-    pub(crate) fn back_transform(&self, layout: &TermLayout, x: &mut [f64]) {
-        let intercept = layout.has_intercept();
-        // Slopes start at column 1 behind an intercept, at 0 without one.
-        let slope_slot =
-            |j: usize, level: usize| layout.column_base(j + intercept as usize) + level;
+    pub(crate) fn back_transform(&self, term: &Term<'_>, x: &mut [f64]) {
+        let slope_slot = |j: usize, level: usize| term.column_base(term.slope_column(j)) + level;
         let v = self.slopes.len();
         let mut b = vec![0.0; v];
         for (l, t) in self.transforms.iter().enumerate() {
@@ -114,8 +108,8 @@ impl TermReparam {
             for (j, &bj) in b.iter().enumerate() {
                 x[slope_slot(j, l)] = bj;
             }
-            if intercept {
-                x[layout.offset + l] -= dot(&b, &t.center);
+            if term.intercept {
+                x[term.offset + l] -= dot(&b, &t.center);
             }
         }
     }

@@ -243,11 +243,11 @@ fn max_abs_group_mean(design: &Design<'_>, demeaned: &[f64]) -> f64 {
     design
         .terms
         .iter()
-        .filter(|t| t.layout.has_intercept())
+        .filter(|t| t.intercept)
         .map(|t| {
             let levels = t.levels();
-            let mut sums = vec![0.0f64; t.layout.n_levels()];
-            let mut counts = vec![0.0f64; t.layout.n_levels()];
+            let mut sums = vec![0.0f64; t.n_levels()];
+            let mut counts = vec![0.0f64; t.n_levels()];
             for (obs, &level) in levels.iter().enumerate() {
                 sums[level as usize] += demeaned[obs];
                 counts[level as usize] += 1.0;

@@ -1,4 +1,4 @@
-//! Per-level weighted moments of a term's loading columns, the input to slope whitening.
+//! Per-level weighted moments of a term's raw slopes, the input to slope whitening.
 
 use super::{row_weight, Design};
 
@@ -25,18 +25,15 @@ fn tri_len(v: usize) -> usize {
 impl LevelMoments {
     pub(crate) fn build(design: &Design<'_>, term: usize, sqrt_weights: Option<&[f64]>) -> Self {
         let t = &design.terms[term];
-        let (layout, levels) = (&t.layout, t.levels());
-        let zs: Vec<&[f64]> = layout
-            .covariates()
-            .map(|c| design.raw_loading_column(c as usize))
-            .collect();
+        let levels = t.levels();
+        let zs: Vec<&[f64]> = t.raw_slopes().collect();
         let v = zs.len();
         let mut moments = Self {
             v,
-            intercept: layout.has_intercept(),
-            w_sum: vec![0.0; layout.n_levels()],
-            mean: vec![0.0; layout.n_levels() * v],
-            comoment: vec![0.0; layout.n_levels() * tri_len(v)],
+            intercept: t.intercept,
+            w_sum: vec![0.0; t.n_levels()],
+            mean: vec![0.0; t.n_levels() * v],
+            comoment: vec![0.0; t.n_levels() * tri_len(v)],
         };
         let mut z_row = vec![0.0; v];
         let mut delta = vec![0.0; v];

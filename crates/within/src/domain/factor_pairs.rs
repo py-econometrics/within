@@ -15,7 +15,7 @@ use crate::{BuildError, BuildWarning};
 use super::{BlockDiagonals, CrossTab, PreparedDesign};
 
 mod sddm;
-use crate::domain::Loading;
+use crate::domain::Column;
 use sddm::{convert, NotScalable};
 pub(crate) use sddm::{CoordinateMap, Grounding, LocalComponent, MatrixForm, SddmMatrix};
 
@@ -60,8 +60,8 @@ pub(crate) fn build_local_domains(
         .par_iter()
         .map(|&pair| {
             let (full_ct, full_diag, l2g) = CrossTab::build_for_pair(prepared, pair);
-            let class = if matches!(design.loading(pair.rows), Loading::Constant)
-                && matches!(design.loading(pair.cols), Loading::Constant)
+            let class = if design.column(pair.rows) == Column::Intercept
+                && design.column(pair.cols) == Column::Intercept
             {
                 ComponentClass::KnownLaplacian
             } else {
@@ -80,7 +80,7 @@ pub(crate) fn build_local_domains(
     // A slope channel breaks `1/√c`'s equal-informativeness assumption (#94), so stay uniform.
     if !channels
         .iter()
-        .any(|&c| design.loading(c).covariate().is_some())
+        .any(|&c| design.column(c) != Column::Intercept)
     {
         compute_partition_weights(&mut domain_pairs, design.n_dofs);
     }

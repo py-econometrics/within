@@ -2,8 +2,7 @@
 
 use ndarray::{Array2, ArrayView2};
 use within::config::{LocalSolverConfig, ReductionStrategy, Staleness};
-use within::observation::ObservationFrame;
-use within::{Channel, CoefficientAddress, Design, PreconditionerConfig, SolveResult};
+use within::{Channel, CoefficientAddress, Design, Effect, PreconditionerConfig, SolveResult};
 
 /// One-level additive Schwarz, pinned so a test names the rung the ladder would escalate to.
 pub fn additive() -> PreconditionerConfig {
@@ -41,9 +40,11 @@ pub fn make_test_design() -> Design<'static> {
 }
 
 pub fn make_design(categories: Vec<Vec<u32>>) -> Result<Design<'static>, within::BuildError> {
-    let frame =
-        ObservationFrame::new(categories.into_iter().map(Into::into).collect(), Vec::new())?;
-    Design::from_frame(frame)
+    let effects = categories
+        .iter()
+        .map(|c| Effect::new(c, true, []))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Design::new(effects)?.into_owned())
 }
 
 /// Deterministic, non-trivial RHS sized to the design's observation count.
