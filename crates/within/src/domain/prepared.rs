@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 use rayon::prelude::*;
 
 use super::{row_weight, Column, Design, Term, TermReparam};
-use crate::channel::CoefficientPosition;
+use crate::channel::{Channel, CoefficientPosition};
 use crate::BuildError;
 
 /// A [`Design`] plus all state one weight vector determines.
@@ -113,6 +113,13 @@ impl<'a> PreparedDesign<'a> {
             }
             diag.into_boxed_slice()
         })
+    }
+
+    /// Channel `channel`'s `n_levels` entries of `diag(AᵀA)`.
+    pub(crate) fn channel_diagonal(&self, channel: Channel) -> &[f64] {
+        let term = &self.design.terms[channel.term];
+        let dofs = term.column_dofs(channel.column);
+        &self.diagonal(channel.term)[dofs.start - term.offset..dofs.end - term.offset]
     }
 
     /// `diag(AᵀA)` in solve coordinates.

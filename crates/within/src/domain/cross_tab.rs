@@ -1,8 +1,8 @@
 //! Cross-tabulation of a channel pair: the bipartite local Gramian.
 //!
-//! [`CrossTab`] holds `C` as a [`CsrBlock`] plus its transpose, built on first use,
-//! and the two diagonals (rather than assembling the symmetric block matrix), and
-//! supports bipartite connected-components splitting and per-component extraction.
+//! [`CrossTab`] holds `C` as a [`CsrBlock`] plus its transpose, built on first use
+//! (rather than assembling the symmetric block matrix), and supports bipartite
+//! connected-components splitting and per-component extraction.
 //! Levels use the design's compact positions, with a `local_to_global` map into
 //! the full coefficient space.
 
@@ -23,7 +23,7 @@ pub(crate) struct BipartiteComponent {
     pub(crate) cols: Vec<usize>,
 }
 
-/// Stores `C` and `Cᵀ` only; the solve path never reads the diagonals of `G`.
+/// The off-diagonal block `C` of a channel pair's local Gramian, plus `Cᵀ`.
 #[derive(Clone)]
 pub(crate) struct CrossTab {
     /// CSR(C): row-block rows (n_rows) x col-block cols (n_cols).
@@ -92,26 +92,6 @@ impl<'de> serde::Deserialize<'de> for CrossTab {
     }
 }
 
-/// Folded into the reduced factor during assembly and never read again, so not serialized.
-#[derive(Clone)]
-pub(crate) struct BlockDiagonals {
-    /// Diagonal block for the row factor (length n_rows).
-    pub(crate) rows: Vec<f64>,
-    /// Diagonal block for the col factor (length n_cols).
-    pub(crate) cols: Vec<f64>,
-}
-
-impl BlockDiagonals {
-    /// Gather a component's diagonal into the flat `[rows | cols]` order `neighbors` indexes.
-    pub(crate) fn extract_component(&self, comp: &BipartiteComponent) -> Vec<f64> {
-        comp.rows
-            .iter()
-            .map(|&i| self.rows[i])
-            .chain(comp.cols.iter().map(|&i| self.cols[i]))
-            .collect()
-    }
-}
-
 impl CrossTab {
     /// Number of rows in the row block.
     pub(crate) fn n_rows(&self) -> usize {
@@ -128,22 +108,17 @@ impl CrossTab {
         self.c.nrows + self.c.ncols
     }
 
-    /// Build one channel pair; diagonals come back separately.
+    /// Build one channel pair's `C` and its local-to-global DOF map.
     pub(crate) fn build_for_pair(
         prepared: &PreparedDesign<'_>,
         pair: ChannelPair,
-    ) -> (Self, BlockDiagonals, Vec<u32>) {
+    ) -> (Self, Vec<u32>) {
         let design = &prepared.design;
         let row_term = &design.terms[pair.rows.term];
         let col_term = &design.terms[pair.cols.term];
         let (n_rows, n_cols) = (row_term.n_levels(), col_term.n_levels());
 
-        let (c, row_diag, col_diag) = accumulate_cross_block(prepared, pair, n_rows, n_cols);
-        let cross_tab = CrossTab::eager(c);
-        let diagonals = BlockDiagonals {
-            rows: row_diag,
-            cols: col_diag,
-        };
+        let cross_tab = CrossTab::eager(accumulate_cross_block(prepared, pair, n_rows, n_cols));
         let row_base = row_term.column_dofs(pair.rows.column).start;
         let col_base = col_term.column_dofs(pair.cols.column).start;
         let local_to_global = (0..n_rows)
@@ -151,7 +126,7 @@ impl CrossTab {
             .chain((0..n_cols).map(|level| to_u32(col_base + level)))
             .collect();
 
-        (cross_tab, diagonals, local_to_global)
+        (cross_tab, local_to_global)
     }
 
     /// Symmetric adjacency over local `[q | r]` indexing: q-nodes walk `C`, r-nodes walk `Cᵀ`.
