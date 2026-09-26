@@ -300,6 +300,7 @@ mod design_tests {
 }
 
 mod slope_design_tests {
+    use super::super::scatter::ScatterStrategy;
     use crate::domain::{Design, Effect, PreparedDesign};
     use crate::operator::DesignOperator;
     use schwarz_precond::Operator;
@@ -395,27 +396,46 @@ mod slope_design_tests {
     }
 
     /// Adjoint identity ⟨Dx, r⟩ = ⟨x, Dᵀr⟩ on a design large enough to take
-    /// the parallel strategies — sorted-coalesced (C=2), atomic (C=2), and
-    /// fold (C=3) — with weights in play. Gather and scatter share the layout
-    /// logic but not the kernels, so a per-strategy addressing bug breaks the
-    /// identity.
+    /// the parallel strategies — sorted-coalesced (C=2), atomic (C=2), fold on
+    /// a fused unsorted block past the atomic threshold (C=2), and fold (C=3) —
+    /// with weights in play. Gather and scatter share the layout logic but not
+    /// the kernels, so a per-strategy addressing bug breaks the identity.
     #[test]
     fn slope_adjoint_property_parallel_strategies() {
         let n = 300_000;
         let sorted: Vec<u32> = (0..n).map(|i| (i * 120_000 / n) as u32).collect();
         let unsorted: Vec<u32> = (0..n).map(|i| ((i * 7919) % 100_000) as u32).collect();
+        let unsorted_fused: Vec<u32> = (0..n).map(|i| ((i * 7919) % 60_000) as u32).collect();
         let small: Vec<u32> = (0..n).map(|i| (i % 10) as u32).collect();
-        let z: Vec<Vec<f64>> = (0..4)
+        let z: Vec<Vec<f64>> = (0..5)
             .map(|k| (0..n).map(|i| noise(k * n + i)).collect())
             .collect();
         let effects = vec![
             Effect::new(&sorted, true, [&z[0][..]]).unwrap(),
             Effect::new(&unsorted, true, [&z[1][..]]).unwrap(),
+            Effect::new(&unsorted_fused, true, [&z[4][..]]).unwrap(),
             Effect::new(&small, true, [&z[2][..], &z[3][..]]).unwrap(),
         ];
         let weights: Vec<f64> = (0..n).map(|i| 0.5 + noise(i).abs()).collect();
         let design = PreparedDesign::new(Design::new(effects).unwrap(), Some(&weights)).unwrap();
         let op = DesignOperator::new(&design);
+
+        let picked: Vec<ScatterStrategy> = design
+            .terms()
+            .map(|t| {
+                let (block, levels) = (t.term.dofs().len(), t.term.n_levels());
+                ScatterStrategy::pick(true, block, levels, t.term.sorted())
+            })
+            .collect();
+        assert_eq!(
+            picked,
+            [
+                ScatterStrategy::SortedCoalesced,
+                ScatterStrategy::Atomic,
+                ScatterStrategy::Fold,
+                ScatterStrategy::Fold,
+            ]
+        );
 
         let x: Vec<f64> = (0..design.design.n_dofs)
             .map(|j| noise(13 * j + 1))
