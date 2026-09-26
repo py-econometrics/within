@@ -39,11 +39,25 @@ pub(super) fn scatter_apply(
                     [b, z0[i] * b, z1[i] * b]
                 })
             }
+            (true, [z0, z1, z2]) => {
+                let (z0, z1, z2) = (&z0[..], &z1[..], &z2[..]);
+                scatter_term::<4>(block, &t, parallel, scratch, |i| {
+                    let b = base(i);
+                    [b, z0[i] * b, z1[i] * b, z2[i] * b]
+                })
+            }
             (false, [z0, z1]) => {
                 let (z0, z1) = (&z0[..], &z1[..]);
                 scatter_term::<2>(block, &t, parallel, scratch, |i| {
                     let b = base(i);
                     [z0[i] * b, z1[i] * b]
+                })
+            }
+            (false, [z0, z1, z2]) => {
+                let (z0, z1, z2) = (&z0[..], &z1[..], &z2[..]);
+                scatter_term::<3>(block, &t, parallel, scratch, |i| {
+                    let b = base(i);
+                    [z0[i] * b, z1[i] * b, z2[i] * b]
                 })
             }
             _ => {
@@ -131,7 +145,7 @@ fn scatter_sequential<const C: usize>(
     }
 }
 
-/// Parallel scatter-add via thread-local fold/reduce, best when the block is small.
+/// Parallel scatter-add into per-thread accumulators merged by a reduce.
 fn scatter_fold<const C: usize>(
     block: &mut [f64],
     n_levels: usize,
@@ -181,7 +195,7 @@ fn writeback_scatter_scratch(block: &mut [f64], buf: &[AtomicF64]) {
     }
 }
 
-/// Parallel scatter-add via atomic CAS, best when the block is large; the scratch is reused.
+/// Parallel scatter-add via atomic CAS into the reused scratch.
 fn scatter_atomic<const C: usize>(
     block: &mut [f64],
     n_levels: usize,
