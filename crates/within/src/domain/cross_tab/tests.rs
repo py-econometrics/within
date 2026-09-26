@@ -26,93 +26,12 @@ fn design_of(columns: Vec<Vec<u32>>) -> PreparedDesign<'static> {
 }
 
 #[test]
-fn test_cross_tab_sparse_accumulation_path() {
-    // 2,500 observed levels per factor make n_rows * n_cols exceed the 5M threshold.
-    let n_obs = 2500usize;
-    let n_lev = n_obs;
-
-    let mut fa: Vec<u32> = Vec::with_capacity(n_obs);
-    let mut fb: Vec<u32> = Vec::with_capacity(n_obs);
-    for i in 0..n_obs {
-        fa.push((i % n_lev) as u32);
-        fb.push(((i * 7) % n_lev) as u32);
-    }
-
-    // Sparse path (large level counts)
-    let design_sparse = design_of(vec![fa.clone(), fb.clone()]);
-    let (ct_sparse, diag_sparse, _) = CrossTab::build_for_pair(&design_sparse, INTERCEPT_PAIR);
-
-    // Dense reference: collapse levels so n_rows * n_cols <= 5M.
-    let fa_small: Vec<u32> = fa.iter().map(|&x| x % 100).collect();
-    let fb_small: Vec<u32> = fb.iter().map(|&x| x % 100).collect();
-    let design_dense = design_of(vec![fa_small.clone(), fb_small.clone()]);
-    let (_ct_dense, diag_dense, _) = CrossTab::build_for_pair(&design_dense, INTERCEPT_PAIR);
-
-    // Each observation appears exactly once in its row/col bucket.
-    assert_eq!(
-        diag_sparse.rows.len(),
-        ct_sparse.n_rows(),
-        "row_diag length matches n_rows"
-    );
-    assert_eq!(
-        diag_sparse.cols.len(),
-        ct_sparse.n_cols(),
-        "col_diag length matches n_cols"
-    );
-
-    // row_diag[i] counts observations with fa == i; every active entry must be positive.
-    for &v in &diag_sparse.rows {
-        assert!(v > 0.0, "all active q-diagonals must be positive");
-    }
-    for &v in &diag_sparse.cols {
-        assert!(v > 0.0, "all active r-diagonals must be positive");
-    }
-
-    // Cross-verify: sum of sparse diagonals should equal n_obs.
-    let row_diag_sum: f64 = diag_sparse.rows.iter().sum();
-    assert!(
-        (row_diag_sum - n_obs as f64).abs() < 1e-12,
-        "row_diag sum should equal n_obs: {} vs {}",
-        row_diag_sum,
-        n_obs
-    );
-
-    // Same cross-check for the dense path.
-    let row_diag_dense_sum: f64 = diag_dense.rows.iter().sum();
-    assert!(
-        (row_diag_dense_sum - n_obs as f64).abs() < 1e-12,
-        "dense row_diag sum should equal n_obs: {} vs {}",
-        row_diag_dense_sum,
-        n_obs
-    );
-
-    // C^T must equal the transpose of C for both paths.
-    let ct_t = ct_sparse.c.transpose();
-    assert_eq!(
-        ct_t.indptr,
-        ct_sparse.ct().indptr,
-        "sparse: C^T indptr should equal transpose(C)"
-    );
-    assert_eq!(
-        ct_t.indices,
-        ct_sparse.ct().indices,
-        "sparse: C^T indices should equal transpose(C)"
-    );
-    for (a, b) in ct_t.data.iter().zip(&ct_sparse.ct().data) {
-        assert!(
-            (a - b).abs() < 1e-12,
-            "sparse: C^T data should equal transpose(C)"
-        );
-    }
-}
-
-#[test]
 fn test_extract_component_two_components() {
     // Two disconnected bipartite components: q/r levels {0,1} and {2,3}.
     let fa = vec![0u32, 0, 1, 1, 2, 2, 3, 3];
     let fb = vec![0u32, 1, 0, 1, 2, 3, 2, 3];
     let design = design_of(vec![fa, fb]);
-    let (ct, parent_diag, _) = CrossTab::build_for_pair(&design, INTERCEPT_PAIR);
+    let (ct, _) = CrossTab::build_for_pair(&design, INTERCEPT_PAIR);
 
     let components = ct.bipartite_connected_components();
     assert_eq!(components.len(), 2, "should have 2 connected components");
@@ -137,21 +56,6 @@ fn test_extract_component_two_components() {
     let sub_a = ct.extract_component(comp_a, &mut row_remap, &mut col_remap);
     assert_eq!(sub_a.n_rows(), 2, "component A: n_rows=2");
     assert_eq!(sub_a.n_cols(), 2, "component A: n_cols=2");
-
-    // Component A's diagonal matches the parent's at 0,1, flat as `[rows | cols]`.
-    let sub_a_diag = parent_diag.extract_component(comp_a);
-    for (new_i, &old_i) in comp_a.rows.iter().enumerate() {
-        assert!(
-            (sub_a_diag[new_i] - parent_diag.rows[old_i]).abs() < 1e-12,
-            "sub_a diag row[{new_i}] should match parent diag row[{old_i}]"
-        );
-    }
-    for (new_i, &old_i) in comp_a.cols.iter().enumerate() {
-        assert!(
-            (sub_a_diag[comp_a.rows.len() + new_i] - parent_diag.cols[old_i]).abs() < 1e-12,
-            "sub_a diag col[{new_i}] should match parent diag col[{old_i}]"
-        );
-    }
 
     // Column indices in sub_a.c should be 0-based (0..n_cols for component A = 0..2).
     let max_col_a = sub_a.c.indices.iter().copied().max().unwrap_or(0);
@@ -223,7 +127,7 @@ proptest! {
         }
 
         let design = design_of(vec![fa, fb]);
-        let (ct, _, _) = CrossTab::build_for_pair(&design, INTERCEPT_PAIR);
+        let (ct, _) = CrossTab::build_for_pair(&design, INTERCEPT_PAIR);
 
         let components = ct.bipartite_connected_components();
 
@@ -310,21 +214,16 @@ fn dense_and_sparse_paths_agree_on_signed_data() {
     };
     let n_rows = design.terms[pair.rows.term].n_levels();
     let n_cols = design.terms[pair.cols.term].n_levels();
-    let (c_dense, dq_dense, dr_dense) = accumulate_dense_cross_block(cols, n_rows, n_cols);
-    let (c_sparse, dq_sparse, dr_sparse) = accumulate_sparse_cross_block(cols, n_rows, n_cols);
+    let c_dense = accumulate_dense_cross_block(cols, n_rows, n_cols);
+    let c_sparse = accumulate_sparse_cross_block(cols, n_rows, n_cols);
 
     // Bit-exact parity: identical per-cell addition order in both paths.
     assert_eq!(c_dense.indptr, c_sparse.indptr);
     assert_eq!(c_dense.indices, c_sparse.indices);
     assert_eq!(c_dense.data, c_sparse.data);
-    assert_eq!(dq_dense, dq_sparse);
-    assert_eq!(dr_dense, dr_sparse);
 
     // Row f=0 keeps only cell (0,0) = 2.0; the exact-0.0 cell (0,1) is gone.
     assert_eq!(&c_dense.indptr, &[0, 1, 2]);
     assert_eq!(c_dense.indices[0], 0);
     assert_eq!(c_dense.data[0], 2.0);
-    // Diagonals accumulate w·l²: z² on the slope side, plain counts on the intercept side.
-    assert_eq!(dq_dense, vec![1.0 + 1.0 + 4.0 + 9.0 + 9.0, 16.0]);
-    assert_eq!(dr_dense, vec![4.0, 2.0]);
 }

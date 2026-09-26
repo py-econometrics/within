@@ -8,7 +8,7 @@ mod level_moments;
 mod prepared;
 mod reparam;
 
-pub(crate) use cross_tab::{BlockDiagonals, CrossTab};
+pub(crate) use cross_tab::CrossTab;
 pub(crate) use prepared::{PreparedDesign, PreparedTerm};
 use reparam::TermReparam;
 
