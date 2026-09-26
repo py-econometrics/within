@@ -14,7 +14,7 @@ pub(crate) struct PreparedDesign<'a> {
     /// Per design term, its change of basis; `None` is the identity.
     reparams: Vec<Option<TermReparam>>,
     /// Per design term, its block of [`Self::gram_diagonal`], filled on first read.
-    diagonals: Vec<OnceLock<Vec<f64>>>,
+    diagonals: Vec<OnceLock<Box<[f64]>>>,
 }
 
 /// A term in the solve basis: the design's rows plus this preparation's whitened slopes.
@@ -22,8 +22,6 @@ pub(crate) struct PreparedTerm<'p> {
     pub(crate) term: &'p Term<'p>,
     /// Solve-basis slopes in coefficient-column order; empty for a slope-free term.
     pub(crate) slopes: &'p [Vec<f64>],
-    diagonal: &'p OnceLock<Vec<f64>>,
-    sqrt_weights: Option<&'p [f64]>,
 }
 
 impl<'p> PreparedTerm<'p> {
@@ -33,45 +31,6 @@ impl<'p> PreparedTerm<'p> {
             Column::Intercept => None,
             Column::Slope(j) => Some(&self.slopes[j]),
         }
-    }
-
-    /// This term's squared column norms as laid out by `dofs()`, summed in observation order.
-    pub(crate) fn diagonal(&self) -> &'p [f64] {
-        // Serial fill: a rayon job stolen inside it could re-enter this cell and deadlock.
-        self.diagonal.get_or_init(|| {
-            let (term, sqrt_weights) = (self.term, self.sqrt_weights);
-            let levels = term.levels();
-            let mut diag = vec![0.0; term.n_dofs()];
-            if !self.slopes.is_empty() {
-                let columns: Vec<(usize, Option<&[f64]>)> = (0..term.n_columns())
-                    .map(|c| (term.column_dofs(c).start - term.offset, self.loading(c)))
-                    .collect();
-                for (obs, &level) in levels.iter().enumerate() {
-                    let w = row_weight(sqrt_weights, obs);
-                    for &(base, z) in &columns {
-                        // Keep `w * z * z` left-to-right: a zero weight kills a huge `z` first.
-                        diag[base + level as usize] += z.map_or(w, |z| w * z[obs] * z[obs]);
-                    }
-                }
-            } else if term.sorted() {
-                // A sorted level is one run: a register sum keeps its order with no store per row.
-                let mut start = 0;
-                for run in levels.chunk_by(|a, b| a == b) {
-                    let rows = start..start + run.len();
-                    start = rows.end;
-                    // A sum of ones is exact, so the unweighted run sum is its length.
-                    diag[run[0] as usize] += match sqrt_weights {
-                        None => run.len() as f64,
-                        Some(s) => s[rows].iter().fold(0.0, |sum, &si| sum + si * si),
-                    };
-                }
-            } else {
-                for (obs, &level) in levels.iter().enumerate() {
-                    diag[level as usize] += row_weight(sqrt_weights, obs);
-                }
-            }
-            diag
-        })
     }
 }
 
@@ -106,26 +65,61 @@ impl<'a> PreparedDesign<'a> {
     }
 
     pub(crate) fn term(&self, term: usize) -> PreparedTerm<'_> {
-        let t = &self.design.terms[term];
-        let slopes = self.reparams[term].as_ref().map_or(&[][..], |r| &r.slopes);
+        let (t, reparam) = (&self.design.terms[term], &self.reparams[term]);
+        let slopes: &[Vec<f64>] = reparam.as_ref().map_or(&[], |r| &r.slopes);
         debug_assert_eq!(slopes.len(), t.raw_slopes().len());
-        PreparedTerm {
-            term: t,
-            slopes,
-            diagonal: &self.diagonals[term],
-            sqrt_weights: self.sqrt_weights(),
-        }
+        PreparedTerm { term: t, slopes }
     }
 
     pub(crate) fn terms(&self) -> impl ExactSizeIterator<Item = PreparedTerm<'_>> {
         (0..self.design.n_factors()).map(|term| self.term(term))
     }
 
+    /// Term `term`'s block of `diag(AᵀA)`, laid out like its `dofs()`, summed in observation order.
+    pub(crate) fn diagonal(&self, term: usize) -> &[f64] {
+        // Serial fill: a rayon job stolen inside it could re-enter this cell and deadlock.
+        self.diagonals[term].get_or_init(|| {
+            let prepared = self.term(term);
+            let (term, sqrt_weights) = (prepared.term, self.sqrt_weights());
+            let levels = term.levels();
+            let mut diag = vec![0.0; term.n_dofs()];
+            if !prepared.slopes.is_empty() {
+                let columns: Vec<(usize, Option<&[f64]>)> = (0..term.n_columns())
+                    .map(|c| (term.column_dofs(c).start - term.offset, prepared.loading(c)))
+                    .collect();
+                for (obs, &level) in levels.iter().enumerate() {
+                    let w = row_weight(sqrt_weights, obs);
+                    for &(base, z) in &columns {
+                        // Keep `w * z * z` left-to-right: a zero weight kills a huge `z` first.
+                        diag[base + level as usize] += z.map_or(w, |z| w * z[obs] * z[obs]);
+                    }
+                }
+            } else if term.sorted() {
+                // A sorted level is one run: a register sum keeps its order with no store per row.
+                let mut start = 0;
+                for run in levels.chunk_by(|a, b| a == b) {
+                    let rows = start..start + run.len();
+                    start = rows.end;
+                    // A sum of ones is exact, so the unweighted run sum is its length.
+                    diag[run[0] as usize] += match sqrt_weights {
+                        None => run.len() as f64,
+                        Some(s) => s[rows].iter().fold(0.0, |sum, &si| sum + si * si),
+                    };
+                }
+            } else {
+                for (obs, &level) in levels.iter().enumerate() {
+                    diag[level as usize] += row_weight(sqrt_weights, obs);
+                }
+            }
+            diag.into_boxed_slice()
+        })
+    }
+
     /// `diag(AᵀA)` in solve coordinates.
     pub(crate) fn gram_diagonal(&self) -> Vec<f64> {
         let blocks: Vec<&[f64]> = (0..self.design.n_factors())
             .into_par_iter()
-            .map(|term| self.term(term).diagonal())
+            .map(|term| self.diagonal(term))
             .collect();
         let diag = blocks.concat();
         debug_assert_eq!(diag.len(), self.design.n_dofs);

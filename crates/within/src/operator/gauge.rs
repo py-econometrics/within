@@ -150,7 +150,7 @@ fn propose(
         for ((v, &f), &s) in values[block.clone()]
             .iter_mut()
             .zip(&fit[block])
-            .zip(prepared.term(block_term).diagonal())
+            .zip(prepared.diagonal(block_term))
         {
             *v = match s > 0.0 {
                 true => sign * f / s,
