@@ -47,6 +47,10 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - LSMR's residual estimate is its own `‖r_k‖` rather than LSQR's smaller `|φ̄_k|`, which let `ResidualTolerance` fire before the tolerance was met.
 - A non-finite or negative `ScalingConfig::tolerance` silently disabled the dominance certificate under both failure policies, since every comparison against it is `>`; it is now rejected as `BuildError::InvalidScalingTolerance`.
 
+### Performance
+
+- The adjoint scatter of a slope term on an unsorted factor with fewer than 100k levels no longer switches to atomic updates once its combined coefficient block reaches 100k; that path ran up to 7× slower per iteration at 8 threads than the parallel fold it replaces.
+
 ### Removed
 
 - `faer` is no longer a dependency of `schwarz-precond`; it is used only by the `custom_local_solver` example and moves to dev-dependencies.

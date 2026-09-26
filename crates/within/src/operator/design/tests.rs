@@ -397,10 +397,9 @@ mod slope_design_tests {
     /// identity.
     #[test]
     fn slope_adjoint_property_parallel_strategies() {
-        let n = 150_000;
-        let l_big = 60_000usize;
-        let sorted: Vec<u32> = (0..n).map(|i| (i * l_big / n) as u32).collect();
-        let unsorted: Vec<u32> = (0..n).map(|i| ((i * 7919) % l_big) as u32).collect();
+        let n = 300_000;
+        let sorted: Vec<u32> = (0..n).map(|i| (i * 120_000 / n) as u32).collect();
+        let unsorted: Vec<u32> = (0..n).map(|i| ((i * 7919) % 100_000) as u32).collect();
         let small: Vec<u32> = (0..n).map(|i| (i % 10) as u32).collect();
         let z: Vec<Vec<f64>> = (0..4)
             .map(|k| (0..n).map(|i| noise(k * n + i)).collect())
