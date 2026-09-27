@@ -438,7 +438,6 @@ fn screening_warnings_survive_escalation() {
 /// same error without the ladder rebuilding, and re-failing, the same map.
 #[test]
 fn a_failed_deferred_build_is_kept_and_reported_again() {
-    use super::ladder::PrecondSlot;
     use crate::config::{ScalingConfig, ScalingFailure};
     use crate::{BuildError, WithinError};
 
@@ -461,12 +460,9 @@ fn a_failed_deferred_build_is_kept_and_reported_again() {
     };
     let first = solver.solve(&panel.y, None);
     assert!(unscalable(&first), "{first:?}");
-    let PrecondSlot::Adaptive(a) = &solver.slot else {
-        panic!("the ladder")
-    };
     assert!(matches!(
-        a.built.get(),
-        Some(Err(BuildError::UnscalableComponent { .. }))
+        solver.slot.active(),
+        Err(BuildError::UnscalableComponent { .. })
     ));
     assert!(unscalable(&solver.solve(&panel.y, None)));
     assert!(!solver.has_escalated());

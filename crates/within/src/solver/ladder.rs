@@ -5,19 +5,29 @@ use std::time::Instant;
 
 use once_cell::sync::OnceCell;
 
-use crate::config::PreconditionerConfig;
+use crate::config::{PreconditionerConfig, Staleness};
 use crate::domain::PreparedDesign;
 use crate::operator::schwarz::{
-    build_adaptive, build_diagonal, build_schwarz, AdaptiveLadder, Preconditioner, SchwarzConfig,
+    build_adaptive, build_diagonal, build_schwarz, Preconditioner, SchwarzConfig,
 };
 use crate::{BuildError, BuildWarning};
 
 /// The solver's preconditioner: a fixed map, or an adaptive diagonal→Schwarz ladder.
 pub(super) enum PrecondSlot {
     /// A single map (`None` = unpreconditioned) built at construction.
-    Static(Option<Preconditioner>),
+    Static {
+        map: Option<Box<Preconditioner>>,
+        /// Design screening followed by the map's build.
+        warnings: Vec<BuildWarning>,
+    },
     /// Diagonal now, Schwarz built lazily on a stalled contraction.
     Adaptive(Box<AdaptivePrecond>),
+}
+
+/// The map a solve starts on: a settled one, or the ladder's diagonal probing for a stall.
+pub(super) enum Active<'s> {
+    Fixed(Option<&'s Preconditioner>),
+    Probe(&'s AdaptivePrecond),
 }
 
 impl PrecondSlot {
@@ -25,12 +35,11 @@ impl PrecondSlot {
     pub(super) fn build(
         prepared: &PreparedDesign<'_>,
         config: PreconditionerConfig,
-    ) -> Result<(Self, Vec<BuildWarning>), BuildError> {
-        Ok(match config {
-            PreconditionerConfig::Off => (Self::Static(None), Vec::new()),
-            PreconditionerConfig::Diagonal => {
-                (Self::Static(Some(build_diagonal(prepared)?)), Vec::new())
-            }
+        mut warnings: Vec<BuildWarning>,
+    ) -> Result<Self, BuildError> {
+        let map = match config {
+            PreconditionerConfig::Off => None,
+            PreconditionerConfig::Diagonal => Some(build_diagonal(prepared)?),
             PreconditionerConfig::Additive {
                 local_solver,
                 reduction,
@@ -39,8 +48,9 @@ impl PrecondSlot {
                     local_solver,
                     reduction,
                 };
-                let (map, warnings) = build_schwarz(prepared, &schwarz)?;
-                (Self::Static(map), warnings)
+                let (map, build_warnings) = build_schwarz(prepared, &schwarz)?;
+                warnings.extend(build_warnings);
+                map
             }
             PreconditionerConfig::Adaptive {
                 local_solver,
@@ -54,8 +64,12 @@ impl PrecondSlot {
                     reduction,
                 };
                 let base = build_adaptive(prepared, stall, escalated)?;
-                (Self::reuse(prepared, base)?, Vec::new())
+                return Self::reuse(prepared, base, warnings);
             }
+        };
+        Ok(Self::Static {
+            map: map.map(Box::new),
+            warnings,
         })
     }
 
@@ -63,82 +77,122 @@ impl PrecondSlot {
     pub(super) fn reuse(
         prepared: &PreparedDesign<'_>,
         preconditioner: Preconditioner,
+        warnings: Vec<BuildWarning>,
     ) -> Result<Self, BuildError> {
         let Some(ladder) = preconditioner.ladder() else {
-            return Ok(Self::Static(Some(preconditioner)));
+            let map = Some(Box::new(preconditioner));
+            return Ok(Self::Static { map, warnings });
         };
         // A deserialized ladder skipped `Adaptive`'s build-time check, and a one-term design settles.
         ladder.escalated.local_solver.validate()?;
-        Ok(if prepared.design.n_factors() < 2 {
-            Self::Static(Some(preconditioner.settle()))
-        } else {
-            Self::Adaptive(Box::new(AdaptivePrecond {
-                base: preconditioner,
-                built: OnceCell::new(),
-            }))
+        if prepared.design.n_factors() < 2 {
+            let map = Some(Box::new(preconditioner.settle()));
+            return Ok(Self::Static { map, warnings });
+        }
+        let (stall, escalated) = (ladder.stall, ladder.escalated.clone());
+        Ok(Self::Adaptive(Box::new(AdaptivePrecond {
+            base: preconditioner,
+            stall,
+            escalated,
+            screening: warnings,
+            built: OnceCell::new(),
+        })))
+    }
+
+    /// What a solve starts on; a settled build error is final.
+    pub(super) fn active(&self) -> Result<Active<'_>, &BuildError> {
+        Ok(match self {
+            Self::Static { map, .. } => Active::Fixed(map.as_deref()),
+            Self::Adaptive(a) => match a.built.get() {
+                None => Active::Probe(a),
+                Some(Settled::Escalated { rung, .. }) => Active::Fixed(Some(rung)),
+                Some(Settled::NoTarget) => Active::Fixed(Some(&a.base)),
+                Some(Settled::Failed(e)) => return Err(e),
+            },
         })
+    }
+
+    /// The persistable map: under Adaptive, the Schwarz map once built, else the ladder itself.
+    pub(super) fn preconditioner(&self) -> Option<&Preconditioner> {
+        match self {
+            Self::Static { map, .. } => map.as_deref(),
+            Self::Adaptive(a) => Some(match a.built.get() {
+                Some(Settled::Escalated { rung, .. }) => rung,
+                None | Some(Settled::NoTarget | Settled::Failed(_)) => &a.base,
+            }),
+        }
+    }
+
+    pub(super) fn warnings(&self) -> &[BuildWarning] {
+        match self {
+            Self::Static { warnings, .. } => warnings,
+            Self::Adaptive(a) => match a.built.get() {
+                Some(Settled::Escalated { warnings, .. }) => warnings,
+                None | Some(Settled::NoTarget | Settled::Failed(_)) => &a.screening,
+            },
+        }
+    }
+
+    pub(super) fn has_escalated(&self) -> bool {
+        matches!(self, Self::Adaptive(a) if matches!(a.built.get(), Some(Settled::Escalated { .. })))
     }
 }
 
-/// Diagonal-first strategy holding everything needed to build the Schwarz rung on demand.
+/// Diagonal-first strategy holding everything but the design needed to build the Schwarz rung;
+/// its private fields keep `reuse` the only constructor.
 pub(super) struct AdaptivePrecond {
     /// Applies the diagonal and carries the ladder, so handing it out keeps the strategy.
     pub(super) base: Preconditioner,
-    /// A design's own build failure settles here too; a failed isolation pool retries instead.
-    pub(super) built: OnceCell<Result<AdaptiveBuild, BuildError>>,
+    pub(super) stall: Staleness,
+    escalated: SchwarzConfig,
+    screening: Vec<BuildWarning>,
+    /// Empty until a build settles; a failed isolation pool leaves it empty, so the next stall retries.
+    built: OnceCell<Settled>,
 }
 
-/// Outcome of the deferred build: the Schwarz map, or `None` when no factor-pair target exists.
-pub(super) struct AdaptiveBuild {
-    pub(super) schwarz: Option<Preconditioner>,
-    /// Design screening followed by the deferred build, so it can stand in for `Solver::warnings`.
-    pub(super) warnings: Vec<BuildWarning>,
+/// Outcome of the deferred build; each one is final for the solver.
+enum Settled {
+    /// The Schwarz rung, with the screening followed by its build warnings.
+    Escalated {
+        rung: Preconditioner,
+        warnings: Vec<BuildWarning>,
+    },
+    /// No factor-pair target exists, so the diagonal stays.
+    NoTarget,
+    Failed(BuildError),
 }
 
 impl AdaptivePrecond {
-    pub(super) fn ladder(&self) -> &AdaptiveLadder {
-        self.base
-            .ladder()
-            .expect("an adaptive slot is built only from a ladder")
-    }
-
-    pub(super) fn build(&self) -> Option<&AdaptiveBuild> {
-        self.built.get().and_then(|b| b.as_ref().ok())
-    }
-
-    pub(super) fn schwarz(&self) -> Option<&Preconditioner> {
-        self.build().and_then(|b| b.schwarz.as_ref())
-    }
-
-    /// The rung a solve should run on: the escalated Schwarz map once built, else the diagonal.
-    pub(super) fn rung(&self) -> &Preconditioner {
-        self.schwarz().unwrap_or(&self.base)
-    }
-
-    /// Build once and return this call's build seconds; every other caller waits for it.
+    /// Build once and return the rung stalled solves resume on, with this call's build seconds.
     pub(super) fn escalate(
         &self,
         prepared: &PreparedDesign<'_>,
-        screening: &[BuildWarning],
-    ) -> Result<f64, BuildError> {
+    ) -> Result<(&Preconditioner, f64), BuildError> {
         let mut build_secs = 0.0;
-        let built = self.built.get_or_try_init(|| {
+        let settled = self.built.get_or_try_init(|| {
             let t_build = Instant::now();
-            let outcome = isolated(|| build_schwarz(prepared, &self.ladder().escalated))?.map(
-                |(schwarz, build_warnings)| {
-                    let schwarz = schwarz.map(|mut p| {
-                        p.gauge = self.base.gauge.clone();
-                        p
-                    });
-                    let mut warnings = screening.to_vec();
-                    warnings.extend(build_warnings);
-                    AdaptiveBuild { schwarz, warnings }
+            let settled = isolated(|| match build_schwarz(prepared, &self.escalated) {
+                Ok((Some(mut schwarz), build_warnings)) => Settled::Escalated {
+                    rung: {
+                        schwarz.gauge = self.base.gauge.clone();
+                        schwarz
+                    },
+                    warnings: [self.screening.as_slice(), &build_warnings].concat(),
                 },
-            );
+                Ok((None, build_warnings)) => {
+                    debug_assert!(build_warnings.is_empty(), "a warning names a subdomain");
+                    Settled::NoTarget
+                }
+                Err(e) => Settled::Failed(e),
+            })?;
             build_secs = t_build.elapsed().as_secs_f64();
-            Ok(outcome)
+            Ok::<_, BuildError>(settled)
         })?;
-        built.as_ref().map(|_| build_secs).map_err(Clone::clone)
+        match settled {
+            Settled::Escalated { rung, .. } => Ok((rung, build_secs)),
+            Settled::NoTarget => Ok((&self.base, build_secs)),
+            Settled::Failed(e) => Err(e.clone()),
+        }
     }
 }
 

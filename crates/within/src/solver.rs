@@ -26,7 +26,7 @@ mod layout;
 #[cfg(test)]
 mod tests;
 
-use ladder::PrecondSlot;
+use ladder::{Active, PrecondSlot};
 pub use layout::CoefficientLayout;
 
 /// Fallible conversion into a [`Design`] for [`Solver::new`]: a categories
@@ -215,7 +215,6 @@ impl BatchSolveResult {
 pub struct Solver<'a> {
     prepared: PreparedDesign<'a>,
     slot: PrecondSlot,
-    warnings: Vec<BuildWarning>,
 }
 
 impl std::fmt::Debug for Solver<'_> {
@@ -310,14 +309,14 @@ impl<'a> Solver<'a> {
         // Whiten the slope columns (if any) before the preconditioner reads them.
         let prepared = PreparedDesign::new(design.into_design()?, weights)?;
         let screened = detect_collinear_slopes(&prepared);
-        let mut warnings: Vec<BuildWarning> = screened.iter().map(CollinearSlope::warn).collect();
+        let warnings: Vec<BuildWarning> = screened.iter().map(CollinearSlope::warn).collect();
         let n_dofs = prepared.design.n_dofs;
 
-        let (mut slot, build_warnings) = match preconditioner.into() {
+        let mut slot = match preconditioner.into() {
             PreconditionerInput::Default => {
-                PrecondSlot::build(&prepared, PreconditionerConfig::default())?
+                PrecondSlot::build(&prepared, PreconditionerConfig::default(), warnings)?
             }
-            PreconditionerInput::Config(c) => PrecondSlot::build(&prepared, c)?,
+            PreconditionerInput::Config(c) => PrecondSlot::build(&prepared, c, warnings)?,
             PreconditionerInput::Prebuilt(p) => {
                 if p.nrows() != n_dofs || p.ncols() != n_dofs {
                     return Err(BuildError::PreconditionerDimensionMismatch {
@@ -326,46 +325,32 @@ impl<'a> Solver<'a> {
                         actual_cols: p.ncols(),
                     });
                 }
-                (PrecondSlot::reuse(&prepared, p)?, Vec::new())
+                PrecondSlot::reuse(&prepared, p, warnings)?
             }
         };
 
         let base = match &mut slot {
-            PrecondSlot::Static(p) => p.as_mut(),
+            PrecondSlot::Static { map, .. } => map.as_deref_mut(),
             PrecondSlot::Adaptive(a) => Some(&mut a.base),
         };
         // Only `M⁻¹` can inject a null of `A`; an escalated rung inherits this one from the base.
         if let Some(p) = base {
             p.gauge = GaugeConstraint::build(&prepared, &screened).map(Arc::new);
         }
-        warnings.extend(build_warnings);
 
-        Ok(Self {
-            prepared,
-            slot,
-            warnings,
-        })
+        Ok(Self { prepared, slot })
     }
 
     /// Non-fatal events from design screening and the preconditioner build; a reused
     /// pre-built preconditioner contributes none (its own were reported when built).
     /// An Adaptive solver's deferred build adds its own once a solve escalates.
     pub fn warnings(&self) -> &[BuildWarning] {
-        match &self.slot {
-            PrecondSlot::Static(_) => &self.warnings,
-            PrecondSlot::Adaptive(a) => a
-                .build()
-                .map(|b| b.warnings.as_slice())
-                .unwrap_or(&self.warnings),
-        }
+        self.slot.warnings()
     }
 
     /// Whether an [`Adaptive`](crate::PreconditionerConfig::Adaptive) solve has built Schwarz.
     pub fn has_escalated(&self) -> bool {
-        match &self.slot {
-            PrecondSlot::Adaptive(a) => a.schwarz().is_some(),
-            PrecondSlot::Static(_) => false,
-        }
+        self.slot.has_escalated()
     }
 
     /// Validate `y` and move it into the internal observation frame.
@@ -431,14 +416,10 @@ impl<'a> Solver<'a> {
         ys: &[&[f64]],
         lsmr: &LsmrOptions,
     ) -> Result<(Vec<RhsSolution>, f64), WithinError> {
-        let (map, ladder) = match &self.slot {
-            PrecondSlot::Static(p) => (p.as_ref(), None),
-            // A settled ladder never re-probes: its map, or its kept build error, is final.
-            PrecondSlot::Adaptive(a) => match a.built.get() {
-                Some(Ok(_)) => (Some(a.rung()), None),
-                Some(Err(e)) => return Err(e.clone().into()),
-                None => (Some(&a.base), Some(a.as_ref())),
-            },
+        // A settled ladder never re-probes: its map, or its kept build error, is final.
+        let (map, ladder) = match self.slot.active().map_err(Clone::clone)? {
+            Active::Fixed(map) => (map, None),
+            Active::Probe(a) => (Some(&a.base), Some(a)),
         };
         // A stall on the last permitted iteration leaves rung 2 nothing to spend, so no build.
         let stalled = |r: &LsmrResult| {
@@ -450,7 +431,7 @@ impl<'a> Solver<'a> {
             .map(|y| {
                 let rhs = self.prepare(y)?;
                 let options = MlsmrOptions {
-                    escalation: ladder.map(|a| &a.ladder().stall as &dyn EscalationPolicy),
+                    escalation: ladder.map(|a| &a.stall as &dyn EscalationPolicy),
                     local_size: lsmr.local_size,
                     ..Default::default()
                 };
@@ -467,11 +448,11 @@ impl<'a> Solver<'a> {
             .collect::<Result<Vec<_>, SolveError>>()?;
 
         // Built outside the fan-out, so sibling RHS never race for it.
-        let build_secs = match ladder {
+        let escalated = match ladder {
             Some(a) if passes.iter().any(|p| matches!(p, Pass::Stalled(..))) => {
-                a.escalate(&self.prepared, &self.warnings)?
+                Some(a.escalate(&self.prepared)?)
             }
-            _ => 0.0,
+            _ => None,
         };
         let solutions = passes
             .into_par_iter()
@@ -480,7 +461,7 @@ impl<'a> Solver<'a> {
                     Pass::Done(solution) => return Ok(solution),
                     Pass::Stalled(rhs, probe) => (rhs, probe),
                 };
-                let map = ladder.expect("only a ladder stalls").rung();
+                let (map, _) = escalated.expect("only a ladder stalls");
                 let rung1 = probe.result;
                 // The whole ladder shares the caller's budget; rung 2 gets what rung 1 left.
                 let options = MlsmrOptions {
@@ -496,7 +477,7 @@ impl<'a> Solver<'a> {
                 Ok(self.finish(rhs, resumed))
             })
             .collect::<Result<Vec<_>, SolveError>>()?;
-        Ok((solutions, build_secs))
+        Ok((solutions, escalated.map_or(0.0, |(_, secs)| secs)))
     }
 
     /// Per-level directions the data cannot identify, shared across all RHS:
@@ -592,10 +573,7 @@ impl<'a> Solver<'a> {
     /// Access the preconditioner (for serialization or reuse across solvers).
     /// Under Adaptive: the Schwarz map once built, otherwise the diagonal base carrying the ladder.
     pub fn preconditioner(&self) -> Option<&Preconditioner> {
-        match &self.slot {
-            PrecondSlot::Static(p) => p.as_ref(),
-            PrecondSlot::Adaptive(a) => Some(a.rung()),
-        }
+        self.slot.preconditioner()
     }
 
     /// Number of DOFs (coefficients).
