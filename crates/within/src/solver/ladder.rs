@@ -16,7 +16,7 @@ use crate::{BuildError, BuildWarning};
 pub(super) enum PrecondSlot {
     /// A single map (`None` = unpreconditioned) built at construction.
     Static {
-        map: Option<Box<Preconditioner>>,
+        map: Option<Preconditioner>,
         /// Design screening followed by the map's build.
         warnings: Vec<BuildWarning>,
     },
@@ -67,10 +67,7 @@ impl PrecondSlot {
                 return Self::reuse(prepared, base, warnings);
             }
         };
-        Ok(Self::Static {
-            map: map.map(Box::new),
-            warnings,
-        })
+        Ok(Self::Static { map, warnings })
     }
 
     /// An unescalated ladder resumes, or settles on one term; any other map stays fixed.
@@ -79,35 +76,31 @@ impl PrecondSlot {
         preconditioner: Preconditioner,
         warnings: Vec<BuildWarning>,
     ) -> Result<Self, BuildError> {
-        let Some(ladder) = preconditioner.ladder() else {
-            let map = Some(Box::new(preconditioner));
-            return Ok(Self::Static { map, warnings });
-        };
-        // A deserialized ladder skipped `Adaptive`'s build-time check, and a one-term design settles.
-        ladder.escalated.local_solver.validate()?;
-        if prepared.design.n_factors() < 2 {
-            let map = Some(Box::new(preconditioner.settle()));
-            return Ok(Self::Static { map, warnings });
+        if let Some(ladder) = preconditioner.ladder() {
+            // A deserialized ladder skipped `Adaptive`'s build-time check, and a one-term design settles.
+            ladder.escalated.local_solver.validate()?;
+            if prepared.design.n_factors() >= 2 {
+                let (stall, escalated) = (ladder.stall, ladder.escalated.clone());
+                return Ok(Self::Adaptive(Box::new(AdaptivePrecond {
+                    base: preconditioner,
+                    stall,
+                    escalated,
+                    screening: warnings,
+                    built: OnceCell::new(),
+                })));
+            }
         }
-        let (stall, escalated) = (ladder.stall, ladder.escalated.clone());
-        Ok(Self::Adaptive(Box::new(AdaptivePrecond {
-            base: preconditioner,
-            stall,
-            escalated,
-            screening: warnings,
-            built: OnceCell::new(),
-        })))
+        let map = Some(preconditioner.settle());
+        Ok(Self::Static { map, warnings })
     }
 
     /// What a solve starts on; a settled build error is final.
     pub(super) fn active(&self) -> Result<Active<'_>, &BuildError> {
         Ok(match self {
-            Self::Static { map, .. } => Active::Fixed(map.as_deref()),
+            Self::Static { map, .. } => Active::Fixed(map.as_ref()),
             Self::Adaptive(a) => match a.built.get() {
                 None => Active::Probe(a),
-                Some(Settled::Escalated { rung, .. }) => Active::Fixed(Some(rung)),
-                Some(Settled::NoTarget) => Active::Fixed(Some(&a.base)),
-                Some(Settled::Failed(e)) => return Err(e),
+                Some(settled) => Active::Fixed(Some(a.rung(settled)?)),
             },
         })
     }
@@ -115,7 +108,7 @@ impl PrecondSlot {
     /// The persistable map: under Adaptive, the Schwarz map once built, else the ladder itself.
     pub(super) fn preconditioner(&self) -> Option<&Preconditioner> {
         match self {
-            Self::Static { map, .. } => map.as_deref(),
+            Self::Static { map, .. } => map.as_ref(),
             Self::Adaptive(a) => Some(match a.built.get() {
                 Some(Settled::Escalated { rung, .. }) => rung,
                 None | Some(Settled::NoTarget | Settled::Failed(_)) => &a.base,
@@ -138,8 +131,7 @@ impl PrecondSlot {
     }
 }
 
-/// Diagonal-first strategy holding everything but the design needed to build the Schwarz rung;
-/// its private fields keep `reuse` the only constructor.
+/// Diagonal-first strategy; its private fields keep `reuse` the only constructor.
 pub(super) struct AdaptivePrecond {
     /// Applies the diagonal and carries the ladder, so handing it out keeps the strategy.
     pub(super) base: Preconditioner,
@@ -188,10 +180,16 @@ impl AdaptivePrecond {
             build_secs = t_build.elapsed().as_secs_f64();
             Ok::<_, BuildError>(settled)
         })?;
+        let rung = self.rung(settled).map_err(Clone::clone)?;
+        Ok((rung, build_secs))
+    }
+
+    /// The map a settled ladder runs on: the Schwarz rung, or the diagonal when none exists.
+    fn rung<'s>(&'s self, settled: &'s Settled) -> Result<&'s Preconditioner, &'s BuildError> {
         match settled {
-            Settled::Escalated { rung, .. } => Ok((rung, build_secs)),
-            Settled::NoTarget => Ok((&self.base, build_secs)),
-            Settled::Failed(e) => Err(e.clone()),
+            Settled::Escalated { rung, .. } => Ok(rung),
+            Settled::NoTarget => Ok(&self.base),
+            Settled::Failed(e) => Err(e),
         }
     }
 }

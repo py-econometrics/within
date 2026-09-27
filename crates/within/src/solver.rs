@@ -330,7 +330,7 @@ impl<'a> Solver<'a> {
         };
 
         let base = match &mut slot {
-            PrecondSlot::Static { map, .. } => map.as_deref_mut(),
+            PrecondSlot::Static { map, .. } => map.as_mut(),
             PrecondSlot::Adaptive(a) => Some(&mut a.base),
         };
         // Only `M⁻¹` can inject a null of `A`; an escalated rung inherits this one from the base.
