@@ -63,40 +63,22 @@ impl FactorEncoding {
     // Inlined into `build`, its label loops lose registers and reload pointers from the stack.
     #[inline(never)]
     fn encode_labels(labels: Cow<'_, [u32]>) -> EncodedFactor<'_> {
-        let (Some(&first), Some(&last)) = (labels.first(), labels.last()) else {
+        if labels.is_empty() {
             return EncodedFactor {
                 encoding: Self::identity(0),
                 levels: labels,
                 sorted: true,
             };
-        };
-        match is_non_decreasing_with_gaps(&labels) {
-            // Non-decreasing and contiguous.
-            Some(false) => EncodedFactor::contiguous(labels, first, last, true),
-            // Non-decreasing with gaps, regardless of range width.
-            Some(true) => EncodedFactor::sorted_gaps(&labels),
-            // Not non-decreasing: distinguish sparse gaps, dense gaps, and contiguous.
-            None => {
-                let (min, max) = labels.par_iter().map(|&label| (label, label)).reduce(
-                    || (u32::MAX, u32::MIN),
-                    |(lo, hi), (a, b)| (lo.min(a), hi.max(b)),
-                );
-                if (max - min) as usize >= labels.len() {
-                    // Unsorted labels with sparse gaps
-                    EncodedFactor::sparse(&labels)
-                } else if let Some(is_gap) = find_gaps(&labels, min, max) {
-                    // Unsorted labels with dense gaps
-                    let distinct_labels = is_gap
-                        .par_iter()
-                        .positions(|&gap| !gap)
-                        .map(|offset| min + offset as u32)
-                        .collect();
-                    EncodedFactor::dense(&labels, distinct_labels)
-                } else {
-                    // Unsorted contiguous labels
-                    EncodedFactor::contiguous(labels, min, max, false)
-                }
+        }
+        match identify_label_layout(&labels) {
+            LabelLayout::Contiguous { min, max, sorted } => {
+                EncodedFactor::contiguous(labels, min, max, sorted)
             }
+            LabelLayout::SortedWithGaps => EncodedFactor::sorted_gaps(&labels),
+            LabelLayout::UnsortedDense { distinct_labels } => {
+                EncodedFactor::dense(&labels, distinct_labels)
+            }
+            LabelLayout::UnsortedSparse => EncodedFactor::sparse(&labels),
         }
     }
 
@@ -395,6 +377,56 @@ pub(crate) fn row_weight(sqrt_weights: Option<&[f64]>, obs: usize) -> f64 {
 // Inspired by [within::operator::design::scatter::scatter_sorted_coalesced]
 const LABEL_CHUNK: usize = 65_536;
 
+/// Label layout used to select an encoding strategy.
+enum LabelLayout {
+    /// Every value in `min..=max` occurs; `sorted` indicates non-decreasing input.
+    Contiguous { min: u32, max: u32, sorted: bool },
+    /// Non-decreasing labels with missing values between their minimum and maximum.
+    SortedWithGaps,
+    /// Unsorted labels with gaps and a range no wider than the observation count.
+    /// `distinct_labels` contains the observed labels in non-decreasing order.
+    UnsortedDense { distinct_labels: Vec<u32> },
+    /// Unsorted labels whose range exceeds the observation count.
+    UnsortedSparse,
+}
+
+/// Identifies the label layout in terms of ordering, contiguity and range width.
+///
+/// Requires nonempty `labels`.
+fn identify_label_layout(labels: &[u32]) -> LabelLayout {
+    match is_non_decreasing_with_gaps(labels) {
+        // Non-decreasing and contiguous.
+        Some(false) => LabelLayout::Contiguous {
+            min: labels[0],
+            max: labels[labels.len() - 1],
+            sorted: true,
+        },
+        // Non-decreasing with gaps.
+        Some(true) => LabelLayout::SortedWithGaps,
+        // Not non-decreasing: distinguish sparse gaps, dense gaps, and contiguous.
+        None => {
+            let (min, max) = labels.par_iter().map(|&label| (label, label)).reduce(
+                || (u32::MAX, u32::MIN),
+                |(lo, hi), (a, b)| (lo.min(a), hi.max(b)),
+            );
+            if (max - min) as usize >= labels.len() {
+                // Unsorted labels with sparse gaps
+                LabelLayout::UnsortedSparse
+            } else if let Some(distinct_labels) = get_distinct_labels(labels, min, max) {
+                // Unsorted labels with dense gaps
+                LabelLayout::UnsortedDense { distinct_labels }
+            } else {
+                // Unsorted contiguous labels
+                LabelLayout::Contiguous {
+                    min,
+                    max,
+                    sorted: false,
+                }
+            }
+        }
+    }
+}
+
 /// Checks if `labels` are in non-decreasing order and whether there are gaps.
 ///
 /// Returns `None` if not non-decreasing, `Some(true)` if non-decreasing with gaps,
@@ -420,12 +452,12 @@ fn is_non_decreasing_with_gaps(labels: &[u32]) -> Option<bool> {
         .try_reduce(|| false, |a, b| Some(a | b))
 }
 
-/// Finds the values in `min..=max` that do not occur in `labels`, indexed by `value - min`.
-/// Stops reading labels as soon as every value has been seen, so a column without
-/// gaps often costs only a prefix; with a gap it reads every label.
+/// Finds the distinct values in `labels` and stops as soon as every value in `min..=max`
+/// has been seen. Returns `None` if all values in `min..=max` occur and otherwise the
+/// distinct values (`Some`).
 ///
 /// Every label must lie in `min..=max`, and the range must be no wider than the column.
-fn find_gaps(labels: &[u32], min: u32, max: u32) -> Option<Vec<bool>> {
+fn get_distinct_labels(labels: &[u32], min: u32, max: u32) -> Option<Vec<u32>> {
     let width = (max - min) as usize + 1;
     debug_assert!(
         width <= labels.len(),
@@ -464,11 +496,11 @@ fn find_gaps(labels: &[u32], min: u32, max: u32) -> Option<Vec<bool>> {
     if filled_early || advance() == width {
         return None;
     }
-    // A gap is not filled, hence `!slot.into_inner()`
     Some(
         present
             .into_par_iter()
-            .map(|slot| !slot.into_inner())
+            .enumerate()
+            .filter_map(|(offset, slot)| slot.into_inner().then_some(min + offset as u32))
             .collect(),
     )
 }
