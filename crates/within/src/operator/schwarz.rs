@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use crate::block_elim::BlockElimSolver;
 use crate::config::{LocalSolverConfig, PreconditionerConfig, ReductionStrategy, Staleness};
-use crate::domain::{LocalDomain, PreparedDesign};
+use crate::domain::{DesignLayout, LocalDomain, PreparedDesign};
 use crate::operator::gauge::GaugeConstraint;
 use crate::{BuildError, BuildWarning};
 
@@ -132,6 +132,8 @@ pub struct Preconditioner {
     /// design the solver attaches, so it is rebuilt rather than serialized.
     #[serde(skip)]
     pub(crate) gauge: Option<Arc<GaugeConstraint>>,
+    /// Structural layout of the design used to build this preconditioner
+    pub(crate) layout: DesignLayout,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -256,6 +258,7 @@ pub(crate) fn build_diagonal(prepared: &PreparedDesign<'_>) -> Result<Preconditi
         inner: Variant::Diagonal(diagonal),
         build_duration: build_started.elapsed(),
         gauge: None,
+        layout: DesignLayout::from_design(&prepared.design),
     })
 }
 
@@ -275,6 +278,7 @@ pub(crate) fn build_adaptive(
         }),
         build_duration: build_started.elapsed(),
         gauge: None,
+        layout: DesignLayout::from_design(&prepared.design),
     })
 }
 
@@ -314,6 +318,7 @@ pub(crate) fn build_schwarz(
         inner: Variant::Additive(schwarz),
         build_duration: build_started.elapsed(),
         gauge: None,
+        layout: DesignLayout::from_design(&prepared.design),
     };
     Ok((Some(preconditioner), warnings))
 }

@@ -170,6 +170,38 @@ mod tests {
     use std::time::Duration;
 
     use super::isolated;
+    use crate::domain::PreparedDesign;
+    use crate::operator::schwarz::{build_adaptive, SchwarzConfig};
+    use crate::{Preconditioner, PreconditionerConfig, Solver, Staleness};
+
+    #[test]
+    fn deserialized_adaptive_state_settles_on_one_term() {
+        let prepared = PreparedDesign::from_levels_for_test(vec![vec![0, 1, 2, 0, 1, 2]]);
+        // Solver::new settles immediately on one term. Use the internal builder
+        // to serialize an adaptive map before it reaches that settling step.
+        let ladder = build_adaptive(
+            &prepared,
+            Staleness::try_new(1, 0.0).expect("valid staleness"),
+            SchwarzConfig {
+                local_solver: Default::default(),
+                reduction: Default::default(),
+            },
+        )
+        .expect("adaptive map");
+        assert_eq!(ladder.variant_name(), "Adaptive");
+
+        let bytes = postcard::to_stdvec(&ladder).expect("serialize");
+        let restored: Preconditioner = postcard::from_bytes(&bytes).expect("deserialize");
+        assert_eq!(restored.variant_name(), "Adaptive");
+
+        // Exercise the public reuse path, including layout validation, on the
+        // same one-term design that produced the serialized map.
+        let reused = Solver::new(&prepared.design, None, restored).expect("compatible solver");
+        let settled = reused.preconditioner().expect("settled map");
+        assert_eq!(settled.variant_name(), "Diagonal");
+        assert_eq!(settled.config(), PreconditionerConfig::Diagonal);
+        assert!(!reused.has_escalated());
+    }
 
     thread_local! {
         static ON_CALLER_POOL: Cell<bool> = const { Cell::new(false) };

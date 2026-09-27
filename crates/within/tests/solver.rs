@@ -1,7 +1,7 @@
 use ndarray::array;
 use rstest::rstest;
 use within::{
-    solve, ApproxCholConfig, ApproxSchurConfig, Effect, LocalSolverConfig, LsmrOptions,
+    solve, ApproxCholConfig, ApproxSchurConfig, Design, Effect, LocalSolverConfig, LsmrOptions,
     Preconditioner, PreconditionerConfig, ReductionStrategy, ScalingConfig, ScalingFailure,
     SchurMode, Solver,
 };
@@ -205,6 +205,87 @@ fn fully_specified_additive() -> PreconditionerConfig {
         },
         reduction: ReductionStrategy::AtomicScatter,
     }
+}
+
+fn cached_preconditioner(
+    design: &Design<'_>,
+    config: &PreconditionerConfig,
+    through_wire: bool,
+) -> Preconditioner {
+    let source = Solver::new(design, None, config).expect("source solver");
+    let cached = source.preconditioner().expect("built preconditioner");
+    if through_wire {
+        let bytes = postcard::to_stdvec(cached).expect("serialize");
+        postcard::from_bytes(&bytes).expect("deserialize")
+    } else {
+        cached.clone()
+    }
+}
+
+/// Compatibility depends on term structure, not the sample or caller's level labels.
+#[rstest]
+#[case::assignments(array![[0u32, 0], [0, 0], [0, 1], [1, 1]])]
+#[case::labels(array![[10u32, 20], [10, 30], [20, 20], [20, 30]])]
+#[case::row_order(array![[1u32, 1], [0, 0], [1, 0], [0, 1]])]
+#[case::observation_count(array![[0u32, 0], [0, 1], [1, 0], [1, 1], [0, 0], [1, 1]])]
+fn test_preconditioner_reuse_accepts_changed_data(
+    #[case] changed: ndarray::Array2<u32>,
+    #[values(PreconditionerConfig::Diagonal, common::additive(), common::adaptive())]
+    config: PreconditionerConfig,
+    #[values(false, true)] through_wire: bool,
+) {
+    let original = array![[0u32, 0], [0, 1], [1, 0], [1, 1]];
+    let original = Design::from_categories(original.view()).expect("original design");
+    let changed = Design::from_categories(changed.view()).expect("changed design");
+    assert_eq!(original.n_dofs(), changed.n_dofs());
+    let cached = cached_preconditioner(&original, &config, through_wire);
+
+    let reused = Solver::new(&changed, None, &cached).expect("same layout accepts changed data");
+    assert_eq!(
+        reused
+            .preconditioner()
+            .expect("reused map")
+            .build_duration(),
+        cached.build_duration(),
+    );
+}
+
+#[rstest]
+fn test_preconditioner_reuse_accepts_changed_slopes(
+    #[values(PreconditionerConfig::Diagonal, common::additive(), common::adaptive())]
+    config: PreconditionerConfig,
+    #[values(false, true)] through_wire: bool,
+) {
+    let f = [0, 0, 0, 1, 1, 1];
+    let g = [0, 1, 2, 0, 1, 2];
+    let before = [1.0, 2.0, 4.0, 2.0, 5.0, 9.0];
+    let after = [1.0, 3.0, 4.0, 2.0, 6.0, 8.0];
+    let design = |slope| {
+        Design::new([
+            Effect::new(&f, true, [slope]).expect("slope effect"),
+            Effect::new(&g, true, []).expect("intercept effect"),
+        ])
+        .expect("design")
+    };
+    let original = design(&before[..]);
+    let changed = design(&after[..]);
+    let cached = cached_preconditioner(&original, &config, through_wire);
+
+    Solver::new(&changed, None, cached).expect("same layout accepts changed slopes");
+}
+
+#[rstest]
+fn test_preconditioner_reuse_accepts_changed_weights(
+    #[values(PreconditionerConfig::Diagonal, common::additive(), common::adaptive())]
+    config: PreconditionerConfig,
+    #[values(false, true)] through_wire: bool,
+) {
+    let categories = array![[0u32, 0], [0, 1], [1, 0], [1, 1]];
+    let design = Design::from_categories(categories.view()).expect("design");
+    let cached = cached_preconditioner(&design, &config, through_wire);
+
+    Solver::new(&design, Some(&[2.0, 3.0, 4.0, 5.0]), cached)
+        .expect("same design accepts changed weights");
 }
 
 /// A solved ladder hands out whichever rung it reached, so the axis is the two eager variants.
