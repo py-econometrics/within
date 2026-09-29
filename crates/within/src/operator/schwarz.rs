@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use crate::block_elim::BlockElimSolver;
 use crate::config::{LocalSolverConfig, PreconditionerConfig, ReductionStrategy, Staleness};
 use crate::domain::{LocalDomain, PreparedDesign};
-use crate::operator::gauge::GaugeConstraint;
+use crate::operator::gauge::GaugeFold;
 use crate::{BuildError, BuildWarning};
 
 #[cfg(test)]
@@ -131,7 +131,7 @@ pub struct Preconditioner {
     /// Cross-term nulls every apply keeps out of the solve space, `P M⁻¹ P`; a property of the
     /// design the solver attaches, so it is rebuilt rather than serialized.
     #[serde(skip)]
-    pub(crate) gauge: Option<Arc<GaugeConstraint>>,
+    pub(crate) gauge: Option<Arc<GaugeFold>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -218,7 +218,7 @@ impl Preconditioner {
 }
 
 impl Preconditioner {
-    fn base(&self) -> &dyn Operator {
+    pub(crate) fn base(&self) -> &dyn Operator {
         match &self.inner {
             Variant::Additive(p) => p,
             Variant::Diagonal(p) => p,
@@ -238,7 +238,7 @@ impl Operator for Preconditioner {
 
     fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
         match &self.gauge {
-            Some(gauge) => gauge.constrain(x, y, |p, y| self.base().apply(p, y)),
+            Some(gauge) => gauge.apply(self.base(), x, y),
             None => self.base().apply(x, y),
         }
     }

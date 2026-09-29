@@ -265,7 +265,7 @@ fn constrained_rank(solver: &Solver<'_>) -> Option<usize> {
     solver
         .preconditioner()
         .and_then(|p| p.gauge.as_ref())
-        .map(|gauge| gauge.rank())
+        .map(|gauge| gauge.rank_for_test())
 }
 
 fn verdicts(solver: &Solver<'_>) -> Vec<AliasVerdict> {

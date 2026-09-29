@@ -336,7 +336,8 @@ impl<'a> Solver<'a> {
         };
         // Only `M⁻¹` can inject a null of `A`; an escalated rung inherits this one from the base.
         if let Some(p) = base {
-            p.gauge = GaugeConstraint::build(&prepared, &screened).map(Arc::new);
+            p.gauge =
+                GaugeConstraint::build(&prepared, &screened).map(|g| Arc::new(g.fold(p.base())));
         }
         warnings.extend(build_warnings);
 
