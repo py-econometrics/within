@@ -1,6 +1,7 @@
 //! The solver's preconditioner slot: a fixed map, or the diagonal→Schwarz ladder that
 //! [`PreconditionerConfig::Adaptive`] builds on a stalled solve.
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use once_cell::sync::OnceCell;
@@ -124,17 +125,24 @@ impl AdaptivePrecond {
         let mut build_secs = 0.0;
         let built = self.built.get_or_try_init(|| {
             let t_build = Instant::now();
-            let outcome = isolated(|| build_schwarz(prepared, &self.ladder().escalated))?.map(
-                |(schwarz, build_warnings)| {
-                    let schwarz = schwarz.map(|mut p| {
-                        p.gauge = self.base.gauge.clone();
-                        p
-                    });
-                    let mut warnings = screening.to_vec();
-                    warnings.extend(build_warnings);
-                    AdaptiveBuild { schwarz, warnings }
-                },
-            );
+            // The refold applies the new map, so it runs on the isolated pool with the build.
+            let outcome = isolated(|| {
+                build_schwarz(prepared, &self.ladder().escalated).map(
+                    |(schwarz, build_warnings)| {
+                        let schwarz = schwarz.map(|mut p| {
+                            p.gauge = self
+                                .base
+                                .gauge
+                                .as_ref()
+                                .map(|g| Arc::new(g.refold(p.base())));
+                            p
+                        });
+                        let mut warnings = screening.to_vec();
+                        warnings.extend(build_warnings);
+                        AdaptiveBuild { schwarz, warnings }
+                    },
+                )
+            })?;
             build_secs = t_build.elapsed().as_secs_f64();
             Ok(outcome)
         })?;
