@@ -259,6 +259,32 @@ fn singular_signed_boundary_remains_floating() {
     assert_sddm(&component);
 }
 
+#[rstest::rstest]
+#[case::laplacian_singular([1.0, 3.0, 2.0, 6.0], MatrixForm::Laplacian, 0.0, Grounding::Floating)]
+#[case::cover_singular([1.0, 3.0, 2.0, -6.0], MatrixForm::SignedPendingCover, 0.0, Grounding::Floating)]
+#[case::laplacian_surplus([1.0, 3.0, 2.0, 6.0], MatrixForm::Laplacian, 4e-12, Grounding::Grounded)]
+#[case::cover_surplus([1.0, 3.0, 2.0, -6.0], MatrixForm::SignedPendingCover, 4e-12, Grounding::Grounded)]
+fn perturbed_kernel_scaling_classifies_by_net_surplus(
+    #[case] table: [f64; 4],
+    #[case] form: MatrixForm,
+    #[case] surplus: f64,
+    #[case] expected: Grounding,
+) {
+    // Singular D − |C| (one obs per cell, z = (1, 2) × (1, 3)); δ off its kernel nets only 2δ².
+    // The surplus scales to 1e-12: above the roundoff budget, far below the δ-sized deficits.
+    for delta in [1e-10, 1e-8] {
+        let (component, _) = assemble(
+            CrossTab::from_dense_for_test(&table, 2, 2),
+            vec![2.0, 8.0 + surplus, 2.0, 18.0],
+            vec![1.0 + delta, 0.5, -1.0, -1.0 / 3.0],
+            form,
+            &ScalingConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(component.matrix.grounding, expected, "δ = {delta:e}");
+    }
+}
+
 #[test]
 fn large_rescaled_singular_boundary_remains_floating() {
     let n_cols = 20_000usize;
