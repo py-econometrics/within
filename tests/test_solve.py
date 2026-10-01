@@ -377,14 +377,17 @@ class TestSolverBatch:
 
     def test_batch_result_fields(self, problem):
         cats, y = problem
-        solver = Solver(as_solver_categories(cats))
+        solver = Solver(
+            as_solver_categories(cats),
+            preconditioner=PreconditionerConfig.Additive(),
+        )
         Y = np.column_stack([y, y])
         batch = solver.solve_batch(Y)
         assert len(batch.converged) == 2
         assert len(batch.iterations) == 2
         assert len(batch.residual) == 2
         assert len(batch.time_solve) == 2
-        # The method reuses the built preconditioner, so it reports no build cost.
+        # The preconditioner was built at construction, so the batch builds nothing.
         assert batch.time_setup == 0.0
         assert batch.time_total >= 0
         assert batch.unidentified == []
