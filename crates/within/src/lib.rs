@@ -45,8 +45,8 @@ pub use config::{
     ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, LsmrOptions, PreconditionerConfig,
     ReductionStrategy, ScalingConfig, ScalingFailure, SchurMode, Staleness, StalenessError,
 };
-pub use domain::{Design, Effect};
-pub use error::{AliasVerdict, BuildError, BuildWarning, SolveError, WithinError};
+pub use domain::{Design, Effect, SolverCoordinateOrder};
+pub use error::{AliasVerdict, BuildError, BuildWarning, LayoutMismatch, SolveError, WithinError};
 pub use operator::schwarz::Preconditioner;
 pub use solver::{
     solve, solve_batch, BatchSolveResult, CoefficientLayout, IntoDesign, PreconditionerInput,

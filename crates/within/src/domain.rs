@@ -20,7 +20,7 @@ pub(crate) use factor_pairs::{
 };
 
 use crate::channel::Channel;
-use crate::BuildError;
+use crate::{BuildError, LayoutMismatch};
 use ndarray::{ArrayView2, Axis};
 use rayon::prelude::*;
 use rustc_hash::FxBuildHasher;
@@ -30,6 +30,8 @@ use std::ops::Range;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize};
 use std::sync::Arc;
+
+use serde::{Deserialize, Serialize};
 
 /// What one coefficient column of a term multiplies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -283,6 +285,87 @@ impl EncodedFactor<'static> {
     }
 }
 
+/// Layout of a design.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct DesignLayout {
+    coordinate_order: SolverCoordinateOrder,
+    terms: Arc<[TermLayout]>,
+    n_dofs: usize,
+}
+
+impl DesignLayout {
+    pub(crate) fn from_design(design: &Design<'_>) -> Self {
+        Self {
+            coordinate_order: SolverCoordinateOrder::ColumnMajor,
+            terms: design.terms.iter().map(TermLayout::from_term).collect(),
+            n_dofs: design.n_dofs,
+        }
+    }
+
+    pub(crate) fn validate(&self, design: &Design<'_>) -> Result<(), BuildError> {
+        let mismatch = BuildError::PreconditionerLayoutMismatch;
+
+        if self.n_dofs != design.n_dofs {
+            return Err(mismatch(LayoutMismatch::DofCount {
+                expected: design.n_dofs,
+                actual: self.n_dofs,
+            }));
+        }
+        let expected_order = SolverCoordinateOrder::ColumnMajor;
+        if self.coordinate_order != expected_order {
+            return Err(mismatch(LayoutMismatch::CoordinateOrder {
+                expected: expected_order,
+                actual: self.coordinate_order,
+            }));
+        }
+        if self.terms.len() != design.terms.len() {
+            return Err(mismatch(LayoutMismatch::TermCount {
+                expected: design.terms.len(),
+                actual: self.terms.len(),
+            }));
+        }
+
+        if !self
+            .terms
+            .iter()
+            .copied()
+            .eq(design.terms.iter().map(TermLayout::from_term))
+        {
+            return Err(mismatch(LayoutMismatch::Terms));
+        }
+
+        Ok(())
+    }
+}
+
+/// Ordering of coefficients within each term's block in solver coordinates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SolverCoordinateOrder {
+    /// Each column's levels are contiguous.
+    ColumnMajor,
+    /// Each level's coefficients are contiguous.
+    LevelMajor, // https://github.com/py-econometrics/within/issues/271
+}
+
+/// Structural layout of a `Term`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+struct TermLayout {
+    offset: usize,
+    n_levels: usize,
+    intercept: bool,
+    n_slopes: usize,
+}
+
+impl TermLayout {
+    fn from_term(term: &Term<'_>) -> Self {
+        Self {
+            offset: term.offset,
+            n_levels: term.n_levels(),
+            intercept: term.intercept,
+            n_slopes: term.slopes.len(),
+        }
+    }
+}
 /// One term's coefficients and rows: column `c` of `level` lives at `offset + c · n_levels + level`.
 #[derive(Debug, Clone)]
 pub(crate) struct Term<'a> {
@@ -740,6 +823,60 @@ impl<'a> Design<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[rstest::rstest]
+    #[case::dofs(
+        |layout: &mut DesignLayout| layout.n_dofs = 6,
+        LayoutMismatch::DofCount { expected: 5, actual: 6 }
+    )]
+    #[case::coordinate_order(
+        |layout: &mut DesignLayout| layout.coordinate_order = SolverCoordinateOrder::LevelMajor,
+        LayoutMismatch::CoordinateOrder {
+            expected: SolverCoordinateOrder::ColumnMajor,
+            actual: SolverCoordinateOrder::LevelMajor,
+        }
+    )]
+    #[case::terms(
+        |layout: &mut DesignLayout| layout.terms = layout.terms[..1].into(),
+        LayoutMismatch::TermCount { expected: 2, actual: 1 }
+    )]
+    #[case::offset(
+        |layout: &mut DesignLayout| Arc::make_mut(&mut layout.terms)[1].offset = 9,
+        LayoutMismatch::Terms
+    )]
+    #[case::levels(
+        |layout: &mut DesignLayout| Arc::make_mut(&mut layout.terms)[1].n_levels = 4,
+        LayoutMismatch::Terms
+    )]
+    #[case::intercept(
+        |layout: &mut DesignLayout| Arc::make_mut(&mut layout.terms)[1].intercept = false,
+        LayoutMismatch::Terms
+    )]
+    #[case::slopes(
+        |layout: &mut DesignLayout| Arc::make_mut(&mut layout.terms)[1].n_slopes = 1,
+        LayoutMismatch::Terms
+    )]
+    fn layout_validation_reports_typed_mismatch_after_roundtrip(
+        #[case] change: fn(&mut DesignLayout),
+        #[case] expected: LayoutMismatch,
+    ) {
+        let design = Design::from_levels_for_test(vec![vec![0, 1, 0], vec![0, 1, 2]]);
+        let mut layout = DesignLayout::from_design(&design);
+        assert!(layout.validate(&design).is_ok());
+        change(&mut layout);
+
+        // Validate decoded metadata too, including inconsistent cached offsets/counts.
+        let bytes = postcard::to_stdvec(&layout).unwrap();
+        let restored: DesignLayout = postcard::from_bytes(&bytes).unwrap();
+        for candidate in [&layout, &restored] {
+            let BuildError::PreconditionerLayoutMismatch(reason) =
+                candidate.validate(&design).unwrap_err()
+            else {
+                panic!("expected a layout mismatch");
+            };
+            assert_eq!(reason, expected);
+        }
+    }
 
     impl Design<'static> {
         pub(crate) fn from_levels_for_test(columns: Vec<Vec<u32>>) -> Self {

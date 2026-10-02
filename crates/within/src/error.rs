@@ -3,8 +3,45 @@
 use thiserror::Error;
 
 use crate::channel::{Channel, ChannelPair};
+use crate::domain::SolverCoordinateOrder;
 
 pub use schwarz_precond::SolveError;
+
+/// A structural difference between a cached preconditioner's layout and a design.
+///
+/// `expected` values come from the supplied design; `actual` values come from
+/// the cached layout.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[non_exhaustive]
+pub enum LayoutMismatch {
+    /// Different total coefficient counts.
+    #[error("preconditioner has {actual} DOFs, supplied design has {expected}")]
+    DofCount {
+        /// Supplied design's coefficient count.
+        expected: usize,
+        /// Cached layout's coefficient count.
+        actual: usize,
+    },
+    /// Different internal coefficient ordering conventions.
+    #[error("preconditioner uses {actual:?} coordinates, supplied design uses {expected:?}")]
+    CoordinateOrder {
+        /// Supplied design's coordinate ordering.
+        expected: SolverCoordinateOrder,
+        /// Cached layout's coordinate ordering.
+        actual: SolverCoordinateOrder,
+    },
+    /// Different numbers of terms.
+    #[error("preconditioner has {actual} terms, supplied design has {expected}")]
+    TermCount {
+        /// Supplied design's term count.
+        expected: usize,
+        /// Cached layout's term count.
+        actual: usize,
+    },
+    /// Corresponding terms have different coefficient layouts.
+    #[error("coefficient layout differs between corresponding terms")]
+    Terms,
+}
 
 /// Errors produced while validating inputs or building solver components.
 #[derive(Debug, Clone, Error)]
@@ -83,19 +120,9 @@ pub enum BuildError {
     /// Schwarz preconditioner structural validation failed.
     #[error("preconditioner build failed: {0}")]
     Preconditioner(#[source] schwarz_precond::BuildError),
-    /// A pre-built preconditioner's shape does not match the design's DOF count.
-    #[error(
-        "prebuilt preconditioner shape ({actual_rows}x{actual_cols}) does not match \
-         design DOF count {expected}"
-    )]
-    PreconditionerDimensionMismatch {
-        /// Expected number of rows and columns (design `n_dofs`).
-        expected: usize,
-        /// Actual row count of the supplied preconditioner.
-        actual_rows: usize,
-        /// Actual column count of the supplied preconditioner.
-        actual_cols: usize,
-    },
+    /// A pre-built preconditioner has an incompatible design layout.
+    #[error("prebuilt preconditioner layout mismatch: {0}")]
+    PreconditionerLayoutMismatch(#[source] LayoutMismatch),
     /// A negative floor breaks the dominance invariant; a non-finite one poisons every solve.
     #[error("local solver ridge must be finite and non-negative, got {value}")]
     InvalidRidge {

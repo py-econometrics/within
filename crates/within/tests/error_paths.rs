@@ -4,7 +4,7 @@ use ndarray::Array2;
 use rstest::rstest;
 use schwarz_precond::SolveError;
 use within::{
-    solve, solve_batch, BuildError, Design, Effect, LocalSolverConfig, LsmrOptions,
+    solve, solve_batch, BuildError, Design, Effect, LayoutMismatch, LocalSolverConfig, LsmrOptions,
     PreconditionerConfig, Solver, Staleness, WithinError,
 };
 
@@ -72,7 +72,7 @@ fn test_empty_categories_via_solve() {
 
 #[test]
 fn test_preconditioner_dimension_mismatch_error() {
-    // Reusing a larger design's preconditioner must trip the dim check in Solver::new.
+    // Reusing a larger design's preconditioner must trip layout validation.
     let big = Array2::from_shape_vec((4, 2), vec![0u32, 0, 1, 1, 2, 0, 3, 1]).expect("big array");
     let small = Array2::from_shape_vec((3, 2), vec![0u32, 0, 1, 1, 0, 0]).expect("small array");
 
@@ -83,18 +83,60 @@ fn test_preconditioner_dimension_mismatch_error() {
         .clone();
 
     let result = Solver::new(small.view(), None, prebuilt);
-    let err = result.expect_err("expected PreconditionerDimensionMismatch, got Ok");
-    match err {
-        BuildError::PreconditionerDimensionMismatch {
-            expected,
-            actual_rows,
-            actual_cols,
-        } => {
-            assert_ne!(expected, actual_rows);
-            assert_eq!(actual_rows, actual_cols);
-        }
-        other => panic!("Expected PreconditionerDimensionMismatch, got: {:?}", other),
-    }
+    let err = result.expect_err("expected a layout mismatch");
+    assert!(matches!(
+        err,
+        BuildError::PreconditionerLayoutMismatch(LayoutMismatch::DofCount {
+            expected: 4,
+            actual: 6,
+        })
+    ));
+}
+
+#[rstest]
+fn test_preconditioner_layout_mismatch_with_equal_dofs(#[values(false, true)] roundtrip: bool) {
+    let two_levels = [0, 0, 0, 0, 1, 1];
+    let three_levels = [10, 10, 20, 30, 20, 30];
+    let original = Design::new([
+        Effect::new(&two_levels, true, []).unwrap(),
+        Effect::new(&three_levels, true, []).unwrap(),
+    ])
+    .unwrap();
+    let swapped = Design::new([
+        Effect::new(&three_levels, true, []).unwrap(),
+        Effect::new(&two_levels, true, []).unwrap(),
+    ])
+    .unwrap();
+    assert_eq!(original.n_dofs(), swapped.n_dofs());
+
+    let built = Solver::new(&original, None, PreconditionerConfig::Diagonal).unwrap();
+    let cached = built.preconditioner().unwrap();
+    let cached = if roundtrip {
+        postcard::from_bytes::<within::Preconditioner>(&postcard::to_stdvec(cached).unwrap())
+            .unwrap()
+    } else {
+        cached.clone()
+    };
+    Solver::new(&original, None, &cached).expect("original layout still accepted");
+    let err = Solver::new(&swapped, None, cached).expect_err("term sizes differ");
+    assert!(matches!(
+        err,
+        BuildError::PreconditionerLayoutMismatch(LayoutMismatch::Terms)
+    ));
+}
+
+#[test]
+fn test_layout_mismatch_display_and_source() {
+    let reason = LayoutMismatch::Terms;
+    let err = BuildError::PreconditionerLayoutMismatch(reason.clone());
+    assert_eq!(
+        err.to_string(),
+        "prebuilt preconditioner layout mismatch: coefficient layout differs between corresponding terms"
+    );
+    assert_eq!(
+        err.source().unwrap().downcast_ref::<LayoutMismatch>(),
+        Some(&reason)
+    );
 }
 
 #[test]

@@ -295,6 +295,10 @@ impl<'a> Solver<'a> {
     ///   [`PreconditionerConfig`] variant
     /// - [`Preconditioner`] or `&Preconditioner` — reuse a previously built one
     ///
+    /// A pre-built preconditioner is accepted only when its coefficient layout
+    /// [`within::domain::DesignLayout`] matches the supplied design. This does not
+    /// guarantee that a preconditioner is numerically suitable for the design.
+    ///
     /// `weights` is `None` for an unweighted solve. Supplied weights are validated
     /// in caller observation order, then retained internally only as `√w` in the
     /// design's internal observation order.
@@ -311,7 +315,6 @@ impl<'a> Solver<'a> {
         let prepared = PreparedDesign::new(design.into_design()?, weights)?;
         let screened = detect_collinear_slopes(&prepared);
         let mut warnings: Vec<BuildWarning> = screened.iter().map(CollinearSlope::warn).collect();
-        let n_dofs = prepared.design.n_dofs;
 
         let (mut slot, build_warnings) = match preconditioner.into() {
             PreconditionerInput::Default => {
@@ -319,13 +322,7 @@ impl<'a> Solver<'a> {
             }
             PreconditionerInput::Config(c) => PrecondSlot::build(&prepared, c)?,
             PreconditionerInput::Prebuilt(p) => {
-                if p.nrows() != n_dofs || p.ncols() != n_dofs {
-                    return Err(BuildError::PreconditionerDimensionMismatch {
-                        expected: n_dofs,
-                        actual_rows: p.nrows(),
-                        actual_cols: p.ncols(),
-                    });
-                }
+                p.layout.validate(&prepared.design)?;
                 (PrecondSlot::reuse(&prepared, p)?, Vec::new())
             }
         };
