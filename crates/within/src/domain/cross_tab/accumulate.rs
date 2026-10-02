@@ -10,11 +10,12 @@
 use crate::channel::ChannelPair;
 use crate::csr_block::CsrBlock;
 use crate::domain::{row_weight, PreparedDesign};
+use crate::linalg::add_compensated;
 
 use super::to_u32;
 
-/// Hard cap on the dense accumulator (~40 MB); larger tables always go sparse.
-const DENSE_TABLE_MAX_ENTRIES: usize = 5_000_000;
+/// Prefer sparse above this accumulator size when it reduces transient memory.
+const DENSE_TABLE_MAX_BYTES: usize = 40_000_000;
 
 /// A channel's per-observation loading.
 pub(super) trait Loading: Copy {
@@ -79,9 +80,9 @@ pub(super) fn accumulate_cross_block(
     let sqrt_weights = prepared.sqrt_weights();
     // Dispatching on cell count alone would pick sparse where it uses MORE memory.
     let table_size = n_rows.saturating_mul(n_cols);
-    let dense_cost = table_size.saturating_mul(8);
+    let dense_cost = table_size.saturating_mul(16);
     let sparse_cost = design.n_obs.saturating_mul(12);
-    let go_sparse = table_size > DENSE_TABLE_MAX_ENTRIES && sparse_cost < dense_cost;
+    let go_sparse = dense_cost > DENSE_TABLE_MAX_BYTES && sparse_cost < dense_cost;
 
     let (rows, cols) = (prepared.term(pair.rows.term), prepared.term(pair.cols.term));
     let (row_levels, col_levels) = (rows.term.levels(), cols.term.levels());
@@ -163,13 +164,18 @@ pub(super) fn accumulate_dense_cross_block<Lq: Loading, Lr: Loading>(
 ) -> CsrBlock {
     let n_obs = cols.row_levels.len();
     let mut table = vec![0.0f64; n_rows * n_cols];
+    let mut corrections = vec![0.0f64; table.len()];
 
     for uid in 0..n_obs {
         let o = cols.decode(uid);
         debug_assert!(o.cj < n_rows && o.ck < n_cols);
-        table[o.cj * n_cols + o.ck] += o.cell;
+        let cell = o.cj * n_cols + o.ck;
+        add_compensated(&mut table[cell], &mut corrections[cell], o.cell);
     }
 
+    for (cell, correction) in table.iter_mut().zip(corrections) {
+        *cell += correction;
+    }
     CsrBlock::from_dense_table(&table, n_rows, n_cols)
 }
 
@@ -205,6 +211,7 @@ pub(super) fn accumulate_sparse_cross_block<Lq: Loading, Lr: Loading>(
 
     // A signed cell cancelling to 0.0 mid-row re-pushes its column; the duplicate is harmless.
     let mut work = vec![0.0f64; n_cols];
+    let mut corrections = vec![0.0f64; n_cols];
     let mut touched: Vec<u32> = Vec::new();
     let mut c_indptr = vec![0u32; n_rows + 1];
     let mut c_indices = Vec::new();
@@ -215,19 +222,20 @@ pub(super) fn accumulate_sparse_cross_block<Lq: Loading, Lr: Loading>(
         let end = bucket_indptr[row + 1] as usize;
         for idx in start..end {
             let col = bucket_cols[idx] as usize;
-            if work[col] == 0.0 {
+            if work[col] == 0.0 && corrections[col] == 0.0 {
                 touched.push(to_u32(col));
             }
-            work[col] += bucket_vals[idx];
+            add_compensated(&mut work[col], &mut corrections[col], bucket_vals[idx]);
         }
         touched.sort_unstable();
         for &col in &touched {
-            let v = work[col as usize];
+            let v = work[col as usize] + corrections[col as usize];
             if v != 0.0 {
                 c_indices.push(col);
                 c_data.push(v);
             }
             work[col as usize] = 0.0;
+            corrections[col as usize] = 0.0;
         }
         c_indptr[row + 1] = to_u32(c_indices.len());
         touched.clear();

@@ -78,7 +78,10 @@ fn scripted_run(
         None,
         criteria,
         maxiter,
-        escalation,
+        super::super::IterationControl {
+            escalation,
+            poll: None,
+        },
     )
     .expect("scripted run")
 }

@@ -12,7 +12,7 @@ mod tests;
 pub(crate) struct TermReparam {
     /// The term's slopes in the solve basis, in coefficient-column order.
     pub(super) slopes: Vec<Vec<f64>>,
-    transforms: Vec<LevelTransform>,
+    transforms: Option<Vec<LevelTransform>>,
     /// Directions the data cannot identify, ascending in `(level, column)`.
     pub(super) unidentified: Vec<CoefficientPosition>,
 }
@@ -26,6 +26,15 @@ struct LevelTransform {
 }
 
 impl TermReparam {
+    /// Caller-controlled rank: keep the supplied columns and the identity map.
+    pub(crate) fn raw(term: &Term<'_>) -> Option<Self> {
+        term.has_slopes().then(|| Self {
+            slopes: term.raw_slopes().map(<[f64]>::to_vec).collect(),
+            transforms: None,
+            unidentified: Vec::new(),
+        })
+    }
+
     /// `None` without slopes; unidentified directions become zero columns, so they solve to `0`.
     pub(crate) fn build(
         design: &Design<'_>,
@@ -91,18 +100,21 @@ impl TermReparam {
 
         Some(Self {
             slopes,
-            transforms,
+            transforms: Some(transforms),
             unidentified,
         })
     }
 
     /// Map this term's solve-basis coefficients back; slots outside its block are untouched.
     pub(crate) fn back_transform(&self, term: &Term<'_>, x: &mut [f64]) {
+        let Some(transforms) = &self.transforms else {
+            return;
+        };
         let slope_slot =
             |j: usize, level: usize| term.column_dofs(term.slope_column(j)).start + level;
         let v = self.slopes.len();
         let mut b = vec![0.0; v];
-        for (l, t) in self.transforms.iter().enumerate() {
+        for (l, t) in transforms.iter().enumerate() {
             if t.w.is_empty() {
                 continue;
             }

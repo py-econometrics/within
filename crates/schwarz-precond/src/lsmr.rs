@@ -228,6 +228,23 @@ pub fn lsmr<A: Operator + ?Sized>(
     maxiter: usize,
     local_size: Option<usize>,
 ) -> Result<LsmrResult, SolveError> {
+    lsmr_with_poll(operator, b, tol, maxiter, local_size, None)
+}
+
+/// Unpreconditioned LSMR with an optional cooperative cancellation poll.
+///
+/// The poll runs before initialization and each iteration/restart on the thread
+/// executing the solve. A false return aborts with [`SolveError::Interrupted`].
+/// A poll must not access a host API restricted to another thread.
+pub fn lsmr_with_poll<A: Operator + ?Sized>(
+    operator: &A,
+    b: &[f64],
+    tol: f64,
+    maxiter: usize,
+    local_size: Option<usize>,
+    poll: Option<&(dyn Fn() -> bool + Sync)>,
+) -> Result<LsmrResult, SolveError> {
+    check_poll(poll)?;
     validate_lsmr_inputs(operator, b, tol)?;
     let n = operator.ncols();
 
@@ -247,7 +264,18 @@ pub fn lsmr<A: Operator + ?Sized>(
     let local_size = local_size.unwrap_or(0);
     let (bidiag, step1) = GolubKahan::init(operator, b, b_norm, local_size)?;
     let criteria = ConvergenceCriteria::new(b_norm, tol);
-    lsmr_from_bidiag(bidiag, step1, b, None, criteria, maxiter, None)
+    lsmr_from_bidiag(
+        bidiag,
+        step1,
+        b,
+        None,
+        criteria,
+        maxiter,
+        IterationControl {
+            escalation: None,
+            poll,
+        },
+    )
 }
 
 /// Preconditioned LSMR with `M ≈ AᵀA`, one `M⁻¹` apply per iteration; `M⁻¹` must be nonsingular.
@@ -259,6 +287,20 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
     maxiter: usize,
     options: MlsmrOptions<'_>,
 ) -> Result<LsmrResult, SolveError> {
+    mlsmr_with_poll(operator, b, preconditioner, tol, maxiter, options, None)
+}
+
+/// Preconditioned LSMR with the same poll contract as [`lsmr_with_poll`].
+pub fn mlsmr_with_poll<A: Operator + ?Sized, M: Operator + ?Sized>(
+    operator: &A,
+    b: &[f64],
+    preconditioner: &M,
+    tol: f64,
+    maxiter: usize,
+    options: MlsmrOptions<'_>,
+    poll: Option<&(dyn Fn() -> bool + Sync)>,
+) -> Result<LsmrResult, SolveError> {
+    check_poll(poll)?;
     validate_lsmr_inputs(operator, b, tol)?;
     let n = operator.ncols();
     if preconditioner.nrows() != n || preconditioner.ncols() != n {
@@ -333,7 +375,28 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
     });
     let reference_norm = if b_norm > 0.0 { b_norm } else { rhs_norm };
     let criteria = ConvergenceCriteria::new(reference_norm, tol);
-    lsmr_from_bidiag(bidiag, step1, b, warm_start, criteria, maxiter, escalation)
+    lsmr_from_bidiag(
+        bidiag,
+        step1,
+        b,
+        warm_start,
+        criteria,
+        maxiter,
+        IterationControl { escalation, poll },
+    )
+}
+
+struct IterationControl<'a> {
+    escalation: Option<&'a dyn EscalationPolicy>,
+    poll: Option<&'a (dyn Fn() -> bool + Sync)>,
+}
+
+fn check_poll(poll: Option<&(dyn Fn() -> bool + Sync)>) -> Result<(), SolveError> {
+    if poll.is_some_and(|poll| !poll()) {
+        Err(SolveError::Interrupted)
+    } else {
+        Ok(())
+    }
 }
 
 /// Restarts from a refuted tolerance stop before the solve is refused outright.
@@ -378,7 +441,7 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
     warm_start: Option<WarmStart<'_>>,
     criteria: ConvergenceCriteria,
     maxiter: usize,
-    escalation: Option<&dyn EscalationPolicy>,
+    control: IterationControl<'_>,
 ) -> Result<LsmrResult, SolveError> {
     let n = bidiag.v().len();
     let reference = warm_start
@@ -388,6 +451,7 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
     let mut iterations = 0;
     let mut restarts = 0;
     loop {
+        check_poll(control.poll)?;
         // A metric reporting no gradient at all may be hiding one outside itself.
         if step1.alpha == 0.0 {
             let x = base.map_or_else(|| vec![0.0; n], Cow::into_owned);
@@ -423,13 +487,14 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
         }
 
         // A pass reports its drop from its own ζ̄₀, so a restarted one needs a handler that agrees.
-        let mut escalation = escalation.map(EscalationPolicy::handler);
+        let mut escalation = control.escalation.map(EscalationPolicy::handler);
         let mut convergence = criteria.start(step1.alpha);
         let mut recurrence = LsmrRecurrenceState::init(step1);
         let mut solution = SolutionState::init(bidiag.v(), step1.beta);
         let mut prev_rot = RotationStep::initial();
         let stop_reason = 'pass: {
             while iterations < maxiter {
+                check_poll(control.poll)?;
                 iterations += 1;
                 let step = bidiag.step()?;
                 convergence.observe(step);

@@ -16,18 +16,22 @@
 //!
 //! # Reproducibility
 //!
-//! A single-threaded run (a one-thread Rayon pool, or `RAYON_NUM_THREADS=1`)
-//! is bitwise-reproducible. Parallel reductions sum in an order that depends on
-//! the Rayon width, so coefficients from different thread counts differ at the
-//! ULP scale — reproducible within solver tolerance, not bitwise. Pinning the
-//! Rayon width across runs holds estimates stable within solver tolerance (and
-//! is bitwise in practice at a fixed width, though only the single-threaded
-//! case is a guarantee); when the width may vary, also pin an explicit
-//! [`ReductionStrategy`] rather than [`ReductionStrategy::Auto`], which selects
-//! its backend from the width.
+//! On the same machine/build, coefficients, residuals and iteration counts are
+//! bitwise-reproducible across Rayon worker counts with [`PreconditionerConfig::Off`],
+//! [`PreconditionerConfig::Diagonal`], or additive Schwarz configured with
+//! [`ReductionStrategy::ParallelReduction`]. The design operator and LSMR use
+//! fixed arithmetic trees; Schwarz combines local outputs in subdomain order.
+//! Batch RHS scheduling and concurrent preconditioner reuse do not change that order.
+//!
+//! [`ReductionStrategy::AtomicScatter`] retains scheduling-dependent floating-point
+//! additions. [`ReductionStrategy::Auto`] may select that backend and therefore
+//! does not guarantee bitwise reproducibility. Request `ParallelReduction`
+//! explicitly for reproducible additive solves. Cross-machine/build bit identity
+//! and wall-clock diagnostic identity are not guaranteed.
 //!
 //! [`PreconditionerConfig::Adaptive`] reproduces raw coefficients per solve, not
-//! across solves; fitted values agree.
+//! across solves; fitted values agree. The fixed-configuration guarantee above
+//! does not extend to adaptive solves.
 
 pub mod config;
 pub mod error;

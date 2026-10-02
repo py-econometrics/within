@@ -1,5 +1,26 @@
 //! Shared dense linear-algebra kernels.
 
+/// Neumaier accumulation keeps long Gram diagonals and cross-cells consistent
+/// without enlarging the matrix validation budget.
+#[inline]
+pub(crate) fn add_compensated(sum: &mut f64, correction: &mut f64, value: f64) {
+    let next = *sum + value;
+    if sum.abs() >= value.abs() {
+        *correction += (*sum - next) + value;
+    } else {
+        *correction += (value - next) + *sum;
+    }
+    *sum = next;
+}
+
+pub(crate) fn compensated_sum(values: &[f64]) -> f64 {
+    let (mut sum, mut correction) = (0.0, 0.0);
+    for &value in values {
+        add_compensated(&mut sum, &mut correction, value);
+    }
+    sum + correction
+}
+
 pub(crate) fn dot(left: &[f64], right: &[f64]) -> f64 {
     left.iter().zip(right).map(|(&x, &y)| x * y).sum()
 }

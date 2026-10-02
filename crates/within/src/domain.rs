@@ -5,14 +5,16 @@ pub(crate) mod cross_tab;
 mod effect;
 pub(crate) mod factor_pairs;
 mod level_moments;
+mod membership;
 mod prepared;
 mod reparam;
 
 pub(crate) use cross_tab::CrossTab;
-pub(crate) use prepared::{PreparedDesign, PreparedTerm};
+pub(crate) use prepared::PreparedDesign;
 use reparam::TermReparam;
 
 pub use effect::Effect;
+pub(crate) use membership::LevelMembership;
 
 pub(crate) use factor_pairs::{
     build_local_domains, CoordinateMap, Grounding, LocalComponent, LocalDomain, MatrixForm,
@@ -550,6 +552,7 @@ fn gather<T: Copy>(col: &[T], perm: &[u32]) -> Vec<T> {
 pub struct Design<'a> {
     /// Rows in internal order (caller's, or an owned locality-sorted copy).
     pub(crate) terms: Arc<Vec<Term<'a>>>,
+    pub(crate) membership: Arc<Vec<LevelMembership>>,
     pub(crate) n_obs: usize,
     pub(crate) n_dofs: usize,
     /// `obs_perm[k]` = caller's original index of the observation at internal position `k`.
@@ -657,7 +660,14 @@ impl<'a> Design<'a> {
             _ => None,
         };
 
+        let membership = Arc::new(
+            terms
+                .iter()
+                .map(|term| LevelMembership::new(term.levels(), term.n_levels(), term.sorted()))
+                .collect(),
+        );
         Ok(Design {
+            membership,
             terms: Arc::new(terms),
             n_obs,
             n_dofs: offset,
@@ -670,6 +680,7 @@ impl<'a> Design<'a> {
         let terms = Arc::unwrap_or_clone(self.terms);
         Design {
             terms: Arc::new(terms.into_iter().map(Term::into_owned).collect()),
+            membership: self.membership,
             n_obs: self.n_obs,
             n_dofs: self.n_dofs,
             obs_perm: self.obs_perm,

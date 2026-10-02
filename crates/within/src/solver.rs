@@ -9,7 +9,7 @@ use std::time::Instant;
 use ndarray::ArrayView2;
 use rayon::prelude::*;
 use schwarz_precond::{
-    lsmr as lsmr_solve, mlsmr, EscalationPolicy, LsmrResult, LsmrStopReason, MlsmrOptions,
+    lsmr_with_poll, mlsmr_with_poll, EscalationPolicy, LsmrResult, LsmrStopReason, MlsmrOptions,
 };
 
 use crate::channel::CoefficientAddress;
@@ -307,9 +307,42 @@ impl<'a> Solver<'a> {
         weights: Option<&[f64]>,
         preconditioner: impl Into<PreconditionerInput>,
     ) -> Result<Self, BuildError> {
-        // Whiten the slope columns (if any) before the preconditioner reads them.
-        let prepared = PreparedDesign::new(design.into_design()?, weights)?;
-        let screened = detect_collinear_slopes(&prepared);
+        Self::build(design, weights, preconditioner, false)
+    }
+
+    /// Construct in the caller's raw slope coordinates, without rank truncation.
+    ///
+    /// This skips slope whitening and cross-term alias constraints. It is intended
+    /// for callers that own rank decisions and independently certify the original
+    /// design. Near dependencies can require much tighter iteration tolerances;
+    /// the normal-equation residual alone does not bound forward error. Returned
+    /// `unidentified` lists are empty: identification remains the caller's job.
+    /// Preconditioning and solves use the same kernels as [`Self::new`].
+    pub fn new_raw(
+        design: impl IntoDesign<'a>,
+        weights: Option<&[f64]>,
+        preconditioner: impl Into<PreconditionerInput>,
+    ) -> Result<Self, BuildError> {
+        Self::build(design, weights, preconditioner, true)
+    }
+
+    fn build(
+        design: impl IntoDesign<'a>,
+        weights: Option<&[f64]>,
+        preconditioner: impl Into<PreconditionerInput>,
+        raw: bool,
+    ) -> Result<Self, BuildError> {
+        let design = design.into_design()?;
+        let prepared = if raw {
+            PreparedDesign::new_raw(design, weights)?
+        } else {
+            PreparedDesign::new(design, weights)?
+        };
+        let screened = if raw {
+            Vec::new()
+        } else {
+            detect_collinear_slopes(&prepared)
+        };
         let mut warnings: Vec<BuildWarning> = screened.iter().map(CollinearSlope::warn).collect();
         let n_dofs = prepared.design.n_dofs;
 
@@ -430,7 +463,9 @@ impl<'a> Solver<'a> {
         &self,
         ys: &[&[f64]],
         lsmr: &LsmrOptions,
+        poll: Option<&(dyn Fn() -> bool + Sync)>,
     ) -> Result<(Vec<RhsSolution>, f64), WithinError> {
+        check_poll(poll)?;
         let (map, ladder) = match &self.slot {
             PrecondSlot::Static(p) => (p.as_ref(), None),
             // A settled ladder never re-probes: its map, or its kept build error, is final.
@@ -448,6 +483,7 @@ impl<'a> Solver<'a> {
         let passes = ys
             .par_iter()
             .map(|y| {
+                check_poll(poll)?;
                 let rhs = self.prepare(y)?;
                 let options = MlsmrOptions {
                     escalation: ladder.map(|a| &a.ladder().stall as &dyn EscalationPolicy),
@@ -455,8 +491,17 @@ impl<'a> Solver<'a> {
                     ..Default::default()
                 };
                 let run = Run::timed(|| match map {
-                    Some(m) => mlsmr(&rhs.op, rhs.b(), m, lsmr.tol, lsmr.maxiter, options),
-                    None => lsmr_solve(&rhs.op, rhs.b(), lsmr.tol, lsmr.maxiter, lsmr.local_size),
+                    Some(m) => {
+                        mlsmr_with_poll(&rhs.op, rhs.b(), m, lsmr.tol, lsmr.maxiter, options, poll)
+                    }
+                    None => lsmr_with_poll(
+                        &rhs.op,
+                        rhs.b(),
+                        lsmr.tol,
+                        lsmr.maxiter,
+                        lsmr.local_size,
+                        poll,
+                    ),
                 })?;
                 Ok(if stalled(&run.result) {
                     Pass::Stalled(rhs, run)
@@ -469,6 +514,7 @@ impl<'a> Solver<'a> {
         // Built outside the fan-out, so sibling RHS never race for it.
         let build_secs = match ladder {
             Some(a) if passes.iter().any(|p| matches!(p, Pass::Stalled(..))) => {
+                check_poll(poll)?;
                 a.escalate(&self.prepared, &self.warnings)?
             }
             _ => 0.0,
@@ -489,8 +535,9 @@ impl<'a> Solver<'a> {
                     ..Default::default()
                 };
                 let remaining = lsmr.maxiter - rung1.iterations;
-                let mut resumed =
-                    Run::timed(|| mlsmr(&rhs.op, rhs.b(), map, lsmr.tol, remaining, options))?;
+                let mut resumed = Run::timed(|| {
+                    mlsmr_with_poll(&rhs.op, rhs.b(), map, lsmr.tol, remaining, options, poll)
+                })?;
                 resumed.result.iterations += rung1.iterations;
                 resumed.solve_secs += probe.solve_secs;
                 Ok(self.finish(rhs, resumed))
@@ -514,11 +561,23 @@ impl<'a> Solver<'a> {
         y: &[f64],
         lsmr: impl Into<Option<&'o LsmrOptions>>,
     ) -> Result<SolveResult, WithinError> {
+        self.solve_with_poll(y, lsmr, None)
+    }
+
+    /// Solve with an optional cooperative poll before initialization and each
+    /// Krylov iteration/restart. False aborts with [`SolveError::Interrupted`].
+    /// Polls execute on the solve's workers; use a relay for thread-bound host APIs.
+    pub fn solve_with_poll<'o>(
+        &self,
+        y: &[f64],
+        lsmr: impl Into<Option<&'o LsmrOptions>>,
+        poll: Option<&(dyn Fn() -> bool + Sync)>,
+    ) -> Result<SolveResult, WithinError> {
         let default = LsmrOptions::default();
         let lsmr = lsmr.into().unwrap_or(&default);
 
         let t_start = Instant::now();
-        let (solutions, build_secs) = self.solve_all(&[y], lsmr)?;
+        let (solutions, build_secs) = self.solve_all(&[y], lsmr, poll)?;
         let solution = solutions
             .into_iter()
             .next()
@@ -547,12 +606,24 @@ impl<'a> Solver<'a> {
         ys: &[&[f64]],
         lsmr: impl Into<Option<&'o LsmrOptions>>,
     ) -> Result<BatchSolveResult, WithinError> {
+        self.solve_batch_with_poll(ys, lsmr, None)
+    }
+
+    /// Solve a batch with the poll contract of [`Self::solve_with_poll`].
+    /// Independent RHS may invoke the shared poll concurrently. Cancellation
+    /// returns an error without publishing a partial batch.
+    pub fn solve_batch_with_poll<'o>(
+        &self,
+        ys: &[&[f64]],
+        lsmr: impl Into<Option<&'o LsmrOptions>>,
+        poll: Option<&(dyn Fn() -> bool + Sync)>,
+    ) -> Result<BatchSolveResult, WithinError> {
         let t_start = Instant::now();
         let default = LsmrOptions::default();
         let lsmr = lsmr.into().unwrap_or(&default);
         let n_rhs = ys.len();
 
-        let (solutions, build_secs) = self.solve_all(ys, lsmr)?;
+        let (solutions, build_secs) = self.solve_all(ys, lsmr, poll)?;
 
         let mut x = Vec::with_capacity(self.prepared.design.n_dofs * n_rhs);
         let mut demeaned = Vec::with_capacity(self.prepared.design.n_obs * n_rhs);
@@ -661,4 +732,12 @@ pub fn solve_batch<'a, 'o>(
     result.time_setup += time_setup;
     result.time_total = t_start.elapsed().as_secs_f64();
     Ok(result)
+}
+
+fn check_poll(poll: Option<&(dyn Fn() -> bool + Sync)>) -> Result<(), SolveError> {
+    if poll.is_some_and(|poll| !poll()) {
+        Err(SolveError::Interrupted)
+    } else {
+        Ok(())
+    }
 }

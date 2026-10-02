@@ -360,3 +360,57 @@ fn large_barely_pd_surplus_is_not_absorbed_by_validation_slack() {
     assert!(structural_surplus > FLOATING_CLASSIFICATION_BUDGET.tolerance(n, total_diagonal));
     assert!(structural_surplus <= LAPLACIAN_VALIDATION_BUDGET.tolerance(n, total_diagonal));
 }
+
+#[test]
+fn long_weighted_runs_preserve_known_laplacian_balance() {
+    use crate::channel::{Channel, ChannelPair};
+    use crate::domain::{Design, Effect, PreparedDesign};
+    let n = 1_000_000;
+    // The first case exposed diagonal drift; the second also has long cell sums.
+    for [na, nb, nc] in [[317, 101, 7], [5, 2, 3]] {
+        let a: Vec<u32> = (0..n).map(|i| (i % na) as u32).collect();
+        let b: Vec<u32> = (0..n).map(|i| ((i / 3 + i % 7) % nb) as u32).collect();
+        let c: Vec<u32> = (0..n).map(|i| ((i / 19) % nc) as u32).collect();
+        let weights: Vec<f64> = (0..n).map(|i| 0.7 + (i % 13) as f64 / 7.).collect();
+        let effects = [&a, &b, &c].map(|v| Effect::new(v, true, []).unwrap());
+        let prepared = PreparedDesign::new(Design::new(effects).unwrap(), Some(&weights)).unwrap();
+        let pair = ChannelPair {
+            rows: Channel { term: 1, column: 0 },
+            cols: Channel { term: 2, column: 0 },
+        };
+        let (cross_tab, _) = CrossTab::build_for_pair(&prepared, pair);
+        let diagonal = [
+            prepared.channel_diagonal(pair.rows),
+            prepared.channel_diagonal(pair.cols),
+        ]
+        .concat();
+        let mismatch: f64 = diagonal
+            .iter()
+            .zip(adjacency_sums(&cross_tab))
+            .map(|(d, s)| (d - s).abs())
+            .sum();
+        let budget =
+            LAPLACIAN_VALIDATION_BUDGET.tolerance(cross_tab.n_local(), diagonal.iter().sum());
+        eprintln!("levels={nb}/{nc}, mismatch={mismatch:e}, unchanged budget={budget:e}");
+        assert!(convert_known_laplacian(cross_tab, diagonal).is_ok());
+        // Integer multiplicities provide an independent short-sum oracle; no
+        // long observation fold or production compensation is reused here.
+        for (channel, levels, width) in [(pair.rows, &b, nb), (pair.cols, &c, nc)] {
+            let mut counts = vec![[0u32; 13]; width];
+            for (i, &level) in levels.iter().enumerate() {
+                counts[level as usize][i % 13] += 1;
+            }
+            for (&actual, count) in prepared.channel_diagonal(channel).iter().zip(counts) {
+                let expected: f64 = count
+                    .into_iter()
+                    .enumerate()
+                    .map(|(r, count)| {
+                        let s = (0.7 + r as f64 / 7.).sqrt();
+                        f64::from(count) * (s * s)
+                    })
+                    .sum();
+                assert!((actual - expected).abs() <= 16.0 * f64::EPSILON * expected);
+            }
+        }
+    }
+}

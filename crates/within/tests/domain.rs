@@ -61,8 +61,8 @@ fn test_three_factor_design_solve_converges() {
 fn test_disconnected_design_larger_converges() {
     use within::{solve, LsmrOptions};
 
-    let fa = vec![0u32, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3];
-    let fb = vec![0u32, 1, 2, 0, 1, 2, 3, 4, 5, 3, 4, 5];
+    let fa = [0u32, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3];
+    let fb = [0u32, 1, 2, 0, 1, 2, 3, 4, 5, 3, 4, 5];
     let n_obs = fa.len();
 
     let mut cats = ndarray::Array2::<u32>::zeros((n_obs, 2));
