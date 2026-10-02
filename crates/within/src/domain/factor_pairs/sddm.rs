@@ -315,8 +315,8 @@ fn finalize(
     let mut ground_edges = vec![0.0; n];
 
     let mut total_diagonal = 0.0;
-    let mut total_surplus = 0.0;
     let mut clamped_deficit = 0.0f64;
+    let mut net_surplus = 0.0f64;
     for ((diagonal, &row_sum), surplus) in scaled_diagonal
         .iter_mut()
         .zip(row_sums.iter())
@@ -325,20 +325,22 @@ fn finalize(
         if !diagonal.is_finite() || *diagonal <= 0.0 {
             return Err(NotScalable);
         }
-        let deficit = (row_sum - *diagonal) / *diagonal;
+        let excess = *diagonal - row_sum;
+        let deficit = -excess / *diagonal;
         if deficit > scaling.tolerance {
             if scaling.on_failure == ScalingFailure::Error {
                 return Err(NotScalable);
             }
             clamped_deficit = clamped_deficit.max(deficit);
         }
-        *diagonal = diagonal.max(row_sum);
-        *surplus = (*diagonal - row_sum).max(0.0);
+        net_surplus += excess;
         total_diagonal += *diagonal;
-        total_surplus += *surplus;
+        *surplus = excess.max(0.0);
+        *diagonal = diagonal.max(row_sum);
     }
 
-    let floats = total_surplus <= FLOATING_CLASSIFICATION_BUDGET.tolerance(n, total_diagonal);
+    // Unclamped, Σ(dᵢ − rᵢ) = 1ᵀ|S|(D − |C|)|S|1 ≥ 0: each cell is a PSD 2×2 summing into D.
+    let floats = net_surplus <= FLOATING_CLASSIFICATION_BUDGET.tolerance(n, total_diagonal);
     if floats {
         scaled_diagonal = row_sums;
         ground_edges.fill(0.0);
