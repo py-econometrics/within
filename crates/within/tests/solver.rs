@@ -201,7 +201,6 @@ fn fully_specified_additive() -> PreconditionerConfig {
                 max_iterations: 123,
                 on_failure: ScalingFailure::Error,
             },
-            ridge: 1e-5,
         },
         reduction: ReductionStrategy::AtomicScatter,
     }

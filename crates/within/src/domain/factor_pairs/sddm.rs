@@ -149,19 +149,6 @@ pub(crate) struct UncertifiedScaling {
     pub(crate) violation: f64,
 }
 
-pub(super) fn add_relative_ridge(matrix: &mut SddmMatrix, relative: f64) {
-    let scale = matrix.diagonal.iter().copied().fold(0.0, f64::max);
-    let ridge = relative * scale;
-    for (diagonal, ground_edge) in matrix
-        .diagonal
-        .iter_mut()
-        .zip(matrix.ground_edges.iter_mut())
-    {
-        *diagonal += ridge;
-        *ground_edge += ridge;
-    }
-}
-
 /// Skipping the signed machinery keeps the dominant plain path at two streaming passes.
 pub(super) fn convert_known_laplacian(
     cross_tab: CrossTab,

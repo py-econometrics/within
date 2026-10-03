@@ -268,17 +268,6 @@ fn max_abs_group_mean(design: &Design<'_>, demeaned: &[f64]) -> f64 {
         .fold(0.0f64, f64::max)
 }
 
-/// The spectral floor off, so an aliased solve rests on the local solves alone.
-fn unfloored() -> PreconditionerConfig {
-    PreconditionerConfig::Additive {
-        local_solver: LocalSolverConfig {
-            ridge: 0.0,
-            ..Default::default()
-        },
-        reduction: Default::default(),
-    }
-}
-
 fn solve_tight(solver: &Solver<'_>, y: &[f64]) -> crate::SolveResult {
     solver
         .solve(
@@ -306,7 +295,15 @@ fn solve_tight(solver: &Solver<'_>, y: &[f64]) -> crate::SolveResult {
 #[case::alias_of_two_terms(SlopeSpec::AgeCohort)]
 fn an_aliased_slope_converges(#[case] spec: SlopeSpec) {
     let panel = akm_panel(4_000, 200, 10, 0.15, spec);
-    let solver = Solver::new(panel.effects(), None, unfloored()).expect("solver");
+    let solver = Solver::new(
+        panel.effects(),
+        None,
+        PreconditionerConfig::Additive {
+            local_solver: Default::default(),
+            reduction: Default::default(),
+        },
+    )
+    .expect("solver");
     let out = solve_tight(&solver, &panel.y);
     // A floating component grounded by mistake reports a false convergence at an O(1) mean.
     let group_mean = max_abs_group_mean(&solver.prepared.design, &out.demeaned);
