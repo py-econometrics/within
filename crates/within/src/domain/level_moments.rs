@@ -130,7 +130,14 @@ impl LevelMeans {
         let mut w_sum = Vec::new();
         let mut means = vec![0.0; rows.n_levels * v];
         for (j, z) in zs.iter().enumerate() {
-            let column = rows.fold(ShiftedMean::default(), |m, _, obs, w| m.add(w, z[obs]));
+            let mut column = rows.fold(ShiftedMean::default(), |m, _, obs, w| m.add(w, z[obs]));
+            // A spread near the float range overflows Σw(z−s); a power-of-two weight scale is exact.
+            if column.iter().any(|m| !m.sum.hi.is_finite()) {
+                let scale = 2f64.powi(-64);
+                column = rows.fold(ShiftedMean::default(), |m, _, obs, w| {
+                    m.add(w * scale, z[obs])
+                });
+            }
             for (level, m) in column.iter().enumerate() {
                 means[level * v + j] = m.mean();
             }

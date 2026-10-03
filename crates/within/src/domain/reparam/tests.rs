@@ -3,6 +3,7 @@
 
 use crate::channel::Channel;
 use crate::domain::{Effect, PreparedDesign};
+use rstest::rstest;
 
 use super::*;
 
@@ -114,11 +115,13 @@ fn an_observation_at_its_level_mean_loads_exactly_zero() {
     assert_eq!(t.slopes[0][mean_year], 0.0);
 }
 
-#[test]
-fn a_level_sum_past_the_float_range_still_whitens_finitely() {
+#[rstest]
+#[case::level_sum(|_| 1e306)]
+#[case::spread(|i| if i % 2 == 0 { 1e307 } else { -1e307 })]
+fn a_sum_past_the_float_range_still_whitens_finitely(#[case] huge_at: fn(usize) -> f64) {
     let n = 200;
     let level = vec![0u32; n];
-    let huge = vec![1e306; n];
+    let huge: Vec<f64> = (0..n).map(huge_at).collect();
     let year: Vec<f64> = (0..n).map(|i| i as f64).collect();
     let effects = vec![Effect::new(&level, true, [&huge[..], &year[..]]).unwrap()];
     let prepared = PreparedDesign::unweighted_for_test(Design::new(effects).unwrap());
