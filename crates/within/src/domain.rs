@@ -1,6 +1,5 @@
 //! Domain layer: [`Design`] (design-matrix metadata) and factor-pair [`Subdomain`] construction.
 
-pub(crate) mod collinearity;
 pub(crate) mod cross_tab;
 mod effect;
 pub(crate) mod factor_pairs;
@@ -716,14 +715,6 @@ impl<'a> Design<'a> {
         self.terms[channel.term].column(channel.column)
     }
 
-    /// `channel`'s slope in internal row order, before whitening; `None` for an intercept.
-    pub(crate) fn raw_slope(&self, channel: Channel) -> Option<&[f64]> {
-        match self.column(channel) {
-            Column::Intercept => None,
-            Column::Slope(j) => Some(&self.terms[channel.term].slopes[j]),
-        }
-    }
-
     /// Number of observations (rows of D).
     #[inline]
     pub fn n_obs(&self) -> usize {
@@ -933,11 +924,10 @@ mod tests {
         assert_eq!(design.n_dofs, 11);
 
         // Each term's slopes are the effect's own, in effect order.
-        let slope = |term, column| design.raw_slope(Channel { term, column });
-        assert_eq!(slope(0, 1), Some(&z0[..]));
-        assert_eq!(slope(0, 2), Some(&z1[..]));
-        assert_eq!(slope(1, 0), None);
-        assert_eq!(slope(2, 0), Some(&z1[..]));
+        let slopes = |term: usize| design.terms[term].raw_slopes().collect::<Vec<_>>();
+        assert_eq!(slopes(0), [&z0[..], &z1[..]]);
+        assert!(slopes(1).is_empty());
+        assert_eq!(slopes(2), [&z1[..]]);
     }
 
     #[test]
@@ -954,10 +944,7 @@ mod tests {
         assert_eq!(design.obs_perm.as_deref(), Some(&[1, 3, 2, 0][..]));
         assert_eq!(design.terms[0].levels(), &[0, 0, 1, 2]);
         assert_eq!(design.terms[1].levels(), &[1, 0, 1, 0]);
-        let slope = |term: usize| {
-            let column = design.terms[term].slope_column(0);
-            design.raw_slope(Channel { term, column }).unwrap()
-        };
+        let slope = |term: usize| design.terms[term].raw_slopes().next().unwrap();
         assert_eq!(slope(0), &[20.0, 40.0, 30.0, 10.0]);
         assert_eq!(slope(1), &[2.0, 4.0, 3.0, 1.0]);
     }

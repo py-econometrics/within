@@ -3,7 +3,6 @@
 //! convenience wrappers built on top of it.
 
 use std::borrow::Cow;
-use std::sync::Arc;
 use std::time::Instant;
 
 use ndarray::ArrayView2;
@@ -14,9 +13,7 @@ use schwarz_precond::{
 
 use crate::channel::CoefficientAddress;
 use crate::config::{LsmrOptions, PreconditionerConfig};
-use crate::domain::collinearity::{detect_collinear_slopes, CollinearSlope};
 use crate::domain::{Design, Effect, PreparedDesign};
-use crate::operator::gauge::GaugeConstraint;
 use crate::operator::schwarz::Preconditioner;
 use crate::operator::DesignOperator;
 use crate::{BuildError, BuildWarning, SolveError, WithinError};
@@ -309,11 +306,9 @@ impl<'a> Solver<'a> {
     ) -> Result<Self, BuildError> {
         // Whiten the slope columns (if any) before the preconditioner reads them.
         let prepared = PreparedDesign::new(design.into_design()?, weights)?;
-        let screened = detect_collinear_slopes(&prepared);
-        let mut warnings: Vec<BuildWarning> = screened.iter().map(CollinearSlope::warn).collect();
         let n_dofs = prepared.design.n_dofs;
 
-        let (mut slot, build_warnings) = match preconditioner.into() {
+        let (slot, warnings) = match preconditioner.into() {
             PreconditionerInput::Default => {
                 PrecondSlot::build(&prepared, PreconditionerConfig::default())?
             }
@@ -330,16 +325,6 @@ impl<'a> Solver<'a> {
             }
         };
 
-        let base = match &mut slot {
-            PrecondSlot::Static(p) => p.as_mut(),
-            PrecondSlot::Adaptive(a) => Some(&mut a.base),
-        };
-        // Only `M⁻¹` can inject a null of `A`; an escalated rung inherits this one from the base.
-        if let Some(p) = base {
-            p.gauge = GaugeConstraint::build(&prepared, &screened).map(Arc::new);
-        }
-        warnings.extend(build_warnings);
-
         Ok(Self {
             prepared,
             slot,
@@ -347,7 +332,7 @@ impl<'a> Solver<'a> {
         })
     }
 
-    /// Non-fatal events from design screening and the preconditioner build; a reused
+    /// Non-fatal events from the preconditioner build; a reused
     /// pre-built preconditioner contributes none (its own were reported when built).
     /// An Adaptive solver's deferred build adds its own once a solve escalates.
     pub fn warnings(&self) -> &[BuildWarning] {
@@ -469,7 +454,7 @@ impl<'a> Solver<'a> {
         // Built outside the fan-out, so sibling RHS never race for it.
         let build_secs = match ladder {
             Some(a) if passes.iter().any(|p| matches!(p, Pass::Stalled(..))) => {
-                a.escalate(&self.prepared, &self.warnings)?
+                a.escalate(&self.prepared)?
             }
             _ => 0.0,
         };

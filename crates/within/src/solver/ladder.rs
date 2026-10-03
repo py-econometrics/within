@@ -91,7 +91,7 @@ pub(super) struct AdaptivePrecond {
 /// Outcome of the deferred build: the Schwarz map, or `None` when no factor-pair target exists.
 pub(super) struct AdaptiveBuild {
     pub(super) schwarz: Option<Preconditioner>,
-    /// Design screening followed by the deferred build, so it can stand in for `Solver::warnings`.
+    /// The deferred build's, standing in for `Solver::warnings`.
     pub(super) warnings: Vec<BuildWarning>,
 }
 
@@ -116,25 +116,12 @@ impl AdaptivePrecond {
     }
 
     /// Build once and return this call's build seconds; every other caller waits for it.
-    pub(super) fn escalate(
-        &self,
-        prepared: &PreparedDesign<'_>,
-        screening: &[BuildWarning],
-    ) -> Result<f64, BuildError> {
+    pub(super) fn escalate(&self, prepared: &PreparedDesign<'_>) -> Result<f64, BuildError> {
         let mut build_secs = 0.0;
         let built = self.built.get_or_try_init(|| {
             let t_build = Instant::now();
-            let outcome = isolated(|| build_schwarz(prepared, &self.ladder().escalated))?.map(
-                |(schwarz, build_warnings)| {
-                    let schwarz = schwarz.map(|mut p| {
-                        p.gauge = self.base.gauge.clone();
-                        p
-                    });
-                    let mut warnings = screening.to_vec();
-                    warnings.extend(build_warnings);
-                    AdaptiveBuild { schwarz, warnings }
-                },
-            );
+            let outcome = isolated(|| build_schwarz(prepared, &self.ladder().escalated))?
+                .map(|(schwarz, warnings)| AdaptiveBuild { schwarz, warnings });
             build_secs = t_build.elapsed().as_secs_f64();
             Ok(outcome)
         })?;

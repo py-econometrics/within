@@ -10,7 +10,6 @@ use std::time::{Duration, Instant};
 use crate::block_elim::BlockElimSolver;
 use crate::config::{LocalSolverConfig, PreconditionerConfig, ReductionStrategy, Staleness};
 use crate::domain::{LocalDomain, PreparedDesign};
-use crate::operator::gauge::GaugeConstraint;
 use crate::{BuildError, BuildWarning};
 
 #[cfg(test)]
@@ -128,10 +127,6 @@ pub(crate) fn build_entry(
 pub struct Preconditioner {
     inner: Variant,
     build_duration: Duration,
-    /// Cross-term nulls every apply keeps out of the solve space, `P M⁻¹ P`; a property of the
-    /// design the solver attaches, so it is rebuilt rather than serialized.
-    #[serde(skip)]
-    pub(crate) gauge: Option<Arc<GaugeConstraint>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -237,10 +232,7 @@ impl Operator for Preconditioner {
     }
 
     fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
-        match &self.gauge {
-            Some(gauge) => gauge.constrain(x, y, |p, y| self.base().apply(p, y)),
-            None => self.base().apply(x, y),
-        }
+        self.base().apply(x, y)
     }
 
     fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
@@ -255,7 +247,6 @@ pub(crate) fn build_diagonal(prepared: &PreparedDesign<'_>) -> Result<Preconditi
     Ok(Preconditioner {
         inner: Variant::Diagonal(diagonal),
         build_duration: build_started.elapsed(),
-        gauge: None,
     })
 }
 
@@ -274,7 +265,6 @@ pub(crate) fn build_adaptive(
             escalated,
         }),
         build_duration: build_started.elapsed(),
-        gauge: None,
     })
 }
 
@@ -313,7 +303,6 @@ pub(crate) fn build_schwarz(
     let preconditioner = Preconditioner {
         inner: Variant::Additive(schwarz),
         build_duration: build_started.elapsed(),
-        gauge: None,
     };
     Ok((Some(preconditioner), warnings))
 }
