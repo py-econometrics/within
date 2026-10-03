@@ -46,7 +46,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - A preconditioned solve with local reorthogonalization (`local_size`) could fail with `SolveError::InvalidInput` ("preconditioner not positive definite") on a positive definite preconditioner, once reorthogonalization cancelled the last Krylov direction to rounding noise; the pair is now recomputed before the check.
 - LSMR's residual estimate is its own `‖r_k‖` rather than LSQR's smaller `|φ̄_k|`, which let `ResidualTolerance` fire before the tolerance was met.
 - A non-finite or negative `ScalingConfig::tolerance` silently disabled the dominance certificate under both failure policies, since every comparison against it is `>`; it is now rejected as `BuildError::InvalidScalingTolerance`.
-- A slope covariate that another term reproduces exactly could converge to a wrong answer or not at all when an observation sits at its level's slope mean (e.g. the middle of an odd number of balanced years), because the running mean drifted by an ulp and left a noise loading where the exact one is zero; the level mean is now taken from shifted double-word sums and the slope Gram from a second pass about it, which also keeps the whitening accurate for slopes with a large offset.
+- A slope covariate that another term reproduces exactly could converge to a wrong answer, or not at all, when an observation sits at its level's slope mean (#446).
 
 ### Performance
 
