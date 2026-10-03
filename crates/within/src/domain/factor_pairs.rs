@@ -14,9 +14,11 @@ use crate::{BuildError, BuildWarning};
 
 use super::{CrossTab, PreparedDesign};
 
+mod grounding;
 mod sddm;
 use crate::domain::Column;
-use sddm::{convert, NotScalable};
+use grounding::{PairObservations, ScaledForest};
+use sddm::NotScalable;
 pub(crate) use sddm::{CoordinateMap, Grounding, LocalComponent, MatrixForm, SddmMatrix};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,7 +106,14 @@ fn split_into_subdomains(
         (full_ct.n_rows(), full_ct.n_cols())
     );
     let n_rows_full = full_ct.n_rows();
-    let components = full_ct.bipartite_connected_components();
+    // The forest needs the components only to be read, so it grows beside their search.
+    let (components, mut forest) = rayon::join(
+        || full_ct.bipartite_connected_components(),
+        || {
+            (class == ComponentClass::General)
+                .then(|| ScaledForest::grow(&PairObservations::new(prepared, pair), &full_ct.c))
+        },
+    );
 
     let cross_tabs: Vec<CrossTab> = if components.len() == 1 {
         vec![full_ct]
@@ -137,9 +146,15 @@ fn split_into_subdomains(
             .collect();
         let (comp_ct, comp_diag, comp_globals) =
             sddm::orient_for_elimination(comp_ct, comp_diag, comp_globals);
-        let (mut component, uncertified) = convert(comp_ct, comp_diag, class, &config.scaling)
-            .map_err(|NotScalable| BuildError::UnscalableComponent { pair })?;
-        if class == ComponentClass::General && component.matrix.grounding == Grounding::Grounded {
+        let converted = match &mut forest {
+            None => sddm::convert_known_laplacian(comp_ct, comp_diag).map(|c| (c, None)),
+            Some(forest) => {
+                sddm::convert_general(comp_ct, comp_diag, forest.grounding(comp), &config.scaling)
+            }
+        };
+        let (mut component, uncertified) =
+            converted.map_err(|NotScalable| BuildError::UnscalableComponent { pair })?;
+        if component.matrix.grounding == Grounding::Grounded {
             sddm::add_relative_ridge(&mut component.matrix, config.ridge);
         }
         if let Some(uncertified) = uncertified {

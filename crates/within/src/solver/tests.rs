@@ -136,6 +136,8 @@ enum SlopeSpec {
     /// Two independent aliases at once: the worker's slope is the year index and a fourth
     /// term's slope is the firm index, each reproduced by a different term.
     TwoIndependentAliases,
+    /// Year plus a per-worker cohort: in the span of worker and year together, of neither alone.
+    AgeCohort,
 }
 
 struct AkmPanel {
@@ -221,6 +223,7 @@ fn akm_panel(
                 | SlopeSpec::YearIndexWithoutIntercept
                 | SlopeSpec::TwoIndependentAliases => t as f64,
                 SlopeSpec::NearYearIndex(delta) => t as f64 + delta * next(),
+                SlopeSpec::AgeCohort => (t + 20 + w * 7919 % 40) as f64,
             };
             if matches!(spec, SlopeSpec::DuplicateYearIndex) {
                 panel.z2.push(z + 1e-6 * z * z);
@@ -319,6 +322,7 @@ fn solve_tight(solver: &Solver<'_>, y: &[f64]) -> crate::SolveResult {
 #[case::duplicate_aliases(SlopeSpec::DuplicateYearIndex, &[Kept, Constrained], Some(1))]
 #[case::alias_without_intercept(SlopeSpec::YearIndexWithoutIntercept, &[Constrained], Some(1))]
 #[case::two_independent_aliases(SlopeSpec::TwoIndependentAliases, &[Constrained, Constrained], Some(2))]
+#[case::alias_of_two_terms(SlopeSpec::AgeCohort, &[], None)]
 fn a_warned_direction_is_removed_only_when_it_carries_nothing(
     #[case] spec: SlopeSpec,
     #[case] expected: &[AliasVerdict],

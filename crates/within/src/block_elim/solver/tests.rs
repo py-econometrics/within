@@ -130,7 +130,7 @@ fn block_elim_solver_solves_a_two_block_component() {
         dense_threshold: 0, // disable dense fast path to ensure sparse path is covered
         ..Default::default()
     };
-    let component = LocalComponent::general_for_test(cross_tab, diagonals);
+    let component = LocalComponent::general_for_test(cross_tab, diagonals, Grounding::Grounded);
     let solver = BlockElimSolver::build(component, &config).expect("block-elim build failed");
 
     let n_local = solver.n_local();
@@ -164,7 +164,7 @@ fn grounded_two_block_solve_is_leak_free() {
         dense_threshold: 0, // force the sparse grounded path → explicit ground vertex
         ..Default::default()
     };
-    let component = LocalComponent::general_for_test(cross_tab, diagonals);
+    let component = LocalComponent::general_for_test(cross_tab, diagonals, Grounding::Grounded);
     let solver = BlockElimSolver::build(component, &config).expect("block-elim build failed");
     // Original bipartite Gram A the solver inverts (diagonals + the two cross entries).
     let n = solver.n_local();
@@ -218,7 +218,7 @@ fn trivial_singleton_component_solves_r_over_d(#[case] n_rows: usize, #[case] n_
     };
     let cross_tab = CrossTab::from_dense_for_test(&[], n_rows, n_cols);
     let diagonal = vec![4.0; n_rows + n_cols];
-    let component = LocalComponent::general_for_test(cross_tab, diagonal);
+    let component = LocalComponent::general_for_test(cross_tab, diagonal, Grounding::Grounded);
     let solver = BlockElimSolver::build(component, &config).expect("trivial 1×1 build");
     assert_eq!(solver.n_local(), 1);
 
@@ -235,7 +235,8 @@ fn trivial_singleton_component_solves_r_over_d(#[case] n_rows: usize, #[case] n_
 fn sampled_sparse_preserves_barely_pd_direction() {
     let surplus = 5e-10;
     let cross_tab = CrossTab::from_dense_for_test(&[1.0], 1, 1);
-    let component = LocalComponent::general_for_test(cross_tab, vec![1.0 + surplus, 1.0]);
+    let component =
+        LocalComponent::general_for_test(cross_tab, vec![1.0 + surplus, 1.0], Grounding::Grounded);
     let config = LocalSolverConfig {
         approx_chol: ApproxCholConfig::default(),
         schur: SchurMode::Approximate(crate::config::ApproxSchurConfig::default()),
@@ -335,7 +336,8 @@ fn signed_component_realizes_congruence_transformed_solve(
         .enumerate()
         .map(|(i, &v)| if i < n_rows { v } else { -v })
         .collect();
-    let component = LocalComponent::with_factors_for_test(cross_tab, diagonals, &factors);
+    let component =
+        LocalComponent::with_factors_for_test(cross_tab, diagonals, &factors, Grounding::Grounded);
     let solver =
         BlockElimSolver::build(component, &config).expect("signed block-elim build failed");
 
@@ -385,6 +387,7 @@ fn frustrated_component_solves_exactly_through_cover() {
     let component = LocalComponent::general_for_test(
         CrossTab::from_dense_for_test(&c_raw, n_rows, n_cols),
         vec![a[0][0], a[1][1], a[2][2], a[3][3]],
+        Grounding::Grounded,
     );
     let config = LocalSolverConfig {
         approx_chol: ApproxCholConfig::default(),
@@ -435,7 +438,7 @@ fn valid_solver_for_deser() -> BlockElimSolver {
         dense_threshold: 0,
         ..Default::default()
     };
-    let component = LocalComponent::general_for_test(cross_tab, diagonals);
+    let component = LocalComponent::general_for_test(cross_tab, diagonals, Grounding::Grounded);
     BlockElimSolver::build(component, &config).expect("block-elim build failed")
 }
 

@@ -55,6 +55,14 @@ impl CsrBlock {
             .map(|(&j, &w)| (j as usize, w))
     }
 
+    /// Storage position of entry `(i, j)`, `None` when it is structurally zero.
+    pub(crate) fn position(&self, i: usize, j: usize) -> Option<usize> {
+        let start = self.indptr[i] as usize;
+        let end = self.indptr[i + 1] as usize;
+        let offset = self.indices[start..end].binary_search(&to_u32(j)).ok()?;
+        Some(start + offset)
+    }
+
     /// Transpose in O(nnz); output rows come out sorted because source rows go ascending.
     pub(crate) fn transpose(&self) -> CsrBlock {
         let nnz = self.nnz();

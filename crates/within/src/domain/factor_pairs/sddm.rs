@@ -11,7 +11,6 @@
 //! reduced Schur SDDM is built transiently at factor time (see
 //! [`crate::block_elim`]), so the stored matrix stays single-sized.
 
-use super::ComponentClass;
 use crate::config::{ScalingConfig, ScalingFailure};
 use crate::domain::CrossTab;
 
@@ -30,8 +29,6 @@ impl RoundoffBudget {
 }
 
 const LAPLACIAN_VALIDATION_BUDGET: RoundoffBudget = RoundoffBudget { ulps: 64.0 };
-// A false Grounded retains noise edges; a false Floating deletes an identified direction.
-const FLOATING_CLASSIFICATION_BUDGET: RoundoffBudget = RoundoffBudget { ulps: 4.0 };
 
 /// Gauge of a reduced system: `Floating` anchors one node, `Grounded` factors the full complement.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -152,20 +149,6 @@ pub(crate) struct UncertifiedScaling {
     pub(crate) violation: f64,
 }
 
-pub(super) fn convert(
-    cross_tab: CrossTab,
-    diagonal: Vec<f64>,
-    class: ComponentClass,
-    scaling: &ScalingConfig,
-) -> Result<(LocalComponent, Option<UncertifiedScaling>), NotScalable> {
-    match class {
-        ComponentClass::KnownLaplacian => {
-            convert_known_laplacian(cross_tab, diagonal).map(|component| (component, None))
-        }
-        ComponentClass::General => convert_general(cross_tab, diagonal, scaling),
-    }
-}
-
 pub(super) fn add_relative_ridge(matrix: &mut SddmMatrix, relative: f64) {
     let scale = matrix.diagonal.iter().copied().fold(0.0, f64::max);
     let ridge = relative * scale;
@@ -180,7 +163,7 @@ pub(super) fn add_relative_ridge(matrix: &mut SddmMatrix, relative: f64) {
 }
 
 /// Skipping the signed machinery keeps the dominant plain path at two streaming passes.
-fn convert_known_laplacian(
+pub(super) fn convert_known_laplacian(
     cross_tab: CrossTab,
     diagonal: Vec<f64>,
 ) -> Result<LocalComponent, NotScalable> {
@@ -206,9 +189,11 @@ fn convert_known_laplacian(
     })
 }
 
-fn convert_general(
+/// `grounding` comes from the observations; the scaling only shapes the matrix.
+pub(super) fn convert_general(
     cross_tab: CrossTab,
     diagonal: Vec<f64>,
+    grounding: Grounding,
     scaling: &ScalingConfig,
 ) -> Result<(LocalComponent, Option<UncertifiedScaling>), NotScalable> {
     let signs = folding_signs(&cross_tab);
@@ -223,7 +208,14 @@ fn convert_general(
                 .zip(relaxation.scales.iter())
                 .map(|(&sign, &scale)| sign * scale)
                 .collect();
-            assemble(cross_tab, diagonal, factors, MatrixForm::Laplacian, scaling)?
+            assemble(
+                cross_tab,
+                diagonal,
+                factors,
+                MatrixForm::Laplacian,
+                grounding,
+                scaling,
+            )?
         }
         None => {
             let n_rows = cross_tab.n_rows();
@@ -236,6 +228,7 @@ fn convert_general(
                 diagonal,
                 factors,
                 MatrixForm::SignedPendingCover,
+                grounding,
                 scaling,
             )?
         }
@@ -254,6 +247,7 @@ fn assemble(
     diagonal: Vec<f64>,
     factors: Vec<f64>,
     form: MatrixForm,
+    grounding: Grounding,
     scaling: &ScalingConfig,
 ) -> Result<(LocalComponent, f64), NotScalable> {
     let n_rows = cross_tab.n_rows();
@@ -298,24 +292,24 @@ fn assemble(
         row_sums,
         coordinates,
         form,
+        grounding,
         scaling,
     )
 }
 
-/// Clamp roundoff deficits, retain surplus as ground edges, and classify the [`Grounding`].
+/// Clamp roundoff deficits and retain surplus as ground edges, which a `Floating` matrix drops.
 fn finalize(
     cross_tab: CrossTab,
     mut scaled_diagonal: Vec<f64>,
     row_sums: Vec<f64>,
     coordinates: CoordinateMap,
     form: MatrixForm,
+    grounding: Grounding,
     scaling: &ScalingConfig,
 ) -> Result<(LocalComponent, f64), NotScalable> {
     let n = cross_tab.n_local();
     let mut ground_edges = vec![0.0; n];
 
-    let mut total_diagonal = 0.0;
-    let mut total_surplus = 0.0;
     let mut clamped_deficit = 0.0f64;
     for ((diagonal, &row_sum), surplus) in scaled_diagonal
         .iter_mut()
@@ -334,20 +328,12 @@ fn finalize(
         }
         *diagonal = diagonal.max(row_sum);
         *surplus = (*diagonal - row_sum).max(0.0);
-        total_diagonal += *diagonal;
-        total_surplus += *surplus;
     }
 
-    let floats = total_surplus <= FLOATING_CLASSIFICATION_BUDGET.tolerance(n, total_diagonal);
-    if floats {
+    if grounding == Grounding::Floating {
         scaled_diagonal = row_sums;
         ground_edges.fill(0.0);
     }
-    let grounding = if floats {
-        Grounding::Floating
-    } else {
-        Grounding::Grounded
-    };
     Ok((
         LocalComponent {
             matrix: SddmMatrix {

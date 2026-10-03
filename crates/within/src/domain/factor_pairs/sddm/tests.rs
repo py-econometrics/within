@@ -3,27 +3,20 @@ use crate::csr_block::CsrBlock;
 
 impl LocalComponent {
     pub(crate) fn plain_for_test(cross_tab: CrossTab, diagonal: Vec<f64>) -> Self {
-        convert(
-            cross_tab,
-            diagonal,
-            ComponentClass::KnownLaplacian,
-            &ScalingConfig::default(),
-        )
-        .expect("plain test component must convert to SDDM")
-        .0
+        convert_known_laplacian(cross_tab, diagonal)
+            .expect("plain test component must convert to SDDM")
     }
 
-    pub(crate) fn general_for_test(cross_tab: CrossTab, diagonal: Vec<f64>) -> Self {
+    pub(crate) fn general_for_test(
+        cross_tab: CrossTab,
+        diagonal: Vec<f64>,
+        grounding: Grounding,
+    ) -> Self {
         let globals = (0..cross_tab.n_local() as u32).collect();
         let (cross_tab, diagonal, _) = super::orient_for_elimination(cross_tab, diagonal, globals);
-        convert(
-            cross_tab,
-            diagonal,
-            ComponentClass::General,
-            &ScalingConfig::default(),
-        )
-        .expect("general test component must convert to SDDM")
-        .0
+        convert_general(cross_tab, diagonal, grounding, &ScalingConfig::default())
+            .expect("general test component must convert to SDDM")
+            .0
     }
 
     /// Assemble under externally supplied congruence factors: the relaxation's
@@ -33,12 +26,14 @@ impl LocalComponent {
         cross_tab: CrossTab,
         diagonal: Vec<f64>,
         factors: &[f64],
+        grounding: Grounding,
     ) -> Self {
         assemble(
             cross_tab,
             diagonal,
             factors.to_vec(),
             MatrixForm::Laplacian,
+            grounding,
             &ScalingConfig::default(),
         )
         .expect("test factors must fold to SDDM")
@@ -167,38 +162,33 @@ fn assert_sddm(component: &LocalComponent) {
 
 #[test]
 fn known_laplacian_has_canonical_coordinates_and_no_ground() {
-    let (component, uncertified) = convert(
+    let component = convert_known_laplacian(
         CrossTab::from_dense_for_test(&[2.0, 1.0, 0.0, 3.0], 2, 2),
         vec![3.0, 3.0, 2.0, 4.0],
-        ComponentClass::KnownLaplacian,
-        &ScalingConfig::default(),
     )
     .unwrap();
     assert_eq!(component.form, MatrixForm::Laplacian);
     assert_eq!(component.matrix.grounding, Grounding::Floating);
     assert!(matches!(component.coordinates, CoordinateMap::Canonical));
-    assert!(uncertified.is_none());
     assert_sddm(&component);
 }
 
 #[test]
 fn known_laplacian_claim_is_checked() {
     // Structural surplus contradicts the Laplacian claim, so it must fail loudly.
-    let result = convert(
+    let result = convert_known_laplacian(
         CrossTab::from_dense_for_test(&[2.0, 1.0, 0.0, 3.0], 2, 2),
         vec![4.0, 3.0, 2.0, 4.0],
-        ComponentClass::KnownLaplacian,
-        &ScalingConfig::default(),
     );
     assert!(matches!(result, Err(NotScalable)));
 }
 
 #[test]
 fn frustrated_component_stores_single_signed_operator() {
-    let (component, uncertified) = convert(
+    let (component, uncertified) = convert_general(
         CrossTab::from_dense_for_test(&[1.0, 1.0, 1.0, -1.0], 2, 2),
         vec![2.0, 2.0, 2.0, 2.0],
-        ComponentClass::General,
+        Grounding::Floating,
         &ScalingConfig::default(),
     )
     .unwrap();
@@ -231,10 +221,10 @@ fn scalable_signed_component_produces_valid_grounded_sddm() {
             raw[i * 3 + j] = c_hat[i][j] / (d[i] * d[2 + j]);
         }
     }
-    let (component, uncertified) = convert(
+    let (component, uncertified) = convert_general(
         CrossTab::from_dense_for_test(&raw, 2, 3),
         (0..5).map(|i| diag_hat[i] / (d[i] * d[i])).collect(),
-        ComponentClass::General,
+        Grounding::Grounded,
         &ScalingConfig::default(),
     )
     .unwrap();
@@ -245,68 +235,11 @@ fn scalable_signed_component_produces_valid_grounded_sddm() {
 }
 
 #[test]
-fn singular_signed_boundary_remains_floating() {
-    let (component, uncertified) = convert(
-        CrossTab::from_dense_for_test(&[0.5, -1.0], 2, 1),
-        vec![0.25, 1.0, 2.0],
-        ComponentClass::General,
-        &ScalingConfig::default(),
-    )
-    .unwrap();
-    assert_eq!(component.form, MatrixForm::Laplacian);
-    assert_eq!(component.matrix.grounding, Grounding::Floating);
-    assert!(uncertified.is_none());
-    assert_sddm(&component);
-}
-
-#[test]
-fn large_rescaled_singular_boundary_remains_floating() {
-    let n_cols = 20_000usize;
-    let row_factor = 1.3;
-    let r_factors: Vec<f64> = (0..n_cols).map(|j| 0.7 + 0.03 * (j % 17) as f64).collect();
-    let weights: Vec<f64> = (0..n_cols).map(|j| 1.0 + 0.01 * (j % 23) as f64).collect();
-    let c = CsrBlock {
-        indptr: vec![0, n_cols as u32],
-        indices: (0..n_cols as u32).collect(),
-        data: weights
-            .iter()
-            .zip(&r_factors)
-            .map(|(&weight, &factor)| -weight / (row_factor * factor))
-            .collect(),
-        nrows: 1,
-        ncols: n_cols,
-    };
-    let cross_tab = CrossTab::eager(c);
-    let diagonal: Vec<f64> = std::iter::once(weights.iter().sum::<f64>() / row_factor.powi(2))
-        .chain(
-            weights
-                .iter()
-                .zip(&r_factors)
-                .map(|(&weight, &factor)| weight / factor.powi(2)),
-        )
-        .collect();
-    let factors: Vec<f64> = std::iter::once(row_factor).chain(r_factors).collect();
-
-    let (component, _) = assemble(
-        cross_tab,
-        diagonal,
-        factors,
-        MatrixForm::Laplacian,
-        &ScalingConfig::default(),
-    )
-    .unwrap();
-
-    assert_eq!(component.form, MatrixForm::Laplacian);
-    assert_eq!(component.matrix.grounding, Grounding::Floating);
-    assert_sddm(&component);
-}
-
-#[test]
 fn non_scalable_component_errors_under_error_mode() {
-    let result = convert(
+    let result = convert_general(
         CrossTab::from_dense_for_test(&[1.0, -1.0, 2.0, -2.0], 2, 2),
         vec![1.0, 2.0, 1.0, 2.0],
-        ComponentClass::General,
+        Grounding::Grounded,
         &ScalingConfig {
             on_failure: ScalingFailure::Error,
             ..Default::default()
@@ -322,10 +255,10 @@ fn non_scalable_component_warns_and_clamps_under_warn_mode() {
         ..Default::default()
     };
     assert_eq!(config.on_failure, ScalingFailure::Warn);
-    let (component, uncertified) = convert(
+    let (component, uncertified) = convert_general(
         CrossTab::from_dense_for_test(&[1.0, -1.0, 2.0, -2.0], 2, 2),
         vec![1.0, 2.0, 1.0, 2.0],
-        ComponentClass::General,
+        Grounding::Grounded,
         &config,
     )
     .unwrap();
@@ -336,12 +269,12 @@ fn non_scalable_component_warns_and_clamps_under_warn_mode() {
 }
 
 #[test]
-fn barely_pd_surplus_is_structural() {
+fn grounded_component_keeps_a_barely_pd_surplus() {
     let surplus = 5e-10;
-    let (component, _) = convert(
+    let (component, _) = convert_general(
         CrossTab::from_dense_for_test(&[1.0], 1, 1),
         vec![1.0 + surplus, 1.0],
-        ComponentClass::General,
+        Grounding::Grounded,
         &ScalingConfig::default(),
     )
     .unwrap();
@@ -349,14 +282,4 @@ fn barely_pd_surplus_is_structural() {
     assert_eq!(component.matrix.grounding, Grounding::Grounded);
     assert!((component.matrix.ground_edges[0] - surplus).abs() < 1e-15);
     assert_sddm(&component);
-}
-
-#[test]
-fn large_barely_pd_surplus_is_not_absorbed_by_validation_slack() {
-    let n = 1_000_000;
-    let total_diagonal = 1.0;
-    let structural_surplus = 5e-12;
-
-    assert!(structural_surplus > FLOATING_CLASSIFICATION_BUDGET.tolerance(n, total_diagonal));
-    assert!(structural_surplus <= LAPLACIAN_VALIDATION_BUDGET.tolerance(n, total_diagonal));
 }
