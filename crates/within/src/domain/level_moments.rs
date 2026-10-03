@@ -4,9 +4,12 @@ use super::{row_weight, Term};
 
 /// Weighted within-level mean and Gram, two-pass so structural zeros stay exact.
 pub(crate) struct LevelMoments {
+    /// Slope columns per level: the stride of the means and the side of each level's Gram.
+    n_slopes: usize,
     /// `None` without an intercept.
     means: Option<LevelMeans>,
-    gram: LevelGram,
+    /// Per packed entry `(j, k)`, each level's `Σ w (z_j−c_j)(z_k−c_k)`, `c` its means or `0`.
+    gram: Vec<Vec<f64>>,
 }
 
 /// Index of `(j, k)`, `k ≤ j`, in a packed row-major lower triangle.
@@ -115,9 +118,8 @@ impl ShiftedMean {
     }
 }
 
-/// Each level's weighted slope means, with the level's weight total.
+/// Each level's weight total and its `v` weighted slope means, row-major.
 struct LevelMeans {
-    v: usize,
     w_sum: Vec<f64>,
     means: Vec<f64>,
 }
@@ -136,51 +138,7 @@ impl LevelMeans {
                 w_sum = column.iter().map(|m| m.w_sum.hi).collect();
             }
         }
-        Self { v, w_sum, means }
-    }
-
-    fn of(&self, level: usize) -> &[f64] {
-        &self.means[level * self.v..][..self.v]
-    }
-}
-
-/// Per packed entry `(j, k)`, each level's `Σ w (z_j−c_j)(z_k−c_k)`, `c` its means or `0`.
-struct LevelGram {
-    v: usize,
-    entries: Vec<Vec<f64>>,
-}
-
-impl LevelGram {
-    fn new(rows: &WeightedRows<'_>, zs: &[&[f64]], means: Option<&LevelMeans>) -> Self {
-        let entries = (0..zs.len())
-            .flat_map(|j| (0..=j).map(move |k| (j, k)))
-            .map(|(j, k)| {
-                let (zj, zk) = (zs[j], zs[k]);
-                match means {
-                    Some(m) => rows.fold(0.0, |g, level, obs, w| {
-                        let c = m.of(level);
-                        g + w * (zj[obs] - c[j]) * (zk[obs] - c[k])
-                    }),
-                    None => rows.fold(0.0, |g, _, obs, w| g + w * zj[obs] * zk[obs]),
-                }
-            })
-            .collect();
-        Self {
-            v: zs.len(),
-            entries,
-        }
-    }
-
-    /// The level's Gram unpacked into a row-major `v×v` matrix.
-    fn fill(&self, level: usize, gram: &mut [f64]) {
-        let v = self.v;
-        for j in 0..v {
-            for k in 0..=j {
-                let g = self.entries[tri_index(j, k)][level];
-                gram[j * v + k] = g;
-                gram[k * v + j] = g;
-            }
-        }
+        Self { w_sum, means }
     }
 }
 
@@ -191,9 +149,26 @@ impl LevelMoments {
             n_levels: t.n_levels(),
             sqrt_weights,
         };
+        let v = zs.len();
         let means = t.intercept.then(|| LevelMeans::new(&rows, zs));
-        let gram = LevelGram::new(&rows, zs, means.as_ref());
-        Self { means, gram }
+        let gram = (0..v)
+            .flat_map(|j| (0..=j).map(move |k| (j, k)))
+            .map(|(j, k)| {
+                let (zj, zk) = (zs[j], zs[k]);
+                match &means {
+                    Some(m) => rows.fold(0.0, |g, level, obs, w| {
+                        let c = &m.means[level * v..];
+                        g + w * (zj[obs] - c[j]) * (zk[obs] - c[k])
+                    }),
+                    None => rows.fold(0.0, |g, _, obs, w| g + w * zj[obs] * zk[obs]),
+                }
+            })
+            .collect();
+        Self {
+            n_slopes: v,
+            means,
+            gram,
+        }
     }
 
     /// The level's weight total, tracked only with an intercept.
@@ -203,10 +178,20 @@ impl LevelMoments {
 
     /// The level's weighted slope means, tracked only with an intercept.
     pub(crate) fn mean(&self, level: usize) -> Option<&[f64]> {
-        self.means.as_ref().map(|m| m.of(level))
+        self.means
+            .as_ref()
+            .map(|m| &m.means[level * self.n_slopes..][..self.n_slopes])
     }
 
+    /// The level's Gram unpacked into a row-major `v×v` matrix.
     pub(crate) fn fill_gram(&self, level: usize, gram: &mut [f64]) {
-        self.gram.fill(level, gram);
+        let v = self.n_slopes;
+        for j in 0..v {
+            for k in 0..=j {
+                let g = self.gram[tri_index(j, k)][level];
+                gram[j * v + k] = g;
+                gram[k * v + j] = g;
+            }
+        }
     }
 }
