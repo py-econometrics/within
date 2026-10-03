@@ -16,9 +16,9 @@ use super::{CrossTab, PreparedDesign};
 
 mod grounding;
 mod sddm;
-use crate::domain::cross_tab::BipartiteComponent;
+use crate::domain::cross_tab::{BipartiteComponent, PairColumns};
 use crate::domain::Column;
-use grounding::{PairObservations, ScaledForest};
+use grounding::ScaledForest;
 use sddm::NotScalable;
 pub(crate) use sddm::{CoordinateMap, Grounding, LocalComponent, MatrixForm, SddmMatrix};
 
@@ -113,7 +113,7 @@ fn split_into_subdomains(
             .map(|comp| (comp, None))
             .collect(),
         ComponentClass::General => {
-            ScaledForest::grow(&PairObservations::new(prepared, pair), &full_ct.c)
+            ScaledForest::grow(&PairColumns::new(prepared, pair), &full_ct.c)
                 .into_components()
                 .into_iter()
                 .map(|(comp, grounding)| (comp, Some(grounding)))

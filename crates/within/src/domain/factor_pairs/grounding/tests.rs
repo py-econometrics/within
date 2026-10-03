@@ -1,8 +1,8 @@
 use rstest::rstest;
 
 use super::*;
-use crate::channel::Channel;
-use crate::domain::{CrossTab, Design, Effect};
+use crate::channel::{Channel, ChannelPair};
+use crate::domain::{CrossTab, Design, Effect, PreparedDesign};
 use Grounding::{Floating, Grounded};
 
 const FIRST_CHANNELS: ChannelPair = ChannelPair {
@@ -19,8 +19,7 @@ fn classify_pair(
     let design = Design::new([rows, cols]).expect("valid design");
     let prepared = PreparedDesign::new(design, weights).expect("valid weights");
     let (cross_tab, _) = CrossTab::build_for_pair(&prepared, FIRST_CHANNELS);
-    let observations = PairObservations::new(&prepared, FIRST_CHANNELS);
-    let forest = ScaledForest::grow(&observations, &cross_tab.c);
+    let forest = ScaledForest::grow(&PairColumns::new(&prepared, FIRST_CHANNELS), &cross_tab.c);
     let mut shapes: Vec<_> = (forest.into_components().into_iter())
         .map(|(component, grounding)| (component.rows.len(), component.cols.len(), grounding))
         .collect();
@@ -168,10 +167,7 @@ fn the_forest_finds_the_cross_tab_components_in_their_order() {
     .expect("valid design");
     let prepared = PreparedDesign::new(design, Some(&weights)).expect("valid weights");
     let (cross_tab, _) = CrossTab::build_for_pair(&prepared, FIRST_CHANNELS);
-    let forest = ScaledForest::grow(
-        &PairObservations::new(&prepared, FIRST_CHANNELS),
-        &cross_tab.c,
-    );
+    let forest = ScaledForest::grow(&PairColumns::new(&prepared, FIRST_CHANNELS), &cross_tab.c);
 
     let found: Vec<_> = (forest.into_components().into_iter())
         .map(|(component, _)| (component.rows, component.cols))
@@ -216,18 +212,18 @@ fn the_forest_carries_the_rayleigh_quotient_of_its_own_scales() {
         }
     }
     let c = CsrBlock::from_dense_table(&table, n_rows, n_cols);
-    let observations = PairObservations {
+    let columns = PairColumns {
         row_levels: &row_levels,
         col_levels: &col_levels,
-        row_load: Some(&x),
-        col_load: Some(&y),
+        row_load: &x[..],
+        col_load: &y[..],
         sqrt_weights: Some(&sqrt_weights),
     };
-    let mut forest = ScaledForest::grow(&observations, &c);
+    let mut forest = ScaledForest::grow(&columns, &c);
     let u: Vec<f64> = (0..n_rows + n_cols).map(|k| forest.find(k).1).collect();
 
     let mut diagonal = vec![0.0; n_rows + n_cols];
-    for o in observations.iter() {
+    for o in (0..columns.n_obs()).map(|uid| columns.observation(uid)) {
         diagonal[o.row] += o.w * o.x * o.x;
         diagonal[n_rows + o.col] += o.w * o.y * o.y;
     }

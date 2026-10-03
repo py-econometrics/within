@@ -1,8 +1,8 @@
 //! Observation accumulation kernels for [`CrossTab`](super::CrossTab) construction.
 //!
-//! Both the dense and sparse paths scan observations once, decoding each into
-//! its compact [`Contribution`] via [`PairColumns::decode`]: `w·l_row·l_col` to its
-//! cell, where `l` is the channel's loading, so slope channels yield signed cells.
+//! Both the dense and sparse paths scan observations once, adding each
+//! [`Observation`]'s `w·l_row·l_col` to its cell, where `l` is the channel's
+//! loading, so slope channels yield signed cells.
 //! Paths are generic over [`Loading`] and monomorphized per pair: intercept
 //! channels pass [`Unit`], whose `l ≡ 1` folds the loading math away, so plain
 //! pairs keep the pre-slope codegen.
@@ -17,7 +17,7 @@ use super::to_u32;
 const DENSE_TABLE_MAX_ENTRIES: usize = 5_000_000;
 
 /// A channel's per-observation loading.
-pub(super) trait Loading: Copy {
+pub(crate) trait Loading: Copy {
     fn at(self, uid: usize) -> f64;
 }
 
@@ -39,31 +39,73 @@ impl Loading for &[f64] {
     }
 }
 
-/// One observation's Gram contribution: signed cell `w·l_row·l_col`.
-struct Contribution {
-    cj: usize,
-    ck: usize,
-    cell: f64,
+/// `None` is an intercept's `l ≡ 1`, for a reader that needs no specialized kernel.
+impl Loading for Option<&[f64]> {
+    #[inline]
+    fn at(self, uid: usize) -> f64 {
+        self.map_or(1.0, |z| z[uid])
+    }
+}
+
+/// One weighted observation of a channel pair, at its cell with both loadings.
+pub(crate) struct Observation {
+    pub(crate) row: usize,
+    pub(crate) col: usize,
+    pub(crate) x: f64,
+    pub(crate) y: f64,
+    pub(crate) w: f64,
 }
 
 /// Per-observation input columns backing one channel pair: level codes, loadings, and weights.
 #[derive(Clone, Copy)]
-pub(super) struct PairColumns<'a, Lq: Loading, Lr: Loading> {
-    pub(super) row_levels: &'a [u32],
-    pub(super) col_levels: &'a [u32],
-    pub(super) row_load: Lq,
-    pub(super) col_load: Lr,
-    pub(super) sqrt_weights: Option<&'a [f64]>,
+pub(crate) struct PairColumns<'a, Lq: Loading, Lr: Loading> {
+    pub(crate) row_levels: &'a [u32],
+    pub(crate) col_levels: &'a [u32],
+    pub(crate) row_load: Lq,
+    pub(crate) col_load: Lr,
+    pub(crate) sqrt_weights: Option<&'a [f64]>,
 }
 
-impl<Lq: Loading, Lr: Loading> PairColumns<'_, Lq, Lr> {
+impl<'a> PairColumns<'a, Option<&'a [f64]>, Option<&'a [f64]>> {
+    pub(crate) fn new(prepared: &'a PreparedDesign<'_>, pair: ChannelPair) -> Self {
+        let (rows, cols) = (prepared.term(pair.rows.term), prepared.term(pair.cols.term));
+        Self {
+            row_levels: rows.term.levels(),
+            col_levels: cols.term.levels(),
+            row_load: rows.loading(pair.rows.column),
+            col_load: cols.loading(pair.cols.column),
+            sqrt_weights: prepared.sqrt_weights(),
+        }
+    }
+}
+
+impl<'a, Lq: Loading, Lr: Loading> PairColumns<'a, Lq, Lr> {
+    fn with_loadings<Mq: Loading, Mr: Loading>(
+        self,
+        row_load: Mq,
+        col_load: Mr,
+    ) -> PairColumns<'a, Mq, Mr> {
+        PairColumns {
+            row_levels: self.row_levels,
+            col_levels: self.col_levels,
+            row_load,
+            col_load,
+            sqrt_weights: self.sqrt_weights,
+        }
+    }
+
+    pub(crate) fn n_obs(&self) -> usize {
+        self.row_levels.len()
+    }
+
     #[inline]
-    fn decode(&self, uid: usize) -> Contribution {
-        let w = row_weight(self.sqrt_weights, uid);
-        Contribution {
-            cj: self.row_levels[uid] as usize,
-            ck: self.col_levels[uid] as usize,
-            cell: w * self.row_load.at(uid) * self.col_load.at(uid),
+    pub(crate) fn observation(&self, uid: usize) -> Observation {
+        Observation {
+            row: self.row_levels[uid] as usize,
+            col: self.col_levels[uid] as usize,
+            x: self.row_load.at(uid),
+            y: self.col_load.at(uid),
+            w: row_weight(self.sqrt_weights, uid),
         }
     }
 }
@@ -76,68 +118,19 @@ pub(super) fn accumulate_cross_block(
     n_cols: usize,
 ) -> CsrBlock {
     let design = &prepared.design;
-    let sqrt_weights = prepared.sqrt_weights();
     // Dispatching on cell count alone would pick sparse where it uses MORE memory.
     let table_size = n_rows.saturating_mul(n_cols);
     let dense_cost = table_size.saturating_mul(8);
     let sparse_cost = design.n_obs.saturating_mul(12);
     let go_sparse = table_size > DENSE_TABLE_MAX_ENTRIES && sparse_cost < dense_cost;
 
-    let (rows, cols) = (prepared.term(pair.rows.term), prepared.term(pair.cols.term));
-    let (row_levels, col_levels) = (rows.term.levels(), cols.term.levels());
-    // One arm per loading combination; closures aren't generic, so the literals repeat.
-    match (
-        rows.loading(pair.rows.column),
-        cols.loading(pair.cols.column),
-    ) {
-        (None, None) => accumulate(
-            PairColumns {
-                row_levels,
-                col_levels,
-                row_load: Unit,
-                col_load: Unit,
-                sqrt_weights,
-            },
-            n_rows,
-            n_cols,
-            go_sparse,
-        ),
-        (Some(zq), None) => accumulate(
-            PairColumns {
-                row_levels,
-                col_levels,
-                row_load: zq,
-                col_load: Unit,
-                sqrt_weights,
-            },
-            n_rows,
-            n_cols,
-            go_sparse,
-        ),
-        (None, Some(zr)) => accumulate(
-            PairColumns {
-                row_levels,
-                col_levels,
-                row_load: Unit,
-                col_load: zr,
-                sqrt_weights,
-            },
-            n_rows,
-            n_cols,
-            go_sparse,
-        ),
-        (Some(zq), Some(zr)) => accumulate(
-            PairColumns {
-                row_levels,
-                col_levels,
-                row_load: zq,
-                col_load: zr,
-                sqrt_weights,
-            },
-            n_rows,
-            n_cols,
-            go_sparse,
-        ),
+    let cols = PairColumns::new(prepared, pair);
+    // One arm per loading combination, so each is monomorphized.
+    match (cols.row_load, cols.col_load) {
+        (None, None) => accumulate(cols.with_loadings(Unit, Unit), n_rows, n_cols, go_sparse),
+        (Some(zq), None) => accumulate(cols.with_loadings(zq, Unit), n_rows, n_cols, go_sparse),
+        (None, Some(zr)) => accumulate(cols.with_loadings(Unit, zr), n_rows, n_cols, go_sparse),
+        (Some(zq), Some(zr)) => accumulate(cols.with_loadings(zq, zr), n_rows, n_cols, go_sparse),
     }
 }
 
@@ -161,13 +154,12 @@ pub(super) fn accumulate_dense_cross_block<Lq: Loading, Lr: Loading>(
     n_rows: usize,
     n_cols: usize,
 ) -> CsrBlock {
-    let n_obs = cols.row_levels.len();
     let mut table = vec![0.0f64; n_rows * n_cols];
 
-    for uid in 0..n_obs {
-        let o = cols.decode(uid);
-        debug_assert!(o.cj < n_rows && o.ck < n_cols);
-        table[o.cj * n_cols + o.ck] += o.cell;
+    for uid in 0..cols.n_obs() {
+        let o = cols.observation(uid);
+        debug_assert!(o.row < n_rows && o.col < n_cols);
+        table[o.row * n_cols + o.col] += o.w * o.x * o.y;
     }
 
     CsrBlock::from_dense_table(&table, n_rows, n_cols)
@@ -179,7 +171,7 @@ pub(super) fn accumulate_sparse_cross_block<Lq: Loading, Lr: Loading>(
     n_rows: usize,
     n_cols: usize,
 ) -> CsrBlock {
-    let n_obs = cols.row_levels.len();
+    let n_obs = cols.n_obs();
 
     let mut row_counts = vec![0u32; n_rows];
     for uid in 0..n_obs {
@@ -196,11 +188,11 @@ pub(super) fn accumulate_sparse_cross_block<Lq: Loading, Lr: Loading>(
     let mut bucket_vals = vec![0.0f64; total_entries];
     let mut cursor = bucket_indptr[..n_rows].to_vec();
     for uid in 0..n_obs {
-        let o = cols.decode(uid);
-        let pos = cursor[o.cj] as usize;
-        bucket_cols[pos] = to_u32(o.ck);
-        bucket_vals[pos] = o.cell;
-        cursor[o.cj] += 1;
+        let o = cols.observation(uid);
+        let pos = cursor[o.row] as usize;
+        bucket_cols[pos] = to_u32(o.col);
+        bucket_vals[pos] = o.w * o.x * o.y;
+        cursor[o.row] += 1;
     }
 
     // A signed cell cancelling to 0.0 mid-row re-pushes its column; the duplicate is harmless.
