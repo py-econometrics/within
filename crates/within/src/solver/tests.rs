@@ -605,3 +605,33 @@ fn an_alias_through_a_zero_loading_still_converges() {
         out.iterations
     );
 }
+
+#[test]
+fn nonzero_easy_pilot_never_enters_factorization() {
+    use super::ladder::PrecondSlot;
+    use crate::build_control::{BuildControl, BuildStage};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let starts = Arc::new(AtomicUsize::new(0));
+    let count = starts.clone();
+    let control = BuildControl::with_hook(move |stage| {
+        if stage == BuildStage::Factorization {
+            count.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+    let design = PreparedDesign::from_levels_for_test(vec![
+        (0..2000).map(|i| (i % 10) as u32).collect(),
+        (0..2000).map(|i| ((i / 10) % 10) as u32).collect(),
+    ])
+    .design;
+    let solver = Solver::new(design, None, PreconditionerConfig::default()).unwrap();
+    let y: Vec<_> = (0..2000).map(|i| ((i * 13) % 101) as f64).collect();
+    let PrecondSlot::Adaptive(ladder) = &solver.slot else {
+        panic!("ladder");
+    };
+    let (solutions, _) = solver
+        .solve_all_speculative(&y, &[], &LsmrOptions::default(), ladder, &control)
+        .unwrap();
+    assert!(solutions[0].converged && solutions[0].iterations > 0);
+    assert_eq!(starts.load(Ordering::Relaxed), 0);
+    assert!(!solver.has_escalated());
+}

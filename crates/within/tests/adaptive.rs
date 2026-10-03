@@ -300,7 +300,7 @@ fn an_easy_pilot_does_not_commit_its_speculative_build() {
     assert!(solver.has_escalated(), "a later stall must still hand off");
 }
 
-/// A later RHS can use the speculative build even when the pilot converges on diagonal.
+/// A later RHS can escalate normally after an easy pilot cancels its speculative build.
 #[test]
 fn an_easy_pilot_does_not_hide_a_stalled_batch_rhs() {
     let design = crossed_panel();

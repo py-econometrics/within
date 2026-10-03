@@ -26,7 +26,8 @@ mod layout;
 #[cfg(test)]
 mod tests;
 
-use ladder::{AdaptivePrecond, CandidateBuild, PrecondSlot};
+use crate::build_control::BuildControl;
+use ladder::{spawn_isolated, AdaptivePrecond, CandidateBuild, PrecondSlot, Speculation};
 pub use layout::CoefficientLayout;
 
 /// Fallible conversion into a [`Design`] for [`Solver::new`]: a categories
@@ -147,8 +148,9 @@ pub struct SolveResult {
     pub residual: f64,
     /// Wall-clock time for the entire solve (setup + LSMR), in seconds.
     pub time_total: f64,
-    /// Setup work in seconds: RHS gather, any Adaptive Schwarz build, and
-    /// `Solver::new` via [`solve`]. A speculative build can overlap the solve.
+    /// Elapsed setup time: RHS gather, Adaptive Schwarz preparation/build (including
+    /// gate waiting or discarded preparation), and `Solver::new` via [`solve`].
+    /// Setup can overlap solving, so the timing fields need not sum to `time_total`.
     pub time_setup: f64,
     /// Wall-clock time for the LSMR solve phase, in seconds.
     pub time_solve: f64,
@@ -181,8 +183,9 @@ pub struct BatchSolveResult {
     pub residual: Vec<f64>,
     /// Per-RHS solve times in seconds.
     pub time_solve: Vec<f64>,
-    /// Setup work in seconds: any Adaptive Schwarz build and `Solver::new` via
-    /// [`solve_batch`]. A speculative build can overlap the solve.
+    /// Elapsed setup time: Adaptive Schwarz preparation/build (including gate waiting
+    /// or discarded preparation) and `Solver::new` via [`solve_batch`]. Setup can
+    /// overlap solving, so the timing fields need not sum to `time_total`.
     pub time_setup: f64,
     /// Total wall-clock time for the entire batch (setup + all solves), in seconds.
     pub time_total: f64,
@@ -288,6 +291,7 @@ enum Pass<'s> {
 }
 
 fn is_stalled(result: &LsmrResult, maxiter: usize) -> bool {
+    // A stall on the last allowed iteration leaves the Schwarz rung nothing to spend.
     result.stop_reason == LsmrStopReason::Escalated && result.iterations < maxiter
 }
 
@@ -367,7 +371,7 @@ impl<'a> Solver<'a> {
         }
     }
 
-    /// Whether an [`Adaptive`](crate::PreconditionerConfig::Adaptive) solve has built Schwarz.
+    /// Whether an [`Adaptive`](crate::PreconditionerConfig::Adaptive) solve has published Schwarz.
     pub fn has_escalated(&self) -> bool {
         match &self.slot {
             PrecondSlot::Adaptive(a) => a.schwarz().is_some(),
@@ -440,10 +444,16 @@ impl<'a> Solver<'a> {
     ) -> Result<(Vec<RhsSolution>, f64), WithinError> {
         if let (Some(&first), PrecondSlot::Adaptive(a)) = (ys.first(), &self.slot) {
             if a.built.get().is_none() && a.should_speculate() {
-                return self.solve_all_speculative(first, &ys[1..], lsmr, a);
+                return self.solve_all_speculative(
+                    first,
+                    &ys[1..],
+                    lsmr,
+                    a,
+                    &BuildControl::default(),
+                );
             }
         }
-        self.solve_all_standard(ys, lsmr, None)
+        self.solve_all_standard(ys, lsmr)
     }
 
     fn solve_all_speculative(
@@ -452,15 +462,16 @@ impl<'a> Solver<'a> {
         rest: &[&[f64]],
         lsmr: &LsmrOptions,
         ladder: &AdaptivePrecond,
+        control: &BuildControl,
     ) -> Result<(Vec<RhsSolution>, f64), WithinError> {
         let rhs = self.prepare(first)?;
         let threads = rayon::current_num_threads();
-        let (probe, candidate) = std::thread::scope(|scope| {
-            let build = std::thread::Builder::new()
-                .name("within-speculative-schwarz".into())
-                .spawn_scoped(scope, || {
-                    ladder.speculate(&self.prepared, &self.warnings, threads)
-                });
+        let (probe, speculation) = std::thread::scope(|scope| {
+            let _cancel_on_unwind = control.guard();
+            let build_started = Instant::now();
+            let build = spawn_isolated(scope, threads, || {
+                ladder.speculate(&self.prepared, &self.warnings, control)
+            });
             let options = MlsmrOptions {
                 escalation: Some(&ladder.ladder().stall),
                 local_size: lsmr.local_size,
@@ -476,36 +487,51 @@ impl<'a> Solver<'a> {
                     options,
                 )
             });
-            let candidate = match build {
+            // Signal before joining or processing the result: no expensive backend may
+            // start unless the pilot actually requests Schwarz with budget remaining.
+            control.finish(
+                probe
+                    .as_ref()
+                    .is_ok_and(|run| is_stalled(&run.result, lsmr.maxiter)),
+            );
+            let speculation = match build {
                 Ok(build) => match build.join() {
-                    Ok(candidate) => candidate,
-                    Err(payload) => std::panic::resume_unwind(payload),
+                    Ok(Ok(speculation)) => speculation,
+                    Ok(Err(error)) => Speculation::Completed(CandidateBuild::unavailable(error)),
+                    Err(payload) => Speculation::Completed(CandidateBuild::panicked(
+                        payload,
+                        build_started.elapsed().as_secs_f64(),
+                    )),
                 },
-                Err(error) => {
-                    AdaptivePrecond::unavailable(BuildError::ThreadPool(error.to_string()))
-                }
+                Err(error) => Speculation::Completed(CandidateBuild::unavailable(error)),
             };
-            (probe, candidate)
+            (probe, speculation)
         });
         let probe = probe?;
-        let build_secs = candidate.elapsed_secs;
+        let build_secs = speculation.elapsed_secs();
 
         if is_stalled(&probe.result, lsmr.maxiter) {
-            ladder.publish(candidate)?;
+            let retry_secs = match speculation {
+                Speculation::Completed(candidate) => {
+                    ladder.publish(candidate, &self.prepared, &self.warnings)?
+                }
+                Speculation::Cancelled { .. } => ladder.escalate(&self.prepared, &self.warnings)?,
+            };
             let map = ladder.rung();
             let (first, remaining) = rayon::join(
                 || self.resume_stalled(rhs, probe, map, lsmr),
-                || self.solve_all_standard(rest, lsmr, None),
+                || self.solve_all_standard(rest, lsmr),
             );
             let mut solutions = Vec::with_capacity(rest.len() + 1);
             solutions.push(first?);
             let (mut remaining, later_build_secs) = remaining?;
             solutions.append(&mut remaining);
-            Ok((solutions, build_secs + later_build_secs))
+            Ok((solutions, build_secs + retry_secs + later_build_secs))
         } else {
             let first = self.finish(rhs, probe);
-            let (mut remaining, build_secs) =
-                self.solve_all_standard(rest, lsmr, Some(candidate))?;
+            // Partial preparation is never reused: a later stalled RHS follows the ladder.
+            drop(speculation);
+            let (mut remaining, later_build_secs) = self.solve_all_standard(rest, lsmr)?;
             if first.converged
                 && remaining.iter().all(|solution| solution.converged)
                 && ladder.built.get().is_none()
@@ -515,16 +541,15 @@ impl<'a> Solver<'a> {
             let mut solutions = Vec::with_capacity(rest.len() + 1);
             solutions.push(first);
             solutions.append(&mut remaining);
-            Ok((solutions, build_secs))
+            Ok((solutions, build_secs + later_build_secs))
         }
     }
 
-    /// Existing #381 first-pass and handoff path, also used when a pilot finishes on diagonal.
+    /// Diagonal first passes and warm handoff, also used after a pilot finishes on diagonal.
     fn solve_all_standard(
         &self,
         ys: &[&[f64]],
         lsmr: &LsmrOptions,
-        candidate: Option<CandidateBuild>,
     ) -> Result<(Vec<RhsSolution>, f64), WithinError> {
         let (map, ladder) = match &self.slot {
             PrecondSlot::Static(p) => (p.as_ref(), None),
@@ -542,16 +567,11 @@ impl<'a> Solver<'a> {
             .collect::<Result<Vec<_>, SolveError>>()?;
 
         // Built outside the fan-out, so sibling RHS never race for it.
-        let candidate_secs = candidate.as_ref().map_or(0.0, |c| c.elapsed_secs);
         let build_secs = match ladder {
-            Some(a) if passes.iter().any(|p| matches!(p, Pass::Stalled(..))) => match candidate {
-                Some(candidate) => {
-                    a.publish(candidate)?;
-                    candidate_secs
-                }
-                None => a.escalate(&self.prepared, &self.warnings)?,
-            },
-            _ => candidate_secs,
+            Some(a) if passes.iter().any(|p| matches!(p, Pass::Stalled(..))) => {
+                a.escalate(&self.prepared, &self.warnings)?
+            }
+            _ => 0.0,
         };
         let solutions = passes
             .into_par_iter()

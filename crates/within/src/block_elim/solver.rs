@@ -1,3 +1,4 @@
+use crate::build_control::{BuildContext, BuildFailure, BuildResult};
 use std::borrow::Borrow;
 use std::sync::Arc;
 
@@ -192,15 +193,18 @@ impl Eliminated {
     fn factor_reduced(
         fold: impl Borrow<Self>,
         config: &LocalSolverConfig,
-    ) -> Result<Factor, BuildError> {
+        control: BuildContext<'_>,
+    ) -> BuildResult<Factor> {
         let this = fold.borrow();
         let exact_below = config.dense_threshold;
         let exact = (exact_below > 0 && this.matrix.n_kept() <= exact_below)
             .then(|| schur::exact_for_factor(&this.matrix, &this.inv_diagonal));
         if let Some(exact) = &exact {
-            match factor_complement(exact, config, ExactFailure::Error) {
-                Err(approx_chol::Error::DenseFactorizationFailed { .. }) => {}
-                result => return result.map_err(local_solver_build),
+            match factor_complement(exact, config, ExactFailure::Error, control) {
+                Err(BuildFailure::Failed(approx_chol::Error::DenseFactorizationFailed {
+                    ..
+                })) => {}
+                result => return result.map_err(|error| error.map(local_solver_build)),
             }
         }
         let complement = match &config.schur {
@@ -211,8 +215,13 @@ impl Eliminated {
         };
         // An owned fold is the transient cover; it is freed before the factor's fill is allocated.
         drop(fold);
-        factor_complement(&complement, config, ExactFailure::FallBackToApproximate)
-            .map_err(local_solver_build)
+        factor_complement(
+            &complement,
+            config,
+            ExactFailure::FallBackToApproximate,
+            control,
+        )
+        .map_err(|error| error.map(local_solver_build))
     }
 }
 
@@ -220,11 +229,12 @@ fn factor_complement(
     complement: &CsrMatrix,
     config: &LocalSolverConfig,
     on_failure: ExactFailure,
-) -> Result<Factor, approx_chol::Error> {
+    control: BuildContext<'_>,
+) -> BuildResult<Factor, approx_chol::Error> {
     let approx_chol = config
         .approx_chol
         .to_approx_chol(config.dense_threshold, on_failure);
-    factor_sparse(complement, approx_chol)
+    factor_sparse(complement, approx_chol, control)
 }
 
 /// Gremban cover: SDDM, and acts on the antisymmetric `[z, -z]` subspace as the original.
@@ -319,7 +329,8 @@ impl BlockElimSolver {
     pub(crate) fn build(
         component: LocalComponent,
         config: &LocalSolverConfig,
-    ) -> Result<Self, BuildError> {
+        control: BuildContext<'_>,
+    ) -> BuildResult<Self> {
         let LocalComponent {
             matrix,
             form,
@@ -330,7 +341,7 @@ impl BlockElimSolver {
         let factor = match form {
             MatrixForm::Laplacian => {
                 let factor = ReducedFactor::Direct {
-                    factor: Eliminated::factor_reduced(&eliminated, config)?,
+                    factor: Eliminated::factor_reduced(&eliminated, config, control)?,
                     grounding: eliminated.matrix.grounding,
                 };
                 debug_assert!(factor.solve_dimension() >= factor.input_dimension());
@@ -338,7 +349,7 @@ impl BlockElimSolver {
             }
             // Surplus survives the cover, so it grounds as the signed matrix did.
             MatrixForm::SignedPendingCover => ReducedFactor::Cover {
-                inner: Eliminated::factor_reduced(eliminated.cover()?, config)?,
+                inner: Eliminated::factor_reduced(eliminated.cover()?, config, control)?,
                 m: eliminated.matrix.n_kept(),
             },
         };

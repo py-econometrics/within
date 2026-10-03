@@ -165,7 +165,8 @@ pub enum PreconditionerConfig {
     },
     /// Diagonal/Jacobi; a zero diagonal takes the pseudo-inverse, pinning that coordinate to 0.
     Diagonal,
-    /// Diagonal first; additive Schwarz is built at, and used from, the first stalled contraction.
+    /// Diagonal first; Schwarz preparation can overlap the pilot, but factorization
+    /// and use begin only on a stalled contraction.
     Adaptive {
         /// Local solver configuration for the escalated Schwarz factorization.
         local_solver: LocalSolverConfig,

@@ -33,6 +33,7 @@ pub mod config;
 pub mod error;
 
 pub(crate) mod block_elim;
+mod build_control;
 pub(crate) mod channel;
 pub(crate) mod csr_block;
 pub(crate) mod domain;
