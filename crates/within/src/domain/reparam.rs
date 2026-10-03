@@ -36,10 +36,10 @@ impl TermReparam {
         if !t.has_slopes() {
             return None;
         }
-        let moments = LevelMoments::build(design, term, sqrt_weights);
         let levels = t.levels();
         let n_levels = t.n_levels();
         let zs: Vec<&[f64]> = t.raw_slopes().collect();
+        let moments = LevelMoments::build(t, &zs, sqrt_weights);
         let v = zs.len();
 
         let mut z_row = vec![0.0; v];

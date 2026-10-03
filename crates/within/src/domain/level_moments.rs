@@ -1,6 +1,6 @@
 //! Per-level weighted moments of a term's raw slopes, the input to slope whitening.
 
-use super::{row_weight, Design, Term};
+use super::{row_weight, Term};
 
 /// Weighted within-level mean and Gram, two-pass so structural zeros stay exact.
 pub(crate) struct LevelMoments {
@@ -21,15 +21,7 @@ struct WeightedRows<'a> {
     sqrt_weights: Option<&'a [f64]>,
 }
 
-impl<'a> WeightedRows<'a> {
-    fn new(term: &'a Term<'_>, sqrt_weights: Option<&'a [f64]>) -> Self {
-        Self {
-            levels: term.levels(),
-            n_levels: term.n_levels(),
-            sqrt_weights,
-        }
-    }
-
+impl WeightedRows<'_> {
     /// Per level, `init` folded by `step(state, level, obs, w)` over the level's rows in row order.
     fn fold<S: Copy>(&self, init: S, step: impl Fn(S, usize, usize, f64) -> S) -> Vec<S> {
         let mut states = vec![init; self.n_levels];
@@ -92,10 +84,6 @@ impl DoubleWord {
         let (hi, lo) = two_sum(x, self.hi);
         hi + (lo + self.lo)
     }
-
-    fn value(self) -> f64 {
-        self.hi + self.lo
-    }
 }
 
 /// Weighted mean `s + Σw(z−s)/Σw`, `s` the first row, so the sums scale with the spread.
@@ -137,21 +125,18 @@ struct LevelMeans {
 impl LevelMeans {
     fn new(rows: &WeightedRows<'_>, zs: &[&[f64]]) -> Self {
         let v = zs.len();
-        let columns: Vec<Vec<ShiftedMean>> = zs
-            .iter()
-            .map(|z| rows.fold(ShiftedMean::default(), |m, _, obs, w| m.add(w, z[obs])))
-            .collect();
+        let mut w_sum = Vec::new();
         let mut means = vec![0.0; rows.n_levels * v];
-        for (j, column) in columns.iter().enumerate() {
+        for (j, z) in zs.iter().enumerate() {
+            let column = rows.fold(ShiftedMean::default(), |m, _, obs, w| m.add(w, z[obs]));
             for (level, m) in column.iter().enumerate() {
                 means[level * v + j] = m.mean();
             }
+            if j == 0 {
+                w_sum = column.iter().map(|m| m.w_sum.hi).collect();
+            }
         }
-        Self {
-            v,
-            w_sum: columns[0].iter().map(|m| m.w_sum.value()).collect(),
-            means,
-        }
+        Self { v, w_sum, means }
     }
 
     fn of(&self, level: usize) -> &[f64] {
@@ -200,12 +185,14 @@ impl LevelGram {
 }
 
 impl LevelMoments {
-    pub(crate) fn build(design: &Design<'_>, term: usize, sqrt_weights: Option<&[f64]>) -> Self {
-        let t = &design.terms[term];
-        let zs: Vec<&[f64]> = t.raw_slopes().collect();
-        let rows = WeightedRows::new(t, sqrt_weights);
-        let means = t.intercept.then(|| LevelMeans::new(&rows, &zs));
-        let gram = LevelGram::new(&rows, &zs, means.as_ref());
+    pub(crate) fn build(t: &Term<'_>, zs: &[&[f64]], sqrt_weights: Option<&[f64]>) -> Self {
+        let rows = WeightedRows {
+            levels: t.levels(),
+            n_levels: t.n_levels(),
+            sqrt_weights,
+        };
+        let means = t.intercept.then(|| LevelMeans::new(&rows, zs));
+        let gram = LevelGram::new(&rows, zs, means.as_ref());
         Self { means, gram }
     }
 

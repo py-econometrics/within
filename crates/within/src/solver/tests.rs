@@ -176,6 +176,17 @@ impl AkmPanel {
     }
 }
 
+/// A fixed-seed xorshift stream of draws in `[0, 1)`.
+fn uniform_draws() -> impl FnMut() -> f64 {
+    let mut state = 0x2545_f491_4f6c_dd1du64;
+    move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state >> 11) as f64 / (1u64 << 53) as f64
+    }
+}
+
 fn akm_panel(
     n_workers: usize,
     n_firms: usize,
@@ -183,13 +194,7 @@ fn akm_panel(
     mobility: f64,
     spec: SlopeSpec,
 ) -> AkmPanel {
-    let mut state = 0x2545_f491_4f6c_dd1du64;
-    let mut next = move || {
-        state ^= state << 13;
-        state ^= state >> 7;
-        state ^= state << 17;
-        (state >> 11) as f64 / (1u64 << 53) as f64
-    };
+    let mut next = uniform_draws();
     let mut panel = AkmPanel {
         worker: Vec::new(),
         firm: Vec::new(),
@@ -561,13 +566,7 @@ fn a_contrast_of_certified_proposals_is_not_itself_certified() {
 /// A mean-year noise loading must not tie a near-isolated year into the alias block.
 #[test]
 fn an_alias_through_a_zero_loading_still_converges() {
-    let mut state = 0x2545_f491_4f6c_dd1du64;
-    let mut next = move || {
-        state ^= state << 13;
-        state ^= state >> 7;
-        state ^= state << 17;
-        (state >> 11) as f64 / (1u64 << 53) as f64
-    };
+    let mut next = uniform_draws();
     let (n_workers, n_firms, n_years) = (500, 25, 11);
     let (mut worker, mut firm, mut year, mut z, mut y) = (vec![], vec![], vec![], vec![], vec![]);
     for w in 0..n_workers {

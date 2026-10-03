@@ -12,6 +12,7 @@ const Z1: [f64; 6] = [1.0, 4.0, 9.0, 16.0, 25.0, 36.0];
 const G: [u32; 6] = [0, 1, 2, 0, 1, 2];
 const F2: [u32; 6] = [0, 1, 0, 1, 0, 1];
 const Z2: [f64; 6] = [2.0, 7.0, 1.0, 8.0, 3.0, 9.0];
+const YEAR: [f64; 11] = [6.0, 8.0, 10.0, 7.0, 5.0, 3.0, 0.0, 4.0, 1.0, 9.0, 2.0];
 
 /// Two slope-bearing terms around a plain one; term 0 is dominant and sorted
 /// so the locality sort stays a no-op.
@@ -103,9 +104,8 @@ fn back_transform_leaves_other_terms_untouched() {
 /// Welford's mean of this order is `5 + 2⁻⁵⁰`, so plain centering leaves the mean year a noise load.
 #[test]
 fn an_observation_at_its_level_mean_loads_exactly_zero() {
-    let year = [6.0, 8.0, 10.0, 7.0, 5.0, 3.0, 0.0, 4.0, 1.0, 9.0, 2.0];
     let level = [0u32; 11];
-    let effects = vec![Effect::new(&level, true, [&year[..]]).unwrap()];
+    let effects = vec![Effect::new(&level, true, [&YEAR[..]]).unwrap()];
     let prepared = PreparedDesign::unweighted_for_test(Design::new(effects).unwrap());
     let t = prepared.term(0);
     let mean_year = (0..t.term.levels().len())
@@ -133,9 +133,8 @@ fn a_level_sum_past_the_float_range_still_whitens_finitely() {
 /// Slopes spread over ~1e-9 of their size; a running mean's rounding would show in the Gram.
 #[test]
 fn a_large_offset_still_whitens_to_the_identity() {
-    let year = [6.0, 8.0, 10.0, 7.0, 5.0, 3.0, 0.0, 4.0, 1.0, 9.0, 2.0];
-    let z0: Vec<f64> = year.iter().map(|t| 1e9 + 0.1 * t).collect();
-    let z1: Vec<f64> = year
+    let z0: Vec<f64> = YEAR.iter().map(|t| 1e9 + 0.1 * t).collect();
+    let z1: Vec<f64> = YEAR
         .iter()
         .map(|t| 1e9 + 0.1 * t + 0.03 * (t * t % 7.0))
         .collect();
