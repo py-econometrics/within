@@ -16,9 +16,6 @@ pub use schwarz_precond::{ReductionStrategy, Staleness, StalenessError};
 /// Default `n_keep` threshold below which a Schur domain tries the exact dense backend.
 pub(crate) const DEFAULT_DENSE_SCHUR_THRESHOLD: usize = 24;
 
-/// Default spectral floor; centred between the measured failure cliff (1e-13) and iteration cost (1e-7).
-pub(crate) const DEFAULT_SLOPE_PAIR_RIDGE: f64 = 1e-10;
-
 /// Configuration for approximate Cholesky factorization.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApproxCholConfig {
@@ -72,16 +69,11 @@ pub struct LocalSolverConfig {
     pub dense_threshold: usize,
     /// Certification policy for the diagonal scaling of signed components.
     pub scaling: ScalingConfig,
-    /// Spectral floor on grounded signed components, as a fraction of the largest diagonal; `0` off.
-    pub ridge: f64,
 }
 
 impl LocalSolverConfig {
     /// Separate from any build so a deferred escalation can reject the config at construction.
     pub(crate) fn validate(&self) -> Result<(), BuildError> {
-        if !self.ridge.is_finite() || self.ridge < 0.0 {
-            return Err(BuildError::InvalidRidge { value: self.ridge });
-        }
         let tolerance = self.scaling.tolerance;
         if !tolerance.is_finite() || tolerance < 0.0 {
             return Err(BuildError::InvalidScalingTolerance { value: tolerance });
@@ -100,7 +92,6 @@ impl Default for LocalSolverConfig {
             schur: SchurMode::default(),
             dense_threshold: DEFAULT_DENSE_SCHUR_THRESHOLD,
             scaling: ScalingConfig::default(),
-            ridge: DEFAULT_SLOPE_PAIR_RIDGE,
         }
     }
 }

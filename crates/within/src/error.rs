@@ -96,12 +96,6 @@ pub enum BuildError {
         /// Actual column count of the supplied preconditioner.
         actual_cols: usize,
     },
-    /// A negative floor breaks the dominance invariant; a non-finite one poisons every solve.
-    #[error("local solver ridge must be finite and non-negative, got {value}")]
-    InvalidRidge {
-        /// The offending value.
-        value: f64,
-    },
     /// Every dominance comparison is `>`, so a NaN or infinite slack silently certifies anything.
     #[error("scaling tolerance must be finite and non-negative, got {value}")]
     InvalidScalingTolerance {
