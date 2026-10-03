@@ -105,7 +105,7 @@ it).
 | validate | plain B → L₊ | check row sums ≡ diagonals (roundoff); adopt $\sigma = (\mathbf{1}_q, -\mathbf{1}_r)$ | exact | $x = \sigma \circ \hat x$ |
 | scale | dominant B → S± | $A \mapsto SAS$, $S$ certified by conjugate gradients on the reduced operator | exact | $x = S\hat x$ |
 | clamp | ¬dominant B → S± | diagonal lift $d_i \mapsto \max\bigl(d_i, \sum_j \lvert a_{ij}\rvert\bigr)$ — operator perturbation | quality | — |
-| switch | balanced S± → L₊ | $A \mapsto \sigma A \sigma$, fused with scale; surplus → ground edges; floating ⟺ total surplus ≤ roundoff | exact | $x = \sigma \circ \hat x$ |
+| switch | balanced S± → L₊ | $A \mapsto \sigma A \sigma$, fused with scale; surplus → ground edges; floating ⟺ $u^\top(D - \lvert C\rvert)u \le 10^{-13}\,u^\top D u$ at the spanning-tree vector $u$, summed over observations | exact | $x = \sigma \circ \hat x$ |
 | cover | frustrated S± → L₊ ($2n$) | Gremban double cover; balanced ⟺ cover disconnects | exact | $x = (x^+ - x^-)/2$ |
 | eliminate | L₊ → L₊ | Schur on the larger bipartite side: independent set ⇒ pivots = original diagonals; ground kept; eliminated surplus joins its star (capacity = pivot) | exact rows / sampled per-star clique-tree (unbiased, kernel sure, no spectral guarantee; exact on ≤ 2-entry stars) | back-substitution |
 | factor | L₊ → 𝓛 | clique-tree to completion (ground ordinary) / dense Cholesky (floating: anchored minor = grounding, benign) | sampled / exact | substitution |

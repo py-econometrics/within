@@ -20,14 +20,9 @@ fn classify_pair(
     let prepared = PreparedDesign::new(design, weights).expect("valid weights");
     let (cross_tab, _) = CrossTab::build_for_pair(&prepared, FIRST_CHANNELS);
     let observations = PairObservations::new(&prepared, FIRST_CHANNELS);
-    let mut forest = ScaledForest::grow(&observations, &cross_tab.c);
-    let mut shapes: Vec<_> = cross_tab
-        .bipartite_connected_components()
-        .iter()
-        .map(|component| {
-            let grounding = forest.grounding(component);
-            (component.rows.len(), component.cols.len(), grounding)
-        })
+    let forest = ScaledForest::grow(&observations, &cross_tab.c);
+    let mut shapes: Vec<_> = (forest.into_components().into_iter())
+        .map(|(component, grounding)| (component.rows.len(), component.cols.len(), grounding))
         .collect();
     shapes.sort_by_key(|&(rows, cols, grounding)| (rows, cols, grounding as u8));
     shapes
@@ -143,6 +138,52 @@ fn an_overflowing_tree_vector_grounds() {
         None,
     );
     assert_eq!(shapes, [(4, 5, Grounded)]);
+}
+
+/// Zero loadings, cancelled cells and weightless rows join nothing in either search.
+#[test]
+fn the_forest_finds_the_cross_tab_components_in_their_order() {
+    let mut state = 0.61f64;
+    let mut draw = || {
+        state = (state * 997.0 + 0.311).fract();
+        state
+    };
+    let (mut rows, mut cols, mut z, mut weights) = (vec![], vec![], vec![], vec![]);
+    for _ in 0..40 {
+        let (row, col) = ((draw() * 30.0) as u32, (draw() * 30.0) as u32);
+        let loading = [0.0, 1.5, -0.5][(draw() * 3.0) as usize];
+        // A repeat of opposite loading cancels its cell.
+        let copies = if draw() < 0.2 { 2 } else { 1 };
+        for k in 0..copies {
+            rows.push(row);
+            cols.push(col);
+            z.push(if k == 0 { loading } else { -loading });
+            weights.push(if draw() < 0.1 { 0.0 } else { 1.0 });
+        }
+    }
+    let design = Design::new([
+        Effect::new(&rows, false, [&z[..]]).unwrap(),
+        Effect::new(&cols, true, []).unwrap(),
+    ])
+    .expect("valid design");
+    let prepared = PreparedDesign::new(design, Some(&weights)).expect("valid weights");
+    let (cross_tab, _) = CrossTab::build_for_pair(&prepared, FIRST_CHANNELS);
+    let forest = ScaledForest::grow(
+        &PairObservations::new(&prepared, FIRST_CHANNELS),
+        &cross_tab.c,
+    );
+
+    let found: Vec<_> = (forest.into_components().into_iter())
+        .map(|(component, _)| (component.rows, component.cols))
+        .collect();
+    let searched: Vec<_> = (cross_tab.bipartite_connected_components().into_iter())
+        .map(|component| (component.rows, component.cols))
+        .collect();
+    assert!(
+        found.len() > 2,
+        "test is vacuous: build a pair with several components"
+    );
+    assert_eq!(found, searched);
 }
 
 /// Every join rescales the absorbed sums, so they stay the quotient at the forest's own `u`.

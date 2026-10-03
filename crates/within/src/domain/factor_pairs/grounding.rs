@@ -155,11 +155,32 @@ impl ScaledForest {
         joined
     }
 
-    /// `Floating` iff `ρ = uᵀ(D − |C|)u / uᵀDu ≤ λ*` over the component's set.
-    pub(super) fn grounding(&mut self, component: &BipartiteComponent) -> Grounding {
-        let node = component.rows.first().copied();
-        let node = node.unwrap_or_else(|| self.n_rows + component.cols[0]);
-        let (root, _) = self.find(node);
+    /// Each set with its grounding, ordered by lowest level as the cross-tab's DFS orders them.
+    pub(super) fn into_components(mut self) -> Vec<(BipartiteComponent, Grounding)> {
+        let mut slot = vec![usize::MAX; self.parent.len()];
+        let mut components: Vec<(BipartiteComponent, Grounding)> = Vec::new();
+        for node in 0..self.parent.len() {
+            let (root, _) = self.find(node);
+            if slot[root] == usize::MAX {
+                slot[root] = components.len();
+                let empty = BipartiteComponent {
+                    rows: vec![],
+                    cols: vec![],
+                };
+                components.push((empty, self.grounding(root)));
+            }
+            let (component, _) = &mut components[slot[root]];
+            if node < self.n_rows {
+                component.rows.push(node);
+            } else {
+                component.cols.push(node - self.n_rows);
+            }
+        }
+        components
+    }
+
+    /// `Floating` iff `ρ = uᵀ(D − |C|)u / uᵀDu ≤ λ*` over the set of `root`.
+    fn grounding(&self, root: usize) -> Grounding {
         // An overflowed `u` reads NaN, so it grounds.
         if self.numerator[root] / self.denominator[root] <= FLOATING_RAYLEIGH_BOUND {
             Grounding::Floating

@@ -16,6 +16,7 @@ use super::{CrossTab, PreparedDesign};
 
 mod grounding;
 mod sddm;
+use crate::domain::cross_tab::BipartiteComponent;
 use crate::domain::Column;
 use grounding::{PairObservations, ScaledForest};
 use sddm::NotScalable;
@@ -106,14 +107,19 @@ fn split_into_subdomains(
         (full_ct.n_rows(), full_ct.n_cols())
     );
     let n_rows_full = full_ct.n_rows();
-    // The forest needs the components only to be read, so it grows beside their search.
-    let (components, mut forest) = rayon::join(
-        || full_ct.bipartite_connected_components(),
-        || {
-            (class == ComponentClass::General)
-                .then(|| ScaledForest::grow(&PairObservations::new(prepared, pair), &full_ct.c))
-        },
-    );
+    // `None` marks a known Laplacian, which needs no grounding.
+    let components: Vec<(BipartiteComponent, Option<Grounding>)> = match class {
+        ComponentClass::KnownLaplacian => (full_ct.bipartite_connected_components().into_iter())
+            .map(|comp| (comp, None))
+            .collect(),
+        ComponentClass::General => {
+            ScaledForest::grow(&PairObservations::new(prepared, pair), &full_ct.c)
+                .into_components()
+                .into_iter()
+                .map(|(comp, grounding)| (comp, Some(grounding)))
+                .collect()
+        }
+    };
 
     let cross_tabs: Vec<CrossTab> = if components.len() == 1 {
         vec![full_ct]
@@ -122,13 +128,13 @@ fn split_into_subdomains(
         let mut col_remap = vec![u32::MAX; full_ct.n_cols()];
         components
             .iter()
-            .map(|comp| full_ct.extract_component(comp, &mut row_remap, &mut col_remap))
+            .map(|(comp, _)| full_ct.extract_component(comp, &mut row_remap, &mut col_remap))
             .collect()
     };
 
     let mut domains = Vec::with_capacity(components.len());
     let mut warnings = Vec::new();
-    for (comp, comp_ct) in components.iter().zip(cross_tabs) {
+    for ((comp, grounding), comp_ct) in components.iter().zip(cross_tabs) {
         let comp_diag: Vec<f64> = comp
             .rows
             .iter()
@@ -146,10 +152,10 @@ fn split_into_subdomains(
             .collect();
         let (comp_ct, comp_diag, comp_globals) =
             sddm::orient_for_elimination(comp_ct, comp_diag, comp_globals);
-        let converted = match &mut forest {
+        let converted = match *grounding {
             None => sddm::convert_known_laplacian(comp_ct, comp_diag).map(|c| (c, None)),
-            Some(forest) => {
-                sddm::convert_general(comp_ct, comp_diag, forest.grounding(comp), &config.scaling)
+            Some(grounding) => {
+                sddm::convert_general(comp_ct, comp_diag, grounding, &config.scaling)
             }
         };
         let (mut component, uncertified) =
