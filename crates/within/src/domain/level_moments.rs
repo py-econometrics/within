@@ -1,7 +1,5 @@
 //! Per-level weighted moments of a term's raw slopes, the input to slope whitening.
 
-use std::ops::Range;
-
 use super::{row_weight, Design};
 
 /// Weighted within-level mean and Gram, two-pass so structural zeros stay exact.
@@ -23,14 +21,35 @@ fn tri_len(v: usize) -> usize {
     v * (v + 1) / 2
 }
 
-/// Each maximal run of equal levels as `(level, rows)`.
-fn level_runs(levels: &[u32]) -> impl Iterator<Item = (usize, Range<usize>)> + '_ {
-    let mut start = 0;
-    levels.chunk_by(|a, b| a == b).map(move |run| {
-        let rows = start..start + run.len();
-        start = rows.end;
-        (run[0] as usize, rows)
-    })
+/// A term's positive-weight rows, folded per level.
+struct WeightedRows<'a> {
+    levels: &'a [u32],
+    n_levels: usize,
+    sqrt_weights: Option<&'a [f64]>,
+}
+
+impl WeightedRows<'_> {
+    /// Per level, `init` folded by `step(state, level, obs, w)` over the level's rows in row order.
+    fn fold<S: Copy>(&self, init: S, step: impl Fn(S, usize, usize, f64) -> S) -> Vec<S> {
+        let mut states = vec![init; self.n_levels];
+        let mut start = 0;
+        // A run of equal levels keeps the state in registers instead of round-tripping memory.
+        for run in self.levels.chunk_by(|a, b| a == b) {
+            let level = run[0] as usize;
+            let rows = start..start + run.len();
+            start = rows.end;
+            let state = &mut states[level];
+            *state = rows.fold(*state, |s, obs| {
+                let w = row_weight(self.sqrt_weights, obs);
+                if w > 0.0 {
+                    step(s, level, obs, w)
+                } else {
+                    s
+                }
+            });
+        }
+        states
+    }
 }
 
 fn two_sum(a: f64, b: f64) -> (f64, f64) {
@@ -72,24 +91,38 @@ impl DoubleWord {
         let (hi, lo) = two_sum(x, self.hi);
         hi + (lo + self.lo)
     }
+
+    fn value(self) -> f64 {
+        self.hi + self.lo
+    }
 }
 
-/// One level's `Σw(z−s)` for one slope, shifted by its first row to scale with the spread.
+/// Weighted mean `s + Σw(z−s)/Σw`, `s` the first row, so the sums scale with the spread.
 #[derive(Clone, Copy, Default)]
-struct ShiftedSum {
+struct ShiftedMean {
     shift: f64,
+    w_sum: DoubleWord,
     sum: DoubleWord,
 }
 
-impl ShiftedSum {
-    fn add(&mut self, w: f64, z: f64) {
+impl ShiftedMean {
+    fn add(mut self, w: f64, z: f64) -> Self {
+        if self.w_sum.hi == 0.0 {
+            self.shift = z;
+        }
         let (d, e) = two_sum(z, -self.shift);
         self.sum.add_product(w, d);
         self.sum.lo += w * e;
+        self.w_sum.add(w);
+        self
     }
 
-    fn mean(self, w_sum: DoubleWord) -> f64 {
-        self.sum.quotient(w_sum).plus(self.shift)
+    /// `0` for a level without weight.
+    fn mean(self) -> f64 {
+        if self.w_sum.hi == 0.0 {
+            return 0.0;
+        }
+        self.sum.quotient(self.w_sum).plus(self.shift)
     }
 }
 
@@ -99,105 +132,48 @@ impl LevelMoments {
         let zs: Vec<&[f64]> = t.raw_slopes().collect();
         let v = zs.len();
         let n_levels = t.n_levels();
-        let weight = |obs: usize| row_weight(sqrt_weights, obs);
+        let rows = WeightedRows {
+            levels: t.levels(),
+            n_levels,
+            sqrt_weights,
+        };
 
-        // Runs sum in registers, off the per-row store chain; random orders are all singletons.
-        let mut w_sum = vec![DoubleWord::default(); n_levels];
-        let n_shifted = if t.intercept { v } else { 0 };
-        let mut shifted = vec![ShiftedSum::default(); n_levels * n_shifted];
-        for (level, rows) in level_runs(t.levels()) {
-            let level_w = &mut w_sum[level];
-            let accs = &mut shifted[level * n_shifted..][..n_shifted];
-            if rows.len() == 1 {
-                let obs = rows.start;
-                let w = weight(obs);
-                if w > 0.0 {
-                    let first = level_w.hi == 0.0;
-                    for (acc, col) in accs.iter_mut().zip(&zs) {
-                        if first {
-                            acc.shift = col[obs];
-                        }
-                        acc.add(w, col[obs]);
-                    }
-                    level_w.add(w);
-                }
-                continue;
-            }
-            let first = if level_w.hi == 0.0 {
-                rows.clone().find(|&obs| weight(obs) > 0.0)
-            } else {
-                None
-            };
-            let mut run_w = *level_w;
-            for obs in rows.clone() {
-                let w = weight(obs);
-                if w > 0.0 {
-                    run_w.add(w);
-                }
-            }
-            *level_w = run_w;
-            for (acc, col) in accs.iter_mut().zip(&zs) {
-                let mut run_acc = *acc;
-                if let Some(obs) = first {
-                    run_acc.shift = col[obs];
-                }
-                for obs in rows.clone() {
-                    let w = weight(obs);
-                    if w > 0.0 {
-                        run_acc.add(w, col[obs]);
-                    }
-                }
-                *acc = run_acc;
-            }
-        }
         let mut center = vec![0.0; n_levels * v];
-        if t.intercept {
-            for (i, c) in center.iter_mut().enumerate() {
-                let w = w_sum[i / v];
-                if w.hi > 0.0 {
-                    *c = shifted[i].mean(w);
+        let w_sum: Vec<f64> = if t.intercept {
+            let means: Vec<Vec<ShiftedMean>> = zs
+                .iter()
+                .map(|z| rows.fold(ShiftedMean::default(), |m, _, obs, w| m.add(w, z[obs])))
+                .collect();
+            for (j, column) in means.iter().enumerate() {
+                for (level, m) in column.iter().enumerate() {
+                    center[level * v + j] = m.mean();
                 }
             }
-        }
+            means[0].iter().map(|m| m.w_sum.value()).collect()
+        } else {
+            let w_sums = rows.fold(DoubleWord::default(), |mut s, _, _, w| {
+                s.add(w);
+                s
+            });
+            w_sums.into_iter().map(DoubleWord::value).collect()
+        };
 
         let mut gram = vec![0.0; n_levels * tri_len(v)];
-        let mut dev = vec![0.0; v];
-        for (level, rows) in level_runs(t.levels()) {
-            let c = &center[level * v..][..v];
-            let g = &mut gram[level * tri_len(v)..][..tri_len(v)];
-            if rows.len() == 1 {
-                let obs = rows.start;
-                let w = weight(obs);
-                if w > 0.0 {
-                    for ((d, col), cj) in dev.iter_mut().zip(&zs).zip(c) {
-                        *d = col[obs] - cj;
-                    }
-                    for j in 0..v {
-                        let wd = w * dev[j];
-                        for k in 0..=j {
-                            g[tri_index(j, k)] += wd * dev[k];
-                        }
-                    }
-                }
-                continue;
-            }
-            for j in 0..v {
-                for k in 0..=j {
-                    let mut acc = g[tri_index(j, k)];
-                    for obs in rows.clone() {
-                        let w = weight(obs);
-                        if w > 0.0 {
-                            acc += w * (zs[j][obs] - c[j]) * (zs[k][obs] - c[k]);
-                        }
-                    }
-                    g[tri_index(j, k)] = acc;
+        for j in 0..v {
+            for k in 0..=j {
+                let (zj, zk) = (zs[j], zs[k]);
+                let entries = rows.fold(0.0, |g, level, obs, w| {
+                    g + w * (zj[obs] - center[level * v + j]) * (zk[obs] - center[level * v + k])
+                });
+                for (level, g) in entries.into_iter().enumerate() {
+                    gram[level * tri_len(v) + tri_index(j, k)] = g;
                 }
             }
         }
 
         Self {
             v,
-            w_sum: w_sum.iter().map(|w| w.hi + w.lo).collect(),
+            w_sum,
             center,
             gram,
         }
