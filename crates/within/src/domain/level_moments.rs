@@ -1,24 +1,17 @@
 //! Per-level weighted moments of a term's raw slopes, the input to slope whitening.
 
-use super::{row_weight, Design};
+use super::{row_weight, Design, Term};
 
 /// Weighted within-level mean and Gram, two-pass so structural zeros stay exact.
 pub(crate) struct LevelMoments {
-    v: usize,
-    w_sum: Vec<f64>,
-    /// Per level, the weighted mean with an intercept, `0` without one.
-    center: Vec<f64>,
-    /// Per level, `Σ w (z−c)(z−c)ᵀ` about the center, packed as a row-major lower triangle.
-    gram: Vec<f64>,
+    /// `None` without an intercept.
+    means: Option<LevelMeans>,
+    gram: LevelGram,
 }
 
 /// Index of `(j, k)`, `k ≤ j`, in a packed row-major lower triangle.
 fn tri_index(j: usize, k: usize) -> usize {
     j * (j + 1) / 2 + k
-}
-
-fn tri_len(v: usize) -> usize {
-    v * (v + 1) / 2
 }
 
 /// A term's positive-weight rows, folded per level.
@@ -28,7 +21,15 @@ struct WeightedRows<'a> {
     sqrt_weights: Option<&'a [f64]>,
 }
 
-impl WeightedRows<'_> {
+impl<'a> WeightedRows<'a> {
+    fn new(term: &'a Term<'_>, sqrt_weights: Option<&'a [f64]>) -> Self {
+        Self {
+            levels: term.levels(),
+            n_levels: term.n_levels(),
+            sqrt_weights,
+        }
+    }
+
     /// Per level, `init` folded by `step(state, level, obs, w)` over the level's rows in row order.
     fn fold<S: Copy>(&self, init: S, step: impl Fn(S, usize, usize, f64) -> S) -> Vec<S> {
         let mut states = vec![init; self.n_levels];
@@ -126,78 +127,99 @@ impl ShiftedMean {
     }
 }
 
-impl LevelMoments {
-    pub(crate) fn build(design: &Design<'_>, term: usize, sqrt_weights: Option<&[f64]>) -> Self {
-        let t = &design.terms[term];
-        let zs: Vec<&[f64]> = t.raw_slopes().collect();
+/// Each level's weighted slope means, with the level's weight total.
+struct LevelMeans {
+    v: usize,
+    w_sum: Vec<f64>,
+    means: Vec<f64>,
+}
+
+impl LevelMeans {
+    fn new(rows: &WeightedRows<'_>, zs: &[&[f64]]) -> Self {
         let v = zs.len();
-        let n_levels = t.n_levels();
-        let rows = WeightedRows {
-            levels: t.levels(),
-            n_levels,
-            sqrt_weights,
-        };
-
-        let mut center = vec![0.0; n_levels * v];
-        let w_sum: Vec<f64> = if t.intercept {
-            let means: Vec<Vec<ShiftedMean>> = zs
-                .iter()
-                .map(|z| rows.fold(ShiftedMean::default(), |m, _, obs, w| m.add(w, z[obs])))
-                .collect();
-            for (j, column) in means.iter().enumerate() {
-                for (level, m) in column.iter().enumerate() {
-                    center[level * v + j] = m.mean();
-                }
-            }
-            means[0].iter().map(|m| m.w_sum.value()).collect()
-        } else {
-            let w_sums = rows.fold(DoubleWord::default(), |mut s, _, _, w| {
-                s.add(w);
-                s
-            });
-            w_sums.into_iter().map(DoubleWord::value).collect()
-        };
-
-        let mut gram = vec![0.0; n_levels * tri_len(v)];
-        for j in 0..v {
-            for k in 0..=j {
-                let (zj, zk) = (zs[j], zs[k]);
-                let entries = rows.fold(0.0, |g, level, obs, w| {
-                    g + w * (zj[obs] - center[level * v + j]) * (zk[obs] - center[level * v + k])
-                });
-                for (level, g) in entries.into_iter().enumerate() {
-                    gram[level * tri_len(v) + tri_index(j, k)] = g;
-                }
+        let columns: Vec<Vec<ShiftedMean>> = zs
+            .iter()
+            .map(|z| rows.fold(ShiftedMean::default(), |m, _, obs, w| m.add(w, z[obs])))
+            .collect();
+        let mut means = vec![0.0; rows.n_levels * v];
+        for (j, column) in columns.iter().enumerate() {
+            for (level, m) in column.iter().enumerate() {
+                means[level * v + j] = m.mean();
             }
         }
-
         Self {
             v,
-            w_sum,
-            center,
-            gram,
+            w_sum: columns[0].iter().map(|m| m.w_sum.value()).collect(),
+            means,
         }
     }
 
-    pub(crate) fn w_sum(&self, level: usize) -> f64 {
-        self.w_sum[level]
+    fn of(&self, level: usize) -> &[f64] {
+        &self.means[level * self.v..][..self.v]
     }
+}
 
-    pub(crate) fn center(&self, level: usize) -> &[f64] {
-        let v = self.v;
-        &self.center[level * v..][..v]
+/// Per packed entry `(j, k)`, each level's `Σ w (z_j−c_j)(z_k−c_k)`, `c` its means or `0`.
+struct LevelGram {
+    v: usize,
+    entries: Vec<Vec<f64>>,
+}
+
+impl LevelGram {
+    fn new(rows: &WeightedRows<'_>, zs: &[&[f64]], means: Option<&LevelMeans>) -> Self {
+        let entries = (0..zs.len())
+            .flat_map(|j| (0..=j).map(move |k| (j, k)))
+            .map(|(j, k)| {
+                let (zj, zk) = (zs[j], zs[k]);
+                match means {
+                    Some(m) => rows.fold(0.0, |g, level, obs, w| {
+                        let c = m.of(level);
+                        g + w * (zj[obs] - c[j]) * (zk[obs] - c[k])
+                    }),
+                    None => rows.fold(0.0, |g, _, obs, w| g + w * zj[obs] * zk[obs]),
+                }
+            })
+            .collect();
+        Self {
+            v: zs.len(),
+            entries,
+        }
     }
 
     /// The level's Gram unpacked into a row-major `v×v` matrix.
-    pub(crate) fn fill_gram(&self, level: usize, gram: &mut [f64]) {
+    fn fill(&self, level: usize, gram: &mut [f64]) {
         let v = self.v;
-        let packed = &self.gram[level * tri_len(v)..][..tri_len(v)];
         for j in 0..v {
             for k in 0..=j {
-                let g = packed[tri_index(j, k)];
+                let g = self.entries[tri_index(j, k)][level];
                 gram[j * v + k] = g;
                 gram[k * v + j] = g;
             }
         }
+    }
+}
+
+impl LevelMoments {
+    pub(crate) fn build(design: &Design<'_>, term: usize, sqrt_weights: Option<&[f64]>) -> Self {
+        let t = &design.terms[term];
+        let zs: Vec<&[f64]> = t.raw_slopes().collect();
+        let rows = WeightedRows::new(t, sqrt_weights);
+        let means = t.intercept.then(|| LevelMeans::new(&rows, &zs));
+        let gram = LevelGram::new(&rows, &zs, means.as_ref());
+        Self { means, gram }
+    }
+
+    /// The level's weight total, tracked only with an intercept.
+    pub(crate) fn w_sum(&self, level: usize) -> Option<f64> {
+        self.means.as_ref().map(|m| m.w_sum[level])
+    }
+
+    /// The level's weighted slope means, tracked only with an intercept.
+    pub(crate) fn mean(&self, level: usize) -> Option<&[f64]> {
+        self.means.as_ref().map(|m| m.of(level))
+    }
+
+    pub(crate) fn fill_gram(&self, level: usize, gram: &mut [f64]) {
+        self.gram.fill(level, gram);
     }
 }
