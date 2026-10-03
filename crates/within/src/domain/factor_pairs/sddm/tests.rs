@@ -1,4 +1,5 @@
 use super::*;
+use crate::build_control::BuildFailure;
 use crate::csr_block::CsrBlock;
 
 impl LocalComponent {
@@ -8,6 +9,7 @@ impl LocalComponent {
             diagonal,
             ComponentClass::KnownLaplacian,
             &ScalingConfig::default(),
+            Default::default(),
         )
         .expect("plain test component must convert to SDDM")
         .0
@@ -21,6 +23,7 @@ impl LocalComponent {
             diagonal,
             ComponentClass::General,
             &ScalingConfig::default(),
+            Default::default(),
         )
         .expect("general test component must convert to SDDM")
         .0
@@ -96,7 +99,8 @@ fn long_feasible_chain_certifies_with_reduced_cg() {
         max_iterations: 128,
         ..Default::default()
     };
-    let result = dominance_scaling(&cross_tab, &diagonal, &scaling).expect("chain scales");
+    let result = dominance_scaling(&cross_tab, &diagonal, &scaling, Default::default())
+        .expect("chain scales");
     assert!(
         result.violation <= scaling.tolerance,
         "chain must certify, got violation {:.3e}",
@@ -124,7 +128,8 @@ fn accelerating_convergence_case_certifies_without_extrapolation() {
         max_iterations: 16,
         ..Default::default()
     };
-    let result = dominance_scaling(&cross_tab, &[1.0; 5], &scaling).expect("matrix scales");
+    let result = dominance_scaling(&cross_tab, &[1.0; 5], &scaling, Default::default())
+        .expect("matrix scales");
     assert!(
         result.violation <= scaling.tolerance,
         "matrix must certify, got violation {:.3e} after {} iterations",
@@ -139,7 +144,7 @@ fn indefinite_comparison_matrix_remains_uncertified() {
     let cross_tab = CrossTab::from_dense_for_test(&[1.0, -1.0, 2.0, -2.0], 2, 2);
     let diagonal: [f64; 4] = [1.0, 2.0, 1.0, 2.0];
     let scaling = ScalingConfig::default();
-    let result = dominance_scaling(&cross_tab, &diagonal, &scaling).unwrap();
+    let result = dominance_scaling(&cross_tab, &diagonal, &scaling, Default::default()).unwrap();
     assert!(result.violation > scaling.tolerance);
     assert!(result.iterations < scaling.max_iterations);
 }
@@ -172,6 +177,7 @@ fn known_laplacian_has_canonical_coordinates_and_no_ground() {
         vec![3.0, 3.0, 2.0, 4.0],
         ComponentClass::KnownLaplacian,
         &ScalingConfig::default(),
+        Default::default(),
     )
     .unwrap();
     assert_eq!(component.form, MatrixForm::Laplacian);
@@ -189,8 +195,9 @@ fn known_laplacian_claim_is_checked() {
         vec![4.0, 3.0, 2.0, 4.0],
         ComponentClass::KnownLaplacian,
         &ScalingConfig::default(),
+        Default::default(),
     );
-    assert!(matches!(result, Err(NotScalable)));
+    assert!(matches!(result, Err(BuildFailure::Failed(NotScalable))));
 }
 
 #[test]
@@ -200,6 +207,7 @@ fn frustrated_component_stores_single_signed_operator() {
         vec![2.0, 2.0, 2.0, 2.0],
         ComponentClass::General,
         &ScalingConfig::default(),
+        Default::default(),
     )
     .unwrap();
     assert!(uncertified.is_none());
@@ -236,6 +244,7 @@ fn scalable_signed_component_produces_valid_grounded_sddm() {
         (0..5).map(|i| diag_hat[i] / (d[i] * d[i])).collect(),
         ComponentClass::General,
         &ScalingConfig::default(),
+        Default::default(),
     )
     .unwrap();
     assert_eq!(component.form, MatrixForm::Laplacian);
@@ -251,6 +260,7 @@ fn singular_signed_boundary_remains_floating() {
         vec![0.25, 1.0, 2.0],
         ComponentClass::General,
         &ScalingConfig::default(),
+        Default::default(),
     )
     .unwrap();
     assert_eq!(component.form, MatrixForm::Laplacian);
@@ -311,8 +321,9 @@ fn non_scalable_component_errors_under_error_mode() {
             on_failure: ScalingFailure::Error,
             ..Default::default()
         },
+        Default::default(),
     );
-    assert!(matches!(result, Err(NotScalable)));
+    assert!(matches!(result, Err(BuildFailure::Failed(NotScalable))));
 }
 
 #[test]
@@ -327,6 +338,7 @@ fn non_scalable_component_warns_and_clamps_under_warn_mode() {
         vec![1.0, 2.0, 1.0, 2.0],
         ComponentClass::General,
         &config,
+        Default::default(),
     )
     .unwrap();
     let uncertified = uncertified.expect("no dominant scaling exists");
@@ -343,6 +355,7 @@ fn barely_pd_surplus_is_structural() {
         vec![1.0 + surplus, 1.0],
         ComponentClass::General,
         &ScalingConfig::default(),
+        Default::default(),
     )
     .unwrap();
     assert_eq!(component.form, MatrixForm::Laplacian);

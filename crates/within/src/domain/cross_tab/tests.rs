@@ -10,7 +10,8 @@ use crate::domain::{Design, Effect, PreparedDesign};
 
 impl CrossTab {
     pub(crate) fn from_dense_for_test(table: &[f64], n_rows: usize, n_cols: usize) -> Self {
-        let c = CsrBlock::from_dense_table(table, n_rows, n_cols);
+        let c =
+            CsrBlock::from_dense_table(table, n_rows, n_cols, Default::default()).expect("build");
         Self::eager(c)
     }
 }
@@ -35,7 +36,8 @@ fn over_threshold_pair_matches_the_dense_kernel() {
         .collect();
     let effects = [&fa, &fb].map(|levels| Effect::new(levels, true, []).unwrap());
     let design = PreparedDesign::unweighted_for_test(Design::new_unsorted(effects).unwrap());
-    let (ct, _) = CrossTab::build_for_pair(&design, INTERCEPT_PAIR);
+    let (ct, _) =
+        CrossTab::build_for_pair(&design, INTERCEPT_PAIR, Default::default()).expect("build");
 
     let terms = &design.design.terms;
     let cols = PairColumns {
@@ -45,7 +47,13 @@ fn over_threshold_pair_matches_the_dense_kernel() {
         col_load: Unit,
         sqrt_weights: None,
     };
-    let dense = accumulate_dense_cross_block(cols, terms[0].n_levels(), terms[1].n_levels());
+    let dense = accumulate_dense_cross_block(
+        cols,
+        terms[0].n_levels(),
+        terms[1].n_levels(),
+        Default::default(),
+    )
+    .expect("build");
     assert_eq!(ct.c.indptr, dense.indptr);
     assert_eq!(ct.c.indices, dense.indices);
     assert_eq!(ct.c.data, dense.data);
@@ -57,9 +65,12 @@ fn test_extract_component_two_components() {
     let fa = vec![0u32, 0, 1, 1, 2, 2, 3, 3];
     let fb = vec![0u32, 1, 0, 1, 2, 3, 2, 3];
     let design = design_of(vec![fa, fb]);
-    let (ct, _) = CrossTab::build_for_pair(&design, INTERCEPT_PAIR);
+    let (ct, _) =
+        CrossTab::build_for_pair(&design, INTERCEPT_PAIR, Default::default()).expect("build");
 
-    let components = ct.bipartite_connected_components();
+    let components = ct
+        .bipartite_connected_components(Default::default())
+        .expect("build");
     assert_eq!(components.len(), 2, "should have 2 connected components");
 
     // Reusable remap buffers, reset by `extract_component` between components.
@@ -79,7 +90,9 @@ fn test_extract_component_two_components() {
     assert_eq!(comp_b.cols, vec![2, 3], "component B col indices");
 
     // Extract component A and verify its sub-CrossTab.
-    let sub_a = ct.extract_component(comp_a, &mut row_remap, &mut col_remap);
+    let sub_a = ct
+        .extract_component(comp_a, &mut row_remap, &mut col_remap, Default::default())
+        .expect("build");
     assert_eq!(sub_a.n_rows(), 2, "component A: n_rows=2");
     assert_eq!(sub_a.n_cols(), 2, "component A: n_cols=2");
 
@@ -111,7 +124,9 @@ fn test_extract_component_two_components() {
     }
 
     // Extract component B and verify its sub-CrossTab.
-    let sub_b = ct.extract_component(comp_b, &mut row_remap, &mut col_remap);
+    let sub_b = ct
+        .extract_component(comp_b, &mut row_remap, &mut col_remap, Default::default())
+        .expect("build");
     assert_eq!(sub_b.n_rows(), 2, "component B: n_rows=2");
     assert_eq!(sub_b.n_cols(), 2, "component B: n_cols=2");
 
@@ -153,9 +168,9 @@ proptest! {
         }
 
         let design = design_of(vec![fa, fb]);
-        let (ct, _) = CrossTab::build_for_pair(&design, INTERCEPT_PAIR);
+        let (ct, _) = CrossTab::build_for_pair(&design, INTERCEPT_PAIR, Default::default()).expect("build");
 
-        let components = ct.bipartite_connected_components();
+        let components = ct.bipartite_connected_components(Default::default()).expect("build");
 
         // Collect all row indices and col indices across components.
         let mut all_rows: Vec<usize> = components.iter().flat_map(|c| c.rows.iter().copied()).collect();
@@ -240,8 +255,10 @@ fn dense_and_sparse_paths_agree_on_signed_data() {
     };
     let n_rows = design.terms[pair.rows.term].n_levels();
     let n_cols = design.terms[pair.cols.term].n_levels();
-    let c_dense = accumulate_dense_cross_block(cols, n_rows, n_cols);
-    let c_sparse = accumulate_sparse_cross_block(cols, n_rows, n_cols);
+    let c_dense =
+        accumulate_dense_cross_block(cols, n_rows, n_cols, Default::default()).expect("build");
+    let c_sparse =
+        accumulate_sparse_cross_block(cols, n_rows, n_cols, Default::default()).expect("build");
 
     // Bit-exact parity: identical per-cell addition order in both paths.
     assert_eq!(c_dense.indptr, c_sparse.indptr);

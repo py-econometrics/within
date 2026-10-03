@@ -26,7 +26,8 @@ mod layout;
 #[cfg(test)]
 mod tests;
 
-use ladder::PrecondSlot;
+use crate::build_control::BuildControl;
+use ladder::{spawn_isolated, AdaptivePrecond, CandidateBuild, PrecondSlot, Speculation};
 pub use layout::CoefficientLayout;
 
 /// Fallible conversion into a [`Design`] for [`Solver::new`]: a categories
@@ -147,7 +148,9 @@ pub struct SolveResult {
     pub residual: f64,
     /// Wall-clock time for the entire solve (setup + LSMR), in seconds.
     pub time_total: f64,
-    /// Setup seconds in this call: RHS gather, deferred Adaptive build, `Solver::new` via [`solve`].
+    /// Elapsed setup time: RHS gather, Adaptive Schwarz preparation/build (including
+    /// gate waiting or discarded preparation), and `Solver::new` via [`solve`].
+    /// Setup can overlap solving, so the timing fields need not sum to `time_total`.
     pub time_setup: f64,
     /// Wall-clock time for the LSMR solve phase, in seconds.
     pub time_solve: f64,
@@ -180,7 +183,9 @@ pub struct BatchSolveResult {
     pub residual: Vec<f64>,
     /// Per-RHS solve times in seconds.
     pub time_solve: Vec<f64>,
-    /// Setup seconds in this call: deferred Adaptive build, `Solver::new` via [`solve_batch`]; else 0.
+    /// Elapsed setup time: Adaptive Schwarz preparation/build (including gate waiting
+    /// or discarded preparation) and `Solver::new` via [`solve_batch`]. Setup can
+    /// overlap solving, so the timing fields need not sum to `time_total`.
     pub time_setup: f64,
     /// Total wall-clock time for the entire batch (setup + all solves), in seconds.
     pub time_total: f64,
@@ -206,7 +211,8 @@ impl BatchSolveResult {
 /// Build once with [`Solver::new`], then call [`Solver::solve`] or
 /// [`Solver::solve_batch`] repeatedly with different RHS vectors. The expensive
 /// preconditioner factorization happens at construction time, except under
-/// [`PreconditionerConfig::Adaptive`], which defers it to the first stalled solve;
+/// [`PreconditionerConfig::Adaptive`], which builds Schwarz beside a first diagonal
+/// pilot and keeps it if a RHS stalls;
 /// LSMR tuning ([`LsmrOptions`]) is supplied per call.
 ///
 /// Ownership: each observation column is borrowed or owned independently
@@ -282,6 +288,11 @@ impl Run {
 enum Pass<'s> {
     Done(RhsSolution),
     Stalled(PreparedRhs<'s>, Run),
+}
+
+fn is_stalled(result: &LsmrResult, maxiter: usize) -> bool {
+    // A stall on the last allowed iteration leaves the Schwarz rung nothing to spend.
+    result.stop_reason == LsmrStopReason::Escalated && result.iterations < maxiter
 }
 
 impl<'a> Solver<'a> {
@@ -360,7 +371,7 @@ impl<'a> Solver<'a> {
         }
     }
 
-    /// Whether an [`Adaptive`](crate::PreconditionerConfig::Adaptive) solve has built Schwarz.
+    /// Whether an [`Adaptive`](crate::PreconditionerConfig::Adaptive) solve has published Schwarz.
     pub fn has_escalated(&self) -> bool {
         match &self.slot {
             PrecondSlot::Adaptive(a) => a.schwarz().is_some(),
@@ -425,8 +436,117 @@ impl<'a> Solver<'a> {
         }
     }
 
-    /// Every RHS in one pass; an unsettled ladder then builds Schwarz once and resumes the stalled.
+    /// A first RHS probes the diagonal while its possible Schwarz rung builds off-pool.
     fn solve_all(
+        &self,
+        ys: &[&[f64]],
+        lsmr: &LsmrOptions,
+    ) -> Result<(Vec<RhsSolution>, f64), WithinError> {
+        if let (Some(&first), PrecondSlot::Adaptive(a)) = (ys.first(), &self.slot) {
+            if a.built.get().is_none() && a.should_speculate() {
+                return self.solve_all_speculative(
+                    first,
+                    &ys[1..],
+                    lsmr,
+                    a,
+                    &BuildControl::default(),
+                );
+            }
+        }
+        self.solve_all_standard(ys, lsmr)
+    }
+
+    fn solve_all_speculative(
+        &self,
+        first: &[f64],
+        rest: &[&[f64]],
+        lsmr: &LsmrOptions,
+        ladder: &AdaptivePrecond,
+        control: &BuildControl,
+    ) -> Result<(Vec<RhsSolution>, f64), WithinError> {
+        let rhs = self.prepare(first)?;
+        let threads = rayon::current_num_threads();
+        let (probe, speculation) = std::thread::scope(|scope| {
+            let _cancel_on_unwind = control.guard();
+            let build_started = Instant::now();
+            let build = spawn_isolated(scope, threads, || {
+                ladder.speculate(&self.prepared, &self.warnings, control)
+            });
+            let options = MlsmrOptions {
+                escalation: Some(&ladder.ladder().stall),
+                local_size: lsmr.local_size,
+                ..Default::default()
+            };
+            let probe = Run::timed(|| {
+                mlsmr(
+                    &rhs.op,
+                    rhs.b(),
+                    &ladder.base,
+                    lsmr.tol,
+                    lsmr.maxiter,
+                    options,
+                )
+            });
+            // Signal before joining or processing the result: no expensive backend may
+            // start unless the pilot actually requests Schwarz with budget remaining.
+            control.finish(
+                probe
+                    .as_ref()
+                    .is_ok_and(|run| is_stalled(&run.result, lsmr.maxiter)),
+            );
+            let speculation = match build {
+                Ok(build) => match build.join() {
+                    Ok(Ok(speculation)) => speculation,
+                    Ok(Err(error)) => Speculation::Completed(CandidateBuild::unavailable(error)),
+                    Err(payload) => Speculation::Completed(CandidateBuild::panicked(
+                        payload,
+                        build_started.elapsed().as_secs_f64(),
+                    )),
+                },
+                Err(error) => Speculation::Completed(CandidateBuild::unavailable(error)),
+            };
+            (probe, speculation)
+        });
+        let probe = probe?;
+        let build_secs = speculation.elapsed_secs();
+
+        if is_stalled(&probe.result, lsmr.maxiter) {
+            let retry_secs = match speculation {
+                Speculation::Completed(candidate) => {
+                    ladder.publish(candidate, &self.prepared, &self.warnings)?
+                }
+                Speculation::Cancelled { .. } => ladder.escalate(&self.prepared, &self.warnings)?,
+            };
+            let map = ladder.rung();
+            let (first, remaining) = rayon::join(
+                || self.resume_stalled(rhs, probe, map, lsmr),
+                || self.solve_all_standard(rest, lsmr),
+            );
+            let mut solutions = Vec::with_capacity(rest.len() + 1);
+            solutions.push(first?);
+            let (mut remaining, later_build_secs) = remaining?;
+            solutions.append(&mut remaining);
+            Ok((solutions, build_secs + retry_secs + later_build_secs))
+        } else {
+            let first = self.finish(rhs, probe);
+            // Partial preparation is never reused: a later stalled RHS follows the ladder.
+            drop(speculation);
+            let (mut remaining, later_build_secs) = self.solve_all_standard(rest, lsmr)?;
+            if first.converged
+                && remaining.iter().all(|solution| solution.converged)
+                && ladder.built.get().is_none()
+            {
+                ladder.keep_diagonal();
+            }
+            let mut solutions = Vec::with_capacity(rest.len() + 1);
+            solutions.push(first);
+            solutions.append(&mut remaining);
+            Ok((solutions, build_secs + later_build_secs))
+        }
+    }
+
+    /// Diagonal first passes and warm handoff, also used after a pilot finishes on diagonal.
+    fn solve_all_standard(
         &self,
         ys: &[&[f64]],
         lsmr: &LsmrOptions,
@@ -440,30 +560,10 @@ impl<'a> Solver<'a> {
                 None => (Some(&a.base), Some(a.as_ref())),
             },
         };
-        // A stall on the last permitted iteration leaves rung 2 nothing to spend, so no build.
-        let stalled = |r: &LsmrResult| {
-            r.stop_reason == LsmrStopReason::Escalated && r.iterations < lsmr.maxiter
-        };
         // Collecting into `Result` fails fast on the first per-RHS error, not during the fold.
         let passes = ys
             .par_iter()
-            .map(|y| {
-                let rhs = self.prepare(y)?;
-                let options = MlsmrOptions {
-                    escalation: ladder.map(|a| &a.ladder().stall as &dyn EscalationPolicy),
-                    local_size: lsmr.local_size,
-                    ..Default::default()
-                };
-                let run = Run::timed(|| match map {
-                    Some(m) => mlsmr(&rhs.op, rhs.b(), m, lsmr.tol, lsmr.maxiter, options),
-                    None => lsmr_solve(&rhs.op, rhs.b(), lsmr.tol, lsmr.maxiter, lsmr.local_size),
-                })?;
-                Ok(if stalled(&run.result) {
-                    Pass::Stalled(rhs, run)
-                } else {
-                    Pass::Done(self.finish(rhs, run))
-                })
-            })
+            .map(|y| self.first_pass(y, map, ladder, lsmr))
             .collect::<Result<Vec<_>, SolveError>>()?;
 
         // Built outside the fan-out, so sibling RHS never race for it.
@@ -481,22 +581,56 @@ impl<'a> Solver<'a> {
                     Pass::Stalled(rhs, probe) => (rhs, probe),
                 };
                 let map = ladder.expect("only a ladder stalls").rung();
-                let rung1 = probe.result;
-                // The whole ladder shares the caller's budget; rung 2 gets what rung 1 left.
-                let options = MlsmrOptions {
-                    warm_start: Some(&rung1.x),
-                    local_size: lsmr.local_size,
-                    ..Default::default()
-                };
-                let remaining = lsmr.maxiter - rung1.iterations;
-                let mut resumed =
-                    Run::timed(|| mlsmr(&rhs.op, rhs.b(), map, lsmr.tol, remaining, options))?;
-                resumed.result.iterations += rung1.iterations;
-                resumed.solve_secs += probe.solve_secs;
-                Ok(self.finish(rhs, resumed))
+                self.resume_stalled(rhs, probe, map, lsmr)
             })
             .collect::<Result<Vec<_>, SolveError>>()?;
         Ok((solutions, build_secs))
+    }
+
+    fn first_pass<'s>(
+        &'s self,
+        y: &'s [f64],
+        map: Option<&Preconditioner>,
+        ladder: Option<&AdaptivePrecond>,
+        lsmr: &LsmrOptions,
+    ) -> Result<Pass<'s>, SolveError> {
+        let rhs = self.prepare(y)?;
+        let options = MlsmrOptions {
+            escalation: ladder.map(|a| &a.ladder().stall as &dyn EscalationPolicy),
+            local_size: lsmr.local_size,
+            ..Default::default()
+        };
+        let run = Run::timed(|| match map {
+            Some(m) => mlsmr(&rhs.op, rhs.b(), m, lsmr.tol, lsmr.maxiter, options),
+            None => lsmr_solve(&rhs.op, rhs.b(), lsmr.tol, lsmr.maxiter, lsmr.local_size),
+        })?;
+        Ok(if is_stalled(&run.result, lsmr.maxiter) {
+            Pass::Stalled(rhs, run)
+        } else {
+            Pass::Done(self.finish(rhs, run))
+        })
+    }
+
+    fn resume_stalled(
+        &self,
+        rhs: PreparedRhs<'_>,
+        probe: Run,
+        map: &Preconditioner,
+        lsmr: &LsmrOptions,
+    ) -> Result<RhsSolution, SolveError> {
+        let rung1 = probe.result;
+        // The whole ladder shares the caller's budget; rung 2 gets what rung 1 left.
+        let options = MlsmrOptions {
+            warm_start: Some(&rung1.x),
+            local_size: lsmr.local_size,
+            ..Default::default()
+        };
+        let remaining = lsmr.maxiter - rung1.iterations;
+        let mut resumed =
+            Run::timed(|| mlsmr(&rhs.op, rhs.b(), map, lsmr.tol, remaining, options))?;
+        resumed.result.iterations += rung1.iterations;
+        resumed.solve_secs += probe.solve_secs;
+        Ok(self.finish(rhs, resumed))
     }
 
     /// Per-level directions the data cannot identify, shared across all RHS:
@@ -535,7 +669,7 @@ impl<'a> Solver<'a> {
             iterations: solution.iterations,
             residual: solution.residual,
             time_total: t_start.elapsed().as_secs_f64(),
-            // A deferred Schwarz build happens between two runs: it is setup, not solve.
+            // Charge Schwarz build work to setup even when it overlaps the pilot.
             time_setup: solution.gather_secs + build_secs,
             time_solve: solution.time_solve,
         })
@@ -581,7 +715,7 @@ impl<'a> Solver<'a> {
             iterations,
             residual,
             time_solve,
-            // The deferred build is the batch's only setup, so this is zero when it built nothing.
+            // Charge Schwarz build work to setup even when it overlaps the pilot.
             time_setup: build_secs,
             time_total: t_start.elapsed().as_secs_f64(),
             n_dofs: self.prepared.design.n_dofs,

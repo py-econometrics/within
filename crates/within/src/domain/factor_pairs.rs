@@ -6,6 +6,7 @@
 //!
 //! Entry point: [`build_local_domains`].
 
+use crate::build_control::{BuildContext, BuildResult};
 use schwarz_precond::{PartitionWeights, SubdomainCore};
 
 use crate::channel::{Channel, ChannelPair};
@@ -16,7 +17,7 @@ use super::{CrossTab, PreparedDesign};
 
 mod sddm;
 use crate::domain::Column;
-use sddm::{convert, NotScalable};
+use sddm::NotScalable;
 pub(crate) use sddm::{CoordinateMap, Grounding, LocalComponent, MatrixForm, SddmMatrix};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,7 +37,8 @@ pub(crate) struct LocalDomain {
 pub(crate) fn build_local_domains(
     prepared: &PreparedDesign<'_>,
     config: &LocalSolverConfig,
-) -> Result<(Vec<LocalDomain>, Vec<BuildWarning>), BuildError> {
+    control: BuildContext<'_>,
+) -> BuildResult<(Vec<LocalDomain>, Vec<BuildWarning>)> {
     use rayon::prelude::*;
 
     let design = &prepared.design;
@@ -59,7 +61,7 @@ pub(crate) fn build_local_domains(
     let per_pair: Vec<(Vec<LocalDomain>, Vec<BuildWarning>)> = pairs
         .par_iter()
         .map(|&pair| {
-            let (full_ct, l2g) = CrossTab::build_for_pair(prepared, pair);
+            let (full_ct, l2g) = CrossTab::build_for_pair(prepared, pair, control)?;
             let class = if design.column(pair.rows) == Column::Intercept
                 && design.column(pair.cols) == Column::Intercept
             {
@@ -67,9 +69,9 @@ pub(crate) fn build_local_domains(
             } else {
                 ComponentClass::General
             };
-            split_into_subdomains(prepared, pair, class, full_ct, &l2g, config)
+            split_into_subdomains(prepared, pair, class, full_ct, &l2g, config, control)
         })
-        .collect::<Result<_, BuildError>>()?;
+        .collect::<BuildResult<_>>()?;
     let mut domain_pairs = Vec::new();
     let mut warnings = Vec::new();
     for (domains, pair_warnings) in per_pair {
@@ -96,7 +98,8 @@ fn split_into_subdomains(
     full_ct: CrossTab,
     l2g: &[u32],
     config: &LocalSolverConfig,
-) -> Result<(Vec<LocalDomain>, Vec<BuildWarning>), BuildError> {
+    control: BuildContext<'_>,
+) -> BuildResult<(Vec<LocalDomain>, Vec<BuildWarning>)> {
     let row_diag = prepared.channel_diagonal(pair.rows);
     let col_diag = prepared.channel_diagonal(pair.cols);
     debug_assert_eq!(
@@ -104,7 +107,7 @@ fn split_into_subdomains(
         (full_ct.n_rows(), full_ct.n_cols())
     );
     let n_rows_full = full_ct.n_rows();
-    let components = full_ct.bipartite_connected_components();
+    let components = full_ct.bipartite_connected_components(control)?;
 
     let cross_tabs: Vec<CrossTab> = if components.len() == 1 {
         vec![full_ct]
@@ -113,8 +116,8 @@ fn split_into_subdomains(
         let mut col_remap = vec![u32::MAX; full_ct.n_cols()];
         components
             .iter()
-            .map(|comp| full_ct.extract_component(comp, &mut row_remap, &mut col_remap))
-            .collect()
+            .map(|comp| full_ct.extract_component(comp, &mut row_remap, &mut col_remap, control))
+            .collect::<BuildResult<Vec<_>>>()?
     };
 
     let mut domains = Vec::with_capacity(components.len());
@@ -137,8 +140,10 @@ fn split_into_subdomains(
             .collect();
         let (comp_ct, comp_diag, comp_globals) =
             sddm::orient_for_elimination(comp_ct, comp_diag, comp_globals);
-        let (mut component, uncertified) = convert(comp_ct, comp_diag, class, &config.scaling)
-            .map_err(|NotScalable| BuildError::UnscalableComponent { pair })?;
+        let (mut component, uncertified) =
+            sddm::convert(comp_ct, comp_diag, class, &config.scaling, control).map_err(
+                |error| error.map(|NotScalable| BuildError::UnscalableComponent { pair }),
+            )?;
         if class == ComponentClass::General && component.matrix.grounding == Grounding::Grounded {
             sddm::add_relative_ridge(&mut component.matrix, config.ridge);
         }
@@ -217,7 +222,8 @@ mod tests {
     fn test_full_cover_domain_count() {
         let dm = make_test_design();
         let (domain_pairs, _) =
-            build_local_domains(&dm, &LocalSolverConfig::default()).expect("plain domains build");
+            build_local_domains(&dm, &LocalSolverConfig::default(), Default::default())
+                .expect("plain domains build");
         // 3 factor pairs; each pair may produce multiple components
         assert!(domain_pairs.len() >= 3);
     }
@@ -226,7 +232,8 @@ mod tests {
     fn test_partition_of_unity() {
         let dm = make_test_design();
         let (domain_pairs, _) =
-            build_local_domains(&dm, &LocalSolverConfig::default()).expect("plain domains build");
+            build_local_domains(&dm, &LocalSolverConfig::default(), Default::default())
+                .expect("plain domains build");
         let n_dofs = dm.design.n_dofs;
         // Two-sided PoU: squared weights must sum to 1 at every DOF.
         let mut weight_sq_sum = vec![0.0; n_dofs];
@@ -258,8 +265,9 @@ mod tests {
         .expect("valid slope design");
         let design = PreparedDesign::unweighted_for_test(design);
 
-        let (domain_pairs, _) = build_local_domains(&design, &LocalSolverConfig::default())
-            .expect("slope domains build");
+        let (domain_pairs, _) =
+            build_local_domains(&design, &LocalSolverConfig::default(), Default::default())
+                .expect("slope domains build");
 
         for ld in &domain_pairs {
             for i in 0..ld.core.global_indices().len() {
@@ -288,7 +296,8 @@ mod tests {
     fn test_domains_cover_all_dofs() {
         let dm = make_test_design();
         let (domain_pairs, _) =
-            build_local_domains(&dm, &LocalSolverConfig::default()).expect("plain domains build");
+            build_local_domains(&dm, &LocalSolverConfig::default(), Default::default())
+                .expect("plain domains build");
         let mut covered = vec![false; dm.design.n_dofs];
         for ld in &domain_pairs {
             for &idx in ld.core.global_indices() {

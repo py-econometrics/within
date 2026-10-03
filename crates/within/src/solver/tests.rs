@@ -39,7 +39,8 @@ fn positive_slope_only_pair_grounds_beyond_dense_threshold() {
     ];
     let prepared = PreparedDesign::unweighted_for_test(Design::new(effects).expect("design"));
     let (domains, warnings) =
-        build_local_domains(&prepared, &LocalSolverConfig::default()).expect("domains");
+        build_local_domains(&prepared, &LocalSolverConfig::default(), Default::default())
+            .expect("domains");
     assert!(
         domains.iter().any(|ld| {
             let ct = &ld.component.matrix.cross_tab;
@@ -604,4 +605,34 @@ fn an_alias_through_a_zero_loading_still_converges() {
         out.converged,
         out.iterations
     );
+}
+
+#[test]
+fn nonzero_easy_pilot_never_enters_factorization() {
+    use super::ladder::PrecondSlot;
+    use crate::build_control::{BuildControl, BuildStage};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let starts = Arc::new(AtomicUsize::new(0));
+    let count = starts.clone();
+    let control = BuildControl::with_hook(move |stage| {
+        if stage == BuildStage::Factorization {
+            count.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+    let design = PreparedDesign::from_levels_for_test(vec![
+        (0..2000).map(|i| (i % 10) as u32).collect(),
+        (0..2000).map(|i| ((i / 10) % 10) as u32).collect(),
+    ])
+    .design;
+    let solver = Solver::new(design, None, PreconditionerConfig::default()).unwrap();
+    let y: Vec<_> = (0..2000).map(|i| ((i * 13) % 101) as f64).collect();
+    let PrecondSlot::Adaptive(ladder) = &solver.slot else {
+        panic!("ladder");
+    };
+    let (solutions, _) = solver
+        .solve_all_speculative(&y, &[], &LsmrOptions::default(), ladder, &control)
+        .unwrap();
+    assert!(solutions[0].converged && solutions[0].iterations > 0);
+    assert_eq!(starts.load(Ordering::Relaxed), 0);
+    assert!(!solver.has_escalated());
 }

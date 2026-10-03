@@ -92,7 +92,15 @@ fn exact_schur_matches_dense_reference_when_eliminating_rows() {
     let expected = dense_exact_schur(&c_dense, 3, 2, row_diag, col_diag, true);
 
     let matrix = SddmMatrix::from_dense_for_test(&c_dense, 3, 2, diagonal, Grounding::Grounded);
-    let got = sparse_to_dense(&exact(&matrix, &inv_diagonal, RowSplit::Parallel));
+    let got = sparse_to_dense(
+        &exact(
+            &matrix,
+            &inv_diagonal,
+            RowSplit::Parallel,
+            Default::default(),
+        )
+        .expect("build"),
+    );
     assert_dense_close(&got, &expected, 1e-12);
 }
 
@@ -108,8 +116,20 @@ fn both_row_splits_produce_the_same_complement(
     let inv_diagonal: Vec<f64> = row_diag.iter().map(|d| 1.0 / d).collect();
 
     let operator = SddmMatrix::from_dense_for_test(&c_dense, 3, 2, diagonal, grounding);
-    let parallel = exact(&operator, &inv_diagonal, RowSplit::Parallel);
-    let sequential = exact(&operator, &inv_diagonal, RowSplit::Sequential);
+    let parallel = exact(
+        &operator,
+        &inv_diagonal,
+        RowSplit::Parallel,
+        Default::default(),
+    )
+    .expect("build");
+    let sequential = exact(
+        &operator,
+        &inv_diagonal,
+        RowSplit::Sequential,
+        Default::default(),
+    )
+    .expect("build");
 
     assert_eq!(sequential.indptr(), parallel.indptr());
     assert_eq!(sequential.indices(), parallel.indices());
@@ -132,8 +152,8 @@ fn approximate_schur_is_seed_deterministic_and_laplacian_like() {
         ..Default::default()
     };
 
-    let a = sampled(&matrix, &config);
-    let b = sampled(&matrix, &config);
+    let a = sampled(&matrix, &config, Default::default()).expect("build");
+    let b = sampled(&matrix, &config, Default::default()).expect("build");
 
     assert_eq!(a.indptr(), b.indptr());
     assert_eq!(a.indices(), b.indices());
@@ -166,7 +186,8 @@ fn sampled_schur_carries_surplus_exactly_on_low_degree_stars() {
     let expected = dense_exact_schur(&c_dense, 3, 2, row_diag, col_diag, true);
     let matrix = SddmMatrix::from_dense_for_test(&c_dense, 3, 2, diagonal, Grounding::Grounded);
 
-    let sampled_dense = sparse_to_dense(&sampled(&matrix, &Default::default()));
+    let sampled_dense =
+        sparse_to_dense(&sampled(&matrix, &Default::default(), Default::default()).expect("build"));
     let sampled_principal: Vec<Vec<f64>> = sampled_dense[..expected.len()]
         .iter()
         .map(|row| row[..expected.len()].to_vec())

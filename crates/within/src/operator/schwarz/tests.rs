@@ -21,7 +21,8 @@ fn make_test_data() -> (PreparedDesign<'static>, Vec<LocalDomain>) {
     let design =
         PreparedDesign::from_levels_for_test(vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]]);
     let (domain_pairs, _) =
-        build_local_domains(&design, &LocalSolverConfig::default()).expect("plain domains build");
+        build_local_domains(&design, &LocalSolverConfig::default(), Default::default())
+            .expect("plain domains build");
     (design, domain_pairs)
 }
 
@@ -127,6 +128,7 @@ fn run_block_elim_parallel_reduction_regression_case() {
                 reduction: ReductionStrategy::ParallelReduction,
             },
             n_dofs,
+            Default::default(),
         )
         .expect("build block-elim additive preconditioner");
         let atomic = build_additive(
@@ -136,6 +138,7 @@ fn run_block_elim_parallel_reduction_regression_case() {
                 reduction: ReductionStrategy::AtomicScatter,
             },
             n_dofs,
+            Default::default(),
         )
         .expect("build block-elim atomic preconditioner");
 
@@ -211,8 +214,13 @@ fn test_build_additive() {
         local_solver: LocalSolverConfig::default(),
         reduction: ReductionStrategy::default(),
     };
-    let schwarz = build_additive(domain_pairs, &config, design.design.n_dofs)
-        .expect("build schwarz with explicit domains");
+    let schwarz = build_additive(
+        domain_pairs,
+        &config,
+        design.design.n_dofs,
+        Default::default(),
+    )
+    .expect("build schwarz with explicit domains");
     let r = vec![1.0; design.design.n_dofs];
     let mut z = vec![0.0; design.design.n_dofs];
     schwarz.apply(&r, &mut z).expect("schwarz apply succeeds");
@@ -229,8 +237,8 @@ fn small_subdomain_solve(schur: SchurMode, dense_threshold: usize) -> Vec<f64> {
         dense_threshold,
         ..Default::default()
     };
-    let solver =
-        crate::block_elim::BlockElimSolver::build(component, &config).expect("block-elim build");
+    let solver = crate::block_elim::BlockElimSolver::build(component, &config, Default::default())
+        .expect("block-elim build");
     let mut rhs = vec![0.0; solver.scratch_size()];
     for (i, slot) in rhs.iter_mut().take(solver.n_local()).enumerate() {
         *slot = if i % 2 == 0 { 1.0 } else { -1.0 };
@@ -268,4 +276,70 @@ fn test_dense_threshold_zero_disables_exact_route() {
         0,
     );
     assert_ne!(exact, approximate);
+}
+
+/// Preparation can cancel before either factorization backend starts.
+#[test]
+fn preparation_can_cancel_at_each_stage() {
+    use crate::build_control::{BuildContext, BuildControl, BuildFailure, BuildStage::*};
+    use crate::{Design, Effect};
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    let plain = PreparedDesign::from_levels_for_test(vec![
+        vec![0, 0, 1, 1, 2, 2, 3, 3],
+        vec![0, 1, 0, 1, 2, 3, 2, 3],
+    ]);
+    let (a, b, z) = ([0, 0, 1, 1], [0, 1, 0, 1], [1.0, 1.0, 1.0, -1.0]);
+    let signed = PreparedDesign::unweighted_for_test(
+        Design::new([
+            Effect::new(&a, false, [&z[..]]).unwrap(),
+            Effect::new(&b, true, []).unwrap(),
+        ])
+        .unwrap(),
+    );
+    for dense_threshold in [0, 64] {
+        for target in [
+            Accumulate, Csr, Transpose, Components, Extract, Schur, Scaling, Cover, Factor,
+        ] {
+            let reached = Arc::new(AtomicBool::new(false));
+            let backend = Arc::new(AtomicBool::new(false));
+            let control = Arc::new_cyclic(|weak: &std::sync::Weak<BuildControl>| {
+                let (weak, reached, backend) = (weak.clone(), reached.clone(), backend.clone());
+                BuildControl::with_hook(move |stage| {
+                    if stage == Factorization {
+                        backend.store(true, Ordering::Relaxed);
+                    }
+                    if stage == target {
+                        reached.store(true, Ordering::Relaxed);
+                    }
+                    // Fail instead of waiting forever if a fixture misses its target.
+                    if stage == target || stage == Factor {
+                        weak.upgrade().unwrap().finish(false);
+                    }
+                })
+            });
+            let config = SchwarzConfig {
+                local_solver: LocalSolverConfig {
+                    dense_threshold,
+                    ..Default::default()
+                },
+                reduction: ReductionStrategy::Auto,
+            };
+            let prepared = if matches!(target, Scaling | Cover) {
+                &signed
+            } else {
+                &plain
+            };
+            let result =
+                super::build_schwarz_controlled(prepared, &config, BuildContext(Some(&control)));
+            assert!(
+                matches!(result, Err(BuildFailure::Cancelled)),
+                "{target:?}: {result:?}"
+            );
+            assert!(reached.load(Ordering::Relaxed), "{target:?}");
+            assert!(!backend.load(Ordering::Relaxed));
+        }
+    }
 }

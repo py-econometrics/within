@@ -273,6 +273,50 @@ fn every_batch_rhs_resumes_on_the_escalated_rung() {
     );
 }
 
+/// A completed pilot keeps the diagonal for this call and later calls still retain the
+/// original adaptive handoff if they encounter a harder RHS.
+#[test]
+fn an_easy_pilot_does_not_commit_its_speculative_build() {
+    let design = crossed_panel();
+    let easy = vec![0.0; design.n_obs()];
+    let hard = common::make_deterministic_y(&design);
+    let solver = Solver::new(design, None, adaptive(eager_stall())).expect("solver");
+
+    let first = solver.solve(&easy, &tight()).expect("easy pilot");
+    assert!(first.converged);
+    assert!(!solver.has_escalated());
+    assert_eq!(
+        solver.preconditioner().expect("base").variant_name(),
+        "Adaptive"
+    );
+
+    let second = solver.solve(&easy, &tight()).expect("later easy solve");
+    assert!(second.converged);
+    assert_eq!(second.iterations, first.iterations);
+    assert!(!solver.has_escalated());
+
+    let later = solver.solve(&hard, &tight()).expect("later hard solve");
+    assert!(later.converged);
+    assert!(solver.has_escalated(), "a later stall must still hand off");
+}
+
+/// A later RHS can escalate normally after an easy pilot cancels its speculative build.
+#[test]
+fn an_easy_pilot_does_not_hide_a_stalled_batch_rhs() {
+    let design = crossed_panel();
+    let easy = vec![0.0; design.n_obs()];
+    let hard = common::make_deterministic_y(&design);
+    let solver = Solver::new(design, None, adaptive(eager_stall())).expect("solver");
+
+    let batch = solver
+        .solve_batch(&[&easy, &hard], &tight())
+        .expect("mixed batch");
+    assert!(batch.converged.iter().all(|&c| c));
+    assert_eq!(batch.iterations[0], 0);
+    assert!(solver.has_escalated(), "the second RHS must hand off");
+    assert!(batch.time_setup > 0.0, "the build belongs to this batch");
+}
+
 /// Concurrent first solves all beat a diagonal-only solve, whichever of them wins the build.
 #[rstest]
 #[case::plain_threads(2, None)]

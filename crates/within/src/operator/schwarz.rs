@@ -1,6 +1,7 @@
 //! Schwarz preconditioner: bridges FE domain types to the generic
 //! `schwarz-precond` API, plus the opaque public [`Preconditioner`] handle.
 
+use crate::build_control::{unrestricted, BuildContext, BuildResult};
 use rayon::prelude::*;
 use schwarz_precond::{Operator, SchwarzPreconditioner, SubdomainEntry};
 use serde::{Deserialize, Serialize};
@@ -102,11 +103,12 @@ pub(crate) fn build_additive(
     domains: Vec<LocalDomain>,
     config: &SchwarzConfig,
     n_dofs: usize,
-) -> Result<FeSchwarz, BuildError> {
+    control: BuildContext<'_>,
+) -> BuildResult<FeSchwarz> {
     let entries = domains
         .into_par_iter()
-        .map(|domain| build_entry(domain, &config.local_solver))
-        .collect::<Result<Vec<_>, BuildError>>()?;
+        .map(|domain| build_entry_controlled(domain, &config.local_solver, control))
+        .collect::<BuildResult<Vec<_>>>()?;
     Ok(FeSchwarz {
         inner: SchwarzPreconditioner::with_n_dofs(entries, n_dofs, config.reduction),
         config: config.clone(),
@@ -114,13 +116,14 @@ pub(crate) fn build_additive(
 }
 
 /// Build a single `SubdomainEntry<BlockElimSolver>` from a pre-built CrossTab.
-pub(crate) fn build_entry(
+pub(crate) fn build_entry_controlled(
     domain: LocalDomain,
     config: &LocalSolverConfig,
-) -> Result<SubdomainEntry<BlockElimSolver>, BuildError> {
+    control: BuildContext<'_>,
+) -> BuildResult<SubdomainEntry<BlockElimSolver>> {
     let LocalDomain { core, component } = domain;
-    let solver = BlockElimSolver::build(component, config)?;
-    SubdomainEntry::try_new(core, solver).map_err(BuildError::Preconditioner)
+    let solver = BlockElimSolver::build(component, config, control)?;
+    SubdomainEntry::try_new(core, solver).map_err(|error| BuildError::Preconditioner(error).into())
 }
 
 /// Opaque handle to a pre-built preconditioner; cloning is O(1) via `Arc`.
@@ -304,12 +307,25 @@ pub(crate) fn build_schwarz(
     prepared: &PreparedDesign<'_>,
     config: &SchwarzConfig,
 ) -> Result<(Option<Preconditioner>, Vec<BuildWarning>), BuildError> {
+    unrestricted(build_schwarz_controlled(
+        prepared,
+        config,
+        BuildContext::default(),
+    ))
+}
+
+pub(crate) fn build_schwarz_controlled(
+    prepared: &PreparedDesign<'_>,
+    config: &SchwarzConfig,
+    control: BuildContext<'_>,
+) -> BuildResult<(Option<Preconditioner>, Vec<BuildWarning>)> {
     let build_started = Instant::now();
-    let (domains, warnings) = crate::domain::build_local_domains(prepared, &config.local_solver)?;
+    let (domains, warnings) =
+        crate::domain::factor_pairs::build_local_domains(prepared, &config.local_solver, control)?;
     if domains.is_empty() {
         return Ok((None, warnings));
     }
-    let schwarz = build_additive(domains, config, prepared.design.n_dofs)?;
+    let schwarz = build_additive(domains, config, prepared.design.n_dofs, control)?;
     let preconditioner = Preconditioner {
         inner: Variant::Additive(schwarz),
         build_duration: build_started.elapsed(),

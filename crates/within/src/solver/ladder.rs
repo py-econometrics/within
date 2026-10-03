@@ -1,14 +1,17 @@
 //! The solver's preconditioner slot: a fixed map, or the diagonal→Schwarz ladder that
-//! [`PreconditionerConfig::Adaptive`] builds on a stalled solve.
+//! [`PreconditionerConfig::Adaptive`] prepares speculatively and factors on a stalled solve.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use once_cell::sync::OnceCell;
 
+use crate::build_control::{BuildContext, BuildControl, BuildFailure};
 use crate::config::PreconditionerConfig;
 use crate::domain::PreparedDesign;
 use crate::operator::schwarz::{
-    build_adaptive, build_diagonal, build_schwarz, AdaptiveLadder, Preconditioner, SchwarzConfig,
+    build_adaptive, build_diagonal, build_schwarz, build_schwarz_controlled, AdaptiveLadder,
+    Preconditioner, SchwarzConfig,
 };
 use crate::{BuildError, BuildWarning};
 
@@ -16,7 +19,7 @@ use crate::{BuildError, BuildWarning};
 pub(super) enum PrecondSlot {
     /// A single map (`None` = unpreconditioned) built at construction.
     Static(Option<Preconditioner>),
-    /// Diagonal now, Schwarz built lazily on a stalled contraction.
+    /// Diagonal now, Schwarz factorization deferred to a stalled contraction.
     Adaptive(Box<AdaptivePrecond>),
 }
 
@@ -75,6 +78,7 @@ impl PrecondSlot {
             Self::Adaptive(Box::new(AdaptivePrecond {
                 base: preconditioner,
                 built: OnceCell::new(),
+                diagonal_won: AtomicBool::new(false),
             }))
         })
     }
@@ -86,6 +90,8 @@ pub(super) struct AdaptivePrecond {
     pub(super) base: Preconditioner,
     /// A design's own build failure settles here too; a failed isolation pool retries instead.
     pub(super) built: OnceCell<Result<AdaptiveBuild, BuildError>>,
+    /// A completed diagonal batch needs no further speculative builds; later RHS still probe.
+    diagonal_won: AtomicBool,
 }
 
 /// Outcome of the deferred build: the Schwarz map, or `None` when no factor-pair target exists.
@@ -95,7 +101,122 @@ pub(super) struct AdaptiveBuild {
     pub(super) warnings: Vec<BuildWarning>,
 }
 
+/// A speculative build is published only if a solve actually needs the second rung.
+pub(super) struct CandidateBuild {
+    outcome: CandidateOutcome,
+    pub(super) elapsed_secs: f64,
+}
+
+pub(super) enum Speculation {
+    Completed(CandidateBuild),
+    Cancelled { elapsed_secs: f64 },
+}
+
+impl Speculation {
+    pub(super) fn elapsed_secs(&self) -> f64 {
+        match self {
+            Self::Completed(candidate) => candidate.elapsed_secs,
+            Self::Cancelled { elapsed_secs } => *elapsed_secs,
+        }
+    }
+}
+
+enum CandidateOutcome {
+    Ready(Result<AdaptiveBuild, BuildError>),
+    /// Isolation failures are retried by synchronous escalation, never cached.
+    Unavailable(BuildError),
+    Panicked(Box<dyn std::any::Any + Send>),
+}
+
+impl CandidateBuild {
+    pub(super) fn unavailable(error: BuildError) -> Self {
+        Self {
+            outcome: CandidateOutcome::Unavailable(error),
+            elapsed_secs: 0.0,
+        }
+    }
+
+    pub(super) fn panicked(payload: Box<dyn std::any::Any + Send>, elapsed_secs: f64) -> Self {
+        Self {
+            outcome: CandidateOutcome::Panicked(payload),
+            elapsed_secs,
+        }
+    }
+}
+
 impl AdaptivePrecond {
+    pub(super) fn should_speculate(&self) -> bool {
+        !self.diagonal_won.load(Ordering::Acquire)
+    }
+
+    pub(super) fn keep_diagonal(&self) {
+        self.diagonal_won.store(true, Ordering::Release);
+    }
+
+    /// Prepare against the existing design inside the pool entered by `spawn_isolated`.
+    pub(super) fn speculate(
+        &self,
+        prepared: &PreparedDesign<'_>,
+        screening: &[BuildWarning],
+        control: &BuildControl,
+    ) -> Speculation {
+        let started = Instant::now();
+        let outcome = build_schwarz_controlled(
+            prepared,
+            &self.ladder().escalated,
+            BuildContext(Some(control)),
+        );
+        let outcome = match outcome {
+            Ok((schwarz, warnings)) => {
+                CandidateOutcome::Ready(Ok(self.assembled(schwarz, warnings, screening)))
+            }
+            Err(BuildFailure::Failed(error)) => CandidateOutcome::Ready(Err(error)),
+            Err(BuildFailure::Cancelled) => {
+                return Speculation::Cancelled {
+                    elapsed_secs: started.elapsed().as_secs_f64(),
+                };
+            }
+        };
+        Speculation::Completed(CandidateBuild {
+            outcome,
+            elapsed_secs: started.elapsed().as_secs_f64(),
+        })
+    }
+
+    /// The first concurrent caller to publish wins; build errors remain cached as before.
+    pub(super) fn publish(
+        &self,
+        candidate: CandidateBuild,
+        prepared: &PreparedDesign<'_>,
+        screening: &[BuildWarning],
+    ) -> Result<f64, BuildError> {
+        let outcome = match candidate.outcome {
+            CandidateOutcome::Ready(outcome) => outcome,
+            CandidateOutcome::Unavailable(_error) => return self.escalate(prepared, screening),
+            CandidateOutcome::Panicked(payload) => std::panic::resume_unwind(payload),
+        };
+        self.built
+            .get_or_init(|| outcome)
+            .as_ref()
+            .map(|_| 0.0)
+            .map_err(Clone::clone)
+    }
+
+    fn assembled(
+        &self,
+        schwarz: Option<Preconditioner>,
+        build_warnings: Vec<BuildWarning>,
+        screening: &[BuildWarning],
+    ) -> AdaptiveBuild {
+        let schwarz = schwarz.map(|mut p| {
+            p.gauge = self.base.gauge.clone();
+            p
+        });
+        let mut warnings = screening.to_vec();
+        warnings.extend(build_warnings);
+        AdaptiveBuild { schwarz, warnings }
+    }
+
     pub(super) fn ladder(&self) -> &AdaptiveLadder {
         self.base
             .ladder()
@@ -124,17 +245,8 @@ impl AdaptivePrecond {
         let mut build_secs = 0.0;
         let built = self.built.get_or_try_init(|| {
             let t_build = Instant::now();
-            let outcome = isolated(|| build_schwarz(prepared, &self.ladder().escalated))?.map(
-                |(schwarz, build_warnings)| {
-                    let schwarz = schwarz.map(|mut p| {
-                        p.gauge = self.base.gauge.clone();
-                        p
-                    });
-                    let mut warnings = screening.to_vec();
-                    warnings.extend(build_warnings);
-                    AdaptiveBuild { schwarz, warnings }
-                },
-            );
+            let outcome = isolated(|| build_schwarz(prepared, &self.ladder().escalated))?
+                .map(|(schwarz, warnings)| self.assembled(schwarz, warnings, screening));
             build_secs = t_build.elapsed().as_secs_f64();
             Ok(outcome)
         })?;
@@ -146,20 +258,36 @@ impl AdaptivePrecond {
 /// steal a solve off the shared pool; a stolen solve blocking on this build is the #371 deadlock.
 /// Nothing run here may wait on the shared pool.
 fn isolated<R: Send>(f: impl FnOnce() -> R + Send) -> Result<R, BuildError> {
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(rayon::current_num_threads())
-        .build()
-        .map_err(|e| BuildError::ThreadPool(e.to_string()))?;
+    let threads = rayon::current_num_threads();
     std::thread::scope(|s| {
-        let bridge = std::thread::Builder::new()
-            .spawn_scoped(s, || pool.install(f))
-            .map_err(|e| BuildError::ThreadPool(e.to_string()))?;
+        let bridge = spawn_isolated(s, threads, f)?;
         match bridge.join() {
-            Ok(r) => Ok(r),
+            Ok(r) => r,
             // Carry the build's own panic, not `Any { .. }` from formatting the payload.
             Err(payload) => std::panic::resume_unwind(payload),
         }
     })
+}
+
+/// Enter an isolated pool only from this bridge thread, outside every Rayon pool.
+/// The closure must never wait for work on the caller's pool (#371).
+pub(super) fn spawn_isolated<'scope, 'env, R: Send + 'scope>(
+    scope: &'scope std::thread::Scope<'scope, 'env>,
+    threads: usize,
+    f: impl FnOnce() -> R + Send + 'scope,
+) -> Result<std::thread::ScopedJoinHandle<'scope, Result<R, BuildError>>, BuildError> {
+    std::thread::Builder::new()
+        .name("within-schwarz".into())
+        .spawn_scoped(scope, move || on_pool(threads, f))
+        .map_err(|e| BuildError::ThreadPool(e.to_string()))
+}
+
+fn on_pool<R: Send>(threads: usize, f: impl FnOnce() -> R + Send) -> Result<R, BuildError> {
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build()
+        .map_err(|e| BuildError::ThreadPool(e.to_string()))?;
+    Ok(pool.install(f))
 }
 
 #[cfg(test)]

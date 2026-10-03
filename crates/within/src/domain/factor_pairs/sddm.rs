@@ -12,10 +12,12 @@
 //! [`crate::block_elim`]), so the stored matrix stays single-sized.
 
 use super::ComponentClass;
+use crate::build_control::{BuildContext, BuildResult};
 use crate::config::{ScalingConfig, ScalingFailure};
 use crate::domain::CrossTab;
 
 mod scaling;
+#[cfg(test)]
 use scaling::dominance_scaling;
 
 #[derive(Clone, Copy)]
@@ -157,12 +159,13 @@ pub(super) fn convert(
     diagonal: Vec<f64>,
     class: ComponentClass,
     scaling: &ScalingConfig,
-) -> Result<(LocalComponent, Option<UncertifiedScaling>), NotScalable> {
+    control: BuildContext<'_>,
+) -> BuildResult<(LocalComponent, Option<UncertifiedScaling>), NotScalable> {
     match class {
-        ComponentClass::KnownLaplacian => {
-            convert_known_laplacian(cross_tab, diagonal).map(|component| (component, None))
-        }
-        ComponentClass::General => convert_general(cross_tab, diagonal, scaling),
+        ComponentClass::KnownLaplacian => convert_known_laplacian(cross_tab, diagonal)
+            .map(|component| (component, None))
+            .map_err(Into::into),
+        ComponentClass::General => convert_general(cross_tab, diagonal, scaling, control),
     }
 }
 
@@ -210,11 +213,12 @@ fn convert_general(
     cross_tab: CrossTab,
     diagonal: Vec<f64>,
     scaling: &ScalingConfig,
-) -> Result<(LocalComponent, Option<UncertifiedScaling>), NotScalable> {
+    control: BuildContext<'_>,
+) -> BuildResult<(LocalComponent, Option<UncertifiedScaling>), NotScalable> {
     let signs = folding_signs(&cross_tab);
-    let relaxation = dominance_scaling(&cross_tab, &diagonal, scaling)?;
+    let relaxation = scaling::dominance_scaling(&cross_tab, &diagonal, scaling, control)?;
     if relaxation.violation > scaling.tolerance && scaling.on_failure == ScalingFailure::Error {
-        return Err(NotScalable);
+        return Err(NotScalable.into());
     }
     let (component, clamped_deficit) = match signs {
         Some(signs) => {

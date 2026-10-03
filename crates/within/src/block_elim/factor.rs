@@ -3,6 +3,9 @@
 //! [`ReducedFactor`] wraps an `approx-chol` factor, either directly or behind a
 //! Gremban cover. [`factor_sparse`] bridges to the `approx-chol` builder.
 
+#[cfg(test)]
+use crate::build_control::BuildStage;
+use crate::build_control::{BuildContext, BuildResult};
 use approx_chol::low_level::Builder;
 use approx_chol::{CsrRef, Factor};
 use schwarz_precond::LocalSolveError;
@@ -158,14 +161,18 @@ fn solve_approx(f: &Factor, x: &mut [f64]) -> Result<(), LocalSolveError> {
 pub(crate) fn factor_sparse(
     matrix: &CsrMatrix,
     config: approx_chol::Config,
-) -> Result<Factor, approx_chol::Error> {
+    control: BuildContext<'_>,
+) -> BuildResult<Factor, approx_chol::Error> {
     let csr = CsrRef::new(
         matrix.indptr(),
         matrix.indices(),
         matrix.data(),
         u32::try_from(matrix.n()).expect("Schur complement dimension exceeds u32::MAX"),
     )?;
-    Builder::new(config).build(csr)
+    control.before_factorization()?;
+    #[cfg(test)]
+    control.checkpoint(BuildStage::Factorization)?;
+    Builder::new(config).build(csr).map_err(Into::into)
 }
 
 pub(crate) fn local_solver_build(e: approx_chol::Error) -> BuildError {
@@ -192,7 +199,7 @@ mod tests {
             split_merge: Some(2),
         }
         .to_approx_chol(DEFAULT_DENSE_SCHUR_THRESHOLD, ExactFailure::Error);
-        let inner = factor_sparse(&cover, config).expect("factor cover");
+        let inner = factor_sparse(&cover, config, BuildContext::default()).expect("factor cover");
         let reduced = ReducedFactor::Cover { inner, m: 2 };
         assert_eq!(reduced.input_dimension(), 2);
         assert_eq!(reduced.solve_dimension(), 2);
@@ -221,7 +228,7 @@ mod tests {
         );
         let config = ApproxCholConfig::default()
             .to_approx_chol(DEFAULT_DENSE_SCHUR_THRESHOLD, ExactFailure::Error);
-        factor_sparse(&m, config).expect("factor 2x2")
+        factor_sparse(&m, config, BuildContext::default()).expect("factor 2x2")
     }
 
     #[test]

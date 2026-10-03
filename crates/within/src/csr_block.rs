@@ -1,3 +1,4 @@
+use crate::build_control::{unrestricted, BuildContext, BuildResult, BuildStage};
 use rayon::prelude::*;
 
 /// Minimum number of rows to trigger parallel SpMV.
@@ -57,22 +58,32 @@ impl CsrBlock {
 
     /// Transpose in O(nnz); output rows come out sorted because source rows go ascending.
     pub(crate) fn transpose(&self) -> CsrBlock {
+        unrestricted(self.transpose_controlled(BuildContext::default()))
+            .expect("unrestricted construction")
+    }
+
+    pub(crate) fn transpose_controlled(&self, control: BuildContext<'_>) -> BuildResult<CsrBlock> {
+        control.checkpoint(BuildStage::Transpose)?;
         let nnz = self.nnz();
         let mut row_counts = vec![0u32; self.ncols];
-        for &col in &self.indices {
+        for (edge, &col) in self.indices.iter().enumerate() {
+            control.poll(edge, BuildStage::Transpose)?;
             row_counts[col as usize] += 1;
         }
         let mut indptr = vec![0u32; self.ncols + 1];
         for i in 0..self.ncols {
+            control.poll(i, BuildStage::Transpose)?;
             indptr[i + 1] = indptr[i] + row_counts[i];
         }
         let mut cursor = indptr[..self.ncols].to_vec();
         let mut indices = vec![0u32; nnz];
         let mut data = vec![0.0f64; nnz];
         for src_row in 0..self.nrows {
+            control.poll(src_row, BuildStage::Transpose)?;
             let start = self.indptr[src_row] as usize;
             let end = self.indptr[src_row + 1] as usize;
             for idx in start..end {
+                control.poll(idx, BuildStage::Transpose)?;
                 let dst_row = self.indices[idx] as usize;
                 let pos = cursor[dst_row] as usize;
                 indices[pos] = src_row as u32;
@@ -80,23 +91,32 @@ impl CsrBlock {
                 cursor[dst_row] += 1;
             }
         }
-        CsrBlock {
+        control.checkpoint(BuildStage::Transpose)?;
+        Ok(CsrBlock {
             indptr,
             indices,
             data,
             nrows: self.ncols,
             ncols: self.nrows,
-        }
+        })
     }
 
     /// Build a CSR block from a row-major dense table (`table[i * ncols + j]`), skipping zeros.
-    pub(crate) fn from_dense_table(table: &[f64], nrows: usize, ncols: usize) -> Self {
+    pub(crate) fn from_dense_table(
+        table: &[f64],
+        nrows: usize,
+        ncols: usize,
+        control: BuildContext<'_>,
+    ) -> BuildResult<Self> {
+        control.checkpoint(BuildStage::Csr)?;
         debug_assert_eq!(table.len(), nrows * ncols);
         let mut indptr = vec![0u32; nrows + 1];
         for i in 0..nrows {
+            control.poll(i, BuildStage::Csr)?;
             let row_start = i * ncols;
             let mut count = 0u32;
             for j in 0..ncols {
+                control.poll(row_start + j, BuildStage::Csr)?;
                 if table[row_start + j] != 0.0 {
                     count += 1;
                 }
@@ -107,8 +127,10 @@ impl CsrBlock {
         let mut indices = Vec::with_capacity(nnz);
         let mut data = Vec::with_capacity(nnz);
         for i in 0..nrows {
+            control.poll(i, BuildStage::Csr)?;
             let row_start = i * ncols;
             for j in 0..ncols {
+                control.poll(row_start + j, BuildStage::Csr)?;
                 let v = table[row_start + j];
                 if v != 0.0 {
                     indices.push(j as u32);
@@ -116,13 +138,14 @@ impl CsrBlock {
                 }
             }
         }
-        CsrBlock {
+        control.checkpoint(BuildStage::Csr)?;
+        Ok(CsrBlock {
             indptr,
             indices,
             data,
             nrows,
             ncols,
-        }
+        })
     }
 
     /// `y = base + A x`, fusing the base copy with accumulation to avoid an extra pass.
@@ -196,7 +219,9 @@ mod tests {
             &[1.0, 0.0, 2.0, 0.0, 0.0, 3.0, 0.0, 4.0, 5.0, 0.0, 6.0, 0.0],
             3,
             4,
+            BuildContext::default(),
         )
+        .expect("build")
     }
 
     #[test]
@@ -231,7 +256,8 @@ mod tests {
 
     #[test]
     fn test_from_dense_table_all_zeros() {
-        let b = CsrBlock::from_dense_table(&[0.0; 6], 2, 3);
+        let b =
+            CsrBlock::from_dense_table(&[0.0; 6], 2, 3, BuildContext::default()).expect("build");
         assert_eq!(b.nrows, 2);
         assert_eq!(b.ncols, 3);
         assert_eq!(b.nnz(), 0);
@@ -279,7 +305,8 @@ mod tests {
         let b = make_3x4_block();
         assert_eq!(b.nnz(), 6);
 
-        let empty = CsrBlock::from_dense_table(&[0.0; 4], 2, 2);
+        let empty =
+            CsrBlock::from_dense_table(&[0.0; 4], 2, 2, BuildContext::default()).expect("build");
         assert_eq!(empty.nnz(), 0);
     }
 
@@ -311,7 +338,7 @@ mod tests {
 
     #[test]
     fn test_from_dense_table_single_element() {
-        let b = CsrBlock::from_dense_table(&[42.0], 1, 1);
+        let b = CsrBlock::from_dense_table(&[42.0], 1, 1, BuildContext::default()).expect("build");
         assert_eq!(b.nrows, 1);
         assert_eq!(b.ncols, 1);
         assert_eq!(b.nnz(), 1);
@@ -321,7 +348,8 @@ mod tests {
 
     #[test]
     fn test_transpose_empty() {
-        let b = CsrBlock::from_dense_table(&[0.0; 6], 2, 3);
+        let b =
+            CsrBlock::from_dense_table(&[0.0; 6], 2, 3, BuildContext::default()).expect("build");
         let bt = b.transpose();
         assert_eq!(bt.nrows, 3);
         assert_eq!(bt.ncols, 2);

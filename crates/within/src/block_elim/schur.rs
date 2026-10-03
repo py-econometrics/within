@@ -6,6 +6,7 @@
 
 use super::compensated_sum;
 use super::csr_matrix::CsrMatrix;
+use crate::build_control::{BuildContext, BuildResult, BuildStage};
 use approx_chol::low_level::CliqueTreeSampler;
 use rayon::prelude::*;
 
@@ -35,14 +36,18 @@ pub(crate) fn exact(
     matrix: &SddmMatrix,
     inv_diagonal_eliminated: &[f64],
     split: RowSplit,
-) -> CsrMatrix {
+    control: BuildContext<'_>,
+) -> BuildResult<CsrMatrix> {
+    control.checkpoint(BuildStage::Schur)?;
     let n_keep = matrix.n_kept();
     // `extract_sparse_row` zeroes what it read, so one workspace serves a whole run.
     let row = |i: usize, work: &mut Vec<f64>, touched: &mut Vec<usize>| {
+        control.checkpoint(BuildStage::Schur)?;
         compute_schur_row_dense(matrix, inv_diagonal_eliminated, i, work, touched);
         let result = extract_sparse_row(i, work, touched);
         touched.clear();
-        result
+        control.checkpoint(BuildStage::Schur)?;
+        Ok(result)
     };
 
     let rows: Vec<UpperSchurRow> = match split {
@@ -52,35 +57,53 @@ pub(crate) fn exact(
                 || (vec![0.0f64; n_keep], Vec::new()),
                 |(work, touched), i| row(i, work, touched),
             )
-            .collect(),
+            .collect::<BuildResult<_>>()?,
         RowSplit::Sequential => {
             let mut work = vec![0.0f64; n_keep];
             let mut touched = Vec::new();
             (0..n_keep)
                 .map(|i| row(i, &mut work, &mut touched))
-                .collect()
+                .collect::<BuildResult<_>>()?
         }
     };
 
-    assemble_schur_csr(rows, n_keep)
+    control.checkpoint(BuildStage::Schur)?;
+    let complement = assemble_schur_csr(rows, n_keep);
+    control.checkpoint(BuildStage::Schur)?;
+    Ok(complement)
 }
 
 /// Sampled Schur complement as a Laplacian; a ground vertex stays an ordinary final vertex.
-pub(crate) fn sampled(matrix: &SddmMatrix, config: &ApproxSchurConfig) -> CsrMatrix {
-    let edges = par_emit(matrix, config);
+pub(crate) fn sampled(
+    matrix: &SddmMatrix,
+    config: &ApproxSchurConfig,
+    control: BuildContext<'_>,
+) -> BuildResult<CsrMatrix> {
+    let edges = par_emit(matrix, config, control)?;
     let n = matrix.n_kept() + usize::from(matrix.grounding == Grounding::Grounded);
-    build_laplacian_csr(&edges, n)
+    control.checkpoint(BuildStage::Schur)?;
+    let complement = build_laplacian_csr(&edges, n);
+    control.checkpoint(BuildStage::Schur)?;
+    Ok(complement)
 }
 
-pub(crate) fn exact_for_factor(matrix: &SddmMatrix, inv_diagonal_eliminated: &[f64]) -> CsrMatrix {
+pub(crate) fn exact_for_factor(
+    matrix: &SddmMatrix,
+    inv_diagonal_eliminated: &[f64],
+    control: BuildContext<'_>,
+) -> BuildResult<CsrMatrix> {
+    control.checkpoint(BuildStage::Schur)?;
     let split = if exact_flops(matrix) < PAR_ROW_SPLIT_THRESHOLD {
         RowSplit::Sequential
     } else {
         RowSplit::Parallel
     };
-    let principal = exact(matrix, inv_diagonal_eliminated, split);
+    let principal = exact(matrix, inv_diagonal_eliminated, split, control)?;
     let surplus = reduced_surplus(matrix, inv_diagonal_eliminated);
-    build_explicit_laplacian(&principal, &surplus, matrix.grounding)
+    control.checkpoint(BuildStage::Schur)?;
+    let complement = build_explicit_laplacian(&principal, &surplus, matrix.grounding);
+    control.checkpoint(BuildStage::Schur)?;
+    Ok(complement)
 }
 
 /// Upper-triangle multiply-adds: `Σ_k nnz(k)(nnz(k)+1)/2`.
@@ -367,7 +390,12 @@ fn star(matrix: &SddmMatrix, k: usize) -> Star<'_> {
     }
 }
 
-fn par_emit(matrix: &SddmMatrix, config: &ApproxSchurConfig) -> Vec<Edge> {
+fn par_emit(
+    matrix: &SddmMatrix,
+    config: &ApproxSchurConfig,
+    control: BuildContext<'_>,
+) -> BuildResult<Vec<Edge>> {
+    control.checkpoint(BuildStage::Schur)?;
     // The total order fixes per-`(lo, hi)` summation, so the result is scheduling-independent.
     let n_kept = matrix.n_kept();
     let surplus_eliminated = matrix.surplus_eliminated();
@@ -375,19 +403,20 @@ fn par_emit(matrix: &SddmMatrix, config: &ApproxSchurConfig) -> Vec<Edge> {
         .then(|| u32::try_from(n_kept).expect("ground vertex exceeds u32::MAX"));
     let mut chunks = (0..matrix.n_eliminated())
         .into_par_iter()
-        .fold(
+        .try_fold(
             || StarWorkspace::new(config),
             |mut work, k| {
+                control.checkpoint(BuildStage::Schur)?;
                 let star = star(matrix, k);
                 if star.degree() > 0 {
                     let ground = ground_vertex.map(|g| (g, surplus_eliminated[k]));
                     work.sample_star(&star, ground);
                 }
-                work
+                Ok(work)
             },
         )
-        .map(|work| work.edges)
-        .collect::<Vec<_>>();
+        .map(|work: BuildResult<StarWorkspace>| work.map(|work| work.edges))
+        .collect::<BuildResult<Vec<_>>>()?;
     if let Some(ground) = ground_vertex {
         chunks.push(
             matrix
@@ -399,7 +428,10 @@ fn par_emit(matrix: &SddmMatrix, config: &ApproxSchurConfig) -> Vec<Edge> {
                 .collect(),
         );
     }
-    sort_and_dedup(chunks, n_kept)
+    control.checkpoint(BuildStage::Schur)?;
+    let edges = sort_and_dedup(chunks, n_kept);
+    control.checkpoint(BuildStage::Schur)?;
+    Ok(edges)
 }
 
 /// Sort into total `(lo, hi, weight)` order; the weight tiebreak makes the Schur reproducible.
