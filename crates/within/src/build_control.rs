@@ -1,8 +1,10 @@
-//! Pilot decision and blocking gate before speculative Schwarz factorization.
+//! Pilot decision, cooperative cancellation, and the gate before Schwarz factorization.
 
 use once_cell::sync::OnceCell;
 
 use crate::BuildError;
+
+const POLL_STRIDE: usize = 4096;
 
 /// A cancellation is neither a failed design nor a successful build without a target.
 #[derive(Debug)]
@@ -31,6 +33,14 @@ pub(crate) type BuildResult<T, E = BuildError> = Result<T, BuildFailure<E>>;
 /// Stages are also the deterministic test seams for cancellation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BuildStage {
+    Accumulate,
+    Csr,
+    Transpose,
+    Components,
+    Extract,
+    Schur,
+    Scaling,
+    Cover,
     Factor,
     #[cfg(test)]
     Factorization,
@@ -94,6 +104,14 @@ impl BuildContext<'_> {
         } else {
             Ok(())
         }
+    }
+
+    #[inline]
+    pub(crate) fn poll<E>(self, index: usize, stage: BuildStage) -> BuildResult<(), E> {
+        if index % POLL_STRIDE == 0 {
+            self.checkpoint(stage)?;
+        }
+        Ok(())
     }
 
     /// The backend has no cancellation API: do not enter it until Schwarz is needed.

@@ -1,4 +1,4 @@
-use crate::build_control::{BuildContext, BuildFailure, BuildResult};
+use crate::build_control::{BuildContext, BuildFailure, BuildResult, BuildStage};
 use std::borrow::Borrow;
 use std::sync::Arc;
 
@@ -185,8 +185,8 @@ impl Eliminated {
     }
 
     /// Fold of the signed matrix's Gremban cover; transient, dropped once its complement is built.
-    fn cover(&self) -> Result<Self, BuildError> {
-        Self::new(assemble_bipartite_cover(&self.matrix))
+    fn cover(&self, control: BuildContext<'_>) -> BuildResult<Self> {
+        Self::new(assemble_bipartite_cover(&self.matrix, control)?).map_err(Into::into)
     }
 
     /// A dense Cholesky spends nothing on sparsity, so it entails the exact complement.
@@ -197,8 +197,15 @@ impl Eliminated {
     ) -> BuildResult<Factor> {
         let this = fold.borrow();
         let exact_below = config.dense_threshold;
-        let exact = (exact_below > 0 && this.matrix.n_kept() <= exact_below)
-            .then(|| schur::exact_for_factor(&this.matrix, &this.inv_diagonal));
+        let exact = if exact_below > 0 && this.matrix.n_kept() <= exact_below {
+            Some(schur::exact_for_factor(
+                &this.matrix,
+                &this.inv_diagonal,
+                control,
+            )?)
+        } else {
+            None
+        };
         if let Some(exact) = &exact {
             match factor_complement(exact, config, ExactFailure::Error, control) {
                 Err(BuildFailure::Failed(approx_chol::Error::DenseFactorizationFailed {
@@ -208,10 +215,11 @@ impl Eliminated {
             }
         }
         let complement = match &config.schur {
-            SchurMode::Approximate(cfg) => schur::sampled(&this.matrix, cfg),
-            SchurMode::Exact => {
-                exact.unwrap_or_else(|| schur::exact_for_factor(&this.matrix, &this.inv_diagonal))
-            }
+            SchurMode::Approximate(cfg) => schur::sampled(&this.matrix, cfg, control)?,
+            SchurMode::Exact => match exact {
+                Some(exact) => exact,
+                None => schur::exact_for_factor(&this.matrix, &this.inv_diagonal, control)?,
+            },
         };
         // An owned fold is the transient cover; it is freed before the factor's fill is allocated.
         drop(fold);
@@ -238,7 +246,11 @@ fn factor_complement(
 }
 
 /// Gremban cover: SDDM, and acts on the antisymmetric `[z, -z]` subspace as the original.
-fn assemble_bipartite_cover(matrix: &SddmMatrix) -> SddmMatrix {
+fn assemble_bipartite_cover(
+    matrix: &SddmMatrix,
+    control: BuildContext<'_>,
+) -> BuildResult<SddmMatrix> {
+    control.checkpoint(BuildStage::Cover)?;
     let c = &matrix.cross_tab.c;
     let n_rows = c.nrows;
     let n_cols = c.ncols;
@@ -253,6 +265,7 @@ fn assemble_bipartite_cover(matrix: &SddmMatrix) -> SddmMatrix {
     indptr.push(0u32);
     for copy_shifted in [false, true] {
         for i in 0..n_rows {
+            control.poll(i, BuildStage::Cover)?;
             let start = c.indptr[i] as usize;
             let end = c.indptr[i + 1] as usize;
             // Same-sheet columns precede cross-sheet ones so each output row stays column-sorted.
@@ -260,6 +273,7 @@ fn assemble_bipartite_cover(matrix: &SddmMatrix) -> SddmMatrix {
                 let column_base = if column_shifted { n_cols_u32 } else { 0 };
                 let select_negative = column_shifted != copy_shifted;
                 for idx in start..end {
+                    control.poll(idx, BuildStage::Cover)?;
                     let value = c.data[idx];
                     if (value < 0.0) != select_negative {
                         continue;
@@ -278,12 +292,13 @@ fn assemble_bipartite_cover(matrix: &SddmMatrix) -> SddmMatrix {
         nrows: 2 * n_rows,
         ncols: 2 * n_cols,
     };
-    SddmMatrix {
+    control.checkpoint(BuildStage::Cover)?;
+    Ok(SddmMatrix {
         cross_tab: CrossTab::new(cover_c),
         diagonal: double_for_cover(&matrix.diagonal, n_rows),
         ground_edges: double_for_cover(&matrix.ground_edges, n_rows),
         grounding: matrix.grounding,
-    }
+    })
 }
 
 /// Each Gremban sheet copies every vertex, so a per-vertex array doubles within each side.
@@ -349,7 +364,7 @@ impl BlockElimSolver {
             }
             // Surplus survives the cover, so it grounds as the signed matrix did.
             MatrixForm::SignedPendingCover => ReducedFactor::Cover {
-                inner: Eliminated::factor_reduced(eliminated.cover()?, config, control)?,
+                inner: Eliminated::factor_reduced(eliminated.cover(control)?, config, control)?,
                 m: eliminated.matrix.n_kept(),
             },
         };

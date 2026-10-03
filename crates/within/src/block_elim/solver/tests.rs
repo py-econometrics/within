@@ -80,7 +80,12 @@ fn an_unusable_dense_pivot_is_retried_rather_than_fatal(
     let matrix =
         SddmMatrix::laplacian_for_test(&[0.0, 1e-16, 1e2, 1e0, 1e5, 0.0, 0.0, 1e14, 0.0], 3, 3);
     let eliminated = Eliminated::new(matrix).expect("a positive diagonal must fold");
-    let exact = schur::exact_for_factor(&eliminated.matrix, &eliminated.inv_diagonal);
+    let exact = schur::exact_for_factor(
+        &eliminated.matrix,
+        &eliminated.inv_diagonal,
+        Default::default(),
+    )
+    .expect("build");
     let exact_only = ApproxCholConfig::default()
         .to_approx_chol(DEFAULT_DENSE_SCHUR_THRESHOLD, ExactFailure::Error);
     assert!(

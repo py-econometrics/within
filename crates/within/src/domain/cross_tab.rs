@@ -6,6 +6,7 @@
 //! Levels use the design's compact positions, with a `local_to_global` map into
 //! the full coefficient space.
 
+use crate::build_control::{BuildContext, BuildResult, BuildStage};
 use std::sync::OnceLock;
 
 use serde::ser::SerializeStruct;
@@ -52,6 +53,11 @@ impl CrossTab {
     pub(crate) fn eager(c: CsrBlock) -> Self {
         let ct = c.transpose();
         Self::with_transpose(c, ct)
+    }
+
+    pub(crate) fn eager_controlled(c: CsrBlock, control: BuildContext<'_>) -> BuildResult<Self> {
+        let ct = c.transpose_controlled(control)?;
+        Ok(Self::with_transpose(c, ct))
     }
 
     pub(crate) fn ct(&self) -> &CsrBlock {
@@ -112,21 +118,31 @@ impl CrossTab {
     pub(crate) fn build_for_pair(
         prepared: &PreparedDesign<'_>,
         pair: ChannelPair,
-    ) -> (Self, Vec<u32>) {
+        control: BuildContext<'_>,
+    ) -> BuildResult<(Self, Vec<u32>)> {
         let design = &prepared.design;
         let row_term = &design.terms[pair.rows.term];
         let col_term = &design.terms[pair.cols.term];
         let (n_rows, n_cols) = (row_term.n_levels(), col_term.n_levels());
 
-        let cross_tab = CrossTab::eager(accumulate_cross_block(prepared, pair, n_rows, n_cols));
+        let cross_tab = CrossTab::eager_controlled(
+            accumulate_cross_block(prepared, pair, n_rows, n_cols, control)?,
+            control,
+        )?;
         let row_base = row_term.column_dofs(pair.rows.column).start;
         let col_base = col_term.column_dofs(pair.cols.column).start;
         let local_to_global = (0..n_rows)
-            .map(|level| to_u32(row_base + level))
-            .chain((0..n_cols).map(|level| to_u32(col_base + level)))
-            .collect();
+            .map(|level| {
+                control.poll(level, BuildStage::Extract)?;
+                Ok(to_u32(row_base + level))
+            })
+            .chain((0..n_cols).map(|level| {
+                control.poll(level, BuildStage::Extract)?;
+                Ok(to_u32(col_base + level))
+            }))
+            .collect::<BuildResult<Vec<_>>>()?;
 
-        (cross_tab, local_to_global)
+        Ok((cross_tab, local_to_global))
     }
 
     /// Symmetric adjacency over local `[q | r]` indexing: q-nodes walk `C`, r-nodes walk `Cᵀ`.
@@ -141,13 +157,18 @@ impl CrossTab {
     }
 
     /// Connected components by DFS over [`Self::neighbors`]; O(n_rows + n_cols + nnz).
-    pub(crate) fn bipartite_connected_components(&self) -> Vec<BipartiteComponent> {
+    pub(crate) fn bipartite_connected_components(
+        &self,
+        control: BuildContext<'_>,
+    ) -> BuildResult<Vec<BipartiteComponent>> {
+        control.checkpoint(BuildStage::Components)?;
         let n_rows = self.n_rows();
         let mut visited = vec![false; self.n_local()];
         let mut components = Vec::new();
         let mut stack = Vec::new();
 
         for start in 0..self.n_local() {
+            control.poll(start, BuildStage::Components)?;
             if visited[start] {
                 continue;
             }
@@ -157,12 +178,14 @@ impl CrossTab {
             let mut cols = Vec::new();
 
             while let Some(node) = stack.pop() {
+                control.checkpoint(BuildStage::Components)?;
                 if node < n_rows {
                     rows.push(node);
                 } else {
                     cols.push(node - n_rows);
                 }
-                for (j, _) in self.neighbors(node) {
+                for (edge, (j, _)) in self.neighbors(node).enumerate() {
+                    control.poll(edge, BuildStage::Components)?;
                     if !visited[j] {
                         visited[j] = true;
                         stack.push(j);
@@ -170,30 +193,37 @@ impl CrossTab {
                 }
             }
 
+            control.checkpoint(BuildStage::Components)?;
             rows.sort_unstable();
             cols.sort_unstable();
+            control.checkpoint(BuildStage::Components)?;
             components.push(BipartiteComponent { rows, cols });
         }
 
-        components
+        control.checkpoint(BuildStage::Components)?;
+        Ok(components)
     }
 
-    /// `row_remap`/`col_remap` must arrive all-`u32::MAX` and are reset on exit.
+    /// `row_remap`/`col_remap` must arrive all-`u32::MAX` and are reset on success.
     pub(crate) fn extract_component(
         &self,
         comp: &BipartiteComponent,
         row_remap: &mut [u32],
         col_remap: &mut [u32],
-    ) -> Self {
+        control: BuildContext<'_>,
+    ) -> BuildResult<Self> {
+        control.checkpoint(BuildStage::Extract)?;
         let n_rows = comp.rows.len();
         let n_cols = comp.cols.len();
         debug_assert_eq!(row_remap.len(), self.n_rows());
         debug_assert_eq!(col_remap.len(), self.n_cols());
 
         for (new_idx, &old_idx) in comp.rows.iter().enumerate() {
+            control.poll(new_idx, BuildStage::Extract)?;
             row_remap[old_idx] = to_u32(new_idx);
         }
         for (new_idx, &old_idx) in comp.cols.iter().enumerate() {
+            control.poll(new_idx, BuildStage::Extract)?;
             col_remap[old_idx] = to_u32(new_idx);
         }
 
@@ -201,9 +231,11 @@ impl CrossTab {
         let mut c_indices = Vec::new();
         let mut c_data = Vec::new();
         for (new_row, &old_row) in comp.rows.iter().enumerate() {
+            control.poll(new_row, BuildStage::Extract)?;
             let start = self.c.indptr[old_row] as usize;
             let end = self.c.indptr[old_row + 1] as usize;
             for idx in start..end {
+                control.poll(idx, BuildStage::Extract)?;
                 let old_rj = self.c.indices[idx] as usize;
                 let new_rj = col_remap[old_rj];
                 if new_rj != u32::MAX {
@@ -221,14 +253,16 @@ impl CrossTab {
             nrows: n_rows,
             ncols: n_cols,
         };
-        for &old_idx in &comp.rows {
+        for (entry, &old_idx) in comp.rows.iter().enumerate() {
+            control.poll(entry, BuildStage::Extract)?;
             row_remap[old_idx] = u32::MAX;
         }
-        for &old_idx in &comp.cols {
+        for (entry, &old_idx) in comp.cols.iter().enumerate() {
+            control.poll(entry, BuildStage::Extract)?;
             col_remap[old_idx] = u32::MAX;
         }
 
-        CrossTab::eager(c)
+        CrossTab::eager_controlled(c, control)
     }
 }
 

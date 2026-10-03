@@ -14,9 +14,10 @@ use reparam::TermReparam;
 
 pub use effect::Effect;
 
+#[cfg(test)]
+pub(crate) use factor_pairs::build_local_domains;
 pub(crate) use factor_pairs::{
-    build_local_domains, CoordinateMap, Grounding, LocalComponent, LocalDomain, MatrixForm,
-    SddmMatrix,
+    CoordinateMap, Grounding, LocalComponent, LocalDomain, MatrixForm, SddmMatrix,
 };
 
 use crate::channel::Channel;

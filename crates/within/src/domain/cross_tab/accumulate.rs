@@ -7,6 +7,7 @@
 //! channels pass [`Unit`], whose `l ≡ 1` folds the loading math away, so plain
 //! pairs keep the pre-slope codegen.
 
+use crate::build_control::{BuildContext, BuildResult, BuildStage};
 use crate::channel::ChannelPair;
 use crate::csr_block::CsrBlock;
 use crate::domain::{row_weight, PreparedDesign};
@@ -74,7 +75,8 @@ pub(super) fn accumulate_cross_block(
     pair: ChannelPair,
     n_rows: usize,
     n_cols: usize,
-) -> CsrBlock {
+    control: BuildContext<'_>,
+) -> BuildResult<CsrBlock> {
     let design = &prepared.design;
     let sqrt_weights = prepared.sqrt_weights();
     // Dispatching on cell count alone would pick sparse where it uses MORE memory.
@@ -101,6 +103,7 @@ pub(super) fn accumulate_cross_block(
             n_rows,
             n_cols,
             go_sparse,
+            control,
         ),
         (Some(zq), None) => accumulate(
             PairColumns {
@@ -113,6 +116,7 @@ pub(super) fn accumulate_cross_block(
             n_rows,
             n_cols,
             go_sparse,
+            control,
         ),
         (None, Some(zr)) => accumulate(
             PairColumns {
@@ -125,6 +129,7 @@ pub(super) fn accumulate_cross_block(
             n_rows,
             n_cols,
             go_sparse,
+            control,
         ),
         (Some(zq), Some(zr)) => accumulate(
             PairColumns {
@@ -137,6 +142,7 @@ pub(super) fn accumulate_cross_block(
             n_rows,
             n_cols,
             go_sparse,
+            control,
         ),
     }
 }
@@ -147,11 +153,12 @@ fn accumulate<Lq: Loading, Lr: Loading>(
     n_rows: usize,
     n_cols: usize,
     go_sparse: bool,
-) -> CsrBlock {
+    control: BuildContext<'_>,
+) -> BuildResult<CsrBlock> {
     if go_sparse {
-        accumulate_sparse_cross_block(cols, n_rows, n_cols)
+        accumulate_sparse_cross_block(cols, n_rows, n_cols, control)
     } else {
-        accumulate_dense_cross_block(cols, n_rows, n_cols)
+        accumulate_dense_cross_block(cols, n_rows, n_cols, control)
     }
 }
 
@@ -160,17 +167,20 @@ pub(super) fn accumulate_dense_cross_block<Lq: Loading, Lr: Loading>(
     cols: PairColumns<'_, Lq, Lr>,
     n_rows: usize,
     n_cols: usize,
-) -> CsrBlock {
+    control: BuildContext<'_>,
+) -> BuildResult<CsrBlock> {
+    control.checkpoint(BuildStage::Accumulate)?;
     let n_obs = cols.row_levels.len();
     let mut table = vec![0.0f64; n_rows * n_cols];
 
     for uid in 0..n_obs {
+        control.poll(uid, BuildStage::Accumulate)?;
         let o = cols.decode(uid);
         debug_assert!(o.cj < n_rows && o.ck < n_cols);
         table[o.cj * n_cols + o.ck] += o.cell;
     }
 
-    CsrBlock::from_dense_table(&table, n_rows, n_cols)
+    CsrBlock::from_dense_table(&table, n_rows, n_cols, control)
 }
 
 /// Sparse path: bucket by row, then dedup each row through a dense `n_cols` workspace.
@@ -178,16 +188,20 @@ pub(super) fn accumulate_sparse_cross_block<Lq: Loading, Lr: Loading>(
     cols: PairColumns<'_, Lq, Lr>,
     n_rows: usize,
     n_cols: usize,
-) -> CsrBlock {
+    control: BuildContext<'_>,
+) -> BuildResult<CsrBlock> {
+    control.checkpoint(BuildStage::Accumulate)?;
     let n_obs = cols.row_levels.len();
 
     let mut row_counts = vec![0u32; n_rows];
     for uid in 0..n_obs {
+        control.poll(uid, BuildStage::Accumulate)?;
         row_counts[cols.row_levels[uid] as usize] += 1;
     }
 
     let mut bucket_indptr = vec![0u32; n_rows + 1];
     for i in 0..n_rows {
+        control.poll(i, BuildStage::Accumulate)?;
         bucket_indptr[i + 1] = bucket_indptr[i] + row_counts[i];
     }
     let total_entries = bucket_indptr[n_rows] as usize;
@@ -196,6 +210,7 @@ pub(super) fn accumulate_sparse_cross_block<Lq: Loading, Lr: Loading>(
     let mut bucket_vals = vec![0.0f64; total_entries];
     let mut cursor = bucket_indptr[..n_rows].to_vec();
     for uid in 0..n_obs {
+        control.poll(uid, BuildStage::Accumulate)?;
         let o = cols.decode(uid);
         let pos = cursor[o.cj] as usize;
         bucket_cols[pos] = to_u32(o.ck);
@@ -211,17 +226,22 @@ pub(super) fn accumulate_sparse_cross_block<Lq: Loading, Lr: Loading>(
     let mut c_data = Vec::new();
 
     for row in 0..n_rows {
+        control.poll(row, BuildStage::Accumulate)?;
         let start = bucket_indptr[row] as usize;
         let end = bucket_indptr[row + 1] as usize;
         for idx in start..end {
+            control.poll(idx, BuildStage::Accumulate)?;
             let col = bucket_cols[idx] as usize;
             if work[col] == 0.0 {
                 touched.push(to_u32(col));
             }
             work[col] += bucket_vals[idx];
         }
+        control.checkpoint(BuildStage::Accumulate)?;
         touched.sort_unstable();
-        for &col in &touched {
+        control.checkpoint(BuildStage::Accumulate)?;
+        for (entry, &col) in touched.iter().enumerate() {
+            control.poll(entry, BuildStage::Accumulate)?;
             let v = work[col as usize];
             if v != 0.0 {
                 c_indices.push(col);
@@ -233,11 +253,12 @@ pub(super) fn accumulate_sparse_cross_block<Lq: Loading, Lr: Loading>(
         touched.clear();
     }
 
-    CsrBlock {
+    control.checkpoint(BuildStage::Accumulate)?;
+    Ok(CsrBlock {
         indptr: c_indptr,
         indices: c_indices,
         data: c_data,
         nrows: n_rows,
         ncols: n_cols,
-    }
+    })
 }

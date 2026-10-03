@@ -1,4 +1,5 @@
 use super::NotScalable;
+use crate::build_control::{BuildContext, BuildResult, BuildStage};
 use crate::config::ScalingConfig;
 use crate::csr_block::CsrBlock;
 use crate::domain::CrossTab;
@@ -269,7 +270,8 @@ fn reduced_cg_scaling(
     operator: &NormalizedCrossOperator<'_>,
     initial: ScalingCandidate,
     scaling: &ScalingConfig,
-) -> Result<ScalingResult, NotScalable> {
+    control: BuildContext<'_>,
+) -> BuildResult<ScalingResult, NotScalable> {
     let mut large_work = vec![0.0; operator.large_len()];
     let rhs = operator.reduced_rhs(&mut large_work);
     let mut cg = ReducedCg::new(rhs)?;
@@ -277,6 +279,7 @@ fn reduced_cg_scaling(
     let mut small_image = vec![0.0; operator.small_len()];
 
     for iteration in 1..=scaling.max_iterations {
+        control.checkpoint(BuildStage::Scaling)?;
         let step = cg.step(operator, &mut large_work)?;
         if matches!(step, ReducedCgStep::NonPositiveCurvature) {
             // A singular boundary exposes its Perron vector as the zero-curvature direction.
@@ -344,11 +347,13 @@ pub(super) fn dominance_scaling(
     cross_tab: &CrossTab,
     diagonal: &[f64],
     scaling: &ScalingConfig,
-) -> Result<DominanceScaling, NotScalable> {
+    control: BuildContext<'_>,
+) -> BuildResult<DominanceScaling, NotScalable> {
+    control.checkpoint(BuildStage::Scaling)?;
     let n = cross_tab.n_local();
     debug_assert_eq!(diagonal.len(), n);
     if diagonal.iter().any(|d| !d.is_finite() || *d <= 0.0) {
-        return Err(NotScalable);
+        return Err(NotScalable.into());
     }
 
     let already_dominant = (0..n).all(|i| {
@@ -382,7 +387,7 @@ pub(super) fn dominance_scaling(
         mu: initial_mu,
     };
     let operator = NormalizedCrossOperator::new(cross_tab, &inv_sqrt);
-    let result = reduced_cg_scaling(&operator, initial, scaling)?;
+    let result = reduced_cg_scaling(&operator, initial, scaling, control)?;
     let scales: Vec<f64> = result
         .candidate
         .mu
@@ -391,7 +396,7 @@ pub(super) fn dominance_scaling(
         .map(|(&value, &normalizer)| value * normalizer)
         .collect();
     if !scales.iter().all(|value| value.is_finite() && *value > 0.0) {
-        return Err(NotScalable);
+        return Err(NotScalable.into());
     }
     Ok(DominanceScaling {
         scales,
