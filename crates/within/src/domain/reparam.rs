@@ -67,14 +67,9 @@ impl TermReparam {
                     });
                 }
             }
-            let center = if intercept {
-                moments.mean(level).into()
-            } else {
-                vec![0.0; v].into()
-            };
             transforms.push(LevelTransform {
                 w: w.into(),
-                center,
+                center: moments.center(level).into(),
             });
         }
 

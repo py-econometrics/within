@@ -1,18 +1,17 @@
 //! Per-level weighted moments of a term's raw slopes, the input to slope whitening.
 
+use std::ops::Range;
+
 use super::{row_weight, Design};
 
-/// One-pass weighted within-level moments (multivariate Welford); structural
-/// zeros stay exact, so rank drops survive a zero tolerance.
+/// Weighted within-level mean and Gram, two-pass so structural zeros stay exact.
 pub(crate) struct LevelMoments {
     v: usize,
-    intercept: bool,
-    w_sum: Vec<DoubleWord>,
-    /// Running Welford mean while observing, the faithful `Σwz / Σw` once built.
-    mean: Vec<f64>,
-    wz_sum: Vec<DoubleWord>,
-    /// Per level, `Σ w (z−μ)(z−μ)ᵀ` packed as a row-major lower triangle.
-    comoment: Vec<f64>,
+    w_sum: Vec<f64>,
+    /// Per level, the weighted mean with an intercept, `0` without one.
+    center: Vec<f64>,
+    /// Per level, `Σ w (z−c)(z−c)ᵀ` about the center, packed as a row-major lower triangle.
+    gram: Vec<f64>,
 }
 
 /// Index of `(j, k)`, `k ≤ j`, in a packed row-major lower triangle.
@@ -22,6 +21,16 @@ fn tri_index(j: usize, k: usize) -> usize {
 
 fn tri_len(v: usize) -> usize {
     v * (v + 1) / 2
+}
+
+/// Each maximal run of equal levels as `(level, rows)`.
+fn level_runs(levels: &[u32]) -> impl Iterator<Item = (usize, Range<usize>)> + '_ {
+    let mut start = 0;
+    levels.chunk_by(|a, b| a == b).map(move |run| {
+        let rows = start..start + run.len();
+        start = rows.end;
+        (run[0] as usize, rows)
+    })
 }
 
 fn two_sum(a: f64, b: f64) -> (f64, f64) {
@@ -38,106 +47,178 @@ struct DoubleWord {
 }
 
 impl DoubleWord {
-    fn add_product(&mut self, a: f64, b: f64) {
-        let p = a * b;
-        let (hi, err) = two_sum(self.hi, p);
+    fn add(&mut self, x: f64) {
+        let (hi, err) = two_sum(self.hi, x);
         self.hi = hi;
-        self.lo += err + a.mul_add(b, -p);
+        self.lo += err;
     }
 
-    /// Faithful when `n²u(κ+1) < ¼`, `κ = Σ|wz|/|Σwz|`, so a representable quotient is exact.
-    fn quotient(self, divisor: Self) -> f64 {
+    fn add_product(&mut self, a: f64, b: f64) {
+        let p = a * b;
+        self.add(p);
+        self.lo += a.mul_add(b, -p);
+    }
+
+    fn quotient(self, divisor: Self) -> Self {
         let (s, s_lo) = two_sum(self.hi, self.lo);
         let (d, d_lo) = two_sum(divisor.hi, divisor.lo);
         let q = s / d;
         // The remainder of a rounded quotient is representable, so this fma is exact.
         let r = (-q).mul_add(d, s) + s_lo - q * d_lo;
-        q + r / d
+        Self { hi: q, lo: r / d }
+    }
+
+    fn plus(self, x: f64) -> f64 {
+        let (hi, lo) = two_sum(x, self.hi);
+        hi + (lo + self.lo)
+    }
+}
+
+/// One level's `Σw(z−s)` for one slope, shifted by its first row to scale with the spread.
+#[derive(Clone, Copy, Default)]
+struct ShiftedSum {
+    shift: f64,
+    sum: DoubleWord,
+}
+
+impl ShiftedSum {
+    fn add(&mut self, w: f64, z: f64) {
+        let (d, e) = two_sum(z, -self.shift);
+        self.sum.add_product(w, d);
+        self.sum.lo += w * e;
+    }
+
+    fn mean(self, w_sum: DoubleWord) -> f64 {
+        self.sum.quotient(w_sum).plus(self.shift)
     }
 }
 
 impl LevelMoments {
     pub(crate) fn build(design: &Design<'_>, term: usize, sqrt_weights: Option<&[f64]>) -> Self {
         let t = &design.terms[term];
-        let levels = t.levels();
         let zs: Vec<&[f64]> = t.raw_slopes().collect();
         let v = zs.len();
-        let mut moments = Self {
-            v,
-            intercept: t.intercept,
-            w_sum: vec![DoubleWord::default(); t.n_levels()],
-            mean: vec![0.0; t.n_levels() * v],
-            wz_sum: vec![DoubleWord::default(); t.n_levels() * v],
-            comoment: vec![0.0; t.n_levels() * tri_len(v)],
-        };
-        let mut z_row = vec![0.0; v];
-        let mut delta = vec![0.0; v];
-        for (obs, &level) in levels.iter().enumerate() {
-            for (zr, col) in z_row.iter_mut().zip(&zs) {
-                *zr = col[obs];
+        let n_levels = t.n_levels();
+        let weight = |obs: usize| row_weight(sqrt_weights, obs);
+
+        // Runs sum in registers, off the per-row store chain; random orders are all singletons.
+        let mut w_sum = vec![DoubleWord::default(); n_levels];
+        let n_shifted = if t.intercept { v } else { 0 };
+        let mut shifted = vec![ShiftedSum::default(); n_levels * n_shifted];
+        for (level, rows) in level_runs(t.levels()) {
+            let level_w = &mut w_sum[level];
+            let accs = &mut shifted[level * n_shifted..][..n_shifted];
+            if rows.len() == 1 {
+                let obs = rows.start;
+                let w = weight(obs);
+                if w > 0.0 {
+                    let first = level_w.hi == 0.0;
+                    for (acc, col) in accs.iter_mut().zip(&zs) {
+                        if first {
+                            acc.shift = col[obs];
+                        }
+                        acc.add(w, col[obs]);
+                    }
+                    level_w.add(w);
+                }
+                continue;
             }
-            let w = row_weight(sqrt_weights, obs);
-            moments.observe(level as usize, &z_row, w, &mut delta);
+            let first = if level_w.hi == 0.0 {
+                rows.clone().find(|&obs| weight(obs) > 0.0)
+            } else {
+                None
+            };
+            let mut run_w = *level_w;
+            for obs in rows.clone() {
+                let w = weight(obs);
+                if w > 0.0 {
+                    run_w.add(w);
+                }
+            }
+            *level_w = run_w;
+            for (acc, col) in accs.iter_mut().zip(&zs) {
+                let mut run_acc = *acc;
+                if let Some(obs) = first {
+                    run_acc.shift = col[obs];
+                }
+                for obs in rows.clone() {
+                    let w = weight(obs);
+                    if w > 0.0 {
+                        run_acc.add(w, col[obs]);
+                    }
+                }
+                *acc = run_acc;
+            }
         }
-        // Welford's mean drifts by ulps, so a row at the exact mean would centre to noise, not 0.
-        for (level, w_sum) in moments.w_sum.iter().enumerate() {
-            if w_sum.hi > 0.0 {
-                for (m, wz) in moments.mean[level * v..][..v]
-                    .iter_mut()
-                    .zip(&moments.wz_sum[level * v..])
-                {
-                    *m = wz.quotient(*w_sum);
+        let mut center = vec![0.0; n_levels * v];
+        if t.intercept {
+            for (i, c) in center.iter_mut().enumerate() {
+                let w = w_sum[i / v];
+                if w.hi > 0.0 {
+                    *c = shifted[i].mean(w);
                 }
             }
         }
-        moments
-    }
 
-    fn observe(&mut self, level: usize, z: &[f64], w: f64, delta: &mut [f64]) {
-        if w <= 0.0 {
-            return;
-        }
-        let v = self.v;
-        self.w_sum[level].add_product(w, 1.0);
-        let ratio = w / self.w_sum[level].hi;
-        for (wz, &zj) in self.wz_sum[level * v..][..v].iter_mut().zip(z) {
-            wz.add_product(w, zj);
-        }
-        let mean = &mut self.mean[level * v..][..v];
-        for (dj, (zj, mj)) in delta.iter_mut().zip(z.iter().zip(mean.iter_mut())) {
-            *dj = zj - *mj;
-            *mj += ratio * *dj;
-        }
-        let com = &mut self.comoment[level * tri_len(v)..][..tri_len(v)];
-        for j in 0..v {
-            let dev = w * (z[j] - mean[j]);
-            for k in 0..=j {
-                com[tri_index(j, k)] += delta[k] * dev;
+        let mut gram = vec![0.0; n_levels * tri_len(v)];
+        let mut dev = vec![0.0; v];
+        for (level, rows) in level_runs(t.levels()) {
+            let c = &center[level * v..][..v];
+            let g = &mut gram[level * tri_len(v)..][..tri_len(v)];
+            if rows.len() == 1 {
+                let obs = rows.start;
+                let w = weight(obs);
+                if w > 0.0 {
+                    for ((d, col), cj) in dev.iter_mut().zip(&zs).zip(c) {
+                        *d = col[obs] - cj;
+                    }
+                    for j in 0..v {
+                        let wd = w * dev[j];
+                        for k in 0..=j {
+                            g[tri_index(j, k)] += wd * dev[k];
+                        }
+                    }
+                }
+                continue;
             }
+            for j in 0..v {
+                for k in 0..=j {
+                    let mut acc = g[tri_index(j, k)];
+                    for obs in rows.clone() {
+                        let w = weight(obs);
+                        if w > 0.0 {
+                            acc += w * (zs[j][obs] - c[j]) * (zs[k][obs] - c[k]);
+                        }
+                    }
+                    g[tri_index(j, k)] = acc;
+                }
+            }
+        }
+
+        Self {
+            v,
+            w_sum: w_sum.iter().map(|w| w.hi + w.lo).collect(),
+            center,
+            gram,
         }
     }
 
     pub(crate) fn w_sum(&self, level: usize) -> f64 {
-        self.w_sum[level].hi
+        self.w_sum[level]
     }
 
-    pub(crate) fn mean(&self, level: usize) -> &[f64] {
+    pub(crate) fn center(&self, level: usize) -> &[f64] {
         let v = self.v;
-        &self.mean[level * v..][..v]
+        &self.center[level * v..][..v]
     }
 
-    /// The level's row-major `v×v` Gramian: centered with an intercept, `M2 + w·μμᵀ` without one.
+    /// The level's Gram unpacked into a row-major `v×v` matrix.
     pub(crate) fn fill_gram(&self, level: usize, gram: &mut [f64]) {
         let v = self.v;
-        let com = &self.comoment[level * tri_len(v)..][..tri_len(v)];
-        let mean = self.mean(level);
-        let w = self.w_sum[level].hi;
+        let packed = &self.gram[level * tri_len(v)..][..tri_len(v)];
         for j in 0..v {
             for k in 0..=j {
-                let mut g = com[tri_index(j, k)];
-                if !self.intercept {
-                    g += w * mean[j] * mean[k];
-                }
+                let g = packed[tri_index(j, k)];
                 gram[j * v + k] = g;
                 gram[k * v + j] = g;
             }

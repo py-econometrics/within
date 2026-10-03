@@ -558,8 +558,7 @@ fn a_contrast_of_certified_proposals_is_not_itself_certified() {
     assert!(share < 1e-12, "share={share:.3e}");
 }
 
-/// Eleven shuffled years put the mean year at an exact zero loading that the running mean
-/// misses by roundoff; the noise loading ties a near-isolated year into the alias block.
+/// A mean-year noise loading must not tie a near-isolated year into the alias block.
 #[test]
 fn an_alias_through_a_zero_loading_still_converges() {
     let mut state = 0x2545_f491_4f6c_dd1du64;

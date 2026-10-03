@@ -113,3 +113,41 @@ fn an_observation_at_its_level_mean_loads_exactly_zero() {
         .unwrap();
     assert_eq!(t.slopes[0][mean_year], 0.0);
 }
+
+#[test]
+fn a_level_sum_past_the_float_range_still_whitens_finitely() {
+    let n = 200;
+    let level = vec![0u32; n];
+    let huge = vec![1e306; n];
+    let year: Vec<f64> = (0..n).map(|i| i as f64).collect();
+    let effects = vec![Effect::new(&level, true, [&huge[..], &year[..]]).unwrap()];
+    let prepared = PreparedDesign::unweighted_for_test(Design::new(effects).unwrap());
+    assert!(prepared
+        .term(0)
+        .slopes
+        .iter()
+        .flatten()
+        .all(|u| u.is_finite()));
+}
+
+/// Slopes spread over ~1e-9 of their size; a running mean's rounding would show in the Gram.
+#[test]
+fn a_large_offset_still_whitens_to_the_identity() {
+    let year = [6.0, 8.0, 10.0, 7.0, 5.0, 3.0, 0.0, 4.0, 1.0, 9.0, 2.0];
+    let z0: Vec<f64> = year.iter().map(|t| 1e9 + 0.1 * t).collect();
+    let z1: Vec<f64> = year
+        .iter()
+        .map(|t| 1e9 + 0.1 * t + 0.03 * (t * t % 7.0))
+        .collect();
+    let level = [0u32; 11];
+    let effects = vec![Effect::new(&level, true, [&z0[..], &z1[..]]).unwrap()];
+    let prepared = PreparedDesign::unweighted_for_test(Design::new(effects).unwrap());
+    let us = prepared.term(0).slopes;
+    for (j, uj) in us.iter().enumerate() {
+        for (k, uk) in us.iter().enumerate() {
+            let gram: f64 = uj.iter().zip(uk).map(|(a, b)| a * b).sum();
+            let expected = if j == k { 1.0 } else { 0.0 };
+            assert!((gram - expected).abs() < 1e-12, "⟨u{j}, u{k}⟩ = {gram}");
+        }
+    }
+}
