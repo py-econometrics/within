@@ -6,8 +6,7 @@ use super::{CoefficientAddress, CoefficientLayout};
 use crate::channel::Channel;
 use crate::config::{LocalSolverConfig, LsmrOptions, DEFAULT_DENSE_SCHUR_THRESHOLD};
 use crate::domain::{build_local_domains, Design, Grounding, MatrixForm, PreparedDesign};
-use crate::AliasVerdict::{self, Constrained, Kept};
-use crate::{BuildWarning, Effect, PreconditionerConfig, Solver};
+use crate::{Effect, PreconditionerConfig, Solver};
 
 /// DGP kept in lockstep with `surplus_component_sampled_matches_exact_reduction`
 /// in `tests/slopes_routing.rs`. A positive slope-only term is not centered by
@@ -269,25 +268,7 @@ fn max_abs_group_mean(design: &Design<'_>, demeaned: &[f64]) -> f64 {
         .fold(0.0f64, f64::max)
 }
 
-fn constrained_rank(solver: &Solver<'_>) -> Option<usize> {
-    solver
-        .preconditioner()
-        .and_then(|p| p.gauge.as_ref())
-        .map(|gauge| gauge.rank())
-}
-
-fn verdicts(solver: &Solver<'_>) -> Vec<AliasVerdict> {
-    solver
-        .warnings()
-        .iter()
-        .filter_map(|w| match w {
-            BuildWarning::CollinearSlopeCovariate { verdict, .. } => Some(*verdict),
-            _ => None,
-        })
-        .collect()
-}
-
-/// The spectral floor off, so only the gauge constraint can save an aliased solve.
+/// The spectral floor off, so an aliased solve rests on the local solves alone.
 fn unfloored() -> PreconditionerConfig {
     PreconditionerConfig::Additive {
         local_solver: LocalSolverConfig {
@@ -312,43 +293,28 @@ fn solve_tight(solver: &Solver<'_>, y: &[f64]) -> crate::SolveResult {
 }
 
 #[rstest]
-#[case::unrelated(SlopeSpec::Independent, &[], None)]
-#[case::exact_alias(SlopeSpec::YearIndex, &[Constrained], Some(1))]
-#[case::shared_covariate(SlopeSpec::SharedWithFirm, &[Constrained, Constrained], Some(1))]
-#[case::deep_null(SlopeSpec::NearYearIndex(1e-10), &[Constrained], Some(1))]
-#[case::recoverable_at_the_floor(SlopeSpec::NearYearIndex(1e-8), &[Kept], None)]
-#[case::recoverable(SlopeSpec::NearYearIndex(1e-6), &[Kept], None)]
-#[case::near_alias(SlopeSpec::NearYearIndex(1e-3), &[Kept], None)]
-#[case::duplicate_aliases(SlopeSpec::DuplicateYearIndex, &[Kept, Constrained], Some(1))]
-#[case::alias_without_intercept(SlopeSpec::YearIndexWithoutIntercept, &[Constrained], Some(1))]
-#[case::two_independent_aliases(SlopeSpec::TwoIndependentAliases, &[Constrained, Constrained], Some(2))]
-#[case::alias_of_two_terms(SlopeSpec::AgeCohort, &[], None)]
-fn a_warned_direction_is_removed_only_when_it_carries_nothing(
-    #[case] spec: SlopeSpec,
-    #[case] expected: &[AliasVerdict],
-    #[case] rank: Option<usize>,
-) {
+#[case::unrelated(SlopeSpec::Independent)]
+#[case::exact_alias(SlopeSpec::YearIndex)]
+#[case::shared_covariate(SlopeSpec::SharedWithFirm)]
+#[case::deep_null(SlopeSpec::NearYearIndex(1e-10))]
+#[case::recoverable_at_the_floor(SlopeSpec::NearYearIndex(1e-8))]
+#[case::recoverable(SlopeSpec::NearYearIndex(1e-6))]
+#[case::near_alias(SlopeSpec::NearYearIndex(1e-3))]
+#[case::duplicate_aliases(SlopeSpec::DuplicateYearIndex)]
+#[case::alias_without_intercept(SlopeSpec::YearIndexWithoutIntercept)]
+#[case::two_independent_aliases(SlopeSpec::TwoIndependentAliases)]
+#[case::alias_of_two_terms(SlopeSpec::AgeCohort)]
+fn an_aliased_slope_converges(#[case] spec: SlopeSpec) {
     let panel = akm_panel(4_000, 200, 10, 0.15, spec);
     let solver = Solver::new(panel.effects(), None, unfloored()).expect("solver");
     let out = solve_tight(&solver, &panel.y);
-    // Without the constraint an aliased solve reports a false convergence at an O(1) mean.
+    // A floating component grounded by mistake reports a false convergence at an O(1) mean.
     let group_mean = max_abs_group_mean(&solver.prepared.design, &out.demeaned);
     assert!(
         out.converged && group_mean < 1e-9,
         "converged={}, gm={group_mean:.3e}",
         out.converged
     );
-    assert_eq!(verdicts(&solver), expected, "{:?}", solver.warnings());
-    // Two proposals can name one direction; the duplicate is spent against the first row.
-    assert_eq!(constrained_rank(&solver), rank);
-
-    // The gauge is the design's, not the factorization's: a deserialized preconditioner gets it
-    // back from the solver it is attached to.
-    let bytes = postcard::to_stdvec(solver.preconditioner().expect("built")).expect("serialize");
-    let prebuilt: crate::Preconditioner = postcard::from_bytes(&bytes).expect("deserialize");
-    assert!(prebuilt.gauge.is_none());
-    let reattached = Solver::new(panel.effects(), None, prebuilt).expect("solver");
-    assert_eq!(constrained_rank(&reattached), rank);
 }
 
 /// Escalates after any single non-vanishing contraction, so a handoff is deterministic.
@@ -360,30 +326,7 @@ fn eager_ladder(local_solver: LocalSolverConfig) -> PreconditionerConfig {
     }
 }
 
-/// The escalated rung is built after the gauge, so it has to inherit it: an aliased design that
-/// hands off would otherwise run its second rung unconstrained.
-#[test]
-fn an_escalated_rung_keeps_the_constrained_directions_out() {
-    let panel = akm_panel(4_000, 200, 10, 0.15, SlopeSpec::YearIndex);
-    let ladder = eager_ladder(LocalSolverConfig {
-        ridge: 0.0,
-        ..Default::default()
-    });
-    let solver = Solver::new(panel.effects(), None, ladder).expect("solver");
-    let out = solve_tight(&solver, &panel.y);
-
-    assert!(solver.has_escalated(), "eager stall must hand off");
-    assert_eq!(constrained_rank(&solver), Some(1));
-    let group_mean = max_abs_group_mean(&solver.prepared.design, &out.demeaned);
-    assert!(
-        out.converged && group_mean < 1e-9,
-        "converged={}, gm={group_mean:.3e}",
-        out.converged
-    );
-}
-
-/// Two crossed slope terms on one covariate: large enough for the diagonal to stall, and
-/// screened as collinear at construction.
+/// Two crossed slope terms on one covariate: large enough for the diagonal to stall.
 struct SharedCovariatePair {
     a: Vec<u32>,
     b: Vec<u32>,
@@ -409,38 +352,6 @@ impl SharedCovariatePair {
             Effect::new(&self.b, true, [&self.z[..]]).expect("b"),
         ]
     }
-}
-
-/// Design screening runs at construction, so its warnings must survive the deferred
-/// Schwarz build rather than being replaced by it (#260 over #283).
-#[test]
-fn screening_warnings_survive_escalation() {
-    let panel = SharedCovariatePair::new();
-    let collinear = |solver: &Solver<'_>| {
-        solver
-            .warnings()
-            .iter()
-            .filter(|w| matches!(w, BuildWarning::CollinearSlopeCovariate { .. }))
-            .count()
-    };
-
-    let solver =
-        Solver::new(panel.effects(), None, eager_ladder(Default::default())).expect("solver");
-    let before = collinear(&solver);
-    assert!(
-        before > 0,
-        "shared covariate must warn: {:?}",
-        solver.warnings()
-    );
-
-    let _ = solver.solve(&panel.y, None).expect("adaptive solve");
-    assert!(solver.has_escalated(), "eager stall must hand off");
-    assert_eq!(
-        collinear(&solver),
-        before,
-        "escalation dropped screening warnings: {:?}",
-        solver.warnings()
-    );
 }
 
 /// A deferred build that fails is settled like one that succeeds: the second solve reports the
@@ -481,30 +392,6 @@ fn a_failed_deferred_build_is_kept_and_reported_again() {
     assert!(!solver.has_escalated());
 }
 
-/// A batch runs its right-hand sides on rayon workers that also execute the base apply's
-/// subdomain jobs; the constraint's scratch must never be held across that apply.
-#[test]
-fn a_constrained_batch_solve_does_not_deadlock() {
-    let panel = akm_panel(4_000, 200, 10, 0.15, SlopeSpec::YearIndex);
-    let solver = Solver::new(panel.effects(), None, unfloored()).expect("solver");
-    assert_eq!(constrained_rank(&solver), Some(1));
-    let ys: Vec<Vec<f64>> = (0..64)
-        .map(|k| panel.y.iter().map(|v| v * (k + 1) as f64).collect())
-        .collect();
-    let refs: Vec<&[f64]> = ys.iter().map(Vec::as_slice).collect();
-    let out = solver
-        .solve_batch(
-            &refs,
-            &LsmrOptions {
-                tol: 1e-12,
-                maxiter: 20_000,
-                ..Default::default()
-            },
-        )
-        .expect("batch");
-    assert!(out.converged.iter().all(|&c| c), "{:?}", out.converged);
-}
-
 /// Three mutually orthogonal, centered ±1 columns on eight observations.
 fn walsh_columns() -> ([f64; 8], [f64; 8], [f64; 8]) {
     (
@@ -515,18 +402,16 @@ fn walsh_columns() -> ([f64; 8], [f64; 8], [f64; 8]) {
 }
 
 /// Share of `y` left after residualizing on `effects` under the default preconditioner.
-fn residual_share<'a>(effects: Vec<Effect<'a>>, y: &[f64]) -> (Solver<'a>, f64) {
+fn residual_share(effects: Vec<Effect<'_>>, y: &[f64]) -> f64 {
     let solver = Solver::new(effects, None, None).expect("solver");
     let out = solve_tight(&solver, y);
     let energy = |v: &[f64]| v.iter().map(|x| x * x).sum::<f64>();
-    let share = energy(&out.demeaned) / energy(y);
-    (solver, share)
+    energy(&out.demeaned) / energy(y)
 }
 
-/// Whitening spent the carrying term's own `c` direction on a near-duplicate slope whose remainder
-/// the other term does not span, so the proposed difference of fits is not a null.
+/// A near-duplicate slope whose remainder the other term does not span still residualizes fully.
 #[test]
-fn a_covariate_its_own_term_no_longer_carries_is_not_a_null() {
+fn a_near_duplicate_slope_residualizes_its_span() {
     let (c, _, e) = walsh_columns();
     let near: [f64; 8] = std::array::from_fn(|i| 2.0 * c[i] + 1e-6 * e[i]);
     let level = [0u32; 8];
@@ -535,21 +420,13 @@ fn a_covariate_its_own_term_no_longer_carries_is_not_a_null() {
         Effect::new(&level, true, [&c[..]]).unwrap(),
     ];
     // `e` lies in the design's span, so nothing of it may survive residualization.
-    let (solver, share) = residual_share(effects, &e);
-    assert_eq!(
-        verdicts(&solver),
-        [Kept, Kept, Kept],
-        "{:?}",
-        solver.warnings()
-    );
-    assert_eq!(constrained_rank(&solver), None);
+    let share = residual_share(effects, &e);
     assert!(share < 1e-12, "share={share:.3e}");
 }
 
-/// Two certified proposals `c` and `c + 1e-3·d + 5e-11·e` name one null and a contrast whose
-/// unexplained `e` part is divided by the contrast's `1e-3` share: the contrast is not certified.
+/// A slope `c + 1e-3·d + 5e-11·e` beside a term carrying `c` and `d` still residualizes fully.
 #[test]
-fn a_contrast_of_certified_proposals_is_not_itself_certified() {
+fn a_near_combination_slope_residualizes_its_span() {
     let (c, d, e) = walsh_columns();
     let near: [f64; 8] = std::array::from_fn(|i| c[i] + 1e-3 * d[i] + 5e-11 * e[i]);
     let level = [0u32; 8];
@@ -557,13 +434,7 @@ fn a_contrast_of_certified_proposals_is_not_itself_certified() {
         Effect::new(&level, true, [&c[..], &near[..]]).unwrap(),
         Effect::new(&level, true, [&c[..], &d[..]]).unwrap(),
     ];
-    let (solver, share) = residual_share(effects, &e);
-    assert_eq!(
-        constrained_rank(&solver),
-        Some(1),
-        "{:?}",
-        solver.warnings()
-    );
+    let share = residual_share(effects, &e);
     assert!(share < 1e-12, "share={share:.3e}");
 }
 
