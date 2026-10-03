@@ -36,11 +36,10 @@ impl TermReparam {
         if !t.has_slopes() {
             return None;
         }
-        let moments = LevelMoments::build(design, term, sqrt_weights);
         let levels = t.levels();
         let n_levels = t.n_levels();
-        let intercept = t.intercept;
         let zs: Vec<&[f64]> = t.raw_slopes().collect();
+        let moments = LevelMoments::build(t, &zs, sqrt_weights);
         let v = zs.len();
 
         let mut z_row = vec![0.0; v];
@@ -50,7 +49,7 @@ impl TermReparam {
         for level in 0..n_levels {
             let GramBasis { rows: w, kept } =
                 workspace.orthonormalize(|gram| moments.fill_gram(level, gram));
-            if intercept && moments.w_sum(level) == 0.0 {
+            if moments.w_sum(level) == Some(0.0) {
                 unidentified.push(CoefficientPosition {
                     channel: Channel { term, column: 0 },
                     level,
@@ -67,14 +66,11 @@ impl TermReparam {
                     });
                 }
             }
-            let center = if intercept {
-                moments.mean(level).into()
-            } else {
-                vec![0.0; v].into()
-            };
             transforms.push(LevelTransform {
                 w: w.into(),
-                center,
+                center: moments
+                    .mean(level)
+                    .map_or_else(|| vec![0.0; v].into(), Into::into),
             });
         }
 

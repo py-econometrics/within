@@ -3,6 +3,7 @@
 
 use crate::channel::Channel;
 use crate::domain::{Effect, PreparedDesign};
+use rstest::rstest;
 
 use super::*;
 
@@ -12,6 +13,7 @@ const Z1: [f64; 6] = [1.0, 4.0, 9.0, 16.0, 25.0, 36.0];
 const G: [u32; 6] = [0, 1, 2, 0, 1, 2];
 const F2: [u32; 6] = [0, 1, 0, 1, 0, 1];
 const Z2: [f64; 6] = [2.0, 7.0, 1.0, 8.0, 3.0, 9.0];
+const YEAR: [f64; 11] = [6.0, 8.0, 10.0, 7.0, 5.0, 3.0, 0.0, 4.0, 1.0, 9.0, 2.0];
 
 /// Two slope-bearing terms around a plain one; term 0 is dominant and sorted
 /// so the locality sort stays a no-op.
@@ -98,4 +100,56 @@ fn back_transform_leaves_other_terms_untouched() {
     assert_eq!(x[t1..t2], before[t1..t2]);
     assert_ne!(x[..t1], before[..t1]);
     assert_ne!(x[t2..], before[t2..]);
+}
+
+/// Welford's mean of this order is `5 + 2⁻⁵⁰`, so plain centering leaves the mean year a noise load.
+#[test]
+fn an_observation_at_its_level_mean_loads_exactly_zero() {
+    let level = [0u32; 11];
+    let effects = vec![Effect::new(&level, true, [&YEAR[..]]).unwrap()];
+    let prepared = PreparedDesign::unweighted_for_test(Design::new(effects).unwrap());
+    let t = prepared.term(0);
+    let mean_year = (0..t.term.levels().len())
+        .find(|&i| t.term.raw_slopes().next().unwrap()[i] == 5.0)
+        .unwrap();
+    assert_eq!(t.slopes[0][mean_year], 0.0);
+}
+
+#[rstest]
+#[case::level_sum(|_| 1e306)]
+#[case::spread(|i| if i % 2 == 0 { 1e307 } else { -1e307 })]
+fn a_sum_past_the_float_range_still_whitens_finitely(#[case] huge_at: fn(usize) -> f64) {
+    let n = 200;
+    let level = vec![0u32; n];
+    let huge: Vec<f64> = (0..n).map(huge_at).collect();
+    let year: Vec<f64> = (0..n).map(|i| i as f64).collect();
+    let effects = vec![Effect::new(&level, true, [&huge[..], &year[..]]).unwrap()];
+    let prepared = PreparedDesign::unweighted_for_test(Design::new(effects).unwrap());
+    assert!(prepared
+        .term(0)
+        .slopes
+        .iter()
+        .flatten()
+        .all(|u| u.is_finite()));
+}
+
+/// Slopes spread over ~1e-9 of their size; a running mean's rounding would show in the Gram.
+#[test]
+fn a_large_offset_still_whitens_to_the_identity() {
+    let z0: Vec<f64> = YEAR.iter().map(|t| 1e9 + 0.1 * t).collect();
+    let z1: Vec<f64> = YEAR
+        .iter()
+        .map(|t| 1e9 + 0.1 * t + 0.03 * (t * t % 7.0))
+        .collect();
+    let level = [0u32; 11];
+    let effects = vec![Effect::new(&level, true, [&z0[..], &z1[..]]).unwrap()];
+    let prepared = PreparedDesign::unweighted_for_test(Design::new(effects).unwrap());
+    let us = prepared.term(0).slopes;
+    for (j, uj) in us.iter().enumerate() {
+        for (k, uk) in us.iter().enumerate() {
+            let gram: f64 = uj.iter().zip(uk).map(|(a, b)| a * b).sum();
+            let expected = if j == k { 1.0 } else { 0.0 };
+            assert!((gram - expected).abs() < 1e-12, "⟨u{j}, u{k}⟩ = {gram}");
+        }
+    }
 }
