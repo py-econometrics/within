@@ -99,3 +99,17 @@ fn back_transform_leaves_other_terms_untouched() {
     assert_ne!(x[..t1], before[..t1]);
     assert_ne!(x[t2..], before[t2..]);
 }
+
+/// Welford's mean of this order is `5 + 2⁻⁵⁰`, so plain centering leaves the mean year a noise load.
+#[test]
+fn an_observation_at_its_level_mean_loads_exactly_zero() {
+    let year = [6.0, 8.0, 10.0, 7.0, 5.0, 3.0, 0.0, 4.0, 1.0, 9.0, 2.0];
+    let level = [0u32; 11];
+    let effects = vec![Effect::new(&level, true, [&year[..]]).unwrap()];
+    let prepared = PreparedDesign::unweighted_for_test(Design::new(effects).unwrap());
+    let t = prepared.term(0);
+    let mean_year = (0..t.term.levels().len())
+        .find(|&i| t.term.raw_slopes().next().unwrap()[i] == 5.0)
+        .unwrap();
+    assert_eq!(t.slopes[0][mean_year], 0.0);
+}

@@ -557,3 +557,53 @@ fn a_contrast_of_certified_proposals_is_not_itself_certified() {
     );
     assert!(share < 1e-12, "share={share:.3e}");
 }
+
+/// Eleven shuffled years put the mean year at an exact zero loading that the running mean
+/// misses by roundoff; the noise loading ties a near-isolated year into the alias block.
+#[test]
+fn an_alias_through_a_zero_loading_still_converges() {
+    let mut state = 0x2545_f491_4f6c_dd1du64;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let (n_workers, n_firms, n_years) = (500, 25, 11);
+    let (mut worker, mut firm, mut year, mut z, mut y) = (vec![], vec![], vec![], vec![], vec![]);
+    for w in 0..n_workers {
+        let mut years: Vec<usize> = (0..n_years).collect();
+        for k in (1..n_years).rev() {
+            years.swap(k, (next() * (k + 1) as f64) as usize % (k + 1));
+        }
+        let mut current = (next() * n_firms as f64) as usize % n_firms;
+        for t in years {
+            if next() < 0.15 {
+                current = (next() * n_firms as f64) as usize % n_firms;
+            }
+            worker.push(w as u32);
+            firm.push(current as u32);
+            year.push(t as u32);
+            z.push(1e6 + t as f64);
+            y.push(current as f64 + 0.3 * t as f64 + next() - 0.5);
+        }
+    }
+    let effects = vec![
+        Effect::new(&worker, true, [&z[..]]).unwrap(),
+        Effect::new(&firm, true, []).unwrap(),
+        Effect::new(&year, true, []).unwrap(),
+    ];
+    let schwarz = PreconditionerConfig::Additive {
+        local_solver: Default::default(),
+        reduction: Default::default(),
+    };
+    let solver = Solver::new(effects, None, schwarz).expect("solver");
+    let out = solve_tight(&solver, &y);
+    let group_mean = max_abs_group_mean(&solver.prepared.design, &out.demeaned);
+    assert!(
+        out.converged && group_mean < 1e-9,
+        "converged={}, iterations={}, gm={group_mean:.3e}",
+        out.converged,
+        out.iterations
+    );
+}
