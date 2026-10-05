@@ -1,7 +1,7 @@
 use std::borrow::Borrow;
 use std::sync::Arc;
 
-use approx_chol::{ExactFailure, Factor};
+use approx_chol::{ExactFailure, Factor, Sddm};
 use rayon::prelude::*;
 use schwarz_precond::{LocalSolveError, LocalSolver};
 
@@ -11,8 +11,7 @@ use crate::domain::{CoordinateMap, CrossTab, Grounding, LocalComponent, MatrixFo
 use crate::BuildError;
 
 use super::compensated_sum;
-use super::csr_matrix::CsrMatrix;
-use super::factor::{factor_sparse, local_solver_build, ReducedFactor};
+use super::factor::{factor_sddm, local_solver_build, ReducedFactor};
 use super::schur;
 
 /// Minimum number of rows to trigger parallel back-substitution.
@@ -89,9 +88,6 @@ pub struct BlockElimSolver {
     /// Internal DOF count; the matrix is single-sized, a cover living in `reduced_factor`.
     #[serde(skip)]
     n_internal: usize,
-    /// Internal factor dimension, including backend-added auxiliary vertices.
-    #[serde(skip)]
-    n_reduced: usize,
     /// Original-to-SDDM coordinate map.
     coordinates: CoordinateMap,
 }
@@ -138,7 +134,7 @@ impl<'de> serde::Deserialize<'de> for BlockElimSolver {
             }
         }
 
-        if !h.reduced_factor.spans_kept_block(n_kept) {
+        if h.reduced_factor.n() != n_kept {
             return Err(D::Error::custom(
                 "reduced factor input dimension disagrees with the kept block",
             ));
@@ -198,7 +194,7 @@ impl Eliminated {
         let exact = (exact_below > 0 && this.matrix.n_kept() <= exact_below)
             .then(|| schur::exact_for_factor(&this.matrix, &this.inv_diagonal));
         if let Some(exact) = &exact {
-            match factor_complement(exact, config, ExactFailure::Error) {
+            match factor_complement(exact.clone(), config, ExactFailure::Error) {
                 Err(approx_chol::Error::DenseFactorizationFailed { .. }) => {}
                 result => return result.map_err(local_solver_build),
             }
@@ -211,20 +207,20 @@ impl Eliminated {
         };
         // An owned fold is the transient cover; it is freed before the factor's fill is allocated.
         drop(fold);
-        factor_complement(&complement, config, ExactFailure::FallBackToApproximate)
+        factor_complement(complement, config, ExactFailure::FallBackToApproximate)
             .map_err(local_solver_build)
     }
 }
 
 fn factor_complement(
-    complement: &CsrMatrix,
+    complement: Sddm,
     config: &LocalSolverConfig,
     on_failure: ExactFailure,
 ) -> Result<Factor, approx_chol::Error> {
     let approx_chol = config
         .approx_chol
         .to_approx_chol(config.dense_threshold, on_failure);
-    factor_sparse(complement, approx_chol)
+    factor_sddm(complement, approx_chol)
 }
 
 /// Gremban cover: SDDM, and acts on the antisymmetric `[z, -z]` subspace as the original.
@@ -302,15 +298,13 @@ impl BlockElimSolver {
         let cross_tab = cross_tab.into();
         // Every solve reads the transpose, so it is built here rather than inside the first.
         cross_tab.ct();
-        debug_assert!(reduced_factor.spans_kept_block(cross_tab.n_cols()));
+        debug_assert_eq!(reduced_factor.n(), cross_tab.n_cols());
         let n_internal = cross_tab.n_local();
-        let n_reduced = reduced_factor.solve_dimension();
         Self {
             cross_tab,
             inv_diag_elim,
             reduced_factor,
             n_internal,
-            n_reduced,
             coordinates,
         }
     }
@@ -328,14 +322,10 @@ impl BlockElimSolver {
         let eliminated = Eliminated::new(matrix)?;
 
         let factor = match form {
-            MatrixForm::Laplacian => {
-                let factor = ReducedFactor::Direct {
-                    factor: Eliminated::factor_reduced(&eliminated, config)?,
-                    grounding: eliminated.matrix.grounding,
-                };
-                debug_assert!(factor.solve_dimension() >= factor.input_dimension());
-                factor
-            }
+            MatrixForm::Laplacian => ReducedFactor::Direct {
+                factor: Eliminated::factor_reduced(&eliminated, config)?,
+                grounding: eliminated.matrix.grounding,
+            },
             // Surplus survives the cover, so it grounds as the signed matrix did.
             MatrixForm::SignedPendingCover => ReducedFactor::Cover {
                 inner: Eliminated::factor_reduced(eliminated.cover()?, config)?,
@@ -360,13 +350,10 @@ impl BlockElimSolver {
     ) -> Result<(), LocalSolveError> {
         let n = self.n_internal;
         let (n_elim, n_keep) = (self.n_eliminated(), self.n_kept());
-        let explicit_ground = self.reduced_factor.explicit_ground_index(n_keep);
-
         scale_by_diag_in_place(&mut rhs[..n_elim], &self.inv_diag_elim);
 
         {
             let (main, scratch) = rhs.split_at_mut(n);
-            scratch[n_keep..self.n_reduced].fill(0.0);
             self.cross_tab.ct().spmv_assign_add(
                 &main[..n_elim],
                 &main[n_elim..],
@@ -374,46 +361,12 @@ impl BlockElimSolver {
                 allow_inner_parallelism,
             );
         }
-        match self.reduced_factor.grounding() {
-            Some(Grounding::Floating) => {
-                subtract_mean(&mut rhs[n..], self.n_reduced);
-            }
-            // The ground node's potential is the gauge subtracted after the solve.
-            Some(Grounding::Grounded) => {
-                if let Some(ground) = explicit_ground {
-                    rhs[n + ground] = -compensated_sum(&rhs[n..n + n_keep]);
-                }
-            }
-            // A cover grounds itself via the antisymmetric `[b, -b]` embed.
-            None => {}
-        }
-
-        // The reduced solve spills into slots that are dead except the grounded gauge.
-        let reduced = n_elim..n_elim + self.n_reduced;
-        debug_assert!(
-            n_keep <= self.n_reduced,
-            "reduced region must cover the kept block",
-        );
-        debug_assert!(
-            reduced.end <= sol.len() && n + self.n_reduced <= rhs.len(),
-            "reduced solve and its RHS copy must fit sol and rhs",
-        );
-        debug_assert!(
-            explicit_ground.is_none_or(|g| n_keep <= g && g < self.n_reduced),
-            "grounded gauge slot must spill past the kept block into a solved slot",
-        );
-        sol[reduced.clone()].copy_from_slice(&rhs[n..n + self.n_reduced]);
-        let embed = &mut rhs[n + self.n_reduced..];
+        let reduced = n_elim..n_elim + n_keep;
+        sol[reduced.clone()].copy_from_slice(&rhs[n..n + n_keep]);
         self.reduced_factor
-            .solve_in_place(&mut sol[reduced], embed)?;
-        if let Some(ground) = explicit_ground {
-            let ground = sol[n_elim + ground];
-            for v in &mut sol[n_elim..n_elim + n_keep] {
-                *v -= ground;
-            }
-        }
+            .solve_in_place(&mut sol[reduced], &mut rhs[n + n_keep..])?;
 
-        // Back-substitution reads the gauged kept block, so the gauge subtraction runs first.
+        // Back-substitution reads the kept block the reduced solve just wrote.
         let (sol_output, sol_source) = sol.split_at_mut(n_elim);
         let sol_source = &sol_source[..n_keep];
         backsub_block_from_scaled_rhs(
@@ -434,7 +387,7 @@ impl LocalSolver for BlockElimSolver {
     }
 
     fn scratch_size(&self) -> usize {
-        self.n_internal + self.n_reduced + self.reduced_factor.scratch_len()
+        self.n_internal + self.n_kept() + self.reduced_factor.scratch_len()
     }
 
     fn inner_parallelism_work_estimate(&self) -> usize {

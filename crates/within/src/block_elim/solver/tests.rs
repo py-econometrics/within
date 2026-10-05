@@ -2,8 +2,8 @@ use rstest::rstest;
 
 use super::*;
 
-use crate::block_elim::csr_matrix::CsrMatrix;
 use crate::config::{ApproxCholConfig, SchurMode, DEFAULT_DENSE_SCHUR_THRESHOLD};
+use approx_chol::{Grounded, Laplacian};
 
 #[test]
 fn test_subtract_mean_empty() {
@@ -85,7 +85,7 @@ fn an_unusable_dense_pivot_is_retried_rather_than_fatal(
         .to_approx_chol(DEFAULT_DENSE_SCHUR_THRESHOLD, ExactFailure::Error);
     assert!(
         matches!(
-            factor_sparse(&exact, exact_only),
+            factor_sddm(exact, exact_only),
             Err(approx_chol::Error::DenseFactorizationFailed { .. })
         ),
         "the fixture no longer reaches the fall-through"
@@ -260,26 +260,17 @@ fn sampled_sparse_preserves_barely_pd_direction() {
 fn grounded_backend_auxiliary_is_initialized_on_every_solve() {
     let large = 1e7;
     let small = 1e-9;
-    let principal = CsrMatrix::new(
-        vec![0, 2, 4],
-        vec![0, 1, 0, 1],
-        vec![large, -large, -large, large + small],
-        2,
-    );
-    let explicit_ground_laplacian =
-        schur::build_explicit_laplacian(&principal, &[0.0, small], Grounding::Grounded);
+    let edge = Laplacian::new(vec![0, 1, 1], vec![1], vec![large]).unwrap();
+    let barely_pd = Grounded::new(edge, vec![0.0, small]).unwrap().into();
     let config = ApproxCholConfig::default().to_approx_chol(
         DEFAULT_DENSE_SCHUR_THRESHOLD,
         ExactFailure::FallBackToApproximate,
     );
     let factor = ReducedFactor::Direct {
-        factor: factor_sparse(&explicit_ground_laplacian, config)
-            .expect("factorization must succeed"),
+        factor: factor_sddm(barely_pd, config).expect("factorization must succeed"),
         grounding: Grounding::Grounded,
     };
-    assert_eq!(factor.input_dimension(), 3);
-    // approx-chol declines to ground a surplus below its resolvable pivot scale.
-    assert_eq!(factor.solve_dimension(), 3);
+    assert_eq!(factor.n(), 2);
 
     let cross_tab = CrossTab::from_dense_for_test(&[0.0; 6], 3, 2);
     let solver = BlockElimSolver::new(cross_tab, vec![1.0; 3], factor, CoordinateMap::default());
@@ -287,7 +278,7 @@ fn grounded_backend_auxiliary_is_initialized_on_every_solve() {
     let solve_with_dirty_auxiliary = |dirty: f64| {
         let mut rhs = vec![0.0; solver.scratch_size()];
         rhs[3..5].copy_from_slice(&[1.0, -1.0]);
-        rhs[7] = dirty;
+        rhs[7..].fill(dirty);
         let mut solution = vec![0.0; solver.scratch_size()];
         solver.solve_local(&mut rhs, &mut solution, false).unwrap();
         solution

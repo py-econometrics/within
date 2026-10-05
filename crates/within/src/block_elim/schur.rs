@@ -4,9 +4,10 @@
 //! [`exact`] accumulates the true reduced rows; [`sampled`] approximates each
 //! eliminated star's clique on the explicit augmented graph.
 
-use super::compensated_sum;
+#[cfg(test)]
 use super::csr_matrix::CsrMatrix;
 use approx_chol::low_level::CliqueTreeSampler;
+use approx_chol::{Grounded, Laplacian, Sddm};
 use rayon::prelude::*;
 
 use crate::config::ApproxSchurConfig;
@@ -30,12 +31,25 @@ struct UpperSchurRow {
 /// Multiply-adds below which splitting the kept rows costs more than it saves.
 const PAR_ROW_SPLIT_THRESHOLD: usize = 100_000;
 
-/// Exact Schur complement, accumulated per keep-row without materializing intermediate edges.
+/// Exact Schur complement as a mirrored CSR, which only the tests compare against.
+#[cfg(test)]
 pub(crate) fn exact(
     matrix: &SddmMatrix,
     inv_diagonal_eliminated: &[f64],
     split: RowSplit,
 ) -> CsrMatrix {
+    assemble_schur_csr(
+        exact_rows(matrix, inv_diagonal_eliminated, split),
+        matrix.n_kept(),
+    )
+}
+
+/// Exact Schur rows, diagonal and upper, accumulated without materializing intermediate edges.
+fn exact_rows(
+    matrix: &SddmMatrix,
+    inv_diagonal_eliminated: &[f64],
+    split: RowSplit,
+) -> Vec<UpperSchurRow> {
     let n_keep = matrix.n_kept();
     // `extract_sparse_row` zeroes what it read, so one workspace serves a whole run.
     let row = |i: usize, work: &mut Vec<f64>, touched: &mut Vec<usize>| {
@@ -61,26 +75,89 @@ pub(crate) fn exact(
                 .collect()
         }
     };
-
-    assemble_schur_csr(rows, n_keep)
+    rows
 }
 
-/// Sampled Schur complement as a Laplacian; a ground vertex stays an ordinary final vertex.
-pub(crate) fn sampled(matrix: &SddmMatrix, config: &ApproxSchurConfig) -> CsrMatrix {
+/// Sampled Schur complement; fill reaching the ground pseudo-vertex is the kept rows' surplus.
+pub(crate) fn sampled(matrix: &SddmMatrix, config: &ApproxSchurConfig) -> Sddm {
     let edges = par_emit(matrix, config);
-    let n = matrix.n_kept() + usize::from(matrix.grounding == Grounding::Grounded);
-    build_laplacian_csr(&edges, n)
+    let n_kept = matrix.n_kept();
+    match matrix.grounding {
+        Grounding::Floating => sampled_laplacian(&edges, n_kept, |_, _| {
+            unreachable!("a floating matrix has no ground pseudo-vertex to fill toward")
+        })
+        .into(),
+        Grounding::Grounded => {
+            let mut surplus = vec![0.0; n_kept];
+            let laplacian = sampled_laplacian(&edges, n_kept, |row, weight| surplus[row] += weight);
+            grounded(laplacian, surplus)
+        }
+    }
 }
 
-pub(crate) fn exact_for_factor(matrix: &SddmMatrix, inv_diagonal_eliminated: &[f64]) -> CsrMatrix {
+/// `ground` receives each edge into vertex `n_kept`, which is not part of the Laplacian.
+fn sampled_laplacian(
+    edges: &[Edge],
+    n_kept: usize,
+    mut ground: impl FnMut(usize, f64),
+) -> Laplacian {
+    let mut row_ptrs = vec![0u32; n_kept + 1];
+    let mut neighbors = Vec::with_capacity(edges.len());
+    let mut weights = Vec::with_capacity(edges.len());
+    // Sorted by `(lo, hi)`, so each row's neighbors arrive ascending.
+    for &(lo, hi, weight) in edges {
+        if hi as usize == n_kept {
+            ground(lo as usize, weight);
+            continue;
+        }
+        neighbors.push(hi);
+        weights.push(weight);
+        row_ptrs[lo as usize + 1] += 1;
+    }
+    for i in 0..n_kept {
+        row_ptrs[i + 1] += row_ptrs[i];
+    }
+    Laplacian::new(row_ptrs, neighbors, weights).expect("sampled Schur is a Laplacian")
+}
+
+pub(crate) fn exact_for_factor(matrix: &SddmMatrix, inv_diagonal_eliminated: &[f64]) -> Sddm {
     let split = if exact_flops(matrix) < PAR_ROW_SPLIT_THRESHOLD {
         RowSplit::Sequential
     } else {
         RowSplit::Parallel
     };
-    let principal = exact(matrix, inv_diagonal_eliminated, split);
-    let surplus = reduced_surplus(matrix, inv_diagonal_eliminated);
-    build_explicit_laplacian(&principal, &surplus, matrix.grounding)
+    let rows = exact_rows(matrix, inv_diagonal_eliminated, split);
+    let mut row_ptrs = Vec::with_capacity(rows.len() + 1);
+    let mut neighbors = Vec::new();
+    let mut weights = Vec::new();
+    row_ptrs.push(0u32);
+    for (i, row) in rows.iter().enumerate() {
+        for (&j, &value) in row.columns.iter().zip(&row.values) {
+            if j as usize != i {
+                neighbors.push(j);
+                weights.push(-value);
+            }
+        }
+        row_ptrs.push(to_u32(neighbors.len()));
+    }
+    let laplacian =
+        Laplacian::new(row_ptrs, neighbors, weights).expect("exact Schur is a Laplacian");
+    match matrix.grounding {
+        Grounding::Floating => laplacian.into(),
+        Grounding::Grounded => {
+            grounded(laplacian, reduced_surplus(matrix, inv_diagonal_eliminated))
+        }
+    }
+}
+
+/// Surplus can miss every kept row, which leaves the reduced system floating.
+fn grounded(laplacian: Laplacian, surplus: Vec<f64>) -> Sddm {
+    if surplus.iter().all(|&s| s == 0.0) {
+        return laplacian.into();
+    }
+    Grounded::new(laplacian, surplus)
+        .expect("reduced surplus is non-negative")
+        .into()
 }
 
 /// Upper-triangle multiply-adds: `Σ_k nnz(k)(nnz(k)+1)/2`.
@@ -143,6 +220,7 @@ fn extract_sparse_row(i: usize, work: &mut [f64], touched: &mut [usize]) -> Uppe
 }
 
 /// Assemble full rows from diagonal-and-upper parts; the strict upper mirrors into the lower.
+#[cfg(test)]
 fn assemble_schur_csr(rows: Vec<UpperSchurRow>, n_keep: usize) -> CsrMatrix {
     let mut row_offsets = vec![0u32; n_keep + 1];
     for (i, row) in rows.iter().enumerate() {
@@ -178,59 +256,7 @@ fn assemble_schur_csr(rows: Vec<UpperSchurRow>, n_keep: usize) -> CsrMatrix {
     CsrMatrix::new(row_offsets, column_indices, values, n_keep)
 }
 
-/// Edges sorted by `(lo, hi)` land both triangles in column order without per-row sorting.
-fn build_laplacian_csr(edges: &[Edge], n: usize) -> CsrMatrix {
-    debug_assert!(edges.iter().all(|&(lo, hi, _)| lo < hi));
-
-    let mut lower_count = vec![0u32; n];
-    let mut upper_count = vec![0u32; n];
-    let mut diag = vec![0.0; n];
-    for &(lo, hi, w) in edges {
-        diag[lo as usize] += w;
-        upper_count[lo as usize] += 1; // row lo gets col hi (upper)
-        lower_count[hi as usize] += 1; // row hi gets col lo (lower)
-        diag[hi as usize] += w;
-    }
-
-    // Row layout: [lower entries | diagonal | upper entries].
-    let mut offsets = vec![0u32; n + 1];
-    for i in 0..n {
-        offsets[i + 1] = offsets[i] + lower_count[i] + 1 + upper_count[i];
-    }
-    let total_nnz = offsets[n] as usize;
-    let mut indices = vec![0u32; total_nnz];
-    let mut data = vec![0.0f64; total_nnz];
-
-    let mut lower_cursor: Vec<u32> = (0..n).map(|i| offsets[i]).collect();
-    let mut upper_cursor: Vec<u32> = (0..n).map(|i| offsets[i] + lower_count[i] + 1).collect();
-    for i in 0..n {
-        let pos = (offsets[i] + lower_count[i]) as usize;
-        indices[pos] = to_u32(i);
-        data[pos] = diag[i];
-    }
-
-    for &(lo, hi, w) in edges {
-        let lo_idx = lo as usize;
-        let hi_idx = hi as usize;
-        // Upper triangle: row lo, column hi.
-        let pos = upper_cursor[lo_idx] as usize;
-        indices[pos] = hi;
-        data[pos] = -w;
-        upper_cursor[lo_idx] += 1;
-        // Lower triangle: row hi, column lo.
-        let pos = lower_cursor[hi_idx] as usize;
-        indices[pos] = lo;
-        data[pos] = -w;
-        lower_cursor[hi_idx] += 1;
-    }
-
-    CsrMatrix::new(offsets, indices, data, n)
-}
-
 fn reduced_surplus(matrix: &SddmMatrix, inv_diagonal_eliminated: &[f64]) -> Vec<f64> {
-    if matrix.grounding == Grounding::Floating {
-        return vec![0.0; matrix.n_kept()];
-    }
     let scaled: Vec<f64> = inv_diagonal_eliminated
         .iter()
         .zip(matrix.surplus_eliminated())
@@ -242,62 +268,6 @@ fn reduced_surplus(matrix: &SddmMatrix, inv_diagonal_eliminated: &[f64]) -> Vec<
         .ct()
         .spmv_assign_add(&scaled, matrix.surplus_kept(), &mut surplus, false);
     surplus
-}
-
-pub(super) fn build_explicit_laplacian(
-    principal: &CsrMatrix,
-    surplus: &[f64],
-    grounding: Grounding,
-) -> CsrMatrix {
-    let n_keep = principal.n();
-    let ground = to_u32(n_keep);
-    let grounded = grounding == Grounding::Grounded;
-    let n = n_keep + usize::from(grounded);
-    let mut indptr = Vec::with_capacity(n + 1);
-    let mut indices = Vec::new();
-    let mut data = Vec::new();
-    indptr.push(0);
-
-    for (i, &row_surplus) in surplus.iter().enumerate().take(n_keep) {
-        let start = principal.indptr()[i] as usize;
-        let end = principal.indptr()[i + 1] as usize;
-        let mut adjacency = 0.0;
-        let mut diagonal_position = None;
-        for (&j, &value) in principal.indices()[start..end]
-            .iter()
-            .zip(&principal.data()[start..end])
-        {
-            if j as usize == i {
-                diagonal_position = Some(indices.len());
-                indices.push(j);
-                data.push(0.0);
-            } else {
-                adjacency -= value;
-                indices.push(j);
-                data.push(value);
-            }
-        }
-        let diagonal_position = diagonal_position.expect("exact Schur row must contain a diagonal");
-        data[diagonal_position] = adjacency + row_surplus;
-        if grounded && row_surplus > 0.0 {
-            indices.push(ground);
-            data.push(-row_surplus);
-        }
-        indptr.push(to_u32(indices.len()));
-    }
-
-    if grounded {
-        for (i, &value) in surplus.iter().enumerate() {
-            if value > 0.0 {
-                indices.push(to_u32(i));
-                data.push(-value);
-            }
-        }
-        indices.push(ground);
-        data.push(compensated_sum(surplus));
-        indptr.push(to_u32(indices.len()));
-    }
-    CsrMatrix::new(indptr, indices, data, n)
 }
 
 /// Undirected fill edge: `(lo_col, hi_col, weight)` with `lo_col < hi_col`.

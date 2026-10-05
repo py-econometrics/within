@@ -16,6 +16,34 @@ fn sparse_to_dense(matrix: &CsrMatrix) -> Vec<Vec<f64>> {
     dense
 }
 
+/// `L + diag(surplus)`, the matrix an [`Sddm`] stands for.
+fn sddm_to_dense(sddm: &Sddm) -> Vec<Vec<f64>> {
+    let laplacian = sddm.laplacian();
+    let mut dense = vec![vec![0.0; sddm.n()]; sddm.n()];
+    if let Sddm::Grounded(grounded) = sddm {
+        for (i, &s) in grounded.surplus().iter().enumerate() {
+            dense[i][i] += s;
+        }
+    }
+    for i in 0..sddm.n() {
+        let (from, to) = (
+            laplacian.row_ptrs()[i] as usize,
+            laplacian.row_ptrs()[i + 1] as usize,
+        );
+        for (&j, &w) in laplacian.neighbors()[from..to]
+            .iter()
+            .zip(&laplacian.weights()[from..to])
+        {
+            let j = j as usize;
+            dense[i][j] -= w;
+            dense[j][i] -= w;
+            dense[i][i] += w;
+            dense[j][j] += w;
+        }
+    }
+    dense
+}
+
 fn dense_exact_schur(
     c_dense: &[f64],
     n_rows: usize,
@@ -135,11 +163,16 @@ fn approximate_schur_is_seed_deterministic_and_laplacian_like() {
     let a = sampled(&matrix, &config);
     let b = sampled(&matrix, &config);
 
-    assert_eq!(a.indptr(), b.indptr());
-    assert_eq!(a.indices(), b.indices());
-    assert_eq!(a.data(), b.data());
+    assert_eq!(a.laplacian().row_ptrs(), b.laplacian().row_ptrs());
+    assert_eq!(a.laplacian().neighbors(), b.laplacian().neighbors());
+    assert_eq!(a.laplacian().weights(), b.laplacian().weights());
+    match (&a, &b) {
+        (Sddm::Grounded(a), Sddm::Grounded(b)) => assert_eq!(a.surplus(), b.surplus()),
+        (Sddm::Laplacian(_), Sddm::Laplacian(_)) => {}
+        _ => panic!("one run grounded the complement and the other did not"),
+    }
 
-    let dense = sparse_to_dense(&a);
+    let dense = sddm_to_dense(&a);
     for (i, row) in dense.iter().enumerate() {
         let mut row_sum = 0.0;
         for (j, &value) in row.iter().enumerate() {
@@ -166,18 +199,8 @@ fn sampled_schur_carries_surplus_exactly_on_low_degree_stars() {
     let expected = dense_exact_schur(&c_dense, 3, 2, row_diag, col_diag, true);
     let matrix = SddmMatrix::from_dense_for_test(&c_dense, 3, 2, diagonal, Grounding::Grounded);
 
-    let sampled_dense = sparse_to_dense(&sampled(&matrix, &Default::default()));
-    let sampled_principal: Vec<Vec<f64>> = sampled_dense[..expected.len()]
-        .iter()
-        .map(|row| row[..expected.len()].to_vec())
-        .collect();
-    assert_dense_close(&sampled_principal, &expected, 1e-12);
-
-    // Surplus becomes an explicit ground vertex, so the augmented matrix is a Laplacian.
-    for (i, row) in sampled_dense.iter().enumerate() {
-        let row_sum: f64 = row.iter().sum();
-        assert!(row_sum.abs() < 1e-12, "row {i} sum is {row_sum}");
-    }
+    let sampled = sampled(&matrix, &Default::default());
+    assert_dense_close(&sddm_to_dense(&sampled), &expected, 1e-12);
 }
 
 #[test]
