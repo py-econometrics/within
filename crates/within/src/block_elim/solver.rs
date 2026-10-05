@@ -1,7 +1,7 @@
 use std::borrow::Borrow;
 use std::sync::Arc;
 
-use approx_chol::{ExactFailure, Factor, Sddm};
+use approx_chol::{ExactFailure, Factor, Sddm, UnusablePivot};
 use rayon::prelude::*;
 use schwarz_precond::{LocalSolveError, LocalSolver};
 
@@ -11,7 +11,7 @@ use crate::domain::{CoordinateMap, CrossTab, Grounding, LocalComponent, MatrixFo
 use crate::BuildError;
 
 use super::compensated_sum;
-use super::factor::{factor_sddm, local_solver_build, ReducedFactor};
+use super::factor::{local_solver_build, ReducedFactor};
 use super::schur;
 
 /// Minimum number of rows to trigger parallel back-substitution.
@@ -195,7 +195,7 @@ impl Eliminated {
             .then(|| schur::exact_for_factor(&this.matrix, &this.inv_diagonal));
         if let Some(exact) = &exact {
             match factor_complement(exact.clone(), config, ExactFailure::Error) {
-                Err(approx_chol::Error::DenseFactorizationFailed { .. }) => {}
+                Err(UnusablePivot { .. }) => {}
                 result => return result.map_err(local_solver_build),
             }
         }
@@ -216,11 +216,11 @@ fn factor_complement(
     complement: Sddm,
     config: &LocalSolverConfig,
     on_failure: ExactFailure,
-) -> Result<Factor, approx_chol::Error> {
+) -> Result<Factor, UnusablePivot> {
     let approx_chol = config
         .approx_chol
         .to_approx_chol(config.dense_threshold, on_failure);
-    factor_sddm(complement, approx_chol)
+    approx_chol::factorize_with(complement, approx_chol)
 }
 
 /// Gremban cover: SDDM, and acts on the antisymmetric `[z, -z]` subspace as the original.

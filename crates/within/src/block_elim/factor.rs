@@ -1,10 +1,9 @@
 //! Reduced-system factor for Schur-complement local solves.
 //!
 //! [`ReducedFactor`] wraps an `approx-chol` factor, either directly or behind a
-//! Gremban cover. [`factor_sddm`] bridges to the `approx-chol` builder.
+//! Gremban cover.
 
-use approx_chol::low_level::Builder;
-use approx_chol::{Factor, Sddm};
+use approx_chol::{Factor, UnusablePivot};
 use schwarz_precond::LocalSolveError;
 
 use crate::domain::Grounding;
@@ -120,16 +119,10 @@ fn solve_approx(f: &Factor, x: &mut [f64], scratch: &mut [f64]) -> Result<(), Lo
         })
 }
 
-/// Returns the `approx-chol` error unmapped, so the caller can spot an unusable exact pivot.
-pub(crate) fn factor_sddm(
-    sddm: Sddm,
-    config: approx_chol::Config,
-) -> Result<Factor, approx_chol::Error> {
-    Builder::new(config).build(sddm)
-}
-
-pub(crate) fn local_solver_build(e: approx_chol::Error) -> BuildError {
-    BuildError::LocalSolverBuild(format!("failed Schur complement factorization: {e}"))
+pub(crate) fn local_solver_build(pivot: UnusablePivot) -> BuildError {
+    BuildError::LocalSolverBuild(format!(
+        "failed Schur complement factorization: exact dense Cholesky failed at {pivot}"
+    ))
 }
 
 #[cfg(test)]
@@ -142,13 +135,13 @@ mod tests {
     fn cover_reduced_factor_solves_signed_system() {
         // Pins the `ReducedFactor::Cover` embed/read-back, not approx-chol's accuracy.
         let edges = Laplacian::new(vec![0, 1, 2, 2, 2], vec![3, 2], vec![1.0, 1.0]).unwrap();
-        let cover = Grounded::new(edges, vec![1.0; 4]).unwrap().into();
+        let cover = Grounded::new(edges, vec![1.0; 4]).unwrap();
         let config = ApproxCholConfig {
             seed: 0,
             split_merge: Some(2),
         }
         .to_approx_chol(DEFAULT_DENSE_SCHUR_THRESHOLD, ExactFailure::Error);
-        let inner = factor_sddm(cover, config).expect("factor cover");
+        let inner = approx_chol::factorize_with(cover, config).expect("factor cover");
         let reduced = ReducedFactor::Cover { inner, m: 2 };
         assert_eq!(reduced.n(), 2);
 
@@ -170,7 +163,7 @@ mod tests {
         let edges = Laplacian::new(vec![0, 1, 1], vec![1], vec![1.0]).unwrap();
         let config = ApproxCholConfig::default()
             .to_approx_chol(DEFAULT_DENSE_SCHUR_THRESHOLD, ExactFailure::Error);
-        factor_sddm(Grounded::new(edges, vec![1.0, 1.0]).unwrap().into(), config)
+        approx_chol::factorize_with(Grounded::new(edges, vec![1.0, 1.0]).unwrap(), config)
             .expect("factor 2x2")
     }
 

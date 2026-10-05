@@ -85,8 +85,8 @@ fn an_unusable_dense_pivot_is_retried_rather_than_fatal(
         .to_approx_chol(DEFAULT_DENSE_SCHUR_THRESHOLD, ExactFailure::Error);
     assert!(
         matches!(
-            factor_sddm(exact, exact_only),
-            Err(approx_chol::Error::DenseFactorizationFailed { .. })
+            approx_chol::factorize_with(exact, exact_only),
+            Err(approx_chol::UnusablePivot { .. })
         ),
         "the fixture no longer reaches the fall-through"
     );
@@ -261,13 +261,13 @@ fn grounded_backend_auxiliary_is_initialized_on_every_solve() {
     let large = 1e7;
     let small = 1e-9;
     let edge = Laplacian::new(vec![0, 1, 1], vec![1], vec![large]).unwrap();
-    let barely_pd = Grounded::new(edge, vec![0.0, small]).unwrap().into();
+    let barely_pd = Grounded::new(edge, vec![0.0, small]).unwrap();
     let config = ApproxCholConfig::default().to_approx_chol(
         DEFAULT_DENSE_SCHUR_THRESHOLD,
         ExactFailure::FallBackToApproximate,
     );
     let factor = ReducedFactor::Direct {
-        factor: factor_sddm(barely_pd, config).expect("factorization must succeed"),
+        factor: approx_chol::factorize_with(barely_pd, config).expect("factorization must succeed"),
         grounding: Grounding::Grounded,
     };
     assert_eq!(factor.n(), 2);

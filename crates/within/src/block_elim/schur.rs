@@ -7,7 +7,7 @@
 #[cfg(test)]
 use super::csr_matrix::CsrMatrix;
 use approx_chol::low_level::CliqueTreeSampler;
-use approx_chol::{Grounded, Laplacian, Sddm};
+use approx_chol::{Laplacian, Sddm};
 use rayon::prelude::*;
 
 use crate::config::ApproxSchurConfig;
@@ -90,7 +90,8 @@ pub(crate) fn sampled(matrix: &SddmMatrix, config: &ApproxSchurConfig) -> Sddm {
         Grounding::Grounded => {
             let mut surplus = vec![0.0; n_kept];
             let laplacian = sampled_laplacian(&edges, n_kept, |row, weight| surplus[row] += weight);
-            grounded(laplacian, surplus)
+            // Surplus can miss every kept row, which leaves the reduced system floating.
+            Sddm::with_surplus(laplacian, surplus).expect("sampled surplus is non-negative")
         }
     }
 }
@@ -145,19 +146,10 @@ pub(crate) fn exact_for_factor(matrix: &SddmMatrix, inv_diagonal_eliminated: &[f
     match matrix.grounding {
         Grounding::Floating => laplacian.into(),
         Grounding::Grounded => {
-            grounded(laplacian, reduced_surplus(matrix, inv_diagonal_eliminated))
+            Sddm::with_surplus(laplacian, reduced_surplus(matrix, inv_diagonal_eliminated))
+                .expect("reduced surplus is non-negative")
         }
     }
-}
-
-/// Surplus can miss every kept row, which leaves the reduced system floating.
-fn grounded(laplacian: Laplacian, surplus: Vec<f64>) -> Sddm {
-    if surplus.iter().all(|&s| s == 0.0) {
-        return laplacian.into();
-    }
-    Grounded::new(laplacian, surplus)
-        .expect("reduced surplus is non-negative")
-        .into()
 }
 
 /// Upper-triangle multiply-adds: `Σ_k nnz(k)(nnz(k)+1)/2`.
