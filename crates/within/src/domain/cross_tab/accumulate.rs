@@ -1,8 +1,8 @@
 //! Observation accumulation kernels for [`CrossTab`](super::CrossTab) construction.
 //!
-//! Both the dense and sparse paths scan observations once, decoding each into
-//! its compact [`Contribution`] via [`PairColumns::decode`]: `w·l_row·l_col` to its
-//! cell, where `l` is the channel's loading, so slope channels yield signed cells.
+//! Both the dense and sparse paths scan [`PairColumns::observations`] once, adding
+//! `w·l_row·l_col` to each cell, where `l` is the channel's loading, so slope channels
+//! yield signed cells.
 //! Paths are generic over [`Loading`] and monomorphized per pair: intercept
 //! channels pass [`Unit`], whose `l ≡ 1` folds the loading math away, so plain
 //! pairs keep the pre-slope codegen.
@@ -39,11 +39,13 @@ impl Loading for &[f64] {
     }
 }
 
-/// One observation's Gram contribution: signed cell `w·l_row·l_col`.
-struct Contribution {
-    cj: usize,
-    ck: usize,
-    cell: f64,
+/// One weighted observation of a channel pair, at its cell with both loadings.
+pub(super) struct Observation {
+    pub(super) row: usize,
+    pub(super) col: usize,
+    pub(super) x: f64,
+    pub(super) y: f64,
+    pub(super) w: f64,
 }
 
 /// Per-observation input columns backing one channel pair: level codes, loadings, and weights.
@@ -58,13 +60,14 @@ pub(super) struct PairColumns<'a, Lq: Loading, Lr: Loading> {
 
 impl<Lq: Loading, Lr: Loading> PairColumns<'_, Lq, Lr> {
     #[inline]
-    fn decode(&self, uid: usize) -> Contribution {
-        let w = row_weight(self.sqrt_weights, uid);
-        Contribution {
-            cj: self.row_levels[uid] as usize,
-            ck: self.col_levels[uid] as usize,
-            cell: w * self.row_load.at(uid) * self.col_load.at(uid),
-        }
+    pub(super) fn observations(&self) -> impl Iterator<Item = Observation> + '_ {
+        (0..self.row_levels.len()).map(move |uid| Observation {
+            row: self.row_levels[uid] as usize,
+            col: self.col_levels[uid] as usize,
+            x: self.row_load.at(uid),
+            y: self.col_load.at(uid),
+            w: row_weight(self.sqrt_weights, uid),
+        })
     }
 }
 
@@ -161,13 +164,11 @@ pub(super) fn accumulate_dense_cross_block<Lq: Loading, Lr: Loading>(
     n_rows: usize,
     n_cols: usize,
 ) -> CsrBlock {
-    let n_obs = cols.row_levels.len();
     let mut table = vec![0.0f64; n_rows * n_cols];
 
-    for uid in 0..n_obs {
-        let o = cols.decode(uid);
-        debug_assert!(o.cj < n_rows && o.ck < n_cols);
-        table[o.cj * n_cols + o.ck] += o.cell;
+    for o in cols.observations() {
+        debug_assert!(o.row < n_rows && o.col < n_cols);
+        table[o.row * n_cols + o.col] += o.w * o.x * o.y;
     }
 
     CsrBlock::from_dense_table(&table, n_rows, n_cols)
@@ -179,11 +180,9 @@ pub(super) fn accumulate_sparse_cross_block<Lq: Loading, Lr: Loading>(
     n_rows: usize,
     n_cols: usize,
 ) -> CsrBlock {
-    let n_obs = cols.row_levels.len();
-
     let mut row_counts = vec![0u32; n_rows];
-    for uid in 0..n_obs {
-        row_counts[cols.row_levels[uid] as usize] += 1;
+    for &row in cols.row_levels {
+        row_counts[row as usize] += 1;
     }
 
     let mut bucket_indptr = vec![0u32; n_rows + 1];
@@ -195,12 +194,11 @@ pub(super) fn accumulate_sparse_cross_block<Lq: Loading, Lr: Loading>(
     let mut bucket_cols = vec![0u32; total_entries];
     let mut bucket_vals = vec![0.0f64; total_entries];
     let mut cursor = bucket_indptr[..n_rows].to_vec();
-    for uid in 0..n_obs {
-        let o = cols.decode(uid);
-        let pos = cursor[o.cj] as usize;
-        bucket_cols[pos] = to_u32(o.ck);
-        bucket_vals[pos] = o.cell;
-        cursor[o.cj] += 1;
+    for o in cols.observations() {
+        let pos = cursor[o.row] as usize;
+        bucket_cols[pos] = to_u32(o.col);
+        bucket_vals[pos] = o.w * o.x * o.y;
+        cursor[o.row] += 1;
     }
 
     // A signed cell cancelling to 0.0 mid-row re-pushes its column; the duplicate is harmless.
