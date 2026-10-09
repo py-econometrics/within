@@ -14,10 +14,10 @@ pub enum BuildError {
     #[error("no observations provided")]
     EmptyObservations,
     /// One effect does not match the first effect's observation count.
-    #[error("effect {effect} has {got} observations, expected {expected}")]
+    #[error("column {column} has {got} observations, expected {expected}")]
     ObservationCountMismatch {
         /// Index of the mismatched effect.
-        effect: usize,
+        column: usize,
         /// Expected number of observations.
         expected: usize,
         /// Actual number of observations in this effect.

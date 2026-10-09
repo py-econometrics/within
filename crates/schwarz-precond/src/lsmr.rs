@@ -15,10 +15,7 @@ mod tests;
 use std::borrow::Cow;
 
 use crate::{Operator, SolveError};
-use bidiag::{
-    axpby, metric_gradient_norm, residual_into, BidiagStep, Bidiagonalization, GolubKahan,
-    ModifiedGolubKahan,
-};
+use bidiag::{axpby, BidiagStep, Bidiagonalization, GolubKahan, StagedStart};
 use magnitude::Magnitude;
 use recurrence::{ConvergenceCriteria, LsmrRecurrenceState, RotationStep, SolutionState, Stop};
 
@@ -70,12 +67,12 @@ pub enum LsmrStopReason {
     ResidualTolerance,
     /// The estimate `‖Aᵀrₖ‖ / (‖A‖ ‖rₖ‖)` met the relative tolerance.
     NormalEquationTolerance,
+    /// The iteration budget was exhausted before convergence.
+    MaxIterations,
     /// The warm start already solved the system: `b − A x0` was exactly zero.
     WarmStartExact,
     /// A tolerance stop, and each restart from it, that `‖b − A x‖` refuted.
     FalseConvergence,
-    /// The iteration budget was exhausted before convergence.
-    MaxIterations,
     /// The [`EscalationHandler`] requested a handoff to a stronger preconditioner.
     Escalated,
 }
@@ -292,19 +289,22 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
     let b_norm = finite(vec_norm(b), "rhs norm")?;
     let local_size = local_size.unwrap_or(0);
 
-    let (rhs, rhs_norm): (Cow<'_, [f64]>, f64) = match warm_start {
-        None => (Cow::Borrowed(b), b_norm),
+    // A zero start vector needs no stream; a warm one must be formed in the stream to be measured.
+    let staged = match warm_start {
+        None => (b_norm > 0.0).then(|| {
+            (
+                StagedStart::cold(operator, preconditioner, b, local_size),
+                b_norm,
+            )
+        }),
         Some(x0) => {
-            let mut residual = vec![0.0; operator.nrows()];
+            let (staged, norm) = StagedStart::warm(operator, preconditioner, x0, b, local_size)?;
             // Unlike `b`, the residual is computed: an ∞ entry norms to NaN, read as β₁ = 0 downstream.
-            let norm = finite(
-                residual_into(operator, x0, b, &mut residual)?,
-                "warm-start residual norm",
-            )?;
-            (Cow::Owned(residual), norm)
+            let norm = finite(norm, "warm-start residual norm")?;
+            (norm > 0.0).then_some((staged, norm))
         }
     };
-    if rhs_norm == 0.0 {
+    let Some((mut staged, rhs_norm)) = staged else {
         let (x, stop_reason) = match warm_start {
             Some(x0) => (x0.to_vec(), LsmrStopReason::WarmStartExact),
             None => (vec![0.0; n], LsmrStopReason::ZeroRhs),
@@ -318,15 +318,13 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
             stop_reason,
             true_residual: None,
         });
-    }
+    };
 
-    // `‖Aᵀb‖` must be taken before the stream exists: the stream's own query clobbers `v₁`.
     let metric = match warm_start {
         None => None,
-        Some(_) => Some(metric_gradient_norm(operator, preconditioner, b, b_norm)?),
+        Some(_) => Some(staged.metric_gradient_norm(b, b_norm)?),
     };
-    let (bidiag, step1) =
-        ModifiedGolubKahan::init(operator, preconditioner, &rhs, rhs_norm, local_size)?;
+    let (bidiag, step1) = staged.restart(rhs_norm)?;
     let warm_start = warm_start.zip(metric).map(|(x0, metric)| WarmStart {
         x0,
         reference: NormalEqReference::warm(metric, step1),
