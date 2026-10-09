@@ -3,7 +3,6 @@
 //! convenience wrappers built on top of it.
 
 use std::borrow::Cow;
-use std::sync::Arc;
 use std::time::Instant;
 
 use ndarray::ArrayView2;
@@ -14,9 +13,7 @@ use schwarz_precond::{
 
 use crate::channel::CoefficientAddress;
 use crate::config::{LsmrOptions, PreconditionerConfig};
-use crate::domain::collinearity::{detect_collinear_slopes, CollinearSlope};
 use crate::domain::{Design, Effect, PreparedDesign};
-use crate::operator::gauge::GaugeConstraint;
 use crate::operator::schwarz::Preconditioner;
 use crate::operator::DesignOperator;
 use crate::{BuildError, BuildWarning, SolveError, WithinError};
@@ -215,7 +212,6 @@ impl BatchSolveResult {
 pub struct Solver<'a> {
     prepared: PreparedDesign<'a>,
     slot: PrecondSlot,
-    warnings: Vec<BuildWarning>,
 }
 
 impl std::fmt::Debug for Solver<'_> {
@@ -232,7 +228,7 @@ impl std::fmt::Debug for Solver<'_> {
 
 /// Per-RHS solve output shared by [`Solver::solve`] and [`Solver::solve_batch`].
 ///
-/// The design-level fields (`layout`, `warnings`, `unidentified`) are identical
+/// The shared fields (`layout`, `warnings`, `unidentified`) are identical
 /// across RHS, so the batch path attaches them once instead of cloning them per
 /// RHS as it would if each worker returned a full [`SolveResult`].
 struct RhsSolution {
@@ -309,11 +305,9 @@ impl<'a> Solver<'a> {
     ) -> Result<Self, BuildError> {
         // Whiten the slope columns (if any) before the preconditioner reads them.
         let prepared = PreparedDesign::new(design.into_design()?, weights)?;
-        let screened = detect_collinear_slopes(&prepared);
-        let mut warnings: Vec<BuildWarning> = screened.iter().map(CollinearSlope::warn).collect();
         let n_dofs = prepared.design.n_dofs;
 
-        let (mut slot, build_warnings) = match preconditioner.into() {
+        let slot = match preconditioner.into() {
             PreconditionerInput::Default => {
                 PrecondSlot::build(&prepared, PreconditionerConfig::default())?
             }
@@ -326,37 +320,20 @@ impl<'a> Solver<'a> {
                         actual_cols: p.ncols(),
                     });
                 }
-                (PrecondSlot::reuse(&prepared, p)?, Vec::new())
+                PrecondSlot::reuse(&prepared, p)?
             }
         };
 
-        let base = match &mut slot {
-            PrecondSlot::Static(p) => p.as_mut(),
-            PrecondSlot::Adaptive(a) => Some(&mut a.base),
-        };
-        // Only `M⁻¹` can inject a null of `A`; an escalated rung inherits this one from the base.
-        if let Some(p) = base {
-            p.gauge = GaugeConstraint::build(&prepared, &screened).map(Arc::new);
-        }
-        warnings.extend(build_warnings);
-
-        Ok(Self {
-            prepared,
-            slot,
-            warnings,
-        })
+        Ok(Self { prepared, slot })
     }
 
-    /// Non-fatal events from design screening and the preconditioner build; a reused
-    /// pre-built preconditioner contributes none (its own were reported when built).
-    /// An Adaptive solver's deferred build adds its own once a solve escalates.
+    /// Non-fatal events from the preconditioner build; a reused pre-built preconditioner
+    /// contributes none (its own were reported when built). An Adaptive solver reports its
+    /// deferred build's once a solve escalates.
     pub fn warnings(&self) -> &[BuildWarning] {
         match &self.slot {
-            PrecondSlot::Static(_) => &self.warnings,
-            PrecondSlot::Adaptive(a) => a
-                .build()
-                .map(|b| b.warnings.as_slice())
-                .unwrap_or(&self.warnings),
+            PrecondSlot::Static { warnings, .. } => warnings,
+            PrecondSlot::Adaptive(a) => a.build().map_or(&[], |b| &b.warnings),
         }
     }
 
@@ -364,7 +341,7 @@ impl<'a> Solver<'a> {
     pub fn has_escalated(&self) -> bool {
         match &self.slot {
             PrecondSlot::Adaptive(a) => a.schwarz().is_some(),
-            PrecondSlot::Static(_) => false,
+            PrecondSlot::Static { .. } => false,
         }
     }
 
@@ -432,7 +409,7 @@ impl<'a> Solver<'a> {
         lsmr: &LsmrOptions,
     ) -> Result<(Vec<RhsSolution>, f64), WithinError> {
         let (map, ladder) = match &self.slot {
-            PrecondSlot::Static(p) => (p.as_ref(), None),
+            PrecondSlot::Static { map, .. } => (map.as_ref(), None),
             // A settled ladder never re-probes: its map, or its kept build error, is final.
             PrecondSlot::Adaptive(a) => match a.built.get() {
                 Some(Ok(_)) => (Some(a.rung()), None),
@@ -469,7 +446,7 @@ impl<'a> Solver<'a> {
         // Built outside the fan-out, so sibling RHS never race for it.
         let build_secs = match ladder {
             Some(a) if passes.iter().any(|p| matches!(p, Pass::Stalled(..))) => {
-                a.escalate(&self.prepared, &self.warnings)?
+                a.escalate(&self.prepared)?
             }
             _ => 0.0,
         };
@@ -593,7 +570,7 @@ impl<'a> Solver<'a> {
     /// Under Adaptive: the Schwarz map once built, otherwise the diagonal base carrying the ladder.
     pub fn preconditioner(&self) -> Option<&Preconditioner> {
         match &self.slot {
-            PrecondSlot::Static(p) => p.as_ref(),
+            PrecondSlot::Static { map, .. } => map.as_ref(),
             PrecondSlot::Adaptive(a) => Some(a.rung()),
         }
     }

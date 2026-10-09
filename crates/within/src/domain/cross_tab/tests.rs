@@ -234,7 +234,7 @@ fn dense_and_sparse_paths_agree_on_signed_data() {
     let cols = PairColumns {
         row_levels: design.terms[0].levels(),
         col_levels: design.terms[1].levels(),
-        row_load: design.raw_slope(pair.rows).unwrap(),
+        row_load: design.terms[0].raw_slopes().next().unwrap(),
         col_load: Unit,
         sqrt_weights: None,
     };

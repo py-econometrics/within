@@ -58,12 +58,6 @@ impl<'a> PreparedDesign<'a> {
         self.sqrt_weights.as_deref()
     }
 
-    /// The Gram weight of row `obs`: the operator applies `s`, so its normal matrix carries `s²`.
-    #[inline]
-    pub(crate) fn row_weight(&self, obs: usize) -> f64 {
-        row_weight(self.sqrt_weights(), obs)
-    }
-
     pub(crate) fn term(&self, term: usize) -> PreparedTerm<'_> {
         let (t, reparam) = (&self.design.terms[term], &self.reparams[term]);
         let slopes: &[Vec<f64>] = reparam.as_ref().map_or(&[], |r| &r.slopes);
@@ -76,7 +70,7 @@ impl<'a> PreparedDesign<'a> {
     }
 
     /// Term `term`'s block of `diag(AᵀA)`, laid out like its `dofs()`, summed in observation order.
-    pub(crate) fn diagonal(&self, term: usize) -> &[f64] {
+    fn diagonal(&self, term: usize) -> &[f64] {
         // Serial fill: a rayon job stolen inside it could re-enter this cell and deadlock.
         self.diagonals[term].get_or_init(|| {
             let prepared = self.term(term);
@@ -200,7 +194,7 @@ mod tests {
         assert_eq!(prepared.sqrt_weights(), Some(&[2.0, 4.0, 3.0, 1.0][..]));
         assert_eq!(
             (0..4)
-                .map(|obs| prepared.row_weight(obs))
+                .map(|obs| row_weight(prepared.sqrt_weights(), obs))
                 .collect::<Vec<_>>(),
             [4.0, 16.0, 9.0, 1.0]
         );
@@ -214,7 +208,7 @@ mod tests {
                 let block = &mut diag[term.term.column_dofs(column)];
                 let z = term.loading(column);
                 for (obs, &level) in term.term.levels().iter().enumerate() {
-                    let w = prepared.row_weight(obs);
+                    let w = row_weight(prepared.sqrt_weights(), obs);
                     block[level as usize] += z.map_or(w, |z| w * z[obs] * z[obs]);
                 }
             }

@@ -28,10 +28,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- A slope covariate another term reproduces to roundoff is removed from the solve space instead of amplified by the preconditioner (#297).
 - Persistent designs build once and share across solves: Python adds `Design`, accepted by `Solver`, `solve`, and `solve_batch`; Rust adds `Design::from_categories` and accepts `&Design` in `Solver::new`, keeping weight-dependent preparation solver-local (#269).
 - Python `Preconditioner.build_duration_seconds` and Rust `Preconditioner::build_duration()` expose the original preconditioner build duration, preserved across serialization and reuse.
-- `BuildWarning::CollinearSlopeCovariate` reports a slope covariate that is (nearly) a per-level combination of another term's columns — a near-null direction per-term whitening cannot see, which can inflate iteration counts by orders of magnitude (#281); its `verdict: AliasVerdict` records whether that direction was constrained out of the solve space (#297).
 - `PreconditionerConfig::Adaptive` starts on the diagonal and escalates to additive Schwarz on a stalled contraction, building the Schwarz factorization only on escalation; `Solver::has_escalated()` reports whether the Schwarz map was built, and until then `Solver::preconditioner()` is the diagonal base carrying the ladder (`config()` is `Adaptive`), which a reusing solver escalates the same way (#260).
 - Python exposes it as `PreconditionerConfig.Adaptive(local_solver=..., reduction=..., stall=...)`, with `Solver.has_escalated` and `within.config.Staleness(window=..., threshold=...)` (#260).
 

@@ -2,7 +2,7 @@
 
 use thiserror::Error;
 
-use crate::channel::{Channel, ChannelPair};
+use crate::channel::ChannelPair;
 
 pub use schwarz_precond::SolveError;
 
@@ -129,27 +129,6 @@ pub enum BuildWarning {
         /// Largest relative dominance violation at hand-over.
         violation: f64,
     },
-    /// A slope covariate is (nearly) a per-level combination of another term's
-    /// columns, so the design has a (near-)null direction spanning both terms.
-    CollinearSlopeCovariate {
-        /// The slope channel carrying the covariate.
-        slope: Channel,
-        /// The term whose columns (nearly) reproduce the covariate.
-        term: usize,
-        /// Share of the covariate's weighted variation outside that term's span.
-        relative_residual: f64,
-        /// Whether the direction spanning both terms left the solve space.
-        verdict: AliasVerdict,
-    },
-}
-
-/// What became of a warned cross-term direction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AliasVerdict {
-    /// A null of the design, kept out of the solve space.
-    Constrained,
-    /// Not certified as a null, so the iteration keeps it.
-    Kept,
 }
 
 impl std::fmt::Display for BuildWarning {
@@ -165,26 +144,6 @@ impl std::fmt::Display for BuildWarning {
                  {iterations} iterations (max relative violation {violation:.2e}); deficits \
                  clamped, preconditioner quality may degrade"
             ),
-            Self::CollinearSlopeCovariate {
-                slope,
-                term,
-                relative_residual,
-                verdict,
-            } => {
-                let fate = match verdict {
-                    AliasVerdict::Constrained => "was removed from the solve space",
-                    AliasVerdict::Kept => {
-                        "was not certified as a null and stays in the solve space, where \
-                         iteration counts can inflate by orders of magnitude"
-                    }
-                };
-                write!(
-                    f,
-                    "slope covariate of {slope} is nearly collinear with the columns of term \
-                     {term} (relative residual {relative_residual:.2e}); the direction spanning \
-                     both terms {fate}"
-                )
-            }
         }
     }
 }
