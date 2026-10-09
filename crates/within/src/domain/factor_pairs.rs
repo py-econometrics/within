@@ -182,11 +182,6 @@ fn split_into_subdomains(
             }
         }
     }
-    for ld in &mut domains {
-        if ld.component.matrix.grounding == Grounding::Grounded {
-            sddm::add_relative_ridge(&mut ld.component.matrix, config.ridge);
-        }
-    }
     Ok((domains, warnings))
 }
 
