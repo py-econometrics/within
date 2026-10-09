@@ -47,6 +47,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - LSMR's residual estimate is its own `‖r_k‖` rather than LSQR's smaller `|φ̄_k|`, which let `ResidualTolerance` fire before the tolerance was met.
 - A non-finite or negative `ScalingConfig::tolerance` silently disabled the dominance certificate under both failure policies, since every comparison against it is `>`; it is now rejected as `BuildError::InvalidScalingTolerance`.
 - A slope covariate that another term reproduces exactly could converge to a wrong answer, or not at all, when an observation sits at its level's slope mean (#446).
+- A slope covariate that other terms reproduce exactly could fail to converge, since its singular slope-pair block was factored as nonsingular; singularity is now read from the observations (#442).
 
 ### Performance
 

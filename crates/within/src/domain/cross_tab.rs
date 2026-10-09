@@ -16,6 +16,7 @@ use crate::domain::PreparedDesign;
 
 mod accumulate;
 use accumulate::accumulate_cross_block;
+pub(crate) use accumulate::PairColumns;
 
 /// A connected component in a bipartite factor-pair graph, in compact 0-based parent indices.
 pub(crate) struct BipartiteComponent {

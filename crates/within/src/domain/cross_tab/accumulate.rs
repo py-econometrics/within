@@ -17,7 +17,7 @@ use super::to_u32;
 const DENSE_TABLE_MAX_ENTRIES: usize = 5_000_000;
 
 /// A channel's per-observation loading.
-pub(super) trait Loading: Copy {
+pub(crate) trait Loading: Copy {
     fn at(self, uid: usize) -> f64;
 }
 
@@ -39,18 +39,26 @@ impl Loading for &[f64] {
     }
 }
 
+/// `None` is an intercept's `l ≡ 1`, for a reader that needs no specialized kernel.
+impl Loading for Option<&[f64]> {
+    #[inline]
+    fn at(self, uid: usize) -> f64 {
+        self.map_or(1.0, |z| z[uid])
+    }
+}
+
 /// One weighted observation of a channel pair, at its cell with both loadings.
-pub(super) struct Observation {
-    pub(super) row: usize,
-    pub(super) col: usize,
-    pub(super) x: f64,
-    pub(super) y: f64,
-    pub(super) w: f64,
+pub(crate) struct Observation {
+    pub(crate) row: usize,
+    pub(crate) col: usize,
+    pub(crate) x: f64,
+    pub(crate) y: f64,
+    pub(crate) w: f64,
 }
 
 /// Per-observation input columns backing one channel pair: level codes, loadings, and weights.
 #[derive(Clone, Copy)]
-pub(super) struct PairColumns<'a, Lq: Loading, Lr: Loading> {
+pub(crate) struct PairColumns<'a, Lq: Loading, Lr: Loading> {
     pub(super) row_levels: &'a [u32],
     pub(super) col_levels: &'a [u32],
     pub(super) row_load: Lq,
@@ -58,9 +66,22 @@ pub(super) struct PairColumns<'a, Lq: Loading, Lr: Loading> {
     pub(super) sqrt_weights: Option<&'a [f64]>,
 }
 
+impl<'a> PairColumns<'a, Option<&'a [f64]>, Option<&'a [f64]>> {
+    pub(crate) fn new(prepared: &'a PreparedDesign<'_>, pair: ChannelPair) -> Self {
+        let (rows, cols) = (prepared.term(pair.rows.term), prepared.term(pair.cols.term));
+        Self {
+            row_levels: rows.term.levels(),
+            col_levels: cols.term.levels(),
+            row_load: rows.loading(pair.rows.column),
+            col_load: cols.loading(pair.cols.column),
+            sqrt_weights: prepared.sqrt_weights(),
+        }
+    }
+}
+
 impl<Lq: Loading, Lr: Loading> PairColumns<'_, Lq, Lr> {
     #[inline]
-    pub(super) fn observations(&self) -> impl Iterator<Item = Observation> + '_ {
+    pub(crate) fn observations(&self) -> impl Iterator<Item = Observation> + '_ {
         (0..self.row_levels.len()).map(move |uid| Observation {
             row: self.row_levels[uid] as usize,
             col: self.col_levels[uid] as usize,

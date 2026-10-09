@@ -18,20 +18,7 @@ use crate::domain::CrossTab;
 mod scaling;
 use scaling::dominance_scaling;
 
-#[derive(Clone, Copy)]
-struct RoundoffBudget {
-    ulps: f64,
-}
-
-impl RoundoffBudget {
-    fn tolerance(self, n: usize, total_diagonal: f64) -> f64 {
-        self.ulps * f64::EPSILON * (n.max(1) as f64).sqrt() * total_diagonal
-    }
-}
-
-const LAPLACIAN_VALIDATION_BUDGET: RoundoffBudget = RoundoffBudget { ulps: 64.0 };
-// A false Grounded retains noise edges; a false Floating deletes an identified direction.
-const FLOATING_CLASSIFICATION_BUDGET: RoundoffBudget = RoundoffBudget { ulps: 4.0 };
+const LAPLACIAN_VALIDATION_ULPS: f64 = 64.0;
 
 /// Gauge of a reduced system: `Floating` anchors one node, `Grounded` factors the full complement.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -89,17 +76,17 @@ impl CoordinateMap {
 pub(crate) fn orient_for_elimination(
     cross_tab: CrossTab,
     mut diagonal: Vec<f64>,
-    mut globals: Vec<u32>,
+    mut indices: Vec<u32>,
 ) -> (CrossTab, Vec<f64>, Vec<u32>) {
-    debug_assert_eq!(globals.len(), cross_tab.n_local());
+    debug_assert_eq!(indices.len(), cross_tab.n_local());
     debug_assert_eq!(diagonal.len(), cross_tab.n_local());
     if cross_tab.n_cols() <= cross_tab.n_rows() {
-        return (cross_tab, diagonal, globals);
+        return (cross_tab, diagonal, indices);
     }
     diagonal.rotate_left(cross_tab.n_rows());
-    globals.rotate_left(cross_tab.n_rows());
+    indices.rotate_left(cross_tab.n_rows());
     let (c, ct) = cross_tab.into_parts();
-    (CrossTab::with_transpose(ct, c), diagonal, globals)
+    (CrossTab::with_transpose(ct, c), diagonal, indices)
 }
 
 /// Bipartite SDDM in eliminated-major form; arrays are flat, split at `n_eliminated`.
@@ -130,6 +117,13 @@ impl SddmMatrix {
 
     pub(crate) fn surplus_kept(&self) -> &[f64] {
         &self.ground_edges[self.n_eliminated()..]
+    }
+
+    /// A floating matrix anchors one node instead, so it drops its surplus.
+    pub(super) fn float(&mut self) {
+        self.diagonal = magnitude_sums(&self.cross_tab);
+        self.ground_edges.fill(0.0);
+        self.grounding = Grounding::Floating;
     }
 }
 
@@ -191,7 +185,8 @@ fn convert_known_laplacian(
         total_diagonal += entry;
         total_mismatch += (entry - row_sum).abs();
     }
-    if total_mismatch > LAPLACIAN_VALIDATION_BUDGET.tolerance(cross_tab.n_local(), total_diagonal) {
+    let n = cross_tab.n_local().max(1) as f64;
+    if total_mismatch > LAPLACIAN_VALIDATION_ULPS * f64::EPSILON * n.sqrt() * total_diagonal {
         return Err(NotScalable);
     }
     Ok(LocalComponent {
@@ -291,31 +286,20 @@ fn assemble(
         CoordinateMap::Scaled(factors.into_boxed_slice())
     };
 
-    let row_sums = magnitude_sums(&cross_tab);
-    finalize(
-        cross_tab,
-        scaled_diagonal,
-        row_sums,
-        coordinates,
-        form,
-        scaling,
-    )
+    finalize(cross_tab, scaled_diagonal, coordinates, form, scaling)
 }
 
-/// Clamp roundoff deficits, retain surplus as ground edges, and classify the [`Grounding`].
+/// Clamp roundoff deficits and retain surplus as ground edges.
 fn finalize(
     cross_tab: CrossTab,
     mut scaled_diagonal: Vec<f64>,
-    row_sums: Vec<f64>,
     coordinates: CoordinateMap,
     form: MatrixForm,
     scaling: &ScalingConfig,
 ) -> Result<(LocalComponent, f64), NotScalable> {
-    let n = cross_tab.n_local();
-    let mut ground_edges = vec![0.0; n];
+    let row_sums = magnitude_sums(&cross_tab);
+    let mut ground_edges = vec![0.0; cross_tab.n_local()];
 
-    let mut total_diagonal = 0.0;
-    let mut total_surplus = 0.0;
     let mut clamped_deficit = 0.0f64;
     for ((diagonal, &row_sum), surplus) in scaled_diagonal
         .iter_mut()
@@ -334,27 +318,14 @@ fn finalize(
         }
         *diagonal = diagonal.max(row_sum);
         *surplus = (*diagonal - row_sum).max(0.0);
-        total_diagonal += *diagonal;
-        total_surplus += *surplus;
     }
-
-    let floats = total_surplus <= FLOATING_CLASSIFICATION_BUDGET.tolerance(n, total_diagonal);
-    if floats {
-        scaled_diagonal = row_sums;
-        ground_edges.fill(0.0);
-    }
-    let grounding = if floats {
-        Grounding::Floating
-    } else {
-        Grounding::Grounded
-    };
     Ok((
         LocalComponent {
             matrix: SddmMatrix {
                 cross_tab,
                 diagonal: scaled_diagonal,
                 ground_edges,
-                grounding,
+                grounding: Grounding::Grounded,
             },
             form,
             coordinates,

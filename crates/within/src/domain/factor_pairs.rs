@@ -10,12 +10,16 @@ use schwarz_precond::{PartitionWeights, SubdomainCore};
 
 use crate::channel::{Channel, ChannelPair};
 use crate::config::LocalSolverConfig;
+use crate::csr_block::to_u32;
 use crate::{BuildError, BuildWarning};
 
 use super::{CrossTab, PreparedDesign};
 
+mod grounding;
 mod sddm;
+use crate::domain::cross_tab::PairColumns;
 use crate::domain::Column;
+use grounding::scaled_groundings;
 use sddm::{convert, NotScalable};
 pub(crate) use sddm::{CoordinateMap, Grounding, LocalComponent, MatrixForm, SddmMatrix};
 
@@ -117,6 +121,8 @@ fn split_into_subdomains(
             .collect()
     };
 
+    // Only folded components are tested: a frustrated block is nonsingular, so it never floats.
+    let mut levels: Option<Vec<Option<(usize, f64)>>> = None;
     let mut domains = Vec::with_capacity(components.len());
     let mut warnings = Vec::new();
     for (comp, comp_ct) in components.iter().zip(cross_tabs) {
@@ -129,19 +135,17 @@ fn split_into_subdomains(
         if comp_diag.iter().all(|&v| v == 0.0) {
             continue;
         }
-        let comp_globals: Vec<u32> = comp
+        // Pair-local `[rows | cols]` positions, mapped to globals once oriented.
+        let comp_indices: Vec<u32> = comp
             .rows
             .iter()
-            .map(|&i| l2g[i])
-            .chain(comp.cols.iter().map(|&i| l2g[n_rows_full + i]))
+            .map(|&i| to_u32(i))
+            .chain(comp.cols.iter().map(|&j| to_u32(n_rows_full + j)))
             .collect();
-        let (comp_ct, comp_diag, comp_globals) =
-            sddm::orient_for_elimination(comp_ct, comp_diag, comp_globals);
-        let (mut component, uncertified) = convert(comp_ct, comp_diag, class, &config.scaling)
+        let (comp_ct, comp_diag, mut comp_indices) =
+            sddm::orient_for_elimination(comp_ct, comp_diag, comp_indices);
+        let (component, uncertified) = convert(comp_ct, comp_diag, class, &config.scaling)
             .map_err(|NotScalable| BuildError::UnscalableComponent { pair })?;
-        if class == ComponentClass::General && component.matrix.grounding == Grounding::Grounded {
-            sddm::add_relative_ridge(&mut component.matrix, config.ridge);
-        }
         if let Some(uncertified) = uncertified {
             warnings.push(BuildWarning::UnscalableComponent {
                 pair,
@@ -149,10 +153,39 @@ fn split_into_subdomains(
                 violation: uncertified.violation,
             });
         }
+        if class == ComponentClass::General && component.form == MatrixForm::Laplacian {
+            let levels = levels.get_or_insert_with(|| vec![None; n_rows_full + col_diag.len()]);
+            let mut factors = vec![1.0; comp_indices.len()];
+            component
+                .coordinates
+                .fold(&mut factors, component.matrix.n_eliminated());
+            for (&p, &f) in comp_indices.iter().zip(&factors) {
+                levels[p as usize] = Some((domains.len(), f));
+            }
+        }
+        for index in &mut comp_indices {
+            *index = l2g[*index as usize];
+        }
         domains.push(LocalDomain {
-            core: schwarz_precond::SubdomainCore::uniform(comp_globals),
+            core: schwarz_precond::SubdomainCore::uniform(comp_indices),
             component,
         });
+    }
+
+    // A folded component's dropped surplus is `fᵀGf` exactly, so only those read the observations.
+    if let Some(levels) = levels {
+        let columns = PairColumns::new(prepared, pair);
+        let groundings = scaled_groundings(&columns, &levels, n_rows_full, domains.len());
+        for (ld, grounding) in domains.iter_mut().zip(groundings) {
+            if grounding == Grounding::Floating {
+                ld.component.matrix.float();
+            }
+        }
+    }
+    for ld in &mut domains {
+        if ld.component.matrix.grounding == Grounding::Grounded {
+            sddm::add_relative_ridge(&mut ld.component.matrix, config.ridge);
+        }
     }
     Ok((domains, warnings))
 }
@@ -282,6 +315,37 @@ mod tests {
             counts.iter().any(|&c| c > 1),
             "test is vacuous: build a design whose subdomains share a DOF"
         );
+    }
+
+    /// `z = a_row · b_col` aliases the intercept; a floated block keeps no surplus.
+    #[rstest::rstest]
+    #[case::aliased(0.0, Grounding::Floating)]
+    #[case::identified(1e-4, Grounding::Grounded)]
+    fn a_folded_alias_floats_without_surplus(#[case] delta: f64, #[case] expected: Grounding) {
+        let (rows, cols) = ([0u32, 0, 1, 1, 2, 2], [0u32, 1, 0, 1, 0, 1]);
+        let z = [1.0, 3.0, -2.0, -6.0 * (1.0 + delta), 0.5, 1.5];
+        let weights = [0.3, 2.0, 1.0, 7.5, 0.01, 4.0];
+        let design = Design::new(vec![
+            Effect::new(&rows, false, [&z[..]]).expect("slope effect"),
+            Effect::new(&cols, true, []).expect("plain effect"),
+        ])
+        .expect("valid design");
+        let prepared = PreparedDesign::new(design, Some(&weights)).expect("valid weights");
+        let (domains, _) =
+            build_local_domains(&prepared, &LocalSolverConfig::default()).expect("domains");
+        let [ld] = &domains[..] else {
+            panic!("one component expected, got {}", domains.len())
+        };
+        let matrix = &ld.component.matrix;
+        assert_eq!(ld.component.form, MatrixForm::Laplacian);
+        assert_eq!(matrix.grounding, expected);
+        if expected == Grounding::Floating {
+            assert!(matrix.ground_edges.iter().all(|&g| g == 0.0));
+            for (i, &d) in matrix.diagonal.iter().enumerate() {
+                let sum: f64 = matrix.cross_tab.neighbors(i).map(|(_, v)| v.abs()).sum();
+                assert_eq!(d, sum, "row {i}");
+            }
+        }
     }
 
     #[test]
