@@ -29,7 +29,7 @@ fn test_observation_count_mismatch_error() {
     ]);
     match result.unwrap_err() {
         BuildError::ObservationCountMismatch {
-            effect: 1,
+            column: 1,
             expected: 3,
             got: 2,
         } => {}

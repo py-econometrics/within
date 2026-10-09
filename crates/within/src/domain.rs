@@ -589,10 +589,10 @@ impl<'a> Design<'a> {
 
     fn build(effects: Vec<Effect<'a>>, locality_sort: bool) -> Result<Self, BuildError> {
         let n_obs = effects.first().map_or(0, |e| e.levels.len());
-        for (effect, e) in effects.iter().enumerate() {
+        for (column, e) in effects.iter().enumerate() {
             if e.levels.len() != n_obs {
                 return Err(BuildError::ObservationCountMismatch {
-                    effect,
+                    column,
                     expected: n_obs,
                     got: e.levels.len(),
                 });

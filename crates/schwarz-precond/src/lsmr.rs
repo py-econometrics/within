@@ -70,12 +70,12 @@ pub enum LsmrStopReason {
     ResidualTolerance,
     /// The estimate `‖Aᵀrₖ‖ / (‖A‖ ‖rₖ‖)` met the relative tolerance.
     NormalEquationTolerance,
+    /// The iteration budget was exhausted before convergence.
+    MaxIterations,
     /// The warm start already solved the system: `b − A x0` was exactly zero.
     WarmStartExact,
     /// A tolerance stop, and each restart from it, that `‖b − A x‖` refuted.
     FalseConvergence,
-    /// The iteration budget was exhausted before convergence.
-    MaxIterations,
     /// The [`EscalationHandler`] requested a handoff to a stronger preconditioner.
     Escalated,
 }
