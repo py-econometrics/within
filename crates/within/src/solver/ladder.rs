@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use once_cell::sync::OnceCell;
 
+use crate::build_control::{unrestricted, BuildContext, BuildFailure, BuildResult};
 use crate::config::PreconditionerConfig;
 use crate::domain::PreparedDesign;
 use crate::operator::schwarz::{
@@ -40,7 +41,8 @@ impl PrecondSlot {
                     local_solver,
                     reduction,
                 };
-                let (map, warnings) = build_schwarz(prepared, &schwarz)?;
+                let (map, warnings) =
+                    unrestricted(build_schwarz(prepared, &schwarz, BuildContext::default()))?;
                 (Self::Static(map), warnings)
             }
             PreconditionerConfig::Adaptive {
@@ -131,8 +133,9 @@ impl AdaptivePrecond {
         &self,
         prepared: &PreparedDesign<'_>,
         screening: &[BuildWarning],
-    ) -> Result<AdaptiveBuild, BuildError> {
-        let (schwarz, build_warnings) = build_schwarz(prepared, &self.ladder().escalated)?;
+        context: BuildContext<'_>,
+    ) -> BuildResult<AdaptiveBuild> {
+        let (schwarz, build_warnings) = build_schwarz(prepared, &self.ladder().escalated, context)?;
         let schwarz = schwarz.map(|mut p| {
             p.gauge = self.base.gauge.clone();
             p
@@ -147,14 +150,19 @@ impl AdaptivePrecond {
         prepared: &PreparedDesign<'_>,
         screening: &[BuildWarning],
         threads: usize,
-    ) -> (CandidateBuild, f64) {
+        context: BuildContext<'_>,
+    ) -> (Option<CandidateBuild>, f64) {
         let start = Instant::now();
         let outcome = rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
             .build()
             .map_or_else(
-                |_| CandidateBuild::Unavailable,
-                |pool| CandidateBuild::Ready(pool.install(|| self.construct(prepared, screening))),
+                |_| Some(CandidateBuild::Unavailable),
+                |pool| match pool.install(|| self.construct(prepared, screening, context)) {
+                    Ok(build) => Some(CandidateBuild::Ready(Ok(build))),
+                    Err(BuildFailure::Failed(error)) => Some(CandidateBuild::Ready(Err(error))),
+                    Err(BuildFailure::Cancelled) => None,
+                },
             );
         (outcome, start.elapsed().as_secs_f64())
     }
@@ -172,7 +180,9 @@ impl AdaptivePrecond {
                 return Ok(outcome);
             }
             let t_build = Instant::now();
-            let outcome = isolated(|| self.construct(prepared, screening))?;
+            let outcome = isolated(|| {
+                unrestricted(self.construct(prepared, screening, BuildContext::default()))
+            })?;
             build_secs = t_build.elapsed().as_secs_f64();
             Ok(outcome)
         })?;

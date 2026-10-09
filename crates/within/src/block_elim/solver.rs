@@ -5,6 +5,7 @@ use approx_chol::{ExactFailure, Factor};
 use rayon::prelude::*;
 use schwarz_precond::{LocalSolveError, LocalSolver};
 
+use crate::build_control::{BuildContext, BuildResult};
 use crate::config::{LocalSolverConfig, SchurMode};
 use crate::csr_block::{CsrBlock, PAR_SPMV_THRESHOLD};
 use crate::domain::{CoordinateMap, CrossTab, Grounding, LocalComponent, MatrixForm, SddmMatrix};
@@ -192,15 +193,17 @@ impl Eliminated {
     fn factor_reduced(
         fold: impl Borrow<Self>,
         config: &LocalSolverConfig,
-    ) -> Result<Factor, BuildError> {
+        context: BuildContext<'_>,
+    ) -> BuildResult<Factor> {
         let this = fold.borrow();
         let exact_below = config.dense_threshold;
         let exact = (exact_below > 0 && this.matrix.n_kept() <= exact_below)
             .then(|| schur::exact_for_factor(&this.matrix, &this.inv_diagonal));
         if let Some(exact) = &exact {
+            context.before_factorization()?;
             match factor_complement(exact, config, ExactFailure::Error) {
                 Err(approx_chol::Error::DenseFactorizationFailed { .. }) => {}
-                result => return result.map_err(local_solver_build),
+                result => return result.map_err(|error| local_solver_build(error).into()),
             }
         }
         let complement = match &config.schur {
@@ -211,8 +214,9 @@ impl Eliminated {
         };
         // An owned fold is the transient cover; it is freed before the factor's fill is allocated.
         drop(fold);
+        context.before_factorization()?;
         factor_complement(&complement, config, ExactFailure::FallBackToApproximate)
-            .map_err(local_solver_build)
+            .map_err(|error| local_solver_build(error).into())
     }
 }
 
@@ -319,7 +323,8 @@ impl BlockElimSolver {
     pub(crate) fn build(
         component: LocalComponent,
         config: &LocalSolverConfig,
-    ) -> Result<Self, BuildError> {
+        context: BuildContext<'_>,
+    ) -> BuildResult<Self> {
         let LocalComponent {
             matrix,
             form,
@@ -330,7 +335,7 @@ impl BlockElimSolver {
         let factor = match form {
             MatrixForm::Laplacian => {
                 let factor = ReducedFactor::Direct {
-                    factor: Eliminated::factor_reduced(&eliminated, config)?,
+                    factor: Eliminated::factor_reduced(&eliminated, config, context)?,
                     grounding: eliminated.matrix.grounding,
                 };
                 debug_assert!(factor.solve_dimension() >= factor.input_dimension());
@@ -338,7 +343,7 @@ impl BlockElimSolver {
             }
             // Surplus survives the cover, so it grounds as the signed matrix did.
             MatrixForm::SignedPendingCover => ReducedFactor::Cover {
-                inner: Eliminated::factor_reduced(eliminated.cover()?, config)?,
+                inner: Eliminated::factor_reduced(eliminated.cover()?, config, context)?,
                 m: eliminated.matrix.n_kept(),
             },
         };

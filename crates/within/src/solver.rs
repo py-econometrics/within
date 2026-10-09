@@ -7,11 +7,13 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use ndarray::ArrayView2;
+use once_cell::sync::OnceCell;
 use rayon::prelude::*;
 use schwarz_precond::{
     lsmr as lsmr_solve, mlsmr, EscalationPolicy, LsmrResult, LsmrStopReason, MlsmrOptions,
 };
 
+use crate::build_control::{BuildContext, CancelOnDrop};
 use crate::channel::CoefficientAddress;
 use crate::config::{LsmrOptions, PreconditionerConfig};
 use crate::domain::collinearity::{detect_collinear_slopes, CollinearSlope};
@@ -431,14 +433,26 @@ impl<'a> Solver<'a> {
         y: &'s [f64],
         lsmr: &LsmrOptions,
         ladder: &AdaptivePrecond,
-    ) -> Result<(PreparedRhs<'s>, Run, CandidateBuild, f64), SolveError> {
+    ) -> Result<(PreparedRhs<'s>, Run, Option<CandidateBuild>, f64), SolveError> {
         let rhs = self.prepare(y)?;
         let threads = rayon::current_num_threads();
+        let decision = OnceCell::new();
         std::thread::scope(|scope| {
+            // Release waiting build workers before the scope joins during unwinding.
+            let _cancel_on_drop = CancelOnDrop {
+                decision: &decision,
+            };
             let build = std::thread::Builder::new()
                 .name("within-speculative-schwarz".into())
                 .spawn_scoped(scope, || {
-                    ladder.speculate(&self.prepared, &self.warnings, threads)
+                    ladder.speculate(
+                        &self.prepared,
+                        &self.warnings,
+                        threads,
+                        BuildContext {
+                            decision: Some(&decision),
+                        },
+                    )
                 });
             let options = MlsmrOptions {
                 escalation: Some(&ladder.ladder().stall),
@@ -455,12 +469,17 @@ impl<'a> Solver<'a> {
                     options,
                 )
             });
+            // Signal before joining; only a stall with budget left permits factorization.
+            let _ = decision.set(probe.as_ref().is_ok_and(|run| {
+                run.result.stop_reason == LsmrStopReason::Escalated
+                    && run.result.iterations < lsmr.maxiter
+            }));
             let (candidate, build_secs) = match build {
                 Ok(build) => match build.join() {
                     Ok(result) => result,
                     Err(payload) => std::panic::resume_unwind(payload),
                 },
-                Err(_) => (CandidateBuild::Unavailable, 0.0),
+                Err(_) => (Some(CandidateBuild::Unavailable), 0.0),
             };
             Ok((rhs, probe?, candidate, build_secs))
         })
@@ -521,7 +540,7 @@ impl<'a> Solver<'a> {
         let (remaining, pilot, candidate, build_secs) = match pilot {
             Some((rhs, probe, built, elapsed)) if stalled(&probe.result) => {
                 let adaptive = ladder.expect("a pilot uses the adaptive ladder");
-                let additional = adaptive.escalate(&self.prepared, &self.warnings, Some(built))?;
+                let additional = adaptive.escalate(&self.prepared, &self.warnings, built)?;
                 (
                     &ys[1..],
                     Some(Pass::Stalled(rhs, probe)),
@@ -532,7 +551,7 @@ impl<'a> Solver<'a> {
             Some((rhs, probe, built, elapsed)) => (
                 &ys[1..],
                 Some(Pass::Done(self.finish(rhs, probe))),
-                Some(built),
+                built,
                 elapsed,
             ),
             None => (ys, None, None, 0.0),

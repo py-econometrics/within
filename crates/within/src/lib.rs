@@ -40,6 +40,8 @@ pub(crate) mod linalg;
 pub(crate) mod operator;
 pub(crate) mod solver;
 
+mod build_control;
+
 pub use channel::{Channel, ChannelPair, CoefficientAddress};
 pub use config::{
     ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, LsmrOptions, PreconditionerConfig,

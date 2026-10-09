@@ -1,3 +1,4 @@
+use crate::build_control::BuildContext;
 use std::env;
 use std::process::Command;
 use std::thread;
@@ -127,6 +128,7 @@ fn run_block_elim_parallel_reduction_regression_case() {
                 reduction: ReductionStrategy::ParallelReduction,
             },
             n_dofs,
+            BuildContext::default(),
         )
         .expect("build block-elim additive preconditioner");
         let atomic = build_additive(
@@ -136,6 +138,7 @@ fn run_block_elim_parallel_reduction_regression_case() {
                 reduction: ReductionStrategy::AtomicScatter,
             },
             n_dofs,
+            BuildContext::default(),
         )
         .expect("build block-elim atomic preconditioner");
 
@@ -211,8 +214,13 @@ fn test_build_additive() {
         local_solver: LocalSolverConfig::default(),
         reduction: ReductionStrategy::default(),
     };
-    let schwarz = build_additive(domain_pairs, &config, design.design.n_dofs)
-        .expect("build schwarz with explicit domains");
+    let schwarz = build_additive(
+        domain_pairs,
+        &config,
+        design.design.n_dofs,
+        BuildContext::default(),
+    )
+    .expect("build schwarz with explicit domains");
     let r = vec![1.0; design.design.n_dofs];
     let mut z = vec![0.0; design.design.n_dofs];
     schwarz.apply(&r, &mut z).expect("schwarz apply succeeds");
@@ -230,7 +238,8 @@ fn small_subdomain_solve(schur: SchurMode, dense_threshold: usize) -> Vec<f64> {
         ..Default::default()
     };
     let solver =
-        crate::block_elim::BlockElimSolver::build(component, &config).expect("block-elim build");
+        crate::block_elim::BlockElimSolver::build(component, &config, BuildContext::default())
+            .expect("block-elim build");
     let mut rhs = vec![0.0; solver.scratch_size()];
     for (i, slot) in rhs.iter_mut().take(solver.n_local()).enumerate() {
         *slot = if i % 2 == 0 { 1.0 } else { -1.0 };
