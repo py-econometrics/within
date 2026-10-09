@@ -309,7 +309,8 @@ pub(crate) fn build_schwarz(
     context: BuildContext<'_>,
 ) -> BuildResult<(Option<Preconditioner>, Vec<BuildWarning>)> {
     let build_started = Instant::now();
-    let (domains, warnings) = crate::domain::build_local_domains(prepared, &config.local_solver)?;
+    let (domains, warnings) =
+        crate::domain::build_local_domains(prepared, &config.local_solver, context)?;
     if domains.is_empty() {
         return Ok((None, warnings));
     }

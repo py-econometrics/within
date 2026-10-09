@@ -28,6 +28,15 @@ impl BuildContext<'_> {
             _ => Ok(()),
         }
     }
+
+    /// Permit preparation until the pilot explicitly cancels it.
+    #[inline]
+    pub(crate) fn checkpoint<E>(self) -> BuildResult<(), E> {
+        match self.decision {
+            Some(decision) if decision.get() == Some(&false) => Err(BuildFailure::Cancelled),
+            _ => Ok(()),
+        }
+    }
 }
 
 pub(crate) struct CancelOnDrop<'a> {

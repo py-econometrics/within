@@ -35,7 +35,8 @@ fn over_threshold_pair_matches_the_dense_kernel() {
         .collect();
     let effects = [&fa, &fb].map(|levels| Effect::new(levels, true, []).unwrap());
     let design = PreparedDesign::unweighted_for_test(Design::new_unsorted(effects).unwrap());
-    let (ct, _) = CrossTab::build_for_pair(&design, INTERCEPT_PAIR);
+    let (ct, _) = CrossTab::build_for_pair(&design, INTERCEPT_PAIR, Default::default())
+        .expect("plain cross-tab builds");
 
     let terms = &design.design.terms;
     let cols = PairColumns {
@@ -57,7 +58,8 @@ fn test_extract_component_two_components() {
     let fa = vec![0u32, 0, 1, 1, 2, 2, 3, 3];
     let fb = vec![0u32, 1, 0, 1, 2, 3, 2, 3];
     let design = design_of(vec![fa, fb]);
-    let (ct, _) = CrossTab::build_for_pair(&design, INTERCEPT_PAIR);
+    let (ct, _) = CrossTab::build_for_pair(&design, INTERCEPT_PAIR, Default::default())
+        .expect("plain cross-tab builds");
 
     let components = ct.bipartite_connected_components();
     assert_eq!(components.len(), 2, "should have 2 connected components");
@@ -153,7 +155,8 @@ proptest! {
         }
 
         let design = design_of(vec![fa, fb]);
-        let (ct, _) = CrossTab::build_for_pair(&design, INTERCEPT_PAIR);
+        let (ct, _) = CrossTab::build_for_pair(&design, INTERCEPT_PAIR, Default::default())
+        .expect("plain cross-tab builds");
 
         let components = ct.bipartite_connected_components();
 

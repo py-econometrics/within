@@ -10,6 +10,7 @@ use std::sync::OnceLock;
 
 use serde::ser::SerializeStruct;
 
+use crate::build_control::{BuildContext, BuildResult};
 use crate::channel::ChannelPair;
 use crate::csr_block::{to_u32, CsrBlock};
 use crate::domain::PreparedDesign;
@@ -113,13 +114,18 @@ impl CrossTab {
     pub(crate) fn build_for_pair(
         prepared: &PreparedDesign<'_>,
         pair: ChannelPair,
-    ) -> (Self, Vec<u32>) {
+        context: BuildContext<'_>,
+    ) -> BuildResult<(Self, Vec<u32>)> {
         let design = &prepared.design;
         let row_term = &design.terms[pair.rows.term];
         let col_term = &design.terms[pair.cols.term];
         let (n_rows, n_cols) = (row_term.n_levels(), col_term.n_levels());
 
-        let cross_tab = CrossTab::eager(accumulate_cross_block(prepared, pair, n_rows, n_cols));
+        context.checkpoint()?;
+        let c = accumulate_cross_block(prepared, pair, n_rows, n_cols);
+        context.checkpoint()?;
+        let cross_tab = CrossTab::eager(c);
+        context.checkpoint()?;
         let row_base = row_term.column_dofs(pair.rows.column).start;
         let col_base = col_term.column_dofs(pair.cols.column).start;
         let local_to_global = (0..n_rows)
@@ -127,7 +133,7 @@ impl CrossTab {
             .chain((0..n_cols).map(|level| to_u32(col_base + level)))
             .collect();
 
-        (cross_tab, local_to_global)
+        Ok((cross_tab, local_to_global))
     }
 
     /// Symmetric adjacency over local `[q | r]` indexing: q-nodes walk `C`, r-nodes walk `Cᵀ`.
