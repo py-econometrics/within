@@ -21,7 +21,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - A warm start that already solves the system reports `WarmStartExact` instead of `ZeroRhs`.
 - A warm-started LSMR stop measures the total solution against the original `b`; with `b = 0`, tolerances measure against `‖b − A x₀‖`.
 - **BREAKING:** `ScalingConfig::max_sweeps` is now `max_iterations`, and `BuildWarning::UnscalableComponent` reports `iterations` in place of `sweeps`; the dominance certificate runs reduced CG, not relaxation sweeps.
-- **BREAKING:** The serialized `Preconditioner` wire format moved v12 → v17 (approx-chol 0.5, full construction config, build duration, `LocalSolverConfig::ridge`, the built map's own Schwarz description in place of the strategy enum, and an unescalated adaptive ladder); 0.3.0 bytes no longer decode.
+- **BREAKING:** The serialized `Preconditioner` wire format moved v12 → v17 (approx-chol 0.5, full construction config, build duration, the built map's own Schwarz description in place of the strategy enum, and an unescalated adaptive ladder); 0.3.0 bytes no longer decode.
 - **BREAKING:** Coefficient addresses use caller-visible `u32` factor labels rather than internal `usize` level positions, affecting `CoefficientAddress::level` and the accepted range of Python coefficient-layout and unidentified-direction levels.
 - **BREAKING:** `Solver::solve` and `Solver::solve_batch` return `WithinError` (was `SolveError`), so a deferred preconditioner build surfaces its failure through the solve path (#260).
 - **BREAKING:** The default preconditioner is the adaptive diagonal→Schwarz ladder rather than additive Schwarz built up front. Coefficients may sit at a different point of the usual intercept degeneracy than 0.3.0 returned; `demeaned` is unaffected (#301).
@@ -34,7 +34,6 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - `BuildWarning::CollinearSlopeCovariate` reports a slope covariate that is (nearly) a per-level combination of another term's columns — a near-null direction per-term whitening cannot see, which can inflate iteration counts by orders of magnitude (#281); its `verdict: AliasVerdict` records whether that direction was constrained out of the solve space (#297).
 - `PreconditionerConfig::Adaptive` starts on the diagonal and escalates to additive Schwarz on a stalled contraction, building the Schwarz factorization only on escalation; `Solver::has_escalated()` reports whether the Schwarz map was built, and until then `Solver::preconditioner()` is the diagonal base carrying the ladder (`config()` is `Adaptive`), which a reusing solver escalates the same way (#260).
 - Python exposes it as `PreconditionerConfig.Adaptive(local_solver=..., reduction=..., stall=...)`, with `Solver.has_escalated` and `within.config.Staleness(window=..., threshold=...)` (#260).
-- `LocalSolverConfig::ridge` (Python `LocalSolverConfig(ridge=...)`) floors the local spectrum of grounded slope-pair components at a fraction of their largest diagonal; `0` disables it (#290).
 
 ### Fixed
 
@@ -47,6 +46,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - LSMR's residual estimate is its own `‖r_k‖` rather than LSQR's smaller `|φ̄_k|`, which let `ResidualTolerance` fire before the tolerance was met.
 - A non-finite or negative `ScalingConfig::tolerance` silently disabled the dominance certificate under both failure policies, since every comparison against it is `>`; it is now rejected as `BuildError::InvalidScalingTolerance`.
 - A slope covariate that another term reproduces exactly could converge to a wrong answer, or not at all, when an observation sits at its level's slope mean (#446).
+- A slope covariate that other terms reproduce exactly could fail to converge, since its singular slope-pair block was factored as nonsingular; singularity is now read from the observations (#442).
 
 ### Performance
 
