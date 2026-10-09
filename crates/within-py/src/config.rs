@@ -4,6 +4,9 @@
 //! Python→native config conversions (`to_native`, `resolve_precond_input`,
 //! `resolve_lsmr_config`). The low-level classes are exposed for benchmark tuning.
 
+// `#[pyclass(from_py_object)]` expands to `.clone()` on the `Copy` config classes.
+#![allow(clippy::clone_on_copy)]
+
 use numpy::PyReadonlyArray1;
 use pyo3::prelude::*;
 
