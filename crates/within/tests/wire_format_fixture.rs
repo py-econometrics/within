@@ -12,6 +12,7 @@ use common::additive;
 const WIRE_FORMAT_VERSION: u32 = 19;
 const PRECOND_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v19.postcard");
 const PRE_BUMP_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v18.postcard");
+const RELEASE_0_3_0_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v12.postcard");
 
 fn fixture_problem() -> (Vec<u32>, Vec<u32>, Vec<f64>, Vec<f64>) {
     // The frustrated (f-slope, g) pair pins a signed operator with Scaled coords and a Cover.
@@ -88,6 +89,11 @@ fn signed_route_preconditioner_round_trips() {
 #[test]
 fn pre_bump_fixture_no_longer_decodes() {
     assert!(postcard::from_bytes::<Preconditioner>(PRE_BUMP_BYTES).is_err());
+}
+
+#[test]
+fn release_0_3_0_fixture_no_longer_decodes() {
+    assert!(postcard::from_bytes::<Preconditioner>(RELEASE_0_3_0_BYTES).is_err());
 }
 
 /// Generate the wire-format fixture. Run with `--ignored` to overwrite
