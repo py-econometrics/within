@@ -35,6 +35,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Long weighted Gram diagonals and cross-table cells use compensated accumulation, avoiding roundoff-driven Laplacian validation failures and loss of signed cell contributions.
+
 - A design carrying varying slopes on two distinct factors could fail preconditioner construction with `matrix is not symmetric`, when rounding left the two triangles of the exact Schur complement unequal (#229).
 - A `design` that is neither a 2-D `uint32` array nor a list of `Effect` raised `ValueError` where the documented type is `TypeError`, and `AdditiveSchwarz` accepted a wrong-type `local_solver` at construction, deferring the `TypeError` to solve time (#248).
 - LSMR no longer certifies a false stop: a tolerance stop is checked against `‖b − A x‖` and a refuted one reports `LsmrStopReason::FalseConvergence`, while a non-finite `α`, `β`, `⟨v, Mv⟩`, `‖b‖`, or `x` fails with `SolveError::InvalidInput` (#290, #297, #303, #362).
