@@ -174,7 +174,7 @@ fn par_norm(v: &[f64]) -> f64 {
 }
 
 /// `u = rhs − A x`, returning `‖u‖`.
-pub(super) fn residual_into<A: Operator + ?Sized>(
+fn residual_into<A: Operator + ?Sized>(
     operator: &A,
     x: &[f64],
     rhs: &[f64],
@@ -615,33 +615,47 @@ pub(super) struct ModifiedGolubKahan<'a, A: Operator + ?Sized, M: Operator + ?Si
     u_norm_inv: f64,
 }
 
-impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M> {
-    /// An unseeded stream: stage `u` by [`stage`](Self::stage) or `residual_norm`, then `restart`.
-    pub(super) fn new(operator: &'a A, preconditioner: &'a M, local_size: usize) -> Self {
-        let (m, n) = (operator.nrows(), operator.ncols());
-        Self {
-            operator,
-            preconditioner,
-            bufs: ModifiedGolubKahanBuffers::new(m, n, local_size),
-            alpha: 0.0,
-            u_norm_inv: 1.0,
-        }
+/// A start vector `rhs − A x₀` staged in a [`ModifiedGolubKahan`]'s `u`, before its first `restart`.
+pub(super) struct StagedStart<'a, A: Operator + ?Sized, M: Operator + ?Sized>(
+    ModifiedGolubKahan<'a, A, M>,
+);
+
+impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> StagedStart<'a, A, M> {
+    /// `x₀ = 0`: `u = b`.
+    pub(super) fn cold(
+        operator: &'a A,
+        preconditioner: &'a M,
+        b: &[f64],
+        local_size: usize,
+    ) -> Self {
+        let mut stream = ModifiedGolubKahan::new(operator, preconditioner, local_size);
+        stream.bufs.u.copy_from_slice(b);
+        Self(stream)
     }
 
-    /// Stage `rhs` itself for `restart`: the cold start's `rhs − A·0`.
-    pub(super) fn stage(&mut self, rhs: &[f64]) {
-        self.bufs.u.copy_from_slice(rhs);
+    /// `u = b − A x₀`, the way a refuted stop restarts; also returns `‖b − A x₀‖`.
+    pub(super) fn warm(
+        operator: &'a A,
+        preconditioner: &'a M,
+        x0: &[f64],
+        b: &[f64],
+        local_size: usize,
+    ) -> Result<(Self, f64), SolveError> {
+        let mut stream = ModifiedGolubKahan::new(operator, preconditioner, local_size);
+        let norm = stream.residual_norm(x0, b)?;
+        Ok((Self(stream), norm))
     }
 
-    /// `‖Âᵀ rhs‖ = ‖Aᵀ rhs‖·√(ĝᵀM⁻¹ĝ)` for unit `ĝ ∥ Aᵀ rhs`, on scratch that spares a staged `u`.
+    /// `‖Âᵀ rhs‖ = ‖Aᵀ rhs‖·√(ĝᵀM⁻¹ĝ)` for unit `ĝ ∥ Aᵀ rhs`, on scratch that spares the staged `u`.
     pub(super) fn metric_gradient_norm(
         &mut self,
         rhs: &[f64],
         rhs_norm: f64,
     ) -> Result<Magnitude, SolveError> {
-        let bufs = &mut self.bufs;
+        let stream = &mut self.0;
+        let bufs = &mut stream.bufs;
         let (g, mv) = (&mut bufs.atu, &mut bufs.v);
-        let image = adjoint_image(self.operator, rhs, rhs_norm, &mut bufs.av, g)?;
+        let image = adjoint_image(stream.operator, rhs, rhs_norm, &mut bufs.av, g)?;
         if !image.g_norm.is_finite() {
             return Ok(Magnitude::from(image.g_norm));
         }
@@ -652,9 +666,32 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M
             1.0
         };
         normalize(g, scale);
-        self.preconditioner.apply(g, mv)?;
+        stream.preconditioner.apply(g, mv)?;
         let alpha = alpha_from_vp(mv, g)?;
         Ok(Magnitude::product(ldexp(1.0, image.k), scale) * Magnitude::from(alpha))
+    }
+
+    /// Seed the sequence from the staged `u` with `β₁ = ‖u‖`, yielding the stream and `(α₁, β₁)`.
+    pub(super) fn restart(
+        self,
+        beta: f64,
+    ) -> Result<(ModifiedGolubKahan<'a, A, M>, BidiagStep), SolveError> {
+        let mut stream = self.0;
+        let step1 = stream.restart(beta)?;
+        Ok((stream, step1))
+    }
+}
+
+impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M> {
+    fn new(operator: &'a A, preconditioner: &'a M, local_size: usize) -> Self {
+        let (m, n) = (operator.nrows(), operator.ncols());
+        Self {
+            operator,
+            preconditioner,
+            bufs: ModifiedGolubKahanBuffers::new(m, n, local_size),
+            alpha: 0.0,
+            u_norm_inv: 1.0,
+        }
     }
 
     /// Scaling by `β / α_k` cancels the stored `α_k`; requires `α_k > 0`.

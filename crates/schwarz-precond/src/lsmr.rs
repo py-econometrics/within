@@ -15,7 +15,7 @@ mod tests;
 use std::borrow::Cow;
 
 use crate::{Operator, SolveError};
-use bidiag::{axpby, BidiagStep, Bidiagonalization, GolubKahan, ModifiedGolubKahan};
+use bidiag::{axpby, BidiagStep, Bidiagonalization, GolubKahan, StagedStart};
 use magnitude::Magnitude;
 use recurrence::{ConvergenceCriteria, LsmrRecurrenceState, RotationStep, SolutionState, Stop};
 
@@ -289,17 +289,22 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
     let b_norm = finite(vec_norm(b), "rhs norm")?;
     let local_size = local_size.unwrap_or(0);
 
-    // A warm start seeds the stream the way a refuted stop restarts it: `b − A x₀` staged in `u`.
-    let mut bidiag = ModifiedGolubKahan::new(operator, preconditioner, local_size);
-    let rhs_norm = match warm_start {
-        None => {
-            bidiag.stage(b);
-            b_norm
+    // A zero start vector needs no stream; a warm one must be formed in the stream to be measured.
+    let staged = match warm_start {
+        None => (b_norm > 0.0).then(|| {
+            (
+                StagedStart::cold(operator, preconditioner, b, local_size),
+                b_norm,
+            )
+        }),
+        Some(x0) => {
+            let (staged, norm) = StagedStart::warm(operator, preconditioner, x0, b, local_size)?;
+            // Unlike `b`, the residual is computed: an ∞ entry norms to NaN, read as β₁ = 0 downstream.
+            let norm = finite(norm, "warm-start residual norm")?;
+            (norm > 0.0).then_some((staged, norm))
         }
-        // Unlike `b`, the residual is computed: an ∞ entry norms to NaN, read as β₁ = 0 downstream.
-        Some(x0) => finite(bidiag.residual_norm(x0, b)?, "warm-start residual norm")?,
     };
-    if rhs_norm == 0.0 {
+    let Some((mut staged, rhs_norm)) = staged else {
         let (x, stop_reason) = match warm_start {
             Some(x0) => (x0.to_vec(), LsmrStopReason::WarmStartExact),
             None => (vec![0.0; n], LsmrStopReason::ZeroRhs),
@@ -313,14 +318,13 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
             stop_reason,
             true_residual: None,
         });
-    }
+    };
 
-    // `‖Âᵀb‖` borrows the stream's scratch, so it must precede `restart`, which seeds `v₁`.
     let metric = match warm_start {
         None => None,
-        Some(_) => Some(bidiag.metric_gradient_norm(b, b_norm)?),
+        Some(_) => Some(staged.metric_gradient_norm(b, b_norm)?),
     };
-    let step1 = bidiag.restart(rhs_norm)?;
+    let (bidiag, step1) = staged.restart(rhs_norm)?;
     let warm_start = warm_start.zip(metric).map(|(x0, metric)| WarmStart {
         x0,
         reference: NormalEqReference::warm(metric, step1),
