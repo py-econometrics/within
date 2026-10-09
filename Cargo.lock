@@ -2091,7 +2091,6 @@ dependencies = [
  "criterion",
  "ndarray",
  "once_cell",
- "portable-atomic",
  "postcard",
  "proptest",
  "rand 0.10.3",

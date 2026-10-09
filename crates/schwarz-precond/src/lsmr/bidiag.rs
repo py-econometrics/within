@@ -21,9 +21,16 @@ pub(super) const LSMR_PAR_THRESHOLD: usize = 10_000;
 /// Per-worker chunk size: large enough to clear rayon dispatch, small enough to stay L1-resident.
 pub(super) const LSMR_UPDATE_CHUNK: usize = 4096;
 
-/// Fused `y = x + scale · y` returning `‖y_new‖`; per-chunk partials avoid reduction traffic.
+/// Fused update followed by the existing range-safe norm recovery.
 #[inline]
 fn axpy_with_norm(y: &mut [f64], x: &[f64], scale: f64) -> f64 {
+    let sq = axpy_with_sq_norm(y, x, scale);
+    norm_from_sq(y, sq)
+}
+
+/// Fused `y = x + scale · y` returning `‖y_new‖²`; per-chunk partials avoid reduction traffic.
+#[inline]
+fn axpy_with_sq_norm(y: &mut [f64], x: &[f64], scale: f64) -> f64 {
     debug_assert_eq!(x.len(), y.len());
     let seq = |y_c: &mut [f64], x_c: &[f64]| -> f64 {
         let mut s = 0.0;
@@ -34,15 +41,19 @@ fn axpy_with_norm(y: &mut [f64], x: &[f64], scale: f64) -> f64 {
         }
         s
     };
-    let sq = if y.len() >= LSMR_PAR_THRESHOLD {
-        y.par_chunks_mut(LSMR_UPDATE_CHUNK)
-            .zip(x.par_chunks(LSMR_UPDATE_CHUNK))
-            .map(|(y_c, x_c)| seq(y_c, x_c))
-            .sum()
+    if y.len() >= LSMR_PAR_THRESHOLD {
+        // Fix the arithmetic tree independently of Rayon's work-stealing tree.
+        let mid = (y.len() / 2 / LSMR_UPDATE_CHUNK) * LSMR_UPDATE_CHUNK;
+        let (yl, yr) = y.split_at_mut(mid);
+        let (xl, xr) = x.split_at(mid);
+        let (left, right) = rayon::join(
+            || axpy_with_sq_norm(yl, xl, scale),
+            || axpy_with_sq_norm(yr, xr, scale),
+        );
+        left + right
     } else {
         seq(y, x)
-    };
-    norm_from_sq(y, sq)
+    }
 }
 
 /// `y = alpha * x + beta * y`. Parallel above the threshold.
@@ -94,10 +105,11 @@ pub(super) fn dot(a: &[f64], b: &[f64]) -> f64 {
 fn par_dot(a: &[f64], b: &[f64]) -> f64 {
     debug_assert_eq!(a.len(), b.len());
     if a.len() >= LSMR_PAR_THRESHOLD {
-        a.par_chunks(LSMR_UPDATE_CHUNK)
-            .zip(b.par_chunks(LSMR_UPDATE_CHUNK))
-            .map(|(ac, bc)| ac.iter().zip(bc).map(|(x, y)| x * y).sum::<f64>())
-            .sum()
+        let mid = (a.len() / 2 / LSMR_UPDATE_CHUNK) * LSMR_UPDATE_CHUNK;
+        let (al, ar) = a.split_at(mid);
+        let (bl, br) = b.split_at(mid);
+        let (left, right) = rayon::join(|| par_dot(al, bl), || par_dot(ar, br));
+        left + right
     } else {
         dot(a, b)
     }
