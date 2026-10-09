@@ -18,7 +18,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - **BREAKING:** `schwarz_precond::mlsmr` takes an `MlsmrOptions` in place of its trailing `local_size`.
 - **BREAKING:** `LsmrStopReason` gains `WarmStartExact`, `FalseConvergence`, and `Escalated`, and `LsmrResult` gains `true_residual`, breaking exhaustive `match`es and struct literals.
 - **BREAKING:** `ScalingConfig::max_sweeps` (Python `max_sweeps=`) is now `max_iterations`, and `BuildWarning::UnscalableComponent` reports `iterations` in place of `sweeps`; the dominance certificate runs reduced CG, not relaxation sweeps.
-- **BREAKING:** The serialized `Preconditioner` wire format moved v12 → v18; 0.3.0 bytes no longer decode.
+- **BREAKING:** The serialized `Preconditioner` wire format moved v12 → v19; 0.3.0 bytes no longer decode.
 - **BREAKING:** Coefficient addresses use caller-visible `u32` factor labels rather than internal `usize` level positions, affecting `CoefficientAddress::level` and the accepted range of Python coefficient-layout and unidentified-direction levels.
 - **BREAKING:** `Solver::solve` and `Solver::solve_batch` return `WithinError` (was `SolveError`), so a deferred preconditioner build surfaces its failure through the solve path (#260).
 - **BREAKING:** The default preconditioner is the adaptive diagonal→Schwarz ladder rather than additive Schwarz built up front. Coefficients may sit at a different point of the usual intercept degeneracy than 0.3.0 returned; `demeaned` is unaffected (#301).
