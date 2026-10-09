@@ -113,6 +113,38 @@ fn an_overflow_after_initialization_is_an_error() {
     );
 }
 
+#[test]
+fn scalar_reductions_and_fused_updates_are_bit_identical_across_workers() {
+    for n in [9_999, 10_000, 20_003, 131_079] {
+        let x: Vec<_> = (0..n)
+            .map(|i| (i as f64 * 0.31).sin() * (1. + (i % 29) as f64))
+            .collect();
+        let y: Vec<_> = (0..n).map(|i| (i as f64 * 0.73).cos()).collect();
+        let mut reference = None;
+        for threads in [1, 2, 3, 8] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            let actual = pool.install(|| {
+                let product = super::par_dot(&x, &y);
+                let mut updated = y.clone();
+                let norm = super::axpy_with_sq_norm(&mut updated, &x, -0.7);
+                (
+                    product.to_bits(),
+                    norm.to_bits(),
+                    updated.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                )
+            });
+            if let Some(expected) = &reference {
+                assert!(expected == &actual, "n={n}, threads={threads}");
+            } else {
+                reference = Some(actual);
+            }
+        }
+    }
+}
+
 /// Window smaller than the iteration count: the ring must wrap correctly.
 /// We re-run the bidiagonalization manually with the same window and
 /// verify the last `local_size` `v` vectors are mutually orthogonal to

@@ -9,22 +9,21 @@
 //! The pooled scratch-buffer types live in [`super::buffers`].
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use rayon::prelude::*;
 
 use crate::error::SolveError;
 use crate::local_solve::{LocalSolver, SubdomainEntry};
 
-use super::buffers::{
-    AdditiveSweepBuffers, BufferPool, LocalSolveScratch, SchwarzBuffers, WorkerBufferStack,
-    WorkerReductionBuffers,
-};
+use super::buffers::{BufferPool, LocalSolveScratch, SchwarzBuffers, WorkerBufferStack};
 use super::planning::ReductionPlan;
+use super::reduction::ReductionLayout;
 
 pub(super) struct AdditiveExecutor<S: LocalSolver> {
     subdomains: Arc<Vec<SubdomainEntry<S>>>,
     buf_pool: BufferPool,
+    reduction: Arc<OnceLock<ReductionLayout>>,
 }
 
 impl<S: LocalSolver> AdditiveExecutor<S> {
@@ -36,6 +35,7 @@ impl<S: LocalSolver> AdditiveExecutor<S> {
         Self {
             subdomains,
             buf_pool: BufferPool::new(n_dofs, max_scratch_size),
+            reduction: Arc::default(),
         }
     }
 
@@ -64,9 +64,16 @@ impl<S: LocalSolver> AdditiveExecutor<S> {
                 accum,
                 scratch_pool,
             } => self.apply_atomic(plan.allow_inner_parallelism, r, z, accum, scratch_pool),
-            SchwarzBuffers::Reduction { pool } => {
-                self.apply_parallel_reduction(plan.allow_inner_parallelism, r, z, pool)
-            }
+            SchwarzBuffers::Reduction {
+                outputs,
+                scratch_pool,
+            } => self.apply_parallel_reduction(
+                plan.allow_inner_parallelism,
+                r,
+                z,
+                outputs,
+                scratch_pool,
+            ),
         };
         // `put` is infallible and never overwrites the real `apply_result`.
         self.buf_pool.put(bufs, &apply_result);
@@ -130,38 +137,59 @@ impl<S: LocalSolver> AdditiveExecutor<S> {
         allow_inner_parallelism: bool,
         r: &[f64],
         z: &mut [f64],
-        pool: &mut Vec<AdditiveSweepBuffers>,
+        outputs: &mut Vec<Vec<f64>>,
+        scratch_pool: &mut Vec<LocalSolveScratch>,
     ) -> Result<(), SolveError> {
-        let worker_buffers = WorkerReductionBuffers::new(
-            std::mem::take(pool),
-            self.buf_pool.n_dofs(),
-            self.buf_pool.max_scratch_size(),
-        );
-        let apply_result =
-            self.subdomains
-                .par_iter()
-                .enumerate()
-                .try_for_each(|(subdomain, entry)| {
-                    worker_buffers.stack.with_buffer(|buffers| {
-                        entry
-                            .apply_weighted_into_with_scratch(
-                                r,
-                                &mut buffers.global_accum,
-                                &mut buffers.scratch.r_scratch,
-                                &mut buffers.scratch.z_scratch,
-                                allow_inner_parallelism,
-                            )
-                            .map_err(|source| SolveError::LocalSolveFailed { subdomain, source })
-                    })
-                });
-
-        // A pool-recovery failure must not mask a real `LocalSolveFailed`.
-        match worker_buffers.finish_round(z, &apply_result) {
-            Ok(recovered) => *pool = recovered,
-            Err(finish_err) => return apply_result.and(Err(finish_err)),
+        let layout = self
+            .reduction
+            .get_or_init(|| ReductionLayout::new(&self.subdomains, self.n_dofs()));
+        if outputs.len() != self.subdomains.len() {
+            *outputs = self
+                .subdomains
+                .iter()
+                .map(|entry| vec![0.; entry.core().n_local()])
+                .collect();
         }
-
-        apply_result
+        let max_scratch_size = self.buf_pool.max_scratch_size();
+        let worker_scratch = WorkerBufferStack::new(std::mem::take(scratch_pool), move || {
+            LocalSolveScratch::new(max_scratch_size)
+        });
+        let apply_result = self
+            .subdomains
+            .par_iter()
+            .zip(outputs.par_iter_mut())
+            .enumerate()
+            .try_for_each(|(subdomain, (entry, output))| {
+                if entry.is_empty() {
+                    return Ok(());
+                }
+                worker_scratch.with_buffer(|scratch| {
+                    entry.core().restrict_weighted(r, &mut scratch.r_scratch);
+                    entry
+                        .solver()
+                        .solve_local(
+                            &mut scratch.r_scratch,
+                            &mut scratch.z_scratch,
+                            allow_inner_parallelism,
+                        )
+                        .map_err(|source| SolveError::LocalSolveFailed { subdomain, source })?;
+                    for (i, value) in output.iter_mut().enumerate() {
+                        *value = scratch.z_scratch[i] * entry.partition_weights().get(i);
+                    }
+                    Ok(())
+                })
+            });
+        // Preserve the original local-solver failure and never expose a partial sum.
+        if apply_result.is_err() {
+            z.fill(0.);
+        }
+        match worker_scratch.into_pool("additive.reduction.scratch.into_inner") {
+            Ok(recovered) => *scratch_pool = recovered,
+            Err(into_err) => return apply_result.and(Err(into_err)),
+        }
+        apply_result?;
+        layout.sum(outputs, z);
+        Ok(())
     }
 }
 
@@ -170,6 +198,7 @@ impl<S: LocalSolver> Clone for AdditiveExecutor<S> {
         Self {
             subdomains: Arc::clone(&self.subdomains),
             buf_pool: self.buf_pool.clone(),
+            reduction: Arc::clone(&self.reduction),
         }
     }
 }

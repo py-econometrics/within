@@ -8,8 +8,10 @@
 //! The heuristic balances two costs:
 //! - **Atomic scatter**: contention grows with overlap (DOFs shared across
 //!   many subdomains)
-//! - **Parallel reduction**: memory and final-reduction cost grow with
-//!   `P × n_dofs` where P is the number of active workers
+//! - **Parallel reduction**: compact per-subdomain outputs plus an ordered
+//!   incidence table, independent of the current worker count. The existing
+//!   Auto thresholds remain a coarse scheduling heuristic; select this backend
+//!   explicitly when cross-worker reproducibility is required.
 
 /// Strategy for combining per-subdomain results in additive Schwarz apply.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -20,7 +22,9 @@ pub enum ReductionStrategy {
     Auto,
     /// Atomic scatter into a shared accumulator; O(n_dofs) shared plus O(P · max_scratch) local.
     AtomicScatter,
-    /// Private per-task buffers combined by a parallel chunk reduction; O(P · n_dofs).
+    /// Compact per-subdomain outputs summed in fixed subdomain order at each DOF.
+    /// Reproducible across workers when the local solver's arithmetic is reproducible;
+    /// storage is O(total local DOFs + n_dofs + P · max_scratch).
     ParallelReduction,
 }
 

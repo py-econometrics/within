@@ -7,7 +7,6 @@ use std::cell::RefCell;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
-use rayon::prelude::*;
 use thread_local::ThreadLocal;
 
 use crate::error::SolveError;
@@ -49,11 +48,7 @@ impl BufferPool {
         if let Some(idx) = pool.iter().position(|bufs| bufs.strategy() == strategy) {
             return Ok(pool.swap_remove(idx));
         }
-        Ok(SchwarzBuffers::new(
-            strategy,
-            self.n_dofs,
-            self.max_scratch_size,
-        ))
+        Ok(SchwarzBuffers::new(strategy, self.n_dofs))
     }
 
     /// Infallible: pool bookkeeping must never mask the caller's real `apply_result`.
@@ -96,21 +91,6 @@ impl LocalSolveScratch {
     }
 }
 
-/// Task-local scratch for the parallel-reduction path.
-pub(super) struct AdditiveSweepBuffers {
-    pub(super) global_accum: Vec<f64>,
-    pub(super) scratch: LocalSolveScratch,
-}
-
-impl AdditiveSweepBuffers {
-    fn new(n_dofs: usize, max_scratch_size: usize) -> Self {
-        Self {
-            global_accum: vec![0.0f64; n_dofs],
-            scratch: LocalSolveScratch::new(max_scratch_size),
-        }
-    }
-}
-
 /// Pooled buffers that vary by reduction strategy.
 pub(super) enum SchwarzBuffers {
     /// Shared atomic accumulator plus a pool of per-worker local-solve scratch.
@@ -118,19 +98,23 @@ pub(super) enum SchwarzBuffers {
         accum: Vec<AtomicU64>,
         scratch_pool: Vec<LocalSolveScratch>,
     },
-    /// Reusable task-local buffers for parallel reduction.
-    Reduction { pool: Vec<AdditiveSweepBuffers> },
+    /// Each subdomain owns one compact output; their indices fix the final sum order.
+    Reduction {
+        outputs: Vec<Vec<f64>>,
+        scratch_pool: Vec<LocalSolveScratch>,
+    },
 }
 
 impl SchwarzBuffers {
-    fn new(strategy: ResolvedReductionStrategy, n_dofs: usize, max_scratch_size: usize) -> Self {
+    fn new(strategy: ResolvedReductionStrategy, n_dofs: usize) -> Self {
         match strategy {
             ResolvedReductionStrategy::AtomicScatter => Self::Atomic {
                 accum: (0..n_dofs).map(|_| AtomicU64::new(0)).collect(),
                 scratch_pool: Vec::new(),
             },
             ResolvedReductionStrategy::ParallelReduction => Self::Reduction {
-                pool: vec![AdditiveSweepBuffers::new(n_dofs, max_scratch_size)],
+                outputs: Vec::new(),
+                scratch_pool: Vec::new(),
             },
         }
     }
@@ -195,66 +179,6 @@ impl<T: Send> WorkerBufferStack<T> {
             pool.append(worker_stack.get_mut());
         }
         Ok(pool)
-    }
-}
-
-/// Worker-local buffers for the parallel-reduction path, plus the reduce-into-`z` step.
-pub(super) struct WorkerReductionBuffers {
-    pub(super) stack: WorkerBufferStack<AdditiveSweepBuffers>,
-}
-
-impl WorkerReductionBuffers {
-    pub(super) fn new(
-        pool: Vec<AdditiveSweepBuffers>,
-        n_dofs: usize,
-        max_scratch_size: usize,
-    ) -> Self {
-        Self {
-            stack: WorkerBufferStack::new(pool, move || {
-                AdditiveSweepBuffers::new(n_dofs, max_scratch_size)
-            }),
-        }
-    }
-
-    pub(super) fn finish_round(
-        self,
-        z: &mut [f64],
-        apply_result: &Result<(), SolveError>,
-    ) -> Result<Vec<AdditiveSweepBuffers>, SolveError> {
-        // Leave `z` fully written so a failed apply never exposes a partial accumulation.
-        if apply_result.is_err() {
-            z.fill(0.0);
-        }
-        let mut buffers = self.stack.into_pool("additive.reduction.pool.into_inner")?;
-        if apply_result.is_ok() {
-            Self::reduce_into(z, &buffers);
-        }
-        // A `P × n_dofs` pass on every apply, so spread it across workers.
-        buffers
-            .par_iter_mut()
-            .for_each(|b| b.global_accum.fill(0.0));
-        Ok(buffers)
-    }
-
-    fn reduce_into(z: &mut [f64], buffers: &[AdditiveSweepBuffers]) {
-        if buffers.is_empty() {
-            z.fill(0.0);
-            return;
-        }
-
-        const REDUCE_CHUNK: usize = 4096;
-        z.par_chunks_mut(REDUCE_CHUNK)
-            .enumerate()
-            .for_each(|(ci, chunk)| {
-                let offset = ci * REDUCE_CHUNK;
-                chunk.fill(0.0);
-                for buffers in buffers {
-                    let accum = &buffers.global_accum[offset..offset + chunk.len()];
-                    for (zi, &ai) in chunk.iter_mut().zip(accum) {
-                        *zi += ai;
-                    }
-                }
-            });
     }
 }
 

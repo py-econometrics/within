@@ -16,15 +16,13 @@
 //!
 //! # Reproducibility
 //!
-//! A single-threaded run (a one-thread Rayon pool, or `RAYON_NUM_THREADS=1`)
-//! is bitwise-reproducible. Parallel reductions sum in an order that depends on
-//! the Rayon width, so coefficients from different thread counts differ at the
-//! ULP scale — reproducible within solver tolerance, not bitwise. Pinning the
-//! Rayon width across runs holds estimates stable within solver tolerance (and
-//! is bitwise in practice at a fixed width, though only the single-threaded
-//! case is a guarantee); when the width may vary, also pin an explicit
-//! [`ReductionStrategy`] rather than [`ReductionStrategy::Auto`], which selects
-//! its backend from the width.
+//! On the same machine and build, fixed [`PreconditionerConfig::Off`],
+//! [`PreconditionerConfig::Diagonal`], and additive
+//! [`ReductionStrategy::ParallelReduction`] use a fixed arithmetic order across
+//! Rayon worker counts, provided the local solver is itself reproducible.
+//! Coefficients, demeaned responses, and iteration counts are bitwise-reproducible.
+//! [`ReductionStrategy::AtomicScatter`] and [`ReductionStrategy::Auto`] do not
+//! provide this guarantee. Automatic backend selection is unchanged.
 //!
 //! [`PreconditionerConfig::Adaptive`] reproduces raw coefficients per solve, not
 //! across solves; fitted values agree.
