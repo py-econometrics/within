@@ -303,30 +303,6 @@ pub(super) struct BidiagStep {
     pub(super) beta: f64,
 }
 
-/// `‖Âᵀ rhs‖ = ‖Aᵀ rhs‖·√(ĝᵀM⁻¹ĝ)` for unit `ĝ ∥ Aᵀ rhs`; the raw product may not be a double.
-pub(super) fn metric_gradient_norm<A: Operator + ?Sized, M: Operator + ?Sized>(
-    operator: &A,
-    preconditioner: &M,
-    rhs: &[f64],
-    rhs_norm: f64,
-) -> Result<Magnitude, SolveError> {
-    let (mut g, mut mv) = (vec![0.0; operator.ncols()], vec![0.0; operator.ncols()]);
-    let image = adjoint_image(operator, rhs, rhs_norm, &mut vec![0.0; rhs.len()], &mut g)?;
-    if !image.g_norm.is_finite() {
-        return Ok(Magnitude::from(image.g_norm));
-    }
-    // `gᵀM⁻¹g` overflows past `‖g‖ ≈ 1e154`, but `M⁻¹` of a subnormal `g` made unit may too.
-    let scale = if image.g_norm.is_normal() {
-        image.g_norm
-    } else {
-        1.0
-    };
-    normalize(&mut g, scale);
-    preconditioner.apply(&g, &mut mv)?;
-    let alpha = alpha_from_vp(&mv, &g)?;
-    Ok(Magnitude::product(ldexp(1.0, image.k), scale) * Magnitude::from(alpha))
-}
-
 /// `Aᵀ rhs = 2ᵏ·g` and `‖rhs‖ = 2ᵏ·unit_norm` for the `g` that [`adjoint_image`] leaves.
 #[derive(Clone, Copy)]
 pub(super) struct AdjointImage {
@@ -640,26 +616,45 @@ pub(super) struct ModifiedGolubKahan<'a, A: Operator + ?Sized, M: Operator + ?Si
 }
 
 impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M> {
-    /// Initialize the bidiagonalization, returning `Self` and the first step `(α₁, β₁)`.
-    pub(super) fn init(
-        operator: &'a A,
-        preconditioner: &'a M,
-        b: &[f64],
-        b_norm: f64,
-        local_size: usize,
-    ) -> Result<(Self, BidiagStep), SolveError> {
-        let mut bufs =
-            ModifiedGolubKahanBuffers::new(operator.nrows(), operator.ncols(), local_size);
-        bufs.u.copy_from_slice(b);
-        let mut stream = Self {
+    /// An unseeded stream: stage `u` by [`stage`](Self::stage) or `residual_norm`, then `restart`.
+    pub(super) fn new(operator: &'a A, preconditioner: &'a M, local_size: usize) -> Self {
+        let (m, n) = (operator.nrows(), operator.ncols());
+        Self {
             operator,
             preconditioner,
-            bufs,
+            bufs: ModifiedGolubKahanBuffers::new(m, n, local_size),
             alpha: 0.0,
             u_norm_inv: 1.0,
+        }
+    }
+
+    /// Stage `rhs` itself for `restart`: the cold start's `rhs − A·0`.
+    pub(super) fn stage(&mut self, rhs: &[f64]) {
+        self.bufs.u.copy_from_slice(rhs);
+    }
+
+    /// `‖Âᵀ rhs‖ = ‖Aᵀ rhs‖·√(ĝᵀM⁻¹ĝ)` for unit `ĝ ∥ Aᵀ rhs`, on scratch that spares a staged `u`.
+    pub(super) fn metric_gradient_norm(
+        &mut self,
+        rhs: &[f64],
+        rhs_norm: f64,
+    ) -> Result<Magnitude, SolveError> {
+        let bufs = &mut self.bufs;
+        let (g, mv) = (&mut bufs.atu, &mut bufs.v);
+        let image = adjoint_image(self.operator, rhs, rhs_norm, &mut bufs.av, g)?;
+        if !image.g_norm.is_finite() {
+            return Ok(Magnitude::from(image.g_norm));
+        }
+        // `gᵀM⁻¹g` overflows past `‖g‖ ≈ 1e154`, but `M⁻¹` of a subnormal `g` made unit may too.
+        let scale = if image.g_norm.is_normal() {
+            image.g_norm
+        } else {
+            1.0
         };
-        let step1 = stream.restart(b_norm)?;
-        Ok((stream, step1))
+        normalize(g, scale);
+        self.preconditioner.apply(g, mv)?;
+        let alpha = alpha_from_vp(mv, g)?;
+        Ok(Magnitude::product(ldexp(1.0, image.k), scale) * Magnitude::from(alpha))
     }
 
     /// Scaling by `β / α_k` cancels the stored `α_k`; requires `α_k > 0`.

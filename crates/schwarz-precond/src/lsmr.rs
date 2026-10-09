@@ -15,10 +15,7 @@ mod tests;
 use std::borrow::Cow;
 
 use crate::{Operator, SolveError};
-use bidiag::{
-    axpby, metric_gradient_norm, residual_into, BidiagStep, Bidiagonalization, GolubKahan,
-    ModifiedGolubKahan,
-};
+use bidiag::{axpby, BidiagStep, Bidiagonalization, GolubKahan, ModifiedGolubKahan};
 use magnitude::Magnitude;
 use recurrence::{ConvergenceCriteria, LsmrRecurrenceState, RotationStep, SolutionState, Stop};
 
@@ -292,17 +289,15 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
     let b_norm = finite(vec_norm(b), "rhs norm")?;
     let local_size = local_size.unwrap_or(0);
 
-    let (rhs, rhs_norm): (Cow<'_, [f64]>, f64) = match warm_start {
-        None => (Cow::Borrowed(b), b_norm),
-        Some(x0) => {
-            let mut residual = vec![0.0; operator.nrows()];
-            // Unlike `b`, the residual is computed: an ∞ entry norms to NaN, read as β₁ = 0 downstream.
-            let norm = finite(
-                residual_into(operator, x0, b, &mut residual)?,
-                "warm-start residual norm",
-            )?;
-            (Cow::Owned(residual), norm)
+    // A warm start seeds the stream the way a refuted stop restarts it: `b − A x₀` staged in `u`.
+    let mut bidiag = ModifiedGolubKahan::new(operator, preconditioner, local_size);
+    let rhs_norm = match warm_start {
+        None => {
+            bidiag.stage(b);
+            b_norm
         }
+        // Unlike `b`, the residual is computed: an ∞ entry norms to NaN, read as β₁ = 0 downstream.
+        Some(x0) => finite(bidiag.residual_norm(x0, b)?, "warm-start residual norm")?,
     };
     if rhs_norm == 0.0 {
         let (x, stop_reason) = match warm_start {
@@ -320,13 +315,12 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
         });
     }
 
-    // `‖Aᵀb‖` must be taken before the stream exists: the stream's own query clobbers `v₁`.
+    // `‖Âᵀb‖` borrows the stream's scratch, so it must precede `restart`, which seeds `v₁`.
     let metric = match warm_start {
         None => None,
-        Some(_) => Some(metric_gradient_norm(operator, preconditioner, b, b_norm)?),
+        Some(_) => Some(bidiag.metric_gradient_norm(b, b_norm)?),
     };
-    let (bidiag, step1) =
-        ModifiedGolubKahan::init(operator, preconditioner, &rhs, rhs_norm, local_size)?;
+    let step1 = bidiag.restart(rhs_norm)?;
     let warm_start = warm_start.zip(metric).map(|(x0, metric)| WarmStart {
         x0,
         reference: NormalEqReference::warm(metric, step1),

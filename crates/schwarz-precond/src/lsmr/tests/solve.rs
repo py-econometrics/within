@@ -39,7 +39,7 @@ fn test_lsmr_large_magnitude_rhs_not_silently_zero() {
 }
 
 /// Companion for the preconditioned path: within's default solve runs `mlsmr`
-/// → `ModifiedGolubKahan::init`, which carries the same β₁ = ‖b‖ fix. With
+/// → `ModifiedGolubKahan::restart`, which carries the same β₁ = ‖b‖ fix. With
 /// A = I and M = I the exact solution is again x = b.
 #[test]
 fn test_mlsmr_large_magnitude_rhs_not_silently_zero() {
