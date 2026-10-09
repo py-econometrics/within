@@ -35,9 +35,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- Fixed `Off`, `Diagonal`, and additive `ParallelReduction` solves use worker-independent reduction order on the same machine/build; `Auto` and `AtomicScatter` retain their existing policies.
-
 - A design carrying varying slopes on two distinct factors could fail preconditioner construction with `matrix is not symmetric`, when rounding left the two triangles of the exact Schur complement unequal (#229).
+- Fixed `Off`, `Diagonal`, and additive `ParallelReduction` solves use worker-independent reduction order on the same machine/build; `Auto` and `AtomicScatter` retain their existing policies.
 - A `design` that is neither a 2-D `uint32` array nor a list of `Effect` raised `ValueError` where the documented type is `TypeError`, and `AdditiveSchwarz` accepted a wrong-type `local_solver` at construction, deferring the `TypeError` to solve time (#248).
 - LSMR no longer certifies a false stop: a tolerance stop is checked against `‖b − A x‖` and a refuted one reports `LsmrStopReason::FalseConvergence`, while a non-finite `α`, `β`, `⟨v, Mv⟩`, `‖b‖`, or `x` fails with `SolveError::InvalidInput` (#290, #297, #303, #362).
 - A warm-started solve measures its residuals against the original `b`, including at a budget stop and where `‖Aᵀb‖` leaves the double range.
@@ -51,7 +50,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 ### Performance
 
 - The adjoint scatter of a slope term on an unsorted factor with fewer than 100k levels no longer switches to atomic updates once its combined coefficient block reaches 100k; that path ran up to 7× slower per iteration at 8 threads than the parallel fold it replaces.
-- Terms with three slopes take fused gather and scatter kernels instead of the per-column fallback, 13–64% faster per iteration on the measured designs.
+- Terms with three slopes take a fused gather kernel instead of the per-column fallback.
 
 ### Removed
 
