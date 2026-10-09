@@ -3,7 +3,7 @@
 use super::level_moments::LevelMoments;
 use super::{Design, Term};
 use crate::channel::{Channel, CoefficientPosition};
-use crate::linalg::{dot, GramBasis, GramBasisWorkspace, RANK_TOL};
+use crate::linalg::{dot, GramBasis, GramBasisWorkspace};
 
 #[cfg(test)]
 mod tests;
@@ -45,7 +45,7 @@ impl TermReparam {
         let mut z_row = vec![0.0; v];
         let mut unidentified = Vec::new();
         let mut transforms = Vec::with_capacity(n_levels);
-        let mut workspace = GramBasisWorkspace::new(v, RANK_TOL);
+        let mut workspace = GramBasisWorkspace::new(v);
         for level in 0..n_levels {
             let GramBasis { rows: w, kept } =
                 workspace.orthonormalize(|gram| moments.fill_gram(level, gram));

@@ -213,7 +213,7 @@ impl Preconditioner {
 }
 
 impl Preconditioner {
-    fn base(&self) -> &dyn Operator {
+    fn operator(&self) -> &dyn Operator {
         match &self.inner {
             Variant::Additive(p) => p,
             Variant::Diagonal(p) => p,
@@ -224,15 +224,15 @@ impl Preconditioner {
 
 impl Operator for Preconditioner {
     fn nrows(&self) -> usize {
-        self.base().nrows()
+        self.operator().nrows()
     }
 
     fn ncols(&self) -> usize {
-        self.base().ncols()
+        self.operator().ncols()
     }
 
     fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
-        self.base().apply(x, y)
+        self.operator().apply(x, y)
     }
 
     fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {

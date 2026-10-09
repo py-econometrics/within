@@ -145,8 +145,7 @@ enum SlopeSpec {
     /// The year index perturbed off the year term's span by the given amount.
     NearYearIndex(f64),
     SharedWithFirm,
-    /// Two worker slopes that both alias the year term, and each other to `1e-6`; whitening
-    /// spends the first on the second, so only the second still proposes a direction.
+    /// Two worker slopes that both alias the year term, and each other to `1e-6`.
     DuplicateYearIndex,
     YearIndexWithoutIntercept,
     /// Two independent aliases at once: the worker's slope is the year index and a fourth
@@ -313,10 +312,10 @@ fn solve_tight(solver: &Solver<'_>, y: &[f64]) -> crate::SolveResult {
 #[case::unrelated(SlopeSpec::Independent)]
 #[case::exact_alias(SlopeSpec::YearIndex)]
 #[case::shared_covariate(SlopeSpec::SharedWithFirm)]
-#[case::deep_null(SlopeSpec::NearYearIndex(1e-10))]
-#[case::recoverable_at_the_floor(SlopeSpec::NearYearIndex(1e-8))]
-#[case::recoverable(SlopeSpec::NearYearIndex(1e-6))]
-#[case::near_alias(SlopeSpec::NearYearIndex(1e-3))]
+#[case::near_alias_1e10(SlopeSpec::NearYearIndex(1e-10))]
+#[case::near_alias_1e8(SlopeSpec::NearYearIndex(1e-8))]
+#[case::near_alias_1e6(SlopeSpec::NearYearIndex(1e-6))]
+#[case::near_alias_1e3(SlopeSpec::NearYearIndex(1e-3))]
 #[case::duplicate_aliases(SlopeSpec::DuplicateYearIndex)]
 #[case::alias_without_intercept(SlopeSpec::YearIndexWithoutIntercept)]
 #[case::two_independent_aliases(SlopeSpec::TwoIndependentAliases)]
@@ -332,15 +331,6 @@ fn an_aliased_slope_converges(#[case] spec: SlopeSpec) {
         "converged={}, gm={group_mean:.3e}",
         out.converged
     );
-}
-
-/// Escalates after any single non-vanishing contraction, so a handoff is deterministic.
-fn eager_ladder(local_solver: LocalSolverConfig) -> PreconditionerConfig {
-    PreconditionerConfig::Adaptive {
-        local_solver,
-        reduction: Default::default(),
-        stall: crate::Staleness::try_new(1, 0.0).expect("valid staleness"),
-    }
 }
 
 /// Two crossed slope terms on one covariate: large enough for the diagonal to stall.
@@ -381,14 +371,19 @@ fn a_failed_deferred_build_is_kept_and_reported_again() {
 
     // A zero-tolerance, zero-iteration certificate rejects the signed cross-block deterministically.
     let panel = SharedCovariatePair::new();
-    let precond = eager_ladder(LocalSolverConfig {
-        scaling: ScalingConfig {
-            tolerance: 0.0,
-            max_iterations: 0,
-            on_failure: ScalingFailure::Error,
+    let precond = PreconditionerConfig::Adaptive {
+        local_solver: LocalSolverConfig {
+            scaling: ScalingConfig {
+                tolerance: 0.0,
+                max_iterations: 0,
+                on_failure: ScalingFailure::Error,
+            },
+            ..LocalSolverConfig::default()
         },
-        ..LocalSolverConfig::default()
-    });
+        reduction: Default::default(),
+        // Escalates after any single non-vanishing contraction, so the handoff is deterministic.
+        stall: crate::Staleness::try_new(1, 0.0).expect("valid staleness"),
+    };
     let solver = Solver::new(panel.effects(), None, precond).unwrap();
     let unscalable = |r: &Result<crate::SolveResult, WithinError>| {
         matches!(

@@ -14,8 +14,11 @@ use crate::{BuildError, BuildWarning};
 
 /// The solver's preconditioner: a fixed map, or an adaptive diagonal→Schwarz ladder.
 pub(super) enum PrecondSlot {
-    /// A single map (`None` = unpreconditioned) built at construction.
-    Static(Option<Preconditioner>),
+    /// A single map (`None` = unpreconditioned) built at construction, with its build's warnings.
+    Static {
+        map: Option<Preconditioner>,
+        warnings: Vec<BuildWarning>,
+    },
     /// Diagonal now, Schwarz built lazily on a stalled contraction.
     Adaptive(Box<AdaptivePrecond>),
 }
@@ -25,12 +28,16 @@ impl PrecondSlot {
     pub(super) fn build(
         prepared: &PreparedDesign<'_>,
         config: PreconditionerConfig,
-    ) -> Result<(Self, Vec<BuildWarning>), BuildError> {
+    ) -> Result<Self, BuildError> {
         Ok(match config {
-            PreconditionerConfig::Off => (Self::Static(None), Vec::new()),
-            PreconditionerConfig::Diagonal => {
-                (Self::Static(Some(build_diagonal(prepared)?)), Vec::new())
-            }
+            PreconditionerConfig::Off => Self::Static {
+                map: None,
+                warnings: Vec::new(),
+            },
+            PreconditionerConfig::Diagonal => Self::Static {
+                map: Some(build_diagonal(prepared)?),
+                warnings: Vec::new(),
+            },
             PreconditionerConfig::Additive {
                 local_solver,
                 reduction,
@@ -40,7 +47,7 @@ impl PrecondSlot {
                     reduction,
                 };
                 let (map, warnings) = build_schwarz(prepared, &schwarz)?;
-                (Self::Static(map), warnings)
+                Self::Static { map, warnings }
             }
             PreconditionerConfig::Adaptive {
                 local_solver,
@@ -54,7 +61,7 @@ impl PrecondSlot {
                     reduction,
                 };
                 let base = build_adaptive(prepared, stall, escalated)?;
-                (Self::reuse(prepared, base)?, Vec::new())
+                Self::reuse(prepared, base)?
             }
         })
     }
@@ -65,12 +72,18 @@ impl PrecondSlot {
         preconditioner: Preconditioner,
     ) -> Result<Self, BuildError> {
         let Some(ladder) = preconditioner.ladder() else {
-            return Ok(Self::Static(Some(preconditioner)));
+            return Ok(Self::Static {
+                map: Some(preconditioner),
+                warnings: Vec::new(),
+            });
         };
         // A deserialized ladder skipped `Adaptive`'s build-time check, and a one-term design settles.
         ladder.escalated.local_solver.validate()?;
         Ok(if prepared.design.n_factors() < 2 {
-            Self::Static(Some(preconditioner.settle()))
+            Self::Static {
+                map: Some(preconditioner.settle()),
+                warnings: Vec::new(),
+            }
         } else {
             Self::Adaptive(Box::new(AdaptivePrecond {
                 base: preconditioner,
@@ -91,7 +104,6 @@ pub(super) struct AdaptivePrecond {
 /// Outcome of the deferred build: the Schwarz map, or `None` when no factor-pair target exists.
 pub(super) struct AdaptiveBuild {
     pub(super) schwarz: Option<Preconditioner>,
-    /// The deferred build's, standing in for `Solver::warnings`.
     pub(super) warnings: Vec<BuildWarning>,
 }
 
