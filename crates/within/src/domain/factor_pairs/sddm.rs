@@ -240,8 +240,8 @@ fn assemble(
 ) -> Result<(LocalComponent, f64), NotScalable> {
     let n_rows = cross_tab.n_rows();
     let enforce_z = form == MatrixForm::Laplacian;
-    // The transpose is stale once `c` is folded; `_` drops it here, `..` would keep it to the end.
-    let (mut c, _) = cross_tab.into_parts();
+    let (mut c, mut ct) = cross_tab.into_parts();
+    let mut row_sums = Vec::with_capacity(c.nrows + ct.nrows);
     for i in 0..n_rows {
         let start = c.indptr[i] as usize;
         let end = c.indptr[i + 1] as usize;
@@ -253,8 +253,19 @@ fn assemble(
             }
             *value = folded;
         }
+        row_sums.push(c.data[start..end].iter().map(|v| v.abs()).sum());
     }
-    let cross_tab = CrossTab::eager(c);
+    // Same product order as `c`, so each `Cᵀ` entry folds to the bits of its `C` twin.
+    for j in 0..ct.nrows {
+        let start = ct.indptr[j] as usize;
+        let end = ct.indptr[j + 1] as usize;
+        let rows = &ct.indices[start..end];
+        for (&i, value) in rows.iter().zip(&mut ct.data[start..end]) {
+            *value *= -factors[i as usize] * factors[n_rows + j];
+        }
+        row_sums.push(ct.data[start..end].iter().map(|v| v.abs()).sum());
+    }
+    let cross_tab = CrossTab::with_transpose(c, ct);
 
     let scaled_diagonal: Vec<f64> = diagonal
         .iter()
@@ -273,18 +284,25 @@ fn assemble(
         CoordinateMap::Scaled(factors.into_boxed_slice())
     };
 
-    finalize(cross_tab, scaled_diagonal, coordinates, form, scaling)
+    finalize(
+        cross_tab,
+        scaled_diagonal,
+        &row_sums,
+        coordinates,
+        form,
+        scaling,
+    )
 }
 
 /// Clamp roundoff deficits and retain surplus as ground edges.
 fn finalize(
     cross_tab: CrossTab,
     mut scaled_diagonal: Vec<f64>,
+    row_sums: &[f64],
     coordinates: CoordinateMap,
     form: MatrixForm,
     scaling: &ScalingConfig,
 ) -> Result<(LocalComponent, f64), NotScalable> {
-    let row_sums = magnitude_sums(&cross_tab);
     let mut ground_edges = vec![0.0; cross_tab.n_local()];
 
     let mut clamped_deficit = 0.0f64;
