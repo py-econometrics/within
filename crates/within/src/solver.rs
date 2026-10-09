@@ -26,6 +26,7 @@ mod layout;
 #[cfg(test)]
 mod tests;
 
+use crate::solver::ladder::{AdaptivePrecond, CandidateBuild};
 use ladder::PrecondSlot;
 pub use layout::CoefficientLayout;
 
@@ -425,6 +426,68 @@ impl<'a> Solver<'a> {
         }
     }
 
+    fn run_pilot<'s>(
+        &'s self,
+        y: &'s [f64],
+        lsmr: &LsmrOptions,
+        ladder: &AdaptivePrecond,
+    ) -> Result<(PreparedRhs<'s>, Run, CandidateBuild, f64), SolveError> {
+        let rhs = self.prepare(y)?;
+        let threads = rayon::current_num_threads();
+        std::thread::scope(|scope| {
+            let build = std::thread::Builder::new()
+                .name("within-speculative-schwarz".into())
+                .spawn_scoped(scope, || {
+                    ladder.speculate(&self.prepared, &self.warnings, threads)
+                });
+            let options = MlsmrOptions {
+                escalation: Some(&ladder.ladder().stall),
+                local_size: lsmr.local_size,
+                ..Default::default()
+            };
+            let probe = Run::timed(|| {
+                mlsmr(
+                    &rhs.op,
+                    rhs.b(),
+                    &ladder.base,
+                    lsmr.tol,
+                    lsmr.maxiter,
+                    options,
+                )
+            });
+            let (candidate, build_secs) = match build {
+                Ok(build) => match build.join() {
+                    Ok(result) => result,
+                    Err(payload) => std::panic::resume_unwind(payload),
+                },
+                Err(_) => (CandidateBuild::Unavailable, 0.0),
+            };
+            Ok((rhs, probe?, candidate, build_secs))
+        })
+    }
+
+    fn resume_stalled(
+        &self,
+        rhs: PreparedRhs<'_>,
+        probe: Run,
+        map: &Preconditioner,
+        lsmr: &LsmrOptions,
+    ) -> Result<RhsSolution, SolveError> {
+        let rung1 = probe.result;
+        // The whole ladder shares the caller's budget; rung 2 gets what rung 1 left.
+        let options = MlsmrOptions {
+            warm_start: Some(&rung1.x),
+            local_size: lsmr.local_size,
+            ..Default::default()
+        };
+        let remaining = lsmr.maxiter - rung1.iterations;
+        let mut resumed =
+            Run::timed(|| mlsmr(&rhs.op, rhs.b(), map, lsmr.tol, remaining, options))?;
+        resumed.result.iterations += rung1.iterations;
+        resumed.solve_secs += probe.solve_secs;
+        Ok(self.finish(rhs, resumed))
+    }
+
     /// Every RHS in one pass; an unsettled ladder then builds Schwarz once and resumes the stalled.
     fn solve_all(
         &self,
@@ -444,34 +507,81 @@ impl<'a> Solver<'a> {
         let stalled = |r: &LsmrResult| {
             r.stop_reason == LsmrStopReason::Escalated && r.iterations < lsmr.maxiter
         };
-        // Collecting into `Result` fails fast on the first per-RHS error, not during the fold.
-        let passes = ys
-            .par_iter()
-            .map(|y| {
-                let rhs = self.prepare(y)?;
-                let options = MlsmrOptions {
-                    escalation: ladder.map(|a| &a.ladder().stall as &dyn EscalationPolicy),
-                    local_size: lsmr.local_size,
-                    ..Default::default()
-                };
-                let run = Run::timed(|| match map {
-                    Some(m) => mlsmr(&rhs.op, rhs.b(), m, lsmr.tol, lsmr.maxiter, options),
-                    None => lsmr_solve(&rhs.op, rhs.b(), lsmr.tol, lsmr.maxiter, lsmr.local_size),
-                })?;
-                Ok(if stalled(&run.result) {
-                    Pass::Stalled(rhs, run)
-                } else {
-                    Pass::Done(self.finish(rhs, run))
-                })
+
+        let pilot = if let Some(adaptive) =
+            ladder.filter(|adaptive| adaptive.should_speculate() && !ys.is_empty())
+        {
+            Some(self.run_pilot(ys[0], lsmr, adaptive)?)
+        } else {
+            None
+        };
+
+        let used_pilot = pilot.is_some();
+
+        let (remaining, pilot, candidate, build_secs) = match pilot {
+            Some((rhs, probe, built, elapsed)) if stalled(&probe.result) => {
+                let adaptive = ladder.expect("a pilot uses the adaptive ladder");
+                let additional = adaptive.escalate(&self.prepared, &self.warnings, Some(built))?;
+                (
+                    &ys[1..],
+                    Some(Pass::Stalled(rhs, probe)),
+                    None,
+                    elapsed + additional,
+                )
+            }
+            Some((rhs, probe, built, elapsed)) => (
+                &ys[1..],
+                Some(Pass::Done(self.finish(rhs, probe))),
+                Some(built),
+                elapsed,
+            ),
+            None => (ys, None, None, 0.0),
+        };
+
+        let map = ladder.map(|a| a.rung()).or(map);
+        // Check if the adaptive ladder is still eligible for diagonal stall detection and escalation
+        let probing_ladder = match ladder {
+            Some(a) if a.built.get().is_none() => Some(a),
+            _ => None,
+        };
+        // Passes remaining after pilot
+        let remaining_passes = remaining.par_iter().map(|y| {
+            let rhs = self.prepare(y)?;
+            let options = MlsmrOptions {
+                // Disable diagonal stall detection when pilot has already published Schwarz
+                escalation: probing_ladder.map(|a| &a.ladder().stall as &dyn EscalationPolicy),
+                local_size: lsmr.local_size,
+                ..Default::default()
+            };
+            let run = Run::timed(|| match map {
+                Some(m) => mlsmr(&rhs.op, rhs.b(), m, lsmr.tol, lsmr.maxiter, options),
+                None => lsmr_solve(&rhs.op, rhs.b(), lsmr.tol, lsmr.maxiter, lsmr.local_size),
+            })?;
+            Ok(if stalled(&run.result) {
+                Pass::Stalled(rhs, run)
+            } else {
+                Pass::Done(self.finish(rhs, run))
             })
+        });
+        // Combine remaining passes with the pilot
+        let passes = pilot
+            .into_par_iter()
+            .map(|pass| match pass {
+                Pass::Done(solution) => Ok(Pass::Done(solution)),
+                Pass::Stalled(rhs, probe) => {
+                    let map = ladder.expect("a pilot uses the adaptive ladder").rung();
+                    self.resume_stalled(rhs, probe, map, lsmr).map(Pass::Done)
+                }
+            })
+            .chain(remaining_passes)
             .collect::<Result<Vec<_>, SolveError>>()?;
 
         // Built outside the fan-out, so sibling RHS never race for it.
-        let build_secs = match ladder {
+        let build_secs = match probing_ladder {
             Some(a) if passes.iter().any(|p| matches!(p, Pass::Stalled(..))) => {
-                a.escalate(&self.prepared, &self.warnings)?
+                build_secs + a.escalate(&self.prepared, &self.warnings, candidate)?
             }
-            _ => 0.0,
+            _ => build_secs,
         };
         let solutions = passes
             .into_par_iter()
@@ -481,21 +591,16 @@ impl<'a> Solver<'a> {
                     Pass::Stalled(rhs, probe) => (rhs, probe),
                 };
                 let map = ladder.expect("only a ladder stalls").rung();
-                let rung1 = probe.result;
-                // The whole ladder shares the caller's budget; rung 2 gets what rung 1 left.
-                let options = MlsmrOptions {
-                    warm_start: Some(&rung1.x),
-                    local_size: lsmr.local_size,
-                    ..Default::default()
-                };
-                let remaining = lsmr.maxiter - rung1.iterations;
-                let mut resumed =
-                    Run::timed(|| mlsmr(&rhs.op, rhs.b(), map, lsmr.tol, remaining, options))?;
-                resumed.result.iterations += rung1.iterations;
-                resumed.solve_secs += probe.solve_secs;
-                Ok(self.finish(rhs, resumed))
+                self.resume_stalled(rhs, probe, map, lsmr)
             })
             .collect::<Result<Vec<_>, SolveError>>()?;
+        if let Some(a) = ladder.filter(|a| {
+            used_pilot
+                && a.built.get().is_none()
+                && solutions.iter().all(|solution| solution.converged)
+        }) {
+            a.keep_diagonal();
+        }
         Ok((solutions, build_secs))
     }
 

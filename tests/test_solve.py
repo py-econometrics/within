@@ -377,7 +377,9 @@ class TestSolverBatch:
 
     def test_batch_result_fields(self, problem):
         cats, y = problem
-        solver = Solver(as_solver_categories(cats))
+        solver = Solver(
+            as_solver_categories(cats), preconditioner=PreconditionerConfig.Additive()
+        )
         Y = np.column_stack([y, y])
         batch = solver.solve_batch(Y)
         assert len(batch.converged) == 2

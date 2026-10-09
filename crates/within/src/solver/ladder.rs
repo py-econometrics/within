@@ -1,6 +1,7 @@
 //! The solver's preconditioner slot: a fixed map, or the diagonal→Schwarz ladder that
 //! [`PreconditionerConfig::Adaptive`] builds on a stalled solve.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use once_cell::sync::OnceCell;
@@ -75,6 +76,7 @@ impl PrecondSlot {
             Self::Adaptive(Box::new(AdaptivePrecond {
                 base: preconditioner,
                 built: OnceCell::new(),
+                diagonal_won: AtomicBool::new(false),
             }))
         })
     }
@@ -86,6 +88,8 @@ pub(super) struct AdaptivePrecond {
     pub(super) base: Preconditioner,
     /// A design's own build failure settles here too; a failed isolation pool retries instead.
     pub(super) built: OnceCell<Result<AdaptiveBuild, BuildError>>,
+    /// A completed diagonal batch needs no further speculative builds; later RHS still probe.
+    diagonal_won: AtomicBool,
 }
 
 /// Outcome of the deferred build: the Schwarz map, or `None` when no factor-pair target exists.
@@ -115,31 +119,70 @@ impl AdaptivePrecond {
         self.schwarz().unwrap_or(&self.base)
     }
 
+    pub(super) fn should_speculate(&self) -> bool {
+        !self.diagonal_won.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn keep_diagonal(&self) {
+        self.diagonal_won.store(true, Ordering::Relaxed)
+    }
+
+    fn construct(
+        &self,
+        prepared: &PreparedDesign<'_>,
+        screening: &[BuildWarning],
+    ) -> Result<AdaptiveBuild, BuildError> {
+        let (schwarz, build_warnings) = build_schwarz(prepared, &self.ladder().escalated)?;
+        let schwarz = schwarz.map(|mut p| {
+            p.gauge = self.base.gauge.clone();
+            p
+        });
+        let mut warnings = screening.to_vec();
+        warnings.extend(build_warnings);
+        Ok(AdaptiveBuild { schwarz, warnings })
+    }
+
+    pub(super) fn speculate(
+        &self,
+        prepared: &PreparedDesign<'_>,
+        screening: &[BuildWarning],
+        threads: usize,
+    ) -> (CandidateBuild, f64) {
+        let start = Instant::now();
+        let outcome = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .map_or_else(
+                |_| CandidateBuild::Unavailable,
+                |pool| CandidateBuild::Ready(pool.install(|| self.construct(prepared, screening))),
+            );
+        (outcome, start.elapsed().as_secs_f64())
+    }
+
     /// Build once and return this call's build seconds; every other caller waits for it.
     pub(super) fn escalate(
         &self,
         prepared: &PreparedDesign<'_>,
         screening: &[BuildWarning],
+        candidate: Option<CandidateBuild>,
     ) -> Result<f64, BuildError> {
         let mut build_secs = 0.0;
         let built = self.built.get_or_try_init(|| {
+            if let Some(CandidateBuild::Ready(outcome)) = candidate {
+                return Ok(outcome);
+            }
             let t_build = Instant::now();
-            let outcome = isolated(|| build_schwarz(prepared, &self.ladder().escalated))?.map(
-                |(schwarz, build_warnings)| {
-                    let schwarz = schwarz.map(|mut p| {
-                        p.gauge = self.base.gauge.clone();
-                        p
-                    });
-                    let mut warnings = screening.to_vec();
-                    warnings.extend(build_warnings);
-                    AdaptiveBuild { schwarz, warnings }
-                },
-            );
+            let outcome = isolated(|| self.construct(prepared, screening))?;
             build_secs = t_build.elapsed().as_secs_f64();
             Ok(outcome)
         })?;
         built.as_ref().map(|_| build_secs).map_err(Clone::clone)
     }
+}
+
+pub(super) enum CandidateBuild {
+    Ready(Result<AdaptiveBuild, BuildError>),
+    Unavailable,
 }
 
 /// Run `f` on a pool of its own, entered from a thread outside every pool, so no wait inside it can
