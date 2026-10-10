@@ -1,7 +1,8 @@
 //! Channel-pair subdomain construction.
 //!
 //! Each cross-factor channel pair becomes a Schwarz subdomain (one per
-//! connected component of its bipartite cross-tab). Overlap is handled by
+//! connected component of its bipartite cross-tab; isolated levels share one
+//! edgeless subdomain per side). Overlap is handled by
 //! partition-of-unity weights — see [`schwarz_precond::domain`] for the math.
 //!
 //! Entry point: [`build_local_domains`].
@@ -17,7 +18,7 @@ use super::{CrossTab, PreparedDesign};
 
 mod grounding;
 mod sddm;
-use crate::domain::cross_tab::PairColumns;
+use crate::domain::cross_tab::{BipartiteComponent, PairColumns};
 use crate::domain::Column;
 use grounding::scaled_groundings;
 use sddm::{convert, NotScalable};
@@ -108,7 +109,21 @@ fn split_into_subdomains(
         (full_ct.n_rows(), full_ct.n_cols())
     );
     let n_rows_full = full_ct.n_rows();
-    let components = full_ct.bipartite_connected_components();
+    // An isolated level's Gram row is diagonal, so batching changes no local solve, only overhead.
+    let mut components = Vec::new();
+    let (mut isolated_rows, mut isolated_cols) = (Vec::new(), Vec::new());
+    for comp in full_ct.bipartite_connected_components() {
+        match (&comp.rows[..], &comp.cols[..]) {
+            (&[i], []) if row_diag[i] != 0.0 => isolated_rows.push(i),
+            ([], &[j]) if col_diag[j] != 0.0 => isolated_cols.push(j),
+            _ => components.push(comp),
+        }
+    }
+    for (rows, cols) in [(isolated_rows, Vec::new()), (Vec::new(), isolated_cols)] {
+        if !rows.is_empty() || !cols.is_empty() {
+            components.push(BipartiteComponent { rows, cols });
+        }
+    }
 
     let cross_tabs: Vec<CrossTab> = if components.len() == 1 {
         vec![full_ct]
@@ -341,6 +356,29 @@ mod tests {
                 assert_eq!(d, sum, "row {i}");
             }
         }
+    }
+
+    #[test]
+    fn isolated_levels_share_one_subdomain() {
+        // Workers 0 and 1 load ±z within one firm, so their cross cells cancel to exactly zero.
+        let workers = [0u32, 0, 1, 1, 2, 2];
+        let firms = [0u32, 0, 1, 1, 0, 1];
+        let z = [1.0, -1.0, 2.0, -2.0, 1.0, 1.0];
+        let design = Design::new(vec![
+            Effect::new(&workers, false, [&z[..]]).expect("slope effect"),
+            Effect::new(&firms, true, []).expect("firm effect"),
+        ])
+        .expect("valid design");
+        let prepared = PreparedDesign::unweighted_for_test(design);
+        let (domains, _) =
+            build_local_domains(&prepared, &LocalSolverConfig::default()).expect("domains");
+        let mut cores: Vec<Vec<u32>> = domains
+            .iter()
+            .map(|d| d.core.global_indices().to_vec())
+            .collect();
+        cores.iter_mut().for_each(|core| core.sort_unstable());
+        cores.sort_unstable();
+        assert_eq!(cores, [vec![0, 1], vec![2, 3, 4]]);
     }
 
     #[test]
