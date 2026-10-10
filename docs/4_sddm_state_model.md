@@ -82,7 +82,7 @@ $$
 |---|---|
 | **G∘** | PSD; channels orthogonal within each level (slope channels orthonormal); cross-factor blocks bipartite, assembled from rank-1 stamps $w\,\tilde c_f \tilde c_g^\top$ |
 | **P** | connected principal submatrix on *all* channels of two factors ≃ matrix-weighted bipartite Laplacian, rank-1 PSD block weights |
-| **B** | member: one channel per factor, one connected component; $\begin{bmatrix} D_q & C \\ C^\top & D_r \end{bmatrix}$, $D$ diagonal, $C$ signed |
+| **B** | member: one channel per factor, one connected component or a one-sided batch of isolated levels ($C = 0$); $\begin{bmatrix} D_q & C \\ C^\top & D_r \end{bmatrix}$, $D$ diagonal, $C$ signed |
 | **S±** | signed SDD; row surplus explicit as ground-edge weight |
 | **L₊** | grounded Laplacian ≡ SDDM; *floating* ($\ker = \mathbf{1}$) or *grounded* (PD) |
 | **𝓛** | $\mathcal{L}\mathcal{L}^\top = X$ [exact] or $\mathbb{E}[\mathcal{L}\mathcal{L}^\top] = X$ [sampled], $X$ the source; rank = source, surely |
