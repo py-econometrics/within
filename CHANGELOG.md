@@ -9,7 +9,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- Levels with no cross-factor entries in a channel pair share one Schwarz subdomain per side instead of one each, cutting per-subdomain build and apply overhead without changing the preconditioner.
+- Levels with no cross-factor entries in a channel pair are batched into diagonal Schwarz subdomains per side instead of one subdomain each, cutting per-subdomain build and apply overhead without changing the preconditioner.
 
 ## [0.4.0] - 2026-10-09
 

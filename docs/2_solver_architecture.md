@@ -51,7 +51,7 @@ $$
 
 ### 2.2 Connected components as subdomains
 
-The bipartite graph of $C_{qr}$ may have multiple connected components. Each connected component defines an independent subproblem and becomes a subdomain of the Schwarz preconditioner.
+The bipartite graph of $C_{qr}$ may have multiple connected components. Each connected component defines an independent subproblem and becomes a subdomain of the Schwarz preconditioner. Isolated levels (no nonzero cross entry) are batched instead: bounded chunks of one side form diagonal subdomains.
 
 | Full interaction graph | Worker–Firm subgraph |
 |:---:|:---:|
@@ -114,7 +114,7 @@ The solver converges when the relative residual on the normal equations satisfie
 
 ### 4.1 How it works
 
-The Schwarz preconditioner decomposes the global Gramian into overlapping subdomains — one per factor-pair connected component — and applies local solves to each. The local operator on subdomain $i$ is $A_i = R_i G R_i^\top$, the principal submatrix of $G$ restricted to that subdomain's DOFs / factor levels, where $R_i$ is the restriction matrix that picks out subdomain $i$'s rows.
+The Schwarz preconditioner decomposes the global Gramian into overlapping subdomains — one per factor-pair connected component, with isolated levels batched per side — and applies local solves to each. The local operator on subdomain $i$ is $A_i = R_i G R_i^\top$, the principal submatrix of $G$ restricted to that subdomain's DOFs / factor levels, where $R_i$ is the restriction matrix that picks out subdomain $i$'s rows.
 
 ### 4.2 Partition of unity
 
@@ -143,7 +143,7 @@ Subdomains are derived from the factor-pair structure of the Gramian:
 1. **Enumerate factor pairs**: all $\binom{Q}{2}$ unordered pairs $(q, r)$.
 2. **Build cross-tabulation**: for each pair, scan observations to build the sparse bipartite block $C_{qr}$ and diagonal vectors $D_q$, $D_r$.
 3. **Find connected components**: run DFS (depth-first search — a standard graph traversal that follows edges recursively until no new nodes are reachable) on the bipartite graph of $C_{qr}$ to identify independent components.
-4. **Create subdomains**: each component becomes a subdomain with its global DOF / factor level indices.
+4. **Create subdomains**: each component becomes a subdomain with its global DOF / factor level indices; isolated levels are batched per side into diagonal subdomains, and those with a zero diagonal are dropped.
 5. **Compute partition-of-unity weights**: if subdomains overlap, count how many subdomains each DOF / factor level belongs to and assign $\omega_j = 1/\sqrt{c_j}$; for non-overlapping DOFs / factor levels the weight is trivially 1.
 
 Factor pairs are processed in parallel.

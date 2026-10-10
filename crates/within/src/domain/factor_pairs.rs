@@ -1,8 +1,8 @@
 //! Channel-pair subdomain construction.
 //!
 //! Each cross-factor channel pair becomes a Schwarz subdomain (one per
-//! connected component of its bipartite cross-tab; isolated levels share one
-//! edgeless subdomain per side). Overlap is handled by
+//! connected component of its bipartite cross-tab; isolated levels are batched
+//! into diagonal subdomains per side). Overlap is handled by
 //! partition-of-unity weights — see [`schwarz_precond::domain`] for the math.
 //!
 //! Entry point: [`build_local_domains`].
@@ -23,6 +23,9 @@ use crate::domain::Column;
 use grounding::scaled_groundings;
 use sddm::{convert, NotScalable};
 pub(crate) use sddm::{CoordinateMap, Grounding, LocalComponent, MatrixForm, SddmMatrix};
+
+/// Keeps a batch below the local solver's inner-parallel threshold and typical scratch size.
+const ISOLATED_LEVEL_CHUNK: usize = 4096;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ComponentClass {
@@ -109,7 +112,6 @@ fn split_into_subdomains(
         (full_ct.n_rows(), full_ct.n_cols())
     );
     let n_rows_full = full_ct.n_rows();
-    // An isolated level's Gram row is diagonal, so batching changes no local solve, only overhead.
     let mut components = Vec::new();
     let (mut isolated_rows, mut isolated_cols) = (Vec::new(), Vec::new());
     for comp in full_ct.bipartite_connected_components() {
@@ -119,11 +121,23 @@ fn split_into_subdomains(
             _ => components.push(comp),
         }
     }
-    for (rows, cols) in [(isolated_rows, Vec::new()), (Vec::new(), isolated_cols)] {
-        if !rows.is_empty() || !cols.is_empty() {
-            components.push(BipartiteComponent { rows, cols });
-        }
-    }
+    // Isolated levels have a diagonal Gram, so batching changes no local solve, only overhead.
+    components.extend(
+        isolated_rows
+            .chunks(ISOLATED_LEVEL_CHUNK)
+            .map(|rows| BipartiteComponent {
+                rows: rows.to_vec(),
+                cols: Vec::new(),
+            }),
+    );
+    components.extend(
+        isolated_cols
+            .chunks(ISOLATED_LEVEL_CHUNK)
+            .map(|cols| BipartiteComponent {
+                rows: Vec::new(),
+                cols: cols.to_vec(),
+            }),
+    );
 
     let cross_tabs: Vec<CrossTab> = if components.len() == 1 {
         vec![full_ct]
@@ -359,11 +373,11 @@ mod tests {
     }
 
     #[test]
-    fn isolated_levels_share_one_subdomain() {
-        // Workers 0 and 1 load ±z within one firm, so their cross cells cancel to exactly zero.
-        let workers = [0u32, 0, 1, 1, 2, 2];
-        let firms = [0u32, 0, 1, 1, 0, 1];
-        let z = [1.0, -1.0, 2.0, -2.0, 1.0, 1.0];
+    fn isolated_levels_batch_per_side_and_dead_levels_drop() {
+        // ±z within one firm cancels a cross cell to exactly zero; worker 4's zero z is dead.
+        let workers = [0u32, 0, 1, 1, 2, 2, 3, 3, 4];
+        let firms = [0u32, 0, 2, 2, 0, 1, 3, 3, 0];
+        let z = [1.0, -1.0, 2.0, -2.0, 1.0, 1.0, 3.0, -3.0, 0.0];
         let design = Design::new(vec![
             Effect::new(&workers, false, [&z[..]]).expect("slope effect"),
             Effect::new(&firms, true, []).expect("firm effect"),
@@ -378,7 +392,8 @@ mod tests {
             .collect();
         cores.iter_mut().for_each(|core| core.sort_unstable());
         cores.sort_unstable();
-        assert_eq!(cores, [vec![0, 1], vec![2, 3, 4]]);
+        // Workers occupy DOFs 0..5 and firms 5..9.
+        assert_eq!(cores, [vec![0, 1, 3], vec![2, 5, 6], vec![7, 8]]);
     }
 
     #[test]
