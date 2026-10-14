@@ -1,9 +1,9 @@
 use ndarray::array;
 use rstest::rstest;
 use within::{
-    solve, ApproxCholConfig, ApproxSchurConfig, Effect, LocalSolverConfig, LsmrOptions,
-    Preconditioner, PreconditionerConfig, ReductionStrategy, ScalingConfig, ScalingFailure,
-    SchurMode, Solver,
+    solve, ApproxCholConfig, ApproxSchurConfig, Channel, CoefficientAddress, Effect,
+    LocalSolverConfig, LsmrOptions, Preconditioner, PreconditionerConfig, ReductionStrategy,
+    ScalingConfig, ScalingFailure, SchurMode, Solver,
 };
 
 #[path = "common/orchestrate_helpers.rs"]
@@ -174,6 +174,51 @@ fn test_unidentified_empty_for_plain_factors() {
 
     let batch = solver.solve_batch(&[&y], &params).expect("solve batch");
     assert!(batch.unidentified.is_empty());
+}
+
+#[rstest]
+#[case::slope_free_dominant(false, [1.0, 1.0, 1.0, 1.0, 0.0, 0.0], 0, 2)]
+#[case::slope_free_secondary(false, [1.0, 0.0, 1.0, 0.0, 1.0, 0.0], 1, 1)]
+#[case::sloped_dominant(true, [1.0, 1.0, 1.0, 1.0, 0.0, 0.0], 0, 2)]
+fn test_zero_weight_level_is_unidentified(
+    #[case] sloped: bool,
+    #[case] weights: [f64; 6],
+    #[case] term: usize,
+    #[case] level: u32,
+    #[values(
+        PreconditionerConfig::Off,
+        PreconditionerConfig::Diagonal,
+        common::additive(),
+        PreconditionerConfig::default()
+    )]
+    precond: PreconditionerConfig,
+) {
+    let f = [0u32, 0, 1, 1, 2, 2];
+    let g = [0u32, 1, 0, 1, 0, 1];
+    let z = [1.0, 3.0, 2.0, 5.0, 4.0, 7.0];
+    let y = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let slopes: &[&[f64]] = if sloped { &[&z] } else { &[] };
+    let effects = vec![
+        Effect::new(&f, true, slopes.iter().copied()).expect("f effect"),
+        Effect::new(&g, true, []).expect("g effect"),
+    ];
+    let solver = Solver::new(effects, Some(&weights), &precond).expect("solver build");
+    let result = solver.solve(&y, &default_params()).expect("solve");
+
+    let columns = if sloped && term == 0 { 0..2 } else { 0..1 };
+    let expected: Vec<CoefficientAddress> = columns
+        .map(|column| CoefficientAddress {
+            channel: Channel { term, column },
+            level,
+        })
+        .collect();
+    assert_eq!(result.unidentified, expected);
+    for address in &expected {
+        assert_eq!(
+            result.x[result.layout.index(*address).expect("in layout")],
+            0.0
+        );
+    }
 }
 
 #[test]
