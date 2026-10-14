@@ -253,3 +253,25 @@ fn dense_and_sparse_paths_agree_on_signed_data() {
     assert_eq!(c_dense.indices[0], 0);
     assert_eq!(c_dense.data[0], 2.0);
 }
+
+#[test]
+fn both_accumulators_recover_signed_cells_and_reset_compensation() {
+    let rows = [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1];
+    let cols = [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0];
+    let loading = [1e16, 1., -1e16, 1., -1., 0., 2., 0., 1., 1e16, -1e16];
+    let pair = PairColumns {
+        row_levels: &rows,
+        col_levels: &cols,
+        row_load: &loading[..],
+        col_load: Unit,
+        sqrt_weights: None,
+    };
+    for actual in [
+        accumulate_dense_cross_block(pair, 2, 2),
+        accumulate_sparse_cross_block(pair, 2, 2),
+    ] {
+        assert_eq!(actual.indptr, [0, 2, 3]);
+        assert_eq!(actual.indices, [0, 1, 0]);
+        assert_eq!(actual.data, [1., 2., 1.]);
+    }
+}

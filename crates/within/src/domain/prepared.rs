@@ -4,6 +4,7 @@ use rayon::prelude::*;
 
 use super::{row_weight, Column, Design, Term, TermReparam};
 use crate::channel::{Channel, CoefficientPosition};
+use crate::linalg::add_compensated;
 use crate::BuildError;
 
 /// A [`Design`] plus all state one weight vector determines.
@@ -77,6 +78,7 @@ impl<'a> PreparedDesign<'a> {
             let (term, sqrt_weights) = (prepared.term, self.sqrt_weights());
             let levels = term.levels();
             let mut diag = vec![0.0; term.n_dofs()];
+            let mut corrections = vec![0.0; term.n_dofs()];
             if !prepared.slopes.is_empty() {
                 let columns: Vec<(usize, Option<&[f64]>)> = (0..term.n_columns())
                     .map(|c| (term.column_dofs(c).start - term.offset, prepared.loading(c)))
@@ -85,7 +87,12 @@ impl<'a> PreparedDesign<'a> {
                     let w = row_weight(sqrt_weights, obs);
                     for &(base, z) in &columns {
                         // Keep `w * z * z` left-to-right: a zero weight kills a huge `z` first.
-                        diag[base + level as usize] += z.map_or(w, |z| w * z[obs] * z[obs]);
+                        let slot = base + level as usize;
+                        add_compensated(
+                            &mut diag[slot],
+                            &mut corrections[slot],
+                            z.map_or(w, |z| w * z[obs] * z[obs]),
+                        );
                     }
                 }
             } else if term.sorted() {
@@ -97,13 +104,27 @@ impl<'a> PreparedDesign<'a> {
                     // A sum of ones is exact, so the unweighted run sum is its length.
                     diag[run[0] as usize] += match sqrt_weights {
                         None => run.len() as f64,
-                        Some(s) => s[rows].iter().fold(0.0, |sum, &si| sum + si * si),
+                        Some(s) => {
+                            let (mut sum, mut correction) = (0.0, 0.0);
+                            for &si in &s[rows] {
+                                add_compensated(&mut sum, &mut correction, si * si);
+                            }
+                            sum + correction
+                        }
                     };
                 }
             } else {
                 for (obs, &level) in levels.iter().enumerate() {
-                    diag[level as usize] += row_weight(sqrt_weights, obs);
+                    let level = level as usize;
+                    add_compensated(
+                        &mut diag[level],
+                        &mut corrections[level],
+                        row_weight(sqrt_weights, obs),
+                    );
                 }
+            }
+            for (entry, correction) in diag.iter_mut().zip(corrections) {
+                *entry += correction;
             }
             diag.into_boxed_slice()
         })
@@ -200,24 +221,67 @@ mod tests {
         );
     }
 
-    /// `Σ w·z·z` per column and level, one column at a time in observation order.
+    /// Independent floating-point expansion: retain each exact two-sum remainder
+    /// before rounding the short expansion, rather than reusing Neumaier's kernel.
+    fn expansion_sum(values: Vec<f64>) -> f64 {
+        let mut partials: Vec<f64> = Vec::new();
+        for mut x in values {
+            let mut kept = 0;
+            for i in 0..partials.len() {
+                let mut y = partials[i];
+                if x.abs() < y.abs() {
+                    std::mem::swap(&mut x, &mut y);
+                }
+                let hi = x + y;
+                let lo = y - (hi - x);
+                if lo != 0.0 {
+                    partials[kept] = lo;
+                    kept += 1;
+                }
+                x = hi;
+            }
+            partials.truncate(kept);
+            partials.push(x);
+        }
+        let mut hi = partials.pop().unwrap_or(0.0);
+        let mut lo = 0.0;
+        while let Some(y) = partials.pop() {
+            let x = hi;
+            hi = x + y;
+            lo = y - (hi - x);
+            if lo != 0.0 {
+                break;
+            }
+        }
+        // A same-sign tail resolves a halfway rounding at the leading pair.
+        if partials.last().is_some_and(|tail| lo * tail > 0.0) {
+            let twice = 2.0 * lo;
+            let rounded = hi + twice;
+            if rounded - hi == twice {
+                hi = rounded;
+            }
+        }
+        hi
+    }
+
+    /// Explicit per-column, per-level contributions, independently summed.
     fn observation_sums(prepared: &PreparedDesign<'_>) -> Vec<f64> {
-        let mut diag = vec![0.0; prepared.design.n_dofs];
+        let mut entries = vec![Vec::new(); prepared.design.n_dofs];
         for term in prepared.terms() {
             for column in 0..term.term.n_columns() {
-                let block = &mut diag[term.term.column_dofs(column)];
+                let block = &mut entries[term.term.column_dofs(column)];
                 let z = term.loading(column);
                 for (obs, &level) in term.term.levels().iter().enumerate() {
                     let w = row_weight(prepared.sqrt_weights(), obs);
-                    block[level as usize] += z.map_or(w, |z| w * z[obs] * z[obs]);
+                    block[level as usize].push(z.map_or(w, |z| w * z[obs] * z[obs]));
                 }
             }
         }
-        diag
+        entries.into_iter().map(expansion_sum).collect()
     }
 
     #[test]
-    fn gram_diagonal_is_the_observation_sums_bitwise() {
+    fn gram_diagonal_matches_independent_expansion_sums() {
         // Level 1 of `f` has z1 = 2·z0 (a rank drop).
         let f = [0u32, 1, 0, 1, 0, 1, 2, 2];
         let z0 = [1.0, 2.0, 3.0, 4.0, 5.5, 6.0, 0.3, 0.7];
@@ -239,10 +303,9 @@ mod tests {
             let terms = &prepared.design.terms;
             assert!(terms[3].sorted() && !terms[1].sorted());
             assert!(prepared.unidentified().next().is_some());
-            let bits = |v: &[f64]| v.iter().map(|d| d.to_bits()).collect::<Vec<_>>();
             assert_eq!(
-                bits(&prepared.gram_diagonal()),
-                bits(&observation_sums(&prepared)),
+                prepared.gram_diagonal(),
+                observation_sums(&prepared),
                 "weights {weights:?}"
             );
         }
