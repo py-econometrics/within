@@ -61,7 +61,7 @@ fn slope_free_term_has_no_reparam() {
 
 #[test]
 fn unidentified_directions_ascend_across_terms() {
-    // Index-order term iteration keeps the list ascending without any sort.
+    // Terms concatenate in index order, so the per-term sort makes the whole list ascend.
     let f0 = [0u32, 0, 1, 1, 2, 2];
     let z0 = [1.0, 2.0, 5.0, 5.0, 3.0, 7.0];
     let f1 = [0u32, 1, 0, 1, 0, 1];
