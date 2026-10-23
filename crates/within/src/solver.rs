@@ -281,9 +281,9 @@ impl Run {
 }
 
 /// A first pass over one RHS: finished, or stalled on the diagonal and kept for the resume.
-enum Pass<'s> {
+enum Pass<R> {
     Done(RhsSolution),
-    Stalled(PreparedRhs<'s>, Run),
+    Stalled(R, Run),
 }
 
 impl<'a> Solver<'a> {

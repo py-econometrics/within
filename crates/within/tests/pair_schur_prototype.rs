@@ -63,7 +63,9 @@ fn pair_schur_matches_full_fits_on_weighted_and_disconnected_designs() {
                 let reduced = full
                     .pair_schur_prototype(&config(), Default::default())
                     .unwrap();
-                assert!(reduced.schur_domains() > 0 && reduced.retained_domains() > 0);
+                assert!(
+                    reduced.schur_domains().unwrap() > 0 && reduced.retained_domains().unwrap() > 0
+                );
                 for multiplier in [1.0, -0.5] {
                     let response: Vec<f64> = y.iter().map(|v| multiplier * v).collect();
                     let result = reduced.solve(&response, &options).unwrap();
@@ -123,8 +125,8 @@ fn global_elimination_can_reverse_local_pair_orientation() {
     let reduced = solver
         .pair_schur_prototype(&config(), Default::default())
         .unwrap();
-    assert_eq!(reduced.schur_domains(), 2);
-    assert_eq!(reduced.retained_domains(), 0);
+    assert_eq!(reduced.schur_domains().unwrap(), 2);
+    assert_eq!(reduced.retained_domains().unwrap(), 0);
     let y: Vec<f64> = (0..200).map(|i| (i as f64 * 0.31).sin()).collect();
     let options = LsmrOptions {
         tol: 1e-9,

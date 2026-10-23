@@ -5,7 +5,7 @@ use std::time::Instant;
 use rayon::prelude::*;
 use schwarz_precond::{lsmr, mlsmr, MlsmrOptions, Operator};
 
-use super::{CoefficientLayout, LsmrOptions, Run, SolveResult, Solver};
+use super::{CoefficientLayout, LsmrOptions, PreparedRhs, RhsSolution, Run, SolveResult, Solver};
 use crate::domain::{row_weight, PreparedDesign};
 use crate::linalg::{dot, GramBasisWorkspace};
 use crate::{SolveError, WithinError};
@@ -342,6 +342,12 @@ impl Operator for ProjectedDesign<'_> {
     }
 }
 
+/// One RHS: `b` in grouped row order, projected off the eliminated factor.
+struct ReducedRhs<'s> {
+    rhs: PreparedRhs<'s>,
+    b: Vec<f64>,
+}
+
 struct RestrictedInverse<'a> {
     elimination: &'a Elimination<'a>,
     full: &'a dyn Operator,
@@ -392,6 +398,39 @@ impl Solver<'_> {
         self.solve_projected(&elimination, &projected, y, options, map, start)
     }
 
+    fn prepare_reduced<'s>(
+        &'s self,
+        op: &ReducedDesign,
+        y: &'s [f64],
+    ) -> Result<ReducedRhs<'s>, SolveError> {
+        let start = Instant::now();
+        let mut rhs = self.prepare(y)?;
+        let b = op.projected_rhs(rhs.b());
+        rhs.gather_secs = start.elapsed().as_secs_f64();
+        Ok(ReducedRhs { rhs, b })
+    }
+
+    /// The eliminated factor fit to what the kept coefficients leave, then demeaned.
+    fn recover(
+        &self,
+        elimination: &Elimination<'_>,
+        reduced: ReducedRhs<'_>,
+        mut run: Run,
+    ) -> Result<RhsSolution, SolveError> {
+        let ReducedRhs { rhs, mut b } = reduced;
+        let mut full = vec![0.0; self.n_dofs()];
+        elimination.embed(&run.result.x, &mut full);
+        rhs.op.apply(&full, &mut b)?;
+        for (bi, &original) in b.iter_mut().zip(rhs.b()) {
+            *bi = original - *bi;
+        }
+        elimination.coefficients(&b, &mut full[elimination.removed.clone()]);
+        run.result.x = full;
+        // Recovery changes the residual, including predictions at zero-weight observations.
+        run.result.true_residual = None;
+        Ok(self.finish(rhs, run))
+    }
+
     /// LSMR on `(I − P_e) D_kept`, `map` preconditioning the kept coefficients, then the eliminated factor recovered.
     fn solve_projected(
         &self,
@@ -402,14 +441,12 @@ impl Solver<'_> {
         map: Option<&dyn Operator>,
         start: Instant,
     ) -> Result<SolveResult, WithinError> {
-        let rhs = self.prepare(y)?;
-        let mut b = op.projected_rhs(rhs.b());
+        let reduced = self.prepare_reduced(op, y)?;
         let setup = start.elapsed().as_secs_f64();
-        let solve_start = Instant::now();
-        let mut result = match map {
+        let run = Run::timed(|| match map {
             Some(map) => mlsmr(
                 op,
-                &b,
+                &reduced.b,
                 map,
                 options.tol,
                 options.maxiter,
@@ -418,25 +455,15 @@ impl Solver<'_> {
                     ..Default::default()
                 },
             ),
-            None => lsmr(op, &b, options.tol, options.maxiter, options.local_size),
-        }?;
-        let mut full = vec![0.0; self.n_dofs()];
-        elimination.embed(&result.x, &mut full);
-        rhs.op.apply(&full, &mut b)?;
-        for (bi, &original) in b.iter_mut().zip(rhs.b()) {
-            *bi = original - *bi;
-        }
-        elimination.coefficients(&b, &mut full[elimination.removed.clone()]);
-        result.x = full;
-        // Recovery changes the residual, including predictions at zero-weight observations.
-        result.true_residual = None;
-        let solution = self.finish(
-            rhs,
-            Run {
-                result,
-                solve_secs: solve_start.elapsed().as_secs_f64(),
-            },
-        );
+            None => lsmr(
+                op,
+                &reduced.b,
+                options.tol,
+                options.maxiter,
+                options.local_size,
+            ),
+        })?;
+        let solution = self.recover(elimination, reduced, run)?;
         Ok(SolveResult {
             x: solution.x,
             unidentified: self.unidentified(),

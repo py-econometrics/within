@@ -88,8 +88,8 @@ fn compare(label: &str, design: &within::Design<'_>, y: &[f64]) {
         )
         .unwrap();
     let scale = y.iter().map(|v| v * v).sum::<f64>().sqrt();
-    println!("{label} schur={:?} reference_converged={} full_dofs={} reduced_dofs={} schur_domains={} retained_domains={}",config.schur,reference.converged,full.n_dofs(),reduced.n_reduced(),reduced.schur_domains(),reduced.retained_domains());
-    println!("full_build={full_build:.6}s reduced_build={reduced_build:.6}s operator={operator:.6}s reduced_preconditioner={:.6}s",reduced.preconditioner_seconds());
+    println!("{label} schur={:?} reference_converged={} full_dofs={} reduced_dofs={} schur_domains={} retained_domains={}",config.schur,reference.converged,full.n_dofs(),reduced.n_reduced(),reduced.schur_domains().unwrap(),reduced.retained_domains().unwrap());
+    println!("full_build={full_build:.6}s reduced_build={reduced_build:.6}s operator={operator:.6}s reduced_preconditioner={:.6}s",reduced.preconditioner_seconds().unwrap());
     // Reduced mlsmr never reads the assembled `S`, so its build excludes that assembly.
     let methods = [
         ("full_mlsmr_full_schwarz", full_build),

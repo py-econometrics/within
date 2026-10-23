@@ -50,6 +50,7 @@ fn _within(m: &Bound<'_, PyModule>) -> PyResult<()> {
     {
         m.add_class::<reduced::PyReducedInverse>()?;
         m.add_function(wrap_pyfunction!(reduced::solve_reduced, m)?)?;
+        m.add_function(wrap_pyfunction!(reduced::solve_reduced_batch, m)?)?;
     }
     Ok(())
 }

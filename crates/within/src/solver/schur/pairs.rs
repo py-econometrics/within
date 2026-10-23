@@ -2,20 +2,25 @@ use std::sync::OnceLock;
 use std::time::Instant;
 
 use approx_chol::Side;
+use once_cell::sync::OnceCell;
 use rayon::prelude::*;
-use schwarz_precond::{Operator, SchwarzPreconditioner, SubdomainCore, SubdomainEntry};
+use schwarz_precond::{
+    mlsmr, EscalationPolicy, LsmrResult, LsmrStopReason, MlsmrOptions, Operator,
+    SchwarzPreconditioner, Staleness, SubdomainCore, SubdomainEntry,
+};
 
 use super::pcg::{solve_reduced, solve_with_full_preconditioner, SchurMatrix};
 use super::segmented::ReducedDesign;
-use super::{Elimination, LsmrOptions, SolveResult, Solver};
+use super::Elimination;
 use crate::block_solver::BlockSolver;
 use crate::domain::factor_pairs::{
     channel_pairs, compute_partition_weights, pair_domains, PairMatrix,
 };
 use crate::domain::LocalDomain;
+use crate::solver::{CoefficientLayout, LsmrOptions, Pass, RhsSolution, Run, SolveResult, Solver};
 use crate::{
-    BuildError, BuildWarning, LocalSolverConfig, Preconditioner, ReductionStrategy, SolveError,
-    WithinError,
+    BatchSolveResult, BuildError, BuildWarning, LocalSolverConfig, Preconditioner,
+    ReductionStrategy, SolveError, WithinError,
 };
 
 /// Which factor pairs the reduced inverse keeps.
@@ -61,6 +66,45 @@ fn reduced(domain: LocalDomain, e: &Elimination<'_>) -> LocalDomain {
     }
 }
 
+/// The reduced additive inverse and what its build reported.
+struct PairInverse {
+    inverse: SchwarzPreconditioner<BlockSolver>,
+    warnings: Vec<BuildWarning>,
+    seconds: f64,
+    schur_domains: usize,
+    retained_domains: usize,
+}
+
+/// How a solve picks its preconditioner on the reduced system.
+enum Ladder {
+    /// The pair inverse, built at construction.
+    Fixed,
+    /// `diag(S)` first; the pair inverse is built once a solve stalls on it.
+    Adaptive {
+        diagonal: DiagonalInverse,
+        stall: Staleness,
+    },
+}
+
+/// `y = d ⊙ x`, a zero entry for a column `S` annihilates.
+struct DiagonalInverse(Vec<f64>);
+
+impl Operator for DiagonalInverse {
+    fn nrows(&self) -> usize {
+        self.0.len()
+    }
+    fn ncols(&self) -> usize {
+        self.0.len()
+    }
+    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+        (y.par_iter_mut().zip(x).zip(&*self.0)).for_each(|((y, x), d)| *y = d * x);
+        Ok(())
+    }
+    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+        self.apply(x, y)
+    }
+}
+
 /// Exact Schur PCG with additive local factor-pair Schur inverses.
 pub struct PairSchurPrototype<'a> {
     solver: &'a Solver<'a>,
@@ -68,11 +112,13 @@ pub struct PairSchurPrototype<'a> {
     /// Assembled on first PCG use: reduced mlsmr never reads it.
     matrix: OnceLock<(SchurMatrix, f64)>,
     projected: ReducedDesign,
-    inverse: SchwarzPreconditioner<BlockSolver>,
-    warnings: Vec<BuildWarning>,
-    preconditioner_seconds: f64,
-    schur_domains: usize,
-    retained_domains: usize,
+    config: LocalSolverConfig,
+    reduction: ReductionStrategy,
+    pairs: Pairs,
+    ladder: Ladder,
+    inverse: OnceCell<PairInverse>,
+    /// Elimination, projected design and whatever preconditioner construction built.
+    setup_seconds: f64,
 }
 
 impl Solver<'_> {
@@ -82,7 +128,7 @@ impl Solver<'_> {
         config: &LocalSolverConfig,
         reduction: ReductionStrategy,
     ) -> Result<PairSchurPrototype<'_>, WithinError> {
-        self.reduced_pairs(config, reduction, Pairs::All)
+        self.reduced_pairs(config, reduction, Pairs::All, None)
     }
 
     /// [`Self::pair_schur_prototype`] without the retained pairs: block Jacobi over the kept factors.
@@ -91,7 +137,17 @@ impl Solver<'_> {
         config: &LocalSolverConfig,
         reduction: ReductionStrategy,
     ) -> Result<PairSchurPrototype<'_>, WithinError> {
-        self.reduced_pairs(config, reduction, Pairs::SchurOnly)
+        self.reduced_pairs(config, reduction, Pairs::SchurOnly, None)
+    }
+
+    /// [`Self::pair_schur_prototype`] built only once a solve stalls on `diag(S)`.
+    pub fn pair_schur_adaptive(
+        &self,
+        config: &LocalSolverConfig,
+        reduction: ReductionStrategy,
+        stall: Staleness,
+    ) -> Result<PairSchurPrototype<'_>, WithinError> {
+        self.reduced_pairs(config, reduction, Pairs::All, Some(stall))
     }
 
     fn reduced_pairs(
@@ -99,6 +155,7 @@ impl Solver<'_> {
         config: &LocalSolverConfig,
         reduction: ReductionStrategy,
         pairs: Pairs,
+        stall: Option<Staleness>,
     ) -> Result<PairSchurPrototype<'_>, WithinError> {
         let start = Instant::now();
         let elimination = Elimination::new(&self.prepared);
@@ -109,13 +166,60 @@ impl Solver<'_> {
             }
             .into());
         }
+        config.to_approx_chol()?;
         let projected = ReducedDesign::build(&elimination);
-        let approx_chol = config.to_approx_chol()?;
-        let (_, all_pairs) = channel_pairs(&self.prepared);
+        let ladder = match stall {
+            None => Ladder::Fixed,
+            Some(stall) => {
+                let mut diagonal = projected.gram_diagonal();
+                diagonal
+                    .iter_mut()
+                    .filter(|d| **d > 0.0)
+                    .for_each(|d| *d = 1.0 / *d);
+                Ladder::Adaptive {
+                    diagonal: DiagonalInverse(diagonal),
+                    stall,
+                }
+            }
+        };
+        let reduced = PairSchurPrototype {
+            solver: self,
+            elimination,
+            matrix: OnceLock::new(),
+            projected,
+            config: config.clone(),
+            reduction,
+            pairs,
+            ladder,
+            inverse: OnceCell::new(),
+            setup_seconds: 0.0,
+        };
+        if let Ladder::Fixed = reduced.ladder {
+            reduced.pair_inverse()?;
+        }
+        Ok(PairSchurPrototype {
+            setup_seconds: start.elapsed().as_secs_f64(),
+            ..reduced
+        })
+    }
+}
+
+impl PairSchurPrototype<'_> {
+    fn build_inverse(&self) -> Result<PairInverse, BuildError> {
+        let start = Instant::now();
+        let e = &self.elimination;
+        let approx_chol = self.config.to_approx_chol()?;
+        let (_, all_pairs) = channel_pairs(&self.solver.prepared);
         let per_pair = (all_pairs.par_iter())
             .filter_map(|&pair| {
-                let matrix = pair_matrix(&elimination, pair, pairs)?;
-                let built = pair_domains(&self.prepared, pair, approx_chol, config, matrix);
+                let matrix = pair_matrix(e, pair, self.pairs)?;
+                let built = pair_domains(
+                    &self.solver.prepared,
+                    pair,
+                    approx_chol,
+                    &self.config,
+                    matrix,
+                );
                 Some(built.map(|(domains, warnings)| (matrix, domains, warnings)))
             })
             .collect::<Result<Vec<_>, BuildError>>()?;
@@ -125,42 +229,44 @@ impl Solver<'_> {
             if let PairMatrix::Complement(_) = matrix {
                 schur_domains += pair_domains.len();
             }
-            domains.extend(pair_domains.into_iter().map(|d| reduced(d, &elimination)));
+            domains.extend(pair_domains.into_iter().map(|d| reduced(d, e)));
             warnings.extend(pair_warnings);
         }
         let retained_domains = domains.len() - schur_domains;
-        compute_partition_weights(&mut domains, elimination.n_kept());
+        compute_partition_weights(&mut domains, e.n_kept());
         let entries = (domains.into_iter())
             .map(|LocalDomain { core, solver }| SubdomainEntry::try_new(core, solver))
             .collect::<Result<Vec<_>, _>>()
             .map_err(BuildError::Preconditioner)?;
-        let inverse = SchwarzPreconditioner::with_n_dofs(entries, elimination.n_kept(), reduction);
-        Ok(PairSchurPrototype {
-            solver: self,
-            elimination,
-            matrix: OnceLock::new(),
-            projected,
-            inverse,
+        Ok(PairInverse {
+            inverse: SchwarzPreconditioner::with_n_dofs(entries, e.n_kept(), self.reduction),
             warnings,
-            preconditioner_seconds: start.elapsed().as_secs_f64(),
+            seconds: start.elapsed().as_secs_f64(),
             schur_domains,
             retained_domains,
         })
     }
-}
 
-impl PairSchurPrototype<'_> {
+    /// The pair inverse, built on first use.
+    fn pair_inverse(&self) -> Result<&PairInverse, BuildError> {
+        self.inverse.get_or_try_init(|| self.build_inverse())
+    }
+
     /// Coefficients retained by the outer Schur system.
     pub fn n_reduced(&self) -> usize {
         self.elimination.n_kept()
     }
     /// Local domains whose eliminated factor has been removed from every preconditioner application.
-    pub fn schur_domains(&self) -> usize {
-        self.schur_domains
+    pub fn schur_domains(&self) -> Result<usize, WithinError> {
+        Ok(self.pair_inverse()?.schur_domains)
     }
     /// Local domains containing only retained coefficients.
-    pub fn retained_domains(&self) -> usize {
-        self.retained_domains
+    pub fn retained_domains(&self) -> Result<usize, WithinError> {
+        Ok(self.pair_inverse()?.retained_domains)
+    }
+    /// Whether a solve has built the pair inverse.
+    pub fn has_escalated(&self) -> bool {
+        matches!(self.ladder, Ladder::Adaptive { .. }) && self.inverse.get().is_some()
     }
     /// Assembles `S` for the PCG solves unless already done, returning the assembly's seconds.
     pub fn assemble(&self) -> Result<f64, WithinError> {
@@ -177,12 +283,21 @@ impl PairSchurPrototype<'_> {
             .get_or_init(|| (matrix, start.elapsed().as_secs_f64())))
     }
     /// Seconds spent building reduced additive Schwarz.
-    pub fn preconditioner_seconds(&self) -> f64 {
-        self.preconditioner_seconds
+    pub fn preconditioner_seconds(&self) -> Result<f64, WithinError> {
+        Ok(self.pair_inverse()?.seconds)
+    }
+    /// Seconds construction took: the elimination, the projected design and any eager build.
+    pub fn setup_seconds(&self) -> f64 {
+        self.setup_seconds
     }
     /// Applies the reduced additive inverse for operator checks and timing experiments.
-    pub fn apply_preconditioner(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        self.inverse.apply(x, y)
+    pub fn apply_preconditioner(&self, x: &[f64], y: &mut [f64]) -> Result<(), WithinError> {
+        Ok(self.pair_inverse()?.inverse.apply(x, y)?)
+    }
+    fn warnings(&self) -> Vec<BuildWarning> {
+        self.inverse
+            .get()
+            .map_or_else(Vec::new, |b| b.warnings.clone())
     }
     /// PCG uses `tol`/`maxiter`, ignores `local_size`, and audits the full normal-equation residual.
     pub fn solve(&self, y: &[f64], options: &LsmrOptions) -> Result<SolveResult, WithinError> {
@@ -192,25 +307,146 @@ impl PairSchurPrototype<'_> {
             &self.schur_matrix()?.0,
             y,
             options,
-            &self.inverse,
+            &self.pair_inverse()?.inverse,
         )?;
-        result.warnings = self.warnings.clone();
+        result.warnings = self.warnings();
         Ok(result)
     }
-    /// mlsmr on the projected design with the same reduced additive inverse; `local_size` applies.
+
+    /// Every RHS in one pass; an unsettled ladder then builds the pair inverse once and resumes the stalled.
+    fn solve_all(
+        &self,
+        ys: &[&[f64]],
+        lsmr: &LsmrOptions,
+    ) -> Result<(Vec<RhsSolution>, f64), WithinError> {
+        let (solver, op) = (self.solver, &self.projected);
+        let probe = match (&self.ladder, self.inverse.get()) {
+            (Ladder::Adaptive { diagonal, stall }, None) => Some((diagonal, stall)),
+            _ => None,
+        };
+        let settled = || {
+            self.inverse
+                .get()
+                .expect("built at construction or by the stall")
+        };
+        // A stall on the last permitted iteration leaves rung 2 nothing to spend, so no build.
+        let stalled = |r: &LsmrResult| {
+            r.stop_reason == LsmrStopReason::Escalated && r.iterations < lsmr.maxiter
+        };
+        let passes = (ys.par_iter())
+            .map(|y| {
+                let rhs = solver.prepare_reduced(op, y)?;
+                let run = Run::timed(|| match probe {
+                    Some((diagonal, stall)) => {
+                        let options = MlsmrOptions {
+                            escalation: Some(stall as &dyn EscalationPolicy),
+                            local_size: lsmr.local_size,
+                            ..Default::default()
+                        };
+                        mlsmr(op, &rhs.b, diagonal, lsmr.tol, lsmr.maxiter, options)
+                    }
+                    None => {
+                        let options = MlsmrOptions {
+                            local_size: lsmr.local_size,
+                            ..Default::default()
+                        };
+                        let map = &settled().inverse;
+                        mlsmr(op, &rhs.b, map, lsmr.tol, lsmr.maxiter, options)
+                    }
+                })?;
+                Ok(match stalled(&run.result) {
+                    true => Pass::Stalled(rhs, run),
+                    false => Pass::Done(solver.recover(&self.elimination, rhs, run)?),
+                })
+            })
+            .collect::<Result<Vec<_>, SolveError>>()?;
+        let build_secs = match passes.iter().any(|p| matches!(p, Pass::Stalled(..))) {
+            true => self.pair_inverse()?.seconds,
+            false => 0.0,
+        };
+        let solutions = (passes.into_par_iter())
+            .map(|pass| {
+                let (rhs, probe) = match pass {
+                    Pass::Done(solution) => return Ok(solution),
+                    Pass::Stalled(rhs, probe) => (rhs, probe),
+                };
+                let rung1 = probe.result;
+                let options = MlsmrOptions {
+                    warm_start: Some(&rung1.x),
+                    local_size: lsmr.local_size,
+                    ..Default::default()
+                };
+                let remaining = lsmr.maxiter - rung1.iterations;
+                let map = &settled().inverse;
+                let mut resumed =
+                    Run::timed(|| mlsmr(op, &rhs.b, map, lsmr.tol, remaining, options))?;
+                resumed.result.iterations += rung1.iterations;
+                resumed.solve_secs += probe.solve_secs;
+                solver.recover(&self.elimination, rhs, resumed)
+            })
+            .collect::<Result<Vec<_>, SolveError>>()?;
+        Ok((solutions, build_secs))
+    }
+
+    /// mlsmr on the projected design; `local_size` applies. Setup is the RHS projection plus any build.
     pub fn solve_lsmr(&self, y: &[f64], options: &LsmrOptions) -> Result<SolveResult, WithinError> {
-        let map: &dyn Operator = &self.inverse;
-        let mut result = (self.solver).solve_projected(
-            &self.elimination,
-            &self.projected,
-            y,
-            options,
-            Some(map),
-            Instant::now(),
-        )?;
-        result.warnings = self.warnings.clone();
+        let start = Instant::now();
+        let (solutions, build_secs) = self.solve_all(&[y], options)?;
+        let solution = solutions
+            .into_iter()
+            .next()
+            .expect("one RHS yields one solution");
+        Ok(SolveResult {
+            x: solution.x,
+            unidentified: self.solver.unidentified(),
+            warnings: self.warnings(),
+            layout: CoefficientLayout::from_design(&self.solver.prepared.design),
+            demeaned: solution.demeaned,
+            converged: solution.converged,
+            iterations: solution.iterations,
+            residual: solution.residual,
+            time_total: start.elapsed().as_secs_f64(),
+            time_setup: solution.gather_secs + build_secs,
+            time_solve: solution.time_solve,
+        })
+    }
+
+    /// [`Self::solve_lsmr`] for every column of `ys` at once, sharing the reduced setup.
+    pub fn solve_lsmr_batch(
+        &self,
+        ys: &[&[f64]],
+        options: &LsmrOptions,
+    ) -> Result<BatchSolveResult, WithinError> {
+        let start = Instant::now();
+        let (solutions, build_secs) = self.solve_all(ys, options)?;
+        let design = &self.solver.prepared.design;
+        let mut result = BatchSolveResult {
+            x: Vec::with_capacity(design.n_dofs * ys.len()),
+            unidentified: self.solver.unidentified(),
+            warnings: self.warnings(),
+            layout: CoefficientLayout::from_design(design),
+            demeaned: Vec::with_capacity(design.n_obs * ys.len()),
+            converged: Vec::new(),
+            iterations: Vec::new(),
+            residual: Vec::new(),
+            time_solve: Vec::new(),
+            time_setup: build_secs,
+            time_total: 0.0,
+            n_dofs: design.n_dofs,
+            n_obs: design.n_obs,
+        };
+        for solution in solutions {
+            result.x.extend_from_slice(&solution.x);
+            result.demeaned.extend_from_slice(&solution.demeaned);
+            result.converged.push(solution.converged);
+            result.iterations.push(solution.iterations);
+            result.residual.push(solution.residual);
+            result.time_solve.push(solution.time_solve);
+        }
+        result.time_total = start.elapsed().as_secs_f64();
         Ok(result)
     }
+
     /// Control experiment using the same Schur operator and PCG with the old full inverse restricted.
     pub fn solve_with_full_preconditioner(
         &self,
@@ -315,6 +551,7 @@ mod tests {
             SlopeSpec::AgeCohort,
         ];
         let config = LocalSolverConfig::default();
+        let mut escalated = false;
         for spec in specs {
             let panel = akm_panel(4_000, 200, 10, 0.15, spec);
             let full = Solver::new(
@@ -349,17 +586,30 @@ mod tests {
             let bound = 1e-8 + 10.0 * gap(&reference.demeaned, &tight.demeaned);
             let all = full.pair_schur_prototype(&config, Default::default());
             let jacobi = full.pair_schur_block_jacobi(&config, Default::default());
-            for (name, reduced) in [("all", all), ("jacobi", jacobi)] {
-                let out = reduced.unwrap().solve_lsmr(&panel.y, &options).unwrap();
-                let gm = max_abs_group_mean(&full.prepared.design, &out.demeaned);
-                let gap = gap(&out.demeaned, &reference.demeaned);
-                assert!(
-                    out.converged && gm < 1e-9 && gap < bound,
-                    "{spec:?} {name}: converged={} iterations={} gm={gm:.2e} gap={gap:.2e} bound={bound:.2e}",
-                    out.converged,
-                    out.iterations
-                );
+            let stall = Staleness::default();
+            let adaptive = full.pair_schur_adaptive(&config, Default::default(), stall);
+            for (name, reduced) in [("all", all), ("jacobi", jacobi), ("adaptive", adaptive)] {
+                let reduced = reduced.unwrap();
+                let doubled: Vec<f64> = panel.y.iter().map(|v| 2.0 * v).collect();
+                let batch = reduced
+                    .solve_lsmr_batch(&[&panel.y, &doubled], &options)
+                    .unwrap();
+                escalated |= reduced.has_escalated();
+                for (k, scale) in [(0, 1.0), (1, 2.0)] {
+                    let demeaned: Vec<f64> = batch.demeaned(k).iter().map(|v| v / scale).collect();
+                    let gm = max_abs_group_mean(&full.prepared.design, &demeaned);
+                    let gap = gap(&demeaned, &reference.demeaned);
+                    let (converged, iterations) = (batch.converged[k], batch.iterations[k]);
+                    assert!(
+                        converged && gm < 1e-9 && gap < bound,
+                        "{spec:?} {name}[{k}]: converged={converged} iterations={iterations} gm={gm:.2e} gap={gap:.2e} bound={bound:.2e}",
+                    );
+                }
             }
         }
+        assert!(
+            escalated,
+            "no panel stalled on diag(S), so the resumed rung went untested"
+        );
     }
 }

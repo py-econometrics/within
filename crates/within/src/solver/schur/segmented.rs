@@ -129,6 +129,16 @@ impl KeptRows {
         (slopes.iter().zip(values)).fold(unit, |acc, (&c, &z)| acc + z * x[c as usize])
     }
 
+    /// Each `(column, loading)` of row `p`.
+    #[inline(always)]
+    fn for_each_entry(&self, p: usize, mut f: impl FnMut(u32, f64)) {
+        let columns = &self.columns[p * self.n_channels..][..self.n_channels];
+        let (intercepts, slopes) = columns.split_at(self.n_intercepts);
+        intercepts.iter().for_each(|&c| f(c, 1.0));
+        let values = &self.values[p * slopes.len()..][..slopes.len()];
+        (slopes.iter().zip(values)).for_each(|(&c, &z)| f(c, z));
+    }
+
     /// `acc += v D_kept[p, :]`.
     #[inline(always)]
     fn add_row(&self, p: usize, v: f64, acc: &mut [f64]) {
@@ -182,6 +192,13 @@ impl ReducedDesign {
         match self {
             Self::Means(d) => d.projected_rhs(b),
             Self::Fits(d) => d.projected_rhs(b),
+        }
+    }
+
+    pub(super) fn gram_diagonal(&self) -> Vec<f64> {
+        match self {
+            Self::Means(d) => d.gram_diagonal(),
+            Self::Fits(d) => d.gram_diagonal(),
         }
     }
 
@@ -251,6 +268,58 @@ impl<P: LevelProjection> SegmentedDesign<P> {
             (rows.clone()).for_each(|p| projection.accumulate(p, w(p) * y[p - base], &mut fit));
             projection.solve(l, &mut fit);
             rows.for_each(|p| y[p - base] -= w(p) * projection.fitted(p, &fit));
+        }
+    }
+
+    /// `diag(S)`: each kept column's squared norm less its projection onto the eliminated factor.
+    fn gram_diagonal(&self) -> Vec<f64> {
+        let zeros = || (vec![0.0; self.n_kept], vec![0.0; self.n_kept]);
+        let (diagonal, norms) = (self.groups.tasks.par_iter())
+            .fold(zeros, |mut acc, levels| {
+                match &self.sqrt_weights {
+                    Some(sw) => self.diagonal(levels.clone(), &mut acc, |p| sw[p]),
+                    None => self.diagonal(levels.clone(), &mut acc, |_| 1.0),
+                }
+                acc
+            })
+            .reduce(zeros, |(mut d, mut n), (d2, n2)| {
+                d.iter_mut().zip(&d2).for_each(|(a, b)| *a += b);
+                n.iter_mut().zip(&n2).for_each(|(a, b)| *a += b);
+                (d, n)
+            });
+        // A column inside the eliminated span keeps roundoff `~ε‖u‖²`, not zero.
+        (diagonal.iter().zip(&norms))
+            .map(|(&d, &n)| if d > 1e-12 * n { d } else { 0.0 })
+            .collect()
+    }
+
+    fn diagonal(
+        &self,
+        levels: Range<usize>,
+        (diagonal, norms): &mut (Vec<f64>, Vec<f64>),
+        w: impl Fn(usize) -> f64,
+    ) {
+        let (starts, projection) = (&self.groups.starts, &self.projection);
+        let mut fit = projection.fit();
+        let mut entries: Vec<(u32, usize, f64)> = Vec::new();
+        for l in levels {
+            entries.clear();
+            for p in starts[l]..starts[l + 1] {
+                self.kept
+                    .for_each_entry(p, |c, z| entries.push((c, p, w(p) * z)));
+            }
+            entries.sort_unstable_by_key(|&(c, ..)| c);
+            for column in entries.chunk_by(|a, b| a.0 == b.0) {
+                (column.iter()).for_each(|&(_, p, u)| projection.accumulate(p, w(p) * u, &mut fit));
+                projection.solve(l, &mut fit);
+                let (squared, projected) = (column.iter())
+                    .fold((0.0, 0.0), |(s, q), &(_, p, u)| {
+                        (s + u * u, q + u * w(p) * projection.fitted(p, &fit))
+                    });
+                let c = column[0].0 as usize;
+                norms[c] += squared;
+                diagonal[c] += squared - projected;
+            }
         }
     }
 
@@ -392,6 +461,17 @@ mod tests {
         fast.apply_adjoint(&grouped, &mut got).unwrap();
         for (a, b) in got.iter().zip(&expected) {
             assert!((a - b).abs() < 1e-9 * (1.0 + b.abs()));
+        }
+        let diagonal = fast.gram_diagonal();
+        let mut column = vec![0.0; n];
+        for (j, &d) in diagonal.iter().enumerate() {
+            let unit: Vec<f64> = (0..x.len()).map(|i| (i == j) as u8 as f64).collect();
+            reference.apply(&unit, &mut column).unwrap();
+            let squared: f64 = column.iter().map(|v| v * v).sum();
+            assert!(
+                (d - squared).abs() < 1e-9 * (1.0 + squared),
+                "column {j}: {d} vs {squared}"
+            );
         }
         let mut projected = u.clone();
         e.project(&mut projected, &mut vec![0.0; e.removed.len()]);
