@@ -1,3 +1,4 @@
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use approx_chol::Side;
@@ -64,11 +65,11 @@ fn reduced(domain: LocalDomain, e: &Elimination<'_>) -> LocalDomain {
 pub struct PairSchurPrototype<'a> {
     solver: &'a Solver<'a>,
     elimination: Elimination<'a>,
-    matrix: SchurMatrix,
+    /// Assembled on first PCG use: reduced mlsmr never reads it.
+    matrix: OnceLock<(SchurMatrix, f64)>,
     projected: SegmentedDesign,
     inverse: SchwarzPreconditioner<BlockSolver>,
     warnings: Vec<BuildWarning>,
-    operator_seconds: f64,
     preconditioner_seconds: f64,
     schur_domains: usize,
     retained_domains: usize,
@@ -100,7 +101,7 @@ impl Solver<'_> {
         pairs: Pairs,
     ) -> Result<PairSchurPrototype<'_>, WithinError> {
         let start = Instant::now();
-        let elimination = Elimination::new(&self.prepared)?;
+        let elimination = Elimination::new(&self.prepared);
         if elimination.n_kept() == 0 {
             return Err(SolveError::InvalidInput {
                 context: "pair_schur_prototype",
@@ -108,9 +109,6 @@ impl Solver<'_> {
             }
             .into());
         }
-        let matrix = SchurMatrix::build(&elimination);
-        let operator_seconds = start.elapsed().as_secs_f64();
-        let start = Instant::now();
         let projected = SegmentedDesign::build(&elimination);
         let approx_chol = config.to_approx_chol()?;
         let (_, all_pairs) = channel_pairs(&self.prepared);
@@ -140,11 +138,10 @@ impl Solver<'_> {
         Ok(PairSchurPrototype {
             solver: self,
             elimination,
-            matrix,
+            matrix: OnceLock::new(),
             projected,
             inverse,
             warnings,
-            operator_seconds,
             preconditioner_seconds: start.elapsed().as_secs_f64(),
             schur_domains,
             retained_domains,
@@ -165,9 +162,19 @@ impl PairSchurPrototype<'_> {
     pub fn retained_domains(&self) -> usize {
         self.retained_domains
     }
-    /// Seconds spent assembling coefficient-space blocks for exact Schur products.
-    pub fn operator_seconds(&self) -> f64 {
-        self.operator_seconds
+    /// Assembles `S` for the PCG solves unless already done, returning the assembly's seconds.
+    pub fn assemble(&self) -> Result<f64, WithinError> {
+        Ok(self.schur_matrix()?.1)
+    }
+    fn schur_matrix(&self) -> Result<&(SchurMatrix, f64), SolveError> {
+        if let Some(built) = self.matrix.get() {
+            return Ok(built);
+        }
+        let start = Instant::now();
+        let matrix = SchurMatrix::build(&self.elimination)?;
+        Ok(self
+            .matrix
+            .get_or_init(|| (matrix, start.elapsed().as_secs_f64())))
     }
     /// Seconds spent building reduced additive Schwarz.
     pub fn preconditioner_seconds(&self) -> f64 {
@@ -182,7 +189,7 @@ impl PairSchurPrototype<'_> {
         let mut result = solve_reduced(
             self.solver,
             &self.elimination,
-            &self.matrix,
+            &self.schur_matrix()?.0,
             y,
             options,
             &self.inverse,
@@ -214,7 +221,7 @@ impl PairSchurPrototype<'_> {
         solve_with_full_preconditioner(
             self.solver,
             &self.elimination,
-            &self.matrix,
+            &self.schur_matrix()?.0,
             y,
             options,
             full,
@@ -258,7 +265,11 @@ mod tests {
             let x: Vec<f64> = (0..e.n_kept()).map(|i| (i as f64).sin()).collect();
             let mut r = vec![0.0; x.len()];
             let mut scratch = vec![0.0; e.removed.len()];
-            reduced.matrix.apply(&x, &mut r, &mut scratch);
+            reduced
+                .schur_matrix()
+                .unwrap()
+                .0
+                .apply(&x, &mut r, &mut scratch);
             let mut local = vec![0.0; x.len()];
             reduced.apply_preconditioner(&r, &mut local).unwrap();
             let mut padded = vec![0.0; full.n_dofs()];
@@ -272,9 +283,83 @@ mod tests {
             e.restrict(&solved, &mut restricted);
             let delta: Vec<f64> = local.iter().zip(&restricted).map(|(a, b)| a - b).collect();
             let mut image = vec![0.0; x.len()];
-            reduced.matrix.apply(&delta, &mut image, &mut scratch);
+            reduced
+                .schur_matrix()
+                .unwrap()
+                .0
+                .apply(&delta, &mut image, &mut scratch);
             let norm = |a: &[f64]| a.iter().map(|v| v * v).sum::<f64>().sqrt();
             assert!(norm(&image) / norm(&r) < 1e-10);
+        }
+    }
+
+    #[test]
+    fn reduced_slope_fits_match_the_full_solve() {
+        use crate::solver::tests::{akm_panel, max_abs_group_mean, SlopeSpec};
+        let options = LsmrOptions {
+            tol: 1e-12,
+            maxiter: 20_000,
+            ..Default::default()
+        };
+        let specs = [
+            SlopeSpec::Independent,
+            SlopeSpec::YearIndex,
+            SlopeSpec::SharedWithFirm,
+            SlopeSpec::NearYearIndex(1e-10),
+            SlopeSpec::NearYearIndex(1e-8),
+            SlopeSpec::NearYearIndex(1e-6),
+            SlopeSpec::NearYearIndex(1e-3),
+            SlopeSpec::DuplicateYearIndex,
+            SlopeSpec::YearIndexWithoutIntercept,
+            SlopeSpec::TwoIndependentAliases,
+            SlopeSpec::AgeCohort,
+        ];
+        let config = LocalSolverConfig::default();
+        for spec in specs {
+            let panel = akm_panel(4_000, 200, 10, 0.15, spec);
+            let full = Solver::new(
+                panel.effects(),
+                None,
+                PreconditionerConfig::Additive {
+                    local_solver: config.clone(),
+                    reduction: Default::default(),
+                },
+            )
+            .unwrap();
+            let gap = |a: &[f64], b: &[f64]| {
+                let scale = b.iter().map(|v| v * v).sum::<f64>().sqrt();
+                (a.iter().zip(b))
+                    .map(|(a, b)| (a - b).powi(2))
+                    .sum::<f64>()
+                    .sqrt()
+                    / scale
+            };
+            let reference = full.solve(&panel.y, &options).unwrap();
+            // Near aliases leave the fit undetermined past `tol`: bound by the full solve's own spread.
+            let tight = Solver::new(panel.effects(), None, PreconditionerConfig::Diagonal)
+                .unwrap()
+                .solve(
+                    &panel.y,
+                    &LsmrOptions {
+                        tol: 1e-14,
+                        ..options.clone()
+                    },
+                )
+                .unwrap();
+            let bound = 1e-8 + 10.0 * gap(&reference.demeaned, &tight.demeaned);
+            let all = full.pair_schur_prototype(&config, Default::default());
+            let jacobi = full.pair_schur_block_jacobi(&config, Default::default());
+            for (name, reduced) in [("all", all), ("jacobi", jacobi)] {
+                let out = reduced.unwrap().solve_lsmr(&panel.y, &options).unwrap();
+                let gm = max_abs_group_mean(&full.prepared.design, &out.demeaned);
+                let gap = gap(&out.demeaned, &reference.demeaned);
+                assert!(
+                    out.converged && gm < 1e-9 && gap < bound,
+                    "{spec:?} {name}: converged={} iterations={} gm={gm:.2e} gap={gap:.2e} bound={bound:.2e}",
+                    out.converged,
+                    out.iterations
+                );
+            }
         }
     }
 }

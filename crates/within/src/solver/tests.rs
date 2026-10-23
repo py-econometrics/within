@@ -139,7 +139,7 @@ fn solvers_built_from_a_borrowed_design_share_its_storage() {
 /// with probability `mobility`. `spec` picks how the worker's slope covariate relates
 /// to the rest of the design.
 #[derive(Clone, Copy, Debug)]
-enum SlopeSpec {
+pub(super) enum SlopeSpec {
     Independent,
     YearIndex,
     /// The year index perturbed off the year term's span by the given amount.
@@ -155,7 +155,7 @@ enum SlopeSpec {
     AgeCohort,
 }
 
-struct AkmPanel {
+pub(super) struct AkmPanel {
     worker: Vec<u32>,
     firm: Vec<u32>,
     year: Vec<u32>,
@@ -164,12 +164,12 @@ struct AkmPanel {
     z2: Vec<f64>,
     /// A fourth factor, present only for [`SlopeSpec::TwoIndependentAliases`].
     region: Vec<u32>,
-    y: Vec<f64>,
+    pub(super) y: Vec<f64>,
     spec: SlopeSpec,
 }
 
 impl AkmPanel {
-    fn effects(&self) -> Vec<Effect<'_>> {
+    pub(super) fn effects(&self) -> Vec<Effect<'_>> {
         let firm = match self.spec {
             SlopeSpec::SharedWithFirm => Effect::new(&self.firm, true, [&self.z[..]]),
             _ => Effect::new(&self.firm, true, []),
@@ -204,7 +204,7 @@ fn uniform_draws() -> impl FnMut() -> f64 {
     }
 }
 
-fn akm_panel(
+pub(super) fn akm_panel(
     n_workers: usize,
     n_firms: usize,
     n_years: usize,
@@ -261,7 +261,7 @@ fn akm_panel(
 
 /// Largest absolute within-level mean of `demeaned`, over the levels of every term whose
 /// normal equations force one: only an intercept makes the within-level sum a residual leg.
-fn max_abs_group_mean(design: &Design<'_>, demeaned: &[f64]) -> f64 {
+pub(super) fn max_abs_group_mean(design: &Design<'_>, demeaned: &[f64]) -> f64 {
     let demeaned = design.permute_obs_in(demeaned);
     design
         .terms

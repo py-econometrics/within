@@ -5,7 +5,8 @@ use std::time::Instant;
 use schwarz_precond::{lsmr, mlsmr, MlsmrOptions, Operator};
 
 use super::{CoefficientLayout, LsmrOptions, Run, SolveResult, Solver};
-use crate::domain::PreparedDesign;
+use crate::domain::{row_weight, PreparedDesign};
+use crate::linalg::{dot, GramBasisWorkspace};
 use crate::{SolveError, WithinError};
 use segmented::SegmentedDesign;
 
@@ -26,17 +27,23 @@ struct Elimination<'a> {
     prepared: &'a PreparedDesign<'a>,
     term: usize,
     removed: Range<usize>,
+    /// The eliminated term's coefficient columns: each level's Gram block is `width × width`.
+    width: usize,
+    /// Per eliminated level, a generalized inverse of its Gram block, row-major.
     inverse: Vec<f64>,
 }
 
+/// A kept coefficient column: its levels' first slot among the kept coefficients, and what it multiplies.
+#[derive(Clone, Copy)]
+struct KeptChannel<'p> {
+    start: usize,
+    levels: &'p [u32],
+    /// `None` is an intercept.
+    loading: Option<&'p [f64]>,
+}
+
 impl<'a> Elimination<'a> {
-    fn new(prepared: &'a PreparedDesign<'a>) -> Result<Self, SolveError> {
-        if prepared.design.terms.iter().any(|t| t.has_slopes()) {
-            return Err(SolveError::InvalidInput {
-                context: "solve_schur_prototype",
-                message: "the Schur prototype requires intercept-only factors".into(),
-            });
-        }
+    fn new(prepared: &'a PreparedDesign<'a>) -> Self {
         let (term, largest) = prepared
             .design
             .terms
@@ -45,16 +52,95 @@ impl<'a> Elimination<'a> {
             .max_by_key(|(_, t)| t.n_dofs())
             .expect("validated nonempty design");
         let removed = largest.dofs();
-        let inverse = prepared.gram_diagonal()[removed.clone()]
-            .iter()
-            .map(|&d| if d > 0.0 { 1.0 / d } else { 0.0 })
-            .collect();
-        Ok(Self {
+        let mut e = Self {
             prepared,
             term,
             removed,
-            inverse,
-        })
+            width: largest.n_columns(),
+            inverse: Vec::new(),
+        };
+        e.inverse = e.block_inverses();
+        e
+    }
+
+    /// `Wᵀ W` from pivoted Gram–Schmidt is a generalized inverse, so `A G⁻ Aᵀ` is the exact projector.
+    fn block_inverses(&self) -> Vec<f64> {
+        let (n, c) = (self.n_levels(), self.width);
+        let loadings = self.eliminated_loadings();
+        let mut gram = vec![0.0; n * c * c];
+        for (i, &level) in self.levels().iter().enumerate() {
+            let w = row_weight(self.prepared.sqrt_weights(), i);
+            let block = &mut gram[level as usize * c * c..][..c * c];
+            for (j, aj) in loadings.iter().enumerate() {
+                let wa = aj.map_or(w, |z| w * z[i]);
+                for (k, ak) in loadings.iter().enumerate() {
+                    block[j * c + k] += ak.map_or(wa, |z| wa * z[i]);
+                }
+            }
+        }
+        let mut workspace = GramBasisWorkspace::new(c);
+        let mut inverse = vec![0.0; n * c * c];
+        for (block, out) in gram
+            .chunks_exact(c * c)
+            .zip(inverse.chunks_exact_mut(c * c))
+        {
+            let basis = workspace.orthonormalize(|g| g.copy_from_slice(block));
+            for row in basis.rows.chunks_exact(c) {
+                for (j, &rj) in row.iter().enumerate() {
+                    for (k, &rk) in row.iter().enumerate() {
+                        out[j * c + k] += rj * rk;
+                    }
+                }
+            }
+        }
+        inverse
+    }
+
+    fn levels(&self) -> &'a [u32] {
+        self.prepared.design.terms[self.term].levels()
+    }
+
+    /// Per eliminated coefficient column, its loading; `None` is the intercept.
+    fn eliminated_loadings(&self) -> Vec<Option<&'a [f64]>> {
+        let prepared: &'a PreparedDesign<'a> = self.prepared;
+        let term = prepared.term(self.term);
+        (0..self.width).map(|c| term.loading(c)).collect()
+    }
+
+    /// Every kept coefficient column, in kept-coefficient order.
+    fn kept_channels(&self) -> Vec<KeptChannel<'a>> {
+        let prepared: &'a PreparedDesign<'a> = self.prepared;
+        let mut start = 0;
+        let mut channels = Vec::new();
+        for (index, term) in prepared.terms().enumerate() {
+            if index == self.term {
+                continue;
+            }
+            for c in 0..term.term.n_columns() {
+                channels.push(KeptChannel {
+                    start: start + c * term.term.n_levels(),
+                    levels: term.term.levels(),
+                    loading: term.loading(c),
+                });
+            }
+            start += term.term.n_dofs();
+        }
+        channels
+    }
+
+    /// The assembled-`S` prototypes index one intercept per kept term and invert scalar levels.
+    fn require_intercepts(&self, context: &'static str) -> Result<(), SolveError> {
+        if self.prepared.design.terms.iter().any(|t| t.has_slopes()) {
+            return Err(SolveError::InvalidInput {
+                context,
+                message: "this prototype requires intercept-only factors".into(),
+            });
+        }
+        Ok(())
+    }
+
+    fn n_levels(&self) -> usize {
+        self.removed.len() / self.width
     }
 
     fn n_kept(&self) -> usize {
@@ -78,29 +164,38 @@ impl<'a> Elimination<'a> {
         self.prepared.sqrt_weights().map_or(1.0, |w| w[row])
     }
 
-    fn coefficients(&self, values: &[f64], means: &mut [f64]) {
-        means.fill(0.0);
-        for (i, &level) in self.prepared.design.terms[self.term]
-            .levels()
-            .iter()
-            .enumerate()
-        {
-            means[level as usize] += self.scale(i) * values[i];
+    /// The eliminated coefficients fitting `values`, laid out like `removed`.
+    fn coefficients(&self, values: &[f64], coefficients: &mut [f64]) {
+        let (n, c) = (self.n_levels(), self.width);
+        let loadings = self.eliminated_loadings();
+        let mut sums = vec![0.0; n * c];
+        for (i, &level) in self.levels().iter().enumerate() {
+            let v = self.scale(i) * values[i];
+            for (sum, a) in sums[level as usize * c..][..c].iter_mut().zip(&loadings) {
+                *sum += a.map_or(v, |z| z[i] * v);
+            }
         }
-        for (mean, &inverse) in means.iter_mut().zip(&self.inverse) {
-            *mean *= inverse;
+        for (l, sums) in sums.chunks_exact(c).enumerate() {
+            let inverse = &self.inverse[l * c * c..][..c * c];
+            for (j, row) in inverse.chunks_exact(c).enumerate() {
+                coefficients[j * n + l] = dot(row, sums);
+            }
         }
     }
 
     #[cfg(test)]
-    fn project(&self, values: &mut [f64], means: &mut [f64]) {
-        self.coefficients(values, means);
-        for (i, &level) in self.prepared.design.terms[self.term]
-            .levels()
-            .iter()
-            .enumerate()
-        {
-            values[i] -= self.scale(i) * means[level as usize];
+    fn project(&self, values: &mut [f64], coefficients: &mut [f64]) {
+        self.coefficients(values, coefficients);
+        let n = self.n_levels();
+        let loadings = self.eliminated_loadings();
+        for (i, &level) in self.levels().iter().enumerate() {
+            let fit: f64 = (loadings.iter().enumerate())
+                .map(|(j, a)| {
+                    let b = coefficients[j * n + level as usize];
+                    a.map_or(b, |z| z[i] * b)
+                })
+                .sum();
+            values[i] -= self.scale(i) * fit;
         }
     }
 }
@@ -143,15 +238,11 @@ impl Operator for ProjectedDesign<'_> {
     fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
         let e = self.elimination;
         y.fill(0.0);
-        let mut offset = 0;
-        for (index, term) in e.prepared.design.terms.iter().enumerate() {
-            if index == e.term {
-                continue;
+        for channel in e.kept_channels() {
+            for (i, &level) in channel.levels.iter().enumerate() {
+                let x = x[channel.start + level as usize];
+                y[i] += channel.loading.map_or(x, |z| z[i] * x);
             }
-            for (i, &level) in term.levels().iter().enumerate() {
-                y[i] += x[offset + level as usize];
-            }
-            offset += term.n_dofs();
         }
         for (i, yi) in y.iter_mut().enumerate() {
             *yi *= e.scale(i);
@@ -171,15 +262,11 @@ impl Operator for ProjectedDesign<'_> {
         observations.copy_from_slice(x);
         e.project(observations, means);
         y.fill(0.0);
-        let mut offset = 0;
-        for (index, term) in e.prepared.design.terms.iter().enumerate() {
-            if index == e.term {
-                continue;
+        for channel in e.kept_channels() {
+            for (i, &level) in channel.levels.iter().enumerate() {
+                let v = e.scale(i) * observations[i];
+                y[channel.start + level as usize] += channel.loading.map_or(v, |z| z[i] * v);
             }
-            for (i, &level) in term.levels().iter().enumerate() {
-                y[offset + level as usize] += e.scale(i) * observations[i];
-            }
-            offset += term.n_dofs();
         }
         Ok(())
     }
@@ -221,7 +308,7 @@ impl Solver<'_> {
         options: &LsmrOptions,
     ) -> Result<SolveResult, WithinError> {
         let start = Instant::now();
-        let elimination = Elimination::new(&self.prepared)?;
+        let elimination = Elimination::new(&self.prepared);
         if elimination.n_kept() == 0 {
             return self.solve(y, options);
         }
@@ -299,15 +386,11 @@ impl Solver<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Design, PreconditionerConfig};
+    use crate::{Design, Effect, PreconditionerConfig};
     use ndarray::Array2;
 
-    #[test]
-    fn projected_operator_has_adjoint_and_schur_gram() {
-        let categories = Array2::from_shape_fn((120, 3), |(i, j)| {
-            ((i * (2 * j + 1) + i / 7) % [5, 13, 3][j]) as u32
-        });
-        let weights: Vec<f64> = (0..120)
+    fn weights(n: usize) -> Vec<f64> {
+        (0..n)
             .map(|i| {
                 if i % 7 == 0 {
                     0.0
@@ -315,28 +398,35 @@ mod tests {
                     0.2 + (i % 3) as f64
                 }
             })
-            .collect();
-        let design = Design::from_categories(categories.view()).unwrap();
-        let solver = Solver::new(design, Some(&weights), PreconditionerConfig::Diagonal).unwrap();
-        let e = Elimination::new(&solver.prepared).unwrap();
+            .collect()
+    }
+
+    /// Checks the projection against the full design operator, which shares none of its indexing.
+    fn assert_schur_gram(solver: &Solver<'_>) {
+        let n = solver.prepared.design.n_obs;
+        let e = Elimination::new(&solver.prepared);
         let op = ProjectedDesign::new(&e);
         let x: Vec<f64> = (0..op.ncols()).map(|i| (i as f64).sin()).collect();
-        let y: Vec<f64> = (0..120).map(|i| (i as f64 * 0.7).cos()).collect();
-        let mut ax = vec![0.0; 120];
+        let y: Vec<f64> = (0..n).map(|i| (i as f64 * 0.7).cos()).collect();
+        let mut ax = vec![0.0; n];
         let mut aty = vec![0.0; op.ncols()];
         op.apply(&x, &mut ax).unwrap();
         op.apply_adjoint(&y, &mut aty).unwrap();
         let dot = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(a, b)| a * b).sum::<f64>();
-        assert!((dot(&ax, &y) - dot(&x, &aty)).abs() < 1e-12);
+        assert!((dot(&ax, &y) - dot(&x, &aty)).abs() < 1e-10 * (1.0 + dot(&ax, &y).abs()));
         let full_op = crate::operator::DesignOperator::new(&solver.prepared);
+        let mut full = vec![0.0; solver.n_dofs()];
+        full_op.apply_adjoint(&ax, &mut full).unwrap();
+        let norm = |a: &[f64]| a.iter().map(|v| v * v).sum::<f64>().sqrt();
+        assert!(norm(&full[e.removed.clone()]) < 1e-10 * norm(&ax));
         let mut embedded = vec![0.0; solver.n_dofs()];
         e.embed(&x, &mut embedded);
-        let mut gathered = vec![0.0; 120];
+        let mut gathered = vec![0.0; n];
         full_op.apply(&embedded, &mut gathered).unwrap();
-        let mut means = vec![0.0; e.removed.len()];
-        e.coefficients(&gathered, &mut means);
-        for (target, mean) in embedded[e.removed.clone()].iter_mut().zip(means) {
-            *target = -mean;
+        let mut coefficients = vec![0.0; e.removed.len()];
+        e.coefficients(&gathered, &mut coefficients);
+        for (target, b) in embedded[e.removed.clone()].iter_mut().zip(coefficients) {
+            *target = -b;
         }
         full_op.apply(&embedded, &mut gathered).unwrap();
         let mut gram = vec![0.0; solver.n_dofs()];
@@ -345,7 +435,44 @@ mod tests {
         e.restrict(&gram, &mut schur);
         op.apply_adjoint(&ax, &mut aty).unwrap();
         for (a, b) in aty.iter().zip(schur) {
-            assert!((a - b).abs() < 1e-12);
+            assert!((a - b).abs() < 1e-10 * (1.0 + b.abs()));
+        }
+    }
+
+    #[test]
+    fn projected_operator_has_adjoint_and_schur_gram() {
+        let categories = Array2::from_shape_fn((120, 3), |(i, j)| {
+            ((i * (2 * j + 1) + i / 7) % [5, 13, 3][j]) as u32
+        });
+        let weights = weights(120);
+        let design = Design::from_categories(categories.view()).unwrap();
+        let solver = Solver::new(design, Some(&weights), PreconditionerConfig::Diagonal).unwrap();
+        assert_schur_gram(&solver);
+    }
+
+    #[test]
+    fn projected_slope_operator_has_adjoint_and_schur_gram() {
+        let n = 600;
+        let a: Vec<u32> = (0..n).map(|i| (i % 37) as u32).collect();
+        let b: Vec<u32> = (0..n).map(|i| ((i * 7 + i / 11) % 13) as u32).collect();
+        let c: Vec<u32> = (0..n).map(|i| (i / 37 % 5) as u32).collect();
+        let z1: Vec<f64> = (0..n).map(|i| (i as f64 * 0.37).sin()).collect();
+        // Within each `a` level, `z2` is `c` up to `1e-7`: a near alias the block inverse must survive.
+        let z2: Vec<f64> = (0..n)
+            .map(|i| c[i] as f64 + 1e-7 * (i as f64).cos())
+            .collect();
+        let z3: Vec<f64> = (0..n).map(|i| (i as f64 * 0.11).cos() + 2.0).collect();
+        let weights = weights(n);
+        for intercept in [true, false] {
+            for weights in [None, Some(&weights[..])] {
+                let effects = vec![
+                    Effect::new(&a, intercept, [&z1[..], &z2[..]]).unwrap(),
+                    Effect::new(&b, true, [&z3[..]]).unwrap(),
+                    Effect::new(&c, true, []).unwrap(),
+                ];
+                let solver = Solver::new(effects, weights, PreconditionerConfig::Diagonal).unwrap();
+                assert_schur_gram(&solver);
+            }
         }
     }
 }

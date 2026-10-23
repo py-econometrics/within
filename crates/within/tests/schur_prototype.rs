@@ -85,7 +85,7 @@ fn reduced_solve_matches_full_fit_and_normal_equations() {
 }
 
 #[test]
-fn handles_zero_rhs_single_factor_and_rejects_slopes() {
+fn handles_zero_rhs_and_single_factors() {
     let categories = Array2::from_shape_fn((100, 2), |(i, j)| ((i / (j + 1)) % 7) as u32);
     let solver = Solver::new(categories.view(), None, PreconditionerConfig::Diagonal).unwrap();
     let options = LsmrOptions::default();
@@ -103,5 +103,10 @@ fn handles_zero_rhs_single_factor_and_rejects_slopes() {
     let levels = vec![0; 100];
     let effect = Effect::new(&levels, true, [&y[..]]).unwrap();
     let solver = Solver::new(vec![effect], None, PreconditionerConfig::Diagonal).unwrap();
-    assert!(solver.solve_schur_prototype(&y, &options).is_err());
+    assert!(
+        solver
+            .solve_schur_prototype(&y, &options)
+            .unwrap()
+            .converged
+    );
 }

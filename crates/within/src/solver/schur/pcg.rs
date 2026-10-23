@@ -92,7 +92,8 @@ impl SchurMatrix {
 
 impl SchurMatrix {
     #[cfg(feature = "pair-schur-prototype")]
-    pub(super) fn build(e: &Elimination<'_>) -> Self {
+    pub(super) fn build(e: &Elimination<'_>) -> Result<Self, SolveError> {
+        e.require_intercepts("pair_schur_prototype")?;
         let mut h = Assembly::new(e.n_kept());
         let mut c = Assembly::new(e.removed.len());
         let mut columns = Vec::with_capacity(e.prepared.design.terms.len() - 1);
@@ -118,11 +119,11 @@ impl SchurMatrix {
                 }
             }
         }
-        Self {
+        Ok(Self {
             kept: h.finish(),
             coupling: c.finish(),
             inverse: e.inverse.clone(),
-        }
+        })
     }
 }
 

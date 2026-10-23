@@ -79,7 +79,8 @@ impl Solver<'_> {
             return Err(invalid("relative_shift must be finite and positive").into());
         }
         let start = Instant::now();
-        let e = Elimination::new(&self.prepared)?;
+        let e = Elimination::new(&self.prepared);
+        e.require_intercepts("asca_prototype")?;
         if e.n_kept() == 0 {
             return Err(invalid("ASCA requires at least two factors").into());
         }
