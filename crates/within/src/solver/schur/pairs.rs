@@ -6,7 +6,7 @@ use rayon::prelude::*;
 use schwarz_precond::{Operator, SchwarzPreconditioner, SubdomainCore, SubdomainEntry};
 
 use super::pcg::{solve_reduced, solve_with_full_preconditioner, SchurMatrix};
-use super::segmented::SegmentedDesign;
+use super::segmented::ReducedDesign;
 use super::{Elimination, LsmrOptions, SolveResult, Solver};
 use crate::block_solver::BlockSolver;
 use crate::domain::factor_pairs::{
@@ -67,7 +67,7 @@ pub struct PairSchurPrototype<'a> {
     elimination: Elimination<'a>,
     /// Assembled on first PCG use: reduced mlsmr never reads it.
     matrix: OnceLock<(SchurMatrix, f64)>,
-    projected: SegmentedDesign,
+    projected: ReducedDesign,
     inverse: SchwarzPreconditioner<BlockSolver>,
     warnings: Vec<BuildWarning>,
     preconditioner_seconds: f64,
@@ -109,7 +109,7 @@ impl Solver<'_> {
             }
             .into());
         }
-        let projected = SegmentedDesign::build(&elimination);
+        let projected = ReducedDesign::build(&elimination);
         let approx_chol = config.to_approx_chol()?;
         let (_, all_pairs) = channel_pairs(&self.prepared);
         let per_pair = (all_pairs.par_iter())

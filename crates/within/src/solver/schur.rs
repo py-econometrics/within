@@ -1,14 +1,15 @@
 use std::ops::Range;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use rayon::prelude::*;
 use schwarz_precond::{lsmr, mlsmr, MlsmrOptions, Operator};
 
 use super::{CoefficientLayout, LsmrOptions, Run, SolveResult, Solver};
 use crate::domain::{row_weight, PreparedDesign};
 use crate::linalg::{dot, GramBasisWorkspace};
 use crate::{SolveError, WithinError};
-use segmented::SegmentedDesign;
+use segmented::ReducedDesign;
 
 #[cfg(feature = "pair-schur-prototype")]
 mod pairs;
@@ -23,10 +24,77 @@ mod asca;
 #[cfg(feature = "asca-prototype")]
 pub use asca::{AscaConfig, AscaPrototype};
 
+/// Rows per parallel task, cut at an eliminated level's end so no level spans two tasks.
+const ROWS_PER_TASK: usize = 16_384;
+
+/// Observations grouped by eliminated level, and the parallel tasks over those groups.
+struct LevelGroups {
+    /// Grouped row `p` is original row `order[p]`.
+    order: Vec<u32>,
+    /// Eliminated level `e` owns grouped rows `starts[e]..starts[e + 1]`.
+    starts: Vec<usize>,
+    /// Eliminated levels per task.
+    tasks: Vec<Range<usize>>,
+}
+
+impl LevelGroups {
+    fn build(levels: &[u32], n_levels: usize) -> Self {
+        let mut starts = vec![0usize; n_levels + 1];
+        for &l in levels {
+            starts[l as usize + 1] += 1;
+        }
+        for l in 0..n_levels {
+            starts[l + 1] += starts[l];
+        }
+        let mut next = starts[..n_levels].to_vec();
+        let mut order = vec![0u32; levels.len()];
+        for (i, &l) in levels.iter().enumerate() {
+            order[next[l as usize]] = i as u32;
+            next[l as usize] += 1;
+        }
+        let mut tasks = Vec::new();
+        let mut first = 0;
+        for l in 0..n_levels {
+            if starts[l + 1] - starts[first] >= ROWS_PER_TASK {
+                tasks.push(first..l + 1);
+                first = l + 1;
+            }
+        }
+        if first < n_levels {
+            tasks.push(first..n_levels);
+        }
+        Self {
+            order,
+            starts,
+            tasks,
+        }
+    }
+
+    /// Per original row, `loadings` at that row, laid out in grouped row order.
+    fn gather(&self, loadings: &[&[f64]]) -> Vec<f64> {
+        (self.order.par_iter())
+            .flat_map_iter(|&i| loadings.iter().map(move |z| z[i as usize]))
+            .collect()
+    }
+
+    /// Each task's levels with its rows of `y`.
+    fn split<'y>(&self, mut y: &'y mut [f64]) -> Vec<(Range<usize>, &'y mut [f64])> {
+        let mut pieces = Vec::with_capacity(self.tasks.len());
+        for levels in &self.tasks {
+            let len = self.starts[levels.end] - self.starts[levels.start];
+            let (head, tail) = std::mem::take(&mut y).split_at_mut(len);
+            pieces.push((levels.clone(), head));
+            y = tail;
+        }
+        pieces
+    }
+}
+
 struct Elimination<'a> {
     prepared: &'a PreparedDesign<'a>,
     term: usize,
     removed: Range<usize>,
+    groups: Arc<LevelGroups>,
     /// The eliminated term's coefficient columns: each level's Gram block is `width × width`.
     width: usize,
     /// Per eliminated level, a generalized inverse of its Gram block, row-major.
@@ -56,6 +124,7 @@ impl<'a> Elimination<'a> {
             prepared,
             term,
             removed,
+            groups: Arc::new(LevelGroups::build(largest.levels(), largest.n_levels())),
             width: largest.n_columns(),
             inverse: Vec::new(),
         };
@@ -65,34 +134,35 @@ impl<'a> Elimination<'a> {
 
     /// `Wᵀ W` from pivoted Gram–Schmidt is a generalized inverse, so `A G⁻ Aᵀ` is the exact projector.
     fn block_inverses(&self) -> Vec<f64> {
-        let (n, c) = (self.n_levels(), self.width);
+        let c = self.width;
         let loadings = self.eliminated_loadings();
-        let mut gram = vec![0.0; n * c * c];
-        for (i, &level) in self.levels().iter().enumerate() {
-            let w = row_weight(self.prepared.sqrt_weights(), i);
-            let block = &mut gram[level as usize * c * c..][..c * c];
-            for (j, aj) in loadings.iter().enumerate() {
-                let wa = aj.map_or(w, |z| w * z[i]);
-                for (k, ak) in loadings.iter().enumerate() {
-                    block[j * c + k] += ak.map_or(wa, |z| wa * z[i]);
-                }
-            }
-        }
-        let mut workspace = GramBasisWorkspace::new(c);
-        let mut inverse = vec![0.0; n * c * c];
-        for (block, out) in gram
-            .chunks_exact(c * c)
-            .zip(inverse.chunks_exact_mut(c * c))
-        {
-            let basis = workspace.orthonormalize(|g| g.copy_from_slice(block));
-            for row in basis.rows.chunks_exact(c) {
-                for (j, &rj) in row.iter().enumerate() {
-                    for (k, &rk) in row.iter().enumerate() {
-                        out[j * c + k] += rj * rk;
+        let sqrt_weights = self.prepared.sqrt_weights();
+        let LevelGroups { order, starts, .. } = &*self.groups;
+        let mut inverse = vec![0.0; self.n_levels() * c * c];
+        (inverse.par_chunks_mut(c * c).enumerate().with_min_len(256)).for_each_init(
+            || GramBasisWorkspace::new(c),
+            |workspace, (l, out)| {
+                let basis = workspace.orthonormalize(|block| {
+                    block.fill(0.0);
+                    for &i in &order[starts[l]..starts[l + 1]] {
+                        let (i, w) = (i as usize, row_weight(sqrt_weights, i as usize));
+                        for (j, aj) in loadings.iter().enumerate() {
+                            let wa = aj.map_or(w, |z| w * z[i]);
+                            for (k, ak) in loadings.iter().enumerate() {
+                                block[j * c + k] += ak.map_or(wa, |z| wa * z[i]);
+                            }
+                        }
+                    }
+                });
+                for row in basis.rows.chunks_exact(c) {
+                    for (j, &rj) in row.iter().enumerate() {
+                        for (k, &rk) in row.iter().enumerate() {
+                            out[j * c + k] += rj * rk;
+                        }
                     }
                 }
-            }
-        }
+            },
+        );
         inverse
     }
 
@@ -318,7 +388,7 @@ impl Solver<'_> {
             scratch: Mutex::new((vec![0.0; self.n_dofs()], vec![0.0; self.n_dofs()])),
         });
         let map = map.as_ref().map(|m| m as &dyn Operator);
-        let projected = SegmentedDesign::build(&elimination);
+        let projected = ReducedDesign::build(&elimination);
         self.solve_projected(&elimination, &projected, y, options, map, start)
     }
 
@@ -326,7 +396,7 @@ impl Solver<'_> {
     fn solve_projected(
         &self,
         elimination: &Elimination<'_>,
-        op: &SegmentedDesign,
+        op: &ReducedDesign,
         y: &[f64],
         options: &LsmrOptions,
         map: Option<&dyn Operator>,
