@@ -10,9 +10,14 @@ repository.workspace = true
 keywords = ["fixed-effects", "least-squares", "preconditioner", "schwarz", "econometrics"]
 categories.workspace = true
 
+[features]
+schur-prototype = []
+pair-schur-prototype = ["schur-prototype"]
+asca-prototype = ["schur-prototype", "dep:faer", "dep:rand"]
+
 [dependencies]
 schwarz-precond = { workspace = true, features = ["serde"] }
-approx-chol = { version = "0.6.0", features = ["serde"] }
+approx-chol = { path = "/Users/kristof/Projects/within-worktrees/approx-chol-complement/crates/approx-chol", features = ["serde"] }
 serde = { workspace = true, features = ["rc"] }
 postcard.workspace = true
 ndarray = "0.17"
@@ -21,6 +26,8 @@ portable-atomic = { version = "1", features = ["float"] }
 rayon.workspace = true
 thiserror.workspace = true
 rustc-hash = "2"
+faer = { workspace = true, optional = true }
+rand = { version = "0.10", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.7", features = ["html_reports"] }

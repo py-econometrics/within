@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::block_elim::BlockElimSolver;
+use crate::block_solver::BlockSolver;
 use crate::config::{LocalSolverConfig, PreconditionerConfig, ReductionStrategy, Staleness};
 use crate::domain::{LocalDomain, PreparedDesign};
 use crate::{BuildError, BuildWarning};
@@ -25,7 +25,7 @@ pub(crate) struct SchwarzConfig {
 /// Concrete additive Schwarz type used in the parent crate.
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct FeSchwarz {
-    inner: SchwarzPreconditioner<BlockElimSolver>,
+    inner: SchwarzPreconditioner<BlockSolver>,
     config: SchwarzConfig,
 }
 
@@ -104,22 +104,13 @@ pub(crate) fn build_additive(
 ) -> Result<FeSchwarz, BuildError> {
     let entries = domains
         .into_par_iter()
-        .map(|domain| build_entry(domain, &config.local_solver))
-        .collect::<Result<Vec<_>, BuildError>>()?;
+        .map(|LocalDomain { core, solver }| SubdomainEntry::try_new(core, solver))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(BuildError::Preconditioner)?;
     Ok(FeSchwarz {
         inner: SchwarzPreconditioner::with_n_dofs(entries, n_dofs, config.reduction),
         config: config.clone(),
     })
-}
-
-/// Build a single `SubdomainEntry<BlockElimSolver>` from a pre-built CrossTab.
-pub(crate) fn build_entry(
-    domain: LocalDomain,
-    config: &LocalSolverConfig,
-) -> Result<SubdomainEntry<BlockElimSolver>, BuildError> {
-    let LocalDomain { core, component } = domain;
-    let solver = BlockElimSolver::build(component, config)?;
-    SubdomainEntry::try_new(core, solver).map_err(BuildError::Preconditioner)
 }
 
 /// Opaque handle to a pre-built preconditioner; cloning is O(1) via `Arc`.

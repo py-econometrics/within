@@ -5,7 +5,7 @@ use rstest::rstest;
 use super::{CoefficientAddress, CoefficientLayout};
 use crate::channel::Channel;
 use crate::config::{LocalSolverConfig, LsmrOptions, DEFAULT_DENSE_SCHUR_THRESHOLD};
-use crate::domain::{build_local_domains, Design, Grounding, MatrixForm, PreparedDesign};
+use crate::domain::{build_local_domains, Design, PreparedDesign};
 use crate::{Effect, PreconditionerConfig, Solver};
 
 /// DGP kept in lockstep with `surplus_component_sampled_matches_exact_reduction`
@@ -40,12 +40,12 @@ fn positive_slope_only_pair_grounds_beyond_dense_threshold() {
     let (domains, warnings) =
         build_local_domains(&prepared, &LocalSolverConfig::default()).expect("domains");
     assert!(
-        domains.iter().any(|ld| {
-            let ct = &ld.component.matrix.cross_tab;
-            ld.component.form == MatrixForm::Laplacian
-                && ld.component.matrix.grounding == Grounding::Grounded
-                && ct.n_rows().min(ct.n_cols()) > DEFAULT_DENSE_SCHUR_THRESHOLD
-        }),
+        domains
+            .iter()
+            .flat_map(|ld| ld.solver.blocks_for_test())
+            .any(|block| {
+                !block.floats() && block.vertices().len() > 2 * DEFAULT_DENSE_SCHUR_THRESHOLD
+            }),
         "fixture must ground a component past the dense threshold (warnings: {warnings:?})"
     );
 }

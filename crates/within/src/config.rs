@@ -25,24 +25,6 @@ pub struct ApproxCholConfig {
     pub split_merge: Option<u32>,
 }
 
-impl ApproxCholConfig {
-    pub(crate) fn to_approx_chol(
-        self,
-        exact_below: usize,
-        on_failure: approx_chol::ExactFailure,
-    ) -> approx_chol::Config {
-        approx_chol::Config {
-            seed: self.seed,
-            split_merge: self.split_merge,
-            // `max_dim: 0` claims no block, which is what `dense_threshold: 0` asks for.
-            backend: approx_chol::Backend::ExactBelow {
-                max_dim: exact_below,
-                on_failure,
-            },
-        }
-    }
-}
-
 /// Schur reduction mode: sampled bounds per-subdomain cost, exact trades speed for fidelity.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SchurMode {
@@ -74,12 +56,43 @@ pub struct LocalSolverConfig {
 impl LocalSolverConfig {
     /// Separate from any build so a deferred escalation can reject the config at construction.
     pub(crate) fn validate(&self) -> Result<(), BuildError> {
-        let tolerance = self.scaling.tolerance;
-        if !tolerance.is_finite() || tolerance < 0.0 {
-            return Err(BuildError::InvalidScalingTolerance { value: tolerance });
-        }
-        Ok(())
+        self.to_approx_chol().map(drop)
     }
+
+    pub(crate) fn to_approx_chol(&self) -> Result<ApproxChol, BuildError> {
+        let ScalingConfig {
+            tolerance,
+            max_iterations,
+            ..
+        } = self.scaling;
+        let scaling = approx_chol::ScalingPolicy::new(tolerance, max_iterations)
+            .ok_or(BuildError::InvalidScalingTolerance { value: tolerance })?;
+        let complement = match self.schur {
+            SchurMode::Approximate(ApproxSchurConfig { split }) => {
+                approx_chol::SchurMode::Approximate {
+                    split_merge: Some(split),
+                }
+            }
+            SchurMode::Exact => approx_chol::SchurMode::Exact,
+        };
+        let config = approx_chol::Config {
+            seed: self.approx_chol.seed,
+            split_merge: self.approx_chol.split_merge,
+            // `max_dim: 0` claims no block, which is what `dense_threshold: 0` asks for.
+            backend: approx_chol::Backend::ExactBelow {
+                max_dim: self.dense_threshold,
+            },
+            complement,
+        };
+        Ok(ApproxChol { config, scaling })
+    }
+}
+
+/// What approx-chol takes for one factorization.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ApproxChol {
+    pub(crate) config: approx_chol::Config,
+    pub(crate) scaling: approx_chol::ScalingPolicy,
 }
 
 impl Default for LocalSolverConfig {
@@ -126,18 +139,16 @@ impl Default for ScalingConfig {
     }
 }
 
-/// Approximate Schur via GKS 2023 Algorithm 3: unbiased edge weights at O(deg) fill.
+/// Approximate Schur via GKS 2023 Algorithm 3, its sampler seeded by [`ApproxCholConfig::seed`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApproxSchurConfig {
-    /// Random seed for the clique-tree sampler.
-    pub seed: u64,
     /// Star-edge split factor: `1` is standard, `k > 1` a denser approximation at more fill-in.
     pub split: u32,
 }
 
 impl Default for ApproxSchurConfig {
     fn default() -> Self {
-        Self { seed: 0, split: 1 }
+        Self { split: 1 }
     }
 }
 

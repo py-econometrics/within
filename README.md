@@ -161,7 +161,7 @@ as `.build_duration_seconds`; both are preserved across pickling and reuse.
 | `LocalSolverConfig(approx_chol?, schur?, dense_threshold=24, scaling?)` | Schur reduction + approximate Cholesky. Omit `schur` for the library-default approximate variant; pass `schur=Schur.exact()` to request an exact Schur (slower, used for validation). |
 | `Schur.approximate(config?)` / `Schur.exact()` | Schur-reduction mode passed as `LocalSolverConfig(schur=...)`. |
 | `ApproxCholConfig(seed=0, split_merge=None)` | Approximate Cholesky parameters. |
-| `ApproxSchurConfig(seed=0, split=1)` | Approximate Schur complement sampling parameters. |
+| `ApproxSchurConfig(split=1)` | Approximate Schur complement sampling parameters. |
 | `ReductionStrategy` | `Auto` (default), `AtomicScatter`, `ParallelReduction` (class attributes, not an `Enum`). |
 
 ### Result types

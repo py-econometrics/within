@@ -1,22 +1,17 @@
 //! Domain layer: [`Design`] (design-matrix metadata) and factor-pair [`Subdomain`] construction.
 
-pub(crate) mod cross_tab;
 mod effect;
 pub(crate) mod factor_pairs;
 mod level_moments;
 mod prepared;
 mod reparam;
 
-pub(crate) use cross_tab::CrossTab;
 pub(crate) use prepared::{PreparedDesign, PreparedTerm};
 use reparam::TermReparam;
 
 pub use effect::Effect;
 
-pub(crate) use factor_pairs::{
-    build_local_domains, CoordinateMap, Grounding, LocalComponent, LocalDomain, MatrixForm,
-    SddmMatrix,
-};
+pub(crate) use factor_pairs::{build_local_domains, LocalDomain};
 
 use crate::channel::Channel;
 use crate::BuildError;
@@ -631,7 +626,7 @@ impl<'a> Design<'a> {
             terms.push(term);
         }
 
-        // Rejected here rather than left to panic in `to_u32`.
+        // Rejected here rather than left to panic in subdomain indexing.
         if u32::try_from(offset).is_err() {
             return Err(BuildError::DofSpaceExceedsU32 { n_dofs: offset });
         }

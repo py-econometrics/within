@@ -9,7 +9,11 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- Levels with no cross-factor entries in a channel pair are batched into diagonal Schwarz subdomains per side instead of one subdomain each, cutting per-subdomain build and apply overhead without changing the preconditioner.
+- Schwarz subdomains are factored by approx-chol 0.7 from each channel pair's observations: block elimination, sign folding, dominance scaling, floating detection and the Schur complement move into approx-chol, and each irreducible block is a subdomain.
+- Levels with no cross-factor entries in a channel pair are batched into diagonal Schwarz subdomains instead of one subdomain each, cutting per-subdomain build and apply overhead without changing the preconditioner.
+- **BREAKING:** `ApproxSchurConfig::seed` (Python `seed=`) is removed; the Schur sampler draws from `ApproxCholConfig::seed`.
+- **BREAKING:** `ScalingConfig::tolerance` must be below `1`, else `BuildError::InvalidScalingTolerance`.
+- **BREAKING:** The serialized `Preconditioner` wire format moved v19 → v20.
 
 ### Fixed
 

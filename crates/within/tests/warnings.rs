@@ -6,14 +6,14 @@ use within::{
     ReductionStrategy, ScalingConfig, ScalingFailure, Solver,
 };
 
-// Two crossed slope-only factors: their signed slope cross-block is not
-// diagonally dominant. A zero-tolerance / zero-iteration scaling policy reports
-// that as an uncertified-scaling warning deterministically, without relying on
-// the (deliberately rare) default-tolerance path.
+// Two crossed slope-only factors whose cycle closes no null vector, so the
+// non-dominant cross-block needs an iterated scaling. A zero-tolerance /
+// zero-iteration policy reports it as uncertified deterministically, without
+// relying on the (deliberately rare) default-tolerance path.
 const LA: [u32; 4] = [0, 0, 1, 1];
 const LB: [u32; 4] = [0, 1, 0, 1];
 const ZA: [f64; 4] = [1.0, 1.0, 1.0, 1.0];
-const ZB: [f64; 4] = [1.0, -1.0, 2.0, -2.0];
+const ZB: [f64; 4] = [1.0, -1.0, 2.0, -3.0];
 
 fn warning_effects() -> Vec<Effect<'static>> {
     vec![

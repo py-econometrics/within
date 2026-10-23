@@ -32,9 +32,8 @@
 pub mod config;
 pub mod error;
 
-pub(crate) mod block_elim;
+pub(crate) mod block_solver;
 pub(crate) mod channel;
-pub(crate) mod csr_block;
 pub(crate) mod domain;
 pub(crate) mod linalg;
 pub(crate) mod operator;
@@ -48,7 +47,11 @@ pub use config::{
 pub use domain::{Design, Effect};
 pub use error::{BuildError, BuildWarning, SolveError, WithinError};
 pub use operator::schwarz::Preconditioner;
+#[cfg(feature = "pair-schur-prototype")]
+pub use solver::PairSchurPrototype;
 pub use solver::{
     solve, solve_batch, BatchSolveResult, CoefficientLayout, IntoDesign, PreconditionerInput,
     SolveResult, Solver,
 };
+#[cfg(feature = "asca-prototype")]
+pub use solver::{AscaConfig, AscaPrototype};
