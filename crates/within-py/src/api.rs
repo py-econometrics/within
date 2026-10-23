@@ -197,7 +197,7 @@ impl PyEffect {
 
 impl PyEffect {
     /// Infallible: `PyEffect::new` already validated these exact columns.
-    fn as_effect(&self) -> Effect<'_> {
+    pub(crate) fn as_effect(&self) -> Effect<'_> {
         Effect::new(
             &self.levels,
             self.intercept,
@@ -208,7 +208,7 @@ impl PyEffect {
 }
 
 /// A native, categorical, or effect-based design supplied at the Python boundary.
-enum DesignSource<'py> {
+pub(crate) enum DesignSource<'py> {
     /// A cheap native clone of an existing persistent Python [`PyDesign`].
     Persistent(Design<'static>),
     /// An `(n_obs, n_factors)` categories matrix, borrowed from numpy.
@@ -217,7 +217,10 @@ enum DesignSource<'py> {
     Effects(Vec<Py<PyEffect>>),
 }
 
-fn extract_design<'py>(py: Python<'_>, design: &Bound<'py, PyAny>) -> PyResult<DesignSource<'py>> {
+pub(crate) fn extract_design<'py>(
+    py: Python<'_>,
+    design: &Bound<'py, PyAny>,
+) -> PyResult<DesignSource<'py>> {
     if let Ok(design) = design.cast::<PyDesign>() {
         return Ok(DesignSource::Persistent(design.get().as_design().clone()));
     }

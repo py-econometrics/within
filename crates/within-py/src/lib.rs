@@ -14,6 +14,8 @@ use pyo3::prelude::*;
 mod api;
 mod config;
 mod convert;
+#[cfg(feature = "pair-schur-prototype")]
+mod reduced;
 mod results;
 
 use api::{solve, solve_batch, PyDesign, PyEffect, PySolver};
@@ -44,5 +46,10 @@ fn _within(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyEffect>()?;
     m.add_function(wrap_pyfunction!(solve, m)?)?;
     m.add_function(wrap_pyfunction!(solve_batch, m)?)?;
+    #[cfg(feature = "pair-schur-prototype")]
+    {
+        m.add_class::<reduced::PyReducedInverse>()?;
+        m.add_function(wrap_pyfunction!(reduced::solve_reduced, m)?)?;
+    }
     Ok(())
 }

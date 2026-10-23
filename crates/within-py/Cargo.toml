@@ -10,6 +10,9 @@ publish = false
 name = "_within"
 crate-type = ["cdylib"]
 
+[features]
+pair-schur-prototype = ["within/pair-schur-prototype"]
+
 [dependencies]
 within = { path = "../within" }
 postcard.workspace = true
