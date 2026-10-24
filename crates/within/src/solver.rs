@@ -291,6 +291,8 @@ trait Formulation: Sync {
         Self: 's;
     fn prepare<'s>(&'s self, y: &'s [f64]) -> Result<Self::Rhs<'s>, SolveError>;
     fn system<'r>(&'r self, rhs: &'r Self::Rhs<'_>) -> (&'r dyn Operator, &'r [f64]);
+    /// What the residual tolerance is relative to, when not the system's own `‖b‖`.
+    fn residual_reference(&self, rhs: &Self::Rhs<'_>) -> Option<f64>;
     fn finish(&self, rhs: Self::Rhs<'_>, run: Run) -> Result<RhsSolution, SolveError>;
     fn gram_diagonal(&self) -> Vec<f64>;
     /// `None` when no factor-pair subdomain exists to build on.
@@ -461,6 +463,10 @@ impl<'a> Formulation for PreparedDesign<'a> {
         (&rhs.op, rhs.b())
     }
 
+    fn residual_reference(&self, _: &PreparedRhs<'_>) -> Option<f64> {
+        None
+    }
+
     /// Demean and back-transform one finished run. Excludes the design-level `layout` /
     /// `warnings` / `unidentified`, which the public entry points attach once.
     fn finish(&self, rhs: PreparedRhs<'_>, run: Run) -> Result<RhsSolution, SolveError> {
@@ -527,6 +533,7 @@ fn solve_all<F: Formulation>(
             let options = MlsmrOptions {
                 escalation: ladder.map(|a| &a.ladder().stall as &dyn EscalationPolicy),
                 local_size: lsmr.local_size,
+                reference_norm: system.residual_reference(&rhs),
                 ..Default::default()
             };
             let run = Run::timed(|| match map {
@@ -559,6 +566,7 @@ fn solve_all<F: Formulation>(
             let options = MlsmrOptions {
                 warm_start: Some(&rung1.x),
                 local_size: lsmr.local_size,
+                reference_norm: system.residual_reference(&rhs),
                 ..Default::default()
             };
             let remaining = lsmr.maxiter - rung1.iterations;

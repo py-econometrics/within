@@ -212,6 +212,8 @@ pub struct MlsmrOptions<'a> {
     pub escalation: Option<&'a dyn EscalationPolicy>,
     /// Local reorthogonalization window; `None` disables it.
     pub local_size: Option<usize>,
+    /// The norm the residual tolerance is relative to; `None` is `‖b‖`.
+    pub reference_norm: Option<f64>,
 }
 
 /// Unpreconditioned LSMR.
@@ -273,7 +275,15 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
         warm_start,
         escalation,
         local_size,
+        reference_norm,
     } = options;
+    if let Some(r) = reference_norm {
+        if !(r.is_finite() && r > 0.0) {
+            return Err(invalid_input(format!(
+                "reference norm must be finite and positive, got {r}"
+            )));
+        }
+    }
 
     if let Some(x0) = warm_start {
         if x0.len() != n {
@@ -338,7 +348,7 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
         x0: warm_start,
         reference,
     };
-    let reference_norm = if b_norm > 0.0 { b_norm } else { rhs_norm };
+    let reference_norm = reference_norm.unwrap_or(if b_norm > 0.0 { b_norm } else { rhs_norm });
     let criteria = ConvergenceCriteria::new(reference_norm, tol);
     lsmr_from_bidiag(bidiag, step1, b, start, criteria, maxiter, escalation)
 }
