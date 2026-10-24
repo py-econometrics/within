@@ -87,11 +87,10 @@ fn compare(label: &str, design: &within::Design<'_>, y: &[f64]) {
         )
         .unwrap();
     let scale = y.iter().map(|v| v * v).sum::<f64>().sqrt();
-    println!("{label} schur={:?} reference_converged={} full_dofs={} reduced_dofs={} schur_domains={} retained_domains={}",config.schur,reference.converged,full.n_dofs(),reduced.n_reduced(),reduced.schur_domains().unwrap(),reduced.retained_domains().unwrap());
-    println!("full_build={full_build:.6}s reduced_build={reduced_build:.6}s reduced_preconditioner={:.6}s",reduced.preconditioner_seconds().unwrap());
+    println!("{label} schur={:?} reference_converged={} full_dofs={} reduced_dofs={} subdomains={} schur_subdomains={}",config.schur,reference.converged,full.n_dofs(),reduced.n_reduced(),reduced.n_subdomains(),jacobi.n_subdomains());
+    println!("full_build={full_build:.6}s reduced_build={reduced_build:.6}s reduced_preconditioner={:.6}s",reduced.preconditioner_seconds());
     let methods = [
         ("full_mlsmr_full_schwarz", full_build),
-        ("reduced_mlsmr_restricted_full", full_build),
         ("reduced_mlsmr_pair_schur", reduced_build),
         ("reduced_mlsmr_block_jacobi", jacobi_build),
     ];
@@ -105,8 +104,7 @@ fn compare(label: &str, design: &within::Design<'_>, y: &[f64]) {
             let start = Instant::now();
             let result = match method {
                 0 => full.solve(y, &options),
-                1 => full.solve_schur_prototype(y, &options),
-                2 => reduced.solve_lsmr(y, &options),
+                1 => reduced.solve_lsmr(y, &options),
                 _ => jacobi.solve_lsmr(y, &options),
             }
             .unwrap();

@@ -1,7 +1,7 @@
 //! Domain layer: [`Design`] (design-matrix metadata) and factor-pair [`Subdomain`] construction.
 
 mod effect;
-#[cfg(feature = "schur-prototype")]
+#[cfg(feature = "pair-schur-prototype")]
 pub(crate) mod elimination;
 pub(crate) mod factor_pairs;
 mod level_moments;
@@ -13,7 +13,7 @@ use reparam::TermReparam;
 
 pub use effect::Effect;
 
-pub(crate) use factor_pairs::{build_local_domains, LocalDomain};
+pub(crate) use factor_pairs::{build_local_domains, FullPairs, LocalDomain, PairSubdomains};
 
 use crate::channel::Channel;
 use crate::BuildError;

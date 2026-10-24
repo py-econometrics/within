@@ -9,13 +9,9 @@ use std::time::{Duration, Instant};
 
 use crate::block_solver::BlockSolver;
 use crate::config::{LocalSolverConfig, PreconditionerConfig, ReductionStrategy, Staleness};
-use crate::domain::{LocalDomain, PreparedDesign};
+use crate::domain::{LocalDomain, PairSubdomains, PreparedDesign};
 use crate::{BuildError, BuildWarning};
 
-#[cfg(feature = "pair-schur-prototype")]
-pub(crate) mod pair_schur;
-#[cfg(feature = "schur-prototype")]
-pub(crate) mod restricted;
 #[cfg(test)]
 mod tests;
 
@@ -62,7 +58,7 @@ impl Operator for FeSchwarz {
 
 /// Diagonal/Jacobi preconditioner for the fixed-effects Gramian.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct DiagonalPreconditioner {
+struct DiagonalPreconditioner {
     inv_diag: Arc<[f64]>,
 }
 
@@ -205,6 +201,14 @@ impl Preconditioner {
     pub fn build_duration(&self) -> Duration {
         self.build_duration
     }
+
+    #[cfg(feature = "pair-schur-prototype")]
+    pub(crate) fn n_subdomains(&self) -> usize {
+        match &self.inner {
+            Variant::Additive(p) => p.inner.subdomains().len(),
+            Variant::Diagonal(_) | Variant::Adaptive(_) => 0,
+        }
+    }
 }
 
 impl Preconditioner {
@@ -235,10 +239,10 @@ impl Operator for Preconditioner {
     }
 }
 
-/// Build the diagonal/Jacobi map.
-pub(crate) fn build_diagonal(prepared: &PreparedDesign<'_>) -> Result<Preconditioner, BuildError> {
+/// Build the diagonal/Jacobi map from the normal equations' diagonal.
+pub(crate) fn build_diagonal(gram_diagonal: Vec<f64>) -> Result<Preconditioner, BuildError> {
     let build_started = Instant::now();
-    let diagonal = DiagonalPreconditioner::from_gram_diagonal(prepared.gram_diagonal())?;
+    let diagonal = diagonal_map(gram_diagonal)?;
     Ok(Preconditioner {
         inner: Variant::Diagonal(diagonal),
         build_duration: build_started.elapsed(),
@@ -247,12 +251,12 @@ pub(crate) fn build_diagonal(prepared: &PreparedDesign<'_>) -> Result<Preconditi
 
 /// Build the diagonal base of an `Adaptive` strategy; the Schwarz rung is left to a stalled solve.
 pub(crate) fn build_adaptive(
-    prepared: &PreparedDesign<'_>,
+    gram_diagonal: Vec<f64>,
     stall: Staleness,
     escalated: SchwarzConfig,
 ) -> Result<Preconditioner, BuildError> {
     let build_started = Instant::now();
-    let base = DiagonalPreconditioner::from_gram_diagonal(prepared.gram_diagonal())?;
+    let base = diagonal_map(gram_diagonal)?;
     Ok(Preconditioner {
         inner: Variant::Adaptive(AdaptiveLadder {
             base,
@@ -263,24 +267,22 @@ pub(crate) fn build_adaptive(
     })
 }
 
-impl DiagonalPreconditioner {
-    pub(crate) fn from_gram_diagonal(mut diag: Vec<f64>) -> Result<Self, BuildError> {
-        // A zero diagonal is an unidentified DOF, so the pseudo-inverse keeps it in the null space.
-        for (index, d) in diag.iter_mut().enumerate() {
-            if *d == 0.0 {
-                continue;
-            }
-            let inv = 1.0 / *d;
-            if !inv.is_finite() {
-                return Err(BuildError::SingularDiagonal { index });
-            }
-            *d = inv;
+fn diagonal_map(mut diag: Vec<f64>) -> Result<DiagonalPreconditioner, BuildError> {
+    // A zero diagonal is an unidentified DOF, so the pseudo-inverse keeps it in the null space.
+    for (index, d) in diag.iter_mut().enumerate() {
+        if *d == 0.0 {
+            continue;
         }
-
-        Ok(DiagonalPreconditioner {
-            inv_diag: Arc::from(diag),
-        })
+        let inv = 1.0 / *d;
+        if !inv.is_finite() {
+            return Err(BuildError::SingularDiagonal { index });
+        }
+        *d = inv;
     }
+
+    Ok(DiagonalPreconditioner {
+        inv_diag: Arc::from(diag),
+    })
 }
 
 /// Build the additive Schwarz map plus its warnings; `None` when the design has no factor-pair
@@ -288,13 +290,15 @@ impl DiagonalPreconditioner {
 pub(crate) fn build_schwarz(
     prepared: &PreparedDesign<'_>,
     config: &SchwarzConfig,
+    subdomains: &impl PairSubdomains,
 ) -> Result<(Option<Preconditioner>, Vec<BuildWarning>), BuildError> {
     let build_started = Instant::now();
-    let (domains, warnings) = crate::domain::build_local_domains(prepared, &config.local_solver)?;
+    let (domains, warnings) =
+        crate::domain::build_local_domains(prepared, &config.local_solver, subdomains)?;
     if domains.is_empty() {
         return Ok((None, warnings));
     }
-    let schwarz = build_additive(domains, config, prepared.design.n_dofs)?;
+    let schwarz = build_additive(domains, config, subdomains.n_dofs(prepared))?;
     let preconditioner = Preconditioner {
         inner: Variant::Additive(schwarz),
         build_duration: build_started.elapsed(),

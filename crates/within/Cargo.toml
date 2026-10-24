@@ -11,8 +11,7 @@ keywords = ["fixed-effects", "least-squares", "preconditioner", "schwarz", "econ
 categories.workspace = true
 
 [features]
-schur-prototype = []
-pair-schur-prototype = ["schur-prototype"]
+pair-schur-prototype = []
 
 [dependencies]
 schwarz-precond = { workspace = true, features = ["serde"] }

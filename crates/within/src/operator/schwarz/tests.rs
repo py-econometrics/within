@@ -7,7 +7,7 @@ use crate::config::{
     ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, SchurMode,
     DEFAULT_DENSE_SCHUR_THRESHOLD,
 };
-use crate::domain::{build_local_domains, Design, LocalDomain, PreparedDesign};
+use crate::domain::{build_local_domains, Design, FullPairs, LocalDomain, PreparedDesign};
 use crate::operator::schwarz::{build_additive, SchwarzConfig};
 use crate::Effect;
 use schwarz_precond::{LocalSolver, Operator, ReductionStrategy};
@@ -17,8 +17,8 @@ const BLOCK_ELIM_NESTED_RAYON_CHILD_ENV: &str = "WITHIN_TEST_BLOCK_ELIM_NESTED_R
 fn make_test_data() -> (PreparedDesign<'static>, Vec<LocalDomain>) {
     let design =
         PreparedDesign::from_levels_for_test(vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]]);
-    let (domain_pairs, _) =
-        build_local_domains(&design, &LocalSolverConfig::default()).expect("plain domains build");
+    let (domain_pairs, _) = build_local_domains(&design, &LocalSolverConfig::default(), &FullPairs)
+        .expect("plain domains build");
     (design, domain_pairs)
 }
 
@@ -53,7 +53,11 @@ fn nested_domains(
     n_subdomains: usize,
 ) -> Vec<LocalDomain> {
     (0..n_subdomains)
-        .flat_map(|_| build_local_domains(prepared, config).expect("domains").0)
+        .flat_map(|_| {
+            build_local_domains(prepared, config, &FullPairs)
+                .expect("domains")
+                .0
+        })
         .collect()
 }
 
@@ -188,7 +192,7 @@ fn small_subdomain_solve(schur: SchurMode, dense_threshold: usize) -> Vec<f64> {
         ..Default::default()
     };
     let (domains, _) =
-        build_local_domains(&synthetic_sparse_design(8, 4), &config).expect("domains");
+        build_local_domains(&synthetic_sparse_design(8, 4), &config, &FullPairs).expect("domains");
     let [LocalDomain { solver, .. }] = &domains[..] else {
         panic!("one block expected, got {}", domains.len())
     };

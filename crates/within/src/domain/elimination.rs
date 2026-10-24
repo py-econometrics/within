@@ -3,7 +3,11 @@ use std::sync::Arc;
 
 use rayon::prelude::*;
 
+use approx_chol::Side;
+
+use super::factor_pairs::{PairMatrix, PairSubdomains};
 use super::{row_weight, PreparedDesign};
+use crate::channel::ChannelPair;
 use crate::linalg::{dot, GramBasisWorkspace};
 
 /// Where grouped row `p` came from: itself when the levels were already sorted.
@@ -188,11 +192,6 @@ impl<'a> Elimination<'a> {
         self.prepared
     }
 
-    #[cfg(feature = "pair-schur-prototype")]
-    pub(crate) fn term(&self) -> usize {
-        self.term
-    }
-
     /// The eliminated coefficients' slots in the full coefficient vector.
     pub(crate) fn removed(&self) -> Range<usize> {
         self.removed.clone()
@@ -257,6 +256,7 @@ impl<'a> Elimination<'a> {
         full[self.removed.end..].copy_from_slice(&reduced[start..]);
     }
 
+    #[cfg(test)]
     pub(crate) fn restrict(&self, full: &[f64], reduced: &mut [f64]) {
         let start = self.removed.start;
         reduced[..start].copy_from_slice(&full[..start]);
@@ -300,6 +300,52 @@ impl<'a> Elimination<'a> {
                 .sum();
             values[i] -= self.scale(i) * fit;
         }
+    }
+}
+
+/// Which factor pairs the reduced subdomains keep.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Pairs {
+    /// Every pair: Schur complements plus the retained pairs' Grams, partition-weighted.
+    All,
+    /// Only the pairs split by the eliminated factor: block Jacobi on `S`.
+    SchurOnly,
+}
+
+/// Subdomains over the kept coefficients: the eliminated term's pairs factor their complement.
+pub(crate) struct ReducedPairs<'e> {
+    pub(crate) elimination: &'e Elimination<'e>,
+    pub(crate) pairs: Pairs,
+}
+
+impl PairSubdomains for ReducedPairs<'_> {
+    fn matrix(&self, pair: ChannelPair) -> Option<PairMatrix> {
+        let term = self.elimination.term;
+        match (pair.rows.term == term, pair.cols.term == term) {
+            (true, _) => Some(PairMatrix::Complement(Side::Right)),
+            (_, true) => Some(PairMatrix::Complement(Side::Left)),
+            _ if self.pairs == Pairs::SchurOnly => None,
+            _ => Some(PairMatrix::Gram),
+        }
+    }
+
+    fn dof(&self, dof: usize) -> usize {
+        let removed = &self.elimination.removed;
+        debug_assert!(!removed.contains(&dof), "a kept coefficient");
+        if dof >= removed.end {
+            dof - removed.len()
+        } else {
+            dof
+        }
+    }
+
+    fn n_dofs(&self, _: &PreparedDesign<'_>) -> usize {
+        self.elimination.n_kept()
+    }
+
+    /// Unlike the full design's, slope overlaps do not slow the reduced solve under `1/√c`.
+    fn partition_weighted(&self, _: &PreparedDesign<'_>) -> bool {
+        true
     }
 }
 

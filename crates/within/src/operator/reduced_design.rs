@@ -193,7 +193,6 @@ impl KeptRows {
     }
 
     /// Each `(column, loading)` of row `p`.
-    #[cfg(any(test, feature = "pair-schur-prototype"))]
     #[inline(always)]
     fn for_each_entry(&self, p: usize, mut f: impl FnMut(u32, f64)) {
         let columns = self.columns::<0>(p);
@@ -260,7 +259,6 @@ impl ReducedDesign {
         }
     }
 
-    #[cfg(any(test, feature = "pair-schur-prototype"))]
     pub(crate) fn gram_diagonal(&self) -> Vec<f64> {
         match self {
             Self::Means(d) => d.gram_diagonal(),
@@ -344,7 +342,6 @@ impl<P: LevelProjection> SegmentedDesign<P> {
     }
 
     /// `diag(S)`: each kept column's squared norm less its projection onto the eliminated factor.
-    #[cfg(any(test, feature = "pair-schur-prototype"))]
     fn gram_diagonal(&self) -> Vec<f64> {
         let zeros = || (vec![0.0; self.n_kept], vec![0.0; self.n_kept]);
         let (mut diagonal, norms) = self
@@ -371,7 +368,6 @@ impl<P: LevelProjection> SegmentedDesign<P> {
         diagonal
     }
 
-    #[cfg(any(test, feature = "pair-schur-prototype"))]
     fn diagonal(
         &self,
         levels: Range<usize>,

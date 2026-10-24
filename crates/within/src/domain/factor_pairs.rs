@@ -8,6 +8,7 @@
 //! Entry point: [`build_local_domains`].
 
 use approx_chol::input::{BipartiteFactorWidth2, FactorWidth1, ViewError};
+#[cfg(feature = "pair-schur-prototype")]
 use approx_chol::Side;
 use approx_chol::{BlockFactor, ReduceError};
 use schwarz_precond::{PartitionWeights, SubdomainCore};
@@ -28,20 +29,63 @@ pub(crate) struct LocalDomain {
     pub(crate) solver: BlockSolver,
 }
 
+/// How channel pairs become subdomains: which matrix each pair factors, over which coefficients.
+pub(crate) trait PairSubdomains: Sync {
+    /// `None` drops the pair.
+    fn matrix(&self, pair: ChannelPair) -> Option<PairMatrix>;
+    /// A design coefficient's index among the coefficients the subdomains act on.
+    fn dof(&self, dof: usize) -> usize;
+    fn n_dofs(&self, prepared: &PreparedDesign<'_>) -> usize;
+    fn partition_weighted(&self, prepared: &PreparedDesign<'_>) -> bool;
+}
+
+/// Every pair's Gram over every coefficient.
+pub(crate) struct FullPairs;
+
+impl PairSubdomains for FullPairs {
+    fn matrix(&self, _: ChannelPair) -> Option<PairMatrix> {
+        Some(PairMatrix::Gram)
+    }
+
+    fn dof(&self, dof: usize) -> usize {
+        dof
+    }
+
+    fn n_dofs(&self, prepared: &PreparedDesign<'_>) -> usize {
+        prepared.design.n_dofs
+    }
+
+    /// A slope channel breaks `1/√c`'s equal-informativeness assumption (#94), so stay uniform.
+    fn partition_weighted(&self, prepared: &PreparedDesign<'_>) -> bool {
+        let design = &prepared.design;
+        (0..design.n_factors())
+            .flat_map(|term| design.channels(term))
+            .all(|c| design.column(c) == Column::Intercept)
+    }
+}
+
 /// Same-factor channel pairs are exactly orthogonal after whitening, so never enumerated.
 pub(crate) fn build_local_domains(
     prepared: &PreparedDesign<'_>,
     config: &LocalSolverConfig,
+    subdomains: &impl PairSubdomains,
 ) -> Result<(Vec<LocalDomain>, Vec<BuildWarning>), BuildError> {
     use rayon::prelude::*;
 
-    let design = &prepared.design;
     let approx_chol = config.to_approx_chol()?;
-
-    let (channels, pairs) = channel_pairs(prepared);
-    let per_pair: Vec<(Vec<LocalDomain>, Vec<BuildWarning>)> = pairs
+    let per_pair: Vec<(Vec<LocalDomain>, Vec<BuildWarning>)> = channel_pairs(prepared)
         .par_iter()
-        .map(|&pair| pair_domains(prepared, pair, approx_chol, config, PairMatrix::Gram))
+        .filter_map(|&pair| {
+            let matrix = subdomains.matrix(pair)?;
+            Some(pair_domains(
+                prepared,
+                pair,
+                approx_chol,
+                config,
+                matrix,
+                subdomains,
+            ))
+        })
         .collect::<Result<_, BuildError>>()?;
     let mut domain_pairs = Vec::new();
     let mut warnings = Vec::new();
@@ -50,24 +94,20 @@ pub(crate) fn build_local_domains(
         warnings.extend(pair_warnings);
     }
 
-    // A slope channel breaks `1/√c`'s equal-informativeness assumption (#94), so stay uniform.
-    if !channels
-        .iter()
-        .any(|&c| design.column(c) != Column::Intercept)
-    {
-        compute_partition_weights(&mut domain_pairs, design.n_dofs);
+    if subdomains.partition_weighted(prepared) {
+        compute_partition_weights(&mut domain_pairs, subdomains.n_dofs(prepared));
     }
 
     Ok((domain_pairs, warnings))
 }
 
-/// Every channel, and every pair of channels on different terms.
-pub(crate) fn channel_pairs(prepared: &PreparedDesign<'_>) -> (Vec<Channel>, Vec<ChannelPair>) {
+/// Every pair of channels on different terms.
+fn channel_pairs(prepared: &PreparedDesign<'_>) -> Vec<ChannelPair> {
     let design = &prepared.design;
     let channels: Vec<Channel> = (0..design.n_factors())
         .flat_map(|term| design.channels(term))
         .collect();
-    let pairs = channels
+    channels
         .iter()
         .enumerate()
         .flat_map(|(i, &rows)| {
@@ -76,8 +116,7 @@ pub(crate) fn channel_pairs(prepared: &PreparedDesign<'_>) -> (Vec<Channel>, Vec
                 .filter(move |cols| cols.term != rows.term)
                 .map(move |&cols| ChannelPair { rows, cols })
         })
-        .collect();
-    (channels, pairs)
+        .collect()
 }
 
 /// What a pair's subdomains factor: its Gram, or the Gram's Schur complement onto one side.
@@ -85,6 +124,7 @@ pub(crate) fn channel_pairs(prepared: &PreparedDesign<'_>) -> (Vec<Channel>, Vec
 pub(crate) enum PairMatrix {
     Gram,
     /// `rows` is the left side, `cols` the right.
+    #[cfg(feature = "pair-schur-prototype")]
     Complement(Side),
 }
 
@@ -98,12 +138,13 @@ fn side<'p>(term: &PreparedTerm<'p>, column: usize) -> Result<FactorWidth1<'p, f
 }
 
 /// Dead levels (zero diagonal, an exact-zero design column) are in no block, so no subdomain.
-pub(crate) fn pair_domains(
+fn pair_domains(
     prepared: &PreparedDesign<'_>,
     pair: ChannelPair,
     approx_chol: ApproxChol,
     config: &LocalSolverConfig,
     matrix: PairMatrix,
+    subdomains: &impl PairSubdomains,
 ) -> Result<(Vec<LocalDomain>, Vec<BuildWarning>), BuildError> {
     let (rows, cols) = (prepared.term(pair.rows.term), prepared.term(pair.cols.term));
     let gram = (|| {
@@ -123,6 +164,7 @@ pub(crate) fn pair_domains(
     } = approx_chol;
     let factor = match matrix {
         PairMatrix::Gram => approx_chol::factorize_with(gram, ac, scaling),
+        #[cfg(feature = "pair-schur-prototype")]
         PairMatrix::Complement(kept) => approx_chol::factorize_complement(gram, kept, ac, scaling),
     }
     .map_err(|e| match e {
@@ -156,10 +198,12 @@ pub(crate) fn pair_domains(
         let dof = match matrix {
             PairMatrix::Gram if v < n_rows => row_base + v,
             PairMatrix::Gram => col_base + v - n_rows,
+            #[cfg(feature = "pair-schur-prototype")]
             PairMatrix::Complement(Side::Left) => row_base + v,
+            #[cfg(feature = "pair-schur-prototype")]
             PairMatrix::Complement(Side::Right) => col_base + v,
         };
-        u32::try_from(dof).expect("design rejects DOF spaces past u32")
+        u32::try_from(subdomains.dof(dof)).expect("design rejects DOF spaces past u32")
     };
     // Isolated levels have a diagonal Gram, so batching changes no local solve, only overhead.
     let (isolated, coupled): (Vec<BlockFactor>, Vec<BlockFactor>) = (factor.into_blocks())
@@ -185,7 +229,7 @@ pub(crate) fn pair_domains(
 }
 
 /// Two-sided Schwarz needs `Σ Rᵢᵀ D̃ᵢ² Rᵢ = I`, so a DOF in `c` subdomains gets `1/√c`.
-pub(crate) fn compute_partition_weights(domain_pairs: &mut [LocalDomain], n_dofs: usize) {
+fn compute_partition_weights(domain_pairs: &mut [LocalDomain], n_dofs: usize) {
     use rayon::prelude::*;
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -243,8 +287,8 @@ mod tests {
     #[test]
     fn test_full_cover_domain_count() {
         let dm = make_test_design();
-        let (domain_pairs, _) =
-            build_local_domains(&dm, &LocalSolverConfig::default()).expect("plain domains build");
+        let (domain_pairs, _) = build_local_domains(&dm, &LocalSolverConfig::default(), &FullPairs)
+            .expect("plain domains build");
         // 3 factor pairs; each pair may produce multiple components
         assert!(domain_pairs.len() >= 3);
     }
@@ -252,8 +296,8 @@ mod tests {
     #[test]
     fn test_partition_of_unity() {
         let dm = make_test_design();
-        let (domain_pairs, _) =
-            build_local_domains(&dm, &LocalSolverConfig::default()).expect("plain domains build");
+        let (domain_pairs, _) = build_local_domains(&dm, &LocalSolverConfig::default(), &FullPairs)
+            .expect("plain domains build");
         let n_dofs = dm.design.n_dofs;
         // Two-sided PoU: squared weights must sum to 1 at every DOF.
         let mut weight_sq_sum = vec![0.0; n_dofs];
@@ -285,8 +329,9 @@ mod tests {
         .expect("valid slope design");
         let design = PreparedDesign::unweighted_for_test(design);
 
-        let (domain_pairs, _) = build_local_domains(&design, &LocalSolverConfig::default())
-            .expect("slope domains build");
+        let (domain_pairs, _) =
+            build_local_domains(&design, &LocalSolverConfig::default(), &FullPairs)
+                .expect("slope domains build");
 
         for ld in &domain_pairs {
             for i in 0..ld.core.global_indices().len() {
@@ -324,7 +369,8 @@ mod tests {
         .expect("valid design");
         let prepared = PreparedDesign::unweighted_for_test(design);
         let (domains, _) =
-            build_local_domains(&prepared, &LocalSolverConfig::default()).expect("domains");
+            build_local_domains(&prepared, &LocalSolverConfig::default(), &FullPairs)
+                .expect("domains");
         let mut cores: Vec<Vec<u32>> = domains
             .iter()
             .map(|d| d.core.global_indices().to_vec())
@@ -338,8 +384,8 @@ mod tests {
     #[test]
     fn test_domains_cover_all_dofs() {
         let dm = make_test_design();
-        let (domain_pairs, _) =
-            build_local_domains(&dm, &LocalSolverConfig::default()).expect("plain domains build");
+        let (domain_pairs, _) = build_local_domains(&dm, &LocalSolverConfig::default(), &FullPairs)
+            .expect("plain domains build");
         let mut covered = vec![false; dm.design.n_dofs];
         for ld in &domain_pairs {
             for &idx in ld.core.global_indices() {

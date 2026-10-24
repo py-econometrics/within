@@ -2,7 +2,7 @@
 //! Schwarz preconditioner construction in [`schwarz`].
 
 pub(crate) mod design;
-#[cfg(feature = "schur-prototype")]
+#[cfg(feature = "pair-schur-prototype")]
 pub(crate) mod reduced_design;
 pub(crate) mod schwarz;
 

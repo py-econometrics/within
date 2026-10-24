@@ -5,7 +5,7 @@ use rstest::rstest;
 use super::{CoefficientAddress, CoefficientLayout};
 use crate::channel::Channel;
 use crate::config::{LocalSolverConfig, LsmrOptions, DEFAULT_DENSE_SCHUR_THRESHOLD};
-use crate::domain::{build_local_domains, Design, PreparedDesign};
+use crate::domain::{build_local_domains, Design, FullPairs, PreparedDesign};
 use crate::{Effect, PreconditionerConfig, Solver};
 
 /// DGP kept in lockstep with `surplus_component_sampled_matches_exact_reduction`
@@ -38,7 +38,7 @@ fn positive_slope_only_pair_grounds_beyond_dense_threshold() {
     ];
     let prepared = PreparedDesign::unweighted_for_test(Design::new(effects).expect("design"));
     let (domains, warnings) =
-        build_local_domains(&prepared, &LocalSolverConfig::default()).expect("domains");
+        build_local_domains(&prepared, &LocalSolverConfig::default(), &FullPairs).expect("domains");
     assert!(
         domains
             .iter()
