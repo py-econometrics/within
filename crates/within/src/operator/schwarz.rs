@@ -12,6 +12,10 @@ use crate::config::{LocalSolverConfig, PreconditionerConfig, ReductionStrategy, 
 use crate::domain::{LocalDomain, PreparedDesign};
 use crate::{BuildError, BuildWarning};
 
+#[cfg(feature = "pair-schur-prototype")]
+pub(crate) mod pair_schur;
+#[cfg(feature = "schur-prototype")]
+pub(crate) mod restricted;
 #[cfg(test)]
 mod tests;
 
@@ -58,7 +62,7 @@ impl Operator for FeSchwarz {
 
 /// Diagonal/Jacobi preconditioner for the fixed-effects Gramian.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct DiagonalPreconditioner {
+pub(crate) struct DiagonalPreconditioner {
     inv_diag: Arc<[f64]>,
 }
 
@@ -234,7 +238,7 @@ impl Operator for Preconditioner {
 /// Build the diagonal/Jacobi map.
 pub(crate) fn build_diagonal(prepared: &PreparedDesign<'_>) -> Result<Preconditioner, BuildError> {
     let build_started = Instant::now();
-    let diagonal = diagonal_map(prepared)?;
+    let diagonal = DiagonalPreconditioner::from_gram_diagonal(prepared.gram_diagonal())?;
     Ok(Preconditioner {
         inner: Variant::Diagonal(diagonal),
         build_duration: build_started.elapsed(),
@@ -248,7 +252,7 @@ pub(crate) fn build_adaptive(
     escalated: SchwarzConfig,
 ) -> Result<Preconditioner, BuildError> {
     let build_started = Instant::now();
-    let base = diagonal_map(prepared)?;
+    let base = DiagonalPreconditioner::from_gram_diagonal(prepared.gram_diagonal())?;
     Ok(Preconditioner {
         inner: Variant::Adaptive(AdaptiveLadder {
             base,
@@ -259,24 +263,24 @@ pub(crate) fn build_adaptive(
     })
 }
 
-fn diagonal_map(prepared: &PreparedDesign<'_>) -> Result<DiagonalPreconditioner, BuildError> {
-    let mut diag = prepared.gram_diagonal();
+impl DiagonalPreconditioner {
+    pub(crate) fn from_gram_diagonal(mut diag: Vec<f64>) -> Result<Self, BuildError> {
+        // A zero diagonal is an unidentified DOF, so the pseudo-inverse keeps it in the null space.
+        for (index, d) in diag.iter_mut().enumerate() {
+            if *d == 0.0 {
+                continue;
+            }
+            let inv = 1.0 / *d;
+            if !inv.is_finite() {
+                return Err(BuildError::SingularDiagonal { index });
+            }
+            *d = inv;
+        }
 
-    // A zero diagonal is an unidentified DOF, so the pseudo-inverse keeps it in the null space.
-    for (index, d) in diag.iter_mut().enumerate() {
-        if *d == 0.0 {
-            continue;
-        }
-        let inv = 1.0 / *d;
-        if !inv.is_finite() {
-            return Err(BuildError::SingularDiagonal { index });
-        }
-        *d = inv;
+        Ok(DiagonalPreconditioner {
+            inv_diag: Arc::from(diag),
+        })
     }
-
-    Ok(DiagonalPreconditioner {
-        inv_diag: Arc::from(diag),
-    })
 }
 
 /// Build the additive Schwarz map plus its warnings; `None` when the design has no factor-pair

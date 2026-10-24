@@ -53,5 +53,3 @@ pub use solver::{
     solve, solve_batch, BatchSolveResult, CoefficientLayout, IntoDesign, PreconditionerInput,
     SolveResult, Solver,
 };
-#[cfg(feature = "asca-prototype")]
-pub use solver::{AscaConfig, AscaPrototype};

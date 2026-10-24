@@ -76,7 +76,6 @@ fn compare(label: &str, design: &within::Design<'_>, y: &[f64]) {
         .pair_schur_block_jacobi(&config, Default::default())
         .unwrap();
     let jacobi_build = start.elapsed().as_secs_f64();
-    let (operator, jacobi_operator) = (reduced.assemble().unwrap(), jacobi.assemble().unwrap());
     let reference = full
         .solve(
             y,
@@ -89,21 +88,12 @@ fn compare(label: &str, design: &within::Design<'_>, y: &[f64]) {
         .unwrap();
     let scale = y.iter().map(|v| v * v).sum::<f64>().sqrt();
     println!("{label} schur={:?} reference_converged={} full_dofs={} reduced_dofs={} schur_domains={} retained_domains={}",config.schur,reference.converged,full.n_dofs(),reduced.n_reduced(),reduced.schur_domains().unwrap(),reduced.retained_domains().unwrap());
-    println!("full_build={full_build:.6}s reduced_build={reduced_build:.6}s operator={operator:.6}s reduced_preconditioner={:.6}s",reduced.preconditioner_seconds().unwrap());
-    // Reduced mlsmr never reads the assembled `S`, so its build excludes that assembly.
+    println!("full_build={full_build:.6}s reduced_build={reduced_build:.6}s reduced_preconditioner={:.6}s",reduced.preconditioner_seconds().unwrap());
     let methods = [
         ("full_mlsmr_full_schwarz", full_build),
         ("reduced_mlsmr_restricted_full", full_build),
         ("reduced_mlsmr_pair_schur", reduced_build),
-        (
-            "reduced_pcg_assembled_s_pair_schur",
-            reduced_build + operator,
-        ),
         ("reduced_mlsmr_block_jacobi", jacobi_build),
-        (
-            "reduced_pcg_assembled_s_block_jacobi",
-            jacobi_build + jacobi_operator,
-        ),
     ];
     let mut times = vec![Vec::new(); methods.len()];
     for repeat in 0..7 {
@@ -117,9 +107,7 @@ fn compare(label: &str, design: &within::Design<'_>, y: &[f64]) {
                 0 => full.solve(y, &options),
                 1 => full.solve_schur_prototype(y, &options),
                 2 => reduced.solve_lsmr(y, &options),
-                3 => reduced.solve(y, &options),
-                4 => jacobi.solve_lsmr(y, &options),
-                _ => jacobi.solve(y, &options),
+                _ => jacobi.solve_lsmr(y, &options),
             }
             .unwrap();
             let elapsed = start.elapsed().as_secs_f64();

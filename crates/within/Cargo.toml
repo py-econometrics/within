@@ -13,7 +13,6 @@ categories.workspace = true
 [features]
 schur-prototype = []
 pair-schur-prototype = ["schur-prototype"]
-asca-prototype = ["schur-prototype", "dep:faer", "dep:rand"]
 
 [dependencies]
 schwarz-precond = { workspace = true, features = ["serde"] }
@@ -26,8 +25,6 @@ portable-atomic = { version = "1", features = ["float"] }
 rayon.workspace = true
 thiserror.workspace = true
 rustc-hash = "2"
-faer = { workspace = true, optional = true }
-rand = { version = "0.10", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.7", features = ["html_reports"] }

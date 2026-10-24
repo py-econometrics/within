@@ -1,6 +1,8 @@
 //! Domain layer: [`Design`] (design-matrix metadata) and factor-pair [`Subdomain`] construction.
 
 mod effect;
+#[cfg(feature = "schur-prototype")]
+pub(crate) mod elimination;
 pub(crate) mod factor_pairs;
 mod level_moments;
 mod prepared;

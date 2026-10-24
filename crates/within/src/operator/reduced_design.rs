@@ -4,11 +4,68 @@ use std::sync::Arc;
 use rayon::prelude::*;
 use schwarz_precond::Operator;
 
-use super::{Elimination, LevelGroups};
+use crate::domain::elimination::{Elimination, LevelGroups, RowOrder};
 use crate::SolveError;
 
+#[cfg(test)]
+mod tests;
+
+/// Rows per parallel task, cut at an eliminated level's end so no level spans two tasks.
+const ROWS_PER_TASK: usize = 16_384;
+
+/// Eliminated levels per parallel task.
+struct LevelTasks(Vec<Range<usize>>);
+
+impl LevelTasks {
+    fn build(starts: &[usize]) -> Self {
+        let n_levels = starts.len() - 1;
+        let mut tasks = Vec::new();
+        let mut first = 0;
+        for l in 0..n_levels {
+            if starts[l + 1] - starts[first] >= ROWS_PER_TASK {
+                tasks.push(first..l + 1);
+                first = l + 1;
+            }
+        }
+        if first < n_levels {
+            tasks.push(first..n_levels);
+        }
+        Self(tasks)
+    }
+
+    /// Each task's levels with its rows of `y`, grouped rows of level `l` starting at `starts[l]`.
+    fn for_each_mut(
+        &self,
+        starts: &[usize],
+        y: &mut [f64],
+        visit: impl Fn(Range<usize>, &mut [f64]) + Send + Sync,
+    ) {
+        if self.0.is_empty() {
+            return;
+        }
+        rayon::iter::split((&self.0[..], y), |(tasks, y)| {
+            if tasks.len() < 2 {
+                return ((tasks, y), None);
+            }
+            let (left, right) = tasks.split_at(tasks.len() / 2);
+            let split = starts[right[0].start] - starts[left[0].start];
+            let (a, b) = y.split_at_mut(split);
+            ((left, a), Some((right, b)))
+        })
+        .for_each(|(tasks, y)| visit(tasks[0].start..tasks[tasks.len() - 1].end, y));
+    }
+
+    fn batches(&self) -> impl IndexedParallelIterator<Item = Range<usize>> + '_ {
+        // Bound coefficient-sized accumulators by the pool size, independent of row count.
+        let chunk = self.0.len().div_ceil(rayon::current_num_threads()).max(1);
+        self.0
+            .par_chunks(chunk)
+            .map(|tasks| tasks[0].start..tasks[tasks.len() - 1].end)
+    }
+}
+
 /// `P_e` one eliminated level at a time: moments `Σ_p a_p v_p` in, the fit `a_pᵀ G_l⁻ Σ a v` out.
-pub(super) trait LevelProjection: Send + Sync {
+pub(crate) trait LevelProjection: Send + Sync {
     type Fit;
     fn fit(&self) -> Self::Fit;
     fn accumulate(&self, p: usize, v: f64, fit: &mut Self::Fit);
@@ -18,22 +75,22 @@ pub(super) trait LevelProjection: Send + Sync {
 }
 
 /// An intercept-only eliminated term: `P_e` subtracts weighted level means.
-pub(super) struct LevelMeans {
-    inverse: Vec<f64>,
+pub(crate) struct LevelMeans {
+    inverse: Arc<Vec<f64>>,
 }
 
 /// An eliminated term with slopes: `P_e` subtracts each level's weighted least-squares fit.
-pub(super) struct LevelFits {
+pub(crate) struct LevelFits {
     width: usize,
     intercept: bool,
     /// Per level, the generalized inverse of its `width × width` Gram block, row-major.
-    inverse: Vec<f64>,
+    inverse: Arc<Vec<f64>>,
     /// Each grouped row's slope loadings, row-major; an intercept's `1` is implicit.
     slopes: Vec<f64>,
 }
 
 /// One level's moments and coefficients.
-pub(super) struct BlockFit {
+pub(crate) struct BlockFit {
     sums: Vec<f64>,
     coefficients: Vec<f64>,
 }
@@ -116,10 +173,16 @@ struct KeptRows {
 }
 
 impl KeptRows {
+    #[inline(always)]
+    fn columns<const WIDTH: usize>(&self, p: usize) -> &[u32] {
+        let width = if WIDTH == 0 { self.n_channels } else { WIDTH };
+        &self.columns[p * width..][..width]
+    }
+
     /// `D_kept x` at grouped row `p`.
     #[inline(always)]
-    fn row(&self, p: usize, x: &[f64]) -> f64 {
-        let columns = &self.columns[p * self.n_channels..][..self.n_channels];
+    fn row<const WIDTH: usize>(&self, p: usize, x: &[f64]) -> f64 {
+        let columns = self.columns::<WIDTH>(p);
         if self.values.is_empty() {
             return columns.iter().map(|&c| x[c as usize]).sum();
         }
@@ -130,9 +193,10 @@ impl KeptRows {
     }
 
     /// Each `(column, loading)` of row `p`.
+    #[cfg(any(test, feature = "pair-schur-prototype"))]
     #[inline(always)]
     fn for_each_entry(&self, p: usize, mut f: impl FnMut(u32, f64)) {
-        let columns = &self.columns[p * self.n_channels..][..self.n_channels];
+        let columns = self.columns::<0>(p);
         let (intercepts, slopes) = columns.split_at(self.n_intercepts);
         intercepts.iter().for_each(|&c| f(c, 1.0));
         let values = &self.values[p * slopes.len()..][..slopes.len()];
@@ -142,7 +206,7 @@ impl KeptRows {
     /// `acc += v D_kept[p, :]`.
     #[inline(always)]
     fn add_row(&self, p: usize, v: f64, acc: &mut [f64]) {
-        let columns = &self.columns[p * self.n_channels..][..self.n_channels];
+        let columns = self.columns::<0>(p);
         if self.values.is_empty() {
             return columns.iter().for_each(|&c| acc[c as usize] += v);
         }
@@ -154,8 +218,9 @@ impl KeptRows {
 }
 
 /// `(I − P_e) W^{1/2} D_kept` with rows grouped by eliminated level, so each product is one fused sweep.
-pub(super) struct SegmentedDesign<P> {
+pub(crate) struct SegmentedDesign<P> {
     groups: Arc<LevelGroups>,
+    tasks: LevelTasks,
     projection: P,
     kept: KeptRows,
     n_kept: usize,
@@ -163,23 +228,23 @@ pub(super) struct SegmentedDesign<P> {
 }
 
 /// The reduced design, its per-level projection fixed by the eliminated term's columns.
-pub(super) enum ReducedDesign {
+pub(crate) enum ReducedDesign {
     Means(SegmentedDesign<LevelMeans>),
     Fits(SegmentedDesign<LevelFits>),
 }
 
 impl ReducedDesign {
-    pub(super) fn build(e: &Elimination<'_>) -> Self {
-        let groups = e.groups.clone();
+    pub(crate) fn build(e: &Elimination<'_>) -> Self {
+        let groups = e.groups().clone();
         let loadings = e.eliminated_loadings();
         let slopes: Vec<&[f64]> = loadings.iter().flatten().copied().collect();
-        let inverse = e.inverse.clone();
+        let inverse = e.inverse().clone();
         match slopes.is_empty() {
             true => Self::Means(SegmentedDesign::build(e, groups, |_| LevelMeans {
                 inverse,
             })),
             false => Self::Fits(SegmentedDesign::build(e, groups, |groups| LevelFits {
-                width: e.width,
+                width: e.width(),
                 intercept: loadings[0].is_none(),
                 inverse,
                 slopes: groups.gather(&slopes),
@@ -188,14 +253,15 @@ impl ReducedDesign {
     }
 
     /// `b` in grouped row order, projected off the eliminated factor.
-    pub(super) fn projected_rhs(&self, b: &[f64]) -> Vec<f64> {
+    pub(crate) fn projected_rhs(&self, b: &[f64]) -> Vec<f64> {
         match self {
             Self::Means(d) => d.projected_rhs(b),
             Self::Fits(d) => d.projected_rhs(b),
         }
     }
 
-    pub(super) fn gram_diagonal(&self) -> Vec<f64> {
+    #[cfg(any(test, feature = "pair-schur-prototype"))]
+    pub(crate) fn gram_diagonal(&self) -> Vec<f64> {
         match self {
             Self::Means(d) => d.gram_diagonal(),
             Self::Fits(d) => d.gram_diagonal(),
@@ -209,6 +275,14 @@ impl ReducedDesign {
             Self::Fits(d) => &d.groups,
         }
     }
+
+    #[cfg(test)]
+    fn n_tasks(&self) -> usize {
+        match self {
+            Self::Means(d) => d.tasks.0.len(),
+            Self::Fits(d) => d.tasks.0.len(),
+        }
+    }
 }
 
 impl<P: LevelProjection> SegmentedDesign<P> {
@@ -220,17 +294,24 @@ impl<P: LevelProjection> SegmentedDesign<P> {
         let (intercepts, slopes): (Vec<_>, Vec<_>) =
             (e.kept_channels().into_iter()).partition(|channel| channel.loading.is_none());
         let kept: Vec<_> = intercepts.iter().chain(&slopes).collect();
-        let columns = (groups.order.par_iter())
-            .flat_map_iter(|&i| {
-                (kept.iter()).map(move |channel| channel.start as u32 + channel.levels[i as usize])
-            })
-            .collect();
+        let mut columns = vec![0; groups.order.len() * kept.len()];
+        if !kept.is_empty() {
+            columns
+                .par_chunks_mut(kept.len())
+                .zip(groups.order.par_iter())
+                .for_each(|(row, i)| {
+                    row.iter_mut().zip(&kept).for_each(|(c, channel)| {
+                        *c = channel.start as u32 + channel.levels[i as usize];
+                    });
+                });
+        }
         let loadings: Vec<&[f64]> = slopes.iter().filter_map(|c| c.loading).collect();
         let values = groups.gather(&loadings);
-        let sqrt_weights = (e.prepared.sqrt_weights())
-            .map(|sw| groups.order.par_iter().map(|&i| sw[i as usize]).collect());
+        let sqrt_weights = (e.prepared().sqrt_weights())
+            .map(|sw| groups.order.par_iter().map(|i| sw[i as usize]).collect());
         Self {
             projection: projection(&groups),
+            tasks: LevelTasks::build(&groups.starts),
             groups,
             kept: KeptRows {
                 columns,
@@ -244,55 +325,53 @@ impl<P: LevelProjection> SegmentedDesign<P> {
     }
 
     fn projected_rhs(&self, b: &[f64]) -> Vec<f64> {
-        let mut grouped: Vec<f64> = (self.groups.order.par_iter())
-            .map(|&i| b[i as usize])
-            .collect();
-        let pieces = self.groups.split(&mut grouped);
-        pieces
-            .into_par_iter()
-            .for_each(|(levels, y)| match &self.sqrt_weights {
-                Some(sw) => self.center(levels, y, |p| sw[p]),
-                None => self.center(levels, y, |_| 1.0),
+        match &self.groups.order {
+            RowOrder::Identity(_) => self.projected_rhs_rows(|p| b[p]),
+            RowOrder::Permutation(rows) => self.projected_rhs_rows(|p| b[rows[p] as usize]),
+        }
+    }
+
+    fn projected_rhs_rows(&self, row: impl Fn(usize) -> f64 + Sync) -> Vec<f64> {
+        let mut grouped = vec![0.0; self.groups.order.len()];
+        self.tasks
+            .for_each_mut(&self.groups.starts, &mut grouped, |levels, y| {
+                match &self.sqrt_weights {
+                    Some(sw) => self.project_rows(levels, y, |p| sw[p], &row),
+                    None => self.project_rows(levels, y, |_| 1.0, &row),
+                }
             });
         grouped
     }
 
-    /// `y ← (I − P_e) y` on `levels`' rows, `y` starting at the first of them.
-    #[inline(always)]
-    fn center(&self, levels: Range<usize>, y: &mut [f64], w: impl Fn(usize) -> f64) {
-        let (starts, projection) = (&self.groups.starts, &self.projection);
-        let base = starts[levels.start];
-        let mut fit = projection.fit();
-        for l in levels {
-            let rows = starts[l]..starts[l + 1];
-            (rows.clone()).for_each(|p| projection.accumulate(p, w(p) * y[p - base], &mut fit));
-            projection.solve(l, &mut fit);
-            rows.for_each(|p| y[p - base] -= w(p) * projection.fitted(p, &fit));
-        }
-    }
-
     /// `diag(S)`: each kept column's squared norm less its projection onto the eliminated factor.
+    #[cfg(any(test, feature = "pair-schur-prototype"))]
     fn gram_diagonal(&self) -> Vec<f64> {
         let zeros = || (vec![0.0; self.n_kept], vec![0.0; self.n_kept]);
-        let (diagonal, norms) = (self.groups.tasks.par_iter())
-            .fold(zeros, |mut acc, levels| {
+        let (mut diagonal, norms) = self
+            .tasks
+            .batches()
+            .map(|levels| {
+                let mut acc = zeros();
                 match &self.sqrt_weights {
-                    Some(sw) => self.diagonal(levels.clone(), &mut acc, |p| sw[p]),
-                    None => self.diagonal(levels.clone(), &mut acc, |_| 1.0),
+                    Some(sw) => self.diagonal(levels, &mut acc, |p| sw[p]),
+                    None => self.diagonal(levels, &mut acc, |_| 1.0),
                 }
                 acc
             })
-            .reduce(zeros, |(mut d, mut n), (d2, n2)| {
+            .reduce_with(|(mut d, mut n), (d2, n2)| {
                 d.iter_mut().zip(&d2).for_each(|(a, b)| *a += b);
                 n.iter_mut().zip(&n2).for_each(|(a, b)| *a += b);
                 (d, n)
-            });
+            })
+            .unwrap_or_else(zeros);
         // A column inside the eliminated span keeps roundoff `~ε‖u‖²`, not zero.
-        (diagonal.iter().zip(&norms))
-            .map(|(&d, &n)| if d > 1e-12 * n { d } else { 0.0 })
-            .collect()
+        diagonal.iter_mut().zip(norms).for_each(|(d, n)| {
+            *d = if *d > 1e-12 * n { *d } else { 0.0 };
+        });
+        diagonal
     }
 
+    #[cfg(any(test, feature = "pair-schur-prototype"))]
     fn diagonal(
         &self,
         levels: Range<usize>,
@@ -324,14 +403,20 @@ impl<P: LevelProjection> SegmentedDesign<P> {
     }
 
     #[inline(always)]
-    fn gather(&self, x: &[f64], levels: Range<usize>, y: &mut [f64], w: impl Fn(usize) -> f64) {
+    fn project_rows(
+        &self,
+        levels: Range<usize>,
+        y: &mut [f64],
+        w: impl Fn(usize) -> f64,
+        row: impl Fn(usize) -> f64,
+    ) {
         let (starts, projection) = (&self.groups.starts, &self.projection);
         let base = starts[levels.start];
         let mut fit = projection.fit();
         for l in levels {
             let rows = starts[l]..starts[l + 1];
             for p in rows.clone() {
-                let v = w(p) * self.kept.row(p, x);
+                let v = row(p);
                 y[p - base] = v;
                 projection.accumulate(p, w(p) * v, &mut fit);
             }
@@ -365,31 +450,54 @@ impl<P: LevelProjection> Operator for SegmentedDesign<P> {
     }
 
     fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        let pieces = self.groups.split(y);
-        pieces
-            .into_par_iter()
-            .for_each(|(levels, y)| match &self.sqrt_weights {
-                Some(sw) => self.gather(x, levels, y, |p| sw[p]),
-                None => self.gather(x, levels, y, |_| 1.0),
-            });
-        Ok(())
+        match self.kept.n_channels {
+            2 => self.apply_rows::<2>(x, y),
+            _ => self.apply_rows::<0>(x, y),
+        }
     }
 
     fn apply_adjoint(&self, u: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        let zeros = || vec![0.0; self.n_kept];
-        let sum = (self.groups.tasks.par_iter())
-            .fold(zeros, |mut acc, levels| {
-                match &self.sqrt_weights {
-                    Some(sw) => self.scatter(u, levels.clone(), &mut acc, |p| sw[p]),
-                    None => self.scatter(u, levels.clone(), &mut acc, |_| 1.0),
-                }
+        let scatter = |levels: Range<usize>, acc: &mut [f64]| match &self.sqrt_weights {
+            Some(sw) => self.scatter(u, levels, acc, |p| sw[p]),
+            None => self.scatter(u, levels, acc, |_| 1.0),
+        };
+        if self.tasks.0.len() <= 1 || rayon::current_num_threads() == 1 {
+            y.fill(0.0);
+            scatter(0..self.groups.starts.len() - 1, y);
+            return Ok(());
+        }
+        let sum = self
+            .tasks
+            .batches()
+            .map(|levels| {
+                let mut acc = vec![0.0; self.n_kept];
+                scatter(levels, &mut acc);
                 acc
             })
-            .reduce(zeros, |mut a, b| {
+            .reduce_with(|mut a, b| {
                 a.iter_mut().zip(&b).for_each(|(a, b)| *a += b);
                 a
-            });
+            })
+            .expect("nonempty parallel tasks");
         y.copy_from_slice(&sum);
+        Ok(())
+    }
+}
+
+impl<P: LevelProjection> SegmentedDesign<P> {
+    fn apply_rows<const WIDTH: usize>(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+        self.tasks
+            .for_each_mut(&self.groups.starts, y, |levels, y| {
+                match &self.sqrt_weights {
+                    Some(sw) => self.project_rows(
+                        levels,
+                        y,
+                        |p| sw[p],
+                        |p| sw[p] * self.kept.row::<WIDTH>(p, x),
+                    ),
+                    None => self.project_rows(levels, y, |_| 1.0, |p| self.kept.row::<WIDTH>(p, x)),
+                }
+            });
         Ok(())
     }
 }
@@ -417,114 +525,6 @@ impl Operator for ReducedDesign {
         match self {
             Self::Means(d) => d.apply_adjoint(u, y),
             Self::Fits(d) => d.apply_adjoint(u, y),
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::super::ProjectedDesign;
-    use super::*;
-    use crate::{Design, Effect, PreconditionerConfig, Solver};
-    use ndarray::Array2;
-
-    fn weights(n: usize) -> Vec<f64> {
-        (0..n)
-            .map(|i| {
-                if i % 7 == 0 {
-                    0.0
-                } else {
-                    0.2 + (i % 3) as f64
-                }
-            })
-            .collect()
-    }
-
-    fn assert_reproduces_reference(solver: &Solver<'_>, slopes: bool) {
-        let n = solver.prepared.design.n_obs;
-        let e = Elimination::new(&solver.prepared);
-        let (reference, fast) = (ProjectedDesign::new(&e), ReducedDesign::build(&e));
-        assert_eq!(matches!(fast, ReducedDesign::Fits(_)), slopes);
-        let order = &fast.groups().order;
-        assert!(fast.groups().tasks.len() > 1);
-        let x: Vec<f64> = (0..fast.ncols()).map(|i| (i as f64).sin()).collect();
-        let u: Vec<f64> = (0..n).map(|i| (i as f64 * 0.7).cos()).collect();
-        let (mut expected, mut got) = (vec![0.0; n], vec![0.0; n]);
-        reference.apply(&x, &mut expected).unwrap();
-        fast.apply(&x, &mut got).unwrap();
-        for (p, &i) in order.iter().enumerate() {
-            assert!((got[p] - expected[i as usize]).abs() < 1e-11);
-        }
-        let grouped: Vec<f64> = order.iter().map(|&i| u[i as usize]).collect();
-        let (mut expected, mut got) = (vec![0.0; x.len()], vec![0.0; x.len()]);
-        reference.apply_adjoint(&u, &mut expected).unwrap();
-        fast.apply_adjoint(&grouped, &mut got).unwrap();
-        for (a, b) in got.iter().zip(&expected) {
-            assert!((a - b).abs() < 1e-9 * (1.0 + b.abs()));
-        }
-        let diagonal = fast.gram_diagonal();
-        let mut column = vec![0.0; n];
-        for (j, &d) in diagonal.iter().enumerate() {
-            let unit: Vec<f64> = (0..x.len()).map(|i| (i == j) as u8 as f64).collect();
-            reference.apply(&unit, &mut column).unwrap();
-            let squared: f64 = column.iter().map(|v| v * v).sum();
-            assert!(
-                (d - squared).abs() < 1e-9 * (1.0 + squared),
-                "column {j}: {d} vs {squared}"
-            );
-        }
-        let mut projected = u.clone();
-        e.project(&mut projected, &mut vec![0.0; e.removed.len()]);
-        let centered = fast.projected_rhs(&u);
-        for (p, &i) in order.iter().enumerate() {
-            assert!((centered[p] - projected[i as usize]).abs() < 1e-11);
-        }
-    }
-
-    #[test]
-    fn grouped_rows_reproduce_the_projected_design() {
-        let n = 30_000;
-        let categories = Array2::from_shape_fn((n, 3), |(i, j)| {
-            ((i * (2 * j + 1) + i / 7) % [5003, 131, 7][j]) as u32
-        });
-        let weights = weights(n);
-        for weights in [None, Some(&weights[..])] {
-            let design = Design::from_categories(categories.view()).unwrap();
-            let solver = Solver::new(design, weights, PreconditionerConfig::Diagonal).unwrap();
-            assert_reproduces_reference(&solver, false);
-        }
-    }
-
-    #[test]
-    fn grouped_rows_reproduce_the_projected_slope_design() {
-        let n = 30_000;
-        let worker: Vec<u32> = (0..n).map(|i| (i % 3001) as u32).collect();
-        let firm: Vec<u32> = (0..n).map(|i| ((i * 7 + i / 11) % 131) as u32).collect();
-        let year: Vec<u32> = (0..n).map(|i| (i / 3001 % 10) as u32).collect();
-        let z1: Vec<f64> = (0..n).map(|i| (i as f64 * 0.37).sin()).collect();
-        let z2: Vec<f64> = (0..n)
-            .map(|i| year[i] as f64 + 1e-3 * (i as f64).cos())
-            .collect();
-        let z3: Vec<f64> = (0..n).map(|i| (i as f64 * 0.11).cos() + 2.0).collect();
-        let weights = weights(n);
-        for intercept in [true, false] {
-            for weights in [None, Some(&weights[..])] {
-                let effects = vec![
-                    Effect::new(&worker, intercept, [&z1[..], &z2[..]]).unwrap(),
-                    Effect::new(&firm, true, [&z3[..]]).unwrap(),
-                    Effect::new(&year, true, []).unwrap(),
-                ];
-                let solver = Solver::new(effects, weights, PreconditionerConfig::Diagonal).unwrap();
-                assert_reproduces_reference(&solver, true);
-            }
-            // Kept slopes alone: the eliminated term is intercept-only.
-            let effects = vec![
-                Effect::new(&worker, true, []).unwrap(),
-                Effect::new(&firm, intercept, [&z3[..]]).unwrap(),
-                Effect::new(&year, true, [&z1[..]]).unwrap(),
-            ];
-            let solver = Solver::new(effects, None, PreconditionerConfig::Diagonal).unwrap();
-            assert_reproduces_reference(&solver, false);
         }
     }
 }

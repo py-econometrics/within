@@ -24,8 +24,6 @@ mod layout;
 mod schur;
 #[cfg(feature = "pair-schur-prototype")]
 pub use schur::PairSchurPrototype;
-#[cfg(feature = "asca-prototype")]
-pub use schur::{AscaConfig, AscaPrototype};
 #[cfg(test)]
 mod tests;
 

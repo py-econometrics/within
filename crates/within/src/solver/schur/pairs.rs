@@ -1,79 +1,20 @@
-use std::sync::OnceLock;
 use std::time::Instant;
 
-use approx_chol::Side;
 use once_cell::sync::OnceCell;
 use rayon::prelude::*;
 use schwarz_precond::{
-    mlsmr, EscalationPolicy, LsmrResult, LsmrStopReason, MlsmrOptions, Operator,
-    SchwarzPreconditioner, Staleness, SubdomainCore, SubdomainEntry,
+    mlsmr, EscalationPolicy, LsmrResult, LsmrStopReason, MlsmrOptions, Operator, Staleness,
 };
 
-use super::pcg::{solve_reduced, solve_with_full_preconditioner, SchurMatrix};
-use super::segmented::ReducedDesign;
-use super::Elimination;
-use crate::block_solver::BlockSolver;
-use crate::domain::factor_pairs::{
-    channel_pairs, compute_partition_weights, pair_domains, PairMatrix,
-};
-use crate::domain::LocalDomain;
+use crate::domain::elimination::Elimination;
+use crate::operator::reduced_design::ReducedDesign;
+use crate::operator::schwarz::pair_schur::{build_pair_schur, PairSchur, Pairs};
+use crate::operator::schwarz::{DiagonalPreconditioner, SchwarzConfig};
 use crate::solver::{CoefficientLayout, LsmrOptions, Pass, RhsSolution, Run, SolveResult, Solver};
 use crate::{
-    BatchSolveResult, BuildError, BuildWarning, LocalSolverConfig, Preconditioner,
-    ReductionStrategy, SolveError, WithinError,
+    BatchSolveResult, BuildError, BuildWarning, LocalSolverConfig, ReductionStrategy, SolveError,
+    WithinError,
 };
-
-/// Which factor pairs the reduced inverse keeps.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Pairs {
-    /// Every pair: Schur complements plus the retained pairs' Grams, partition-weighted.
-    All,
-    /// Only the pairs split by the eliminated factor: block Jacobi on `S`.
-    SchurOnly,
-}
-
-/// The eliminated factor's pairs factor their complement onto the other side; the rest their Gram, unless dropped.
-fn pair_matrix(
-    e: &Elimination<'_>,
-    pair: crate::channel::ChannelPair,
-    pairs: Pairs,
-) -> Option<PairMatrix> {
-    match (pair.rows.term == e.term, pair.cols.term == e.term) {
-        (true, _) => Some(PairMatrix::Complement(Side::Right)),
-        (_, true) => Some(PairMatrix::Complement(Side::Left)),
-        _ if pairs == Pairs::SchurOnly => None,
-        _ => Some(PairMatrix::Gram),
-    }
-}
-
-/// `domain` over the kept coefficients: no complement or retained Gram touches the eliminated ones.
-fn reduced(domain: LocalDomain, e: &Elimination<'_>) -> LocalDomain {
-    let shift = e.removed.len() as u32;
-    let end = e.removed.end as u32;
-    let indices = (domain.core.global_indices().iter())
-        .map(|&i| {
-            debug_assert!(!e.removed.contains(&(i as usize)), "a kept coefficient");
-            if i >= end {
-                i - shift
-            } else {
-                i
-            }
-        })
-        .collect();
-    LocalDomain {
-        core: SubdomainCore::uniform(indices),
-        solver: domain.solver,
-    }
-}
-
-/// The reduced additive inverse and what its build reported.
-struct PairInverse {
-    inverse: SchwarzPreconditioner<BlockSolver>,
-    warnings: Vec<BuildWarning>,
-    seconds: f64,
-    schur_domains: usize,
-    retained_domains: usize,
-}
 
 /// How a solve picks its preconditioner on the reduced system.
 enum Ladder {
@@ -81,42 +22,20 @@ enum Ladder {
     Fixed,
     /// `diag(S)` first; the pair inverse is built once a solve stalls on it.
     Adaptive {
-        diagonal: DiagonalInverse,
+        diagonal: DiagonalPreconditioner,
         stall: Staleness,
     },
 }
 
-/// `y = d ⊙ x`, a zero entry for a column `S` annihilates.
-struct DiagonalInverse(Vec<f64>);
-
-impl Operator for DiagonalInverse {
-    fn nrows(&self) -> usize {
-        self.0.len()
-    }
-    fn ncols(&self) -> usize {
-        self.0.len()
-    }
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        (y.par_iter_mut().zip(x).zip(&*self.0)).for_each(|((y, x), d)| *y = d * x);
-        Ok(())
-    }
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        self.apply(x, y)
-    }
-}
-
-/// Exact Schur PCG with additive local factor-pair Schur inverses.
+/// Reduced LSMR with additive local factor-pair Schur inverses.
 pub struct PairSchurPrototype<'a> {
     solver: &'a Solver<'a>,
     elimination: Elimination<'a>,
-    /// Assembled on first PCG use: reduced mlsmr never reads it.
-    matrix: OnceLock<(SchurMatrix, f64)>,
     projected: ReducedDesign,
-    config: LocalSolverConfig,
-    reduction: ReductionStrategy,
+    config: SchwarzConfig,
     pairs: Pairs,
     ladder: Ladder,
-    inverse: OnceCell<PairInverse>,
+    inverse: OnceCell<PairSchur>,
     /// Elimination, projected design and whatever preconditioner construction built.
     setup_seconds: f64,
 }
@@ -170,25 +89,19 @@ impl Solver<'_> {
         let projected = ReducedDesign::build(&elimination);
         let ladder = match stall {
             None => Ladder::Fixed,
-            Some(stall) => {
-                let mut diagonal = projected.gram_diagonal();
-                diagonal
-                    .iter_mut()
-                    .filter(|d| **d > 0.0)
-                    .for_each(|d| *d = 1.0 / *d);
-                Ladder::Adaptive {
-                    diagonal: DiagonalInverse(diagonal),
-                    stall,
-                }
-            }
+            Some(stall) => Ladder::Adaptive {
+                diagonal: DiagonalPreconditioner::from_gram_diagonal(projected.gram_diagonal())?,
+                stall,
+            },
         };
         let reduced = PairSchurPrototype {
             solver: self,
             elimination,
-            matrix: OnceLock::new(),
             projected,
-            config: config.clone(),
-            reduction,
+            config: SchwarzConfig {
+                local_solver: config.clone(),
+                reduction,
+            },
             pairs,
             ladder,
             inverse: OnceCell::new(),
@@ -205,51 +118,10 @@ impl Solver<'_> {
 }
 
 impl PairSchurPrototype<'_> {
-    fn build_inverse(&self) -> Result<PairInverse, BuildError> {
-        let start = Instant::now();
-        let e = &self.elimination;
-        let approx_chol = self.config.to_approx_chol()?;
-        let (_, all_pairs) = channel_pairs(&self.solver.prepared);
-        let per_pair = (all_pairs.par_iter())
-            .filter_map(|&pair| {
-                let matrix = pair_matrix(e, pair, self.pairs)?;
-                let built = pair_domains(
-                    &self.solver.prepared,
-                    pair,
-                    approx_chol,
-                    &self.config,
-                    matrix,
-                );
-                Some(built.map(|(domains, warnings)| (matrix, domains, warnings)))
-            })
-            .collect::<Result<Vec<_>, BuildError>>()?;
-        let (mut domains, mut warnings) = (Vec::new(), Vec::new());
-        let mut schur_domains = 0;
-        for (matrix, pair_domains, pair_warnings) in per_pair {
-            if let PairMatrix::Complement(_) = matrix {
-                schur_domains += pair_domains.len();
-            }
-            domains.extend(pair_domains.into_iter().map(|d| reduced(d, e)));
-            warnings.extend(pair_warnings);
-        }
-        let retained_domains = domains.len() - schur_domains;
-        compute_partition_weights(&mut domains, e.n_kept());
-        let entries = (domains.into_iter())
-            .map(|LocalDomain { core, solver }| SubdomainEntry::try_new(core, solver))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(BuildError::Preconditioner)?;
-        Ok(PairInverse {
-            inverse: SchwarzPreconditioner::with_n_dofs(entries, e.n_kept(), self.reduction),
-            warnings,
-            seconds: start.elapsed().as_secs_f64(),
-            schur_domains,
-            retained_domains,
-        })
-    }
-
     /// The pair inverse, built on first use.
-    fn pair_inverse(&self) -> Result<&PairInverse, BuildError> {
-        self.inverse.get_or_try_init(|| self.build_inverse())
+    fn pair_inverse(&self) -> Result<&PairSchur, BuildError> {
+        (self.inverse)
+            .get_or_try_init(|| build_pair_schur(&self.elimination, self.pairs, &self.config))
     }
 
     /// Coefficients retained by the outer Schur system.
@@ -268,20 +140,6 @@ impl PairSchurPrototype<'_> {
     pub fn has_escalated(&self) -> bool {
         matches!(self.ladder, Ladder::Adaptive { .. }) && self.inverse.get().is_some()
     }
-    /// Assembles `S` for the PCG solves unless already done, returning the assembly's seconds.
-    pub fn assemble(&self) -> Result<f64, WithinError> {
-        Ok(self.schur_matrix()?.1)
-    }
-    fn schur_matrix(&self) -> Result<&(SchurMatrix, f64), SolveError> {
-        if let Some(built) = self.matrix.get() {
-            return Ok(built);
-        }
-        let start = Instant::now();
-        let matrix = SchurMatrix::build(&self.elimination)?;
-        Ok(self
-            .matrix
-            .get_or_init(|| (matrix, start.elapsed().as_secs_f64())))
-    }
     /// Seconds spent building reduced additive Schwarz.
     pub fn preconditioner_seconds(&self) -> Result<f64, WithinError> {
         Ok(self.pair_inverse()?.seconds)
@@ -292,27 +150,13 @@ impl PairSchurPrototype<'_> {
     }
     /// Applies the reduced additive inverse for operator checks and timing experiments.
     pub fn apply_preconditioner(&self, x: &[f64], y: &mut [f64]) -> Result<(), WithinError> {
-        Ok(self.pair_inverse()?.inverse.apply(x, y)?)
+        Ok(self.pair_inverse()?.map.apply(x, y)?)
     }
     fn warnings(&self) -> Vec<BuildWarning> {
         self.inverse
             .get()
             .map_or_else(Vec::new, |b| b.warnings.clone())
     }
-    /// PCG uses `tol`/`maxiter`, ignores `local_size`, and audits the full normal-equation residual.
-    pub fn solve(&self, y: &[f64], options: &LsmrOptions) -> Result<SolveResult, WithinError> {
-        let mut result = solve_reduced(
-            self.solver,
-            &self.elimination,
-            &self.schur_matrix()?.0,
-            y,
-            options,
-            &self.pair_inverse()?.inverse,
-        )?;
-        result.warnings = self.warnings();
-        Ok(result)
-    }
-
     /// Every RHS in one pass; an unsettled ladder then builds the pair inverse once and resumes the stalled.
     fn solve_all(
         &self,
@@ -350,7 +194,7 @@ impl PairSchurPrototype<'_> {
                             local_size: lsmr.local_size,
                             ..Default::default()
                         };
-                        let map = &settled().inverse;
+                        let map = &settled().map;
                         mlsmr(op, &rhs.b, map, lsmr.tol, lsmr.maxiter, options)
                     }
                 })?;
@@ -377,7 +221,7 @@ impl PairSchurPrototype<'_> {
                     ..Default::default()
                 };
                 let remaining = lsmr.maxiter - rung1.iterations;
-                let map = &settled().inverse;
+                let map = &settled().map;
                 let mut resumed =
                     Run::timed(|| mlsmr(op, &rhs.b, map, lsmr.tol, remaining, options))?;
                 resumed.result.iterations += rung1.iterations;
@@ -446,23 +290,6 @@ impl PairSchurPrototype<'_> {
         result.time_total = start.elapsed().as_secs_f64();
         Ok(result)
     }
-
-    /// Control experiment using the same Schur operator and PCG with the old full inverse restricted.
-    pub fn solve_with_full_preconditioner(
-        &self,
-        y: &[f64],
-        options: &LsmrOptions,
-        full: &Preconditioner,
-    ) -> Result<SolveResult, WithinError> {
-        solve_with_full_preconditioner(
-            self.solver,
-            &self.elimination,
-            &self.schur_matrix()?.0,
-            y,
-            options,
-            full,
-        )
-    }
 }
 
 #[cfg(test)]
@@ -500,12 +327,9 @@ mod tests {
             let e = &reduced.elimination;
             let x: Vec<f64> = (0..e.n_kept()).map(|i| (i as f64).sin()).collect();
             let mut r = vec![0.0; x.len()];
-            let mut scratch = vec![0.0; e.removed.len()];
-            reduced
-                .schur_matrix()
-                .unwrap()
-                .0
-                .apply(&x, &mut r, &mut scratch);
+            let mut scratch = vec![0.0; reduced.projected.nrows()];
+            reduced.projected.apply(&x, &mut scratch).unwrap();
+            reduced.projected.apply_adjoint(&scratch, &mut r).unwrap();
             let mut local = vec![0.0; x.len()];
             reduced.apply_preconditioner(&r, &mut local).unwrap();
             let mut padded = vec![0.0; full.n_dofs()];
@@ -519,11 +343,11 @@ mod tests {
             e.restrict(&solved, &mut restricted);
             let delta: Vec<f64> = local.iter().zip(&restricted).map(|(a, b)| a - b).collect();
             let mut image = vec![0.0; x.len()];
+            reduced.projected.apply(&delta, &mut scratch).unwrap();
             reduced
-                .schur_matrix()
-                .unwrap()
-                .0
-                .apply(&delta, &mut image, &mut scratch);
+                .projected
+                .apply_adjoint(&scratch, &mut image)
+                .unwrap();
             let norm = |a: &[f64]| a.iter().map(|v| v * v).sum::<f64>().sqrt();
             assert!(norm(&image) / norm(&r) < 1e-10);
         }

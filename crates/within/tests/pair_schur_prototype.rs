@@ -68,9 +68,26 @@ fn pair_schur_matches_full_fits_on_weighted_and_disconnected_designs() {
                 );
                 for multiplier in [1.0, -0.5] {
                     let response: Vec<f64> = y.iter().map(|v| multiplier * v).collect();
-                    let result = reduced.solve(&response, &options).unwrap();
+                    let result = reduced.solve_lsmr(&response, &options).unwrap();
                     assert!(result.converged, "{sizes:?} disconnected={disconnected} weighted={weighted} residual={} iterations={}", result.residual,result.iterations);
-                    assert!(result.residual <= options.tol);
+                    let mut gradient = vec![0.0; sizes.iter().sum()];
+                    let mut rhs = gradient.clone();
+                    for i in 0..n {
+                        let w = if weighted { weights[i] } else { 1.0 };
+                        let mut offset = 0;
+                        for j in 0..3 {
+                            let k = offset + categories[[i, j]] as usize;
+                            gradient[k] += w * result.demeaned[i];
+                            rhs[k] += w * response[i];
+                            offset += sizes[j];
+                        }
+                    }
+                    let norm = |v: &[f64]| v.iter().map(|x| x * x).sum::<f64>().sqrt();
+                    let relative_gradient = norm(&gradient) / norm(&rhs);
+                    assert!(
+                        relative_gradient <= options.tol,
+                        "full gradient {relative_gradient}"
+                    );
                     let error = result
                         .demeaned
                         .iter()
@@ -84,12 +101,8 @@ fn pair_schur_matches_full_fits_on_weighted_and_disconnected_designs() {
                         .sqrt();
                     assert!(error < 1e-4, "fit error {error}");
                 }
-                let zero = reduced.solve(&vec![0.0; n], &options).unwrap();
+                let zero = reduced.solve_lsmr(&vec![0.0; n], &options).unwrap();
                 assert!(zero.converged && zero.iterations == 0);
-                let control = reduced
-                    .solve_with_full_preconditioner(&y, &options, full.preconditioner().unwrap())
-                    .unwrap();
-                assert!(control.converged);
                 let x: Vec<f64> = (0..reduced.n_reduced()).map(|i| (i as f64).sin()).collect();
                 let z: Vec<f64> = (0..reduced.n_reduced())
                     .map(|i| (i as f64 * 0.7).cos())
@@ -133,7 +146,7 @@ fn global_elimination_can_reverse_local_pair_orientation() {
         maxiter: 1000,
         local_size: None,
     };
-    let r = reduced.solve(&y, &options).unwrap();
+    let r = reduced.solve_lsmr(&y, &options).unwrap();
     let reference = solver.solve(&y, &options).unwrap();
     assert!(r.converged && reference.converged);
     assert!(
@@ -160,8 +173,8 @@ fn all_zero_weights_and_invalid_inputs() {
         .pair_schur_prototype(&config(), Default::default())
         .unwrap();
     let y = vec![1.0; 100];
-    let r = reduced.solve(&y, &LsmrOptions::default()).unwrap();
+    let r = reduced.solve_lsmr(&y, &LsmrOptions::default()).unwrap();
     assert!(r.converged);
     assert_eq!(r.demeaned, y);
-    assert!(reduced.solve(&[1.0], &LsmrOptions::default()).is_err());
+    assert!(reduced.solve_lsmr(&[1.0], &LsmrOptions::default()).is_err());
 }
