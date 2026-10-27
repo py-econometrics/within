@@ -14,7 +14,7 @@ from typing import Callable
 
 import numpy as np
 from numpy.typing import NDArray
-from within import Effect, PreconditionerConfig, solve
+from within import Effect, PreconditionerConfig
 
 from .._framework import (
     BenchmarkResult,
@@ -24,6 +24,7 @@ from .._framework import (
     benchmark_lsmr,
     max_abs_group_mean,
     suite,
+    solve_configured,
 )
 from .._problems import (
     _make_response,
@@ -170,11 +171,11 @@ def run_slopes(opts: SuiteOptions) -> list[BenchmarkResult]:
             name = f"n={n_obs:,} {case_name}"
             print(f"\n  {name}: Rows={len(case.y):,}")
             try:
-                r = solve(
+                r = solve_configured(
                     case.effects,
                     case.y,
-                    options=cfg.config,
-                    preconditioner=cfg.preconditioner,
+                    config=cfg,
+                    opts=opts,
                 )
             except Exception as e:  # noqa: BLE001 - report and continue the sweep
                 print(f"    WARNING: {cfg.label} failed: {e}")

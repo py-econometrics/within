@@ -18,7 +18,7 @@ from typing import Callable
 import numpy as np
 from numpy.typing import NDArray
 
-from within import Effect, LsmrOptions, PreconditionerConfig, solve
+from within import Effect, LsmrOptions, PreconditionerConfig
 
 from .._framework import (
     BenchmarkResult,
@@ -27,6 +27,7 @@ from .._framework import (
     SuiteOptions,
     max_abs_group_mean,
     suite,
+    solve_configured,
 )
 from .._problems import AssortativeMobility, _make_response, _reindex
 from .._table import print_pivot, print_table
@@ -159,11 +160,11 @@ def run_akm_slopes(opts: SuiteOptions) -> list[BenchmarkResult]:
                 name = f"n={n_obs:,} {design_name} {spec_name}"
                 print(f"\n  {name}: Rows={len(case.y):,}")
                 try:
-                    r = solve(
+                    r = solve_configured(
                         case.effects,
                         case.y,
-                        options=cfg.config,
-                        preconditioner=cfg.preconditioner,
+                        config=cfg,
+                        opts=opts,
                     )
                 except Exception as e:  # noqa: BLE001 - report and continue the sweep
                     print(f"    WARNING: {cfg.label} failed: {e}")

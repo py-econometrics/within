@@ -27,6 +27,8 @@ const ISOLATED_LEVEL_CHUNK: usize = 4096;
 pub(crate) struct LocalDomain {
     pub(crate) core: SubdomainCore,
     pub(crate) solver: BlockSolver,
+    /// Per-coefficient factor multiplied into the partition weights.
+    pub(crate) scale: Option<std::sync::Arc<Vec<f64>>>,
 }
 
 /// How channel pairs become subdomains: which matrix each pair factors, over which coefficients.
@@ -37,6 +39,10 @@ pub(crate) trait PairSubdomains: Sync {
     fn dof(&self, dof: usize) -> usize;
     fn n_dofs(&self, prepared: &PreparedDesign<'_>) -> usize;
     fn partition_weighted(&self, prepared: &PreparedDesign<'_>) -> bool;
+    /// Per-coefficient factor on this pair's partition weights.
+    fn piece_scale(&self, _: ChannelPair) -> Option<std::sync::Arc<Vec<f64>>> {
+        None
+    }
 }
 
 /// Every pair's Gram over every coefficient.
@@ -222,6 +228,7 @@ fn pair_domains(
             LocalDomain {
                 core: SubdomainCore::uniform(indices),
                 solver,
+                scale: subdomains.piece_scale(pair),
             }
         })
         .collect();
@@ -245,12 +252,13 @@ fn compute_partition_weights(domain_pairs: &mut [LocalDomain], n_dofs: usize) {
 
     // Each subdomain's weights depend only on shared counts, so per-domain work is independent.
     domain_pairs.par_iter_mut().for_each(|ld| {
+        let scale = ld.scale.as_deref();
         let all_unique = ld
             .core
             .global_indices()
             .iter()
             .all(|&idx| counts[idx as usize] <= 1);
-        if all_unique {
+        if all_unique && scale.is_none() {
             ld.core.set_uniform_partition_weights();
         } else {
             let weights: Vec<f64> = ld
@@ -260,7 +268,7 @@ fn compute_partition_weights(domain_pairs: &mut [LocalDomain], n_dofs: usize) {
                 .map(|&idx| {
                     let c = counts[idx as usize];
                     debug_assert!(c > 0);
-                    1.0 / (c as f64).sqrt()
+                    scale.map_or(1.0, |s| s[idx as usize]) / (c as f64).sqrt()
                 })
                 .collect();
             ld.core

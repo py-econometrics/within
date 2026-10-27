@@ -7,6 +7,7 @@ use once_cell::sync::OnceCell;
 
 use super::Formulation;
 use crate::config::PreconditionerConfig;
+use crate::operator::coarse::CoarseRung;
 use crate::operator::schwarz::{
     build_adaptive, build_diagonal, AdaptiveLadder, Preconditioner, SchwarzConfig,
 };
@@ -88,6 +89,7 @@ impl PrecondSlot {
             Self::Adaptive(Box::new(AdaptivePrecond {
                 base: preconditioner,
                 built: OnceCell::new(),
+                coarse: OnceCell::new(),
             }))
         })
     }
@@ -124,6 +126,13 @@ pub(super) struct AdaptivePrecond {
     pub(super) base: Preconditioner,
     /// A design's own build failure settles here too; a failed isolation pool retries instead.
     pub(super) built: OnceCell<Result<AdaptiveBuild, BuildError>>,
+    /// The rung past Schwarz, tried once Schwarz stalls; `None` once the system declined it.
+    coarse: OnceCell<Option<Box<dyn CoarseRung>>>,
+}
+
+/// Builds a system's coarse rung; `None` declines it for this design.
+pub(super) trait CoarseSource: Sync {
+    fn build_coarse(&self) -> Option<Box<dyn CoarseRung>>;
 }
 
 /// Outcome of the deferred build: the Schwarz map, or `None` when no factor-pair target exists.
@@ -163,6 +172,27 @@ impl AdaptivePrecond {
             Ok(outcome)
         })?;
         built.as_ref().map(|_| build_secs).map_err(Clone::clone)
+    }
+
+    /// Whether the coarse rung is still to be tried.
+    pub(super) fn coarse_untried(&self) -> bool {
+        self.coarse.get().is_none()
+    }
+
+    pub(super) fn coarse(&self) -> Option<&dyn CoarseRung> {
+        self.coarse.get().and_then(Option::as_deref)
+    }
+
+    /// Try the coarse rung once and return this call's build seconds.
+    pub(super) fn coarsen(&self, source: &dyn CoarseSource) -> Result<f64, BuildError> {
+        let mut build_secs = 0.0;
+        self.coarse.get_or_try_init(|| {
+            let t_build = Instant::now();
+            let coarse = isolated(|| source.build_coarse())?;
+            build_secs = t_build.elapsed().as_secs_f64();
+            Ok::<_, BuildError>(coarse)
+        })?;
+        Ok(build_secs)
     }
 }
 

@@ -8,12 +8,14 @@ use std::time::Instant;
 use ndarray::ArrayView2;
 use rayon::prelude::*;
 use schwarz_precond::{
-    lsmr as lsmr_solve, mlsmr, EscalationPolicy, LsmrResult, LsmrStopReason, MlsmrOptions, Operator,
+    lsmr as lsmr_solve, mlsmr, EscalationPolicy, LsmrResult, LsmrStopReason, MlsmrOptions,
+    Operator, Staleness,
 };
 
 use crate::channel::CoefficientAddress;
 use crate::config::{LsmrOptions, PreconditionerConfig};
 use crate::domain::{Design, Effect, FullPairs, PreparedDesign};
+use crate::operator::coarse::Coarsened;
 use crate::operator::schwarz::{build_schwarz, Preconditioner, SchwarzConfig};
 use crate::operator::DesignOperator;
 use crate::{BuildError, BuildWarning, SolveError, WithinError};
@@ -27,7 +29,7 @@ pub use schur::PairSchurPrototype;
 #[cfg(test)]
 mod tests;
 
-use ladder::PrecondSlot;
+use ladder::{CoarseSource, PrecondSlot};
 pub use layout::CoefficientLayout;
 
 /// Fallible conversion into a [`Design`] for [`Solver::new`]: a categories
@@ -278,10 +280,10 @@ impl Run {
     }
 }
 
-/// A first pass over one RHS: finished, or stalled on the diagonal and kept for the resume.
+/// One RHS between rungs: finished, or pending with the run the next rung resumes from.
 enum Pass<R> {
     Done(RhsSolution),
-    Stalled(R, Run),
+    Pending(R, Option<Run>),
 }
 
 /// The least-squares system LSMR runs on, and the preconditioners the ladder builds for it.
@@ -301,6 +303,10 @@ trait Formulation: Sync {
         config: &SchwarzConfig,
     ) -> Result<(Option<Preconditioner>, Vec<BuildWarning>), BuildError>;
     fn has_factor_pairs(&self) -> bool;
+    /// What an adaptive ladder tries once its Schwarz rung stalls; none for the full design.
+    fn coarse_source(&self) -> Option<&dyn CoarseSource> {
+        None
+    }
 }
 
 impl<'a> Solver<'a> {
@@ -505,79 +511,110 @@ impl<'a> Formulation for PreparedDesign<'a> {
     }
 }
 
-/// Every RHS in one pass; an unsettled ladder then builds Schwarz once and resumes the stalled.
+/// Every RHS up the slot's rungs; a rung is built once, outside the fan-out, when some RHS stalls.
 fn solve_all<F: Formulation>(
     system: &F,
     slot: &PrecondSlot,
     ys: &[&[f64]],
     lsmr: &LsmrOptions,
 ) -> Result<(Vec<RhsSolution>, f64), WithinError> {
-    let (map, ladder) = match slot {
-        PrecondSlot::Static { map, .. } => (map.as_ref(), None),
-        // A settled ladder never re-probes: its map, or its kept build error, is final.
-        PrecondSlot::Adaptive(a) => match a.built.get() {
-            Some(Ok(_)) => (Some(a.rung()), None),
-            Some(Err(e)) => return Err(e.clone().into()),
-            None => (Some(&a.base), Some(a.as_ref())),
-        },
-    };
-    // A stall on the last permitted iteration leaves rung 2 nothing to spend, so no build.
-    let stalled =
-        |r: &LsmrResult| r.stop_reason == LsmrStopReason::Escalated && r.iterations < lsmr.maxiter;
     // Collecting into `Result` fails fast on the first per-RHS error, not during the fold.
-    let passes = ys
+    let mut passes = ys
         .par_iter()
-        .map(|y| {
-            let rhs = system.prepare(y)?;
+        .map(|y| Ok(Pass::Pending(system.prepare(y)?, None)))
+        .collect::<Result<Vec<_>, SolveError>>()?;
+    let pending =
+        |passes: &[Pass<F::Rhs<'_>>]| passes.iter().any(|p| matches!(p, Pass::Pending(..)));
+    let mut build_secs = 0.0;
+    match slot {
+        PrecondSlot::Static { map, .. } => {
+            let map = map.as_ref().map(|m| m as &dyn Operator);
+            passes = rung(system, passes, map, None, lsmr)?;
+        }
+        PrecondSlot::Adaptive(a) => {
+            let stall = &a.ladder().stall;
+            // A settled ladder never re-probes the diagonal: its map, or its kept build error, is final.
+            match a.built.get() {
+                Some(Err(e)) => return Err(e.clone().into()),
+                Some(Ok(_)) => {}
+                None => {
+                    passes = rung(system, passes, Some(&a.base), Some(stall), lsmr)?;
+                    if pending(&passes) {
+                        build_secs += a.escalate(system)?;
+                    }
+                }
+            }
+            let source = system
+                .coarse_source()
+                .filter(|_| a.schwarz().is_some() && a.coarse_untried());
+            if let Some(source) = source {
+                passes = rung(system, passes, Some(a.rung()), Some(stall), lsmr)?;
+                if pending(&passes) {
+                    build_secs += a.coarsen(source)?;
+                }
+            }
+            passes = match a.coarse() {
+                Some(coarse) => {
+                    let coarsened = Coarsened {
+                        inner: a.rung(),
+                        coarse,
+                    };
+                    rung(system, passes, Some(&coarsened), None, lsmr)?
+                }
+                None => rung(system, passes, Some(a.rung()), None, lsmr)?,
+            };
+        }
+    }
+    let solutions = passes.into_iter().map(|pass| match pass {
+        Pass::Done(solution) => solution,
+        Pass::Pending(..) => unreachable!("a rung without escalation finishes every RHS"),
+    });
+    Ok((solutions.collect(), build_secs))
+}
+
+/// One rung over the pending RHS, each resuming from its last run: it finishes, or stalls here.
+fn rung<'s, F: Formulation>(
+    system: &'s F,
+    passes: Vec<Pass<F::Rhs<'s>>>,
+    map: Option<&dyn Operator>,
+    stall: Option<&Staleness>,
+    lsmr: &LsmrOptions,
+) -> Result<Vec<Pass<F::Rhs<'s>>>, SolveError> {
+    passes
+        .into_par_iter()
+        .map(|pass| {
+            let (rhs, prior) = match pass {
+                Pass::Done(solution) => return Ok(Pass::Done(solution)),
+                Pass::Pending(rhs, prior) => (rhs, prior),
+            };
             let (op, b) = system.system(&rhs);
+            // The whole ladder shares the caller's budget; each rung gets what the last left.
+            let done = prior.as_ref().map_or(0, |p| p.result.iterations);
             let options = MlsmrOptions {
-                escalation: ladder.map(|a| &a.ladder().stall as &dyn EscalationPolicy),
+                warm_start: prior.as_ref().map(|p| p.result.x.as_slice()),
+                escalation: stall.map(|s| s as &dyn EscalationPolicy),
                 local_size: lsmr.local_size,
                 reference_norm: system.residual_reference(&rhs),
-                ..Default::default()
             };
-            let run = Run::timed(|| match map {
-                Some(m) => mlsmr(op, b, m, lsmr.tol, lsmr.maxiter, options),
-                None => lsmr_solve(op, b, lsmr.tol, lsmr.maxiter, lsmr.local_size),
+            let remaining = lsmr.maxiter - done;
+            let mut run = Run::timed(|| match map {
+                Some(m) => mlsmr(op, b, m, lsmr.tol, remaining, options),
+                None => lsmr_solve(op, b, lsmr.tol, remaining, lsmr.local_size),
             })?;
-            Ok(if stalled(&run.result) {
-                Pass::Stalled(rhs, run)
+            if let Some(prior) = &prior {
+                run.result.iterations += done;
+                run.solve_secs += prior.solve_secs;
+            }
+            // A stall on the last permitted iteration leaves the next rung nothing to spend.
+            let stalled = run.result.stop_reason == LsmrStopReason::Escalated
+                && run.result.iterations < lsmr.maxiter;
+            Ok(if stalled {
+                Pass::Pending(rhs, Some(run))
             } else {
                 Pass::Done(system.finish(rhs, run)?)
             })
         })
-        .collect::<Result<Vec<_>, SolveError>>()?;
-
-    // Built outside the fan-out, so sibling RHS never race for it.
-    let build_secs = match ladder {
-        Some(a) if passes.iter().any(|p| matches!(p, Pass::Stalled(..))) => a.escalate(system)?,
-        _ => 0.0,
-    };
-    let solutions = passes
-        .into_par_iter()
-        .map(|pass| {
-            let (rhs, probe) = match pass {
-                Pass::Done(solution) => return Ok(solution),
-                Pass::Stalled(rhs, probe) => (rhs, probe),
-            };
-            let map = ladder.expect("only a ladder stalls").rung();
-            let rung1 = probe.result;
-            // The whole ladder shares the caller's budget; rung 2 gets what rung 1 left.
-            let options = MlsmrOptions {
-                warm_start: Some(&rung1.x),
-                local_size: lsmr.local_size,
-                reference_norm: system.residual_reference(&rhs),
-                ..Default::default()
-            };
-            let remaining = lsmr.maxiter - rung1.iterations;
-            let (op, b) = system.system(&rhs);
-            let mut resumed = Run::timed(|| mlsmr(op, b, map, lsmr.tol, remaining, options))?;
-            resumed.result.iterations += rung1.iterations;
-            resumed.solve_secs += probe.solve_secs;
-            system.finish(rhs, resumed)
-        })
-        .collect::<Result<Vec<_>, SolveError>>()?;
-    Ok((solutions, build_secs))
+        .collect()
 }
 
 /// Per-level directions the data cannot identify, shared across all RHS:

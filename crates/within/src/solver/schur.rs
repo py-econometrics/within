@@ -1,15 +1,18 @@
+use std::sync::Arc;
 use std::time::Instant;
 
-use schwarz_precond::{Operator, Staleness};
+use schwarz_precond::{mlsmr, LsmrResult, LsmrStopReason, MlsmrOptions, Operator, Staleness};
 
-use super::ladder::PrecondSlot;
+use super::ladder::{CoarseSource, PrecondSlot};
 use super::{
     batch_result, solve_all, solve_result, Formulation, LsmrOptions, PreparedRhs, RhsSolution, Run,
     SolveResult, Solver,
 };
-use crate::domain::elimination::{Elimination, Pairs, ReducedPairs};
+use crate::domain::elimination::{Elimination, Pairs, PieceScales, ReducedPairs};
 use crate::linalg::dot;
-use crate::operator::reduced_design::ReducedDesign;
+use crate::operator::coarse::{CoarseRung, Coarsened};
+use crate::operator::reduced_coarse::ReducedCoarse;
+use crate::operator::reduced_design::{self, ReducedDesign};
 use crate::operator::schwarz::{build_schwarz, Preconditioner, SchwarzConfig};
 use crate::{
     BatchSolveResult, BuildError, BuildWarning, LocalSolverConfig, PreconditionerConfig,
@@ -19,8 +22,10 @@ use crate::{
 /// The kept coefficients' system `(I − P_e) W^{1/2} D_kept`; the eliminated term is recovered after.
 struct Reduced<'a> {
     elimination: Elimination<'a>,
-    design: ReducedDesign,
+    design: Box<dyn ReducedDesign>,
     pairs: Pairs,
+    /// Set by `WITHIN_REDUCED_GAMMA` (Gram pieces) and `WITHIN_REDUCED_GAMMA_C` (complement pieces).
+    scales: Option<PieceScales>,
 }
 
 /// One RHS: `b` in grouped row order, projected off the eliminated factor.
@@ -47,7 +52,7 @@ impl Formulation for Reduced<'_> {
     }
 
     fn system<'r>(&'r self, rhs: &'r ReducedRhs<'_>) -> (&'r dyn Operator, &'r [f64]) {
-        (&self.design, &rhs.b)
+        (self.design.operator(), &rhs.b)
     }
 
     fn residual_reference(&self, rhs: &ReducedRhs<'_>) -> Option<f64> {
@@ -82,6 +87,7 @@ impl Formulation for Reduced<'_> {
         let subdomains = ReducedPairs {
             elimination: &self.elimination,
             pairs: self.pairs,
+            scales: self.scales.as_ref(),
         };
         build_schwarz(self.elimination.prepared(), config, &subdomains)
     }
@@ -90,12 +96,32 @@ impl Formulation for Reduced<'_> {
     fn has_factor_pairs(&self) -> bool {
         true
     }
+
+    fn coarse_source(&self) -> Option<&dyn CoarseSource> {
+        Some(self)
+    }
+}
+
+impl CoarseSource for Reduced<'_> {
+    fn build_coarse(&self) -> Option<Box<dyn CoarseRung>> {
+        let coarse = ReducedCoarse::build(&self.elimination, rigid_k())?;
+        Some(Box::new(coarse))
+    }
+}
+
+/// Spell-gluing ratio `K`, `WITHIN_REDUCED_RIGID` overriding 150.
+fn rigid_k() -> f64 {
+    (std::env::var("WITHIN_REDUCED_RIGID").ok())
+        .and_then(|k| k.parse::<f64>().ok())
+        .unwrap_or(150.0)
 }
 
 /// Reduced LSMR with additive local factor-pair Schur inverses.
 pub struct PairSchurPrototype<'a> {
     reduced: Reduced<'a>,
     slot: PrecondSlot,
+    /// Rigid-component coarse correction, built when `WITHIN_REDUCED_RIGID=K` is set.
+    coarse: Option<ReducedCoarse>,
     /// Elimination, projected design and whatever preconditioner construction built.
     setup_seconds: f64,
 }
@@ -159,16 +185,68 @@ impl Solver<'_> {
             }
             .into());
         }
-        let design = ReducedDesign::build(&elimination);
+        let design = reduced_design::build(&elimination);
+        let gamma = |name: &str| {
+            (std::env::var(name).ok())
+                .and_then(|g| g.parse::<f64>().ok())
+                .unwrap_or(0.0)
+        };
+        let (gamma_g, gamma_c) = (
+            gamma("WITHIN_REDUCED_GAMMA"),
+            gamma("WITHIN_REDUCED_GAMMA_C"),
+        );
+        let scales = (gamma_g != 0.0 || gamma_c != 0.0).then(|| {
+            let (diagonal, norms) = design.gram_diagonal_and_norms();
+            // A coefficient inside the eliminated span has S_ll = 0 and keeps its plain weight.
+            let scale = |piece: &[f64], g: f64| -> Arc<Vec<f64>> {
+                Arc::new(
+                    (diagonal.iter().zip(piece))
+                        .map(|(&s, &p)| {
+                            if s > 0.0 && p > s * 1e-12 && g != 0.0 {
+                                (s / p).powf(-g)
+                            } else {
+                                1.0
+                            }
+                        })
+                        .collect(),
+                )
+            };
+            let complement = match gamma_c {
+                0.0 => {
+                    let ones = Arc::new(vec![1.0; norms.len()]);
+                    (0..elimination.width())
+                        .map(|_| Arc::clone(&ones))
+                        .collect()
+                }
+                g => (elimination.single_channel_removal().iter())
+                    .map(|removed| {
+                        let piece: Vec<f64> =
+                            norms.iter().zip(removed).map(|(a, r)| a - r).collect();
+                        scale(&piece, g)
+                    })
+                    .collect(),
+            };
+            PieceScales {
+                gram: scale(&norms, gamma_g),
+                complement,
+            }
+        });
         let reduced = Reduced {
             elimination,
             design,
             pairs,
+            scales,
         };
         let slot = PrecondSlot::build(&reduced, config)?;
+        let coarse = std::env::var("WITHIN_REDUCED_RIGID")
+            .ok()
+            .filter(|_| std::env::var_os("WITHIN_REDUCED_COARSE_STALL").is_none())
+            .and_then(|k| k.parse::<f64>().ok())
+            .and_then(|k| ReducedCoarse::build(&reduced.elimination, k));
         Ok(PairSchurPrototype {
             reduced,
             slot,
+            coarse,
             setup_seconds: start.elapsed().as_secs_f64(),
         })
     }
@@ -207,6 +285,93 @@ impl PairSchurPrototype<'_> {
     /// mlsmr on the projected design; `local_size` applies. Setup is the RHS projection plus any build.
     pub fn solve_lsmr(&self, y: &[f64], options: &LsmrOptions) -> Result<SolveResult, WithinError> {
         let start = Instant::now();
+        // `WITHIN_REDUCED_COARSE_STALL=w,t`: Schwarz until Staleness(w, t), then the coarse space from the iterate.
+        let gate = std::env::var("WITHIN_REDUCED_COARSE_STALL")
+            .ok()
+            .and_then(|v| {
+                let (w, t) = v.split_once(',')?;
+                Staleness::try_new(w.parse().ok()?, t.parse().ok()?).ok()
+            });
+        if let (Some(policy), PrecondSlot::Static { map: Some(map), .. }) = (gate, &self.slot) {
+            let system = &self.reduced;
+            let rhs = system.prepare(y)?;
+            let (op, b) = system.system(&rhs);
+            let base = MlsmrOptions {
+                local_size: options.local_size,
+                reference_norm: system.residual_reference(&rhs),
+                ..Default::default()
+            };
+            let first = Run::timed(|| {
+                let options_first = MlsmrOptions {
+                    escalation: Some(&policy),
+                    ..base
+                };
+                mlsmr(op, b, map, options.tol, options.maxiter, options_first)
+            })?;
+            let mut run = first;
+            if run.result.stop_reason == LsmrStopReason::Escalated {
+                let coarse = ReducedCoarse::build(&system.elimination, rigid_k());
+                let done = run.result.iterations;
+                let warm = run.result.x.clone();
+                let resumed = MlsmrOptions {
+                    warm_start: Some(&warm),
+                    ..base
+                };
+                let left = options.maxiter.saturating_sub(done);
+                let second = match &coarse {
+                    Some(coarse) => {
+                        let m = Coarsened { inner: map, coarse };
+                        Run::timed(|| mlsmr(op, b, &m, options.tol, left, resumed))?
+                    }
+                    None => Run::timed(|| mlsmr(op, b, map, options.tol, left, resumed))?,
+                };
+                if std::env::var_os("WITHIN_REDUCED_RIGID_STATS").is_some() {
+                    eprintln!(
+                        "reduced_gate: stalled at {done}, coarse={}",
+                        coarse.is_some()
+                    );
+                }
+                run = Run {
+                    solve_secs: run.solve_secs + second.solve_secs,
+                    result: LsmrResult {
+                        iterations: done + second.result.iterations,
+                        ..second.result
+                    },
+                };
+            }
+            let solution = system.finish(rhs, run)?;
+            let prepared = self.reduced.elimination.prepared();
+            return Ok(solve_result(
+                prepared,
+                &self.slot,
+                vec![solution],
+                0.0,
+                start,
+            ));
+        }
+        if let (Some(coarse), PrecondSlot::Static { map: Some(map), .. }) =
+            (&self.coarse, &self.slot)
+        {
+            let system = &self.reduced;
+            let rhs = system.prepare(y)?;
+            let (op, b) = system.system(&rhs);
+            let mlsmr_options = MlsmrOptions {
+                local_size: options.local_size,
+                reference_norm: system.residual_reference(&rhs),
+                ..Default::default()
+            };
+            let m = Coarsened { inner: map, coarse };
+            let run = Run::timed(|| mlsmr(op, b, &m, options.tol, options.maxiter, mlsmr_options))?;
+            let solution = system.finish(rhs, run)?;
+            let prepared = self.reduced.elimination.prepared();
+            return Ok(solve_result(
+                prepared,
+                &self.slot,
+                vec![solution],
+                0.0,
+                start,
+            ));
+        }
         let (solutions, build_secs) = solve_all(&self.reduced, &self.slot, &[y], options)?;
         let prepared = self.reduced.elimination.prepared();
         Ok(solve_result(

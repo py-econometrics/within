@@ -104,7 +104,7 @@ pub(crate) fn build_additive(
 ) -> Result<FeSchwarz, BuildError> {
     let entries = domains
         .into_par_iter()
-        .map(|LocalDomain { core, solver }| SubdomainEntry::try_new(core, solver))
+        .map(|LocalDomain { core, solver, .. }| SubdomainEntry::try_new(core, solver))
         .collect::<Result<Vec<_>, _>>()
         .map_err(BuildError::Preconditioner)?;
     Ok(FeSchwarz {

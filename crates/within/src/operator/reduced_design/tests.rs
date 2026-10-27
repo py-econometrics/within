@@ -109,12 +109,12 @@ fn profile_reduced_operator() {
         for _ in 0..7 {
             let start = Instant::now();
             let e = Elimination::new(&prepared);
-            black_box(ReducedDesign::build(&e));
+            black_box(build(&e));
             setups.push(start.elapsed().as_secs_f64());
         }
         setups.sort_by(f64::total_cmp);
         let e = Elimination::new(&prepared);
-        let op = ReducedDesign::build(&e);
+        let op = build(&e);
         let mut x: Vec<f64> = (0..op.ncols()).map(|i| (i as f64).sin()).collect();
         let mut y = vec![0.0; n];
         let mut times = [0.0; 3];
@@ -169,7 +169,7 @@ fn adjoint_overwrites_output_across_pools_and_concurrent_calls() {
         PreparedDesign::new(categories.view().into_design().unwrap(), Some(&weights)).unwrap();
     let e = Elimination::new(&prepared);
     let reference = ProjectedDesign::new(&e);
-    let op = ReducedDesign::build(&e);
+    let op = build(&e);
     let u: Vec<f64> = (0..n).map(|i| (i as f64 * 0.7).cos()).collect();
     let grouped: Vec<f64> = op
         .groups()
@@ -203,8 +203,8 @@ fn adjoint_overwrites_output_across_pools_and_concurrent_calls() {
 fn assert_reproduces_reference(prepared: &PreparedDesign<'_>, slopes: bool) {
     let n = prepared.design.n_obs;
     let e = Elimination::new(prepared);
-    let (reference, fast) = (ProjectedDesign::new(&e), ReducedDesign::build(&e));
-    assert_eq!(matches!(fast, ReducedDesign::Fits(_)), slopes);
+    let (reference, fast) = (ProjectedDesign::new(&e), build(&e));
+    assert_eq!(e.eliminated_loadings().iter().any(Option::is_some), slopes);
     let order = &fast.groups().order;
     assert!(fast.n_tasks() > 1);
     let x: Vec<f64> = (0..fast.ncols()).map(|i| (i as f64).sin()).collect();

@@ -201,6 +201,10 @@ impl<'a> Elimination<'a> {
         &self.groups
     }
 
+    pub(crate) fn term(&self) -> usize {
+        self.term
+    }
+
     pub(crate) fn width(&self) -> usize {
         self.width
     }
@@ -218,6 +222,51 @@ impl<'a> Elimination<'a> {
         let prepared: &'a PreparedDesign<'a> = self.prepared;
         let term = prepared.term(self.term);
         (0..self.width).map(|c| term.loading(c)).collect()
+    }
+
+    /// Per eliminated column `j`, per kept coefficient: `Σ_e (Σ_{i∈e,l} w x_c x_j)² / Σ_{i∈e} w x_j²`.
+    pub(crate) fn single_channel_removal(&self) -> Vec<Vec<f64>> {
+        let (groups, sw) = (&self.groups, self.prepared.sqrt_weights());
+        let loadings = self.eliminated_loadings();
+        let channels = self.kept_channels();
+        let (width, n_kept) = (self.width, self.n_kept());
+        let zeros = || vec![vec![0.0; n_kept]; width];
+        (0..self.n_levels())
+            .into_par_iter()
+            .fold(zeros, |mut acc, level| {
+                let rows: Vec<usize> = (groups
+                    .order
+                    .rows(groups.starts[level]..groups.starts[level + 1]))
+                .map(|r| r as usize)
+                .collect();
+                let mut cross: Vec<(usize, f64)> = Vec::new();
+                for (j, load) in loadings.iter().enumerate() {
+                    let x = |r: usize| sw.map_or(1.0, |s| s[r]) * load.map_or(1.0, |z| z[r]);
+                    let delta: f64 = rows.iter().map(|&r| x(r) * x(r)).sum();
+                    if delta <= 0.0 {
+                        continue;
+                    }
+                    cross.clear();
+                    for ch in &channels {
+                        cross.extend(rows.iter().map(|&r| {
+                            let c = sw.map_or(1.0, |s| s[r]) * ch.loading.map_or(1.0, |z| z[r]);
+                            (ch.start + ch.levels[r] as usize, c * x(r))
+                        }));
+                    }
+                    cross.sort_unstable_by_key(|t| t.0);
+                    for run in cross.chunk_by(|a, b| a.0 == b.0) {
+                        let s: f64 = run.iter().map(|t| t.1).sum();
+                        acc[j][run[0].0] += s * s / delta;
+                    }
+                }
+                acc
+            })
+            .reduce(zeros, |mut a, b| {
+                a.iter_mut()
+                    .zip(b)
+                    .for_each(|(x, y)| x.iter_mut().zip(y).for_each(|(u, v)| *u += v));
+                a
+            })
     }
 
     /// Every kept coefficient column, in kept-coefficient order.
@@ -316,6 +365,13 @@ pub(crate) enum Pairs {
 pub(crate) struct ReducedPairs<'e> {
     pub(crate) elimination: &'e Elimination<'e>,
     pub(crate) pairs: Pairs,
+    pub(crate) scales: Option<&'e PieceScales>,
+}
+
+/// Per kept coefficient, `(S_ll / piece_ll)^{-γ}`: one vector for the retained Grams, one per eliminated column.
+pub(crate) struct PieceScales {
+    pub(crate) gram: Arc<Vec<f64>>,
+    pub(crate) complement: Vec<Arc<Vec<f64>>>,
 }
 
 impl PairSubdomains for ReducedPairs<'_> {
@@ -346,6 +402,15 @@ impl PairSubdomains for ReducedPairs<'_> {
     /// Unlike the full design's, slope overlaps do not slow the reduced solve under `1/√c`.
     fn partition_weighted(&self, _: &PreparedDesign<'_>) -> bool {
         true
+    }
+
+    fn piece_scale(&self, pair: ChannelPair) -> Option<Arc<Vec<f64>>> {
+        let (scales, term) = (self.scales?, self.elimination.term);
+        Some(match (pair.rows.term == term, pair.cols.term == term) {
+            (true, _) => scales.complement[pair.rows.column].clone(),
+            (_, true) => scales.complement[pair.cols.column].clone(),
+            _ => scales.gram.clone(),
+        })
     }
 }
 

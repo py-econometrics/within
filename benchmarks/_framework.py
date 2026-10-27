@@ -22,6 +22,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from within import Effect, LsmrOptions, PreconditionerConfig, solve
+from within._within import SolveResult
 from within._within import (
     ApproxCholConfig,
     ApproxSchurConfig,
@@ -108,18 +109,46 @@ def max_abs_group_mean(
     return worst
 
 
+def solve_configured(
+    design: NDArray[np.uint32] | list[Effect],
+    y: NDArray[np.float64],
+    config: SolverConfig,
+    opts: SuiteOptions | None = None,
+) -> SolveResult:
+    if opts is None or opts.formulation == "full":
+        return solve(
+            design, y, options=config.config, preconditioner=config.preconditioner
+        )
+    from within._within import ReducedInverse, solve_reduced
+
+    preconditioner = config.preconditioner
+    if not isinstance(preconditioner, PreconditionerConfig.Additive):
+        raise ValueError(
+            "reduced comparison requires an additive Schwarz configuration"
+        )
+    return solve_reduced(
+        design,
+        y,
+        options=config.config,
+        local_solver=preconditioner.local_solver,
+        reduction=preconditioner.reduction,
+        inverse=ReducedInverse.PairSchur,
+    )
+
+
 def _solve_once(
     categories: list[NDArray[np.int64]],
     n_levels: list[int],
     y: NDArray[np.float64],
     config: SolverConfig,
+    opts: SuiteOptions | None = None,
 ) -> BenchmarkResult:
     """Run one timed solve."""
-    result = solve(
+    result = solve_configured(
         np.asfortranarray(np.column_stack(categories).astype(np.uint32)),
         y,
-        options=config.config,
-        preconditioner=config.preconditioner,
+        config,
+        opts,
     )
 
     demean_err = max_abs_group_mean(categories, n_levels, result.demeaned)
@@ -175,7 +204,7 @@ def run_solve(
     runs: list[BenchmarkResult] = []
     total_runs = opts.warmup + opts.repeat
     for run_idx in range(total_runs):
-        result = _solve_once(categories, n_levels, y, config)
+        result = _solve_once(categories, n_levels, y, config, opts)
         if run_idx >= opts.warmup:
             runs.append(result)
     return _aggregate_runs(runs)
@@ -292,6 +321,7 @@ class SuiteOptions:
     profile: ScaleProfile = "full"
     repeat: int = 1
     warmup: int = 0
+    formulation: Literal["full", "reduced"] = "full"
 
     @property
     def quick(self) -> bool:

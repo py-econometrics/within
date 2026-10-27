@@ -65,7 +65,7 @@ impl LevelTasks {
 }
 
 /// `P_e` one eliminated level at a time: moments `Σ_p a_p v_p` in, the fit `a_pᵀ G_l⁻ Σ a v` out.
-pub(crate) trait LevelProjection: Send + Sync {
+trait LevelProjection: Send + Sync {
     type Fit;
     fn fit(&self) -> Self::Fit;
     fn accumulate(&self, p: usize, v: f64, fit: &mut Self::Fit);
@@ -75,12 +75,12 @@ pub(crate) trait LevelProjection: Send + Sync {
 }
 
 /// An intercept-only eliminated term: `P_e` subtracts weighted level means.
-pub(crate) struct LevelMeans {
+struct LevelMeans {
     inverse: Arc<Vec<f64>>,
 }
 
 /// An eliminated term with slopes: `P_e` subtracts each level's weighted least-squares fit.
-pub(crate) struct LevelFits {
+struct LevelFits {
     width: usize,
     intercept: bool,
     /// Per level, the generalized inverse of its `width × width` Gram block, row-major.
@@ -90,7 +90,7 @@ pub(crate) struct LevelFits {
 }
 
 /// One level's moments and coefficients.
-pub(crate) struct BlockFit {
+struct BlockFit {
     sums: Vec<f64>,
     coefficients: Vec<f64>,
 }
@@ -217,7 +217,7 @@ impl KeptRows {
 }
 
 /// `(I − P_e) W^{1/2} D_kept` with rows grouped by eliminated level, so each product is one fused sweep.
-pub(crate) struct SegmentedDesign<P> {
+struct SegmentedDesign<P> {
     groups: Arc<LevelGroups>,
     tasks: LevelTasks,
     projection: P,
@@ -226,69 +226,42 @@ pub(crate) struct SegmentedDesign<P> {
     sqrt_weights: Option<Vec<f64>>,
 }
 
-/// The reduced design, its per-level projection fixed by the eliminated term's columns.
-pub(crate) enum ReducedDesign {
-    Means(SegmentedDesign<LevelMeans>),
-    Fits(SegmentedDesign<LevelFits>),
+pub(crate) trait ReducedDesign: Operator {
+    fn operator(&self) -> &dyn Operator;
+    fn projected_rhs(&self, b: &[f64]) -> Vec<f64>;
+    /// `diag(S)` and the kept columns' squared norms `diag(A_KK)`.
+    fn gram_diagonal_and_norms(&self) -> (Vec<f64>, Vec<f64>);
+    fn gram_diagonal(&self) -> Vec<f64> {
+        self.gram_diagonal_and_norms().0
+    }
+    #[cfg(test)]
+    fn groups(&self) -> &LevelGroups;
+    #[cfg(test)]
+    fn n_tasks(&self) -> usize;
 }
 
-impl ReducedDesign {
-    pub(crate) fn build(e: &Elimination<'_>) -> Self {
-        let groups = e.groups().clone();
-        let loadings = e.eliminated_loadings();
-        let slopes: Vec<&[f64]> = loadings.iter().flatten().copied().collect();
-        let inverse = e.inverse().clone();
-        match slopes.is_empty() {
-            true => Self::Means(SegmentedDesign::build(e, groups, |_| LevelMeans {
-                inverse,
-            })),
-            false => Self::Fits(SegmentedDesign::build(e, groups, |groups| LevelFits {
+pub(crate) fn build(e: &Elimination<'_>) -> Box<dyn ReducedDesign> {
+    let loadings = e.eliminated_loadings();
+    let slopes: Vec<&[f64]> = loadings.iter().flatten().copied().collect();
+    let inverse = e.inverse().clone();
+    if slopes.is_empty() {
+        Box::new(SegmentedDesign::build(e, LevelMeans { inverse }))
+    } else {
+        Box::new(SegmentedDesign::build(
+            e,
+            LevelFits {
                 width: e.width(),
                 intercept: loadings[0].is_none(),
                 inverse,
-                slopes: groups.gather(&slopes),
-            })),
-        }
-    }
-
-    /// `b` in grouped row order, projected off the eliminated factor.
-    pub(crate) fn projected_rhs(&self, b: &[f64]) -> Vec<f64> {
-        match self {
-            Self::Means(d) => d.projected_rhs(b),
-            Self::Fits(d) => d.projected_rhs(b),
-        }
-    }
-
-    pub(crate) fn gram_diagonal(&self) -> Vec<f64> {
-        match self {
-            Self::Means(d) => d.gram_diagonal(),
-            Self::Fits(d) => d.gram_diagonal(),
-        }
-    }
-
-    #[cfg(test)]
-    fn groups(&self) -> &LevelGroups {
-        match self {
-            Self::Means(d) => &d.groups,
-            Self::Fits(d) => &d.groups,
-        }
-    }
-
-    #[cfg(test)]
-    fn n_tasks(&self) -> usize {
-        match self {
-            Self::Means(d) => d.tasks.0.len(),
-            Self::Fits(d) => d.tasks.0.len(),
-        }
+                slopes: e.groups().gather(&slopes),
+            },
+        ))
     }
 }
 
 impl<P: LevelProjection> SegmentedDesign<P> {
-    fn build(
-        e: &Elimination<'_>,
-        groups: Arc<LevelGroups>,
-        projection: impl FnOnce(&LevelGroups) -> P,
-    ) -> Self {
+    fn build(e: &Elimination<'_>, projection: P) -> Self {
+        let groups = e.groups().clone();
         let (intercepts, slopes): (Vec<_>, Vec<_>) =
             (e.kept_channels().into_iter()).partition(|channel| channel.loading.is_none());
         let kept: Vec<_> = intercepts.iter().chain(&slopes).collect();
@@ -308,7 +281,7 @@ impl<P: LevelProjection> SegmentedDesign<P> {
         let sqrt_weights = (e.prepared().sqrt_weights())
             .map(|sw| groups.order.par_iter().map(|i| sw[i as usize]).collect());
         Self {
-            projection: projection(&groups),
+            projection,
             tasks: LevelTasks::build(&groups.starts),
             groups,
             kept: KeptRows {
@@ -322,13 +295,6 @@ impl<P: LevelProjection> SegmentedDesign<P> {
         }
     }
 
-    fn projected_rhs(&self, b: &[f64]) -> Vec<f64> {
-        match &self.groups.order {
-            RowOrder::Identity(_) => self.projected_rhs_rows(|p| b[p]),
-            RowOrder::Permutation(rows) => self.projected_rhs_rows(|p| b[rows[p] as usize]),
-        }
-    }
-
     fn projected_rhs_rows(&self, row: impl Fn(usize) -> f64 + Sync) -> Vec<f64> {
         let mut grouped = vec![0.0; self.groups.order.len()];
         self.tasks
@@ -339,33 +305,6 @@ impl<P: LevelProjection> SegmentedDesign<P> {
                 }
             });
         grouped
-    }
-
-    /// `diag(S)`: each kept column's squared norm less its projection onto the eliminated factor.
-    fn gram_diagonal(&self) -> Vec<f64> {
-        let zeros = || (vec![0.0; self.n_kept], vec![0.0; self.n_kept]);
-        let (mut diagonal, norms) = self
-            .tasks
-            .batches()
-            .map(|levels| {
-                let mut acc = zeros();
-                match &self.sqrt_weights {
-                    Some(sw) => self.diagonal(levels, &mut acc, |p| sw[p]),
-                    None => self.diagonal(levels, &mut acc, |_| 1.0),
-                }
-                acc
-            })
-            .reduce_with(|(mut d, mut n), (d2, n2)| {
-                d.iter_mut().zip(&d2).for_each(|(a, b)| *a += b);
-                n.iter_mut().zip(&n2).for_each(|(a, b)| *a += b);
-                (d, n)
-            })
-            .unwrap_or_else(zeros);
-        // A column inside the eliminated span keeps roundoff `~ε‖u‖²`, not zero.
-        diagonal.iter_mut().zip(norms).for_each(|(d, n)| {
-            *d = if *d > 1e-12 * n { *d } else { 0.0 };
-        });
-        diagonal
     }
 
     fn diagonal(
@@ -498,29 +437,52 @@ impl<P: LevelProjection> SegmentedDesign<P> {
     }
 }
 
-impl Operator for ReducedDesign {
-    fn nrows(&self) -> usize {
-        match self {
-            Self::Means(d) => d.nrows(),
-            Self::Fits(d) => d.nrows(),
+impl<P: LevelProjection> ReducedDesign for SegmentedDesign<P> {
+    fn operator(&self) -> &dyn Operator {
+        self
+    }
+
+    fn projected_rhs(&self, b: &[f64]) -> Vec<f64> {
+        match &self.groups.order {
+            RowOrder::Identity(_) => self.projected_rhs_rows(|p| b[p]),
+            RowOrder::Permutation(rows) => self.projected_rhs_rows(|p| b[rows[p] as usize]),
         }
     }
-    fn ncols(&self) -> usize {
-        match self {
-            Self::Means(d) => d.ncols(),
-            Self::Fits(d) => d.ncols(),
-        }
+
+    /// `diag(S)`: each kept column's squared norm less its projection onto the eliminated factor.
+    fn gram_diagonal_and_norms(&self) -> (Vec<f64>, Vec<f64>) {
+        let zeros = || (vec![0.0; self.n_kept], vec![0.0; self.n_kept]);
+        let (mut diagonal, norms) = self
+            .tasks
+            .batches()
+            .map(|levels| {
+                let mut acc = zeros();
+                match &self.sqrt_weights {
+                    Some(sw) => self.diagonal(levels, &mut acc, |p| sw[p]),
+                    None => self.diagonal(levels, &mut acc, |_| 1.0),
+                }
+                acc
+            })
+            .reduce_with(|(mut d, mut n), (d2, n2)| {
+                d.iter_mut().zip(&d2).for_each(|(a, b)| *a += b);
+                n.iter_mut().zip(&n2).for_each(|(a, b)| *a += b);
+                (d, n)
+            })
+            .unwrap_or_else(zeros);
+        // A column inside the eliminated span keeps roundoff `~ε‖u‖²`, not zero.
+        diagonal.iter_mut().zip(&norms).for_each(|(d, &n)| {
+            *d = if *d > 1e-12 * n { *d } else { 0.0 };
+        });
+        (diagonal, norms)
     }
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        match self {
-            Self::Means(d) => d.apply(x, y),
-            Self::Fits(d) => d.apply(x, y),
-        }
+
+    #[cfg(test)]
+    fn groups(&self) -> &LevelGroups {
+        &self.groups
     }
-    fn apply_adjoint(&self, u: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        match self {
-            Self::Means(d) => d.apply_adjoint(u, y),
-            Self::Fits(d) => d.apply_adjoint(u, y),
-        }
+
+    #[cfg(test)]
+    fn n_tasks(&self) -> usize {
+        self.tasks.0.len()
     }
 }

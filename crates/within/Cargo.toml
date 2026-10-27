@@ -11,7 +11,7 @@ keywords = ["fixed-effects", "least-squares", "preconditioner", "schwarz", "econ
 categories.workspace = true
 
 [features]
-pair-schur-prototype = []
+pair-schur-prototype = ["dep:faer"]
 
 [dependencies]
 schwarz-precond = { workspace = true, features = ["serde"] }
@@ -24,6 +24,7 @@ portable-atomic = { version = "1", features = ["float"] }
 rayon.workspace = true
 thiserror.workspace = true
 rustc-hash = "2"
+faer = { workspace = true, optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.7", features = ["html_reports"] }
