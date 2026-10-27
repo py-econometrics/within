@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use schwarz_precond::{mlsmr, LsmrResult, LsmrStopReason, MlsmrOptions, Operator, Staleness};
+use schwarz_precond::{mlsmr, MlsmrOptions, Operator, Staleness};
 
 use super::ladder::{CoarseSource, PrecondSlot};
 use super::{
@@ -240,7 +240,6 @@ impl Solver<'_> {
         let slot = PrecondSlot::build(&reduced, config)?;
         let coarse = std::env::var("WITHIN_REDUCED_RIGID")
             .ok()
-            .filter(|_| std::env::var_os("WITHIN_REDUCED_COARSE_STALL").is_none())
             .and_then(|k| k.parse::<f64>().ok())
             .and_then(|k| ReducedCoarse::build(&reduced.elimination, k));
         Ok(PairSchurPrototype {
@@ -285,70 +284,6 @@ impl PairSchurPrototype<'_> {
     /// mlsmr on the projected design; `local_size` applies. Setup is the RHS projection plus any build.
     pub fn solve_lsmr(&self, y: &[f64], options: &LsmrOptions) -> Result<SolveResult, WithinError> {
         let start = Instant::now();
-        // `WITHIN_REDUCED_COARSE_STALL=w,t`: Schwarz until Staleness(w, t), then the coarse space from the iterate.
-        let gate = std::env::var("WITHIN_REDUCED_COARSE_STALL")
-            .ok()
-            .and_then(|v| {
-                let (w, t) = v.split_once(',')?;
-                Staleness::try_new(w.parse().ok()?, t.parse().ok()?).ok()
-            });
-        if let (Some(policy), PrecondSlot::Static { map: Some(map), .. }) = (gate, &self.slot) {
-            let system = &self.reduced;
-            let rhs = system.prepare(y)?;
-            let (op, b) = system.system(&rhs);
-            let base = MlsmrOptions {
-                local_size: options.local_size,
-                reference_norm: system.residual_reference(&rhs),
-                ..Default::default()
-            };
-            let first = Run::timed(|| {
-                let options_first = MlsmrOptions {
-                    escalation: Some(&policy),
-                    ..base
-                };
-                mlsmr(op, b, map, options.tol, options.maxiter, options_first)
-            })?;
-            let mut run = first;
-            if run.result.stop_reason == LsmrStopReason::Escalated {
-                let coarse = ReducedCoarse::build(&system.elimination, rigid_k());
-                let done = run.result.iterations;
-                let warm = run.result.x.clone();
-                let resumed = MlsmrOptions {
-                    warm_start: Some(&warm),
-                    ..base
-                };
-                let left = options.maxiter.saturating_sub(done);
-                let second = match &coarse {
-                    Some(coarse) => {
-                        let m = Coarsened { inner: map, coarse };
-                        Run::timed(|| mlsmr(op, b, &m, options.tol, left, resumed))?
-                    }
-                    None => Run::timed(|| mlsmr(op, b, map, options.tol, left, resumed))?,
-                };
-                if std::env::var_os("WITHIN_REDUCED_RIGID_STATS").is_some() {
-                    eprintln!(
-                        "reduced_gate: stalled at {done}, coarse={}",
-                        coarse.is_some()
-                    );
-                }
-                run = Run {
-                    solve_secs: run.solve_secs + second.solve_secs,
-                    result: LsmrResult {
-                        iterations: done + second.result.iterations,
-                        ..second.result
-                    },
-                };
-            }
-            let solution = system.finish(rhs, run)?;
-            let prepared = self.reduced.elimination.prepared();
-            return Ok(solve_result(
-                prepared,
-                &self.slot,
-                vec![solution],
-                0.0,
-                start,
-            ));
-        }
         if let (Some(coarse), PrecondSlot::Static { map: Some(map), .. }) =
             (&self.coarse, &self.slot)
         {
