@@ -3,11 +3,7 @@ use std::sync::Arc;
 
 use rayon::prelude::*;
 
-use approx_chol::Side;
-
-use super::factor_pairs::{PairMatrix, PairSubdomains};
 use super::{PreparedDesign, PreparedTerm};
-use crate::channel::ChannelPair;
 use crate::linalg::GramBasisWorkspace;
 
 /// Where grouped row `p` came from: itself when the levels were already sorted.
@@ -396,68 +392,6 @@ fn kept_channels<'a>(prepared: &'a PreparedDesign<'a>, eliminated: usize) -> Vec
         start += term.term.n_dofs();
     }
     channels
-}
-
-/// Which factor pairs the reduced subdomains keep.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Pairs {
-    /// Every pair: Schur complements plus the retained pairs' Grams, partition-weighted.
-    All,
-    /// Only the pairs split by the eliminated factor: block Jacobi on `S`.
-    SchurOnly,
-}
-
-/// Subdomains over the kept coefficients: the eliminated term's pairs factor their complement.
-pub(crate) struct ReducedPairs<'e> {
-    pub(crate) elimination: &'e Elimination<'e>,
-    pub(crate) pairs: Pairs,
-    pub(crate) scales: Option<&'e PieceScales>,
-}
-
-/// Per kept coefficient, `(S_ll / piece_ll)^{-γ}`: one vector for the retained Grams, one per eliminated column.
-pub(crate) struct PieceScales {
-    pub(crate) gram: Arc<Vec<f64>>,
-    pub(crate) complement: Vec<Arc<Vec<f64>>>,
-}
-
-impl PairSubdomains for ReducedPairs<'_> {
-    fn matrix(&self, pair: ChannelPair) -> Option<PairMatrix> {
-        let term = self.elimination.term;
-        match (pair.rows.term == term, pair.cols.term == term) {
-            (true, _) => Some(PairMatrix::Complement(Side::Right)),
-            (_, true) => Some(PairMatrix::Complement(Side::Left)),
-            _ if self.pairs == Pairs::SchurOnly => None,
-            _ => Some(PairMatrix::Gram),
-        }
-    }
-
-    fn dof(&self, dof: usize) -> usize {
-        let removed = &self.elimination.removed;
-        debug_assert!(!removed.contains(&dof), "a kept coefficient");
-        if dof >= removed.end {
-            dof - removed.len()
-        } else {
-            dof
-        }
-    }
-
-    fn n_dofs(&self, _: &PreparedDesign<'_>) -> usize {
-        self.elimination.n_kept()
-    }
-
-    /// Unlike the full design's, slope overlaps do not slow the reduced solve under `1/√c`.
-    fn partition_weighted(&self, _: &PreparedDesign<'_>) -> bool {
-        true
-    }
-
-    fn piece_scale(&self, pair: ChannelPair) -> Option<Arc<Vec<f64>>> {
-        let (scales, term) = (self.scales?, self.elimination.term);
-        Some(match (pair.rows.term == term, pair.cols.term == term) {
-            (true, _) => scales.complement[pair.rows.column].clone(),
-            (_, true) => scales.complement[pair.cols.column].clone(),
-            _ => scales.gram.clone(),
-        })
-    }
 }
 
 #[cfg(test)]

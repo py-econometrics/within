@@ -19,6 +19,9 @@ use super::coarse::CoarseRung;
 use crate::domain::elimination::{Elimination, GroupedRows};
 use crate::domain::{row_weight, Column, PreparedTerm, Term};
 
+/// Below this many entries a product is faster on one thread than fanned out over rayon.
+const PARALLEL_NNZ: usize = 1 << 18;
+
 /// Sparse `n × m` held both ways: by column for `Mᵀx`, by nonempty row for `M c`.
 struct TwoWay {
     col_ptr: Vec<usize>,
@@ -125,16 +128,32 @@ impl TwoWay {
     }
 
     fn t_mul(&self, x: &[f64], out: &mut [f64]) {
-        out.par_iter_mut().enumerate().for_each(|(c, o)| {
+        let column = |(c, o): (usize, &mut f64)| {
             let span = self.col_ptr[c]..self.col_ptr[c + 1];
             *o = (self.col_idx[span.clone()].iter().zip(&self.col_val[span]))
                 .map(|(&r, &v)| v * x[r as usize])
                 .sum();
-        });
+        };
+        match self.nnz() < PARALLEL_NNZ {
+            true => out.iter_mut().enumerate().for_each(column),
+            false => out.par_iter_mut().enumerate().for_each(column),
+        }
     }
 
     fn mul_add(&self, c: &[f64], alpha: f64, out: &mut [f64]) {
         const BLOCK: usize = 4096;
+        let row = |i: usize| -> f64 {
+            let span = self.row_ptr[i]..self.row_ptr[i + 1];
+            (self.row_idx[span.clone()].iter().zip(&self.row_val[span]))
+                .map(|(&k, &v)| v * c[k as usize])
+                .sum()
+        };
+        if self.nnz() < PARALLEL_NNZ {
+            for (i, &r) in self.rows.iter().enumerate() {
+                out[r as usize] += alpha * row(i);
+            }
+            return;
+        }
         out.par_chunks_mut(BLOCK)
             .enumerate()
             .for_each(|(j, block)| {
@@ -144,11 +163,7 @@ impl TwoWay {
                     .rows
                     .partition_point(|&r| (r as usize) < base + block.len());
                 for i in lo..hi {
-                    let span = self.row_ptr[i]..self.row_ptr[i + 1];
-                    let s: f64 = (self.row_idx[span.clone()].iter().zip(&self.row_val[span]))
-                        .map(|(&k, &v)| v * c[k as usize])
-                        .sum();
-                    block[self.rows[i] as usize - base] += alpha * s;
+                    block[self.rows[i] as usize - base] += alpha * row(i);
                 }
             });
     }
@@ -593,26 +608,7 @@ pub(crate) struct ReducedCoarse {
     sz: TwoWay,
     symbolic: SymbolicCholesky<u32>,
     l_values: Vec<f64>,
-    /// Nanoseconds per apply stage: Zᵀ, solve, SZ, inner, SZᵀ, solve, Z; and apply count.
-    timers: [std::sync::atomic::AtomicU64; 8],
-}
-
-impl Drop for ReducedCoarse {
-    fn drop(&mut self) {
-        if std::env::var_os("WITHIN_REDUCED_RIGID_STATS").is_some() {
-            let t: Vec<u64> = self
-                .timers
-                .iter()
-                .map(|a| a.load(std::sync::atomic::Ordering::Relaxed))
-                .collect();
-            let calls = t[7].max(1) as f64;
-            let ms = |i: usize| t[i] as f64 / calls / 1e6;
-            eprintln!(
-                "reduced_coarse_apply: calls={} ms/apply Zt={:.3} solve1={:.3} SZ={:.3} inner={:.3} SZt={:.3} solve2={:.3} Z={:.3}",
-                t[7], ms(0), ms(1), ms(2), ms(3), ms(4), ms(5), ms(6)
-            );
-        }
-    }
+    par: Par,
 }
 
 impl ReducedCoarse {
@@ -930,17 +926,21 @@ impl ReducedCoarse {
             dynamic_regularization_delta: d_max,
             dynamic_regularization_epsilon: 1e-12 * d_max,
         };
+        // `WITHIN_REDUCED_COARSE_PAR` runs the factorization and solves on the rayon pool.
+        let par = match std::env::var_os("WITHIN_REDUCED_COARSE_PAR") {
+            Some(_) => Par::rayon(0),
+            None => Par::Seq,
+        };
         let mut l_values = vec![0.0; symbolic.len_val()];
-        let mut mem = MemBuffer::new(
-            symbolic.factorize_numeric_ldlt_scratch::<f64>(coarse_par(), Default::default()),
-        );
+        let mut mem =
+            MemBuffer::new(symbolic.factorize_numeric_ldlt_scratch::<f64>(par, Default::default()));
         symbolic
             .factorize_numeric_ldlt(
                 &mut l_values,
                 e_lower.as_ref(),
                 Side::Lower,
                 regularization,
-                coarse_par(),
+                par,
                 MemStack::new(&mut mem),
                 Default::default(),
             )
@@ -952,74 +952,42 @@ impl ReducedCoarse {
             sz,
             symbolic,
             l_values,
-            timers: Default::default(),
+            par,
         })
     }
 
     fn solve_coarse(&self, v: &mut [f64]) {
-        let mut buf = MemBuffer::new(self.symbolic.solve_in_place_scratch::<f64>(1, coarse_par()));
+        let mut buf = MemBuffer::new(self.symbolic.solve_in_place_scratch::<f64>(1, self.par));
         LdltRef::new(&self.symbolic, &self.l_values).solve_in_place_with_conj(
             Conj::No,
             MatMut::from_column_major_slice_mut(v, self.m, 1),
-            coarse_par(),
+            self.par,
             MemStack::new(&mut buf),
         );
-    }
-
-    /// Balancing form around `inner`: `Z E⁻¹ Zᵀx + (I − Z E⁻¹ ZᵀS) B (I − S Z E⁻¹ Zᵀ) x`.
-    fn apply_balanced(
-        &self,
-        inner: &dyn Operator,
-        x: &[f64],
-        y: &mut [f64],
-    ) -> Result<(), SolveError> {
-        use std::sync::atomic::Ordering::Relaxed;
-        let mut clock = std::time::Instant::now();
-        let mut lap = |i: usize| {
-            let now = std::time::Instant::now();
-            self.timers[i].fetch_add((now - clock).as_nanos() as u64, Relaxed);
-            clock = now;
-        };
-        let mut c = vec![0.0; self.m];
-        self.z.t_mul(x, &mut c);
-        lap(0);
-        self.solve_coarse(&mut c);
-        lap(1);
-        let mut t = x.to_vec();
-        self.sz.mul_add(&c, -1.0, &mut t);
-        lap(2);
-        inner.apply(&t, y)?;
-        lap(3);
-        let mut d = vec![0.0; self.m];
-        self.sz.t_mul(y, &mut d);
-        lap(4);
-        self.solve_coarse(&mut d);
-        lap(5);
-        for (ci, di) in c.iter_mut().zip(&d) {
-            *ci -= di;
-        }
-        self.z.mul_add(&c, 1.0, y);
-        lap(6);
-        self.timers[7].fetch_add(1, Relaxed);
-        Ok(())
     }
 }
 
 impl CoarseRung for ReducedCoarse {
+    /// Balancing form around `inner`: `Z E⁻¹ Zᵀx + (I − Z E⁻¹ ZᵀS) B (I − S Z E⁻¹ Zᵀ) x`.
     fn apply_around(
         &self,
         inner: &dyn Operator,
         x: &[f64],
         y: &mut [f64],
     ) -> Result<(), SolveError> {
-        self.apply_balanced(inner, x, y)
-    }
-}
-
-/// `WITHIN_REDUCED_COARSE_PAR=1` runs the coarse factorization and solves on the rayon pool.
-fn coarse_par() -> Par {
-    match std::env::var_os("WITHIN_REDUCED_COARSE_PAR") {
-        Some(_) => Par::rayon(0),
-        None => Par::Seq,
+        let mut c = vec![0.0; self.m];
+        self.z.t_mul(x, &mut c);
+        self.solve_coarse(&mut c);
+        let mut t = x.to_vec();
+        self.sz.mul_add(&c, -1.0, &mut t);
+        inner.apply(&t, y)?;
+        let mut d = vec![0.0; self.m];
+        self.sz.t_mul(y, &mut d);
+        self.solve_coarse(&mut d);
+        for (ci, di) in c.iter_mut().zip(&d) {
+            *ci -= di;
+        }
+        self.z.mul_add(&c, 1.0, y);
+        Ok(())
     }
 }

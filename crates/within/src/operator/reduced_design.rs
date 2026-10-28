@@ -179,6 +179,7 @@ pub(crate) struct ColumnMoments {
 }
 
 pub(crate) trait ReducedDesign: Operator {
+    /// The design as a plain operator: trait upcasting needs Rust 1.86, past the MSRV.
     fn operator(&self) -> &dyn Operator;
     fn projected_rhs(&self, b: &[f64]) -> Vec<f64>;
     fn column_moments(&self) -> ColumnMoments;
@@ -187,8 +188,6 @@ pub(crate) trait ReducedDesign: Operator {
     }
     /// The eliminated coefficients fitting `b − W½ D_kept x`, laid out like the removed slots.
     fn recover(&self, b: &[f64], x: &[f64], coefficients: &mut [f64]);
-    #[cfg(test)]
-    fn n_tasks(&self) -> usize;
 }
 
 pub(crate) fn build(e: &Elimination<'_>) -> Box<dyn ReducedDesign> {
@@ -423,10 +422,5 @@ impl<P: LevelProjection> ReducedDesign for SegmentedDesign<P> {
                 coefficients[j * n + l] = value;
             }
         }
-    }
-
-    #[cfg(test)]
-    fn n_tasks(&self) -> usize {
-        self.tasks.0.len()
     }
 }

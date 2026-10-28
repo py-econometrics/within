@@ -242,7 +242,7 @@ fn assert_reproduces_reference(prepared: &PreparedDesign<'_>, slopes: bool) {
     let (reference, fast) = (ProjectedDesign::new(&e), build(&e));
     assert_eq!(e.eliminated_loadings().iter().any(Option::is_some), slopes);
     let order = &e.rows().order;
-    assert!(fast.n_tasks() > 1);
+    assert!(LevelTasks::build(&e.rows().starts).0.len() > 1);
     let x: Vec<f64> = (0..fast.ncols()).map(|i| (i as f64).sin()).collect();
     let u: Vec<f64> = (0..n).map(|i| (i as f64 * 0.7).cos()).collect();
     let (mut expected, mut got) = (vec![0.0; n], vec![0.0; n]);

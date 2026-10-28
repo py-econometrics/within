@@ -8,11 +8,16 @@ use super::{
     batch_result, solve_all, solve_result, Formulation, LsmrOptions, PreparedRhs, RhsSolution, Run,
     SolveResult, Solver,
 };
-use crate::domain::elimination::{Elimination, Pairs, PieceScales, ReducedPairs};
+use approx_chol::Side;
+
+use crate::channel::ChannelPair;
+use crate::domain::elimination::Elimination;
+use crate::domain::factor_pairs::PairMatrix;
+use crate::domain::{PairSubdomains, PreparedDesign};
 use crate::linalg::dot;
 use crate::operator::coarse::CoarseRung;
 use crate::operator::reduced_coarse::ReducedCoarse;
-use crate::operator::reduced_design::{self, ReducedDesign};
+use crate::operator::reduced_design::{self, ColumnMoments, ReducedDesign};
 use crate::operator::schwarz::{build_schwarz, Preconditioner, SchwarzConfig};
 use crate::{
     BatchSolveResult, BuildError, BuildWarning, LocalSolverConfig, PreconditionerConfig,
@@ -117,6 +122,99 @@ fn rigid_k() -> f64 {
         .unwrap_or(150.0)
 }
 
+/// Which factor pairs the reduced subdomains keep.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pairs {
+    /// Every pair: Schur complements plus the retained pairs' Grams, partition-weighted.
+    All,
+    /// Only the pairs split by the eliminated factor: block Jacobi on `S`.
+    SchurOnly,
+}
+
+/// Subdomains over the kept coefficients: the eliminated term's pairs factor their complement.
+struct ReducedPairs<'e> {
+    elimination: &'e Elimination<'e>,
+    pairs: Pairs,
+    scales: Option<&'e PieceScales>,
+}
+
+/// Per kept coefficient, `(S_ll / piece_ll)^{-γ}`: one vector for the retained Grams, one per eliminated column.
+struct PieceScales {
+    gram: Arc<Vec<f64>>,
+    complement: Vec<Arc<Vec<f64>>>,
+}
+
+impl PieceScales {
+    /// `γ = 0` keeps a piece's plain weight; so does a coefficient inside the eliminated span.
+    fn new(moments: &ColumnMoments, gamma_gram: f64, gamma_complement: f64) -> Self {
+        let scale = |piece: &[f64], g: f64| -> Arc<Vec<f64>> {
+            Arc::new(
+                (moments.diagonal.iter().zip(piece))
+                    .map(|(&s, &p)| {
+                        if s > 0.0 && p > s * 1e-12 && g != 0.0 {
+                            (s / p).powf(-g)
+                        } else {
+                            1.0
+                        }
+                    })
+                    .collect(),
+            )
+        };
+        let complement = (moments.single_removal.iter())
+            .map(|removed| {
+                let piece: Vec<f64> = (moments.norms.iter().zip(removed))
+                    .map(|(a, r)| a - r)
+                    .collect();
+                scale(&piece, gamma_complement)
+            })
+            .collect();
+        Self {
+            gram: scale(&moments.norms, gamma_gram),
+            complement,
+        }
+    }
+}
+
+impl PairSubdomains for ReducedPairs<'_> {
+    fn matrix(&self, pair: ChannelPair) -> Option<PairMatrix> {
+        let term = self.elimination.term();
+        match (pair.rows.term == term, pair.cols.term == term) {
+            (true, _) => Some(PairMatrix::Complement(Side::Right)),
+            (_, true) => Some(PairMatrix::Complement(Side::Left)),
+            _ if self.pairs == Pairs::SchurOnly => None,
+            _ => Some(PairMatrix::Gram),
+        }
+    }
+
+    fn dof(&self, dof: usize) -> usize {
+        let removed = self.elimination.removed();
+        debug_assert!(!removed.contains(&dof), "a kept coefficient");
+        if dof >= removed.end {
+            dof - removed.len()
+        } else {
+            dof
+        }
+    }
+
+    fn n_dofs(&self, _: &PreparedDesign<'_>) -> usize {
+        self.elimination.n_kept()
+    }
+
+    /// Unlike the full design's, slope overlaps do not slow the reduced solve under `1/√c`.
+    fn partition_weighted(&self, _: &PreparedDesign<'_>) -> bool {
+        true
+    }
+
+    fn piece_scale(&self, pair: ChannelPair) -> Option<Arc<Vec<f64>>> {
+        let (scales, term) = (self.scales?, self.elimination.term());
+        Some(match (pair.rows.term == term, pair.cols.term == term) {
+            (true, _) => scales.complement[pair.rows.column].clone(),
+            (_, true) => scales.complement[pair.cols.column].clone(),
+            _ => scales.gram.clone(),
+        })
+    }
+}
+
 /// Reduced LSMR with additive local factor-pair Schur inverses.
 pub struct PairSchurPrototype<'a> {
     reduced: Reduced<'a>,
@@ -194,43 +292,8 @@ impl Solver<'_> {
             gamma("WITHIN_REDUCED_GAMMA"),
             gamma("WITHIN_REDUCED_GAMMA_C"),
         );
-        let scales = (gamma_g != 0.0 || gamma_c != 0.0).then(|| {
-            let moments = design.column_moments();
-            let (diagonal, norms) = (&moments.diagonal, &moments.norms);
-            // A coefficient inside the eliminated span has S_ll = 0 and keeps its plain weight.
-            let scale = |piece: &[f64], g: f64| -> Arc<Vec<f64>> {
-                Arc::new(
-                    (diagonal.iter().zip(piece))
-                        .map(|(&s, &p)| {
-                            if s > 0.0 && p > s * 1e-12 && g != 0.0 {
-                                (s / p).powf(-g)
-                            } else {
-                                1.0
-                            }
-                        })
-                        .collect(),
-                )
-            };
-            let complement = match gamma_c {
-                0.0 => {
-                    let ones = Arc::new(vec![1.0; norms.len()]);
-                    (0..elimination.width())
-                        .map(|_| Arc::clone(&ones))
-                        .collect()
-                }
-                g => (moments.single_removal.iter())
-                    .map(|removed| {
-                        let piece: Vec<f64> =
-                            norms.iter().zip(removed).map(|(a, r)| a - r).collect();
-                        scale(&piece, g)
-                    })
-                    .collect(),
-            };
-            PieceScales {
-                gram: scale(norms, gamma_g),
-                complement,
-            }
-        });
+        let scales = (gamma_g != 0.0 || gamma_c != 0.0)
+            .then(|| PieceScales::new(&design.column_moments(), gamma_g, gamma_c));
         let reduced = Reduced {
             elimination,
             design,
