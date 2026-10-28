@@ -15,8 +15,8 @@ use crate::domain::elimination::Elimination;
 use crate::domain::factor_pairs::PairMatrix;
 use crate::domain::{PairSubdomains, PreparedDesign};
 use crate::linalg::dot;
-use crate::operator::coarse::CoarseRung;
-use crate::operator::reduced_coarse::ReducedCoarse;
+use crate::operator::coarse::{CoarseRung, Coarsened};
+use crate::operator::reduced_coarse::{Declined, ReducedCoarse};
 use crate::operator::reduced_design::{self, ColumnMoments, ReducedDesign};
 use crate::operator::schwarz::{build_schwarz, Preconditioner, SchwarzConfig};
 use crate::{
@@ -109,17 +109,30 @@ impl Formulation for Reduced<'_> {
 }
 
 impl CoarseSource for Reduced<'_> {
+    /// Gluing more spells coarsens the space and thins the factor: double `K` until it fits.
+    /// Past `8 K` gluing saturates and `κ ~ K` erodes what the rung buys.
     fn build_coarse(&self) -> Option<Box<dyn CoarseRung>> {
-        let coarse = ReducedCoarse::build(&self.elimination, rigid_k())?;
-        Some(Box::new(coarse))
+        let first = rigid_k();
+        let (mut k, mut glued) = (first, None);
+        loop {
+            match ReducedCoarse::build(&self.elimination, k) {
+                Ok(coarse) => return Some(Box::new(coarse)),
+                Err(Declined::OverBudget { glued: now })
+                    if k < 8.0 * first && glued != Some(now) =>
+                {
+                    (k, glued) = (2.0 * k, Some(now));
+                }
+                Err(_) => return None,
+            }
+        }
     }
 }
 
-/// Spell-gluing ratio `K`, `WITHIN_REDUCED_RIGID` overriding 150.
+/// Initial spell-gluing ratio `K`, `WITHIN_REDUCED_RIGID` overriding 20.
 fn rigid_k() -> f64 {
     (std::env::var("WITHIN_REDUCED_RIGID").ok())
         .and_then(|k| k.parse::<f64>().ok())
-        .unwrap_or(150.0)
+        .unwrap_or(20.0)
 }
 
 /// Which factor pairs the reduced subdomains keep.
@@ -339,6 +352,116 @@ impl PairSchurPrototype<'_> {
         Ok(self.map().apply(x, y)?)
     }
 
+    /// Ritz pairs `(θ, residual bound)` of `M S` (`M` the map with its coarse rung) via Lanczos on `Ã M Ãᵀ`.
+    pub fn ritz_values(&self, steps: usize) -> Result<Vec<(f64, f64)>, WithinError> {
+        let (diag, off) = self.with_map(|m| self.lanczos(m, steps, |_, _| {}))?;
+        let (theta, u) = tridiagonal_eigen(&diag, &off);
+        let (k, tail) = (diag.len(), off.get(diag.len() - 1).copied().unwrap_or(0.0));
+        Ok((0..k)
+            .map(|j| (theta[j], tail * u[(k - 1, j)].abs()))
+            .collect())
+    }
+
+    /// Eigenvectors `x = M Ãᵀ u` of `M S` for the Ritz indices `which` of [`Self::ritz_values`],
+    /// replayed, with `‖M S x − θ x‖ / ‖θ x‖`.
+    pub fn ritz_vectors(
+        &self,
+        steps: usize,
+        which: &[usize],
+    ) -> Result<Vec<(Vec<f64>, f64)>, WithinError> {
+        self.with_map(|m| {
+            let (diag, off) = self.lanczos(m, steps, |_, _| {})?;
+            let (theta, coef) = tridiagonal_eigen(&diag, &off);
+            let rows = self.reduced.design.nrows();
+            let mut u = vec![vec![0.0; rows]; which.len()];
+            self.lanczos(m, diag.len(), |j, v| {
+                for (u, &i) in u.iter_mut().zip(which) {
+                    let c = coef[(j, i)];
+                    u.iter_mut().zip(v).for_each(|(u, v)| *u += c * v);
+                }
+            })?;
+            let (n, design) = (self.n_reduced(), &self.reduced.design);
+            let (mut g, mut r, mut y) = (vec![0.0; n], vec![0.0; rows], vec![0.0; n]);
+            (u.iter().zip(which))
+                .map(|(u, &i)| {
+                    let mut x = vec![0.0; n];
+                    design.apply_adjoint(u, &mut g)?;
+                    m.apply(&g, &mut x)?;
+                    design.apply(&x, &mut r)?;
+                    design.apply_adjoint(&r, &mut g)?;
+                    m.apply(&g, &mut y)?;
+                    y.iter_mut().zip(&x).for_each(|(y, x)| *y -= theta[i] * x);
+                    let residual = (dot(&y, &y) / dot(&x, &x)).sqrt() / theta[i];
+                    Ok((x, residual))
+                })
+                .collect()
+        })
+    }
+
+    /// `(levels, columns)` of each kept term, in the order of the reduced coefficients.
+    pub fn kept_terms(&self) -> Vec<(usize, usize)> {
+        let e = &self.reduced.elimination;
+        (e.prepared().design.terms.iter().enumerate())
+            .filter(|&(t, _)| t != e.term())
+            .map(|(_, term)| (term.n_levels(), term.n_columns()))
+            .collect()
+    }
+
+    fn with_map<R>(&self, f: impl FnOnce(&dyn Operator) -> R) -> R {
+        let PrecondSlot::Static {
+            map: Some(fixed), ..
+        } = &self.slot
+        else {
+            panic!("Ritz pairs need a fixed map");
+        };
+        match fixed.coarse.as_deref() {
+            Some(coarse) => f(&Coarsened {
+                inner: &fixed.inner,
+                coarse,
+            }),
+            None => f(&fixed.inner),
+        }
+    }
+
+    /// Plain Lanczos on `Ã M Ãᵀ` from a fixed start; `visit(j, v_j)` sees each basis vector.
+    fn lanczos(
+        &self,
+        m: &dyn Operator,
+        steps: usize,
+        mut visit: impl FnMut(usize, &[f64]),
+    ) -> Result<(Vec<f64>, Vec<f64>), WithinError> {
+        let (n, design) = (self.n_reduced(), &self.reduced.design);
+        // `S`'s gauge null space never enters: every product ends in `range(Ã)`.
+        let rows = design.nrows();
+        let (mut g, mut mg) = (vec![0.0; n], vec![0.0; n]);
+        let x0: Vec<f64> = (0..n).map(|i| (i as f64).sin()).collect();
+        let mut v = vec![0.0; rows];
+        design.apply(&x0, &mut v)?;
+        let norm = dot(&v, &v).sqrt();
+        v.iter_mut().for_each(|a| *a /= norm);
+        let (mut v_prev, mut w) = (vec![0.0; rows], vec![0.0; rows]);
+        let (mut diag, mut off) = (Vec::new(), Vec::new());
+        let mut beta = 0.0;
+        for j in 0..steps {
+            visit(j, &v);
+            design.apply_adjoint(&v, &mut g)?;
+            m.apply(&g, &mut mg)?;
+            design.apply(&mg, &mut w)?;
+            w.iter_mut().zip(&v_prev).for_each(|(w, p)| *w -= beta * p);
+            let alpha = dot(&v, &w);
+            w.iter_mut().zip(&v).for_each(|(w, v)| *w -= alpha * v);
+            diag.push(alpha);
+            beta = dot(&w, &w).sqrt();
+            if beta.partial_cmp(&(1e-12 * alpha.abs())) != Some(std::cmp::Ordering::Greater) {
+                break;
+            }
+            off.push(beta);
+            std::mem::swap(&mut v_prev, &mut v);
+            v.iter_mut().zip(&w).for_each(|(v, w)| *v = w / beta);
+        }
+        Ok((diag, off))
+    }
+
     /// mlsmr on the projected design; `local_size` applies. Setup is the RHS projection plus any build.
     pub fn solve_lsmr(&self, y: &[f64], options: &LsmrOptions) -> Result<SolveResult, WithinError> {
         let start = Instant::now();
@@ -362,6 +485,18 @@ impl PairSchurPrototype<'_> {
             prepared, &self.slot, solutions, build_secs, start,
         ))
     }
+}
+
+fn tridiagonal_eigen(diag: &[f64], off: &[f64]) -> (Vec<f64>, faer::Mat<f64>) {
+    let k = diag.len();
+    let t = faer::Mat::<f64>::from_fn(k, k, |i, j| match i.abs_diff(j) {
+        0 => diag[i],
+        1 => off[i.min(j)],
+        _ => 0.0,
+    });
+    let evd = (t.self_adjoint_eigen(faer::Side::Lower)).expect("tridiagonal eigenvalues");
+    let theta = (0..k).map(|j| evd.S()[j]).collect();
+    (theta, evd.U().to_owned())
 }
 
 #[cfg(test)]

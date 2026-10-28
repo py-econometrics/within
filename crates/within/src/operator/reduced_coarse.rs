@@ -431,13 +431,19 @@ fn row_gram(
     }
 }
 
+const PENCIL_EDGES: [f64; 12] = [
+    2.0, 4.0, 8.0, 12.0, 14.0, 16.0, 18.0, 20.0, 30.0, 50.0, 150.0, 1e3,
+];
+
 /// Spells whose Gram is within `k` of both levels' own Grams, as `(eliminated, anchor)` levels.
 fn glued_spells(
     rows: &GroupedRows,
     anchor: &Anchor<'_>,
     anchor_gram: &[f64],
     k: f64,
+    histogram: Option<&[std::sync::atomic::AtomicUsize]>,
 ) -> Vec<(u32, u32)> {
+    let bin = |v: f64| PENCIL_EDGES.iter().take_while(|&&e| v > e).count();
     let p = rows.eliminated.width;
     let eliminated = |r: usize, j: usize| rows.eliminated.loading(r, j);
     let anchored = |r: usize, j: usize| anchor.loading(rows, r, j);
@@ -462,6 +468,9 @@ fn glued_spells(
                     &anchor_gram[lf * p * p..][..p * p],
                     p,
                 ));
+                if let Some(hist) = histogram {
+                    hist[bin(worst)].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
                 if worst <= k {
                     out.push((lw as u32, lf as u32));
                 }
@@ -640,6 +649,15 @@ fn lower_csc(m: usize, triplets: Vec<(u32, u32, f64)>) -> (Vec<u32>, Vec<u32>, V
 }
 
 /// The coarse space `Z` over the kept coefficients and the LDLᵀ of `ZᵀSZ = (ÃZ)ᵀ(ÃZ)`.
+/// Why no coarse rung was built; a larger gluing ratio can only cure `OverBudget`.
+pub(crate) enum Declined {
+    NoCoarseSpace,
+    /// With the number of spells glued, which a larger ratio must raise to help.
+    OverBudget {
+        glued: usize,
+    },
+}
+
 pub(crate) struct ReducedCoarse {
     m: usize,
     z: TwoWay,
@@ -649,6 +667,8 @@ pub(crate) struct ReducedCoarse {
     par: Par,
     /// Wide levels' rows: the factor is of `[G s; sᵀ E₀]`, whose Schur complement is `E`.
     hubs: Option<HubCorrection>,
+    /// The factor is of `D E D` with `D` this diagonal.
+    scale: Vec<f64>,
 }
 
 /// Wide levels' `s = EᵀW DZ` rows over the live columns, their `G` and `G⁻`, in level order.
@@ -776,9 +796,9 @@ impl HubCorrection {
 }
 
 impl ReducedCoarse {
-    /// `None` without a kept term sharing the eliminated term's column layout, when the
-    /// components cover more than half the levels, or when `E` or its factor exceeds `8 · n_obs` values.
-    pub(crate) fn build(e: &Elimination<'_>, k: f64) -> Option<Self> {
+    /// Declines without a kept term sharing the eliminated term's column layout, when the
+    /// components cover more than half the levels, or when its factor exceeds `n_obs` values.
+    pub(crate) fn build(e: &Elimination<'_>, k: f64) -> Result<Self, Declined> {
         let started = std::time::Instant::now();
         let stats = std::env::var_os("WITHIN_REDUCED_RIGID_STATS").is_some();
         let stage = |name: &str| {
@@ -791,11 +811,29 @@ impl ReducedCoarse {
         };
         let n_obs = e.prepared().design.n_obs();
         let p = e.width();
-        let anchor = Anchor::find(e)?;
+        let anchor = Anchor::find(e).ok_or(Declined::NoCoarseSpace)?;
         let rows = &**e.rows();
         let (na, nb) = (rows.n_levels(), anchor.n_levels());
         let (anchor_gram, gauge) = anchor.gauges(e.prepared().sqrt_weights(), p);
-        let glued = glued_spells(rows, &anchor, &anchor_gram, k);
+        let histogram: Vec<std::sync::atomic::AtomicUsize> = (0..=PENCIL_EDGES.len())
+            .map(|_| Default::default())
+            .collect();
+        let glued = glued_spells(
+            rows,
+            &anchor,
+            &anchor_gram,
+            k,
+            stats.then_some(&histogram[..]),
+        );
+        if stats {
+            let counts: Vec<String> = (histogram.iter().enumerate())
+                .map(|(i, c)| match PENCIL_EDGES.get(i) {
+                    Some(e) => format!("<={e}:{}", c.load(std::sync::atomic::Ordering::Relaxed)),
+                    None => format!(">1e3:{}", c.load(std::sync::atomic::Ordering::Relaxed)),
+                })
+                .collect();
+            eprintln!("reduced_rigid: pencil {}", counts.join(" "));
+        }
         stage("spells");
 
         let mut parent: Vec<u32> = (0..(na + nb) as u32).collect();
@@ -819,12 +857,12 @@ impl ReducedCoarse {
         if 2 * n_components > na + nb {
             if stats {
                 eprintln!(
-                    "reduced_rigid: glued={} components={n_components} levels={} declined",
+                    "reduced_rigid: k={k} glued={} components={n_components} levels={} declined",
                     glued.len(),
                     na + nb
                 );
             }
-            return None;
+            return Err(Declined::NoCoarseSpace);
         }
         stage("components");
         // Coarse index per component touching the anchor side.
@@ -861,7 +899,11 @@ impl ReducedCoarse {
             if stats {
                 eprintln!("reduced_rigid: anchor_components={n_fc} none split, declined");
             }
-            return None;
+            return Err(Declined::NoCoarseSpace);
+        }
+        if let Some(path) = std::env::var_os("WITHIN_REDUCED_RIGID_COMPONENTS") {
+            let bytes: Vec<u8> = anchor_comp.iter().flat_map(|c| c.to_le_bytes()).collect();
+            std::fs::write(path, bytes).expect("component dump");
         }
         let m = n_fc as usize * p;
         // A level touching `t` columns adds a dense `t × t` block to `E`; a wide one (`t² > 2pm`)
@@ -876,11 +918,12 @@ impl ReducedCoarse {
                 false => comps.len() * p * (comps.len() * p + 1) / 2,
             })
             .sum();
-        if e_bound > 8 * n_obs {
+        // `E` overcounts by 3–50×, so this only turns away factors far past the budget below.
+        if e_bound > 2 * n_obs {
             if stats {
                 eprintln!("reduced_rigid: E_bound={e_bound} n_obs={n_obs} declined");
             }
-            return None;
+            return Err(Declined::OverBudget { glued: glued.len() });
         }
 
         let mut norm2 = vec![0.0f64; m];
@@ -932,7 +975,7 @@ impl ReducedCoarse {
         let (n_all, m) = (m, live as usize);
         let dropped = n_all - m;
         if m == 0 {
-            return None;
+            return Err(Declined::NoCoarseSpace);
         }
         let n = e.n_kept();
         let mut z_entries = Vec::new();
@@ -970,7 +1013,34 @@ impl ReducedCoarse {
         }
         let rank = hubs.rank();
         let dim = m + rank;
-        let (col_ptr, row_idx, values) = lower_csc(dim, e_triplets);
+        let (col_ptr, row_idx, mut values) = lower_csc(dim, e_triplets);
+        if let Some(path) = std::env::var_os("WITHIN_REDUCED_RIGID_DUMP_E") {
+            let mut out: Vec<u8> = (dim as u64).to_le_bytes().to_vec();
+            for c in 0..dim {
+                for k in col_ptr[c] as usize..col_ptr[c + 1] as usize {
+                    out.extend((c as u64).to_le_bytes());
+                    out.extend((row_idx[k] as u64).to_le_bytes());
+                    out.extend(values[k].to_le_bytes());
+                }
+            }
+            std::fs::write(path, out).expect("E dump");
+        }
+        // Unit diagonal: null pivots then sit at rounding level, far below any live mode.
+        let mut scale = vec![1.0; dim];
+        for c in 0..dim {
+            let first = col_ptr[c] as usize;
+            if first < col_ptr[c + 1] as usize
+                && row_idx[first] as usize == c
+                && values[first] > 0.0
+            {
+                scale[c] = values[first].sqrt().recip();
+            }
+        }
+        for c in 0..dim {
+            for k in col_ptr[c] as usize..col_ptr[c + 1] as usize {
+                values[k] *= scale[c] * scale[row_idx[k] as usize];
+            }
+        }
         let d_max = (0..dim)
             .filter_map(|c| {
                 let first = col_ptr[c] as usize;
@@ -988,11 +1058,11 @@ impl ReducedCoarse {
             SymmetricOrdering::Amd,
             CholeskySymbolicParams::default(),
         )
-        .ok()?;
-        let fits_budget = symbolic.len_val() <= 8 * n_obs;
+        .map_err(|_| Declined::NoCoarseSpace)?;
+        let fits_budget = symbolic.len_val() <= n_obs;
         if stats {
             eprintln!(
-                "reduced_rigid: glued={} components={n_components} anchor_components={n_fc} m={m} hub_rank={rank} null_dropped={dropped} Z_nnz={} E_nnz={e_nnz} L_nnz={} fits={fits_budget} build_s={:.3}",
+                "reduced_rigid: k={k} e_bound={e_bound} glued={} components={n_components} anchor_components={n_fc} m={m} hub_rank={rank} null_dropped={dropped} Z_nnz={} E_nnz={e_nnz} L_nnz={} fits={fits_budget} build_s={:.3}",
                 glued.len(),
                 z.nnz(),
                 symbolic.len_val(),
@@ -1000,7 +1070,7 @@ impl ReducedCoarse {
             );
         }
         if !fits_budget {
-            return None;
+            return Err(Declined::OverBudget { glued: glued.len() });
         }
         // SZ = D_keptᵀ W½ U, one coarse column at a time over the levels touching its component.
         let mut comp_ptr = vec![0usize; n_fc as usize + 1];
@@ -1152,7 +1222,7 @@ impl ReducedCoarse {
         let regularization = LdltRegularization {
             dynamic_regularization_signs: Some(&signs),
             dynamic_regularization_delta: d_max,
-            dynamic_regularization_epsilon: 1e-12 * d_max,
+            dynamic_regularization_epsilon: 1e-10 * d_max,
         };
         // `WITHIN_REDUCED_COARSE_PAR` runs the factorization and solves on the rayon pool.
         let par = match std::env::var_os("WITHIN_REDUCED_COARSE_PAR") {
@@ -1172,12 +1242,12 @@ impl ReducedCoarse {
                 MemStack::new(&mut mem),
                 Default::default(),
             )
-            .ok()?;
+            .map_err(|_| Declined::NoCoarseSpace)?;
         stage("factored");
         if !l_values.iter().all(|v| v.is_finite()) {
-            return None;
+            return Err(Declined::NoCoarseSpace);
         }
-        Some(Self {
+        Ok(Self {
             m,
             z,
             sz,
@@ -1185,6 +1255,7 @@ impl ReducedCoarse {
             l_values,
             par,
             hubs: (rank > 0).then(|| hubs.into_correction(f)),
+            scale,
         })
     }
 
@@ -1209,6 +1280,7 @@ impl ReducedCoarse {
         let dim = self.m + self.hubs.as_ref().map_or(0, HubCorrection::rank);
         let mut x = v.to_vec();
         x.resize(dim, 0.0);
+        x.iter_mut().zip(&self.scale).for_each(|(x, s)| *x *= s);
         let mut buf = MemBuffer::new(self.symbolic.solve_in_place_scratch::<f64>(1, self.par));
         LdltRef::new(&self.symbolic, &self.l_values).solve_in_place_with_conj(
             Conj::No,
@@ -1216,6 +1288,7 @@ impl ReducedCoarse {
             self.par,
             MemStack::new(&mut buf),
         );
+        x.iter_mut().zip(&self.scale).for_each(|(x, s)| *x *= s);
         v.copy_from_slice(&x[..self.m]);
     }
 }
@@ -1425,7 +1498,7 @@ mod hub {
             PreparedDesign::new(design.into_design().unwrap(), data.weights.as_deref()).unwrap();
         let e = Elimination::new(&prepared);
         let start = std::time::Instant::now();
-        let Some(c) = ReducedCoarse::build(&e, 150.0) else {
+        let Ok(c) = ReducedCoarse::build(&e, 150.0) else {
             return format!("declined in {:.3}s", start.elapsed().as_secs_f64());
         };
         let build_s = start.elapsed().as_secs_f64();
