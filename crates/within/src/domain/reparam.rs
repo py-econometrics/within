@@ -13,8 +13,6 @@ pub(crate) struct TermReparam {
     /// The term's slopes in the solve basis, in coefficient-column order.
     pub(super) slopes: Vec<Vec<f64>>,
     transforms: Vec<LevelTransform>,
-    /// Directions the data cannot identify, ascending in `(level, column)`.
-    pub(super) unidentified: Vec<CoefficientPosition>,
 }
 
 /// One level's `u = W·(z − center)`, `W` row-major `rank × V`; an empty `w`
@@ -26,11 +24,12 @@ struct LevelTransform {
 }
 
 impl TermReparam {
-    /// `None` without slopes; unidentified directions become zero columns, so they solve to `0`.
+    /// `None` without slopes; pushes the slope directions it drops, which then solve to `0`.
     pub(crate) fn build(
         design: &Design<'_>,
         term: usize,
         sqrt_weights: Option<&[f64]>,
+        unidentified: &mut Vec<CoefficientPosition>,
     ) -> Option<Self> {
         let t = &design.terms[term];
         if !t.has_slopes() {
@@ -43,18 +42,11 @@ impl TermReparam {
         let v = zs.len();
 
         let mut z_row = vec![0.0; v];
-        let mut unidentified = Vec::new();
         let mut transforms = Vec::with_capacity(n_levels);
         let mut workspace = GramBasisWorkspace::new(v);
         for level in 0..n_levels {
             let GramBasis { rows: w, kept } =
                 workspace.orthonormalize(|gram| moments.fill_gram(level, gram));
-            if moments.w_sum(level) == Some(0.0) {
-                unidentified.push(CoefficientPosition {
-                    channel: Channel { term, column: 0 },
-                    level,
-                });
-            }
             for (j, &kept_j) in kept.iter().enumerate() {
                 if !kept_j {
                     unidentified.push(CoefficientPosition {
@@ -85,11 +77,7 @@ impl TermReparam {
             }
         }
 
-        Some(Self {
-            slopes,
-            transforms,
-            unidentified,
-        })
+        Some(Self { slopes, transforms })
     }
 
     /// Map this term's solve-basis coefficients back; slots outside its block are untouched.

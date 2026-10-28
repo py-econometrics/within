@@ -14,6 +14,7 @@ pub(crate) struct PreparedDesign<'a> {
     sqrt_weights: Option<Vec<f64>>,
     /// Per design term, its change of basis; `None` is the identity.
     reparams: Vec<Option<TermReparam>>,
+    unidentified: Vec<CoefficientPosition>,
     /// Per design term, its block of [`Self::gram_diagonal`], filled on first read.
     diagonals: Vec<OnceLock<Box<[f64]>>>,
 }
@@ -40,15 +41,37 @@ impl<'a> PreparedDesign<'a> {
         let sqrt_weights = weights
             .map(|weights| prepare_sqrt_weights(&design, weights))
             .transpose()?;
-        let reparams: Vec<Option<TermReparam>> = (0..design.n_factors())
+        let sw = sqrt_weights.as_deref();
+        // Unweighted, every compacted level has a row, so only a zero weight can empty one.
+        let zero_weighted = sw.filter(|sw| sw.contains(&0.0));
+        let (reparams, unidentified): (Vec<Option<TermReparam>>, Vec<_>) = (0..design.n_factors())
             .into_par_iter()
-            .map(|t| TermReparam::build(&design, t, sqrt_weights.as_deref()))
-            .collect();
+            .map(|term| {
+                let t = &design.terms[term];
+                let mut positions = Vec::new();
+                if let Some(sw) = zero_weighted.filter(|_| t.intercept) {
+                    let mut weighted = vec![false; t.n_levels()];
+                    for (&level, &s) in t.levels().iter().zip(sw) {
+                        weighted[level as usize] |= s > 0.0;
+                    }
+                    let channel = Channel { term, column: 0 };
+                    positions.extend(
+                        (0..t.n_levels())
+                            .filter(|&level| !weighted[level])
+                            .map(|level| CoefficientPosition { channel, level }),
+                    );
+                }
+                let reparam = TermReparam::build(&design, term, sw, &mut positions);
+                positions.sort_unstable_by_key(|p| (p.level, p.channel.column));
+                (reparam, positions)
+            })
+            .unzip();
         let diagonals = (0..design.n_factors()).map(|_| OnceLock::new()).collect();
         Ok(Self {
             design,
             sqrt_weights,
             reparams,
+            unidentified: unidentified.concat(),
             diagonals,
         })
     }
@@ -159,10 +182,7 @@ impl<'a> PreparedDesign<'a> {
 
     /// Directions the data cannot identify, ascending in `(term, level, column)`.
     pub(crate) fn unidentified(&self) -> impl Iterator<Item = CoefficientPosition> + '_ {
-        self.reparams
-            .iter()
-            .flatten()
-            .flat_map(|r| r.unidentified.iter().copied())
+        self.unidentified.iter().copied()
     }
 }
 

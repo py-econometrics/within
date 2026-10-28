@@ -15,6 +15,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- `unidentified` now lists, in every term with an intercept, the intercept of a level whose rows all have zero weight, not only in terms with slopes.
 - LSMR now audits normal-equation tolerance exits in the plain metric. Stops hidden by singular or deflating preconditioners restart and may end in `FalseConvergence` (#389; addresses part of #455).
 
 ## [0.4.0] - 2026-10-09

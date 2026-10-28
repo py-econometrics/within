@@ -7,7 +7,7 @@ pub(crate) struct LevelMoments {
     /// Slope columns per level: the stride of the means and the side of each level's Gram.
     n_slopes: usize,
     /// `None` without an intercept.
-    means: Option<LevelMeans>,
+    means: Option<Vec<f64>>,
     /// Per packed entry `(j, k)`, each level's `Σ w (z_j−c_j)(z_k−c_k)`, `c` its means or `0`.
     gram: Vec<Vec<f64>>,
 }
@@ -118,35 +118,24 @@ impl ShiftedMean {
     }
 }
 
-/// Each level's weight total and its `v` weighted slope means, row-major.
-struct LevelMeans {
-    w_sum: Vec<f64>,
-    means: Vec<f64>,
-}
-
-impl LevelMeans {
-    fn new(rows: &WeightedRows<'_>, zs: &[&[f64]]) -> Self {
-        let v = zs.len();
-        let mut w_sum = Vec::new();
-        let mut means = vec![0.0; rows.n_levels * v];
-        for (j, z) in zs.iter().enumerate() {
-            let mut column = rows.fold(ShiftedMean::default(), |m, _, obs, w| m.add(w, z[obs]));
-            // A spread near the float range overflows Σw(z−s); a power-of-two weight scale is exact.
-            if column.iter().any(|m| !m.sum.hi.is_finite()) {
-                let scale = 2f64.powi(-64);
-                column = rows.fold(ShiftedMean::default(), |m, _, obs, w| {
-                    m.add(w * scale, z[obs])
-                });
-            }
-            for (level, m) in column.iter().enumerate() {
-                means[level * v + j] = m.mean();
-            }
-            if j == 0 {
-                w_sum = column.iter().map(|m| m.w_sum.hi).collect();
-            }
+/// Each level's `v` weighted slope means, row-major.
+fn level_means(rows: &WeightedRows<'_>, zs: &[&[f64]]) -> Vec<f64> {
+    let v = zs.len();
+    let mut means = vec![0.0; rows.n_levels * v];
+    for (j, z) in zs.iter().enumerate() {
+        let mut column = rows.fold(ShiftedMean::default(), |m, _, obs, w| m.add(w, z[obs]));
+        // A spread near the float range overflows Σw(z−s); a power-of-two weight scale is exact.
+        if column.iter().any(|m| !m.sum.hi.is_finite()) {
+            let scale = 2f64.powi(-64);
+            column = rows.fold(ShiftedMean::default(), |m, _, obs, w| {
+                m.add(w * scale, z[obs])
+            });
         }
-        Self { w_sum, means }
+        for (level, m) in column.iter().enumerate() {
+            means[level * v + j] = m.mean();
+        }
     }
+    means
 }
 
 impl LevelMoments {
@@ -157,14 +146,14 @@ impl LevelMoments {
             sqrt_weights,
         };
         let v = zs.len();
-        let means = t.intercept.then(|| LevelMeans::new(&rows, zs));
+        let means = t.intercept.then(|| level_means(&rows, zs));
         let gram = (0..v)
             .flat_map(|j| (0..=j).map(move |k| (j, k)))
             .map(|(j, k)| {
                 let (zj, zk) = (zs[j], zs[k]);
                 match &means {
                     Some(m) => rows.fold(0.0, |g, level, obs, w| {
-                        let c = &m.means[level * v..];
+                        let c = &m[level * v..];
                         g + w * (zj[obs] - c[j]) * (zk[obs] - c[k])
                     }),
                     None => rows.fold(0.0, |g, _, obs, w| g + w * zj[obs] * zk[obs]),
@@ -178,16 +167,11 @@ impl LevelMoments {
         }
     }
 
-    /// The level's weight total, tracked only with an intercept.
-    pub(crate) fn w_sum(&self, level: usize) -> Option<f64> {
-        self.means.as_ref().map(|m| m.w_sum[level])
-    }
-
     /// The level's weighted slope means, tracked only with an intercept.
     pub(crate) fn mean(&self, level: usize) -> Option<&[f64]> {
         self.means
             .as_ref()
-            .map(|m| &m.means[level * self.n_slopes..][..self.n_slopes])
+            .map(|m| &m[level * self.n_slopes..][..self.n_slopes])
     }
 
     /// The level's Gram unpacked into a row-major `v×v` matrix.
