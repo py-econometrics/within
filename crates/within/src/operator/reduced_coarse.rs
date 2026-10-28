@@ -19,8 +19,10 @@ use super::coarse::CoarseRung;
 use crate::domain::elimination::{Elimination, GroupedRows};
 use crate::domain::{row_weight, Column, PreparedTerm, Term};
 
-/// Below this many entries a product is faster on one thread than fanned out over rayon.
-const PARALLEL_NNZ: usize = 1 << 18;
+/// Entries from which rayon beats one thread (`two_way_crossover`): the gather `Mᵀx` pays later
+/// than the row-blocked `M c`.
+const PARALLEL_T_MUL: usize = 1 << 18;
+const PARALLEL_MUL_ADD: usize = 1 << 16;
 
 /// Sparse `n × m` held both ways: by column for `Mᵀx`, by nonempty row for `M c`.
 struct TwoWay {
@@ -128,19 +130,27 @@ impl TwoWay {
     }
 
     fn t_mul(&self, x: &[f64], out: &mut [f64]) {
+        self.t_mul_on(x, out, self.nnz() >= PARALLEL_T_MUL);
+    }
+
+    fn t_mul_on(&self, x: &[f64], out: &mut [f64], parallel: bool) {
         let column = |(c, o): (usize, &mut f64)| {
             let span = self.col_ptr[c]..self.col_ptr[c + 1];
             *o = (self.col_idx[span.clone()].iter().zip(&self.col_val[span]))
                 .map(|(&r, &v)| v * x[r as usize])
                 .sum();
         };
-        match self.nnz() < PARALLEL_NNZ {
-            true => out.iter_mut().enumerate().for_each(column),
-            false => out.par_iter_mut().enumerate().for_each(column),
+        match parallel {
+            false => out.iter_mut().enumerate().for_each(column),
+            true => out.par_iter_mut().enumerate().for_each(column),
         }
     }
 
     fn mul_add(&self, c: &[f64], alpha: f64, out: &mut [f64]) {
+        self.mul_add_on(c, alpha, out, self.nnz() >= PARALLEL_MUL_ADD);
+    }
+
+    fn mul_add_on(&self, c: &[f64], alpha: f64, out: &mut [f64], parallel: bool) {
         const BLOCK: usize = 4096;
         let row = |i: usize| -> f64 {
             let span = self.row_ptr[i]..self.row_ptr[i + 1];
@@ -148,7 +158,7 @@ impl TwoWay {
                 .map(|(&k, &v)| v * c[k as usize])
                 .sum()
         };
-        if self.nnz() < PARALLEL_NNZ {
+        if !parallel {
             for (i, &r) in self.rows.iter().enumerate() {
                 out[r as usize] += alpha * row(i);
             }
@@ -477,8 +487,8 @@ struct LevelGram {
     energy: Vec<f64>,
     /// The lower triangle of `UᵀU` over the touched columns; a hub's own blocks only.
     entries: Vec<(u32, u32, f64)>,
-    /// A hub's `s = EᵀW DZ`, `width × columns`: the rank-`p` part left out of `entries`.
-    correction: Option<Vec<f64>>,
+    /// A hub's `s = EᵀW DZ` (`width × columns`) and level Gram `G`: rows `[G s]` augmenting `E₀`.
+    correction: Option<(Vec<f64>, Vec<f64>)>,
 }
 
 /// What the coarse columns are made of, to evaluate `U = ÃZ` one entry at a time.
@@ -581,7 +591,18 @@ impl Lift<'_> {
             pre,
             energy,
             entries,
-            correction: hub.then_some(s),
+            correction: hub.then(|| {
+                let mut g = vec![0.0; p * p];
+                for r in rows.starts[lw]..rows.starts[lw + 1] {
+                    for a in 0..p {
+                        let wa = rows.weight(r) * rows.eliminated.loading(r, a);
+                        for b in 0..p {
+                            g[a * p + b] += wa * rows.eliminated.loading(r, b);
+                        }
+                    }
+                }
+                (s, g)
+            }),
         };
         (GroupFit { columns, beta }, gram)
     }
@@ -626,13 +647,13 @@ pub(crate) struct ReducedCoarse {
     symbolic: SymbolicCholesky<u32>,
     l_values: Vec<f64>,
     par: Par,
-    /// Hub levels' rank-`p` corrections: the factor above is of `E₀ = E + BᵀCB`.
-    low_rank: Option<LowRank>,
+    /// Wide levels' rows: the factor is of `[G s; sᵀ E₀]`, whose Schur complement is `E`.
+    hubs: Option<HubCorrection>,
 }
 
-/// Hub levels' `B` rows (`s = EᵀW DZ` over live columns) and `C` blocks (`G⁻`), gathered in level order.
+/// Wide levels' `s = EᵀW DZ` rows over the live columns, their `G` and `G⁻`, in level order.
 #[derive(Default)]
-struct LowRankParts {
+struct HubRows {
     ptr: Vec<usize>,
     cols: Vec<u32>,
     vals: Vec<f64>,
@@ -640,16 +661,40 @@ struct LowRankParts {
     p: usize,
 }
 
-impl LowRankParts {
-    fn push(&mut self, s: &[f64], columns: &[u32], renumber: &[u32], inverse: &[f64]) {
-        let (t, p) = (columns.len(), s.len() / columns.len());
+impl HubRows {
+    /// Appends a wide level's rows `m + rank..`: `G`'s lower triangle and `s` against the columns.
+    #[allow(clippy::too_many_arguments)]
+    fn push(
+        &mut self,
+        s: &[f64],
+        g: &[f64],
+        inverse: &[f64],
+        columns: &[u32],
+        renumber: &[u32],
+        m: usize,
+        lower: &mut Vec<(u32, u32, f64)>,
+    ) {
+        let (t, p) = (columns.len(), g.len().isqrt());
         if self.ptr.is_empty() {
             self.ptr.push(0);
         }
         self.p = p;
+        let base = m + self.rank();
+        // Rows scaled to a unit diagonal: the Schur complement onto `E₀` is unchanged.
+        let scale: Vec<f64> = (0..p)
+            .map(|k| match g[k * p + k] > 0.0 {
+                true => g[k * p + k].sqrt().recip(),
+                false => 1.0,
+            })
+            .collect();
         for k in 0..p {
+            let row = (base + k) as u32;
+            for j in 0..=k {
+                lower.push(((base + j) as u32, row, scale[k] * scale[j] * g[k * p + j]));
+            }
             for (i, &c) in columns.iter().enumerate() {
                 if renumber[c as usize] != u32::MAX {
+                    lower.push((renumber[c as usize], row, scale[k] * s[k * t + i]));
                     self.cols.push(renumber[c as usize]);
                     self.vals.push(s[k * t + i]);
                 }
@@ -663,85 +708,29 @@ impl LowRankParts {
         self.ptr.len().saturating_sub(1)
     }
 
-    /// The symmetric Woodbury form of `E⁻¹`, `E₀⁻¹ + U H⁺ Uᵀ` with `V = C½B`, `U = E₀⁻¹Vᵀ`,
-    /// `H = I − V U`: `H`'s spectrum lies in `[0, 1]` and its null space is `E`'s, dropped like
-    /// the null pivots of a direct factor of `E`.
-    fn factor(self, f: TwoWay, solve: impl Fn(&mut [f64]), m: usize) -> Option<LowRank> {
-        let (r, p) = (self.rank(), self.p);
-        let mut half = vec![0.0; self.c.len()];
-        for (c, half) in self.c.chunks_exact(p * p).zip(half.chunks_exact_mut(p * p)) {
-            let evd = faer::Mat::<f64>::from_fn(p, p, |i, j| c[i * p + j])
-                .self_adjoint_eigen(Side::Lower)
-                .ok()?;
-            let (u, s) = (evd.U(), evd.S().column_vector());
-            for a in 0..p {
-                for b in 0..p {
-                    half[a * p + b] = s[a].max(0.0).sqrt() * u[(b, a)];
-                }
-            }
-        }
-        let mut low_rank = LowRank {
+    fn into_correction(self, f: TwoWay) -> HubCorrection {
+        HubCorrection {
             ptr: self.ptr,
             cols: self.cols,
             vals: self.vals,
             c: self.c,
-            half,
-            p,
-            basis: Vec::new(),
-            directions: Vec::new(),
-            inverse: Vec::new(),
+            p: self.p,
             f,
-        };
-        let mut u = vec![0.0; m * r];
-        for (i, column) in u.chunks_exact_mut(m).enumerate() {
-            let mut e = vec![0.0; r];
-            e[i] = 1.0;
-            low_rank.add_v_t(&e, column);
-            solve(column);
         }
-        let vu: Vec<Vec<f64>> = u.chunks_exact(m).map(|c| low_rank.v_mul(c)).collect();
-        let h = faer::Mat::<f64>::from_fn(r, r, |i, j| {
-            (i == j) as u8 as f64 - 0.5 * (vu[j][i] + vu[i][j])
-        });
-        let evd = h.self_adjoint_eigen(Side::Lower).ok()?;
-        let (q, theta) = (evd.U(), evd.S().column_vector());
-        for j in (0..r).filter(|&j| theta[j] > 1e-10) {
-            low_rank.inverse.push(theta[j].recip());
-            low_rank.directions.extend((0..r).map(|i| q[(i, j)]));
-            let mut b = vec![0.0; m];
-            for (i, column) in u.chunks_exact(m).enumerate() {
-                b.iter_mut()
-                    .zip(column)
-                    .for_each(|(b, c)| *b += q[(i, j)] * c);
-            }
-            low_rank.basis.extend(b);
-        }
-        let finite = (low_rank.basis.iter())
-            .chain(&low_rank.inverse)
-            .all(|v| v.is_finite());
-        finite.then_some(low_rank)
     }
 }
 
-/// `E = E₀ − BᵀCB`: hub levels' rank-`p` parts, with `E⁻¹ = E₀⁻¹ + U H⁺ Uᵀ` on `E`'s range.
-struct LowRank {
-    /// `B` by row: each hub level's `s = EᵀW DZ`, one row per eliminated column.
+/// `SZ = SZ₀ − F C B` for the wide levels: `B` their `s` rows, `C` their `G⁻`, `F = D_keptᵀ W E`.
+struct HubCorrection {
     ptr: Vec<usize>,
     cols: Vec<u32>,
     vals: Vec<f64>,
-    /// Per hub level, its `p × p` generalized inverse `G⁻`, and `C½` with `C½ᵀC½ = G⁻`.
     c: Vec<f64>,
-    half: Vec<f64>,
     p: usize,
-    /// `U P` over `H`'s kept eigenvectors `P`, column-major `m × k`; `P` itself `r × k`; `θ⁻¹`.
-    basis: Vec<f64>,
-    directions: Vec<f64>,
-    inverse: Vec<f64>,
-    /// `D_keptᵀ W E` over each hub's rows, `n × r`: `SZ = SZ₀ − F C B`.
     f: TwoWay,
 }
 
-impl LowRank {
+impl HubCorrection {
     fn rank(&self) -> usize {
         self.ptr.len() - 1
     }
@@ -756,65 +745,32 @@ impl LowRank {
             .collect()
     }
 
-    /// `out += Bᵀ q`.
-    fn add_b_t(&self, q: &[f64], out: &mut [f64]) {
-        for (i, &q) in q.iter().enumerate() {
-            for k in self.ptr[i]..self.ptr[i + 1] {
-                out[self.cols[k] as usize] += self.vals[k] * q;
-            }
-        }
-    }
-
-    /// Each hub's `p × p` block of `blocks` times `q`, transposed when `transpose`.
-    fn blocks_mul(&self, blocks: &[f64], q: &[f64], transpose: bool) -> Vec<f64> {
+    /// `C q`, each wide level's `G⁻` on its `p` entries.
+    fn c_mul(&self, q: &[f64]) -> Vec<f64> {
         let p = self.p;
         (0..q.len())
             .map(|i| {
                 let (h, a) = (i / p, i % p);
-                let at = |b: usize| match transpose {
-                    true => blocks[h * p * p + b * p + a],
-                    false => blocks[h * p * p + a * p + b],
-                };
-                (0..p).map(|b| at(b) * q[h * p + b]).sum()
+                (0..p)
+                    .map(|b| self.c[h * p * p + a * p + b] * q[h * p + b])
+                    .sum()
             })
             .collect()
     }
 
-    /// `V v = C½ B v`.
-    fn v_mul(&self, v: &[f64]) -> Vec<f64> {
-        self.blocks_mul(&self.half, &self.b_mul(v), false)
-    }
-
-    /// `out += Vᵀ q = Bᵀ C½ᵀ q`.
-    fn add_v_t(&self, q: &[f64], out: &mut [f64]) {
-        self.add_b_t(&self.blocks_mul(&self.half, q, true), out);
-    }
-
     /// `out += alpha (F C B) c`.
     fn add_sz(&self, c: &[f64], alpha: f64, out: &mut [f64]) {
-        let beta = self.blocks_mul(&self.c, &self.b_mul(c), false);
-        self.f.mul_add(&beta, alpha, out);
+        self.f.mul_add(&self.c_mul(&self.b_mul(c)), alpha, out);
     }
 
     /// `out += alpha (F C B)ᵀ y = alpha Bᵀ C Fᵀ y`.
     fn add_sz_t(&self, y: &[f64], alpha: f64, out: &mut [f64]) {
         let mut fy = vec![0.0; self.rank()];
         self.f.t_mul(y, &mut fy);
-        let q: Vec<f64> = (self.blocks_mul(&self.c, &fy, false).into_iter())
-            .map(|q| alpha * q)
-            .collect();
-        self.add_b_t(&q, out);
-    }
-
-    /// `v ← v + U H⁺ Uᵀ x` for `v = E₀⁻¹x`, using `Uᵀx = V v`.
-    fn correct(&self, v: &mut [f64]) {
-        let (r, m) = (self.rank(), v.len());
-        let q = self.v_mul(v);
-        for (j, &inverse) in self.inverse.iter().enumerate() {
-            let direction = &self.directions[j * r..][..r];
-            let s = inverse * direction.iter().zip(&q).map(|(d, q)| d * q).sum::<f64>();
-            let basis = &self.basis[j * m..][..m];
-            v.iter_mut().zip(basis).for_each(|(v, b)| *v += b * s);
+        for (i, q) in self.c_mul(&fy).into_iter().enumerate() {
+            for k in self.ptr[i]..self.ptr[i + 1] {
+                out[self.cols[k] as usize] += alpha * self.vals[k] * q;
+            }
         }
     }
 }
@@ -908,20 +864,15 @@ impl ReducedCoarse {
             return None;
         }
         let m = n_fc as usize * p;
-        // A level touching `t` columns adds a dense `t × t` block to `E`; past `t² > 2pm` its exact
-        // rank-`p` Woodbury correction (`p × m`) is cheaper. The widest go first, rank capped at `m/4`.
-        let mut hub = vec![false; na];
-        let mut wide: Vec<usize> = (0..na)
-            .filter(|&l| (touched[l].0.len() * p).pow(2) > 2 * p * m)
+        // A level touching `t` columns adds a dense `t × t` block to `E`; a wide one (`t² > 2pm`)
+        // instead augments the coarse system with its `p` rows `[G s]`, leaving `E₀` sparse.
+        let hub: Vec<bool> = (touched.iter())
+            .map(|(comps, _)| (comps.len() * p).pow(2) > 2 * p * m)
             .collect();
-        wide.sort_unstable_by_key(|&l| std::cmp::Reverse(touched[l].0.len()));
-        wide.iter()
-            .take((m / 4 / p).max(1))
-            .for_each(|&l| hub[l] = true);
         // `E` gathers each level's block before merging: bound it like the factor.
         let e_bound: usize = (touched.iter().zip(&hub))
             .map(|((comps, _), &hub)| match hub {
-                true => comps.len() * p * (p + 1) / 2,
+                true => comps.len() * p * (p + 1) / 2 + p * comps.len() * p + p * (p + 1) / 2,
                 false => comps.len() * p * (comps.len() * p + 1) / 2,
             })
             .sum();
@@ -1005,19 +956,22 @@ impl ReducedCoarse {
         drop(z_entries);
         // E = UᵀU from each level's block, lower triangle by column.
         let (mut fits, mut e_triplets) = (Vec::with_capacity(na), Vec::new());
-        let mut corrections = LowRankParts::default();
+        let mut hubs = HubRows::default();
         for (lw, (fit, gram)) in per_group.into_iter().enumerate() {
             e_triplets.extend(gram.entries.into_iter().filter_map(|(a, b, v)| {
                 let (a, b) = (renumber[a as usize], renumber[b as usize]);
                 (a != u32::MAX && b != u32::MAX).then_some((a, b, v))
             }));
-            if let Some(s) = gram.correction {
-                corrections.push(&s, &fit.columns, &renumber, &inverse[lw * p * p..][..p * p]);
+            if let Some((s, g)) = gram.correction {
+                let inverse = &inverse[lw * p * p..][..p * p];
+                hubs.push(&s, &g, inverse, &fit.columns, &renumber, m, &mut e_triplets);
             }
             fits.push(fit);
         }
-        let (col_ptr, row_idx, values) = lower_csc(m, e_triplets);
-        let d_max = (0..m)
+        let rank = hubs.rank();
+        let dim = m + rank;
+        let (col_ptr, row_idx, values) = lower_csc(dim, e_triplets);
+        let d_max = (0..dim)
             .filter_map(|c| {
                 let first = col_ptr[c] as usize;
                 (first < col_ptr[c + 1] as usize && row_idx[first] as usize == c)
@@ -1025,7 +979,7 @@ impl ReducedCoarse {
             })
             .fold(0.0, f64::max);
         let e_nnz = values.len();
-        let pattern = SymbolicSparseColMat::new_checked(m, m, col_ptr, None, row_idx);
+        let pattern = SymbolicSparseColMat::new_checked(dim, dim, col_ptr, None, row_idx);
         let e_lower = SparseColMat::new(pattern, values);
         stage("E");
         let symbolic = factorize_symbolic_cholesky(
@@ -1035,8 +989,7 @@ impl ReducedCoarse {
             CholeskySymbolicParams::default(),
         )
         .ok()?;
-        let rank = corrections.rank();
-        let fits_budget = symbolic.len_val() + m * rank <= 8 * n_obs;
+        let fits_budget = symbolic.len_val() <= 8 * n_obs;
         if stats {
             eprintln!(
                 "reduced_rigid: glued={} components={n_components} anchor_components={n_fc} m={m} hub_rank={rank} null_dropped={dropped} Z_nnz={} E_nnz={e_nnz} L_nnz={} fits={fits_budget} build_s={:.3}",
@@ -1195,7 +1148,7 @@ impl ReducedCoarse {
             );
         }
         // Null pivots become LARGE, as in the fused blocks: tiny ones amplify nulls.
-        let signs = vec![1i8; m];
+        let signs = vec![1i8; dim];
         let regularization = LdltRegularization {
             dynamic_regularization_signs: Some(&signs),
             dynamic_regularization_delta: d_max,
@@ -1224,53 +1177,46 @@ impl ReducedCoarse {
         if !l_values.iter().all(|v| v.is_finite()) {
             return None;
         }
-        let mut coarse = Self {
+        Some(Self {
             m,
             z,
             sz,
             symbolic,
             l_values,
             par,
-            low_rank: None,
-        };
-        if rank > 0 {
-            coarse.low_rank = Some(corrections.factor(f, |v| coarse.solve_sparse(v), m)?);
-            stage("hub correction");
-        }
-        Some(coarse)
+            hubs: (rank > 0).then(|| hubs.into_correction(f)),
+        })
     }
 
     /// `out += alpha SZ c`.
     fn sz_mul_add(&self, c: &[f64], alpha: f64, out: &mut [f64]) {
         self.sz.mul_add(c, alpha, out);
-        if let Some(low_rank) = &self.low_rank {
-            low_rank.add_sz(c, -alpha, out);
+        if let Some(hubs) = &self.hubs {
+            hubs.add_sz(c, -alpha, out);
         }
     }
 
     /// `out = SZᵀ y`.
     fn sz_t_mul(&self, y: &[f64], out: &mut [f64]) {
         self.sz.t_mul(y, out);
-        if let Some(low_rank) = &self.low_rank {
-            low_rank.add_sz_t(y, -1.0, out);
+        if let Some(hubs) = &self.hubs {
+            hubs.add_sz_t(y, -1.0, out);
         }
     }
 
+    /// `E⁻¹v`: the wide levels' rows ride along with zero right-hand side.
     fn solve_coarse(&self, v: &mut [f64]) {
-        self.solve_sparse(v);
-        if let Some(low_rank) = &self.low_rank {
-            low_rank.correct(v);
-        }
-    }
-
-    fn solve_sparse(&self, v: &mut [f64]) {
+        let dim = self.m + self.hubs.as_ref().map_or(0, HubCorrection::rank);
+        let mut x = v.to_vec();
+        x.resize(dim, 0.0);
         let mut buf = MemBuffer::new(self.symbolic.solve_in_place_scratch::<f64>(1, self.par));
         LdltRef::new(&self.symbolic, &self.l_values).solve_in_place_with_conj(
             Conj::No,
-            MatMut::from_column_major_slice_mut(v, self.m, 1),
+            MatMut::from_column_major_slice_mut(&mut x, dim, 1),
             self.par,
             MemStack::new(&mut buf),
         );
+        v.copy_from_slice(&x[..self.m]);
     }
 }
 
@@ -1296,6 +1242,57 @@ impl CoarseRung for ReducedCoarse {
         }
         self.z.mul_add(&c, 1.0, y);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod threshold {
+    use super::*;
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    /// Sequential vs rayon products over `nnz`: columns of ~16 rows each, near their own index.
+    #[test]
+    #[ignore]
+    fn two_way_crossover() {
+        println!("threads={}", rayon::current_num_threads());
+        for log in 13..=23 {
+            let nnz = 1usize << log;
+            let (m, n) = (nnz / 16, nnz / 4);
+            let mut entries = Vec::with_capacity(nnz);
+            for c in 0..m {
+                let mut rows: Vec<u32> = (0..16)
+                    .map(|k| ((c * 4 + (c * 7 + k * 131) % 64) % n) as u32)
+                    .collect();
+                rows.sort_unstable();
+                rows.dedup();
+                entries.extend(
+                    rows.into_iter()
+                        .map(|r| (c as u32, r, 1.0 + (r % 7) as f64)),
+                );
+            }
+            let a = TwoWay::from_sorted(n, m, &entries);
+            let (x, cv) = (vec![0.5; n], vec![0.25; m]);
+            let (mut om, mut on) = (vec![0.0; m], vec![0.0; n]);
+            let mut best = [f64::INFINITY; 4];
+            let reps = (1 << 24) / nnz + 20;
+            for _ in 0..reps {
+                for (k, b) in best.iter_mut().enumerate() {
+                    let start = Instant::now();
+                    match k {
+                        0 => a.t_mul_on(black_box(&x), &mut om, false),
+                        1 => a.t_mul_on(black_box(&x), &mut om, true),
+                        2 => a.mul_add_on(black_box(&cv), 1.0, &mut on, false),
+                        _ => a.mul_add_on(black_box(&cv), 1.0, &mut on, true),
+                    }
+                    *b = b.min(start.elapsed().as_secs_f64() * 1e6);
+                }
+            }
+            println!(
+                "nnz=2^{log:<2} ({:>8}) t_mul seq {:>8.1} par {:>8.1} µs | mul_add seq {:>8.1} par {:>8.1} µs",
+                a.nnz(), best[0], best[1], best[2], best[3]
+            );
+        }
     }
 }
 
@@ -1461,7 +1458,7 @@ mod hub {
         c.sz_t_mul(&w, &mut szt);
         let dot = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>();
         let adjoint = (dot(&sz, &w) - dot(&z, &szt)).abs() / dot(&sz, &w).abs();
-        let rank = c.low_rank.as_ref().map_or(0, LowRank::rank);
+        let rank = c.hubs.as_ref().map_or(0, HubCorrection::rank);
         assert!(
             residual < 1e-8 && adjoint < 1e-10,
             "{panel:?}: residual {residual:.1e} adjoint {adjoint:.1e}"
@@ -1516,6 +1513,26 @@ mod hub {
         }
         std::env::remove_var("WITHIN_REDUCED_RIGID");
         out
+    }
+
+    /// Many hubs at scale: `HUB_T` clusters, `HUB_HUBS` hubs of `HUB_ROWS` rows over `HUB_REACH` clusters.
+    #[test]
+    #[ignore]
+    fn hub_scale() {
+        let var = |k: &str, d: usize| std::env::var(k).map_or(d, |v| v.parse().unwrap());
+        let panel = HubPanel {
+            clusters: var("HUB_T", 10_000),
+            hubs: var("HUB_HUBS", 100),
+            reach: var("HUB_REACH", 200),
+            rows: var("HUB_ROWS", 2_000),
+            ..HubPanel::base()
+        };
+        let data = panel.data();
+        println!("{panel:?} n_obs={}", data.y.len());
+        println!("{}", operators(&panel, &data));
+        if std::env::var_os("HUB_SOLVE").is_some() {
+            println!("{}", end_to_end(&data));
+        }
     }
 
     #[test]
