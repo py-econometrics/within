@@ -413,7 +413,7 @@ impl ReducedCoarse {
             },
         ];
         let (na, nb) = (sides[0].n_levels, sides[1].n_levels);
-        let groups = e.groups();
+        let groups = e.rows();
 
         // Level Grams of both sides.
         let level_grams = |s: &LevelSide<'_>| {

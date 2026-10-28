@@ -5,6 +5,47 @@ use crate::domain::PreparedDesign;
 use crate::{Design, Effect, IntoDesign};
 use ndarray::Array2;
 
+fn scale(e: &Elimination<'_>, row: usize) -> f64 {
+    e.prepared().sqrt_weights().map_or(1.0, |w| w[row])
+}
+
+/// The serial eliminated fit to `values`, laid out like `removed`.
+fn fit_coefficients(e: &Elimination<'_>, values: &[f64], coefficients: &mut [f64]) {
+    let (n, c) = (e.rows().n_levels(), e.width());
+    let levels = e.prepared().design.terms[e.term()].levels();
+    let loadings = e.eliminated_loadings();
+    let mut sums = vec![0.0; n * c];
+    for (i, &level) in levels.iter().enumerate() {
+        let v = scale(e, i) * values[i];
+        for (sum, a) in sums[level as usize * c..][..c].iter_mut().zip(&loadings) {
+            *sum += a.map_or(v, |z| z[i] * v);
+        }
+    }
+    for (l, sums) in sums.chunks_exact(c).enumerate() {
+        let inverse = &e.inverse()[l * c * c..][..c * c];
+        for (j, row) in inverse.chunks_exact(c).enumerate() {
+            coefficients[j * n + l] = row.iter().zip(sums).map(|(g, s)| g * s).sum();
+        }
+    }
+}
+
+/// The serial `(I − P_e)` in original row order.
+fn project(e: &Elimination<'_>, values: &mut [f64], fit: &mut [f64]) {
+    fit_coefficients(e, values, fit);
+    let n = e.rows().n_levels();
+    let levels = e.prepared().design.terms[e.term()].levels();
+    let loadings = e.eliminated_loadings();
+    for (i, &level) in levels.iter().enumerate() {
+        let fitted: f64 = (loadings.iter().enumerate())
+            .map(|(j, a)| {
+                let b = fit[j * n + level as usize];
+                a.map_or(b, |z| z[i] * b)
+            })
+            .sum();
+        values[i] -= scale(e, i) * fitted;
+    }
+}
+
 struct ProjectionScratch {
     observations: Vec<f64>,
     means: Vec<f64>,
@@ -46,10 +87,10 @@ impl Operator for ProjectedDesign<'_> {
             }
         }
         for (i, yi) in y.iter_mut().enumerate() {
-            *yi *= e.scale(i);
+            *yi *= scale(e, i);
         }
         let mut scratch = self.scratch.lock().expect("projection scratch poisoned");
-        e.project(y, &mut scratch.means);
+        project(e, y, &mut scratch.means);
         Ok(())
     }
 
@@ -61,11 +102,11 @@ impl Operator for ProjectedDesign<'_> {
             means,
         } = &mut *scratch;
         observations.copy_from_slice(x);
-        e.project(observations, means);
+        project(e, observations, means);
         y.fill(0.0);
         for channel in e.kept_channels() {
             for (i, &level) in channel.levels.iter().enumerate() {
-                let v = e.scale(i) * observations[i];
+                let v = scale(e, i) * observations[i];
                 y[channel.start + level as usize] += channel.loading.map_or(v, |z| z[i] * v);
             }
         }
@@ -171,12 +212,7 @@ fn adjoint_overwrites_output_across_pools_and_concurrent_calls() {
     let reference = ProjectedDesign::new(&e);
     let op = build(&e);
     let u: Vec<f64> = (0..n).map(|i| (i as f64 * 0.7).cos()).collect();
-    let grouped: Vec<f64> = op
-        .groups()
-        .order
-        .rows(0..n)
-        .map(|i| u[i as usize])
-        .collect();
+    let grouped: Vec<f64> = (e.rows().order.rows(0..n)).map(|i| u[i as usize]).collect();
     let mut expected = vec![0.0; op.ncols()];
     reference.apply_adjoint(&u, &mut expected).unwrap();
     for threads in [1, 4] {
@@ -205,7 +241,7 @@ fn assert_reproduces_reference(prepared: &PreparedDesign<'_>, slopes: bool) {
     let e = Elimination::new(prepared);
     let (reference, fast) = (ProjectedDesign::new(&e), build(&e));
     assert_eq!(e.eliminated_loadings().iter().any(Option::is_some), slopes);
-    let order = &fast.groups().order;
+    let order = &e.rows().order;
     assert!(fast.n_tasks() > 1);
     let x: Vec<f64> = (0..fast.ncols()).map(|i| (i as f64).sin()).collect();
     let u: Vec<f64> = (0..n).map(|i| (i as f64 * 0.7).cos()).collect();
@@ -234,7 +270,7 @@ fn assert_reproduces_reference(prepared: &PreparedDesign<'_>, slopes: bool) {
         );
     }
     let mut projected = u.clone();
-    e.project(&mut projected, &mut vec![0.0; e.removed().len()]);
+    project(&e, &mut projected, &mut vec![0.0; e.removed().len()]);
     let centered = fast.projected_rhs(&u);
     for (p, i) in order.rows(0..n).enumerate() {
         assert!((centered[p] - projected[i as usize]).abs() < 1e-11);
@@ -375,7 +411,7 @@ fn assert_schur_gram(prepared: &PreparedDesign<'_>) {
     let mut gathered = vec![0.0; n];
     full_op.apply(&embedded, &mut gathered).unwrap();
     let mut coefficients = vec![0.0; e.removed().len()];
-    e.coefficients(&gathered, &mut coefficients);
+    fit_coefficients(&e, &gathered, &mut coefficients);
     for (target, b) in embedded[e.removed()].iter_mut().zip(coefficients) {
         *target = -b;
     }

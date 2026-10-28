@@ -6,9 +6,9 @@ use rayon::prelude::*;
 use approx_chol::Side;
 
 use super::factor_pairs::{PairMatrix, PairSubdomains};
-use super::{row_weight, PreparedDesign};
+use super::{PreparedDesign, PreparedTerm};
 use crate::channel::ChannelPair;
-use crate::linalg::{dot, GramBasisWorkspace};
+use crate::linalg::GramBasisWorkspace;
 
 /// Where grouped row `p` came from: itself when the levels were already sorted.
 pub(crate) enum RowOrder {
@@ -41,54 +41,178 @@ impl RowOrder {
     }
 }
 
-/// Observations grouped by eliminated level.
-pub(crate) struct LevelGroups {
+/// Each grouped row's eliminated loadings: an implicit leading `1` for an intercept, then slopes.
+pub(crate) struct EliminatedRows {
+    pub(crate) width: usize,
+    pub(crate) intercept: bool,
+    /// Row-major, `width - intercept` per row.
+    slopes: Vec<f64>,
+}
+
+impl EliminatedRows {
+    #[inline(always)]
+    pub(crate) fn slopes(&self, p: usize) -> &[f64] {
+        let n = self.width - self.intercept as usize;
+        &self.slopes[p * n..][..n]
+    }
+
+    #[inline(always)]
+    pub(crate) fn loading(&self, p: usize, column: usize) -> f64 {
+        match (self.intercept, column) {
+            (true, 0) => 1.0,
+            (true, j) => self.slopes(p)[j - 1],
+            (false, j) => self.slopes(p)[j],
+        }
+    }
+}
+
+/// The kept design's rows in grouped order: unit intercept columns, then valued slope columns.
+pub(crate) struct KeptRows {
+    /// Each row's reduced coefficient per kept channel, intercepts first, row-major.
+    columns: Vec<u32>,
+    /// Each row's loading per kept slope channel, row-major in `columns`' order.
+    values: Vec<f64>,
+    pub(crate) n_channels: usize,
+    n_intercepts: usize,
+}
+
+impl KeptRows {
+    #[inline(always)]
+    fn columns<const WIDTH: usize>(&self, p: usize) -> &[u32] {
+        let width = if WIDTH == 0 { self.n_channels } else { WIDTH };
+        &self.columns[p * width..][..width]
+    }
+
+    /// `D_kept x` at grouped row `p`; `WIDTH` is the channel count, `0` when not specialized.
+    #[inline(always)]
+    pub(crate) fn row<const WIDTH: usize>(&self, p: usize, x: &[f64]) -> f64 {
+        let columns = self.columns::<WIDTH>(p);
+        if self.values.is_empty() {
+            return columns.iter().map(|&c| x[c as usize]).sum();
+        }
+        let (intercepts, slopes) = columns.split_at(self.n_intercepts);
+        let unit: f64 = intercepts.iter().map(|&c| x[c as usize]).sum();
+        let values = &self.values[p * slopes.len()..][..slopes.len()];
+        (slopes.iter().zip(values)).fold(unit, |acc, (&c, &z)| acc + z * x[c as usize])
+    }
+
+    /// Each `(column, loading)` of row `p`.
+    #[inline(always)]
+    pub(crate) fn for_each_entry(&self, p: usize, mut f: impl FnMut(u32, f64)) {
+        let columns = self.columns::<0>(p);
+        let (intercepts, slopes) = columns.split_at(self.n_intercepts);
+        intercepts.iter().for_each(|&c| f(c, 1.0));
+        let values = &self.values[p * slopes.len()..][..slopes.len()];
+        (slopes.iter().zip(values)).for_each(|(&c, &z)| f(c, z));
+    }
+
+    /// `acc += v D_kept[p, :]`.
+    #[inline(always)]
+    pub(crate) fn add_row(&self, p: usize, v: f64, acc: &mut [f64]) {
+        let columns = self.columns::<0>(p);
+        if self.values.is_empty() {
+            return columns.iter().for_each(|&c| acc[c as usize] += v);
+        }
+        let (intercepts, slopes) = columns.split_at(self.n_intercepts);
+        intercepts.iter().for_each(|&c| acc[c as usize] += v);
+        let values = &self.values[p * slopes.len()..][..slopes.len()];
+        (slopes.iter().zip(values)).for_each(|(&c, &z)| acc[c as usize] += z * v);
+    }
+}
+
+/// The design's rows grouped by eliminated level, so each level's rows are contiguous.
+pub(crate) struct GroupedRows {
     /// Grouped row `p` is original row `order[p]`.
     pub(crate) order: RowOrder,
     /// Eliminated level `e` owns grouped rows `starts[e]..starts[e + 1]`.
     pub(crate) starts: Vec<usize>,
+    pub(crate) sqrt_weights: Option<Vec<f64>>,
+    pub(crate) eliminated: EliminatedRows,
+    pub(crate) kept: KeptRows,
 }
 
-impl LevelGroups {
-    fn build(levels: &[u32], n_levels: usize) -> Self {
-        let mut starts = vec![0usize; n_levels + 1];
-        for &l in levels {
-            starts[l as usize + 1] += 1;
-        }
-        for l in 0..n_levels {
-            starts[l + 1] += starts[l];
-        }
-        let order = if levels.is_sorted() {
-            RowOrder::Identity(levels.len())
-        } else {
-            let mut order = vec![0u32; levels.len()];
-            for (i, &l) in levels.iter().enumerate() {
-                order[starts[l as usize]] = i as u32;
-                starts[l as usize] += 1;
+/// Where each level's rows go: the grouped order and each level's first grouped row.
+fn group_by_level(levels: &[u32], n_levels: usize) -> (RowOrder, Vec<usize>) {
+    let mut starts = vec![0usize; n_levels + 1];
+    for &l in levels {
+        starts[l as usize + 1] += 1;
+    }
+    for l in 0..n_levels {
+        starts[l + 1] += starts[l];
+    }
+    if levels.is_sorted() {
+        return (RowOrder::Identity(levels.len()), starts);
+    }
+    let mut order = vec![0u32; levels.len()];
+    for (i, &l) in levels.iter().enumerate() {
+        order[starts[l as usize]] = i as u32;
+        starts[l as usize] += 1;
+    }
+    // The insertion cursors are now level ends; shift them back to starts.
+    starts.rotate_right(1);
+    starts[0] = 0;
+    (RowOrder::Permutation(order), starts)
+}
+
+impl GroupedRows {
+    fn build(
+        prepared: &PreparedDesign<'_>,
+        eliminated: &PreparedTerm<'_>,
+        kept: &[KeptChannel<'_>],
+    ) -> Self {
+        let (order, starts) = group_by_level(eliminated.term.levels(), eliminated.term.n_levels());
+        let gather = |loadings: &[&[f64]]| -> Vec<f64> {
+            let mut values = vec![0.0; order.len() * loadings.len()];
+            if !loadings.is_empty() {
+                (values.par_chunks_mut(loadings.len()).zip(order.par_iter())).for_each(
+                    |(row, i)| {
+                        (row.iter_mut().zip(loadings)).for_each(|(v, z)| *v = z[i as usize]);
+                    },
+                );
             }
-            // The insertion cursors are now level ends; shift them back to starts.
-            starts.rotate_right(1);
-            starts[0] = 0;
-            RowOrder::Permutation(order)
+            values
         };
-        Self { order, starts }
+        let width = eliminated.term.n_columns();
+        let slopes: Vec<&[f64]> = (0..width).filter_map(|c| eliminated.loading(c)).collect();
+        let (intercepts, valued): (Vec<&KeptChannel<'_>>, Vec<_>) =
+            kept.iter().partition(|channel| channel.loading.is_none());
+        let channels: Vec<_> = intercepts.iter().chain(&valued).copied().collect();
+        let mut columns = vec![0; order.len() * channels.len()];
+        if !channels.is_empty() {
+            (columns.par_chunks_mut(channels.len()).zip(order.par_iter())).for_each(|(row, i)| {
+                row.iter_mut().zip(&channels).for_each(|(c, channel)| {
+                    *c = channel.start as u32 + channel.levels[i as usize];
+                });
+            });
+        }
+        let values: Vec<&[f64]> = valued.iter().filter_map(|c| c.loading).collect();
+        Self {
+            sqrt_weights: (prepared.sqrt_weights())
+                .map(|sw| order.par_iter().map(|i| sw[i as usize]).collect()),
+            eliminated: EliminatedRows {
+                width,
+                intercept: width > slopes.len(),
+                slopes: gather(&slopes),
+            },
+            kept: KeptRows {
+                columns,
+                values: gather(&values),
+                n_channels: channels.len(),
+                n_intercepts: intercepts.len(),
+            },
+            order,
+            starts,
+        }
     }
 
-    /// Per original row, `loadings` at that row, laid out in grouped row order.
-    pub(crate) fn gather(&self, loadings: &[&[f64]]) -> Vec<f64> {
-        if loadings.is_empty() {
-            return Vec::new();
-        }
-        let mut values = vec![0.0; self.order.len() * loadings.len()];
-        values
-            .par_chunks_mut(loadings.len())
-            .zip(self.order.par_iter())
-            .for_each(|(row, i)| {
-                row.iter_mut()
-                    .zip(loadings)
-                    .for_each(|(v, z)| *v = z[i as usize]);
-            });
-        values
+    pub(crate) fn n_levels(&self) -> usize {
+        self.starts.len() - 1
+    }
+
+    /// Grouped row `p`'s weight `w = (√w)²`.
+    #[inline(always)]
+    pub(crate) fn weight(&self, p: usize) -> f64 {
+        self.sqrt_weights.as_ref().map_or(1.0, |s| s[p] * s[p])
     }
 }
 
@@ -97,10 +221,8 @@ pub(crate) struct Elimination<'a> {
     prepared: &'a PreparedDesign<'a>,
     term: usize,
     removed: Range<usize>,
-    groups: Arc<LevelGroups>,
-    /// The eliminated term's coefficient columns: each level's Gram block is `width × width`.
-    width: usize,
-    /// Per eliminated level, a generalized inverse of its Gram block, row-major.
+    rows: Arc<GroupedRows>,
+    /// Per eliminated level, a generalized inverse of its `width × width` Gram block, row-major.
     inverse: Arc<Vec<f64>>,
 }
 
@@ -113,79 +235,67 @@ pub(crate) struct KeptChannel<'p> {
     pub(crate) loading: Option<&'p [f64]>,
 }
 
-impl<'a> Elimination<'a> {
-    pub(crate) fn new(prepared: &'a PreparedDesign<'a>) -> Self {
-        let (term, largest) = prepared
-            .design
-            .terms
-            .iter()
-            .enumerate()
-            .max_by_key(|(_, t)| t.n_dofs())
-            .expect("validated nonempty design");
-        let removed = largest.dofs();
-        let mut e = Self {
-            prepared,
-            term,
-            removed,
-            groups: Arc::new(LevelGroups::build(largest.levels(), largest.n_levels())),
-            width: largest.n_columns(),
-            inverse: Arc::default(),
-        };
-        e.inverse = Arc::new(e.block_inverses());
-        e
+/// `Wᵀ W` from pivoted Gram–Schmidt is a generalized inverse, so `A G⁻ Aᵀ` is the exact projector.
+fn block_inverses(rows: &GroupedRows) -> Vec<f64> {
+    let (starts, eliminated) = (&rows.starts, &rows.eliminated);
+    let c = eliminated.width;
+    if c == 1 && eliminated.intercept {
+        return (starts.par_windows(2))
+            .map(|bounds| {
+                let weight: f64 = match rows.sqrt_weights {
+                    Some(_) => (bounds[0]..bounds[1]).map(|p| rows.weight(p)).sum(),
+                    None => (bounds[1] - bounds[0]) as f64,
+                };
+                if weight > 0.0 && weight.is_finite() {
+                    weight.recip()
+                } else {
+                    0.0
+                }
+            })
+            .collect();
     }
-
-    /// `Wᵀ W` from pivoted Gram–Schmidt is a generalized inverse, so `A G⁻ Aᵀ` is the exact projector.
-    fn block_inverses(&self) -> Vec<f64> {
-        let c = self.width;
-        let loadings = self.eliminated_loadings();
-        let sqrt_weights = self.prepared.sqrt_weights();
-        let LevelGroups { order, starts } = &*self.groups;
-        if loadings == [None] {
-            return starts
-                .par_windows(2)
-                .map(|bounds| {
-                    let weight = match sqrt_weights {
-                        Some(sw) => order
-                            .rows(bounds[0]..bounds[1])
-                            .map(|i| row_weight(Some(sw), i as usize))
-                            .sum(),
-                        None => (bounds[1] - bounds[0]) as f64,
-                    };
-                    if weight > 0.0 && weight.is_finite() {
-                        weight.recip()
-                    } else {
-                        0.0
-                    }
-                })
-                .collect();
-        }
-        let mut inverse = vec![0.0; self.n_levels() * c * c];
-        (inverse.par_chunks_mut(c * c).enumerate().with_min_len(256)).for_each_init(
-            || GramBasisWorkspace::new(c),
-            |workspace, (l, out)| {
-                let basis = workspace.orthonormalize(|block| {
-                    block.fill(0.0);
-                    for i in order.rows(starts[l]..starts[l + 1]) {
-                        let (i, w) = (i as usize, row_weight(sqrt_weights, i as usize));
-                        for (j, aj) in loadings.iter().enumerate() {
-                            let wa = aj.map_or(w, |z| w * z[i]);
-                            for (k, ak) in loadings.iter().enumerate() {
-                                block[j * c + k] += ak.map_or(wa, |z| wa * z[i]);
-                            }
-                        }
-                    }
-                });
-                for row in basis.rows.chunks_exact(c) {
-                    for (j, &rj) in row.iter().enumerate() {
-                        for (k, &rk) in row.iter().enumerate() {
-                            out[j * c + k] += rj * rk;
+    let mut inverse = vec![0.0; rows.n_levels() * c * c];
+    (inverse.par_chunks_mut(c * c).enumerate().with_min_len(256)).for_each_init(
+        || GramBasisWorkspace::new(c),
+        |workspace, (l, out)| {
+            let basis = workspace.orthonormalize(|block| {
+                block.fill(0.0);
+                for p in starts[l]..starts[l + 1] {
+                    let w = rows.weight(p);
+                    for j in 0..c {
+                        let wa = w * eliminated.loading(p, j);
+                        for k in 0..c {
+                            block[j * c + k] += wa * eliminated.loading(p, k);
                         }
                     }
                 }
-            },
-        );
-        inverse
+            });
+            for row in basis.rows.chunks_exact(c) {
+                for (j, &rj) in row.iter().enumerate() {
+                    for (k, &rk) in row.iter().enumerate() {
+                        out[j * c + k] += rj * rk;
+                    }
+                }
+            }
+        },
+    );
+    inverse
+}
+
+impl<'a> Elimination<'a> {
+    pub(crate) fn new(prepared: &'a PreparedDesign<'a>) -> Self {
+        let (term, largest) = (prepared.design.terms.iter().enumerate())
+            .max_by_key(|(_, t)| t.n_dofs())
+            .expect("validated nonempty design");
+        let kept = kept_channels(prepared, term);
+        let rows = GroupedRows::build(prepared, &prepared.term(term), &kept);
+        Self {
+            prepared,
+            term,
+            removed: largest.dofs(),
+            inverse: Arc::new(block_inverses(&rows)),
+            rows: Arc::new(rows),
+        }
     }
 
     pub(crate) fn prepared(&self) -> &'a PreparedDesign<'a> {
@@ -197,8 +307,8 @@ impl<'a> Elimination<'a> {
         self.removed.clone()
     }
 
-    pub(crate) fn groups(&self) -> &Arc<LevelGroups> {
-        &self.groups
+    pub(crate) fn rows(&self) -> &Arc<GroupedRows> {
+        &self.rows
     }
 
     pub(crate) fn term(&self) -> usize {
@@ -206,92 +316,23 @@ impl<'a> Elimination<'a> {
     }
 
     pub(crate) fn width(&self) -> usize {
-        self.width
+        self.rows.eliminated.width
     }
 
     pub(crate) fn inverse(&self) -> &Arc<Vec<f64>> {
         &self.inverse
     }
 
-    fn levels(&self) -> &'a [u32] {
-        self.prepared.design.terms[self.term].levels()
-    }
-
     /// Per eliminated coefficient column, its loading; `None` is the intercept.
     pub(crate) fn eliminated_loadings(&self) -> Vec<Option<&'a [f64]>> {
         let prepared: &'a PreparedDesign<'a> = self.prepared;
         let term = prepared.term(self.term);
-        (0..self.width).map(|c| term.loading(c)).collect()
-    }
-
-    /// Per eliminated column `j`, per kept coefficient: `Σ_e (Σ_{i∈e,l} w x_c x_j)² / Σ_{i∈e} w x_j²`.
-    pub(crate) fn single_channel_removal(&self) -> Vec<Vec<f64>> {
-        let (groups, sw) = (&self.groups, self.prepared.sqrt_weights());
-        let loadings = self.eliminated_loadings();
-        let channels = self.kept_channels();
-        let (width, n_kept) = (self.width, self.n_kept());
-        let zeros = || vec![vec![0.0; n_kept]; width];
-        (0..self.n_levels())
-            .into_par_iter()
-            .fold(zeros, |mut acc, level| {
-                let rows: Vec<usize> = (groups
-                    .order
-                    .rows(groups.starts[level]..groups.starts[level + 1]))
-                .map(|r| r as usize)
-                .collect();
-                let mut cross: Vec<(usize, f64)> = Vec::new();
-                for (j, load) in loadings.iter().enumerate() {
-                    let x = |r: usize| sw.map_or(1.0, |s| s[r]) * load.map_or(1.0, |z| z[r]);
-                    let delta: f64 = rows.iter().map(|&r| x(r) * x(r)).sum();
-                    if delta <= 0.0 {
-                        continue;
-                    }
-                    cross.clear();
-                    for ch in &channels {
-                        cross.extend(rows.iter().map(|&r| {
-                            let c = sw.map_or(1.0, |s| s[r]) * ch.loading.map_or(1.0, |z| z[r]);
-                            (ch.start + ch.levels[r] as usize, c * x(r))
-                        }));
-                    }
-                    cross.sort_unstable_by_key(|t| t.0);
-                    for run in cross.chunk_by(|a, b| a.0 == b.0) {
-                        let s: f64 = run.iter().map(|t| t.1).sum();
-                        acc[j][run[0].0] += s * s / delta;
-                    }
-                }
-                acc
-            })
-            .reduce(zeros, |mut a, b| {
-                a.iter_mut()
-                    .zip(b)
-                    .for_each(|(x, y)| x.iter_mut().zip(y).for_each(|(u, v)| *u += v));
-                a
-            })
+        (0..self.width()).map(|c| term.loading(c)).collect()
     }
 
     /// Every kept coefficient column, in kept-coefficient order.
     pub(crate) fn kept_channels(&self) -> Vec<KeptChannel<'a>> {
-        let prepared: &'a PreparedDesign<'a> = self.prepared;
-        let mut start = 0;
-        let mut channels = Vec::new();
-        for (index, term) in prepared.terms().enumerate() {
-            if index == self.term {
-                continue;
-            }
-            for c in 0..term.term.n_columns() {
-                channels.push(KeptChannel {
-                    start: start + c * term.term.n_levels(),
-                    levels: term.term.levels(),
-                    loading: term.loading(c),
-                });
-            }
-            start += term.term.n_dofs();
-        }
-        channels
-    }
-
-    pub(crate) fn n_levels(&self) -> usize {
-        self.removed.len() / self.width
+        kept_channels(self.prepared, self.term)
     }
 
     pub(crate) fn n_kept(&self) -> usize {
@@ -311,45 +352,25 @@ impl<'a> Elimination<'a> {
         reduced[..start].copy_from_slice(&full[..start]);
         reduced[start..].copy_from_slice(&full[self.removed.end..]);
     }
+}
 
-    pub(crate) fn scale(&self, row: usize) -> f64 {
-        self.prepared.sqrt_weights().map_or(1.0, |w| w[row])
-    }
-
-    /// The eliminated coefficients fitting `values`, laid out like `removed`.
-    pub(crate) fn coefficients(&self, values: &[f64], coefficients: &mut [f64]) {
-        let (n, c) = (self.n_levels(), self.width);
-        let loadings = self.eliminated_loadings();
-        let mut sums = vec![0.0; n * c];
-        for (i, &level) in self.levels().iter().enumerate() {
-            let v = self.scale(i) * values[i];
-            for (sum, a) in sums[level as usize * c..][..c].iter_mut().zip(&loadings) {
-                *sum += a.map_or(v, |z| z[i] * v);
-            }
+fn kept_channels<'a>(prepared: &'a PreparedDesign<'a>, eliminated: usize) -> Vec<KeptChannel<'a>> {
+    let mut start = 0;
+    let mut channels = Vec::new();
+    for (index, term) in prepared.terms().enumerate() {
+        if index == eliminated {
+            continue;
         }
-        for (l, sums) in sums.chunks_exact(c).enumerate() {
-            let inverse = &self.inverse[l * c * c..][..c * c];
-            for (j, row) in inverse.chunks_exact(c).enumerate() {
-                coefficients[j * n + l] = dot(row, sums);
-            }
+        for c in 0..term.term.n_columns() {
+            channels.push(KeptChannel {
+                start: start + c * term.term.n_levels(),
+                levels: term.term.levels(),
+                loading: term.loading(c),
+            });
         }
+        start += term.term.n_dofs();
     }
-
-    #[cfg(test)]
-    pub(crate) fn project(&self, values: &mut [f64], coefficients: &mut [f64]) {
-        self.coefficients(values, coefficients);
-        let n = self.n_levels();
-        let loadings = self.eliminated_loadings();
-        for (i, &level) in self.levels().iter().enumerate() {
-            let fit: f64 = (loadings.iter().enumerate())
-                .map(|(j, a)| {
-                    let b = coefficients[j * n + level as usize];
-                    a.map_or(b, |z| z[i] * b)
-                })
-                .sum();
-            values[i] -= self.scale(i) * fit;
-        }
-    }
+    channels
 }
 
 /// Which factor pairs the reduced subdomains keep.
@@ -427,9 +448,9 @@ mod tests {
             (&[1, 1, 3, 3][..], 6),
             (&[3, 1, 3, 0, 3, 1, 3][..], 6),
         ] {
-            let groups = LevelGroups::build(levels, n_levels);
-            assert_eq!(groups.starts[0], 0);
-            assert_eq!(groups.starts[n_levels], levels.len());
+            let (order, starts) = group_by_level(levels, n_levels);
+            assert_eq!(starts[0], 0);
+            assert_eq!(starts[n_levels], levels.len());
             for l in 0..n_levels {
                 let expected: Vec<u32> = levels
                     .iter()
@@ -437,10 +458,7 @@ mod tests {
                     .filter_map(|(i, &level)| (level as usize == l).then_some(i as u32))
                     .collect();
                 assert_eq!(
-                    groups
-                        .order
-                        .rows(groups.starts[l]..groups.starts[l + 1])
-                        .collect::<Vec<_>>(),
+                    order.rows(starts[l]..starts[l + 1]).collect::<Vec<_>>(),
                     expected
                 );
             }

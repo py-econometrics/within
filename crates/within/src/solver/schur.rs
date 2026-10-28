@@ -62,14 +62,10 @@ impl Formulation for Reduced<'_> {
     /// The eliminated factor fit to what the kept coefficients leave, then demeaned.
     fn finish(&self, reduced: ReducedRhs<'_>, mut run: Run) -> Result<RhsSolution, SolveError> {
         let e = &self.elimination;
-        let ReducedRhs { rhs, mut b, .. } = reduced;
+        let rhs = reduced.rhs;
         let mut full = vec![0.0; e.prepared().design.n_dofs];
         e.embed(&run.result.x, &mut full);
-        rhs.op.apply(&full, &mut b)?;
-        for (bi, &original) in b.iter_mut().zip(rhs.b()) {
-            *bi = original - *bi;
-        }
-        e.coefficients(&b, &mut full[e.removed()]);
+        (self.design).recover(rhs.b(), &run.result.x, &mut full[e.removed()]);
         run.result.x = full;
         // Recovery changes the residual, including predictions at zero-weight observations.
         run.result.true_residual = None;
@@ -199,7 +195,8 @@ impl Solver<'_> {
             gamma("WITHIN_REDUCED_GAMMA_C"),
         );
         let scales = (gamma_g != 0.0 || gamma_c != 0.0).then(|| {
-            let (diagonal, norms) = design.gram_diagonal_and_norms();
+            let moments = design.column_moments();
+            let (diagonal, norms) = (&moments.diagonal, &moments.norms);
             // A coefficient inside the eliminated span has S_ll = 0 and keeps its plain weight.
             let scale = |piece: &[f64], g: f64| -> Arc<Vec<f64>> {
                 Arc::new(
@@ -221,7 +218,7 @@ impl Solver<'_> {
                         .map(|_| Arc::clone(&ones))
                         .collect()
                 }
-                g => (elimination.single_channel_removal().iter())
+                g => (moments.single_removal.iter())
                     .map(|removed| {
                         let piece: Vec<f64> =
                             norms.iter().zip(removed).map(|(a, r)| a - r).collect();
@@ -230,7 +227,7 @@ impl Solver<'_> {
                     .collect(),
             };
             PieceScales {
-                gram: scale(&norms, gamma_g),
+                gram: scale(norms, gamma_g),
                 complement,
             }
         });
