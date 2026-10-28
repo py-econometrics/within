@@ -517,9 +517,12 @@ impl ReducedCoarse {
             })
             .collect();
         // An eliminated level inside one anchor component absorbs the gauges on its rows exactly.
+        // Zero-weight rows carry no energy, so they cannot split a level.
         let split = (0..na).into_par_iter().any(|lw| {
             let mut comps = (groups.order.rows(groups.starts[lw]..groups.starts[lw + 1]))
-                .map(|r| anchor_comp[sides[1].levels[r as usize] as usize]);
+                .map(|r| r as usize)
+                .filter(|&r| weight(r) > 0.0)
+                .map(|r| anchor_comp[sides[1].levels[r] as usize]);
             let first = comps.next();
             comps.any(|c| Some(c) != first)
         });
