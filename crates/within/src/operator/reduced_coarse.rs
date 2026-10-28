@@ -985,14 +985,6 @@ impl ReducedCoarse {
         lap(0);
         self.solve_coarse(&mut c);
         lap(1);
-        if std::env::var_os("WITHIN_REDUCED_COARSE_ADDITIVE").is_some() {
-            inner.apply(x, y)?;
-            lap(3);
-            self.z.mul_add(&c, 1.0, y);
-            lap(6);
-            self.timers[7].fetch_add(1, Relaxed);
-            return Ok(());
-        }
         let mut t = x.to_vec();
         self.sz.mul_add(&c, -1.0, &mut t);
         lap(2);
