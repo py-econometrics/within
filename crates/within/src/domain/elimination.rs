@@ -24,6 +24,7 @@ impl RowOrder {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn rows(&self, range: Range<usize>) -> impl Iterator<Item = u32> + '_ {
         match self {
             Self::Identity(_) => rayon::iter::Either::Left(range.map(|i| i as u32)),
@@ -74,6 +75,8 @@ pub(crate) struct KeptRows {
     values: Vec<f64>,
     pub(crate) n_channels: usize,
     n_intercepts: usize,
+    /// Per kept channel, in kept-channel order, its slot in each row.
+    slots: Vec<usize>,
 }
 
 impl KeptRows {
@@ -94,6 +97,17 @@ impl KeptRows {
         let unit: f64 = intercepts.iter().map(|&c| x[c as usize]).sum();
         let values = &self.values[p * slopes.len()..][..slopes.len()];
         (slopes.iter().zip(values)).fold(unit, |acc, (&c, &z)| acc + z * x[c as usize])
+    }
+
+    /// Kept channel `k`'s `(column, loading)` at row `p`.
+    #[inline(always)]
+    pub(crate) fn entry(&self, p: usize, k: usize) -> (u32, f64) {
+        let slot = self.slots[k];
+        let column = self.columns[p * self.n_channels + slot];
+        let n_slopes = self.n_channels - self.n_intercepts;
+        let loading =
+            (slot.checked_sub(self.n_intercepts)).map_or(1.0, |s| self.values[p * n_slopes + s]);
+        (column, loading)
     }
 
     /// Each `(column, loading)` of row `p`.
@@ -186,6 +200,14 @@ impl GroupedRows {
             });
         }
         let values: Vec<&[f64]> = valued.iter().filter_map(|c| c.loading).collect();
+        let mut next = [0, intercepts.len()];
+        let slots = (kept.iter())
+            .map(|channel| {
+                let side = &mut next[channel.loading.is_some() as usize];
+                *side += 1;
+                *side - 1
+            })
+            .collect();
         Self {
             sqrt_weights: (prepared.sqrt_weights())
                 .map(|sw| order.par_iter().map(|i| sw[i as usize]).collect()),
@@ -199,6 +221,7 @@ impl GroupedRows {
                 values: gather(&values),
                 n_channels: channels.len(),
                 n_intercepts: intercepts.len(),
+                slots,
             },
             order,
             starts,
@@ -324,6 +347,7 @@ impl<'a> Elimination<'a> {
     }
 
     /// Per eliminated coefficient column, its loading; `None` is the intercept.
+    #[cfg(test)]
     pub(crate) fn eliminated_loadings(&self) -> Vec<Option<&'a [f64]>> {
         let prepared: &'a PreparedDesign<'a> = self.prepared;
         let term = prepared.term(self.term);
@@ -331,6 +355,7 @@ impl<'a> Elimination<'a> {
     }
 
     /// Every kept coefficient column, in kept-coefficient order.
+    #[cfg(test)]
     pub(crate) fn kept_channels(&self) -> Vec<KeptChannel<'a>> {
         kept_channels(self.prepared, self.term)
     }

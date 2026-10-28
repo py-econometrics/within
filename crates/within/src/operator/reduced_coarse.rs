@@ -16,8 +16,8 @@ use rayon::prelude::*;
 use schwarz_precond::{Operator, SolveError};
 
 use super::coarse::CoarseRung;
-use crate::domain::elimination::Elimination;
-use crate::domain::Column;
+use crate::domain::elimination::{Elimination, GroupedRows};
+use crate::domain::{row_weight, Column, PreparedTerm, Term};
 
 /// Sparse `n × m` held both ways: by column for `Mᵀx`, by nonempty row for `M c`.
 struct TwoWay {
@@ -152,19 +152,6 @@ impl TwoWay {
                 }
             });
     }
-}
-
-/// Merge `(a, b, v)` triplets with equal `(a, b)` after sorting.
-fn sort_merge(mut t: Vec<(u32, u32, f64)>) -> Vec<(u32, u32, f64)> {
-    t.par_sort_unstable_by_key(|e| (e.0, e.1));
-    let mut out: Vec<(u32, u32, f64)> = Vec::with_capacity(t.len());
-    for e in t {
-        match out.last_mut() {
-            Some(last) if last.0 == e.0 && last.1 == e.1 => last.2 += e.2,
-            _ => out.push(e),
-        }
-    }
-    out
 }
 
 /// Cyclic Jacobi eigenvalues of a small symmetric matrix (row-major, overwritten).
@@ -309,31 +296,294 @@ fn find(parent: &mut [u32], mut x: u32) -> u32 {
     x
 }
 
-/// One term's solve-basis columns at a row.
-struct LevelSide<'a> {
-    levels: &'a [u32],
-    loadings: Vec<Option<&'a [f64]>>,
-    n_levels: usize,
+/// The kept term sharing the eliminated term's column layout, with the most levels.
+struct Anchor<'a> {
+    term: PreparedTerm<'a>,
+    /// Its first column's index among the kept channels.
+    channel: usize,
+    /// Its first coefficient among the kept coefficients.
+    base: usize,
 }
 
-impl LevelSide<'_> {
-    fn coef(&self, column: usize, row: usize) -> f64 {
-        self.loadings[column].map_or(1.0, |z| z[row])
+impl<'a> Anchor<'a> {
+    fn find(e: &Elimination<'a>) -> Option<Self> {
+        let design = &e.prepared().design;
+        let layout = |t: &Term<'_>| {
+            (0..t.n_columns())
+                .map(|c| matches!(t.column(c), Column::Intercept))
+                .collect::<Vec<_>>()
+        };
+        let target = layout(&design.terms[e.term()]);
+        let (mut channel, mut base) = (0, 0);
+        let mut anchor: Option<(usize, usize, usize)> = None;
+        for (t, term) in design.terms.iter().enumerate() {
+            if t == e.term() {
+                continue;
+            }
+            if layout(term) == target
+                && anchor.is_none_or(|(a, ..)| design.terms[a].n_levels() < term.n_levels())
+            {
+                anchor = Some((t, channel, base));
+            }
+            channel += term.n_columns();
+            base += term.n_dofs();
+        }
+        let (t, channel, base) = anchor?;
+        Some(Self {
+            term: e.prepared().term(t),
+            channel,
+            base,
+        })
     }
 
-    fn gram(&self, rows: impl Iterator<Item = usize>, w: impl Fn(usize) -> f64, out: &mut [f64]) {
-        let p = self.loadings.len();
-        out.fill(0.0);
-        for r in rows {
-            let wr = w(r);
-            for a in 0..p {
-                let wa = wr * self.coef(a, r);
+    fn n_levels(&self) -> usize {
+        self.term.term.n_levels()
+    }
+
+    /// Grouped row `p`'s anchor level.
+    fn level(&self, rows: &GroupedRows, p: usize) -> usize {
+        rows.kept.entry(p, self.channel).0 as usize - self.base
+    }
+
+    /// Grouped row `p`'s anchor loading in column `q`.
+    fn loading(&self, rows: &GroupedRows, p: usize, q: usize) -> f64 {
+        rows.kept.entry(p, self.channel + q).1
+    }
+
+    /// Per anchor level, its Gram and per user channel `j` the solve coefficients reproducing it.
+    fn gauges(&self, sqrt_weights: Option<&[f64]>, p: usize) -> (Vec<f64>, Vec<f64>) {
+        let term = self.term.term;
+        let raw: Vec<&[f64]> = term.raw_slopes().collect();
+        let user = |c: usize, r: usize| match term.column(c) {
+            Column::Intercept => 1.0,
+            Column::Slope(j) => raw[j][r],
+        };
+        let coef = |q: usize, r: usize| self.term.loading(q).map_or(1.0, |z| z[r]);
+        let nb = self.n_levels();
+        let (mut gram, mut rhs) = (vec![0.0; nb * p * p], vec![0.0; nb * p * p]);
+        for (r, &l) in term.levels().iter().enumerate() {
+            let wr = row_weight(sqrt_weights, r);
+            let at = l as usize * p * p;
+            for q in 0..p {
+                let wq = wr * coef(q, r);
                 for b in 0..p {
-                    out[a * p + b] += wa * self.coef(b, r);
+                    gram[at + q * p + b] += wq * coef(b, r);
+                }
+                for j in 0..p {
+                    rhs[at + j * p + q] += wq * user(j, r);
                 }
             }
         }
+        let mut gauge = vec![0.0; nb * p * p];
+        for l in 0..nb {
+            let g = &gram[l * p * p..][..p * p];
+            for j in 0..p {
+                let x = active_solve(g, &rhs[(l * p + j) * p..][..p], p);
+                gauge[(l * p + j) * p..][..p].copy_from_slice(&x);
+            }
+        }
+        (gram, gauge)
     }
+}
+
+/// `Σ w a aᵀ` over grouped rows `span`, `a(p, j)` row `p`'s loading in column `j`.
+fn row_gram(
+    rows: &GroupedRows,
+    span: impl Iterator<Item = usize>,
+    a: impl Fn(usize, usize) -> f64,
+    out: &mut [f64],
+) {
+    let p = rows.eliminated.width;
+    out.fill(0.0);
+    for r in span {
+        let wr = rows.weight(r);
+        for i in 0..p {
+            let wa = wr * a(r, i);
+            for j in 0..p {
+                out[i * p + j] += wa * a(r, j);
+            }
+        }
+    }
+}
+
+/// Spells whose Gram is within `k` of both levels' own Grams, as `(eliminated, anchor)` levels.
+fn glued_spells(
+    rows: &GroupedRows,
+    anchor: &Anchor<'_>,
+    anchor_gram: &[f64],
+    k: f64,
+) -> Vec<(u32, u32)> {
+    let p = rows.eliminated.width;
+    let eliminated = |r: usize, j: usize| rows.eliminated.loading(r, j);
+    let anchored = |r: usize, j: usize| anchor.loading(rows, r, j);
+    (0..rows.n_levels())
+        .into_par_iter()
+        .flat_map_iter(|lw| {
+            let span = rows.starts[lw]..rows.starts[lw + 1];
+            let (mut level, mut gram) = (vec![0.0; p * p], vec![0.0; p * p]);
+            row_gram(rows, span.clone(), eliminated, &mut level);
+            let mut by_anchor: Vec<(usize, usize)> =
+                span.map(|r| (anchor.level(rows, r), r)).collect();
+            by_anchor.sort_unstable();
+            let mut out = Vec::new();
+            for spell in by_anchor.chunk_by(|a, b| a.0 == b.0) {
+                let lf = spell[0].0;
+                let spell_rows = || spell.iter().map(|&(_, r)| r);
+                row_gram(rows, spell_rows(), eliminated, &mut gram);
+                let mut worst = pencil_condition(&gram, &level, p);
+                row_gram(rows, spell_rows(), anchored, &mut gram);
+                worst = worst.max(pencil_condition(
+                    &gram,
+                    &anchor_gram[lf * p * p..][..p * p],
+                    p,
+                ));
+                if worst <= k {
+                    out.push((lw as u32, lf as u32));
+                }
+            }
+            out
+        })
+        .collect()
+}
+
+/// One eliminated level's share of `U = ÃZ`: the coarse columns its rows touch and their fit `β`.
+struct GroupFit {
+    /// Touched coarse columns, ascending: every channel of each touched component.
+    columns: Vec<u32>,
+    /// `β = G⁻ Eᵀ W½ (W½ D Z)`, `width × columns`, row-major.
+    beta: Vec<f64>,
+}
+
+/// A level's share of the column energies and of `E = UᵀU`.
+struct LevelGram {
+    /// `‖W½DZ‖²` per touched column, in the fit's column order.
+    pre: Vec<f64>,
+    /// The lower triangle of `UᵀU` over the touched columns.
+    entries: Vec<(u32, u32, f64)>,
+}
+
+/// What the coarse columns are made of, to evaluate `U = ÃZ` one entry at a time.
+struct Lift<'a> {
+    rows: &'a GroupedRows,
+    anchor: &'a Anchor<'a>,
+    anchor_comp: &'a [u32],
+    gauge: &'a [f64],
+    inv_norm: &'a [f64],
+}
+
+impl Lift<'_> {
+    /// `√w (D Z)` at grouped row `r` in coarse column `c`: nonzero only on the row's component.
+    fn lifted(&self, r: usize, c: usize) -> f64 {
+        let p = self.rows.eliminated.width;
+        let l = self.anchor.level(self.rows, r);
+        if self.anchor_comp[l] as usize != c / p {
+            return 0.0;
+        }
+        let g = &self.gauge[(l * p + c % p) * p..][..p];
+        let val: f64 = (0..p)
+            .map(|q| self.anchor.loading(self.rows, r, q) * g[q])
+            .sum();
+        self.root(r) * val * self.inv_norm[c]
+    }
+
+    fn root(&self, r: usize) -> f64 {
+        self.rows.sqrt_weights.as_ref().map_or(1.0, |s| s[r])
+    }
+
+    /// `U` at grouped row `r` in local column `i` of `fit`, from its lifted value `v`.
+    fn projected(&self, r: usize, mut v: f64, fit: &GroupFit, i: usize) -> f64 {
+        let (p, t) = (self.rows.eliminated.width, fit.columns.len());
+        for a in 0..p {
+            let wa = self.root(r) * self.rows.eliminated.loading(r, a);
+            v -= wa * fit.beta[a * t + i];
+        }
+        v
+    }
+
+    /// Level `lw`'s fit, `‖W½DZ‖²` and the lower triangle of `UᵀU` over its columns.
+    fn fit(&self, lw: usize, comps: &[u32], inverse: &[f64]) -> (GroupFit, LevelGram) {
+        let (rows, p) = (self.rows, self.rows.eliminated.width);
+        let span = rows.starts[lw]..rows.starts[lw + 1];
+        let columns: Vec<u32> = (comps.iter())
+            .flat_map(|&c| (0..p as u32).map(move |j| c * p as u32 + j))
+            .collect();
+        let t = columns.len();
+        let mut v = vec![0.0; span.len() * t];
+        for (i, r) in span.clone().enumerate() {
+            let c = self.anchor_comp[self.anchor.level(rows, r)];
+            let at = comps.binary_search(&c).expect("touched component") * p;
+            for j in 0..p {
+                v[i * t + at + j] = self.lifted(r, columns[at + j] as usize);
+            }
+        }
+        let pre: Vec<f64> = (0..t)
+            .map(|c| (0..span.len()).map(|i| v[i * t + c] * v[i * t + c]).sum())
+            .collect();
+        let inv = &inverse[lw * p * p..][..p * p];
+        let mut s = vec![0.0; p * t];
+        for (i, r) in span.clone().enumerate() {
+            for a in 0..p {
+                let wa = self.root(r) * rows.eliminated.loading(r, a);
+                for c in 0..t {
+                    s[a * t + c] += wa * v[i * t + c];
+                }
+            }
+        }
+        let mut beta = vec![0.0; p * t];
+        for a in 0..p {
+            for b in 0..p {
+                for c in 0..t {
+                    beta[a * t + c] += inv[a * p + b] * s[b * t + c];
+                }
+            }
+        }
+        let fit = GroupFit { columns, beta };
+        for (i, r) in span.enumerate() {
+            for c in 0..t {
+                v[i * t + c] = self.projected(r, v[i * t + c], &fit, c);
+            }
+        }
+        let n = v.len() / t.max(1);
+        let mut gram = Vec::with_capacity(t * (t + 1) / 2);
+        for a in 0..t {
+            for b in a..t {
+                let e: f64 = (0..n).map(|i| v[i * t + a] * v[i * t + b]).sum();
+                gram.push((fit.columns[a], fit.columns[b], e));
+            }
+        }
+        (fit, LevelGram { pre, entries: gram })
+    }
+}
+
+/// Lower `(column, row, value)` triplets as a column-major lower triangle, duplicates summed in input order.
+fn lower_csc(m: usize, triplets: Vec<(u32, u32, f64)>) -> (Vec<u32>, Vec<u32>, Vec<f64>) {
+    let mut col_ptr = vec![0usize; m + 1];
+    for &(c, ..) in &triplets {
+        col_ptr[c as usize + 1] += 1;
+    }
+    for c in 0..m {
+        col_ptr[c + 1] += col_ptr[c];
+    }
+    let mut sorted = vec![(0u32, 0.0); triplets.len()];
+    let mut cursor = col_ptr.clone();
+    for (c, r, v) in triplets {
+        sorted[cursor[c as usize]] = (r, v);
+        cursor[c as usize] += 1;
+    }
+    let (mut ptr, mut rows, mut values) = (vec![0u32], Vec::new(), Vec::new());
+    for c in 0..m {
+        let column = &mut sorted[col_ptr[c]..col_ptr[c + 1]];
+        column.sort_by_key(|e| e.0);
+        for run in column.chunk_by(|a, b| a.0 == b.0) {
+            let v: f64 = run.iter().map(|e| e.1).sum();
+            if v != 0.0 {
+                rows.push(run[0].0);
+                values.push(v);
+            }
+        }
+        ptr.push(rows.len() as u32);
+    }
+    (ptr, rows, values)
 }
 
 /// The coarse space `Z` over the kept coefficients and the LDLᵀ of `ZᵀSZ = (ÃZ)ᵀ(ÃZ)`.
@@ -366,108 +616,28 @@ impl Drop for ReducedCoarse {
 }
 
 impl ReducedCoarse {
-    /// `None` without a kept term sharing the eliminated term's column layout, or when the
-    /// components cover more than half the levels or the coarse factor exceeds `8 · n_obs` values.
+    /// `None` without a kept term sharing the eliminated term's column layout, when the
+    /// components cover more than half the levels, or when `E` or its factor exceeds `8 · n_obs` values.
     pub(crate) fn build(e: &Elimination<'_>, k: f64) -> Option<Self> {
         let started = std::time::Instant::now();
-        let prepared = e.prepared();
-        let design = &prepared.design;
-        let sw = prepared.sqrt_weights();
-        let weight = |r: usize| sw.map_or(1.0, |s| s[r] * s[r]);
-        let root = |r: usize| sw.map_or(1.0, |s| s[r]);
-        let n_obs = design.n_obs();
+        let stats = std::env::var_os("WITHIN_REDUCED_RIGID_STATS").is_some();
+        let stage = |name: &str| {
+            if stats {
+                eprintln!(
+                    "reduced_stage: {name} {:.3}",
+                    started.elapsed().as_secs_f64()
+                );
+            }
+        };
+        let n_obs = e.prepared().design.n_obs();
         let p = e.width();
-        let elim_term = &design.terms[e.term()];
-        let layout = |t: &crate::domain::Term<'_>| {
-            (0..t.n_columns())
-                .map(|c| matches!(t.column(c), Column::Intercept))
-                .collect::<Vec<_>>()
-        };
+        let anchor = Anchor::find(e)?;
+        let rows = &**e.rows();
+        let (na, nb) = (rows.n_levels(), anchor.n_levels());
+        let (anchor_gram, gauge) = anchor.gauges(e.prepared().sqrt_weights(), p);
+        let glued = glued_spells(rows, &anchor, &anchor_gram, k);
+        stage("spells");
 
-        // Anchor: the kept term with the eliminated term's layout and the most levels.
-        let mut base = 0usize;
-        let mut anchor: Option<(usize, usize)> = None;
-        for (t, term) in design.terms.iter().enumerate() {
-            if t == e.term() {
-                continue;
-            }
-            if layout(term) == layout(elim_term)
-                && anchor.is_none_or(|(a, _)| design.terms[a].n_levels() < term.n_levels())
-            {
-                anchor = Some((t, base));
-            }
-            base += term.n_dofs();
-        }
-        let (anchor, anchor_base) = anchor?;
-        let a_term = prepared.term(anchor);
-        let sides = [
-            LevelSide {
-                levels: elim_term.levels(),
-                loadings: e.eliminated_loadings(),
-                n_levels: elim_term.n_levels(),
-            },
-            LevelSide {
-                levels: a_term.term.levels(),
-                loadings: (0..p).map(|c| a_term.loading(c)).collect(),
-                n_levels: a_term.term.n_levels(),
-            },
-        ];
-        let (na, nb) = (sides[0].n_levels, sides[1].n_levels);
-        let groups = e.rows();
-
-        // Level Grams of both sides.
-        let level_grams = |s: &LevelSide<'_>| {
-            let mut g = vec![0.0; s.n_levels * p * p];
-            for (r, &l) in s.levels.iter().enumerate() {
-                let block = &mut g[l as usize * p * p..][..p * p];
-                let wr = weight(r);
-                for a in 0..p {
-                    let wa = wr * s.coef(a, r);
-                    for b in 0..p {
-                        block[a * p + b] += wa * s.coef(b, r);
-                    }
-                }
-            }
-            g
-        };
-        let lgram = [level_grams(&sides[0]), level_grams(&sides[1])];
-
-        // Spells: within each eliminated level's group, rows sorted by anchor level.
-        let glued: Vec<(u32, u32)> = (0..na)
-            .into_par_iter()
-            .flat_map_iter(|lw| {
-                let mut rows: Vec<usize> =
-                    (groups.order.rows(groups.starts[lw]..groups.starts[lw + 1]))
-                        .map(|i| i as usize)
-                        .collect();
-                rows.sort_unstable_by_key(|&r| sides[1].levels[r]);
-                let mut out = Vec::new();
-                let mut gram = vec![0.0; p * p];
-                for spell in rows.chunk_by(|&a, &b| sides[1].levels[a] == sides[1].levels[b]) {
-                    let lf = sides[1].levels[spell[0]] as usize;
-                    let mut worst = 0.0f64;
-                    for (si, (s, level)) in sides.iter().zip([lw, lf]).enumerate() {
-                        s.gram(spell.iter().copied(), weight, &mut gram);
-                        worst = worst.max(pencil_condition(
-                            &gram,
-                            &lgram[si][level * p * p..][..p * p],
-                            p,
-                        ));
-                    }
-                    if worst <= k {
-                        out.push((lw as u32, lf as u32));
-                    }
-                }
-                out
-            })
-            .collect();
-
-        if std::env::var_os("WITHIN_REDUCED_RIGID_STATS").is_some() {
-            eprintln!(
-                "reduced_stage: spells {:.3}",
-                started.elapsed().as_secs_f64()
-            );
-        }
         let mut parent: Vec<u32> = (0..(na + nb) as u32).collect();
         for &(a, b) in &glued {
             let (ra, rb) = (find(&mut parent, a), find(&mut parent, na as u32 + b));
@@ -485,7 +655,6 @@ impl ReducedCoarse {
                 .filter(|&&r| !std::mem::replace(&mut seen[r as usize], true))
                 .count()
         };
-        let stats = std::env::var_os("WITHIN_REDUCED_RIGID_STATS").is_some();
         // Components covering most levels glue nothing worth a coarse column.
         if 2 * n_components > na + nb {
             if stats {
@@ -497,12 +666,7 @@ impl ReducedCoarse {
             }
             return None;
         }
-        if stats {
-            eprintln!(
-                "reduced_stage: components {:.3}",
-                started.elapsed().as_secs_f64()
-            );
-        }
+        stage("components");
         // Coarse index per component touching the anchor side.
         let mut fc_of_root = vec![u32::MAX; na + nb];
         let mut n_fc = 0u32;
@@ -516,48 +680,41 @@ impl ReducedCoarse {
                 fc_of_root[r]
             })
             .collect();
+        // Per eliminated level, the anchor components its rows touch, and whether it splits one.
+        let touched: Vec<(Vec<u32>, bool)> = (0..na)
+            .into_par_iter()
+            .map(|lw| {
+                let span = rows.starts[lw]..rows.starts[lw + 1];
+                let comp = |r: usize| anchor_comp[anchor.level(rows, r)];
+                // Zero-weight rows carry no energy, so they cannot split a level.
+                let mut positive = span.clone().filter(|&r| rows.weight(r) > 0.0).map(comp);
+                let first = positive.next();
+                let split = positive.any(|c| Some(c) != first);
+                let mut comps: Vec<u32> = span.map(comp).collect();
+                comps.sort_unstable();
+                comps.dedup();
+                (comps, split)
+            })
+            .collect();
         // An eliminated level inside one anchor component absorbs the gauges on its rows exactly.
-        // Zero-weight rows carry no energy, so they cannot split a level.
-        let split = (0..na).into_par_iter().any(|lw| {
-            let mut comps = (groups.order.rows(groups.starts[lw]..groups.starts[lw + 1]))
-                .map(|r| r as usize)
-                .filter(|&r| weight(r) > 0.0)
-                .map(|r| anchor_comp[sides[1].levels[r] as usize]);
-            let first = comps.next();
-            comps.any(|c| Some(c) != first)
-        });
-        if !split {
+        if !touched.iter().any(|t| t.1) {
             if stats {
                 eprintln!("reduced_rigid: anchor_components={n_fc} none split, declined");
             }
             return None;
         }
+        // `E` gathers each level's `t × t` block before merging: bound it like the factor.
+        let e_bound: usize = (touched.iter())
+            .map(|(comps, _)| comps.len() * p * (comps.len() * p + 1) / 2)
+            .sum();
+        if e_bound > 8 * n_obs {
+            if stats {
+                eprintln!("reduced_rigid: E_bound={e_bound} n_obs={n_obs} declined");
+            }
+            return None;
+        }
         let m = n_fc as usize * p;
 
-        // Gauges: per anchor level, the solve coefficients reproducing each user channel.
-        let raw: Vec<&[f64]> = a_term.term.raw_slopes().collect();
-        let user = |c: usize, r: usize| match a_term.term.column(c) {
-            Column::Intercept => 1.0,
-            Column::Slope(j) => raw[j][r],
-        };
-        let mut rhs = vec![0.0; nb * p * p];
-        for (r, &l) in sides[1].levels.iter().enumerate() {
-            let wr = weight(r);
-            for q in 0..p {
-                let wq = wr * sides[1].coef(q, r);
-                for j in 0..p {
-                    rhs[(l as usize * p + j) * p + q] += wq * user(j, r);
-                }
-            }
-        }
-        let mut gauge = vec![0.0; nb * p * p];
-        for l in 0..nb {
-            let g = &lgram[1][l * p * p..][..p * p];
-            for j in 0..p {
-                let x = active_solve(g, &rhs[(l * p + j) * p..][..p], p);
-                gauge[(l * p + j) * p..][..p].copy_from_slice(&x);
-            }
-        }
         let mut norm2 = vec![0.0f64; m];
         for l in 0..nb {
             for j in 0..p {
@@ -571,126 +728,29 @@ impl ReducedCoarse {
             .iter()
             .map(|&v| if v > 0.0 { v.sqrt().recip() } else { 0.0 })
             .collect();
-        let n = e.n_kept();
-        let mut z_entries = Vec::new();
-        for l in 0..nb {
-            let c = anchor_comp[l] as usize;
-            for j in 0..p {
-                for (q, &v) in gauge[(l * p + j) * p..][..p].iter().enumerate() {
-                    if v != 0.0 {
-                        let dof = anchor_base + q * nb + l;
-                        z_entries.push(((c * p + j) as u32, dof as u32, v * inv_norm[c * p + j]));
-                    }
-                }
-            }
-        }
-        if stats {
-            eprintln!(
-                "reduced_stage: gauges+Z {:.3}",
-                started.elapsed().as_secs_f64()
-            );
-        }
-        // U = ÃZ per grouped row, projected within each eliminated level's group.
+        stage("gauges");
+        let lift = Lift {
+            rows,
+            anchor: &anchor,
+            anchor_comp: &anchor_comp,
+            gauge: &gauge,
+            inv_norm: &inv_norm,
+        };
         let inverse = e.inverse();
-        let elim_load = e.eliminated_loadings();
-        let ec = |a: usize, r: usize| elim_load[a].map_or(1.0, |z| z[r]);
-        // Per group: (grouped row, coarse column, value) and the group's Gram contributions.
-        type Group = (Vec<(u32, u32, f64)>, Vec<(u32, u32, f64)>, Vec<(u32, f64)>);
-        let per_group: Vec<Group> = (0..na)
-            .into_par_iter()
-            .map(|lw| {
-                let span = groups.starts[lw]..groups.starts[lw + 1];
-                let rows: Vec<usize> = groups
-                    .order
-                    .rows(span.clone())
-                    .map(|i| i as usize)
-                    .collect();
-                let mut cols: Vec<u32> = rows
-                    .iter()
-                    .flat_map(|&r| {
-                        let c = anchor_comp[sides[1].levels[r] as usize];
-                        (0..p as u32).map(move |j| c * p as u32 + j)
-                    })
-                    .collect();
-                cols.sort_unstable();
-                cols.dedup();
-                let t = cols.len();
-                let col_of = |c: u32| cols.binary_search(&c).expect("touched column");
-                // v[row][t]: w½ · (D Z) at the row.
-                let mut v = vec![0.0; rows.len() * t];
-                for (i, &r) in rows.iter().enumerate() {
-                    let l = sides[1].levels[r] as usize;
-                    let c = anchor_comp[l] as usize;
-                    for j in 0..p {
-                        let g = &gauge[(l * p + j) * p..][..p];
-                        let val: f64 = (0..p).map(|q| sides[1].coef(q, r) * g[q]).sum();
-                        v[i * t + col_of((c * p + j) as u32)] = root(r) * val * inv_norm[c * p + j];
-                    }
-                }
-                let pre: Vec<(u32, f64)> = (0..t)
-                    .map(|c| {
-                        (
-                            cols[c],
-                            (0..rows.len()).map(|i| v[i * t + c] * v[i * t + c]).sum(),
-                        )
-                    })
-                    .collect();
-                // Project off the eliminated level's columns: β = G⁻ Eᵀ W½ v.
-                let inv = &inverse[lw * p * p..][..p * p];
-                let mut s = vec![0.0; p * t];
-                for (i, &r) in rows.iter().enumerate() {
-                    for a in 0..p {
-                        let wa = root(r) * ec(a, r);
-                        for c in 0..t {
-                            s[a * t + c] += wa * v[i * t + c];
-                        }
-                    }
-                }
-                let mut beta = vec![0.0; p * t];
-                for a in 0..p {
-                    for b in 0..p {
-                        for c in 0..t {
-                            beta[a * t + c] += inv[a * p + b] * s[b * t + c];
-                        }
-                    }
-                }
-                for (i, &r) in rows.iter().enumerate() {
-                    for a in 0..p {
-                        let wa = root(r) * ec(a, r);
-                        for c in 0..t {
-                            v[i * t + c] -= wa * beta[a * t + c];
-                        }
-                    }
-                }
-                let mut u = Vec::with_capacity(rows.len() * t);
-                for (i, p_row) in span.enumerate() {
-                    let vi = &v[i * t..][..t];
-                    for c in 0..t {
-                        if vi[c] != 0.0 {
-                            u.push((p_row as u32, cols[c], vi[c]));
-                        }
-                    }
-                }
-                (u, Vec::new(), pre)
-            })
+        let per_group: Vec<(GroupFit, LevelGram)> = (touched.par_iter())
+            .enumerate()
+            .map(|(lw, (comps, _))| lift.fit(lw, comps, inverse))
             .collect();
-        if stats {
-            eprintln!(
-                "reduced_stage: U per group {:.3}",
-                started.elapsed().as_secs_f64()
-            );
-        }
-        let mut pre_energy = vec![0.0f64; m];
+        drop(touched);
+        stage("U per group");
         // Exact nulls of S (the eliminated term absorbs the gauge) need no lift; keep the rest.
-        let mut energy = vec![0.0f64; m];
-        let mut u = Vec::with_capacity(na);
-        for (ug, _, pg) in per_group {
-            for &(_, c, v) in &ug {
-                energy[c as usize] += v * v;
-            }
-            u.push(ug);
-            for (c, v) in pg {
+        let (mut pre_energy, mut energy) = (vec![0.0f64; m], vec![0.0f64; m]);
+        for (fit, gram) in &per_group {
+            for (&c, v) in fit.columns.iter().zip(&gram.pre) {
                 pre_energy[c as usize] += v;
+            }
+            for &(a, _, v) in gram.entries.iter().filter(|t| t.0 == t.1) {
+                energy[a as usize] += v;
             }
         }
         let mut renumber = vec![u32::MAX; m];
@@ -701,140 +761,52 @@ impl ReducedCoarse {
                 live += 1;
             }
         }
-        let dropped = m - live as usize;
-        let m = live as usize;
+        let (n_all, m) = (m, live as usize);
+        let dropped = n_all - m;
         if m == 0 {
             return None;
         }
-        let keep = |t: &(u32, u32, f64)| renumber[t.0 as usize] != u32::MAX;
-        let z_entries: Vec<_> = (z_entries.into_iter().filter(keep))
-            .map(|(c, r, v)| (renumber[c as usize], r, v))
-            .collect();
-        let z = TwoWay::from_sorted(n, m, &sort_merge(z_entries));
-        if stats {
-            eprintln!(
-                "reduced_stage: renumber {:.3}",
-                started.elapsed().as_secs_f64()
-            );
-        }
-        // U renumbered in grouped-row order: segment `s` is one row's entries, columns ascending.
-        let (mut seg_prow, mut seg_ptr) = (Vec::<u32>::new(), vec![0usize]);
-        let (mut row_col, mut row_val) = (Vec::<u32>::new(), Vec::<f64>::new());
-        for (p, c, v) in u.into_iter().flatten() {
-            let c = renumber[c as usize];
-            if c == u32::MAX {
-                continue;
-            }
-            if seg_prow.last() != Some(&p) {
-                if !seg_prow.is_empty() {
-                    seg_ptr.push(row_col.len());
+        let n = e.n_kept();
+        let mut z_entries = Vec::new();
+        for l in 0..nb {
+            let comp = anchor_comp[l] as usize;
+            for j in 0..p {
+                let c = comp * p + j;
+                if renumber[c] == u32::MAX {
+                    continue;
                 }
-                seg_prow.push(p);
-            }
-            row_col.push(c);
-            row_val.push(v);
-        }
-        if !seg_prow.is_empty() {
-            seg_ptr.push(row_col.len());
-        }
-        // The same entries by coarse column, each naming its row segment.
-        let mut u_ptr = vec![0usize; m + 1];
-        for &c in &row_col {
-            u_ptr[c as usize + 1] += 1;
-        }
-        for k in 0..m {
-            u_ptr[k + 1] += u_ptr[k];
-        }
-        let mut u_seg = vec![0u32; u_ptr[m]];
-        let mut u_val = vec![0.0f64; u_ptr[m]];
-        let mut cursor = u_ptr.clone();
-        for s in 0..seg_prow.len() {
-            for k in seg_ptr[s]..seg_ptr[s + 1] {
-                let j = &mut cursor[row_col[k] as usize];
-                u_seg[*j] = s as u32;
-                u_val[*j] = row_val[k];
-                *j += 1;
-            }
-        }
-        drop(cursor);
-        let ranges = 4 * rayon::current_num_threads().max(1);
-        let per = u_ptr[m].div_ceil(ranges).max(1);
-        let mut splits = vec![0usize];
-        for (c, &start) in u_ptr.iter().enumerate().take(m).skip(1) {
-            if start >= per * splits.len() {
-                splits.push(c);
-            }
-        }
-        splits.push(m);
-        let windows: Vec<(usize, usize)> = splits.windows(2).map(|w| (w[0], w[1])).collect();
-        if stats {
-            eprintln!(
-                "reduced_stage: U columns {:.3}",
-                started.elapsed().as_secs_f64()
-            );
-        }
-        // E = UᵀU by column, lower triangle: column c gathers the rows touching it, kept at c' ≥ c.
-        let e_entries: Vec<(u32, u32, f64)> = windows
-            .par_iter()
-            .map(|&(lo, hi)| {
-                let mut acc = vec![0.0f64; m];
-                let mut seen = vec![u32::MAX; m];
-                let mut touched: Vec<u32> = Vec::new();
-                let mut out = Vec::new();
-                for col in lo..hi {
-                    for k in u_ptr[col]..u_ptr[col + 1] {
-                        let s = u_seg[k] as usize;
-                        let a = u_val[k];
-                        let span = seg_ptr[s]..seg_ptr[s + 1];
-                        let from = span.start
-                            + row_col[span.clone()].partition_point(|&c| (c as usize) < col);
-                        for j in from..span.end {
-                            let c2 = row_col[j] as usize;
-                            if seen[c2] != col as u32 {
-                                seen[c2] = col as u32;
-                                touched.push(c2 as u32);
-                            }
-                            acc[c2] += a * row_val[j];
-                        }
+                for (q, &v) in gauge[(l * p + j) * p..][..p].iter().enumerate() {
+                    if v != 0.0 {
+                        let dof = anchor.base + q * nb + l;
+                        z_entries.push((renumber[c], dof as u32, v * inv_norm[c]));
                     }
-                    touched.sort_unstable();
-                    for &c2 in &touched {
-                        let v = std::mem::take(&mut acc[c2 as usize]);
-                        if v != 0.0 {
-                            out.push((col as u32, c2, v));
-                        }
-                    }
-                    touched.clear();
                 }
-                out
+            }
+        }
+        z_entries.par_sort_unstable_by_key(|t| (t.0, t.1));
+        let z = TwoWay::from_sorted(n, m, &z_entries);
+        drop(z_entries);
+        // E = UᵀU from each level's block, lower triangle by column.
+        let (mut fits, mut e_triplets) = (Vec::with_capacity(na), Vec::new());
+        for (fit, gram) in per_group {
+            e_triplets.extend(gram.entries.into_iter().filter_map(|(a, b, v)| {
+                let (a, b) = (renumber[a as usize], renumber[b as usize]);
+                (a != u32::MAX && b != u32::MAX).then_some((a, b, v))
+            }));
+            fits.push(fit);
+        }
+        let (col_ptr, row_idx, values) = lower_csc(m, e_triplets);
+        let d_max = (0..m)
+            .filter_map(|c| {
+                let first = col_ptr[c] as usize;
+                (first < col_ptr[c + 1] as usize && row_idx[first] as usize == c)
+                    .then(|| values[first])
             })
-            .collect::<Vec<_>>()
-            .concat();
-        drop((row_col, row_val, seg_ptr));
-
-        if stats {
-            eprintln!("reduced_stage: E {:.3}", started.elapsed().as_secs_f64());
-        }
-        let mut col_ptr = vec![0u32; m + 1];
-        for &(c, _, _) in &e_entries {
-            col_ptr[c as usize + 1] += 1;
-        }
-        for d in 0..m {
-            col_ptr[d + 1] += col_ptr[d];
-        }
-        let d_max = e_entries
-            .iter()
-            .filter(|t| t.0 == t.1)
-            .map(|t| t.2)
             .fold(0.0, f64::max);
-        let pattern = SymbolicSparseColMat::new_checked(
-            m,
-            m,
-            col_ptr,
-            None,
-            e_entries.iter().map(|t| t.1).collect(),
-        );
-        let e_lower = SparseColMat::new(pattern, e_entries.iter().map(|t| t.2).collect());
+        let e_nnz = values.len();
+        let pattern = SymbolicSparseColMat::new_checked(m, m, col_ptr, None, row_idx);
+        let e_lower = SparseColMat::new(pattern, values);
+        stage("E");
         let symbolic = factorize_symbolic_cholesky(
             e_lower.symbolic(),
             Side::Lower,
@@ -842,53 +814,98 @@ impl ReducedCoarse {
             CholeskySymbolicParams::default(),
         )
         .ok()?;
-        let fits = symbolic.len_val() <= 8 * n_obs;
+        let fits_budget = symbolic.len_val() <= 8 * n_obs;
         if stats {
             eprintln!(
-                "reduced_rigid: glued={} components={n_components} anchor_components={n_fc} m={m} null_dropped={dropped} Z_nnz={} E_nnz={} L_nnz={} fits={fits} build_s={:.3}",
+                "reduced_rigid: glued={} components={n_components} anchor_components={n_fc} m={m} null_dropped={dropped} Z_nnz={} E_nnz={e_nnz} L_nnz={} fits={fits_budget} build_s={:.3}",
                 glued.len(),
                 z.nnz(),
-                e_entries.len(),
                 symbolic.len_val(),
                 started.elapsed().as_secs_f64()
             );
         }
-        if !fits {
+        if !fits_budget {
             return None;
         }
-        // SZ = D_keptᵀ W½ U: every kept channel's level sums of w½·a·U.
-        let channels = e.kept_channels();
-        let order: Vec<usize> = groups
-            .order
-            .rows(0..groups.order.len())
-            .map(|i| i as usize)
-            .collect();
-        // Each coarse column summed into a dense kept-coefficient buffer: no global sort.
+        // SZ = D_keptᵀ W½ U, one coarse column at a time over the levels touching its component.
+        let mut comp_ptr = vec![0usize; n_fc as usize + 1];
+        for fit in &fits {
+            for &c in fit.columns.iter().step_by(p) {
+                comp_ptr[c as usize / p + 1] += 1;
+            }
+        }
+        for c in 0..n_fc as usize {
+            comp_ptr[c + 1] += comp_ptr[c];
+        }
+        let mut comp_levels = vec![0u32; comp_ptr[n_fc as usize]];
+        let mut cursor = comp_ptr.clone();
+        for (lw, fit) in fits.iter().enumerate() {
+            for &c in fit.columns.iter().step_by(p) {
+                let k = &mut cursor[c as usize / p];
+                comp_levels[*k] = lw as u32;
+                *k += 1;
+            }
+        }
+        drop(cursor);
+        let live_columns: Vec<usize> = (0..n_all).filter(|&c| renumber[c] != u32::MAX).collect();
+        let work = |c: usize| -> usize {
+            let comp = c / p;
+            (comp_levels[comp_ptr[comp]..comp_ptr[comp + 1]].iter())
+                .map(|&lw| rows.starts[lw as usize + 1] - rows.starts[lw as usize])
+                .sum()
+        };
+        let total: usize = live_columns.iter().map(|&c| work(c)).sum();
+        let per = total
+            .div_ceil(4 * rayon::current_num_threads().max(1))
+            .max(1);
+        let (mut windows, mut first, mut load) = (Vec::new(), 0, 0);
+        for (i, &c) in live_columns.iter().enumerate() {
+            load += work(c);
+            if load >= per {
+                windows.push(first..i + 1);
+                (first, load) = (i + 1, 0);
+            }
+        }
+        if first < live_columns.len() {
+            windows.push(first..live_columns.len());
+        }
         let sz_parts: Vec<Vec<(u32, u32, f64)>> = windows
             .par_iter()
-            .map(|&(lo, hi)| {
+            .map(|window| {
                 let mut acc = vec![0.0f64; n];
                 let mut seen = vec![u32::MAX; n];
                 let mut touched: Vec<u32> = Vec::new();
                 let mut out = Vec::new();
-                for col in lo..hi {
-                    for k in u_ptr[col]..u_ptr[col + 1] {
-                        let r = order[seg_prow[u_seg[k] as usize] as usize];
-                        let val = root(r) * u_val[k];
-                        for ch in &channels {
-                            let d = ch.start + ch.levels[r] as usize;
-                            if seen[d] != col as u32 {
-                                seen[d] = col as u32;
-                                touched.push(d as u32);
+                for &c in &live_columns[window.clone()] {
+                    let col = renumber[c];
+                    let comp = c / p;
+                    for &lw in &comp_levels[comp_ptr[comp]..comp_ptr[comp + 1]] {
+                        let fit = &fits[lw as usize];
+                        let i = fit
+                            .columns
+                            .binary_search(&(c as u32))
+                            .expect("touched column");
+                        let lw = lw as usize;
+                        for r in rows.starts[lw]..rows.starts[lw + 1] {
+                            let u = lift.projected(r, lift.lifted(r, c), fit, i);
+                            if u == 0.0 {
+                                continue;
                             }
-                            acc[d] += ch.loading.map_or(1.0, |z| z[r]) * val;
+                            let val = lift.root(r) * u;
+                            rows.kept.for_each_entry(r, |d, z| {
+                                if seen[d as usize] != col {
+                                    seen[d as usize] = col;
+                                    touched.push(d);
+                                }
+                                acc[d as usize] += z * val;
+                            });
                         }
                     }
                     touched.sort_unstable();
                     for &d in &touched {
                         let v = std::mem::take(&mut acc[d as usize]);
                         if v != 0.0 {
-                            out.push((col as u32, d, v));
+                            out.push((col, d, v));
                         }
                     }
                     touched.clear();
@@ -896,7 +913,6 @@ impl ReducedCoarse {
                 out
             })
             .collect();
-        drop((u_ptr, u_seg, u_val, seg_prow));
         let sz = TwoWay::from_parts(n, m, sz_parts);
         if stats {
             eprintln!(
@@ -929,12 +945,7 @@ impl ReducedCoarse {
                 Default::default(),
             )
             .ok()?;
-        if stats {
-            eprintln!(
-                "reduced_rigid: factored_s={:.3}",
-                started.elapsed().as_secs_f64()
-            );
-        }
+        stage("factored");
         l_values.iter().all(|v| v.is_finite()).then_some(Self {
             m,
             z,
