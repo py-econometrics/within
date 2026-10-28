@@ -17,11 +17,17 @@ use crate::{BuildError, BuildWarning};
 pub(super) enum PrecondSlot {
     /// A single map (`None` = unpreconditioned) built at construction, with its build's warnings.
     Static {
-        map: Option<Preconditioner>,
+        map: Option<FixedMap>,
         warnings: Vec<BuildWarning>,
     },
     /// Diagonal now, Schwarz built lazily on a stalled contraction.
     Adaptive(Box<AdaptivePrecond>),
+}
+
+/// A map built at construction, with the coarse rung the system asked to build around it.
+pub(super) struct FixedMap {
+    pub(super) inner: Preconditioner,
+    pub(super) coarse: Option<Box<dyn CoarseRung>>,
 }
 
 impl PrecondSlot {
@@ -36,7 +42,10 @@ impl PrecondSlot {
                 warnings: Vec::new(),
             },
             PreconditionerConfig::Diagonal => Self::Static {
-                map: Some(build_diagonal(system.gram_diagonal())?),
+                map: Some(FixedMap {
+                    inner: build_diagonal(system.gram_diagonal())?,
+                    coarse: None,
+                }),
                 warnings: Vec::new(),
             },
             PreconditionerConfig::Additive {
@@ -48,6 +57,10 @@ impl PrecondSlot {
                     reduction,
                 };
                 let (map, warnings) = system.build_schwarz(&schwarz)?;
+                let map = map.map(|inner| FixedMap {
+                    inner,
+                    coarse: system.eager_coarse().and_then(CoarseSource::build_coarse),
+                });
                 Self::Static { map, warnings }
             }
             PreconditionerConfig::Adaptive {
@@ -74,7 +87,10 @@ impl PrecondSlot {
     ) -> Result<Self, BuildError> {
         let Some(ladder) = preconditioner.ladder() else {
             return Ok(Self::Static {
-                map: Some(preconditioner),
+                map: Some(FixedMap {
+                    inner: preconditioner,
+                    coarse: None,
+                }),
                 warnings: Vec::new(),
             });
         };
@@ -82,7 +98,10 @@ impl PrecondSlot {
         ladder.escalated.local_solver.validate()?;
         Ok(if !system.has_factor_pairs() {
             Self::Static {
-                map: Some(preconditioner.settle()),
+                map: Some(FixedMap {
+                    inner: preconditioner.settle(),
+                    coarse: None,
+                }),
                 warnings: Vec::new(),
             }
         } else {
@@ -114,7 +133,7 @@ impl PrecondSlot {
     /// The map a solve runs on now: under Adaptive, Schwarz once built, else the diagonal base.
     pub(super) fn preconditioner(&self) -> Option<&Preconditioner> {
         match self {
-            Self::Static { map, .. } => map.as_ref(),
+            Self::Static { map, .. } => map.as_ref().map(|m| &m.inner),
             Self::Adaptive(a) => Some(a.rung()),
         }
     }

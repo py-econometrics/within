@@ -15,7 +15,7 @@ use schwarz_precond::{
 use crate::channel::CoefficientAddress;
 use crate::config::{LsmrOptions, PreconditionerConfig};
 use crate::domain::{Design, Effect, FullPairs, PreparedDesign};
-use crate::operator::coarse::Coarsened;
+use crate::operator::coarse::{CoarseRung, Coarsened};
 use crate::operator::schwarz::{build_schwarz, Preconditioner, SchwarzConfig};
 use crate::operator::DesignOperator;
 use crate::{BuildError, BuildWarning, SolveError, WithinError};
@@ -307,6 +307,10 @@ trait Formulation: Sync {
     fn coarse_source(&self) -> Option<&dyn CoarseSource> {
         None
     }
+    /// What a fixed Schwarz map is built with from the start; none unless the system opts in.
+    fn eager_coarse(&self) -> Option<&dyn CoarseSource> {
+        None
+    }
 }
 
 impl<'a> Solver<'a> {
@@ -527,9 +531,9 @@ fn solve_all<F: Formulation>(
         |passes: &[Pass<F::Rhs<'_>>]| passes.iter().any(|p| matches!(p, Pass::Pending(..)));
     let mut build_secs = 0.0;
     match slot {
-        PrecondSlot::Static { map, .. } => {
-            let map = map.as_ref().map(|m| m as &dyn Operator);
-            passes = rung(system, passes, map, None, lsmr)?;
+        PrecondSlot::Static { map: None, .. } => passes = rung(system, passes, None, None, lsmr)?,
+        PrecondSlot::Static { map: Some(m), .. } => {
+            passes = last_rung(system, passes, &m.inner, m.coarse.as_deref(), lsmr)?;
         }
         PrecondSlot::Adaptive(a) => {
             let stall = &a.ladder().stall;
@@ -555,16 +559,7 @@ fn solve_all<F: Formulation>(
                     build_secs += a.coarsen(source)?;
                 }
             }
-            passes = match a.coarse() {
-                Some(coarse) => {
-                    let coarsened = Coarsened {
-                        inner: a.rung(),
-                        coarse,
-                    };
-                    rung(system, passes, Some(&coarsened), None, lsmr)?
-                }
-                None => rung(system, passes, Some(a.rung()), None, lsmr)?,
-            };
+            passes = last_rung(system, passes, a.rung(), a.coarse(), lsmr)?;
         }
     }
     let solutions = passes.into_iter().map(|pass| match pass {
@@ -572,6 +567,19 @@ fn solve_all<F: Formulation>(
         Pass::Pending(..) => unreachable!("a rung without escalation finishes every RHS"),
     });
     Ok((solutions.collect(), build_secs))
+}
+
+/// The final rung: `inner`, wrapped in `coarse` when one was built.
+fn last_rung<'s, F: Formulation>(
+    system: &'s F,
+    passes: Vec<Pass<F::Rhs<'s>>>,
+    inner: &Preconditioner,
+    coarse: Option<&dyn CoarseRung>,
+    lsmr: &LsmrOptions,
+) -> Result<Vec<Pass<F::Rhs<'s>>>, SolveError> {
+    let coarsened = coarse.map(|coarse| Coarsened { inner, coarse });
+    let map = coarsened.as_ref().map_or(inner as &dyn Operator, |c| c);
+    rung(system, passes, Some(map), None, lsmr)
 }
 
 /// One rung over the pending RHS, each resuming from its last run: it finishes, or stalls here.

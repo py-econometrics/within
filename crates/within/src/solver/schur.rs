@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use schwarz_precond::{mlsmr, MlsmrOptions, Operator, Staleness};
+use schwarz_precond::{Operator, Staleness};
 
 use super::ladder::{CoarseSource, PrecondSlot};
 use super::{
@@ -10,7 +10,7 @@ use super::{
 };
 use crate::domain::elimination::{Elimination, Pairs, PieceScales, ReducedPairs};
 use crate::linalg::dot;
-use crate::operator::coarse::{CoarseRung, Coarsened};
+use crate::operator::coarse::CoarseRung;
 use crate::operator::reduced_coarse::ReducedCoarse;
 use crate::operator::reduced_design::{self, ReducedDesign};
 use crate::operator::schwarz::{build_schwarz, Preconditioner, SchwarzConfig};
@@ -100,6 +100,11 @@ impl Formulation for Reduced<'_> {
     fn coarse_source(&self) -> Option<&dyn CoarseSource> {
         Some(self)
     }
+
+    /// `WITHIN_REDUCED_RIGID` builds the coarse rung with a fixed map too.
+    fn eager_coarse(&self) -> Option<&dyn CoarseSource> {
+        std::env::var_os("WITHIN_REDUCED_RIGID").map(|_| self as &dyn CoarseSource)
+    }
 }
 
 impl CoarseSource for Reduced<'_> {
@@ -120,8 +125,6 @@ fn rigid_k() -> f64 {
 pub struct PairSchurPrototype<'a> {
     reduced: Reduced<'a>,
     slot: PrecondSlot,
-    /// Rigid-component coarse correction, built when `WITHIN_REDUCED_RIGID=K` is set.
-    coarse: Option<ReducedCoarse>,
     /// Elimination, projected design and whatever preconditioner construction built.
     setup_seconds: f64,
 }
@@ -238,14 +241,9 @@ impl Solver<'_> {
             scales,
         };
         let slot = PrecondSlot::build(&reduced, config)?;
-        let coarse = std::env::var("WITHIN_REDUCED_RIGID")
-            .ok()
-            .and_then(|k| k.parse::<f64>().ok())
-            .and_then(|k| ReducedCoarse::build(&reduced.elimination, k));
         Ok(PairSchurPrototype {
             reduced,
             slot,
-            coarse,
             setup_seconds: start.elapsed().as_secs_f64(),
         })
     }
@@ -284,29 +282,6 @@ impl PairSchurPrototype<'_> {
     /// mlsmr on the projected design; `local_size` applies. Setup is the RHS projection plus any build.
     pub fn solve_lsmr(&self, y: &[f64], options: &LsmrOptions) -> Result<SolveResult, WithinError> {
         let start = Instant::now();
-        if let (Some(coarse), PrecondSlot::Static { map: Some(map), .. }) =
-            (&self.coarse, &self.slot)
-        {
-            let system = &self.reduced;
-            let rhs = system.prepare(y)?;
-            let (op, b) = system.system(&rhs);
-            let mlsmr_options = MlsmrOptions {
-                local_size: options.local_size,
-                reference_norm: system.residual_reference(&rhs),
-                ..Default::default()
-            };
-            let m = Coarsened { inner: map, coarse };
-            let run = Run::timed(|| mlsmr(op, b, &m, options.tol, options.maxiter, mlsmr_options))?;
-            let solution = system.finish(rhs, run)?;
-            let prepared = self.reduced.elimination.prepared();
-            return Ok(solve_result(
-                prepared,
-                &self.slot,
-                vec![solution],
-                0.0,
-                start,
-            ));
-        }
         let (solutions, build_secs) = solve_all(&self.reduced, &self.slot, &[y], options)?;
         let prepared = self.reduced.elimination.prepared();
         Ok(solve_result(
