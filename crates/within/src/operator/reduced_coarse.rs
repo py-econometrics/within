@@ -516,6 +516,19 @@ impl ReducedCoarse {
                 fc_of_root[r]
             })
             .collect();
+        // An eliminated level inside one anchor component absorbs the gauges on its rows exactly.
+        let split = (0..na).into_par_iter().any(|lw| {
+            let mut comps = (groups.order.rows(groups.starts[lw]..groups.starts[lw + 1]))
+                .map(|r| anchor_comp[sides[1].levels[r as usize] as usize]);
+            let first = comps.next();
+            comps.any(|c| Some(c) != first)
+        });
+        if !split {
+            if stats {
+                eprintln!("reduced_rigid: anchor_components={n_fc} none split, declined");
+            }
+            return None;
+        }
         let m = n_fc as usize * p;
 
         // Gauges: per anchor level, the solve coefficients reproducing each user channel.
