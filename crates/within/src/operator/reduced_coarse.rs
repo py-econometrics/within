@@ -6,7 +6,6 @@
 
 use faer::dyn_stack::{MemBuffer, MemStack};
 use faer::linalg::cholesky::ldlt::factor::LdltRegularization;
-use faer::linalg::solvers::SolveCore;
 use faer::sparse::linalg::cholesky::{
     factorize_symbolic_cholesky, CholeskySymbolicParams, LdltRef, SymbolicCholesky,
     SymmetricOrdering,
@@ -664,58 +663,80 @@ impl LowRankParts {
         self.ptr.len().saturating_sub(1)
     }
 
-    /// `W = E₀⁻¹Bᵀ` and the LU of `K = I − C B W`; `None` when `K` is numerically singular.
+    /// The symmetric Woodbury form of `E⁻¹`, `E₀⁻¹ + U H⁺ Uᵀ` with `V = C½B`, `U = E₀⁻¹Vᵀ`,
+    /// `H = I − V U`: `H`'s spectrum lies in `[0, 1]` and its null space is `E`'s, dropped like
+    /// the null pivots of a direct factor of `E`.
     fn factor(self, f: TwoWay, solve: impl Fn(&mut [f64]), m: usize) -> Option<LowRank> {
         let (r, p) = (self.rank(), self.p);
-        let mut w = vec![0.0; m * r];
-        for (i, column) in w.chunks_exact_mut(m).enumerate() {
-            for k in self.ptr[i]..self.ptr[i + 1] {
-                column[self.cols[k] as usize] = self.vals[k];
+        let mut half = vec![0.0; self.c.len()];
+        for (c, half) in self.c.chunks_exact(p * p).zip(half.chunks_exact_mut(p * p)) {
+            let evd = faer::Mat::<f64>::from_fn(p, p, |i, j| c[i * p + j])
+                .self_adjoint_eigen(Side::Lower)
+                .ok()?;
+            let (u, s) = (evd.U(), evd.S().column_vector());
+            for a in 0..p {
+                for b in 0..p {
+                    half[a * p + b] = s[a].max(0.0).sqrt() * u[(b, a)];
+                }
             }
-            solve(column);
         }
-        let b_row = |i: usize, x: &[f64]| -> f64 {
-            (self.ptr[i]..self.ptr[i + 1])
-                .map(|k| self.vals[k] * x[self.cols[k] as usize])
-                .sum()
-        };
-        let bw: Vec<f64> = (0..r)
-            .flat_map(|j| (0..r).map(move |i| (i, j)))
-            .map(|(i, j)| b_row(i, &w[j * m..][..m]))
-            .collect();
-        let k = faer::Mat::<f64>::from_fn(r, r, |i, j| {
-            let (h, a) = (i / p, i % p);
-            let cbw: f64 = (0..p)
-                .map(|b| self.c[h * p * p + a * p + b] * bw[j * r + h * p + b])
-                .sum();
-            (i == j) as u8 as f64 - cbw
-        });
-        let low_rank = LowRank {
+        let mut low_rank = LowRank {
             ptr: self.ptr,
             cols: self.cols,
             vals: self.vals,
             c: self.c,
+            half,
             p,
-            w,
-            k: k.partial_piv_lu(),
+            basis: Vec::new(),
+            directions: Vec::new(),
+            inverse: Vec::new(),
             f,
         };
-        let mut probe = vec![1.0; m];
-        low_rank.correct(&mut probe);
-        probe.iter().all(|v| v.is_finite()).then_some(low_rank)
+        let mut u = vec![0.0; m * r];
+        for (i, column) in u.chunks_exact_mut(m).enumerate() {
+            let mut e = vec![0.0; r];
+            e[i] = 1.0;
+            low_rank.add_v_t(&e, column);
+            solve(column);
+        }
+        let vu: Vec<Vec<f64>> = u.chunks_exact(m).map(|c| low_rank.v_mul(c)).collect();
+        let h = faer::Mat::<f64>::from_fn(r, r, |i, j| {
+            (i == j) as u8 as f64 - 0.5 * (vu[j][i] + vu[i][j])
+        });
+        let evd = h.self_adjoint_eigen(Side::Lower).ok()?;
+        let (q, theta) = (evd.U(), evd.S().column_vector());
+        for j in (0..r).filter(|&j| theta[j] > 1e-10) {
+            low_rank.inverse.push(theta[j].recip());
+            low_rank.directions.extend((0..r).map(|i| q[(i, j)]));
+            let mut b = vec![0.0; m];
+            for (i, column) in u.chunks_exact(m).enumerate() {
+                b.iter_mut()
+                    .zip(column)
+                    .for_each(|(b, c)| *b += q[(i, j)] * c);
+            }
+            low_rank.basis.extend(b);
+        }
+        let finite = (low_rank.basis.iter())
+            .chain(&low_rank.inverse)
+            .all(|v| v.is_finite());
+        finite.then_some(low_rank)
     }
 }
 
-/// `E⁻¹ = E₀⁻¹ + W K⁻¹ C B E₀⁻¹` for `E = E₀ − BᵀCB`, `W = E₀⁻¹Bᵀ`, `K = I − C B W`.
+/// `E = E₀ − BᵀCB`: hub levels' rank-`p` parts, with `E⁻¹ = E₀⁻¹ + U H⁺ Uᵀ` on `E`'s range.
 struct LowRank {
+    /// `B` by row: each hub level's `s = EᵀW DZ`, one row per eliminated column.
     ptr: Vec<usize>,
     cols: Vec<u32>,
     vals: Vec<f64>,
+    /// Per hub level, its `p × p` generalized inverse `G⁻`, and `C½` with `C½ᵀC½ = G⁻`.
     c: Vec<f64>,
+    half: Vec<f64>,
     p: usize,
-    /// `E₀⁻¹Bᵀ`, column-major `m × r`.
-    w: Vec<f64>,
-    k: faer::linalg::solvers::PartialPivLu<f64>,
+    /// `U P` over `H`'s kept eigenvectors `P`, column-major `m × k`; `P` itself `r × k`; `θ⁻¹`.
+    basis: Vec<f64>,
+    directions: Vec<f64>,
+    inverse: Vec<f64>,
     /// `D_keptᵀ W E` over each hub's rows, `n × r`: `SZ = SZ₀ − F C B`.
     f: TwoWay,
 }
@@ -725,57 +746,75 @@ impl LowRank {
         self.ptr.len() - 1
     }
 
-    /// `C q` blockwise: each hub's `G⁻`.
-    fn c_mul(&self, q: &[f64]) -> Vec<f64> {
-        let p = self.p;
-        (0..q.len())
-            .map(|i| {
-                let (h, a) = (i / p, i % p);
-                (0..p)
-                    .map(|b| self.c[h * p * p + a * p + b] * q[h * p + b])
-                    .sum()
-            })
-            .collect()
-    }
-
-    /// `C B v`: each hub's fit `β` of a coarse vector.
-    fn beta(&self, v: &[f64]) -> Vec<f64> {
-        let bv: Vec<f64> = (0..self.rank())
+    fn b_mul(&self, v: &[f64]) -> Vec<f64> {
+        (0..self.rank())
             .map(|i| {
                 (self.ptr[i]..self.ptr[i + 1])
                     .map(|k| self.vals[k] * v[self.cols[k] as usize])
                     .sum()
             })
-            .collect();
-        self.c_mul(&bv)
+            .collect()
+    }
+
+    /// `out += Bᵀ q`.
+    fn add_b_t(&self, q: &[f64], out: &mut [f64]) {
+        for (i, &q) in q.iter().enumerate() {
+            for k in self.ptr[i]..self.ptr[i + 1] {
+                out[self.cols[k] as usize] += self.vals[k] * q;
+            }
+        }
+    }
+
+    /// Each hub's `p × p` block of `blocks` times `q`, transposed when `transpose`.
+    fn blocks_mul(&self, blocks: &[f64], q: &[f64], transpose: bool) -> Vec<f64> {
+        let p = self.p;
+        (0..q.len())
+            .map(|i| {
+                let (h, a) = (i / p, i % p);
+                let at = |b: usize| match transpose {
+                    true => blocks[h * p * p + b * p + a],
+                    false => blocks[h * p * p + a * p + b],
+                };
+                (0..p).map(|b| at(b) * q[h * p + b]).sum()
+            })
+            .collect()
+    }
+
+    /// `V v = C½ B v`.
+    fn v_mul(&self, v: &[f64]) -> Vec<f64> {
+        self.blocks_mul(&self.half, &self.b_mul(v), false)
+    }
+
+    /// `out += Vᵀ q = Bᵀ C½ᵀ q`.
+    fn add_v_t(&self, q: &[f64], out: &mut [f64]) {
+        self.add_b_t(&self.blocks_mul(&self.half, q, true), out);
     }
 
     /// `out += alpha (F C B) c`.
     fn add_sz(&self, c: &[f64], alpha: f64, out: &mut [f64]) {
-        self.f.mul_add(&self.beta(c), alpha, out);
+        let beta = self.blocks_mul(&self.c, &self.b_mul(c), false);
+        self.f.mul_add(&beta, alpha, out);
     }
 
     /// `out += alpha (F C B)ᵀ y = alpha Bᵀ C Fᵀ y`.
     fn add_sz_t(&self, y: &[f64], alpha: f64, out: &mut [f64]) {
         let mut fy = vec![0.0; self.rank()];
         self.f.t_mul(y, &mut fy);
-        for (i, q) in self.c_mul(&fy).into_iter().enumerate() {
-            for k in self.ptr[i]..self.ptr[i + 1] {
-                out[self.cols[k] as usize] += alpha * self.vals[k] * q;
-            }
-        }
+        let q: Vec<f64> = (self.blocks_mul(&self.c, &fy, false).into_iter())
+            .map(|q| alpha * q)
+            .collect();
+        self.add_b_t(&q, out);
     }
 
-    /// `v ← v + W K⁻¹ C B v`, turning `v = E₀⁻¹x` into `E⁻¹x`.
+    /// `v ← v + U H⁺ Uᵀ x` for `v = E₀⁻¹x`, using `Uᵀx = V v`.
     fn correct(&self, v: &mut [f64]) {
         let (r, m) = (self.rank(), v.len());
-        let mut q = self.beta(v);
-        self.k
-            .solve_in_place_with_conj(Conj::No, MatMut::from_column_major_slice_mut(&mut q, r, 1));
-        for (j, &qj) in q.iter().enumerate() {
-            for (vi, wi) in v.iter_mut().zip(&self.w[j * m..][..m]) {
-                *vi += wi * qj;
-            }
+        let q = self.v_mul(v);
+        for (j, &inverse) in self.inverse.iter().enumerate() {
+            let direction = &self.directions[j * r..][..r];
+            let s = inverse * direction.iter().zip(&q).map(|(d, q)| d * q).sum::<f64>();
+            let basis = &self.basis[j * m..][..m];
+            v.iter_mut().zip(basis).for_each(|(v, b)| *v += b * s);
         }
     }
 }
@@ -1264,87 +1303,308 @@ impl CoarseRung for ReducedCoarse {
 mod hub {
     use super::*;
     use crate::domain::PreparedDesign;
-    use crate::{Design, Effect, IntoDesign};
+    use crate::{
+        Design, Effect, IntoDesign, LocalSolverConfig, LsmrOptions, PreconditionerConfig, Solver,
+    };
 
-    /// `T` clusters of 4 firms × 20 workers glue internally; one hub worker spreads `R` rows over
-    /// every cluster with two slopes `1e-4` apart per spell: full rank, too ill-conditioned to glue.
-    #[test]
-    #[ignore]
-    fn hub_level_dense_buffer() {
-        let var = |k: &str, d: usize| std::env::var(k).map_or(d, |v| v.parse().unwrap());
-        let (t, r) = (var("HUB_T", 200), var("HUB_R", 10_000));
-        let (mut worker, mut firm, mut x, mut z) = (vec![], vec![], vec![], vec![]);
-        for k in 0..t {
-            for w in 0..20 {
-                for i in 0..5 {
-                    worker.push((20 * k + w) as u32);
-                    firm.push((4 * k + (w + (i >= 3) as usize) % 4) as u32);
-                    x.push(i as f64);
-                    z.push(((k * 131 + w * 17 + i * 7) % 23) as f64);
-                }
+    /// `clusters` blocks of 4 firms × 20 workers glue internally; each of `hubs` workers spreads
+    /// `rows` over `reach` clusters with slopes `1e-4` apart per spell: full rank, too ill-conditioned
+    /// to glue. `flat` drops that spread (singular per component); `shared` gives firms the workers' slopes.
+    #[derive(Clone, Copy, Debug)]
+    struct HubPanel {
+        clusters: usize,
+        rows: usize,
+        hubs: usize,
+        reach: usize,
+        slopes: usize,
+        weighted: bool,
+        flat: bool,
+        shared: bool,
+    }
+
+    struct Data {
+        worker: Vec<u32>,
+        firm: Vec<u32>,
+        x: Vec<Vec<f64>>,
+        z: Vec<Vec<f64>>,
+        weights: Option<Vec<f64>>,
+        y: Vec<f64>,
+    }
+
+    impl HubPanel {
+        fn base() -> Self {
+            Self {
+                clusters: 200,
+                rows: 10_000,
+                hubs: 1,
+                reach: 200,
+                slopes: 1,
+                weighted: false,
+                flat: false,
+                shared: false,
             }
         }
-        let hub = (20 * t) as u32;
-        for j in 0..r {
-            worker.push(hub);
-            firm.push((4 * (j % t)) as u32);
-            x.push(2.0 + (j % t) as f64 * 1e-3 + ((j / t) % 2) as f64 * 1e-4);
-            z.push(((j * 13) % 29) as f64);
+
+        fn data(&self) -> Data {
+            let s = self.slopes;
+            let per_worker = 2 * (s + 1);
+            let (mut worker, mut firm, mut w) = (vec![], vec![], vec![]);
+            let (mut x, mut z) = (vec![vec![]; s], vec![vec![]; s]);
+            for k in 0..self.clusters {
+                for v in 0..20 {
+                    for i in 0..per_worker {
+                        worker.push((20 * k + v) as u32);
+                        firm.push((4 * k + (v + i % 2) % 4) as u32);
+                        for q in 0..s {
+                            x[q].push((i as f64).powi(q as i32 + 1) / (q as f64 + 1.0));
+                            z[q].push(((k * 131 + v * 17 + i * 7 + q * 5) % 23) as f64);
+                        }
+                        w.push(1.0 + (i % 3) as f64 * 0.5);
+                    }
+                }
+            }
+            let stride = (self.clusters / self.hubs).max(1);
+            for h in 0..self.hubs {
+                for j in 0..self.rows {
+                    let cluster = (h * stride + j % self.reach) % self.clusters;
+                    worker.push((20 * self.clusters + h) as u32);
+                    firm.push((4 * cluster) as u32);
+                    let alt = (j / self.reach) % (s + 1);
+                    for q in 0..s {
+                        let spread = if self.flat {
+                            0.0
+                        } else {
+                            (alt == q + 1) as u8 as f64 * 1e-4
+                        };
+                        x[q].push(2.0 + q as f64 + cluster as f64 * 1e-3 + spread);
+                        z[q].push(((j * 13 + q * 3) % 29) as f64);
+                    }
+                    w.push(if j % 7 == 0 {
+                        0.0
+                    } else {
+                        0.5 + (j % 3) as f64
+                    });
+                }
+            }
+            if self.shared {
+                z = x.clone();
+            }
+            let hash = |i: usize| ((i as f64 * 12.9898).sin() * 43758.5453).fract();
+            let y = (0..worker.len())
+                .map(|i| {
+                    (worker[i] as f64 * 0.37).sin()
+                        + (firm[i] as f64 * 0.11).cos()
+                        + x[0][i] * (worker[i] as f64 * 0.7).sin()
+                        + z[0][i] * (firm[i] as f64 * 0.3).cos()
+                        + 0.1 * hash(i)
+                })
+                .collect();
+            Data {
+                worker,
+                firm,
+                x,
+                z,
+                weights: self.weighted.then_some(w),
+                y,
+            }
         }
-        let n_obs = worker.len();
-        let effects = vec![
-            Effect::new(&worker, true, [&x[..]]).unwrap(),
-            Effect::new(&firm, true, [&z[..]]).unwrap(),
-        ];
-        let design = Design::new_unsorted(effects).unwrap();
-        let prepared = PreparedDesign::new(design.into_design().unwrap(), None).unwrap();
+    }
+
+    impl Data {
+        fn effects(&self) -> Vec<Effect<'_>> {
+            let x: Vec<&[f64]> = self.x.iter().map(|v| &v[..]).collect();
+            let z: Vec<&[f64]> = self.z.iter().map(|v| &v[..]).collect();
+            vec![
+                Effect::new(&self.worker, true, x).unwrap(),
+                Effect::new(&self.firm, true, z).unwrap(),
+            ]
+        }
+    }
+
+    /// The built coarse operators against each other: `E = ZᵀSZ` inverted on its range, `SZ` vs `SZᵀ`.
+    fn operators(panel: &HubPanel, data: &Data) -> String {
+        let design = Design::new_unsorted(data.effects()).unwrap();
+        let prepared =
+            PreparedDesign::new(design.into_design().unwrap(), data.weights.as_deref()).unwrap();
         let e = Elimination::new(&prepared);
-        println!(
-            "T={t} R={r} n_obs={n_obs} hub buffer R×2T = {:.1} MB, E bound 2T(2T+1)/2 = {} vs 8·n_obs = {}",
-            (r * 2 * t * 8) as f64 / 1e6,
-            2 * t * (2 * t + 1) / 2,
-            8 * n_obs
+        let start = std::time::Instant::now();
+        let Some(c) = ReducedCoarse::build(&e, 150.0) else {
+            return format!("declined in {:.3}s", start.elapsed().as_secs_f64());
+        };
+        let build_s = start.elapsed().as_secs_f64();
+        let e_mul = |v: &[f64]| {
+            let mut sv = vec![0.0; e.n_kept()];
+            c.sz_mul_add(v, 1.0, &mut sv);
+            let mut out = vec![0.0; c.m];
+            c.z.t_mul(&sv, &mut out);
+            out
+        };
+        let norm = |v: &[f64]| v.iter().map(|a| a * a).sum::<f64>().sqrt();
+        let z: Vec<f64> = (0..c.m).map(|i| (i as f64 * 0.7).sin()).collect();
+        let x = e_mul(&z);
+        let mut y = x.clone();
+        c.solve_coarse(&mut y);
+        let r: Vec<f64> = e_mul(&y).iter().zip(&x).map(|(a, b)| a - b).collect();
+        // Backward error: a stable solve leaves `‖E y − x‖ ~ ε ‖E‖ ‖y‖` whatever `κ(E)`.
+        let mut v = z.clone();
+        let mut e_norm = 0.0;
+        for _ in 0..30 {
+            let ev = e_mul(&v);
+            e_norm = norm(&ev) / norm(&v);
+            v = ev;
+        }
+        let residual = norm(&r) / (e_norm * norm(&y));
+        let kappa = e_norm * norm(&y) / norm(&x);
+        let w: Vec<f64> = (0..e.n_kept()).map(|i| (i as f64 * 0.3).cos()).collect();
+        let (mut sz, mut szt) = (vec![0.0; e.n_kept()], vec![0.0; c.m]);
+        c.sz_mul_add(&z, 1.0, &mut sz);
+        c.sz_t_mul(&w, &mut szt);
+        let dot = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>();
+        let adjoint = (dot(&sz, &w) - dot(&z, &szt)).abs() / dot(&sz, &w).abs();
+        let rank = c.low_rank.as_ref().map_or(0, LowRank::rank);
+        assert!(
+            residual < 1e-8 && adjoint < 1e-10,
+            "{panel:?}: residual {residual:.1e} adjoint {adjoint:.1e}"
         );
-        if var("HUB_BUILD", 1) == 1 {
-            let start = std::time::Instant::now();
-            let coarse = ReducedCoarse::build(&e, 150.0);
-            println!(
-                "built={} m={} build_s={:.3}",
-                coarse.is_some(),
-                coarse.as_ref().map_or(0, |c| c.m),
-                start.elapsed().as_secs_f64()
+        format!(
+            "m={} rank={rank} L={} SZ={} build={build_s:.3}s backward={residual:.0e} κ≳{kappa:.0e} adjoint={adjoint:.0e}",
+            c.m,
+            c.l_values.len(),
+            c.sz.nnz()
+        )
+    }
+
+    /// Reduced LSMR with and without the rigid rung against the full solve.
+    fn end_to_end(data: &Data) -> String {
+        let options = LsmrOptions {
+            tol: 1e-10,
+            maxiter: 20_000,
+            ..Default::default()
+        };
+        let config = LocalSolverConfig::default();
+        let full = Solver::new(
+            data.effects(),
+            data.weights.as_deref(),
+            PreconditionerConfig::Additive {
+                local_solver: config.clone(),
+                reduction: Default::default(),
+            },
+        )
+        .unwrap();
+        let reference = full.solve(&data.y, &options).unwrap();
+        let norm = |v: &[f64]| v.iter().map(|a| a * a).sum::<f64>().sqrt();
+        let mut out = format!("full {}", reference.iterations);
+        for rigid in [false, true] {
+            match rigid {
+                true => std::env::set_var("WITHIN_REDUCED_RIGID", "150"),
+                false => std::env::remove_var("WITHIN_REDUCED_RIGID"),
+            }
+            let reduced = full
+                .pair_schur_prototype(&config, Default::default())
+                .unwrap();
+            let result = reduced.solve_lsmr(&data.y, &options).unwrap();
+            let gap: Vec<f64> = (result.demeaned.iter().zip(&reference.demeaned))
+                .map(|(a, b)| a - b)
+                .collect();
+            out += &format!(
+                " | {} {}{} gap={:.0e}",
+                if rigid { "rigid" } else { "reduced" },
+                result.iterations,
+                if result.converged { "" } else { "!" },
+                norm(&gap) / norm(&reference.demeaned)
             );
-            if let Some(c) = coarse {
-                // `ZᵀSZ = E` from the separately built SZ: for `x = E z`, `E E⁻¹x` returns `x`.
-                let e_mul = |v: &[f64]| {
-                    let mut sv = vec![0.0; e.n_kept()];
-                    c.sz_mul_add(v, 1.0, &mut sv);
-                    let mut out = vec![0.0; c.m];
-                    c.z.t_mul(&sv, &mut out);
-                    out
-                };
-                let z: Vec<f64> = (0..c.m).map(|i| (i as f64 * 0.7).sin()).collect();
-                let x = e_mul(&z);
-                let mut y = x.clone();
-                c.solve_coarse(&mut y);
-                let norm = |v: &[f64]| v.iter().map(|a| a * a).sum::<f64>().sqrt();
-                let r: Vec<f64> = e_mul(&y).iter().zip(&x).map(|(a, b)| a - b).collect();
-                let dz: Vec<f64> = y.iter().zip(&z).map(|(a, b)| a - b).collect();
-                println!(
-                    "‖E E⁻¹x − x‖/‖x‖ = {:.1e}  ‖E⁻¹x − z‖/‖z‖ = {:.1e}",
-                    norm(&r) / norm(&x),
-                    norm(&dz) / norm(&z)
-                );
-                let w: Vec<f64> = (0..e.n_kept()).map(|i| (i as f64 * 0.3).cos()).collect();
-                let (mut sz, mut szt) = (vec![0.0; e.n_kept()], vec![0.0; c.m]);
-                c.sz_mul_add(&z, 1.0, &mut sz);
-                c.sz_t_mul(&w, &mut szt);
-                let dot = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>();
-                let (lhs, rhs) = (dot(&sz, &w), dot(&z, &szt));
-                println!(
-                    "adjoint |⟨SZz,w⟩ − ⟨z,SZᵀw⟩| / |⟨SZz,w⟩| = {:.1e}",
-                    (lhs - rhs).abs() / lhs.abs()
-                );
+        }
+        std::env::remove_var("WITHIN_REDUCED_RIGID");
+        out
+    }
+
+    #[test]
+    #[ignore]
+    fn hub_battle() {
+        let base = HubPanel::base();
+        let variants = [
+            ("base", base),
+            (
+                "4 hubs disjoint",
+                HubPanel {
+                    hubs: 4,
+                    reach: 50,
+                    rows: 2_500,
+                    ..base
+                },
+            ),
+            (
+                "4 hubs overlap",
+                HubPanel {
+                    hubs: 4,
+                    rows: 2_500,
+                    ..base
+                },
+            ),
+            (
+                "80 hubs past cap",
+                HubPanel {
+                    hubs: 80,
+                    reach: 40,
+                    rows: 400,
+                    ..base
+                },
+            ),
+            (
+                "weighted, zeros",
+                HubPanel {
+                    weighted: true,
+                    ..base
+                },
+            ),
+            ("flat hub", HubPanel { flat: true, ..base }),
+            (
+                "shared slopes",
+                HubPanel {
+                    shared: true,
+                    ..base
+                },
+            ),
+            (
+                "p=3",
+                HubPanel {
+                    slopes: 2,
+                    rows: 15_000,
+                    ..base
+                },
+            ),
+            (
+                "t=40 below",
+                HubPanel {
+                    reach: 20,
+                    rows: 2_000,
+                    ..base
+                },
+            ),
+            (
+                "t=42 above",
+                HubPanel {
+                    reach: 21,
+                    rows: 2_100,
+                    ..base
+                },
+            ),
+            (
+                "3 clusters",
+                HubPanel {
+                    clusters: 3,
+                    reach: 3,
+                    rows: 300,
+                    ..base
+                },
+            ),
+        ];
+        let solve = std::env::var_os("HUB_SOLVE").is_some();
+        for (name, panel) in variants {
+            let data = panel.data();
+            println!("{name:18} {}", operators(&panel, &data));
+            if solve {
+                println!("{:18} {}", "", end_to_end(&data));
             }
         }
     }
