@@ -548,7 +548,9 @@ fn solve_all<F: Formulation>(
                 .coarse_source()
                 .filter(|_| a.schwarz().is_some() && a.coarse_untried());
             if let Some(source) = source {
-                passes = rung(system, passes, Some(a.rung()), Some(stall), lsmr)?;
+                // Stricter than the ladder's rule: intercept panels plateau at 4,0.7 without a real stall.
+                let coarse_stall = Staleness::try_new(8, 0.8).expect("valid staleness");
+                passes = rung(system, passes, Some(a.rung()), Some(&coarse_stall), lsmr)?;
                 if pending(&passes) {
                     build_secs += a.coarsen(source)?;
                 }
