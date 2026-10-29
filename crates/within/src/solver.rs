@@ -15,7 +15,6 @@ use crate::channel::CoefficientAddress;
 use crate::config::{LsmrOptions, PreconditionerConfig};
 use crate::domain::{Design, Effect, PreparedDesign};
 use crate::operator::schwarz::Preconditioner;
-use crate::operator::DesignOperator;
 use crate::{BuildError, BuildWarning, SolveError, WithinError};
 
 mod ladder;
@@ -243,7 +242,6 @@ struct RhsSolution {
 
 /// One RHS in the internal observation frame: `y` to subtract the fit from, `b` for LSMR.
 struct PreparedRhs<'s> {
-    op: DesignOperator<'s>,
     y: Cow<'s, [f64]>,
     /// `W^{1/2} y`; `None` when unweighted, where `b` is `y` itself.
     weighted: Option<Vec<f64>>,
@@ -347,7 +345,7 @@ impl<'a> Solver<'a> {
 
     /// Validate `y` and move it into the internal observation frame.
     fn prepare<'s>(&'s self, y: &'s [f64]) -> Result<PreparedRhs<'s>, SolveError> {
-        // `weighted_rhs` zips y with sqrt-weights, silently truncating when `y.len() > n_rows`.
+        // `b = W^{1/2} y` zips y with sqrt-weights, silently truncating when `y.len() > n_rows`.
         if y.len() != self.prepared.design.n_obs {
             return Err(SolveError::InvalidInput {
                 context: "Solver::solve",
@@ -367,15 +365,13 @@ impl<'a> Solver<'a> {
 
         let t_start = Instant::now();
         let y = self.prepared.design.permute_obs_in(y);
-        let op = DesignOperator::new(&self.prepared);
-        let weighted = match op.weighted_rhs(&y) {
-            Cow::Borrowed(_) => None,
-            Cow::Owned(b) => Some(b),
-        };
+        let weighted = self
+            .prepared
+            .sqrt_weights()
+            .map(|sw| y.iter().zip(sw).map(|(&yi, &swi)| swi * yi).collect());
         Ok(PreparedRhs {
-            op,
-            y,
             weighted,
+            y,
             gather_secs: t_start.elapsed().as_secs_f64(),
         })
     }
@@ -384,7 +380,7 @@ impl<'a> Solver<'a> {
     /// `warnings` / `unidentified`, which the public entry points attach once.
     fn finish(&self, rhs: PreparedRhs<'_>, run: Run) -> RhsSolution {
         let r = run.result;
-        let demeaned = rhs.op.demeaned(&r.x, &rhs.y, r.true_residual);
+        let demeaned = self.prepared.demeaned(&r.x, &rhs.y, r.true_residual);
 
         let mut x = r.x;
         self.prepared.back_transform(&mut x);
@@ -432,8 +428,14 @@ impl<'a> Solver<'a> {
                     ..Default::default()
                 };
                 let run = Run::timed(|| match map {
-                    Some(m) => mlsmr(&rhs.op, rhs.b(), m, lsmr.tol, lsmr.maxiter, options),
-                    None => lsmr_solve(&rhs.op, rhs.b(), lsmr.tol, lsmr.maxiter, lsmr.local_size),
+                    Some(m) => mlsmr(&self.prepared, rhs.b(), m, lsmr.tol, lsmr.maxiter, options),
+                    None => lsmr_solve(
+                        &self.prepared,
+                        rhs.b(),
+                        lsmr.tol,
+                        lsmr.maxiter,
+                        lsmr.local_size,
+                    ),
                 })?;
                 Ok(if stalled(&run.result) {
                     Pass::Stalled(rhs, run)
@@ -466,8 +468,9 @@ impl<'a> Solver<'a> {
                     ..Default::default()
                 };
                 let remaining = lsmr.maxiter - rung1.iterations;
-                let mut resumed =
-                    Run::timed(|| mlsmr(&rhs.op, rhs.b(), map, lsmr.tol, remaining, options))?;
+                let mut resumed = Run::timed(|| {
+                    mlsmr(&self.prepared, rhs.b(), map, lsmr.tol, remaining, options)
+                })?;
                 resumed.result.iterations += rung1.iterations;
                 resumed.solve_secs += probe.solve_secs;
                 Ok(self.finish(rhs, resumed))
