@@ -8,7 +8,7 @@ pub use faer::matrix_free::{BiLinOp, LinOp};
 pub use faer::{MatMut, MatRef, Par};
 
 use crate::error::SolveError;
-use crate::{EscalationPolicy, LsmrOptions, LsmrResult};
+use crate::{EscalationPolicy, LsmrOptions, LsmrStopReason};
 
 /// `a` and `b` on rayon, each with half of `par` (`⌈n/2⌉`, `⌊n/2⌋`); inline under `Par::Seq`.
 pub fn join<A: Send, B: Send>(
@@ -35,36 +35,49 @@ pub trait LocalSolver: Send + Sync {
     fn solve_local(&self, x: MatMut<'_, f64>, par: Par, stack: &mut MemStack);
 }
 
-/// Where a preconditioned run starts and when it hands off to a stronger map.
-#[derive(Clone, Copy, Default)]
-pub struct MlsmrOptions<'a> {
-    /// Residual-correction start; tolerances stay relative to `‖b‖` (`‖b − A x₀‖` if `b = 0`).
-    pub warm_start: Option<&'a [f64]>,
-    /// Hands off to a stronger preconditioner mid-run; see [`EscalationPolicy`].
-    pub escalation: Option<&'a dyn EscalationPolicy>,
+/// What a run reports; the solution is in the caller's `x` and `b − A x` in its `r`.
+#[derive(Clone, Copy, Debug)]
+pub struct LsmrInfo {
+    /// Whether a tolerance stop survived its applicable recomputed-residual and plain-gradient audits.
+    pub converged: bool,
+    /// Total number of iterations performed.
+    pub iterations: usize,
+    /// `‖r‖`.
+    pub residual_norm: f64,
+    /// `‖Âᵀr‖ / ‖Âᵀb‖`, measured in `M`'s metric when preconditioned.
+    pub normal_eq_residual: f64,
+    /// Reason the solver stopped.
+    pub stop_reason: LsmrStopReason,
 }
 
-/// Unpreconditioned LSMR; grows `scratch` like `mlsmr`.
+/// Unpreconditioned LSMR from `x` (all zeros: a cold start) into `x`, with `r = b − A x`;
+/// tolerances stay relative to `‖b‖`; grows `scratch` like `mlsmr`.
 pub fn lsmr<A: BiLinOp<f64> + ?Sized>(
     operator: &A,
     b: &[f64],
+    x: &mut [f64],
+    r: &mut [f64],
     options: &LsmrOptions,
     par: Par,
     scratch: &mut MemBuffer,
-) -> Result<LsmrResult, SolveError> {
+) -> Result<LsmrInfo, SolveError> {
     todo!()
 }
 
-/// LSMR on `M⁻¹ ≈ (AᵀA)⁻¹`, which `preconditioner` applies; grows `scratch` to what `operator` and
+/// LSMR on `M⁻¹ ≈ (AᵀA)⁻¹`, which `preconditioner` applies, from `x` into `x` like `lsmr`;
+/// `escalation` may hand off to a stronger map mid-run; grows `scratch` to what `operator` and
 /// `preconditioner` need under `par`, so one buffer serves every solve it is passed to.
+#[allow(clippy::too_many_arguments)]
 pub fn mlsmr<A: BiLinOp<f64> + ?Sized, M: LinOp<f64> + ?Sized>(
     operator: &A,
     b: &[f64],
     preconditioner: &M,
+    x: &mut [f64],
+    r: &mut [f64],
     lsmr: &LsmrOptions,
-    options: MlsmrOptions<'_>,
+    escalation: Option<&dyn EscalationPolicy>,
     par: Par,
     scratch: &mut MemBuffer,
-) -> Result<LsmrResult, SolveError> {
+) -> Result<LsmrInfo, SolveError> {
     todo!()
 }
