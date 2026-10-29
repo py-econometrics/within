@@ -2,12 +2,12 @@ use std::sync::OnceLock;
 
 use rayon::prelude::*;
 
-use super::{row_weight, Column, Design, Term, TermReparam};
+use super::{row_weight, Column, Design, ScatterSplit, Term, TermReparam};
 use crate::channel::{Channel, CoefficientPosition};
 use crate::linalg::add_compensated;
 use crate::BuildError;
 
-/// A [`Design`] plus all state one weight vector determines.
+/// A [`Design`] plus the solve state it and one weight vector determine.
 pub(crate) struct PreparedDesign<'a> {
     pub(crate) design: Design<'a>,
     /// `W^{1/2}` in the design's internal observation order; `None` is unweighted.
@@ -16,6 +16,8 @@ pub(crate) struct PreparedDesign<'a> {
     reparams: Vec<Option<TermReparam>>,
     /// Per design term, its block of [`Self::gram_diagonal`], filled on first read.
     diagonals: Vec<OnceLock<Box<[f64]>>>,
+    /// Per design term, how its adjoint scatter-add splits into parallel pieces.
+    splits: Vec<ScatterSplit>,
 }
 
 /// A term in the solve basis: the design's rows plus this preparation's whitened slopes.
@@ -23,6 +25,7 @@ pub(crate) struct PreparedTerm<'p> {
     pub(crate) term: &'p Term<'p>,
     /// Solve-basis slopes in coefficient-column order; empty for a slope-free term.
     pub(crate) slopes: &'p [Vec<f64>],
+    pub(crate) split: &'p ScatterSplit,
 }
 
 impl<'p> PreparedTerm<'p> {
@@ -45,11 +48,13 @@ impl<'a> PreparedDesign<'a> {
             .map(|t| TermReparam::build(&design, t, sqrt_weights.as_deref()))
             .collect();
         let diagonals = (0..design.n_factors()).map(|_| OnceLock::new()).collect();
+        let splits = design.terms.par_iter().map(ScatterSplit::new).collect();
         Ok(Self {
             design,
             sqrt_weights,
             reparams,
             diagonals,
+            splits,
         })
     }
 
@@ -63,7 +68,11 @@ impl<'a> PreparedDesign<'a> {
         let (t, reparam) = (&self.design.terms[term], &self.reparams[term]);
         let slopes: &[Vec<f64>] = reparam.as_ref().map_or(&[], |r| &r.slopes);
         debug_assert_eq!(slopes.len(), t.raw_slopes().len());
-        PreparedTerm { term: t, slopes }
+        PreparedTerm {
+            term: t,
+            slopes,
+            split: &self.splits[term],
+        }
     }
 
     pub(crate) fn terms(&self) -> impl ExactSizeIterator<Item = PreparedTerm<'_>> {
