@@ -15,12 +15,11 @@ serde = ["dep:serde"]
 
 [dependencies]
 rayon.workspace = true
-dyn-stack.workspace = true
+faer.workspace = true
 serde = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [dev-dependencies]
-faer.workspace = true
 postcard.workspace = true
 rstest.workspace = true
 

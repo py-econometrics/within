@@ -4,7 +4,7 @@
 use std::time::Instant;
 
 use once_cell::sync::OnceCell;
-use schwarz_precond::draft::ThreadBudget;
+use schwarz_precond::draft::Par;
 
 use crate::config::PreconditionerConfig;
 use crate::domain::PreparedDesign;
@@ -122,7 +122,7 @@ impl AdaptivePrecond {
         let mut build_secs = 0.0;
         let built = self.built.get_or_try_init(|| {
             let t_build = Instant::now();
-            let outcome = isolated(ThreadBudget::current(), || {
+            let outcome = isolated(Par::rayon(0), || {
                 build_schwarz(prepared, &self.ladder().escalated)
             })?
             .map(|b| AdaptiveBuild {
@@ -139,12 +139,9 @@ impl AdaptivePrecond {
 /// Run `f` on a pool of its own, entered from a thread outside every pool, so no wait inside it can
 /// steal a solve off the shared pool; a stolen solve blocking on this build is the #371 deadlock.
 /// Nothing run here may wait on the shared pool.
-pub(super) fn isolated<R: Send>(
-    budget: ThreadBudget,
-    f: impl FnOnce() -> R + Send,
-) -> Result<R, BuildError> {
+pub(super) fn isolated<R: Send>(par: Par, f: impl FnOnce() -> R + Send) -> Result<R, BuildError> {
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(budget.0.get())
+        .num_threads(par.degree())
         .build()
         .map_err(|e| BuildError::ThreadPool(e.to_string()))?;
     std::thread::scope(|s| {
@@ -166,7 +163,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use super::{isolated, ThreadBudget};
+    use super::{isolated, Par};
 
     thread_local! {
         static ON_CALLER_POOL: Cell<bool> = const { Cell::new(false) };
@@ -186,7 +183,7 @@ mod tests {
         );
         assert!(
             !caller
-                .install(|| isolated(ThreadBudget::current(), || ON_CALLER_POOL.with(Cell::get)))
+                .install(|| isolated(Par::rayon(0), || ON_CALLER_POOL.with(Cell::get)))
                 .expect("isolated build"),
             "the build ran on the caller's pool"
         );
@@ -204,7 +201,7 @@ mod tests {
         let queued = Arc::clone(&ran);
         caller.install(move || {
             rayon::spawn(move || queued.store(true, Ordering::SeqCst));
-            isolated(ThreadBudget::current(), || {
+            isolated(Par::rayon(0), || {
                 std::thread::sleep(Duration::from_millis(50))
             })
             .expect("isolated build");

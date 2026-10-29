@@ -17,7 +17,6 @@ categories = ["mathematics", "science", "algorithms"]
 [workspace.dependencies]
 schwarz-precond = { version = "0.5.0", path = "crates/schwarz-precond" }
 faer = "0.24.4"
-dyn-stack = "0.13.2"
 rayon = "1.12"
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["use-std"] }
