@@ -74,14 +74,14 @@ impl Staleness {
     }
 }
 
-/// What a run reports; the solution is in the caller's `x` and `b − A x` in its `r`.
+/// What a run reports; the solution is in the caller's `x`.
 #[derive(Clone, Copy, Debug)]
 pub struct LsmrInfo {
     /// Whether a tolerance stop survived its applicable recomputed-residual and plain-gradient audits.
     pub converged: bool,
     /// Total number of iterations performed.
     pub iterations: usize,
-    /// `‖r‖`.
+    /// `‖b − A x‖`: recomputed at a tolerance stop, the recurrence's estimate at any other.
     pub residual_norm: f64,
     /// `‖Âᵀr‖ / ‖Âᵀb‖`, measured in `M`'s metric when preconditioned.
     pub normal_eq_residual: f64,
@@ -89,14 +89,12 @@ pub struct LsmrInfo {
     pub stop_reason: LsmrStopReason,
 }
 
-/// Unpreconditioned LSMR from `x` (all zeros: a cold start) into `x`, with `r = b − A x`;
+/// Unpreconditioned LSMR from `x` (all zeros: a cold start) into `x`;
 /// tolerances stay relative to `‖b‖`; grows `scratch` like `mlsmr`.
-#[allow(clippy::too_many_arguments)]
 pub fn lsmr<A: BiLinOp<f64> + ?Sized>(
     operator: &A,
     b: &[f64],
     x: &mut [f64],
-    r: &mut [f64],
     options: &LsmrOptions,
     stop: Option<&mut dyn StopRule>,
     par: Par,
@@ -114,7 +112,6 @@ pub fn mlsmr<A: BiLinOp<f64> + ?Sized, M: LinOp<f64> + ?Sized>(
     b: &[f64],
     preconditioner: &M,
     x: &mut [f64],
-    r: &mut [f64],
     lsmr: &LsmrOptions,
     stop: Option<&mut dyn StopRule>,
     par: Par,
