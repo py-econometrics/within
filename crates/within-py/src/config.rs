@@ -505,9 +505,8 @@ pub(crate) fn resolve_precond_input(
             return Ok(PreconditionerInput::Prebuilt(built.get().inner.clone()));
         }
     }
-    Ok(PreconditionerInput::Config(
-        extract_preconditioner_config(preconditioner)?.unwrap_or_default(),
-    ))
+    Ok(extract_preconditioner_config(preconditioner)?
+        .map_or(PreconditionerInput::Default, PreconditionerInput::Config))
 }
 
 fn extract_preconditioner_config(

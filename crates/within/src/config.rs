@@ -172,4 +172,4 @@ impl Default for PreconditionerConfig {
     }
 }
 
-pub use schwarz_precond::draft::LsmrOptions;
+pub use schwarz_precond::LsmrOptions;

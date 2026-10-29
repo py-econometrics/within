@@ -32,7 +32,7 @@ pub(crate) fn build_additive(
 }
 
 /// Opaque handle to a pre-built preconditioner; cloning is O(1) via `Arc`.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Preconditioner {
     inner: Variant,
     build_duration: Duration,
@@ -49,8 +49,25 @@ enum Variant {
     Adaptive(AdaptiveLadder),
 }
 
+impl std::fmt::Debug for Variant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Additive {
+                schwarz,
+                local_solver,
+            } => f
+                .debug_struct("Additive")
+                .field("n_subdomains", &schwarz.subdomains().len())
+                .field("local_solver", local_solver)
+                .finish(),
+            Self::Diagonal(inv_diag) => f.debug_tuple("Diagonal").field(inv_diag).finish(),
+            Self::Adaptive(ladder) => f.debug_tuple("Adaptive").field(ladder).finish(),
+        }
+    }
+}
+
 /// An unescalated `Adaptive` map: the diagonal plus what a reusing solver needs to escalate.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct AdaptiveLadder {
     base: Arc<[f64]>,
     pub(crate) stall: Staleness,

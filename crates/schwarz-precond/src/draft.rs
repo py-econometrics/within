@@ -6,7 +6,7 @@ use std::num::NonZeroUsize;
 pub use dyn_stack::{PodBuffer, PodStack, StackReq};
 
 use crate::error::{LocalSolveError, SolveError};
-use crate::{EscalationPolicy, LsmrResult};
+use crate::{EscalationPolicy, LsmrOptions, LsmrResult};
 
 /// How many tasks one parallel region may keep busy on the global rayon pool; `SEQ` runs inline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,27 +81,6 @@ pub trait LocalSolver: Send + Sync {
         par: Par,
         stack: &mut PodStack,
     ) -> Result<(), LocalSolveError>;
-}
-
-/// When LSMR stops on one right-hand side, and its reorthogonalization window.
-#[derive(Debug, Clone, Copy)]
-pub struct LsmrOptions {
-    /// Relative residual convergence tolerance.
-    pub tol: f64,
-    /// Iterations per right-hand side; a run resumed on a stronger map gets what is left.
-    pub maxiter: usize,
-    /// Windowed MGS over the last `local_size` `v` (mlsmr: and `p̃`), `local_size · ncols` each.
-    pub local_size: Option<usize>,
-}
-
-impl Default for LsmrOptions {
-    fn default() -> Self {
-        Self {
-            tol: 1e-8,
-            maxiter: 1000,
-            local_size: None,
-        }
-    }
 }
 
 /// Where a preconditioned run starts and when it hands off to a stronger map.
