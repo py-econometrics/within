@@ -12,7 +12,7 @@ use pyo3::prelude::*;
 
 use within::config::{
     ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, LsmrOptions, PreconditionerConfig,
-    ReductionStrategy, ScalingConfig, ScalingFailure, SchurMode, Staleness,
+    ScalingConfig, ScalingFailure, SchurMode, Staleness,
 };
 use within::{Preconditioner, PreconditionerInput};
 
@@ -210,23 +210,17 @@ impl PyScalingConfig {
 #[derive(PartialEq)]
 pub enum PyPreconditionerConfig {
     Off(),
-    #[pyo3(constructor = (
-        local_solver=PyLocalSolverConfig::default(),
-        reduction=PyReductionStrategy::Auto
-    ))]
+    #[pyo3(constructor = (local_solver=PyLocalSolverConfig::default()))]
     Additive {
         local_solver: PyLocalSolverConfig,
-        reduction: PyReductionStrategy,
     },
     Diagonal(),
     #[pyo3(constructor = (
         local_solver=PyLocalSolverConfig::default(),
-        reduction=PyReductionStrategy::Auto,
         stall=PyStaleness::default()
     ))]
     Adaptive {
         local_solver: PyLocalSolverConfig,
-        reduction: PyReductionStrategy,
         stall: PyStaleness,
     },
 }
@@ -236,20 +230,14 @@ impl PyPreconditionerConfig {
         match self {
             Self::Off() => PreconditionerConfig::Off,
             Self::Diagonal() => PreconditionerConfig::Diagonal,
-            Self::Additive {
-                local_solver,
-                reduction,
-            } => PreconditionerConfig::Additive {
+            Self::Additive { local_solver } => PreconditionerConfig::Additive {
                 local_solver: local_solver.to_native(),
-                reduction: reduction.to_native(),
             },
             Self::Adaptive {
                 local_solver,
-                reduction,
                 stall,
             } => PreconditionerConfig::Adaptive {
                 local_solver: local_solver.to_native(),
-                reduction: reduction.to_native(),
                 stall: stall.to_native(),
             },
         }
@@ -259,20 +247,14 @@ impl PyPreconditionerConfig {
         Ok(match config {
             PreconditionerConfig::Off => Self::Off(),
             PreconditionerConfig::Diagonal => Self::Diagonal(),
-            PreconditionerConfig::Additive {
-                local_solver,
-                reduction,
-            } => Self::Additive {
+            PreconditionerConfig::Additive { local_solver } => Self::Additive {
                 local_solver: PyLocalSolverConfig::from_native(local_solver),
-                reduction: PyReductionStrategy::from_native(*reduction),
             },
             PreconditionerConfig::Adaptive {
                 local_solver,
-                reduction,
                 stall,
             } => Self::Adaptive {
                 local_solver: PyLocalSolverConfig::from_native(local_solver),
-                reduction: PyReductionStrategy::from_native(*reduction),
                 stall: PyStaleness { inner: *stall },
             },
             _ => {
@@ -329,33 +311,6 @@ impl PyStaleness {
 impl PyStaleness {
     pub(crate) fn to_native(self) -> Staleness {
         self.inner
-    }
-}
-
-#[pyclass(frozen, eq, eq_int, from_py_object, module = "within._within")]
-#[pyo3(name = "ReductionStrategy")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PyReductionStrategy {
-    Auto = 0,
-    AtomicScatter = 1,
-    ParallelReduction = 2,
-}
-
-impl PyReductionStrategy {
-    pub(crate) fn from_native(strategy: ReductionStrategy) -> Self {
-        match strategy {
-            ReductionStrategy::Auto => Self::Auto,
-            ReductionStrategy::AtomicScatter => Self::AtomicScatter,
-            ReductionStrategy::ParallelReduction => Self::ParallelReduction,
-        }
-    }
-
-    pub(crate) fn to_native(self) -> ReductionStrategy {
-        match self {
-            Self::Auto => ReductionStrategy::Auto,
-            Self::AtomicScatter => ReductionStrategy::AtomicScatter,
-            Self::ParallelReduction => ReductionStrategy::ParallelReduction,
-        }
     }
 }
 

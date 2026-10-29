@@ -65,8 +65,10 @@ pub struct ReadmeDoctests;
 pub mod domain;
 /// Typed errors for build and runtime failures.
 pub mod error;
+mod fold;
 mod local_solve;
 mod lsmr;
+mod prolongation;
 mod schwarz;
 
 pub use domain::{PartitionWeights, SubdomainCore};
@@ -76,4 +78,4 @@ pub use lsmr::{
     lsmr, mlsmr, EscalationHandler, EscalationPolicy, LsmrResult, LsmrStopReason, MlsmrOptions,
     Progress, Staleness, StalenessError,
 };
-pub use schwarz::{ReductionStrategy, SchwarzPreconditioner};
+pub use schwarz::SchwarzPreconditioner;

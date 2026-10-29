@@ -6,10 +6,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use rayon::prelude::*;
-use rstest::rstest;
+use rstest::{fixture, rstest};
 use schwarz_precond::{
     lsmr, mlsmr, LocalSolveError, LocalSolver, MlsmrOptions, Operator, PartitionWeights,
-    ReductionStrategy, SchwarzPreconditioner, SubdomainCore, SubdomainEntry,
+    SchwarzPreconditioner, SubdomainCore, SubdomainEntry,
 };
 
 use common::{make_schwarz_entries, FailingLocalSolver, TridiagOperator, UniformDiagLocalSolver};
@@ -21,59 +21,6 @@ fn make_entry<S: LocalSolver>(core: SubdomainCore, solver: S) -> SubdomainEntry<
 fn weighted_core(global_indices: Vec<u32>, weights: Vec<f64>) -> SubdomainCore {
     SubdomainCore::with_partition_weights(global_indices, PartitionWeights::NonUniform(weights))
         .expect("matching partition weights")
-}
-
-fn make_overlapping_entries(n: usize) -> Vec<SubdomainEntry<UniformDiagLocalSolver>> {
-    let mut entries = Vec::new();
-    if n < 3 {
-        return entries;
-    }
-    for start in (0..n.saturating_sub(2)).step_by(2) {
-        let weights = if (start / 2) % 2 == 0 {
-            vec![1.0, 0.5, 1.0]
-        } else {
-            vec![0.75, 1.0, 0.5]
-        };
-        entries.push(make_entry(
-            weighted_core(
-                vec![start as u32, (start + 1) as u32, (start + 2) as u32],
-                weights,
-            ),
-            UniformDiagLocalSolver::new(3, 3.0),
-        ));
-    }
-    // When n is even, the loop above leaves index n-1 uncovered; add a
-    // trailing subdomain so the entries collectively cover [0, n).
-    if entries
-        .last()
-        .and_then(|e| e.global_indices().iter().max())
-        .copied()
-        .is_none_or(|max_idx| (max_idx as usize) < n - 1)
-    {
-        let last_start = n - 3;
-        entries.push(make_entry(
-            weighted_core(
-                vec![
-                    last_start as u32,
-                    (last_start + 1) as u32,
-                    (last_start + 2) as u32,
-                ],
-                vec![1.0, 0.5, 1.0],
-            ),
-            UniformDiagLocalSolver::new(3, 3.0),
-        ));
-    }
-    entries
-}
-
-fn assert_vec_close(lhs: &[f64], rhs: &[f64], tol: f64) {
-    assert_eq!(lhs.len(), rhs.len(), "vector lengths differ");
-    for (idx, (&a, &b)) in lhs.iter().zip(rhs.iter()).enumerate() {
-        assert!(
-            (a - b).abs() <= tol,
-            "vectors differ at index {idx}: lhs={a}, rhs={b}, tol={tol}",
-        );
-    }
 }
 
 const NESTED_RAYON_CHILD_ENV: &str = "WITHIN_TEST_NESTED_RAYON_CHILD";
@@ -95,27 +42,21 @@ impl LocalSolver for NestedRayonIdentitySolver {
         self.n
     }
 
-    fn scratch_size(&self) -> usize {
-        self.n
+    fn workspace_len(&self) -> usize {
+        0
     }
 
     fn solve_local(
         &self,
-        rhs: &mut [f64],
-        sol: &mut [f64],
+        x: &mut [f64],
+        _workspace: &mut [f64],
         allow_inner_parallelism: bool,
     ) -> Result<(), LocalSolveError> {
+        // Identity, forking per chunk so the apply runs nested Rayon work.
         if allow_inner_parallelism {
-            sol[..self.n]
-                .par_chunks_mut(Self::CHUNK_SIZE)
-                .enumerate()
-                .for_each(|(chunk_idx, chunk)| {
-                    let start = chunk_idx * Self::CHUNK_SIZE;
-                    let end = start + chunk.len();
-                    chunk.copy_from_slice(&rhs[start..end]);
-                });
-        } else {
-            sol[..self.n].copy_from_slice(&rhs[..self.n]);
+            x.par_chunks_mut(Self::CHUNK_SIZE).for_each(|chunk| {
+                std::hint::black_box(chunk);
+            });
         }
         Ok(())
     }
@@ -137,7 +78,7 @@ fn make_nested_parallel_entries(n: usize) -> Vec<SubdomainEntry<NestedRayonIdent
         .collect()
 }
 
-fn run_nested_parallel_reduction_regression_case() {
+fn run_nested_rayon_regression_case() {
     let n = 16_384;
     let rhs: Vec<f64> = (0..n).map(|i| ((i % 13) as f64) - 6.0).collect();
 
@@ -146,10 +87,7 @@ fn run_nested_parallel_reduction_regression_case() {
         .build()
         .expect("test rayon pool");
     pool.install(|| {
-        let schwarz = SchwarzPreconditioner::new(
-            make_nested_parallel_entries(n),
-            ReductionStrategy::ParallelReduction,
-        );
+        let schwarz = SchwarzPreconditioner::new(make_nested_parallel_entries(n));
 
         for _ in 0..8 {
             let mut z = vec![0.0; n];
@@ -166,19 +104,19 @@ fn run_nested_parallel_reduction_regression_case() {
 }
 
 #[test]
-fn test_parallel_reduction_nested_rayon_deadlock_child() {
+fn test_nested_rayon_deadlock_child() {
     if env::var_os(NESTED_RAYON_CHILD_ENV).is_none() {
         return;
     }
-    run_nested_parallel_reduction_regression_case();
+    run_nested_rayon_regression_case();
 }
 
 #[test]
-fn test_parallel_reduction_nested_rayon_does_not_deadlock() {
+fn test_nested_rayon_does_not_deadlock() {
     let current_exe = env::current_exe().expect("test binary path");
     let mut child = Command::new(current_exe)
         .env(NESTED_RAYON_CHILD_ENV, "1")
-        .arg("test_parallel_reduction_nested_rayon_deadlock_child")
+        .arg("test_nested_rayon_deadlock_child")
         .arg("--exact")
         .arg("--nocapture")
         .spawn()
@@ -198,18 +136,23 @@ fn test_parallel_reduction_nested_rayon_does_not_deadlock() {
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            panic!(
-                "parallel reduction nested Rayon regression child exceeded {:?}",
-                timeout
-            );
+            panic!("nested Rayon regression child exceeded {:?}", timeout);
         }
 
         thread::sleep(Duration::from_millis(25));
     }
 }
-#[test]
-fn test_additive_schwarz_reduces_iterations() {
-    let n = 20;
+/// Additive Schwarz over `make_schwarz_entries(n)`, 20 DOFs unless `#[with(n)]` says otherwise.
+#[fixture]
+fn schwarz(#[default(20)] n: usize) -> SchwarzPreconditioner<UniformDiagLocalSolver> {
+    SchwarzPreconditioner::new(make_schwarz_entries(n))
+}
+
+#[rstest]
+fn test_additive_schwarz_reduces_iterations(
+    schwarz: SchwarzPreconditioner<UniformDiagLocalSolver>,
+) {
+    let n = schwarz.nrows();
     let a = TridiagOperator::new(n, 3.0);
     let rhs = vec![1.0; n];
 
@@ -219,7 +162,6 @@ fn test_additive_schwarz_reduces_iterations() {
         "Unpreconditioned LSMR did not converge"
     );
 
-    let schwarz = SchwarzPreconditioner::new(make_schwarz_entries(n), ReductionStrategy::default());
     let options = MlsmrOptions::default();
     let precond = mlsmr(&a, &rhs, &schwarz, 1e-8, 200, options).expect("preconditioned lsmr");
     assert!(precond.converged, "Preconditioned LSMR did not converge");
@@ -232,11 +174,11 @@ fn test_additive_schwarz_reduces_iterations() {
     );
 }
 
-#[test]
-fn test_clone_produces_independent_preconditioner() {
-    let n = 20;
-    let original =
-        SchwarzPreconditioner::new(make_schwarz_entries(n), ReductionStrategy::default());
+#[rstest]
+fn test_clone_produces_independent_preconditioner(
+    #[from(schwarz)] original: SchwarzPreconditioner<UniformDiagLocalSolver>,
+) {
+    let n = original.nrows();
     let cloned = original.clone();
 
     // Apply on different inputs and verify both produce correct results.
@@ -279,11 +221,11 @@ fn test_clone_produces_independent_preconditioner() {
     }
 }
 
-#[test]
-fn test_additive_schwarz_operator_dimensions() {
+#[rstest]
+fn test_additive_schwarz_operator_dimensions(
+    #[with(10)] schwarz: SchwarzPreconditioner<UniformDiagLocalSolver>,
+) {
     let n = 10;
-    let schwarz = SchwarzPreconditioner::new(make_schwarz_entries(n), ReductionStrategy::default());
-
     assert_eq!(schwarz.nrows(), n);
     assert_eq!(schwarz.ncols(), n);
 
@@ -306,10 +248,11 @@ fn test_additive_schwarz_operator_dimensions() {
     }
 }
 
-#[test]
-fn test_additive_schwarz_parallel_apply_stress_no_panics() {
-    let n = 64;
-    let schwarz = SchwarzPreconditioner::new(make_schwarz_entries(n), ReductionStrategy::default());
+#[rstest]
+fn test_additive_schwarz_parallel_apply_stress_no_panics(
+    #[with(64)] schwarz: SchwarzPreconditioner<UniformDiagLocalSolver>,
+) {
+    let n = schwarz.nrows();
 
     let rhs_columns: Vec<Vec<f64>> = (0..128)
         .map(|k| {
@@ -336,65 +279,77 @@ fn test_additive_schwarz_parallel_apply_stress_no_panics() {
     );
 }
 
-#[test]
-fn test_additive_backends_match_on_overlapping_subdomains() {
-    let n = 66;
-    let rhs: Vec<f64> = (0..n).map(|i| ((i % 11) as f64) - 5.0).collect();
+const DEEP_OVERLAP_DOFS: usize = 20_000;
 
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(4)
-        .build()
-        .expect("test rayon pool");
-    pool.install(|| {
-        let atomic = SchwarzPreconditioner::new(
-            make_overlapping_entries(n),
-            ReductionStrategy::AtomicScatter,
-        );
-        let reduction = SchwarzPreconditioner::new(
-            make_overlapping_entries(n),
-            ReductionStrategy::ParallelReduction,
-        );
+/// 64-DOF windows every 8 DOFs: interior DOFs sum 8 terms, so their order shows in the bits.
+#[fixture]
+fn deep_overlap_entries() -> Vec<SubdomainEntry<UniformDiagLocalSolver>> {
+    (0..=DEEP_OVERLAP_DOFS - 64)
+        .step_by(8)
+        .map(|start| {
+            let indices: Vec<u32> = (start as u32..start as u32 + 64).collect();
+            // Weights over six decades, distinct per subdomain, so the summands differ in scale.
+            let weights = indices
+                .iter()
+                .map(|&g| {
+                    let h = (start as u64 * 31 + g as u64) * 2_654_435_761;
+                    10f64.powf(((h % 1_000) as f64 / 1_000.0 - 0.5) * 6.0)
+                })
+                .collect();
+            make_entry(
+                weighted_core(indices, weights),
+                UniformDiagLocalSolver::new(64, 3.0),
+            )
+        })
+        .collect()
+}
 
-        let mut z_atomic = vec![0.0; n];
-        let mut z_reduction = vec![0.0; n];
-        atomic
-            .apply(&rhs, &mut z_atomic)
-            .expect("atomic apply succeeds");
-        reduction
-            .apply(&rhs, &mut z_reduction)
-            .expect("reduction apply succeeds");
-        assert_vec_close(&z_atomic, &z_reduction, 1e-12);
-    });
+/// Entries spanning 30 decades, so a reordered sum rounds differently.
+#[fixture]
+fn wide_range_rhs() -> Vec<f64> {
+    (0..DEEP_OVERLAP_DOFS)
+        .map(|i| ((i * 7919) % 997) as f64 * 10f64.powi((i % 31) as i32 - 15))
+        .collect()
+}
+
+/// `Σᵢ Rᵢᵀ D̃ᵢ Aᵢ⁻¹ D̃ᵢ Rᵢ r`, accumulated by hand in subdomain order.
+#[fixture]
+fn subdomain_order_sum(
+    deep_overlap_entries: Vec<SubdomainEntry<UniformDiagLocalSolver>>,
+    wide_range_rhs: Vec<f64>,
+) -> Vec<f64> {
+    let mut sum = vec![0.0; DEEP_OVERLAP_DOFS];
+    for entry in &deep_overlap_entries {
+        let PartitionWeights::NonUniform(w) = entry.partition_weights() else {
+            unreachable!("deep-overlap entries are weighted")
+        };
+        for (&g, &wi) in entry.global_indices().iter().zip(w) {
+            let g = g as usize;
+            sum[g] += wide_range_rhs[g] * wi * (1.0 / 3.0) * wi;
+        }
+    }
+    sum
 }
 
 #[rstest]
-fn test_additive_auto_matches_resolved_backend(#[values(1, 4)] n_threads: usize) {
-    let n = 66;
-    let rhs: Vec<f64> = (0..n).map(|i| ((3 * i) % 17) as f64 - 8.0).collect();
-
+fn test_additive_apply_is_the_subdomain_order_sum_at_any_thread_count(
+    deep_overlap_entries: Vec<SubdomainEntry<UniformDiagLocalSolver>>,
+    wide_range_rhs: Vec<f64>,
+    subdomain_order_sum: Vec<f64>,
+    #[values(1, 2, 3, 8)] threads: usize,
+) {
+    let schwarz = SchwarzPreconditioner::new(deep_overlap_entries);
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(n_threads)
+        .num_threads(threads)
         .build()
         .expect("test rayon pool");
-    pool.install(|| {
-        let auto = SchwarzPreconditioner::new(make_overlapping_entries(n), ReductionStrategy::Auto);
-        let resolved = auto.reduction_strategy();
-        assert_ne!(
-            resolved,
-            ReductionStrategy::Auto,
-            "auto must resolve to a concrete backend"
-        );
-
-        let explicit = SchwarzPreconditioner::new(make_overlapping_entries(n), resolved);
-
-        let mut z_auto = vec![0.0; n];
-        let mut z_explicit = vec![0.0; n];
-        auto.apply(&rhs, &mut z_auto).expect("auto apply succeeds");
-        explicit
-            .apply(&rhs, &mut z_explicit)
-            .expect("explicit apply succeeds");
-        assert_vec_close(&z_auto, &z_explicit, 1e-12);
-    });
+    let mut z = vec![f64::NAN; DEEP_OVERLAP_DOFS];
+    pool.install(|| schwarz.apply(&wide_range_rhs, &mut z))
+        .expect("apply succeeds");
+    assert!(z
+        .iter()
+        .map(|v| v.to_bits())
+        .eq(subdomain_order_sum.iter().map(|v| v.to_bits())));
 }
 
 use schwarz_precond::{BuildError, SolveError};
@@ -411,7 +366,7 @@ fn test_additive_schwarz_subdomains_accessor() {
     let n = 10;
     let entries = make_schwarz_entries(n);
     let expected_len = entries.len();
-    let schwarz = SchwarzPreconditioner::new(entries, ReductionStrategy::default());
+    let schwarz = SchwarzPreconditioner::new(entries);
     assert_eq!(schwarz.subdomains().len(), expected_len);
 }
 
@@ -423,7 +378,7 @@ fn test_additive_schwarz_apply_subdomain_empty_indices() {
     let solver = common::UniformDiagLocalSolver::new(0, 1.0);
     let core = SubdomainCore::uniform(vec![]);
     let entry = make_entry(core, solver);
-    let schwarz = SchwarzPreconditioner::new(vec![entry], ReductionStrategy::default());
+    let schwarz = SchwarzPreconditioner::new(vec![entry]);
     assert_eq!(schwarz.nrows(), 0);
 
     let r: Vec<f64> = vec![];
@@ -431,6 +386,26 @@ fn test_additive_schwarz_apply_subdomain_empty_indices() {
     schwarz
         .apply(&r, &mut z)
         .expect("apply with empty subdomain succeeds");
+}
+
+#[test]
+fn test_solve_local_gets_x_of_its_own_length_beside_larger_subdomains() {
+    let entries = vec![
+        make_entry(
+            SubdomainCore::uniform(vec![0, 1, 2]),
+            UniformDiagLocalSolver::new(3, 1.0),
+        ),
+        make_entry(
+            SubdomainCore::uniform(vec![3]),
+            UniformDiagLocalSolver::new(1, 1.0),
+        ),
+    ];
+    let schwarz = SchwarzPreconditioner::new(entries);
+    let mut z = vec![0.0; 4];
+    schwarz
+        .apply(&[1.0, 2.0, 3.0, 4.0], &mut z)
+        .expect("apply succeeds");
+    assert_eq!(z, [1.0, 2.0, 3.0, 4.0]);
 }
 
 // ============================================================================
@@ -446,17 +421,6 @@ fn test_subdomain_entry_build_error_display_local_dof_mismatch() {
     let msg = err.to_string();
     assert!(msg.contains("5"), "missing index_count: {msg}");
     assert!(msg.contains("3"), "missing solver_n_local: {msg}");
-}
-
-#[test]
-fn test_subdomain_entry_build_error_display_scratch_size_too_small() {
-    let err = BuildError::ScratchSizeTooSmall {
-        scratch_size: 2,
-        required_min: 4,
-    };
-    let msg = err.to_string();
-    assert!(msg.contains("2"), "missing scratch_size: {msg}");
-    assert!(msg.contains("4"), "missing required_min: {msg}");
 }
 
 #[test]
@@ -500,19 +464,6 @@ fn test_solve_error_display_local_solve_failed() {
 }
 
 #[test]
-fn test_solve_error_display_synchronization() {
-    let err = SolveError::Synchronization {
-        context: "mutex.lock",
-    };
-    let msg = err.to_string();
-    assert!(
-        msg.contains("synchronization"),
-        "missing sync keyword: {msg}"
-    );
-    assert!(msg.contains("mutex.lock"), "missing context: {msg}");
-}
-
-#[test]
 fn test_solve_error_source() {
     let local_err = LocalSolveError::BackendFailed {
         context: "test",
@@ -525,12 +476,6 @@ fn test_solve_error_source() {
     assert!(
         err.source().is_some(),
         "LocalSolveFailed should have a source"
-    );
-
-    let err2 = SolveError::Synchronization { context: "test" };
-    assert!(
-        err2.source().is_none(),
-        "Synchronization should have no source"
     );
 }
 
@@ -603,7 +548,7 @@ fn test_additive_schwarz_parallel_readout_large_n() {
         ));
     }
 
-    let schwarz = SchwarzPreconditioner::new(entries, ReductionStrategy::default());
+    let schwarz = SchwarzPreconditioner::new(entries);
     assert_eq!(schwarz.nrows(), n);
 
     let rhs = vec![4.0; n];
@@ -625,14 +570,11 @@ fn test_additive_schwarz_parallel_readout_large_n() {
 fn test_additive_schwarz_apply_returns_err_on_solver_failure() {
     // FailingLocalSolver always returns Err — apply must propagate the error
     // (previously this silently filled z with NaN).
-    let solver = FailingLocalSolver {
-        n_local: 2,
-        scratch_size: 2,
-    };
+    let solver = FailingLocalSolver { n_local: 2 };
     let core = SubdomainCore::uniform(vec![0u32, 1]);
     let entry = make_entry(core, solver);
 
-    let schwarz = SchwarzPreconditioner::new(vec![entry], ReductionStrategy::default());
+    let schwarz = SchwarzPreconditioner::new(vec![entry]);
 
     let n = schwarz.nrows();
     let rhs = vec![1.0; n];
@@ -663,7 +605,7 @@ fn with_n_dofs_pads_uncovered_tail_and_applies_zero() {
         UniformDiagLocalSolver::new(2, 2.0),
     )];
     let n_dofs = 4;
-    let padded = SchwarzPreconditioner::with_n_dofs(entries, n_dofs, ReductionStrategy::default());
+    let padded = SchwarzPreconditioner::with_n_dofs(entries, n_dofs);
     assert_eq!((padded.nrows(), padded.ncols()), (n_dofs, n_dofs));
 
     let rhs = vec![4.0; n_dofs];

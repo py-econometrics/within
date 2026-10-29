@@ -8,7 +8,7 @@ use ndarray::{Array2, ShapeBuilder};
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
 
-use within::config::{LocalSolverConfig, LsmrOptions, PreconditionerConfig, ReductionStrategy};
+use within::config::{LocalSolverConfig, LsmrOptions, PreconditionerConfig};
 use within::Solver;
 
 const TOL: f64 = 1e-6;
@@ -54,7 +54,6 @@ fn generate_problem(n_obs: usize, n_lev: &[usize], seed: u64) -> Problem {
     // Pinned, not the default: the ladder would rebuild and possibly escalate inside `b.iter()`.
     let preconditioner = Some(PreconditionerConfig::Additive {
         local_solver: LocalSolverConfig::default(),
-        reduction: ReductionStrategy::Auto,
     });
 
     let label = format!(

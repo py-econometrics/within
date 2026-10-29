@@ -12,8 +12,8 @@ class PreconditionerConfig:
     """Preconditioner configuration for the LSMR solver.
 
     A tagged union: each variant is a subclass. Construct with ``Off()``,
-    ``Diagonal()``, ``Additive(local_solver=..., reduction=...)``, or
-    ``Adaptive(local_solver=..., reduction=..., stall=...)``. Instances
+    ``Diagonal()``, ``Additive(local_solver=...)``, or
+    ``Adaptive(local_solver=..., stall=...)``. Instances
     compare by value and support ``match``/``case``.
     """
 
@@ -31,11 +31,9 @@ class PreconditionerConfig:
         """Additive Schwarz with a normalized local-solver configuration."""
 
         local_solver: LocalSolverConfig
-        reduction: ReductionStrategy
         def __init__(
             self,
             local_solver: LocalSolverConfig = ...,
-            reduction: ReductionStrategy = ...,
         ) -> None: ...
 
     class Adaptive(PreconditionerConfig):
@@ -47,12 +45,10 @@ class PreconditionerConfig:
         """
 
         local_solver: LocalSolverConfig
-        reduction: ReductionStrategy
         stall: Staleness
         def __init__(
             self,
             local_solver: LocalSolverConfig = ...,
-            reduction: ReductionStrategy = ...,
             stall: Staleness = ...,
         ) -> None: ...
 
@@ -73,21 +69,6 @@ class Staleness:
         threshold: float | None = None,
     ) -> None: ...
     def __repr__(self) -> str: ...
-
-class ReductionStrategy:
-    """Strategy for combining subdomain contributions in additive Schwarz.
-
-    Not an ``Enum``: the members below are class attributes (not iterable).
-
-    Attributes:
-        Auto: Let the solver choose based on problem structure (recommended).
-        AtomicScatter: Use atomic operations to scatter subdomain results.
-        ParallelReduction: Use parallel reduction over subdomain results.
-    """
-
-    Auto: ReductionStrategy
-    AtomicScatter: ReductionStrategy
-    ParallelReduction: ReductionStrategy
 
 class LsmrOptions:
     """Modified LSMR solver configuration.
@@ -302,8 +283,8 @@ def solve(
             a stalled contraction; pass ``Adaptive(...)`` to tune it.
             ``PreconditionerConfig.Off()`` disables it.
             ``PreconditionerConfig.Diagonal()`` uses diagonal/Jacobi scaling.
-            ``PreconditionerConfig.Additive(...)`` overrides the local-solver /
-            reduction settings. A previously-built ``Preconditioner`` instance
+            ``PreconditionerConfig.Additive(...)`` overrides the local-solver
+            settings. A previously-built ``Preconditioner`` instance
             reuses an existing factorisation.
 
     Returns:
@@ -313,15 +294,8 @@ def solve(
     Raises:
         ValueError: If dimensions or values are inconsistent.
         TypeError: If an argument has the wrong type or dtype.
-        RuntimeError: If the solve fails at runtime (poisoned lock, or a
-            subdomain solve diverges).
-
-    Note:
-        A single-threaded run (``RAYON_NUM_THREADS=1``) is bitwise-reproducible.
-        Across thread counts, parallel summation reorders floating-point adds,
-        so coefficients differ at the ULP scale — reproducible within solver
-        tolerance, not bitwise. Pin the thread count to keep estimates stable
-        within solver tolerance across runs (only single-threaded is bitwise).
+        RuntimeError: If the solve fails at runtime (a subdomain solve
+            diverges).
 
     Example::
 
@@ -366,8 +340,8 @@ def solve_batch(
     Raises:
         ValueError: If dimensions or values are inconsistent.
         TypeError: If an argument has the wrong type or dtype.
-        RuntimeError: If the solve fails at runtime (poisoned lock, or a
-            subdomain solve diverges).
+        RuntimeError: If the solve fails at runtime (a subdomain solve
+            diverges).
     """
     ...
 

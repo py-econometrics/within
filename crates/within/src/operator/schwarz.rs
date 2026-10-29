@@ -8,32 +8,25 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::block_elim::BlockElimSolver;
-use crate::config::{LocalSolverConfig, PreconditionerConfig, ReductionStrategy, Staleness};
+use crate::config::{LocalSolverConfig, PreconditionerConfig, Staleness};
 use crate::domain::{LocalDomain, PreparedDesign};
 use crate::{BuildError, BuildWarning};
 
 #[cfg(test)]
 mod tests;
 
-/// The additive Schwarz map's description: what the builder builds and a built map records.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct SchwarzConfig {
-    pub(crate) local_solver: LocalSolverConfig,
-    pub(crate) reduction: ReductionStrategy,
-}
-
 /// Concrete additive Schwarz type used in the parent crate.
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct FeSchwarz {
     inner: SchwarzPreconditioner<BlockElimSolver>,
-    config: SchwarzConfig,
+    local_solver: LocalSolverConfig,
 }
 
 impl std::fmt::Debug for FeSchwarz {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FeSchwarz")
             .field("n_subdomains", &self.inner.subdomains().len())
-            .field("config", &self.config)
+            .field("local_solver", &self.local_solver)
             .finish()
     }
 }
@@ -99,16 +92,16 @@ impl Operator for DiagonalPreconditioner {
 /// `n_dofs` may exceed the span of subdomain indices; an uncovered column resolves to `0`.
 pub(crate) fn build_additive(
     domains: Vec<LocalDomain>,
-    config: &SchwarzConfig,
+    local_solver: &LocalSolverConfig,
     n_dofs: usize,
 ) -> Result<FeSchwarz, BuildError> {
     let entries = domains
         .into_par_iter()
-        .map(|domain| build_entry(domain, &config.local_solver))
+        .map(|domain| build_entry(domain, local_solver))
         .collect::<Result<Vec<_>, BuildError>>()?;
     Ok(FeSchwarz {
-        inner: SchwarzPreconditioner::with_n_dofs(entries, n_dofs, config.reduction),
-        config: config.clone(),
+        inner: SchwarzPreconditioner::with_n_dofs(entries, n_dofs),
+        local_solver: local_solver.clone(),
     })
 }
 
@@ -142,7 +135,7 @@ enum Variant {
 pub(crate) struct AdaptiveLadder {
     base: DiagonalPreconditioner,
     pub(crate) stall: Staleness,
-    pub(crate) escalated: SchwarzConfig,
+    pub(crate) escalated: LocalSolverConfig,
 }
 
 impl Preconditioner {
@@ -178,13 +171,11 @@ impl Preconditioner {
     pub fn config(&self) -> PreconditionerConfig {
         match &self.inner {
             Variant::Additive(p) => PreconditionerConfig::Additive {
-                local_solver: p.config.local_solver.clone(),
-                reduction: p.config.reduction,
+                local_solver: p.local_solver.clone(),
             },
             Variant::Diagonal(_) => PreconditionerConfig::Diagonal,
             Variant::Adaptive(ladder) => PreconditionerConfig::Adaptive {
-                local_solver: ladder.escalated.local_solver.clone(),
-                reduction: ladder.escalated.reduction,
+                local_solver: ladder.escalated.clone(),
                 stall: ladder.stall,
             },
         }
@@ -254,7 +245,7 @@ pub(crate) fn build_diagonal(prepared: &PreparedDesign<'_>) -> Result<Preconditi
 pub(crate) fn build_adaptive(
     prepared: &PreparedDesign<'_>,
     stall: Staleness,
-    escalated: SchwarzConfig,
+    escalated: LocalSolverConfig,
 ) -> Result<Preconditioner, BuildError> {
     let build_started = Instant::now();
     let base = diagonal_map(prepared)?;
@@ -292,14 +283,14 @@ fn diagonal_map(prepared: &PreparedDesign<'_>) -> Result<DiagonalPreconditioner,
 /// subdomain to build on, where plain LSMR is the fallback.
 pub(crate) fn build_schwarz(
     prepared: &PreparedDesign<'_>,
-    config: &SchwarzConfig,
+    local_solver: &LocalSolverConfig,
 ) -> Result<(Option<Preconditioner>, Vec<BuildWarning>), BuildError> {
     let build_started = Instant::now();
-    let (domains, warnings) = crate::domain::build_local_domains(prepared, &config.local_solver)?;
+    let (domains, warnings) = crate::domain::build_local_domains(prepared, local_solver)?;
     if domains.is_empty() {
         return Ok((None, warnings));
     }
-    let schwarz = build_additive(domains, config, prepared.design.n_dofs)?;
+    let schwarz = build_additive(domains, local_solver, prepared.design.n_dofs)?;
     let preconditioner = Preconditioner {
         inner: Variant::Additive(schwarz),
         build_duration: build_started.elapsed(),

@@ -19,14 +19,13 @@ use super::schur;
 const PAR_BACKSUB_THRESHOLD: usize = 10_000;
 const PAR_BACKSUB_CHUNK: usize = 4096;
 
-/// Subtract the mean of `slice[..n]` from those `n` elements.
 #[inline]
-fn subtract_mean(slice: &mut [f64], n: usize) {
-    if n == 0 {
+fn subtract_mean(values: &mut [f64]) {
+    if values.is_empty() {
         return;
     }
-    let mean = compensated_sum(&slice[..n]) / n as f64;
-    for val in slice[..n].iter_mut() {
+    let mean = compensated_sum(values) / values.len() as f64;
+    for val in values.iter_mut() {
         *val -= mean;
     }
 }
@@ -303,6 +302,11 @@ impl BlockElimSolver {
         // Every solve reads the transpose, so it is built here rather than inside the first.
         cross_tab.ct();
         debug_assert!(reduced_factor.spans_kept_block(cross_tab.n_cols()));
+        debug_assert!(
+            reduced_factor.grounding() != Some(Grounding::Floating)
+                || reduced_factor.solve_dimension() == cross_tab.n_cols(),
+            "a floating factor has no ground slots for its mean to read",
+        );
         let n_internal = cross_tab.n_local();
         let n_reduced = reduced_factor.solve_dimension();
         Self {
@@ -356,72 +360,58 @@ impl BlockElimSolver {
         &self,
         rhs: &mut [f64],
         sol: &mut [f64],
+        workspace: &mut [f64],
         allow_inner_parallelism: bool,
     ) -> Result<(), LocalSolveError> {
-        let n = self.n_internal;
         let (n_elim, n_keep) = (self.n_eliminated(), self.n_kept());
         let explicit_ground = self.reduced_factor.explicit_ground_index(n_keep);
+        debug_assert!(
+            n_keep <= self.n_reduced,
+            "reduced region must cover the kept block",
+        );
+        debug_assert!(
+            explicit_ground.is_none_or(|g| n_keep <= g && g < self.n_reduced),
+            "grounded gauge slot must lie past the kept block inside the reduced system",
+        );
 
         scale_by_diag_in_place(&mut rhs[..n_elim], &self.inv_diag_elim);
 
-        {
-            let (main, scratch) = rhs.split_at_mut(n);
-            scratch[n_keep..self.n_reduced].fill(0.0);
-            self.cross_tab.ct().spmv_assign_add(
-                &main[..n_elim],
-                &main[n_elim..],
-                &mut scratch[..n_keep],
-                allow_inner_parallelism,
-            );
-        }
+        let (reduced, embed) = workspace.split_at_mut(self.n_reduced);
+        self.cross_tab.ct().spmv_assign_add(
+            &rhs[..n_elim],
+            &rhs[n_elim..],
+            &mut reduced[..n_keep],
+            allow_inner_parallelism,
+        );
         match self.reduced_factor.grounding() {
-            Some(Grounding::Floating) => {
-                subtract_mean(&mut rhs[n..], self.n_reduced);
-            }
+            Some(Grounding::Floating) => subtract_mean(reduced),
             // The ground node's potential is the gauge subtracted after the solve.
             Some(Grounding::Grounded) => {
                 if let Some(ground) = explicit_ground {
-                    rhs[n + ground] = -compensated_sum(&rhs[n..n + n_keep]);
+                    reduced[ground] = -compensated_sum(&reduced[..n_keep]);
                 }
             }
             // A cover grounds itself via the antisymmetric `[b, -b]` embed.
             None => {}
         }
 
-        // The reduced solve spills into slots that are dead except the grounded gauge.
-        let reduced = n_elim..n_elim + self.n_reduced;
-        debug_assert!(
-            n_keep <= self.n_reduced,
-            "reduced region must cover the kept block",
-        );
-        debug_assert!(
-            reduced.end <= sol.len() && n + self.n_reduced <= rhs.len(),
-            "reduced solve and its RHS copy must fit sol and rhs",
-        );
-        debug_assert!(
-            explicit_ground.is_none_or(|g| n_keep <= g && g < self.n_reduced),
-            "grounded gauge slot must spill past the kept block into a solved slot",
-        );
-        sol[reduced.clone()].copy_from_slice(&rhs[n..n + self.n_reduced]);
-        let embed = &mut rhs[n + self.n_reduced..];
-        self.reduced_factor
-            .solve_in_place(&mut sol[reduced], embed)?;
+        self.reduced_factor.solve_in_place(reduced, embed)?;
+        let (sol_elim, sol_kept) = sol.split_at_mut(n_elim);
+        sol_kept.copy_from_slice(&reduced[..n_keep]);
         if let Some(ground) = explicit_ground {
-            let ground = sol[n_elim + ground];
-            for v in &mut sol[n_elim..n_elim + n_keep] {
+            let ground = reduced[ground];
+            for v in sol_kept.iter_mut() {
                 *v -= ground;
             }
         }
 
         // Back-substitution reads the gauged kept block, so the gauge subtraction runs first.
-        let (sol_output, sol_source) = sol.split_at_mut(n_elim);
-        let sol_source = &sol_source[..n_keep];
         backsub_block_from_scaled_rhs(
-            sol_output,
+            sol_elim,
             &rhs[..n_elim],
             &self.cross_tab.c,
             &self.inv_diag_elim,
-            sol_source,
+            sol_kept,
             allow_inner_parallelism,
         );
         Ok(())
@@ -433,8 +423,8 @@ impl LocalSolver for BlockElimSolver {
         self.n_internal
     }
 
-    fn scratch_size(&self) -> usize {
-        self.n_internal + self.n_reduced + self.reduced_factor.scratch_len()
+    fn workspace_len(&self) -> usize {
+        self.n_internal + self.n_reduced + self.reduced_factor.embed_len()
     }
 
     fn inner_parallelism_work_estimate(&self) -> usize {
@@ -449,24 +439,27 @@ impl LocalSolver for BlockElimSolver {
 
     fn solve_local(
         &self,
-        rhs: &mut [f64],
-        sol: &mut [f64],
+        x: &mut [f64],
+        workspace: &mut [f64],
         allow_inner_parallelism: bool,
     ) -> Result<(), LocalSolveError> {
-        let n = self.n_internal;
         let n_eliminated = self.n_eliminated();
+        // The elimination keeps its right-hand side apart from the solution it writes.
+        let (rhs, workspace) = workspace.split_at_mut(self.n_internal);
+        rhs.copy_from_slice(x);
+        let sol = x;
 
-        self.coordinates.fold(&mut rhs[..n], n_eliminated);
+        self.coordinates.fold(rhs, n_eliminated);
         if self.reduced_factor.grounding() == Some(Grounding::Floating) {
-            subtract_mean(rhs, n);
+            subtract_mean(rhs);
         }
 
-        self.eliminate_and_recover(rhs, sol, allow_inner_parallelism)?;
+        self.eliminate_and_recover(rhs, sol, workspace, allow_inner_parallelism)?;
 
         if self.reduced_factor.grounding() == Some(Grounding::Floating) {
-            subtract_mean(sol, n);
+            subtract_mean(sol);
         }
-        self.coordinates.unfold(&mut sol[..n], n_eliminated);
+        self.coordinates.unfold(sol, n_eliminated);
         Ok(())
     }
 }

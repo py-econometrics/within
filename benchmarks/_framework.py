@@ -26,7 +26,6 @@ from within._within import (
     ApproxCholConfig,
     ApproxSchurConfig,
     Schur,
-    ReductionStrategy,
     LocalSolverConfig,
 )
 
@@ -197,15 +196,6 @@ def benchmark_lsmr(
     )
 
 
-def make_additive_schwarz(
-    local_solver: LocalSolverConfig,
-) -> PreconditionerConfig.Additive:
-    """Construct additive Schwarz using the default Auto reduction mode."""
-    return PreconditionerConfig.Additive(
-        local_solver=local_solver, reduction=ReductionStrategy.Auto
-    )
-
-
 def standard_solver_configs(
     opts: Any, *, maxiter: int | None = None
 ) -> list[SolverConfig]:
@@ -229,12 +219,12 @@ def standard_solver_configs(
         SolverConfig(
             "LSMR(Schwarz)",
             benchmark_lsmr(opts, maxiter=maxiter),
-            preconditioner=make_additive_schwarz(local_solver=schur),
+            preconditioner=PreconditionerConfig.Additive(local_solver=schur),
         ),
         SolverConfig(
             "LSMR(Schwarz,2-2)",
             benchmark_lsmr(opts, maxiter=maxiter),
-            preconditioner=make_additive_schwarz(local_solver=schur_2_2),
+            preconditioner=PreconditionerConfig.Additive(local_solver=schur_2_2),
         ),
     ]
 

@@ -1,7 +1,7 @@
 //! Behavior of the `Adaptive` (diagonal→Schwarz) preconditioner strategy (#260).
 
 use rstest::rstest;
-use within::config::{LocalSolverConfig, ReductionStrategy};
+use within::config::LocalSolverConfig;
 use within::{Design, LsmrOptions, PreconditionerConfig, Solver, Staleness};
 
 #[path = "common/orchestrate_helpers.rs"]
@@ -16,7 +16,6 @@ fn eager_stall() -> Staleness {
 fn adaptive(stall: Staleness) -> PreconditionerConfig {
     PreconditionerConfig::Adaptive {
         local_solver: LocalSolverConfig::default(),
-        reduction: ReductionStrategy::Auto,
         stall,
     }
 }
@@ -181,24 +180,15 @@ fn an_unescalated_map_reuses_as_the_ladder(#[values(false, true)] through_wire: 
     };
 
     let reused = Solver::new(crossed_panel(), None, taken).expect("solver");
-    // Only a single thread is bitwise reproducible, so the iteration counts can match exactly.
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(1)
-        .build()
-        .expect("pool");
-    let (resumed, original) = pool.install(|| {
-        (
-            reused.solve(&y, &tight()).expect("reused solve"),
-            source.solve(&y, &tight()).expect("source solve"),
-        )
-    });
+    let resumed = reused.solve(&y, &tight()).expect("reused solve");
+    let original = source.solve(&y, &tight()).expect("source solve");
 
     assert!(
         reused.has_escalated(),
         "a reused ladder must still hand off"
     );
     assert_eq!(resumed.iterations, original.iterations);
-    common::assert_solutions_close(&resumed.demeaned, &original.demeaned, 1e-12);
+    assert_eq!(resumed.demeaned, original.demeaned);
 }
 
 /// A ladder reused on a one-term design settles to its diagonal, as a fresh build there does.

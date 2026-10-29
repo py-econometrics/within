@@ -7,6 +7,7 @@ complement on the local solver. Scales from 100K to 160M observations.
 
 from __future__ import annotations
 
+from within import PreconditionerConfig
 from within._within import (
     ApproxCholConfig,
     ApproxSchurConfig,
@@ -18,7 +19,6 @@ from .._framework import (
     SolverConfig,
     SuiteOptions,
     benchmark_lsmr,
-    make_additive_schwarz,
     run_solve,
     suite,
 )
@@ -70,17 +70,17 @@ def run_fixest_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
         SolverConfig(
             "LSMR(exact)",
             benchmark_lsmr(opts),
-            preconditioner=make_additive_schwarz(local_solver=exact_schur),
+            preconditioner=PreconditionerConfig.Additive(local_solver=exact_schur),
         ),
         SolverConfig(
             "LSMR(approx)",
             benchmark_lsmr(opts),
-            preconditioner=make_additive_schwarz(local_solver=approx_schur),
+            preconditioner=PreconditionerConfig.Additive(local_solver=approx_schur),
         ),
         SolverConfig(
             "LSMR(2-2)",
             benchmark_lsmr(opts),
-            preconditioner=make_additive_schwarz(local_solver=schur_2_2),
+            preconditioner=PreconditionerConfig.Additive(local_solver=schur_2_2),
         ),
     ]
 

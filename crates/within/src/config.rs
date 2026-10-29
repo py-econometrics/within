@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::BuildError;
 
-pub use schwarz_precond::{ReductionStrategy, Staleness, StalenessError};
+pub use schwarz_precond::{Staleness, StalenessError};
 
 /// Default `n_keep` threshold below which a Schur domain tries the exact dense backend.
 pub(crate) const DEFAULT_DENSE_SCHUR_THRESHOLD: usize = 24;
@@ -151,8 +151,6 @@ pub enum PreconditionerConfig {
     Additive {
         /// Local solver configuration applied inside each subdomain.
         local_solver: LocalSolverConfig,
-        /// Strategy for combining overlapping subdomain contributions.
-        reduction: ReductionStrategy,
     },
     /// Diagonal/Jacobi; a zero diagonal takes the pseudo-inverse, pinning that coordinate to 0.
     Diagonal,
@@ -160,8 +158,6 @@ pub enum PreconditionerConfig {
     Adaptive {
         /// Local solver configuration for the escalated Schwarz factorization.
         local_solver: LocalSolverConfig,
-        /// Strategy for combining overlapping subdomain contributions.
-        reduction: ReductionStrategy,
         /// Contraction-stall condition that triggers escalation.
         stall: Staleness,
     },
@@ -171,7 +167,6 @@ impl Default for PreconditionerConfig {
     fn default() -> Self {
         Self::Adaptive {
             local_solver: LocalSolverConfig::default(),
-            reduction: ReductionStrategy::default(),
             stall: Staleness::default(),
         }
     }

@@ -145,8 +145,8 @@ The `preconditioner` argument accepts any of:
 | `PreconditionerConfig.Off()` | Explicit identity — solve unpreconditioned. |
 | `PreconditionerConfig.Additive()` | Additive Schwarz shortcut, built up front. |
 | `PreconditionerConfig.Diagonal()` | Diagonal/Jacobi preconditioner using `diag(D^T W D)^{-1}`. |
-| `PreconditionerConfig.Additive(local_solver?, reduction?)` | Tuned additive Schwarz. Argument types import from `within.config`. |
-| `PreconditionerConfig.Adaptive(local_solver?, reduction?, stall?)` | Tuned form of the default; the factorization is built only on escalation. |
+| `PreconditionerConfig.Additive(local_solver?)` | Tuned additive Schwarz. Argument types import from `within.config`. |
+| `PreconditionerConfig.Adaptive(local_solver?, stall?)` | Tuned form of the default; the factorization is built only on escalation. |
 | `Preconditioner` instance | Reuse a previously-built preconditioner across solvers. |
 
 `PreconditionerConfig` is a tagged union: each variant is a subclass, so instances
@@ -162,7 +162,6 @@ as `.build_duration_seconds`; both are preserved across pickling and reuse.
 | `Schur.approximate(config?)` / `Schur.exact()` | Schur-reduction mode passed as `LocalSolverConfig(schur=...)`. |
 | `ApproxCholConfig(seed=0, split_merge=None)` | Approximate Cholesky parameters. |
 | `ApproxSchurConfig(seed=0, split=1)` | Approximate Schur complement sampling parameters. |
-| `ReductionStrategy` | `Auto` (default), `AtomicScatter`, `ParallelReduction` (class attributes, not an `Enum`). |
 
 ### Result types
 
@@ -177,7 +176,7 @@ Coefficients for unidentified directions are pinned to the **minimal-norm** valu
 ```rust
 use ndarray::Array2;
 use within::{solve, LsmrOptions, PreconditionerConfig};
-use within::config::{LocalSolverConfig, ReductionStrategy};
+use within::config::LocalSolverConfig;
 
 let categories = /* Array2<u32> of shape (n_obs, n_factors) */;
 let y: &[f64] = /* response vector */;
@@ -190,7 +189,6 @@ assert!(r.converged);
 let lsmr = LsmrOptions { tol: 1e-10, ..LsmrOptions::default() };
 let precond = PreconditionerConfig::Additive {
     local_solver: LocalSolverConfig::default(),
-    reduction: ReductionStrategy::default(),
 };
 let r = solve(categories.view(), &y, None, &lsmr, &precond)?;
 
@@ -245,7 +243,7 @@ assert_eq!(result.x.len(), 4); // two observed levels in each of two factors
 |---|---|
 | `Design` | Reusable immutable design; build with `Design::from_categories` or `Design::new`, then share via `Solver::new(&design, ...)` or `solve(&design, ...)`. |
 | `LsmrOptions` | `{ tol: f64, maxiter: usize, local_size: Option<usize> }` |
-| `PreconditionerConfig` | `Off` \| `Additive { local_solver: LocalSolverConfig, reduction: ReductionStrategy }` \| `Diagonal` (`#[non_exhaustive]`) |
+| `PreconditionerConfig` | `Off` \| `Additive { local_solver: LocalSolverConfig }` \| `Diagonal` (`#[non_exhaustive]`) |
 | `LocalSolverConfig` | `{ approx_chol, schur: SchurMode, dense_threshold, scaling }` |
 | `SchurMode` | `Approximate(ApproxSchurConfig)` \| `Exact` |
 | `Preconditioner` | Opaque built handle — reuse via `Solver::new(.., precond)` (owned or `&`) |
@@ -284,7 +282,7 @@ across solves like any other.
 
 | Module | Visibility | Key types |
 |---|---|---|
-| `within::config` | public | `LsmrOptions`, `PreconditionerConfig`, `LocalSolverConfig`, `SchurMode`, `ApproxCholConfig`, `ApproxSchurConfig`, `ScalingConfig`, `ReductionStrategy` |
+| `within::config` | public | `LsmrOptions`, `PreconditionerConfig`, `LocalSolverConfig`, `SchurMode`, `ApproxCholConfig`, `ApproxSchurConfig`, `ScalingConfig` |
 | `within::error` | public | `WithinError`, `BuildError`, `SolveError` |
 | `block_elim` / `channel` / `csr_block` / `domain` / `linalg` / `operator` / `solver` | `pub(crate)` | implementation layers — public items are re-exported at the crate root |
 

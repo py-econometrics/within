@@ -67,19 +67,19 @@ impl ReducedFactor {
         }
     }
 
-    /// Extra scratch beyond the reduced buffers; only [`Self::Cover`] embeds into a larger system.
-    pub(crate) fn scratch_len(&self) -> usize {
+    /// Length of the larger system only [`Self::Cover`] embeds into.
+    pub(crate) fn embed_len(&self) -> usize {
         match self {
             Self::Direct { .. } => 0,
             Self::Cover { inner, .. } => inner.n(),
         }
     }
 
-    /// `x` spans [`Self::solve_dimension`]; `scratch` is at least [`Self::scratch_len`] long.
+    /// `x` spans [`Self::solve_dimension`]; `embed` is at least [`Self::embed_len`] long.
     pub(crate) fn solve_in_place(
         &self,
         x: &mut [f64],
-        scratch: &mut [f64],
+        embed: &mut [f64],
     ) -> Result<(), LocalSolveError> {
         match self {
             Self::Direct { factor, .. } => {
@@ -89,7 +89,7 @@ impl ReducedFactor {
             Self::Cover { inner, m } => {
                 debug_assert_eq!(*m, x.len());
                 let cover_n = inner.n();
-                let buf = &mut scratch[..cover_n];
+                let buf = &mut embed[..cover_n];
                 // Grounding vertices past the `2m` cover nodes have zero RHS, so clear the tail.
                 buf[..*m].copy_from_slice(x);
                 for (out, &v) in buf[*m..2 * *m].iter_mut().zip(x.iter()) {
@@ -199,9 +199,9 @@ mod tests {
 
         let b = [1.0, 0.5];
         let mut x = b;
-        let mut scratch = vec![0.0; reduced.scratch_len()];
+        let mut embed = vec![0.0; reduced.embed_len()];
         reduced
-            .solve_in_place(&mut x, &mut scratch)
+            .solve_in_place(&mut x, &mut embed)
             .expect("cover solve");
 
         // Residual of the signed system M x = b (M = [[2,1],[1,2]]).

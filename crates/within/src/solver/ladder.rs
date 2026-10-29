@@ -8,7 +8,7 @@ use once_cell::sync::OnceCell;
 use crate::config::PreconditionerConfig;
 use crate::domain::PreparedDesign;
 use crate::operator::schwarz::{
-    build_adaptive, build_diagonal, build_schwarz, AdaptiveLadder, Preconditioner, SchwarzConfig,
+    build_adaptive, build_diagonal, build_schwarz, AdaptiveLadder, Preconditioner,
 };
 use crate::{BuildError, BuildWarning};
 
@@ -38,29 +38,17 @@ impl PrecondSlot {
                 map: Some(build_diagonal(prepared)?),
                 warnings: Vec::new(),
             },
-            PreconditionerConfig::Additive {
-                local_solver,
-                reduction,
-            } => {
-                let schwarz = SchwarzConfig {
-                    local_solver,
-                    reduction,
-                };
-                let (map, warnings) = build_schwarz(prepared, &schwarz)?;
+            PreconditionerConfig::Additive { local_solver } => {
+                let (map, warnings) = build_schwarz(prepared, &local_solver)?;
                 Self::Static { map, warnings }
             }
             PreconditionerConfig::Adaptive {
                 local_solver,
-                reduction,
                 stall,
             } => {
                 // Fail before the diagonal pass; `reuse` repeats this for a deserialized ladder.
                 local_solver.validate()?;
-                let escalated = SchwarzConfig {
-                    local_solver,
-                    reduction,
-                };
-                let base = build_adaptive(prepared, stall, escalated)?;
+                let base = build_adaptive(prepared, stall, local_solver)?;
                 Self::reuse(prepared, base)?
             }
         })
@@ -78,7 +66,7 @@ impl PrecondSlot {
             });
         };
         // A deserialized ladder skipped `Adaptive`'s build-time check, and a one-term design settles.
-        ladder.escalated.local_solver.validate()?;
+        ladder.escalated.validate()?;
         Ok(if prepared.design.n_factors() < 2 {
             Self::Static {
                 map: Some(preconditioner.settle()),

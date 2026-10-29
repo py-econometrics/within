@@ -12,8 +12,8 @@ use schwarz_precond::SubdomainCore;
 use crate::csr_block::CsrBlock;
 use crate::domain::{build_local_domains, LocalDomain, PreparedDesign};
 use crate::domain::{CrossTab, LocalComponent};
-use crate::operator::schwarz::{build_additive, SchwarzConfig};
-use schwarz_precond::{LocalSolver, Operator, ReductionStrategy};
+use crate::operator::schwarz::build_additive;
+use schwarz_precond::{LocalSolver, Operator};
 
 const BLOCK_ELIM_NESTED_RAYON_CHILD_ENV: &str = "WITHIN_TEST_BLOCK_ELIM_NESTED_RAYON_CHILD";
 
@@ -95,7 +95,7 @@ fn make_nested_block_elim_domain_pairs(
     (n_local, domain_pairs)
 }
 
-fn run_block_elim_parallel_reduction_regression_case() {
+fn run_block_elim_nested_rayon_case() {
     let n_keep = 1_024;
     let elim_ratio = 32;
     let (n_dofs, domain_pairs) = make_nested_block_elim_domain_pairs(n_keep, elim_ratio, 2);
@@ -113,69 +113,45 @@ fn run_block_elim_parallel_reduction_regression_case() {
     };
     let rhs: Vec<f64> = (0..n_dofs).map(|i| ((i % 29) as f64) - 14.0).collect();
 
-    let (_, domain_pairs_atomic) = make_nested_block_elim_domain_pairs(n_keep, elim_ratio, 2);
+    let schwarz =
+        build_additive(domain_pairs, &config, n_dofs).expect("build block-elim preconditioner");
 
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(4)
-        .build()
-        .expect("test rayon pool");
-    pool.install(|| {
-        let reduction = build_additive(
-            domain_pairs,
-            &SchwarzConfig {
-                local_solver: config.clone(),
-                reduction: ReductionStrategy::ParallelReduction,
-            },
-            n_dofs,
-        )
-        .expect("build block-elim additive preconditioner");
-        let atomic = build_additive(
-            domain_pairs_atomic,
-            &SchwarzConfig {
-                local_solver: config.clone(),
-                reduction: ReductionStrategy::AtomicScatter,
-            },
-            n_dofs,
-        )
-        .expect("build block-elim atomic preconditioner");
-
-        for _ in 0..4 {
-            let mut z_reduction = vec![0.0; n_dofs];
-            let mut z_atomic = vec![0.0; n_dofs];
-            reduction
-                .apply(&rhs, &mut z_reduction)
-                .expect("reduction apply succeeds");
-            atomic
-                .apply(&rhs, &mut z_atomic)
-                .expect("atomic apply succeeds");
-            for (i, (&zr, &za)) in z_reduction.iter().zip(&z_atomic).enumerate() {
-                assert!(
-                    zr.is_finite() && za.is_finite(),
-                    "non-finite result at index {i}: reduction={zr}, atomic={za}"
-                );
-                assert!(
-                    (zr - za).abs() <= 1e-9,
-                    "backend mismatch at index {i}: reduction={zr}, atomic={za}"
-                );
-            }
-        }
-    });
+    // Two subdomains: inner parallelism is off in a 1-thread pool and on in a 4-thread pool.
+    let apply_in = |threads: usize| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .expect("test rayon pool")
+            .install(|| {
+                let mut z = vec![0.0; n_dofs];
+                schwarz.apply(&rhs, &mut z).expect("apply succeeds");
+                z.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+            })
+    };
+    let reference = apply_in(1);
+    assert!(reference.iter().all(|&b| f64::from_bits(b).is_finite()));
+    for _ in 0..4 {
+        assert!(
+            apply_in(4) == reference,
+            "inner parallelism changed the bits"
+        );
+    }
 }
 
 #[test]
-fn test_block_elim_parallel_reduction_nested_rayon_child() {
+fn test_block_elim_nested_rayon_child() {
     if env::var_os(BLOCK_ELIM_NESTED_RAYON_CHILD_ENV).is_none() {
         return;
     }
-    run_block_elim_parallel_reduction_regression_case();
+    run_block_elim_nested_rayon_case();
 }
 
 #[test]
-fn test_block_elim_parallel_reduction_nested_rayon_does_not_deadlock() {
+fn test_block_elim_nested_rayon_does_not_deadlock() {
     let current_exe = env::current_exe().expect("test binary path");
     let mut child = Command::new(current_exe)
         .env(BLOCK_ELIM_NESTED_RAYON_CHILD_ENV, "1")
-        .arg("test_block_elim_parallel_reduction_nested_rayon_child")
+        .arg("test_block_elim_nested_rayon_child")
         .arg("--nocapture")
         .spawn()
         .expect("spawn block-elim nested Rayon regression child");
@@ -195,7 +171,7 @@ fn test_block_elim_parallel_reduction_nested_rayon_does_not_deadlock() {
             let _ = child.kill();
             let _ = child.wait();
             panic!(
-                "block-elim parallel reduction nested Rayon regression child exceeded {:?}",
+                "block-elim nested Rayon regression child exceeded {:?}",
                 timeout
             );
         }
@@ -207,12 +183,12 @@ fn test_block_elim_parallel_reduction_nested_rayon_does_not_deadlock() {
 #[test]
 fn test_build_additive() {
     let (design, domain_pairs) = make_test_data();
-    let config = SchwarzConfig {
-        local_solver: LocalSolverConfig::default(),
-        reduction: ReductionStrategy::default(),
-    };
-    let schwarz = build_additive(domain_pairs, &config, design.design.n_dofs)
-        .expect("build schwarz with explicit domains");
+    let schwarz = build_additive(
+        domain_pairs,
+        &LocalSolverConfig::default(),
+        design.design.n_dofs,
+    )
+    .expect("build schwarz with explicit domains");
     let r = vec![1.0; design.design.n_dofs];
     let mut z = vec![0.0; design.design.n_dofs];
     schwarz.apply(&r, &mut z).expect("schwarz apply succeeds");
@@ -231,16 +207,10 @@ fn small_subdomain_solve(schur: SchurMode, dense_threshold: usize) -> Vec<f64> {
     };
     let solver =
         crate::block_elim::BlockElimSolver::build(component, &config).expect("block-elim build");
-    let mut rhs = vec![0.0; solver.scratch_size()];
-    for (i, slot) in rhs.iter_mut().take(solver.n_local()).enumerate() {
-        *slot = if i % 2 == 0 { 1.0 } else { -1.0 };
-    }
-    let mut solution = vec![0.0; solver.scratch_size()];
-    solver
-        .solve_local(&mut rhs, &mut solution, false)
-        .expect("local solve");
-    solution.truncate(solver.n_local());
-    solution
+    let r: Vec<f64> = (0..solver.n_local())
+        .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
+        .collect();
+    solver.solve_for_test(&r, 0.0)
 }
 
 #[test]

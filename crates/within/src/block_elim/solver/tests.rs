@@ -5,32 +5,32 @@ use super::*;
 use crate::block_elim::csr_matrix::CsrMatrix;
 use crate::config::{ApproxCholConfig, SchurMode, DEFAULT_DENSE_SCHUR_THRESHOLD};
 
+impl BlockElimSolver {
+    /// Solves `r` with the workspace preset to `stale`.
+    pub(crate) fn solve_for_test(&self, r: &[f64], stale: f64) -> Vec<f64> {
+        let mut x = r.to_vec();
+        let mut workspace = vec![stale; self.workspace_len()];
+        self.solve_local(&mut x, &mut workspace, false)
+            .expect("solve_local failed");
+        x
+    }
+}
+
 #[test]
 fn test_subtract_mean_empty() {
-    let mut data = vec![1.0, 2.0, 3.0];
-    subtract_mean(&mut data, 0);
-    // Should not modify anything
-    assert_eq!(data, vec![1.0, 2.0, 3.0]);
+    let mut data: Vec<f64> = Vec::new();
+    subtract_mean(&mut data);
+    assert!(data.is_empty());
 }
 
 #[test]
 fn test_subtract_mean_basic() {
     let mut data = vec![2.0, 4.0, 6.0];
-    subtract_mean(&mut data, 3);
+    subtract_mean(&mut data);
     // mean = 4.0
     assert!((data[0] - (-2.0)).abs() < 1e-14);
     assert!((data[1] - 0.0).abs() < 1e-14);
     assert!((data[2] - 2.0).abs() < 1e-14);
-}
-
-#[test]
-fn test_subtract_mean_partial() {
-    let mut data = vec![3.0, 5.0, 100.0];
-    subtract_mean(&mut data, 2);
-    // mean of first 2 = 4.0
-    assert!((data[0] - (-1.0)).abs() < 1e-14);
-    assert!((data[1] - 1.0).abs() < 1e-14);
-    assert_eq!(data[2], 100.0); // unchanged
 }
 
 #[test]
@@ -136,21 +136,13 @@ fn block_elim_solver_solves_a_two_block_component() {
     let n_local = solver.n_local();
     assert_eq!(n_local, 7);
 
-    let scratch_sz = solver.scratch_size();
-    let mut rhs = vec![0.0; scratch_sz];
-    for (i, v) in rhs[..n_local].iter_mut().enumerate() {
-        *v = (i as f64 + 1.0) * 0.5;
-    }
-    let mut sol = vec![0.0; scratch_sz];
+    let r: Vec<f64> = (0..n_local).map(|i| (i as f64 + 1.0) * 0.5).collect();
+    let sol = solver.solve_for_test(&r, 0.0);
 
-    solver
-        .solve_local(&mut rhs, &mut sol, true)
-        .expect("solve_local should succeed");
-
-    for (i, &v) in sol[..n_local].iter().enumerate() {
+    for (i, &v) in sol.iter().enumerate() {
         assert!(v.is_finite(), "sol[{i}] = {v} is not finite");
     }
-    let sol_norm: f64 = sol[..n_local].iter().map(|v| v * v).sum::<f64>().sqrt();
+    let sol_norm: f64 = sol.iter().map(|v| v * v).sum::<f64>().sqrt();
     assert!(sol_norm > 1e-15, "solution is unexpectedly all-zero");
 }
 
@@ -178,20 +170,10 @@ fn grounded_two_block_solve_is_leak_free() {
     }
 
     let r = [0.5, 3.0, -1.25, 0.75, 2.0, 1.0, -2.0];
-    let solve_with_dirty = |dirty: f64| {
-        let mut rhs = vec![dirty; solver.scratch_size()];
-        rhs[..n].copy_from_slice(&r);
-        let mut sol = vec![dirty; solver.scratch_size()];
-        solver
-            .solve_local(&mut rhs, &mut sol, false)
-            .expect("solve_local failed");
-        sol
-    };
-    let clean = solve_with_dirty(0.0);
-    let dirty = solve_with_dirty(1e6);
+    let clean = solver.solve_for_test(&r, 0.0);
+    let dirty = solver.solve_for_test(&r, 1e6);
     assert_eq!(
-        clean[..n],
-        dirty[..n],
+        clean, dirty,
         "pre-dirtied overlap/scratch slots leaked into the solution",
     );
 
@@ -222,12 +204,7 @@ fn trivial_singleton_component_solves_r_over_d(#[case] n_rows: usize, #[case] n_
     let solver = BlockElimSolver::build(component, &config).expect("trivial 1×1 build");
     assert_eq!(solver.n_local(), 1);
 
-    let mut rhs = vec![0.0; solver.scratch_size()];
-    rhs[0] = 2.0;
-    let mut sol = vec![0.0; solver.scratch_size()];
-    solver
-        .solve_local(&mut rhs, &mut sol, false)
-        .expect("trivial solve");
+    let sol = solver.solve_for_test(&[2.0], 0.0);
     assert_eq!(sol[0], 0.5, "expected r/d");
 }
 
@@ -243,10 +220,7 @@ fn sampled_sparse_preserves_barely_pd_direction() {
         ..Default::default()
     };
     let solver = BlockElimSolver::build(component, &config).unwrap();
-    let mut rhs = vec![0.0; solver.scratch_size()];
-    rhs[..2].copy_from_slice(&[1.0, -1.0]);
-    let mut solution = vec![0.0; solver.scratch_size()];
-    solver.solve_local(&mut rhs, &mut solution, false).unwrap();
+    let solution = solver.solve_for_test(&[1.0, -1.0], 0.0);
 
     let ax = [
         (1.0 + surplus) * solution[0] + solution[1],
@@ -256,46 +230,48 @@ fn sampled_sparse_preserves_barely_pd_direction() {
     assert!((ax[1] + 1.0).abs() < 1e-6);
 }
 
-#[test]
-fn grounded_backend_auxiliary_is_initialized_on_every_solve() {
-    let large = 1e7;
-    let small = 1e-9;
-    let principal = CsrMatrix::new(
-        vec![0, 2, 4],
-        vec![0, 1, 0, 1],
-        vec![large, -large, -large, large + small],
-        2,
-    );
-    let explicit_ground_laplacian =
-        schur::build_explicit_laplacian(&principal, &[0.0, small], Grounding::Grounded);
+fn two_dof_sddm(diagonal: [f64; 2], off_diagonal: f64) -> CsrMatrix {
+    let data = vec![diagonal[0], off_diagonal, off_diagonal, diagonal[1]];
+    CsrMatrix::new(vec![0, 2, 4], vec![0, 1, 0, 1], data, 2)
+}
+
+fn explicit_ground_laplacian() -> CsrMatrix {
+    let (large, small) = (1e7, 1e-9);
+    let principal = two_dof_sddm([large, large + small], -large);
+    schur::build_explicit_laplacian(&principal, &[0.0, small], Grounding::Grounded)
+}
+
+#[rstest]
+// approx-chol declines to ground a surplus below its resolvable pivot scale.
+#[case::explicit_ground(explicit_ground_laplacian(), 3)]
+// A resolvable surplus makes approx-chol append a ground vertex of its own.
+#[case::backend_ground(two_dof_sddm([2.5, 2.5], -2.0), 2)]
+fn stale_ground_slots_past_the_kept_block_never_reach_the_solution(
+    #[case] reduced: CsrMatrix,
+    #[case] input_dimension: usize,
+    #[values(3.0, -7.0)] stale: f64,
+) {
     let config = ApproxCholConfig::default().to_approx_chol(
         DEFAULT_DENSE_SCHUR_THRESHOLD,
         ExactFailure::FallBackToApproximate,
     );
     let factor = ReducedFactor::Direct {
-        factor: factor_sparse(&explicit_ground_laplacian, config)
-            .expect("factorization must succeed"),
+        factor: factor_sparse(&reduced, config).expect("factorization must succeed"),
         grounding: Grounding::Grounded,
     };
-    assert_eq!(factor.input_dimension(), 3);
-    // approx-chol declines to ground a surplus below its resolvable pivot scale.
-    assert_eq!(factor.solve_dimension(), 3);
+    assert_eq!(
+        (factor.input_dimension(), factor.solve_dimension()),
+        (input_dimension, 3)
+    );
 
     let cross_tab = CrossTab::from_dense_for_test(&[0.0; 6], 3, 2);
     let solver = BlockElimSolver::new(cross_tab, vec![1.0; 3], factor, CoordinateMap::default());
 
-    let solve_with_dirty_auxiliary = |dirty: f64| {
-        let mut rhs = vec![0.0; solver.scratch_size()];
-        rhs[3..5].copy_from_slice(&[1.0, -1.0]);
-        rhs[7] = dirty;
-        let mut solution = vec![0.0; solver.scratch_size()];
-        solver.solve_local(&mut rhs, &mut solution, false).unwrap();
-        solution
-    };
-
-    let first = solve_with_dirty_auxiliary(3.0);
-    let second = solve_with_dirty_auxiliary(-7.0);
-    assert_eq!(first[..solver.n_local()], second[..solver.n_local()]);
+    let r = [0.0, 0.0, 0.0, 1.0, -1.0];
+    assert_eq!(
+        solver.solve_for_test(&r, stale),
+        solver.solve_for_test(&r, 0.0)
+    );
 }
 
 /// Stars of ≤2 entries sample deterministically-exact, so all three arms share one oracle.
@@ -341,12 +317,7 @@ fn signed_component_realizes_congruence_transformed_solve(
 
     let n = n_rows + n_cols;
     let r = [0.5, 3.0, -1.25, 1.0, -2.0];
-    let mut rhs = vec![0.0; solver.scratch_size()];
-    rhs[..n].copy_from_slice(&r);
-    let mut sol = vec![0.0; solver.scratch_size()];
-    solver
-        .solve_local(&mut rhs, &mut sol, false)
-        .expect("solve_local failed");
+    let sol = solver.solve_for_test(&r, 0.0);
 
     for i in 0..n {
         let mut ax = 0.0;
@@ -408,12 +379,7 @@ fn frustrated_component_solves_exactly_through_cover() {
     );
 
     let r = [1.0, -2.0, 0.5, 3.0];
-    let mut rhs = vec![0.0; solver.scratch_size()];
-    rhs[..n].copy_from_slice(&r);
-    let mut sol = vec![0.0; solver.scratch_size()];
-    solver
-        .solve_local(&mut rhs, &mut sol, false)
-        .expect("solve_local failed");
+    let sol = solver.solve_for_test(&r, 0.0);
 
     for i in 0..n {
         let ax: f64 = (0..n).map(|j| a[i][j] * sol[j]).sum();
@@ -445,7 +411,7 @@ fn valid_solver_round_trips() {
     let bytes = postcard::to_stdvec(&solver).expect("serialize");
     let restored: BlockElimSolver = postcard::from_bytes(&bytes).expect("deserialize");
     assert_eq!(restored.n_local(), solver.n_local());
-    assert_eq!(restored.scratch_size(), solver.scratch_size());
+    assert_eq!(restored.workspace_len(), solver.workspace_len());
 }
 
 #[test]
