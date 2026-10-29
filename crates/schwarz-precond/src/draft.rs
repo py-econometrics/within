@@ -10,9 +10,9 @@ use crate::{EscalationPolicy, LsmrOptions, LsmrResult};
 
 /// How many tasks one parallel region may keep busy on the global rayon pool; `SEQ` runs inline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Par(pub NonZeroUsize);
+pub struct ThreadBudget(pub NonZeroUsize);
 
-impl Par {
+impl ThreadBudget {
     /// One task: inline on the calling thread, no rayon call.
     pub const SEQ: Self = Self(NonZeroUsize::MIN);
 
@@ -48,14 +48,14 @@ pub trait Operator: Send + Sync {
     fn nrows(&self) -> usize;
     /// Number of columns in the operator.
     fn ncols(&self) -> usize;
-    /// Scratch one `apply` or `apply_adjoint` under `par` takes from its stack.
-    fn scratch_req(&self, par: Par) -> StackReq;
+    /// Scratch one `apply` or `apply_adjoint` under `budget` takes from its stack.
+    fn scratch_req(&self, budget: ThreadBudget) -> StackReq;
     /// Computes `y = A x`.
     fn apply(
         &self,
         x: &[f64],
         y: &mut [f64],
-        par: Par,
+        budget: ThreadBudget,
         stack: &mut PodStack,
     ) -> Result<(), SolveError>;
     /// Computes `y = Aᵀ x`; symmetric operators delegate to `apply`.
@@ -63,7 +63,7 @@ pub trait Operator: Send + Sync {
         &self,
         x: &[f64],
         y: &mut [f64],
-        par: Par,
+        budget: ThreadBudget,
         stack: &mut PodStack,
     ) -> Result<(), SolveError>;
 }
@@ -78,7 +78,7 @@ pub trait LocalSolver: Send + Sync {
     fn solve_local(
         &self,
         x: &mut [f64],
-        par: Par,
+        budget: ThreadBudget,
         stack: &mut PodStack,
     ) -> Result<(), LocalSolveError>;
 }
@@ -97,21 +97,21 @@ pub fn lsmr<A: Operator + ?Sized>(
     operator: &A,
     b: &[f64],
     options: &LsmrOptions,
-    par: Par,
+    budget: ThreadBudget,
     scratch: &mut PodBuffer,
 ) -> Result<LsmrResult, SolveError> {
     todo!()
 }
 
 /// LSMR on `M⁻¹ ≈ (AᵀA)⁻¹`, which `preconditioner` applies; grows `scratch` to what `operator` and
-/// `preconditioner` need under `par`, so one buffer serves every solve it is passed to.
+/// `preconditioner` need under `budget`, so one buffer serves every solve it is passed to.
 pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
     operator: &A,
     b: &[f64],
     preconditioner: &M,
     lsmr: &LsmrOptions,
     options: MlsmrOptions<'_>,
-    par: Par,
+    budget: ThreadBudget,
     scratch: &mut PodBuffer,
 ) -> Result<LsmrResult, SolveError> {
     todo!()

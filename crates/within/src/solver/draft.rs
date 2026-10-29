@@ -4,7 +4,7 @@
 use std::time::Instant;
 
 use once_cell::sync::OnceCell;
-use schwarz_precond::draft::Par;
+use schwarz_precond::draft::ThreadBudget;
 
 use super::ladder::isolated;
 use super::{RhsSolution, Run};
@@ -130,14 +130,14 @@ impl<'a> Solver<'a> {
         self.builds().flat_map(|l| &l.warnings).cloned().collect()
     }
 
-    /// Every RHS on the current map in `min(k, par)` lanes, each lane reusing one scratch
-    /// buffer; per stall, build the next rung once with all of `par`, then resume the
+    /// Every RHS on the current map in `min(k, budget)` lanes, each lane reusing one scratch
+    /// buffer; per stall, build the next rung once with all of `budget`, then resume the
     /// stalled RHS warm-started on it.
     pub(super) fn solve_all(
         &self,
         ys: &[&[f64]],
         lsmr: &LsmrOptions,
-        par: Par,
+        budget: ThreadBudget,
     ) -> Result<(Vec<RhsSolution>, f64), WithinError> {
         let prepared = &self.prepared;
         // One pass over the cells: a concurrent build must not move `map` and `next` apart.
@@ -151,14 +151,14 @@ impl<'a> Solver<'a> {
         loop {
             let rung = next.next();
             let stall = rung.map(|r| &r.stall);
-            let (finished, stalled) = run_lanes(prepared, map, stall, ys, pending, lsmr, par)?;
+            let (finished, stalled) = run_lanes(prepared, map, stall, ys, pending, lsmr, budget)?;
             done.extend(finished);
             let Some(rung) = rung.filter(|_| !stalled.is_empty()) else {
                 break;
             };
             let t_build = Instant::now();
             let built = rung.built.get_or_try_init(|| {
-                isolated(par, || build_schwarz(prepared, &rung.local_solver))
+                isolated(budget, || build_schwarz(prepared, &rung.local_solver))
             })?;
             map = built.as_ref().map_err(Clone::clone)?.map.as_ref().or(map);
             build_secs += t_build.elapsed().as_secs_f64();
@@ -181,7 +181,7 @@ fn run_lanes(
     ys: &[&[f64]],
     pending: Vec<(usize, Option<Run>)>,
     lsmr: &LsmrOptions,
-    par: Par,
+    budget: ThreadBudget,
 ) -> Result<(Vec<Solved>, Vec<Stalled>), SolveError> {
     todo!()
 }
