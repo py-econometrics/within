@@ -13,7 +13,7 @@ use crate::csr_block::CsrBlock;
 use crate::domain::{build_local_domains, LocalDomain, PreparedDesign};
 use crate::domain::{CrossTab, LocalComponent};
 use crate::operator::schwarz::build_additive;
-use schwarz_precond::{LocalSolver, Operator};
+use schwarz_precond::LocalSolver;
 
 const BLOCK_ELIM_NESTED_RAYON_CHILD_ENV: &str = "WITHIN_TEST_BLOCK_ELIM_NESTED_RAYON_CHILD";
 

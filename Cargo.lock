@@ -1569,6 +1569,7 @@ dependencies = [
 name = "schwarz-precond"
 version = "0.5.0"
 dependencies = [
+ "dyn-stack",
  "faer",
  "postcard",
  "rayon",

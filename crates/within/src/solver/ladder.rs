@@ -39,7 +39,8 @@ impl PrecondSlot {
                 warnings: Vec::new(),
             },
             PreconditionerConfig::Additive { local_solver } => {
-                let (map, warnings) = build_schwarz(prepared, &local_solver)?;
+                let crate::operator::schwarz::PreconditionerBuild { map, warnings } =
+                    build_schwarz(prepared, &local_solver)?;
                 Self::Static { map, warnings }
             }
             PreconditionerConfig::Adaptive {
@@ -120,8 +121,13 @@ impl AdaptivePrecond {
         let mut build_secs = 0.0;
         let built = self.built.get_or_try_init(|| {
             let t_build = Instant::now();
-            let outcome = isolated(|| build_schwarz(prepared, &self.ladder().escalated))?
-                .map(|(schwarz, warnings)| AdaptiveBuild { schwarz, warnings });
+            let outcome =
+                isolated(|| build_schwarz(prepared, &self.ladder().escalated))?.map(|b| {
+                    AdaptiveBuild {
+                        schwarz: b.map,
+                        warnings: b.warnings,
+                    }
+                });
             build_secs = t_build.elapsed().as_secs_f64();
             Ok(outcome)
         })?;

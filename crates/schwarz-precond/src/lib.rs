@@ -63,6 +63,8 @@ pub struct ReadmeDoctests;
 
 /// Domain decomposition primitives: subdomain cores and partition weights.
 pub mod domain;
+/// #365 type draft.
+pub mod draft;
 /// Typed errors for build and runtime failures.
 pub mod error;
 mod fold;

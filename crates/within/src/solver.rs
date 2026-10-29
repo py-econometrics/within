@@ -17,6 +17,7 @@ use crate::domain::{Design, Effect, PreparedDesign};
 use crate::operator::schwarz::Preconditioner;
 use crate::{BuildError, BuildWarning, SolveError, WithinError};
 
+mod draft;
 mod ladder;
 mod layout;
 #[cfg(test)]
@@ -68,8 +69,6 @@ impl<'a> IntoDesign<'a> for Vec<Effect<'a>> {
 /// `None` resolves unambiguously because there is exactly one `From<Option<X>>`
 /// impl (with `X = &PreconditionerConfig`).
 pub enum PreconditionerInput {
-    /// Library default: diagonal, escalating to additive Schwarz on a stalled solve.
-    Default,
     /// Build from this config (`PreconditionerConfig::Off` ⇒ unpreconditioned).
     Config(PreconditionerConfig),
     /// Reuse this pre-built preconditioner (e.g. deserialized or pulled off a previous solver).
@@ -90,7 +89,7 @@ impl From<&PreconditionerConfig> for PreconditionerInput {
 
 impl From<Option<&PreconditionerConfig>> for PreconditionerInput {
     fn from(opt: Option<&PreconditionerConfig>) -> Self {
-        opt.map_or(Self::Default, |c| Self::Config(c.clone()))
+        Self::Config(opt.cloned().unwrap_or_default())
     }
 }
 
@@ -306,9 +305,6 @@ impl<'a> Solver<'a> {
         let n_dofs = prepared.design.n_dofs;
 
         let slot = match preconditioner.into() {
-            PreconditionerInput::Default => {
-                PrecondSlot::build(&prepared, PreconditionerConfig::default())?
-            }
             PreconditionerInput::Config(c) => PrecondSlot::build(&prepared, c)?,
             PreconditionerInput::Prebuilt(p) => {
                 if p.nrows() != n_dofs || p.ncols() != n_dofs {
