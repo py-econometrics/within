@@ -1,14 +1,8 @@
 """The akm_slopes cell whose reduced-CG scaling once drove the Schwarz factor near singular
 (#286): the amplified local solve collapsed the LSMR recurrences into a converged report while
-the true normal-equation residual stayed O(1) (#290). Single-threaded reductions reproduce it."""
+the true normal-equation residual stayed O(1) (#290)."""
 
 from __future__ import annotations
-
-import json
-import os
-import subprocess
-import sys
-from pathlib import Path
 
 import numpy as np
 
@@ -17,7 +11,7 @@ CELL = dict(
 )
 
 
-def solve_cell() -> dict[str, float | bool | int]:
+def test_shared_year_cell_solves_honestly():
     from benchmarks._problems import _make_response
     from benchmarks.suites.akm_slopes import _LADDER, _SPECS, _mover_panel, _slope_case
     from within import LsmrOptions, PreconditionerConfig, solve
@@ -49,27 +43,5 @@ def solve_cell() -> dict[str, float | bool | int]:
     for factor, columns_f in enumerate(slopes[:2]):
         for z in columns_f or ():
             worst = max(worst, group_mean(factor, z))
-    return {
-        "converged": bool(result.converged),
-        "iterations": int(result.iterations),
-        "worst_group_mean": worst,
-    }
-
-
-def test_shared_year_cell_solves_honestly_on_one_thread():
-    env = {
-        **os.environ,
-        "RAYON_NUM_THREADS": "1",
-        "PYTHONPATH": str(Path(__file__).resolve().parents[1]),
-    }
-    proc = subprocess.run(
-        [sys.executable, __file__], env=env, capture_output=True, text=True, check=False
-    )
-    assert proc.returncode == 0, proc.stderr
-    report = json.loads(proc.stdout.strip().splitlines()[-1])
-    assert report["converged"], report
-    assert report["worst_group_mean"] < 1e-6, report
-
-
-if __name__ == "__main__":
-    print(json.dumps(solve_cell()))
+    assert result.converged, result.iterations
+    assert worst < 1e-6, worst
