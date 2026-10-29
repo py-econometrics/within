@@ -60,7 +60,7 @@ fn a_negatively_rounded_pair_clamps_however_the_resum_rounds() {
         (state >> 11) as f64 / (1u64 << 53) as f64 - 0.5
     };
     for _ in 0..40 {
-        // Past the parallel threshold, so `vp` and the re-sum associate differently.
+        // Longer than one 4096-item block, so `vp` and the re-sum associate differently.
         let v: Vec<f64> = (0..20_000).map(|_| draw()).collect();
         let mut p: Vec<f64> = (0..20_000).map(|_| draw()).collect();
         let c = dot(&v, &p) / dot(&v, &v);

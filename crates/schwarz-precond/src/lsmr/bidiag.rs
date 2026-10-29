@@ -12,11 +12,12 @@ mod tests;
 
 use super::finite;
 use super::magnitude::{exponent, ldexp, Magnitude};
+use crate::fold::{fold, Split};
 use crate::{Operator, SolveError};
 use rayon::iter::{IndexedParallelIterator, ParallelIterator};
 use rayon::prelude::{ParallelSlice, ParallelSliceMut};
 
-/// Below this count the vector kernels run sequentially; rayon wake/steal would dominate.
+/// Below this count the elementwise kernels run sequentially; rayon wake/steal would dominate.
 pub(super) const LSMR_PAR_THRESHOLD: usize = 10_000;
 /// Per-worker chunk size: large enough to clear rayon dispatch, small enough to stay L1-resident.
 pub(super) const LSMR_UPDATE_CHUNK: usize = 4096;
@@ -25,24 +26,36 @@ pub(super) const LSMR_UPDATE_CHUNK: usize = 4096;
 #[inline]
 fn axpy_with_norm(y: &mut [f64], x: &[f64], scale: f64) -> f64 {
     debug_assert_eq!(x.len(), y.len());
-    let seq = |y_c: &mut [f64], x_c: &[f64]| -> f64 {
-        let mut s = 0.0;
-        for (yi, &xi) in y_c.iter_mut().zip(x_c.iter()) {
+    let sq = chunked_sum((&mut *y, x), |(y_c, x_c): (&mut [f64], &[f64])| {
+        let step = |yi: &mut f64, xi: f64| {
             let val = xi + scale * *yi;
             *yi = val;
-            s += val * val;
+            val * val
+        };
+        let mut acc = [0.0; LANES];
+        let mut y_lanes = y_c.chunks_exact_mut(LANES);
+        let mut x_lanes = x_c.chunks_exact(LANES);
+        for (y, x) in (&mut y_lanes).zip(&mut x_lanes) {
+            for ((s, yi), &xi) in acc.iter_mut().zip(y).zip(x) {
+                *s += step(yi, xi);
+            }
         }
-        s
-    };
-    let sq = if y.len() >= LSMR_PAR_THRESHOLD {
-        y.par_chunks_mut(LSMR_UPDATE_CHUNK)
-            .zip(x.par_chunks(LSMR_UPDATE_CHUNK))
-            .map(|(y_c, x_c)| seq(y_c, x_c))
-            .sum()
-    } else {
-        seq(y, x)
-    };
+        let tail: f64 = (y_lanes.into_remainder().iter_mut())
+            .zip(x_lanes.remainder())
+            .map(|(yi, &xi)| step(yi, xi))
+            .sum();
+        acc.iter().sum::<f64>() + tail
+    });
     norm_from_sq(y, sq)
+}
+
+/// Independent accumulators per leaf: a single add chain is latency-bound and never vectorizes.
+const LANES: usize = 8;
+
+/// `Σ leaf` over `LSMR_UPDATE_CHUNK` pieces in a tree fixed by the length.
+#[inline]
+fn chunked_sum<P: Split>(input: P, leaf: impl Fn(P) -> f64 + Sync) -> f64 {
+    fold(input, LSMR_UPDATE_CHUNK, &leaf, &|a, b| a + b)
 }
 
 /// `y = alpha * x + beta * y`. Parallel above the threshold.
@@ -86,21 +99,24 @@ fn normalize(y: &mut [f64], d: f64) {
 /// Inner product of two vectors.
 #[inline]
 pub(super) fn dot(a: &[f64], b: &[f64]) -> f64 {
-    a.iter().zip(b).map(|(a, b)| a * b).sum()
+    let (a_lanes, b_lanes) = (a.chunks_exact(LANES), b.chunks_exact(LANES));
+    let tail: f64 = (a_lanes.remainder().iter())
+        .zip(b_lanes.remainder())
+        .map(|(x, y)| x * y)
+        .sum();
+    let mut acc = [0.0; LANES];
+    for (x, y) in a_lanes.zip(b_lanes) {
+        for ((s, xi), yi) in acc.iter_mut().zip(x).zip(y) {
+            *s += xi * yi;
+        }
+    }
+    acc.iter().sum::<f64>() + tail
 }
 
-/// Parallel dot product, falling back to the sequential `dot` below the threshold.
+/// Dot product added in a tree fixed by the length alone.
 #[inline]
 fn par_dot(a: &[f64], b: &[f64]) -> f64 {
-    debug_assert_eq!(a.len(), b.len());
-    if a.len() >= LSMR_PAR_THRESHOLD {
-        a.par_chunks(LSMR_UPDATE_CHUNK)
-            .zip(b.par_chunks(LSMR_UPDATE_CHUNK))
-            .map(|(ac, bc)| ac.iter().zip(bc).map(|(x, y)| x * y).sum::<f64>())
-            .sum()
-    } else {
-        dot(a, b)
-    }
+    chunked_sum((a, b), |(ac, bc)| dot(ac, bc))
 }
 
 /// Why [`alpha_from_vp`] refused a pair.
