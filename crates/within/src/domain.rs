@@ -6,10 +6,12 @@ pub(crate) mod factor_pairs;
 mod level_moments;
 mod prepared;
 mod reparam;
+mod scatter_split;
 
 pub(crate) use cross_tab::CrossTab;
 pub(crate) use prepared::{PreparedDesign, PreparedTerm};
 use reparam::TermReparam;
+pub(crate) use scatter_split::{LevelRows, ScatterSplit};
 
 pub use effect::Effect;
 
@@ -373,7 +375,6 @@ pub(crate) fn row_weight(sqrt_weights: Option<&[f64]>, obs: usize) -> f64 {
     sqrt_weights.map_or(1.0, |s| s[obs] * s[obs])
 }
 
-// Inspired by [within::operator::design::scatter::scatter_sorted_coalesced]
 const LABEL_CHUNK: usize = 65_536;
 
 /// Label layout used to select an encoding strategy.
@@ -508,7 +509,8 @@ fn get_distinct_labels(labels: &[u32], min: u32, max: u32) -> Option<Vec<u32>> {
 ///
 /// Compact internal positions guarantee `n_levels <= key.len()`, so counting sort
 /// takes `O(n_obs + n_levels)` time and `O(n_levels)` temporary memory.
-fn stable_argsort(key: &[u32], n_levels: usize) -> Vec<u32> {
+/// Rows grouped by level, ascending within each: level `l` owns `perm[offsets[l]..offsets[l + 1]]`.
+fn stable_argsort(key: &[u32], n_levels: usize) -> (Vec<usize>, Vec<u32>) {
     let n_obs = key.len();
     debug_assert!(
         u32::try_from(n_obs).is_ok(),
@@ -518,24 +520,25 @@ fn stable_argsort(key: &[u32], n_levels: usize) -> Vec<u32> {
         n_levels <= n_obs,
         "compact level count cannot exceed observation count"
     );
-    let mut cursors = vec![0usize; n_levels + 1];
+    let mut offsets = vec![0usize; n_levels + 1];
     for &k in key {
         debug_assert!(
             (k as usize) < n_levels,
             "counting sort key must be a level id (< n_levels)"
         );
-        cursors[k as usize + 1] += 1;
+        offsets[k as usize + 1] += 1;
     }
-    for i in 1..cursors.len() {
-        cursors[i] += cursors[i - 1];
+    for i in 1..offsets.len() {
+        offsets[i] += offsets[i - 1];
     }
+    let mut cursors = offsets[..n_levels].to_vec();
     let mut perm = vec![0u32; n_obs];
     for (i, &k) in key.iter().enumerate() {
         let cursor = &mut cursors[k as usize];
         perm[*cursor] = i as u32;
         *cursor += 1;
     }
-    perm
+    (offsets, perm)
 }
 
 // Inlined into `Design::build`, its loop measured +3–8% on slope designs.
@@ -640,8 +643,8 @@ impl<'a> Design<'a> {
         let dominant = terms.iter().max_by_key(|t| t.n_dofs());
         let obs_perm = match dominant {
             Some(d) if locality_sort && !d.sorted && u32::try_from(n_obs).is_ok() => {
-                let perm = stable_argsort(&d.levels, d.n_levels());
-                // Factors nested in the dominant one come out sorted, keeping coalesced scatter.
+                let (_, perm) = stable_argsort(&d.levels, d.n_levels());
+                // Factors nested in the dominant one come out sorted and need no row index.
                 for t in terms.iter_mut() {
                     let levels = gather(&t.levels, &perm);
                     t.sorted = levels.is_sorted();
@@ -770,7 +773,7 @@ mod tests {
             let mut expected: Vec<u32> = (0..n_obs as u32).collect();
             expected.sort_by_key(|&i| key[i as usize]);
             assert_eq!(
-                stable_argsort(&key, n_levels),
+                stable_argsort(&key, n_levels).1,
                 expected,
                 "n_obs={n_obs} n_levels={n_levels}"
             );
