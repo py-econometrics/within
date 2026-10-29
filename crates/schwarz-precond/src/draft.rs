@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 pub use faer::dyn_stack::{MemBuffer, MemStack, StackReq};
 pub use faer::matrix_free::{BiLinOp, LinOp};
-pub use faer::{MatMut, MatRef, Par};
+pub use faer::{ColMut, ColRef, MatMut, MatRef, Par};
 
 use crate::error::SolveError;
 use crate::{LsmrOptions, LsmrStopReason, Progress, Staleness};
@@ -93,8 +93,8 @@ pub struct LsmrInfo {
 /// tolerances stay relative to `‖b‖`; grows `scratch` like `mlsmr`.
 pub fn lsmr<A: BiLinOp<f64> + ?Sized>(
     operator: &A,
-    b: &[f64],
-    x: &mut [f64],
+    b: ColRef<'_, f64>,
+    x: ColMut<'_, f64>,
     options: &LsmrOptions,
     stop: Option<&mut dyn StopRule>,
     par: Par,
@@ -109,9 +109,9 @@ pub fn lsmr<A: BiLinOp<f64> + ?Sized>(
 #[allow(clippy::too_many_arguments)]
 pub fn mlsmr<A: BiLinOp<f64> + ?Sized, M: LinOp<f64> + ?Sized>(
     operator: &A,
-    b: &[f64],
+    b: ColRef<'_, f64>,
     preconditioner: &M,
-    x: &mut [f64],
+    x: ColMut<'_, f64>,
     lsmr: &LsmrOptions,
     stop: Option<&mut dyn StopRule>,
     par: Par,
