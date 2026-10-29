@@ -4,7 +4,7 @@
 use std::num::NonZeroUsize;
 
 pub use faer::dyn_stack::{MemBuffer, MemStack, StackReq};
-pub use faer::matrix_free::{BiLinOp, BiPrecond, LinOp, Precond};
+pub use faer::matrix_free::{BiLinOp, LinOp};
 pub use faer::{MatMut, MatRef, Par};
 
 use crate::error::SolveError;
@@ -57,7 +57,7 @@ pub fn lsmr<A: BiLinOp<f64> + ?Sized>(
 
 /// LSMR on `M⁻¹ ≈ (AᵀA)⁻¹`, which `preconditioner` applies; grows `scratch` to what `operator` and
 /// `preconditioner` need under `par`, so one buffer serves every solve it is passed to.
-pub fn mlsmr<A: BiLinOp<f64> + ?Sized, M: BiPrecond<f64> + ?Sized>(
+pub fn mlsmr<A: BiLinOp<f64> + ?Sized, M: LinOp<f64> + ?Sized>(
     operator: &A,
     b: &[f64],
     preconditioner: &M,
