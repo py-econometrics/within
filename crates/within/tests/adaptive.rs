@@ -180,17 +180,8 @@ fn an_unescalated_map_reuses_as_the_ladder(#[values(false, true)] through_wire: 
     };
 
     let reused = Solver::new(crossed_panel(), None, taken).expect("solver");
-    // Only a single thread is bitwise reproducible, so the iteration counts can match exactly.
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(1)
-        .build()
-        .expect("pool");
-    let (resumed, original) = pool.install(|| {
-        (
-            reused.solve(&y, &tight()).expect("reused solve"),
-            source.solve(&y, &tight()).expect("source solve"),
-        )
-    });
+    let resumed = reused.solve(&y, &tight()).expect("reused solve");
+    let original = source.solve(&y, &tight()).expect("source solve");
 
     assert!(
         reused.has_escalated(),

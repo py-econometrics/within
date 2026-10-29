@@ -294,15 +294,11 @@ def solve(
     Raises:
         ValueError: If dimensions or values are inconsistent.
         TypeError: If an argument has the wrong type or dtype.
-        RuntimeError: If the solve fails at runtime (poisoned lock, or a
-            subdomain solve diverges).
+        RuntimeError: If the solve fails at runtime (a subdomain solve
+            diverges).
 
     Note:
-        A single-threaded run (``RAYON_NUM_THREADS=1``) is bitwise-reproducible.
-        Across thread counts, parallel summation reorders floating-point adds,
-        so coefficients differ at the ULP scale — reproducible within solver
-        tolerance, not bitwise. Pin the thread count to keep estimates stable
-        within solver tolerance across runs (only single-threaded is bitwise).
+        The result is bitwise identical at any thread count, run after run.
 
     Example::
 
@@ -347,8 +343,8 @@ def solve_batch(
     Raises:
         ValueError: If dimensions or values are inconsistent.
         TypeError: If an argument has the wrong type or dtype.
-        RuntimeError: If the solve fails at runtime (poisoned lock, or a
-            subdomain solve diverges).
+        RuntimeError: If the solve fails at runtime (a subdomain solve
+            diverges).
     """
     ...
 

@@ -1,6 +1,6 @@
 """The akm_slopes cell whose reduced-CG scaling once drove the Schwarz factor near singular
 (#286): the amplified local solve collapsed the LSMR recurrences into a converged report while
-the true normal-equation residual stayed O(1) (#290). Single-threaded reductions reproduce it."""
+the true normal-equation residual stayed O(1) (#290)."""
 
 from __future__ import annotations
 
@@ -56,10 +56,9 @@ def solve_cell() -> dict[str, float | bool | int]:
     }
 
 
-def test_shared_year_cell_solves_honestly_on_one_thread():
+def test_shared_year_cell_solves_honestly():
     env = {
         **os.environ,
-        "RAYON_NUM_THREADS": "1",
         "PYTHONPATH": str(Path(__file__).resolve().parents[1]),
     }
     proc = subprocess.run(

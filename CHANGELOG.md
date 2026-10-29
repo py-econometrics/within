@@ -12,9 +12,13 @@ and this project follows [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - Levels with no cross-factor entries in a channel pair are batched into diagonal Schwarz subdomains per side instead of one subdomain each, cutting per-subdomain build and apply overhead without changing the preconditioner.
+- **BREAKING:** `ReductionStrategy` is removed: the `reduction` field of `PreconditionerConfig::Additive` and `::Adaptive`, Python's `reduction=` argument and `within.config.ReductionStrategy`, and the strategy argument of `SchwarzPreconditioner::new`/`with_n_dofs` with its `reduction_strategy()` getter. Overlapping subdomain outputs always sum in subdomain order (#472).
+- **BREAKING:** `schwarz_precond::LocalSolver::solve_local(x, workspace, allow_inner_parallelism)` solves in place, and the required `workspace_len()` replaces `scratch_size()`. `SubdomainEntry::{core, is_empty, scratch_size, apply_weighted_into_with_scratch, apply_weighted_into_atomic}`, `SubdomainCore::{restrict_weighted, prolongate_weighted_add, prolongate_weighted_add_atomic}`, `BuildError::ScratchSizeTooSmall` and `SolveError::Synchronization` are removed.
+- **BREAKING:** The serialized `Preconditioner` wire format moved v19 → v20; 0.4.0 bytes no longer decode.
 
 ### Fixed
 
+- A solve returns bitwise-identical coefficients, demeaned response, residual and iteration count at any thread count, run after run: LSMR inner products, the Schwarz prolongation and the design adjoint sum in an order fixed by the data, never by Rayon's split. Repeated `Adaptive` solves on one `Solver` may still differ (#370) (#472).
 - LSMR now audits normal-equation tolerance exits in the plain metric. Stops hidden by singular or deflating preconditioners restart and may end in `FalseConvergence` (#389; addresses part of #455).
 
 ## [0.4.0] - 2026-10-09
