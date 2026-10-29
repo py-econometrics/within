@@ -48,21 +48,21 @@ pub trait Operator: Send + Sync {
     fn nrows(&self) -> usize;
     /// Number of columns in the operator.
     fn ncols(&self) -> usize;
-    /// Scratch one `apply` or `adjoint_apply` under `par` takes from its stack.
+    /// Scratch one `apply` or `apply_adjoint` under `par` takes from its stack.
     fn scratch_req(&self, par: Par) -> StackReq;
     /// Computes `y = A x`.
     fn apply(
         &self,
-        y: &mut [f64],
         x: &[f64],
+        y: &mut [f64],
         par: Par,
         stack: &mut PodStack,
     ) -> Result<(), SolveError>;
     /// Computes `y = Aᵀ x`; symmetric operators delegate to `apply`.
-    fn adjoint_apply(
+    fn apply_adjoint(
         &self,
-        y: &mut [f64],
         x: &[f64],
+        y: &mut [f64],
         par: Par,
         stack: &mut PodStack,
     ) -> Result<(), SolveError>;
