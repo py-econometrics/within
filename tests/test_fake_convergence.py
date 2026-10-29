@@ -4,12 +4,6 @@ the true normal-equation residual stayed O(1) (#290)."""
 
 from __future__ import annotations
 
-import json
-import os
-import subprocess
-import sys
-from pathlib import Path
-
 import numpy as np
 
 CELL = dict(
@@ -57,18 +51,6 @@ def solve_cell() -> dict[str, float | bool | int]:
 
 
 def test_shared_year_cell_solves_honestly():
-    env = {
-        **os.environ,
-        "PYTHONPATH": str(Path(__file__).resolve().parents[1]),
-    }
-    proc = subprocess.run(
-        [sys.executable, __file__], env=env, capture_output=True, text=True, check=False
-    )
-    assert proc.returncode == 0, proc.stderr
-    report = json.loads(proc.stdout.strip().splitlines()[-1])
+    report = solve_cell()
     assert report["converged"], report
     assert report["worst_group_mean"] < 1e-6, report
-
-
-if __name__ == "__main__":
-    print(json.dumps(solve_cell()))

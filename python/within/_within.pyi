@@ -297,9 +297,6 @@ def solve(
         RuntimeError: If the solve fails at runtime (a subdomain solve
             diverges).
 
-    Note:
-        The result is bitwise identical at any thread count, run after run.
-
     Example::
 
         import numpy as np

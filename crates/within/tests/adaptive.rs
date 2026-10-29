@@ -188,7 +188,7 @@ fn an_unescalated_map_reuses_as_the_ladder(#[values(false, true)] through_wire: 
         "a reused ladder must still hand off"
     );
     assert_eq!(resumed.iterations, original.iterations);
-    common::assert_solutions_close(&resumed.demeaned, &original.demeaned, 1e-12);
+    assert_eq!(resumed.demeaned, original.demeaned);
 }
 
 /// A ladder reused on a one-term design settles to its diagonal, as a fresh build there does.
