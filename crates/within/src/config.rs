@@ -172,23 +172,4 @@ impl Default for PreconditionerConfig {
     }
 }
 
-/// LSMR solver configuration: tolerances and reorthogonalization window.
-#[derive(Debug, Clone)]
-pub struct LsmrOptions {
-    /// Relative residual convergence tolerance.
-    pub tol: f64,
-    /// Maximum LSMR iterations before declaring non-convergence.
-    pub maxiter: usize,
-    /// Window of past `v` vectors for windowed MGS; `None` disables. Costs `local_size · n`.
-    pub local_size: Option<usize>,
-}
-
-impl Default for LsmrOptions {
-    fn default() -> Self {
-        Self {
-            tol: 1e-8,
-            maxiter: 1000,
-            local_size: None,
-        }
-    }
-}
+pub use schwarz_precond::draft::LsmrOptions;

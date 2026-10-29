@@ -1,12 +1,12 @@
 //! #365 type draft, faer-shaped: a parallelism budget and stack scratch per apply. Signatures only.
-#![allow(dead_code, unused_variables, clippy::too_many_arguments)]
+#![allow(dead_code, unused_variables)]
 
 use std::num::NonZeroUsize;
 
 pub use dyn_stack::{PodBuffer, PodStack, StackReq};
 
 use crate::error::{LocalSolveError, SolveError};
-use crate::{LsmrResult, MlsmrOptions};
+use crate::{EscalationPolicy, LsmrResult};
 
 /// How many tasks one parallel region may keep busy on the global rayon pool; `SEQ` runs inline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21,26 +21,24 @@ impl Par {
         Self(NonZeroUsize::new(rayon::current_num_threads()).unwrap_or(NonZeroUsize::MIN))
     }
 
-    /// `min(parts, tasks)` budgets summing to this one: the one rule for nesting regions.
-    pub fn split(self, parts: usize) -> impl ExactSizeIterator<Item = Self> {
-        let (tasks, parts) = (self.0.get(), parts.min(self.0.get()));
-        (0..parts).map(move |i| {
-            let share = tasks / parts + usize::from(i < tasks % parts);
-            Self(NonZeroUsize::new(share).unwrap_or(NonZeroUsize::MIN))
-        })
+    /// The budgets `join` hands its two sides, remainder left; `SEQ` halves to `(SEQ, SEQ)`.
+    pub fn halves(self) -> (Self, Self) {
+        let tasks = self.0.get();
+        let half = |n: usize| Self(NonZeroUsize::new(n).unwrap_or(NonZeroUsize::MIN));
+        (half(tasks.div_ceil(2)), half(tasks / 2))
     }
 
-    /// `a` and `b` on halves of this budget: inline under `SEQ`, else one `rayon::join`.
+    /// `a` and `b` on `halves()`: inline under `SEQ`, else one `rayon::join`.
     pub fn join<A: Send, B: Send>(
         self,
         a: impl FnOnce(Self) -> A + Send,
         b: impl FnOnce(Self) -> B + Send,
     ) -> (A, B) {
-        let mut halves = self.split(2);
-        match (halves.next(), halves.next()) {
-            (Some(l), Some(r)) => rayon::join(|| a(l), || b(r)),
-            _ => (a(Self::SEQ), b(Self::SEQ)),
+        let (l, r) = self.halves();
+        if self == Self::SEQ {
+            return (a(l), b(r));
         }
+        rayon::join(|| a(l), || b(r))
     }
 }
 
@@ -85,27 +83,54 @@ pub trait LocalSolver: Send + Sync {
     ) -> Result<(), LocalSolveError>;
 }
 
+/// When one LSMR run stops, and its reorthogonalization window.
+#[derive(Debug, Clone, Copy)]
+pub struct LsmrOptions {
+    /// Relative residual convergence tolerance.
+    pub tol: f64,
+    /// Maximum LSMR iterations before declaring non-convergence.
+    pub maxiter: usize,
+    /// Windowed MGS over the last `local_size` `v` (mlsmr: and `p̃`), `local_size · ncols` each.
+    pub local_size: Option<usize>,
+}
+
+impl Default for LsmrOptions {
+    fn default() -> Self {
+        Self {
+            tol: 1e-8,
+            maxiter: 1000,
+            local_size: None,
+        }
+    }
+}
+
+/// Where a preconditioned run starts and when it hands off to a stronger map.
+#[derive(Clone, Copy, Default)]
+pub struct MlsmrOptions<'a> {
+    /// Residual-correction start; tolerances stay relative to `‖b‖` (`‖b − A x₀‖` if `b = 0`).
+    pub warm_start: Option<&'a [f64]>,
+    /// Hands off to a stronger preconditioner mid-run; see [`EscalationPolicy`].
+    pub escalation: Option<&'a dyn EscalationPolicy>,
+}
+
 /// Unpreconditioned LSMR; grows `scratch` like `mlsmr`.
 pub fn lsmr<A: Operator + ?Sized>(
     operator: &A,
     b: &[f64],
-    tol: f64,
-    maxiter: usize,
-    local_size: Option<usize>,
+    options: &LsmrOptions,
     par: Par,
     scratch: &mut PodBuffer,
 ) -> Result<LsmrResult, SolveError> {
     todo!()
 }
 
-/// Preconditioned LSMR; grows `scratch` to what `operator` and `preconditioner` need under
-/// `par`, so one buffer serves every solve it is passed to.
+/// LSMR on `M⁻¹ ≈ (AᵀA)⁻¹`, which `preconditioner` applies; grows `scratch` to what `operator` and
+/// `preconditioner` need under `par`, so one buffer serves every solve it is passed to.
 pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
     operator: &A,
     b: &[f64],
     preconditioner: &M,
-    tol: f64,
-    maxiter: usize,
+    lsmr: &LsmrOptions,
     options: MlsmrOptions<'_>,
     par: Par,
     scratch: &mut PodBuffer,
