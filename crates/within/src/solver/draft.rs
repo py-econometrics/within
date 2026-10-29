@@ -6,16 +6,20 @@ use std::time::Instant;
 use once_cell::sync::OnceCell;
 use schwarz_precond::draft::Par;
 
+use super::ladder::isolated;
 use super::{RhsSolution, Run};
 use crate::config::{LocalSolverConfig, LsmrOptions, PreconditionerConfig, Staleness};
 use crate::domain::PreparedDesign;
-use crate::operator::schwarz::{Preconditioner, PreconditionerBuild};
+use crate::operator::schwarz::{
+    build_adaptive, build_diagonal, build_schwarz, Preconditioner, PreconditionerBuild,
+};
 use crate::{BuildError, BuildWarning, WithinError};
 use schwarz_precond::SolveError;
 
-/// The maps a solve may run on: `base`, then each rung once the map below it stalls.
-/// `Off`, `Diagonal`, `Additive` and a reused map are ladders without rungs.
-pub(crate) struct Ladder {
+/// The design and the maps a solve may run on: `base`, then each rung once the map below it
+/// stalls. Only an `Adaptive` config on two or more terms has a rung.
+pub(crate) struct Solver<'a> {
+    prepared: PreparedDesign<'a>,
     base: PreconditionerBuild,
     rungs: Vec<Rung>,
 }
@@ -27,36 +31,80 @@ pub(crate) struct Rung {
     built: OnceCell<Result<PreconditionerBuild, BuildError>>,
 }
 
-impl Rung {
-    /// The map this rung adds (`None`: no factor pair), built on the first call with all of `par`.
-    fn build(
-        &self,
-        prepared: &PreparedDesign<'_>,
-        par: Par,
-    ) -> Result<Option<&Preconditioner>, BuildError> {
-        todo!()
-    }
-}
-
-impl Ladder {
-    /// `Adaptive` gets one rung, dropped up front on a one-factor design (no factor pair).
+impl<'a> Solver<'a> {
+    /// `Adaptive` goes through `reuse`, the one place a rung is derived.
     pub(crate) fn build(
-        prepared: &PreparedDesign<'_>,
+        prepared: PreparedDesign<'a>,
         config: PreconditionerConfig,
-        par: Par,
     ) -> Result<Self, BuildError> {
-        todo!()
-    }
-
-    /// A reused map is fixed: no rungs.
-    pub(crate) fn reuse(preconditioner: Preconditioner) -> Self {
-        Self {
-            base: PreconditionerBuild {
-                map: Some(preconditioner),
+        let base = match config {
+            PreconditionerConfig::Off => PreconditionerBuild {
+                map: None,
                 warnings: Vec::new(),
             },
+            PreconditionerConfig::Diagonal => PreconditionerBuild {
+                map: Some(build_diagonal(&prepared)?),
+                warnings: Vec::new(),
+            },
+            PreconditionerConfig::Additive { local_solver } => {
+                build_schwarz(&prepared, &local_solver)?
+            }
+            PreconditionerConfig::Adaptive {
+                local_solver,
+                stall,
+            } => {
+                local_solver.validate()?;
+                let map = build_adaptive(&prepared, stall, local_solver)?;
+                return Self::reuse(prepared, map);
+            }
+        };
+        Ok(Self {
+            prepared,
+            base,
             rungs: Vec::new(),
+        })
+    }
+
+    /// The map as base plus its `Adaptive` rung; on one term it settles to its diagonal, no rung.
+    pub(crate) fn reuse(
+        prepared: PreparedDesign<'a>,
+        preconditioner: Preconditioner,
+    ) -> Result<Self, BuildError> {
+        let n_dofs = prepared.design.n_dofs;
+        let (actual_rows, actual_cols) = (preconditioner.nrows(), preconditioner.ncols());
+        if actual_rows != n_dofs || actual_cols != n_dofs {
+            return Err(BuildError::PreconditionerDimensionMismatch {
+                expected: n_dofs,
+                actual_rows,
+                actual_cols,
+            });
         }
+        let rung = match preconditioner.config() {
+            PreconditionerConfig::Adaptive {
+                local_solver,
+                stall,
+            } => {
+                local_solver.validate()?;
+                (prepared.design.n_factors() >= 2).then(|| Rung {
+                    stall,
+                    local_solver,
+                    built: OnceCell::new(),
+                })
+            }
+            _ => None,
+        };
+        let map = match rung {
+            Some(_) => preconditioner,
+            None => preconditioner.settle(),
+        };
+        Ok(Self {
+            prepared,
+            base: PreconditionerBuild {
+                map: Some(map),
+                warnings: Vec::new(),
+            },
+            rungs: rung.into_iter().collect(),
+        })
     }
 
     /// `base`, then each rung's build up to the first rung not built.
@@ -69,7 +117,7 @@ impl Ladder {
     }
 
     /// The highest built map; where the next solve starts.
-    pub(crate) fn current(&self) -> Option<&Preconditioner> {
+    pub(crate) fn preconditioner(&self) -> Option<&Preconditioner> {
         self.builds().filter_map(|l| l.map.as_ref()).last()
     }
 
@@ -78,20 +126,20 @@ impl Ladder {
         self.builds().skip(1).any(|l| l.map.is_some())
     }
 
-    pub(crate) fn warnings(&self) -> impl Iterator<Item = &BuildWarning> {
-        self.builds().flat_map(|l| &l.warnings)
+    pub(crate) fn warnings(&self) -> Vec<BuildWarning> {
+        self.builds().flat_map(|l| &l.warnings).cloned().collect()
     }
 
     /// Every RHS on the current map in `min(k, par)` lanes, each lane reusing one scratch
     /// buffer; per stall, build the next rung once with all of `par`, then resume the
     /// stalled RHS warm-started on it.
-    pub(crate) fn solve(
+    pub(super) fn solve_all(
         &self,
-        prepared: &PreparedDesign<'_>,
         ys: &[&[f64]],
         lsmr: &LsmrOptions,
         par: Par,
     ) -> Result<(Vec<RhsSolution>, f64), WithinError> {
+        let prepared = &self.prepared;
         // One pass over the cells: a concurrent build must not move `map` and `next` apart.
         let (mut map, mut built) = (None, 0);
         for build in self.builds() {
@@ -109,7 +157,10 @@ impl Ladder {
                 break;
             };
             let t_build = Instant::now();
-            map = rung.build(prepared, par)?.or(map);
+            let built = rung.built.get_or_try_init(|| {
+                isolated(par, || build_schwarz(prepared, &rung.local_solver))
+            })?;
+            map = built.as_ref().map_err(Clone::clone)?.map.as_ref().or(map);
             build_secs += t_build.elapsed().as_secs_f64();
             pending = stalled.into_iter().map(|(i, run)| (i, Some(run))).collect();
         }

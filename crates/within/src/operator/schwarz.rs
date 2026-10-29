@@ -23,19 +23,12 @@ pub(crate) fn build_additive(
 ) -> Result<SchwarzPreconditioner<BlockElimSolver>, BuildError> {
     let entries = domains
         .into_par_iter()
-        .map(|domain| build_entry(domain, local_solver))
+        .map(|LocalDomain { core, component }| {
+            let solver = BlockElimSolver::build(component, local_solver)?;
+            SubdomainEntry::try_new(core, solver).map_err(BuildError::Preconditioner)
+        })
         .collect::<Result<Vec<_>, BuildError>>()?;
     Ok(SchwarzPreconditioner::with_n_dofs(entries, n_dofs))
-}
-
-/// Build a single `SubdomainEntry<BlockElimSolver>` from a pre-built CrossTab.
-pub(crate) fn build_entry(
-    domain: LocalDomain,
-    config: &LocalSolverConfig,
-) -> Result<SubdomainEntry<BlockElimSolver>, BuildError> {
-    let LocalDomain { core, component } = domain;
-    let solver = BlockElimSolver::build(component, config)?;
-    SubdomainEntry::try_new(core, solver).map_err(BuildError::Preconditioner)
 }
 
 /// Opaque handle to a pre-built preconditioner; cloning is O(1) via `Arc`.

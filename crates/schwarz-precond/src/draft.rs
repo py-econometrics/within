@@ -83,12 +83,12 @@ pub trait LocalSolver: Send + Sync {
     ) -> Result<(), LocalSolveError>;
 }
 
-/// When one LSMR run stops, and its reorthogonalization window.
+/// When LSMR stops on one right-hand side, and its reorthogonalization window.
 #[derive(Debug, Clone, Copy)]
 pub struct LsmrOptions {
     /// Relative residual convergence tolerance.
     pub tol: f64,
-    /// Maximum LSMR iterations before declaring non-convergence.
+    /// Iterations per right-hand side; a run resumed on a stronger map gets what is left.
     pub maxiter: usize,
     /// Windowed MGS over the last `local_size` `v` (mlsmr: and `p̃`), `local_size · ncols` each.
     pub local_size: Option<usize>,
