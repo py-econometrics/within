@@ -1,7 +1,7 @@
 //! Behavior of the `Adaptive` (diagonal→Schwarz) preconditioner strategy (#260).
 
 use rstest::rstest;
-use within::config::{LocalSolverConfig, ReductionStrategy};
+use within::config::LocalSolverConfig;
 use within::{Design, LsmrOptions, PreconditionerConfig, Solver, Staleness};
 
 #[path = "common/orchestrate_helpers.rs"]
@@ -16,7 +16,6 @@ fn eager_stall() -> Staleness {
 fn adaptive(stall: Staleness) -> PreconditionerConfig {
     PreconditionerConfig::Adaptive {
         local_solver: LocalSolverConfig::default(),
-        reduction: ReductionStrategy::Auto,
         stall,
     }
 }

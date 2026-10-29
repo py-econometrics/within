@@ -4,9 +4,7 @@ use criterion::measurement::WallTime;
 use criterion::{
     criterion_group, criterion_main, BenchmarkGroup, BenchmarkId, Criterion, SamplingMode,
 };
-use within::config::{
-    ApproxCholConfig, LocalSolverConfig, LsmrOptions, PreconditionerConfig, ReductionStrategy,
-};
+use within::config::{ApproxCholConfig, LocalSolverConfig, LsmrOptions, PreconditionerConfig};
 use within::{Design, Solver};
 
 #[path = "shared/fixest_dgp.rs"]
@@ -92,10 +90,7 @@ fn run_lsmr_one_level(design: &Design<'_>, y: &[f64], ac2: bool) {
         ..Default::default()
     };
     let cfg = one_level_local_solver(ac2);
-    let precond = PreconditionerConfig::Additive {
-        local_solver: cfg,
-        reduction: ReductionStrategy::Auto,
-    };
+    let precond = PreconditionerConfig::Additive { local_solver: cfg };
     let solver = Solver::new(design.clone(), None, &precond).expect("solver build");
     let _ = solver.solve(y, &params).expect("solve");
 }

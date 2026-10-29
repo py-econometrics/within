@@ -17,7 +17,6 @@ from within._within import (
     ApproxCholConfig,
     ApproxSchurConfig,
     LocalSolverConfig,
-    ReductionStrategy,
     ScalingConfig,
     Schur,
     Staleness,
@@ -51,7 +50,6 @@ class TestAdvancedConfigs:
         implicit = PreconditionerConfig.Additive()
         explicit = PreconditionerConfig.Additive(
             local_solver=LocalSolverConfig(),
-            reduction=ReductionStrategy.Auto,
         )
 
         assert implicit == explicit
@@ -67,13 +65,11 @@ class TestAdvancedConfigs:
         off = PreconditionerConfig.Off()
         tuned = PreconditionerConfig.Additive(
             local_solver=LocalSolverConfig(dense_threshold=0),
-            reduction=ReductionStrategy.AtomicScatter,
         )
 
         assert isinstance(off, PreconditionerConfig)
         assert isinstance(tuned, PreconditionerConfig.Additive)
         assert not isinstance(off, PreconditionerConfig.Additive)
-        assert tuned.reduction == ReductionStrategy.AtomicScatter
         assert tuned.local_solver.dense_threshold == 0
 
     def test_approx_chol_config_defaults(self):
@@ -190,7 +186,6 @@ class TestFePreconditioner:
                 schur=Schur.approximate(ApproxSchurConfig(seed=17, split=2)),
                 dense_threshold=0,
             ),
-            reduction=ReductionStrategy.AtomicScatter,
         )
 
         solver = Solver(as_solver_categories(cats), preconditioner=requested)
@@ -200,7 +195,6 @@ class TestFePreconditioner:
         actual = precond.config
         assert actual == requested
         assert isinstance(actual, PreconditionerConfig.Additive)
-        assert actual.reduction == ReductionStrategy.AtomicScatter
         assert actual.local_solver.approx_chol.seed == 41
         assert actual.local_solver.approx_chol.split_merge == 3
         assert repr(actual.local_solver.schur) == "Schur.approximate(seed=17, split=2)"
@@ -254,11 +248,9 @@ class TestAdaptive:
     def test_adaptive_config_round_trips_through_getters(self):
         config = PreconditionerConfig.Adaptive(
             local_solver=LocalSolverConfig(dense_threshold=8),
-            reduction=ReductionStrategy.AtomicScatter,
             stall=Staleness(window=3, threshold=0.25),
         )
         assert isinstance(config, PreconditionerConfig)
-        assert config.reduction == ReductionStrategy.AtomicScatter
         assert config.local_solver.dense_threshold == 8
         assert config.stall == Staleness(window=3, threshold=0.25)
 
@@ -266,7 +258,6 @@ class TestAdaptive:
         cats, _ = problem
         requested = PreconditionerConfig.Adaptive(
             local_solver=LocalSolverConfig(dense_threshold=8),
-            reduction=ReductionStrategy.AtomicScatter,
             stall=Staleness(window=3, threshold=0.25),
         )
         solver = Solver(as_solver_categories(cats), preconditioner=requested)

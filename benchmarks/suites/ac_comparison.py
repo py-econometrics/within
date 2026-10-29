@@ -14,6 +14,7 @@ at the cost of more fill-in.
 
 from __future__ import annotations
 
+from within import PreconditionerConfig
 from within._within import (
     ApproxCholConfig,
     ApproxSchurConfig,
@@ -26,7 +27,6 @@ from .._framework import (
     SolverConfig,
     SuiteOptions,
     benchmark_lsmr,
-    make_additive_schwarz,
     run_problem_set,
     suite,
 )
@@ -128,12 +128,16 @@ def run_ac_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
         SolverConfig(
             "LSMR(AC)",
             benchmark_lsmr(opts),
-            preconditioner=make_additive_schwarz(local_solver=_schur(opts.seed, None)),
+            preconditioner=PreconditionerConfig.Additive(
+                local_solver=_schur(opts.seed, None)
+            ),
         ),
         SolverConfig(
             "LSMR(AC2)",
             benchmark_lsmr(opts),
-            preconditioner=make_additive_schwarz(local_solver=_schur(opts.seed, 2)),
+            preconditioner=PreconditionerConfig.Additive(
+                local_solver=_schur(opts.seed, 2)
+            ),
         ),
     ]
 
@@ -249,12 +253,16 @@ def run_graph_backend_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
         SolverConfig(
             "ac",
             benchmark_lsmr(opts, maxiter=maxiter),
-            preconditioner=make_additive_schwarz(local_solver=_schur(opts.seed, None)),
+            preconditioner=PreconditionerConfig.Additive(
+                local_solver=_schur(opts.seed, None)
+            ),
         ),
         SolverConfig(
             "ac2",
             benchmark_lsmr(opts, maxiter=maxiter),
-            preconditioner=make_additive_schwarz(local_solver=_schur(opts.seed, 2)),
+            preconditioner=PreconditionerConfig.Additive(
+                local_solver=_schur(opts.seed, 2)
+            ),
         ),
     ]
 

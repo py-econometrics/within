@@ -2,7 +2,7 @@
 //! argument shapes: if any call form below stops compiling, the public surface shifted.
 
 use ndarray::Array2;
-use within::config::{LocalSolverConfig, ReductionStrategy, Staleness};
+use within::config::{LocalSolverConfig, Staleness};
 use within::{solve, solve_batch, LsmrOptions, PreconditionerConfig, Solver};
 
 fn cats() -> Array2<u32> {
@@ -96,8 +96,7 @@ fn options_are_optional_and_tuned_additive_builds_from_crate_root() {
     // A tuned Additive preconditioner is constructible from crate-root imports
     // alone — no `within::config::` paths — and LSMR options are optional (#105).
     use within::{
-        ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, PreconditionerConfig,
-        ReductionStrategy, SchurMode,
+        ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, PreconditionerConfig, SchurMode,
     };
 
     let categories = cats();
@@ -110,7 +109,6 @@ fn options_are_optional_and_tuned_additive_builds_from_crate_root() {
             schur: SchurMode::Approximate(ApproxSchurConfig::default()),
             ..Default::default()
         },
-        reduction: ReductionStrategy::Auto,
     };
     let solver = Solver::new(categories.view(), None, tuned).expect("tuned Additive builds");
 
@@ -136,7 +134,6 @@ fn library_default_is_the_adaptive_ladder() {
         PreconditionerConfig::default(),
         PreconditionerConfig::Adaptive {
             local_solver: LocalSolverConfig::default(),
-            reduction: ReductionStrategy::default(),
             stall: Staleness::default(),
         }
     );

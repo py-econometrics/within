@@ -1575,7 +1575,6 @@ dependencies = [
  "rstest",
  "serde",
  "thiserror 2.0.21",
- "thread_local",
 ]
 
 [[package]]

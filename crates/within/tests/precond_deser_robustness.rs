@@ -14,7 +14,7 @@ const CRASH_NDOFS_SPAN: &[u8] = include_bytes!("fixtures/precond_deser_crash_ndo
 
 // A `BlockElimSolver` whose reduced factor is a `Cover` nested inside another
 // `Cover` — a shape no real build produces. Deriving `Deserialize` let it
-// decode, then `scratch_len` recursed down the chain until the stack overflowed
+// decode, then `embed_len` recursed down the chain until the stack overflowed
 // (#166). The wire format now decodes a cover's inner factor as a leaf, so the
 // nested discriminant fails to decode instead.
 const CRASH_NESTED_COVER: &[u8] = include_bytes!("fixtures/precond_deser_crash_nested_cover.bin");

@@ -221,7 +221,6 @@ fn surplus_component_sampled_matches_exact_reduction() {
                 schur,
                 ..Default::default()
             },
-            reduction: Default::default(),
         };
         Solver::new(effects, None, config)
             .expect("build")

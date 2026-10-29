@@ -9,27 +9,25 @@
 //!
 //! - [`SubdomainEntry`] — bundles a [`SubdomainCore`] (which implements
 //!   `Rᵢ` and `D̃ᵢ`) with a `LocalSolver` (which implements `Aᵢ⁻¹`),
-//!   giving a single object that can compute the full per-subdomain
-//!   contribution `Rᵢᵀ D̃ᵢ Aᵢ⁻¹ D̃ᵢ Rᵢ r` via [`SubdomainEntry::apply_weighted_into_with_scratch`].
-
-use std::sync::atomic::AtomicU64;
+//!   giving a single object that can compute the per-subdomain
+//!   contribution `D̃ᵢ Aᵢ⁻¹ D̃ᵢ Rᵢ r` via [`SubdomainEntry::apply_weighted_local`].
 
 use crate::domain::SubdomainCore;
 use crate::error::{BuildError, LocalSolveError};
 
 /// The `Aᵢ⁻¹` operator: solves the restricted system `Aᵢ = Rᵢ A Rᵢᵀ`, exactly or approximately.
 pub trait LocalSolver: Send + Sync {
-    /// Number of DOFs in the subdomain (before augmentation).
+    /// Number of DOFs in the subdomain.
     fn n_local(&self) -> usize;
 
-    /// Required scratch buffer size (may be > n_local for augmented systems).
-    fn scratch_size(&self) -> usize;
+    /// Length of the private `workspace` that `solve_local` gets with stale contents.
+    fn workspace_len(&self) -> usize;
 
-    /// Solve into `sol`; buffers are `scratch_size()` long and the parallelism hint may be ignored.
+    /// Solves in place: `x` spans `n_local()`, rhs in, solution out; bits depend on `x` alone.
     fn solve_local(
         &self,
-        rhs: &mut [f64],
-        sol: &mut [f64],
+        x: &mut [f64],
+        workspace: &mut [f64],
         allow_inner_parallelism: bool,
     ) -> Result<(), LocalSolveError>;
 
@@ -59,21 +57,7 @@ impl<S: LocalSolver> SubdomainEntry<S> {
                 solver_n_local,
             });
         }
-
-        let scratch_size = solver.scratch_size();
-        if scratch_size < index_count {
-            return Err(BuildError::ScratchSizeTooSmall {
-                scratch_size,
-                required_min: index_count,
-            });
-        }
-
         Ok(Self { core, solver })
-    }
-
-    /// Subdomain metadata and partition weights.
-    pub fn core(&self) -> &SubdomainCore {
-        &self.core
     }
 
     /// Global DOF indices covered by this subdomain.
@@ -91,58 +75,24 @@ impl<S: LocalSolver> SubdomainEntry<S> {
         &self.solver
     }
 
-    /// Returns `true` if this subdomain is empty.
-    pub fn is_empty(&self) -> bool {
-        self.core.is_empty()
-    }
-
-    /// Required scratch buffer size (delegates to solver).
-    #[inline]
-    pub fn scratch_size(&self) -> usize {
-        self.solver.scratch_size()
-    }
-
-    /// Accumulate `out += Rᵢᵀ D̃ᵢ Aᵢ⁻¹ D̃ᵢ Rᵢ r`; both buffers must be `scratch_size()` long.
-    pub fn apply_weighted_into_with_scratch(
+    /// Writes `D̃ᵢ Aᵢ⁻¹ D̃ᵢ Rᵢ r` locally to `out`; `workspace` holds at least `workspace_len()`.
+    pub(crate) fn apply_weighted_local(
         &self,
         r: &[f64],
         out: &mut [f64],
-        r_scratch: &mut [f64],
-        z_scratch: &mut [f64],
+        workspace: &mut [f64],
         allow_inner_parallelism: bool,
     ) -> Result<(), LocalSolveError> {
         if self.core.is_empty() {
             return Ok(());
         }
-
-        self.core.restrict_weighted(r, r_scratch);
-
-        self.solver
-            .solve_local(r_scratch, z_scratch, allow_inner_parallelism)?;
-
-        self.core.prolongate_weighted_add(z_scratch, out);
-        Ok(())
-    }
-
-    /// Accumulate the weighted local solve into a global buffer via atomic f64 add.
-    pub fn apply_weighted_into_atomic(
-        &self,
-        r: &[f64],
-        out: &[AtomicU64],
-        r_scratch: &mut [f64],
-        z_scratch: &mut [f64],
-        allow_inner_parallelism: bool,
-    ) -> Result<(), LocalSolveError> {
-        if self.core.is_empty() {
-            return Ok(());
-        }
-
-        self.core.restrict_weighted(r, r_scratch);
-
-        self.solver
-            .solve_local(r_scratch, z_scratch, allow_inner_parallelism)?;
-
-        self.core.prolongate_weighted_add_atomic(z_scratch, out);
+        self.core.restrict_weighted(r, out);
+        self.solver.solve_local(
+            out,
+            &mut workspace[..self.solver.workspace_len()],
+            allow_inner_parallelism,
+        )?;
+        self.core.weight(out);
         Ok(())
     }
 }
@@ -190,8 +140,8 @@ where
 mod tests {
     use super::*;
     use crate::domain::PartitionWeights;
+    use rstest::rstest;
 
-    /// Identity local solver: sol = rhs.
     struct IdentityLocalSolver {
         n: usize,
     }
@@ -200,60 +150,49 @@ mod tests {
         fn n_local(&self) -> usize {
             self.n
         }
-        fn scratch_size(&self) -> usize {
-            self.n
+        fn workspace_len(&self) -> usize {
+            0
         }
         fn solve_local(
             &self,
-            rhs: &mut [f64],
-            sol: &mut [f64],
+            _x: &mut [f64],
+            _workspace: &mut [f64],
             _allow_inner_parallelism: bool,
         ) -> Result<(), LocalSolveError> {
-            sol[..self.n].copy_from_slice(&rhs[..self.n]);
             Ok(())
         }
     }
 
-    #[test]
-    fn test_gather_scatter_roundtrip_uniform() {
-        // Subdomain covers DOFs [1, 3, 4] out of 6 global DOFs.
-        let core = SubdomainCore::uniform(vec![1, 3, 4]);
-        let global = vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0];
-        let mut local = vec![0.0; 3];
-
-        // Restrict (gather): local = global[indices]
-        core.restrict_weighted(&global, &mut local);
-        assert_eq!(local, vec![20.0, 40.0, 50.0]);
-
-        // Prolongate (scatter): out[indices] += local
-        let mut out = vec![0.0; 6];
-        core.prolongate_weighted_add(&local, &mut out);
-        assert_eq!(out, vec![0.0, 20.0, 0.0, 40.0, 50.0, 0.0]);
-    }
-
-    #[test]
-    fn test_weighted_gather_scatter() {
-        // Non-uniform weights: two-sided PoU means effective weight = w^2
-        let core = SubdomainCore::with_partition_weights(
+    #[rstest]
+    #[case::uniform(
+        SubdomainCore::uniform(vec![1, 3, 4]),
+        vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0],
+        vec![20.0, 40.0, 50.0],
+        vec![20.0, 40.0, 50.0]
+    )]
+    // Two-sided partition of unity: the effective weight is `w²`.
+    #[case::nonuniform(
+        SubdomainCore::with_partition_weights(
             vec![0, 1, 2],
             PartitionWeights::NonUniform(vec![1.0, 0.5, 0.25]),
         )
-        .expect("matching non-uniform weights");
-        let global = vec![4.0, 8.0, 16.0];
-        let mut local = vec![0.0; 3];
-
-        // Restrict: local[i] = w[i] * global[idx[i]]
+        .expect("matching non-uniform weights"),
+        vec![4.0, 8.0, 16.0],
+        vec![4.0, 4.0, 4.0],
+        vec![4.0, 2.0, 1.0]
+    )]
+    fn test_restrict_and_weight(
+        #[case] core: SubdomainCore,
+        #[case] global: Vec<f64>,
+        #[case] restricted: Vec<f64>,
+        #[case] weighted: Vec<f64>,
+    ) {
+        let mut local = vec![0.0; restricted.len()];
         core.restrict_weighted(&global, &mut local);
-        assert!((local[0] - 4.0).abs() < 1e-14); // 1.0 * 4.0
-        assert!((local[1] - 4.0).abs() < 1e-14); // 0.5 * 8.0
-        assert!((local[2] - 4.0).abs() < 1e-14); // 0.25 * 16.0
+        assert_eq!(local, restricted);
 
-        // Prolongate: out[idx[i]] += w[i] * local[i]
-        let mut out = vec![0.0; 3];
-        core.prolongate_weighted_add(&local, &mut out);
-        assert!((out[0] - 4.0).abs() < 1e-14);
-        assert!((out[1] - 2.0).abs() < 1e-14);
-        assert!((out[2] - 1.0).abs() < 1e-14);
+        core.weight(&mut local);
+        assert_eq!(local, weighted);
     }
 
     #[test]
@@ -263,15 +202,12 @@ mod tests {
         let entry = SubdomainEntry::try_new(core, solver).expect("valid entry");
 
         let r = vec![10.0, 20.0, 30.0, 40.0];
-        let mut out = vec![0.0; 4];
-        let mut r_scratch = vec![0.0; 2];
-        let mut z_scratch = vec![0.0; 2];
-
+        let mut out = vec![0.0; 2];
         entry
-            .apply_weighted_into_with_scratch(&r, &mut out, &mut r_scratch, &mut z_scratch, true)
+            .apply_weighted_local(&r, &mut out, &mut [], true)
             .expect("identity local solver should not fail");
 
-        // Should restrict DOFs [1,2] → [20, 30], identity solve, scatter back
-        assert_eq!(out, vec![0.0, 20.0, 30.0, 0.0]);
+        // Restricts DOFs [1, 2] → [20, 30] and solves with the identity.
+        assert_eq!(out, vec![20.0, 30.0]);
     }
 }

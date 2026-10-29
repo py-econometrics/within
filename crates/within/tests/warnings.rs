@@ -3,7 +3,7 @@
 
 use within::{
     solve, solve_batch, BuildWarning, Effect, LocalSolverConfig, PreconditionerConfig,
-    ReductionStrategy, ScalingConfig, ScalingFailure, Solver,
+    ScalingConfig, ScalingFailure, Solver,
 };
 
 // Two crossed slope-only factors: their signed slope cross-block is not
@@ -32,7 +32,6 @@ fn strict_scaling() -> PreconditionerConfig {
             },
             ..LocalSolverConfig::default()
         },
-        reduction: ReductionStrategy::default(),
     }
 }
 

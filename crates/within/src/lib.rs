@@ -43,7 +43,7 @@ pub(crate) mod solver;
 pub use channel::{Channel, ChannelPair, CoefficientAddress};
 pub use config::{
     ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, LsmrOptions, PreconditionerConfig,
-    ReductionStrategy, ScalingConfig, ScalingFailure, SchurMode, Staleness, StalenessError,
+    ScalingConfig, ScalingFailure, SchurMode, Staleness, StalenessError,
 };
 pub use domain::{Design, Effect};
 pub use error::{BuildError, BuildWarning, SolveError, WithinError};

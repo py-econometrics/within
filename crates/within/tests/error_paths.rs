@@ -184,7 +184,10 @@ fn test_within_error_from_build_error() {
 
 #[test]
 fn test_within_error_from_solve_error() {
-    let inner = SolveError::Synchronization { context: "test" };
+    let inner = SolveError::InvalidInput {
+        context: "test",
+        message: "test".to_string(),
+    };
     let e: WithinError = inner.into();
     match e {
         WithinError::Solve(_) => {}
@@ -195,9 +198,9 @@ fn test_within_error_from_solve_error() {
 #[test]
 fn test_within_error_source_chains_through_transparent_wrapper() {
     // Transparent: WithinError -> BuildError::Preconditioner -> schwarz_precond::BuildError
-    let inner = schwarz_precond::BuildError::ScratchSizeTooSmall {
-        scratch_size: 1,
-        required_min: 2,
+    let inner = schwarz_precond::BuildError::LocalDofCountMismatch {
+        index_count: 1,
+        solver_n_local: 2,
     };
     let e = WithinError::Build(BuildError::Preconditioner(inner));
     assert!(e.source().is_some());
@@ -219,14 +222,10 @@ fn test_invalid_local_solver_rejected(
     let precond = if adaptive {
         PreconditionerConfig::Adaptive {
             local_solver,
-            reduction: Default::default(),
             stall: Staleness::try_new(4, 0.9).expect("stall"),
         }
     } else {
-        PreconditionerConfig::Additive {
-            local_solver,
-            reduction: Default::default(),
-        }
+        PreconditionerConfig::Additive { local_solver }
     };
     let mut effects = vec![Effect::new(&f, true, []).expect("f")];
     if n_factors == 2 {

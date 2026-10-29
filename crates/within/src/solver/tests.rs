@@ -288,7 +288,6 @@ fn max_abs_group_mean(design: &Design<'_>, demeaned: &[f64]) -> f64 {
 fn additive() -> PreconditionerConfig {
     PreconditionerConfig::Additive {
         local_solver: Default::default(),
-        reduction: Default::default(),
     }
 }
 
@@ -377,7 +376,6 @@ fn a_failed_deferred_build_is_kept_and_reported_again() {
             },
             ..LocalSolverConfig::default()
         },
-        reduction: Default::default(),
         // Escalates after any single non-vanishing contraction, so the handoff is deterministic.
         stall: crate::Staleness::try_new(1, 0.0).expect("valid staleness"),
     };
@@ -477,7 +475,6 @@ fn an_alias_through_a_zero_loading_still_converges() {
     ];
     let schwarz = PreconditionerConfig::Additive {
         local_solver: Default::default(),
-        reduction: Default::default(),
     };
     let solver = Solver::new(effects, None, schwarz).expect("solver");
     let out = solve_tight(&solver, &y);
