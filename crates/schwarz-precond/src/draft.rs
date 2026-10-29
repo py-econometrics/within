@@ -48,8 +48,10 @@ pub trait Operator: Send + Sync {
     fn nrows(&self) -> usize;
     /// Number of columns in the operator.
     fn ncols(&self) -> usize;
-    /// Scratch one `apply` or `apply_adjoint` under `budget` takes from its stack.
-    fn scratch_req(&self, budget: ThreadBudget) -> StackReq;
+    /// Scratch one `apply` under `budget` takes from its stack.
+    fn apply_scratch(&self, budget: ThreadBudget) -> StackReq;
+    /// Scratch one `apply_adjoint` under `budget` takes from its stack.
+    fn apply_adjoint_scratch(&self, budget: ThreadBudget) -> StackReq;
     /// Computes `y = A x`.
     fn apply(
         &self,
@@ -72,8 +74,8 @@ pub trait Operator: Send + Sync {
 pub trait LocalSolver: Send + Sync {
     /// Number of DOFs in the subdomain.
     fn n_local(&self) -> usize;
-    /// Scratch one `solve_local` takes from its stack.
-    fn scratch_req(&self) -> StackReq;
+    /// Scratch one `solve_local` under `budget` takes from its stack.
+    fn solve_local_scratch(&self, budget: ThreadBudget) -> StackReq;
     /// Solves in place: `x` spans `n_local()`, rhs in, solution out; bits depend on `x` alone.
     fn solve_local(
         &self,
