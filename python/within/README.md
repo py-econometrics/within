@@ -112,7 +112,7 @@ seconds as `.build_duration_seconds`; both are preserved across pickling and reu
 | `LocalSolverConfig(approx_chol?, schur?, dense_threshold?, scaling?)` | Schur complement reduction with approximate Cholesky on the reduced system. Default local solver. Import from `within.config`. Omit `schur` for the library default (approximate); pass `Schur.exact()` for the exact complement. |
 | `Schur.approximate(config?)` / `Schur.exact()` | Schur-reduction mode for `LocalSolverConfig`. |
 | `ApproxCholConfig(seed=0, split_merge=None)` | Approximate Cholesky parameters. |
-| `ApproxSchurConfig(seed=0, split=1)` | Approximate Schur complement sampling parameters. |
+| `ApproxSchurConfig(split=1)` | Approximate Schur complement sampling parameters; draws from `ApproxCholConfig.seed`. |
 
 ### Result types
 

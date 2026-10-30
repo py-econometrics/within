@@ -56,31 +56,26 @@ impl PyApproxCholConfig {
 #[pyo3(name = "ApproxSchurConfig")]
 pub struct PyApproxSchurConfig {
     #[pyo3(get)]
-    pub seed: u64,
-    #[pyo3(get)]
     pub split: u32,
 }
 
 #[pymethods]
 impl PyApproxSchurConfig {
     #[new]
-    #[pyo3(signature = (seed=0, split=1))]
-    fn new(seed: u64, split: u32) -> PyResult<Self> {
+    #[pyo3(signature = (split=1))]
+    fn new(split: u32) -> PyResult<Self> {
         if split == 0 {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "split must be >= 1",
             ));
         }
-        Ok(Self { seed, split })
+        Ok(Self { split })
     }
 }
 
 impl PyApproxSchurConfig {
     pub(crate) fn to_native(&self) -> ApproxSchurConfig {
-        ApproxSchurConfig {
-            seed: self.seed,
-            split: self.split,
-        }
+        ApproxSchurConfig { split: self.split }
     }
 }
 
@@ -117,7 +112,7 @@ impl PySchur {
     fn __repr__(&self) -> String {
         match &self.inner {
             SchurMode::Approximate(cfg) => {
-                format!("Schur.approximate(seed={}, split={})", cfg.seed, cfg.split)
+                format!("Schur.approximate(split={})", cfg.split)
             }
             SchurMode::Exact => "Schur.exact()".to_string(),
         }

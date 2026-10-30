@@ -1,43 +1,32 @@
 //! Channel-pair subdomain construction.
 //!
-//! Each cross-factor channel pair becomes a Schwarz subdomain (one per
-//! connected component of its bipartite cross-tab; isolated levels are batched
-//! into diagonal subdomains per side). Overlap is handled by
+//! Each cross-factor channel pair hands approx-chol its Gram factor `V`, one column per
+//! observation, and each irreducible block of the factor becomes a Schwarz subdomain
+//! (isolated levels are batched into diagonal subdomains per side). Overlap is handled by
 //! partition-of-unity weights — see [`schwarz_precond::domain`] for the math.
 //!
 //! Entry point: [`build_local_domains`].
 
+use approx_chol::input::{BipartiteFactorWidth2, FactorWidth1};
+use approx_chol::{BlockFactor, ReduceError};
 use schwarz_precond::{PartitionWeights, SubdomainCore};
 
+use crate::block_solver::BlockSolver;
 use crate::channel::{Channel, ChannelPair};
-use crate::config::LocalSolverConfig;
-use crate::csr_block::to_u32;
+use crate::config::{LocalSolverConfig, ScalingFailure};
+use crate::domain::Column;
 use crate::{BuildError, BuildWarning};
 
-use super::{CrossTab, PreparedDesign};
-
-mod grounding;
-mod sddm;
-use crate::domain::cross_tab::{BipartiteComponent, PairColumns};
-use crate::domain::Column;
-use grounding::scaled_groundings;
-use sddm::{convert, NotScalable};
-pub(crate) use sddm::{CoordinateMap, Grounding, LocalComponent, MatrixForm, SddmMatrix};
+use super::{PreparedDesign, PreparedTerm};
 
 /// Keeps a batch below the local solver's inner-parallel threshold and typical scratch size.
 const ISOLATED_LEVEL_CHUNK: usize = 4096;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ComponentClass {
-    KnownLaplacian,
-    General,
-}
-
-/// A factor-pair Schwarz domain paired with its validated local operator.
+/// A factor-pair Schwarz domain paired with its factored local operator.
 #[derive(Clone)]
 pub(crate) struct LocalDomain {
     pub(crate) core: SubdomainCore,
-    pub(crate) component: LocalComponent,
+    pub(crate) solver: BlockSolver,
 }
 
 /// Same-factor channel pairs are exactly orthogonal after whitening, so never enumerated.
@@ -66,17 +55,7 @@ pub(crate) fn build_local_domains(
         .collect();
     let per_pair: Vec<(Vec<LocalDomain>, Vec<BuildWarning>)> = pairs
         .par_iter()
-        .map(|&pair| {
-            let (full_ct, l2g) = CrossTab::build_for_pair(prepared, pair);
-            let class = if design.column(pair.rows) == Column::Intercept
-                && design.column(pair.cols) == Column::Intercept
-            {
-                ComponentClass::KnownLaplacian
-            } else {
-                ComponentClass::General
-            };
-            split_into_subdomains(prepared, pair, class, full_ct, &l2g, config)
-        })
+        .map(|&pair| factor_pair(prepared, pair, config))
         .collect::<Result<_, BuildError>>()?;
     let mut domain_pairs = Vec::new();
     let mut warnings = Vec::new();
@@ -96,119 +75,90 @@ pub(crate) fn build_local_domains(
     Ok((domain_pairs, warnings))
 }
 
-/// Dead singletons (zero diagonal, an exact-zero design column) produce no subdomain.
-fn split_into_subdomains(
+/// `G = V Vᵀ`, observation `k` adding `√w_k (z_q(k) e_{a_k} + z_r(k) e_{n_q + b_k})`.
+fn factor_pair(
     prepared: &PreparedDesign<'_>,
     pair: ChannelPair,
-    class: ComponentClass,
-    full_ct: CrossTab,
-    l2g: &[u32],
     config: &LocalSolverConfig,
 ) -> Result<(Vec<LocalDomain>, Vec<BuildWarning>), BuildError> {
-    let row_diag = prepared.channel_diagonal(pair.rows);
-    let col_diag = prepared.channel_diagonal(pair.cols);
-    debug_assert_eq!(
-        (row_diag.len(), col_diag.len()),
-        (full_ct.n_rows(), full_ct.n_cols())
-    );
-    let n_rows_full = full_ct.n_rows();
-    let mut components = Vec::new();
-    let (mut isolated_rows, mut isolated_cols) = (Vec::new(), Vec::new());
-    for comp in full_ct.bipartite_connected_components() {
-        match (&comp.rows[..], &comp.cols[..]) {
-            (&[i], []) if row_diag[i] != 0.0 => isolated_rows.push(i),
-            ([], &[j]) if col_diag[j] != 0.0 => isolated_cols.push(j),
-            _ => components.push(comp),
+    let (rows, cols) = (prepared.term(pair.rows.term), prepared.term(pair.cols.term));
+    fn side<'p>(term: &PreparedTerm<'p>, column: usize) -> FactorWidth1<'p, f64> {
+        FactorWidth1::new(
+            term.term.n_levels(),
+            term.term.levels(),
+            term.loading(column),
+        )
+        .expect("levels index their term")
+    }
+    let (left, right) = (side(&rows, pair.rows.column), side(&cols, pair.cols.column));
+    let v = match prepared.sqrt_weights() {
+        Some(s) => BipartiteFactorWidth2::scaled(left, right, s),
+        None => BipartiteFactorWidth2::new(left, right),
+    }
+    .expect("both sides read the same observations");
+    let factor = approx_chol::factorize_with(v, config.factor_config(), config.scaling_policy()?)
+        .map_err(|e| match e {
+        approx_chol::Error::Reduce(ReduceError::Unscalable { .. }) => {
+            BuildError::UnscalableComponent { pair }
+        }
+        e => BuildError::LocalSolverBuild(e.to_string()),
+    })?;
+
+    let mut warnings = Vec::new();
+    for report in factor
+        .blocks()
+        .iter()
+        .filter_map(BlockFactor::scaling_report)
+    {
+        match config.scaling.on_failure {
+            ScalingFailure::Warn => warnings.push(BuildWarning::UnscalableComponent {
+                pair,
+                iterations: report.iterations,
+                violation: report.violation,
+            }),
+            ScalingFailure::Error => return Err(BuildError::UnscalableComponent { pair }),
+        }
+    }
+
+    let n_rows = rows.term.n_levels();
+    let row_base = rows.term.column_dofs(pair.rows.column).start;
+    let col_base = cols.term.column_dofs(pair.cols.column).start;
+    let global = |vertex: usize| {
+        let dof = if vertex < n_rows {
+            row_base + vertex
+        } else {
+            col_base + vertex - n_rows
+        };
+        u32::try_from(dof).expect("the DOF space fits u32")
+    };
+    let domain = |blocks: Vec<BlockFactor>| LocalDomain {
+        core: SubdomainCore::uniform(
+            blocks
+                .iter()
+                .flat_map(BlockFactor::vertices)
+                .map(global)
+                .collect(),
+        ),
+        solver: BlockSolver::new(blocks),
+    };
+
+    let mut domains = Vec::new();
+    let mut isolated = [Vec::new(), Vec::new()];
+    for block in factor.into_blocks() {
+        match block.vertices().len() {
+            1 => isolated[usize::from(block.vertices().all(|v| v >= n_rows))].push(block),
+            _ => domains.push(domain(vec![block])),
         }
     }
     // Isolated levels have a diagonal Gram, so batching changes no local solve, only overhead.
-    components.extend(
-        isolated_rows
-            .chunks(ISOLATED_LEVEL_CHUNK)
-            .map(|rows| BipartiteComponent {
-                rows: rows.to_vec(),
-                cols: Vec::new(),
-            }),
-    );
-    components.extend(
-        isolated_cols
-            .chunks(ISOLATED_LEVEL_CHUNK)
-            .map(|cols| BipartiteComponent {
-                rows: Vec::new(),
-                cols: cols.to_vec(),
-            }),
-    );
-
-    let cross_tabs: Vec<CrossTab> = if components.len() == 1 {
-        vec![full_ct]
-    } else {
-        let mut row_remap = vec![u32::MAX; full_ct.n_rows()];
-        let mut col_remap = vec![u32::MAX; full_ct.n_cols()];
-        components
-            .iter()
-            .map(|comp| full_ct.extract_component(comp, &mut row_remap, &mut col_remap))
-            .collect()
-    };
-
-    // Only folded components are tested: a frustrated block is nonsingular, so it never floats.
-    let mut levels: Option<Vec<Option<(usize, f64)>>> = None;
-    let mut domains = Vec::with_capacity(components.len());
-    let mut warnings = Vec::new();
-    for (comp, comp_ct) in components.iter().zip(cross_tabs) {
-        let comp_diag: Vec<f64> = comp
-            .rows
-            .iter()
-            .map(|&i| row_diag[i])
-            .chain(comp.cols.iter().map(|&i| col_diag[i]))
-            .collect();
-        if comp_diag.iter().all(|&v| v == 0.0) {
-            continue;
-        }
-        // Pair-local `[rows | cols]` positions, mapped to globals once oriented.
-        let comp_indices: Vec<u32> = comp
-            .rows
-            .iter()
-            .map(|&i| to_u32(i))
-            .chain(comp.cols.iter().map(|&j| to_u32(n_rows_full + j)))
-            .collect();
-        let (comp_ct, comp_diag, mut comp_indices) =
-            sddm::orient_for_elimination(comp_ct, comp_diag, comp_indices);
-        let (component, uncertified) = convert(comp_ct, comp_diag, class, &config.scaling)
-            .map_err(|NotScalable| BuildError::UnscalableComponent { pair })?;
-        if let Some(uncertified) = uncertified {
-            warnings.push(BuildWarning::UnscalableComponent {
-                pair,
-                iterations: uncertified.iterations,
-                violation: uncertified.violation,
-            });
-        }
-        if class == ComponentClass::General && component.form == MatrixForm::Laplacian {
-            let levels = levels.get_or_insert_with(|| vec![None; n_rows_full + col_diag.len()]);
-            let mut factors = vec![1.0; comp_indices.len()];
-            component
-                .coordinates
-                .fold(&mut factors, component.matrix.n_eliminated());
-            for (&p, &f) in comp_indices.iter().zip(&factors) {
-                levels[p as usize] = Some((domains.len(), f));
+    for side in isolated {
+        let mut side = side.into_iter();
+        loop {
+            let batch: Vec<BlockFactor> = side.by_ref().take(ISOLATED_LEVEL_CHUNK).collect();
+            if batch.is_empty() {
+                break;
             }
-        }
-        for index in &mut comp_indices {
-            *index = l2g[*index as usize];
-        }
-        domains.push(LocalDomain {
-            core: schwarz_precond::SubdomainCore::uniform(comp_indices),
-            component,
-        });
-    }
-
-    // A folded component's dropped surplus is `fᵀGf` exactly, so only those read the observations.
-    if let Some(levels) = levels {
-        let columns = PairColumns::new(prepared, pair);
-        let groundings = scaled_groundings(&columns, &levels, n_rows_full, domains.len());
-        for (ld, grounding) in domains.iter_mut().zip(groundings) {
-            if grounding == Grounding::Floating {
-                ld.component.matrix.float();
-            }
+            domains.push(domain(batch));
         }
     }
     Ok((domains, warnings))
@@ -339,37 +289,6 @@ mod tests {
             counts.iter().any(|&c| c > 1),
             "test is vacuous: build a design whose subdomains share a DOF"
         );
-    }
-
-    /// `z = a_row · b_col` aliases the intercept; a floated block keeps no surplus.
-    #[rstest::rstest]
-    #[case::aliased(0.0, Grounding::Floating)]
-    #[case::identified(1e-4, Grounding::Grounded)]
-    fn a_folded_alias_floats_without_surplus(#[case] delta: f64, #[case] expected: Grounding) {
-        let (rows, cols) = ([0u32, 0, 1, 1, 2, 2], [0u32, 1, 0, 1, 0, 1]);
-        let z = [1.0, 3.0, -2.0, -6.0 * (1.0 + delta), 0.5, 1.5];
-        let weights = [0.3, 2.0, 1.0, 7.5, 0.01, 4.0];
-        let design = Design::new(vec![
-            Effect::new(&rows, false, [&z[..]]).expect("slope effect"),
-            Effect::new(&cols, true, []).expect("plain effect"),
-        ])
-        .expect("valid design");
-        let prepared = PreparedDesign::new(design, Some(&weights)).expect("valid weights");
-        let (domains, _) =
-            build_local_domains(&prepared, &LocalSolverConfig::default()).expect("domains");
-        let [ld] = &domains[..] else {
-            panic!("one component expected, got {}", domains.len())
-        };
-        let matrix = &ld.component.matrix;
-        assert_eq!(ld.component.form, MatrixForm::Laplacian);
-        assert_eq!(matrix.grounding, expected);
-        if expected == Grounding::Floating {
-            assert!(matrix.ground_edges.iter().all(|&g| g == 0.0));
-            for (i, &d) in matrix.diagonal.iter().enumerate() {
-                let sum: f64 = matrix.cross_tab.neighbors(i).map(|(_, v)| v.abs()).sum();
-                assert_eq!(d, sum, "row {i}");
-            }
-        }
     }
 
     #[test]

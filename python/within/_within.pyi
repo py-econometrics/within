@@ -428,13 +428,14 @@ class ApproxCholConfig:
     def __init__(self, seed: int = 0, split_merge: int | None = None) -> None: ...
 
 class ApproxSchurConfig:
-    """Configuration for approximate Schur complement via clique-tree sampling."""
+    """Configuration for approximate Schur complement via clique-tree sampling.
+
+    The sampler draws from ``ApproxCholConfig.seed``.
+    """
 
     @property
-    def seed(self) -> int: ...
-    @property
     def split(self) -> int: ...
-    def __init__(self, seed: int = 0, split: int = 1) -> None: ...
+    def __init__(self, split: int = 1) -> None: ...
 
 class Schur:
     """Schur-complement reduction mode for :class:`LocalSolverConfig`.

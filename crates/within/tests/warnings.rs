@@ -6,14 +6,14 @@ use within::{
     ScalingConfig, ScalingFailure, Solver,
 };
 
-// Two crossed slope-only factors: their signed slope cross-block is not
-// diagonally dominant. A zero-tolerance / zero-iteration scaling policy reports
+// Two crossed slope-only factors: level a0's cross entries sum to 4 > its diagonal 2,
+// so the block needs a dominance scaling. A zero-tolerance / zero-iteration policy reports
 // that as an uncertified-scaling warning deterministically, without relying on
 // the (deliberately rare) default-tolerance path.
 const LA: [u32; 4] = [0, 0, 1, 1];
 const LB: [u32; 4] = [0, 1, 0, 1];
 const ZA: [f64; 4] = [1.0, 1.0, 1.0, 1.0];
-const ZB: [f64; 4] = [1.0, -1.0, 2.0, -2.0];
+const ZB: [f64; 4] = [3.0, -1.0, 2.0, -4.0];
 
 fn warning_effects() -> Vec<Effect<'static>> {
     vec![
