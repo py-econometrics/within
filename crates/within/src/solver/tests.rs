@@ -4,8 +4,8 @@ use rstest::rstest;
 
 use super::{CoefficientAddress, CoefficientLayout};
 use crate::channel::Channel;
-use crate::config::{LocalSolverConfig, LsmrOptions, DEFAULT_DENSE_SCHUR_THRESHOLD};
-use crate::domain::{build_local_domains, Design, Grounding, MatrixForm, PreparedDesign};
+use crate::config::{LocalSolverConfig, LsmrOptions};
+use crate::domain::Design;
 use crate::{Effect, PreconditionerConfig, Solver};
 
 /// DGP kept in lockstep with `surplus_component_sampled_matches_exact_reduction`
@@ -27,27 +27,6 @@ fn positive_slope_only_panel() -> (Vec<u32>, Vec<u32>, Vec<f64>) {
         .map(|i| 0.5 + ((i * 13) % 100) as f64 / 100.0)
         .collect();
     (f, g, z)
-}
-
-#[test]
-fn positive_slope_only_pair_grounds_beyond_dense_threshold() {
-    let (f, g, z) = positive_slope_only_panel();
-    let effects = vec![
-        Effect::new(&f, false, [&z[..]]).expect("slope effect"),
-        Effect::new(&g, true, []).expect("plain effect"),
-    ];
-    let prepared = PreparedDesign::unweighted_for_test(Design::new(effects).expect("design"));
-    let (domains, warnings) =
-        build_local_domains(&prepared, &LocalSolverConfig::default()).expect("domains");
-    assert!(
-        domains.iter().any(|ld| {
-            let ct = &ld.component.matrix.cross_tab;
-            ld.component.form == MatrixForm::Laplacian
-                && ld.component.matrix.grounding == Grounding::Grounded
-                && ct.n_rows().min(ct.n_cols()) > DEFAULT_DENSE_SCHUR_THRESHOLD
-        }),
-        "fixture must ground a component past the dense threshold (warnings: {warnings:?})"
-    );
 }
 
 #[test]

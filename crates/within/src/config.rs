@@ -13,7 +13,7 @@ use crate::error::BuildError;
 
 pub use schwarz_precond::{Staleness, StalenessError};
 
-/// Default `n_keep` threshold below which a Schur domain tries the exact dense backend.
+/// Default block dimension at or below which a block is factored exactly.
 pub(crate) const DEFAULT_DENSE_SCHUR_THRESHOLD: usize = 24;
 
 /// Configuration for approximate Cholesky factorization.
@@ -23,24 +23,6 @@ pub struct ApproxCholConfig {
     pub seed: u64,
     /// Optional split/merge count for denser AC2-style factorizations.
     pub split_merge: Option<u32>,
-}
-
-impl ApproxCholConfig {
-    pub(crate) fn to_approx_chol(
-        self,
-        exact_below: usize,
-        on_failure: approx_chol::ExactFailure,
-    ) -> approx_chol::Config {
-        approx_chol::Config {
-            seed: self.seed,
-            split_merge: self.split_merge,
-            // `max_dim: 0` claims no block, which is what `dense_threshold: 0` asks for.
-            backend: approx_chol::Backend::ExactBelow {
-                max_dim: exact_below,
-                on_failure,
-            },
-        }
-    }
 }
 
 /// Schur reduction mode: sampled bounds per-subdomain cost, exact trades speed for fidelity.
@@ -65,7 +47,7 @@ pub struct LocalSolverConfig {
     pub approx_chol: ApproxCholConfig,
     /// Schur-complement reduction mode (default: approximate).
     pub schur: SchurMode,
-    /// Reduced-size threshold at or below which fill-in is affordable; `0` disables.
+    /// Largest Cholesky dimension factored exactly, a signed block's two cover sheets counted; `0` disables.
     pub dense_threshold: usize,
     /// Certification policy for the diagonal scaling of signed components.
     pub scaling: ScalingConfig,
@@ -74,11 +56,33 @@ pub struct LocalSolverConfig {
 impl LocalSolverConfig {
     /// Separate from any build so a deferred escalation can reject the config at construction.
     pub(crate) fn validate(&self) -> Result<(), BuildError> {
-        let tolerance = self.scaling.tolerance;
-        if !tolerance.is_finite() || tolerance < 0.0 {
-            return Err(BuildError::InvalidScalingTolerance { value: tolerance });
+        self.scaling_policy().map(|_| ())
+    }
+
+    pub(crate) fn scaling_policy(&self) -> Result<approx_chol::ScalingPolicy, BuildError> {
+        let ScalingConfig {
+            tolerance,
+            max_iterations,
+            ..
+        } = self.scaling;
+        approx_chol::ScalingPolicy::new(tolerance, max_iterations)
+            .ok_or(BuildError::InvalidScalingTolerance { value: tolerance })
+    }
+
+    pub(crate) fn factor_config(&self) -> approx_chol::Config {
+        approx_chol::Config {
+            seed: self.approx_chol.seed,
+            split_merge: self.approx_chol.split_merge,
+            exact_max_dim: self.dense_threshold,
+            complement: match self.schur {
+                SchurMode::Approximate(ApproxSchurConfig { split }) => {
+                    approx_chol::SchurMode::Approximate {
+                        split_merge: Some(split),
+                    }
+                }
+                SchurMode::Exact => approx_chol::SchurMode::Exact,
+            },
         }
-        Ok(())
     }
 }
 
@@ -99,9 +103,9 @@ impl Default for LocalSolverConfig {
 /// Frustration is always a hard error; this governs only the dominance certificate.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ScalingConfig {
-    /// Relative slack for weak dominance; PSD-boundary designs hover at ≈ 1e-12.
+    /// Relative slack for weak dominance, in `[0, 1)`; PSD-boundary designs hover at ≈ 1e-12.
     pub tolerance: f64,
-    /// Reduced-CG iteration budget; each iteration costs 2–4 matrix-vector passes.
+    /// Scaling iteration budget per irreducible block.
     pub max_iterations: usize,
     /// Disposition when certification fails.
     pub on_failure: ScalingFailure,
@@ -126,18 +130,16 @@ impl Default for ScalingConfig {
     }
 }
 
-/// Approximate Schur via GKS 2023 Algorithm 3: unbiased edge weights at O(deg) fill.
+/// Approximate Schur via GKS 2023 Algorithm 3, drawing from [`ApproxCholConfig::seed`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApproxSchurConfig {
-    /// Random seed for the clique-tree sampler.
-    pub seed: u64,
     /// Star-edge split factor: `1` is standard, `k > 1` a denser approximation at more fill-in.
     pub split: u32,
 }
 
 impl Default for ApproxSchurConfig {
     fn default() -> Self {
-        Self { seed: 0, split: 1 }
+        Self { split: 1 }
     }
 }
 

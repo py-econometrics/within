@@ -84,7 +84,6 @@ class TestAdvancedConfigs:
 
     def test_approx_schur_config_defaults(self):
         cfg = ApproxSchurConfig()
-        assert cfg.seed == 0
         assert cfg.split == 1
 
     def test_schur_complement_defaults(self):
@@ -92,7 +91,7 @@ class TestAdvancedConfigs:
         assert sc.dense_threshold == 24
         assert sc.approx_chol.seed == 0
         assert sc.approx_chol.split_merge == 2
-        assert repr(sc.schur) == "Schur.approximate(seed=0, split=1)"
+        assert repr(sc.schur) == "Schur.approximate(split=1)"
         assert sc.scaling.on_failure == "warn"
 
     def test_schur_mode_spellings(self):
@@ -183,7 +182,7 @@ class TestFePreconditioner:
         requested = PreconditionerConfig.Additive(
             local_solver=LocalSolverConfig(
                 approx_chol=ApproxCholConfig(seed=41, split_merge=3),
-                schur=Schur.approximate(ApproxSchurConfig(seed=17, split=2)),
+                schur=Schur.approximate(ApproxSchurConfig(split=2)),
                 dense_threshold=0,
             ),
         )
@@ -197,7 +196,7 @@ class TestFePreconditioner:
         assert isinstance(actual, PreconditionerConfig.Additive)
         assert actual.local_solver.approx_chol.seed == 41
         assert actual.local_solver.approx_chol.split_merge == 3
-        assert repr(actual.local_solver.schur) == "Schur.approximate(seed=17, split=2)"
+        assert repr(actual.local_solver.schur) == "Schur.approximate(split=2)"
         assert actual.local_solver.dense_threshold == 0
         assert actual.local_solver.scaling.on_failure == "warn"
 

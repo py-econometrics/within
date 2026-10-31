@@ -1,6 +1,5 @@
 //! Domain layer: [`Design`] (design-matrix metadata) and factor-pair [`Subdomain`] construction.
 
-pub(crate) mod cross_tab;
 mod effect;
 pub(crate) mod factor_pairs;
 mod level_moments;
@@ -8,17 +7,13 @@ mod prepared;
 mod reparam;
 mod scatter_split;
 
-pub(crate) use cross_tab::CrossTab;
 pub(crate) use prepared::{PreparedDesign, PreparedTerm};
 use reparam::TermReparam;
 pub(crate) use scatter_split::{LevelRows, ScatterSplit};
 
 pub use effect::Effect;
 
-pub(crate) use factor_pairs::{
-    build_local_domains, CoordinateMap, Grounding, LocalComponent, LocalDomain, MatrixForm,
-    SddmMatrix,
-};
+pub(crate) use factor_pairs::{build_local_domains, LocalDomain};
 
 use crate::channel::Channel;
 use crate::BuildError;
