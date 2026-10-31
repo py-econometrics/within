@@ -1,8 +1,6 @@
 //! LSMR for rectangular least-squares (`min ‖b − A x‖₂`).
 //!
-//! Two entry points:
-//! - [`lsmr`] — standard Golub-Kahan bidiagonalization, no preconditioner.
-//! - [`mlsmr`] — preconditioned variant with composable warm starts and escalation.
+//! [`mlsmr`]: preconditioned LSMR; an [`InitialGuess`] may warm-start, a [`Staleness`] rule may stop.
 
 mod bidiag;
 #[cfg(test)]
@@ -12,10 +10,14 @@ mod recurrence;
 #[cfg(test)]
 mod tests;
 
-use std::borrow::Cow;
+use faer::dyn_stack::{MemBuffer, MemStack, StackReq};
+use faer::matrix_free::{BiLinOp, LinOp};
+use faer::reborrow::{Reborrow, ReborrowMut};
+use faer::{ColMut, ColRef};
 
-use crate::{Operator, SolveError};
-use bidiag::{axpby, BidiagStep, Bidiagonalization, StagedStart};
+use crate::par::Par;
+use crate::SolveError;
+use bidiag::{axpby, BidiagStep, Bidiagonalization, Ctx, StagedStart};
 use magnitude::Magnitude;
 use recurrence::{ConvergenceCriteria, LsmrRecurrenceState, RotationStep, SolutionState, Stop};
 
@@ -37,11 +39,10 @@ pub(crate) fn vec_norm(v: &[f64]) -> f64 {
     scale * v.iter().map(|&x| (x / scale).powi(2)).sum::<f64>().sqrt()
 }
 
-/// Result of an LSMR solve.
+/// What a run reports; the solution is in the caller's `x`.
+#[derive(Clone, Copy, Debug)]
 #[must_use]
-pub struct LsmrResult {
-    /// Solution vector.
-    pub x: Vec<f64>,
+pub struct LsmrInfo {
     /// Whether a tolerance stop survived its applicable recomputed-residual and plain-gradient audits.
     pub converged: bool,
     /// Total number of iterations performed.
@@ -52,8 +53,6 @@ pub struct LsmrResult {
     pub normal_eq_residual: f64,
     /// Reason the solver stopped.
     pub stop_reason: LsmrStopReason,
-    /// `b − A x` itself, present only where a tolerance stop recomputed it.
-    pub true_residual: Option<Vec<f64>>,
 }
 
 /// Reason an LSMR solve stopped.
@@ -73,32 +72,50 @@ pub enum LsmrStopReason {
     WarmStartExact,
     /// A tolerance stop, and each restart from it, refuted by a residual or plain-gradient audit.
     FalseConvergence,
-    /// The [`EscalationHandler`] requested a handoff to a stronger preconditioner.
-    Escalated,
+    /// The [`Staleness`] rule stopped a stalling run.
+    Stalled,
 }
 
-/// One completed iteration's progress.
-#[derive(Clone, Copy, Debug)]
-pub struct Progress {
-    /// 1-based index of the iteration just completed.
-    pub iteration: usize,
-    /// [`LsmrResult::normal_eq_residual`] as of this iteration.
-    pub normal_eq_residual: f64,
+/// Only [`Default`] makes one, so a struct literal of an options type needs `..Default::default()`.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NonExhaustive(());
+
+/// What [`mlsmr`] reads from `x` before it starts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InitialGuess {
+    /// Ignore `x` and start from zero.
+    Zero,
+    /// Start from `x`; tolerances stay relative to `‖b‖`.
+    Given,
 }
 
-/// Immutable factory for per-run escalation state.
-pub trait EscalationPolicy: Send + Sync {
-    /// A handler holding this policy's per-run state.
-    fn handler(&self) -> Box<dyn EscalationHandler>;
+/// When LSMR stops on one right-hand side, and its reorthogonalization window.
+#[derive(Debug, Clone, Copy)]
+pub struct LsmrOptions {
+    /// Relative residual convergence tolerance.
+    pub tol: f64,
+    /// Iterations per right-hand side; a run resumed on a stronger map gets what is left.
+    pub maxiter: usize,
+    /// Windowed MGS over the last `local_size` `v` and `p̃`, `local_size · ncols` each.
+    pub local_size: Option<usize>,
+    /// New fields may follow: build with `..Default::default()`.
+    #[doc(hidden)]
+    pub non_exhaustive: NonExhaustive,
 }
 
-/// Mutable escalation state for one solve run.
-pub trait EscalationHandler {
-    /// Whether to hand off now.
-    fn should_escalate(&mut self, progress: Progress) -> bool;
+impl Default for LsmrOptions {
+    fn default() -> Self {
+        Self {
+            tol: 1e-8,
+            maxiter: 1000,
+            local_size: None,
+            non_exhaustive: NonExhaustive(()),
+        }
+    }
 }
 
-/// Escalates after `window` consecutive contraction ratios exceed `threshold`.
+/// Stops after `window` consecutive contraction ratios exceed `threshold`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Staleness {
@@ -127,14 +144,14 @@ impl Staleness {
         if window == 0 {
             return Err(StalenessError::ZeroWindow);
         }
-        // Ratios are `|s̄ₖ| ≤ 1` by construction, so a threshold of 1 or more never escalates.
+        // Ratios are `|s̄ₖ| ≤ 1` by construction, so a threshold of 1 or more never stalls.
         if !(0.0..1.0).contains(&threshold) {
             return Err(StalenessError::InvalidThreshold { threshold });
         }
         Ok(Self { window, threshold })
     }
 
-    /// Consecutive stalled iterations required before escalating.
+    /// Consecutive stalled iterations required before stopping.
     pub fn window(&self) -> usize {
         self.window
     }
@@ -142,6 +159,15 @@ impl Staleness {
     /// Contraction ratio above which an iteration counts as stalled.
     pub fn threshold(&self) -> f64 {
         self.threshold
+    }
+
+    /// This policy's stall counter for one pass.
+    fn run(self) -> StalenessRun {
+        StalenessRun {
+            policy: self,
+            previous: f64::NAN,
+            stalled: 0,
+        }
     }
 }
 
@@ -163,7 +189,7 @@ impl<'de> serde::Deserialize<'de> for Staleness {
 }
 
 impl Default for Staleness {
-    /// Escalates after four consecutive residual reductions below 30% (ratio above 0.7).
+    /// Stops after four consecutive residual reductions below 30% (ratio above 0.7).
     fn default() -> Self {
         Self {
             window: 4,
@@ -172,25 +198,16 @@ impl Default for Staleness {
     }
 }
 
-impl EscalationPolicy for Staleness {
-    fn handler(&self) -> Box<dyn EscalationHandler> {
-        Box::new(StalenessRun {
-            policy: *self,
-            previous: f64::NAN,
-            stalled: 0,
-        })
-    }
-}
-
+/// [`Staleness`]'s count over one pass; a restart re-seeds the drops, so it starts a fresh one.
 struct StalenessRun {
     policy: Staleness,
     previous: f64,
     stalled: usize,
 }
 
-impl EscalationHandler for StalenessRun {
-    fn should_escalate(&mut self, progress: Progress) -> bool {
-        let current = progress.normal_eq_residual;
+impl StalenessRun {
+    /// Counts this iteration's normal-equation drop; true once `window` in a row stalled.
+    fn stalled(&mut self, current: f64) -> bool {
         if self.previous.is_finite() && self.previous > 0.0 {
             if current / self.previous > self.policy.threshold {
                 self.stalled += 1;
@@ -203,130 +220,128 @@ impl EscalationHandler for StalenessRun {
     }
 }
 
-/// Optional behaviors for [`mlsmr`].
-#[derive(Clone, Copy, Default)]
-pub struct MlsmrOptions<'a> {
-    /// Residual-correction start; tolerances stay relative to `‖b‖` (`‖b − A x₀‖` if `b = 0`).
-    pub warm_start: Option<&'a [f64]>,
-    /// Hands off to a stronger preconditioner mid-run; see [`EscalationPolicy`].
-    pub escalation: Option<&'a dyn EscalationPolicy>,
-    /// Local reorthogonalization window; `None` disables it.
-    pub local_size: Option<usize>,
-}
-
-/// `M = I`: [`mlsmr`] with it is plain LSMR.
-#[derive(Clone, Copy, Debug)]
-pub struct IdentityPrecond {
-    /// Dimension of the solution.
-    pub dim: usize,
-}
-
-impl Operator for IdentityPrecond {
-    fn nrows(&self) -> usize {
-        self.dim
-    }
-    fn ncols(&self) -> usize {
-        self.dim
-    }
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        y.copy_from_slice(x);
-        Ok(())
-    }
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        self.apply(x, y)
-    }
-}
-
-/// Preconditioned LSMR with `M ≈ AᵀA`, one `M⁻¹` apply per iteration; `M⁻¹` must be nonsingular.
-pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
+/// LSMR on `min ‖b − A x‖₂` preconditioned by `M⁻¹ ≈ (AᵀA)⁻¹`; [`IdentityPrecond`](faer::matrix_free::IdentityPrecond) for none.
+#[allow(clippy::too_many_arguments)]
+pub fn mlsmr<A: BiLinOp<f64> + ?Sized, M: LinOp<f64> + ?Sized>(
     operator: &A,
     b: &[f64],
     preconditioner: &M,
-    tol: f64,
-    maxiter: usize,
-    options: MlsmrOptions<'_>,
-) -> Result<LsmrResult, SolveError> {
-    validate_lsmr_inputs(operator, b, tol)?;
-    let n = operator.ncols();
-    if preconditioner.nrows() != n || preconditioner.ncols() != n {
-        return Err(invalid_input(format!(
-            "preconditioner shape {}x{} must match operator column count {n}",
-            preconditioner.nrows(),
-            preconditioner.ncols(),
-        )));
+    x: &mut [f64],
+    start: InitialGuess,
+    options: &LsmrOptions,
+    stall: Option<Staleness>,
+    par: Par,
+    scratch: &mut MemBuffer,
+) -> Result<LsmrInfo, SolveError> {
+    let (m, n) = (operator.nrows(), operator.ncols());
+    assert_eq!(
+        (b.len(), x.len()),
+        (m, n),
+        "b and x lengths against the operator"
+    );
+    let shape = (preconditioner.nrows(), preconditioner.ncols());
+    assert_eq!(
+        shape,
+        (n, n),
+        "preconditioner shape against the operator columns"
+    );
+    if start == InitialGuess::Zero {
+        x.fill(0.0);
     }
-    let MlsmrOptions {
-        warm_start,
-        escalation,
-        local_size,
-    } = options;
-
-    if let Some(x0) = warm_start {
-        if x0.len() != n {
-            return Err(invalid_input(format!(
-                "warm-start length {} does not match operator column count {n}",
-                x0.len()
-            )));
-        }
-        if let Some((index, value)) = x0.iter().copied().enumerate().find(|(_, v)| !v.is_finite()) {
-            return Err(invalid_input(format!(
-                "warm-start entry {index} must be finite, got {value}"
-            )));
-        }
-    }
+    validate_lsmr_inputs(b, x, options.tol)?;
+    grow(
+        scratch,
+        StackReq::any_of(&[
+            operator.apply_scratch(1, par),
+            operator.transpose_apply_scratch(1, par),
+            preconditioner.apply_scratch(1, par),
+        ]),
+    );
+    let ctx = Ctx {
+        par,
+        stack: MemStack::new(scratch),
+    };
 
     // `b` is finite entrywise, but its norm sets the tolerance and an ∞ there certifies anything.
     let b_norm = finite(vec_norm(b), "rhs norm")?;
-    let local_size = local_size.unwrap_or(0);
+    let local_size = options.local_size.unwrap_or(0);
+    let warm = x.iter().any(|&v| v != 0.0);
 
     // A zero start vector needs no stream; a warm one must be formed in the stream to be measured.
-    let staged = match warm_start {
-        None => (b_norm > 0.0).then(|| {
-            (
-                StagedStart::cold(operator, preconditioner, b, local_size),
-                b_norm,
-            )
-        }),
-        Some(x0) => {
-            let (staged, norm) = StagedStart::warm(operator, preconditioner, x0, b, local_size)?;
-            // Unlike `b`, the residual is computed: an ∞ entry norms to NaN, read as β₁ = 0 downstream.
-            let norm = finite(norm, "warm-start residual norm")?;
-            (norm > 0.0).then_some((staged, norm))
+    let (mut staged, rhs_norm) = if warm {
+        let (staged, norm) = StagedStart::warm(operator, preconditioner, x, b, local_size, ctx);
+        // Unlike `b`, the residual is computed: an ∞ entry norms to NaN, read as β₁ = 0 downstream.
+        let norm = finite(norm, "warm-start residual norm")?;
+        if norm == 0.0 {
+            return Ok(LsmrInfo::exact(LsmrStopReason::WarmStartExact));
         }
-    };
-    let Some((mut staged, rhs_norm)) = staged else {
-        let (x, stop_reason) = match warm_start {
-            Some(x0) => (x0.to_vec(), LsmrStopReason::WarmStartExact),
-            None => (vec![0.0; n], LsmrStopReason::ZeroRhs),
-        };
-        return Ok(LsmrResult {
-            x,
-            converged: true,
-            iterations: 0,
-            residual_norm: 0.0,
-            normal_eq_residual: 0.0,
-            stop_reason,
-            true_residual: None,
-        });
+        (staged, norm)
+    } else {
+        if b_norm == 0.0 {
+            return Ok(LsmrInfo::exact(LsmrStopReason::ZeroRhs));
+        }
+        (
+            StagedStart::cold(operator, preconditioner, b, local_size, ctx),
+            b_norm,
+        )
     };
 
-    let references = match warm_start {
-        None => None,
-        Some(_) if b_norm > 0.0 => Some(staged.gradient_references(b, b_norm)?),
-        Some(_) => None,
+    let references = if warm && b_norm > 0.0 {
+        Some(staged.gradient_references(b, b_norm)?)
+    } else {
+        None
     };
     let (bidiag, step1, cold_plain_reference) = staged.restart(rhs_norm)?;
     let reference = references.map_or_else(
         || NormalEqReference::cold(step1, cold_plain_reference),
         |(metric, plain)| NormalEqReference::warm(metric, plain, step1, cold_plain_reference),
     );
-    let start = SolveStart {
-        x0: warm_start,
-        reference,
-    };
     let reference_norm = if b_norm > 0.0 { b_norm } else { rhs_norm };
-    let criteria = ConvergenceCriteria::new(reference_norm, tol);
-    lsmr_from_bidiag(bidiag, step1, b, start, criteria, maxiter, escalation)
+    let criteria = ConvergenceCriteria::new(reference_norm, options.tol);
+    lsmr_from_bidiag(bidiag, step1, b, x, reference, criteria, options, stall)
+}
+
+impl LsmrInfo {
+    /// A run that needed no iteration: the start already solved it.
+    fn exact(stop_reason: LsmrStopReason) -> Self {
+        Self {
+            converged: true,
+            iterations: 0,
+            residual_norm: 0.0,
+            normal_eq_residual: 0.0,
+            stop_reason,
+        }
+    }
+}
+
+/// Grows `scratch` to hold `req`; never shrinks it.
+fn grow(scratch: &mut MemBuffer, req: StackReq) {
+    if !MemStack::new(scratch).can_hold(req) {
+        *scratch = MemBuffer::new(req);
+    }
+}
+
+/// `f(x, y)` on unit-stride slices; a strided column goes through a heap copy.
+pub fn with_unit_stride<R>(
+    x: ColRef<'_, f64>,
+    mut y: ColMut<'_, f64>,
+    f: impl FnOnce(&[f64], &mut [f64]) -> R,
+) -> R {
+    let copied: Vec<f64>;
+    let x = match x.try_as_col_major() {
+        Some(x) => x.as_slice(),
+        None => {
+            copied = x.iter().copied().collect();
+            &copied
+        }
+    };
+    if let Some(y) = y.rb_mut().try_as_col_major_mut() {
+        return f(x, y.as_slice_mut());
+    }
+    let mut staged: Vec<f64> = y.rb().iter().copied().collect();
+    let r = f(x, &mut staged);
+    y.copy_from(ColRef::from_slice(&staged));
+    r
 }
 
 /// Restarts from a refuted tolerance stop before the solve is refused outright.
@@ -370,33 +385,27 @@ impl NormalEqReference {
     }
 }
 
-/// Initial iterate and fixed references; warm streams measure `b − A x₀`, not `b`.
-struct SolveStart<'a> {
-    x0: Option<&'a [f64]>,
-    reference: NormalEqReference,
-}
-
-/// Runs LSMR on the correction to `x0`, restarting from any tolerance stop `b − A x` refutes.
+/// Runs LSMR on the correction to `x`, restarting from any tolerance stop `b − A x` refutes.
+#[allow(clippy::too_many_arguments)]
 fn lsmr_from_bidiag<B: Bidiagonalization>(
     mut bidiag: B,
     mut step1: BidiagStep,
     b: &[f64],
-    start: SolveStart<'_>,
+    x: &mut [f64],
+    reference: NormalEqReference,
     criteria: ConvergenceCriteria,
-    maxiter: usize,
-    escalation: Option<&dyn EscalationPolicy>,
-) -> Result<LsmrResult, SolveError> {
-    let n = bidiag.v().len();
-    let reference = start.reference;
-    let mut base: Option<Cow<'_, [f64]>> = start.x0.map(Cow::Borrowed);
+    options: &LsmrOptions,
+    stall: Option<Staleness>,
+) -> Result<LsmrInfo, SolveError> {
+    let maxiter = options.maxiter;
+    let par = bidiag.par();
     let mut iterations = 0;
     let mut restarts = 0;
     loop {
         // A metric reporting no gradient at all may be hiding one outside itself.
         if step1.alpha == 0.0 {
-            let x = base.map_or_else(|| vec![0.0; n], Cow::into_owned);
             let b_norm = vec_norm(b);
-            let (converged, normal_eq_residual) = match bidiag.hidden_gradient(b, b_norm)? {
+            let (converged, normal_eq_residual) = match bidiag.hidden_gradient(b, b_norm) {
                 None => (true, 0.0),
                 Some((per_unit_residual, b_image)) => {
                     let normar = Magnitude::product(step1.beta, per_unit_residual);
@@ -411,8 +420,7 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
                     )
                 }
             };
-            return Ok(LsmrResult {
-                x,
+            return Ok(LsmrInfo {
                 converged,
                 iterations,
                 residual_norm: step1.beta,
@@ -422,12 +430,10 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
                 } else {
                     LsmrStopReason::FalseConvergence
                 },
-                true_residual: None,
             });
         }
 
-        // A pass reports its drop from its own ζ̄₀, so a restarted one needs a handler that agrees.
-        let mut escalation = escalation.map(EscalationPolicy::handler);
+        let mut stall = stall.map(Staleness::run);
         let mut convergence = criteria.start(step1.alpha);
         let mut recurrence = LsmrRecurrenceState::init(step1);
         let mut solution = SolutionState::init(bidiag.v(), step1.beta);
@@ -438,7 +444,7 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
                 let step = bidiag.step()?;
                 convergence.observe(step);
                 let curr_rot = recurrence.step(step);
-                solution.update(bidiag.v(), curr_rot, prev_rot);
+                solution.update(bidiag.v(), curr_rot, prev_rot, par);
 
                 // The tolerance test catches breakdown when the residual recurrences collapse.
                 match convergence.check(&recurrence) {
@@ -448,98 +454,70 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
                         break 'pass LsmrStopReason::NormalEquationTolerance
                     }
                 }
-                if let Some(rule) = escalation.as_deref_mut() {
-                    let progress = Progress {
-                        iteration: iterations,
-                        normal_eq_residual: recurrence.relative_normal_eq_residual(),
-                    };
-                    if rule.should_escalate(progress) {
-                        break 'pass LsmrStopReason::Escalated;
-                    }
+                let drop = recurrence.relative_normal_eq_residual();
+                if stall.as_mut().is_some_and(|s| s.stalled(drop)) {
+                    break 'pass LsmrStopReason::Stalled;
                 }
                 prev_rot = curr_rot;
             }
             LsmrStopReason::MaxIterations
         };
 
-        let mut x = solution.into_x();
-        if let Some(base) = &base {
-            axpby(&mut x, base, 1.0, 1.0);
-        }
+        axpby(x, solution.correction(), 1.0, 1.0, par);
         // Only tolerance stops measure `x`, and a non-finite entry never recovers.
         if let Some((index, value)) = x.iter().copied().enumerate().find(|(_, v)| !v.is_finite()) {
             return Err(invalid_input(format!(
                 "non-finite solution entry {index} ({value})"
             )));
         }
-        let mut result = LsmrResult {
-            x,
+        let mut info = LsmrInfo {
             converged: false,
             iterations,
             residual_norm: recurrence.residual_estimate(),
             normal_eq_residual: reference.relative(recurrence.normal_eq_residual_estimate()),
             stop_reason,
-            true_residual: None,
         };
         // Only a tolerance stop claims convergence, so only it is worth a true-residual evaluation.
         if matches!(
             stop_reason,
             LsmrStopReason::ResidualTolerance | LsmrStopReason::NormalEquationTolerance
         ) {
-            let residual_norm = bidiag.residual_norm(&result.x, b)?;
-            result.converged = criteria.corroborates_residual(residual_norm, result.residual_norm);
-            if result.converged && stop_reason == LsmrStopReason::NormalEquationTolerance {
-                if let Some(current) = bidiag.plain_gradient(residual_norm)? {
-                    result.converged = criteria.corroborates_normal_eq(
-                        residual_norm,
-                        current,
-                        reference.plain,
-                        result.normal_eq_residual,
-                    );
-                }
+            let residual_norm = bidiag.residual_norm(x, b);
+            info.converged = criteria.corroborates_residual(residual_norm, info.residual_norm);
+            if info.converged && stop_reason == LsmrStopReason::NormalEquationTolerance {
+                info.converged = criteria.corroborates_normal_eq(
+                    residual_norm,
+                    bidiag.plain_gradient(residual_norm),
+                    reference.plain,
+                    info.normal_eq_residual,
+                );
             }
-            if !result.converged
+            if !info.converged
                 && residual_norm.is_finite()
                 && restarts < MAX_RESTARTS
                 && iterations < maxiter
             {
                 restarts += 1;
                 step1 = bidiag.restart(residual_norm)?;
-                base = Some(Cow::Owned(result.x));
                 continue;
             }
-            if !result.converged {
-                result.stop_reason = LsmrStopReason::FalseConvergence;
+            if !info.converged {
+                info.stop_reason = LsmrStopReason::FalseConvergence;
                 // The estimate is the refuted claim; a seed from the staged residual measures `x`.
-                result.normal_eq_residual = if residual_norm.is_finite() {
+                info.normal_eq_residual = if residual_norm.is_finite() {
                     let step = bidiag.restart(residual_norm)?;
                     reference.relative(Magnitude::product(step.alpha, step.beta))
                 } else {
                     residual_norm
                 };
             }
-            result.residual_norm = residual_norm;
-            // A refused stop's reseed normalized the staged residual in place.
-            if result.converged {
-                result.true_residual = Some(bidiag.into_residual());
-            }
+            info.residual_norm = residual_norm;
         }
-        return Ok(result);
+        return Ok(info);
     }
 }
 
-fn validate_lsmr_inputs<A: Operator + ?Sized>(
-    operator: &A,
-    b: &[f64],
-    tol: f64,
-) -> Result<(), SolveError> {
-    if b.len() != operator.nrows() {
-        return Err(invalid_input(format!(
-            "rhs length {} does not match operator row count {}",
-            b.len(),
-            operator.nrows()
-        )));
-    }
+fn validate_lsmr_inputs(b: &[f64], x: &[f64], tol: f64) -> Result<(), SolveError> {
     if !tol.is_finite() || tol < 0.0 {
         return Err(invalid_input(format!(
             "tolerance must be finite and nonnegative, got {tol}"
@@ -548,6 +526,11 @@ fn validate_lsmr_inputs<A: Operator + ?Sized>(
     if let Some((index, value)) = b.iter().copied().enumerate().find(|(_, v)| !v.is_finite()) {
         return Err(invalid_input(format!(
             "rhs entry {index} must be finite, got {value}"
+        )));
+    }
+    if let Some((index, value)) = x.iter().copied().enumerate().find(|(_, v)| !v.is_finite()) {
+        return Err(invalid_input(format!(
+            "start entry {index} must be finite, got {value}"
         )));
     }
     Ok(())

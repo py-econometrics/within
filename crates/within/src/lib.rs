@@ -41,6 +41,8 @@ pub use config::{
 pub use domain::{Design, Effect};
 pub use error::{BuildError, BuildWarning, SolveError, WithinError};
 pub use operator::schwarz::Preconditioner;
+/// What [`Preconditioner`]'s `LinOp` apply takes, so callers need no faer dependency of their own.
+pub use schwarz_precond::{LinOp, MatMut, MatRef, MemBuffer, MemStack, Par, StackReq};
 pub use solver::{
     solve, solve_batch, BatchSolveResult, CoefficientLayout, IntoDesign, PreconditionerInput,
     SolveResult, Solver,

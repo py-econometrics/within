@@ -1,6 +1,6 @@
 //! The prolongation `Rᵀ = [R₁ᵀ … Rₖᵀ]` of the stacked restriction, summing in a fixed order.
 
-use rayon::prelude::*;
+use crate::par::{for_each_chunk, Par};
 
 /// For each DOF, the slots of the stacked local vector holding it, in ascending slot order.
 pub(crate) struct Prolongation {
@@ -33,30 +33,26 @@ impl Prolongation {
     }
 
     /// `global[g] = Σ local[s]` over the slots `s` of `g`, summed in ascending `s`.
-    pub(crate) fn apply(&self, local: &[f64], global: &mut [f64]) {
+    pub(crate) fn apply(&self, local: &[f64], global: &mut [f64], par: Par) {
         debug_assert_eq!(local.len(), self.slots.len());
         debug_assert_eq!(global.len() + 1, self.offsets.len());
         const CHUNK: usize = 4096;
-        global
-            .par_chunks_mut(CHUNK)
-            .enumerate()
-            .for_each(|(ci, chunk)| {
-                let first = ci * CHUNK;
-                for (g, o) in (first..).zip(chunk.iter_mut()) {
-                    let mut sum = 0.0;
-                    for &s in &self.slots[self.offsets[g]..self.offsets[g + 1]] {
-                        sum += local[s as usize];
-                    }
-                    *o = sum;
+        for_each_chunk(par, global, CHUNK, &|first, chunk: &mut [f64]| {
+            for (g, o) in (first..).zip(chunk.iter_mut()) {
+                let mut sum = 0.0;
+                for &s in &self.slots[self.offsets[g]..self.offsets[g + 1]] {
+                    sum += local[s as usize];
                 }
-            });
+                *o = sum;
+            }
+        });
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fold::assert_pool_independent;
+    use crate::fold::assert_budget_independent;
     use rstest::{fixture, rstest};
 
     #[test]
@@ -64,7 +60,7 @@ mod tests {
         let big = 2f64.powi(53);
         let p = Prolongation::new([1u32, 0, 1, 1].into_iter(), 3);
         let mut out = vec![f64::NAN; 3];
-        p.apply(&[1.0, 3.0, big, -big], &mut out);
+        p.apply(&[1.0, 3.0, big, -big], &mut out, Par::Seq);
         // `1 + 2⁵³` rounds to `2⁵³`; summed in reverse, DOF 1 would be 1.
         assert_eq!(out, vec![3.0, 0.0, 0.0]);
     }
@@ -92,9 +88,9 @@ mod tests {
         scattered_prolongation: Prolongation,
         wide_range_local: Vec<f64>,
     ) {
-        assert_pool_independent(|| {
+        assert_budget_independent(|par| {
             let mut global = vec![0.0; DOFS as usize];
-            scattered_prolongation.apply(&wide_range_local, &mut global);
+            scattered_prolongation.apply(&wide_range_local, &mut global, par);
             global.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
         });
     }

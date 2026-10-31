@@ -1,7 +1,7 @@
 //! Schwarz local solver over approx-chol's irreducible-block factors.
 
 use approx_chol::{BlockFactor, InnerParallelism};
-use schwarz_precond::{LocalSolveError, LocalSolver};
+use schwarz_precond::{LocalSolver, MatMut, MemStack, Par, StackReq};
 use serde::{Deserialize, Serialize};
 
 /// Consecutive irreducible blocks; the subdomain's local order concatenates their vertices.
@@ -14,6 +14,25 @@ impl BlockSolver {
     pub(crate) fn new(blocks: Vec<BlockFactor>) -> Self {
         Self { blocks }
     }
+
+    /// Whether a solve has enough splittable work to pay for nested rayon.
+    fn splits(&self) -> bool {
+        const MIN_INNER_PARALLEL_WORK: usize = 200_000;
+        let work = self
+            .blocks
+            .iter()
+            .map(BlockFactor::splittable_work)
+            .sum::<usize>();
+        work >= MIN_INNER_PARALLEL_WORK
+    }
+
+    fn scratch_len(&self) -> usize {
+        self.blocks
+            .iter()
+            .map(BlockFactor::scratch_len)
+            .max()
+            .unwrap_or(0)
+    }
 }
 
 impl LocalSolver for BlockSolver {
@@ -21,40 +40,29 @@ impl LocalSolver for BlockSolver {
         self.blocks.iter().map(|b| b.vertices().len()).sum()
     }
 
-    fn workspace_len(&self) -> usize {
-        self.blocks
-            .iter()
-            .map(BlockFactor::scratch_len)
-            .max()
-            .unwrap_or(0)
+    fn solve_local_scratch(&self, _rhs_ncols: usize, _par: Par) -> StackReq {
+        StackReq::new::<f64>(self.scratch_len())
     }
 
-    fn solve_local(
-        &self,
-        x: &mut [f64],
-        workspace: &mut [f64],
-        allow_inner_parallelism: bool,
-    ) -> Result<(), LocalSolveError> {
-        let inner = if allow_inner_parallelism {
+    fn solve_local(&self, x: MatMut<'_, f64>, par: Par, stack: &mut MemStack) {
+        let inner = if par.degree() > 1 && self.splits() {
             InnerParallelism::Allow
         } else {
             InnerParallelism::Forbid
         };
-        let mut rest = x;
-        for block in &self.blocks {
-            let (local, tail) = rest.split_at_mut(block.vertices().len());
-            block
-                .solve_local(local, &mut workspace[..block.scratch_len()], inner)
-                .map_err(|e| LocalSolveError::BackendFailed {
-                    context: "BlockSolver::solve_local",
-                    message: e.to_string(),
-                })?;
-            rest = tail;
+        let (mut scratch, _) = stack.make_with(self.scratch_len(), |_| 0.0);
+        for column in x.col_iter_mut() {
+            let mut rest = column
+                .try_as_col_major_mut()
+                .expect("Schwarz passes unit-stride columns")
+                .as_slice_mut();
+            for block in &self.blocks {
+                let (local, tail) = rest.split_at_mut(block.vertices().len());
+                block
+                    .solve_local(local, &mut scratch[..block.scratch_len()], inner)
+                    .expect("buffers sized by the factor");
+                rest = tail;
+            }
         }
-        Ok(())
-    }
-
-    fn inner_parallelism_work_estimate(&self) -> usize {
-        self.blocks.iter().map(BlockFactor::splittable_work).sum()
     }
 }

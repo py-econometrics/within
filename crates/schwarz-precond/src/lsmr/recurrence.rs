@@ -7,8 +7,11 @@
 
 use super::bidiag::{BidiagStep, LSMR_PAR_THRESHOLD, LSMR_UPDATE_CHUNK};
 use super::magnitude::Magnitude;
-use rayon::iter::{IndexedParallelIterator, ParallelIterator};
-use rayon::prelude::{ParallelSlice, ParallelSliceMut};
+use crate::fold::for_each_piece;
+use crate::par::{at_least, Par};
+
+/// `(h̄, h)` and `(x, v)` over one range of rows.
+type Rows<'a> = ((&'a mut [f64], &'a mut [f64]), (&'a mut [f64], &'a [f64]));
 
 /// Givens rotation built from `(a, b)` so applying it yields `(r, 0)`, `r = hypot(a, b)`.
 #[derive(Clone, Copy)]
@@ -247,7 +250,7 @@ impl SolutionState {
     }
 
     /// One `(x, h, h̄)` step; `v` must be normalized `v_{k+1}` and `prev` carries `(ρ, ρ̄)_{k-1}`.
-    pub(super) fn update(&mut self, v: &[f64], curr: RotationStep, prev: RotationStep) {
+    pub(super) fn update(&mut self, v: &[f64], curr: RotationStep, prev: RotationStep, par: Par) {
         // `ρρ̄` scales with `‖A‖²`, and `ζ/(ρρ̄)` can underflow where `β₁ζ/(ρρ̄)` does not.
         let t_x = if curr.rho == 0.0 || curr.rho_bar == 0.0 {
             0.0
@@ -262,7 +265,9 @@ impl SolutionState {
         let n = self.x.len();
         debug_assert_eq!(v.len(), n);
 
-        let chunk = |hb_c: &mut [f64], h_c: &mut [f64], x_c: &mut [f64], v_c: &[f64]| {
+        let rows = ((&mut self.h_bar[..], &mut self.h[..]), (&mut self.x[..], v));
+        let par = at_least(par, n, LSMR_PAR_THRESHOLD);
+        let leaf = |((hb_c, h_c), (x_c, v_c)): Rows<'_>| {
             for (((hbi, hi), xi), vi) in hb_c
                 .iter_mut()
                 .zip(h_c.iter_mut())
@@ -276,21 +281,12 @@ impl SolutionState {
                 *hi = *vi - t_h * h_old;
             }
         };
-
-        if n >= LSMR_PAR_THRESHOLD {
-            self.h_bar
-                .par_chunks_mut(LSMR_UPDATE_CHUNK)
-                .zip(self.h.par_chunks_mut(LSMR_UPDATE_CHUNK))
-                .zip(self.x.par_chunks_mut(LSMR_UPDATE_CHUNK))
-                .zip(v.par_chunks(LSMR_UPDATE_CHUNK))
-                .for_each(|(((hb_c, h_c), x_c), v_c)| chunk(hb_c, h_c, x_c, v_c));
-        } else {
-            chunk(&mut self.h_bar, &mut self.h, &mut self.x, v);
-        }
+        for_each_piece(par, rows, LSMR_UPDATE_CHUNK, &leaf);
     }
 
-    pub(super) fn into_x(self) -> Vec<f64> {
-        self.x
+    /// `x_k − x₀`.
+    pub(super) fn correction(&self) -> &[f64] {
+        &self.x
     }
 }
 

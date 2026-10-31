@@ -8,8 +8,9 @@ use crate::config::{
     DEFAULT_DENSE_SCHUR_THRESHOLD,
 };
 use crate::domain::{build_local_domains, Design, LocalDomain, PreparedDesign};
+use crate::operator::apply_ambient;
 use crate::operator::schwarz::build_additive;
-use schwarz_precond::{LocalSolver, Operator};
+use schwarz_precond::{LocalSolver, MatMut, MemBuffer, MemStack, Par};
 
 const BLOCK_ELIM_NESTED_RAYON_CHILD_ENV: &str = "WITHIN_TEST_BLOCK_ELIM_NESTED_RAYON_CHILD";
 
@@ -59,8 +60,7 @@ fn run_block_elim_nested_rayon_case() {
     domain_pairs.push(domain.clone());
     let rhs: Vec<f64> = (0..n_dofs).map(|i| ((i % 29) as f64) - 14.0).collect();
 
-    let schwarz =
-        build_additive(domain_pairs, &config, n_dofs).expect("build block-elim preconditioner");
+    let schwarz = build_additive(domain_pairs, n_dofs).expect("build block-elim preconditioner");
 
     // Two subdomains: inner parallelism is off in a 1-thread pool and on in a 4-thread pool.
     let apply_in = |threads: usize| {
@@ -70,7 +70,7 @@ fn run_block_elim_nested_rayon_case() {
             .expect("test rayon pool")
             .install(|| {
                 let mut z = vec![0.0; n_dofs];
-                schwarz.apply(&rhs, &mut z).expect("apply succeeds");
+                apply_ambient(&schwarz, &rhs, &mut z);
                 z.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
             })
     };
@@ -129,15 +129,11 @@ fn test_block_elim_nested_rayon_does_not_deadlock() {
 #[test]
 fn test_build_additive() {
     let (design, domain_pairs) = make_test_data();
-    let schwarz = build_additive(
-        domain_pairs,
-        &LocalSolverConfig::default(),
-        design.design.n_dofs,
-    )
-    .expect("build schwarz with explicit domains");
+    let schwarz = build_additive(domain_pairs, design.design.n_dofs)
+        .expect("build schwarz with explicit domains");
     let r = vec![1.0; design.design.n_dofs];
     let mut z = vec![0.0; design.design.n_dofs];
-    schwarz.apply(&r, &mut z).expect("schwarz apply succeeds");
+    apply_ambient(&schwarz, &r, &mut z);
 }
 
 /// Three-entry eliminated stars, so clique sampling is not
@@ -156,11 +152,13 @@ fn small_subdomain_solve(schur: SchurMode, dense_threshold: usize) -> Vec<f64> {
     let mut x: Vec<f64> = (0..domain.solver.n_local())
         .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
         .collect();
-    let mut workspace = vec![0.0; domain.solver.workspace_len()];
-    domain
-        .solver
-        .solve_local(&mut x, &mut workspace, false)
-        .expect("local solve");
+    let mut scratch = MemBuffer::new(domain.solver.solve_local_scratch(1, Par::Seq));
+    let n = x.len();
+    domain.solver.solve_local(
+        MatMut::from_column_major_slice_mut(&mut x, n, 1),
+        Par::Seq,
+        MemStack::new(&mut scratch),
+    );
     x
 }
 
@@ -193,11 +191,10 @@ fn signed_wire_fixture_contains_uniform_weights() {
         "/tests/fixtures/preconditioner_v21.postcard"
     ));
     let preconditioner: Preconditioner = postcard::from_bytes(bytes).expect("signed fixture");
-    let Variant::Additive(additive) = &preconditioner.inner else {
+    let Variant::Additive { schwarz, .. } = &preconditioner.inner else {
         panic!("signed fixture must be additive Schwarz");
     };
-    assert!(additive
-        .inner
+    assert!(schwarz
         .subdomains()
         .iter()
         .any(|subdomain| { matches!(subdomain.partition_weights(), PartitionWeights::Uniform) }));

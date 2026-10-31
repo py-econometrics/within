@@ -4,11 +4,9 @@ use rstest::rstest;
 use super::super::bidiag::{BidiagStep, Bidiagonalization};
 use super::super::magnitude::Magnitude;
 use super::super::recurrence::ConvergenceCriteria;
-use super::super::{
-    lsmr_from_bidiag, mlsmr, EscalationHandler, EscalationPolicy, LsmrResult, LsmrStopReason,
-    MlsmrOptions, NormalEqReference, SolveStart,
-};
-use crate::lsmr::fixtures::{lsmr, DenseOp, DiagOp, FixedIterations, IdentityOp};
+use super::super::{lsmr_from_bidiag, LsmrInfo, LsmrStopReason, NormalEqReference};
+use crate::lsmr::fixtures::*;
+use crate::par::Par;
 use crate::SolveError;
 
 /// Stops on ResidualTolerance at every pass's first step; `true_residuals` scripts each check.
@@ -28,13 +26,15 @@ impl Bidiagonalization for ScriptedStream<'_> {
     fn v(&self) -> &[f64] {
         &self.v
     }
-    fn residual_norm(&mut self, _x: &[f64], _rhs: &[f64]) -> Result<f64, SolveError> {
-        Ok(self
-            .true_residuals
-            .next()
-            .expect("a scripted residual per pass"))
+    fn par(&self) -> Par {
+        Par::Seq
     }
-    fn plain_gradient(&mut self, _residual_norm: f64) -> Result<Option<Magnitude>, SolveError> {
+    fn residual_norm(&mut self, _x: &[f64], _rhs: &[f64]) -> f64 {
+        self.true_residuals
+            .next()
+            .expect("a scripted residual per pass")
+    }
+    fn plain_gradient(&mut self, _residual_norm: f64) -> Magnitude {
         panic!("a residual-tolerance stop must not request a plain-gradient audit")
     }
     fn restart(&mut self, _beta: f64) -> Result<BidiagStep, SolveError> {
@@ -43,28 +43,10 @@ impl Bidiagonalization for ScriptedStream<'_> {
             beta: 1.0,
         })
     }
-    fn into_residual(self) -> Vec<f64> {
-        Vec::new()
-    }
-}
-
-/// Counts the handlers a run asks for, one per pass.
-#[derive(Default)]
-struct CountingPolicy(std::sync::atomic::AtomicUsize);
-
-impl EscalationPolicy for CountingPolicy {
-    fn handler(&self) -> Box<dyn EscalationHandler> {
-        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Box::new(FixedIterations(usize::MAX))
-    }
 }
 
 /// `tol = 1e-10` against `‖b‖ = 1`, so the gap an honest stop may show is `1e-8`.
-fn scripted_run(
-    true_residuals: &[f64],
-    maxiter: usize,
-    escalation: Option<&dyn EscalationPolicy>,
-) -> LsmrResult {
+fn scripted_run(true_residuals: &[f64], maxiter: usize) -> (Vec<f64>, LsmrInfo) {
     let stream = ScriptedStream {
         v: vec![1.0, 2.0],
         true_residuals: true_residuals.iter().copied(),
@@ -74,26 +56,27 @@ fn scripted_run(
         beta: 1.0,
     };
     let criteria = ConvergenceCriteria::new(1.0, 1e-10);
-    lsmr_from_bidiag(
+    let options = opts(1e-10, maxiter);
+    let mut x = vec![0.0, 0.0];
+    let info = lsmr_from_bidiag(
         stream,
         step1,
         &[1.0, 1.0],
-        SolveStart {
-            x0: None,
-            reference: NormalEqReference::cold(step1, Magnitude::product(step1.alpha, step1.beta)),
-        },
+        &mut x,
+        NormalEqReference::cold(step1, Magnitude::product(step1.alpha, step1.beta)),
         criteria,
-        maxiter,
-        escalation,
+        &options,
+        None,
     )
-    .expect("scripted run")
+    .expect("scripted run");
+    (x, info)
 }
 
 #[rstest]
 #[case::exact(1e-12)]
 #[case::inside_the_gap(1e-9)]
 fn a_stop_the_true_residual_confirms_is_certified(#[case] true_residual: f64) {
-    let r = scripted_run(&[true_residual], 5, None);
+    let (_, r) = scripted_run(&[true_residual], 5);
     assert!(r.converged);
     assert_eq!(r.stop_reason, LsmrStopReason::ResidualTolerance);
     assert_eq!(r.iterations, 1);
@@ -103,24 +86,23 @@ fn a_stop_the_true_residual_confirms_is_certified(#[case] true_residual: f64) {
 /// `v` is constant, so each pass adds the same correction on top of the refuted iterate.
 #[test]
 fn a_refuted_stop_restarts_from_its_iterate() {
-    let r = scripted_run(&[1.0, 1e-12], 5, None);
+    let (x, r) = scripted_run(&[1.0, 1e-12], 5);
     assert!(r.converged);
     assert_eq!(r.stop_reason, LsmrStopReason::ResidualTolerance);
     assert_eq!(r.iterations, 2);
     assert_eq!(r.residual_norm, 1e-12);
-    assert_eq!(r.x, vec![2.0, 4.0]);
+    assert_eq!(x, vec![2.0, 4.0]);
 }
 
 #[test]
 fn restarts_are_capped_before_the_stop_is_refused() {
-    let r = scripted_run(&[1.0, 1.0, 1.0], 5, None);
+    let (x, r) = scripted_run(&[1.0, 1.0, 1.0], 5);
     assert!(!r.converged);
     assert_eq!(r.stop_reason, LsmrStopReason::FalseConvergence);
     assert_eq!(r.iterations, 3);
     assert_eq!(r.residual_norm, 1.0);
     assert_eq!(r.normal_eq_residual, 1.0);
-    assert_eq!(r.x, vec![3.0, 6.0]);
-    assert!(r.true_residual.is_none());
+    assert_eq!(x, vec![3.0, 6.0]);
 }
 
 /// A spent budget or a non-numeric residual leaves nothing to restart with.
@@ -128,7 +110,7 @@ fn restarts_are_capped_before_the_stop_is_refused() {
 #[case::budget_exhausted(1.0, 1)]
 #[case::non_finite_residual(f64::NAN, 5)]
 fn a_refuted_stop_without_a_restart_is_refused(#[case] true_residual: f64, #[case] maxiter: usize) {
-    let r = scripted_run(&[true_residual], maxiter, None);
+    let (_, r) = scripted_run(&[true_residual], maxiter);
     assert!(!r.converged);
     assert_eq!(r.stop_reason, LsmrStopReason::FalseConvergence);
     assert_eq!(r.iterations, 1);
@@ -139,24 +121,16 @@ fn a_refuted_stop_without_a_restart_is_refused(#[case] true_residual: f64, #[cas
         true_residual
     };
     assert_eq!(r.normal_eq_residual.to_bits(), expected.to_bits());
-    assert!(r.true_residual.is_none());
 }
 
 /// `x₀ + Δx` cancels to `x = 0` on the only step allowed, so the stop is refused unrestarted.
 #[rstest]
 fn a_refused_stop_reports_its_iterates_normal_equation_residual(#[values(1.0, 4.0)] m_inv: f64) {
-    let op = DenseOp {
-        rows: 1,
-        cols: 1,
-        data: vec![1.0],
-    };
-    let options = MlsmrOptions {
-        warm_start: Some(&[1e20]),
-        ..Default::default()
-    };
-    let r = mlsmr(&op, &[1.0], &DiagOp(vec![m_inv]), 1e-12, 1, options).expect("solve");
+    let op = dense(1, 1, &[1.0]);
+    let m = diag(&[m_inv]);
+    let (x, r) = run(&op, &[1.0], &m, Some(&[1e20]), &opts(1e-12, 1), None).expect("solve");
     assert_eq!(r.stop_reason, LsmrStopReason::FalseConvergence);
-    assert_eq!(r.x, vec![0.0]);
+    assert_eq!(x, vec![0.0]);
     assert_eq!(r.normal_eq_residual, 1.0);
 }
 
@@ -241,25 +215,15 @@ fn each_plain_gradient_audit_leg_is_explicit(
 /// `M⁻¹ = diag(1, 1e-20)` cannot certify the solution direction it hides.
 #[test]
 fn a_deflating_preconditioner_cannot_certify_the_direction_it_hides() {
-    let op = DenseOp {
-        rows: 3,
-        cols: 2,
-        data: vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
-    };
-    let result = mlsmr(
-        &op,
-        &[1.0, 1.0, 1.0],
-        &DiagOp(vec![1.0, 1e-20]),
-        1e-8,
-        20,
-        MlsmrOptions::default(),
-    )
-    .expect("deflated solve");
+    let op = dense(3, 2, &[1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+    let m = diag(&[1.0, 1e-20]);
+    let (x, result) =
+        run(&op, &[1.0, 1.0, 1.0], &m, None, &opts(1e-8, 20), None).expect("deflated solve");
 
     assert!(
-        !result.converged || (result.x[1] - 1.0).abs() <= 1e-8,
+        !result.converged || (x[1] - 1.0).abs() <= 1e-8,
         "a converged solve left the deflated coordinate at {} after {} iterations",
-        result.x[1],
+        x[1],
         result.iterations,
     );
 }
@@ -267,20 +231,13 @@ fn a_deflating_preconditioner_cannot_certify_the_direction_it_hides() {
 /// The warm-start certificate keeps the original right-hand side as its reference.
 #[test]
 fn a_warm_start_near_the_solution_keeps_its_certificate() {
-    let op = DenseOp {
-        rows: 4,
-        cols: 2,
-        data: vec![1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, -1.0],
-    };
+    let op = dense(4, 2, &[1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, -1.0]);
     let rhs = [1.0, 2.0, 3.0, 5.0];
-    let solution = lsmr(&op, &rhs, 1e-14, 100, None).expect("cold solve").x;
+    let solution = lsmr(&op, &rhs, 1e-14, 100, None).expect("cold solve").0;
     let warm_start = [solution[0] + 1e-11, solution[1] - 2e-11];
-    let options = MlsmrOptions {
-        warm_start: Some(&warm_start),
-        ..Default::default()
-    };
-
-    let result = mlsmr(&op, &rhs, &IdentityOp { n: 2 }, 1e-8, 20, options).expect("warm solve");
+    let m = IdentityPrecond { dim: 2 };
+    let (_, result) =
+        run(&op, &rhs, &m, Some(&warm_start), &opts(1e-8, 20), None).expect("warm solve");
 
     assert!(result.converged, "{:?}", result.stop_reason);
 }
@@ -318,15 +275,4 @@ fn the_backward_error_survives_the_ends_of_the_range(
             "{ratio:e} vs {expected:e}"
         );
     }
-}
-
-/// A restart re-seeds `ζ̄₀`, so its drops need a fresh handler, not the refuted pass's `previous`.
-#[test]
-fn a_restarted_pass_gets_its_own_escalation_handler() {
-    let policy = CountingPolicy::default();
-    let r = scripted_run(&[1.0, 1e-12], 5, Some(&policy));
-
-    assert!(r.converged);
-    assert_eq!(r.iterations, 2);
-    assert_eq!(policy.0.load(std::sync::atomic::Ordering::Relaxed), 2);
 }

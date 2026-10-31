@@ -1,7 +1,6 @@
 //! Additive Schwarz preconditioner `M⁻¹ = Σ Rᵢᵀ D̃ᵢ Aᵢ⁻¹ D̃ᵢ Rᵢ` as an
-//! [`Operator`](crate::Operator).
+//! [`LinOp`](faer::matrix_free::LinOp).
 
-mod buffers;
 mod preconditioner;
 
 pub use preconditioner::SchwarzPreconditioner;

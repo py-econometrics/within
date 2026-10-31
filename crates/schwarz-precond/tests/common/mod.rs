@@ -1,7 +1,8 @@
 //! Shared test fixtures for schwarz-precond integration tests.
 
 use schwarz_precond::{
-    LocalSolveError, LocalSolver, Operator, SolveError, SubdomainCore, SubdomainEntry,
+    BiLinOp, LinOp, LocalSolver, MatMut, MatRef, MemBuffer, MemStack, Par, StackReq, SubdomainCore,
+    SubdomainEntry,
 };
 
 // ---------------------------------------------------------------------------
@@ -9,6 +10,7 @@ use schwarz_precond::{
 // ---------------------------------------------------------------------------
 
 /// Tridiagonal SPD operator: diag=`diag_val`, off-diag=-1.
+#[derive(Debug)]
 pub struct TridiagOperator {
     pub n: usize,
     pub diag_val: f64,
@@ -20,28 +22,70 @@ impl TridiagOperator {
     }
 }
 
-impl Operator for TridiagOperator {
+impl LinOp<f64> for TridiagOperator {
+    fn apply_scratch(&self, _rhs_ncols: usize, _par: Par) -> StackReq {
+        StackReq::EMPTY
+    }
     fn nrows(&self) -> usize {
         self.n
     }
     fn ncols(&self) -> usize {
         self.n
     }
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        for i in 0..self.n {
-            y[i] = self.diag_val * x[i];
-            if i > 0 {
-                y[i] -= x[i - 1];
-            }
-            if i + 1 < self.n {
-                y[i] -= x[i + 1];
+    fn apply(&self, mut out: MatMut<'_, f64>, rhs: MatRef<'_, f64>, _: Par, _: &mut MemStack) {
+        for j in 0..rhs.ncols() {
+            for i in 0..self.n {
+                let mut y = self.diag_val * rhs[(i, j)];
+                if i > 0 {
+                    y -= rhs[(i - 1, j)];
+                }
+                if i + 1 < self.n {
+                    y -= rhs[(i + 1, j)];
+                }
+                out[(i, j)] = y;
             }
         }
-        Ok(())
     }
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        self.apply(x, y)
+    fn conj_apply(&self, out: MatMut<'_, f64>, rhs: MatRef<'_, f64>, par: Par, s: &mut MemStack) {
+        LinOp::apply(self, out, rhs, par, s)
     }
+}
+
+/// Symmetric, so every adjoint is the apply.
+impl BiLinOp<f64> for TridiagOperator {
+    fn transpose_apply_scratch(&self, _rhs_ncols: usize, _par: Par) -> StackReq {
+        StackReq::EMPTY
+    }
+    fn transpose_apply(
+        &self,
+        out: MatMut<'_, f64>,
+        rhs: MatRef<'_, f64>,
+        par: Par,
+        s: &mut MemStack,
+    ) {
+        LinOp::apply(self, out, rhs, par, s)
+    }
+    fn adjoint_apply(
+        &self,
+        out: MatMut<'_, f64>,
+        rhs: MatRef<'_, f64>,
+        par: Par,
+        s: &mut MemStack,
+    ) {
+        LinOp::apply(self, out, rhs, par, s)
+    }
+}
+
+/// `z = op r` under `par`, on scratch sized by the operator.
+pub fn apply(op: &impl LinOp<f64>, r: &[f64], z: &mut [f64], par: Par) {
+    let mut scratch = MemBuffer::new(op.apply_scratch(1, par));
+    let n = z.len();
+    op.apply(
+        MatMut::from_column_major_slice_mut(z, n, 1),
+        MatRef::from_column_major_slice(r, r.len(), 1),
+        par,
+        MemStack::new(&mut scratch),
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -67,20 +111,16 @@ impl LocalSolver for UniformDiagLocalSolver {
     fn n_local(&self) -> usize {
         self.n_local
     }
-    fn workspace_len(&self) -> usize {
-        0
+    fn solve_local_scratch(&self, _rhs_ncols: usize, _par: Par) -> StackReq {
+        StackReq::EMPTY
     }
-    fn solve_local(
-        &self,
-        x: &mut [f64],
-        _workspace: &mut [f64],
-        _allow_inner_parallelism: bool,
-    ) -> Result<(), LocalSolveError> {
-        assert_eq!(x.len(), self.n_local);
-        for v in x.iter_mut() {
-            *v *= self.inv_diag;
+    fn solve_local(&self, mut x: MatMut<'_, f64>, _par: Par, _stack: &mut MemStack) {
+        assert_eq!(x.nrows(), self.n_local);
+        for j in 0..x.ncols() {
+            for i in 0..x.nrows() {
+                x[(i, j)] *= self.inv_diag;
+            }
         }
-        Ok(())
     }
 }
 
@@ -112,29 +152,4 @@ pub fn make_schwarz_entries(n: usize) -> Vec<SubdomainEntry<UniformDiagLocalSolv
         );
     }
     entries
-}
-
-/// Local solver that always fails with `BackendFailed`.
-pub struct FailingLocalSolver {
-    pub n_local: usize,
-}
-
-impl LocalSolver for FailingLocalSolver {
-    fn n_local(&self) -> usize {
-        self.n_local
-    }
-    fn workspace_len(&self) -> usize {
-        0
-    }
-    fn solve_local(
-        &self,
-        _x: &mut [f64],
-        _workspace: &mut [f64],
-        _allow_inner_parallelism: bool,
-    ) -> Result<(), LocalSolveError> {
-        Err(LocalSolveError::BackendFailed {
-            context: "test.failing_local_solver",
-            message: format!("deliberate failure for n={}", self.n_local),
-        })
-    }
 }

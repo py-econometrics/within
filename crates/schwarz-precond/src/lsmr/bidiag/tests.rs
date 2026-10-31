@@ -2,24 +2,31 @@
 
 use rstest::rstest;
 
+use faer::dyn_stack::{MemBuffer, MemStack, StackReq};
+
+use faer::matrix_free::{BiLinOp, LinOp};
+use faer::{MatMut, MatRef};
+
 use super::{
-    alpha_from_vp, dot, par_dot, BidiagStep, Bidiagonalization, ModifiedGolubKahan, StagedStart,
+    alpha_from_vp, dot, par_dot, BidiagStep, Bidiagonalization, Ctx, ModifiedGolubKahan,
+    StagedStart,
 };
-use crate::lsmr::IdentityPrecond;
+use crate::lsmr::fixtures::*;
+use crate::par::Par;
+use crate::SolveError;
 
 /// The unpreconditioned stream from `b`, and its first step.
-fn cold_stream<'a, A: Operator>(
+fn cold_stream<'a, A: BiLinOp<f64>>(
     op: &'a A,
     identity: &'a IdentityPrecond,
     b: &[f64],
     local_size: usize,
+    ctx: Ctx<'a>,
 ) -> Result<(ModifiedGolubKahan<'a, A, IdentityPrecond>, BidiagStep), SolveError> {
-    let staged = StagedStart::cold(op, identity, b, local_size);
+    let staged = StagedStart::cold(op, identity, b, local_size, ctx);
     let (stream, step1, _) = staged.restart(crate::lsmr::vec_norm(b))?;
     Ok((stream, step1))
 }
-use crate::lsmr::fixtures::{DenseOp, DiagOp};
-use crate::{Operator, SolveError};
 
 /// A NaN `vp` clamped to α = 0 via `f64::max`; a product bound overflowed to ∞ or underflowed to 0.
 #[rstest]
@@ -31,7 +38,7 @@ use crate::{Operator, SolveError};
 fn alpha_from_vp_rejects_non_finite_and_indefinite_pairs(#[case] v: &[f64], #[case] p: &[f64]) {
     assert!(
         matches!(
-            alpha_from_vp(v, p).map_err(SolveError::from),
+            alpha_from_vp(v, p, Par::Seq).map_err(SolveError::from),
             Err(SolveError::InvalidInput { .. })
         ),
         "{v:?}·{p:?} accepted"
@@ -43,13 +50,17 @@ fn alpha_from_vp_rejects_non_finite_and_indefinite_pairs(#[case] v: &[f64], #[ca
 #[case::tiny_scale(&[1e-100, 1e-100], &[1e-100, -1.000000000001e-100])]
 #[case::extreme_scales(&[1e-316, 1e-316], &[1e308, -1.000000000001e308])]
 fn alpha_from_vp_clamps_a_pair_within_root_epsilon(#[case] v: &[f64], #[case] p: &[f64]) {
-    assert_eq!(alpha_from_vp(v, p).expect("within √ε"), 0.0, "{v:?}·{p:?}");
+    assert_eq!(
+        alpha_from_vp(v, p, Par::Seq).expect("within √ε"),
+        0.0,
+        "{v:?}·{p:?}"
+    );
 }
 
 /// `cos(v, p̃) ≈ 1e-328` underflows a re-sum normalized to 1, though `α ≈ 1e-158` does not.
 #[test]
 fn a_tiny_cosine_keeps_its_gradient_length() {
-    let alpha = alpha_from_vp(&[1e-158, 0.0], &[1e-158, 1e170]).expect("positive pair");
+    let alpha = alpha_from_vp(&[1e-158, 0.0], &[1e-158, 1e170], Par::Seq).expect("positive pair");
     assert!((alpha / 1e-158 - 1.0).abs() < 1e-12, "{alpha:e}");
 }
 
@@ -57,7 +68,8 @@ fn a_tiny_cosine_keeps_its_gradient_length() {
 #[test]
 fn a_negative_subnormal_pair_keeps_its_gradient_length() {
     let t = 2f64.powi(-537);
-    let alpha = alpha_from_vp(&[t; 3], &[1.49 * t, 1.49 * t, -2.9 * t]).expect("positive pair");
+    let alpha =
+        alpha_from_vp(&[t; 3], &[1.49 * t, 1.49 * t, -2.9 * t], Par::Seq).expect("positive pair");
     assert!(
         (alpha / (0.08f64.sqrt() * t) - 1.0).abs() < 1e-10,
         "{alpha:e}"
@@ -80,8 +92,8 @@ fn a_negatively_rounded_pair_clamps_however_the_resum_rounds() {
         let mut p: Vec<f64> = (0..20_000).map(|_| draw()).collect();
         let c = dot(&v, &p) / dot(&v, &v);
         p.iter_mut().zip(&v).for_each(|(pi, vi)| *pi -= c * vi);
-        if par_dot(&v, &p) < 0.0 {
-            assert_eq!(alpha_from_vp(&v, &p).expect("within √ε"), 0.0);
+        if par_dot(&v, &p, Par::Seq) < 0.0 {
+            assert_eq!(alpha_from_vp(&v, &p, Par::Seq).expect("within √ε"), 0.0);
         }
     }
 }
@@ -89,34 +101,64 @@ fn a_negatively_rounded_pair_clamps_however_the_resum_rounds() {
 /// `beta == 0.0` and `alpha > 0.0` are both false for NaN; unguarded, it poisons the run.
 #[test]
 fn a_non_finite_operator_norm_is_an_error() {
-    let result =
-        crate::lsmr::fixtures::lsmr(&DiagOp(vec![f64::NAN, 1.0]), &[1.0, 1.0], 1e-10, 50, None);
+    let result = lsmr(&diag(&[f64::NAN, 1.0]), &[1.0, 1.0], 1e-10, 50, None);
     assert!(matches!(result, Err(SolveError::InvalidInput { .. })));
 }
 
 /// A finite adjoint keeps `init` clean, so the overflow reaches the `step` guard on β.
 #[test]
 fn an_overflow_after_initialization_is_an_error() {
+    /// No matrix: the forward apply saturates at `f64::MAX` while the adjoint is the identity.
+    #[derive(Debug)]
     struct OverflowingForward;
-    impl Operator for OverflowingForward {
+    impl LinOp<f64> for OverflowingForward {
+        fn apply_scratch(&self, _: usize, _: Par) -> StackReq {
+            StackReq::EMPTY
+        }
         fn nrows(&self) -> usize {
             2
         }
         fn ncols(&self) -> usize {
             2
         }
-        fn apply(&self, _x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-            y.fill(f64::MAX);
-            Ok(())
+        fn apply(&self, mut out: MatMut<'_, f64>, _: MatRef<'_, f64>, _: Par, _: &mut MemStack) {
+            out.fill(f64::MAX);
         }
-        fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-            y.copy_from_slice(x);
-            Ok(())
+        fn conj_apply(&self, out: MatMut<'_, f64>, rhs: MatRef<'_, f64>, p: Par, s: &mut MemStack) {
+            self.apply(out, rhs, p, s)
         }
     }
-    let identity = IdentityPrecond { dim: 2 };
+    impl BiLinOp<f64> for OverflowingForward {
+        fn transpose_apply_scratch(&self, _: usize, _: Par) -> StackReq {
+            StackReq::EMPTY
+        }
+        fn transpose_apply(
+            &self,
+            mut out: MatMut<'_, f64>,
+            rhs: MatRef<'_, f64>,
+            _: Par,
+            _: &mut MemStack,
+        ) {
+            out.copy_from(rhs);
+        }
+        fn adjoint_apply(
+            &self,
+            out: MatMut<'_, f64>,
+            rhs: MatRef<'_, f64>,
+            p: Par,
+            s: &mut MemStack,
+        ) {
+            self.transpose_apply(out, rhs, p, s)
+        }
+    }
+    let mut buffer = MemBuffer::new(StackReq::EMPTY);
+    let ctx = Ctx {
+        par: Par::Seq,
+        stack: MemStack::new(&mut buffer),
+    };
+    let (op, identity) = (OverflowingForward, IdentityPrecond { dim: 2 });
     let (mut bidiag, first) =
-        cold_stream(&OverflowingForward, &identity, &[1.0, 1.0], 0).expect("finite init");
+        cold_stream(&op, &identity, &[1.0, 1.0], 0, ctx).expect("finite init");
     assert!(first.alpha > 0.0);
     let err = bidiag.step().err().expect("an overflowing β was accepted");
     assert!(
@@ -131,13 +173,7 @@ fn an_overflow_after_initialization_is_an_error() {
 /// tighter tolerance than they would be without reorthogonalization.
 #[test]
 fn local_reorth_keeps_the_window_vectors_orthogonal() {
-    let op = DenseOp::vandermonde(30, 12);
-    let b: Vec<f64> = (0..op.rows)
-        .map(|i| {
-            let x = i as f64 / (op.rows - 1) as f64;
-            (1.0 + x).ln()
-        })
-        .collect();
+    let (op, b) = vandermonde_ls();
 
     let local_size = 3;
     let n_iters = 10;
@@ -145,8 +181,13 @@ fn local_reorth_keeps_the_window_vectors_orthogonal() {
     // Run the bidiagonalization directly so we can capture v_k after each
     // step. Mirrors the body of `lsmr_from_bidiag` minus the recurrence.
     let collect_vs = |window_size: usize| -> Vec<Vec<f64>> {
-        let identity = IdentityPrecond { dim: op.cols };
-        let (mut bidiag, _) = cold_stream(&op, &identity, &b, window_size).expect("init");
+        let mut buffer = MemBuffer::new(StackReq::EMPTY);
+        let ctx = Ctx {
+            par: Par::Seq,
+            stack: MemStack::new(&mut buffer),
+        };
+        let identity = IdentityPrecond { dim: op.ncols() };
+        let (mut bidiag, _) = cold_stream(&op, &identity, &b, window_size, ctx).expect("init");
         let mut vs = vec![bidiag.v().to_vec()];
         for _ in 0..n_iters {
             bidiag.step().expect("step");
