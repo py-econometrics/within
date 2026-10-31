@@ -90,7 +90,7 @@ fn a_negatively_rounded_pair_clamps_however_the_resum_rounds() {
 #[test]
 fn a_non_finite_operator_norm_is_an_error() {
     let result =
-        crate::lsmr::fixtures::run_lsmr(&DiagOp(vec![f64::NAN, 1.0]), &[1.0, 1.0], 1e-10, 50, None);
+        crate::lsmr::fixtures::lsmr(&DiagOp(vec![f64::NAN, 1.0]), &[1.0, 1.0], 1e-10, 50, None);
     assert!(matches!(result, Err(SolveError::InvalidInput { .. })));
 }
 

@@ -3,8 +3,8 @@
 use super::*;
 use crate::{Operator, SolveError};
 
-/// Unpreconditioned [`mlsmr`]: the identity metric.
-pub(crate) fn run_lsmr<O: Operator + ?Sized>(
+/// The removed `lsmr`'s signature over [`mlsmr`] with the identity metric.
+pub(crate) fn lsmr<O: Operator + ?Sized>(
     op: &O,
     b: &[f64],
     tol: f64,

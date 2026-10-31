@@ -25,7 +25,7 @@ fn test_lsmr_large_magnitude_rhs_not_silently_zero() {
     // Entries ~1e155: the unscaled Σb² = 1e310 overflows f64, but the
     // max-scaled ‖b‖ stays finite. A = I, so the exact solution is x = b.
     let b = vec![1e155, 2e155, 3e155];
-    let result = run_lsmr(&IdentityOp { n: 3 }, &b, 1e-10, 100, None).expect("lsmr solve");
+    let result = lsmr(&IdentityOp { n: 3 }, &b, 1e-10, 100, None).expect("lsmr solve");
 
     let all_zero = result.x.iter().all(|&xi| xi == 0.0);
     assert!(
@@ -62,7 +62,7 @@ fn test_mlsmr_large_magnitude_rhs_not_silently_zero() {
 #[test]
 fn test_mlsmr_unpreconditioned() {
     let b = vec![1.0, 2.0, 3.0, 3.0];
-    let result = run_lsmr(&OverdeterminedOp, &b, 1e-10, 100, None).expect("lsmr solve");
+    let result = lsmr(&OverdeterminedOp, &b, 1e-10, 100, None).expect("lsmr solve");
     assert!(result.converged, "MLSMR did not converge");
     let err: f64 = result
         .x
@@ -101,7 +101,7 @@ fn test_mlsmr_preconditioned() {
 #[test]
 fn test_mlsmr_inconsistent_system() {
     let b = vec![1.0, 2.0, 3.0, 0.0];
-    let result = run_lsmr(&OverdeterminedOp, &b, 1e-10, 100, None).expect("lsmr solve");
+    let result = lsmr(&OverdeterminedOp, &b, 1e-10, 100, None).expect("lsmr solve");
     assert!(
         result.converged,
         "MLSMR did not converge on inconsistent system"
@@ -137,7 +137,7 @@ fn test_mlsmr_underdetermined_system() {
     }
 
     let b = vec![1.0, 2.0];
-    let result = run_lsmr(&UnderOp, &b, 1e-12, 100, None).expect("underdetermined solve");
+    let result = lsmr(&UnderOp, &b, 1e-12, 100, None).expect("underdetermined solve");
     assert!(result.converged);
     assert!((result.x[0] - 1.0).abs() < 1e-10);
     assert!((result.x[1] - 2.0).abs() < 1e-10);
@@ -169,7 +169,7 @@ fn test_mlsmr_rank_deficient_system() {
     }
 
     let b = vec![3.0, 6.0];
-    let result = run_lsmr(&RankDeficientOp, &b, 1e-12, 100, None).expect("rank-deficient solve");
+    let result = lsmr(&RankDeficientOp, &b, 1e-12, 100, None).expect("rank-deficient solve");
     assert!(result.converged);
     assert!(((result.x[0] + result.x[1]) - 3.0).abs() < 1e-10);
     assert!(normal_equation_residual(&RankDeficientOp, &result.x, &b) < 1e-10);
@@ -205,7 +205,7 @@ fn a_singular_preconditioner_cannot_certify_the_direction_it_annihilates(#[case]
 #[test]
 fn test_mlsmr_zero_column_and_zero_row() {
     let b = vec![2.0, 3.0];
-    let result = run_lsmr(&ZeroSecondRow, &b, 1e-12, 100, None).expect("degenerate solve");
+    let result = lsmr(&ZeroSecondRow, &b, 1e-12, 100, None).expect("degenerate solve");
     assert!(result.converged);
     assert!((result.x[0] - 2.0).abs() < 1e-10);
     assert!(result.x[1].abs() < 1e-10);
@@ -215,7 +215,7 @@ fn test_mlsmr_zero_column_and_zero_row() {
 #[test]
 fn test_mlsmr_maxiter_exhaustion() {
     let b = vec![1.0, 2.0, 3.0, 3.0];
-    let result = run_lsmr(&OverdeterminedOp, &b, 1e-15, 1, None).expect("lsmr solve");
+    let result = lsmr(&OverdeterminedOp, &b, 1e-15, 1, None).expect("lsmr solve");
     assert!(
         !result.converged,
         "should not converge in 1 iteration at 1e-15 tol"
@@ -235,7 +235,7 @@ fn test_mlsmr_none_matches_identity_precond() {
     let b = vec![1.0, 2.0, 3.0, 3.0];
     let id = IdentityOp { n: 3 };
 
-    let none_result = run_lsmr(&OverdeterminedOp, &b, 1e-12, 100, None).expect("lsmr solve");
+    let none_result = lsmr(&OverdeterminedOp, &b, 1e-12, 100, None).expect("lsmr solve");
     let id_result = mlsmr(
         &OverdeterminedOp,
         &b,
@@ -295,7 +295,7 @@ fn test_mlsmr_none_matches_identity_precond_windowed() {
     // Tight tolerance with headroom in maxiter: drives both paths to the
     // same minimum so the comparison isn't governed by rounding noise in
     // the convergence test.
-    let none_result = run_lsmr(&op, &b, 1e-12, 50, local).expect("lsmr windowed solve");
+    let none_result = lsmr(&op, &b, 1e-12, 50, local).expect("lsmr windowed solve");
     let opts = MlsmrOptions {
         local_size: local,
         ..Default::default()
@@ -343,8 +343,8 @@ fn test_mlsmr_none_matches_identity_precond_windowed() {
 #[test]
 fn test_mlsmr_local_reorth_zero_is_identity() {
     let b = vec![1.0, 2.0, 3.0, 3.0];
-    let r1 = run_lsmr(&OverdeterminedOp, &b, 1e-10, 100, None).expect("unwindowed solve");
-    let r2 = run_lsmr(&OverdeterminedOp, &b, 1e-10, 100, Some(0)).expect("zero-window solve");
+    let r1 = lsmr(&OverdeterminedOp, &b, 1e-10, 100, None).expect("unwindowed solve");
+    let r2 = lsmr(&OverdeterminedOp, &b, 1e-10, 100, Some(0)).expect("zero-window solve");
     assert_eq!(r1.iterations, r2.iterations);
     // Tight tolerance, not exact bit-for-bit, so determinism remains testable
     // if a future refactor adds parallel reductions.
@@ -372,8 +372,8 @@ fn test_mlsmr_local_reorth_unpreconditioned() {
     let tol = 1e-9;
     let maxiter = 30;
 
-    let r0 = run_lsmr(&op, &b, tol, maxiter, None).expect("no-reorth solve");
-    let r10 = run_lsmr(&op, &b, tol, maxiter, Some(10)).expect("windowed solve");
+    let r0 = lsmr(&op, &b, tol, maxiter, None).expect("no-reorth solve");
+    let r10 = lsmr(&op, &b, tol, maxiter, Some(10)).expect("windowed solve");
 
     // The windowed solve should reach the tolerance; the unwindowed one
     // typically stalls or overshoots maxiter on this matrix.
@@ -447,8 +447,7 @@ fn test_mlsmr_local_reorth_window_boundary_sizes(#[case] window_size: usize) {
         .collect();
 
     // 200 iterations lets a ring of one (no real reorthogonalization) converge at cond ≈ 1e10.
-    let result =
-        run_lsmr(&op, &b, 1e-9, 200, Some(window_size)).expect("lsmr boundary-window solve");
+    let result = lsmr(&op, &b, 1e-9, 200, Some(window_size)).expect("lsmr boundary-window solve");
     assert!(result.converged);
     assert!(
         normal_equation_residual(&op, &result.x, &b) < 1e-6,
@@ -461,7 +460,7 @@ fn test_mlsmr_local_reorth_window_boundary_sizes(#[case] window_size: usize) {
 #[test]
 fn an_overflowing_operator_norm_estimate_does_not_certify_a_stop() {
     let a = DiagOp(vec![1.2e154, 1e154]);
-    let result = run_lsmr(&a, &[1.0, 1.0], 1e-10, 100, None).expect("extreme-scale solve");
+    let result = lsmr(&a, &[1.0, 1.0], 1e-10, 100, None).expect("extreme-scale solve");
 
     assert!(result.converged);
     // The refused stop sat at 0.254 after one iteration.
@@ -481,7 +480,7 @@ fn a_response_nearly_orthogonal_to_the_design_certifies_under_an_identity_precon
         data: vec![1.0, 0.0, 0.0, 1e-2, 0.0, 0.0],
     };
     let b = vec![1e-12, 1e-12, 1.0];
-    let plain = run_lsmr(&op, &b, 1e-10, 50, None).expect("lsmr solve");
+    let plain = lsmr(&op, &b, 1e-10, 50, None).expect("lsmr solve");
     let id = mlsmr(
         &op,
         &b,
@@ -525,7 +524,7 @@ fn a_small_normed_design_still_gets_its_solution_update() {
         cols: 1,
         data: vec![1e-9, 0.0],
     };
-    let r = run_lsmr(&op, &[1e-5, 1.0], 1e-10, 1, None).expect("small-normed solve");
+    let r = lsmr(&op, &[1e-5, 1.0], 1e-10, 1, None).expect("small-normed solve");
     assert!(r.converged, "stop_reason: {:?}", r.stop_reason);
     assert!((r.x[0] / 1e4 - 1.0).abs() < 1e-9, "{:?}", r.x);
 }
@@ -544,7 +543,7 @@ fn the_solution_update_survives_its_unit_rhs_underflowing(
         data: vec![2f64.powi(1023), 0.0],
     };
     let b = [2f64.powi(fit_exp), 2f64.powi(miss_exp)];
-    let r = run_lsmr(&op, &b, 1e-10, 10, None).expect("extreme solve");
+    let r = lsmr(&op, &b, 1e-10, 10, None).expect("extreme solve");
     assert!(r.converged, "stop_reason: {:?}", r.stop_reason);
     let want = 2f64.powi(fit_exp - 1023);
     assert!(
@@ -558,7 +557,7 @@ fn the_solution_update_survives_its_unit_rhs_underflowing(
 #[rstest]
 fn the_residual_estimate_is_the_iterates_own(#[values(2, 4, 8)] maxiter: usize) {
     let (op, b) = vandermonde_ls();
-    let r = run_lsmr(&op, &b, 1e-14, maxiter, None).expect("budget solve");
+    let r = lsmr(&op, &b, 1e-14, maxiter, None).expect("budget solve");
     assert_eq!(r.stop_reason, LsmrStopReason::MaxIterations);
 
     let mut residual = vec![0.0; b.len()];
@@ -588,7 +587,7 @@ fn a_power_of_two_scaling_reproduces_the_unit_scale_solve(
     let solve = |op: &DenseOp, b: &[f64]| {
         let identity = IdentityOp { n: op.cols };
         match metric {
-            false => run_lsmr(op, b, 1e-4, 100, None),
+            false => lsmr(op, b, 1e-4, 100, None),
             true => mlsmr(op, b, &identity, 1e-4, 100, MlsmrOptions::default()),
         }
         .expect("scaled solve")

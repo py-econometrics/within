@@ -32,7 +32,7 @@ fn solve<A: Operator>(
         ..Default::default()
     };
     match metric {
-        Metric::None => run_lsmr(a, b, 1e-10, 50, local_size),
+        Metric::None => lsmr(a, b, 1e-10, 50, local_size),
         Metric::Identity => mlsmr(a, b, &IdentityOp { n }, 1e-10, 50, options),
         Metric::Diagonal => mlsmr(a, b, &diagonal, 1e-10, 50, options),
     }
@@ -122,7 +122,7 @@ fn a_definite_metric_whose_raw_dot_product_overflows_is_rescaled() {
 fn an_operator_at_the_top_of_the_range_solves_to_its_backward_error() {
     let a = DiagOp(vec![f64::MAX, 1.0]);
     let b = [1.0, 1.0];
-    let r = run_lsmr(&a, &b, 1e-10, 50, None).expect("top-of-range solve");
+    let r = lsmr(&a, &b, 1e-10, 50, None).expect("top-of-range solve");
 
     assert!(r.converged, "{:?}", r.stop_reason);
     assert!((r.x[0] * f64::MAX - 1.0).abs() < 1e-9, "{:?}", r.x);
@@ -176,7 +176,7 @@ fn a_run_past_krylov_exhaustion_never_returns_a_non_finite_x(
             MlsmrOptions::default(),
         )
     } else {
-        run_lsmr(&a, &b, 0.0, 5, None)
+        lsmr(&a, &b, 0.0, 5, None)
     };
     if let Ok(r) = r {
         assert!(
