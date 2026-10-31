@@ -297,6 +297,3 @@ pub(crate) fn build_schwarz(
     };
     Ok((Some(preconditioner), warnings))
 }
-
-#[cfg(test)]
-mod uniform_fixture_tests;

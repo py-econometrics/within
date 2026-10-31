@@ -239,3 +239,23 @@ fn test_dense_threshold_zero_disables_exact_route() {
     );
     assert_ne!(exact, approximate);
 }
+
+#[test]
+fn signed_wire_fixture_contains_uniform_weights() {
+    use crate::operator::schwarz::{Preconditioner, Variant};
+    use schwarz_precond::PartitionWeights;
+
+    let bytes = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/preconditioner_v21.postcard"
+    ));
+    let preconditioner: Preconditioner = postcard::from_bytes(bytes).expect("signed fixture");
+    let Variant::Additive(additive) = &preconditioner.inner else {
+        panic!("signed fixture must be additive Schwarz");
+    };
+    assert!(additive
+        .inner
+        .subdomains()
+        .iter()
+        .any(|subdomain| { matches!(subdomain.partition_weights(), PartitionWeights::Uniform) }));
+}

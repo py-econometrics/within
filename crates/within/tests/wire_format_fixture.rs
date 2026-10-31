@@ -3,6 +3,7 @@
 //! cross-version encoding shifts the same-build round-trip test cannot.
 //! Regenerate via the `#[ignore]`d `regenerate_wire_format_fixture` test.
 
+use rstest::rstest;
 use within::{Effect, LsmrOptions, Preconditioner, Solver};
 
 #[path = "common/orchestrate_helpers.rs"]
@@ -10,10 +11,7 @@ mod common;
 use common::additive;
 
 const WIRE_FORMAT_VERSION: u32 = 21;
-const PRECOND_FIXTURE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/preconditioner_v21.postcard"
-);
+const PRECOND_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v21.postcard");
 const PRE_BUMP_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v20.postcard");
 const EARLIER_PRE_BUMP_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v19.postcard");
 const RELEASE_0_3_0_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v12.postcard");
@@ -39,9 +37,8 @@ fn wire_format_fixture_deserializes_and_solves() {
     let _ = WIRE_FORMAT_VERSION;
 
     let (f, g, z, y) = fixture_problem();
-    let bytes = std::fs::read(PRECOND_FIXTURE_PATH).expect("read fixture preconditioner");
     let prebuilt: Preconditioner =
-        postcard::from_bytes(&bytes).expect("deserialize fixture preconditioner");
+        postcard::from_bytes(PRECOND_BYTES).expect("deserialize fixture preconditioner");
 
     let solver = Solver::new(fixture_effects(&f, &g, &z), None, prebuilt)
         .expect("build solver from fixture");
@@ -66,21 +63,44 @@ fn wire_format_fixture_deserializes_and_solves() {
     }
 }
 
-#[test]
-fn signed_route_preconditioner_round_trips() {
-    let (f, g, z, y) = fixture_problem();
-    let solver1 = Solver::new(fixture_effects(&f, &g, &z), None, additive()).expect("build solver");
-    let r1 = solver1.solve(&y, &LsmrOptions::default()).expect("solve 1");
+#[derive(Clone, Copy)]
+enum Shape {
+    Signed,
+    Uniform,
+}
 
-    let bytes = postcard::to_stdvec(solver1.preconditioner().expect("has preconditioner"))
-        .expect("serialize");
+#[rstest]
+#[case::signed(Shape::Signed)]
+#[case::uniform(Shape::Uniform)]
+fn preconditioner_round_trips(#[case] shape: Shape) {
+    let (f, g, z, y) = fixture_problem();
+    let effects = || match shape {
+        Shape::Signed => fixture_effects(&f, &g, &z),
+        Shape::Uniform => vec![
+            Effect::new(&f, true, []).expect("first intercept"),
+            Effect::new(&g, true, []).expect("second intercept"),
+        ],
+    };
+    let solver1 = Solver::new(effects(), None, additive()).expect("build solver");
+    let r1 = solver1.solve(&y, &LsmrOptions::default()).expect("solve 1");
+    let original = solver1.preconditioner().expect("has preconditioner");
+    let bytes = postcard::to_stdvec(original).expect("serialize");
     let restored: Preconditioner = postcard::from_bytes(&bytes).expect("deserialize");
     assert_eq!(restored.config(), additive());
+    assert_eq!(restored.nrows(), original.nrows());
+    assert_eq!(restored.ncols(), original.ncols());
 
-    let solver2 =
-        Solver::new(fixture_effects(&f, &g, &z), None, restored).expect("solver from round-trip");
+    let input: Vec<f64> = (0..original.ncols()).map(|i| i as f64 + 0.25).collect();
+    let mut before = vec![0.0; original.nrows()];
+    let mut after = vec![0.0; restored.nrows()];
+    original.apply(&input, &mut before).expect("original apply");
+    restored.apply(&input, &mut after).expect("restored apply");
+    assert_eq!(before, after);
+
+    let solver2 = Solver::new(effects(), None, restored).expect("solver from round-trip");
     let r2 = solver2.solve(&y, &LsmrOptions::default()).expect("solve 2");
-
+    assert!(r1.converged && r2.converged);
+    assert_eq!(r1.x.len(), r2.x.len());
     for (a, b) in r1.x.iter().zip(r2.x.iter()) {
         assert!(
             (a - b).abs() < 1e-12,
@@ -91,19 +111,12 @@ fn signed_route_preconditioner_round_trips() {
     }
 }
 
-#[test]
-fn pre_bump_fixture_no_longer_decodes() {
-    assert!(postcard::from_bytes::<Preconditioner>(PRE_BUMP_BYTES).is_err());
-}
-
-#[test]
-fn earlier_pre_bump_fixture_no_longer_decodes() {
-    assert!(postcard::from_bytes::<Preconditioner>(EARLIER_PRE_BUMP_BYTES).is_err());
-}
-
-#[test]
-fn release_0_3_0_fixture_no_longer_decodes() {
-    assert!(postcard::from_bytes::<Preconditioner>(RELEASE_0_3_0_BYTES).is_err());
+#[rstest]
+#[case::v20(PRE_BUMP_BYTES)]
+#[case::v19(EARLIER_PRE_BUMP_BYTES)]
+#[case::release_0_3_0(RELEASE_0_3_0_BYTES)]
+fn legacy_fixture_no_longer_decodes(#[case] bytes: &[u8]) {
+    assert!(postcard::from_bytes::<Preconditioner>(bytes).is_err());
 }
 
 /// Generate the wire-format fixture. Run with `--ignored` to overwrite
