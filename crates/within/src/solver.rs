@@ -17,6 +17,7 @@ use crate::domain::{Design, Effect, PreparedDesign};
 use crate::operator::schwarz::Preconditioner;
 use crate::{BuildError, BuildWarning, SolveError, WithinError};
 
+mod draft;
 mod ladder;
 mod layout;
 #[cfg(test)]

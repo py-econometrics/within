@@ -214,6 +214,27 @@ pub struct MlsmrOptions<'a> {
     pub local_size: Option<usize>,
 }
 
+/// When LSMR stops on one right-hand side, and its reorthogonalization window.
+#[derive(Debug, Clone, Copy)]
+pub struct LsmrOptions {
+    /// Relative residual convergence tolerance.
+    pub tol: f64,
+    /// Iterations per right-hand side; a run resumed on a stronger map gets what is left.
+    pub maxiter: usize,
+    /// Windowed MGS over the last `local_size` `v` (mlsmr: and `p̃`), `local_size · ncols` each.
+    pub local_size: Option<usize>,
+}
+
+impl Default for LsmrOptions {
+    fn default() -> Self {
+        Self {
+            tol: 1e-8,
+            maxiter: 1000,
+            local_size: None,
+        }
+    }
+}
+
 /// Unpreconditioned LSMR.
 ///
 /// Solves `min ‖b − A x‖₂` using the standard Golub-Kahan

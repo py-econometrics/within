@@ -63,6 +63,8 @@ pub struct ReadmeDoctests;
 
 /// Domain decomposition primitives: subdomain cores and partition weights.
 pub mod domain;
+/// #365 type draft.
+pub mod draft;
 /// Typed errors for build and runtime failures.
 pub mod error;
 mod fold;
@@ -75,7 +77,7 @@ pub use domain::{PartitionWeights, SubdomainCore};
 pub use error::{BuildError, LocalSolveError, SolveError};
 pub use local_solve::{LocalSolver, SubdomainEntry};
 pub use lsmr::{
-    lsmr, mlsmr, EscalationHandler, EscalationPolicy, LsmrResult, LsmrStopReason, MlsmrOptions,
-    Progress, Staleness, StalenessError,
+    lsmr, mlsmr, EscalationHandler, EscalationPolicy, LsmrOptions, LsmrResult, LsmrStopReason,
+    MlsmrOptions, Progress, Staleness, StalenessError,
 };
 pub use schwarz::SchwarzPreconditioner;

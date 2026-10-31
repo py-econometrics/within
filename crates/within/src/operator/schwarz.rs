@@ -15,104 +15,20 @@ use crate::{BuildError, BuildWarning};
 #[cfg(test)]
 mod tests;
 
-/// Concrete additive Schwarz type used in the parent crate.
-#[derive(Clone, Serialize, Deserialize)]
-pub(crate) struct FeSchwarz {
-    inner: SchwarzPreconditioner<BlockElimSolver>,
-    local_solver: LocalSolverConfig,
-}
-
-impl std::fmt::Debug for FeSchwarz {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FeSchwarz")
-            .field("n_subdomains", &self.inner.subdomains().len())
-            .field("local_solver", &self.local_solver)
-            .finish()
-    }
-}
-
-impl Operator for FeSchwarz {
-    fn nrows(&self) -> usize {
-        self.inner.nrows()
-    }
-
-    fn ncols(&self) -> usize {
-        self.inner.ncols()
-    }
-
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
-        self.inner.apply(x, y)
-    }
-
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
-        self.inner.apply_adjoint(x, y)
-    }
-}
-
-/// Diagonal/Jacobi preconditioner for the fixed-effects Gramian.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct DiagonalPreconditioner {
-    inv_diag: Arc<[f64]>,
-}
-
-impl Operator for DiagonalPreconditioner {
-    fn nrows(&self) -> usize {
-        self.inv_diag.len()
-    }
-
-    fn ncols(&self) -> usize {
-        self.inv_diag.len()
-    }
-
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
-        let n = self.inv_diag.len();
-        if x.len() != n || y.len() != n {
-            return Err(schwarz_precond::SolveError::InvalidInput {
-                context: "DiagonalPreconditioner::apply",
-                message: format!(
-                    "x.len()={}, y.len()={}, expected n_dofs={}",
-                    x.len(),
-                    y.len(),
-                    n
-                ),
-            });
-        }
-        for ((yi, &xi), &di) in y.iter_mut().zip(x.iter()).zip(self.inv_diag.iter()) {
-            *yi = di * xi;
-        }
-        Ok(())
-    }
-
-    /// A diagonal operator is symmetric (`M^T = M`), so the adjoint is `apply`.
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
-        self.apply(x, y)
-    }
-}
-
 /// `n_dofs` may exceed the span of subdomain indices; an uncovered column resolves to `0`.
 pub(crate) fn build_additive(
     domains: Vec<LocalDomain>,
     local_solver: &LocalSolverConfig,
     n_dofs: usize,
-) -> Result<FeSchwarz, BuildError> {
+) -> Result<SchwarzPreconditioner<BlockElimSolver>, BuildError> {
     let entries = domains
         .into_par_iter()
-        .map(|domain| build_entry(domain, local_solver))
+        .map(|LocalDomain { core, component }| {
+            let solver = BlockElimSolver::build(component, local_solver)?;
+            SubdomainEntry::try_new(core, solver).map_err(BuildError::Preconditioner)
+        })
         .collect::<Result<Vec<_>, BuildError>>()?;
-    Ok(FeSchwarz {
-        inner: SchwarzPreconditioner::with_n_dofs(entries, n_dofs),
-        local_solver: local_solver.clone(),
-    })
-}
-
-/// Build a single `SubdomainEntry<BlockElimSolver>` from a pre-built CrossTab.
-pub(crate) fn build_entry(
-    domain: LocalDomain,
-    config: &LocalSolverConfig,
-) -> Result<SubdomainEntry<BlockElimSolver>, BuildError> {
-    let LocalDomain { core, component } = domain;
-    let solver = BlockElimSolver::build(component, config)?;
-    SubdomainEntry::try_new(core, solver).map_err(BuildError::Preconditioner)
+    Ok(SchwarzPreconditioner::with_n_dofs(entries, n_dofs))
 }
 
 /// Opaque handle to a pre-built preconditioner; cloning is O(1) via `Arc`.
@@ -122,18 +38,38 @@ pub struct Preconditioner {
     build_duration: Duration,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 enum Variant {
     // Append only: postcard encodes by declaration order and the fixtures depend on it.
-    Additive(FeSchwarz),
-    Diagonal(DiagonalPreconditioner),
+    Additive {
+        schwarz: SchwarzPreconditioner<BlockElimSolver>,
+        local_solver: LocalSolverConfig,
+    },
+    Diagonal(Arc<[f64]>),
     Adaptive(AdaptiveLadder),
+}
+
+impl std::fmt::Debug for Variant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Additive {
+                schwarz,
+                local_solver,
+            } => f
+                .debug_struct("Additive")
+                .field("n_subdomains", &schwarz.subdomains().len())
+                .field("local_solver", local_solver)
+                .finish(),
+            Self::Diagonal(inv_diag) => f.debug_tuple("Diagonal").field(inv_diag).finish(),
+            Self::Adaptive(ladder) => f.debug_tuple("Adaptive").field(ladder).finish(),
+        }
+    }
 }
 
 /// An unescalated `Adaptive` map: the diagonal plus what a reusing solver needs to escalate.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct AdaptiveLadder {
-    base: DiagonalPreconditioner,
+    base: Arc<[f64]>,
     pub(crate) stall: Staleness,
     pub(crate) escalated: LocalSolverConfig,
 }
@@ -142,7 +78,7 @@ impl Preconditioner {
     /// Stable display name for the concrete preconditioner variant.
     pub fn variant_name(&self) -> &'static str {
         match &self.inner {
-            Variant::Additive(_) => "Additive",
+            Variant::Additive { .. } => "Additive",
             Variant::Diagonal(_) => "Diagonal",
             Variant::Adaptive(_) => "Adaptive",
         }
@@ -152,7 +88,7 @@ impl Preconditioner {
     pub(crate) fn ladder(&self) -> Option<&AdaptiveLadder> {
         match &self.inner {
             Variant::Adaptive(ladder) => Some(ladder),
-            Variant::Additive(_) | Variant::Diagonal(_) => None,
+            Variant::Additive { .. } | Variant::Diagonal(_) => None,
         }
     }
 
@@ -163,15 +99,15 @@ impl Preconditioner {
                 inner: Variant::Diagonal(ladder.base),
                 ..self
             },
-            Variant::Additive(_) | Variant::Diagonal(_) => self,
+            Variant::Additive { .. } | Variant::Diagonal(_) => self,
         }
     }
 
     /// The configuration that rebuilds this map.
     pub fn config(&self) -> PreconditionerConfig {
         match &self.inner {
-            Variant::Additive(p) => PreconditionerConfig::Additive {
-                local_solver: p.local_solver.clone(),
+            Variant::Additive { local_solver, .. } => PreconditionerConfig::Additive {
+                local_solver: local_solver.clone(),
             },
             Variant::Diagonal(_) => PreconditionerConfig::Diagonal,
             Variant::Adaptive(ladder) => PreconditionerConfig::Adaptive {
@@ -203,27 +139,38 @@ impl Preconditioner {
     }
 }
 
-impl Preconditioner {
-    fn operator(&self) -> &dyn Operator {
-        match &self.inner {
-            Variant::Additive(p) => p,
-            Variant::Diagonal(p) => p,
-            Variant::Adaptive(ladder) => &ladder.base,
-        }
-    }
-}
-
 impl Operator for Preconditioner {
     fn nrows(&self) -> usize {
-        self.operator().nrows()
+        match &self.inner {
+            Variant::Additive { schwarz, .. } => schwarz.nrows(),
+            Variant::Diagonal(d) | Variant::Adaptive(AdaptiveLadder { base: d, .. }) => d.len(),
+        }
     }
 
     fn ncols(&self) -> usize {
-        self.operator().ncols()
+        self.nrows()
     }
 
     fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
-        self.operator().apply(x, y)
+        let inv_diag = match &self.inner {
+            Variant::Additive { schwarz, .. } => return schwarz.apply(x, y),
+            Variant::Diagonal(d) | Variant::Adaptive(AdaptiveLadder { base: d, .. }) => d,
+        };
+        let n = inv_diag.len();
+        if x.len() != n || y.len() != n {
+            return Err(schwarz_precond::SolveError::InvalidInput {
+                context: "Preconditioner::apply",
+                message: format!(
+                    "x.len()={}, y.len()={}, expected n_dofs={n}",
+                    x.len(),
+                    y.len()
+                ),
+            });
+        }
+        for ((yi, &xi), &di) in y.iter_mut().zip(x).zip(inv_diag.iter()) {
+            *yi = di * xi;
+        }
+        Ok(())
     }
 
     fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
@@ -259,7 +206,7 @@ pub(crate) fn build_adaptive(
     })
 }
 
-fn diagonal_map(prepared: &PreparedDesign<'_>) -> Result<DiagonalPreconditioner, BuildError> {
+fn diagonal_map(prepared: &PreparedDesign<'_>) -> Result<Arc<[f64]>, BuildError> {
     let mut diag = prepared.gram_diagonal();
 
     // A zero diagonal is an unidentified DOF, so the pseudo-inverse keeps it in the null space.
@@ -274,26 +221,38 @@ fn diagonal_map(prepared: &PreparedDesign<'_>) -> Result<DiagonalPreconditioner,
         *d = inv;
     }
 
-    Ok(DiagonalPreconditioner {
-        inv_diag: Arc::from(diag),
-    })
+    Ok(Arc::from(diag))
 }
 
-/// Build the additive Schwarz map plus its warnings; `None` when the design has no factor-pair
-/// subdomain to build on, where plain LSMR is the fallback.
+/// What one preconditioner build yields: the map (`None` adds nothing below it) and its warnings.
+pub(crate) struct PreconditionerBuild {
+    pub(crate) map: Option<Preconditioner>,
+    pub(crate) warnings: Vec<BuildWarning>,
+}
+
+/// The additive Schwarz build; no map when the design has no factor-pair subdomain.
 pub(crate) fn build_schwarz(
     prepared: &PreparedDesign<'_>,
     local_solver: &LocalSolverConfig,
-) -> Result<(Option<Preconditioner>, Vec<BuildWarning>), BuildError> {
+) -> Result<PreconditionerBuild, BuildError> {
     let build_started = Instant::now();
     let (domains, warnings) = crate::domain::build_local_domains(prepared, local_solver)?;
     if domains.is_empty() {
-        return Ok((None, warnings));
+        return Ok(PreconditionerBuild {
+            map: None,
+            warnings,
+        });
     }
     let schwarz = build_additive(domains, local_solver, prepared.design.n_dofs)?;
     let preconditioner = Preconditioner {
-        inner: Variant::Additive(schwarz),
+        inner: Variant::Additive {
+            schwarz,
+            local_solver: local_solver.clone(),
+        },
         build_duration: build_started.elapsed(),
     };
-    Ok((Some(preconditioner), warnings))
+    Ok(PreconditionerBuild {
+        map: Some(preconditioner),
+        warnings,
+    })
 }
