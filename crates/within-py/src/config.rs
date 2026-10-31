@@ -7,6 +7,8 @@
 // `#[pyclass(from_py_object)]` expands to `.clone()` on the `Copy` config classes.
 #![allow(clippy::clone_on_copy)]
 
+use std::num::NonZeroU32;
+
 use numpy::PyReadonlyArray1;
 use pyo3::prelude::*;
 
@@ -57,8 +59,7 @@ impl PyApproxCholConfig {
 pub struct PyApproxSchurConfig {
     #[pyo3(get)]
     pub seed: u64,
-    #[pyo3(get)]
-    pub split: u32,
+    split: NonZeroU32,
 }
 
 #[pymethods]
@@ -66,12 +67,14 @@ impl PyApproxSchurConfig {
     #[new]
     #[pyo3(signature = (seed=0, split=1))]
     fn new(seed: u64, split: u32) -> PyResult<Self> {
-        if split == 0 {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "split must be >= 1",
-            ));
-        }
+        let split = NonZeroU32::new(split)
+            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("split must be >= 1"))?;
         Ok(Self { seed, split })
+    }
+
+    #[getter]
+    fn split(&self) -> u32 {
+        self.split.get()
     }
 }
 

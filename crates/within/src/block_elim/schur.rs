@@ -332,7 +332,7 @@ impl StarWorkspace {
         Self {
             edges: Vec::new(),
             entries: Vec::new(),
-            sampler: CliqueTreeSampler::new(config.seed, Some(config.split)),
+            sampler: CliqueTreeSampler::new(config.seed, Some(config.split.get())),
         }
     }
 

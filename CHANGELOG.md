@@ -11,6 +11,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **BREAKING:** Rust `ApproxSchurConfig::split` is now `NonZeroU32`, so a zero split factor cannot be constructed or deserialized. Python keeps its integer API and `ValueError` for zero; positive serialized values are unchanged (#426).
+
 - **BREAKING:** `schwarz_precond::PartitionWeights::Uniform` is a unit variant; `PartitionWeights::len` and `is_empty` are removed. Uniform weights take their shape from `SubdomainCore::n_local`; only explicit weights carry a length. The serialized uniform variant no longer carries a count; the wire-format fixture moves v20 → v21; v20, v19 and v12 remain rejected-payload controls. The fixture number is not a runtime serialization envelope (#425).
 
 - Levels with no cross-factor entries in a channel pair are batched into diagonal Schwarz subdomains per side instead of one subdomain each, cutting per-subdomain build and apply overhead without changing the preconditioner.
