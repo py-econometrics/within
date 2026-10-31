@@ -9,9 +9,13 @@ use within::{Effect, LsmrOptions, Preconditioner, Solver};
 mod common;
 use common::additive;
 
-const WIRE_FORMAT_VERSION: u32 = 20;
-const PRECOND_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v20.postcard");
-const PRE_BUMP_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v19.postcard");
+const WIRE_FORMAT_VERSION: u32 = 21;
+const PRECOND_FIXTURE_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/preconditioner_v21.postcard"
+);
+const PRE_BUMP_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v20.postcard");
+const EARLIER_PRE_BUMP_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v19.postcard");
 const RELEASE_0_3_0_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v12.postcard");
 
 fn fixture_problem() -> (Vec<u32>, Vec<u32>, Vec<f64>, Vec<f64>) {
@@ -35,8 +39,9 @@ fn wire_format_fixture_deserializes_and_solves() {
     let _ = WIRE_FORMAT_VERSION;
 
     let (f, g, z, y) = fixture_problem();
+    let bytes = std::fs::read(PRECOND_FIXTURE_PATH).expect("read fixture preconditioner");
     let prebuilt: Preconditioner =
-        postcard::from_bytes(PRECOND_BYTES).expect("deserialize fixture preconditioner");
+        postcard::from_bytes(&bytes).expect("deserialize fixture preconditioner");
 
     let solver = Solver::new(fixture_effects(&f, &g, &z), None, prebuilt)
         .expect("build solver from fixture");
@@ -92,12 +97,17 @@ fn pre_bump_fixture_no_longer_decodes() {
 }
 
 #[test]
+fn earlier_pre_bump_fixture_no_longer_decodes() {
+    assert!(postcard::from_bytes::<Preconditioner>(EARLIER_PRE_BUMP_BYTES).is_err());
+}
+
+#[test]
 fn release_0_3_0_fixture_no_longer_decodes() {
     assert!(postcard::from_bytes::<Preconditioner>(RELEASE_0_3_0_BYTES).is_err());
 }
 
 /// Generate the wire-format fixture. Run with `--ignored` to overwrite
-/// `crates/within/tests/fixtures/preconditioner_v20.postcard`. Intended for
+/// `crates/within/tests/fixtures/preconditioner_v21.postcard`. Intended for
 /// intentional wire-format bumps only; CI runs the non-ignored tests above.
 #[test]
 #[ignore]
@@ -113,7 +123,7 @@ fn regenerate_wire_format_fixture() {
     let bytes = postcard::to_stdvec(prec).expect("serialize");
 
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.push("tests/fixtures/preconditioner_v20.postcard");
+    path.push("tests/fixtures/preconditioner_v21.postcard");
     let mut out = std::fs::File::create(&path).expect("create fixture file");
     out.write_all(&bytes).expect("write fixture bytes");
     eprintln!("wrote {} bytes to {}", bytes.len(), path.display());
