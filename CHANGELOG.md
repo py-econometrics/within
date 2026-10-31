@@ -11,6 +11,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **BREAKING:** `schwarz_precond::PartitionWeights::Uniform` is a unit variant; `PartitionWeights::len` and `is_empty` are removed. Uniform weights take their shape from `SubdomainCore::n_local`; only explicit weights carry a length. The serialized uniform variant no longer carries a count; the wire-format fixture moves v20 → v21; v20, v19 and v12 remain rejected-payload controls. The fixture number is not a runtime serialization envelope (#425).
+
 - Levels with no cross-factor entries in a channel pair are batched into diagonal Schwarz subdomains per side instead of one subdomain each, cutting per-subdomain build and apply overhead without changing the preconditioner.
 - **BREAKING:** `ReductionStrategy` is removed: the `reduction` field of `PreconditionerConfig::Additive` and `::Adaptive`, Python's `reduction=` argument and `within.config.ReductionStrategy`, and the strategy argument of `SchwarzPreconditioner::new`/`with_n_dofs` with its `reduction_strategy()` getter. Overlapping subdomain outputs always sum in subdomain order (#472).
 - **BREAKING:** `schwarz_precond::LocalSolver::solve_local(x, workspace, allow_inner_parallelism)` solves in place, and the required `workspace_len()` replaces `scratch_size()`. `SubdomainEntry::{core, is_empty, scratch_size, apply_weighted_into_with_scratch, apply_weighted_into_atomic}`, `SubdomainCore::{restrict_weighted, prolongate_weighted_add, prolongate_weighted_add_atomic}`, `BuildError::ScratchSizeTooSmall` and `SolveError::Synchronization` are removed.
