@@ -5,10 +5,10 @@ use super::super::bidiag::{BidiagStep, Bidiagonalization};
 use super::super::magnitude::Magnitude;
 use super::super::recurrence::ConvergenceCriteria;
 use super::super::{
-    lsmr, lsmr_from_bidiag, mlsmr, EscalationHandler, EscalationPolicy, LsmrResult, LsmrStopReason,
+    lsmr_from_bidiag, mlsmr, EscalationHandler, EscalationPolicy, LsmrResult, LsmrStopReason,
     MlsmrOptions, NormalEqReference, SolveStart,
 };
-use crate::lsmr::fixtures::{DenseOp, DiagOp, FixedIterations, IdentityOp};
+use crate::lsmr::fixtures::{run_lsmr, DenseOp, DiagOp, FixedIterations, IdentityOp};
 use crate::SolveError;
 
 /// Stops on ResidualTolerance at every pass's first step; `true_residuals` scripts each check.
@@ -273,7 +273,7 @@ fn a_warm_start_near_the_solution_keeps_its_certificate() {
         data: vec![1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, -1.0],
     };
     let rhs = [1.0, 2.0, 3.0, 5.0];
-    let solution = lsmr(&op, &rhs, 1e-14, 100, None).expect("cold solve").x;
+    let solution = run_lsmr(&op, &rhs, 1e-14, 100, None).expect("cold solve").x;
     let warm_start = [solution[0] + 1e-11, solution[1] - 2e-11];
     let options = MlsmrOptions {
         warm_start: Some(&warm_start),

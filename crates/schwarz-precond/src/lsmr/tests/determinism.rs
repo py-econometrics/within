@@ -4,7 +4,7 @@ use rstest::rstest;
 
 use super::super::*;
 use crate::fold::assert_pool_independent;
-use crate::lsmr::fixtures::DiagOp;
+use crate::lsmr::fixtures::{run_lsmr, DiagOp};
 use crate::{Operator, SolveError};
 
 /// `A x` with `y[i] = x[i mod n] + ½ x[(7i + 3) mod n]`: large enough that every reduction splits.
@@ -75,7 +75,9 @@ fn lsmr_returns_the_same_bits_at_any_thread_count(
 ) {
     let op = wrapped();
     let b = spread(op.m, 1.0);
-    assert_pool_independent(|| fingerprint(&lsmr(&op, &b, 1e-14, 40, local_size).expect("lsmr")));
+    assert_pool_independent(|| {
+        fingerprint(&run_lsmr(&op, &b, 1e-14, 40, local_size).expect("lsmr"))
+    });
 }
 
 #[rstest]

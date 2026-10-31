@@ -2,7 +2,22 @@
 
 use rstest::rstest;
 
-use super::{alpha_from_vp, dot, par_dot, Bidiagonalization, GolubKahan};
+use super::{
+    alpha_from_vp, dot, par_dot, BidiagStep, Bidiagonalization, ModifiedGolubKahan, StagedStart,
+};
+use crate::lsmr::IdentityPrecond;
+
+/// The unpreconditioned stream from `b`, and its first step.
+fn cold_stream<'a, A: Operator>(
+    op: &'a A,
+    identity: &'a IdentityPrecond,
+    b: &[f64],
+    local_size: usize,
+) -> Result<(ModifiedGolubKahan<'a, A, IdentityPrecond>, BidiagStep), SolveError> {
+    let staged = StagedStart::cold(op, identity, b, local_size);
+    let (stream, step1, _) = staged.restart(crate::lsmr::vec_norm(b))?;
+    Ok((stream, step1))
+}
 use crate::lsmr::fixtures::{DenseOp, DiagOp};
 use crate::{Operator, SolveError};
 
@@ -74,7 +89,8 @@ fn a_negatively_rounded_pair_clamps_however_the_resum_rounds() {
 /// `beta == 0.0` and `alpha > 0.0` are both false for NaN; unguarded, it poisons the run.
 #[test]
 fn a_non_finite_operator_norm_is_an_error() {
-    let result = crate::lsmr::lsmr(&DiagOp(vec![f64::NAN, 1.0]), &[1.0, 1.0], 1e-10, 50, None);
+    let result =
+        crate::lsmr::fixtures::run_lsmr(&DiagOp(vec![f64::NAN, 1.0]), &[1.0, 1.0], 1e-10, 50, None);
     assert!(matches!(result, Err(SolveError::InvalidInput { .. })));
 }
 
@@ -98,13 +114,9 @@ fn an_overflow_after_initialization_is_an_error() {
             Ok(())
         }
     }
-    let (mut bidiag, first) = GolubKahan::init(
-        &OverflowingForward,
-        &[1.0, 1.0],
-        crate::lsmr::vec_norm(&[1.0, 1.0]),
-        0,
-    )
-    .expect("finite init");
+    let identity = IdentityPrecond { dim: 2 };
+    let (mut bidiag, first) =
+        cold_stream(&OverflowingForward, &identity, &[1.0, 1.0], 0).expect("finite init");
     assert!(first.alpha > 0.0);
     let err = bidiag.step().err().expect("an overflowing β was accepted");
     assert!(
@@ -133,8 +145,8 @@ fn local_reorth_keeps_the_window_vectors_orthogonal() {
     // Run the bidiagonalization directly so we can capture v_k after each
     // step. Mirrors the body of `lsmr_from_bidiag` minus the recurrence.
     let collect_vs = |window_size: usize| -> Vec<Vec<f64>> {
-        let (mut bidiag, _) =
-            GolubKahan::init(&op, &b, crate::lsmr::vec_norm(&b), window_size).expect("init");
+        let identity = IdentityPrecond { dim: op.cols };
+        let (mut bidiag, _) = cold_stream(&op, &identity, &b, window_size).expect("init");
         let mut vs = vec![bidiag.v().to_vec()];
         for _ in 0..n_iters {
             bidiag.step().expect("step");

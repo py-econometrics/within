@@ -20,7 +20,7 @@ fn zero_second_row_solve(b: &[f64], modified: bool) -> LsmrResult {
         )
         .expect("modified Golub-Kahan")
     } else {
-        lsmr(&ZeroSecondRow, b, 1e-12, 100, None).expect("Golub-Kahan")
+        run_lsmr(&ZeroSecondRow, b, 1e-12, 100, None).expect("Golub-Kahan")
     }
 }
 
@@ -65,7 +65,7 @@ fn test_mlsmr_step1_alpha_zero_early_exit() {
     }
 
     let b = vec![0.0, 1.0];
-    let result = lsmr(&ColE1, &b, 1e-12, 100, None).expect("lsmr alpha=0 early exit");
+    let result = run_lsmr(&ColE1, &b, 1e-12, 100, None).expect("lsmr alpha=0 early exit");
     assert!(result.converged);
     assert_eq!(result.iterations, 0);
     assert_eq!(result.x, vec![0.0; 1]);
@@ -97,7 +97,7 @@ fn zero_initial_gradient(
                 ..Default::default()
             },
         ),
-        None => lsmr(&a, b, 1e-10, 100, None),
+        None => run_lsmr(&a, b, 1e-10, 100, None),
     }
     .expect("α₁ = 0 exit")
 }
@@ -190,7 +190,7 @@ fn test_mid_stream_breakdown_reports_convergence(#[case] modified: bool) {
 #[test]
 fn test_mlsmr_zero_rhs_stop_reason() {
     let b = vec![0.0; 4];
-    let result = lsmr(&OverdeterminedOp, &b, 1e-12, 100, None).expect("zero-rhs solve");
+    let result = run_lsmr(&OverdeterminedOp, &b, 1e-12, 100, None).expect("zero-rhs solve");
     assert!(result.converged);
     assert_eq!(result.iterations, 0);
     assert_eq!(result.stop_reason, LsmrStopReason::ZeroRhs);
@@ -243,10 +243,10 @@ fn test_mlsmr_near_breakdown_vp_clamps_to_zero() {
 
 #[test]
 fn test_mlsmr_rejects_invalid_inputs() {
-    let bad_len = lsmr(&OverdeterminedOp, &[1.0, 2.0], 1e-10, 100, None);
+    let bad_len = run_lsmr(&OverdeterminedOp, &[1.0, 2.0], 1e-10, 100, None);
     assert!(matches!(bad_len, Err(SolveError::InvalidInput { .. })));
 
-    let bad_tol = lsmr(
+    let bad_tol = run_lsmr(
         &OverdeterminedOp,
         &[1.0, 2.0, 3.0, 4.0],
         f64::NAN,
@@ -255,7 +255,7 @@ fn test_mlsmr_rejects_invalid_inputs() {
     );
     assert!(matches!(bad_tol, Err(SolveError::InvalidInput { .. })));
 
-    let bad_rhs = lsmr(
+    let bad_rhs = run_lsmr(
         &OverdeterminedOp,
         &[1.0, f64::INFINITY, 3.0, 4.0],
         1e-10,
@@ -265,7 +265,7 @@ fn test_mlsmr_rejects_invalid_inputs() {
     assert!(matches!(bad_rhs, Err(SolveError::InvalidInput { .. })));
 
     // Finite entrywise, but `‖b‖` overflows and would scale u₁ to zero, reading as α₁ = 0.
-    let overflowing_rhs = lsmr(&OverdeterminedOp, &[f64::MAX; 4], 1e-10, 100, None);
+    let overflowing_rhs = run_lsmr(&OverdeterminedOp, &[f64::MAX; 4], 1e-10, 100, None);
     assert!(matches!(
         overflowing_rhs,
         Err(SolveError::InvalidInput { .. })

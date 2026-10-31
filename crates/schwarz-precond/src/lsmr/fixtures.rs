@@ -3,6 +3,28 @@
 use super::*;
 use crate::{Operator, SolveError};
 
+/// Unpreconditioned [`mlsmr`]: the identity metric.
+pub(crate) fn run_lsmr<O: Operator + ?Sized>(
+    op: &O,
+    b: &[f64],
+    tol: f64,
+    maxiter: usize,
+    local_size: Option<usize>,
+) -> Result<LsmrResult, SolveError> {
+    let options = MlsmrOptions {
+        local_size,
+        ..Default::default()
+    };
+    mlsmr(
+        op,
+        b,
+        &IdentityPrecond { dim: op.ncols() },
+        tol,
+        maxiter,
+        options,
+    )
+}
+
 /// Identity operator used by mlsmr equivalence tests.
 pub(crate) struct IdentityOp {
     pub(crate) n: usize,
