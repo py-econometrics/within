@@ -87,6 +87,17 @@ class TestAdvancedConfigs:
         assert cfg.seed == 0
         assert cfg.split == 1
 
+    @pytest.mark.parametrize("split", [1, 2, 2**32 - 1])
+    def test_approx_schur_config_nonzero_split(self, split):
+        cfg = ApproxSchurConfig(seed=17, split=split)
+        assert cfg.seed == 17
+        assert cfg.split == split
+        assert (
+            repr(Schur.approximate(cfg)) == f"Schur.approximate(seed=17, split={split})"
+        )
+        with pytest.raises(AttributeError):
+            cfg.split = 0
+
     def test_schur_complement_defaults(self):
         sc = LocalSolverConfig()
         assert sc.dense_threshold == 24
@@ -179,7 +190,7 @@ class TestFePreconditioner:
         assert precond.config == PreconditionerConfig.Additive()
 
     def test_preconditioner_exposes_tuned_config(self, problem):
-        cats, _ = problem
+        cats, y = problem
         requested = PreconditionerConfig.Additive(
             local_solver=LocalSolverConfig(
                 approx_chol=ApproxCholConfig(seed=41, split_merge=3),
@@ -200,6 +211,15 @@ class TestFePreconditioner:
         assert repr(actual.local_solver.schur) == "Schur.approximate(seed=17, split=2)"
         assert actual.local_solver.dense_threshold == 0
         assert actual.local_solver.scaling.on_failure == "warn"
+
+        restored = pickle.loads(pickle.dumps(precond))
+        assert restored.config == requested
+        vector = np.arange(precond.ncols, dtype=np.float64) + 0.25
+        np.testing.assert_array_equal(restored.apply(vector), precond.apply(vector))
+        expected = solver.solve(y)
+        reused = Solver(as_solver_categories(cats), preconditioner=restored).solve(y)
+        assert expected.converged and reused.converged
+        np.testing.assert_allclose(reused.x, expected.x, rtol=0, atol=1e-9)
 
     def test_preconditioner_corrupt_bytes_raises(self):
         with pytest.raises(ValueError):
