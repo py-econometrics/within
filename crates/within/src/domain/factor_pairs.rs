@@ -109,6 +109,7 @@ fn factor_pair(
         .blocks()
         .iter()
         .filter_map(BlockFactor::scaling_report)
+        .filter(|report| report.violation > config.scaling.tolerance)
     {
         match config.scaling.on_failure {
             ScalingFailure::Warn => warnings.push(BuildWarning::UnscalableComponent {

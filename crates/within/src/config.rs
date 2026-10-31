@@ -47,7 +47,7 @@ pub struct LocalSolverConfig {
     pub approx_chol: ApproxCholConfig,
     /// Schur-complement reduction mode (default: approximate).
     pub schur: SchurMode,
-    /// Largest block dimension factored by exact dense Cholesky; `0` disables.
+    /// Largest Cholesky dimension factored exactly, a signed block's two cover sheets counted; `0` disables.
     pub dense_threshold: usize,
     /// Certification policy for the diagonal scaling of signed components.
     pub scaling: ScalingConfig,
