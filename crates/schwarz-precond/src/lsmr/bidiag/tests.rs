@@ -5,7 +5,9 @@ use rstest::rstest;
 use super::{
     alpha_from_vp, dot, par_dot, BidiagStep, Bidiagonalization, ModifiedGolubKahan, StagedStart,
 };
+use crate::lsmr::fixtures::{lsmr, DenseOp, DiagOp};
 use crate::lsmr::IdentityPrecond;
+use crate::{Operator, SolveError};
 
 /// The unpreconditioned stream from `b`, and its first step.
 fn cold_stream<'a, A: Operator>(
@@ -18,8 +20,6 @@ fn cold_stream<'a, A: Operator>(
     let (stream, step1, _) = staged.restart(crate::lsmr::vec_norm(b))?;
     Ok((stream, step1))
 }
-use crate::lsmr::fixtures::{DenseOp, DiagOp};
-use crate::{Operator, SolveError};
 
 /// A NaN `vp` clamped to α = 0 via `f64::max`; a product bound overflowed to ∞ or underflowed to 0.
 #[rstest]
@@ -89,8 +89,7 @@ fn a_negatively_rounded_pair_clamps_however_the_resum_rounds() {
 /// `beta == 0.0` and `alpha > 0.0` are both false for NaN; unguarded, it poisons the run.
 #[test]
 fn a_non_finite_operator_norm_is_an_error() {
-    let result =
-        crate::lsmr::fixtures::lsmr(&DiagOp(vec![f64::NAN, 1.0]), &[1.0, 1.0], 1e-10, 50, None);
+    let result = lsmr(&DiagOp(vec![f64::NAN, 1.0]), &[1.0, 1.0], 1e-10, 50, None);
     assert!(matches!(result, Err(SolveError::InvalidInput { .. })));
 }
 

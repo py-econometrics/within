@@ -25,7 +25,7 @@ fn test_lsmr_large_magnitude_rhs_not_silently_zero() {
     // Entries ~1e155: the unscaled Σb² = 1e310 overflows f64, but the
     // max-scaled ‖b‖ stays finite. A = I, so the exact solution is x = b.
     let b = vec![1e155, 2e155, 3e155];
-    let result = lsmr(&IdentityOp { n: 3 }, &b, 1e-10, 100, None).expect("lsmr solve");
+    let result = lsmr(&IdentityPrecond { dim: 3 }, &b, 1e-10, 100, None).expect("lsmr solve");
 
     let all_zero = result.x.iter().all(|&xi| xi == 0.0);
     assert!(
@@ -44,7 +44,7 @@ fn test_lsmr_large_magnitude_rhs_not_silently_zero() {
 #[test]
 fn test_mlsmr_large_magnitude_rhs_not_silently_zero() {
     let b = vec![1e155, 2e155, 3e155];
-    let op = IdentityOp { n: 3 };
+    let op = IdentityPrecond { dim: 3 };
     let result = mlsmr(&op, &b, &op, 1e-10, 100, MlsmrOptions::default())
         .expect("preconditioned mlsmr solve");
 
@@ -181,7 +181,7 @@ fn test_mlsmr_rank_deficient_system() {
 #[case(&[1.0, 1.0, 0.0])]
 #[case(&[1e20, 0.0])]
 fn a_singular_preconditioner_cannot_certify_the_direction_it_annihilates(#[case] m: &[f64]) {
-    let a = IdentityOp { n: m.len() };
+    let a = IdentityPrecond { dim: m.len() };
     let b = vec![1.0; m.len()];
     let result = mlsmr(
         &a,
@@ -222,119 +222,6 @@ fn test_mlsmr_maxiter_exhaustion() {
     );
     assert_eq!(result.iterations, 1);
     assert_eq!(result.stop_reason, LsmrStopReason::MaxIterations);
-}
-
-/// `lsmr` (GolubKahan path) and `mlsmr` with `M = I`
-/// (ModifiedGolubKahan with the identity) are mathematically the same
-/// algorithm.
-/// They should produce numerically equivalent solutions and iteration
-/// counts; this guards against future drift between the two
-/// bidiagonalization implementations.
-#[test]
-fn test_mlsmr_none_matches_identity_precond() {
-    let b = vec![1.0, 2.0, 3.0, 3.0];
-    let id = IdentityOp { n: 3 };
-
-    let none_result = lsmr(&OverdeterminedOp, &b, 1e-12, 100, None).expect("lsmr solve");
-    let id_result = mlsmr(
-        &OverdeterminedOp,
-        &b,
-        &id,
-        1e-12,
-        100,
-        MlsmrOptions::default(),
-    )
-    .expect("preconditioned Identity solve");
-
-    assert!(none_result.converged && id_result.converged);
-    assert!(
-        (none_result.iterations as isize - id_result.iterations as isize).abs() <= 1,
-        "iteration counts disagree: {} vs {}",
-        none_result.iterations,
-        id_result.iterations,
-    );
-
-    let diff: f64 = none_result
-        .x
-        .iter()
-        .zip(id_result.x.iter())
-        .map(|(a, b)| (a - b).powi(2))
-        .sum::<f64>()
-        .sqrt();
-    assert!(
-        diff < 1e-10,
-        "GolubKahan vs ModifiedGolubKahan-with-identity solutions disagree: {diff}"
-    );
-    assert!(
-        (none_result.residual_norm - id_result.residual_norm).abs() < 1e-10,
-        "residual norm estimates disagree: {} vs {}",
-        none_result.residual_norm,
-        id_result.residual_norm
-    );
-}
-
-/// Same equivalence guarantee as above but with windowed reorthogonalization
-/// active. The M-weighted MGS path uses dot products against `p̃ = M v` and
-/// scales `p̃` by `1/α`; with `M = I` this must reduce to the Euclidean
-/// MGS used by the unpreconditioned path. Guards the windowed scaling
-/// logic in `WindowRing<2>::push` against drift.
-#[test]
-fn test_mlsmr_none_matches_identity_precond_windowed() {
-    // 30×12 Vandermonde, cond(A) ≈ 1e10 — chosen to stress the windowed reorth
-    // path (see test_mlsmr_local_reorth_unpreconditioned for rationale).
-    let op = DenseOp::vandermonde(30, 12);
-    let b: Vec<f64> = (0..op.rows)
-        .map(|i| {
-            let x = i as f64 / (op.rows - 1) as f64;
-            (1.0 + x).ln()
-        })
-        .collect();
-    let id = IdentityOp { n: op.cols };
-    let local = Some(10);
-
-    // Tight tolerance with headroom in maxiter: drives both paths to the
-    // same minimum so the comparison isn't governed by rounding noise in
-    // the convergence test.
-    let none_result = lsmr(&op, &b, 1e-12, 50, local).expect("lsmr windowed solve");
-    let opts = MlsmrOptions {
-        local_size: local,
-        ..Default::default()
-    };
-    let id_result =
-        mlsmr(&op, &b, &id, 1e-12, 50, opts).expect("preconditioned Identity windowed solve");
-
-    assert!(none_result.converged && id_result.converged);
-    // The two paths do the same algebra differently (par_dot on `v` vs on
-    // `p̃ = M v`), so rounding can shift the convergence test by one step.
-    // The solve must still land on the same answer.
-    assert!(
-        (none_result.iterations as isize - id_result.iterations as isize).abs() <= 1,
-        "iteration counts disagree: {} vs {}",
-        none_result.iterations,
-        id_result.iterations,
-    );
-
-    // Agreement bound is governed by what each path is converging to —
-    // the windowed Vandermonde test asserts a normal-equation residual of
-    // 1e-6, so 1e-7 here cleanly catches scaling drift in the M-weighted
-    // reorth without flagging algebra-order rounding.
-    let diff: f64 = none_result
-        .x
-        .iter()
-        .zip(id_result.x.iter())
-        .map(|(a, b)| (a - b).powi(2))
-        .sum::<f64>()
-        .sqrt();
-    assert!(
-        diff < 1e-7,
-        "windowed GolubKahan vs ModifiedGolubKahan-with-identity disagree: {diff}"
-    );
-    assert!(
-        (none_result.residual_norm - id_result.residual_norm).abs() < 1e-7,
-        "windowed residual norm estimates disagree: {} vs {}",
-        none_result.residual_norm,
-        id_result.residual_norm
-    );
 }
 
 /// `local_size = 0` is the no-op fast path — it must match repeated runs
@@ -473,26 +360,15 @@ fn an_overflowing_operator_norm_estimate_does_not_certify_a_stop() {
 
 /// `‖Aᵀb‖` far below `‖b‖` leaves only the backward-error leg; the plain audit must use it too.
 #[test]
-fn a_response_nearly_orthogonal_to_the_design_certifies_under_an_identity_preconditioner() {
+fn a_response_nearly_orthogonal_to_the_design_certifies() {
     let op = DenseOp {
         rows: 3,
         cols: 2,
         data: vec![1.0, 0.0, 0.0, 1e-2, 0.0, 0.0],
     };
     let b = vec![1e-12, 1e-12, 1.0];
-    let plain = lsmr(&op, &b, 1e-10, 50, None).expect("lsmr solve");
-    let id = mlsmr(
-        &op,
-        &b,
-        &IdentityOp { n: op.cols },
-        1e-10,
-        50,
-        MlsmrOptions::default(),
-    )
-    .expect("identity-preconditioned solve");
-    assert!(plain.converged);
-    assert_eq!(id.converged, plain.converged);
-    assert_eq!(id.stop_reason, plain.stop_reason);
+    let r = lsmr(&op, &b, 1e-10, 50, None).expect("lsmr solve");
+    assert!(r.converged, "{:?}", r.stop_reason);
 }
 
 /// The plain audit's reference is `‖Aᵀb‖`; a metric one rescales it and refuses an honest stop.
@@ -582,16 +458,8 @@ fn the_residual_estimate_is_the_iterates_own(#[values(2, 4, 8)] maxiter: usize) 
 fn a_power_of_two_scaling_reproduces_the_unit_scale_solve(
     #[case] design_exp: i32,
     #[case] rhs_exp: i32,
-    #[values(false, true)] metric: bool,
 ) {
-    let solve = |op: &DenseOp, b: &[f64]| {
-        let identity = IdentityOp { n: op.cols };
-        match metric {
-            false => lsmr(op, b, 1e-4, 100, None),
-            true => mlsmr(op, b, &identity, 1e-4, 100, MlsmrOptions::default()),
-        }
-        .expect("scaled solve")
-    };
+    let solve = |op: &DenseOp, b: &[f64]| lsmr(op, b, 1e-4, 100, None).expect("scaled solve");
     // Conditioned well enough that one rounding apart stays far below the checked agreement.
     let op = DenseOp::vandermonde(30, 6);
     // A sawtooth no low-degree polynomial fits keeps the residual far above the tolerance.

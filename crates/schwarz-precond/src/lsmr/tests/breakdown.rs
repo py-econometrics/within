@@ -6,31 +6,15 @@ use super::super::*;
 use crate::lsmr::fixtures::*;
 use crate::{Operator, SolveError};
 
-/// `ZeroSecondRow` under either bidiagonalization; the modified one also zeroes the paired p̃.
-fn zero_second_row_solve(b: &[f64], modified: bool) -> LsmrResult {
-    if modified {
-        let identity = IdentityOp { n: 2 };
-        mlsmr(
-            &ZeroSecondRow,
-            b,
-            &identity,
-            1e-12,
-            100,
-            MlsmrOptions::default(),
-        )
-        .expect("modified Golub-Kahan")
-    } else {
-        lsmr(&ZeroSecondRow, b, 1e-12, 100, None).expect("Golub-Kahan")
-    }
+fn zero_second_row_solve(b: &[f64]) -> LsmrResult {
+    lsmr(&ZeroSecondRow, b, 1e-12, 100, None).expect("zero-second-row solve")
 }
 
 /// b lies in A's range, so `A v₁ − α₁ u₁` collapses and β₂ = 0; the residual estimate is then
 /// exactly zero — a converged ResidualTolerance solve, not a distinct breakdown reason.
-#[rstest]
-#[case::golub_kahan(false)]
-#[case::modified_golub_kahan(true)]
-fn test_mlsmr_mid_stream_beta_zero_breakdown(#[case] modified: bool) {
-    let result = zero_second_row_solve(&[5.0, 0.0], modified);
+#[test]
+fn test_mlsmr_mid_stream_beta_zero_breakdown() {
+    let result = zero_second_row_solve(&[5.0, 0.0]);
     assert!(result.converged);
     assert_eq!(result.iterations, 1);
     assert_eq!(result.stop_reason, LsmrStopReason::ResidualTolerance);
@@ -77,28 +61,20 @@ fn test_mlsmr_step1_alpha_zero_early_exit() {
 }
 
 /// Every case below reaches the `α₁ = 0` exit: `diag(m)` annihilates `Aᵀ rhs`, or squaring an
-/// already-tiny gradient underflows. `None` runs the unpreconditioned stream instead.
-fn zero_initial_gradient(
-    a: &[f64],
-    m: Option<&[f64]>,
-    b: &[f64],
-    x0: Option<&[f64]>,
-) -> LsmrResult {
-    let a = DiagOp(a.to_vec());
-    match m {
-        Some(m) => mlsmr(
-            &a,
-            b,
-            &DiagOp(m.to_vec()),
-            1e-10,
-            100,
-            MlsmrOptions {
-                warm_start: x0,
-                ..Default::default()
-            },
-        ),
-        None => lsmr(&a, b, 1e-10, 100, None),
-    }
+/// already-tiny gradient underflows.
+fn zero_initial_gradient(a: &[f64], m: &[f64], b: &[f64], x0: Option<&[f64]>) -> LsmrResult {
+    let options = MlsmrOptions {
+        warm_start: x0,
+        ..Default::default()
+    };
+    mlsmr(
+        &DiagOp(a.to_vec()),
+        b,
+        &DiagOp(m.to_vec()),
+        1e-10,
+        100,
+        options,
+    )
     .expect("α₁ = 0 exit")
 }
 
@@ -122,7 +98,7 @@ fn a_zero_initial_gradient_the_metric_cannot_see_is_refused(
     #[case] x0: Option<&[f64]>,
     #[case] unsolved: f64,
 ) {
-    let result = zero_initial_gradient(a, Some(&[1.0, 0.0]), b, x0);
+    let result = zero_initial_gradient(a, &[1.0, 0.0], b, x0);
     let residual = normal_equation_residual(&DiagOp(a.to_vec()), &result.x, b);
 
     assert!(!result.converged, "{:?}", result.stop_reason);
@@ -133,10 +109,9 @@ fn a_zero_initial_gradient_the_metric_cannot_see_is_refused(
 
 /// An `α₁` whose product form underflows is a scale to recover, not a breakdown at `x = 0`.
 #[rstest]
-#[case::no_metric(None)]
-#[case::identity_metric(Some(&[1.0, 1.0][..]))]
-#[case::scaled_metric(Some(&[1e-10, 1e-10][..]))]
-fn an_underflowed_alpha_is_a_scale_not_a_breakdown(#[case] m: Option<&[f64]>) {
+#[case::identity_metric(&[1.0, 1.0])]
+#[case::scaled_metric(&[1e-10, 1e-10])]
+fn an_underflowed_alpha_is_a_scale_not_a_breakdown(#[case] m: &[f64]) {
     let a = &[0.0, 1.0];
     let b = &[1e100, 1e-100];
     let result = zero_initial_gradient(a, m, b, None);
@@ -152,12 +127,12 @@ fn an_underflowed_alpha_is_a_scale_not_a_breakdown(#[case] m: Option<&[f64]>) {
 /// and `exact_warm_start` fails outright if the audit reaches for a cold certificate it cannot
 /// square.
 #[rstest]
-#[case::inside_residual_tolerance(&[1.0, 1.0], Some(&[1.0, 0.0][..]), &[1e6, 1e-5], Some(&[1e6, 0.0][..]))]
-#[case::meets_normal_equation_tolerance(&[1.0, 1e-12], Some(&[1.0, 0.0][..]), &[1.0, 1e-4], Some(&[1.0, 0.0][..]))]
-#[case::exact_warm_start(&[1.0, 0.0], Some(&[1.0, 1.0][..]), &[1e200, 1.0], Some(&[1e200, 0.0][..]))]
+#[case::inside_residual_tolerance(&[1.0, 1.0], &[1.0, 0.0], &[1e6, 1e-5], Some(&[1e6, 0.0][..]))]
+#[case::meets_normal_equation_tolerance(&[1.0, 1e-12], &[1.0, 0.0], &[1.0, 1e-4], Some(&[1.0, 0.0][..]))]
+#[case::exact_warm_start(&[1.0, 0.0], &[1.0, 1.0], &[1e200, 1.0], Some(&[1e200, 0.0][..]))]
 fn a_zero_initial_gradient_nothing_contradicts_certifies(
     #[case] a: &[f64],
-    #[case] m: Option<&[f64]>,
+    #[case] m: &[f64],
     #[case] b: &[f64],
     #[case] x0: Option<&[f64]>,
 ) {
@@ -174,12 +149,10 @@ fn a_zero_initial_gradient_nothing_contradicts_certifies(
 /// residual) it fires as NormalEquationTolerance.
 ///
 /// `ZeroSecondRow` with `b = [5, 3]` reaches `alpha_2 = 0` while leaving a
-/// residual of 3, exercising exactly this path on both bidiagonalizations.
-#[rstest]
-#[case::golub_kahan(false)]
-#[case::modified_golub_kahan(true)]
-fn test_mid_stream_breakdown_reports_convergence(#[case] modified: bool) {
-    let result = zero_second_row_solve(&[5.0, 3.0], modified);
+/// residual of 3, exercising exactly this path.
+#[test]
+fn test_mid_stream_breakdown_reports_convergence() {
+    let result = zero_second_row_solve(&[5.0, 3.0]);
     assert!(result.converged);
     assert_eq!(result.stop_reason, LsmrStopReason::NormalEquationTolerance);
     // x_0 = 5 fits row 0; row 1 is unmatchable, leaving residual 3.
@@ -225,7 +198,7 @@ fn test_mlsmr_near_breakdown_vp_clamps_to_zero() {
     }
 
     let b = vec![3.0, 4.0];
-    let op = IdentityOp { n: 2 };
+    let op = IdentityPrecond { dim: 2 };
     let result = mlsmr(
         &op,
         &b,
@@ -328,7 +301,7 @@ fn test_mlsmr_rejects_indefinite_preconditioner() {
     }
 
     let b = vec![3.0, 4.0];
-    let op = IdentityOp { n: 2 };
+    let op = IdentityPrecond { dim: 2 };
     let result = mlsmr(&op, &b, &NegIdentity, 1e-10, 100, MlsmrOptions::default());
     assert!(matches!(result, Err(SolveError::InvalidInput { .. })));
 }

@@ -1,8 +1,4 @@
-//! LSMR for rectangular least-squares (`min ‖b − A x‖₂`).
-//!
-//! Two entry points:
-//! - [`lsmr`] — standard Golub-Kahan bidiagonalization, no preconditioner.
-//! - [`mlsmr`] — preconditioned variant with composable warm starts and escalation.
+//! LSMR for `min ‖b − A x‖₂`; [`mlsmr`] with [`IdentityPrecond`] is unpreconditioned.
 
 mod bidiag;
 #[cfg(test)]

@@ -8,7 +8,6 @@ use crate::Operator;
 
 #[derive(Clone, Copy, Debug)]
 enum Metric {
-    None,
     Identity,
     Diagonal,
 }
@@ -32,8 +31,7 @@ fn solve<A: Operator>(
         ..Default::default()
     };
     match metric {
-        Metric::None => lsmr(a, b, 1e-10, 50, local_size),
-        Metric::Identity => mlsmr(a, b, &IdentityOp { n }, 1e-10, 50, options),
+        Metric::Identity => mlsmr(a, b, &IdentityPrecond { dim: n }, 1e-10, 50, options),
         Metric::Diagonal => mlsmr(a, b, &diagonal, 1e-10, 50, options),
     }
 }
@@ -41,7 +39,7 @@ fn solve<A: Operator>(
 /// `α₁ = ‖Aᵀb‖ / ‖b‖ ≈ 1e-310` is subnormal although `‖A‖` and `‖b‖` are not, so `1/α₁` is ∞.
 #[rstest]
 fn a_subnormal_initial_gradient_normalizes_its_basis_vector(
-    #[values(Metric::None, Metric::Identity, Metric::Diagonal)] metric: Metric,
+    #[values(Metric::Identity, Metric::Diagonal)] metric: Metric,
     #[values(None, Some(2))] local_size: Option<usize>,
 ) {
     let r = solve(
@@ -61,10 +59,16 @@ fn a_subnormal_initial_gradient_normalizes_its_basis_vector(
 /// A subnormal `‖b‖` has no representable reciprocal either.
 #[rstest]
 fn a_subnormal_rhs_normalizes_its_first_vector(
-    #[values(Metric::None, Metric::Identity, Metric::Diagonal)] metric: Metric,
+    #[values(Metric::Identity, Metric::Diagonal)] metric: Metric,
 ) {
-    let r = solve(&IdentityOp { n: 2 }, &[1e-310, 0.0], metric, None, None)
-        .expect("subnormal-rhs solve");
+    let r = solve(
+        &IdentityPrecond { dim: 2 },
+        &[1e-310, 0.0],
+        metric,
+        None,
+        None,
+    )
+    .expect("subnormal-rhs solve");
 
     assert!(r.converged, "{:?}", r.stop_reason);
     assert!((r.x[0] / 1e-310 - 1.0).abs() < 1e-9, "{:?}", r.x);
@@ -144,7 +148,7 @@ fn an_operator_past_the_unnormalized_headroom_fails_loudly(#[case] data: &[f64])
     let r = mlsmr(
         &a,
         &[1.0, 0.0],
-        &IdentityOp { n: 2 },
+        &IdentityPrecond { dim: 2 },
         0.0,
         2,
         MlsmrOptions::default(),
@@ -170,7 +174,7 @@ fn a_run_past_krylov_exhaustion_never_returns_a_non_finite_x(
         mlsmr(
             &a,
             &b,
-            &IdentityOp { n: 2 },
+            &IdentityPrecond { dim: 2 },
             0.0,
             5,
             MlsmrOptions::default(),
@@ -223,7 +227,7 @@ fn a_warm_reference_past_the_double_range_reports_against_b() {
         mlsmr(
             &DiagOp(vec![s, 2.0 * s]),
             &[t, t],
-            &IdentityOp { n: 2 },
+            &IdentityPrecond { dim: 2 },
             1e-10,
             1,
             MlsmrOptions {
