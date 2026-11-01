@@ -15,17 +15,6 @@ impl BlockSolver {
         Self { blocks }
     }
 
-    /// Whether a solve has enough splittable work to pay for nested rayon.
-    fn splits(&self) -> bool {
-        const MIN_INNER_PARALLEL_WORK: usize = 200_000;
-        let work = self
-            .blocks
-            .iter()
-            .map(BlockFactor::splittable_work)
-            .sum::<usize>();
-        work >= MIN_INNER_PARALLEL_WORK
-    }
-
     fn scratch_len(&self) -> usize {
         self.blocks
             .iter()
@@ -45,7 +34,7 @@ impl LocalSolver for BlockSolver {
     }
 
     fn solve_local(&self, x: MatMut<'_, f64>, par: Par, stack: &mut MemStack) {
-        let inner = if par.degree() > 1 && self.splits() {
+        let inner = if par.degree() > 1 {
             InnerParallelism::Allow
         } else {
             InnerParallelism::Forbid
