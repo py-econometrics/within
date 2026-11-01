@@ -20,6 +20,7 @@ use crate::operator::schwarz::{build_schwarz, Preconditioner, SchwarzConfig};
 use crate::operator::DesignOperator;
 use crate::{BuildError, BuildWarning, SolveError, WithinError};
 
+mod block_probe;
 mod ladder;
 mod layout;
 #[cfg(feature = "pair-schur-prototype")]
@@ -295,6 +296,9 @@ trait Formulation: Sync {
     fn system<'r>(&'r self, rhs: &'r Self::Rhs<'_>) -> (&'r dyn Operator, &'r [f64]);
     /// What the residual tolerance is relative to, when not the system's own `‖b‖`.
     fn residual_reference(&self, rhs: &Self::Rhs<'_>) -> Option<f64>;
+    fn block_design(&self) -> Option<&dyn crate::operator::reduced_design::BlockDesign> {
+        None
+    }
     fn finish(&self, rhs: Self::Rhs<'_>, run: Run) -> Result<RhsSolution, SolveError>;
     fn gram_diagonal(&self) -> Vec<f64>;
     /// `None` when no factor-pair subdomain exists to build on.
@@ -579,6 +583,50 @@ fn last_rung<'s, F: Formulation>(
 ) -> Result<Vec<Pass<F::Rhs<'s>>>, SolveError> {
     let coarsened = coarse.map(|coarse| Coarsened { inner, coarse });
     let map = coarsened.as_ref().map_or(inner as &dyn Operator, |c| c);
+    if std::env::var_os("BLOCK_PROBE").is_some() {
+        let pending: Vec<_> = passes.iter().filter_map(|p| match p {
+            Pass::Pending(rhs, _) => {
+                let (op, b) = system.system(rhs);
+                let norm = b.iter().map(|v| v * v).sum::<f64>().sqrt();
+                let reference = system.residual_reference(rhs).unwrap_or(norm);
+                (norm > 1e-8 * reference).then_some((op, b, system.residual_reference(rhs)))
+            }
+            Pass::Done(_) => None,
+        }).collect();
+        if pending.len() > 1 {
+            let bs: Vec<&[f64]> = pending.iter().map(|(_, b, _)| *b).collect();
+            let refs: Vec<Option<f64>> = pending.iter().map(|(_, _, r)| *r).collect();
+            if let (Some(_), Some(ab)) = (std::env::var_os("BLOCK_WALL"), system.block_design()) {
+                let inner_block = |t: &[f64], y2: &mut [f64], k: usize| {
+                    if std::env::var_os("PROBE_INNER_FUSED").is_some() {
+                        return inner.apply_block(t, y2, k);
+                    }
+                    let n = inner.nrows();
+                    let cols: Vec<Vec<f64>> = (0..k).into_par_iter().map(|j| {
+                        let xc: Vec<f64> = (0..n).map(|i| t[i * k + j]).collect();
+                        let mut yc = vec![0.0; n];
+                        inner.apply(&xc, &mut yc).expect("apply");
+                        yc
+                    }).collect();
+                    y2.par_chunks_mut(k).enumerate().for_each(|(i, row)| (0..k).for_each(|j| row[j] = cols[j][i]));
+                };
+                let mb = |x: &[f64], y: &mut [f64], k: usize| match coarse {
+                    Some(c) => c.apply_around_block(&|t: &[f64], y2: &mut [f64]| inner_block(t, y2, k), x, y, k),
+                    None => inner_block(x, y, k),
+                };
+                if std::env::var_os("M_TIMING").is_some() {
+                    let ib = |x: &[f64], y: &mut [f64], k: usize| inner.apply_block(x, y, k);
+                    block_probe::m_timing(inner, &ib, map, &mb, bs.len());
+                } else {
+                    block_probe::wall_report(pending[0].0, ab, map, &mb, &bs, &refs, lsmr.tol, lsmr.local_size);
+                }
+            } else if std::env::var_os("KERNEL_PROFILE").is_some() {
+                block_probe::kernel_profile(pending[0].0, inner, map, &bs);
+            } else {
+                block_probe::report(pending[0].0, map, &bs);
+            }
+        }
+    }
     rung(system, passes, Some(map), None, lsmr)
 }
 

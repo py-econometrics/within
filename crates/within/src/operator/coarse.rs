@@ -12,6 +12,17 @@ pub(crate) trait CoarseRung: Send + Sync {
         x: &[f64],
         y: &mut [f64],
     ) -> Result<(), SolveError>;
+
+    /// Probe: `k` interleaved columns around a block `inner`.
+    fn apply_around_block(
+        &self,
+        _inner: &(dyn Fn(&[f64], &mut [f64]) + Sync),
+        _x: &[f64],
+        _y: &mut [f64],
+        _k: usize,
+    ) {
+        unimplemented!("probe: no block coarse apply")
+    }
 }
 
 /// The Schwarz map with a coarse rung around it.

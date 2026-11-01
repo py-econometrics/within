@@ -129,6 +129,55 @@ impl TwoWay {
         self.col_idx.len()
     }
 
+    /// Probe: `out = Aᵀ x` for `k` interleaved columns.
+    fn t_mul_k(&self, x: &[f64], out: &mut [f64], k: usize) {
+        macro_rules! go { ($($k:literal)*) => { match k {
+            $($k => self.t_mul_r::<$k>(x.as_chunks().0, out.as_chunks_mut().0),)*
+            _ => panic!("k = {k}"),
+        } } }
+        go!(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16)
+    }
+
+    fn t_mul_r<const K: usize>(&self, x: &[[f64; K]], out: &mut [[f64; K]]) {
+        out.par_iter_mut().enumerate().with_min_len(64).for_each(|(c, o)| {
+            let mut acc = [0.0; K];
+            let span = self.col_ptr[c]..self.col_ptr[c + 1];
+            for (&r, &v) in self.col_idx[span.clone()].iter().zip(&self.col_val[span]) {
+                let xr = &x[r as usize];
+                (0..K).for_each(|l| acc[l] += v * xr[l]);
+            }
+            *o = acc;
+        });
+    }
+
+    /// Probe: `out += alpha A c` for `k` interleaved columns.
+    fn mul_add_k(&self, c: &[f64], alpha: f64, out: &mut [f64], k: usize) {
+        macro_rules! go { ($($k:literal)*) => { match k {
+            $($k => self.mul_add_r::<$k>(c.as_chunks().0, alpha, out.as_chunks_mut().0),)*
+            _ => panic!("k = {k}"),
+        } } }
+        go!(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16)
+    }
+
+    fn mul_add_r<const K: usize>(&self, c: &[[f64; K]], alpha: f64, out: &mut [[f64; K]]) {
+        const BLOCK: usize = 512;
+        out.par_chunks_mut(BLOCK).enumerate().for_each(|(j, block)| {
+            let base = j * BLOCK;
+            let lo = self.rows.partition_point(|&r| (r as usize) < base);
+            let hi = self.rows.partition_point(|&r| (r as usize) < base + block.len());
+            for i in lo..hi {
+                let mut acc = [0.0; K];
+                let span = self.row_ptr[i]..self.row_ptr[i + 1];
+                for (&kk, &v) in self.row_idx[span.clone()].iter().zip(&self.row_val[span]) {
+                    let cr = &c[kk as usize];
+                    (0..K).for_each(|l| acc[l] += v * cr[l]);
+                }
+                let o = &mut block[self.rows[i] as usize - base];
+                (0..K).for_each(|l| o[l] += alpha * acc[l]);
+            }
+        });
+    }
+
     fn t_mul(&self, x: &[f64], out: &mut [f64]) {
         self.t_mul_on(x, out, self.nnz() >= PARALLEL_T_MUL);
     }
@@ -783,6 +832,49 @@ impl HubCorrection {
         self.f.mul_add(&self.c_mul(&self.b_mul(c)), alpha, out);
     }
 
+    /// Probe: `C q` on interleaved rows.
+    fn c_mul_r<const K: usize>(&self, q: &[[f64; K]]) -> Vec<[f64; K]> {
+        let p = self.p;
+        (0..q.len())
+            .map(|i| {
+                let (h, a) = (i / p, i % p);
+                let mut acc = [0.0; K];
+                for b in 0..p {
+                    let (cv, qr) = (self.c[h * p * p + a * p + b], &q[h * p + b]);
+                    (0..K).for_each(|l| acc[l] += cv * qr[l]);
+                }
+                acc
+            })
+            .collect()
+    }
+
+    /// Probe: [`Self::add_sz`] on interleaved rows.
+    fn add_sz_r<const K: usize>(&self, c: &[[f64; K]], alpha: f64, out: &mut [[f64; K]]) {
+        let bc: Vec<[f64; K]> = (0..self.rank())
+            .map(|i| {
+                let mut acc = [0.0; K];
+                for k in self.ptr[i]..self.ptr[i + 1] {
+                    let (v, cr) = (self.vals[k], &c[self.cols[k] as usize]);
+                    (0..K).for_each(|l| acc[l] += v * cr[l]);
+                }
+                acc
+            })
+            .collect();
+        self.f.mul_add_r(&self.c_mul_r(&bc), alpha, out);
+    }
+
+    /// Probe: [`Self::add_sz_t`] on interleaved rows.
+    fn add_sz_t_r<const K: usize>(&self, y: &[[f64; K]], alpha: f64, out: &mut [[f64; K]]) {
+        let mut fy = vec![[0.0; K]; self.rank()];
+        self.f.t_mul_r(y, &mut fy);
+        for (i, q) in self.c_mul_r(&fy).into_iter().enumerate() {
+            for k in self.ptr[i]..self.ptr[i + 1] {
+                let (o, v) = (&mut out[self.cols[k] as usize], alpha * self.vals[k]);
+                (0..K).for_each(|l| o[l] += v * q[l]);
+            }
+        }
+    }
+
     /// `out += alpha (F C B)ᵀ y = alpha Bᵀ C Fᵀ y`.
     fn add_sz_t(&self, y: &[f64], alpha: f64, out: &mut [f64]) {
         let mut fy = vec![0.0; self.rank()];
@@ -1275,6 +1367,48 @@ impl ReducedCoarse {
         }
     }
 
+    /// Probe: `E⁻¹` on `k` interleaved columns.
+    fn solve_coarse_k(&self, v: &mut [f64], k: usize) {
+        let dim = self.m + self.hubs.as_ref().map_or(0, HubCorrection::rank);
+        let mut x = vec![0.0; dim * k];
+        for i in 0..self.m {
+            for j in 0..k {
+                x[j * dim + i] = v[i * k + j] * self.scale[i];
+            }
+        }
+        if dim > self.m {
+            for j in 0..k {
+                for i in self.m..dim {
+                    x[j * dim + i] *= self.scale[i];
+                }
+            }
+        }
+        let mode = std::env::var("PROBE_ESOLVE").unwrap_or_else(|_| "split1".into());
+        let solve = |cols: &mut [f64], par: Par| {
+            let kk = cols.len() / dim;
+            let mut buf = MemBuffer::new(self.symbolic.solve_in_place_scratch::<f64>(kk, par));
+            LdltRef::new(&self.symbolic, &self.l_values).solve_in_place_with_conj(
+                Conj::No,
+                MatMut::from_column_major_slice_mut(cols, dim, kk),
+                par,
+                MemStack::new(&mut buf),
+            );
+        };
+        match mode.as_str() {
+            "par" => solve(&mut x, Par::rayon(rayon::current_num_threads())),
+            m if m.starts_with("split") => {
+                let g: usize = m[5..].parse().unwrap_or(1);
+                x.par_chunks_mut(dim * g).for_each(|cols| solve(cols, Par::Seq));
+            }
+            _ => solve(&mut x, self.par),
+        }
+        for i in 0..self.m {
+            for j in 0..k {
+                v[i * k + j] = x[j * dim + i] * self.scale[i];
+            }
+        }
+    }
+
     /// `E⁻¹v`: the wide levels' rows ride along with zero right-hand side.
     fn solve_coarse(&self, v: &mut [f64]) {
         let dim = self.m + self.hubs.as_ref().map_or(0, HubCorrection::rank);
@@ -1293,7 +1427,85 @@ impl ReducedCoarse {
     }
 }
 
+static SZ_BENCHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub(crate) static CTIME: [std::sync::atomic::AtomicU64; 5] = [const { std::sync::atomic::AtomicU64::new(0) }; 5];
+
+impl ReducedCoarse {
+    fn around_rows<const K: usize>(&self, inner: &(dyn Fn(&[f64], &mut [f64]) + Sync), x: &[f64], y: &mut [f64]) {
+        use std::sync::atomic::Ordering::Relaxed;
+        thread_local! {
+            static T: std::cell::Cell<Vec<f64>> = const { std::cell::Cell::new(Vec::new()) };
+        }
+        let mut tick = std::time::Instant::now();
+        let mut lap = |i: usize| {
+            CTIME[i].fetch_add(tick.elapsed().as_nanos() as u64, Relaxed);
+            tick = std::time::Instant::now();
+        };
+        let rows = |v: &[f64]| -> Vec<[f64; K]> { v.as_chunks::<K>().0.to_vec() };
+        let mut c = vec![[0.0; K]; self.m];
+        self.z.t_mul_r(x.as_chunks().0, &mut c);
+        lap(0);
+        self.solve_coarse_k(c.as_flattened_mut(), K);
+        lap(1);
+        let mut t = T.take();
+        t.clear();
+        t.extend_from_slice(x);
+        let tr = t.as_chunks_mut::<K>().0;
+        self.sz.mul_add_r(&c, -1.0, tr);
+        lap(2);
+        if let Some(h) = &self.hubs {
+            h.add_sz_r(&c, 1.0, tr);
+        }
+        lap(3);
+        inner(&t, y);
+        T.set(t);
+        lap(4);
+        let yr = y.as_chunks::<K>().0;
+        let mut d = vec![[0.0; K]; self.m];
+        self.sz.t_mul_r(yr, &mut d);
+        lap(2);
+        if let Some(h) = &self.hubs {
+            h.add_sz_t_r(yr, -1.0, &mut d);
+        }
+        lap(3);
+        self.solve_coarse_k(d.as_flattened_mut(), K);
+        lap(1);
+        c.iter_mut().zip(&d).for_each(|(c, d)| (0..K).for_each(|l| c[l] -= d[l]));
+        self.z.mul_add_r(&c, 1.0, y.as_chunks_mut::<K>().0);
+        lap(0);
+        let _ = rows;
+    }
+}
+
 impl CoarseRung for ReducedCoarse {
+    fn apply_around_block(
+        &self,
+        inner: &(dyn Fn(&[f64], &mut [f64]) + Sync),
+        x: &[f64],
+        y: &mut [f64],
+        k: usize,
+    ) {
+        if std::env::var_os("PROBE_SZ_BENCH").is_some() && !SZ_BENCHED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            let n = x.len() / k;
+            let best = |f: &mut dyn FnMut()| (0..5).map(|_| { let t = std::time::Instant::now(); f(); t.elapsed().as_secs_f64() }).fold(f64::INFINITY, f64::min) * 1e3;
+            let cols: Vec<Vec<f64>> = (0..k).map(|j| (0..n).map(|i| x[i * k + j]).collect()).collect();
+            let mut cm = vec![vec![0.0; self.m]; k];
+            let mut bm = vec![0.0; self.m * k];
+            let t_conc = best(&mut || cols.par_iter().zip(&mut cm).for_each(|(x, o)| self.sz.t_mul(x, o)));
+            let t_seqpar = best(&mut || cols.iter().zip(&mut cm).for_each(|(x, o)| self.sz.t_mul_on(x, o, true)));
+            let t_blk = best(&mut || self.sz.t_mul_k(x, &mut bm, k));
+            let mut on = vec![vec![0.0; n]; k];
+            let mut bn = vec![0.0; n * k];
+            let m_conc = best(&mut || cm.par_iter().zip(&mut on).for_each(|(c, o)| self.sz.mul_add(c, 1.0, o)));
+            let m_blk = best(&mut || self.sz.mul_add_k(&bm, 1.0, &mut bn, k));
+            eprintln!("SZ nnz={} m={} n={n} k={k}: t_mul conc {t_conc:.2} seq-of-par {t_seqpar:.2} block {t_blk:.2} ms | mul_add conc {m_conc:.2} block {m_blk:.2} ms", self.sz.nnz(), self.m);
+        }
+        macro_rules! go { ($($k:literal)*) => { match k {
+            $($k => self.around_rows::<$k>(inner, x, y),)*
+            _ => panic!("k = {k}"),
+        } } }
+        go!(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16)
+    }
     /// Balancing form around `inner`: `Z E⁻¹ Zᵀx + (I − Z E⁻¹ ZᵀS) B (I − S Z E⁻¹ Zᵀ) x`.
     fn apply_around(
         &self,

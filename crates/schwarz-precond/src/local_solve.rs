@@ -33,6 +33,39 @@ pub trait LocalSolver: Send + Sync {
         allow_inner_parallelism: bool,
     ) -> Result<(), LocalSolveError>;
 
+    /// Probe: a one-line description of the local factor.
+    fn describe(&self) -> String {
+        String::new()
+    }
+
+    /// Probe: `k` column-major local right-hand sides solved in place.
+    fn solve_local_block(&self, x: &mut [f64], k: usize, threaded: bool) {
+        let n = self.n_local();
+        let mut sol = vec![0.0; self.scratch_size()];
+        let mut rhs = vec![0.0; self.scratch_size()];
+        for col in x.chunks_mut(n).take(k) {
+            rhs[..n].copy_from_slice(col);
+            self.solve_local(&mut rhs, &mut sol, threaded).expect("local solve");
+            col.copy_from_slice(&sol[..n]);
+        }
+    }
+
+    /// Probe: `K` interleaved local right-hand sides solved in place.
+    fn solve_local_rows<const K: usize>(&self, x: &mut [[f64; K]], threaded: bool)
+    where
+        Self: Sized,
+    {
+        let n = x.len();
+        let mut cols = vec![0.0; n * K];
+        for (i, r) in x.iter().enumerate() {
+            (0..K).for_each(|l| cols[l * n + i] = r[l]);
+        }
+        self.solve_local_block(&mut cols, K, threaded);
+        for (i, r) in x.iter_mut().enumerate() {
+            (0..K).for_each(|l| r[l] = cols[l * n + i]);
+        }
+    }
+
     /// Estimated local work that can benefit from nested Rayon; zero when there is no such region.
     fn inner_parallelism_work_estimate(&self) -> usize {
         0

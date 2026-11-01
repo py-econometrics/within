@@ -60,6 +60,10 @@ impl Formulation for Reduced<'_> {
         (self.design.operator(), &rhs.b)
     }
 
+    fn block_design(&self) -> Option<&dyn crate::operator::reduced_design::BlockDesign> {
+        Some(self.design.block())
+    }
+
     fn residual_reference(&self, rhs: &ReducedRhs<'_>) -> Option<f64> {
         (rhs.full_norm > 0.0).then_some(rhs.full_norm)
     }

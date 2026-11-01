@@ -221,6 +221,23 @@ impl Preconditioner {
     }
 }
 
+impl Preconditioner {
+    /// Probe: `k` interleaved columns at once; non-Schwarz variants go column by column.
+    pub(crate) fn apply_block(&self, x: &[f64], y: &mut [f64], k: usize) {
+        if let Variant::Additive(p) = &self.inner {
+            return p.inner.apply_block(x, y, k);
+        }
+        let n = self.nrows();
+        let mut xc = vec![0.0; n];
+        let mut yc = vec![0.0; n];
+        for j in 0..k {
+            (0..n).for_each(|i| xc[i] = x[i * k + j]);
+            self.apply(&xc, &mut yc).expect("apply");
+            (0..n).for_each(|i| y[i * k + j] = yc[i]);
+        }
+    }
+}
+
 impl Operator for Preconditioner {
     fn nrows(&self) -> usize {
         self.operator().nrows()

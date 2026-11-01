@@ -178,7 +178,146 @@ pub(crate) struct ColumnMoments {
     pub(crate) single_removal: Vec<Vec<f64>>,
 }
 
-pub(crate) trait ReducedDesign: Operator {
+/// Probe: `k` columns at once, rows interleaved (`x[c·k + j]`).
+pub(crate) trait BlockDesign: Sync {
+    fn apply_block(&self, x: &[f64], y: &mut [f64], k: usize);
+    fn apply_adjoint_block(&self, u: &[f64], y: &mut [f64], k: usize);
+}
+
+macro_rules! dispatch_k {
+    ($k:expr, $f:ident, $($arg:expr),*) => {
+        match $k {
+            1 => $f::<1, P>($($arg),*), 2 => $f::<2, P>($($arg),*), 3 => $f::<3, P>($($arg),*),
+            4 => $f::<4, P>($($arg),*), 5 => $f::<5, P>($($arg),*), 6 => $f::<6, P>($($arg),*),
+            7 => $f::<7, P>($($arg),*), 8 => $f::<8, P>($($arg),*), 9 => $f::<9, P>($($arg),*),
+            10 => $f::<10, P>($($arg),*), 11 => $f::<11, P>($($arg),*), 12 => $f::<12, P>($($arg),*),
+            13 => $f::<13, P>($($arg),*), 14 => $f::<14, P>($($arg),*), 15 => $f::<15, P>($($arg),*),
+            16 => $f::<16, P>($($arg),*),
+            _ => panic!("k = {} outside 1..=16", $k),
+        }
+    };
+}
+
+fn block_apply<const K: usize, P: LevelProjection>(d: &SegmentedDesign<P>, x: &[f64], y: &mut [f64]) {
+    let (x, _) = x.as_chunks::<K>();
+    let (y, _) = y.as_chunks_mut::<K>();
+    let starts = &d.rows.starts;
+    let mut parts = Vec::with_capacity(d.tasks.0.len());
+    let mut rest = y;
+    for t in &d.tasks.0 {
+        let (head, tail) = rest.split_at_mut(starts[t.end] - starts[t.start]);
+        parts.push((t.clone(), head));
+        rest = tail;
+    }
+    let (kept, projection) = (&d.rows.kept, &d.projection);
+    let run = |(levels, y): (Range<usize>, &mut [[f64; K]]), w: &(dyn Fn(usize) -> f64 + Sync)| {
+        let base = starts[levels.start];
+        let mut fits: [P::Fit; K] = std::array::from_fn(|_| projection.fit());
+        for l in levels {
+            for p in starts[l]..starts[l + 1] {
+                let mut v = [0.0; K];
+                kept.for_each_entry(p, |c, z| {
+                    let xc = &x[c as usize];
+                    for j in 0..K {
+                        v[j] += z * xc[j];
+                    }
+                });
+                let wp = w(p);
+                for j in 0..K {
+                    v[j] *= wp;
+                    projection.accumulate(p, wp * v[j], &mut fits[j]);
+                }
+                y[p - base] = v;
+            }
+            for f in fits.iter_mut() {
+                projection.solve(l, f);
+            }
+            for p in starts[l]..starts[l + 1] {
+                let wp = w(p);
+                for j in 0..K {
+                    y[p - base][j] -= wp * projection.fitted(p, &fits[j]);
+                }
+            }
+        }
+    };
+    match &d.rows.sqrt_weights {
+        Some(sw) => parts.into_par_iter().for_each(|part| run(part, &|p| sw[p])),
+        None => parts.into_par_iter().for_each(|part| run(part, &|_| 1.0)),
+    }
+}
+
+fn block_adjoint<const K: usize, P: LevelProjection>(d: &SegmentedDesign<P>, u: &[f64], out: &mut [f64]) {
+    let (u, _) = u.as_chunks::<K>();
+    let (out, _) = out.as_chunks_mut::<K>();
+    let (starts, kept, projection) = (&d.rows.starts, &d.rows.kept, &d.projection);
+    let scatter = |levels: Range<usize>, acc: &mut [[f64; K]], w: &(dyn Fn(usize) -> f64 + Sync)| {
+        let mut fits: [P::Fit; K] = std::array::from_fn(|_| projection.fit());
+        for l in levels {
+            for p in starts[l]..starts[l + 1] {
+                let wp = w(p);
+                for j in 0..K {
+                    projection.accumulate(p, wp * u[p][j], &mut fits[j]);
+                }
+            }
+            for f in fits.iter_mut() {
+                projection.solve(l, f);
+            }
+            for p in starts[l]..starts[l + 1] {
+                let wp = w(p);
+                let mut v = [0.0; K];
+                for j in 0..K {
+                    v[j] = wp * (u[p][j] - wp * projection.fitted(p, &fits[j]));
+                }
+                kept.for_each_entry(p, |c, z| {
+                    let a = &mut acc[c as usize];
+                    for j in 0..K {
+                        a[j] += z * v[j];
+                    }
+                });
+            }
+        }
+    };
+    let ones = |_: usize| 1.0;
+    let weighted;
+    let w: &(dyn Fn(usize) -> f64 + Sync) = match &d.rows.sqrt_weights {
+        Some(sw) => {
+            weighted = move |p: usize| sw[p];
+            &weighted
+        }
+        None => &ones,
+    };
+    if d.tasks.0.len() <= 1 || rayon::current_num_threads() == 1 {
+        out.fill([0.0; K]);
+        scatter(0..d.rows.n_levels(), out, w);
+        return;
+    }
+    let sum = d
+        .tasks
+        .batches()
+        .map(|levels| {
+            let mut acc = vec![[0.0; K]; d.n_kept];
+            scatter(levels, &mut acc, w);
+            acc
+        })
+        .reduce_with(|mut a, b| {
+            a.iter_mut().zip(&b).for_each(|(a, b)| (0..K).for_each(|j| a[j] += b[j]));
+            a
+        })
+        .expect("nonempty parallel tasks");
+    out.copy_from_slice(&sum);
+}
+
+impl<P: LevelProjection> BlockDesign for SegmentedDesign<P> {
+    fn apply_block(&self, x: &[f64], y: &mut [f64], k: usize) {
+        dispatch_k!(k, block_apply, self, x, y)
+    }
+    fn apply_adjoint_block(&self, u: &[f64], y: &mut [f64], k: usize) {
+        dispatch_k!(k, block_adjoint, self, u, y)
+    }
+}
+
+pub(crate) trait ReducedDesign: Operator + BlockDesign {
+    fn block(&self) -> &dyn BlockDesign;
     /// The design as a plain operator: trait upcasting needs Rust 1.86, past the MSRV.
     fn operator(&self) -> &dyn Operator;
     fn projected_rhs(&self, b: &[f64]) -> Vec<f64>;
@@ -354,6 +493,9 @@ impl<P: LevelProjection> SegmentedDesign<P> {
 }
 
 impl<P: LevelProjection> ReducedDesign for SegmentedDesign<P> {
+    fn block(&self) -> &dyn BlockDesign {
+        self
+    }
     fn operator(&self) -> &dyn Operator {
         self
     }

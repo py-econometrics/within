@@ -73,6 +73,7 @@ where
 
 /// One-level additive Schwarz preconditioner; pooled per-thread buffers make `apply()` safe.
 pub struct SchwarzPreconditioner<S: LocalSolver> {
+    probe: Arc<ProbeCache>,
     reduction_strategy: ReductionStrategy,
     scheduler: AdditiveScheduler,
     executor: AdditiveExecutor<S>,
@@ -130,6 +131,7 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
             total_scatter_dofs,
         };
         Self {
+            probe: Arc::default(),
             reduction_strategy: strategy,
             scheduler,
             executor,
@@ -165,6 +167,64 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
         self.executor.apply(plan, r, z)
     }
 
+    /// Probe: `z = M⁻¹ r` for `k` interleaved columns (`r[g·k + j]`).
+    pub fn apply_block(&self, r: &[f64], z: &mut [f64], k: usize) {
+        macro_rules! go {
+            ($($k:literal)*) => {
+                match k {
+                    $($k => self.apply_rows::<$k>(r.as_chunks::<$k>().0, z.as_chunks_mut::<$k>().0),)*
+                    _ => panic!("k = {k} unsupported"),
+                }
+            };
+        }
+        go!(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16)
+    }
+
+    fn apply_rows<const K: usize>(&self, r: &[[f64; K]], z: &mut [[f64; K]]) {
+        use rayon::prelude::*;
+        let subs = self.executor.subdomains();
+        let inverse = self.probe.inverse.get_or_init(|| Inverse::new(subs, self.executor.n_dofs()));
+        let threaded = rayon::current_num_threads() > 1;
+        let thread_min = *self.probe.thread_min.get_or_init(|| {
+            std::env::var("PROBE_THREAD_MIN").ok().and_then(|v| v.parse().ok()).unwrap_or(4096)
+        });
+        let mut locals = std::mem::take(&mut *self.probe.locals.lock().unwrap());
+        let total = *inverse.offsets.last().unwrap();
+        if locals.len() < total * K {
+            locals.resize(total * K, 0.0);
+        }
+        {
+            let mut rest = &mut locals[..total * K].as_chunks_mut::<K>().0[..];
+            let mut slices = Vec::with_capacity(subs.len());
+            for e in subs {
+                let (head, tail) = rest.split_at_mut(e.global_indices().len());
+                slices.push(head);
+                rest = tail;
+            }
+            subs.par_iter().zip(slices).for_each(|(e, local)| {
+                if local.is_empty() {
+                    return;
+                }
+                let (idx, w) = (e.global_indices(), e.partition_weights());
+                for (i, (&g, row)) in idx.iter().zip(local.iter_mut()).enumerate() {
+                    let (wi, src) = (w.get(i), &r[g as usize]);
+                    (0..K).for_each(|l| row[l] = src[l] * wi);
+                }
+                e.solver().solve_local_rows::<K>(local, threaded && local.len() >= thread_min);
+            });
+        }
+        let rows = &locals[..total * K].as_chunks::<K>().0;
+        z.par_iter_mut().enumerate().with_min_len(1024).for_each(|(g, out)| {
+            let mut acc = [0.0; K];
+            for e in inverse.ptr[g]..inverse.ptr[g + 1] {
+                let (p, w) = (inverse.pos[e] as usize, inverse.weight[e]);
+                (0..K).for_each(|l| acc[l] += rows[p][l] * w);
+            }
+            *out = acc;
+        });
+        *self.probe.locals.lock().unwrap() = locals;
+    }
+
     fn reduction_plan(&self) -> ReductionPlan {
         let threads = rayon::current_num_threads().max(1);
         self.scheduler.reduction_plan(
@@ -180,6 +240,7 @@ impl<S: LocalSolver> Clone for SchwarzPreconditioner<S> {
     /// Clone shares subdomain data and the buffer pool via `Arc`: O(1) and fully interchangeable.
     fn clone(&self) -> Self {
         Self {
+            probe: Arc::clone(&self.probe),
             reduction_strategy: self.reduction_strategy,
             scheduler: self.scheduler,
             executor: self.executor.clone(),
@@ -202,5 +263,46 @@ impl<S: LocalSolver> Operator for SchwarzPreconditioner<S> {
 
     fn apply_adjoint(&self, r: &[f64], z: &mut [f64]) -> Result<(), SolveError> {
         SchwarzPreconditioner::apply(self, r, z)
+    }
+}
+
+/// Probe: lazily built gather map and a reusable local buffer for block applies.
+#[derive(Default)]
+struct ProbeCache {
+    inverse: std::sync::OnceLock<Inverse>,
+    thread_min: std::sync::OnceLock<usize>,
+    locals: std::sync::Mutex<Vec<f64>>,
+}
+
+/// Each global dof's `(position in the concatenated locals, weight)` entries.
+struct Inverse {
+    offsets: Vec<usize>,
+    ptr: Vec<usize>,
+    pos: Vec<u32>,
+    weight: Vec<f64>,
+}
+
+impl Inverse {
+    fn new<S: LocalSolver>(subs: &[SubdomainEntry<S>], n_dofs: usize) -> Self {
+        let mut offsets = vec![0];
+        let mut ptr = vec![0usize; n_dofs + 1];
+        for e in subs {
+            offsets.push(offsets.last().unwrap() + e.global_indices().len());
+            e.global_indices().iter().for_each(|&g| ptr[g as usize + 1] += 1);
+        }
+        (0..n_dofs).for_each(|g| ptr[g + 1] += ptr[g]);
+        let mut fill = ptr.clone();
+        let total = *offsets.last().unwrap();
+        let (mut pos, mut weight) = (vec![0u32; total], vec![0.0; total]);
+        for (s, e) in subs.iter().enumerate() {
+            let w = e.partition_weights();
+            for (i, &g) in e.global_indices().iter().enumerate() {
+                let slot = &mut fill[g as usize];
+                pos[*slot] = (offsets[s] + i) as u32;
+                weight[*slot] = w.get(i);
+                *slot += 1;
+            }
+        }
+        Self { offsets, ptr, pos, weight }
     }
 }

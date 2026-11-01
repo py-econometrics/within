@@ -83,6 +83,55 @@ impl LocalSolver for BlockSolver {
         Ok(())
     }
 
+    fn describe(&self) -> String {
+        let mut d: Vec<String> = self.blocks.iter().map(|b| b.proto_describe()).collect();
+        d.sort_by_key(|s| std::cmp::Reverse(s.len()));
+        format!("{} blocks; {}", self.blocks.len(), d.into_iter().take(3).collect::<Vec<_>>().join(" | "))
+    }
+
+    fn solve_local_rows<const K: usize>(&self, x: &mut [[f64; K]], threaded: bool) {
+        thread_local! {
+            static WORK: std::cell::Cell<(Vec<f64>, Vec<f64>, Vec<f64>)> = const { std::cell::Cell::new((Vec::new(), Vec::new(), Vec::new())) };
+        }
+        // Taken, not borrowed: nested rayon work may run another solve on this thread.
+        let (mut work, mut scratch, mut col) = WORK.take();
+        scratch.resize(scratch.len().max(self.scratch_size), 0.0);
+        col.resize(col.len().max(self.n_local), 0.0);
+        let mut off = 0;
+        for block in &self.blocks {
+            let nb = block.vertices().len();
+            block.proto_solve_rows::<K>(&mut x[off..off + nb], &mut work, &mut scratch, &mut col, threaded);
+            off += nb;
+        }
+        WORK.set((work, scratch, col));
+    }
+
+    fn solve_local_block(&self, x: &mut [f64], k: usize, threaded: bool) {
+        let n = self.n_local;
+        let mut scratch = vec![0.0; self.scratch_size];
+        let mut buf = vec![0.0; n * 16];
+        let mut col = vec![0.0; n];
+        let mut first = 0;
+        while first < k {
+            let group = [16, 8, 4, 2, 1].into_iter().find(|&g| g <= k - first).unwrap();
+            let mut off = 0;
+            for block in &self.blocks {
+                let nb = block.vertices().len();
+                let xs = &mut x[first * n + off..];
+                let (s, b, c) = (&mut scratch[..block.scratch_len()], &mut buf[..], &mut col[..]);
+                match group {
+                    16 => block.proto_solve_k::<16>(xs, n, b, s, c, threaded),
+                    8 => block.proto_solve_k::<8>(xs, n, b, s, c, threaded),
+                    4 => block.proto_solve_k::<4>(xs, n, b, s, c, threaded),
+                    2 => block.proto_solve_k::<2>(xs, n, b, s, c, threaded),
+                    _ => block.proto_solve_k::<1>(xs, n, b, s, c, threaded),
+                }
+                off += nb;
+            }
+            first += group;
+        }
+    }
+
     fn inner_parallelism_work_estimate(&self) -> usize {
         self.blocks.iter().map(BlockFactor::splittable_work).sum()
     }
