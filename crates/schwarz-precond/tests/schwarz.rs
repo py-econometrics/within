@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use rayon::prelude::*;
 use rstest::{fixture, rstest};
 use schwarz_precond::{
-    mlsmr, IdentityPrecond, LocalSolveError, LocalSolver, MlsmrOptions, Operator, PartitionWeights,
+    mlsmr, IdentityOp, LocalSolveError, LocalSolver, MlsmrOptions, Operator, PartitionWeights,
     SchwarzPreconditioner, SubdomainCore, SubdomainEntry,
 };
 
@@ -159,7 +159,7 @@ fn test_additive_schwarz_reduces_iterations(
     let unprecond = mlsmr(
         &a,
         &rhs,
-        &IdentityPrecond { dim: a.ncols() },
+        &IdentityOp { n: a.ncols() },
         1e-8,
         200,
         MlsmrOptions::default(),

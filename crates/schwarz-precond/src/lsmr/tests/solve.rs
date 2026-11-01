@@ -25,7 +25,7 @@ fn test_lsmr_large_magnitude_rhs_not_silently_zero() {
     // Entries ~1e155: the unscaled Σb² = 1e310 overflows f64, but the
     // max-scaled ‖b‖ stays finite. A = I, so the exact solution is x = b.
     let b = vec![1e155, 2e155, 3e155];
-    let result = lsmr(&IdentityPrecond { dim: 3 }, &b, 1e-10, 100, None).expect("lsmr solve");
+    let result = lsmr(&IdentityOp { n: 3 }, &b, 1e-10, 100, None).expect("lsmr solve");
 
     let all_zero = result.x.iter().all(|&xi| xi == 0.0);
     assert!(
@@ -44,7 +44,7 @@ fn test_lsmr_large_magnitude_rhs_not_silently_zero() {
 #[test]
 fn test_mlsmr_large_magnitude_rhs_not_silently_zero() {
     let b = vec![1e155, 2e155, 3e155];
-    let op = IdentityPrecond { dim: 3 };
+    let op = IdentityOp { n: 3 };
     let result = mlsmr(&op, &b, &op, 1e-10, 100, MlsmrOptions::default())
         .expect("preconditioned mlsmr solve");
 
@@ -181,7 +181,7 @@ fn test_mlsmr_rank_deficient_system() {
 #[case(&[1.0, 1.0, 0.0])]
 #[case(&[1e20, 0.0])]
 fn a_singular_preconditioner_cannot_certify_the_direction_it_annihilates(#[case] m: &[f64]) {
-    let a = IdentityPrecond { dim: m.len() };
+    let a = IdentityOp { n: m.len() };
     let b = vec![1.0; m.len()];
     let result = mlsmr(
         &a,

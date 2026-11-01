@@ -8,7 +8,7 @@ use std::time::Instant;
 use ndarray::ArrayView2;
 use rayon::prelude::*;
 use schwarz_precond::{
-    mlsmr, EscalationPolicy, IdentityPrecond, LsmrResult, LsmrStopReason, MlsmrOptions,
+    mlsmr, EscalationPolicy, IdentityOp, LsmrResult, LsmrStopReason, MlsmrOptions,
 };
 
 use crate::channel::CoefficientAddress;
@@ -431,8 +431,8 @@ impl<'a> Solver<'a> {
                 let run = Run::timed(|| match map {
                     Some(m) => mlsmr(&self.prepared, b, m, lsmr.tol, maxiter, options),
                     None => {
-                        let identity = IdentityPrecond {
-                            dim: self.prepared.design.n_dofs,
+                        let identity = IdentityOp {
+                            n: self.prepared.design.n_dofs,
                         };
                         mlsmr(&self.prepared, b, &identity, lsmr.tol, maxiter, options)
                     }

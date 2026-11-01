@@ -1,4 +1,4 @@
-//! LSMR for `min ‖b − A x‖₂`; [`mlsmr`] with [`IdentityPrecond`] is unpreconditioned.
+//! LSMR for `min ‖b − A x‖₂`; [`mlsmr`] with [`IdentityOp`] is unpreconditioned.
 
 mod bidiag;
 #[cfg(test)]
@@ -212,17 +212,17 @@ pub struct MlsmrOptions<'a> {
 
 /// `M = I`: [`mlsmr`] with it is plain LSMR.
 #[derive(Clone, Copy, Debug)]
-pub struct IdentityPrecond {
+pub struct IdentityOp {
     /// Dimension of the solution.
-    pub dim: usize,
+    pub n: usize,
 }
 
-impl Operator for IdentityPrecond {
+impl Operator for IdentityOp {
     fn nrows(&self) -> usize {
-        self.dim
+        self.n
     }
     fn ncols(&self) -> usize {
-        self.dim
+        self.n
     }
     fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
         y.copy_from_slice(x);

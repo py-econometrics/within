@@ -9,11 +9,11 @@
 //! See `examples/` for runnable usage. Reference: Toselli & Widlund (2005).
 //! *Domain Decomposition Methods — Algorithms and Theory*. Springer.
 //!
-//! [`mlsmr`] solves `min ‖b − A x‖₂` for any [`Operator`]; [`IdentityPrecond`] runs it
+//! [`mlsmr`] solves `min ‖b − A x‖₂` for any [`Operator`]; [`IdentityOp`] runs it
 //! unpreconditioned:
 //!
 //! ```
-//! use schwarz_precond::{mlsmr, IdentityPrecond, MlsmrOptions, Operator, SolveError};
+//! use schwarz_precond::{mlsmr, IdentityOp, MlsmrOptions, Operator, SolveError};
 //!
 //! struct Diag(Vec<f64>);
 //! impl Operator for Diag {
@@ -35,7 +35,7 @@
 //! }
 //!
 //! let a = Diag(vec![2.0, 3.0]);
-//! let none = IdentityPrecond { dim: 2 };
+//! let none = IdentityOp { n: 2 };
 //! let r = mlsmr(&a, &[4.0, 9.0], &none, 1e-10, 50, MlsmrOptions::default()).unwrap();
 //! assert!(r.converged);
 //! assert!((r.x[0] - 2.0).abs() < 1e-6);
@@ -76,7 +76,7 @@ pub use domain::{PartitionWeights, SubdomainCore};
 pub use error::{BuildError, LocalSolveError, SolveError};
 pub use local_solve::{LocalSolver, SubdomainEntry};
 pub use lsmr::{
-    mlsmr, EscalationHandler, EscalationPolicy, IdentityPrecond, LsmrResult, LsmrStopReason,
+    mlsmr, EscalationHandler, EscalationPolicy, IdentityOp, LsmrResult, LsmrStopReason,
     MlsmrOptions, Progress, Staleness, StalenessError,
 };
 pub use schwarz::SchwarzPreconditioner;

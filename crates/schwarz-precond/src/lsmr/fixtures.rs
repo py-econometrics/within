@@ -3,7 +3,7 @@
 use super::*;
 use crate::{Operator, SolveError};
 
-/// Unpreconditioned LSMR: [`mlsmr`] with [`IdentityPrecond`].
+/// Unpreconditioned LSMR: [`mlsmr`] with [`IdentityOp`].
 pub(crate) fn lsmr<O: Operator + ?Sized>(
     op: &O,
     b: &[f64],
@@ -15,14 +15,7 @@ pub(crate) fn lsmr<O: Operator + ?Sized>(
         local_size,
         ..Default::default()
     };
-    mlsmr(
-        op,
-        b,
-        &IdentityPrecond { dim: op.ncols() },
-        tol,
-        maxiter,
-        options,
-    )
+    mlsmr(op, b, &IdentityOp { n: op.ncols() }, tol, maxiter, options)
 }
 
 /// Simple 4×3 overdetermined system.

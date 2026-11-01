@@ -198,7 +198,7 @@ fn test_mlsmr_near_breakdown_vp_clamps_to_zero() {
     }
 
     let b = vec![3.0, 4.0];
-    let op = IdentityPrecond { dim: 2 };
+    let op = IdentityOp { n: 2 };
     let result = mlsmr(
         &op,
         &b,
@@ -301,7 +301,7 @@ fn test_mlsmr_rejects_indefinite_preconditioner() {
     }
 
     let b = vec![3.0, 4.0];
-    let op = IdentityPrecond { dim: 2 };
+    let op = IdentityOp { n: 2 };
     let result = mlsmr(&op, &b, &NegIdentity, 1e-10, 100, MlsmrOptions::default());
     assert!(matches!(result, Err(SolveError::InvalidInput { .. })));
 }

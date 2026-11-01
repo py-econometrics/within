@@ -4,8 +4,8 @@
 //! subdomains and diagonal local solvers.
 
 use schwarz_precond::{
-    mlsmr, IdentityPrecond, LocalSolveError, LocalSolver, MlsmrOptions, Operator,
-    SchwarzPreconditioner, SolveError, SubdomainCore, SubdomainEntry,
+    mlsmr, IdentityOp, LocalSolveError, LocalSolver, MlsmrOptions, Operator, SchwarzPreconditioner,
+    SolveError, SubdomainCore, SubdomainEntry,
 };
 
 // ---------------------------------------------------------------------------
@@ -113,7 +113,7 @@ fn main() {
     let result_plain = mlsmr(
         &a,
         &rhs,
-        &IdentityPrecond { dim: a.ncols() },
+        &IdentityOp { n: a.ncols() },
         1e-10,
         200,
         MlsmrOptions::default(),

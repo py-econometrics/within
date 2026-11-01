@@ -56,7 +56,7 @@ fn test_mlsmr_warm_tolerance_is_relative_to_original_rhs() {
 #[case::short_x0_zero_rhs(&[0.0, 0.0, 0.0], &[0.0, 0.0])]
 #[case::nan_x0_zero_rhs(&[0.0, 0.0, 0.0], &[0.0, f64::NAN, 0.0])]
 fn test_mlsmr_rejects_bad_warm_start_for_any_rhs(#[case] b: &[f64], #[case] x0: &[f64]) {
-    let op = IdentityPrecond { dim: 3 };
+    let op = IdentityOp { n: 3 };
     let options = MlsmrOptions {
         warm_start: Some(x0),
         ..Default::default()
@@ -72,7 +72,7 @@ fn test_mlsmr_rejects_bad_warm_start_for_any_rhs(#[case] b: &[f64], #[case] x0: 
 #[test]
 fn test_mlsmr_warm_rejects_overflowing_warm_start_residual() {
     let op = DiagOp(vec![1e200; 3]);
-    let m = IdentityPrecond { dim: 3 };
+    let m = IdentityOp { n: 3 };
     let x0 = [1e200; 3];
     let options = MlsmrOptions {
         warm_start: Some(&x0),
@@ -105,7 +105,7 @@ fn test_mlsmr_warm_rejects_overflowing_rhs_norm() {
 
 #[test]
 fn test_mlsmr_zero_rhs_corrects_non_exact_warm_start() {
-    let op = IdentityPrecond { dim: 3 };
+    let op = IdentityOp { n: 3 };
     let x0 = [1.0, 2.0, 3.0];
     let options = MlsmrOptions {
         warm_start: Some(&x0),
@@ -123,7 +123,7 @@ fn test_mlsmr_zero_rhs_corrects_non_exact_warm_start() {
 }
 
 #[rstest]
-#[case::identity(&IdentityPrecond { dim: 3 }, &[1.0, 2.0, 3.0], &[1.0, 2.0, 3.0])]
+#[case::identity(&IdentityOp { n: 3 }, &[1.0, 2.0, 3.0], &[1.0, 2.0, 3.0])]
 #[case::null_direction(&ZeroSecondRow, &[0.0, 0.0], &[0.0, 7.0])]
 fn test_mlsmr_exact_warm_start_is_returned_untouched(
     #[case] op: &dyn Operator,
@@ -134,7 +134,7 @@ fn test_mlsmr_exact_warm_start_is_returned_untouched(
         warm_start: Some(x0),
         ..Default::default()
     };
-    let m = IdentityPrecond { dim: op.ncols() };
+    let m = IdentityOp { n: op.ncols() };
     let result = mlsmr(op, b, &m, 1e-10, 50, options).expect("exact warm start");
     assert_eq!(result.stop_reason, LsmrStopReason::WarmStartExact);
     assert!(result.converged);
@@ -155,16 +155,8 @@ fn test_mlsmr_converged_solve_is_never_escalated() {
         escalation: Some(&FixedIterations(1)),
         ..Default::default()
     };
-    let m = IdentityPrecond { dim: 3 };
-    let result = mlsmr(
-        &IdentityPrecond { dim: 3 },
-        &[1.0, 2.0, 3.0],
-        &m,
-        1e-10,
-        50,
-        opts,
-    )
-    .expect("solve");
+    let m = IdentityOp { n: 3 };
+    let result = mlsmr(&IdentityOp { n: 3 }, &[1.0, 2.0, 3.0], &m, 1e-10, 50, opts).expect("solve");
     assert!(result.converged);
     assert_ne!(result.stop_reason, LsmrStopReason::Escalated);
 }
@@ -213,7 +205,7 @@ fn test_warm_escalated_stop_is_measured_against_the_original_rhs() {
 fn test_mlsmr_ladder_warm_starts_and_escalates() {
     let (op, b) = vandermonde_ls();
     let (tol, window) = (1e-9, Some(12));
-    let weak = IdentityPrecond { dim: op.cols };
+    let weak = IdentityOp { n: op.cols };
     let strong = jacobi(&op);
     let rung = MlsmrOptions {
         escalation: Some(&FixedIterations(3)),
@@ -341,7 +333,7 @@ fn test_mlsmr_maxiter_residuals_are_rebased_onto_the_original_rhs() {
     let result = mlsmr(
         &op,
         &b,
-        &IdentityPrecond { dim: op.cols },
+        &IdentityOp { n: op.cols },
         1e-15,
         3,
         MlsmrOptions {
@@ -377,9 +369,9 @@ fn test_mlsmr_warm_start_audits_at_extreme_magnitude() {
     let b = [1e160, 5e159];
     let x0 = [9e159, 4.5e159];
     let result = mlsmr(
-        &IdentityPrecond { dim: 2 },
+        &IdentityOp { n: 2 },
         &b,
-        &IdentityPrecond { dim: 2 },
+        &IdentityOp { n: 2 },
         1e-15,
         5,
         MlsmrOptions {

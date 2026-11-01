@@ -9,7 +9,7 @@ use super::super::{
     MlsmrOptions, NormalEqReference, SolveStart,
 };
 use crate::lsmr::fixtures::{lsmr, DenseOp, DiagOp, FixedIterations};
-use crate::lsmr::IdentityPrecond;
+use crate::lsmr::IdentityOp;
 use crate::SolveError;
 
 /// Stops on ResidualTolerance at every pass's first step; `true_residuals` scripts each check.
@@ -281,8 +281,7 @@ fn a_warm_start_near_the_solution_keeps_its_certificate() {
         ..Default::default()
     };
 
-    let result =
-        mlsmr(&op, &rhs, &IdentityPrecond { dim: 2 }, 1e-8, 20, options).expect("warm solve");
+    let result = mlsmr(&op, &rhs, &IdentityOp { n: 2 }, 1e-8, 20, options).expect("warm solve");
 
     assert!(result.converged, "{:?}", result.stop_reason);
 }
