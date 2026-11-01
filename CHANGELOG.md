@@ -23,6 +23,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - **BREAKING:** `mlsmr(op, b, m, x, start, &options, stall, par, scratch)` writes the solution into `x` and returns `LsmrInfo`; `start: InitialGuess` says whether `x` holds a warm start. Mismatched lengths or shapes panic instead of returning `SolveError::InvalidInput`. `MlsmrOptions`, `LsmrResult`, `EscalationPolicy`, `EscalationHandler` and `Progress` are removed; `stall: Option<Staleness>` replaces `escalation`, and `LsmrStopReason::Escalated` is `Stalled` (#365).
 - **BREAKING:** `within::LsmrOptions` is `schwarz_precond::LsmrOptions`, which has a hidden field, so a struct literal needs `..Default::default()`.
 - **BREAKING:** `within::Preconditioner::apply` is renamed `apply_slices`; `Preconditioner` implements faer `LinOp<f64>`, and `within` re-exports `LinOp`, `MatMut`, `MatRef`, `MemBuffer`, `MemStack`, `Par` and `StackReq` for it.
+- `solve` and `solve_batch` read the thread count from the ambient rayon pool once; a batch divides it across right-hand sides (#365).
 - **BREAKING:** The serialized `Preconditioner` wire format moved v19 → v20; 0.4.0 bytes no longer decode.
 
 ### Fixed

@@ -86,14 +86,6 @@ impl Preconditioner {
         }
     }
 
-    /// The ladder a reusing solver resumes, while this map has not escalated.
-    pub(crate) fn ladder(&self) -> Option<&AdaptiveLadder> {
-        match &self.inner {
-            Variant::Adaptive(ladder) => Some(ladder),
-            Variant::Additive { .. } | Variant::Diagonal(_) => None,
-        }
-    }
-
     /// Drop the ladder for a design with no factor pair to escalate to, keeping its diagonal.
     pub(crate) fn settle(self) -> Self {
         match self.inner {
@@ -260,16 +252,24 @@ fn diagonal_map(prepared: &PreparedDesign<'_>) -> Result<Arc<[f64]>, BuildError>
     Ok(Arc::from(diag))
 }
 
-/// Build the additive Schwarz map plus its warnings; `None` when the design has no factor-pair
-/// subdomain to build on, where plain LSMR is the fallback.
+/// What one preconditioner build yields: the map (`None` adds nothing below it) and its warnings.
+pub(crate) struct PreconditionerBuild {
+    pub(crate) map: Option<Preconditioner>,
+    pub(crate) warnings: Vec<BuildWarning>,
+}
+
+/// The additive Schwarz build; no map when the design has no factor-pair subdomain.
 pub(crate) fn build_schwarz(
     prepared: &PreparedDesign<'_>,
     local_solver: &LocalSolverConfig,
-) -> Result<(Option<Preconditioner>, Vec<BuildWarning>), BuildError> {
+) -> Result<PreconditionerBuild, BuildError> {
     let build_started = Instant::now();
     let (domains, warnings) = crate::domain::build_local_domains(prepared, local_solver)?;
     if domains.is_empty() {
-        return Ok((None, warnings));
+        return Ok(PreconditionerBuild {
+            map: None,
+            warnings,
+        });
     }
     let schwarz = build_additive(domains, prepared.design.n_dofs)?;
     let preconditioner = Preconditioner {
@@ -279,5 +279,8 @@ pub(crate) fn build_schwarz(
         },
         build_duration: build_started.elapsed(),
     };
-    Ok((Some(preconditioner), warnings))
+    Ok(PreconditionerBuild {
+        map: Some(preconditioner),
+        warnings,
+    })
 }
