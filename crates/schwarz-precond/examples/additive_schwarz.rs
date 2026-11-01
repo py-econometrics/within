@@ -4,7 +4,7 @@
 //! subdomains and diagonal local solvers.
 
 use schwarz_precond::{
-    lsmr, mlsmr, LocalSolveError, LocalSolver, MlsmrOptions, Operator, SchwarzPreconditioner,
+    mlsmr, IdentityOp, LocalSolveError, LocalSolver, MlsmrOptions, Operator, SchwarzPreconditioner,
     SolveError, SubdomainCore, SubdomainEntry,
 };
 
@@ -110,7 +110,15 @@ fn main() {
     let a = TridiagOperator { n };
 
     // --- Unpreconditioned LSMR ---
-    let result_plain = lsmr(&a, &rhs, 1e-10, 200, None).expect("unpreconditioned lsmr");
+    let result_plain = mlsmr(
+        &a,
+        &rhs,
+        &IdentityOp { n: a.ncols() },
+        1e-10,
+        200,
+        MlsmrOptions::default(),
+    )
+    .expect("unpreconditioned lsmr");
     println!(
         "Unpreconditioned LSMR : converged={}, iterations={:>3}, residual={:.3e}",
         result_plain.converged, result_plain.iterations, result_plain.residual_norm,

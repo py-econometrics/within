@@ -3,26 +3,19 @@
 use super::*;
 use crate::{Operator, SolveError};
 
-/// Identity operator used by mlsmr equivalence tests.
-pub(crate) struct IdentityOp {
-    pub(crate) n: usize,
-}
-
-impl Operator for IdentityOp {
-    fn nrows(&self) -> usize {
-        self.n
-    }
-    fn ncols(&self) -> usize {
-        self.n
-    }
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        y.copy_from_slice(x);
-        Ok(())
-    }
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        y.copy_from_slice(x);
-        Ok(())
-    }
+/// Unpreconditioned LSMR: [`mlsmr`] with [`IdentityOp`].
+pub(crate) fn lsmr<O: Operator + ?Sized>(
+    op: &O,
+    b: &[f64],
+    tol: f64,
+    maxiter: usize,
+    local_size: Option<usize>,
+) -> Result<LsmrResult, SolveError> {
+    let options = MlsmrOptions {
+        local_size,
+        ..Default::default()
+    };
+    mlsmr(op, b, &IdentityOp { n: op.ncols() }, tol, maxiter, options)
 }
 
 /// Simple 4×3 overdetermined system.

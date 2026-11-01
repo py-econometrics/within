@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use rayon::prelude::*;
 use rstest::{fixture, rstest};
 use schwarz_precond::{
-    lsmr, mlsmr, LocalSolveError, LocalSolver, MlsmrOptions, Operator, PartitionWeights,
+    mlsmr, IdentityOp, LocalSolveError, LocalSolver, MlsmrOptions, Operator, PartitionWeights,
     SchwarzPreconditioner, SubdomainCore, SubdomainEntry,
 };
 
@@ -156,7 +156,15 @@ fn test_additive_schwarz_reduces_iterations(
     let a = TridiagOperator::new(n, 3.0);
     let rhs = vec![1.0; n];
 
-    let unprecond = lsmr(&a, &rhs, 1e-8, 200, None).expect("unpreconditioned lsmr");
+    let unprecond = mlsmr(
+        &a,
+        &rhs,
+        &IdentityOp { n: a.ncols() },
+        1e-8,
+        200,
+        MlsmrOptions::default(),
+    )
+    .expect("unpreconditioned lsmr");
     assert!(
         unprecond.converged,
         "Unpreconditioned LSMR did not converge"

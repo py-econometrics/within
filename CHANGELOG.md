@@ -11,6 +11,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **BREAKING:** `schwarz_precond::lsmr` is removed; `mlsmr` with `IdentityOp` runs unpreconditioned LSMR.
 - **BREAKING:** `schwarz_precond::PartitionWeights::Uniform` is a unit variant; `PartitionWeights::len` and `is_empty` are removed. Uniform weights take their shape from `SubdomainCore::n_local`; only explicit weights carry a length. The serialized uniform variant no longer carries a count; the wire-format fixture moves v20 → v21; v20, v19 and v12 remain rejected-payload controls. The fixture number is not a runtime serialization envelope (#425).
 - Schwarz subdomains are factored by approx-chol 0.7 from each channel pair's factor-width-2 Gram factor `V`, one column per observation: sign folding, dominance scaling, floating detection and the Schur complement move into approx-chol, and each irreducible block is a subdomain (#481).
 - **BREAKING:** `ApproxSchurConfig::seed` (Python `seed=`) is removed; the Schur sampler draws from `ApproxCholConfig::seed`.

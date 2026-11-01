@@ -1,8 +1,4 @@
-//! LSMR for rectangular least-squares (`min ‖b − A x‖₂`).
-//!
-//! Two entry points:
-//! - [`lsmr`] — standard Golub-Kahan bidiagonalization, no preconditioner.
-//! - [`mlsmr`] — preconditioned variant with composable warm starts and escalation.
+//! LSMR for `min ‖b − A x‖₂`; [`mlsmr`] with [`IdentityOp`] is unpreconditioned.
 
 mod bidiag;
 #[cfg(test)]
@@ -15,7 +11,7 @@ mod tests;
 use std::borrow::Cow;
 
 use crate::{Operator, SolveError};
-use bidiag::{axpby, BidiagStep, Bidiagonalization, GolubKahan, StagedStart};
+use bidiag::{axpby, BidiagStep, Bidiagonalization, StagedStart};
 use magnitude::Magnitude;
 use recurrence::{ConvergenceCriteria, LsmrRecurrenceState, RotationStep, SolutionState, Stop};
 
@@ -214,41 +210,27 @@ pub struct MlsmrOptions<'a> {
     pub local_size: Option<usize>,
 }
 
-/// Unpreconditioned LSMR.
-///
-/// Solves `min ‖b − A x‖₂` using the standard Golub-Kahan
-/// bidiagonalization.
-pub fn lsmr<A: Operator + ?Sized>(
-    operator: &A,
-    b: &[f64],
-    tol: f64,
-    maxiter: usize,
-    local_size: Option<usize>,
-) -> Result<LsmrResult, SolveError> {
-    validate_lsmr_inputs(operator, b, tol)?;
-    let n = operator.ncols();
+/// `M = I`: [`mlsmr`] with it is plain LSMR.
+#[derive(Clone, Copy, Debug)]
+pub struct IdentityOp {
+    /// Dimension of the solution.
+    pub n: usize,
+}
 
-    let b_norm = finite(vec_norm(b), "rhs norm")?;
-    if b_norm == 0.0 {
-        return Ok(LsmrResult {
-            x: vec![0.0; n],
-            converged: true,
-            iterations: 0,
-            residual_norm: 0.0,
-            normal_eq_residual: 0.0,
-            stop_reason: LsmrStopReason::ZeroRhs,
-            true_residual: None,
-        });
+impl Operator for IdentityOp {
+    fn nrows(&self) -> usize {
+        self.n
     }
-
-    let local_size = local_size.unwrap_or(0);
-    let (bidiag, step1) = GolubKahan::init(operator, b, b_norm, local_size)?;
-    let criteria = ConvergenceCriteria::new(b_norm, tol);
-    let start = SolveStart {
-        x0: None,
-        reference: NormalEqReference::cold(step1, Magnitude::product(step1.alpha, step1.beta)),
-    };
-    lsmr_from_bidiag(bidiag, step1, b, start, criteria, maxiter, None)
+    fn ncols(&self) -> usize {
+        self.n
+    }
+    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+        y.copy_from_slice(x);
+        Ok(())
+    }
+    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+        self.apply(x, y)
+    }
 }
 
 /// Preconditioned LSMR with `M ≈ AᵀA`, one `M⁻¹` apply per iteration; `M⁻¹` must be nonsingular.

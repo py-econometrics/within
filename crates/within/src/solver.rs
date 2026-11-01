@@ -8,7 +8,7 @@ use std::time::Instant;
 use ndarray::ArrayView2;
 use rayon::prelude::*;
 use schwarz_precond::{
-    lsmr as lsmr_solve, mlsmr, EscalationPolicy, LsmrResult, LsmrStopReason, MlsmrOptions,
+    mlsmr, EscalationPolicy, IdentityOp, LsmrResult, LsmrStopReason, MlsmrOptions,
 };
 
 use crate::channel::CoefficientAddress;
@@ -427,15 +427,15 @@ impl<'a> Solver<'a> {
                     local_size: lsmr.local_size,
                     ..Default::default()
                 };
+                let (b, maxiter) = (rhs.b(), lsmr.maxiter);
                 let run = Run::timed(|| match map {
-                    Some(m) => mlsmr(&self.prepared, rhs.b(), m, lsmr.tol, lsmr.maxiter, options),
-                    None => lsmr_solve(
-                        &self.prepared,
-                        rhs.b(),
-                        lsmr.tol,
-                        lsmr.maxiter,
-                        lsmr.local_size,
-                    ),
+                    Some(m) => mlsmr(&self.prepared, b, m, lsmr.tol, maxiter, options),
+                    None => {
+                        let identity = IdentityOp {
+                            n: self.prepared.design.n_dofs,
+                        };
+                        mlsmr(&self.prepared, b, &identity, lsmr.tol, maxiter, options)
+                    }
                 })?;
                 Ok(if stalled(&run.result) {
                     Pass::Stalled(rhs, run)
