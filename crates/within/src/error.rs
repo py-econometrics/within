@@ -96,8 +96,8 @@ pub enum BuildError {
         /// Actual column count of the supplied preconditioner.
         actual_cols: usize,
     },
-    /// Every dominance comparison is `>`, so a NaN or infinite slack silently certifies anything.
-    #[error("scaling tolerance must be finite and non-negative, got {value}")]
+    /// A scaling tolerance outside `[0, 1)`.
+    #[error("scaling tolerance must lie in [0, 1), got {value}")]
     InvalidScalingTolerance {
         /// The offending value.
         value: f64,

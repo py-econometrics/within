@@ -161,7 +161,7 @@ as `.build_duration_seconds`; both are preserved across pickling and reuse.
 | `LocalSolverConfig(approx_chol?, schur?, dense_threshold=24, scaling?)` | Schur reduction + approximate Cholesky. Omit `schur` for the library-default approximate variant; pass `schur=Schur.exact()` to request an exact Schur (slower, used for validation). |
 | `Schur.approximate(config?)` / `Schur.exact()` | Schur-reduction mode passed as `LocalSolverConfig(schur=...)`. |
 | `ApproxCholConfig(seed=0, split_merge=None)` | Approximate Cholesky parameters. |
-| `ApproxSchurConfig(seed=0, split=1)` | Approximate Schur complement sampling parameters. |
+| `ApproxSchurConfig(split=1)` | Approximate Schur complement sampling parameters; draws from `ApproxCholConfig.seed`. |
 
 ### Result types
 
@@ -284,7 +284,7 @@ across solves like any other.
 |---|---|---|
 | `within::config` | public | `LsmrOptions`, `PreconditionerConfig`, `LocalSolverConfig`, `SchurMode`, `ApproxCholConfig`, `ApproxSchurConfig`, `ScalingConfig` |
 | `within::error` | public | `WithinError`, `BuildError`, `SolveError` |
-| `block_elim` / `channel` / `csr_block` / `domain` / `linalg` / `operator` / `solver` | `pub(crate)` | implementation layers — public items are re-exported at the crate root |
+| `block_solver` / `channel` / `domain` / `linalg` / `operator` / `solver` | `pub(crate)` | implementation layers — public items are re-exported at the crate root |
 
 ## Project structure
 

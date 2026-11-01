@@ -211,7 +211,7 @@ fn test_within_error_source_chains_through_transparent_wrapper() {
 /// silently — no `UnscalableComponent` under `Error`, and no `BuildWarning` under `Warn` either.
 #[rstest]
 fn test_invalid_local_solver_rejected(
-    #[values(-1e-9, f64::NAN, f64::INFINITY)] value: f64,
+    #[values(-1e-9, 1.0, f64::NAN, f64::INFINITY)] value: f64,
     #[values(false, true)] adaptive: bool,
     #[values(1, 2)] n_factors: usize,
 ) {

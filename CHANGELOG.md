@@ -7,12 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-- Long weighted Gram diagonals and cross-table cells use compensated accumulation, avoiding roundoff-driven Laplacian validation failures and loss of signed cell contributions.
+- Long weighted Gram diagonals use compensated accumulation.
 
 ### Changed
 
 - **BREAKING:** `schwarz_precond::PartitionWeights::Uniform` is a unit variant; `PartitionWeights::len` and `is_empty` are removed. Uniform weights take their shape from `SubdomainCore::n_local`; only explicit weights carry a length. The serialized uniform variant no longer carries a count; the wire-format fixture moves v20 → v21; v20, v19 and v12 remain rejected-payload controls. The fixture number is not a runtime serialization envelope (#425).
-
+- Schwarz subdomains are factored by approx-chol 0.7 from each channel pair's factor-width-2 Gram factor `V`, one column per observation: sign folding, dominance scaling, floating detection and the Schur complement move into approx-chol, and each irreducible block is a subdomain (#481).
+- **BREAKING:** `ApproxSchurConfig::seed` (Python `seed=`) is removed; the Schur sampler draws from `ApproxCholConfig::seed`.
+- **BREAKING:** `ScalingConfig::tolerance` must lie in `[0, 1)`, else `BuildError::InvalidScalingTolerance`.
 - Levels with no cross-factor entries in a channel pair are batched into diagonal Schwarz subdomains per side instead of one subdomain each, cutting per-subdomain build and apply overhead without changing the preconditioner.
 - **BREAKING:** `ReductionStrategy` is removed: the `reduction` field of `PreconditionerConfig::Additive` and `::Adaptive`, Python's `reduction=` argument and `within.config.ReductionStrategy`, and the strategy argument of `SchwarzPreconditioner::new`/`with_n_dofs` with its `reduction_strategy()` getter. Overlapping subdomain outputs always sum in subdomain order (#472).
 - **BREAKING:** `schwarz_precond::LocalSolver::solve_local(x, workspace, allow_inner_parallelism)` solves in place, and the required `workspace_len()` replaces `scratch_size()`. `SubdomainEntry::{core, is_empty, scratch_size, apply_weighted_into_with_scratch, apply_weighted_into_atomic}`, `SubdomainCore::{restrict_weighted, prolongate_weighted_add, prolongate_weighted_add_atomic}`, `BuildError::ScratchSizeTooSmall` and `SolveError::Synchronization` are removed.

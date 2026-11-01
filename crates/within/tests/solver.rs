@@ -193,7 +193,7 @@ fn fully_specified_additive() -> PreconditionerConfig {
                 seed: 41,
                 split_merge: Some(3),
             },
-            schur: SchurMode::Approximate(ApproxSchurConfig { seed: 17, split: 2 }),
+            schur: SchurMode::Approximate(ApproxSchurConfig { split: 2 }),
             dense_threshold: 0,
             scaling: ScalingConfig {
                 tolerance: 1e-7,

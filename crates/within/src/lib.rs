@@ -26,9 +26,8 @@
 pub mod config;
 pub mod error;
 
-pub(crate) mod block_elim;
+pub(crate) mod block_solver;
 pub(crate) mod channel;
-pub(crate) mod csr_block;
 pub(crate) mod domain;
 pub(crate) mod linalg;
 pub(crate) mod operator;

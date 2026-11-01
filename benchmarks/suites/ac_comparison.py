@@ -36,7 +36,7 @@ from .._table import print_pivot, print_table
 def _schur(seed: int, split_merge: int | None) -> LocalSolverConfig:
     return LocalSolverConfig(
         approx_chol=ApproxCholConfig(seed=seed, split_merge=split_merge),
-        schur=Schur.approximate(ApproxSchurConfig(seed=seed)),
+        schur=Schur.approximate(ApproxSchurConfig()),
     )
 
 

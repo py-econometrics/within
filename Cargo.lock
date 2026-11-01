@@ -25,12 +25,13 @@ checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
 
 [[package]]
 name = "approx-chol"
-version = "0.6.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3f7e4049cc6e5824e9c88f88f98f3759baee45dc5e3fe33fc2e99889414755b"
+checksum = "b20c64c7b87a2a7518f8ac03b9797795d9408e33a7d081528985131636d64776"
 dependencies = [
  "num-traits",
  "rand 0.10.3",
+ "rayon",
  "serde",
 ]
 
