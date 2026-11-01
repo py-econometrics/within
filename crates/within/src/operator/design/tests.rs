@@ -1,7 +1,8 @@
 mod design_tests {
     use crate::domain::PreparedDesign;
     use crate::linalg::dot;
-    use schwarz_precond::Operator;
+    use crate::operator::{apply_ambient, transpose_apply_ambient};
+    use schwarz_precond::LinOp;
 
     fn make_test_design() -> PreparedDesign<'static> {
         // Sorted on the dominant factor, so construction applies no locality permutation.
@@ -11,8 +12,8 @@ mod design_tests {
     #[test]
     fn test_design_operator_dimensions() {
         let schema = make_test_design();
-        assert_eq!(schema.nrows(), 5);
-        assert_eq!(schema.ncols(), 7);
+        assert_eq!(LinOp::nrows(&schema), 5);
+        assert_eq!(LinOp::ncols(&schema), 7);
     }
 
     #[test]
@@ -23,13 +24,11 @@ mod design_tests {
         let r = vec![0.1, 0.2, -0.3, 0.4, -0.5];
 
         let mut dx = vec![0.0; 5];
-        schema.apply(&x, &mut dx).expect("apply succeeds");
+        apply_ambient(&schema, &x, &mut dx);
         let lhs: f64 = dx.iter().zip(r.iter()).map(|(a, b)| a * b).sum();
 
         let mut dtr = vec![0.0; 7];
-        schema
-            .apply_adjoint(&r, &mut dtr)
-            .expect("apply_adjoint succeeds");
+        transpose_apply_ambient(&schema, &r, &mut dtr);
         let rhs: f64 = x.iter().zip(dtr.iter()).map(|(a, b)| a * b).sum();
         assert!((lhs - rhs).abs() < 1e-12);
     }
@@ -39,7 +38,7 @@ mod design_tests {
         let schema = make_test_design();
         let x = vec![1.0, 2.0, 3.0, 10.0, 20.0, 30.0, 40.0];
         let mut y = vec![0.0; 5];
-        schema.apply(&x, &mut y).expect("apply succeeds");
+        apply_ambient(&schema, &x, &mut y);
         assert_eq!(y, vec![11.0, 12.0, 22.0, 33.0, 41.0]);
     }
 
@@ -48,9 +47,7 @@ mod design_tests {
         let schema = make_test_design();
         let r = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         let mut x = vec![0.0; 7];
-        schema
-            .apply_adjoint(&r, &mut x)
-            .expect("apply_adjoint succeeds");
+        transpose_apply_ambient(&schema, &r, &mut x);
         assert_eq!(x, vec![6.0, 5.0, 4.0, 3.0, 3.0, 4.0, 5.0]);
     }
 
@@ -80,11 +77,10 @@ mod design_tests {
         let r: Vec<f64> = (0..n_rows).map(|i| (i as f64 * 0.23 + 2.0).cos()).collect();
 
         let mut dx = vec![0.0f64; n_rows];
-        dm.apply(&x, &mut dx).expect("apply succeeds");
+        apply_ambient(&dm, &x, &mut dx);
 
         let mut dtr = vec![0.0f64; n_dofs];
-        dm.apply_adjoint(&r, &mut dtr)
-            .expect("apply_adjoint succeeds");
+        transpose_apply_ambient(&dm, &r, &mut dtr);
 
         let lhs = dot(&dx, &r);
         let rhs = dot(&x, &dtr);
@@ -102,7 +98,7 @@ mod design_tests {
         let mut ej = vec![0.0f64; dm.design.n_dofs];
         ej[0] = 1.0;
         let mut y = vec![0.0f64; dm.design.n_obs];
-        dm.apply(&ej, &mut y).expect("apply succeeds");
+        apply_ambient(&dm, &ej, &mut y);
 
         for (i, &yi) in y.iter().enumerate() {
             let expected = if i < 300 { 1.0 } else { 0.0 };
@@ -119,8 +115,7 @@ mod design_tests {
 
         let ones = vec![1.0f64; dm.design.n_obs];
         let mut x = vec![0.0f64; dm.design.n_dofs];
-        dm.apply_adjoint(&ones, &mut x)
-            .expect("apply_adjoint succeeds");
+        transpose_apply_ambient(&dm, &ones, &mut x);
 
         let expected_count = (dm.design.n_obs / 50) as f64;
         for (j, &xj) in x.iter().enumerate() {
@@ -139,11 +134,10 @@ mod design_tests {
         let r: Vec<f64> = vec![0.5, 1.5, -0.5, 2.0, -1.0];
 
         let mut dx = vec![0.0f64; dm.design.n_obs];
-        dm.apply(&x, &mut dx).expect("apply succeeds");
+        apply_ambient(&dm, &x, &mut dx);
 
         let mut dtr = vec![0.0f64; dm.design.n_dofs];
-        dm.apply_adjoint(&r, &mut dtr)
-            .expect("apply_adjoint succeeds");
+        transpose_apply_ambient(&dm, &r, &mut dtr);
 
         let lhs = dot(&dx, &r);
         let rhs = dot(&x, &dtr);
@@ -159,7 +153,7 @@ mod design_tests {
         let dm = make_single_factor_design();
         let x = vec![10.0, 20.0, 30.0];
         let mut y = vec![0.0f64; 5];
-        dm.apply(&x, &mut y).expect("apply succeeds");
+        apply_ambient(&dm, &x, &mut y);
         assert_eq!(y, vec![10.0, 10.0, 20.0, 20.0, 30.0]);
     }
 
@@ -168,15 +162,14 @@ mod design_tests {
         let dm = make_single_factor_design();
         let r = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         let mut x = vec![0.0f64; 3];
-        dm.apply_adjoint(&r, &mut x)
-            .expect("apply_adjoint succeeds");
+        transpose_apply_ambient(&dm, &r, &mut x);
         assert_eq!(x, vec![3.0, 7.0, 5.0]);
     }
 }
 
 mod slope_design_tests {
     use crate::domain::{Design, Effect, PreparedDesign, ScatterSplit};
-    use schwarz_precond::Operator;
+    use crate::operator::{apply_ambient, transpose_apply_ambient};
 
     /// Deterministic pseudo-random f64 in [-1, 1).
     fn noise(seed: usize) -> f64 {
@@ -247,7 +240,7 @@ mod slope_design_tests {
             .map(|j| noise(7_000 + j))
             .collect();
         let mut got = vec![0.0; design.design.n_obs];
-        design.apply(&x, &mut got).unwrap();
+        apply_ambient(&design, &x, &mut got);
         let expect: Vec<f64> = dense
             .iter()
             .map(|row| row.iter().zip(&x).map(|(d, xj)| d * xj).sum())
@@ -256,7 +249,7 @@ mod slope_design_tests {
 
         let r: Vec<f64> = (0..design.design.n_obs).map(|i| noise(9_000 + i)).collect();
         let mut got_t = vec![0.0; design.design.n_dofs];
-        design.apply_adjoint(&r, &mut got_t).unwrap();
+        transpose_apply_ambient(&design, &r, &mut got_t);
         let mut expect_t = vec![0.0; design.design.n_dofs];
         for (row, &ri) in dense.iter().zip(&r) {
             for (e, d) in expect_t.iter_mut().zip(row) {
@@ -316,7 +309,7 @@ mod slope_design_tests {
                 .expect("test rayon pool")
                 .install(|| {
                     let mut dtr = vec![0.0; design.design.n_dofs];
-                    design.apply_adjoint(&r, &mut dtr).unwrap();
+                    transpose_apply_ambient(&design, &r, &mut dtr);
                     dtr.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
                 })
         };
@@ -348,9 +341,9 @@ mod slope_design_tests {
         let r: Vec<f64> = (0..n).map(|i| noise(29 * i + 5)).collect();
 
         let mut dx = vec![0.0; n];
-        design.apply(&x, &mut dx).unwrap();
+        apply_ambient(&design, &x, &mut dx);
         let mut dtr = vec![0.0; design.design.n_dofs];
-        design.apply_adjoint(&r, &mut dtr).unwrap();
+        transpose_apply_ambient(&design, &r, &mut dtr);
 
         let lhs: f64 = dx.iter().zip(&r).map(|(a, b)| a * b).sum();
         let rhs: f64 = x.iter().zip(&dtr).map(|(a, b)| a * b).sum();
@@ -363,8 +356,8 @@ mod slope_design_tests {
 
 mod weighted_adjoint_proptests {
     use crate::domain::PreparedDesign;
+    use crate::operator::{apply_ambient, transpose_apply_ambient};
     use proptest::prelude::*;
-    use schwarz_precond::Operator;
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(10))]
@@ -403,11 +396,11 @@ mod weighted_adjoint_proptests {
                 .collect();
 
             let mut dx = vec![0.0f64; n_rows];
-            dm.apply(&x, &mut dx).unwrap();
+            apply_ambient(&dm, &x, &mut dx);
             let lhs: f64 = dx.iter().zip(&r).map(|(dxi, ri)| dxi * ri).sum();
 
             let mut dtr = vec![0.0f64; n_dofs];
-            dm.apply_adjoint(&r, &mut dtr).unwrap();
+            transpose_apply_ambient(&dm, &r, &mut dtr);
             let rhs: f64 = x.iter().zip(dtr.iter()).map(|(xi, wi)| xi * wi).sum();
 
             prop_assert!(
@@ -415,5 +408,37 @@ mod weighted_adjoint_proptests {
                 "<W^1/2 D·x, r>={lhs} != <x, D^T W^1/2·r>={rhs}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod by_row_scratch_tests {
+    use schwarz_precond::{BiLinOp, MatMut, MatRef, MemBuffer, MemStack, Par};
+
+    use crate::domain::{Design, Effect, PreparedDesign};
+
+    /// Four slopes take the per-column scatter, whose shorter leaves need a deeper partial tree.
+    #[test]
+    fn a_wide_by_row_term_fits_its_declared_scratch() {
+        let (n, n_levels) = (800_000usize, 20_000u32);
+        let levels: Vec<u32> = (0..n)
+            .map(|i| ((i as u64 * 2_654_435_761) % n_levels as u64) as u32)
+            .collect();
+        let slope: Vec<f64> = (0..n).map(|i| (i % 7) as f64 - 3.0).collect();
+        let effect = Effect::new(&levels, true, vec![&slope[..]; 4]).expect("valid effect");
+        let design = Design::new_unsorted([effect]).expect("valid design");
+        let prepared = PreparedDesign::new(design, None).expect("prepared");
+        let par = Par::rayon(16);
+        let r = vec![1.0; n];
+        let mut out = vec![0.0; prepared.design.n_dofs];
+        let mut scratch = MemBuffer::new(prepared.transpose_apply_scratch(1, par));
+        let m = out.len();
+        prepared.transpose_apply(
+            MatMut::from_column_major_slice_mut(&mut out, m, 1),
+            MatRef::from_column_major_slice(&r, n, 1),
+            par,
+            MemStack::new(&mut scratch),
+        );
+        assert_eq!(out[..n_levels as usize].iter().sum::<f64>(), n as f64);
     }
 }

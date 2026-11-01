@@ -3,14 +3,14 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use rayon::prelude::*;
+use faer::dyn_stack::{MemStack, StackReq};
+use faer::matrix_free::LinOp;
+use faer::{MatMut, MatRef};
 
-use crate::error::SolveError;
 use crate::local_solve::{LocalSolver, SubdomainEntry};
+use crate::par::{join_on_stack, Par};
 use crate::prolongation::Prolongation;
-use crate::Operator;
-
-use super::buffers::Pool;
+use crate::with_unit_stride;
 
 /// Persists `n_dofs`, which entries alone cannot recover when some columns are uncovered.
 #[cfg(feature = "serde")]
@@ -55,25 +55,15 @@ where
     }
 }
 
-/// One-level additive Schwarz preconditioner; `apply` reuses buffers pooled across clones.
+/// One-level additive Schwarz preconditioner; every apply takes its buffers from the caller's stack.
 pub struct SchwarzPreconditioner<S: LocalSolver> {
     subdomains: Arc<Vec<SubdomainEntry<S>>>,
     /// Subdomain `i` owns slots `slot_starts[i]..slot_starts[i + 1]` of the stacked local vector.
     slot_starts: Arc<[usize]>,
     prolongation: Arc<Prolongation>,
-    /// One per concurrent apply; every apply rewrites all slots, so a failure leaves nothing stale.
-    local_outputs: Arc<Pool>,
-    /// One per running span of subdomains.
-    workspaces: Arc<Pool>,
-    outer_capacity: f64,
 }
 
 impl<S: LocalSolver> SchwarzPreconditioner<S> {
-    const MIN_INNER_PARALLEL_WORK: usize = 200_000;
-    const OUTER_CAPACITY_TARGET: f64 = 0.75;
-    /// Each spans every slot, so a burst of concurrent applies must not stay resident.
-    const MAX_FREE_LOCAL_OUTPUTS: usize = 4;
-
     /// Infers `n_dofs` from the maximum global index; only valid when every DOF is covered.
     pub fn new(entries: Vec<SubdomainEntry<S>>) -> Self {
         let n_dofs = covered_span(&entries);
@@ -94,38 +84,11 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
                 .flat_map(|e| e.global_indices().iter().copied()),
             n_dofs,
         );
-        let workspace_len = entries
-            .iter()
-            .map(|e| e.solver().workspace_len())
-            .max()
-            .unwrap_or(0);
         Self {
-            local_outputs: Arc::new(Pool::new(
-                slot_starts[entries.len()],
-                Self::MAX_FREE_LOCAL_OUTPUTS,
-            )),
-            // Sized by the largest subdomain; uncapped, as at most one per running span is live.
-            workspaces: Arc::new(Pool::new(workspace_len, usize::MAX)),
-            outer_capacity: Self::outer_capacity(&entries),
             subdomains: Arc::new(entries),
             slot_starts,
             prolongation: Arc::new(prolongation),
         }
-    }
-
-    /// Total over largest subdomain work; infinite when no subdomain merits inner parallelism.
-    fn outer_capacity(entries: &[SubdomainEntry<S>]) -> f64 {
-        let work = || {
-            entries
-                .iter()
-                .map(|e| e.solver().inner_parallelism_work_estimate())
-        };
-        let largest = work().max().unwrap_or(0);
-        if largest < Self::MIN_INNER_PARALLEL_WORK {
-            return f64::INFINITY;
-        }
-        let total = work().fold(0usize, usize::saturating_add);
-        total as f64 / largest as f64
     }
 
     /// Access the underlying subdomain entries.
@@ -137,64 +100,58 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
         self.prolongation.n_dofs()
     }
 
-    /// Operator apply that propagates local-solver failures.
-    pub fn apply(&self, r: &[f64], z: &mut [f64]) -> Result<(), SolveError> {
-        self.check_len("r", r.len())?;
-        self.check_len("z", z.len())?;
-        let allow_inner_parallelism = self.allow_inner_parallelism();
-        let starts = &*self.slot_starts;
-        self.local_outputs.lend(|outputs| {
-            let all = Span {
-                ids: 0..self.subdomains.len(),
-                outputs: &mut *outputs,
-            };
-            rayon::iter::split(all, |span| span.halve(starts)).try_for_each(|span| {
-                self.workspaces
-                    .lend(|workspace| self.solve_span(span, r, workspace, allow_inner_parallelism))
-            })?;
-            self.prolongation.apply(outputs, z);
-            Ok(())
+    fn n_slots(&self) -> usize {
+        self.slot_starts[self.subdomains.len()]
+    }
+
+    /// One task's local-solve scratch; a task under `par` runs at most one subdomain at a time.
+    fn task_scratch(&self, par: Par) -> StackReq {
+        self.subdomains.iter().fold(StackReq::EMPTY, |req, e| {
+            req.or(e.solver().solve_local_scratch(1, par))
         })
     }
 
+    /// `z = M⁻¹ r` for one column.
+    fn apply_column(&self, r: &[f64], z: &mut [f64], par: Par, stack: &mut MemStack) {
+        let (mut outputs, stack) = stack.make_with(self.n_slots(), |_| 0.0);
+        let all = Span {
+            ids: 0..self.subdomains.len(),
+            outputs: &mut outputs,
+        };
+        self.solve_span(all, r, par, self.task_scratch(par), stack);
+        self.prolongation.apply(&outputs, z, par);
+    }
+
+    /// Halves `span` and `par` together until a part has one subdomain or a degree of one.
     fn solve_span(
         &self,
         mut span: Span<'_>,
         r: &[f64],
-        workspace: &mut [f64],
-        allow_inner_parallelism: bool,
-    ) -> Result<(), SolveError> {
-        for i in span.ids.clone() {
-            self.subdomains[i]
-                .apply_weighted_local(
-                    r,
-                    span.outputs_of(i, &self.slot_starts),
-                    workspace,
-                    allow_inner_parallelism,
-                )
-                .map_err(|source| SolveError::LocalSolveFailed {
-                    subdomain: i,
-                    source,
-                })?;
+        par: Par,
+        task: StackReq,
+        stack: &mut MemStack,
+    ) {
+        if span.ids.len() == 1 {
+            let i = span.ids.start;
+            let out = span.outputs_of(i, &self.slot_starts);
+            self.subdomains[i].apply_weighted_local(r, out, par, stack);
+            return;
         }
-        Ok(())
-    }
-
-    fn check_len(&self, name: &str, len: usize) -> Result<(), SolveError> {
-        let n_dofs = self.n_dofs();
-        if len == n_dofs {
-            return Ok(());
+        if par.degree() <= 1 || span.ids.is_empty() {
+            for i in span.ids.clone() {
+                let out = span.outputs_of(i, &self.slot_starts);
+                self.subdomains[i].apply_weighted_local(r, out, Par::Seq, stack);
+            }
+            return;
         }
-        Err(SolveError::InvalidInput {
-            context: "SchwarzPreconditioner::apply",
-            message: format!("{name}.len() ({len}) != n_dofs ({n_dofs})"),
-        })
-    }
-
-    /// Nested Rayon in local solves, unless the subdomains alone already fill the pool.
-    fn allow_inner_parallelism(&self) -> bool {
-        let threads = rayon::current_num_threads().max(1);
-        self.outer_capacity < threads as f64 * Self::OUTER_CAPACITY_TARGET
+        let (left, right) = span.halve(&self.slot_starts);
+        join_on_stack(
+            par,
+            |p| task.array(p.degree()),
+            stack,
+            |p, s| self.solve_span(left, r, p, task, s),
+            |p, s| self.solve_span(right, r, p, task, s),
+        );
     }
 }
 
@@ -213,24 +170,25 @@ struct Span<'a> {
     outputs: &'a mut [f64],
 }
 
-impl Span<'_> {
-    fn halve(self, starts: &[usize]) -> (Self, Option<Self>) {
-        if self.ids.len() < 2 {
-            return (self, None);
-        }
-        let mid = self.ids.start + self.ids.len() / 2;
-        let (left, right) = self
-            .outputs
-            .split_at_mut(starts[mid] - starts[self.ids.start]);
-        let left = Span {
-            ids: self.ids.start..mid,
-            outputs: left,
-        };
-        let right = Span {
-            ids: mid..self.ids.end,
-            outputs: right,
-        };
-        (left, Some(right))
+impl<'a> Span<'a> {
+    /// Two nonempty halves of about equal slot count; requires at least two subdomains.
+    fn halve(self, starts: &[usize]) -> (Span<'a>, Span<'a>) {
+        let (lo, hi) = (self.ids.start, self.ids.end);
+        debug_assert!(hi - lo >= 2);
+        let half = starts[lo] + (starts[hi] - starts[lo]) / 2;
+        let mid =
+            (lo + 1 + starts[lo + 1..hi].partition_point(|&s| s <= half)).clamp(lo + 1, hi - 1);
+        let (left, right) = self.outputs.split_at_mut(starts[mid] - starts[lo]);
+        (
+            Span {
+                ids: lo..mid,
+                outputs: left,
+            },
+            Span {
+                ids: mid..hi,
+                outputs: right,
+            },
+        )
     }
 
     /// The slots of subdomain `i`, one of `ids`.
@@ -241,20 +199,31 @@ impl Span<'_> {
 }
 
 impl<S: LocalSolver> Clone for SchwarzPreconditioner<S> {
-    /// Clone shares subdomain data and the buffer pools via `Arc`: O(1) and fully interchangeable.
+    /// Shares the subdomain data via `Arc`: O(1).
     fn clone(&self) -> Self {
         Self {
             subdomains: Arc::clone(&self.subdomains),
             slot_starts: Arc::clone(&self.slot_starts),
             prolongation: Arc::clone(&self.prolongation),
-            local_outputs: Arc::clone(&self.local_outputs),
-            workspaces: Arc::clone(&self.workspaces),
-            outer_capacity: self.outer_capacity,
         }
     }
 }
 
-impl<S: LocalSolver> Operator for SchwarzPreconditioner<S> {
+impl<S: LocalSolver> std::fmt::Debug for SchwarzPreconditioner<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SchwarzPreconditioner")
+            .field("n_subdomains", &self.subdomains.len())
+            .field("n_dofs", &self.n_dofs())
+            .finish()
+    }
+}
+
+/// `M⁻¹`, column by column; symmetric, so `conj_apply` is `apply`.
+impl<S: LocalSolver> LinOp<f64> for SchwarzPreconditioner<S> {
+    fn apply_scratch(&self, _rhs_ncols: usize, par: Par) -> StackReq {
+        StackReq::new::<f64>(self.n_slots()).and(self.task_scratch(par).array(par.degree()))
+    }
+
     fn nrows(&self) -> usize {
         self.n_dofs()
     }
@@ -263,11 +232,25 @@ impl<S: LocalSolver> Operator for SchwarzPreconditioner<S> {
         self.n_dofs()
     }
 
-    fn apply(&self, r: &[f64], z: &mut [f64]) -> Result<(), SolveError> {
-        SchwarzPreconditioner::apply(self, r, z)
+    fn apply(&self, out: MatMut<'_, f64>, rhs: MatRef<'_, f64>, par: Par, stack: &mut MemStack) {
+        let n = self.n_dofs();
+        assert_eq!(
+            (out.shape(), rhs.nrows()),
+            ((n, rhs.ncols()), n),
+            "M⁻¹ apply shape"
+        );
+        for (z, r) in out.col_iter_mut().zip(rhs.col_iter()) {
+            with_unit_stride(r, z, |r, z| self.apply_column(r, z, par, stack));
+        }
     }
 
-    fn apply_adjoint(&self, r: &[f64], z: &mut [f64]) -> Result<(), SolveError> {
-        SchwarzPreconditioner::apply(self, r, z)
+    fn conj_apply(
+        &self,
+        out: MatMut<'_, f64>,
+        rhs: MatRef<'_, f64>,
+        par: Par,
+        stack: &mut MemStack,
+    ) {
+        self.apply(out, rhs, par, stack);
     }
 }

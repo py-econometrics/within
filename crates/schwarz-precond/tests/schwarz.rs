@@ -8,11 +8,12 @@ use std::time::{Duration, Instant};
 use rayon::prelude::*;
 use rstest::{fixture, rstest};
 use schwarz_precond::{
-    mlsmr, IdentityPrecond, LocalSolveError, LocalSolver, MlsmrOptions, Operator, PartitionWeights,
-    SchwarzPreconditioner, SubdomainCore, SubdomainEntry,
+    mlsmr, IdentityPrecond, InitialGuess, LinOp, LocalSolver, LsmrOptions, MatMut, MemBuffer,
+    MemStack, Par, PartitionWeights, SchwarzPreconditioner, StackReq, SubdomainCore,
+    SubdomainEntry,
 };
 
-use common::{make_schwarz_entries, FailingLocalSolver, TridiagOperator, UniformDiagLocalSolver};
+use common::{apply, make_schwarz_entries, TridiagOperator, UniformDiagLocalSolver};
 
 fn make_entry<S: LocalSolver>(core: SubdomainCore, solver: S) -> SubdomainEntry<S> {
     SubdomainEntry::try_new(core, solver).expect("valid subdomain entry")
@@ -42,27 +43,20 @@ impl LocalSolver for NestedRayonIdentitySolver {
         self.n
     }
 
-    fn workspace_len(&self) -> usize {
-        0
+    fn solve_local_scratch(&self, _rhs_ncols: usize, _par: Par) -> StackReq {
+        StackReq::EMPTY
     }
 
-    fn solve_local(
-        &self,
-        x: &mut [f64],
-        _workspace: &mut [f64],
-        allow_inner_parallelism: bool,
-    ) -> Result<(), LocalSolveError> {
+    fn solve_local(&self, x: MatMut<'_, f64>, par: Par, _stack: &mut MemStack) {
         // Identity, forking per chunk so the apply runs nested Rayon work.
-        if allow_inner_parallelism {
-            x.par_chunks_mut(Self::CHUNK_SIZE).for_each(|chunk| {
-                std::hint::black_box(chunk);
-            });
+        if par.degree() > 1 {
+            let x = x.col_mut(0).try_as_col_major_mut().expect("unit stride");
+            x.as_slice_mut()
+                .par_chunks_mut(Self::CHUNK_SIZE)
+                .for_each(|chunk| {
+                    std::hint::black_box(chunk);
+                });
         }
-        Ok(())
-    }
-
-    fn inner_parallelism_work_estimate(&self) -> usize {
-        self.n.saturating_mul(32)
     }
 }
 
@@ -91,7 +85,7 @@ fn run_nested_rayon_regression_case() {
 
         for _ in 0..8 {
             let mut z = vec![0.0; n];
-            schwarz.apply(&rhs, &mut z).expect("apply succeeds");
+            apply(&schwarz, &rhs, &mut z, Par::rayon(0));
             for (i, (&zi, &ri)) in z.iter().zip(&rhs).enumerate() {
                 assert!(
                     (zi - 2.0 * ri).abs() <= 1e-12,
@@ -156,13 +150,24 @@ fn test_additive_schwarz_reduces_iterations(
     let a = TridiagOperator::new(n, 3.0);
     let rhs = vec![1.0; n];
 
+    let options = LsmrOptions {
+        tol: 1e-8,
+        maxiter: 200,
+        local_size: None,
+        ..Default::default()
+    };
+    let mut scratch = MemBuffer::new(StackReq::EMPTY);
+    let mut x = vec![0.0; n];
     let unprecond = mlsmr(
         &a,
         &rhs,
-        &IdentityPrecond { dim: a.ncols() },
-        1e-8,
-        200,
-        MlsmrOptions::default(),
+        &IdentityPrecond { dim: x.len() },
+        &mut x,
+        InitialGuess::Zero,
+        &options,
+        None,
+        Par::Seq,
+        &mut scratch,
     )
     .expect("unpreconditioned lsmr");
     assert!(
@@ -170,8 +175,19 @@ fn test_additive_schwarz_reduces_iterations(
         "Unpreconditioned LSMR did not converge"
     );
 
-    let options = MlsmrOptions::default();
-    let precond = mlsmr(&a, &rhs, &schwarz, 1e-8, 200, options).expect("preconditioned lsmr");
+    x.fill(0.0);
+    let precond = mlsmr(
+        &a,
+        &rhs,
+        &schwarz,
+        &mut x,
+        InitialGuess::Zero,
+        &options,
+        None,
+        Par::rayon(0),
+        &mut scratch,
+    )
+    .expect("preconditioned lsmr");
     assert!(precond.converged, "Preconditioned LSMR did not converge");
 
     assert!(
@@ -196,18 +212,12 @@ fn test_clone_produces_independent_preconditioner(
     let mut z_orig = vec![0.0; n];
     let mut z_clone = vec![0.0; n];
 
-    original
-        .apply(&r1, &mut z_orig)
-        .expect("original apply succeeds");
-    cloned
-        .apply(&r2, &mut z_clone)
-        .expect("cloned apply succeeds");
+    apply(&original, &r1, &mut z_orig, Par::rayon(0));
+    apply(&cloned, &r2, &mut z_clone, Par::rayon(0));
 
     // Verify independently: apply the original with r2 to check the clone's result.
     let mut z_check = vec![0.0; n];
-    original
-        .apply(&r2, &mut z_check)
-        .expect("check apply succeeds");
+    apply(&original, &r2, &mut z_check, Par::rayon(0));
     for i in 0..n {
         assert!(
             (z_clone[i] - z_check[i]).abs() < 1e-14,
@@ -220,7 +230,7 @@ fn test_clone_produces_independent_preconditioner(
 
     // Verify the original was not corrupted by the clone's apply.
     let mut z_orig2 = vec![0.0; n];
-    original.apply(&r1, &mut z_orig2).expect("apply succeeds");
+    apply(&original, &r1, &mut z_orig2, Par::rayon(0));
     for i in 0..n {
         assert!(
             (z_orig[i] - z_orig2[i]).abs() < 1e-14,
@@ -237,23 +247,13 @@ fn test_additive_schwarz_operator_dimensions(
     assert_eq!(schwarz.nrows(), n);
     assert_eq!(schwarz.ncols(), n);
 
-    // apply and apply_adjoint should produce the same result (symmetric)
+    // A sequential and a parallel budget apply the same map.
     let r = vec![1.0; n];
     let mut z1 = vec![0.0; n];
     let mut z2 = vec![0.0; n];
-    schwarz.apply(&r, &mut z1).expect("apply succeeds");
-    schwarz
-        .apply_adjoint(&r, &mut z2)
-        .expect("apply_adjoint succeeds");
-    for i in 0..n {
-        assert!(
-            (z1[i] - z2[i]).abs() < 1e-14,
-            "apply != apply_adjoint at index {}: {} vs {}",
-            i,
-            z1[i],
-            z2[i]
-        );
-    }
+    apply(&schwarz, &r, &mut z1, Par::Seq);
+    apply(&schwarz, &r, &mut z2, Par::rayon(4));
+    assert_eq!(z1, z2);
 }
 
 #[rstest]
@@ -275,7 +275,7 @@ fn test_additive_schwarz_parallel_apply_stress_no_panics(
         .map(|rhs| {
             let mut z = vec![0.0; n];
             for _ in 0..16 {
-                schwarz.apply(rhs, &mut z).expect("apply succeeds");
+                apply(&schwarz, rhs, &mut z, Par::rayon(0));
             }
             z
         })
@@ -340,7 +340,7 @@ fn subdomain_order_sum(
 }
 
 #[rstest]
-fn test_additive_apply_is_the_subdomain_order_sum_at_any_thread_count(
+fn test_additive_apply_is_the_subdomain_order_sum_under_any_budget(
     deep_overlap_entries: Vec<SubdomainEntry<UniformDiagLocalSolver>>,
     wide_range_rhs: Vec<f64>,
     subdomain_order_sum: Vec<f64>,
@@ -352,8 +352,7 @@ fn test_additive_apply_is_the_subdomain_order_sum_at_any_thread_count(
         .build()
         .expect("test rayon pool");
     let mut z = vec![f64::NAN; DEEP_OVERLAP_DOFS];
-    pool.install(|| schwarz.apply(&wide_range_rhs, &mut z))
-        .expect("apply succeeds");
+    pool.install(|| apply(&schwarz, &wide_range_rhs, &mut z, Par::rayon(threads)));
     assert!(z
         .iter()
         .map(|v| v.to_bits())
@@ -363,8 +362,6 @@ fn test_additive_apply_is_the_subdomain_order_sum_at_any_thread_count(
 use schwarz_precond::{BuildError, SolveError};
 use std::error::Error;
 
-// ============================================================================
-// Additive Schwarz edge cases
 // ============================================================================
 // Additive Schwarz edge cases
 // ============================================================================
@@ -391,9 +388,7 @@ fn test_additive_schwarz_apply_subdomain_empty_indices() {
 
     let r: Vec<f64> = vec![];
     let mut z: Vec<f64> = vec![];
-    schwarz
-        .apply(&r, &mut z)
-        .expect("apply with empty subdomain succeeds");
+    apply(&schwarz, &r, &mut z, Par::rayon(0));
 }
 
 #[test]
@@ -410,9 +405,7 @@ fn test_solve_local_gets_x_of_its_own_length_beside_larger_subdomains() {
     ];
     let schwarz = SchwarzPreconditioner::new(entries);
     let mut z = vec![0.0; 4];
-    schwarz
-        .apply(&[1.0, 2.0, 3.0, 4.0], &mut z)
-        .expect("apply succeeds");
+    apply(&schwarz, &[1.0, 2.0, 3.0, 4.0], &mut z, Par::rayon(0));
     assert_eq!(z, [1.0, 2.0, 3.0, 4.0]);
 }
 
@@ -440,51 +433,6 @@ fn test_subdomain_core_build_error_display_partition_weight_mismatch() {
     let msg = err.to_string();
     assert!(msg.contains("3"), "missing index_count: {msg}");
     assert!(msg.contains("5"), "missing weight_count: {msg}");
-}
-
-#[test]
-fn test_local_solve_error_display() {
-    let err = LocalSolveError::BackendFailed {
-        context: "backsolve",
-        message: "singular matrix".to_string(),
-    };
-    let msg = err.to_string();
-    assert!(msg.contains("backsolve"), "missing context: {msg}");
-    assert!(msg.contains("singular matrix"), "missing message: {msg}");
-}
-
-#[test]
-fn test_solve_error_display_local_solve_failed() {
-    let local_err = LocalSolveError::BackendFailed {
-        context: "test",
-        message: "fail".to_string(),
-    };
-    let err = SolveError::LocalSolveFailed {
-        subdomain: 7,
-        source: local_err,
-    };
-    let msg = err.to_string();
-    assert!(msg.contains("subdomain 7"), "missing subdomain: {msg}");
-    assert!(
-        msg.contains("local solve failed"),
-        "missing description: {msg}"
-    );
-}
-
-#[test]
-fn test_solve_error_source() {
-    let local_err = LocalSolveError::BackendFailed {
-        context: "test",
-        message: "err".to_string(),
-    };
-    let err = SolveError::LocalSolveFailed {
-        subdomain: 0,
-        source: local_err,
-    };
-    assert!(
-        err.source().is_some(),
-        "LocalSolveFailed should have a source"
-    );
 }
 
 #[test]
@@ -534,7 +482,6 @@ fn test_validate_partition_weight_length_mismatch() {
 
 #[test]
 fn test_additive_schwarz_parallel_readout_large_n() {
-    // n > 100_000 triggers the par_chunks_mut readout path.
     let n = 150_002usize;
     // Build non-overlapping 2-DOF subdomains with diag_val = 2.0.
     // UniformDiagLocalSolver computes sol = rhs / diag_val.
@@ -561,39 +508,11 @@ fn test_additive_schwarz_parallel_readout_large_n() {
 
     let rhs = vec![4.0; n];
     let mut z = vec![0.0; n];
-    let result = schwarz.apply(&rhs, &mut z);
-    assert!(result.is_ok(), "apply should succeed: {:?}", result);
+    apply(&schwarz, &rhs, &mut z, Par::rayon(0));
 
     // Each DOF: output = 1.0 * (1.0 * 4.0 / 2.0) = 2.0
     for (i, &v) in z.iter().enumerate() {
         assert!((v - 2.0_f64).abs() < 1e-12, "z[{i}] = {v}, expected 2.0",);
-    }
-}
-
-// ============================================================================
-// apply propagates local-solver failure
-// ============================================================================
-
-#[test]
-fn test_additive_schwarz_apply_returns_err_on_solver_failure() {
-    // FailingLocalSolver always returns Err — apply must propagate the error
-    // (previously this silently filled z with NaN).
-    let solver = FailingLocalSolver { n_local: 2 };
-    let core = SubdomainCore::uniform(vec![0u32, 1]);
-    let entry = make_entry(core, solver);
-
-    let schwarz = SchwarzPreconditioner::new(vec![entry]);
-
-    let n = schwarz.nrows();
-    let rhs = vec![1.0; n];
-    let mut z = vec![0.0; n];
-    let result = schwarz.apply(&rhs, &mut z);
-
-    match result {
-        Err(SolveError::LocalSolveFailed { subdomain, .. }) => {
-            assert_eq!(subdomain, 0, "failure should be reported for subdomain 0");
-        }
-        other => panic!("expected LocalSolveFailed, got: {:?}", other),
     }
 }
 
@@ -618,7 +537,45 @@ fn with_n_dofs_pads_uncovered_tail_and_applies_zero() {
 
     let rhs = vec![4.0; n_dofs];
     let mut z = vec![f64::NAN; n_dofs];
-    padded.apply(&rhs, &mut z).expect("apply succeeds");
+    apply(&padded, &rhs, &mut z, Par::rayon(0));
     // Covered DOFs: 1.0 * (4.0 / 2.0) = 2.0; uncovered tail stays exactly 0.
     assert_eq!(z, vec![2.0, 2.0, 0.0, 0.0]);
+}
+
+/// A transposed view has row stride; the apply must match the unit-stride one bit for bit.
+#[test]
+fn a_strided_view_applies_like_a_contiguous_one() {
+    let n = 6;
+    let precond = SchwarzPreconditioner::new(make_schwarz_entries(n));
+    let rhs = faer::Mat::<f64>::from_fn(2, n, |i, j| (i * n + j) as f64 + 1.0);
+    let mut strided = faer::Mat::<f64>::zeros(2, n);
+    let mut scratch = MemBuffer::new(precond.apply_scratch(2, Par::Seq));
+    precond.apply(
+        strided.as_mut().transpose_mut(),
+        rhs.as_ref().transpose(),
+        Par::Seq,
+        MemStack::new(&mut scratch),
+    );
+    for j in 0..2 {
+        let r: Vec<f64> = rhs.row(j).iter().copied().collect();
+        let mut z = vec![0.0; n];
+        apply(&precond, &r, &mut z, Par::Seq);
+        let got: Vec<f64> = strided.row(j).iter().copied().collect();
+        assert_eq!(got, z, "column {j}");
+    }
+}
+
+/// An output wider than the input would keep stale columns, so the apply refuses it.
+#[test]
+#[should_panic(expected = "M⁻¹ apply shape")]
+fn an_output_wider_than_the_input_is_refused() {
+    let precond = SchwarzPreconditioner::new(make_schwarz_entries(4));
+    let (rhs, mut out) = (faer::Mat::<f64>::ones(4, 1), faer::Mat::<f64>::zeros(4, 2));
+    let mut scratch = MemBuffer::new(precond.apply_scratch(2, Par::Seq));
+    precond.apply(
+        out.as_mut(),
+        rhs.as_ref(),
+        Par::Seq,
+        MemStack::new(&mut scratch),
+    );
 }

@@ -22,28 +22,23 @@ cargo add schwarz-precond
 ## Example
 
 ```rust
+use faer::sparse::{SparseColMat, Triplet};
 use schwarz_precond::{
-    mlsmr, LocalSolver, MlsmrOptions, Operator, SchwarzPreconditioner,
-    SolveError, SubdomainCore, SubdomainEntry,
+    mlsmr, InitialGuess, LocalSolver, LsmrOptions, MatMut, MemBuffer, MemStack, Par,
+    SchwarzPreconditioner, StackReq, SubdomainCore, SubdomainEntry,
 };
 
-// --- Tridiagonal SPD operator: A = tridiag(-1, 3, -1) ---
-struct TridiagOp(usize);
-
-impl Operator for TridiagOp {
-    fn nrows(&self) -> usize { self.0 }
-    fn ncols(&self) -> usize { self.0 }
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        for i in 0..self.0 {
-            y[i] = 3.0 * x[i];
-            if i > 0          { y[i] -= x[i - 1]; }
-            if i + 1 < self.0 { y[i] -= x[i + 1]; }
+/// `tridiag(-1, 3, -1)` of size `n`, as a faer sparse matrix (a `BiLinOp`).
+fn tridiag(n: usize) -> SparseColMat<usize, f64> {
+    let mut triplets = Vec::new();
+    for i in 0..n {
+        triplets.push(Triplet::new(i, i, 3.0));
+        if i + 1 < n {
+            triplets.push(Triplet::new(i, i + 1, -1.0));
+            triplets.push(Triplet::new(i + 1, i, -1.0));
         }
-        Ok(())
     }
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        self.apply(x, y)
-    }
+    SparseColMat::try_new_from_triplets(n, n, &triplets).expect("valid triplets")
 }
 
 // --- Diagonal local solver: x ← x / diag ---
@@ -51,21 +46,19 @@ struct DiagSolver(usize, f64);
 
 impl LocalSolver for DiagSolver {
     fn n_local(&self) -> usize { self.0 }
-    fn workspace_len(&self) -> usize { 0 }
-    fn solve_local(
-        &self,
-        x: &mut [f64],
-        _workspace: &mut [f64],
-        _allow_inner_parallelism: bool,
-    ) -> Result<(), schwarz_precond::LocalSolveError> {
-        for v in x.iter_mut() { *v /= self.1; }
-        Ok(())
+    fn solve_local_scratch(&self, _rhs_ncols: usize, _par: Par) -> StackReq {
+        StackReq::EMPTY
+    }
+    fn solve_local(&self, mut x: MatMut<'_, f64>, _par: Par, _stack: &mut MemStack) {
+        for j in 0..x.ncols() {
+            for i in 0..x.nrows() { x[(i, j)] /= self.1; }
+        }
     }
 }
 
 fn main() {
     let n = 100;
-    let a = TridiagOp(n);
+    let a = tridiag(n);
     let b = vec![1.0; n];
 
     // Build non-overlapping 2-DOF subdomains with uniform PoU weights
@@ -80,11 +73,15 @@ fn main() {
         .collect();
 
     let precond = SchwarzPreconditioner::new(entries);
-    let result = mlsmr(&a, &b, &precond, 1e-10, 500, MlsmrOptions::default())
-        .expect("lsmr should converge");
+    let options = LsmrOptions { tol: 1e-10, maxiter: 500, local_size: None, ..Default::default() };
+    // The caller owns all per-run scratch; one buffer serves every solve it is passed to.
+    let mut scratch = MemBuffer::new(StackReq::EMPTY);
+    let mut x = vec![0.0; n];
+    let info = mlsmr(&a, &b, &precond, &mut x, InitialGuess::Zero, &options, None, Par::rayon(0), &mut scratch)
+    .expect("lsmr should converge");
 
     println!("converged={} iters={} res={:.3e}",
-        result.converged, result.iterations, result.residual_norm);
+        info.converged, info.iterations, info.residual_norm);
 }
 ```
 

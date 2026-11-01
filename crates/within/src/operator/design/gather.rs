@@ -1,6 +1,7 @@
 //! Gather kernel: coefficient space → observation space (`D x`).
 
-use rayon::prelude::*;
+use schwarz_precond::par::{at_least, for_each_chunk};
+use schwarz_precond::Par;
 
 use super::PAR_THRESHOLD;
 use crate::domain::PreparedDesign;
@@ -11,6 +12,7 @@ pub(crate) fn gather_apply(
     src: &[f64],
     dst: &mut [f64],
     scale: Option<&[f64]>,
+    par: Par,
 ) {
     let design = &prepared.design;
     debug_assert!(scale.is_none_or(|s| s.len() == design.n_obs));
@@ -19,7 +21,9 @@ pub(crate) fn gather_apply(
 
     dst.fill(0.0);
 
-    for_each_chunk(dst, |chunk, row_start| {
+    const CHUNK_SIZE: usize = 4096;
+    let par = at_least(par, dst.len(), PAR_THRESHOLD + 1);
+    for_each_chunk(par, dst, CHUNK_SIZE, &|row_start, chunk: &mut [f64]| {
         for t in prepared.terms() {
             let (offset, n_levels, levels) = (t.term.offset, t.term.n_levels(), t.term.levels());
             let col = |c: usize| &src[t.term.column_dofs(c)];
@@ -83,29 +87,6 @@ pub(crate) fn gather_apply(
             }
         }
     });
-}
-
-/// Divide an observation-space vector row-wise, undoing the `scale` [`gather_apply`] applied.
-pub(crate) fn unscale(dst: &mut [f64], scale: &[f64]) {
-    debug_assert_eq!(dst.len(), scale.len());
-    for_each_chunk(dst, |chunk, row_start| {
-        for (d, &s) in chunk.iter_mut().zip(&scale[row_start..]) {
-            *d /= s;
-        }
-    });
-}
-
-/// Sweep `dst` in cache-sized chunks, parallel above [`PAR_THRESHOLD`] rows.
-fn for_each_chunk(dst: &mut [f64], kernel: impl Fn(&mut [f64], usize) + Sync) {
-    if dst.len() > PAR_THRESHOLD {
-        const CHUNK_SIZE: usize = 4096;
-
-        dst.par_chunks_mut(CHUNK_SIZE)
-            .enumerate()
-            .for_each(|(chunk_idx, chunk)| kernel(chunk, chunk_idx * CHUNK_SIZE));
-    } else {
-        kernel(dst, 0);
-    }
 }
 
 /// One term sweep with a compile-time column count.

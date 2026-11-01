@@ -93,8 +93,12 @@ fn preconditioner_round_trips(#[case] shape: Shape) {
     let input: Vec<f64> = (0..original.ncols()).map(|i| i as f64 + 0.25).collect();
     let mut before = vec![0.0; original.nrows()];
     let mut after = vec![0.0; restored.nrows()];
-    original.apply(&input, &mut before).expect("original apply");
-    restored.apply(&input, &mut after).expect("restored apply");
+    original
+        .apply_slices(&input, &mut before)
+        .expect("original apply");
+    restored
+        .apply_slices(&input, &mut after)
+        .expect("restored apply");
     assert_eq!(before, after);
 
     let solver2 = Solver::new(effects(), None, restored).expect("solver from round-trip");

@@ -79,6 +79,7 @@ impl Panel {
             tol: 1e-6,
             maxiter: 200,
             local_size: None,
+            ..Default::default()
         };
         let r = solver
             .solve_batch(&self.ys.each_ref().map(Vec::as_slice), &lsmr)

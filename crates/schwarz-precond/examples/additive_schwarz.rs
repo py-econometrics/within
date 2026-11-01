@@ -3,42 +3,25 @@
 //! Demonstrates the simplest use of `SchwarzPreconditioner` with hand-built
 //! subdomains and diagonal local solvers.
 
+use faer::sparse::{SparseColMat, Triplet};
 use schwarz_precond::{
-    mlsmr, IdentityPrecond, LocalSolveError, LocalSolver, MlsmrOptions, Operator,
-    SchwarzPreconditioner, SolveError, SubdomainCore, SubdomainEntry,
+    mlsmr, IdentityPrecond, InitialGuess, LocalSolver, LsmrOptions, MatMut, MemBuffer, MemStack,
+    Par, SchwarzPreconditioner, StackReq, SubdomainCore, SubdomainEntry,
 };
 
-// ---------------------------------------------------------------------------
-// Tridiagonal operator: diag=3, off-diag=-1
-// ---------------------------------------------------------------------------
-
-struct TridiagOperator {
-    n: usize,
-}
-
-impl Operator for TridiagOperator {
-    fn nrows(&self) -> usize {
-        self.n
-    }
-    fn ncols(&self) -> usize {
-        self.n
-    }
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        for i in 0..self.n {
-            y[i] = 3.0 * x[i];
-            if i > 0 {
-                y[i] -= x[i - 1];
-            }
-            if i + 1 < self.n {
-                y[i] -= x[i + 1];
-            }
+/// `tridiag(-1, 3, -1)` of size `n`, as a faer sparse matrix (a `BiLinOp`).
+fn tridiag(n: usize) -> SparseColMat<usize, f64> {
+    let mut triplets = Vec::new();
+    for i in 0..n {
+        triplets.push(Triplet::new(i, i, 3.0));
+        if i + 1 < n {
+            triplets.push(Triplet::new(i, i + 1, -1.0));
+            triplets.push(Triplet::new(i + 1, i, -1.0));
         }
-        Ok(())
     }
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        self.apply(x, y) // symmetric
-    }
+    SparseColMat::try_new_from_triplets(n, n, &triplets).expect("valid triplets")
 }
+
 // ---------------------------------------------------------------------------
 // Diagonal local solver: y = rhs / diag_val
 // ---------------------------------------------------------------------------
@@ -52,19 +35,15 @@ impl LocalSolver for DiagLocalSolver {
     fn n_local(&self) -> usize {
         self.n_local
     }
-    fn workspace_len(&self) -> usize {
-        0
+    fn solve_local_scratch(&self, _rhs_ncols: usize, _par: Par) -> StackReq {
+        StackReq::EMPTY
     }
-    fn solve_local(
-        &self,
-        x: &mut [f64],
-        _workspace: &mut [f64],
-        _allow_inner_parallelism: bool,
-    ) -> Result<(), LocalSolveError> {
-        for v in x.iter_mut() {
-            *v /= self.diag_val;
+    fn solve_local(&self, mut x: MatMut<'_, f64>, _par: Par, _stack: &mut MemStack) {
+        for j in 0..x.ncols() {
+            for i in 0..x.nrows() {
+                x[(i, j)] /= self.diag_val;
+            }
         }
-        Ok(())
     }
 }
 
@@ -107,16 +86,28 @@ fn build_entries(n: usize) -> Vec<SubdomainEntry<DiagLocalSolver>> {
 fn main() {
     let n = 20;
     let rhs = vec![1.0; n];
-    let a = TridiagOperator { n };
+    let a = tridiag(n);
+    let options = LsmrOptions {
+        tol: 1e-10,
+        maxiter: 200,
+        local_size: None,
+        ..Default::default()
+    };
+    // One scratch buffer, grown on first use, serves every solve.
+    let mut scratch = MemBuffer::new(StackReq::EMPTY);
 
     // --- Unpreconditioned LSMR ---
+    let mut x = vec![0.0; n];
     let result_plain = mlsmr(
         &a,
         &rhs,
-        &IdentityPrecond { dim: a.ncols() },
-        1e-10,
-        200,
-        MlsmrOptions::default(),
+        &IdentityPrecond { dim: x.len() },
+        &mut x,
+        InitialGuess::Zero,
+        &options,
+        None,
+        Par::Seq,
+        &mut scratch,
     )
     .expect("unpreconditioned lsmr");
     println!(
@@ -126,9 +117,19 @@ fn main() {
 
     // --- Additive Schwarz preconditioned LSMR ---
     let precond = SchwarzPreconditioner::new(build_entries(n));
-    let options = MlsmrOptions::default();
-    let result_schwarz =
-        mlsmr(&a, &rhs, &precond, 1e-10, 200, options).expect("preconditioned lsmr");
+    x.fill(0.0);
+    let result_schwarz = mlsmr(
+        &a,
+        &rhs,
+        &precond,
+        &mut x,
+        InitialGuess::Zero,
+        &options,
+        None,
+        Par::rayon(0),
+        &mut scratch,
+    )
+    .expect("preconditioned lsmr");
     println!(
         "Additive Schwarz LSMR : converged={}, iterations={:>3}, residual={:.3e}",
         result_schwarz.converged, result_schwarz.iterations, result_schwarz.residual_norm,

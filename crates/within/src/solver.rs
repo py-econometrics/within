@@ -8,7 +8,8 @@ use std::time::Instant;
 use ndarray::ArrayView2;
 use rayon::prelude::*;
 use schwarz_precond::{
-    mlsmr, EscalationPolicy, IdentityPrecond, LsmrResult, LsmrStopReason, MlsmrOptions,
+    mlsmr, IdentityPrecond, InitialGuess, LinOp, LsmrInfo, LsmrStopReason, MemBuffer, Par,
+    StackReq, Staleness,
 };
 
 use crate::channel::CoefficientAddress;
@@ -257,16 +258,38 @@ impl PreparedRhs<'_> {
 
 /// One finished LSMR run and the seconds it alone took, without any build between rungs.
 struct Run {
-    result: LsmrResult,
+    x: Vec<f64>,
+    info: LsmrInfo,
     solve_secs: f64,
 }
 
 impl Run {
-    fn timed(run: impl FnOnce() -> Result<LsmrResult, SolveError>) -> Result<Self, SolveError> {
+    /// `mlsmr` on the ambient pool from `x`, which is zero unless `start` says otherwise.
+    fn timed(
+        prepared: &PreparedDesign<'_>,
+        b: &[f64],
+        m: &impl LinOp<f64>,
+        mut x: Vec<f64>,
+        start: InitialGuess,
+        options: &LsmrOptions,
+        stall: Option<Staleness>,
+    ) -> Result<Self, SolveError> {
         let t_start = Instant::now();
-        let result = run()?;
+        let mut scratch = MemBuffer::new(StackReq::EMPTY);
+        let info = mlsmr(
+            prepared,
+            b,
+            m,
+            &mut x,
+            start,
+            options,
+            stall,
+            Par::rayon(0),
+            &mut scratch,
+        )?;
         Ok(Self {
-            result,
+            x,
+            info,
             solve_secs: t_start.elapsed().as_secs_f64(),
         })
     }
@@ -379,20 +402,18 @@ impl<'a> Solver<'a> {
     /// Demean and back-transform one finished run. Excludes the design-level `layout` /
     /// `warnings` / `unidentified`, which the public entry points attach once.
     fn finish(&self, rhs: PreparedRhs<'_>, run: Run) -> RhsSolution {
-        let r = run.result;
-        let demeaned = self.prepared.demeaned(&r.x, &rhs.y, r.true_residual);
-
-        let mut x = r.x;
+        let Run { mut x, info, .. } = run;
+        let demeaned = self.prepared.demeaned(&x, &rhs.y, Par::rayon(0));
         self.prepared.back_transform(&mut x);
 
         RhsSolution {
             x,
             // Back to the caller's observation order (no-op if not reordered).
             demeaned: self.prepared.design.permute_obs_out(demeaned),
-            converged: r.converged,
-            iterations: r.iterations,
+            converged: info.converged,
+            iterations: info.iterations,
             // Read from the LSMR recurrence at no extra cost; see `SolveResult::residual`.
-            residual: r.normal_eq_residual,
+            residual: info.normal_eq_residual,
             gather_secs: rhs.gather_secs,
             time_solve: run.solve_secs,
         }
@@ -414,30 +435,27 @@ impl<'a> Solver<'a> {
             },
         };
         // A stall on the last permitted iteration leaves rung 2 nothing to spend, so no build.
-        let stalled = |r: &LsmrResult| {
-            r.stop_reason == LsmrStopReason::Escalated && r.iterations < lsmr.maxiter
-        };
+        let stalled =
+            |r: &LsmrInfo| r.stop_reason == LsmrStopReason::Stalled && r.iterations < lsmr.maxiter;
         // Collecting into `Result` fails fast on the first per-RHS error, not during the fold.
         let passes = ys
             .par_iter()
             .map(|y| {
                 let rhs = self.prepare(y)?;
-                let options = MlsmrOptions {
-                    escalation: ladder.map(|a| &a.ladder().stall as &dyn EscalationPolicy),
-                    local_size: lsmr.local_size,
-                    ..Default::default()
-                };
-                let (b, maxiter) = (rhs.b(), lsmr.maxiter);
-                let run = Run::timed(|| match map {
-                    Some(m) => mlsmr(&self.prepared, b, m, lsmr.tol, maxiter, options),
+                let stall = ladder.map(|a| a.ladder().stall);
+                let (prepared, b) = (&self.prepared, rhs.b());
+                let x = vec![0.0; prepared.design.n_dofs];
+                let zero = InitialGuess::Zero;
+                let run = match map {
+                    Some(m) => Run::timed(prepared, b, m, x, zero, lsmr, stall)?,
                     None => {
                         let identity = IdentityPrecond {
-                            dim: self.prepared.design.n_dofs,
+                            dim: prepared.design.n_dofs,
                         };
-                        mlsmr(&self.prepared, b, &identity, lsmr.tol, maxiter, options)
+                        Run::timed(prepared, b, &identity, x, zero, lsmr, stall)?
                     }
-                })?;
-                Ok(if stalled(&run.result) {
+                };
+                Ok(if stalled(&run.info) {
                     Pass::Stalled(rhs, run)
                 } else {
                     Pass::Done(self.finish(rhs, run))
@@ -460,18 +478,16 @@ impl<'a> Solver<'a> {
                     Pass::Stalled(rhs, probe) => (rhs, probe),
                 };
                 let map = ladder.expect("only a ladder stalls").rung();
-                let rung1 = probe.result;
+                let spent = probe.info.iterations;
                 // The whole ladder shares the caller's budget; rung 2 gets what rung 1 left.
-                let options = MlsmrOptions {
-                    warm_start: Some(&rung1.x),
-                    local_size: lsmr.local_size,
-                    ..Default::default()
+                let options = LsmrOptions {
+                    maxiter: lsmr.maxiter - spent,
+                    ..*lsmr
                 };
-                let remaining = lsmr.maxiter - rung1.iterations;
-                let mut resumed = Run::timed(|| {
-                    mlsmr(&self.prepared, rhs.b(), map, lsmr.tol, remaining, options)
-                })?;
-                resumed.result.iterations += rung1.iterations;
+                let start = InitialGuess::Given;
+                let (prepared, b) = (&self.prepared, rhs.b());
+                let mut resumed = Run::timed(prepared, b, map, probe.x, start, &options, None)?;
+                resumed.info.iterations += spent;
                 resumed.solve_secs += probe.solve_secs;
                 Ok(self.finish(rhs, resumed))
             })

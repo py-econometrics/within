@@ -10,12 +10,15 @@
 #[cfg(test)]
 mod tests;
 
+use faer::dyn_stack::MemStack;
+use faer::matrix_free::{BiLinOp, LinOp};
+use faer::{ColMut, ColRef};
+
 use super::finite;
 use super::magnitude::{exponent, ldexp, Magnitude};
 use crate::fold::{fold, Split};
-use crate::{Operator, SolveError};
-use rayon::iter::{IndexedParallelIterator, ParallelIterator};
-use rayon::prelude::{ParallelSlice, ParallelSliceMut};
+use crate::par::{at_least, for_each_chunk, Par};
+use crate::SolveError;
 
 /// Below this count the elementwise kernels run sequentially; rayon wake/steal would dominate.
 pub(super) const LSMR_PAR_THRESHOLD: usize = 10_000;
@@ -24,9 +27,9 @@ pub(super) const LSMR_UPDATE_CHUNK: usize = 4096;
 
 /// Fused `y = x + scale · y` returning `‖y_new‖`; per-chunk partials avoid reduction traffic.
 #[inline]
-fn axpy_with_norm(y: &mut [f64], x: &[f64], scale: f64) -> f64 {
+fn axpy_with_norm(y: &mut [f64], x: &[f64], scale: f64, par: Par) -> f64 {
     debug_assert_eq!(x.len(), y.len());
-    let sq = chunked_sum((&mut *y, x), |(y_c, x_c): (&mut [f64], &[f64])| {
+    let sq = chunked_sum(par, (&mut *y, x), |(y_c, x_c): (&mut [f64], &[f64])| {
         let step = |yi: &mut f64, xi: f64| {
             let val = xi + scale * *yi;
             *yi = val;
@@ -54,45 +57,35 @@ const LANES: usize = 8;
 
 /// `Σ leaf` over `LSMR_UPDATE_CHUNK` pieces in a tree fixed by the length.
 #[inline]
-fn chunked_sum<P: Split>(input: P, leaf: impl Fn(P) -> f64 + Sync) -> f64 {
-    fold(input, LSMR_UPDATE_CHUNK, &leaf, &|a, b| a + b)
+fn chunked_sum<P: Split>(par: Par, input: P, leaf: impl Fn(P) -> f64 + Sync) -> f64 {
+    fold(par, input, LSMR_UPDATE_CHUNK, &leaf, &|a, b| a + b)
 }
 
 /// `y = alpha * x + beta * y`. Parallel above the threshold.
 #[inline]
-pub(super) fn axpby(y: &mut [f64], x: &[f64], alpha: f64, beta: f64) {
+pub(super) fn axpby(y: &mut [f64], x: &[f64], alpha: f64, beta: f64, par: Par) {
     debug_assert_eq!(x.len(), y.len());
-    let seq = |y_c: &mut [f64], x_c: &[f64]| {
-        for (yi, &xi) in y_c.iter_mut().zip(x_c.iter()) {
+    let par = at_least(par, y.len(), LSMR_PAR_THRESHOLD);
+    for_each_chunk(par, y, LSMR_UPDATE_CHUNK, &|start, y_c: &mut [f64]| {
+        for (yi, &xi) in y_c.iter_mut().zip(&x[start..]) {
             *yi = alpha * xi + beta * *yi;
         }
-    };
-    if y.len() >= LSMR_PAR_THRESHOLD {
-        y.par_chunks_mut(LSMR_UPDATE_CHUNK)
-            .zip(x.par_chunks(LSMR_UPDATE_CHUNK))
-            .for_each(|(y_c, x_c)| seq(y_c, x_c));
-    } else {
-        seq(y, x);
-    }
+    });
 }
 
 /// `y /= d` without over/underflow unless `y / d` does, to one rounding at `f64::MAX` (`drscl`).
 #[inline]
-fn normalize(y: &mut [f64], d: f64) {
+fn normalize(y: &mut [f64], d: f64, par: Par) {
     if d > 0.0 {
         let inv = 1.0 / d;
-        let seq = |c: &mut [f64]| {
+        let par = at_least(par, y.len(), LSMR_PAR_THRESHOLD);
+        for_each_chunk(par, y, LSMR_UPDATE_CHUNK, &|_, c: &mut [f64]| {
             if inv.is_normal() {
                 c.iter_mut().for_each(|yi| *yi *= inv);
             } else {
                 c.iter_mut().for_each(|yi| *yi /= d);
             }
-        };
-        if y.len() >= LSMR_PAR_THRESHOLD {
-            y.par_chunks_mut(LSMR_UPDATE_CHUNK).for_each(seq);
-        } else {
-            seq(y);
-        }
+        });
     }
 }
 
@@ -115,8 +108,8 @@ pub(super) fn dot(a: &[f64], b: &[f64]) -> f64 {
 
 /// Dot product added in a tree fixed by the length alone.
 #[inline]
-fn par_dot(a: &[f64], b: &[f64]) -> f64 {
-    chunked_sum((a, b), |(ac, bc)| dot(ac, bc))
+fn par_dot(a: &[f64], b: &[f64], par: Par) -> f64 {
+    chunked_sum(par, (a, b), |(ac, bc)| dot(ac, bc))
 }
 
 /// Why [`alpha_from_vp`] refused a pair.
@@ -146,9 +139,9 @@ impl From<AlphaError> for SolveError {
 }
 
 /// `α = √⟨v, p̃⟩`; a `vp` negative within `√ε·‖v‖‖p̃‖` clamps to 0, an indefinite `M` raises.
-fn alpha_from_vp(v: &[f64], p_tilde: &[f64]) -> Result<f64, AlphaError> {
+fn alpha_from_vp(v: &[f64], p_tilde: &[f64], par: Par) -> Result<f64, AlphaError> {
     // A NaN `vp` may be `∞ − ∞` from finite vectors; the norms below reject a NaN entry.
-    let vp = par_dot(v, p_tilde);
+    let vp = par_dot(v, p_tilde, par);
     if vp.is_normal() && vp > 0.0 {
         return Ok(vp.sqrt());
     }
@@ -185,19 +178,48 @@ fn norm_from_sq(v: &[f64], sq: f64) -> f64 {
     }
 }
 
-fn par_norm(v: &[f64]) -> f64 {
-    norm_from_sq(v, par_dot(v, v))
+fn par_norm(v: &[f64], par: Par) -> f64 {
+    norm_from_sq(v, par_dot(v, v, par))
 }
 
-/// `u = rhs − A x`, returning `‖u‖`.
-fn residual_into<A: Operator + ?Sized>(
-    operator: &A,
-    x: &[f64],
-    rhs: &[f64],
-    u: &mut [f64],
-) -> Result<f64, SolveError> {
-    operator.apply(x, u)?;
-    Ok(axpy_with_norm(u, rhs, -1.0))
+/// The budget and the stack every apply of one run draws from.
+pub(super) struct Ctx<'s> {
+    pub(super) par: Par,
+    pub(super) stack: &'s mut MemStack,
+}
+
+impl Ctx<'_> {
+    /// `y = A x`.
+    fn apply<A: LinOp<f64> + ?Sized>(&mut self, operator: &A, x: &[f64], y: &mut [f64]) {
+        operator.apply(
+            ColMut::from_slice_mut(y).as_mat_mut(),
+            ColRef::from_slice(x).as_mat(),
+            self.par,
+            self.stack,
+        );
+    }
+
+    /// `y = Aᵀ x`.
+    fn apply_adjoint<A: BiLinOp<f64> + ?Sized>(&mut self, operator: &A, x: &[f64], y: &mut [f64]) {
+        operator.transpose_apply(
+            ColMut::from_slice_mut(y).as_mat_mut(),
+            ColRef::from_slice(x).as_mat(),
+            self.par,
+            self.stack,
+        );
+    }
+
+    /// `u = rhs − A x`, returning `‖u‖`.
+    fn residual_into<A: LinOp<f64> + ?Sized>(
+        &mut self,
+        operator: &A,
+        x: &[f64],
+        rhs: &[f64],
+        u: &mut [f64],
+    ) -> f64 {
+        self.apply(operator, x, u);
+        axpy_with_norm(u, rhs, -1.0, self.par)
+    }
 }
 
 /// Ring of recent basis vectors for windowed MGS; the disabled state is `None`, so `cap > 0`.
@@ -270,24 +292,24 @@ impl<const L: usize> WindowRing<L> {
 /// M-weighted windowed MGS: `v` is M-orthogonal, so the coefficient is `⟨v_new, p̃_j⟩`.
 impl WindowRing<2> {
     /// Subtracts `c = ⟨v, p̃_j⟩` from both `v` and `p̃`.
-    fn reorthogonalize(&self, v: &mut [f64], p_tilde: &mut [f64]) {
+    fn reorthogonalize(&self, v: &mut [f64], p_tilde: &mut [f64], par: Par) {
         for slot in self.chrono_slots() {
             let v_j = self.lane(0, slot);
             let p_j = self.lane(1, slot);
-            let c = par_dot(v, p_j);
-            axpby(v, v_j, -c, 1.0);
-            axpby(p_tilde, p_j, -c, 1.0);
+            let c = par_dot(v, p_j, par);
+            axpby(v, v_j, -c, 1.0, par);
+            axpby(p_tilde, p_j, -c, 1.0, par);
         }
     }
 
     /// Copy normalized `v` and `p_tilde / alpha` into the next slots, advancing the ring.
-    fn push(&mut self, v: &[f64], p_tilde_unscaled: &[f64], alpha: f64) {
+    fn push(&mut self, v: &[f64], p_tilde_unscaled: &[f64], alpha: f64, par: Par) {
         let slot = self.advance();
         self.lane_mut(0, slot).copy_from_slice(v);
         let p = self.lane_mut(1, slot);
         if alpha > 0.0 {
             p.copy_from_slice(p_tilde_unscaled);
-            normalize(p, alpha);
+            normalize(p, alpha, par);
         } else {
             p.fill(0.0);
         }
@@ -322,36 +344,37 @@ impl AdjointImage {
 }
 
 /// `Aᵀ` of `rhs`, or of `rhs·2⁻ᵏ` in `unit` where `‖rhs‖` or the raw image is not normal.
-fn adjoint_image<A: Operator + ?Sized>(
+fn adjoint_image<A: BiLinOp<f64> + ?Sized>(
     operator: &A,
     rhs: &[f64],
     rhs_norm: f64,
     unit: &mut [f64],
     g: &mut [f64],
-) -> Result<AdjointImage, SolveError> {
+    ctx: &mut Ctx<'_>,
+) -> AdjointImage {
     // Scaling first flushes the entries far below `‖rhs‖`, which `Aᵀ` may amplify back into range.
     let k = exponent(rhs_norm);
     if rhs_norm.is_normal() {
-        operator.apply_adjoint(rhs, g)?;
-        let g_norm = par_norm(g);
+        ctx.apply_adjoint(operator, rhs, g);
+        let g_norm = par_norm(g, ctx.par);
         if k == 0 || g_norm.is_normal() {
-            return Ok(AdjointImage {
+            return AdjointImage {
                 k: 0,
                 g_norm,
                 unit_norm: rhs_norm,
-            });
+            };
         }
     }
     // A power of two scales exactly, so `unit` is measured afresh instead of trusting `‖rhs‖`.
     unit.iter_mut()
         .zip(rhs)
         .for_each(|(u, &r)| *u = ldexp(r, -k));
-    operator.apply_adjoint(unit, g)?;
-    Ok(AdjointImage {
+    ctx.apply_adjoint(operator, unit, g);
+    AdjointImage {
         k,
-        g_norm: par_norm(g),
-        unit_norm: par_norm(unit),
-    })
+        g_norm: par_norm(g, ctx.par),
+        unit_norm: par_norm(unit, ctx.par),
+    }
 }
 
 /// Stream feeding LSMR `(α, β)` pairs and the matching normalized `v_k`.
@@ -360,33 +383,32 @@ pub(super) trait Bidiagonalization {
     fn step(&mut self) -> Result<BidiagStep, SolveError>;
     /// Most recent normalized basis vector.
     fn v(&self) -> &[f64];
+    /// The run's budget.
+    fn par(&self) -> Par;
     /// `‖rhs − A x‖`, staging `rhs − A x` for [`restart`](Self::restart); clobbers the stream.
-    fn residual_norm(&mut self, x: &[f64], rhs: &[f64]) -> Result<f64, SolveError>;
+    fn residual_norm(&mut self, x: &[f64], rhs: &[f64]) -> f64;
     /// `‖Aᵀr‖` for the residual staged by [`residual_norm`](Self::residual_norm).
-    fn plain_gradient(&mut self, _residual_norm: f64) -> Result<Option<Magnitude>, SolveError> {
-        Ok(None)
-    }
+    fn plain_gradient(&mut self, residual_norm: f64) -> Magnitude;
     /// Seed a fresh sequence from the staged residual and the `β₁` `residual_norm` returned.
     fn restart(&mut self, beta: f64) -> Result<BidiagStep, SolveError>;
-    /// Spend the stream for the `rhs − A x` that [`residual_norm`](Self::residual_norm) staged.
-    fn into_residual(self) -> Vec<f64>;
     /// After `α₁ = 0`, a gradient the metric hid: `‖Aᵀ rhs‖ / ‖rhs‖` and `Aᵀ b`.
-    fn hidden_gradient(
-        &mut self,
-        _b: &[f64],
-        _b_norm: f64,
-    ) -> Result<Option<(f64, AdjointImage)>, SolveError> {
-        Ok(None)
+    fn hidden_gradient(&mut self, _b: &[f64], _b_norm: f64) -> Option<(f64, AdjointImage)> {
+        None
     }
 }
 
-impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
+impl<A: BiLinOp<f64> + ?Sized, M: LinOp<f64> + ?Sized> Bidiagonalization
     for ModifiedGolubKahan<'_, A, M>
 {
     fn step(&mut self) -> Result<BidiagStep, SolveError> {
+        let par = self.ctx.par;
         let scale = -(self.alpha * self.u_norm_inv);
-        self.operator.apply(&self.bufs.v, &mut self.bufs.av)?;
-        let beta = finite(axpy_with_norm(&mut self.bufs.u, &self.bufs.av, scale), "β")?;
+        self.ctx
+            .apply(self.operator, &self.bufs.v, &mut self.bufs.av);
+        let beta = finite(
+            axpy_with_norm(&mut self.bufs.u, &self.bufs.av, scale, par),
+            "β",
+        )?;
         if beta == 0.0 {
             // Lucky breakdown: zero `v` and its paired `p̃` so the update contributes nothing.
             self.bufs.v.fill(0.0);
@@ -398,11 +420,11 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
         self.u_norm_inv = if RAW_U_NORMS.contains(&beta) {
             1.0 / beta
         } else {
-            normalize(&mut self.bufs.u, beta);
+            normalize(&mut self.bufs.u, beta, par);
             1.0
         };
 
-        self.update_p_tilde(beta)?;
+        self.update_p_tilde(beta);
         let alpha_new = self.reorthonormalize_v()?;
 
         self.alpha = alpha_new;
@@ -417,11 +439,16 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
         &self.bufs.v
     }
 
-    fn residual_norm(&mut self, x: &[f64], rhs: &[f64]) -> Result<f64, SolveError> {
-        residual_into(self.operator, x, rhs, &mut self.bufs.u)
+    fn par(&self) -> Par {
+        self.ctx.par
     }
 
-    fn plain_gradient(&mut self, residual_norm: f64) -> Result<Option<Magnitude>, SolveError> {
+    fn residual_norm(&mut self, x: &[f64], rhs: &[f64]) -> f64 {
+        self.ctx
+            .residual_into(self.operator, x, rhs, &mut self.bufs.u)
+    }
+
+    fn plain_gradient(&mut self, residual_norm: f64) -> Magnitude {
         let bufs = &mut self.bufs;
         let image = adjoint_image(
             self.operator,
@@ -429,44 +456,45 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
             residual_norm,
             &mut bufs.av,
             &mut bufs.atu,
-        )?;
-        Ok(Some(image.norm()))
-    }
-
-    fn into_residual(self) -> Vec<f64> {
-        self.bufs.u
+            &mut self.ctx,
+        );
+        image.norm()
     }
 
     fn restart(&mut self, beta: f64) -> Result<BidiagStep, SolveError> {
-        normalize(&mut self.bufs.u, beta);
-        self.operator
-            .apply_adjoint(&self.bufs.u, &mut self.bufs.p_tilde)?;
-        self.preconditioner
-            .apply(&self.bufs.p_tilde, &mut self.bufs.v)?;
-        let alpha = alpha_from_vp(&self.bufs.v, &self.bufs.p_tilde)?;
-        normalize(&mut self.bufs.v, alpha);
+        let par = self.ctx.par;
+        normalize(&mut self.bufs.u, beta, par);
+        self.ctx
+            .apply_adjoint(self.operator, &self.bufs.u, &mut self.bufs.p_tilde);
+        self.ctx
+            .apply(self.preconditioner, &self.bufs.p_tilde, &mut self.bufs.v);
+        let alpha = alpha_from_vp(&self.bufs.v, &self.bufs.p_tilde, par)?;
+        normalize(&mut self.bufs.v, alpha, par);
         if let Some(reorth) = &mut self.bufs.local_reorth {
             reorth.clear();
-            reorth.push(&self.bufs.v, &self.bufs.p_tilde, alpha);
+            reorth.push(&self.bufs.v, &self.bufs.p_tilde, alpha, par);
         }
         self.alpha = alpha;
         self.u_norm_inv = 1.0; // u was normalized
         Ok(BidiagStep { alpha, beta })
     }
 
-    fn hidden_gradient(
-        &mut self,
-        b: &[f64],
-        b_norm: f64,
-    ) -> Result<Option<(f64, AdjointImage)>, SolveError> {
+    fn hidden_gradient(&mut self, b: &[f64], b_norm: f64) -> Option<(f64, AdjointImage)> {
         // At `α₁ = 0` the stream holds `p̃ = Aᵀu` for the unit `u`, so `‖p̃‖ = ‖Aᵀ rhs‖ / ‖rhs‖`.
-        let plain = par_norm(&self.bufs.p_tilde);
+        let plain = par_norm(&self.bufs.p_tilde, self.ctx.par);
         if plain == 0.0 {
-            return Ok(None);
+            return None;
         }
         let bufs = &mut self.bufs;
-        let b_image = adjoint_image(self.operator, b, b_norm, &mut bufs.u, &mut bufs.atu)?;
-        Ok(Some((plain, b_image)))
+        let b_image = adjoint_image(
+            self.operator,
+            b,
+            b_norm,
+            &mut bufs.u,
+            &mut bufs.atu,
+            &mut self.ctx,
+        );
+        Some((plain, b_image))
     }
 }
 
@@ -503,10 +531,11 @@ impl ModifiedGolubKahanBuffers {
 const RAW_U_NORMS: std::ops::RangeInclusive<f64> = 1e-64..=1e64;
 
 /// Modified Golub-Kahan with `M ≈ AᵀA`, storing `p̃` scaled by `α` so a step costs one `M⁻¹`.
-pub(super) struct ModifiedGolubKahan<'a, A: Operator + ?Sized, M: Operator + ?Sized> {
+pub(super) struct ModifiedGolubKahan<'a, A: BiLinOp<f64> + ?Sized, M: LinOp<f64> + ?Sized> {
     operator: &'a A,
     preconditioner: &'a M,
     bufs: ModifiedGolubKahanBuffers,
+    ctx: Ctx<'a>,
     /// Last `α` emitted; needed by the next step to scale `p_tilde`.
     alpha: f64,
     /// `1/‖u‖` as stored: `1/β_k`, or 1 once `u` was normalized in place.
@@ -514,19 +543,20 @@ pub(super) struct ModifiedGolubKahan<'a, A: Operator + ?Sized, M: Operator + ?Si
 }
 
 /// A start vector `rhs − A x₀` staged in a [`ModifiedGolubKahan`]'s `u`, before its first `restart`.
-pub(super) struct StagedStart<'a, A: Operator + ?Sized, M: Operator + ?Sized>(
+pub(super) struct StagedStart<'a, A: BiLinOp<f64> + ?Sized, M: LinOp<f64> + ?Sized>(
     ModifiedGolubKahan<'a, A, M>,
 );
 
-impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> StagedStart<'a, A, M> {
+impl<'a, A: BiLinOp<f64> + ?Sized, M: LinOp<f64> + ?Sized> StagedStart<'a, A, M> {
     /// `x₀ = 0`: `u = b`.
     pub(super) fn cold(
         operator: &'a A,
         preconditioner: &'a M,
         b: &[f64],
         local_size: usize,
+        ctx: Ctx<'a>,
     ) -> Self {
-        let mut stream = ModifiedGolubKahan::new(operator, preconditioner, local_size);
+        let mut stream = ModifiedGolubKahan::new(operator, preconditioner, local_size, ctx);
         stream.bufs.u.copy_from_slice(b);
         Self(stream)
     }
@@ -538,10 +568,11 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> StagedStart<'a, A, M> {
         x0: &[f64],
         b: &[f64],
         local_size: usize,
-    ) -> Result<(Self, f64), SolveError> {
-        let mut stream = ModifiedGolubKahan::new(operator, preconditioner, local_size);
-        let norm = stream.residual_norm(x0, b)?;
-        Ok((Self(stream), norm))
+        ctx: Ctx<'a>,
+    ) -> (Self, f64) {
+        let mut stream = ModifiedGolubKahan::new(operator, preconditioner, local_size, ctx);
+        let norm = stream.residual_norm(x0, b);
+        (Self(stream), norm)
     }
 
     /// `‖Âᵀ rhs‖ = ‖Aᵀ rhs‖·√(ĝᵀM⁻¹ĝ)` for unit `ĝ ∥ Aᵀ rhs`, on scratch that spares the staged `u`.
@@ -551,9 +582,17 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> StagedStart<'a, A, M> {
         rhs_norm: f64,
     ) -> Result<(Magnitude, Magnitude), SolveError> {
         let stream = &mut self.0;
+        let par = stream.ctx.par;
         let bufs = &mut stream.bufs;
         let (g, mv) = (&mut bufs.atu, &mut bufs.v);
-        let image = adjoint_image(stream.operator, rhs, rhs_norm, &mut bufs.av, g)?;
+        let image = adjoint_image(
+            stream.operator,
+            rhs,
+            rhs_norm,
+            &mut bufs.av,
+            g,
+            &mut stream.ctx,
+        );
         if !image.g_norm.is_finite() {
             return Ok((Magnitude::from(image.g_norm), image.norm()));
         }
@@ -564,9 +603,9 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> StagedStart<'a, A, M> {
         } else {
             1.0
         };
-        normalize(g, scale);
-        stream.preconditioner.apply(g, mv)?;
-        let alpha = alpha_from_vp(mv, g)?;
+        normalize(g, scale, par);
+        stream.ctx.apply(stream.preconditioner, g, mv);
+        let alpha = alpha_from_vp(mv, g, par)?;
         Ok((
             Magnitude::product(ldexp(1.0, image.k), scale) * Magnitude::from(alpha),
             plain,
@@ -580,27 +619,29 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> StagedStart<'a, A, M> {
     ) -> Result<(ModifiedGolubKahan<'a, A, M>, BidiagStep, Magnitude), SolveError> {
         let mut stream = self.0;
         let step1 = stream.restart(beta)?;
-        let plain = Magnitude::product(par_norm(&stream.bufs.p_tilde), beta);
+        let plain = Magnitude::product(par_norm(&stream.bufs.p_tilde, stream.ctx.par), beta);
         Ok((stream, step1, plain))
     }
 }
 
-impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M> {
-    fn new(operator: &'a A, preconditioner: &'a M, local_size: usize) -> Self {
+impl<'a, A: BiLinOp<f64> + ?Sized, M: LinOp<f64> + ?Sized> ModifiedGolubKahan<'a, A, M> {
+    fn new(operator: &'a A, preconditioner: &'a M, local_size: usize, ctx: Ctx<'a>) -> Self {
         let (m, n) = (operator.nrows(), operator.ncols());
         Self {
             operator,
             preconditioner,
             bufs: ModifiedGolubKahanBuffers::new(m, n, local_size),
+            ctx,
             alpha: 0.0,
             u_norm_inv: 1.0,
         }
     }
 
     /// Scaling by `β / α_k` cancels the stored `α_k`; requires `α_k > 0`.
-    fn update_p_tilde(&mut self, beta: f64) -> Result<(), SolveError> {
-        self.operator
-            .apply_adjoint(&self.bufs.u, &mut self.bufs.atu)?;
+    fn update_p_tilde(&mut self, beta: f64) {
+        let par = self.ctx.par;
+        self.ctx
+            .apply_adjoint(self.operator, &self.bufs.u, &mut self.bufs.atu);
         debug_assert!(
             self.alpha > 0.0,
             "self.alpha must be > 0; lsmr_from_bidiag's loop guard prevents step() after alpha=0",
@@ -608,7 +649,7 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M
         let mut p_coeff = beta / self.alpha;
         if !p_coeff.is_normal() {
             // `β/α` can leave the range while `p̃ / α = M v` does not, so divide first (`dlascl`).
-            normalize(&mut self.bufs.p_tilde, self.alpha);
+            normalize(&mut self.bufs.p_tilde, self.alpha, par);
             p_coeff = beta;
         }
         axpby(
@@ -616,33 +657,34 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M
             &self.bufs.atu,
             self.u_norm_inv,
             -p_coeff,
+            par,
         );
-        Ok(())
     }
 
     /// Recover `ṽ = M⁻¹ p̃`, MGS both in lockstep, normalize; returns `α_{k+1}`.
     fn reorthonormalize_v(&mut self) -> Result<f64, SolveError> {
-        self.preconditioner
-            .apply(&self.bufs.p_tilde, &mut self.bufs.v)?;
+        let par = self.ctx.par;
+        self.ctx
+            .apply(self.preconditioner, &self.bufs.p_tilde, &mut self.bufs.v);
 
         if let Some(reorth) = &self.bufs.local_reorth {
-            reorth.reorthogonalize(&mut self.bufs.v, &mut self.bufs.p_tilde);
+            reorth.reorthogonalize(&mut self.bufs.v, &mut self.bufs.p_tilde, par);
         }
 
-        let alpha_new = match alpha_from_vp(&self.bufs.v, &self.bufs.p_tilde) {
+        let alpha_new = match alpha_from_vp(&self.bufs.v, &self.bufs.p_tilde, par) {
             // MGS updates `v` and `p̃` apart, so near breakdown `v` drifts from `M⁻¹ p̃`.
             Err(AlphaError::NegativeMetric) if self.bufs.local_reorth.is_some() => {
-                self.preconditioner
-                    .apply(&self.bufs.p_tilde, &mut self.bufs.v)?;
-                alpha_from_vp(&self.bufs.v, &self.bufs.p_tilde)?
+                self.ctx
+                    .apply(self.preconditioner, &self.bufs.p_tilde, &mut self.bufs.v);
+                alpha_from_vp(&self.bufs.v, &self.bufs.p_tilde, par)?
             }
             alpha => alpha?,
         };
 
-        normalize(&mut self.bufs.v, alpha_new);
+        normalize(&mut self.bufs.v, alpha_new, par);
 
         if let Some(reorth) = &mut self.bufs.local_reorth {
-            reorth.push(&self.bufs.v, &self.bufs.p_tilde, alpha_new);
+            reorth.push(&self.bufs.v, &self.bufs.p_tilde, alpha_new, par);
         }
 
         Ok(alpha_new)

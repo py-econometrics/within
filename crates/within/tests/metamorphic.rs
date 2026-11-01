@@ -20,6 +20,7 @@ fn tight_params() -> LsmrOptions {
         tol: 1e-11,
         maxiter: 3000,
         local_size: Some(10),
+        ..Default::default()
     }
 }
 

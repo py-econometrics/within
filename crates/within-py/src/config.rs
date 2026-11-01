@@ -429,7 +429,7 @@ impl PyPreconditioner {
         let y = py
             .detach(|| {
                 let mut y = vec![0.0; self.inner.nrows()];
-                self.inner.apply(x_slice, &mut y).map(|()| y)
+                self.inner.apply_slices(x_slice, &mut y).map(|()| y)
             })
             .map_err(IntoPyErr::into_py_err)?;
         Ok(numpy::PyArray1::from_vec(py, y))
@@ -532,6 +532,7 @@ pub(crate) fn resolve_lsmr_config(config: Option<&Bound<'_, PyAny>>) -> PyResult
             tol: lsmr.tol,
             maxiter: lsmr.maxiter,
             local_size: lsmr.local_size,
+            ..Default::default()
         });
     }
     Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(

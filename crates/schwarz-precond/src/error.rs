@@ -5,14 +5,7 @@
 //! - **Build** ([`BuildError`]) — caught during construction, before any
 //!   solve begins. Covers partition-weight validation, subdomain DOF
 //!   contracts, and preconditioner-wide index checks.
-//! - **Solve** ([`SolveError`]) — runtime failures during a solve, including
-//!   operator/preconditioner application (e.g. a local solver diverges) and
-//!   iterative-solver input validation.
-//!
-//! [`crate::error::LocalSolveError`] is the narrow trait contract returned by
-//! [`crate::LocalSolver::solve_local`]. The Schwarz apply lifts it into
-//! [`SolveError::LocalSolveFailed`] at the one apply site that knows the
-//! subdomain index, so there is no `From` chain between the two.
+//! - **Solve** ([`SolveError`]) — solver input and breakdowns; operator applies are infallible.
 
 use thiserror::Error;
 
@@ -38,33 +31,10 @@ pub enum BuildError {
     },
 }
 
-/// Local-solver failure; backends report a free-form site and message, not typed modes.
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-#[non_exhaustive]
-pub enum LocalSolveError {
-    /// The backend implementation reported a failure during a local solve.
-    #[error("{context}: {message}")]
-    BackendFailed {
-        /// Context string identifying where the failure occurred.
-        context: &'static str,
-        /// Backend error text.
-        message: String,
-    },
-}
-
 /// Runtime failure while executing a solve.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[non_exhaustive]
 pub enum SolveError {
-    /// A local subdomain solve failed during a preconditioner apply.
-    #[error("subdomain {subdomain} local solve failed: {source}")]
-    LocalSolveFailed {
-        /// Index of the failing subdomain entry in the preconditioner.
-        subdomain: usize,
-        /// Local solver error.
-        #[source]
-        source: LocalSolveError,
-    },
     /// Solver input was invalid before any iteration was attempted.
     #[error("invalid solver input at {context}: {message}")]
     InvalidInput {

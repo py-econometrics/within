@@ -1,223 +1,159 @@
 //! Operators and helpers shared by the LSMR test modules.
 
 use super::*;
-use crate::{Operator, SolveError};
+use crate::SolveError;
+use faer::diag::Diag;
+pub(crate) use faer::matrix_free::IdentityPrecond;
+pub(crate) use faer::Mat;
+use faer::{Col, MatMut, MatRef};
 
-/// The removed `lsmr`'s signature over [`mlsmr`] with the identity metric.
-pub(crate) fn lsmr<O: Operator + ?Sized>(
-    op: &O,
+/// [`mlsmr`] on the ambient pool, warm from `x0` or cold.
+pub(crate) fn run(
+    op: &(impl BiLinOp<f64> + ?Sized),
+    b: &[f64],
+    m: &(impl LinOp<f64> + ?Sized),
+    x0: Option<&[f64]>,
+    options: &LsmrOptions,
+    stall: Option<Staleness>,
+) -> Result<(Vec<f64>, LsmrInfo), SolveError> {
+    let mut x = x0.map_or_else(|| vec![0.0; op.ncols()], <[f64]>::to_vec);
+    let start = match x0 {
+        Some(_) => InitialGuess::Given,
+        None => InitialGuess::Zero,
+    };
+    let mut scratch = MemBuffer::new(StackReq::EMPTY);
+    let par = Par::rayon(0);
+    let info = mlsmr(op, b, m, &mut x, start, options, stall, par, &mut scratch)?;
+    Ok((x, info))
+}
+
+/// Unpreconditioned [`run`] from a cold start.
+pub(crate) fn lsmr(
+    op: &(impl BiLinOp<f64> + ?Sized),
     b: &[f64],
     tol: f64,
     maxiter: usize,
     local_size: Option<usize>,
-) -> Result<LsmrResult, SolveError> {
-    let options = MlsmrOptions {
+) -> Result<(Vec<f64>, LsmrInfo), SolveError> {
+    let options = LsmrOptions {
         local_size,
-        ..Default::default()
+        ..opts(tol, maxiter)
     };
-    mlsmr(
+    run(
         op,
         b,
         &IdentityPrecond { dim: op.ncols() },
-        tol,
-        maxiter,
-        options,
+        None,
+        &options,
+        None,
     )
 }
 
-/// Identity operator used by mlsmr equivalence tests.
-pub(crate) struct IdentityOp {
-    pub(crate) n: usize,
-}
-
-impl Operator for IdentityOp {
-    fn nrows(&self) -> usize {
-        self.n
-    }
-    fn ncols(&self) -> usize {
-        self.n
-    }
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        y.copy_from_slice(x);
-        Ok(())
-    }
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        y.copy_from_slice(x);
-        Ok(())
+pub(crate) fn opts(tol: f64, maxiter: usize) -> LsmrOptions {
+    LsmrOptions {
+        tol,
+        maxiter,
+        ..Default::default()
     }
 }
 
-/// Simple 4×3 overdetermined system.
-/// A = [1 0 0; 0 1 0; 0 0 1; 1 1 0]
-pub(crate) struct OverdeterminedOp;
-
-impl Operator for OverdeterminedOp {
-    fn nrows(&self) -> usize {
-        4
-    }
-    fn ncols(&self) -> usize {
-        3
-    }
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        y[0] = x[0];
-        y[1] = x[1];
-        y[2] = x[2];
-        y[3] = x[0] + x[1];
-        Ok(())
-    }
-    fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) -> Result<(), SolveError> {
-        x[0] = u[0] + u[3];
-        x[1] = u[1] + u[3];
-        x[2] = u[2];
-        Ok(())
-    }
+/// `y = A x` on one thread.
+pub(crate) fn times(op: &(impl LinOp<f64> + ?Sized), x: &[f64]) -> Vec<f64> {
+    let mut y = vec![0.0; op.nrows()];
+    let mut scratch = MemBuffer::new(op.apply_scratch(1, Par::Seq));
+    let (out, rhs) = (column_mut(&mut y), column(x));
+    op.apply(out, rhs, Par::Seq, MemStack::new(&mut scratch));
+    y
 }
 
-/// Degenerate 2×2 operator `A = [[1, 0], [0, 0]]` — zero second row and zero
-/// second column. Shared by the zero-row/column and mid-stream `beta == 0`
-/// breakdown tests.
-pub(crate) struct ZeroSecondRow;
-
-impl Operator for ZeroSecondRow {
-    fn nrows(&self) -> usize {
-        2
-    }
-    fn ncols(&self) -> usize {
-        2
-    }
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        y[0] = x[0];
-        y[1] = 0.0;
-        Ok(())
-    }
-    fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) -> Result<(), SolveError> {
-        x[0] = u[0];
-        x[1] = 0.0;
-        Ok(())
-    }
+/// `y = Aᵀ x` on one thread.
+pub(crate) fn times_t(op: &(impl BiLinOp<f64> + ?Sized), x: &[f64]) -> Vec<f64> {
+    let mut y = vec![0.0; op.ncols()];
+    let mut scratch = MemBuffer::new(op.transpose_apply_scratch(1, Par::Seq));
+    let (out, rhs) = (column_mut(&mut y), column(x));
+    op.transpose_apply(out, rhs, Par::Seq, MemStack::new(&mut scratch));
+    y
 }
 
-/// `‖Aᵀ (b - A x)‖₂` — normal-equation residual, the scale-invariant
-/// "did we actually solve the least-squares problem?" check.
-pub(crate) fn normal_equation_residual<O: Operator + ?Sized>(op: &O, x: &[f64], b: &[f64]) -> f64 {
-    let mut ax = vec![0.0; op.nrows()];
-    op.apply(x, &mut ax).expect("apply succeeds");
-    let resid: Vec<f64> = b.iter().zip(&ax).map(|(bi, ai)| bi - ai).collect();
-    let mut atr = vec![0.0; op.ncols()];
-    op.apply_adjoint(&resid, &mut atr)
-        .expect("apply_adjoint succeeds");
-    vec_norm(&atr)
+pub(crate) fn column(x: &[f64]) -> MatRef<'_, f64> {
+    MatRef::from_column_major_slice(x, x.len(), 1)
 }
 
-/// Diagonal operator, used as a stand-in preconditioner `M⁻¹`.
-pub(crate) struct DiagOp(pub(crate) Vec<f64>);
+pub(crate) fn column_mut(x: &mut [f64]) -> MatMut<'_, f64> {
+    let n = x.len();
+    MatMut::from_column_major_slice_mut(x, n, 1)
+}
 
-impl Operator for DiagOp {
-    fn nrows(&self) -> usize {
-        self.0.len()
-    }
-    fn ncols(&self) -> usize {
-        self.0.len()
-    }
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        for ((yi, &xi), &di) in y.iter_mut().zip(x).zip(self.0.iter()) {
-            *yi = di * xi;
-        }
-        Ok(())
-    }
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        self.apply(x, y)
-    }
+/// `rows × cols` from row-major `data`.
+pub(crate) fn dense(rows: usize, cols: usize, data: &[f64]) -> Mat<f64> {
+    Mat::from_fn(rows, cols, |i, j| data[i * cols + j])
+}
+
+pub(crate) fn diag(d: &[f64]) -> Diag<f64> {
+    Col::from_fn(d.len(), |i| d[i]).into_diagonal()
+}
+
+/// `A = [1 0 0; 0 1 0; 0 0 1; 1 1 0]`.
+pub(crate) fn overdetermined() -> Mat<f64> {
+    dense(
+        4,
+        3,
+        &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0],
+    )
+}
+
+/// `A = [[1, 0], [0, 0]]`: a zero second row and column, for the breakdown tests.
+pub(crate) fn zero_second_row() -> Mat<f64> {
+    dense(2, 2, &[1.0, 0.0, 0.0, 0.0])
+}
+
+/// `‖Aᵀ (b - A x)‖₂`, the scale-invariant check that the least-squares problem is solved.
+pub(crate) fn normal_equation_residual(
+    op: &(impl BiLinOp<f64> + ?Sized),
+    x: &[f64],
+    b: &[f64],
+) -> f64 {
+    let resid: Vec<f64> = b.iter().zip(times(op, x)).map(|(bi, ai)| bi - ai).collect();
+    vec_norm(&times_t(op, &resid))
 }
 
 /// `M⁻¹ ≈ diag(AᵀA)⁻¹`.
-pub(crate) fn jacobi(op: &DenseOp) -> DiagOp {
-    let mut diag_inv = vec![0.0; op.cols];
-    for (j, di) in diag_inv.iter_mut().enumerate() {
-        let s: f64 = op
-            .data
-            .chunks_exact(op.cols)
-            .map(|row| row[j] * row[j])
-            .sum();
-        *di = if s > 0.0 { 1.0 / s } else { 1.0 };
-    }
-    DiagOp(diag_inv)
+pub(crate) fn jacobi(op: &Mat<f64>) -> Diag<f64> {
+    Col::from_fn(op.ncols(), |j| {
+        let s: f64 = op.col(j).iter().map(|a| a * a).sum();
+        if s > 0.0 {
+            1.0 / s
+        } else {
+            1.0
+        }
+    })
+    .into_diagonal()
 }
 
-/// Dense row-major test operator. Used by the local-reorth tests to build
-/// ill-conditioned least-squares problems (Vandermonde-flavored) that
-/// stress the v-orthogonality of the bidiagonalization.
-pub(crate) struct DenseOp {
-    pub(crate) rows: usize,
-    pub(crate) cols: usize,
-    pub(crate) data: Vec<f64>,
-}
-
-impl DenseOp {
-    /// Vandermonde-like matrix `A[i,j] = (i / (rows-1))^j`.
-    ///
-    /// `rows = 30`, `cols = 12` gives `cond(A) ≈ 1e10` — well past where
-    /// the `v` short-recurrence drifts in floating point and convergence
-    /// stalls without reorthogonalization.
-    pub(crate) fn vandermonde(rows: usize, cols: usize) -> Self {
-        let mut data = vec![0.0; rows * cols];
-        for i in 0..rows {
-            let x = i as f64 / (rows - 1).max(1) as f64;
-            let mut p = 1.0;
-            for j in 0..cols {
-                data[i * cols + j] = p;
-                p *= x;
-            }
+/// `A[i,j] = (i / (rows-1))^j`; `30 × 12` has `cond(A) ≈ 1e10`, where unreorthogonalized `v` drifts.
+pub(crate) fn vandermonde(rows: usize, cols: usize) -> Mat<f64> {
+    let mut a = Mat::zeros(rows, cols);
+    for i in 0..rows {
+        let x = i as f64 / (rows - 1).max(1) as f64;
+        let mut p = 1.0;
+        for j in 0..cols {
+            a[(i, j)] = p;
+            p *= x;
         }
-        Self { rows, cols, data }
     }
-}
-
-impl Operator for DenseOp {
-    fn nrows(&self) -> usize {
-        self.rows
-    }
-    fn ncols(&self) -> usize {
-        self.cols
-    }
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        for (yi, row) in y.iter_mut().zip(self.data.chunks_exact(self.cols)) {
-            *yi = row.iter().zip(x).map(|(a, b)| a * b).sum();
-        }
-        Ok(())
-    }
-    fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) -> Result<(), SolveError> {
-        for (j, xj) in x.iter_mut().enumerate() {
-            let mut s = 0.0;
-            for (ui, row) in u.iter().zip(self.data.chunks_exact(self.cols)) {
-                s += row[j] * ui;
-            }
-            *xj = s;
-        }
-        Ok(())
-    }
+    a
 }
 
 /// The ill-conditioned least-squares problem the ladder tests run on, with a smooth RHS.
-pub(crate) fn vandermonde_ls() -> (DenseOp, Vec<f64>) {
-    let op = DenseOp::vandermonde(30, 12);
-    let b = (0..op.rows)
-        .map(|i| (1.0 + i as f64 / (op.rows - 1) as f64).ln())
+pub(crate) fn vandermonde_ls() -> (Mat<f64>, Vec<f64>) {
+    let op = vandermonde(30, 12);
+    let b = (0..op.nrows())
+        .map(|i| (1.0 + i as f64 / (op.nrows() - 1) as f64).ln())
         .collect();
     (op, b)
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct FixedIterations(pub(crate) usize);
-
-impl EscalationPolicy for FixedIterations {
-    fn handler(&self) -> Box<dyn EscalationHandler> {
-        Box::new(*self)
-    }
-}
-
-impl EscalationHandler for FixedIterations {
-    fn should_escalate(&mut self, progress: Progress) -> bool {
-        progress.iteration >= self.0
-    }
+/// Stops at iteration `n ≥ 2`: a zero threshold counts every positive drop ratio as stalled.
+pub(crate) fn stop_at(n: usize) -> Staleness {
+    Staleness::try_new(n - 1, 0.0).expect("n ≥ 2")
 }

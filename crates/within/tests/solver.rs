@@ -231,8 +231,12 @@ fn test_preconditioner_serde_roundtrip(#[case] precond: PreconditionerConfig) {
     let x: Vec<f64> = (0..precond_ref.ncols()).map(|i| i as f64 + 0.25).collect();
     let mut y1 = vec![0.0; precond_ref.nrows()];
     let mut y2 = vec![0.0; precond2.nrows()];
-    precond_ref.apply(&x, &mut y1).expect("apply original");
-    precond2.apply(&x, &mut y2).expect("apply deserialized");
+    precond_ref
+        .apply_slices(&x, &mut y1)
+        .expect("apply original");
+    precond2
+        .apply_slices(&x, &mut y2)
+        .expect("apply deserialized");
     assert_eq!(y1, y2);
 
     let solver2 =

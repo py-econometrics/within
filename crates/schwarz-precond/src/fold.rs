@@ -2,6 +2,8 @@
 
 use std::ops::Range;
 
+use crate::par::{fork, Par};
+
 /// An ordered input that [`fold`] can cut at an index into a prefix and a suffix.
 pub(crate) trait Split: Sized + Send {
     fn n_items(&self) -> usize;
@@ -50,6 +52,7 @@ impl<A: Split, B: Split> Split for (A, B) {
 
 /// `leaf` over `block_len` pieces of `input`, combined in a tree fixed by the length alone.
 pub(crate) fn fold<P: Split, T: Send>(
+    par: Par,
     input: P,
     block_len: usize,
     leaf: &(impl Fn(P) -> T + Sync),
@@ -61,32 +64,52 @@ pub(crate) fn fold<P: Split, T: Send>(
         return leaf(input);
     }
     let (left, right) = input.split_at(pieces / 2 * block_len);
-    let (l, r) = if n > SEQUENTIAL_ITEMS {
-        rayon::join(
-            || fold(left, block_len, leaf, combine),
-            || fold(right, block_len, leaf, combine),
-        )
-    } else {
-        (
-            fold(left, block_len, leaf, combine),
-            fold(right, block_len, leaf, combine),
-        )
-    };
+    let par = if n > SEQUENTIAL_ITEMS { par } else { Par::Seq };
+    let (l, r) = fork(
+        par,
+        |p| fold(p, left, block_len, leaf, combine),
+        |p| fold(p, right, block_len, leaf, combine),
+    );
     combine(l, r)
+}
+
+/// `leaf` on each `block_len` piece of `input`, forked down to single pieces under `par`.
+pub(crate) fn for_each_piece<P: Split>(
+    par: Par,
+    input: P,
+    block_len: usize,
+    leaf: &(impl Fn(P) + Sync),
+) {
+    let pieces = input.n_items().div_ceil(block_len);
+    if pieces <= 1 || par.degree() <= 1 {
+        let mut rest = input;
+        while rest.n_items() > block_len {
+            let (piece, tail) = rest.split_at(block_len);
+            leaf(piece);
+            rest = tail;
+        }
+        return leaf(rest);
+    }
+    let (left, right) = input.split_at(pieces / 2 * block_len);
+    fork(
+        par,
+        |p| for_each_piece(p, left, block_len, leaf),
+        |p| for_each_piece(p, right, block_len, leaf),
+    );
 }
 
 /// Subtrees this small run on the calling thread: a `join` per piece costs more than it spreads.
 const SEQUENTIAL_ITEMS: usize = 1 << 16;
 
-/// Asserts `f` returns the same value in pools of 1, 2, 3 and 8 threads.
+/// Asserts `f` returns the same value under budgets of 1, 2, 3 and 8, each in a pool that wide.
 #[cfg(test)]
-pub(crate) fn assert_pool_independent<R: PartialEq + Send>(f: impl Fn() -> R + Sync) {
+pub(crate) fn assert_budget_independent<R: PartialEq + Send>(f: impl Fn(Par) -> R + Sync) {
     let in_pool = |threads: usize| {
         rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
             .build()
             .expect("pool")
-            .install(&f)
+            .install(|| f(Par::rayon(threads)))
     };
     let reference = in_pool(1);
     for threads in [2, 3, 8] {
@@ -110,10 +133,16 @@ mod tests {
     #[case(43)]
     #[case(1_000)]
     fn leaves_cover_the_input_once_in_order(#[case] n: usize) {
-        let leaves = fold(0..n, 8, &|r: Range<usize>| vec![r], &|mut a, b| {
-            a.extend(b);
-            a
-        });
+        let leaves = fold(
+            Par::rayon(4),
+            0..n,
+            8,
+            &|r: Range<usize>| vec![r],
+            &|mut a, b| {
+                a.extend(b);
+                a
+            },
+        );
         assert!(leaves
             .iter()
             .all(|r| r.len() <= 8 && (n == 0 || !r.is_empty())));
@@ -127,8 +156,9 @@ mod tests {
         let x: Vec<f64> = (0..100_003u64)
             .map(|i| ((i * 2_654_435_761) % 997) as f64 * 10f64.powi((i % 31) as i32 - 15))
             .collect();
-        assert_pool_independent(|| {
+        assert_budget_independent(|par| {
             fold(
+                par,
                 x.as_slice(),
                 64,
                 &|c: &[f64]| c.iter().sum::<f64>(),
