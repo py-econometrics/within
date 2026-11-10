@@ -616,6 +616,8 @@ pub(crate) struct FastRun {
     pub wall: f64,
     pub secs: [f64; 4],
     pub recomputed: Vec<f64>,
+    pub xs: Vec<Vec<f64>>,
+    pub achieved: Vec<f64>,
 }
 
 /// Block LSMR to `‖Âᵀrⱼ‖_M ≤ tol ‖Âᵀbⱼ‖_M` for every column; `fused` uses the k-column design kernels.
@@ -628,6 +630,7 @@ fn fast<const K: usize>(
     maxit: usize,
     fused: bool,
     mb: Option<BlockMap<'_>>,
+    verify: bool,
 ) -> FastRun {
     let (nobs, n) = (a.nrows(), a.ncols());
     let t0 = Instant::now();
@@ -651,15 +654,18 @@ fn fast<const K: usize>(
         }
         secs[2] += t.elapsed().as_secs_f64();
     };
-    let mut b = vec![[0.0; K]; nobs];
-    b.par_chunks_mut(CHUNK).enumerate().for_each(|(c, rows)| {
-        for (i, r) in rows.iter_mut().enumerate() {
-            for j in 0..K {
-                r[j] = bs[j][c * CHUNK + i];
+    let interleave = || {
+        let mut b = vec![[0.0; K]; nobs];
+        b.par_chunks_mut(CHUNK).enumerate().for_each(|(c, rows)| {
+            for (i, r) in rows.iter_mut().enumerate() {
+                for j in 0..K {
+                    r[j] = bs[j][c * CHUNK + i];
+                }
             }
-        }
-    });
-    let mut u = b.clone();
+        });
+        b
+    };
+    let mut u = interleave();
     let tv = Instant::now();
     let beta1 = cholqr2_k(&mut u, None, None, None, &mut seed).t();
     secs[3] += tv.elapsed().as_secs_f64();
@@ -747,7 +753,14 @@ fn fast<const K: usize>(
             break;
         }
     }
+    let achieved: Vec<f64> = (0..K).map(|j| zeta_bar.col_norm(j) / norms0[j]).collect();
+    drop((u, q, v, w, p, pt, h, hbar));
+    let xs: Vec<Vec<f64>> = (0..K).into_par_iter().map(|j| x.iter().map(|r| r[j]).collect()).collect();
     let wall = t0.elapsed().as_secs_f64();
+    if !verify {
+        return FastRun { iterations: it, per_column, wall, secs, recomputed: Vec::new(), xs, achieved };
+    }
+    let b = interleave();
     let mut r = vec![[0.0; K]; nobs];
     ab.apply_block(x.as_flattened(), r.as_flattened_mut(), K);
     r.iter_mut().zip(&b).for_each(|(r, b)| (0..K).for_each(|j| r[j] = b[j] - r[j]));
@@ -758,7 +771,7 @@ fn fast<const K: usize>(
     let recomputed = (0..K)
         .map(|j| z.iter().zip(&mz).map(|(a, b)| a[j] * b[j]).sum::<f64>().max(0.0).sqrt() / norms0[j])
         .collect();
-    FastRun { iterations: it, per_column, wall, secs, recomputed }
+    FastRun { iterations: it, per_column, wall, secs, recomputed, xs, achieved }
 }
 
 pub(crate) type BlockMap<'a> = &'a (dyn Fn(&[f64], &mut [f64], usize) + Sync);
@@ -823,6 +836,11 @@ pub(crate) fn wall_report(
 ) {
     let maxit = 5000;
     let s = bs.len();
+    if std::env::var_os("BLOCK_ONLY").is_some() {
+        let r = dispatch_fast!(s, a, ab, m, bs, &vec![tol; s], maxit, true, Some(mb), true);
+        eprintln!("  block only: {:.1} ms, {} its", 1e3 * r.wall, r.iterations);
+        return;
+    }
     let rounds: usize = std::env::var("BLOCK_ROUNDS").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
     {
         let n = m.ncols();
@@ -865,8 +883,8 @@ pub(crate) fn wall_report(
         if round == 0 {
             tols = bs.iter().zip(&prod).map(|(b, r)| metric_rel(a, m, b, &r.x)).collect();
         }
-        keep(&mut fused_d, dispatch_fast!(s, a, ab, m, bs, &tols, maxit, true, None));
-        keep(&mut fused, dispatch_fast!(s, a, ab, m, bs, &tols, maxit, true, Some(mb)));
+        keep(&mut fused_d, dispatch_fast!(s, a, ab, m, bs, &tols, maxit, true, None, true));
+        keep(&mut fused, dispatch_fast!(s, a, ab, m, bs, &tols, maxit, true, Some(mb), true));
     }
     let (fused, fused_d) = (fused.unwrap(), fused_d.unwrap());
     let its: Vec<usize> = prod.iter().map(|r| r.iterations).collect();
@@ -882,4 +900,39 @@ pub(crate) fn wall_report(
             ms(r.secs[0]), ms(r.secs[1]), ms(r.secs[2]), ms(r.secs[3]),
         );
     }
+}
+
+/// The block solve itself: one result per column, nothing kept for verification.
+pub(crate) fn solve(
+    a: &dyn Operator,
+    ab: &dyn BlockDesign,
+    m: &dyn Operator,
+    mb: BlockMap<'_>,
+    bs: &[&[f64]],
+    tol: f64,
+    maxit: usize,
+) -> Vec<(schwarz_precond::LsmrResult, f64)> {
+    let r = dispatch_fast!(bs.len(), a, ab, m, bs, &vec![tol; bs.len()], maxit, true, Some(mb), false);
+    eprintln!("  block solve: {:.1} ms, {} its", 1e3 * r.wall, r.iterations);
+    r.xs.into_iter()
+        .zip(r.per_column)
+        .zip(r.achieved)
+        .map(|((x, its), achieved)| {
+            let converged = its > 0;
+            let result = schwarz_precond::LsmrResult {
+                x,
+                converged,
+                iterations: if converged { its } else { r.iterations },
+                residual_norm: f64::NAN,
+                normal_eq_residual: achieved,
+                stop_reason: if converged {
+                    schwarz_precond::LsmrStopReason::NormalEquationTolerance
+                } else {
+                    schwarz_precond::LsmrStopReason::MaxIterations
+                },
+                true_residual: None,
+            };
+            (result, r.wall)
+        })
+        .collect()
 }

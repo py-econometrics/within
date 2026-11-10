@@ -583,6 +583,53 @@ fn last_rung<'s, F: Formulation>(
 ) -> Result<Vec<Pass<F::Rhs<'s>>>, SolveError> {
     let coarsened = coarse.map(|coarse| Coarsened { inner, coarse });
     let map = coarsened.as_ref().map_or(inner as &dyn Operator, |c| c);
+    let inner_block = |t: &[f64], y2: &mut [f64], k: usize| {
+        if std::env::var_os("PROBE_INNER_FUSED").is_some() {
+            return inner.apply_block(t, y2, k);
+        }
+        let n = inner.nrows();
+        let cols: Vec<Vec<f64>> = (0..k).into_par_iter().map(|j| {
+            let xc: Vec<f64> = (0..n).map(|i| t[i * k + j]).collect();
+            let mut yc = vec![0.0; n];
+            inner.apply(&xc, &mut yc).expect("apply");
+            yc
+        }).collect();
+        y2.par_chunks_mut(k).enumerate().for_each(|(i, row)| (0..k).for_each(|j| row[j] = cols[j][i]));
+    };
+    let mb = |x: &[f64], y: &mut [f64], k: usize| match coarse {
+        Some(c) => c.apply_around_block(&|t: &[f64], y2: &mut [f64]| inner_block(t, y2, k), x, y, k),
+        None => inner_block(x, y, k),
+    };
+    let mut passes = passes;
+    if let (Some(_), Some(ab)) = (std::env::var_os("BLOCK_SOLVE"), system.block_design()) {
+        let picked: Vec<bool> = passes.iter().map(|p| match p {
+            Pass::Pending(rhs, _) => {
+                let b = system.system(rhs).1;
+                let norm = b.iter().map(|v| v * v).sum::<f64>().sqrt();
+                norm > 1e-8 * system.residual_reference(rhs).unwrap_or(norm)
+            }
+            Pass::Done(_) => false,
+        }).collect();
+        if picked.iter().filter(|&&p| p).count() > 1 {
+            let warm = passes.iter().zip(&picked).filter(|(p, &k)| k && matches!(p, Pass::Pending(_, Some(_)))).count();
+            let mut results = {
+                let rhs: Vec<_> = passes.iter().zip(&picked).filter_map(|(p, &k)| match p {
+                    Pass::Pending(rhs, _) if k => Some(system.system(rhs)),
+                    _ => None,
+                }).collect();
+                let bs: Vec<&[f64]> = rhs.iter().map(|(_, b)| *b).collect();
+                eprintln!("  block solve over {} columns ({warm} with a discarded warm start)", bs.len());
+                block_probe::solve(rhs[0].0, ab, map, &mb, &bs, lsmr.tol, lsmr.maxiter).into_iter()
+            };
+            let slots: Vec<_> = picked.iter().map(|&k| if k { results.next() } else { None }).collect();
+            passes = passes.into_par_iter().zip(slots).map(|(pass, slot)| match (pass, slot) {
+                (Pass::Pending(rhs, _), Some((result, solve_secs))) => {
+                    Ok(Pass::Done(system.finish(rhs, Run { result, solve_secs })?))
+                }
+                (pass, _) => Ok(pass),
+            }).collect::<Result<Vec<_>, SolveError>>()?;
+        }
+    }
     if std::env::var_os("BLOCK_PROBE").is_some() {
         let pending: Vec<_> = passes.iter().filter_map(|p| match p {
             Pass::Pending(rhs, _) => {
@@ -597,23 +644,6 @@ fn last_rung<'s, F: Formulation>(
             let bs: Vec<&[f64]> = pending.iter().map(|(_, b, _)| *b).collect();
             let refs: Vec<Option<f64>> = pending.iter().map(|(_, _, r)| *r).collect();
             if let (Some(_), Some(ab)) = (std::env::var_os("BLOCK_WALL"), system.block_design()) {
-                let inner_block = |t: &[f64], y2: &mut [f64], k: usize| {
-                    if std::env::var_os("PROBE_INNER_FUSED").is_some() {
-                        return inner.apply_block(t, y2, k);
-                    }
-                    let n = inner.nrows();
-                    let cols: Vec<Vec<f64>> = (0..k).into_par_iter().map(|j| {
-                        let xc: Vec<f64> = (0..n).map(|i| t[i * k + j]).collect();
-                        let mut yc = vec![0.0; n];
-                        inner.apply(&xc, &mut yc).expect("apply");
-                        yc
-                    }).collect();
-                    y2.par_chunks_mut(k).enumerate().for_each(|(i, row)| (0..k).for_each(|j| row[j] = cols[j][i]));
-                };
-                let mb = |x: &[f64], y: &mut [f64], k: usize| match coarse {
-                    Some(c) => c.apply_around_block(&|t: &[f64], y2: &mut [f64]| inner_block(t, y2, k), x, y, k),
-                    None => inner_block(x, y, k),
-                };
                 if std::env::var_os("M_TIMING").is_some() {
                     let ib = |x: &[f64], y: &mut [f64], k: usize| inner.apply_block(x, y, k);
                     block_probe::m_timing(inner, &ib, map, &mb, bs.len());
