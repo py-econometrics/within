@@ -25,8 +25,10 @@ checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
 
 [[package]]
 name = "approx-chol"
-version = "0.7.0"
+version = "0.8.0"
+source = "git+https://github.com/aai-institute/approx-chol?branch=main#15e15e6fa6b19450c0ed7549b805f3ff1dbccc37"
 dependencies = [
+ "dyn-stack",
  "num-traits",
  "rand 0.10.3",
  "rayon",

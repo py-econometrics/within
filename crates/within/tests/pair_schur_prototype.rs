@@ -143,7 +143,7 @@ fn global_elimination_can_reverse_local_pair_orientation() {
     let jacobi = solver
         .pair_schur_block_jacobi(&config())
         .unwrap();
-    assert_eq!((reduced.n_subdomains(), jacobi.n_subdomains()), (2, 2));
+    assert_eq!((reduced.n_subdomains(), jacobi.n_subdomains()), (1, 1));
     let y: Vec<f64> = (0..200).map(|i| (i as f64 * 0.31).sin()).collect();
     let options = LsmrOptions {
         tol: 1e-9,

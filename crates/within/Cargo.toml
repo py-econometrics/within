@@ -15,7 +15,7 @@ pair-schur-prototype = ["dep:faer"]
 
 [dependencies]
 schwarz-precond = { workspace = true, features = ["serde"] }
-approx-chol = { path = "/Users/kristof/Projects/approx-chol-integrated/crates/approx-chol", features = ["serde"] }
+approx-chol = { git = "https://github.com/aai-institute/approx-chol", branch = "main", features = ["serde"] }
 serde = { workspace = true, features = ["rc"] }
 postcard.workspace = true
 ndarray = "0.17"

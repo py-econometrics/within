@@ -1,16 +1,16 @@
 //! Channel-pair subdomain construction.
 //!
 //! Each cross-factor channel pair hands approx-chol its Gram factor `V`, one column per
-//! observation, and each irreducible block of the factor becomes a Schwarz subdomain
-//! (isolated levels are batched into diagonal subdomains per side). Overlap is handled by
-//! partition-of-unity weights — see [`schwarz_precond::domain`] for the math.
+//! observation, and its block-diagonal approximate inverse becomes one Schwarz subdomain.
+//! Overlap is handled by partition-of-unity weights — see [`schwarz_precond::domain`] for
+//! the math.
 //!
 //! Entry point: [`build_local_domains`].
 
 use approx_chol::input::{BipartiteFactorWidth2, FactorWidth1};
 #[cfg(feature = "pair-schur-prototype")]
-use approx_chol::Side;
-use approx_chol::{BlockFactor, ReduceError};
+use approx_chol::input::Side;
+use approx_chol::ScalingOutcome;
 use schwarz_precond::{PartitionWeights, SubdomainCore};
 
 use crate::block_solver::BlockSolver;
@@ -20,9 +20,6 @@ use crate::domain::Column;
 use crate::{BuildError, BuildWarning};
 
 use super::{PreparedDesign, PreparedTerm};
-
-/// Keeps a batch below the local solver's inner-parallel threshold and typical scratch size.
-const ISOLATED_LEVEL_CHUNK: usize = 4096;
 
 /// A factor-pair Schwarz domain paired with its factored local operator.
 #[derive(Clone)]
@@ -137,11 +134,11 @@ fn factor_pair(
 ) -> Result<(Vec<LocalDomain>, Vec<BuildWarning>), BuildError> {
     let (rows, cols) = (prepared.term(pair.rows.term), prepared.term(pair.cols.term));
     fn side<'p>(term: &PreparedTerm<'p>, column: usize) -> FactorWidth1<'p, f64> {
-        FactorWidth1::new(
-            term.term.n_levels(),
-            term.term.levels(),
-            term.loading(column),
-        )
+        let (n, levels) = (term.term.n_levels(), term.term.levels());
+        match term.loading(column) {
+            Some(z) => FactorWidth1::valued(n, levels, z),
+            None => FactorWidth1::new(n, levels),
+        }
         .expect("levels index their term")
     }
     let (left, right) = (side(&rows, pair.rows.column), side(&cols, pair.cols.column));
@@ -151,33 +148,28 @@ fn factor_pair(
     }
     .expect("both sides read the same observations");
     let (ac, scaling) = (config.factor_config(), config.scaling_policy()?);
-    let factor = match matrix {
+    let inverse = match matrix {
         PairMatrix::Gram => approx_chol::factorize_with(v, ac, scaling),
         #[cfg(feature = "pair-schur-prototype")]
         PairMatrix::Complement(kept) => approx_chol::factorize_complement(v, kept, ac, scaling),
     }
-    .map_err(|e| match e {
-        approx_chol::Error::Reduce(ReduceError::Unscalable { .. }) => {
-            BuildError::UnscalableComponent { pair }
-        }
-        e => BuildError::LocalSolverBuild(e.to_string()),
-    })?;
+    .map_err(|e| BuildError::LocalSolverBuild(e.to_string()))?;
 
     let mut warnings = Vec::new();
-    for report in factor
-        .blocks()
-        .iter()
-        .filter_map(BlockFactor::scaling_report)
-        .filter(|report| report.violation > config.scaling.tolerance)
-    {
+    for clamp in inverse.components().filter_map(|c| c.clamp()) {
+        if clamp.scaling == ScalingOutcome::Certified {
+            continue;
+        }
         match config.scaling.on_failure {
             ScalingFailure::Warn => warnings.push(BuildWarning::UnscalableComponent {
                 pair,
-                iterations: report.iterations,
-                violation: report.violation,
+                violation: clamp.violation,
             }),
             ScalingFailure::Error => return Err(BuildError::UnscalableComponent { pair }),
         }
+    }
+    if inverse.components().len() == 0 {
+        return Ok((Vec::new(), warnings));
     }
 
     let n_rows = rows.term.n_levels();
@@ -194,38 +186,13 @@ fn factor_pair(
         };
         u32::try_from(subdomains.dof(dof)).expect("the DOF space fits u32")
     };
-    let domain = |blocks: Vec<BlockFactor>| LocalDomain {
-        core: SubdomainCore::uniform(
-            blocks
-                .iter()
-                .flat_map(BlockFactor::vertices)
-                .map(global)
-                .collect(),
-        ),
-        solver: BlockSolver::new(blocks),
+    // The factor's components are disjoint blocks, so one subdomain per pair solves each alone.
+    let domain = LocalDomain {
+        core: SubdomainCore::uniform((0..inverse.n()).map(global).collect()),
+        solver: BlockSolver::new(inverse),
         scale: subdomains.piece_scale(pair),
     };
-
-    let mut domains = Vec::new();
-    let mut isolated = [Vec::new(), Vec::new()];
-    for block in factor.into_blocks() {
-        match block.vertices().len() {
-            1 => isolated[usize::from(block.vertices().all(|v| v >= n_rows))].push(block),
-            _ => domains.push(domain(vec![block])),
-        }
-    }
-    // Isolated levels have a diagonal Gram, so batching changes no local solve, only overhead.
-    for side in isolated {
-        let mut side = side.into_iter();
-        loop {
-            let batch: Vec<BlockFactor> = side.by_ref().take(ISOLATED_LEVEL_CHUNK).collect();
-            if batch.is_empty() {
-                break;
-            }
-            domains.push(domain(batch));
-        }
-    }
-    Ok((domains, warnings))
+    Ok((vec![domain], warnings))
 }
 
 /// Two-sided Schwarz needs `Σ Rᵢᵀ D̃ᵢ² Rᵢ = I`, so a DOF in `c` subdomains gets `1/√c`.
@@ -357,7 +324,8 @@ mod tests {
     }
 
     #[test]
-    fn isolated_levels_batch_per_side_and_dead_levels_drop() {
+    fn one_subdomain_per_pair_solves_dead_levels_to_zero() {
+        use schwarz_precond::LocalSolver;
         // ±z within one firm cancels a cross cell to exactly zero; worker 4's zero z is dead.
         let workers = [0u32, 0, 1, 1, 2, 2, 3, 3, 4];
         let firms = [0u32, 0, 2, 2, 0, 1, 3, 3, 0];
@@ -370,14 +338,15 @@ mod tests {
         let prepared = PreparedDesign::unweighted_for_test(design);
         let (domains, _) =
             build_local_domains(&prepared, &LocalSolverConfig::default(), &FullPairs).expect("domains");
-        let mut cores: Vec<Vec<u32>> = domains
-            .iter()
-            .map(|d| d.core.global_indices().to_vec())
-            .collect();
-        cores.iter_mut().for_each(|core| core.sort_unstable());
-        cores.sort_unstable();
-        // Workers occupy DOFs 0..5 and firms 5..9.
-        assert_eq!(cores, [vec![0, 1, 3], vec![2, 5, 6], vec![7, 8]]);
+        let [domain] = &domains[..] else {
+            panic!("one subdomain per pair, got {}", domains.len())
+        };
+        // Workers occupy DOFs 0..5 and firms 5..9, in the pair's own numbering.
+        assert_eq!(domain.core.global_indices(), (0..9).collect::<Vec<u32>>());
+        let mut x = vec![1.0; 9];
+        domain.solver.solve_local(&mut x, &mut [], false).expect("solve");
+        assert_eq!(x[4], 0.0);
+        assert!(x.iter().enumerate().all(|(i, v)| i == 4 || *v != 0.0), "{x:?}");
     }
 
     #[test]

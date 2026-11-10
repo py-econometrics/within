@@ -8,7 +8,7 @@ use super::{
     batch_result, solve_all, solve_result, Formulation, LsmrOptions, PreparedRhs, RhsSolution, Run,
     SolveResult, Solver,
 };
-use approx_chol::Side;
+use approx_chol::input::Side;
 
 use crate::channel::ChannelPair;
 use crate::domain::elimination::Elimination;
