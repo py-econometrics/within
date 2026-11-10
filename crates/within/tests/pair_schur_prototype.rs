@@ -46,7 +46,6 @@ fn pair_schur_matches_full_fits_on_weighted_and_disconnected_designs() {
                     weighted.then_some(weights.as_slice()),
                     PreconditionerConfig::Additive {
                         local_solver: config(),
-                        reduction: Default::default(),
                     },
                 )
                 .unwrap();
@@ -61,10 +60,10 @@ fn pair_schur_matches_full_fits_on_weighted_and_disconnected_designs() {
                     .unwrap();
                 assert!(reference.converged);
                 let reduced = full
-                    .pair_schur_prototype(&config(), Default::default())
+                    .pair_schur_prototype(&config())
                     .unwrap();
                 let jacobi = full
-                    .pair_schur_block_jacobi(&config(), Default::default())
+                    .pair_schur_block_jacobi(&config())
                     .unwrap();
                 assert!(
                     jacobi.n_subdomains() > 0 && reduced.n_subdomains() > jacobi.n_subdomains()
@@ -139,10 +138,10 @@ fn global_elimination_can_reverse_local_pair_orientation() {
     });
     let solver = Solver::new(categories.view(), None, PreconditionerConfig::Off).unwrap();
     let reduced = solver
-        .pair_schur_prototype(&config(), Default::default())
+        .pair_schur_prototype(&config())
         .unwrap();
     let jacobi = solver
-        .pair_schur_block_jacobi(&config(), Default::default())
+        .pair_schur_block_jacobi(&config())
         .unwrap();
     assert_eq!((reduced.n_subdomains(), jacobi.n_subdomains()), (2, 2));
     let y: Vec<f64> = (0..200).map(|i| (i as f64 * 0.31).sin()).collect();
@@ -175,7 +174,7 @@ fn all_zero_weights_and_invalid_inputs() {
     )
     .unwrap();
     let reduced = solver
-        .pair_schur_prototype(&config(), Default::default())
+        .pair_schur_prototype(&config())
         .unwrap();
     let y = vec![1.0; 100];
     let r = reduced.solve_lsmr(&y, &LsmrOptions::default()).unwrap();

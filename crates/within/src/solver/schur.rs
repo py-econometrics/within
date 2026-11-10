@@ -18,10 +18,10 @@ use crate::linalg::dot;
 use crate::operator::coarse::{CoarseRung, Coarsened};
 use crate::operator::reduced_coarse::{Declined, ReducedCoarse};
 use crate::operator::reduced_design::{self, ColumnMoments, ReducedDesign};
-use crate::operator::schwarz::{build_schwarz, Preconditioner, SchwarzConfig};
+use crate::operator::schwarz::{build_schwarz, Preconditioner};
 use crate::{
     BatchSolveResult, BuildError, BuildWarning, LocalSolverConfig, PreconditionerConfig,
-    ReductionStrategy, SolveError, WithinError,
+    SolveError, WithinError,
 };
 
 /// The kept coefficients' system `(I − P_e) W^{1/2} D_kept`; the eliminated term is recovered after.
@@ -87,7 +87,7 @@ impl Formulation for Reduced<'_> {
 
     fn build_schwarz(
         &self,
-        config: &SchwarzConfig,
+        config: &LocalSolverConfig,
     ) -> Result<(Option<Preconditioner>, Vec<BuildWarning>), BuildError> {
         let subdomains = ReducedPairs {
             elimination: &self.elimination,
@@ -245,12 +245,10 @@ impl Solver<'_> {
     pub fn pair_schur_prototype(
         &self,
         config: &LocalSolverConfig,
-        reduction: ReductionStrategy,
     ) -> Result<PairSchurPrototype<'_>, WithinError> {
         let local_solver = config.clone();
         let config = PreconditionerConfig::Additive {
             local_solver,
-            reduction,
         };
         self.reduced_pairs(config, Pairs::All)
     }
@@ -259,12 +257,10 @@ impl Solver<'_> {
     pub fn pair_schur_block_jacobi(
         &self,
         config: &LocalSolverConfig,
-        reduction: ReductionStrategy,
     ) -> Result<PairSchurPrototype<'_>, WithinError> {
         let local_solver = config.clone();
         let config = PreconditionerConfig::Additive {
             local_solver,
-            reduction,
         };
         self.reduced_pairs(config, Pairs::SchurOnly)
     }
@@ -273,13 +269,11 @@ impl Solver<'_> {
     pub fn pair_schur_adaptive(
         &self,
         config: &LocalSolverConfig,
-        reduction: ReductionStrategy,
         stall: Staleness,
     ) -> Result<PairSchurPrototype<'_>, WithinError> {
         let local_solver = config.clone();
         let config = PreconditionerConfig::Adaptive {
             local_solver,
-            reduction,
             stall,
         };
         self.reduced_pairs(config, Pairs::All)
@@ -528,12 +522,11 @@ mod tests {
                 None,
                 PreconditionerConfig::Additive {
                     local_solver: config.clone(),
-                    reduction: Default::default(),
                 },
             )
             .unwrap();
             let reduced = full
-                .pair_schur_prototype(&config, Default::default())
+                .pair_schur_prototype(&config)
                 .unwrap();
             let e = &reduced.reduced.elimination;
             let x: Vec<f64> = (0..e.n_kept()).map(|i| (i as f64).sin()).collect();
@@ -600,7 +593,6 @@ mod tests {
                 None,
                 PreconditionerConfig::Additive {
                     local_solver: config.clone(),
-                    reduction: Default::default(),
                 },
             )
             .unwrap();
@@ -625,10 +617,10 @@ mod tests {
                 )
                 .unwrap();
             let bound = 1e-8 + 10.0 * gap(&reference.demeaned, &tight.demeaned);
-            let all = full.pair_schur_prototype(&config, Default::default());
-            let jacobi = full.pair_schur_block_jacobi(&config, Default::default());
+            let all = full.pair_schur_prototype(&config);
+            let jacobi = full.pair_schur_block_jacobi(&config);
             let stall = Staleness::default();
-            let adaptive = full.pair_schur_adaptive(&config, Default::default(), stall);
+            let adaptive = full.pair_schur_adaptive(&config, stall);
             for (name, reduced) in [("all", all), ("jacobi", jacobi), ("adaptive", adaptive)] {
                 let reduced = reduced.unwrap();
                 let doubled: Vec<f64> = panel.y.iter().map(|v| 2.0 * v).collect();

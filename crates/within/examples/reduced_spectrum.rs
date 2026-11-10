@@ -48,7 +48,7 @@ fn main() {
         let design = Design::new(effects).unwrap();
         let base = Solver::new(&design, None, PreconditionerConfig::Off).unwrap();
         let reduced = base
-            .pair_schur_prototype(&config, Default::default())
+            .pair_schur_prototype(&config)
             .unwrap();
         let options = LsmrOptions {
             tol: 1e-12,

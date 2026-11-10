@@ -8,7 +8,6 @@ use crate::Operator;
 
 #[derive(Clone, Copy, Debug)]
 enum Metric {
-    None,
     Identity,
     Diagonal,
 }
@@ -32,7 +31,6 @@ fn solve<A: Operator>(
         ..Default::default()
     };
     match metric {
-        Metric::None => lsmr(a, b, 1e-10, 50, local_size),
         Metric::Identity => mlsmr(a, b, &IdentityOp { n }, 1e-10, 50, options),
         Metric::Diagonal => mlsmr(a, b, &diagonal, 1e-10, 50, options),
     }
@@ -41,7 +39,7 @@ fn solve<A: Operator>(
 /// `α₁ = ‖Aᵀb‖ / ‖b‖ ≈ 1e-310` is subnormal although `‖A‖` and `‖b‖` are not, so `1/α₁` is ∞.
 #[rstest]
 fn a_subnormal_initial_gradient_normalizes_its_basis_vector(
-    #[values(Metric::None, Metric::Identity, Metric::Diagonal)] metric: Metric,
+    #[values(Metric::Identity, Metric::Diagonal)] metric: Metric,
     #[values(None, Some(2))] local_size: Option<usize>,
 ) {
     let r = solve(
@@ -61,7 +59,7 @@ fn a_subnormal_initial_gradient_normalizes_its_basis_vector(
 /// A subnormal `‖b‖` has no representable reciprocal either.
 #[rstest]
 fn a_subnormal_rhs_normalizes_its_first_vector(
-    #[values(Metric::None, Metric::Identity, Metric::Diagonal)] metric: Metric,
+    #[values(Metric::Identity, Metric::Diagonal)] metric: Metric,
 ) {
     let r = solve(&IdentityOp { n: 2 }, &[1e-310, 0.0], metric, None, None)
         .expect("subnormal-rhs solve");

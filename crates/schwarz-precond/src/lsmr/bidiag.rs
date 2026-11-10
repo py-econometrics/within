@@ -12,11 +12,12 @@ mod tests;
 
 use super::finite;
 use super::magnitude::{exponent, ldexp, Magnitude};
+use crate::fold::{fold, Split};
 use crate::{Operator, SolveError};
 use rayon::iter::{IndexedParallelIterator, ParallelIterator};
 use rayon::prelude::{ParallelSlice, ParallelSliceMut};
 
-/// Below this count the vector kernels run sequentially; rayon wake/steal would dominate.
+/// Below this count the elementwise kernels run sequentially; rayon wake/steal would dominate.
 pub(super) const LSMR_PAR_THRESHOLD: usize = 10_000;
 /// Per-worker chunk size: large enough to clear rayon dispatch, small enough to stay L1-resident.
 pub(super) const LSMR_UPDATE_CHUNK: usize = 4096;
@@ -25,24 +26,36 @@ pub(super) const LSMR_UPDATE_CHUNK: usize = 4096;
 #[inline]
 fn axpy_with_norm(y: &mut [f64], x: &[f64], scale: f64) -> f64 {
     debug_assert_eq!(x.len(), y.len());
-    let seq = |y_c: &mut [f64], x_c: &[f64]| -> f64 {
-        let mut s = 0.0;
-        for (yi, &xi) in y_c.iter_mut().zip(x_c.iter()) {
+    let sq = chunked_sum((&mut *y, x), |(y_c, x_c): (&mut [f64], &[f64])| {
+        let step = |yi: &mut f64, xi: f64| {
             let val = xi + scale * *yi;
             *yi = val;
-            s += val * val;
+            val * val
+        };
+        let mut acc = [0.0; LANES];
+        let mut y_lanes = y_c.chunks_exact_mut(LANES);
+        let mut x_lanes = x_c.chunks_exact(LANES);
+        for (y, x) in (&mut y_lanes).zip(&mut x_lanes) {
+            for ((s, yi), &xi) in acc.iter_mut().zip(y).zip(x) {
+                *s += step(yi, xi);
+            }
         }
-        s
-    };
-    let sq = if y.len() >= LSMR_PAR_THRESHOLD {
-        y.par_chunks_mut(LSMR_UPDATE_CHUNK)
-            .zip(x.par_chunks(LSMR_UPDATE_CHUNK))
-            .map(|(y_c, x_c)| seq(y_c, x_c))
-            .sum()
-    } else {
-        seq(y, x)
-    };
+        let tail: f64 = (y_lanes.into_remainder().iter_mut())
+            .zip(x_lanes.remainder())
+            .map(|(yi, &xi)| step(yi, xi))
+            .sum();
+        acc.iter().sum::<f64>() + tail
+    });
     norm_from_sq(y, sq)
+}
+
+/// Independent accumulators per leaf: a single add chain is latency-bound and never vectorizes.
+const LANES: usize = 8;
+
+/// `Σ leaf` over `LSMR_UPDATE_CHUNK` pieces in a tree fixed by the length.
+#[inline]
+fn chunked_sum<P: Split>(input: P, leaf: impl Fn(P) -> f64 + Sync) -> f64 {
+    fold(input, LSMR_UPDATE_CHUNK, &leaf, &|a, b| a + b)
 }
 
 /// `y = alpha * x + beta * y`. Parallel above the threshold.
@@ -86,21 +99,24 @@ fn normalize(y: &mut [f64], d: f64) {
 /// Inner product of two vectors.
 #[inline]
 pub(super) fn dot(a: &[f64], b: &[f64]) -> f64 {
-    a.iter().zip(b).map(|(a, b)| a * b).sum()
+    let (a_lanes, b_lanes) = (a.chunks_exact(LANES), b.chunks_exact(LANES));
+    let tail: f64 = (a_lanes.remainder().iter())
+        .zip(b_lanes.remainder())
+        .map(|(x, y)| x * y)
+        .sum();
+    let mut acc = [0.0; LANES];
+    for (x, y) in a_lanes.zip(b_lanes) {
+        for ((s, xi), yi) in acc.iter_mut().zip(x).zip(y) {
+            *s += xi * yi;
+        }
+    }
+    acc.iter().sum::<f64>() + tail
 }
 
-/// Parallel dot product, falling back to the sequential `dot` below the threshold.
+/// Dot product added in a tree fixed by the length alone.
 #[inline]
 fn par_dot(a: &[f64], b: &[f64]) -> f64 {
-    debug_assert_eq!(a.len(), b.len());
-    if a.len() >= LSMR_PAR_THRESHOLD {
-        a.par_chunks(LSMR_UPDATE_CHUNK)
-            .zip(b.par_chunks(LSMR_UPDATE_CHUNK))
-            .map(|(ac, bc)| ac.iter().zip(bc).map(|(x, y)| x * y).sum::<f64>())
-            .sum()
-    } else {
-        dot(a, b)
-    }
+    chunked_sum((a, b), |(ac, bc)| dot(ac, bc))
 }
 
 /// Why [`alpha_from_vp`] refused a pair.
@@ -251,24 +267,6 @@ impl<const L: usize> WindowRing<L> {
     }
 }
 
-/// Euclidean windowed MGS over the single stored `v` lane, used by [`GolubKahan`].
-impl WindowRing<1> {
-    /// MGS sweep over stored slots oldest-first, subtracting each projection of `y`.
-    fn reorthogonalize(&self, y: &mut [f64]) {
-        for slot in self.chrono_slots() {
-            let v_j = self.lane(0, slot);
-            let c = par_dot(y, v_j);
-            axpby(y, v_j, -c, 1.0);
-        }
-    }
-
-    /// Copy `v` into the next slot, advancing the ring.
-    fn push(&mut self, v: &[f64]) {
-        let slot = self.advance();
-        self.lane_mut(0, slot).copy_from_slice(v);
-    }
-}
-
 /// M-weighted windowed MGS: `v` is M-orthogonal, so the coefficient is `⟨v_new, p̃_j⟩`.
 impl WindowRing<2> {
     /// Subtracts `c = ⟨v, p̃_j⟩` from both `v` and `p̃`.
@@ -382,80 +380,6 @@ pub(super) trait Bidiagonalization {
     }
 }
 
-impl<A: Operator + ?Sized> Bidiagonalization for GolubKahan<'_, A> {
-    fn step(&mut self) -> Result<BidiagStep, SolveError> {
-        self.operator.apply(&self.bufs.v, &mut self.bufs.av)?;
-        let beta = finite(
-            axpy_with_norm(&mut self.bufs.u, &self.bufs.av, -self.alpha),
-            "β",
-        )?;
-        if beta == 0.0 {
-            // Lucky breakdown: zero `v` so `solution.update` contributes nothing.
-            self.bufs.v.fill(0.0);
-            self.alpha = 0.0;
-            return Ok(BidiagStep { alpha: 0.0, beta });
-        }
-        normalize(&mut self.bufs.u, beta);
-
-        self.operator
-            .apply_adjoint(&self.bufs.u, &mut self.bufs.atu)?;
-        let mut alpha = axpy_with_norm(&mut self.bufs.v, &self.bufs.atu, -beta);
-
-        // MGS runs before normalization, so α must be re-derived from the corrected `v`.
-        if let Some(reorth) = &self.bufs.local_reorth {
-            reorth.reorthogonalize(&mut self.bufs.v);
-            alpha = par_norm(&self.bufs.v);
-        }
-        let alpha = finite(alpha, "α")?;
-        normalize(&mut self.bufs.v, alpha);
-
-        if let Some(reorth) = &mut self.bufs.local_reorth {
-            reorth.push(&self.bufs.v);
-        }
-
-        self.alpha = alpha;
-        Ok(BidiagStep { alpha, beta })
-    }
-
-    fn v(&self) -> &[f64] {
-        &self.bufs.v
-    }
-
-    fn residual_norm(&mut self, x: &[f64], rhs: &[f64]) -> Result<f64, SolveError> {
-        residual_into(self.operator, x, rhs, &mut self.bufs.u)
-    }
-
-    fn plain_gradient(&mut self, residual_norm: f64) -> Result<Option<Magnitude>, SolveError> {
-        let bufs = &mut self.bufs;
-        let image = adjoint_image(
-            self.operator,
-            &bufs.u,
-            residual_norm,
-            &mut bufs.av,
-            &mut bufs.atu,
-        )?;
-        Ok(Some(image.norm()))
-    }
-
-    fn into_residual(self) -> Vec<f64> {
-        self.bufs.u
-    }
-
-    fn restart(&mut self, beta: f64) -> Result<BidiagStep, SolveError> {
-        normalize(&mut self.bufs.u, beta);
-        self.operator
-            .apply_adjoint(&self.bufs.u, &mut self.bufs.v)?;
-        let alpha = finite(par_norm(&self.bufs.v), "α")?;
-        normalize(&mut self.bufs.v, alpha);
-        if let Some(reorth) = &mut self.bufs.local_reorth {
-            reorth.clear();
-            reorth.push(&self.bufs.v);
-        }
-        self.alpha = alpha;
-        Ok(BidiagStep { alpha, beta })
-    }
-}
-
 impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
     for ModifiedGolubKahan<'_, A, M>
 {
@@ -543,60 +467,6 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
         let bufs = &mut self.bufs;
         let b_image = adjoint_image(self.operator, b, b_norm, &mut bufs.u, &mut bufs.atu)?;
         Ok(Some((plain, b_image)))
-    }
-}
-
-/// Workspaces used by [`GolubKahan`].
-struct GolubKahanBuffers {
-    /// `u_k` in observation space (length m), kept normalized.
-    u: Vec<f64>,
-    /// `v_k` in DOF space (length n), kept normalized.
-    v: Vec<f64>,
-    /// Scratch for `A · v` (length m).
-    av: Vec<f64>,
-    /// Scratch for `Aᵀ · u` (length n).
-    atu: Vec<f64>,
-    /// Windowed reorthogonalization buffer; `None` disables it.
-    local_reorth: Option<WindowRing<1>>,
-}
-
-impl GolubKahanBuffers {
-    fn new(m: usize, n: usize, local_size: usize) -> Self {
-        Self {
-            u: vec![0.0; m],
-            v: vec![0.0; n],
-            av: vec![0.0; m],
-            atu: vec![0.0; n],
-            local_reorth: WindowRing::<1>::new(m, n, local_size),
-        }
-    }
-}
-
-/// Standard Golub-Kahan bidiagonalization: no preconditioner, two normalizations per step.
-pub(super) struct GolubKahan<'a, A: Operator + ?Sized> {
-    operator: &'a A,
-    bufs: GolubKahanBuffers,
-    /// Last `α` emitted; needed by the next step's u-update.
-    alpha: f64,
-}
-
-impl<'a, A: Operator + ?Sized> GolubKahan<'a, A> {
-    /// Initialize the bidiagonalization, returning `Self` and the first step `(α₁, β₁)`.
-    pub(super) fn init(
-        operator: &'a A,
-        b: &[f64],
-        b_norm: f64,
-        local_size: usize,
-    ) -> Result<(Self, BidiagStep), SolveError> {
-        let mut bufs = GolubKahanBuffers::new(operator.nrows(), operator.ncols(), local_size);
-        bufs.u.copy_from_slice(b);
-        let mut stream = Self {
-            operator,
-            bufs,
-            alpha: 0.0,
-        };
-        let step1 = stream.restart(b_norm)?;
-        Ok((stream, step1))
     }
 }
 

@@ -3,7 +3,7 @@
 
 use ndarray::Array2;
 use proptest::prelude::*;
-use within::config::{LocalSolverConfig, ReductionStrategy, Staleness};
+use within::config::{LocalSolverConfig, Staleness};
 use within::PreconditionerConfig;
 
 /// Generate a random FE problem: (categories Array2<u32>, y Vec<f64>).
@@ -40,7 +40,6 @@ pub fn random_fe_problem_strategy() -> impl Strategy<Value = (Array2<u32>, Vec<f
 pub fn additive() -> PreconditionerConfig {
     PreconditionerConfig::Additive {
         local_solver: LocalSolverConfig::default(),
-        reduction: ReductionStrategy::default(),
     }
 }
 
@@ -48,7 +47,6 @@ pub fn additive() -> PreconditionerConfig {
 pub fn adaptive() -> PreconditionerConfig {
     PreconditionerConfig::Adaptive {
         local_solver: LocalSolverConfig::default(),
-        reduction: ReductionStrategy::default(),
         stall: Staleness::default(),
     }
 }

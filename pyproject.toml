@@ -47,3 +47,7 @@ python-source = "python"
 module-name = "within._within"
 manifest-path = "crates/within-py/Cargo.toml"
 features = ["pyo3/extension-module"]
+
+[tool.pytest.ini_options]
+# `benchmarks` is imported by tests and not installed.
+pythonpath = ["."]

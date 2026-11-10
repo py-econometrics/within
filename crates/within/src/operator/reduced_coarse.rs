@@ -1769,7 +1769,6 @@ mod hub {
             data.weights.as_deref(),
             PreconditionerConfig::Additive {
                 local_solver: config.clone(),
-                reduction: Default::default(),
             },
         )
         .unwrap();
@@ -1782,7 +1781,7 @@ mod hub {
                 false => std::env::remove_var("WITHIN_REDUCED_RIGID"),
             }
             let reduced = full
-                .pair_schur_prototype(&config, Default::default())
+                .pair_schur_prototype(&config)
                 .unwrap();
             let result = reduced.solve_lsmr(&data.y, &options).unwrap();
             let gap: Vec<f64> = (result.demeaned.iter().zip(&reference.demeaned))

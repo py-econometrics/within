@@ -41,11 +41,15 @@ Two-tier public API:
   ``Preconditioner``).
 - :mod:`within.config` re-exports the advanced configuration objects
   (``LocalSolverConfig``, ``ApproxCholConfig``, ``ApproxSchurConfig``,
-  ``ReductionStrategy``, ``ScalingConfig``, ``Schur``, ``Staleness``).
+  ``ScalingConfig``, ``Schur``, ``Staleness``).
 
 Thread safety: the heavy work runs with the interpreter detached and reads the
 caller's arrays in place. As with NumPy itself, an input array must not be
 mutated from another thread while a ``within`` call is reading it.
+
+Reproducibility: a solve returns the same bits at any thread count, run after
+run. Repeated solves on one ``Solver`` with ``PreconditionerConfig.Adaptive``
+agree in fitted values, not necessarily in raw coefficients.
 
 For Rust-level internals, build the API docs with ``cargo doc --open``.
 """

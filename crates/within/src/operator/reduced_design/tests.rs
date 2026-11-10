@@ -401,7 +401,7 @@ fn assert_schur_gram(prepared: &PreparedDesign<'_>) {
     op.apply_adjoint(&y, &mut aty).unwrap();
     let dot = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(a, b)| a * b).sum::<f64>();
     assert!((dot(&ax, &y) - dot(&x, &aty)).abs() < 1e-10 * (1.0 + dot(&ax, &y).abs()));
-    let full_op = crate::operator::DesignOperator::new(prepared);
+    let full_op = prepared;
     let mut full = vec![0.0; prepared.design.n_dofs];
     full_op.apply_adjoint(&ax, &mut full).unwrap();
     let norm = |a: &[f64]| a.iter().map(|v| v * v).sum::<f64>().sqrt();

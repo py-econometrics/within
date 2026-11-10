@@ -4,8 +4,8 @@
 //! subdomains and diagonal local solvers.
 
 use schwarz_precond::{
-    lsmr, mlsmr, LocalSolveError, LocalSolver, MlsmrOptions, Operator, ReductionStrategy,
-    SchwarzPreconditioner, SolveError, SubdomainCore, SubdomainEntry,
+    mlsmr, IdentityOp, LocalSolveError, LocalSolver, MlsmrOptions, Operator, SchwarzPreconditioner,
+    SolveError, SubdomainCore, SubdomainEntry,
 };
 
 // ---------------------------------------------------------------------------
@@ -52,17 +52,17 @@ impl LocalSolver for DiagLocalSolver {
     fn n_local(&self) -> usize {
         self.n_local
     }
-    fn scratch_size(&self) -> usize {
-        self.n_local
+    fn workspace_len(&self) -> usize {
+        0
     }
     fn solve_local(
         &self,
-        rhs: &mut [f64],
-        sol: &mut [f64],
+        x: &mut [f64],
+        _workspace: &mut [f64],
         _allow_inner_parallelism: bool,
     ) -> Result<(), LocalSolveError> {
-        for i in 0..self.n_local {
-            sol[i] = rhs[i] / self.diag_val;
+        for v in x.iter_mut() {
+            *v /= self.diag_val;
         }
         Ok(())
     }
@@ -110,14 +110,22 @@ fn main() {
     let a = TridiagOperator { n };
 
     // --- Unpreconditioned LSMR ---
-    let result_plain = lsmr(&a, &rhs, 1e-10, 200, None).expect("unpreconditioned lsmr");
+    let result_plain = mlsmr(
+        &a,
+        &rhs,
+        &IdentityOp { n: a.ncols() },
+        1e-10,
+        200,
+        MlsmrOptions::default(),
+    )
+    .expect("unpreconditioned lsmr");
     println!(
         "Unpreconditioned LSMR : converged={}, iterations={:>3}, residual={:.3e}",
         result_plain.converged, result_plain.iterations, result_plain.residual_norm,
     );
 
     // --- Additive Schwarz preconditioned LSMR ---
-    let precond = SchwarzPreconditioner::new(build_entries(n), ReductionStrategy::default());
+    let precond = SchwarzPreconditioner::new(build_entries(n));
     let options = MlsmrOptions::default();
     let result_schwarz =
         mlsmr(&a, &rhs, &precond, 1e-10, 200, options).expect("preconditioned lsmr");

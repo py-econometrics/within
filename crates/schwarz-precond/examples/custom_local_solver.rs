@@ -6,8 +6,8 @@
 use faer::{MatRef, Side};
 
 use schwarz_precond::{
-    mlsmr, LocalSolveError, LocalSolver, MlsmrOptions, Operator, ReductionStrategy,
-    SchwarzPreconditioner, SolveError, SubdomainCore, SubdomainEntry,
+    mlsmr, LocalSolveError, LocalSolver, MlsmrOptions, Operator, SchwarzPreconditioner, SolveError,
+    SubdomainCore, SubdomainEntry,
 };
 // ---------------------------------------------------------------------------
 // Tridiagonal operator
@@ -74,46 +74,40 @@ impl DenseCholeskyLocalSolver {
             n_local: m,
         }
     }
-
-    /// Solve L L^T x = rhs via forward/backward substitution.
-    fn solve(&self, rhs: &[f64], sol: &mut [f64]) {
-        let m = self.n_local;
-
-        // Forward solve: L z = rhs
-        let mut z = vec![0.0; m];
-        for i in 0..m {
-            let mut s = rhs[i];
-            for (j, &zj) in z.iter().take(i).enumerate() {
-                s -= self.l_row_major[i * m + j] * zj;
-            }
-            z[i] = s / self.l_row_major[i * m + i];
-        }
-
-        // Backward solve: L^T x = z
-        for i in (0..m).rev() {
-            let mut s = z[i];
-            for (j, &sol_j) in sol.iter().enumerate().skip(i + 1) {
-                s -= self.l_row_major[j * m + i] * sol_j;
-            }
-            sol[i] = s / self.l_row_major[i * m + i];
-        }
-    }
 }
 
 impl LocalSolver for DenseCholeskyLocalSolver {
     fn n_local(&self) -> usize {
         self.n_local
     }
-    fn scratch_size(&self) -> usize {
-        self.n_local
+    fn workspace_len(&self) -> usize {
+        0
     }
     fn solve_local(
         &self,
-        rhs: &mut [f64],
-        sol: &mut [f64],
+        x: &mut [f64],
+        _workspace: &mut [f64],
         _allow_inner_parallelism: bool,
     ) -> Result<(), LocalSolveError> {
-        self.solve(rhs, sol);
+        let m = self.n_local;
+
+        // Forward solve: L z = b, z overwriting b
+        for i in 0..m {
+            let mut s = x[i];
+            for (j, &zj) in x[..i].iter().enumerate() {
+                s -= self.l_row_major[i * m + j] * zj;
+            }
+            x[i] = s / self.l_row_major[i * m + i];
+        }
+
+        // Backward solve: L^T x = z
+        for i in (0..m).rev() {
+            let mut s = x[i];
+            for (j, &xj) in x.iter().enumerate().skip(i + 1) {
+                s -= self.l_row_major[j * m + i] * xj;
+            }
+            x[i] = s / self.l_row_major[i * m + i];
+        }
         Ok(())
     }
 }
@@ -173,7 +167,7 @@ fn main() {
     let rhs = vec![1.0; n];
     let a = TridiagOperator { n };
 
-    let precond = SchwarzPreconditioner::new(build_entries(n), ReductionStrategy::default());
+    let precond = SchwarzPreconditioner::new(build_entries(n));
     let options = MlsmrOptions::default();
     let result = mlsmr(&a, &rhs, &precond, 1e-10, 200, options).expect("preconditioned lsmr");
     println!(

@@ -12,7 +12,6 @@ Typical usage::
         ApproxCholConfig,
         ApproxSchurConfig,
         LocalSolverConfig,
-        ReductionStrategy,
         Schur,
         Staleness,
     )
@@ -22,7 +21,6 @@ Typical usage::
             approx_chol=ApproxCholConfig(split_merge=2),
             schur=Schur.approximate(ApproxSchurConfig(split=2)),
         ),
-        reduction=ReductionStrategy.Auto,
     )
     result = solve(categories, y, preconditioner=schwarz)
 
@@ -34,7 +32,6 @@ from within._within import (
     ApproxCholConfig,
     ApproxSchurConfig,
     LocalSolverConfig,
-    ReductionStrategy,
     ScalingConfig,
     Schur,
     Staleness,
@@ -44,7 +41,6 @@ __all__ = [
     "ApproxCholConfig",
     "ApproxSchurConfig",
     "LocalSolverConfig",
-    "ReductionStrategy",
     "ScalingConfig",
     "Schur",
     "Staleness",

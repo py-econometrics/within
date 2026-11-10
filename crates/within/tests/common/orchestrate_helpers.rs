@@ -1,14 +1,13 @@
 #![allow(dead_code)]
 
 use ndarray::{Array2, ArrayView2};
-use within::config::{LocalSolverConfig, ReductionStrategy, Staleness};
+use within::config::{LocalSolverConfig, Staleness};
 use within::{Channel, CoefficientAddress, Design, Effect, PreconditionerConfig, SolveResult};
 
 /// One-level additive Schwarz, pinned so a test names the rung the ladder would escalate to.
 pub fn additive() -> PreconditionerConfig {
     PreconditionerConfig::Additive {
         local_solver: LocalSolverConfig::default(),
-        reduction: ReductionStrategy::default(),
     }
 }
 
@@ -16,7 +15,6 @@ pub fn additive() -> PreconditionerConfig {
 pub fn adaptive() -> PreconditionerConfig {
     PreconditionerConfig::Adaptive {
         local_solver: LocalSolverConfig::default(),
-        reduction: ReductionStrategy::default(),
         stall: Staleness::default(),
     }
 }

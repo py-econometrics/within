@@ -8,11 +8,11 @@ use pyo3::prelude::*;
 
 use within::{
     BatchSolveResult, BuildWarning, Design, LocalSolverConfig, LsmrOptions, PairSchurPrototype,
-    PreconditionerConfig, ReductionStrategy, SolveResult, Solver, Staleness, WithinError,
+    PreconditionerConfig, SolveResult, Solver, Staleness, WithinError,
 };
 
 use crate::api::{extract_design, DesignSource};
-use crate::config::{resolve_lsmr_config, PyLocalSolverConfig, PyReductionStrategy};
+use crate::config::{resolve_lsmr_config, PyLocalSolverConfig};
 use crate::convert::{
     coerce_to_slice, column_refs, extract_columns, readonly_f64_1d, readonly_f64_2d,
 };
@@ -35,19 +35,18 @@ pub enum PyReducedInverse {
 
 /// The reduced system and its preconditioner, set up once for every RHS solved on it.
 struct Reduced {
-    reduction: ReductionStrategy,
     local_solver: LocalSolverConfig,
     inverse: PyReducedInverse,
 }
 
 impl Reduced {
     fn build<'s>(&self, solver: &'s Solver<'s>) -> Result<PairSchurPrototype<'s>, WithinError> {
-        let (config, reduction) = (&self.local_solver, self.reduction);
+        let config = &self.local_solver;
         match self.inverse {
-            PyReducedInverse::PairSchur => solver.pair_schur_prototype(config, reduction),
-            PyReducedInverse::BlockJacobi => solver.pair_schur_block_jacobi(config, reduction),
+            PyReducedInverse::PairSchur => solver.pair_schur_prototype(config),
+            PyReducedInverse::BlockJacobi => solver.pair_schur_block_jacobi(config),
             PyReducedInverse::Adaptive => {
-                solver.pair_schur_adaptive(config, reduction, Staleness::default())
+                solver.pair_schur_adaptive(config, Staleness::default())
             }
         }
     }
@@ -92,7 +91,7 @@ fn build_and_solve_reduced_batch(
 #[pyfunction]
 #[pyo3(signature = (
     design, y, weights=None, options=None, local_solver=None,
-    reduction=PyReductionStrategy::Auto, inverse=PyReducedInverse::PairSchur,
+    inverse=PyReducedInverse::PairSchur,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn solve_reduced<'py>(
@@ -102,12 +101,10 @@ pub fn solve_reduced<'py>(
     weights: Option<&Bound<'py, PyAny>>,
     options: Option<&Bound<'py, PyAny>>,
     local_solver: Option<PyLocalSolverConfig>,
-    reduction: PyReductionStrategy,
     inverse: PyReducedInverse,
 ) -> PyResult<PySolveResult> {
     let params = resolve_lsmr_config(options)?;
     let reduced = Reduced {
-        reduction: reduction.to_native(),
         local_solver: local_solver.unwrap_or_default().to_native(),
         inverse,
     };
@@ -137,7 +134,7 @@ pub fn solve_reduced<'py>(
 #[pyfunction]
 #[pyo3(signature = (
     design, Y, weights=None, options=None, local_solver=None,
-    reduction=PyReductionStrategy::Auto, inverse=PyReducedInverse::Adaptive,
+    inverse=PyReducedInverse::Adaptive,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn solve_reduced_batch<'py>(
@@ -147,12 +144,10 @@ pub fn solve_reduced_batch<'py>(
     weights: Option<&Bound<'py, PyAny>>,
     options: Option<&Bound<'py, PyAny>>,
     local_solver: Option<PyLocalSolverConfig>,
-    reduction: PyReductionStrategy,
     inverse: PyReducedInverse,
 ) -> PyResult<PyBatchSolveResult> {
     let params = resolve_lsmr_config(options)?;
     let reduced = Reduced {
-        reduction: reduction.to_native(),
         local_solver: local_solver.unwrap_or_default().to_native(),
         inverse,
     };

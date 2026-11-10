@@ -2,8 +2,7 @@ use ndarray::array;
 use rstest::rstest;
 use within::{
     solve, ApproxCholConfig, ApproxSchurConfig, Effect, LocalSolverConfig, LsmrOptions,
-    Preconditioner, PreconditionerConfig, ReductionStrategy, ScalingConfig, ScalingFailure,
-    SchurMode, Solver,
+    Preconditioner, PreconditionerConfig, ScalingConfig, ScalingFailure, SchurMode, Solver,
 };
 
 #[path = "common/orchestrate_helpers.rs"]
@@ -202,7 +201,6 @@ fn fully_specified_additive() -> PreconditionerConfig {
                 on_failure: ScalingFailure::Error,
             },
         },
-        reduction: ReductionStrategy::AtomicScatter,
     }
 }
 

@@ -60,7 +60,6 @@ fn compare(label: &str, design: &within::Design<'_>, y: &[f64]) {
         None,
         PreconditionerConfig::Additive {
             local_solver: config.clone(),
-            reduction: Default::default(),
         },
     )
     .unwrap();
@@ -68,12 +67,12 @@ fn compare(label: &str, design: &within::Design<'_>, y: &[f64]) {
     let start = Instant::now();
     let base = Solver::new(design, None, PreconditionerConfig::Off).unwrap();
     let reduced = base
-        .pair_schur_prototype(&config, Default::default())
+        .pair_schur_prototype(&config)
         .unwrap();
     let reduced_build = start.elapsed().as_secs_f64();
     let start = Instant::now();
     let jacobi = base
-        .pair_schur_block_jacobi(&config, Default::default())
+        .pair_schur_block_jacobi(&config)
         .unwrap();
     let jacobi_build = start.elapsed().as_secs_f64();
     let reference = full

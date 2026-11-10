@@ -541,7 +541,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             None,
             PreconditionerConfig::Additive {
                 local_solver: Default::default(),
-                reduction: Default::default(),
             },
         )?;
         let setup = start.elapsed().as_secs_f64();
@@ -714,7 +713,6 @@ mod tests {
             None,
             PreconditionerConfig::Additive {
                 local_solver: Default::default(),
-                reduction: Default::default(),
             },
         )
         .unwrap();

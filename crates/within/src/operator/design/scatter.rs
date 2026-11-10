@@ -1,18 +1,15 @@
-//! Scatter kernel: observation space → coefficient space (`Dᵀ x`), one
-//! strategy per term picked by block size and level-column sortedness.
+//! Scatter kernel `Dᵀ x`, summed per term in the order its [`ScatterSplit`] fixes.
 
-use std::sync::atomic::Ordering;
+use std::ops::Range;
 
-use portable_atomic::AtomicF64;
 use rayon::prelude::*;
 
 use super::PAR_THRESHOLD;
-use crate::domain::{PreparedDesign, PreparedTerm};
+use crate::domain::{LevelRows, PreparedDesign, PreparedTerm, ScatterSplit};
 
 /// Adjoint scatter over all terms; `base(i)` is the row value each column scales by its loading.
 pub(super) fn scatter_apply(
     prepared: &PreparedDesign<'_>,
-    scratch: &[AtomicF64],
     dst: &mut [f64],
     base: &(impl Fn(usize) -> f64 + Sync),
 ) {
@@ -24,38 +21,38 @@ pub(super) fn scatter_apply(
         let term = t.term;
         let block = &mut dst[term.dofs()];
         match (term.intercept, t.slopes) {
-            (true, []) => scatter_term::<1>(block, &t, parallel, scratch, |i| [base(i)]),
+            (true, []) => scatter_term::<1>(block, &t, parallel, |i| [base(i)]),
             (true, [z0]) => {
                 let z0 = &z0[..];
-                scatter_term::<2>(block, &t, parallel, scratch, |i| {
+                scatter_term::<2>(block, &t, parallel, |i| {
                     let b = base(i);
                     [b, z0[i] * b]
                 })
             }
             (true, [z0, z1]) => {
                 let (z0, z1) = (&z0[..], &z1[..]);
-                scatter_term::<3>(block, &t, parallel, scratch, |i| {
+                scatter_term::<3>(block, &t, parallel, |i| {
                     let b = base(i);
                     [b, z0[i] * b, z1[i] * b]
                 })
             }
             (true, [z0, z1, z2]) => {
                 let (z0, z1, z2) = (&z0[..], &z1[..], &z2[..]);
-                scatter_term::<4>(block, &t, parallel, scratch, |i| {
+                scatter_term::<4>(block, &t, parallel, |i| {
                     let b = base(i);
                     [b, z0[i] * b, z1[i] * b, z2[i] * b]
                 })
             }
             (false, [z0, z1]) => {
                 let (z0, z1) = (&z0[..], &z1[..]);
-                scatter_term::<2>(block, &t, parallel, scratch, |i| {
+                scatter_term::<2>(block, &t, parallel, |i| {
                     let b = base(i);
                     [z0[i] * b, z1[i] * b]
                 })
             }
             (false, [z0, z1, z2]) => {
                 let (z0, z1, z2) = (&z0[..], &z1[..], &z2[..]);
-                scatter_term::<3>(block, &t, parallel, scratch, |i| {
+                scatter_term::<3>(block, &t, parallel, |i| {
                     let b = base(i);
                     [z0[i] * b, z1[i] * b, z2[i] * b]
                 })
@@ -65,16 +62,8 @@ pub(super) fn scatter_apply(
                     let start = c * term.n_levels();
                     let slot = &mut block[start..start + term.n_levels()];
                     match t.loading(c) {
-                        None => scatter_term::<1>(slot, &t, parallel, scratch, |i| [base(i)]),
-                        Some(z) => {
-                            scatter_term::<1>(
-                                slot,
-                                &t,
-                                parallel,
-                                scratch,
-                                move |i| [z[i] * base(i)],
-                            )
-                        }
+                        None => scatter_term::<1>(slot, &t, parallel, |i| [base(i)]),
+                        Some(z) => scatter_term::<1>(slot, &t, parallel, move |i| [z[i] * base(i)]),
                     }
                 }
             }
@@ -82,219 +71,109 @@ pub(super) fn scatter_apply(
     }
 }
 
-/// Scatter one term's coefficient block: `block[c·L + level(i)] += values(i)[c]`.
+/// Write one term's coefficient block: `block[c·L + l] = Σ_{i : level(i) = l} values(i)[c]`.
 fn scatter_term<const C: usize>(
     block: &mut [f64],
     term: &PreparedTerm<'_>,
     parallel: bool,
-    scratch: &[AtomicF64],
     values: impl Fn(usize) -> [f64; C] + Sync,
 ) {
     let (n_levels, levels) = (term.term.n_levels(), term.term.levels());
     debug_assert_eq!(block.len(), C * n_levels);
-    match ScatterStrategy::pick(parallel, C * n_levels, n_levels, term.term.sorted()) {
-        ScatterStrategy::Sequential => scatter_sequential::<C>(block, n_levels, levels, &values),
-        ScatterStrategy::Fold => scatter_fold::<C>(block, n_levels, levels, &values),
-        ScatterStrategy::Atomic => scatter_atomic::<C>(block, n_levels, levels, &values, scratch),
-        ScatterStrategy::SortedCoalesced => {
-            scatter_sorted_coalesced::<C>(block, n_levels, levels, &values, scratch)
-        }
-    }
-}
-
-/// Size above which a sorted block coalesces and an unsorted column goes atomic instead of fold.
-const SCATTER_LOCAL_THRESHOLD: usize = 100_000;
-
-/// Strategy for a single term's scatter-add loop.
-#[derive(Debug, PartialEq, Eq)]
-pub(super) enum ScatterStrategy {
-    /// Plain sequential loop — used when n_rows is below `PAR_THRESHOLD`.
-    Sequential,
-    /// Parallel fold/reduce with thread-local accumulators — O(block · n_threads) memory.
-    Fold,
-    /// Parallel atomic CAS into the reused scratch — for unsorted columns with many levels.
-    Atomic,
-    /// Equal-level runs coalesce into one atomic add per level per chunk, avoiding a CAS storm.
-    SortedCoalesced,
-}
-
-impl ScatterStrategy {
-    /// Atomic gates on one column's `n_levels`: a fused unsorted CAS loses to fold below it.
-    pub(super) fn pick(parallel: bool, block: usize, n_levels: usize, sorted: bool) -> Self {
-        match (parallel, sorted) {
-            (false, _) => ScatterStrategy::Sequential,
-            (true, true) if block >= SCATTER_LOCAL_THRESHOLD => ScatterStrategy::SortedCoalesced,
-            (true, false) if n_levels >= SCATTER_LOCAL_THRESHOLD => ScatterStrategy::Atomic,
-            (true, _) => ScatterStrategy::Fold,
-        }
-    }
-}
-
-/// Sequential scatter-add: `block[c·L + levels[i]] += values(i)[c]`.
-fn scatter_sequential<const C: usize>(
-    block: &mut [f64],
-    n_levels: usize,
-    levels: &[u32],
-    values: &(impl Fn(usize) -> [f64; C] + Sync),
-) {
-    for (i, &lev) in levels.iter().enumerate() {
-        let vals = values(i);
-        for (c, v) in vals.into_iter().enumerate() {
-            block[c * n_levels + lev as usize] += v;
-        }
-    }
-}
-
-/// Parallel scatter-add into per-thread accumulators merged by a reduce.
-fn scatter_fold<const C: usize>(
-    block: &mut [f64],
-    n_levels: usize,
-    levels: &[u32],
-    values: &(impl Fn(usize) -> [f64; C] + Sync),
-) {
-    let min_len = (levels.len() / rayon::current_num_threads().max(1)).max(1024);
-    let identity = || vec![0.0f64; C * n_levels];
-    let fold = |mut acc: Vec<f64>, (i, &lev): (usize, &u32)| {
-        let vals = values(i);
-        for (c, v) in vals.into_iter().enumerate() {
-            acc[c * n_levels + lev as usize] += v;
-        }
-        acc
-    };
-    let reduction = |mut a: Vec<f64>, b: Vec<f64>| {
-        for (ai, bi) in a.iter_mut().zip(b.iter()) {
-            *ai += *bi;
-        }
-        a
-    };
-    let result: Vec<f64> = levels
-        .par_iter()
-        .enumerate()
-        .with_min_len(min_len)
-        .fold(identity, fold)
-        .reduce(identity, reduction);
-    for (d, r) in block.iter_mut().zip(result.iter()) {
-        *d += *r;
-    }
-}
-
-/// Seed the atomic scratch with `block`'s contents, returning the trimmed accumulation view.
-fn seed_scatter_scratch<'b>(atomic_buf: &'b [AtomicF64], block: &[f64]) -> &'b [AtomicF64] {
-    debug_assert!(atomic_buf.len() >= block.len());
-    let buf = &atomic_buf[..block.len()];
-    for (a, &v) in buf.iter().zip(block.iter()) {
-        a.store(v, Ordering::Relaxed);
-    }
-    buf
-}
-
-/// Copy accumulated scratch values back into `block`.
-fn writeback_scatter_scratch(block: &mut [f64], buf: &[AtomicF64]) {
-    for (d, a) in block.iter_mut().zip(buf.iter()) {
-        *d = a.load(Ordering::Relaxed);
-    }
-}
-
-/// Parallel scatter-add via atomic CAS into the reused scratch.
-fn scatter_atomic<const C: usize>(
-    block: &mut [f64],
-    n_levels: usize,
-    levels: &[u32],
-    values: &(impl Fn(usize) -> [f64; C] + Sync),
-    atomic_buf: &[AtomicF64],
-) {
-    let buf = seed_scatter_scratch(atomic_buf, block);
-    levels.par_iter().enumerate().for_each(|(i, &lev)| {
-        let vals = values(i);
-        for (c, v) in vals.into_iter().enumerate() {
-            buf[c * n_levels + lev as usize].fetch_add(v, Ordering::Relaxed);
-        }
-    });
-    writeback_scatter_scratch(block, buf);
-}
-
-fn scatter_sorted_coalesced<const C: usize>(
-    block: &mut [f64],
-    n_levels: usize,
-    levels: &[u32],
-    values: &(impl Fn(usize) -> [f64; C] + Sync),
-    atomic_buf: &[AtomicF64],
-) {
-    let buf = seed_scatter_scratch(atomic_buf, block);
-    // A run split across a chunk boundary is committed by both chunks — additive, so correct.
-    const CHUNK: usize = 65_536;
-    levels
-        .par_chunks(CHUNK)
-        .enumerate()
-        .for_each(|(c_idx, chunk)| {
-            let start = c_idx * CHUNK;
-            let mut level = chunk[0] as usize;
-            let mut sums = values(start);
-            for (i, &li) in (start + 1..).zip(&chunk[1..]) {
-                let li = li as usize;
-                if li != level {
-                    for (c, s) in sums.into_iter().enumerate() {
-                        buf[c * n_levels + level].fetch_add(s, Ordering::Relaxed);
+    match term.split {
+        ScatterSplit::ByLevel(rows) => level_sums::<C>(block, rows, parallel, &values),
+        ScatterSplit::ByRow => {
+            // Adding two leaves costs C·L ≤ C·n/12 adds; leaves of 4·C·L rows bound how many add.
+            let leaf_len = (4 * C * n_levels).min(levels.len().div_ceil(2)).max(65_536);
+            let scatter = |rows: Range<usize>| {
+                let mut sums = vec![0.0; C * n_levels];
+                for i in rows {
+                    let level = levels[i] as usize;
+                    for (c, v) in values(i).into_iter().enumerate() {
+                        sums[c * n_levels + level] += v;
                     }
-                    level = li;
-                    sums = [0.0; C];
                 }
-                let vals = values(i);
-                for (c, v) in vals.into_iter().enumerate() {
-                    sums[c] += v;
-                }
-            }
-            for (c, s) in sums.into_iter().enumerate() {
-                buf[c * n_levels + level].fetch_add(s, Ordering::Relaxed);
-            }
-        });
-    writeback_scatter_scratch(block, buf);
+                sums
+            };
+            block.copy_from_slice(&fixed_tree(0..levels.len(), leaf_len, &scatter));
+        }
+    }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Levels per parallel task in [`level_sums`].
+const LEVEL_GROUP: usize = 1024;
 
-    /// Must match a naive per-row scatter-add, including a run straddling the
-    /// chunk boundary (committed by two chunks via additive atomics) and the
-    /// multi-column fused commit. Gated on large sorted terms, so integration
-    /// tests never reach it — exercised directly here.
-    #[test]
-    fn coalesced_scatter_matches_naive() {
-        let n = 70_000usize;
-        let n_levels = 1_000usize;
-        let levels: Vec<u32> = (0..n).map(|i| (i * n_levels / n) as u32).collect();
-        let x: Vec<f64> = (0..n).map(|i| (i % 13) as f64 - 6.0).collect();
-        let z: Vec<f64> = (0..n).map(|i| ((i * 7) % 11) as f64 / 11.0 - 0.5).collect();
+/// Rows per leaf of one level's sum; above `PAR_THRESHOLD`, so a sequential scatter never joins.
+const LEVEL_LEAF: usize = PAR_THRESHOLD.next_power_of_two();
 
-        let buf: Vec<AtomicF64> = (0..2 * n_levels).map(|_| AtomicF64::new(0.0)).collect();
-        let mut got = vec![0.0f64; 2 * n_levels];
-        scatter_sorted_coalesced::<2>(&mut got, n_levels, &levels, &|i| [x[i], z[i] * x[i]], &buf);
-
-        let mut expect = vec![0.0f64; 2 * n_levels];
-        for (i, &l) in levels.iter().enumerate() {
-            expect[l as usize] += x[i];
-            expect[n_levels + l as usize] += z[i] * x[i];
+/// Each level's `C` column sums over its own rows, written to `block[c·L + l]`.
+fn level_sums<const C: usize>(
+    block: &mut [f64],
+    rows: &LevelRows,
+    parallel: bool,
+    values: &(impl Fn(usize) -> [f64; C] + Sync),
+) {
+    let level_sum = |level: usize| {
+        let leaf = |positions: Range<usize>| {
+            let mut sums = [0.0; C];
+            rows.for_each_row(positions, |i| {
+                for (s, v) in sums.iter_mut().zip(values(i)) {
+                    *s += v;
+                }
+            });
+            sums
+        };
+        let positions = rows.positions(level);
+        if positions.len() <= LEVEL_LEAF {
+            return leaf(positions);
         }
-        for (g, e) in got.iter().zip(expect.iter()) {
-            assert!((g - e).abs() < 1e-9, "{g} vs {e}");
+        fixed_tree(positions, LEVEL_LEAF, &leaf)
+    };
+    let n_levels = block.len() / C;
+    let mut columns = block
+        .chunks_mut(n_levels)
+        .map(|c| c.chunks_mut(LEVEL_GROUP));
+    let mut columns: [_; C] = std::array::from_fn(|_| columns.next().expect("C columns"));
+    let groups = (0..n_levels.div_ceil(LEVEL_GROUP)).map(|_| {
+        columns
+            .each_mut()
+            .map(|c| c.next().expect("a group per column"))
+    });
+    let fill = |(g, mut group): (usize, [&mut [f64]; C])| {
+        for k in 0..group[0].len() {
+            let sums = level_sum(g * LEVEL_GROUP + k);
+            for (column, s) in group.iter_mut().zip(sums) {
+                column[k] = s;
+            }
         }
+    };
+    if parallel {
+        groups
+            .collect::<Vec<_>>()
+            .into_par_iter()
+            .enumerate()
+            .for_each(fill);
+    } else {
+        groups.enumerate().for_each(fill);
     }
+}
 
-    #[test]
-    fn atomic_gates_on_one_columns_levels() {
-        let pick = ScatterStrategy::pick;
-        assert!(matches!(
-            pick(true, 3 * 40_000, 40_000, false),
-            ScatterStrategy::Fold
-        ));
-        assert!(matches!(
-            pick(true, 100_000, 100_000, false),
-            ScatterStrategy::Atomic
-        ));
-        assert!(matches!(
-            pick(true, 3 * 40_000, 40_000, true),
-            ScatterStrategy::SortedCoalesced
-        ));
+/// `leaf` over `leaf_len` pieces of `items`, added in a binary tree fixed by both lengths alone.
+fn fixed_tree<T: AsMut<[f64]> + Send>(
+    items: Range<usize>,
+    leaf_len: usize,
+    leaf: &(impl Fn(Range<usize>) -> T + Sync),
+) -> T {
+    if items.len() <= leaf_len {
+        return leaf(items);
     }
+    let mid = items.start + (items.len() / 2 / leaf_len).max(1) * leaf_len;
+    let (mut left, mut right) = rayon::join(
+        || fixed_tree(items.start..mid, leaf_len, leaf),
+        || fixed_tree(mid..items.end, leaf_len, leaf),
+    );
+    for (x, y) in left.as_mut().iter_mut().zip(right.as_mut()) {
+        *x += *y;
+    }
+    left
 }

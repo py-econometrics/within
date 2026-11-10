@@ -9,7 +9,7 @@ use super::Formulation;
 use crate::config::PreconditionerConfig;
 use crate::operator::coarse::CoarseRung;
 use crate::operator::schwarz::{
-    build_adaptive, build_diagonal, AdaptiveLadder, Preconditioner, SchwarzConfig,
+    build_adaptive, build_diagonal, AdaptiveLadder, Preconditioner,
 };
 use crate::{BuildError, BuildWarning};
 
@@ -48,15 +48,8 @@ impl PrecondSlot {
                 }),
                 warnings: Vec::new(),
             },
-            PreconditionerConfig::Additive {
-                local_solver,
-                reduction,
-            } => {
-                let schwarz = SchwarzConfig {
-                    local_solver,
-                    reduction,
-                };
-                let (map, warnings) = system.build_schwarz(&schwarz)?;
+            PreconditionerConfig::Additive { local_solver } => {
+                let (map, warnings) = system.build_schwarz(&local_solver)?;
                 let map = map.map(|inner| FixedMap {
                     inner,
                     coarse: system.eager_coarse().and_then(CoarseSource::build_coarse),
@@ -65,16 +58,11 @@ impl PrecondSlot {
             }
             PreconditionerConfig::Adaptive {
                 local_solver,
-                reduction,
                 stall,
             } => {
                 // Fail before the diagonal pass; `reuse` repeats this for a deserialized ladder.
                 local_solver.validate()?;
-                let escalated = SchwarzConfig {
-                    local_solver,
-                    reduction,
-                };
-                let base = build_adaptive(system.gram_diagonal(), stall, escalated)?;
+                let base = build_adaptive(system.gram_diagonal(), stall, local_solver)?;
                 Self::reuse(system, base)?
             }
         })
@@ -95,7 +83,7 @@ impl PrecondSlot {
             });
         };
         // A deserialized ladder skipped `Adaptive`'s build-time check, and a one-term design settles.
-        ladder.escalated.local_solver.validate()?;
+        ladder.escalated.validate()?;
         Ok(if !system.has_factor_pairs() {
             Self::Static {
                 map: Some(FixedMap {

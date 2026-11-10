@@ -1,85 +1,56 @@
-//! Schwarz local solver over approx-chol's factors of a channel pair's irreducible blocks.
+//! Schwarz local solver over approx-chol's irreducible-block factors.
 
 use approx_chol::{BlockFactor, InnerParallelism};
 use schwarz_precond::{LocalSolveError, LocalSolver};
+use serde::{Deserialize, Serialize};
 
-/// Irreducible blocks of one channel pair, solved one after another in local order.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-#[serde(from = "Blocks")]
+/// Consecutive irreducible blocks; the subdomain's local order concatenates their vertices.
+#[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct BlockSolver {
     blocks: Vec<BlockFactor>,
-    #[serde(skip)]
-    n_local: usize,
-    #[serde(skip)]
-    scratch_size: usize,
-}
-
-/// The wire form: everything else is derived from the blocks.
-#[derive(serde::Deserialize)]
-struct Blocks {
-    blocks: Vec<BlockFactor>,
-}
-
-impl From<Blocks> for BlockSolver {
-    fn from(Blocks { blocks }: Blocks) -> Self {
-        Self::new(blocks)
-    }
 }
 
 impl BlockSolver {
     pub(crate) fn new(blocks: Vec<BlockFactor>) -> Self {
-        let n_local = blocks.iter().map(|block| block.vertices().len()).sum();
-        let scratch = blocks.iter().map(BlockFactor::scratch_len).max();
-        Self {
-            blocks,
-            n_local,
-            scratch_size: scratch.unwrap_or(0).max(n_local),
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn blocks_for_test(&self) -> &[BlockFactor] {
-        &self.blocks
-    }
-
-    /// Local order, in the pair's `[rows | cols]` numbering.
-    pub(crate) fn vertices(&self) -> impl Iterator<Item = usize> + '_ {
-        self.blocks.iter().flat_map(BlockFactor::vertices)
+        Self { blocks }
     }
 }
 
 impl LocalSolver for BlockSolver {
     fn n_local(&self) -> usize {
-        self.n_local
+        self.blocks.iter().map(|b| b.vertices().len()).sum()
     }
 
-    fn scratch_size(&self) -> usize {
-        self.scratch_size
+    fn workspace_len(&self) -> usize {
+        self.blocks
+            .iter()
+            .map(BlockFactor::scratch_len)
+            .max()
+            .unwrap_or(0)
     }
 
-    /// Solves in `rhs` with `sol` as the blocks' workspace, then copies the solution over.
     fn solve_local(
         &self,
-        rhs: &mut [f64],
-        sol: &mut [f64],
+        x: &mut [f64],
+        workspace: &mut [f64],
         allow_inner_parallelism: bool,
     ) -> Result<(), LocalSolveError> {
-        let inner = match allow_inner_parallelism {
-            true => InnerParallelism::Allow,
-            false => InnerParallelism::Forbid,
+        let inner = if allow_inner_parallelism {
+            InnerParallelism::Allow
+        } else {
+            InnerParallelism::Forbid
         };
-        let mut rest = &mut rhs[..self.n_local];
+        let mut rest = x;
         for block in &self.blocks {
-            let (x, tail) = rest.split_at_mut(block.vertices().len());
+            let (local, tail) = rest.split_at_mut(block.vertices().len());
             block
-                .solve_local(x, &mut sol[..block.scratch_len()], inner)
+                .solve_local(local, &mut workspace[..block.scratch_len()], inner)
                 .map_err(|e| LocalSolveError::BackendFailed {
-                    context: "within.local.block_factor",
+                    context: "BlockSolver::solve_local",
                     message: e.to_string(),
                 })?;
             rest = tail;
         }
-        sol[..self.n_local].copy_from_slice(&rhs[..self.n_local]);
         Ok(())
     }
 
@@ -95,8 +66,9 @@ impl LocalSolver for BlockSolver {
         }
         // Taken, not borrowed: nested rayon work may run another solve on this thread.
         let (mut work, mut scratch, mut col) = WORK.take();
-        scratch.resize(scratch.len().max(self.scratch_size), 0.0);
-        col.resize(col.len().max(self.n_local), 0.0);
+        let n_local = self.n_local();
+        scratch.resize(scratch.len().max(self.workspace_len()), 0.0);
+        col.resize(col.len().max(n_local), 0.0);
         let mut off = 0;
         for block in &self.blocks {
             let nb = block.vertices().len();
@@ -107,8 +79,8 @@ impl LocalSolver for BlockSolver {
     }
 
     fn solve_local_block(&self, x: &mut [f64], k: usize, threaded: bool) {
-        let n = self.n_local;
-        let mut scratch = vec![0.0; self.scratch_size];
+        let n = self.n_local();
+        let mut scratch = vec![0.0; self.workspace_len()];
         let mut buf = vec![0.0; n * 16];
         let mut col = vec![0.0; n];
         let mut first = 0;

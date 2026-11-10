@@ -94,8 +94,8 @@ solver2 = Solver(fe, preconditioner=precond)   # skip re-factorization
 |---|---|
 | `PreconditionerConfig.Off()` | Disable preconditioning. |
 | `PreconditionerConfig.Additive()` | Additive Schwarz shortcut, built up front. |
-| `PreconditionerConfig.Additive(local_solver?, reduction?)` | Tuned additive Schwarz. Argument types import from `within.config`. |
-| `PreconditionerConfig.Adaptive(local_solver?, reduction?, stall?)` | Tuned form of the default; the factorization is built only on escalation. |
+| `PreconditionerConfig.Additive(local_solver?)` | Tuned additive Schwarz. Argument types import from `within.config`. |
+| `PreconditionerConfig.Adaptive(local_solver?, stall?)` | Tuned form of the default; the factorization is built only on escalation. |
 | `PreconditionerConfig.Diagonal()` | Diagonal/Jacobi preconditioner using `diag(D^T W D)^{-1}`. |
 | `Preconditioner` (built) | Reuse a previously-built preconditioner across solvers. |
 
@@ -112,7 +112,7 @@ seconds as `.build_duration_seconds`; both are preserved across pickling and reu
 | `LocalSolverConfig(approx_chol?, schur?, dense_threshold?, scaling?)` | Schur complement reduction with approximate Cholesky on the reduced system. Default local solver. Import from `within.config`. Omit `schur` for the library default (approximate); pass `Schur.exact()` for the exact complement. |
 | `Schur.approximate(config?)` / `Schur.exact()` | Schur-reduction mode for `LocalSolverConfig`. |
 | `ApproxCholConfig(seed=0, split_merge=None)` | Approximate Cholesky parameters. |
-| `ApproxSchurConfig(split=1)` | Approximate Schur complement sampling parameters. |
+| `ApproxSchurConfig(split=1)` | Approximate Schur complement sampling parameters; draws from `ApproxCholConfig.seed`. |
 
 ### Result types
 

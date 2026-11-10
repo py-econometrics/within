@@ -3,12 +3,10 @@ from __future__ import annotations
 import pickle
 
 import numpy as np
-import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from within import PreconditionerConfig, Solver, solve
-from within.config import ReductionStrategy
+from within import Solver, solve
 
 from conftest import every_preconditioner_map
 
@@ -64,60 +62,6 @@ class TestProperties:
         result_after = built2.apply(x)
 
         np.testing.assert_array_equal(result_before, result_after)
-
-
-class TestAdvancedPreconditioners:
-    """Tests for additive Schwarz preconditioner configs."""
-
-    @pytest.mark.parametrize(
-        "reduction",
-        [
-            ReductionStrategy.Auto,
-            ReductionStrategy.AtomicScatter,
-            ReductionStrategy.ParallelReduction,
-        ],
-        ids=["Auto", "AtomicScatter", "ParallelReduction"],
-    )
-    def test_reduction_strategy_converges(self, reduction):
-        rng = np.random.default_rng(10)
-        categories = np.asfortranarray(
-            np.column_stack(
-                [rng.integers(0, 20, size=500), rng.integers(0, 20, size=500)]
-            ).astype(np.uint32)
-        )
-        y = rng.standard_normal(500)
-        result = solve(
-            categories,
-            y,
-            preconditioner=PreconditionerConfig.Additive(reduction=reduction),
-        )
-        assert result.converged
-
-    def test_reduction_strategies_give_equivalent_solutions(self):
-        """AtomicScatter and ParallelReduction should give the same solution."""
-        rng = np.random.default_rng(42)
-        categories = np.asfortranarray(
-            np.column_stack(
-                [rng.integers(0, 20, size=500), rng.integers(0, 20, size=500)]
-            ).astype(np.uint32)
-        )
-        y = rng.standard_normal(500)
-        r_atomic = solve(
-            categories,
-            y,
-            preconditioner=PreconditionerConfig.Additive(
-                reduction=ReductionStrategy.AtomicScatter
-            ),
-        )
-        r_parallel = solve(
-            categories,
-            y,
-            preconditioner=PreconditionerConfig.Additive(
-                reduction=ReductionStrategy.ParallelReduction
-            ),
-        )
-        assert r_atomic.converged and r_parallel.converged
-        np.testing.assert_allclose(r_atomic.x, r_parallel.x, atol=1e-4)
 
 
 class TestBatchProperties:

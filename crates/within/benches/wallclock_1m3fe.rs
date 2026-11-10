@@ -11,7 +11,7 @@
 use std::hint::black_box;
 use std::time::Instant;
 
-use within::config::{LocalSolverConfig, LsmrOptions, PreconditionerConfig, ReductionStrategy};
+use within::config::{LocalSolverConfig, LsmrOptions, PreconditionerConfig};
 use within::Solver;
 
 #[path = "shared/fixest_dgp.rs"]
@@ -34,7 +34,6 @@ fn main() {
     };
     let precond = PreconditionerConfig::Additive {
         local_solver: LocalSolverConfig::default(),
-        reduction: ReductionStrategy::Auto,
     };
 
     let mut best = u128::MAX;

@@ -8,16 +8,16 @@ use std::time::Instant;
 use ndarray::ArrayView2;
 use rayon::prelude::*;
 use schwarz_precond::{
-    lsmr as lsmr_solve, mlsmr, EscalationPolicy, LsmrResult, LsmrStopReason, MlsmrOptions,
-    Operator, Staleness,
+    mlsmr, EscalationPolicy, IdentityOp, LsmrResult, LsmrStopReason, MlsmrOptions, Operator,
+    Staleness,
 };
 
 use crate::channel::CoefficientAddress;
 use crate::config::{LsmrOptions, PreconditionerConfig};
+use crate::config::LocalSolverConfig;
 use crate::domain::{Design, Effect, FullPairs, PreparedDesign};
 use crate::operator::coarse::{CoarseRung, Coarsened};
-use crate::operator::schwarz::{build_schwarz, Preconditioner, SchwarzConfig};
-use crate::operator::DesignOperator;
+use crate::operator::schwarz::{build_schwarz, Preconditioner};
 use crate::{BuildError, BuildWarning, SolveError, WithinError};
 
 mod block_probe;
@@ -250,7 +250,6 @@ struct RhsSolution {
 
 /// One RHS in the internal observation frame: `y` to subtract the fit from, `b` for LSMR.
 struct PreparedRhs<'s> {
-    op: DesignOperator<'s>,
     y: Cow<'s, [f64]>,
     /// `W^{1/2} y`; `None` when unweighted, where `b` is `y` itself.
     weighted: Option<Vec<f64>>,
@@ -304,7 +303,7 @@ trait Formulation: Sync {
     /// `None` when no factor-pair subdomain exists to build on.
     fn build_schwarz(
         &self,
-        config: &SchwarzConfig,
+        config: &LocalSolverConfig,
     ) -> Result<(Option<Preconditioner>, Vec<BuildWarning>), BuildError>;
     fn has_factor_pairs(&self) -> bool;
     /// What an adaptive ladder tries once its Schwarz rung stalls; none for the full design.
@@ -440,7 +439,7 @@ impl<'a> Formulation for PreparedDesign<'a> {
 
     /// Validate `y` and move it into the internal observation frame.
     fn prepare<'s>(&'s self, y: &'s [f64]) -> Result<PreparedRhs<'s>, SolveError> {
-        // `weighted_rhs` zips y with sqrt-weights, silently truncating when `y.len() > n_rows`.
+        // `b = W^{1/2} y` zips y with sqrt-weights, silently truncating when `y.len() > n_rows`.
         if y.len() != self.design.n_obs {
             return Err(SolveError::InvalidInput {
                 context: "Solver::solve",
@@ -460,21 +459,18 @@ impl<'a> Formulation for PreparedDesign<'a> {
 
         let t_start = Instant::now();
         let y = self.design.permute_obs_in(y);
-        let op = DesignOperator::new(self);
-        let weighted = match op.weighted_rhs(&y) {
-            Cow::Borrowed(_) => None,
-            Cow::Owned(b) => Some(b),
-        };
+        let weighted = self
+            .sqrt_weights()
+            .map(|sw| y.iter().zip(sw).map(|(&yi, &swi)| swi * yi).collect());
         Ok(PreparedRhs {
-            op,
-            y,
             weighted,
+            y,
             gather_secs: t_start.elapsed().as_secs_f64(),
         })
     }
 
     fn system<'r>(&'r self, rhs: &'r PreparedRhs<'_>) -> (&'r dyn Operator, &'r [f64]) {
-        (&rhs.op, rhs.b())
+        (self, rhs.b())
     }
 
     fn residual_reference(&self, _: &PreparedRhs<'_>) -> Option<f64> {
@@ -485,7 +481,7 @@ impl<'a> Formulation for PreparedDesign<'a> {
     /// `warnings` / `unidentified`, which the public entry points attach once.
     fn finish(&self, rhs: PreparedRhs<'_>, run: Run) -> Result<RhsSolution, SolveError> {
         let r = run.result;
-        let demeaned = rhs.op.demeaned(&r.x, &rhs.y, r.true_residual);
+        let demeaned = self.demeaned(&r.x, &rhs.y, r.true_residual);
 
         let mut x = r.x;
         self.back_transform(&mut x);
@@ -509,7 +505,7 @@ impl<'a> Formulation for PreparedDesign<'a> {
 
     fn build_schwarz(
         &self,
-        config: &SchwarzConfig,
+        config: &LocalSolverConfig,
     ) -> Result<(Option<Preconditioner>, Vec<BuildWarning>), BuildError> {
         build_schwarz(self, config, &FullPairs)
     }
@@ -687,7 +683,10 @@ fn rung<'s, F: Formulation>(
             let remaining = lsmr.maxiter - done;
             let mut run = Run::timed(|| match map {
                 Some(m) => mlsmr(op, b, m, lsmr.tol, remaining, options),
-                None => lsmr_solve(op, b, lsmr.tol, remaining, lsmr.local_size),
+                None => {
+                    let identity = IdentityOp { n: op.ncols() };
+                    mlsmr(op, b, &identity, lsmr.tol, remaining, options)
+                }
             })?;
             if let Some(prior) = &prior {
                 run.result.iterations += done;

@@ -5,10 +5,11 @@ use super::super::bidiag::{BidiagStep, Bidiagonalization};
 use super::super::magnitude::Magnitude;
 use super::super::recurrence::ConvergenceCriteria;
 use super::super::{
-    lsmr, lsmr_from_bidiag, mlsmr, EscalationHandler, EscalationPolicy, LsmrResult, LsmrStopReason,
+    lsmr_from_bidiag, mlsmr, EscalationHandler, EscalationPolicy, LsmrResult, LsmrStopReason,
     MlsmrOptions, NormalEqReference, SolveStart,
 };
-use crate::lsmr::fixtures::{DenseOp, DiagOp, FixedIterations, IdentityOp};
+use crate::lsmr::fixtures::{lsmr, DenseOp, DiagOp, FixedIterations};
+use crate::lsmr::IdentityOp;
 use crate::SolveError;
 
 /// Stops on ResidualTolerance at every pass's first step; `true_residuals` scripts each check.
