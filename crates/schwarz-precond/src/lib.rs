@@ -71,8 +71,10 @@ mod local_solve;
 mod lsmr;
 mod prolongation;
 mod schwarz;
+mod threads;
 
 pub use domain::{PartitionWeights, SubdomainCore};
+pub use dyn_stack::{MemBuffer, MemStack, StackReq};
 pub use error::{BuildError, LocalSolveError, SolveError};
 pub use local_solve::{LocalSolver, SubdomainEntry};
 pub use lsmr::{
@@ -80,3 +82,4 @@ pub use lsmr::{
     MlsmrOptions, Progress, Staleness, StalenessError,
 };
 pub use schwarz::SchwarzPreconditioner;
+pub use threads::Threads;

@@ -6,8 +6,8 @@
 use faer::{MatRef, Side};
 
 use schwarz_precond::{
-    mlsmr, LocalSolveError, LocalSolver, MlsmrOptions, Operator, SchwarzPreconditioner, SolveError,
-    SubdomainCore, SubdomainEntry,
+    mlsmr, LocalSolveError, LocalSolver, MemStack, MlsmrOptions, Operator, SchwarzPreconditioner,
+    SolveError, StackReq, SubdomainCore, SubdomainEntry, Threads,
 };
 // ---------------------------------------------------------------------------
 // Tridiagonal operator
@@ -80,14 +80,14 @@ impl LocalSolver for DenseCholeskyLocalSolver {
     fn n_local(&self) -> usize {
         self.n_local
     }
-    fn workspace_len(&self) -> usize {
-        0
+    fn scratch(&self, _threads: Threads) -> StackReq {
+        StackReq::EMPTY
     }
     fn solve_local(
         &self,
         x: &mut [f64],
-        _workspace: &mut [f64],
-        _allow_inner_parallelism: bool,
+        _threads: Threads,
+        _stack: &mut MemStack,
     ) -> Result<(), LocalSolveError> {
         let m = self.n_local;
 

@@ -9,7 +9,7 @@ use crate::config::{
 };
 use crate::domain::{build_local_domains, Design, LocalDomain, PreparedDesign};
 use crate::operator::schwarz::build_additive;
-use schwarz_precond::{LocalSolver, Operator};
+use schwarz_precond::{LocalSolver, MemBuffer, MemStack, Operator, Threads};
 
 const BLOCK_ELIM_NESTED_RAYON_CHILD_ENV: &str = "WITHIN_TEST_BLOCK_ELIM_NESTED_RAYON_CHILD";
 
@@ -156,10 +156,18 @@ fn small_subdomain_solve(schur: SchurMode, dense_threshold: usize) -> Vec<f64> {
     let mut x: Vec<f64> = (0..domain.solver.n_local())
         .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
         .collect();
-    let mut workspace = vec![0.0; domain.solver.workspace_len()];
+    let mut buffer = MemBuffer::new(
+        domain
+            .solver
+            .scratch(Threads::Count(std::num::NonZeroUsize::MIN)),
+    );
     domain
         .solver
-        .solve_local(&mut x, &mut workspace, false)
+        .solve_local(
+            &mut x,
+            Threads::Count(std::num::NonZeroUsize::MIN),
+            MemStack::new(&mut buffer),
+        )
         .expect("local solve");
     x
 }

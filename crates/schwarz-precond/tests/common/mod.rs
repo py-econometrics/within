@@ -1,7 +1,8 @@
 //! Shared test fixtures for schwarz-precond integration tests.
 
 use schwarz_precond::{
-    LocalSolveError, LocalSolver, Operator, SolveError, SubdomainCore, SubdomainEntry,
+    LocalSolveError, LocalSolver, MemStack, Operator, SolveError, StackReq, SubdomainCore,
+    SubdomainEntry, Threads,
 };
 
 // ---------------------------------------------------------------------------
@@ -67,14 +68,14 @@ impl LocalSolver for UniformDiagLocalSolver {
     fn n_local(&self) -> usize {
         self.n_local
     }
-    fn workspace_len(&self) -> usize {
-        0
+    fn scratch(&self, _threads: Threads) -> StackReq {
+        StackReq::EMPTY
     }
     fn solve_local(
         &self,
         x: &mut [f64],
-        _workspace: &mut [f64],
-        _allow_inner_parallelism: bool,
+        _threads: Threads,
+        _stack: &mut MemStack,
     ) -> Result<(), LocalSolveError> {
         assert_eq!(x.len(), self.n_local);
         for v in x.iter_mut() {
@@ -123,14 +124,14 @@ impl LocalSolver for FailingLocalSolver {
     fn n_local(&self) -> usize {
         self.n_local
     }
-    fn workspace_len(&self) -> usize {
-        0
+    fn scratch(&self, _threads: Threads) -> StackReq {
+        StackReq::EMPTY
     }
     fn solve_local(
         &self,
         _x: &mut [f64],
-        _workspace: &mut [f64],
-        _allow_inner_parallelism: bool,
+        _threads: Threads,
+        _stack: &mut MemStack,
     ) -> Result<(), LocalSolveError> {
         Err(LocalSolveError::BackendFailed {
             context: "test.failing_local_solver",

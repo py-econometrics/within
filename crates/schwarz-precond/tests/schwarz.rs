@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use rayon::prelude::*;
 use rstest::{fixture, rstest};
 use schwarz_precond::{
-    mlsmr, IdentityOp, LocalSolveError, LocalSolver, MlsmrOptions, Operator, PartitionWeights,
-    SchwarzPreconditioner, SubdomainCore, SubdomainEntry,
+    mlsmr, IdentityOp, LocalSolveError, LocalSolver, MemStack, MlsmrOptions, Operator,
+    PartitionWeights, SchwarzPreconditioner, StackReq, SubdomainCore, SubdomainEntry, Threads,
 };
 
 use common::{make_schwarz_entries, FailingLocalSolver, TridiagOperator, UniformDiagLocalSolver};
@@ -42,18 +42,18 @@ impl LocalSolver for NestedRayonIdentitySolver {
         self.n
     }
 
-    fn workspace_len(&self) -> usize {
-        0
+    fn scratch(&self, _threads: Threads) -> StackReq {
+        StackReq::EMPTY
     }
 
     fn solve_local(
         &self,
         x: &mut [f64],
-        _workspace: &mut [f64],
-        allow_inner_parallelism: bool,
+        threads: Threads,
+        _stack: &mut MemStack,
     ) -> Result<(), LocalSolveError> {
         // Identity, forking per chunk so the apply runs nested Rayon work.
-        if allow_inner_parallelism {
+        if threads == Threads::All {
             x.par_chunks_mut(Self::CHUNK_SIZE).for_each(|chunk| {
                 std::hint::black_box(chunk);
             });
