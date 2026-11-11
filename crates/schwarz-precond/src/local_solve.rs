@@ -12,26 +12,31 @@
 //!   giving a single object that can compute the per-subdomain
 //!   contribution `D̃ᵢ Aᵢ⁻¹ D̃ᵢ Rᵢ r` via [`SubdomainEntry::apply_weighted_local`].
 
+use dyn_stack::{MemStack, StackReq};
+
 use crate::domain::SubdomainCore;
 use crate::error::{BuildError, LocalSolveError};
+use crate::threads::Threads;
 
 /// The `Aᵢ⁻¹` operator: solves the restricted system `Aᵢ = Rᵢ A Rᵢᵀ`, exactly or approximately.
 pub trait LocalSolver: Send + Sync {
     /// Number of DOFs in the subdomain.
     fn n_local(&self) -> usize;
 
-    /// Length of the private `workspace` that `solve_local` gets with stale contents.
-    fn workspace_len(&self) -> usize;
+    /// What `solve_local` can use from its stack at `threads`; at `Threads::ONE`, all it needs.
+    fn scratch(&self, threads: Threads) -> StackReq;
 
     /// Solves in place: `x` spans `n_local()`, rhs in, solution out; bits depend on `x` alone.
+    ///
+    /// `stack` holds at least `scratch(Threads::ONE)`, with stale contents; less than `scratch(threads)` only runs fewer tasks at once.
     fn solve_local(
         &self,
         x: &mut [f64],
-        workspace: &mut [f64],
-        allow_inner_parallelism: bool,
+        threads: Threads,
+        stack: &mut MemStack,
     ) -> Result<(), LocalSolveError>;
 
-    /// Estimated local work that can benefit from nested Rayon; zero when there is no such region.
+    /// Estimated local work that can benefit from more than one thread; zero when there is none.
     fn inner_parallelism_work_estimate(&self) -> usize {
         0
     }
@@ -75,23 +80,19 @@ impl<S: LocalSolver> SubdomainEntry<S> {
         &self.solver
     }
 
-    /// Writes `D̃ᵢ Aᵢ⁻¹ D̃ᵢ Rᵢ r` locally to `out`; `workspace` holds at least `workspace_len()`.
+    /// Writes `D̃ᵢ Aᵢ⁻¹ D̃ᵢ Rᵢ r` locally to `out`; `stack` holds at least the solver's scratch.
     pub(crate) fn apply_weighted_local(
         &self,
         r: &[f64],
         out: &mut [f64],
-        workspace: &mut [f64],
-        allow_inner_parallelism: bool,
+        threads: Threads,
+        stack: &mut MemStack,
     ) -> Result<(), LocalSolveError> {
         if self.core.is_empty() {
             return Ok(());
         }
         self.core.restrict_weighted(r, out);
-        self.solver.solve_local(
-            out,
-            &mut workspace[..self.solver.workspace_len()],
-            allow_inner_parallelism,
-        )?;
+        self.solver.solve_local(out, threads, stack)?;
         self.core.weight(out);
         Ok(())
     }
@@ -150,14 +151,14 @@ mod tests {
         fn n_local(&self) -> usize {
             self.n
         }
-        fn workspace_len(&self) -> usize {
-            0
+        fn scratch(&self, _threads: Threads) -> StackReq {
+            StackReq::EMPTY
         }
         fn solve_local(
             &self,
             _x: &mut [f64],
-            _workspace: &mut [f64],
-            _allow_inner_parallelism: bool,
+            _threads: Threads,
+            _stack: &mut MemStack,
         ) -> Result<(), LocalSolveError> {
             Ok(())
         }
@@ -204,7 +205,7 @@ mod tests {
         let r = vec![10.0, 20.0, 30.0, 40.0];
         let mut out = vec![0.0; 2];
         entry
-            .apply_weighted_local(&r, &mut out, &mut [], true)
+            .apply_weighted_local(&r, &mut out, Threads::All, MemStack::new(&mut []))
             .expect("identity local solver should not fail");
 
         // Restricts DOFs [1, 2] → [20, 30] and solves with the identity.

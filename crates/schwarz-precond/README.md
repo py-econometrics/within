@@ -23,8 +23,8 @@ cargo add schwarz-precond
 
 ```rust
 use schwarz_precond::{
-    mlsmr, LocalSolver, MlsmrOptions, Operator, SchwarzPreconditioner,
-    SolveError, SubdomainCore, SubdomainEntry,
+    mlsmr, LocalSolver, MemStack, MlsmrOptions, Operator, SchwarzPreconditioner,
+    SolveError, StackReq, SubdomainCore, SubdomainEntry, Threads,
 };
 
 // --- Tridiagonal SPD operator: A = tridiag(-1, 3, -1) ---
@@ -51,12 +51,12 @@ struct DiagSolver(usize, f64);
 
 impl LocalSolver for DiagSolver {
     fn n_local(&self) -> usize { self.0 }
-    fn workspace_len(&self) -> usize { 0 }
+    fn scratch(&self, _threads: Threads) -> StackReq { StackReq::EMPTY }
     fn solve_local(
         &self,
         x: &mut [f64],
-        _workspace: &mut [f64],
-        _allow_inner_parallelism: bool,
+        _threads: Threads,
+        _stack: &mut MemStack,
     ) -> Result<(), schwarz_precond::LocalSolveError> {
         for v in x.iter_mut() { *v /= self.1; }
         Ok(())
