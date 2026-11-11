@@ -23,12 +23,12 @@ pub trait LocalSolver: Send + Sync {
     /// Number of DOFs in the subdomain.
     fn n_local(&self) -> usize;
 
-    /// What `solve_local` takes from its stack at `threads`.
+    /// What `solve_local` can use from its stack at `threads`; at `Threads::ONE`, all it needs.
     fn scratch(&self, threads: Threads) -> StackReq;
 
     /// Solves in place: `x` spans `n_local()`, rhs in, solution out; bits depend on `x` alone.
     ///
-    /// `stack` holds at least `scratch(threads)`, with stale contents.
+    /// `stack` holds at least `scratch(Threads::ONE)`, with stale contents; less than `scratch(threads)` only runs fewer tasks at once.
     fn solve_local(
         &self,
         x: &mut [f64],

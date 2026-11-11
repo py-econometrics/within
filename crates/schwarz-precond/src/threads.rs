@@ -13,5 +13,5 @@ pub enum Threads {
 
 impl Threads {
     /// The calling thread alone.
-    pub(crate) const ONE: Self = Self::Count(NonZeroUsize::MIN);
+    pub const ONE: Self = Self::Count(NonZeroUsize::MIN);
 }

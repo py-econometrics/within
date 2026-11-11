@@ -100,7 +100,7 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
         );
         let scratch = entries
             .iter()
-            .flat_map(|e| [Threads::All, Threads::ONE].map(|t| e.solver().scratch(t)))
+            .flat_map(|e| Self::LOCAL_BUDGETS.map(|t| e.solver().scratch(t)))
             .fold(StackReq::EMPTY, StackReq::or);
         Self {
             local_outputs: Arc::new(Pool::new(Self::MAX_FREE_LOCAL_OUTPUTS)),
@@ -193,13 +193,17 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
         })
     }
 
+    /// Every budget `local_threads` hands a local solve, which the pooled stacks are sized for.
+    const LOCAL_BUDGETS: [Threads; 2] = [Threads::All, Threads::ONE];
+
     /// Every thread to each local solve, unless the subdomains alone already fill the pool.
     fn local_threads(&self) -> Threads {
+        let [all, one] = Self::LOCAL_BUDGETS;
         let threads = rayon::current_num_threads().max(1);
         if self.outer_capacity < threads as f64 * Self::OUTER_CAPACITY_TARGET {
-            Threads::All
+            all
         } else {
-            Threads::ONE
+            one
         }
     }
 }

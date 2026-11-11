@@ -156,18 +156,10 @@ fn small_subdomain_solve(schur: SchurMode, dense_threshold: usize) -> Vec<f64> {
     let mut x: Vec<f64> = (0..domain.solver.n_local())
         .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
         .collect();
-    let mut buffer = MemBuffer::new(
-        domain
-            .solver
-            .scratch(Threads::Count(std::num::NonZeroUsize::MIN)),
-    );
+    let mut buffer = MemBuffer::new(domain.solver.scratch(Threads::ONE));
     domain
         .solver
-        .solve_local(
-            &mut x,
-            Threads::Count(std::num::NonZeroUsize::MIN),
-            MemStack::new(&mut buffer),
-        )
+        .solve_local(&mut x, Threads::ONE, MemStack::new(&mut buffer))
         .expect("local solve");
     x
 }
