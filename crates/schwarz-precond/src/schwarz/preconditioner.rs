@@ -73,7 +73,6 @@ pub struct SchwarzPreconditioner<S: LocalSolver> {
 }
 
 impl<S: LocalSolver> SchwarzPreconditioner<S> {
-    const MIN_INNER_PARALLEL_WORK: usize = 200_000;
     const OUTER_CAPACITY_TARGET: f64 = 0.75;
     /// Each spans every slot, so a burst of concurrent applies must not stay resident.
     const MAX_FREE_LOCAL_OUTPUTS: usize = 4;
@@ -122,7 +121,7 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
                 .map(|e| e.solver().inner_parallelism_work_estimate())
         };
         let largest = work().max().unwrap_or(0);
-        if largest < Self::MIN_INNER_PARALLEL_WORK {
+        if largest == 0 {
             return f64::INFINITY;
         }
         let total = work().fold(0usize, usize::saturating_add);
