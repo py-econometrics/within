@@ -282,7 +282,7 @@ fn whitening_is_bitwise_identical_across_thread_counts() {
     use crate::domain::ScatterSplit;
     use rand::rngs::SmallRng;
     use rand::{RngExt, SeedableRng};
-    let n = 300_000;
+    let n: usize = 300_000;
     let mut rng = SmallRng::seed_from_u64(515);
     let big: Vec<u32> = (0..n)
         .map(|i| if i % 3 == 0 { 0 } else { 1 + (i % 5000) as u32 })
