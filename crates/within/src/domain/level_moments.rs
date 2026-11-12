@@ -83,9 +83,31 @@ impl DoubleWord {
         Self { hi: q, lo: r / d }
     }
 
-    fn plus(self, x: f64) -> f64 {
+    fn plus(self, x: f64) -> LevelMean {
         let (hi, lo) = two_sum(x, self.hi);
-        hi + (lo + self.lo)
+        let (hi, lo) = two_sum(hi, lo + self.lo);
+        LevelMean { hi, lo }
+    }
+}
+
+/// A weighted level mean kept as `hi + lo`, so centring carries no eps·|mean| error.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct LevelMean {
+    hi: f64,
+    lo: f64,
+}
+
+impl LevelMean {
+    pub(crate) fn new(value: f64) -> Self {
+        Self { hi: value, lo: 0.0 }
+    }
+
+    pub(crate) fn value(self) -> f64 {
+        self.hi + self.lo
+    }
+
+    pub(crate) fn centre(self, z: f64) -> f64 {
+        (z - self.hi) - self.lo
     }
 }
 
@@ -110,9 +132,9 @@ impl ShiftedMean {
     }
 
     /// `0` for a level without weight.
-    fn mean(self) -> f64 {
+    fn mean(self) -> LevelMean {
         if self.w_sum.hi == 0.0 {
-            return 0.0;
+            return LevelMean::default();
         }
         self.sum.quotient(self.w_sum).plus(self.shift)
     }
@@ -121,14 +143,14 @@ impl ShiftedMean {
 /// Each level's weight total and its `v` weighted slope means, row-major.
 struct LevelMeans {
     w_sum: Vec<f64>,
-    means: Vec<f64>,
+    means: Vec<LevelMean>,
 }
 
 impl LevelMeans {
     fn new(rows: &WeightedRows<'_>, zs: &[&[f64]]) -> Self {
         let v = zs.len();
         let mut w_sum = Vec::new();
-        let mut means = vec![0.0; rows.n_levels * v];
+        let mut means = vec![LevelMean::default(); rows.n_levels * v];
         for (j, z) in zs.iter().enumerate() {
             let mut column = rows.fold(ShiftedMean::default(), |m, _, obs, w| m.add(w, z[obs]));
             // A spread near the float range overflows Σw(z−s); a power-of-two weight scale is exact.
@@ -165,7 +187,7 @@ impl LevelMoments {
                 match &means {
                     Some(m) => rows.fold(0.0, |g, level, obs, w| {
                         let c = &m.means[level * v..];
-                        g + w * (zj[obs] - c[j]) * (zk[obs] - c[k])
+                        g + w * c[j].centre(zj[obs]) * c[k].centre(zk[obs])
                     }),
                     None => rows.fold(0.0, |g, _, obs, w| g + w * zj[obs] * zk[obs]),
                 }
@@ -184,7 +206,7 @@ impl LevelMoments {
     }
 
     /// The level's weighted slope means, tracked only with an intercept.
-    pub(crate) fn mean(&self, level: usize) -> Option<&[f64]> {
+    pub(crate) fn mean(&self, level: usize) -> Option<&[LevelMean]> {
         self.means
             .as_ref()
             .map(|m| &m.means[level * self.n_slopes..][..self.n_slopes])
