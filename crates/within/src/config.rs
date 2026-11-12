@@ -70,18 +70,25 @@ impl LocalSolverConfig {
     }
 
     pub(crate) fn factor_config(&self) -> approx_chol::Config {
+        // `split_merge: None` and a split of `1` are standard AC; a count above one is AC2.
+        let sampling = |copies: Option<u32>| approx_chol::Sampling::CliqueTree {
+            copies: copies
+                .and_then(std::num::NonZeroU32::new)
+                .unwrap_or(std::num::NonZeroU32::MIN),
+        };
         approx_chol::Config {
             seed: self.approx_chol.seed,
-            split_merge: self.approx_chol.split_merge,
+            sampling: sampling(self.approx_chol.split_merge),
             exact_max_dim: self.dense_threshold,
             complement: match self.schur {
                 SchurMode::Approximate(ApproxSchurConfig { split }) => {
                     approx_chol::SchurMode::Approximate {
-                        split_merge: Some(split),
+                        sampling: sampling(Some(split)),
                     }
                 }
                 SchurMode::Exact => approx_chol::SchurMode::Exact,
             },
+            ..Default::default()
         }
     }
 }
@@ -105,7 +112,7 @@ impl Default for LocalSolverConfig {
 pub struct ScalingConfig {
     /// Relative slack for weak dominance, in `[0, 1)`; PSD-boundary designs hover at ≈ 1e-12.
     pub tolerance: f64,
-    /// Scaling iteration budget per irreducible block.
+    /// Scaling iteration budget per component.
     pub max_iterations: usize,
     /// Disposition when certification fails.
     pub on_failure: ScalingFailure,

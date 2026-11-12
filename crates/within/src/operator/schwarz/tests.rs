@@ -190,7 +190,7 @@ fn signed_wire_fixture_contains_uniform_weights() {
 
     let bytes = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/preconditioner_v21.postcard"
+        "/tests/fixtures/preconditioner_v22.postcard"
     ));
     let preconditioner: Preconditioner = postcard::from_bytes(bytes).expect("signed fixture");
     let Variant::Additive(additive) = &preconditioner.inner else {
