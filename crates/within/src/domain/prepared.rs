@@ -43,12 +43,12 @@ impl<'a> PreparedDesign<'a> {
         let sqrt_weights = weights
             .map(|weights| prepare_sqrt_weights(&design, weights))
             .transpose()?;
+        let splits: Vec<ScatterSplit> = design.terms.par_iter().map(ScatterSplit::new).collect();
         let reparams: Vec<Option<TermReparam>> = (0..design.n_factors())
             .into_par_iter()
-            .map(|t| TermReparam::build(&design, t, sqrt_weights.as_deref()))
+            .map(|t| TermReparam::build(&design, t, &splits[t], sqrt_weights.as_deref()))
             .collect();
         let diagonals = (0..design.n_factors()).map(|_| OnceLock::new()).collect();
-        let splits = design.terms.par_iter().map(ScatterSplit::new).collect();
         Ok(Self {
             design,
             sqrt_weights,

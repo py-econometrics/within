@@ -114,6 +114,22 @@ fn a_sum_past_the_float_range_still_whitens_finitely(#[case] huge_at: fn(usize) 
         .all(|u| u.is_finite()));
 }
 
+/// Leaves of one level start from shifts `0` and `±1e308`; merging them must not overflow.
+#[test]
+fn merging_partial_means_across_the_float_range_stays_finite() {
+    let leaf = 1 << 14;
+    let z: Vec<f64> = [0.0, 0.0, -1e308, 9e307]
+        .iter()
+        .flat_map(|&v| std::iter::repeat_n(v, leaf))
+        .collect();
+    let level = vec![0u32; z.len()];
+    let weights = vec![1e-320; z.len()];
+    let effects = vec![Effect::new(&level, true, [&z[..]]).unwrap()];
+    let prepared = PreparedDesign::new(Design::new(effects).unwrap(), Some(&weights)).unwrap();
+    assert!(prepared.unidentified().next().is_none());
+    assert!(prepared.term(0).slopes[0].iter().all(|u| u.is_finite()));
+}
+
 /// Slopes spread over ~1e-9 of their size; a running mean's rounding would show in the Gram.
 #[test]
 fn a_large_offset_still_whitens_to_the_identity() {
@@ -257,4 +273,102 @@ fn near_collinear_large_mean_slopes_stay_orthonormal(
     };
     assert_eq!(prepared.unidentified().collect::<Vec<_>>(), expected);
     assert_level_grams_orthonormal(&prepared, 0, 1e-14);
+}
+
+/// Row-split terms, a level past one leaf, and several level and row chunks: every piece the
+/// split fixes runs, so only scheduling varies with the thread count.
+#[test]
+fn whitening_is_bitwise_identical_across_thread_counts() {
+    use crate::domain::ScatterSplit;
+    use rand::rngs::SmallRng;
+    use rand::{RngExt, SeedableRng};
+    let n = 300_000;
+    let mut rng = SmallRng::seed_from_u64(515);
+    let big: Vec<u32> = (0..n)
+        .map(|i| if i % 3 == 0 { 0 } else { 1 + (i % 5000) as u32 })
+        .collect();
+    let small: Vec<u32> = (0..n)
+        .map(|i| {
+            if i % 3 == 1 {
+                0
+            } else {
+                1 + ((i * 7919) % 2000) as u32
+            }
+        })
+        .collect();
+    let few: Vec<u32> = (0..n).map(|i| (i % 3) as u32).collect();
+    let mut column =
+        |mean: f64| -> Vec<f64> { (0..n).map(|_| mean + rng.random::<f64>()).collect() };
+    let (z0, z1, z2, z3, z4) = (
+        column(1e6),
+        column(0.0),
+        column(3.0),
+        column(-2.0),
+        column(1e3),
+    );
+    let weights: Vec<f64> = (0..n)
+        .map(|i| {
+            if i % 17 == 0 {
+                0.0
+            } else {
+                0.5 + (i % 11) as f64 / 11.0
+            }
+        })
+        .collect();
+    let prepare = || {
+        let effects = vec![
+            Effect::new(&big, true, [&z0[..]]).unwrap(),
+            Effect::new(&small, true, [&z1[..], &z2[..]]).unwrap(),
+            Effect::new(&few, false, [&z3[..], &z4[..]]).unwrap(),
+        ];
+        PreparedDesign::new(Design::new(effects).unwrap(), Some(&weights)).unwrap()
+    };
+    let bits = |threads: usize| {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap();
+        pool.install(|| {
+            let prepared = prepare();
+            let mut x: Vec<f64> = (0..prepared.design.n_dofs)
+                .map(|i| (i as f64).sin())
+                .collect();
+            prepared.back_transform(&mut x);
+            let slopes: Vec<u64> = prepared
+                .terms()
+                .flat_map(|t| t.slopes.iter().flatten().map(|u| u.to_bits()))
+                .collect();
+            let row_split = prepared
+                .terms()
+                .filter(|t| matches!(t.split, ScatterSplit::ByRow))
+                .count();
+            let largest_by_level = prepared
+                .terms()
+                .filter(|t| matches!(t.split, ScatterSplit::ByLevel(_)))
+                .map(|t| {
+                    let mut rows = vec![0usize; t.term.n_levels()];
+                    for &l in t.term.levels() {
+                        rows[l as usize] += 1;
+                    }
+                    rows.into_iter().max().unwrap_or(0)
+                })
+                .max()
+                .unwrap_or(0);
+            (
+                slopes,
+                x.iter().map(|c| c.to_bits()).collect::<Vec<_>>(),
+                row_split,
+                largest_by_level,
+            )
+        })
+    };
+    let one = bits(1);
+    assert!(one.2 >= 1, "the fixture needs a row-split term");
+    assert!(
+        one.3 > crate::domain::scatter_split::LEVEL_LEAF,
+        "the fixture needs a by-level term with a level past one leaf"
+    );
+    for threads in [4, 12] {
+        assert!(bits(threads) == one, "{threads} threads differ from one");
+    }
 }

@@ -1,6 +1,6 @@
 //! Per-level weighted moments of a term's raw slopes, the input to slope whitening.
 
-use super::{row_weight, Term};
+use super::{row_weight, ScatterSplit, Term};
 
 /// Weighted within-level mean and Gram, two-pass so structural zeros stay exact.
 pub(crate) struct LevelMoments {
@@ -17,33 +17,35 @@ fn tri_index(j: usize, k: usize) -> usize {
     j * (j + 1) / 2 + k
 }
 
-/// A term's positive-weight rows, folded per level.
+/// A term's positive-weight rows, folded per level in the pieces its split fixes.
 struct WeightedRows<'a> {
     levels: &'a [u32],
     n_levels: usize,
     sqrt_weights: Option<&'a [f64]>,
+    split: &'a ScatterSplit,
 }
 
 impl WeightedRows<'_> {
-    /// Per level, `init` folded by `step(state, level, obs, w)` over the level's rows in row order.
-    fn fold<S: Copy>(&self, init: S, step: impl Fn(S, usize, usize, f64) -> S) -> Vec<S> {
+    /// Per level, `init` folded by `step(state, level, obs, w)`, pieces combined by `merge`.
+    fn fold<S: Copy + Send + Sync>(
+        &self,
+        init: S,
+        step: impl Fn(&mut S, usize, usize, f64) + Sync,
+        merge: impl Fn(&mut S, &S) + Sync,
+    ) -> Vec<S> {
         let mut states = vec![init; self.n_levels];
-        let mut start = 0;
-        // A run of equal levels keeps the state in registers instead of round-tripping memory.
-        for run in self.levels.chunk_by(|a, b| a == b) {
-            let level = run[0] as usize;
-            let rows = start..start + run.len();
-            start = rows.end;
-            let state = &mut states[level];
-            *state = rows.fold(*state, |s, obs| {
+        self.split.fold(
+            self.levels,
+            init,
+            &|s: &mut S, level, obs| {
                 let w = row_weight(self.sqrt_weights, obs);
                 if w > 0.0 {
-                    step(s, level, obs, w)
-                } else {
-                    s
+                    step(s, level, obs, w);
                 }
-            });
-        }
+            },
+            &merge,
+            &mut states[..],
+        );
         states
     }
 }
@@ -98,10 +100,6 @@ pub(crate) struct LevelMean {
 }
 
 impl LevelMean {
-    pub(crate) fn new(value: f64) -> Self {
-        Self { hi: value, lo: 0.0 }
-    }
-
     pub(crate) fn value(self) -> f64 {
         self.hi + self.lo
     }
@@ -131,6 +129,26 @@ impl ShiftedMean {
         self
     }
 
+    /// Adds `other`'s rows: `Σw(z − a) = Σw(z − b) + 2W·(b/2 − a/2)`; halved, the shift gap
+    /// stays finite across the whole float range.
+    fn merge(&mut self, other: &Self) {
+        if other.w_sum.hi == 0.0 {
+            return;
+        }
+        if self.w_sum.hi == 0.0 {
+            *self = *other;
+            return;
+        }
+        let (d, e) = two_sum(0.5 * other.shift, -0.5 * self.shift);
+        self.sum.add(other.sum.hi);
+        self.sum.lo += other.sum.lo;
+        self.sum.add_product(other.w_sum.hi, d);
+        self.sum.add_product(other.w_sum.hi, d);
+        self.sum.lo += 2.0 * (other.w_sum.hi * e + other.w_sum.lo * d);
+        self.w_sum.add(other.w_sum.hi);
+        self.w_sum.lo += other.w_sum.lo;
+    }
+
     /// `0` for a level without weight.
     fn mean(self) -> LevelMean {
         if self.w_sum.hi == 0.0 {
@@ -152,13 +170,19 @@ impl LevelMeans {
         let mut w_sum = Vec::new();
         let mut means = vec![LevelMean::default(); rows.n_levels * v];
         for (j, z) in zs.iter().enumerate() {
-            let mut column = rows.fold(ShiftedMean::default(), |m, _, obs, w| m.add(w, z[obs]));
+            let mut column = rows.fold(
+                ShiftedMean::default(),
+                |m, _, obs, w| *m = m.add(w, z[obs]),
+                ShiftedMean::merge,
+            );
             // A spread near the float range overflows Σw(z−s); a power-of-two weight scale is exact.
             if column.iter().any(|m| !m.sum.hi.is_finite()) {
                 let scale = 2f64.powi(-64);
-                column = rows.fold(ShiftedMean::default(), |m, _, obs, w| {
-                    m.add(w * scale, z[obs])
-                });
+                column = rows.fold(
+                    ShiftedMean::default(),
+                    |m, _, obs, w| *m = m.add(w * scale, z[obs]),
+                    ShiftedMean::merge,
+                );
             }
             for (level, m) in column.iter().enumerate() {
                 means[level * v + j] = m.mean();
@@ -172,24 +196,35 @@ impl LevelMeans {
 }
 
 impl LevelMoments {
-    pub(crate) fn build(t: &Term<'_>, zs: &[&[f64]], sqrt_weights: Option<&[f64]>) -> Self {
+    pub(crate) fn build(
+        t: &Term<'_>,
+        split: &ScatterSplit,
+        zs: &[&[f64]],
+        sqrt_weights: Option<&[f64]>,
+    ) -> Self {
         let rows = WeightedRows {
             levels: t.levels(),
             n_levels: t.n_levels(),
             sqrt_weights,
+            split,
         };
         let v = zs.len();
         let means = t.intercept.then(|| LevelMeans::new(&rows, zs));
+        let add = |l: &mut f64, r: &f64| *l += r;
         let gram = (0..v)
             .flat_map(|j| (0..=j).map(move |k| (j, k)))
             .map(|(j, k)| {
                 let (zj, zk) = (zs[j], zs[k]);
                 match &means {
-                    Some(m) => rows.fold(0.0, |g, level, obs, w| {
-                        let c = &m.means[level * v..];
-                        g + w * c[j].centre(zj[obs]) * c[k].centre(zk[obs])
-                    }),
-                    None => rows.fold(0.0, |g, _, obs, w| g + w * zj[obs] * zk[obs]),
+                    Some(m) => rows.fold(
+                        0.0,
+                        |g, level, obs, w| {
+                            let c = &m.means[level * v..];
+                            *g += w * c[j].centre(zj[obs]) * c[k].centre(zk[obs]);
+                        },
+                        add,
+                    ),
+                    None => rows.fold(0.0, |g, _, obs, w| *g += w * zj[obs] * zk[obs], add),
                 }
             })
             .collect();
