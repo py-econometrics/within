@@ -7,10 +7,10 @@ use once_cell::sync::OnceCell;
 
 use crate::config::PreconditionerConfig;
 use crate::domain::PreparedDesign;
-use crate::operator::schwarz::{
-    build_adaptive, build_diagonal, build_schwarz, AdaptiveLadder, Preconditioner,
-};
+use crate::operator::schwarz::{build_adaptive, build_diagonal, AdaptiveLadder, Preconditioner};
 use crate::{BuildError, BuildWarning};
+
+use super::system::LeastSquaresSystem;
 
 /// The solver's preconditioner: a fixed map, or an adaptive diagonal→Schwarz ladder.
 pub(super) enum PrecondSlot {
@@ -39,7 +39,7 @@ impl PrecondSlot {
                 warnings: Vec::new(),
             },
             PreconditionerConfig::Additive { local_solver } => {
-                let (map, warnings) = build_schwarz(prepared, &local_solver)?;
+                let (map, warnings) = prepared.build_schwarz(&local_solver)?;
                 Self::Static { map, warnings }
             }
             PreconditionerConfig::Adaptive {
@@ -116,11 +116,11 @@ impl AdaptivePrecond {
     }
 
     /// Build once and return this call's build seconds; every other caller waits for it.
-    pub(super) fn escalate(&self, prepared: &PreparedDesign<'_>) -> Result<f64, BuildError> {
+    pub(super) fn escalate(&self, system: &impl LeastSquaresSystem) -> Result<f64, BuildError> {
         let mut build_secs = 0.0;
         let built = self.built.get_or_try_init(|| {
             let t_build = Instant::now();
-            let outcome = isolated(|| build_schwarz(prepared, &self.ladder().escalated))?
+            let outcome = isolated(|| system.build_schwarz(&self.ladder().escalated))?
                 .map(|(schwarz, warnings)| AdaptiveBuild { schwarz, warnings });
             build_secs = t_build.elapsed().as_secs_f64();
             Ok(outcome)
