@@ -1,12 +1,18 @@
 //! Within-level reparametrization of a design's varying-slope terms.
 
+use rayon::prelude::*;
+
 use super::level_moments::{LevelMean, LevelMoments};
-use super::{row_weight, Design, Term};
+use super::scatter_split::LEVEL_GROUP;
+use super::{Design, ScatterSplit, Term};
 use crate::channel::{Channel, CoefficientPosition};
-use crate::linalg::{add_compensated, dot, GramBasisWorkspace};
+use crate::linalg::{dot, GramBasisWorkspace};
 
 #[cfg(test)]
 mod tests;
+
+/// Rows per parallel task of a sweep's row pass.
+const ROW_CHUNK: usize = 1 << 14;
 
 /// A slope term's change of basis to an identity within-level Gram.
 pub(crate) struct TermReparam {
@@ -29,12 +35,28 @@ struct Sweeps {
 }
 
 impl Sweeps {
-    fn new(n_levels: usize, v: usize) -> Self {
-        Self {
-            v,
-            w: vec![0.0; n_levels * v * v],
-            center: vec![LevelMean::default(); n_levels * v],
-        }
+    /// Whitens each level's Gram in `moments`; `kept[l·V + j]` says whether slope `j` survived.
+    fn whiten(moments: &LevelMoments, n_levels: usize, v: usize) -> (Self, Vec<bool>) {
+        let mut w = vec![0.0; n_levels * v * v];
+        let mut center = vec![LevelMean::default(); n_levels * v];
+        let mut kept = vec![false; n_levels * v];
+        w.par_chunks_exact_mut(v * v)
+            .zip(center.par_chunks_exact_mut(v))
+            .zip(kept.par_chunks_exact_mut(v))
+            .enumerate()
+            .with_min_len(LEVEL_GROUP)
+            .for_each_init(
+                || GramBasisWorkspace::new(v),
+                |workspace, (level, ((w, center), kept))| {
+                    let basis = workspace.orthonormalize(|gram| moments.fill_gram(level, gram));
+                    w[..basis.rows.len()].copy_from_slice(basis.rows);
+                    kept.copy_from_slice(basis.kept);
+                    if let Some(mean) = moments.mean(level) {
+                        center.copy_from_slice(mean);
+                    }
+                },
+            );
+        (Self { v, w, center }, kept)
     }
 
     fn level(&self, level: usize) -> (&[f64], &[LevelMean]) {
@@ -45,31 +67,33 @@ impl Sweeps {
         )
     }
 
-    /// Rewrites each row of `slopes` (one `Vec` per column) by its level's sweep, handing the
-    /// new row to `written`.
-    fn apply(
-        &self,
-        levels: &[u32],
-        slopes: &mut [Vec<f64>],
-        mut written: impl FnMut(usize, usize, &[f64]),
-    ) {
+    /// Rewrites each row of `slopes` (one `Vec` per column) by its level's sweep.
+    fn apply(&self, levels: &[u32], slopes: &mut [Vec<f64>]) {
         let v = self.v;
-        let (mut z_row, mut u_row) = (vec![0.0; v], vec![0.0; v]);
-        for (i, &level) in levels.iter().enumerate() {
-            let (w, center) = self.level(level as usize);
-            for ((zr, col), c) in z_row.iter_mut().zip(&*slopes).zip(center) {
-                *zr = c.centre(col[i]);
-            }
-            for ((ur, out), w_row) in u_row
-                .iter_mut()
-                .zip(slopes.iter_mut())
-                .zip(w.chunks_exact(v))
-            {
-                *ur = dot(w_row, &z_row);
-                out[i] = *ur;
-            }
-            written(level as usize, i, &u_row);
-        }
+        let mut columns: Vec<_> = slopes.iter_mut().map(|c| c.chunks_mut(ROW_CHUNK)).collect();
+        let chunks: Vec<Vec<&mut [f64]>> = (0..levels.len().div_ceil(ROW_CHUNK))
+            .map(|_| {
+                columns
+                    .iter_mut()
+                    .map(|c| c.next().expect("a chunk per column"))
+                    .collect()
+            })
+            .collect();
+        chunks
+            .into_par_iter()
+            .zip(levels.par_chunks(ROW_CHUNK))
+            .for_each(|(mut columns, levels)| {
+                let mut z_row = vec![0.0; v];
+                for (r, &level) in levels.iter().enumerate() {
+                    let (w, center) = self.level(level as usize);
+                    for ((zr, col), c) in z_row.iter_mut().zip(&columns).zip(center) {
+                        *zr = c.centre(col[r]);
+                    }
+                    for (col, w_row) in columns.iter_mut().zip(w.chunks_exact(v)) {
+                        col[r] = dot(w_row, &z_row);
+                    }
+                }
+            });
     }
 
     /// `u = W₂·(W₁·(z − c₁) − c₂)` as `W = W₂·W₁`, `shift = W₂·(W₁·c₁ + c₂)`, `W` reusing
@@ -77,103 +101,41 @@ impl Sweeps {
     fn compose(self, second: &Self) -> (Vec<f64>, Vec<f64>) {
         let Self { v, mut w, center } = self;
         let mut shift = vec![0.0; center.len()];
-        let (mut centre, mut composed) = (vec![0.0; v], vec![0.0; v * v]);
-        for (level, (w1, s)) in w
-            .chunks_exact_mut(v * v)
-            .zip(shift.chunks_exact_mut(v))
+        w.par_chunks_exact_mut(v * v)
+            .zip(shift.par_chunks_exact_mut(v))
             .enumerate()
-        {
-            let c1 = &center[level * v..][..v];
-            let (w2, c2) = second.level(level);
-            for ((cm, w1_row), c2m) in centre.iter_mut().zip(w1.chunks_exact(v)).zip(c2) {
-                *cm = w1_row
-                    .iter()
-                    .zip(c1)
-                    .map(|(a, c)| a * c.value())
-                    .sum::<f64>()
-                    + c2m.value();
-            }
-            composed.fill(0.0);
-            for ((row, w2_row), sk) in composed
-                .chunks_exact_mut(v)
-                .zip(w2.chunks_exact(v))
-                .zip(&mut *s)
-            {
-                for (&a, w1_row) in w2_row.iter().zip(w1.chunks_exact(v)) {
-                    for (rj, &b) in row.iter_mut().zip(w1_row) {
-                        *rj += a * b;
+            .with_min_len(LEVEL_GROUP)
+            .for_each_init(
+                || (vec![0.0; v], vec![0.0; v * v]),
+                |(centre, composed), (level, (w1, s))| {
+                    let c1 = &center[level * v..][..v];
+                    let (w2, c2) = second.level(level);
+                    for ((cm, w1_row), c2m) in centre.iter_mut().zip(w1.chunks_exact(v)).zip(c2) {
+                        let w1c1: f64 = w1_row.iter().zip(c1).map(|(a, c)| a * c.value()).sum();
+                        *cm = w1c1 + c2m.value();
                     }
-                }
-                *sk = dot(w2_row, &centre);
-            }
-            w1.copy_from_slice(&composed);
-        }
+                    composed.fill(0.0);
+                    for ((row, w2_row), sk) in composed
+                        .chunks_exact_mut(v)
+                        .zip(w2.chunks_exact(v))
+                        .zip(s.iter_mut())
+                    {
+                        for (&a, w1_row) in w2_row.iter().zip(w1.chunks_exact(v)) {
+                            for (rj, &b) in row.iter_mut().zip(w1_row) {
+                                *rj += a * b;
+                            }
+                        }
+                        *sk = dot(w2_row, centre);
+                    }
+                    w1.copy_from_slice(composed);
+                },
+            );
         (w, shift)
     }
 }
 
-/// Per level, `Σw`, `Σw·u` and `Σw·u·uᵀ` of whitened rows `u`.
-struct RowSums {
-    v: usize,
-    w: Vec<f64>,
-    u: Vec<f64>,
-    /// Compensation of `u`: a mean-valued row must load exactly `0` after re-centring.
-    u_err: Vec<f64>,
-    uu: Vec<f64>,
-}
-
-impl RowSums {
-    fn new(n_levels: usize, v: usize) -> Self {
-        Self {
-            v,
-            w: vec![0.0; n_levels],
-            u: vec![0.0; n_levels * v],
-            u_err: vec![0.0; n_levels * v],
-            uu: vec![0.0; n_levels * v * v],
-        }
-    }
-
-    fn add(&mut self, level: usize, w: f64, row: &[f64]) {
-        let v = self.v;
-        self.w[level] += w;
-        let u = &mut self.u[level * v..][..v];
-        let u_err = &mut self.u_err[level * v..][..v];
-        let uu = &mut self.uu[level * v * v..][..v * v];
-        for (j, &rj) in row.iter().enumerate() {
-            add_compensated(&mut u[j], &mut u_err[j], w * rj);
-            for (k, &rk) in row[..=j].iter().enumerate() {
-                uu[j * v + k] += w * rj * rk;
-            }
-        }
-    }
-
-    /// The level's weighted mean into `out`; left at `0` without centring.
-    fn mean_into(&self, level: usize, out: &mut [LevelMean]) {
-        let w = self.w[level];
-        if w > 0.0 {
-            let range = level * self.v..(level + 1) * self.v;
-            for ((m, &s), &e) in out
-                .iter_mut()
-                .zip(&self.u[range.clone()])
-                .zip(&self.u_err[range])
-            {
-                *m = LevelMean::new((s + e) / w);
-            }
-        }
-    }
-
-    /// `Σw·(u − m)(u − m)ᵀ = Σw·uuᵀ − s·mmᵀ`, exact enough since `m` is rounding-small.
-    fn fill_gram(&self, level: usize, mean: &[LevelMean], gram: &mut [f64]) {
-        let v = self.v;
-        let (w, uu) = (self.w[level], &self.uu[level * v * v..][..v * v]);
-        for j in 0..v {
-            for k in 0..=j {
-                let g = uu[j * v + k] - w * mean[j].value() * mean[k].value();
-                gram[j * v + k] = g;
-                gram[k * v + j] = g;
-            }
-        }
-    }
+fn columns(slopes: &[Vec<f64>]) -> Vec<&[f64]> {
+    slopes.iter().map(Vec::as_slice).collect()
 }
 
 impl TermReparam {
@@ -182,6 +144,7 @@ impl TermReparam {
     pub(crate) fn build(
         design: &Design<'_>,
         term: usize,
+        split: &ScatterSplit,
         sqrt_weights: Option<&[f64]>,
     ) -> Option<Self> {
         let t = &design.terms[term];
@@ -190,27 +153,23 @@ impl TermReparam {
         }
         let levels = t.levels();
         let n_levels = t.n_levels();
-        let mut slopes: Vec<Vec<f64>> = t.raw_slopes().map(<[f64]>::to_vec).collect();
+        let mut slopes: Vec<Vec<f64>> = t
+            .raw_slopes()
+            .map(|z| z.par_iter().with_min_len(ROW_CHUNK).copied().collect())
+            .collect();
         let v = slopes.len();
-        let mut workspace = GramBasisWorkspace::new(v);
 
+        let moments = LevelMoments::build(t, split, &columns(&slopes), sqrt_weights);
+        let (first, kept) = Sweeps::whiten(&moments, n_levels, v);
         let mut unidentified = Vec::new();
-        let mut first = Sweeps::new(n_levels, v);
-        let raw: Vec<&[f64]> = slopes.iter().map(Vec::as_slice).collect();
-        let moments = LevelMoments::build(t, &raw, sqrt_weights);
-        for level in 0..n_levels {
-            let basis = workspace.orthonormalize(|gram| moments.fill_gram(level, gram));
-            first.w[level * v * v..][..basis.rows.len()].copy_from_slice(basis.rows);
-            if let Some(mean) = moments.mean(level) {
-                first.center[level * v..][..v].copy_from_slice(mean);
-            }
+        for (level, kept) in kept.chunks_exact(v).enumerate() {
             if moments.w_sum(level) == Some(0.0) {
                 unidentified.push(CoefficientPosition {
                     channel: Channel { term, column: 0 },
                     level,
                 });
             }
-            for j in (0..v).filter(|&j| !basis.kept[j]) {
+            for j in (0..v).filter(|&j| !kept[j]) {
                 unidentified.push(CoefficientPosition {
                     channel: Channel {
                         term,
@@ -221,26 +180,13 @@ impl TermReparam {
             }
         }
         drop(moments);
-        let mut sums = RowSums::new(n_levels, v);
-        first.apply(levels, &mut slopes, |level, i, u| {
-            let w = row_weight(sqrt_weights, i);
-            if w > 0.0 {
-                sums.add(level, w, u);
-            }
-        });
+        first.apply(levels, &mut slopes);
 
         // The rank tolerance keeps the first sweep well-conditioned, so this one drops nothing.
-        let mut second = Sweeps::new(n_levels, v);
-        for level in 0..n_levels {
-            let center = &mut second.center[level * v..][..v];
-            if t.intercept {
-                sums.mean_into(level, center);
-            }
-            let basis = workspace.orthonormalize(|gram| sums.fill_gram(level, center, gram));
-            second.w[level * v * v..][..basis.rows.len()].copy_from_slice(basis.rows);
-        }
-        drop(sums);
-        second.apply(levels, &mut slopes, |_, _, _| {});
+        let moments = LevelMoments::build(t, split, &columns(&slopes), sqrt_weights);
+        let (second, _) = Sweeps::whiten(&moments, n_levels, v);
+        drop(moments);
+        second.apply(levels, &mut slopes);
 
         let (w, shift) = first.compose(&second);
         Some(Self {

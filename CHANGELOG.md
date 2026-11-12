@@ -11,6 +11,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Slope whitening's row passes run in parallel within a term, bit-identical at any thread count: per-level sums, the design adjoint included, combine in one fixed tree set by the data, with row-split leaves of `4·L` rows whatever the state size (#515).
 - **BREAKING:** `schwarz_precond::lsmr` is removed; `mlsmr` with `IdentityOp` runs unpreconditioned LSMR.
 - **BREAKING:** `schwarz_precond::PartitionWeights::Uniform` is a unit variant; `PartitionWeights::len` and `is_empty` are removed. Uniform weights take their shape from `SubdomainCore::n_local`; only explicit weights carry a length. The serialized uniform variant no longer carries a count; the wire-format fixture moves v20 → v22; v21, v20 and v12 remain rejected-payload controls. The fixture number is not a runtime serialization envelope (#425).
 - Schwarz subdomains are factored by approx-chol 0.8 from each channel pair's factor-width-2 Gram factor `V`, one column per observation: sign folding, dominance scaling, floating detection and the Schur complement move into approx-chol (#481). Each channel pair is one subdomain whose local solve is approx-chol's block-diagonal approximate inverse over the pair's components; a local solve uses nested threads whenever it reports work (#495).

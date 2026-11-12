@@ -1,6 +1,6 @@
 use schwarz_precond::Operator;
 
-use crate::domain::PreparedDesign;
+use crate::domain::{PreparedDesign, PAR_THRESHOLD};
 
 mod gather;
 mod scatter;
@@ -10,9 +10,6 @@ mod tests;
 
 use gather::{gather_apply, unscale};
 use scatter::scatter_apply;
-
-/// Minimum number of rows before scatter/gather loops are parallelized.
-const PAR_THRESHOLD: usize = 10_000;
 
 impl PreparedDesign<'_> {
     /// `y − D x`, read off this operator's measured `b − A x` unless a zero weight erased a row.
