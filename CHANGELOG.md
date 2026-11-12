@@ -24,6 +24,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - A solve returns bitwise-identical coefficients, demeaned response, residual and iteration count at any thread count, run after run: LSMR inner products, the Schwarz prolongation and the design adjoint sum in an order fixed by the data, never by Rayon's split. Repeated `Adaptive` solves on one `Solver` may still differ (#370) (#472).
+- Whitened slopes are orthonormal within each level to rounding: slopes are centred on a double-word level mean and whitened twice (CholeskyQR2), removing errors of order eps·|mean|/sd and eps·κ(G). A slope whose within-level spread sits at its mean's rounding is now reported unidentified (#514).
 - LSMR now audits normal-equation tolerance exits in the plain metric. Stops hidden by singular or deflating preconditioners restart and may end in `FalseConvergence` (#389; addresses part of #455).
 
 ## [0.4.0] - 2026-10-09
