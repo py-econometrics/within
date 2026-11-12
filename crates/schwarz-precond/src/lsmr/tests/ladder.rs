@@ -10,8 +10,7 @@ use crate::{Operator, SolveError};
 fn test_mlsmr_warm_tolerance_is_relative_to_original_rhs() {
     let op = DenseOp::vandermonde(30, 12);
     let x_true: Vec<f64> = (0..op.cols).map(|j| 1.0 / (1.0 + j as f64)).collect();
-    let mut b = vec![0.0; op.rows];
-    op.apply(&x_true, &mut b).expect("apply");
+    let b = consistent_rhs(&op, &x_true);
     let x0: Vec<f64> = x_true.iter().map(|v| v * 0.9999).collect();
     let tol = 1e-6;
     let window = Some(12);
@@ -181,6 +180,7 @@ fn test_warm_escalated_stop_is_measured_against_the_original_rhs() {
                 warm_start: Some(&cold.x),
                 escalation,
                 local_size: window,
+                ..Default::default()
             },
         )
         .expect("warm rung")
@@ -326,8 +326,7 @@ fn test_staleness_rejects_an_invalid_threshold(
 fn test_mlsmr_maxiter_residuals_are_rebased_onto_the_original_rhs() {
     let op = DenseOp::vandermonde(30, 12);
     let x_true: Vec<f64> = (0..op.cols).map(|j| 1.0 / (1.0 + j as f64)).collect();
-    let mut b = vec![0.0; op.rows];
-    op.apply(&x_true, &mut b).expect("apply");
+    let b = consistent_rhs(&op, &x_true);
     let x0: Vec<f64> = x_true.iter().map(|v| v * 0.9).collect();
 
     let result = mlsmr(

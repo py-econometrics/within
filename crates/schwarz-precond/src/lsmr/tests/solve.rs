@@ -494,3 +494,68 @@ fn a_power_of_two_scaling_reproduces_the_unit_scale_solve(
         assert!((xi * s / t - ui).abs() < 1e-8 * x_max, "{:?}", r.x);
     }
 }
+
+/// A consistent system whose residual stop fires before its backward-error stop.
+fn consistent_vandermonde() -> (DenseOp, Vec<f64>) {
+    let op = DenseOp::vandermonde(30, 6);
+    let b = consistent_rhs(&op, &[1.0; 6]);
+    (op, b)
+}
+
+#[test]
+fn an_exactly_solved_rhs_part_loosens_the_residual_tolerance() {
+    let (op, b) = consistent_vandermonde();
+    let identity = IdentityOp { n: op.cols };
+    let tol = 1e-10;
+    let exact_rhs_norm = 1e4 * vec_norm(&b);
+    let run = |exact_rhs_norm| {
+        let options = MlsmrOptions {
+            exact_rhs_norm,
+            ..Default::default()
+        };
+        mlsmr(&op, &b, &identity, tol, 200, options).expect("mlsmr")
+    };
+    let own = run(0.0);
+    let whole = run(exact_rhs_norm);
+    assert_eq!(whole.stop_reason, LsmrStopReason::ResidualTolerance);
+    assert!(whole.converged);
+    assert!(whole.residual_norm <= tol * vec_norm(&b).hypot(exact_rhs_norm));
+    assert!(
+        whole.iterations < own.iterations,
+        "{} vs {}",
+        whole.iterations,
+        own.iterations
+    );
+}
+
+#[rstest]
+#[case(-1.0)]
+#[case(f64::NAN)]
+#[case(f64::INFINITY)]
+fn an_exactly_solved_rhs_norm_must_be_finite_and_nonnegative(#[case] exact_rhs_norm: f64) {
+    let (op, b) = consistent_vandermonde();
+    let identity = IdentityOp { n: op.cols };
+    let options = MlsmrOptions {
+        exact_rhs_norm,
+        ..Default::default()
+    };
+    assert!(matches!(
+        mlsmr(&op, &b, &identity, 1e-10, 200, options),
+        Err(SolveError::InvalidInput { .. })
+    ));
+}
+
+#[test]
+fn an_overflowing_whole_rhs_norm_is_rejected_even_from_an_exact_start() {
+    let b = [1.3e308, 0.0];
+    let identity = IdentityOp { n: 2 };
+    let options = MlsmrOptions {
+        warm_start: Some(&b),
+        exact_rhs_norm: 1.3e308,
+        ..Default::default()
+    };
+    assert!(matches!(
+        mlsmr(&identity, &b, &identity, 1e-10, 10, options),
+        Err(SolveError::InvalidInput { .. })
+    ));
+}

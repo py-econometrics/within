@@ -169,6 +169,13 @@ impl Operator for DenseOp {
     }
 }
 
+/// `b = A x`, a consistent right-hand side.
+pub(crate) fn consistent_rhs(op: &DenseOp, x: &[f64]) -> Vec<f64> {
+    let mut b = vec![0.0; op.rows];
+    op.apply(x, &mut b).expect("apply");
+    b
+}
+
 /// The ill-conditioned least-squares problem the ladder tests run on, with a smooth RHS.
 pub(crate) fn vandermonde_ls() -> (DenseOp, Vec<f64>) {
     let op = DenseOp::vandermonde(30, 12);
