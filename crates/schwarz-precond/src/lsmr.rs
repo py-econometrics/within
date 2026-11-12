@@ -202,14 +202,12 @@ impl EscalationHandler for StalenessRun {
 /// Optional behaviors for [`mlsmr`].
 #[derive(Clone, Copy, Default)]
 pub struct MlsmrOptions<'a> {
-    /// Residual-correction start; tolerances stay relative to `‖b + c‖` (`‖b − A x₀‖` if it is 0).
+    /// Residual-correction start; tolerances stay relative to `‖b‖` (`‖b − A x₀‖` if `b = 0`).
     pub warm_start: Option<&'a [f64]>,
     /// Hands off to a stronger preconditioner mid-run; see [`EscalationPolicy`].
     pub escalation: Option<&'a dyn EscalationPolicy>,
     /// Local reorthogonalization window; `None` disables it.
     pub local_size: Option<usize>,
-    /// `‖c‖` of an RHS part `c ⟂ b, range(A)` solved outside; tolerances are relative to `‖b + c‖`.
-    pub exact_rhs_norm: f64,
 }
 
 /// `M = I`: [`mlsmr`] with it is plain LSMR.
@@ -257,13 +255,7 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
         warm_start,
         escalation,
         local_size,
-        exact_rhs_norm,
     } = options;
-    if !(exact_rhs_norm.is_finite() && exact_rhs_norm >= 0.0) {
-        return Err(invalid_input(format!(
-            "exact right-hand-side norm must be finite and nonnegative, got {exact_rhs_norm}"
-        )));
-    }
 
     if let Some(x0) = warm_start {
         if x0.len() != n {
@@ -281,11 +273,6 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
 
     // `b` is finite entrywise, but its norm sets the tolerance and an ∞ there certifies anything.
     let b_norm = finite(vec_norm(b), "rhs norm")?;
-    let whole_norm = if exact_rhs_norm == 0.0 {
-        b_norm
-    } else {
-        finite(b_norm.hypot(exact_rhs_norm), "rhs norm")?
-    };
     let local_size = local_size.unwrap_or(0);
 
     // A zero start vector needs no stream; a warm one must be formed in the stream to be measured.
@@ -333,11 +320,7 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
         x0: warm_start,
         reference,
     };
-    let reference_norm = if whole_norm > 0.0 {
-        whole_norm
-    } else {
-        rhs_norm
-    };
+    let reference_norm = if b_norm > 0.0 { b_norm } else { rhs_norm };
     let criteria = ConvergenceCriteria::new(reference_norm, tol);
     lsmr_from_bidiag(bidiag, step1, b, start, criteria, maxiter, escalation)
 }

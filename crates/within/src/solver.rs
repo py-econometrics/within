@@ -292,7 +292,6 @@ fn rung<'s, S: LeastSquaresSystem>(
                 warm_start: probe.as_ref().map(|p| p.x.as_slice()),
                 escalation: stall,
                 local_size: lsmr.local_size,
-                exact_rhs_norm: system.exact_rhs_norm(&rhs),
             };
             let identity;
             let m: &dyn Operator = match map {

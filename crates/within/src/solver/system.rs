@@ -19,9 +19,8 @@ pub(crate) trait LeastSquaresSystem: Sync {
     fn matrix(&self) -> &Self::Matrix;
     /// Validate `y`, then form this system's right-hand side.
     fn prepare<'s>(&'s self, y: &'s [f64]) -> Result<Self::Rhs<'s>, SolveError>;
+    /// What LSMR iterates on; tolerances are relative to its norm.
     fn b<'r>(&self, rhs: &'r Self::Rhs<'_>) -> &'r [f64];
-    /// `‖W^{1/2} y − b‖` of the response part solved outside LSMR, orthogonal to `b` and `range(A)`.
-    fn exact_rhs_norm(&self, rhs: &Self::Rhs<'_>) -> f64;
     /// Caller coefficients and `y − D x` from the iterate and, if measured, its `b − A x`.
     fn finish(
         &self,
@@ -97,10 +96,6 @@ impl LeastSquaresSystem for PreparedDesign<'_> {
 
     fn b<'r>(&self, rhs: &'r Response<'_>) -> &'r [f64] {
         rhs.weighted()
-    }
-
-    fn exact_rhs_norm(&self, _: &Response<'_>) -> f64 {
-        0.0
     }
 
     fn finish(

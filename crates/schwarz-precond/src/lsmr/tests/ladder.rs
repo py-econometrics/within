@@ -180,7 +180,6 @@ fn test_warm_escalated_stop_is_measured_against_the_original_rhs() {
                 warm_start: Some(&cold.x),
                 escalation,
                 local_size: window,
-                ..Default::default()
             },
         )
         .expect("warm rung")
