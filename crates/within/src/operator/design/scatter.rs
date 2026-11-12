@@ -1,64 +1,58 @@
 //! Scatter kernel `Dᵀ x`, summed per term in the order its [`ScatterSplit`] fixes.
 
-use crate::domain::{LevelSlots, PreparedDesign, PreparedTerm};
+use crate::domain::{LevelSlots, PreparedTerm};
 
-/// Adjoint scatter over all terms; `base(i)` is the row value each column scales by its loading.
-pub(super) fn scatter_apply(
-    prepared: &PreparedDesign<'_>,
-    dst: &mut [f64],
+/// One term's adjoint scatter `block = A_tᵀ v`, with `base(i)` the row value of `v`.
+pub(super) fn scatter_block(
+    t: &PreparedTerm<'_>,
+    block: &mut [f64],
     base: &(impl Fn(usize) -> f64 + Sync),
 ) {
-    let design = &prepared.design;
-    debug_assert_eq!(dst.len(), design.n_dofs);
-
-    for t in prepared.terms() {
-        let term = t.term;
-        let block = &mut dst[term.dofs()];
-        match (term.intercept, t.slopes) {
-            (true, []) => scatter_term::<1>(block, &t, |i| [base(i)]),
-            (true, [z0]) => {
-                let z0 = &z0[..];
-                scatter_term::<2>(block, &t, |i| {
-                    let b = base(i);
-                    [b, z0[i] * b]
-                })
-            }
-            (true, [z0, z1]) => {
-                let (z0, z1) = (&z0[..], &z1[..]);
-                scatter_term::<3>(block, &t, |i| {
-                    let b = base(i);
-                    [b, z0[i] * b, z1[i] * b]
-                })
-            }
-            (true, [z0, z1, z2]) => {
-                let (z0, z1, z2) = (&z0[..], &z1[..], &z2[..]);
-                scatter_term::<4>(block, &t, |i| {
-                    let b = base(i);
-                    [b, z0[i] * b, z1[i] * b, z2[i] * b]
-                })
-            }
-            (false, [z0, z1]) => {
-                let (z0, z1) = (&z0[..], &z1[..]);
-                scatter_term::<2>(block, &t, |i| {
-                    let b = base(i);
-                    [z0[i] * b, z1[i] * b]
-                })
-            }
-            (false, [z0, z1, z2]) => {
-                let (z0, z1, z2) = (&z0[..], &z1[..], &z2[..]);
-                scatter_term::<3>(block, &t, |i| {
-                    let b = base(i);
-                    [z0[i] * b, z1[i] * b, z2[i] * b]
-                })
-            }
-            _ => {
-                for c in 0..term.n_columns() {
-                    let start = c * term.n_levels();
-                    let slot = &mut block[start..start + term.n_levels()];
-                    match t.loading(c) {
-                        None => scatter_term::<1>(slot, &t, |i| [base(i)]),
-                        Some(z) => scatter_term::<1>(slot, &t, move |i| [z[i] * base(i)]),
-                    }
+    let term = t.term;
+    match (term.intercept, t.slopes) {
+        (true, []) => scatter_term::<1>(block, t, |i| [base(i)]),
+        (true, [z0]) => {
+            let z0 = &z0[..];
+            scatter_term::<2>(block, t, |i| {
+                let b = base(i);
+                [b, z0[i] * b]
+            })
+        }
+        (true, [z0, z1]) => {
+            let (z0, z1) = (&z0[..], &z1[..]);
+            scatter_term::<3>(block, t, |i| {
+                let b = base(i);
+                [b, z0[i] * b, z1[i] * b]
+            })
+        }
+        (true, [z0, z1, z2]) => {
+            let (z0, z1, z2) = (&z0[..], &z1[..], &z2[..]);
+            scatter_term::<4>(block, t, |i| {
+                let b = base(i);
+                [b, z0[i] * b, z1[i] * b, z2[i] * b]
+            })
+        }
+        (false, [z0, z1]) => {
+            let (z0, z1) = (&z0[..], &z1[..]);
+            scatter_term::<2>(block, t, |i| {
+                let b = base(i);
+                [z0[i] * b, z1[i] * b]
+            })
+        }
+        (false, [z0, z1, z2]) => {
+            let (z0, z1, z2) = (&z0[..], &z1[..], &z2[..]);
+            scatter_term::<3>(block, t, |i| {
+                let b = base(i);
+                [z0[i] * b, z1[i] * b, z2[i] * b]
+            })
+        }
+        _ => {
+            for c in 0..term.n_columns() {
+                let start = c * term.n_levels();
+                let slot = &mut block[start..start + term.n_levels()];
+                match t.loading(c) {
+                    None => scatter_term::<1>(slot, t, |i| [base(i)]),
+                    Some(z) => scatter_term::<1>(slot, t, move |i| [z[i] * base(i)]),
                 }
             }
         }
