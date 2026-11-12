@@ -80,7 +80,7 @@ impl<'a> PreparedDesign<'a> {
     }
 
     /// Term `term`'s block of `diag(AᵀA)`, laid out like its `dofs()`, summed in observation order.
-    fn diagonal(&self, term: usize) -> &[f64] {
+    pub(crate) fn diagonal(&self, term: usize) -> &[f64] {
         // Serial fill: a rayon job stolen inside it could re-enter this cell and deadlock.
         self.diagonals[term].get_or_init(|| {
             let prepared = self.term(term);

@@ -1,6 +1,6 @@
 use schwarz_precond::Operator;
 
-use crate::domain::{PreparedDesign, PAR_THRESHOLD};
+use crate::domain::{PreparedDesign, PreparedTerm, PAR_THRESHOLD};
 
 mod gather;
 mod scatter;
@@ -9,7 +9,7 @@ mod scatter;
 mod tests;
 
 use gather::{gather_apply, unscale};
-use scatter::scatter_apply;
+use scatter::scatter_block;
 
 impl PreparedDesign<'_> {
     /// `y − D x`, read off this operator's measured `b − A x` unless a zero weight erased a row.
@@ -28,6 +28,36 @@ impl PreparedDesign<'_> {
                 }
                 demeaned
             }
+        }
+    }
+
+    /// Fits the dominant block of `x` to `b = W^½ y` given the other blocks; 0 if unidentified.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the reduced system recovers with it")
+    )]
+    pub(crate) fn recover_eliminated(&self, b: &[f64], x: &mut [f64]) {
+        let eliminated = self.design.dominant;
+        let dofs = self.design.terms[eliminated].dofs();
+        x[dofs.clone()].fill(0.0);
+        let mut residual = vec![0.0; b.len()];
+        gather_apply(self, x, &mut residual, self.sqrt_weights());
+        for (r, &bi) in residual.iter_mut().zip(b) {
+            *r = bi - *r;
+        }
+        let block = &mut x[dofs];
+        self.adjoint_block(&self.term(eliminated), &residual, block);
+        // Whitening makes each level's block of `A_eᵀA_e` diagonal.
+        for (xj, &g) in block.iter_mut().zip(self.diagonal(eliminated)) {
+            *xj = if g > 0.0 { *xj / g } else { 0.0 };
+        }
+    }
+
+    /// `block = A_tᵀ v` for one term `t`.
+    fn adjoint_block(&self, t: &PreparedTerm<'_>, v: &[f64], block: &mut [f64]) {
+        match self.sqrt_weights() {
+            Some(sw) => scatter_block(t, block, &|i| sw[i] * v[i]),
+            None => scatter_block(t, block, &|i| v[i]),
         }
     }
 }
@@ -52,9 +82,8 @@ impl Operator for PreparedDesign<'_> {
     fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
         debug_assert_eq!(x.len(), self.design.n_obs);
         debug_assert_eq!(y.len(), self.design.n_dofs);
-        match self.sqrt_weights() {
-            Some(sw) => scatter_apply(self, y, &|i| sw[i] * x[i]),
-            None => scatter_apply(self, y, &|i| x[i]),
+        for t in self.terms() {
+            self.adjoint_block(&t, x, &mut y[t.term.dofs()]);
         }
         Ok(())
     }

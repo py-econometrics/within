@@ -550,6 +550,8 @@ pub struct Design<'a> {
     pub(crate) n_dofs: usize,
     /// `obs_perm[k]` = caller's original index of the observation at internal position `k`.
     pub(crate) obs_perm: Option<Arc<[u32]>>,
+    /// The term with the most DOFs, ties to the last: the sort key and the eliminated term.
+    pub(crate) dominant: usize,
 }
 
 impl<'a> Design<'a> {
@@ -633,24 +635,26 @@ impl<'a> Design<'a> {
             return Err(BuildError::DofSpaceExceedsU32 { n_dofs: offset });
         }
 
-        // Sort by the term contributing the most DOFs so its gather/scatter runs sequentially.
-        let dominant = terms.iter().max_by_key(|t| t.n_dofs());
-        let obs_perm = match dominant {
-            Some(d) if locality_sort && !d.sorted && u32::try_from(n_obs).is_ok() => {
-                let (_, perm) = stable_argsort(&d.levels, d.n_levels());
-                // Factors nested in the dominant one come out sorted and need no row index.
-                for t in terms.iter_mut() {
-                    let levels = gather(&t.levels, &perm);
-                    t.sorted = levels.is_sorted();
-                    t.levels = Cow::Owned(levels);
-                }
-                // Level columns before any slope: interleaving them measured +2–4% here.
-                for slope in terms.iter_mut().flat_map(|t| &mut t.slopes) {
-                    *slope = Cow::Owned(gather(slope, &perm));
-                }
-                Some(perm.into())
+        let dominant = (0..terms.len())
+            .max_by_key(|&t| terms[t].n_dofs())
+            .expect("observations imply an effect");
+        // Sort by the dominant term so its gather/scatter runs sequentially.
+        let d = &terms[dominant];
+        let obs_perm = if locality_sort && !d.sorted && u32::try_from(n_obs).is_ok() {
+            let (_, perm) = stable_argsort(&d.levels, d.n_levels());
+            // Factors nested in the dominant one come out sorted and need no row index.
+            for t in terms.iter_mut() {
+                let levels = gather(&t.levels, &perm);
+                t.sorted = levels.is_sorted();
+                t.levels = Cow::Owned(levels);
             }
-            _ => None,
+            // Level columns before any slope: interleaving them measured +2–4% here.
+            for slope in terms.iter_mut().flat_map(|t| &mut t.slopes) {
+                *slope = Cow::Owned(gather(slope, &perm));
+            }
+            Some(perm.into())
+        } else {
+            None
         };
 
         Ok(Design {
@@ -658,6 +662,7 @@ impl<'a> Design<'a> {
             n_obs,
             n_dofs: offset,
             obs_perm,
+            dominant,
         })
     }
 
@@ -669,6 +674,7 @@ impl<'a> Design<'a> {
             n_obs: self.n_obs,
             n_dofs: self.n_dofs,
             obs_perm: self.obs_perm,
+            dominant: self.dominant,
         }
     }
 
