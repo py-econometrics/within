@@ -66,35 +66,14 @@ fn add_moments(basis: &impl DiagonalGramBasis, p: usize, v: f64, moments: &mut [
     not(test),
     expect(dead_code, reason = "`System::Reduced` wires the reduced operator in")
 )]
-pub(crate) fn project_twice(
-    basis: &impl DiagonalGramBasis,
-    v: &mut [f64],
-    fit: &mut [f64],
-    step: &mut [f64],
-) {
-    correct_twice(basis, v, fit, step);
+pub(crate) fn project(basis: &impl DiagonalGramBasis, v: &mut [f64], fit: &mut [f64]) {
+    solve_rescued(basis, v, fit);
     for (p, x) in v.iter_mut().enumerate() {
-        *x = remove_fit(basis, p, *x, step);
+        *x = remove_fit(basis, p, *x, fit);
     }
 }
 
-/// `fit ← G⁻¹Bᵀv` given `fit = Bᵀv`; `v` is left partly projected.
-#[inline(always)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "`System::Reduced` wires the reduced operator in")
-)]
-pub(crate) fn fit_twice(
-    basis: &impl DiagonalGramBasis,
-    v: &mut [f64],
-    fit: &mut [f64],
-    step: &mut [f64],
-) {
-    correct_twice(basis, v, fit, step);
-    fit.iter_mut().zip(step.iter()).for_each(|(f, s)| *f += s);
-}
-
-/// `fit ← G⁻¹Bᵀv`, `v` less that fit and `step` the fit of what remains.
+/// `fit ← G⁻¹Bᵀv` given `fit = Bᵀv`; `v` is left projected once.
 ///
 /// A second classical Gram–Schmidt pass restores the digits the first rounds away when `v`
 /// lies close to the span ("twice is enough"). For an intercept column this is the corrected
@@ -117,7 +96,12 @@ pub(crate) fn fit_twice(
     not(test),
     expect(dead_code, reason = "`System::Reduced` wires the reduced operator in")
 )]
-fn correct_twice(basis: &impl DiagonalGramBasis, v: &mut [f64], fit: &mut [f64], step: &mut [f64]) {
+pub(crate) fn fit_twice(
+    basis: &impl DiagonalGramBasis,
+    v: &mut [f64],
+    fit: &mut [f64],
+    step: &mut [f64],
+) {
     solve_rescued(basis, v, fit);
     step.fill(0.0);
     for (p, x) in v.iter_mut().enumerate() {
@@ -125,6 +109,7 @@ fn correct_twice(basis: &impl DiagonalGramBasis, v: &mut [f64], fit: &mut [f64],
         add_moments(basis, p, *x, step);
     }
     solve_rescued(basis, v, step);
+    fit.iter_mut().zip(step.iter()).for_each(|(f, s)| *f += s);
 }
 
 /// `moments ← G⁻¹ moments`, `v`'s moments refolded at a power-of-two scale if any overflowed.

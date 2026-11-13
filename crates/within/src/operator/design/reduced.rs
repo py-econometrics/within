@@ -9,7 +9,7 @@ use schwarz_precond::Operator;
 use crate::domain::{
     fixed_tree, row_weight, LevelRows, PreparedDesign, PreparedTerm, MIN_LEAF_ROWS,
 };
-use crate::linalg::{fit_twice, project_twice, DenseBasis, DiagonalGramBasis};
+use crate::linalg::{fit_twice, project, DenseBasis, DiagonalGramBasis};
 use crate::BuildError;
 
 /// Rows per parallel task, cut at an eliminated level's end so no level spans two tasks.
@@ -177,7 +177,7 @@ impl<'p, 'a> ReducedDesign<'p, 'a> {
         }
     }
 
-    /// Fills `level` with level `l`'s basis `W^½ z_c` and `v` with the row values `u(i)`, and
+    /// Fills `level` with level `l`'s basis `W^½ z_c`, sets each row's value in `v` by `set`, and
     /// sets `level.fit` to their moments.
     #[inline(always)]
     fn level_basis(
@@ -187,7 +187,7 @@ impl<'p, 'a> ReducedDesign<'p, 'a> {
         w: impl Fn(usize) -> f64,
         level: &mut Level<'_>,
         v: &mut [f64],
-        u: impl Fn(usize) -> f64,
+        set: impl Fn(usize, &mut f64),
     ) {
         let n_levels = self.eliminated.n_levels;
         for (c, g) in level.norms.iter_mut().enumerate() {
@@ -198,7 +198,7 @@ impl<'p, 'a> ReducedDesign<'p, 'a> {
         let rows = level.entries.chunks_exact_mut(width).zip(v.iter_mut());
         for (i, (entries, x)) in positions.zip(rows) {
             let wi = w(i);
-            *x = u(i);
+            set(i, x);
             for ((e, m), z) in
                 (entries.iter_mut().zip(level.fit.iter_mut())).zip(&self.eliminated.loadings)
             {
@@ -215,10 +215,10 @@ impl<'p, 'a> ReducedDesign<'p, 'a> {
             .fold(-0.0, |acc, (f, z)| acc + z.map_or(*f, |z| f * z[i]))
     }
 
-    /// `out ← (I − P_e) u` from row values `u`, weighted by `w = W^½`.
+    /// `out ← (I − P_e) out` in one pass, `set` first writing each row's value; `w = W^½`.
     fn project<const PLAIN: bool>(
         &self,
-        u: impl Fn(usize) -> f64 + Sync,
+        set: impl Fn(usize, &mut f64) + Sync,
         w: impl Fn(usize) -> f64 + Sync,
         out: &mut [f64],
     ) {
@@ -239,7 +239,7 @@ impl<'p, 'a> ReducedDesign<'p, 'a> {
                     let v = &mut part[rows.start - base..rows.end - base];
                     let mut sum = 0.0;
                     for (x, i) in v.iter_mut().zip(rows.clone()) {
-                        *x = u(i);
+                        set(i, x);
                         sum += w(i) * *x;
                     }
                     let gram = self.gram[l];
@@ -248,7 +248,7 @@ impl<'p, 'a> ReducedDesign<'p, 'a> {
                         w: &w,
                         gram,
                     };
-                    project_twice(&basis, v, &mut [sum], &mut [0.0]);
+                    project(&basis, v, &mut [sum]);
                 }
             });
             return;
@@ -260,7 +260,7 @@ impl<'p, 'a> ReducedDesign<'p, 'a> {
                     let positions = self.rows.positions(l);
                     let v = &mut part[positions.start - base..positions.end - base];
                     let (mut level, _) = scratch.level(v.len());
-                    self.level_basis(l, positions, &w, &mut level, v, &u);
+                    self.level_basis(l, positions, &w, &mut level, v, &set);
                     level.project(v);
                 }
             },
@@ -270,11 +270,11 @@ impl<'p, 'a> ReducedDesign<'p, 'a> {
     /// `(I − P_e) b`.
     pub(crate) fn project_rhs(&self, b: &[f64]) -> Vec<f64> {
         let mut out = vec![0.0; b.len()];
-        with_shape!(self, |PLAIN, w| self.project::<PLAIN>(
-            |i| b[i],
-            w,
-            &mut out
-        ));
+        with_shape!(self, |PLAIN, w| {
+            self.project::<PLAIN>(|i, x| *x = b[i], w, &mut out);
+            // One pass rounds away entries of heavy rows that light rows' weights make matter.
+            self.project::<PLAIN>(|_, _| {}, w, &mut out);
+        });
         out
     }
 
@@ -336,8 +336,8 @@ impl<'p, 'a> ReducedDesign<'p, 'a> {
                 |scratch, (l, out)| {
                     let positions = self.rows.positions(l);
                     let (mut level, v) = scratch.level(positions.len());
-                    let u = |i| b[i] - w(i) * self.kept_row::<PLAIN>(x_k, i);
-                    self.level_basis(l, positions, w, &mut level, v, u);
+                    let set = |i, x: &mut f64| *x = b[i] - w(i) * self.kept_row::<PLAIN>(x_k, i);
+                    self.level_basis(l, positions, w, &mut level, v, set);
                     level.fit(v);
                     out.copy_from_slice(level.fit);
                 },
@@ -553,7 +553,7 @@ impl Level<'_> {
             entries: self.entries,
             norms: self.norms,
         };
-        project_twice(&basis, v, self.fit, self.step);
+        project(&basis, v, self.fit);
     }
 
     /// `fit` becomes the level's coefficients of `v`.
@@ -597,7 +597,7 @@ impl Operator for ReducedDesign<'_, '_> {
     fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
         debug_assert_eq!(x.len(), self.n_kept);
         with_shape!(self, |PLAIN, w| {
-            self.project::<PLAIN>(|i| w(i) * self.kept_row::<PLAIN>(x, i), w, y)
+            self.project::<PLAIN>(|i, y| *y = w(i) * self.kept_row::<PLAIN>(x, i), w, y)
         });
         Ok(())
     }
