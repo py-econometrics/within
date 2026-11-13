@@ -15,8 +15,6 @@ pub(crate) enum SchwarzRung {
     /// Nothing for Schwarz to couple: the ladder settles on its diagonal.
     Absent,
     Buildable,
-    /// Coupled terms whose Schwarz this system cannot build yet: a ladder stays on its diagonal.
-    Unavailable,
 }
 
 /// `min ‖b − A x‖` over the coefficients LSMR iterates on, and the way back to the full fit.
@@ -154,7 +152,7 @@ impl LeastSquaresSystem for PreparedDesign<'_> {
         &self,
         local_solver: &LocalSolverConfig,
     ) -> Result<(Option<Preconditioner>, Vec<BuildWarning>), BuildError> {
-        build_schwarz(self, local_solver)
+        build_schwarz(self, local_solver, None)
     }
 }
 
@@ -179,7 +177,7 @@ impl LeastSquaresSystem for ReducedDesign<'_, '_> {
         // With one kept factor the reduced normal matrix already couples its levels.
         match ReducedDesign::prepared(self).design.n_factors() {
             0 | 1 => SchwarzRung::Absent,
-            _ => SchwarzRung::Unavailable,
+            _ => SchwarzRung::Buildable,
         }
     }
 
@@ -218,8 +216,9 @@ impl LeastSquaresSystem for ReducedDesign<'_, '_> {
 
     fn build_schwarz(
         &self,
-        _: &LocalSolverConfig,
+        local_solver: &LocalSolverConfig,
     ) -> Result<(Option<Preconditioner>, Vec<BuildWarning>), BuildError> {
-        Err(BuildError::SchwarzOnReducedSystem)
+        let prepared = ReducedDesign::prepared(self);
+        build_schwarz(prepared, local_solver, Some(prepared.design.dominant))
     }
 }

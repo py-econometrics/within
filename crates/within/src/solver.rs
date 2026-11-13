@@ -444,8 +444,8 @@ impl<'a> Solver<'a> {
 
     /// [`Solver::new`] on the reduced system: the term with the most coefficients is eliminated
     /// exactly, LSMR iterates on the remaining terms, and the eliminated coefficients are
-    /// recovered from the rest. Schwarz is not yet built on the reduced system: once a term
-    /// remains after elimination, Additive is refused and Adaptive stays on its diagonal.
+    /// recovered from the rest. Every [`PreconditionerConfig`] means the same on both systems.
+    /// A prebuilt Schwarz map does not record its system yet, so this refuses one.
     pub fn reduced(
         design: impl IntoDesign<'a>,
         weights: Option<&[f64]>,
@@ -469,7 +469,15 @@ impl<'a> Solver<'a> {
         let prepared = PreparedDesign::new(design, weights)?;
         let slot = match system {
             System::Full => resolve(&prepared, preconditioner)?,
-            System::Reduced => resolve(&ReducedDesign::new(&prepared)?, preconditioner)?,
+            System::Reduced => {
+                if let PreconditionerInput::Prebuilt(p) = &preconditioner {
+                    let diagonal = matches!(p.config(), PreconditionerConfig::Diagonal);
+                    if p.ladder().is_none() && !diagonal {
+                        return Err(BuildError::SchwarzOnReducedSystem);
+                    }
+                }
+                resolve(&ReducedDesign::new(&prepared)?, preconditioner)?
+            }
         };
         Ok(Self {
             prepared,

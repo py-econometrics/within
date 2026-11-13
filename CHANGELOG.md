@@ -12,7 +12,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- `Solver::reduced` eliminates the term with the most coefficients exactly and runs LSMR on the remaining terms, projected off the eliminated term's span; the eliminated coefficients are recovered from the rest. Schwarz is not built on it yet: once a term remains after elimination, `Additive` is refused and `Adaptive`, the default, stays on its diagonal (#498).
+- `Solver::reduced` eliminates the term with the most coefficients exactly and runs LSMR on the remaining terms, projected off the eliminated term's span; the eliminated coefficients are recovered from the rest. Every `PreconditionerConfig` means the same on both systems: on the reduced one, pairs with the eliminated term factor their Schur complement onto the kept side. A prebuilt Schwarz map cannot be reused on the reduced system yet (#498).
 
 ### Changed
 

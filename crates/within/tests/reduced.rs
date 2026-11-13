@@ -140,7 +140,11 @@ fn assert_same_fit(reduced: &[f64], full: &[f64], identified: &[bool], y: &[f64]
 fn reduced_and_full_fits_agree(
     #[values(2, 3)] n_factors: usize,
     #[values(false, true)] weighted: bool,
-    #[values(PreconditionerConfig::Off, PreconditionerConfig::Diagonal)]
+    #[values(
+        PreconditionerConfig::Off,
+        PreconditionerConfig::Diagonal,
+        PreconditionerConfig::Additive { local_solver: Default::default() }
+    )]
     preconditioner: PreconditionerConfig,
 ) {
     let factors = factors(n_factors);
@@ -285,33 +289,7 @@ fn a_prebuilt_preconditioner_must_fit_the_reduced_system() {
     );
 }
 
-/// A kept factor's levels are coupled through the eliminated one, and the reduced system does
-/// not build Schwarz yet.
-#[rstest]
-fn additive_is_not_yet_built_on_the_reduced_system(#[values(2, 3)] n_factors: usize) {
-    let factors = factors(n_factors);
-    let y = response(5);
-    let additive = PreconditionerConfig::Additive {
-        local_solver: Default::default(),
-    };
-    let result = solve(
-        effects(&factors),
-        &y,
-        None,
-        None,
-        &additive,
-        System::Reduced,
-    );
-    assert!(
-        matches!(
-            result,
-            Err(WithinError::Build(BuildError::SchwarzOnReducedSystem))
-        ),
-        "{result:?}"
-    );
-}
-
-/// The ladder starts on the reduced system's own diagonal, and stays there until Schwarz is built.
+/// The ladder starts on the reduced system's own diagonal, and an easy panel finishes there.
 #[rstest]
 fn the_default_preconditioner_starts_on_the_reduced_diagonal(
     #[values(2, 3)] n_factors: usize,

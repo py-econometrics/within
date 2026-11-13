@@ -42,7 +42,6 @@ impl PrecondSlot {
                 let (map, warnings) = match system.schwarz_rung() {
                     SchwarzRung::Absent => (None, Vec::new()),
                     SchwarzRung::Buildable => system.build_schwarz(&local_solver)?,
-                    SchwarzRung::Unavailable => return Err(BuildError::SchwarzOnReducedSystem),
                 };
                 Self::Static { map, warnings }
             }
@@ -66,13 +65,6 @@ impl PrecondSlot {
         preconditioner: Preconditioner,
     ) -> Result<Self, BuildError> {
         let Some(ladder) = preconditioner.ladder() else {
-            if matches!(
-                preconditioner.config(),
-                PreconditionerConfig::Additive { .. }
-            ) && matches!(system.schwarz_rung(), SchwarzRung::Unavailable)
-            {
-                return Err(BuildError::SchwarzOnReducedSystem);
-            }
             return Ok(Self::Static {
                 map: Some(preconditioner),
                 warnings: Vec::new(),
@@ -86,7 +78,7 @@ impl PrecondSlot {
     /// A diagonal-first ladder on a system with this `rung`.
     fn ladder(rung: SchwarzRung, ladder: Preconditioner) -> Self {
         match rung {
-            SchwarzRung::Absent | SchwarzRung::Unavailable => Self::Static {
+            SchwarzRung::Absent => Self::Static {
                 map: Some(ladder.settle()),
                 warnings: Vec::new(),
             },

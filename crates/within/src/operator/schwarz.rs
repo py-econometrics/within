@@ -274,18 +274,23 @@ fn diagonal_map(mut diag: Vec<f64>) -> Result<DiagonalPreconditioner, BuildError
     })
 }
 
-/// Build the additive Schwarz map plus its warnings; `None` when the design has no factor-pair
-/// subdomain to build on, where plain LSMR is the fallback.
+/// Build the additive Schwarz map plus its warnings, over every coefficient or over all but
+/// the `eliminated` term's; `None` when the design has no factor-pair subdomain to build on,
+/// where plain LSMR is the fallback.
 pub(crate) fn build_schwarz(
     prepared: &PreparedDesign<'_>,
     local_solver: &LocalSolverConfig,
+    eliminated: Option<usize>,
 ) -> Result<(Option<Preconditioner>, Vec<BuildWarning>), BuildError> {
     let build_started = Instant::now();
-    let (domains, warnings) = crate::domain::build_local_domains(prepared, local_solver)?;
+    let (domains, warnings) =
+        crate::domain::build_local_domains(prepared, local_solver, eliminated)?;
     if domains.is_empty() {
         return Ok((None, warnings));
     }
-    let schwarz = build_additive(domains, local_solver, prepared.design.n_dofs)?;
+    let design = &prepared.design;
+    let n_dofs = design.n_dofs - eliminated.map_or(0, |t| design.terms[t].n_dofs());
+    let schwarz = build_additive(domains, local_solver, n_dofs)?;
     let preconditioner = Preconditioner {
         inner: Variant::Additive(schwarz),
         build_duration: build_started.elapsed(),

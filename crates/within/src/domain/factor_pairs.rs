@@ -2,12 +2,13 @@
 //!
 //! Each cross-factor channel pair hands approx-chol its Gram factor `V`, one column per
 //! observation, and its block-diagonal approximate inverse becomes one Schwarz subdomain.
+//! With a term eliminated, its pairs factor their Schur complement onto the other side.
 //! Overlap is handled by partition-of-unity weights — see [`schwarz_precond::domain`] for
 //! the math.
 //!
 //! Entry point: [`build_local_domains`].
 
-use approx_chol::input::{BipartiteFactorWidth2, FactorWidth1};
+use approx_chol::input::{BipartiteFactorWidth2, FactorWidth1, Side};
 use approx_chol::ScalingOutcome;
 use schwarz_precond::{PartitionWeights, SubdomainCore};
 
@@ -26,10 +27,13 @@ pub(crate) struct LocalDomain {
     pub(crate) solver: BlockSolver,
 }
 
+/// Subdomains over every coefficient, or over all but the `eliminated` term's.
+///
 /// Same-factor channel pairs are exactly orthogonal after whitening, so never enumerated.
 pub(crate) fn build_local_domains(
     prepared: &PreparedDesign<'_>,
     config: &LocalSolverConfig,
+    eliminated: Option<usize>,
 ) -> Result<(Vec<LocalDomain>, Vec<BuildWarning>), BuildError> {
     use rayon::prelude::*;
 
@@ -52,7 +56,7 @@ pub(crate) fn build_local_domains(
         .collect();
     let per_pair: Vec<(Option<LocalDomain>, Vec<BuildWarning>)> = pairs
         .par_iter()
-        .map(|&pair| factor_pair(prepared, pair, config))
+        .map(|&pair| factor_pair(prepared, pair, config, eliminated))
         .collect::<Result<_, BuildError>>()?;
     let mut domain_pairs = Vec::new();
     let mut warnings = Vec::new();
@@ -61,22 +65,27 @@ pub(crate) fn build_local_domains(
         warnings.extend(pair_warnings);
     }
 
-    // A slope channel breaks `1/√c`'s equal-informativeness assumption (#94), so stay uniform.
-    if !channels
-        .iter()
-        .any(|&c| design.column(c) != Column::Intercept)
+    // A slope channel breaks `1/√c`'s equal-informativeness assumption (#94), so stay uniform;
+    // with a term eliminated, slope overlaps do not slow the solve under `1/√c`.
+    if eliminated.is_some()
+        || !channels
+            .iter()
+            .any(|&c| design.column(c) != Column::Intercept)
     {
-        compute_partition_weights(&mut domain_pairs, design.n_dofs);
+        let removed = eliminated.map_or(0, |t| design.terms[t].n_dofs());
+        compute_partition_weights(&mut domain_pairs, design.n_dofs - removed);
     }
 
     Ok((domain_pairs, warnings))
 }
 
-/// `G = V Vᵀ`, observation `k` adding `√w_k (z_q(k) e_{a_k} + z_r(k) e_{n_q + b_k})`.
+/// `G = V Vᵀ`, observation `k` adding `√w_k (z_q(k) e_{a_k} + z_r(k) e_{n_q + b_k})`; a pair
+/// with the `eliminated` term factors `G`'s Schur complement onto its other side.
 fn factor_pair(
     prepared: &PreparedDesign<'_>,
     pair: ChannelPair,
     config: &LocalSolverConfig,
+    eliminated: Option<usize>,
 ) -> Result<(Option<LocalDomain>, Vec<BuildWarning>), BuildError> {
     let (rows, cols) = (prepared.term(pair.rows.term), prepared.term(pair.cols.term));
     fn side<'p>(term: &PreparedTerm<'p>, column: usize) -> FactorWidth1<'p, f64> {
@@ -93,8 +102,17 @@ fn factor_pair(
         None => BipartiteFactorWidth2::new(left, right),
     }
     .expect("both sides read the same observations");
-    let inverse = approx_chol::factorize_with(v, config.factor_config(), config.scaling_policy()?)
-        .map_err(|e| BuildError::LocalSolverBuild(e.to_string()))?;
+    let kept = match eliminated {
+        Some(t) if pair.rows.term == t => Some(Side::Right),
+        Some(t) if pair.cols.term == t => Some(Side::Left),
+        _ => None,
+    };
+    let (factor, scaling) = (config.factor_config(), config.scaling_policy()?);
+    let inverse = match kept {
+        None => approx_chol::factorize_with(v, factor, scaling),
+        Some(kept) => approx_chol::factorize_complement(v, kept, factor, scaling),
+    }
+    .map_err(|e| BuildError::LocalSolverBuild(e.to_string()))?;
 
     let mut warnings = Vec::new();
     for clamp in inverse.components().filter_map(|c| c.clamp()) {
@@ -116,13 +134,20 @@ fn factor_pair(
     let n_rows = rows.term.n_levels();
     let row_base = rows.term.column_dofs(pair.rows.column).start;
     let col_base = cols.term.column_dofs(pair.cols.column).start;
+    let removed = eliminated.map(|t| prepared.design.terms[t].dofs());
     let global = |vertex: usize| {
-        let dof = if vertex < n_rows {
-            row_base + vertex
-        } else {
-            col_base + vertex - n_rows
+        let dof = match kept {
+            None if vertex < n_rows => row_base + vertex,
+            None => col_base + vertex - n_rows,
+            Some(Side::Left) => row_base + vertex,
+            Some(Side::Right) => col_base + vertex,
         };
-        u32::try_from(dof).expect("the DOF space fits u32")
+        // The kept coefficients are the design's without the eliminated block.
+        let column = match &removed {
+            Some(removed) if dof >= removed.end => dof - removed.len(),
+            _ => dof,
+        };
+        u32::try_from(column).expect("the DOF space fits u32")
     };
     // The factor's components are disjoint blocks, so one subdomain per pair solves each alone.
     let domain = LocalDomain {
@@ -191,8 +216,8 @@ mod tests {
     #[test]
     fn test_full_cover_domain_count() {
         let dm = make_test_design();
-        let (domain_pairs, _) =
-            build_local_domains(&dm, &LocalSolverConfig::default()).expect("plain domains build");
+        let (domain_pairs, _) = build_local_domains(&dm, &LocalSolverConfig::default(), None)
+            .expect("plain domains build");
         // 3 factor pairs; each pair may produce multiple components
         assert!(domain_pairs.len() >= 3);
     }
@@ -200,8 +225,8 @@ mod tests {
     #[test]
     fn test_partition_of_unity() {
         let dm = make_test_design();
-        let (domain_pairs, _) =
-            build_local_domains(&dm, &LocalSolverConfig::default()).expect("plain domains build");
+        let (domain_pairs, _) = build_local_domains(&dm, &LocalSolverConfig::default(), None)
+            .expect("plain domains build");
         let n_dofs = dm.design.n_dofs;
         // Two-sided PoU: squared weights must sum to 1 at every DOF.
         let mut weight_sq_sum = vec![0.0; n_dofs];
@@ -233,7 +258,7 @@ mod tests {
         .expect("valid slope design");
         let design = PreparedDesign::unweighted_for_test(design);
 
-        let (domain_pairs, _) = build_local_domains(&design, &LocalSolverConfig::default())
+        let (domain_pairs, _) = build_local_domains(&design, &LocalSolverConfig::default(), None)
             .expect("slope domains build");
 
         for ld in &domain_pairs {
@@ -273,7 +298,7 @@ mod tests {
         .expect("valid design");
         let prepared = PreparedDesign::unweighted_for_test(design);
         let (domains, _) =
-            build_local_domains(&prepared, &LocalSolverConfig::default()).expect("domains");
+            build_local_domains(&prepared, &LocalSolverConfig::default(), None).expect("domains");
         let [domain] = &domains[..] else {
             panic!("one subdomain per pair, got {}", domains.len())
         };
@@ -295,8 +320,8 @@ mod tests {
     #[test]
     fn test_domains_cover_all_dofs() {
         let dm = make_test_design();
-        let (domain_pairs, _) =
-            build_local_domains(&dm, &LocalSolverConfig::default()).expect("plain domains build");
+        let (domain_pairs, _) = build_local_domains(&dm, &LocalSolverConfig::default(), None)
+            .expect("plain domains build");
         let mut covered = vec![false; dm.design.n_dofs];
         for ld in &domain_pairs {
             for &idx in ld.core.global_indices() {
