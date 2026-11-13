@@ -8,6 +8,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 - Long weighted Gram diagonals use compensated accumulation.
+- Weights near the float range are scaled by a power of two, so a level's weight sum stays finite.
 
 ### Changed
 
