@@ -55,6 +55,21 @@ G^\circ &= A^\top A && \text{preconditioner lane — formed per factor pair}
 \end{aligned}
 $$
 
+**reduce** (optional) eliminates the term $e$ with the most coefficients;
+$A = (A_e \;\, A_k)$, $P_e$ the projector onto $\operatorname{span}(A_e)$,
+level-wise rank-1 sums since whitening makes each level's columns orthogonal:
+
+$$
+A_r = (I - P_e) A_k ,\qquad b_r = (I - P_e) b ,\qquad
+S = A_r^\top A_r = G^\circ_{kk} - G^\circ_{ke} (G^\circ_{ee})^+ G^\circ_{ek} .
+$$
+
+Pullback $\hat\gamma_e = (A_e^\top A_e)^+ A_e^\top (b - A_k\hat\gamma_k)$; then
+$b - A\hat\gamma = b_r - A_r\hat\gamma_k$, so residual and normal residual are the
+full system's. Both lanes then read $(A_r, S)$ in place of $(A, G^\circ)$;
+the preconditioner lane is $\operatorname{diag}(S)$ (no factor-pair states on
+$S$ yet), optionally wrapped by a coarse space.
+
 ## Normal form
 
 Signed grounded Laplacian: $n+1$ vertices (ground $g$); off-diagonals are
@@ -88,6 +103,8 @@ $$
 | **𝓛** | $\mathcal{L}\mathcal{L}^\top = X$ [exact] or $\mathbb{E}[\mathcal{L}\mathcal{L}^\top] = X$ [sampled], $X$ the source; rank = source, surely |
 | **B⁺** | member solve action: grounded → $B^{-1}$; floating → kernel-matched pseudo-inverse (not Moore–Penrose) |
 | **M** | $M = \sum_i R_i^\top \tilde D_i B_i^+ \tilde D_i R_i$, $\tilde D = 1/\sqrt{c}$ partition of unity ($\sum_i R_i^\top \tilde D_i^2 R_i = I$ on covered DOFs); symmetric PSD; applied once per iteration |
+| **Red** | reduced problem $(A_r, b_r)$, $S = A_r^\top A_r$ PSD, $\ker S = \{x : A_k x \in \operatorname{span}(A_e)\}$ |
+| **Mc** | $Z E^{-1} Z^\top + (I - Z E^{-1} Z^\top S) M (I - S Z E^{-1} Z^\top)$, $E = Z^\top S Z$, $Z$ rigid-component gauge columns ([Part 2, §5.4](2_solver_architecture.md#5-reduced-system)) |
 
 Predicates on **B**: **balanced** — $\exists\,\sigma \in \{\pm 1\}^n$ with
 $\sigma A \sigma \le 0$ off-diagonal (no frustrated cycle; plain pairs always,
@@ -111,6 +128,8 @@ it).
 | factor | L₊ → 𝓛 | clique-tree to completion (ground ordinary) / dense Cholesky (floating: anchored minor = grounding, benign) | sampled / exact | substitution |
 | pseudo-solve | 𝓛 → B⁺ | compose pullbacks in reverse; floating: mean-project RHS and solution; grounded: gauge $(b, -\mathbf{1}^\top b)$, $x = \hat x - \hat x_g$ | — | is the pullback |
 | recompose | {B⁺} → M | the PoU sum of the states table | quality — **the** approximation locus | — |
+| reduce | whitened problem → Red | project out $\operatorname{span}(A_e)$ level by level | exact | $\hat\gamma_e = (A_e^\top A_e)^+ A_e^\top (b - A_k\hat\gamma_k)$ |
+| coarsen | M on Red → Mc | glue spells by pencil $\kappa \le K$; drop columns with $\lVert A_r z\rVert^2 \le 10^{-10} \lVert W^{1/2} D z\rVert^2$; $LDL^\top$ of $E$ at unit diagonal, null pivots lifted | quality | — |
 
 ¹ below restrict everything is quality-only, except the kernel rule.
 
@@ -169,9 +188,19 @@ flowchart TD
     BINV -->|"recompose [quality]"| M
     GW -.->|"M = I / Jacobi"| M
 
+    RED["Red — A_r = (I − P_e)A_k,  S = A_rᵀA_r"]
+    WHITE -->|"reduce — γ̂ₑ from γ̂ₖ"| RED
+    MD["M = diag(S)"]
+    RED --> MD
+    MC["Mc — balancing coarse space"]
+    MD -.->|"coarsen [quality]"| MC
+
     IT["LSMR, M-inner product<br/>ker(M) ∩ range(Aᵀ) = {0}"]
     OP --> IT
     M --> IT
+    RED --> IT
+    MD --> IT
+    MC --> IT
     OUT["γ̂ mod identification, ṽ unique"]
     IT --> OUT
 ```
@@ -232,7 +261,8 @@ theorem is Kyng–Sachdeva's heavier sampler.
    \operatorname{range}(M)\}$, stopping quantity = the $M$-seminorm of the
    normal residual — identically zero on $\ker(M)$.
 
-**Rule: correct (mod identification) $\iff \ker(M) \cap R = \{0\}$.**
+**Rule: correct (mod identification) $\iff \ker(M) \cap R = \{0\}$.** On
+the reduced system the same rule holds with $R := \operatorname{range}(A_r^\top)$.
 
 | $\ker(M)$ | outcome |
 |---|---|
@@ -262,5 +292,6 @@ which problem is solved, invisibly.
   grounding isomorphism; exact Schur closure and clique decomposition
   (AC(k) §3.1); Gremban cover exactness; additive-Schwarz symmetry/PSD-ness
   under two-sided PoU weights.
+- **Not yet audited** — the reduce and coarsen edges.
 - **Open** — elimination theory for rank-1-block matrix-weighted Laplacians
   (state P); connection-Laplacian theory needs scaled-unitary weights.
