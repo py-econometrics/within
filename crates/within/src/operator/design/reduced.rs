@@ -154,9 +154,31 @@ impl<'p, 'a> ReducedDesign<'p, 'a> {
     /// `(D_k x)_i`.
     #[inline(always)]
     fn kept_row<const PLAIN: bool>(&self, x: &[f64], i: usize) -> f64 {
-        (self.kept.iter()).fold(-0.0, |acc, (_, columns, offset)| {
-            acc + columns.row::<PLAIN>(x, *offset, i)
-        })
+        let row = |(_, columns, offset): &(usize, Columns<'_>, usize)| {
+            columns.row::<PLAIN>(x, *offset, i)
+        };
+        // One and two kept terms skip the loop, which costs a 3FE product a fifth of its time.
+        match &self.kept[..] {
+            [a] => row(a),
+            [a, b] => row(a) + row(b),
+            kept => kept.iter().fold(-0.0, |acc, term| acc + row(term)),
+        }
+    }
+
+    /// `acc += v · D_kᵀ e_i`.
+    #[inline(always)]
+    fn add_kept_row<const PLAIN: bool>(&self, acc: &mut [f64], i: usize, v: f64) {
+        let mut add = |(_, columns, offset): &(usize, Columns<'_>, usize)| {
+            columns.add_row::<PLAIN>(acc, *offset, i, v)
+        };
+        match &self.kept[..] {
+            [a] => add(a),
+            [a, b] => {
+                add(a);
+                add(b);
+            }
+            kept => kept.iter().for_each(add),
+        }
     }
 
     /// Adds row `i`'s weighted value `wu` to its level's moments `D_e,lᵀ W^½ u`.
@@ -297,9 +319,7 @@ impl<'p, 'a> ReducedDesign<'p, 'a> {
                     let mean = if g[l] > 0.0 { sum / g[l] } else { 0.0 };
                     for i in rows {
                         let projected = w(i) * (v[i] - w(i) * mean);
-                        for (_, columns, offset) in &self.kept {
-                            columns.add_row::<PLAIN>(&mut acc, *offset, i, projected);
-                        }
+                        self.add_kept_row::<PLAIN>(&mut acc, i, projected);
                     }
                 }
                 return acc;
@@ -313,9 +333,7 @@ impl<'p, 'a> ReducedDesign<'p, 'a> {
                 self.solve(l, fit);
                 for i in rows {
                     let projected = w(i) * (v[i] - w(i) * self.fitted(fit, i));
-                    for (_, columns, offset) in &self.kept {
-                        columns.add_row::<PLAIN>(&mut acc, *offset, i, projected);
-                    }
+                    self.add_kept_row::<PLAIN>(&mut acc, i, projected);
                 }
             }
             acc
