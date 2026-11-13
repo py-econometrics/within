@@ -9,7 +9,7 @@ use schwarz_precond::Operator;
 use crate::domain::{
     fixed_tree, row_weight, LevelRows, PreparedDesign, PreparedTerm, MIN_LEAF_ROWS,
 };
-use crate::linalg::{fit_twice, project, DenseBasis, DiagonalGramBasis};
+use crate::linalg::{add_moments, fit_twice, remove_fit, solve, solve_rescued, DiagonalGramBasis};
 use crate::BuildError;
 
 /// Rows per parallel task, cut at an eliminated level's end so no level spans two tasks.
@@ -76,7 +76,6 @@ pub(crate) struct ReducedDesign<'p, 'a> {
     /// Kept terms: design index, columns, offset in the kept coefficients.
     kept: Vec<(usize, Columns<'p>, usize)>,
     n_kept: usize,
-    max_level_rows: usize,
     /// Every term is a lone intercept: the plain kernels.
     plain: bool,
 }
@@ -131,10 +130,6 @@ impl<'p, 'a> ReducedDesign<'p, 'a> {
         // Merging costs ∝ n_kept per leaf, so a leaf spans at least 4·n_kept rows.
         let leaves = cut(tasks.len(), MIN_LEAF_ROWS.max(4 * n_kept), task_rows);
         let plain = (design.terms.iter()).all(|t| t.intercept && !t.has_slopes());
-        let max_level_rows = (0..e.term.n_levels())
-            .map(|l| rows.positions(l).len())
-            .max()
-            .unwrap_or(0);
         let eliminated = Columns::new(&e);
         let gram = prepared.diagonal(design.dominant);
         Ok(Self {
@@ -147,7 +142,6 @@ impl<'p, 'a> ReducedDesign<'p, 'a> {
             leaves,
             kept,
             n_kept,
-            max_level_rows,
         })
     }
 
@@ -181,60 +175,29 @@ impl<'p, 'a> ReducedDesign<'p, 'a> {
         }
     }
 
-    /// Adds row `i`'s weighted value `wu` to its level's moments `D_e,lᵀ W^½ u`.
+    /// Level `l`'s rows and its columns of `A_e`.
     #[inline(always)]
-    fn accumulate(&self, moments: &mut [f64], i: usize, wu: f64) {
-        for (m, z) in moments.iter_mut().zip(&self.eliminated.loadings) {
-            *m += z.map_or(wu, |z| z[i] * wu);
-        }
-    }
-
-    /// Level `l`'s moments become its fit `G_l⁺ A_e,lᵀ u`; 0 where unidentified.
-    #[inline(always)]
-    fn solve(&self, l: usize, fit: &mut [f64]) {
-        let n_levels = self.eliminated.n_levels;
-        for (c, f) in fit.iter_mut().enumerate() {
-            let g = self.gram[c * n_levels + l];
-            *f = if g > 0.0 { *f / g } else { 0.0 };
-        }
-    }
-
-    /// Fills `level` with level `l`'s basis `W^½ z_c`, sets each row's value in `v` by `set`, and
-    /// sets `level.fit` to their moments.
-    #[inline(always)]
-    fn level_basis(
+    fn level<const PLAIN: bool, W: Fn(usize) -> f64>(
         &self,
         l: usize,
-        positions: Range<usize>,
-        w: impl Fn(usize) -> f64,
-        level: &mut Level<'_>,
-        v: &mut [f64],
-        set: impl Fn(usize, &mut f64),
-    ) {
-        let n_levels = self.eliminated.n_levels;
-        for (c, g) in level.norms.iter_mut().enumerate() {
-            *g = self.gram[c * n_levels + l];
-        }
-        level.fit.fill(0.0);
-        let width = level.fit.len();
-        let rows = level.entries.chunks_exact_mut(width).zip(v.iter_mut());
-        for (i, (entries, x)) in positions.zip(rows) {
-            let wi = w(i);
-            set(i, x);
-            for ((e, m), z) in
-                (entries.iter_mut().zip(level.fit.iter_mut())).zip(&self.eliminated.loadings)
-            {
-                *e = z.map_or(wi, |z| wi * z[i]);
-                *m += *e * *x;
-            }
-        }
+        w: W,
+    ) -> (Range<usize>, LevelBasis<'_, PLAIN, W>) {
+        let rows = self.rows.positions(l);
+        let basis = LevelBasis {
+            start: rows.start,
+            w,
+            loadings: &self.eliminated.loadings,
+            gram: self.gram,
+            n_levels: self.eliminated.n_levels,
+            level: l,
+        };
+        (rows, basis)
     }
 
-    /// `(D_e,l fit)_i`.
-    #[inline(always)]
-    fn fitted(&self, fit: &[f64], i: usize) -> f64 {
-        (fit.iter().zip(&self.eliminated.loadings))
-            .fold(-0.0, |acc, (f, z)| acc + z.map_or(*f, |z| f * z[i]))
+    /// `k` moments per eliminated column, a cache line clear of other threads' buffers at each
+    /// end: small buffers that shared a line ran up to 2× slower.
+    fn moments(&self, k: usize) -> Vec<f64> {
+        vec![0.0; 2 * LINE + k * self.eliminated.loadings.len()]
     }
 
     /// `out ← (I − P_e) out` in one pass, `set` first writing each row's value; `w = W^½`.
@@ -254,36 +217,27 @@ impl<'p, 'a> ReducedDesign<'p, 'a> {
             rest = tail;
         }
         let width = self.eliminated.loadings.len();
-        if PLAIN {
-            parts.into_par_iter().for_each(|(levels, base, part)| {
-                for l in levels {
-                    let rows = self.rows.positions(l);
-                    let v = &mut part[rows.start - base..rows.end - base];
-                    let mut sum = 0.0;
-                    for (x, i) in v.iter_mut().zip(rows.clone()) {
-                        set(i, x);
-                        sum += w(i) * *x;
-                    }
-                    let gram = self.gram[l];
-                    let basis = WeightRun {
-                        start: rows.start,
-                        w: &w,
-                        gram,
-                    };
-                    project(&basis, v, &mut [sum]);
-                }
-            });
-            return;
-        }
         parts.into_par_iter().for_each_init(
-            || LevelScratch::new(width, self.max_level_rows),
-            |scratch, (levels, base, part)| {
+            || self.moments(1),
+            |moments, (levels, base, part)| {
+                // A plain level's one moment stays in a register; through the heap it cost 12%.
+                let mut plain = [0.0];
+                let fit = match PLAIN {
+                    true => &mut plain[..],
+                    false => &mut moments[LINE..][..width],
+                };
                 for l in levels {
-                    let positions = self.rows.positions(l);
-                    let v = &mut part[positions.start - base..positions.end - base];
-                    let (mut level, _) = scratch.level(v.len());
-                    self.level_basis(l, positions, &w, &mut level, v, &set);
-                    level.project(v);
+                    let (rows, basis) = self.level::<PLAIN, _>(l, &w);
+                    let v = &mut part[rows.start - base..rows.end - base];
+                    fit.fill(0.0);
+                    for (p, x) in v.iter_mut().enumerate() {
+                        set(rows.start + p, x);
+                        add_moments(&basis, p, *x, fit);
+                    }
+                    solve_rescued(&basis, v, fit);
+                    for (p, x) in v.iter_mut().enumerate() {
+                        *x = remove_fit(&basis, p, *x, fit);
+                    }
                 }
             },
         );
@@ -305,34 +259,28 @@ impl<'p, 'a> ReducedDesign<'p, 'a> {
         let width = self.eliminated.loadings.len();
         let leaf = |tasks: Range<usize>| {
             let mut acc = vec![0.0; self.n_kept];
-            let mut scratch = LevelScratch::new(width, 0);
-            let fit = scratch.level(0).0.fit;
+            let mut moments = self.moments(1);
+            let mut plain = [0.0];
+            let fit = match PLAIN {
+                true => &mut plain[..],
+                false => &mut moments[LINE..][..width],
+            };
             let levels = match tasks.len() {
                 0 => 0..0,
                 _ => self.tasks[tasks.start].start..self.tasks[tasks.end - 1].end,
             };
-            if PLAIN {
-                for l in levels {
-                    let rows = self.rows.positions(l);
-                    let g = self.gram;
-                    let sum: f64 = rows.clone().map(|i| w(i) * v[i]).sum();
-                    let mean = if g[l] > 0.0 { sum / g[l] } else { 0.0 };
-                    for i in rows {
-                        let projected = w(i) * (v[i] - w(i) * mean);
-                        self.add_kept_row::<PLAIN>(&mut acc, i, projected);
-                    }
-                }
-                return acc;
-            }
             for l in levels {
+                let (rows, basis) = self.level::<PLAIN, _>(l, &w);
+                let u = &v[rows.clone()];
                 fit.fill(0.0);
-                let rows = self.rows.positions(l);
-                for i in rows.clone() {
-                    self.accumulate(fit, i, w(i) * v[i]);
+                for (p, &x) in u.iter().enumerate() {
+                    add_moments(&basis, p, x, fit);
                 }
-                self.solve(l, fit);
-                for i in rows {
-                    let projected = w(i) * (v[i] - w(i) * self.fitted(fit, i));
+                // Unrescued: the check costs a 3FE product 7%, and LSMR's vectors are normalized.
+                solve(&basis, fit);
+                for (p, &x) in u.iter().enumerate() {
+                    let i = rows.start + p;
+                    let projected = w(i) * remove_fit(&basis, p, x, fit);
                     self.add_kept_row::<PLAIN>(&mut acc, i, projected);
                 }
             }
@@ -350,14 +298,18 @@ impl<'p, 'a> ReducedDesign<'p, 'a> {
         with_shape!(self, |PLAIN, w| {
             let levels = by_level.par_chunks_mut(width).enumerate().with_min_len(256);
             levels.for_each_init(
-                || LevelScratch::new(width, self.max_level_rows),
-                |scratch, (l, out)| {
-                    let positions = self.rows.positions(l);
-                    let (mut level, v) = scratch.level(positions.len());
-                    let set = |i, x: &mut f64| *x = b[i] - w(i) * self.kept_row::<PLAIN>(x_k, i);
-                    self.level_basis(l, positions, w, &mut level, v, set);
-                    level.fit(v);
-                    out.copy_from_slice(level.fit);
+                || (self.moments(2), Vec::new()),
+                |(moments, v), (l, out)| {
+                    let (fit, step) = moments[LINE..][..2 * width].split_at_mut(width);
+                    let (rows, basis) = self.level::<PLAIN, _>(l, w);
+                    v.clear();
+                    v.extend(rows.map(|i| b[i] - w(i) * self.kept_row::<PLAIN>(x_k, i)));
+                    fit.fill(0.0);
+                    for (p, &x) in v.iter().enumerate() {
+                        add_moments(&basis, p, x, fit);
+                    }
+                    fit_twice(&basis, v, fit, step);
+                    out.copy_from_slice(fit);
                 },
             )
         });
@@ -410,19 +362,20 @@ impl<'p, 'a> ReducedDesign<'p, 'a> {
                     }
                 }
             }
-            self.solve(e, &mut fit);
             let n_levels = self.eliminated.n_levels;
-            for (k, (error, f)) in fit_error.iter_mut().zip(&fit).enumerate() {
+            for (k, (error, f)) in fit_error.iter_mut().zip(&mut fit).enumerate() {
                 let g = self.gram[k * n_levels + e];
-                *error = if g > 0.0 {
-                    f64::EPSILON * (*error / g + f.abs())
+                (*f, *error) = if g > 0.0 {
+                    let fit = *f / g;
+                    (fit, f64::EPSILON * (*error / g + fit.abs()))
                 } else {
-                    0.0
+                    (0.0, 0.0)
                 };
             }
             for i in rows {
                 let s = sqrt_weights.map_or(1.0, |s| s[i]);
-                let fitted = self.fitted(&fit, i);
+                let fitted = (fit.iter().zip(&self.eliminated.loadings))
+                    .fold(-0.0, |acc, (f, z)| acc + z.map_or(*f, |z| f * z[i]));
                 let r = s * (a(i) - fitted);
                 energy += r * r;
                 let spread = (fit_error.iter().zip(&self.eliminated.loadings))
@@ -522,84 +475,31 @@ fn cut(n: usize, min: usize, size: impl Fn(usize) -> usize) -> Vec<Range<usize>>
 /// Doubles in a cache line, 128 bytes on Apple silicon and 64 elsewhere.
 const LINE: usize = 16;
 
-/// One task's buffers for the eliminated term's levels, in one allocation padded by a cache line
-/// at each end: small buffers of different threads that shared lines ran up to 2× slower.
-struct LevelScratch {
-    buf: Vec<f64>,
-    width: usize,
-}
-
-impl LevelScratch {
-    /// For levels of at most `rows` rows.
-    fn new(width: usize, rows: usize) -> Self {
-        Self {
-            buf: vec![0.0; 2 * LINE + rows * (width + 1) + 3 * width],
-            width,
-        }
-    }
-
-    /// The buffers of a level of `len` rows, and room for its row values.
-    fn level(&mut self, len: usize) -> (Level<'_>, &mut [f64]) {
-        let width = self.width;
-        let (entries, rest) = self.buf[LINE..].split_at_mut(len * width);
-        let (values, rest) = rest.split_at_mut(len);
-        let (norms, rest) = rest.split_at_mut(width);
-        let (fit, rest) = rest.split_at_mut(width);
-        let step = &mut rest[..width];
-        let level = Level {
-            entries,
-            norms,
-            fit,
-            step,
-        };
-        (level, values)
-    }
-}
-
-/// One level's basis, row-major, with its squared column norms and the fit of its values.
-struct Level<'s> {
-    entries: &'s mut [f64],
-    norms: &'s mut [f64],
-    fit: &'s mut [f64],
-    step: &'s mut [f64],
-}
-
-impl Level<'_> {
-    /// `v ← (I − P_l) v`.
-    fn project(&mut self, v: &mut [f64]) {
-        let basis = DenseBasis {
-            entries: self.entries,
-            norms: self.norms,
-        };
-        project(&basis, v, self.fit);
-    }
-
-    /// `fit` becomes the level's coefficients of `v`.
-    fn fit(&mut self, v: &mut [f64]) {
-        let basis = DenseBasis {
-            entries: self.entries,
-            norms: self.norms,
-        };
-        fit_twice(&basis, v, self.fit, self.step);
-    }
-}
-
-/// A plain level: grouped rows from `start`, its one column `W^½` itself.
-struct WeightRun<W> {
+/// One eliminated level's columns `W^½ D_e,l`, row `p` of them at design row `start + p`.
+struct LevelBasis<'r, const PLAIN: bool, W> {
     start: usize,
     w: W,
-    gram: f64,
+    loadings: &'r [Option<&'r [f64]>],
+    /// `diag(A_eᵀA_e)`, column-major over the term's `n_levels`.
+    gram: &'r [f64],
+    n_levels: usize,
+    level: usize,
 }
 
-impl<W: Fn(usize) -> f64> DiagonalGramBasis for WeightRun<W> {
+impl<const PLAIN: bool, W: Fn(usize) -> f64> DiagonalGramBasis for LevelBasis<'_, PLAIN, W> {
     #[inline(always)]
-    fn entry(&self, p: usize, _: usize) -> f64 {
-        (self.w)(self.start + p)
+    fn entry(&self, p: usize, c: usize) -> f64 {
+        let i = self.start + p;
+        let w = (self.w)(i);
+        if PLAIN {
+            return w;
+        }
+        self.loadings[c].map_or(w, |z| w * z[i])
     }
 
     #[inline(always)]
-    fn norm2(&self, _: usize) -> f64 {
-        self.gram
+    fn norm2(&self, c: usize) -> f64 {
+        self.gram[c * self.n_levels + self.level]
     }
 }
 

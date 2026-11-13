@@ -26,50 +26,15 @@ pub(crate) trait DiagonalGramBasis {
     fn norm2(&self, c: usize) -> f64;
 }
 
-/// Row-major `entries`, `norms.len()` per row, with their columns' squared norms.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "`System::Reduced` wires the reduced operator in")
-)]
-pub(crate) struct DenseBasis<'a> {
-    pub(crate) entries: &'a [f64],
-    pub(crate) norms: &'a [f64],
-}
-
-impl DiagonalGramBasis for DenseBasis<'_> {
-    #[inline(always)]
-    fn entry(&self, p: usize, c: usize) -> f64 {
-        self.entries[p * self.norms.len() + c]
-    }
-
-    #[inline(always)]
-    fn norm2(&self, c: usize) -> f64 {
-        self.norms[c]
-    }
-}
-
 /// Adds row `p`'s `entry · v` to each column's moment.
 #[inline(always)]
 #[cfg_attr(
     not(test),
     expect(dead_code, reason = "`System::Reduced` wires the reduced operator in")
 )]
-fn add_moments(basis: &impl DiagonalGramBasis, p: usize, v: f64, moments: &mut [f64]) {
+pub(crate) fn add_moments(basis: &impl DiagonalGramBasis, p: usize, v: f64, moments: &mut [f64]) {
     for (c, m) in moments.iter_mut().enumerate() {
         *m += basis.entry(p, c) * v;
-    }
-}
-
-/// `v ← (I − P) v`, `P` projecting onto `basis`, given `fit = Bᵀv`.
-#[inline(always)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "`System::Reduced` wires the reduced operator in")
-)]
-pub(crate) fn project(basis: &impl DiagonalGramBasis, v: &mut [f64], fit: &mut [f64]) {
-    solve_rescued(basis, v, fit);
-    for (p, x) in v.iter_mut().enumerate() {
-        *x = remove_fit(basis, p, *x, fit);
     }
 }
 
@@ -118,19 +83,29 @@ pub(crate) fn fit_twice(
     not(test),
     expect(dead_code, reason = "`System::Reduced` wires the reduced operator in")
 )]
-fn solve_rescued(basis: &impl DiagonalGramBasis, v: &[f64], moments: &mut [f64]) {
+pub(crate) fn solve_rescued(basis: &impl DiagonalGramBasis, v: &[f64], moments: &mut [f64]) {
     let overflowed = moments.iter().any(|m| !m.is_finite());
     let scale = if overflowed {
         rescale_moments(basis, v, moments)
     } else {
         1.0
     };
+    solve(basis, moments);
+    if overflowed {
+        moments.iter_mut().for_each(|m| *m /= scale);
+    }
+}
+
+/// `moments ← G⁻¹ moments`.
+#[inline(always)]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "`System::Reduced` wires the reduced operator in")
+)]
+pub(crate) fn solve(basis: &impl DiagonalGramBasis, moments: &mut [f64]) {
     for (c, m) in moments.iter_mut().enumerate() {
         let g = basis.norm2(c);
         *m = if g > 0.0 { *m / g } else { 0.0 };
-    }
-    if overflowed {
-        moments.iter_mut().for_each(|m| *m /= scale);
     }
 }
 
@@ -159,7 +134,7 @@ fn rescale_moments(basis: &impl DiagonalGramBasis, v: &[f64], moments: &mut [f64
     not(test),
     expect(dead_code, reason = "`System::Reduced` wires the reduced operator in")
 )]
-fn remove_fit(basis: &impl DiagonalGramBasis, p: usize, v: f64, fit: &[f64]) -> f64 {
+pub(crate) fn remove_fit(basis: &impl DiagonalGramBasis, p: usize, v: f64, fit: &[f64]) -> f64 {
     (fit.iter().enumerate()).fold(v, |v, (c, m)| sub_product(v, basis.entry(p, c), *m))
 }
 
