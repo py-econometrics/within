@@ -102,8 +102,8 @@ pub enum BuildError {
         /// The offending value.
         value: f64,
     },
-    /// Schwarz preconditioning of a reduced system with two kept terms is not available yet.
-    #[error("Additive and Adaptive preconditioners are not available on a reduced system that keeps two or more terms")]
+    /// The Additive preconditioner of a reduced system that keeps a term is not available yet.
+    #[error("the Additive preconditioner is not available on a reduced system that keeps a term")]
     SchwarzOnReducedSystem,
     /// The reduced system indexes observations as `u32`.
     #[error("the reduced system supports at most u32::MAX observations, got {n_obs}")]

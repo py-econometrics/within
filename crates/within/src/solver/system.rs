@@ -10,11 +10,13 @@ use crate::operator::design::ReducedDesign;
 use crate::operator::schwarz::{build_schwarz, Preconditioner};
 use crate::{BuildError, BuildWarning, SolveError};
 
-/// Whether a system's Schwarz rung exists.
+/// A system's Schwarz rung.
 pub(crate) enum SchwarzRung {
     /// Nothing for Schwarz to couple: the ladder settles on its diagonal.
     Absent,
     Buildable,
+    /// Coupled terms whose Schwarz this system cannot build yet: a ladder stays on its diagonal.
+    Unavailable,
 }
 
 /// `min ‖b − A x‖` over the coefficients LSMR iterates on, and the way back to the full fit.
@@ -25,8 +27,8 @@ pub(crate) trait LeastSquaresSystem: Sync {
         Self: 's;
 
     fn matrix(&self) -> &Self::Matrix;
-    /// Whether a Schwarz rung exists on what LSMR iterates on; an error when it can't be built.
-    fn schwarz_rung(&self) -> Result<SchwarzRung, BuildError>;
+    /// The Schwarz rung on what LSMR iterates on.
+    fn schwarz_rung(&self) -> SchwarzRung;
     /// The diagonal of this system's own normal matrix `AᵀA`.
     fn gram_diagonal(&self) -> Vec<f64>;
     /// Validate `y`, then form this system's right-hand side.
@@ -119,12 +121,12 @@ impl LeastSquaresSystem for PreparedDesign<'_> {
         self
     }
 
-    fn schwarz_rung(&self) -> Result<SchwarzRung, BuildError> {
+    fn schwarz_rung(&self) -> SchwarzRung {
         // Schwarz subdomains are factor pairs; one factor's normal matrix is diagonal.
-        Ok(match self.design.n_factors() {
+        match self.design.n_factors() {
             0 | 1 => SchwarzRung::Absent,
             _ => SchwarzRung::Buildable,
-        })
+        }
     }
 
     fn gram_diagonal(&self) -> Vec<f64> {
@@ -173,11 +175,11 @@ impl LeastSquaresSystem for ReducedDesign<'_, '_> {
         self
     }
 
-    fn schwarz_rung(&self) -> Result<SchwarzRung, BuildError> {
+    fn schwarz_rung(&self) -> SchwarzRung {
         // With one kept factor the reduced normal matrix already couples its levels.
         match ReducedDesign::prepared(self).design.n_factors() {
-            0 | 1 => Ok(SchwarzRung::Absent),
-            _ => Err(BuildError::SchwarzOnReducedSystem),
+            0 | 1 => SchwarzRung::Absent,
+            _ => SchwarzRung::Unavailable,
         }
     }
 

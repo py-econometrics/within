@@ -39,9 +39,10 @@ impl PrecondSlot {
             },
             PreconditionerConfig::Additive { local_solver } => {
                 local_solver.validate()?;
-                let (map, warnings) = match system.schwarz_rung()? {
+                let (map, warnings) = match system.schwarz_rung() {
                     SchwarzRung::Absent => (None, Vec::new()),
                     SchwarzRung::Buildable => system.build_schwarz(&local_solver)?,
+                    SchwarzRung::Unavailable => return Err(BuildError::SchwarzOnReducedSystem),
                 };
                 Self::Static { map, warnings }
             }
@@ -51,9 +52,8 @@ impl PrecondSlot {
             } => {
                 // Fail before the diagonal pass; `reuse` repeats this for a deserialized ladder.
                 local_solver.validate()?;
-                let rung = system.schwarz_rung()?;
                 Self::ladder(
-                    rung,
+                    system.schwarz_rung(),
                     build_adaptive(|| system.gram_diagonal(), stall, local_solver)?,
                 )
             }
@@ -69,8 +69,9 @@ impl PrecondSlot {
             if matches!(
                 preconditioner.config(),
                 PreconditionerConfig::Additive { .. }
-            ) {
-                system.schwarz_rung()?;
+            ) && matches!(system.schwarz_rung(), SchwarzRung::Unavailable)
+            {
+                return Err(BuildError::SchwarzOnReducedSystem);
             }
             return Ok(Self::Static {
                 map: Some(preconditioner),
@@ -79,13 +80,13 @@ impl PrecondSlot {
         };
         // A deserialized ladder skipped `Adaptive`'s build-time checks.
         ladder.escalated.validate()?;
-        Ok(Self::ladder(system.schwarz_rung()?, preconditioner))
+        Ok(Self::ladder(system.schwarz_rung(), preconditioner))
     }
 
     /// A diagonal-first ladder on a system with this `rung`.
     fn ladder(rung: SchwarzRung, ladder: Preconditioner) -> Self {
         match rung {
-            SchwarzRung::Absent => Self::Static {
+            SchwarzRung::Absent | SchwarzRung::Unavailable => Self::Static {
                 map: Some(ladder.settle()),
                 warnings: Vec::new(),
             },

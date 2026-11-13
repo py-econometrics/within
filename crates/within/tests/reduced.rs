@@ -288,23 +288,18 @@ fn a_prebuilt_preconditioner_must_fit_the_reduced_system() {
 /// A kept factor's levels are coupled through the eliminated one, and the reduced system does
 /// not build Schwarz yet.
 #[rstest]
-fn schwarz_is_not_yet_built_on_the_reduced_system(
-    #[values(2, 3)] n_factors: usize,
-    #[values(
-        None,
-        Some(PreconditionerConfig::Additive { local_solver: Default::default() }),
-        Some(PreconditionerConfig::default())
-    )]
-    preconditioner: Option<PreconditionerConfig>,
-) {
+fn additive_is_not_yet_built_on_the_reduced_system(#[values(2, 3)] n_factors: usize) {
     let factors = factors(n_factors);
     let y = response(5);
+    let additive = PreconditionerConfig::Additive {
+        local_solver: Default::default(),
+    };
     let result = solve(
         effects(&factors),
         &y,
         None,
         None,
-        preconditioner.as_ref(),
+        &additive,
         System::Reduced,
     );
     assert!(
@@ -314,6 +309,28 @@ fn schwarz_is_not_yet_built_on_the_reduced_system(
         ),
         "{result:?}"
     );
+}
+
+/// The ladder starts on the reduced system's own diagonal, and stays there until Schwarz is built.
+#[rstest]
+fn the_default_preconditioner_starts_on_the_reduced_diagonal(
+    #[values(2, 3)] n_factors: usize,
+    #[values(None, Some(PreconditionerConfig::default()))] preconditioner: Option<
+        PreconditionerConfig,
+    >,
+) {
+    let factors = factors(n_factors);
+    let y = response(5);
+    let solve_on = |system, preconditioner: Option<&PreconditionerConfig>| {
+        solve(effects(&factors), &y, None, &lsmr(), preconditioner, system).expect("solve")
+    };
+    let ladder = solve_on(System::Reduced, preconditioner.as_ref());
+    let diagonal = solve_on(System::Reduced, Some(&PreconditionerConfig::Diagonal));
+    assert!(ladder.converged);
+    assert_eq!(ladder.iterations, diagonal.iterations);
+    assert_eq!(ladder.x, diagonal.x);
+    let full = solve_on(System::Full, preconditioner.as_ref());
+    assert_same_fit(&ladder.demeaned, &full.demeaned, &[true; N], &y);
 }
 
 /// A Schwarz map built on another design's full system is refused even when its size fits.

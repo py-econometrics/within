@@ -444,8 +444,8 @@ impl<'a> Solver<'a> {
 
     /// [`Solver::new`] on the reduced system: the term with the most coefficients is eliminated
     /// exactly, LSMR iterates on the remaining terms, and the eliminated coefficients are
-    /// recovered from the rest. Schwarz is not yet built on the reduced system, so it refuses
-    /// Schwarz preconditioners once two terms remain after elimination.
+    /// recovered from the rest. Schwarz is not yet built on the reduced system: once a term
+    /// remains after elimination, Additive is refused and Adaptive stays on its diagonal.
     pub fn reduced(
         design: impl IntoDesign<'a>,
         weights: Option<&[f64]>,
