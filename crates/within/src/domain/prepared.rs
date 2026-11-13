@@ -184,10 +184,17 @@ fn prepare_sqrt_weights(design: &Design<'_>, weights: &[f64]) -> Result<Vec<f64>
     {
         return Err(BuildError::InvalidWeight { index, value });
     }
+    // The fit ignores a common weight scale; a power of four keeps every level's Σw finite.
+    let max = weights.iter().copied().fold(0.0, f64::max);
+    let scale = if max > 2f64.powi(960) {
+        2f64.powi(-128)
+    } else {
+        1.0
+    };
     Ok(design
         .permute_obs_in(weights)
         .iter()
-        .map(|weight| weight.sqrt())
+        .map(|weight| (scale * weight).sqrt())
         .collect())
 }
 
