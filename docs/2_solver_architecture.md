@@ -150,40 +150,126 @@ Factor pairs are processed in parallel.
 
 ---
 
-## 5. Full Algorithm Summary
+## 5. Reduced System
+
+The full system (Sections 3–4) iterates on every coefficient. The **reduced system** solves one term exactly and iterates on the rest. Unlike the local Schur complements of [Part 3](3_local_solvers.md), which act inside one subdomain's preconditioner, this elimination changes the operator LSMR iterates on.
+
+### 5.1 Eliminated and kept terms
+
+Let $e$ be the term with the most coefficients and $k$ the remaining terms, and split the whitened operator ([Part 4](4_sddm_state_model.md)) as $A = \begin{pmatrix} A_e & A_k \end{pmatrix}$. Observations are sorted by $e$'s level, so $A_e$ is block-diagonal over $e$'s levels $l$ in contiguous rows, with one block $a_l \in \mathbb{R}^{n_l \times p}$ per level ($p$ = number of $e$'s columns: intercept and slopes). Whitening makes each block's columns orthogonal, $a_l^\top a_l = \Delta_l$ diagonal, so the orthogonal projector onto $\operatorname{span}(A_e)$ is a sum of rank-1 terms, level by level:
+
+$$
+P_e = A_e (A_e^\top A_e)^+ A_e^\top = \bigoplus_l \sum_{c \,:\, \Delta_{l,c} > 0} \frac{a_{l,c}\, a_{l,c}^\top}{\Delta_{l,c}} .
+$$
+
+Each level's projection is two classical Gram–Schmidt passes against its columns; a column with $\Delta_{l,c} = 0$ fits zero.
+
+### 5.2 The reduced least-squares problem
+
+$$
+\min_{\alpha_k} \|b_r - A_r \alpha_k\|_2 ,\qquad A_r = (I - P_e) A_k ,\qquad b_r = (I - P_e)\, b .
+$$
+
+Its normal matrix is the Schur complement of $G_{ee}$ in $G$:
+
+$$
+S = A_r^\top A_r = G_{kk} - G_{ke}\, G_{ee}^+\, G_{ek} ,
+$$
+
+and by Frisch–Waugh–Lovell its minimizers are the $k$-blocks of the full minimizers. LSMR runs on $(A_r, b_r)$ unchanged: $A_r \alpha_k$ is one sweep over the rows grouped by eliminated level, $A_r^\top v = A_k^\top (I - P_e) v$.
+
+**Recovery.** The eliminated coefficients are the level-wise least-squares fit of what the kept terms leave:
+
+$$
+\alpha_e = (A_e^\top A_e)^+ A_e^\top (b - A_k \alpha_k) .
+$$
+
+**Residuals.** With $\alpha_e$ recovered,
+
+$$
+r = b - A_e \alpha_e - A_k \alpha_k = (I - P_e)(b - A_k \alpha_k) = b_r - A_r \alpha_k = r_r ,
+$$
+
+and since $A_e^\top r = 0$ and $A_k^\top r = A_r^\top r_r$, also $\|A^\top r\|_2 = \|A_r^\top r_r\|_2$. The iterate's residual and normal residual are exactly the full system's; only the reference norms in the stopping tests are the reduced system's own ($\|b_r\|_2$, $\|A_r^\top b_r\|_2$).
+
+### 5.3 Preconditioning the reduced system
+
+The diagonal of $S$ is each kept column's squared norm less its projection onto $A_e$:
+
+$$
+S_{jj} = \|A_{k,j}\|_2^2 - \sum_l \sum_{c \,:\, \Delta_{l,c} > 0} \frac{(a_{l,c}^\top A_{k,j})^2}{\Delta_{l,c}} .
+$$
+
+Where this difference cancels to within $O(n\varepsilon)\,\|A_{k,j}\|_2^2$, it is recomputed directly as $\|(I - P_e) A_{k,j}\|_2^2$ and set to $0$ when that lies within its own rounding bound. On the reduced system the preconditioner is currently this diagonal; Schwarz subdomains on $S$ are not built.
+
+### 5.4 Rigid coarse space
+
+A coarse space $Z$ over the kept coefficients corrects the directions in which a local or diagonal preconditioner $M$ of $S$ is poor, in the balancing (BNN) form
+
+$$
+M_c = Z E^{-1} Z^\top + (I - Z E^{-1} Z^\top S)\, M\, (I - S Z E^{-1} Z^\top) ,\qquad E = Z^\top S Z = (A_r Z)^\top (A_r Z) .
+$$
+
+Per application: one $M$, two solves with $E$, and products with $Z$, $Z^\top$, $SZ = A_r^\top (A_r Z)$ and $(SZ)^\top$, where $Z$ and $SZ$ are stored sparse. The construction below is a prototype, not yet part of the solver.
+
+**Anchor.** The anchor $f$ is the kept term with the same columns as $e$ (same intercept and slope pattern, $p$ columns) and the most levels; without one there is no coarse space.
+
+**Gluing.** A spell $(l, m)$ is the set of rows with eliminated level $l$ and anchor level $m$. With $G^e_{lm} = \sum_{o \in (l,m)} w_o\, c_e(o) c_e(o)^\top$ its Gram on $e$'s columns, $G^e_l$ level $l$'s Gram, and $G^f_{lm}$, $G^f_m$ the same on $f$'s columns, the spell glues $l$ and $m$ iff
+
+$$
+\max\bigl(\kappa(G^e_{lm}, G^e_l),\ \kappa(G^f_{lm}, G^f_m)\bigr) \le K ,
+\qquad \kappa(X, Y) = \frac{\lambda_{\max}}{\lambda_{\min}}\bigl(Y^{-1/2} X Y^{-1/2}\bigr) \text{ on } \operatorname{range}(Y),
+$$
+
+with $\kappa = \infty$ when $\lambda_{\min} \le 10^{-12} \lambda_{\max}$. For $p = 1$ the pencil is a scalar, so every spell with positive weight glues. The components are the connected components of the bipartite graph on $e$'s and $f$'s levels with the glued spells as edges.
+
+**Coarse columns.** For each component $C$ and channel $j$, $z_{C,j}$ sets coefficient $j$ of every anchor level in $C$ to $1$ in the caller's parametrization, mapped to the whitened basis and normalized. $z_{C,j}$ has energy $\|A_r z_{C,j}\|_2^2$ only on eliminated levels whose columns cannot reproduce $A_k z_{C,j}$ on their rows; with intercepts only, these are exactly the levels split across components. Columns with $\|A_r z\|_2^2 \le 10^{-10} \|\sqrt{W} D z\|_2^2$ are taken as null directions of $S$ and dropped.
+
+**Factorization.** $E$ is assembled per eliminated level from $A_r Z$ on its rows; an eliminated level touching many components instead adds its $p$ rows $\bigl(G_l \;\; s_l\bigr)$, $s_l = a_l^\top A_k Z$, to an augmented matrix whose Schur complement is $E$. The matrix is scaled to unit diagonal, $\tilde E = \operatorname{diag}(E)^{-1/2} E \operatorname{diag}(E)^{-1/2}$, and factored by sparse $LDL^\top$ with AMD ordering; a pivot below $10^{-10} \max_i \tilde E_{ii}$ is replaced by $\max_i \tilde E_{ii}$, so a remaining null direction of $E$ contributes almost nothing to $E^{-1}$.
+
+**When it declines.** No coarse space is built when there is no anchor, when the components number more than half of the levels, when no eliminated level is split across components, or when every column is dropped. The factor is limited to $n_{\text{obs}}$ nonzeros; over that budget $K$ doubles from $20$ — gluing more spells into fewer, larger components — up to $8\times$, stopping early when doubling glues nothing new, and the coarse space is declined if no $K$ fits.
+
+---
+
+## 6. Full Algorithm Summary
 
 We conclude with a summary of the full algorithm.
 
-### 5.1 Setup phase
+### 6.1 Setup phase
 
 1. **Build weighted design** from `categories` and `weights`.
    - Infer $m_q$ (number of levels) per factor by scanning observations.
+   - Sort observations by the term with the most coefficients, which is $e$ on the reduced system ([Section 5](#5-reduced-system)).
 
-2. **For each factor pair $(q, r)$ in parallel:**
+2. **Reduced system only**: compute $\operatorname{diag}(S)$ (Section 5.3) as the preconditioner; skip steps 3–6.
+
+3. **For each factor pair $(q, r)$ in parallel:**
    - Build cross-tabulation $C_{qr}$ and diagonal blocks $D_q$, $D_r$.
    - Find connected components of the bipartite graph of $C_{qr}$.
-   - Create one subdomain per component, recording its global DOF / factor level indices.
+   - Create one subdomain for the pair, its local solve block-diagonal over the components.
 
-3. **Compute partition-of-unity weights**: $\omega_j = 1/\sqrt{c_j}$ for each DOF / factor level $j$.
+4. **Compute partition-of-unity weights**: $\omega_j = 1/\sqrt{c_j}$ for each DOF / factor level $j$.
 
-4. **For each subdomain in parallel:**
+5. **For each subdomain in parallel:**
    - Build local Laplacian via sign-flip (Section 2.3).
    - Factor with approximate Cholesky (or dense Cholesky for small systems; see Part 3).
 
-5. **Assemble** Schwarz preconditioner $M^{-1}$ from subdomain factors.
+6. **Assemble** Schwarz preconditioner $M^{-1}$ from subdomain factors.
 
-### 5.2 Solve phase
+### 6.2 Solve phase
 
-1. **Form the rectangular operator and right-hand side**: $A = \sqrt{W} D$, $b = \sqrt{W} y$ (both implicit — never materialized).
+1. **Form the rectangular operator and right-hand side**: $A = \sqrt{W} D$, $b = \sqrt{W} y$ (both implicit — never materialized). On the reduced system, form $b_r = (I - P_e) b$ and iterate on $(A_r, b_r)$ in step 2.
 
 2. **Run modified LSMR** on $(A, b)$ with preconditioner $M^{-1}$:
    - Each iteration: one $Av$, one $A^\top u$, one $M^{-1}\tilde{p}$ application, plus a constant number of vector updates.
    - Optionally reorthogonalize against the last `local_size` basis vectors.
    - Converge when $\|A^\top r_k\|_2 \leq \text{tol} \cdot \|A^\top b\|_2$.
 
-3. **Compute demeaned residuals**: $e = y - D\alpha$.
+3. **Reduced system only**: recover $\alpha_e$ from $\alpha_k$ (Section 5.2).
 
-4. **Report** the final relative residual along with the converged solution $\alpha$.
+4. **Compute demeaned residuals**: $e = y - D\alpha$.
+
+5. **Report** the final relative residual along with the converged solution $\alpha$.
 
 ---
 
