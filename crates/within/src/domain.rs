@@ -9,7 +9,7 @@ mod scatter_split;
 
 pub(crate) use prepared::{PreparedDesign, PreparedTerm};
 use reparam::TermReparam;
-pub(crate) use scatter_split::{LevelSlots, ScatterSplit};
+pub(crate) use scatter_split::{fixed_tree, LevelRows, LevelSlots, ScatterSplit, MIN_LEAF_ROWS};
 
 /// Rows from which a sweep over observations runs in parallel.
 pub(crate) const PAR_THRESHOLD: usize = 10_000;

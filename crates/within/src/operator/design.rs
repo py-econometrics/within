@@ -3,12 +3,25 @@ use schwarz_precond::Operator;
 use crate::domain::{PreparedDesign, PreparedTerm, PAR_THRESHOLD};
 
 mod gather;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "`System::Reduced` wires the reduced operator in")
+)]
+mod reduced;
 mod scatter;
 
 #[cfg(test)]
 mod tests;
 
 use gather::{gather_apply, unscale};
+#[cfg_attr(
+    not(test),
+    expect(
+        unused_imports,
+        reason = "`System::Reduced` wires the reduced operator in"
+    )
+)]
+pub(crate) use reduced::ReducedDesign;
 use scatter::scatter_block;
 
 impl PreparedDesign<'_> {
@@ -28,28 +41,6 @@ impl PreparedDesign<'_> {
                 }
                 demeaned
             }
-        }
-    }
-
-    /// Fits the dominant block of `x` to `b = W^½ y` given the other blocks; 0 if unidentified.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the reduced system recovers with it")
-    )]
-    pub(crate) fn recover_eliminated(&self, b: &[f64], x: &mut [f64]) {
-        let eliminated = self.design.dominant;
-        let dofs = self.design.terms[eliminated].dofs();
-        x[dofs.clone()].fill(0.0);
-        let mut residual = vec![0.0; b.len()];
-        gather_apply(self, x, &mut residual, self.sqrt_weights());
-        for (r, &bi) in residual.iter_mut().zip(b) {
-            *r = bi - *r;
-        }
-        let block = &mut x[dofs];
-        self.adjoint_block(&self.term(eliminated), &residual, block);
-        // Whitening makes each level's block of `A_eᵀA_e` diagonal.
-        for (xj, &g) in block.iter_mut().zip(self.diagonal(eliminated)) {
-            *xj = if g > 0.0 { *xj / g } else { 0.0 };
         }
     }
 

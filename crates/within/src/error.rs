@@ -102,6 +102,9 @@ pub enum BuildError {
         /// The offending value.
         value: f64,
     },
+    /// The reduced system needs the rows sorted by the eliminated term, as `Design::new` sorts them.
+    #[error("the reduced system needs a design sorted by its dominant term")]
+    UnsortedReducedSystem,
     /// The compact coefficient space exceeds the internal `u32` index width.
     #[error("design has {n_dofs} degrees of freedom, exceeding the u32 column-index limit")]
     DofSpaceExceedsU32 {
