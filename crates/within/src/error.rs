@@ -102,6 +102,18 @@ pub enum BuildError {
         /// The offending value.
         value: f64,
     },
+    /// Schwarz preconditioning of a reduced system with two kept terms is not available yet.
+    #[error("Additive and Adaptive preconditioners are not available on a reduced system that keeps two or more terms")]
+    SchwarzOnReducedSystem,
+    /// The reduced system indexes observations as `u32`.
+    #[error("the reduced system supports at most u32::MAX observations, got {n_obs}")]
+    ObservationsExceedU32 {
+        /// Number of observations in the design.
+        n_obs: usize,
+    },
+    /// The reduced system needs the rows sorted by the eliminated term, as `Design::new` sorts them.
+    #[error("the reduced system needs a design sorted by its dominant term")]
+    UnsortedReducedSystem,
     /// The compact coefficient space exceeds the internal `u32` index width.
     #[error("design has {n_dofs} degrees of freedom, exceeding the u32 column-index limit")]
     DofSpaceExceedsU32 {

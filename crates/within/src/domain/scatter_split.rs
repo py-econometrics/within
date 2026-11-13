@@ -54,9 +54,7 @@ impl ScatterSplit {
             {
                 return Self::ByRow;
             }
-            let (offsets, rows) = super::stable_argsort(levels, n_levels);
-            let rows = Some(rows.into_boxed_slice());
-            return Self::ByLevel(LevelRows { offsets, rows });
+            return Self::ByLevel(LevelRows::argsort(levels, n_levels));
         }
         let mut offsets = vec![0; n_levels + 1];
         // One store per run: a per-row increment chains each run through one counter.
@@ -120,7 +118,9 @@ impl ScatterSplit {
             }
             Self::ByRow => {
                 // Merging costs ∝ L per state word, a leaf ∝ its rows per word: 4·L rows bound merges.
-                let leaf_len = (4 * n_levels).min(levels.len().div_ceil(2)).max(65_536);
+                let leaf_len = (4 * n_levels)
+                    .min(levels.len().div_ceil(2))
+                    .max(MIN_LEAF_ROWS);
                 let scatter = |rows: Range<usize>| {
                     let mut states = vec![init; n_levels];
                     for i in rows {
@@ -143,8 +143,11 @@ impl ScatterSplit {
     }
 }
 
+/// Fewest rows per accumulator in a row-parallel reduction.
+pub(crate) const MIN_LEAF_ROWS: usize = 65_536;
+
 /// `leaf` over `leaf_len` pieces of `items`, merged in a binary tree fixed by both lengths alone.
-fn fixed_tree<T: Send>(
+pub(crate) fn fixed_tree<T: Send>(
     items: Range<usize>,
     leaf_len: usize,
     leaf: &(impl Fn(Range<usize>) -> T + Sync),
@@ -163,6 +166,7 @@ fn fixed_tree<T: Send>(
 }
 
 /// The rows of each level, ascending: the inverse of the row → level map.
+#[derive(Clone)]
 pub(crate) struct LevelRows {
     /// Level `l` owns positions `offsets[l]..offsets[l + 1]`.
     offsets: Vec<usize>,
@@ -171,14 +175,28 @@ pub(crate) struct LevelRows {
 }
 
 impl LevelRows {
+    /// Needs `u32` row indices.
+    pub(crate) fn argsort(levels: &[u32], n_levels: usize) -> Self {
+        let (offsets, rows) = super::stable_argsort(levels, n_levels);
+        Self {
+            offsets,
+            rows: Some(rows.into_boxed_slice()),
+        }
+    }
+
     /// Positions of `level`'s rows, for [`for_each_row`](Self::for_each_row).
-    fn positions(&self, level: usize) -> Range<usize> {
+    pub(crate) fn positions(&self, level: usize) -> Range<usize> {
         self.offsets[level]..self.offsets[level + 1]
+    }
+
+    /// The row at each position; `None` when positions are rows.
+    pub(crate) fn order(&self) -> Option<&[u32]> {
+        self.rows.as_deref()
     }
 
     /// Calls `f` on the row at each of `positions`, in order.
     #[inline(always)]
-    fn for_each_row(&self, positions: Range<usize>, f: impl FnMut(usize)) {
+    pub(crate) fn for_each_row(&self, positions: Range<usize>, f: impl FnMut(usize)) {
         match &self.rows {
             None => positions.for_each(f),
             Some(rows) => rows[positions].iter().map(|&r| r as usize).for_each(f),

@@ -10,6 +10,10 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - Long weighted Gram diagonals use compensated accumulation.
 - Weights near the float range are scaled by a power of two, so a level's weight sum stays finite.
 
+### Added
+
+- `Solver::reduced` eliminates the term with the most coefficients exactly and runs LSMR on the remaining terms, projected off the eliminated term's span; the eliminated coefficients are recovered from the rest. Schwarz preconditioners are refused once two terms remain after elimination; with fewer, they mean what they mean on the full system (#498).
+
 ### Changed
 
 - Slope whitening's row passes run in parallel within a term, bit-identical at any thread count: per-level sums, the design adjoint included, combine in one fixed tree set by the data, with row-split leaves of `4·L` rows whatever the state size (#515).

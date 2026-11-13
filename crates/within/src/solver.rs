@@ -13,6 +13,7 @@ use schwarz_precond::{
 use crate::channel::CoefficientAddress;
 use crate::config::{LsmrOptions, PreconditionerConfig};
 use crate::domain::{Design, Effect, PreparedDesign};
+use crate::operator::design::ReducedDesign;
 use crate::operator::schwarz::Preconditioner;
 use crate::{BuildError, BuildWarning, SolveError, WithinError};
 
@@ -136,7 +137,7 @@ pub struct SolveResult {
     pub converged: bool,
     /// Number of LSMR iterations used (summed across both rungs when escalated).
     pub iterations: usize,
-    /// Relative normal-equation residual `||D^T W (y - Dx)|| / ||D^T W y||`,
+    /// Relative normal-equation residual `‖Aᵀ(b − Ax)‖ / ‖Aᵀb‖` of the iterated system,
     /// estimated from the LSMR recurrence (Fong & Saunders) at no extra cost.
     /// Exact for an unpreconditioned solve; for a preconditioned solve it is
     /// measured in the preconditioner's metric and typically sits a modest
@@ -197,6 +198,14 @@ impl BatchSolveResult {
         &self.demeaned[i * self.n_obs..(i + 1) * self.n_obs]
     }
 }
+/// The least-squares system LSMR iterates on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum System {
+    /// Every coefficient.
+    Full,
+    /// The term with the most coefficients is eliminated exactly; the rest iterate.
+    Reduced,
+}
 
 /// Persistent solver that owns its preconditioner for reuse across multiple solves.
 ///
@@ -211,6 +220,7 @@ impl BatchSolveResult {
 /// Python boundary — uses owned columns.
 pub struct Solver<'a> {
     prepared: PreparedDesign<'a>,
+    system: System,
     slot: PrecondSlot,
 }
 
@@ -220,6 +230,7 @@ impl std::fmt::Debug for Solver<'_> {
             .field("n_obs", &self.prepared.design.n_obs)
             .field("n_dofs", &self.prepared.design.n_dofs)
             .field("has_weights", &self.prepared.sqrt_weights().is_some())
+            .field("system", &self.system)
             .field("has_preconditioner", &self.preconditioner().is_some())
             .field("has_escalated", &self.has_escalated())
             .finish()
@@ -383,6 +394,28 @@ fn solve_all<S: LeastSquaresSystem>(
     Ok((solutions, build_secs))
 }
 
+/// The preconditioner slot `input` resolves to on `system`.
+fn resolve<S: LeastSquaresSystem>(
+    system: &S,
+    input: PreconditionerInput,
+) -> Result<PrecondSlot, BuildError> {
+    match input {
+        PreconditionerInput::Default => PrecondSlot::build(system, PreconditionerConfig::default()),
+        PreconditionerInput::Config(c) => PrecondSlot::build(system, c),
+        PreconditionerInput::Prebuilt(p) => {
+            let n = system.matrix().ncols();
+            if p.nrows() != n || p.ncols() != n {
+                return Err(BuildError::PreconditionerDimensionMismatch {
+                    expected: n,
+                    actual_rows: p.nrows(),
+                    actual_cols: p.ncols(),
+                });
+            }
+            PrecondSlot::reuse(system, p)
+        }
+    }
+}
+
 impl<'a> Solver<'a> {
     /// Construct a solver.
     ///
@@ -406,28 +439,57 @@ impl<'a> Solver<'a> {
         weights: Option<&[f64]>,
         preconditioner: impl Into<PreconditionerInput>,
     ) -> Result<Self, BuildError> {
+        Self::on(System::Full, design, weights, preconditioner.into())
+    }
+
+    /// [`Solver::new`] on the reduced system: the term with the most coefficients is eliminated
+    /// exactly, LSMR iterates on the remaining terms, and the eliminated coefficients are
+    /// recovered from the rest. Schwarz is not yet built on the reduced system, so it refuses
+    /// Schwarz preconditioners once two terms remain after elimination.
+    pub fn reduced(
+        design: impl IntoDesign<'a>,
+        weights: Option<&[f64]>,
+        preconditioner: impl Into<PreconditionerInput>,
+    ) -> Result<Self, BuildError> {
+        Self::on(System::Reduced, design, weights, preconditioner.into())
+    }
+
+    fn on(
+        system: System,
+        design: impl IntoDesign<'a>,
+        weights: Option<&[f64]>,
+        preconditioner: PreconditionerInput,
+    ) -> Result<Self, BuildError> {
+        let design = design.into_design()?;
+        let n_obs = design.n_obs;
+        if system == System::Reduced && u32::try_from(n_obs).is_err() {
+            return Err(BuildError::ObservationsExceedU32 { n_obs });
+        }
         // Whiten the slope columns (if any) before the preconditioner reads them.
-        let prepared = PreparedDesign::new(design.into_design()?, weights)?;
-        let n_dofs = prepared.design.n_dofs;
-
-        let slot = match preconditioner.into() {
-            PreconditionerInput::Default => {
-                PrecondSlot::build(&prepared, PreconditionerConfig::default())?
-            }
-            PreconditionerInput::Config(c) => PrecondSlot::build(&prepared, c)?,
-            PreconditionerInput::Prebuilt(p) => {
-                if p.nrows() != n_dofs || p.ncols() != n_dofs {
-                    return Err(BuildError::PreconditionerDimensionMismatch {
-                        expected: n_dofs,
-                        actual_rows: p.nrows(),
-                        actual_cols: p.ncols(),
-                    });
-                }
-                PrecondSlot::reuse(&prepared, p)?
-            }
+        let prepared = PreparedDesign::new(design, weights)?;
+        let slot = match system {
+            System::Full => resolve(&prepared, preconditioner)?,
+            System::Reduced => resolve(&ReducedDesign::new(&prepared)?, preconditioner)?,
         };
+        Ok(Self {
+            prepared,
+            system,
+            slot,
+        })
+    }
 
-        Ok(Self { prepared, slot })
+    /// Every RHS's solution, and the seconds a deferred Schwarz build took.
+    fn solutions(
+        &self,
+        ys: &[&[f64]],
+        lsmr: &LsmrOptions,
+    ) -> Result<(Vec<RhsSolution>, f64), WithinError> {
+        match self.system {
+            System::Full => solve_all(&self.prepared, &self.slot, ys, lsmr),
+            System::Reduced => {
+                solve_all(&ReducedDesign::new(&self.prepared)?, &self.slot, ys, lsmr)
+            }
+        }
     }
 
     /// Non-fatal events from the preconditioner build; a reused pre-built preconditioner
@@ -467,7 +529,7 @@ impl<'a> Solver<'a> {
         let lsmr = lsmr.into().unwrap_or(&default);
 
         let t_start = Instant::now();
-        let (solutions, build_secs) = solve_all(&self.prepared, &self.slot, &[y], lsmr)?;
+        let (solutions, build_secs) = self.solutions(&[y], lsmr)?;
         let solution = solutions
             .into_iter()
             .next()
@@ -501,7 +563,7 @@ impl<'a> Solver<'a> {
         let lsmr = lsmr.into().unwrap_or(&default);
         let n_rhs = ys.len();
 
-        let (solutions, build_secs) = solve_all(&self.prepared, &self.slot, ys, lsmr)?;
+        let (solutions, build_secs) = self.solutions(ys, lsmr)?;
 
         let mut x = Vec::with_capacity(self.prepared.design.n_dofs * n_rhs);
         let mut demeaned = Vec::with_capacity(self.prepared.design.n_obs * n_rhs);
