@@ -215,6 +215,42 @@ mod tests {
         assert!(domain_pairs.len() >= 3);
     }
 
+    /// With the eliminated term between the kept ones and slopes on each, every subdomain sits on
+    /// its kept channels' coefficients in the layout without the eliminated block.
+    #[test]
+    fn subdomains_sit_on_the_kept_layout_around_an_eliminated_middle_term() {
+        let n = 240;
+        let f: Vec<u32> = (0..n).map(|i| ((i * 7 + i / 30) % 4) as u32).collect();
+        let e: Vec<u32> = (0..n).map(|i| (i % 30) as u32).collect();
+        let g: Vec<u32> = (0..n).map(|i| ((i / 7) % 3) as u32).collect();
+        let z: Vec<f64> = (0..n).map(|i| ((i * 37) % 11) as f64 - 5.0).collect();
+        let effects = [&f, &e, &g].map(|levels| Effect::new(levels, true, [&z[..]]).unwrap());
+        let design = Design::new(effects).unwrap();
+        assert_eq!(design.dominant, 1);
+        let prepared = PreparedDesign::new(design, None).unwrap();
+        let config = LocalSolverConfig::default();
+        let (domains, _) =
+            build_local_domains(&prepared, &config, Unknowns::WithoutDominant).unwrap();
+        // Kept layout: f's intercept and slope on 0..4 and 4..8, g's on 8..11 and 11..14.
+        let (f_columns, g_columns) = ([0..4, 4..8], [8..11, 11..14]);
+        let mut expected: Vec<Vec<u32>> = Vec::new();
+        for kept in f_columns.iter().chain(&g_columns) {
+            // One pair per eliminated channel keeps this column alone.
+            expected.extend([kept.clone().collect(), kept.clone().collect()]);
+        }
+        for rows in &f_columns {
+            for cols in &g_columns {
+                expected.push(rows.clone().chain(cols.clone()).collect());
+            }
+        }
+        let mut indices: Vec<Vec<u32>> = (domains.iter())
+            .map(|d| d.core.global_indices().to_vec())
+            .collect();
+        indices.sort();
+        expected.sort();
+        assert_eq!(indices, expected);
+    }
+
     #[test]
     fn test_partition_of_unity() {
         let dm = make_test_design();

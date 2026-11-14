@@ -283,6 +283,31 @@ fn the_default_preconditioner_starts_on_the_reduced_diagonal(
     assert_same_fit(&ladder.demeaned, &full.demeaned, &[true; N], &y);
 }
 
+/// With the eliminated term between the kept ones, its pairs keep their row side or their column
+/// side; slopes shift every kept block.
+#[test]
+fn schwarz_serves_an_eliminated_term_between_the_kept_ones() {
+    let factors = factors(3);
+    let z: Vec<Vec<f64>> = (0..3)
+        .map(|k| (0..N).map(|i| noise((20 + k) * N + i)).collect())
+        .collect();
+    let term = |t: usize| Effect::new(&factors[t], true, [&z[t][..]]).expect("effect");
+    let y = response(6);
+    let additive = PreconditionerConfig::Additive {
+        local_solver: Default::default(),
+    };
+    let solve = |order: [usize; 3], system| {
+        solver(Vec::from(order.map(term)), None, &additive, system)
+            .expect("solver")
+            .solve(&y, &lsmr())
+            .expect("solve")
+    };
+    let between = solve([1, 0, 2], System::Reduced);
+    let full = solve([1, 0, 2], System::Full);
+    assert!(between.converged);
+    assert_same_fit(&between.demeaned, &full.demeaned, &[true; N], &y);
+}
+
 /// A Schwarz map built on the reduced system solves the same when a second solver reuses it.
 #[test]
 fn a_reduced_schwarz_map_is_reused_on_the_reduced_system() {
