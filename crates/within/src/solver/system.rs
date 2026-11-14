@@ -5,9 +5,17 @@ use std::borrow::Cow;
 use schwarz_precond::Operator;
 
 use crate::config::LocalSolverConfig;
-use crate::domain::PreparedDesign;
+use crate::domain::{PreparedDesign, Unknowns};
+use crate::operator::design::ReducedDesign;
 use crate::operator::schwarz::{build_schwarz, Preconditioner};
 use crate::{BuildError, BuildWarning, SolveError};
+
+/// A system's Schwarz rung.
+pub(crate) enum SchwarzRung {
+    /// Nothing for Schwarz to couple: the ladder settles on its diagonal.
+    Absent,
+    Buildable,
+}
 
 /// `min ‖b − A x‖` over the coefficients LSMR iterates on, and the way back to the full fit.
 pub(crate) trait LeastSquaresSystem: Sync {
@@ -17,6 +25,10 @@ pub(crate) trait LeastSquaresSystem: Sync {
         Self: 's;
 
     fn matrix(&self) -> &Self::Matrix;
+    /// The Schwarz rung on what LSMR iterates on.
+    fn schwarz_rung(&self) -> SchwarzRung;
+    /// The diagonal of this system's own normal matrix `AᵀA`.
+    fn gram_diagonal(&self) -> Vec<f64>;
     /// Validate `y`, then form this system's right-hand side.
     fn prepare<'s>(&'s self, y: &'s [f64]) -> Result<Self::Rhs<'s>, SolveError>;
     /// What LSMR iterates on; tolerances are relative to its norm.
@@ -79,6 +91,23 @@ pub(crate) struct Fit {
     pub(crate) demeaned: Vec<f64>,
 }
 
+impl PreparedDesign<'_> {
+    /// The caller's fit from solve-basis coefficients `x` and, if measured, `b − A x`.
+    pub(crate) fn fit(
+        &self,
+        rhs: Response<'_>,
+        mut x: Vec<f64>,
+        measured: Option<Vec<f64>>,
+    ) -> Fit {
+        let demeaned = self.demeaned(&x, &rhs.y, measured);
+        self.back_transform(&mut x);
+        Fit {
+            x,
+            demeaned: self.design.permute_obs_out(demeaned),
+        }
+    }
+}
+
 impl LeastSquaresSystem for PreparedDesign<'_> {
     type Matrix = Self;
     type Rhs<'s>
@@ -88,6 +117,18 @@ impl LeastSquaresSystem for PreparedDesign<'_> {
 
     fn matrix(&self) -> &Self {
         self
+    }
+
+    fn schwarz_rung(&self) -> SchwarzRung {
+        // Schwarz subdomains are factor pairs; one factor's normal matrix is diagonal.
+        match self.design.n_factors() {
+            0 | 1 => SchwarzRung::Absent,
+            _ => SchwarzRung::Buildable,
+        }
+    }
+
+    fn gram_diagonal(&self) -> Vec<f64> {
+        PreparedDesign::gram_diagonal(self)
     }
 
     fn prepare<'s>(&'s self, y: &'s [f64]) -> Result<Response<'s>, SolveError> {
@@ -101,21 +142,74 @@ impl LeastSquaresSystem for PreparedDesign<'_> {
     fn finish(
         &self,
         rhs: Response<'_>,
-        mut x: Vec<f64>,
+        x: Vec<f64>,
         measured: Option<Vec<f64>>,
     ) -> Result<Fit, SolveError> {
-        let demeaned = self.demeaned(&x, &rhs.y, measured);
-        self.back_transform(&mut x);
-        Ok(Fit {
-            x,
-            demeaned: self.design.permute_obs_out(demeaned),
-        })
+        Ok(self.fit(rhs, x, measured))
     }
 
     fn build_schwarz(
         &self,
         local_solver: &LocalSolverConfig,
     ) -> Result<(Option<Preconditioner>, Vec<BuildWarning>), BuildError> {
-        build_schwarz(self, local_solver)
+        build_schwarz(self, local_solver, Unknowns::All)
+    }
+}
+
+/// One response and the reduced system's right-hand side `(I − P_e) W^{1/2} y`.
+pub(crate) struct ReducedResponse<'s> {
+    response: Response<'s>,
+    projected: Vec<f64>,
+}
+
+impl LeastSquaresSystem for ReducedDesign<'_> {
+    type Matrix = Self;
+    type Rhs<'s>
+        = ReducedResponse<'s>
+    where
+        Self: 's;
+
+    fn matrix(&self) -> &Self {
+        self
+    }
+
+    fn schwarz_rung(&self) -> SchwarzRung {
+        ReducedDesign::prepared(self).schwarz_rung()
+    }
+
+    fn gram_diagonal(&self) -> Vec<f64> {
+        ReducedDesign::gram_diagonal(self)
+    }
+
+    fn prepare<'s>(&'s self, y: &'s [f64]) -> Result<ReducedResponse<'s>, SolveError> {
+        let response = Response::new(ReducedDesign::prepared(self), y)?;
+        let projected = self.project_rhs(response.weighted());
+        Ok(ReducedResponse {
+            response,
+            projected,
+        })
+    }
+
+    fn b<'r>(&self, rhs: &'r ReducedResponse<'_>) -> &'r [f64] {
+        &rhs.projected
+    }
+
+    fn finish(
+        &self,
+        rhs: ReducedResponse<'_>,
+        x: Vec<f64>,
+        measured: Option<Vec<f64>>,
+    ) -> Result<Fit, SolveError> {
+        drop(rhs.projected);
+        let x = self.recover(rhs.response.weighted(), &x);
+        // `(I − P_e)(b − A_k x_k)` is `b − A x` once the eliminated block is recovered.
+        Ok(ReducedDesign::prepared(self).fit(rhs.response, x, measured))
+    }
+
+    fn build_schwarz(
+        &self,
+        local_solver: &LocalSolverConfig,
+    ) -> Result<(Option<Preconditioner>, Vec<BuildWarning>), BuildError> {
+        build_schwarz(self.prepared(), local_solver, Unknowns::WithoutDominant)
     }
 }

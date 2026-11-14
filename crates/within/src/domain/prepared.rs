@@ -2,7 +2,7 @@ use std::sync::OnceLock;
 
 use rayon::prelude::*;
 
-use super::{row_weight, Column, Design, ScatterSplit, Term, TermReparam};
+use super::{row_weight, Column, Design, LevelRows, ScatterSplit, Term, TermReparam};
 use crate::channel::CoefficientPosition;
 use crate::linalg::add_compensated;
 use crate::BuildError;
@@ -18,6 +18,8 @@ pub(crate) struct PreparedDesign<'a> {
     diagonals: Vec<OnceLock<Box<[f64]>>>,
     /// Per design term, how its adjoint scatter-add splits into parallel pieces.
     splits: Vec<ScatterSplit>,
+    /// Per design term whose split keeps no row index, its rows by level, sorted on first read.
+    level_rows: Vec<OnceLock<LevelRows>>,
 }
 
 /// A term in the solve basis: the design's rows plus this preparation's whitened slopes.
@@ -49,12 +51,14 @@ impl<'a> PreparedDesign<'a> {
             .map(|t| TermReparam::build(&design, t, &splits[t], sqrt_weights.as_deref()))
             .collect();
         let diagonals = (0..design.n_factors()).map(|_| OnceLock::new()).collect();
+        let level_rows = (0..design.n_factors()).map(|_| OnceLock::new()).collect();
         Ok(Self {
             design,
             sqrt_weights,
             reparams,
             diagonals,
             splits,
+            level_rows,
         })
     }
 
@@ -77,6 +81,17 @@ impl<'a> PreparedDesign<'a> {
 
     pub(crate) fn terms(&self) -> impl ExactSizeIterator<Item = PreparedTerm<'_>> {
         (0..self.design.n_factors()).map(|term| self.term(term))
+    }
+
+    /// Term `term`'s rows grouped by level; needs `u32` row indices.
+    pub(crate) fn level_rows(&self, term: usize) -> &LevelRows {
+        match &self.splits[term] {
+            ScatterSplit::ByLevel(rows) => rows,
+            ScatterSplit::ByRow => self.level_rows[term].get_or_init(|| {
+                let t = &self.design.terms[term];
+                LevelRows::argsort(t.levels(), t.n_levels())
+            }),
+        }
     }
 
     /// Term `term`'s block of `diag(AᵀA)`, laid out like its `dofs()`, summed in observation order.

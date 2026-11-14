@@ -9,7 +9,7 @@ mod scatter_split;
 
 pub(crate) use prepared::{PreparedDesign, PreparedTerm};
 use reparam::TermReparam;
-pub(crate) use scatter_split::{LevelSlots, ScatterSplit};
+pub(crate) use scatter_split::{fixed_tree, LevelRows, LevelSlots, ScatterSplit, MIN_LEAF_ROWS};
 
 /// Rows from which a sweep over observations runs in parallel.
 pub(crate) const PAR_THRESHOLD: usize = 10_000;
@@ -24,6 +24,7 @@ use ndarray::{ArrayView2, Axis};
 use rayon::prelude::*;
 use rustc_hash::FxBuildHasher;
 use std::borrow::Cow;
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::atomic::Ordering::Relaxed;
@@ -541,6 +542,14 @@ fn gather<T: Copy>(col: &[T], perm: &[u32]) -> Vec<T> {
     perm.iter().map(|&k| col[k as usize]).collect()
 }
 
+/// The coefficients LSMR iterates on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Unknowns {
+    All,
+    /// The dominant term's block is eliminated; the rest keep their order.
+    WithoutDominant,
+}
+
 /// Fixed-effects design: its terms; clones share rows.
 #[derive(Clone, Debug)]
 pub struct Design<'a> {
@@ -716,6 +725,23 @@ impl<'a> Design<'a> {
     /// What `channel` multiplies.
     pub(crate) fn column(&self, channel: Channel) -> Column {
         self.terms[channel.term].column(channel.column)
+    }
+
+    /// Term `t`'s block start among `unknowns`; `None` for the eliminated term.
+    pub(crate) fn block_start(&self, unknowns: Unknowns, t: usize) -> Option<usize> {
+        let eliminated = &self.terms[self.dominant];
+        match (unknowns, t.cmp(&self.dominant)) {
+            (Unknowns::All, _) | (_, Ordering::Less) => Some(self.terms[t].offset),
+            (_, Ordering::Equal) => None,
+            (_, Ordering::Greater) => Some(self.terms[t].offset - eliminated.n_dofs()),
+        }
+    }
+
+    pub(crate) fn n_unknowns(&self, unknowns: Unknowns) -> usize {
+        match unknowns {
+            Unknowns::All => self.n_dofs,
+            Unknowns::WithoutDominant => self.n_dofs - self.terms[self.dominant].n_dofs(),
+        }
     }
 
     /// Number of observations (rows of D).

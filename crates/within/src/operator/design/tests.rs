@@ -424,8 +424,9 @@ mod elimination_tests {
     use schwarz_precond::Operator;
 
     use super::noise;
-    use crate::domain::{Design, Effect, PreparedDesign};
+    use crate::domain::{Design, Effect};
     use crate::linalg::dot;
+    use crate::operator::design::ReducedDesign;
 
     fn norm(v: &[f64]) -> f64 {
         dot(v, v).sqrt()
@@ -443,20 +444,11 @@ mod elimination_tests {
         DroppedSlope,
     }
 
-    #[rstest]
-    fn recovery_fits_the_eliminated_term_exactly(
-        #[values(
-            Dominant::InterceptOnly,
-            Dominant::CollinearLargeMean,
-            Dominant::RankEdge,
-            Dominant::SlopeOnly,
-            Dominant::DroppedSlope
-        )]
-        dominant: Dominant,
-        #[values(false, true)] weighted: bool,
-        #[values(false, true)] sorted: bool,
-    ) {
-        let n = 600;
+    const N: usize = 600;
+
+    /// Three terms whose middle one, the dominant, is shaped by `dominant`.
+    fn fixture(dominant: Dominant, weighted: bool) -> ReducedDesign<'static> {
+        let n = N;
         let n_levels = 40;
         let e: Vec<u32> = (0..n).map(|i| ((i * 7) % n_levels) as u32).collect();
         let f: Vec<u32> = (0..n).map(|i| (i % 5) as u32).collect();
@@ -487,12 +479,7 @@ mod elimination_tests {
             Effect::new(&e, intercept, zs.iter().map(|z| &z[..])).unwrap(),
             Effect::new(&g, true, gz.iter().map(|z| &z[..])).unwrap(),
         ];
-        let design = if sorted {
-            Design::new(effects)
-        } else {
-            Design::new_unsorted(effects)
-        }
-        .unwrap();
+        let design = Design::new(effects).unwrap();
         assert_eq!(design.dominant, 1);
         // Every row of level 3 and every fourth row elsewhere carry zero weight.
         let weights: Vec<f64> = (0..n)
@@ -501,7 +488,24 @@ mod elimination_tests {
                 _ => 1.0 + noise(9 * n + i).abs(),
             })
             .collect();
-        let prepared = PreparedDesign::new(design, weighted.then_some(&weights[..])).unwrap();
+        ReducedDesign::new(design.into_owned(), weighted.then_some(&weights[..])).unwrap()
+    }
+
+    #[rstest]
+    fn recovery_fits_the_eliminated_term_exactly(
+        #[values(
+            Dominant::InterceptOnly,
+            Dominant::CollinearLargeMean,
+            Dominant::RankEdge,
+            Dominant::SlopeOnly,
+            Dominant::DroppedSlope
+        )]
+        dominant: Dominant,
+        #[values(false, true)] weighted: bool,
+    ) {
+        let n = N;
+        let reduced = fixture(dominant, weighted);
+        let prepared = reduced.prepared();
         let dofs = prepared.design.terms[1].dofs();
         let unidentified: Vec<usize> = prepared
             .diagonal(1)
@@ -517,6 +521,12 @@ mod elimination_tests {
 
         let p = prepared.design.n_dofs;
         let kept: Vec<f64> = (0..p).map(|j| noise(11 * n + j)).collect();
+        let x_k: Vec<f64> = [&kept[..dofs.start], &kept[dofs.end..]].concat();
+        let recover = |b: &[f64]| {
+            let x = reduced.recover(b, &x_k);
+            assert_eq!([&x[..dofs.start], &x[dofs.end..]].concat(), x_k);
+            x
+        };
         let residual = |x: &[f64], b: &[f64]| -> Vec<f64> {
             let mut fitted = vec![0.0; n];
             prepared.apply(x, &mut fitted).unwrap();
@@ -532,8 +542,7 @@ mod elimination_tests {
         let b: Vec<f64> = (0..n).map(|i| noise(13 * n + i)).collect();
         let mut without = kept.clone();
         without[dofs.clone()].fill(0.0);
-        let mut x = kept.clone();
-        prepared.recover_eliminated(&b, &mut x);
+        let x = recover(&b);
         let normal = eliminated_normal(&residual(&x, &b));
         let scale = eliminated_normal(&residual(&without, &b));
         assert!(
@@ -547,15 +556,190 @@ mod elimination_tests {
         // `b` in the span: the kept coefficients of a solution recover a full solution.
         let mut b = vec![0.0; n];
         prepared.apply(&kept, &mut b).unwrap();
-        let mut x = kept.clone();
-        x[dofs.clone()].fill(f64::NAN);
-        prepared.recover_eliminated(&b, &mut x);
+        let x = recover(&b);
         let r = residual(&x, &b);
         assert!(
             norm(&r) <= 1e-13 * norm(&b),
             "‖b − A x̂‖ = {:.2e} of {:.2e}",
             norm(&r),
             norm(&b)
+        );
+    }
+
+    #[rstest]
+    fn the_reduced_operator_projects_the_kept_columns_off_the_eliminated_span(
+        #[values(
+            Dominant::InterceptOnly,
+            Dominant::CollinearLargeMean,
+            Dominant::RankEdge,
+            Dominant::SlopeOnly,
+            Dominant::DroppedSlope
+        )]
+        dominant: Dominant,
+        #[values(false, true)] weighted: bool,
+    ) {
+        let reduced = fixture(dominant, weighted);
+        let prepared = reduced.prepared();
+        let dofs = prepared.design.terms[1].dofs();
+        let (p, k) = (prepared.design.n_dofs, reduced.ncols());
+        assert_eq!(k, p - dofs.len());
+        let embed = |x_k: &[f64]| {
+            [
+                &x_k[..dofs.start],
+                &vec![0.0; dofs.len()],
+                &x_k[dofs.start..],
+            ]
+            .concat()
+        };
+        let eliminated_normal = |r: &[f64]| {
+            let mut normal = vec![0.0; p];
+            prepared.apply_adjoint(r, &mut normal).unwrap();
+            normal[dofs.clone()].to_vec()
+        };
+
+        let x_k: Vec<f64> = (0..k).map(|j| noise(17 * N + j)).collect();
+        let mut kept_image = vec![0.0; N];
+        prepared.apply(&embed(&x_k), &mut kept_image).unwrap();
+        let mut image = vec![0.0; N];
+        reduced.apply(&x_k, &mut image).unwrap();
+
+        // `A_r x ⊥ A_e`.
+        let normal = eliminated_normal(&image);
+        let scale = eliminated_normal(&kept_image);
+        assert!(
+            norm(&normal) <= 1e-13 * norm(&scale),
+            "‖A_eᵀ A_r x‖ = {:.2e} of {:.2e}",
+            norm(&normal),
+            norm(&scale)
+        );
+        // `(I − P_e) b ⊥ A_e`.
+        let projected = reduced.project_rhs(&kept_image);
+        let normal = eliminated_normal(&projected);
+        assert!(norm(&normal) <= 1e-13 * norm(&scale));
+        // `A_k x − A_r x ∈ span(A_e)`: fitting it by `A_e` alone leaves nothing.
+        let removed: Vec<f64> = kept_image.iter().zip(&image).map(|(a, r)| a - r).collect();
+        let fit = reduced.recover(&removed, &vec![0.0; k]);
+        let mut fitted = vec![0.0; N];
+        prepared.apply(&fit, &mut fitted).unwrap();
+        let left: Vec<f64> = removed.iter().zip(&fitted).map(|(d, f)| d - f).collect();
+        assert!(norm(&left) <= 1e-13 * norm(&kept_image));
+
+        // `⟨A_r x, v⟩ = ⟨x, A_rᵀ v⟩`.
+        let v: Vec<f64> = (0..N).map(|i| noise(19 * N + i)).collect();
+        let mut adjoint = vec![0.0; k];
+        reduced.apply_adjoint(&v, &mut adjoint).unwrap();
+        let gap = (dot(&image, &v) - dot(&x_k, &adjoint)).abs();
+        assert!(
+            gap <= 1e-13 * norm(&image) * norm(&v),
+            "adjoint gap {gap:.2e}"
+        );
+
+        // `diag(A_rᵀA_r)` column by column, relative to the kept column's own norm.
+        let diagonal = reduced.gram_diagonal();
+        let gram = prepared.gram_diagonal();
+        let kept_gram = [&gram[..dofs.start], &gram[dofs.end..]].concat();
+        for j in 0..k {
+            let mut unit = vec![0.0; k];
+            unit[j] = 1.0;
+            reduced.apply(&unit, &mut image).unwrap();
+            let squared = dot(&image, &image);
+            assert!(
+                (diagonal[j] - squared).abs() <= 1e-12 * kept_gram[j],
+                "column {j}: {:.6e} vs ‖A_r e_j‖² = {squared:.6e} of {:.2e}",
+                diagonal[j],
+                kept_gram[j]
+            );
+        }
+    }
+
+    /// Each cross-moment squares below the float range, but its share of the norm does not.
+    #[test]
+    fn the_diagonal_keeps_the_share_of_tiny_cross_moments() {
+        let (e, f) = (vec![0, 0, 1, 1], vec![0, 1, 0, 1]);
+        let effects = vec![
+            Effect::new(&f, true, []).unwrap(),
+            Effect::new(&e, true, []).unwrap(),
+        ];
+        let design = Design::new(effects).unwrap();
+        let weights = Some(&[1e-200; 4][..]);
+        let diagonal = ReducedDesign::new(design, weights).unwrap().gram_diagonal();
+        assert_eq!(diagonal.len(), 2);
+        for d in diagonal {
+            assert!((d / 1e-200 - 1.0).abs() <= 1e-14, "{d:e}");
+        }
+    }
+
+    /// Enough rows for several parallel tasks and accumulator leaves, against a hand projection.
+    #[rstest]
+    fn the_reduced_operator_matches_level_means_across_tasks(
+        #[values(false, true)] weighted: bool,
+    ) {
+        let n = 150_000;
+        let e: Vec<u32> = (0..n).map(|i| ((i * 7919) % 20_000) as u32).collect();
+        let f: Vec<u32> = (0..n).map(|i| ((i / 3) % 700) as u32).collect();
+        let g: Vec<u32> = (0..n).map(|i| (i % 11) as u32).collect();
+        let effects = vec![
+            Effect::new(&f, true, []).unwrap(),
+            Effect::new(&e, true, []).unwrap(),
+            Effect::new(&g, true, []).unwrap(),
+        ];
+        let design = Design::new(effects).unwrap();
+        let weights: Vec<f64> = (0..n)
+            .map(|i| {
+                if i % 5 == 0 {
+                    0.0
+                } else {
+                    0.5 + noise(i).abs()
+                }
+            })
+            .collect();
+        let reduced = ReducedDesign::new(design, weighted.then_some(&weights[..])).unwrap();
+        let prepared = reduced.prepared();
+        let dofs = prepared.design.terms[1].dofs();
+        let k = reduced.ncols();
+        let x_k: Vec<f64> = (0..k).map(|j| noise(3 * n + j)).collect();
+        let full_x = [
+            &x_k[..dofs.start],
+            &vec![0.0; dofs.len()],
+            &x_k[dofs.start..],
+        ]
+        .concat();
+        let mut kept_image = vec![0.0; n];
+        prepared.apply(&full_x, &mut kept_image).unwrap();
+
+        // `(I − P_e) u`: subtract each eliminated level's weighted mean, in internal row order.
+        let sw = prepared.sqrt_weights();
+        let w = |i: usize| sw.map_or(1.0, |s| s[i] * s[i]);
+        let root = |i: usize| sw.map_or(1.0, |s| s[i]);
+        let levels = prepared.design.terms[1].levels();
+        let mut sums = vec![(0.0, 0.0); 20_000];
+        for (i, &u) in kept_image.iter().enumerate() {
+            let s = &mut sums[levels[i] as usize];
+            s.0 += root(i) * u;
+            s.1 += w(i);
+        }
+        let expected: Vec<f64> = (0..n)
+            .map(|i| {
+                let (su, sw) = sums[levels[i] as usize];
+                kept_image[i] - if sw > 0.0 { root(i) * su / sw } else { 0.0 }
+            })
+            .collect();
+        let mut image = vec![0.0; n];
+        reduced.apply(&x_k, &mut image).unwrap();
+        let gap: Vec<f64> = image.iter().zip(&expected).map(|(a, b)| a - b).collect();
+        assert!(
+            norm(&gap) <= 1e-12 * norm(&expected),
+            "apply gap {:.2e}",
+            norm(&gap)
+        );
+
+        let v: Vec<f64> = (0..n).map(|i| noise(5 * n + i)).collect();
+        let mut adjoint = vec![0.0; k];
+        reduced.apply_adjoint(&v, &mut adjoint).unwrap();
+        let gap = (dot(&image, &v) - dot(&x_k, &adjoint)).abs();
+        assert!(
+            gap <= 1e-12 * norm(&image) * norm(&v),
+            "adjoint gap {gap:.2e}"
         );
     }
 }

@@ -6,11 +6,10 @@ use std::time::Instant;
 use once_cell::sync::OnceCell;
 
 use crate::config::PreconditionerConfig;
-use crate::domain::PreparedDesign;
 use crate::operator::schwarz::{build_adaptive, build_diagonal, AdaptiveLadder, Preconditioner};
 use crate::{BuildError, BuildWarning};
 
-use super::system::LeastSquaresSystem;
+use super::system::{LeastSquaresSystem, SchwarzRung};
 
 /// The solver's preconditioner: a fixed map, or an adaptive diagonal→Schwarz ladder.
 pub(super) enum PrecondSlot {
@@ -26,7 +25,7 @@ pub(super) enum PrecondSlot {
 impl PrecondSlot {
     /// Resolve a strategy: a fixed map built now, or a diagonal base with Schwarz deferred to a stall.
     pub(super) fn build(
-        prepared: &PreparedDesign<'_>,
+        system: &impl LeastSquaresSystem,
         config: PreconditionerConfig,
     ) -> Result<Self, BuildError> {
         Ok(match config {
@@ -35,11 +34,11 @@ impl PrecondSlot {
                 warnings: Vec::new(),
             },
             PreconditionerConfig::Diagonal => Self::Static {
-                map: Some(build_diagonal(prepared)?),
+                map: Some(build_diagonal(|| system.gram_diagonal())?),
                 warnings: Vec::new(),
             },
             PreconditionerConfig::Additive { local_solver } => {
-                let (map, warnings) = prepared.build_schwarz(&local_solver)?;
+                let (map, warnings) = system.build_schwarz(&local_solver)?;
                 Self::Static { map, warnings }
             }
             PreconditionerConfig::Adaptive {
@@ -48,15 +47,17 @@ impl PrecondSlot {
             } => {
                 // Fail before the diagonal pass; `reuse` repeats this for a deserialized ladder.
                 local_solver.validate()?;
-                let base = build_adaptive(prepared, stall, local_solver)?;
-                Self::reuse(prepared, base)?
+                Self::ladder(
+                    system.schwarz_rung(),
+                    build_adaptive(|| system.gram_diagonal(), stall, local_solver)?,
+                )
             }
         })
     }
 
-    /// An unescalated ladder resumes, or settles on one term; any other map stays fixed.
+    /// An unescalated ladder resumes, or settles without a rung; any other map stays fixed.
     pub(super) fn reuse(
-        prepared: &PreparedDesign<'_>,
+        system: &impl LeastSquaresSystem,
         preconditioner: Preconditioner,
     ) -> Result<Self, BuildError> {
         let Some(ladder) = preconditioner.ladder() else {
@@ -65,19 +66,23 @@ impl PrecondSlot {
                 warnings: Vec::new(),
             });
         };
-        // A deserialized ladder skipped `Adaptive`'s build-time check, and a one-term design settles.
+        // A deserialized ladder skipped `Adaptive`'s build-time checks.
         ladder.escalated.validate()?;
-        Ok(if prepared.design.n_factors() < 2 {
-            Self::Static {
-                map: Some(preconditioner.settle()),
+        Ok(Self::ladder(system.schwarz_rung(), preconditioner))
+    }
+
+    /// A diagonal-first ladder on a system with this `rung`.
+    fn ladder(rung: SchwarzRung, ladder: Preconditioner) -> Self {
+        match rung {
+            SchwarzRung::Absent => Self::Static {
+                map: Some(ladder.settle()),
                 warnings: Vec::new(),
-            }
-        } else {
-            Self::Adaptive(Box::new(AdaptivePrecond {
-                base: preconditioner,
+            },
+            SchwarzRung::Buildable => Self::Adaptive(Box::new(AdaptivePrecond {
+                base: ladder,
                 built: OnceCell::new(),
-            }))
-        })
+            })),
+        }
     }
 }
 

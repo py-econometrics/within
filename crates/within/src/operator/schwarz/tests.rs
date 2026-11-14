@@ -7,7 +7,7 @@ use crate::config::{
     ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, SchurMode,
     DEFAULT_DENSE_SCHUR_THRESHOLD,
 };
-use crate::domain::{build_local_domains, Design, LocalDomain, PreparedDesign};
+use crate::domain::{build_local_domains, Design, LocalDomain, PreparedDesign, Unknowns};
 use crate::operator::schwarz::build_additive;
 use schwarz_precond::{LocalSolver, MemBuffer, MemStack, Operator, Threads};
 
@@ -17,7 +17,8 @@ fn make_test_data() -> (PreparedDesign<'static>, Vec<LocalDomain>) {
     let design =
         PreparedDesign::from_levels_for_test(vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]]);
     let (domain_pairs, _) =
-        build_local_domains(&design, &LocalSolverConfig::default()).expect("plain domains build");
+        build_local_domains(&design, &LocalSolverConfig::default(), Unknowns::All)
+            .expect("plain domains build");
     (design, domain_pairs)
 }
 
@@ -52,7 +53,8 @@ fn run_block_elim_nested_rayon_case() {
     };
     let design = synthetic_star_design(n_keep, elim_ratio);
     let n_dofs = design.design.n_dofs;
-    let (mut domain_pairs, _) = build_local_domains(&design, &config).expect("domains");
+    let (mut domain_pairs, _) =
+        build_local_domains(&design, &config, Unknowns::All).expect("domains");
     let [domain] = &domain_pairs[..] else {
         panic!("one component expected, got {}", domain_pairs.len())
     };
@@ -149,7 +151,8 @@ fn small_subdomain_solve(schur: SchurMode, dense_threshold: usize) -> Vec<f64> {
         dense_threshold,
         ..Default::default()
     };
-    let (domains, _) = build_local_domains(&synthetic_star_design(8, 4), &config).expect("domains");
+    let (domains, _) =
+        build_local_domains(&synthetic_star_design(8, 4), &config, Unknowns::All).expect("domains");
     let [domain] = &domains[..] else {
         panic!("one component expected, got {}", domains.len())
     };
