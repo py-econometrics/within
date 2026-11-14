@@ -38,11 +38,7 @@ impl PrecondSlot {
                 warnings: Vec::new(),
             },
             PreconditionerConfig::Additive { local_solver } => {
-                local_solver.validate()?;
-                let (map, warnings) = match system.schwarz_rung() {
-                    SchwarzRung::Absent => (None, Vec::new()),
-                    SchwarzRung::Buildable => system.build_schwarz(&local_solver)?,
-                };
+                let (map, warnings) = system.build_schwarz(&local_solver)?;
                 Self::Static { map, warnings }
             }
             PreconditionerConfig::Adaptive {

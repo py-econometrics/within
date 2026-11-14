@@ -471,8 +471,7 @@ impl<'a> Solver<'a> {
     ) -> Result<Self, BuildError> {
         let (design, preconditioner) = (design.into_design()?, preconditioner.into());
         if let PreconditionerInput::Prebuilt(p) = &preconditioner {
-            let diagonal = matches!(p.config(), PreconditionerConfig::Diagonal);
-            if p.ladder().is_none() && !diagonal {
+            if matches!(p.config(), PreconditionerConfig::Additive { .. }) {
                 return Err(BuildError::SchwarzOnReducedSystem);
             }
         }

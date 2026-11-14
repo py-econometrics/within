@@ -174,11 +174,7 @@ impl LeastSquaresSystem for ReducedDesign<'_> {
     }
 
     fn schwarz_rung(&self) -> SchwarzRung {
-        // With one kept factor the reduced normal matrix already couples its levels.
-        match ReducedDesign::prepared(self).design.n_factors() {
-            0 | 1 => SchwarzRung::Absent,
-            _ => SchwarzRung::Buildable,
-        }
+        ReducedDesign::prepared(self).schwarz_rung()
     }
 
     fn gram_diagonal(&self) -> Vec<f64> {
@@ -204,14 +200,10 @@ impl LeastSquaresSystem for ReducedDesign<'_> {
         x: Vec<f64>,
         measured: Option<Vec<f64>>,
     ) -> Result<Fit, SolveError> {
-        let ReducedResponse {
-            response,
-            projected,
-        } = rhs;
-        drop(projected);
-        let x = self.recover(response.weighted(), &x);
+        drop(rhs.projected);
+        let x = self.recover(rhs.response.weighted(), &x);
         // `(I − P_e)(b − A_k x_k)` is `b − A x` once the eliminated block is recovered.
-        Ok(ReducedDesign::prepared(self).fit(response, x, measured))
+        Ok(ReducedDesign::prepared(self).fit(rhs.response, x, measured))
     }
 
     fn build_schwarz(

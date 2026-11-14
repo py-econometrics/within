@@ -166,7 +166,6 @@ pub(crate) fn fixed_tree<T: Send>(
 }
 
 /// The rows of each level, ascending: the inverse of the row → level map.
-#[derive(Clone)]
 pub(crate) struct LevelRows {
     /// Level `l` owns positions `offsets[l]..offsets[l + 1]`.
     offsets: Vec<usize>,

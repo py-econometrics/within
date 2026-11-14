@@ -65,8 +65,7 @@ pub(crate) fn build_local_domains(
         warnings.extend(pair_warnings);
     }
 
-    // A slope channel breaks `1/√c`'s equal-informativeness assumption (#94), so stay uniform;
-    // with a term eliminated, slope overlaps do not slow the solve under `1/√c`.
+    // A slope channel breaks `1/√c`'s equal informativeness (#94) unless a term is eliminated.
     if unknowns == Unknowns::WithoutDominant
         || !channels
             .iter()
@@ -137,8 +136,7 @@ fn factor_pair(
         let column = match starts {
             (Some(row), Some(_)) if vertex < n_rows => row + vertex,
             (Some(_), Some(col)) => col + vertex - n_rows,
-            (Some(row), None) => row + vertex,
-            (None, Some(col)) => col + vertex,
+            (Some(start), None) | (None, Some(start)) => start + vertex,
             (None, None) => unreachable!("a pair spans two terms"),
         };
         u32::try_from(column).expect("the DOF space fits u32")

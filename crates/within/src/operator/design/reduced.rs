@@ -243,15 +243,15 @@ impl<'a> ReducedDesign<'a> {
             // Each level owns its rows' sums, so no reduction depends on the thread count.
             by_level.par_chunks_mut(width).enumerate().for_each_init(
                 Vec::new,
-                |pairs: &mut Vec<(u32, usize)>, (level, entries)| {
-                    pairs.clear();
-                    rows.for_each_row(rows.positions(level), |i| pairs.push((e_levels[i], i)));
-                    pairs.sort_unstable();
+                |level_rows: &mut Vec<usize>, (level, entries)| {
+                    // Ascending rows of a design sorted by the eliminated term: runs of its levels.
+                    level_rows.clear();
+                    rows.for_each_row(rows.positions(level), |i| level_rows.push(i));
                     for (c, entry) in entries.iter_mut().enumerate() {
                         *entry = gram[c * n_levels + level];
                     }
-                    for run in pairs.chunk_by(|a, b| a.0 == b.0) {
-                        let e_level = run[0].0 as usize;
+                    for run in level_rows.chunk_by(|&a, &b| e_levels[a] == e_levels[b]) {
+                        let e_level = e_levels[run[0]] as usize;
                         for e_column in 0..eliminated.term.n_columns() {
                             let e_loading = eliminated.loading(e_column);
                             let g = e_gram[e_column * e_n_levels + e_level];
@@ -262,7 +262,7 @@ impl<'a> ReducedDesign<'a> {
                                 let loading = kept.loading(c);
                                 let cross: f64 = run
                                     .iter()
-                                    .map(|&(_, i)| {
+                                    .map(|&i| {
                                         // Weight first: a zero weight kills a huge loading.
                                         let w = row_weight(sqrt_weights, i);
                                         let wz = loading.map_or(w, |z| w * z[i]);
@@ -274,7 +274,7 @@ impl<'a> ReducedDesign<'a> {
                         }
                     }
                     // The difference cancels below `n·ε` of the squared norm.
-                    let noise = 4.0 * pairs.len() as f64 * f64::EPSILON;
+                    let noise = 4.0 * level_rows.len() as f64 * f64::EPSILON;
                     for (c, entry) in entries.iter_mut().enumerate() {
                         if *entry <= noise * gram[c * n_levels + level] {
                             *entry = 0.0;
