@@ -669,6 +669,48 @@ mod elimination_tests {
         }
     }
 
+    /// Both products' bits must not depend on the pool they run in, the adjoint on capped leaves.
+    #[test]
+    fn the_reduced_products_are_pool_independent() {
+        let n = 600_000;
+        let e: Vec<u32> = (0..n).map(|i| ((i * 7919) % 100_000) as u32).collect();
+        let f: Vec<u32> = (0..n).map(|i| ((i / 3) % 30_000) as u32).collect();
+        let g: Vec<u32> = (0..n).map(|i| (i % 11) as u32).collect();
+        let z: Vec<Vec<f64>> = (0..2)
+            .map(|k| (0..n).map(|i| noise(k * n + i)).collect())
+            .collect();
+        let effects = vec![
+            Effect::new(&f, true, [&z[0][..]]).unwrap(),
+            Effect::new(&e, true, [&z[1][..]]).unwrap(),
+            Effect::new(&g, true, []).unwrap(),
+        ];
+        let weights: Vec<f64> = (0..n).map(|i| 0.5 + noise(2 * n + i).abs()).collect();
+        let reduced = ReducedDesign::new(Design::new(effects).unwrap(), Some(&weights)).unwrap();
+        let k = reduced.ncols();
+        // A leaf of 4·k rows exceeds an eighth of the design, so the cap sets the leaves.
+        assert!(4 * k > n / 8);
+        let x: Vec<f64> = (0..k).map(|j| noise(3 * n + j)).collect();
+        let v: Vec<f64> = (0..n).map(|i| noise(5 * n + i)).collect();
+        let products_in = |threads: usize| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("test rayon pool")
+                .install(|| {
+                    let (mut image, mut adjoint) = (vec![0.0; n], vec![0.0; k]);
+                    reduced.apply(&x, &mut image).unwrap();
+                    reduced.apply_adjoint(&v, &mut adjoint).unwrap();
+                    let bits = image.iter().chain(&adjoint).map(|v| v.to_bits());
+                    bits.collect::<Vec<_>>()
+                })
+        };
+        let reference = products_in(1);
+        for threads in [2, 3, 8] {
+            // Not `assert_eq!`: a printed vector would bury the thread count.
+            assert!(products_in(threads) == reference, "{threads} threads");
+        }
+    }
+
     /// Enough rows for several parallel tasks and accumulator leaves, against a hand projection.
     #[rstest]
     fn the_reduced_operator_matches_level_means_across_tasks(
