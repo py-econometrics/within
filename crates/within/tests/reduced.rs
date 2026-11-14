@@ -115,6 +115,12 @@ fn reduced_and_full(
     (on(System::Reduced), on(System::Full))
 }
 
+/// `head`, then 1000 rows of `zero`.
+fn padded<T: Clone>(head: &[T], zero: T) -> Vec<T> {
+    let zeros = std::iter::repeat_n(zero, 1000);
+    head.iter().cloned().chain(zeros).collect()
+}
+
 fn assert_same_fit(reduced: &[f64], full: &[f64], identified: &[bool], y: &[f64]) {
     let gap: Vec<f64> = (reduced.iter().zip(full).zip(identified))
         .map(|((r, f), &keep)| if keep { r - f } else { 0.0 })
@@ -332,6 +338,64 @@ fn an_unsorted_design_is_refused_on_the_reduced_system() {
         matches!(solver, Err(BuildError::UnsortedReducedSystem)),
         "{solver:?}"
     );
+}
+
+/// Level sums of a response near the float range overflow; the recovered effect must not.
+#[rstest]
+fn recovery_near_the_float_range_stays_finite(#[values(1, 2)] n_factors: usize) {
+    let factors: Vec<Vec<u32>> = [vec![0, 0, 0], vec![0, 1, 0]]
+        .into_iter()
+        .take(n_factors)
+        .collect();
+    // ‖y‖ stays finite while the level sum does not.
+    let y = [1e308; 3];
+    let (reduced, full) =
+        reduced_and_full(&factors, &y, None, &lsmr(), &PreconditionerConfig::Diagonal);
+    assert!(reduced.converged);
+    assert!(reduced.x.iter().all(|x| x.is_finite()), "{:?}", reduced.x);
+    let gap = (reduced.demeaned.iter().zip(&full.demeaned)).map(|(r, f)| (r - f).abs());
+    assert!(
+        gap.fold(0.0, f64::max) <= 1e-12 * 1e308,
+        "{:?}",
+        reduced.demeaned
+    );
+}
+
+/// Four-row designs at the edge of rounding, on which both systems converge to one fit:
+/// - each level's moment `Σ w·y` exceeds the float range, though `W^½ y` and the fit do not;
+/// - rows of zero weight round nothing, so they must not raise the diagonal's rounding bound;
+/// - a kept column's distinction from the eliminated span lies below that span's Gram rounding.
+#[rstest]
+#[case::moments_beyond_the_float_range_one_factor(
+    vec![vec![0, 0, 1, 1]],
+    vec![1e308; 4],
+    vec![1e60, 1e60, -1e60, 0.5e60]
+)]
+#[case::moments_beyond_the_float_range_two_factors(
+    vec![vec![0, 0, 1, 1], vec![0, 1, 0, 1]],
+    vec![1e308; 4],
+    vec![1e60, 1e60, -1e60, 0.5e60]
+)]
+#[case::zero_weight_rows_beside_a_tiny_direction(
+    vec![padded(&[0, 1, 1, 0], 0), padded(&[0, 0, 1, 1], 0)],
+    padded(&[1.0, 1e-26, 1.0, 1e-26], 0.0),
+    padded(&[0.0, 1.0, 0.0, -1.0], 0.0)
+)]
+#[case::a_column_below_the_eliminated_grams_rounding(
+    vec![vec![0, 0, 1, 1], vec![0, 1, 1, 0]],
+    vec![1.0, 1e-18, 1.0, 1e-18],
+    vec![1.0, 1.0, 0.0, 0.0]
+)]
+fn an_edge_of_rounding_keeps_the_fit(
+    #[case] factors: Vec<Vec<u32>>,
+    #[case] w: Vec<f64>,
+    #[case] y: Vec<f64>,
+    #[values(PreconditionerConfig::Off, PreconditionerConfig::Diagonal)]
+    preconditioner: PreconditionerConfig,
+) {
+    let (reduced, full) = reduced_and_full(&factors, &y, Some(&w), &lsmr(), &preconditioner);
+    assert!(reduced.converged && full.converged, "{reduced:?}\n{full:?}");
+    assert_same_fit(&reduced.demeaned, &full.demeaned, &vec![true; y.len()], &y);
 }
 
 /// A kept level nested in one eliminated level is a null column of the reduced system; its

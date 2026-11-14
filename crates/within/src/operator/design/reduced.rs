@@ -10,7 +10,7 @@ use crate::domain::{
     fixed_tree, row_weight, Design, LevelRows, PreparedDesign, PreparedTerm, Unknowns,
     MIN_LEAF_ROWS,
 };
-use crate::linalg::{add_moments, remove_fit, solve, DiagonalGramBasis};
+use crate::linalg::{add_moments, fit_twice, remove_fit, solve, solve_rescued, DiagonalGramBasis};
 use crate::BuildError;
 
 /// Rows per parallel task, cut at an eliminated level's end so no level spans two tasks.
@@ -188,7 +188,9 @@ impl<'a> ReducedDesign<'a> {
         let columns = self.columns();
         let mut out = vec![0.0; b.len()];
         with_shape!(columns, |PLAIN, w| {
-            columns.project::<PLAIN>(|i, x| *x = b[i], w, &mut out)
+            columns.project::<PLAIN>(|i, x| *x = b[i], w, &mut out);
+            // One pass rounds away entries of heavy rows that light rows' weights make matter.
+            columns.project::<PLAIN>(|_, _| {}, w, &mut out);
         });
         out
     }
@@ -201,9 +203,9 @@ impl<'a> ReducedDesign<'a> {
         with_shape!(columns, |PLAIN, w| {
             let levels = by_level.par_chunks_mut(width).enumerate().with_min_len(256);
             levels.for_each_init(
-                || (columns.moments(1), Vec::new()),
+                || (columns.moments(2), Vec::new()),
                 |(moments, v), (l, out)| {
-                    let fit = &mut moments[LINE..][..width];
+                    let (fit, step) = moments[LINE..][..2 * width].split_at_mut(width);
                     let (rows, basis) = columns.level::<PLAIN, _>(l, w);
                     v.clear();
                     v.extend(rows.map(|i| b[i] - w(i) * columns.kept_row::<PLAIN>(x_k, i)));
@@ -211,7 +213,7 @@ impl<'a> ReducedDesign<'a> {
                     for (p, &x) in v.iter().enumerate() {
                         add_moments(&basis, p, x, fit);
                     }
-                    solve(&basis, fit);
+                    fit_twice(&basis, v, fit, step);
                     out.copy_from_slice(fit);
                 },
             )
@@ -223,6 +225,79 @@ impl<'a> ReducedDesign<'a> {
         x.extend(column_major(&by_level, width));
         x.extend_from_slice(&x_k[dofs.start..]);
         x
+    }
+
+    /// `‖(I − P_e) a‖²` of column `c` of `kept`'s `level`, summed row by row over the rows of
+    /// `e_levels`; 0 when it lies within the rounding of its own evaluation.
+    fn projected_energy(
+        &self,
+        kept: &PreparedTerm<'_>,
+        level: usize,
+        c: usize,
+        e_levels: impl Iterator<Item = u32>,
+    ) -> f64 {
+        let dominant = self.prepared.design.dominant;
+        let eliminated = self.prepared.term(dominant);
+        let (gram, e_rows) = (
+            self.prepared.diagonal(dominant),
+            self.prepared.level_rows(dominant),
+        );
+        let sqrt_weights = self.prepared.sqrt_weights();
+        let (levels, loading) = (kept.term.levels(), kept.loading(c));
+        let a = |i: usize| {
+            if levels[i] as usize == level {
+                loading.map_or(1.0, |z| z[i])
+            } else {
+                0.0
+            }
+        };
+        let width = eliminated.term.n_columns();
+        let e_loadings: Vec<Option<&[f64]>> = (0..width).map(|k| eliminated.loading(k)).collect();
+        let (mut fit, mut fit_error) = (vec![0.0; width], vec![0.0; width]);
+        // Running error bounds (Higham, ASNA 2nd ed., §3.3); a row with weight 0 rounds nothing.
+        let (mut energy, mut bound) = (0.0, 0.0);
+        let row_error = (width + 2) as f64 * f64::EPSILON;
+        for e in e_levels.map(|e| e as usize) {
+            fit.fill(0.0);
+            fit_error.fill(0.0);
+            let rows = e_rows.positions(e);
+            for i in rows.clone() {
+                let wa = row_weight(sqrt_weights, i) * a(i);
+                for ((f, error), z) in fit.iter_mut().zip(&mut fit_error).zip(&e_loadings) {
+                    let term = z.map_or(wa, |z| z[i] * wa);
+                    if term != 0.0 {
+                        *f += term;
+                        *error += f.abs() + 2.0 * term.abs();
+                    }
+                }
+            }
+            let n_levels = eliminated.term.n_levels();
+            for (k, (error, f)) in fit_error.iter_mut().zip(&mut fit).enumerate() {
+                let g = gram[k * n_levels + e];
+                (*f, *error) = if g > 0.0 {
+                    let fit = *f / g;
+                    (fit, f64::EPSILON * (*error / g + fit.abs()))
+                } else {
+                    (0.0, 0.0)
+                };
+            }
+            for i in rows {
+                let s = sqrt_weights.map_or(1.0, |s| s[i]);
+                let fitted = (fit.iter().zip(&e_loadings))
+                    .fold(-0.0, |acc, (f, z)| acc + z.map_or(*f, |z| f * z[i]));
+                let r = s * (a(i) - fitted);
+                energy += r * r;
+                let spread = (fit_error.iter().zip(&e_loadings))
+                    .fold(0.0, |acc, (d, z)| acc + d * z.map_or(1.0, |z| z[i].abs()));
+                let error = s * (row_error * (a(i).abs() + fitted.abs()) + spread);
+                bound += error * error;
+            }
+        }
+        if energy <= 4.0 * bound {
+            0.0
+        } else {
+            energy
+        }
     }
 
     /// `diag(A_rᵀ A_r)`: each kept column's squared norm less its projection onto `A_e`; 0 when
@@ -273,11 +348,15 @@ impl<'a> ReducedDesign<'a> {
                             }
                         }
                     }
-                    // The difference cancels below `n·ε` of the squared norm.
+                    // The difference cancels below `n·ε` of the squared norm; there it is resummed.
                     let noise = 4.0 * level_rows.len() as f64 * f64::EPSILON;
                     for (c, entry) in entries.iter_mut().enumerate() {
-                        if *entry <= noise * gram[c * n_levels + level] {
-                            *entry = 0.0;
+                        let norm = gram[c * n_levels + level];
+                        if *entry <= noise * norm {
+                            let e_levels = level_rows
+                                .chunk_by(|&a, &b| e_levels[a] == e_levels[b])
+                                .map(|run| e_levels[run[0]]);
+                            *entry = self.projected_energy(&kept, level, c, e_levels);
                         }
                     }
                 },
@@ -377,7 +456,7 @@ impl ProjectedColumns<'_> {
                         set(rows.start + p, x);
                         add_moments(&basis, p, *x, fit);
                     }
-                    solve(&basis, fit);
+                    solve_rescued(&basis, v, fit);
                     for (p, x) in v.iter_mut().enumerate() {
                         *x = remove_fit(&basis, p, *x, fit);
                     }
@@ -415,6 +494,7 @@ impl ProjectedColumns<'_> {
                 for (p, &x) in u.iter().enumerate() {
                     add_moments(&basis, p, x, fit);
                 }
+                // Unrescued: the check costs a 3FE product 7%, and LSMR's vectors are normalized.
                 solve(&basis, fit);
                 for (p, &x) in u.iter().enumerate() {
                     let i = rows.start + p;
