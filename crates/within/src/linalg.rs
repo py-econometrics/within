@@ -13,6 +13,48 @@ pub(crate) fn add_compensated(sum: &mut f64, correction: &mut f64, value: f64) {
     *sum = next;
 }
 
+/// The columns of a basis over one block of rows whose Gram matrix is diagonal; callers size
+/// the moment slices to its width.
+pub(crate) trait DiagonalGramBasis {
+    /// Row `p`'s entry in column `c`.
+    fn entry(&self, p: usize, c: usize) -> f64;
+    /// Column `c`'s squared norm; a column with none fits nothing.
+    fn norm2(&self, c: usize) -> f64;
+}
+
+/// Adds row `p`'s `entry · v` to each column's moment.
+#[inline(always)]
+pub(crate) fn add_moments(basis: &impl DiagonalGramBasis, p: usize, v: f64, moments: &mut [f64]) {
+    for (c, m) in moments.iter_mut().enumerate() {
+        *m += basis.entry(p, c) * v;
+    }
+}
+
+/// `moments ← G⁻¹ moments`.
+#[inline(always)]
+pub(crate) fn solve(basis: &impl DiagonalGramBasis, moments: &mut [f64]) {
+    for (c, m) in moments.iter_mut().enumerate() {
+        let g = basis.norm2(c);
+        *m = if g > 0.0 { *m / g } else { 0.0 };
+    }
+}
+
+/// `v − Σ_c entry(p, c) · fit_c`.
+#[inline(always)]
+pub(crate) fn remove_fit(basis: &impl DiagonalGramBasis, p: usize, v: f64, fit: &[f64]) -> f64 {
+    (fit.iter().enumerate()).fold(v, |v, (c, m)| sub_product(v, basis.entry(p, c), *m))
+}
+
+/// `v − a · b`, fused where the target has the instruction; without it `mul_add` calls libm.
+#[inline(always)]
+fn sub_product(v: f64, a: f64, b: f64) -> f64 {
+    if cfg!(any(target_arch = "aarch64", target_feature = "fma")) {
+        (-a).mul_add(b, v)
+    } else {
+        v - a * b
+    }
+}
+
 pub(crate) fn dot(left: &[f64], right: &[f64]) -> f64 {
     left.iter().zip(right).map(|(&x, &y)| x * y).sum()
 }
