@@ -207,9 +207,10 @@ impl<'a> ReducedDesign<'a> {
                     let fit = &mut moments[LINE..][..width];
                     let (rows, basis) = columns.level::<PLAIN, _>(l, w);
                     v.clear();
-                    v.extend(rows.map(|i| b[i] - w(i) * columns.kept_row::<PLAIN>(x_k, i)));
                     fit.fill(0.0);
-                    for (p, &x) in v.iter().enumerate() {
+                    for (p, i) in rows.enumerate() {
+                        let x = b[i] - w(i) * columns.kept_row::<PLAIN>(x_k, i);
+                        v.push(x);
                         add_moments(&basis, p, x, fit);
                     }
                     solve(&basis, fit);
@@ -405,11 +406,7 @@ impl ProjectedColumns<'_> {
                 true => &mut plain[..],
                 false => &mut moments[LINE..][..width],
             };
-            let levels = match tasks.len() {
-                0 => 0..0,
-                _ => all[tasks.start].start..all[tasks.end - 1].end,
-            };
-            for l in levels {
+            for l in all[tasks.start].start..all[tasks.end - 1].end {
                 let (rows, basis) = self.level::<PLAIN, _>(l, &w);
                 let u = &v[rows.clone()];
                 fit.fill(0.0);
@@ -426,7 +423,7 @@ impl ProjectedColumns<'_> {
             acc
         };
         let add = |l: &mut Vec<f64>, r: &Vec<f64>| l.iter_mut().zip(r).for_each(|(l, r)| *l += r);
-        let leaf = |mut k: Range<usize>| leaf(k.next().map_or(0..0, |k| leaves[k].clone()));
+        let leaf = |k: Range<usize>| leaf(leaves[k.start].clone());
         fixed_tree(0..leaves.len(), 1, &leaf, &add)
     }
 }

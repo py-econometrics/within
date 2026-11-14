@@ -562,8 +562,8 @@ impl<'a> Solver<'a> {
 
         let (solutions, build_secs) = self.solutions(ys, lsmr)?;
 
-        let mut x = Vec::with_capacity(self.system.prepared().design.n_dofs * n_rhs);
-        let mut demeaned = Vec::with_capacity(self.system.prepared().design.n_obs * n_rhs);
+        let mut x = Vec::with_capacity(self.n_dofs() * n_rhs);
+        let mut demeaned = Vec::with_capacity(self.n_obs() * n_rhs);
         let mut converged = Vec::with_capacity(n_rhs);
         let mut iterations = Vec::with_capacity(n_rhs);
         let mut residual = Vec::with_capacity(n_rhs);
@@ -592,8 +592,8 @@ impl<'a> Solver<'a> {
             // The deferred build is the batch's only setup, so this is zero when it built nothing.
             time_setup: build_secs,
             time_total: t_start.elapsed().as_secs_f64(),
-            n_dofs: self.system.prepared().design.n_dofs,
-            n_obs: self.system.prepared().design.n_obs,
+            n_dofs: self.n_dofs(),
+            n_obs: self.n_obs(),
         })
     }
 
