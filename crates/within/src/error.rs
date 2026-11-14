@@ -102,9 +102,6 @@ pub enum BuildError {
         /// The offending value.
         value: f64,
     },
-    /// A prebuilt Schwarz map does not record its system, so a reduced system cannot reuse one yet.
-    #[error("a prebuilt Schwarz preconditioner cannot be reused on a reduced system yet")]
-    SchwarzOnReducedSystem,
     /// The reduced system indexes observations as `u32`.
     #[error("the reduced system supports at most u32::MAX observations, got {n_obs}")]
     ObservationsExceedU32 {

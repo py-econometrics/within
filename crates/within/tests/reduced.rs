@@ -283,30 +283,22 @@ fn the_default_preconditioner_starts_on_the_reduced_diagonal(
     assert_same_fit(&ladder.demeaned, &full.demeaned, &[true; N], &y);
 }
 
-/// A Schwarz map built on another design's full system is refused even when its size fits.
+/// A Schwarz map built on the reduced system solves the same when a second solver reuses it.
 #[test]
-fn a_prebuilt_schwarz_map_is_refused_on_the_reduced_system() {
-    let n = 200;
-    let pair = vec![
-        (0..n).map(|i| (i % 3) as u32).collect::<Vec<_>>(),
-        (0..n).map(|i| ((i / 3) % 4) as u32).collect(),
-    ];
+fn a_reduced_schwarz_map_is_reused_on_the_reduced_system() {
+    let factors = factors(3);
+    let y = response(5);
     let additive = PreconditionerConfig::Additive {
         local_solver: Default::default(),
     };
-    let full = Solver::new(effects(&pair), None, &additive).expect("full");
-    let schwarz = full.preconditioner().expect("schwarz").clone();
-    // An eliminated 20-level factor beside kept factors of 3 and 4 levels: 7 kept columns.
-    let three = vec![
-        (0..n).map(|i| (i % 20) as u32).collect::<Vec<_>>(),
-        (0..n).map(|i| ((i * 7) % 3) as u32).collect(),
-        (0..n).map(|i| ((i / 5) % 4) as u32).collect(),
-    ];
-    let reduced = Solver::reduced(effects(&three), None, schwarz);
-    assert!(
-        matches!(reduced, Err(BuildError::SchwarzOnReducedSystem)),
-        "{reduced:?}"
-    );
+    let built = solver(effects(&factors), None, &additive, System::Reduced).expect("built");
+    let map = built.preconditioner().expect("schwarz").clone();
+    let reused = solver(effects(&factors), None, map, System::Reduced).expect("reused");
+    let built = built.solve(&y, &lsmr()).expect("solve");
+    let reused = reused.solve(&y, &lsmr()).expect("solve");
+    assert!(built.converged);
+    assert_eq!(reused.iterations, built.iterations);
+    assert_eq!(reused.x, built.x);
 }
 
 #[test]

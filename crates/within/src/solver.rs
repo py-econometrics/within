@@ -463,20 +463,13 @@ impl<'a> Solver<'a> {
     /// [`Solver::new`] on the reduced system: the term with the most coefficients is eliminated
     /// exactly, LSMR iterates on the remaining terms, and the eliminated coefficients are
     /// recovered from the rest. Every [`PreconditionerConfig`] means the same on both systems.
-    /// A prebuilt Schwarz map does not record its system yet, so this refuses one.
     pub fn reduced(
         design: impl IntoDesign<'a>,
         weights: Option<&[f64]>,
         preconditioner: impl Into<PreconditionerInput>,
     ) -> Result<Self, BuildError> {
-        let (design, preconditioner) = (design.into_design()?, preconditioner.into());
-        if let PreconditionerInput::Prebuilt(p) = &preconditioner {
-            if matches!(p.config(), PreconditionerConfig::Additive { .. }) {
-                return Err(BuildError::SchwarzOnReducedSystem);
-            }
-        }
-        let reduced = ReducedDesign::new(design, weights)?;
-        let slot = resolve(&reduced, preconditioner)?;
+        let reduced = ReducedDesign::new(design.into_design()?, weights)?;
+        let slot = resolve(&reduced, preconditioner.into())?;
         Ok(Self {
             system: System::Reduced(reduced),
             slot,
