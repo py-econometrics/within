@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use schwarz_precond::Operator;
 
 use crate::config::LocalSolverConfig;
-use crate::domain::PreparedDesign;
+use crate::domain::{PreparedDesign, Unknowns};
 use crate::operator::design::ReducedDesign;
 use crate::operator::schwarz::{build_schwarz, Preconditioner};
 use crate::{BuildError, BuildWarning, SolveError};
@@ -152,7 +152,7 @@ impl LeastSquaresSystem for PreparedDesign<'_> {
         &self,
         local_solver: &LocalSolverConfig,
     ) -> Result<(Option<Preconditioner>, Vec<BuildWarning>), BuildError> {
-        build_schwarz(self, local_solver, None)
+        build_schwarz(self, local_solver, Unknowns::All)
     }
 }
 
@@ -162,7 +162,7 @@ pub(crate) struct ReducedResponse<'s> {
     projected: Vec<f64>,
 }
 
-impl LeastSquaresSystem for ReducedDesign<'_, '_> {
+impl LeastSquaresSystem for ReducedDesign<'_> {
     type Matrix = Self;
     type Rhs<'s>
         = ReducedResponse<'s>
@@ -218,7 +218,6 @@ impl LeastSquaresSystem for ReducedDesign<'_, '_> {
         &self,
         local_solver: &LocalSolverConfig,
     ) -> Result<(Option<Preconditioner>, Vec<BuildWarning>), BuildError> {
-        let prepared = ReducedDesign::prepared(self);
-        build_schwarz(prepared, local_solver, Some(prepared.design.dominant))
+        build_schwarz(self.prepared(), local_solver, Unknowns::WithoutDominant)
     }
 }

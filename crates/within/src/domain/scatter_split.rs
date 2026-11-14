@@ -189,11 +189,6 @@ impl LevelRows {
         self.offsets[level]..self.offsets[level + 1]
     }
 
-    /// The row at each position; `None` when positions are rows.
-    pub(crate) fn order(&self) -> Option<&[u32]> {
-        self.rows.as_deref()
-    }
-
     /// Calls `f` on the row at each of `positions`, in order.
     #[inline(always)]
     pub(crate) fn for_each_row(&self, positions: Range<usize>, f: impl FnMut(usize)) {

@@ -424,7 +424,7 @@ mod elimination_tests {
     use schwarz_precond::Operator;
 
     use super::noise;
-    use crate::domain::{Design, Effect, PreparedDesign};
+    use crate::domain::{Design, Effect};
     use crate::linalg::dot;
     use crate::operator::design::ReducedDesign;
 
@@ -447,7 +447,7 @@ mod elimination_tests {
     const N: usize = 600;
 
     /// Three terms whose middle one, the dominant, is shaped by `dominant`.
-    fn fixture(dominant: Dominant, weighted: bool) -> PreparedDesign<'static> {
+    fn fixture(dominant: Dominant, weighted: bool) -> ReducedDesign<'static> {
         let n = N;
         let n_levels = 40;
         let e: Vec<u32> = (0..n).map(|i| ((i * 7) % n_levels) as u32).collect();
@@ -488,7 +488,7 @@ mod elimination_tests {
                 _ => 1.0 + noise(9 * n + i).abs(),
             })
             .collect();
-        PreparedDesign::new(design.into_owned(), weighted.then_some(&weights[..])).unwrap()
+        ReducedDesign::new(design.into_owned(), weighted.then_some(&weights[..])).unwrap()
     }
 
     #[rstest]
@@ -504,7 +504,8 @@ mod elimination_tests {
         #[values(false, true)] weighted: bool,
     ) {
         let n = N;
-        let prepared = fixture(dominant, weighted);
+        let reduced = fixture(dominant, weighted);
+        let prepared = reduced.prepared();
         let dofs = prepared.design.terms[1].dofs();
         let unidentified: Vec<usize> = prepared
             .diagonal(1)
@@ -521,7 +522,6 @@ mod elimination_tests {
         let p = prepared.design.n_dofs;
         let kept: Vec<f64> = (0..p).map(|j| noise(11 * n + j)).collect();
         let x_k: Vec<f64> = [&kept[..dofs.start], &kept[dofs.end..]].concat();
-        let reduced = ReducedDesign::new(&prepared).unwrap();
         let recover = |b: &[f64]| {
             let x = reduced.recover(b, &x_k);
             assert_eq!([&x[..dofs.start], &x[dofs.end..]].concat(), x_k);
@@ -578,8 +578,8 @@ mod elimination_tests {
         dominant: Dominant,
         #[values(false, true)] weighted: bool,
     ) {
-        let prepared = fixture(dominant, weighted);
-        let reduced = ReducedDesign::new(&prepared).unwrap();
+        let reduced = fixture(dominant, weighted);
+        let prepared = reduced.prepared();
         let dofs = prepared.design.terms[1].dofs();
         let (p, k) = (prepared.design.n_dofs, reduced.ncols());
         assert_eq!(k, p - dofs.len());
@@ -661,8 +661,8 @@ mod elimination_tests {
             Effect::new(&e, true, []).unwrap(),
         ];
         let design = Design::new(effects).unwrap();
-        let prepared = PreparedDesign::new(design, Some(&[1e-200; 4])).unwrap();
-        let diagonal = ReducedDesign::new(&prepared).unwrap().gram_diagonal();
+        let weights = Some(&[1e-200; 4][..]);
+        let diagonal = ReducedDesign::new(design, weights).unwrap().gram_diagonal();
         assert_eq!(diagonal.len(), 2);
         for d in diagonal {
             assert!((d / 1e-200 - 1.0).abs() <= 1e-14, "{d:e}");
@@ -693,8 +693,8 @@ mod elimination_tests {
                 }
             })
             .collect();
-        let prepared = PreparedDesign::new(design, weighted.then_some(&weights[..])).unwrap();
-        let reduced = ReducedDesign::new(&prepared).unwrap();
+        let reduced = ReducedDesign::new(design, weighted.then_some(&weights[..])).unwrap();
+        let prepared = reduced.prepared();
         let dofs = prepared.design.terms[1].dofs();
         let k = reduced.ncols();
         let x_k: Vec<f64> = (0..k).map(|j| noise(3 * n + j)).collect();

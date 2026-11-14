@@ -199,12 +199,20 @@ impl BatchSolveResult {
     }
 }
 /// The least-squares system LSMR iterates on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum System {
+enum System<'a> {
     /// Every coefficient.
-    Full,
+    Full(PreparedDesign<'a>),
     /// The term with the most coefficients is eliminated exactly; the rest iterate.
-    Reduced,
+    Reduced(ReducedDesign<'a>),
+}
+
+impl<'a> System<'a> {
+    fn prepared(&self) -> &PreparedDesign<'a> {
+        match self {
+            Self::Full(prepared) => prepared,
+            Self::Reduced(reduced) => reduced.prepared(),
+        }
+    }
 }
 
 /// Persistent solver that owns its preconditioner for reuse across multiple solves.
@@ -219,18 +227,22 @@ enum System {
 /// (`Cow`); a solver that outlives its inputs — e.g. one returned across the
 /// Python boundary — uses owned columns.
 pub struct Solver<'a> {
-    prepared: PreparedDesign<'a>,
-    system: System,
+    system: System<'a>,
     slot: PrecondSlot,
 }
 
 impl std::fmt::Debug for Solver<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let prepared = self.system.prepared();
+        let system = match self.system {
+            System::Full(_) => "Full",
+            System::Reduced(_) => "Reduced",
+        };
         f.debug_struct("Solver")
-            .field("n_obs", &self.prepared.design.n_obs)
-            .field("n_dofs", &self.prepared.design.n_dofs)
-            .field("has_weights", &self.prepared.sqrt_weights().is_some())
-            .field("system", &self.system)
+            .field("n_obs", &prepared.design.n_obs)
+            .field("n_dofs", &prepared.design.n_dofs)
+            .field("has_weights", &prepared.sqrt_weights().is_some())
+            .field("system", &format_args!("{system}"))
             .field("has_preconditioner", &self.preconditioner().is_some())
             .field("has_escalated", &self.has_escalated())
             .finish()
@@ -439,7 +451,13 @@ impl<'a> Solver<'a> {
         weights: Option<&[f64]>,
         preconditioner: impl Into<PreconditionerInput>,
     ) -> Result<Self, BuildError> {
-        Self::on(System::Full, design, weights, preconditioner.into())
+        // Whiten the slope columns (if any) before the preconditioner reads them.
+        let prepared = PreparedDesign::new(design.into_design()?, weights)?;
+        let slot = resolve(&prepared, preconditioner.into())?;
+        Ok(Self {
+            system: System::Full(prepared),
+            slot,
+        })
     }
 
     /// [`Solver::new`] on the reduced system: the term with the most coefficients is eliminated
@@ -451,37 +469,17 @@ impl<'a> Solver<'a> {
         weights: Option<&[f64]>,
         preconditioner: impl Into<PreconditionerInput>,
     ) -> Result<Self, BuildError> {
-        Self::on(System::Reduced, design, weights, preconditioner.into())
-    }
-
-    fn on(
-        system: System,
-        design: impl IntoDesign<'a>,
-        weights: Option<&[f64]>,
-        preconditioner: PreconditionerInput,
-    ) -> Result<Self, BuildError> {
-        let design = design.into_design()?;
-        let n_obs = design.n_obs;
-        if system == System::Reduced && u32::try_from(n_obs).is_err() {
-            return Err(BuildError::ObservationsExceedU32 { n_obs });
-        }
-        // Whiten the slope columns (if any) before the preconditioner reads them.
-        let prepared = PreparedDesign::new(design, weights)?;
-        let slot = match system {
-            System::Full => resolve(&prepared, preconditioner)?,
-            System::Reduced => {
-                if let PreconditionerInput::Prebuilt(p) = &preconditioner {
-                    let diagonal = matches!(p.config(), PreconditionerConfig::Diagonal);
-                    if p.ladder().is_none() && !diagonal {
-                        return Err(BuildError::SchwarzOnReducedSystem);
-                    }
-                }
-                resolve(&ReducedDesign::new(&prepared)?, preconditioner)?
+        let (design, preconditioner) = (design.into_design()?, preconditioner.into());
+        if let PreconditionerInput::Prebuilt(p) = &preconditioner {
+            let diagonal = matches!(p.config(), PreconditionerConfig::Diagonal);
+            if p.ladder().is_none() && !diagonal {
+                return Err(BuildError::SchwarzOnReducedSystem);
             }
-        };
+        }
+        let reduced = ReducedDesign::new(design, weights)?;
+        let slot = resolve(&reduced, preconditioner)?;
         Ok(Self {
-            prepared,
-            system,
+            system: System::Reduced(reduced),
             slot,
         })
     }
@@ -492,11 +490,9 @@ impl<'a> Solver<'a> {
         ys: &[&[f64]],
         lsmr: &LsmrOptions,
     ) -> Result<(Vec<RhsSolution>, f64), WithinError> {
-        match self.system {
-            System::Full => solve_all(&self.prepared, &self.slot, ys, lsmr),
-            System::Reduced => {
-                solve_all(&ReducedDesign::new(&self.prepared)?, &self.slot, ys, lsmr)
-            }
+        match &self.system {
+            System::Full(prepared) => solve_all(prepared, &self.slot, ys, lsmr),
+            System::Reduced(reduced) => solve_all(reduced, &self.slot, ys, lsmr),
         }
     }
 
@@ -521,9 +517,10 @@ impl<'a> Solver<'a> {
     /// Per-level directions the data cannot identify, shared across all RHS:
     /// identification depends only on the design and weights, never on `y`.
     fn unidentified(&self) -> Vec<CoefficientAddress> {
-        self.prepared
+        let prepared = self.system.prepared();
+        prepared
             .unidentified()
-            .map(|position| position.to_caller_address(&self.prepared.design))
+            .map(|position| position.to_caller_address(&prepared.design))
             .collect()
     }
 
@@ -548,7 +545,7 @@ impl<'a> Solver<'a> {
             unidentified: self.unidentified(),
             // Read after solving so a deferred Adaptive build's warnings are included.
             warnings: self.warnings().to_vec(),
-            layout: CoefficientLayout::from_design(&self.prepared.design),
+            layout: CoefficientLayout::from_design(&self.system.prepared().design),
             demeaned: solution.fit.demeaned,
             converged: solution.converged,
             iterations: solution.iterations,
@@ -573,8 +570,8 @@ impl<'a> Solver<'a> {
 
         let (solutions, build_secs) = self.solutions(ys, lsmr)?;
 
-        let mut x = Vec::with_capacity(self.prepared.design.n_dofs * n_rhs);
-        let mut demeaned = Vec::with_capacity(self.prepared.design.n_obs * n_rhs);
+        let mut x = Vec::with_capacity(self.system.prepared().design.n_dofs * n_rhs);
+        let mut demeaned = Vec::with_capacity(self.system.prepared().design.n_obs * n_rhs);
         let mut converged = Vec::with_capacity(n_rhs);
         let mut iterations = Vec::with_capacity(n_rhs);
         let mut residual = Vec::with_capacity(n_rhs);
@@ -594,7 +591,7 @@ impl<'a> Solver<'a> {
             unidentified: self.unidentified(),
             // Read after solving so a deferred Adaptive build's warnings are included.
             warnings: self.warnings().to_vec(),
-            layout: CoefficientLayout::from_design(&self.prepared.design),
+            layout: CoefficientLayout::from_design(&self.system.prepared().design),
             demeaned,
             converged,
             iterations,
@@ -603,8 +600,8 @@ impl<'a> Solver<'a> {
             // The deferred build is the batch's only setup, so this is zero when it built nothing.
             time_setup: build_secs,
             time_total: t_start.elapsed().as_secs_f64(),
-            n_dofs: self.prepared.design.n_dofs,
-            n_obs: self.prepared.design.n_obs,
+            n_dofs: self.system.prepared().design.n_dofs,
+            n_obs: self.system.prepared().design.n_obs,
         })
     }
 
@@ -619,12 +616,12 @@ impl<'a> Solver<'a> {
 
     /// Number of DOFs (coefficients).
     pub fn n_dofs(&self) -> usize {
-        self.prepared.design.n_dofs
+        self.system.prepared().design.n_dofs
     }
 
     /// Number of observations.
     pub fn n_obs(&self) -> usize {
-        self.prepared.design.n_obs
+        self.system.prepared().design.n_obs
     }
 }
 

@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use crate::block_solver::BlockSolver;
 use crate::config::{LocalSolverConfig, PreconditionerConfig, Staleness};
-use crate::domain::{LocalDomain, PreparedDesign};
+use crate::domain::{LocalDomain, PreparedDesign, Unknowns};
 use crate::{BuildError, BuildWarning};
 
 #[cfg(test)]
@@ -274,22 +274,19 @@ fn diagonal_map(mut diag: Vec<f64>) -> Result<DiagonalPreconditioner, BuildError
     })
 }
 
-/// Build the additive Schwarz map plus its warnings, over every coefficient or over all but
-/// the `eliminated` term's; `None` when the design has no factor-pair subdomain to build on,
-/// where plain LSMR is the fallback.
+/// Build the additive Schwarz map over `unknowns` plus its warnings; `None` when the design has
+/// no factor-pair subdomain to build on, where plain LSMR is the fallback.
 pub(crate) fn build_schwarz(
     prepared: &PreparedDesign<'_>,
     local_solver: &LocalSolverConfig,
-    eliminated: Option<usize>,
+    unknowns: Unknowns,
 ) -> Result<(Option<Preconditioner>, Vec<BuildWarning>), BuildError> {
     let build_started = Instant::now();
-    let (domains, warnings) =
-        crate::domain::build_local_domains(prepared, local_solver, eliminated)?;
+    let (domains, warnings) = crate::domain::build_local_domains(prepared, local_solver, unknowns)?;
     if domains.is_empty() {
         return Ok((None, warnings));
     }
-    let design = &prepared.design;
-    let n_dofs = design.n_dofs - eliminated.map_or(0, |t| design.terms[t].n_dofs());
+    let n_dofs = prepared.design.n_unknowns(unknowns);
     let schwarz = build_additive(domains, local_solver, n_dofs)?;
     let preconditioner = Preconditioner {
         inner: Variant::Additive(schwarz),

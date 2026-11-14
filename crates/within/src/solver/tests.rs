@@ -104,10 +104,13 @@ fn solvers_built_from_a_borrowed_design_share_its_storage() {
     let weighted = Solver::new(&design, Some(&w), &PreconditionerConfig::Diagonal).unwrap();
 
     assert!(Arc::ptr_eq(
-        &unweighted.prepared.design.terms,
+        &unweighted.system.prepared().design.terms,
         &design.terms
     ));
-    assert!(Arc::ptr_eq(&weighted.prepared.design.terms, &design.terms));
+    assert!(Arc::ptr_eq(
+        &weighted.system.prepared().design.terms,
+        &design.terms
+    ));
     let a = unweighted.solve(&y, None).unwrap();
     let b = weighted.solve(&y, None).unwrap();
     assert!(a.converged && b.converged);
@@ -300,7 +303,7 @@ fn an_aliased_slope_converges(#[case] spec: SlopeSpec) {
     let solver = Solver::new(panel.effects(), None, additive()).expect("solver");
     let out = solve_tight(&solver, &panel.y);
     // A floating component grounded by mistake reports a false convergence at an O(1) mean.
-    let group_mean = max_abs_group_mean(&solver.prepared.design, &out.demeaned);
+    let group_mean = max_abs_group_mean(&solver.system.prepared().design, &out.demeaned);
     assert!(
         out.converged && group_mean < 1e-9,
         "converged={}, gm={group_mean:.3e}",
@@ -457,7 +460,7 @@ fn an_alias_through_a_zero_loading_still_converges() {
     };
     let solver = Solver::new(effects, None, schwarz).expect("solver");
     let out = solve_tight(&solver, &y);
-    let group_mean = max_abs_group_mean(&solver.prepared.design, &out.demeaned);
+    let group_mean = max_abs_group_mean(&solver.system.prepared().design, &out.demeaned);
     assert!(
         out.converged && group_mean < 1e-9,
         "converged={}, iterations={}, gm={group_mean:.3e}",
