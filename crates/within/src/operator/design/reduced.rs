@@ -150,9 +150,10 @@ impl<'a> ReducedDesign<'a> {
         });
         let task_rows =
             |t: usize| rows.positions(tasks[t].end - 1).end - rows.positions(tasks[t].start).start;
-        // Merging costs ∝ the kept coefficients per leaf, so a leaf spans at least 4× as many rows.
+        // Merging costs ∝ the kept coefficients per leaf: 4× as many rows, capped at 8 leaves' worth.
         let n_kept = design.n_unknowns(Unknowns::WithoutDominant);
-        let leaves = cut(tasks.len(), MIN_LEAF_ROWS.max(4 * n_kept), task_rows);
+        let leaf_rows = (4 * n_kept).min(design.n_obs.div_ceil(8));
+        let leaves = cut(tasks.len(), MIN_LEAF_ROWS.max(leaf_rows), task_rows);
         let plain = (design.terms.iter()).all(|t| t.intercept && !t.has_slopes());
         // Filled here: left to the first product, a solve's fan-out would wait on it.
         prepared.diagonal(dominant);
