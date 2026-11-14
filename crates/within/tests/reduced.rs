@@ -1,7 +1,7 @@
 use rstest::rstest;
 use within::{
-    BatchSolveResult, BuildError, Channel, CoefficientAddress, Design, Effect, IntoDesign,
-    LsmrOptions, PreconditionerConfig, PreconditionerInput, SolveResult, Solver, WithinError,
+    BuildError, Channel, CoefficientAddress, Design, Effect, IntoDesign, LsmrOptions,
+    PreconditionerConfig, PreconditionerInput, SolveResult, Solver,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -20,28 +20,6 @@ fn solver<'a>(
         System::Full => Solver::new(design, weights, preconditioner),
         System::Reduced => Solver::reduced(design, weights, preconditioner),
     }
-}
-
-fn solve<'a, 'o>(
-    design: impl IntoDesign<'a>,
-    y: &[f64],
-    weights: Option<&[f64]>,
-    lsmr: impl Into<Option<&'o LsmrOptions>>,
-    preconditioner: impl Into<PreconditionerInput>,
-    system: System,
-) -> Result<SolveResult, WithinError> {
-    solver(design, weights, preconditioner, system)?.solve(y, lsmr)
-}
-
-fn solve_batch<'a, 'o>(
-    design: impl IntoDesign<'a>,
-    ys: &[&[f64]],
-    weights: Option<&[f64]>,
-    lsmr: impl Into<Option<&'o LsmrOptions>>,
-    preconditioner: impl Into<PreconditionerInput>,
-    system: System,
-) -> Result<BatchSolveResult, WithinError> {
-    solver(design, weights, preconditioner, system)?.solve_batch(ys, lsmr)
 }
 
 fn noise(k: usize) -> f64 {
@@ -111,6 +89,20 @@ fn identified_rows(factors: &[Vec<u32>], weighted: bool) -> Vec<bool> {
         .collect()
 }
 
+fn solve_on(
+    system: System,
+    factors: &[Vec<u32>],
+    y: &[f64],
+    w: Option<&[f64]>,
+    options: &LsmrOptions,
+    preconditioner: &PreconditionerConfig,
+) -> SolveResult {
+    solver(effects(factors), w, preconditioner, system)
+        .expect("solver")
+        .solve(y, options)
+        .expect("solve")
+}
+
 /// One response solved on the reduced system and on the full one.
 fn reduced_and_full(
     factors: &[Vec<u32>],
@@ -119,9 +111,8 @@ fn reduced_and_full(
     options: &LsmrOptions,
     preconditioner: &PreconditionerConfig,
 ) -> (SolveResult, SolveResult) {
-    let solve_on =
-        |system| solve(effects(factors), y, w, options, preconditioner, system).expect("solve");
-    (solve_on(System::Reduced), solve_on(System::Full))
+    let on = |system| solve_on(system, factors, y, w, options, preconditioner);
+    (on(System::Reduced), on(System::Full))
 }
 
 fn assert_same_fit(reduced: &[f64], full: &[f64], identified: &[bool], y: &[f64]) {
@@ -150,12 +141,9 @@ fn reduced_and_full_fits_agree(
     let factors = factors(n_factors);
     let w = weighted.then(|| weights(&factors));
     let y = response(1);
-    let solve_on = |system, preconditioner: &PreconditionerConfig| {
-        let effects = effects(&factors);
-        solve(effects, &y, w.as_deref(), &lsmr(), preconditioner, system).expect("solve")
-    };
-    let reduced = solve_on(System::Reduced, &preconditioner);
-    let full = solve_on(System::Full, &PreconditionerConfig::Diagonal);
+    let on = |system, p| solve_on(system, &factors, &y, w.as_deref(), &lsmr(), p);
+    let reduced = on(System::Reduced, &preconditioner);
+    let full = on(System::Full, &PreconditionerConfig::Diagonal);
     assert!(reduced.converged && full.converged, "{reduced:?}\n{full:?}");
     assert_eq!(reduced.unidentified, full.unidentified);
     let identified = identified_rows(&factors, weighted);
@@ -182,7 +170,10 @@ fn reduced_and_full_batches_agree(#[values(2, 3)] n_factors: usize) {
     let batch = |system| {
         let effects = effects(&factors);
         let preconditioner = PreconditionerConfig::Diagonal;
-        solve_batch(effects, &ys, Some(&w), &lsmr(), &preconditioner, system).expect("batch")
+        solver(effects, Some(&w), &preconditioner, system)
+            .expect("solver")
+            .solve_batch(&ys, &lsmr())
+            .expect("batch")
     };
     let (reduced, full) = (batch(System::Reduced), batch(System::Full));
     assert_eq!(reduced.unidentified, full.unidentified);
@@ -199,15 +190,10 @@ fn one_factor_is_solved_by_elimination_alone(#[values(false, true)] weighted: bo
     let w = weighted.then(|| weights(&factors));
     let y = response(4);
     // With no kept factor, the Schwarz default settles like any one-factor system.
-    let result = solve(
-        effects(&factors),
-        &y,
-        w.as_deref(),
-        None,
-        None,
-        System::Reduced,
-    )
-    .expect("solve");
+    let result = Solver::reduced(effects(&factors), w.as_deref(), None)
+        .expect("solver")
+        .solve(&y, None)
+        .expect("solve");
     assert!(result.converged);
     assert_eq!(result.iterations, 0);
 
@@ -250,18 +236,7 @@ fn schwarz_on_one_factor_matches_its_plain_counterpart(
     let factors = factors(1);
     let w = weights(&factors);
     let y = response(7);
-    let solve_with = |preconditioner: &PreconditionerConfig| {
-        let effects = effects(&factors);
-        solve(
-            effects,
-            &y,
-            Some(&w),
-            &lsmr(),
-            preconditioner,
-            System::Reduced,
-        )
-        .expect("solve")
-    };
+    let solve_with = |p| solve_on(System::Reduced, &factors, &y, Some(&w), &lsmr(), p);
     let (schwarz, plain) = (solve_with(&schwarz), solve_with(&plain));
     assert!(schwarz.converged);
     assert_eq!(schwarz.iterations, plain.iterations);
@@ -271,15 +246,9 @@ fn schwarz_on_one_factor_matches_its_plain_counterpart(
 #[test]
 fn a_prebuilt_preconditioner_must_fit_the_reduced_system() {
     let factors = factors(1);
-    let full = solver(
-        effects(&factors),
-        None,
-        &PreconditionerConfig::Diagonal,
-        System::Full,
-    )
-    .expect("full");
+    let full = Solver::new(effects(&factors), None, &PreconditionerConfig::Diagonal).expect("full");
     let prebuilt = full.preconditioner().expect("diagonal").clone();
-    let reduced = solver(effects(&factors), None, prebuilt, System::Reduced);
+    let reduced = Solver::reduced(effects(&factors), None, prebuilt);
     assert!(
         matches!(
             reduced,
@@ -299,15 +268,18 @@ fn the_default_preconditioner_starts_on_the_reduced_diagonal(
 ) {
     let factors = factors(n_factors);
     let y = response(5);
-    let solve_on = |system, preconditioner: Option<&PreconditionerConfig>| {
-        solve(effects(&factors), &y, None, &lsmr(), preconditioner, system).expect("solve")
+    let solve_with = |system, preconditioner: Option<&PreconditionerConfig>| {
+        solver(effects(&factors), None, preconditioner, system)
+            .expect("solver")
+            .solve(&y, &lsmr())
+            .expect("solve")
     };
-    let ladder = solve_on(System::Reduced, preconditioner.as_ref());
-    let diagonal = solve_on(System::Reduced, Some(&PreconditionerConfig::Diagonal));
+    let ladder = solve_with(System::Reduced, preconditioner.as_ref());
+    let diagonal = solve_with(System::Reduced, Some(&PreconditionerConfig::Diagonal));
     assert!(ladder.converged);
     assert_eq!(ladder.iterations, diagonal.iterations);
     assert_eq!(ladder.x, diagonal.x);
-    let full = solve_on(System::Full, preconditioner.as_ref());
+    let full = solve_with(System::Full, preconditioner.as_ref());
     assert_same_fit(&ladder.demeaned, &full.demeaned, &[true; N], &y);
 }
 
@@ -322,7 +294,7 @@ fn a_prebuilt_schwarz_map_is_refused_on_the_reduced_system() {
     let additive = PreconditionerConfig::Additive {
         local_solver: Default::default(),
     };
-    let full = solver(effects(&pair), None, &additive, System::Full).expect("full");
+    let full = Solver::new(effects(&pair), None, &additive).expect("full");
     let schwarz = full.preconditioner().expect("schwarz").clone();
     // An eliminated 20-level factor beside kept factors of 3 and 4 levels: 7 kept columns.
     let three = vec![
@@ -330,7 +302,7 @@ fn a_prebuilt_schwarz_map_is_refused_on_the_reduced_system() {
         (0..n).map(|i| ((i * 7) % 3) as u32).collect(),
         (0..n).map(|i| ((i / 5) % 4) as u32).collect(),
     ];
-    let reduced = solver(effects(&three), None, schwarz, System::Reduced);
+    let reduced = Solver::reduced(effects(&three), None, schwarz);
     assert!(
         matches!(reduced, Err(BuildError::SchwarzOnReducedSystem)),
         "{reduced:?}"
@@ -363,12 +335,7 @@ fn an_unsorted_design_is_refused_on_the_reduced_system() {
         Effect::new(&e, true, []).expect("effect"),
     ])
     .expect("design");
-    let solver = solver(
-        design,
-        None,
-        &PreconditionerConfig::Diagonal,
-        System::Reduced,
-    );
+    let solver = Solver::reduced(design, None, &PreconditionerConfig::Diagonal);
     assert!(
         matches!(solver, Err(BuildError::UnsortedReducedSystem)),
         "{solver:?}"
@@ -411,15 +378,14 @@ fn weights_near_the_float_range_keep_the_fit() {
         tol: 1e-12,
         ..LsmrOptions::default()
     };
-    let result = solve(
-        effects(&[vec![0, 0]]),
+    let result = solve_on(
+        System::Reduced,
+        &[vec![0, 0]],
         &[1.0, 1.0],
         Some(&[1e308, 1e308]),
         &lsmr,
         &PreconditionerConfig::Diagonal,
-        System::Reduced,
-    )
-    .expect("solve");
+    );
     assert!(result.converged);
     assert!((result.x[0] - 1.0).abs() <= 1e-14, "{:?}", result.x);
     assert!(
