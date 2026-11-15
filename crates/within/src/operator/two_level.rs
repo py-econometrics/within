@@ -9,11 +9,13 @@ use std::sync::Arc;
 
 use faer::dyn_stack::{MemBuffer, MemStack};
 use faer::linalg::cholesky::ldlt::factor::LdltRegularization;
+use faer::perm::PermRef;
+use faer::sparse::linalg::amd;
 use faer::sparse::linalg::cholesky::{
     factorize_symbolic_cholesky, CholeskySymbolicParams, LdltRef, SymbolicCholesky,
     SymmetricOrdering,
 };
-use faer::sparse::{SparseColMat, SymbolicSparseColMat};
+use faer::sparse::{SparseColMat, SymbolicSparseColMat, SymbolicSparseColMatRef};
 use faer::{Conj, MatMut, Par, Side};
 use rayon::prelude::*;
 use schwarz_precond::{Operator, SolveError};
@@ -145,9 +147,14 @@ fn merged(mut triplets: Vec<(u32, u32, f64)>) -> Vec<(u32, u32, f64)> {
 }
 
 impl CoarseFactor {
-    /// The LDLᵀ of the `dim × dim` matrix with lower triplets `lower`, at unit diagonal;
-    /// declines past `budget` factor values.
-    fn new(dim: usize, lower: Vec<(u32, u32, f64)>, budget: usize) -> Result<Self, CoarseDecline> {
+    /// The LDLᵀ of the `dim × dim` matrix with lower triplets `lower`, at unit diagonal, its rows
+    /// past `coarse` (the hubs') eliminated last; declines past `budget` factor values.
+    fn new(
+        dim: usize,
+        coarse: usize,
+        lower: Vec<(u32, u32, f64)>,
+        budget: usize,
+    ) -> Result<Self, CoarseDecline> {
         let lower = merged(lower);
         let mut diagonal = vec![0.0; dim];
         for &(c, r, v) in &lower {
@@ -172,10 +179,11 @@ impl CoarseFactor {
         let (row_idx, values) = lower.into_iter().map(|(_, r, v)| (r, v)).unzip();
         let pattern = SymbolicSparseColMat::new_checked(dim, dim, col_ptr, None, row_idx);
         let matrix = SparseColMat::new(pattern, values);
+        let (fwd, inv) = hubs_last(matrix.symbolic(), coarse)?;
         let symbolic = factorize_symbolic_cholesky(
             matrix.symbolic(),
             Side::Lower,
-            SymmetricOrdering::Amd,
+            SymmetricOrdering::Custom(PermRef::new_checked(&fwd, &inv, dim)),
             CholeskySymbolicParams::default(),
         )
         .map_err(|_| CoarseDecline::NoCoarseSpace)?;
@@ -231,6 +239,37 @@ impl CoarseFactor {
         let m = v.len();
         v.copy_from_slice(&x[..m]);
     }
+}
+
+/// AMD over the first `coarse` rows, the rest after them. Eliminated last, a hub's coupling rows
+/// take its cancellation into their own pivots, where null modes surface at rounding; eliminated
+/// first, they leave it in the coarse block (Björck 1996, ch. 6, block angular problems).
+fn hubs_last(
+    pattern: SymbolicSparseColMatRef<'_, u32>,
+    coarse: usize,
+) -> Result<(Vec<u32>, Vec<u32>), CoarseDecline> {
+    let dim = pattern.nrows();
+    let (mut block_ptr, mut block_rows) = (vec![0u32], Vec::new());
+    for c in 0..coarse {
+        let rows = pattern.row_idx_of_col_raw(c).iter();
+        block_rows.extend(rows.take_while(|&&r| (r as usize) < coarse));
+        block_ptr.push(block_rows.len() as u32);
+    }
+    // AMD orders the pattern of A + Aᵀ: the lower block serves as is.
+    let block = SymbolicSparseColMat::new_checked(coarse, coarse, block_ptr, None, block_rows);
+    let (mut fwd, mut inv) = (vec![0u32; coarse], vec![0u32; coarse]);
+    let mut mem = MemBuffer::new(amd::order_scratch::<u32>(coarse, block.compute_nnz()));
+    amd::order(
+        &mut fwd,
+        &mut inv,
+        block.as_ref(),
+        amd::Control::default(),
+        MemStack::new(&mut mem),
+    )
+    .map_err(|_| CoarseDecline::NoCoarseSpace)?;
+    fwd.extend(coarse as u32..dim as u32);
+    inv.extend(coarse as u32..dim as u32);
+    Ok((fwd, inv))
 }
 
 /// Sparse `n × m` held both ways: by column for `Mᵀx`, by nonempty row for `M c`.

@@ -1,7 +1,7 @@
 use rstest::rstest;
 use schwarz_precond::Operator;
 
-use super::{build_two_level, TwoLevelMap};
+use super::{build_two_level, CoarseFactor, TwoLevelMap};
 use crate::config::{CoarseBuild, CoarseCorrection, CoarseSpace, LocalSolverConfig, TwoLevelForm};
 use crate::domain::{Design, Effect, PreparedDesign, Unknowns};
 use crate::linalg::dot;
@@ -301,6 +301,40 @@ fn a_level_of_zero_weight_rows_leaves_the_two_level_map_as_its_removal(
     if system == System::Reduced {
         assert_same_map(&zeroed, &applied(&kept, None, system));
     }
+}
+
+/// HMDA US's coarse system, two hub rows bordering 22 gauge columns: eliminated before the
+/// gauges, the hubs leave five null modes at their cancellation error, which the solve amplifies
+/// by 1e13; eliminated last, the largest gain is a live mode's (12).
+#[test]
+fn hub_rows_eliminated_last_keep_the_coarse_null_modes_at_rounding() {
+    let fixture = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/hmda_coarse_system.txt"
+    ));
+    let mut lines = fixture.lines();
+    let (dim, coarse) = (lines.next().expect("header").split_once(' ')).expect("dim coarse");
+    let (dim, coarse): (usize, usize) =
+        (dim.parse().expect("dim"), coarse.parse().expect("coarse"));
+    let lower = lines
+        .map(|line| {
+            let entry: Vec<&str> = line.split(' ').collect();
+            let index = |k: usize| entry[k].parse::<u32>().expect("index");
+            (index(0), index(1), entry[2].parse().expect("value"))
+        })
+        .collect();
+    let factor = CoarseFactor::new(dim, coarse, lower, usize::MAX).expect("factor");
+    // At unit diagonal: the fixture's diagonal spans 0.08 to 8.7e5.
+    let gain = (0..coarse)
+        .map(|j| {
+            let mut v = vec![0.0; coarse];
+            v[j] = factor.scale[j].recip();
+            factor.solve(&mut v);
+            let scaled = v.iter().zip(&factor.scale).map(|(x, s)| x / s);
+            scaled.map(|x| x * x).sum::<f64>().sqrt()
+        })
+        .fold(0.0, f64::max);
+    assert!(gain < 1e3, "gain {gain:.3e}");
 }
 
 /// The two-level map applied to a fixed vector.

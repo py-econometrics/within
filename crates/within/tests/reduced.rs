@@ -452,6 +452,52 @@ fn a_coarse_correction_lands_the_solve_on_the_two_level_map(
     );
 }
 
+/// Gauges the eliminated term absorbs to within 1e-6 of their energy keep the two-level fit:
+/// `E`'s null modes stay at rounding, where its factor drops them, not amplified into the solve.
+#[rstest]
+fn nearly_absorbed_gauges_keep_the_two_level_fit(
+    #[values(System::Full, System::Reduced)] system: System,
+) {
+    let (worker, firm, z_worker, z_firm) = clustered();
+    // Movers' one row elsewhere is all the energy their firms' gauges keep.
+    let short = |i: usize| i >= 960 && (i - 960) % 8 == 7;
+    let w: Vec<f64> = (0..worker.len())
+        .map(|i| if short(i) { 1.0 } else { 1e6 })
+        .collect();
+    let effects = || {
+        vec![
+            Effect::new(&worker, true, [&z_worker[..]]).expect("worker"),
+            Effect::new(&firm, true, [&z_firm[..]]).expect("firm"),
+        ]
+    };
+    let y: Vec<f64> = (0..worker.len()).map(noise).collect();
+    let solve = |coarse, options: &LsmrOptions| {
+        let config = PreconditionerConfig::Schwarz(within::Schwarz {
+            coarse,
+            ..Default::default()
+        });
+        let solver = solver(effects(), Some(&w), &config, system).expect("solver");
+        let result = solver.solve(&y, options).expect("solve");
+        (result, solver.preconditioner().map(|p| p.rung()))
+    };
+    let (two_level, rung) = solve(Some(coarse(CoarseBuild::WithSchwarz)), &lsmr());
+    // The light rows' fit is loose at 1e-12 of the weighted response: refer to a tighter one.
+    let tight = LsmrOptions {
+        tol: 1e-14,
+        maxiter: 200_000,
+        ..LsmrOptions::default()
+    };
+    let (reference, _) = solve(None, &tight);
+    assert_eq!(rung, Some(Rung::TwoLevel));
+    assert!(two_level.converged && reference.converged);
+    assert_same_fit(
+        &two_level.demeaned,
+        &reference.demeaned,
+        &vec![true; y.len()],
+        &y,
+    );
+}
+
 /// A design with no coarse space leaves the solve on one-level Schwarz, with the reason.
 #[rstest]
 fn a_declined_coarse_correction_leaves_the_solve_one_level(

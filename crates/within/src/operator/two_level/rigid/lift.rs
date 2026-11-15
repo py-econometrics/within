@@ -36,7 +36,7 @@ pub(super) fn coarse_solve(
     let eliminated = design.block_start(unknowns, design.dominant);
     let z = lift.coarse_basis(&fits, &live, eliminated, n);
     let (lower, hubs) = lift.coarse_system(&mut fits, &live);
-    let factor = CoarseFactor::new(live.count + hubs.rank(), lower, design.n_obs)?;
+    let factor = CoarseFactor::new(live.count + hubs.rank(), live.count, lower, design.n_obs)?;
     let sz = lift.projected_columns(&fits, &live, n);
     let f = lift.hub_coupling(&fits, n, hubs.rank());
     Ok(CoarseSolve {
@@ -174,7 +174,8 @@ impl Lift<'_> {
     /// Level `lw`'s fit, `‖W½DZ‖²` and the lower triangle of `UᵀU` over its columns.
     ///
     /// `UᵀU = (DZ)ᵀW(DZ) − sᵀG⁻s` with `s = EᵀW DZ`: a row touches only its own component's
-    /// columns, so the first term is per-component `p × p` and no row-by-column buffer is needed.
+    /// columns, so between components only `−sᵀG⁻s` remains; within one, see
+    /// [`Self::component_blocks`].
     fn fit(&self, lw: usize) -> LevelFit {
         let (gauges, p) = (self.gauges, self.rows.width());
         let comps = &gauges.touched()[lw];
@@ -182,23 +183,23 @@ impl Lift<'_> {
         let t = comps.len() * p;
         let wide = gauges.is_wide(lw);
         let (mut pre, mut s) = (vec![0.0; t], vec![0.0; t * p]);
-        let mut blocks = vec![0.0; comps.len() * p * p];
+        let mut blocks = vec![0.0; if wide { comps.len() * p * p } else { 0 }];
         let mut lifted = vec![0.0; p];
         let mut by_comp = Vec::new();
         for (at, r) in basis.weighted() {
             let c = gauges.component(r);
             let k = comps.binary_search(&c).expect("touched component");
-            if wide {
-                by_comp.push((c, r as u32));
-            }
             for (j, v) in lifted.iter_mut().enumerate() {
                 *v = gauges.lifted(r, c as usize * p + j);
                 pre[k * p + j] += *v * *v;
             }
-            let block = &mut blocks[k * p * p..][..p * p];
-            for (i, &vi) in lifted.iter().enumerate() {
-                for (j, &vj) in lifted.iter().enumerate() {
-                    block[i * p + j] += vi * vj;
+            if wide {
+                by_comp.push((c, r as u32));
+                let block = &mut blocks[k * p * p..][..p * p];
+                for (i, &vi) in lifted.iter().enumerate() {
+                    for (j, &vj) in lifted.iter().enumerate() {
+                        block[i * p + j] += vi * vj;
+                    }
                 }
             }
             for (j, &v) in lifted.iter().enumerate() {
@@ -207,22 +208,19 @@ impl Lift<'_> {
         }
         let mut beta = s.clone();
         beta.chunks_exact_mut(p).for_each(|b| solve(&basis, b));
-        let own = |a: usize, b: usize| match a / p == b / p {
-            true => blocks[(a / p) * p * p + (a % p) * p + b % p],
-            false => 0.0,
-        };
         let fitted =
             |a: usize, b: usize| -> f64 { (0..p).map(|k| s[a * p + k] * beta[b * p + k]).sum() };
-        let energy = (0..t).map(|a| own(a, a) - fitted(a, a)).collect();
+        let blocks_u = self.component_blocks(lw, comps, &beta);
+        let entry = |a: usize, b: usize| (a / p) * p * p + (a % p) * p + b % p;
+        let energy = (0..t).map(|a| blocks_u[entry(a, a)]).collect();
         let column = |a: usize| comps[a / p] * p as u32 + (a % p) as u32;
+        let own = if wide { &blocks } else { &blocks_u };
         let mut lower = Vec::new();
         for a in 0..t {
-            match wide {
-                true => {
-                    (a..(a / p + 1) * p).for_each(|b| lower.push((column(a), column(b), own(a, b))))
-                }
-                false => (a..t)
-                    .for_each(|b| lower.push((column(a), column(b), own(a, b) - fitted(a, b)))),
+            let end = (a / p + 1) * p;
+            (a..end).for_each(|b| lower.push((column(a), column(b), own[entry(a, b)])));
+            if !wide {
+                (end..t).for_each(|b| lower.push((column(a), column(b), -fitted(a, b))));
             }
         }
         let coupling = match wide {
@@ -237,6 +235,62 @@ impl Lift<'_> {
             gram: LevelGram { pre, energy, lower },
             coupling,
         }
+    }
+
+    /// Each touched component's own `p × p` block of `UᵀU`: its rows' residual Gram plus
+    /// `β_κᵀ G_¬κ β_κ` from the level's other rows. `own − fitted` would lose the digits the fit
+    /// absorbs, the null modes' among them (block-angular least squares: Golub & Plemmons 1980).
+    fn component_blocks(&self, lw: usize, comps: &[u32], beta: &[f64]) -> Vec<f64> {
+        let (gauges, p) = (self.gauges, self.rows.width());
+        let basis = self.rows.level(lw);
+        let block = p * p;
+        let (mut residual, mut gram) = (
+            vec![0.0; comps.len() * block],
+            vec![0.0; comps.len() * block],
+        );
+        let (mut b, mut u) = (vec![0.0; p], vec![0.0; p]);
+        for (at, r) in basis.weighted() {
+            let c = gauges.component(r);
+            let k = comps.binary_search(&c).expect("touched component");
+            b.iter_mut()
+                .enumerate()
+                .for_each(|(q, v)| *v = basis.entry(at, q));
+            for (j, v) in u.iter_mut().enumerate() {
+                let fit = &beta[(k * p + j) * p..][..p];
+                *v = remove_fit(&basis, at, gauges.lifted(r, c as usize * p + j), fit);
+            }
+            for (i, j) in (0..p).flat_map(|i| (0..p).map(move |j| (i, j))) {
+                residual[k * block + i * p + j] += u[i] * u[j];
+                gram[k * block + i * p + j] += b[i] * b[j];
+            }
+        }
+        // `G_¬κ` as prefix plus suffix sums: `G − G_κ` would cancel where `κ` holds the level.
+        let mut before = vec![0.0; (comps.len() + 1) * block];
+        let mut after = vec![0.0; (comps.len() + 1) * block];
+        for k in 0..comps.len() {
+            for e in 0..block {
+                before[(k + 1) * block + e] = before[k * block + e] + gram[k * block + e];
+            }
+        }
+        for k in (0..comps.len()).rev() {
+            for e in 0..block {
+                after[k * block + e] = after[(k + 1) * block + e] + gram[k * block + e];
+            }
+        }
+        for k in 0..comps.len() {
+            let rest = |q: usize, o: usize| {
+                before[k * block + q * p + o] + after[(k + 1) * block + q * p + o]
+            };
+            for (i, j) in (0..p).flat_map(|i| (0..p).map(move |j| (i, j))) {
+                let (bi, bj) = (&beta[(k * p + i) * p..][..p], &beta[(k * p + j) * p..][..p]);
+                let share: f64 = (0..p)
+                    .flat_map(|q| (0..p).map(move |o| (q, o)))
+                    .map(|(q, o)| bi[q] * rest(q, o) * bj[o])
+                    .sum();
+                residual[k * block + i * p + j] += share;
+            }
+        }
+        residual
     }
 
     /// `Z` over the live columns: the gauges on the anchor's unknowns and, where the system
