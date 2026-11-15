@@ -6,6 +6,7 @@
 mod glue;
 mod lift;
 
+use std::borrow::Cow;
 use std::ops::Range;
 
 use super::CoarseSolve;
@@ -27,7 +28,7 @@ pub(super) fn build(
 
 /// The eliminated term's rows grouped by level, read in the solve basis.
 struct Rows<'p> {
-    by_level: &'p LevelRows,
+    by_level: Cow<'p, LevelRows>,
     eliminated: TermRows<'p>,
     /// `diag(A_eᵀA_e)`, each level's whole Gram block after whitening, column-major.
     gram: &'p [f64],

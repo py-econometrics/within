@@ -111,11 +111,16 @@ impl<'s> Response<'s> {
                 message: format!("response at index {index} must be finite, got {value}"),
             });
         }
+        Ok(Self::permuted(prepared, y))
+    }
+
+    /// A validated `y` in internal order, and weighted.
+    fn permuted(prepared: &PreparedDesign<'_>, y: &'s [f64]) -> Self {
         let y = prepared.design.permute_obs_in(y);
         let weighted = prepared
             .sqrt_weights()
             .map(|sw| y.iter().zip(sw).map(|(&yi, &swi)| swi * yi).collect());
-        Ok(Self { y, weighted })
+        Self { y, weighted }
     }
 
     pub(crate) fn weighted(&self) -> &[f64] {
@@ -187,9 +192,10 @@ impl LeastSquaresSystem for PreparedDesign<'_> {
     }
 }
 
-/// One response and the reduced system's right-hand side `(I − P_e) W^{1/2} y`.
+/// A validated response and the reduced system's right-hand side `(I − P_e) W^{1/2} y`.
 pub(crate) struct ReducedResponse<'s> {
-    response: Response<'s>,
+    /// In caller order: a solve holds only `projected`, and `finish` permutes `y` again.
+    y: &'s [f64],
     projected: Vec<f64>,
 }
 
@@ -217,12 +223,9 @@ impl LeastSquaresSystem for ReducedDesign<'_> {
     }
 
     fn prepare<'s>(&'s self, y: &'s [f64]) -> Result<ReducedResponse<'s>, SolveError> {
-        let response = Response::new(ReducedDesign::prepared(self), y)?;
-        let projected = self.project_rhs(response.weighted());
-        Ok(ReducedResponse {
-            response,
-            projected,
-        })
+        let projected =
+            self.project_rhs(Response::new(ReducedDesign::prepared(self), y)?.weighted());
+        Ok(ReducedResponse { y, projected })
     }
 
     fn b<'r>(&self, rhs: &'r ReducedResponse<'_>) -> &'r [f64] {
@@ -236,8 +239,9 @@ impl LeastSquaresSystem for ReducedDesign<'_> {
         measured: Option<Vec<f64>>,
     ) -> Result<Fit, SolveError> {
         drop(rhs.projected);
-        let x = self.recover(rhs.response.weighted(), &x);
+        let response = Response::permuted(ReducedDesign::prepared(self), rhs.y);
+        let x = self.recover(response.weighted(), &x);
         // `(I − P_e)(b − A_k x_k)` is `b − A x` once the eliminated block is recovered.
-        Ok(ReducedDesign::prepared(self).fit(rhs.response, x, measured))
+        Ok(ReducedDesign::prepared(self).fit(response, x, measured))
     }
 }

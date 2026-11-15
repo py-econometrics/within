@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::sync::OnceLock;
 
 use rayon::prelude::*;
@@ -18,8 +19,6 @@ pub(crate) struct PreparedDesign<'a> {
     diagonals: Vec<OnceLock<Box<[f64]>>>,
     /// Per design term, how its adjoint scatter-add splits into parallel pieces.
     splits: Vec<ScatterSplit>,
-    /// Per design term whose split keeps no row index, its rows by level, sorted on first read.
-    level_rows: Vec<OnceLock<LevelRows>>,
 }
 
 /// A term in the solve basis: the design's rows plus this preparation's whitened slopes.
@@ -140,14 +139,12 @@ impl<'a> PreparedDesign<'a> {
             .map(|t| TermReparam::build(&design, t, &splits[t], sqrt_weights.as_deref()))
             .collect();
         let diagonals = (0..design.n_factors()).map(|_| OnceLock::new()).collect();
-        let level_rows = (0..design.n_factors()).map(|_| OnceLock::new()).collect();
         Ok(Self {
             design,
             sqrt_weights,
             reparams,
             diagonals,
             splits,
-            level_rows,
         })
     }
 
@@ -172,14 +169,14 @@ impl<'a> PreparedDesign<'a> {
         (0..self.design.n_factors()).map(|term| self.term(term))
     }
 
-    /// Term `term`'s rows grouped by level.
-    pub(crate) fn level_rows(&self, term: usize) -> &LevelRows {
+    /// Term `term`'s rows grouped by level; sorted here, and not kept, when its split has none.
+    pub(crate) fn level_rows(&self, term: usize) -> Cow<'_, LevelRows> {
         match &self.splits[term] {
-            ScatterSplit::ByLevel(rows) => rows,
-            ScatterSplit::ByRow => self.level_rows[term].get_or_init(|| {
+            ScatterSplit::ByLevel(rows) => Cow::Borrowed(rows),
+            ScatterSplit::ByRow => {
                 let t = &self.design.terms[term];
-                LevelRows::argsort(t.levels(), t.n_levels())
-            }),
+                Cow::Owned(LevelRows::argsort(t.levels(), t.n_levels()))
+            }
         }
     }
 
