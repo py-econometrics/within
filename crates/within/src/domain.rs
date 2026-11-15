@@ -506,6 +506,19 @@ fn get_distinct_labels(labels: &[u32], min: u32, max: u32) -> Option<Vec<u32>> {
     )
 }
 
+/// Where each of `n_keys` groups starts once `keys` are counted into them: group `k` owns
+/// `offsets[k]..offsets[k + 1]`.
+pub(crate) fn offsets(n_keys: usize, keys: impl IntoIterator<Item = usize>) -> Vec<usize> {
+    let mut offsets = vec![0usize; n_keys + 1];
+    for k in keys {
+        offsets[k + 1] += 1;
+    }
+    for i in 1..offsets.len() {
+        offsets[i] += offsets[i - 1];
+    }
+    offsets
+}
+
 /// Rows grouped by level, ascending within each: level `l` owns `perm[offsets[l]..offsets[l + 1]]`.
 fn stable_argsort(key: &[u32], n_levels: usize) -> (Vec<usize>, Vec<u32>) {
     let n_obs = key.len();
@@ -517,17 +530,7 @@ fn stable_argsort(key: &[u32], n_levels: usize) -> (Vec<usize>, Vec<u32>) {
         n_levels <= n_obs,
         "compact level count cannot exceed observation count"
     );
-    let mut offsets = vec![0usize; n_levels + 1];
-    for &k in key {
-        debug_assert!(
-            (k as usize) < n_levels,
-            "counting sort key must be a level id (< n_levels)"
-        );
-        offsets[k as usize + 1] += 1;
-    }
-    for i in 1..offsets.len() {
-        offsets[i] += offsets[i - 1];
-    }
+    let offsets = offsets(n_levels, key.iter().map(|&k| k as usize));
     let mut cursors = offsets[..n_levels].to_vec();
     let mut perm = vec![0u32; n_obs];
     for (i, &k) in key.iter().enumerate() {

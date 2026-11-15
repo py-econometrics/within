@@ -121,6 +121,12 @@ fn sub_product(v: f64, a: f64, b: f64) -> f64 {
     }
 }
 
+/// The directions whose Gram diagonal `g` is above rounding of the largest.
+pub(crate) fn active(g: &[f64]) -> Vec<usize> {
+    let max = g.iter().copied().fold(0.0, f64::max);
+    (0..g.len()).filter(|&i| g[i] > 1e-14 * max).collect()
+}
+
 pub(crate) fn dot(left: &[f64], right: &[f64]) -> f64 {
     left.iter().zip(right).map(|(&x, &y)| x * y).sum()
 }

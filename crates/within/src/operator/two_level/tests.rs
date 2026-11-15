@@ -260,3 +260,42 @@ fn a_design_without_a_fitting_coarse_space_declines(
         assert_eq!(decline, expected);
     });
 }
+
+/// A row of zero weight is the row removed: it touches no component and lifts nothing.
+#[rstest]
+fn a_zero_weight_row_leaves_the_two_level_map_as_its_removal(
+    #[values(System::Full, System::Reduced)] system: System,
+) {
+    let panel = Panel::clustered(40, 3, 8, 30, 7, 1);
+    let dropped = |k: usize| k % 5 == 0 && k >= 40 * 3 * 8;
+    let weights: Vec<f64> = (0..panel.worker.len())
+        .map(|k| if dropped(k) { 0.0 } else { 1.0 })
+        .collect();
+    let mut kept = Panel::default();
+    for k in (0..panel.worker.len()).filter(|&k| !dropped(k)) {
+        kept.worker.push(panel.worker[k]);
+        kept.firm.push(panel.firm[k]);
+        kept.z_worker.push(panel.z_worker[k]);
+        kept.z_firm.push(panel.z_firm[k]);
+    }
+    let applied = |panel: &Panel, weights: Option<&[f64]>| {
+        on_system(panel.design(), weights, system, |prepared, _, unknowns| {
+            let map = two_level(prepared, unknowns).expect("built");
+            let x: Vec<f64> = (0..map.nrows()).map(|i| (0.3 * i as f64).sin()).collect();
+            let mut y = vec![0.0; map.nrows()];
+            map.apply(&x, &mut y).expect("apply");
+            y
+        })
+    };
+    let (zeroed, removed) = (applied(&panel, Some(&weights)), applied(&kept, None));
+    let gap: f64 = zeroed
+        .iter()
+        .zip(&removed)
+        .map(|(a, b)| (a - b).powi(2))
+        .sum();
+    assert!(
+        gap.sqrt() <= 1e-10 * dot(&removed, &removed).sqrt(),
+        "gap {:.3e}",
+        gap.sqrt()
+    );
+}

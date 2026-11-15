@@ -8,14 +8,19 @@ mod tests;
 use std::sync::Arc;
 
 use faer::dyn_stack::{MemBuffer, MemStack};
-use faer::sparse::linalg::cholesky::{LdltRef, SymbolicCholesky};
-use faer::{Conj, MatMut, Par};
+use faer::linalg::cholesky::ldlt::factor::LdltRegularization;
+use faer::sparse::linalg::cholesky::{
+    factorize_symbolic_cholesky, CholeskySymbolicParams, LdltRef, SymbolicCholesky,
+    SymmetricOrdering,
+};
+use faer::sparse::{SparseColMat, SymbolicSparseColMat};
+use faer::{Conj, MatMut, Par, Side};
 use rayon::prelude::*;
 use schwarz_precond::{Operator, SolveError};
 
 use super::schwarz::FeSchwarz;
 use crate::config::{CoarseCorrection, CoarseSpace, TwoLevelForm};
-use crate::domain::{PreparedDesign, Unknowns};
+use crate::domain::{offsets, PreparedDesign, Unknowns};
 use crate::CoarseDecline;
 
 /// Entries from which rayon beats one thread: the gather `Mᵀx` pays later than the row-blocked
@@ -64,13 +69,13 @@ impl Operator for TwoLevelMap {
         let m = coarse.z.ncols();
         let mut c = vec![0.0; m];
         coarse.z.t_mul(x, &mut c);
-        coarse.solve(&mut c);
+        coarse.factor.solve(&mut c);
         let mut t = x.to_vec();
         coarse.sub_sz(&c, &mut t);
         self.one_level.apply(&t, y)?;
         let mut d = vec![0.0; m];
         coarse.sz_t_mul(y, &mut d);
-        coarse.solve(&mut d);
+        coarse.factor.solve(&mut d);
         for (c, d) in c.iter_mut().zip(&d) {
             *c -= d;
         }
@@ -83,16 +88,20 @@ impl Operator for TwoLevelMap {
     }
 }
 
-/// The coarse space `Z`, `SZ`, and the LDLᵀ of `E = ZᵀSZ` scaled to a unit diagonal.
+/// The coarse space `Z`, `SZ`, and the factor of `E = ZᵀSZ`.
 pub(crate) struct CoarseSolve {
     z: TwoWay,
     /// `SZ`, less `hubs` where there are wide levels.
     sz: TwoWay,
     /// Wide levels' rows: the factor is of `[G s; sᵀ E₀]`, whose Schur complement is `E`.
     hubs: Option<HubCorrection>,
+    factor: CoarseFactor,
+}
+
+/// The LDLᵀ of `D E D`, `D` scaling `E` to a unit diagonal.
+struct CoarseFactor {
     symbolic: SymbolicCholesky<u32>,
     l_values: Vec<f64>,
-    /// The factor is of `D E D` with `D` this diagonal.
     scale: Vec<f64>,
 }
 
@@ -100,7 +109,7 @@ impl std::fmt::Debug for CoarseSolve {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CoarseSolve")
             .field("columns", &self.z.ncols())
-            .field("factor_values", &self.l_values.len())
+            .field("factor_values", &self.factor.l_values.len())
             .finish()
     }
 }
@@ -120,6 +129,89 @@ impl CoarseSolve {
         if let Some(hubs) = &self.hubs {
             hubs.sub_transpose(y, out);
         }
+    }
+}
+
+/// `(column, row, value)` triplets by column then row, duplicates summed in input order, zero
+/// sums dropped.
+fn merged(mut triplets: Vec<(u32, u32, f64)>) -> Vec<(u32, u32, f64)> {
+    triplets.par_sort_by_key(|e| (e.0, e.1));
+    (triplets.chunk_by(|a, b| (a.0, a.1) == (b.0, b.1)))
+        .filter_map(|run| {
+            let v = run.iter().fold(0.0, |v, e| v + e.2);
+            (v != 0.0).then_some((run[0].0, run[0].1, v))
+        })
+        .collect()
+}
+
+impl CoarseFactor {
+    /// The LDLᵀ of the `dim × dim` matrix with lower triplets `lower`, at unit diagonal;
+    /// declines past `budget` factor values.
+    fn new(dim: usize, lower: Vec<(u32, u32, f64)>, budget: usize) -> Result<Self, CoarseDecline> {
+        let lower = merged(lower);
+        let mut diagonal = vec![0.0; dim];
+        for &(c, r, v) in &lower {
+            if c == r {
+                diagonal[c as usize] = v;
+            }
+        }
+        // Unit diagonal: null pivots then sit at rounding level, far below any live mode.
+        let scale: Vec<f64> = (diagonal.iter())
+            .map(|&d| if d > 0.0 { d.sqrt().recip() } else { 1.0 })
+            .collect();
+        let lower: Vec<(u32, u32, f64)> = (lower.into_iter())
+            .map(|(c, r, v)| (c, r, v * (scale[c as usize] * scale[r as usize])))
+            .collect();
+        let d_max = (lower.iter())
+            .filter(|e| e.0 == e.1)
+            .map(|e| e.2)
+            .fold(0.0, f64::max);
+        let col_ptr = (offsets(dim, lower.iter().map(|e| e.0 as usize)).into_iter())
+            .map(|k| k as u32)
+            .collect();
+        let (row_idx, values) = lower.into_iter().map(|(_, r, v)| (r, v)).unzip();
+        let pattern = SymbolicSparseColMat::new_checked(dim, dim, col_ptr, None, row_idx);
+        let matrix = SparseColMat::new(pattern, values);
+        let symbolic = factorize_symbolic_cholesky(
+            matrix.symbolic(),
+            Side::Lower,
+            SymmetricOrdering::Amd,
+            CholeskySymbolicParams::default(),
+        )
+        .map_err(|_| CoarseDecline::NoCoarseSpace)?;
+        if symbolic.len_val() > budget {
+            return Err(CoarseDecline::OverBudget);
+        }
+        // Null pivots become LARGE, as in the fused blocks: tiny ones amplify nulls.
+        let signs = vec![1i8; dim];
+        let regularization = LdltRegularization {
+            dynamic_regularization_signs: Some(&signs),
+            dynamic_regularization_delta: d_max,
+            dynamic_regularization_epsilon: 1e-10 * d_max,
+        };
+        let mut l_values = vec![0.0; symbolic.len_val()];
+        let mut mem = MemBuffer::new(
+            symbolic.factorize_numeric_ldlt_scratch::<f64>(Par::Seq, Default::default()),
+        );
+        symbolic
+            .factorize_numeric_ldlt(
+                &mut l_values,
+                matrix.as_ref(),
+                Side::Lower,
+                regularization,
+                Par::Seq,
+                MemStack::new(&mut mem),
+                Default::default(),
+            )
+            .map_err(|_| CoarseDecline::NoCoarseSpace)?;
+        if !l_values.iter().all(|v| v.is_finite()) {
+            return Err(CoarseDecline::NoCoarseSpace);
+        }
+        Ok(Self {
+            symbolic,
+            l_values,
+            scale,
+        })
     }
 
     /// `E⁻¹v`: the wide levels' rows ride along with a zero right-hand side.
@@ -157,18 +249,8 @@ impl TwoWay {
     /// duplicates.
     fn from_parts(n: usize, m: usize, parts: Vec<Vec<(u32, u32, f64)>>) -> Self {
         let total: usize = parts.iter().map(Vec::len).sum();
-        let mut col_ptr = vec![0usize; m + 1];
-        let mut row_ptr = vec![0usize; n + 1];
-        for &(c, r, _) in parts.iter().flatten() {
-            col_ptr[c as usize + 1] += 1;
-            row_ptr[r as usize + 1] += 1;
-        }
-        for k in 0..m {
-            col_ptr[k + 1] += col_ptr[k];
-        }
-        for k in 0..n {
-            row_ptr[k + 1] += row_ptr[k];
-        }
+        let col_ptr = offsets(m, parts.iter().flatten().map(|e| e.0 as usize));
+        let row_ptr = offsets(n, parts.iter().flatten().map(|e| e.1 as usize));
         let (mut col_idx, mut col_val) = (Vec::with_capacity(total), Vec::with_capacity(total));
         let (mut row_idx, mut row_val) = (vec![0u32; total], vec![0.0; total]);
         let mut cursor = row_ptr.clone();
