@@ -90,7 +90,10 @@ fn run_lsmr_one_level(design: &Design<'_>, y: &[f64], ac2: bool) {
         ..Default::default()
     };
     let cfg = one_level_local_solver(ac2);
-    let precond = PreconditionerConfig::Schwarz(within::Schwarz { local_solver: cfg });
+    let precond = PreconditionerConfig::Schwarz(within::Schwarz {
+        local_solver: cfg,
+        ..Default::default()
+    });
     let solver = Solver::new(design.clone(), None, &precond).expect("solver build");
     let _ = solver.solve(y, &params).expect("solve");
 }

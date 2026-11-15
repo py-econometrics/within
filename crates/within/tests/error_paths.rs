@@ -225,10 +225,16 @@ fn test_invalid_local_solver_rejected(
     let precond = if adaptive {
         PreconditionerConfig::Adaptive {
             stall: Staleness::try_new(4, 0.9).expect("stall"),
-            schwarz: within::Schwarz { local_solver },
+            schwarz: within::Schwarz {
+                local_solver,
+                ..Default::default()
+            },
         }
     } else {
-        PreconditionerConfig::Schwarz(within::Schwarz { local_solver })
+        PreconditionerConfig::Schwarz(within::Schwarz {
+            local_solver,
+            ..Default::default()
+        })
     };
     let mut effects = vec![Effect::new(&f, true, []).expect("f")];
     if n_factors == 2 {

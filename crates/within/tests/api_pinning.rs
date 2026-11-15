@@ -108,6 +108,7 @@ fn options_are_optional_and_tuned_schwarz_builds_from_crate_root() {
             schur: SchurMode::Approximate(ApproxSchurConfig::default()),
             ..Default::default()
         },
+        coarse: None,
     });
     let solver = Solver::new(categories.view(), None, tuned).expect("tuned Schwarz builds");
 
@@ -134,6 +135,7 @@ fn the_default_ladder_has_every_rung() {
             stall: within::Staleness::default(),
             schwarz: within::Schwarz {
                 local_solver: within::LocalSolverConfig::default(),
+                coarse: None,
             }
         }
     );

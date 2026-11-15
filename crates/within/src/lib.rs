@@ -35,8 +35,9 @@ pub(crate) mod solver;
 
 pub use channel::{Channel, ChannelPair, CoefficientAddress};
 pub use config::{
-    ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, LsmrOptions, PreconditionerConfig,
-    Rung, ScalingConfig, ScalingFailure, SchurMode, Schwarz, Staleness, StalenessError,
+    ApproxCholConfig, ApproxSchurConfig, CoarseBuild, CoarseCorrection, CoarseSpace,
+    LocalSolverConfig, LsmrOptions, PreconditionerConfig, Rung, ScalingConfig, ScalingFailure,
+    SchurMode, Schwarz, Staleness, StalenessError, TwoLevelForm,
 };
 pub use domain::{Design, Effect};
 pub use error::{BuildError, BuildWarning, LayoutMismatch, SolveError, WithinError};

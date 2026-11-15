@@ -224,6 +224,7 @@ impl PyPreconditionerConfig {
     pub(crate) fn to_native(&self) -> PreconditionerConfig {
         let schwarz = |local_solver: &PyLocalSolverConfig| Schwarz {
             local_solver: local_solver.to_native(),
+            coarse: None,
         };
         match self {
             Self::Off() => PreconditionerConfig::Off,
@@ -499,6 +500,7 @@ impl PyPreconditioner {
 pub enum PyRung {
     Diagonal,
     Schwarz,
+    TwoLevel,
 }
 
 impl From<Rung> for PyRung {
@@ -506,6 +508,7 @@ impl From<Rung> for PyRung {
         match rung {
             Rung::Diagonal => Self::Diagonal,
             Rung::Schwarz => Self::Schwarz,
+            Rung::TwoLevel => Self::TwoLevel,
         }
     }
 }

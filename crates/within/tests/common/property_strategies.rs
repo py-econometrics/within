@@ -39,6 +39,7 @@ pub fn random_fe_problem_strategy() -> impl Strategy<Value = (Array2<u32>, Vec<f
 pub fn schwarz() -> PreconditionerConfig {
     PreconditionerConfig::Schwarz(within::Schwarz {
         local_solver: within::LocalSolverConfig::default(),
+        coarse: None,
     })
 }
 
@@ -48,6 +49,7 @@ pub fn adaptive() -> PreconditionerConfig {
         stall: within::Staleness::default(),
         schwarz: within::Schwarz {
             local_solver: within::LocalSolverConfig::default(),
+            coarse: None,
         },
     }
 }
