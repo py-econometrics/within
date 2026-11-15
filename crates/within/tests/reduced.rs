@@ -1,7 +1,7 @@
 use rstest::rstest;
 use within::{
-    BuildError, Channel, CoefficientAddress, Design, Effect, IntoDesign, LsmrOptions,
-    PreconditionerConfig, PreconditionerInput, SolveResult, Solver,
+    BuildError, Channel, CoefficientAddress, Design, Effect, IntoDesign, LayoutMismatch,
+    LsmrOptions, PreconditionerConfig, PreconditionerInput, SolveResult, Solver,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -296,7 +296,7 @@ fn a_prebuilt_preconditioner_must_fit_the_reduced_system() {
     assert!(
         matches!(
             reduced,
-            Err(BuildError::PreconditionerDimensionMismatch { expected: 0, .. })
+            Err(BuildError::PreconditionerMismatch(LayoutMismatch::System))
         ),
         "{reduced:?}"
     );

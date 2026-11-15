@@ -402,17 +402,7 @@ fn resolve<S: LeastSquaresSystem>(
 ) -> Result<PrecondSlot, BuildError> {
     match input {
         PreconditionerInput::Config(config) => PrecondSlot::build(system, config),
-        PreconditionerInput::Prebuilt(p) => {
-            let n = system.matrix().ncols();
-            if p.nrows() != n || p.ncols() != n {
-                return Err(BuildError::PreconditionerDimensionMismatch {
-                    expected: n,
-                    actual_rows: p.nrows(),
-                    actual_cols: p.ncols(),
-                });
-            }
-            PrecondSlot::reuse(p)
-        }
+        PreconditionerInput::Prebuilt(p) => PrecondSlot::reuse(system, p),
     }
 }
 
@@ -425,6 +415,10 @@ impl<'a> Solver<'a> {
     /// - `None` — build the default [`PreconditionerConfig`]
     /// - `&PreconditionerConfig` / `Some(&PreconditionerConfig)` — build that config
     /// - [`Preconditioner`] or `&Preconditioner` — reuse a previously built one
+    ///
+    /// A reused map must act on this design's coefficients, or construction fails with
+    /// [`BuildError::PreconditionerMismatch`]. Built on other data it may be singular on this data
+    /// (a level that had zero weight there), and the solve stops without converging; build afresh.
     ///
     /// `weights` is `None` for an unweighted solve. Supplied weights are validated
     /// in caller observation order, then retained internally only as `√w` in the

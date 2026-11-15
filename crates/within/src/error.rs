@@ -83,19 +83,9 @@ pub enum BuildError {
     /// Schwarz preconditioner structural validation failed.
     #[error("preconditioner build failed: {0}")]
     Preconditioner(#[source] schwarz_precond::BuildError),
-    /// A pre-built preconditioner's shape does not match the design's DOF count.
-    #[error(
-        "prebuilt preconditioner shape ({actual_rows}x{actual_cols}) does not match \
-         design DOF count {expected}"
-    )]
-    PreconditionerDimensionMismatch {
-        /// Expected number of rows and columns (design `n_dofs`).
-        expected: usize,
-        /// Actual row count of the supplied preconditioner.
-        actual_rows: usize,
-        /// Actual column count of the supplied preconditioner.
-        actual_cols: usize,
-    },
+    /// A reused preconditioner was built for other coefficients than this solver's.
+    #[error("the prebuilt preconditioner was built for other coefficients: {0}")]
+    PreconditionerMismatch(LayoutMismatch),
     /// A scaling tolerance outside `[0, 1)`.
     #[error("scaling tolerance must lie in [0, 1), got {value}")]
     InvalidScalingTolerance {
@@ -142,6 +132,42 @@ impl std::fmt::Display for BuildWarning {
             ),
         }
     }
+}
+
+/// How a reused preconditioner's coefficients differ from the solver's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum LayoutMismatch {
+    /// Built on the full system and reused on the reduced one, or the reverse.
+    #[error("built on the other system (full vs reduced)")]
+    System,
+    /// Built on a design with another number of terms.
+    #[error("built on {found} terms, the design has {expected}")]
+    TermCount {
+        /// The design's term count.
+        expected: usize,
+        /// The term count the preconditioner was built on.
+        found: usize,
+    },
+    /// Term `term` has another number of levels.
+    #[error("term {term} has {expected} levels, the preconditioner was built on {found}")]
+    Levels {
+        /// Index of the first differing term.
+        term: usize,
+        /// The design's level count for it.
+        expected: usize,
+        /// The level count the preconditioner was built on.
+        found: usize,
+    },
+    /// Term `term` has another number of coefficient columns.
+    #[error("term {term} has {expected} columns, the preconditioner was built on {found}")]
+    Columns {
+        /// Index of the first differing term.
+        term: usize,
+        /// The design's column count for it.
+        expected: usize,
+        /// The column count the preconditioner was built on.
+        found: usize,
+    },
 }
 
 /// Top-level error type returned by [`crate::solve`] and [`crate::solve_batch`].

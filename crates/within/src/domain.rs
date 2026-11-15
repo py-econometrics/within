@@ -19,7 +19,7 @@ pub use effect::Effect;
 pub(crate) use factor_pairs::{build_local_domains, LocalDomain};
 
 use crate::channel::Channel;
-use crate::BuildError;
+use crate::{BuildError, LayoutMismatch};
 use ndarray::{ArrayView2, Axis};
 use rayon::prelude::*;
 use rustc_hash::FxBuildHasher;
@@ -543,11 +543,80 @@ fn gather<T: Copy>(col: &[T], perm: &[u32]) -> Vec<T> {
 }
 
 /// The coefficients LSMR iterates on.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Unknowns {
     All,
     /// The dominant term's block is eliminated; the rest keep their order.
     WithoutDominant,
+}
+
+/// The term with the most coefficients, ties to the last: the sort key and the eliminated term.
+fn dominant(sizes: impl Iterator<Item = usize>) -> Option<usize> {
+    sizes.enumerate().max_by_key(|&(_, n)| n).map(|(t, _)| t)
+}
+
+/// The coefficients a map acts on: whether the dominant term is eliminated, and each term's level
+/// and column count.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct UnknownsLayout {
+    unknowns: Unknowns,
+    terms: Vec<TermSize>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct TermSize {
+    levels: usize,
+    columns: usize,
+}
+
+impl UnknownsLayout {
+    /// Number of coefficients a map over this layout acts on; `None` when no `usize` holds it.
+    pub(crate) fn len(&self) -> Option<usize> {
+        let sizes = self
+            .terms
+            .iter()
+            .map(|t| t.levels.checked_mul(t.columns))
+            .collect::<Option<Vec<_>>>()?;
+        let all = sizes
+            .iter()
+            .try_fold(0usize, |sum, &n| sum.checked_add(n))?;
+        match self.unknowns {
+            Unknowns::All => Some(all),
+            Unknowns::WithoutDominant => Some(all - sizes[dominant(sizes.iter().copied())?]),
+        }
+    }
+
+    /// How a map built over `built` fails to fit these coefficients; `None` when it fits.
+    pub(crate) fn mismatch(&self, built: &Self) -> Option<LayoutMismatch> {
+        if self.terms.len() != built.terms.len() {
+            return Some(LayoutMismatch::TermCount {
+                expected: self.terms.len(),
+                found: built.terms.len(),
+            });
+        }
+        let differing = self
+            .terms
+            .iter()
+            .zip(&built.terms)
+            .position(|(a, b)| a != b);
+        if let Some(term) = differing {
+            let (expected, found) = (self.terms[term], built.terms[term]);
+            return Some(if expected.levels != found.levels {
+                LayoutMismatch::Levels {
+                    term,
+                    expected: expected.levels,
+                    found: found.levels,
+                }
+            } else {
+                LayoutMismatch::Columns {
+                    term,
+                    expected: expected.columns,
+                    found: found.columns,
+                }
+            });
+        }
+        (self.unknowns != built.unknowns).then_some(LayoutMismatch::System)
+    }
 }
 
 /// Fixed-effects design: its terms; clones share rows.
@@ -559,7 +628,7 @@ pub struct Design<'a> {
     pub(crate) n_dofs: usize,
     /// `obs_perm[k]` = caller's original index of the observation at internal position `k`.
     pub(crate) obs_perm: Option<Arc<[u32]>>,
-    /// The term with the most DOFs, ties to the last: the sort key and the eliminated term.
+    /// [`dominant`] of the terms' sizes.
     pub(crate) dominant: usize,
 }
 
@@ -644,9 +713,8 @@ impl<'a> Design<'a> {
             return Err(BuildError::DofSpaceExceedsU32 { n_dofs: offset });
         }
 
-        let dominant = (0..terms.len())
-            .max_by_key(|&t| terms[t].n_dofs())
-            .expect("observations imply an effect");
+        let dominant =
+            dominant(terms.iter().map(Term::n_dofs)).expect("observations imply an effect");
         // Sort by the dominant term so its gather/scatter runs sequentially.
         let d = &terms[dominant];
         let obs_perm = if locality_sort && !d.sorted && u32::try_from(n_obs).is_ok() {
@@ -741,6 +809,21 @@ impl<'a> Design<'a> {
         match unknowns {
             Unknowns::All => self.n_dofs,
             Unknowns::WithoutDominant => self.n_dofs - self.terms[self.dominant].n_dofs(),
+        }
+    }
+
+    /// The coefficients a map over `unknowns` acts on.
+    pub(crate) fn unknowns_layout(&self, unknowns: Unknowns) -> UnknownsLayout {
+        UnknownsLayout {
+            unknowns,
+            terms: self
+                .terms
+                .iter()
+                .map(|t| TermSize {
+                    levels: t.n_levels(),
+                    columns: t.n_columns(),
+                })
+                .collect(),
         }
     }
 
@@ -976,5 +1059,22 @@ mod tests {
         let slope = |term: usize| design.terms[term].raw_slopes().next().unwrap();
         assert_eq!(slope(0), &[20.0, 40.0, 30.0, 10.0]);
         assert_eq!(slope(1), &[2.0, 4.0, 3.0, 1.0]);
+    }
+
+    /// A decoded layout whose size overflows has no size, so decoding refuses it.
+    #[test]
+    fn an_overflowing_layout_has_no_size() {
+        let layout = |levels| UnknownsLayout {
+            unknowns: Unknowns::WithoutDominant,
+            terms: vec![
+                TermSize {
+                    levels: 3,
+                    columns: 1,
+                },
+                TermSize { levels, columns: 2 },
+            ],
+        };
+        assert_eq!(layout(4).len(), Some(3));
+        assert_eq!(layout(usize::MAX / 2 + 1).len(), None);
     }
 }

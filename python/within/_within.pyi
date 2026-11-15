@@ -287,7 +287,9 @@ def solve(
             ``PreconditionerConfig.Diagonal()`` uses diagonal/Jacobi scaling.
             ``PreconditionerConfig.Schwarz(...)`` overrides the local-solver
             settings. A previously-built ``Preconditioner`` instance
-            reuses an existing factorisation.
+            reuses an existing factorisation; it must have been built on
+            the same terms with the same level and column counts, and, built
+            on other data, it may be singular here and stop the solve early.
 
     Returns:
         A ``SolveResult`` with coefficients, demeaned response, convergence

@@ -1,6 +1,7 @@
 //! The solver's preconditioner slot: a [`PreconditionerConfig`] and the map of each rung built
 //! so far.
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use once_cell::sync::OnceCell;
@@ -40,7 +41,7 @@ impl PrecondSlot {
             let Some(build) = system.offer(rung) else {
                 continue;
             };
-            let built = slot.run(&build)?;
+            let built = slot.run(system, &build)?;
             let found = built.map.is_some();
             cell.get_or_init(|| Ok(built));
             if found {
@@ -50,8 +51,15 @@ impl PrecondSlot {
         Ok(slot)
     }
 
-    /// The config `preconditioner` is a rung of, resumed from that rung.
-    pub(super) fn reuse(preconditioner: Preconditioner) -> Result<Self, BuildError> {
+    /// The config `preconditioner` is a rung of, resumed from that rung, if its map acts on
+    /// `system`'s coefficients.
+    pub(super) fn reuse(
+        system: &impl LeastSquaresSystem,
+        preconditioner: Preconditioner,
+    ) -> Result<Self, BuildError> {
+        if let Some(mismatch) = system.layout().mismatch(&preconditioner.layout) {
+            return Err(BuildError::PreconditionerMismatch(mismatch));
+        }
         // A deserialized config skipped `build`'s checks.
         preconditioner.config.validate()?;
         let at = preconditioner
@@ -73,13 +81,18 @@ impl PrecondSlot {
         Self { config, built }
     }
 
-    fn run(&self, build: &Build<'_>) -> Result<RungBuild<Preconditioner>, BuildError> {
+    fn run(
+        &self,
+        system: &impl LeastSquaresSystem,
+        build: &Build<'_>,
+    ) -> Result<RungBuild<Preconditioner>, BuildError> {
         let started = Instant::now();
         let build = build()?;
         Ok(RungBuild {
             map: build.map.map(|map| Preconditioner {
                 map,
                 config: self.config.clone(),
+                layout: Arc::new(system.layout()),
                 build_duration: started.elapsed(),
             }),
             warnings: build.warnings,
@@ -150,7 +163,7 @@ impl PrecondSlot {
         while let Some((at, build)) = self.next(system, stalled.at) {
             let built = self.built[at].get_or_try_init(|| {
                 let started = Instant::now();
-                let outcome = isolated(|| self.run(&build))?;
+                let outcome = isolated(|| self.run(system, &build))?;
                 build_secs += started.elapsed().as_secs_f64();
                 Ok::<_, BuildError>(outcome)
             })?;

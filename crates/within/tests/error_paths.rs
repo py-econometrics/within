@@ -1,10 +1,10 @@
 use std::error::Error;
 
-use ndarray::Array2;
+use ndarray::{array, Array2};
 use rstest::rstest;
 use schwarz_precond::SolveError;
 use within::{
-    solve, solve_batch, BuildError, Design, Effect, LocalSolverConfig, LsmrOptions,
+    solve, solve_batch, BuildError, Design, Effect, LayoutMismatch, LocalSolverConfig, LsmrOptions,
     PreconditionerConfig, Solver, Staleness, WithinError,
 };
 
@@ -70,30 +70,33 @@ fn test_empty_categories_via_solve() {
     }
 }
 
-#[test]
-fn test_preconditioner_dimension_mismatch_error() {
-    // Reusing a larger design's preconditioner must trip the dim check in Solver::new.
-    let big = Array2::from_shape_vec((4, 2), vec![0u32, 0, 1, 1, 2, 0, 3, 1]).expect("big array");
-    let small = Array2::from_shape_vec((3, 2), vec![0u32, 0, 1, 1, 0, 0]).expect("small array");
-
-    let big_solver = Solver::new(big.view(), None, None).expect("big solver");
-    let prebuilt = big_solver
-        .preconditioner()
-        .expect("default solver has a preconditioner")
-        .clone();
-
-    let result = Solver::new(small.view(), None, prebuilt);
-    let err = result.expect_err("expected PreconditionerDimensionMismatch, got Ok");
-    match err {
-        BuildError::PreconditionerDimensionMismatch {
-            expected,
-            actual_rows,
-            actual_cols,
-        } => {
-            assert_ne!(expected, actual_rows);
-            assert_eq!(actual_rows, actual_cols);
-        }
-        other => panic!("Expected PreconditionerDimensionMismatch, got: {:?}", other),
+/// A prebuilt map must act on this design's coefficients, not just on as many of them.
+#[rstest]
+#[case::other_level_counts(
+    array![[0u32, 0], [1, 1], [2, 0], [3, 1]],
+    array![[0u32, 0], [1, 1], [0, 0]],
+    LayoutMismatch::Levels { term: 0, expected: 2, found: 4 }
+)]
+#[case::same_size_split_otherwise(
+    array![[0u32, 0], [1, 1], [2, 0]],
+    array![[0u32, 0], [1, 1], [0, 2]],
+    LayoutMismatch::Levels { term: 0, expected: 2, found: 3 }
+)]
+#[case::other_term_count(
+    array![[0u32, 0], [1, 1], [2, 0]],
+    array![[0u32, 0, 0], [1, 1, 1], [0, 2, 0]],
+    LayoutMismatch::TermCount { expected: 3, found: 2 }
+)]
+fn a_prebuilt_preconditioner_must_fit_the_design(
+    #[case] built_on: Array2<u32>,
+    #[case] reused_on: Array2<u32>,
+    #[case] expected: LayoutMismatch,
+) {
+    let built = Solver::new(built_on.view(), None, None).expect("built-on solver");
+    let prebuilt = built.preconditioner().expect("a map").clone();
+    match Solver::new(reused_on.view(), None, prebuilt) {
+        Err(BuildError::PreconditionerMismatch(found)) => assert_eq!(found, expected),
+        other => panic!("expected {expected:?}, got {other:?}"),
     }
 }
 
