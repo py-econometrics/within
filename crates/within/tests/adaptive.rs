@@ -1,8 +1,7 @@
 //! Behavior of the `Adaptive` (diagonal→Schwarz) preconditioner strategy (#260).
 
 use rstest::rstest;
-use within::config::LocalSolverConfig;
-use within::{Design, LsmrOptions, PreconditionerConfig, Solver, Staleness};
+use within::{Design, LsmrOptions, PreconditionerConfig, Rung, Solver, Staleness};
 
 #[path = "common/orchestrate_helpers.rs"]
 mod common;
@@ -13,12 +12,14 @@ fn eager_stall() -> Staleness {
     Staleness::try_new(1, 0.0).expect("valid staleness")
 }
 
+fn on_schwarz(solver: &Solver<'_>) -> bool {
+    solver.preconditioner().map(|p| p.rung()) == Some(Rung::Schwarz)
+}
+
 fn adaptive(stall: Staleness) -> PreconditionerConfig {
     PreconditionerConfig::Adaptive {
         stall,
-        schwarz: within::Schwarz {
-            local_solver: LocalSolverConfig::default(),
-        },
+        schwarz: within::Schwarz::default(),
     }
 }
 
@@ -65,8 +66,12 @@ fn the_escalated_answer_matches_a_cold_additive_solve(
     let reference = cold.solve(&y, None).expect("additive solve");
 
     // Visible in the solver's lifecycle...
-    assert!(ladder.has_escalated(), "eager stall must hand off");
-    assert!(!cold.has_escalated());
+    assert!(on_schwarz(&ladder), "eager stall must hand off");
+    assert_eq!(
+        cold.preconditioner().map(|p| p.config()),
+        Some(&schwarz()),
+        "a fixed Schwarz solver keeps the map it built at construction"
+    );
 
     // ...invisible in the answer: the fitted values `Dx` agree with a cold Schwarz solve.
     // Raw coefficients agree only up to `null(D)` — a warm-started resume shares the unique
@@ -85,8 +90,8 @@ fn without_a_target_it_behaves_like_diagonal() {
     let solver = Solver::new(design(), None, adaptive(eager_stall())).expect("solver");
     // Settled at construction, so even the first solve is plain diagonal rather than a probe.
     assert_eq!(
-        solver.preconditioner().expect("a base map").variant_name(),
-        "Diagonal"
+        solver.preconditioner().expect("a base map").rung(),
+        Rung::Diagonal
     );
     let first = solver.solve(&y, None).expect("first solve");
     let diagonal = Solver::new(design(), None, &PreconditionerConfig::Diagonal)
@@ -95,7 +100,7 @@ fn without_a_target_it_behaves_like_diagonal() {
         .expect("diagonal solve");
 
     assert!(
-        !solver.has_escalated(),
+        !on_schwarz(&solver),
         "no factor-pair target means no escalation"
     );
     // No probe means no restart: the answer and the iteration count match `Diagonal` outright.
@@ -124,7 +129,7 @@ fn the_ladder_spends_exactly_the_callers_budget(
     let solver = Solver::new(design, None, adaptive(eager_stall())).expect("solver");
     let result = solver.solve(&y, &budget).expect("solve");
 
-    assert_eq!(solver.has_escalated(), escalates);
+    assert_eq!(on_schwarz(&solver), escalates);
     assert!(
         !result.converged,
         "the budget must be too small to converge"
@@ -145,7 +150,7 @@ fn later_solves_cost_the_same_as_a_cold_schwarz_solver() {
     let stall = Staleness::try_new(8, 0.5).expect("valid staleness");
     let solver = Solver::new(crossed_panel(), None, adaptive(stall)).expect("solver");
     let escalating = solver.solve(&y, &tight()).expect("escalating solve");
-    assert!(solver.has_escalated(), "the ladder must hand off");
+    assert!(on_schwarz(&solver), "the ladder must hand off");
     let later = solver.solve(&y, &tight()).expect("later solve");
 
     let cold = Solver::new(crossed_panel(), None, schwarz())
@@ -172,8 +177,8 @@ fn an_unescalated_map_reuses_as_the_ladder(#[values(false, true)] through_wire: 
     let y = common::make_deterministic_y(&crossed_panel());
     let source = Solver::new(crossed_panel(), None, adaptive(eager_stall())).expect("solver");
     let taken = source.preconditioner().expect("a base map").clone();
-    assert_eq!(taken.variant_name(), "Adaptive");
-    assert_eq!(taken.config(), adaptive(eager_stall()));
+    assert_eq!(taken.rung(), Rung::Diagonal);
+    assert_eq!(taken.config(), &adaptive(eager_stall()));
     let taken = if through_wire {
         let bytes = postcard::to_stdvec(&taken).expect("serialize");
         postcard::from_bytes(&bytes).expect("deserialize")
@@ -185,17 +190,14 @@ fn an_unescalated_map_reuses_as_the_ladder(#[values(false, true)] through_wire: 
     let resumed = reused.solve(&y, &tight()).expect("reused solve");
     let original = source.solve(&y, &tight()).expect("source solve");
 
-    assert!(
-        reused.has_escalated(),
-        "a reused ladder must still hand off"
-    );
+    assert!(on_schwarz(&reused), "a reused ladder must still hand off");
     assert_eq!(resumed.iterations, original.iterations);
     assert_eq!(resumed.demeaned, original.demeaned);
 }
 
-/// A ladder reused on a one-term design settles to its diagonal, as a fresh build there does.
+/// A ladder reused on a one-term design stays on its diagonal, as a fresh build there does.
 #[test]
-fn a_reused_ladder_settles_on_one_term() {
+fn a_reused_ladder_stays_on_its_diagonal_on_one_term() {
     let crossed = common::make_design(vec![vec![0, 1, 2, 0, 1, 2], vec![0, 0, 1, 1, 2, 2]]);
     let source = Solver::new(crossed.expect("design"), None, adaptive(eager_stall()));
     let ladder = source
@@ -208,8 +210,8 @@ fn a_reused_ladder_settles_on_one_term() {
     let reused = Solver::new(one_term, None, ladder).expect("solver");
 
     let map = reused.preconditioner().expect("a settled map");
-    assert_eq!(map.variant_name(), "Diagonal");
-    assert_eq!(map.config(), PreconditionerConfig::Diagonal);
+    assert_eq!(map.rung(), Rung::Diagonal);
+    assert_eq!(map.config(), &adaptive(eager_stall()));
 }
 
 /// The batch builds once, between passes, and every stalled RHS resumes on the map; the build
@@ -234,7 +236,7 @@ fn every_batch_rhs_resumes_on_the_escalated_rung() {
         .expect("diagonal batch");
     let solver = Solver::new(crossed_panel(), None, adaptive(stall)).expect("solver");
     let batch = solver.solve_batch(&refs, &tight()).expect("adaptive batch");
-    assert!(solver.has_escalated(), "the ladder must hand off");
+    assert!(on_schwarz(&solver), "the ladder must hand off");
     assert!(batch.converged.iter().all(|&c| c), "{:?}", batch.converged);
 
     for (k, (&ladder, &diagonal)) in batch
@@ -250,8 +252,8 @@ fn every_batch_rhs_resumes_on_the_escalated_rung() {
     }
 
     assert_eq!(
-        solver.preconditioner().expect("built").variant_name(),
-        "Additive"
+        solver.preconditioner().expect("built").rung(),
+        Rung::Schwarz
     );
     assert!(
         batch.time_setup > 0.0,
@@ -308,7 +310,7 @@ fn concurrent_first_solves_all_finish_on_the_map(
             .collect::<Vec<_>>()
     });
 
-    assert!(solver.has_escalated(), "the ladder must hand off");
+    assert!(on_schwarz(&solver), "the ladder must hand off");
     for (k, r) in results.iter().enumerate() {
         assert!(
             r.converged && r.iterations < diagonal.iterations,

@@ -61,8 +61,7 @@ fn run_block_elim_nested_rayon_case() {
     domain_pairs.push(domain.clone());
     let rhs: Vec<f64> = (0..n_dofs).map(|i| ((i % 29) as f64) - 14.0).collect();
 
-    let schwarz =
-        build_additive(domain_pairs, &config, n_dofs).expect("build block-elim preconditioner");
+    let schwarz = build_additive(domain_pairs, n_dofs).expect("build block-elim preconditioner");
 
     // Two subdomains: inner parallelism is off in a 1-thread pool and on in a 4-thread pool.
     let apply_in = |threads: usize| {
@@ -131,12 +130,8 @@ fn test_block_elim_nested_rayon_does_not_deadlock() {
 #[test]
 fn test_build_additive() {
     let (design, domain_pairs) = make_test_data();
-    let schwarz = build_additive(
-        domain_pairs,
-        &LocalSolverConfig::default(),
-        design.design.n_dofs,
-    )
-    .expect("build schwarz with explicit domains");
+    let schwarz = build_additive(domain_pairs, design.design.n_dofs)
+        .expect("build schwarz with explicit domains");
     let r = vec![1.0; design.design.n_dofs];
     let mut z = vec![0.0; design.design.n_dofs];
     schwarz.apply(&r, &mut z).expect("schwarz apply succeeds");
@@ -188,15 +183,15 @@ fn test_dense_threshold_zero_disables_exact_route() {
 
 #[test]
 fn signed_wire_fixture_contains_uniform_weights() {
-    use crate::operator::schwarz::{Preconditioner, Variant};
+    use crate::operator::schwarz::{Preconditioner, RungMap};
     use schwarz_precond::PartitionWeights;
 
     let bytes = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/preconditioner_v22.postcard"
+        "/tests/fixtures/preconditioner_v23.postcard"
     ));
     let preconditioner: Preconditioner = postcard::from_bytes(bytes).expect("signed fixture");
-    let Variant::Additive(additive) = &preconditioner.inner else {
+    let RungMap::Schwarz(additive) = &preconditioner.map else {
         panic!("signed fixture must be additive Schwarz");
     };
     assert!(additive

@@ -4,17 +4,34 @@ use std::borrow::Cow;
 
 use schwarz_precond::Operator;
 
-use crate::config::LocalSolverConfig;
+use crate::config::RungSettings;
 use crate::domain::{PreparedDesign, Unknowns};
 use crate::operator::design::ReducedDesign;
-use crate::operator::schwarz::{build_schwarz, Preconditioner};
-use crate::{BuildError, BuildWarning, SolveError};
+use crate::operator::schwarz::{build_schwarz, diagonal_map, RungBuild, RungMap};
+use crate::{BuildError, SolveError};
 
-/// A system's Schwarz rung.
-pub(crate) enum SchwarzRung {
-    /// Nothing for Schwarz to couple: the ladder settles on its diagonal.
-    Absent,
-    Buildable,
+pub(crate) type Build<'s> = Box<dyn Fn() -> Result<RungBuild, BuildError> + Send + Sync + 's>;
+
+/// `rung` over `unknowns` of `prepared`, whose normal matrix has the diagonal `gram_diagonal`.
+fn offer<'s>(
+    prepared: &'s PreparedDesign<'_>,
+    unknowns: Unknowns,
+    gram_diagonal: impl Fn() -> Vec<f64> + Send + Sync + 's,
+    rung: RungSettings<'s>,
+) -> Option<Build<'s>> {
+    match rung {
+        RungSettings::Diagonal { .. } => Some(Box::new(move || {
+            Ok(RungBuild {
+                map: Ok(RungMap::Diagonal(diagonal_map(gram_diagonal())?)),
+                warnings: Vec::new(),
+            })
+        })),
+        // Schwarz subdomains are factor pairs; one factor's normal matrix is diagonal.
+        RungSettings::Schwarz(_) if prepared.design.n_factors() < 2 => None,
+        RungSettings::Schwarz(schwarz) => Some(Box::new(move || {
+            build_schwarz(prepared, &schwarz.local_solver, unknowns)
+        })),
+    }
 }
 
 /// `min ‖b − A x‖` over the coefficients LSMR iterates on, and the way back to the full fit.
@@ -25,10 +42,8 @@ pub(crate) trait LeastSquaresSystem: Sync {
         Self: 's;
 
     fn matrix(&self) -> &Self::Matrix;
-    /// The Schwarz rung on what LSMR iterates on.
-    fn schwarz_rung(&self) -> SchwarzRung;
-    /// The diagonal of this system's own normal matrix `AᵀA`.
-    fn gram_diagonal(&self) -> Vec<f64>;
+    /// The build of `rung` for this system's normal matrix; `None` for a rung it does not offer.
+    fn offer<'s>(&'s self, rung: RungSettings<'s>) -> Option<Build<'s>>;
     /// Validate `y`, then form this system's right-hand side.
     fn prepare<'s>(&'s self, y: &'s [f64]) -> Result<Self::Rhs<'s>, SolveError>;
     /// What LSMR iterates on; tolerances are relative to its norm.
@@ -40,11 +55,6 @@ pub(crate) trait LeastSquaresSystem: Sync {
         x: Vec<f64>,
         measured: Option<Vec<f64>>,
     ) -> Result<Fit, SolveError>;
-    /// The rung a stalled ladder escalates to; `None` without a factor-pair subdomain.
-    fn build_schwarz(
-        &self,
-        local_solver: &LocalSolverConfig,
-    ) -> Result<(Option<Preconditioner>, Vec<BuildWarning>), BuildError>;
 }
 
 /// One response in the internal observation order, with its `W^{1/2}`-weighted image.
@@ -119,16 +129,8 @@ impl LeastSquaresSystem for PreparedDesign<'_> {
         self
     }
 
-    fn schwarz_rung(&self) -> SchwarzRung {
-        // Schwarz subdomains are factor pairs; one factor's normal matrix is diagonal.
-        match self.design.n_factors() {
-            0 | 1 => SchwarzRung::Absent,
-            _ => SchwarzRung::Buildable,
-        }
-    }
-
-    fn gram_diagonal(&self) -> Vec<f64> {
-        PreparedDesign::gram_diagonal(self)
+    fn offer<'s>(&'s self, rung: RungSettings<'s>) -> Option<Build<'s>> {
+        offer(self, Unknowns::All, || self.gram_diagonal(), rung)
     }
 
     fn prepare<'s>(&'s self, y: &'s [f64]) -> Result<Response<'s>, SolveError> {
@@ -146,13 +148,6 @@ impl LeastSquaresSystem for PreparedDesign<'_> {
         measured: Option<Vec<f64>>,
     ) -> Result<Fit, SolveError> {
         Ok(self.fit(rhs, x, measured))
-    }
-
-    fn build_schwarz(
-        &self,
-        local_solver: &LocalSolverConfig,
-    ) -> Result<(Option<Preconditioner>, Vec<BuildWarning>), BuildError> {
-        build_schwarz(self, local_solver, Unknowns::All)
     }
 }
 
@@ -173,12 +168,13 @@ impl LeastSquaresSystem for ReducedDesign<'_> {
         self
     }
 
-    fn schwarz_rung(&self) -> SchwarzRung {
-        ReducedDesign::prepared(self).schwarz_rung()
-    }
-
-    fn gram_diagonal(&self) -> Vec<f64> {
-        ReducedDesign::gram_diagonal(self)
+    fn offer<'s>(&'s self, rung: RungSettings<'s>) -> Option<Build<'s>> {
+        offer(
+            self.prepared(),
+            Unknowns::WithoutDominant,
+            || self.gram_diagonal(),
+            rung,
+        )
     }
 
     fn prepare<'s>(&'s self, y: &'s [f64]) -> Result<ReducedResponse<'s>, SolveError> {
@@ -204,12 +200,5 @@ impl LeastSquaresSystem for ReducedDesign<'_> {
         let x = self.recover(rhs.response.weighted(), &x);
         // `(I − P_e)(b − A_k x_k)` is `b − A x` once the eliminated block is recovered.
         Ok(ReducedDesign::prepared(self).fit(rhs.response, x, measured))
-    }
-
-    fn build_schwarz(
-        &self,
-        local_solver: &LocalSolverConfig,
-    ) -> Result<(Option<Preconditioner>, Vec<BuildWarning>), BuildError> {
-        build_schwarz(self.prepared(), local_solver, Unknowns::WithoutDominant)
     }
 }

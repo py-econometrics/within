@@ -117,7 +117,7 @@ fn test_preconditioner_matches_unpreconditioned_solution(
 
     let preconditioned =
         solve(cats.view(), &y, None, &params, &precond).expect("preconditioned solve");
-    let unpreconditioned = solve(cats.view(), &y, None, &params, &PreconditionerConfig::Off)
+    let unpreconditioned = solve(cats.view(), &y, None, &params, PreconditionerConfig::Off)
         .expect("unpreconditioned solve");
 
     common::assert_solution_finite(&preconditioned);

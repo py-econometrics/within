@@ -20,8 +20,8 @@
 //! sum is split where the data says, every parallel build is put back in a fixed order,
 //! and the width only decides how many pieces run at once.
 //!
-//! [`PreconditionerConfig::Adaptive`] reproduces raw coefficients per solve, not
-//! across solves; fitted values agree.
+//! [`PreconditionerConfig::Adaptive`] reproduces raw coefficients per solve, not across solves;
+//! fitted values agree.
 
 pub mod config;
 pub mod error;
@@ -36,7 +36,7 @@ pub(crate) mod solver;
 pub use channel::{Channel, ChannelPair, CoefficientAddress};
 pub use config::{
     ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, LsmrOptions, PreconditionerConfig,
-    ScalingConfig, ScalingFailure, SchurMode, Schwarz, Staleness, StalenessError,
+    Rung, ScalingConfig, ScalingFailure, SchurMode, Schwarz, Staleness, StalenessError,
 };
 pub use domain::{Design, Effect};
 pub use error::{BuildError, BuildWarning, SolveError, WithinError};

@@ -3,7 +3,7 @@
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
 use rstest::{fixture, rstest};
-use within::{Design, Effect, LsmrOptions, PreconditionerConfig, Solver};
+use within::{Design, Effect, LsmrOptions, PreconditionerConfig, Rung, Solver};
 
 #[path = "common/orchestrate_helpers.rs"]
 mod common;
@@ -56,7 +56,7 @@ struct Fingerprint {
     residual: Vec<u64>,
     iterations: Vec<usize>,
     converged: Vec<bool>,
-    escalated: bool,
+    rung: Option<Rung>,
 }
 
 impl Panel {
@@ -90,7 +90,7 @@ impl Panel {
             residual: bits(&r.residual),
             iterations: r.iterations,
             converged: r.converged,
-            escalated: solver.has_escalated(),
+            rung: solver.preconditioner().map(|p| p.rung()),
         }
     }
 }
@@ -105,21 +105,22 @@ fn with_threads<T: Send>(threads: usize, run: impl FnOnce() -> T + Send) -> T {
 
 /// Off and the diagonal run different LSMR drivers; Adaptive builds a weighted Schwarz on a stall.
 #[rstest]
-#[case::off(PreconditionerConfig::Off, false)]
-#[case::diagonal_weighted(PreconditionerConfig::Diagonal, true)]
-#[case::schwarz(common::schwarz(), false)]
-#[case::adaptive_weighted(common::adaptive(), true)]
+#[case::off(PreconditionerConfig::Off, false, None)]
+#[case::diagonal_weighted(PreconditionerConfig::Diagonal, true, Some(Rung::Diagonal))]
+#[case::schwarz(common::schwarz(), false, Some(Rung::Schwarz))]
+#[case::adaptive_weighted(common::adaptive(), true, Some(Rung::Schwarz))]
 fn a_solve_returns_the_same_bits_at_any_thread_count(
     panel: &Panel,
     #[case] precond: PreconditionerConfig,
     #[case] weighted: bool,
+    #[case] last: Option<Rung>,
 ) {
     let adaptive = matches!(precond, PreconditionerConfig::Adaptive { .. });
     let solver = with_threads(1, || panel.solver(&precond, weighted));
     let reference = with_threads(1, || panel.fingerprint(&solver));
     assert_eq!(
-        reference.escalated, adaptive,
-        "only the weighted ladder reaches its Schwarz build"
+        reference.rung, last,
+        "every config ends on its last rung, so the weighted one reaches its Schwarz build"
     );
     // Not `assert_eq!`: a printed solution vector would bury the thread count.
     for threads in [2, 3, 8] {

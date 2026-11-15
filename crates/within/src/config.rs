@@ -1,11 +1,8 @@
 //! Solver and preconditioner configuration types.
 //!
-//! Stability policy: enums that may gain variants (the preconditioner strategy
-//! set) stay `#[non_exhaustive]`, so adding a variant is non-breaking — external
-//! `match` sites already carry a wildcard arm. Option structs commit to public
-//! fields and literal construction; adding a field is a deliberate breaking
-//! change, caught mechanically by the cargo-semver-checks CI gate rather than
-//! slipping through silently.
+//! Stability policy: option structs commit to public fields and literal construction; adding
+//! a field is a deliberate breaking change, caught mechanically by the cargo-semver-checks CI
+//! gate rather than slipping through silently.
 
 use serde::{Deserialize, Serialize};
 
@@ -151,9 +148,8 @@ impl Default for ApproxSchurConfig {
 }
 
 /// The preconditioner a solve runs on, and the one it moves to when that one stalls.
-/// `#[non_exhaustive]`, so external `match` sites need a wildcard arm.
+// Append only: postcard encodes by declaration order and every `Preconditioner` carries one.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub enum PreconditionerConfig {
     /// Identity preconditioner. Solves the unpreconditioned normal equations.
     Off,
@@ -179,11 +175,79 @@ impl Default for PreconditionerConfig {
     }
 }
 
+impl PreconditionerConfig {
+    /// Its rungs in the order a solve reaches them.
+    pub(crate) fn rungs(&self) -> impl Iterator<Item = RungSettings<'_>> {
+        let (diagonal, schwarz) = match self {
+            Self::Off => (None, None),
+            Self::Diagonal => (Some(RungSettings::Diagonal { stall: None }), None),
+            Self::Schwarz(schwarz) => (None, Some(schwarz)),
+            Self::Adaptive { stall, schwarz } => (
+                Some(RungSettings::Diagonal { stall: Some(stall) }),
+                Some(schwarz),
+            ),
+        };
+        diagonal
+            .into_iter()
+            .chain(schwarz.map(RungSettings::Schwarz))
+    }
+
+    /// Where `rung` stands among its rungs; `None` when it is not one of them.
+    pub(crate) fn position(&self, rung: Rung) -> Option<usize> {
+        self.rungs().position(|r| r.rung() == rung)
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), BuildError> {
+        match self {
+            Self::Off | Self::Diagonal => Ok(()),
+            Self::Schwarz(schwarz) | Self::Adaptive { schwarz, .. } => {
+                schwarz.local_solver.validate()
+            }
+        }
+    }
+}
+
 /// One-level additive Schwarz over factor-pair subdomains.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Schwarz {
     /// Local solver configuration applied inside each subdomain.
     pub local_solver: LocalSolverConfig,
+}
+
+/// A preconditioner a solve can run on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Rung {
+    /// Diagonal/Jacobi.
+    Diagonal,
+    /// One-level additive Schwarz.
+    Schwarz,
+}
+
+/// One rung's settings, as [`PreconditionerConfig::rungs`] yields them.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum RungSettings<'c> {
+    /// `stall` hands the solve to Schwarz.
+    Diagonal {
+        stall: Option<&'c Staleness>,
+    },
+    Schwarz(&'c Schwarz),
+}
+
+impl<'c> RungSettings<'c> {
+    pub(crate) fn rung(&self) -> Rung {
+        match self {
+            Self::Diagonal { .. } => Rung::Diagonal,
+            Self::Schwarz(_) => Rung::Schwarz,
+        }
+    }
+
+    /// The stall on this rung that hands the solve on; `None` on a rung that is never left.
+    pub(crate) fn stall(&self) -> Option<&'c Staleness> {
+        match self {
+            Self::Diagonal { stall } => *stall,
+            Self::Schwarz(_) => None,
+        }
+    }
 }
 
 /// LSMR solver configuration: tolerances and reorthogonalization window.

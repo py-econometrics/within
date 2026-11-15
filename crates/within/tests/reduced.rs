@@ -140,7 +140,7 @@ fn reduced_and_full_fits_agree(
     #[values(
         PreconditionerConfig::Off,
         PreconditionerConfig::Diagonal,
-        PreconditionerConfig::Schwarz(within::Schwarz { local_solver: Default::default() })
+        PreconditionerConfig::Schwarz(Default::default())
     )]
     preconditioner: PreconditionerConfig,
 ) {
@@ -235,7 +235,7 @@ fn one_factor_is_solved_by_elimination_alone(#[values(false, true)] weighted: bo
 fn schwarz_on_one_factor_matches_its_plain_counterpart(
     #[values(
         (PreconditionerConfig::default(), PreconditionerConfig::Diagonal),
-        (PreconditionerConfig::Schwarz(within::Schwarz { local_solver: Default::default() }), PreconditionerConfig::Off)
+        (PreconditionerConfig::Schwarz(Default::default()), PreconditionerConfig::Off)
     )]
     (schwarz, plain): (PreconditionerConfig, PreconditionerConfig),
 ) {
