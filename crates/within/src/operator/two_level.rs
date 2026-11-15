@@ -249,23 +249,14 @@ fn hubs_last(
     coarse: usize,
 ) -> Result<(Vec<u32>, Vec<u32>), CoarseDecline> {
     let dim = pattern.nrows();
-    let (col_ptr, row_idx) = (pattern.col_ptr(), pattern.row_idx());
-    let mut upper: Vec<(u32, u32)> = (0..coarse)
-        .flat_map(|c| (col_ptr[c] as usize..col_ptr[c + 1] as usize).map(move |k| (c, k)))
-        .filter(|&(_, k)| (row_idx[k] as usize) < coarse)
-        .map(|(c, k)| (row_idx[k], c as u32))
-        .collect();
-    upper.sort_unstable_by_key(|&(r, c)| (r, c));
-    let block_ptr = (offsets(coarse, upper.iter().map(|e| e.0 as usize)).into_iter())
-        .map(|k| k as u32)
-        .collect();
-    let block = SymbolicSparseColMat::new_checked(
-        coarse,
-        coarse,
-        block_ptr,
-        None,
-        upper.into_iter().map(|e| e.1).collect(),
-    );
+    let (mut block_ptr, mut block_rows) = (vec![0u32], Vec::new());
+    for c in 0..coarse {
+        let rows = pattern.row_idx_of_col_raw(c).iter();
+        block_rows.extend(rows.take_while(|&&r| (r as usize) < coarse));
+        block_ptr.push(block_rows.len() as u32);
+    }
+    // AMD orders the pattern of A + Aᵀ: the lower block serves as is.
+    let block = SymbolicSparseColMat::new_checked(coarse, coarse, block_ptr, None, block_rows);
     let (mut fwd, mut inv) = (vec![0u32; coarse], vec![0u32; coarse]);
     let mut mem = MemBuffer::new(amd::order_scratch::<u32>(coarse, block.compute_nnz()));
     amd::order(

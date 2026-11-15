@@ -7,7 +7,7 @@ use super::super::{merged, CoarseFactor, CoarseSolve, HubCorrection, HubRows, Tw
 use super::glue::Gauges;
 use super::Rows;
 use crate::domain::{cut, offsets, PreparedDesign, TermRows, Unknowns};
-use crate::linalg::{add_moments, dot, remove_fit, solve, DiagonalGramBasis};
+use crate::linalg::{add_moments, remove_fit, solve, DiagonalGramBasis};
 use crate::CoarseDecline;
 
 /// The coarse solve over the columns of `gauges`; declines when no column keeps energy once the
@@ -183,23 +183,23 @@ impl Lift<'_> {
         let t = comps.len() * p;
         let wide = gauges.is_wide(lw);
         let (mut pre, mut s) = (vec![0.0; t], vec![0.0; t * p]);
-        let mut blocks = vec![0.0; comps.len() * p * p];
+        let mut blocks = vec![0.0; if wide { comps.len() * p * p } else { 0 }];
         let mut lifted = vec![0.0; p];
         let mut by_comp = Vec::new();
         for (at, r) in basis.weighted() {
             let c = gauges.component(r);
             let k = comps.binary_search(&c).expect("touched component");
-            if wide {
-                by_comp.push((c, r as u32));
-            }
             for (j, v) in lifted.iter_mut().enumerate() {
                 *v = gauges.lifted(r, c as usize * p + j);
                 pre[k * p + j] += *v * *v;
             }
-            let block = &mut blocks[k * p * p..][..p * p];
-            for (i, &vi) in lifted.iter().enumerate() {
-                for (j, &vj) in lifted.iter().enumerate() {
-                    block[i * p + j] += vi * vj;
+            if wide {
+                by_comp.push((c, r as u32));
+                let block = &mut blocks[k * p * p..][..p * p];
+                for (i, &vi) in lifted.iter().enumerate() {
+                    for (j, &vj) in lifted.iter().enumerate() {
+                        block[i * p + j] += vi * vj;
+                    }
                 }
             }
             for (j, &v) in lifted.iter().enumerate() {
@@ -208,29 +208,19 @@ impl Lift<'_> {
         }
         let mut beta = s.clone();
         beta.chunks_exact_mut(p).for_each(|b| solve(&basis, b));
-        let own = |a: usize, b: usize| match a / p == b / p {
-            true => blocks[(a / p) * p * p + (a % p) * p + b % p],
-            false => 0.0,
-        };
         let fitted =
             |a: usize, b: usize| -> f64 { (0..p).map(|k| s[a * p + k] * beta[b * p + k]).sum() };
         let blocks_u = self.component_blocks(lw, comps, &beta);
-        let within = |a: usize, b: usize| blocks_u[(a / p) * p * p + (a % p) * p + b % p];
-        let energy = (0..t).map(|a| within(a, a)).collect();
+        let entry = |a: usize, b: usize| (a / p) * p * p + (a % p) * p + b % p;
+        let energy = (0..t).map(|a| blocks_u[entry(a, a)]).collect();
         let column = |a: usize| comps[a / p] * p as u32 + (a % p) as u32;
+        let own = if wide { &blocks } else { &blocks_u };
         let mut lower = Vec::new();
         for a in 0..t {
-            match wide {
-                true => {
-                    (a..(a / p + 1) * p).for_each(|b| lower.push((column(a), column(b), own(a, b))))
-                }
-                false => (a..t).for_each(|b| {
-                    let v = match a / p == b / p {
-                        true => within(a, b),
-                        false => -fitted(a, b),
-                    };
-                    lower.push((column(a), column(b), v))
-                }),
+            let end = (a / p + 1) * p;
+            (a..end).for_each(|b| lower.push((column(a), column(b), own[entry(a, b)])));
+            if !wide {
+                (end..t).for_each(|b| lower.push((column(a), column(b), -fitted(a, b))));
             }
         }
         let coupling = match wide {
@@ -266,7 +256,8 @@ impl Lift<'_> {
                 .enumerate()
                 .for_each(|(q, v)| *v = basis.entry(at, q));
             for (j, v) in u.iter_mut().enumerate() {
-                *v = gauges.lifted(r, c as usize * p + j) - dot(&b, &beta[(k * p + j) * p..][..p]);
+                let fit = &beta[(k * p + j) * p..][..p];
+                *v = remove_fit(&basis, at, gauges.lifted(r, c as usize * p + j), fit);
             }
             for (i, j) in (0..p).flat_map(|i| (0..p).map(move |j| (i, j))) {
                 residual[k * block + i * p + j] += u[i] * u[j];
