@@ -41,7 +41,7 @@ impl PrecondSlot {
                 continue;
             };
             let built = slot.run(&build)?;
-            let found = built.map.is_ok();
+            let found = built.map.is_some();
             cell.get_or_init(|| Ok(built));
             if found {
                 break;
@@ -61,7 +61,7 @@ impl PrecondSlot {
         let slot = Self::unbuilt(preconditioner.config.clone());
         slot.built[at].get_or_init(|| {
             Ok(RungBuild {
-                map: Ok(preconditioner),
+                map: Some(preconditioner),
                 warnings: Vec::new(),
             })
         });
@@ -93,13 +93,13 @@ impl PrecondSlot {
             .zip(&self.built)
             .enumerate()
             .filter_map(|(at, (rung, cell))| match cell.get() {
-                Some(Ok(RungBuild { map: Ok(map), .. })) => Some((at, rung, map)),
+                Some(Ok(RungBuild { map: Some(map), .. })) => Some((at, rung, map)),
                 _ => None,
             })
             .last()
     }
 
-    /// The first rung above `floor` that `system` offers and that has not declined.
+    /// The first rung above `floor` that `system` offers and that was not built without a map.
     fn next<'s, S: LeastSquaresSystem>(
         &'s self,
         system: &'s S,
@@ -110,10 +110,7 @@ impl PrecondSlot {
             .enumerate()
             .skip(floor.map_or(0, |at| at + 1))
             .filter(|&(at, _)| {
-                !matches!(
-                    self.built[at].get(),
-                    Some(Ok(RungBuild { map: Err(_), .. }))
-                )
+                !matches!(self.built[at].get(), Some(Ok(RungBuild { map: None, .. })))
             })
             .find_map(|(at, rung)| Some((at, system.offer(rung)?)))
     }
@@ -149,7 +146,7 @@ impl PrecondSlot {
         stalled: &Running<'_>,
     ) -> Result<f64, BuildError> {
         let mut build_secs = 0.0;
-        // A rung that declines drops out of `next`, so the loop moves on to the one after it.
+        // A rung built without a map drops out of `next`, so the loop moves on to the one after it.
         while let Some((at, build)) = self.next(system, stalled.at) {
             let built = self.built[at].get_or_try_init(|| {
                 let started = Instant::now();
@@ -157,7 +154,7 @@ impl PrecondSlot {
                 build_secs += started.elapsed().as_secs_f64();
                 Ok::<_, BuildError>(outcome)
             })?;
-            if built.as_ref().map_err(Clone::clone)?.map.is_ok() {
+            if built.as_ref().map_err(Clone::clone)?.map.is_some() {
                 break;
             }
         }

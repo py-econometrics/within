@@ -148,16 +148,10 @@ pub(crate) enum RungMap {
     Schwarz(FeSchwarz),
 }
 
-/// Why an offered rung has no map on this system.
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum Decline {
-    /// No factor pair yields a subdomain.
-    NoFactorPair,
-}
-
-/// One rung built on one system: its map, or why it has none, and the build's warnings.
+/// One rung built on one system, and the build's warnings.
 pub(crate) struct RungBuild<M = RungMap> {
-    pub(crate) map: Result<M, Decline>,
+    /// `None` when the system's operator is zero: every solve is exact at `x = 0`.
+    pub(crate) map: Option<M>,
     pub(crate) warnings: Vec<BuildWarning>,
 }
 
@@ -243,7 +237,8 @@ pub(crate) fn diagonal_map(mut diag: Vec<f64>) -> Result<DiagonalPreconditioner,
     })
 }
 
-/// The additive Schwarz map over `unknowns`, declined when no factor pair yields a subdomain.
+/// The additive Schwarz map over `unknowns`; `None` when no factor pair yields a subdomain, which
+/// on a design of two or more terms happens only when the operator over `unknowns` is zero.
 pub(crate) fn build_schwarz(
     prepared: &PreparedDesign<'_>,
     local_solver: &LocalSolverConfig,
@@ -251,9 +246,9 @@ pub(crate) fn build_schwarz(
 ) -> Result<RungBuild, BuildError> {
     let (domains, warnings) = crate::domain::build_local_domains(prepared, local_solver, unknowns)?;
     let map = if domains.is_empty() {
-        Err(Decline::NoFactorPair)
+        None
     } else {
-        Ok(RungMap::Schwarz(build_additive(
+        Some(RungMap::Schwarz(build_additive(
             domains,
             prepared.design.n_unknowns(unknowns),
         )?))
