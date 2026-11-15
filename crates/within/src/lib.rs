@@ -39,7 +39,7 @@ pub use config::{
     Rung, ScalingConfig, ScalingFailure, SchurMode, Schwarz, Staleness, StalenessError,
 };
 pub use domain::{Design, Effect};
-pub use error::{BuildError, BuildWarning, SolveError, WithinError};
+pub use error::{BuildError, BuildWarning, LayoutMismatch, SolveError, WithinError};
 pub use operator::schwarz::Preconditioner;
 pub use solver::{
     solve, solve_batch, BatchSolveResult, CoefficientLayout, IntoDesign, PreconditionerInput,

@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use schwarz_precond::Operator;
 
 use crate::config::RungSettings;
-use crate::domain::{PreparedDesign, Unknowns};
+use crate::domain::{PreparedDesign, Unknowns, UnknownsLayout};
 use crate::operator::design::ReducedDesign;
 use crate::operator::schwarz::{build_schwarz, diagonal_map, RungBuild, RungMap};
 use crate::{BuildError, SolveError};
@@ -42,6 +42,13 @@ pub(crate) trait LeastSquaresSystem: Sync {
         Self: 's;
 
     fn matrix(&self) -> &Self::Matrix;
+    fn prepared(&self) -> &PreparedDesign<'_>;
+    /// The coefficients LSMR iterates on.
+    fn unknowns(&self) -> Unknowns;
+    /// The coefficients every map built on this system acts on.
+    fn layout(&self) -> UnknownsLayout {
+        self.prepared().design.unknowns_layout(self.unknowns())
+    }
     /// The build of `rung` for this system's normal matrix; `None` for a rung it does not offer.
     fn offer<'s>(&'s self, rung: RungSettings<'s>) -> Option<Build<'s>>;
     /// Validate `y`, then form this system's right-hand side.
@@ -129,8 +136,16 @@ impl LeastSquaresSystem for PreparedDesign<'_> {
         self
     }
 
+    fn prepared(&self) -> &PreparedDesign<'_> {
+        self
+    }
+
+    fn unknowns(&self) -> Unknowns {
+        Unknowns::All
+    }
+
     fn offer<'s>(&'s self, rung: RungSettings<'s>) -> Option<Build<'s>> {
-        offer(self, Unknowns::All, || self.gram_diagonal(), rung)
+        offer(self, self.unknowns(), || self.gram_diagonal(), rung)
     }
 
     fn prepare<'s>(&'s self, y: &'s [f64]) -> Result<Response<'s>, SolveError> {
@@ -168,10 +183,18 @@ impl LeastSquaresSystem for ReducedDesign<'_> {
         self
     }
 
+    fn prepared(&self) -> &PreparedDesign<'_> {
+        ReducedDesign::prepared(self)
+    }
+
+    fn unknowns(&self) -> Unknowns {
+        Unknowns::WithoutDominant
+    }
+
     fn offer<'s>(&'s self, rung: RungSettings<'s>) -> Option<Build<'s>> {
         offer(
-            self.prepared(),
-            Unknowns::WithoutDominant,
+            ReducedDesign::prepared(self),
+            self.unknowns(),
             || self.gram_diagonal(),
             rung,
         )

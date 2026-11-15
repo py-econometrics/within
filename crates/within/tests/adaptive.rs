@@ -1,7 +1,9 @@
 //! Behavior of the `Adaptive` (diagonal→Schwarz) preconditioner strategy (#260).
 
 use rstest::rstest;
-use within::{Design, LsmrOptions, PreconditionerConfig, Rung, Solver, Staleness};
+use within::{
+    BuildError, Design, LayoutMismatch, LsmrOptions, PreconditionerConfig, Rung, Solver, Staleness,
+};
 
 #[path = "common/orchestrate_helpers.rs"]
 mod common;
@@ -195,9 +197,9 @@ fn an_unescalated_map_reuses_as_the_ladder(#[values(false, true)] through_wire: 
     assert_eq!(resumed.demeaned, original.demeaned);
 }
 
-/// A ladder reused on a one-term design stays on its diagonal, as a fresh build there does.
+/// A ladder built on two terms is refused on a one-term design: its map acts on other coefficients.
 #[test]
-fn a_reused_ladder_stays_on_its_diagonal_on_one_term() {
+fn a_ladder_from_two_terms_is_refused_on_one_term() {
     let crossed = common::make_design(vec![vec![0, 1, 2, 0, 1, 2], vec![0, 0, 1, 1, 2, 2]]);
     let source = Solver::new(crossed.expect("design"), None, adaptive(eager_stall()));
     let ladder = source
@@ -207,11 +209,15 @@ fn a_reused_ladder_stays_on_its_diagonal_on_one_term() {
         .clone();
     let one_term = common::make_design(vec![vec![0, 1, 2, 3, 4, 5]]).expect("design");
 
-    let reused = Solver::new(one_term, None, ladder).expect("solver");
-
-    let map = reused.preconditioner().expect("a settled map");
-    assert_eq!(map.rung(), Rung::Diagonal);
-    assert_eq!(map.config(), &adaptive(eager_stall()));
+    assert!(matches!(
+        Solver::new(one_term, None, ladder),
+        Err(BuildError::PreconditionerMismatch(
+            LayoutMismatch::TermCount {
+                expected: 1,
+                found: 2
+            }
+        ))
+    ));
 }
 
 /// The batch builds once, between passes, and every stalled RHS resumes on the map; the build

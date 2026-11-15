@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use crate::block_solver::BlockSolver;
 use crate::config::{LocalSolverConfig, PreconditionerConfig, Rung};
-use crate::domain::{LocalDomain, PreparedDesign, Unknowns};
+use crate::domain::{LocalDomain, PreparedDesign, Unknowns, UnknownsLayout};
 use crate::{BuildError, BuildWarning};
 
 #[cfg(test)]
@@ -113,14 +113,18 @@ pub struct Preconditioner {
     pub(crate) map: RungMap,
     /// The config this map is a rung of, as written.
     pub(crate) config: PreconditionerConfig,
+    /// The coefficients this map acts on.
+    pub(crate) layout: Arc<UnknownsLayout>,
     pub(crate) build_duration: Duration,
 }
 
-/// [`Preconditioner`] as decoded, before its map is known to be a rung of its config.
+/// [`Preconditioner`] as decoded, before its map is known to be a rung of its config that acts on
+/// its layout.
 #[derive(Deserialize)]
 struct Decoded {
     map: RungMap,
     config: PreconditionerConfig,
+    layout: Arc<UnknownsLayout>,
     build_duration: Duration,
 }
 
@@ -131,12 +135,20 @@ impl TryFrom<Decoded> for Preconditioner {
         let preconditioner = Self {
             map: decoded.map,
             config: decoded.config,
+            layout: decoded.layout,
             build_duration: decoded.build_duration,
         };
-        match preconditioner.config.position(preconditioner.rung()) {
-            Some(_) => Ok(preconditioner),
-            None => Err("the map is not a rung of its config"),
+        if preconditioner
+            .config
+            .position(preconditioner.rung())
+            .is_none()
+        {
+            return Err("the map is not a rung of its config");
         }
+        if preconditioner.layout.len() != Some(preconditioner.nrows()) {
+            return Err("the map does not act on its layout's coefficients");
+        }
+        Ok(preconditioner)
     }
 }
 
