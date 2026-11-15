@@ -85,7 +85,7 @@ impl Panel {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum System {
     Full,
     Reduced,
@@ -278,23 +278,49 @@ fn a_zero_weight_row_leaves_the_two_level_map_as_its_removal(
         kept.z_worker.push(panel.z_worker[k]);
         kept.z_firm.push(panel.z_firm[k]);
     }
-    let applied = |panel: &Panel, weights: Option<&[f64]>| {
-        on_system(panel.design(), weights, system, |prepared, _, unknowns| {
-            let map = two_level(prepared, unknowns).expect("built");
-            let x: Vec<f64> = (0..map.nrows()).map(|i| (0.3 * i as f64).sin()).collect();
-            let mut y = vec![0.0; map.nrows()];
-            map.apply(&x, &mut y).expect("apply");
-            y
-        })
-    };
-    let (zeroed, removed) = (applied(&panel, Some(&weights)), applied(&kept, None));
-    let gap: f64 = zeroed
-        .iter()
-        .zip(&removed)
+    let zeroed = applied(&panel, Some(&weights), system);
+    assert_same_map(&zeroed, &applied(&kept, None, system));
+}
+
+/// A level whose rows all have zero weight is the level removed: it joins no component.
+#[rstest]
+fn a_level_of_zero_weight_rows_leaves_the_two_level_map_as_its_removal(
+    #[values(System::Full, System::Reduced)] system: System,
+) {
+    let kept = Panel::clustered(40, 3, 8, 30, 7, 1);
+    let mut panel = Panel::clustered(40, 3, 8, 30, 7, 1);
+    let first = kept.worker.iter().max().expect("rows") + 1;
+    for k in 0..200 {
+        panel.spell(first + k, k % 40, 1);
+    }
+    let weights: Vec<f64> = (0..panel.worker.len())
+        .map(|k| if k < kept.worker.len() { 1.0 } else { 0.0 })
+        .collect();
+    let zeroed = applied(&panel, Some(&weights), system);
+    // The full system keeps the empty workers' unknowns; the reduced one eliminates them.
+    if system == System::Reduced {
+        assert_same_map(&zeroed, &applied(&kept, None, system));
+    }
+}
+
+/// The two-level map applied to a fixed vector.
+fn applied(panel: &Panel, weights: Option<&[f64]>, system: System) -> Vec<f64> {
+    on_system(panel.design(), weights, system, |prepared, _, unknowns| {
+        let map = two_level(prepared, unknowns).expect("built");
+        let x: Vec<f64> = (0..map.nrows()).map(|i| (0.3 * i as f64).sin()).collect();
+        let mut y = vec![0.0; map.nrows()];
+        map.apply(&x, &mut y).expect("apply");
+        y
+    })
+}
+
+fn assert_same_map(got: &[f64], expected: &[f64]) {
+    assert_eq!(got.len(), expected.len());
+    let gap: f64 = (got.iter().zip(expected))
         .map(|(a, b)| (a - b).powi(2))
         .sum();
     assert!(
-        gap.sqrt() <= 1e-10 * dot(&removed, &removed).sqrt(),
+        gap.sqrt() <= 1e-10 * dot(expected, expected).sqrt(),
         "gap {:.3e}",
         gap.sqrt()
     );

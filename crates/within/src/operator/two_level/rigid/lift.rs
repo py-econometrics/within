@@ -269,7 +269,7 @@ impl Lift<'_> {
     }
 
     /// `E`'s lower triplets over the live columns, wide levels' rows `[G s]` after them, and those
-    /// rows; takes each level's share of `E`.
+    /// rows; takes each level's share of `E` and its `s`.
     fn coarse_system(&self, fits: &mut [LevelFit], live: &Live) -> (Vec<(u32, u32, f64)>, HubRows) {
         let p = self.rows.width();
         let mut lower = Vec::new();
@@ -284,9 +284,10 @@ impl Lift<'_> {
                 (std::mem::take(&mut fit.gram).lower.into_iter())
                     .filter_map(|(a, b, v)| Some((live.get(a)?, live.get(b)?, v))),
             );
-            let Coupling::Rows { s, .. } = &fit.coupling else {
+            let Coupling::Rows { s, .. } = &mut fit.coupling else {
                 continue;
             };
+            let s = std::mem::take(s);
             let basis = self.rows.level(lw);
             for k in 0..p {
                 for (i, c) in columns(comps, p).enumerate() {

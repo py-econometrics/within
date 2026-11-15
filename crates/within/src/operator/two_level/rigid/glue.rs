@@ -5,9 +5,15 @@ use faer::{Mat, Side};
 use rayon::prelude::*;
 
 use super::Rows;
-use crate::domain::{Column, PreparedDesign, PreparedTerm, Unknowns};
-use crate::linalg::{active, DiagonalGramBasis};
+use crate::domain::{row_weight, Column, PreparedDesign, PreparedTerm, Unknowns};
+use crate::linalg::DiagonalGramBasis;
 use crate::CoarseDecline;
+
+/// The directions whose Gram diagonal `g` is above rounding of the largest.
+fn active(g: &[f64]) -> Vec<usize> {
+    let max = g.iter().copied().fold(0.0, f64::max);
+    (0..g.len()).filter(|&i| g[i] > 1e-14 * max).collect()
+}
 
 /// A spell glues its two levels when its Gram is within this ratio of both levels' own.
 const GLUE_RATIO: f64 = 20.0;
@@ -182,7 +188,7 @@ impl<'p> Anchor<'p> {
         };
         let mut gauge = vec![0.0; self.n_levels() * p * p];
         for (r, &l) in term.levels().iter().enumerate() {
-            let w = rows.root(r) * rows.root(r);
+            let w = row_weight(rows.sqrt_weights, r);
             let at = l as usize * p * p;
             for q in 0..p {
                 let wq = w * self.loading(r, q);
@@ -209,7 +215,8 @@ impl<'p> Anchor<'p> {
 pub(super) struct Gauges<'a> {
     rows: &'a Rows<'a>,
     anchor: Anchor<'a>,
-    /// The component of each anchor level, numbered in anchor-level order.
+    /// The component of each anchor level, numbered in anchor-level order; `u32::MAX` without a
+    /// weighted row.
     of_anchor: Vec<u32>,
     count: usize,
     /// Per eliminated level, the components its weighted rows touch, ascending.
@@ -219,8 +226,9 @@ pub(super) struct Gauges<'a> {
 }
 
 impl<'a> Gauges<'a> {
-    /// Declines without an anchor, when the components cover more than half the levels, when no
-    /// eliminated level touches two, or when the levels' blocks of `E` far exceed `n_obs` values.
+    /// Declines without an anchor, when the components cover more than half the weighted levels,
+    /// when no eliminated level touches two, or when the levels' blocks of `E` far exceed `n_obs`
+    /// values.
     pub(super) fn glue(
         prepared: &'a PreparedDesign<'_>,
         unknowns: Unknowns,
@@ -241,21 +249,27 @@ impl<'a> Gauges<'a> {
                 }
             }
         }
+        // A level with no weighted row is a removed level: it joins and counts nothing.
+        let mut weighted: Vec<bool> = reached.iter().map(|levels| !levels.is_empty()).collect();
+        weighted.resize(na + nb, false);
+        for &lf in reached.iter().flatten() {
+            weighted[na + lf as usize] = true;
+        }
         let roots: Vec<u32> = (0..(na + nb) as u32)
             .map(|x| find(&mut parent, x))
             .collect();
         let n_roots = (roots.iter().enumerate())
-            .filter(|&(x, &r)| x == r as usize)
+            .filter(|&(x, &r)| weighted[x] && x == r as usize)
             .count();
         // Components covering most levels glue nothing worth a coarse column.
-        if 2 * n_roots > na + nb {
+        if 2 * n_roots > weighted.iter().filter(|&&w| w).count() {
             return Err(CoarseDecline::NoCoarseSpace);
         }
         let mut number = vec![u32::MAX; na + nb];
         let mut count = 0;
-        let of_anchor: Vec<u32> = (roots[na..].iter())
-            .map(|&r| {
-                if number[r as usize] == u32::MAX {
+        let of_anchor: Vec<u32> = (roots[na..].iter().zip(&weighted[na..]))
+            .map(|(&r, &weighted)| {
+                if weighted && number[r as usize] == u32::MAX {
                     number[r as usize] = count;
                     count += 1;
                 }
@@ -279,14 +293,19 @@ impl<'a> Gauges<'a> {
         check_budget(&touched, p, count as usize, prepared.design.n_obs)?;
         let mut gauge = anchor.gauges(rows);
         let mut norm2 = vec![0.0f64; count as usize * p];
-        for (l, gauge) in gauge.chunks_exact(p * p).enumerate() {
-            let comp = of_anchor[l] as usize;
+        for (gauge, &comp) in gauge.chunks_exact(p * p).zip(&of_anchor) {
+            if comp == u32::MAX {
+                continue;
+            }
             for (j, g) in gauge.chunks_exact(p).enumerate() {
-                norm2[comp * p + j] += g.iter().map(|v| v * v).sum::<f64>();
+                norm2[comp as usize * p + j] += g.iter().map(|v| v * v).sum::<f64>();
             }
         }
-        for (l, gauge) in gauge.chunks_exact_mut(p * p).enumerate() {
-            let comp = of_anchor[l] as usize;
+        for (gauge, &comp) in gauge.chunks_exact_mut(p * p).zip(&of_anchor) {
+            if comp == u32::MAX {
+                continue;
+            }
+            let comp = comp as usize;
             for (j, g) in gauge.chunks_exact_mut(p).enumerate() {
                 let n2 = norm2[comp * p + j];
                 let inv = if n2 > 0.0 { n2.sqrt().recip() } else { 0.0 };
@@ -337,15 +356,17 @@ impl<'a> Gauges<'a> {
     /// `Z` on the anchor's unknowns: its nonzero `(coarse column, unknown, value)`s.
     pub(super) fn entries(&self) -> impl Iterator<Item = (u32, u32, f64)> + '_ {
         let p = self.rows.width();
-        (self.gauge.chunks_exact(p * p).enumerate()).flat_map(move |(l, gauge)| {
-            let comp = self.of_anchor[l] as usize;
-            (gauge.chunks_exact(p).enumerate()).flat_map(move |(j, g)| {
-                (g.iter().enumerate())
-                    .filter(|&(_, &v)| v != 0.0)
-                    .map(move |(q, &v)| {
-                        ((comp * p + j) as u32, self.anchor.unknown(q, l) as u32, v)
-                    })
+        (self.gauge.chunks_exact(p * p).enumerate())
+            .filter(|&(l, _)| self.of_anchor[l] != u32::MAX)
+            .flat_map(move |(l, gauge)| {
+                let comp = self.of_anchor[l] as usize;
+                (gauge.chunks_exact(p).enumerate()).flat_map(move |(j, g)| {
+                    (g.iter().enumerate())
+                        .filter(|&(_, &v)| v != 0.0)
+                        .map(move |(q, &v)| {
+                            ((comp * p + j) as u32, self.anchor.unknown(q, l) as u32, v)
+                        })
+                })
             })
-        })
     }
 }
