@@ -37,7 +37,7 @@ fn an_alias_its_scaling_misses_keeps_its_surplus() {
         Effect::new(&slope_level, false, [&z[..]]).unwrap(),
         Effect::new(&intercept_level, true, []).unwrap(),
     ];
-    let solver = Solver::new(effects, None, additive()).expect("solver");
+    let solver = Solver::new(effects, None, schwarz()).expect("solver");
     let out = solve_tight(&solver, &[0.3, 0.7]);
     let worst = out.demeaned.iter().fold(0.0f64, |m, r| m.max(r.abs()));
     assert!(
@@ -267,10 +267,10 @@ fn max_abs_group_mean(design: &Design<'_>, demeaned: &[f64]) -> f64 {
 }
 
 /// Schwarz built up front, so an aliased solve rests on the local solves.
-fn additive() -> PreconditionerConfig {
-    PreconditionerConfig::Additive {
+fn schwarz() -> PreconditionerConfig {
+    PreconditionerConfig::Schwarz(crate::Schwarz {
         local_solver: Default::default(),
-    }
+    })
 }
 
 fn solve_tight(solver: &Solver<'_>, y: &[f64]) -> crate::SolveResult {
@@ -300,7 +300,7 @@ fn solve_tight(solver: &Solver<'_>, y: &[f64]) -> crate::SolveResult {
 #[case::alias_of_two_terms(SlopeSpec::AgeCohort)]
 fn an_aliased_slope_converges(#[case] spec: SlopeSpec) {
     let panel = akm_panel(4_000, 200, 10, 0.15, spec);
-    let solver = Solver::new(panel.effects(), None, additive()).expect("solver");
+    let solver = Solver::new(panel.effects(), None, schwarz()).expect("solver");
     let out = solve_tight(&solver, &panel.y);
     // A floating component grounded by mistake reports a false convergence at an O(1) mean.
     let group_mean = max_abs_group_mean(&solver.system.prepared().design, &out.demeaned);
@@ -350,16 +350,18 @@ fn a_failed_deferred_build_is_kept_and_reported_again() {
     // A zero-tolerance, zero-iteration certificate rejects the signed cross-block deterministically.
     let panel = SharedCovariatePair::new();
     let precond = PreconditionerConfig::Adaptive {
-        local_solver: LocalSolverConfig {
-            scaling: ScalingConfig {
-                tolerance: 0.0,
-                max_iterations: 0,
-                on_failure: ScalingFailure::Error,
-            },
-            ..LocalSolverConfig::default()
-        },
         // Escalates after any single non-vanishing contraction, so the handoff is deterministic.
         stall: crate::Staleness::try_new(1, 0.0).expect("valid staleness"),
+        schwarz: crate::Schwarz {
+            local_solver: LocalSolverConfig {
+                scaling: ScalingConfig {
+                    tolerance: 0.0,
+                    max_iterations: 0,
+                    on_failure: ScalingFailure::Error,
+                },
+                ..LocalSolverConfig::default()
+            },
+        },
     };
     let solver = Solver::new(panel.effects(), None, precond).unwrap();
     let unscalable = |r: &Result<crate::SolveResult, WithinError>| {
@@ -455,9 +457,9 @@ fn an_alias_through_a_zero_loading_still_converges() {
         Effect::new(&firm, true, []).unwrap(),
         Effect::new(&year, true, []).unwrap(),
     ];
-    let schwarz = PreconditionerConfig::Additive {
+    let schwarz = PreconditionerConfig::Schwarz(crate::Schwarz {
         local_solver: Default::default(),
-    };
+    });
     let solver = Solver::new(effects, None, schwarz).expect("solver");
     let out = solve_tight(&solver, &y);
     let group_mean = max_abs_group_mean(&solver.system.prepared().design, &out.demeaned);

@@ -8,7 +8,7 @@ use within::{
 
 #[path = "common/orchestrate_helpers.rs"]
 mod common;
-use common::additive;
+use common::schwarz;
 
 const TOL: f64 = 1e-6;
 
@@ -181,7 +181,7 @@ fn rank_drops_report_deterministically_with_exact_zeros() {
     let y = synthetic_y(levels.len());
     let run = |config: &PreconditionerConfig| solve_with(&levels, &z, true, None, &y, config);
 
-    let r = run(&additive());
+    let r = run(&schwarz());
     assert!(r.converged);
     // Ascending (level, column) order.
     assert_eq!(drops(&r), [(0, 2, 1)]);
@@ -250,7 +250,7 @@ fn zero_weight_garbage_does_not_poison_identification() {
     let y = synthetic_y(levels.len());
     let run = |config: &PreconditionerConfig| solve_with(&levels, &z, true, Some(&w), &y, config);
 
-    let r = run(&additive());
+    let r = run(&schwarz());
     assert!(r.unidentified.is_empty());
     let (a, b) = per_level_intercept_slope(&levels, &z, &y, Some(&w), 2);
     for l in 0..2 {

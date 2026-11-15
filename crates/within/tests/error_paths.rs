@@ -221,11 +221,11 @@ fn test_invalid_local_solver_rejected(
     local_solver.scaling.tolerance = value;
     let precond = if adaptive {
         PreconditionerConfig::Adaptive {
-            local_solver,
             stall: Staleness::try_new(4, 0.9).expect("stall"),
+            schwarz: within::Schwarz { local_solver },
         }
     } else {
-        PreconditionerConfig::Additive { local_solver }
+        PreconditionerConfig::Schwarz(within::Schwarz { local_solver })
     };
     let mut effects = vec![Effect::new(&f, true, []).expect("f")];
     if n_factors == 2 {

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::block_solver::BlockSolver;
-use crate::config::{LocalSolverConfig, PreconditionerConfig, Staleness};
+use crate::config::{LocalSolverConfig, PreconditionerConfig, Schwarz, Staleness};
 use crate::domain::{LocalDomain, PreparedDesign, Unknowns};
 use crate::{BuildError, BuildWarning};
 
@@ -165,13 +165,15 @@ impl Preconditioner {
     /// The configuration that rebuilds this map.
     pub fn config(&self) -> PreconditionerConfig {
         match &self.inner {
-            Variant::Additive(p) => PreconditionerConfig::Additive {
+            Variant::Additive(p) => PreconditionerConfig::Schwarz(Schwarz {
                 local_solver: p.local_solver.clone(),
-            },
+            }),
             Variant::Diagonal(_) => PreconditionerConfig::Diagonal,
             Variant::Adaptive(ladder) => PreconditionerConfig::Adaptive {
-                local_solver: ladder.escalated.clone(),
                 stall: ladder.stall,
+                schwarz: Schwarz {
+                    local_solver: ladder.escalated.clone(),
+                },
             },
         }
     }

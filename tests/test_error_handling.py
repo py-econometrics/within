@@ -102,7 +102,7 @@ class TestErrorHandling:
     def test_additive_schwarz_rejects_local_solver_type(self):
         """A wrong-type local_solver should raise at construction, not at solve."""
         with pytest.raises(TypeError):
-            PreconditionerConfig.Additive(local_solver="invalid")
+            PreconditionerConfig.Schwarz(local_solver="invalid")
 
     def test_approx_schur_config_split_zero_raises(self):
         """ApproxSchurConfig(split=0) should raise ValueError."""

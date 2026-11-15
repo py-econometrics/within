@@ -52,9 +52,9 @@ fn generate_problem(n_obs: usize, n_lev: &[usize], seed: u64) -> Problem {
         ..Default::default()
     };
     // Pinned, not the default: the ladder would rebuild and possibly escalate inside `b.iter()`.
-    let preconditioner = Some(PreconditionerConfig::Additive {
+    let preconditioner = Some(PreconditionerConfig::Schwarz(within::Schwarz {
         local_solver: LocalSolverConfig::default(),
-    });
+    }));
 
     let label = format!(
         "{}FE {} n={}",

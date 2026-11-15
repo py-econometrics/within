@@ -40,15 +40,15 @@ def solver_and_precond(problem):
     """Build a Schwarz Solver and extract its preconditioner."""
     cats, y = problem
     categories = as_solver_categories(cats)
-    solver = Solver(categories, preconditioner=PreconditionerConfig.Additive())
+    solver = Solver(categories, preconditioner=PreconditionerConfig.Schwarz())
     precond = solver.preconditioner
     return solver, precond, categories, y
 
 
 class TestAdvancedConfigs:
     def test_preconditioner_config_additive_constructor(self):
-        implicit = PreconditionerConfig.Additive()
-        explicit = PreconditionerConfig.Additive(
+        implicit = PreconditionerConfig.Schwarz()
+        explicit = PreconditionerConfig.Schwarz(
             local_solver=LocalSolverConfig(),
         )
 
@@ -57,19 +57,19 @@ class TestAdvancedConfigs:
         assert implicit.local_solver == LocalSolverConfig()
 
         with pytest.raises(TypeError):
-            PreconditionerConfig.Additive(local_solver=None)
+            PreconditionerConfig.Schwarz(local_solver=None)
 
     def test_preconditioner_config_variant_introspection(self):
         # Each variant is a subclass of PreconditionerConfig (the 3.9-safe
-        # equivalent of ``match``), and Additive exposes its fields as getters.
+        # equivalent of ``match``), and Schwarz exposes its fields as getters.
         off = PreconditionerConfig.Off()
-        tuned = PreconditionerConfig.Additive(
+        tuned = PreconditionerConfig.Schwarz(
             local_solver=LocalSolverConfig(dense_threshold=0),
         )
 
         assert isinstance(off, PreconditionerConfig)
-        assert isinstance(tuned, PreconditionerConfig.Additive)
-        assert not isinstance(off, PreconditionerConfig.Additive)
+        assert isinstance(tuned, PreconditionerConfig.Schwarz)
+        assert not isinstance(off, PreconditionerConfig.Schwarz)
         assert tuned.local_solver.dense_threshold == 0
 
     def test_approx_chol_config_defaults(self):
@@ -110,7 +110,7 @@ class TestAdvancedConfigs:
                 cats,
                 y,
                 options=LsmrOptions(maxiter=2000),
-                preconditioner=PreconditionerConfig.Additive(local_solver=local),
+                preconditioner=PreconditionerConfig.Schwarz(local_solver=local),
             )
             assert result.converged
 
@@ -120,7 +120,7 @@ class TestAdvancedConfigs:
             as_solver_categories(cats),
             y,
             options=LsmrOptions(),
-            preconditioner=PreconditionerConfig.Additive(
+            preconditioner=PreconditionerConfig.Schwarz(
                 local_solver=LocalSolverConfig()
             ),
         )
@@ -155,7 +155,7 @@ class TestFePreconditioner:
         )
 
         for config in (
-            PreconditionerConfig.Additive(),
+            PreconditionerConfig.Schwarz(),
             PreconditionerConfig.Diagonal(),
         ):
             precond = Solver(categories, preconditioner=config).preconditioner
@@ -175,11 +175,11 @@ class TestFePreconditioner:
 
     def test_preconditioner_exposes_requested_config(self, solver_and_precond):
         solver, precond, categories, y = solver_and_precond
-        assert precond.config == PreconditionerConfig.Additive()
+        assert precond.config == PreconditionerConfig.Schwarz()
 
     def test_preconditioner_exposes_tuned_config(self, problem):
         cats, _ = problem
-        requested = PreconditionerConfig.Additive(
+        requested = PreconditionerConfig.Schwarz(
             local_solver=LocalSolverConfig(
                 approx_chol=ApproxCholConfig(seed=41, split_merge=3),
                 schur=Schur.approximate(ApproxSchurConfig(split=2)),
@@ -193,7 +193,7 @@ class TestFePreconditioner:
         assert precond is not None
         actual = precond.config
         assert actual == requested
-        assert isinstance(actual, PreconditionerConfig.Additive)
+        assert isinstance(actual, PreconditionerConfig.Schwarz)
         assert actual.local_solver.approx_chol.seed == 41
         assert actual.local_solver.approx_chol.split_merge == 3
         assert repr(actual.local_solver.schur) == "Schur.approximate(split=2)"
@@ -290,9 +290,9 @@ class TestAdaptive:
 
         Solver(
             effects,
-            preconditioner=PreconditionerConfig.Additive(local_solver=local_solver),
+            preconditioner=PreconditionerConfig.Schwarz(local_solver=local_solver),
         )
-        assert unscalable(recwarn.list), "fixture no longer warns under Additive"
+        assert unscalable(recwarn.list), "fixture no longer warns under Schwarz"
 
         recwarn.clear()
         solver = Solver(

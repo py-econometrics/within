@@ -93,8 +93,8 @@ solver2 = Solver(fe, preconditioner=precond)   # skip re-factorization
 | Class | Description |
 |---|---|
 | `PreconditionerConfig.Off()` | Disable preconditioning. |
-| `PreconditionerConfig.Additive()` | Additive Schwarz shortcut, built up front. |
-| `PreconditionerConfig.Additive(local_solver?)` | Tuned additive Schwarz. Argument types import from `within.config`. |
+| `PreconditionerConfig.Schwarz()` | Additive Schwarz shortcut, built up front. |
+| `PreconditionerConfig.Schwarz(local_solver?)` | Tuned additive Schwarz. Argument types import from `within.config`. |
 | `PreconditionerConfig.Adaptive(local_solver?, stall?)` | Tuned form of the default; the factorization is built only on escalation. |
 | `PreconditionerConfig.Diagonal()` | Diagonal/Jacobi preconditioner using `diag(D^T W D)^{-1}`. |
 | `Preconditioner` (built) | Reuse a previously-built preconditioner across solvers. |

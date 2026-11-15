@@ -29,7 +29,7 @@ fn test_lsmr_preconditioned() {
         maxiter: 1000,
         ..Default::default()
     };
-    let precond = common::additive();
+    let precond = common::schwarz();
     let solver = Solver::new(design, None, &precond).expect("build solver");
     let result = solver.solve(&y, &params).expect("solve");
     common::assert_converged_with_small_residual(&result, 1e-6);

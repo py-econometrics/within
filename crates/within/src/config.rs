@@ -150,35 +150,40 @@ impl Default for ApproxSchurConfig {
     }
 }
 
-/// Preconditioner variant. `#[non_exhaustive]`, so external `match` sites need a wildcard arm.
+/// The preconditioner a solve runs on, and the one it moves to when that one stalls.
+/// `#[non_exhaustive]`, so external `match` sites need a wildcard arm.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum PreconditionerConfig {
     /// Identity preconditioner. Solves the unpreconditioned normal equations.
     Off,
-    /// One-level additive Schwarz over factor-pair subdomains.
-    Additive {
-        /// Local solver configuration applied inside each subdomain.
-        local_solver: LocalSolverConfig,
-    },
     /// Diagonal/Jacobi; a zero diagonal takes the pseudo-inverse, pinning that coordinate to 0.
     Diagonal,
-    /// Diagonal first; additive Schwarz is built at, and used from, the first stalled contraction.
+    /// Schwarz from construction on.
+    Schwarz(Schwarz),
+    /// Diagonal first; Schwarz is built at, and used from, the first `stall`.
     Adaptive {
-        /// Local solver configuration for the escalated Schwarz factorization.
-        local_solver: LocalSolverConfig,
-        /// Contraction-stall condition that triggers escalation.
+        /// The contraction stall on the diagonal that hands the solve to Schwarz.
         stall: Staleness,
+        /// The Schwarz the solve moves to.
+        schwarz: Schwarz,
     },
 }
 
 impl Default for PreconditionerConfig {
     fn default() -> Self {
         Self::Adaptive {
-            local_solver: LocalSolverConfig::default(),
             stall: Staleness::default(),
+            schwarz: Schwarz::default(),
         }
     }
+}
+
+/// One-level additive Schwarz over factor-pair subdomains.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Schwarz {
+    /// Local solver configuration applied inside each subdomain.
+    pub local_solver: LocalSolverConfig,
 }
 
 /// LSMR solver configuration: tolerances and reorthogonalization window.

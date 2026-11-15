@@ -12,7 +12,7 @@ class PreconditionerConfig:
     """Preconditioner configuration for the LSMR solver.
 
     A tagged union: each variant is a subclass. Construct with ``Off()``,
-    ``Diagonal()``, ``Additive(local_solver=...)``, or
+    ``Diagonal()``, ``Schwarz(local_solver=...)``, or
     ``Adaptive(local_solver=..., stall=...)``. Instances
     compare by value and support ``match``/``case``.
     """
@@ -27,7 +27,7 @@ class PreconditionerConfig:
 
         def __init__(self) -> None: ...
 
-    class Additive(PreconditionerConfig):
+    class Schwarz(PreconditionerConfig):
         """Additive Schwarz with a normalized local-solver configuration."""
 
         local_solver: LocalSolverConfig
@@ -283,7 +283,7 @@ def solve(
             a stalled contraction; pass ``Adaptive(...)`` to tune it.
             ``PreconditionerConfig.Off()`` disables it.
             ``PreconditionerConfig.Diagonal()`` uses diagonal/Jacobi scaling.
-            ``PreconditionerConfig.Additive(...)`` overrides the local-solver
+            ``PreconditionerConfig.Schwarz(...)`` overrides the local-solver
             settings. A previously-built ``Preconditioner`` instance
             reuses an existing factorisation.
 

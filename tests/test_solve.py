@@ -118,7 +118,7 @@ def test_one_shot_solve_surfaces_build_warnings():
     from within import solve_batch
 
     design = [Effect(f, True, [z]), Effect(g, True)]
-    precond = PreconditionerConfig.Additive(
+    precond = PreconditionerConfig.Schwarz(
         local_solver=LocalSolverConfig(scaling=ScalingConfig(max_iterations=0))
     )
 

@@ -140,7 +140,7 @@ fn reduced_and_full_fits_agree(
     #[values(
         PreconditionerConfig::Off,
         PreconditionerConfig::Diagonal,
-        PreconditionerConfig::Additive { local_solver: Default::default() }
+        PreconditionerConfig::Schwarz(within::Schwarz { local_solver: Default::default() })
     )]
     preconditioner: PreconditionerConfig,
 ) {
@@ -235,7 +235,7 @@ fn one_factor_is_solved_by_elimination_alone(#[values(false, true)] weighted: bo
 fn schwarz_on_one_factor_matches_its_plain_counterpart(
     #[values(
         (PreconditionerConfig::default(), PreconditionerConfig::Diagonal),
-        (PreconditionerConfig::Additive { local_solver: Default::default() }, PreconditionerConfig::Off)
+        (PreconditionerConfig::Schwarz(within::Schwarz { local_solver: Default::default() }), PreconditionerConfig::Off)
     )]
     (schwarz, plain): (PreconditionerConfig, PreconditionerConfig),
 ) {
@@ -299,9 +299,9 @@ fn schwarz_serves_an_eliminated_term_between_the_kept_ones() {
         .collect();
     let term = |t: usize| Effect::new(&factors[t], true, [&z[t][..]]).expect("effect");
     let y = response(6);
-    let additive = PreconditionerConfig::Additive {
+    let additive = PreconditionerConfig::Schwarz(within::Schwarz {
         local_solver: Default::default(),
-    };
+    });
     let solve = |order: [usize; 3], system| {
         solver(Vec::from(order.map(term)), None, &additive, system)
             .expect("solver")
@@ -319,9 +319,9 @@ fn schwarz_serves_an_eliminated_term_between_the_kept_ones() {
 fn a_reduced_schwarz_map_is_reused_on_the_reduced_system() {
     let factors = factors(3);
     let y = response(5);
-    let additive = PreconditionerConfig::Additive {
+    let additive = PreconditionerConfig::Schwarz(within::Schwarz {
         local_solver: Default::default(),
-    };
+    });
     let built = solver(effects(&factors), None, &additive, System::Reduced).expect("built");
     let map = built.preconditioner().expect("schwarz").clone();
     let reused = solver(effects(&factors), None, map, System::Reduced).expect("reused");
@@ -350,7 +350,7 @@ fn local_solver_settings_are_validated_without_a_rung() {
     let factors = factors(1);
     let mut local_solver = within::LocalSolverConfig::default();
     local_solver.scaling.tolerance = f64::NAN;
-    let additive = PreconditionerConfig::Additive { local_solver };
+    let additive = PreconditionerConfig::Schwarz(within::Schwarz { local_solver });
     for system in [System::Full, System::Reduced] {
         let result = solver(effects(&factors), None, &additive, system);
         assert!(

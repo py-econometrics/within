@@ -1,21 +1,22 @@
 #![allow(dead_code)]
 
 use ndarray::{Array2, ArrayView2};
-use within::config::{LocalSolverConfig, Staleness};
 use within::{Channel, CoefficientAddress, Design, Effect, PreconditionerConfig, SolveResult};
 
-/// One-level additive Schwarz, pinned so a test names the rung the ladder would escalate to.
-pub fn additive() -> PreconditionerConfig {
-    PreconditionerConfig::Additive {
-        local_solver: LocalSolverConfig::default(),
-    }
+/// One-level Schwarz from construction on; a literal, so a new `Schwarz` field must be chosen here.
+pub fn schwarz() -> PreconditionerConfig {
+    PreconditionerConfig::Schwarz(within::Schwarz {
+        local_solver: within::LocalSolverConfig::default(),
+    })
 }
 
-/// The diagonal→Schwarz ladder, named rather than reached through `default()`.
+/// Diagonal, then one-level Schwarz on the default stall; spelled out, not `default()`.
 pub fn adaptive() -> PreconditionerConfig {
     PreconditionerConfig::Adaptive {
-        local_solver: LocalSolverConfig::default(),
-        stall: Staleness::default(),
+        stall: within::Staleness::default(),
+        schwarz: within::Schwarz {
+            local_solver: within::LocalSolverConfig::default(),
+        },
     }
 }
 
