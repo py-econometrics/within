@@ -268,9 +268,7 @@ fn max_abs_group_mean(design: &Design<'_>, demeaned: &[f64]) -> f64 {
 
 /// Schwarz built up front, so an aliased solve rests on the local solves.
 fn schwarz() -> PreconditionerConfig {
-    PreconditionerConfig::Schwarz(crate::Schwarz {
-        local_solver: Default::default(),
-    })
+    PreconditionerConfig::Schwarz(crate::Schwarz::default())
 }
 
 fn solve_tight(solver: &Solver<'_>, y: &[f64]) -> crate::SolveResult {
@@ -360,6 +358,7 @@ fn a_failed_deferred_build_is_kept_and_reported_again() {
                 },
                 ..LocalSolverConfig::default()
             },
+            ..Default::default()
         },
     };
     let solver = Solver::new(panel.effects(), None, precond).unwrap();
@@ -457,9 +456,7 @@ fn an_alias_through_a_zero_loading_still_converges() {
         Effect::new(&firm, true, []).unwrap(),
         Effect::new(&year, true, []).unwrap(),
     ];
-    let schwarz = PreconditionerConfig::Schwarz(crate::Schwarz {
-        local_solver: Default::default(),
-    });
+    let schwarz = PreconditionerConfig::Schwarz(crate::Schwarz::default());
     let solver = Solver::new(effects, None, schwarz).expect("solver");
     let out = solve_tight(&solver, &y);
     let group_mean = max_abs_group_mean(&solver.system.prepared().design, &out.demeaned);

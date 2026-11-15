@@ -201,6 +201,7 @@ fn fully_specified_schwarz() -> PreconditionerConfig {
                 on_failure: ScalingFailure::Error,
             },
         },
+        ..Default::default()
     })
 }
 

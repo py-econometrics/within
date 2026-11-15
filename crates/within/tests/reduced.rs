@@ -1,7 +1,8 @@
 use rstest::rstest;
 use within::{
-    BuildError, Channel, CoefficientAddress, Design, Effect, IntoDesign, LayoutMismatch,
-    LsmrOptions, PreconditionerConfig, PreconditionerInput, SolveResult, Solver,
+    BuildError, Channel, CoarseBuild, CoarseCorrection, CoarseSpace, CoefficientAddress, Design,
+    Effect, IntoDesign, LayoutMismatch, LsmrOptions, PreconditionerConfig, PreconditionerInput,
+    Rung, SolveResult, Solver, Staleness, TwoLevelForm,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -337,9 +338,7 @@ fn schwarz_serves_an_eliminated_term_between_the_kept_ones() {
         .collect();
     let term = |t: usize| Effect::new(&factors[t], true, [&z[t][..]]).expect("effect");
     let y = response(6);
-    let additive = PreconditionerConfig::Schwarz(within::Schwarz {
-        local_solver: Default::default(),
-    });
+    let additive = PreconditionerConfig::Schwarz(within::Schwarz::default());
     let solve = |order: [usize; 3], system| {
         solver(Vec::from(order.map(term)), None, &additive, system)
             .expect("solver")
@@ -357,9 +356,7 @@ fn schwarz_serves_an_eliminated_term_between_the_kept_ones() {
 fn a_reduced_schwarz_map_is_reused_on_the_reduced_system() {
     let factors = factors(3);
     let y = response(5);
-    let additive = PreconditionerConfig::Schwarz(within::Schwarz {
-        local_solver: Default::default(),
-    });
+    let additive = PreconditionerConfig::Schwarz(within::Schwarz::default());
     let built = solver(effects(&factors), None, &additive, System::Reduced).expect("built");
     let map = built.preconditioner().expect("schwarz").clone();
     let reused = solver(effects(&factors), None, map, System::Reduced).expect("reused");
@@ -368,6 +365,53 @@ fn a_reduced_schwarz_map_is_reused_on_the_reduced_system() {
     assert!(built.converged);
     assert_eq!(reused.iterations, built.iterations);
     assert_eq!(reused.x, built.x);
+}
+
+/// No system offers the two-level rung yet, so a coarse correction leaves the solve one-level.
+#[rstest]
+fn a_coarse_correction_no_system_offers_leaves_the_solve_one_level(
+    #[values(System::Full, System::Reduced)] system: System,
+    #[values(false, true)] adaptive: bool,
+    #[values(
+        CoarseBuild::WithSchwarz,
+        CoarseBuild::OnStall(Staleness::try_new(8, 0.8).expect("stall"))
+    )]
+    build: CoarseBuild,
+) {
+    let factors = factors(3);
+    let y = response(7);
+    let config = |coarse| {
+        let schwarz = within::Schwarz {
+            coarse,
+            ..Default::default()
+        };
+        match adaptive {
+            false => PreconditionerConfig::Schwarz(schwarz),
+            true => PreconditionerConfig::Adaptive {
+                // Any contraction stalls: the solve escalates on its first iteration.
+                stall: Staleness::try_new(1, 0.0).expect("stall"),
+                schwarz,
+            },
+        }
+    };
+    let coarse = CoarseCorrection {
+        space: CoarseSpace::RigidComponents,
+        form: TwoLevelForm::Balanced,
+        build,
+    };
+    let solve = |config: PreconditionerConfig| {
+        let solver = solver(effects(&factors), None, &config, system).expect("solver");
+        let result = solver.solve(&y, &lsmr()).expect("solve");
+        let rung = solver.preconditioner().map(|p| p.rung());
+        (result, rung)
+    };
+    let (two_level, rung) = solve(config(Some(coarse)));
+    let (one_level, one_level_rung) = solve(config(None));
+    assert!(one_level.converged);
+    assert_eq!(rung, one_level_rung);
+    assert_eq!(rung, Some(Rung::Schwarz));
+    assert_eq!(two_level.iterations, one_level.iterations);
+    assert_eq!(two_level.x, one_level.x);
 }
 
 /// A response whose weighted value leaves the float range is a solve error on both systems.
@@ -388,7 +432,10 @@ fn local_solver_settings_are_validated_without_a_rung() {
     let factors = factors(1);
     let mut local_solver = within::LocalSolverConfig::default();
     local_solver.scaling.tolerance = f64::NAN;
-    let additive = PreconditionerConfig::Schwarz(within::Schwarz { local_solver });
+    let additive = PreconditionerConfig::Schwarz(within::Schwarz {
+        local_solver,
+        ..Default::default()
+    });
     for system in [System::Full, System::Reduced] {
         let result = solver(effects(&factors), None, &additive, system);
         assert!(

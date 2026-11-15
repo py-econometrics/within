@@ -31,6 +31,7 @@ fn offer<'s>(
         RungSettings::Schwarz(schwarz) => Some(Box::new(move || {
             build_schwarz(prepared, &schwarz.local_solver, unknowns)
         })),
+        RungSettings::TwoLevel => None,
     }
 }
 

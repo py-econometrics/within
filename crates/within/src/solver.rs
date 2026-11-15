@@ -373,7 +373,7 @@ fn solve_all<S: LeastSquaresSystem>(
     lsmr: &LsmrOptions,
 ) -> Result<(Vec<RhsSolution>, f64), WithinError> {
     let mut passes: Vec<_> = ys.iter().map(|&y| Pass::Unstarted(y)).collect();
-    let mut build_secs = 0.0;
+    let mut build_secs = slot.settle(system)?;
     loop {
         // Read outside the fan-out, so every RHS of a pass runs on the same map.
         let running = slot.running(system)?;

@@ -74,6 +74,7 @@ fn scaling(tolerance: f64, on_failure: ScalingFailure) -> PreconditionerConfig {
             },
             ..LocalSolverConfig::default()
         },
+        ..Default::default()
     })
 }
 

@@ -7,18 +7,21 @@ use std::time::Instant;
 use once_cell::sync::OnceCell;
 use schwarz_precond::Staleness;
 
-use crate::config::{PreconditionerConfig, RungSettings};
+use crate::config::{Handoff, PreconditionerConfig, RungSettings};
 use crate::operator::schwarz::{Preconditioner, RungBuild};
 use crate::{BuildError, BuildWarning};
 
 use super::system::{Build, LeastSquaresSystem};
+
+/// One rung's build: the map and its warnings, or the error it keeps.
+type Built = Result<RungBuild<Preconditioner>, BuildError>;
 
 /// The solver's config; a solve runs on its highest built rung and builds the next on a stall.
 pub(super) struct PrecondSlot {
     config: PreconditionerConfig,
     /// One per rung of `config`, in its order. A design's own build failure settles here too;
     /// a failed isolation pool retries instead.
-    pub(super) built: Vec<OnceCell<Result<RungBuild<Preconditioner>, BuildError>>>,
+    pub(super) built: Vec<OnceCell<Built>>,
 }
 
 /// The map a solve runs on now, where it stands among the rungs, and the stall that hands it
@@ -30,24 +33,14 @@ pub(super) struct Running<'s> {
 }
 
 impl PrecondSlot {
-    /// `config` with the first rung that has a map on `system` built.
+    /// `config` with rungs built on `system` until a solve runs on one.
     pub(super) fn build(
         system: &impl LeastSquaresSystem,
         config: PreconditionerConfig,
     ) -> Result<Self, BuildError> {
         config.validate()?;
         let slot = Self::unbuilt(config);
-        for (rung, cell) in slot.config.rungs().zip(&slot.built) {
-            let Some(build) = system.offer(rung) else {
-                continue;
-            };
-            let built = slot.run(system, &build)?;
-            let found = built.map.is_some();
-            cell.get_or_init(|| Ok(built));
-            if found {
-                break;
-            }
-        }
+        slot.settle_with(system, |build| Ok(slot.run(system, build)))?;
         Ok(slot)
     }
 
@@ -73,6 +66,7 @@ impl PrecondSlot {
                 warnings: Vec::new(),
             })
         });
+        slot.settle_with(system, |build| Ok(slot.run(system, build)))?;
         Ok(slot)
     }
 
@@ -117,7 +111,7 @@ impl PrecondSlot {
         &'s self,
         system: &'s S,
         floor: Option<usize>,
-    ) -> Option<(usize, Build<'s>)> {
+    ) -> Option<(usize, RungSettings<'s>, Build<'s>)> {
         self.config
             .rungs()
             .enumerate()
@@ -125,10 +119,28 @@ impl PrecondSlot {
             .filter(|&(at, _)| {
                 !matches!(self.built[at].get(), Some(Ok(RungBuild { map: None, .. })))
             })
-            .find_map(|(at, rung)| Some((at, system.offer(rung)?)))
+            .find_map(|(at, rung)| Some((at, rung, system.offer(rung)?)))
     }
 
-    /// The map a solve runs on now; a kept build error of the rung above it is final.
+    /// Build the rungs a solve must not start below; this call's build seconds. Every other
+    /// caller waits for the same builds.
+    pub(super) fn settle(&self, system: &impl LeastSquaresSystem) -> Result<f64, BuildError> {
+        self.settle_with(system, |build| isolated(|| self.run(system, build)))
+    }
+
+    fn settle_with(
+        &self,
+        system: &impl LeastSquaresSystem,
+        run: impl Fn(&Build<'_>) -> Result<Built, BuildError>,
+    ) -> Result<f64, BuildError> {
+        match self.top() {
+            Some((_, rung, _)) if runs_on(&rung) => Ok(0.0),
+            top => self.climb(system, top.map(|(at, ..)| at), run),
+        }
+    }
+
+    /// The map a solve runs on now, once settled; a kept build error of the rung above it is
+    /// final.
     pub(super) fn running(
         &self,
         system: &impl LeastSquaresSystem,
@@ -136,11 +148,14 @@ impl PrecondSlot {
         let top = self.top();
         let at = top.map(|(at, ..)| at);
         let stall = match self.next(system, at) {
-            Some((next, _)) => {
+            Some((next, ..)) => {
                 if let Some(Err(e)) = self.built[next].get() {
                     return Err(e.clone());
                 }
-                top.and_then(|(_, rung, _)| rung.stall())
+                top.and_then(|(_, rung, _)| match rung.handoff()? {
+                    Handoff::OnStall(stall) => Some(stall),
+                    Handoff::AtBuild => None,
+                })
             }
             None => None,
         };
@@ -151,25 +166,39 @@ impl PrecondSlot {
         })
     }
 
-    /// Build rungs above the one `stalled` ran on until one has a map; this call's build
+    /// Build rungs above the one `stalled` ran on until a solve runs on one; this call's build
     /// seconds. Every other caller waits for the same builds.
     pub(super) fn escalate(
         &self,
         system: &impl LeastSquaresSystem,
         stalled: &Running<'_>,
     ) -> Result<f64, BuildError> {
+        self.climb(system, stalled.at, |build| {
+            isolated(|| self.run(system, build))
+        })
+    }
+
+    /// Build rungs above `floor`, each through `run`, until a solve runs on one; a kept build
+    /// error is final; an error `run` returns without a build is retried by the next caller.
+    fn climb(
+        &self,
+        system: &impl LeastSquaresSystem,
+        mut floor: Option<usize>,
+        run: impl Fn(&Build<'_>) -> Result<Built, BuildError>,
+    ) -> Result<f64, BuildError> {
         let mut build_secs = 0.0;
-        // A rung built without a map drops out of `next`, so the loop moves on to the one after it.
-        while let Some((at, build)) = self.next(system, stalled.at) {
+        while let Some((at, rung, build)) = self.next(system, floor) {
             let built = self.built[at].get_or_try_init(|| {
                 let started = Instant::now();
-                let outcome = isolated(|| self.run(system, &build))?;
+                let outcome = run(&build)?;
                 build_secs += started.elapsed().as_secs_f64();
                 Ok::<_, BuildError>(outcome)
             })?;
-            if built.as_ref().map_err(Clone::clone)?.map.is_some() {
+            let built = built.as_ref().map_err(Clone::clone)?;
+            if built.map.is_some() && runs_on(&rung) {
                 break;
             }
+            floor = Some(at);
         }
         Ok(build_secs)
     }
@@ -186,6 +215,11 @@ impl PrecondSlot {
             .flat_map(|built| built.warnings.iter().cloned())
             .collect()
     }
+}
+
+/// A solve runs on `rung` once it has a map: it does not hand off at build.
+fn runs_on(rung: &RungSettings<'_>) -> bool {
+    !matches!(rung.handoff(), Some(Handoff::AtBuild))
 }
 
 /// Run `f` on a pool of its own, entered from a thread outside every pool, so no wait inside it can

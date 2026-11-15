@@ -10,8 +10,9 @@ use within::{Effect, LsmrOptions, Preconditioner, Solver};
 mod common;
 use common::schwarz;
 
-const WIRE_FORMAT_VERSION: u32 = 24;
-const PRECOND_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v24.postcard");
+const WIRE_FORMAT_VERSION: u32 = 25;
+const PRECOND_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v25.postcard");
+const COARSELESS_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v24.postcard");
 const LAYOUTLESS_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v23.postcard");
 const LADDERLESS_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v22.postcard");
 const PRE_BUMP_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v21.postcard");
@@ -114,6 +115,7 @@ fn preconditioner_round_trips(#[case] shape: Shape) {
 }
 
 #[rstest]
+#[case::v24(COARSELESS_BYTES)]
 #[case::v23(LAYOUTLESS_BYTES)]
 #[case::v22(LADDERLESS_BYTES)]
 #[case::v21(PRE_BUMP_BYTES)]
@@ -124,7 +126,7 @@ fn legacy_fixture_no_longer_decodes(#[case] bytes: &[u8]) {
 }
 
 /// Generate the wire-format fixture. Run with `--ignored` to overwrite
-/// `crates/within/tests/fixtures/preconditioner_v24.postcard`. Intended for
+/// `crates/within/tests/fixtures/preconditioner_v25.postcard`. Intended for
 /// intentional wire-format bumps only; CI runs the non-ignored tests above.
 #[test]
 #[ignore]
@@ -140,7 +142,7 @@ fn regenerate_wire_format_fixture() {
     let bytes = postcard::to_stdvec(prec).expect("serialize");
 
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.push("tests/fixtures/preconditioner_v24.postcard");
+    path.push("tests/fixtures/preconditioner_v25.postcard");
     let mut out = std::fs::File::create(&path).expect("create fixture file");
     out.write_all(&bytes).expect("write fixture bytes");
     eprintln!("wrote {} bytes to {}", bytes.len(), path.display());

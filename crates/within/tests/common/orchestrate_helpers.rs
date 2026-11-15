@@ -7,6 +7,7 @@ use within::{Channel, CoefficientAddress, Design, Effect, PreconditionerConfig, 
 pub fn schwarz() -> PreconditionerConfig {
     PreconditionerConfig::Schwarz(within::Schwarz {
         local_solver: within::LocalSolverConfig::default(),
+        coarse: None,
     })
 }
 
@@ -16,6 +17,7 @@ pub fn adaptive() -> PreconditionerConfig {
         stall: within::Staleness::default(),
         schwarz: within::Schwarz {
             local_solver: within::LocalSolverConfig::default(),
+            coarse: None,
         },
     }
 }

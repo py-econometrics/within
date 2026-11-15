@@ -189,6 +189,7 @@ assert!(r.converged);
 let lsmr = LsmrOptions { tol: 1e-10, ..LsmrOptions::default() };
 let precond = PreconditionerConfig::Schwarz(Schwarz {
     local_solver: LocalSolverConfig::default(),
+    coarse: None,
 });
 let r = solve(categories.view(), &y, None, &lsmr, &precond)?;
 
