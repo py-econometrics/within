@@ -120,6 +120,18 @@ pub enum BuildWarning {
         /// Largest relative dominance violation, clamped away.
         violation: f64,
     },
+    /// The two-level rung built no map; the solve stays on one-level Schwarz.
+    CoarseDeclined(CoarseDecline),
+}
+
+/// Why the two-level rung built no map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CoarseDecline {
+    /// No well-conditioned spell glues levels into a component that needs a coarse column.
+    NoCoarseSpace,
+    /// The coarse factor would hold more values than the design has observations.
+    OverBudget,
 }
 
 impl std::fmt::Display for BuildWarning {
@@ -129,6 +141,15 @@ impl std::fmt::Display for BuildWarning {
                 f,
                 "signed component between {pair}: dominance scaling uncertified (max relative \
                  violation {violation:.2e}); deficits clamped, preconditioner quality may degrade"
+            ),
+            Self::CoarseDeclined(CoarseDecline::NoCoarseSpace) => write!(
+                f,
+                "two-level Schwarz declined: no coarse space; the solve stays one-level"
+            ),
+            Self::CoarseDeclined(CoarseDecline::OverBudget) => write!(
+                f,
+                "two-level Schwarz declined: its coarse factor exceeds the budget; the solve \
+                 stays one-level"
             ),
         }
     }

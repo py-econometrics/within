@@ -1,8 +1,8 @@
 use rstest::rstest;
 use within::{
-    BuildError, Channel, CoarseBuild, CoarseCorrection, CoarseSpace, CoefficientAddress, Design,
-    Effect, IntoDesign, LayoutMismatch, LsmrOptions, PreconditionerConfig, PreconditionerInput,
-    Rung, SolveResult, Solver, Staleness, TwoLevelForm,
+    BuildError, BuildWarning, Channel, CoarseBuild, CoarseCorrection, CoarseDecline, CoarseSpace,
+    CoefficientAddress, Design, Effect, IntoDesign, LayoutMismatch, LsmrOptions,
+    PreconditionerConfig, PreconditionerInput, Rung, SolveResult, Solver, Staleness, TwoLevelForm,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -367,51 +367,121 @@ fn a_reduced_schwarz_map_is_reused_on_the_reduced_system() {
     assert_eq!(reused.x, built.x);
 }
 
-/// No system offers the two-level rung yet, so a coarse correction leaves the solve one-level.
-#[rstest]
-fn a_coarse_correction_no_system_offers_leaves_the_solve_one_level(
-    #[values(System::Full, System::Reduced)] system: System,
-    #[values(false, true)] adaptive: bool,
-    #[values(
-        CoarseBuild::WithSchwarz,
-        CoarseBuild::OnStall(Staleness::try_new(8, 0.8).expect("stall"))
-    )]
-    build: CoarseBuild,
-) {
-    let factors = factors(3);
-    let y = response(7);
-    let config = |coarse| {
-        let schwarz = within::Schwarz {
-            coarse,
-            ..Default::default()
-        };
-        match adaptive {
-            false => PreconditionerConfig::Schwarz(schwarz),
-            true => PreconditionerConfig::Adaptive {
-                // Any contraction stalls: the solve escalates on its first iteration.
-                stall: Staleness::try_new(1, 0.0).expect("stall"),
-                schwarz,
-            },
-        }
+/// Workers staying in 40 firm clusters with a slope on both terms, and movers whose one row
+/// elsewhere glues nothing: each cluster is a rigid component the one-level map cannot see.
+fn clustered() -> (Vec<u32>, Vec<u32>, Vec<f64>, Vec<f64>) {
+    let (mut worker, mut firm) = (Vec::new(), Vec::new());
+    let mut spell = |w: u32, f: u32, rows: usize| {
+        worker.extend(std::iter::repeat_n(w, rows));
+        firm.extend(std::iter::repeat_n(f, rows));
     };
-    let coarse = CoarseCorrection {
+    for k in 0..120 {
+        spell(k, k / 3, 8);
+    }
+    for k in 0..30 {
+        let a = (7 * k + 3) % 40;
+        spell(120 + k, a, 7);
+        spell(120 + k, (a + 1 + (13 * k) % 39) % 40, 1);
+    }
+    let n = worker.len();
+    let z_worker = (0..n).map(|i| noise(2 * n + i)).collect();
+    let z_firm = (0..n).map(|i| noise(3 * n + i)).collect();
+    (worker, firm, z_worker, z_firm)
+}
+
+fn coarse(build: CoarseBuild) -> CoarseCorrection {
+    CoarseCorrection {
         space: CoarseSpace::RigidComponents,
         form: TwoLevelForm::Balanced,
         build,
+    }
+}
+
+/// `schwarz` from construction on, or after a diagonal that stalls on its first iteration.
+fn ladder(schwarz: within::Schwarz, adaptive: bool) -> PreconditionerConfig {
+    match adaptive {
+        false => PreconditionerConfig::Schwarz(schwarz),
+        true => PreconditionerConfig::Adaptive {
+            stall: Staleness::try_new(1, 0.0).expect("stall"),
+            schwarz,
+        },
+    }
+}
+
+/// Built with Schwarz or on its first stall, the two-level map is where the solve ends.
+#[rstest]
+fn a_coarse_correction_lands_the_solve_on_the_two_level_map(
+    #[values(System::Full, System::Reduced)] system: System,
+    #[values(false, true)] adaptive: bool,
+    // Any contraction stalls: the solve leaves one-level Schwarz on its first iteration.
+    #[values(
+        CoarseBuild::WithSchwarz,
+        CoarseBuild::OnStall(Staleness::try_new(1, 0.0).expect("stall"))
+    )]
+    build: CoarseBuild,
+) {
+    let (worker, firm, z_worker, z_firm) = clustered();
+    let effects = || {
+        vec![
+            Effect::new(&worker, true, [&z_worker[..]]).expect("worker"),
+            Effect::new(&firm, true, [&z_firm[..]]).expect("firm"),
+        ]
     };
-    let solve = |config: PreconditionerConfig| {
+    let y: Vec<f64> = (0..worker.len()).map(noise).collect();
+    let solve = |coarse| {
+        let config = ladder(
+            within::Schwarz {
+                coarse,
+                ..Default::default()
+            },
+            adaptive,
+        );
+        let solver = solver(effects(), None, &config, system).expect("solver");
+        let result = solver.solve(&y, &lsmr()).expect("solve");
+        (result, solver.preconditioner().map(|p| p.rung()))
+    };
+    let (two_level, rung) = solve(Some(coarse(build)));
+    let (one_level, _) = solve(None);
+    assert_eq!(rung, Some(Rung::TwoLevel));
+    assert!(two_level.converged && one_level.converged);
+    assert_same_fit(
+        &two_level.demeaned,
+        &one_level.demeaned,
+        &vec![true; y.len()],
+        &y,
+    );
+}
+
+/// A design with no coarse space leaves the solve on one-level Schwarz, with the reason.
+#[rstest]
+fn a_declined_coarse_correction_leaves_the_solve_one_level(
+    #[values(System::Full, System::Reduced)] system: System,
+    #[values(false, true)] adaptive: bool,
+) {
+    let factors = factors(3);
+    let y = response(7);
+    let solve = |coarse| {
+        let config = ladder(
+            within::Schwarz {
+                coarse,
+                ..Default::default()
+            },
+            adaptive,
+        );
         let solver = solver(effects(&factors), None, &config, system).expect("solver");
         let result = solver.solve(&y, &lsmr()).expect("solve");
         let rung = solver.preconditioner().map(|p| p.rung());
-        (result, rung)
+        (result, rung, solver.warnings())
     };
-    let (two_level, rung) = solve(config(Some(coarse)));
-    let (one_level, one_level_rung) = solve(config(None));
-    assert!(one_level.converged);
-    assert_eq!(rung, one_level_rung);
+    let (declined, rung, warnings) = solve(Some(coarse(CoarseBuild::WithSchwarz)));
+    let (one_level, ..) = solve(None);
     assert_eq!(rung, Some(Rung::Schwarz));
-    assert_eq!(two_level.iterations, one_level.iterations);
-    assert_eq!(two_level.x, one_level.x);
+    assert_eq!(
+        warnings,
+        [BuildWarning::CoarseDeclined(CoarseDecline::NoCoarseSpace)]
+    );
+    assert_eq!(declined.iterations, one_level.iterations);
+    assert_eq!(declined.x, one_level.x);
 }
 
 /// A response whose weighted value leaves the float range is a solve error on both systems.

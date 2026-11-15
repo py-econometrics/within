@@ -191,7 +191,7 @@ impl PreconditionerConfig {
         diagonal
             .into_iter()
             .chain(schwarz.map(RungSettings::Schwarz))
-            .chain(two_level.map(|_| RungSettings::TwoLevel))
+            .chain(two_level.map(RungSettings::TwoLevel))
     }
 
     /// Where `rung` stands among its rungs; `None` when it is not one of them.
@@ -275,7 +275,7 @@ pub(crate) enum RungSettings<'c> {
         stall: Option<&'c Staleness>,
     },
     Schwarz(&'c Schwarz),
-    TwoLevel,
+    TwoLevel(&'c CoarseCorrection),
 }
 
 /// When a rung hands the solve to the next one.
@@ -291,7 +291,7 @@ impl<'c> RungSettings<'c> {
         match self {
             Self::Diagonal { .. } => Rung::Diagonal,
             Self::Schwarz(_) => Rung::Schwarz,
-            Self::TwoLevel => Rung::TwoLevel,
+            Self::TwoLevel(_) => Rung::TwoLevel,
         }
     }
 
@@ -303,7 +303,7 @@ impl<'c> RungSettings<'c> {
                 CoarseBuild::WithSchwarz => Some(Handoff::AtBuild),
                 CoarseBuild::OnStall(stall) => Some(Handoff::OnStall(stall)),
             },
-            Self::TwoLevel => None,
+            Self::TwoLevel(_) => None,
         }
     }
 }

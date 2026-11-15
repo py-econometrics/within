@@ -8,6 +8,7 @@ use crate::config::RungSettings;
 use crate::domain::{PreparedDesign, Unknowns, UnknownsLayout};
 use crate::operator::design::ReducedDesign;
 use crate::operator::schwarz::{build_schwarz, diagonal_map, RungBuild, RungMap};
+use crate::operator::two_level::build_two_level;
 use crate::{BuildError, SolveError};
 
 pub(crate) type Build<'s> = Box<dyn Fn() -> Result<RungBuild, BuildError> + Send + Sync + 's>;
@@ -18,6 +19,7 @@ fn offer<'s>(
     unknowns: Unknowns,
     gram_diagonal: impl Fn() -> Vec<f64> + Send + Sync + 's,
     rung: RungSettings<'s>,
+    below: Option<&'s RungMap>,
 ) -> Option<Build<'s>> {
     match rung {
         RungSettings::Diagonal { .. } => Some(Box::new(move || {
@@ -31,7 +33,14 @@ fn offer<'s>(
         RungSettings::Schwarz(schwarz) => Some(Box::new(move || {
             build_schwarz(prepared, &schwarz.local_solver, unknowns)
         })),
-        RungSettings::TwoLevel => None,
+        RungSettings::TwoLevel(coarse) => {
+            let Some(RungMap::Schwarz(one_level)) = below else {
+                return None;
+            };
+            Some(Box::new(move || {
+                Ok(build_two_level(prepared, unknowns, one_level, coarse))
+            }))
+        }
     }
 }
 
@@ -50,8 +59,10 @@ pub(crate) trait LeastSquaresSystem: Sync {
     fn layout(&self) -> UnknownsLayout {
         self.prepared().design.unknowns_layout(self.unknowns())
     }
-    /// The build of `rung` for this system's normal matrix; `None` for a rung it does not offer.
-    fn offer<'s>(&'s self, rung: RungSettings<'s>) -> Option<Build<'s>>;
+    /// The build of `rung` for this system's normal matrix over `below`, the map of the rung
+    /// under it; `None` for a rung it does not offer.
+    fn offer<'s>(&'s self, rung: RungSettings<'s>, below: Option<&'s RungMap>)
+        -> Option<Build<'s>>;
     /// Validate `y`, then form this system's right-hand side.
     fn prepare<'s>(&'s self, y: &'s [f64]) -> Result<Self::Rhs<'s>, SolveError>;
     /// What LSMR iterates on; tolerances are relative to its norm.
@@ -145,8 +156,12 @@ impl LeastSquaresSystem for PreparedDesign<'_> {
         Unknowns::All
     }
 
-    fn offer<'s>(&'s self, rung: RungSettings<'s>) -> Option<Build<'s>> {
-        offer(self, self.unknowns(), || self.gram_diagonal(), rung)
+    fn offer<'s>(
+        &'s self,
+        rung: RungSettings<'s>,
+        below: Option<&'s RungMap>,
+    ) -> Option<Build<'s>> {
+        offer(self, self.unknowns(), || self.gram_diagonal(), rung, below)
     }
 
     fn prepare<'s>(&'s self, y: &'s [f64]) -> Result<Response<'s>, SolveError> {
@@ -192,12 +207,17 @@ impl LeastSquaresSystem for ReducedDesign<'_> {
         Unknowns::WithoutDominant
     }
 
-    fn offer<'s>(&'s self, rung: RungSettings<'s>) -> Option<Build<'s>> {
+    fn offer<'s>(
+        &'s self,
+        rung: RungSettings<'s>,
+        below: Option<&'s RungMap>,
+    ) -> Option<Build<'s>> {
         offer(
             ReducedDesign::prepared(self),
             self.unknowns(),
             || self.gram_diagonal(),
             rung,
+            below,
         )
     }
 

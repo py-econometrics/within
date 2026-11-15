@@ -40,7 +40,7 @@ pub use config::{
     SchurMode, Schwarz, Staleness, StalenessError, TwoLevelForm,
 };
 pub use domain::{Design, Effect};
-pub use error::{BuildError, BuildWarning, LayoutMismatch, SolveError, WithinError};
+pub use error::{BuildError, BuildWarning, CoarseDecline, LayoutMismatch, SolveError, WithinError};
 pub use operator::schwarz::Preconditioner;
 pub use solver::{
     solve, solve_batch, BatchSolveResult, CoefficientLayout, IntoDesign, PreconditionerInput,

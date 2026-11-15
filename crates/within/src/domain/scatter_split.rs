@@ -188,6 +188,11 @@ impl LevelRows {
         self.offsets[level]..self.offsets[level + 1]
     }
 
+    /// The rows of `level`, in position order.
+    pub(crate) fn rows(&self, level: usize) -> impl Iterator<Item = usize> + Clone + '_ {
+        (self.positions(level)).map(|at| self.rows.as_ref().map_or(at, |rows| rows[at] as usize))
+    }
+
     /// Calls `f` on the row at each of `positions`, in order.
     #[inline(always)]
     pub(crate) fn for_each_row(&self, positions: Range<usize>, f: impl FnMut(usize)) {

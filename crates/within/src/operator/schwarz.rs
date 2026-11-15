@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 
+use super::two_level::TwoLevelMap;
 use crate::block_solver::BlockSolver;
 use crate::config::{LocalSolverConfig, PreconditionerConfig, Rung};
 use crate::domain::{LocalDomain, PreparedDesign, Unknowns, UnknownsLayout};
@@ -158,11 +159,14 @@ pub(crate) enum RungMap {
     // Append only: postcard encodes by declaration order and the fixtures depend on it.
     Diagonal(DiagonalPreconditioner),
     Schwarz(FeSchwarz),
+    #[serde(skip)]
+    TwoLevel(TwoLevelMap),
 }
 
 /// One rung built on one system, and the build's warnings.
 pub(crate) struct RungBuild<M = RungMap> {
-    /// `None` when the system's operator is zero: every solve is exact at `x = 0`.
+    /// `None` when the system's operator is zero, so every solve is exact at `x = 0`, or when the
+    /// rung declined: the solve stays on the rung below.
     pub(crate) map: Option<M>,
     pub(crate) warnings: Vec<BuildWarning>,
 }
@@ -173,6 +177,7 @@ impl Preconditioner {
         match &self.map {
             RungMap::Diagonal(_) => Rung::Diagonal,
             RungMap::Schwarz(_) => Rung::Schwarz,
+            RungMap::TwoLevel(_) => Rung::TwoLevel,
         }
     }
 
@@ -208,6 +213,7 @@ impl Preconditioner {
         match &self.map {
             RungMap::Diagonal(p) => p,
             RungMap::Schwarz(p) => p,
+            RungMap::TwoLevel(p) => p,
         }
     }
 }
