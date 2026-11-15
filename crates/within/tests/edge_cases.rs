@@ -72,7 +72,7 @@ fn test_zero_weight_returns_zero(
     #[values(
         PreconditionerConfig::Off,
         PreconditionerConfig::Diagonal,
-        common::additive(),
+        common::schwarz(),
         common::adaptive()
     )]
     precond: PreconditionerConfig,
@@ -108,7 +108,7 @@ fn test_zero_weight_returns_zero(
 /// metric — only the fitted values, not the raw coefficients, are invariant.
 #[rstest]
 fn test_preconditioner_matches_unpreconditioned_solution(
-    #[values(PreconditionerConfig::Diagonal, common::additive(), common::adaptive())]
+    #[values(PreconditionerConfig::Diagonal, common::schwarz(), common::adaptive())]
     precond: PreconditionerConfig,
 ) {
     let cats = array![[0u32], [0], [1], [1], [2], [2]];

@@ -8,7 +8,7 @@ use within::{Effect, LsmrOptions, Preconditioner, Solver};
 
 #[path = "common/orchestrate_helpers.rs"]
 mod common;
-use common::additive;
+use common::schwarz;
 
 const WIRE_FORMAT_VERSION: u32 = 22;
 const PRECOND_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v22.postcard");
@@ -49,7 +49,7 @@ fn wire_format_fixture_deserializes_and_solves() {
     assert!(result.converged, "fixture-built solver should converge");
 
     // Compare against a fresh build to detect any semantic regression.
-    let fresh = Solver::new(fixture_effects(&f, &g, &z), None, additive()).expect("fresh solver");
+    let fresh = Solver::new(fixture_effects(&f, &g, &z), None, schwarz()).expect("fresh solver");
     let fresh_result = fresh
         .solve(&y, &LsmrOptions::default())
         .expect("fresh solve");
@@ -81,12 +81,12 @@ fn preconditioner_round_trips(#[case] shape: Shape) {
             Effect::new(&g, true, []).expect("second intercept"),
         ],
     };
-    let solver1 = Solver::new(effects(), None, additive()).expect("build solver");
+    let solver1 = Solver::new(effects(), None, schwarz()).expect("build solver");
     let r1 = solver1.solve(&y, &LsmrOptions::default()).expect("solve 1");
     let original = solver1.preconditioner().expect("has preconditioner");
     let bytes = postcard::to_stdvec(original).expect("serialize");
     let restored: Preconditioner = postcard::from_bytes(&bytes).expect("deserialize");
-    assert_eq!(restored.config(), additive());
+    assert_eq!(restored.config(), schwarz());
     assert_eq!(restored.nrows(), original.nrows());
     assert_eq!(restored.ncols(), original.ncols());
 
@@ -129,7 +129,7 @@ fn regenerate_wire_format_fixture() {
     use std::path::PathBuf;
 
     let (f, g, z, _) = fixture_problem();
-    let solver = Solver::new(fixture_effects(&f, &g, &z), None, additive()).expect("build solver");
+    let solver = Solver::new(fixture_effects(&f, &g, &z), None, schwarz()).expect("build solver");
     let prec = solver
         .preconditioner()
         .expect("Schwarz solver has a preconditioner");

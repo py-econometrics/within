@@ -25,7 +25,7 @@ fn test_solver_matches_oneshot(
     #[values(
         PreconditionerConfig::Off,
         PreconditionerConfig::Diagonal,
-        common::additive(),
+        common::schwarz(),
         common::adaptive()
     )]
     precond: PreconditionerConfig,
@@ -186,8 +186,8 @@ fn test_solver_properties() {
 }
 
 /// Every non-default field set, so a roundtrip that silently reset one would be caught.
-fn fully_specified_additive() -> PreconditionerConfig {
-    PreconditionerConfig::Additive {
+fn fully_specified_schwarz() -> PreconditionerConfig {
+    PreconditionerConfig::Schwarz(within::Schwarz {
         local_solver: LocalSolverConfig {
             approx_chol: ApproxCholConfig {
                 seed: 41,
@@ -201,13 +201,13 @@ fn fully_specified_additive() -> PreconditionerConfig {
                 on_failure: ScalingFailure::Error,
             },
         },
-    }
+    })
 }
 
 /// A solved ladder hands out whichever rung it reached, so the axis is the two eager variants.
 #[rstest]
 #[case::diagonal(PreconditionerConfig::Diagonal)]
-#[case::additive(fully_specified_additive())]
+#[case::schwarz(fully_specified_schwarz())]
 fn test_preconditioner_serde_roundtrip(#[case] precond: PreconditionerConfig) {
     let (categories, y) = categories_and_y();
     let params = default_params();
@@ -313,7 +313,7 @@ fn test_demeaned_equals_residual_of_returned_x(
     #[values(
         PreconditionerConfig::Off,
         PreconditionerConfig::Diagonal,
-        common::additive(),
+        common::schwarz(),
         common::adaptive()
     )]
     precond: PreconditionerConfig,

@@ -44,9 +44,9 @@ fn main() {
         maxiter: 200,
         ..Default::default()
     };
-    let precond = PreconditionerConfig::Additive {
+    let precond = PreconditionerConfig::Schwarz(within::Schwarz {
         local_solver: LocalSolverConfig::default(),
-    };
+    });
 
     let t_build = Instant::now();
     let solver = Solver::new(design, None, &precond).expect("solver build");

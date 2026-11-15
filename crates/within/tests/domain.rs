@@ -6,7 +6,7 @@ use within::Design;
 
 #[path = "common/orchestrate_helpers.rs"]
 mod common;
-use common::additive;
+use common::schwarz;
 
 // Three-factor design: shared DOFs across factor pairs force NonUniform
 // partition weights; verified via the public solve API.
@@ -40,7 +40,7 @@ fn test_three_factor_design_solve_converges() {
         maxiter: 500,
         ..LsmrOptions::default()
     };
-    let precond = additive();
+    let precond = schwarz();
     let result = solve(cats.view(), &y, None, &params, &precond).expect("solve should not error");
 
     assert!(
@@ -78,7 +78,7 @@ fn test_disconnected_design_larger_converges() {
         maxiter: 500,
         ..LsmrOptions::default()
     };
-    let precond = additive();
+    let precond = schwarz();
     let result = solve(cats.view(), &y, None, &params, &precond).expect("solve should not error");
 
     assert!(
@@ -110,7 +110,7 @@ fn test_disconnected_design_solve_converges() {
         maxiter: 500,
         ..LsmrOptions::default()
     };
-    let precond = additive();
+    let precond = schwarz();
     let result = solve(cats.view(), &y, None, &params, &precond).expect("solve should not error");
 
     assert!(
@@ -180,7 +180,7 @@ fn test_intercept_only_effects_match_categories_bitwise() {
         .map(|i| (i as f64 * 1.3 - 2.0).sin() + 0.5)
         .collect();
     let params = LsmrOptions::default();
-    let precond = additive();
+    let precond = schwarz();
 
     let matrix = ndarray::Array2::from_shape_fn((n_obs, 2), |(i, f)| [&col0, &col1][f][i]);
     let categories = Design::from_categories(matrix.view()).expect("categories design");
@@ -248,7 +248,7 @@ fn test_slope_chain_design_converges_fast() {
         Effect::new(&worker, true, [&z[..]]).expect("slope effect"),
         Effect::new(&firm, true, []).expect("plain effect"),
     ];
-    let solver = Solver::new(effects, None, additive()).expect("solver build");
+    let solver = Solver::new(effects, None, schwarz()).expect("solver build");
     let params = LsmrOptions {
         tol: 1e-8,
         maxiter: 500,

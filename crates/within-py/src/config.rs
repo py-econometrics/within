@@ -12,7 +12,7 @@ use pyo3::prelude::*;
 
 use within::config::{
     ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, LsmrOptions, PreconditionerConfig,
-    ScalingConfig, ScalingFailure, SchurMode, Staleness,
+    ScalingConfig, ScalingFailure, SchurMode, Schwarz, Staleness,
 };
 use within::{Preconditioner, PreconditionerInput};
 
@@ -206,7 +206,7 @@ impl PyScalingConfig {
 pub enum PyPreconditionerConfig {
     Off(),
     #[pyo3(constructor = (local_solver=PyLocalSolverConfig::default()))]
-    Additive {
+    Schwarz {
         local_solver: PyLocalSolverConfig,
     },
     Diagonal(),
@@ -225,15 +225,17 @@ impl PyPreconditionerConfig {
         match self {
             Self::Off() => PreconditionerConfig::Off,
             Self::Diagonal() => PreconditionerConfig::Diagonal,
-            Self::Additive { local_solver } => PreconditionerConfig::Additive {
+            Self::Schwarz { local_solver } => PreconditionerConfig::Schwarz(Schwarz {
                 local_solver: local_solver.to_native(),
-            },
+            }),
             Self::Adaptive {
                 local_solver,
                 stall,
             } => PreconditionerConfig::Adaptive {
-                local_solver: local_solver.to_native(),
                 stall: stall.to_native(),
+                schwarz: Schwarz {
+                    local_solver: local_solver.to_native(),
+                },
             },
         }
     }
@@ -242,14 +244,11 @@ impl PyPreconditionerConfig {
         Ok(match config {
             PreconditionerConfig::Off => Self::Off(),
             PreconditionerConfig::Diagonal => Self::Diagonal(),
-            PreconditionerConfig::Additive { local_solver } => Self::Additive {
-                local_solver: PyLocalSolverConfig::from_native(local_solver),
+            PreconditionerConfig::Schwarz(schwarz) => Self::Schwarz {
+                local_solver: PyLocalSolverConfig::from_native(&schwarz.local_solver),
             },
-            PreconditionerConfig::Adaptive {
-                local_solver,
-                stall,
-            } => Self::Adaptive {
-                local_solver: PyLocalSolverConfig::from_native(local_solver),
+            PreconditionerConfig::Adaptive { stall, schwarz } => Self::Adaptive {
+                local_solver: PyLocalSolverConfig::from_native(&schwarz.local_solver),
                 stall: PyStaleness { inner: *stall },
             },
             _ => {
@@ -517,7 +516,7 @@ fn extract_preconditioner_config(
 
     Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
         "preconditioner must be PreconditionerConfig.Off(), PreconditionerConfig.Diagonal(), \
-         PreconditionerConfig.Additive(...), PreconditionerConfig.Adaptive(...), a pre-built \
+         PreconditionerConfig.Schwarz(...), PreconditionerConfig.Adaptive(...), a pre-built \
          Preconditioner, or None",
     ))
 }

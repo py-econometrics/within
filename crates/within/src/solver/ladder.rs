@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use once_cell::sync::OnceCell;
 
-use crate::config::PreconditionerConfig;
+use crate::config::{PreconditionerConfig, Schwarz};
 use crate::operator::schwarz::{build_adaptive, build_diagonal, AdaptiveLadder, Preconditioner};
 use crate::{BuildError, BuildWarning};
 
@@ -37,13 +37,13 @@ impl PrecondSlot {
                 map: Some(build_diagonal(|| system.gram_diagonal())?),
                 warnings: Vec::new(),
             },
-            PreconditionerConfig::Additive { local_solver } => {
+            PreconditionerConfig::Schwarz(Schwarz { local_solver }) => {
                 let (map, warnings) = system.build_schwarz(&local_solver)?;
                 Self::Static { map, warnings }
             }
             PreconditionerConfig::Adaptive {
-                local_solver,
                 stall,
+                schwarz: Schwarz { local_solver },
             } => {
                 // Fail before the diagonal pass; `reuse` repeats this for a deserialized ladder.
                 local_solver.validate()?;

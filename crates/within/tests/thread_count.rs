@@ -107,7 +107,7 @@ fn with_threads<T: Send>(threads: usize, run: impl FnOnce() -> T + Send) -> T {
 #[rstest]
 #[case::off(PreconditionerConfig::Off, false)]
 #[case::diagonal_weighted(PreconditionerConfig::Diagonal, true)]
-#[case::additive(common::additive(), false)]
+#[case::schwarz(common::schwarz(), false)]
 #[case::adaptive_weighted(common::adaptive(), true)]
 fn a_solve_returns_the_same_bits_at_any_thread_count(
     panel: &Panel,

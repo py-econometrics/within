@@ -160,7 +160,7 @@ def run_slopes(opts: SuiteOptions) -> list[BenchmarkResult]:
     cfg = SolverConfig(
         "LSMR(Schwarz)",
         benchmark_lsmr(opts),
-        preconditioner=PreconditionerConfig.Additive(),
+        preconditioner=PreconditionerConfig.Schwarz(),
     )
 
     results: list[BenchmarkResult] = []

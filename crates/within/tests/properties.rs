@@ -7,8 +7,8 @@ use within::{
 #[path = "common/property_strategies.rs"]
 mod strategies;
 use strategies::{
-    adaptive, additive, any_preconditioner, random_fe_problem_strategy,
-    random_slopes_problem_strategy,
+    adaptive, any_preconditioner, random_fe_problem_strategy, random_slopes_problem_strategy,
+    schwarz,
 };
 
 fn at(term: usize, level: u32, column: usize) -> CoefficientAddress {
@@ -30,7 +30,7 @@ proptest! {
         (cats, _y) in random_fe_problem_strategy(),
         precond in prop_oneof![
             Just(PreconditionerConfig::Diagonal),
-            Just(additive()),
+            Just(schwarz()),
             Just(adaptive()),
         ],
     ) {

@@ -32,9 +32,9 @@ fn main() {
         maxiter: MAXITER,
         ..Default::default()
     };
-    let precond = PreconditionerConfig::Additive {
+    let precond = PreconditionerConfig::Schwarz(within::Schwarz {
         local_solver: LocalSolverConfig::default(),
-    };
+    });
 
     let mut best = u128::MAX;
     for _ in 0..RUNS {

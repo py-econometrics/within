@@ -70,17 +70,17 @@ def run_fixest_comparison(opts: SuiteOptions) -> list[BenchmarkResult]:
         SolverConfig(
             "LSMR(exact)",
             benchmark_lsmr(opts),
-            preconditioner=PreconditionerConfig.Additive(local_solver=exact_schur),
+            preconditioner=PreconditionerConfig.Schwarz(local_solver=exact_schur),
         ),
         SolverConfig(
             "LSMR(approx)",
             benchmark_lsmr(opts),
-            preconditioner=PreconditionerConfig.Additive(local_solver=approx_schur),
+            preconditioner=PreconditionerConfig.Schwarz(local_solver=approx_schur),
         ),
         SolverConfig(
             "LSMR(2-2)",
             benchmark_lsmr(opts),
-            preconditioner=PreconditionerConfig.Additive(local_solver=schur_2_2),
+            preconditioner=PreconditionerConfig.Schwarz(local_solver=schur_2_2),
         ),
     ]
 

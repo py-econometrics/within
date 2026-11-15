@@ -147,7 +147,7 @@ def run_akm_slopes(opts: SuiteOptions) -> list[BenchmarkResult]:
         LsmrOptions(
             tol=min(opts.tol, CONDITIONING_TOL), maxiter=max(opts.maxiter, 20_000)
         ),
-        preconditioner=PreconditionerConfig.Additive(),
+        preconditioner=PreconditionerConfig.Schwarz(),
     )
 
     results: list[BenchmarkResult] = []
