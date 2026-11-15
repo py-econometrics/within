@@ -13,10 +13,10 @@ use faer::{Conj, MatMut, Par};
 use rayon::prelude::*;
 use schwarz_precond::{Operator, SolveError};
 
-use super::schwarz::{FeSchwarz, RungBuild, RungMap};
+use super::schwarz::FeSchwarz;
 use crate::config::{CoarseCorrection, CoarseSpace, TwoLevelForm};
 use crate::domain::{PreparedDesign, Unknowns};
-use crate::BuildWarning;
+use crate::CoarseDecline;
 
 /// Entries from which rayon beats one thread: the gather `Mᵀx` pays later than the row-blocked
 /// `M c`.
@@ -30,32 +30,23 @@ pub(crate) struct TwoLevelMap {
     coarse: Arc<CoarseSolve>,
 }
 
-/// `one_level` with the coarse correction `coarse` asks for over `unknowns`; `None` with the
-/// reason when `prepared` has no such coarse space.
+/// `one_level` with the coarse correction `coarse` asks for over `unknowns`, unless `prepared`
+/// has no such coarse space.
 pub(crate) fn build_two_level(
     prepared: &PreparedDesign<'_>,
     unknowns: Unknowns,
     one_level: &FeSchwarz,
     coarse: &CoarseCorrection,
-) -> RungBuild {
+) -> Result<TwoLevelMap, CoarseDecline> {
     let CoarseCorrection {
         space: CoarseSpace::RigidComponents,
         form: TwoLevelForm::Balanced,
         build: _,
     } = coarse;
-    match rigid::build(prepared, unknowns) {
-        Ok(coarse) => RungBuild {
-            map: Some(RungMap::TwoLevel(TwoLevelMap {
-                one_level: one_level.clone(),
-                coarse: Arc::new(coarse),
-            })),
-            warnings: Vec::new(),
-        },
-        Err(decline) => RungBuild {
-            map: None,
-            warnings: vec![BuildWarning::CoarseDeclined(decline)],
-        },
-    }
+    Ok(TwoLevelMap {
+        one_level: one_level.clone(),
+        coarse: Arc::new(rigid::build(prepared, unknowns)?),
+    })
 }
 
 impl Operator for TwoLevelMap {
@@ -70,13 +61,14 @@ impl Operator for TwoLevelMap {
     /// `Z E⁻¹ Zᵀx + (I − Z E⁻¹ (SZ)ᵀ) B (I − SZ E⁻¹ Zᵀ) x`.
     fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
         let coarse = &self.coarse;
-        let mut c = vec![0.0; coarse.m];
+        let m = coarse.z.ncols();
+        let mut c = vec![0.0; m];
         coarse.z.t_mul(x, &mut c);
         coarse.solve(&mut c);
         let mut t = x.to_vec();
-        coarse.sz_mul_add(&c, -1.0, &mut t);
+        coarse.sub_sz(&c, &mut t);
         self.one_level.apply(&t, y)?;
-        let mut d = vec![0.0; coarse.m];
+        let mut d = vec![0.0; m];
         coarse.sz_t_mul(y, &mut d);
         coarse.solve(&mut d);
         for (c, d) in c.iter_mut().zip(&d) {
@@ -93,8 +85,6 @@ impl Operator for TwoLevelMap {
 
 /// The coarse space `Z`, `SZ`, and the LDLᵀ of `E = ZᵀSZ` scaled to a unit diagonal.
 pub(crate) struct CoarseSolve {
-    /// Coarse columns.
-    m: usize,
     z: TwoWay,
     /// `SZ`, less `hubs` where there are wide levels.
     sz: TwoWay,
@@ -109,18 +99,18 @@ pub(crate) struct CoarseSolve {
 impl std::fmt::Debug for CoarseSolve {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CoarseSolve")
-            .field("columns", &self.m)
+            .field("columns", &self.z.ncols())
             .field("factor_values", &self.l_values.len())
             .finish()
     }
 }
 
 impl CoarseSolve {
-    /// `out += alpha SZ c`.
-    fn sz_mul_add(&self, c: &[f64], alpha: f64, out: &mut [f64]) {
-        self.sz.mul_add(c, alpha, out);
+    /// `out −= SZ c`.
+    fn sub_sz(&self, c: &[f64], out: &mut [f64]) {
+        self.sz.mul_add(c, -1.0, out);
         if let Some(hubs) = &self.hubs {
-            hubs.add_sz(c, -alpha, out);
+            hubs.add(c, out);
         }
     }
 
@@ -128,7 +118,7 @@ impl CoarseSolve {
     fn sz_t_mul(&self, y: &[f64], out: &mut [f64]) {
         self.sz.t_mul(y, out);
         if let Some(hubs) = &self.hubs {
-            hubs.add_sz_t(y, -1.0, out);
+            hubs.sub_transpose(y, out);
         }
     }
 
@@ -146,7 +136,8 @@ impl CoarseSolve {
             MemStack::new(&mut buf),
         );
         x.iter_mut().zip(&self.scale).for_each(|(x, s)| *x *= s);
-        v.copy_from_slice(&x[..self.m]);
+        let m = v.len();
+        v.copy_from_slice(&x[..m]);
     }
 }
 
@@ -210,6 +201,10 @@ impl TwoWay {
         self.col_idx.len()
     }
 
+    fn ncols(&self) -> usize {
+        self.col_ptr.len() - 1
+    }
+
     /// `out = Mᵀx`.
     fn t_mul(&self, x: &[f64], out: &mut [f64]) {
         let column = |(c, o): (usize, &mut f64)| {
@@ -255,55 +250,62 @@ impl TwoWay {
 
 /// `SZ = SZ₀ − F C B` for the wide levels: `B` their `s` rows, `C` their `G⁻`, `F = D_keptᵀ W E`.
 struct HubCorrection {
-    ptr: Vec<usize>,
-    cols: Vec<u32>,
-    vals: Vec<f64>,
-    /// Each wide level's `G⁻`, `p × p` row-major.
-    c: Vec<f64>,
-    p: usize,
+    rows: HubRows,
     f: TwoWay,
 }
 
-impl HubCorrection {
+/// Wide levels' `s = EᵀW DZ` rows over the live coarse columns, one per channel, with its `G`.
+struct HubRows {
+    ptr: Vec<usize>,
+    cols: Vec<u32>,
+    vals: Vec<f64>,
+    gram: Vec<f64>,
+}
+
+impl HubRows {
     fn rank(&self) -> usize {
-        self.ptr.len() - 1
+        self.gram.len()
     }
 
-    fn b_mul(&self, v: &[f64]) -> Vec<f64> {
-        (0..self.rank())
+    /// Row `i` of `C v`, from its `B` row `b`.
+    fn c_mul(&self, i: usize, b: f64) -> f64 {
+        let g = self.gram[i];
+        if g > 0.0 {
+            b / g
+        } else {
+            0.0
+        }
+    }
+}
+
+impl HubCorrection {
+    /// `C B v`.
+    fn cb_mul(&self, v: &[f64]) -> Vec<f64> {
+        let rows = &self.rows;
+        (0..rows.rank())
             .map(|i| {
-                (self.ptr[i]..self.ptr[i + 1])
-                    .map(|k| self.vals[k] * v[self.cols[k] as usize])
-                    .sum()
+                let b: f64 = (rows.ptr[i]..rows.ptr[i + 1])
+                    .map(|k| rows.vals[k] * v[rows.cols[k] as usize])
+                    .sum();
+                rows.c_mul(i, b)
             })
             .collect()
     }
 
-    /// `C q`, each wide level's `G⁻` on its `p` entries.
-    fn c_mul(&self, q: &[f64]) -> Vec<f64> {
-        let p = self.p;
-        (0..q.len())
-            .map(|i| {
-                let (h, a) = (i / p, i % p);
-                (0..p)
-                    .map(|b| self.c[h * p * p + a * p + b] * q[h * p + b])
-                    .sum()
-            })
-            .collect()
+    /// `out += F C B c`.
+    fn add(&self, c: &[f64], out: &mut [f64]) {
+        self.f.mul_add(&self.cb_mul(c), 1.0, out);
     }
 
-    /// `out += alpha (F C B) c`.
-    fn add_sz(&self, c: &[f64], alpha: f64, out: &mut [f64]) {
-        self.f.mul_add(&self.c_mul(&self.b_mul(c)), alpha, out);
-    }
-
-    /// `out += alpha (F C B)ᵀ y = alpha Bᵀ C Fᵀ y`.
-    fn add_sz_t(&self, y: &[f64], alpha: f64, out: &mut [f64]) {
-        let mut fy = vec![0.0; self.rank()];
+    /// `out −= (F C B)ᵀ y = Bᵀ C Fᵀ y`.
+    fn sub_transpose(&self, y: &[f64], out: &mut [f64]) {
+        let rows = &self.rows;
+        let mut fy = vec![0.0; rows.rank()];
         self.f.t_mul(y, &mut fy);
-        for (i, q) in self.c_mul(&fy).into_iter().enumerate() {
-            for k in self.ptr[i]..self.ptr[i + 1] {
-                out[self.cols[k] as usize] += alpha * self.vals[k] * q;
+        for (i, f) in fy.into_iter().enumerate() {
+            let q = rows.c_mul(i, f);
+            for k in rows.ptr[i]..rows.ptr[i + 1] {
+                out[rows.cols[k] as usize] -= rows.vals[k] * q;
             }
         }
     }

@@ -11,7 +11,7 @@ use crate::config::{Handoff, PreconditionerConfig, RungSettings};
 use crate::operator::schwarz::{Preconditioner, RungBuild, RungMap};
 use crate::{BuildError, BuildWarning};
 
-use super::system::{Build, LeastSquaresSystem};
+use super::system::{offer, Build, LeastSquaresSystem};
 
 /// One rung's build: the map and its warnings, or the error it keeps.
 type Built = Result<RungBuild<Preconditioner>, BuildError>;
@@ -127,7 +127,7 @@ impl PrecondSlot {
             .filter(|&(at, _)| {
                 !matches!(self.built[at].get(), Some(Ok(RungBuild { map: None, .. })))
             })
-            .find_map(|(at, rung)| Some((at, rung, system.offer(rung, self.below(at))?)))
+            .find_map(|(at, rung)| Some((at, rung, offer(system, rung, self.below(at))?)))
     }
 
     /// Build the rungs a solve must not start below; this call's build seconds. Every other

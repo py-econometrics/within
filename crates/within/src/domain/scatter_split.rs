@@ -143,6 +143,23 @@ impl ScatterSplit {
     }
 }
 
+/// `0..n` cut into consecutive ranges whose `size`s sum to at least `min`, the last maybe less.
+pub(crate) fn cut(n: usize, min: usize, size: impl Fn(usize) -> usize) -> Vec<Range<usize>> {
+    let mut ranges = Vec::new();
+    let (mut first, mut total) = (0, 0);
+    for k in 0..n {
+        total += size(k);
+        if total >= min {
+            ranges.push(first..k + 1);
+            (first, total) = (k + 1, 0);
+        }
+    }
+    if first < n {
+        ranges.push(first..n);
+    }
+    ranges
+}
+
 /// Fewest rows per accumulator in a row-parallel reduction.
 pub(crate) const MIN_LEAF_ROWS: usize = 65_536;
 

@@ -7,7 +7,7 @@ use rayon::prelude::*;
 use schwarz_precond::Operator;
 
 use crate::domain::{
-    fixed_tree, row_weight, Design, LevelRows, PreparedDesign, PreparedTerm, Unknowns,
+    cut, fixed_tree, row_weight, Design, LevelRows, PreparedDesign, PreparedTerm, Unknowns,
     MIN_LEAF_ROWS,
 };
 use crate::linalg::{add_moments, fit_twice, remove_fit, solve, solve_rescued, DiagonalGramBasis};
@@ -511,23 +511,6 @@ impl ProjectedColumns<'_> {
 /// Level-major `by_level` (`width` entries per level) read column by column.
 fn column_major(by_level: &[f64], width: usize) -> impl Iterator<Item = f64> + '_ {
     (0..width).flat_map(move |c| by_level.iter().skip(c).step_by(width).copied())
-}
-
-/// `0..n` cut into consecutive ranges whose `size`s sum to at least `min`, the last maybe less.
-fn cut(n: usize, min: usize, size: impl Fn(usize) -> usize) -> Vec<Range<usize>> {
-    let mut ranges = Vec::new();
-    let (mut first, mut total) = (0, 0);
-    for k in 0..n {
-        total += size(k);
-        if total >= min {
-            ranges.push(first..k + 1);
-            (first, total) = (k + 1, 0);
-        }
-    }
-    if first < n {
-        ranges.push(first..n);
-    }
-    ranges
 }
 
 /// Doubles in a cache line, 128 bytes on Apple silicon and 64 elsewhere.

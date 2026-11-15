@@ -4,9 +4,10 @@ use schwarz_precond::Operator;
 use super::{build_two_level, TwoLevelMap};
 use crate::config::{CoarseBuild, CoarseCorrection, CoarseSpace, LocalSolverConfig, TwoLevelForm};
 use crate::domain::{Design, Effect, PreparedDesign, Unknowns};
+use crate::linalg::dot;
 use crate::operator::design::ReducedDesign;
 use crate::operator::schwarz::{build_schwarz, RungBuild, RungMap};
-use crate::{BuildWarning, CoarseDecline};
+use crate::CoarseDecline;
 
 const COARSE: CoarseCorrection = CoarseCorrection {
     space: CoarseSpace::RigidComponents,
@@ -90,25 +91,48 @@ enum System {
     Reduced,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum Weights {
+    Unit,
+    Varying,
+}
+
+impl Weights {
+    fn of(self, panel: &Panel) -> Option<Vec<f64>> {
+        match self {
+            Self::Unit => None,
+            Self::Varying => Some(
+                (0..panel.worker.len())
+                    .map(|k| 0.5 + 0.4 * (0.23 * k as f64).sin())
+                    .collect(),
+            ),
+        }
+    }
+}
+
 /// `f` on the system's prepared design, its normal matrix's operator and its unknowns.
 fn on_system<R>(
     design: Design<'_>,
+    weights: Option<&[f64]>,
     system: System,
     f: impl FnOnce(&PreparedDesign<'_>, &dyn Operator, Unknowns) -> R,
 ) -> R {
     match system {
         System::Full => {
-            let prepared = PreparedDesign::new(design, None).expect("prepared");
+            let prepared = PreparedDesign::new(design, weights).expect("prepared");
             f(&prepared, &prepared, Unknowns::All)
         }
         System::Reduced => {
-            let reduced = ReducedDesign::new(design, None).expect("reduced");
+            let reduced = ReducedDesign::new(design, weights).expect("reduced");
             f(reduced.prepared(), &reduced, Unknowns::WithoutDominant)
         }
     }
 }
 
-fn two_level(prepared: &PreparedDesign<'_>, unknowns: Unknowns) -> RungBuild {
+fn two_level(
+    prepared: &PreparedDesign<'_>,
+    unknowns: Unknowns,
+) -> Result<TwoLevelMap, CoarseDecline> {
     let RungBuild {
         map: Some(RungMap::Schwarz(one_level)),
         ..
@@ -119,13 +143,6 @@ fn two_level(prepared: &PreparedDesign<'_>, unknowns: Unknowns) -> RungBuild {
     build_two_level(prepared, unknowns, &one_level, &COARSE)
 }
 
-fn built(build: RungBuild) -> TwoLevelMap {
-    match build.map {
-        Some(RungMap::TwoLevel(map)) => map,
-        _ => panic!("declined: {:?}", build.warnings),
-    }
-}
-
 /// `AᵀA x`.
 fn normal(a: &dyn Operator, x: &[f64]) -> Vec<f64> {
     let (mut ax, mut out) = (vec![0.0; a.nrows()], vec![0.0; a.ncols()]);
@@ -134,58 +151,70 @@ fn normal(a: &dyn Operator, x: &[f64]) -> Vec<f64> {
     out
 }
 
-fn dot(a: &[f64], b: &[f64]) -> f64 {
-    a.iter().zip(b).map(|(a, b)| a * b).sum()
-}
-
 /// The balanced form is exact on its coarse space, `A M S Z c = A Z c`: what it adds to `Z c` lies
 /// in the null space of `A`, where the one-level map is free.
 #[rstest]
 fn the_two_level_map_inverts_the_normal_matrix_on_its_coarse_space(
     #[values(System::Full, System::Reduced)] system: System,
+    #[values(Weights::Unit, Weights::Varying)] weights: Weights,
 ) {
     let panel = Panel::clustered(40, 3, 8, 30, 7, 1);
-    on_system(panel.design(), system, |prepared, a, unknowns| {
-        let map = built(two_level(prepared, unknowns));
-        let (n, m) = (map.nrows(), map.coarse.m);
-        assert!(m >= 40, "{m} coarse columns");
-        let image = |x: &[f64]| {
-            let mut ax = vec![0.0; a.nrows()];
-            a.apply(x, &mut ax).expect("A x");
-            ax
-        };
-        for column in 0..m {
-            let mut c = vec![0.0; m];
-            c[column] = 1.0;
-            let mut zc = vec![0.0; n];
-            map.coarse.z.mul_add(&c, 1.0, &mut zc);
-            let mut y = vec![0.0; n];
-            map.apply(&normal(a, &zc), &mut y).expect("apply");
-            let (ay, azc) = (image(&y), image(&zc));
-            let error: f64 = ay.iter().zip(&azc).map(|(y, z)| (y - z).powi(2)).sum();
-            assert!(
-                error.sqrt() <= 1e-10 * dot(&azc, &azc).sqrt(),
-                "column {column}: ‖A (M S Z c − Z c)‖ = {:.3e}",
-                error.sqrt()
-            );
-        }
-    });
+    let weights = weights.of(&panel);
+    on_system(
+        panel.design(),
+        weights.as_deref(),
+        system,
+        |prepared, a, unknowns| {
+            let map = two_level(prepared, unknowns).expect("built");
+            let (n, m) = (map.nrows(), map.coarse.z.ncols());
+            assert!(m >= 40, "{m} coarse columns");
+            let image = |x: &[f64]| {
+                let mut ax = vec![0.0; a.nrows()];
+                a.apply(x, &mut ax).expect("A x");
+                ax
+            };
+            for column in 0..m {
+                let mut c = vec![0.0; m];
+                c[column] = 1.0;
+                let mut zc = vec![0.0; n];
+                map.coarse.z.mul_add(&c, 1.0, &mut zc);
+                let mut y = vec![0.0; n];
+                map.apply(&normal(a, &zc), &mut y).expect("apply");
+                let (ay, azc) = (image(&y), image(&zc));
+                let error: f64 = ay.iter().zip(&azc).map(|(y, z)| (y - z).powi(2)).sum();
+                assert!(
+                    error.sqrt() <= 1e-10 * dot(&azc, &azc).sqrt(),
+                    "column {column}: ‖A (M S Z c − Z c)‖ = {:.3e}",
+                    error.sqrt()
+                );
+            }
+        },
+    );
 }
 
 #[rstest]
-fn the_two_level_map_is_symmetric(#[values(System::Full, System::Reduced)] system: System) {
+fn the_two_level_map_is_symmetric(
+    #[values(System::Full, System::Reduced)] system: System,
+    #[values(Weights::Unit, Weights::Varying)] weights: Weights,
+) {
     let panel = Panel::clustered(40, 3, 8, 30, 7, 1);
-    on_system(panel.design(), system, |prepared, _, unknowns| {
-        let map = built(two_level(prepared, unknowns));
-        let n = map.nrows();
-        let x: Vec<f64> = (0..n).map(|i| (0.3 * i as f64).sin()).collect();
-        let v: Vec<f64> = (0..n).map(|i| (0.7 * i as f64 + 1.0).cos()).collect();
-        let (mut mx, mut mv) = (vec![0.0; n], vec![0.0; n]);
-        map.apply(&x, &mut mx).expect("M x");
-        map.apply(&v, &mut mv).expect("M v");
-        let (a, b) = (dot(&v, &mx), dot(&x, &mv));
-        assert!((a - b).abs() <= 1e-10 * a.abs().max(b.abs()), "{a} vs {b}");
-    });
+    let weights = weights.of(&panel);
+    on_system(
+        panel.design(),
+        weights.as_deref(),
+        system,
+        |prepared, _, unknowns| {
+            let map = two_level(prepared, unknowns).expect("built");
+            let n = map.nrows();
+            let x: Vec<f64> = (0..n).map(|i| (0.3 * i as f64).sin()).collect();
+            let v: Vec<f64> = (0..n).map(|i| (0.7 * i as f64 + 1.0).cos()).collect();
+            let (mut mx, mut mv) = (vec![0.0; n], vec![0.0; n]);
+            map.apply(&x, &mut mx).expect("M x");
+            map.apply(&v, &mut mv).expect("M v");
+            let (a, b) = (dot(&v, &mx), dot(&x, &mv));
+            assert!((a - b).abs() <= 1e-10 * a.abs().max(b.abs()), "{a} vs {b}");
+        },
+    );
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -226,9 +255,8 @@ fn a_design_without_a_fitting_coarse_space_declines(
         .expect("design"),
         _ => panel.design(),
     };
-    on_system(design, system, |prepared, _, unknowns| {
-        let build = two_level(prepared, unknowns);
-        assert!(build.map.is_none());
-        assert_eq!(build.warnings, [BuildWarning::CoarseDeclined(expected)]);
+    on_system(design, None, system, |prepared, _, unknowns| {
+        let decline = two_level(prepared, unknowns).expect_err("declines");
+        assert_eq!(decline, expected);
     });
 }
