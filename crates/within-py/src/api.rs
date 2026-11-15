@@ -36,7 +36,7 @@ fn build_and_solve<'a>(
     let mut result = solver.solve(y, lsmr)?;
     result.time_setup += time_setup;
     result.time_total = t_start.elapsed().as_secs_f64();
-    Ok((result, solver.warnings().to_vec()))
+    Ok((result, solver.warnings()))
 }
 
 /// Batch counterpart to [`build_and_solve`], mirroring [`within::solve_batch`].
@@ -53,7 +53,7 @@ fn build_and_solve_batch<'a>(
     let mut result = solver.solve_batch(ys, lsmr)?;
     result.time_setup += time_setup;
     result.time_total = t_start.elapsed().as_secs_f64();
-    Ok((result, solver.warnings().to_vec()))
+    Ok((result, solver.warnings()))
 }
 
 #[pyfunction]
@@ -318,9 +318,10 @@ impl PySolver {
             })
             .map_err(value_err)?;
 
-        emit_build_warnings(py, solver.warnings())?;
+        let warnings = solver.warnings();
+        emit_build_warnings(py, &warnings)?;
         Ok(Self {
-            reported_warnings: AtomicUsize::new(solver.warnings().len()),
+            reported_warnings: AtomicUsize::new(warnings.len()),
             solver,
         })
     }
@@ -394,12 +395,6 @@ impl PySolver {
     #[getter]
     fn n_obs(&self) -> usize {
         self.solver.n_obs()
-    }
-
-    /// Whether an ``Adaptive`` solve has handed off to Schwarz; always ``False`` otherwise.
-    #[getter]
-    fn has_escalated(&self) -> bool {
-        self.solver.has_escalated()
     }
 }
 

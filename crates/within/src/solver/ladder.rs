@@ -1,136 +1,180 @@
-//! The solver's preconditioner slot: a fixed map, or the diagonal→Schwarz ladder that
-//! [`PreconditionerConfig::Adaptive`] builds on a stalled solve.
+//! The solver's preconditioner slot: a [`PreconditionerConfig`] and the map of each rung built
+//! so far.
 
 use std::time::Instant;
 
 use once_cell::sync::OnceCell;
+use schwarz_precond::Staleness;
 
-use crate::config::{PreconditionerConfig, Schwarz};
-use crate::operator::schwarz::{build_adaptive, build_diagonal, AdaptiveLadder, Preconditioner};
+use crate::config::{PreconditionerConfig, RungSettings};
+use crate::operator::schwarz::{Preconditioner, RungBuild};
 use crate::{BuildError, BuildWarning};
 
-use super::system::{LeastSquaresSystem, SchwarzRung};
+use super::system::{Build, LeastSquaresSystem};
 
-/// The solver's preconditioner: a fixed map, or an adaptive diagonal→Schwarz ladder.
-pub(super) enum PrecondSlot {
-    /// A single map (`None` = unpreconditioned) built at construction, with its build's warnings.
-    Static {
-        map: Option<Preconditioner>,
-        warnings: Vec<BuildWarning>,
-    },
-    /// Diagonal now, Schwarz built lazily on a stalled contraction.
-    Adaptive(Box<AdaptivePrecond>),
+/// The solver's config; a solve runs on its highest built rung and builds the next on a stall.
+pub(super) struct PrecondSlot {
+    config: PreconditionerConfig,
+    /// One per rung of `config`, in its order. A design's own build failure settles here too;
+    /// a failed isolation pool retries instead.
+    pub(super) built: Vec<OnceCell<Result<RungBuild<Preconditioner>, BuildError>>>,
+}
+
+/// The map a solve runs on now, where it stands among the rungs, and the stall that hands it
+/// to a rung still to be built.
+pub(super) struct Running<'s> {
+    at: Option<usize>,
+    pub(super) map: Option<&'s Preconditioner>,
+    pub(super) stall: Option<&'s Staleness>,
 }
 
 impl PrecondSlot {
-    /// Resolve a strategy: a fixed map built now, or a diagonal base with Schwarz deferred to a stall.
+    /// `config` with the first rung that has a map on `system` built.
     pub(super) fn build(
         system: &impl LeastSquaresSystem,
         config: PreconditionerConfig,
     ) -> Result<Self, BuildError> {
-        Ok(match config {
-            PreconditionerConfig::Off => Self::Static {
-                map: None,
-                warnings: Vec::new(),
-            },
-            PreconditionerConfig::Diagonal => Self::Static {
-                map: Some(build_diagonal(|| system.gram_diagonal())?),
-                warnings: Vec::new(),
-            },
-            PreconditionerConfig::Schwarz(Schwarz { local_solver }) => {
-                let (map, warnings) = system.build_schwarz(&local_solver)?;
-                Self::Static { map, warnings }
+        config.validate()?;
+        let slot = Self::unbuilt(config);
+        for (rung, cell) in slot.config.rungs().zip(&slot.built) {
+            let Some(build) = system.offer(rung) else {
+                continue;
+            };
+            let built = slot.run(&build)?;
+            let found = built.map.is_ok();
+            cell.get_or_init(|| Ok(built));
+            if found {
+                break;
             }
-            PreconditionerConfig::Adaptive {
-                stall,
-                schwarz: Schwarz { local_solver },
-            } => {
-                // Fail before the diagonal pass; `reuse` repeats this for a deserialized ladder.
-                local_solver.validate()?;
-                Self::ladder(
-                    system.schwarz_rung(),
-                    build_adaptive(|| system.gram_diagonal(), stall, local_solver)?,
-                )
-            }
+        }
+        Ok(slot)
+    }
+
+    /// The config `preconditioner` is a rung of, resumed from that rung.
+    pub(super) fn reuse(preconditioner: Preconditioner) -> Result<Self, BuildError> {
+        // A deserialized config skipped `build`'s checks.
+        preconditioner.config.validate()?;
+        let at = preconditioner
+            .config
+            .position(preconditioner.rung())
+            .expect("a handed-out map is a rung of its config");
+        let slot = Self::unbuilt(preconditioner.config.clone());
+        slot.built[at].get_or_init(|| {
+            Ok(RungBuild {
+                map: Ok(preconditioner),
+                warnings: Vec::new(),
+            })
+        });
+        Ok(slot)
+    }
+
+    fn unbuilt(config: PreconditionerConfig) -> Self {
+        let built = config.rungs().map(|_| OnceCell::new()).collect();
+        Self { config, built }
+    }
+
+    fn run(&self, build: &Build<'_>) -> Result<RungBuild<Preconditioner>, BuildError> {
+        let started = Instant::now();
+        let build = build()?;
+        Ok(RungBuild {
+            map: build.map.map(|map| Preconditioner {
+                map,
+                config: self.config.clone(),
+                build_duration: started.elapsed(),
+            }),
+            warnings: build.warnings,
         })
     }
 
-    /// An unescalated ladder resumes, or settles without a rung; any other map stays fixed.
-    pub(super) fn reuse(
+    /// The highest rung with a map: its position, settings and map.
+    fn top(&self) -> Option<(usize, RungSettings<'_>, &Preconditioner)> {
+        self.config
+            .rungs()
+            .zip(&self.built)
+            .enumerate()
+            .filter_map(|(at, (rung, cell))| match cell.get() {
+                Some(Ok(RungBuild { map: Ok(map), .. })) => Some((at, rung, map)),
+                _ => None,
+            })
+            .last()
+    }
+
+    /// The first rung above `floor` that `system` offers and that has not declined.
+    fn next<'s, S: LeastSquaresSystem>(
+        &'s self,
+        system: &'s S,
+        floor: Option<usize>,
+    ) -> Option<(usize, Build<'s>)> {
+        self.config
+            .rungs()
+            .enumerate()
+            .skip(floor.map_or(0, |at| at + 1))
+            .filter(|&(at, _)| {
+                !matches!(
+                    self.built[at].get(),
+                    Some(Ok(RungBuild { map: Err(_), .. }))
+                )
+            })
+            .find_map(|(at, rung)| Some((at, system.offer(rung)?)))
+    }
+
+    /// The map a solve runs on now; a kept build error of the rung above it is final.
+    pub(super) fn running(
+        &self,
         system: &impl LeastSquaresSystem,
-        preconditioner: Preconditioner,
-    ) -> Result<Self, BuildError> {
-        let Some(ladder) = preconditioner.ladder() else {
-            return Ok(Self::Static {
-                map: Some(preconditioner),
-                warnings: Vec::new(),
-            });
+    ) -> Result<Running<'_>, BuildError> {
+        let top = self.top();
+        let at = top.map(|(at, ..)| at);
+        let stall = match self.next(system, at) {
+            Some((next, _)) => {
+                if let Some(Err(e)) = self.built[next].get() {
+                    return Err(e.clone());
+                }
+                top.and_then(|(_, rung, _)| rung.stall())
+            }
+            None => None,
         };
-        // A deserialized ladder skipped `Adaptive`'s build-time checks.
-        ladder.escalated.validate()?;
-        Ok(Self::ladder(system.schwarz_rung(), preconditioner))
+        Ok(Running {
+            at,
+            map: top.map(|(.., map)| map),
+            stall,
+        })
     }
 
-    /// A diagonal-first ladder on a system with this `rung`.
-    fn ladder(rung: SchwarzRung, ladder: Preconditioner) -> Self {
-        match rung {
-            SchwarzRung::Absent => Self::Static {
-                map: Some(ladder.settle()),
-                warnings: Vec::new(),
-            },
-            SchwarzRung::Buildable => Self::Adaptive(Box::new(AdaptivePrecond {
-                base: ladder,
-                built: OnceCell::new(),
-            })),
-        }
-    }
-}
-
-/// Diagonal-first strategy holding everything needed to build the Schwarz rung on demand.
-pub(super) struct AdaptivePrecond {
-    /// Applies the diagonal and carries the ladder, so handing it out keeps the strategy.
-    pub(super) base: Preconditioner,
-    /// A design's own build failure settles here too; a failed isolation pool retries instead.
-    pub(super) built: OnceCell<Result<AdaptiveBuild, BuildError>>,
-}
-
-/// Outcome of the deferred build: the Schwarz map, or `None` when no factor-pair target exists.
-pub(super) struct AdaptiveBuild {
-    pub(super) schwarz: Option<Preconditioner>,
-    pub(super) warnings: Vec<BuildWarning>,
-}
-
-impl AdaptivePrecond {
-    pub(super) fn ladder(&self) -> &AdaptiveLadder {
-        self.base
-            .ladder()
-            .expect("an adaptive slot is built only from a ladder")
-    }
-
-    pub(super) fn build(&self) -> Option<&AdaptiveBuild> {
-        self.built.get().and_then(|b| b.as_ref().ok())
-    }
-
-    pub(super) fn schwarz(&self) -> Option<&Preconditioner> {
-        self.build().and_then(|b| b.schwarz.as_ref())
-    }
-
-    /// The rung a solve should run on: the escalated Schwarz map once built, else the diagonal.
-    pub(super) fn rung(&self) -> &Preconditioner {
-        self.schwarz().unwrap_or(&self.base)
-    }
-
-    /// Build once and return this call's build seconds; every other caller waits for it.
-    pub(super) fn escalate(&self, system: &impl LeastSquaresSystem) -> Result<f64, BuildError> {
+    /// Build rungs above the one `stalled` ran on until one has a map; this call's build
+    /// seconds. Every other caller waits for the same builds.
+    pub(super) fn escalate(
+        &self,
+        system: &impl LeastSquaresSystem,
+        stalled: &Running<'_>,
+    ) -> Result<f64, BuildError> {
         let mut build_secs = 0.0;
-        let built = self.built.get_or_try_init(|| {
-            let t_build = Instant::now();
-            let outcome = isolated(|| system.build_schwarz(&self.ladder().escalated))?
-                .map(|(schwarz, warnings)| AdaptiveBuild { schwarz, warnings });
-            build_secs = t_build.elapsed().as_secs_f64();
-            Ok(outcome)
-        })?;
-        built.as_ref().map(|_| build_secs).map_err(Clone::clone)
+        // A rung that declines drops out of `next`, so the loop moves on to the one after it.
+        while let Some((at, build)) = self.next(system, stalled.at) {
+            let built = self.built[at].get_or_try_init(|| {
+                let started = Instant::now();
+                let outcome = isolated(|| self.run(&build))?;
+                build_secs += started.elapsed().as_secs_f64();
+                Ok::<_, BuildError>(outcome)
+            })?;
+            if built.as_ref().map_err(Clone::clone)?.map.is_ok() {
+                break;
+            }
+        }
+        Ok(build_secs)
+    }
+
+    pub(super) fn preconditioner(&self) -> Option<&Preconditioner> {
+        self.top().map(|(.., map)| map)
+    }
+
+    /// Every built rung's non-fatal events, in rung order.
+    pub(super) fn warnings(&self) -> Vec<BuildWarning> {
+        self.built
+            .iter()
+            .filter_map(|cell| cell.get()?.as_ref().ok())
+            .flat_map(|built| built.warnings.iter().cloned())
+            .collect()
     }
 }
 

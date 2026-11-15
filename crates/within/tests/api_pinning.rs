@@ -2,7 +2,6 @@
 //! argument shapes: if any call form below stops compiling, the public surface shifted.
 
 use ndarray::Array2;
-use within::config::{LocalSolverConfig, Staleness};
 use within::{solve, solve_batch, LsmrOptions, PreconditionerConfig, Solver};
 
 fn cats() -> Array2<u32> {
@@ -126,16 +125,15 @@ fn options_are_optional_and_tuned_schwarz_builds_from_crate_root() {
         .expect("free solve_batch, None options");
 }
 
-/// The one place the default's identity is asserted. Variant lists across the test suite name
-/// `Adaptive` explicitly and rely on this to catch a default that moved out from under them.
+/// The one place the default's identity is asserted.
 #[test]
-fn library_default_is_the_adaptive_ladder() {
+fn the_default_ladder_has_every_rung() {
     assert_eq!(
         PreconditionerConfig::default(),
         PreconditionerConfig::Adaptive {
-            stall: Staleness::default(),
+            stall: within::Staleness::default(),
             schwarz: within::Schwarz {
-                local_solver: LocalSolverConfig::default()
+                local_solver: within::LocalSolverConfig::default(),
             }
         }
     );

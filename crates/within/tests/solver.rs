@@ -81,7 +81,7 @@ fn test_diagonal_preconditioner_single_factor_is_cached() {
         .expect("single-factor diagonal preconditioner should be cached");
     assert_eq!(cached.nrows(), 3);
     assert_eq!(cached.ncols(), 3);
-    assert_eq!(cached.config(), precond);
+    assert_eq!(cached.config(), &precond);
 }
 
 #[test]
@@ -218,12 +218,12 @@ fn test_preconditioner_serde_roundtrip(#[case] precond: PreconditionerConfig) {
     let precond_ref = solver1
         .preconditioner()
         .expect("should have preconditioner");
-    assert_eq!(precond_ref.config(), precond);
+    assert_eq!(precond_ref.config(), &precond);
     let bytes = postcard::to_stdvec(precond_ref).expect("serialize");
     assert!(!bytes.is_empty());
 
     let precond2: Preconditioner = postcard::from_bytes(&bytes).expect("deserialize");
-    assert_eq!(precond2.config(), precond);
+    assert_eq!(precond2.config(), &precond);
     assert_eq!(precond2.nrows(), precond_ref.nrows());
     assert_eq!(precond2.ncols(), precond_ref.ncols());
     assert_eq!(precond2.build_duration(), precond_ref.build_duration());

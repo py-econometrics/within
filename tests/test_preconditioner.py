@@ -10,6 +10,7 @@ from within import (
     LsmrOptions,
     Preconditioner,
     PreconditionerConfig,
+    Rung,
     Solver,
     solve,
 )
@@ -141,9 +142,9 @@ class TestFePreconditioner:
         with pytest.raises(ValueError):
             precond.apply(x)
 
-    def test_preconditioner_repr_additive(self, solver_and_precond):
+    def test_preconditioner_repr_schwarz(self, solver_and_precond):
         solver, precond, categories, y = solver_and_precond
-        assert "Additive" in repr(precond)
+        assert "Schwarz" in repr(precond)
 
     def test_preconditioner_nrows_ncols_match_solver(self, solver_and_precond):
         solver, precond, categories, y = solver_and_precond
@@ -271,9 +272,9 @@ class TestAdaptive:
                 stall=Staleness(window=1, threshold=0.0)
             ),
         )
-        assert not solver.has_escalated
+        assert solver.preconditioner.rung == Rung.Diagonal
         assert solver.solve(y, LsmrOptions(tol=1e-10, maxiter=2000)).converged
-        assert solver.has_escalated
+        assert solver.preconditioner.rung == Rung.Schwarz
 
     def test_deferred_build_warnings_surface_on_the_escalating_solve(self, recwarn):
         """The constructor cannot see them: the Schwarz build happens mid-solve."""
@@ -305,7 +306,7 @@ class TestAdaptive:
 
         recwarn.clear()
         solver.solve(y, options)
-        assert solver.has_escalated
+        assert solver.preconditioner.rung == Rung.Schwarz
         assert len(unscalable(recwarn.list)) == 1
 
         recwarn.clear()

@@ -12,7 +12,7 @@ use pyo3::prelude::*;
 
 use within::config::{
     ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, LsmrOptions, PreconditionerConfig,
-    ScalingConfig, ScalingFailure, SchurMode, Schwarz, Staleness,
+    Rung, ScalingConfig, ScalingFailure, SchurMode, Schwarz, Staleness,
 };
 use within::{Preconditioner, PreconditionerInput};
 
@@ -222,41 +222,37 @@ pub enum PyPreconditionerConfig {
 
 impl PyPreconditionerConfig {
     pub(crate) fn to_native(&self) -> PreconditionerConfig {
+        let schwarz = |local_solver: &PyLocalSolverConfig| Schwarz {
+            local_solver: local_solver.to_native(),
+        };
         match self {
             Self::Off() => PreconditionerConfig::Off,
             Self::Diagonal() => PreconditionerConfig::Diagonal,
-            Self::Schwarz { local_solver } => PreconditionerConfig::Schwarz(Schwarz {
-                local_solver: local_solver.to_native(),
-            }),
+            Self::Schwarz { local_solver } => PreconditionerConfig::Schwarz(schwarz(local_solver)),
             Self::Adaptive {
                 local_solver,
                 stall,
             } => PreconditionerConfig::Adaptive {
                 stall: stall.to_native(),
-                schwarz: Schwarz {
-                    local_solver: local_solver.to_native(),
-                },
+                schwarz: schwarz(local_solver),
             },
         }
     }
 
-    pub(crate) fn from_native(config: &PreconditionerConfig) -> PyResult<Self> {
-        Ok(match config {
+    pub(crate) fn from_native(config: &PreconditionerConfig) -> Self {
+        let local_solver =
+            |schwarz: &Schwarz| PyLocalSolverConfig::from_native(&schwarz.local_solver);
+        match config {
             PreconditionerConfig::Off => Self::Off(),
             PreconditionerConfig::Diagonal => Self::Diagonal(),
             PreconditionerConfig::Schwarz(schwarz) => Self::Schwarz {
-                local_solver: PyLocalSolverConfig::from_native(&schwarz.local_solver),
+                local_solver: local_solver(schwarz),
             },
             PreconditionerConfig::Adaptive { stall, schwarz } => Self::Adaptive {
-                local_solver: PyLocalSolverConfig::from_native(&schwarz.local_solver),
+                local_solver: local_solver(schwarz),
                 stall: PyStaleness { inner: *stall },
             },
-            _ => {
-                return Err(pyo3::exceptions::PyRuntimeError::new_err(
-                    "unsupported preconditioner configuration",
-                ))
-            }
-        })
+        }
     }
 }
 
@@ -453,10 +449,16 @@ impl PyPreconditioner {
 
     fn __repr__(&self) -> String {
         format!(
-            "Preconditioner({}, n={})",
-            self.inner.variant_name(),
+            "Preconditioner({:?}, n={})",
+            self.inner.rung(),
             self.inner.nrows()
         )
+    }
+
+    /// The rung of its config this map is.
+    #[getter]
+    fn rung(&self) -> PyRung {
+        self.inner.rung().into()
     }
 
     /// Pickle support: serialize to ``(bytes,)`` constructor arg.
@@ -485,8 +487,26 @@ impl PyPreconditioner {
 
     /// Complete normalized configuration used to build this preconditioner.
     #[getter]
-    fn config(&self) -> PyResult<PyPreconditionerConfig> {
-        PyPreconditionerConfig::from_native(&self.inner.config())
+    fn config(&self) -> PyPreconditionerConfig {
+        PyPreconditionerConfig::from_native(self.inner.config())
+    }
+}
+
+/// A preconditioner a solve can run on.
+#[pyclass(frozen, eq, eq_int, skip_from_py_object, module = "within._within")]
+#[pyo3(name = "Rung")]
+#[derive(Clone, Copy, PartialEq)]
+pub enum PyRung {
+    Diagonal,
+    Schwarz,
+}
+
+impl From<Rung> for PyRung {
+    fn from(rung: Rung) -> Self {
+        match rung {
+            Rung::Diagonal => Self::Diagonal,
+            Rung::Schwarz => Self::Schwarz,
+        }
     }
 }
 
@@ -499,8 +519,9 @@ pub(crate) fn resolve_precond_input(
             return Ok(PreconditionerInput::Prebuilt(built.get().inner.clone()));
         }
     }
-    Ok(extract_preconditioner_config(preconditioner)?
-        .map_or(PreconditionerInput::Default, PreconditionerInput::Config))
+    Ok(PreconditionerInput::Config(
+        extract_preconditioner_config(preconditioner)?.unwrap_or_default(),
+    ))
 }
 
 fn extract_preconditioner_config(

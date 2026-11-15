@@ -243,7 +243,7 @@ assert_eq!(result.x.len(), 4); // two observed levels in each of two factors
 |---|---|
 | `Design` | Reusable immutable design; build with `Design::from_categories` or `Design::new`, then share via `Solver::new(&design, ...)` or `solve(&design, ...)`. |
 | `LsmrOptions` | `{ tol: f64, maxiter: usize, local_size: Option<usize> }` |
-| `PreconditionerConfig` | `Off` \| `Diagonal` \| `Schwarz(Schwarz)` \| `Adaptive { stall: Staleness, schwarz: Schwarz }` (`#[non_exhaustive]`) |
+| `PreconditionerConfig` | `Off` \| `Diagonal` \| `Schwarz(Schwarz)` \| `Adaptive { stall: Staleness, schwarz: Schwarz }` |
 | `Schwarz` | `{ local_solver: LocalSolverConfig }` |
 | `LocalSolverConfig` | `{ approx_chol, schur: SchurMode, dense_threshold, scaling }` |
 | `SchurMode` | `Approximate(ApproxSchurConfig)` \| `Exact` |

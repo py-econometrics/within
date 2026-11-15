@@ -5,6 +5,8 @@ Most users should import from ``within`` directly rather than from
 ``within._within``.
 """
 
+import enum
+
 import numpy as np
 from numpy.typing import NDArray
 
@@ -345,6 +347,12 @@ def solve_batch(
     """
     ...
 
+class Rung(enum.Enum):
+    """A preconditioner a solve can run on."""
+
+    Diagonal = ...
+    Schwarz = ...
+
 class Preconditioner:
     """Pre-built fixed-effects preconditioner.
 
@@ -365,6 +373,10 @@ class Preconditioner:
     def ncols(self) -> int: ...
     @property
     def config(self) -> PreconditionerConfig: ...
+    @property
+    def rung(self) -> Rung:
+        """The rung of its config this map is."""
+        ...
     @property
     def build_duration_seconds(self) -> float: ...
     def __repr__(self) -> str: ...
@@ -404,10 +416,6 @@ class Solver:
         Under ``Adaptive`` this is the Schwarz map once built, and before that
         the diagonal base carrying the ladder, which escalates when reused.
         """
-        ...
-    @property
-    def has_escalated(self) -> bool:
-        """Whether an ``Adaptive`` solve has handed off to Schwarz."""
         ...
     @property
     def n_dofs(self) -> int: ...
