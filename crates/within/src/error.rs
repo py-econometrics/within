@@ -92,12 +92,6 @@ pub enum BuildError {
         /// The offending value.
         value: f64,
     },
-    /// The reduced system indexes observations as `u32`.
-    #[error("the reduced system supports at most u32::MAX observations, got {n_obs}")]
-    ObservationsExceedU32 {
-        /// Number of observations in the design.
-        n_obs: usize,
-    },
     /// The reduced system needs the rows sorted by the eliminated term, as `Design::new` sorts them.
     #[error("the reduced system needs a design sorted by its dominant term")]
     UnsortedReducedSystem,
