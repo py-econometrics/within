@@ -249,6 +249,44 @@ fn schwarz_on_one_factor_matches_its_plain_counterpart(
     assert_eq!(schwarz.demeaned, plain.demeaned);
 }
 
+/// A Schwarz build finds no subdomain only when the operator it would act on is zero; these
+/// designs reach that case, and the solve is exact at `x = 0` without a map.
+#[rstest]
+#[case::every_column_zero(System::Full, [Some(0.0), Some(0.0)], 1.0)]
+#[case::every_kept_column_zero(System::Reduced, [None, Some(0.0)], 1.0)]
+#[case::every_weight_zero_full(System::Full, [None, None], 0.0)]
+#[case::every_weight_zero_reduced(System::Reduced, [None, None], 0.0)]
+fn a_schwarz_build_without_a_subdomain_solves_at_zero(
+    #[case] system: System,
+    // `None` is an intercept term; `Some(v)` a term whose only column is the slope `v`.
+    #[case] slopes: [Option<f64>; 2],
+    #[case] weight: f64,
+) {
+    let levels: [Vec<u32>; 2] = [vec![0, 0, 1, 1, 2, 2], vec![0, 1, 0, 1, 0, 1]];
+    let columns = slopes.map(|v| v.map(|v| vec![v; 6]));
+    let effects: Vec<_> = levels
+        .iter()
+        .zip(&columns)
+        .map(|(levels, slope)| {
+            Effect::new(levels, slope.is_none(), slope.as_deref()).expect("effect")
+        })
+        .collect();
+    let w = vec![weight; 6];
+    let solver = solver(
+        effects,
+        Some(&w),
+        PreconditionerConfig::Schwarz(Default::default()),
+        system,
+    )
+    .expect("solver");
+    assert!(solver.preconditioner().is_none());
+    let r = solver
+        .solve(&[1.0, -2.0, 0.5, 3.0, -1.5, 2.5], &lsmr())
+        .expect("solve");
+    assert!(r.converged);
+    assert_eq!(r.iterations, 0);
+}
+
 #[test]
 fn a_prebuilt_preconditioner_must_fit_the_reduced_system() {
     let factors = factors(1);

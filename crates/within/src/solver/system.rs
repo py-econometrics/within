@@ -22,7 +22,7 @@ fn offer<'s>(
     match rung {
         RungSettings::Diagonal { .. } => Some(Box::new(move || {
             Ok(RungBuild {
-                map: Ok(RungMap::Diagonal(diagonal_map(gram_diagonal())?)),
+                map: Some(RungMap::Diagonal(diagonal_map(gram_diagonal())?)),
                 warnings: Vec::new(),
             })
         })),
