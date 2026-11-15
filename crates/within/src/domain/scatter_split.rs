@@ -4,7 +4,7 @@ use std::ops::Range;
 
 use rayon::prelude::*;
 
-use super::{Term, PAR_THRESHOLD};
+use super::{RowIndex, Term, PAR_THRESHOLD};
 
 /// Rows per level from which splitting by row beats splitting by level.
 const FOLD_ROWS_PER_LEVEL: usize = 12;
@@ -48,10 +48,7 @@ impl ScatterSplit {
     pub(crate) fn new(term: &Term<'_>) -> Self {
         let (levels, n_levels) = (term.levels(), term.n_levels());
         if !term.sorted() {
-            // An unsorted term's row index stores u32 rows.
-            if levels.len() >= FOLD_ROWS_PER_LEVEL * n_levels
-                || u32::try_from(levels.len()).is_err()
-            {
+            if levels.len() >= FOLD_ROWS_PER_LEVEL * n_levels {
                 return Self::ByRow;
             }
             return Self::ByLevel(LevelRows::argsort(levels, n_levels));
@@ -187,17 +184,14 @@ pub(crate) struct LevelRows {
     /// Level `l` owns positions `offsets[l]..offsets[l + 1]`.
     offsets: Vec<usize>,
     /// Row at each position; `None` when the levels are sorted, so positions are rows.
-    rows: Option<Box<[u32]>>,
+    rows: Option<RowIndex>,
 }
 
 impl LevelRows {
-    /// Needs `u32` row indices.
     pub(crate) fn argsort(levels: &[u32], n_levels: usize) -> Self {
-        let (offsets, rows) = super::stable_argsort(levels, n_levels);
-        Self {
-            offsets,
-            rows: Some(rows.into_boxed_slice()),
-        }
+        let offsets = super::offsets(n_levels, levels.iter().map(|&l| l as usize));
+        let rows = Some(RowIndex::argsort(levels, &offsets));
+        Self { offsets, rows }
     }
 
     /// Positions of `level`'s rows, for [`for_each_row`](Self::for_each_row).
@@ -209,7 +203,7 @@ impl LevelRows {
     pub(crate) fn row(&self, position: usize) -> usize {
         self.rows
             .as_ref()
-            .map_or(position, |rows| rows[position] as usize)
+            .map_or(position, |rows| rows.get(position))
     }
 
     /// The rows of `level`, in position order.
@@ -222,7 +216,7 @@ impl LevelRows {
     pub(crate) fn for_each_row(&self, positions: Range<usize>, f: impl FnMut(usize)) {
         match &self.rows {
             None => positions.for_each(f),
-            Some(rows) => rows[positions].iter().map(|&r| r as usize).for_each(f),
+            Some(rows) => rows.for_each(positions, f),
         }
     }
 }
@@ -237,14 +231,18 @@ mod tests {
         let ScatterSplit::ByLevel(rows) = split(&[2, 0, 2, 1, 0]) else {
             panic!()
         };
+        let order: Vec<usize> = (0..5).map(|at| rows.row(at)).collect();
         assert_eq!(
-            (rows.offsets, rows.rows.as_deref()),
-            (vec![0, 2, 3, 5], Some(&[1, 4, 3, 0, 2][..]))
+            (rows.offsets, order),
+            (vec![0, 2, 3, 5], vec![1, 4, 3, 0, 2])
         );
         let ScatterSplit::ByLevel(sorted) = split(&[0, 0, 1, 1, 1]) else {
             panic!()
         };
-        assert_eq!((sorted.offsets, sorted.rows), (vec![0, 2, 5], None));
+        assert_eq!(
+            (sorted.offsets, sorted.rows.is_none()),
+            (vec![0, 2, 5], true)
+        );
     }
 
     fn split(levels: &[u32]) -> ScatterSplit {

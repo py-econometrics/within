@@ -70,12 +70,8 @@ macro_rules! with_shape {
 }
 
 impl<'a> ReducedDesign<'a> {
-    /// Needs `u32` row indices; refuses a design not sorted by its dominant term.
+    /// Refuses a design not sorted by its dominant term.
     pub(crate) fn new(design: Design<'a>, weights: Option<&[f64]>) -> Result<Self, BuildError> {
-        let n_obs = design.n_obs;
-        if u32::try_from(n_obs).is_err() {
-            return Err(BuildError::ObservationsExceedU32 { n_obs });
-        }
         let dominant = design.dominant;
         if !design.terms[dominant].sorted() {
             return Err(BuildError::UnsortedReducedSystem);

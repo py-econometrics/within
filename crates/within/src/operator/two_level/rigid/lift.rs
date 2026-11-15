@@ -83,7 +83,7 @@ enum Coupling {
         /// `s = EᵀW DZ`, `width` per column.
         s: Vec<f64>,
         /// Its weighted rows, by component.
-        by_comp: Vec<(u32, u32)>,
+        by_comp: Vec<(u32, usize)>,
     },
 }
 
@@ -95,7 +95,7 @@ impl LevelFit {
         };
         let lo = by_comp.partition_point(|e| (e.0 as usize) < comp);
         let hi = by_comp.partition_point(|e| (e.0 as usize) <= comp);
-        Some(by_comp[lo..hi].iter().map(|&(_, r)| r as usize))
+        Some(by_comp[lo..hi].iter().map(|&(_, r)| r))
     }
 }
 
@@ -194,7 +194,7 @@ impl Lift<'_> {
                 pre[k * p + j] += *v * *v;
             }
             if wide {
-                by_comp.push((c, r as u32));
+                by_comp.push((c, r));
                 let block = &mut blocks[k * p * p..][..p * p];
                 for (i, &vi) in lifted.iter().enumerate() {
                     for (j, &vj) in lifted.iter().enumerate() {

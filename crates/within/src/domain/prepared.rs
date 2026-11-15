@@ -172,7 +172,7 @@ impl<'a> PreparedDesign<'a> {
         (0..self.design.n_factors()).map(|term| self.term(term))
     }
 
-    /// Term `term`'s rows grouped by level; needs `u32` row indices.
+    /// Term `term`'s rows grouped by level.
     pub(crate) fn level_rows(&self, term: usize) -> &LevelRows {
         match &self.splits[term] {
             ScatterSplit::ByLevel(rows) => rows,

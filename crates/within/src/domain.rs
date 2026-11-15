@@ -5,10 +5,12 @@ pub(crate) mod factor_pairs;
 mod level_moments;
 mod prepared;
 mod reparam;
+mod row_index;
 mod scatter_split;
 
 pub(crate) use prepared::{PreparedDesign, PreparedTerm, TermRows};
 use reparam::TermReparam;
+pub(crate) use row_index::RowIndex;
 pub(crate) use scatter_split::{
     cut, fixed_tree, LevelRows, LevelSlots, ScatterSplit, MIN_LEAF_ROWS,
 };
@@ -519,34 +521,6 @@ pub(crate) fn offsets(n_keys: usize, keys: impl IntoIterator<Item = usize>) -> V
     offsets
 }
 
-/// Rows grouped by level, ascending within each: level `l` owns `perm[offsets[l]..offsets[l + 1]]`.
-fn stable_argsort(key: &[u32], n_levels: usize) -> (Vec<usize>, Vec<u32>) {
-    let n_obs = key.len();
-    debug_assert!(
-        u32::try_from(n_obs).is_ok(),
-        "observation index must fit the u32 permutation"
-    );
-    debug_assert!(
-        n_levels <= n_obs,
-        "compact level count cannot exceed observation count"
-    );
-    let offsets = offsets(n_levels, key.iter().map(|&k| k as usize));
-    let mut cursors = offsets[..n_levels].to_vec();
-    let mut perm = vec![0u32; n_obs];
-    for (i, &k) in key.iter().enumerate() {
-        let cursor = &mut cursors[k as usize];
-        perm[*cursor] = i as u32;
-        *cursor += 1;
-    }
-    (offsets, perm)
-}
-
-// Inlined into `Design::build`, its loop measured +3–8% on slope designs.
-#[inline(never)]
-fn gather<T: Copy>(col: &[T], perm: &[u32]) -> Vec<T> {
-    perm.iter().map(|&k| col[k as usize]).collect()
-}
-
 /// The coefficients LSMR iterates on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Unknowns {
@@ -632,7 +606,7 @@ pub struct Design<'a> {
     pub(crate) n_obs: usize,
     pub(crate) n_dofs: usize,
     /// `obs_perm[k]` = caller's original index of the observation at internal position `k`.
-    pub(crate) obs_perm: Option<Arc<[u32]>>,
+    pub(crate) obs_perm: Option<Arc<RowIndex>>,
     /// [`dominant`] of the terms' sizes.
     pub(crate) dominant: usize,
 }
@@ -722,19 +696,20 @@ impl<'a> Design<'a> {
             dominant(terms.iter().map(Term::n_dofs)).expect("observations imply an effect");
         // Sort by the dominant term so its gather/scatter runs sequentially.
         let d = &terms[dominant];
-        let obs_perm = if locality_sort && !d.sorted && u32::try_from(n_obs).is_ok() {
-            let (_, perm) = stable_argsort(&d.levels, d.n_levels());
+        let obs_perm = if locality_sort && !d.sorted {
+            let offsets = offsets(d.n_levels(), d.levels.iter().map(|&l| l as usize));
+            let perm = RowIndex::argsort(&d.levels, &offsets);
             // Factors nested in the dominant one come out sorted and need no row index.
             for t in terms.iter_mut() {
-                let levels = gather(&t.levels, &perm);
+                let levels = perm.gather(&t.levels);
                 t.sorted = levels.is_sorted();
                 t.levels = Cow::Owned(levels);
             }
             // Level columns before any slope: interleaving them measured +2–4% here.
             for slope in terms.iter_mut().flat_map(|t| &mut t.slopes) {
-                *slope = Cow::Owned(gather(slope, &perm));
+                *slope = Cow::Owned(perm.gather(slope));
             }
-            Some(perm.into())
+            Some(Arc::new(perm))
         } else {
             None
         };
@@ -765,7 +740,7 @@ impl<'a> Design<'a> {
         debug_assert_eq!(v.len(), self.n_obs);
         match &self.obs_perm {
             None => Cow::Borrowed(v),
-            Some(perm) => Cow::Owned(gather(v, perm)),
+            Some(perm) => Cow::Owned(perm.gather(v)),
         }
     }
 
@@ -774,13 +749,7 @@ impl<'a> Design<'a> {
         debug_assert_eq!(v.len(), self.n_obs);
         match &self.obs_perm {
             None => v,
-            Some(perm) => {
-                let mut out = vec![0.0; v.len()];
-                for (k, &orig) in perm.iter().enumerate() {
-                    out[orig as usize] = v[k];
-                }
-                out
-            }
+            Some(perm) => perm.scatter(&v),
         }
     }
 
@@ -855,42 +824,6 @@ mod tests {
                 .iter()
                 .map(|c| Effect::new(c, true, []).expect("intercept effect"));
             Design::new(effects).expect("valid design").into_owned()
-        }
-    }
-
-    /// Counting sort must preserve caller order within each level so locality
-    /// sorting does not change downstream summation order.
-    #[test]
-    fn stable_argsort_agrees_with_a_stable_reference() {
-        let mut state = 0x2545_f491_4f6c_dd1du64;
-        let mut next = move || {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            state
-        };
-        // `key_span` is decoupled so the counting sort also covers empty buckets.
-        for (n_obs, n_levels, key_span) in [
-            (0usize, 0usize, 1usize),
-            (1, 1, 1),
-            (997, 1, 1),
-            (997, 16, 16),
-            (997, 996, 996),
-            (997, 997, 997),
-            (4096, 4096, 8),
-            (4096, 4096, 4096),
-        ] {
-            assert!(key_span <= n_levels.max(1), "keys must stay below n_levels");
-            let key: Vec<u32> = (0..n_obs)
-                .map(|_| (next() % key_span as u64) as u32)
-                .collect();
-            let mut expected: Vec<u32> = (0..n_obs as u32).collect();
-            expected.sort_by_key(|&i| key[i as usize]);
-            assert_eq!(
-                stable_argsort(&key, n_levels).1,
-                expected,
-                "n_obs={n_obs} n_levels={n_levels}"
-            );
         }
     }
 
@@ -981,7 +914,10 @@ mod tests {
         let design = Design::from_levels_for_test(vec![vec![2, 0, 1, 0], vec![0, 0, 1, 1]]);
 
         // Stable argsort of [2,0,1,0] → original indices [1,3,2,0].
-        assert_eq!(design.obs_perm.as_deref(), Some(&[1u32, 3, 2, 0][..]));
+        assert_eq!(
+            *design.permute_obs_in(&[0.0, 1.0, 2.0, 3.0]),
+            [1.0, 3.0, 2.0, 0.0]
+        );
         assert!(design.terms[0].sorted());
         // Factor 1's permuted column [0,1,1,0] is no longer non-decreasing.
         assert!(!design.terms[1].sorted());
@@ -1058,7 +994,10 @@ mod tests {
         ])
         .unwrap();
 
-        assert_eq!(design.obs_perm.as_deref(), Some(&[1, 3, 2, 0][..]));
+        assert_eq!(
+            *design.permute_obs_in(&[0.0, 1.0, 2.0, 3.0]),
+            [1.0, 3.0, 2.0, 0.0]
+        );
         assert_eq!(design.terms[0].levels(), &[0, 0, 1, 2]);
         assert_eq!(design.terms[1].levels(), &[1, 0, 1, 0]);
         let slope = |term: usize| design.terms[term].raw_slopes().next().unwrap();
