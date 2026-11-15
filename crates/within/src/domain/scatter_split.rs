@@ -205,9 +205,16 @@ impl LevelRows {
         self.offsets[level]..self.offsets[level + 1]
     }
 
+    /// The row at `position`.
+    pub(crate) fn row(&self, position: usize) -> usize {
+        self.rows
+            .as_ref()
+            .map_or(position, |rows| rows[position] as usize)
+    }
+
     /// The rows of `level`, in position order.
     pub(crate) fn rows(&self, level: usize) -> impl Iterator<Item = usize> + Clone + '_ {
-        (self.positions(level)).map(|at| self.rows.as_ref().map_or(at, |rows| rows[at] as usize))
+        self.positions(level).map(|at| self.row(at))
     }
 
     /// Calls `f` on the row at each of `positions`, in order.

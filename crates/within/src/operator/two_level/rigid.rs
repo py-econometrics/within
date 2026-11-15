@@ -13,7 +13,10 @@ use faer::{Mat, Par, Side};
 use rayon::prelude::*;
 
 use super::{CoarseSolve, HubCorrection, HubRows, TwoWay};
-use crate::domain::{cut, row_weight, Column, LevelRows, PreparedDesign, PreparedTerm, Unknowns};
+use crate::domain::{
+    cut, row_weight, Column, LevelRows, PreparedDesign, PreparedTerm, TermRows, Unknowns,
+};
+use crate::linalg::{add_moments, remove_fit, solve, DiagonalGramBasis};
 use crate::CoarseDecline;
 
 /// The gluing ratios, tried in turn while the factor is over budget.
@@ -48,27 +51,12 @@ pub(super) fn build(
 /// The rows grouped by eliminated level, read in the solve basis.
 struct Rows<'p> {
     by_level: &'p LevelRows,
-    n_levels: usize,
-    /// Per eliminated column, its loading; `None` is the intercept.
-    eliminated: Vec<Option<&'p [f64]>>,
+    eliminated: TermRows<'p>,
     /// `diag(A_eᵀA_e)`, each level's whole Gram block after whitening, column-major.
     gram: &'p [f64],
     sqrt_weights: Option<&'p [f64]>,
-    kept: Vec<KeptTerm<'p>>,
-}
-
-struct KeptTerm<'p> {
-    levels: &'p [u32],
-    n_levels: usize,
-    loadings: Vec<Option<&'p [f64]>>,
-    /// Its block start among the unknowns.
-    start: usize,
-}
-
-fn loadings<'p>(term: &PreparedTerm<'p>) -> Vec<Option<&'p [f64]>> {
-    (0..term.term.n_columns())
-        .map(|c| term.loading(c))
-        .collect()
+    /// Per kept term, its columns and its block start among the unknowns.
+    kept: Vec<(TermRows<'p>, usize)>,
 }
 
 impl<'p> Rows<'p> {
@@ -78,27 +66,25 @@ impl<'p> Rows<'p> {
         let kept = (0..design.n_factors())
             .filter(|&t| t != dominant)
             .map(|t| {
-                let term = prepared.term(t);
-                KeptTerm {
-                    levels: term.term.levels(),
-                    n_levels: term.term.n_levels(),
-                    loadings: loadings(&term),
-                    start: design.block_start(unknowns, t).expect("a kept term"),
-                }
+                let start = design.block_start(unknowns, t).expect("a kept term");
+                (TermRows::new(&prepared.term(t)), start)
             })
             .collect();
         Self {
             by_level: prepared.level_rows(dominant),
-            n_levels: design.terms[dominant].n_levels(),
-            eliminated: loadings(&prepared.term(dominant)),
+            eliminated: TermRows::new(&prepared.term(dominant)),
             gram: prepared.diagonal(dominant),
             sqrt_weights: prepared.sqrt_weights(),
             kept,
         }
     }
 
+    fn n_levels(&self) -> usize {
+        self.eliminated.n_levels
+    }
+
     fn width(&self) -> usize {
-        self.eliminated.len()
+        self.eliminated.width()
     }
 
     fn rows(&self, level: usize) -> impl Iterator<Item = usize> + Clone + '_ {
@@ -113,37 +99,37 @@ impl<'p> Rows<'p> {
         row_weight(self.sqrt_weights, i)
     }
 
-    /// Row `i`'s loading in eliminated column `a`.
-    fn eliminated(&self, i: usize, a: usize) -> f64 {
-        self.eliminated[a].map_or(1.0, |z| z[i])
-    }
-
-    /// Entry `a` of level `l`'s `G`, which whitening makes diagonal.
-    fn gram(&self, l: usize, a: usize) -> f64 {
-        self.gram[a * self.n_levels + l]
-    }
-
-    /// Entry `a` of level `l`'s `G⁻`.
-    fn inverse(&self, l: usize, a: usize) -> f64 {
-        let g = self.gram(l, a);
-        if g > 0.0 {
-            g.recip()
-        } else {
-            0.0
+    fn level(&self, level: usize) -> EliminatedLevel<'_> {
+        EliminatedLevel {
+            rows: self,
+            level,
+            start: self.by_level.positions(level).start,
         }
     }
 
     /// `f(unknown, loading)` over row `i`'s kept coefficients.
     fn for_each_kept(&self, i: usize, mut f: impl FnMut(usize, f64)) {
-        for term in &self.kept {
-            let level = term.levels[i] as usize;
-            for (c, z) in term.loadings.iter().enumerate() {
-                f(
-                    term.start + c * term.n_levels + level,
-                    z.map_or(1.0, |z| z[i]),
-                );
-            }
+        for (term, start) in &self.kept {
+            term.for_each_column(*start, i, &mut f);
         }
+    }
+}
+
+/// One level's columns of `A_e`, `W½ D_e`; their row `k` is the level's `k`-th row.
+struct EliminatedLevel<'r> {
+    rows: &'r Rows<'r>,
+    level: usize,
+    start: usize,
+}
+
+impl DiagonalGramBasis for EliminatedLevel<'_> {
+    fn entry(&self, k: usize, c: usize) -> f64 {
+        let r = self.rows.by_level.row(self.start + k);
+        self.rows.root(r) * self.rows.eliminated.column(r, c)
+    }
+
+    fn norm2(&self, c: usize) -> f64 {
+        self.rows.gram[c * self.rows.n_levels() + self.level]
     }
 }
 
@@ -296,10 +282,11 @@ struct Spell {
 
 fn spells(rows: &Rows<'_>, anchor: &Anchor<'_>) -> Vec<Spell> {
     let p = rows.width();
-    (0..rows.n_levels)
+    (0..rows.n_levels())
         .into_par_iter()
         .flat_map_iter(|lw| {
-            let level: Vec<f64> = (0..p).map(|a| rows.gram(lw, a)).collect();
+            let basis = rows.level(lw);
+            let level: Vec<f64> = (0..p).map(|a| basis.norm2(a)).collect();
             let mut gram = vec![0.0; p * p];
             let mut by_anchor: Vec<(usize, usize)> =
                 rows.rows(lw).map(|r| (anchor.level(r), r)).collect();
@@ -309,7 +296,12 @@ fn spells(rows: &Rows<'_>, anchor: &Anchor<'_>) -> Vec<Spell> {
                 .map(|spell| {
                     let lf = spell[0].0;
                     let spell_rows = || spell.iter().map(|&(_, r)| r);
-                    row_gram(rows, spell_rows(), |r, j| rows.eliminated(r, j), &mut gram);
+                    row_gram(
+                        rows,
+                        spell_rows(),
+                        |r, j| rows.eliminated.column(r, j),
+                        &mut gram,
+                    );
                     let eliminated = pencil_condition(&gram, &level);
                     row_gram(rows, spell_rows(), |r, j| anchor.loading(r, j), &mut gram);
                     let anchored = pencil_condition(&gram, &anchor.gram(lf, p));
@@ -329,7 +321,7 @@ fn spells(rows: &Rows<'_>, anchor: &Anchor<'_>) -> Vec<Spell> {
 struct GroupFit {
     /// Touched components, ascending; their channels are the level's coarse columns.
     comps: Vec<u32>,
-    /// `β = G⁻ Eᵀ W½ (W½ D Z)`, `width × columns`, row-major.
+    /// Per column, its `β = G⁻ Eᵀ W½ (W½ D Z)` over the `width` eliminated columns.
     beta: Vec<f64>,
 }
 
@@ -356,7 +348,7 @@ struct LevelGram {
     energy: Vec<f64>,
     /// The lower triangle of `UᵀU` over the touched columns; a hub's own blocks only.
     entries: Vec<(u32, u32, f64)>,
-    /// A hub's `s = EᵀW DZ` (`width × columns`): rows `[G s]` augmenting `E₀`.
+    /// A hub's `s = EᵀW DZ`, `width` per column: rows `[G s]` augmenting `E₀`.
     hub: Option<Vec<f64>>,
 }
 
@@ -382,26 +374,18 @@ impl Lift<'_> {
         self.rows.root(r) * val * self.inv_norm[c]
     }
 
-    /// `U` at row `r` in local column `i` of `fit`, from its lifted value `v`.
-    fn projected(&self, r: usize, mut v: f64, fit: &GroupFit, i: usize) -> f64 {
-        let (p, t) = (self.rows.width(), fit.comps.len() * self.rows.width());
-        for a in 0..p {
-            v -= self.rows.root(r) * self.rows.eliminated(r, a) * fit.beta[a * t + i];
-        }
-        v
-    }
-
     /// Level `lw`'s fit, `‖W½DZ‖²` and the lower triangle of `UᵀU` over its columns.
     ///
     /// `UᵀU = (DZ)ᵀW(DZ) − sᵀG⁻s` with `s = EᵀW DZ`: a row touches only its own component's
     /// columns, so the first term is per-component `p × p` and no row-by-column buffer is needed.
     fn fit(&self, lw: usize, comps: Vec<u32>, hub: bool) -> (GroupFit, LevelGram) {
         let (rows, p) = (self.rows, self.rows.width());
+        let basis = rows.level(lw);
         let t = comps.len() * p;
-        let (mut pre, mut s) = (vec![0.0; t], vec![0.0; p * t]);
+        let (mut pre, mut s) = (vec![0.0; t], vec![0.0; t * p]);
         let mut blocks = vec![0.0; comps.len() * p * p];
         let mut lifted = vec![0.0; p];
-        for r in rows.rows(lw) {
+        for (at, r) in rows.rows(lw).enumerate() {
             let c = self.anchor_comp[self.anchor.level(r)];
             let k = comps.binary_search(&c).expect("touched component");
             for (j, v) in lifted.iter_mut().enumerate() {
@@ -414,20 +398,18 @@ impl Lift<'_> {
                     block[i * p + j] += vi * vj;
                 }
             }
-            for a in 0..p {
-                let wa = rows.root(r) * rows.eliminated(r, a);
-                for (j, &v) in lifted.iter().enumerate() {
-                    s[a * t + k * p + j] += wa * v;
-                }
+            for (j, &v) in lifted.iter().enumerate() {
+                add_moments(&basis, at, v, &mut s[(k * p + j) * p..][..p]);
             }
         }
-        let beta: Vec<f64> = (0..p * t).map(|k| rows.inverse(lw, k / t) * s[k]).collect();
+        let mut beta = s.clone();
+        beta.chunks_exact_mut(p).for_each(|b| solve(&basis, b));
         let own = |a: usize, b: usize| match a / p == b / p {
             true => blocks[(a / p) * p * p + (a % p) * p + b % p],
             false => 0.0,
         };
         let fitted =
-            |a: usize, b: usize| -> f64 { (0..p).map(|k| s[k * t + a] * beta[k * t + b]).sum() };
+            |a: usize, b: usize| -> f64 { (0..p).map(|k| s[a * p + k] * beta[b * p + k]).sum() };
         let energy = (0..t).map(|a| own(a, a) - fitted(a, a)).collect();
         let column = |a: usize| comps[a / p] * p as u32 + (a % p) as u32;
         let mut entries = Vec::new();
@@ -449,53 +431,32 @@ impl Lift<'_> {
     }
 }
 
-/// Lower `(column, row, value)` triplets as a column-major lower triangle, duplicates summed in
-/// input order.
-fn lower_csc(m: usize, triplets: Vec<(u32, u32, f64)>) -> (Vec<u32>, Vec<u32>, Vec<f64>) {
-    let mut col_ptr = vec![0usize; m + 1];
-    for &(c, ..) in &triplets {
-        col_ptr[c as usize + 1] += 1;
-    }
-    for c in 0..m {
-        col_ptr[c + 1] += col_ptr[c];
-    }
-    let mut sorted = vec![(0u32, 0.0); triplets.len()];
-    let mut cursor = col_ptr.clone();
-    for (c, r, v) in triplets {
-        sorted[cursor[c as usize]] = (r, v);
-        cursor[c as usize] += 1;
-    }
-    let (mut ptr, mut rows, mut values) = (vec![0u32], Vec::new(), Vec::new());
-    for c in 0..m {
-        let column = &mut sorted[col_ptr[c]..col_ptr[c + 1]];
-        column.sort_by_key(|e| e.0);
-        for run in column.chunk_by(|a, b| a.0 == b.0) {
-            let v: f64 = run.iter().map(|e| e.1).sum();
-            if v != 0.0 {
-                rows.push(run[0].0);
-                values.push(v);
-            }
-        }
-        ptr.push(rows.len() as u32);
-    }
-    (ptr, rows, values)
+/// `(column, row, value)` triplets by column then row, duplicates summed in input order, zero
+/// sums dropped.
+fn merged(mut triplets: Vec<(u32, u32, f64)>) -> Vec<(u32, u32, f64)> {
+    triplets.par_sort_by_key(|e| (e.0, e.1));
+    (triplets.chunk_by(|a, b| (a.0, a.1) == (b.0, b.1)))
+        .filter_map(|run| {
+            let v = run.iter().fold(0.0, |v, e| v + e.2);
+            (v != 0.0).then_some((run[0].0, run[0].1, v))
+        })
+        .collect()
 }
 
 impl HubRows {
     /// Appends wide level `lw`'s rows: its `G` and `s` against the live columns.
     fn push(&mut self, rows: &Rows<'_>, lw: usize, s: &[f64], fit: &GroupFit, renumber: &[u32]) {
-        let p = rows.width();
-        let t = fit.comps.len() * p;
+        let (p, basis) = (rows.width(), rows.level(lw));
         for k in 0..p {
             for (i, c) in fit.columns(p).enumerate() {
                 let c = renumber[c as usize];
                 if c != u32::MAX {
                     self.cols.push(c);
-                    self.vals.push(s[k * t + i]);
+                    self.vals.push(s[i * p + k]);
                 }
             }
             self.ptr.push(self.cols.len());
-            self.gram.push(rows.gram(lw, k));
+            self.gram.push(basis.norm2(k));
         }
     }
 }
@@ -513,7 +474,7 @@ fn build_glued(
     let design = &prepared.design;
     let n_obs = design.n_obs;
     let p = rows.width();
-    let (na, nb) = (rows.n_levels, anchor.n_levels());
+    let (na, nb) = (rows.n_levels(), anchor.n_levels());
 
     let mut parent: Vec<u32> = (0..(na + nb) as u32).collect();
     for spell in glued {
@@ -645,11 +606,10 @@ fn build_glued(
     // Over the eliminated term too, `Z` is `[−β; Z]`, so that `A Z = U`.
     if let Some(start) = design.block_start(unknowns, design.dominant) {
         for (lw, (fit, _)) in per_level.iter().enumerate() {
-            let t = fit.comps.len() * p;
             for a in 0..p {
                 let unknown = (start + a * na + lw) as u32;
                 for (i, c) in fit.columns(p).enumerate() {
-                    let v = fit.beta[a * t + i];
+                    let v = fit.beta[i * p + a];
                     if renumber[c as usize] != u32::MAX && v != 0.0 {
                         z_entries.push((renumber[c as usize], unknown, -v));
                     }
@@ -686,26 +646,32 @@ fn build_glued(
         );
     }
     let dim = m + rank;
-    let (col_ptr, row_idx, mut values) = lower_csc(dim, e_triplets);
-    let diagonal = |c: usize, values: &[f64]| {
-        let first = col_ptr[c] as usize;
-        (first < col_ptr[c + 1] as usize && row_idx[first] as usize == c).then(|| values[first])
-    };
-    // Unit diagonal: null pivots then sit at rounding level, far below any live mode.
-    let scale: Vec<f64> = (0..dim)
-        .map(|c| match diagonal(c, &values) {
-            Some(d) if d > 0.0 => d.sqrt().recip(),
-            _ => 1.0,
-        })
-        .collect();
-    for c in 0..dim {
-        for k in col_ptr[c] as usize..col_ptr[c + 1] as usize {
-            values[k] *= scale[c] * scale[row_idx[k] as usize];
+    let lower = merged(e_triplets);
+    let mut diagonal = vec![0.0; dim];
+    for &(c, r, v) in &lower {
+        if c == r {
+            diagonal[c as usize] = v;
         }
     }
-    let d_max = (0..dim)
-        .filter_map(|c| diagonal(c, &values))
+    // Unit diagonal: null pivots then sit at rounding level, far below any live mode.
+    let scale: Vec<f64> = (diagonal.iter())
+        .map(|&d| if d > 0.0 { d.sqrt().recip() } else { 1.0 })
+        .collect();
+    let lower: Vec<(u32, u32, f64)> = (lower.into_iter())
+        .map(|(c, r, v)| (c, r, v * (scale[c as usize] * scale[r as usize])))
+        .collect();
+    let d_max = (lower.iter())
+        .filter(|e| e.0 == e.1)
+        .map(|e| e.2)
         .fold(0.0, f64::max);
+    let mut col_ptr = vec![0u32; dim + 1];
+    for &(c, ..) in &lower {
+        col_ptr[c as usize + 1] += 1;
+    }
+    for c in 0..dim {
+        col_ptr[c + 1] += col_ptr[c];
+    }
+    let (row_idx, values) = lower.into_iter().map(|(_, r, v)| (r, v)).unzip();
     let pattern = SymbolicSparseColMat::new_checked(dim, dim, col_ptr, None, row_idx);
     let e_lower = SparseColMat::new(pattern, values);
     let symbolic = factorize_symbolic_cholesky(
@@ -753,18 +719,15 @@ fn build_glued(
                 let w = rows.weight(r);
                 rows.for_each_kept(r, |d, z| {
                     for a in 0..p {
-                        entries.push(((h * p + a) as u32, d as u32, w * z * rows.eliminated(r, a)));
+                        entries.push((
+                            (h * p + a) as u32,
+                            d as u32,
+                            w * z * rows.eliminated.column(r, a),
+                        ));
                     }
                 });
             }
-            // Stable, so each sum runs in row order.
-            entries.sort_by_key(|e| (e.0, e.1));
-            (entries.chunk_by(|a, b| (a.0, a.1) == (b.0, b.1)))
-                .filter_map(|run| {
-                    let v = run.iter().fold(0.0, |v, e| v + e.2);
-                    (v != 0.0).then_some((run[0].0, run[0].1, v))
-                })
-                .collect()
+            merged(entries)
         })
         .collect();
     let f = TwoWay::from_parts(n, rank, f_parts);
@@ -870,10 +833,10 @@ fn projected_columns(
                             }
                             continue;
                         }
-                        let fit = &fits[lw];
-                        let i = fit.local(c, p);
-                        for r in rows.rows(lw) {
-                            visit(r, lift.projected(r, lift.lifted(r, c), fit, i));
+                        let (fit, basis) = (&fits[lw], rows.level(lw));
+                        let beta = &fit.beta[fit.local(c, p) * p..][..p];
+                        for (at, r) in rows.rows(lw).enumerate() {
+                            visit(r, remove_fit(&basis, at, lift.lifted(r, c), beta));
                         }
                     }
                     touched.sort_unstable();

@@ -7,7 +7,7 @@ mod prepared;
 mod reparam;
 mod scatter_split;
 
-pub(crate) use prepared::{PreparedDesign, PreparedTerm};
+pub(crate) use prepared::{PreparedDesign, PreparedTerm, TermRows};
 use reparam::TermReparam;
 pub(crate) use scatter_split::{
     cut, fixed_tree, LevelRows, LevelSlots, ScatterSplit, MIN_LEAF_ROWS,
