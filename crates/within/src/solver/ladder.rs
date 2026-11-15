@@ -8,10 +8,10 @@ use once_cell::sync::OnceCell;
 use schwarz_precond::Staleness;
 
 use crate::config::{Handoff, PreconditionerConfig, RungSettings};
-use crate::operator::schwarz::{Preconditioner, RungBuild};
+use crate::operator::schwarz::{Preconditioner, RungBuild, RungMap};
 use crate::{BuildError, BuildWarning};
 
-use super::system::{Build, LeastSquaresSystem};
+use super::system::{offer, Build, LeastSquaresSystem};
 
 /// One rung's build: the map and its warnings, or the error it keeps.
 type Built = Result<RungBuild<Preconditioner>, BuildError>;
@@ -106,6 +106,14 @@ impl PrecondSlot {
             .last()
     }
 
+    /// The map of the rung under `at`, once built.
+    fn below(&self, at: usize) -> Option<&RungMap> {
+        match self.built[at.checked_sub(1)?].get()? {
+            Ok(RungBuild { map: Some(p), .. }) => Some(&p.map),
+            _ => None,
+        }
+    }
+
     /// The first rung above `floor` that `system` offers and that was not built without a map.
     fn next<'s, S: LeastSquaresSystem>(
         &'s self,
@@ -119,7 +127,7 @@ impl PrecondSlot {
             .filter(|&(at, _)| {
                 !matches!(self.built[at].get(), Some(Ok(RungBuild { map: None, .. })))
             })
-            .find_map(|(at, rung)| Some((at, rung, system.offer(rung)?)))
+            .find_map(|(at, rung)| Some((at, rung, offer(system, rung, self.below(at))?)))
     }
 
     /// Build the rungs a solve must not start below; this call's build seconds. Every other

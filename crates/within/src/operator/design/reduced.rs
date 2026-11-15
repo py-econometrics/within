@@ -7,76 +7,14 @@ use rayon::prelude::*;
 use schwarz_precond::Operator;
 
 use crate::domain::{
-    fixed_tree, row_weight, Design, LevelRows, PreparedDesign, PreparedTerm, Unknowns,
-    MIN_LEAF_ROWS,
+    cut, fixed_tree, row_weight, Design, LevelRows, PreparedDesign, PreparedTerm, TermRows,
+    Unknowns, MIN_LEAF_ROWS,
 };
 use crate::linalg::{add_moments, fit_twice, remove_fit, solve, solve_rescued, DiagonalGramBasis};
 use crate::BuildError;
 
 /// Rows per parallel task, cut at an eliminated level's end so no level spans two tasks.
 const TASK_ROWS: usize = 16_384;
-
-/// One term's coefficient columns, read row by row.
-struct TermRows<'p> {
-    levels: &'p [u32],
-    n_levels: usize,
-    /// Column 0 is an intercept; the slopes follow it.
-    intercept: bool,
-    slopes: &'p [Vec<f64>],
-}
-
-impl<'p> TermRows<'p> {
-    fn new(t: &PreparedTerm<'p>) -> Self {
-        Self {
-            levels: t.term.levels(),
-            n_levels: t.term.n_levels(),
-            intercept: t.term.intercept,
-            slopes: t.slopes,
-        }
-    }
-
-    fn width(&self) -> usize {
-        self.intercept as usize + self.slopes.len()
-    }
-
-    /// `(D_t x_t)_i` with `x_t` at `offset` of `x`; `PLAIN` when every term is a lone intercept.
-    #[inline(always)]
-    fn row<const PLAIN: bool>(&self, x: &[f64], offset: usize, i: usize) -> f64 {
-        let level = offset + self.levels[i] as usize;
-        if PLAIN {
-            return x[level];
-        }
-        let (mut acc, mut at) = (-0.0, level);
-        if self.intercept {
-            acc += x[at];
-            at += self.n_levels;
-        }
-        for z in self.slopes {
-            acc += x[at] * z[i];
-            at += self.n_levels;
-        }
-        acc
-    }
-
-    /// `x_t += v · D_tᵀ e_i` with `x_t` at `offset` of `x`.
-    #[inline(always)]
-    fn add_row<const PLAIN: bool>(&self, x: &mut [f64], offset: usize, i: usize, v: f64) {
-        let level = offset + self.levels[i] as usize;
-        if PLAIN {
-            x[level] += v;
-            return;
-        }
-        let mut at = level;
-        if self.intercept {
-            x[at] += v;
-            at += self.n_levels;
-        }
-        for z in self.slopes {
-            x[at] += z[i] * v;
-            at += self.n_levels;
-        }
-    }
-}
 
 /// `A_r = (I − P_e) A_k`, where `P_e` projects onto the eliminated term's columns `A_e`.
 ///
@@ -511,23 +449,6 @@ impl ProjectedColumns<'_> {
 /// Level-major `by_level` (`width` entries per level) read column by column.
 fn column_major(by_level: &[f64], width: usize) -> impl Iterator<Item = f64> + '_ {
     (0..width).flat_map(move |c| by_level.iter().skip(c).step_by(width).copied())
-}
-
-/// `0..n` cut into consecutive ranges whose `size`s sum to at least `min`, the last maybe less.
-fn cut(n: usize, min: usize, size: impl Fn(usize) -> usize) -> Vec<Range<usize>> {
-    let mut ranges = Vec::new();
-    let (mut first, mut total) = (0, 0);
-    for k in 0..n {
-        total += size(k);
-        if total >= min {
-            ranges.push(first..k + 1);
-            (first, total) = (k + 1, 0);
-        }
-    }
-    if first < n {
-        ranges.push(first..n);
-    }
-    ranges
 }
 
 /// Doubles in a cache line, 128 bytes on Apple silicon and 64 elsewhere.

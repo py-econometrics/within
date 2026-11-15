@@ -8,21 +8,23 @@ use crate::config::RungSettings;
 use crate::domain::{PreparedDesign, Unknowns, UnknownsLayout};
 use crate::operator::design::ReducedDesign;
 use crate::operator::schwarz::{build_schwarz, diagonal_map, RungBuild, RungMap};
-use crate::{BuildError, SolveError};
+use crate::operator::two_level::build_two_level;
+use crate::{BuildError, BuildWarning, SolveError};
 
 pub(crate) type Build<'s> = Box<dyn Fn() -> Result<RungBuild, BuildError> + Send + Sync + 's>;
 
-/// `rung` over `unknowns` of `prepared`, whose normal matrix has the diagonal `gram_diagonal`.
-fn offer<'s>(
-    prepared: &'s PreparedDesign<'_>,
-    unknowns: Unknowns,
-    gram_diagonal: impl Fn() -> Vec<f64> + Send + Sync + 's,
+/// The build of `rung` for `system`'s normal matrix over `below`, the map of the rung under it;
+/// `None` for a rung it does not offer.
+pub(crate) fn offer<'s>(
+    system: &'s impl LeastSquaresSystem,
     rung: RungSettings<'s>,
+    below: Option<&'s RungMap>,
 ) -> Option<Build<'s>> {
+    let (prepared, unknowns) = (system.prepared(), system.unknowns());
     match rung {
         RungSettings::Diagonal { .. } => Some(Box::new(move || {
             Ok(RungBuild {
-                map: Some(RungMap::Diagonal(diagonal_map(gram_diagonal())?)),
+                map: Some(RungMap::Diagonal(diagonal_map(system.gram_diagonal())?)),
                 warnings: Vec::new(),
             })
         })),
@@ -31,7 +33,25 @@ fn offer<'s>(
         RungSettings::Schwarz(schwarz) => Some(Box::new(move || {
             build_schwarz(prepared, &schwarz.local_solver, unknowns)
         })),
-        RungSettings::TwoLevel => None,
+        RungSettings::TwoLevel(coarse) => {
+            let Some(RungMap::Schwarz(one_level)) = below else {
+                return None;
+            };
+            Some(Box::new(move || {
+                Ok(
+                    match build_two_level(prepared, unknowns, one_level, coarse) {
+                        Ok(map) => RungBuild {
+                            map: Some(RungMap::TwoLevel(map)),
+                            warnings: Vec::new(),
+                        },
+                        Err(decline) => RungBuild {
+                            map: None,
+                            warnings: vec![BuildWarning::CoarseDeclined(decline)],
+                        },
+                    },
+                )
+            }))
+        }
     }
 }
 
@@ -50,8 +70,8 @@ pub(crate) trait LeastSquaresSystem: Sync {
     fn layout(&self) -> UnknownsLayout {
         self.prepared().design.unknowns_layout(self.unknowns())
     }
-    /// The build of `rung` for this system's normal matrix; `None` for a rung it does not offer.
-    fn offer<'s>(&'s self, rung: RungSettings<'s>) -> Option<Build<'s>>;
+    /// `diag(AᵀA)` over the unknowns.
+    fn gram_diagonal(&self) -> Vec<f64>;
     /// Validate `y`, then form this system's right-hand side.
     fn prepare<'s>(&'s self, y: &'s [f64]) -> Result<Self::Rhs<'s>, SolveError>;
     /// What LSMR iterates on; tolerances are relative to its norm.
@@ -145,8 +165,8 @@ impl LeastSquaresSystem for PreparedDesign<'_> {
         Unknowns::All
     }
 
-    fn offer<'s>(&'s self, rung: RungSettings<'s>) -> Option<Build<'s>> {
-        offer(self, self.unknowns(), || self.gram_diagonal(), rung)
+    fn gram_diagonal(&self) -> Vec<f64> {
+        PreparedDesign::gram_diagonal(self)
     }
 
     fn prepare<'s>(&'s self, y: &'s [f64]) -> Result<Response<'s>, SolveError> {
@@ -192,13 +212,8 @@ impl LeastSquaresSystem for ReducedDesign<'_> {
         Unknowns::WithoutDominant
     }
 
-    fn offer<'s>(&'s self, rung: RungSettings<'s>) -> Option<Build<'s>> {
-        offer(
-            ReducedDesign::prepared(self),
-            self.unknowns(),
-            || self.gram_diagonal(),
-            rung,
-        )
+    fn gram_diagonal(&self) -> Vec<f64> {
+        ReducedDesign::gram_diagonal(self)
     }
 
     fn prepare<'s>(&'s self, y: &'s [f64]) -> Result<ReducedResponse<'s>, SolveError> {

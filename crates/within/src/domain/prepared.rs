@@ -30,6 +30,95 @@ pub(crate) struct PreparedTerm<'p> {
     pub(crate) split: &'p ScatterSplit,
 }
 
+/// One term's coefficient columns, read row by row.
+pub(crate) struct TermRows<'p> {
+    pub(crate) levels: &'p [u32],
+    pub(crate) n_levels: usize,
+    /// Column 0 is an intercept; the slopes follow it.
+    pub(crate) intercept: bool,
+    pub(crate) slopes: &'p [Vec<f64>],
+}
+
+impl<'p> TermRows<'p> {
+    pub(crate) fn new(t: &PreparedTerm<'p>) -> Self {
+        Self {
+            levels: t.term.levels(),
+            n_levels: t.term.n_levels(),
+            intercept: t.term.intercept,
+            slopes: t.slopes,
+        }
+    }
+
+    pub(crate) fn width(&self) -> usize {
+        self.intercept as usize + self.slopes.len()
+    }
+
+    /// `(D_t x_t)_i` with `x_t` at `offset` of `x`; `PLAIN` when every term is a lone intercept.
+    #[inline(always)]
+    pub(crate) fn row<const PLAIN: bool>(&self, x: &[f64], offset: usize, i: usize) -> f64 {
+        let level = offset + self.levels[i] as usize;
+        if PLAIN {
+            return x[level];
+        }
+        let (mut acc, mut at) = (-0.0, level);
+        if self.intercept {
+            acc += x[at];
+            at += self.n_levels;
+        }
+        for z in self.slopes {
+            acc += x[at] * z[i];
+            at += self.n_levels;
+        }
+        acc
+    }
+
+    /// `x_t += v · D_tᵀ e_i` with `x_t` at `offset` of `x`.
+    #[inline(always)]
+    pub(crate) fn add_row<const PLAIN: bool>(
+        &self,
+        x: &mut [f64],
+        offset: usize,
+        i: usize,
+        v: f64,
+    ) {
+        let level = offset + self.levels[i] as usize;
+        if PLAIN {
+            x[level] += v;
+            return;
+        }
+        let mut at = level;
+        if self.intercept {
+            x[at] += v;
+            at += self.n_levels;
+        }
+        for z in self.slopes {
+            x[at] += z[i] * v;
+            at += self.n_levels;
+        }
+    }
+
+    /// Row `i`'s loading in column `c`.
+    pub(crate) fn column(&self, i: usize, c: usize) -> f64 {
+        match c.checked_sub(self.intercept as usize) {
+            None => 1.0,
+            Some(j) => self.slopes[j][i],
+        }
+    }
+
+    /// `f(coefficient, loading)` over row `i`'s columns, with `x_t` at `offset`.
+    pub(crate) fn for_each_column(&self, offset: usize, i: usize, mut f: impl FnMut(usize, f64)) {
+        let mut at = offset + self.levels[i] as usize;
+        if self.intercept {
+            f(at, 1.0);
+            at += self.n_levels;
+        }
+        for z in self.slopes {
+            f(at, z[i]);
+            at += self.n_levels;
+        }
+    }
+}
+
 impl<'p> PreparedTerm<'p> {
     /// Column `column`'s solve-basis loading; `None` is the intercept.
     pub(crate) fn loading(&self, column: usize) -> Option<&'p [f64]> {
