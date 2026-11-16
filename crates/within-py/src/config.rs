@@ -274,7 +274,7 @@ impl PyPreconditionerConfig {
     }
 }
 
-/// A coarse space, the form composing it with the one-level map, and when it is built.
+/// Two-level Schwarz over rigid components, balanced; built with Schwarz or at `on_stall`.
 #[pyclass(frozen, eq, from_py_object, module = "within._within")]
 #[pyo3(name = "CoarseCorrection")]
 #[derive(Clone, PartialEq)]
@@ -285,108 +285,30 @@ pub struct PyCoarseCorrection {
 #[pymethods]
 impl PyCoarseCorrection {
     #[new]
-    fn new(space: PyCoarseSpace, form: PyTwoLevelForm, build: &Bound<'_, PyCoarseBuild>) -> Self {
+    #[pyo3(signature = (on_stall=None))]
+    fn new(on_stall: Option<PyStaleness>) -> Self {
         Self {
             inner: CoarseCorrection {
-                space: space.into(),
-                form: form.into(),
-                build: build.get().to_native(),
+                space: CoarseSpace::RigidComponents,
+                form: TwoLevelForm::Balanced,
+                build: match on_stall {
+                    None => CoarseBuild::WithSchwarz,
+                    Some(stall) => CoarseBuild::OnStall(stall.to_native()),
+                },
             },
         }
     }
 
     #[getter]
-    fn space(&self) -> PyCoarseSpace {
-        self.inner.space.into()
-    }
-
-    #[getter]
-    fn form(&self) -> PyTwoLevelForm {
-        self.inner.form.into()
-    }
-
-    #[getter]
-    fn build(&self) -> PyCoarseBuild {
-        PyCoarseBuild::from_native(&self.inner.build)
-    }
-}
-
-/// The columns of a coarse space.
-#[pyclass(frozen, eq, eq_int, from_py_object, module = "within._within")]
-#[pyo3(name = "CoarseSpace")]
-#[derive(Clone, Copy, PartialEq)]
-pub enum PyCoarseSpace {
-    RigidComponents,
-}
-
-impl From<PyCoarseSpace> for CoarseSpace {
-    fn from(space: PyCoarseSpace) -> Self {
-        match space {
-            PyCoarseSpace::RigidComponents => Self::RigidComponents,
+    fn on_stall(&self) -> Option<PyStaleness> {
+        match &self.inner.build {
+            CoarseBuild::WithSchwarz => None,
+            CoarseBuild::OnStall(stall) => Some(PyStaleness::from_native(*stall)),
         }
     }
 }
 
-impl From<CoarseSpace> for PyCoarseSpace {
-    fn from(space: CoarseSpace) -> Self {
-        match space {
-            CoarseSpace::RigidComponents => Self::RigidComponents,
-        }
-    }
-}
-
-/// How the coarse solve composes with the one-level map.
-#[pyclass(frozen, eq, eq_int, from_py_object, module = "within._within")]
-#[pyo3(name = "TwoLevelForm")]
-#[derive(Clone, Copy, PartialEq)]
-pub enum PyTwoLevelForm {
-    Balanced,
-}
-
-impl From<PyTwoLevelForm> for TwoLevelForm {
-    fn from(form: PyTwoLevelForm) -> Self {
-        match form {
-            PyTwoLevelForm::Balanced => Self::Balanced,
-        }
-    }
-}
-
-impl From<TwoLevelForm> for PyTwoLevelForm {
-    fn from(form: TwoLevelForm) -> Self {
-        match form {
-            TwoLevelForm::Balanced => Self::Balanced,
-        }
-    }
-}
-
-/// When the two-level map is built.
-#[pyclass(frozen, eq, module = "within._within")]
-#[pyo3(name = "CoarseBuild")]
-#[derive(PartialEq)]
-pub enum PyCoarseBuild {
-    WithSchwarz(),
-    OnStall { stall: PyStaleness },
-}
-
-impl PyCoarseBuild {
-    fn from_native(build: &CoarseBuild) -> Self {
-        match build {
-            CoarseBuild::WithSchwarz => Self::WithSchwarz(),
-            CoarseBuild::OnStall(stall) => Self::OnStall {
-                stall: PyStaleness::from_native(*stall),
-            },
-        }
-    }
-
-    fn to_native(&self) -> CoarseBuild {
-        match self {
-            Self::WithSchwarz() => CoarseBuild::WithSchwarz,
-            Self::OnStall { stall } => CoarseBuild::OnStall(stall.to_native()),
-        }
-    }
-}
-
-/// Contraction-stall condition that triggers an `Adaptive` escalation.
+/// Contraction-stall condition that hands the solve to the next rung.
 #[pyclass(frozen, eq, from_py_object, module = "within._within")]
 #[pyo3(name = "Staleness")]
 #[derive(Clone, Copy, Default, PartialEq)]

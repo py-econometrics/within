@@ -17,14 +17,11 @@ from within import (
 from within.config import (
     ApproxCholConfig,
     ApproxSchurConfig,
-    CoarseBuild,
     CoarseCorrection,
-    CoarseSpace,
     LocalSolverConfig,
     ScalingConfig,
     Schur,
     Staleness,
-    TwoLevelForm,
 )
 
 
@@ -326,12 +323,6 @@ class TestAdaptive:
         assert not recwarn.list, "a built rung must not re-warn on later solves"
 
 
-def coarse(build):
-    return CoarseCorrection(
-        space=CoarseSpace.RigidComponents, form=TwoLevelForm.Balanced, build=build
-    )
-
-
 def clustered():
     """Workers in 40 firm clusters with a slope on both terms; each mover's one row elsewhere glues nothing."""
     spells = [(k, k // 3, 8) for k in range(120)]
@@ -353,12 +344,10 @@ class TestCoarse:
 
     def test_coarse_config_round_trips_through_getters(self):
         stall = Staleness(window=2, threshold=0.5)
-        on_stall = coarse(CoarseBuild.OnStall(stall=stall))
-        assert on_stall.space == CoarseSpace.RigidComponents
-        assert on_stall.form == TwoLevelForm.Balanced
-        assert isinstance(on_stall.build, CoarseBuild.OnStall)
-        assert on_stall.build.stall == stall
-        assert on_stall != coarse(CoarseBuild.WithSchwarz())
+        on_stall = CoarseCorrection(on_stall=stall)
+        assert on_stall.on_stall == stall
+        assert CoarseCorrection().on_stall is None
+        assert on_stall != CoarseCorrection()
         assert PreconditionerConfig.Schwarz().coarse is None
         assert PreconditionerConfig.Adaptive(coarse=on_stall).coarse == on_stall
         assert (
@@ -369,10 +358,10 @@ class TestCoarse:
     @pytest.mark.parametrize(
         "requested",
         [
-            PreconditionerConfig.Schwarz(coarse=coarse(CoarseBuild.WithSchwarz())),
+            PreconditionerConfig.Schwarz(coarse=CoarseCorrection()),
             PreconditionerConfig.Adaptive(
                 stall=Staleness(1, 0.0),
-                coarse=coarse(CoarseBuild.OnStall(stall=Staleness(1, 0.0))),
+                coarse=CoarseCorrection(on_stall=Staleness(1, 0.0)),
             ),
         ],
         ids=["schwarz_with_schwarz", "adaptive_on_stall"],
@@ -392,9 +381,7 @@ class TestCoarse:
 
     def test_a_two_level_preconditioner_round_trips(self):
         effects, y = clustered()
-        requested = PreconditionerConfig.Schwarz(
-            coarse=coarse(CoarseBuild.WithSchwarz())
-        )
+        requested = PreconditionerConfig.Schwarz(coarse=CoarseCorrection())
         built = Solver(effects, preconditioner=requested)
         assert built.preconditioner.rung == Rung.TwoLevel
         restored = pickle.loads(pickle.dumps(built.preconditioner))
@@ -412,8 +399,6 @@ class TestCoarse:
         with pytest.warns(UserWarning, match="two-level Schwarz declined"):
             solver = Solver(
                 as_solver_categories(cats),
-                preconditioner=PreconditionerConfig.Schwarz(
-                    coarse=coarse(CoarseBuild.WithSchwarz())
-                ),
+                preconditioner=PreconditionerConfig.Schwarz(coarse=CoarseCorrection()),
             )
         assert solver.preconditioner.rung == Rung.Schwarz

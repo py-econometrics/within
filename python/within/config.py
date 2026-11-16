@@ -31,25 +31,19 @@ Schur); pass ``Schur.exact()`` for the exact complement.
 from within._within import (
     ApproxCholConfig,
     ApproxSchurConfig,
-    CoarseBuild,
     CoarseCorrection,
-    CoarseSpace,
     LocalSolverConfig,
     ScalingConfig,
     Schur,
     Staleness,
-    TwoLevelForm,
 )
 
 __all__ = [
     "ApproxCholConfig",
     "ApproxSchurConfig",
-    "CoarseBuild",
     "CoarseCorrection",
-    "CoarseSpace",
     "LocalSolverConfig",
     "ScalingConfig",
     "Schur",
     "Staleness",
-    "TwoLevelForm",
 ]

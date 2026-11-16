@@ -162,7 +162,7 @@ as `.build_duration_seconds`; both are preserved across pickling and reuse.
 | `Schur.approximate(config?)` / `Schur.exact()` | Schur-reduction mode passed as `LocalSolverConfig(schur=...)`. |
 | `ApproxCholConfig(seed=0, split_merge=None)` | Approximate Cholesky parameters. |
 | `ApproxSchurConfig(split=1)` | Approximate Schur complement sampling parameters; draws from `ApproxCholConfig.seed`. |
-| `CoarseCorrection(space, form, build)` | Coarse correction for `Schwarz`/`Adaptive`: `CoarseSpace.RigidComponents`, `TwoLevelForm.Balanced`, and `CoarseBuild.WithSchwarz()` or `CoarseBuild.OnStall(stall)`. A design without a coarse space keeps one-level Schwarz with a `UserWarning`. |
+| `CoarseCorrection(on_stall?)` | Coarse correction for `Schwarz`/`Adaptive`: two-level Schwarz over rigid components, built with Schwarz or at the `on_stall` staleness. A design without a coarse space keeps one-level Schwarz with a `UserWarning`. |
 
 ### Result types
 
