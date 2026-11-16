@@ -11,7 +11,7 @@ mod scatter_split;
 pub(crate) use prepared::{PreparedDesign, PreparedTerm, TermRows};
 use reparam::TermReparam;
 pub(crate) use row_index::RowIndex;
-pub(crate) use scatter_split::{cut, fixed_tree, LevelRows, ScatterSplit, MIN_LEAF_ROWS};
+pub(crate) use scatter_split::{cut, fixed_tree, tree_mid, LevelRows, ScatterSplit, MIN_LEAF_ROWS};
 
 /// Rows from which a sweep over observations runs in parallel.
 pub(crate) const PAR_THRESHOLD: usize = 10_000;

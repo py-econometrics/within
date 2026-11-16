@@ -7,7 +7,8 @@ use std::time::Instant;
 use ndarray::ArrayView2;
 use rayon::prelude::*;
 use schwarz_precond::{
-    mlsmr, EscalationPolicy, IdentityOp, LsmrResult, LsmrStopReason, MlsmrOptions, Operator,
+    mlsmr, mlsmr_scratch, EscalationPolicy, IdentityOp, LsmrResult, LsmrStopReason, MemBuffer,
+    MemStack, MlsmrOptions, Operator, Threads,
 };
 
 use crate::channel::CoefficientAddress;
@@ -305,7 +306,12 @@ fn rung<'s>(
             };
             let started = Instant::now();
             let maxiter = lsmr.maxiter - spent;
-            let mut result = mlsmr(system, &rhs.projected, m, lsmr.tol, maxiter, options)?;
+            // The RHS run side by side, each on the whole pool.
+            let threads = Threads::All;
+            let mut scratch = MemBuffer::new(mlsmr_scratch(system, m, threads));
+            let stack = MemStack::new(&mut scratch);
+            let (b, tol) = (&rhs.projected, lsmr.tol);
+            let mut result = mlsmr(system, b, m, tol, maxiter, options, threads, stack)?;
             seconds.lsmr += started.elapsed().as_secs_f64();
             // The next rung starts from `result.x`; the probe it replaces is released here.
             drop(probe);

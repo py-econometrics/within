@@ -1,5 +1,5 @@
 use rstest::rstest;
-use schwarz_precond::Operator;
+use schwarz_precond::{MemBuffer, MemStack, Operator, Threads};
 
 use super::{build_two_level, CoarseFactor, HubRows, TwoLevelMap};
 use crate::config::{CoarseBuild, CoarseCorrection, CoarseSpace, LocalSolverConfig, TwoLevelForm};
@@ -128,9 +128,38 @@ fn two_level(prepared: &PreparedDesign<'_>) -> Result<TwoLevelMap, CoarseDecline
 /// `AᵀA x`.
 fn normal(a: &dyn Operator, x: &[f64]) -> Vec<f64> {
     let (mut ax, mut out) = (vec![0.0; a.nrows()], vec![0.0; a.ncols()]);
-    a.apply(x, &mut ax).expect("A x");
-    a.apply_adjoint(&ax, &mut out).expect("Aᵀ y");
+    crate::operator::apply_for_test(a, x, &mut ax).expect("A x");
+    crate::operator::apply_adjoint_for_test(a, &ax, &mut out).expect("Aᵀ y");
     out
+}
+
+/// The map's bits depend on neither the pool nor the scratch it is given.
+#[test]
+fn the_two_level_map_is_pool_and_scratch_independent() {
+    let panel = Panel::clustered(40, 3, 8, 30, 7, 1);
+    on_reduced(panel.design(), None, |prepared, _| {
+        let map = two_level(prepared).expect("built");
+        let x: Vec<f64> = (0..map.nrows()).map(|i| (0.37 * i as f64).sin()).collect();
+        let apply_in = |threads: usize, sized_for: Threads| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("test rayon pool")
+                .install(|| {
+                    let mut scratch = MemBuffer::new(map.scratch(1, sized_for));
+                    let mut y = vec![f64::NAN; map.nrows()];
+                    map.apply(&x, &mut y, Threads::All, MemStack::new(&mut scratch))
+                        .expect("apply");
+                    y.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+                })
+        };
+        let reference = apply_in(1, Threads::ONE);
+        assert!(apply_in(8, Threads::All) == reference, "8 threads");
+        assert!(
+            apply_in(8, Threads::ONE) == reference,
+            "one thread's scratch"
+        );
+    });
 }
 
 /// The balanced form is exact on its coarse space, `A M S Z c = A Z c`: what it adds to `Z c` lies
@@ -147,16 +176,16 @@ fn the_two_level_map_inverts_the_normal_matrix_on_its_coarse_space(
         assert!(m >= 40, "{m} coarse columns");
         let image = |x: &[f64]| {
             let mut ax = vec![0.0; a.nrows()];
-            a.apply(x, &mut ax).expect("A x");
+            crate::operator::apply_for_test(a, x, &mut ax).expect("A x");
             ax
         };
         for column in 0..m {
             let mut c = vec![0.0; m];
             c[column] = 1.0;
             let mut zc = vec![0.0; n];
-            map.coarse.z.mul_add(&c, 1.0, &mut zc);
+            map.coarse.z.mul_add(&c, 1.0, &mut zc, Threads::All);
             let mut y = vec![0.0; n];
-            map.apply(&normal(a, &zc), &mut y).expect("apply");
+            crate::operator::apply_for_test(&map, &normal(a, &zc), &mut y).expect("apply");
             let (ay, azc) = (image(&y), image(&zc));
             let error: f64 = ay.iter().zip(&azc).map(|(y, z)| (y - z).powi(2)).sum();
             assert!(
@@ -178,8 +207,8 @@ fn the_two_level_map_is_symmetric(#[values(Weights::Unit, Weights::Varying)] wei
         let x: Vec<f64> = (0..n).map(|i| (0.3 * i as f64).sin()).collect();
         let v: Vec<f64> = (0..n).map(|i| (0.7 * i as f64 + 1.0).cos()).collect();
         let (mut mx, mut mv) = (vec![0.0; n], vec![0.0; n]);
-        map.apply(&x, &mut mx).expect("M x");
-        map.apply(&v, &mut mv).expect("M v");
+        crate::operator::apply_for_test(&map, &x, &mut mx).expect("M x");
+        crate::operator::apply_for_test(&map, &v, &mut mv).expect("M v");
         let (a, b) = (dot(&v, &mx), dot(&x, &mv));
         assert!((a - b).abs() <= 1e-10 * a.abs().max(b.abs()), "{a} vs {b}");
     });
@@ -309,7 +338,8 @@ fn hub_rows_eliminated_last_keep_the_coarse_null_modes_at_rounding() {
         .map(|j| {
             let mut v = vec![0.0; coarse];
             v[j] = factor.scale[j].recip();
-            factor.solve(&mut v);
+            let mut scratch = MemBuffer::new(factor.scratch());
+            factor.solve(&mut v, MemStack::new(&mut scratch));
             let scaled = v.iter().zip(&factor.scale).map(|(x, s)| x / s);
             scaled.map(|x| x * x).sum::<f64>().sqrt()
         })
@@ -340,8 +370,8 @@ fn a_two_level_map_round_trips_through_the_wire(#[values(Hubs::None, Hubs::One)]
         let decoded: TwoLevelMap = postcard::from_bytes(&bytes).expect("deserialize");
         let x: Vec<f64> = (0..map.nrows()).map(|i| (0.3 * i as f64).sin()).collect();
         let (mut before, mut after) = (vec![0.0; map.nrows()], vec![0.0; decoded.nrows()]);
-        map.apply(&x, &mut before).expect("apply");
-        decoded.apply(&x, &mut after).expect("apply decoded");
+        crate::operator::apply_for_test(&map, &x, &mut before).expect("apply");
+        crate::operator::apply_for_test(&decoded, &x, &mut after).expect("apply decoded");
         let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
         assert_eq!(bits(&before), bits(&after));
     });
@@ -353,7 +383,7 @@ fn applied(panel: &Panel, weights: Option<&[f64]>) -> Vec<f64> {
         let map = two_level(prepared).expect("built");
         let x: Vec<f64> = (0..map.nrows()).map(|i| (0.3 * i as f64).sin()).collect();
         let mut y = vec![0.0; map.nrows()];
-        map.apply(&x, &mut y).expect("apply");
+        crate::operator::apply_for_test(&map, &x, &mut y).expect("apply");
         y
     })
 }

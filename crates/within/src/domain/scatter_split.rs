@@ -1,5 +1,6 @@
 //! How a term's per-level fold splits into fixed parallel pieces, chosen from its rows alone.
 
+use schwarz_precond::Threads;
 use std::ops::Range;
 
 use rayon::prelude::*;
@@ -72,7 +73,7 @@ impl ScatterSplit {
                     if positions.len() <= LEVEL_LEAF {
                         return leaf(positions);
                     }
-                    fixed_tree(positions, LEVEL_LEAF, &leaf, merge)
+                    fixed_tree(positions, LEVEL_LEAF, Threads::All, &leaf, merge)
                 };
                 let fill = |(g, group): (usize, &mut [S])| {
                     for (k, slot) in group.iter_mut().enumerate() {
@@ -103,7 +104,14 @@ impl ScatterSplit {
                         merge(l, r);
                     }
                 };
-                out.copy_from_slice(&fixed_tree(0..levels.len(), leaf_len, &scatter, &merge_all));
+                let all = Threads::All;
+                out.copy_from_slice(&fixed_tree(
+                    0..levels.len(),
+                    leaf_len,
+                    all,
+                    &scatter,
+                    &merge_all,
+                ));
             }
         }
     }
@@ -133,19 +141,27 @@ pub(crate) const MIN_LEAF_ROWS: usize = 65_536;
 pub(crate) fn fixed_tree<T: Send>(
     items: Range<usize>,
     leaf_len: usize,
+    threads: Threads,
     leaf: &(impl Fn(Range<usize>) -> T + Sync),
     merge: &(impl Fn(&mut T, &T) + Sync),
 ) -> T {
     if items.len() <= leaf_len {
         return leaf(items);
     }
-    let mid = items.start + (items.len() / 2 / leaf_len).max(1) * leaf_len;
-    let (mut left, right) = rayon::join(
-        || fixed_tree(items.start..mid, leaf_len, leaf, merge),
-        || fixed_tree(mid..items.end, leaf_len, leaf, merge),
-    );
+    let mid = tree_mid(&items, leaf_len);
+    let left = || fixed_tree(items.start..mid, leaf_len, threads, leaf, merge);
+    let right = || fixed_tree(mid..items.end, leaf_len, threads, leaf, merge);
+    let (mut left, right) = match threads {
+        Threads::ONE => (left(), right()),
+        _ => rayon::join(left, right),
+    };
     merge(&mut left, &right);
     left
+}
+
+/// Where [`fixed_tree`] splits `items` of more than `leaf_len`: whole leaves, about half each side.
+pub(crate) fn tree_mid(items: &Range<usize>, leaf_len: usize) -> usize {
+    items.start + (items.len() / 2 / leaf_len).max(1) * leaf_len
 }
 
 /// The rows of each level, ascending: the inverse of the row → level map.

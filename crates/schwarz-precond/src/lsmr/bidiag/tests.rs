@@ -7,7 +7,7 @@ use super::{
 };
 use crate::lsmr::fixtures::{lsmr, DenseOp, DiagOp};
 use crate::lsmr::IdentityOp;
-use crate::{Operator, SolveError};
+use crate::{MemStack, Operator, SolveError, StackReq, Threads};
 
 /// The unpreconditioned stream from `b`, and its first step.
 fn cold_stream<'a, A: Operator>(
@@ -15,8 +15,9 @@ fn cold_stream<'a, A: Operator>(
     identity: &'a IdentityOp,
     b: &[f64],
     local_size: usize,
+    stack: &'a mut MemStack,
 ) -> Result<(ModifiedGolubKahan<'a, A, IdentityOp>, BidiagStep), SolveError> {
-    let staged = StagedStart::cold(op, identity, b, local_size);
+    let staged = StagedStart::cold(op, identity, b, local_size, Threads::All, stack);
     let (stream, step1, _) = staged.restart(crate::lsmr::vec_norm(b))?;
     Ok((stream, step1))
 }
@@ -31,7 +32,7 @@ fn cold_stream<'a, A: Operator>(
 fn alpha_from_vp_rejects_non_finite_and_indefinite_pairs(#[case] v: &[f64], #[case] p: &[f64]) {
     assert!(
         matches!(
-            alpha_from_vp(v, p).map_err(SolveError::from),
+            alpha_from_vp(v, p, Threads::All).map_err(SolveError::from),
             Err(SolveError::InvalidInput { .. })
         ),
         "{v:?}·{p:?} accepted"
@@ -43,13 +44,18 @@ fn alpha_from_vp_rejects_non_finite_and_indefinite_pairs(#[case] v: &[f64], #[ca
 #[case::tiny_scale(&[1e-100, 1e-100], &[1e-100, -1.000000000001e-100])]
 #[case::extreme_scales(&[1e-316, 1e-316], &[1e308, -1.000000000001e308])]
 fn alpha_from_vp_clamps_a_pair_within_root_epsilon(#[case] v: &[f64], #[case] p: &[f64]) {
-    assert_eq!(alpha_from_vp(v, p).expect("within √ε"), 0.0, "{v:?}·{p:?}");
+    assert_eq!(
+        alpha_from_vp(v, p, Threads::All).expect("within √ε"),
+        0.0,
+        "{v:?}·{p:?}"
+    );
 }
 
 /// `cos(v, p̃) ≈ 1e-328` underflows a re-sum normalized to 1, though `α ≈ 1e-158` does not.
 #[test]
 fn a_tiny_cosine_keeps_its_gradient_length() {
-    let alpha = alpha_from_vp(&[1e-158, 0.0], &[1e-158, 1e170]).expect("positive pair");
+    let alpha =
+        alpha_from_vp(&[1e-158, 0.0], &[1e-158, 1e170], Threads::All).expect("positive pair");
     assert!((alpha / 1e-158 - 1.0).abs() < 1e-12, "{alpha:e}");
 }
 
@@ -57,7 +63,8 @@ fn a_tiny_cosine_keeps_its_gradient_length() {
 #[test]
 fn a_negative_subnormal_pair_keeps_its_gradient_length() {
     let t = 2f64.powi(-537);
-    let alpha = alpha_from_vp(&[t; 3], &[1.49 * t, 1.49 * t, -2.9 * t]).expect("positive pair");
+    let alpha = alpha_from_vp(&[t; 3], &[1.49 * t, 1.49 * t, -2.9 * t], Threads::All)
+        .expect("positive pair");
     assert!(
         (alpha / (0.08f64.sqrt() * t) - 1.0).abs() < 1e-10,
         "{alpha:e}"
@@ -80,8 +87,8 @@ fn a_negatively_rounded_pair_clamps_however_the_resum_rounds() {
         let mut p: Vec<f64> = (0..20_000).map(|_| draw()).collect();
         let c = dot(&v, &p) / dot(&v, &v);
         p.iter_mut().zip(&v).for_each(|(pi, vi)| *pi -= c * vi);
-        if par_dot(&v, &p) < 0.0 {
-            assert_eq!(alpha_from_vp(&v, &p).expect("within √ε"), 0.0);
+        if par_dot(&v, &p, Threads::All) < 0.0 {
+            assert_eq!(alpha_from_vp(&v, &p, Threads::All).expect("within √ε"), 0.0);
         }
     }
 }
@@ -104,18 +111,39 @@ fn an_overflow_after_initialization_is_an_error() {
         fn ncols(&self) -> usize {
             2
         }
-        fn apply(&self, _x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+        fn scratch(&self, _columns: usize, _threads: Threads) -> StackReq {
+            StackReq::EMPTY
+        }
+        fn apply(
+            &self,
+            _x: &[f64],
+            y: &mut [f64],
+            _threads: Threads,
+            _stack: &mut MemStack,
+        ) -> Result<(), SolveError> {
             y.fill(f64::MAX);
             Ok(())
         }
-        fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+        fn apply_adjoint(
+            &self,
+            x: &[f64],
+            y: &mut [f64],
+            _threads: Threads,
+            _stack: &mut MemStack,
+        ) -> Result<(), SolveError> {
             y.copy_from_slice(x);
             Ok(())
         }
     }
     let identity = IdentityOp { n: 2 };
-    let (mut bidiag, first) =
-        cold_stream(&OverflowingForward, &identity, &[1.0, 1.0], 0).expect("finite init");
+    let (mut bidiag, first) = cold_stream(
+        &OverflowingForward,
+        &identity,
+        &[1.0, 1.0],
+        0,
+        MemStack::new(&mut []),
+    )
+    .expect("finite init");
     assert!(first.alpha > 0.0);
     let err = bidiag.step().err().expect("an overflowing β was accepted");
     assert!(
@@ -145,7 +173,8 @@ fn local_reorth_keeps_the_window_vectors_orthogonal() {
     // step. Mirrors the body of `lsmr_from_bidiag` minus the recurrence.
     let collect_vs = |window_size: usize| -> Vec<Vec<f64>> {
         let identity = IdentityOp { n: op.cols };
-        let (mut bidiag, _) = cold_stream(&op, &identity, &b, window_size).expect("init");
+        let (mut bidiag, _) =
+            cold_stream(&op, &identity, &b, window_size, MemStack::new(&mut [])).expect("init");
         let mut vs = vec![bidiag.v().to_vec()];
         for _ in 0..n_iters {
             bidiag.step().expect("step");

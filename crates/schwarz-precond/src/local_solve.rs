@@ -23,12 +23,12 @@ pub trait LocalSolver: Send + Sync {
     /// Number of DOFs in the subdomain.
     fn n_local(&self) -> usize;
 
-    /// What `solve_local` can use from its stack at `threads`; at `Threads::ONE`, all it needs.
-    fn scratch(&self, threads: Threads) -> StackReq;
+    /// What `solve_local` on `columns` columns can use at `threads`; at `Threads::ONE`, all it needs.
+    fn scratch(&self, columns: usize, threads: Threads) -> StackReq;
 
     /// Solves in place: `x` spans `n_local()`, rhs in, solution out; bits depend on `x` alone.
     ///
-    /// `stack` holds at least `scratch(Threads::ONE)`, with stale contents; less than `scratch(threads)` only runs fewer tasks at once.
+    /// `stack` holds at least `scratch(1, Threads::ONE)`, with stale contents; less than `scratch(1, threads)` only runs fewer tasks at once.
     fn solve_local(
         &self,
         x: &mut [f64],
@@ -36,9 +36,10 @@ pub trait LocalSolver: Send + Sync {
         stack: &mut MemStack,
     ) -> Result<(), LocalSolveError>;
 
-    /// Estimated local work that can benefit from more than one thread; zero when there is none.
-    fn inner_parallelism_work_estimate(&self) -> usize {
-        0
+    /// Estimated work of one local solve: past its budget's share of the total, it runs alone on
+    /// the whole budget, and the rest share the pool only when their work pays for waking it.
+    fn work_estimate(&self) -> usize {
+        self.n_local()
     }
 }
 
@@ -151,7 +152,7 @@ mod tests {
         fn n_local(&self) -> usize {
             self.n
         }
-        fn scratch(&self, _threads: Threads) -> StackReq {
+        fn scratch(&self, _columns: usize, _threads: Threads) -> StackReq {
             StackReq::EMPTY
         }
         fn solve_local(

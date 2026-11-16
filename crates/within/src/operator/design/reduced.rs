@@ -5,10 +5,11 @@ use std::borrow::Cow;
 use std::ops::Range;
 
 use rayon::prelude::*;
-use schwarz_precond::Operator;
+use schwarz_precond::{MemBuffer, MemStack, Operator, StackReq, Threads};
 
 use crate::domain::{
-    cut, fixed_tree, row_weight, Design, LevelRows, PreparedDesign, TermRows, MIN_LEAF_ROWS,
+    cut, fixed_tree, row_weight, tree_mid, Design, LevelRows, PreparedDesign, TermRows,
+    MIN_LEAF_ROWS,
 };
 use crate::linalg::{
     add_moments, fit_twice, remove_fit, solve, solve_rescued, DiagonalGramBasis, GramBasisWorkspace,
@@ -145,6 +146,15 @@ impl<'a> ReducedDesign<'a> {
         Cow::Owned(x)
     }
 
+    /// How much of an `n`-long `x` an apply copies: all of it when some coefficients vanished.
+    fn copied(&self, n: usize) -> usize {
+        if self.vanished.is_empty() {
+            0
+        } else {
+            n
+        }
+    }
+
     fn zero_vanished(&self, v: &mut [f64]) {
         self.vanished.iter().for_each(|&j| v[j] = 0.0);
     }
@@ -174,10 +184,12 @@ impl<'a> ReducedDesign<'a> {
     pub(crate) fn project_rhs(&self, b: impl Fn(usize) -> f64 + Sync) -> Vec<f64> {
         let columns = self.columns();
         let mut out = vec![0.0; self.prepared.design.n_obs];
+        let mut scratch = MemBuffer::new(columns.project_scratch(true));
+        let stack = MemStack::new(&mut scratch);
         with_shape!(columns, |W, w| {
-            columns.project::<W>(|i, x| *x = b(i), w, &mut out);
+            columns.project::<W>(|i, x| *x = b(i), w, &mut out, Threads::All, stack);
             // One pass rounds away entries of heavy rows that light rows' weights make matter.
-            columns.project::<W>(|_, _| {}, w, &mut out);
+            columns.project::<W>(|_, _| {}, w, &mut out, Threads::All, stack);
         });
         out
     }
@@ -192,7 +204,7 @@ impl<'a> ReducedDesign<'a> {
         with_shape!(columns, |W, w| {
             let levels = by_level.par_chunks_mut(width).enumerate().with_min_len(256);
             levels.for_each_init(
-                || (columns.moments(2), Vec::new()),
+                || (vec![0.0; 2 * LINE + 2 * width], Vec::new()),
                 |(moments, v), (l, out)| {
                     let (fit, step) = moments[LINE..][..2 * width].split_at_mut(width);
                     let (rows, basis) = columns.level::<W, _>(l, w);
@@ -301,6 +313,7 @@ impl<'a> ReducedDesign<'a> {
         let (removed, counts) = fixed_tree(
             0..leaves.len(),
             1,
+            Threads::All,
             &|k: Range<usize>| leaf(leaves[k.start].clone()),
             &merge,
         );
@@ -543,10 +556,20 @@ impl ProjectedColumns<'_> {
         (rows, basis)
     }
 
-    /// `k` moments per eliminated column, a cache line clear of other threads' buffers at each
-    /// end: small buffers that shared a line ran up to 2× slower.
-    fn moments(&self, k: usize) -> Vec<f64> {
-        vec![0.0; 2 * LINE + k * self.eliminated.width()]
+    /// The moments of one level, a cache line clear of other threads' memory at each end: small
+    /// buffers that shared a line ran up to 2× slower.
+    fn moments_len(&self) -> usize {
+        2 * LINE + self.eliminated.width()
+    }
+
+    fn moments(&self) -> StackReq {
+        StackReq::new::<f64>(self.moments_len())
+    }
+
+    /// What `project` takes: moments per task when the tasks run at once.
+    fn project_scratch(&self, parallel: bool) -> StackReq {
+        let tasks = self.system.tasks.len();
+        self.moments().array(if parallel { tasks } else { 1 })
     }
 
     /// `out ← (I − P_e) out` in one pass, `set` first writing each row's value; `w = W^½`.
@@ -555,22 +578,16 @@ impl ProjectedColumns<'_> {
         set: impl Fn(usize, &mut f64) + Sync + Copy,
         w: impl Fn(usize) -> f64 + Sync + Copy,
         out: &mut [f64],
+        threads: Threads,
+        stack: &mut MemStack,
     ) {
-        let mut parts = Vec::with_capacity(self.system.tasks.len());
-        let mut rest = out;
-        for levels in &self.system.tasks {
-            let start = self.rows.positions(levels.start).start;
-            let end = self.rows.positions(levels.end - 1).end;
-            let (head, tail) = std::mem::take(&mut rest).split_at_mut(end - start);
-            parts.push((levels.clone(), start, head));
-            rest = tail;
-        }
         let width = self.eliminated.width();
-        parts.into_par_iter().for_each_init(
-            || self.moments(1),
-            |moments, (levels, base, part)| {
+        let moments = self.moments_len();
+        let solve_part =
+            |levels: Range<usize>, base: usize, part: &mut [f64], stack: &mut MemStack| {
                 // Copied: read through the captures, each row reloads them after a store to `part`.
                 let (set, w) = (set, w);
+                let (mut moments, _) = stack.make_with(moments, |_| 0.0);
                 // A fixed width keeps the moments in registers; on the heap they cost 12%.
                 let mut fixed = [0.0; W];
                 let fit = match W {
@@ -590,30 +607,80 @@ impl ProjectedColumns<'_> {
                         *x = remove_fit(&basis, p, *x, fit);
                     }
                 }
-            },
-        );
+            };
+        let parallel = threads != Threads::ONE && stack.can_hold(self.project_scratch(true));
+        let tasks = 0..self.system.tasks.len();
+        self.project_tasks(tasks, out, parallel, stack, &solve_part);
     }
 
-    /// `A_rᵀ v`, one accumulator per leaf summed in a fixed tree.
+    /// `solve_part` on each task's levels, its first row and its rows of `out`, halving at once.
+    fn project_tasks(
+        &self,
+        tasks: Range<usize>,
+        out: &mut [f64],
+        parallel: bool,
+        stack: &mut MemStack,
+        solve_part: &(impl Fn(Range<usize>, usize, &mut [f64], &mut MemStack) + Sync),
+    ) {
+        let all = &self.system.tasks;
+        let start = |t: usize| self.rows.positions(all[t].start).start;
+        if parallel && tasks.len() > 1 {
+            let mid = tasks.start + tasks.len() / 2;
+            let (left, right) = out.split_at_mut(start(mid) - start(tasks.start));
+            let carved = self.moments().array(mid - tasks.start);
+            join_carved(
+                stack,
+                carved,
+                |stack| self.project_tasks(tasks.start..mid, left, true, stack, solve_part),
+                |stack| self.project_tasks(mid..tasks.end, right, true, stack, solve_part),
+            );
+            return;
+        }
+        let mut rest = out;
+        for t in tasks {
+            let levels = all[t].clone();
+            let end = self.rows.positions(levels.end - 1).end;
+            let (head, tail) = std::mem::take(&mut rest).split_at_mut(end - start(t));
+            solve_part(levels, start(t), head, stack);
+            rest = tail;
+        }
+    }
+
+    /// What `adjoint` over `leaves` takes: an accumulator per right child, moments per leaf, and
+    /// both children's at once when they run at once.
+    fn adjoint_scratch(&self, leaves: &Range<usize>, parallel: bool) -> StackReq {
+        if leaves.len() <= 1 {
+            return self.moments();
+        }
+        let mid = tree_mid(leaves, 1);
+        let left = self.adjoint_scratch(&(leaves.start..mid), parallel);
+        let right = self.adjoint_scratch(&(mid..leaves.end), parallel);
+        let children = if parallel {
+            left.and(right)
+        } else {
+            left.or(right)
+        };
+        let n_kept = self.system.prepared.design.n_unknowns();
+        StackReq::new::<f64>(n_kept).and(children)
+    }
+
+    /// `y = A_rᵀ v`, one accumulator per leaf summed in [`fixed_tree`]'s tree.
     fn adjoint<'k, const W: usize, const KEPT_PLAIN: bool>(
         &self,
         kept: impl AsRef<Kept<'k>> + Sync + Copy,
         v: &[f64],
         w: impl Fn(usize) -> f64 + Sync + Copy,
-    ) -> Vec<f64> {
+        y: &mut [f64],
+        threads: Threads,
+        stack: &mut MemStack,
+    ) {
         let width = self.eliminated.width();
-        let ReducedDesign {
-            prepared,
-            tasks: all,
-            leaves,
-            ..
-        } = self.system;
-        let n_kept = prepared.design.n_unknowns();
-        let leaf = |tasks: Range<usize>| {
+        let moments = self.moments_len();
+        let all = &self.system.tasks;
+        let leaf = |tasks: Range<usize>, acc: &mut [f64], stack: &mut MemStack| {
             // Copied: read through the captures, each row reloads them after a store to `acc`.
             let (kept, w) = (kept, w);
-            let mut acc = vec![0.0; n_kept];
-            let mut moments = self.moments(1);
+            let (mut moments, _) = stack.make_with(moments, |_| 0.0);
             let mut fixed = [0.0; W];
             let fit = match W {
                 0 => &mut moments[LINE..][..width],
@@ -631,15 +698,58 @@ impl ProjectedColumns<'_> {
                 for (p, &x) in u.iter().enumerate() {
                     let i = rows.start + p;
                     let projected = w(i) * remove_fit(&basis, p, x, fit);
-                    add_kept_row::<KEPT_PLAIN>(&kept, &mut acc, i, projected);
+                    add_kept_row::<KEPT_PLAIN>(&kept, acc, i, projected);
                 }
             }
-            acc
         };
-        let add = |l: &mut Vec<f64>, r: &Vec<f64>| l.iter_mut().zip(r).for_each(|(l, r)| *l += r);
-        let leaf = |k: Range<usize>| leaf(leaves[k.start].clone());
-        fixed_tree(0..leaves.len(), 1, &leaf, &add)
+        let leaves = 0..self.system.leaves.len();
+        let parallel =
+            threads != Threads::ONE && stack.can_hold(self.adjoint_scratch(&leaves, true));
+        y.fill(0.0);
+        self.adjoint_tree(leaves, y, parallel, stack, &leaf);
     }
+
+    /// Adds `leaf` over `leaves` into `out`, zero on entry: the right child into an accumulator
+    /// of its own, added after the left.
+    fn adjoint_tree(
+        &self,
+        leaves: Range<usize>,
+        out: &mut [f64],
+        parallel: bool,
+        stack: &mut MemStack,
+        leaf: &(impl Fn(Range<usize>, &mut [f64], &mut MemStack) + Sync),
+    ) {
+        if leaves.len() <= 1 {
+            return leaf(self.system.leaves[leaves.start].clone(), out, stack);
+        }
+        let mid = tree_mid(&leaves, 1);
+        let (left, right) = (leaves.start..mid, mid..leaves.end);
+        let (mut acc, stack) = stack.make_with(out.len(), |_| 0.0);
+        if parallel {
+            let carved = self.adjoint_scratch(&left, true);
+            join_carved(
+                stack,
+                carved,
+                |stack| self.adjoint_tree(left, out, true, stack, leaf),
+                |stack| self.adjoint_tree(right, &mut acc, true, stack, leaf),
+            );
+        } else {
+            self.adjoint_tree(left, out, false, stack, leaf);
+            self.adjoint_tree(right, &mut acc, false, stack, leaf);
+        }
+        out.iter_mut().zip(acc.iter()).for_each(|(l, r)| *l += r);
+    }
+}
+
+/// `left` on a region of `carved` from `stack` and `right` on the rest, at once.
+fn join_carved(
+    stack: &mut MemStack,
+    carved: StackReq,
+    left: impl FnOnce(&mut MemStack) + Send,
+    right: impl FnOnce(&mut MemStack) + Send,
+) {
+    let (mine, rest) = stack.make_aligned_uninit::<u8>(carved.size_bytes(), carved.align_bytes());
+    rayon::join(|| left(MemStack::new(mine)), || right(rest));
 }
 
 /// Per kept term, its columns and its block start in the kept coefficients.
@@ -713,25 +823,56 @@ impl Operator for ReducedDesign<'_> {
         self.prepared.design.n_unknowns()
     }
 
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
+    /// `apply`'s copy of `x` and its projection, or the adjoint's accumulators.
+    fn scratch(&self, _columns: usize, threads: Threads) -> StackReq {
+        let columns = self.columns();
+        let parallel = threads != Threads::ONE;
+        let leaves = 0..self.leaves.len();
+        let copy = StackReq::new::<f64>(self.copied(self.ncols()));
+        (copy.and(columns.project_scratch(parallel))).or(columns.adjoint_scratch(&leaves, parallel))
+    }
+
+    fn apply(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+        threads: Threads,
+        stack: &mut MemStack,
+    ) -> Result<(), schwarz_precond::SolveError> {
         debug_assert_eq!(x.len(), self.ncols());
-        let x = &*self.without_vanished(x);
+        let (mut copy, stack) = stack.make_with(self.copied(x.len()), |j| x[j]);
+        let x = match copy.is_empty() {
+            true => x,
+            false => {
+                self.zero_vanished(&mut copy);
+                &*copy
+            }
+        };
         let columns = self.columns();
         with_shape!(columns, |W, KEPT_PLAIN, kept, w| {
             columns.project::<W>(
                 move |i, y| *y = w(i) * kept_row::<KEPT_PLAIN>(&kept, x, i),
                 w,
                 y,
+                threads,
+                stack,
             )
         });
         Ok(())
     }
 
-    fn apply_adjoint(&self, v: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
+    fn apply_adjoint(
+        &self,
+        v: &[f64],
+        y: &mut [f64],
+        threads: Threads,
+        stack: &mut MemStack,
+    ) -> Result<(), schwarz_precond::SolveError> {
         debug_assert_eq!(y.len(), self.ncols());
         let columns = self.columns();
-        with_shape!(columns, |W, KEPT_PLAIN, kept, w| y
-            .copy_from_slice(&columns.adjoint::<W, KEPT_PLAIN>(kept, v, w)));
+        with_shape!(columns, |W, KEPT_PLAIN, kept, w| {
+            columns.adjoint::<W, KEPT_PLAIN>(kept, v, w, y, threads, stack)
+        });
         self.zero_vanished(y);
         Ok(())
     }

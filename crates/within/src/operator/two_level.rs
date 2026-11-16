@@ -18,7 +18,7 @@ use faer::sparse::linalg::cholesky::{
 use faer::sparse::{SparseColMat, SymbolicSparseColMat, SymbolicSparseColMatRef};
 use faer::{Conj, MatMut, Par, Side};
 use rayon::prelude::*;
-use schwarz_precond::{Operator, SolveError};
+use schwarz_precond::{Operator, SolveError, StackReq, Threads};
 use serde::{Deserialize, Serialize};
 
 use super::schwarz::FeSchwarz;
@@ -133,28 +133,52 @@ impl Operator for TwoLevelMap {
         self.one_level.ncols()
     }
 
+    /// `Zᵀx`, `x − SZ E⁻¹Zᵀx` and `SZᵀy`, then the coarse solve's or the one-level map's.
+    fn scratch(&self, columns: usize, threads: Threads) -> StackReq {
+        let (m, n) = (self.coarse.z.ncols(), self.nrows());
+        let coarse = StackReq::new::<f64>(m);
+        let vectors = StackReq::all_of(&[coarse, StackReq::new::<f64>(n), coarse]);
+        vectors.and(
+            self.coarse
+                .scratch()
+                .or(self.one_level.scratch(columns, threads)),
+        )
+    }
+
     /// `Z E⁻¹ Zᵀx + (I − Z E⁻¹ (SZ)ᵀ) B (I − SZ E⁻¹ Zᵀ) x`.
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+    fn apply(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+        threads: Threads,
+        stack: &mut MemStack,
+    ) -> Result<(), SolveError> {
         let coarse = &self.coarse;
         let m = coarse.z.ncols();
-        let mut c = vec![0.0; m];
-        coarse.z.t_mul(x, &mut c);
-        coarse.factor.solve(&mut c);
-        let mut t = x.to_vec();
-        coarse.sub_sz(&c, &mut t);
-        self.one_level.apply(&t, y)?;
-        let mut d = vec![0.0; m];
-        coarse.sz_t_mul(y, &mut d);
-        coarse.factor.solve(&mut d);
-        for (c, d) in c.iter_mut().zip(&d) {
+        let (mut c, stack) = stack.make_with(m, |_| 0.0);
+        let (mut t, stack) = stack.make_with(x.len(), |i| x[i]);
+        let (mut d, stack) = stack.make_with(m, |_| 0.0);
+        coarse.z.t_mul(x, &mut c, threads);
+        coarse.factor.solve(&mut c, stack);
+        coarse.sub_sz(&c, &mut t, threads, stack);
+        self.one_level.apply(&t, y, threads, stack)?;
+        coarse.sz_t_mul(y, &mut d, threads, stack);
+        coarse.factor.solve(&mut d, stack);
+        for (c, d) in c.iter_mut().zip(d.iter()) {
             *c -= d;
         }
-        coarse.z.mul_add(&c, 1.0, y);
+        coarse.z.mul_add(&c, 1.0, y, threads);
         Ok(())
     }
 
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        self.apply(x, y)
+    fn apply_adjoint(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+        threads: Threads,
+        stack: &mut MemStack,
+    ) -> Result<(), SolveError> {
+        self.apply(x, y, threads, stack)
     }
 }
 
@@ -187,19 +211,25 @@ impl std::fmt::Debug for CoarseSolve {
 }
 
 impl CoarseSolve {
+    /// What `solve`, `sub_sz` and `sz_t_mul` take.
+    fn scratch(&self) -> StackReq {
+        let hubs = self.hubs.as_ref().map_or(0, |h| h.rows.rank());
+        self.factor.scratch().or(StackReq::new::<f64>(hubs))
+    }
+
     /// `out −= SZ c`.
-    fn sub_sz(&self, c: &[f64], out: &mut [f64]) {
-        self.sz.mul_add(c, -1.0, out);
+    fn sub_sz(&self, c: &[f64], out: &mut [f64], threads: Threads, stack: &mut MemStack) {
+        self.sz.mul_add(c, -1.0, out, threads);
         if let Some(hubs) = &self.hubs {
-            hubs.add(c, out);
+            hubs.add(c, out, threads, stack);
         }
     }
 
     /// `out = SZᵀ y`.
-    fn sz_t_mul(&self, y: &[f64], out: &mut [f64]) {
-        self.sz.t_mul(y, out);
+    fn sz_t_mul(&self, y: &[f64], out: &mut [f64], threads: Threads, stack: &mut MemStack) {
+        self.sz.t_mul(y, out, threads);
         if let Some(hubs) = &self.hubs {
-            hubs.sub_transpose(y, out);
+            hubs.sub_transpose(y, out, threads, stack);
         }
     }
 }
@@ -299,22 +329,25 @@ impl CoarseFactor {
         })
     }
 
-    /// `E⁻¹v`: the wide levels' rows ride along with a zero right-hand side.
-    fn solve(&self, v: &mut [f64]) {
+    fn scratch(&self) -> StackReq {
         let dim = self.scale.len();
-        let mut x = v.to_vec();
-        x.resize(dim, 0.0);
-        x.iter_mut().zip(&self.scale).for_each(|(x, s)| *x *= s);
-        let mut buf = MemBuffer::new(self.symbolic.solve_in_place_scratch::<f64>(1, Par::Seq));
+        let solve = self.symbolic.solve_in_place_scratch::<f64>(1, Par::Seq);
+        StackReq::new::<f64>(dim).and(solve)
+    }
+
+    /// `E⁻¹v`: the wide levels' rows ride along with a zero right-hand side.
+    fn solve(&self, v: &mut [f64], stack: &mut MemStack) {
+        let dim = self.scale.len();
+        let (mut x, stack) = stack.make_with(dim, |i| v.get(i).map_or(0.0, |v| v * self.scale[i]));
         LdltRef::new(&self.symbolic, &self.l_values).solve_in_place_with_conj(
             Conj::No,
             MatMut::from_column_major_slice_mut(&mut x, dim, 1),
             Par::Seq,
-            MemStack::new(&mut buf),
+            stack,
         );
-        x.iter_mut().zip(&self.scale).for_each(|(x, s)| *x *= s);
-        let m = v.len();
-        v.copy_from_slice(&x[..m]);
+        for (v, (x, s)) in v.iter_mut().zip(x.iter().zip(&self.scale)) {
+            *v = x * s;
+        }
     }
 }
 
@@ -437,14 +470,14 @@ impl TwoWay {
     }
 
     /// `out = Mᵀx`.
-    fn t_mul(&self, x: &[f64], out: &mut [f64]) {
+    fn t_mul(&self, x: &[f64], out: &mut [f64], threads: Threads) {
         let column = |(c, o): (usize, &mut f64)| {
             let span = self.col_ptr[c]..self.col_ptr[c + 1];
             *o = (self.col_idx[span.clone()].iter().zip(&self.col_val[span]))
                 .map(|(&r, &v)| v * x[r as usize])
                 .sum();
         };
-        if self.nnz() >= PARALLEL_T_MUL {
+        if threads != Threads::ONE && self.nnz() >= PARALLEL_T_MUL {
             out.par_iter_mut().enumerate().for_each(column);
         } else {
             out.iter_mut().enumerate().for_each(column);
@@ -452,7 +485,7 @@ impl TwoWay {
     }
 
     /// `out += alpha M c`.
-    fn mul_add(&self, c: &[f64], alpha: f64, out: &mut [f64]) {
+    fn mul_add(&self, c: &[f64], alpha: f64, out: &mut [f64], threads: Threads) {
         const BLOCK: usize = 4096;
         let row = |i: usize| -> f64 {
             let span = self.row_ptr[i]..self.row_ptr[i + 1];
@@ -460,7 +493,7 @@ impl TwoWay {
                 .map(|(&k, &v)| v * c[k as usize])
                 .sum()
         };
-        if self.nnz() < PARALLEL_MUL_ADD {
+        if threads == Threads::ONE || self.nnz() < PARALLEL_MUL_ADD {
             for (i, &r) in self.rows.iter().enumerate() {
                 out[r as usize] += alpha * row(i);
             }
@@ -522,30 +555,27 @@ impl HubRows {
 }
 
 impl HubCorrection {
-    /// `C B v`.
-    fn cb_mul(&self, v: &[f64]) -> Vec<f64> {
+    /// Row `i` of `C B v`.
+    fn cb_row(&self, i: usize, v: &[f64]) -> f64 {
         let rows = &self.rows;
-        (0..rows.rank())
-            .map(|i| {
-                let b: f64 = (rows.ptr[i]..rows.ptr[i + 1])
-                    .map(|k| rows.vals[k] * v[rows.cols[k] as usize])
-                    .sum();
-                rows.c_mul(i, b)
-            })
-            .collect()
+        let b: f64 = (rows.ptr[i]..rows.ptr[i + 1])
+            .map(|k| rows.vals[k] * v[rows.cols[k] as usize])
+            .sum();
+        rows.c_mul(i, b)
     }
 
     /// `out += F C B c`.
-    fn add(&self, c: &[f64], out: &mut [f64]) {
-        self.f.mul_add(&self.cb_mul(c), 1.0, out);
+    fn add(&self, c: &[f64], out: &mut [f64], threads: Threads, stack: &mut MemStack) {
+        let (cb, _) = stack.make_with(self.rows.rank(), |i| self.cb_row(i, c));
+        self.f.mul_add(&cb, 1.0, out, threads);
     }
 
     /// `out −= (F C B)ᵀ y = Bᵀ C Fᵀ y`.
-    fn sub_transpose(&self, y: &[f64], out: &mut [f64]) {
+    fn sub_transpose(&self, y: &[f64], out: &mut [f64], threads: Threads, stack: &mut MemStack) {
         let rows = &self.rows;
-        let mut fy = vec![0.0; rows.rank()];
-        self.f.t_mul(y, &mut fy);
-        for (i, f) in fy.into_iter().enumerate() {
+        let (mut fy, _) = stack.make_with(rows.rank(), |_| 0.0);
+        self.f.t_mul(y, &mut fy, threads);
+        for (i, &f) in fy.iter().enumerate() {
             let q = rows.c_mul(i, f);
             for k in rows.ptr[i]..rows.ptr[i + 1] {
                 out[rows.cols[k] as usize] -= rows.vals[k] * q;

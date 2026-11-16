@@ -9,7 +9,7 @@ use crate::config::{
 };
 use crate::domain::{build_local_domains, Design, LocalDomain, PreparedDesign};
 use crate::operator::schwarz::build_additive;
-use schwarz_precond::{LocalSolver, MemBuffer, MemStack, Operator, Threads};
+use schwarz_precond::{LocalSolver, MemBuffer, MemStack, Threads};
 
 const BLOCK_ELIM_NESTED_RAYON_CHILD_ENV: &str = "WITHIN_TEST_BLOCK_ELIM_NESTED_RAYON_CHILD";
 
@@ -61,7 +61,7 @@ fn run_block_elim_nested_rayon_case() {
 
     let schwarz = build_additive(domain_pairs, n_dofs).expect("build block-elim preconditioner");
 
-    // Two subdomains: inner parallelism is off in a 1-thread pool and on in a 4-thread pool.
+    // The same two subdomains in a 1-thread pool and a 4-thread pool.
     let apply_in = |threads: usize| {
         rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
@@ -69,7 +69,7 @@ fn run_block_elim_nested_rayon_case() {
             .expect("test rayon pool")
             .install(|| {
                 let mut z = vec![0.0; n_dofs];
-                schwarz.apply(&rhs, &mut z).expect("apply succeeds");
+                crate::operator::apply_for_test(&schwarz, &rhs, &mut z).expect("apply succeeds");
                 z.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
             })
     };
@@ -132,7 +132,7 @@ fn test_build_additive() {
     let schwarz = build_additive(domain_pairs, n).expect("build schwarz with explicit domains");
     let r = vec![1.0; n];
     let mut z = vec![0.0; n];
-    schwarz.apply(&r, &mut z).expect("schwarz apply succeeds");
+    crate::operator::apply_for_test(&schwarz, &r, &mut z).expect("schwarz apply succeeds");
 }
 
 /// Three-entry eliminated stars, so clique sampling is not
@@ -151,7 +151,7 @@ fn small_subdomain_solve(schur: SchurMode, dense_threshold: usize) -> Vec<f64> {
     let mut x: Vec<f64> = (0..domain.solver.n_local())
         .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
         .collect();
-    let mut buffer = MemBuffer::new(domain.solver.scratch(Threads::ONE));
+    let mut buffer = MemBuffer::new(domain.solver.scratch(1, Threads::ONE));
     domain
         .solver
         .solve_local(&mut x, Threads::ONE, MemStack::new(&mut buffer))

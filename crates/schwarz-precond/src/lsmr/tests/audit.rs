@@ -5,10 +5,10 @@ use super::super::bidiag::{BidiagStep, Bidiagonalization};
 use super::super::magnitude::Magnitude;
 use super::super::recurrence::ConvergenceCriteria;
 use super::super::{
-    lsmr_from_bidiag, mlsmr, EscalationHandler, EscalationPolicy, LsmrResult, LsmrStopReason,
+    lsmr_from_bidiag, EscalationHandler, EscalationPolicy, LsmrResult, LsmrStopReason,
     MlsmrOptions, NormalEqReference, SolveStart,
 };
-use crate::lsmr::fixtures::{lsmr, DenseOp, DiagOp, FixedIterations};
+use crate::lsmr::fixtures::{lsmr, mlsmr_all, DenseOp, DiagOp, FixedIterations};
 use crate::lsmr::IdentityOp;
 use crate::SolveError;
 
@@ -86,6 +86,7 @@ fn scripted_run(
         criteria,
         maxiter,
         escalation,
+        crate::Threads::All,
     )
     .expect("scripted run")
 }
@@ -155,7 +156,7 @@ fn a_refused_stop_reports_its_iterates_normal_equation_residual(#[values(1.0, 4.
         warm_start: Some(&[1e20]),
         ..Default::default()
     };
-    let r = mlsmr(&op, &[1.0], &DiagOp(vec![m_inv]), 1e-12, 1, options).expect("solve");
+    let r = mlsmr_all(&op, &[1.0], &DiagOp(vec![m_inv]), 1e-12, 1, options).expect("solve");
     assert_eq!(r.stop_reason, LsmrStopReason::FalseConvergence);
     assert_eq!(r.x, vec![0.0]);
     assert_eq!(r.normal_eq_residual, 1.0);
@@ -247,7 +248,7 @@ fn a_deflating_preconditioner_cannot_certify_the_direction_it_hides() {
         cols: 2,
         data: vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
     };
-    let result = mlsmr(
+    let result = mlsmr_all(
         &op,
         &[1.0, 1.0, 1.0],
         &DiagOp(vec![1.0, 1e-20]),
@@ -281,7 +282,7 @@ fn a_warm_start_near_the_solution_keeps_its_certificate() {
         ..Default::default()
     };
 
-    let result = mlsmr(&op, &rhs, &IdentityOp { n: 2 }, 1e-8, 20, options).expect("warm solve");
+    let result = mlsmr_all(&op, &rhs, &IdentityOp { n: 2 }, 1e-8, 20, options).expect("warm solve");
 
     assert!(result.converged, "{:?}", result.stop_reason);
 }

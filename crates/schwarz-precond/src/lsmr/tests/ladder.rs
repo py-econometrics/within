@@ -19,7 +19,7 @@ fn test_mlsmr_warm_tolerance_is_relative_to_original_rhs() {
         local_size: window,
         ..Default::default()
     };
-    let warm = mlsmr(
+    let warm = mlsmr_all(
         &op,
         &b,
         &m,
@@ -34,11 +34,11 @@ fn test_mlsmr_warm_tolerance_is_relative_to_original_rhs() {
     assert_eq!(warm.stop_reason, LsmrStopReason::ResidualTolerance);
 
     let mut r = vec![0.0; op.rows];
-    op.apply(&x0, &mut r).expect("apply");
+    apply(&op, &x0, &mut r).expect("apply");
     for (ri, bi) in r.iter_mut().zip(&b) {
         *ri = bi - *ri;
     }
-    let naive = mlsmr(&op, &r, &m, tol, 200, base).expect("naive restart");
+    let naive = mlsmr_all(&op, &r, &m, tol, 200, base).expect("naive restart");
     assert!(
         warm.iterations < naive.iterations,
         "warm took {} iters, naive restart {} — the tolerance basis is not `‖b‖`",
@@ -61,7 +61,7 @@ fn test_mlsmr_rejects_bad_warm_start_for_any_rhs(#[case] b: &[f64], #[case] x0: 
         ..Default::default()
     };
     assert!(matches!(
-        mlsmr(&op, b, &op, 1e-8, 10, options),
+        mlsmr_all(&op, b, &op, 1e-8, 10, options),
         Err(SolveError::InvalidInput { .. })
     ));
 }
@@ -78,7 +78,7 @@ fn test_mlsmr_warm_rejects_overflowing_warm_start_residual() {
         ..Default::default()
     };
     assert!(matches!(
-        mlsmr(&op, &[1.0, 2.0, 3.0], &m, 1e-8, 10, options),
+        mlsmr_all(&op, &[1.0, 2.0, 3.0], &m, 1e-8, 10, options),
         Err(SolveError::InvalidInput { .. })
     ));
 }
@@ -93,7 +93,7 @@ fn test_mlsmr_warm_rejects_overflowing_rhs_norm() {
         warm_start: Some(&x0),
         ..Default::default()
     };
-    let err = mlsmr(&op, &[1.3e308; 2], &m, 1e-10, 10, options)
+    let err = mlsmr_all(&op, &[1.3e308; 2], &m, 1e-10, 10, options)
         .err()
         .expect("an infinite ‖b‖ certified the warm start");
     assert!(
@@ -110,7 +110,8 @@ fn test_mlsmr_zero_rhs_corrects_non_exact_warm_start() {
         warm_start: Some(&x0),
         ..Default::default()
     };
-    let result = mlsmr(&op, &[0.0, 0.0, 0.0], &op, 1e-10, 10, options).expect("warm correction");
+    let result =
+        mlsmr_all(&op, &[0.0, 0.0, 0.0], &op, 1e-10, 10, options).expect("warm correction");
 
     assert!(result.converged);
     // `b = 0` leaves `‖b − A x₀‖` as the only scale, so the residual leg is satisfiable.
@@ -134,7 +135,7 @@ fn test_mlsmr_exact_warm_start_is_returned_untouched(
         ..Default::default()
     };
     let m = IdentityOp { n: op.ncols() };
-    let result = mlsmr(op, b, &m, 1e-10, 50, options).expect("exact warm start");
+    let result = mlsmr_all(op, b, &m, 1e-10, 50, options).expect("exact warm start");
     assert_eq!(result.stop_reason, LsmrStopReason::WarmStartExact);
     assert!(result.converged);
     assert_eq!(result.x, x0);
@@ -155,7 +156,8 @@ fn test_mlsmr_converged_solve_is_never_escalated() {
         ..Default::default()
     };
     let m = IdentityOp { n: 3 };
-    let result = mlsmr(&IdentityOp { n: 3 }, &[1.0, 2.0, 3.0], &m, 1e-10, 50, opts).expect("solve");
+    let result =
+        mlsmr_all(&IdentityOp { n: 3 }, &[1.0, 2.0, 3.0], &m, 1e-10, 50, opts).expect("solve");
     assert!(result.converged);
     assert_ne!(result.stop_reason, LsmrStopReason::Escalated);
 }
@@ -167,10 +169,10 @@ fn test_warm_escalated_stop_is_measured_against_the_original_rhs() {
     let (op, b) = vandermonde_ls();
     let (tol, window) = (1e-12, Some(12));
     let m = jacobi(&op);
-    let cold = mlsmr(&op, &b, &m, tol, 4, MlsmrOptions::default()).expect("cold rung");
+    let cold = mlsmr_all(&op, &b, &m, tol, 4, MlsmrOptions::default()).expect("cold rung");
 
     let warm = |escalation| {
-        mlsmr(
+        mlsmr_all(
             &op,
             &b,
             &m,
@@ -216,10 +218,10 @@ fn test_mlsmr_ladder_warm_starts_and_escalates() {
         ..Default::default()
     };
 
-    let first = mlsmr(&op, &b, &weak, tol, 200, rung).expect("first rung");
+    let first = mlsmr_all(&op, &b, &weak, tol, 200, rung).expect("first rung");
     assert_eq!(first.stop_reason, LsmrStopReason::Escalated);
 
-    let middle = mlsmr(
+    let middle = mlsmr_all(
         &op,
         &b,
         &weak,
@@ -233,7 +235,7 @@ fn test_mlsmr_ladder_warm_starts_and_escalates() {
     .expect("middle rung");
     assert_eq!(middle.stop_reason, LsmrStopReason::Escalated);
 
-    let last = mlsmr(
+    let last = mlsmr_all(
         &op,
         &b,
         &strong,
@@ -247,7 +249,7 @@ fn test_mlsmr_ladder_warm_starts_and_escalates() {
     .expect("last rung");
     assert!(last.converged);
 
-    let cold = mlsmr(&op, &b, &strong, tol, 200, final_rung).expect("cold solve");
+    let cold = mlsmr_all(&op, &b, &strong, tol, 200, final_rung).expect("cold solve");
     let ladder = normal_equation_residual(&op, &last.x, &b);
     assert!(
         ladder <= 10.0 * normal_equation_residual(&op, &cold.x, &b).max(1e-14),
@@ -328,7 +330,7 @@ fn test_mlsmr_maxiter_residuals_are_rebased_onto_the_original_rhs() {
     let b = consistent_rhs(&op, &x_true);
     let x0: Vec<f64> = x_true.iter().map(|v| v * 0.9).collect();
 
-    let result = mlsmr(
+    let result = mlsmr_all(
         &op,
         &b,
         &IdentityOp { n: op.cols },
@@ -353,7 +355,7 @@ fn test_mlsmr_maxiter_residuals_are_rebased_onto_the_original_rhs() {
     );
 
     let mut ax = vec![0.0; op.rows];
-    op.apply(&result.x, &mut ax).expect("apply");
+    apply(&op, &result.x, &mut ax).expect("apply");
     let r: Vec<f64> = b.iter().zip(&ax).map(|(bi, ai)| bi - ai).collect();
     let true_normr = vec_norm(&r);
     assert!((result.residual_norm - true_normr).abs() <= 1e-9 * true_normr);
@@ -366,7 +368,7 @@ fn test_mlsmr_maxiter_residuals_are_rebased_onto_the_original_rhs() {
 fn test_mlsmr_warm_start_audits_at_extreme_magnitude() {
     let b = [1e160, 5e159];
     let x0 = [9e159, 4.5e159];
-    let result = mlsmr(
+    let result = mlsmr_all(
         &IdentityOp { n: 2 },
         &b,
         &IdentityOp { n: 2 },

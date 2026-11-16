@@ -4,8 +4,8 @@ use rstest::rstest;
 
 use super::super::*;
 use crate::fold::assert_pool_independent;
-use crate::lsmr::fixtures::{lsmr, DiagOp};
-use crate::{Operator, SolveError};
+use crate::lsmr::fixtures::{lsmr, mlsmr_all, DiagOp};
+use crate::{MemBuffer, MemStack, Operator, SolveError, StackReq, Threads};
 
 /// `A x` with `y[i] = x[i mod n] + ½ x[(7i + 3) mod n]`: large enough that every reduction splits.
 struct Wrapped {
@@ -26,14 +26,29 @@ impl Operator for Wrapped {
     fn ncols(&self) -> usize {
         self.n
     }
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+    fn scratch(&self, _columns: usize, _threads: Threads) -> StackReq {
+        StackReq::EMPTY
+    }
+    fn apply(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+        _threads: Threads,
+        _stack: &mut MemStack,
+    ) -> Result<(), SolveError> {
         for (i, yi) in y.iter_mut().enumerate() {
             let (a, b) = self.cols(i);
             *yi = x[a] + 0.5 * x[b];
         }
         Ok(())
     }
-    fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) -> Result<(), SolveError> {
+    fn apply_adjoint(
+        &self,
+        u: &[f64],
+        x: &mut [f64],
+        _threads: Threads,
+        _stack: &mut MemStack,
+    ) -> Result<(), SolveError> {
         x.fill(0.0);
         for (i, &ui) in u.iter().enumerate() {
             let (a, b) = self.cols(i);
@@ -96,6 +111,25 @@ fn mlsmr_returns_the_same_bits_at_any_thread_count(
         ..MlsmrOptions::default()
     };
     assert_pool_independent(|| {
-        fingerprint(&mlsmr(&op, &b, &m, 1e-14, 40, options).expect("mlsmr"))
+        fingerprint(&mlsmr_all(&op, &b, &m, 1e-14, 40, options).expect("mlsmr"))
     });
+}
+
+#[rstest]
+fn mlsmr_on_the_calling_thread_returns_the_bits_of_the_whole_pool(
+    #[values(None, Some(4))] local_size: Option<usize>,
+) {
+    let op = wrapped();
+    let b = spread(op.m, 1.0);
+    let options = MlsmrOptions {
+        local_size,
+        ..MlsmrOptions::default()
+    };
+    let m = DiagOp(spread(op.n, 1.0).iter().map(|v| 2.0 + v).collect());
+    let run = |threads| {
+        let mut scratch = MemBuffer::new(mlsmr_scratch(&op, &m, threads));
+        let stack = MemStack::new(&mut scratch);
+        fingerprint(&mlsmr(&op, &b, &m, 1e-14, 40, options, threads, stack).expect("mlsmr"))
+    };
+    assert!(run(Threads::ONE) == run(Threads::All));
 }

@@ -37,12 +37,27 @@ fn test_mlsmr_step1_alpha_zero_early_exit() {
         fn ncols(&self) -> usize {
             1
         }
-        fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+        fn scratch(&self, _columns: usize, _threads: Threads) -> StackReq {
+            StackReq::EMPTY
+        }
+        fn apply(
+            &self,
+            x: &[f64],
+            y: &mut [f64],
+            _threads: Threads,
+            _stack: &mut MemStack,
+        ) -> Result<(), SolveError> {
             y[0] = x[0];
             y[1] = 0.0;
             Ok(())
         }
-        fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) -> Result<(), SolveError> {
+        fn apply_adjoint(
+            &self,
+            u: &[f64],
+            x: &mut [f64],
+            _threads: Threads,
+            _stack: &mut MemStack,
+        ) -> Result<(), SolveError> {
             x[0] = u[0];
             Ok(())
         }
@@ -67,7 +82,7 @@ fn zero_initial_gradient(a: &[f64], m: &[f64], b: &[f64], x0: Option<&[f64]>) ->
         warm_start: x0,
         ..Default::default()
     };
-    mlsmr(
+    mlsmr_all(
         &DiagOp(a.to_vec()),
         b,
         &DiagOp(m.to_vec()),
@@ -187,19 +202,34 @@ fn test_mlsmr_near_breakdown_vp_clamps_to_zero() {
         fn ncols(&self) -> usize {
             2
         }
-        fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+        fn scratch(&self, _columns: usize, _threads: Threads) -> StackReq {
+            StackReq::EMPTY
+        }
+        fn apply(
+            &self,
+            x: &[f64],
+            y: &mut [f64],
+            _threads: Threads,
+            _stack: &mut MemStack,
+        ) -> Result<(), SolveError> {
             y[0] = -x[1] - 1e-10 * x[0];
             y[1] = x[0] - 1e-10 * x[1];
             Ok(())
         }
-        fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-            self.apply(x, y)
+        fn apply_adjoint(
+            &self,
+            x: &[f64],
+            y: &mut [f64],
+            threads: Threads,
+            stack: &mut MemStack,
+        ) -> Result<(), SolveError> {
+            self.apply(x, y, threads, stack)
         }
     }
 
     let b = vec![3.0, 4.0];
     let op = IdentityOp { n: 2 };
-    let result = mlsmr(
+    let result = mlsmr_all(
         &op,
         &b,
         &NearBreakdownPrecond,
@@ -255,17 +285,32 @@ fn test_mlsmr_rejects_bad_preconditioner_shape() {
         fn ncols(&self) -> usize {
             2
         }
-        fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+        fn scratch(&self, _columns: usize, _threads: Threads) -> StackReq {
+            StackReq::EMPTY
+        }
+        fn apply(
+            &self,
+            x: &[f64],
+            y: &mut [f64],
+            _threads: Threads,
+            _stack: &mut MemStack,
+        ) -> Result<(), SolveError> {
             y.copy_from_slice(x);
             Ok(())
         }
-        fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-            self.apply(x, y)
+        fn apply_adjoint(
+            &self,
+            x: &[f64],
+            y: &mut [f64],
+            threads: Threads,
+            stack: &mut MemStack,
+        ) -> Result<(), SolveError> {
+            self.apply(x, y, threads, stack)
         }
     }
 
     let b = vec![1.0, 2.0, 3.0, 3.0];
-    let result = mlsmr(
+    let result = mlsmr_all(
         &OverdeterminedOp,
         &b,
         &BadPrecond,
@@ -289,20 +334,35 @@ fn test_mlsmr_rejects_indefinite_preconditioner() {
         fn ncols(&self) -> usize {
             2
         }
-        fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+        fn scratch(&self, _columns: usize, _threads: Threads) -> StackReq {
+            StackReq::EMPTY
+        }
+        fn apply(
+            &self,
+            x: &[f64],
+            y: &mut [f64],
+            _threads: Threads,
+            _stack: &mut MemStack,
+        ) -> Result<(), SolveError> {
             for (yi, &xi) in y.iter_mut().zip(x) {
                 *yi = -xi;
             }
             Ok(())
         }
-        fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-            self.apply(x, y)
+        fn apply_adjoint(
+            &self,
+            x: &[f64],
+            y: &mut [f64],
+            threads: Threads,
+            stack: &mut MemStack,
+        ) -> Result<(), SolveError> {
+            self.apply(x, y, threads, stack)
         }
     }
 
     let b = vec![3.0, 4.0];
     let op = IdentityOp { n: 2 };
-    let result = mlsmr(&op, &b, &NegIdentity, 1e-10, 100, MlsmrOptions::default());
+    let result = mlsmr_all(&op, &b, &NegIdentity, 1e-10, 100, MlsmrOptions::default());
     assert!(matches!(result, Err(SolveError::InvalidInput { .. })));
 }
 
@@ -357,7 +417,7 @@ fn a_reorthogonalized_breakdown_is_not_an_indefinite_metric(
         local_size: Some(local_size),
         ..Default::default()
     };
-    let r = mlsmr(&a, b, &metric, 1e-10, 50, options).expect("SPD metric");
+    let r = mlsmr_all(&a, b, &metric, 1e-10, 50, options).expect("SPD metric");
 
     assert!(r.converged, "{:?}", r.stop_reason);
     let zero = vec![0.0; a.cols];
@@ -400,6 +460,6 @@ fn an_indefinite_metric_is_refused_after_reorthogonalization(
         local_size,
         ..Default::default()
     };
-    let r = mlsmr(&a, b, &DiagOp(m.to_vec()), 1e-12, 50, options);
+    let r = mlsmr_all(&a, b, &DiagOp(m.to_vec()), 1e-12, 50, options);
     assert!(matches!(r, Err(SolveError::InvalidInput { .. })), "{m:?}");
 }

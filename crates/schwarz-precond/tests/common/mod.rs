@@ -1,9 +1,29 @@
 //! Shared test fixtures for schwarz-precond integration tests.
 
 use schwarz_precond::{
-    LocalSolveError, LocalSolver, MemStack, Operator, SolveError, StackReq, SubdomainCore,
-    SubdomainEntry, Threads,
+    mlsmr, mlsmr_scratch, LocalSolveError, LocalSolver, LsmrResult, MemBuffer, MemStack,
+    MlsmrOptions, Operator, SolveError, StackReq, SubdomainCore, SubdomainEntry, Threads,
 };
+
+/// [`mlsmr`] on every thread of the pool, its scratch allocated.
+pub fn solve<A: Operator + ?Sized, M: Operator + ?Sized>(
+    op: &A,
+    b: &[f64],
+    m: &M,
+    tol: f64,
+    maxiter: usize,
+    options: MlsmrOptions<'_>,
+) -> Result<LsmrResult, SolveError> {
+    let mut scratch = MemBuffer::new(mlsmr_scratch(op, m, Threads::All));
+    let stack = MemStack::new(&mut scratch);
+    mlsmr(op, b, m, tol, maxiter, options, Threads::All, stack)
+}
+
+/// [`Operator::apply`] on every thread of the pool, its scratch allocated.
+pub fn apply<O: Operator + ?Sized>(op: &O, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+    let mut scratch = MemBuffer::new(op.scratch(1, Threads::All));
+    op.apply(x, y, Threads::All, MemStack::new(&mut scratch))
+}
 
 // ---------------------------------------------------------------------------
 // Operators
@@ -28,7 +48,16 @@ impl Operator for TridiagOperator {
     fn ncols(&self) -> usize {
         self.n
     }
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+    fn scratch(&self, _columns: usize, _threads: Threads) -> StackReq {
+        StackReq::EMPTY
+    }
+    fn apply(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+        _threads: Threads,
+        _stack: &mut MemStack,
+    ) -> Result<(), SolveError> {
         for i in 0..self.n {
             y[i] = self.diag_val * x[i];
             if i > 0 {
@@ -40,8 +69,14 @@ impl Operator for TridiagOperator {
         }
         Ok(())
     }
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        self.apply(x, y)
+    fn apply_adjoint(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+        threads: Threads,
+        stack: &mut MemStack,
+    ) -> Result<(), SolveError> {
+        self.apply(x, y, threads, stack)
     }
 }
 
@@ -68,7 +103,7 @@ impl LocalSolver for UniformDiagLocalSolver {
     fn n_local(&self) -> usize {
         self.n_local
     }
-    fn scratch(&self, _threads: Threads) -> StackReq {
+    fn scratch(&self, _columns: usize, _threads: Threads) -> StackReq {
         StackReq::EMPTY
     }
     fn solve_local(
@@ -124,7 +159,7 @@ impl LocalSolver for FailingLocalSolver {
     fn n_local(&self) -> usize {
         self.n_local
     }
-    fn scratch(&self, _threads: Threads) -> StackReq {
+    fn scratch(&self, _columns: usize, _threads: Threads) -> StackReq {
         StackReq::EMPTY
     }
     fn solve_local(

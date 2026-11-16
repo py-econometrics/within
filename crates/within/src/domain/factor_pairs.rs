@@ -282,7 +282,7 @@ mod tests {
         // The kept workers occupy DOFs 0..5.
         assert_eq!(domain.core.global_indices(), (0..5).collect::<Vec<u32>>());
         let mut x = vec![1.0; 5];
-        let mut buffer = MemBuffer::new(domain.solver.scratch(Threads::All));
+        let mut buffer = MemBuffer::new(domain.solver.scratch(1, Threads::All));
         domain
             .solver
             .solve_local(&mut x, Threads::All, MemStack::new(&mut buffer))

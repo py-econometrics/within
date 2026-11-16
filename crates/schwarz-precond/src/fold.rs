@@ -2,6 +2,8 @@
 
 use std::ops::Range;
 
+use crate::threads::Threads;
+
 /// An ordered input that [`fold`] can cut at an index into a prefix and a suffix.
 pub(crate) trait Split: Sized + Send {
     fn n_items(&self) -> usize;
@@ -52,6 +54,7 @@ impl<A: Split, B: Split> Split for (A, B) {
 pub(crate) fn fold<P: Split, T: Send>(
     input: P,
     block_len: usize,
+    threads: Threads,
     leaf: &(impl Fn(P) -> T + Sync),
     combine: &(impl Fn(T, T) -> T + Sync),
 ) -> T {
@@ -61,15 +64,15 @@ pub(crate) fn fold<P: Split, T: Send>(
         return leaf(input);
     }
     let (left, right) = input.split_at(pieces / 2 * block_len);
-    let (l, r) = if n > SEQUENTIAL_ITEMS {
+    let (l, r) = if n > SEQUENTIAL_ITEMS && threads.forks() {
         rayon::join(
-            || fold(left, block_len, leaf, combine),
-            || fold(right, block_len, leaf, combine),
+            || fold(left, block_len, threads, leaf, combine),
+            || fold(right, block_len, threads, leaf, combine),
         )
     } else {
         (
-            fold(left, block_len, leaf, combine),
-            fold(right, block_len, leaf, combine),
+            fold(left, block_len, threads, leaf, combine),
+            fold(right, block_len, threads, leaf, combine),
         )
     };
     combine(l, r)
@@ -110,10 +113,16 @@ mod tests {
     #[case(43)]
     #[case(1_000)]
     fn leaves_cover_the_input_once_in_order(#[case] n: usize) {
-        let leaves = fold(0..n, 8, &|r: Range<usize>| vec![r], &|mut a, b| {
-            a.extend(b);
-            a
-        });
+        let leaves = fold(
+            0..n,
+            8,
+            Threads::All,
+            &|r: Range<usize>| vec![r],
+            &|mut a, b| {
+                a.extend(b);
+                a
+            },
+        );
         assert!(leaves
             .iter()
             .all(|r| r.len() <= 8 && (n == 0 || !r.is_empty())));
@@ -127,14 +136,17 @@ mod tests {
         let x: Vec<f64> = (0..100_003u64)
             .map(|i| ((i * 2_654_435_761) % 997) as f64 * 10f64.powi((i % 31) as i32 - 15))
             .collect();
-        assert_pool_independent(|| {
+        let sum = |threads| {
             fold(
                 x.as_slice(),
                 64,
+                threads,
                 &|c: &[f64]| c.iter().sum::<f64>(),
                 &|a, b| a + b,
             )
             .to_bits()
-        });
+        };
+        assert_pool_independent(|| sum(Threads::All));
+        assert_eq!(sum(Threads::ONE), sum(Threads::All));
     }
 }

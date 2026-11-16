@@ -1,7 +1,41 @@
 //! Operators and helpers shared by the LSMR test modules.
 
 use super::*;
-use crate::{Operator, SolveError};
+use crate::{MemBuffer, MemStack, Operator, SolveError, StackReq, Threads};
+
+/// [`mlsmr`] on every thread of the pool, its scratch allocated.
+pub(crate) fn mlsmr_all<A: Operator + ?Sized, M: Operator + ?Sized>(
+    op: &A,
+    b: &[f64],
+    m: &M,
+    tol: f64,
+    maxiter: usize,
+    options: MlsmrOptions<'_>,
+) -> Result<LsmrResult, SolveError> {
+    let mut scratch = MemBuffer::new(mlsmr_scratch(op, m, Threads::All));
+    let stack = MemStack::new(&mut scratch);
+    mlsmr(op, b, m, tol, maxiter, options, Threads::All, stack)
+}
+
+/// `y = A x` on every thread of the pool, its scratch allocated.
+pub(crate) fn apply<O: Operator + ?Sized>(
+    op: &O,
+    x: &[f64],
+    y: &mut [f64],
+) -> Result<(), SolveError> {
+    let mut scratch = MemBuffer::new(op.scratch(1, Threads::All));
+    op.apply(x, y, Threads::All, MemStack::new(&mut scratch))
+}
+
+/// `y = Aᵀ x` on every thread of the pool, its scratch allocated.
+pub(crate) fn apply_adjoint<O: Operator + ?Sized>(
+    op: &O,
+    x: &[f64],
+    y: &mut [f64],
+) -> Result<(), SolveError> {
+    let mut scratch = MemBuffer::new(op.scratch(1, Threads::All));
+    op.apply_adjoint(x, y, Threads::All, MemStack::new(&mut scratch))
+}
 
 /// Unpreconditioned LSMR: [`mlsmr`] with [`IdentityOp`].
 pub(crate) fn lsmr<O: Operator + ?Sized>(
@@ -15,7 +49,7 @@ pub(crate) fn lsmr<O: Operator + ?Sized>(
         local_size,
         ..Default::default()
     };
-    mlsmr(op, b, &IdentityOp { n: op.ncols() }, tol, maxiter, options)
+    mlsmr_all(op, b, &IdentityOp { n: op.ncols() }, tol, maxiter, options)
 }
 
 /// Simple 4×3 overdetermined system.
@@ -29,14 +63,29 @@ impl Operator for OverdeterminedOp {
     fn ncols(&self) -> usize {
         3
     }
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+    fn scratch(&self, _columns: usize, _threads: Threads) -> StackReq {
+        StackReq::EMPTY
+    }
+    fn apply(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+        _threads: Threads,
+        _stack: &mut MemStack,
+    ) -> Result<(), SolveError> {
         y[0] = x[0];
         y[1] = x[1];
         y[2] = x[2];
         y[3] = x[0] + x[1];
         Ok(())
     }
-    fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) -> Result<(), SolveError> {
+    fn apply_adjoint(
+        &self,
+        u: &[f64],
+        x: &mut [f64],
+        _threads: Threads,
+        _stack: &mut MemStack,
+    ) -> Result<(), SolveError> {
         x[0] = u[0] + u[3];
         x[1] = u[1] + u[3];
         x[2] = u[2];
@@ -56,12 +105,27 @@ impl Operator for ZeroSecondRow {
     fn ncols(&self) -> usize {
         2
     }
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+    fn scratch(&self, _columns: usize, _threads: Threads) -> StackReq {
+        StackReq::EMPTY
+    }
+    fn apply(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+        _threads: Threads,
+        _stack: &mut MemStack,
+    ) -> Result<(), SolveError> {
         y[0] = x[0];
         y[1] = 0.0;
         Ok(())
     }
-    fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) -> Result<(), SolveError> {
+    fn apply_adjoint(
+        &self,
+        u: &[f64],
+        x: &mut [f64],
+        _threads: Threads,
+        _stack: &mut MemStack,
+    ) -> Result<(), SolveError> {
         x[0] = u[0];
         x[1] = 0.0;
         Ok(())
@@ -72,11 +136,10 @@ impl Operator for ZeroSecondRow {
 /// "did we actually solve the least-squares problem?" check.
 pub(crate) fn normal_equation_residual<O: Operator + ?Sized>(op: &O, x: &[f64], b: &[f64]) -> f64 {
     let mut ax = vec![0.0; op.nrows()];
-    op.apply(x, &mut ax).expect("apply succeeds");
+    apply(op, x, &mut ax).expect("apply succeeds");
     let resid: Vec<f64> = b.iter().zip(&ax).map(|(bi, ai)| bi - ai).collect();
     let mut atr = vec![0.0; op.ncols()];
-    op.apply_adjoint(&resid, &mut atr)
-        .expect("apply_adjoint succeeds");
+    apply_adjoint(op, &resid, &mut atr).expect("apply_adjoint succeeds");
     vec_norm(&atr)
 }
 
@@ -90,14 +153,29 @@ impl Operator for DiagOp {
     fn ncols(&self) -> usize {
         self.0.len()
     }
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+    fn scratch(&self, _columns: usize, _threads: Threads) -> StackReq {
+        StackReq::EMPTY
+    }
+    fn apply(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+        _threads: Threads,
+        _stack: &mut MemStack,
+    ) -> Result<(), SolveError> {
         for ((yi, &xi), &di) in y.iter_mut().zip(x).zip(self.0.iter()) {
             *yi = di * xi;
         }
         Ok(())
     }
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        self.apply(x, y)
+    fn apply_adjoint(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+        threads: Threads,
+        stack: &mut MemStack,
+    ) -> Result<(), SolveError> {
+        self.apply(x, y, threads, stack)
     }
 }
 
@@ -151,13 +229,28 @@ impl Operator for DenseOp {
     fn ncols(&self) -> usize {
         self.cols
     }
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+    fn scratch(&self, _columns: usize, _threads: Threads) -> StackReq {
+        StackReq::EMPTY
+    }
+    fn apply(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+        _threads: Threads,
+        _stack: &mut MemStack,
+    ) -> Result<(), SolveError> {
         for (yi, row) in y.iter_mut().zip(self.data.chunks_exact(self.cols)) {
             *yi = row.iter().zip(x).map(|(a, b)| a * b).sum();
         }
         Ok(())
     }
-    fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) -> Result<(), SolveError> {
+    fn apply_adjoint(
+        &self,
+        u: &[f64],
+        x: &mut [f64],
+        _threads: Threads,
+        _stack: &mut MemStack,
+    ) -> Result<(), SolveError> {
         for (j, xj) in x.iter_mut().enumerate() {
             let mut s = 0.0;
             for (ui, row) in u.iter().zip(self.data.chunks_exact(self.cols)) {
@@ -172,7 +265,7 @@ impl Operator for DenseOp {
 /// `b = A x`, a consistent right-hand side.
 pub(crate) fn consistent_rhs(op: &DenseOp, x: &[f64]) -> Vec<f64> {
     let mut b = vec![0.0; op.rows];
-    op.apply(x, &mut b).expect("apply");
+    apply(op, x, &mut b).expect("apply");
     b
 }
 

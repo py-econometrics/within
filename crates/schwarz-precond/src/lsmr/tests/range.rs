@@ -31,8 +31,8 @@ fn solve<A: Operator>(
         ..Default::default()
     };
     match metric {
-        Metric::Identity => mlsmr(a, b, &IdentityOp { n }, 1e-10, 50, options),
-        Metric::Diagonal => mlsmr(a, b, &diagonal, 1e-10, 50, options),
+        Metric::Identity => mlsmr_all(a, b, &IdentityOp { n }, 1e-10, 50, options),
+        Metric::Diagonal => mlsmr_all(a, b, &diagonal, 1e-10, 50, options),
     }
 }
 
@@ -100,7 +100,7 @@ fn a_definite_metric_whose_raw_dot_product_overflows_is_rescaled() {
         cols: 2,
         data: vec![1.0, -1.0, -1.0, 1.5],
     };
-    let r = mlsmr(
+    let r = mlsmr_all(
         &DiagOp(vec![2e200, 1e200]),
         &[1.0, 1.0],
         &m,
@@ -139,7 +139,7 @@ fn an_operator_past_the_unnormalized_headroom_fails_loudly(#[case] data: &[f64])
         cols: 2,
         data: data.to_vec(),
     };
-    let r = mlsmr(
+    let r = mlsmr_all(
         &a,
         &[1.0, 0.0],
         &IdentityOp { n: 2 },
@@ -165,7 +165,7 @@ fn a_run_past_krylov_exhaustion_never_returns_a_non_finite_x(
     };
     let b = [1.0, 0.0];
     let r = if metric {
-        mlsmr(
+        mlsmr_all(
             &a,
             &b,
             &IdentityOp { n: 2 },
@@ -194,7 +194,7 @@ fn a_subnormal_rhs_bounds_the_operator_by_its_own_norm() {
         cols: 2,
         data: vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
     };
-    let r = mlsmr(
+    let r = mlsmr_all(
         &a,
         &[1e-310, 0.0, 1e-310],
         &DiagOp(vec![1.0, 0.0]),
@@ -218,7 +218,7 @@ fn a_subnormal_rhs_bounds_the_operator_by_its_own_norm() {
 #[test]
 fn a_warm_reference_past_the_double_range_reports_against_b() {
     let solve = |s: f64, t: f64| {
-        mlsmr(
+        mlsmr_all(
             &DiagOp(vec![s, 2.0 * s]),
             &[t, t],
             &IdentityOp { n: 2 },
@@ -243,7 +243,7 @@ fn a_warm_reference_past_the_double_range_reports_against_b() {
 /// `b / ‖b‖` flushes `b₂ = 2^-500`, whose `2^300` column carries the metric reference.
 #[test]
 fn a_warm_reference_keeps_an_rhs_entry_far_below_its_norm() {
-    let r = mlsmr(
+    let r = mlsmr_all(
         &DiagOp(vec![1.0, 2f64.powi(300)]),
         &[2f64.powi(600), 2f64.powi(-500)],
         &DiagOp(vec![2f64.powi(-1000), 2f64.powi(700)]),
@@ -265,7 +265,7 @@ fn a_warm_reference_keeps_an_rhs_entry_far_below_its_norm() {
 /// A subnormal `Aᵀb` made unit meets a metric near `f64::MAX`, overflowing `M⁻¹g` the raw one fits.
 #[test]
 fn a_subnormal_warm_gradient_stays_raw_under_a_huge_metric() {
-    let r = mlsmr(
+    let r = mlsmr_all(
         &DiagOp(vec![1e-310, 1e-310]),
         &[1.0, 1.0],
         &DenseOp {
@@ -292,7 +292,7 @@ fn a_subnormal_warm_gradient_stays_raw_under_a_huge_metric() {
 #[test]
 fn a_rounded_subnormal_rhs_norm_does_not_overstate_the_operator() {
     let eps = f64::from_bits(1);
-    let r = mlsmr(
+    let r = mlsmr_all(
         &DiagOp(vec![1.0, 0.5]),
         &[eps, eps],
         &DiagOp(vec![eps, eps]),

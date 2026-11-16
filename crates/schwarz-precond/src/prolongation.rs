@@ -2,6 +2,8 @@
 
 use rayon::prelude::*;
 
+use crate::threads::Threads;
+
 /// For each DOF, the slots of the stacked local vector holding it, in ascending slot order.
 pub(crate) struct Prolongation {
     offsets: Vec<usize>,
@@ -33,23 +35,24 @@ impl Prolongation {
     }
 
     /// `global[g] = Σ local[s]` over the slots `s` of `g`, summed in ascending `s`.
-    pub(crate) fn apply(&self, local: &[f64], global: &mut [f64]) {
+    pub(crate) fn apply(&self, local: &[f64], global: &mut [f64], threads: Threads) {
         debug_assert_eq!(local.len(), self.slots.len());
         debug_assert_eq!(global.len() + 1, self.offsets.len());
         const CHUNK: usize = 4096;
-        global
-            .par_chunks_mut(CHUNK)
-            .enumerate()
-            .for_each(|(ci, chunk)| {
-                let first = ci * CHUNK;
-                for (g, o) in (first..).zip(chunk.iter_mut()) {
-                    let mut sum = 0.0;
-                    for &s in &self.slots[self.offsets[g]..self.offsets[g + 1]] {
-                        sum += local[s as usize];
-                    }
-                    *o = sum;
+        let sum_chunk = |(ci, chunk): (usize, &mut [f64])| {
+            let first = ci * CHUNK;
+            for (g, o) in (first..).zip(chunk.iter_mut()) {
+                let mut sum = 0.0;
+                for &s in &self.slots[self.offsets[g]..self.offsets[g + 1]] {
+                    sum += local[s as usize];
                 }
-            });
+                *o = sum;
+            }
+        };
+        match threads.forks() {
+            true => global.par_chunks_mut(CHUNK).enumerate().for_each(sum_chunk),
+            false => global.chunks_mut(CHUNK).enumerate().for_each(sum_chunk),
+        }
     }
 }
 
@@ -64,7 +67,7 @@ mod tests {
         let big = 2f64.powi(53);
         let p = Prolongation::new([1u32, 0, 1, 1].into_iter(), 3);
         let mut out = vec![f64::NAN; 3];
-        p.apply(&[1.0, 3.0, big, -big], &mut out);
+        p.apply(&[1.0, 3.0, big, -big], &mut out, Threads::All);
         // `1 + 2⁵³` rounds to `2⁵³`; summed in reverse, DOF 1 would be 1.
         assert_eq!(out, vec![3.0, 0.0, 0.0]);
     }
@@ -92,10 +95,12 @@ mod tests {
         scattered_prolongation: Prolongation,
         wide_range_local: Vec<f64>,
     ) {
-        assert_pool_independent(|| {
+        let sum = |threads| {
             let mut global = vec![0.0; DOFS as usize];
-            scattered_prolongation.apply(&wide_range_local, &mut global);
+            scattered_prolongation.apply(&wide_range_local, &mut global, threads);
             global.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
-        });
+        };
+        assert_pool_independent(|| sum(Threads::All));
+        assert!(sum(Threads::ONE) == sum(Threads::All));
     }
 }

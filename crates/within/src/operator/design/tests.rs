@@ -119,11 +119,11 @@ mod weighted_adjoint_proptests {
                 .collect();
 
             let mut ax = vec![0.0f64; reduced.nrows()];
-            reduced.apply(&x, &mut ax).unwrap();
+            crate::operator::apply_for_test(&reduced, &x, &mut ax).unwrap();
             let lhs: f64 = ax.iter().zip(&r).map(|(a, ri)| a * ri).sum();
 
             let mut atr = vec![0.0f64; reduced.ncols()];
-            reduced.apply_adjoint(&r, &mut atr).unwrap();
+            crate::operator::apply_adjoint_for_test(&reduced, &r, &mut atr).unwrap();
             let rhs: f64 = x.iter().zip(&atr).map(|(xi, ai)| xi * ai).sum();
 
             prop_assert!(
@@ -136,7 +136,7 @@ mod weighted_adjoint_proptests {
 
 mod elimination_tests {
     use rstest::rstest;
-    use schwarz_precond::Operator;
+    use schwarz_precond::{MemBuffer, MemStack, Operator, Threads};
 
     use super::{adjoint, noise, product};
     use crate::domain::{Design, Effect};
@@ -318,7 +318,7 @@ mod elimination_tests {
         let x_k: Vec<f64> = (0..k).map(|j| noise(17 * N + j)).collect();
         let kept_image = product(prepared, &embed(&x_k));
         let mut image = vec![0.0; N];
-        reduced.apply(&x_k, &mut image).unwrap();
+        crate::operator::apply_for_test(&reduced, &x_k, &mut image).unwrap();
 
         // `A_r x ⊥ A_e`.
         let normal = eliminated_normal(&image);
@@ -343,7 +343,7 @@ mod elimination_tests {
         // `⟨A_r x, v⟩ = ⟨x, A_rᵀ v⟩`.
         let v: Vec<f64> = (0..N).map(|i| noise(19 * N + i)).collect();
         let mut adjoint = vec![0.0; k];
-        reduced.apply_adjoint(&v, &mut adjoint).unwrap();
+        crate::operator::apply_adjoint_for_test(&reduced, &v, &mut adjoint).unwrap();
         let gap = (dot(&image, &v) - dot(&x_k, &adjoint)).abs();
         assert!(
             gap <= 1e-13 * norm(&image) * norm(&v),
@@ -356,7 +356,7 @@ mod elimination_tests {
         for j in 0..k {
             let mut unit = vec![0.0; k];
             unit[j] = 1.0;
-            reduced.apply(&unit, &mut image).unwrap();
+            crate::operator::apply_for_test(&reduced, &unit, &mut image).unwrap();
             let squared = dot(&image, &image);
             assert!(
                 (diagonal[j] - squared).abs() <= 1e-12 * kept_gram[j],
@@ -405,7 +405,7 @@ mod elimination_tests {
         for j in n_nested..k {
             let mut unit = vec![0.0; k];
             unit[j] = 1.0;
-            reduced.apply(&unit, &mut image).unwrap();
+            crate::operator::apply_for_test(&reduced, &unit, &mut image).unwrap();
             let squared = dot(&image, &image);
             assert!(
                 (diagonal[j] - squared).abs() <= 1e-12 * squared,
@@ -414,7 +414,8 @@ mod elimination_tests {
         }
     }
 
-    /// The products' and the diagonal's bits must not depend on the pool, the leaves capped.
+    /// The products' and the diagonal's bits depend on neither the pool nor the scratch, the
+    /// leaves capped.
     #[test]
     fn the_reduced_products_are_pool_independent() {
         let n = 600_000;
@@ -437,26 +438,38 @@ mod elimination_tests {
         assert!(4 * k > n / 8);
         let x: Vec<f64> = (0..k).map(|j| noise(3 * n + j)).collect();
         let v: Vec<f64> = (0..n).map(|i| noise(5 * n + i)).collect();
-        let products_in = |threads: usize| {
+        // On every thread of the pool, with scratch `sized_for` a budget.
+        let products_in = |threads: usize, sized_for: Threads| {
             rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .build()
                 .expect("test rayon pool")
                 .install(|| {
                     let reduced = build().unwrap();
+                    let mut scratch = MemBuffer::new(reduced.scratch(1, sized_for));
+                    let stack = MemStack::new(&mut scratch);
                     let (mut image, mut adjoint) = (vec![0.0; n], vec![0.0; k]);
-                    reduced.apply(&x, &mut image).unwrap();
-                    reduced.apply_adjoint(&v, &mut adjoint).unwrap();
+                    reduced.apply(&x, &mut image, Threads::All, stack).unwrap();
+                    reduced
+                        .apply_adjoint(&v, &mut adjoint, Threads::All, stack)
+                        .unwrap();
                     let diagonal = reduced.gram_diagonal();
                     let bits = (image.iter().chain(&adjoint).chain(&diagonal)).map(|v| v.to_bits());
                     bits.collect::<Vec<_>>()
                 })
         };
-        let reference = products_in(1);
+        let reference = products_in(1, Threads::All);
         for threads in [2, 3, 8] {
             // Not `assert_eq!`: a printed vector would bury the thread count.
-            assert!(products_in(threads) == reference, "{threads} threads");
+            assert!(
+                products_in(threads, Threads::All) == reference,
+                "{threads} threads"
+            );
         }
+        assert!(
+            products_in(8, Threads::ONE) == reference,
+            "one thread's scratch"
+        );
     }
 
     /// Enough rows for several parallel tasks and accumulator leaves, against a hand projection.
@@ -514,7 +527,7 @@ mod elimination_tests {
             })
             .collect();
         let mut image = vec![0.0; n];
-        reduced.apply(&x_k, &mut image).unwrap();
+        crate::operator::apply_for_test(&reduced, &x_k, &mut image).unwrap();
         let gap: Vec<f64> = image.iter().zip(&expected).map(|(a, b)| a - b).collect();
         assert!(
             norm(&gap) <= 1e-12 * norm(&expected),
@@ -524,7 +537,7 @@ mod elimination_tests {
 
         let v: Vec<f64> = (0..n).map(|i| noise(5 * n + i)).collect();
         let mut adjoint = vec![0.0; k];
-        reduced.apply_adjoint(&v, &mut adjoint).unwrap();
+        crate::operator::apply_adjoint_for_test(&reduced, &v, &mut adjoint).unwrap();
         let gap = (dot(&image, &v) - dot(&x_k, &adjoint)).abs();
         assert!(
             gap <= 1e-12 * norm(&image) * norm(&v),
