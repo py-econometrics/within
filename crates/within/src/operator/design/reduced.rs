@@ -7,8 +7,8 @@ use rayon::prelude::*;
 use schwarz_precond::Operator;
 
 use crate::domain::{
-    cut, fixed_tree, row_weight, Design, LevelRows, PreparedDesign, PreparedTerm, TermRows,
-    Unknowns, MIN_LEAF_ROWS,
+    cut, fixed_tree, row_weight, Design, LevelRows, PreparedDesign, TermRows, Unknowns,
+    MIN_LEAF_ROWS,
 };
 use crate::linalg::{add_moments, fit_twice, remove_fit, solve, solve_rescued, DiagonalGramBasis};
 use crate::BuildError;
@@ -27,6 +27,12 @@ pub(crate) struct ReducedDesign<'a> {
     leaves: Vec<Range<usize>>,
     /// Every term is a lone intercept: the plain kernels.
     plain: bool,
+}
+
+/// The eliminated term's runs: `new` refuses an unsorted term, and a sorted one splits by level.
+fn sorted_rows<'p>(prepared: &'p PreparedDesign<'_>) -> &'p LevelRows {
+    let rows = prepared.level_rows(prepared.design.dominant);
+    rows.expect("the eliminated term is sorted")
 }
 
 /// `A_e` and `A_k` borrowed for one product.
@@ -78,7 +84,7 @@ impl<'a> ReducedDesign<'a> {
         }
         let prepared = PreparedDesign::new(design, weights)?;
         let design = &prepared.design;
-        let rows = prepared.level_rows(dominant);
+        let rows = sorted_rows(&prepared);
         let tasks = cut(design.terms[dominant].n_levels(), TASK_ROWS, |l| {
             rows.positions(l).len()
         });
@@ -89,8 +95,10 @@ impl<'a> ReducedDesign<'a> {
         let leaf_rows = (4 * n_kept).min(design.n_obs.div_ceil(8));
         let leaves = cut(tasks.len(), MIN_LEAF_ROWS.max(leaf_rows), task_rows);
         let plain = (design.terms.iter()).all(|t| t.intercept && !t.has_slopes());
-        // Filled here: left to the first product, a solve's fan-out would wait on it.
-        prepared.diagonal(dominant);
+        // Filled here: left to first use, a solve's fan-out would wait on the dominant's.
+        (0..design.n_factors()).into_par_iter().for_each(|t| {
+            prepared.diagonal(t);
+        });
         Ok(Self {
             prepared,
             tasks,
@@ -113,17 +121,17 @@ impl<'a> ReducedDesign<'a> {
             system: self,
             eliminated: TermRows::new(&self.prepared.term(design.dominant)),
             gram: self.prepared.diagonal(design.dominant),
-            rows: self.prepared.level_rows(design.dominant),
+            rows: sorted_rows(&self.prepared),
             kept: kept.collect(),
         }
     }
 
-    /// `(I − P_e) b`.
-    pub(crate) fn project_rhs(&self, b: &[f64]) -> Vec<f64> {
+    /// `(I − P_e) b`, with `b` read row by row in internal order.
+    pub(crate) fn project_rhs(&self, b: impl Fn(usize) -> f64 + Sync) -> Vec<f64> {
         let columns = self.columns();
-        let mut out = vec![0.0; b.len()];
+        let mut out = vec![0.0; self.prepared.design.n_obs];
         with_shape!(columns, |PLAIN, w| {
-            columns.project::<PLAIN>(|i, x| *x = b[i], w, &mut out);
+            columns.project::<PLAIN>(|i, x| *x = b(i), w, &mut out);
             // One pass rounds away entries of heavy rows that light rows' weights make matter.
             columns.project::<PLAIN>(|_, _| {}, w, &mut out);
         });
@@ -131,7 +139,7 @@ impl<'a> ReducedDesign<'a> {
     }
 
     /// The full coefficients: `x_k` plus the eliminated block fitted to `b − A_k x_k`.
-    pub(crate) fn recover(&self, b: &[f64], x_k: &[f64]) -> Vec<f64> {
+    pub(crate) fn recover(&self, b: impl Fn(usize) -> f64 + Sync, x_k: &[f64]) -> Vec<f64> {
         let columns = self.columns();
         let (n_levels, width) = (columns.eliminated.n_levels, columns.eliminated.width());
         let mut by_level = vec![0.0; n_levels * width];
@@ -145,7 +153,7 @@ impl<'a> ReducedDesign<'a> {
                     v.clear();
                     fit.fill(0.0);
                     for (p, i) in rows.enumerate() {
-                        let x = b[i] - w(i) * columns.kept_row::<PLAIN>(x_k, i);
+                        let x = b(i) - w(i) * columns.kept_row::<PLAIN>(x_k, i);
                         v.push(x);
                         add_moments(&basis, p, x, fit);
                     }
@@ -163,32 +171,193 @@ impl<'a> ReducedDesign<'a> {
         x
     }
 
+    /// `diag(A_rᵀ A_r)`: each kept column's squared norm less its projection onto `A_e`; 0 when
+    /// that is rounding.
+    pub(crate) fn gram_diagonal(&self) -> Vec<f64> {
+        let columns = self.columns();
+        let design = &self.prepared.design;
+        let (eliminated, e_gram) = (&columns.eliminated, columns.gram);
+        let (e_n_levels, e_width) = (eliminated.n_levels, eliminated.width());
+        let sqrt_weights = self.prepared.sqrt_weights();
+        let mut n_kept_levels = 0;
+        let kept: Vec<KeptTerm<'_>> = (0..design.n_factors())
+            .filter_map(|t| {
+                let start = design.block_start(Unknowns::WithoutDominant, t)?;
+                let rows = TermRows::new(&self.prepared.term(t));
+                let first = n_kept_levels;
+                n_kept_levels += rows.n_levels;
+                let gram = self.prepared.diagonal(t);
+                Some(KeptTerm {
+                    rows,
+                    start,
+                    first,
+                    gram,
+                })
+            })
+            .collect();
+        let n_kept = design.n_unknowns(Unknowns::WithoutDominant);
+        let max_levels = kept.iter().map(|t| t.rows.n_levels).max().unwrap_or(0);
+        let tasks = &self.tasks;
+        let leaf = |leaf: Range<usize>| {
+            let mut removed = vec![0.0; n_kept];
+            let mut counts = vec![0usize; n_kept_levels];
+            // One `width × e_width` block per kept level the run touches, not per kept level.
+            let (mut cross, mut touched) = (Vec::new(), Vec::new());
+            let mut slot = vec![u32::MAX; max_levels];
+            for e in tasks[leaf.start].start..tasks[leaf.end - 1].end {
+                let rows = columns.rows.positions(e);
+                for term in &kept {
+                    let (levels, n_levels) = (term.rows.levels, term.rows.n_levels);
+                    let width = term.rows.width();
+                    let block = width * e_width;
+                    touched.clear();
+                    cross.clear();
+                    for i in rows.clone() {
+                        let l = levels[i] as usize;
+                        if slot[l] == u32::MAX {
+                            slot[l] = touched.len() as u32;
+                            touched.push(l);
+                            cross.resize(cross.len() + block, 0.0);
+                        }
+                        counts[term.first + l] += 1;
+                        let at = slot[l] as usize * block;
+                        // Weight first: a zero weight kills a huge loading.
+                        let w = row_weight(sqrt_weights, i);
+                        for c in 0..width {
+                            let wz = w * term.rows.column(i, c);
+                            for k in 0..e_width {
+                                cross[at + c * e_width + k] += wz * eliminated.column(i, k);
+                            }
+                        }
+                    }
+                    for (p, &l) in touched.iter().enumerate() {
+                        slot[l] = u32::MAX;
+                        for k in 0..e_width {
+                            let g = e_gram[k * e_n_levels + e];
+                            if g <= 0.0 {
+                                continue;
+                            }
+                            for c in 0..width {
+                                let x = cross[p * block + c * e_width + k];
+                                removed[term.start + c * n_levels + l] += x / g * x;
+                            }
+                        }
+                    }
+                }
+            }
+            (removed, counts)
+        };
+        let merge = |(l, lc): &mut (Vec<f64>, Vec<usize>), (r, rc): &(Vec<f64>, Vec<usize>)| {
+            l.iter_mut().zip(r).for_each(|(l, r)| *l += r);
+            lc.iter_mut().zip(rc).for_each(|(l, r)| *l += r);
+        };
+        let leaves = &self.leaves;
+        let (removed, counts) = fixed_tree(
+            0..leaves.len(),
+            1,
+            &|k: Range<usize>| leaf(leaves[k.start].clone()),
+            &merge,
+        );
+        let mut diagonal = vec![0.0; n_kept];
+        // (coefficient, kept term, level, column)
+        let mut flagged: Vec<(usize, usize, usize, usize)> = Vec::new();
+        for (t, term) in kept.iter().enumerate() {
+            let n_levels = term.rows.n_levels;
+            for c in 0..term.rows.width() {
+                for l in 0..n_levels {
+                    let (at, norm) = (term.start + c * n_levels + l, term.gram[c * n_levels + l]);
+                    let entry = norm - removed[at];
+                    // The difference cancels below `n·ε` of the squared norm; there it is resummed.
+                    let noise = 4.0 * counts[term.first + l] as f64 * f64::EPSILON;
+                    if entry <= noise * norm {
+                        flagged.push((at, t, l, c));
+                    } else {
+                        diagonal[at] = entry;
+                    }
+                }
+            }
+        }
+        if flagged.is_empty() {
+            return diagonal;
+        }
+        let mut wanted = vec![false; n_kept_levels];
+        for &(_, t, l, _) in &flagged {
+            wanted[kept[t].first + l] = true;
+        }
+        let searched: Vec<&KeptTerm<'_>> = (kept.iter())
+            .filter(|t| wanted[t.first..][..t.rows.n_levels].contains(&true))
+            .collect();
+        // The eliminated levels each flagged kept level meets, ascending.
+        let mut met: Vec<(usize, u32)> = tasks
+            .par_iter()
+            .flat_map_iter(|task| {
+                let (mut pairs, mut seen) = (Vec::new(), Vec::new());
+                for e in task.clone() {
+                    seen.clear();
+                    for i in columns.rows.positions(e) {
+                        for term in &searched {
+                            let at = term.first + term.rows.levels[i] as usize;
+                            if wanted[at] {
+                                seen.push(at);
+                            }
+                        }
+                    }
+                    seen.sort_unstable();
+                    seen.dedup();
+                    pairs.extend(seen.iter().map(|&at| (at, e as u32)));
+                }
+                pairs
+            })
+            .collect();
+        met.par_sort_unstable();
+        let entries: Vec<f64> = flagged
+            .par_iter()
+            .map(|&(_, t, l, c)| {
+                let at = kept[t].first + l;
+                let lo = met.partition_point(|p| p.0 < at);
+                let hi = met.partition_point(|p| p.0 <= at);
+                let e_levels = met[lo..hi].iter().map(|&(_, e)| e);
+                columns.projected_energy(&kept[t].rows, l, c, e_levels)
+            })
+            .collect();
+        for (&(at, ..), entry) in flagged.iter().zip(entries) {
+            diagonal[at] = entry;
+        }
+        diagonal
+    }
+}
+
+/// A kept term as `gram_diagonal` sweeps it.
+struct KeptTerm<'p> {
+    rows: TermRows<'p>,
+    /// Its block start in the kept coefficients.
+    start: usize,
+    /// Its first level among all kept terms' levels.
+    first: usize,
+    /// Its block of `diag(AᵀA)`.
+    gram: &'p [f64],
+}
+
+impl ProjectedColumns<'_> {
     /// `‖(I − P_e) a‖²` of column `c` of `kept`'s `level`, summed row by row over the rows of
     /// `e_levels`; 0 when it lies within the rounding of its own evaluation.
     fn projected_energy(
         &self,
-        kept: &PreparedTerm<'_>,
+        kept: &TermRows<'_>,
         level: usize,
         c: usize,
         e_levels: impl Iterator<Item = u32>,
     ) -> f64 {
-        let dominant = self.prepared.design.dominant;
-        let eliminated = self.prepared.term(dominant);
-        let (gram, e_rows) = (
-            self.prepared.diagonal(dominant),
-            self.prepared.level_rows(dominant),
-        );
-        let sqrt_weights = self.prepared.sqrt_weights();
-        let (levels, loading) = (kept.term.levels(), kept.loading(c));
+        let (eliminated, gram) = (&self.eliminated, self.gram);
+        let sqrt_weights = self.system.prepared.sqrt_weights();
         let a = |i: usize| {
-            if levels[i] as usize == level {
-                loading.map_or(1.0, |z| z[i])
+            if kept.levels[i] as usize == level {
+                kept.column(i, c)
             } else {
                 0.0
             }
         };
-        let width = eliminated.term.n_columns();
-        let e_loadings: Vec<Option<&[f64]>> = (0..width).map(|k| eliminated.loading(k)).collect();
+        let width = eliminated.width();
         let (mut fit, mut fit_error) = (vec![0.0; width], vec![0.0; width]);
         // Running error bounds (Higham, ASNA 2nd ed., §3.3); a row with weight 0 rounds nothing.
         let (mut energy, mut bound) = (0.0, 0.0);
@@ -196,20 +365,19 @@ impl<'a> ReducedDesign<'a> {
         for e in e_levels.map(|e| e as usize) {
             fit.fill(0.0);
             fit_error.fill(0.0);
-            let rows = e_rows.positions(e);
+            let rows = self.rows.positions(e);
             for i in rows.clone() {
                 let wa = row_weight(sqrt_weights, i) * a(i);
-                for ((f, error), z) in fit.iter_mut().zip(&mut fit_error).zip(&e_loadings) {
-                    let term = z.map_or(wa, |z| z[i] * wa);
+                for (k, (f, error)) in fit.iter_mut().zip(&mut fit_error).enumerate() {
+                    let term = eliminated.column(i, k) * wa;
                     if term != 0.0 {
                         *f += term;
                         *error += f.abs() + 2.0 * term.abs();
                     }
                 }
             }
-            let n_levels = eliminated.term.n_levels();
             for (k, (error, f)) in fit_error.iter_mut().zip(&mut fit).enumerate() {
-                let g = gram[k * n_levels + e];
+                let g = gram[k * eliminated.n_levels + e];
                 (*f, *error) = if g > 0.0 {
                     let fit = *f / g;
                     (fit, f64::EPSILON * (*error / g + fit.abs()))
@@ -219,12 +387,12 @@ impl<'a> ReducedDesign<'a> {
             }
             for i in rows {
                 let s = sqrt_weights.map_or(1.0, |s| s[i]);
-                let fitted = (fit.iter().zip(&e_loadings))
-                    .fold(-0.0, |acc, (f, z)| acc + z.map_or(*f, |z| f * z[i]));
+                let fitted = (fit.iter().enumerate())
+                    .fold(-0.0, |acc, (k, f)| acc + f * eliminated.column(i, k));
                 let r = s * (a(i) - fitted);
                 energy += r * r;
-                let spread = (fit_error.iter().zip(&e_loadings))
-                    .fold(0.0, |acc, (d, z)| acc + d * z.map_or(1.0, |z| z[i].abs()));
+                let spread = (fit_error.iter().enumerate())
+                    .fold(0.0, |acc, (k, d)| acc + d * eliminated.column(i, k).abs());
                 let error = s * (row_error * (a(i).abs() + fitted.abs()) + spread);
                 bound += error * error;
             }
@@ -235,75 +403,6 @@ impl<'a> ReducedDesign<'a> {
             energy
         }
     }
-
-    /// `diag(A_rᵀ A_r)`: each kept column's squared norm less its projection onto `A_e`; 0 when
-    /// that is rounding.
-    pub(crate) fn gram_diagonal(&self) -> Vec<f64> {
-        let design = &self.prepared.design;
-        let eliminated = self.prepared.term(design.dominant);
-        let (e_levels, e_n_levels) = (eliminated.term.levels(), eliminated.term.n_levels());
-        let e_gram = self.prepared.diagonal(design.dominant);
-        let sqrt_weights = self.prepared.sqrt_weights();
-        let mut diagonal = Vec::with_capacity(design.n_unknowns(Unknowns::WithoutDominant));
-        for index in (0..design.n_factors()).filter(|&t| t != design.dominant) {
-            let kept = self.prepared.term(index);
-            let (n_levels, width) = (kept.term.n_levels(), kept.term.n_columns());
-            let gram = self.prepared.diagonal(index);
-            let rows = self.prepared.level_rows(index);
-            let mut by_level = vec![0.0; n_levels * width];
-            // Each level owns its rows' sums, so no reduction depends on the thread count.
-            by_level.par_chunks_mut(width).enumerate().for_each_init(
-                Vec::new,
-                |level_rows: &mut Vec<usize>, (level, entries)| {
-                    // Ascending rows of a design sorted by the eliminated term: runs of its levels.
-                    level_rows.clear();
-                    rows.for_each_row(rows.positions(level), |i| level_rows.push(i));
-                    for (c, entry) in entries.iter_mut().enumerate() {
-                        *entry = gram[c * n_levels + level];
-                    }
-                    for run in level_rows.chunk_by(|&a, &b| e_levels[a] == e_levels[b]) {
-                        let e_level = e_levels[run[0]] as usize;
-                        for e_column in 0..eliminated.term.n_columns() {
-                            let e_loading = eliminated.loading(e_column);
-                            let g = e_gram[e_column * e_n_levels + e_level];
-                            if g <= 0.0 {
-                                continue;
-                            }
-                            for (c, entry) in entries.iter_mut().enumerate() {
-                                let loading = kept.loading(c);
-                                let cross: f64 = run
-                                    .iter()
-                                    .map(|&i| {
-                                        // Weight first: a zero weight kills a huge loading.
-                                        let w = row_weight(sqrt_weights, i);
-                                        let wz = loading.map_or(w, |z| w * z[i]);
-                                        e_loading.map_or(wz, |z| wz * z[i])
-                                    })
-                                    .sum();
-                                *entry -= cross / g * cross;
-                            }
-                        }
-                    }
-                    // The difference cancels below `n·ε` of the squared norm; there it is resummed.
-                    let noise = 4.0 * level_rows.len() as f64 * f64::EPSILON;
-                    for (c, entry) in entries.iter_mut().enumerate() {
-                        let norm = gram[c * n_levels + level];
-                        if *entry <= noise * norm {
-                            let e_levels = level_rows
-                                .chunk_by(|&a, &b| e_levels[a] == e_levels[b])
-                                .map(|run| e_levels[run[0]]);
-                            *entry = self.projected_energy(&kept, level, c, e_levels);
-                        }
-                    }
-                },
-            );
-            diagonal.extend(column_major(&by_level, width));
-        }
-        diagonal
-    }
-}
-
-impl ProjectedColumns<'_> {
     /// `(D_k x)_i`.
     #[inline(always)]
     fn kept_row<const PLAIN: bool>(&self, x: &[f64], i: usize) -> f64 {

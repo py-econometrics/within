@@ -1,7 +1,7 @@
 use std::ops::Range;
 
 /// Observation indices, 4 bytes each while every row fits `u32`.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) enum RowIndex {
     Narrow(Box<[u32]>),
     Wide(Box<[usize]>),
