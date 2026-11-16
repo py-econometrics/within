@@ -108,6 +108,9 @@ pub(crate) fn build_entry(domain: LocalDomain) -> Result<SubdomainEntry<BlockSol
 }
 
 /// Opaque handle to a pre-built preconditioner; cloning is O(1) via `Arc`.
+///
+/// Decoding refactors a two-level map's coarse matrix without a size bound, so a crafted payload
+/// can exhaust memory: decode only bytes `within` wrote.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(try_from = "Decoded")]
 pub struct Preconditioner {
