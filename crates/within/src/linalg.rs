@@ -125,9 +125,6 @@ pub(crate) fn dot(left: &[f64], right: &[f64]) -> f64 {
     left.iter().zip(right).map(|(&x, &y)| x * y).sum()
 }
 
-/// Relative rank tolerance: the residual share of its variance below which a column drops.
-const RANK_TOL: f64 = 1e-10;
-
 /// Orthonormalizes `v×v` Gramians; reused, a sweep over Gramians allocates nothing.
 pub(crate) struct GramBasisWorkspace {
     gram: Vec<f64>,
@@ -154,8 +151,13 @@ impl GramBasisWorkspace {
         }
     }
 
-    /// Orthonormalize the row-major Gramian `fill` writes, by pivoted Gram–Schmidt.
-    pub(crate) fn orthonormalize(&mut self, fill: impl FnOnce(&mut [f64])) -> GramBasis<'_> {
+    /// Orthonormalize the row-major Gramian `fill` writes, by pivoted Gram–Schmidt; column `j`
+    /// drops once its residual is at most `floor(j, G_jj)`.
+    pub(crate) fn orthonormalize(
+        &mut self,
+        fill: impl FnOnce(&mut [f64]),
+        floor: impl Fn(usize, f64) -> f64,
+    ) -> GramBasis<'_> {
         let Self {
             gram,
             residual,
@@ -172,7 +174,7 @@ impl GramBasisWorkspace {
         rows.clear();
         while let Some(p) = (0..v)
             .filter(|&j| {
-                !kept[j] && residual[j].is_finite() && residual[j] > RANK_TOL * gram[j * v + j]
+                !kept[j] && residual[j].is_finite() && residual[j] > floor(j, gram[j * v + j])
             })
             .max_by(|&a, &b| residual[a].total_cmp(&residual[b]))
         {
@@ -212,7 +214,8 @@ mod tests {
         // Diagonals [2, 5, 3] force the pivot sequence 1 → 2 → 0, breaking order assumptions.
         let g = [2.0, 1.0, 0.5, 1.0, 5.0, 2.0, 0.5, 2.0, 3.0];
         let mut workspace = GramBasisWorkspace::new(3);
-        let GramBasis { rows: w, kept } = workspace.orthonormalize(|gram| gram.copy_from_slice(&g));
+        let GramBasis { rows: w, kept } =
+            workspace.orthonormalize(|gram| gram.copy_from_slice(&g), |_, _| 0.0);
         assert_eq!(kept, [true; 3]);
         assert_eq!(w.len(), 9);
 
@@ -236,7 +239,8 @@ mod tests {
         // Both [1, 0] and [½, ½] satisfy W·G·Wᵀ = 1 here; only zero on the dropped column is valid.
         let g = [1.0, 1.0, 1.0, 1.0];
         let mut workspace = GramBasisWorkspace::new(2);
-        let GramBasis { rows: w, kept } = workspace.orthonormalize(|gram| gram.copy_from_slice(&g));
+        let GramBasis { rows: w, kept } =
+            workspace.orthonormalize(|gram| gram.copy_from_slice(&g), |_, _| 0.0);
         assert_eq!(kept.iter().filter(|&&k| k).count(), 1);
         for (j, _) in kept.iter().enumerate().filter(|(_, &k)| !k) {
             assert!(w.chunks_exact(2).all(|row| row[j] == 0.0));
