@@ -18,7 +18,7 @@ use faer::sparse::linalg::cholesky::{
 use faer::sparse::{SparseColMat, SymbolicSparseColMat, SymbolicSparseColMatRef};
 use faer::{Conj, MatMut, Par, Side};
 use rayon::prelude::*;
-use schwarz_precond::{Operator, SolveError};
+use schwarz_precond::{Operator, SolveError, StackReq, Threads};
 use serde::{Deserialize, Serialize};
 
 use super::schwarz::FeSchwarz;
@@ -133,8 +133,18 @@ impl Operator for TwoLevelMap {
         self.one_level.ncols()
     }
 
+    fn scratch(&self, columns: usize, threads: Threads) -> StackReq {
+        self.one_level.scratch(columns, threads)
+    }
+
     /// `Z E⁻¹ Zᵀx + (I − Z E⁻¹ (SZ)ᵀ) B (I − SZ E⁻¹ Zᵀ) x`.
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+    fn apply(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+        threads: Threads,
+        stack: &mut MemStack,
+    ) -> Result<(), SolveError> {
         let coarse = &self.coarse;
         let m = coarse.z.ncols();
         let mut c = vec![0.0; m];
@@ -142,7 +152,7 @@ impl Operator for TwoLevelMap {
         coarse.factor.solve(&mut c);
         let mut t = x.to_vec();
         coarse.sub_sz(&c, &mut t);
-        self.one_level.apply(&t, y)?;
+        self.one_level.apply(&t, y, threads, stack)?;
         let mut d = vec![0.0; m];
         coarse.sz_t_mul(y, &mut d);
         coarse.factor.solve(&mut d);
@@ -153,8 +163,14 @@ impl Operator for TwoLevelMap {
         Ok(())
     }
 
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        self.apply(x, y)
+    fn apply_adjoint(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+        threads: Threads,
+        stack: &mut MemStack,
+    ) -> Result<(), SolveError> {
+        self.apply(x, y, threads, stack)
     }
 }
 

@@ -99,7 +99,7 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
         );
         let scratch = entries
             .iter()
-            .flat_map(|e| Self::LOCAL_BUDGETS.map(|t| e.solver().scratch(t)))
+            .flat_map(|e| Self::LOCAL_BUDGETS.map(|t| e.solver().scratch(1, t)))
             .fold(StackReq::EMPTY, StackReq::or);
         Self {
             local_outputs: Arc::new(Pool::new(Self::MAX_FREE_LOCAL_OUTPUTS)),
@@ -137,11 +137,11 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
         self.prolongation.n_dofs()
     }
 
-    /// Operator apply that propagates local-solver failures.
-    pub fn apply(&self, r: &[f64], z: &mut [f64]) -> Result<(), SolveError> {
+    /// Operator apply on at most `threads` that propagates local-solver failures.
+    pub fn apply(&self, r: &[f64], z: &mut [f64], threads: Threads) -> Result<(), SolveError> {
         self.check_len("r", r.len())?;
         self.check_len("z", z.len())?;
-        let threads = self.local_threads();
+        let local = self.local_threads(threads);
         let starts = &*self.slot_starts;
         let n_slots = starts[self.subdomains.len()];
         self.local_outputs.lend(
@@ -151,13 +151,17 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
                     ids: 0..self.subdomains.len(),
                     outputs: &mut *outputs,
                 };
-                rayon::iter::split(all, |span| span.halve(starts)).try_for_each(|span| {
+                let solve = |span| {
                     self.stacks.lend(
                         || MemBuffer::new(self.scratch),
-                        |buffer| self.solve_span(span, r, threads, MemStack::new(buffer)),
+                        |buffer| self.solve_span(span, r, local, MemStack::new(buffer)),
                     )
-                })?;
-                self.prolongation.apply(outputs, z);
+                };
+                match threads.forks() {
+                    true => rayon::iter::split(all, |span| span.halve(starts)).try_for_each(solve),
+                    false => solve(all),
+                }?;
+                self.prolongation.apply(outputs, z, threads);
                 Ok(())
             },
         )
@@ -192,17 +196,17 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
         })
     }
 
-    /// Every budget `local_threads` hands a local solve, which the pooled stacks are sized for.
+    /// The pooled stacks' sizes: `local_threads` hands out these or a count, which needs no more.
     const LOCAL_BUDGETS: [Threads; 2] = [Threads::All, Threads::ONE];
 
-    /// Every thread to each local solve, unless the subdomains alone already fill the pool.
-    fn local_threads(&self) -> Threads {
-        let [all, one] = Self::LOCAL_BUDGETS;
-        let threads = rayon::current_num_threads().max(1);
-        if self.outer_capacity < threads as f64 * Self::OUTER_CAPACITY_TARGET {
-            all
+    /// All of `threads` to each local solve, unless the subdomains alone already fill them.
+    fn local_threads(&self, threads: Threads) -> Threads {
+        if threads.forks()
+            && self.outer_capacity < threads.tasks() as f64 * Self::OUTER_CAPACITY_TARGET
+        {
+            threads
         } else {
-            one
+            Threads::ONE
         }
     }
 }
@@ -273,11 +277,27 @@ impl<S: LocalSolver> Operator for SchwarzPreconditioner<S> {
         self.n_dofs()
     }
 
-    fn apply(&self, r: &[f64], z: &mut [f64]) -> Result<(), SolveError> {
-        SchwarzPreconditioner::apply(self, r, z)
+    fn scratch(&self, _columns: usize, _threads: Threads) -> StackReq {
+        StackReq::EMPTY
     }
 
-    fn apply_adjoint(&self, r: &[f64], z: &mut [f64]) -> Result<(), SolveError> {
-        SchwarzPreconditioner::apply(self, r, z)
+    fn apply(
+        &self,
+        r: &[f64],
+        z: &mut [f64],
+        threads: Threads,
+        _stack: &mut MemStack,
+    ) -> Result<(), SolveError> {
+        SchwarzPreconditioner::apply(self, r, z, threads)
+    }
+
+    fn apply_adjoint(
+        &self,
+        r: &[f64],
+        z: &mut [f64],
+        threads: Threads,
+        _stack: &mut MemStack,
+    ) -> Result<(), SolveError> {
+        SchwarzPreconditioner::apply(self, r, z, threads)
     }
 }

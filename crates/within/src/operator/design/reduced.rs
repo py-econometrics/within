@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use std::ops::Range;
 
 use rayon::prelude::*;
-use schwarz_precond::Operator;
+use schwarz_precond::{MemStack, Operator, StackReq, Threads};
 
 use crate::domain::{
     cut, fixed_tree, row_weight, Design, LevelRows, PreparedDesign, TermRows, MIN_LEAF_ROWS,
@@ -175,9 +175,9 @@ impl<'a> ReducedDesign<'a> {
         let columns = self.columns();
         let mut out = vec![0.0; self.prepared.design.n_obs];
         with_shape!(columns, |W, w| {
-            columns.project::<W>(|i, x| *x = b(i), w, &mut out);
+            columns.project::<W>(|i, x| *x = b(i), w, &mut out, Threads::All);
             // One pass rounds away entries of heavy rows that light rows' weights make matter.
-            columns.project::<W>(|_, _| {}, w, &mut out);
+            columns.project::<W>(|_, _| {}, w, &mut out, Threads::All);
         });
         out
     }
@@ -301,6 +301,7 @@ impl<'a> ReducedDesign<'a> {
         let (removed, counts) = fixed_tree(
             0..leaves.len(),
             1,
+            Threads::All,
             &|k: Range<usize>| leaf(leaves[k.start].clone()),
             &merge,
         );
@@ -555,6 +556,7 @@ impl ProjectedColumns<'_> {
         set: impl Fn(usize, &mut f64) + Sync + Copy,
         w: impl Fn(usize) -> f64 + Sync + Copy,
         out: &mut [f64],
+        threads: Threads,
     ) {
         let mut parts = Vec::with_capacity(self.system.tasks.len());
         let mut rest = out;
@@ -566,9 +568,8 @@ impl ProjectedColumns<'_> {
             rest = tail;
         }
         let width = self.eliminated.width();
-        parts.into_par_iter().for_each_init(
-            || self.moments(1),
-            |moments, (levels, base, part)| {
+        let solve_part =
+            |moments: &mut Vec<f64>, (levels, base, part): (Range<usize>, usize, &mut [f64])| {
                 // Copied: read through the captures, each row reloads them after a store to `part`.
                 let (set, w) = (set, w);
                 // A fixed width keeps the moments in registers; on the heap they cost 12%.
@@ -590,8 +591,18 @@ impl ProjectedColumns<'_> {
                         *x = remove_fit(&basis, p, *x, fit);
                     }
                 }
-            },
-        );
+            };
+        match threads {
+            Threads::ONE => {
+                let mut moments = self.moments(1);
+                parts
+                    .into_iter()
+                    .for_each(|part| solve_part(&mut moments, part));
+            }
+            _ => parts
+                .into_par_iter()
+                .for_each_init(|| self.moments(1), solve_part),
+        }
     }
 
     /// `A_rᵀ v`, one accumulator per leaf summed in a fixed tree.
@@ -600,6 +611,7 @@ impl ProjectedColumns<'_> {
         kept: impl AsRef<Kept<'k>> + Sync + Copy,
         v: &[f64],
         w: impl Fn(usize) -> f64 + Sync + Copy,
+        threads: Threads,
     ) -> Vec<f64> {
         let width = self.eliminated.width();
         let ReducedDesign {
@@ -638,7 +650,7 @@ impl ProjectedColumns<'_> {
         };
         let add = |l: &mut Vec<f64>, r: &Vec<f64>| l.iter_mut().zip(r).for_each(|(l, r)| *l += r);
         let leaf = |k: Range<usize>| leaf(leaves[k.start].clone());
-        fixed_tree(0..leaves.len(), 1, &leaf, &add)
+        fixed_tree(0..leaves.len(), 1, threads, &leaf, &add)
     }
 }
 
@@ -713,7 +725,17 @@ impl Operator for ReducedDesign<'_> {
         self.prepared.design.n_unknowns()
     }
 
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
+    fn scratch(&self, _columns: usize, _threads: Threads) -> StackReq {
+        StackReq::EMPTY
+    }
+
+    fn apply(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+        threads: Threads,
+        _stack: &mut MemStack,
+    ) -> Result<(), schwarz_precond::SolveError> {
         debug_assert_eq!(x.len(), self.ncols());
         let x = &*self.without_vanished(x);
         let columns = self.columns();
@@ -722,16 +744,24 @@ impl Operator for ReducedDesign<'_> {
                 move |i, y| *y = w(i) * kept_row::<KEPT_PLAIN>(&kept, x, i),
                 w,
                 y,
+                threads,
             )
         });
         Ok(())
     }
 
-    fn apply_adjoint(&self, v: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
+    fn apply_adjoint(
+        &self,
+        v: &[f64],
+        y: &mut [f64],
+        threads: Threads,
+        _stack: &mut MemStack,
+    ) -> Result<(), schwarz_precond::SolveError> {
         debug_assert_eq!(y.len(), self.ncols());
         let columns = self.columns();
-        with_shape!(columns, |W, KEPT_PLAIN, kept, w| y
-            .copy_from_slice(&columns.adjoint::<W, KEPT_PLAIN>(kept, v, w)));
+        with_shape!(columns, |W, KEPT_PLAIN, kept, w| y.copy_from_slice(
+            &columns.adjoint::<W, KEPT_PLAIN>(kept, v, w, threads)
+        ));
         self.zero_vanished(y);
         Ok(())
     }

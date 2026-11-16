@@ -28,8 +28,8 @@ impl LocalSolver for BlockSolver {
         self.inverse.n()
     }
 
-    fn scratch(&self, threads: Threads) -> StackReq {
-        self.inverse.scratch(1, budget(threads))
+    fn scratch(&self, columns: usize, threads: Threads) -> StackReq {
+        self.inverse.scratch(columns, budget(threads))
     }
 
     fn solve_local(

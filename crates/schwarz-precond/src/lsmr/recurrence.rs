@@ -7,6 +7,7 @@
 
 use super::bidiag::{BidiagStep, LSMR_PAR_THRESHOLD, LSMR_UPDATE_CHUNK};
 use super::magnitude::Magnitude;
+use crate::Threads;
 use rayon::iter::{IndexedParallelIterator, ParallelIterator};
 use rayon::prelude::{ParallelSlice, ParallelSliceMut};
 
@@ -233,16 +234,18 @@ pub(super) struct SolutionState {
     x: Vec<f64>,
     h: Vec<f64>,
     h_bar: Vec<f64>,
+    threads: Threads,
 }
 
 impl SolutionState {
     /// Initialize from the first normalized basis vector: `h₁ = v₁`, `x = 0`, `h̄₀ = 0`.
-    pub(super) fn init(v1: &[f64], rhs_norm: f64) -> Self {
+    pub(super) fn init(v1: &[f64], rhs_norm: f64, threads: Threads) -> Self {
         Self {
             rhs_norm,
             x: vec![0.0; v1.len()],
             h: v1.to_vec(),
             h_bar: vec![0.0; v1.len()],
+            threads,
         }
     }
 
@@ -277,7 +280,7 @@ impl SolutionState {
             }
         };
 
-        if n >= LSMR_PAR_THRESHOLD {
+        if n >= LSMR_PAR_THRESHOLD && self.threads.forks() {
             self.h_bar
                 .par_chunks_mut(LSMR_UPDATE_CHUNK)
                 .zip(self.h.par_chunks_mut(LSMR_UPDATE_CHUNK))

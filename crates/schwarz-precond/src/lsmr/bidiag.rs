@@ -13,7 +13,7 @@ mod tests;
 use super::finite;
 use super::magnitude::{exponent, ldexp, Magnitude};
 use crate::fold::{fold, Split};
-use crate::{Operator, SolveError};
+use crate::{MemStack, Operator, SolveError, Threads};
 use rayon::iter::{IndexedParallelIterator, ParallelIterator};
 use rayon::prelude::{ParallelSlice, ParallelSliceMut};
 
@@ -24,9 +24,9 @@ pub(super) const LSMR_UPDATE_CHUNK: usize = 4096;
 
 /// Fused `y = x + scale · y` returning `‖y_new‖`; per-chunk partials avoid reduction traffic.
 #[inline]
-fn axpy_with_norm(y: &mut [f64], x: &[f64], scale: f64) -> f64 {
+fn axpy_with_norm(y: &mut [f64], x: &[f64], scale: f64, threads: Threads) -> f64 {
     debug_assert_eq!(x.len(), y.len());
-    let sq = chunked_sum((&mut *y, x), |(y_c, x_c): (&mut [f64], &[f64])| {
+    let sq = chunked_sum((&mut *y, x), threads, |(y_c, x_c): (&mut [f64], &[f64])| {
         let step = |yi: &mut f64, xi: f64| {
             let val = xi + scale * *yi;
             *yi = val;
@@ -54,20 +54,20 @@ const LANES: usize = 8;
 
 /// `Σ leaf` over `LSMR_UPDATE_CHUNK` pieces in a tree fixed by the length.
 #[inline]
-fn chunked_sum<P: Split>(input: P, leaf: impl Fn(P) -> f64 + Sync) -> f64 {
-    fold(input, LSMR_UPDATE_CHUNK, &leaf, &|a, b| a + b)
+fn chunked_sum<P: Split>(input: P, threads: Threads, leaf: impl Fn(P) -> f64 + Sync) -> f64 {
+    fold(input, LSMR_UPDATE_CHUNK, threads, &leaf, &|a, b| a + b)
 }
 
 /// `y = alpha * x + beta * y`. Parallel above the threshold.
 #[inline]
-pub(super) fn axpby(y: &mut [f64], x: &[f64], alpha: f64, beta: f64) {
+pub(super) fn axpby(y: &mut [f64], x: &[f64], alpha: f64, beta: f64, threads: Threads) {
     debug_assert_eq!(x.len(), y.len());
     let seq = |y_c: &mut [f64], x_c: &[f64]| {
         for (yi, &xi) in y_c.iter_mut().zip(x_c.iter()) {
             *yi = alpha * xi + beta * *yi;
         }
     };
-    if y.len() >= LSMR_PAR_THRESHOLD {
+    if y.len() >= LSMR_PAR_THRESHOLD && threads.forks() {
         y.par_chunks_mut(LSMR_UPDATE_CHUNK)
             .zip(x.par_chunks(LSMR_UPDATE_CHUNK))
             .for_each(|(y_c, x_c)| seq(y_c, x_c));
@@ -78,7 +78,7 @@ pub(super) fn axpby(y: &mut [f64], x: &[f64], alpha: f64, beta: f64) {
 
 /// `y /= d` without over/underflow unless `y / d` does, to one rounding at `f64::MAX` (`drscl`).
 #[inline]
-fn normalize(y: &mut [f64], d: f64) {
+fn normalize(y: &mut [f64], d: f64, threads: Threads) {
     if d > 0.0 {
         let inv = 1.0 / d;
         let seq = |c: &mut [f64]| {
@@ -88,7 +88,7 @@ fn normalize(y: &mut [f64], d: f64) {
                 c.iter_mut().for_each(|yi| *yi /= d);
             }
         };
-        if y.len() >= LSMR_PAR_THRESHOLD {
+        if y.len() >= LSMR_PAR_THRESHOLD && threads.forks() {
             y.par_chunks_mut(LSMR_UPDATE_CHUNK).for_each(seq);
         } else {
             seq(y);
@@ -115,8 +115,8 @@ pub(super) fn dot(a: &[f64], b: &[f64]) -> f64 {
 
 /// Dot product added in a tree fixed by the length alone.
 #[inline]
-fn par_dot(a: &[f64], b: &[f64]) -> f64 {
-    chunked_sum((a, b), |(ac, bc)| dot(ac, bc))
+fn par_dot(a: &[f64], b: &[f64], threads: Threads) -> f64 {
+    chunked_sum((a, b), threads, |(ac, bc)| dot(ac, bc))
 }
 
 /// Why [`alpha_from_vp`] refused a pair.
@@ -146,9 +146,9 @@ impl From<AlphaError> for SolveError {
 }
 
 /// `α = √⟨v, p̃⟩`; a `vp` negative within `√ε·‖v‖‖p̃‖` clamps to 0, an indefinite `M` raises.
-fn alpha_from_vp(v: &[f64], p_tilde: &[f64]) -> Result<f64, AlphaError> {
+fn alpha_from_vp(v: &[f64], p_tilde: &[f64], threads: Threads) -> Result<f64, AlphaError> {
     // A NaN `vp` may be `∞ − ∞` from finite vectors; the norms below reject a NaN entry.
-    let vp = par_dot(v, p_tilde);
+    let vp = par_dot(v, p_tilde, threads);
     if vp.is_normal() && vp > 0.0 {
         return Ok(vp.sqrt());
     }
@@ -185,8 +185,8 @@ fn norm_from_sq(v: &[f64], sq: f64) -> f64 {
     }
 }
 
-fn par_norm(v: &[f64]) -> f64 {
-    norm_from_sq(v, par_dot(v, v))
+fn par_norm(v: &[f64], threads: Threads) -> f64 {
+    norm_from_sq(v, par_dot(v, v, threads))
 }
 
 /// `u = rhs − A x`, returning `‖u‖`.
@@ -195,9 +195,11 @@ fn residual_into<A: Operator + ?Sized>(
     x: &[f64],
     rhs: &[f64],
     u: &mut [f64],
+    threads: Threads,
+    stack: &mut MemStack,
 ) -> Result<f64, SolveError> {
-    operator.apply(x, u)?;
-    Ok(axpy_with_norm(u, rhs, -1.0))
+    operator.apply(x, u, threads, stack)?;
+    Ok(axpy_with_norm(u, rhs, -1.0, threads))
 }
 
 /// Ring of recent basis vectors for windowed MGS; the disabled state is `None`, so `cap > 0`.
@@ -270,24 +272,24 @@ impl<const L: usize> WindowRing<L> {
 /// M-weighted windowed MGS: `v` is M-orthogonal, so the coefficient is `⟨v_new, p̃_j⟩`.
 impl WindowRing<2> {
     /// Subtracts `c = ⟨v, p̃_j⟩` from both `v` and `p̃`.
-    fn reorthogonalize(&self, v: &mut [f64], p_tilde: &mut [f64]) {
+    fn reorthogonalize(&self, v: &mut [f64], p_tilde: &mut [f64], threads: Threads) {
         for slot in self.chrono_slots() {
             let v_j = self.lane(0, slot);
             let p_j = self.lane(1, slot);
-            let c = par_dot(v, p_j);
-            axpby(v, v_j, -c, 1.0);
-            axpby(p_tilde, p_j, -c, 1.0);
+            let c = par_dot(v, p_j, threads);
+            axpby(v, v_j, -c, 1.0, threads);
+            axpby(p_tilde, p_j, -c, 1.0, threads);
         }
     }
 
     /// Copy normalized `v` and `p_tilde / alpha` into the next slots, advancing the ring.
-    fn push(&mut self, v: &[f64], p_tilde_unscaled: &[f64], alpha: f64) {
+    fn push(&mut self, v: &[f64], p_tilde_unscaled: &[f64], alpha: f64, threads: Threads) {
         let slot = self.advance();
         self.lane_mut(0, slot).copy_from_slice(v);
         let p = self.lane_mut(1, slot);
         if alpha > 0.0 {
             p.copy_from_slice(p_tilde_unscaled);
-            normalize(p, alpha);
+            normalize(p, alpha, threads);
         } else {
             p.fill(0.0);
         }
@@ -328,12 +330,14 @@ fn adjoint_image<A: Operator + ?Sized>(
     rhs_norm: f64,
     unit: &mut [f64],
     g: &mut [f64],
+    threads: Threads,
+    stack: &mut MemStack,
 ) -> Result<AdjointImage, SolveError> {
     // Scaling first flushes the entries far below `‖rhs‖`, which `Aᵀ` may amplify back into range.
     let k = exponent(rhs_norm);
     if rhs_norm.is_normal() {
-        operator.apply_adjoint(rhs, g)?;
-        let g_norm = par_norm(g);
+        operator.apply_adjoint(rhs, g, threads, stack)?;
+        let g_norm = par_norm(g, threads);
         if k == 0 || g_norm.is_normal() {
             return Ok(AdjointImage {
                 k: 0,
@@ -346,11 +350,11 @@ fn adjoint_image<A: Operator + ?Sized>(
     unit.iter_mut()
         .zip(rhs)
         .for_each(|(u, &r)| *u = ldexp(r, -k));
-    operator.apply_adjoint(unit, g)?;
+    operator.apply_adjoint(unit, g, threads, stack)?;
     Ok(AdjointImage {
         k,
-        g_norm: par_norm(g),
-        unit_norm: par_norm(unit),
+        g_norm: par_norm(g, threads),
+        unit_norm: par_norm(unit, threads),
     })
 }
 
@@ -385,8 +389,12 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
 {
     fn step(&mut self) -> Result<BidiagStep, SolveError> {
         let scale = -(self.alpha * self.u_norm_inv);
-        self.operator.apply(&self.bufs.v, &mut self.bufs.av)?;
-        let beta = finite(axpy_with_norm(&mut self.bufs.u, &self.bufs.av, scale), "β")?;
+        let threads = self.threads;
+        (self.operator).apply(&self.bufs.v, &mut self.bufs.av, threads, self.stack)?;
+        let beta = finite(
+            axpy_with_norm(&mut self.bufs.u, &self.bufs.av, scale, threads),
+            "β",
+        )?;
         if beta == 0.0 {
             // Lucky breakdown: zero `v` and its paired `p̃` so the update contributes nothing.
             self.bufs.v.fill(0.0);
@@ -398,7 +406,7 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
         self.u_norm_inv = if RAW_U_NORMS.contains(&beta) {
             1.0 / beta
         } else {
-            normalize(&mut self.bufs.u, beta);
+            normalize(&mut self.bufs.u, beta, threads);
             1.0
         };
 
@@ -418,7 +426,8 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
     }
 
     fn residual_norm(&mut self, x: &[f64], rhs: &[f64]) -> Result<f64, SolveError> {
-        residual_into(self.operator, x, rhs, &mut self.bufs.u)
+        let u = &mut self.bufs.u;
+        residual_into(self.operator, x, rhs, u, self.threads, self.stack)
     }
 
     fn plain_gradient(&mut self, residual_norm: f64) -> Result<Option<Magnitude>, SolveError> {
@@ -429,6 +438,8 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
             residual_norm,
             &mut bufs.av,
             &mut bufs.atu,
+            self.threads,
+            self.stack,
         )?;
         Ok(Some(image.norm()))
     }
@@ -438,16 +449,15 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
     }
 
     fn restart(&mut self, beta: f64) -> Result<BidiagStep, SolveError> {
-        normalize(&mut self.bufs.u, beta);
-        self.operator
-            .apply_adjoint(&self.bufs.u, &mut self.bufs.p_tilde)?;
-        self.preconditioner
-            .apply(&self.bufs.p_tilde, &mut self.bufs.v)?;
-        let alpha = alpha_from_vp(&self.bufs.v, &self.bufs.p_tilde)?;
-        normalize(&mut self.bufs.v, alpha);
-        if let Some(reorth) = &mut self.bufs.local_reorth {
+        let (bufs, threads) = (&mut self.bufs, self.threads);
+        normalize(&mut bufs.u, beta, threads);
+        (self.operator).apply_adjoint(&bufs.u, &mut bufs.p_tilde, threads, self.stack)?;
+        (self.preconditioner).apply(&bufs.p_tilde, &mut bufs.v, threads, self.stack)?;
+        let alpha = alpha_from_vp(&bufs.v, &bufs.p_tilde, threads)?;
+        normalize(&mut bufs.v, alpha, threads);
+        if let Some(reorth) = &mut bufs.local_reorth {
             reorth.clear();
-            reorth.push(&self.bufs.v, &self.bufs.p_tilde, alpha);
+            reorth.push(&bufs.v, &bufs.p_tilde, alpha, threads);
         }
         self.alpha = alpha;
         self.u_norm_inv = 1.0; // u was normalized
@@ -460,12 +470,13 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
         b_norm: f64,
     ) -> Result<Option<(f64, AdjointImage)>, SolveError> {
         // At `α₁ = 0` the stream holds `p̃ = Aᵀu` for the unit `u`, so `‖p̃‖ = ‖Aᵀ rhs‖ / ‖rhs‖`.
-        let plain = par_norm(&self.bufs.p_tilde);
+        let plain = par_norm(&self.bufs.p_tilde, self.threads);
         if plain == 0.0 {
             return Ok(None);
         }
         let bufs = &mut self.bufs;
-        let b_image = adjoint_image(self.operator, b, b_norm, &mut bufs.u, &mut bufs.atu)?;
+        let (u, atu) = (&mut bufs.u, &mut bufs.atu);
+        let b_image = adjoint_image(self.operator, b, b_norm, u, atu, self.threads, self.stack)?;
         Ok(Some((plain, b_image)))
     }
 }
@@ -506,6 +517,9 @@ const RAW_U_NORMS: std::ops::RangeInclusive<f64> = 1e-64..=1e64;
 pub(super) struct ModifiedGolubKahan<'a, A: Operator + ?Sized, M: Operator + ?Sized> {
     operator: &'a A,
     preconditioner: &'a M,
+    /// Every apply's budget and scratch.
+    threads: Threads,
+    stack: &'a mut MemStack,
     bufs: ModifiedGolubKahanBuffers,
     /// Last `α` emitted; needed by the next step to scale `p_tilde`.
     alpha: f64,
@@ -525,8 +539,11 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> StagedStart<'a, A, M> {
         preconditioner: &'a M,
         b: &[f64],
         local_size: usize,
+        threads: Threads,
+        stack: &'a mut MemStack,
     ) -> Self {
-        let mut stream = ModifiedGolubKahan::new(operator, preconditioner, local_size);
+        let mut stream =
+            ModifiedGolubKahan::new(operator, preconditioner, local_size, threads, stack);
         stream.bufs.u.copy_from_slice(b);
         Self(stream)
     }
@@ -538,8 +555,11 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> StagedStart<'a, A, M> {
         x0: &[f64],
         b: &[f64],
         local_size: usize,
+        threads: Threads,
+        stack: &'a mut MemStack,
     ) -> Result<(Self, f64), SolveError> {
-        let mut stream = ModifiedGolubKahan::new(operator, preconditioner, local_size);
+        let mut stream =
+            ModifiedGolubKahan::new(operator, preconditioner, local_size, threads, stack);
         let norm = stream.residual_norm(x0, b)?;
         Ok((Self(stream), norm))
     }
@@ -551,9 +571,18 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> StagedStart<'a, A, M> {
         rhs_norm: f64,
     ) -> Result<(Magnitude, Magnitude), SolveError> {
         let stream = &mut self.0;
+        let (threads, stack) = (stream.threads, &mut *stream.stack);
         let bufs = &mut stream.bufs;
         let (g, mv) = (&mut bufs.atu, &mut bufs.v);
-        let image = adjoint_image(stream.operator, rhs, rhs_norm, &mut bufs.av, g)?;
+        let image = adjoint_image(
+            stream.operator,
+            rhs,
+            rhs_norm,
+            &mut bufs.av,
+            g,
+            threads,
+            stack,
+        )?;
         if !image.g_norm.is_finite() {
             return Ok((Magnitude::from(image.g_norm), image.norm()));
         }
@@ -564,9 +593,9 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> StagedStart<'a, A, M> {
         } else {
             1.0
         };
-        normalize(g, scale);
-        stream.preconditioner.apply(g, mv)?;
-        let alpha = alpha_from_vp(mv, g)?;
+        normalize(g, scale, threads);
+        stream.preconditioner.apply(g, mv, threads, stack)?;
+        let alpha = alpha_from_vp(mv, g, threads)?;
         Ok((
             Magnitude::product(ldexp(1.0, image.k), scale) * Magnitude::from(alpha),
             plain,
@@ -580,17 +609,25 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> StagedStart<'a, A, M> {
     ) -> Result<(ModifiedGolubKahan<'a, A, M>, BidiagStep, Magnitude), SolveError> {
         let mut stream = self.0;
         let step1 = stream.restart(beta)?;
-        let plain = Magnitude::product(par_norm(&stream.bufs.p_tilde), beta);
+        let plain = Magnitude::product(par_norm(&stream.bufs.p_tilde, stream.threads), beta);
         Ok((stream, step1, plain))
     }
 }
 
 impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M> {
-    fn new(operator: &'a A, preconditioner: &'a M, local_size: usize) -> Self {
+    fn new(
+        operator: &'a A,
+        preconditioner: &'a M,
+        local_size: usize,
+        threads: Threads,
+        stack: &'a mut MemStack,
+    ) -> Self {
         let (m, n) = (operator.nrows(), operator.ncols());
         Self {
             operator,
             preconditioner,
+            threads,
+            stack,
             bufs: ModifiedGolubKahanBuffers::new(m, n, local_size),
             alpha: 0.0,
             u_norm_inv: 1.0,
@@ -599,8 +636,8 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M
 
     /// Scaling by `β / α_k` cancels the stored `α_k`; requires `α_k > 0`.
     fn update_p_tilde(&mut self, beta: f64) -> Result<(), SolveError> {
-        self.operator
-            .apply_adjoint(&self.bufs.u, &mut self.bufs.atu)?;
+        let threads = self.threads;
+        (self.operator).apply_adjoint(&self.bufs.u, &mut self.bufs.atu, threads, self.stack)?;
         debug_assert!(
             self.alpha > 0.0,
             "self.alpha must be > 0; lsmr_from_bidiag's loop guard prevents step() after alpha=0",
@@ -608,7 +645,7 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M
         let mut p_coeff = beta / self.alpha;
         if !p_coeff.is_normal() {
             // `β/α` can leave the range while `p̃ / α = M v` does not, so divide first (`dlascl`).
-            normalize(&mut self.bufs.p_tilde, self.alpha);
+            normalize(&mut self.bufs.p_tilde, self.alpha, threads);
             p_coeff = beta;
         }
         axpby(
@@ -616,33 +653,33 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M
             &self.bufs.atu,
             self.u_norm_inv,
             -p_coeff,
+            threads,
         );
         Ok(())
     }
 
     /// Recover `ṽ = M⁻¹ p̃`, MGS both in lockstep, normalize; returns `α_{k+1}`.
     fn reorthonormalize_v(&mut self) -> Result<f64, SolveError> {
-        self.preconditioner
-            .apply(&self.bufs.p_tilde, &mut self.bufs.v)?;
+        let (bufs, threads) = (&mut self.bufs, self.threads);
+        (self.preconditioner).apply(&bufs.p_tilde, &mut bufs.v, threads, self.stack)?;
 
-        if let Some(reorth) = &self.bufs.local_reorth {
-            reorth.reorthogonalize(&mut self.bufs.v, &mut self.bufs.p_tilde);
+        if let Some(reorth) = &bufs.local_reorth {
+            reorth.reorthogonalize(&mut bufs.v, &mut bufs.p_tilde, threads);
         }
 
-        let alpha_new = match alpha_from_vp(&self.bufs.v, &self.bufs.p_tilde) {
+        let alpha_new = match alpha_from_vp(&bufs.v, &bufs.p_tilde, threads) {
             // MGS updates `v` and `p̃` apart, so near breakdown `v` drifts from `M⁻¹ p̃`.
-            Err(AlphaError::NegativeMetric) if self.bufs.local_reorth.is_some() => {
-                self.preconditioner
-                    .apply(&self.bufs.p_tilde, &mut self.bufs.v)?;
-                alpha_from_vp(&self.bufs.v, &self.bufs.p_tilde)?
+            Err(AlphaError::NegativeMetric) if bufs.local_reorth.is_some() => {
+                (self.preconditioner).apply(&bufs.p_tilde, &mut bufs.v, threads, self.stack)?;
+                alpha_from_vp(&bufs.v, &bufs.p_tilde, threads)?
             }
             alpha => alpha?,
         };
 
-        normalize(&mut self.bufs.v, alpha_new);
+        normalize(&mut bufs.v, alpha_new, threads);
 
-        if let Some(reorth) = &mut self.bufs.local_reorth {
-            reorth.push(&self.bufs.v, &self.bufs.p_tilde, alpha_new);
+        if let Some(reorth) = &mut bufs.local_reorth {
+            reorth.push(&bufs.v, &bufs.p_tilde, alpha_new, threads);
         }
 
         Ok(alpha_new)

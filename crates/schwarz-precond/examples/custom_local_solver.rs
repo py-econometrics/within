@@ -6,8 +6,8 @@
 use faer::{MatRef, Side};
 
 use schwarz_precond::{
-    mlsmr, LocalSolveError, LocalSolver, MemStack, MlsmrOptions, Operator, SchwarzPreconditioner,
-    SolveError, StackReq, SubdomainCore, SubdomainEntry, Threads,
+    mlsmr, mlsmr_scratch, LocalSolveError, LocalSolver, MemBuffer, MemStack, MlsmrOptions,
+    Operator, SchwarzPreconditioner, SolveError, StackReq, SubdomainCore, SubdomainEntry, Threads,
 };
 // ---------------------------------------------------------------------------
 // Tridiagonal operator
@@ -24,7 +24,16 @@ impl Operator for TridiagOperator {
     fn ncols(&self) -> usize {
         self.n
     }
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+    fn scratch(&self, _columns: usize, _threads: Threads) -> StackReq {
+        StackReq::EMPTY
+    }
+    fn apply(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+        _threads: Threads,
+        _stack: &mut MemStack,
+    ) -> Result<(), SolveError> {
         for i in 0..self.n {
             y[i] = 3.0 * x[i];
             if i > 0 {
@@ -36,8 +45,14 @@ impl Operator for TridiagOperator {
         }
         Ok(())
     }
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        self.apply(x, y)
+    fn apply_adjoint(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+        threads: Threads,
+        stack: &mut MemStack,
+    ) -> Result<(), SolveError> {
+        self.apply(x, y, threads, stack)
     }
 }
 
@@ -80,7 +95,7 @@ impl LocalSolver for DenseCholeskyLocalSolver {
     fn n_local(&self) -> usize {
         self.n_local
     }
-    fn scratch(&self, _threads: Threads) -> StackReq {
+    fn scratch(&self, _columns: usize, _threads: Threads) -> StackReq {
         StackReq::EMPTY
     }
     fn solve_local(
@@ -169,7 +184,10 @@ fn main() {
 
     let precond = SchwarzPreconditioner::new(build_entries(n));
     let options = MlsmrOptions::default();
-    let result = mlsmr(&a, &rhs, &precond, 1e-10, 200, options).expect("preconditioned lsmr");
+    let mut scratch = MemBuffer::new(mlsmr_scratch(&a, &precond, Threads::All));
+    let stack = MemStack::new(&mut scratch);
+    let result = mlsmr(&a, &rhs, &precond, 1e-10, 200, options, Threads::All, stack)
+        .expect("preconditioned lsmr");
     println!(
         "Dense Cholesky Schwarz LSMR: converged={}, iterations={:>3}, residual={:.3e}",
         result.converged, result.iterations, result.residual_norm,

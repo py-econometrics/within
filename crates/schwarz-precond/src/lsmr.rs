@@ -10,7 +10,7 @@ mod tests;
 
 use std::borrow::Cow;
 
-use crate::{Operator, SolveError};
+use crate::{MemStack, Operator, SolveError, StackReq, Threads};
 use bidiag::{axpby, BidiagStep, Bidiagonalization, StagedStart};
 use magnitude::Magnitude;
 use recurrence::{ConvergenceCriteria, LsmrRecurrenceState, RotationStep, SolutionState, Stop};
@@ -224,16 +224,46 @@ impl Operator for IdentityOp {
     fn ncols(&self) -> usize {
         self.n
     }
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+    fn scratch(&self, _columns: usize, _threads: Threads) -> StackReq {
+        StackReq::EMPTY
+    }
+    fn apply(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+        _threads: Threads,
+        _stack: &mut MemStack,
+    ) -> Result<(), SolveError> {
         y.copy_from_slice(x);
         Ok(())
     }
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        self.apply(x, y)
+    fn apply_adjoint(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+        threads: Threads,
+        stack: &mut MemStack,
+    ) -> Result<(), SolveError> {
+        self.apply(x, y, threads, stack)
     }
 }
 
+/// What [`mlsmr`] can use from its stack at `threads`; at `Threads::ONE`, all it needs.
+pub fn mlsmr_scratch<A: Operator + ?Sized, M: Operator + ?Sized>(
+    operator: &A,
+    preconditioner: &M,
+    threads: Threads,
+) -> StackReq {
+    operator
+        .scratch(1, threads)
+        .or(preconditioner.scratch(1, threads))
+}
+
 /// Preconditioned LSMR with `M ≈ AᵀA`, one `M⁻¹` apply per iteration; `M⁻¹` must be nonsingular.
+///
+/// Every apply runs on at most `threads` and takes its scratch from `stack`, which holds at least
+/// [`mlsmr_scratch`] at `Threads::ONE`.
+#[allow(clippy::too_many_arguments)]
 pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
     operator: &A,
     b: &[f64],
@@ -241,6 +271,8 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
     tol: f64,
     maxiter: usize,
     options: MlsmrOptions<'_>,
+    threads: Threads,
+    stack: &mut MemStack,
 ) -> Result<LsmrResult, SolveError> {
     validate_lsmr_inputs(operator, b, tol)?;
     let n = operator.ncols();
@@ -279,12 +311,13 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
     let staged = match warm_start {
         None => (b_norm > 0.0).then(|| {
             (
-                StagedStart::cold(operator, preconditioner, b, local_size),
+                StagedStart::cold(operator, preconditioner, b, local_size, threads, stack),
                 b_norm,
             )
         }),
         Some(x0) => {
-            let (staged, norm) = StagedStart::warm(operator, preconditioner, x0, b, local_size)?;
+            let (staged, norm) =
+                StagedStart::warm(operator, preconditioner, x0, b, local_size, threads, stack)?;
             // Unlike `b`, the residual is computed: an ∞ entry norms to NaN, read as β₁ = 0 downstream.
             let norm = finite(norm, "warm-start residual norm")?;
             (norm > 0.0).then_some((staged, norm))
@@ -322,7 +355,9 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
     };
     let reference_norm = if b_norm > 0.0 { b_norm } else { rhs_norm };
     let criteria = ConvergenceCriteria::new(reference_norm, tol);
-    lsmr_from_bidiag(bidiag, step1, b, start, criteria, maxiter, escalation)
+    lsmr_from_bidiag(
+        bidiag, step1, b, start, criteria, maxiter, escalation, threads,
+    )
 }
 
 /// Restarts from a refuted tolerance stop before the solve is refused outright.
@@ -373,6 +408,7 @@ struct SolveStart<'a> {
 }
 
 /// Runs LSMR on the correction to `x0`, restarting from any tolerance stop `b − A x` refutes.
+#[allow(clippy::too_many_arguments)]
 fn lsmr_from_bidiag<B: Bidiagonalization>(
     mut bidiag: B,
     mut step1: BidiagStep,
@@ -381,6 +417,7 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
     criteria: ConvergenceCriteria,
     maxiter: usize,
     escalation: Option<&dyn EscalationPolicy>,
+    threads: Threads,
 ) -> Result<LsmrResult, SolveError> {
     let n = bidiag.v().len();
     let reference = start.reference;
@@ -426,7 +463,7 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
         let mut escalation = escalation.map(EscalationPolicy::handler);
         let mut convergence = criteria.start(step1.alpha);
         let mut recurrence = LsmrRecurrenceState::init(step1);
-        let mut solution = SolutionState::init(bidiag.v(), step1.beta);
+        let mut solution = SolutionState::init(bidiag.v(), step1.beta, threads);
         let mut prev_rot = RotationStep::initial();
         let stop_reason = 'pass: {
             while iterations < maxiter {
@@ -460,7 +497,7 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
 
         let mut x = solution.into_x();
         if let Some(base) = &base {
-            axpby(&mut x, base, 1.0, 1.0);
+            axpby(&mut x, base, 1.0, 1.0, threads);
         }
         // Only tolerance stops measure `x`, and a non-finite entry never recovers.
         if let Some((index, value)) = x.iter().copied().enumerate().find(|(_, v)| !v.is_finite()) {

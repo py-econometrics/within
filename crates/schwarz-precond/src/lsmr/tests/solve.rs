@@ -45,7 +45,7 @@ fn test_lsmr_large_magnitude_rhs_not_silently_zero() {
 fn test_mlsmr_large_magnitude_rhs_not_silently_zero() {
     let b = vec![1e155, 2e155, 3e155];
     let op = IdentityOp { n: 3 };
-    let result = mlsmr(&op, &b, &op, 1e-10, 100, MlsmrOptions::default())
+    let result = mlsmr_all(&op, &b, &op, 1e-10, 100, MlsmrOptions::default())
         .expect("preconditioned mlsmr solve");
 
     let all_zero = result.x.iter().all(|&xi| xi == 0.0);
@@ -78,7 +78,7 @@ fn test_mlsmr_unpreconditioned() {
 fn test_mlsmr_preconditioned() {
     let b = vec![1.0, 2.0, 3.0, 3.0];
     let preconditioner = DiagOp(vec![0.5, 0.5, 1.0]);
-    let result = mlsmr(
+    let result = mlsmr_all(
         &OverdeterminedOp,
         &b,
         &preconditioner,
@@ -123,12 +123,27 @@ fn test_mlsmr_underdetermined_system() {
         fn ncols(&self) -> usize {
             3
         }
-        fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+        fn scratch(&self, _columns: usize, _threads: Threads) -> StackReq {
+            StackReq::EMPTY
+        }
+        fn apply(
+            &self,
+            x: &[f64],
+            y: &mut [f64],
+            _threads: Threads,
+            _stack: &mut MemStack,
+        ) -> Result<(), SolveError> {
             y[0] = x[0];
             y[1] = x[1];
             Ok(())
         }
-        fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) -> Result<(), SolveError> {
+        fn apply_adjoint(
+            &self,
+            u: &[f64],
+            x: &mut [f64],
+            _threads: Threads,
+            _stack: &mut MemStack,
+        ) -> Result<(), SolveError> {
             x[0] = u[0];
             x[1] = u[1];
             x[2] = 0.0;
@@ -154,13 +169,28 @@ fn test_mlsmr_rank_deficient_system() {
         fn ncols(&self) -> usize {
             2
         }
-        fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+        fn scratch(&self, _columns: usize, _threads: Threads) -> StackReq {
+            StackReq::EMPTY
+        }
+        fn apply(
+            &self,
+            x: &[f64],
+            y: &mut [f64],
+            _threads: Threads,
+            _stack: &mut MemStack,
+        ) -> Result<(), SolveError> {
             let s = x[0] + x[1];
             y[0] = s;
             y[1] = 2.0 * s;
             Ok(())
         }
-        fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) -> Result<(), SolveError> {
+        fn apply_adjoint(
+            &self,
+            u: &[f64],
+            x: &mut [f64],
+            _threads: Threads,
+            _stack: &mut MemStack,
+        ) -> Result<(), SolveError> {
             let s = u[0] + 2.0 * u[1];
             x[0] = s;
             x[1] = s;
@@ -183,7 +213,7 @@ fn test_mlsmr_rank_deficient_system() {
 fn a_singular_preconditioner_cannot_certify_the_direction_it_annihilates(#[case] m: &[f64]) {
     let a = IdentityOp { n: m.len() };
     let b = vec![1.0; m.len()];
-    let result = mlsmr(
+    let result = mlsmr_all(
         &a,
         &b,
         &DiagOp(m.to_vec()),
@@ -304,7 +334,7 @@ fn test_mlsmr_local_reorth_preconditioned() {
         local_size: Some(10),
         ..Default::default()
     };
-    let r10 = mlsmr(&op, &b, &m, tol, maxiter, opts).expect("windowed preconditioned solve");
+    let r10 = mlsmr_all(&op, &b, &m, tol, maxiter, opts).expect("windowed preconditioned solve");
     assert!(
         r10.converged,
         "windowed preconditioned LSMR failed to converge (iters = {})",
@@ -380,7 +410,7 @@ fn a_rescaling_preconditioner_does_not_deflate_the_plain_audit_reference() {
         data: vec![1e6, 0.0, 0.0, 1e-3, 0.0, 0.0],
     };
     let m = DiagOp(vec![1e-12, 1e-16]);
-    let r = mlsmr(
+    let r = mlsmr_all(
         &op,
         &[1.0, 1.0, 1.0],
         &m,
@@ -437,7 +467,7 @@ fn the_residual_estimate_is_the_iterates_own(#[values(2, 4, 8)] maxiter: usize) 
     assert_eq!(r.stop_reason, LsmrStopReason::MaxIterations);
 
     let mut residual = vec![0.0; b.len()];
-    op.apply(&r.x, &mut residual).expect("apply");
+    apply(&op, &r.x, &mut residual).expect("apply");
     for (ri, &bi) in residual.iter_mut().zip(&b) {
         *ri = bi - *ri;
     }

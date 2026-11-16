@@ -23,8 +23,8 @@ cargo add schwarz-precond
 
 ```rust
 use schwarz_precond::{
-    mlsmr, LocalSolver, MemStack, MlsmrOptions, Operator, SchwarzPreconditioner,
-    SolveError, StackReq, SubdomainCore, SubdomainEntry, Threads,
+    mlsmr, mlsmr_scratch, LocalSolver, MemBuffer, MemStack, MlsmrOptions, Operator,
+    SchwarzPreconditioner, SolveError, StackReq, SubdomainCore, SubdomainEntry, Threads,
 };
 
 // --- Tridiagonal SPD operator: A = tridiag(-1, 3, -1) ---
@@ -33,7 +33,16 @@ struct TridiagOp(usize);
 impl Operator for TridiagOp {
     fn nrows(&self) -> usize { self.0 }
     fn ncols(&self) -> usize { self.0 }
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+    fn scratch(&self, _columns: usize, _threads: Threads) -> StackReq {
+        StackReq::EMPTY
+    }
+    fn apply(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+        _threads: Threads,
+        _stack: &mut MemStack,
+    ) -> Result<(), SolveError> {
         for i in 0..self.0 {
             y[i] = 3.0 * x[i];
             if i > 0          { y[i] -= x[i - 1]; }
@@ -41,8 +50,14 @@ impl Operator for TridiagOp {
         }
         Ok(())
     }
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        self.apply(x, y)
+    fn apply_adjoint(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+        threads: Threads,
+        stack: &mut MemStack,
+    ) -> Result<(), SolveError> {
+        self.apply(x, y, threads, stack)
     }
 }
 
@@ -51,7 +66,7 @@ struct DiagSolver(usize, f64);
 
 impl LocalSolver for DiagSolver {
     fn n_local(&self) -> usize { self.0 }
-    fn scratch(&self, _threads: Threads) -> StackReq { StackReq::EMPTY }
+    fn scratch(&self, _columns: usize, _threads: Threads) -> StackReq { StackReq::EMPTY }
     fn solve_local(
         &self,
         x: &mut [f64],
@@ -80,7 +95,10 @@ fn main() {
         .collect();
 
     let precond = SchwarzPreconditioner::new(entries);
-    let result = mlsmr(&a, &b, &precond, 1e-10, 500, MlsmrOptions::default())
+    let mut scratch = MemBuffer::new(mlsmr_scratch(&a, &precond, Threads::All));
+    let stack = MemStack::new(&mut scratch);
+    let options = MlsmrOptions::default();
+    let result = mlsmr(&a, &b, &precond, 1e-10, 500, options, Threads::All, stack)
         .expect("lsmr should converge");
 
     println!("converged={} iters={} res={:.3e}",
