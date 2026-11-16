@@ -40,8 +40,7 @@ struct ProjectedColumns<'r> {
     gram: &'r [f64],
     /// The rows of each eliminated level, contiguous: the design is sorted by it.
     rows: &'r LevelRows,
-    /// Per kept term, its columns and its block start in the kept coefficients.
-    kept: Vec<(TermRows<'r>, usize)>,
+    kept: Box<Kept<'r>>,
     /// Every kept term is a lone intercept.
     kept_plain: bool,
     /// The eliminated slopes a fixed-width kernel reads, unused slots empty.
@@ -53,14 +52,24 @@ const MAX_FIXED_SLOPES: usize = 2;
 
 /// Runs `$body` with the eliminated term's intercept `$i` and width `$width` (0: read at run
 /// time), whether the kept terms are lone intercepts `$kp` when asked, and the row weight `$w`
-/// fixed at compile time.
+/// fixed at compile time; `$kept` holds one or two kept terms by value, more behind a slice.
 macro_rules! with_shape {
-    ($columns:ident, |$i:ident, $width:ident, $kp:ident, $w:ident| $body:expr) => {
+    ($columns:ident, |$i:ident, $width:ident, $kp:ident, $kept:ident, $w:ident| $body:expr) => {
+        // A loop over a slice costs a 3FE product a fifth of its time.
+        match $columns.kept[..] {
+            [a] => with_shape!(@plain $columns, $i, $width, $kp, ($kept = [a]), $w, $body),
+            [a, b] => with_shape!(@plain $columns, $i, $width, $kp, ($kept = [a, b]), $w, $body),
+            ref kept => with_shape!(@plain $columns, $i, $width, $kp, ($kept = kept), $w, $body),
+        }
+    };
+    (@plain $columns:ident, $i:ident, $width:ident, $kp:ident, ($kept:ident = $kv:expr),
+     $w:ident, $body:expr) => {{
+        let $kept = $kv;
         match $columns.kept_plain {
             true => with_shape!(@width $columns, $i, $width, ($kp = true), $w, $body),
             false => with_shape!(@width $columns, $i, $width, ($kp = false), $w, $body),
         }
-    };
+    }};
     ($columns:ident, |$i:ident, $width:ident, $w:ident| $body:expr) => {
         with_shape!(@width $columns, $i, $width, (), $w, $body)
     };
@@ -91,7 +100,7 @@ macro_rules! with_shape {
                 $body
             }
             Some(sw) => {
-                let $w = |i: usize| sw[i];
+                let $w = move |i: usize| sw[i];
                 $body
             }
         }
@@ -152,7 +161,7 @@ impl<'a> ReducedDesign<'a> {
 
     fn columns(&self) -> ProjectedColumns<'_> {
         let design = &self.prepared.design;
-        let kept: Vec<_> = (0..design.n_factors())
+        let kept: Box<Kept<'_>> = (0..design.n_factors())
             .filter_map(|t| {
                 let start = design.block_start(t)?;
                 Some((TermRows::new(&self.prepared.term(t)), start))
@@ -192,7 +201,7 @@ impl<'a> ReducedDesign<'a> {
         let columns = self.columns();
         let (n_levels, width) = (columns.eliminated.n_levels, columns.eliminated.width());
         let mut by_level = vec![0.0; n_levels * width];
-        with_shape!(columns, |I, W, KEPT_PLAIN, w| {
+        with_shape!(columns, |I, W, KEPT_PLAIN, kept, w| {
             let levels = by_level.par_chunks_mut(width).enumerate().with_min_len(256);
             levels.for_each_init(
                 || (columns.moments(2), Vec::new()),
@@ -202,7 +211,7 @@ impl<'a> ReducedDesign<'a> {
                     v.clear();
                     fit.fill(0.0);
                     for (p, i) in rows.enumerate() {
-                        let x = b(i) - w(i) * columns.kept_row::<KEPT_PLAIN>(x_k, i);
+                        let x = b(i) - w(i) * kept_row::<KEPT_PLAIN>(&kept, x_k, i);
                         v.push(x);
                         add_moments(&basis, p, x, fit);
                     }
@@ -452,33 +461,6 @@ impl ProjectedColumns<'_> {
             energy
         }
     }
-    /// `(D_k x)_i`.
-    #[inline(always)]
-    fn kept_row<const PLAIN: bool>(&self, x: &[f64], i: usize) -> f64 {
-        let row = |(columns, offset): &(TermRows<'_>, usize)| columns.row::<PLAIN>(x, *offset, i);
-        // One and two kept terms skip the loop, which costs a 3FE product a fifth of its time.
-        match &self.kept[..] {
-            [a] => row(a),
-            [a, b] => row(a) + row(b),
-            kept => kept.iter().fold(-0.0, |acc, term| acc + row(term)),
-        }
-    }
-
-    /// `acc += v · D_kᵀ e_i`.
-    #[inline(always)]
-    fn add_kept_row<const PLAIN: bool>(&self, acc: &mut [f64], i: usize, v: f64) {
-        let mut add = |(columns, offset): &(TermRows<'_>, usize)| {
-            columns.add_row::<PLAIN>(acc, *offset, i, v)
-        };
-        match &self.kept[..] {
-            [a] => add(a),
-            [a, b] => {
-                add(a);
-                add(b);
-            }
-            kept => kept.iter().for_each(add),
-        }
-    }
 
     /// Level `l`'s rows and its columns of `A_e`.
     #[inline(always)]
@@ -493,7 +475,9 @@ impl ProjectedColumns<'_> {
             w,
             intercept: self.eliminated.intercept,
             slopes: self.eliminated.slopes,
-            loadings: &self.loadings,
+            loadings: self
+                .loadings
+                .map(|z| z.get(rows.clone()).unwrap_or_default()),
             gram: self.gram,
             n_levels: self.eliminated.n_levels,
             level: l,
@@ -510,8 +494,8 @@ impl ProjectedColumns<'_> {
     /// `out ← (I − P_e) out` in one pass, `set` first writing each row's value; `w = W^½`.
     fn project<const I: bool, const W: usize>(
         &self,
-        set: impl Fn(usize, &mut f64) + Sync,
-        w: impl Fn(usize) -> f64 + Sync,
+        set: impl Fn(usize, &mut f64) + Sync + Copy,
+        w: impl Fn(usize) -> f64 + Sync + Copy,
         out: &mut [f64],
     ) {
         let mut parts = Vec::with_capacity(self.system.tasks.len());
@@ -527,6 +511,8 @@ impl ProjectedColumns<'_> {
         parts.into_par_iter().for_each_init(
             || self.moments(1),
             |moments, (levels, base, part)| {
+                // Copied: read through the captures, each row reloads them after a store to `part`.
+                let (set, w) = (set, w);
                 // A fixed width keeps the moments in registers; through the heap a plain level's
                 // one moment cost 12%.
                 let mut fixed = [0.0; W];
@@ -535,7 +521,7 @@ impl ProjectedColumns<'_> {
                     _ => &mut fixed[..],
                 };
                 for l in levels {
-                    let (rows, basis) = self.level::<I, W, _>(l, &w);
+                    let (rows, basis) = self.level::<I, W, _>(l, w);
                     let v = &mut part[rows.start - base..rows.end - base];
                     fit.fill(0.0);
                     for (p, x) in v.iter_mut().enumerate() {
@@ -552,10 +538,11 @@ impl ProjectedColumns<'_> {
     }
 
     /// `A_rᵀ v`, one accumulator per leaf summed in a fixed tree.
-    fn adjoint<const I: bool, const W: usize, const KEPT_PLAIN: bool>(
+    fn adjoint<'k, const I: bool, const W: usize, const KEPT_PLAIN: bool>(
         &self,
+        kept: impl AsRef<Kept<'k>> + Sync + Copy,
         v: &[f64],
-        w: impl Fn(usize) -> f64 + Sync,
+        w: impl Fn(usize) -> f64 + Sync + Copy,
     ) -> Vec<f64> {
         let width = self.eliminated.width();
         let ReducedDesign {
@@ -566,6 +553,8 @@ impl ProjectedColumns<'_> {
         } = self.system;
         let n_kept = prepared.design.n_unknowns();
         let leaf = |tasks: Range<usize>| {
+            // Copied: read through the captures, each row reloads them after a store to `acc`.
+            let (kept, w) = (kept, w);
             let mut acc = vec![0.0; n_kept];
             let mut moments = self.moments(1);
             let mut fixed = [0.0; W];
@@ -574,7 +563,7 @@ impl ProjectedColumns<'_> {
                 _ => &mut fixed[..],
             };
             for l in all[tasks.start].start..all[tasks.end - 1].end {
-                let (rows, basis) = self.level::<I, W, _>(l, &w);
+                let (rows, basis) = self.level::<I, W, _>(l, w);
                 let u = &v[rows.clone()];
                 fit.fill(0.0);
                 for (p, &x) in u.iter().enumerate() {
@@ -585,7 +574,7 @@ impl ProjectedColumns<'_> {
                 for (p, &x) in u.iter().enumerate() {
                     let i = rows.start + p;
                     let projected = w(i) * remove_fit(&basis, p, x, fit);
-                    self.add_kept_row::<KEPT_PLAIN>(&mut acc, i, projected);
+                    add_kept_row::<KEPT_PLAIN>(&kept, &mut acc, i, projected);
                 }
             }
             acc
@@ -593,6 +582,29 @@ impl ProjectedColumns<'_> {
         let add = |l: &mut Vec<f64>, r: &Vec<f64>| l.iter_mut().zip(r).for_each(|(l, r)| *l += r);
         let leaf = |k: Range<usize>| leaf(leaves[k.start].clone());
         fixed_tree(0..leaves.len(), 1, &leaf, &add)
+    }
+}
+
+/// Per kept term, its columns and its block start in the kept coefficients.
+type Kept<'r> = [(TermRows<'r>, usize)];
+
+/// `(D_k x)_i`.
+#[inline(always)]
+fn kept_row<'r, const PLAIN: bool>(kept: &impl AsRef<Kept<'r>>, x: &[f64], i: usize) -> f64 {
+    let row = |(columns, offset): &(TermRows<'_>, usize)| columns.row::<PLAIN>(x, *offset, i);
+    (kept.as_ref().iter()).fold(-0.0, |acc, term| acc + row(term))
+}
+
+/// `acc += v · D_kᵀ e_i`.
+#[inline(always)]
+fn add_kept_row<'r, const PLAIN: bool>(
+    kept: &impl AsRef<Kept<'r>>,
+    acc: &mut [f64],
+    i: usize,
+    v: f64,
+) {
+    for (columns, offset) in kept.as_ref() {
+        columns.add_row::<PLAIN>(acc, *offset, i, v);
     }
 }
 
@@ -611,7 +623,8 @@ struct LevelBasis<'r, const I: bool, const W: usize, Wt> {
     w: Wt,
     intercept: bool,
     slopes: &'r [Vec<f64>],
-    loadings: &'r [&'r [f64]; MAX_FIXED_SLOPES],
+    /// The fixed-width slopes on this level's rows.
+    loadings: [&'r [f64]; MAX_FIXED_SLOPES],
     /// `diag(A_eᵀA_e)`, column-major over the term's `n_levels`.
     gram: &'r [f64],
     n_levels: usize,
@@ -628,7 +641,7 @@ impl<const I: bool, const W: usize, Wt: Fn(usize) -> f64> DiagonalGramBasis
         if W > 0 {
             return match I && c == 0 {
                 true => w,
-                false => w * self.loadings[c - I as usize][i],
+                false => w * self.loadings[c - I as usize][p],
             };
         }
         match c.checked_sub(self.intercept as usize) {
@@ -656,9 +669,9 @@ impl Operator for ReducedDesign<'_> {
         debug_assert_eq!(x.len(), self.ncols());
         let x = &*self.without_vanished(x);
         let columns = self.columns();
-        with_shape!(columns, |I, W, KEPT_PLAIN, w| {
+        with_shape!(columns, |I, W, KEPT_PLAIN, kept, w| {
             columns.project::<I, W>(
-                |i, y| *y = w(i) * columns.kept_row::<KEPT_PLAIN>(x, i),
+                move |i, y| *y = w(i) * kept_row::<KEPT_PLAIN>(&kept, x, i),
                 w,
                 y,
             )
@@ -669,8 +682,8 @@ impl Operator for ReducedDesign<'_> {
     fn apply_adjoint(&self, v: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
         debug_assert_eq!(y.len(), self.ncols());
         let columns = self.columns();
-        with_shape!(columns, |I, W, KEPT_PLAIN, w| y
-            .copy_from_slice(&columns.adjoint::<I, W, KEPT_PLAIN>(v, w)));
+        with_shape!(columns, |I, W, KEPT_PLAIN, kept, w| y
+            .copy_from_slice(&columns.adjoint::<I, W, KEPT_PLAIN>(kept, v, w)));
         self.zero_vanished(y);
         Ok(())
     }

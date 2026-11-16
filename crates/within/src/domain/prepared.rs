@@ -26,6 +26,7 @@ pub(crate) struct PreparedTerm<'p> {
 }
 
 /// One term's coefficient columns, read row by row.
+#[derive(Clone, Copy)]
 pub(crate) struct TermRows<'p> {
     pub(crate) levels: &'p [u32],
     pub(crate) n_levels: usize,
