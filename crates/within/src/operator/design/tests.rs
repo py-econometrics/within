@@ -523,7 +523,7 @@ mod elimination_tests {
         let kept: Vec<f64> = (0..p).map(|j| noise(11 * n + j)).collect();
         let x_k: Vec<f64> = [&kept[..dofs.start], &kept[dofs.end..]].concat();
         let recover = |b: &[f64]| {
-            let x = reduced.recover(b, &x_k);
+            let x = reduced.recover(|i| b[i], &x_k);
             assert_eq!([&x[..dofs.start], &x[dofs.end..]].concat(), x_k);
             x
         };
@@ -613,12 +613,12 @@ mod elimination_tests {
             norm(&scale)
         );
         // `(I − P_e) b ⊥ A_e`.
-        let projected = reduced.project_rhs(&kept_image);
+        let projected = reduced.project_rhs(|i| kept_image[i]);
         let normal = eliminated_normal(&projected);
         assert!(norm(&normal) <= 1e-13 * norm(&scale));
         // `A_k x − A_r x ∈ span(A_e)`: fitting it by `A_e` alone leaves nothing.
         let removed: Vec<f64> = kept_image.iter().zip(&image).map(|(a, r)| a - r).collect();
-        let fit = reduced.recover(&removed, &vec![0.0; k]);
+        let fit = reduced.recover(|i| removed[i], &vec![0.0; k]);
         let mut fitted = vec![0.0; N];
         prepared.apply(&fit, &mut fitted).unwrap();
         let left: Vec<f64> = removed.iter().zip(&fitted).map(|(d, f)| d - f).collect();

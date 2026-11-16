@@ -126,12 +126,12 @@ impl<'a> ReducedDesign<'a> {
         }
     }
 
-    /// `(I − P_e) b`.
-    pub(crate) fn project_rhs(&self, b: &[f64]) -> Vec<f64> {
+    /// `(I − P_e) b`, with `b` read row by row in internal order.
+    pub(crate) fn project_rhs(&self, b: impl Fn(usize) -> f64 + Sync) -> Vec<f64> {
         let columns = self.columns();
-        let mut out = vec![0.0; b.len()];
+        let mut out = vec![0.0; self.prepared.design.n_obs];
         with_shape!(columns, |PLAIN, w| {
-            columns.project::<PLAIN>(|i, x| *x = b[i], w, &mut out);
+            columns.project::<PLAIN>(|i, x| *x = b(i), w, &mut out);
             // One pass rounds away entries of heavy rows that light rows' weights make matter.
             columns.project::<PLAIN>(|_, _| {}, w, &mut out);
         });
@@ -139,7 +139,7 @@ impl<'a> ReducedDesign<'a> {
     }
 
     /// The full coefficients: `x_k` plus the eliminated block fitted to `b − A_k x_k`.
-    pub(crate) fn recover(&self, b: &[f64], x_k: &[f64]) -> Vec<f64> {
+    pub(crate) fn recover(&self, b: impl Fn(usize) -> f64 + Sync, x_k: &[f64]) -> Vec<f64> {
         let columns = self.columns();
         let (n_levels, width) = (columns.eliminated.n_levels, columns.eliminated.width());
         let mut by_level = vec![0.0; n_levels * width];
@@ -153,7 +153,7 @@ impl<'a> ReducedDesign<'a> {
                     v.clear();
                     fit.fill(0.0);
                     for (p, i) in rows.enumerate() {
-                        let x = b[i] - w(i) * columns.kept_row::<PLAIN>(x_k, i);
+                        let x = b(i) - w(i) * columns.kept_row::<PLAIN>(x_k, i);
                         v.push(x);
                         add_moments(&basis, p, x, fit);
                     }

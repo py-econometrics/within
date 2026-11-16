@@ -85,11 +85,10 @@ pub(crate) trait LeastSquaresSystem: Sync {
     ) -> Result<Fit, SolveError>;
 }
 
-/// One response in the internal observation order, with its `W^{1/2}`-weighted image.
+/// A response validated against the design, in the caller's observation order.
+#[derive(Clone, Copy)]
 pub(crate) struct Response<'s> {
-    y: Cow<'s, [f64]>,
-    /// `None` when unweighted, where the weighted image is `y` itself.
-    weighted: Option<Vec<f64>>,
+    y: &'s [f64],
 }
 
 impl<'s> Response<'s> {
@@ -111,21 +110,41 @@ impl<'s> Response<'s> {
                 message: format!("response at index {index} must be finite, got {value}"),
             });
         }
-        Ok(Self::permuted(prepared, y))
+        Ok(Self { y })
     }
 
-    /// A validated `y` in internal order, and weighted.
-    fn permuted(prepared: &PreparedDesign<'_>, y: &'s [f64]) -> Self {
-        let y = prepared.design.permute_obs_in(y);
-        let weighted = prepared
-            .sqrt_weights()
-            .map(|sw| y.iter().zip(sw).map(|(&yi, &swi)| swi * yi).collect());
-        Self { y, weighted }
+    /// `W^{1/2} y` in internal order; borrows `y` when neither permuted nor weighted.
+    fn weighted(self, prepared: &PreparedDesign<'_>) -> Cow<'s, [f64]> {
+        let y = prepared.design.permute_obs_in(self.y);
+        let Some(sw) = prepared.sqrt_weights() else {
+            return y;
+        };
+        Cow::Owned(match y {
+            Cow::Borrowed(y) => y.iter().zip(sw).map(|(&yi, &swi)| swi * yi).collect(),
+            Cow::Owned(mut y) => {
+                y.iter_mut().zip(sw).for_each(|(yi, &swi)| *yi *= swi);
+                y
+            }
+        })
     }
 
-    pub(crate) fn weighted(&self) -> &[f64] {
-        self.weighted.as_deref().unwrap_or(&self.y)
+    /// Row `i` of `W^{1/2} y` in internal order.
+    fn weighted_row<'p>(self, prepared: &'p PreparedDesign<'_>) -> impl Fn(usize) -> f64 + Sync + 'p
+    where
+        's: 'p,
+    {
+        let (perm, sqrt_weights) = (prepared.design.obs_perm.as_deref(), prepared.sqrt_weights());
+        move |i| {
+            let yi = self.y[perm.map_or(i, |p| p.get(i))];
+            sqrt_weights.map_or(yi, |sw| sw[i] * yi)
+        }
     }
+}
+
+/// A validated response and the full system's right-hand side `W^{1/2} y`.
+pub(crate) struct FullResponse<'s> {
+    response: Response<'s>,
+    weighted: Cow<'s, [f64]>,
 }
 
 /// Coefficients in the caller's parametrization; `y − D x` in the caller's observation order.
@@ -138,11 +157,11 @@ impl PreparedDesign<'_> {
     /// The caller's fit from solve-basis coefficients `x` and, if measured, `b − A x`.
     pub(crate) fn fit(
         &self,
-        rhs: Response<'_>,
+        response: Response<'_>,
         mut x: Vec<f64>,
         measured: Option<Vec<f64>>,
     ) -> Fit {
-        let demeaned = self.demeaned(&x, &rhs.y, measured);
+        let demeaned = self.demeaned(&x, response.y, measured);
         self.back_transform(&mut x);
         Fit {
             x,
@@ -154,7 +173,7 @@ impl PreparedDesign<'_> {
 impl LeastSquaresSystem for PreparedDesign<'_> {
     type Matrix = Self;
     type Rhs<'s>
-        = Response<'s>
+        = FullResponse<'s>
     where
         Self: 's;
 
@@ -174,28 +193,30 @@ impl LeastSquaresSystem for PreparedDesign<'_> {
         PreparedDesign::gram_diagonal(self)
     }
 
-    fn prepare<'s>(&'s self, y: &'s [f64]) -> Result<Response<'s>, SolveError> {
-        Response::new(self, y)
+    fn prepare<'s>(&'s self, y: &'s [f64]) -> Result<FullResponse<'s>, SolveError> {
+        let response = Response::new(self, y)?;
+        let weighted = response.weighted(self);
+        Ok(FullResponse { response, weighted })
     }
 
-    fn b<'r>(&self, rhs: &'r Response<'_>) -> &'r [f64] {
-        rhs.weighted()
+    fn b<'r>(&self, rhs: &'r FullResponse<'_>) -> &'r [f64] {
+        &rhs.weighted
     }
 
     fn finish(
         &self,
-        rhs: Response<'_>,
+        rhs: FullResponse<'_>,
         x: Vec<f64>,
         measured: Option<Vec<f64>>,
     ) -> Result<Fit, SolveError> {
-        Ok(self.fit(rhs, x, measured))
+        drop(rhs.weighted);
+        Ok(self.fit(rhs.response, x, measured))
     }
 }
 
 /// A validated response and the reduced system's right-hand side `(I − P_e) W^{1/2} y`.
 pub(crate) struct ReducedResponse<'s> {
-    /// In caller order: a solve holds only `projected`, and `finish` permutes `y` again.
-    y: &'s [f64],
+    response: Response<'s>,
     projected: Vec<f64>,
 }
 
@@ -223,9 +244,13 @@ impl LeastSquaresSystem for ReducedDesign<'_> {
     }
 
     fn prepare<'s>(&'s self, y: &'s [f64]) -> Result<ReducedResponse<'s>, SolveError> {
-        let projected =
-            self.project_rhs(Response::new(ReducedDesign::prepared(self), y)?.weighted());
-        Ok(ReducedResponse { y, projected })
+        let prepared = ReducedDesign::prepared(self);
+        let response = Response::new(prepared, y)?;
+        let projected = self.project_rhs(response.weighted_row(prepared));
+        Ok(ReducedResponse {
+            response,
+            projected,
+        })
     }
 
     fn b<'r>(&self, rhs: &'r ReducedResponse<'_>) -> &'r [f64] {
@@ -239,9 +264,9 @@ impl LeastSquaresSystem for ReducedDesign<'_> {
         measured: Option<Vec<f64>>,
     ) -> Result<Fit, SolveError> {
         drop(rhs.projected);
-        let response = Response::permuted(ReducedDesign::prepared(self), rhs.y);
-        let x = self.recover(response.weighted(), &x);
+        let prepared = ReducedDesign::prepared(self);
+        let x = self.recover(rhs.response.weighted_row(prepared), &x);
         // `(I − P_e)(b − A_k x_k)` is `b − A x` once the eliminated block is recovered.
-        Ok(ReducedDesign::prepared(self).fit(response, x, measured))
+        Ok(prepared.fit(rhs.response, x, measured))
     }
 }
