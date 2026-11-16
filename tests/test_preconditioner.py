@@ -146,9 +146,12 @@ class TestFePreconditioner:
         solver, precond, categories, y = solver_and_precond
         assert "Schwarz" in repr(precond)
 
-    def test_preconditioner_nrows_ncols_match_solver(self, solver_and_precond):
+    def test_preconditioner_acts_on_all_but_the_largest_factor(
+        self, solver_and_precond
+    ):
         solver, precond, categories, y = solver_and_precond
-        assert precond.nrows == precond.ncols == solver.n_dofs
+        levels = [len(np.unique(column)) for column in categories.T]
+        assert precond.nrows == precond.ncols == solver.n_dofs - max(levels)
 
     def test_preconditioner_exposes_build_duration(self):
         categories = as_solver_categories(
@@ -231,7 +234,8 @@ class TestFePreconditioner:
         precond = solver.preconditioner
 
         assert precond is not None
-        assert precond.nrows == precond.ncols == 3
+        # The one factor is eliminated, so the map acts on no coefficients.
+        assert precond.nrows == precond.ncols == 0
 
 
 class TestAdaptive:
@@ -278,11 +282,14 @@ class TestAdaptive:
 
     def test_deferred_build_warnings_surface_on_the_escalating_solve(self, recwarn):
         """The constructor cannot see them: the Schwarz build happens mid-solve."""
-        f = np.array([0, 0, 0, 1, 1, 1], np.uint32)
-        g = np.array([0, 1, 2, 0, 1, 2], np.uint32)
-        z = np.array([-2.0, 1.0, 1.0, -1.0, -1.0, 2.0])
-        y = np.array([1.0, -2.0, 0.5, 3.0, -1.5, 2.5])
-        effects = [Effect(f, True, [z]), Effect(g, True)]
+        # A third factor, so the reduced diagonal iterates long enough to stall.
+        i = np.arange(24)
+        f = (i % 6 // 3 + 2 * (i // 6)).astype(np.uint32)
+        g = (i % 3 + 3 * (i // 6 % 2)).astype(np.uint32)
+        h = ((5 * i + i // 7) % 4).astype(np.uint32)
+        z = np.tile([-2.0, 1.0, 1.0, -1.0, -1.0, 2.0], 4) * (1 + 0.1 * (i // 6))
+        y = np.sin(1.7 * i)
+        effects = [Effect(f, True, [z]), Effect(g, True), Effect(h, True)]
         local_solver = LocalSolverConfig(scaling=ScalingConfig(max_iterations=0))
         options = LsmrOptions(tol=1e-12, maxiter=100)
 
@@ -293,7 +300,8 @@ class TestAdaptive:
             effects,
             preconditioner=PreconditionerConfig.Schwarz(local_solver=local_solver),
         )
-        assert unscalable(recwarn.list), "fixture no longer warns under Schwarz"
+        warned = len(unscalable(recwarn.list))
+        assert warned, "fixture no longer warns under Schwarz"
 
         recwarn.clear()
         solver = Solver(
@@ -307,7 +315,7 @@ class TestAdaptive:
         recwarn.clear()
         solver.solve(y, options)
         assert solver.preconditioner.rung == Rung.Schwarz
-        assert len(unscalable(recwarn.list)) == 1
+        assert len(unscalable(recwarn.list)) == warned
 
         recwarn.clear()
         solver.solve(y, options)

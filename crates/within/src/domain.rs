@@ -521,24 +521,15 @@ pub(crate) fn offsets(n_keys: usize, keys: impl IntoIterator<Item = usize>) -> V
     offsets
 }
 
-/// The coefficients LSMR iterates on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum Unknowns {
-    All,
-    /// The dominant term's block is eliminated; the rest keep their order.
-    WithoutDominant,
-}
-
 /// The term with the most coefficients, ties to the last: the sort key and the eliminated term.
 fn dominant(sizes: impl Iterator<Item = usize>) -> Option<usize> {
     sizes.enumerate().max_by_key(|&(_, n)| n).map(|(t, _)| t)
 }
 
-/// The coefficients a map acts on: whether the dominant term is eliminated, and each term's level
-/// and column count.
+/// The coefficients a map acts on: each term's level and column count, the dominant term's
+/// eliminated.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct UnknownsLayout {
-    unknowns: Unknowns,
     terms: Vec<TermSize>,
 }
 
@@ -559,10 +550,7 @@ impl UnknownsLayout {
         let all = sizes
             .iter()
             .try_fold(0usize, |sum, &n| sum.checked_add(n))?;
-        match self.unknowns {
-            Unknowns::All => Some(all),
-            Unknowns::WithoutDominant => Some(all - sizes[dominant(sizes.iter().copied())?]),
-        }
+        Some(all - sizes[dominant(sizes.iter().copied())?])
     }
 
     /// How a map built over `built` fails to fit these coefficients; `None` when it fits.
@@ -594,7 +582,7 @@ impl UnknownsLayout {
                 }
             });
         }
-        (self.unknowns != built.unknowns).then_some(LayoutMismatch::System)
+        None
     }
 }
 
@@ -614,13 +602,7 @@ pub struct Design<'a> {
 impl<'a> Design<'a> {
     /// Lower effect terms into a design, laid out term-major (`offset[t] + c · L_t + level`).
     pub fn new(effects: impl IntoIterator<Item = Effect<'a>>) -> Result<Self, BuildError> {
-        Self::build(effects.into_iter().collect(), true)
-    }
-
-    /// [`new`](Self::new) without the locality sort — profiling escape hatch.
-    #[doc(hidden)]
-    pub fn new_unsorted(effects: impl IntoIterator<Item = Effect<'a>>) -> Result<Self, BuildError> {
-        Self::build(effects.into_iter().collect(), false)
+        Self::build(effects.into_iter().collect())
     }
 
     /// Build an intercept-only design from an observation-major categories matrix.
@@ -640,10 +622,10 @@ impl<'a> Design<'a> {
                 }
             })
             .collect();
-        Self::build(effects, true)
+        Self::build(effects)
     }
 
-    fn build(effects: Vec<Effect<'a>>, locality_sort: bool) -> Result<Self, BuildError> {
+    fn build(effects: Vec<Effect<'a>>) -> Result<Self, BuildError> {
         let n_obs = effects.first().map_or(0, |e| e.levels.len());
         for (column, e) in effects.iter().enumerate() {
             if e.levels.len() != n_obs {
@@ -696,7 +678,7 @@ impl<'a> Design<'a> {
             dominant(terms.iter().map(Term::n_dofs)).expect("observations imply an effect");
         // Sort by the dominant term so its gather/scatter runs sequentially.
         let d = &terms[dominant];
-        let obs_perm = if locality_sort && !d.sorted {
+        let obs_perm = if !d.sorted {
             let offsets = offsets(d.n_levels(), d.levels.iter().map(|&l| l as usize));
             let perm = RowIndex::argsort(&d.levels, &offsets);
             // Factors nested in the dominant one come out sorted and need no row index.
@@ -764,32 +746,24 @@ impl<'a> Design<'a> {
         (0..self.terms[term].n_columns()).map(move |column| Channel { term, column })
     }
 
-    /// What `channel` multiplies.
-    pub(crate) fn column(&self, channel: Channel) -> Column {
-        self.terms[channel.term].column(channel.column)
-    }
-
-    /// Term `t`'s block start among `unknowns`; `None` for the eliminated term.
-    pub(crate) fn block_start(&self, unknowns: Unknowns, t: usize) -> Option<usize> {
+    /// Term `t`'s block start among the unknowns; `None` for the eliminated term.
+    pub(crate) fn block_start(&self, t: usize) -> Option<usize> {
         let eliminated = &self.terms[self.dominant];
-        match (unknowns, t.cmp(&self.dominant)) {
-            (Unknowns::All, _) | (_, Ordering::Less) => Some(self.terms[t].offset),
-            (_, Ordering::Equal) => None,
-            (_, Ordering::Greater) => Some(self.terms[t].offset - eliminated.n_dofs()),
+        match t.cmp(&self.dominant) {
+            Ordering::Less => Some(self.terms[t].offset),
+            Ordering::Equal => None,
+            Ordering::Greater => Some(self.terms[t].offset - eliminated.n_dofs()),
         }
     }
 
-    pub(crate) fn n_unknowns(&self, unknowns: Unknowns) -> usize {
-        match unknowns {
-            Unknowns::All => self.n_dofs,
-            Unknowns::WithoutDominant => self.n_dofs - self.terms[self.dominant].n_dofs(),
-        }
+    /// The coefficients LSMR iterates on: all but the eliminated term's.
+    pub(crate) fn n_unknowns(&self) -> usize {
+        self.n_dofs - self.terms[self.dominant].n_dofs()
     }
 
-    /// The coefficients a map over `unknowns` acts on.
-    pub(crate) fn unknowns_layout(&self, unknowns: Unknowns) -> UnknownsLayout {
+    /// The coefficients a map acts on.
+    pub(crate) fn unknowns_layout(&self) -> UnknownsLayout {
         UnknownsLayout {
-            unknowns,
             terms: self
                 .terms
                 .iter()
@@ -1009,7 +983,6 @@ mod tests {
     #[test]
     fn an_overflowing_layout_has_no_size() {
         let layout = |levels| UnknownsLayout {
-            unknowns: Unknowns::WithoutDominant,
             terms: vec![
                 TermSize {
                     levels: 3,

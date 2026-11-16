@@ -265,11 +265,19 @@ fn surplus_component_sampled_matches_exact_reduction() {
 /// fit the `Off`/`Diagonal` preconditioners already produce.
 #[test]
 fn singleton_level_in_non_first_slope_term_solves_under_additive_schwarz() {
-    // The firm-slope level-2 column is last, so an omitted one shows up as a shape mismatch.
-    let worker = [0u32, 0, 1, 1, 2, 2];
-    let firm = [2u32, 0, 0, 1, 1, 0];
-    let x = [0.5, -1.0, 0.3, 2.0, -0.7, 1.1];
-    let y = [1.0, 2.0, 3.0, 1.5, 0.4, -0.2];
+    // Seven workers outnumber the firm's six coefficients, so the worker term is eliminated and
+    // the firm-slope level-2 column is the last kept one: an omitted one shows up as a shape
+    // mismatch.
+    let worker = [0u32, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6];
+    let firm = [2u32, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0];
+    let x = [
+        0.5, -1.0, 0.3, 2.0, -0.7, 1.1, 0.9, -0.4, 1.6, 0.2, -1.3, 0.8, 0.1, -0.6,
+    ];
+    let y = [
+        1.0, 2.0, 3.0, 1.5, 0.4, -0.2, 0.7, 2.2, -1.1, 0.3, 1.9, -0.5, 0.6, 1.2,
+    ];
+    // The firm's three intercepts and three slopes, the uncovered last one included.
+    let kept = 6;
 
     let effects = || {
         vec![
@@ -282,8 +290,8 @@ fn singleton_level_in_non_first_slope_term_solves_under_additive_schwarz() {
 
     // The preconditioner must match the operator's column count, uncovered ones included.
     let precond = solver.preconditioner().expect("has a preconditioner");
-    assert_eq!(precond.ncols(), solver.n_dofs());
-    assert_eq!(precond.nrows(), solver.n_dofs());
+    assert_eq!(precond.ncols(), kept);
+    assert_eq!(precond.nrows(), kept);
 
     let r = solver
         .solve(&y, &LsmrOptions::default())
@@ -314,7 +322,7 @@ fn singleton_level_in_non_first_slope_term_solves_under_additive_schwarz() {
     // A dropped n_dofs would trip Solver::new's dimension check after the round-trip.
     let bytes = postcard::to_stdvec(precond).expect("serialize");
     let restored: Preconditioner = postcard::from_bytes(&bytes).expect("deserialize");
-    assert_eq!(restored.ncols(), solver.n_dofs());
+    assert_eq!(restored.ncols(), kept);
     let reused = Solver::new(effects(), None, restored)
         .expect("reused preconditioner accepted")
         .solve(&y, &LsmrOptions::default())

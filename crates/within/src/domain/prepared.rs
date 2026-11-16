@@ -14,7 +14,7 @@ pub(crate) struct PreparedDesign<'a> {
     sqrt_weights: Option<Vec<f64>>,
     /// Per design term, its change of basis; `None` is the identity.
     reparams: Vec<Option<TermReparam>>,
-    /// Per design term, its block of [`Self::gram_diagonal`], filled on first read.
+    /// Per design term, its block of `diag(AᵀA)` in solve coordinates, filled on first read.
     diagonals: Vec<OnceLock<Box<[f64]>>>,
     /// Per design term, how its adjoint scatter-add splits into parallel pieces.
     splits: Vec<ScatterSplit>,
@@ -25,7 +25,6 @@ pub(crate) struct PreparedTerm<'p> {
     pub(crate) term: &'p Term<'p>,
     /// Solve-basis slopes in coefficient-column order; empty for a slope-free term.
     pub(crate) slopes: &'p [Vec<f64>],
-    pub(crate) split: &'p ScatterSplit,
 }
 
 /// One term's coefficient columns, read row by row.
@@ -157,11 +156,7 @@ impl<'a> PreparedDesign<'a> {
         let (t, reparam) = (&self.design.terms[term], &self.reparams[term]);
         let slopes: &[Vec<f64>] = reparam.as_ref().map_or(&[], |r| &r.slopes);
         debug_assert_eq!(slopes.len(), t.raw_slopes().len());
-        PreparedTerm {
-            term: t,
-            slopes,
-            split: &self.splits[term],
-        }
+        PreparedTerm { term: t, slopes }
     }
 
     pub(crate) fn terms(&self) -> impl ExactSizeIterator<Item = PreparedTerm<'_>> {
@@ -236,17 +231,6 @@ impl<'a> PreparedDesign<'a> {
         })
     }
 
-    /// `diag(AᵀA)` in solve coordinates.
-    pub(crate) fn gram_diagonal(&self) -> Vec<f64> {
-        let blocks: Vec<&[f64]> = (0..self.design.n_factors())
-            .into_par_iter()
-            .map(|term| self.diagonal(term))
-            .collect();
-        let diag = blocks.concat();
-        debug_assert_eq!(diag.len(), self.design.n_dofs);
-        diag
-    }
-
     /// Map solve-basis coefficients back to the user's parametrization.
     pub(crate) fn back_transform(&self, x: &mut [f64]) {
         for (t, reparam) in self.design.terms.iter().zip(&self.reparams) {
@@ -298,6 +282,13 @@ fn prepare_sqrt_weights(design: &Design<'_>, weights: &[f64]) -> Result<Vec<f64>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every term's block of `diag(AᵀA)`, in coefficient order.
+    fn gram_diagonal(prepared: &PreparedDesign<'_>) -> Vec<f64> {
+        (0..prepared.design.n_factors())
+            .flat_map(|t| prepared.diagonal(t).iter().copied())
+            .collect()
+    }
 
     impl<'a> PreparedDesign<'a> {
         /// Unweighted, whitened like a solver would.
@@ -410,7 +401,7 @@ mod tests {
             assert!(terms[3].sorted() && !terms[1].sorted());
             assert!(prepared.unidentified().next().is_some());
             assert_eq!(
-                prepared.gram_diagonal(),
+                gram_diagonal(&prepared),
                 observation_sums(&prepared),
                 "weights {weights:?}"
             );
@@ -434,7 +425,7 @@ mod tests {
                 crate::Effect::new(&g, true, []).unwrap(),
             ];
             let prepared = PreparedDesign::new(Design::new(effects).unwrap(), weights).unwrap();
-            let diag = prepared.gram_diagonal();
+            let diag = gram_diagonal(&prepared);
             let block =
                 |term: usize, column| &diag[prepared.design.terms[term].column_dofs(column)];
             assert_eq!(block(0, 0), f_sums);

@@ -8,10 +8,11 @@ use once_cell::sync::OnceCell;
 use schwarz_precond::Staleness;
 
 use crate::config::{Handoff, PreconditionerConfig, RungSettings};
+use crate::operator::design::ReducedDesign;
 use crate::operator::schwarz::{Preconditioner, RungBuild, RungMap};
 use crate::{BuildError, BuildWarning};
 
-use super::system::{offer, Build, LeastSquaresSystem};
+use super::system::{offer, Build};
 
 /// One rung's build: the map and its warnings, or the error it keeps.
 type Built = Result<RungBuild<Preconditioner>, BuildError>;
@@ -35,7 +36,7 @@ pub(super) struct Running<'s> {
 impl PrecondSlot {
     /// `config` with rungs built on `system` until a solve runs on one.
     pub(super) fn build(
-        system: &impl LeastSquaresSystem,
+        system: &ReducedDesign<'_>,
         config: PreconditionerConfig,
     ) -> Result<Self, BuildError> {
         config.validate()?;
@@ -47,10 +48,15 @@ impl PrecondSlot {
     /// The config `preconditioner` is a rung of, resumed from that rung, if its map acts on
     /// `system`'s coefficients.
     pub(super) fn reuse(
-        system: &impl LeastSquaresSystem,
+        system: &ReducedDesign<'_>,
         preconditioner: Preconditioner,
     ) -> Result<Self, BuildError> {
-        if let Some(mismatch) = system.layout().mismatch(&preconditioner.layout) {
+        if let Some(mismatch) = system
+            .prepared()
+            .design
+            .unknowns_layout()
+            .mismatch(&preconditioner.layout)
+        {
             return Err(BuildError::PreconditionerMismatch(mismatch));
         }
         // A deserialized config skipped `build`'s checks.
@@ -77,7 +83,7 @@ impl PrecondSlot {
 
     fn run(
         &self,
-        system: &impl LeastSquaresSystem,
+        system: &ReducedDesign<'_>,
         build: &Build<'_>,
     ) -> Result<RungBuild<Preconditioner>, BuildError> {
         let started = Instant::now();
@@ -86,7 +92,7 @@ impl PrecondSlot {
             map: build.map.map(|map| Preconditioner {
                 map,
                 config: self.config.clone(),
-                layout: Arc::new(system.layout()),
+                layout: Arc::new(system.prepared().design.unknowns_layout()),
                 build_duration: started.elapsed(),
             }),
             warnings: build.warnings,
@@ -115,9 +121,9 @@ impl PrecondSlot {
     }
 
     /// The first rung above `floor` that `system` offers and that was not built without a map.
-    fn next<'s, S: LeastSquaresSystem>(
+    fn next<'s>(
         &'s self,
-        system: &'s S,
+        system: &'s ReducedDesign<'_>,
         floor: Option<usize>,
     ) -> Option<(usize, RungSettings<'s>, Build<'s>)> {
         self.config
@@ -132,13 +138,13 @@ impl PrecondSlot {
 
     /// Build the rungs a solve must not start below; this call's build seconds. Every other
     /// caller waits for the same builds.
-    pub(super) fn settle(&self, system: &impl LeastSquaresSystem) -> Result<f64, BuildError> {
+    pub(super) fn settle(&self, system: &ReducedDesign<'_>) -> Result<f64, BuildError> {
         self.settle_with(system, |build| isolated(|| self.run(system, build)))
     }
 
     fn settle_with(
         &self,
-        system: &impl LeastSquaresSystem,
+        system: &ReducedDesign<'_>,
         run: impl Fn(&Build<'_>) -> Result<Built, BuildError>,
     ) -> Result<f64, BuildError> {
         match self.top() {
@@ -149,10 +155,7 @@ impl PrecondSlot {
 
     /// The map a solve runs on now, once settled; a kept build error of the rung above it is
     /// final.
-    pub(super) fn running(
-        &self,
-        system: &impl LeastSquaresSystem,
-    ) -> Result<Running<'_>, BuildError> {
+    pub(super) fn running(&self, system: &ReducedDesign<'_>) -> Result<Running<'_>, BuildError> {
         let top = self.top();
         let at = top.map(|(at, ..)| at);
         let stall = match self.next(system, at) {
@@ -178,7 +181,7 @@ impl PrecondSlot {
     /// seconds. Every other caller waits for the same builds.
     pub(super) fn escalate(
         &self,
-        system: &impl LeastSquaresSystem,
+        system: &ReducedDesign<'_>,
         stalled: &Running<'_>,
     ) -> Result<f64, BuildError> {
         self.climb(system, stalled.at, |build| {
@@ -190,7 +193,7 @@ impl PrecondSlot {
     /// error is final; an error `run` returns without a build is retried by the next caller.
     fn climb(
         &self,
-        system: &impl LeastSquaresSystem,
+        system: &ReducedDesign<'_>,
         mut floor: Option<usize>,
         run: impl Fn(&Build<'_>) -> Result<Built, BuildError>,
     ) -> Result<f64, BuildError> {

@@ -8,8 +8,7 @@ use rayon::prelude::*;
 use schwarz_precond::Operator;
 
 use crate::domain::{
-    cut, fixed_tree, row_weight, Design, LevelRows, PreparedDesign, TermRows, Unknowns,
-    MIN_LEAF_ROWS,
+    cut, fixed_tree, row_weight, Design, LevelRows, PreparedDesign, TermRows, MIN_LEAF_ROWS,
 };
 use crate::linalg::{add_moments, fit_twice, remove_fit, solve, solve_rescued, DiagonalGramBasis};
 use crate::BuildError;
@@ -82,12 +81,8 @@ macro_rules! with_shape {
 }
 
 impl<'a> ReducedDesign<'a> {
-    /// Refuses a design not sorted by its dominant term.
     pub(crate) fn new(design: Design<'a>, weights: Option<&[f64]>) -> Result<Self, BuildError> {
         let dominant = design.dominant;
-        if !design.terms[dominant].sorted() {
-            return Err(BuildError::UnsortedReducedSystem);
-        }
         let prepared = PreparedDesign::new(design, weights)?;
         let design = &prepared.design;
         let rows = sorted_rows(&prepared);
@@ -97,7 +92,7 @@ impl<'a> ReducedDesign<'a> {
         let task_rows =
             |t: usize| rows.positions(tasks[t].end - 1).end - rows.positions(tasks[t].start).start;
         // Merging costs ∝ the kept coefficients per leaf: 4× as many rows, capped at 8 leaves' worth.
-        let n_kept = design.n_unknowns(Unknowns::WithoutDominant);
+        let n_kept = design.n_unknowns();
         let leaf_rows = (4 * n_kept).min(design.n_obs.div_ceil(8));
         let leaves = cut(tasks.len(), MIN_LEAF_ROWS.max(leaf_rows), task_rows);
         let plain = (design.terms.iter()).all(|t| t.intercept && !t.has_slopes());
@@ -146,7 +141,7 @@ impl<'a> ReducedDesign<'a> {
     fn columns(&self) -> ProjectedColumns<'_> {
         let design = &self.prepared.design;
         let kept = (0..design.n_factors()).filter_map(|t| {
-            let start = design.block_start(Unknowns::WithoutDominant, t)?;
+            let start = design.block_start(t)?;
             Some((TermRows::new(&self.prepared.term(t)), start))
         });
         ProjectedColumns {
@@ -215,7 +210,7 @@ impl<'a> ReducedDesign<'a> {
         let mut n_kept_levels = 0;
         let kept: Vec<KeptTerm<'_>> = (0..design.n_factors())
             .filter_map(|t| {
-                let start = design.block_start(Unknowns::WithoutDominant, t)?;
+                let start = design.block_start(t)?;
                 let rows = TermRows::new(&self.prepared.term(t));
                 let first = n_kept_levels;
                 n_kept_levels += rows.n_levels;
@@ -228,7 +223,7 @@ impl<'a> ReducedDesign<'a> {
                 })
             })
             .collect();
-        let n_kept = design.n_unknowns(Unknowns::WithoutDominant);
+        let n_kept = design.n_unknowns();
         let max_levels = kept.iter().map(|t| t.rows.n_levels).max().unwrap_or(0);
         let tasks = &self.tasks;
         let leaf = |leaf: Range<usize>| {
@@ -542,7 +537,7 @@ impl ProjectedColumns<'_> {
             leaves,
             ..
         } = self.system;
-        let n_kept = prepared.design.n_unknowns(Unknowns::WithoutDominant);
+        let n_kept = prepared.design.n_unknowns();
         let leaf = |tasks: Range<usize>| {
             let mut acc = vec![0.0; n_kept];
             let mut moments = self.moments(1);
@@ -620,7 +615,7 @@ impl Operator for ReducedDesign<'_> {
     }
 
     fn ncols(&self) -> usize {
-        self.prepared.design.n_unknowns(Unknowns::WithoutDominant)
+        self.prepared.design.n_unknowns()
     }
 
     fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {

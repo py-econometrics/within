@@ -13,8 +13,9 @@ use within::{
 mod common;
 use common::schwarz;
 
-const WIRE_FORMAT_VERSION: u32 = 26;
-const PRECOND_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v26.postcard");
+const WIRE_FORMAT_VERSION: u32 = 27;
+const PRECOND_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v27.postcard");
+const FULL_SYSTEM_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v26.postcard");
 const ONE_LEVEL_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v25.postcard");
 const COARSELESS_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v24.postcard");
 const LAYOUTLESS_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v23.postcard");
@@ -105,48 +106,18 @@ fn wire_format_fixture_deserializes_and_solves() {
     let prebuilt: Preconditioner =
         postcard::from_bytes(PRECOND_BYTES).expect("deserialize fixture preconditioner");
     assert_eq!(prebuilt.rung(), Rung::TwoLevel);
-    let solver = Solver::reduced(panel.effects(), None, prebuilt).expect("solver from fixture");
+    let solver = Solver::new(panel.effects(), None, prebuilt).expect("solver from fixture");
     let result = solver
         .solve(&panel.y(), &LsmrOptions::default())
         .expect("solve with fixture preconditioner");
     assert!(result.converged, "fixture-built solver should converge");
 
-    let fresh = Solver::reduced(panel.effects(), None, two_level()).expect("fresh solver");
+    let fresh = Solver::new(panel.effects(), None, two_level()).expect("fresh solver");
     let fresh_result = fresh
         .solve(&panel.y(), &LsmrOptions::default())
         .expect("fresh solve");
     for (a, b) in result.x.iter().zip(fresh_result.x.iter()) {
         assert!((a - b).abs() < 1e-9, "fixture vs fresh: {a} vs {b}");
-    }
-}
-
-/// A one-level map from before the two-level one was encodable decodes unchanged.
-#[test]
-fn a_one_level_fixture_from_v25_still_decodes() {
-    let (f, g, z, y) = fixture_problem();
-    let prebuilt: Preconditioner =
-        postcard::from_bytes(ONE_LEVEL_BYTES).expect("deserialize fixture preconditioner");
-
-    let solver = Solver::new(fixture_effects(&f, &g, &z), None, prebuilt)
-        .expect("build solver from fixture");
-    let result = solver
-        .solve(&y, &LsmrOptions::default())
-        .expect("solve with fixture preconditioner");
-
-    assert!(result.converged, "fixture-built solver should converge");
-
-    // Compare against a fresh build to detect any semantic regression.
-    let fresh = Solver::new(fixture_effects(&f, &g, &z), None, schwarz()).expect("fresh solver");
-    let fresh_result = fresh
-        .solve(&y, &LsmrOptions::default())
-        .expect("fresh solve");
-    for (a, b) in result.x.iter().zip(fresh_result.x.iter()) {
-        assert!(
-            (a - b).abs() < 1e-9,
-            "fixture vs fresh coefficient drift: {} vs {}",
-            a,
-            b,
-        );
     }
 }
 
@@ -199,6 +170,8 @@ fn preconditioner_round_trips(#[case] shape: Shape) {
 }
 
 #[rstest]
+#[case::v26(FULL_SYSTEM_BYTES)]
+#[case::v25(ONE_LEVEL_BYTES)]
 #[case::v24(COARSELESS_BYTES)]
 #[case::v23(LAYOUTLESS_BYTES)]
 #[case::v22(LADDERLESS_BYTES)]
@@ -210,7 +183,7 @@ fn legacy_fixture_no_longer_decodes(#[case] bytes: &[u8]) {
 }
 
 /// Generate the wire-format fixture. Run with `--ignored` to overwrite
-/// `crates/within/tests/fixtures/preconditioner_v26.postcard`. Intended for
+/// `crates/within/tests/fixtures/preconditioner_v27.postcard`. Intended for
 /// intentional wire-format bumps only; CI runs the non-ignored tests above.
 #[test]
 #[ignore]
@@ -219,13 +192,13 @@ fn regenerate_wire_format_fixture() {
     use std::path::PathBuf;
 
     let panel = Clustered::new();
-    let solver = Solver::reduced(panel.effects(), None, two_level()).expect("build solver");
+    let solver = Solver::new(panel.effects(), None, two_level()).expect("build solver");
     let prec = solver.preconditioner().expect("a two-level map");
     assert_eq!(prec.rung(), Rung::TwoLevel);
     let bytes = postcard::to_stdvec(prec).expect("serialize");
 
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.push("tests/fixtures/preconditioner_v26.postcard");
+    path.push("tests/fixtures/preconditioner_v27.postcard");
     let mut out = std::fs::File::create(&path).expect("create fixture file");
     out.write_all(&bytes).expect("write fixture bytes");
     eprintln!("wrote {} bytes to {}", bytes.len(), path.display());

@@ -247,9 +247,10 @@ mod tests {
     }
 
     fn split(levels: &[u32]) -> ScatterSplit {
-        let slope = vec![1.0; levels.len()];
-        let effect = Effect::new(levels, true, vec![&slope[..]; 4]).expect("valid effect");
-        ScatterSplit::new(&Design::new_unsorted([effect]).expect("valid design").terms[0])
+        // A sorted dominant term with one level per row leaves the term under test in its order.
+        let rows: Vec<u32> = (0..levels.len() as u32).collect();
+        let effects = [&rows[..], levels].map(|l| Effect::new(l, true, []).expect("valid effect"));
+        ScatterSplit::new(&Design::new(effects).expect("valid design").terms[1])
     }
 
     #[test]

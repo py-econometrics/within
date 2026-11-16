@@ -1,7 +1,7 @@
 //! The rigid-component coarse space. A spell (one eliminated level × one anchor level) whose Gram
 //! is within a ratio of both levels' own Grams glues the two levels; each glued component's
 //! anchor-side gauges span one coarse column per channel. With the eliminated term fitted exactly,
-//! `U = ÃZ` is the gauges' energy-minimal extension; on the full system `Z` carries that fit `−β`.
+//! `U = ÃZ` is the gauges' energy-minimal extension.
 
 mod glue;
 mod lift;
@@ -10,20 +10,17 @@ use std::borrow::Cow;
 use std::ops::Range;
 
 use super::CoarseSolve;
-use crate::domain::{LevelRows, PreparedDesign, TermRows, Unknowns};
+use crate::domain::{LevelRows, PreparedDesign, TermRows};
 use crate::linalg::DiagonalGramBasis;
 use crate::CoarseDecline;
 use glue::Gauges;
 
-/// The coarse solve over `unknowns`; declines when gluing leaves no coarse space worth a column
+/// The coarse solve over the unknowns; declines when gluing leaves no coarse space worth a column
 /// or its factor exceeds `n_obs` values.
-pub(super) fn build(
-    prepared: &PreparedDesign<'_>,
-    unknowns: Unknowns,
-) -> Result<CoarseSolve, CoarseDecline> {
+pub(super) fn build(prepared: &PreparedDesign<'_>) -> Result<CoarseSolve, CoarseDecline> {
     let rows = Rows::new(prepared);
-    let gauges = Gauges::glue(prepared, unknowns, &rows)?;
-    lift::coarse_solve(prepared, unknowns, &rows, &gauges)
+    let gauges = Gauges::glue(prepared, &rows)?;
+    lift::coarse_solve(prepared, &rows, &gauges)
 }
 
 /// The eliminated term's rows grouped by level, read in the solve basis.

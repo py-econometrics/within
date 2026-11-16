@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 
 use super::schwarz::FeSchwarz;
 use crate::config::{CoarseCorrection, CoarseSpace, TwoLevelForm};
-use crate::domain::{offsets, PreparedDesign, Unknowns};
+use crate::domain::{offsets, PreparedDesign};
 use crate::CoarseDecline;
 
 /// Entries from which rayon beats one thread: the gather `Mᵀx` pays later than the row-blocked
@@ -106,11 +106,10 @@ impl TryFrom<TwoLevelWire> for TwoLevelMap {
     }
 }
 
-/// `one_level` with the coarse correction `coarse` asks for over `unknowns`, unless `prepared`
+/// `one_level` with the coarse correction `coarse` asks for over the unknowns, unless `prepared`
 /// has no such coarse space.
 pub(crate) fn build_two_level(
     prepared: &PreparedDesign<'_>,
-    unknowns: Unknowns,
     one_level: &FeSchwarz,
     coarse: &CoarseCorrection,
 ) -> Result<TwoLevelMap, CoarseDecline> {
@@ -121,7 +120,7 @@ pub(crate) fn build_two_level(
     } = coarse;
     Ok(TwoLevelMap {
         one_level: one_level.clone(),
-        coarse: Arc::new(rigid::build(prepared, unknowns)?),
+        coarse: Arc::new(rigid::build(prepared)?),
     })
 }
 

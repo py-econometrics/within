@@ -10,7 +10,7 @@ use std::time::Duration;
 use super::two_level::TwoLevelMap;
 use crate::block_solver::BlockSolver;
 use crate::config::{LocalSolverConfig, PreconditionerConfig, Rung};
-use crate::domain::{LocalDomain, PreparedDesign, Unknowns, UnknownsLayout};
+use crate::domain::{LocalDomain, PreparedDesign, UnknownsLayout};
 use crate::{BuildError, BuildWarning};
 
 #[cfg(test)]
@@ -257,20 +257,19 @@ pub(crate) fn diagonal_map(mut diag: Vec<f64>) -> Result<DiagonalPreconditioner,
     })
 }
 
-/// The additive Schwarz map over `unknowns`; `None` when no factor pair yields a subdomain, which
+/// The additive Schwarz map over the unknowns; `None` when no factor pair yields a subdomain, which
 /// on a design of two or more terms happens only when the operator over `unknowns` is zero.
 pub(crate) fn build_schwarz(
     prepared: &PreparedDesign<'_>,
     local_solver: &LocalSolverConfig,
-    unknowns: Unknowns,
 ) -> Result<RungBuild, BuildError> {
-    let (domains, warnings) = crate::domain::build_local_domains(prepared, local_solver, unknowns)?;
+    let (domains, warnings) = crate::domain::build_local_domains(prepared, local_solver)?;
     let map = if domains.is_empty() {
         None
     } else {
         Some(RungMap::Schwarz(build_additive(
             domains,
-            prepared.design.n_unknowns(unknowns),
+            prepared.design.n_unknowns(),
         )?))
     };
     Ok(RungBuild { map, warnings })
