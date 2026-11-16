@@ -186,7 +186,7 @@ fn rank_drops_report_deterministically_with_exact_zeros() {
     // Ascending (level, column) order.
     assert_eq!(drops(&r), [(0, 2, 1)]);
 
-    // Minimal-norm 0 at exactly the dropped slot; everything else finite.
+    // 0 at exactly the dropped slot; everything else finite.
     assert_eq!(r.x.len(), 6);
     assert_eq!(coefficient(&r, 2, 1), 0.0);
     assert!(r.x.iter().all(|v| v.is_finite()));

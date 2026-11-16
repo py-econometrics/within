@@ -104,8 +104,7 @@ fn test_zero_weight_returns_zero(
 ///
 /// Uses a single full-rank factor so the solution is unique. A multi-factor FE
 /// design is rank-deficient (the additive constant is unidentified), so the
-/// minimum-norm coefficient vector LSMR returns depends on the preconditioned
-/// metric — only the fitted values, not the raw coefficients, are invariant.
+/// coefficient vector LSMR returns depends on the preconditioner — only the fitted values, not the raw coefficients, are invariant.
 #[rstest]
 fn test_preconditioner_matches_unpreconditioned_solution(
     #[values(PreconditionerConfig::Diagonal, common::schwarz(), common::adaptive())]

@@ -1,6 +1,7 @@
 //! The reduced system: the kept terms with the eliminated term's span projected out, one sweep
 //! per product over the rows grouped by eliminated level.
 
+use std::borrow::Cow;
 use std::ops::Range;
 
 use rayon::prelude::*;
@@ -16,7 +17,8 @@ use crate::BuildError;
 /// Rows per parallel task, cut at an eliminated level's end so no level spans two tasks.
 const TASK_ROWS: usize = 16_384;
 
-/// `A_r = (I − P_e) A_k`, where `P_e` projects onto the eliminated term's columns `A_e`.
+/// `A_r = (I − P_e) A_k`, where `P_e` projects onto the eliminated term's columns `A_e`, with
+/// every column whose projection is rounding set to 0.
 ///
 /// The kept coefficients are the full ones without the eliminated term's block.
 pub(crate) struct ReducedDesign<'a> {
@@ -27,6 +29,10 @@ pub(crate) struct ReducedDesign<'a> {
     leaves: Vec<Range<usize>>,
     /// Every term is a lone intercept: the plain kernels.
     plain: bool,
+    /// `projected_gram`, computed once.
+    diagonal: Vec<f64>,
+    /// The kept coefficients whose diagonal is 0: the products treat their columns as zero.
+    vanished: Vec<usize>,
 }
 
 /// The eliminated term's runs: `new` refuses an unsorted term, and a sorted one splits by level.
@@ -99,12 +105,38 @@ impl<'a> ReducedDesign<'a> {
         (0..design.n_factors()).into_par_iter().for_each(|t| {
             prepared.diagonal(t);
         });
-        Ok(Self {
+        let mut system = Self {
             prepared,
             tasks,
             leaves,
             plain,
-        })
+            diagonal: Vec::new(),
+            vanished: Vec::new(),
+        };
+        system.diagonal = system.projected_gram();
+        system.vanished = (system.diagonal.iter().enumerate())
+            .filter_map(|(j, &d)| (d == 0.0).then_some(j))
+            .collect();
+        Ok(system)
+    }
+
+    /// `diag(A_rᵀ A_r)`.
+    pub(crate) fn gram_diagonal(&self) -> Vec<f64> {
+        self.diagonal.clone()
+    }
+
+    /// `x` with the vanished coefficients at 0, borrowed when there are none.
+    fn without_vanished<'x>(&self, x: &'x [f64]) -> Cow<'x, [f64]> {
+        if self.vanished.is_empty() {
+            return Cow::Borrowed(x);
+        }
+        let mut x = x.to_vec();
+        self.zero_vanished(&mut x);
+        Cow::Owned(x)
+    }
+
+    fn zero_vanished(&self, v: &mut [f64]) {
+        self.vanished.iter().for_each(|&j| v[j] = 0.0);
     }
 
     pub(crate) fn prepared(&self) -> &PreparedDesign<'a> {
@@ -140,6 +172,7 @@ impl<'a> ReducedDesign<'a> {
 
     /// The full coefficients: `x_k` plus the eliminated block fitted to `b − A_k x_k`.
     pub(crate) fn recover(&self, b: impl Fn(usize) -> f64 + Sync, x_k: &[f64]) -> Vec<f64> {
+        let x_k = &*self.without_vanished(x_k);
         let columns = self.columns();
         let (n_levels, width) = (columns.eliminated.n_levels, columns.eliminated.width());
         let mut by_level = vec![0.0; n_levels * width];
@@ -173,7 +206,7 @@ impl<'a> ReducedDesign<'a> {
 
     /// `diag(A_rᵀ A_r)`: each kept column's squared norm less its projection onto `A_e`; 0 when
     /// that is rounding.
-    pub(crate) fn gram_diagonal(&self) -> Vec<f64> {
+    fn projected_gram(&self) -> Vec<f64> {
         let columns = self.columns();
         let design = &self.prepared.design;
         let (eliminated, e_gram) = (&columns.eliminated, columns.gram);
@@ -327,7 +360,7 @@ impl<'a> ReducedDesign<'a> {
     }
 }
 
-/// A kept term as `gram_diagonal` sweeps it.
+/// A kept term as `projected_gram` sweeps it.
 struct KeptTerm<'p> {
     rows: TermRows<'p>,
     /// Its block start in the kept coefficients.
@@ -592,6 +625,7 @@ impl Operator for ReducedDesign<'_> {
 
     fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
         debug_assert_eq!(x.len(), self.ncols());
+        let x = &*self.without_vanished(x);
         let columns = self.columns();
         with_shape!(columns, |PLAIN, w| {
             columns.project::<PLAIN>(|i, y| *y = w(i) * columns.kept_row::<PLAIN>(x, i), w, y)
@@ -604,6 +638,7 @@ impl Operator for ReducedDesign<'_> {
         let columns = self.columns();
         with_shape!(columns, |PLAIN, w| y
             .copy_from_slice(&columns.adjoint::<PLAIN>(v, w)));
+        self.zero_vanished(y);
         Ok(())
     }
 }

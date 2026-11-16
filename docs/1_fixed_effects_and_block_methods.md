@@ -63,7 +63,7 @@ $$
 G\alpha = D^\top W y, \qquad G = D^\top W D
 $$
 
-The Gramian $G$ is symmetric positive semi-definite and always singular: within each connected component of the factor interaction graph, a constant can be shifted between factors without changing $D\alpha$. The system is always consistent, and the solver (starting from zero) converges to the minimum-norm solution.
+The Gramian $G$ is symmetric positive semi-definite and always singular: within each connected component of the factor interaction graph, a constant can be shifted between factors without changing $D\alpha$. The system is always consistent; which solution the solver returns in that null space depends on the preconditioner, while the fit $D\alpha$ does not.
 
 ---
 

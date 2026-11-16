@@ -169,7 +169,7 @@ as `.build_duration_seconds`; both are preserved across pickling and reuse.
 
 **`BatchSolveResult`**: Same fields, with `converged`, `iterations`, `residual`, and `time_solve` as lists (one entry per RHS).
 
-Coefficients for unidentified directions are pinned to the **minimal-norm** value `0` (never NaN). This is why `x` can differ from reference tools that instead drop a reference level; the identified fit — `demeaned` — is unaffected by the choice.
+Coefficients for unidentified directions are pinned to `0` (never NaN). Each connected component's gauge (a constant shifted between factors) depends on the preconditioner, so `x` can differ between solves and from reference tools that instead drop a reference level; the identified fit — `demeaned` — is unaffected by the choice.
 
 ## Rust API
 

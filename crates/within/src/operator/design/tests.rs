@@ -424,7 +424,7 @@ mod elimination_tests {
     use schwarz_precond::Operator;
 
     use super::noise;
-    use crate::domain::{Design, Effect};
+    use crate::domain::{Design, Effect, Unknowns};
     use crate::linalg::dot;
     use crate::operator::design::ReducedDesign;
 
@@ -522,9 +522,18 @@ mod elimination_tests {
         let p = prepared.design.n_dofs;
         let kept: Vec<f64> = (0..p).map(|j| noise(11 * n + j)).collect();
         let x_k: Vec<f64> = [&kept[..dofs.start], &kept[dofs.end..]].concat();
+        // `f` is a function of `e` (`i mod 5` of `7i mod 40`) unless `e` has no intercept.
+        let diagonal = reduced.gram_diagonal();
+        assert_eq!(
+            diagonal[..5].iter().all(|&d| d == 0.0),
+            !matches!(dominant, Dominant::SlopeOnly)
+        );
+        let passed: Vec<f64> = (x_k.iter().zip(&diagonal))
+            .map(|(&x, &d)| if d == 0.0 { 0.0 } else { x })
+            .collect();
         let recover = |b: &[f64]| {
             let x = reduced.recover(|i| b[i], &x_k);
-            assert_eq!([&x[..dofs.start], &x[dofs.end..]].concat(), x_k);
+            assert_eq!([&x[..dofs.start], &x[dofs.end..]].concat(), passed);
             x
         };
         let residual = |x: &[f64], b: &[f64]| -> Vec<f64> {
@@ -715,8 +724,11 @@ mod elimination_tests {
             Effect::new(&g, true, []).unwrap(),
         ];
         let weights: Vec<f64> = (0..n).map(|i| 0.5 + noise(2 * n + i).abs()).collect();
-        let reduced = ReducedDesign::new(Design::new(effects).unwrap(), Some(&weights)).unwrap();
-        let k = reduced.ncols();
+        // Built in each pool: construction computes the diagonal.
+        let build = || ReducedDesign::new(Design::new(effects.clone()).unwrap(), Some(&weights));
+        let k = Design::new(effects.clone())
+            .unwrap()
+            .n_unknowns(Unknowns::WithoutDominant);
         // A leaf of 4·k rows exceeds an eighth of the design, so the cap sets the leaves.
         assert!(4 * k > n / 8);
         let x: Vec<f64> = (0..k).map(|j| noise(3 * n + j)).collect();
@@ -727,6 +739,7 @@ mod elimination_tests {
                 .build()
                 .expect("test rayon pool")
                 .install(|| {
+                    let reduced = build().unwrap();
                     let (mut image, mut adjoint) = (vec![0.0; n], vec![0.0; k]);
                     reduced.apply(&x, &mut image).unwrap();
                     reduced.apply_adjoint(&v, &mut adjoint).unwrap();
