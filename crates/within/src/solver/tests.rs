@@ -38,7 +38,7 @@ fn an_alias_its_scaling_misses_keeps_its_surplus() {
         Effect::new(&intercept_level, true, []).unwrap(),
     ];
     let solver = Solver::new(effects, None, schwarz()).expect("solver");
-    let out = solve_tight(&solver, &[0.3, 0.7]);
+    let out = solve_tight(&solver, &[0.3, 0.7], 1e-12);
     let worst = out.demeaned.iter().fold(0.0f64, |m, r| m.max(r.abs()));
     assert!(
         worst < 1e-12,
@@ -271,12 +271,12 @@ fn schwarz() -> PreconditionerConfig {
     PreconditionerConfig::Schwarz(crate::Schwarz::default())
 }
 
-fn solve_tight(solver: &Solver<'_>, y: &[f64]) -> crate::SolveResult {
+fn solve_tight(solver: &Solver<'_>, y: &[f64], tol: f64) -> crate::SolveResult {
     solver
         .solve(
             y,
             &LsmrOptions {
-                tol: 1e-12,
+                tol,
                 maxiter: 20_000,
                 ..Default::default()
             },
@@ -300,12 +300,7 @@ fn solve_tight(solver: &Solver<'_>, y: &[f64]) -> crate::SolveResult {
 fn an_aliased_slope_converges(#[case] spec: SlopeSpec, #[case] tol: f64) {
     let panel = akm_panel(4_000, 200, 10, 0.15, spec);
     let solver = Solver::new(panel.effects(), None, schwarz()).expect("solver");
-    let options = LsmrOptions {
-        tol,
-        maxiter: 20_000,
-        ..Default::default()
-    };
-    let out = solver.solve(&panel.y, &options).expect("solve");
+    let out = solve_tight(&solver, &panel.y, tol);
     // A floating component grounded by mistake reports a false convergence at an O(1) mean.
     let group_mean = max_abs_group_mean(&solver.system.prepared().design, &out.demeaned);
     assert!(
@@ -400,7 +395,7 @@ fn walsh_columns() -> ([f64; 8], [f64; 8], [f64; 8]) {
 /// Share of `y` left after residualizing on `effects` under the default preconditioner.
 fn residual_share(effects: Vec<Effect<'_>>, y: &[f64]) -> f64 {
     let solver = Solver::new(effects, None, None).expect("solver");
-    let out = solve_tight(&solver, y);
+    let out = solve_tight(&solver, y, 1e-12);
     let energy = |v: &[f64]| v.iter().map(|x| x * x).sum::<f64>();
     energy(&out.demeaned) / energy(y)
 }
@@ -434,6 +429,28 @@ fn a_near_combination_slope_residualizes_its_span() {
     assert!(share < 1e-12, "share={share:.3e}");
 }
 
+/// A near-absorbed direction `c − e + 5e-11·ce` spread over two slopes still residualizes fully.
+#[rstest]
+#[case::with_intercept(true)]
+#[case::slopes_only(false)]
+#[ignore = "a near-collinear kept level stalls the reduced solve (#548)"]
+fn a_near_combination_over_two_slopes_residualizes_its_span(#[case] intercept: bool) {
+    let (c, d, e) = walsh_columns();
+    let (cd, ce): ([f64; 8], [f64; 8]) = (
+        std::array::from_fn(|i| c[i] * d[i]),
+        std::array::from_fn(|i| c[i] * e[i]),
+    );
+    let sum: [f64; 8] = std::array::from_fn(|i| c[i] + e[i]);
+    let near: [f64; 8] = std::array::from_fn(|i| c[i] - e[i] + 5e-11 * ce[i]);
+    let level = [0u32; 8];
+    let effects = vec![
+        Effect::new(&level, intercept, [&sum[..], &near[..]]).unwrap(),
+        Effect::new(&level, true, [&c[..], &d[..], &cd[..]]).unwrap(),
+    ];
+    let share = residual_share(effects, &ce);
+    assert!(share < 1e-12, "share={share:.3e}");
+}
+
 /// A mean-year noise loading must not tie a near-isolated year into the alias block.
 #[test]
 fn an_alias_through_a_zero_loading_still_converges() {
@@ -464,7 +481,7 @@ fn an_alias_through_a_zero_loading_still_converges() {
     ];
     let schwarz = PreconditionerConfig::Schwarz(crate::Schwarz::default());
     let solver = Solver::new(effects, None, schwarz).expect("solver");
-    let out = solve_tight(&solver, &y);
+    let out = solve_tight(&solver, &y, 1e-12);
     let group_mean = max_abs_group_mean(&solver.system.prepared().design, &out.demeaned);
     assert!(
         out.converged && group_mean < 1e-9,
