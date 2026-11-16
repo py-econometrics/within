@@ -669,7 +669,37 @@ mod elimination_tests {
         }
     }
 
-    /// Both products' bits must not depend on the pool they run in, the adjoint on capped leaves.
+    /// A kept term nested in the eliminated one projects to nothing: every level is resummed to 0.
+    #[test]
+    fn a_kept_term_nested_in_the_eliminated_one_has_a_zero_diagonal() {
+        let n = 200_000;
+        let e: Vec<u32> = (0..n).map(|i| ((i * 7919) % 20_000) as u32).collect();
+        let nested: Vec<u32> = e.iter().map(|&l| l / 4).collect();
+        let g: Vec<u32> = (0..n).map(|i| (i % 7) as u32).collect();
+        let effects = vec![
+            Effect::new(&e, true, []).unwrap(),
+            Effect::new(&nested, true, []).unwrap(),
+            Effect::new(&g, true, []).unwrap(),
+        ];
+        let reduced = ReducedDesign::new(Design::new(effects).unwrap(), None).unwrap();
+        let diagonal = reduced.gram_diagonal();
+        let (k, n_nested) = (reduced.ncols(), 5_000);
+        assert_eq!(diagonal.len(), k);
+        assert!(diagonal[..n_nested].iter().all(|&d| d == 0.0));
+        let mut image = vec![0.0; n];
+        for j in n_nested..k {
+            let mut unit = vec![0.0; k];
+            unit[j] = 1.0;
+            reduced.apply(&unit, &mut image).unwrap();
+            let squared = dot(&image, &image);
+            assert!(
+                (diagonal[j] - squared).abs() <= 1e-12 * squared,
+                "column {j}"
+            );
+        }
+    }
+
+    /// The products' and the diagonal's bits must not depend on the pool, the leaves capped.
     #[test]
     fn the_reduced_products_are_pool_independent() {
         let n = 600_000;
@@ -700,7 +730,8 @@ mod elimination_tests {
                     let (mut image, mut adjoint) = (vec![0.0; n], vec![0.0; k]);
                     reduced.apply(&x, &mut image).unwrap();
                     reduced.apply_adjoint(&v, &mut adjoint).unwrap();
-                    let bits = image.iter().chain(&adjoint).map(|v| v.to_bits());
+                    let diagonal = reduced.gram_diagonal();
+                    let bits = (image.iter().chain(&adjoint).chain(&diagonal)).map(|v| v.to_bits());
                     bits.collect::<Vec<_>>()
                 })
         };

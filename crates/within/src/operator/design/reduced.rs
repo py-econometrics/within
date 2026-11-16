@@ -91,7 +91,9 @@ impl<'a> ReducedDesign<'a> {
         let leaves = cut(tasks.len(), MIN_LEAF_ROWS.max(leaf_rows), task_rows);
         let plain = (design.terms.iter()).all(|t| t.intercept && !t.has_slopes());
         // Filled here: left to the first product, a solve's fan-out would wait on it.
-        prepared.diagonal(dominant);
+        (0..design.n_factors()).into_par_iter().for_each(|t| {
+            prepared.diagonal(t);
+        });
         Ok(Self {
             prepared,
             tasks,
@@ -241,71 +243,166 @@ impl<'a> ReducedDesign<'a> {
     /// that is rounding.
     pub(crate) fn gram_diagonal(&self) -> Vec<f64> {
         let design = &self.prepared.design;
-        let eliminated = self.prepared.term(design.dominant);
-        let (e_levels, e_n_levels) = (eliminated.term.levels(), eliminated.term.n_levels());
-        let e_gram = self.prepared.diagonal(design.dominant);
+        let dominant = design.dominant;
+        let eliminated = self.prepared.term(dominant);
+        let (e_n_levels, e_width) = (eliminated.term.n_levels(), eliminated.term.n_columns());
+        let e_loadings: Vec<Option<&[f64]>> = (0..e_width).map(|k| eliminated.loading(k)).collect();
+        let e_gram = self.prepared.diagonal(dominant);
+        let e_rows = self.prepared.level_rows(dominant);
         let sqrt_weights = self.prepared.sqrt_weights();
-        let kept: Vec<usize> = (0..design.n_factors())
-            .filter(|&t| t != design.dominant)
+        // (term, its block start in the kept coefficients, its first level among all kept levels)
+        let mut kept: Vec<(PreparedTerm<'_>, usize, usize)> = Vec::new();
+        let mut n_kept_levels = 0;
+        for t in 0..design.n_factors() {
+            if let Some(start) = design.block_start(Unknowns::WithoutDominant, t) {
+                let term = self.prepared.term(t);
+                let n_levels = term.term.n_levels();
+                kept.push((term, start, n_kept_levels));
+                n_kept_levels += n_levels;
+            }
+        }
+        let grams: Vec<&[f64]> = (0..design.n_factors())
+            .filter(|&t| t != dominant)
+            .map(|t| self.prepared.diagonal(t))
             .collect();
-        let blocks: Vec<Vec<f64>> = kept
-            .into_par_iter()
-            .map(|index| {
-                let kept = self.prepared.term(index);
-                let (n_levels, width) = (kept.term.n_levels(), kept.term.n_columns());
-                let gram = self.prepared.diagonal(index);
-                let rows = self.prepared.level_rows(index);
-                let mut by_level = vec![0.0; n_levels * width];
-                // Each level owns its rows' sums, so no reduction depends on the thread count.
-                by_level.par_chunks_mut(width).enumerate().for_each_init(
-                    Vec::new,
-                    |level_rows: &mut Vec<usize>, (level, entries)| {
-                        // Ascending rows of a design sorted by the eliminated term: runs of its levels.
-                        level_rows.clear();
-                        rows.for_each_row(rows.positions(level), |i| level_rows.push(i));
-                        for (c, entry) in entries.iter_mut().enumerate() {
-                            *entry = gram[c * n_levels + level];
+        let n_kept = design.n_unknowns(Unknowns::WithoutDominant);
+        let kept_loadings: Vec<Vec<Option<&[f64]>>> = (kept.iter())
+            .map(|(t, ..)| (0..t.term.n_columns()).map(|c| t.loading(c)).collect())
+            .collect();
+        let max_levels = kept
+            .iter()
+            .map(|(t, ..)| t.term.n_levels())
+            .max()
+            .unwrap_or(0);
+        let tasks = &self.tasks;
+        // Per kept coefficient `Σ_e cross²/g` over the eliminated levels of one leaf, and per kept
+        // level its row count; each level's cross sums its rows in ascending order.
+        let leaf = |leaf: Range<usize>| {
+            let mut removed = vec![0.0; n_kept];
+            let mut counts = vec![0usize; n_kept_levels];
+            // `cross` is compact: one `width × e_width` block per kept level the run touches.
+            let (mut cross, mut touched, mut rows_of) = (Vec::new(), Vec::new(), Vec::new());
+            let mut slot = vec![u32::MAX; max_levels];
+            for e in tasks[leaf.start].start..tasks[leaf.end - 1].end {
+                let rows = e_rows.positions(e);
+                for ((term, start, first), loadings) in kept.iter().zip(&kept_loadings) {
+                    let (levels, n_levels) = (term.term.levels(), term.term.n_levels());
+                    let width = loadings.len();
+                    let block = width * e_width;
+                    touched.clear();
+                    rows_of.clear();
+                    cross.clear();
+                    for i in rows.clone() {
+                        let l = levels[i] as usize;
+                        if slot[l] == u32::MAX {
+                            slot[l] = touched.len() as u32;
+                            touched.push(l);
+                            rows_of.push(0);
+                            cross.resize(cross.len() + block, 0.0);
                         }
-                        for run in level_rows.chunk_by(|&a, &b| e_levels[a] == e_levels[b]) {
-                            let e_level = e_levels[run[0]] as usize;
-                            for e_column in 0..eliminated.term.n_columns() {
-                                let e_loading = eliminated.loading(e_column);
-                                let g = e_gram[e_column * e_n_levels + e_level];
-                                if g <= 0.0 {
-                                    continue;
-                                }
-                                for (c, entry) in entries.iter_mut().enumerate() {
-                                    let loading = kept.loading(c);
-                                    let cross: f64 = run
-                                        .iter()
-                                        .map(|&i| {
-                                            // Weight first: a zero weight kills a huge loading.
-                                            let w = row_weight(sqrt_weights, i);
-                                            let wz = loading.map_or(w, |z| w * z[i]);
-                                            e_loading.map_or(wz, |z| wz * z[i])
-                                        })
-                                        .sum();
-                                    *entry -= cross / g * cross;
+                        let p = slot[l] as usize;
+                        rows_of[p] += 1;
+                        let at = p * block;
+                        // Weight first: a zero weight kills a huge loading.
+                        let w = row_weight(sqrt_weights, i);
+                        for (c, loading) in loadings.iter().enumerate() {
+                            let wz = loading.map_or(w, |z| w * z[i]);
+                            for (k, e_loading) in e_loadings.iter().enumerate() {
+                                cross[at + c * e_width + k] += e_loading.map_or(wz, |z| wz * z[i]);
+                            }
+                        }
+                    }
+                    for (p, &l) in touched.iter().enumerate() {
+                        slot[l] = u32::MAX;
+                        counts[first + l] += rows_of[p];
+                        for k in 0..e_width {
+                            let g = e_gram[k * e_n_levels + e];
+                            for c in 0..width {
+                                let x = cross[p * block + c * e_width + k];
+                                if g > 0.0 {
+                                    removed[start + c * n_levels + l] += x / g * x;
                                 }
                             }
                         }
-                        // The difference cancels below `n·ε` of the squared norm; there it is resummed.
-                        let noise = 4.0 * level_rows.len() as f64 * f64::EPSILON;
-                        for (c, entry) in entries.iter_mut().enumerate() {
-                            let norm = gram[c * n_levels + level];
-                            if *entry <= noise * norm {
-                                let e_levels = level_rows
-                                    .chunk_by(|&a, &b| e_levels[a] == e_levels[b])
-                                    .map(|run| e_levels[run[0]]);
-                                *entry = self.projected_energy(&kept, level, c, e_levels);
+                    }
+                }
+            }
+            (removed, counts)
+        };
+        let merge = |(l, lc): &mut (Vec<f64>, Vec<usize>), (r, rc): &(Vec<f64>, Vec<usize>)| {
+            l.iter_mut().zip(r).for_each(|(l, r)| *l += r);
+            lc.iter_mut().zip(rc).for_each(|(l, r)| *l += r);
+        };
+        let leaves = &self.leaves;
+        let (removed, counts) = fixed_tree(
+            0..leaves.len(),
+            1,
+            &|k: Range<usize>| leaf(leaves[k.start].clone()),
+            &merge,
+        );
+        let mut diagonal = vec![0.0; n_kept];
+        let mut flagged: Vec<(usize, usize, usize)> = Vec::new();
+        for (k, ((term, start, first), gram)) in kept.iter().zip(&grams).enumerate() {
+            let n_levels = term.term.n_levels();
+            for c in 0..term.term.n_columns() {
+                for l in 0..n_levels {
+                    let (at, norm) = (start + c * n_levels + l, gram[c * n_levels + l]);
+                    let entry = norm - removed[at];
+                    // The difference cancels below `n·ε` of the squared norm; there it is resummed.
+                    let noise = 4.0 * counts[first + l] as f64 * f64::EPSILON;
+                    match entry <= noise * norm {
+                        true => flagged.push((k, l, c)),
+                        false => diagonal[at] = entry,
+                    }
+                }
+            }
+        }
+        if flagged.is_empty() {
+            return diagonal;
+        }
+        let mut wanted = vec![false; n_kept_levels];
+        for &(k, l, _) in &flagged {
+            wanted[kept[k].2 + l] = true;
+        }
+        // The eliminated levels each flagged kept level meets, ascending.
+        let pairs: Vec<Vec<(usize, u32)>> = tasks
+            .par_iter()
+            .map(|task| {
+                let (mut pairs, mut met) = (Vec::new(), Vec::new());
+                for e in task.clone() {
+                    met.clear();
+                    for i in e_rows.positions(e) {
+                        for (term, _, first) in &kept {
+                            let at = first + term.term.levels()[i] as usize;
+                            if wanted[at] {
+                                met.push(at);
                             }
                         }
-                    },
-                );
-                column_major(&by_level, width).collect()
+                    }
+                    met.sort_unstable();
+                    met.dedup();
+                    pairs.extend(met.iter().map(|&at| (at, e as u32)));
+                }
+                pairs
             })
             .collect();
-        blocks.concat()
+        let mut met: Vec<(usize, u32)> = pairs.concat();
+        met.par_sort_by_key(|&(at, _)| at);
+        let entries: Vec<f64> = flagged
+            .par_iter()
+            .map(|&(k, l, c)| {
+                let at = kept[k].2 + l;
+                let lo = met.partition_point(|p| p.0 < at);
+                let hi = met.partition_point(|p| p.0 <= at);
+                let e_levels = met[lo..hi].iter().map(|&(_, e)| e);
+                self.projected_energy(&kept[k].0, l, c, e_levels)
+            })
+            .collect();
+        for (&(k, l, c), entry) in flagged.iter().zip(entries) {
+            let (term, start, _) = &kept[k];
+            diagonal[start + c * term.term.n_levels() + l] = entry;
+        }
+        diagonal
     }
 }
 
