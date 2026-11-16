@@ -159,7 +159,6 @@ pub(crate) enum RungMap {
     // Append only: postcard encodes by declaration order and the fixtures depend on it.
     Diagonal(DiagonalPreconditioner),
     Schwarz(FeSchwarz),
-    #[serde(skip)]
     TwoLevel(TwoLevelMap),
 }
 

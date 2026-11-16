@@ -452,6 +452,33 @@ fn a_coarse_correction_lands_the_solve_on_the_two_level_map(
     );
 }
 
+/// A two-level preconditioner saved and loaded solves to the same bits.
+#[rstest]
+fn a_two_level_preconditioner_round_trips(#[values(System::Full, System::Reduced)] system: System) {
+    let (worker, firm, z_worker, z_firm) = clustered();
+    let effects = || {
+        vec![
+            Effect::new(&worker, true, [&z_worker[..]]).expect("worker"),
+            Effect::new(&firm, true, [&z_firm[..]]).expect("firm"),
+        ]
+    };
+    let y: Vec<f64> = (0..worker.len()).map(noise).collect();
+    let config = PreconditionerConfig::Schwarz(within::Schwarz {
+        coarse: Some(coarse(CoarseBuild::WithSchwarz)),
+        ..Default::default()
+    });
+    let built = solver(effects(), None, &config, system).expect("solver");
+    let original = built.preconditioner().expect("built");
+    assert_eq!(original.rung(), Rung::TwoLevel);
+    let bytes = postcard::to_stdvec(original).expect("serialize");
+    let restored: within::Preconditioner = postcard::from_bytes(&bytes).expect("deserialize");
+    let reused = solver(effects(), None, restored, system).expect("reused");
+    let (a, b) = (built.solve(&y, &lsmr()), reused.solve(&y, &lsmr()));
+    let (a, b) = (a.expect("solve"), b.expect("reused solve"));
+    assert!(a.converged);
+    assert_eq!((a.iterations, &a.x), (b.iterations, &b.x));
+}
+
 /// Gauges the eliminated term absorbs to within 1e-6 of their energy keep the two-level fit:
 /// `E`'s null modes stay at rounding, where its factor drops them, not amplified into the solve.
 #[rstest]

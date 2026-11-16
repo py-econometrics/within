@@ -337,6 +337,43 @@ fn hub_rows_eliminated_last_keep_the_coarse_null_modes_at_rounding() {
     assert!(gain < 1e3, "gain {gain:.3e}");
 }
 
+#[derive(Clone, Copy, Debug)]
+enum Hubs {
+    None,
+    /// One worker with a row at every firm: a wide level.
+    One,
+}
+
+/// The wire carries `E`, not its factor: the decoded map refactors it to the same bits.
+#[rstest]
+fn a_two_level_map_round_trips_through_the_wire(
+    #[values(System::Full, System::Reduced)] system: System,
+    #[values(Hubs::None, Hubs::One)] hubs: Hubs,
+) {
+    let mut panel = Panel::clustered(40, 3, 8, 30, 7, 1);
+    if let Hubs::One = hubs {
+        let hub = panel.worker.iter().max().expect("rows") + 1;
+        (0..40).for_each(|firm| panel.spell(hub, firm, 1));
+    }
+    let weights = Weights::Varying.of(&panel);
+    on_system(
+        panel.design(),
+        weights.as_deref(),
+        system,
+        |prepared, _, unknowns| {
+            let map = two_level(prepared, unknowns).expect("built");
+            assert_eq!(map.coarse.hubs.is_some(), matches!(hubs, Hubs::One));
+            let bytes = postcard::to_stdvec(&map).expect("serialize");
+            let decoded: TwoLevelMap = postcard::from_bytes(&bytes).expect("deserialize");
+            let x: Vec<f64> = (0..map.nrows()).map(|i| (0.3 * i as f64).sin()).collect();
+            let (mut before, mut after) = (vec![0.0; map.nrows()], vec![0.0; decoded.nrows()]);
+            map.apply(&x, &mut before).expect("apply");
+            decoded.apply(&x, &mut after).expect("apply decoded");
+            assert_eq!(before, after);
+        },
+    );
+}
+
 /// The two-level map applied to a fixed vector.
 fn applied(panel: &Panel, weights: Option<&[f64]>, system: System) -> Vec<f64> {
     on_system(panel.design(), weights, system, |prepared, _, unknowns| {
