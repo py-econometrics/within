@@ -10,14 +10,16 @@ use schwarz_precond::Operator;
 use crate::domain::{
     cut, fixed_tree, row_weight, Design, LevelRows, PreparedDesign, TermRows, MIN_LEAF_ROWS,
 };
-use crate::linalg::{add_moments, fit_twice, remove_fit, solve, solve_rescued, DiagonalGramBasis};
+use crate::linalg::{
+    add_moments, fit_twice, remove_fit, solve, solve_rescued, DiagonalGramBasis, GramBasisWorkspace,
+};
 use crate::BuildError;
 
 /// Rows per parallel task, cut at an eliminated level's end so no level spans two tasks.
 const TASK_ROWS: usize = 16_384;
 
 /// `A_r = (I − P_e) A_k`, where `P_e` projects onto the eliminated term's columns `A_e`, with
-/// every column whose projection is rounding set to 0.
+/// every column whose projection is rounding off the span of its level's larger ones set to 0.
 ///
 /// The kept coefficients are the full ones without the eliminated term's block.
 pub(crate) struct ReducedDesign<'a> {
@@ -216,7 +218,7 @@ impl<'a> ReducedDesign<'a> {
     }
 
     /// `diag(A_rᵀ A_r)`: each kept column's squared norm less its projection onto `A_e`; 0 when
-    /// that is rounding.
+    /// what is left is rounding off the span of its level's larger columns.
     fn projected_gram(&self) -> Vec<f64> {
         let columns = self.columns();
         let design = &self.prepared.design;
@@ -303,9 +305,8 @@ impl<'a> ReducedDesign<'a> {
             &merge,
         );
         let mut diagonal = vec![0.0; n_kept];
-        // (coefficient, kept term, level, column)
-        let mut flagged: Vec<(usize, usize, usize, usize)> = Vec::new();
-        for (t, term) in kept.iter().enumerate() {
+        let mut wanted = vec![false; n_kept_levels];
+        for term in &kept {
             let n_levels = term.rows.n_levels;
             for c in 0..term.rows.width() {
                 for l in 0..n_levels {
@@ -314,19 +315,24 @@ impl<'a> ReducedDesign<'a> {
                     // The difference cancels below `n·ε` of the squared norm; there it is resummed.
                     let noise = 4.0 * counts[term.first + l] as f64 * f64::EPSILON;
                     if entry <= noise * norm {
-                        flagged.push((at, t, l, c));
+                        wanted[term.first + l] = true;
                     } else {
                         diagonal[at] = entry;
                     }
                 }
             }
         }
+        // (kept term, level)
+        let flagged: Vec<(usize, usize)> = (kept.iter().enumerate())
+            .flat_map(|(t, term)| {
+                let wanted = &wanted[term.first..][..term.rows.n_levels];
+                (0..wanted.len())
+                    .filter(|&l| wanted[l])
+                    .map(move |l| (t, l))
+            })
+            .collect();
         if flagged.is_empty() {
             return diagonal;
-        }
-        let mut wanted = vec![false; n_kept_levels];
-        for &(_, t, l, _) in &flagged {
-            wanted[kept[t].first + l] = true;
         }
         let searched: Vec<&KeptTerm<'_>> = (kept.iter())
             .filter(|t| wanted[t.first..][..t.rows.n_levels].contains(&true))
@@ -354,18 +360,21 @@ impl<'a> ReducedDesign<'a> {
             })
             .collect();
         met.par_sort_unstable();
-        let entries: Vec<f64> = flagged
+        let entries: Vec<Vec<f64>> = flagged
             .par_iter()
-            .map(|&(_, t, l, c)| {
+            .map(|&(t, l)| {
                 let at = kept[t].first + l;
                 let lo = met.partition_point(|p| p.0 < at);
                 let hi = met.partition_point(|p| p.0 <= at);
                 let e_levels = met[lo..hi].iter().map(|&(_, e)| e);
-                columns.projected_energy(&kept[t].rows, l, c, e_levels)
+                columns.projected_energies(&kept[t].rows, l, e_levels)
             })
             .collect();
-        for (&(at, ..), entry) in flagged.iter().zip(entries) {
-            diagonal[at] = entry;
+        for (&(t, l), entries) in flagged.iter().zip(entries) {
+            let (start, n_levels) = (kept[t].start, kept[t].rows.n_levels);
+            for (c, entry) in entries.into_iter().enumerate() {
+                diagonal[start + c * n_levels + l] = entry;
+            }
         }
         diagonal
     }
@@ -383,45 +392,52 @@ struct KeptTerm<'p> {
 }
 
 impl ProjectedColumns<'_> {
-    /// `‖(I − P_e) a‖²` of column `c` of `kept`'s `level`, summed row by row over the rows of
-    /// `e_levels`; 0 when it lies within the rounding of its own evaluation.
-    fn projected_energy(
+    /// `‖(I − P_e) a‖²` of each column `a` of `kept`'s `level`, summed row by row over the rows of
+    /// `e_levels`; 0 for a column within the rounding of its own evaluation of the span of the
+    /// level's larger columns.
+    fn projected_energies(
         &self,
         kept: &TermRows<'_>,
         level: usize,
-        c: usize,
         e_levels: impl Iterator<Item = u32>,
-    ) -> f64 {
+    ) -> Vec<f64> {
         let (eliminated, gram) = (&self.eliminated, self.gram);
         let sqrt_weights = self.system.prepared.sqrt_weights();
-        let a = |i: usize| {
+        let a = |i: usize, c: usize| {
             if kept.levels[i] as usize == level {
                 kept.column(i, c)
             } else {
                 0.0
             }
         };
-        let width = eliminated.width();
-        let (mut fit, mut fit_error) = (vec![0.0; width], vec![0.0; width]);
+        let (width, e_width) = (kept.width(), eliminated.width());
+        let (mut fit, mut fit_error) = (vec![0.0; width * e_width], vec![0.0; width * e_width]);
+        let (mut r, mut error) = (vec![0.0; width], vec![0.0; width]);
         // Running error bounds (Higham, ASNA 2nd ed., §3.3); a row with weight 0 rounds nothing.
-        let (mut energy, mut bound) = (0.0, 0.0);
-        let row_error = (width + 2) as f64 * f64::EPSILON;
+        let (mut cross, mut bound) = (vec![0.0; width * width], vec![0.0; width]);
+        let row_error = (e_width + 2) as f64 * f64::EPSILON;
         for e in e_levels.map(|e| e as usize) {
             fit.fill(0.0);
             fit_error.fill(0.0);
             let rows = self.rows.positions(e);
             for i in rows.clone() {
-                let wa = row_weight(sqrt_weights, i) * a(i);
-                for (k, (f, error)) in fit.iter_mut().zip(&mut fit_error).enumerate() {
-                    let term = eliminated.column(i, k) * wa;
-                    if term != 0.0 {
-                        *f += term;
-                        *error += f.abs() + 2.0 * term.abs();
+                let w = row_weight(sqrt_weights, i);
+                let by_column = fit
+                    .chunks_exact_mut(e_width)
+                    .zip(fit_error.chunks_exact_mut(e_width));
+                for (c, (fit, fit_error)) in by_column.enumerate() {
+                    let wa = w * a(i, c);
+                    for (k, (f, error)) in fit.iter_mut().zip(fit_error).enumerate() {
+                        let term = eliminated.column(i, k) * wa;
+                        if term != 0.0 {
+                            *f += term;
+                            *error += f.abs() + 2.0 * term.abs();
+                        }
                     }
                 }
             }
-            for (k, (error, f)) in fit_error.iter_mut().zip(&mut fit).enumerate() {
-                let g = gram[k * eliminated.n_levels + e];
+            for (j, (error, f)) in fit_error.iter_mut().zip(&mut fit).enumerate() {
+                let g = gram[(j % e_width) * eliminated.n_levels + e];
                 (*f, *error) = if g > 0.0 {
                     let fit = *f / g;
                     (fit, f64::EPSILON * (*error / g + fit.abs()))
@@ -431,21 +447,31 @@ impl ProjectedColumns<'_> {
             }
             for i in rows {
                 let s = sqrt_weights.map_or(1.0, |s| s[i]);
-                let fitted = (fit.iter().enumerate())
-                    .fold(-0.0, |acc, (k, f)| acc + f * eliminated.column(i, k));
-                let r = s * (a(i) - fitted);
-                energy += r * r;
-                let spread = (fit_error.iter().enumerate())
-                    .fold(0.0, |acc, (k, d)| acc + d * eliminated.column(i, k).abs());
-                let error = s * (row_error * (a(i).abs() + fitted.abs()) + spread);
-                bound += error * error;
+                let by_column = fit
+                    .chunks_exact(e_width)
+                    .zip(fit_error.chunks_exact(e_width));
+                for (c, (fit, fit_error)) in by_column.enumerate() {
+                    let fitted = (fit.iter().enumerate())
+                        .fold(-0.0, |acc, (k, f)| acc + f * eliminated.column(i, k));
+                    r[c] = s * (a(i, c) - fitted);
+                    let spread = (fit_error.iter().enumerate())
+                        .fold(0.0, |acc, (k, d)| acc + d * eliminated.column(i, k).abs());
+                    error[c] = s * (row_error * (a(i, c).abs() + fitted.abs()) + spread);
+                }
+                for (c, row) in cross.chunks_exact_mut(width).enumerate() {
+                    row.iter_mut().zip(&r).for_each(|(x, rd)| *x += r[c] * rd);
+                    bound[c] += error[c] * error[c];
+                }
             }
         }
-        if energy <= 4.0 * bound {
-            0.0
-        } else {
-            energy
-        }
+        let mut workspace = GramBasisWorkspace::new(width);
+        let basis = workspace.orthonormalize(|g| g.copy_from_slice(&cross), |c, _| 4.0 * bound[c]);
+        (0..width)
+            .map(|c| match basis.kept[c] {
+                true => cross[c * width + c],
+                false => 0.0,
+            })
+            .collect()
     }
 
     /// Level `l`'s rows and its columns of `A_e`.

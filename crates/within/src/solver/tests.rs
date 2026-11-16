@@ -417,7 +417,6 @@ fn a_near_duplicate_slope_residualizes_its_span() {
 
 /// A slope `c + 1e-3·d + 5e-11·e` beside a term carrying `c` and `d` still residualizes fully.
 #[test]
-#[ignore = "reduced system drifts above the floor here (#544)"]
 fn a_near_combination_slope_residualizes_its_span() {
     let (c, d, e) = walsh_columns();
     let near: [f64; 8] = std::array::from_fn(|i| c[i] + 1e-3 * d[i] + 5e-11 * e[i]);
