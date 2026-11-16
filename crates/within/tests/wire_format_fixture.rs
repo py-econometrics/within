@@ -88,12 +88,12 @@ impl Clustered {
 
 fn two_level() -> PreconditionerConfig {
     PreconditionerConfig::Schwarz(within::Schwarz {
-        local_solver: within::LocalSolverConfig::default(),
         coarse: Some(CoarseCorrection {
             space: CoarseSpace::RigidComponents,
             form: TwoLevelForm::Balanced,
             build: CoarseBuild::WithSchwarz,
         }),
+        ..Default::default()
     })
 }
 

@@ -1,7 +1,7 @@
 use rstest::rstest;
 use schwarz_precond::Operator;
 
-use super::{build_two_level, CoarseFactor, TwoLevelMap};
+use super::{build_two_level, CoarseFactor, HubRows, TwoLevelMap};
 use crate::config::{CoarseBuild, CoarseCorrection, CoarseSpace, LocalSolverConfig, TwoLevelForm};
 use crate::domain::{Design, Effect, PreparedDesign, Unknowns};
 use crate::linalg::dot;
@@ -316,14 +316,34 @@ fn hub_rows_eliminated_last_keep_the_coarse_null_modes_at_rounding() {
     let (dim, coarse) = (lines.next().expect("header").split_once(' ')).expect("dim coarse");
     let (dim, coarse): (usize, usize) =
         (dim.parse().expect("dim"), coarse.parse().expect("coarse"));
-    let lower = lines
+    let (block, border): (Vec<(u32, u32, f64)>, Vec<_>) = lines
         .map(|line| {
             let entry: Vec<&str> = line.split(' ').collect();
             let index = |k: usize| entry[k].parse::<u32>().expect("index");
             (index(0), index(1), entry[2].parse().expect("value"))
         })
-        .collect();
-    let factor = CoarseFactor::new(dim, coarse, lower, usize::MAX).expect("factor");
+        .partition(|e| (e.1 as usize) < coarse);
+    let mut hubs = HubRows {
+        ptr: vec![0],
+        cols: Vec::new(),
+        vals: Vec::new(),
+        gram: Vec::new(),
+    };
+    for row in coarse..dim {
+        for &(c, r, v) in border.iter().filter(|e| e.1 as usize == row) {
+            match c == r {
+                true => hubs.gram.push(v),
+                false => {
+                    assert!((c as usize) < coarse, "a hub row couples only gauges");
+                    hubs.cols.push(c);
+                    hubs.vals.push(v);
+                }
+            }
+        }
+        hubs.ptr.push(hubs.cols.len());
+    }
+    assert_eq!(hubs.gram.len(), dim - coarse);
+    let factor = CoarseFactor::new(coarse, block, Some(&hubs), usize::MAX).expect("factor");
     // At unit diagonal: the fixture's diagonal spans 0.08 to 8.7e5.
     let gain = (0..coarse)
         .map(|j| {
@@ -369,7 +389,8 @@ fn a_two_level_map_round_trips_through_the_wire(
             let (mut before, mut after) = (vec![0.0; map.nrows()], vec![0.0; decoded.nrows()]);
             map.apply(&x, &mut before).expect("apply");
             decoded.apply(&x, &mut after).expect("apply decoded");
-            assert_eq!(before, after);
+            let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&before), bits(&after));
         },
     );
 }

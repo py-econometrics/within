@@ -369,7 +369,27 @@ fn a_reduced_schwarz_map_is_reused_on_the_reduced_system() {
 
 /// Workers staying in 40 firm clusters with a slope on both terms, and movers whose one row
 /// elsewhere glues nothing: each cluster is a rigid component the one-level map cannot see.
-fn clustered() -> (Vec<u32>, Vec<u32>, Vec<f64>, Vec<f64>) {
+struct Clustered {
+    worker: Vec<u32>,
+    firm: Vec<u32>,
+    z_worker: Vec<f64>,
+    z_firm: Vec<f64>,
+}
+
+impl Clustered {
+    fn effects(&self) -> Vec<Effect<'_>> {
+        vec![
+            Effect::new(&self.worker, true, [&self.z_worker[..]]).expect("worker"),
+            Effect::new(&self.firm, true, [&self.z_firm[..]]).expect("firm"),
+        ]
+    }
+
+    fn y(&self) -> Vec<f64> {
+        (0..self.worker.len()).map(noise).collect()
+    }
+}
+
+fn clustered() -> Clustered {
     let (mut worker, mut firm) = (Vec::new(), Vec::new());
     let mut spell = |w: u32, f: u32, rows: usize| {
         worker.extend(std::iter::repeat_n(w, rows));
@@ -384,9 +404,12 @@ fn clustered() -> (Vec<u32>, Vec<u32>, Vec<f64>, Vec<f64>) {
         spell(120 + k, (a + 1 + (13 * k) % 39) % 40, 1);
     }
     let n = worker.len();
-    let z_worker = (0..n).map(|i| noise(2 * n + i)).collect();
-    let z_firm = (0..n).map(|i| noise(3 * n + i)).collect();
-    (worker, firm, z_worker, z_firm)
+    Clustered {
+        z_worker: (0..n).map(|i| noise(2 * n + i)).collect(),
+        z_firm: (0..n).map(|i| noise(3 * n + i)).collect(),
+        worker,
+        firm,
+    }
 }
 
 fn coarse(build: CoarseBuild) -> CoarseCorrection {
@@ -420,14 +443,8 @@ fn a_coarse_correction_lands_the_solve_on_the_two_level_map(
     )]
     build: CoarseBuild,
 ) {
-    let (worker, firm, z_worker, z_firm) = clustered();
-    let effects = || {
-        vec![
-            Effect::new(&worker, true, [&z_worker[..]]).expect("worker"),
-            Effect::new(&firm, true, [&z_firm[..]]).expect("firm"),
-        ]
-    };
-    let y: Vec<f64> = (0..worker.len()).map(noise).collect();
+    let panel = clustered();
+    let y = panel.y();
     let solve = |coarse| {
         let config = ladder(
             within::Schwarz {
@@ -436,7 +453,7 @@ fn a_coarse_correction_lands_the_solve_on_the_two_level_map(
             },
             adaptive,
         );
-        let solver = solver(effects(), None, &config, system).expect("solver");
+        let solver = solver(panel.effects(), None, &config, system).expect("solver");
         let result = solver.solve(&y, &lsmr()).expect("solve");
         (result, solver.preconditioner().map(|p| p.rung()))
     };
@@ -455,28 +472,23 @@ fn a_coarse_correction_lands_the_solve_on_the_two_level_map(
 /// A two-level preconditioner saved and loaded solves to the same bits.
 #[rstest]
 fn a_two_level_preconditioner_round_trips(#[values(System::Full, System::Reduced)] system: System) {
-    let (worker, firm, z_worker, z_firm) = clustered();
-    let effects = || {
-        vec![
-            Effect::new(&worker, true, [&z_worker[..]]).expect("worker"),
-            Effect::new(&firm, true, [&z_firm[..]]).expect("firm"),
-        ]
-    };
-    let y: Vec<f64> = (0..worker.len()).map(noise).collect();
+    let panel = clustered();
+    let y = panel.y();
     let config = PreconditionerConfig::Schwarz(within::Schwarz {
         coarse: Some(coarse(CoarseBuild::WithSchwarz)),
         ..Default::default()
     });
-    let built = solver(effects(), None, &config, system).expect("solver");
+    let built = solver(panel.effects(), None, &config, system).expect("solver");
     let original = built.preconditioner().expect("built");
     assert_eq!(original.rung(), Rung::TwoLevel);
     let bytes = postcard::to_stdvec(original).expect("serialize");
     let restored: within::Preconditioner = postcard::from_bytes(&bytes).expect("deserialize");
-    let reused = solver(effects(), None, restored, system).expect("reused");
+    let reused = solver(panel.effects(), None, restored, system).expect("reused");
     let (a, b) = (built.solve(&y, &lsmr()), reused.solve(&y, &lsmr()));
     let (a, b) = (a.expect("solve"), b.expect("reused solve"));
+    let bits = |x: &[f64]| x.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
     assert!(a.converged);
-    assert_eq!((a.iterations, &a.x), (b.iterations, &b.x));
+    assert_eq!((a.iterations, bits(&a.x)), (b.iterations, bits(&b.x)));
 }
 
 /// Gauges the eliminated term absorbs to within 1e-6 of their energy keep the two-level fit:
@@ -485,25 +497,19 @@ fn a_two_level_preconditioner_round_trips(#[values(System::Full, System::Reduced
 fn nearly_absorbed_gauges_keep_the_two_level_fit(
     #[values(System::Full, System::Reduced)] system: System,
 ) {
-    let (worker, firm, z_worker, z_firm) = clustered();
+    let panel = clustered();
     // Movers' one row elsewhere is all the energy their firms' gauges keep.
     let short = |i: usize| i >= 960 && (i - 960) % 8 == 7;
-    let w: Vec<f64> = (0..worker.len())
+    let w: Vec<f64> = (0..panel.worker.len())
         .map(|i| if short(i) { 1.0 } else { 1e6 })
         .collect();
-    let effects = || {
-        vec![
-            Effect::new(&worker, true, [&z_worker[..]]).expect("worker"),
-            Effect::new(&firm, true, [&z_firm[..]]).expect("firm"),
-        ]
-    };
-    let y: Vec<f64> = (0..worker.len()).map(noise).collect();
+    let y = panel.y();
     let solve = |coarse, options: &LsmrOptions| {
         let config = PreconditionerConfig::Schwarz(within::Schwarz {
             coarse,
             ..Default::default()
         });
-        let solver = solver(effects(), Some(&w), &config, system).expect("solver");
+        let solver = solver(panel.effects(), Some(&w), &config, system).expect("solver");
         let result = solver.solve(&y, options).expect("solve");
         (result, solver.preconditioner().map(|p| p.rung()))
     };

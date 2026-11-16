@@ -36,29 +36,72 @@ const PARALLEL_MUL_ADD: usize = 1 << 16;
 const NULL_ENERGY_SHARE: f64 = 1e-10;
 
 /// `PᵀBP + Q` with `P = I − SQ`: exact on the coarse space, `M S Z = Z`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(try_from = "TwoLevelWire")]
 pub(crate) struct TwoLevelMap {
     one_level: FeSchwarz,
     coarse: Arc<CoarseSolve>,
 }
 
+/// A sparse matrix's columns: pointers, row indices, values.
+type Columns = (Vec<usize>, Vec<u32>, Vec<f64>);
+
+/// The one-level map, `Z`, `SZ`, the hubs' rows and `F`, and `E`'s coarse block: each dimension
+/// once, faer's factor having no serde.
 #[derive(Deserialize)]
-struct TwoLevelWire {
-    one_level: FeSchwarz,
-    coarse: Arc<CoarseSolve>,
+struct TwoLevelWire(
+    FeSchwarz,
+    Columns,
+    Columns,
+    Option<(HubRows, Columns)>,
+    Vec<(u32, u32, f64)>,
+);
+
+impl Serialize for TwoLevelMap {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let c = &*self.coarse;
+        let hubs = c.hubs.as_ref().map(|h| (&h.rows, h.f.columns()));
+        let block = &c.factor.block;
+        (&self.one_level, c.z.columns(), c.sz.columns(), hubs, block).serialize(serializer)
+    }
 }
 
 impl TryFrom<TwoLevelWire> for TwoLevelMap {
     type Error = &'static str;
 
     fn try_from(wire: TwoLevelWire) -> Result<Self, Self::Error> {
-        if wire.coarse.z.n != wire.one_level.nrows() {
-            return Err("the coarse space does not act on the one-level map's coefficients");
+        let TwoLevelWire(one_level, z, sz, hubs, block) = wire;
+        let n = one_level.nrows();
+        let z = TwoWay::from_wire(n, z)?;
+        let m = z.ncols();
+        let sz = TwoWay::from_wire(n, sz)?;
+        let hubs = (hubs.map(|(rows, f)| {
+            let f = TwoWay::from_wire(n, f)?;
+            let fits = rows.ptr.len() == rows.rank() + 1
+                && compressed(&rows.ptr, &rows.cols, m)
+                && rows.vals.len() == rows.cols.len()
+                && f.ncols() == rows.rank();
+            (fits.then_some(HubCorrection { rows, f }))
+                .ok_or("the hub correction does not fit the coarse space")
+        }))
+        .transpose()?;
+        let dim = m + hubs.as_ref().map_or(0, |h| h.rows.rank());
+        let lower = (block.iter()).all(|&(c, r, v)| c <= r && (r as usize) < m && v.is_finite());
+        // faer indexes with i32.
+        if sz.ncols() != m || !lower || dim > i32::MAX as usize {
+            return Err("E's coarse block does not fit Z's columns");
         }
+        let rows = hubs.as_ref().map(|h| &h.rows);
+        let factor =
+            CoarseFactor::new(m, block, rows, usize::MAX).map_err(|_| "E does not factor")?;
         Ok(Self {
-            one_level: wire.one_level,
-            coarse: wire.coarse,
+            one_level,
+            coarse: Arc::new(CoarseSolve {
+                z,
+                sz,
+                hubs,
+                factor,
+            }),
         })
     }
 }
@@ -117,8 +160,6 @@ impl Operator for TwoLevelMap {
 }
 
 /// The coarse space `Z`, `SZ`, and the factor of `E = ZᵀSZ`.
-#[derive(Serialize, Deserialize)]
-#[serde(try_from = "CoarseSolveWire")]
 pub(crate) struct CoarseSolve {
     z: TwoWay,
     /// `SZ`, less `hubs` where there are wide levels.
@@ -128,106 +169,13 @@ pub(crate) struct CoarseSolve {
     factor: CoarseFactor,
 }
 
-#[derive(Deserialize)]
-struct CoarseSolveWire {
-    z: TwoWay,
-    sz: TwoWay,
-    hubs: Option<HubCorrection>,
-    factor: CoarseFactor,
-}
-
-impl TryFrom<CoarseSolveWire> for CoarseSolve {
-    type Error = &'static str;
-
-    fn try_from(wire: CoarseSolveWire) -> Result<Self, Self::Error> {
-        let CoarseSolveWire {
-            z,
-            sz,
-            hubs,
-            factor,
-        } = wire;
-        let (n, coarse) = (z.n, factor.coarse);
-        if (sz.n, z.ncols(), sz.ncols()) != (n, coarse, coarse) {
-            return Err("Z and SZ differ in shape from the coarse factor");
-        }
-        let rank = hubs.as_ref().map_or(0, |h| h.rows.rank());
-        if factor.scale.len() != coarse + rank {
-            return Err("the coarse factor's hub rows differ from the hub correction's");
-        }
-        if let Some(HubCorrection { rows, f }) = &hubs {
-            if (f.n, f.ncols()) != (n, rank) || rows.cols.iter().any(|&c| c as usize >= coarse) {
-                return Err("the hub correction does not fit the coarse space");
-            }
-        }
-        Ok(Self {
-            z,
-            sz,
-            hubs,
-            factor,
-        })
-    }
-}
-
 /// The LDLᵀ of `D E D`, `D` scaling `E` to a unit diagonal.
-#[derive(Serialize, Deserialize)]
-#[serde(try_from = "CoarseFactorWire")]
 struct CoarseFactor {
-    /// The lower triangle of `D E D`: the wire carries it, faer's factor having no serde.
-    #[serde(serialize_with = "lower_parts")]
-    matrix: SparseColMat<u32, f64>,
-    /// Rows past this are the hubs', eliminated last.
-    coarse: usize,
-    scale: Vec<f64>,
-    #[serde(skip)]
+    /// `E`'s merged lower triplets over the coarse columns: the wire carries them.
+    block: Vec<(u32, u32, f64)>,
     symbolic: SymbolicCholesky<u32>,
-    #[serde(skip)]
     l_values: Vec<f64>,
-}
-
-#[derive(Deserialize)]
-struct CoarseFactorWire {
-    matrix: (Vec<u32>, Vec<u32>, Vec<f64>),
-    coarse: usize,
     scale: Vec<f64>,
-}
-
-fn lower_parts<S: serde::Serializer>(
-    matrix: &SparseColMat<u32, f64>,
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    let pattern = matrix.symbolic();
-    (pattern.col_ptr(), pattern.row_idx(), matrix.val()).serialize(serializer)
-}
-
-impl TryFrom<CoarseFactorWire> for CoarseFactor {
-    type Error = &'static str;
-
-    fn try_from(wire: CoarseFactorWire) -> Result<Self, Self::Error> {
-        let CoarseFactorWire {
-            matrix: (col_ptr, row_idx, values),
-            coarse,
-            scale,
-        } = wire;
-        let dim = scale.len();
-        let ptr: Vec<usize> = col_ptr.iter().map(|&k| k as usize).collect();
-        let valid = col_ptr.len() == dim + 1
-            && is_csc(&ptr, &row_idx, |c| c..dim)
-            && values.len() == row_idx.len()
-            && coarse <= dim
-            && values.iter().all(|v| v.is_finite())
-            && scale.iter().all(|s| s.is_finite() && *s > 0.0);
-        if !valid {
-            return Err("the coarse matrix is not a lower triangle of its dimension");
-        }
-        let pattern = SymbolicSparseColMat::new_checked(dim, dim, col_ptr, None, row_idx);
-        Self::factor(
-            SparseColMat::new(pattern, values),
-            coarse,
-            scale,
-            usize::MAX,
-        )
-        .map_err(|_| "the coarse matrix does not factor")
-    }
 }
 
 impl std::fmt::Debug for CoarseSolve {
@@ -270,15 +218,21 @@ fn merged(mut triplets: Vec<(u32, u32, f64)>) -> Vec<(u32, u32, f64)> {
 }
 
 impl CoarseFactor {
-    /// The LDLᵀ of the `dim × dim` matrix with lower triplets `lower`, at unit diagonal, its rows
-    /// past `coarse` (the hubs') eliminated last; declines past `budget` factor values.
+    /// The LDLᵀ of `E`, lower triplets `lower` over its `coarse` columns bordered by the `hubs`'
+    /// rows, at unit diagonal, the hubs eliminated last; declines past `budget` factor values.
     fn new(
-        dim: usize,
         coarse: usize,
-        lower: Vec<(u32, u32, f64)>,
+        mut lower: Vec<(u32, u32, f64)>,
+        hubs: Option<&HubRows>,
         budget: usize,
     ) -> Result<Self, CoarseDecline> {
+        let dim = coarse + hubs.map_or(0, HubRows::rank);
+        lower.extend(hubs.into_iter().flat_map(|h| h.lower(coarse)));
         let lower = merged(lower);
+        let block = (lower.iter())
+            .filter(|e| (e.1 as usize) < coarse)
+            .copied()
+            .collect();
         let mut diagonal = vec![0.0; dim];
         for &(c, r, v) in &lower {
             if c == r {
@@ -292,27 +246,16 @@ impl CoarseFactor {
         let lower: Vec<(u32, u32, f64)> = (lower.into_iter())
             .map(|(c, r, v)| (c, r, v * (scale[c as usize] * scale[r as usize])))
             .collect();
+        let d_max = (lower.iter())
+            .filter(|e| e.0 == e.1)
+            .map(|e| e.2)
+            .fold(0.0, f64::max);
         let col_ptr = (offsets(dim, lower.iter().map(|e| e.0 as usize)).into_iter())
             .map(|k| k as u32)
             .collect();
         let (row_idx, values) = lower.into_iter().map(|(_, r, v)| (r, v)).unzip();
         let pattern = SymbolicSparseColMat::new_checked(dim, dim, col_ptr, None, row_idx);
-        Self::factor(SparseColMat::new(pattern, values), coarse, scale, budget)
-    }
-
-    /// The LDLᵀ of `matrix`, a lower triangle at unit diagonal scaled by `scale`.
-    fn factor(
-        matrix: SparseColMat<u32, f64>,
-        coarse: usize,
-        scale: Vec<f64>,
-        budget: usize,
-    ) -> Result<Self, CoarseDecline> {
-        let dim = scale.len();
-        let pattern = matrix.symbolic();
-        let d_max = (0..dim)
-            .filter(|&c| pattern.row_idx_of_col_raw(c).first() == Some(&(c as u32)))
-            .map(|c| matrix.val_of_col(c)[0])
-            .fold(0.0, f64::max);
+        let matrix = SparseColMat::new(pattern, values);
         let (fwd, inv) = hubs_last(matrix.symbolic(), coarse)?;
         let symbolic = factorize_symbolic_cholesky(
             matrix.symbolic(),
@@ -350,11 +293,10 @@ impl CoarseFactor {
             return Err(CoarseDecline::NoCoarseSpace);
         }
         Ok(Self {
-            matrix,
-            coarse,
-            scale,
+            block,
             symbolic,
             l_values,
+            scale,
         })
     }
 
@@ -408,90 +350,63 @@ fn hubs_last(
     Ok((fwd, inv))
 }
 
-/// Sparse `n × m` held both ways: by column for `Mᵀx`, by nonempty row for `M c`. The wire
-/// carries the columns alone.
-#[derive(Serialize, Deserialize)]
-#[serde(try_from = "TwoWayWire")]
-struct TwoWay {
-    n: usize,
-    col_ptr: Vec<usize>,
-    col_idx: Vec<u32>,
-    col_val: Vec<f64>,
-    #[serde(skip)]
-    rows: Vec<u32>,
-    #[serde(skip)]
-    row_ptr: Vec<usize>,
-    #[serde(skip)]
-    row_idx: Vec<u32>,
-    #[serde(skip)]
-    row_val: Vec<f64>,
-}
-
-#[derive(Deserialize)]
-struct TwoWayWire {
-    n: usize,
-    col_ptr: Vec<usize>,
-    col_idx: Vec<u32>,
-    col_val: Vec<f64>,
-}
-
-impl TryFrom<TwoWayWire> for TwoWay {
-    type Error = &'static str;
-
-    fn try_from(wire: TwoWayWire) -> Result<Self, Self::Error> {
-        let TwoWayWire {
-            n,
-            col_ptr,
-            col_idx,
-            col_val,
-        } = wire;
-        let m = col_ptr.len().saturating_sub(1);
-        let valid = is_csc(&col_ptr, &col_idx, |_| 0..n)
-            && col_val.len() == col_idx.len()
-            && m <= u32::MAX as usize
-            && n <= u32::MAX as usize;
-        if !valid {
-            return Err("a sparse matrix's columns are malformed");
-        }
-        let entries = (0..m)
-            .flat_map(|c| (col_ptr[c]..col_ptr[c + 1]).map(move |k| (c as u32, k)))
-            .map(|(c, k)| (c, col_idx[k], col_val[k]))
-            .collect();
-        Ok(Self::from_parts(n, m, vec![entries]))
-    }
-}
-
-/// Whether `ptr` and `idx` hold `ptr.len() − 1` columns from 0 to `idx.len()`, each's indices
-/// strictly increasing within `rows(c)`.
-fn is_csc(ptr: &[usize], idx: &[u32], rows: impl Fn(usize) -> std::ops::Range<usize>) -> bool {
-    let column = |c: usize| {
-        let (start, end) = (ptr[c], ptr[c + 1]);
-        let span = &idx[start..end];
-        span.iter().all(|&r| rows(c).contains(&(r as usize))) && span.is_sorted_by(|a, b| a < b)
-    };
+/// Whether `ptr` cuts `idx` into runs from 0 to its end, every index below `bound`.
+fn compressed(ptr: &[usize], idx: &[u32], bound: usize) -> bool {
     ptr.first() == Some(&0)
         && ptr.last() == Some(&idx.len())
         && ptr.is_sorted()
-        && (0..ptr.len() - 1).all(column)
+        && idx.iter().all(|&r| (r as usize) < bound)
+}
+
+/// Sparse `n × m` held both ways: by column for `Mᵀx`, by nonempty row for `M c`.
+struct TwoWay {
+    col_ptr: Vec<usize>,
+    col_idx: Vec<u32>,
+    col_val: Vec<f64>,
+    rows: Vec<u32>,
+    row_ptr: Vec<usize>,
+    row_idx: Vec<u32>,
+    row_val: Vec<f64>,
 }
 
 impl TwoWay {
-    /// From `(column, row, value)` parts in column order, each sorted by column then row, without
-    /// duplicates.
+    /// From `(column, row, value)` parts in column order.
     fn from_parts(n: usize, m: usize, parts: Vec<Vec<(u32, u32, f64)>>) -> Self {
         let total: usize = parts.iter().map(Vec::len).sum();
         let col_ptr = offsets(m, parts.iter().flatten().map(|e| e.0 as usize));
-        let row_ptr = offsets(n, parts.iter().flatten().map(|e| e.1 as usize));
         let (mut col_idx, mut col_val) = (Vec::with_capacity(total), Vec::with_capacity(total));
-        let (mut row_idx, mut row_val) = (vec![0u32; total], vec![0.0; total]);
-        let mut cursor = row_ptr.clone();
-        for (c, r, v) in parts.into_iter().flatten() {
+        for (_, r, v) in parts.into_iter().flatten() {
             col_idx.push(r);
             col_val.push(v);
-            let k = &mut cursor[r as usize];
-            row_idx[*k] = c;
-            row_val[*k] = v;
-            *k += 1;
+        }
+        Self::from_columns(n, col_ptr, col_idx, col_val)
+    }
+
+    /// From the wire's columns over the one-level map's `n` rows.
+    fn from_wire(n: usize, (col_ptr, col_idx, col_val): Columns) -> Result<Self, &'static str> {
+        let valid = compressed(&col_ptr, &col_idx, n)
+            && col_val.len() == col_idx.len()
+            && col_ptr.len() <= u32::MAX as usize
+            && n < u32::MAX as usize;
+        match valid {
+            true => Ok(Self::from_columns(n, col_ptr, col_idx, col_val)),
+            false => Err("a sparse matrix's columns are malformed"),
+        }
+    }
+
+    /// Adds the row view to the columns.
+    fn from_columns(n: usize, col_ptr: Vec<usize>, col_idx: Vec<u32>, col_val: Vec<f64>) -> Self {
+        let total = col_idx.len();
+        let row_ptr = offsets(n, col_idx.iter().map(|&r| r as usize));
+        let (mut row_idx, mut row_val) = (vec![0u32; total], vec![0.0; total]);
+        let mut cursor = row_ptr.clone();
+        for c in 0..col_ptr.len() - 1 {
+            for k in col_ptr[c]..col_ptr[c + 1] {
+                let slot = &mut cursor[col_idx[k] as usize];
+                row_idx[*slot] = c as u32;
+                row_val[*slot] = col_val[k];
+                *slot += 1;
+            }
         }
         let rows: Vec<u32> = (0..n as u32)
             .filter(|&r| row_ptr[r as usize + 1] > row_ptr[r as usize])
@@ -500,7 +415,6 @@ impl TwoWay {
             .chain(row_ptr.last().copied())
             .collect();
         Self {
-            n,
             col_ptr,
             col_idx,
             col_val,
@@ -509,6 +423,10 @@ impl TwoWay {
             row_idx,
             row_val,
         }
+    }
+
+    fn columns(&self) -> (&[usize], &[u32], &[f64]) {
+        (&self.col_ptr, &self.col_idx, &self.col_val)
     }
 
     fn nnz(&self) -> usize {
@@ -563,7 +481,6 @@ impl TwoWay {
 }
 
 /// `SZ = SZ₀ − F C B` for the wide levels: `B` their `s` rows, `C` their `G⁻`, `F = D_keptᵀ W E`.
-#[derive(Serialize, Deserialize)]
 struct HubCorrection {
     rows: HubRows,
     f: TwoWay,
@@ -571,7 +488,6 @@ struct HubCorrection {
 
 /// Wide levels' `s = EᵀW DZ` rows over the live coarse columns, one per channel, with its `G`.
 #[derive(Serialize, Deserialize)]
-#[serde(try_from = "HubRowsWire")]
 struct HubRows {
     ptr: Vec<usize>,
     cols: Vec<u32>,
@@ -579,44 +495,20 @@ struct HubRows {
     gram: Vec<f64>,
 }
 
-#[derive(Deserialize)]
-struct HubRowsWire {
-    ptr: Vec<usize>,
-    cols: Vec<u32>,
-    vals: Vec<f64>,
-    gram: Vec<f64>,
-}
-
-impl TryFrom<HubRowsWire> for HubRows {
-    type Error = &'static str;
-
-    fn try_from(wire: HubRowsWire) -> Result<Self, Self::Error> {
-        let HubRowsWire {
-            ptr,
-            cols,
-            vals,
-            gram,
-        } = wire;
-        let valid = ptr.len() == gram.len() + 1
-            && ptr[0] == 0
-            && ptr.is_sorted()
-            && ptr[gram.len()] == cols.len()
-            && vals.len() == cols.len();
-        if !valid {
-            return Err("the hub rows are malformed");
-        }
-        Ok(Self {
-            ptr,
-            cols,
-            vals,
-            gram,
-        })
-    }
-}
-
 impl HubRows {
     fn rank(&self) -> usize {
         self.gram.len()
+    }
+
+    /// `E`'s rows `[G s]` past its `coarse` columns, as lower triplets.
+    fn lower(&self, coarse: usize) -> impl Iterator<Item = (u32, u32, f64)> + '_ {
+        (0..self.rank()).flat_map(move |i| {
+            let row = (coarse + i) as u32;
+            let span = self.ptr[i]..self.ptr[i + 1];
+            let s = (self.cols[span.clone()].iter().zip(&self.vals[span]))
+                .map(move |(&c, &v)| (c, row, v));
+            std::iter::once((row, row, self.gram[i])).chain(s)
+        })
     }
 
     /// Row `i` of `C v`, from its `B` row `b`.
