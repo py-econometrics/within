@@ -46,7 +46,7 @@ impl LocalSolver for BlockSolver {
             })
     }
 
-    fn inner_parallelism_work_estimate(&self) -> usize {
+    fn work_estimate(&self) -> usize {
         self.inverse.n_steps()
     }
 }

@@ -19,6 +19,12 @@ pub fn solve<A: Operator + ?Sized, M: Operator + ?Sized>(
     mlsmr(op, b, m, tol, maxiter, options, Threads::All, stack)
 }
 
+/// [`Operator::apply`] on every thread of the pool, its scratch allocated.
+pub fn apply<O: Operator + ?Sized>(op: &O, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+    let mut scratch = MemBuffer::new(op.scratch(1, Threads::All));
+    op.apply(x, y, Threads::All, MemStack::new(&mut scratch))
+}
+
 // ---------------------------------------------------------------------------
 // Operators
 // ---------------------------------------------------------------------------

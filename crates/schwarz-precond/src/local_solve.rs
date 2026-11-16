@@ -36,9 +36,10 @@ pub trait LocalSolver: Send + Sync {
         stack: &mut MemStack,
     ) -> Result<(), LocalSolveError>;
 
-    /// Estimated local work that can benefit from more than one thread; zero when there is none.
-    fn inner_parallelism_work_estimate(&self) -> usize {
-        0
+    /// Estimated work of one local solve: past its budget's share of the total, it runs alone on
+    /// the whole budget, and the rest share the pool only when their work pays for waking it.
+    fn work_estimate(&self) -> usize {
+        self.n_local()
     }
 }
 

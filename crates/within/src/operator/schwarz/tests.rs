@@ -61,7 +61,7 @@ fn run_block_elim_nested_rayon_case() {
 
     let schwarz = build_additive(domain_pairs, n_dofs).expect("build block-elim preconditioner");
 
-    // Two subdomains: inner parallelism is off in a 1-thread pool and on in a 4-thread pool.
+    // The same two subdomains in a 1-thread pool and a 4-thread pool.
     let apply_in = |threads: usize| {
         rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
