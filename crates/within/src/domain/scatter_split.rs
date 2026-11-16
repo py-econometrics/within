@@ -148,7 +148,7 @@ pub(crate) fn fixed_tree<T: Send>(
     if items.len() <= leaf_len {
         return leaf(items);
     }
-    let mid = items.start + (items.len() / 2 / leaf_len).max(1) * leaf_len;
+    let mid = tree_mid(&items, leaf_len);
     let left = || fixed_tree(items.start..mid, leaf_len, threads, leaf, merge);
     let right = || fixed_tree(mid..items.end, leaf_len, threads, leaf, merge);
     let (mut left, right) = match threads {
@@ -157,6 +157,11 @@ pub(crate) fn fixed_tree<T: Send>(
     };
     merge(&mut left, &right);
     left
+}
+
+/// Where [`fixed_tree`] splits `items` of more than `leaf_len`: whole leaves, about half each side.
+pub(crate) fn tree_mid(items: &Range<usize>, leaf_len: usize) -> usize {
+    items.start + (items.len() / 2 / leaf_len).max(1) * leaf_len
 }
 
 /// The rows of each level, ascending: the inverse of the row → level map.
