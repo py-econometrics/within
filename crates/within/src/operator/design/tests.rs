@@ -186,7 +186,7 @@ mod elimination_tests {
                 .collect()],
         };
         let intercept = !matches!(dominant, Dominant::SlopeOnly);
-        // A slope-free design when the dominant term has none either.
+        // No kept slopes: a slope-free design, or kept lone intercepts beside a sloped dominant.
         let gz: Vec<Vec<f64>> = match dominant {
             Dominant::InterceptOnly | Dominant::TwoSlopes => vec![],
             _ => vec![(0..n).map(|i| noise(5 * n + i)).collect()],

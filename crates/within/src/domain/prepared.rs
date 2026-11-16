@@ -49,7 +49,7 @@ impl<'p> TermRows<'p> {
         self.intercept as usize + self.slopes.len()
     }
 
-    /// `(D_t x_t)_i` with `x_t` at `offset` of `x`; `PLAIN` when every term is a lone intercept.
+    /// `(D_t x_t)_i` with `x_t` at `offset` of `x`; `PLAIN` when this term is a lone intercept.
     #[inline(always)]
     pub(crate) fn row<const PLAIN: bool>(&self, x: &[f64], offset: usize, i: usize) -> f64 {
         let level = offset + self.levels[i] as usize;
@@ -94,6 +94,7 @@ impl<'p> TermRows<'p> {
     }
 
     /// Row `i`'s loading in column `c`.
+    #[inline(always)]
     pub(crate) fn column(&self, i: usize, c: usize) -> f64 {
         match c.checked_sub(self.intercept as usize) {
             None => 1.0,
