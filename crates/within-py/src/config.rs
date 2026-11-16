@@ -11,8 +11,9 @@ use numpy::PyReadonlyArray1;
 use pyo3::prelude::*;
 
 use within::config::{
-    ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, LsmrOptions, PreconditionerConfig,
-    Rung, ScalingConfig, ScalingFailure, SchurMode, Schwarz, Staleness,
+    ApproxCholConfig, ApproxSchurConfig, CoarseBuild, CoarseCorrection, CoarseSpace,
+    LocalSolverConfig, LsmrOptions, PreconditionerConfig, Rung, ScalingConfig, ScalingFailure,
+    SchurMode, Schwarz, Staleness, TwoLevelForm,
 };
 use within::{Preconditioner, PreconditionerInput};
 
@@ -205,37 +206,45 @@ impl PyScalingConfig {
 #[derive(PartialEq)]
 pub enum PyPreconditionerConfig {
     Off(),
-    #[pyo3(constructor = (local_solver=PyLocalSolverConfig::default()))]
+    #[pyo3(constructor = (local_solver=PyLocalSolverConfig::default(), coarse=None))]
     Schwarz {
         local_solver: PyLocalSolverConfig,
+        coarse: Option<PyCoarseCorrection>,
     },
     Diagonal(),
     #[pyo3(constructor = (
         local_solver=PyLocalSolverConfig::default(),
-        stall=PyStaleness::default()
+        stall=PyStaleness::default(),
+        coarse=None
     ))]
     Adaptive {
         local_solver: PyLocalSolverConfig,
         stall: PyStaleness,
+        coarse: Option<PyCoarseCorrection>,
     },
 }
 
 impl PyPreconditionerConfig {
     pub(crate) fn to_native(&self) -> PreconditionerConfig {
-        let schwarz = |local_solver: &PyLocalSolverConfig| Schwarz {
-            local_solver: local_solver.to_native(),
-            coarse: None,
-        };
+        let schwarz =
+            |local_solver: &PyLocalSolverConfig, coarse: &Option<PyCoarseCorrection>| Schwarz {
+                local_solver: local_solver.to_native(),
+                coarse: coarse.as_ref().map(|c| c.inner.clone()),
+            };
         match self {
             Self::Off() => PreconditionerConfig::Off,
             Self::Diagonal() => PreconditionerConfig::Diagonal,
-            Self::Schwarz { local_solver } => PreconditionerConfig::Schwarz(schwarz(local_solver)),
+            Self::Schwarz {
+                local_solver,
+                coarse,
+            } => PreconditionerConfig::Schwarz(schwarz(local_solver, coarse)),
             Self::Adaptive {
                 local_solver,
                 stall,
+                coarse,
             } => PreconditionerConfig::Adaptive {
                 stall: stall.to_native(),
-                schwarz: schwarz(local_solver),
+                schwarz: schwarz(local_solver, coarse),
             },
         }
     }
@@ -243,21 +252,63 @@ impl PyPreconditionerConfig {
     pub(crate) fn from_native(config: &PreconditionerConfig) -> Self {
         let local_solver =
             |schwarz: &Schwarz| PyLocalSolverConfig::from_native(&schwarz.local_solver);
+        let coarse = |schwarz: &Schwarz| {
+            schwarz
+                .coarse
+                .clone()
+                .map(|inner| PyCoarseCorrection { inner })
+        };
         match config {
             PreconditionerConfig::Off => Self::Off(),
             PreconditionerConfig::Diagonal => Self::Diagonal(),
             PreconditionerConfig::Schwarz(schwarz) => Self::Schwarz {
                 local_solver: local_solver(schwarz),
+                coarse: coarse(schwarz),
             },
             PreconditionerConfig::Adaptive { stall, schwarz } => Self::Adaptive {
                 local_solver: local_solver(schwarz),
-                stall: PyStaleness { inner: *stall },
+                stall: PyStaleness::from_native(*stall),
+                coarse: coarse(schwarz),
             },
         }
     }
 }
 
-/// Contraction-stall condition that triggers an `Adaptive` escalation.
+/// Two-level Schwarz over rigid components, balanced; built with Schwarz or at `on_stall`.
+#[pyclass(frozen, eq, from_py_object, module = "within._within")]
+#[pyo3(name = "CoarseCorrection")]
+#[derive(Clone, PartialEq)]
+pub struct PyCoarseCorrection {
+    inner: CoarseCorrection,
+}
+
+#[pymethods]
+impl PyCoarseCorrection {
+    #[new]
+    #[pyo3(signature = (on_stall=None))]
+    fn new(on_stall: Option<PyStaleness>) -> Self {
+        Self {
+            inner: CoarseCorrection {
+                space: CoarseSpace::RigidComponents,
+                form: TwoLevelForm::Balanced,
+                build: match on_stall {
+                    None => CoarseBuild::WithSchwarz,
+                    Some(stall) => CoarseBuild::OnStall(stall.to_native()),
+                },
+            },
+        }
+    }
+
+    #[getter]
+    fn on_stall(&self) -> Option<PyStaleness> {
+        match &self.inner.build {
+            CoarseBuild::WithSchwarz => None,
+            CoarseBuild::OnStall(stall) => Some(PyStaleness::from_native(*stall)),
+        }
+    }
+}
+
+/// Contraction-stall condition that hands the solve to the next rung.
 #[pyclass(frozen, eq, from_py_object, module = "within._within")]
 #[pyo3(name = "Staleness")]
 #[derive(Clone, Copy, Default, PartialEq)]
@@ -300,6 +351,10 @@ impl PyStaleness {
 }
 
 impl PyStaleness {
+    fn from_native(inner: Staleness) -> Self {
+        Self { inner }
+    }
+
     pub(crate) fn to_native(self) -> Staleness {
         self.inner
     }

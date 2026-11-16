@@ -31,6 +31,7 @@ Schur); pass ``Schur.exact()`` for the exact complement.
 from within._within import (
     ApproxCholConfig,
     ApproxSchurConfig,
+    CoarseCorrection,
     LocalSolverConfig,
     ScalingConfig,
     Schur,
@@ -40,6 +41,7 @@ from within._within import (
 __all__ = [
     "ApproxCholConfig",
     "ApproxSchurConfig",
+    "CoarseCorrection",
     "LocalSolverConfig",
     "ScalingConfig",
     "Schur",

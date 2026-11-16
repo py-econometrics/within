@@ -30,12 +30,17 @@ class PreconditionerConfig:
         def __init__(self) -> None: ...
 
     class Schwarz(PreconditionerConfig):
-        """Additive Schwarz with a normalized local-solver configuration."""
+        """Additive Schwarz with a normalized local-solver configuration.
+
+        ``coarse`` composes a coarse correction with it; ``None`` keeps it one-level.
+        """
 
         local_solver: LocalSolverConfig
+        coarse: CoarseCorrection | None
         def __init__(
             self,
             local_solver: LocalSolverConfig = ...,
+            coarse: CoarseCorrection | None = None,
         ) -> None: ...
 
     class Adaptive(PreconditionerConfig):
@@ -44,15 +49,32 @@ class PreconditionerConfig:
         The factorization is built only at the moment of escalation, so a design
         whose diagonal solve never stalls never pays to construct it. A build
         error therefore surfaces from :meth:`Solver.solve`, not the constructor.
+        ``coarse`` composes a coarse correction with the Schwarz map; its build,
+        and a declined coarse space's warning, come with that escalation or later.
         """
 
         local_solver: LocalSolverConfig
         stall: Staleness
+        coarse: CoarseCorrection | None
         def __init__(
             self,
             local_solver: LocalSolverConfig = ...,
             stall: Staleness = ...,
+            coarse: CoarseCorrection | None = None,
         ) -> None: ...
+
+class CoarseCorrection:
+    """Two-level Schwarz: a coarse solve over rigid components, balanced with Schwarz.
+
+    ``on_stall=None`` builds it right after Schwarz; a ``Staleness`` builds it at
+    the first stall on one-level Schwarz. A design without a coarse space, or whose
+    coarse factor would hold more values than it has observations, keeps
+    one-level Schwarz and emits a ``UserWarning`` when the build is attempted.
+    """
+
+    @property
+    def on_stall(self) -> Staleness | None: ...
+    def __init__(self, on_stall: Staleness | None = None) -> None: ...
 
 class Staleness:
     """Escalates after ``window`` consecutive contraction ratios exceed ``threshold``.

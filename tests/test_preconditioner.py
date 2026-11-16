@@ -14,9 +14,10 @@ from within import (
     Solver,
     solve,
 )
-from within._within import (
+from within.config import (
     ApproxCholConfig,
     ApproxSchurConfig,
+    CoarseCorrection,
     LocalSolverConfig,
     ScalingConfig,
     Schur,
@@ -320,3 +321,84 @@ class TestAdaptive:
         recwarn.clear()
         solver.solve(y, options)
         assert not recwarn.list, "a built rung must not re-warn on later solves"
+
+
+def clustered():
+    """Workers in 40 firm clusters with a slope on both terms; each mover's one row elsewhere glues nothing."""
+    spells = [(k, k // 3, 8) for k in range(120)]
+    for k in range(30):
+        a = (7 * k + 3) % 40
+        spells += [(120 + k, a, 7), (120 + k, (a + 1 + (13 * k) % 39) % 40, 1)]
+    worker = np.repeat([w for w, _, n in spells], [n for _, _, n in spells])
+    firm = np.repeat([f for _, f, n in spells], [n for _, _, n in spells])
+    rng = np.random.default_rng(11)
+    effects = [
+        Effect(worker.astype(np.uint32), True, [rng.uniform(-0.5, 0.5, worker.size)]),
+        Effect(firm.astype(np.uint32), True, [rng.uniform(-0.5, 0.5, worker.size)]),
+    ]
+    return effects, rng.uniform(-0.5, 0.5, worker.size)
+
+
+class TestCoarse:
+    """Binding surface only; the two-level map is covered in crates/within/tests/reduced.rs."""
+
+    def test_coarse_config_round_trips_through_getters(self):
+        stall = Staleness(window=2, threshold=0.5)
+        on_stall = CoarseCorrection(on_stall=stall)
+        assert on_stall.on_stall == stall
+        assert CoarseCorrection().on_stall is None
+        assert on_stall != CoarseCorrection()
+        assert PreconditionerConfig.Schwarz().coarse is None
+        assert PreconditionerConfig.Adaptive(coarse=on_stall).coarse == on_stall
+        assert (
+            PreconditionerConfig.Schwarz(coarse=on_stall)
+            != PreconditionerConfig.Schwarz()
+        )
+
+    @pytest.mark.parametrize(
+        "requested",
+        [
+            PreconditionerConfig.Schwarz(coarse=CoarseCorrection()),
+            PreconditionerConfig.Adaptive(
+                stall=Staleness(1, 0.0),
+                coarse=CoarseCorrection(on_stall=Staleness(1, 0.0)),
+            ),
+        ],
+        ids=["schwarz_with_schwarz", "adaptive_on_stall"],
+    )
+    def test_a_coarse_correction_lands_the_solve_on_the_two_level_map(self, requested):
+        effects, y = clustered()
+        options = LsmrOptions(tol=1e-12, maxiter=2000)
+        solver = Solver(effects, preconditioner=requested)
+        result = solver.solve(y, options)
+        one_level = solve(
+            effects, y, options=options, preconditioner=PreconditionerConfig.Schwarz()
+        )
+        assert solver.preconditioner.rung == Rung.TwoLevel
+        assert solver.preconditioner.config == requested
+        assert result.converged and one_level.converged
+        np.testing.assert_allclose(result.demeaned, one_level.demeaned, atol=1e-9)
+
+    def test_a_two_level_preconditioner_round_trips(self):
+        effects, y = clustered()
+        requested = PreconditionerConfig.Schwarz(coarse=CoarseCorrection())
+        built = Solver(effects, preconditioner=requested)
+        assert built.preconditioner.rung == Rung.TwoLevel
+        restored = pickle.loads(pickle.dumps(built.preconditioner))
+        assert restored.rung == Rung.TwoLevel
+        assert restored.config == requested
+        options = LsmrOptions(tol=1e-12, maxiter=2000)
+        a = built.solve(y, options)
+        b = Solver(effects, preconditioner=restored).solve(y, options)
+        assert a.converged
+        assert a.iterations == b.iterations
+        np.testing.assert_array_equal(a.x, b.x)
+
+    def test_a_declined_coarse_correction_warns_and_stays_one_level(self, problem):
+        cats, _ = problem
+        with pytest.warns(UserWarning, match="two-level Schwarz declined"):
+            solver = Solver(
+                as_solver_categories(cats),
+                preconditioner=PreconditionerConfig.Schwarz(coarse=CoarseCorrection()),
+            )
+        assert solver.preconditioner.rung == Rung.Schwarz
