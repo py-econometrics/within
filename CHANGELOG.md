@@ -12,7 +12,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- `Schwarz.coarse` builds the two-level map `PᵀBP + Q`, `P = I − SQ`: one-level Schwarz `B` balanced by the coarse solve over the rigid components of the eliminated and the widest matching kept term, glued by spells well conditioned against both levels. A design without such a space, or whose coarse factor would hold more values than it has observations, keeps one-level Schwarz with `BuildWarning::CoarseDeclined(CoarseDecline)`. A two-level `Preconditioner` serializes; loading it refactors the coarse matrix `E`, which the wire carries in place of its factor.
+- `Schwarz.coarse` builds the two-level map `PᵀBP + Q`, `P = I − SQ`: one-level Schwarz `B` balanced by the coarse solve over the rigid components of the eliminated and the widest matching kept term, glued by spells well conditioned against both levels. A design without such a space, or whose coarse factor would hold more values than it has observations, keeps one-level Schwarz with `BuildWarning::CoarseDeclined(CoarseDecline)`. A two-level `Preconditioner` serializes; loading it refactors the coarse matrix `E`, which the wire carries in place of its factor. Python's `PreconditionerConfig.Schwarz` and `.Adaptive` take `coarse=within.config.CoarseCorrection(space, form, build)`.
 
 ### Changed
 

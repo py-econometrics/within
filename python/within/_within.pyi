@@ -30,12 +30,17 @@ class PreconditionerConfig:
         def __init__(self) -> None: ...
 
     class Schwarz(PreconditionerConfig):
-        """Additive Schwarz with a normalized local-solver configuration."""
+        """Additive Schwarz with a normalized local-solver configuration.
+
+        ``coarse`` composes a coarse correction with it; ``None`` keeps it one-level.
+        """
 
         local_solver: LocalSolverConfig
+        coarse: CoarseCorrection | None
         def __init__(
             self,
             local_solver: LocalSolverConfig = ...,
+            coarse: CoarseCorrection | None = None,
         ) -> None: ...
 
     class Adaptive(PreconditionerConfig):
@@ -48,11 +53,59 @@ class PreconditionerConfig:
 
         local_solver: LocalSolverConfig
         stall: Staleness
+        coarse: CoarseCorrection | None
         def __init__(
             self,
             local_solver: LocalSolverConfig = ...,
             stall: Staleness = ...,
+            coarse: CoarseCorrection | None = None,
         ) -> None: ...
+
+class CoarseCorrection:
+    """A coarse space, the form composing it with one-level Schwarz, and when it is built.
+
+    A design without a coarse space, or whose coarse factor would hold more values
+    than it has observations, keeps one-level Schwarz and emits a ``UserWarning``.
+    """
+
+    @property
+    def space(self) -> CoarseSpace: ...
+    @property
+    def form(self) -> TwoLevelForm: ...
+    @property
+    def build(self) -> CoarseBuild: ...
+    def __init__(
+        self,
+        space: CoarseSpace,
+        form: TwoLevelForm,
+        build: CoarseBuild,
+    ) -> None: ...
+
+class CoarseSpace(enum.Enum):
+    """The columns ``Z`` of a coarse space."""
+
+    RigidComponents = ...
+    """The gauges of each component the well-conditioned spells glue rigidly together."""
+
+class TwoLevelForm(enum.Enum):
+    """How the coarse solve ``Q = Z (ZᵀSZ)⁻¹ Zᵀ`` composes with the one-level map ``B``."""
+
+    Balanced = ...
+    """``PᵀBP + Q`` with ``P = I − SQ``."""
+
+class CoarseBuild:
+    """When the two-level map is built. A tagged union like :class:`PreconditionerConfig`."""
+
+    class WithSchwarz(CoarseBuild):
+        """Right after the one-level map it composes with."""
+
+        def __init__(self) -> None: ...
+
+    class OnStall(CoarseBuild):
+        """At the first ``stall`` on the one-level map."""
+
+        stall: Staleness
+        def __init__(self, stall: Staleness) -> None: ...
 
 class Staleness:
     """Escalates after ``window`` consecutive contraction ratios exceed ``threshold``.
