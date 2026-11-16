@@ -1,27 +1,12 @@
 use rstest::rstest;
 use within::{
     BuildError, BuildWarning, Channel, CoarseBuild, CoarseCorrection, CoarseDecline, CoarseSpace,
-    CoefficientAddress, Design, Effect, IntoDesign, LayoutMismatch, LsmrOptions,
-    PreconditionerConfig, PreconditionerInput, Rung, SolveResult, Solver, Staleness, TwoLevelForm,
+    CoefficientAddress, Effect, LsmrOptions, PreconditionerConfig, Rung, SolveResult, Solver,
+    Staleness, TwoLevelForm,
 };
 
-#[derive(Debug, Clone, Copy)]
-enum System {
-    Full,
-    Reduced,
-}
-
-fn solver<'a>(
-    design: impl IntoDesign<'a>,
-    weights: Option<&[f64]>,
-    preconditioner: impl Into<PreconditionerInput>,
-    system: System,
-) -> Result<Solver<'a>, BuildError> {
-    match system {
-        System::Full => Solver::new(design, weights, preconditioner),
-        System::Reduced => Solver::reduced(design, weights, preconditioner),
-    }
-}
+#[path = "common/orchestrate_helpers.rs"]
+mod common;
 
 fn noise(k: usize) -> f64 {
     let mut h = (k as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0x2545_F491_4F6C_DD1D;
@@ -83,37 +68,17 @@ fn lsmr() -> LsmrOptions {
     }
 }
 
-/// Rows touching a level whose weights are all zero have gauge-dependent fits in either system.
-fn identified_rows(factors: &[Vec<u32>], weighted: bool) -> Vec<bool> {
-    (0..N)
-        .map(|i| !weighted || !unidentified_row(factors, i))
-        .collect()
-}
-
 fn solve_on(
-    system: System,
     factors: &[Vec<u32>],
     y: &[f64],
     w: Option<&[f64]>,
     options: &LsmrOptions,
     preconditioner: &PreconditionerConfig,
 ) -> SolveResult {
-    solver(effects(factors), w, preconditioner, system)
+    Solver::new(effects(factors), w, preconditioner)
         .expect("solver")
         .solve(y, options)
         .expect("solve")
-}
-
-/// One response solved on the reduced system and on the full one.
-fn reduced_and_full(
-    factors: &[Vec<u32>],
-    y: &[f64],
-    w: Option<&[f64]>,
-    options: &LsmrOptions,
-    preconditioner: &PreconditionerConfig,
-) -> (SolveResult, SolveResult) {
-    let on = |system| solve_on(system, factors, y, w, options, preconditioner);
-    (on(System::Reduced), on(System::Full))
 }
 
 /// `head`, then 1000 rows of `zero`.
@@ -122,10 +87,8 @@ fn padded<T: Clone>(head: &[T], zero: T) -> Vec<T> {
     head.iter().cloned().chain(zeros).collect()
 }
 
-fn assert_same_fit(reduced: &[f64], full: &[f64], identified: &[bool], y: &[f64]) {
-    let gap: Vec<f64> = (reduced.iter().zip(full).zip(identified))
-        .map(|((r, f), &keep)| if keep { r - f } else { 0.0 })
-        .collect();
+fn assert_same_fit(demeaned: &[f64], expected: &[f64], y: &[f64]) {
+    let gap: Vec<f64> = demeaned.iter().zip(expected).map(|(d, e)| d - e).collect();
     assert!(
         norm(&gap) <= 1e-8 * norm(y),
         "‖demeaned gap‖ = {:.2e} of ‖y‖ = {:.2e}",
@@ -135,7 +98,7 @@ fn assert_same_fit(reduced: &[f64], full: &[f64], identified: &[bool], y: &[f64]
 }
 
 #[rstest]
-fn reduced_and_full_fits_agree(
+fn the_fit_satisfies_the_normal_equations(
     #[values(2, 3)] n_factors: usize,
     #[values(false, true)] weighted: bool,
     #[values(
@@ -148,13 +111,9 @@ fn reduced_and_full_fits_agree(
     let factors = factors(n_factors);
     let w = weighted.then(|| weights(&factors));
     let y = response(1);
-    let on = |system, p| solve_on(system, &factors, &y, w.as_deref(), &lsmr(), p);
-    let reduced = on(System::Reduced, &preconditioner);
-    let full = on(System::Full, &PreconditionerConfig::Diagonal);
-    assert!(reduced.converged && full.converged, "{reduced:?}\n{full:?}");
-    assert_eq!(reduced.unidentified, full.unidentified);
-    let identified = identified_rows(&factors, weighted);
-    assert_same_fit(&reduced.demeaned, &full.demeaned, &identified, &y);
+    let reduced = solve_on(&factors, &y, w.as_deref(), &lsmr(), &preconditioner);
+    assert!(reduced.converged, "{reduced:?}");
+    common::assert_normal_equations_satisfied(&factors, w.as_deref(), &y, &reduced.demeaned, 1e-8);
     if weighted {
         // The eliminated level with no weight is unidentified, and recovery leaves it at 0.
         let worker_11 = CoefficientAddress {
@@ -169,25 +128,18 @@ fn reduced_and_full_fits_agree(
 }
 
 #[rstest]
-fn reduced_and_full_batches_agree(#[values(2, 3)] n_factors: usize) {
+fn each_fit_of_a_batch_satisfies_the_normal_equations(#[values(2, 3)] n_factors: usize) {
     let factors = factors(n_factors);
     let w = weights(&factors);
     let ys = [response(2), response(3)];
     let ys: Vec<&[f64]> = ys.iter().map(Vec::as_slice).collect();
-    let batch = |system| {
-        let effects = effects(&factors);
-        let preconditioner = PreconditionerConfig::Diagonal;
-        solver(effects, Some(&w), &preconditioner, system)
-            .expect("solver")
-            .solve_batch(&ys, &lsmr())
-            .expect("batch")
-    };
-    let (reduced, full) = (batch(System::Reduced), batch(System::Full));
-    assert_eq!(reduced.unidentified, full.unidentified);
-    let identified = identified_rows(&factors, true);
+    let batch = Solver::new(effects(&factors), Some(&w), &PreconditionerConfig::Diagonal)
+        .expect("solver")
+        .solve_batch(&ys, &lsmr())
+        .expect("batch");
     for (k, y) in ys.iter().enumerate() {
-        assert!(reduced.converged[k] && full.converged[k]);
-        assert_same_fit(reduced.demeaned(k), full.demeaned(k), &identified, y);
+        assert!(batch.converged[k]);
+        common::assert_normal_equations_satisfied(&factors, Some(&w), y, batch.demeaned(k), 1e-8);
     }
 }
 
@@ -197,7 +149,7 @@ fn one_factor_is_solved_by_elimination_alone(#[values(false, true)] weighted: bo
     let w = weighted.then(|| weights(&factors));
     let y = response(4);
     // With no kept factor, the Schwarz default settles like any one-factor system.
-    let result = Solver::reduced(effects(&factors), w.as_deref(), None)
+    let result = Solver::new(effects(&factors), w.as_deref(), None)
         .expect("solver")
         .solve(&y, None)
         .expect("solve");
@@ -243,7 +195,7 @@ fn schwarz_on_one_factor_matches_its_plain_counterpart(
     let factors = factors(1);
     let w = weights(&factors);
     let y = response(7);
-    let solve_with = |p| solve_on(System::Reduced, &factors, &y, Some(&w), &lsmr(), p);
+    let solve_with = |p| solve_on(&factors, &y, Some(&w), &lsmr(), p);
     let (schwarz, plain) = (solve_with(&schwarz), solve_with(&plain));
     assert!(schwarz.converged);
     assert_eq!(schwarz.iterations, plain.iterations);
@@ -253,12 +205,10 @@ fn schwarz_on_one_factor_matches_its_plain_counterpart(
 /// A Schwarz build finds no subdomain only when the operator it would act on is zero; these
 /// designs reach that case, and the solve is exact at `x = 0` without a map.
 #[rstest]
-#[case::every_column_zero(System::Full, [Some(0.0), Some(0.0)], 1.0)]
-#[case::every_kept_column_zero(System::Reduced, [None, Some(0.0)], 1.0)]
-#[case::every_weight_zero_full(System::Full, [None, None], 0.0)]
-#[case::every_weight_zero_reduced(System::Reduced, [None, None], 0.0)]
+#[case::every_column_zero([Some(0.0), Some(0.0)], 1.0)]
+#[case::every_kept_column_zero([None, Some(0.0)], 1.0)]
+#[case::every_weight_zero([None, None], 0.0)]
 fn a_schwarz_build_without_a_subdomain_solves_at_zero(
-    #[case] system: System,
     // `None` is an intercept term; `Some(v)` a term whose only column is the slope `v`.
     #[case] slopes: [Option<f64>; 2],
     #[case] weight: f64,
@@ -273,11 +223,10 @@ fn a_schwarz_build_without_a_subdomain_solves_at_zero(
         })
         .collect();
     let w = vec![weight; 6];
-    let solver = solver(
+    let solver = Solver::new(
         effects,
         Some(&w),
         PreconditionerConfig::Schwarz(Default::default()),
-        system,
     )
     .expect("solver");
     assert!(solver.preconditioner().is_none());
@@ -286,21 +235,6 @@ fn a_schwarz_build_without_a_subdomain_solves_at_zero(
         .expect("solve");
     assert!(r.converged);
     assert_eq!(r.iterations, 0);
-}
-
-#[test]
-fn a_prebuilt_preconditioner_must_fit_the_reduced_system() {
-    let factors = factors(1);
-    let full = Solver::new(effects(&factors), None, &PreconditionerConfig::Diagonal).expect("full");
-    let prebuilt = full.preconditioner().expect("diagonal").clone();
-    let reduced = Solver::reduced(effects(&factors), None, prebuilt);
-    assert!(
-        matches!(
-            reduced,
-            Err(BuildError::PreconditionerMismatch(LayoutMismatch::System))
-        ),
-        "{reduced:?}"
-    );
 }
 
 /// The ladder starts on the reduced system's own diagonal, and an easy panel finishes there.
@@ -313,23 +247,22 @@ fn the_default_preconditioner_starts_on_the_reduced_diagonal(
 ) {
     let factors = factors(n_factors);
     let y = response(5);
-    let solve_with = |system, preconditioner: Option<&PreconditionerConfig>| {
-        solver(effects(&factors), None, preconditioner, system)
+    let solve_with = |preconditioner: Option<&PreconditionerConfig>| {
+        Solver::new(effects(&factors), None, preconditioner)
             .expect("solver")
             .solve(&y, &lsmr())
             .expect("solve")
     };
-    let ladder = solve_with(System::Reduced, preconditioner.as_ref());
-    let diagonal = solve_with(System::Reduced, Some(&PreconditionerConfig::Diagonal));
+    let ladder = solve_with(preconditioner.as_ref());
+    let diagonal = solve_with(Some(&PreconditionerConfig::Diagonal));
     assert!(ladder.converged);
     assert_eq!(ladder.iterations, diagonal.iterations);
     assert_eq!(ladder.x, diagonal.x);
-    let full = solve_with(System::Full, preconditioner.as_ref());
-    assert_same_fit(&ladder.demeaned, &full.demeaned, &[true; N], &y);
+    common::assert_normal_equations_satisfied(&factors, None, &y, &ladder.demeaned, 1e-8);
 }
 
 /// With the eliminated term between the kept ones, its pairs keep their row side or their column
-/// side; slopes shift every kept block.
+/// side; slopes shift every kept block. The fit is the one with the eliminated term first.
 #[test]
 fn schwarz_serves_an_eliminated_term_between_the_kept_ones() {
     let factors = factors(3);
@@ -339,16 +272,15 @@ fn schwarz_serves_an_eliminated_term_between_the_kept_ones() {
     let term = |t: usize| Effect::new(&factors[t], true, [&z[t][..]]).expect("effect");
     let y = response(6);
     let additive = PreconditionerConfig::Schwarz(within::Schwarz::default());
-    let solve = |order: [usize; 3], system| {
-        solver(Vec::from(order.map(term)), None, &additive, system)
+    let solve = |order: [usize; 3]| {
+        Solver::new(Vec::from(order.map(term)), None, &additive)
             .expect("solver")
             .solve(&y, &lsmr())
             .expect("solve")
     };
-    let between = solve([1, 0, 2], System::Reduced);
-    let full = solve([1, 0, 2], System::Full);
-    assert!(between.converged);
-    assert_same_fit(&between.demeaned, &full.demeaned, &[true; N], &y);
+    let (between, first) = (solve([1, 0, 2]), solve([0, 1, 2]));
+    assert!(between.converged && first.converged);
+    assert_same_fit(&between.demeaned, &first.demeaned, &y);
 }
 
 /// A Schwarz map built on the reduced system solves the same when a second solver reuses it.
@@ -357,9 +289,9 @@ fn a_reduced_schwarz_map_is_reused_on_the_reduced_system() {
     let factors = factors(3);
     let y = response(5);
     let additive = PreconditionerConfig::Schwarz(within::Schwarz::default());
-    let built = solver(effects(&factors), None, &additive, System::Reduced).expect("built");
+    let built = Solver::new(effects(&factors), None, &additive).expect("built");
     let map = built.preconditioner().expect("schwarz").clone();
-    let reused = solver(effects(&factors), None, map, System::Reduced).expect("reused");
+    let reused = Solver::new(effects(&factors), None, map).expect("reused");
     let built = built.solve(&y, &lsmr()).expect("solve");
     let reused = reused.solve(&y, &lsmr()).expect("solve");
     assert!(built.converged);
@@ -434,7 +366,6 @@ fn ladder(schwarz: within::Schwarz, adaptive: bool) -> PreconditionerConfig {
 /// Built with Schwarz or on its first stall, the two-level map is where the solve ends.
 #[rstest]
 fn a_coarse_correction_lands_the_solve_on_the_two_level_map(
-    #[values(System::Full, System::Reduced)] system: System,
     #[values(false, true)] adaptive: bool,
     // Any contraction stalls: the solve leaves one-level Schwarz on its first iteration.
     #[values(
@@ -453,7 +384,7 @@ fn a_coarse_correction_lands_the_solve_on_the_two_level_map(
             },
             adaptive,
         );
-        let solver = solver(panel.effects(), None, &config, system).expect("solver");
+        let solver = Solver::new(panel.effects(), None, &config).expect("solver");
         let result = solver.solve(&y, &lsmr()).expect("solve");
         (result, solver.preconditioner().map(|p| p.rung()))
     };
@@ -461,29 +392,24 @@ fn a_coarse_correction_lands_the_solve_on_the_two_level_map(
     let (one_level, _) = solve(None);
     assert_eq!(rung, Some(Rung::TwoLevel));
     assert!(two_level.converged && one_level.converged);
-    assert_same_fit(
-        &two_level.demeaned,
-        &one_level.demeaned,
-        &vec![true; y.len()],
-        &y,
-    );
+    assert_same_fit(&two_level.demeaned, &one_level.demeaned, &y);
 }
 
 /// A two-level preconditioner saved and loaded solves to the same bits.
 #[rstest]
-fn a_two_level_preconditioner_round_trips(#[values(System::Full, System::Reduced)] system: System) {
+fn a_two_level_preconditioner_round_trips() {
     let panel = clustered();
     let y = panel.y();
     let config = PreconditionerConfig::Schwarz(within::Schwarz {
         coarse: Some(coarse(CoarseBuild::WithSchwarz)),
         ..Default::default()
     });
-    let built = solver(panel.effects(), None, &config, system).expect("solver");
+    let built = Solver::new(panel.effects(), None, &config).expect("solver");
     let original = built.preconditioner().expect("built");
     assert_eq!(original.rung(), Rung::TwoLevel);
     let bytes = postcard::to_stdvec(original).expect("serialize");
     let restored: within::Preconditioner = postcard::from_bytes(&bytes).expect("deserialize");
-    let reused = solver(panel.effects(), None, restored, system).expect("reused");
+    let reused = Solver::new(panel.effects(), None, restored).expect("reused");
     let (a, b) = (built.solve(&y, &lsmr()), reused.solve(&y, &lsmr()));
     let (a, b) = (a.expect("solve"), b.expect("reused solve"));
     let bits = |x: &[f64]| x.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
@@ -494,9 +420,7 @@ fn a_two_level_preconditioner_round_trips(#[values(System::Full, System::Reduced
 /// Gauges the eliminated term absorbs to within 1e-6 of their energy keep the two-level fit:
 /// `E`'s null modes stay at rounding, where its factor drops them, not amplified into the solve.
 #[rstest]
-fn nearly_absorbed_gauges_keep_the_two_level_fit(
-    #[values(System::Full, System::Reduced)] system: System,
-) {
+fn nearly_absorbed_gauges_keep_the_two_level_fit() {
     let panel = clustered();
     // Movers' one row elsewhere is all the energy their firms' gauges keep.
     let short = |i: usize| i >= 960 && (i - 960) % 8 == 7;
@@ -509,7 +433,7 @@ fn nearly_absorbed_gauges_keep_the_two_level_fit(
             coarse,
             ..Default::default()
         });
-        let solver = solver(panel.effects(), Some(&w), &config, system).expect("solver");
+        let solver = Solver::new(panel.effects(), Some(&w), &config).expect("solver");
         let result = solver.solve(&y, options).expect("solve");
         (result, solver.preconditioner().map(|p| p.rung()))
     };
@@ -523,20 +447,12 @@ fn nearly_absorbed_gauges_keep_the_two_level_fit(
     let (reference, _) = solve(None, &tight);
     assert_eq!(rung, Some(Rung::TwoLevel));
     assert!(two_level.converged && reference.converged);
-    assert_same_fit(
-        &two_level.demeaned,
-        &reference.demeaned,
-        &vec![true; y.len()],
-        &y,
-    );
+    assert_same_fit(&two_level.demeaned, &reference.demeaned, &y);
 }
 
 /// A design with no coarse space leaves the solve on one-level Schwarz, with the reason.
 #[rstest]
-fn a_declined_coarse_correction_leaves_the_solve_one_level(
-    #[values(System::Full, System::Reduced)] system: System,
-    #[values(false, true)] adaptive: bool,
-) {
+fn a_declined_coarse_correction_leaves_the_solve_one_level(#[values(false, true)] adaptive: bool) {
     let factors = factors(3);
     let y = response(7);
     let solve = |coarse| {
@@ -547,7 +463,7 @@ fn a_declined_coarse_correction_leaves_the_solve_one_level(
             },
             adaptive,
         );
-        let solver = solver(effects(&factors), None, &config, system).expect("solver");
+        let solver = Solver::new(effects(&factors), None, &config).expect("solver");
         let result = solver.solve(&y, &lsmr()).expect("solve");
         let rung = solver.preconditioner().map(|p| p.rung());
         (result, rung, solver.warnings())
@@ -563,17 +479,15 @@ fn a_declined_coarse_correction_leaves_the_solve_one_level(
     assert_eq!(declined.x, one_level.x);
 }
 
-/// A response whose weighted value leaves the float range is a solve error on both systems.
+/// A response whose weighted value leaves the float range is a solve error.
 #[test]
 fn an_overflowing_weighted_response_is_refused() {
     let factors = factors(2);
     let y: Vec<f64> = (0..N).map(|i| 1e300 * noise(i)).collect();
     let w = vec![1e100; N];
-    for system in [System::Full, System::Reduced] {
-        let diagonal = &PreconditionerConfig::Diagonal;
-        let solver = solver(effects(&factors), Some(&w), diagonal, system).expect("solver");
-        assert!(solver.solve(&y, &lsmr()).is_err(), "{system:?}");
-    }
+    let diagonal = &PreconditionerConfig::Diagonal;
+    let solver = Solver::new(effects(&factors), Some(&w), diagonal).expect("solver");
+    assert!(solver.solve(&y, &lsmr()).is_err());
 }
 
 #[test]
@@ -585,30 +499,10 @@ fn local_solver_settings_are_validated_without_a_rung() {
         local_solver,
         ..Default::default()
     });
-    for system in [System::Full, System::Reduced] {
-        let result = solver(effects(&factors), None, &additive, system);
-        assert!(
-            matches!(result, Err(BuildError::InvalidScalingTolerance { .. })),
-            "{system:?}: {result:?}"
-        );
-    }
-}
-
-#[test]
-fn an_unsorted_design_is_refused_on_the_reduced_system() {
-    let (e, f): (Vec<u32>, Vec<u32>) = (
-        (0..12).map(|i| i % 6).collect(),
-        (0..12).map(|i| i / 6).collect(),
-    );
-    let design = Design::new_unsorted([
-        Effect::new(&f, true, []).expect("effect"),
-        Effect::new(&e, true, []).expect("effect"),
-    ])
-    .expect("design");
-    let solver = Solver::reduced(design, None, &PreconditionerConfig::Diagonal);
+    let result = Solver::new(effects(&factors), None, &additive);
     assert!(
-        matches!(solver, Err(BuildError::UnsortedReducedSystem)),
-        "{solver:?}"
+        matches!(result, Err(BuildError::InvalidScalingTolerance { .. })),
+        "{result:?}"
     );
 }
 
@@ -619,55 +513,61 @@ fn recovery_near_the_float_range_stays_finite(#[values(1, 2)] n_factors: usize) 
         .into_iter()
         .take(n_factors)
         .collect();
-    // ‖y‖ stays finite while the level sum does not.
+    // ‖y‖ stays finite while the level sum does not; a constant `y` is fitted exactly.
     let y = [1e308; 3];
-    let (reduced, full) =
-        reduced_and_full(&factors, &y, None, &lsmr(), &PreconditionerConfig::Diagonal);
+    let reduced = solve_on(&factors, &y, None, &lsmr(), &PreconditionerConfig::Diagonal);
     assert!(reduced.converged);
     assert!(reduced.x.iter().all(|x| x.is_finite()), "{:?}", reduced.x);
-    let gap = (reduced.demeaned.iter().zip(&full.demeaned)).map(|(r, f)| (r - f).abs());
     assert!(
-        gap.fold(0.0, f64::max) <= 1e-12 * 1e308,
+        reduced.demeaned.iter().all(|d| d.abs() <= 1e-12 * 1e308),
         "{:?}",
         reduced.demeaned
     );
 }
 
-/// Four-row designs at the edge of rounding, on which both systems converge to one fit:
+/// Four-row designs at the edge of rounding, with their fits in closed form:
 /// - each level's moment `Σ w·y` exceeds the float range, though `W^½ y` and the fit do not;
 /// - rows of zero weight round nothing, so they must not raise the diagonal's rounding bound;
 /// - a kept column's distinction from the eliminated span lies below that span's Gram rounding.
+///
+/// One factor leaves each level's deviation from its mean; two crossed factors on four rows leave
+/// `c (cᵀ y) / 4` with `c = ±1` alternating over the cells, which the last two `y` make zero.
 #[rstest]
 #[case::moments_beyond_the_float_range_one_factor(
     vec![vec![0, 0, 1, 1]],
     vec![1e308; 4],
-    vec![1e60, 1e60, -1e60, 0.5e60]
+    vec![1e60, 1e60, -1e60, 0.5e60],
+    vec![0.0, 0.0, -0.75e60, 0.75e60]
 )]
 #[case::moments_beyond_the_float_range_two_factors(
     vec![vec![0, 0, 1, 1], vec![0, 1, 0, 1]],
     vec![1e308; 4],
-    vec![1e60, 1e60, -1e60, 0.5e60]
+    vec![1e60, 1e60, -1e60, 0.5e60],
+    vec![0.375e60, -0.375e60, -0.375e60, 0.375e60]
 )]
 #[case::zero_weight_rows_beside_a_tiny_direction(
     vec![padded(&[0, 1, 1, 0], 0), padded(&[0, 0, 1, 1], 0)],
     padded(&[1.0, 1e-26, 1.0, 1e-26], 0.0),
-    padded(&[0.0, 1.0, 0.0, -1.0], 0.0)
+    padded(&[0.0, 1.0, 0.0, -1.0], 0.0),
+    vec![0.0; 1004]
 )]
 #[case::a_column_below_the_eliminated_grams_rounding(
     vec![vec![0, 0, 1, 1], vec![0, 1, 1, 0]],
     vec![1.0, 1e-18, 1.0, 1e-18],
-    vec![1.0, 1.0, 0.0, 0.0]
+    vec![1.0, 1.0, 0.0, 0.0],
+    vec![0.0; 4]
 )]
 fn an_edge_of_rounding_keeps_the_fit(
     #[case] factors: Vec<Vec<u32>>,
     #[case] w: Vec<f64>,
     #[case] y: Vec<f64>,
+    #[case] expected: Vec<f64>,
     #[values(PreconditionerConfig::Off, PreconditionerConfig::Diagonal)]
     preconditioner: PreconditionerConfig,
 ) {
-    let (reduced, full) = reduced_and_full(&factors, &y, Some(&w), &lsmr(), &preconditioner);
-    assert!(reduced.converged && full.converged, "{reduced:?}\n{full:?}");
-    assert_same_fit(&reduced.demeaned, &full.demeaned, &vec![true; y.len()], &y);
+    let reduced = solve_on(&factors, &y, Some(&w), &lsmr(), &preconditioner);
+    assert!(reduced.converged, "{reduced:?}");
+    assert_same_fit(&reduced.demeaned, &expected, &y);
 }
 
 /// A kept level nested in one eliminated level is a null column of the reduced system; its
@@ -688,7 +588,7 @@ fn a_kept_level_nested_in_an_eliminated_level_does_not_stall_the_diagonal() {
         maxiter: 500,
         ..lsmr()
     };
-    let (reduced, full) = reduced_and_full(
+    let reduced = solve_on(
         &factors,
         &y,
         Some(&w),
@@ -696,11 +596,12 @@ fn a_kept_level_nested_in_an_eliminated_level_does_not_stall_the_diagonal() {
         &PreconditionerConfig::Diagonal,
     );
     assert!(reduced.converged, "{} iterations", reduced.iterations);
-    assert_same_fit(&reduced.demeaned, &full.demeaned, &[true; N], &y);
+    common::assert_normal_equations_satisfied(&factors, Some(&w), &y, &reduced.demeaned, 1e-8);
 }
 
 /// Every column of a term that is a function of the eliminated one lies in its span: alone, it
-/// leaves the reduced system nothing to iterate on, whatever the map.
+/// leaves the reduced system nothing to iterate on, whatever the map, and the fit is the one
+/// without it.
 #[rstest]
 fn a_kept_term_nested_in_the_eliminated_one_is_zero(
     // Slopes on (the eliminated term, the kept one); a kept slope needs the eliminated one's.
@@ -721,11 +622,11 @@ fn a_kept_term_nested_in_the_eliminated_one_is_zero(
     let region: Vec<u32> = worker.iter().map(|&w| w / 10).collect();
     let z: Vec<f64> = (0..N).map(|i| noise(2 * N + i)).collect();
     let loadings = |on: bool| if on { vec![&z[..]] } else { vec![] };
-    let effects = || {
-        let mut effects = vec![
-            Effect::new(&worker, true, loadings(eliminated_slope)).unwrap(),
-            Effect::new(&region, true, loadings(kept_slope)).unwrap(),
-        ];
+    let effects = |nested: bool| {
+        let mut effects = vec![Effect::new(&worker, true, loadings(eliminated_slope)).unwrap()];
+        if nested {
+            effects.push(Effect::new(&region, true, loadings(kept_slope)).unwrap());
+        }
         if firm {
             effects.push(Effect::new(&factors[0], true, []).unwrap());
         }
@@ -733,17 +634,22 @@ fn a_kept_term_nested_in_the_eliminated_one_is_zero(
     };
     let w: Vec<f64> = (0..N).map(|i| 0.5 + noise(N + i).abs()).collect();
     let y = response(7);
-    let reduced = Solver::reduced(effects(), Some(&w), &preconditioner)
-        .unwrap()
-        .solve(&y, &lsmr())
-        .unwrap();
-    let full = Solver::new(effects(), Some(&w), &PreconditionerConfig::Diagonal)
-        .unwrap()
-        .solve(&y, &lsmr())
-        .unwrap();
-    assert!(reduced.converged && full.converged, "{reduced:?}\n{full:?}");
+    let solve = |nested: bool, preconditioner: &PreconditionerConfig| {
+        Solver::new(effects(nested), Some(&w), preconditioner)
+            .unwrap()
+            .solve(&y, &lsmr())
+            .unwrap()
+    };
+    let (reduced, without) = (
+        solve(true, &preconditioner),
+        solve(false, &PreconditionerConfig::Diagonal),
+    );
+    assert!(
+        reduced.converged && without.converged,
+        "{reduced:?}\n{without:?}"
+    );
     assert!(firm || reduced.iterations == 0, "{}", reduced.iterations);
-    assert_same_fit(&reduced.demeaned, &full.demeaned, &[true; N], &y);
+    assert_same_fit(&reduced.demeaned, &without.demeaned, &y);
     assert!((0..reduced.x.len())
         .filter(|&j| reduced.layout.address(j).expect("slot").channel.term == 1)
         .all(|j| reduced.x[j] == 0.0));
@@ -757,7 +663,6 @@ fn weights_near_the_float_range_keep_the_fit() {
         ..LsmrOptions::default()
     };
     let result = solve_on(
-        System::Reduced,
         &[vec![0, 0]],
         &[1.0, 1.0],
         Some(&[1e308, 1e308]),

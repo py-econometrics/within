@@ -13,7 +13,13 @@ fn test_high_level_solve() {
     let result = solve(categories.view(), &y, None, &params, &precond).expect("solve");
     common::assert_converged_with_small_residual(&result, 1e-6);
     common::assert_solution_finite(&result);
-    common::assert_normal_equations_satisfied(&common::test_categories(), None, &y, &result, 1e-6);
+    common::assert_normal_equations_satisfied(
+        &common::test_categories(),
+        None,
+        &y,
+        &result.demeaned,
+        1e-6,
+    );
 }
 
 #[test]
@@ -32,7 +38,7 @@ fn test_high_level_solve_weighted() {
         &common::test_categories(),
         Some(weights.as_slice()),
         &y,
-        &result,
+        &result.demeaned,
         1e-6,
     );
 }

@@ -144,13 +144,13 @@ impl TermReparam {
     pub(crate) fn build(
         design: &Design<'_>,
         term: usize,
-        split: &ScatterSplit,
         sqrt_weights: Option<&[f64]>,
     ) -> Option<Self> {
         let t = &design.terms[term];
         if !t.has_slopes() {
             return None;
         }
+        let split = &ScatterSplit::new(t);
         let levels = t.levels();
         let n_levels = t.n_levels();
         let mut slopes: Vec<Vec<f64>> = t

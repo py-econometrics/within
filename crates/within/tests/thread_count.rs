@@ -3,7 +3,7 @@
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
 use rstest::{fixture, rstest};
-use within::{Design, Effect, LsmrOptions, PreconditionerConfig, Rung, Solver};
+use within::{Design, Effect, LsmrOptions, PreconditionerConfig, Rung, Solver, Staleness};
 
 #[path = "common/orchestrate_helpers.rs"]
 mod common;
@@ -103,12 +103,20 @@ fn with_threads<T: Send>(threads: usize, run: impl FnOnce() -> T + Send) -> T {
         .install(run)
 }
 
+/// Hands off to Schwarz after any contraction, so before the solve converges.
+fn eager_adaptive() -> PreconditionerConfig {
+    PreconditionerConfig::Adaptive {
+        stall: Staleness::try_new(1, 0.0).expect("stall"),
+        schwarz: within::Schwarz::default(),
+    }
+}
+
 /// Off and the diagonal run different LSMR drivers; Adaptive builds a weighted Schwarz on a stall.
 #[rstest]
 #[case::off(PreconditionerConfig::Off, false, None)]
 #[case::diagonal_weighted(PreconditionerConfig::Diagonal, true, Some(Rung::Diagonal))]
 #[case::schwarz(common::schwarz(), false, Some(Rung::Schwarz))]
-#[case::adaptive_weighted(common::adaptive(), true, Some(Rung::Schwarz))]
+#[case::adaptive_weighted(eager_adaptive(), true, Some(Rung::Schwarz))]
 fn a_solve_returns_the_same_bits_at_any_thread_count(
     panel: &Panel,
     #[case] precond: PreconditionerConfig,

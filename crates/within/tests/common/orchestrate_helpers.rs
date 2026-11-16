@@ -67,7 +67,7 @@ pub fn assert_converged_with_small_residual(result: &SolveResult, tol: f64) {
 
 /// Independent optimality oracle for a purely categorical fixed-effects design:
 /// recomputes the relative normal-equation residual `‖DᵀW(y−Dx)‖ / ‖DᵀWy‖` from
-/// `result.demeaned` (`y − Dx`, produced by a matvec separate from the LSMR
+/// `demeaned` (`y − Dx`, produced by a matvec separate from the LSMR
 /// recurrence) and the raw categories. Unlike `result.residual`, which is now the
 /// solver's own stopping estimate, this cannot be satisfied by the solver merely
 /// reporting convergence. `categories[f][i]` is observation `i`'s level in factor `f`.
@@ -75,7 +75,7 @@ pub fn assert_normal_equations_satisfied(
     categories: &[Vec<u32>],
     weights: Option<&[f64]>,
     y: &[f64],
-    result: &SolveResult,
+    demeaned: &[f64],
     tol: f64,
 ) {
     // ‖DᵀW v‖² = Σ_f Σ_level (Σ_{i in level} w_i v_i)²  for a categorical D.
@@ -93,7 +93,7 @@ pub fn assert_normal_equations_satisfied(
         acc
     };
 
-    let numerator = dtw_sq_norm(&result.demeaned).sqrt();
+    let numerator = dtw_sq_norm(demeaned).sqrt();
     let denominator = dtw_sq_norm(y).sqrt().max(1e-15);
     let relative = numerator / denominator;
     assert!(

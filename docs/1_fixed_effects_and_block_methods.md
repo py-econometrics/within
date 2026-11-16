@@ -232,6 +232,8 @@ $$
 A_{qr} = \begin{pmatrix} D_q & C_{qr} \\ C_{qr}^\top & D_r \end{pmatrix}
 $$
 
+The solve eliminates the factor $e$ with the most levels exactly ([Part 2, Section 3](2_solver_architecture.md#3-modified-lsmr-outer-iteration)), so a pair $(q, e)$ keeps only $q$'s levels, with the Schur complement $D_q - C_{qe} D_e^{-1} C_{qe}^\top$ as its local operator.
+
 This captures the complete interaction between the two factors — the diagonal counts **and** the cross-tabulation. In practical applications, these bipartite systems are often too large to solve exactly, but their structure — a bipartite graph that can be transformed into a graph Laplacian — admits nearly-linear-time approximate solvers (Schur complement reduction + approximate Cholesky, see [Part 3](3_local_solvers.md)). 
 
 The figure below illustrates the difference between what MAP algorithm and `within` algo "see". The MAP algo is only aware of the diagonal blocks $D_q$, which are cheap to invert, but ignores all cross-factor coupling - the off-diagonal blocks $C_{qr}$. `within`'s domain decomposition solver instead incorporates the cross-factor structure into each local solve, at the cost of solving a larger, coupled system per subdomain. This is the central tradeoff: via the MAP algorithm, we get cheaper iterations that ignore part of the structure of the problem vs. more expensive iterations that exploit structure it via `within` algorithm.
@@ -257,7 +259,7 @@ The Worker/Firm/Year example ($Q = 3$) produces $\binom{3}{2} = 3$ factor-pair s
 | 2 | (Worker, Year) | W1, W2, W3, Y1, Y2 | 5 |
 | 3 | (Firm, Year) | F1, F2, Y1, Y2 | 4 |
 
-Each factor level appears in $Q - 1 = 2$ subdomains, requiring partition-of-unity weights to prevent double-counting (see [Part 2, Section 4.2](2_solver_architecture.md#42-partition-of-unity)).
+In the solve itself Worker, the factor with the most levels, is eliminated: subdomains 1 and 2 then cover only F1, F2 and Y1, Y2 through their Schur complements. Each factor level appears in $Q - 1 = 2$ subdomains, requiring partition-of-unity weights to prevent double-counting (see [Part 2, Section 4.2](2_solver_architecture.md#42-partition-of-unity)).
 
 To illustrate the process, we draw the same interaction graph from the beginning of this section, but now with three overlapping factor-pair subdomains drawn around it:
 

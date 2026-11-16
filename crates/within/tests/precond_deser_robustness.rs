@@ -20,7 +20,7 @@ const CRASH_NDOFS_SPAN: &[u8] = include_bytes!("fixtures/precond_deser_crash_ndo
 const CRASH_NESTED_COVER: &[u8] = include_bytes!("fixtures/precond_deser_crash_nested_cover.bin");
 
 // A two-level map: its coarse solve decodes and refactors `E` behind the one-level map.
-const TWO_LEVEL: &[u8] = include_bytes!("fixtures/preconditioner_v26.postcard");
+const TWO_LEVEL: &[u8] = include_bytes!("fixtures/preconditioner_v27.postcard");
 
 /// Crash fixtures and malformed byte strings alike must decode to a typed error, never panic.
 #[rstest]

@@ -1,4 +1,4 @@
-//! How a term's scatter-add splits into fixed parallel pieces, chosen from its rows alone.
+//! How a term's per-level fold splits into fixed parallel pieces, chosen from its rows alone.
 
 use std::ops::Range;
 
@@ -14,27 +14,6 @@ pub(crate) const LEVEL_GROUP: usize = 1024;
 
 /// Rows per leaf of one level's fold; above `PAR_THRESHOLD`, so a sequential fold never joins.
 pub(crate) const LEVEL_LEAF: usize = PAR_THRESHOLD.next_power_of_two();
-
-/// Where a fold writes each level's state; splits into disjoint level ranges for parallel tasks.
-pub(crate) trait LevelSlots<S>: Send + Sized {
-    fn len(&self) -> usize;
-    fn split_at(self, mid: usize) -> (Self, Self);
-    fn set(&mut self, level: usize, state: S);
-}
-
-impl<S: Send> LevelSlots<S> for &mut [S] {
-    fn len(&self) -> usize {
-        <[S]>::len(self)
-    }
-
-    fn split_at(self, mid: usize) -> (Self, Self) {
-        self.split_at_mut(mid)
-    }
-
-    fn set(&mut self, level: usize, state: S) {
-        self[level] = state;
-    }
-}
 
 /// The split of `z[l] = Σ_{level(i) = l} vᵢ` into pieces; the thread count only schedules them.
 pub(crate) enum ScatterSplit {
@@ -71,13 +50,13 @@ impl ScatterSplit {
 impl ScatterSplit {
     /// Each level's fold of its rows: `step(state, level, row)` from `init` over pieces this split
     /// fixes, `merge`d left to right in a fixed binary tree; threads only schedule the pieces.
-    pub(crate) fn fold<S: Copy + Send + Sync, O: LevelSlots<S>>(
+    pub(crate) fn fold<S: Copy + Send + Sync>(
         &self,
         levels: &[u32],
         init: S,
         step: &(impl Fn(&mut S, usize, usize) + Sync),
         merge: &(impl Fn(&mut S, &S) + Sync),
-        mut out: O,
+        out: &mut [S],
     ) {
         let parallel = levels.len() > PAR_THRESHOLD;
         let n_levels = out.len();
@@ -95,22 +74,15 @@ impl ScatterSplit {
                     }
                     fixed_tree(positions, LEVEL_LEAF, &leaf, merge)
                 };
-                let mut groups = Vec::with_capacity(n_levels.div_ceil(LEVEL_GROUP));
-                while out.len() > 0 {
-                    let mid = LEVEL_GROUP.min(out.len());
-                    let (group, rest) = out.split_at(mid);
-                    groups.push(group);
-                    out = rest;
-                }
-                let fill = |(g, mut group): (usize, O)| {
-                    for k in 0..LevelSlots::len(&group) {
-                        group.set(k, level_fold(g * LEVEL_GROUP + k));
+                let fill = |(g, group): (usize, &mut [S])| {
+                    for (k, slot) in group.iter_mut().enumerate() {
+                        *slot = level_fold(g * LEVEL_GROUP + k);
                     }
                 };
                 if parallel {
-                    groups.into_par_iter().enumerate().for_each(fill);
+                    out.par_chunks_mut(LEVEL_GROUP).enumerate().for_each(fill);
                 } else {
-                    groups.into_iter().enumerate().for_each(fill);
+                    out.chunks_mut(LEVEL_GROUP).enumerate().for_each(fill);
                 }
             }
             Self::ByRow => {
@@ -131,10 +103,7 @@ impl ScatterSplit {
                         merge(l, r);
                     }
                 };
-                let states = fixed_tree(0..levels.len(), leaf_len, &scatter, &merge_all);
-                for (level, state) in states.into_iter().enumerate() {
-                    out.set(level, state);
-                }
+                out.copy_from_slice(&fixed_tree(0..levels.len(), leaf_len, &scatter, &merge_all));
             }
         }
     }
@@ -225,7 +194,7 @@ impl LevelRows {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{Design, Effect};
+    use crate::domain::Design;
 
     #[test]
     fn level_rows_list_each_levels_rows_ascending() {
@@ -247,9 +216,9 @@ mod tests {
     }
 
     fn split(levels: &[u32]) -> ScatterSplit {
-        let slope = vec![1.0; levels.len()];
-        let effect = Effect::new(levels, true, vec![&slope[..]; 4]).expect("valid effect");
-        ScatterSplit::new(&Design::new_unsorted([effect]).expect("valid design").terms[0])
+        // A sorted dominant term with one level per row leaves the term under test in its order.
+        let rows: Vec<u32> = (0..levels.len() as u32).collect();
+        ScatterSplit::new(&Design::from_levels_for_test(vec![rows, levels.to_vec()]).terms[1])
     }
 
     #[test]

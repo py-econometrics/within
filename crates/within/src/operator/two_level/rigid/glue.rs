@@ -5,7 +5,7 @@ use faer::{Mat, Side};
 use rayon::prelude::*;
 
 use super::Rows;
-use crate::domain::{row_weight, Column, PreparedDesign, PreparedTerm, Unknowns};
+use crate::domain::{row_weight, Column, PreparedDesign, PreparedTerm};
 use crate::linalg::DiagonalGramBasis;
 use crate::CoarseDecline;
 
@@ -137,7 +137,7 @@ struct Anchor<'p> {
 }
 
 impl<'p> Anchor<'p> {
-    fn find(prepared: &'p PreparedDesign<'_>, unknowns: Unknowns) -> Option<Self> {
+    fn find(prepared: &'p PreparedDesign<'_>) -> Option<Self> {
         let design = &prepared.design;
         let layout = |t: usize| {
             let term = &design.terms[t];
@@ -149,7 +149,7 @@ impl<'p> Anchor<'p> {
             .max_by_key(|&t| design.terms[t].n_levels())?;
         Some(Self {
             term: prepared.term(t),
-            start: design.block_start(unknowns, t).expect("a kept term"),
+            start: design.block_start(t).expect("a kept term"),
             gram: prepared.diagonal(t),
         })
     }
@@ -231,10 +231,9 @@ impl<'a> Gauges<'a> {
     /// values.
     pub(super) fn glue(
         prepared: &'a PreparedDesign<'_>,
-        unknowns: Unknowns,
         rows: &'a Rows<'a>,
     ) -> Result<Self, CoarseDecline> {
-        let anchor = Anchor::find(prepared, unknowns).ok_or(CoarseDecline::NoCoarseSpace)?;
+        let anchor = Anchor::find(prepared).ok_or(CoarseDecline::NoCoarseSpace)?;
         let (reached, glued) = spells(rows, &anchor);
         let (na, nb, p) = (rows.n_levels(), anchor.n_levels(), rows.width());
         let mut parent: Vec<u32> = (0..(na + nb) as u32).collect();

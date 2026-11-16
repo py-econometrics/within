@@ -12,7 +12,7 @@ use schwarz_precond::{
 
 use crate::channel::CoefficientAddress;
 use crate::config::{LsmrOptions, PreconditionerConfig};
-use crate::domain::{Design, Effect, PreparedDesign};
+use crate::domain::{Design, Effect};
 use crate::operator::design::ReducedDesign;
 use crate::operator::schwarz::Preconditioner;
 use crate::{BuildError, BuildWarning, SolveError, WithinError};
@@ -25,7 +25,7 @@ mod tests;
 
 use ladder::PrecondSlot;
 pub use layout::CoefficientLayout;
-use system::{Fit, LeastSquaresSystem};
+use system::{Fit, ReducedResponse};
 
 /// Fallible conversion into a [`Design`] for [`Solver::new`]: a categories
 /// matrix (`ArrayView2<u32>`), a list of [`Effect`] terms, a pass-through
@@ -118,8 +118,8 @@ pub struct SolveResult {
     /// `[intercept?, slopes…]`. Use [`SolveResult::layout`] to translate caller
     /// labels to these slots. Slots for unidentified directions hold `0`, never
     /// NaN; see [`SolveResult::unidentified`]. Each connected component's gauge
-    /// (a constant shifted between terms) depends on the system and the
-    /// preconditioner: compare `demeaned` across solves, not `x`.
+    /// (a constant shifted between terms) depends on the preconditioner:
+    /// compare `demeaned` on rows with positive weight across solves, not `x`.
     pub x: Vec<f64>,
     /// Per-level directions the data cannot identify.
     pub unidentified: Vec<CoefficientAddress>,
@@ -198,24 +198,10 @@ impl BatchSolveResult {
         &self.demeaned[i * self.n_obs..(i + 1) * self.n_obs]
     }
 }
-/// The least-squares system LSMR iterates on.
-enum System<'a> {
-    /// Every coefficient.
-    Full(PreparedDesign<'a>),
-    /// The term with the most coefficients is eliminated exactly; the rest iterate.
-    Reduced(ReducedDesign<'a>),
-}
-
-impl<'a> System<'a> {
-    fn prepared(&self) -> &PreparedDesign<'a> {
-        match self {
-            Self::Full(prepared) => prepared,
-            Self::Reduced(reduced) => reduced.prepared(),
-        }
-    }
-}
-
 /// Persistent solver that owns its preconditioner for reuse across multiple solves.
+///
+/// The term with the most coefficients is eliminated exactly: LSMR iterates on the remaining
+/// terms, and the eliminated coefficients are recovered from them.
 ///
 /// Build once with [`Solver::new`], then call [`Solver::solve`] or
 /// [`Solver::solve_batch`] repeatedly with different RHS vectors. The config's first rung is built
@@ -226,22 +212,17 @@ impl<'a> System<'a> {
 /// (`Cow`); a solver that outlives its inputs — e.g. one returned across the
 /// Python boundary — uses owned columns.
 pub struct Solver<'a> {
-    system: System<'a>,
+    system: ReducedDesign<'a>,
     slot: PrecondSlot,
 }
 
 impl std::fmt::Debug for Solver<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let prepared = self.system.prepared();
-        let system = match self.system {
-            System::Full(_) => "Full",
-            System::Reduced(_) => "Reduced",
-        };
         f.debug_struct("Solver")
             .field("n_obs", &prepared.design.n_obs)
             .field("n_dofs", &prepared.design.n_dofs)
             .field("has_weights", &prepared.sqrt_weights().is_some())
-            .field("system", &format_args!("{system}"))
             .field("rung", &self.preconditioner().map(Preconditioner::rung))
             .finish()
     }
@@ -269,12 +250,12 @@ struct RhsSolution {
 }
 
 /// One RHS between rungs.
-enum Pass<'s, S: LeastSquaresSystem + 's> {
+enum Pass<'s> {
     /// No rung has run it yet; the first that does prepares it, inside its fan-out.
     Unstarted(&'s [f64]),
     /// Handed off with budget left; the next rung resumes from `probe.x`.
     Stalled {
-        rhs: S::Rhs<'s>,
+        rhs: ReducedResponse<'s>,
         probe: LsmrResult,
         seconds: Seconds,
     },
@@ -282,13 +263,13 @@ enum Pass<'s, S: LeastSquaresSystem + 's> {
 }
 
 /// Runs every pending RHS on one map; each finishes, and is released, here or stalls.
-fn rung<'s, S: LeastSquaresSystem>(
-    system: &'s S,
-    passes: Vec<Pass<'s, S>>,
+fn rung<'s>(
+    system: &'s ReducedDesign<'_>,
+    passes: Vec<Pass<'s>>,
     map: Option<&Preconditioner>,
     stall: Option<&dyn EscalationPolicy>,
     lsmr: &LsmrOptions,
-) -> Result<Vec<Pass<'s, S>>, SolveError> {
+) -> Result<Vec<Pass<'s>>, SolveError> {
     // Collecting into `Result` fails fast on the first per-RHS error, not during the fold.
     passes
         .into_par_iter()
@@ -318,22 +299,13 @@ fn rung<'s, S: LeastSquaresSystem>(
             let m: &dyn Operator = match map {
                 Some(m) => m,
                 None => {
-                    identity = IdentityOp {
-                        n: system.matrix().ncols(),
-                    };
+                    identity = IdentityOp { n: system.ncols() };
                     &identity
                 }
             };
             let started = Instant::now();
             let maxiter = lsmr.maxiter - spent;
-            let mut result = mlsmr(
-                system.matrix(),
-                system.b(&rhs),
-                m,
-                lsmr.tol,
-                maxiter,
-                options,
-            )?;
+            let mut result = mlsmr(system, &rhs.projected, m, lsmr.tol, maxiter, options)?;
             seconds.lsmr += started.elapsed().as_secs_f64();
             // The next rung starts from `result.x`; the probe it replaces is released here.
             drop(probe);
@@ -355,7 +327,7 @@ fn rung<'s, S: LeastSquaresSystem>(
                 ..
             } = result;
             Ok(Pass::Done(RhsSolution {
-                fit: system.finish(rhs, x, true_residual)?,
+                fit: system.finish(rhs, x, true_residual),
                 converged,
                 iterations,
                 // Read from the LSMR recurrence at no extra cost; see `SolveResult::residual`.
@@ -368,8 +340,8 @@ fn rung<'s, S: LeastSquaresSystem>(
 
 /// Every RHS on the slot's running map; while any stalls, the next rung is built once and the
 /// stalled resume on it.
-fn solve_all<S: LeastSquaresSystem>(
-    system: &S,
+fn solve_all(
+    system: &ReducedDesign<'_>,
     slot: &PrecondSlot,
     ys: &[&[f64]],
     lsmr: &LsmrOptions,
@@ -395,17 +367,6 @@ fn solve_all<S: LeastSquaresSystem>(
         })
         .collect();
     Ok((solutions, build_secs))
-}
-
-/// The preconditioner slot `input` resolves to on `system`.
-fn resolve<S: LeastSquaresSystem>(
-    system: &S,
-    input: PreconditionerInput,
-) -> Result<PrecondSlot, BuildError> {
-    match input {
-        PreconditionerInput::Config(config) => PrecondSlot::build(system, config),
-        PreconditionerInput::Prebuilt(p) => PrecondSlot::reuse(system, p),
-    }
 }
 
 impl<'a> Solver<'a> {
@@ -434,42 +395,12 @@ impl<'a> Solver<'a> {
         weights: Option<&[f64]>,
         preconditioner: impl Into<PreconditionerInput>,
     ) -> Result<Self, BuildError> {
-        // Whiten the slope columns (if any) before the preconditioner reads them.
-        let prepared = PreparedDesign::new(design.into_design()?, weights)?;
-        let slot = resolve(&prepared, preconditioner.into())?;
-        Ok(Self {
-            system: System::Full(prepared),
-            slot,
-        })
-    }
-
-    /// [`Solver::new`] on the reduced system: the term with the most coefficients is eliminated
-    /// exactly, LSMR iterates on the remaining terms, and the eliminated coefficients are
-    /// recovered from the rest. Every [`PreconditionerConfig`] means the same on both
-    /// systems.
-    pub fn reduced(
-        design: impl IntoDesign<'a>,
-        weights: Option<&[f64]>,
-        preconditioner: impl Into<PreconditionerInput>,
-    ) -> Result<Self, BuildError> {
-        let reduced = ReducedDesign::new(design.into_design()?, weights)?;
-        let slot = resolve(&reduced, preconditioner.into())?;
-        Ok(Self {
-            system: System::Reduced(reduced),
-            slot,
-        })
-    }
-
-    /// Every RHS's solution, and the seconds a deferred Schwarz build took.
-    fn solutions(
-        &self,
-        ys: &[&[f64]],
-        lsmr: &LsmrOptions,
-    ) -> Result<(Vec<RhsSolution>, f64), WithinError> {
-        match &self.system {
-            System::Full(prepared) => solve_all(prepared, &self.slot, ys, lsmr),
-            System::Reduced(reduced) => solve_all(reduced, &self.slot, ys, lsmr),
-        }
+        let system = ReducedDesign::new(design.into_design()?, weights)?;
+        let slot = match preconditioner.into() {
+            PreconditionerInput::Config(config) => PrecondSlot::build(&system, config),
+            PreconditionerInput::Prebuilt(p) => PrecondSlot::reuse(&system, p),
+        }?;
+        Ok(Self { system, slot })
     }
 
     /// Non-fatal events from every rung built so far; a reused pre-built preconditioner
@@ -498,7 +429,7 @@ impl<'a> Solver<'a> {
         let lsmr = lsmr.into().unwrap_or(&default);
 
         let t_start = Instant::now();
-        let (solutions, build_secs) = self.solutions(&[y], lsmr)?;
+        let (solutions, build_secs) = solve_all(&self.system, &self.slot, &[y], lsmr)?;
         let solution = solutions
             .into_iter()
             .next()
@@ -532,7 +463,7 @@ impl<'a> Solver<'a> {
         let lsmr = lsmr.into().unwrap_or(&default);
         let n_rhs = ys.len();
 
-        let (solutions, build_secs) = self.solutions(ys, lsmr)?;
+        let (solutions, build_secs) = solve_all(&self.system, &self.slot, ys, lsmr)?;
 
         let mut x = Vec::with_capacity(self.n_dofs() * n_rhs);
         let mut demeaned = Vec::with_capacity(self.n_obs() * n_rhs);

@@ -8,7 +8,7 @@ use super::super::{
 };
 use super::glue::Gauges;
 use super::Rows;
-use crate::domain::{cut, offsets, PreparedDesign, TermRows, Unknowns};
+use crate::domain::{cut, offsets, PreparedDesign, TermRows};
 use crate::linalg::{add_moments, remove_fit, solve, DiagonalGramBasis};
 use crate::CoarseDecline;
 
@@ -16,16 +16,14 @@ use crate::CoarseDecline;
 /// eliminated term is fitted, or when the factor of `E` exceeds `n_obs` values.
 pub(super) fn coarse_solve(
     prepared: &PreparedDesign<'_>,
-    unknowns: Unknowns,
     rows: &Rows<'_>,
     gauges: &Gauges<'_>,
 ) -> Result<CoarseSolve, CoarseDecline> {
     let design = &prepared.design;
     let kept = (0..design.n_factors())
-        .filter(|&t| t != design.dominant)
-        .map(|t| {
-            let start = design.block_start(unknowns, t).expect("a kept term");
-            (TermRows::new(&prepared.term(t)), start)
+        .filter_map(|t| {
+            let start = design.block_start(t)?;
+            Some((TermRows::new(&prepared.term(t)), start))
         })
         .collect();
     let lift = Lift { rows, gauges, kept };
@@ -34,9 +32,8 @@ pub(super) fn coarse_solve(
         .map(|lw| lift.fit(lw))
         .collect();
     let live = Live::new(&fits, gauges, rows.width())?;
-    let n = design.n_unknowns(unknowns);
-    let eliminated = design.block_start(unknowns, design.dominant);
-    let z = lift.coarse_basis(&fits, &live, eliminated, n);
+    let n = design.n_unknowns();
+    let z = lift.coarse_basis(&live, n);
     let (lower, hubs) = lift.coarse_system(&mut fits, &live);
     let factor = CoarseFactor::new(live.count, lower, Some(&hubs), design.n_obs)?;
     let sz = lift.projected_columns(&fits, &live, n);
@@ -295,31 +292,11 @@ impl Lift<'_> {
         residual
     }
 
-    /// `Z` over the live columns: the gauges on the anchor's unknowns and, where the system
-    /// carries the eliminated term from `eliminated` on, `−β` on its unknowns, so that `A Z = U`.
-    fn coarse_basis(
-        &self,
-        fits: &[LevelFit],
-        live: &Live,
-        eliminated: Option<usize>,
-        n: usize,
-    ) -> TwoWay {
-        let (rows, p) = (self.rows, self.rows.width());
+    /// `Z` over the live columns: the gauges on the anchor's unknowns.
+    fn coarse_basis(&self, live: &Live, n: usize) -> TwoWay {
         let mut entries: Vec<(u32, u32, f64)> = (self.gauges.entries())
             .filter_map(|(c, d, v)| Some((live.get(c)?, d, v)))
             .collect();
-        if let Some(start) = eliminated {
-            for (lw, (fit, comps)) in fits.iter().zip(self.gauges.touched()).enumerate() {
-                for (c, beta) in columns(comps, p).zip(fit.beta.chunks_exact(p)) {
-                    let Some(k) = live.get(c) else {
-                        continue;
-                    };
-                    for (a, &v) in beta.iter().enumerate().filter(|&(_, &v)| v != 0.0) {
-                        entries.push((k, (start + a * rows.n_levels() + lw) as u32, -v));
-                    }
-                }
-            }
-        }
         entries.par_sort_unstable_by_key(|t| (t.0, t.1));
         TwoWay::from_parts(n, live.count, vec![entries])
     }
