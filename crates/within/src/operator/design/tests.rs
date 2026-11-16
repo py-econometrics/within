@@ -155,6 +155,8 @@ mod elimination_tests {
         /// Near copies at the rank tolerance, so some levels drop one.
         RankEdge,
         SlopeOnly,
+        /// An intercept and two slopes beside intercept-only kept terms.
+        TwoSlopes,
         /// A slope constant within level 0, so that level's slope is unidentified.
         DroppedSlope,
     }
@@ -176,7 +178,7 @@ mod elimination_tests {
             Dominant::InterceptOnly => vec![],
             Dominant::CollinearLargeMean => vec![base.clone(), near(1, 1e-4), near(2, 1e-4)],
             Dominant::RankEdge => vec![base.clone(), near(1, 1e-5), near(2, 3e-6)],
-            Dominant::SlopeOnly => (1..3)
+            Dominant::SlopeOnly | Dominant::TwoSlopes => (1..3)
                 .map(|k| (0..n).map(|i| noise(k * n + i)).collect())
                 .collect(),
             Dominant::DroppedSlope => vec![(0..n)
@@ -184,9 +186,9 @@ mod elimination_tests {
                 .collect()],
         };
         let intercept = !matches!(dominant, Dominant::SlopeOnly);
-        // A slope-free design when the dominant term has none either.
+        // No kept slopes: a slope-free design, or kept lone intercepts beside a sloped dominant.
         let gz: Vec<Vec<f64>> = match dominant {
-            Dominant::InterceptOnly => vec![],
+            Dominant::InterceptOnly | Dominant::TwoSlopes => vec![],
             _ => vec![(0..n).map(|i| noise(5 * n + i)).collect()],
         };
         let effects = vec![
@@ -213,6 +215,7 @@ mod elimination_tests {
             Dominant::CollinearLargeMean,
             Dominant::RankEdge,
             Dominant::SlopeOnly,
+            Dominant::TwoSlopes,
             Dominant::DroppedSlope
         )]
         dominant: Dominant,
@@ -291,6 +294,7 @@ mod elimination_tests {
             Dominant::CollinearLargeMean,
             Dominant::RankEdge,
             Dominant::SlopeOnly,
+            Dominant::TwoSlopes,
             Dominant::DroppedSlope
         )]
         dominant: Dominant,
