@@ -46,6 +46,18 @@ skip = [
     { crate = "rand@0.8.7", reason = "transitive duplicate; dev-dep is on rand 0.10, num-complex/faer pull the older line" },
     { crate = "rand_core@0.6.4", reason = "pre-existing transitive duplicate (criterion vs faer/approx-chol chains)" },
     { crate = "syn@2.0.119", reason = "transitive duplicate; serde_derive is on syn 3, faer's enum-as-inner/sysctl chain still on syn 2" },
+    # within depends on faer for the coarse LDLᵀ; faer's own tree pins these older lines.
+    { crate = "equator@0.2.2", reason = "faer → nano-gemm; faer itself is on equator 0.6" },
+    { crate = "equator-macro@0.2.1", reason = "faer → nano-gemm → equator 0.2" },
+    { crate = "equator@0.4.2", reason = "faer → spindle; faer itself is on equator 0.6" },
+    { crate = "equator-macro@0.4.2", reason = "faer → spindle → equator 0.4" },
+    { crate = "rand@0.9.5", reason = "faer's rand feature (all-features graph); approx-chol is on rand 0.10" },
+    { crate = "rand_core@0.9.5", reason = "faer → rand 0.9; approx-chol is on rand_core 0.10" },
+    { crate = "getrandom@0.3.4", reason = "faer → rand 0.9; approx-chol is on getrandom 0.4" },
+    { crate = "syn@1.0.109", reason = "faer → private-gemm-x86 → interpol (build-dependency proc-macro)" },
+    { crate = "thiserror@1.0.69", reason = "faer → gemm-common → sysctl; within is on thiserror 2" },
+    { crate = "thiserror-impl@1.0.69", reason = "faer → gemm-common → sysctl → thiserror 1" },
+    { crate = "windows-sys@0.42.0", reason = "faer → spindle → atomic-wait (Windows target only)" },
 ]
 
 [sources]

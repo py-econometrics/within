@@ -2,7 +2,6 @@
 //! argument shapes: if any call form below stops compiling, the public surface shifted.
 
 use ndarray::Array2;
-use within::config::{LocalSolverConfig, Staleness};
 use within::{solve, solve_batch, LsmrOptions, PreconditionerConfig, Solver};
 
 fn cats() -> Array2<u32> {
@@ -92,8 +91,8 @@ fn solver_new_weights_call_shapes_compile() {
 }
 
 #[test]
-fn options_are_optional_and_tuned_additive_builds_from_crate_root() {
-    // A tuned Additive preconditioner is constructible from crate-root imports
+fn options_are_optional_and_tuned_schwarz_builds_from_crate_root() {
+    // A tuned Schwarz preconditioner is constructible from crate-root imports
     // alone — no `within::config::` paths — and LSMR options are optional (#105).
     use within::{
         ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, PreconditionerConfig, SchurMode,
@@ -103,14 +102,15 @@ fn options_are_optional_and_tuned_additive_builds_from_crate_root() {
     let y = vec![0.0; 4];
     let opts = LsmrOptions::default();
 
-    let tuned = PreconditionerConfig::Additive {
+    let tuned = PreconditionerConfig::Schwarz(within::Schwarz {
         local_solver: LocalSolverConfig {
             approx_chol: ApproxCholConfig::default(),
             schur: SchurMode::Approximate(ApproxSchurConfig::default()),
             ..Default::default()
         },
-    };
-    let solver = Solver::new(categories.view(), None, tuned).expect("tuned Additive builds");
+        coarse: None,
+    });
+    let solver = Solver::new(categories.view(), None, tuned).expect("tuned Schwarz builds");
 
     // `None` accepts the default options; `&opts` still works.
     let _ = solver.solve(&y, None).expect("solve, default options");
@@ -126,15 +126,17 @@ fn options_are_optional_and_tuned_additive_builds_from_crate_root() {
         .expect("free solve_batch, None options");
 }
 
-/// The one place the default's identity is asserted. Variant lists across the test suite name
-/// `Adaptive` explicitly and rely on this to catch a default that moved out from under them.
+/// The one place the default's identity is asserted.
 #[test]
-fn library_default_is_the_adaptive_ladder() {
+fn the_default_ladder_has_every_rung() {
     assert_eq!(
         PreconditionerConfig::default(),
         PreconditionerConfig::Adaptive {
-            local_solver: LocalSolverConfig::default(),
-            stall: Staleness::default(),
+            stall: within::Staleness::default(),
+            schwarz: within::Schwarz {
+                local_solver: within::LocalSolverConfig::default(),
+                coarse: None,
+            }
         }
     );
 }

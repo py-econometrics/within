@@ -137,11 +137,10 @@ proptest! {
         }
     }
 
-    /// Minimal-norm gauge: first-order optimality pins every *identified*
-    /// coefficient, but leaves the null-space representative free. `within`
-    /// documents the minimal-norm choice — unidentified directions held at
-    /// exactly `0` — so assert that directly (the equivariance and residual
-    /// checks are gauge-invariant and cannot see it).
+    /// First-order optimality pins every *identified* coefficient, but leaves
+    /// the null-space representative free. `within` documents unidentified
+    /// directions held at exactly `0`, so assert that directly (the
+    /// equivariance and residual checks are gauge-invariant and cannot see it).
     #[test]
     fn prop_unidentified_slots_are_zero(
         (cats, y) in random_fe_problem_strategy(),
@@ -177,7 +176,7 @@ fn saturated_single_factor_recovers_level_means(
     #[values(
         PreconditionerConfig::Off,
         PreconditionerConfig::Diagonal,
-        strategies::additive(),
+        strategies::schwarz(),
         strategies::adaptive()
     )]
     precond: PreconditionerConfig,

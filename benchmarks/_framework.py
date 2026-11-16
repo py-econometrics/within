@@ -219,12 +219,12 @@ def standard_solver_configs(
         SolverConfig(
             "LSMR(Schwarz)",
             benchmark_lsmr(opts, maxiter=maxiter),
-            preconditioner=PreconditionerConfig.Additive(local_solver=schur),
+            preconditioner=PreconditionerConfig.Schwarz(local_solver=schur),
         ),
         SolverConfig(
             "LSMR(Schwarz,2-2)",
             benchmark_lsmr(opts, maxiter=maxiter),
-            preconditioner=PreconditionerConfig.Additive(local_solver=schur_2_2),
+            preconditioner=PreconditionerConfig.Schwarz(local_solver=schur_2_2),
         ),
     ]
 

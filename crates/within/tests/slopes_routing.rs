@@ -7,7 +7,7 @@ use within::{Effect, LsmrOptions, Preconditioner, PreconditionerConfig, SchurMod
 
 #[path = "common/orchestrate_helpers.rs"]
 mod common;
-use common::additive;
+use common::schwarz;
 
 fn lcg(seed: &mut u64) -> u64 {
     *seed = seed
@@ -41,7 +41,7 @@ fn two_factor_slope_solves_with_bounded_iterations() {
         Effect::new(&f, true, [&z[..]]).expect("slope effect"),
         Effect::new(&g, true, []).expect("plain effect"),
     ];
-    let r = Solver::new(effects, None, additive())
+    let r = Solver::new(effects, None, schwarz())
         .expect("signed routing builds")
         .solve(&y, &LsmrOptions::default())
         .expect("solve");
@@ -74,7 +74,7 @@ fn unit_trends_plus_time_effects_boundary() {
         Effect::new(&unit, true, [&t[..]]).expect("trend effect"),
         Effect::new(&time, true, []).expect("time effect"),
     ];
-    let r = Solver::new(effects, None, additive())
+    let r = Solver::new(effects, None, schwarz())
         .expect("PSD-boundary routing builds")
         .solve(&y, &LsmrOptions::default())
         .expect("solve");
@@ -95,7 +95,7 @@ fn frustrated_component_solves_via_cover() {
         Effect::new(&g, true, []).expect("plain effect"),
     ];
 
-    let r = Solver::new(effects, None, additive())
+    let r = Solver::new(effects, None, schwarz())
         .expect("frustrated component builds via its Gremban cover")
         .solve(&y, &LsmrOptions::default())
         .expect("solve");
@@ -152,7 +152,7 @@ fn frustrated_two_factor_slope_solves_with_bounded_iterations() {
         Effect::new(&f, true, [&z[..]]).expect("slope effect"),
         Effect::new(&g, true, []).expect("plain effect"),
     ];
-    let r = Solver::new(effects, None, additive())
+    let r = Solver::new(effects, None, schwarz())
         .expect("frustrated routing builds")
         .solve(&y, &LsmrOptions::default())
         .expect("solve");
@@ -174,7 +174,7 @@ fn near_collinear_cross_term_direction_survives_routing() {
         Effect::new(&f, false, [&z1[..]]).unwrap(),
         Effect::new(&f, false, [&z2[..]]).unwrap(),
     ];
-    let r = Solver::new(effects, None, additive())
+    let r = Solver::new(effects, None, schwarz())
         .expect("near-collinear pair builds")
         .solve(&y, &LsmrOptions::default())
         .expect("solve");
@@ -216,12 +216,13 @@ fn surplus_component_sampled_matches_exact_reduction() {
             Effect::new(&f, false, [&z[..]]).expect("slope effect"),
             Effect::new(&g, true, []).expect("plain effect"),
         ];
-        let config = PreconditionerConfig::Additive {
+        let config = PreconditionerConfig::Schwarz(within::Schwarz {
             local_solver: within::config::LocalSolverConfig {
                 schur,
                 ..Default::default()
             },
-        };
+            ..Default::default()
+        });
         Solver::new(effects, None, config)
             .expect("build")
             .solve(&y, &LsmrOptions::default())
@@ -264,11 +265,17 @@ fn surplus_component_sampled_matches_exact_reduction() {
 /// fit the `Off`/`Diagonal` preconditioners already produce.
 #[test]
 fn singleton_level_in_non_first_slope_term_solves_under_additive_schwarz() {
-    // The firm-slope level-2 column is last, so an omitted one shows up as a shape mismatch.
-    let worker = [0u32, 0, 1, 1, 2, 2];
-    let firm = [2u32, 0, 0, 1, 1, 0];
-    let x = [0.5, -1.0, 0.3, 2.0, -0.7, 1.1];
-    let y = [1.0, 2.0, 3.0, 1.5, 0.4, -0.2];
+    // Seven workers outnumber the firm's six coefficients: the uncovered column is the last kept.
+    let worker = [0u32, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6];
+    let firm = [2u32, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0];
+    let x = [
+        0.5, -1.0, 0.3, 2.0, -0.7, 1.1, 0.9, -0.4, 1.6, 0.2, -1.3, 0.8, 0.1, -0.6,
+    ];
+    let y = [
+        1.0, 2.0, 3.0, 1.5, 0.4, -0.2, 0.7, 2.2, -1.1, 0.3, 1.9, -0.5, 0.6, 1.2,
+    ];
+    // The firm's three intercepts and three slopes, the uncovered last one included.
+    let kept = 6;
 
     let effects = || {
         vec![
@@ -277,12 +284,12 @@ fn singleton_level_in_non_first_slope_term_solves_under_additive_schwarz() {
         ]
     };
 
-    let solver = Solver::new(effects(), None, additive()).expect("Schwarz preconditioner builds");
+    let solver = Solver::new(effects(), None, schwarz()).expect("Schwarz preconditioner builds");
 
     // The preconditioner must match the operator's column count, uncovered ones included.
     let precond = solver.preconditioner().expect("has a preconditioner");
-    assert_eq!(precond.ncols(), solver.n_dofs());
-    assert_eq!(precond.nrows(), solver.n_dofs());
+    assert_eq!(precond.ncols(), kept);
+    assert_eq!(precond.nrows(), kept);
 
     let r = solver
         .solve(&y, &LsmrOptions::default())
@@ -313,7 +320,7 @@ fn singleton_level_in_non_first_slope_term_solves_under_additive_schwarz() {
     // A dropped n_dofs would trip Solver::new's dimension check after the round-trip.
     let bytes = postcard::to_stdvec(precond).expect("serialize");
     let restored: Preconditioner = postcard::from_bytes(&bytes).expect("deserialize");
-    assert_eq!(restored.ncols(), solver.n_dofs());
+    assert_eq!(restored.ncols(), kept);
     let reused = Solver::new(effects(), None, restored)
         .expect("reused preconditioner accepted")
         .solve(&y, &LsmrOptions::default())
@@ -360,7 +367,7 @@ fn dual_factor_slopes_build_across_loading_shapes(
         Effect::new(&year, true, []).expect("year effect"),
         Effect::new(&firm, true, [&z_firm[..]]).expect("firm slope"),
     ];
-    let r = Solver::new(effects, None, additive())
+    let r = Solver::new(effects, None, schwarz())
         .expect("build")
         .solve(&y, &LsmrOptions::default())
         .expect("solve");

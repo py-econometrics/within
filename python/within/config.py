@@ -16,7 +16,7 @@ Typical usage::
         Staleness,
     )
 
-    schwarz = PreconditionerConfig.Additive(
+    schwarz = PreconditionerConfig.Schwarz(
         local_solver=LocalSolverConfig(
             approx_chol=ApproxCholConfig(split_merge=2),
             schur=Schur.approximate(ApproxSchurConfig(split=2)),
@@ -31,6 +31,7 @@ Schur); pass ``Schur.exact()`` for the exact complement.
 from within._within import (
     ApproxCholConfig,
     ApproxSchurConfig,
+    CoarseCorrection,
     LocalSolverConfig,
     ScalingConfig,
     Schur,
@@ -40,6 +41,7 @@ from within._within import (
 __all__ = [
     "ApproxCholConfig",
     "ApproxSchurConfig",
+    "CoarseCorrection",
     "LocalSolverConfig",
     "ScalingConfig",
     "Schur",

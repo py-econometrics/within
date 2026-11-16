@@ -28,7 +28,7 @@ def test_shared_year_cell_solves_honestly():
         case.effects,
         case.y,
         options=LsmrOptions(tol=CELL["tol"], maxiter=20_000),
-        preconditioner=PreconditionerConfig.Additive(),
+        preconditioner=PreconditionerConfig.Schwarz(),
     )
 
     def group_mean(factor: int, z: np.ndarray | None) -> float:

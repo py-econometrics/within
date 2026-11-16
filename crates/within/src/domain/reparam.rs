@@ -14,6 +14,9 @@ mod tests;
 /// Rows per parallel task of a sweep's row pass.
 const ROW_CHUNK: usize = 1 << 14;
 
+/// Relative rank tolerance: the residual share of its variance below which a column drops.
+const RANK_TOL: f64 = 1e-10;
+
 /// A slope term's change of basis to an identity within-level Gram.
 pub(crate) struct TermReparam {
     /// The term's slopes in the solve basis, in coefficient-column order.
@@ -48,7 +51,10 @@ impl Sweeps {
             .for_each_init(
                 || GramBasisWorkspace::new(v),
                 |workspace, (level, ((w, center), kept))| {
-                    let basis = workspace.orthonormalize(|gram| moments.fill_gram(level, gram));
+                    let basis = workspace.orthonormalize(
+                        |gram| moments.fill_gram(level, gram),
+                        |_, norm2| RANK_TOL * norm2,
+                    );
                     w[..basis.rows.len()].copy_from_slice(basis.rows);
                     kept.copy_from_slice(basis.kept);
                     if let Some(mean) = moments.mean(level) {
@@ -144,13 +150,13 @@ impl TermReparam {
     pub(crate) fn build(
         design: &Design<'_>,
         term: usize,
-        split: &ScatterSplit,
         sqrt_weights: Option<&[f64]>,
     ) -> Option<Self> {
         let t = &design.terms[term];
         if !t.has_slopes() {
             return None;
         }
+        let split = &ScatterSplit::new(t);
         let levels = t.levels();
         let n_levels = t.n_levels();
         let mut slopes: Vec<Vec<f64>> = t

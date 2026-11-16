@@ -10,12 +10,14 @@ from within import (
     LsmrOptions,
     Preconditioner,
     PreconditionerConfig,
+    Rung,
     Solver,
     solve,
 )
-from within._within import (
+from within.config import (
     ApproxCholConfig,
     ApproxSchurConfig,
+    CoarseCorrection,
     LocalSolverConfig,
     ScalingConfig,
     Schur,
@@ -40,15 +42,15 @@ def solver_and_precond(problem):
     """Build a Schwarz Solver and extract its preconditioner."""
     cats, y = problem
     categories = as_solver_categories(cats)
-    solver = Solver(categories, preconditioner=PreconditionerConfig.Additive())
+    solver = Solver(categories, preconditioner=PreconditionerConfig.Schwarz())
     precond = solver.preconditioner
     return solver, precond, categories, y
 
 
 class TestAdvancedConfigs:
     def test_preconditioner_config_additive_constructor(self):
-        implicit = PreconditionerConfig.Additive()
-        explicit = PreconditionerConfig.Additive(
+        implicit = PreconditionerConfig.Schwarz()
+        explicit = PreconditionerConfig.Schwarz(
             local_solver=LocalSolverConfig(),
         )
 
@@ -57,19 +59,19 @@ class TestAdvancedConfigs:
         assert implicit.local_solver == LocalSolverConfig()
 
         with pytest.raises(TypeError):
-            PreconditionerConfig.Additive(local_solver=None)
+            PreconditionerConfig.Schwarz(local_solver=None)
 
     def test_preconditioner_config_variant_introspection(self):
         # Each variant is a subclass of PreconditionerConfig (the 3.9-safe
-        # equivalent of ``match``), and Additive exposes its fields as getters.
+        # equivalent of ``match``), and Schwarz exposes its fields as getters.
         off = PreconditionerConfig.Off()
-        tuned = PreconditionerConfig.Additive(
+        tuned = PreconditionerConfig.Schwarz(
             local_solver=LocalSolverConfig(dense_threshold=0),
         )
 
         assert isinstance(off, PreconditionerConfig)
-        assert isinstance(tuned, PreconditionerConfig.Additive)
-        assert not isinstance(off, PreconditionerConfig.Additive)
+        assert isinstance(tuned, PreconditionerConfig.Schwarz)
+        assert not isinstance(off, PreconditionerConfig.Schwarz)
         assert tuned.local_solver.dense_threshold == 0
 
     def test_approx_chol_config_defaults(self):
@@ -110,7 +112,7 @@ class TestAdvancedConfigs:
                 cats,
                 y,
                 options=LsmrOptions(maxiter=2000),
-                preconditioner=PreconditionerConfig.Additive(local_solver=local),
+                preconditioner=PreconditionerConfig.Schwarz(local_solver=local),
             )
             assert result.converged
 
@@ -120,7 +122,7 @@ class TestAdvancedConfigs:
             as_solver_categories(cats),
             y,
             options=LsmrOptions(),
-            preconditioner=PreconditionerConfig.Additive(
+            preconditioner=PreconditionerConfig.Schwarz(
                 local_solver=LocalSolverConfig()
             ),
         )
@@ -141,13 +143,16 @@ class TestFePreconditioner:
         with pytest.raises(ValueError):
             precond.apply(x)
 
-    def test_preconditioner_repr_additive(self, solver_and_precond):
+    def test_preconditioner_repr_schwarz(self, solver_and_precond):
         solver, precond, categories, y = solver_and_precond
-        assert "Additive" in repr(precond)
+        assert "Schwarz" in repr(precond)
 
-    def test_preconditioner_nrows_ncols_match_solver(self, solver_and_precond):
+    def test_preconditioner_acts_on_all_but_the_largest_factor(
+        self, solver_and_precond
+    ):
         solver, precond, categories, y = solver_and_precond
-        assert precond.nrows == precond.ncols == solver.n_dofs
+        levels = [len(np.unique(column)) for column in categories.T]
+        assert precond.nrows == precond.ncols == solver.n_dofs - max(levels)
 
     def test_preconditioner_exposes_build_duration(self):
         categories = as_solver_categories(
@@ -155,7 +160,7 @@ class TestFePreconditioner:
         )
 
         for config in (
-            PreconditionerConfig.Additive(),
+            PreconditionerConfig.Schwarz(),
             PreconditionerConfig.Diagonal(),
         ):
             precond = Solver(categories, preconditioner=config).preconditioner
@@ -175,11 +180,11 @@ class TestFePreconditioner:
 
     def test_preconditioner_exposes_requested_config(self, solver_and_precond):
         solver, precond, categories, y = solver_and_precond
-        assert precond.config == PreconditionerConfig.Additive()
+        assert precond.config == PreconditionerConfig.Schwarz()
 
     def test_preconditioner_exposes_tuned_config(self, problem):
         cats, _ = problem
-        requested = PreconditionerConfig.Additive(
+        requested = PreconditionerConfig.Schwarz(
             local_solver=LocalSolverConfig(
                 approx_chol=ApproxCholConfig(seed=41, split_merge=3),
                 schur=Schur.approximate(ApproxSchurConfig(split=2)),
@@ -193,7 +198,7 @@ class TestFePreconditioner:
         assert precond is not None
         actual = precond.config
         assert actual == requested
-        assert isinstance(actual, PreconditionerConfig.Additive)
+        assert isinstance(actual, PreconditionerConfig.Schwarz)
         assert actual.local_solver.approx_chol.seed == 41
         assert actual.local_solver.approx_chol.split_merge == 3
         assert repr(actual.local_solver.schur) == "Schur.approximate(split=2)"
@@ -230,7 +235,8 @@ class TestFePreconditioner:
         precond = solver.preconditioner
 
         assert precond is not None
-        assert precond.nrows == precond.ncols == 3
+        # The one factor is eliminated, so the map acts on no coefficients.
+        assert precond.nrows == precond.ncols == 0
 
 
 class TestAdaptive:
@@ -271,17 +277,20 @@ class TestAdaptive:
                 stall=Staleness(window=1, threshold=0.0)
             ),
         )
-        assert not solver.has_escalated
+        assert solver.preconditioner.rung == Rung.Diagonal
         assert solver.solve(y, LsmrOptions(tol=1e-10, maxiter=2000)).converged
-        assert solver.has_escalated
+        assert solver.preconditioner.rung == Rung.Schwarz
 
     def test_deferred_build_warnings_surface_on_the_escalating_solve(self, recwarn):
         """The constructor cannot see them: the Schwarz build happens mid-solve."""
-        f = np.array([0, 0, 0, 1, 1, 1], np.uint32)
-        g = np.array([0, 1, 2, 0, 1, 2], np.uint32)
-        z = np.array([-2.0, 1.0, 1.0, -1.0, -1.0, 2.0])
-        y = np.array([1.0, -2.0, 0.5, 3.0, -1.5, 2.5])
-        effects = [Effect(f, True, [z]), Effect(g, True)]
+        # A third factor, so the reduced diagonal iterates long enough to stall.
+        i = np.arange(24)
+        f = (i % 6 // 3 + 2 * (i // 6)).astype(np.uint32)
+        g = (i % 3 + 3 * (i // 6 % 2)).astype(np.uint32)
+        h = ((5 * i + i // 7) % 4).astype(np.uint32)
+        z = np.tile([-2.0, 1.0, 1.0, -1.0, -1.0, 2.0], 4) * (1 + 0.1 * (i // 6))
+        y = np.sin(1.7 * i)
+        effects = [Effect(f, True, [z]), Effect(g, True), Effect(h, True)]
         local_solver = LocalSolverConfig(scaling=ScalingConfig(max_iterations=0))
         options = LsmrOptions(tol=1e-12, maxiter=100)
 
@@ -290,9 +299,10 @@ class TestAdaptive:
 
         Solver(
             effects,
-            preconditioner=PreconditionerConfig.Additive(local_solver=local_solver),
+            preconditioner=PreconditionerConfig.Schwarz(local_solver=local_solver),
         )
-        assert unscalable(recwarn.list), "fixture no longer warns under Additive"
+        warned = len(unscalable(recwarn.list))
+        assert warned, "fixture no longer warns under Schwarz"
 
         recwarn.clear()
         solver = Solver(
@@ -305,9 +315,90 @@ class TestAdaptive:
 
         recwarn.clear()
         solver.solve(y, options)
-        assert solver.has_escalated
-        assert len(unscalable(recwarn.list)) == 1
+        assert solver.preconditioner.rung == Rung.Schwarz
+        assert len(unscalable(recwarn.list)) == warned
 
         recwarn.clear()
         solver.solve(y, options)
         assert not recwarn.list, "a built rung must not re-warn on later solves"
+
+
+def clustered():
+    """Workers in 40 firm clusters with a slope on both terms; each mover's one row elsewhere glues nothing."""
+    spells = [(k, k // 3, 8) for k in range(120)]
+    for k in range(30):
+        a = (7 * k + 3) % 40
+        spells += [(120 + k, a, 7), (120 + k, (a + 1 + (13 * k) % 39) % 40, 1)]
+    worker = np.repeat([w for w, _, n in spells], [n for _, _, n in spells])
+    firm = np.repeat([f for _, f, n in spells], [n for _, _, n in spells])
+    rng = np.random.default_rng(11)
+    effects = [
+        Effect(worker.astype(np.uint32), True, [rng.uniform(-0.5, 0.5, worker.size)]),
+        Effect(firm.astype(np.uint32), True, [rng.uniform(-0.5, 0.5, worker.size)]),
+    ]
+    return effects, rng.uniform(-0.5, 0.5, worker.size)
+
+
+class TestCoarse:
+    """Binding surface only; the two-level map is covered in crates/within/tests/reduced.rs."""
+
+    def test_coarse_config_round_trips_through_getters(self):
+        stall = Staleness(window=2, threshold=0.5)
+        on_stall = CoarseCorrection(on_stall=stall)
+        assert on_stall.on_stall == stall
+        assert CoarseCorrection().on_stall is None
+        assert on_stall != CoarseCorrection()
+        assert PreconditionerConfig.Schwarz().coarse is None
+        assert PreconditionerConfig.Adaptive(coarse=on_stall).coarse == on_stall
+        assert (
+            PreconditionerConfig.Schwarz(coarse=on_stall)
+            != PreconditionerConfig.Schwarz()
+        )
+
+    @pytest.mark.parametrize(
+        "requested",
+        [
+            PreconditionerConfig.Schwarz(coarse=CoarseCorrection()),
+            PreconditionerConfig.Adaptive(
+                stall=Staleness(1, 0.0),
+                coarse=CoarseCorrection(on_stall=Staleness(1, 0.0)),
+            ),
+        ],
+        ids=["schwarz_with_schwarz", "adaptive_on_stall"],
+    )
+    def test_a_coarse_correction_lands_the_solve_on_the_two_level_map(self, requested):
+        effects, y = clustered()
+        options = LsmrOptions(tol=1e-12, maxiter=2000)
+        solver = Solver(effects, preconditioner=requested)
+        result = solver.solve(y, options)
+        one_level = solve(
+            effects, y, options=options, preconditioner=PreconditionerConfig.Schwarz()
+        )
+        assert solver.preconditioner.rung == Rung.TwoLevel
+        assert solver.preconditioner.config == requested
+        assert result.converged and one_level.converged
+        np.testing.assert_allclose(result.demeaned, one_level.demeaned, atol=1e-9)
+
+    def test_a_two_level_preconditioner_round_trips(self):
+        effects, y = clustered()
+        requested = PreconditionerConfig.Schwarz(coarse=CoarseCorrection())
+        built = Solver(effects, preconditioner=requested)
+        assert built.preconditioner.rung == Rung.TwoLevel
+        restored = pickle.loads(pickle.dumps(built.preconditioner))
+        assert restored.rung == Rung.TwoLevel
+        assert restored.config == requested
+        options = LsmrOptions(tol=1e-12, maxiter=2000)
+        a = built.solve(y, options)
+        b = Solver(effects, preconditioner=restored).solve(y, options)
+        assert a.converged
+        assert a.iterations == b.iterations
+        np.testing.assert_array_equal(a.x, b.x)
+
+    def test_a_declined_coarse_correction_warns_and_stays_one_level(self, problem):
+        cats, _ = problem
+        with pytest.warns(UserWarning, match="two-level Schwarz declined"):
+            solver = Solver(
+                as_solver_categories(cats),
+                preconditioner=PreconditionerConfig.Schwarz(coarse=CoarseCorrection()),
+            )
+        assert solver.preconditioner.rung == Rung.Schwarz

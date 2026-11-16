@@ -1,50 +1,63 @@
-//! What a least-squares system owes the solve driver, and the full system's own answer.
+//! The reduced system as the solve driver sees it: the rungs it offers, its right-hand side and
+//! the way back to the caller's fit.
 
-use std::borrow::Cow;
-
-use schwarz_precond::Operator;
-
-use crate::config::LocalSolverConfig;
+use crate::config::RungSettings;
 use crate::domain::PreparedDesign;
-use crate::operator::schwarz::{build_schwarz, Preconditioner};
+use crate::operator::design::ReducedDesign;
+use crate::operator::schwarz::{build_schwarz, diagonal_map, RungBuild, RungMap};
+use crate::operator::two_level::build_two_level;
 use crate::{BuildError, BuildWarning, SolveError};
 
-/// `min ‖b − A x‖` over the coefficients LSMR iterates on, and the way back to the full fit.
-pub(crate) trait LeastSquaresSystem: Sync {
-    type Matrix: Operator;
-    type Rhs<'s>: Send
-    where
-        Self: 's;
+pub(crate) type Build<'s> = Box<dyn Fn() -> Result<RungBuild, BuildError> + Send + Sync + 's>;
 
-    fn matrix(&self) -> &Self::Matrix;
-    /// Validate `y`, then form this system's right-hand side.
-    fn prepare<'s>(&'s self, y: &'s [f64]) -> Result<Self::Rhs<'s>, SolveError>;
-    /// What LSMR iterates on; tolerances are relative to its norm.
-    fn b<'r>(&self, rhs: &'r Self::Rhs<'_>) -> &'r [f64];
-    /// Caller coefficients and `y − D x` from the iterate and, if measured, its `b − A x`.
-    fn finish(
-        &self,
-        rhs: Self::Rhs<'_>,
-        x: Vec<f64>,
-        measured: Option<Vec<f64>>,
-    ) -> Result<Fit, SolveError>;
-    /// The rung a stalled ladder escalates to; `None` without a factor-pair subdomain.
-    fn build_schwarz(
-        &self,
-        local_solver: &LocalSolverConfig,
-    ) -> Result<(Option<Preconditioner>, Vec<BuildWarning>), BuildError>;
+/// The build of `rung` for `system`'s normal matrix over `below`, the map of the rung under it;
+/// `None` for a rung it does not offer.
+pub(crate) fn offer<'s>(
+    system: &'s ReducedDesign<'_>,
+    rung: RungSettings<'s>,
+    below: Option<&'s RungMap>,
+) -> Option<Build<'s>> {
+    let prepared = system.prepared();
+    match rung {
+        RungSettings::Diagonal { .. } => Some(Box::new(move || {
+            Ok(RungBuild {
+                map: Some(RungMap::Diagonal(diagonal_map(system.gram_diagonal())?)),
+                warnings: Vec::new(),
+            })
+        })),
+        // Schwarz subdomains are factor pairs; one factor's normal matrix is diagonal.
+        RungSettings::Schwarz(_) if prepared.design.n_factors() < 2 => None,
+        RungSettings::Schwarz(schwarz) => Some(Box::new(move || {
+            build_schwarz(prepared, &schwarz.local_solver)
+        })),
+        RungSettings::TwoLevel(coarse) => {
+            let Some(RungMap::Schwarz(one_level)) = below else {
+                return None;
+            };
+            Some(Box::new(move || {
+                Ok(match build_two_level(prepared, one_level, coarse) {
+                    Ok(map) => RungBuild {
+                        map: Some(RungMap::TwoLevel(map)),
+                        warnings: Vec::new(),
+                    },
+                    Err(decline) => RungBuild {
+                        map: None,
+                        warnings: vec![BuildWarning::CoarseDeclined(decline)],
+                    },
+                })
+            }))
+        }
+    }
 }
 
-/// One response in the internal observation order, with its `W^{1/2}`-weighted image.
+/// A response validated against the design, in the caller's observation order.
+#[derive(Clone, Copy)]
 pub(crate) struct Response<'s> {
-    y: Cow<'s, [f64]>,
-    /// `None` when unweighted, where the weighted image is `y` itself.
-    weighted: Option<Vec<f64>>,
+    y: &'s [f64],
 }
 
 impl<'s> Response<'s> {
     pub(crate) fn new(prepared: &'s PreparedDesign<'_>, y: &'s [f64]) -> Result<Self, SolveError> {
-        // `W^{1/2} y` zips y with sqrt-weights, silently truncating when `y.len() > n_rows`.
         if y.len() != prepared.design.n_obs {
             return Err(SolveError::InvalidInput {
                 context: "Solver::solve",
@@ -61,15 +74,19 @@ impl<'s> Response<'s> {
                 message: format!("response at index {index} must be finite, got {value}"),
             });
         }
-        let y = prepared.design.permute_obs_in(y);
-        let weighted = prepared
-            .sqrt_weights()
-            .map(|sw| y.iter().zip(sw).map(|(&yi, &swi)| swi * yi).collect());
-        Ok(Self { y, weighted })
+        Ok(Self { y })
     }
 
-    pub(crate) fn weighted(&self) -> &[f64] {
-        self.weighted.as_deref().unwrap_or(&self.y)
+    /// Row `i` of `W^{1/2} y` in internal order.
+    fn weighted_row<'p>(self, prepared: &'p PreparedDesign<'_>) -> impl Fn(usize) -> f64 + Sync + 'p
+    where
+        's: 'p,
+    {
+        let (perm, sqrt_weights) = (prepared.design.obs_perm.as_deref(), prepared.sqrt_weights());
+        move |i| {
+            let yi = self.y[perm.map_or(i, |p| p.get(i))];
+            sqrt_weights.map_or(yi, |sw| sw[i] * yi)
+        }
     }
 }
 
@@ -79,43 +96,41 @@ pub(crate) struct Fit {
     pub(crate) demeaned: Vec<f64>,
 }
 
-impl LeastSquaresSystem for PreparedDesign<'_> {
-    type Matrix = Self;
-    type Rhs<'s>
-        = Response<'s>
-    where
-        Self: 's;
+/// A validated response and the reduced system's right-hand side `(I − P_e) W^{1/2} y`.
+pub(crate) struct ReducedResponse<'s> {
+    response: Response<'s>,
+    /// What LSMR iterates on; tolerances are relative to its norm.
+    pub(crate) projected: Vec<f64>,
+}
 
-    fn matrix(&self) -> &Self {
-        self
-    }
-
-    fn prepare<'s>(&'s self, y: &'s [f64]) -> Result<Response<'s>, SolveError> {
-        Response::new(self, y)
-    }
-
-    fn b<'r>(&self, rhs: &'r Response<'_>) -> &'r [f64] {
-        rhs.weighted()
-    }
-
-    fn finish(
-        &self,
-        rhs: Response<'_>,
-        mut x: Vec<f64>,
-        measured: Option<Vec<f64>>,
-    ) -> Result<Fit, SolveError> {
-        let demeaned = self.demeaned(&x, &rhs.y, measured);
-        self.back_transform(&mut x);
-        Ok(Fit {
-            x,
-            demeaned: self.design.permute_obs_out(demeaned),
+impl ReducedDesign<'_> {
+    /// Validate `y`, then form the right-hand side LSMR iterates on.
+    pub(crate) fn prepare<'s>(&'s self, y: &'s [f64]) -> Result<ReducedResponse<'s>, SolveError> {
+        let prepared = self.prepared();
+        let response = Response::new(prepared, y)?;
+        let projected = self.project_rhs(response.weighted_row(prepared));
+        Ok(ReducedResponse {
+            response,
+            projected,
         })
     }
 
-    fn build_schwarz(
+    /// Caller coefficients and `y − D x` from the iterate and, if measured, its `b − A x`.
+    pub(crate) fn finish(
         &self,
-        local_solver: &LocalSolverConfig,
-    ) -> Result<(Option<Preconditioner>, Vec<BuildWarning>), BuildError> {
-        build_schwarz(self, local_solver)
+        rhs: ReducedResponse<'_>,
+        x: Vec<f64>,
+        measured: Option<Vec<f64>>,
+    ) -> Fit {
+        drop(rhs.projected);
+        let prepared = self.prepared();
+        let mut x = self.recover(rhs.response.weighted_row(prepared), &x);
+        // `(I − P_e)(b − A_k x_k)` is `b − A x` once the eliminated block is recovered.
+        let demeaned = prepared.demeaned(&x, rhs.response.y, measured);
+        prepared.back_transform(&mut x);
+        Fit {
+            x,
+            demeaned: prepared.design.permute_obs_out(demeaned),
+        }
     }
 }

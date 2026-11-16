@@ -5,6 +5,8 @@ Most users should import from ``within`` directly rather than from
 ``within._within``.
 """
 
+import enum
+
 import numpy as np
 from numpy.typing import NDArray
 
@@ -12,7 +14,7 @@ class PreconditionerConfig:
     """Preconditioner configuration for the LSMR solver.
 
     A tagged union: each variant is a subclass. Construct with ``Off()``,
-    ``Diagonal()``, ``Additive(local_solver=...)``, or
+    ``Diagonal()``, ``Schwarz(local_solver=...)``, or
     ``Adaptive(local_solver=..., stall=...)``. Instances
     compare by value and support ``match``/``case``.
     """
@@ -23,17 +25,22 @@ class PreconditionerConfig:
         def __init__(self) -> None: ...
 
     class Diagonal(PreconditionerConfig):
-        """Diagonal/Jacobi preconditioner using ``diag(D^T W D)^{-1}``."""
+        """Diagonal/Jacobi preconditioner on the reduced system's normal matrix."""
 
         def __init__(self) -> None: ...
 
-    class Additive(PreconditionerConfig):
-        """Additive Schwarz with a normalized local-solver configuration."""
+    class Schwarz(PreconditionerConfig):
+        """Additive Schwarz with a normalized local-solver configuration.
+
+        ``coarse`` composes a coarse correction with it; ``None`` keeps it one-level.
+        """
 
         local_solver: LocalSolverConfig
+        coarse: CoarseCorrection | None
         def __init__(
             self,
             local_solver: LocalSolverConfig = ...,
+            coarse: CoarseCorrection | None = None,
         ) -> None: ...
 
     class Adaptive(PreconditionerConfig):
@@ -42,15 +49,32 @@ class PreconditionerConfig:
         The factorization is built only at the moment of escalation, so a design
         whose diagonal solve never stalls never pays to construct it. A build
         error therefore surfaces from :meth:`Solver.solve`, not the constructor.
+        ``coarse`` composes a coarse correction with the Schwarz map; its build,
+        and a declined coarse space's warning, come with that escalation or later.
         """
 
         local_solver: LocalSolverConfig
         stall: Staleness
+        coarse: CoarseCorrection | None
         def __init__(
             self,
             local_solver: LocalSolverConfig = ...,
             stall: Staleness = ...,
+            coarse: CoarseCorrection | None = None,
         ) -> None: ...
+
+class CoarseCorrection:
+    """Two-level Schwarz: a coarse solve over rigid components, balanced with Schwarz.
+
+    ``on_stall=None`` builds it right after Schwarz; a ``Staleness`` builds it at
+    the first stall on one-level Schwarz. A design without a coarse space, or whose
+    coarse factor would hold more values than it has observations, keeps
+    one-level Schwarz and emits a ``UserWarning`` when the build is attempted.
+    """
+
+    @property
+    def on_stall(self) -> Staleness | None: ...
+    def __init__(self, on_stall: Staleness | None = None) -> None: ...
 
 class Staleness:
     """Escalates after ``window`` consecutive contraction ratios exceed ``threshold``.
@@ -86,8 +110,9 @@ class LsmrOptions:
             the plain short recurrence is used. ``5..20`` is cheap insurance
             for ill-conditioned problems where rounding causes the
             bidiagonalization to lose orthogonality and convergence to
-            stall. Memory cost is ``local_size * n_dofs`` doubles
-            unpreconditioned, ``2 * local_size * n_dofs`` preconditioned.
+            stall. Memory cost is ``local_size * n`` doubles unpreconditioned,
+            ``2 * local_size * n`` preconditioned, ``n`` the coefficients
+            outside the eliminated term.
     """
 
     @property
@@ -144,8 +169,10 @@ class SolveResult:
             compact level position ``p``: coefficient column ``c`` sits at
             ``term_offset + c * n_levels + p``, with columns ordered
             ``[intercept?, slopes...]``. Use ``layout`` to translate caller
-            labels to these slots. Slots for unidentified directions hold the
-            minimal-norm value ``0``, never NaN.
+            labels to these slots. Slots for unidentified directions hold
+            ``0``, never NaN. Each connected component's gauge (a constant
+            shifted between factors) depends on the preconditioner: compare
+            ``demeaned`` on rows with positive weight across solves, not ``x``.
         unidentified: Per-level directions the data cannot identify, as
             :class:`UnidentifiedDirection` records.
         layout: Address <-> flat-``x``-index translation for the coefficients.
@@ -153,9 +180,10 @@ class SolveResult:
             shape ``(n_obs,)``.
         converged: Whether the LSMR solver met the convergence tolerance.
         iterations: Total number of LSMR iterations performed.
-        residual: Relative normal-equation residual
-            ``||D^T W (y - Dx)|| / ||D^T W y||`` estimated from the LSMR
-            recurrence at no extra cost. Exact for an unpreconditioned solve;
+        residual: Relative normal-equation residual ``||A^T (b - Ax)|| / ||A^T b||``
+            of the iterated system (the terms other than the eliminated one,
+            projected off its span), estimated from the LSMR recurrence at no
+            extra cost. Exact for an unpreconditioned solve;
             measured in the preconditioner's metric otherwise. An ``Adaptive``
             hand-off is rebased onto the original response, so the escalating
             solve reports on the same footing as a cold one.
@@ -193,8 +221,8 @@ class BatchSolveResult:
 
     Attributes:
         x: Fixed-effect coefficients, shape ``(n_dofs, k)`` (column-major).
-            Slots for unidentified directions hold the minimal-norm value
-            ``0``, never NaN.
+            Slots for unidentified directions hold ``0``, never NaN. Gauges
+            as in :attr:`SolveResult.x`.
         unidentified: Per-level directions the data cannot identify, as
             :class:`UnidentifiedDirection` records; shared across all RHS.
         layout: Address <-> flat-``x``-index translation for the coefficients.
@@ -283,9 +311,11 @@ def solve(
             a stalled contraction; pass ``Adaptive(...)`` to tune it.
             ``PreconditionerConfig.Off()`` disables it.
             ``PreconditionerConfig.Diagonal()`` uses diagonal/Jacobi scaling.
-            ``PreconditionerConfig.Additive(...)`` overrides the local-solver
+            ``PreconditionerConfig.Schwarz(...)`` overrides the local-solver
             settings. A previously-built ``Preconditioner`` instance
-            reuses an existing factorisation.
+            reuses an existing factorisation; it must have been built on
+            the same terms with the same level and column counts, and, built
+            on other data, it may be singular here and stop the solve early.
 
     Returns:
         A ``SolveResult`` with coefficients, demeaned response, convergence
@@ -345,6 +375,13 @@ def solve_batch(
     """
     ...
 
+class Rung(enum.Enum):
+    """A preconditioner a solve can run on."""
+
+    Diagonal = ...
+    Schwarz = ...
+    TwoLevel = ...
+
 class Preconditioner:
     """Pre-built fixed-effects preconditioner.
 
@@ -352,7 +389,8 @@ class Preconditioner:
     escalation, and reused across solves via the persistent
     :class:`Solver`. Pickleable for offline construction; can also be
     deserialised manually via ``Preconditioner(bytes_payload)`` (the same
-    payload produced by ``__reduce__`` / ``pickle.dumps``).
+    payload produced by ``__reduce__`` / ``pickle.dumps``). Load only
+    payloads ``within`` wrote: a crafted one can exhaust memory.
     """
 
     def __init__(self, data: bytes) -> None: ...
@@ -365,6 +403,10 @@ class Preconditioner:
     def ncols(self) -> int: ...
     @property
     def config(self) -> PreconditionerConfig: ...
+    @property
+    def rung(self) -> Rung:
+        """The rung of its config this map is."""
+        ...
     @property
     def build_duration_seconds(self) -> float: ...
     def __repr__(self) -> str: ...
@@ -404,10 +446,6 @@ class Solver:
         Under ``Adaptive`` this is the Schwarz map once built, and before that
         the diagonal base carrying the ladder, which escalates when reused.
         """
-        ...
-    @property
-    def has_escalated(self) -> bool:
-        """Whether an ``Adaptive`` solve has handed off to Schwarz."""
         ...
     @property
     def n_dofs(self) -> int: ...

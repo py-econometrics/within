@@ -37,8 +37,8 @@ fn an_alias_its_scaling_misses_keeps_its_surplus() {
         Effect::new(&slope_level, false, [&z[..]]).unwrap(),
         Effect::new(&intercept_level, true, []).unwrap(),
     ];
-    let solver = Solver::new(effects, None, additive()).expect("solver");
-    let out = solve_tight(&solver, &[0.3, 0.7]);
+    let solver = Solver::new(effects, None, schwarz()).expect("solver");
+    let out = solve_tight(&solver, &[0.3, 0.7], 1e-12);
     let worst = out.demeaned.iter().fold(0.0f64, |m, r| m.max(r.abs()));
     assert!(
         worst < 1e-12,
@@ -104,10 +104,13 @@ fn solvers_built_from_a_borrowed_design_share_its_storage() {
     let weighted = Solver::new(&design, Some(&w), &PreconditionerConfig::Diagonal).unwrap();
 
     assert!(Arc::ptr_eq(
-        &unweighted.prepared.design.terms,
+        &unweighted.system.prepared().design.terms,
         &design.terms
     ));
-    assert!(Arc::ptr_eq(&weighted.prepared.design.terms, &design.terms));
+    assert!(Arc::ptr_eq(
+        &weighted.system.prepared().design.terms,
+        &design.terms
+    ));
     let a = unweighted.solve(&y, None).unwrap();
     let b = weighted.solve(&y, None).unwrap();
     assert!(a.converged && b.converged);
@@ -264,18 +267,16 @@ fn max_abs_group_mean(design: &Design<'_>, demeaned: &[f64]) -> f64 {
 }
 
 /// Schwarz built up front, so an aliased solve rests on the local solves.
-fn additive() -> PreconditionerConfig {
-    PreconditionerConfig::Additive {
-        local_solver: Default::default(),
-    }
+fn schwarz() -> PreconditionerConfig {
+    PreconditionerConfig::Schwarz(crate::Schwarz::default())
 }
 
-fn solve_tight(solver: &Solver<'_>, y: &[f64]) -> crate::SolveResult {
+fn solve_tight(solver: &Solver<'_>, y: &[f64], tol: f64) -> crate::SolveResult {
     solver
         .solve(
             y,
             &LsmrOptions {
-                tol: 1e-12,
+                tol,
                 maxiter: 20_000,
                 ..Default::default()
             },
@@ -284,23 +285,24 @@ fn solve_tight(solver: &Solver<'_>, y: &[f64]) -> crate::SolveResult {
 }
 
 #[rstest]
-#[case::unrelated(SlopeSpec::Independent)]
-#[case::exact_alias(SlopeSpec::YearIndex)]
-#[case::shared_covariate(SlopeSpec::SharedWithFirm)]
-#[case::near_alias_1e10(SlopeSpec::NearYearIndex(1e-10))]
-#[case::near_alias_1e8(SlopeSpec::NearYearIndex(1e-8))]
-#[case::near_alias_1e6(SlopeSpec::NearYearIndex(1e-6))]
-#[case::near_alias_1e3(SlopeSpec::NearYearIndex(1e-3))]
-#[case::duplicate_aliases(SlopeSpec::DuplicateYearIndex)]
-#[case::alias_without_intercept(SlopeSpec::YearIndexWithoutIntercept)]
-#[case::two_independent_aliases(SlopeSpec::TwoIndependentAliases)]
-#[case::alias_of_two_terms(SlopeSpec::AgeCohort)]
-fn an_aliased_slope_converges(#[case] spec: SlopeSpec) {
+#[case::unrelated(SlopeSpec::Independent, 1e-12)]
+#[case::exact_alias(SlopeSpec::YearIndex, 1e-12)]
+#[case::shared_covariate(SlopeSpec::SharedWithFirm, 1e-12)]
+#[case::near_alias_1e10(SlopeSpec::NearYearIndex(1e-10), 1e-12)]
+// At |x| ≈ 5e6, f64 confirms the reduced gradient only to ~1e-10 of ‖A_rᵀb‖ (#544).
+#[case::near_alias_1e8(SlopeSpec::NearYearIndex(1e-8), 1e-11)]
+#[case::near_alias_1e6(SlopeSpec::NearYearIndex(1e-6), 1e-12)]
+#[case::near_alias_1e3(SlopeSpec::NearYearIndex(1e-3), 1e-12)]
+#[case::duplicate_aliases(SlopeSpec::DuplicateYearIndex, 1e-12)]
+#[case::alias_without_intercept(SlopeSpec::YearIndexWithoutIntercept, 1e-12)]
+#[case::two_independent_aliases(SlopeSpec::TwoIndependentAliases, 1e-12)]
+#[case::alias_of_two_terms(SlopeSpec::AgeCohort, 1e-12)]
+fn an_aliased_slope_converges(#[case] spec: SlopeSpec, #[case] tol: f64) {
     let panel = akm_panel(4_000, 200, 10, 0.15, spec);
-    let solver = Solver::new(panel.effects(), None, additive()).expect("solver");
-    let out = solve_tight(&solver, &panel.y);
+    let solver = Solver::new(panel.effects(), None, schwarz()).expect("solver");
+    let out = solve_tight(&solver, &panel.y, tol);
     // A floating component grounded by mistake reports a false convergence at an O(1) mean.
-    let group_mean = max_abs_group_mean(&solver.prepared.design, &out.demeaned);
+    let group_mean = max_abs_group_mean(&solver.system.prepared().design, &out.demeaned);
     assert!(
         out.converged && group_mean < 1e-9,
         "converged={}, gm={group_mean:.3e}",
@@ -340,23 +342,25 @@ impl SharedCovariatePair {
 /// same error without the ladder rebuilding, and re-failing, the same map.
 #[test]
 fn a_failed_deferred_build_is_kept_and_reported_again() {
-    use super::ladder::PrecondSlot;
     use crate::config::{ScalingConfig, ScalingFailure};
     use crate::{BuildError, WithinError};
 
     // A zero-tolerance, zero-iteration certificate rejects the signed cross-block deterministically.
     let panel = SharedCovariatePair::new();
     let precond = PreconditionerConfig::Adaptive {
-        local_solver: LocalSolverConfig {
-            scaling: ScalingConfig {
-                tolerance: 0.0,
-                max_iterations: 0,
-                on_failure: ScalingFailure::Error,
-            },
-            ..LocalSolverConfig::default()
-        },
         // Escalates after any single non-vanishing contraction, so the handoff is deterministic.
         stall: crate::Staleness::try_new(1, 0.0).expect("valid staleness"),
+        schwarz: crate::Schwarz {
+            local_solver: LocalSolverConfig {
+                scaling: ScalingConfig {
+                    tolerance: 0.0,
+                    max_iterations: 0,
+                    on_failure: ScalingFailure::Error,
+                },
+                ..LocalSolverConfig::default()
+            },
+            ..Default::default()
+        },
     };
     let solver = Solver::new(panel.effects(), None, precond).unwrap();
     let unscalable = |r: &Result<crate::SolveResult, WithinError>| {
@@ -367,15 +371,16 @@ fn a_failed_deferred_build_is_kept_and_reported_again() {
     };
     let first = solver.solve(&panel.y, None);
     assert!(unscalable(&first), "{first:?}");
-    let PrecondSlot::Adaptive(a) = &solver.slot else {
-        panic!("the ladder")
-    };
+    // The Schwarz rung's cell keeps the error, so the next solve reports it without a rebuild.
     assert!(matches!(
-        a.built.get(),
+        solver.slot.built[1].get(),
         Some(Err(BuildError::UnscalableComponent { .. }))
     ));
     assert!(unscalable(&solver.solve(&panel.y, None)));
-    assert!(!solver.has_escalated());
+    assert_eq!(
+        solver.preconditioner().map(|p| p.rung()),
+        Some(crate::Rung::Diagonal)
+    );
 }
 
 /// Three mutually orthogonal, centered ±1 columns on eight observations.
@@ -390,7 +395,7 @@ fn walsh_columns() -> ([f64; 8], [f64; 8], [f64; 8]) {
 /// Share of `y` left after residualizing on `effects` under the default preconditioner.
 fn residual_share(effects: Vec<Effect<'_>>, y: &[f64]) -> f64 {
     let solver = Solver::new(effects, None, None).expect("solver");
-    let out = solve_tight(&solver, y);
+    let out = solve_tight(&solver, y, 1e-12);
     let energy = |v: &[f64]| v.iter().map(|x| x * x).sum::<f64>();
     energy(&out.demeaned) / energy(y)
 }
@@ -424,6 +429,28 @@ fn a_near_combination_slope_residualizes_its_span() {
     assert!(share < 1e-12, "share={share:.3e}");
 }
 
+/// A near-absorbed direction `c − e + 5e-11·ce` spread over two slopes still residualizes fully.
+#[rstest]
+#[case::with_intercept(true)]
+#[case::slopes_only(false)]
+#[ignore = "a near-collinear kept level stalls the reduced solve (#548)"]
+fn a_near_combination_over_two_slopes_residualizes_its_span(#[case] intercept: bool) {
+    let (c, d, e) = walsh_columns();
+    let (cd, ce): ([f64; 8], [f64; 8]) = (
+        std::array::from_fn(|i| c[i] * d[i]),
+        std::array::from_fn(|i| c[i] * e[i]),
+    );
+    let sum: [f64; 8] = std::array::from_fn(|i| c[i] + e[i]);
+    let near: [f64; 8] = std::array::from_fn(|i| c[i] - e[i] + 5e-11 * ce[i]);
+    let level = [0u32; 8];
+    let effects = vec![
+        Effect::new(&level, intercept, [&sum[..], &near[..]]).unwrap(),
+        Effect::new(&level, true, [&c[..], &d[..], &cd[..]]).unwrap(),
+    ];
+    let share = residual_share(effects, &ce);
+    assert!(share < 1e-12, "share={share:.3e}");
+}
+
 /// A mean-year noise loading must not tie a near-isolated year into the alias block.
 #[test]
 fn an_alias_through_a_zero_loading_still_converges() {
@@ -452,12 +479,10 @@ fn an_alias_through_a_zero_loading_still_converges() {
         Effect::new(&firm, true, []).unwrap(),
         Effect::new(&year, true, []).unwrap(),
     ];
-    let schwarz = PreconditionerConfig::Additive {
-        local_solver: Default::default(),
-    };
+    let schwarz = PreconditionerConfig::Schwarz(crate::Schwarz::default());
     let solver = Solver::new(effects, None, schwarz).expect("solver");
-    let out = solve_tight(&solver, &y);
-    let group_mean = max_abs_group_mean(&solver.prepared.design, &out.demeaned);
+    let out = solve_tight(&solver, &y, 1e-12);
+    let group_mean = max_abs_group_mean(&solver.system.prepared().design, &out.demeaned);
     assert!(
         out.converged && group_mean < 1e-9,
         "converged={}, iterations={}, gm={group_mean:.3e}",

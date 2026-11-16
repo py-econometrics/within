@@ -72,7 +72,7 @@ fn test_zero_weight_returns_zero(
     #[values(
         PreconditionerConfig::Off,
         PreconditionerConfig::Diagonal,
-        common::additive(),
+        common::schwarz(),
         common::adaptive()
     )]
     precond: PreconditionerConfig,
@@ -104,11 +104,10 @@ fn test_zero_weight_returns_zero(
 ///
 /// Uses a single full-rank factor so the solution is unique. A multi-factor FE
 /// design is rank-deficient (the additive constant is unidentified), so the
-/// minimum-norm coefficient vector LSMR returns depends on the preconditioned
-/// metric — only the fitted values, not the raw coefficients, are invariant.
+/// coefficient vector LSMR returns depends on the preconditioner — only the fitted values, not the raw coefficients, are invariant.
 #[rstest]
 fn test_preconditioner_matches_unpreconditioned_solution(
-    #[values(PreconditionerConfig::Diagonal, common::additive(), common::adaptive())]
+    #[values(PreconditionerConfig::Diagonal, common::schwarz(), common::adaptive())]
     precond: PreconditionerConfig,
 ) {
     let cats = array![[0u32], [0], [1], [1], [2], [2]];
@@ -117,7 +116,7 @@ fn test_preconditioner_matches_unpreconditioned_solution(
 
     let preconditioned =
         solve(cats.view(), &y, None, &params, &precond).expect("preconditioned solve");
-    let unpreconditioned = solve(cats.view(), &y, None, &params, &PreconditionerConfig::Off)
+    let unpreconditioned = solve(cats.view(), &y, None, &params, PreconditionerConfig::Off)
         .expect("unpreconditioned solve");
 
     common::assert_solution_finite(&preconditioned);

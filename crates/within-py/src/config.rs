@@ -11,8 +11,9 @@ use numpy::PyReadonlyArray1;
 use pyo3::prelude::*;
 
 use within::config::{
-    ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, LsmrOptions, PreconditionerConfig,
-    ScalingConfig, ScalingFailure, SchurMode, Staleness,
+    ApproxCholConfig, ApproxSchurConfig, CoarseBuild, CoarseCorrection, CoarseSpace,
+    LocalSolverConfig, LsmrOptions, PreconditionerConfig, Rung, ScalingConfig, ScalingFailure,
+    SchurMode, Schwarz, Staleness, TwoLevelForm,
 };
 use within::{Preconditioner, PreconditionerInput};
 
@@ -205,63 +206,109 @@ impl PyScalingConfig {
 #[derive(PartialEq)]
 pub enum PyPreconditionerConfig {
     Off(),
-    #[pyo3(constructor = (local_solver=PyLocalSolverConfig::default()))]
-    Additive {
+    #[pyo3(constructor = (local_solver=PyLocalSolverConfig::default(), coarse=None))]
+    Schwarz {
         local_solver: PyLocalSolverConfig,
+        coarse: Option<PyCoarseCorrection>,
     },
     Diagonal(),
     #[pyo3(constructor = (
         local_solver=PyLocalSolverConfig::default(),
-        stall=PyStaleness::default()
+        stall=PyStaleness::default(),
+        coarse=None
     ))]
     Adaptive {
         local_solver: PyLocalSolverConfig,
         stall: PyStaleness,
+        coarse: Option<PyCoarseCorrection>,
     },
 }
 
 impl PyPreconditionerConfig {
     pub(crate) fn to_native(&self) -> PreconditionerConfig {
+        let schwarz =
+            |local_solver: &PyLocalSolverConfig, coarse: &Option<PyCoarseCorrection>| Schwarz {
+                local_solver: local_solver.to_native(),
+                coarse: coarse.as_ref().map(|c| c.inner.clone()),
+            };
         match self {
             Self::Off() => PreconditionerConfig::Off,
             Self::Diagonal() => PreconditionerConfig::Diagonal,
-            Self::Additive { local_solver } => PreconditionerConfig::Additive {
-                local_solver: local_solver.to_native(),
-            },
+            Self::Schwarz {
+                local_solver,
+                coarse,
+            } => PreconditionerConfig::Schwarz(schwarz(local_solver, coarse)),
             Self::Adaptive {
                 local_solver,
                 stall,
+                coarse,
             } => PreconditionerConfig::Adaptive {
-                local_solver: local_solver.to_native(),
                 stall: stall.to_native(),
+                schwarz: schwarz(local_solver, coarse),
             },
         }
     }
 
-    pub(crate) fn from_native(config: &PreconditionerConfig) -> PyResult<Self> {
-        Ok(match config {
+    pub(crate) fn from_native(config: &PreconditionerConfig) -> Self {
+        let local_solver =
+            |schwarz: &Schwarz| PyLocalSolverConfig::from_native(&schwarz.local_solver);
+        let coarse = |schwarz: &Schwarz| {
+            schwarz
+                .coarse
+                .clone()
+                .map(|inner| PyCoarseCorrection { inner })
+        };
+        match config {
             PreconditionerConfig::Off => Self::Off(),
             PreconditionerConfig::Diagonal => Self::Diagonal(),
-            PreconditionerConfig::Additive { local_solver } => Self::Additive {
-                local_solver: PyLocalSolverConfig::from_native(local_solver),
+            PreconditionerConfig::Schwarz(schwarz) => Self::Schwarz {
+                local_solver: local_solver(schwarz),
+                coarse: coarse(schwarz),
             },
-            PreconditionerConfig::Adaptive {
-                local_solver,
-                stall,
-            } => Self::Adaptive {
-                local_solver: PyLocalSolverConfig::from_native(local_solver),
-                stall: PyStaleness { inner: *stall },
+            PreconditionerConfig::Adaptive { stall, schwarz } => Self::Adaptive {
+                local_solver: local_solver(schwarz),
+                stall: PyStaleness::from_native(*stall),
+                coarse: coarse(schwarz),
             },
-            _ => {
-                return Err(pyo3::exceptions::PyRuntimeError::new_err(
-                    "unsupported preconditioner configuration",
-                ))
-            }
-        })
+        }
     }
 }
 
-/// Contraction-stall condition that triggers an `Adaptive` escalation.
+/// Two-level Schwarz over rigid components, balanced; built with Schwarz or at `on_stall`.
+#[pyclass(frozen, eq, from_py_object, module = "within._within")]
+#[pyo3(name = "CoarseCorrection")]
+#[derive(Clone, PartialEq)]
+pub struct PyCoarseCorrection {
+    inner: CoarseCorrection,
+}
+
+#[pymethods]
+impl PyCoarseCorrection {
+    #[new]
+    #[pyo3(signature = (on_stall=None))]
+    fn new(on_stall: Option<PyStaleness>) -> Self {
+        Self {
+            inner: CoarseCorrection {
+                space: CoarseSpace::RigidComponents,
+                form: TwoLevelForm::Balanced,
+                build: match on_stall {
+                    None => CoarseBuild::WithSchwarz,
+                    Some(stall) => CoarseBuild::OnStall(stall.to_native()),
+                },
+            },
+        }
+    }
+
+    #[getter]
+    fn on_stall(&self) -> Option<PyStaleness> {
+        match &self.inner.build {
+            CoarseBuild::WithSchwarz => None,
+            CoarseBuild::OnStall(stall) => Some(PyStaleness::from_native(*stall)),
+        }
+    }
+}
+
+/// Contraction-stall condition that hands the solve to the next rung.
 #[pyclass(frozen, eq, from_py_object, module = "within._within")]
 #[pyo3(name = "Staleness")]
 #[derive(Clone, Copy, Default, PartialEq)]
@@ -304,6 +351,10 @@ impl PyStaleness {
 }
 
 impl PyStaleness {
+    fn from_native(inner: Staleness) -> Self {
+        Self { inner }
+    }
+
     pub(crate) fn to_native(self) -> Staleness {
         self.inner
     }
@@ -434,13 +485,13 @@ impl PyPreconditioner {
             .map_err(IntoPyErr::into_py_err)?;
         Ok(numpy::PyArray1::from_vec(py, y))
     }
-    /// Number of rows (DOFs).
+    /// Number of rows: the coefficients outside the eliminated term.
     #[getter]
     fn nrows(&self) -> usize {
         self.inner.nrows()
     }
 
-    /// Number of columns (DOFs).
+    /// Number of columns: the coefficients outside the eliminated term.
     #[getter]
     fn ncols(&self) -> usize {
         self.inner.ncols()
@@ -454,10 +505,16 @@ impl PyPreconditioner {
 
     fn __repr__(&self) -> String {
         format!(
-            "Preconditioner({}, n={})",
-            self.inner.variant_name(),
+            "Preconditioner({:?}, n={})",
+            self.inner.rung(),
             self.inner.nrows()
         )
+    }
+
+    /// The rung of its config this map is.
+    #[getter]
+    fn rung(&self) -> PyRung {
+        self.inner.rung().into()
     }
 
     /// Pickle support: serialize to ``(bytes,)`` constructor arg.
@@ -486,8 +543,28 @@ impl PyPreconditioner {
 
     /// Complete normalized configuration used to build this preconditioner.
     #[getter]
-    fn config(&self) -> PyResult<PyPreconditionerConfig> {
-        PyPreconditionerConfig::from_native(&self.inner.config())
+    fn config(&self) -> PyPreconditionerConfig {
+        PyPreconditionerConfig::from_native(self.inner.config())
+    }
+}
+
+/// A preconditioner a solve can run on.
+#[pyclass(frozen, eq, eq_int, skip_from_py_object, module = "within._within")]
+#[pyo3(name = "Rung")]
+#[derive(Clone, Copy, PartialEq)]
+pub enum PyRung {
+    Diagonal,
+    Schwarz,
+    TwoLevel,
+}
+
+impl From<Rung> for PyRung {
+    fn from(rung: Rung) -> Self {
+        match rung {
+            Rung::Diagonal => Self::Diagonal,
+            Rung::Schwarz => Self::Schwarz,
+            Rung::TwoLevel => Self::TwoLevel,
+        }
     }
 }
 
@@ -500,8 +577,9 @@ pub(crate) fn resolve_precond_input(
             return Ok(PreconditionerInput::Prebuilt(built.get().inner.clone()));
         }
     }
-    Ok(extract_preconditioner_config(preconditioner)?
-        .map_or(PreconditionerInput::Default, PreconditionerInput::Config))
+    Ok(PreconditionerInput::Config(
+        extract_preconditioner_config(preconditioner)?.unwrap_or_default(),
+    ))
 }
 
 fn extract_preconditioner_config(
@@ -517,7 +595,7 @@ fn extract_preconditioner_config(
 
     Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
         "preconditioner must be PreconditionerConfig.Off(), PreconditionerConfig.Diagonal(), \
-         PreconditionerConfig.Additive(...), PreconditionerConfig.Adaptive(...), a pre-built \
+         PreconditionerConfig.Schwarz(...), PreconditionerConfig.Adaptive(...), a pre-built \
          Preconditioner, or None",
     ))
 }

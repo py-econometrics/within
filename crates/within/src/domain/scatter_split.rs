@@ -1,10 +1,10 @@
-//! How a term's scatter-add splits into fixed parallel pieces, chosen from its rows alone.
+//! How a term's per-level fold splits into fixed parallel pieces, chosen from its rows alone.
 
 use std::ops::Range;
 
 use rayon::prelude::*;
 
-use super::{Term, PAR_THRESHOLD};
+use super::{RowIndex, Term, PAR_THRESHOLD};
 
 /// Rows per level from which splitting by row beats splitting by level.
 const FOLD_ROWS_PER_LEVEL: usize = 12;
@@ -14,27 +14,6 @@ pub(crate) const LEVEL_GROUP: usize = 1024;
 
 /// Rows per leaf of one level's fold; above `PAR_THRESHOLD`, so a sequential fold never joins.
 pub(crate) const LEVEL_LEAF: usize = PAR_THRESHOLD.next_power_of_two();
-
-/// Where a fold writes each level's state; splits into disjoint level ranges for parallel tasks.
-pub(crate) trait LevelSlots<S>: Send + Sized {
-    fn len(&self) -> usize;
-    fn split_at(self, mid: usize) -> (Self, Self);
-    fn set(&mut self, level: usize, state: S);
-}
-
-impl<S: Send> LevelSlots<S> for &mut [S] {
-    fn len(&self) -> usize {
-        <[S]>::len(self)
-    }
-
-    fn split_at(self, mid: usize) -> (Self, Self) {
-        self.split_at_mut(mid)
-    }
-
-    fn set(&mut self, level: usize, state: S) {
-        self[level] = state;
-    }
-}
 
 /// The split of `z[l] = Σ_{level(i) = l} vᵢ` into pieces; the thread count only schedules them.
 pub(crate) enum ScatterSplit {
@@ -48,15 +27,10 @@ impl ScatterSplit {
     pub(crate) fn new(term: &Term<'_>) -> Self {
         let (levels, n_levels) = (term.levels(), term.n_levels());
         if !term.sorted() {
-            // An unsorted term's row index stores u32 rows.
-            if levels.len() >= FOLD_ROWS_PER_LEVEL * n_levels
-                || u32::try_from(levels.len()).is_err()
-            {
+            if levels.len() >= FOLD_ROWS_PER_LEVEL * n_levels {
                 return Self::ByRow;
             }
-            let (offsets, rows) = super::stable_argsort(levels, n_levels);
-            let rows = Some(rows.into_boxed_slice());
-            return Self::ByLevel(LevelRows { offsets, rows });
+            return Self::ByLevel(LevelRows::argsort(levels, n_levels));
         }
         let mut offsets = vec![0; n_levels + 1];
         // One store per run: a per-row increment chains each run through one counter.
@@ -76,13 +50,13 @@ impl ScatterSplit {
 impl ScatterSplit {
     /// Each level's fold of its rows: `step(state, level, row)` from `init` over pieces this split
     /// fixes, `merge`d left to right in a fixed binary tree; threads only schedule the pieces.
-    pub(crate) fn fold<S: Copy + Send + Sync, O: LevelSlots<S>>(
+    pub(crate) fn fold<S: Copy + Send + Sync>(
         &self,
         levels: &[u32],
         init: S,
         step: &(impl Fn(&mut S, usize, usize) + Sync),
         merge: &(impl Fn(&mut S, &S) + Sync),
-        mut out: O,
+        out: &mut [S],
     ) {
         let parallel = levels.len() > PAR_THRESHOLD;
         let n_levels = out.len();
@@ -100,27 +74,22 @@ impl ScatterSplit {
                     }
                     fixed_tree(positions, LEVEL_LEAF, &leaf, merge)
                 };
-                let mut groups = Vec::with_capacity(n_levels.div_ceil(LEVEL_GROUP));
-                while out.len() > 0 {
-                    let mid = LEVEL_GROUP.min(out.len());
-                    let (group, rest) = out.split_at(mid);
-                    groups.push(group);
-                    out = rest;
-                }
-                let fill = |(g, mut group): (usize, O)| {
-                    for k in 0..LevelSlots::len(&group) {
-                        group.set(k, level_fold(g * LEVEL_GROUP + k));
+                let fill = |(g, group): (usize, &mut [S])| {
+                    for (k, slot) in group.iter_mut().enumerate() {
+                        *slot = level_fold(g * LEVEL_GROUP + k);
                     }
                 };
                 if parallel {
-                    groups.into_par_iter().enumerate().for_each(fill);
+                    out.par_chunks_mut(LEVEL_GROUP).enumerate().for_each(fill);
                 } else {
-                    groups.into_iter().enumerate().for_each(fill);
+                    out.chunks_mut(LEVEL_GROUP).enumerate().for_each(fill);
                 }
             }
             Self::ByRow => {
                 // Merging costs ∝ L per state word, a leaf ∝ its rows per word: 4·L rows bound merges.
-                let leaf_len = (4 * n_levels).min(levels.len().div_ceil(2)).max(65_536);
+                let leaf_len = (4 * n_levels)
+                    .min(levels.len().div_ceil(2))
+                    .max(MIN_LEAF_ROWS);
                 let scatter = |rows: Range<usize>| {
                     let mut states = vec![init; n_levels];
                     for i in rows {
@@ -134,17 +103,34 @@ impl ScatterSplit {
                         merge(l, r);
                     }
                 };
-                let states = fixed_tree(0..levels.len(), leaf_len, &scatter, &merge_all);
-                for (level, state) in states.into_iter().enumerate() {
-                    out.set(level, state);
-                }
+                out.copy_from_slice(&fixed_tree(0..levels.len(), leaf_len, &scatter, &merge_all));
             }
         }
     }
 }
 
+/// `0..n` cut into consecutive ranges whose `size`s sum to at least `min`, the last maybe less.
+pub(crate) fn cut(n: usize, min: usize, size: impl Fn(usize) -> usize) -> Vec<Range<usize>> {
+    let mut ranges = Vec::new();
+    let (mut first, mut total) = (0, 0);
+    for k in 0..n {
+        total += size(k);
+        if total >= min {
+            ranges.push(first..k + 1);
+            (first, total) = (k + 1, 0);
+        }
+    }
+    if first < n {
+        ranges.push(first..n);
+    }
+    ranges
+}
+
+/// Fewest rows per accumulator in a row-parallel reduction.
+pub(crate) const MIN_LEAF_ROWS: usize = 65_536;
+
 /// `leaf` over `leaf_len` pieces of `items`, merged in a binary tree fixed by both lengths alone.
-fn fixed_tree<T: Send>(
+pub(crate) fn fixed_tree<T: Send>(
     items: Range<usize>,
     leaf_len: usize,
     leaf: &(impl Fn(Range<usize>) -> T + Sync),
@@ -163,25 +149,44 @@ fn fixed_tree<T: Send>(
 }
 
 /// The rows of each level, ascending: the inverse of the row → level map.
+#[derive(Clone)]
 pub(crate) struct LevelRows {
     /// Level `l` owns positions `offsets[l]..offsets[l + 1]`.
     offsets: Vec<usize>,
     /// Row at each position; `None` when the levels are sorted, so positions are rows.
-    rows: Option<Box<[u32]>>,
+    rows: Option<RowIndex>,
 }
 
 impl LevelRows {
+    pub(crate) fn argsort(levels: &[u32], n_levels: usize) -> Self {
+        let offsets = super::offsets(n_levels, levels.iter().map(|&l| l as usize));
+        let rows = Some(RowIndex::argsort(levels, &offsets));
+        Self { offsets, rows }
+    }
+
     /// Positions of `level`'s rows, for [`for_each_row`](Self::for_each_row).
-    fn positions(&self, level: usize) -> Range<usize> {
+    pub(crate) fn positions(&self, level: usize) -> Range<usize> {
         self.offsets[level]..self.offsets[level + 1]
+    }
+
+    /// The row at `position`.
+    pub(crate) fn row(&self, position: usize) -> usize {
+        self.rows
+            .as_ref()
+            .map_or(position, |rows| rows.get(position))
+    }
+
+    /// The rows of `level`, in position order.
+    pub(crate) fn rows(&self, level: usize) -> impl Iterator<Item = usize> + Clone + '_ {
+        self.positions(level).map(|at| self.row(at))
     }
 
     /// Calls `f` on the row at each of `positions`, in order.
     #[inline(always)]
-    fn for_each_row(&self, positions: Range<usize>, f: impl FnMut(usize)) {
+    pub(crate) fn for_each_row(&self, positions: Range<usize>, f: impl FnMut(usize)) {
         match &self.rows {
             None => positions.for_each(f),
-            Some(rows) => rows[positions].iter().map(|&r| r as usize).for_each(f),
+            Some(rows) => rows.for_each(positions, f),
         }
     }
 }
@@ -189,27 +194,31 @@ impl LevelRows {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{Design, Effect};
+    use crate::domain::Design;
 
     #[test]
     fn level_rows_list_each_levels_rows_ascending() {
         let ScatterSplit::ByLevel(rows) = split(&[2, 0, 2, 1, 0]) else {
             panic!()
         };
+        let order: Vec<usize> = (0..5).map(|at| rows.row(at)).collect();
         assert_eq!(
-            (rows.offsets, rows.rows.as_deref()),
-            (vec![0, 2, 3, 5], Some(&[1, 4, 3, 0, 2][..]))
+            (rows.offsets, order),
+            (vec![0, 2, 3, 5], vec![1, 4, 3, 0, 2])
         );
         let ScatterSplit::ByLevel(sorted) = split(&[0, 0, 1, 1, 1]) else {
             panic!()
         };
-        assert_eq!((sorted.offsets, sorted.rows), (vec![0, 2, 5], None));
+        assert_eq!(
+            (sorted.offsets, sorted.rows.is_none()),
+            (vec![0, 2, 5], true)
+        );
     }
 
     fn split(levels: &[u32]) -> ScatterSplit {
-        let slope = vec![1.0; levels.len()];
-        let effect = Effect::new(levels, true, vec![&slope[..]; 4]).expect("valid effect");
-        ScatterSplit::new(&Design::new_unsorted([effect]).expect("valid design").terms[0])
+        // A sorted dominant term with one level per row leaves the term under test in its order.
+        let rows: Vec<u32> = (0..levels.len() as u32).collect();
+        ScatterSplit::new(&Design::from_levels_for_test(vec![rows, levels.to_vec()]).terms[1])
     }
 
     #[test]

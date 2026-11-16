@@ -1,21 +1,24 @@
 #![allow(dead_code)]
 
 use ndarray::{Array2, ArrayView2};
-use within::config::{LocalSolverConfig, Staleness};
 use within::{Channel, CoefficientAddress, Design, Effect, PreconditionerConfig, SolveResult};
 
-/// One-level additive Schwarz, pinned so a test names the rung the ladder would escalate to.
-pub fn additive() -> PreconditionerConfig {
-    PreconditionerConfig::Additive {
-        local_solver: LocalSolverConfig::default(),
-    }
+/// One-level Schwarz from construction on; a literal, so a new `Schwarz` field must be chosen here.
+pub fn schwarz() -> PreconditionerConfig {
+    PreconditionerConfig::Schwarz(within::Schwarz {
+        local_solver: within::LocalSolverConfig::default(),
+        coarse: None,
+    })
 }
 
-/// The diagonal→Schwarz ladder, named rather than reached through `default()`.
+/// Diagonal, then one-level Schwarz on the default stall; spelled out, not `default()`.
 pub fn adaptive() -> PreconditionerConfig {
     PreconditionerConfig::Adaptive {
-        local_solver: LocalSolverConfig::default(),
-        stall: Staleness::default(),
+        stall: within::Staleness::default(),
+        schwarz: within::Schwarz {
+            local_solver: within::LocalSolverConfig::default(),
+            coarse: None,
+        },
     }
 }
 
@@ -64,7 +67,7 @@ pub fn assert_converged_with_small_residual(result: &SolveResult, tol: f64) {
 
 /// Independent optimality oracle for a purely categorical fixed-effects design:
 /// recomputes the relative normal-equation residual `‖DᵀW(y−Dx)‖ / ‖DᵀWy‖` from
-/// `result.demeaned` (`y − Dx`, produced by a matvec separate from the LSMR
+/// `demeaned` (`y − Dx`, produced by a matvec separate from the LSMR
 /// recurrence) and the raw categories. Unlike `result.residual`, which is now the
 /// solver's own stopping estimate, this cannot be satisfied by the solver merely
 /// reporting convergence. `categories[f][i]` is observation `i`'s level in factor `f`.
@@ -72,7 +75,7 @@ pub fn assert_normal_equations_satisfied(
     categories: &[Vec<u32>],
     weights: Option<&[f64]>,
     y: &[f64],
-    result: &SolveResult,
+    demeaned: &[f64],
     tol: f64,
 ) {
     // ‖DᵀW v‖² = Σ_f Σ_level (Σ_{i in level} w_i v_i)²  for a categorical D.
@@ -90,7 +93,7 @@ pub fn assert_normal_equations_satisfied(
         acc
     };
 
-    let numerator = dtw_sq_norm(&result.demeaned).sqrt();
+    let numerator = dtw_sq_norm(demeaned).sqrt();
     let denominator = dtw_sq_norm(y).sqrt().max(1e-15);
     let relative = numerator / denominator;
     assert!(

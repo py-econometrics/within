@@ -1,11 +1,8 @@
 //! Solver and preconditioner configuration types.
 //!
-//! Stability policy: enums that may gain variants (the preconditioner strategy
-//! set) stay `#[non_exhaustive]`, so adding a variant is non-breaking — external
-//! `match` sites already carry a wildcard arm. Option structs commit to public
-//! fields and literal construction; adding a field is a deliberate breaking
-//! change, caught mechanically by the cargo-semver-checks CI gate rather than
-//! slipping through silently.
+//! Stability policy: option structs commit to public fields and literal construction; adding
+//! a field is a deliberate breaking change, caught mechanically by the cargo-semver-checks CI
+//! gate rather than slipping through silently.
 
 use serde::{Deserialize, Serialize};
 
@@ -150,33 +147,163 @@ impl Default for ApproxSchurConfig {
     }
 }
 
-/// Preconditioner variant. `#[non_exhaustive]`, so external `match` sites need a wildcard arm.
+/// The preconditioner a solve runs on, and the one it moves to when that one stalls.
+// Append only: postcard encodes by declaration order and every `Preconditioner` carries one.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub enum PreconditionerConfig {
     /// Identity preconditioner. Solves the unpreconditioned normal equations.
     Off,
-    /// One-level additive Schwarz over factor-pair subdomains.
-    Additive {
-        /// Local solver configuration applied inside each subdomain.
-        local_solver: LocalSolverConfig,
-    },
     /// Diagonal/Jacobi; a zero diagonal takes the pseudo-inverse, pinning that coordinate to 0.
     Diagonal,
-    /// Diagonal first; additive Schwarz is built at, and used from, the first stalled contraction.
+    /// Schwarz from construction on.
+    Schwarz(Schwarz),
+    /// Diagonal first; Schwarz is built at, and used from, the first `stall`.
     Adaptive {
-        /// Local solver configuration for the escalated Schwarz factorization.
-        local_solver: LocalSolverConfig,
-        /// Contraction-stall condition that triggers escalation.
+        /// The contraction stall on the diagonal that hands the solve to Schwarz.
         stall: Staleness,
+        /// The Schwarz the solve moves to.
+        schwarz: Schwarz,
     },
 }
 
 impl Default for PreconditionerConfig {
     fn default() -> Self {
         Self::Adaptive {
-            local_solver: LocalSolverConfig::default(),
             stall: Staleness::default(),
+            schwarz: Schwarz::default(),
+        }
+    }
+}
+
+impl PreconditionerConfig {
+    /// Its rungs in the order a solve reaches them.
+    pub(crate) fn rungs(&self) -> impl Iterator<Item = RungSettings<'_>> {
+        let (diagonal, schwarz) = match self {
+            Self::Off => (None, None),
+            Self::Diagonal => (Some(RungSettings::Diagonal { stall: None }), None),
+            Self::Schwarz(schwarz) => (None, Some(schwarz)),
+            Self::Adaptive { stall, schwarz } => (
+                Some(RungSettings::Diagonal { stall: Some(stall) }),
+                Some(schwarz),
+            ),
+        };
+        let two_level = schwarz.and_then(|s| s.coarse.as_ref());
+        diagonal
+            .into_iter()
+            .chain(schwarz.map(RungSettings::Schwarz))
+            .chain(two_level.map(RungSettings::TwoLevel))
+    }
+
+    /// Where `rung` stands among its rungs; `None` when it is not one of them.
+    pub(crate) fn position(&self, rung: Rung) -> Option<usize> {
+        self.rungs().position(|r| r.rung() == rung)
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), BuildError> {
+        match self {
+            Self::Off | Self::Diagonal => Ok(()),
+            Self::Schwarz(schwarz) | Self::Adaptive { schwarz, .. } => {
+                schwarz.local_solver.validate()
+            }
+        }
+    }
+}
+
+/// Additive Schwarz over factor-pair subdomains, one-level or with a coarse correction.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Schwarz {
+    /// Local solver configuration applied inside each subdomain.
+    pub local_solver: LocalSolverConfig,
+    /// The coarse correction composed with this map; `None` keeps it one-level.
+    pub coarse: Option<CoarseCorrection>,
+}
+
+/// A coarse space, the form composing it with the one-level map, and when it is built.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CoarseCorrection {
+    /// The coarse columns.
+    pub space: CoarseSpace,
+    /// The composition with the one-level map.
+    pub form: TwoLevelForm,
+    /// When the two-level map is built.
+    pub build: CoarseBuild,
+}
+
+/// The columns `Z` of a coarse space.
+// Append only: postcard encodes by declaration order and every `Preconditioner` carries one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CoarseSpace {
+    /// The gauges of each component the well-conditioned spells glue rigidly together.
+    RigidComponents,
+}
+
+/// How the coarse solve `Q = Z (ZᵀSZ)⁻¹ Zᵀ` composes with the one-level map `B`.
+// Append only: postcard encodes by declaration order and every `Preconditioner` carries one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TwoLevelForm {
+    /// `PᵀBP + Q` with `P = I − SQ`.
+    Balanced,
+}
+
+/// When the two-level map is built.
+// Append only: postcard encodes by declaration order and every `Preconditioner` carries one.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum CoarseBuild {
+    /// Right after the one-level map it composes with.
+    WithSchwarz,
+    /// At the first `stall` on the one-level map.
+    OnStall(Staleness),
+}
+
+/// A preconditioner a solve can run on.
+// Append only: postcard encodes by declaration order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Rung {
+    /// Diagonal/Jacobi.
+    Diagonal,
+    /// One-level additive Schwarz.
+    Schwarz,
+    /// Schwarz with a coarse correction.
+    TwoLevel,
+}
+
+/// One rung's settings, as [`PreconditionerConfig::rungs`] yields them.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum RungSettings<'c> {
+    /// `stall` hands the solve to Schwarz.
+    Diagonal {
+        stall: Option<&'c Staleness>,
+    },
+    Schwarz(&'c Schwarz),
+    TwoLevel(&'c CoarseCorrection),
+}
+
+/// When a rung hands the solve to the next one.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Handoff<'c> {
+    /// Once it is built: a solve never runs on it while the next is still to be built.
+    AtBuild,
+    OnStall(&'c Staleness),
+}
+
+impl<'c> RungSettings<'c> {
+    pub(crate) fn rung(&self) -> Rung {
+        match self {
+            Self::Diagonal { .. } => Rung::Diagonal,
+            Self::Schwarz(_) => Rung::Schwarz,
+            Self::TwoLevel(_) => Rung::TwoLevel,
+        }
+    }
+
+    /// `None` on a rung that is never left.
+    pub(crate) fn handoff(&self) -> Option<Handoff<'c>> {
+        match self {
+            Self::Diagonal { stall } => stall.map(Handoff::OnStall),
+            Self::Schwarz(schwarz) => match &schwarz.coarse.as_ref()?.build {
+                CoarseBuild::WithSchwarz => Some(Handoff::AtBuild),
+                CoarseBuild::OnStall(stall) => Some(Handoff::OnStall(stall)),
+            },
+            Self::TwoLevel(_) => None,
         }
     }
 }

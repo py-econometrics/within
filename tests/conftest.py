@@ -8,7 +8,7 @@ from within import PreconditionerConfig
 
 _MAPS = [
     PreconditionerConfig.Diagonal(),
-    PreconditionerConfig.Additive(),
+    PreconditionerConfig.Schwarz(),
     PreconditionerConfig.Adaptive(),
 ]
 

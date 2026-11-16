@@ -5,15 +5,9 @@ use rayon::prelude::*;
 use super::PAR_THRESHOLD;
 use crate::domain::PreparedDesign;
 
-/// Gather-apply `dst[i] = Σ_t Σ_c src[…] · loading_c(i)`, times `scale[i]` when given.
-pub(crate) fn gather_apply(
-    prepared: &PreparedDesign<'_>,
-    src: &[f64],
-    dst: &mut [f64],
-    scale: Option<&[f64]>,
-) {
+/// Gather-apply `dst[i] = Σ_t Σ_c src[…] · loading_c(i)`.
+pub(crate) fn gather_apply(prepared: &PreparedDesign<'_>, src: &[f64], dst: &mut [f64]) {
     let design = &prepared.design;
-    debug_assert!(scale.is_none_or(|s| s.len() == design.n_obs));
     debug_assert_eq!(src.len(), design.n_dofs);
     debug_assert_eq!(dst.len(), design.n_obs);
 
@@ -77,15 +71,10 @@ pub(crate) fn gather_apply(
                 }
             }
         }
-        if let Some(scale) = scale {
-            for (s, dst_val) in scale[row_start..].iter().zip(chunk.iter_mut()) {
-                *dst_val *= s;
-            }
-        }
     });
 }
 
-/// Divide an observation-space vector row-wise, undoing the `scale` [`gather_apply`] applied.
+/// Divide an observation-space vector row-wise by `scale`.
 pub(crate) fn unscale(dst: &mut [f64], scale: &[f64]) {
     debug_assert_eq!(dst.len(), scale.len());
     for_each_chunk(dst, |chunk, row_start| {

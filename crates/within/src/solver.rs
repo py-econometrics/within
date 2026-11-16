@@ -12,7 +12,8 @@ use schwarz_precond::{
 
 use crate::channel::CoefficientAddress;
 use crate::config::{LsmrOptions, PreconditionerConfig};
-use crate::domain::{Design, Effect, PreparedDesign};
+use crate::domain::{Design, Effect};
+use crate::operator::design::ReducedDesign;
 use crate::operator::schwarz::Preconditioner;
 use crate::{BuildError, BuildWarning, SolveError, WithinError};
 
@@ -24,7 +25,7 @@ mod tests;
 
 use ladder::PrecondSlot;
 pub use layout::CoefficientLayout;
-use system::{Fit, LeastSquaresSystem};
+use system::{Fit, ReducedResponse};
 
 /// Fallible conversion into a [`Design`] for [`Solver::new`]: a categories
 /// matrix (`ArrayView2<u32>`), a list of [`Effect`] terms, a pass-through
@@ -61,7 +62,7 @@ impl<'a> IntoDesign<'a> for Vec<Effect<'a>> {
 /// Preconditioner input for [`Solver::new`].
 ///
 /// Constructed implicitly via `From`/`Into` from any of:
-/// - bare `None` — build the library default preconditioner
+/// - bare `None` — build the default [`PreconditionerConfig`]
 /// - `&PreconditionerConfig` or `Some(&PreconditionerConfig)` — build from a tuned config
 /// - `PreconditionerConfig` (owned) — same as above
 /// - [`Preconditioner`] (owned or `&`) — reuse a previously built (or deserialized) preconditioner
@@ -69,29 +70,27 @@ impl<'a> IntoDesign<'a> for Vec<Effect<'a>> {
 /// `None` resolves unambiguously because there is exactly one `From<Option<X>>`
 /// impl (with `X = &PreconditionerConfig`).
 pub enum PreconditionerInput {
-    /// Library default: diagonal, escalating to additive Schwarz on a stalled solve.
-    Default,
-    /// Build from this config (`PreconditionerConfig::Off` ⇒ unpreconditioned).
+    /// Build from this config ([`PreconditionerConfig::Off`] ⇒ unpreconditioned).
     Config(PreconditionerConfig),
     /// Reuse this pre-built preconditioner (e.g. deserialized or pulled off a previous solver).
     Prebuilt(Preconditioner),
 }
 
 impl From<PreconditionerConfig> for PreconditionerInput {
-    fn from(c: PreconditionerConfig) -> Self {
-        Self::Config(c)
+    fn from(config: PreconditionerConfig) -> Self {
+        Self::Config(config)
     }
 }
 
 impl From<&PreconditionerConfig> for PreconditionerInput {
-    fn from(c: &PreconditionerConfig) -> Self {
-        Self::Config(c.clone())
+    fn from(config: &PreconditionerConfig) -> Self {
+        Self::Config(config.clone())
     }
 }
 
 impl From<Option<&PreconditionerConfig>> for PreconditionerInput {
-    fn from(opt: Option<&PreconditionerConfig>) -> Self {
-        opt.map_or(Self::Default, |c| Self::Config(c.clone()))
+    fn from(config: Option<&PreconditionerConfig>) -> Self {
+        Self::Config(config.cloned().unwrap_or_default())
     }
 }
 
@@ -117,8 +116,10 @@ pub struct SolveResult {
     /// Term-major by compact level position `p`: coefficient column `c` sits at
     /// `term_offset + c * n_levels + p`, with columns ordered
     /// `[intercept?, slopes…]`. Use [`SolveResult::layout`] to translate caller
-    /// labels to these slots. Slots for unidentified directions hold the
-    /// minimal-norm value `0`, never NaN; see [`SolveResult::unidentified`].
+    /// labels to these slots. Slots for unidentified directions hold `0`, never
+    /// NaN; see [`SolveResult::unidentified`]. Each connected component's gauge
+    /// (a constant shifted between terms) depends on the preconditioner:
+    /// compare `demeaned` on rows with positive weight across solves, not `x`.
     pub x: Vec<f64>,
     /// Per-level directions the data cannot identify.
     pub unidentified: Vec<CoefficientAddress>,
@@ -134,9 +135,9 @@ pub struct SolveResult {
     pub demeaned: Vec<f64>,
     /// Whether the iterative solver converged within `maxiter` iterations.
     pub converged: bool,
-    /// Number of LSMR iterations used (summed across both rungs when escalated).
+    /// Number of LSMR iterations used, summed over every rung the solve ran on.
     pub iterations: usize,
-    /// Relative normal-equation residual `||D^T W (y - Dx)|| / ||D^T W y||`,
+    /// Relative normal-equation residual `‖Aᵀ(b − Ax)‖ / ‖Aᵀb‖` of the iterated system,
     /// estimated from the LSMR recurrence (Fong & Saunders) at no extra cost.
     /// Exact for an unpreconditioned solve; for a preconditioned solve it is
     /// measured in the preconditioner's metric and typically sits a modest
@@ -144,7 +145,7 @@ pub struct SolveResult {
     pub residual: f64,
     /// Wall-clock time for the entire solve (setup + LSMR), in seconds.
     pub time_total: f64,
-    /// Setup seconds in this call: RHS gather, deferred Adaptive build, `Solver::new` via [`solve`].
+    /// Setup seconds in this call: RHS gather, a rung built on a stall, `Solver::new` via [`solve`].
     pub time_setup: f64,
     /// Wall-clock time for the LSMR solve phase, in seconds.
     pub time_solve: f64,
@@ -156,8 +157,8 @@ pub struct BatchSolveResult {
     /// All coefficient vectors concatenated (length = n_dofs * n_rhs), each
     /// block laid out as in [`SolveResult::x`].
     ///
-    /// Slots for unidentified directions hold the minimal-norm value `0`,
-    /// never NaN; see [`BatchSolveResult::unidentified`].
+    /// Slots for unidentified directions hold `0`, never NaN; see
+    /// [`BatchSolveResult::unidentified`]. Gauges as in [`SolveResult::x`].
     pub x: Vec<f64>,
     /// Per-level directions the data cannot identify, shared across all RHS:
     /// identification depends only on the design and weights, never on `y`.
@@ -177,7 +178,7 @@ pub struct BatchSolveResult {
     pub residual: Vec<f64>,
     /// Per-RHS solve times in seconds.
     pub time_solve: Vec<f64>,
-    /// Setup seconds in this call: deferred Adaptive build, `Solver::new` via [`solve_batch`]; else 0.
+    /// Setup seconds in this call: a rung built on a stall, `Solver::new` via [`solve_batch`]; else 0.
     pub time_setup: f64,
     /// Total wall-clock time for the entire batch (setup + all solves), in seconds.
     pub time_total: f64,
@@ -197,31 +198,32 @@ impl BatchSolveResult {
         &self.demeaned[i * self.n_obs..(i + 1) * self.n_obs]
     }
 }
-
 /// Persistent solver that owns its preconditioner for reuse across multiple solves.
 ///
+/// The term with the most coefficients is eliminated exactly: LSMR iterates on the remaining
+/// terms, and the eliminated coefficients are recovered from them.
+///
 /// Build once with [`Solver::new`], then call [`Solver::solve`] or
-/// [`Solver::solve_batch`] repeatedly with different RHS vectors. The expensive
-/// preconditioner factorization happens at construction time, except under
-/// [`PreconditionerConfig::Adaptive`], which defers it to the first stalled solve;
+/// [`Solver::solve_batch`] repeatedly with different RHS vectors. The config's first rung is built
+/// at construction time and each later one at the first solve that stalls below it;
 /// LSMR tuning ([`LsmrOptions`]) is supplied per call.
 ///
 /// Ownership: each observation column is borrowed or owned independently
 /// (`Cow`); a solver that outlives its inputs — e.g. one returned across the
 /// Python boundary — uses owned columns.
 pub struct Solver<'a> {
-    prepared: PreparedDesign<'a>,
+    system: ReducedDesign<'a>,
     slot: PrecondSlot,
 }
 
 impl std::fmt::Debug for Solver<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let prepared = self.system.prepared();
         f.debug_struct("Solver")
-            .field("n_obs", &self.prepared.design.n_obs)
-            .field("n_dofs", &self.prepared.design.n_dofs)
-            .field("has_weights", &self.prepared.sqrt_weights().is_some())
-            .field("has_preconditioner", &self.preconditioner().is_some())
-            .field("has_escalated", &self.has_escalated())
+            .field("n_obs", &prepared.design.n_obs)
+            .field("n_dofs", &prepared.design.n_dofs)
+            .field("has_weights", &prepared.sqrt_weights().is_some())
+            .field("rung", &self.preconditioner().map(Preconditioner::rung))
             .finish()
     }
 }
@@ -248,12 +250,12 @@ struct RhsSolution {
 }
 
 /// One RHS between rungs.
-enum Pass<'s, S: LeastSquaresSystem + 's> {
+enum Pass<'s> {
     /// No rung has run it yet; the first that does prepares it, inside its fan-out.
     Unstarted(&'s [f64]),
     /// Handed off with budget left; the next rung resumes from `probe.x`.
     Stalled {
-        rhs: S::Rhs<'s>,
+        rhs: ReducedResponse<'s>,
         probe: LsmrResult,
         seconds: Seconds,
     },
@@ -261,13 +263,13 @@ enum Pass<'s, S: LeastSquaresSystem + 's> {
 }
 
 /// Runs every pending RHS on one map; each finishes, and is released, here or stalls.
-fn rung<'s, S: LeastSquaresSystem>(
-    system: &'s S,
-    passes: Vec<Pass<'s, S>>,
+fn rung<'s>(
+    system: &'s ReducedDesign<'_>,
+    passes: Vec<Pass<'s>>,
     map: Option<&Preconditioner>,
     stall: Option<&dyn EscalationPolicy>,
     lsmr: &LsmrOptions,
-) -> Result<Vec<Pass<'s, S>>, SolveError> {
+) -> Result<Vec<Pass<'s>>, SolveError> {
     // Collecting into `Result` fails fast on the first per-RHS error, not during the fold.
     passes
         .into_par_iter()
@@ -297,22 +299,13 @@ fn rung<'s, S: LeastSquaresSystem>(
             let m: &dyn Operator = match map {
                 Some(m) => m,
                 None => {
-                    identity = IdentityOp {
-                        n: system.matrix().ncols(),
-                    };
+                    identity = IdentityOp { n: system.ncols() };
                     &identity
                 }
             };
             let started = Instant::now();
             let maxiter = lsmr.maxiter - spent;
-            let mut result = mlsmr(
-                system.matrix(),
-                system.b(&rhs),
-                m,
-                lsmr.tol,
-                maxiter,
-                options,
-            )?;
+            let mut result = mlsmr(system, &rhs.projected, m, lsmr.tol, maxiter, options)?;
             seconds.lsmr += started.elapsed().as_secs_f64();
             // The next rung starts from `result.x`; the probe it replaces is released here.
             drop(probe);
@@ -334,7 +327,7 @@ fn rung<'s, S: LeastSquaresSystem>(
                 ..
             } = result;
             Ok(Pass::Done(RhsSolution {
-                fit: system.finish(rhs, x, true_residual)?,
+                fit: system.finish(rhs, x, true_residual),
                 converged,
                 iterations,
                 // Read from the LSMR recurrence at no extra cost; see `SolveResult::residual`.
@@ -345,39 +338,32 @@ fn rung<'s, S: LeastSquaresSystem>(
         .collect()
 }
 
-/// Every RHS in one pass; an unsettled ladder then builds Schwarz once and resumes the stalled.
-fn solve_all<S: LeastSquaresSystem>(
-    system: &S,
+/// Every RHS on the slot's running map; while any stalls, the next rung is built once and the
+/// stalled resume on it.
+fn solve_all(
+    system: &ReducedDesign<'_>,
     slot: &PrecondSlot,
     ys: &[&[f64]],
     lsmr: &LsmrOptions,
 ) -> Result<(Vec<RhsSolution>, f64), WithinError> {
-    let (map, ladder) = match slot {
-        PrecondSlot::Static { map, .. } => (map.as_ref(), None),
-        // A settled ladder never re-probes: its map, or its kept build error, is final.
-        PrecondSlot::Adaptive(a) => match a.built.get() {
-            Some(Ok(_)) => (Some(a.rung()), None),
-            Some(Err(e)) => return Err(e.clone().into()),
-            None => (Some(&a.base), Some(a.as_ref())),
-        },
-    };
-    let stall = ladder.map(|a| &a.ladder().stall as &dyn EscalationPolicy);
-    let passes = ys.iter().map(|&y| Pass::Unstarted(y)).collect();
-    let mut passes = rung(system, passes, map, stall, lsmr)?;
-
-    let mut build_secs = 0.0;
-    if let Some(a) = ladder {
-        if passes.iter().any(|p| matches!(p, Pass::Stalled { .. })) {
-            // Built outside the fan-out, so sibling RHS never race for it.
-            build_secs = a.escalate(system)?;
-            passes = rung(system, passes, Some(a.rung()), None, lsmr)?;
+    let mut passes: Vec<_> = ys.iter().map(|&y| Pass::Unstarted(y)).collect();
+    let mut build_secs = slot.settle(system)?;
+    loop {
+        // Read outside the fan-out, so every RHS of a pass runs on the same map.
+        let running = slot.running(system)?;
+        let stall = running.stall.map(|stall| stall as &dyn EscalationPolicy);
+        passes = rung(system, passes, running.map, stall, lsmr)?;
+        if !passes.iter().any(|p| matches!(p, Pass::Stalled { .. })) {
+            break;
         }
+        // Built outside the fan-out, so sibling RHS never race for it.
+        build_secs += slot.escalate(system, &running)?;
     }
     let solutions = passes
         .into_iter()
         .map(|pass| match pass {
             Pass::Done(solution) => solution,
-            _ => unreachable!("a rung without a stall policy finishes every RHS"),
+            _ => unreachable!("the loop ends only once no RHS is stalled"),
         })
         .collect();
     Ok((solutions, build_secs))
@@ -389,10 +375,13 @@ impl<'a> Solver<'a> {
     /// `design` accepts raw categories (`ArrayView2<u32>`), a pre-built
     /// [`Design`], or `&Design` to share one design across solvers (an O(1)
     /// clone of its storage). `preconditioner` accepts:
-    /// - `None` — build the library default preconditioner
-    /// - `&PreconditionerConfig` / `Some(&PreconditionerConfig)` — build from a
-    ///   [`PreconditionerConfig`] variant
+    /// - `None` — build the default [`PreconditionerConfig`]
+    /// - `&PreconditionerConfig` / `Some(&PreconditionerConfig)` — build that config
     /// - [`Preconditioner`] or `&Preconditioner` — reuse a previously built one
+    ///
+    /// A reused map must act on this design's coefficients, or construction fails with
+    /// [`BuildError::PreconditionerMismatch`]. Built on other data it may be singular on this data
+    /// (a level that had zero weight there), and the solve stops without converging; build afresh.
     ///
     /// `weights` is `None` for an unweighted solve. Supplied weights are validated
     /// in caller observation order, then retained internally only as `√w` in the
@@ -406,54 +395,27 @@ impl<'a> Solver<'a> {
         weights: Option<&[f64]>,
         preconditioner: impl Into<PreconditionerInput>,
     ) -> Result<Self, BuildError> {
-        // Whiten the slope columns (if any) before the preconditioner reads them.
-        let prepared = PreparedDesign::new(design.into_design()?, weights)?;
-        let n_dofs = prepared.design.n_dofs;
-
+        let system = ReducedDesign::new(design.into_design()?, weights)?;
         let slot = match preconditioner.into() {
-            PreconditionerInput::Default => {
-                PrecondSlot::build(&prepared, PreconditionerConfig::default())?
-            }
-            PreconditionerInput::Config(c) => PrecondSlot::build(&prepared, c)?,
-            PreconditionerInput::Prebuilt(p) => {
-                if p.nrows() != n_dofs || p.ncols() != n_dofs {
-                    return Err(BuildError::PreconditionerDimensionMismatch {
-                        expected: n_dofs,
-                        actual_rows: p.nrows(),
-                        actual_cols: p.ncols(),
-                    });
-                }
-                PrecondSlot::reuse(&prepared, p)?
-            }
-        };
-
-        Ok(Self { prepared, slot })
+            PreconditionerInput::Config(config) => PrecondSlot::build(&system, config),
+            PreconditionerInput::Prebuilt(p) => PrecondSlot::reuse(&system, p),
+        }?;
+        Ok(Self { system, slot })
     }
 
-    /// Non-fatal events from the preconditioner build; a reused pre-built preconditioner
-    /// contributes none (its own were reported when built). An Adaptive solver reports its
-    /// deferred build's once a solve escalates.
-    pub fn warnings(&self) -> &[BuildWarning] {
-        match &self.slot {
-            PrecondSlot::Static { warnings, .. } => warnings,
-            PrecondSlot::Adaptive(a) => a.build().map_or(&[], |b| &b.warnings),
-        }
-    }
-
-    /// Whether an [`Adaptive`](crate::PreconditionerConfig::Adaptive) solve has built Schwarz.
-    pub fn has_escalated(&self) -> bool {
-        match &self.slot {
-            PrecondSlot::Adaptive(a) => a.schwarz().is_some(),
-            PrecondSlot::Static { .. } => false,
-        }
+    /// Non-fatal events from every rung built so far; a reused pre-built preconditioner
+    /// contributes none (its own were reported when built).
+    pub fn warnings(&self) -> Vec<BuildWarning> {
+        self.slot.warnings()
     }
 
     /// Per-level directions the data cannot identify, shared across all RHS:
     /// identification depends only on the design and weights, never on `y`.
     fn unidentified(&self) -> Vec<CoefficientAddress> {
-        self.prepared
+        let prepared = self.system.prepared();
+        prepared
             .unidentified()
-            .map(|position| position.to_caller_address(&self.prepared.design))
+            .map(|position| position.to_caller_address(&prepared.design))
             .collect()
     }
 
@@ -467,7 +429,7 @@ impl<'a> Solver<'a> {
         let lsmr = lsmr.into().unwrap_or(&default);
 
         let t_start = Instant::now();
-        let (solutions, build_secs) = solve_all(&self.prepared, &self.slot, &[y], lsmr)?;
+        let (solutions, build_secs) = solve_all(&self.system, &self.slot, &[y], lsmr)?;
         let solution = solutions
             .into_iter()
             .next()
@@ -476,9 +438,9 @@ impl<'a> Solver<'a> {
         Ok(SolveResult {
             x: solution.fit.x,
             unidentified: self.unidentified(),
-            // Read after solving so a deferred Adaptive build's warnings are included.
-            warnings: self.warnings().to_vec(),
-            layout: CoefficientLayout::from_design(&self.prepared.design),
+            // Read after solving, so a rung this solve built is included.
+            warnings: self.warnings(),
+            layout: CoefficientLayout::from_design(&self.system.prepared().design),
             demeaned: solution.fit.demeaned,
             converged: solution.converged,
             iterations: solution.iterations,
@@ -501,10 +463,10 @@ impl<'a> Solver<'a> {
         let lsmr = lsmr.into().unwrap_or(&default);
         let n_rhs = ys.len();
 
-        let (solutions, build_secs) = solve_all(&self.prepared, &self.slot, ys, lsmr)?;
+        let (solutions, build_secs) = solve_all(&self.system, &self.slot, ys, lsmr)?;
 
-        let mut x = Vec::with_capacity(self.prepared.design.n_dofs * n_rhs);
-        let mut demeaned = Vec::with_capacity(self.prepared.design.n_obs * n_rhs);
+        let mut x = Vec::with_capacity(self.n_dofs() * n_rhs);
+        let mut demeaned = Vec::with_capacity(self.n_obs() * n_rhs);
         let mut converged = Vec::with_capacity(n_rhs);
         let mut iterations = Vec::with_capacity(n_rhs);
         let mut residual = Vec::with_capacity(n_rhs);
@@ -522,9 +484,9 @@ impl<'a> Solver<'a> {
         Ok(BatchSolveResult {
             x,
             unidentified: self.unidentified(),
-            // Read after solving so a deferred Adaptive build's warnings are included.
-            warnings: self.warnings().to_vec(),
-            layout: CoefficientLayout::from_design(&self.prepared.design),
+            // Read after solving, so a rung this solve built is included.
+            warnings: self.warnings(),
+            layout: CoefficientLayout::from_design(&self.system.prepared().design),
             demeaned,
             converged,
             iterations,
@@ -533,28 +495,25 @@ impl<'a> Solver<'a> {
             // The deferred build is the batch's only setup, so this is zero when it built nothing.
             time_setup: build_secs,
             time_total: t_start.elapsed().as_secs_f64(),
-            n_dofs: self.prepared.design.n_dofs,
-            n_obs: self.prepared.design.n_obs,
+            n_dofs: self.n_dofs(),
+            n_obs: self.n_obs(),
         })
     }
 
-    /// Access the preconditioner (for serialization or reuse across solvers).
-    /// Under Adaptive: the Schwarz map once built, otherwise the diagonal base carrying the ladder.
+    /// The map solves run on now (for serialization or reuse across solvers): the highest rung
+    /// built so far, `None` when no rung has a map.
     pub fn preconditioner(&self) -> Option<&Preconditioner> {
-        match &self.slot {
-            PrecondSlot::Static { map, .. } => map.as_ref(),
-            PrecondSlot::Adaptive(a) => Some(a.rung()),
-        }
+        self.slot.preconditioner()
     }
 
     /// Number of DOFs (coefficients).
     pub fn n_dofs(&self) -> usize {
-        self.prepared.design.n_dofs
+        self.system.prepared().design.n_dofs
     }
 
     /// Number of observations.
     pub fn n_obs(&self) -> usize {
-        self.prepared.design.n_obs
+        self.system.prepared().design.n_obs
     }
 }
 

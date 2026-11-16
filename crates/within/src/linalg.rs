@@ -13,12 +13,117 @@ pub(crate) fn add_compensated(sum: &mut f64, correction: &mut f64, value: f64) {
     *sum = next;
 }
 
+/// The columns of a basis over one block of rows whose Gram matrix is diagonal; callers size
+/// the moment slices to its width.
+pub(crate) trait DiagonalGramBasis {
+    /// Row `p`'s entry in column `c`.
+    fn entry(&self, p: usize, c: usize) -> f64;
+    /// Column `c`'s squared norm; a column with none fits nothing.
+    fn norm2(&self, c: usize) -> f64;
+}
+
+/// Adds row `p`'s `entry · v` to each column's moment.
+#[inline(always)]
+pub(crate) fn add_moments(basis: &impl DiagonalGramBasis, p: usize, v: f64, moments: &mut [f64]) {
+    for (c, m) in moments.iter_mut().enumerate() {
+        *m += basis.entry(p, c) * v;
+    }
+}
+
+/// `fit ← G⁻¹Bᵀv` given `fit = Bᵀv`; `v` is left projected once.
+///
+/// A second classical Gram–Schmidt pass restores the digits the first rounds away when `v`
+/// lies close to the span ("twice is enough"). For an intercept column this is the corrected
+/// two-pass mean, weighted.
+///
+/// References:
+/// - B. N. Parlett, *The Symmetric Eigenvalue Problem*, Prentice-Hall, 1980; SIAM reprint
+///   1998, doi:10.1137/1.9781611971163 (Kahan's "twice is enough").
+/// - J. W. Daniel, W. B. Gragg, L. Kaufman, G. W. Stewart, "Reorthogonalization and stable
+///   algorithms for updating the Gram–Schmidt QR factorization", Math. Comp. 30(136),
+///   772–795, 1976, doi:10.1090/S0025-5718-1976-0431641-8.
+/// - L. Giraud, J. Langou, M. Rozložník, J. van den Eshof, "Rounding error analysis of the
+///   classical Gram–Schmidt orthogonalization process", Numer. Math. 101, 87–100, 2005,
+///   doi:10.1007/s00211-005-0615-4.
+/// - T. F. Chan, G. H. Golub, R. J. LeVeque, "Algorithms for computing the sample variance:
+///   analysis and recommendations", Amer. Statist. 37(3), 242–247, 1983,
+///   doi:10.1080/00031305.1983.10483115.
+#[inline(always)]
+pub(crate) fn fit_twice(
+    basis: &impl DiagonalGramBasis,
+    v: &mut [f64],
+    fit: &mut [f64],
+    step: &mut [f64],
+) {
+    solve_rescued(basis, v, fit);
+    step.fill(0.0);
+    for (p, x) in v.iter_mut().enumerate() {
+        *x = remove_fit(basis, p, *x, fit);
+        add_moments(basis, p, *x, step);
+    }
+    solve_rescued(basis, v, step);
+    fit.iter_mut().zip(step.iter()).for_each(|(f, s)| *f += s);
+}
+
+/// `moments ← G⁻¹ moments`, `v`'s moments refolded at a power-of-two scale if any overflowed.
+#[inline(always)]
+pub(crate) fn solve_rescued(basis: &impl DiagonalGramBasis, v: &[f64], moments: &mut [f64]) {
+    let overflowed = moments.iter().any(|m| !m.is_finite());
+    let scale = if overflowed {
+        rescale_moments(basis, v, moments)
+    } else {
+        1.0
+    };
+    solve(basis, moments);
+    if overflowed {
+        moments.iter_mut().for_each(|m| *m /= scale);
+    }
+}
+
+/// `moments ← G⁻¹ moments`.
+#[inline(always)]
+pub(crate) fn solve(basis: &impl DiagonalGramBasis, moments: &mut [f64]) {
+    for (c, m) in moments.iter_mut().enumerate() {
+        let g = basis.norm2(c);
+        *m = if g > 0.0 { *m / g } else { 0.0 };
+    }
+}
+
+/// Refolds `v`'s moments at the power of two that keeps them finite, and returns it.
+#[cold]
+fn rescale_moments(basis: &impl DiagonalGramBasis, v: &[f64], moments: &mut [f64]) -> f64 {
+    let max_abs = v.iter().fold(0.0, |m: f64, x| m.max(x.abs()));
+    let max_norm2 = (0..moments.len()).fold(0.0, |m: f64, c| m.max(basis.norm2(c)));
+    // Cauchy–Schwarz: |Σ_p a_pc v_p| ≤ √(g_c · len) · max|v|.
+    let log2 = max_abs.log2() + 0.5 * ((v.len() as f64).log2() + max_norm2.log2());
+    // Saturating: a level with no finite value has no scale, and its moments stay non-finite.
+    let scale = 2f64.powi(1020_i32.saturating_sub(log2.ceil() as i32));
+    moments.fill(0.0);
+    for (p, &x) in v.iter().enumerate() {
+        add_moments(basis, p, scale * x, moments);
+    }
+    scale
+}
+
+/// `v − Σ_c entry(p, c) · fit_c`.
+#[inline(always)]
+pub(crate) fn remove_fit(basis: &impl DiagonalGramBasis, p: usize, v: f64, fit: &[f64]) -> f64 {
+    (fit.iter().enumerate()).fold(v, |v, (c, m)| sub_product(v, basis.entry(p, c), *m))
+}
+
+/// `v − a · b`, fused where the target has the instruction; without it `mul_add` calls libm.
+#[inline(always)]
+fn sub_product(v: f64, a: f64, b: f64) -> f64 {
+    if cfg!(any(target_arch = "aarch64", target_feature = "fma")) {
+        (-a).mul_add(b, v)
+    } else {
+        v - a * b
+    }
+}
+
 pub(crate) fn dot(left: &[f64], right: &[f64]) -> f64 {
     left.iter().zip(right).map(|(&x, &y)| x * y).sum()
 }
-
-/// Relative rank tolerance: the residual share of its variance below which a column drops.
-const RANK_TOL: f64 = 1e-10;
 
 /// Orthonormalizes `v×v` Gramians; reused, a sweep over Gramians allocates nothing.
 pub(crate) struct GramBasisWorkspace {
@@ -46,8 +151,13 @@ impl GramBasisWorkspace {
         }
     }
 
-    /// Orthonormalize the row-major Gramian `fill` writes, by pivoted Gram–Schmidt.
-    pub(crate) fn orthonormalize(&mut self, fill: impl FnOnce(&mut [f64])) -> GramBasis<'_> {
+    /// Orthonormalize the row-major Gramian `fill` writes, by pivoted Gram–Schmidt; column `j`
+    /// drops once its residual is at most `floor(j, G_jj)`.
+    pub(crate) fn orthonormalize(
+        &mut self,
+        fill: impl FnOnce(&mut [f64]),
+        floor: impl Fn(usize, f64) -> f64,
+    ) -> GramBasis<'_> {
         let Self {
             gram,
             residual,
@@ -64,7 +174,7 @@ impl GramBasisWorkspace {
         rows.clear();
         while let Some(p) = (0..v)
             .filter(|&j| {
-                !kept[j] && residual[j].is_finite() && residual[j] > RANK_TOL * gram[j * v + j]
+                !kept[j] && residual[j].is_finite() && residual[j] > floor(j, gram[j * v + j])
             })
             .max_by(|&a, &b| residual[a].total_cmp(&residual[b]))
         {
@@ -104,7 +214,8 @@ mod tests {
         // Diagonals [2, 5, 3] force the pivot sequence 1 → 2 → 0, breaking order assumptions.
         let g = [2.0, 1.0, 0.5, 1.0, 5.0, 2.0, 0.5, 2.0, 3.0];
         let mut workspace = GramBasisWorkspace::new(3);
-        let GramBasis { rows: w, kept } = workspace.orthonormalize(|gram| gram.copy_from_slice(&g));
+        let GramBasis { rows: w, kept } =
+            workspace.orthonormalize(|gram| gram.copy_from_slice(&g), |_, _| 0.0);
         assert_eq!(kept, [true; 3]);
         assert_eq!(w.len(), 9);
 
@@ -128,7 +239,8 @@ mod tests {
         // Both [1, 0] and [½, ½] satisfy W·G·Wᵀ = 1 here; only zero on the dropped column is valid.
         let g = [1.0, 1.0, 1.0, 1.0];
         let mut workspace = GramBasisWorkspace::new(2);
-        let GramBasis { rows: w, kept } = workspace.orthonormalize(|gram| gram.copy_from_slice(&g));
+        let GramBasis { rows: w, kept } =
+            workspace.orthonormalize(|gram| gram.copy_from_slice(&g), |_, _| 0.0);
         assert_eq!(kept.iter().filter(|&&k| k).count(), 1);
         for (j, _) in kept.iter().enumerate().filter(|(_, &k)| !k) {
             assert!(w.chunks_exact(2).all(|row| row[j] == 0.0));

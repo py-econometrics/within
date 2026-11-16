@@ -143,10 +143,10 @@ The `preconditioner` argument accepts any of:
 |---|---|
 | `None` (default) | Library default — Adaptive: diagonal, escalating to additive Schwarz on a stalled contraction. |
 | `PreconditionerConfig.Off()` | Explicit identity — solve unpreconditioned. |
-| `PreconditionerConfig.Additive()` | Additive Schwarz shortcut, built up front. |
-| `PreconditionerConfig.Diagonal()` | Diagonal/Jacobi preconditioner using `diag(D^T W D)^{-1}`. |
-| `PreconditionerConfig.Additive(local_solver?)` | Tuned additive Schwarz. Argument types import from `within.config`. |
-| `PreconditionerConfig.Adaptive(local_solver?, stall?)` | Tuned form of the default; the factorization is built only on escalation. |
+| `PreconditionerConfig.Schwarz()` | Additive Schwarz shortcut, built up front. |
+| `PreconditionerConfig.Diagonal()` | Diagonal/Jacobi preconditioner using the inverse diagonal of the reduced system's normal matrix. |
+| `PreconditionerConfig.Schwarz(local_solver?, coarse?)` | Tuned additive Schwarz; `coarse` adds a coarse correction (two-level). Argument types import from `within.config`. |
+| `PreconditionerConfig.Adaptive(local_solver?, stall?, coarse?)` | Tuned form of the default; the factorization is built only on escalation. |
 | `Preconditioner` instance | Reuse a previously-built preconditioner across solvers. |
 
 `PreconditionerConfig` is a tagged union: each variant is a subclass, so instances
@@ -162,6 +162,7 @@ as `.build_duration_seconds`; both are preserved across pickling and reuse.
 | `Schur.approximate(config?)` / `Schur.exact()` | Schur-reduction mode passed as `LocalSolverConfig(schur=...)`. |
 | `ApproxCholConfig(seed=0, split_merge=None)` | Approximate Cholesky parameters. |
 | `ApproxSchurConfig(split=1)` | Approximate Schur complement sampling parameters; draws from `ApproxCholConfig.seed`. |
+| `CoarseCorrection(on_stall?)` | Coarse correction for `Schwarz`/`Adaptive`: two-level Schwarz over rigid components, built with Schwarz or at the `on_stall` staleness. A design without a coarse space keeps one-level Schwarz with a `UserWarning`. |
 
 ### Result types
 
@@ -169,13 +170,13 @@ as `.build_duration_seconds`; both are preserved across pickling and reuse.
 
 **`BatchSolveResult`**: Same fields, with `converged`, `iterations`, `residual`, and `time_solve` as lists (one entry per RHS).
 
-Coefficients for unidentified directions are pinned to the **minimal-norm** value `0` (never NaN). This is why `x` can differ from reference tools that instead drop a reference level; the identified fit — `demeaned` — is unaffected by the choice.
+Coefficients for unidentified directions are pinned to `0` (never NaN). Each connected component's gauge (a constant shifted between factors) depends on the preconditioner, so `x` can differ between solves and from reference tools that instead drop a reference level; the identified fit — `demeaned` — is unaffected by the choice.
 
 ## Rust API
 
 ```rust
 use ndarray::Array2;
-use within::{solve, LsmrOptions, PreconditionerConfig};
+use within::{solve, LsmrOptions, PreconditionerConfig, Schwarz};
 use within::config::LocalSolverConfig;
 
 let categories = /* Array2<u32> of shape (n_obs, n_factors) */;
@@ -187,9 +188,10 @@ assert!(r.converged);
 
 // Tighter tolerance with an explicit additive preconditioner
 let lsmr = LsmrOptions { tol: 1e-10, ..LsmrOptions::default() };
-let precond = PreconditionerConfig::Additive {
+let precond = PreconditionerConfig::Schwarz(Schwarz {
     local_solver: LocalSolverConfig::default(),
-};
+    coarse: None,
+});
 let r = solve(categories.view(), &y, None, &lsmr, &precond)?;
 
 // Opt into diagonal/Jacobi preconditioning
@@ -243,7 +245,8 @@ assert_eq!(result.x.len(), 4); // two observed levels in each of two factors
 |---|---|
 | `Design` | Reusable immutable design; build with `Design::from_categories` or `Design::new`, then share via `Solver::new(&design, ...)` or `solve(&design, ...)`. |
 | `LsmrOptions` | `{ tol: f64, maxiter: usize, local_size: Option<usize> }` |
-| `PreconditionerConfig` | `Off` \| `Additive { local_solver: LocalSolverConfig }` \| `Diagonal` (`#[non_exhaustive]`) |
+| `PreconditionerConfig` | `Off` \| `Diagonal` \| `Schwarz(Schwarz)` \| `Adaptive { stall: Staleness, schwarz: Schwarz }` |
+| `Schwarz` | `{ local_solver: LocalSolverConfig }` |
 | `LocalSolverConfig` | `{ approx_chol, schur: SchurMode, dense_threshold, scaling }` |
 | `SchurMode` | `Approximate(ApproxSchurConfig)` \| `Exact` |
 | `Preconditioner` | Opaque built handle — reuse via `Solver::new(.., precond)` (owned or `&`) |

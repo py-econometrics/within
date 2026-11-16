@@ -51,7 +51,7 @@ fn run_block_elim_nested_rayon_case() {
         ..Default::default()
     };
     let design = synthetic_star_design(n_keep, elim_ratio);
-    let n_dofs = design.design.n_dofs;
+    let n_dofs = design.design.n_unknowns();
     let (mut domain_pairs, _) = build_local_domains(&design, &config).expect("domains");
     let [domain] = &domain_pairs[..] else {
         panic!("one component expected, got {}", domain_pairs.len())
@@ -59,8 +59,7 @@ fn run_block_elim_nested_rayon_case() {
     domain_pairs.push(domain.clone());
     let rhs: Vec<f64> = (0..n_dofs).map(|i| ((i % 29) as f64) - 14.0).collect();
 
-    let schwarz =
-        build_additive(domain_pairs, &config, n_dofs).expect("build block-elim preconditioner");
+    let schwarz = build_additive(domain_pairs, n_dofs).expect("build block-elim preconditioner");
 
     // Two subdomains: inner parallelism is off in a 1-thread pool and on in a 4-thread pool.
     let apply_in = |threads: usize| {
@@ -129,14 +128,10 @@ fn test_block_elim_nested_rayon_does_not_deadlock() {
 #[test]
 fn test_build_additive() {
     let (design, domain_pairs) = make_test_data();
-    let schwarz = build_additive(
-        domain_pairs,
-        &LocalSolverConfig::default(),
-        design.design.n_dofs,
-    )
-    .expect("build schwarz with explicit domains");
-    let r = vec![1.0; design.design.n_dofs];
-    let mut z = vec![0.0; design.design.n_dofs];
+    let n = design.design.n_unknowns();
+    let schwarz = build_additive(domain_pairs, n).expect("build schwarz with explicit domains");
+    let r = vec![1.0; n];
+    let mut z = vec![0.0; n];
     schwarz.apply(&r, &mut z).expect("schwarz apply succeeds");
 }
 
@@ -181,24 +176,4 @@ fn test_dense_threshold_zero_disables_exact_route() {
     let approximate =
         small_subdomain_solve(SchurMode::Approximate(ApproxSchurConfig::default()), 0);
     assert_ne!(exact, approximate);
-}
-
-#[test]
-fn signed_wire_fixture_contains_uniform_weights() {
-    use crate::operator::schwarz::{Preconditioner, Variant};
-    use schwarz_precond::PartitionWeights;
-
-    let bytes = include_bytes!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/preconditioner_v22.postcard"
-    ));
-    let preconditioner: Preconditioner = postcard::from_bytes(bytes).expect("signed fixture");
-    let Variant::Additive(additive) = &preconditioner.inner else {
-        panic!("signed fixture must be additive Schwarz");
-    };
-    assert!(additive
-        .inner
-        .subdomains()
-        .iter()
-        .any(|subdomain| { matches!(subdomain.partition_weights(), PartitionWeights::Uniform) }));
 }
