@@ -39,7 +39,13 @@ impl<'p> Rows<'p> {
     fn new(prepared: &'p PreparedDesign<'_>) -> Self {
         let dominant = prepared.design.dominant;
         Self {
-            by_level: prepared.level_rows(dominant),
+            by_level: match prepared.level_rows(dominant) {
+                Some(rows) => Cow::Borrowed(rows),
+                None => {
+                    let t = &prepared.design.terms[dominant];
+                    Cow::Owned(LevelRows::argsort(t.levels(), t.n_levels()))
+                }
+            },
             eliminated: TermRows::new(&prepared.term(dominant)),
             gram: prepared.diagonal(dominant),
             sqrt_weights: prepared.sqrt_weights(),

@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::sync::OnceLock;
 
 use rayon::prelude::*;
@@ -169,14 +168,11 @@ impl<'a> PreparedDesign<'a> {
         (0..self.design.n_factors()).map(|term| self.term(term))
     }
 
-    /// Term `term`'s rows grouped by level; sorted here, and not kept, when its split has none.
-    pub(crate) fn level_rows(&self, term: usize) -> Cow<'_, LevelRows> {
+    /// Term `term`'s rows grouped by level; `None` when its split keeps none.
+    pub(crate) fn level_rows(&self, term: usize) -> Option<&LevelRows> {
         match &self.splits[term] {
-            ScatterSplit::ByLevel(rows) => Cow::Borrowed(rows),
-            ScatterSplit::ByRow => {
-                let t = &self.design.terms[term];
-                Cow::Owned(LevelRows::argsort(t.levels(), t.n_levels()))
-            }
+            ScatterSplit::ByLevel(rows) => Some(rows),
+            ScatterSplit::ByRow => None,
         }
     }
 
