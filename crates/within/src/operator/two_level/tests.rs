@@ -1,7 +1,7 @@
 use rstest::rstest;
 use schwarz_precond::Operator;
 
-use super::{build_two_level, CoarseFactor, TwoLevelMap};
+use super::{build_two_level, CoarseFactor, HubRows, TwoLevelMap};
 use crate::config::{CoarseBuild, CoarseCorrection, CoarseSpace, LocalSolverConfig, TwoLevelForm};
 use crate::domain::{Design, Effect, PreparedDesign, Unknowns};
 use crate::linalg::dot;
@@ -316,14 +316,34 @@ fn hub_rows_eliminated_last_keep_the_coarse_null_modes_at_rounding() {
     let (dim, coarse) = (lines.next().expect("header").split_once(' ')).expect("dim coarse");
     let (dim, coarse): (usize, usize) =
         (dim.parse().expect("dim"), coarse.parse().expect("coarse"));
-    let lower = lines
+    let (block, border): (Vec<(u32, u32, f64)>, Vec<_>) = lines
         .map(|line| {
             let entry: Vec<&str> = line.split(' ').collect();
             let index = |k: usize| entry[k].parse::<u32>().expect("index");
             (index(0), index(1), entry[2].parse().expect("value"))
         })
-        .collect();
-    let factor = CoarseFactor::new(dim, coarse, lower, usize::MAX).expect("factor");
+        .partition(|e| (e.1 as usize) < coarse);
+    let mut hubs = HubRows {
+        ptr: vec![0],
+        cols: Vec::new(),
+        vals: Vec::new(),
+        gram: Vec::new(),
+    };
+    for row in coarse..dim {
+        for &(c, r, v) in border.iter().filter(|e| e.1 as usize == row) {
+            match c == r {
+                true => hubs.gram.push(v),
+                false => {
+                    assert!((c as usize) < coarse, "a hub row couples only gauges");
+                    hubs.cols.push(c);
+                    hubs.vals.push(v);
+                }
+            }
+        }
+        hubs.ptr.push(hubs.cols.len());
+    }
+    assert_eq!(hubs.gram.len(), dim - coarse);
+    let factor = CoarseFactor::new(coarse, block, Some(&hubs), usize::MAX).expect("factor");
     // At unit diagonal: the fixture's diagonal spans 0.08 to 8.7e5.
     let gain = (0..coarse)
         .map(|j| {
@@ -335,6 +355,44 @@ fn hub_rows_eliminated_last_keep_the_coarse_null_modes_at_rounding() {
         })
         .fold(0.0, f64::max);
     assert!(gain < 1e3, "gain {gain:.3e}");
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Hubs {
+    None,
+    /// One worker with a row at every firm: a wide level.
+    One,
+}
+
+/// The wire carries `E`, not its factor: the decoded map refactors it to the same bits.
+#[rstest]
+fn a_two_level_map_round_trips_through_the_wire(
+    #[values(System::Full, System::Reduced)] system: System,
+    #[values(Hubs::None, Hubs::One)] hubs: Hubs,
+) {
+    let mut panel = Panel::clustered(40, 3, 8, 30, 7, 1);
+    if let Hubs::One = hubs {
+        let hub = panel.worker.iter().max().expect("rows") + 1;
+        (0..40).for_each(|firm| panel.spell(hub, firm, 1));
+    }
+    let weights = Weights::Varying.of(&panel);
+    on_system(
+        panel.design(),
+        weights.as_deref(),
+        system,
+        |prepared, _, unknowns| {
+            let map = two_level(prepared, unknowns).expect("built");
+            assert_eq!(map.coarse.hubs.is_some(), matches!(hubs, Hubs::One));
+            let bytes = postcard::to_stdvec(&map).expect("serialize");
+            let decoded: TwoLevelMap = postcard::from_bytes(&bytes).expect("deserialize");
+            let x: Vec<f64> = (0..map.nrows()).map(|i| (0.3 * i as f64).sin()).collect();
+            let (mut before, mut after) = (vec![0.0; map.nrows()], vec![0.0; decoded.nrows()]);
+            map.apply(&x, &mut before).expect("apply");
+            decoded.apply(&x, &mut after).expect("apply decoded");
+            let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&before), bits(&after));
+        },
+    );
 }
 
 /// The two-level map applied to a fixed vector.

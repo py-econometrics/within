@@ -365,7 +365,8 @@ class Preconditioner:
     escalation, and reused across solves via the persistent
     :class:`Solver`. Pickleable for offline construction; can also be
     deserialised manually via ``Preconditioner(bytes_payload)`` (the same
-    payload produced by ``__reduce__`` / ``pickle.dumps``).
+    payload produced by ``__reduce__`` / ``pickle.dumps``). Load only
+    payloads ``within`` wrote: a crafted one can exhaust memory.
     """
 
     def __init__(self, data: bytes) -> None: ...

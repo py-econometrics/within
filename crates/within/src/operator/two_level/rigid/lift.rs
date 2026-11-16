@@ -38,7 +38,7 @@ pub(super) fn coarse_solve(
     let eliminated = design.block_start(unknowns, design.dominant);
     let z = lift.coarse_basis(&fits, &live, eliminated, n);
     let (lower, hubs) = lift.coarse_system(&mut fits, &live);
-    let factor = CoarseFactor::new(live.count + hubs.rank(), live.count, lower, design.n_obs)?;
+    let factor = CoarseFactor::new(live.count, lower, Some(&hubs), design.n_obs)?;
     let sz = lift.projected_columns(&fits, &live, n);
     let f = lift.hub_coupling(&fits, n, hubs.rank());
     Ok(CoarseSolve {
@@ -324,8 +324,8 @@ impl Lift<'_> {
         TwoWay::from_parts(n, live.count, vec![entries])
     }
 
-    /// `E`'s lower triplets over the live columns, wide levels' rows `[G s]` after them, and those
-    /// rows; takes each level's share of `E` and its `s`.
+    /// `E`'s lower triplets over the live columns, and the wide levels' rows `[G s]` after them;
+    /// takes each level's share of `E` and its `s`.
     fn coarse_system(&self, fits: &mut [LevelFit], live: &Live) -> (Vec<(u32, u32, f64)>, HubRows) {
         let p = self.rows.width();
         let mut lower = Vec::new();
@@ -355,14 +355,6 @@ impl Lift<'_> {
                 hubs.ptr.push(hubs.cols.len());
                 hubs.gram.push(basis.norm2(k));
             }
-        }
-        for (i, &g) in hubs.gram.iter().enumerate() {
-            let row = (live.count + i) as u32;
-            lower.push((row, row, g));
-            let span = hubs.ptr[i]..hubs.ptr[i + 1];
-            lower.extend(
-                (hubs.cols[span.clone()].iter().zip(&hubs.vals[span])).map(|(&c, &v)| (c, row, v)),
-            );
         }
         (lower, hubs)
     }
