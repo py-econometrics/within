@@ -34,12 +34,6 @@ pub(crate) struct ReducedDesign<'a> {
     vanished: Vec<usize>,
 }
 
-/// The eliminated term's runs: `new` refuses an unsorted term, and a sorted one splits by level.
-fn sorted_rows<'p>(prepared: &'p PreparedDesign<'_>) -> &'p LevelRows {
-    let rows = prepared.level_rows(prepared.design.dominant);
-    rows.expect("the eliminated term is sorted")
-}
-
 /// `A_e` and `A_k` borrowed for one product.
 struct ProjectedColumns<'r> {
     system: &'r ReducedDesign<'r>,
@@ -85,7 +79,7 @@ impl<'a> ReducedDesign<'a> {
         let dominant = design.dominant;
         let prepared = PreparedDesign::new(design, weights)?;
         let design = &prepared.design;
-        let rows = sorted_rows(&prepared);
+        let rows = prepared.eliminated_rows();
         let tasks = cut(design.terms[dominant].n_levels(), TASK_ROWS, |l| {
             rows.positions(l).len()
         });
@@ -96,10 +90,6 @@ impl<'a> ReducedDesign<'a> {
         let leaf_rows = (4 * n_kept).min(design.n_obs.div_ceil(8));
         let leaves = cut(tasks.len(), MIN_LEAF_ROWS.max(leaf_rows), task_rows);
         let plain = (design.terms.iter()).all(|t| t.intercept && !t.has_slopes());
-        // Filled here: left to first use, a solve's fan-out would wait on the dominant's.
-        (0..design.n_factors()).into_par_iter().for_each(|t| {
-            prepared.diagonal(t);
-        });
         let mut system = Self {
             prepared,
             tasks,
@@ -148,7 +138,7 @@ impl<'a> ReducedDesign<'a> {
             system: self,
             eliminated: TermRows::new(&self.prepared.term(design.dominant)),
             gram: self.prepared.diagonal(design.dominant),
-            rows: sorted_rows(&self.prepared),
+            rows: self.prepared.eliminated_rows(),
             kept: kept.collect(),
         }
     }

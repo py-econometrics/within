@@ -258,7 +258,7 @@ pub(crate) fn diagonal_map(mut diag: Vec<f64>) -> Result<DiagonalPreconditioner,
 }
 
 /// The additive Schwarz map over the unknowns; `None` when no factor pair yields a subdomain, which
-/// on a design of two or more terms happens only when the operator over `unknowns` is zero.
+/// on a design of two or more terms happens only when the operator over the unknowns is zero.
 pub(crate) fn build_schwarz(
     prepared: &PreparedDesign<'_>,
     local_solver: &LocalSolverConfig,

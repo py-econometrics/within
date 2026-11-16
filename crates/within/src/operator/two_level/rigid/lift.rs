@@ -21,10 +21,9 @@ pub(super) fn coarse_solve(
 ) -> Result<CoarseSolve, CoarseDecline> {
     let design = &prepared.design;
     let kept = (0..design.n_factors())
-        .filter(|&t| t != design.dominant)
-        .map(|t| {
-            let start = design.block_start(t).expect("a kept term");
-            (TermRows::new(&prepared.term(t)), start)
+        .filter_map(|t| {
+            let start = design.block_start(t)?;
+            Some((TermRows::new(&prepared.term(t)), start))
         })
         .collect();
     let lift = Lift { rows, gauges, kept };

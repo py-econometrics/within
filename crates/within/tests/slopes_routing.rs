@@ -265,9 +265,7 @@ fn surplus_component_sampled_matches_exact_reduction() {
 /// fit the `Off`/`Diagonal` preconditioners already produce.
 #[test]
 fn singleton_level_in_non_first_slope_term_solves_under_additive_schwarz() {
-    // Seven workers outnumber the firm's six coefficients, so the worker term is eliminated and
-    // the firm-slope level-2 column is the last kept one: an omitted one shows up as a shape
-    // mismatch.
+    // Seven workers outnumber the firm's six coefficients: the uncovered column is the last kept.
     let worker = [0u32, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6];
     let firm = [2u32, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0];
     let x = [

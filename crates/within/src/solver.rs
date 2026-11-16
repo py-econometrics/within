@@ -327,7 +327,7 @@ fn rung<'s>(
                 ..
             } = result;
             Ok(Pass::Done(RhsSolution {
-                fit: system.finish(rhs, x, true_residual)?,
+                fit: system.finish(rhs, x, true_residual),
                 converged,
                 iterations,
                 // Read from the LSMR recurrence at no extra cost; see `SolveResult::residual`.
@@ -369,17 +369,6 @@ fn solve_all(
     Ok((solutions, build_secs))
 }
 
-/// The preconditioner slot `input` resolves to on `system`.
-fn resolve(
-    system: &ReducedDesign<'_>,
-    input: PreconditionerInput,
-) -> Result<PrecondSlot, BuildError> {
-    match input {
-        PreconditionerInput::Config(config) => PrecondSlot::build(system, config),
-        PreconditionerInput::Prebuilt(p) => PrecondSlot::reuse(system, p),
-    }
-}
-
 impl<'a> Solver<'a> {
     /// Construct a solver.
     ///
@@ -407,7 +396,10 @@ impl<'a> Solver<'a> {
         preconditioner: impl Into<PreconditionerInput>,
     ) -> Result<Self, BuildError> {
         let system = ReducedDesign::new(design.into_design()?, weights)?;
-        let slot = resolve(&system, preconditioner.into())?;
+        let slot = match preconditioner.into() {
+            PreconditionerInput::Config(config) => PrecondSlot::build(&system, config),
+            PreconditionerInput::Prebuilt(p) => PrecondSlot::reuse(&system, p),
+        }?;
         Ok(Self { system, slot })
     }
 

@@ -6,7 +6,6 @@
 mod glue;
 mod lift;
 
-use std::borrow::Cow;
 use std::ops::Range;
 
 use super::CoarseSolve;
@@ -25,7 +24,7 @@ pub(super) fn build(prepared: &PreparedDesign<'_>) -> Result<CoarseSolve, Coarse
 
 /// The eliminated term's rows grouped by level, read in the solve basis.
 struct Rows<'p> {
-    by_level: Cow<'p, LevelRows>,
+    by_level: &'p LevelRows,
     eliminated: TermRows<'p>,
     /// `diag(A_eᵀA_e)`, each level's whole Gram block after whitening, column-major.
     gram: &'p [f64],
@@ -36,13 +35,7 @@ impl<'p> Rows<'p> {
     fn new(prepared: &'p PreparedDesign<'_>) -> Self {
         let dominant = prepared.design.dominant;
         Self {
-            by_level: match prepared.level_rows(dominant) {
-                Some(rows) => Cow::Borrowed(rows),
-                None => {
-                    let t = &prepared.design.terms[dominant];
-                    Cow::Owned(LevelRows::argsort(t.levels(), t.n_levels()))
-                }
-            },
+            by_level: prepared.eliminated_rows(),
             eliminated: TermRows::new(&prepared.term(dominant)),
             gram: prepared.diagonal(dominant),
             sqrt_weights: prepared.sqrt_weights(),

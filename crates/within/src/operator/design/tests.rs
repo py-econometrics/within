@@ -43,17 +43,6 @@ fn adjoint(prepared: &crate::domain::PreparedDesign<'_>, r: &[f64]) -> Vec<f64> 
     out
 }
 
-/// `diag(DᵀWD)`.
-fn gram_diagonal(prepared: &crate::domain::PreparedDesign<'_>) -> Vec<f64> {
-    let mut out = vec![0.0; prepared.design.n_dofs];
-    for i in 0..prepared.design.n_obs {
-        for (j, v) in row_entries(prepared, i) {
-            out[j] += v * v;
-        }
-    }
-    out
-}
-
 /// Every gather arm, on a design the locality sort permutes: `demeaned` is `y − D x`.
 #[test]
 fn demeaned_is_the_response_less_the_design_product() {
@@ -96,7 +85,7 @@ mod elimination_tests {
     use rstest::rstest;
     use schwarz_precond::Operator;
 
-    use super::{adjoint, gram_diagonal, noise, product};
+    use super::{adjoint, noise, product};
     use crate::domain::{Design, Effect};
     use crate::linalg::dot;
     use crate::operator::design::ReducedDesign;
@@ -306,8 +295,7 @@ mod elimination_tests {
 
         // `diag(A_rᵀA_r)` column by column, relative to the kept column's own norm.
         let diagonal = reduced.gram_diagonal();
-        let gram = gram_diagonal(prepared);
-        let kept_gram = [&gram[..dofs.start], &gram[dofs.end..]].concat();
+        let kept_gram = [prepared.diagonal(0), prepared.diagonal(2)].concat();
         for j in 0..k {
             let mut unit = vec![0.0; k];
             unit[j] = 1.0;

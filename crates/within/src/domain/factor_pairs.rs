@@ -263,8 +263,7 @@ mod tests {
     #[test]
     fn one_subdomain_per_pair_solves_dead_levels_to_zero() {
         use schwarz_precond::{LocalSolver, MemBuffer, MemStack, Threads};
-        // ±z within one firm cancels a cross cell to exactly zero; worker 4's zero z is dead. Two
-        // one-row firms make the firms the eliminated term.
+        // ±z within one firm cancels a cross cell to exactly zero; worker 4's zero z is dead.
         let workers = [0u32, 0, 1, 1, 2, 2, 3, 3, 4, 2, 0];
         let firms = [0u32, 0, 2, 2, 0, 1, 3, 3, 0, 4, 5];
         let z = [1.0, -1.0, 2.0, -2.0, 1.0, 1.0, 3.0, -3.0, 0.0, 0.5, 1.5];

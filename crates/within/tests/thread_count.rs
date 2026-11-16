@@ -103,8 +103,7 @@ fn with_threads<T: Send>(threads: usize, run: impl FnOnce() -> T + Send) -> T {
         .install(run)
 }
 
-/// Diagonal, then one-level Schwarz after any contraction, so the solve hands off before it
-/// converges.
+/// Hands off to Schwarz after any contraction, so before the solve converges.
 fn eager_adaptive() -> PreconditionerConfig {
     PreconditionerConfig::Adaptive {
         stall: Staleness::try_new(1, 0.0).expect("stall"),

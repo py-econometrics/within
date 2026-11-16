@@ -11,9 +11,7 @@ mod scatter_split;
 pub(crate) use prepared::{PreparedDesign, PreparedTerm, TermRows};
 use reparam::TermReparam;
 pub(crate) use row_index::RowIndex;
-pub(crate) use scatter_split::{
-    cut, fixed_tree, LevelRows, LevelSlots, ScatterSplit, MIN_LEAF_ROWS,
-};
+pub(crate) use scatter_split::{cut, fixed_tree, LevelRows, ScatterSplit, MIN_LEAF_ROWS};
 
 /// Rows from which a sweep over observations runs in parallel.
 pub(crate) const PAR_THRESHOLD: usize = 10_000;
@@ -566,9 +564,9 @@ impl UnknownsLayout {
             .iter()
             .zip(&built.terms)
             .position(|(a, b)| a != b);
-        if let Some(term) = differing {
+        differing.map(|term| {
             let (expected, found) = (self.terms[term], built.terms[term]);
-            return Some(if expected.levels != found.levels {
+            if expected.levels != found.levels {
                 LayoutMismatch::Levels {
                     term,
                     expected: expected.levels,
@@ -580,16 +578,15 @@ impl UnknownsLayout {
                     expected: expected.columns,
                     found: found.columns,
                 }
-            });
-        }
-        None
+            }
+        })
     }
 }
 
 /// Fixed-effects design: its terms; clones share rows.
 #[derive(Clone, Debug)]
 pub struct Design<'a> {
-    /// Rows in internal order (caller's, or an owned locality-sorted copy).
+    /// Rows in internal order (caller's, or an owned copy sorted by the dominant term).
     pub(crate) terms: Arc<Vec<Term<'a>>>,
     pub(crate) n_obs: usize,
     pub(crate) n_dofs: usize,
@@ -676,7 +673,7 @@ impl<'a> Design<'a> {
 
         let dominant =
             dominant(terms.iter().map(Term::n_dofs)).expect("observations imply an effect");
-        // Sort by the dominant term so its gather/scatter runs sequentially.
+        // Sort by the dominant term: the reduced system reads each of its levels as one run.
         let d = &terms[dominant];
         let obs_perm = if !d.sorted {
             let offsets = offsets(d.n_levels(), d.levels.iter().map(|&l| l as usize));

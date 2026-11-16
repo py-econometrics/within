@@ -58,7 +58,6 @@ pub(crate) struct Response<'s> {
 
 impl<'s> Response<'s> {
     pub(crate) fn new(prepared: &'s PreparedDesign<'_>, y: &'s [f64]) -> Result<Self, SolveError> {
-        // `W^{1/2} y` zips y with sqrt-weights, silently truncating when `y.len() > n_rows`.
         if y.len() != prepared.design.n_obs {
             return Err(SolveError::InvalidInput {
                 context: "Solver::solve",
@@ -97,23 +96,6 @@ pub(crate) struct Fit {
     pub(crate) demeaned: Vec<f64>,
 }
 
-impl PreparedDesign<'_> {
-    /// The caller's fit from solve-basis coefficients `x` and, if measured, `b − A x`.
-    pub(crate) fn fit(
-        &self,
-        response: Response<'_>,
-        mut x: Vec<f64>,
-        measured: Option<Vec<f64>>,
-    ) -> Fit {
-        let demeaned = self.demeaned(&x, response.y, measured);
-        self.back_transform(&mut x);
-        Fit {
-            x,
-            demeaned: self.design.permute_obs_out(demeaned),
-        }
-    }
-}
-
 /// A validated response and the reduced system's right-hand side `(I − P_e) W^{1/2} y`.
 pub(crate) struct ReducedResponse<'s> {
     response: Response<'s>,
@@ -139,11 +121,16 @@ impl ReducedDesign<'_> {
         rhs: ReducedResponse<'_>,
         x: Vec<f64>,
         measured: Option<Vec<f64>>,
-    ) -> Result<Fit, SolveError> {
+    ) -> Fit {
         drop(rhs.projected);
         let prepared = self.prepared();
-        let x = self.recover(rhs.response.weighted_row(prepared), &x);
+        let mut x = self.recover(rhs.response.weighted_row(prepared), &x);
         // `(I − P_e)(b − A_k x_k)` is `b − A x` once the eliminated block is recovered.
-        Ok(prepared.fit(rhs.response, x, measured))
+        let demeaned = prepared.demeaned(&x, rhs.response.y, measured);
+        prepared.back_transform(&mut x);
+        Fit {
+            x,
+            demeaned: prepared.design.permute_obs_out(demeaned),
+        }
     }
 }

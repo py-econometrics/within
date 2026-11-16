@@ -1,5 +1,3 @@
-use std::sync::OnceLock;
-
 use rayon::prelude::*;
 
 use super::{row_weight, Column, Design, LevelRows, ScatterSplit, Term, TermReparam};
@@ -14,10 +12,10 @@ pub(crate) struct PreparedDesign<'a> {
     sqrt_weights: Option<Vec<f64>>,
     /// Per design term, its change of basis; `None` is the identity.
     reparams: Vec<Option<TermReparam>>,
-    /// Per design term, its block of `diag(AᵀA)` in solve coordinates, filled on first read.
-    diagonals: Vec<OnceLock<Box<[f64]>>>,
-    /// Per design term, how its adjoint scatter-add splits into parallel pieces.
-    splits: Vec<ScatterSplit>,
+    /// Per design term, its block of `diag(AᵀA)` in solve coordinates.
+    diagonals: Vec<Box<[f64]>>,
+    /// The eliminated term's rows grouped by level.
+    eliminated_rows: LevelRows,
 }
 
 /// A term in the solve basis: the design's rows plus this preparation's whitened slopes.
@@ -131,19 +129,27 @@ impl<'a> PreparedDesign<'a> {
         let sqrt_weights = weights
             .map(|weights| prepare_sqrt_weights(&design, weights))
             .transpose()?;
-        let splits: Vec<ScatterSplit> = design.terms.par_iter().map(ScatterSplit::new).collect();
         let reparams: Vec<Option<TermReparam>> = (0..design.n_factors())
             .into_par_iter()
-            .map(|t| TermReparam::build(&design, t, &splits[t], sqrt_weights.as_deref()))
+            .map(|t| TermReparam::build(&design, t, sqrt_weights.as_deref()))
             .collect();
-        let diagonals = (0..design.n_factors()).map(|_| OnceLock::new()).collect();
-        Ok(Self {
+        let ScatterSplit::ByLevel(eliminated_rows) =
+            ScatterSplit::new(&design.terms[design.dominant])
+        else {
+            unreachable!("`Design::build` sorts the rows by the eliminated term")
+        };
+        let mut prepared = Self {
             design,
             sqrt_weights,
             reparams,
-            diagonals,
-            splits,
-        })
+            diagonals: Vec::new(),
+            eliminated_rows,
+        };
+        prepared.diagonals = (0..prepared.design.n_factors())
+            .into_par_iter()
+            .map(|t| term_diagonal(&prepared.term(t), prepared.sqrt_weights()))
+            .collect();
+        Ok(prepared)
     }
 
     /// `W^{1/2}` in internal observation order; `None` is unweighted.
@@ -163,72 +169,13 @@ impl<'a> PreparedDesign<'a> {
         (0..self.design.n_factors()).map(|term| self.term(term))
     }
 
-    /// Term `term`'s rows grouped by level; `None` when its split keeps none.
-    pub(crate) fn level_rows(&self, term: usize) -> Option<&LevelRows> {
-        match &self.splits[term] {
-            ScatterSplit::ByLevel(rows) => Some(rows),
-            ScatterSplit::ByRow => None,
-        }
+    pub(crate) fn eliminated_rows(&self) -> &LevelRows {
+        &self.eliminated_rows
     }
 
     /// Term `term`'s block of `diag(AᵀA)`, laid out like its `dofs()`, summed in observation order.
     pub(crate) fn diagonal(&self, term: usize) -> &[f64] {
-        // Serial fill: a rayon job stolen inside it could re-enter this cell and deadlock.
-        self.diagonals[term].get_or_init(|| {
-            let prepared = self.term(term);
-            let (term, sqrt_weights) = (prepared.term, self.sqrt_weights());
-            let levels = term.levels();
-            let mut diag = vec![0.0; term.n_dofs()];
-            let mut corrections = vec![0.0; term.n_dofs()];
-            if !prepared.slopes.is_empty() {
-                let columns: Vec<(usize, Option<&[f64]>)> = (0..term.n_columns())
-                    .map(|c| (term.column_dofs(c).start - term.offset, prepared.loading(c)))
-                    .collect();
-                for (obs, &level) in levels.iter().enumerate() {
-                    let w = row_weight(sqrt_weights, obs);
-                    for &(base, z) in &columns {
-                        // Keep `w * z * z` left-to-right: a zero weight kills a huge `z` first.
-                        let slot = base + level as usize;
-                        add_compensated(
-                            &mut diag[slot],
-                            &mut corrections[slot],
-                            z.map_or(w, |z| w * z[obs] * z[obs]),
-                        );
-                    }
-                }
-            } else if term.sorted() {
-                // A sorted level is one run: a register sum keeps its order with no store per row.
-                let mut start = 0;
-                for run in levels.chunk_by(|a, b| a == b) {
-                    let rows = start..start + run.len();
-                    start = rows.end;
-                    // A sum of ones is exact, so the unweighted run sum is its length.
-                    diag[run[0] as usize] += match sqrt_weights {
-                        None => run.len() as f64,
-                        Some(s) => {
-                            let (mut sum, mut correction) = (0.0, 0.0);
-                            for &si in &s[rows] {
-                                add_compensated(&mut sum, &mut correction, si * si);
-                            }
-                            sum + correction
-                        }
-                    };
-                }
-            } else {
-                for (obs, &level) in levels.iter().enumerate() {
-                    let level = level as usize;
-                    add_compensated(
-                        &mut diag[level],
-                        &mut corrections[level],
-                        row_weight(sqrt_weights, obs),
-                    );
-                }
-            }
-            for (entry, correction) in diag.iter_mut().zip(corrections) {
-                *entry += correction;
-            }
-            diag.into_boxed_slice()
-        })
+        &self.diagonals[term]
     }
 
     /// Map solve-basis coefficients back to the user's parametrization.
@@ -247,6 +194,61 @@ impl<'a> PreparedDesign<'a> {
             .flatten()
             .flat_map(|r| r.unidentified.iter().copied())
     }
+}
+
+fn term_diagonal(prepared: &PreparedTerm<'_>, sqrt_weights: Option<&[f64]>) -> Box<[f64]> {
+    let term = prepared.term;
+    let levels = term.levels();
+    let mut diag = vec![0.0; term.n_dofs()];
+    let mut corrections = vec![0.0; term.n_dofs()];
+    if !prepared.slopes.is_empty() {
+        let columns: Vec<(usize, Option<&[f64]>)> = (0..term.n_columns())
+            .map(|c| (term.column_dofs(c).start - term.offset, prepared.loading(c)))
+            .collect();
+        for (obs, &level) in levels.iter().enumerate() {
+            let w = row_weight(sqrt_weights, obs);
+            for &(base, z) in &columns {
+                // Keep `w * z * z` left-to-right: a zero weight kills a huge `z` first.
+                let slot = base + level as usize;
+                add_compensated(
+                    &mut diag[slot],
+                    &mut corrections[slot],
+                    z.map_or(w, |z| w * z[obs] * z[obs]),
+                );
+            }
+        }
+    } else if term.sorted() {
+        // A sorted level is one run: a register sum keeps its order with no store per row.
+        let mut start = 0;
+        for run in levels.chunk_by(|a, b| a == b) {
+            let rows = start..start + run.len();
+            start = rows.end;
+            // A sum of ones is exact, so the unweighted run sum is its length.
+            diag[run[0] as usize] += match sqrt_weights {
+                None => run.len() as f64,
+                Some(s) => {
+                    let (mut sum, mut correction) = (0.0, 0.0);
+                    for &si in &s[rows] {
+                        add_compensated(&mut sum, &mut correction, si * si);
+                    }
+                    sum + correction
+                }
+            };
+        }
+    } else {
+        for (obs, &level) in levels.iter().enumerate() {
+            let level = level as usize;
+            add_compensated(
+                &mut diag[level],
+                &mut corrections[level],
+                row_weight(sqrt_weights, obs),
+            );
+        }
+    }
+    for (entry, correction) in diag.iter_mut().zip(corrections) {
+        *entry += correction;
+    }
+    diag.into_boxed_slice()
 }
 
 /// Validate caller-order weights, then return `√w` in the design's internal order.
