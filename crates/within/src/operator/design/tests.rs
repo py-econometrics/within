@@ -424,7 +424,7 @@ mod elimination_tests {
     use schwarz_precond::Operator;
 
     use super::noise;
-    use crate::domain::{Design, Effect};
+    use crate::domain::{Design, Effect, Unknowns};
     use crate::linalg::dot;
     use crate::operator::design::ReducedDesign;
 
@@ -726,7 +726,9 @@ mod elimination_tests {
         let weights: Vec<f64> = (0..n).map(|i| 0.5 + noise(2 * n + i).abs()).collect();
         // Built in each pool: construction computes the diagonal.
         let build = || ReducedDesign::new(Design::new(effects.clone()).unwrap(), Some(&weights));
-        let k = build().unwrap().ncols();
+        let k = Design::new(effects.clone())
+            .unwrap()
+            .n_unknowns(Unknowns::WithoutDominant);
         // A leaf of 4·k rows exceeds an eighth of the design, so the cap sets the leaves.
         assert!(4 * k > n / 8);
         let x: Vec<f64> = (0..k).map(|j| noise(3 * n + j)).collect();

@@ -29,7 +29,7 @@ pub(crate) struct ReducedDesign<'a> {
     leaves: Vec<Range<usize>>,
     /// Every term is a lone intercept: the plain kernels.
     plain: bool,
-    /// `diag(A_rᵀ A_r)`, 0 where a column's projection is rounding.
+    /// `projected_gram`, computed once.
     diagonal: Vec<f64>,
     /// The kept coefficients whose diagonal is 0: the products treat their columns as zero.
     vanished: Vec<usize>,
@@ -131,8 +131,12 @@ impl<'a> ReducedDesign<'a> {
             return Cow::Borrowed(x);
         }
         let mut x = x.to_vec();
-        self.vanished.iter().for_each(|&j| x[j] = 0.0);
+        self.zero_vanished(&mut x);
         Cow::Owned(x)
+    }
+
+    fn zero_vanished(&self, v: &mut [f64]) {
+        self.vanished.iter().for_each(|&j| v[j] = 0.0);
     }
 
     pub(crate) fn prepared(&self) -> &PreparedDesign<'a> {
@@ -356,7 +360,7 @@ impl<'a> ReducedDesign<'a> {
     }
 }
 
-/// A kept term as `gram_diagonal` sweeps it.
+/// A kept term as `projected_gram` sweeps it.
 struct KeptTerm<'p> {
     rows: TermRows<'p>,
     /// Its block start in the kept coefficients.
@@ -634,7 +638,7 @@ impl Operator for ReducedDesign<'_> {
         let columns = self.columns();
         with_shape!(columns, |PLAIN, w| y
             .copy_from_slice(&columns.adjoint::<PLAIN>(v, w)));
-        self.vanished.iter().for_each(|&j| y[j] = 0.0);
+        self.zero_vanished(y);
         Ok(())
     }
 }

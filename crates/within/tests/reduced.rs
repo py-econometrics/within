@@ -666,12 +666,14 @@ fn a_kept_level_nested_in_an_eliminated_level_does_not_stall_the_diagonal() {
     assert_same_fit(&reduced.demeaned, &full.demeaned, &[true; N], &y);
 }
 
-/// Every column of a term that is a function of the eliminated one lies in its span: the reduced
-/// system has nothing left to iterate on, whatever the map.
+/// Every column of a term that is a function of the eliminated one lies in its span: alone, it
+/// leaves the reduced system nothing to iterate on, whatever the map.
 #[rstest]
-fn a_kept_term_nested_in_the_eliminated_one_solves_at_zero(
+fn a_kept_term_nested_in_the_eliminated_one_is_zero(
     // Slopes on (the eliminated term, the kept one); a kept slope needs the eliminated one's.
     #[values((false, false), (true, false), (true, true))] slopes: (bool, bool),
+    // A live kept term beside the nested one.
+    #[values(false, true)] firm: bool,
     #[values(
         PreconditionerConfig::Off,
         PreconditionerConfig::Diagonal,
@@ -681,15 +683,20 @@ fn a_kept_term_nested_in_the_eliminated_one_solves_at_zero(
     preconditioner: PreconditionerConfig,
 ) {
     let (eliminated_slope, kept_slope) = slopes;
-    let worker: Vec<u32> = (0..N).map(|i| (i % 300) as u32).collect();
+    let mut factors = factors(2);
+    let worker = factors.remove(0);
     let region: Vec<u32> = worker.iter().map(|&w| w / 10).collect();
     let z: Vec<f64> = (0..N).map(|i| noise(2 * N + i)).collect();
     let loadings = |on: bool| if on { vec![&z[..]] } else { vec![] };
     let effects = || {
-        vec![
+        let mut effects = vec![
             Effect::new(&worker, true, loadings(eliminated_slope)).unwrap(),
             Effect::new(&region, true, loadings(kept_slope)).unwrap(),
-        ]
+        ];
+        if firm {
+            effects.push(Effect::new(&factors[0], true, []).unwrap());
+        }
+        effects
     };
     let w: Vec<f64> = (0..N).map(|i| 0.5 + noise(N + i).abs()).collect();
     let y = response(7);
@@ -702,11 +709,10 @@ fn a_kept_term_nested_in_the_eliminated_one_solves_at_zero(
         .solve(&y, &lsmr())
         .unwrap();
     assert!(reduced.converged && full.converged, "{reduced:?}\n{full:?}");
-    assert_eq!(reduced.iterations, 0);
+    assert!(firm || reduced.iterations == 0, "{}", reduced.iterations);
     assert_same_fit(&reduced.demeaned, &full.demeaned, &[true; N], &y);
-    let region = |j: &usize| reduced.layout.address(*j).expect("slot").channel.term == 1;
     assert!((0..reduced.x.len())
-        .filter(region)
+        .filter(|&j| reduced.layout.address(j).expect("slot").channel.term == 1)
         .all(|j| reduced.x[j] == 0.0));
 }
 
