@@ -285,22 +285,27 @@ fn solve_tight(solver: &Solver<'_>, y: &[f64]) -> crate::SolveResult {
 }
 
 #[rstest]
-#[case::unrelated(SlopeSpec::Independent)]
-#[case::exact_alias(SlopeSpec::YearIndex)]
-#[case::shared_covariate(SlopeSpec::SharedWithFirm)]
-#[case::near_alias_1e10(SlopeSpec::NearYearIndex(1e-10))]
-#[ignore = "reduced system stops above tol 1e-12 here (#544)"]
-#[case::near_alias_1e8(SlopeSpec::NearYearIndex(1e-8))]
-#[case::near_alias_1e6(SlopeSpec::NearYearIndex(1e-6))]
-#[case::near_alias_1e3(SlopeSpec::NearYearIndex(1e-3))]
-#[case::duplicate_aliases(SlopeSpec::DuplicateYearIndex)]
-#[case::alias_without_intercept(SlopeSpec::YearIndexWithoutIntercept)]
-#[case::two_independent_aliases(SlopeSpec::TwoIndependentAliases)]
-#[case::alias_of_two_terms(SlopeSpec::AgeCohort)]
-fn an_aliased_slope_converges(#[case] spec: SlopeSpec) {
+#[case::unrelated(SlopeSpec::Independent, 1e-12)]
+#[case::exact_alias(SlopeSpec::YearIndex, 1e-12)]
+#[case::shared_covariate(SlopeSpec::SharedWithFirm, 1e-12)]
+#[case::near_alias_1e10(SlopeSpec::NearYearIndex(1e-10), 1e-12)]
+// At |x| ≈ 5e6, f64 confirms the reduced gradient only to ~1e-10 of ‖A_rᵀb‖ (#544).
+#[case::near_alias_1e8(SlopeSpec::NearYearIndex(1e-8), 1e-11)]
+#[case::near_alias_1e6(SlopeSpec::NearYearIndex(1e-6), 1e-12)]
+#[case::near_alias_1e3(SlopeSpec::NearYearIndex(1e-3), 1e-12)]
+#[case::duplicate_aliases(SlopeSpec::DuplicateYearIndex, 1e-12)]
+#[case::alias_without_intercept(SlopeSpec::YearIndexWithoutIntercept, 1e-12)]
+#[case::two_independent_aliases(SlopeSpec::TwoIndependentAliases, 1e-12)]
+#[case::alias_of_two_terms(SlopeSpec::AgeCohort, 1e-12)]
+fn an_aliased_slope_converges(#[case] spec: SlopeSpec, #[case] tol: f64) {
     let panel = akm_panel(4_000, 200, 10, 0.15, spec);
     let solver = Solver::new(panel.effects(), None, schwarz()).expect("solver");
-    let out = solve_tight(&solver, &panel.y);
+    let options = LsmrOptions {
+        tol,
+        maxiter: 20_000,
+        ..Default::default()
+    };
+    let out = solver.solve(&panel.y, &options).expect("solve");
     // A floating component grounded by mistake reports a false convergence at an O(1) mean.
     let group_mean = max_abs_group_mean(&solver.system.prepared().design, &out.demeaned);
     assert!(
