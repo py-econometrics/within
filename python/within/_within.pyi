@@ -25,7 +25,7 @@ class PreconditionerConfig:
         def __init__(self) -> None: ...
 
     class Diagonal(PreconditionerConfig):
-        """Diagonal/Jacobi preconditioner using ``diag(D^T W D)^{-1}``."""
+        """Diagonal/Jacobi preconditioner on the reduced system's normal matrix."""
 
         def __init__(self) -> None: ...
 
@@ -88,8 +88,9 @@ class LsmrOptions:
             the plain short recurrence is used. ``5..20`` is cheap insurance
             for ill-conditioned problems where rounding causes the
             bidiagonalization to lose orthogonality and convergence to
-            stall. Memory cost is ``local_size * n_dofs`` doubles
-            unpreconditioned, ``2 * local_size * n_dofs`` preconditioned.
+            stall. Memory cost is ``local_size * n`` doubles unpreconditioned,
+            ``2 * local_size * n`` preconditioned, ``n`` the coefficients
+            outside the eliminated term.
     """
 
     @property
@@ -149,7 +150,7 @@ class SolveResult:
             labels to these slots. Slots for unidentified directions hold
             ``0``, never NaN. Each connected component's gauge (a constant
             shifted between factors) depends on the preconditioner: compare
-            ``demeaned`` across solves, not ``x``.
+            ``demeaned`` on rows with positive weight across solves, not ``x``.
         unidentified: Per-level directions the data cannot identify, as
             :class:`UnidentifiedDirection` records.
         layout: Address <-> flat-``x``-index translation for the coefficients.
@@ -157,9 +158,10 @@ class SolveResult:
             shape ``(n_obs,)``.
         converged: Whether the LSMR solver met the convergence tolerance.
         iterations: Total number of LSMR iterations performed.
-        residual: Relative normal-equation residual
-            ``||D^T W (y - Dx)|| / ||D^T W y||`` estimated from the LSMR
-            recurrence at no extra cost. Exact for an unpreconditioned solve;
+        residual: Relative normal-equation residual ``||A^T (b - Ax)|| / ||A^T b||``
+            of the iterated system (the terms other than the eliminated one,
+            projected off its span), estimated from the LSMR recurrence at no
+            extra cost. Exact for an unpreconditioned solve;
             measured in the preconditioner's metric otherwise. An ``Adaptive``
             hand-off is rebased onto the original response, so the escalating
             solve reports on the same footing as a cold one.

@@ -119,7 +119,7 @@ pub struct SolveResult {
     /// labels to these slots. Slots for unidentified directions hold `0`, never
     /// NaN; see [`SolveResult::unidentified`]. Each connected component's gauge
     /// (a constant shifted between terms) depends on the preconditioner:
-    /// compare `demeaned` across solves, not `x`.
+    /// compare `demeaned` on rows with positive weight across solves, not `x`.
     pub x: Vec<f64>,
     /// Per-level directions the data cannot identify.
     pub unidentified: Vec<CoefficientAddress>,

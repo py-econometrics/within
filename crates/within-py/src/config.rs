@@ -430,13 +430,13 @@ impl PyPreconditioner {
             .map_err(IntoPyErr::into_py_err)?;
         Ok(numpy::PyArray1::from_vec(py, y))
     }
-    /// Number of rows (DOFs).
+    /// Number of rows: the coefficients outside the eliminated term.
     #[getter]
     fn nrows(&self) -> usize {
         self.inner.nrows()
     }
 
-    /// Number of columns (DOFs).
+    /// Number of columns: the coefficients outside the eliminated term.
     #[getter]
     fn ncols(&self) -> usize {
         self.inner.ncols()

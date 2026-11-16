@@ -81,6 +81,59 @@ fn demeaned_is_the_response_less_the_design_product() {
     }
 }
 
+mod weighted_adjoint_proptests {
+    use crate::operator::design::ReducedDesign;
+    use proptest::prelude::*;
+    use schwarz_precond::Operator;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(10))]
+
+        /// `⟨A_r x, r⟩ = ⟨x, A_rᵀ r⟩` on random weighted designs.
+        #[test]
+        fn prop_weighted_adjoint_property(
+            n_obs in 20usize..=200,
+            n_levels_a in 2usize..=15,
+            n_levels_b in 2usize..=15,
+            seed in 0u64..1000,
+        ) {
+            let fa: Vec<u32> = (0..n_obs)
+                .map(|i| ((i * 3 + seed as usize * 7) % n_levels_a) as u32)
+                .collect();
+            let fb: Vec<u32> = (0..n_obs)
+                .map(|i| ((i * 5 + seed as usize * 11) % n_levels_b) as u32)
+                .collect();
+
+            let weights: Vec<f64> = (0..n_obs)
+                .map(|i| 0.5 + (i as f64 * 0.13 + seed as f64 * 0.41).sin().abs())
+                .collect();
+
+            let design = crate::domain::Design::from_levels_for_test(vec![fa, fb]);
+            let reduced = ReducedDesign::new(design, Some(&weights)).unwrap();
+
+            let x: Vec<f64> = (0..reduced.ncols())
+                .map(|i| (i as f64 * 0.37 + seed as f64 * 0.13).sin())
+                .collect();
+            let r: Vec<f64> = (0..reduced.nrows())
+                .map(|i| (i as f64 * 0.29 + seed as f64 * 0.07).cos())
+                .collect();
+
+            let mut ax = vec![0.0f64; reduced.nrows()];
+            reduced.apply(&x, &mut ax).unwrap();
+            let lhs: f64 = ax.iter().zip(&r).map(|(a, ri)| a * ri).sum();
+
+            let mut atr = vec![0.0f64; reduced.ncols()];
+            reduced.apply_adjoint(&r, &mut atr).unwrap();
+            let rhs: f64 = x.iter().zip(&atr).map(|(xi, ai)| xi * ai).sum();
+
+            prop_assert!(
+                (lhs - rhs).abs() < 1e-8,
+                "<A_r x, r>={lhs} != <x, A_r^T r>={rhs}"
+            );
+        }
+    }
+}
+
 mod elimination_tests {
     use rstest::rstest;
     use schwarz_precond::Operator;
