@@ -30,6 +30,10 @@ use crate::CoarseDecline;
 const PARALLEL_T_MUL: usize = 1 << 18;
 const PARALLEL_MUL_ADD: usize = 1 << 16;
 
+/// A coarse direction keeping less than this share of its energy is null: a column of `Z` once
+/// the eliminated term is fitted, or a pivot of `E` at unit diagonal.
+const NULL_ENERGY_SHARE: f64 = 1e-10;
+
 /// `PᵀBP + Q` with `P = I − SQ`: exact on the coarse space, `M S Z = Z`.
 #[derive(Clone, Debug)]
 pub(crate) struct TwoLevelMap {
@@ -195,7 +199,7 @@ impl CoarseFactor {
         let regularization = LdltRegularization {
             dynamic_regularization_signs: Some(&signs),
             dynamic_regularization_delta: d_max,
-            dynamic_regularization_epsilon: 1e-10 * d_max,
+            dynamic_regularization_epsilon: NULL_ENERGY_SHARE * d_max,
         };
         let mut l_values = vec![0.0; symbolic.len_val()];
         let mut mem = MemBuffer::new(

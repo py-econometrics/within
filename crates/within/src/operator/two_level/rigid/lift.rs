@@ -3,7 +3,9 @@
 
 use rayon::prelude::*;
 
-use super::super::{merged, CoarseFactor, CoarseSolve, HubCorrection, HubRows, TwoWay};
+use super::super::{
+    merged, CoarseFactor, CoarseSolve, HubCorrection, HubRows, TwoWay, NULL_ENERGY_SHARE,
+};
 use super::glue::Gauges;
 use super::Rows;
 use crate::domain::{cut, offsets, PreparedDesign, TermRows, Unknowns};
@@ -118,7 +120,7 @@ impl Live {
         }
         let mut count = 0u32;
         let of = (energy.iter().zip(&pre))
-            .map(|(&e, &pre)| match e > 1e-10 * pre {
+            .map(|(&e, &pre)| match e > NULL_ENERGY_SHARE * pre {
                 true => {
                     count += 1;
                     count - 1
