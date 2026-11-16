@@ -146,8 +146,10 @@ class SolveResult:
             compact level position ``p``: coefficient column ``c`` sits at
             ``term_offset + c * n_levels + p``, with columns ordered
             ``[intercept?, slopes...]``. Use ``layout`` to translate caller
-            labels to these slots. Slots for unidentified directions hold the
-            minimal-norm value ``0``, never NaN.
+            labels to these slots. Slots for unidentified directions hold
+            ``0``, never NaN. Each connected component's gauge (a constant
+            shifted between factors) depends on the preconditioner: compare
+            ``demeaned`` across solves, not ``x``.
         unidentified: Per-level directions the data cannot identify, as
             :class:`UnidentifiedDirection` records.
         layout: Address <-> flat-``x``-index translation for the coefficients.
@@ -195,8 +197,8 @@ class BatchSolveResult:
 
     Attributes:
         x: Fixed-effect coefficients, shape ``(n_dofs, k)`` (column-major).
-            Slots for unidentified directions hold the minimal-norm value
-            ``0``, never NaN.
+            Slots for unidentified directions hold ``0``, never NaN. Gauges
+            as in :attr:`SolveResult.x`.
         unidentified: Per-level directions the data cannot identify, as
             :class:`UnidentifiedDirection` records; shared across all RHS.
         layout: Address <-> flat-``x``-index translation for the coefficients.

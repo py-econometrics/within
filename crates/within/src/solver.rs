@@ -116,8 +116,10 @@ pub struct SolveResult {
     /// Term-major by compact level position `p`: coefficient column `c` sits at
     /// `term_offset + c * n_levels + p`, with columns ordered
     /// `[intercept?, slopes…]`. Use [`SolveResult::layout`] to translate caller
-    /// labels to these slots. Slots for unidentified directions hold the
-    /// minimal-norm value `0`, never NaN; see [`SolveResult::unidentified`].
+    /// labels to these slots. Slots for unidentified directions hold `0`, never
+    /// NaN; see [`SolveResult::unidentified`]. Each connected component's gauge
+    /// (a constant shifted between terms) depends on the system and the
+    /// preconditioner: compare `demeaned` across solves, not `x`.
     pub x: Vec<f64>,
     /// Per-level directions the data cannot identify.
     pub unidentified: Vec<CoefficientAddress>,
@@ -155,8 +157,8 @@ pub struct BatchSolveResult {
     /// All coefficient vectors concatenated (length = n_dofs * n_rhs), each
     /// block laid out as in [`SolveResult::x`].
     ///
-    /// Slots for unidentified directions hold the minimal-norm value `0`,
-    /// never NaN; see [`BatchSolveResult::unidentified`].
+    /// Slots for unidentified directions hold `0`, never NaN; see
+    /// [`BatchSolveResult::unidentified`]. Gauges as in [`SolveResult::x`].
     pub x: Vec<f64>,
     /// Per-level directions the data cannot identify, shared across all RHS:
     /// identification depends only on the design and weights, never on `y`.
