@@ -267,7 +267,7 @@ impl PyPreconditionerConfig {
             },
             PreconditionerConfig::Adaptive { stall, schwarz } => Self::Adaptive {
                 local_solver: local_solver(schwarz),
-                stall: PyStaleness { inner: *stall },
+                stall: PyStaleness::from_native(*stall),
                 coarse: coarse(schwarz),
             },
         }
@@ -307,12 +307,7 @@ impl PyCoarseCorrection {
 
     #[getter]
     fn build(&self) -> PyCoarseBuild {
-        match &self.inner.build {
-            CoarseBuild::WithSchwarz => PyCoarseBuild::WithSchwarz(),
-            CoarseBuild::OnStall(stall) => PyCoarseBuild::OnStall {
-                stall: PyStaleness { inner: *stall },
-            },
-        }
+        PyCoarseBuild::from_native(&self.inner.build)
     }
 }
 
@@ -374,6 +369,15 @@ pub enum PyCoarseBuild {
 }
 
 impl PyCoarseBuild {
+    fn from_native(build: &CoarseBuild) -> Self {
+        match build {
+            CoarseBuild::WithSchwarz => Self::WithSchwarz(),
+            CoarseBuild::OnStall(stall) => Self::OnStall {
+                stall: PyStaleness::from_native(*stall),
+            },
+        }
+    }
+
     fn to_native(&self) -> CoarseBuild {
         match self {
             Self::WithSchwarz() => CoarseBuild::WithSchwarz,
@@ -425,6 +429,10 @@ impl PyStaleness {
 }
 
 impl PyStaleness {
+    fn from_native(inner: Staleness) -> Self {
+        Self { inner }
+    }
+
     pub(crate) fn to_native(self) -> Staleness {
         self.inner
     }

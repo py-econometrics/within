@@ -145,8 +145,8 @@ The `preconditioner` argument accepts any of:
 | `PreconditionerConfig.Off()` | Explicit identity — solve unpreconditioned. |
 | `PreconditionerConfig.Schwarz()` | Additive Schwarz shortcut, built up front. |
 | `PreconditionerConfig.Diagonal()` | Diagonal/Jacobi preconditioner using the inverse diagonal of the reduced system's normal matrix. |
-| `PreconditionerConfig.Schwarz(local_solver?)` | Tuned additive Schwarz. Argument types import from `within.config`. |
-| `PreconditionerConfig.Adaptive(local_solver?, stall?)` | Tuned form of the default; the factorization is built only on escalation. |
+| `PreconditionerConfig.Schwarz(local_solver?, coarse?)` | Tuned additive Schwarz; `coarse` adds a coarse correction (two-level). Argument types import from `within.config`. |
+| `PreconditionerConfig.Adaptive(local_solver?, stall?, coarse?)` | Tuned form of the default; the factorization is built only on escalation. |
 | `Preconditioner` instance | Reuse a previously-built preconditioner across solvers. |
 
 `PreconditionerConfig` is a tagged union: each variant is a subclass, so instances
@@ -162,6 +162,7 @@ as `.build_duration_seconds`; both are preserved across pickling and reuse.
 | `Schur.approximate(config?)` / `Schur.exact()` | Schur-reduction mode passed as `LocalSolverConfig(schur=...)`. |
 | `ApproxCholConfig(seed=0, split_merge=None)` | Approximate Cholesky parameters. |
 | `ApproxSchurConfig(split=1)` | Approximate Schur complement sampling parameters; draws from `ApproxCholConfig.seed`. |
+| `CoarseCorrection(space, form, build)` | Coarse correction for `Schwarz`/`Adaptive`: `CoarseSpace.RigidComponents`, `TwoLevelForm.Balanced`, and `CoarseBuild.WithSchwarz()` or `CoarseBuild.OnStall(stall)`. A design without a coarse space keeps one-level Schwarz with a `UserWarning`. |
 
 ### Result types
 

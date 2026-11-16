@@ -14,7 +14,7 @@ from within import (
     Solver,
     solve,
 )
-from within._within import (
+from within.config import (
     ApproxCholConfig,
     ApproxSchurConfig,
     CoarseBuild,
@@ -366,22 +366,19 @@ class TestCoarse:
             != PreconditionerConfig.Schwarz()
         )
 
-    @pytest.mark.parametrize("adaptive", [False, True])
     @pytest.mark.parametrize(
-        "build",
-        [CoarseBuild.WithSchwarz(), CoarseBuild.OnStall(stall=Staleness(1, 0.0))],
-        ids=["with_schwarz", "on_stall"],
+        "requested",
+        [
+            PreconditionerConfig.Schwarz(coarse=coarse(CoarseBuild.WithSchwarz())),
+            PreconditionerConfig.Adaptive(
+                stall=Staleness(1, 0.0),
+                coarse=coarse(CoarseBuild.OnStall(stall=Staleness(1, 0.0))),
+            ),
+        ],
+        ids=["schwarz_with_schwarz", "adaptive_on_stall"],
     )
-    def test_a_coarse_correction_lands_the_solve_on_the_two_level_map(
-        self, adaptive, build
-    ):
+    def test_a_coarse_correction_lands_the_solve_on_the_two_level_map(self, requested):
         effects, y = clustered()
-        if adaptive:
-            requested = PreconditionerConfig.Adaptive(
-                stall=Staleness(1, 0.0), coarse=coarse(build)
-            )
-        else:
-            requested = PreconditionerConfig.Schwarz(coarse=coarse(build))
         options = LsmrOptions(tol=1e-12, maxiter=2000)
         solver = Solver(effects, preconditioner=requested)
         result = solver.solve(y, options)

@@ -49,6 +49,8 @@ class PreconditionerConfig:
         The factorization is built only at the moment of escalation, so a design
         whose diagonal solve never stalls never pays to construct it. A build
         error therefore surfaces from :meth:`Solver.solve`, not the constructor.
+        ``coarse`` composes a coarse correction with the Schwarz map; its build,
+        and a declined coarse space's warning, come with that escalation or later.
         """
 
         local_solver: LocalSolverConfig

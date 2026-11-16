@@ -39,10 +39,7 @@ Two-tier public API:
 - The top-level ``within`` namespace exposes the call-site essentials
   (``solve``, ``Design``, ``Solver``, ``LsmrOptions``, ``PreconditionerConfig``,
   ``Preconditioner``).
-- :mod:`within.config` re-exports the advanced configuration objects
-  (``LocalSolverConfig``, ``ApproxCholConfig``, ``ApproxSchurConfig``,
-  ``ScalingConfig``, ``Schur``, ``Staleness``, ``CoarseCorrection``,
-  ``CoarseSpace``, ``TwoLevelForm``, ``CoarseBuild``).
+- :mod:`within.config` re-exports the advanced configuration objects.
 
 Thread safety: the heavy work runs with the interpreter detached and reads the
 caller's arrays in place. As with NumPy itself, an input array must not be
