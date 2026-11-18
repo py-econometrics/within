@@ -46,9 +46,12 @@ impl PreparedDesign<'_> {
             *r = bi - *r;
         }
         let block = &mut x[dofs];
-        self.adjoint_block(&self.term(eliminated), &residual, block);
+        self.adjoint_block(&self.design.term(eliminated), &residual, block);
         // Whitening makes each level's block of `A_eᵀA_e` diagonal.
-        for (xj, &g) in block.iter_mut().zip(self.diagonal(eliminated)) {
+        for (xj, g) in block
+            .iter_mut()
+            .zip(self.gramian().term_diagonal(eliminated))
+        {
             *xj = if g > 0.0 { *xj / g } else { 0.0 };
         }
     }
@@ -80,7 +83,7 @@ impl Operator for PreparedDesign<'_> {
     fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
         debug_assert_eq!(x.len(), self.design.n_obs());
         debug_assert_eq!(y.len(), self.design.n_dofs());
-        for t in self.terms() {
+        for t in self.design.terms() {
             self.adjoint_block(&t, x, &mut y[t.layout.dofs()]);
         }
         Ok(())

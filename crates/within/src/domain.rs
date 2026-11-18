@@ -2,6 +2,7 @@
 
 mod effect;
 pub(crate) mod factor_pairs;
+mod gramian;
 mod layout;
 mod level_moments;
 mod prepared;
@@ -9,6 +10,7 @@ mod reparam;
 mod row_index;
 mod scatter_split;
 
+pub(crate) use gramian::Gramian;
 pub use layout::CoefficientLayout;
 pub(crate) use layout::TermLayout;
 pub(crate) use prepared::{PreparedDesign, PreparedTerm};

@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use crate::block_solver::BlockSolver;
 use crate::config::{LocalSolverConfig, PreconditionerConfig, Staleness};
-use crate::domain::{LocalDomain, PreparedDesign};
+use crate::domain::{Gramian, LocalDomain};
 use crate::{BuildError, BuildWarning};
 
 #[cfg(test)]
@@ -227,9 +227,9 @@ impl Operator for Preconditioner {
 }
 
 /// Build the diagonal/Jacobi map.
-pub(crate) fn build_diagonal(prepared: &PreparedDesign<'_>) -> Result<Preconditioner, BuildError> {
+pub(crate) fn build_diagonal(gramian: Gramian<'_>) -> Result<Preconditioner, BuildError> {
     let build_started = Instant::now();
-    let diagonal = diagonal_map(prepared)?;
+    let diagonal = diagonal_map(gramian)?;
     Ok(Preconditioner {
         inner: Variant::Diagonal(diagonal),
         build_duration: build_started.elapsed(),
@@ -238,12 +238,12 @@ pub(crate) fn build_diagonal(prepared: &PreparedDesign<'_>) -> Result<Preconditi
 
 /// Build the diagonal base of an `Adaptive` strategy; the Schwarz rung is left to a stalled solve.
 pub(crate) fn build_adaptive(
-    prepared: &PreparedDesign<'_>,
+    gramian: Gramian<'_>,
     stall: Staleness,
     escalated: LocalSolverConfig,
 ) -> Result<Preconditioner, BuildError> {
     let build_started = Instant::now();
-    let base = diagonal_map(prepared)?;
+    let base = diagonal_map(gramian)?;
     Ok(Preconditioner {
         inner: Variant::Adaptive(AdaptiveLadder {
             base,
@@ -254,8 +254,8 @@ pub(crate) fn build_adaptive(
     })
 }
 
-fn diagonal_map(prepared: &PreparedDesign<'_>) -> Result<DiagonalPreconditioner, BuildError> {
-    let mut diag = prepared.gram_diagonal();
+fn diagonal_map(gramian: Gramian<'_>) -> Result<DiagonalPreconditioner, BuildError> {
+    let mut diag = gramian.diagonal();
 
     // A zero diagonal is an unidentified DOF, so the pseudo-inverse keeps it in the null space.
     for (index, d) in diag.iter_mut().enumerate() {
@@ -277,15 +277,15 @@ fn diagonal_map(prepared: &PreparedDesign<'_>) -> Result<DiagonalPreconditioner,
 /// Build the additive Schwarz map plus its warnings; `None` when the design has no factor-pair
 /// subdomain to build on, where plain LSMR is the fallback.
 pub(crate) fn build_schwarz(
-    prepared: &PreparedDesign<'_>,
+    gramian: Gramian<'_>,
     local_solver: &LocalSolverConfig,
 ) -> Result<(Option<Preconditioner>, Vec<BuildWarning>), BuildError> {
     let build_started = Instant::now();
-    let (domains, warnings) = crate::domain::build_local_domains(prepared, local_solver)?;
+    let (domains, warnings) = crate::domain::build_local_domains(gramian, local_solver)?;
     if domains.is_empty() {
         return Ok((None, warnings));
     }
-    let schwarz = build_additive(domains, local_solver, prepared.design.n_dofs())?;
+    let schwarz = build_additive(domains, local_solver, gramian.layout().n_dofs())?;
     let preconditioner = Preconditioner {
         inner: Variant::Additive(schwarz),
         build_duration: build_started.elapsed(),

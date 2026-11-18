@@ -193,7 +193,7 @@ mod slope_design_tests {
     fn dense_matrix(prepared: &PreparedDesign<'_>) -> Vec<Vec<f64>> {
         let design = &prepared.design;
         let mut d = vec![vec![0.0; design.n_dofs()]; design.n_obs()];
-        for t in prepared.terms() {
+        for t in prepared.design.terms() {
             for c in 0..t.layout.n_columns() {
                 let base = t.layout.column_dofs(c).start;
                 let z = t.loading(c);
@@ -340,7 +340,7 @@ mod slope_design_tests {
         let by_level = [
             true, true, true, false, true, true, false, true, true, false,
         ];
-        for (t, by_level) in design.terms().zip(by_level) {
+        for (t, by_level) in design.design.terms().zip(by_level) {
             assert_eq!(matches!(t.rows.split, ScatterSplit::ByLevel(_)), by_level);
         }
         assert!(design.design.obs_perm.is_none());
@@ -500,7 +500,8 @@ mod elimination_tests {
         let prepared = PreparedDesign::new(design, weighted.then_some(&weights[..])).unwrap();
         let dofs = prepared.design.layout.term(1).dofs();
         let unidentified: Vec<usize> = prepared
-            .diagonal(1)
+            .gramian()
+            .term_diagonal(1)
             .iter()
             .enumerate()
             .filter(|&(_, &g)| g == 0.0)

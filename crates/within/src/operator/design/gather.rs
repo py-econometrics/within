@@ -20,7 +20,7 @@ pub(crate) fn gather_apply(
     dst.fill(0.0);
 
     for_each_chunk(dst, |chunk, row_start| {
-        for t in prepared.terms() {
+        for t in prepared.design.terms() {
             let levels = t.rows.levels();
             let col = |c: usize| &src[t.layout.column_dofs(c)];
             match (t.layout.intercept(), t.slopes) {

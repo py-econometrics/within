@@ -37,7 +37,7 @@ fn build_whitens_each_slope_bearing_term() {
 #[test]
 fn slope_free_term_has_no_reparam() {
     let prepared = PreparedDesign::from_levels_for_test(vec![vec![0, 1, 0], vec![0, 0, 1]]);
-    assert!(prepared.terms().all(|t| t.slopes.is_empty()));
+    assert!(prepared.design.terms().all(|t| t.slopes.is_empty()));
 }
 
 #[test]
@@ -92,7 +92,7 @@ fn an_observation_at_its_level_mean_loads_exactly_zero() {
     let level = [0u32; 11];
     let effects = vec![Effect::new(&level, true, [&YEAR[..]]).unwrap()];
     let prepared = PreparedDesign::unweighted_for_test(Design::new(effects).unwrap());
-    let t = prepared.term(0);
+    let t = prepared.design.term(0);
     let mean_year = (0..t.rows.levels().len())
         .find(|&i| YEAR[i] == 5.0)
         .unwrap();
@@ -110,6 +110,7 @@ fn a_sum_past_the_float_range_still_whitens_finitely(#[case] huge_at: fn(usize) 
     let effects = vec![Effect::new(&level, true, [&huge[..], &year[..]]).unwrap()];
     let prepared = PreparedDesign::unweighted_for_test(Design::new(effects).unwrap());
     assert!(prepared
+        .design
         .term(0)
         .slopes
         .iter()
@@ -130,7 +131,9 @@ fn merging_partial_means_across_the_float_range_stays_finite() {
     let effects = vec![Effect::new(&level, true, [&z[..]]).unwrap()];
     let prepared = PreparedDesign::new(Design::new(effects).unwrap(), Some(&weights)).unwrap();
     assert!(prepared.unidentified().next().is_none());
-    assert!(prepared.term(0).slopes[0].iter().all(|u| u.is_finite()));
+    assert!(prepared.design.term(0).slopes[0]
+        .iter()
+        .all(|u| u.is_finite()));
 }
 
 /// Slopes spread over ~1e-9 of their size; a running mean's rounding would show in the Gram.
@@ -151,7 +154,7 @@ fn a_large_offset_still_whitens_to_the_identity() {
 /// Per level of `term`: an identified slope has unit norm, a dropped one is zero, and columns,
 /// intercept included, are orthogonal to `tol` relative to their norms.
 fn assert_level_grams_orthonormal(prepared: &PreparedDesign<'_>, term: usize, tol: f64) {
-    let t = prepared.term(term);
+    let t = prepared.design.term(term);
     let (levels, width) = (t.rows.levels(), t.layout.n_columns());
     let first_slope = usize::from(t.layout.intercept());
     let w = |i: usize| row_weight(prepared.sqrt_weights(), i);
@@ -265,7 +268,7 @@ fn near_collinear_large_mean_slopes_stay_orthonormal(
     let effects = vec![Effect::new(&levels, intercept, zs.iter().map(Vec::as_slice)).unwrap()];
     let prepared = PreparedDesign::new(Design::new(effects).unwrap(), weights.as_deref()).unwrap();
     let expected: Vec<CoefficientPosition> = if weighting == "zero weights" {
-        (0..prepared.term(0).layout.n_columns())
+        (0..prepared.design.term(0).layout.n_columns())
             .map(|column| CoefficientPosition {
                 channel: Channel { term: 0, column },
                 level: 0,
@@ -338,14 +341,17 @@ fn whitening_is_bitwise_identical_across_thread_counts() {
                 .collect();
             prepared.back_transform(&mut x);
             let slopes: Vec<u64> = prepared
+                .design
                 .terms()
                 .flat_map(|t| t.slopes.iter().flat_map(|z| z.iter()).map(|u| u.to_bits()))
                 .collect();
             let row_split = prepared
+                .design
                 .terms()
                 .filter(|t| matches!(t.rows.split, ScatterSplit::ByRow))
                 .count();
             let largest_by_level = prepared
+                .design
                 .terms()
                 .filter(|t| matches!(t.rows.split, ScatterSplit::ByLevel(_)))
                 .map(|t| {

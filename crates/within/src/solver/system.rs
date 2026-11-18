@@ -116,6 +116,6 @@ impl LeastSquaresSystem for PreparedDesign<'_> {
         &self,
         local_solver: &LocalSolverConfig,
     ) -> Result<(Option<Preconditioner>, Vec<BuildWarning>), BuildError> {
-        build_schwarz(self, local_solver)
+        build_schwarz(self.gramian(), local_solver)
     }
 }

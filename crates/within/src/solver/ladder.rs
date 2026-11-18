@@ -35,7 +35,7 @@ impl PrecondSlot {
                 warnings: Vec::new(),
             },
             PreconditionerConfig::Diagonal => Self::Static {
-                map: Some(build_diagonal(prepared)?),
+                map: Some(build_diagonal(prepared.gramian())?),
                 warnings: Vec::new(),
             },
             PreconditionerConfig::Additive { local_solver } => {
@@ -48,7 +48,7 @@ impl PrecondSlot {
             } => {
                 // Fail before the diagonal pass; `reuse` repeats this for a deserialized ladder.
                 local_solver.validate()?;
-                let base = build_adaptive(prepared, stall, local_solver)?;
+                let base = build_adaptive(prepared.gramian(), stall, local_solver)?;
                 Self::reuse(prepared, base)?
             }
         })
