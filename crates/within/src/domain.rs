@@ -5,10 +5,12 @@ pub(crate) mod factor_pairs;
 mod level_moments;
 mod prepared;
 mod reparam;
+mod row_index;
 mod scatter_split;
 
 pub(crate) use prepared::{PreparedDesign, PreparedTerm};
 use reparam::TermReparam;
+pub(crate) use row_index::RowIndex;
 pub(crate) use scatter_split::{LevelSlots, ScatterSplit};
 
 /// Rows from which a sweep over observations runs in parallel.
@@ -291,8 +293,8 @@ pub(crate) struct Term<'a> {
     pub(crate) intercept: bool,
     /// Internal level position of every observation, in the design's row order.
     levels: Cow<'a, [u32]>,
-    /// `levels` is non-decreasing.
-    sorted: bool,
+    /// The rows of each level, as the scatter-add splits them.
+    pub(crate) split: ScatterSplit,
     /// Raw slopes in coefficient-column order, before whitening.
     slopes: Vec<Cow<'a, [f64]>>,
 }
@@ -343,10 +345,6 @@ impl Term<'_> {
         &self.levels
     }
 
-    pub(crate) fn sorted(&self) -> bool {
-        self.sorted
-    }
-
     /// Raw slopes in coefficient-column order.
     pub(crate) fn raw_slopes(&self) -> impl ExactSizeIterator<Item = &[f64]> {
         self.slopes.iter().map(|slope| &**slope)
@@ -358,7 +356,7 @@ impl Term<'_> {
             offset: self.offset,
             intercept: self.intercept,
             levels: Cow::Owned(self.levels.into_owned()),
-            sorted: self.sorted,
+            split: self.split,
             slopes: self
                 .slopes
                 .into_iter()
@@ -503,42 +501,16 @@ fn get_distinct_labels(labels: &[u32], min: u32, max: u32) -> Option<Vec<u32>> {
     )
 }
 
-/// Rows grouped by level, ascending within each: level `l` owns `perm[offsets[l]..offsets[l + 1]]`.
-fn stable_argsort(key: &[u32], n_levels: usize) -> (Vec<usize>, Vec<u32>) {
-    let n_obs = key.len();
-    debug_assert!(
-        u32::try_from(n_obs).is_ok(),
-        "observation index must fit the u32 permutation"
-    );
-    debug_assert!(
-        n_levels <= n_obs,
-        "compact level count cannot exceed observation count"
-    );
-    let mut offsets = vec![0usize; n_levels + 1];
-    for &k in key {
-        debug_assert!(
-            (k as usize) < n_levels,
-            "counting sort key must be a level id (< n_levels)"
-        );
-        offsets[k as usize + 1] += 1;
+/// Group `k` of the counted `keys` owns `offsets[k]..offsets[k + 1]`.
+pub(crate) fn offsets(n_keys: usize, keys: impl IntoIterator<Item = usize>) -> Vec<usize> {
+    let mut offsets = vec![0usize; n_keys + 1];
+    for k in keys {
+        offsets[k + 1] += 1;
     }
     for i in 1..offsets.len() {
         offsets[i] += offsets[i - 1];
     }
-    let mut cursors = offsets[..n_levels].to_vec();
-    let mut perm = vec![0u32; n_obs];
-    for (i, &k) in key.iter().enumerate() {
-        let cursor = &mut cursors[k as usize];
-        perm[*cursor] = i as u32;
-        *cursor += 1;
-    }
-    (offsets, perm)
-}
-
-// Inlined into `Design::build`, its loop measured +3–8% on slope designs.
-#[inline(never)]
-fn gather<T: Copy>(col: &[T], perm: &[u32]) -> Vec<T> {
-    perm.iter().map(|&k| col[k as usize]).collect()
+    offsets
 }
 
 /// Fixed-effects design: its terms; clones share rows.
@@ -549,7 +521,7 @@ pub struct Design<'a> {
     pub(crate) n_obs: usize,
     pub(crate) n_dofs: usize,
     /// `obs_perm[k]` = caller's original index of the observation at internal position `k`.
-    pub(crate) obs_perm: Option<Arc<[u32]>>,
+    pub(crate) obs_perm: Option<Arc<RowIndex>>,
     /// The term with the most DOFs, ties to the last: the sort key and the eliminated term.
     pub(crate) dominant: usize,
 }
@@ -557,13 +529,7 @@ pub struct Design<'a> {
 impl<'a> Design<'a> {
     /// Lower effect terms into a design, laid out term-major (`offset[t] + c · L_t + level`).
     pub fn new(effects: impl IntoIterator<Item = Effect<'a>>) -> Result<Self, BuildError> {
-        Self::build(effects.into_iter().collect(), true)
-    }
-
-    /// [`new`](Self::new) without the locality sort — profiling escape hatch.
-    #[doc(hidden)]
-    pub fn new_unsorted(effects: impl IntoIterator<Item = Effect<'a>>) -> Result<Self, BuildError> {
-        Self::build(effects.into_iter().collect(), false)
+        Self::build(effects.into_iter().collect())
     }
 
     /// Build an intercept-only design from an observation-major categories matrix.
@@ -583,10 +549,10 @@ impl<'a> Design<'a> {
                 }
             })
             .collect();
-        Self::build(effects, true)
+        Self::build(effects)
     }
 
-    fn build(effects: Vec<Effect<'a>>, locality_sort: bool) -> Result<Self, BuildError> {
+    fn build(effects: Vec<Effect<'a>>) -> Result<Self, BuildError> {
         let n_obs = effects.first().map_or(0, |e| e.levels.len());
         for (column, e) in effects.iter().enumerate() {
             if e.levels.len() != n_obs {
@@ -601,66 +567,79 @@ impl<'a> Design<'a> {
             return Err(BuildError::EmptyObservations);
         }
 
-        let mut terms = Vec::with_capacity(effects.len());
-        let mut offset = 0;
-        for Effect {
-            levels,
-            intercept,
-            slopes,
-        } in effects
-        {
-            debug_assert!(
-                slopes.iter().all(|s| s.len() == levels.len()) && (intercept || !slopes.is_empty()),
-                "effect bypassed Effect::new validation"
-            );
-            let EncodedFactor {
-                encoding,
-                levels,
-                sorted,
-            } = FactorEncoding::encode_labels(levels);
-            let term = Term {
-                encoding,
-                offset,
-                intercept,
-                levels,
-                sorted,
-                slopes,
-            };
-            offset += term.n_dofs();
-            terms.push(term);
-        }
-
+        let mut factors: Vec<_> = effects
+            .into_iter()
+            .map(|e| {
+                (
+                    FactorEncoding::encode_labels(e.levels),
+                    e.intercept,
+                    e.slopes,
+                )
+            })
+            .collect();
+        let dofs: Vec<usize> = factors
+            .iter()
+            .map(|(f, intercept, slopes)| {
+                (*intercept as usize + slopes.len()) * f.encoding.n_levels()
+            })
+            .collect();
+        let n_dofs: usize = dofs.iter().sum();
         // Rejected here rather than left to panic in `to_u32`.
-        if u32::try_from(offset).is_err() {
-            return Err(BuildError::DofSpaceExceedsU32 { n_dofs: offset });
+        if u32::try_from(n_dofs).is_err() {
+            return Err(BuildError::DofSpaceExceedsU32 { n_dofs });
         }
 
-        let dominant = (0..terms.len())
-            .max_by_key(|&t| terms[t].n_dofs())
+        let dominant = (0..dofs.len())
+            .max_by_key(|&t| dofs[t])
             .expect("observations imply an effect");
         // Sort by the dominant term so its gather/scatter runs sequentially.
-        let d = &terms[dominant];
-        let obs_perm = if locality_sort && !d.sorted && u32::try_from(n_obs).is_ok() {
-            let (_, perm) = stable_argsort(&d.levels, d.n_levels());
+        let mut sorted_offsets = vec![None; factors.len()];
+        let d = &factors[dominant].0;
+        let obs_perm = if !d.sorted {
+            let (offsets, perm) = RowIndex::argsort(&d.levels, d.encoding.n_levels());
+            sorted_offsets[dominant] = Some(offsets);
             // Factors nested in the dominant one come out sorted and need no row index.
-            for t in terms.iter_mut() {
-                let levels = gather(&t.levels, &perm);
-                t.sorted = levels.is_sorted();
-                t.levels = Cow::Owned(levels);
+            for (f, _, _) in factors.iter_mut() {
+                let levels = perm.gather(&f.levels);
+                f.sorted = levels.is_sorted();
+                f.levels = Cow::Owned(levels);
             }
             // Level columns before any slope: interleaving them measured +2–4% here.
-            for slope in terms.iter_mut().flat_map(|t| &mut t.slopes) {
-                *slope = Cow::Owned(gather(slope, &perm));
+            for slope in factors.iter_mut().flat_map(|(_, _, slopes)| slopes) {
+                *slope = Cow::Owned(perm.gather(slope));
             }
-            Some(perm.into())
+            Some(Arc::new(perm))
         } else {
             None
         };
 
+        let term_offsets = dofs
+            .iter()
+            .scan(0, |next, &n| Some(std::mem::replace(next, *next + n)));
+        let terms = factors
+            .into_par_iter()
+            .zip(sorted_offsets)
+            .zip(term_offsets.collect::<Vec<_>>())
+            .map(|(((f, intercept, slopes), sorted_offsets), offset)| {
+                let n_levels = f.encoding.n_levels();
+                Term {
+                    split: match sorted_offsets {
+                        Some(offsets) => ScatterSplit::sorted(offsets),
+                        None => ScatterSplit::new(&f.levels, n_levels, f.sorted),
+                    },
+                    encoding: f.encoding,
+                    offset,
+                    intercept,
+                    levels: f.levels,
+                    slopes,
+                }
+            })
+            .collect();
+
         Ok(Design {
             terms: Arc::new(terms),
             n_obs,
-            n_dofs: offset,
+            n_dofs,
             obs_perm,
             dominant,
         })
@@ -680,25 +659,17 @@ impl<'a> Design<'a> {
 
     /// Caller order → internal order: `out[k] = v[obs_perm[k]]`; borrows when unpermuted.
     pub(crate) fn permute_obs_in<'v>(&self, v: &'v [f64]) -> Cow<'v, [f64]> {
-        debug_assert_eq!(v.len(), self.n_obs);
         match &self.obs_perm {
             None => Cow::Borrowed(v),
-            Some(perm) => Cow::Owned(gather(v, perm)),
+            Some(perm) => Cow::Owned(perm.gather(v)),
         }
     }
 
     /// Internal order → caller order: `out[obs_perm[k]] = v[k]`.
     pub(crate) fn permute_obs_out(&self, v: Vec<f64>) -> Vec<f64> {
-        debug_assert_eq!(v.len(), self.n_obs);
         match &self.obs_perm {
             None => v,
-            Some(perm) => {
-                let mut out = vec![0.0; v.len()];
-                for (k, &orig) in perm.iter().enumerate() {
-                    out[orig as usize] = v[k];
-                }
-                out
-            }
+            Some(perm) => perm.scatter(&v),
         }
     }
 
@@ -741,42 +712,6 @@ mod tests {
                 .iter()
                 .map(|c| Effect::new(c, true, []).expect("intercept effect"));
             Design::new(effects).expect("valid design").into_owned()
-        }
-    }
-
-    /// Counting sort must preserve caller order within each level so locality
-    /// sorting does not change downstream summation order.
-    #[test]
-    fn stable_argsort_agrees_with_a_stable_reference() {
-        let mut state = 0x2545_f491_4f6c_dd1du64;
-        let mut next = move || {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            state
-        };
-        // `key_span` is decoupled so the counting sort also covers empty buckets.
-        for (n_obs, n_levels, key_span) in [
-            (0usize, 0usize, 1usize),
-            (1, 1, 1),
-            (997, 1, 1),
-            (997, 16, 16),
-            (997, 996, 996),
-            (997, 997, 997),
-            (4096, 4096, 8),
-            (4096, 4096, 4096),
-        ] {
-            assert!(key_span <= n_levels.max(1), "keys must stay below n_levels");
-            let key: Vec<u32> = (0..n_obs)
-                .map(|_| (next() % key_span as u64) as u32)
-                .collect();
-            let mut expected: Vec<u32> = (0..n_obs as u32).collect();
-            expected.sort_by_key(|&i| key[i as usize]);
-            assert_eq!(
-                stable_argsort(&key, n_levels).1,
-                expected,
-                "n_obs={n_obs} n_levels={n_levels}"
-            );
         }
     }
 
@@ -862,50 +797,6 @@ mod tests {
     }
 
     #[test]
-    fn new_sorts_unsorted_dominant() {
-        // Factor 0 (3 levels) dominates and is unsorted; factor 1 starts sorted.
-        let design = Design::from_levels_for_test(vec![vec![2, 0, 1, 0], vec![0, 0, 1, 1]]);
-
-        // Stable argsort of [2,0,1,0] → original indices [1,3,2,0].
-        assert_eq!(design.obs_perm.as_deref(), Some(&[1u32, 3, 2, 0][..]));
-        assert!(design.terms[0].sorted());
-        // Factor 1's permuted column [0,1,1,0] is no longer non-decreasing.
-        assert!(!design.terms[1].sorted());
-
-        assert_eq!(design.terms[0].levels(), [0, 0, 1, 2]);
-        assert_eq!(design.terms[1].levels(), [0, 1, 1, 0]);
-    }
-
-    #[test]
-    fn rescan_marks_nested_factor_sorted_after_permutation() {
-        // Factor 1 is nested in dominant factor 0, so the rescan must detect it stays sorted.
-        let col0 = vec![3u32, 0, 2, 1];
-        let col1: Vec<u32> = col0.iter().map(|&v| v / 2).collect();
-        let design = Design::from_levels_for_test(vec![col0, col1]);
-        assert!(design.obs_perm.is_some());
-        assert!(design.terms[0].sorted());
-        assert!(design.terms[1].sorted());
-    }
-
-    #[test]
-    fn new_keeps_sorted_input() {
-        let design = Design::from_levels_for_test(vec![vec![0, 0, 1, 2], vec![1, 0, 1, 0]]);
-        assert!(design.obs_perm.is_none());
-        assert!(design.terms[0].sorted());
-        assert!(!design.terms[1].sorted());
-    }
-
-    #[test]
-    fn clone_shares_sorted_row_storage() {
-        // The locality sort owns both levels and slopes; a solver's clone must not copy them.
-        let (f, z) = ([2u32, 0, 1, 0], [1.0, 2.0, 3.0, 4.0]);
-        let design = Design::new(vec![Effect::new(&f, true, [&z[..]]).unwrap()]).unwrap();
-        assert!(design.obs_perm.is_some());
-        let clone = design.clone();
-        assert!(Arc::ptr_eq(&clone.terms, &design.terms));
-    }
-
-    #[test]
     fn new_lays_out_slope_terms_term_major() {
         // Sorted levels keep the locality sort a no-op, so columns stay in caller order.
         let f0 = [0u32, 0, 1, 1];
@@ -931,24 +822,5 @@ mod tests {
         assert_eq!(slopes(0), [&z0[..], &z1[..]]);
         assert!(slopes(1).is_empty());
         assert_eq!(slopes(2), [&z1[..]]);
-    }
-
-    #[test]
-    fn locality_sort_keeps_levels_and_slopes_row_aligned() {
-        // Dominant factor [2,0,1,0] argsorts to caller positions [1,3,2,0].
-        let (f0, f1) = ([2u32, 0, 1, 0], [0u32, 1, 1, 0]);
-        let (z0, z1) = ([10.0, 20.0, 30.0, 40.0], [1.0, 2.0, 3.0, 4.0]);
-        let design = Design::new(vec![
-            Effect::new(&f0, true, [&z0[..]]).unwrap(),
-            Effect::new(&f1, false, [&z1[..]]).unwrap(),
-        ])
-        .unwrap();
-
-        assert_eq!(design.obs_perm.as_deref(), Some(&[1, 3, 2, 0][..]));
-        assert_eq!(design.terms[0].levels(), &[0, 0, 1, 2]);
-        assert_eq!(design.terms[1].levels(), &[1, 0, 1, 0]);
-        let slope = |term: usize| design.terms[term].raw_slopes().next().unwrap();
-        assert_eq!(slope(0), &[20.0, 40.0, 30.0, 10.0]);
-        assert_eq!(slope(1), &[2.0, 4.0, 3.0, 1.0]);
     }
 }

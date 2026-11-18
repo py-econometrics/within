@@ -69,7 +69,7 @@ fn scatter_term<const C: usize>(
     debug_assert_eq!(block.len(), C * n_levels);
     let mut columns = block.chunks_mut(n_levels);
     let columns = Columns(std::array::from_fn(|_| columns.next().expect("C columns")));
-    term.split.fold(
+    term.term.split.fold(
         term.term.levels(),
         [0.0; C],
         &|sums: &mut [f64; C], _, i| {

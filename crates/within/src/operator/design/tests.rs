@@ -339,7 +339,7 @@ mod slope_design_tests {
             true, true, true, false, true, true, false, true, true, false,
         ];
         for (t, by_level) in design.terms().zip(by_level) {
-            assert_eq!(matches!(t.split, ScatterSplit::ByLevel(_)), by_level);
+            assert_eq!(matches!(t.term.split, ScatterSplit::ByLevel(_)), by_level);
         }
         assert!(design.design.obs_perm.is_none());
 
@@ -454,7 +454,6 @@ mod elimination_tests {
         )]
         dominant: Dominant,
         #[values(false, true)] weighted: bool,
-        #[values(false, true)] sorted: bool,
     ) {
         let n = 600;
         let n_levels = 40;
@@ -487,12 +486,7 @@ mod elimination_tests {
             Effect::new(&e, intercept, zs.iter().map(|z| &z[..])).unwrap(),
             Effect::new(&g, true, gz.iter().map(|z| &z[..])).unwrap(),
         ];
-        let design = if sorted {
-            Design::new(effects)
-        } else {
-            Design::new_unsorted(effects)
-        }
-        .unwrap();
+        let design = Design::new(effects).unwrap();
         assert_eq!(design.dominant, 1);
         // Every row of level 3 and every fourth row elsewhere carry zero weight.
         let weights: Vec<f64> = (0..n)

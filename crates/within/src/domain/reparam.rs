@@ -4,7 +4,7 @@ use rayon::prelude::*;
 
 use super::level_moments::{LevelMean, LevelMoments};
 use super::scatter_split::LEVEL_GROUP;
-use super::{Design, ScatterSplit, Term};
+use super::{Design, Term};
 use crate::channel::{Channel, CoefficientPosition};
 use crate::linalg::{dot, GramBasisWorkspace};
 
@@ -144,7 +144,6 @@ impl TermReparam {
     pub(crate) fn build(
         design: &Design<'_>,
         term: usize,
-        split: &ScatterSplit,
         sqrt_weights: Option<&[f64]>,
     ) -> Option<Self> {
         let t = &design.terms[term];
@@ -159,7 +158,7 @@ impl TermReparam {
             .collect();
         let v = slopes.len();
 
-        let moments = LevelMoments::build(t, split, &columns(&slopes), sqrt_weights);
+        let moments = LevelMoments::build(t, &columns(&slopes), sqrt_weights);
         let (first, kept) = Sweeps::whiten(&moments, n_levels, v);
         let mut unidentified = Vec::new();
         for (level, kept) in kept.chunks_exact(v).enumerate() {
@@ -183,7 +182,7 @@ impl TermReparam {
         first.apply(levels, &mut slopes);
 
         // The rank tolerance keeps the first sweep well-conditioned, so this one drops nothing.
-        let moments = LevelMoments::build(t, split, &columns(&slopes), sqrt_weights);
+        let moments = LevelMoments::build(t, &columns(&slopes), sqrt_weights);
         let (second, _) = Sweeps::whiten(&moments, n_levels, v);
         drop(moments);
         second.apply(levels, &mut slopes);
