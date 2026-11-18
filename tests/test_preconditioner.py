@@ -60,8 +60,8 @@ class TestAdvancedConfigs:
             PreconditionerConfig.Additive(local_solver=None)
 
     def test_preconditioner_config_variant_introspection(self):
-        # Each variant is a subclass of PreconditionerConfig (the 3.9-safe
-        # equivalent of ``match``), and Additive exposes its fields as getters.
+        # Each variant is a subclass of PreconditionerConfig, and Additive exposes its
+        # fields as getters.
         off = PreconditionerConfig.Off()
         tuned = PreconditionerConfig.Additive(
             local_solver=LocalSolverConfig(dense_threshold=0),

@@ -7,7 +7,7 @@ authors = [
     {name = "Alexander Fischer", email = "alexander-fischer1801@t-online.de"},
     {name = "Kristof Schröder", email = "k.schroeder@appliedai-institute.de"},
 ]
-requires-python = ">= 3.9"
+requires-python = ">= 3.10"
 license = "MIT"
 license-files = [
     "LICENSE",
@@ -18,7 +18,6 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
