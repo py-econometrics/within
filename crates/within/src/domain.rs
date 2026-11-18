@@ -69,13 +69,10 @@ impl FactorEncoding {
             return EncodedFactor {
                 encoding: Self::identity(0),
                 levels: labels,
-                sorted: true,
             };
         }
         match identify_label_layout(&labels) {
-            LabelLayout::Contiguous { min, max, sorted } => {
-                EncodedFactor::contiguous(labels, min, max, sorted)
-            }
+            LabelLayout::Contiguous { min, max } => EncodedFactor::contiguous(labels, min, max),
             LabelLayout::SortedWithGaps => EncodedFactor::sorted_gaps(&labels),
             LabelLayout::UnsortedDense { distinct_labels } => {
                 EncodedFactor::dense(&labels, distinct_labels)
@@ -120,24 +117,20 @@ impl FactorEncoding {
 struct EncodedFactor<'a> {
     encoding: FactorEncoding,
     levels: Cow<'a, [u32]>,
-    /// `levels` is non-decreasing.
-    sorted: bool,
 }
 
 impl<'a> EncodedFactor<'a> {
     /// Every value in `min..=max` occurs, so a label's internal position is `label - min`.
-    fn contiguous(labels: Cow<'a, [u32]>, min: u32, max: u32, sorted: bool) -> Self {
+    fn contiguous(labels: Cow<'a, [u32]>, min: u32, max: u32) -> Self {
         if min == 0 {
             return Self {
                 encoding: FactorEncoding::identity(max as usize + 1),
                 levels: labels,
-                sorted,
             };
         }
         Self {
             encoding: FactorEncoding::integer((min..=max).into_par_iter().collect()),
             levels: Cow::Owned(labels.par_iter().map(|&label| label - min).collect()),
-            sorted,
         }
     }
 }
@@ -193,7 +186,6 @@ impl EncodedFactor<'static> {
         Self {
             encoding: FactorEncoding::integer(caller_labels),
             levels: Cow::Owned(positions),
-            sorted: true,
         }
     }
 
@@ -221,7 +213,6 @@ impl EncodedFactor<'static> {
         EncodedFactor {
             encoding: FactorEncoding::integer(distinct_labels),
             levels: Cow::Owned(positions),
-            sorted: false,
         }
     }
 
@@ -280,7 +271,6 @@ impl EncodedFactor<'static> {
         EncodedFactor {
             encoding: FactorEncoding::integer(caller_labels),
             levels: Cow::Owned(positions),
-            sorted: false,
         }
     }
 }
@@ -316,8 +306,8 @@ const LABEL_CHUNK: usize = 65_536;
 
 /// Label layout used to select an encoding strategy.
 enum LabelLayout {
-    /// Every value in `min..=max` occurs; `sorted` indicates non-decreasing input.
-    Contiguous { min: u32, max: u32, sorted: bool },
+    /// Every value in `min..=max` occurs.
+    Contiguous { min: u32, max: u32 },
     /// Non-decreasing labels with missing values between their minimum and maximum.
     SortedWithGaps,
     /// Unsorted labels with gaps and a range no wider than the observation count.
@@ -336,7 +326,6 @@ fn identify_label_layout(labels: &[u32]) -> LabelLayout {
         Some(false) => LabelLayout::Contiguous {
             min: labels[0],
             max: labels[labels.len() - 1],
-            sorted: true,
         },
         // Non-decreasing with gaps.
         Some(true) => LabelLayout::SortedWithGaps,
@@ -354,11 +343,7 @@ fn identify_label_layout(labels: &[u32]) -> LabelLayout {
                 LabelLayout::UnsortedDense { distinct_labels }
             } else {
                 // Unsorted contiguous labels
-                LabelLayout::Contiguous {
-                    min,
-                    max,
-                    sorted: false,
-                }
+                LabelLayout::Contiguous { min, max }
             }
         }
     }
@@ -508,7 +493,7 @@ impl<'a> Design<'a> {
         }
 
         let mut layout = Vec::with_capacity(effects.len());
-        let mut factors = Vec::with_capacity(effects.len());
+        let mut levels = Vec::with_capacity(effects.len());
         let mut slopes = Vec::new();
         let mut offset = 0;
         for e in effects {
@@ -517,11 +502,12 @@ impl<'a> Design<'a> {
                 encoding: f.encoding,
                 offset,
                 intercept: e.intercept,
-                slopes: slopes.len()..slopes.len() + e.slopes.len(),
+                first_slope: slopes.len(),
+                n_slopes: e.slopes.len(),
             };
             offset = term.dofs().end;
             layout.push(term);
-            factors.push((f.levels, f.sorted));
+            levels.push(f.levels);
             slopes.extend(e.slopes);
         }
         let layout = CoefficientLayout {
@@ -535,39 +521,37 @@ impl<'a> Design<'a> {
 
         // Sort by the dominant term so its gather/scatter runs sequentially.
         let dominant = layout.dominant();
-        let mut sorted_offsets = vec![None; factors.len()];
-        let (levels, sorted) = &factors[dominant];
-        let obs_perm = if !sorted {
-            let n_levels = layout.term(dominant).n_levels();
-            let (offsets, perm) = RowIndex::argsort(levels, n_levels);
-            sorted_offsets[dominant] = Some(offsets);
-            // Factors nested in the dominant one come out sorted and need no row index.
-            for (levels, sorted) in factors.iter_mut() {
-                let permuted = perm.gather(levels);
-                *sorted = permuted.is_sorted();
-                *levels = Cow::Owned(permuted);
-            }
-            // Level columns before any slope: interleaving them measured +2–4% here.
-            for slope in slopes.iter_mut() {
-                *slope = Cow::Owned(perm.gather(slope));
-            }
-            Some(Arc::new(perm))
-        } else {
-            None
+        let n_levels = |t: usize| layout.term(t).n_levels();
+        let (dominant_split, obs_perm) =
+            match ScatterSplit::of_sorted(&levels[dominant], n_levels(dominant)) {
+                Some(split) => (split, None),
+                None => {
+                    let (offsets, perm) = RowIndex::argsort(&levels[dominant], n_levels(dominant));
+                    for levels in levels.iter_mut() {
+                        *levels = Cow::Owned(perm.gather(levels));
+                    }
+                    // Level columns before any slope: interleaving them measured +2–4% here.
+                    for slope in slopes.iter_mut() {
+                        *slope = Cow::Owned(perm.gather(slope));
+                    }
+                    (ScatterSplit::sorted(offsets), Some(Arc::new(perm)))
+                }
+            };
+        let dominant_rows = TermRows {
+            levels: levels.remove(dominant),
+            split: dominant_split,
         };
-
-        let terms = factors
+        let others: Vec<usize> = (0..layout.n_terms()).filter(|&t| t != dominant).collect();
+        // Factors nested in the dominant one come out sorted and need no row index.
+        let mut terms: Vec<TermRows> = levels
             .into_par_iter()
-            .zip(sorted_offsets)
-            .zip(layout.terms().par_iter())
-            .map(|(((levels, sorted), sorted_offsets), term)| TermRows {
-                split: match sorted_offsets {
-                    Some(offsets) => ScatterSplit::sorted(offsets),
-                    None => ScatterSplit::new(&levels, term.n_levels(), sorted),
-                },
+            .zip(others)
+            .map(|(levels, t)| TermRows {
+                split: ScatterSplit::new(&levels, n_levels(t)),
                 levels,
             })
             .collect();
+        terms.insert(dominant, dominant_rows);
 
         Ok(Design {
             layout,
@@ -669,57 +653,41 @@ mod tests {
 
     #[test]
     fn encode_labels_preserves_identity_encoding() {
-        let EncodedFactor {
-            encoding,
-            levels,
-            sorted,
-        } = FactorEncoding::encode_labels(Cow::Borrowed(&[2, 0, 1, 2]));
+        let EncodedFactor { encoding, levels } =
+            FactorEncoding::encode_labels(Cow::Borrowed(&[2, 0, 1, 2]));
 
         assert_eq!(encoding, FactorEncoding::identity(3));
         assert!(matches!(levels, Cow::Borrowed([2, 0, 1, 2])));
-        assert!(!sorted);
     }
 
     #[test]
     fn encode_labels_compacts_bounded_gappy_labels() {
         // Range width = 3 and n_obs = 3, so this exercises the presence-table path.
-        let EncodedFactor {
-            encoding,
-            levels,
-            sorted,
-        } = FactorEncoding::encode_labels(Cow::Borrowed(&[2, 0, 2]));
+        let EncodedFactor { encoding, levels } =
+            FactorEncoding::encode_labels(Cow::Borrowed(&[2, 0, 2]));
 
         assert_eq!(encoding, FactorEncoding::integer(vec![0, 2]));
         assert_eq!(*levels, [1, 0, 1]);
-        assert!(!sorted);
     }
 
     #[test]
     fn encode_labels_compacts_shifted_bounded_range() {
-        let EncodedFactor {
-            encoding,
-            levels,
-            sorted,
-        } = FactorEncoding::encode_labels(Cow::Borrowed(&[1_000_000, 1_000_001, 1_000_002]));
+        let EncodedFactor { encoding, levels } =
+            FactorEncoding::encode_labels(Cow::Borrowed(&[1_000_000, 1_000_001, 1_000_002]));
 
         assert_eq!(
             encoding,
             FactorEncoding::integer(vec![1_000_000, 1_000_001, 1_000_002])
         );
         assert_eq!(*levels, [0, 1, 2]);
-        assert!(sorted);
     }
 
     #[test]
     fn encode_labels_compacts_large_span_without_span_allocation() {
-        let EncodedFactor {
-            encoding,
-            levels,
-            sorted,
-        } = FactorEncoding::encode_labels(Cow::Borrowed(&[u32::MAX, 7, u32::MAX]));
+        let EncodedFactor { encoding, levels } =
+            FactorEncoding::encode_labels(Cow::Borrowed(&[u32::MAX, 7, u32::MAX]));
 
         assert_eq!(encoding, FactorEncoding::integer(vec![7, u32::MAX]));
         assert_eq!(*levels, [1, 0, 1]);
-        assert!(!sorted);
     }
 }

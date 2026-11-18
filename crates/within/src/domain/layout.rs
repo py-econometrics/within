@@ -16,6 +16,7 @@ pub struct CoefficientLayout {
 }
 
 /// One term's block of coefficients: column `c` of `level` sits at `c · n_levels + level` in it.
+/// Each start is stored once; ends follow from the term's own counts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TermLayout {
     pub(super) encoding: FactorEncoding,
@@ -23,8 +24,9 @@ pub(crate) struct TermLayout {
     pub(super) offset: usize,
     /// Column 0 is an intercept; the slopes follow it.
     pub(super) intercept: bool,
-    /// This term's slopes in the design's slope numbering, in column order.
-    pub(super) slopes: Range<usize>,
+    /// Start of this term's slopes in the design's slope numbering.
+    pub(super) first_slope: usize,
+    pub(super) n_slopes: usize,
 }
 
 impl TermLayout {
@@ -38,11 +40,11 @@ impl TermLayout {
 
     /// This term's slopes in the design's slope numbering, in column order.
     pub(crate) fn slopes(&self) -> Range<usize> {
-        self.slopes.clone()
+        self.first_slope..self.first_slope + self.n_slopes
     }
 
     pub(crate) fn n_columns(&self) -> usize {
-        self.intercept as usize + self.slopes.len()
+        self.intercept as usize + self.n_slopes
     }
 
     pub(crate) fn n_dofs(&self) -> usize {
@@ -66,7 +68,7 @@ impl TermLayout {
         self.offset + local.start..self.offset + local.end
     }
 
-    /// What column `index` multiplies: the inverse of [`column_index`](Self::column_index).
+    /// What column `index` multiplies.
     pub(crate) fn column(&self, index: usize) -> Column {
         match index.checked_sub(self.intercept as usize) {
             None => Column::Intercept,
@@ -74,12 +76,12 @@ impl TermLayout {
         }
     }
 
-    /// The column that multiplies `column`; the intercept, when present, comes first.
-    pub(crate) fn column_index(&self, column: Column) -> usize {
-        match column {
-            Column::Intercept => 0,
-            Column::Slope(j) => self.intercept as usize + j,
-        }
+    pub(crate) fn intercept_column(&self) -> Option<usize> {
+        self.intercept.then_some(0)
+    }
+
+    pub(crate) fn slope_column(&self, slope: usize) -> usize {
+        self.intercept as usize + slope
     }
 }
 

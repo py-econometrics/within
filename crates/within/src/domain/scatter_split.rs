@@ -46,10 +46,10 @@ pub(crate) enum ScatterSplit {
 }
 
 impl ScatterSplit {
-    /// The split of `levels`; `sorted` says they are non-decreasing.
-    pub(crate) fn new(levels: &[u32], n_levels: usize, sorted: bool) -> Self {
-        if sorted {
-            return Self::sorted(sorted_offsets(levels, n_levels));
+    /// The split of `levels`.
+    pub(crate) fn new(levels: &[u32], n_levels: usize) -> Self {
+        if let Some(split) = Self::of_sorted(levels, n_levels) {
+            return split;
         }
         if levels.len() >= FOLD_ROWS_PER_LEVEL * n_levels {
             return Self::ByRow;
@@ -59,6 +59,24 @@ impl ScatterSplit {
             offsets,
             rows: Some(rows),
         })
+    }
+
+    /// The split of `levels` if they are non-decreasing, else `None`.
+    pub(crate) fn of_sorted(levels: &[u32], n_levels: usize) -> Option<Self> {
+        let mut offsets = vec![0; n_levels + 1];
+        let mut previous = None;
+        // One store per run: a per-row increment chains each run through one counter.
+        for run in levels.chunk_by(|a, b| a == b) {
+            if previous > Some(run[0]) {
+                return None;
+            }
+            previous = Some(run[0]);
+            offsets[run[0] as usize + 1] = run.len();
+        }
+        for level in 0..n_levels {
+            offsets[level + 1] += offsets[level];
+        }
+        Some(Self::sorted(offsets))
     }
 
     /// The split of sorted rows whose level `l` owns rows `offsets[l]..offsets[l + 1]`.
@@ -79,19 +97,6 @@ impl ScatterSplit {
             _ => None,
         }
     }
-}
-
-/// [`offsets`](super::offsets) of non-decreasing `levels`.
-fn sorted_offsets(levels: &[u32], n_levels: usize) -> Vec<usize> {
-    let mut offsets = vec![0; n_levels + 1];
-    // One store per run: a per-row increment chains each run through one counter.
-    for run in levels.chunk_by(|a, b| a == b) {
-        offsets[run[0] as usize + 1] = run.len();
-    }
-    for level in 0..n_levels {
-        offsets[level + 1] += offsets[level];
-    }
-    offsets
 }
 
 impl ScatterSplit {
@@ -205,5 +210,17 @@ impl LevelRows {
             None => positions.for_each(f),
             Some(rows) => rows.for_each(positions, f),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ScatterSplit;
+
+    #[test]
+    fn of_sorted_counts_runs_and_rejects_a_descent() {
+        let split = ScatterSplit::of_sorted(&[0, 0, 1, 3, 3], 4).unwrap();
+        assert_eq!(split.sorted_offsets(), Some(&[0, 2, 3, 3, 5][..]));
+        assert!(ScatterSplit::of_sorted(&[1, 1, 0], 2).is_none());
     }
 }

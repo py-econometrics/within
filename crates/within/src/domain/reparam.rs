@@ -4,7 +4,7 @@ use rayon::prelude::*;
 
 use super::level_moments::{LevelMean, LevelMoments};
 use super::scatter_split::LEVEL_GROUP;
-use super::{Column, Design, TermLayout};
+use super::{Design, TermLayout};
 use crate::channel::{Channel, CoefficientPosition};
 use crate::linalg::{dot, GramBasisWorkspace};
 
@@ -161,12 +161,9 @@ impl TermReparam {
         let (first, kept) = Sweeps::whiten(&moments, n_levels, v);
         let mut unidentified = Vec::new();
         for (level, kept) in kept.chunks_exact(v).enumerate() {
-            if moments.w_sum(level) == Some(0.0) {
+            if let (Some(column), Some(0.0)) = (layout.intercept_column(), moments.w_sum(level)) {
                 unidentified.push(CoefficientPosition {
-                    channel: Channel {
-                        term,
-                        column: layout.column_index(Column::Intercept),
-                    },
+                    channel: Channel { term, column },
                     level,
                 });
             }
@@ -174,7 +171,7 @@ impl TermReparam {
                 unidentified.push(CoefficientPosition {
                     channel: Channel {
                         term,
-                        column: layout.column_index(Column::Slope(j)),
+                        column: layout.slope_column(j),
                     },
                     level,
                 });
@@ -202,10 +199,9 @@ impl TermReparam {
 
     /// Map this term's block of solve-basis coefficients back.
     pub(crate) fn back_transform(&self, layout: &TermLayout, block: &mut [f64]) {
-        let slot = |column: Column, level: usize| {
-            layout.block_column(layout.column_index(column)).start + level
-        };
-        let v = layout.slopes().len();
+        let n_levels = layout.n_levels();
+        let slope = |j: usize, level: usize| layout.slope_column(j) * n_levels + level;
+        let v = layout.n_slopes;
         let mut b = vec![0.0; v];
         for (l, (w, shift)) in self
             .w
@@ -216,17 +212,17 @@ impl TermReparam {
             b.fill(0.0);
             let mut offset = 0.0;
             for ((k, w_row), s) in w.chunks_exact(v).enumerate().zip(shift) {
-                let bk = block[slot(Column::Slope(k), l)];
+                let bk = block[slope(k, l)];
                 offset += bk * s;
                 for (bj, wj) in b.iter_mut().zip(w_row) {
                     *bj += wj * bk;
                 }
             }
             for (j, &bj) in b.iter().enumerate() {
-                block[slot(Column::Slope(j), l)] = bj;
+                block[slope(j, l)] = bj;
             }
-            if layout.intercept() {
-                block[slot(Column::Intercept, l)] -= offset;
+            if let Some(intercept) = layout.intercept_column() {
+                block[intercept * n_levels + l] -= offset;
             }
         }
     }
