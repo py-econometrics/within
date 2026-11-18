@@ -72,12 +72,15 @@ fn back_transform_leaves_other_terms_untouched() {
     let prepared = PreparedDesign::unweighted_for_test(Design::new(three_term_effects()).unwrap());
     let design = &prepared.design;
 
-    let mut x: Vec<f64> = (0..design.n_dofs).map(|i| 1.0 + i as f64).collect();
+    let mut x: Vec<f64> = (0..design.n_dofs()).map(|i| 1.0 + i as f64).collect();
     let before = x.clone();
     prepared.back_transform(&mut x);
 
     // Plain term 1 sits between the two slope-bearing blocks.
-    let (t1, t2) = (design.terms[1].offset, design.terms[2].offset);
+    let (t1, t2) = (
+        design.layout.term(1).dofs().start,
+        design.layout.term(2).dofs().start,
+    );
     assert_eq!(x[t1..t2], before[t1..t2]);
     assert_ne!(x[..t1], before[..t1]);
     assert_ne!(x[t2..], before[t2..]);
@@ -90,8 +93,8 @@ fn an_observation_at_its_level_mean_loads_exactly_zero() {
     let effects = vec![Effect::new(&level, true, [&YEAR[..]]).unwrap()];
     let prepared = PreparedDesign::unweighted_for_test(Design::new(effects).unwrap());
     let t = prepared.term(0);
-    let mean_year = (0..t.term.levels().len())
-        .find(|&i| t.term.raw_slopes().next().unwrap()[i] == 5.0)
+    let mean_year = (0..t.rows.levels().len())
+        .find(|&i| t.rows.raw_slopes().next().unwrap()[i] == 5.0)
         .unwrap();
     assert_eq!(t.slopes[0][mean_year], 0.0);
 }
@@ -149,11 +152,11 @@ fn a_large_offset_still_whitens_to_the_identity() {
 /// intercept included, are orthogonal to `tol` relative to their norms.
 fn assert_level_grams_orthonormal(prepared: &PreparedDesign<'_>, term: usize, tol: f64) {
     let t = prepared.term(term);
-    let (levels, width) = (t.term.levels(), t.term.n_columns());
-    let first_slope = usize::from(t.term.intercept);
+    let (levels, width) = (t.rows.levels(), t.layout.n_columns());
+    let first_slope = usize::from(t.layout.intercept());
     let w = |i: usize| row_weight(prepared.sqrt_weights(), i);
     let a = |i: usize, c: usize| t.loading(c).map_or(1.0, |z| z[i]);
-    let mut grams = vec![0.0; t.term.n_levels() * width * width];
+    let mut grams = vec![0.0; t.layout.n_levels() * width * width];
     for (i, &level) in levels.iter().enumerate() {
         let g = &mut grams[level as usize * width * width..][..width * width];
         for j in 0..width {
@@ -262,7 +265,7 @@ fn near_collinear_large_mean_slopes_stay_orthonormal(
     let effects = vec![Effect::new(&levels, intercept, zs.iter().map(Vec::as_slice)).unwrap()];
     let prepared = PreparedDesign::new(Design::new(effects).unwrap(), weights.as_deref()).unwrap();
     let expected: Vec<CoefficientPosition> = if weighting == "zero weights" {
-        (0..prepared.term(0).term.n_columns())
+        (0..prepared.term(0).layout.n_columns())
             .map(|column| CoefficientPosition {
                 channel: Channel { term: 0, column },
                 level: 0,
@@ -330,7 +333,7 @@ fn whitening_is_bitwise_identical_across_thread_counts() {
             .unwrap();
         pool.install(|| {
             let prepared = prepare();
-            let mut x: Vec<f64> = (0..prepared.design.n_dofs)
+            let mut x: Vec<f64> = (0..prepared.design.n_dofs())
                 .map(|i| (i as f64).sin())
                 .collect();
             prepared.back_transform(&mut x);
@@ -340,14 +343,14 @@ fn whitening_is_bitwise_identical_across_thread_counts() {
                 .collect();
             let row_split = prepared
                 .terms()
-                .filter(|t| matches!(t.term.split, ScatterSplit::ByRow))
+                .filter(|t| matches!(t.rows.split, ScatterSplit::ByRow))
                 .count();
             let largest_by_level = prepared
                 .terms()
-                .filter(|t| matches!(t.term.split, ScatterSplit::ByLevel(_)))
+                .filter(|t| matches!(t.rows.split, ScatterSplit::ByLevel(_)))
                 .map(|t| {
-                    let mut rows = vec![0usize; t.term.n_levels()];
-                    for &l in t.term.levels() {
+                    let mut rows = vec![0usize; t.layout.n_levels()];
+                    for &l in t.rows.levels() {
                         rows[l as usize] += 1;
                     }
                     rows.into_iter().max().unwrap_or(0)

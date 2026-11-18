@@ -285,7 +285,7 @@ pub(crate) fn build_schwarz(
     if domains.is_empty() {
         return Ok((None, warnings));
     }
-    let schwarz = build_additive(domains, local_solver, prepared.design.n_dofs)?;
+    let schwarz = build_additive(domains, local_solver, prepared.design.n_dofs())?;
     let preconditioner = Preconditioner {
         inner: Variant::Additive(schwarz),
         build_duration: build_started.elapsed(),

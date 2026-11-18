@@ -2,12 +2,15 @@
 
 mod effect;
 pub(crate) mod factor_pairs;
+mod layout;
 mod level_moments;
 mod prepared;
 mod reparam;
 mod row_index;
 mod scatter_split;
 
+pub use layout::CoefficientLayout;
+pub(crate) use layout::TermLayout;
 pub(crate) use prepared::{PreparedDesign, PreparedTerm};
 use reparam::TermReparam;
 pub(crate) use row_index::RowIndex;
@@ -20,14 +23,12 @@ pub use effect::Effect;
 
 pub(crate) use factor_pairs::{build_local_domains, LocalDomain};
 
-use crate::channel::Channel;
 use crate::BuildError;
 use ndarray::{ArrayView2, Axis};
 use rayon::prelude::*;
 use rustc_hash::FxBuildHasher;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::ops::Range;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize};
 use std::sync::Arc;
@@ -284,77 +285,33 @@ impl EncodedFactor<'static> {
     }
 }
 
-/// One term's coefficients and rows: column `c` of `level` lives at `offset + c · n_levels + level`.
+/// One term's observations, in the design's row order.
 #[derive(Debug, Clone)]
-pub(crate) struct Term<'a> {
-    pub(crate) encoding: FactorEncoding,
-    pub(crate) offset: usize,
-    /// Column 0 is an intercept; the slopes follow it.
-    pub(crate) intercept: bool,
-    /// Internal level position of every observation, in the design's row order.
+pub(crate) struct TermRows<'a> {
+    /// Internal level position of every observation.
     levels: Cow<'a, [u32]>,
     /// The rows of each level, as the scatter-add splits them.
     pub(crate) split: ScatterSplit,
-    /// Raw slopes in coefficient-column order, before whitening.
+    /// Raw slopes in slope order, before whitening.
     slopes: Vec<Cow<'a, [f64]>>,
 }
 
-impl Term<'_> {
-    pub(crate) fn n_levels(&self) -> usize {
-        self.encoding.n_levels()
-    }
-
+impl TermRows<'_> {
     pub(crate) fn has_slopes(&self) -> bool {
         !self.slopes.is_empty()
-    }
-
-    pub(crate) fn n_columns(&self) -> usize {
-        self.intercept as usize + self.slopes.len()
-    }
-
-    pub(crate) fn n_dofs(&self) -> usize {
-        self.n_columns() * self.n_levels()
-    }
-
-    /// This term's coefficients in the global DOF vector.
-    pub(crate) fn dofs(&self) -> Range<usize> {
-        self.offset..self.offset + self.n_dofs()
-    }
-
-    /// Coefficient column `column`'s `n_levels` slots in the global DOF vector.
-    pub(crate) fn column_dofs(&self, column: usize) -> Range<usize> {
-        let start = self.offset + column * self.n_levels();
-        start..start + self.n_levels()
-    }
-
-    /// Coefficient column of slope `j`; the intercept, when present, comes first.
-    pub(crate) fn slope_column(&self, j: usize) -> usize {
-        self.intercept as usize + j
-    }
-
-    /// Column `index` in layout order: the inverse of [`slope_column`](Self::slope_column).
-    pub(crate) fn column(&self, index: usize) -> Column {
-        debug_assert!(index < self.n_columns());
-        match index.checked_sub(self.intercept as usize) {
-            None => Column::Intercept,
-            Some(j) => Column::Slope(j),
-        }
     }
 
     pub(crate) fn levels(&self) -> &[u32] {
         &self.levels
     }
 
-    /// Raw slopes in coefficient-column order.
+    /// Raw slopes in slope order.
     pub(crate) fn raw_slopes(&self) -> impl ExactSizeIterator<Item = &[f64]> {
         self.slopes.iter().map(|slope| &**slope)
     }
 
-    fn into_owned(self) -> Term<'static> {
-        Term {
-            encoding: self.encoding,
-            offset: self.offset,
-            intercept: self.intercept,
+    fn into_owned(self) -> TermRows<'static> {
+        TermRows {
             levels: Cow::Owned(self.levels.into_owned()),
             split: self.split,
             slopes: self
@@ -516,14 +473,11 @@ pub(crate) fn offsets(n_keys: usize, keys: impl IntoIterator<Item = usize>) -> V
 /// Fixed-effects design: its terms; clones share rows.
 #[derive(Clone, Debug)]
 pub struct Design<'a> {
+    pub(crate) layout: CoefficientLayout,
     /// Rows in internal order (caller's, or an owned locality-sorted copy).
-    pub(crate) terms: Arc<Vec<Term<'a>>>,
-    pub(crate) n_obs: usize,
-    pub(crate) n_dofs: usize,
+    pub(crate) terms: Arc<Vec<TermRows<'a>>>,
     /// `obs_perm[k]` = caller's original index of the observation at internal position `k`.
     pub(crate) obs_perm: Option<Arc<RowIndex>>,
-    /// The term with the most DOFs, ties to the last: the sort key and the eliminated term.
-    pub(crate) dominant: usize,
 }
 
 impl<'a> Design<'a> {
@@ -567,42 +521,43 @@ impl<'a> Design<'a> {
             return Err(BuildError::EmptyObservations);
         }
 
-        let mut factors: Vec<_> = effects
-            .into_iter()
-            .map(|e| {
-                (
-                    FactorEncoding::encode_labels(e.levels),
-                    e.intercept,
-                    e.slopes,
-                )
-            })
-            .collect();
-        let dofs: Vec<usize> = factors
-            .iter()
-            .map(|(f, intercept, slopes)| {
-                (*intercept as usize + slopes.len()) * f.encoding.n_levels()
-            })
-            .collect();
-        let n_dofs: usize = dofs.iter().sum();
+        let mut layout = Vec::with_capacity(effects.len());
+        let mut factors = Vec::with_capacity(effects.len());
+        let mut offset = 0;
+        for e in effects {
+            let f = FactorEncoding::encode_labels(e.levels);
+            let term = TermLayout {
+                encoding: f.encoding,
+                offset,
+                intercept: e.intercept,
+                n_slopes: e.slopes.len(),
+            };
+            offset = term.dofs().end;
+            layout.push(term);
+            factors.push((f.levels, f.sorted, e.slopes));
+        }
+        let layout = CoefficientLayout {
+            terms: layout.into(),
+        };
+        let n_dofs = layout.n_dofs();
         // Rejected here rather than left to panic in `to_u32`.
         if u32::try_from(n_dofs).is_err() {
             return Err(BuildError::DofSpaceExceedsU32 { n_dofs });
         }
 
-        let dominant = (0..dofs.len())
-            .max_by_key(|&t| dofs[t])
-            .expect("observations imply an effect");
         // Sort by the dominant term so its gather/scatter runs sequentially.
+        let dominant = layout.dominant();
         let mut sorted_offsets = vec![None; factors.len()];
-        let d = &factors[dominant].0;
-        let obs_perm = if !d.sorted {
-            let (offsets, perm) = RowIndex::argsort(&d.levels, d.encoding.n_levels());
+        let (levels, sorted, _) = &factors[dominant];
+        let obs_perm = if !sorted {
+            let n_levels = layout.term(dominant).n_levels();
+            let (offsets, perm) = RowIndex::argsort(levels, n_levels);
             sorted_offsets[dominant] = Some(offsets);
             // Factors nested in the dominant one come out sorted and need no row index.
-            for (f, _, _) in factors.iter_mut() {
-                let levels = perm.gather(&f.levels);
-                f.sorted = levels.is_sorted();
-                f.levels = Cow::Owned(levels);
+            for (levels, sorted, _) in factors.iter_mut() {
+                let permuted = perm.gather(levels);
+                *sorted = permuted.is_sorted();
+                *levels = Cow::Owned(permuted);
             }
             // Level columns before any slope: interleaving them measured +2–4% here.
             for slope in factors.iter_mut().flat_map(|(_, _, slopes)| slopes) {
@@ -613,35 +568,26 @@ impl<'a> Design<'a> {
             None
         };
 
-        let term_offsets = dofs
-            .iter()
-            .scan(0, |next, &n| Some(std::mem::replace(next, *next + n)));
         let terms = factors
             .into_par_iter()
             .zip(sorted_offsets)
-            .zip(term_offsets.collect::<Vec<_>>())
-            .map(|(((f, intercept, slopes), sorted_offsets), offset)| {
-                let n_levels = f.encoding.n_levels();
-                Term {
+            .zip(layout.terms().par_iter())
+            .map(
+                |(((levels, sorted, slopes), sorted_offsets), term)| TermRows {
                     split: match sorted_offsets {
                         Some(offsets) => ScatterSplit::sorted(offsets),
-                        None => ScatterSplit::new(&f.levels, n_levels, f.sorted),
+                        None => ScatterSplit::new(&levels, term.n_levels(), sorted),
                     },
-                    encoding: f.encoding,
-                    offset,
-                    intercept,
-                    levels: f.levels,
+                    levels,
                     slopes,
-                }
-            })
+                },
+            )
             .collect();
 
         Ok(Design {
+            layout,
             terms: Arc::new(terms),
-            n_obs,
-            n_dofs,
             obs_perm,
-            dominant,
         })
     }
 
@@ -649,11 +595,9 @@ impl<'a> Design<'a> {
     pub fn into_owned(self) -> Design<'static> {
         let terms = Arc::unwrap_or_clone(self.terms);
         Design {
-            terms: Arc::new(terms.into_iter().map(Term::into_owned).collect()),
-            n_obs: self.n_obs,
-            n_dofs: self.n_dofs,
+            layout: self.layout,
+            terms: Arc::new(terms.into_iter().map(TermRows::into_owned).collect()),
             obs_perm: self.obs_perm,
-            dominant: self.dominant,
         }
     }
 
@@ -676,29 +620,19 @@ impl<'a> Design<'a> {
     /// Number of categorical factors in the design.
     #[inline]
     pub fn n_factors(&self) -> usize {
-        self.terms.len()
-    }
-
-    /// The term's coefficient columns in layout order.
-    pub(crate) fn channels(&self, term: usize) -> impl Iterator<Item = Channel> + '_ {
-        (0..self.terms[term].n_columns()).map(move |column| Channel { term, column })
-    }
-
-    /// What `channel` multiplies.
-    pub(crate) fn column(&self, channel: Channel) -> Column {
-        self.terms[channel.term].column(channel.column)
+        self.layout.n_terms()
     }
 
     /// Number of observations (rows of D).
     #[inline]
     pub fn n_obs(&self) -> usize {
-        self.n_obs
+        self.terms[0].levels.len()
     }
 
     /// Total degrees of freedom (columns of D).
     #[inline]
     pub fn n_dofs(&self) -> usize {
-        self.n_dofs
+        self.layout.n_dofs()
     }
 }
 
@@ -719,9 +653,9 @@ mod tests {
     fn build_compacts_large_integer_label() {
         let design = Design::from_levels_for_test(vec![vec![u32::MAX]]);
 
-        assert_eq!(design.n_dofs, 1);
+        assert_eq!(design.n_dofs(), 1);
         assert_eq!(design.terms[0].levels(), &[0]);
-        assert_eq!(design.terms[0].encoding.label(0), Some(u32::MAX));
+        assert_eq!(design.layout.term(0).encoding.label(0), Some(u32::MAX));
     }
 
     #[test]
@@ -811,11 +745,14 @@ mod tests {
         let design = Design::new(effects).unwrap();
 
         // term 0: [intercept, z0, z1] over 2 levels; term 1: intercept over 3; term 2: slope.
-        let layout = |t: &Term| (t.offset, t.intercept, t.n_columns(), t.n_dofs());
-        assert_eq!(layout(&design.terms[0]), (0, true, 3, 6));
-        assert_eq!(layout(&design.terms[1]), (6, true, 1, 3));
-        assert_eq!(layout(&design.terms[2]), (9, false, 1, 2));
-        assert_eq!(design.n_dofs, 11);
+        let layout = |t: usize| {
+            let t = design.layout.term(t);
+            (t.offset, t.intercept, t.n_columns(), t.n_dofs())
+        };
+        assert_eq!(layout(0), (0, true, 3, 6));
+        assert_eq!(layout(1), (6, true, 1, 3));
+        assert_eq!(layout(2), (9, false, 1, 2));
+        assert_eq!(design.n_dofs(), 11);
 
         // Each term's slopes are the effect's own, in effect order.
         let slopes = |term: usize| design.terms[term].raw_slopes().collect::<Vec<_>>();

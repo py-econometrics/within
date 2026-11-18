@@ -38,7 +38,7 @@ pub(crate) fn build_local_domains(
     config.validate()?;
 
     let channels: Vec<Channel> = (0..design.n_factors())
-        .flat_map(|term| design.channels(term))
+        .flat_map(|term| design.layout.channels(term))
         .collect();
     let pairs: Vec<ChannelPair> = channels
         .iter()
@@ -64,9 +64,9 @@ pub(crate) fn build_local_domains(
     // A slope channel breaks `1/√c`'s equal-informativeness assumption (#94), so stay uniform.
     if !channels
         .iter()
-        .any(|&c| design.column(c) != Column::Intercept)
+        .any(|&c| design.layout.column(c) != Column::Intercept)
     {
-        compute_partition_weights(&mut domain_pairs, design.n_dofs);
+        compute_partition_weights(&mut domain_pairs, design.n_dofs());
     }
 
     Ok((domain_pairs, warnings))
@@ -80,7 +80,7 @@ fn factor_pair(
 ) -> Result<(Option<LocalDomain>, Vec<BuildWarning>), BuildError> {
     let (rows, cols) = (prepared.term(pair.rows.term), prepared.term(pair.cols.term));
     fn side<'p>(term: &PreparedTerm<'p>, column: usize) -> FactorWidth1<'p, f64> {
-        let (n, levels) = (term.term.n_levels(), term.term.levels());
+        let (n, levels) = (term.layout.n_levels(), term.rows.levels());
         match term.loading(column) {
             Some(z) => FactorWidth1::valued(n, levels, z),
             None => FactorWidth1::new(n, levels),
@@ -113,9 +113,9 @@ fn factor_pair(
         return Ok((None, warnings));
     }
 
-    let n_rows = rows.term.n_levels();
-    let row_base = rows.term.column_dofs(pair.rows.column).start;
-    let col_base = cols.term.column_dofs(pair.cols.column).start;
+    let n_rows = rows.layout.n_levels();
+    let row_base = rows.layout.column_dofs(pair.rows.column).start;
+    let col_base = cols.layout.column_dofs(pair.cols.column).start;
     let global = |vertex: usize| {
         let dof = if vertex < n_rows {
             row_base + vertex
@@ -202,7 +202,7 @@ mod tests {
         let dm = make_test_design();
         let (domain_pairs, _) =
             build_local_domains(&dm, &LocalSolverConfig::default()).expect("plain domains build");
-        let n_dofs = dm.design.n_dofs;
+        let n_dofs = dm.design.n_dofs();
         // Two-sided PoU: squared weights must sum to 1 at every DOF.
         let mut weight_sq_sum = vec![0.0; n_dofs];
         for ld in &domain_pairs {
@@ -247,7 +247,7 @@ mod tests {
         }
 
         // Non-vacuity: without a shared DOF, uniform vs 1/√c weights are indistinguishable.
-        let mut counts = vec![0u32; design.design.n_dofs];
+        let mut counts = vec![0u32; design.design.n_dofs()];
         for ld in &domain_pairs {
             for &idx in ld.core.global_indices() {
                 counts[idx as usize] += 1;
@@ -297,7 +297,7 @@ mod tests {
         let dm = make_test_design();
         let (domain_pairs, _) =
             build_local_domains(&dm, &LocalSolverConfig::default()).expect("plain domains build");
-        let mut covered = vec![false; dm.design.n_dofs];
+        let mut covered = vec![false; dm.design.n_dofs()];
         for ld in &domain_pairs {
             for &idx in ld.core.global_indices() {
                 covered[idx as usize] = true;

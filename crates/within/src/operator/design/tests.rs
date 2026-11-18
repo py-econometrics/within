@@ -81,8 +81,8 @@ mod design_tests {
     #[test]
     fn test_large_design_adjoint_property() {
         let dm = make_large_design();
-        let n_dofs = dm.design.n_dofs;
-        let n_rows = dm.design.n_obs;
+        let n_dofs = dm.design.n_dofs();
+        let n_rows = dm.design.n_obs();
 
         let x: Vec<f64> = (0..n_dofs).map(|i| (i as f64 * 0.17 + 1.0).sin()).collect();
         let r: Vec<f64> = (0..n_rows).map(|i| (i as f64 * 0.23 + 2.0).cos()).collect();
@@ -107,9 +107,9 @@ mod design_tests {
     fn test_large_design_matvec_correctness() {
         let dm = make_large_design();
 
-        let mut ej = vec![0.0f64; dm.design.n_dofs];
+        let mut ej = vec![0.0f64; dm.design.n_dofs()];
         ej[0] = 1.0;
-        let mut y = vec![0.0f64; dm.design.n_obs];
+        let mut y = vec![0.0f64; dm.design.n_obs()];
         dm.apply(&ej, &mut y).expect("apply succeeds");
 
         for (i, &yi) in y.iter().enumerate() {
@@ -125,12 +125,12 @@ mod design_tests {
     fn test_large_design_apply_adjoint_correctness() {
         let dm = make_large_design();
 
-        let ones = vec![1.0f64; dm.design.n_obs];
-        let mut x = vec![0.0f64; dm.design.n_dofs];
+        let ones = vec![1.0f64; dm.design.n_obs()];
+        let mut x = vec![0.0f64; dm.design.n_dofs()];
         dm.apply_adjoint(&ones, &mut x)
             .expect("apply_adjoint succeeds");
 
-        let expected_count = (dm.design.n_obs / 50) as f64;
+        let expected_count = (dm.design.n_obs() / 50) as f64;
         for (j, &xj) in x.iter().enumerate() {
             assert!(
                 (xj - expected_count).abs() < 1e-10,
@@ -146,10 +146,10 @@ mod design_tests {
         let x: Vec<f64> = vec![1.0, 2.0, 3.0];
         let r: Vec<f64> = vec![0.5, 1.5, -0.5, 2.0, -1.0];
 
-        let mut dx = vec![0.0f64; dm.design.n_obs];
+        let mut dx = vec![0.0f64; dm.design.n_obs()];
         dm.apply(&x, &mut dx).expect("apply succeeds");
 
-        let mut dtr = vec![0.0f64; dm.design.n_dofs];
+        let mut dtr = vec![0.0f64; dm.design.n_dofs()];
         dm.apply_adjoint(&r, &mut dtr)
             .expect("apply_adjoint succeeds");
 
@@ -192,12 +192,12 @@ mod slope_design_tests {
     /// permutation.
     fn dense_matrix(prepared: &PreparedDesign<'_>) -> Vec<Vec<f64>> {
         let design = &prepared.design;
-        let mut d = vec![vec![0.0; design.n_dofs]; design.n_obs];
+        let mut d = vec![vec![0.0; design.n_dofs()]; design.n_obs()];
         for t in prepared.terms() {
-            for c in 0..t.term.n_columns() {
-                let base = t.term.column_dofs(c).start;
+            for c in 0..t.layout.n_columns() {
+                let base = t.layout.column_dofs(c).start;
                 let z = t.loading(c);
-                for (i, &lev) in t.term.levels().iter().enumerate() {
+                for (i, &lev) in t.rows.levels().iter().enumerate() {
                     d[i][base + lev as usize] = z.map_or(1.0, |z| z[i]);
                 }
             }
@@ -240,14 +240,14 @@ mod slope_design_tests {
         let design = PreparedDesign::unweighted_for_test(Design::new(effects).unwrap());
         let dense = dense_matrix(&design);
         assert!(
-            (0..design.design.n_dofs).all(|j| dense.iter().any(|row| row[j] != 0.0)),
+            (0..design.design.n_dofs()).all(|j| dense.iter().any(|row| row[j] != 0.0)),
             "whitening zeroed a column; the arm's addressing would go untested"
         );
 
-        let x: Vec<f64> = (0..design.design.n_dofs)
+        let x: Vec<f64> = (0..design.design.n_dofs())
             .map(|j| noise(7_000 + j))
             .collect();
-        let mut got = vec![0.0; design.design.n_obs];
+        let mut got = vec![0.0; design.design.n_obs()];
         design.apply(&x, &mut got).unwrap();
         let expect: Vec<f64> = dense
             .iter()
@@ -255,10 +255,12 @@ mod slope_design_tests {
             .collect();
         assert_close(&got, &expect);
 
-        let r: Vec<f64> = (0..design.design.n_obs).map(|i| noise(9_000 + i)).collect();
-        let mut got_t = vec![0.0; design.design.n_dofs];
+        let r: Vec<f64> = (0..design.design.n_obs())
+            .map(|i| noise(9_000 + i))
+            .collect();
+        let mut got_t = vec![0.0; design.design.n_dofs()];
         design.apply_adjoint(&r, &mut got_t).unwrap();
-        let mut expect_t = vec![0.0; design.design.n_dofs];
+        let mut expect_t = vec![0.0; design.design.n_dofs()];
         for (row, &ri) in dense.iter().zip(&r) {
             for (e, d) in expect_t.iter_mut().zip(row) {
                 *e += d * ri;
@@ -307,7 +309,7 @@ mod slope_design_tests {
     #[test]
     fn adjoint_is_pool_independent() {
         let design = scatter_split_design();
-        let r: Vec<f64> = (0..design.design.n_obs)
+        let r: Vec<f64> = (0..design.design.n_obs())
             .map(|i| noise(29 * i + 5))
             .collect();
         let adjoint_in = |threads: usize| {
@@ -316,7 +318,7 @@ mod slope_design_tests {
                 .build()
                 .expect("test rayon pool")
                 .install(|| {
-                    let mut dtr = vec![0.0; design.design.n_dofs];
+                    let mut dtr = vec![0.0; design.design.n_dofs()];
                     design.apply_adjoint(&r, &mut dtr).unwrap();
                     dtr.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
                 })
@@ -332,25 +334,25 @@ mod slope_design_tests {
     #[test]
     fn slope_adjoint_property_each_scatter_split() {
         let design = scatter_split_design();
-        let n = design.design.n_obs;
+        let n = design.design.n_obs();
 
         // By level unless unsorted with at least 12 rows per level.
         let by_level = [
             true, true, true, false, true, true, false, true, true, false,
         ];
         for (t, by_level) in design.terms().zip(by_level) {
-            assert_eq!(matches!(t.term.split, ScatterSplit::ByLevel(_)), by_level);
+            assert_eq!(matches!(t.rows.split, ScatterSplit::ByLevel(_)), by_level);
         }
         assert!(design.design.obs_perm.is_none());
 
-        let x: Vec<f64> = (0..design.design.n_dofs)
+        let x: Vec<f64> = (0..design.design.n_dofs())
             .map(|j| noise(13 * j + 1))
             .collect();
         let r: Vec<f64> = (0..n).map(|i| noise(29 * i + 5)).collect();
 
         let mut dx = vec![0.0; n];
         design.apply(&x, &mut dx).unwrap();
-        let mut dtr = vec![0.0; design.design.n_dofs];
+        let mut dtr = vec![0.0; design.design.n_dofs()];
         design.apply_adjoint(&r, &mut dtr).unwrap();
 
         let lhs: f64 = dx.iter().zip(&r).map(|(a, b)| a * b).sum();
@@ -393,8 +395,8 @@ mod weighted_adjoint_proptests {
             let design = crate::domain::Design::from_levels_for_test(vec![fa, fb]);
             let dm = PreparedDesign::new(design, Some(&weights)).unwrap();
 
-            let n_dofs = dm.design.n_dofs;
-            let n_rows = dm.design.n_obs;
+            let n_dofs = dm.design.n_dofs();
+            let n_rows = dm.design.n_obs();
 
             let x: Vec<f64> = (0..n_dofs)
                 .map(|i| (i as f64 * 0.37 + seed as f64 * 0.13).sin())
@@ -487,7 +489,7 @@ mod elimination_tests {
             Effect::new(&g, true, gz.iter().map(|z| &z[..])).unwrap(),
         ];
         let design = Design::new(effects).unwrap();
-        assert_eq!(design.dominant, 1);
+        assert_eq!(design.layout.dominant(), 1);
         // Every row of level 3 and every fourth row elsewhere carry zero weight.
         let weights: Vec<f64> = (0..n)
             .map(|i| match (e[i], i % 4) {
@@ -496,7 +498,7 @@ mod elimination_tests {
             })
             .collect();
         let prepared = PreparedDesign::new(design, weighted.then_some(&weights[..])).unwrap();
-        let dofs = prepared.design.terms[1].dofs();
+        let dofs = prepared.design.layout.term(1).dofs();
         let unidentified: Vec<usize> = prepared
             .diagonal(1)
             .iter()
@@ -509,7 +511,7 @@ mod elimination_tests {
             !weighted && !matches!(dominant, Dominant::DroppedSlope | Dominant::RankEdge)
         );
 
-        let p = prepared.design.n_dofs;
+        let p = prepared.design.n_dofs();
         let kept: Vec<f64> = (0..p).map(|j| noise(11 * n + j)).collect();
         let residual = |x: &[f64], b: &[f64]| -> Vec<f64> {
             let mut fitted = vec![0.0; n];

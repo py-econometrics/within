@@ -1,6 +1,6 @@
 //! Per-level weighted moments of a term's raw slopes, the input to slope whitening.
 
-use super::{row_weight, ScatterSplit, Term};
+use super::{row_weight, ScatterSplit, TermLayout, TermRows};
 
 /// Weighted within-level mean and Gram, two-pass so structural zeros stay exact.
 pub(crate) struct LevelMoments {
@@ -196,15 +196,20 @@ impl LevelMeans {
 }
 
 impl LevelMoments {
-    pub(crate) fn build(t: &Term<'_>, zs: &[&[f64]], sqrt_weights: Option<&[f64]>) -> Self {
+    pub(crate) fn build(
+        layout: &TermLayout,
+        term: &TermRows<'_>,
+        zs: &[&[f64]],
+        sqrt_weights: Option<&[f64]>,
+    ) -> Self {
         let rows = WeightedRows {
-            levels: t.levels(),
-            n_levels: t.n_levels(),
+            levels: term.levels(),
+            n_levels: layout.n_levels(),
             sqrt_weights,
-            split: &t.split,
+            split: &term.split,
         };
         let v = zs.len();
-        let means = t.intercept.then(|| LevelMeans::new(&rows, zs));
+        let means = layout.intercept().then(|| LevelMeans::new(&rows, zs));
         let add = |l: &mut f64, r: &f64| *l += r;
         let gram = (0..v)
             .flat_map(|j| (0..=j).map(move |k| (j, k)))

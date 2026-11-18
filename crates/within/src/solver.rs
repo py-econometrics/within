@@ -17,13 +17,12 @@ use crate::operator::schwarz::Preconditioner;
 use crate::{BuildError, BuildWarning, SolveError, WithinError};
 
 mod ladder;
-mod layout;
 mod system;
 #[cfg(test)]
 mod tests;
 
+pub use crate::domain::CoefficientLayout;
 use ladder::PrecondSlot;
-pub use layout::CoefficientLayout;
 use system::{Fit, LeastSquaresSystem};
 
 /// Fallible conversion into a [`Design`] for [`Solver::new`]: a categories
@@ -217,8 +216,8 @@ pub struct Solver<'a> {
 impl std::fmt::Debug for Solver<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Solver")
-            .field("n_obs", &self.prepared.design.n_obs)
-            .field("n_dofs", &self.prepared.design.n_dofs)
+            .field("n_obs", &self.prepared.design.n_obs())
+            .field("n_dofs", &self.prepared.design.n_dofs())
             .field("has_weights", &self.prepared.sqrt_weights().is_some())
             .field("has_preconditioner", &self.preconditioner().is_some())
             .field("has_escalated", &self.has_escalated())
@@ -408,7 +407,7 @@ impl<'a> Solver<'a> {
     ) -> Result<Self, BuildError> {
         // Whiten the slope columns (if any) before the preconditioner reads them.
         let prepared = PreparedDesign::new(design.into_design()?, weights)?;
-        let n_dofs = prepared.design.n_dofs;
+        let n_dofs = prepared.design.n_dofs();
 
         let slot = match preconditioner.into() {
             PreconditionerInput::Default => {
@@ -453,7 +452,7 @@ impl<'a> Solver<'a> {
     fn unidentified(&self) -> Vec<CoefficientAddress> {
         self.prepared
             .unidentified()
-            .map(|position| position.to_caller_address(&self.prepared.design))
+            .map(|position| self.prepared.design.layout.caller_address(position))
             .collect()
     }
 
@@ -478,7 +477,7 @@ impl<'a> Solver<'a> {
             unidentified: self.unidentified(),
             // Read after solving so a deferred Adaptive build's warnings are included.
             warnings: self.warnings().to_vec(),
-            layout: CoefficientLayout::from_design(&self.prepared.design),
+            layout: self.prepared.design.layout.clone(),
             demeaned: solution.fit.demeaned,
             converged: solution.converged,
             iterations: solution.iterations,
@@ -503,8 +502,8 @@ impl<'a> Solver<'a> {
 
         let (solutions, build_secs) = solve_all(&self.prepared, &self.slot, ys, lsmr)?;
 
-        let mut x = Vec::with_capacity(self.prepared.design.n_dofs * n_rhs);
-        let mut demeaned = Vec::with_capacity(self.prepared.design.n_obs * n_rhs);
+        let mut x = Vec::with_capacity(self.prepared.design.n_dofs() * n_rhs);
+        let mut demeaned = Vec::with_capacity(self.prepared.design.n_obs() * n_rhs);
         let mut converged = Vec::with_capacity(n_rhs);
         let mut iterations = Vec::with_capacity(n_rhs);
         let mut residual = Vec::with_capacity(n_rhs);
@@ -524,7 +523,7 @@ impl<'a> Solver<'a> {
             unidentified: self.unidentified(),
             // Read after solving so a deferred Adaptive build's warnings are included.
             warnings: self.warnings().to_vec(),
-            layout: CoefficientLayout::from_design(&self.prepared.design),
+            layout: self.prepared.design.layout.clone(),
             demeaned,
             converged,
             iterations,
@@ -533,8 +532,8 @@ impl<'a> Solver<'a> {
             // The deferred build is the batch's only setup, so this is zero when it built nothing.
             time_setup: build_secs,
             time_total: t_start.elapsed().as_secs_f64(),
-            n_dofs: self.prepared.design.n_dofs,
-            n_obs: self.prepared.design.n_obs,
+            n_dofs: self.prepared.design.n_dofs(),
+            n_obs: self.prepared.design.n_obs(),
         })
     }
 
@@ -549,12 +548,12 @@ impl<'a> Solver<'a> {
 
     /// Number of DOFs (coefficients).
     pub fn n_dofs(&self) -> usize {
-        self.prepared.design.n_dofs
+        self.prepared.design.n_dofs()
     }
 
     /// Number of observations.
     pub fn n_obs(&self) -> usize {
-        self.prepared.design.n_obs
+        self.prepared.design.n_obs()
     }
 }
 

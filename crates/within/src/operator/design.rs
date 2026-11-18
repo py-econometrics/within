@@ -37,8 +37,8 @@ impl PreparedDesign<'_> {
         expect(dead_code, reason = "the reduced system recovers with it")
     )]
     pub(crate) fn recover_eliminated(&self, b: &[f64], x: &mut [f64]) {
-        let eliminated = self.design.dominant;
-        let dofs = self.design.terms[eliminated].dofs();
+        let eliminated = self.design.layout.dominant();
+        let dofs = self.design.layout.term(eliminated).dofs();
         x[dofs.clone()].fill(0.0);
         let mut residual = vec![0.0; b.len()];
         gather_apply(self, x, &mut residual, self.sqrt_weights());
@@ -65,25 +65,25 @@ impl PreparedDesign<'_> {
 /// Design operator `D` or `W^{1/2} D`, whose normal equations `AᵀA = DᵀWD` recover the Gramian.
 impl Operator for PreparedDesign<'_> {
     fn nrows(&self) -> usize {
-        self.design.n_obs
+        self.design.n_obs()
     }
 
     fn ncols(&self) -> usize {
-        self.design.n_dofs
+        self.design.n_dofs()
     }
 
     fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
-        debug_assert_eq!(x.len(), self.design.n_dofs);
-        debug_assert_eq!(y.len(), self.design.n_obs);
+        debug_assert_eq!(x.len(), self.design.n_dofs());
+        debug_assert_eq!(y.len(), self.design.n_obs());
         gather_apply(self, x, y, self.sqrt_weights());
         Ok(())
     }
 
     fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
-        debug_assert_eq!(x.len(), self.design.n_obs);
-        debug_assert_eq!(y.len(), self.design.n_dofs);
+        debug_assert_eq!(x.len(), self.design.n_obs());
+        debug_assert_eq!(y.len(), self.design.n_dofs());
         for t in self.terms() {
-            self.adjoint_block(&t, x, &mut y[t.term.dofs()]);
+            self.adjoint_block(&t, x, &mut y[t.layout.dofs()]);
         }
         Ok(())
     }

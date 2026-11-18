@@ -51,7 +51,7 @@ fn run_block_elim_nested_rayon_case() {
         ..Default::default()
     };
     let design = synthetic_star_design(n_keep, elim_ratio);
-    let n_dofs = design.design.n_dofs;
+    let n_dofs = design.design.n_dofs();
     let (mut domain_pairs, _) = build_local_domains(&design, &config).expect("domains");
     let [domain] = &domain_pairs[..] else {
         panic!("one component expected, got {}", domain_pairs.len())
@@ -132,11 +132,11 @@ fn test_build_additive() {
     let schwarz = build_additive(
         domain_pairs,
         &LocalSolverConfig::default(),
-        design.design.n_dofs,
+        design.design.n_dofs(),
     )
     .expect("build schwarz with explicit domains");
-    let r = vec![1.0; design.design.n_dofs];
-    let mut z = vec![0.0; design.design.n_dofs];
+    let r = vec![1.0; design.design.n_dofs()];
+    let mut z = vec![0.0; design.design.n_dofs()];
     schwarz.apply(&r, &mut z).expect("schwarz apply succeeds");
 }
 

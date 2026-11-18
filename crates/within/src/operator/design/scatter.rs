@@ -8,8 +8,7 @@ pub(super) fn scatter_block(
     block: &mut [f64],
     base: &(impl Fn(usize) -> f64 + Sync),
 ) {
-    let term = t.term;
-    match (term.intercept, t.slopes) {
+    match (t.layout.intercept(), t.slopes) {
         (true, []) => scatter_term::<1>(block, t, |i| [base(i)]),
         (true, [z0]) => {
             let z0 = &z0[..];
@@ -47,9 +46,8 @@ pub(super) fn scatter_block(
             })
         }
         _ => {
-            for c in 0..term.n_columns() {
-                let start = c * term.n_levels();
-                let slot = &mut block[start..start + term.n_levels()];
+            for c in 0..t.layout.n_columns() {
+                let slot = &mut block[t.layout.block_column(c)];
                 match t.loading(c) {
                     None => scatter_term::<1>(slot, t, |i| [base(i)]),
                     Some(z) => scatter_term::<1>(slot, t, move |i| [z[i] * base(i)]),
@@ -65,12 +63,12 @@ fn scatter_term<const C: usize>(
     term: &PreparedTerm<'_>,
     values: impl Fn(usize) -> [f64; C] + Sync,
 ) {
-    let n_levels = term.term.n_levels();
+    let n_levels = term.layout.n_levels();
     debug_assert_eq!(block.len(), C * n_levels);
     let mut columns = block.chunks_mut(n_levels);
     let columns = Columns(std::array::from_fn(|_| columns.next().expect("C columns")));
-    term.term.split.fold(
-        term.term.levels(),
+    term.rows.split.fold(
+        term.rows.levels(),
         [0.0; C],
         &|sums: &mut [f64; C], _, i| {
             for (s, v) in sums.iter_mut().zip(values(i)) {

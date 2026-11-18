@@ -45,13 +45,13 @@ pub(crate) struct Response<'s> {
 impl<'s> Response<'s> {
     pub(crate) fn new(prepared: &'s PreparedDesign<'_>, y: &'s [f64]) -> Result<Self, SolveError> {
         // `W^{1/2} y` zips y with sqrt-weights, silently truncating when `y.len() > n_rows`.
-        if y.len() != prepared.design.n_obs {
+        if y.len() != prepared.design.n_obs() {
             return Err(SolveError::InvalidInput {
                 context: "Solver::solve",
                 message: format!(
                     "response vector length ({}) does not match number of observations ({})",
                     y.len(),
-                    prepared.design.n_obs
+                    prepared.design.n_obs()
                 ),
             });
         }

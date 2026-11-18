@@ -13,17 +13,17 @@ pub(crate) fn gather_apply(
     scale: Option<&[f64]>,
 ) {
     let design = &prepared.design;
-    debug_assert!(scale.is_none_or(|s| s.len() == design.n_obs));
-    debug_assert_eq!(src.len(), design.n_dofs);
-    debug_assert_eq!(dst.len(), design.n_obs);
+    debug_assert!(scale.is_none_or(|s| s.len() == design.n_obs()));
+    debug_assert_eq!(src.len(), design.n_dofs());
+    debug_assert_eq!(dst.len(), design.n_obs());
 
     dst.fill(0.0);
 
     for_each_chunk(dst, |chunk, row_start| {
         for t in prepared.terms() {
-            let (offset, n_levels, levels) = (t.term.offset, t.term.n_levels(), t.term.levels());
-            let col = |c: usize| &src[t.term.column_dofs(c)];
-            match (t.term.intercept, t.slopes) {
+            let levels = t.rows.levels();
+            let col = |c: usize| &src[t.layout.column_dofs(c)];
+            match (t.layout.intercept(), t.slopes) {
                 (true, []) => gather_term(chunk, row_start, levels, [col(0)], |_| [1.0]),
                 (true, [z0]) => {
                     let z0 = &z0[..];
@@ -65,8 +65,8 @@ pub(crate) fn gather_apply(
                         let i = row_start + local;
                         let lev = levels[i] as usize;
                         let mut acc = 0.0;
-                        for c in 0..t.term.n_columns() {
-                            let coef = src[offset + c * n_levels + lev];
+                        for c in 0..t.layout.n_columns() {
+                            let coef = col(c)[lev];
                             acc += match c.checked_sub(first) {
                                 None => coef,
                                 Some(j) => coef * slopes[j][i],

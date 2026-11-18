@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use rstest::rstest;
 
-use super::{CoefficientAddress, CoefficientLayout};
+use super::CoefficientAddress;
 use crate::channel::Channel;
 use crate::config::{LocalSolverConfig, LsmrOptions};
 use crate::domain::Design;
@@ -57,7 +57,7 @@ fn coefficient_layout_translates_addresses_both_ways() {
         Effect::new(&g, true, [&z[..]]).expect("slope effect"),
     ])
     .expect("design");
-    let layout = CoefficientLayout::from_design(&design);
+    let layout = design.layout.clone();
 
     assert_eq!(layout.n_terms(), 2);
     assert_eq!(
@@ -243,13 +243,15 @@ fn akm_panel(
 fn max_abs_group_mean(design: &Design<'_>, demeaned: &[f64]) -> f64 {
     let demeaned = design.permute_obs_in(demeaned);
     design
-        .terms
+        .layout
+        .terms()
         .iter()
-        .filter(|t| t.intercept)
-        .map(|t| {
+        .zip(design.terms.iter())
+        .filter(|(layout, _)| layout.intercept())
+        .map(|(layout, t)| {
             let levels = t.levels();
-            let mut sums = vec![0.0f64; t.n_levels()];
-            let mut counts = vec![0.0f64; t.n_levels()];
+            let mut sums = vec![0.0f64; layout.n_levels()];
+            let mut counts = vec![0.0f64; layout.n_levels()];
             for (obs, &level) in levels.iter().enumerate() {
                 sums[level as usize] += demeaned[obs];
                 counts[level as usize] += 1.0;

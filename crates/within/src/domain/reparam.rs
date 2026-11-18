@@ -4,7 +4,7 @@ use rayon::prelude::*;
 
 use super::level_moments::{LevelMean, LevelMoments};
 use super::scatter_split::LEVEL_GROUP;
-use super::{Design, Term};
+use super::{Column, Design, TermLayout};
 use crate::channel::{Channel, CoefficientPosition};
 use crate::linalg::{dot, GramBasisWorkspace};
 
@@ -146,25 +146,28 @@ impl TermReparam {
         term: usize,
         sqrt_weights: Option<&[f64]>,
     ) -> Option<Self> {
-        let t = &design.terms[term];
-        if !t.has_slopes() {
+        let (layout, rows) = (design.layout.term(term), &design.terms[term]);
+        if !rows.has_slopes() {
             return None;
         }
-        let levels = t.levels();
-        let n_levels = t.n_levels();
-        let mut slopes: Vec<Vec<f64>> = t
+        let levels = rows.levels();
+        let n_levels = layout.n_levels();
+        let mut slopes: Vec<Vec<f64>> = rows
             .raw_slopes()
             .map(|z| z.par_iter().with_min_len(ROW_CHUNK).copied().collect())
             .collect();
         let v = slopes.len();
 
-        let moments = LevelMoments::build(t, &columns(&slopes), sqrt_weights);
+        let moments = LevelMoments::build(layout, rows, &columns(&slopes), sqrt_weights);
         let (first, kept) = Sweeps::whiten(&moments, n_levels, v);
         let mut unidentified = Vec::new();
         for (level, kept) in kept.chunks_exact(v).enumerate() {
             if moments.w_sum(level) == Some(0.0) {
                 unidentified.push(CoefficientPosition {
-                    channel: Channel { term, column: 0 },
+                    channel: Channel {
+                        term,
+                        column: layout.column_index(Column::Intercept),
+                    },
                     level,
                 });
             }
@@ -172,7 +175,7 @@ impl TermReparam {
                 unidentified.push(CoefficientPosition {
                     channel: Channel {
                         term,
-                        column: t.slope_column(j),
+                        column: layout.column_index(Column::Slope(j)),
                     },
                     level,
                 });
@@ -182,7 +185,7 @@ impl TermReparam {
         first.apply(levels, &mut slopes);
 
         // The rank tolerance keeps the first sweep well-conditioned, so this one drops nothing.
-        let moments = LevelMoments::build(t, &columns(&slopes), sqrt_weights);
+        let moments = LevelMoments::build(layout, rows, &columns(&slopes), sqrt_weights);
         let (second, _) = Sweeps::whiten(&moments, n_levels, v);
         drop(moments);
         second.apply(levels, &mut slopes);
@@ -196,10 +199,11 @@ impl TermReparam {
         })
     }
 
-    /// Map this term's solve-basis coefficients back; slots outside its block are untouched.
-    pub(crate) fn back_transform(&self, term: &Term<'_>, x: &mut [f64]) {
-        let slope_slot =
-            |j: usize, level: usize| term.column_dofs(term.slope_column(j)).start + level;
+    /// Map this term's block of solve-basis coefficients back.
+    pub(crate) fn back_transform(&self, layout: &TermLayout, block: &mut [f64]) {
+        let slot = |column: Column, level: usize| {
+            layout.block_column(layout.column_index(column)).start + level
+        };
         let v = self.slopes.len();
         let mut b = vec![0.0; v];
         for (l, (w, shift)) in self
@@ -211,17 +215,17 @@ impl TermReparam {
             b.fill(0.0);
             let mut offset = 0.0;
             for ((k, w_row), s) in w.chunks_exact(v).enumerate().zip(shift) {
-                let bk = x[slope_slot(k, l)];
+                let bk = block[slot(Column::Slope(k), l)];
                 offset += bk * s;
                 for (bj, wj) in b.iter_mut().zip(w_row) {
                     *bj += wj * bk;
                 }
             }
             for (j, &bj) in b.iter().enumerate() {
-                x[slope_slot(j, l)] = bj;
+                block[slot(Column::Slope(j), l)] = bj;
             }
-            if term.intercept {
-                x[term.column_dofs(0).start + l] -= offset;
+            if layout.intercept() {
+                block[slot(Column::Intercept, l)] -= offset;
             }
         }
     }
