@@ -12,6 +12,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **BREAKING:** Python 3.9 is no longer supported; wheels are `cp310-abi3`.
 - **BREAKING:** the hidden `Design::new_unsorted` is removed: every design sorts its rows by its dominant term. Designs above `u32::MAX` rows are sorted too, and their unsorted terms split their scatter by level like smaller ones; row indices are 4 bytes while every row fits `u32`.
 - A `Design` fixes each term's scatter split once: solvers built from one design under different weights (IRLS) no longer re-sort its unsorted terms.
 - Slope whitening's row passes run in parallel within a term, bit-identical at any thread count: per-level sums, the design adjoint included, combine in one fixed tree set by the data, with row-split leaves of `4·L` rows whatever the state size (#515).

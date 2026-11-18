@@ -3,7 +3,7 @@ channels = ["conda-forge"]
 platforms = ["linux-64", "win-64", "osx-arm64", "osx-64"]
 
 [dependencies]
-python = ">=3.9"
+python = ">=3.10"
 
 [feature.build.dependencies]
 rust = ">=1.84"
@@ -34,8 +34,8 @@ pixi-pycharm = "*"
 within-py = { path = ".", editable = true }
 
 # Isolated so `pixi run -e audit abi3audit <wheel>` installs only the auditor.
-# Verifies a built wheel uses only the py3.9 limited API, so the single
-# cp39-abi3 wheel is valid on every later CPython.
+# Verifies a built wheel uses only the py3.10 limited API, so the single
+# cp310-abi3 wheel is valid on every later CPython.
 [feature.audit.dependencies]
 abi3audit = ">=0.0.26"
 
