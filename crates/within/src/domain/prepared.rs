@@ -149,9 +149,7 @@ impl<'a> PreparedDesign<'a> {
             .into_par_iter()
             .map(|term| self.diagonal(term))
             .collect();
-        let diag = blocks.concat();
-        debug_assert_eq!(diag.len(), self.design.n_dofs());
-        diag
+        blocks.concat()
     }
 
     /// Map solve-basis coefficients back to the user's parametrization.

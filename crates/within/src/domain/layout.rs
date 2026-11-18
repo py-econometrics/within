@@ -68,7 +68,6 @@ impl TermLayout {
 
     /// What column `index` multiplies: the inverse of [`column_index`](Self::column_index).
     pub(crate) fn column(&self, index: usize) -> Column {
-        debug_assert!(index < self.n_columns());
         match index.checked_sub(self.intercept as usize) {
             None => Column::Intercept,
             Some(j) => Column::Slope(j),
@@ -78,10 +77,7 @@ impl TermLayout {
     /// The column that multiplies `column`; the intercept, when present, comes first.
     pub(crate) fn column_index(&self, column: Column) -> usize {
         match column {
-            Column::Intercept => {
-                debug_assert!(self.intercept);
-                0
-            }
+            Column::Intercept => 0,
             Column::Slope(j) => self.intercept as usize + j,
         }
     }

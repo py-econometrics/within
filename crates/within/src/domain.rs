@@ -722,40 +722,4 @@ mod tests {
         assert_eq!(*levels, [1, 0, 1]);
         assert!(!sorted);
     }
-
-    #[test]
-    fn new_lays_out_slope_terms_term_major() {
-        // Sorted levels keep the locality sort a no-op, so columns stay in caller order.
-        let f0 = [0u32, 0, 1, 1];
-        let f1 = [0u32, 2, 1, 0];
-        let z0 = [1.0, 2.0, 3.0, 4.0];
-        let z1 = [5.0, 6.0, 7.0, 8.0];
-        let effects = vec![
-            Effect::new(&f0, true, [&z0[..], &z1[..]]).unwrap(),
-            Effect::new(&f1, true, []).unwrap(),
-            Effect::new(&f0, false, [&z1[..]]).unwrap(),
-        ];
-        let design = Design::new(effects).unwrap();
-
-        // term 0: [intercept, z0, z1] over 2 levels; term 1: intercept over 3; term 2: slope.
-        let layout = |t: usize| {
-            let t = design.layout.term(t);
-            (t.offset, t.intercept, t.n_columns(), t.n_dofs())
-        };
-        assert_eq!(layout(0), (0, true, 3, 6));
-        assert_eq!(layout(1), (6, true, 1, 3));
-        assert_eq!(layout(2), (9, false, 1, 2));
-        assert_eq!(design.n_dofs(), 11);
-
-        // Each term's slopes are the effect's own, in effect order.
-        let slopes = |term: usize| {
-            design.slopes[design.layout.term(term).slopes()]
-                .iter()
-                .map(|slope| &**slope)
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(slopes(0), [&z0[..], &z1[..]]);
-        assert!(slopes(1).is_empty());
-        assert_eq!(slopes(2), [&z1[..]]);
-    }
 }

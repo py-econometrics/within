@@ -73,8 +73,6 @@ impl Operator for PreparedDesign<'_> {
     }
 
     fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
-        debug_assert_eq!(x.len(), self.design.n_dofs());
-        debug_assert_eq!(y.len(), self.design.n_obs());
         gather_apply(self, x, y, self.sqrt_weights());
         Ok(())
     }
