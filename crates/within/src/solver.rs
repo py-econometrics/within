@@ -218,7 +218,7 @@ impl std::fmt::Debug for Solver<'_> {
         f.debug_struct("Solver")
             .field("n_obs", &self.prepared.design.n_obs())
             .field("n_dofs", &self.prepared.design.n_dofs())
-            .field("has_weights", &self.prepared.sqrt_weights().is_some())
+            .field("has_weights", &self.prepared.weights.sqrt().is_some())
             .field("has_preconditioner", &self.preconditioner().is_some())
             .field("has_escalated", &self.has_escalated())
             .finish()

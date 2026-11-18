@@ -33,7 +33,8 @@ impl<'s> Response<'s> {
         }
         let y = prepared.design.permute_obs_in(y);
         let weighted = prepared
-            .sqrt_weights()
+            .weights
+            .sqrt()
             .map(|sw| y.iter().zip(sw).map(|(&yi, &swi)| swi * yi).collect());
         Ok(Self { y, weighted })
     }

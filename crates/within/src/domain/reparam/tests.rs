@@ -2,7 +2,7 @@
 //! not reachable through the public API.
 
 use crate::channel::Channel;
-use crate::domain::{row_weight, Effect, PreparedDesign};
+use crate::domain::{Effect, PreparedDesign};
 use rstest::rstest;
 
 use super::*;
@@ -157,7 +157,7 @@ fn assert_level_grams_orthonormal(prepared: &PreparedDesign<'_>, term: usize, to
     let t = prepared.design.term(term);
     let (levels, width) = (t.rows.levels(), t.layout.n_columns());
     let first_slope = usize::from(t.layout.intercept());
-    let w = |i: usize| row_weight(prepared.sqrt_weights(), i);
+    let w = |i: usize| prepared.weights.weight(i);
     let a = |i: usize, c: usize| t.loading(c).map_or(1.0, |z| z[i]);
     let mut grams = vec![0.0; t.layout.n_levels() * width * width];
     for (i, &level) in levels.iter().enumerate() {

@@ -3,7 +3,7 @@
 use approx_chol::input::{BipartiteFactorWidth2, FactorWidth1};
 use rayon::prelude::*;
 
-use super::{row_weight, CoefficientLayout, Design, PreparedTerm};
+use super::{CoefficientLayout, Design, PreparedTerm, RowWeights};
 use crate::channel::ChannelPair;
 use crate::linalg::add_compensated;
 
@@ -12,7 +12,7 @@ use crate::linalg::add_compensated;
 pub(crate) struct Gramian<'p> {
     /// `D̃`: the design in the solve basis.
     pub(super) design: &'p Design<'p>,
-    pub(super) sqrt_weights: Option<&'p [f64]>,
+    pub(super) weights: &'p RowWeights,
 }
 
 impl<'p> Gramian<'p> {
@@ -24,7 +24,7 @@ impl<'p> Gramian<'p> {
     /// `diag(G)` over term `term`'s coefficients, laid out like its `dofs()`, summed in observation order.
     pub(crate) fn term_diagonal(&self, term: usize) -> Vec<f64> {
         let prepared = self.design.term(term);
-        let (layout, sqrt_weights) = (prepared.layout, self.sqrt_weights);
+        let (layout, weights) = (prepared.layout, self.weights);
         let levels = prepared.rows.levels();
         let mut diag = vec![0.0; layout.n_dofs()];
         let mut corrections = vec![0.0; layout.n_dofs()];
@@ -33,7 +33,7 @@ impl<'p> Gramian<'p> {
                 .map(|c| (layout.block_column(c).start, prepared.loading(c)))
                 .collect();
             for (obs, &level) in levels.iter().enumerate() {
-                let w = row_weight(sqrt_weights, obs);
+                let w = weights.weight(obs);
                 for &(base, z) in &columns {
                     // Keep `w * z * z` left-to-right: a zero weight kills a huge `z` first.
                     let slot = base + level as usize;
@@ -47,17 +47,7 @@ impl<'p> Gramian<'p> {
         } else if let Some(offsets) = prepared.rows.split.sorted_offsets() {
             // A sorted level is one run: a register sum keeps its order with no store per row.
             for (level, run) in offsets.windows(2).enumerate() {
-                // A sum of ones is exact, so the unweighted run sum is its length.
-                diag[level] += match sqrt_weights {
-                    None => (run[1] - run[0]) as f64,
-                    Some(s) => {
-                        let (mut sum, mut correction) = (0.0, 0.0);
-                        for &si in &s[run[0]..run[1]] {
-                            add_compensated(&mut sum, &mut correction, si * si);
-                        }
-                        sum + correction
-                    }
-                };
+                diag[level] += weights.sum(run[0]..run[1]);
             }
         } else {
             for (obs, &level) in levels.iter().enumerate() {
@@ -65,7 +55,7 @@ impl<'p> Gramian<'p> {
                 add_compensated(
                     &mut diag[level],
                     &mut corrections[level],
-                    row_weight(sqrt_weights, obs),
+                    weights.weight(obs),
                 );
             }
         }
@@ -99,7 +89,7 @@ impl<'p> Gramian<'p> {
             .expect("levels index their term")
         }
         let (left, right) = (side(&rows, pair.rows.column), side(&cols, pair.cols.column));
-        match self.sqrt_weights {
+        match self.weights.sqrt() {
             Some(s) => BipartiteFactorWidth2::scaled(left, right, s),
             None => BipartiteFactorWidth2::new(left, right),
         }
@@ -109,7 +99,6 @@ impl<'p> Gramian<'p> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::domain::{Design, PreparedDesign};
 
     /// Independent floating-point expansion: retain each exact two-sum remainder
@@ -163,7 +152,7 @@ mod tests {
                 let block = &mut entries[term.layout.column_dofs(column)];
                 let z = term.loading(column);
                 for (obs, &level) in term.rows.levels().iter().enumerate() {
-                    let w = row_weight(prepared.sqrt_weights(), obs);
+                    let w = prepared.weights.weight(obs);
                     block[level as usize].push(z.map_or(w, |z| w * z[obs] * z[obs]));
                 }
             }

@@ -1,6 +1,6 @@
 use schwarz_precond::Operator;
 
-use crate::domain::{Design, PreparedDesign, PreparedTerm, PAR_THRESHOLD};
+use crate::domain::{Design, PreparedDesign, PreparedTerm, RowWeights, PAR_THRESHOLD};
 
 mod gather;
 mod scatter;
@@ -8,7 +8,7 @@ mod scatter;
 #[cfg(test)]
 mod tests;
 
-use gather::{gather_apply, unscale};
+use gather::gather_apply;
 use scatter::scatter_block;
 
 /// `A = W^{1/2} D̃`: the operator LSMR iterates on.
@@ -16,7 +16,7 @@ use scatter::scatter_block;
 pub(crate) struct DesignOperator<'p> {
     /// `D̃`: the design in the solve basis.
     pub(crate) design: &'p Design<'p>,
-    pub(crate) sqrt_weights: Option<&'p [f64]>,
+    pub(crate) weights: &'p RowWeights,
 }
 
 impl PreparedDesign<'_> {
@@ -24,19 +24,18 @@ impl PreparedDesign<'_> {
     pub(crate) fn operator(&self) -> DesignOperator<'_> {
         DesignOperator {
             design: &self.design,
-            sqrt_weights: self.sqrt_weights(),
+            weights: &self.weights,
         }
     }
 
     /// `y − D x`, read off this operator's measured `b − A x` unless a zero weight erased a row.
     pub(crate) fn demeaned(&self, x: &[f64], y: &[f64], measured: Option<Vec<f64>>) -> Vec<f64> {
-        match (measured, self.sqrt_weights()) {
-            (Some(residual), None) => residual,
-            (Some(mut residual), Some(sw)) if !sw.contains(&0.0) => {
-                unscale(&mut residual, sw);
+        match measured {
+            Some(mut residual) if !self.weights.erases_rows() => {
+                self.weights.unscale(&mut residual);
                 residual
             }
-            (measured, _) => {
+            measured => {
                 let mut demeaned = measured.unwrap_or_else(|| vec![0.0; y.len()]);
                 gather_apply(&self.design, x, &mut demeaned, None);
                 for (d, &yi) in demeaned.iter_mut().zip(y) {
@@ -57,7 +56,7 @@ impl PreparedDesign<'_> {
         let dofs = self.design.layout.term(eliminated).dofs();
         x[dofs.clone()].fill(0.0);
         let mut residual = vec![0.0; b.len()];
-        gather_apply(&self.design, x, &mut residual, self.sqrt_weights());
+        gather_apply(&self.design, x, &mut residual, self.weights.sqrt());
         for (r, &bi) in residual.iter_mut().zip(b) {
             *r = bi - *r;
         }
@@ -77,7 +76,7 @@ impl PreparedDesign<'_> {
 impl DesignOperator<'_> {
     /// `block = A_tᵀ v` for one term `t`.
     fn adjoint_block(&self, t: &PreparedTerm<'_>, v: &[f64], block: &mut [f64]) {
-        match self.sqrt_weights {
+        match self.weights.sqrt() {
             Some(sw) => scatter_block(t, block, &|i| sw[i] * v[i]),
             None => scatter_block(t, block, &|i| v[i]),
         }
@@ -95,7 +94,7 @@ impl Operator for DesignOperator<'_> {
     }
 
     fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
-        gather_apply(self.design, x, y, self.sqrt_weights);
+        gather_apply(self.design, x, y, self.weights.sqrt());
         Ok(())
     }
 

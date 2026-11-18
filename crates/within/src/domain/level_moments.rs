@@ -1,6 +1,6 @@
 //! Per-level weighted moments of a term's raw slopes, the input to slope whitening.
 
-use super::{row_weight, ScatterSplit, TermLayout, TermRows};
+use super::{RowWeights, ScatterSplit, TermLayout, TermRows};
 
 /// Weighted within-level mean and Gram, two-pass so structural zeros stay exact.
 pub(crate) struct LevelMoments {
@@ -21,7 +21,7 @@ fn tri_index(j: usize, k: usize) -> usize {
 struct WeightedRows<'a> {
     levels: &'a [u32],
     n_levels: usize,
-    sqrt_weights: Option<&'a [f64]>,
+    weights: &'a RowWeights,
     split: &'a ScatterSplit,
 }
 
@@ -38,7 +38,7 @@ impl WeightedRows<'_> {
             self.levels,
             init,
             &|s: &mut S, level, obs| {
-                let w = row_weight(self.sqrt_weights, obs);
+                let w = self.weights.weight(obs);
                 if w > 0.0 {
                     step(s, level, obs, w);
                 }
@@ -200,12 +200,12 @@ impl LevelMoments {
         layout: &TermLayout,
         term: &TermRows<'_>,
         zs: &[&[f64]],
-        sqrt_weights: Option<&[f64]>,
+        weights: &RowWeights,
     ) -> Self {
         let rows = WeightedRows {
             levels: term.levels(),
             n_levels: layout.n_levels(),
-            sqrt_weights,
+            weights,
             split: &term.split,
         };
         let v = zs.len();

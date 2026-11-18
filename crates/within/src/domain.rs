@@ -9,6 +9,7 @@ mod prepared;
 mod reparam;
 mod row_index;
 mod scatter_split;
+mod weights;
 
 pub(crate) use gramian::Gramian;
 pub use layout::CoefficientLayout;
@@ -17,6 +18,7 @@ pub(crate) use prepared::{PreparedDesign, PreparedTerm};
 use reparam::TermReparam;
 pub(crate) use row_index::RowIndex;
 pub(crate) use scatter_split::{LevelSlots, ScatterSplit};
+pub(crate) use weights::RowWeights;
 
 /// Rows from which a sweep over observations runs in parallel.
 pub(crate) const PAR_THRESHOLD: usize = 10_000;
@@ -297,11 +299,6 @@ impl TermRows<'_> {
             split: self.split,
         }
     }
-}
-
-/// The Gram weight of row `obs`: the operator applies `s`, so its normal matrix carries `s²`.
-pub(crate) fn row_weight(sqrt_weights: Option<&[f64]>, obs: usize) -> f64 {
-    sqrt_weights.map_or(1.0, |s| s[obs] * s[obs])
 }
 
 const LABEL_CHUNK: usize = 65_536;

@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use rayon::prelude::*;
 
-use super::{Column, Design, Gramian, TermLayout, TermReparam, TermRows};
+use super::{Column, Design, Gramian, RowWeights, TermLayout, TermReparam, TermRows};
 use crate::channel::CoefficientPosition;
 use crate::BuildError;
 
@@ -11,8 +11,8 @@ use crate::BuildError;
 pub(crate) struct PreparedDesign<'a> {
     /// The design in the solve basis: the caller's rows with whitened slopes.
     pub(crate) design: Design<'a>,
-    /// `W^{1/2}` in the design's internal observation order; `None` is unweighted.
-    sqrt_weights: Option<Vec<f64>>,
+    /// `W^{1/2}` in the design's internal observation order.
+    pub(crate) weights: RowWeights,
     /// Per design term, its change of basis; `None` is the identity.
     reparams: Vec<Option<TermReparam>>,
 }
@@ -53,12 +53,10 @@ impl<'p> PreparedTerm<'p> {
 
 impl<'a> PreparedDesign<'a> {
     pub(crate) fn new(design: Design<'a>, weights: Option<&[f64]>) -> Result<Self, BuildError> {
-        let sqrt_weights = weights
-            .map(|weights| prepare_sqrt_weights(&design, weights))
-            .transpose()?;
+        let weights = RowWeights::new(&design, weights)?;
         let built: Vec<_> = (0..design.n_factors())
             .into_par_iter()
-            .map(|t| TermReparam::build(&design, t, sqrt_weights.as_deref()))
+            .map(|t| TermReparam::build(&design, t, &weights))
             .collect();
         let mut slopes = Vec::with_capacity(design.slopes.len());
         let reparams = built
@@ -77,22 +75,16 @@ impl<'a> PreparedDesign<'a> {
         };
         Ok(Self {
             design,
-            sqrt_weights,
+            weights,
             reparams,
         })
-    }
-
-    /// `W^{1/2}` in internal observation order; `None` is unweighted.
-    #[inline]
-    pub(crate) fn sqrt_weights(&self) -> Option<&[f64]> {
-        self.sqrt_weights.as_deref()
     }
 
     /// `G = AᵀA`, read from this design's factors.
     pub(crate) fn gramian(&self) -> Gramian<'_> {
         Gramian {
             design: &self.design,
-            sqrt_weights: self.sqrt_weights(),
+            weights: &self.weights,
         }
     }
 
@@ -114,40 +106,9 @@ impl<'a> PreparedDesign<'a> {
     }
 }
 
-/// Validate caller-order weights, then return `√w` in the design's internal order.
-fn prepare_sqrt_weights(design: &Design<'_>, weights: &[f64]) -> Result<Vec<f64>, BuildError> {
-    if weights.len() != design.n_obs() {
-        return Err(BuildError::WeightCountMismatch {
-            expected: design.n_obs(),
-            got: weights.len(),
-        });
-    }
-    // `wi >= 0.0` already rejects NaN; `is_finite` additionally rejects `+∞`.
-    if let Some((index, &value)) = weights
-        .iter()
-        .enumerate()
-        .find(|&(_, &wi)| !(wi >= 0.0 && wi.is_finite()))
-    {
-        return Err(BuildError::InvalidWeight { index, value });
-    }
-    // The fit ignores a common weight scale; a power of four keeps every level's Σw finite.
-    let max = weights.iter().copied().fold(0.0, f64::max);
-    let scale = if max > 2f64.powi(960) {
-        2f64.powi(-128)
-    } else {
-        1.0
-    };
-    Ok(design
-        .permute_obs_in(weights)
-        .iter()
-        .map(|weight| (scale * weight).sqrt())
-        .collect())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::row_weight;
 
     impl<'a> PreparedDesign<'a> {
         /// Unweighted, whitened like a solver would.
@@ -168,10 +129,10 @@ mod tests {
         let design = Design::from_levels_for_test(vec![vec![2, 0, 1, 0]]);
         let prepared = PreparedDesign::new(design, Some(&[1.0, 4.0, 9.0, 16.0])).unwrap();
 
-        assert_eq!(prepared.sqrt_weights(), Some(&[2.0, 4.0, 3.0, 1.0][..]));
+        assert_eq!(prepared.weights.sqrt(), Some(&[2.0, 4.0, 3.0, 1.0][..]));
         assert_eq!(
             (0..4)
-                .map(|obs| row_weight(prepared.sqrt_weights(), obs))
+                .map(|obs| prepared.weights.weight(obs))
                 .collect::<Vec<_>>(),
             [4.0, 16.0, 9.0, 1.0]
         );
