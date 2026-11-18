@@ -297,14 +297,21 @@ fn rung<'s>(
                 Some(m) => m,
                 None => {
                     identity = IdentityOp {
-                        n: prepared.ncols(),
+                        n: prepared.design.n_dofs(),
                     };
                     &identity
                 }
             };
             let started = Instant::now();
             let maxiter = lsmr.maxiter - spent;
-            let mut result = mlsmr(prepared, rhs.weighted(), m, lsmr.tol, maxiter, options)?;
+            let mut result = mlsmr(
+                &prepared.operator(),
+                rhs.weighted(),
+                m,
+                lsmr.tol,
+                maxiter,
+                options,
+            )?;
             seconds.lsmr += started.elapsed().as_secs_f64();
             // The next rung starts from `result.x`; the probe it replaces is released here.
             drop(probe);

@@ -19,8 +19,8 @@ mod design_tests {
     #[test]
     fn test_design_operator_dimensions() {
         let schema = make_test_design();
-        assert_eq!(schema.nrows(), 5);
-        assert_eq!(schema.ncols(), 7);
+        assert_eq!(schema.operator().nrows(), 5);
+        assert_eq!(schema.operator().ncols(), 7);
     }
 
     #[test]
@@ -31,11 +31,15 @@ mod design_tests {
         let r = vec![0.1, 0.2, -0.3, 0.4, -0.5];
 
         let mut dx = vec![0.0; 5];
-        schema.apply(&x, &mut dx).expect("apply succeeds");
+        schema
+            .operator()
+            .apply(&x, &mut dx)
+            .expect("apply succeeds");
         let lhs: f64 = dx.iter().zip(r.iter()).map(|(a, b)| a * b).sum();
 
         let mut dtr = vec![0.0; 7];
         schema
+            .operator()
             .apply_adjoint(&r, &mut dtr)
             .expect("apply_adjoint succeeds");
         let rhs: f64 = x.iter().zip(dtr.iter()).map(|(a, b)| a * b).sum();
@@ -47,7 +51,7 @@ mod design_tests {
         let schema = make_test_design();
         let x = vec![1.0, 2.0, 3.0, 10.0, 20.0, 30.0, 40.0];
         let mut y = vec![0.0; 5];
-        schema.apply(&x, &mut y).expect("apply succeeds");
+        schema.operator().apply(&x, &mut y).expect("apply succeeds");
         assert_eq!(y, vec![11.0, 12.0, 22.0, 33.0, 41.0]);
     }
 
@@ -57,6 +61,7 @@ mod design_tests {
         let r = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         let mut x = vec![0.0; 7];
         schema
+            .operator()
             .apply_adjoint(&r, &mut x)
             .expect("apply_adjoint succeeds");
         assert_eq!(x, vec![6.0, 5.0, 4.0, 3.0, 3.0, 4.0, 5.0]);
@@ -88,10 +93,11 @@ mod design_tests {
         let r: Vec<f64> = (0..n_rows).map(|i| (i as f64 * 0.23 + 2.0).cos()).collect();
 
         let mut dx = vec![0.0f64; n_rows];
-        dm.apply(&x, &mut dx).expect("apply succeeds");
+        dm.operator().apply(&x, &mut dx).expect("apply succeeds");
 
         let mut dtr = vec![0.0f64; n_dofs];
-        dm.apply_adjoint(&r, &mut dtr)
+        dm.operator()
+            .apply_adjoint(&r, &mut dtr)
             .expect("apply_adjoint succeeds");
 
         let lhs = dot(&dx, &r);
@@ -110,7 +116,7 @@ mod design_tests {
         let mut ej = vec![0.0f64; dm.design.n_dofs()];
         ej[0] = 1.0;
         let mut y = vec![0.0f64; dm.design.n_obs()];
-        dm.apply(&ej, &mut y).expect("apply succeeds");
+        dm.operator().apply(&ej, &mut y).expect("apply succeeds");
 
         for (i, &yi) in y.iter().enumerate() {
             let expected = if i < 300 { 1.0 } else { 0.0 };
@@ -127,7 +133,8 @@ mod design_tests {
 
         let ones = vec![1.0f64; dm.design.n_obs()];
         let mut x = vec![0.0f64; dm.design.n_dofs()];
-        dm.apply_adjoint(&ones, &mut x)
+        dm.operator()
+            .apply_adjoint(&ones, &mut x)
             .expect("apply_adjoint succeeds");
 
         let expected_count = (dm.design.n_obs() / 50) as f64;
@@ -147,10 +154,11 @@ mod design_tests {
         let r: Vec<f64> = vec![0.5, 1.5, -0.5, 2.0, -1.0];
 
         let mut dx = vec![0.0f64; dm.design.n_obs()];
-        dm.apply(&x, &mut dx).expect("apply succeeds");
+        dm.operator().apply(&x, &mut dx).expect("apply succeeds");
 
         let mut dtr = vec![0.0f64; dm.design.n_dofs()];
-        dm.apply_adjoint(&r, &mut dtr)
+        dm.operator()
+            .apply_adjoint(&r, &mut dtr)
             .expect("apply_adjoint succeeds");
 
         let lhs = dot(&dx, &r);
@@ -167,7 +175,7 @@ mod design_tests {
         let dm = make_single_factor_design();
         let x = vec![10.0, 20.0, 30.0];
         let mut y = vec![0.0f64; 5];
-        dm.apply(&x, &mut y).expect("apply succeeds");
+        dm.operator().apply(&x, &mut y).expect("apply succeeds");
         assert_eq!(y, vec![10.0, 10.0, 20.0, 20.0, 30.0]);
     }
 
@@ -176,7 +184,8 @@ mod design_tests {
         let dm = make_single_factor_design();
         let r = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         let mut x = vec![0.0f64; 3];
-        dm.apply_adjoint(&r, &mut x)
+        dm.operator()
+            .apply_adjoint(&r, &mut x)
             .expect("apply_adjoint succeeds");
         assert_eq!(x, vec![3.0, 7.0, 5.0]);
     }
@@ -248,7 +257,7 @@ mod slope_design_tests {
             .map(|j| noise(7_000 + j))
             .collect();
         let mut got = vec![0.0; design.design.n_obs()];
-        design.apply(&x, &mut got).unwrap();
+        design.operator().apply(&x, &mut got).unwrap();
         let expect: Vec<f64> = dense
             .iter()
             .map(|row| row.iter().zip(&x).map(|(d, xj)| d * xj).sum())
@@ -259,7 +268,7 @@ mod slope_design_tests {
             .map(|i| noise(9_000 + i))
             .collect();
         let mut got_t = vec![0.0; design.design.n_dofs()];
-        design.apply_adjoint(&r, &mut got_t).unwrap();
+        design.operator().apply_adjoint(&r, &mut got_t).unwrap();
         let mut expect_t = vec![0.0; design.design.n_dofs()];
         for (row, &ri) in dense.iter().zip(&r) {
             for (e, d) in expect_t.iter_mut().zip(row) {
@@ -319,7 +328,7 @@ mod slope_design_tests {
                 .expect("test rayon pool")
                 .install(|| {
                     let mut dtr = vec![0.0; design.design.n_dofs()];
-                    design.apply_adjoint(&r, &mut dtr).unwrap();
+                    design.operator().apply_adjoint(&r, &mut dtr).unwrap();
                     dtr.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
                 })
         };
@@ -351,9 +360,9 @@ mod slope_design_tests {
         let r: Vec<f64> = (0..n).map(|i| noise(29 * i + 5)).collect();
 
         let mut dx = vec![0.0; n];
-        design.apply(&x, &mut dx).unwrap();
+        design.operator().apply(&x, &mut dx).unwrap();
         let mut dtr = vec![0.0; design.design.n_dofs()];
-        design.apply_adjoint(&r, &mut dtr).unwrap();
+        design.operator().apply_adjoint(&r, &mut dtr).unwrap();
 
         let lhs: f64 = dx.iter().zip(&r).map(|(a, b)| a * b).sum();
         let rhs: f64 = x.iter().zip(&dtr).map(|(a, b)| a * b).sum();
@@ -406,11 +415,11 @@ mod weighted_adjoint_proptests {
                 .collect();
 
             let mut dx = vec![0.0f64; n_rows];
-            dm.apply(&x, &mut dx).unwrap();
+            dm.operator().apply(&x, &mut dx).unwrap();
             let lhs: f64 = dx.iter().zip(&r).map(|(dxi, ri)| dxi * ri).sum();
 
             let mut dtr = vec![0.0f64; n_dofs];
-            dm.apply_adjoint(&r, &mut dtr).unwrap();
+            dm.operator().apply_adjoint(&r, &mut dtr).unwrap();
             let rhs: f64 = x.iter().zip(dtr.iter()).map(|(xi, wi)| xi * wi).sum();
 
             prop_assert!(
@@ -516,12 +525,12 @@ mod elimination_tests {
         let kept: Vec<f64> = (0..p).map(|j| noise(11 * n + j)).collect();
         let residual = |x: &[f64], b: &[f64]| -> Vec<f64> {
             let mut fitted = vec![0.0; n];
-            prepared.apply(x, &mut fitted).unwrap();
+            prepared.operator().apply(x, &mut fitted).unwrap();
             b.iter().zip(&fitted).map(|(b, f)| b - f).collect()
         };
         let eliminated_normal = |r: &[f64]| {
             let mut normal = vec![0.0; p];
-            prepared.apply_adjoint(r, &mut normal).unwrap();
+            prepared.operator().apply_adjoint(r, &mut normal).unwrap();
             normal[dofs.clone()].to_vec()
         };
 
@@ -543,7 +552,7 @@ mod elimination_tests {
 
         // `b` in the span: the kept coefficients of a solution recover a full solution.
         let mut b = vec![0.0; n];
-        prepared.apply(&kept, &mut b).unwrap();
+        prepared.operator().apply(&kept, &mut b).unwrap();
         let mut x = kept.clone();
         x[dofs.clone()].fill(f64::NAN);
         prepared.recover_eliminated(&b, &mut x);

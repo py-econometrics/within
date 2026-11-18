@@ -3,16 +3,15 @@
 use rayon::prelude::*;
 
 use super::PAR_THRESHOLD;
-use crate::domain::PreparedDesign;
+use crate::domain::Design;
 
 /// Gather-apply `dst[i] = Σ_t Σ_c src[…] · loading_c(i)`, times `scale[i]` when given.
 pub(crate) fn gather_apply(
-    prepared: &PreparedDesign<'_>,
+    design: &Design<'_>,
     src: &[f64],
     dst: &mut [f64],
     scale: Option<&[f64]>,
 ) {
-    let design = &prepared.design;
     debug_assert!(scale.is_none_or(|s| s.len() == design.n_obs()));
     debug_assert_eq!(src.len(), design.n_dofs());
     debug_assert_eq!(dst.len(), design.n_obs());
@@ -20,7 +19,7 @@ pub(crate) fn gather_apply(
     dst.fill(0.0);
 
     for_each_chunk(dst, |chunk, row_start| {
-        for t in prepared.design.terms() {
+        for t in design.terms() {
             let levels = t.rows.levels();
             let col = |c: usize| &src[t.layout.column_dofs(c)];
             match (t.layout.intercept(), t.slopes) {
