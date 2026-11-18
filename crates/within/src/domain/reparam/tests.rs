@@ -340,11 +340,11 @@ fn whitening_is_bitwise_identical_across_thread_counts() {
                 .collect();
             let row_split = prepared
                 .terms()
-                .filter(|t| matches!(t.split, ScatterSplit::ByRow))
+                .filter(|t| matches!(t.term.split, ScatterSplit::ByRow))
                 .count();
             let largest_by_level = prepared
                 .terms()
-                .filter(|t| matches!(t.split, ScatterSplit::ByLevel(_)))
+                .filter(|t| matches!(t.term.split, ScatterSplit::ByLevel(_)))
                 .map(|t| {
                     let mut rows = vec![0usize; t.term.n_levels()];
                     for &l in t.term.levels() {

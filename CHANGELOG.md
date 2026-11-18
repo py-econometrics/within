@@ -12,6 +12,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **BREAKING:** the hidden `Design::new_unsorted` is removed: every design sorts its rows by its dominant term. Designs above `u32::MAX` rows are sorted too, and their unsorted terms split their scatter by level like smaller ones; row indices are 4 bytes while every row fits `u32`.
+- A `Design` fixes each term's scatter split once: solvers built from one design under different weights (IRLS) no longer re-sort its unsorted terms.
 - Slope whitening's row passes run in parallel within a term, bit-identical at any thread count: per-level sums, the design adjoint included, combine in one fixed tree set by the data, with row-split leaves of `4·L` rows whatever the state size (#515).
 - **BREAKING:** `schwarz_precond::lsmr` is removed; `mlsmr` with `IdentityOp` runs unpreconditioned LSMR.
 - **BREAKING:** `schwarz_precond::PartitionWeights::Uniform` is a unit variant; `PartitionWeights::len` and `is_empty` are removed. Uniform weights take their shape from `SubdomainCore::n_local`; only explicit weights carry a length. The serialized uniform variant no longer carries a count; the wire-format fixture moves v20 → v22; v21, v20 and v12 remain rejected-payload controls. The fixture number is not a runtime serialization envelope (#425).

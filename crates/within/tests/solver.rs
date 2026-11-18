@@ -262,13 +262,11 @@ fn test_solver_accepts_prebuilt_design() {
     assert!(result.converged);
 }
 
-/// Locality sort vs. the `new_unsorted` oracle: equal within tolerance, as row order differs.
+/// Locality sort vs. the same rows given already sorted, a slope included: equal in caller order.
 #[rstest]
 #[case::unweighted(false)]
 #[case::weighted(true)]
 fn test_internal_locality_sort_is_transparent(#[case] weighted: bool) {
-    use within::{Design, Effect};
-
     // Factor 0 (4 levels) is the dominant factor and is non-monotonic.
     let col0: Vec<u32> = vec![3, 0, 2, 1, 3, 0, 2, 1, 3, 0, 2, 1];
     let col1: Vec<u32> = vec![0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 0, 1];
@@ -276,35 +274,45 @@ fn test_internal_locality_sort_is_transparent(#[case] weighted: bool) {
     let y: Vec<f64> = (0..n_obs)
         .map(|i| (i as f64 * 1.3 - 2.0).sin() + 0.5)
         .collect();
-    let weights = weighted.then(|| {
-        (0..n_obs)
-            .map(|i| 0.5 + 0.1 * i as f64)
-            .collect::<Vec<f64>>()
-    });
+    let weights: Option<Vec<f64>> =
+        weighted.then(|| (0..n_obs).map(|i| 0.5 + 0.1 * i as f64).collect());
     let params = default_params();
     let precond = PreconditionerConfig::default();
-
-    let make_solver = |weights: Option<&[f64]>| {
-        let design = common::make_design(vec![col0.clone(), col1.clone()]).expect("design");
-        Solver::new(design, weights, &precond).expect("solver")
-    };
-    let make_oracle = |weights: Option<&[f64]>| {
-        let design = Design::new_unsorted(vec![
-            Effect::new(&col0, true, []).expect("effect 0"),
-            Effect::new(&col1, true, []).expect("effect 1"),
+    let slope: Vec<f64> = (0..n_obs).map(|i| (i as f64 * 0.7).cos() + 2.0).collect();
+    let solve = |cols: Vec<Vec<u32>>, z: &[f64], y: &[f64], weights: Option<&[f64]>| {
+        let design = within::Design::new([
+            Effect::new(&cols[0], true, [z]).expect("effect 0"),
+            Effect::new(&cols[1], true, []).expect("effect 1"),
         ])
-        .expect("oracle design");
-        Solver::new(design, weights, &precond).expect("oracle solver")
+        .expect("design");
+        Solver::new(design, weights, &precond)
+            .expect("solver")
+            .solve(y, &params)
+            .expect("solve")
     };
 
-    let oracle = make_oracle(weights.as_deref())
-        .solve(&y, &params)
-        .expect("oracle");
-    let sorted = make_solver(weights.as_deref())
-        .solve(&y, &params)
-        .expect("sorted");
-    common::assert_solutions_close(&sorted.x, &oracle.x, 1e-7);
-    common::assert_solutions_close(&sorted.demeaned, &oracle.demeaned, 1e-7);
+    let mut order: Vec<usize> = (0..n_obs).collect();
+    order.sort_by_key(|&i| col0[i]);
+    let gather = |v: &[u32]| order.iter().map(|&i| v[i]).collect::<Vec<_>>();
+    let gather_f = |v: &[f64]| order.iter().map(|&i| v[i]).collect::<Vec<_>>();
+    let presorted = solve(
+        vec![gather(&col0), gather(&col1)],
+        &gather_f(&slope),
+        &gather_f(&y),
+        weights.as_deref().map(gather_f).as_deref(),
+    );
+    let sorted = solve(
+        vec![col0.clone(), col1.clone()],
+        &slope,
+        &y,
+        weights.as_deref(),
+    );
+    let mut oracle_demeaned = vec![0.0; n_obs];
+    for (k, &i) in order.iter().enumerate() {
+        oracle_demeaned[i] = presorted.demeaned[k];
+    }
+    common::assert_solutions_close(&sorted.x, &presorted.x, 1e-7);
+    common::assert_solutions_close(&sorted.demeaned, &oracle_demeaned, 1e-7);
 }
 
 /// `demeaned` is `y − D x` for the returned `x`, whichever exit produced it.

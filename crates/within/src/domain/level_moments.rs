@@ -196,17 +196,12 @@ impl LevelMeans {
 }
 
 impl LevelMoments {
-    pub(crate) fn build(
-        t: &Term<'_>,
-        split: &ScatterSplit,
-        zs: &[&[f64]],
-        sqrt_weights: Option<&[f64]>,
-    ) -> Self {
+    pub(crate) fn build(t: &Term<'_>, zs: &[&[f64]], sqrt_weights: Option<&[f64]>) -> Self {
         let rows = WeightedRows {
             levels: t.levels(),
             n_levels: t.n_levels(),
             sqrt_weights,
-            split,
+            split: &t.split,
         };
         let v = zs.len();
         let means = t.intercept.then(|| LevelMeans::new(&rows, zs));

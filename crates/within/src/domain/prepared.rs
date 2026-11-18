@@ -2,7 +2,7 @@ use std::sync::OnceLock;
 
 use rayon::prelude::*;
 
-use super::{row_weight, Column, Design, ScatterSplit, Term, TermReparam};
+use super::{row_weight, Column, Design, Term, TermReparam};
 use crate::channel::CoefficientPosition;
 use crate::linalg::add_compensated;
 use crate::BuildError;
@@ -16,8 +16,6 @@ pub(crate) struct PreparedDesign<'a> {
     reparams: Vec<Option<TermReparam>>,
     /// Per design term, its block of [`Self::gram_diagonal`], filled on first read.
     diagonals: Vec<OnceLock<Box<[f64]>>>,
-    /// Per design term, how its adjoint scatter-add splits into parallel pieces.
-    splits: Vec<ScatterSplit>,
 }
 
 /// A term in the solve basis: the design's rows plus this preparation's whitened slopes.
@@ -25,7 +23,6 @@ pub(crate) struct PreparedTerm<'p> {
     pub(crate) term: &'p Term<'p>,
     /// Solve-basis slopes in coefficient-column order; empty for a slope-free term.
     pub(crate) slopes: &'p [Vec<f64>],
-    pub(crate) split: &'p ScatterSplit,
 }
 
 impl<'p> PreparedTerm<'p> {
@@ -43,10 +40,9 @@ impl<'a> PreparedDesign<'a> {
         let sqrt_weights = weights
             .map(|weights| prepare_sqrt_weights(&design, weights))
             .transpose()?;
-        let splits: Vec<ScatterSplit> = design.terms.par_iter().map(ScatterSplit::new).collect();
         let reparams: Vec<Option<TermReparam>> = (0..design.n_factors())
             .into_par_iter()
-            .map(|t| TermReparam::build(&design, t, &splits[t], sqrt_weights.as_deref()))
+            .map(|t| TermReparam::build(&design, t, sqrt_weights.as_deref()))
             .collect();
         let diagonals = (0..design.n_factors()).map(|_| OnceLock::new()).collect();
         Ok(Self {
@@ -54,7 +50,6 @@ impl<'a> PreparedDesign<'a> {
             sqrt_weights,
             reparams,
             diagonals,
-            splits,
         })
     }
 
@@ -68,11 +63,7 @@ impl<'a> PreparedDesign<'a> {
         let (t, reparam) = (&self.design.terms[term], &self.reparams[term]);
         let slopes: &[Vec<f64>] = reparam.as_ref().map_or(&[], |r| &r.slopes);
         debug_assert_eq!(slopes.len(), t.raw_slopes().len());
-        PreparedTerm {
-            term: t,
-            slopes,
-            split: &self.splits[term],
-        }
+        PreparedTerm { term: t, slopes }
     }
 
     pub(crate) fn terms(&self) -> impl ExactSizeIterator<Item = PreparedTerm<'_>> {
@@ -104,18 +95,15 @@ impl<'a> PreparedDesign<'a> {
                         );
                     }
                 }
-            } else if term.sorted() {
+            } else if let Some(offsets) = term.split.sorted_offsets() {
                 // A sorted level is one run: a register sum keeps its order with no store per row.
-                let mut start = 0;
-                for run in levels.chunk_by(|a, b| a == b) {
-                    let rows = start..start + run.len();
-                    start = rows.end;
+                for (level, run) in offsets.windows(2).enumerate() {
                     // A sum of ones is exact, so the unweighted run sum is its length.
-                    diag[run[0] as usize] += match sqrt_weights {
-                        None => run.len() as f64,
+                    diag[level] += match sqrt_weights {
+                        None => (run[1] - run[0]) as f64,
                         Some(s) => {
                             let (mut sum, mut correction) = (0.0, 0.0);
-                            for &si in &s[rows] {
+                            for &si in &s[run[0]..run[1]] {
                                 add_compensated(&mut sum, &mut correction, si * si);
                             }
                             sum + correction
@@ -310,7 +298,10 @@ mod tests {
             ];
             let prepared = PreparedDesign::new(Design::new(effects).unwrap(), weights).unwrap();
             let terms = &prepared.design.terms;
-            assert!(terms[3].sorted() && !terms[1].sorted());
+            assert!(
+                terms[3].split.sorted_offsets().is_some()
+                    && terms[1].split.sorted_offsets().is_none()
+            );
             assert!(prepared.unidentified().next().is_some());
             assert_eq!(
                 prepared.gram_diagonal(),
