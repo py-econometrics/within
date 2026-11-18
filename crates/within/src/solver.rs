@@ -23,7 +23,7 @@ mod tests;
 
 pub use crate::domain::CoefficientLayout;
 use ladder::PrecondSlot;
-use system::{Fit, LeastSquaresSystem};
+use system::{Fit, Response};
 
 /// Fallible conversion into a [`Design`] for [`Solver::new`]: a categories
 /// matrix (`ArrayView2<u32>`), a list of [`Effect`] terms, a pass-through
@@ -247,12 +247,12 @@ struct RhsSolution {
 }
 
 /// One RHS between rungs.
-enum Pass<'s, S: LeastSquaresSystem + 's> {
+enum Pass<'s> {
     /// No rung has run it yet; the first that does prepares it, inside its fan-out.
     Unstarted(&'s [f64]),
     /// Handed off with budget left; the next rung resumes from `probe.x`.
     Stalled {
-        rhs: S::Rhs<'s>,
+        rhs: Response<'s>,
         probe: LsmrResult,
         seconds: Seconds,
     },
@@ -260,13 +260,13 @@ enum Pass<'s, S: LeastSquaresSystem + 's> {
 }
 
 /// Runs every pending RHS on one map; each finishes, and is released, here or stalls.
-fn rung<'s, S: LeastSquaresSystem>(
-    system: &'s S,
-    passes: Vec<Pass<'s, S>>,
+fn rung<'s>(
+    prepared: &'s PreparedDesign<'_>,
+    passes: Vec<Pass<'s>>,
     map: Option<&Preconditioner>,
     stall: Option<&dyn EscalationPolicy>,
     lsmr: &LsmrOptions,
-) -> Result<Vec<Pass<'s, S>>, SolveError> {
+) -> Result<Vec<Pass<'s>>, SolveError> {
     // Collecting into `Result` fails fast on the first per-RHS error, not during the fold.
     passes
         .into_par_iter()
@@ -275,7 +275,7 @@ fn rung<'s, S: LeastSquaresSystem>(
                 Pass::Done(solution) => return Ok(Pass::Done(solution)),
                 Pass::Unstarted(y) => {
                     let started = Instant::now();
-                    let rhs = system.prepare(y)?;
+                    let rhs = Response::new(prepared, y)?;
                     let prepare = started.elapsed().as_secs_f64();
                     (rhs, None, Seconds { prepare, lsmr: 0.0 })
                 }
@@ -297,21 +297,14 @@ fn rung<'s, S: LeastSquaresSystem>(
                 Some(m) => m,
                 None => {
                     identity = IdentityOp {
-                        n: system.matrix().ncols(),
+                        n: prepared.ncols(),
                     };
                     &identity
                 }
             };
             let started = Instant::now();
             let maxiter = lsmr.maxiter - spent;
-            let mut result = mlsmr(
-                system.matrix(),
-                system.b(&rhs),
-                m,
-                lsmr.tol,
-                maxiter,
-                options,
-            )?;
+            let mut result = mlsmr(prepared, rhs.weighted(), m, lsmr.tol, maxiter, options)?;
             seconds.lsmr += started.elapsed().as_secs_f64();
             // The next rung starts from `result.x`; the probe it replaces is released here.
             drop(probe);
@@ -333,7 +326,7 @@ fn rung<'s, S: LeastSquaresSystem>(
                 ..
             } = result;
             Ok(Pass::Done(RhsSolution {
-                fit: system.finish(rhs, x, true_residual)?,
+                fit: prepared.finish(rhs, x, true_residual)?,
                 converged,
                 iterations,
                 // Read from the LSMR recurrence at no extra cost; see `SolveResult::residual`.
@@ -345,8 +338,8 @@ fn rung<'s, S: LeastSquaresSystem>(
 }
 
 /// Every RHS in one pass; an unsettled ladder then builds Schwarz once and resumes the stalled.
-fn solve_all<S: LeastSquaresSystem>(
-    system: &S,
+fn solve_all(
+    prepared: &PreparedDesign<'_>,
     slot: &PrecondSlot,
     ys: &[&[f64]],
     lsmr: &LsmrOptions,
@@ -362,14 +355,14 @@ fn solve_all<S: LeastSquaresSystem>(
     };
     let stall = ladder.map(|a| &a.ladder().stall as &dyn EscalationPolicy);
     let passes = ys.iter().map(|&y| Pass::Unstarted(y)).collect();
-    let mut passes = rung(system, passes, map, stall, lsmr)?;
+    let mut passes = rung(prepared, passes, map, stall, lsmr)?;
 
     let mut build_secs = 0.0;
     if let Some(a) = ladder {
         if passes.iter().any(|p| matches!(p, Pass::Stalled { .. })) {
             // Built outside the fan-out, so sibling RHS never race for it.
-            build_secs = a.escalate(system)?;
-            passes = rung(system, passes, Some(a.rung()), None, lsmr)?;
+            build_secs = a.escalate(prepared)?;
+            passes = rung(prepared, passes, Some(a.rung()), None, lsmr)?;
         }
     }
     let solutions = passes

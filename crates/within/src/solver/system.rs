@@ -1,39 +1,9 @@
-//! What a least-squares system owes the solve driver, and the full system's own answer.
+//! A solve's two ends: `b = W^{1/2} y` in internal order, and the caller's fit out.
 
 use std::borrow::Cow;
 
-use schwarz_precond::Operator;
-
-use crate::config::LocalSolverConfig;
 use crate::domain::PreparedDesign;
-use crate::operator::schwarz::{build_schwarz, Preconditioner};
-use crate::{BuildError, BuildWarning, SolveError};
-
-/// `min ‖b − A x‖` over the coefficients LSMR iterates on, and the way back to the full fit.
-pub(crate) trait LeastSquaresSystem: Sync {
-    type Matrix: Operator;
-    type Rhs<'s>: Send
-    where
-        Self: 's;
-
-    fn matrix(&self) -> &Self::Matrix;
-    /// Validate `y`, then form this system's right-hand side.
-    fn prepare<'s>(&'s self, y: &'s [f64]) -> Result<Self::Rhs<'s>, SolveError>;
-    /// What LSMR iterates on; tolerances are relative to its norm.
-    fn b<'r>(&self, rhs: &'r Self::Rhs<'_>) -> &'r [f64];
-    /// Caller coefficients and `y − D x` from the iterate and, if measured, its `b − A x`.
-    fn finish(
-        &self,
-        rhs: Self::Rhs<'_>,
-        x: Vec<f64>,
-        measured: Option<Vec<f64>>,
-    ) -> Result<Fit, SolveError>;
-    /// The rung a stalled ladder escalates to; `None` without a factor-pair subdomain.
-    fn build_schwarz(
-        &self,
-        local_solver: &LocalSolverConfig,
-    ) -> Result<(Option<Preconditioner>, Vec<BuildWarning>), BuildError>;
-}
+use crate::SolveError;
 
 /// One response in the internal observation order, with its `W^{1/2}`-weighted image.
 pub(crate) struct Response<'s> {
@@ -79,26 +49,9 @@ pub(crate) struct Fit {
     pub(crate) demeaned: Vec<f64>,
 }
 
-impl LeastSquaresSystem for PreparedDesign<'_> {
-    type Matrix = Self;
-    type Rhs<'s>
-        = Response<'s>
-    where
-        Self: 's;
-
-    fn matrix(&self) -> &Self {
-        self
-    }
-
-    fn prepare<'s>(&'s self, y: &'s [f64]) -> Result<Response<'s>, SolveError> {
-        Response::new(self, y)
-    }
-
-    fn b<'r>(&self, rhs: &'r Response<'_>) -> &'r [f64] {
-        rhs.weighted()
-    }
-
-    fn finish(
+impl PreparedDesign<'_> {
+    /// Caller coefficients and `y − D x` from the iterate and, if measured, its `b − A x`.
+    pub(crate) fn finish(
         &self,
         rhs: Response<'_>,
         mut x: Vec<f64>,
@@ -110,12 +63,5 @@ impl LeastSquaresSystem for PreparedDesign<'_> {
             x,
             demeaned: self.design.permute_obs_out(demeaned),
         })
-    }
-
-    fn build_schwarz(
-        &self,
-        local_solver: &LocalSolverConfig,
-    ) -> Result<(Option<Preconditioner>, Vec<BuildWarning>), BuildError> {
-        build_schwarz(self.gramian(), local_solver)
     }
 }
