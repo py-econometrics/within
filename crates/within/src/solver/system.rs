@@ -32,10 +32,7 @@ impl<'s> Response<'s> {
             });
         }
         let y = prepared.design.permute_obs_in(y);
-        let weighted = prepared
-            .weights
-            .sqrt()
-            .map(|sw| y.iter().zip(sw).map(|(&yi, &swi)| swi * yi).collect());
+        let weighted = prepared.weights.scaled(&y);
         Ok(Self { y, weighted })
     }
 

@@ -86,6 +86,12 @@ impl RowWeights {
         self.erases_rows
     }
 
+    /// `W^{1/2} v`; `None` when unweighted, where `v` is its own image.
+    pub(crate) fn scaled(&self, v: &[f64]) -> Option<Vec<f64>> {
+        let s = self.sqrt.as_deref()?;
+        Some(v.iter().zip(s).map(|(&vi, &si)| si * vi).collect())
+    }
+
     /// Undo `W^{1/2}` on a weighted row vector.
     pub(crate) fn unscale(&self, v: &mut [f64]) {
         if let Some(s) = &self.sqrt {

@@ -131,9 +131,8 @@ fn merging_partial_means_across_the_float_range_stays_finite() {
     let effects = vec![Effect::new(&level, true, [&z[..]]).unwrap()];
     let prepared = PreparedDesign::new(Design::new(effects).unwrap(), Some(&weights)).unwrap();
     assert!(prepared.unidentified().next().is_none());
-    assert!(prepared.design.term(0).slopes[0]
-        .iter()
-        .all(|u| u.is_finite()));
+    let t = prepared.design.term(0);
+    assert!(t.slopes[0].iter().all(|u| u.is_finite()));
 }
 
 /// Slopes spread over ~1e-9 of their size; a running mean's rounding would show in the Gram.
@@ -336,22 +335,18 @@ fn whitening_is_bitwise_identical_across_thread_counts() {
             .unwrap();
         pool.install(|| {
             let prepared = prepare();
-            let mut x: Vec<f64> = (0..prepared.design.n_dofs())
-                .map(|i| (i as f64).sin())
-                .collect();
+            let design = &prepared.design;
+            let mut x: Vec<f64> = (0..design.n_dofs()).map(|i| (i as f64).sin()).collect();
             prepared.back_transform(&mut x);
-            let slopes: Vec<u64> = prepared
-                .design
+            let slopes: Vec<u64> = design
                 .terms()
                 .flat_map(|t| t.slopes.iter().flat_map(|z| z.iter()).map(|u| u.to_bits()))
                 .collect();
-            let row_split = prepared
-                .design
+            let row_split = design
                 .terms()
                 .filter(|t| matches!(t.rows.split, ScatterSplit::ByRow))
                 .count();
-            let largest_by_level = prepared
-                .design
+            let largest_by_level = design
                 .terms()
                 .filter(|t| matches!(t.rows.split, ScatterSplit::ByLevel(_)))
                 .map(|t| {

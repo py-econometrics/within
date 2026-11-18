@@ -19,8 +19,9 @@ mod design_tests {
     #[test]
     fn test_design_operator_dimensions() {
         let schema = make_test_design();
-        assert_eq!(schema.operator().nrows(), 5);
-        assert_eq!(schema.operator().ncols(), 7);
+        let a = schema.operator();
+        assert_eq!(a.nrows(), 5);
+        assert_eq!(a.ncols(), 7);
     }
 
     #[test]
@@ -31,16 +32,12 @@ mod design_tests {
         let r = vec![0.1, 0.2, -0.3, 0.4, -0.5];
 
         let mut dx = vec![0.0; 5];
-        schema
-            .operator()
-            .apply(&x, &mut dx)
-            .expect("apply succeeds");
+        let a = schema.operator();
+        a.apply(&x, &mut dx).expect("apply succeeds");
         let lhs: f64 = dx.iter().zip(r.iter()).map(|(a, b)| a * b).sum();
 
         let mut dtr = vec![0.0; 7];
-        schema
-            .operator()
-            .apply_adjoint(&r, &mut dtr)
+        a.apply_adjoint(&r, &mut dtr)
             .expect("apply_adjoint succeeds");
         let rhs: f64 = x.iter().zip(dtr.iter()).map(|(a, b)| a * b).sum();
         assert!((lhs - rhs).abs() < 1e-12);
@@ -92,12 +89,12 @@ mod design_tests {
         let x: Vec<f64> = (0..n_dofs).map(|i| (i as f64 * 0.17 + 1.0).sin()).collect();
         let r: Vec<f64> = (0..n_rows).map(|i| (i as f64 * 0.23 + 2.0).cos()).collect();
 
+        let a = dm.operator();
         let mut dx = vec![0.0f64; n_rows];
-        dm.operator().apply(&x, &mut dx).expect("apply succeeds");
+        a.apply(&x, &mut dx).expect("apply succeeds");
 
         let mut dtr = vec![0.0f64; n_dofs];
-        dm.operator()
-            .apply_adjoint(&r, &mut dtr)
+        a.apply_adjoint(&r, &mut dtr)
             .expect("apply_adjoint succeeds");
 
         let lhs = dot(&dx, &r);
@@ -153,12 +150,12 @@ mod design_tests {
         let x: Vec<f64> = vec![1.0, 2.0, 3.0];
         let r: Vec<f64> = vec![0.5, 1.5, -0.5, 2.0, -1.0];
 
+        let a = dm.operator();
         let mut dx = vec![0.0f64; dm.design.n_obs()];
-        dm.operator().apply(&x, &mut dx).expect("apply succeeds");
+        a.apply(&x, &mut dx).expect("apply succeeds");
 
         let mut dtr = vec![0.0f64; dm.design.n_dofs()];
-        dm.operator()
-            .apply_adjoint(&r, &mut dtr)
+        a.apply_adjoint(&r, &mut dtr)
             .expect("apply_adjoint succeeds");
 
         let lhs = dot(&dx, &r);
@@ -427,141 +424,5 @@ mod weighted_adjoint_proptests {
                 "<W^1/2 D·x, r>={lhs} != <x, D^T W^1/2·r>={rhs}"
             );
         }
-    }
-}
-
-mod elimination_tests {
-    use rstest::rstest;
-    use schwarz_precond::Operator;
-
-    use super::noise;
-    use crate::domain::{Design, Effect, PreparedDesign};
-    use crate::linalg::dot;
-
-    fn norm(v: &[f64]) -> f64 {
-        dot(v, v).sqrt()
-    }
-
-    #[derive(Clone, Copy, Debug)]
-    enum Dominant {
-        InterceptOnly,
-        /// Three near-collinear slopes with mean 1e6 beside the intercept.
-        CollinearLargeMean,
-        /// Near copies at the rank tolerance, so some levels drop one.
-        RankEdge,
-        SlopeOnly,
-        /// A slope constant within level 0, so that level's slope is unidentified.
-        DroppedSlope,
-    }
-
-    #[rstest]
-    fn recovery_fits_the_eliminated_term_exactly(
-        #[values(
-            Dominant::InterceptOnly,
-            Dominant::CollinearLargeMean,
-            Dominant::RankEdge,
-            Dominant::SlopeOnly,
-            Dominant::DroppedSlope
-        )]
-        dominant: Dominant,
-        #[values(false, true)] weighted: bool,
-    ) {
-        let n = 600;
-        let n_levels = 40;
-        let e: Vec<u32> = (0..n).map(|i| ((i * 7) % n_levels) as u32).collect();
-        let f: Vec<u32> = (0..n).map(|i| (i % 5) as u32).collect();
-        let g: Vec<u32> = (0..n).map(|i| ((i / 3) % 7) as u32).collect();
-        let base: Vec<f64> = (0..n).map(|i| 1e6 + noise(i)).collect();
-        let near = |k: usize, d: f64| -> Vec<f64> {
-            (0..n).map(|i| base[i] + d * noise(k * n + i)).collect()
-        };
-        let zs: Vec<Vec<f64>> = match dominant {
-            Dominant::InterceptOnly => vec![],
-            Dominant::CollinearLargeMean => vec![base.clone(), near(1, 1e-4), near(2, 1e-4)],
-            Dominant::RankEdge => vec![base.clone(), near(1, 1e-5), near(2, 3e-6)],
-            Dominant::SlopeOnly => (1..3)
-                .map(|k| (0..n).map(|i| noise(k * n + i)).collect())
-                .collect(),
-            Dominant::DroppedSlope => vec![(0..n)
-                .map(|i| if e[i] == 0 { 2.0 } else { noise(n + i) })
-                .collect()],
-        };
-        let intercept = !matches!(dominant, Dominant::SlopeOnly);
-        // A slope-free design when the dominant term has none either.
-        let gz: Vec<Vec<f64>> = match dominant {
-            Dominant::InterceptOnly => vec![],
-            _ => vec![(0..n).map(|i| noise(5 * n + i)).collect()],
-        };
-        let effects = vec![
-            Effect::new(&f, true, []).unwrap(),
-            Effect::new(&e, intercept, zs.iter().map(|z| &z[..])).unwrap(),
-            Effect::new(&g, true, gz.iter().map(|z| &z[..])).unwrap(),
-        ];
-        let design = Design::new(effects).unwrap();
-        assert_eq!(design.layout.dominant(), 1);
-        // Every row of level 3 and every fourth row elsewhere carry zero weight.
-        let weights: Vec<f64> = (0..n)
-            .map(|i| match (e[i], i % 4) {
-                (3, _) | (_, 0) => 0.0,
-                _ => 1.0 + noise(9 * n + i).abs(),
-            })
-            .collect();
-        let prepared = PreparedDesign::new(design, weighted.then_some(&weights[..])).unwrap();
-        let dofs = prepared.design.layout.term(1).dofs();
-        let unidentified: Vec<usize> = prepared
-            .gramian()
-            .term_diagonal(1)
-            .iter()
-            .enumerate()
-            .filter(|&(_, &g)| g == 0.0)
-            .map(|(j, _)| dofs.start + j)
-            .collect();
-        assert_eq!(
-            unidentified.is_empty(),
-            !weighted && !matches!(dominant, Dominant::DroppedSlope | Dominant::RankEdge)
-        );
-
-        let p = prepared.design.n_dofs();
-        let kept: Vec<f64> = (0..p).map(|j| noise(11 * n + j)).collect();
-        let residual = |x: &[f64], b: &[f64]| -> Vec<f64> {
-            let mut fitted = vec![0.0; n];
-            prepared.operator().apply(x, &mut fitted).unwrap();
-            b.iter().zip(&fitted).map(|(b, f)| b - f).collect()
-        };
-        let eliminated_normal = |r: &[f64]| {
-            let mut normal = vec![0.0; p];
-            prepared.operator().apply_adjoint(r, &mut normal).unwrap();
-            normal[dofs.clone()].to_vec()
-        };
-
-        // Any `b`: the recovered block solves the eliminated term's normal equations.
-        let b: Vec<f64> = (0..n).map(|i| noise(13 * n + i)).collect();
-        let mut without = kept.clone();
-        without[dofs.clone()].fill(0.0);
-        let mut x = kept.clone();
-        prepared.recover_eliminated(&b, &mut x);
-        let normal = eliminated_normal(&residual(&x, &b));
-        let scale = eliminated_normal(&residual(&without, &b));
-        assert!(
-            norm(&normal) <= 1e-13 * norm(&scale),
-            "‖A_eᵀ r‖ = {:.2e} of {:.2e}",
-            norm(&normal),
-            norm(&scale)
-        );
-        assert!(unidentified.iter().all(|&j| x[j] == 0.0));
-
-        // `b` in the span: the kept coefficients of a solution recover a full solution.
-        let mut b = vec![0.0; n];
-        prepared.operator().apply(&kept, &mut b).unwrap();
-        let mut x = kept.clone();
-        x[dofs.clone()].fill(f64::NAN);
-        prepared.recover_eliminated(&b, &mut x);
-        let r = residual(&x, &b);
-        assert!(
-            norm(&r) <= 1e-13 * norm(&b),
-            "‖b − A x̂‖ = {:.2e} of {:.2e}",
-            norm(&r),
-            norm(&b)
-        );
     }
 }

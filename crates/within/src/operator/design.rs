@@ -1,6 +1,6 @@
 use schwarz_precond::Operator;
 
-use crate::domain::{Design, PreparedDesign, PreparedTerm, RowWeights, PAR_THRESHOLD};
+use crate::domain::{Design, PreparedDesign, RowWeights, PAR_THRESHOLD};
 
 mod gather;
 mod scatter;
@@ -45,42 +45,6 @@ impl PreparedDesign<'_> {
             }
         }
     }
-
-    /// Fits the dominant block of `x` to `b = W^½ y` given the other blocks; 0 if unidentified.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the reduced system recovers with it")
-    )]
-    pub(crate) fn recover_eliminated(&self, b: &[f64], x: &mut [f64]) {
-        let eliminated = self.design.layout.dominant();
-        let dofs = self.design.layout.term(eliminated).dofs();
-        x[dofs.clone()].fill(0.0);
-        let mut residual = vec![0.0; b.len()];
-        gather_apply(&self.design, x, &mut residual, self.weights.sqrt());
-        for (r, &bi) in residual.iter_mut().zip(b) {
-            *r = bi - *r;
-        }
-        let block = &mut x[dofs];
-        self.operator()
-            .adjoint_block(&self.design.term(eliminated), &residual, block);
-        // Whitening makes each level's block of `A_eᵀA_e` diagonal.
-        for (xj, g) in block
-            .iter_mut()
-            .zip(self.gramian().term_diagonal(eliminated))
-        {
-            *xj = if g > 0.0 { *xj / g } else { 0.0 };
-        }
-    }
-}
-
-impl DesignOperator<'_> {
-    /// `block = A_tᵀ v` for one term `t`.
-    fn adjoint_block(&self, t: &PreparedTerm<'_>, v: &[f64], block: &mut [f64]) {
-        match self.weights.sqrt() {
-            Some(sw) => scatter_block(t, block, &|i| sw[i] * v[i]),
-            None => scatter_block(t, block, &|i| v[i]),
-        }
-    }
 }
 
 /// Design operator `D` or `W^{1/2} D`, whose normal equations `AᵀA = DᵀWD` recover the Gramian.
@@ -102,7 +66,11 @@ impl Operator for DesignOperator<'_> {
         debug_assert_eq!(x.len(), self.design.n_obs());
         debug_assert_eq!(y.len(), self.design.n_dofs());
         for t in self.design.terms() {
-            self.adjoint_block(&t, x, &mut y[t.layout.dofs()]);
+            let block = &mut y[t.layout.dofs()];
+            match self.weights.sqrt() {
+                Some(sw) => scatter_block(&t, block, &|i| sw[i] * x[i]),
+                None => scatter_block(&t, block, &|i| x[i]),
+            }
         }
         Ok(())
     }
