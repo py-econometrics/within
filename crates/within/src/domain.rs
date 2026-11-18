@@ -285,40 +285,24 @@ impl EncodedFactor<'static> {
     }
 }
 
-/// One term's observations, in the design's row order.
+/// One term's level of each observation, in the design's row order.
 #[derive(Debug, Clone)]
 pub(crate) struct TermRows<'a> {
     /// Internal level position of every observation.
     levels: Cow<'a, [u32]>,
     /// The rows of each level, as the scatter-add splits them.
     pub(crate) split: ScatterSplit,
-    /// Raw slopes in slope order, before whitening.
-    slopes: Vec<Cow<'a, [f64]>>,
 }
 
 impl TermRows<'_> {
-    pub(crate) fn has_slopes(&self) -> bool {
-        !self.slopes.is_empty()
-    }
-
     pub(crate) fn levels(&self) -> &[u32] {
         &self.levels
-    }
-
-    /// Raw slopes in slope order.
-    pub(crate) fn raw_slopes(&self) -> impl ExactSizeIterator<Item = &[f64]> {
-        self.slopes.iter().map(|slope| &**slope)
     }
 
     fn into_owned(self) -> TermRows<'static> {
         TermRows {
             levels: Cow::Owned(self.levels.into_owned()),
             split: self.split,
-            slopes: self
-                .slopes
-                .into_iter()
-                .map(|slope| Cow::Owned(slope.into_owned()))
-                .collect(),
         }
     }
 }
@@ -476,6 +460,8 @@ pub struct Design<'a> {
     pub(crate) layout: CoefficientLayout,
     /// Rows in internal order (caller's, or an owned locality-sorted copy).
     pub(crate) terms: Arc<Vec<TermRows<'a>>>,
+    /// Raw slopes in the layout's slope numbering, in row order, before whitening.
+    pub(crate) slopes: Arc<Vec<Cow<'a, [f64]>>>,
     /// `obs_perm[k]` = caller's original index of the observation at internal position `k`.
     pub(crate) obs_perm: Option<Arc<RowIndex>>,
 }
@@ -523,6 +509,7 @@ impl<'a> Design<'a> {
 
         let mut layout = Vec::with_capacity(effects.len());
         let mut factors = Vec::with_capacity(effects.len());
+        let mut slopes = Vec::new();
         let mut offset = 0;
         for e in effects {
             let f = FactorEncoding::encode_labels(e.levels);
@@ -530,11 +517,12 @@ impl<'a> Design<'a> {
                 encoding: f.encoding,
                 offset,
                 intercept: e.intercept,
-                n_slopes: e.slopes.len(),
+                slopes: slopes.len()..slopes.len() + e.slopes.len(),
             };
             offset = term.dofs().end;
             layout.push(term);
-            factors.push((f.levels, f.sorted, e.slopes));
+            factors.push((f.levels, f.sorted));
+            slopes.extend(e.slopes);
         }
         let layout = CoefficientLayout {
             terms: layout.into(),
@@ -548,19 +536,19 @@ impl<'a> Design<'a> {
         // Sort by the dominant term so its gather/scatter runs sequentially.
         let dominant = layout.dominant();
         let mut sorted_offsets = vec![None; factors.len()];
-        let (levels, sorted, _) = &factors[dominant];
+        let (levels, sorted) = &factors[dominant];
         let obs_perm = if !sorted {
             let n_levels = layout.term(dominant).n_levels();
             let (offsets, perm) = RowIndex::argsort(levels, n_levels);
             sorted_offsets[dominant] = Some(offsets);
             // Factors nested in the dominant one come out sorted and need no row index.
-            for (levels, sorted, _) in factors.iter_mut() {
+            for (levels, sorted) in factors.iter_mut() {
                 let permuted = perm.gather(levels);
                 *sorted = permuted.is_sorted();
                 *levels = Cow::Owned(permuted);
             }
             // Level columns before any slope: interleaving them measured +2–4% here.
-            for slope in factors.iter_mut().flat_map(|(_, _, slopes)| slopes) {
+            for slope in slopes.iter_mut() {
                 *slope = Cow::Owned(perm.gather(slope));
             }
             Some(Arc::new(perm))
@@ -572,21 +560,19 @@ impl<'a> Design<'a> {
             .into_par_iter()
             .zip(sorted_offsets)
             .zip(layout.terms().par_iter())
-            .map(
-                |(((levels, sorted, slopes), sorted_offsets), term)| TermRows {
-                    split: match sorted_offsets {
-                        Some(offsets) => ScatterSplit::sorted(offsets),
-                        None => ScatterSplit::new(&levels, term.n_levels(), sorted),
-                    },
-                    levels,
-                    slopes,
+            .map(|(((levels, sorted), sorted_offsets), term)| TermRows {
+                split: match sorted_offsets {
+                    Some(offsets) => ScatterSplit::sorted(offsets),
+                    None => ScatterSplit::new(&levels, term.n_levels(), sorted),
                 },
-            )
+                levels,
+            })
             .collect();
 
         Ok(Design {
             layout,
             terms: Arc::new(terms),
+            slopes: Arc::new(slopes),
             obs_perm,
         })
     }
@@ -594,9 +580,16 @@ impl<'a> Design<'a> {
     /// Convert every column to owned, dropping ties to caller buffers.
     pub fn into_owned(self) -> Design<'static> {
         let terms = Arc::unwrap_or_clone(self.terms);
+        let slopes = Arc::unwrap_or_clone(self.slopes);
         Design {
             layout: self.layout,
             terms: Arc::new(terms.into_iter().map(TermRows::into_owned).collect()),
+            slopes: Arc::new(
+                slopes
+                    .into_iter()
+                    .map(|slope| Cow::Owned(slope.into_owned()))
+                    .collect(),
+            ),
             obs_perm: self.obs_perm,
         }
     }
@@ -755,7 +748,12 @@ mod tests {
         assert_eq!(design.n_dofs(), 11);
 
         // Each term's slopes are the effect's own, in effect order.
-        let slopes = |term: usize| design.terms[term].raw_slopes().collect::<Vec<_>>();
+        let slopes = |term: usize| {
+            design.slopes[design.layout.term(term).slopes()]
+                .iter()
+                .map(|slope| &**slope)
+                .collect::<Vec<_>>()
+        };
         assert_eq!(slopes(0), [&z0[..], &z1[..]]);
         assert!(slopes(1).is_empty());
         assert_eq!(slopes(2), [&z1[..]]);

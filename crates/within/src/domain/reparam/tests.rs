@@ -94,7 +94,7 @@ fn an_observation_at_its_level_mean_loads_exactly_zero() {
     let prepared = PreparedDesign::unweighted_for_test(Design::new(effects).unwrap());
     let t = prepared.term(0);
     let mean_year = (0..t.rows.levels().len())
-        .find(|&i| t.rows.raw_slopes().next().unwrap()[i] == 5.0)
+        .find(|&i| prepared.design.slopes[0][i] == 5.0)
         .unwrap();
     assert_eq!(t.slopes[0][mean_year], 0.0);
 }

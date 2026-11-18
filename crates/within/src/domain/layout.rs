@@ -23,7 +23,8 @@ pub(crate) struct TermLayout {
     pub(super) offset: usize,
     /// Column 0 is an intercept; the slopes follow it.
     pub(super) intercept: bool,
-    pub(super) n_slopes: usize,
+    /// This term's slopes in the design's slope numbering, in column order.
+    pub(super) slopes: Range<usize>,
 }
 
 impl TermLayout {
@@ -35,8 +36,13 @@ impl TermLayout {
         self.intercept
     }
 
+    /// This term's slopes in the design's slope numbering, in column order.
+    pub(crate) fn slopes(&self) -> Range<usize> {
+        self.slopes.clone()
+    }
+
     pub(crate) fn n_columns(&self) -> usize {
-        self.intercept as usize + self.n_slopes
+        self.intercept as usize + self.slopes.len()
     }
 
     pub(crate) fn n_dofs(&self) -> usize {

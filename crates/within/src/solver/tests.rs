@@ -108,6 +108,14 @@ fn solvers_built_from_a_borrowed_design_share_its_storage() {
         &design.terms
     ));
     assert!(Arc::ptr_eq(&weighted.prepared.design.terms, &design.terms));
+    assert!(Arc::ptr_eq(
+        &unweighted.prepared.design.slopes,
+        &design.slopes
+    ));
+    assert!(Arc::ptr_eq(
+        &weighted.prepared.design.slopes,
+        &design.slopes
+    ));
     let a = unweighted.solve(&y, None).unwrap();
     let b = weighted.solve(&y, None).unwrap();
     assert!(a.converged && b.converged);

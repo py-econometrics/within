@@ -12,6 +12,8 @@ pub(crate) struct PreparedDesign<'a> {
     pub(crate) design: Design<'a>,
     /// `W^{1/2}` in the design's internal observation order; `None` is unweighted.
     sqrt_weights: Option<Vec<f64>>,
+    /// Solve-basis slopes in the layout's slope numbering.
+    slopes: Vec<Vec<f64>>,
     /// Per design term, its change of basis; `None` is the identity.
     reparams: Vec<Option<TermReparam>>,
     /// Per design term, its block of [`Self::gram_diagonal`], filled on first read.
@@ -41,14 +43,25 @@ impl<'a> PreparedDesign<'a> {
         let sqrt_weights = weights
             .map(|weights| prepare_sqrt_weights(&design, weights))
             .transpose()?;
-        let reparams: Vec<Option<TermReparam>> = (0..design.n_factors())
+        let built: Vec<_> = (0..design.n_factors())
             .into_par_iter()
             .map(|t| TermReparam::build(&design, t, sqrt_weights.as_deref()))
+            .collect();
+        let mut slopes = Vec::with_capacity(design.slopes.len());
+        let reparams = built
+            .into_iter()
+            .map(|built| {
+                built.map(|(reparam, whitened)| {
+                    slopes.extend(whitened);
+                    reparam
+                })
+            })
             .collect();
         let diagonals = (0..design.n_factors()).map(|_| OnceLock::new()).collect();
         Ok(Self {
             design,
             sqrt_weights,
+            slopes,
             reparams,
             diagonals,
         })
@@ -61,13 +74,11 @@ impl<'a> PreparedDesign<'a> {
     }
 
     pub(crate) fn term(&self, term: usize) -> PreparedTerm<'_> {
-        let (rows, reparam) = (&self.design.terms[term], &self.reparams[term]);
-        let slopes: &[Vec<f64>] = reparam.as_ref().map_or(&[], |r| &r.slopes);
-        debug_assert_eq!(slopes.len(), rows.raw_slopes().len());
+        let layout = self.design.layout.term(term);
         PreparedTerm {
-            layout: self.design.layout.term(term),
-            rows,
-            slopes,
+            layout,
+            rows: &self.design.terms[term],
+            slopes: &self.slopes[layout.slopes()],
         }
     }
 

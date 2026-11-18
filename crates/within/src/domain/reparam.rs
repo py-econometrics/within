@@ -16,8 +16,6 @@ const ROW_CHUNK: usize = 1 << 14;
 
 /// A slope term's change of basis to an identity within-level Gram.
 pub(crate) struct TermReparam {
-    /// The term's slopes in the solve basis, in coefficient-column order.
-    pub(super) slopes: Vec<Vec<f64>>,
     /// Per level `u = W·z − shift`, laid out like [`Sweeps`].
     w: Vec<f64>,
     shift: Vec<f64>,
@@ -139,21 +137,22 @@ fn columns(slopes: &[Vec<f64>]) -> Vec<&[f64]> {
 }
 
 impl TermReparam {
-    /// `None` without slopes; unidentified directions become zero columns, so they solve to `0`.
+    /// The change of basis and the term's whitened slopes, in column order; `None` without slopes.
+    /// Unidentified directions become zero columns, so they solve to `0`.
     /// Whitening twice (CholeskyQR2) leaves an orthonormality error of eps, not eps·κ(G).
     pub(crate) fn build(
         design: &Design<'_>,
         term: usize,
         sqrt_weights: Option<&[f64]>,
-    ) -> Option<Self> {
+    ) -> Option<(Self, Vec<Vec<f64>>)> {
         let (layout, rows) = (design.layout.term(term), &design.terms[term]);
-        if !rows.has_slopes() {
+        if layout.slopes().is_empty() {
             return None;
         }
         let levels = rows.levels();
         let n_levels = layout.n_levels();
-        let mut slopes: Vec<Vec<f64>> = rows
-            .raw_slopes()
+        let mut slopes: Vec<Vec<f64>> = design.slopes[layout.slopes()]
+            .iter()
             .map(|z| z.par_iter().with_min_len(ROW_CHUNK).copied().collect())
             .collect();
         let v = slopes.len();
@@ -191,12 +190,14 @@ impl TermReparam {
         second.apply(levels, &mut slopes);
 
         let (w, shift) = first.compose(&second);
-        Some(Self {
+        Some((
+            Self {
+                w,
+                shift,
+                unidentified,
+            },
             slopes,
-            w,
-            shift,
-            unidentified,
-        })
+        ))
     }
 
     /// Map this term's block of solve-basis coefficients back.
@@ -204,7 +205,7 @@ impl TermReparam {
         let slot = |column: Column, level: usize| {
             layout.block_column(layout.column_index(column)).start + level
         };
-        let v = self.slopes.len();
+        let v = layout.slopes().len();
         let mut b = vec![0.0; v];
         for (l, (w, shift)) in self
             .w
