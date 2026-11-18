@@ -94,7 +94,7 @@ fn an_observation_at_its_level_mean_loads_exactly_zero() {
     let prepared = PreparedDesign::unweighted_for_test(Design::new(effects).unwrap());
     let t = prepared.term(0);
     let mean_year = (0..t.rows.levels().len())
-        .find(|&i| prepared.design.slopes[0][i] == 5.0)
+        .find(|&i| YEAR[i] == 5.0)
         .unwrap();
     assert_eq!(t.slopes[0][mean_year], 0.0);
 }
@@ -113,7 +113,7 @@ fn a_sum_past_the_float_range_still_whitens_finitely(#[case] huge_at: fn(usize) 
         .term(0)
         .slopes
         .iter()
-        .flatten()
+        .flat_map(|z| z.iter())
         .all(|u| u.is_finite()));
 }
 
@@ -339,7 +339,7 @@ fn whitening_is_bitwise_identical_across_thread_counts() {
             prepared.back_transform(&mut x);
             let slopes: Vec<u64> = prepared
                 .terms()
-                .flat_map(|t| t.slopes.iter().flatten().map(|u| u.to_bits()))
+                .flat_map(|t| t.slopes.iter().flat_map(|z| z.iter()).map(|u| u.to_bits()))
                 .collect();
             let row_split = prepared
                 .terms()

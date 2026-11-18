@@ -1,4 +1,5 @@
-use std::sync::OnceLock;
+use std::borrow::Cow;
+use std::sync::{Arc, OnceLock};
 
 use rayon::prelude::*;
 
@@ -9,11 +10,10 @@ use crate::BuildError;
 
 /// A [`Design`] plus the solve state it and one weight vector determine.
 pub(crate) struct PreparedDesign<'a> {
+    /// The design in the solve basis: the caller's rows with whitened slopes.
     pub(crate) design: Design<'a>,
     /// `W^{1/2}` in the design's internal observation order; `None` is unweighted.
     sqrt_weights: Option<Vec<f64>>,
-    /// Solve-basis slopes in the layout's slope numbering.
-    slopes: Vec<Vec<f64>>,
     /// Per design term, its change of basis; `None` is the identity.
     reparams: Vec<Option<TermReparam>>,
     /// Per design term, its block of [`Self::gram_diagonal`], filled on first read.
@@ -25,7 +25,7 @@ pub(crate) struct PreparedTerm<'p> {
     pub(crate) layout: &'p TermLayout,
     pub(crate) rows: &'p TermRows<'p>,
     /// Solve-basis slopes in coefficient-column order; empty for a slope-free term.
-    pub(crate) slopes: &'p [Vec<f64>],
+    pub(crate) slopes: &'p [Cow<'p, [f64]>],
 }
 
 impl<'p> PreparedTerm<'p> {
@@ -33,7 +33,7 @@ impl<'p> PreparedTerm<'p> {
     pub(crate) fn loading(&self, column: usize) -> Option<&'p [f64]> {
         match self.layout.column(column) {
             Column::Intercept => None,
-            Column::Slope(j) => Some(&self.slopes[j]),
+            Column::Slope(j) => Some(&self.slopes[j][..]),
         }
     }
 }
@@ -58,10 +58,14 @@ impl<'a> PreparedDesign<'a> {
             })
             .collect();
         let diagonals = (0..design.n_factors()).map(|_| OnceLock::new()).collect();
+        // The raw slopes are dropped here unless the caller's design still shares them.
+        let design = Design {
+            slopes: Arc::new(slopes.into_iter().map(Cow::Owned).collect()),
+            ..design
+        };
         Ok(Self {
             design,
             sqrt_weights,
-            slopes,
             reparams,
             diagonals,
         })
@@ -78,7 +82,7 @@ impl<'a> PreparedDesign<'a> {
         PreparedTerm {
             layout,
             rows: &self.design.terms[term],
-            slopes: &self.slopes[layout.slopes()],
+            slopes: &self.design.slopes[layout.slopes()],
         }
     }
 

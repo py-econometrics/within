@@ -445,7 +445,7 @@ pub struct Design<'a> {
     pub(crate) layout: CoefficientLayout,
     /// Rows in internal order (caller's, or an owned locality-sorted copy).
     pub(crate) terms: Arc<Vec<TermRows<'a>>>,
-    /// Raw slopes in the layout's slope numbering, in row order, before whitening.
+    /// Slopes in the layout's slope numbering, in row order.
     pub(crate) slopes: Arc<Vec<Cow<'a, [f64]>>>,
     /// `obs_perm[k]` = caller's original index of the observation at internal position `k`.
     pub(crate) obs_perm: Option<Arc<RowIndex>>,
