@@ -151,34 +151,75 @@ impl Default for ApproxSchurConfig {
 }
 
 /// Preconditioner variant. `#[non_exhaustive]`, so external `match` sites need a wildcard arm.
+// Append only: postcard encodes by declaration order and every `Preconditioner` carries one.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum PreconditionerConfig {
     /// Identity preconditioner. Solves the unpreconditioned normal equations.
     Off,
-    /// One-level additive Schwarz over factor-pair subdomains.
-    Additive {
-        /// Local solver configuration applied inside each subdomain.
-        local_solver: LocalSolverConfig,
-    },
+    /// Schwarz from construction on.
+    Schwarz(Schwarz),
     /// Diagonal/Jacobi; a zero diagonal takes the pseudo-inverse, pinning that coordinate to 0.
     Diagonal,
-    /// Diagonal first; additive Schwarz is built at, and used from, the first stalled contraction.
+    /// Diagonal first; Schwarz is built at, and used from, the first `stall`.
     Adaptive {
-        /// Local solver configuration for the escalated Schwarz factorization.
-        local_solver: LocalSolverConfig,
-        /// Contraction-stall condition that triggers escalation.
+        /// The contraction stall on the diagonal that hands the solve to Schwarz.
         stall: Staleness,
+        /// The Schwarz the solve moves to.
+        schwarz: Schwarz,
     },
+}
+
+/// One-level additive Schwarz over channel-pair subdomains.
+// Append only: postcard encodes fields in declaration order and every `Preconditioner` carries one.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Schwarz {
+    /// Local solver configuration applied inside each subdomain.
+    pub local_solver: LocalSolverConfig,
 }
 
 impl Default for PreconditionerConfig {
     fn default() -> Self {
         Self::Adaptive {
-            local_solver: LocalSolverConfig::default(),
             stall: Staleness::default(),
+            schwarz: Schwarz::default(),
         }
     }
+}
+
+impl PreconditionerConfig {
+    /// The rungs a solve climbs, in order.
+    pub(crate) fn rungs(&self) -> impl Iterator<Item = Rung<'_>> {
+        let (first, second) = match self {
+            Self::Off => (None, None),
+            Self::Diagonal => (Some(Rung::Diagonal), None),
+            Self::Schwarz(schwarz) => (Some(Rung::Schwarz(schwarz)), None),
+            Self::Adaptive { schwarz, .. } => (Some(Rung::Diagonal), Some(Rung::Schwarz(schwarz))),
+        };
+        first.into_iter().chain(second)
+    }
+
+    /// The stall that hands a solve from rung `at` to the next; `None` on a rung never left.
+    pub(crate) fn stall(&self, at: usize) -> Option<&Staleness> {
+        match self {
+            Self::Adaptive { stall, .. } if at == 0 => Some(stall),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), BuildError> {
+        self.rungs().try_for_each(|rung| match rung {
+            Rung::Diagonal => Ok(()),
+            Rung::Schwarz(schwarz) => schwarz.local_solver.validate(),
+        })
+    }
+}
+
+/// The map one rung of a ladder builds.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Rung<'c> {
+    Diagonal,
+    Schwarz(&'c Schwarz),
 }
 
 /// LSMR solver configuration: tolerances and reorthogonalization window.

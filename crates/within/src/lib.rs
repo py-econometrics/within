@@ -34,7 +34,7 @@ pub(crate) mod system;
 
 pub use config::{
     ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, LsmrOptions, PreconditionerConfig,
-    ScalingConfig, ScalingFailure, SchurMode, Staleness, StalenessError,
+    ScalingConfig, ScalingFailure, SchurMode, Schwarz, Staleness, StalenessError,
 };
 pub use design::{Channel, ChannelPair, CoefficientAddress, CoefficientLayout, Design, Effect};
 pub use error::{BuildError, BuildWarning, SolveError, WithinError};

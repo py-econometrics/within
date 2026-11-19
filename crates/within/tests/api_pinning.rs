@@ -2,7 +2,7 @@
 //! argument shapes: if any call form below stops compiling, the public surface shifted.
 
 use ndarray::Array2;
-use within::config::{LocalSolverConfig, Staleness};
+use within::config::Staleness;
 use within::{solve, solve_batch, LsmrOptions, PreconditionerConfig, Solver};
 
 fn cats() -> Array2<u32> {
@@ -103,13 +103,13 @@ fn options_are_optional_and_tuned_additive_builds_from_crate_root() {
     let y = vec![0.0; 4];
     let opts = LsmrOptions::default();
 
-    let tuned = PreconditionerConfig::Additive {
+    let tuned = PreconditionerConfig::Schwarz(within::Schwarz {
         local_solver: LocalSolverConfig {
             approx_chol: ApproxCholConfig::default(),
             schur: SchurMode::Approximate(ApproxSchurConfig::default()),
             ..Default::default()
         },
-    };
+    });
     let solver = Solver::new(categories.view(), None, tuned).expect("tuned Additive builds");
 
     // `None` accepts the default options; `&opts` still works.
@@ -133,8 +133,8 @@ fn library_default_is_the_adaptive_ladder() {
     assert_eq!(
         PreconditionerConfig::default(),
         PreconditionerConfig::Adaptive {
-            local_solver: LocalSolverConfig::default(),
             stall: Staleness::default(),
+            schwarz: within::Schwarz::default()
         }
     );
 }

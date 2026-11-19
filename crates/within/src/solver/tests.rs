@@ -4,7 +4,7 @@ use super::CoefficientAddress;
 use crate::config::{LocalSolverConfig, LsmrOptions};
 use crate::design::Channel;
 use crate::design::Design;
-use crate::system::OrthogonalDesign;
+use crate::system::{Gramian, OrthogonalDesign};
 use crate::{Effect, PreconditionerConfig, Solver};
 
 /// DGP kept in lockstep with `surplus_component_sampled_matches_exact_reduction`
@@ -261,9 +261,7 @@ fn max_abs_group_mean(design: &OrthogonalDesign<'_>, demeaned: &[f64]) -> f64 {
 
 /// Schwarz built up front, so an aliased solve rests on the local solves.
 fn additive() -> PreconditionerConfig {
-    PreconditionerConfig::Additive {
-        local_solver: Default::default(),
-    }
+    PreconditionerConfig::Schwarz(crate::config::Schwarz::default())
 }
 
 fn solve_tight(solver: &Solver<'_>, y: &[f64]) -> crate::SolveResult {
@@ -337,22 +335,23 @@ impl SharedCovariatePair {
 #[test]
 fn a_failed_deferred_build_is_kept_and_reported_again() {
     use crate::config::{ScalingConfig, ScalingFailure};
-    use crate::precond::PrecondSlot;
     use crate::{BuildError, WithinError};
 
     // A zero-tolerance, zero-iteration certificate rejects the signed cross-block deterministically.
     let panel = SharedCovariatePair::new();
     let precond = PreconditionerConfig::Adaptive {
-        local_solver: LocalSolverConfig {
-            scaling: ScalingConfig {
-                tolerance: 0.0,
-                max_iterations: 0,
-                on_failure: ScalingFailure::Error,
-            },
-            ..LocalSolverConfig::default()
-        },
         // Escalates after any single non-vanishing contraction, so the handoff is deterministic.
         stall: crate::Staleness::try_new(1, 0.0).expect("valid staleness"),
+        schwarz: crate::config::Schwarz {
+            local_solver: LocalSolverConfig {
+                scaling: ScalingConfig {
+                    tolerance: 0.0,
+                    max_iterations: 0,
+                    on_failure: ScalingFailure::Error,
+                },
+                ..LocalSolverConfig::default()
+            },
+        },
     };
     let solver = Solver::new(panel.effects(), None, precond).unwrap();
     let unscalable = |r: &Result<crate::SolveResult, WithinError>| {
@@ -363,12 +362,10 @@ fn a_failed_deferred_build_is_kept_and_reported_again() {
     };
     let first = solver.solve(&panel.y, None);
     assert!(unscalable(&first), "{first:?}");
-    let PrecondSlot::Adaptive(a) = &solver.slot else {
-        panic!("the ladder")
-    };
+    // The ladder reports the kept error before any further solve could rebuild.
     assert!(matches!(
-        a.built.get(),
-        Some(Err(BuildError::UnscalableComponent { .. }))
+        solver.ladder.current(Gramian::new(&solver.design)),
+        Err(BuildError::UnscalableComponent { .. })
     ));
     assert!(unscalable(&solver.solve(&panel.y, None)));
     assert!(!solver.has_escalated());
@@ -448,9 +445,7 @@ fn an_alias_through_a_zero_loading_still_converges() {
         Effect::new(&firm, true, []).unwrap(),
         Effect::new(&year, true, []).unwrap(),
     ];
-    let schwarz = PreconditionerConfig::Additive {
-        local_solver: Default::default(),
-    };
+    let schwarz = PreconditionerConfig::Schwarz(crate::config::Schwarz::default());
     let solver = Solver::new(effects, None, schwarz).expect("solver");
     let out = solve_tight(&solver, &y);
     let group_mean = max_abs_group_mean(&solver.design, &out.demeaned);

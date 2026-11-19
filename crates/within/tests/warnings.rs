@@ -65,7 +65,7 @@ fn free_solve_batch_surfaces_build_warnings() {
 }
 
 fn scaling(tolerance: f64, on_failure: ScalingFailure) -> PreconditionerConfig {
-    PreconditionerConfig::Additive {
+    PreconditionerConfig::Schwarz(within::Schwarz {
         local_solver: LocalSolverConfig {
             scaling: ScalingConfig {
                 tolerance,
@@ -74,7 +74,7 @@ fn scaling(tolerance: f64, on_failure: ScalingFailure) -> PreconditionerConfig {
             },
             ..LocalSolverConfig::default()
         },
-    }
+    })
 }
 
 // The fixture's unscaled violation is about 0.078.

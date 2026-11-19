@@ -14,7 +14,7 @@ use within::config::{
     ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, LsmrOptions, PreconditionerConfig,
     ScalingConfig, ScalingFailure, SchurMode, Staleness,
 };
-use within::{Preconditioner, PreconditionerInput};
+use within::{Preconditioner, PreconditionerInput, Schwarz};
 
 use crate::convert::{value_err, IntoPyErr};
 
@@ -225,15 +225,17 @@ impl PyPreconditionerConfig {
         match self {
             Self::Off() => PreconditionerConfig::Off,
             Self::Diagonal() => PreconditionerConfig::Diagonal,
-            Self::Additive { local_solver } => PreconditionerConfig::Additive {
+            Self::Additive { local_solver } => PreconditionerConfig::Schwarz(Schwarz {
                 local_solver: local_solver.to_native(),
-            },
+            }),
             Self::Adaptive {
                 local_solver,
                 stall,
             } => PreconditionerConfig::Adaptive {
-                local_solver: local_solver.to_native(),
                 stall: stall.to_native(),
+                schwarz: Schwarz {
+                    local_solver: local_solver.to_native(),
+                },
             },
         }
     }
@@ -242,14 +244,11 @@ impl PyPreconditionerConfig {
         Ok(match config {
             PreconditionerConfig::Off => Self::Off(),
             PreconditionerConfig::Diagonal => Self::Diagonal(),
-            PreconditionerConfig::Additive { local_solver } => Self::Additive {
-                local_solver: PyLocalSolverConfig::from_native(local_solver),
+            PreconditionerConfig::Schwarz(schwarz) => Self::Additive {
+                local_solver: PyLocalSolverConfig::from_native(&schwarz.local_solver),
             },
-            PreconditionerConfig::Adaptive {
-                local_solver,
-                stall,
-            } => Self::Adaptive {
-                local_solver: PyLocalSolverConfig::from_native(local_solver),
+            PreconditionerConfig::Adaptive { stall, schwarz } => Self::Adaptive {
+                local_solver: PyLocalSolverConfig::from_native(&schwarz.local_solver),
                 stall: PyStaleness { inner: *stall },
             },
             _ => {
@@ -484,7 +483,7 @@ impl PyPreconditioner {
         Ok(Self { inner })
     }
 
-    /// Complete normalized configuration used to build this preconditioner.
+    /// The configuration whose ladder this map belongs to.
     #[getter]
     fn config(&self) -> PyResult<PyPreconditionerConfig> {
         PyPreconditionerConfig::from_native(&self.inner.config())
