@@ -176,9 +176,9 @@ mod tests {
 
     #[test]
     fn test_full_cover_domain_count() {
-        let dm = make_test_design();
+        let design = make_test_design();
         let (domain_pairs, _) =
-            build_local_domains(Gramian::new(&dm), &LocalSolverConfig::default())
+            build_local_domains(Gramian::new(&design), &LocalSolverConfig::default())
                 .expect("plain domains build");
         // 3 factor pairs; each pair may produce multiple components
         assert!(domain_pairs.len() >= 3);
@@ -186,11 +186,11 @@ mod tests {
 
     #[test]
     fn test_partition_of_unity() {
-        let dm = make_test_design();
+        let design = make_test_design();
         let (domain_pairs, _) =
-            build_local_domains(Gramian::new(&dm), &LocalSolverConfig::default())
+            build_local_domains(Gramian::new(&design), &LocalSolverConfig::default())
                 .expect("plain domains build");
-        let n_dofs = dm.n_dofs();
+        let n_dofs = design.n_dofs();
         // Two-sided PoU: squared weights must sum to 1 at every DOF.
         let mut weight_sq_sum = vec![0.0; n_dofs];
         for ld in &domain_pairs {
@@ -260,9 +260,9 @@ mod tests {
             Effect::new(&firms, true, []).expect("firm effect"),
         ])
         .expect("valid design");
-        let prepared = design.orthogonalize(None).unwrap();
+        let design = design.orthogonalize(None).unwrap();
         let (domains, _) =
-            build_local_domains(Gramian::new(&prepared), &LocalSolverConfig::default())
+            build_local_domains(Gramian::new(&design), &LocalSolverConfig::default())
                 .expect("domains");
         let [domain] = &domains[..] else {
             panic!("one subdomain per pair, got {}", domains.len())
@@ -284,11 +284,11 @@ mod tests {
 
     #[test]
     fn test_domains_cover_all_dofs() {
-        let dm = make_test_design();
+        let design = make_test_design();
         let (domain_pairs, _) =
-            build_local_domains(Gramian::new(&dm), &LocalSolverConfig::default())
+            build_local_domains(Gramian::new(&design), &LocalSolverConfig::default())
                 .expect("plain domains build");
-        let mut covered = vec![false; dm.n_dofs()];
+        let mut covered = vec![false; design.n_dofs()];
         for ld in &domain_pairs {
             for &idx in ld.core.global_indices() {
                 covered[idx as usize] = true;

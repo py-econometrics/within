@@ -8,7 +8,7 @@ use within::{Design, Effect, LsmrOptions, PreconditionerConfig, Solver};
 #[path = "common/orchestrate_helpers.rs"]
 mod common;
 
-/// Worker + firm with a slope + region: one sorted term and both unsorted adjoint splits.
+/// Worker + firm with a slope + region: one sorted term and both unsorted level reductions.
 struct Panel {
     worker: Vec<u32>,
     firm: Vec<u32>,

@@ -154,14 +154,14 @@ mod tests {
     }
 
     /// Explicit per-column, per-level contributions, independently summed.
-    fn observation_sums(prepared: &OrthogonalDesign<'_>) -> Vec<f64> {
-        let mut entries = vec![Vec::new(); prepared.n_dofs()];
-        for (t, term) in prepared.terms().enumerate() {
+    fn observation_sums(design: &OrthogonalDesign<'_>) -> Vec<f64> {
+        let mut entries = vec![Vec::new(); design.n_dofs()];
+        for (t, term) in design.terms().enumerate() {
             for column in 0..term.layout().n_columns() {
-                let block = &mut entries[prepared.layout().dofs(Channel { term: t, column })];
+                let block = &mut entries[design.layout().dofs(Channel { term: t, column })];
                 let z = term.loading(column);
                 for (obs, &level) in term.levels().iter().enumerate() {
-                    let w = prepared.weights.weight(obs);
+                    let w = design.weights.weight(obs);
                     block[level as usize].push(z.map_or(w, |z| w * z[obs] * z[obs]));
                 }
             }
@@ -188,15 +188,15 @@ mod tests {
                 crate::Effect::new(&h, false, [&zh[..]]).unwrap(),
                 crate::Effect::new(&p, true, []).unwrap(),
             ];
-            let prepared = Design::new(effects)
+            let design = Design::new(effects)
                 .unwrap()
                 .orthogonalize(weights)
                 .unwrap();
-            assert!(prepared.unidentified().next().is_some());
+            assert!(design.unidentified().next().is_some());
             // Read off the level Grams, the diagonal agrees with the data's to rounding,
             // and is zero exactly where the data's is.
-            let diag = Gramian::new(&prepared).diagonal();
-            for (d, o) in diag.iter().zip(observation_sums(&prepared)) {
+            let diag = Gramian::new(&design).diagonal();
+            for (d, o) in diag.iter().zip(observation_sums(&design)) {
                 assert_eq!(*d == 0.0, o == 0.0, "weights {weights:?}");
                 assert!((d - o).abs() <= 1e-12 * o.abs().max(1.0), "{d} vs {o}");
             }
@@ -219,13 +219,12 @@ mod tests {
                 crate::Effect::new(&f, true, [&z[..]]).unwrap(),
                 crate::Effect::new(&g, true, []).unwrap(),
             ];
-            let prepared = Design::new(effects)
+            let design = Design::new(effects)
                 .unwrap()
                 .orthogonalize(weights)
                 .unwrap();
-            let diag = Gramian::new(&prepared).diagonal();
-            let block =
-                |term: usize, column| &diag[prepared.layout().dofs(Channel { term, column })];
+            let diag = Gramian::new(&design).diagonal();
+            let block = |term: usize, column| &diag[design.layout().dofs(Channel { term, column })];
             assert_eq!(block(0, 0), f_sums);
             assert_eq!(block(1, 0), g_sums);
             // A kept orthogonalized slope has unit weighted norm; a dropped one is an exact-zero column.
