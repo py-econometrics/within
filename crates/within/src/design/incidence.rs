@@ -57,11 +57,6 @@ impl<'p> TermIncidence<'p> {
             .fold(&self.rows.levels, init, step, merge, out);
     }
 
-    /// Per level, its rows as one contiguous run, when the rows are sorted by level.
-    pub(crate) fn sorted_runs(&self) -> Option<&'p [usize]> {
-        self.rows.split.sorted_offsets()
-    }
-
     #[cfg(test)]
     pub(crate) fn split(&self) -> &'p ScatterSplit {
         &self.rows.split

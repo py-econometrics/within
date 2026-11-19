@@ -1,11 +1,8 @@
 //! `W^{1/2}`: a fit's row weights in the design's internal row order.
 
-use std::ops::Range;
-
 use rayon::prelude::*;
 
 use crate::design::Incidence;
-use crate::linalg::add_compensated;
 use crate::BuildError;
 use crate::PAR_THRESHOLD;
 
@@ -69,20 +66,6 @@ impl RowWeights {
     /// The Gram weight `w` of row `obs`: the operator applies `√w`, so its normal matrix carries `w`.
     pub(crate) fn weight(&self, obs: usize) -> f64 {
         self.sqrt.as_deref().map_or(1.0, |s| s[obs] * s[obs])
-    }
-
-    /// `Σ w` over `rows`, summed in row order; a sum of ones is exact, so unweighted is the length.
-    pub(crate) fn sum(&self, rows: Range<usize>) -> f64 {
-        match &self.sqrt {
-            None => rows.len() as f64,
-            Some(s) => {
-                let (mut sum, mut correction) = (0.0, 0.0);
-                for &si in &s[rows] {
-                    add_compensated(&mut sum, &mut correction, si * si);
-                }
-                sum + correction
-            }
-        }
     }
 
     /// Some row weighs zero, so [`Self::unscale`] cannot recover it.

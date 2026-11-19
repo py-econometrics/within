@@ -31,26 +31,36 @@ impl<'p> Gramian<'p> {
         let layout = self.layout().term(term);
         let mut diag = vec![0.0; layout.n_dofs()];
         if let Some(column) = layout.intercept_column() {
-            // `diag(E_tᵀ W E_t)`: per level `Σ w`, summed in observation order.
-            let (rows, weights) = (self.design.incidence.term(term), &self.design.weights);
-            let sums = &mut diag[layout.block_column(column)];
-            if let Some(offsets) = rows.sorted_runs() {
-                // A sorted level is one run: a register sum keeps its order with no store per row.
-                for (sum, run) in sums.iter_mut().zip(offsets.windows(2)) {
-                    *sum = weights.sum(run[0]..run[1]);
-                }
-            } else {
-                let mut corrections = vec![0.0; sums.len()];
-                for (obs, &level) in rows.levels().iter().enumerate() {
-                    let level = level as usize;
-                    add_compensated(
-                        &mut sums[level],
-                        &mut corrections[level],
-                        weights.weight(obs),
+            // `diag(E_tᵀ W E_t)`: per level `Σ w`, in the pieces the term's split fixes.
+            let (rows, sums) = (
+                self.design.incidence.term(term),
+                &mut diag[layout.block_column(column)],
+            );
+            match self.design.weights.sqrt() {
+                // A sum of ones is exact in any order.
+                None => rows.fold(
+                    0.0,
+                    &|s: &mut f64, _, _| *s += 1.0,
+                    &|l: &mut f64, r: &f64| *l += r,
+                    sums,
+                ),
+                Some(_) => {
+                    let weights = &self.design.weights;
+                    let mut compensated = vec![(0.0, 0.0); sums.len()];
+                    rows.fold(
+                        (0.0, 0.0),
+                        &|(s, c): &mut (f64, f64), _, obs| {
+                            add_compensated(s, c, weights.weight(obs))
+                        },
+                        &|(s, c): &mut (f64, f64), &(rs, rc): &(f64, f64)| {
+                            add_compensated(s, c, rs);
+                            *c += rc;
+                        },
+                        &mut compensated[..],
                     );
-                }
-                for (sum, correction) in sums.iter_mut().zip(corrections) {
-                    *sum += correction;
+                    for (d, (s, c)) in sums.iter_mut().zip(compensated) {
+                        *d = s + c;
+                    }
                 }
             }
         }
@@ -168,7 +178,7 @@ mod tests {
         let g = [2u32, 0, 1, 1, 0, 2, 0, 1];
         let h = [1u32, 0, 0, 1, 1, 0, 1, 0];
         let zh = [0.5, 1.5, -2.0, 3.0, 0.25, -1.0, 7.0, 2.0];
-        // Nested in `f`, so it comes out sorted and is summed by runs.
+        // Nested in `f`, so it comes out sorted.
         let p = [0u32, 1, 0, 1, 0, 1, 1, 1];
         let weights = [2.0, 0.0, 3.0, 0.1, 1.0, 7.0, 0.3, 5.0];
         for weights in [None, Some(&weights[..])] {
@@ -182,10 +192,6 @@ mod tests {
                 .unwrap()
                 .orthogonalize(weights)
                 .unwrap();
-            assert!(
-                prepared.term(3).split().sorted_offsets().is_some()
-                    && prepared.term(1).split().sorted_offsets().is_none()
-            );
             assert!(prepared.unidentified().next().is_some());
             // Read off the level Grams, the diagonal agrees with the data's to rounding,
             // and is zero exactly where the data's is.

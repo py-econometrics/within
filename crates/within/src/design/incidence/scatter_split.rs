@@ -87,17 +87,6 @@ impl ScatterSplit {
             rows: None,
         })
     }
-
-    /// Where each level's rows start when the rows are sorted by level.
-    pub(crate) fn sorted_offsets(&self) -> Option<&[usize]> {
-        match self {
-            Self::ByLevel(LevelRows {
-                offsets,
-                rows: None,
-            }) => Some(offsets),
-            _ => None,
-        }
-    }
 }
 
 impl ScatterSplit {
@@ -216,12 +205,19 @@ impl LevelRows {
 
 #[cfg(test)]
 mod tests {
-    use super::ScatterSplit;
+    use super::{LevelRows, ScatterSplit};
 
     #[test]
     fn of_sorted_counts_runs_and_rejects_a_descent() {
         let split = ScatterSplit::of_sorted(&[0, 0, 1, 3, 3], 4).unwrap();
-        assert_eq!(split.sorted_offsets(), Some(&[0, 2, 3, 3, 5][..]));
+        let ScatterSplit::ByLevel(LevelRows {
+            offsets,
+            rows: None,
+        }) = split
+        else {
+            panic!("sorted levels split by level without a row index")
+        };
+        assert_eq!(offsets, [0, 2, 3, 3, 5]);
         assert!(ScatterSplit::of_sorted(&[1, 1, 0], 2).is_none());
     }
 }
