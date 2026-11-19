@@ -99,15 +99,8 @@ fn factor_pair(
         return Ok((None, warnings));
     }
 
-    let n_rows = layout.term(pair.rows.term).n_levels();
-    let row_base = layout
-        .term(pair.rows.term)
-        .column_dofs(pair.rows.column)
-        .start;
-    let col_base = layout
-        .term(pair.cols.term)
-        .column_dofs(pair.cols.column)
-        .start;
+    let (rows, cols) = (layout.dofs(pair.rows), layout.dofs(pair.cols));
+    let (n_rows, row_base, col_base) = (rows.len(), rows.start, cols.start);
     let global = |vertex: usize| {
         let dof = if vertex < n_rows {
             row_base + vertex

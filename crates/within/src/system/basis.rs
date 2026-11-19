@@ -106,8 +106,8 @@ impl OrthogonalSlopes {
 
     /// Map this term's block of solve-basis coefficients back: `block ← R_t·block`.
     pub(super) fn back_transform(&self, layout: &TermLayout, block: &mut [f64]) {
-        let n_levels = layout.n_levels();
-        let slope = |j: usize, level: usize| layout.slope_column(j) * n_levels + level;
+        let slope =
+            |j: usize, level: usize| layout.block_column(layout.slope_column(j)).start + level;
         let v = layout.n_slopes();
         if v == 0 {
             return;
@@ -132,7 +132,7 @@ impl OrthogonalSlopes {
                 block[slope(j, l)] = bj;
             }
             if let Some(intercept) = layout.intercept_column() {
-                block[intercept * n_levels + l] -= offset;
+                block[layout.block_column(intercept)][l] -= offset;
             }
         }
     }

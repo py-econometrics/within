@@ -203,7 +203,7 @@ mod design_tests {
 
 mod slope_design_tests {
     use super::noise;
-    use crate::design::{Design, Effect, ScatterSplit};
+    use crate::design::{Channel, Design, Effect, ScatterSplit};
     use crate::system::DesignOperator;
     use crate::system::OrthogonalDesign;
     use schwarz_precond::Operator;
@@ -213,9 +213,9 @@ mod slope_design_tests {
     /// permutation.
     fn dense_matrix(design: &OrthogonalDesign<'_>) -> Vec<Vec<f64>> {
         let mut d = vec![vec![0.0; design.n_dofs()]; design.n_obs()];
-        for t in design.terms() {
+        for (term, t) in design.terms().enumerate() {
             for c in 0..t.layout().n_columns() {
-                let base = t.layout().column_dofs(c).start;
+                let base = design.layout().dofs(Channel { term, column: c }).start;
                 let z = t.loading(c);
                 for (i, &lev) in t.levels().iter().enumerate() {
                     d[i][base + lev as usize] = z.map_or(1.0, |z| z[i]);

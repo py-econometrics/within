@@ -27,7 +27,7 @@ impl<'p> Gramian<'p> {
 
     /// `diag(G)` over term `term`'s coefficients, laid out like its `dofs()`. `D̃_tᵀ W D̃_t` is
     /// diagonal per level: `w_l` on the intercept, `1` on the identified slopes, `0` on the rest.
-    pub(crate) fn term_diagonal(&self, term: usize) -> Vec<f64> {
+    fn term_diagonal(&self, term: usize) -> Vec<f64> {
         let layout = self.layout().term(term);
         let mut diag = vec![0.0; layout.n_dofs()];
         if let Some(column) = layout.intercept_column() {
@@ -97,7 +97,7 @@ impl<'p> Gramian<'p> {
 #[cfg(test)]
 mod tests {
     use super::Gramian;
-    use crate::design::Design;
+    use crate::design::{Channel, Design};
     use crate::system::OrthogonalDesign;
 
     /// Independent floating-point expansion: retain each exact two-sum remainder
@@ -146,9 +146,9 @@ mod tests {
     /// Explicit per-column, per-level contributions, independently summed.
     fn observation_sums(prepared: &OrthogonalDesign<'_>) -> Vec<f64> {
         let mut entries = vec![Vec::new(); prepared.n_dofs()];
-        for term in prepared.terms() {
+        for (t, term) in prepared.terms().enumerate() {
             for column in 0..term.layout().n_columns() {
-                let block = &mut entries[term.layout().column_dofs(column)];
+                let block = &mut entries[prepared.layout().dofs(Channel { term: t, column })];
                 let z = term.loading(column);
                 for (obs, &level) in term.levels().iter().enumerate() {
                     let w = prepared.weights.weight(obs);
@@ -219,7 +219,7 @@ mod tests {
                 .unwrap();
             let diag = Gramian::new(&prepared).diagonal();
             let block =
-                |term: usize, column| &diag[prepared.layout().term(term).column_dofs(column)];
+                |term: usize, column| &diag[prepared.layout().dofs(Channel { term, column })];
             assert_eq!(block(0, 0), f_sums);
             assert_eq!(block(1, 0), g_sums);
             // A kept orthogonalized slope has unit weighted norm; a dropped one is an exact-zero column.

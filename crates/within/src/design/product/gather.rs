@@ -54,7 +54,8 @@ struct GatherTerm<'k, 't> {
 impl RowKernel for GatherTerm<'_, '_> {
     #[inline(always)]
     fn fixed<const C: usize>(self, row: impl Fn(usize) -> [f64; C] + Sync) {
-        let cols = std::array::from_fn(|c| &self.src[self.term.layout().column_dofs(c)]);
+        let (layout, block) = (self.term.layout(), &self.src[self.term.layout().dofs()]);
+        let cols = std::array::from_fn(|c| &block[layout.block_column(c)]);
         gather_term(self.chunk, self.row_start, self.term.levels(), cols, row);
     }
 
@@ -62,12 +63,13 @@ impl RowKernel for GatherTerm<'_, '_> {
     fn dynamic(self) {
         // A dynamic column count cannot monomorphize a fixed arity.
         let (t, levels) = (self.term, self.term.levels());
+        let block = &self.src[t.layout().dofs()];
         for (local, dst_val) in self.chunk.iter_mut().enumerate() {
             let i = self.row_start + local;
             let lev = levels[i] as usize;
             let mut acc = 0.0;
             for c in 0..t.layout().n_columns() {
-                let coef = self.src[t.layout().column_dofs(c)][lev];
+                let coef = block[t.layout().block_column(c)][lev];
                 acc += match t.loading(c) {
                     None => coef,
                     Some(z) => coef * z[i],

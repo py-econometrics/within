@@ -1,11 +1,30 @@
-//! Scatter: `x_t = D_tᵀ v`, summed per term in the order its [`ScatterSplit`] fixes.
+//! Scatter: observation space → coefficient space, `x_t = D_tᵀ (s ⊙ v)`, summed per term in the
+//! order its [`ScatterSplit`] fixes.
 
 use crate::design::LevelSlots;
 use crate::design::{RowKernel, TermBlock};
 
-/// One term's adjoint scatter `block = A_tᵀ v`, with `base(i)` the row value of `v`.
+/// `dst_t = D_tᵀ (scale ⊙ src)` for each of `terms`, into its block of `dst`.
+pub(crate) fn scatter(
+    terms: &[TermBlock<'_>],
+    src: &[f64],
+    dst: &mut [f64],
+    scale: Option<&[f64]>,
+) {
+    debug_assert!(scale.is_none_or(|s| s.len() == src.len()));
+    debug_assert!(terms.iter().all(|t| t.levels().len() == src.len()));
+    for t in terms {
+        let block = &mut dst[t.layout().dofs()];
+        match scale {
+            Some(s) => scatter_block(t, block, &|i| s[i] * src[i]),
+            None => scatter_block(t, block, &|i| src[i]),
+        }
+    }
+}
+
+/// One term's `block = D_tᵀ v`, with `base(i)` the row value of `v`.
 #[inline(always)]
-pub(crate) fn scatter(t: &TermBlock<'_>, block: &mut [f64], base: &(impl Fn(usize) -> f64 + Sync)) {
+fn scatter_block(t: &TermBlock<'_>, block: &mut [f64], base: &(impl Fn(usize) -> f64 + Sync)) {
     t.visit_rows(ScatterTerm {
         block,
         term: t,

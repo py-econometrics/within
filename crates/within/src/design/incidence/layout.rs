@@ -67,12 +67,6 @@ impl TermLayout {
         start..start + self.n_levels()
     }
 
-    /// Column `column`'s `n_levels` slots in the flat coefficient vector.
-    pub(crate) fn column_dofs(&self, column: usize) -> Range<usize> {
-        let local = self.block_column(column);
-        self.offset + local.start..self.offset + local.end
-    }
-
     /// What column `index` multiplies.
     pub(crate) fn column(&self, index: usize) -> Column {
         match index.checked_sub(self.intercept as usize) {
@@ -120,7 +114,7 @@ impl CoefficientLayout {
             return None;
         }
         let position = term.encoding.position(at.level)?;
-        Some(term.column_dofs(at.channel.column).start + position)
+        Some(self.dofs(at.channel).start + position)
     }
 
     /// The address of flat index `i`, or `None` if `i >= n_dofs`.
@@ -154,6 +148,13 @@ impl CoefficientLayout {
         (0..self.terms.len())
             .max_by_key(|&t| self.terms[t].n_dofs())
             .expect("a design has a term")
+    }
+
+    /// `channel`'s `n_levels` slots in the flat coefficient vector.
+    pub(crate) fn dofs(&self, channel: Channel) -> Range<usize> {
+        let term = &self.terms[channel.term];
+        let local = term.block_column(channel.column);
+        term.offset + local.start..term.offset + local.end
     }
 
     /// The term's coefficient columns in layout order.

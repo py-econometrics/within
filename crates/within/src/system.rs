@@ -63,7 +63,7 @@ impl<'a> OrthogonalDesign<'a> {
     }
 
     /// Term `term`'s block `D̃_t`.
-    pub(crate) fn term(&self, term: usize) -> TermBlock<'_> {
+    fn term(&self, term: usize) -> TermBlock<'_> {
         TermBlock::new(self.incidence.term(term), self.slopes[term].columns())
     }
 
