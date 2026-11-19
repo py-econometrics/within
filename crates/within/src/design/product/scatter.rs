@@ -6,8 +6,8 @@ use rayon::prelude::*;
 use crate::design::LevelSlots;
 use crate::design::{RowKernel, TermBlock};
 
-/// `dst_t = D_tᵀ (scale ⊙ src)` for `terms` in layout order, whose blocks tile `dst`; the blocks
-/// are disjoint, so the terms run concurrently.
+/// `dst[dofs_t] = D_tᵀ (scale ⊙ src)` for `terms` in layout order; other slots are left as they
+/// are. The blocks are disjoint, so the terms run concurrently.
 pub(crate) fn scatter(
     terms: &[TermBlock<'_>],
     src: &[f64],
@@ -17,13 +17,14 @@ pub(crate) fn scatter(
     debug_assert!(scale.is_none_or(|s| s.len() == src.len()));
     debug_assert!(terms.iter().all(|t| t.levels().len() == src.len()));
     let mut blocks = Vec::with_capacity(terms.len());
-    let mut rest = dst;
+    let (mut rest, mut start) = (dst, 0);
     for t in terms {
-        let (block, tail) = std::mem::take(&mut rest).split_at_mut(t.layout().n_dofs());
+        let dofs = t.layout().dofs();
+        let tail = std::mem::take(&mut rest).split_at_mut(dofs.start - start).1;
+        let (block, tail) = tail.split_at_mut(dofs.len());
         blocks.push(block);
-        rest = tail;
+        (rest, start) = (tail, dofs.end);
     }
-    debug_assert!(rest.is_empty());
     terms
         .par_iter()
         .zip(blocks)
