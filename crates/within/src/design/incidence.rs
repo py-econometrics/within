@@ -19,7 +19,7 @@ use rayon::prelude::*;
 
 /// One term's level of each observation, in the design's row order.
 #[derive(Debug, Clone)]
-pub(crate) struct TermRows<'a> {
+struct TermRows<'a> {
     /// Internal level position of every observation.
     levels: Cow<'a, [u32]>,
     /// The rows of each level, as the scatter-add splits them.
