@@ -49,22 +49,25 @@ assert!(result.converged);
 
 ## Architecture
 
-The crate is organized in three layers:
+The crate is organized in four layers, each depending only on the ones above it:
 
-1. **`domain`** — Domain decomposition. `Design` lowers `Effect`s
-   (`Design::new`) or an observation-major category matrix
-   (`Design::from_categories`) into per-term level codes and slope columns;
-   `build_local_domains` constructs factor-pair subdomains with
-   partition-of-unity weights for the Schwarz preconditioner.
-   `PreparedDesign` owns the weight-dependent state: `sqrt(W)` in internal
-   row order and each term's orthogonalized slopes.
+1. **`design`** — The weight-free design `D = E • X`. `Design` lowers
+   `Effect`s (`Design::new`) or an observation-major category matrix
+   (`Design::from_categories`) into the shared incidence `E` (per-term level
+   codes and coefficient layout) and each term's slope columns `X`, and
+   provides the products `D x` and `Dᵀ v` over its term blocks.
 
-2. **`operator`** — Linear algebra primitives. Internal rectangular
-   `sqrt(W) D` operator for LSMR and Schwarz preconditioner builders
-   that wire approximate Cholesky local solvers into the generic
-   `schwarz-precond` framework.
+2. **`system`** — The least-squares system for one weighting `W`.
+   `OrthogonalDesign` is `D̃ = D·R`, each term's slopes orthogonalized within
+   each level; `DesignOperator` is `A = sqrt(W) D̃`, the operator LSMR
+   iterates on; `Gramian` is `G = AᵀA`, which the preconditioners read.
 
-3. **`solver`** — `Solver` (a design and its preconditioner, reused across
+3. **`precond`** — `M ≈ G⁻¹`: the diagonal and the additive Schwarz
+   preconditioner, whose factor-pair subdomains (`build_local_domains`) wire
+   approximate Cholesky local solvers into the generic `schwarz-precond`
+   framework.
+
+4. **`solver`** — `Solver` (a design and its preconditioner, reused across
    right-hand sides) and the one-shot entry points `solve` and `solve_batch`,
    with typed configuration (`LsmrOptions`, `PreconditionerConfig`).
 
