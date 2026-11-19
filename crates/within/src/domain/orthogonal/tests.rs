@@ -1,8 +1,8 @@
-//! Seam tests for the per-term independence of the multi-term whitening,
+//! Seam tests for the per-term independence of the multi-term orthogonalization,
 //! not reachable through the public API.
 
 use crate::channel::Channel;
-use crate::domain::{Effect, PreparedDesign};
+use crate::domain::Effect;
 use rstest::rstest;
 
 use super::*;
@@ -26,8 +26,11 @@ fn three_term_effects() -> Vec<Effect<'static>> {
 }
 
 #[test]
-fn build_whitens_each_slope_bearing_term() {
-    let prepared = PreparedDesign::unweighted_for_test(Design::new(three_term_effects()).unwrap());
+fn orthogonalizes_each_slope_bearing_term() {
+    let prepared = Design::new(three_term_effects())
+        .unwrap()
+        .orthogonalize(None)
+        .unwrap();
     assert!(prepared.unidentified().next().is_none());
     for term in [0, 2] {
         assert_level_grams_orthonormal(&prepared, term, 1e-12);
@@ -35,9 +38,11 @@ fn build_whitens_each_slope_bearing_term() {
 }
 
 #[test]
-fn slope_free_term_has_no_reparam() {
-    let prepared = PreparedDesign::from_levels_for_test(vec![vec![0, 1, 0], vec![0, 0, 1]]);
-    assert!(prepared.design.terms().all(|t| t.slopes.is_empty()));
+fn slope_free_term_has_no_slopes() {
+    let prepared = Design::from_levels_for_test(vec![vec![0, 1, 0], vec![0, 0, 1]])
+        .orthogonalize(None)
+        .unwrap();
+    assert!(prepared.terms().all(|t| t.slopes().len() == 0));
 }
 
 #[test]
@@ -51,7 +56,7 @@ fn unidentified_directions_ascend_across_terms() {
         Effect::new(&f0, true, [&z0[..]]).unwrap(),
         Effect::new(&f1, true, [&z1[..]]).unwrap(),
     ];
-    let prepared = PreparedDesign::unweighted_for_test(Design::new(effects).unwrap());
+    let prepared = Design::new(effects).unwrap().orthogonalize(None).unwrap();
     assert_eq!(
         prepared.unidentified().collect::<Vec<_>>(),
         vec![
@@ -69,17 +74,19 @@ fn unidentified_directions_ascend_across_terms() {
 
 #[test]
 fn back_transform_leaves_other_terms_untouched() {
-    let prepared = PreparedDesign::unweighted_for_test(Design::new(three_term_effects()).unwrap());
-    let design = &prepared.design;
+    let design = Design::new(three_term_effects())
+        .unwrap()
+        .orthogonalize(None)
+        .unwrap();
 
     let mut x: Vec<f64> = (0..design.n_dofs()).map(|i| 1.0 + i as f64).collect();
     let before = x.clone();
-    prepared.back_transform(&mut x);
+    design.back_transform(&mut x);
 
     // Plain term 1 sits between the two slope-bearing blocks.
     let (t1, t2) = (
-        design.layout.term(1).dofs().start,
-        design.layout.term(2).dofs().start,
+        design.layout().term(1).dofs().start,
+        design.layout().term(2).dofs().start,
     );
     assert_eq!(x[t1..t2], before[t1..t2]);
     assert_ne!(x[..t1], before[..t1]);
@@ -91,31 +98,23 @@ fn back_transform_leaves_other_terms_untouched() {
 fn an_observation_at_its_level_mean_loads_exactly_zero() {
     let level = [0u32; 11];
     let effects = vec![Effect::new(&level, true, [&YEAR[..]]).unwrap()];
-    let prepared = PreparedDesign::unweighted_for_test(Design::new(effects).unwrap());
-    let t = prepared.design.term(0);
-    let mean_year = (0..t.rows.levels().len())
-        .find(|&i| YEAR[i] == 5.0)
-        .unwrap();
-    assert_eq!(t.slopes[0][mean_year], 0.0);
+    let prepared = Design::new(effects).unwrap().orthogonalize(None).unwrap();
+    let t = prepared.term(0);
+    let mean_year = (0..t.levels().len()).find(|&i| YEAR[i] == 5.0).unwrap();
+    assert_eq!(t.slopes().next().unwrap()[mean_year], 0.0);
 }
 
 #[rstest]
 #[case::level_sum(|_| 1e306)]
 #[case::spread(|i| if i % 2 == 0 { 1e307 } else { -1e307 })]
-fn a_sum_past_the_float_range_still_whitens_finitely(#[case] huge_at: fn(usize) -> f64) {
+fn a_sum_past_the_float_range_still_orthogonalizes_finitely(#[case] huge_at: fn(usize) -> f64) {
     let n = 200;
     let level = vec![0u32; n];
     let huge: Vec<f64> = (0..n).map(huge_at).collect();
     let year: Vec<f64> = (0..n).map(|i| i as f64).collect();
     let effects = vec![Effect::new(&level, true, [&huge[..], &year[..]]).unwrap()];
-    let prepared = PreparedDesign::unweighted_for_test(Design::new(effects).unwrap());
-    assert!(prepared
-        .design
-        .term(0)
-        .slopes
-        .iter()
-        .flat_map(|z| z.iter())
-        .all(|u| u.is_finite()));
+    let prepared = Design::new(effects).unwrap().orthogonalize(None).unwrap();
+    assert!(prepared.term(0).slopes().flatten().all(|u| u.is_finite()));
 }
 
 /// Leaves of one level start from shifts `0` and `±1e308`; merging them must not overflow.
@@ -129,15 +128,18 @@ fn merging_partial_means_across_the_float_range_stays_finite() {
     let level = vec![0u32; z.len()];
     let weights = vec![1e-320; z.len()];
     let effects = vec![Effect::new(&level, true, [&z[..]]).unwrap()];
-    let prepared = PreparedDesign::new(Design::new(effects).unwrap(), Some(&weights)).unwrap();
+    let prepared = Design::new(effects)
+        .unwrap()
+        .orthogonalize(Some(&weights))
+        .unwrap();
     assert!(prepared.unidentified().next().is_none());
-    let t = prepared.design.term(0);
-    assert!(t.slopes[0].iter().all(|u| u.is_finite()));
+    let t = prepared.term(0);
+    assert!(t.slopes().next().unwrap().iter().all(|u| u.is_finite()));
 }
 
 /// Slopes spread over ~1e-9 of their size; a running mean's rounding would show in the Gram.
 #[test]
-fn a_large_offset_still_whitens_to_the_identity() {
+fn a_large_offset_still_orthogonalizes_to_the_identity() {
     let z0: Vec<f64> = YEAR.iter().map(|t| 1e9 + 0.1 * t).collect();
     let z1: Vec<f64> = YEAR
         .iter()
@@ -145,18 +147,18 @@ fn a_large_offset_still_whitens_to_the_identity() {
         .collect();
     let level = [0u32; 11];
     let effects = vec![Effect::new(&level, true, [&z0[..], &z1[..]]).unwrap()];
-    let prepared = PreparedDesign::unweighted_for_test(Design::new(effects).unwrap());
+    let prepared = Design::new(effects).unwrap().orthogonalize(None).unwrap();
     assert!(prepared.unidentified().next().is_none());
     assert_level_grams_orthonormal(&prepared, 0, 1e-12);
 }
 
 /// Per level of `term`: an identified slope has unit norm, a dropped one is zero, and columns,
 /// intercept included, are orthogonal to `tol` relative to their norms.
-fn assert_level_grams_orthonormal(prepared: &PreparedDesign<'_>, term: usize, tol: f64) {
-    let t = prepared.design.term(term);
-    let (levels, width) = (t.rows.levels(), t.layout.n_columns());
+fn assert_level_grams_orthonormal(prepared: &OrthogonalDesign<'_>, term: usize, tol: f64) {
+    let t = prepared.term(term);
+    let (levels, width) = (t.levels(), t.layout.n_columns());
     let first_slope = usize::from(t.layout.intercept());
-    let w = |i: usize| prepared.weights.weight(i);
+    let w = |i: usize| prepared.weights().weight(i);
     let a = |i: usize, c: usize| t.loading(c).map_or(1.0, |z| z[i]);
     let mut grams = vec![0.0; t.layout.n_levels() * width * width];
     for (i, &level) in levels.iter().enumerate() {
@@ -202,7 +204,7 @@ fn three_near_collinear_slopes_in_one_level_stay_orthonormal() {
     let z1 = [1.0 + d, 1.0 - d, 1.0, 1.0];
     let z2 = [1.0, 1.0, 1.0 + d, 1.0 - d];
     let effects = vec![Effect::new(&[0u32; 4], false, [&z0[..], &z1[..], &z2[..]]).unwrap()];
-    let prepared = PreparedDesign::unweighted_for_test(Design::new(effects).unwrap());
+    let prepared = Design::new(effects).unwrap().orthogonalize(None).unwrap();
     assert!(prepared.unidentified().next().is_none());
     assert_level_grams_orthonormal(&prepared, 0, 1e-14);
 }
@@ -214,7 +216,7 @@ fn a_spread_at_the_mean_rounding_is_centred_exactly() {
     let z0 = [1.0, 1.0 + eps];
     let z1 = [1.0 + eps, 1.0 + 2.0 * eps];
     let effects = vec![Effect::new(&[0u32; 2], true, [&z0[..], &z1[..]]).unwrap()];
-    let prepared = PreparedDesign::unweighted_for_test(Design::new(effects).unwrap());
+    let prepared = Design::new(effects).unwrap().orthogonalize(None).unwrap();
     let unidentified: Vec<_> = prepared.unidentified().collect();
     assert_eq!(unidentified.len(), 1, "{unidentified:?}");
     assert_ne!(unidentified[0].channel.column, 0);
@@ -265,9 +267,12 @@ fn near_collinear_large_mean_slopes_stay_orthonormal(
         ),
     };
     let effects = vec![Effect::new(&levels, intercept, zs.iter().map(Vec::as_slice)).unwrap()];
-    let prepared = PreparedDesign::new(Design::new(effects).unwrap(), weights.as_deref()).unwrap();
+    let prepared = Design::new(effects)
+        .unwrap()
+        .orthogonalize(weights.as_deref())
+        .unwrap();
     let expected: Vec<CoefficientPosition> = if weighting == "zero weights" {
-        (0..prepared.design.term(0).layout.n_columns())
+        (0..prepared.term(0).layout.n_columns())
             .map(|column| CoefficientPosition {
                 channel: Channel { term: 0, column },
                 level: 0,
@@ -283,7 +288,7 @@ fn near_collinear_large_mean_slopes_stay_orthonormal(
 /// Row-split terms, a level past one leaf, and several level and row chunks: every piece the
 /// split fixes runs, so only scheduling varies with the thread count.
 #[test]
-fn whitening_is_bitwise_identical_across_thread_counts() {
+fn orthogonalization_is_bitwise_identical_across_thread_counts() {
     use crate::domain::ScatterSplit;
     use rand::rngs::SmallRng;
     use rand::{RngExt, SeedableRng};
@@ -326,7 +331,10 @@ fn whitening_is_bitwise_identical_across_thread_counts() {
             Effect::new(&small, true, [&z1[..], &z2[..]]).unwrap(),
             Effect::new(&few, false, [&z3[..], &z4[..]]).unwrap(),
         ];
-        PreparedDesign::new(Design::new(effects).unwrap(), Some(&weights)).unwrap()
+        Design::new(effects)
+            .unwrap()
+            .orthogonalize(Some(&weights))
+            .unwrap()
     };
     let bits = |threads: usize| {
         let pool = rayon::ThreadPoolBuilder::new()
@@ -334,24 +342,23 @@ fn whitening_is_bitwise_identical_across_thread_counts() {
             .build()
             .unwrap();
         pool.install(|| {
-            let prepared = prepare();
-            let design = &prepared.design;
+            let design = prepare();
             let mut x: Vec<f64> = (0..design.n_dofs()).map(|i| (i as f64).sin()).collect();
-            prepared.back_transform(&mut x);
+            design.back_transform(&mut x);
             let slopes: Vec<u64> = design
                 .terms()
-                .flat_map(|t| t.slopes.iter().flat_map(|z| z.iter()).map(|u| u.to_bits()))
+                .flat_map(|t| t.slopes().flatten().map(|u| u.to_bits()))
                 .collect();
             let row_split = design
                 .terms()
-                .filter(|t| matches!(t.rows.split, ScatterSplit::ByRow))
+                .filter(|t| matches!(t.split(), ScatterSplit::ByRow))
                 .count();
             let largest_by_level = design
                 .terms()
-                .filter(|t| matches!(t.rows.split, ScatterSplit::ByLevel(_)))
+                .filter(|t| matches!(t.split(), ScatterSplit::ByLevel(_)))
                 .map(|t| {
                     let mut rows = vec![0usize; t.layout.n_levels()];
-                    for &l in t.rows.levels() {
+                    for &l in t.levels() {
                         rows[l as usize] += 1;
                     }
                     rows.into_iter().max().unwrap_or(0)
@@ -369,7 +376,7 @@ fn whitening_is_bitwise_identical_across_thread_counts() {
     let one = bits(1);
     assert!(one.2 >= 1, "the fixture needs a row-split term");
     assert!(
-        one.3 > crate::domain::scatter_split::LEVEL_LEAF,
+        one.3 > crate::domain::incidence::LEVEL_LEAF,
         "the fixture needs a by-level term with a level past one leaf"
     );
     for threads in [4, 12] {

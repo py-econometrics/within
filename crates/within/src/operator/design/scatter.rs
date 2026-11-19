@@ -1,57 +1,45 @@
 //! Scatter kernel `Dᵀ x`, summed per term in the order its [`ScatterSplit`] fixes.
 
-use crate::domain::{LevelSlots, PreparedTerm};
+use crate::domain::{LevelSlots, RowKernel, TermBlock};
 
 /// One term's adjoint scatter `block = A_tᵀ v`, with `base(i)` the row value of `v`.
+#[inline(always)]
 pub(super) fn scatter_block(
-    t: &PreparedTerm<'_>,
+    t: &TermBlock<'_>,
     block: &mut [f64],
     base: &(impl Fn(usize) -> f64 + Sync),
 ) {
-    match (t.layout.intercept(), t.slopes) {
-        (true, []) => scatter_term::<1>(block, t, |i| [base(i)]),
-        (true, [z0]) => {
-            let z0 = &z0[..];
-            scatter_term::<2>(block, t, |i| {
-                let b = base(i);
-                [b, z0[i] * b]
-            })
-        }
-        (true, [z0, z1]) => {
-            let (z0, z1) = (&z0[..], &z1[..]);
-            scatter_term::<3>(block, t, |i| {
-                let b = base(i);
-                [b, z0[i] * b, z1[i] * b]
-            })
-        }
-        (true, [z0, z1, z2]) => {
-            let (z0, z1, z2) = (&z0[..], &z1[..], &z2[..]);
-            scatter_term::<4>(block, t, |i| {
-                let b = base(i);
-                [b, z0[i] * b, z1[i] * b, z2[i] * b]
-            })
-        }
-        (false, [z0, z1]) => {
-            let (z0, z1) = (&z0[..], &z1[..]);
-            scatter_term::<2>(block, t, |i| {
-                let b = base(i);
-                [z0[i] * b, z1[i] * b]
-            })
-        }
-        (false, [z0, z1, z2]) => {
-            let (z0, z1, z2) = (&z0[..], &z1[..], &z2[..]);
-            scatter_term::<3>(block, t, |i| {
-                let b = base(i);
-                [z0[i] * b, z1[i] * b, z2[i] * b]
-            })
-        }
-        _ => {
-            for c in 0..t.layout.n_columns() {
-                let slot = &mut block[t.layout.block_column(c)];
-                match t.loading(c) {
-                    None => scatter_term::<1>(slot, t, |i| [base(i)]),
-                    Some(z) => scatter_term::<1>(slot, t, move |i| [z[i] * base(i)]),
-                }
+    t.visit_rows(ScatterTerm {
+        block,
+        term: t,
+        base,
+    });
+}
+
+struct ScatterTerm<'k, 't, B> {
+    block: &'k mut [f64],
+    term: &'k TermBlock<'t>,
+    base: &'k B,
+}
+
+impl<B: Fn(usize) -> f64 + Sync> RowKernel for ScatterTerm<'_, '_, B> {
+    #[inline(always)]
+    fn fixed<const C: usize>(self, row: impl Fn(usize) -> [f64; C] + Sync) {
+        let base = self.base;
+        scatter_term::<C>(self.block, self.term, |i| {
+            let b = base(i);
+            row(i).map(|r| r * b)
+        });
+    }
+
+    #[inline(always)]
+    fn dynamic(self) {
+        let (t, base) = (self.term, self.base);
+        for c in 0..t.layout.n_columns() {
+            let slot = &mut self.block[t.layout.block_column(c)];
+            match t.loading(c) {
+                None => scatter_term::<1>(slot, t, |i| [base(i)]),
+                Some(z) => scatter_term::<1>(slot, t, move |i| [z[i] * base(i)]),
             }
         }
     }
@@ -60,15 +48,14 @@ pub(super) fn scatter_block(
 /// Write one term's coefficient block: `block[c·L + l] = Σ_{i : level(i) = l} values(i)[c]`.
 fn scatter_term<const C: usize>(
     block: &mut [f64],
-    term: &PreparedTerm<'_>,
+    term: &TermBlock<'_>,
     values: impl Fn(usize) -> [f64; C] + Sync,
 ) {
     let n_levels = term.layout.n_levels();
     debug_assert_eq!(block.len(), C * n_levels);
     let mut columns = block.chunks_mut(n_levels);
     let columns = Columns(std::array::from_fn(|_| columns.next().expect("C columns")));
-    term.rows.split.fold(
-        term.rows.levels(),
+    term.fold(
         [0.0; C],
         &|sums: &mut [f64; C], _, i| {
             for (s, v) in sums.iter_mut().zip(values(i)) {

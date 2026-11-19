@@ -1,73 +1,72 @@
-//! `G = AᵀA`, read from the solve-basis design and `W^{1/2}`: what preconditioners approximate.
+//! `G = AᵀA` for `A = W^{1/2} D̃`: its term blocks are diagonal, its cross blocks factored.
 
 use approx_chol::input::{BipartiteFactorWidth2, FactorWidth1};
 use rayon::prelude::*;
 
-use super::{CoefficientLayout, Design, PreparedTerm, RowWeights};
+use super::{OrthogonalDesign, TermBlock};
 use crate::channel::ChannelPair;
+use crate::domain::CoefficientLayout;
 use crate::linalg::add_compensated;
 
 /// The normal matrix `G = AᵀA` for `A = W^{1/2} D̃`.
 #[derive(Clone, Copy)]
 pub(crate) struct Gramian<'p> {
-    /// `D̃`: the design in the solve basis.
-    pub(super) design: &'p Design<'p>,
-    pub(super) weights: &'p RowWeights,
+    design: &'p OrthogonalDesign<'p>,
+}
+
+impl OrthogonalDesign<'_> {
+    /// `G = D̃ᵀ W D̃`.
+    pub(crate) fn gramian(&self) -> Gramian<'_> {
+        Gramian { design: self }
+    }
 }
 
 impl<'p> Gramian<'p> {
     /// The coefficient space `G` acts on.
     pub(crate) fn layout(&self) -> &'p CoefficientLayout {
-        &self.design.layout
+        self.design.layout()
     }
 
-    /// `diag(G)` over term `term`'s coefficients, laid out like its `dofs()`, summed in observation order.
+    /// `diag(G)` over term `term`'s coefficients, laid out like its `dofs()`. `D̃_tᵀ W D̃_t` is
+    /// diagonal per level: `w_l` on the intercept, `1` on the identified slopes, `0` on the rest.
     pub(crate) fn term_diagonal(&self, term: usize) -> Vec<f64> {
-        let prepared = self.design.term(term);
-        let (layout, weights) = (prepared.layout, self.weights);
-        let levels = prepared.rows.levels();
+        let layout = self.layout().term(term);
         let mut diag = vec![0.0; layout.n_dofs()];
-        let mut corrections = vec![0.0; layout.n_dofs()];
-        if !prepared.slopes.is_empty() {
-            let columns: Vec<(usize, Option<&[f64]>)> = (0..layout.n_columns())
-                .map(|c| (layout.block_column(c).start, prepared.loading(c)))
-                .collect();
-            for (obs, &level) in levels.iter().enumerate() {
-                let w = weights.weight(obs);
-                for &(base, z) in &columns {
-                    // Keep `w * z * z` left-to-right: a zero weight kills a huge `z` first.
-                    let slot = base + level as usize;
+        if let Some(column) = layout.intercept_column() {
+            // `diag(E_tᵀ W E_t)`: per level `Σ w`, summed in observation order.
+            let (rows, weights) = (&self.design.incidence.terms[term], &self.design.weights);
+            let sums = &mut diag[layout.block_column(column)];
+            if let Some(offsets) = rows.sorted_runs() {
+                // A sorted level is one run: a register sum keeps its order with no store per row.
+                for (sum, run) in sums.iter_mut().zip(offsets.windows(2)) {
+                    *sum = weights.sum(run[0]..run[1]);
+                }
+            } else {
+                let mut corrections = vec![0.0; sums.len()];
+                for (obs, &level) in rows.levels().iter().enumerate() {
+                    let level = level as usize;
                     add_compensated(
-                        &mut diag[slot],
-                        &mut corrections[slot],
-                        z.map_or(w, |z| w * z[obs] * z[obs]),
+                        &mut sums[level],
+                        &mut corrections[level],
+                        weights.weight(obs),
                     );
                 }
-            }
-        } else if let Some(offsets) = prepared.rows.split.sorted_offsets() {
-            // A sorted level is one run: a register sum keeps its order with no store per row.
-            for (level, run) in offsets.windows(2).enumerate() {
-                diag[level] += weights.sum(run[0]..run[1]);
-            }
-        } else {
-            for (obs, &level) in levels.iter().enumerate() {
-                let level = level as usize;
-                add_compensated(
-                    &mut diag[level],
-                    &mut corrections[level],
-                    weights.weight(obs),
-                );
+                for (sum, correction) in sums.iter_mut().zip(corrections) {
+                    *sum += correction;
+                }
             }
         }
-        for (entry, correction) in diag.iter_mut().zip(corrections) {
-            *entry += correction;
+        for (level, rank) in self.design.slopes[term].ranks().enumerate() {
+            for j in 0..rank {
+                diag[layout.block_column(layout.slope_column(j)).start + level] = 1.0;
+            }
         }
         diag
     }
 
     /// `diag(G)` in solve coordinates.
     pub(crate) fn diagonal(&self) -> Vec<f64> {
-        let blocks: Vec<Vec<f64>> = (0..self.design.n_factors())
+        let blocks: Vec<Vec<f64>> = (0..self.layout().n_terms())
             .into_par_iter()
             .map(|term| self.term_diagonal(term))
             .collect();
@@ -80,8 +79,8 @@ impl<'p> Gramian<'p> {
             self.design.term(pair.rows.term),
             self.design.term(pair.cols.term),
         );
-        fn side<'p>(term: &PreparedTerm<'p>, column: usize) -> FactorWidth1<'p, f64> {
-            let (n, levels) = (term.layout.n_levels(), term.rows.levels());
+        fn side<'p>(term: &TermBlock<'p>, column: usize) -> FactorWidth1<'p, f64> {
+            let (n, levels) = (term.layout.n_levels(), term.levels());
             match term.loading(column) {
                 Some(z) => FactorWidth1::valued(n, levels, z),
                 None => FactorWidth1::new(n, levels),
@@ -89,7 +88,7 @@ impl<'p> Gramian<'p> {
             .expect("levels index their term")
         }
         let (left, right) = (side(&rows, pair.rows.column), side(&cols, pair.cols.column));
-        match self.weights.sqrt() {
+        match self.design.weights.sqrt() {
             Some(s) => BipartiteFactorWidth2::scaled(left, right, s),
             None => BipartiteFactorWidth2::new(left, right),
         }
@@ -99,7 +98,7 @@ impl<'p> Gramian<'p> {
 
 #[cfg(test)]
 mod tests {
-    use crate::domain::{Design, PreparedDesign};
+    use crate::domain::{Design, OrthogonalDesign};
 
     /// Independent floating-point expansion: retain each exact two-sum remainder
     /// before rounding the short expansion, rather than reusing Neumaier's kernel.
@@ -145,14 +144,14 @@ mod tests {
     }
 
     /// Explicit per-column, per-level contributions, independently summed.
-    fn observation_sums(prepared: &PreparedDesign<'_>) -> Vec<f64> {
-        let mut entries = vec![Vec::new(); prepared.design.n_dofs()];
-        for term in prepared.design.terms() {
+    fn observation_sums(prepared: &OrthogonalDesign<'_>) -> Vec<f64> {
+        let mut entries = vec![Vec::new(); prepared.n_dofs()];
+        for term in prepared.terms() {
             for column in 0..term.layout.n_columns() {
                 let block = &mut entries[term.layout.column_dofs(column)];
                 let z = term.loading(column);
-                for (obs, &level) in term.rows.levels().iter().enumerate() {
-                    let w = prepared.weights.weight(obs);
+                for (obs, &level) in term.levels().iter().enumerate() {
+                    let w = prepared.weights().weight(obs);
                     block[level as usize].push(z.map_or(w, |z| w * z[obs] * z[obs]));
                 }
             }
@@ -179,18 +178,22 @@ mod tests {
                 crate::Effect::new(&h, false, [&zh[..]]).unwrap(),
                 crate::Effect::new(&p, true, []).unwrap(),
             ];
-            let prepared = PreparedDesign::new(Design::new(effects).unwrap(), weights).unwrap();
-            let terms = &prepared.design.terms;
+            let prepared = Design::new(effects)
+                .unwrap()
+                .orthogonalize(weights)
+                .unwrap();
             assert!(
-                terms[3].split.sorted_offsets().is_some()
-                    && terms[1].split.sorted_offsets().is_none()
+                prepared.term(3).split().sorted_offsets().is_some()
+                    && prepared.term(1).split().sorted_offsets().is_none()
             );
             assert!(prepared.unidentified().next().is_some());
-            assert_eq!(
-                prepared.gramian().diagonal(),
-                observation_sums(&prepared),
-                "weights {weights:?}"
-            );
+            // Read off the level Grams, the diagonal agrees with the data's to rounding,
+            // and is zero exactly where the data's is.
+            let diag = prepared.gramian().diagonal();
+            for (d, o) in diag.iter().zip(observation_sums(&prepared)) {
+                assert_eq!(*d == 0.0, o == 0.0, "weights {weights:?}");
+                assert!((d - o).abs() <= 1e-12 * o.abs().max(1.0), "{d} vs {o}");
+            }
         }
     }
 
@@ -210,13 +213,16 @@ mod tests {
                 crate::Effect::new(&f, true, [&z[..]]).unwrap(),
                 crate::Effect::new(&g, true, []).unwrap(),
             ];
-            let prepared = PreparedDesign::new(Design::new(effects).unwrap(), weights).unwrap();
+            let prepared = Design::new(effects)
+                .unwrap()
+                .orthogonalize(weights)
+                .unwrap();
             let diag = prepared.gramian().diagonal();
             let block =
-                |term: usize, column| &diag[prepared.design.layout.term(term).column_dofs(column)];
+                |term: usize, column| &diag[prepared.layout().term(term).column_dofs(column)];
             assert_eq!(block(0, 0), f_sums);
             assert_eq!(block(1, 0), g_sums);
-            // A kept whitened slope has unit weighted norm; a dropped one is an exact-zero column.
+            // A kept orthogonalized slope has unit weighted norm; a dropped one is an exact-zero column.
             let slope = block(0, 1);
             assert_eq!(slope[1], 0.0, "weights {weights:?}");
             for level in [0, 2] {

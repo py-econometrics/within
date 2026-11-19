@@ -1,6 +1,7 @@
-//! Per-level weighted moments of a term's raw slopes, the input to slope whitening.
+//! Per-level weighted moments of a term's slopes, the input to one orthogonalization pass.
 
-use super::{RowWeights, ScatterSplit, TermLayout, TermRows};
+use super::RowWeights;
+use crate::domain::{TermLayout, TermRows};
 
 /// Weighted within-level mean and Gram, two-pass so structural zeros stay exact.
 pub(crate) struct LevelMoments {
@@ -19,10 +20,9 @@ fn tri_index(j: usize, k: usize) -> usize {
 
 /// A term's positive-weight rows, folded per level in the pieces its split fixes.
 struct WeightedRows<'a> {
-    levels: &'a [u32],
+    rows: &'a TermRows<'a>,
     n_levels: usize,
     weights: &'a RowWeights,
-    split: &'a ScatterSplit,
 }
 
 impl WeightedRows<'_> {
@@ -34,8 +34,7 @@ impl WeightedRows<'_> {
         merge: impl Fn(&mut S, &S) + Sync,
     ) -> Vec<S> {
         let mut states = vec![init; self.n_levels];
-        self.split.fold(
-            self.levels,
+        self.rows.fold(
             init,
             &|s: &mut S, level, obs| {
                 let w = self.weights.weight(obs);
@@ -158,16 +157,16 @@ impl ShiftedMean {
     }
 }
 
-/// Each level's weight total and its `v` weighted slope means, row-major.
+/// Each level's `v` weighted slope means, row-major, and whether it carries any weight.
 struct LevelMeans {
-    w_sum: Vec<f64>,
     means: Vec<LevelMean>,
+    weightless: Vec<bool>,
 }
 
 impl LevelMeans {
     fn new(rows: &WeightedRows<'_>, zs: &[&[f64]]) -> Self {
         let v = zs.len();
-        let mut w_sum = Vec::new();
+        let mut weightless = Vec::new();
         let mut means = vec![LevelMean::default(); rows.n_levels * v];
         for (j, z) in zs.iter().enumerate() {
             let mut column = rows.fold(
@@ -188,25 +187,24 @@ impl LevelMeans {
                 means[level * v + j] = m.mean();
             }
             if j == 0 {
-                w_sum = column.iter().map(|m| m.w_sum.hi).collect();
+                weightless = column.iter().map(|m| m.w_sum.hi == 0.0).collect();
             }
         }
-        Self { w_sum, means }
+        Self { means, weightless }
     }
 }
 
 impl LevelMoments {
     pub(crate) fn build(
+        rows: &TermRows<'_>,
         layout: &TermLayout,
-        term: &TermRows<'_>,
         zs: &[&[f64]],
         weights: &RowWeights,
     ) -> Self {
         let rows = WeightedRows {
-            levels: term.levels(),
+            rows,
             n_levels: layout.n_levels(),
             weights,
-            split: &term.split,
         };
         let v = zs.len();
         let means = layout.intercept().then(|| LevelMeans::new(&rows, zs));
@@ -235,9 +233,9 @@ impl LevelMoments {
         }
     }
 
-    /// The level's weight total, tracked only with an intercept.
-    pub(crate) fn w_sum(&self, level: usize) -> Option<f64> {
-        self.means.as_ref().map(|m| m.w_sum[level])
+    /// Whether the level carries no weight, tracked only with an intercept.
+    pub(crate) fn weightless(&self, level: usize) -> bool {
+        self.means.as_ref().is_some_and(|m| m.weightless[level])
     }
 
     /// The level's weighted slope means, tracked only with an intercept.

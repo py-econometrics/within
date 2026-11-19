@@ -4,7 +4,7 @@ use std::ops::Range;
 
 use rayon::prelude::*;
 
-use super::{Design, PAR_THRESHOLD};
+use crate::domain::{Incidence, PAR_THRESHOLD};
 use crate::linalg::add_compensated;
 use crate::BuildError;
 
@@ -17,17 +17,20 @@ pub(crate) struct RowWeights {
 }
 
 impl RowWeights {
-    /// Validate caller-order weights, then hold `√w` in `design`'s internal order.
-    pub(crate) fn new(design: &Design<'_>, weights: Option<&[f64]>) -> Result<Self, BuildError> {
+    /// Validate caller-order weights, then hold `√w` in `E`'s internal row order.
+    pub(crate) fn new(
+        incidence: &Incidence<'_>,
+        weights: Option<&[f64]>,
+    ) -> Result<Self, BuildError> {
         let Some(weights) = weights else {
             return Ok(Self {
                 sqrt: None,
                 erases_rows: false,
             });
         };
-        if weights.len() != design.n_obs() {
+        if weights.len() != incidence.n_obs() {
             return Err(BuildError::WeightCountMismatch {
-                expected: design.n_obs(),
+                expected: incidence.n_obs(),
                 got: weights.len(),
             });
         }
@@ -46,7 +49,7 @@ impl RowWeights {
         } else {
             1.0
         };
-        let sqrt: Vec<f64> = design
+        let sqrt: Vec<f64> = incidence
             .permute_obs_in(weights)
             .iter()
             .map(|weight| (scale * weight).sqrt())
@@ -101,5 +104,52 @@ impl RowWeights {
                 .with_min_len(PAR_THRESHOLD)
                 .for_each(|(d, &si)| *d /= si);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sqrt_weights_follow_the_internal_observation_order() {
+        // Dominant factor [2,0,1,0] argsorts to caller positions [1,3,2,0].
+        let design = crate::domain::Design::from_levels_for_test(vec![vec![2, 0, 1, 0]]);
+        let weights = RowWeights::new(&design.incidence, Some(&[1.0, 4.0, 9.0, 16.0])).unwrap();
+
+        assert_eq!(weights.sqrt(), Some(&[2.0, 4.0, 3.0, 1.0][..]));
+        assert_eq!(
+            (0..4).map(|obs| weights.weight(obs)).collect::<Vec<_>>(),
+            [4.0, 16.0, 9.0, 1.0]
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_weights_before_permuting_them() {
+        let design = crate::domain::Design::from_levels_for_test(vec![vec![2, 0, 1, 0]]);
+
+        assert!(RowWeights::new(&design.incidence, None).is_ok());
+        assert!(RowWeights::new(&design.incidence, Some(&[1.0, 2.0, 3.0, 4.0])).is_ok());
+        // Zero weights are valid (an excluded observation).
+        assert!(RowWeights::new(&design.incidence, Some(&[0.0, 1.0, 2.0, 3.0])).is_ok());
+        assert!(matches!(
+            RowWeights::new(&design.incidence, Some(&[1.0, 2.0])),
+            Err(BuildError::WeightCountMismatch {
+                expected: 4,
+                got: 2
+            })
+        ));
+        assert!(matches!(
+            RowWeights::new(&design.incidence, Some(&[1.0, -2.0, 3.0, 4.0])),
+            Err(BuildError::InvalidWeight { index: 1, .. })
+        ));
+        assert!(matches!(
+            RowWeights::new(&design.incidence, Some(&[1.0, 2.0, f64::NAN, 4.0])),
+            Err(BuildError::InvalidWeight { index: 2, .. })
+        ));
+        assert!(matches!(
+            RowWeights::new(&design.incidence, Some(&[1.0, 2.0, 3.0, f64::INFINITY])),
+            Err(BuildError::InvalidWeight { index: 3, .. })
+        ));
     }
 }

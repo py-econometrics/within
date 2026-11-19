@@ -3,8 +3,16 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use super::{Column, FactorEncoding};
+use super::FactorEncoding;
 use crate::channel::{Channel, CoefficientAddress, CoefficientPosition};
+
+/// What one coefficient column of a term multiplies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Column {
+    Intercept,
+    /// The term's slope `j`.
+    Slope(usize),
+}
 
 /// Translates a [`CoefficientAddress`] to its flat index in [`SolveResult::x`](crate::SolveResult::x)
 /// and back, including the translation between caller-visible labels and
@@ -12,21 +20,19 @@ use crate::channel::{Channel, CoefficientAddress, CoefficientPosition};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoefficientLayout {
     /// Term blocks in ascending, contiguous order.
-    pub(super) terms: Arc<[TermLayout]>,
+    pub(in crate::domain) terms: Arc<[TermLayout]>,
 }
 
 /// One term's block of coefficients: column `c` of `level` sits at `c · n_levels + level` in it.
 /// Each start is stored once; ends follow from the term's own counts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TermLayout {
-    pub(super) encoding: FactorEncoding,
+    pub(in crate::domain) encoding: FactorEncoding,
     /// Start of the block in the flat coefficient vector.
-    pub(super) offset: usize,
+    pub(in crate::domain) offset: usize,
     /// Column 0 is an intercept; the slopes follow it.
-    pub(super) intercept: bool,
-    /// Start of this term's slopes in the design's slope numbering.
-    pub(super) first_slope: usize,
-    pub(super) n_slopes: usize,
+    pub(in crate::domain) intercept: bool,
+    pub(in crate::domain) n_slopes: usize,
 }
 
 impl TermLayout {
@@ -36,11 +42,6 @@ impl TermLayout {
 
     pub(crate) fn intercept(&self) -> bool {
         self.intercept
-    }
-
-    /// This term's slopes in the design's slope numbering, in column order.
-    pub(crate) fn slopes(&self) -> Range<usize> {
-        self.first_slope..self.first_slope + self.n_slopes
     }
 
     pub(crate) fn n_columns(&self) -> usize {

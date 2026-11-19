@@ -9,11 +9,14 @@ use std::time::{Duration, Instant};
 
 use crate::block_solver::BlockSolver;
 use crate::config::{LocalSolverConfig, PreconditionerConfig, Staleness};
-use crate::domain::{Gramian, LocalDomain};
+use crate::domain::Gramian;
 use crate::{BuildError, BuildWarning};
 
 #[cfg(test)]
 mod tests;
+
+mod factor_pairs;
+pub(crate) use factor_pairs::{build_local_domains, LocalDomain};
 
 /// Concrete additive Schwarz type used in the parent crate.
 #[derive(Clone, Serialize, Deserialize)]
@@ -281,7 +284,7 @@ pub(crate) fn build_schwarz(
     local_solver: &LocalSolverConfig,
 ) -> Result<(Option<Preconditioner>, Vec<BuildWarning>), BuildError> {
     let build_started = Instant::now();
-    let (domains, warnings) = crate::domain::build_local_domains(gramian, local_solver)?;
+    let (domains, warnings) = build_local_domains(gramian, local_solver)?;
     if domains.is_empty() {
         return Ok((None, warnings));
     }

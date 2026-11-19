@@ -2,7 +2,8 @@
 
 use std::borrow::Cow;
 
-use crate::domain::PreparedDesign;
+use super::Solver;
+use crate::domain::OrthogonalDesign;
 use crate::SolveError;
 
 /// One response in the internal observation order, with its `W^{1/2}`-weighted image.
@@ -13,15 +14,15 @@ pub(crate) struct Response<'s> {
 }
 
 impl<'s> Response<'s> {
-    pub(crate) fn new(prepared: &'s PreparedDesign<'_>, y: &'s [f64]) -> Result<Self, SolveError> {
+    pub(crate) fn new(design: &OrthogonalDesign<'_>, y: &'s [f64]) -> Result<Self, SolveError> {
         // `W^{1/2} y` zips y with sqrt-weights, silently truncating when `y.len() > n_rows`.
-        if y.len() != prepared.design.n_obs() {
+        if y.len() != design.n_obs() {
             return Err(SolveError::InvalidInput {
                 context: "Solver::solve",
                 message: format!(
                     "response vector length ({}) does not match number of observations ({})",
                     y.len(),
-                    prepared.design.n_obs()
+                    design.n_obs()
                 ),
             });
         }
@@ -31,8 +32,8 @@ impl<'s> Response<'s> {
                 message: format!("response at index {index} must be finite, got {value}"),
             });
         }
-        let y = prepared.design.permute_obs_in(y);
-        let weighted = prepared.weights.scaled(&y);
+        let y = design.incidence().permute_obs_in(y);
+        let weighted = design.weights().scaled(&y);
         Ok(Self { y, weighted })
     }
 
@@ -47,19 +48,19 @@ pub(crate) struct Fit {
     pub(crate) demeaned: Vec<f64>,
 }
 
-impl PreparedDesign<'_> {
+impl Solver<'_> {
     /// Caller coefficients and `y − D x` from the iterate and, if measured, its `b − A x`.
-    pub(crate) fn finish(
+    pub(super) fn finish(
         &self,
         rhs: Response<'_>,
         mut x: Vec<f64>,
         measured: Option<Vec<f64>>,
-    ) -> Result<Fit, SolveError> {
-        let demeaned = self.demeaned(&x, &rhs.y, measured);
-        self.back_transform(&mut x);
-        Ok(Fit {
+    ) -> Fit {
+        let demeaned = self.design.operator().demeaned(&x, &rhs.y, measured);
+        self.design.back_transform(&mut x);
+        Fit {
             x,
-            demeaned: self.design.permute_obs_out(demeaned),
-        })
+            demeaned: self.design.incidence().permute_obs_out(demeaned),
+        }
     }
 }

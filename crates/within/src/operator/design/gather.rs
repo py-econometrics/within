@@ -3,11 +3,11 @@
 use rayon::prelude::*;
 
 use super::PAR_THRESHOLD;
-use crate::domain::Design;
+use crate::domain::{OrthogonalDesign, RowKernel, TermBlock};
 
 /// Gather-apply `dst[i] = Σ_t Σ_c src[…] · loading_c(i)`, times `scale[i]` when given.
 pub(crate) fn gather_apply(
-    design: &Design<'_>,
+    design: &OrthogonalDesign<'_>,
     src: &[f64],
     dst: &mut [f64],
     scale: Option<&[f64]>,
@@ -19,62 +19,13 @@ pub(crate) fn gather_apply(
     dst.fill(0.0);
 
     for_each_chunk(dst, |chunk, row_start| {
-        for t in design.terms() {
-            let levels = t.rows.levels();
-            let col = |c: usize| &src[t.layout.column_dofs(c)];
-            match (t.layout.intercept(), t.slopes) {
-                (true, []) => gather_term(chunk, row_start, levels, [col(0)], |_| [1.0]),
-                (true, [z0]) => {
-                    let z0 = &z0[..];
-                    gather_term(chunk, row_start, levels, [col(0), col(1)], |i| [1.0, z0[i]])
-                }
-                (true, [z0, z1]) => {
-                    let (z0, z1) = (&z0[..], &z1[..]);
-                    gather_term(chunk, row_start, levels, [col(0), col(1), col(2)], |i| {
-                        [1.0, z0[i], z1[i]]
-                    })
-                }
-                (true, [z0, z1, z2]) => {
-                    let (z0, z1, z2) = (&z0[..], &z1[..], &z2[..]);
-                    let cols = [col(0), col(1), col(2), col(3)];
-                    gather_term(chunk, row_start, levels, cols, |i| {
-                        [1.0, z0[i], z1[i], z2[i]]
-                    })
-                }
-                (false, [z0, z1]) => {
-                    let (z0, z1) = (&z0[..], &z1[..]);
-                    gather_term(chunk, row_start, levels, [col(0), col(1)], |i| {
-                        [z0[i], z1[i]]
-                    })
-                }
-                (false, [z0, z1, z2]) => {
-                    let (z0, z1, z2) = (&z0[..], &z1[..], &z2[..]);
-                    gather_term(chunk, row_start, levels, [col(0), col(1), col(2)], |i| {
-                        [z0[i], z1[i], z2[i]]
-                    })
-                }
-                (false, [z0]) => {
-                    let z0 = &z0[..];
-                    gather_term(chunk, row_start, levels, [col(0)], |i| [z0[i]])
-                }
-                (intercept, slopes) => {
-                    // A dynamic column count cannot monomorphize a fixed arity.
-                    let first = intercept as usize;
-                    for (local, dst_val) in chunk.iter_mut().enumerate() {
-                        let i = row_start + local;
-                        let lev = levels[i] as usize;
-                        let mut acc = 0.0;
-                        for c in 0..t.layout.n_columns() {
-                            let coef = col(c)[lev];
-                            acc += match c.checked_sub(first) {
-                                None => coef,
-                                Some(j) => coef * slopes[j][i],
-                            };
-                        }
-                        *dst_val += acc;
-                    }
-                }
-            }
+        for term in design.terms() {
+            term.visit_rows(GatherTerm {
+                chunk: &mut *chunk,
+                row_start,
+                src,
+                term: &term,
+            });
         }
         if let Some(scale) = scale {
             for (s, dst_val) in scale[row_start..].iter().zip(chunk.iter_mut()) {
@@ -94,6 +45,41 @@ fn for_each_chunk(dst: &mut [f64], kernel: impl Fn(&mut [f64], usize) + Sync) {
             .for_each(|(chunk_idx, chunk)| kernel(chunk, chunk_idx * CHUNK_SIZE));
     } else {
         kernel(dst, 0);
+    }
+}
+
+/// One term's gather into the rows `row_start..` of `chunk`.
+struct GatherTerm<'k, 't> {
+    chunk: &'k mut [f64],
+    row_start: usize,
+    src: &'k [f64],
+    term: &'k TermBlock<'t>,
+}
+
+impl RowKernel for GatherTerm<'_, '_> {
+    #[inline(always)]
+    fn fixed<const C: usize>(self, row: impl Fn(usize) -> [f64; C] + Sync) {
+        let cols = std::array::from_fn(|c| &self.src[self.term.layout.column_dofs(c)]);
+        gather_term(self.chunk, self.row_start, self.term.levels(), cols, row);
+    }
+
+    #[inline(always)]
+    fn dynamic(self) {
+        // A dynamic column count cannot monomorphize a fixed arity.
+        let (t, levels) = (self.term, self.term.levels());
+        for (local, dst_val) in self.chunk.iter_mut().enumerate() {
+            let i = self.row_start + local;
+            let lev = levels[i] as usize;
+            let mut acc = 0.0;
+            for c in 0..t.layout.n_columns() {
+                let coef = self.src[t.layout.column_dofs(c)][lev];
+                acc += match t.loading(c) {
+                    None => coef,
+                    Some(z) => coef * z[i],
+                };
+            }
+            *dst_val += acc;
+        }
     }
 }
 

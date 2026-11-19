@@ -6,7 +6,7 @@ use std::time::Instant;
 use once_cell::sync::OnceCell;
 
 use crate::config::PreconditionerConfig;
-use crate::domain::PreparedDesign;
+use crate::domain::Gramian;
 use crate::operator::schwarz::{
     build_adaptive, build_diagonal, build_schwarz, AdaptiveLadder, Preconditioner,
 };
@@ -26,7 +26,7 @@ pub(super) enum PrecondSlot {
 impl PrecondSlot {
     /// Resolve a strategy: a fixed map built now, or a diagonal base with Schwarz deferred to a stall.
     pub(super) fn build(
-        prepared: &PreparedDesign<'_>,
+        gramian: Gramian<'_>,
         config: PreconditionerConfig,
     ) -> Result<Self, BuildError> {
         Ok(match config {
@@ -35,11 +35,11 @@ impl PrecondSlot {
                 warnings: Vec::new(),
             },
             PreconditionerConfig::Diagonal => Self::Static {
-                map: Some(build_diagonal(prepared.gramian())?),
+                map: Some(build_diagonal(gramian)?),
                 warnings: Vec::new(),
             },
             PreconditionerConfig::Additive { local_solver } => {
-                let (map, warnings) = build_schwarz(prepared.gramian(), &local_solver)?;
+                let (map, warnings) = build_schwarz(gramian, &local_solver)?;
                 Self::Static { map, warnings }
             }
             PreconditionerConfig::Adaptive {
@@ -48,15 +48,15 @@ impl PrecondSlot {
             } => {
                 // Fail before the diagonal pass; `reuse` repeats this for a deserialized ladder.
                 local_solver.validate()?;
-                let base = build_adaptive(prepared.gramian(), stall, local_solver)?;
-                Self::reuse(prepared, base)?
+                let base = build_adaptive(gramian, stall, local_solver)?;
+                Self::reuse(gramian, base)?
             }
         })
     }
 
     /// An unescalated ladder resumes, or settles on one term; any other map stays fixed.
     pub(super) fn reuse(
-        prepared: &PreparedDesign<'_>,
+        gramian: Gramian<'_>,
         preconditioner: Preconditioner,
     ) -> Result<Self, BuildError> {
         let Some(ladder) = preconditioner.ladder() else {
@@ -67,7 +67,7 @@ impl PrecondSlot {
         };
         // A deserialized ladder skipped `Adaptive`'s build-time check, and a one-term design settles.
         ladder.escalated.validate()?;
-        Ok(if prepared.design.n_factors() < 2 {
+        Ok(if gramian.layout().n_terms() < 2 {
             Self::Static {
                 map: Some(preconditioner.settle()),
                 warnings: Vec::new(),
@@ -116,11 +116,11 @@ impl AdaptivePrecond {
     }
 
     /// Build once and return this call's build seconds; every other caller waits for it.
-    pub(super) fn escalate(&self, prepared: &PreparedDesign<'_>) -> Result<f64, BuildError> {
+    pub(super) fn escalate(&self, gramian: Gramian<'_>) -> Result<f64, BuildError> {
         let mut build_secs = 0.0;
         let built = self.built.get_or_try_init(|| {
             let t_build = Instant::now();
-            let outcome = isolated(|| build_schwarz(prepared.gramian(), &self.ladder().escalated))?
+            let outcome = isolated(|| build_schwarz(gramian, &self.ladder().escalated))?
                 .map(|(schwarz, warnings)| AdaptiveBuild { schwarz, warnings });
             build_secs = t_build.elapsed().as_secs_f64();
             Ok(outcome)

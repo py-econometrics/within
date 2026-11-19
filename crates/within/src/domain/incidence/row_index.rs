@@ -75,8 +75,8 @@ fn scatter<I: Copy>(v: &[f64], rows: &[I], row: impl Fn(I) -> usize) -> Vec<f64>
 
 #[cfg(test)]
 mod tests {
+    use super::super::offsets;
     use super::*;
-    use crate::domain::offsets;
 
     fn rows(index: &RowIndex, n: usize) -> Vec<usize> {
         let mut rows = Vec::new();

@@ -1,11 +1,9 @@
-use std::sync::Arc;
-
 use rstest::rstest;
 
 use super::CoefficientAddress;
 use crate::channel::Channel;
 use crate::config::{LocalSolverConfig, LsmrOptions};
-use crate::domain::Design;
+use crate::domain::{Design, OrthogonalDesign};
 use crate::{Effect, PreconditionerConfig, Solver};
 
 /// DGP kept in lockstep with `surplus_component_sampled_matches_exact_reduction`
@@ -57,7 +55,7 @@ fn coefficient_layout_translates_addresses_both_ways() {
         Effect::new(&g, true, [&z[..]]).expect("slope effect"),
     ])
     .expect("design");
-    let layout = design.layout.clone();
+    let layout = design.orthogonalize(None).unwrap().layout().clone();
 
     assert_eq!(layout.n_terms(), 2);
     assert_eq!(
@@ -103,11 +101,8 @@ fn solvers_built_from_a_borrowed_design_share_its_storage() {
     let unweighted = Solver::new(&design, None, &PreconditionerConfig::Diagonal).unwrap();
     let weighted = Solver::new(&design, Some(&w), &PreconditionerConfig::Diagonal).unwrap();
 
-    assert!(Arc::ptr_eq(
-        &unweighted.prepared.design.terms,
-        &design.terms
-    ));
-    assert!(Arc::ptr_eq(&weighted.prepared.design.terms, &design.terms));
+    assert!(unweighted.design.shares_rows_with(&design));
+    assert!(weighted.design.shares_rows_with(&design));
     let a = unweighted.solve(&y, None).unwrap();
     let b = weighted.solve(&y, None).unwrap();
     assert!(a.converged && b.converged);
@@ -240,16 +235,13 @@ fn akm_panel(
 
 /// Largest absolute within-level mean of `demeaned`, over the levels of every term whose
 /// normal equations force one: only an intercept makes the within-level sum a residual leg.
-fn max_abs_group_mean(design: &Design<'_>, demeaned: &[f64]) -> f64 {
-    let demeaned = design.permute_obs_in(demeaned);
+fn max_abs_group_mean(design: &OrthogonalDesign<'_>, demeaned: &[f64]) -> f64 {
+    let demeaned = design.incidence().permute_obs_in(demeaned);
     design
-        .layout
         .terms()
-        .iter()
-        .zip(design.terms.iter())
-        .filter(|(layout, _)| layout.intercept())
-        .map(|(layout, t)| {
-            let levels = t.levels();
+        .filter(|t| t.layout.intercept())
+        .map(|t| {
+            let (layout, levels) = (t.layout, t.levels());
             let mut sums = vec![0.0f64; layout.n_levels()];
             let mut counts = vec![0.0f64; layout.n_levels()];
             for (obs, &level) in levels.iter().enumerate() {
@@ -302,7 +294,7 @@ fn an_aliased_slope_converges(#[case] spec: SlopeSpec) {
     let solver = Solver::new(panel.effects(), None, additive()).expect("solver");
     let out = solve_tight(&solver, &panel.y);
     // A floating component grounded by mistake reports a false convergence at an O(1) mean.
-    let group_mean = max_abs_group_mean(&solver.prepared.design, &out.demeaned);
+    let group_mean = max_abs_group_mean(&solver.design, &out.demeaned);
     assert!(
         out.converged && group_mean < 1e-9,
         "converged={}, gm={group_mean:.3e}",
@@ -459,7 +451,7 @@ fn an_alias_through_a_zero_loading_still_converges() {
     };
     let solver = Solver::new(effects, None, schwarz).expect("solver");
     let out = solve_tight(&solver, &y);
-    let group_mean = max_abs_group_mean(&solver.prepared.design, &out.demeaned);
+    let group_mean = max_abs_group_mean(&solver.design, &out.demeaned);
     assert!(
         out.converged && group_mean < 1e-9,
         "converged={}, iterations={}, gm={group_mean:.3e}",
