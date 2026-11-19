@@ -9,7 +9,7 @@ use crate::PAR_THRESHOLD;
 pub(crate) fn gather(terms: &[TermBlock<'_>], src: &[f64], dst: &mut [f64], scale: Option<&[f64]>) {
     debug_assert!(scale.is_none_or(|s| s.len() == dst.len()));
     debug_assert!(terms.iter().all(|t| t.levels().len() == dst.len()));
-    debug_assert!(terms.iter().all(|t| t.layout().dofs().end <= src.len()));
+    debug_assert!(terms.iter().all(|t| t.dofs().end <= src.len()));
 
     dst.fill(0.0);
 
@@ -54,7 +54,7 @@ struct GatherTerm<'k, 't> {
 impl RowKernel for GatherTerm<'_, '_> {
     #[inline(always)]
     fn fixed<const C: usize>(self, row: impl Fn(usize) -> [f64; C] + Sync) {
-        let (layout, block) = (self.term.layout(), &self.src[self.term.layout().dofs()]);
+        let (layout, block) = (self.term.layout(), &self.src[self.term.dofs()]);
         let cols = std::array::from_fn(|c| &block[layout.block_column(c)]);
         gather_term(self.chunk, self.row_start, self.term.levels(), cols, row);
     }
@@ -63,7 +63,7 @@ impl RowKernel for GatherTerm<'_, '_> {
     fn dynamic(self) {
         // A dynamic column count cannot monomorphize a fixed arity.
         let (t, levels) = (self.term, self.term.levels());
-        let block = &self.src[t.layout().dofs()];
+        let block = &self.src[t.dofs()];
         for (local, dst_val) in self.chunk.iter_mut().enumerate() {
             let i = self.row_start + local;
             let lev = levels[i] as usize;

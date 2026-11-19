@@ -10,7 +10,9 @@ pub(crate) use channel::CoefficientPosition;
 pub use channel::{Channel, ChannelPair, CoefficientAddress};
 pub use effect::Effect;
 pub use incidence::CoefficientLayout;
-pub(crate) use incidence::{Column, Incidence, LevelSlots, TermIncidence, TermLayout, LEVEL_GROUP};
+pub(crate) use incidence::{
+    Column, Incidence, LevelSlots, TermIncidence, TermLayout, Unknowns, LEVEL_GROUP,
+};
 #[cfg(test)]
 pub(crate) use incidence::{LevelReduction, LEVEL_LEAF};
 pub(crate) use term::{RowKernel, TermBlock};
@@ -81,16 +83,13 @@ impl<'a> Design<'a> {
         let mut layout = Vec::with_capacity(effects.len());
         let mut levels = Vec::with_capacity(effects.len());
         let mut slopes = Vec::with_capacity(effects.len());
-        let mut offset = 0;
         for e in effects {
             let f = FactorEncoding::encode_labels(e.levels);
             let term = TermLayout {
                 encoding: f.encoding,
-                offset,
                 intercept: e.intercept,
                 n_slopes: e.slopes.len(),
             };
-            offset = term.dofs().end;
             layout.push(term);
             levels.push(f.levels);
             slopes.push(e.slopes);

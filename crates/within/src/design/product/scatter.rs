@@ -19,7 +19,7 @@ pub(crate) fn scatter(
     let mut blocks = Vec::with_capacity(terms.len());
     let (mut rest, mut start) = (dst, 0);
     for t in terms {
-        let dofs = t.layout().dofs();
+        let dofs = t.dofs();
         let tail = std::mem::take(&mut rest).split_at_mut(dofs.start - start).1;
         let (block, tail) = tail.split_at_mut(dofs.len());
         blocks.push(block);

@@ -56,7 +56,7 @@ fn run_block_elim_nested_rayon_case() {
         ..Default::default()
     };
     let design = synthetic_star_design(n_keep, elim_ratio);
-    let n_dofs = design.n_dofs();
+    let n_dofs = design.unknowns().len();
     let (mut domain_pairs, _) =
         build_local_domains(Gramian::new(&design), &config).expect("domains");
     let [domain] = &domain_pairs[..] else {
@@ -135,10 +135,14 @@ fn test_block_elim_nested_rayon_does_not_deadlock() {
 #[test]
 fn test_build_additive() {
     let (design, domain_pairs) = make_test_data();
-    let schwarz = build_additive(domain_pairs, &LocalSolverConfig::default(), design.n_dofs())
-        .expect("build schwarz with explicit domains");
-    let r = vec![1.0; design.n_dofs()];
-    let mut z = vec![0.0; design.n_dofs()];
+    let schwarz = build_additive(
+        domain_pairs,
+        &LocalSolverConfig::default(),
+        design.unknowns().len(),
+    )
+    .expect("build schwarz with explicit domains");
+    let r = vec![1.0; design.unknowns().len()];
+    let mut z = vec![0.0; design.unknowns().len()];
     schwarz.apply(&r, &mut z).expect("schwarz apply succeeds");
 }
 

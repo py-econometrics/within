@@ -23,7 +23,7 @@ impl<'p> DesignOperator<'p> {
             blocks: design.terms().collect(),
             sqrt: design.weights.sqrt(),
             n_obs: design.n_obs(),
-            n_dofs: design.n_dofs(),
+            n_dofs: design.unknowns().len(),
         }
     }
 }

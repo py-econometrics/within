@@ -314,7 +314,9 @@ fn orthogonalization_is_bitwise_identical_across_thread_counts() {
             .unwrap();
         pool.install(|| {
             let design = prepare();
-            let mut x: Vec<f64> = (0..design.n_dofs()).map(|i| (i as f64).sin()).collect();
+            let mut x: Vec<f64> = (0..design.unknowns().len())
+                .map(|i| (i as f64).sin())
+                .collect();
             design.back_transform(&mut x);
             let slopes: Vec<u64> = design
                 .terms()

@@ -24,12 +24,10 @@ pub struct CoefficientLayout {
 }
 
 /// One term's block of coefficients: column `c` of `level` sits at `c · n_levels + level` in it.
-/// Each start is stored once; ends follow from the term's own counts.
+/// Where the block sits is the index set's: [`CoefficientLayout`] for `β`, [`Unknowns`] for `x`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TermLayout {
     pub(in crate::design) encoding: FactorEncoding,
-    /// Start of the block in the flat coefficient vector.
-    pub(in crate::design) offset: usize,
     /// Column 0 is an intercept; the slopes follow it.
     pub(in crate::design) intercept: bool,
     pub(in crate::design) n_slopes: usize,
@@ -54,11 +52,6 @@ impl TermLayout {
 
     pub(crate) fn n_dofs(&self) -> usize {
         self.n_columns() * self.n_levels()
-    }
-
-    /// The block in the flat coefficient vector.
-    pub(crate) fn dofs(&self) -> Range<usize> {
-        self.offset..self.offset + self.n_dofs()
     }
 
     /// Column `column`'s `n_levels` slots within the block.
@@ -87,7 +80,7 @@ impl TermLayout {
 impl CoefficientLayout {
     /// Total number of coefficients (the length of [`SolveResult::x`](crate::SolveResult::x)).
     pub fn n_dofs(&self) -> usize {
-        self.terms.last().map_or(0, |t| t.dofs().end)
+        self.terms.iter().map(TermLayout::n_dofs).sum()
     }
 
     /// Number of terms in the design.
@@ -122,9 +115,10 @@ impl CoefficientLayout {
         if i >= self.n_dofs() {
             return None;
         }
-        // Term blocks ascend by offset, so the owner is the last one not exceeding `i`.
-        let term = self.terms.partition_point(|t| t.offset <= i) - 1;
-        let within = i - self.terms[term].offset;
+        let term = (0..self.terms.len())
+            .find(|&t| self.term_dofs(t).contains(&i))
+            .expect("i < n_dofs");
+        let within = i - self.term_dofs(term).start;
         let n_levels = self.terms[term].n_levels();
         Some(self.caller_address(CoefficientPosition {
             channel: Channel {
@@ -150,11 +144,19 @@ impl CoefficientLayout {
             .expect("a design has a term")
     }
 
-    /// `channel`'s `n_levels` slots in the flat coefficient vector.
+    /// Term `term`'s block in `β`: the terms in order, back to back.
+    pub(crate) fn term_dofs(&self, term: usize) -> Range<usize> {
+        let start: usize = self.terms[..term].iter().map(TermLayout::n_dofs).sum();
+        start..start + self.terms[term].n_dofs()
+    }
+
+    /// `channel`'s `n_levels` slots in `β`.
     pub(crate) fn dofs(&self, channel: Channel) -> Range<usize> {
-        let term = &self.terms[channel.term];
-        let local = term.block_column(channel.column);
-        term.offset + local.start..term.offset + local.end
+        let (block, local) = (
+            self.term_dofs(channel.term),
+            self.terms[channel.term].block_column(channel.column),
+        );
+        block.start + local.start..block.start + local.end
     }
 
     /// The term's coefficient columns in layout order.
@@ -176,5 +178,47 @@ impl CoefficientLayout {
             channel: position.channel,
             level,
         }
+    }
+}
+
+/// The coefficients a system solves for, `x`: every term's block, back to back in term order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Unknowns {
+    /// Per term, its block in `x`.
+    blocks: Vec<Range<usize>>,
+}
+
+impl Unknowns {
+    pub(crate) fn new(layout: &CoefficientLayout) -> Self {
+        let mut start = 0;
+        let blocks = layout
+            .terms
+            .iter()
+            .map(|term| {
+                let block = start..start + term.n_dofs();
+                start = block.end;
+                block
+            })
+            .collect();
+        Self { blocks }
+    }
+
+    /// The number of unknowns.
+    pub(crate) fn len(&self) -> usize {
+        self.blocks.last().map_or(0, |b| b.end)
+    }
+
+    /// Term `term`'s block in `x`.
+    pub(crate) fn block(&self, term: usize) -> Range<usize> {
+        self.blocks[term].clone()
+    }
+
+    /// `channel`'s `n_levels` slots in `x`.
+    pub(crate) fn dofs(&self, layout: &CoefficientLayout, channel: Channel) -> Range<usize> {
+        let (block, local) = (
+            self.block(channel.term),
+            layout.terms[channel.term].block_column(channel.column),
+        );
+        block.start + local.start..block.start + local.end
     }
 }

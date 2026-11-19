@@ -4,8 +4,8 @@ use approx_chol::input::{BipartiteFactorWidth2, FactorWidth1};
 use rayon::prelude::*;
 
 use super::{OrthogonalDesign, TermBlock};
-use crate::design::ChannelPair;
 use crate::design::CoefficientLayout;
+use crate::design::{ChannelPair, Unknowns};
 use crate::linalg::add_compensated;
 
 /// The normal matrix `G = AᵀA` for `A = W^{1/2} D̃`.
@@ -20,9 +20,14 @@ impl<'p> Gramian<'p> {
         Self { design }
     }
 
-    /// The coefficient space `G` acts on.
+    /// The terms' shapes and the caller's channels.
     pub(crate) fn layout(&self) -> &'p CoefficientLayout {
         self.design.layout()
+    }
+
+    /// The coefficients the system solves for, which the preconditioners map.
+    pub(crate) fn unknowns(&self) -> &'p Unknowns {
+        self.design.unknowns()
     }
 
     /// `diag(G)` over term `term`'s coefficients, laid out like its `dofs()`. `D̃_tᵀ W D̃_t` is
@@ -72,13 +77,18 @@ impl<'p> Gramian<'p> {
         diag
     }
 
-    /// `diag(G)` in solve coordinates.
+    /// `diag(G)` over the coefficients `G` acts on.
     pub(crate) fn diagonal(&self) -> Vec<f64> {
         let blocks: Vec<Vec<f64>> = (0..self.layout().n_terms())
             .into_par_iter()
             .map(|term| self.term_diagonal(term))
             .collect();
-        blocks.concat()
+        let unknowns = self.unknowns();
+        let mut diag = vec![0.0; unknowns.len()];
+        for (term, block) in blocks.iter().enumerate() {
+            diag[unknowns.block(term)].copy_from_slice(block);
+        }
+        diag
     }
 
     /// Pair `pair`'s block of `G` as its factor `V`: `G = V Vᵀ`, one column per observation.
@@ -155,7 +165,7 @@ mod tests {
 
     /// Explicit per-column, per-level contributions, independently summed.
     fn observation_sums(design: &OrthogonalDesign<'_>) -> Vec<f64> {
-        let mut entries = vec![Vec::new(); design.n_dofs()];
+        let mut entries = vec![Vec::new(); design.unknowns().len()];
         for (t, term) in design.terms().enumerate() {
             for column in 0..term.layout().n_columns() {
                 let block = &mut entries[design.layout().dofs(Channel { term: t, column })];

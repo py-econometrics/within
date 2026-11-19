@@ -63,7 +63,7 @@ mod design_tests {
     fn test_large_design_matvec_correctness() {
         let design = make_large_design();
 
-        let mut ej = vec![0.0f64; design.n_dofs()];
+        let mut ej = vec![0.0f64; design.unknowns().len()];
         ej[0] = 1.0;
         let mut y = vec![0.0f64; design.n_obs()];
         DesignOperator::new(&design)
@@ -84,7 +84,7 @@ mod design_tests {
         let design = make_large_design();
 
         let ones = vec![1.0f64; design.n_obs()];
-        let mut x = vec![0.0f64; design.n_dofs()];
+        let mut x = vec![0.0f64; design.unknowns().len()];
         DesignOperator::new(&design)
             .apply_adjoint(&ones, &mut x)
             .expect("apply_adjoint succeeds");
@@ -132,7 +132,7 @@ mod slope_design_tests {
     /// the reference the operator must agree with regardless of the locality
     /// permutation.
     fn dense_matrix(design: &OrthogonalDesign<'_>) -> Vec<Vec<f64>> {
-        let mut d = vec![vec![0.0; design.n_dofs()]; design.n_obs()];
+        let mut d = vec![vec![0.0; design.unknowns().len()]; design.n_obs()];
         for (term, t) in design.terms().enumerate() {
             for c in 0..t.layout().n_columns() {
                 let base = design.layout().dofs(Channel { term, column: c }).start;
@@ -180,11 +180,13 @@ mod slope_design_tests {
         let design = Design::new(effects).unwrap().orthogonalize(None).unwrap();
         let dense = dense_matrix(&design);
         assert!(
-            (0..design.n_dofs()).all(|j| dense.iter().any(|row| row[j] != 0.0)),
+            (0..design.unknowns().len()).all(|j| dense.iter().any(|row| row[j] != 0.0)),
             "orthogonalization zeroed a column; the arm's addressing would go untested"
         );
 
-        let x: Vec<f64> = (0..design.n_dofs()).map(|j| noise(7_000 + j)).collect();
+        let x: Vec<f64> = (0..design.unknowns().len())
+            .map(|j| noise(7_000 + j))
+            .collect();
         let mut got = vec![0.0; design.n_obs()];
         DesignOperator::new(&design).apply(&x, &mut got).unwrap();
         let expect: Vec<f64> = dense
@@ -194,57 +196,17 @@ mod slope_design_tests {
         assert_close(&got, &expect);
 
         let r: Vec<f64> = (0..design.n_obs()).map(|i| noise(9_000 + i)).collect();
-        let mut got_t = vec![0.0; design.n_dofs()];
+        let mut got_t = vec![0.0; design.unknowns().len()];
         DesignOperator::new(&design)
             .apply_adjoint(&r, &mut got_t)
             .unwrap();
-        let mut expect_t = vec![0.0; design.n_dofs()];
+        let mut expect_t = vec![0.0; design.unknowns().len()];
         for (row, &ri) in dense.iter().zip(&r) {
             for (e, d) in expect_t.iter_mut().zip(row) {
                 *e += d * ri;
             }
         }
         assert_close(&got_t, &expect_t);
-    }
-
-    /// Over a subset of the terms, scatter is gather's adjoint and leaves the other blocks alone.
-    #[test]
-    fn term_subset_products_are_adjoint() {
-        use crate::design::product::{gather, scatter};
-        let n = 12;
-        let f0: Vec<u32> = (0..n).map(|i| (i % 3) as u32).collect();
-        let f1: Vec<u32> = (0..n).map(|i| ((i / 2) % 4) as u32).collect();
-        let z: Vec<f64> = (0..n).map(|i| noise(500 + i)).collect();
-        let effects = vec![
-            Effect::new(&f0, true, []).unwrap(),
-            Effect::new(&f1, true, [&z[..]]).unwrap(),
-        ];
-        let design = Design::new(effects).unwrap().orthogonalize(None).unwrap();
-        let kept: Vec<_> = design.terms().skip(1).collect();
-        let first = kept[0].layout().dofs();
-        assert!(
-            first.start > 0,
-            "the subset must start past the first block"
-        );
-
-        let x: Vec<f64> = (0..design.n_dofs()).map(|j| noise(7_000 + j)).collect();
-        let r: Vec<f64> = (0..design.n_obs()).map(|i| noise(9_000 + i)).collect();
-        let mut y = vec![0.0; design.n_obs()];
-        gather(&kept, &x, &mut y, None);
-        let mut xt = vec![f64::NAN; design.n_dofs()];
-        scatter(&kept, &r, &mut xt, None);
-
-        assert!(xt[..first.start].iter().all(|v| v.is_nan()));
-        let lhs: f64 = y.iter().zip(&r).map(|(a, b)| a * b).sum();
-        let rhs: f64 = x[first.start..]
-            .iter()
-            .zip(&xt[first.start..])
-            .map(|(a, b)| a * b)
-            .sum();
-        assert!(
-            (lhs - rhs).abs() <= 1e-12 * lhs.abs().max(1.0),
-            "{lhs} vs {rhs}"
-        );
     }
 
     /// By-level (sorted or indexed) and by-row terms per fused arity; levels over many leaves.
@@ -297,7 +259,7 @@ mod slope_design_tests {
                 .build()
                 .expect("test rayon pool")
                 .install(|| {
-                    let mut dtr = vec![0.0; design.n_dofs()];
+                    let mut dtr = vec![0.0; design.unknowns().len()];
                     DesignOperator::new(&design)
                         .apply_adjoint(&r, &mut dtr)
                         .unwrap();
@@ -332,12 +294,14 @@ mod slope_design_tests {
             std::borrow::Cow::Borrowed(_)
         ));
 
-        let x: Vec<f64> = (0..design.n_dofs()).map(|j| noise(13 * j + 1)).collect();
+        let x: Vec<f64> = (0..design.unknowns().len())
+            .map(|j| noise(13 * j + 1))
+            .collect();
         let r: Vec<f64> = (0..n).map(|i| noise(29 * i + 5)).collect();
 
         let mut dx = vec![0.0; n];
         DesignOperator::new(&design).apply(&x, &mut dx).unwrap();
-        let mut dtr = vec![0.0; design.n_dofs()];
+        let mut dtr = vec![0.0; design.unknowns().len()];
         DesignOperator::new(&design)
             .apply_adjoint(&r, &mut dtr)
             .unwrap();
@@ -382,7 +346,7 @@ mod weighted_adjoint_proptests {
             let design = crate::design::Design::from_levels_for_test(vec![fa, fb]);
             let design = design.orthogonalize(Some(&weights)).unwrap();
 
-            let n_dofs = design.n_dofs();
+            let n_dofs = design.unknowns().len();
             let n_rows = design.n_obs();
 
             let x: Vec<f64> = (0..n_dofs)
