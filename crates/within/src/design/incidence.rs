@@ -72,18 +72,6 @@ impl TermRows<'_> {
     }
 }
 
-/// Group `k` of the counted `keys` owns `offsets[k]..offsets[k + 1]`.
-pub(crate) fn offsets(n_keys: usize, keys: impl IntoIterator<Item = usize>) -> Vec<usize> {
-    let mut offsets = vec![0usize; n_keys + 1];
-    for k in keys {
-        offsets[k + 1] += 1;
-    }
-    for i in 1..offsets.len() {
-        offsets[i] += offsets[i - 1];
-    }
-    offsets
-}
-
 /// `E`: per term the level of each row, with the coefficient layout and the row order. Weight-free,
 /// so a design and its orthogonalization share it.
 #[derive(Clone, Debug)]

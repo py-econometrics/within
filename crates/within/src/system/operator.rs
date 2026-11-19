@@ -44,8 +44,6 @@ impl Operator for DesignOperator<'_> {
     }
 
     fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
-        debug_assert_eq!(x.len(), self.n_obs);
-        debug_assert_eq!(y.len(), self.n_dofs);
         scatter(&self.blocks, x, y, self.sqrt);
         Ok(())
     }

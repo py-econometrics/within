@@ -143,7 +143,7 @@ impl CoefficientLayout {
         &self.terms
     }
 
-    /// The term with the most coefficients, ties to the last: the sort key and the eliminated term.
+    /// The term with the most coefficients, ties to the last: the rows are sorted by it.
     pub(crate) fn dominant(&self) -> usize {
         (0..self.terms.len())
             .max_by_key(|&t| self.terms[t].n_dofs())

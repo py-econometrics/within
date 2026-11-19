@@ -11,7 +11,7 @@ use schwarz_precond::{
 };
 
 use crate::config::{LsmrOptions, PreconditionerConfig};
-use crate::design::CoefficientAddress;
+use crate::design::{CoefficientAddress, CoefficientLayout};
 use crate::design::{Design, Effect};
 use crate::precond::Preconditioner;
 use crate::system::{DesignOperator, Fit, Gramian, OrthogonalDesign, Response};
@@ -20,7 +20,6 @@ use crate::{BuildError, BuildWarning, SolveError, WithinError};
 #[cfg(test)]
 mod tests;
 
-pub use crate::design::CoefficientLayout;
 use crate::precond::PrecondSlot;
 
 /// Fallible conversion into a [`Design`] for [`Solver::new`]: a categories
@@ -126,7 +125,7 @@ pub struct SolveResult {
     /// Demeaned response: `y - D x` (length = n_obs), in caller order.
     ///
     /// Invariant: any per-observation field added here must be translated
-    /// back from internal order via `Design::permute_obs_out` before being
+    /// back from internal order via `Incidence::permute_obs_out` before being
     /// stored, or it leaks the locality-sorted row order to the caller.
     pub demeaned: Vec<f64>,
     /// Whether the iterative solver converged within `maxiter` iterations.

@@ -36,12 +36,11 @@ pub use config::{
     ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, LsmrOptions, PreconditionerConfig,
     ScalingConfig, ScalingFailure, SchurMode, Staleness, StalenessError,
 };
-pub use design::{Channel, ChannelPair, CoefficientAddress, Design, Effect};
+pub use design::{Channel, ChannelPair, CoefficientAddress, CoefficientLayout, Design, Effect};
 pub use error::{BuildError, BuildWarning, SolveError, WithinError};
 pub use precond::Preconditioner;
 pub use solver::{
-    solve, solve_batch, BatchSolveResult, CoefficientLayout, IntoDesign, PreconditionerInput,
-    SolveResult, Solver,
+    solve, solve_batch, BatchSolveResult, IntoDesign, PreconditionerInput, SolveResult, Solver,
 };
 
 /// Rows from which a sweep over observations runs in parallel.
