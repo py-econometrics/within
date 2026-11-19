@@ -483,7 +483,7 @@ impl PyPreconditioner {
         Ok(Self { inner })
     }
 
-    /// Complete normalized configuration used to build this preconditioner.
+    /// The configuration whose ladder this map belongs to.
     #[getter]
     fn config(&self) -> PyResult<PyPreconditionerConfig> {
         PyPreconditionerConfig::from_native(&self.inner.config())

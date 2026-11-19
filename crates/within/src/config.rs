@@ -151,6 +151,7 @@ impl Default for ApproxSchurConfig {
 }
 
 /// Preconditioner variant. `#[non_exhaustive]`, so external `match` sites need a wildcard arm.
+// Append only: postcard encodes by declaration order and every `Preconditioner` carries one.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum PreconditionerConfig {
@@ -170,6 +171,7 @@ pub enum PreconditionerConfig {
 }
 
 /// One-level additive Schwarz over channel-pair subdomains.
+// Append only: postcard encodes fields in declaration order and every `Preconditioner` carries one.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Schwarz {
     /// Local solver configuration applied inside each subdomain.

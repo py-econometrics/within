@@ -81,11 +81,14 @@ impl Ladder {
 
     fn build(&self, gramian: Gramian<'_>, at: usize, rung: Rung<'_>) -> Built {
         let started = Instant::now();
-        let (map, warnings) = if offers(gramian, rung) {
+        let (map, own) = if offers(gramian, rung) {
             build_map(gramian, rung)?
         } else {
             (None, Vec::new())
         };
+        // Each build carries the warnings below it, so `warnings()` only ever grows.
+        let mut warnings = self.warnings().to_vec();
+        warnings.extend(own);
         Ok(RungBuild {
             map: map.map(|map| Preconditioner {
                 config: self.config.clone(),
@@ -168,7 +171,7 @@ impl Ladder {
         self.top().map(|(at, _)| at) > start
     }
 
-    /// The warnings of the highest settled build.
+    /// Every settled rung's warnings, in rung order.
     pub(crate) fn warnings(&self) -> &[BuildWarning] {
         self.built
             .iter()
