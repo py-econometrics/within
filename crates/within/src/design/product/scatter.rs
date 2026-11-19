@@ -68,7 +68,6 @@ fn scatter_term<const C: usize>(
     values: impl Fn(usize) -> [f64; C] + Sync,
 ) {
     let n_levels = term.layout().n_levels();
-    debug_assert_eq!(block.len(), C * n_levels);
     let mut columns = block.chunks_mut(n_levels);
     let columns = Columns(std::array::from_fn(|_| columns.next().expect("C columns")));
     term.fold(

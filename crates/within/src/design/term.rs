@@ -8,7 +8,7 @@ use super::{Column, LevelSlots, TermIncidence, TermLayout};
 #[derive(Clone, Copy)]
 pub(crate) struct TermBlock<'p> {
     incidence: TermIncidence<'p>,
-    /// Slope columns in order; empty for a slope-free term.
+    /// The layout's `n_slopes` columns, in order.
     slopes: &'p [Vec<f64>],
 }
 
@@ -53,7 +53,7 @@ impl<'p> TermBlock<'p> {
     #[inline(always)]
     pub(crate) fn visit_rows(&self, kernel: impl RowKernel) {
         let z = |j: usize| &self.slopes[j][..];
-        match (self.layout().intercept(), self.slopes.len()) {
+        match (self.layout().intercept(), self.layout().n_slopes()) {
             (true, 0) => kernel.fixed(|_| [1.0]),
             (true, 1) => {
                 let z0 = z(0);
