@@ -4,8 +4,8 @@ use approx_chol::input::{BipartiteFactorWidth2, FactorWidth1};
 use rayon::prelude::*;
 
 use super::{OrthogonalDesign, TermBlock};
-use crate::channel::ChannelPair;
-use crate::domain::CoefficientLayout;
+use crate::design::ChannelPair;
+use crate::design::CoefficientLayout;
 use crate::linalg::add_compensated;
 
 /// The normal matrix `G = AᵀA` for `A = W^{1/2} D̃`.
@@ -14,14 +14,12 @@ pub(crate) struct Gramian<'p> {
     design: &'p OrthogonalDesign<'p>,
 }
 
-impl OrthogonalDesign<'_> {
-    /// `G = D̃ᵀ W D̃`.
-    pub(crate) fn gramian(&self) -> Gramian<'_> {
-        Gramian { design: self }
-    }
-}
-
 impl<'p> Gramian<'p> {
+    /// `G = D̃ᵀ W D̃`.
+    pub(crate) fn new(design: &'p OrthogonalDesign<'p>) -> Self {
+        Self { design }
+    }
+
     /// The coefficient space `G` acts on.
     pub(crate) fn layout(&self) -> &'p CoefficientLayout {
         self.design.layout()
@@ -98,7 +96,9 @@ impl<'p> Gramian<'p> {
 
 #[cfg(test)]
 mod tests {
-    use crate::domain::{Design, OrthogonalDesign};
+    use super::Gramian;
+    use crate::design::Design;
+    use crate::system::OrthogonalDesign;
 
     /// Independent floating-point expansion: retain each exact two-sum remainder
     /// before rounding the short expansion, rather than reusing Neumaier's kernel.
@@ -151,7 +151,7 @@ mod tests {
                 let block = &mut entries[term.layout().column_dofs(column)];
                 let z = term.loading(column);
                 for (obs, &level) in term.levels().iter().enumerate() {
-                    let w = prepared.weights().weight(obs);
+                    let w = prepared.weights.weight(obs);
                     block[level as usize].push(z.map_or(w, |z| w * z[obs] * z[obs]));
                 }
             }
@@ -189,7 +189,7 @@ mod tests {
             assert!(prepared.unidentified().next().is_some());
             // Read off the level Grams, the diagonal agrees with the data's to rounding,
             // and is zero exactly where the data's is.
-            let diag = prepared.gramian().diagonal();
+            let diag = Gramian::new(&prepared).diagonal();
             for (d, o) in diag.iter().zip(observation_sums(&prepared)) {
                 assert_eq!(*d == 0.0, o == 0.0, "weights {weights:?}");
                 assert!((d - o).abs() <= 1e-12 * o.abs().max(1.0), "{d} vs {o}");
@@ -217,7 +217,7 @@ mod tests {
                 .unwrap()
                 .orthogonalize(weights)
                 .unwrap();
-            let diag = prepared.gramian().diagonal();
+            let diag = Gramian::new(&prepared).diagonal();
             let block =
                 |term: usize, column| &diag[prepared.layout().term(term).column_dofs(column)];
             assert_eq!(block(0, 0), f_sums);

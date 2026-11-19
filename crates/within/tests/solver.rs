@@ -126,7 +126,7 @@ fn test_solver_batch() {
 
 #[test]
 fn test_solver_batch_term_design_shares_drop_report() {
-    // Level 0's z is constant, so its whitened slope column drops; each batch
+    // Level 0's z is constant, so its orthogonalized slope column drops; each batch
     // column must reproduce the single solve and share the drop report.
     let f = [0u32, 0, 0, 1, 1, 1];
     let g = [0u32, 1, 2, 0, 1, 2];

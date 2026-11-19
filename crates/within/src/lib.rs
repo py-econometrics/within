@@ -26,22 +26,23 @@
 pub mod config;
 pub mod error;
 
-pub(crate) mod block_solver;
-pub(crate) mod channel;
-pub(crate) mod domain;
+pub(crate) mod design;
 pub(crate) mod linalg;
-pub(crate) mod operator;
+pub(crate) mod precond;
 pub(crate) mod solver;
+pub(crate) mod system;
 
-pub use channel::{Channel, ChannelPair, CoefficientAddress};
 pub use config::{
     ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, LsmrOptions, PreconditionerConfig,
     ScalingConfig, ScalingFailure, SchurMode, Staleness, StalenessError,
 };
-pub use domain::{Design, Effect};
+pub use design::{Channel, ChannelPair, CoefficientAddress, Design, Effect};
 pub use error::{BuildError, BuildWarning, SolveError, WithinError};
-pub use operator::schwarz::Preconditioner;
+pub use precond::Preconditioner;
 pub use solver::{
     solve, solve_batch, BatchSolveResult, CoefficientLayout, IntoDesign, PreconditionerInput,
     SolveResult, Solver,
 };
+
+/// Rows from which a sweep over observations runs in parallel.
+pub(crate) const PAR_THRESHOLD: usize = 10_000;

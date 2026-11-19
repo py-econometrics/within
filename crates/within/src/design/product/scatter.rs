@@ -1,14 +1,11 @@
-//! Scatter kernel `Dᵀ x`, summed per term in the order its [`ScatterSplit`] fixes.
+//! Scatter: `x_t = D_tᵀ v`, summed per term in the order its [`ScatterSplit`] fixes.
 
-use crate::domain::{LevelSlots, RowKernel, TermBlock};
+use crate::design::LevelSlots;
+use crate::design::{RowKernel, TermBlock};
 
 /// One term's adjoint scatter `block = A_tᵀ v`, with `base(i)` the row value of `v`.
 #[inline(always)]
-pub(super) fn scatter_block(
-    t: &TermBlock<'_>,
-    block: &mut [f64],
-    base: &(impl Fn(usize) -> f64 + Sync),
-) {
+pub(crate) fn scatter(t: &TermBlock<'_>, block: &mut [f64], base: &(impl Fn(usize) -> f64 + Sync)) {
     t.visit_rows(ScatterTerm {
         block,
         term: t,

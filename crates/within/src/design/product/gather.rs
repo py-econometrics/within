@@ -1,30 +1,25 @@
-//! Gather kernel: coefficient space → observation space (`D x`).
+//! Gather: coefficient space → observation space, `y = s ⊙ Σ_t D_t x_t`.
 
 use rayon::prelude::*;
 
-use super::PAR_THRESHOLD;
-use crate::domain::{OrthogonalDesign, RowKernel, TermBlock};
+use crate::design::{RowKernel, TermBlock};
+use crate::PAR_THRESHOLD;
 
-/// Gather-apply `dst[i] = Σ_t Σ_c src[…] · loading_c(i)`, times `scale[i]` when given.
-pub(crate) fn gather_apply(
-    design: &OrthogonalDesign<'_>,
-    src: &[f64],
-    dst: &mut [f64],
-    scale: Option<&[f64]>,
-) {
-    debug_assert!(scale.is_none_or(|s| s.len() == design.n_obs()));
-    debug_assert_eq!(src.len(), design.n_dofs());
-    debug_assert_eq!(dst.len(), design.n_obs());
+/// `dst[i] = Σ_t Σ_c src[…] · loading_c(i)` over `terms`, times `scale[i]` when given.
+pub(crate) fn gather(terms: &[TermBlock<'_>], src: &[f64], dst: &mut [f64], scale: Option<&[f64]>) {
+    debug_assert!(scale.is_none_or(|s| s.len() == dst.len()));
+    debug_assert!(terms.iter().all(|t| t.levels().len() == dst.len()));
+    debug_assert!(terms.iter().all(|t| t.layout().dofs().end <= src.len()));
 
     dst.fill(0.0);
 
     for_each_chunk(dst, |chunk, row_start| {
-        for term in design.terms() {
+        for term in terms {
             term.visit_rows(GatherTerm {
                 chunk: &mut *chunk,
                 row_start,
                 src,
-                term: &term,
+                term,
             });
         }
         if let Some(scale) = scale {

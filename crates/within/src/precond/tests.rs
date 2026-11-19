@@ -8,8 +8,10 @@ use crate::config::{
     ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, SchurMode,
     DEFAULT_DENSE_SCHUR_THRESHOLD,
 };
-use crate::domain::{Design, OrthogonalDesign};
-use crate::operator::schwarz::build_additive;
+use crate::design::Design;
+use crate::precond::build_additive;
+use crate::system::Gramian;
+use crate::system::OrthogonalDesign;
 use schwarz_precond::{LocalSolver, MemBuffer, MemStack, Operator, Threads};
 
 const BLOCK_ELIM_NESTED_RAYON_CHILD_ENV: &str = "WITHIN_TEST_BLOCK_ELIM_NESTED_RAYON_CHILD";
@@ -18,8 +20,9 @@ fn make_test_data() -> (OrthogonalDesign<'static>, Vec<LocalDomain>) {
     let design = Design::from_levels_for_test(vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]])
         .orthogonalize(None)
         .unwrap();
-    let (domain_pairs, _) = build_local_domains(design.gramian(), &LocalSolverConfig::default())
-        .expect("plain domains build");
+    let (domain_pairs, _) =
+        build_local_domains(Gramian::new(&design), &LocalSolverConfig::default())
+            .expect("plain domains build");
     (design, domain_pairs)
 }
 
@@ -54,7 +57,8 @@ fn run_block_elim_nested_rayon_case() {
     };
     let design = synthetic_star_design(n_keep, elim_ratio);
     let n_dofs = design.n_dofs();
-    let (mut domain_pairs, _) = build_local_domains(design.gramian(), &config).expect("domains");
+    let (mut domain_pairs, _) =
+        build_local_domains(Gramian::new(&design), &config).expect("domains");
     let [domain] = &domain_pairs[..] else {
         panic!("one component expected, got {}", domain_pairs.len())
     };
@@ -148,7 +152,7 @@ fn small_subdomain_solve(schur: SchurMode, dense_threshold: usize) -> Vec<f64> {
         ..Default::default()
     };
     let design = synthetic_star_design(8, 4);
-    let (domains, _) = build_local_domains(design.gramian(), &config).expect("domains");
+    let (domains, _) = build_local_domains(Gramian::new(&design), &config).expect("domains");
     let [domain] = &domains[..] else {
         panic!("one component expected, got {}", domains.len())
     };
@@ -184,7 +188,7 @@ fn test_dense_threshold_zero_disables_exact_route() {
 
 #[test]
 fn signed_wire_fixture_contains_uniform_weights() {
-    use crate::operator::schwarz::{Preconditioner, Variant};
+    use crate::precond::{Preconditioner, Variant};
     use schwarz_precond::PartitionWeights;
 
     let bytes = include_bytes!(concat!(

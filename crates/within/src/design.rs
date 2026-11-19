@@ -1,29 +1,40 @@
-//! `D = E • X`: the caller's design.
+//! `D = E • X`: the caller's weight-free design, its incidence `E` and coefficient addressing.
 
+mod channel;
 mod effect;
+mod incidence;
+pub(crate) mod product;
+mod term;
 
+pub(crate) use channel::CoefficientPosition;
+pub use channel::{Channel, ChannelPair, CoefficientAddress};
 pub use effect::Effect;
+pub use incidence::CoefficientLayout;
+pub(crate) use incidence::{Column, Incidence, LevelSlots, TermIncidence, TermLayout, LEVEL_GROUP};
+#[cfg(test)]
+pub(crate) use incidence::{ScatterSplit, LEVEL_LEAF};
+pub(crate) use term::{RowKernel, TermBlock};
 
 use crate::BuildError;
 use ndarray::{ArrayView2, Axis};
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use super::{CoefficientLayout, FactorEncoding, Incidence, TermLayout};
+use incidence::FactorEncoding;
 
 /// Fixed-effects design `D = E • X`: per term, row `i` is `X`'s row `[1?, z(i)]` in level `i`'s
 /// columns. Clones share `E`.
 #[derive(Clone, Debug)]
 pub struct Design<'a> {
-    pub(super) incidence: Arc<Incidence<'a>>,
+    pub(crate) incidence: Arc<Incidence<'a>>,
     /// `X`, per term.
-    pub(super) slopes: Vec<Slopes<'a>>,
+    pub(crate) slopes: Vec<Slopes<'a>>,
 }
 
 /// `X_t`: one term's slope columns in internal row order, borrowed or owned per column.
 #[derive(Clone, Debug)]
 pub(crate) struct Slopes<'a> {
-    pub(in crate::domain) columns: Vec<Cow<'a, [f64]>>,
+    pub(crate) columns: Vec<Cow<'a, [f64]>>,
 }
 
 impl<'a> Design<'a> {

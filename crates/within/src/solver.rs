@@ -10,20 +10,18 @@ use schwarz_precond::{
     mlsmr, EscalationPolicy, IdentityOp, LsmrResult, LsmrStopReason, MlsmrOptions, Operator,
 };
 
-use crate::channel::CoefficientAddress;
 use crate::config::{LsmrOptions, PreconditionerConfig};
-use crate::domain::{Design, Effect, OrthogonalDesign};
-use crate::operator::schwarz::Preconditioner;
+use crate::design::CoefficientAddress;
+use crate::design::{Design, Effect};
+use crate::precond::Preconditioner;
+use crate::system::{DesignOperator, Fit, Gramian, OrthogonalDesign, Response};
 use crate::{BuildError, BuildWarning, SolveError, WithinError};
 
-mod ladder;
-mod system;
 #[cfg(test)]
 mod tests;
 
-pub use crate::domain::CoefficientLayout;
-use ladder::PrecondSlot;
-use system::{Fit, Response};
+pub use crate::design::CoefficientLayout;
+use crate::precond::PrecondSlot;
 
 /// Fallible conversion into a [`Design`] for [`Solver::new`]: a categories
 /// matrix (`ArrayView2<u32>`), a list of [`Effect`] terms, a pass-through
@@ -219,7 +217,7 @@ impl std::fmt::Debug for Solver<'_> {
         f.debug_struct("Solver")
             .field("n_obs", &self.design.n_obs())
             .field("n_dofs", &self.design.n_dofs())
-            .field("has_weights", &self.design.weights().sqrt().is_some())
+            .field("has_weights", &self.design.is_weighted())
             .field("has_preconditioner", &self.preconditioner().is_some())
             .field("has_escalated", &self.has_escalated())
             .finish()
@@ -307,7 +305,7 @@ impl<'a> Solver<'a> {
                 let started = Instant::now();
                 let maxiter = lsmr.maxiter - spent;
                 let mut result = mlsmr(
-                    &self.design.operator(),
+                    &DesignOperator::new(&self.design),
                     rhs.weighted(),
                     m,
                     lsmr.tol,
@@ -337,7 +335,7 @@ impl<'a> Solver<'a> {
                     ..
                 } = result;
                 Ok(Pass::Done(RhsSolution {
-                    fit: self.finish(rhs, x, true_residual),
+                    fit: Fit::new(&self.design, rhs, x, true_residual),
                     converged,
                     iterations,
                     // Read from the LSMR recurrence at no extra cost; see `SolveResult::residual`.
@@ -371,7 +369,7 @@ impl<'a> Solver<'a> {
         if let Some(a) = ladder {
             if passes.iter().any(|p| matches!(p, Pass::Stalled { .. })) {
                 // Built outside the fan-out, so sibling RHS never race for it.
-                build_secs = a.escalate(self.design.gramian())?;
+                build_secs = a.escalate(Gramian::new(&self.design))?;
                 passes = self.rung(passes, Some(a.rung()), None, lsmr)?;
             }
         }
@@ -409,7 +407,7 @@ impl<'a> Solver<'a> {
     ) -> Result<Self, BuildError> {
         // Orthogonalize the slope columns (if any) before the preconditioner reads them.
         let design = design.into_design()?.orthogonalize(weights)?;
-        let gramian = design.gramian();
+        let gramian = Gramian::new(&design);
         let n_dofs = design.n_dofs();
 
         let slot = match preconditioner.into() {

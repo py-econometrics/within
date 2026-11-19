@@ -7,8 +7,10 @@ fn noise(seed: usize) -> f64 {
 }
 
 mod design_tests {
-    use crate::domain::{Design, OrthogonalDesign};
+    use crate::design::Design;
     use crate::linalg::dot;
+    use crate::system::DesignOperator;
+    use crate::system::OrthogonalDesign;
     use schwarz_precond::Operator;
 
     fn make_test_design() -> OrthogonalDesign<'static> {
@@ -21,7 +23,7 @@ mod design_tests {
     #[test]
     fn test_design_operator_dimensions() {
         let schema = make_test_design();
-        let a = schema.operator();
+        let a = DesignOperator::new(&schema);
         assert_eq!(a.nrows(), 5);
         assert_eq!(a.ncols(), 7);
     }
@@ -34,7 +36,7 @@ mod design_tests {
         let r = vec![0.1, 0.2, -0.3, 0.4, -0.5];
 
         let mut dx = vec![0.0; 5];
-        let a = schema.operator();
+        let a = DesignOperator::new(&schema);
         a.apply(&x, &mut dx).expect("apply succeeds");
         let lhs: f64 = dx.iter().zip(r.iter()).map(|(a, b)| a * b).sum();
 
@@ -50,7 +52,9 @@ mod design_tests {
         let schema = make_test_design();
         let x = vec![1.0, 2.0, 3.0, 10.0, 20.0, 30.0, 40.0];
         let mut y = vec![0.0; 5];
-        schema.operator().apply(&x, &mut y).expect("apply succeeds");
+        DesignOperator::new(&schema)
+            .apply(&x, &mut y)
+            .expect("apply succeeds");
         assert_eq!(y, vec![11.0, 12.0, 22.0, 33.0, 41.0]);
     }
 
@@ -59,8 +63,7 @@ mod design_tests {
         let schema = make_test_design();
         let r = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         let mut x = vec![0.0; 7];
-        schema
-            .operator()
+        DesignOperator::new(&schema)
             .apply_adjoint(&r, &mut x)
             .expect("apply_adjoint succeeds");
         assert_eq!(x, vec![6.0, 5.0, 4.0, 3.0, 3.0, 4.0, 5.0]);
@@ -95,7 +98,7 @@ mod design_tests {
         let x: Vec<f64> = (0..n_dofs).map(|i| (i as f64 * 0.17 + 1.0).sin()).collect();
         let r: Vec<f64> = (0..n_rows).map(|i| (i as f64 * 0.23 + 2.0).cos()).collect();
 
-        let a = dm.operator();
+        let a = DesignOperator::new(&dm);
         let mut dx = vec![0.0f64; n_rows];
         a.apply(&x, &mut dx).expect("apply succeeds");
 
@@ -119,7 +122,9 @@ mod design_tests {
         let mut ej = vec![0.0f64; dm.n_dofs()];
         ej[0] = 1.0;
         let mut y = vec![0.0f64; dm.n_obs()];
-        dm.operator().apply(&ej, &mut y).expect("apply succeeds");
+        DesignOperator::new(&dm)
+            .apply(&ej, &mut y)
+            .expect("apply succeeds");
 
         for (i, &yi) in y.iter().enumerate() {
             let expected = if i < 300 { 1.0 } else { 0.0 };
@@ -136,7 +141,7 @@ mod design_tests {
 
         let ones = vec![1.0f64; dm.n_obs()];
         let mut x = vec![0.0f64; dm.n_dofs()];
-        dm.operator()
+        DesignOperator::new(&dm)
             .apply_adjoint(&ones, &mut x)
             .expect("apply_adjoint succeeds");
 
@@ -156,7 +161,7 @@ mod design_tests {
         let x: Vec<f64> = vec![1.0, 2.0, 3.0];
         let r: Vec<f64> = vec![0.5, 1.5, -0.5, 2.0, -1.0];
 
-        let a = dm.operator();
+        let a = DesignOperator::new(&dm);
         let mut dx = vec![0.0f64; dm.n_obs()];
         a.apply(&x, &mut dx).expect("apply succeeds");
 
@@ -178,7 +183,9 @@ mod design_tests {
         let dm = make_single_factor_design();
         let x = vec![10.0, 20.0, 30.0];
         let mut y = vec![0.0f64; 5];
-        dm.operator().apply(&x, &mut y).expect("apply succeeds");
+        DesignOperator::new(&dm)
+            .apply(&x, &mut y)
+            .expect("apply succeeds");
         assert_eq!(y, vec![10.0, 10.0, 20.0, 20.0, 30.0]);
     }
 
@@ -187,7 +194,7 @@ mod design_tests {
         let dm = make_single_factor_design();
         let r = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         let mut x = vec![0.0f64; 3];
-        dm.operator()
+        DesignOperator::new(&dm)
             .apply_adjoint(&r, &mut x)
             .expect("apply_adjoint succeeds");
         assert_eq!(x, vec![3.0, 7.0, 5.0]);
@@ -196,7 +203,9 @@ mod design_tests {
 
 mod slope_design_tests {
     use super::noise;
-    use crate::domain::{Design, Effect, OrthogonalDesign, ScatterSplit};
+    use crate::design::{Design, Effect, ScatterSplit};
+    use crate::system::DesignOperator;
+    use crate::system::OrthogonalDesign;
     use schwarz_precond::Operator;
 
     /// Dense design matrix from the design's internal (post-sort) columns —
@@ -257,7 +266,7 @@ mod slope_design_tests {
 
         let x: Vec<f64> = (0..design.n_dofs()).map(|j| noise(7_000 + j)).collect();
         let mut got = vec![0.0; design.n_obs()];
-        design.operator().apply(&x, &mut got).unwrap();
+        DesignOperator::new(&design).apply(&x, &mut got).unwrap();
         let expect: Vec<f64> = dense
             .iter()
             .map(|row| row.iter().zip(&x).map(|(d, xj)| d * xj).sum())
@@ -266,7 +275,9 @@ mod slope_design_tests {
 
         let r: Vec<f64> = (0..design.n_obs()).map(|i| noise(9_000 + i)).collect();
         let mut got_t = vec![0.0; design.n_dofs()];
-        design.operator().apply_adjoint(&r, &mut got_t).unwrap();
+        DesignOperator::new(&design)
+            .apply_adjoint(&r, &mut got_t)
+            .unwrap();
         let mut expect_t = vec![0.0; design.n_dofs()];
         for (row, &ri) in dense.iter().zip(&r) {
             for (e, d) in expect_t.iter_mut().zip(row) {
@@ -327,7 +338,9 @@ mod slope_design_tests {
                 .expect("test rayon pool")
                 .install(|| {
                     let mut dtr = vec![0.0; design.n_dofs()];
-                    design.operator().apply_adjoint(&r, &mut dtr).unwrap();
+                    DesignOperator::new(&design)
+                        .apply_adjoint(&r, &mut dtr)
+                        .unwrap();
                     dtr.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
                 })
         };
@@ -360,9 +373,11 @@ mod slope_design_tests {
         let r: Vec<f64> = (0..n).map(|i| noise(29 * i + 5)).collect();
 
         let mut dx = vec![0.0; n];
-        design.operator().apply(&x, &mut dx).unwrap();
+        DesignOperator::new(&design).apply(&x, &mut dx).unwrap();
         let mut dtr = vec![0.0; design.n_dofs()];
-        design.operator().apply_adjoint(&r, &mut dtr).unwrap();
+        DesignOperator::new(&design)
+            .apply_adjoint(&r, &mut dtr)
+            .unwrap();
 
         let lhs: f64 = dx.iter().zip(&r).map(|(a, b)| a * b).sum();
         let rhs: f64 = x.iter().zip(&dtr).map(|(a, b)| a * b).sum();
@@ -374,6 +389,7 @@ mod slope_design_tests {
 }
 
 mod weighted_adjoint_proptests {
+    use crate::system::DesignOperator;
     use proptest::prelude::*;
     use schwarz_precond::Operator;
 
@@ -400,7 +416,7 @@ mod weighted_adjoint_proptests {
                 .map(|i| 0.5 + (i as f64 * 0.13 + seed as f64 * 0.41).sin().abs())
                 .collect();
 
-            let design = crate::domain::Design::from_levels_for_test(vec![fa, fb]);
+            let design = crate::design::Design::from_levels_for_test(vec![fa, fb]);
             let dm = design.orthogonalize(Some(&weights)).unwrap();
 
             let n_dofs = dm.n_dofs();
@@ -414,11 +430,11 @@ mod weighted_adjoint_proptests {
                 .collect();
 
             let mut dx = vec![0.0f64; n_rows];
-            dm.operator().apply(&x, &mut dx).unwrap();
+            DesignOperator::new(&dm).apply(&x, &mut dx).unwrap();
             let lhs: f64 = dx.iter().zip(&r).map(|(dxi, ri)| dxi * ri).sum();
 
             let mut dtr = vec![0.0f64; n_dofs];
-            dm.operator().apply_adjoint(&r, &mut dtr).unwrap();
+            DesignOperator::new(&dm).apply_adjoint(&r, &mut dtr).unwrap();
             let rhs: f64 = x.iter().zip(dtr.iter()).map(|(xi, wi)| xi * wi).sum();
 
             prop_assert!(

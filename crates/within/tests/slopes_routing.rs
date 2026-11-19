@@ -53,7 +53,7 @@ fn two_factor_slope_solves_with_bounded_iterations() {
 
 #[test]
 fn unit_trends_plus_time_effects_boundary() {
-    // Odd T zeroes the whitened trend mid-period, so the signed pair keeps a live 1×1 route.
+    // Odd T zeroes the orthogonalized trend mid-period, so the signed pair keeps a live 1×1 route.
     let (n_units, n_times) = (30usize, 9usize);
     let n = n_units * n_times;
     let unit: Vec<u32> = (0..n).map(|i| (i / n_times) as u32).collect();

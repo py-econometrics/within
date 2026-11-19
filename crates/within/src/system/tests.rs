@@ -1,8 +1,8 @@
 //! Seam tests for the per-term independence of the multi-term orthogonalization,
 //! not reachable through the public API.
 
-use crate::channel::Channel;
-use crate::domain::Effect;
+use crate::design::Channel;
+use crate::design::Effect;
 use rstest::rstest;
 
 use super::*;
@@ -158,7 +158,7 @@ fn assert_level_grams_orthonormal(prepared: &OrthogonalDesign<'_>, term: usize, 
     let t = prepared.term(term);
     let (levels, width) = (t.levels(), t.layout().n_columns());
     let first_slope = usize::from(t.layout().intercept());
-    let w = |i: usize| prepared.weights().weight(i);
+    let w = |i: usize| prepared.weights.weight(i);
     let a = |i: usize, c: usize| t.loading(c).map_or(1.0, |z| z[i]);
     let mut grams = vec![0.0; t.layout().n_levels() * width * width];
     for (i, &level) in levels.iter().enumerate() {
@@ -289,7 +289,7 @@ fn near_collinear_large_mean_slopes_stay_orthonormal(
 /// split fixes runs, so only scheduling varies with the thread count.
 #[test]
 fn orthogonalization_is_bitwise_identical_across_thread_counts() {
-    use crate::domain::ScatterSplit;
+    use crate::design::ScatterSplit;
     use rand::rngs::SmallRng;
     use rand::{RngExt, SeedableRng};
     let n: usize = 300_000;
@@ -376,7 +376,7 @@ fn orthogonalization_is_bitwise_identical_across_thread_counts() {
     let one = bits(1);
     assert!(one.2 >= 1, "the fixture needs a row-split term");
     assert!(
-        one.3 > crate::domain::incidence::LEVEL_LEAF,
+        one.3 > crate::design::LEVEL_LEAF,
         "the fixture needs a by-level term with a level past one leaf"
     );
     for threads in [4, 12] {

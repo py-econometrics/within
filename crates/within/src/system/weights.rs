@@ -4,9 +4,10 @@ use std::ops::Range;
 
 use rayon::prelude::*;
 
-use crate::domain::{Incidence, PAR_THRESHOLD};
+use crate::design::Incidence;
 use crate::linalg::add_compensated;
 use crate::BuildError;
+use crate::PAR_THRESHOLD;
 
 /// `W^{1/2}` in a design's internal row order; the identity when unweighted.
 #[derive(Debug, Clone)]
@@ -114,7 +115,7 @@ mod tests {
     #[test]
     fn sqrt_weights_follow_the_internal_observation_order() {
         // Dominant factor [2,0,1,0] argsorts to caller positions [1,3,2,0].
-        let design = crate::domain::Design::from_levels_for_test(vec![vec![2, 0, 1, 0]]);
+        let design = crate::design::Design::from_levels_for_test(vec![vec![2, 0, 1, 0]]);
         let weights = RowWeights::new(&design.incidence, Some(&[1.0, 4.0, 9.0, 16.0])).unwrap();
 
         assert_eq!(weights.sqrt(), Some(&[2.0, 4.0, 3.0, 1.0][..]));
@@ -126,7 +127,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_weights_before_permuting_them() {
-        let design = crate::domain::Design::from_levels_for_test(vec![vec![2, 0, 1, 0]]);
+        let design = crate::design::Design::from_levels_for_test(vec![vec![2, 0, 1, 0]]);
 
         assert!(RowWeights::new(&design.incidence, None).is_ok());
         assert!(RowWeights::new(&design.incidence, Some(&[1.0, 2.0, 3.0, 4.0])).is_ok());

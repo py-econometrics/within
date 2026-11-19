@@ -1,7 +1,7 @@
 //! Per-level weighted moments of a term's slopes, the input to one orthogonalization pass.
 
-use super::RowWeights;
-use crate::domain::TermIncidence;
+use super::super::RowWeights;
+use crate::design::TermIncidence;
 
 /// Weighted within-level mean and Gram, two-pass so structural zeros stay exact.
 pub(crate) struct LevelMoments {

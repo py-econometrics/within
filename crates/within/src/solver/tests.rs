@@ -1,14 +1,15 @@
 use rstest::rstest;
 
 use super::CoefficientAddress;
-use crate::channel::Channel;
 use crate::config::{LocalSolverConfig, LsmrOptions};
-use crate::domain::{Design, OrthogonalDesign};
+use crate::design::Channel;
+use crate::design::Design;
+use crate::system::OrthogonalDesign;
 use crate::{Effect, PreconditionerConfig, Solver};
 
 /// DGP kept in lockstep with `surplus_component_sampled_matches_exact_reduction`
 /// in `tests/slopes_routing.rs`. A positive slope-only term is not centered by
-/// whitening, so the signed pair stays all-positive — balanced — while generic
+/// orthogonalization, so the signed pair stays all-positive — balanced — while generic
 /// `z` keeps it strictly inside the PSD cone: genuine surplus, grounded.
 fn at(term: usize, level: u32, column: usize) -> CoefficientAddress {
     CoefficientAddress {
@@ -334,8 +335,8 @@ impl SharedCovariatePair {
 /// same error without the ladder rebuilding, and re-failing, the same map.
 #[test]
 fn a_failed_deferred_build_is_kept_and_reported_again() {
-    use super::ladder::PrecondSlot;
     use crate::config::{ScalingConfig, ScalingFailure};
+    use crate::precond::PrecondSlot;
     use crate::{BuildError, WithinError};
 
     // A zero-tolerance, zero-iteration certificate rejects the signed cross-block deterministically.

@@ -10,10 +10,10 @@
 use approx_chol::ScalingOutcome;
 use schwarz_precond::{PartitionWeights, SubdomainCore};
 
-use crate::block_solver::BlockSolver;
-use crate::channel::{Channel, ChannelPair};
 use crate::config::{LocalSolverConfig, ScalingFailure};
-use crate::domain::Column;
+use crate::design::Column;
+use crate::design::{Channel, ChannelPair};
+use crate::precond::block_solver::BlockSolver;
 use crate::{BuildError, BuildWarning};
 
 use super::Gramian;
@@ -169,7 +169,8 @@ fn compute_partition_weights(domain_pairs: &mut [LocalDomain], n_dofs: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{Design, OrthogonalDesign};
+    use crate::design::Design;
+    use crate::system::OrthogonalDesign;
     use crate::Effect;
 
     fn make_test_design() -> OrthogonalDesign<'static> {
@@ -185,8 +186,9 @@ mod tests {
     #[test]
     fn test_full_cover_domain_count() {
         let dm = make_test_design();
-        let (domain_pairs, _) = build_local_domains(dm.gramian(), &LocalSolverConfig::default())
-            .expect("plain domains build");
+        let (domain_pairs, _) =
+            build_local_domains(Gramian::new(&dm), &LocalSolverConfig::default())
+                .expect("plain domains build");
         // 3 factor pairs; each pair may produce multiple components
         assert!(domain_pairs.len() >= 3);
     }
@@ -194,8 +196,9 @@ mod tests {
     #[test]
     fn test_partition_of_unity() {
         let dm = make_test_design();
-        let (domain_pairs, _) = build_local_domains(dm.gramian(), &LocalSolverConfig::default())
-            .expect("plain domains build");
+        let (domain_pairs, _) =
+            build_local_domains(Gramian::new(&dm), &LocalSolverConfig::default())
+                .expect("plain domains build");
         let n_dofs = dm.n_dofs();
         // Two-sided PoU: squared weights must sum to 1 at every DOF.
         let mut weight_sq_sum = vec![0.0; n_dofs];
@@ -228,7 +231,7 @@ mod tests {
         let design = design.orthogonalize(None).unwrap();
 
         let (domain_pairs, _) =
-            build_local_domains(design.gramian(), &LocalSolverConfig::default())
+            build_local_domains(Gramian::new(&design), &LocalSolverConfig::default())
                 .expect("slope domains build");
 
         for ld in &domain_pairs {
@@ -267,8 +270,9 @@ mod tests {
         ])
         .expect("valid design");
         let prepared = design.orthogonalize(None).unwrap();
-        let (domains, _) = build_local_domains(prepared.gramian(), &LocalSolverConfig::default())
-            .expect("domains");
+        let (domains, _) =
+            build_local_domains(Gramian::new(&prepared), &LocalSolverConfig::default())
+                .expect("domains");
         let [domain] = &domains[..] else {
             panic!("one subdomain per pair, got {}", domains.len())
         };
@@ -290,8 +294,9 @@ mod tests {
     #[test]
     fn test_domains_cover_all_dofs() {
         let dm = make_test_design();
-        let (domain_pairs, _) = build_local_domains(dm.gramian(), &LocalSolverConfig::default())
-            .expect("plain domains build");
+        let (domain_pairs, _) =
+            build_local_domains(Gramian::new(&dm), &LocalSolverConfig::default())
+                .expect("plain domains build");
         let mut covered = vec![false; dm.n_dofs()];
         for ld in &domain_pairs {
             for &idx in ld.core.global_indices() {

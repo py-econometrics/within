@@ -57,7 +57,7 @@ The crate is organized in three layers:
    `build_local_domains` constructs factor-pair subdomains with
    partition-of-unity weights for the Schwarz preconditioner.
    `PreparedDesign` owns the weight-dependent state: `sqrt(W)` in internal
-   row order and each term's whitened slopes.
+   row order and each term's orthogonalized slopes.
 
 2. **`operator`** — Linear algebra primitives. Internal rectangular
    `sqrt(W) D` operator for LSMR and Schwarz preconditioner builders

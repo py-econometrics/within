@@ -1,4 +1,4 @@
-//! Schwarz preconditioner: bridges FE domain types to the generic
+//! `M ≈ G⁻¹`: the diagonal and Schwarz preconditioners, read from `G`. Schwarz bridges FE types to the generic
 //! `schwarz-precond` API, plus the opaque public [`Preconditioner`] handle.
 
 use rayon::prelude::*;
@@ -7,16 +7,19 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::block_solver::BlockSolver;
 use crate::config::{LocalSolverConfig, PreconditionerConfig, Staleness};
-use crate::domain::Gramian;
+use crate::system::Gramian;
 use crate::{BuildError, BuildWarning};
+use block_solver::BlockSolver;
 
+mod block_solver;
+mod factor_pairs;
+mod ladder;
 #[cfg(test)]
 mod tests;
 
-mod factor_pairs;
 pub(crate) use factor_pairs::{build_local_domains, LocalDomain};
+pub(crate) use ladder::PrecondSlot;
 
 /// Concrete additive Schwarz type used in the parent crate.
 #[derive(Clone, Serialize, Deserialize)]

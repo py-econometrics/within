@@ -4,7 +4,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use super::FactorEncoding;
-use crate::channel::{Channel, CoefficientAddress, CoefficientPosition};
+use crate::design::{Channel, CoefficientAddress, CoefficientPosition};
 
 /// What one coefficient column of a term multiplies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,19 +20,19 @@ pub(crate) enum Column {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoefficientLayout {
     /// Term blocks in ascending, contiguous order.
-    pub(in crate::domain) terms: Arc<[TermLayout]>,
+    pub(in crate::design) terms: Arc<[TermLayout]>,
 }
 
 /// One term's block of coefficients: column `c` of `level` sits at `c · n_levels + level` in it.
 /// Each start is stored once; ends follow from the term's own counts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TermLayout {
-    pub(in crate::domain) encoding: FactorEncoding,
+    pub(in crate::design) encoding: FactorEncoding,
     /// Start of the block in the flat coefficient vector.
-    pub(in crate::domain) offset: usize,
+    pub(in crate::design) offset: usize,
     /// Column 0 is an intercept; the slopes follow it.
-    pub(in crate::domain) intercept: bool,
-    pub(in crate::domain) n_slopes: usize,
+    pub(in crate::design) intercept: bool,
+    pub(in crate::design) n_slopes: usize,
 }
 
 impl TermLayout {
@@ -42,6 +42,10 @@ impl TermLayout {
 
     pub(crate) fn intercept(&self) -> bool {
         self.intercept
+    }
+
+    pub(crate) fn n_slopes(&self) -> usize {
+        self.n_slopes
     }
 
     pub(crate) fn n_columns(&self) -> usize {

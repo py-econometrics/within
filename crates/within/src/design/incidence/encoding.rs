@@ -31,7 +31,7 @@ impl FactorEncoding {
 
     // Inlined into `build`, its label loops lose registers and reload pointers from the stack.
     #[inline(never)]
-    pub(in crate::domain) fn encode_labels(labels: Cow<'_, [u32]>) -> EncodedFactor<'_> {
+    pub(in crate::design) fn encode_labels(labels: Cow<'_, [u32]>) -> EncodedFactor<'_> {
         if labels.is_empty() {
             return EncodedFactor {
                 encoding: Self::identity(0),
@@ -81,9 +81,9 @@ impl FactorEncoding {
 }
 
 /// A factor's level encoding and level column (the input itself if already positions).
-pub(in crate::domain) struct EncodedFactor<'a> {
-    pub(in crate::domain) encoding: FactorEncoding,
-    pub(in crate::domain) levels: Cow<'a, [u32]>,
+pub(in crate::design) struct EncodedFactor<'a> {
+    pub(in crate::design) encoding: FactorEncoding,
+    pub(in crate::design) levels: Cow<'a, [u32]>,
 }
 
 impl<'a> EncodedFactor<'a> {

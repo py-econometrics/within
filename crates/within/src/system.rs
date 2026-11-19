@@ -1,25 +1,28 @@
-//! `D̃ = D·R`: the design with each term's slopes orthogonalized, for one weighting.
+//! The least-squares system in solve coordinates for one weighting `W`: `D̃ = D·R`, `A = W^{1/2} D̃`,
+//! `G = AᵀA`, and the change of variables to and from the caller's problem.
 
+mod basis;
 mod gramian;
-mod level_moments;
-mod slopes;
-mod term;
+mod operator;
+mod response;
 #[cfg(test)]
 mod tests;
 mod weights;
 
 pub(crate) use gramian::Gramian;
-pub(crate) use term::{RowKernel, TermBlock};
-pub(crate) use weights::RowWeights;
+pub(crate) use operator::DesignOperator;
+pub(crate) use response::{Fit, Response};
+use weights::RowWeights;
 
 use std::sync::Arc;
 
 use rayon::prelude::*;
 
-use super::{CoefficientLayout, Design, Incidence};
-use crate::channel::{Channel, CoefficientPosition};
+use crate::design::TermBlock;
+use crate::design::{Channel, CoefficientPosition};
+use crate::design::{CoefficientLayout, Design, Incidence};
 use crate::BuildError;
-use slopes::OrthogonalSlopes;
+use basis::OrthogonalSlopes;
 
 /// `D̃ = E • X̃ = D·R` for one weighting `W`: `R` orthogonalizes each term's columns within each
 /// level, so `D̃_tᵀ W D̃_t` is diagonal.
@@ -54,16 +57,26 @@ impl<'a> Design<'a> {
 }
 
 impl<'a> OrthogonalDesign<'a> {
+    #[cfg(test)]
     pub(crate) fn incidence(&self) -> &Incidence<'a> {
         &self.incidence
+    }
+
+    /// Term `term`'s block `D̃_t`.
+    pub(crate) fn term(&self, term: usize) -> TermBlock<'_> {
+        TermBlock::new(self.incidence.term(term), self.slopes[term].columns())
+    }
+
+    pub(crate) fn terms(&self) -> impl ExactSizeIterator<Item = TermBlock<'_>> {
+        (0..self.layout().n_terms()).map(|term| self.term(term))
     }
 
     pub(crate) fn layout(&self) -> &CoefficientLayout {
         self.incidence.layout()
     }
 
-    pub(crate) fn weights(&self) -> &RowWeights {
-        &self.weights
+    pub(crate) fn is_weighted(&self) -> bool {
+        self.weights.sqrt().is_some()
     }
 
     pub(crate) fn n_obs(&self) -> usize {
@@ -75,7 +88,7 @@ impl<'a> OrthogonalDesign<'a> {
     }
 
     /// Map solve-basis coefficients back to the caller's parametrization: `x ← R·x`.
-    pub(crate) fn back_transform(&self, x: &mut [f64]) {
+    fn back_transform(&self, x: &mut [f64]) {
         for (layout, slopes) in self.layout().terms().iter().zip(&self.slopes) {
             slopes.back_transform(layout, &mut x[layout.dofs()]);
         }

@@ -5,7 +5,7 @@ use std::ops::Range;
 use rayon::prelude::*;
 
 use super::RowIndex;
-use crate::domain::PAR_THRESHOLD;
+use crate::PAR_THRESHOLD;
 
 /// Rows per level from which splitting by row beats splitting by level.
 const FOLD_ROWS_PER_LEVEL: usize = 12;

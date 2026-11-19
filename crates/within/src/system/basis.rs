@@ -1,15 +1,17 @@
-//! One term's slope columns `X_t`, and their weighted QR over the term's levels.
+//! `R`: each term's slopes orthogonalized by a weighted QR over the term's levels.
 
 use std::borrow::Cow;
 
 use rayon::prelude::*;
 
-use super::level_moments::{LevelMean, LevelMoments};
+mod level_moments;
+
 use super::RowWeights;
-use crate::domain::design::Slopes;
-use crate::domain::incidence::LEVEL_GROUP;
-use crate::domain::{TermIncidence, TermLayout};
+use crate::design::Slopes;
+use crate::design::LEVEL_GROUP;
+use crate::design::{TermIncidence, TermLayout};
 use crate::linalg::{dot, GramBasisWorkspace};
+use level_moments::{LevelMean, LevelMoments};
 
 /// Rows per parallel task of a sweep's row pass.
 const ROW_CHUNK: usize = 1 << 14;
@@ -106,7 +108,7 @@ impl OrthogonalSlopes {
     pub(super) fn back_transform(&self, layout: &TermLayout, block: &mut [f64]) {
         let n_levels = layout.n_levels();
         let slope = |j: usize, level: usize| layout.slope_column(j) * n_levels + level;
-        let v = layout.n_slopes;
+        let v = layout.n_slopes();
         if v == 0 {
             return;
         }

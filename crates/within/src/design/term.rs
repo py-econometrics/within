@@ -1,30 +1,15 @@
-//! One term's column block `D̃_t` of an [`OrthogonalDesign`], and the operations every kernel
-//! reads it through.
+//! One term's column block `D_t = E_t • X_t` of a design, and the operations every kernel reads
+//! it through.
 
-use super::OrthogonalDesign;
-use crate::domain::{Column, LevelSlots, TermIncidence, TermLayout};
+use super::{Column, LevelSlots, TermIncidence, TermLayout};
 
-/// Term `t`'s block `D̃_t`: row `i` holds `r(i) = [1?, u_1(i), …, u_v(i)]` in the columns of
-/// level `level(i)`. Hides how the design stores rows and slopes.
+/// Term `t`'s block `D_t`: row `i` holds `r(i) = [1?, z_1(i), …, z_v(i)]` in the columns of
+/// level `level(i)`.
 #[derive(Clone, Copy)]
 pub(crate) struct TermBlock<'p> {
     incidence: TermIncidence<'p>,
-    /// Orthogonalized slopes in column order; empty for a slope-free term.
+    /// Slope columns in order; empty for a slope-free term.
     slopes: &'p [Vec<f64>],
-}
-
-impl OrthogonalDesign<'_> {
-    /// Term `term`'s block.
-    pub(crate) fn term(&self, term: usize) -> TermBlock<'_> {
-        TermBlock {
-            incidence: self.incidence.term(term),
-            slopes: self.slopes[term].columns(),
-        }
-    }
-
-    pub(crate) fn terms(&self) -> impl ExactSizeIterator<Item = TermBlock<'_>> {
-        (0..self.layout().n_terms()).map(|term| self.term(term))
-    }
 }
 
 /// A kernel over a block's rows `r(i)`.
@@ -36,6 +21,10 @@ pub(crate) trait RowKernel {
 }
 
 impl<'p> TermBlock<'p> {
+    pub(crate) fn new(incidence: TermIncidence<'p>, slopes: &'p [Vec<f64>]) -> Self {
+        Self { incidence, slopes }
+    }
+
     /// Where the block's coefficients sit.
     pub(crate) fn layout(&self) -> &'p TermLayout {
         self.incidence.layout()
@@ -106,7 +95,7 @@ impl<'p> TermBlock<'p> {
     }
 
     #[cfg(test)]
-    pub(crate) fn split(&self) -> &'p crate::domain::ScatterSplit {
+    pub(crate) fn split(&self) -> &'p crate::design::ScatterSplit {
         self.incidence.split()
     }
 }

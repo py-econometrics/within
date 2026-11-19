@@ -30,7 +30,7 @@ $$
 3. $A^\top b \in \operatorname{range}(G)$: the normal equations are always
    consistent.
 
-**whiten** acts on the problem itself, before anything else forms: per level
+**orthogonalize** acts on the problem itself, before anything else forms: per level
 $\ell$ of each slope-bearing term (pivoted Gram–Schmidt, slopes centered on
 the intercept),
 
@@ -46,7 +46,7 @@ coefficients. Only cross-channel *orthogonality* is load-bearing (it makes
 **split** exact); the leftover positive per-level scalings ($\Delta_\ell$)
 commute into **scale** — vacuous for plain pairs.
 
-Both lanes are whitened:
+Both lanes are orthogonalized:
 
 $$
 \begin{aligned}
@@ -99,7 +99,7 @@ it).
 
 | edge | domain → codomain | action | tag | pullback |
 |---|---|---|---|---|
-| whiten | problem → whitened problem | per-level congruence $R^{-1}$ | exact | $\gamma = R^{-1}\hat\gamma$ at return |
+| orthogonalize | problem → orthogonalized problem | per-level congruence $R^{-1}$ | exact | $\gamma = R^{-1}\hat\gamma$ at return |
 | restrict | G∘ → P | principal submatrix, one factor pair | exact¹ | — |
 | split | P → {B} | one member per channel pair, per component; exact partition of coupling; members overlap on shared channels | exact | via recompose |
 | validate | plain B → L₊ | check row sums ≡ diagonals (roundoff); adopt $\sigma = (\mathbf{1}_q, -\mathbf{1}_r)$ | exact | $x = \sigma \circ \hat x$ |
@@ -134,8 +134,8 @@ Boundaries (first-class, not omissions):
 ```mermaid
 flowchart TD
     RAW["min ‖W½(v − Dγ)‖  per FWL target v"]
-    WHITE["whitened problem"]
-    RAW -->|"whiten — γ = R⁻¹γ̂"| WHITE
+    WHITE["orthogonalized problem"]
+    RAW -->|"orthogonalize — γ = R⁻¹γ̂"| WHITE
 
     OP["A = W½D∘"]
     GW["G∘ = AᵀA"]
@@ -255,7 +255,7 @@ which problem is solved, invisibly.
   derivation, falsification experiments, checked against implementation);
   kernel rules for the preconditioned bidiagonalization (derivation, numerics,
   implementation); end-to-end edge audit against the implementation
-  (problem-level whiten, per-member classification, validate/scale/switch/
+  (problem-level orthogonalization, per-member classification, validate/scale/switch/
   clamp with explicit ground surplus, bipartite eliminate, dense/anchored
   factor, pseudo-solve chain incl. grounding gauge, PoU recompose).
 - **Standard, adopted** — FWL and residual invariance; congruences (Sylvester);

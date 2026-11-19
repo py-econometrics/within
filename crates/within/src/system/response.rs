@@ -1,9 +1,9 @@
-//! A solve's two ends: `b = W^{1/2} y` in internal order, and the caller's fit out.
+//! A solve's two ends: `b = W^{1/2} P y` in, the caller's `β = R x̂` and `y − D β` out.
 
 use std::borrow::Cow;
 
-use super::Solver;
-use crate::domain::OrthogonalDesign;
+use super::OrthogonalDesign;
+use crate::design::product::gather;
 use crate::SolveError;
 
 /// One response in the internal observation order, with its `W^{1/2}`-weighted image.
@@ -32,8 +32,8 @@ impl<'s> Response<'s> {
                 message: format!("response at index {index} must be finite, got {value}"),
             });
         }
-        let y = design.incidence().permute_obs_in(y);
-        let weighted = design.weights().scaled(&y);
+        let y = design.incidence.permute_obs_in(y);
+        let weighted = design.weights.scaled(&y);
         Ok(Self { y, weighted })
     }
 
@@ -48,19 +48,32 @@ pub(crate) struct Fit {
     pub(crate) demeaned: Vec<f64>,
 }
 
-impl Solver<'_> {
-    /// Caller coefficients and `y − D x` from the iterate and, if measured, its `b − A x`.
-    pub(super) fn finish(
-        &self,
+impl Fit {
+    /// `β = R x̂` and `y − D β`, read off the measured `b − A x̂` unless a zero weight erased a row.
+    pub(crate) fn new(
+        design: &OrthogonalDesign<'_>,
         rhs: Response<'_>,
         mut x: Vec<f64>,
         measured: Option<Vec<f64>>,
-    ) -> Fit {
-        let demeaned = self.design.operator().demeaned(&x, &rhs.y, measured);
-        self.design.back_transform(&mut x);
+    ) -> Self {
+        let demeaned = match measured {
+            Some(mut residual) if !design.weights.erases_rows() => {
+                design.weights.unscale(&mut residual);
+                residual
+            }
+            measured => {
+                let mut demeaned = measured.unwrap_or_else(|| vec![0.0; rhs.y.len()]);
+                gather(&design.terms().collect::<Vec<_>>(), &x, &mut demeaned, None);
+                for (d, &yi) in demeaned.iter_mut().zip(rhs.y.iter()) {
+                    *d = yi - *d;
+                }
+                demeaned
+            }
+        };
+        design.back_transform(&mut x);
         Fit {
             x,
-            demeaned: self.design.incidence().permute_obs_out(demeaned),
+            demeaned: design.incidence.permute_obs_out(demeaned),
         }
     }
 }
