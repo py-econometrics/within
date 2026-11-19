@@ -20,7 +20,7 @@ use rayon::prelude::*;
 
 use crate::design::TermBlock;
 use crate::design::{Channel, CoefficientPosition};
-use crate::design::{CoefficientLayout, Design, Incidence};
+use crate::design::{CoefficientLayout, Design, Incidence, Unknowns};
 use crate::BuildError;
 use basis::OrthogonalSlopes;
 
@@ -32,6 +32,7 @@ pub(crate) struct OrthogonalDesign<'a> {
     /// `X̃ = X·R` with `R`, per term.
     slopes: Vec<OrthogonalSlopes>,
     weights: RowWeights,
+    unknowns: Unknowns,
 }
 
 impl<'a> Design<'a> {
@@ -48,10 +49,12 @@ impl<'a> Design<'a> {
             .enumerate()
             .map(|(term, slopes)| slopes.orthogonalize(incidence.term(term), &weights))
             .collect();
+        let unknowns = Unknowns::new(incidence.layout());
         Ok(OrthogonalDesign {
             incidence,
             slopes,
             weights,
+            unknowns,
         })
     }
 }
@@ -62,9 +65,10 @@ impl<'a> OrthogonalDesign<'a> {
         &self.incidence
     }
 
-    /// Term `term`'s block `D̃_t`.
+    /// Term `term`'s block `D̃_t`, at its slots in `x`.
     fn term(&self, term: usize) -> TermBlock<'_> {
-        TermBlock::new(self.incidence.term(term), self.slopes[term].columns())
+        let at = self.unknowns.block(term).start;
+        TermBlock::new(self.incidence.term(term), self.slopes[term].columns(), at)
     }
 
     pub(crate) fn terms(&self) -> impl ExactSizeIterator<Item = TermBlock<'_>> {
@@ -83,14 +87,16 @@ impl<'a> OrthogonalDesign<'a> {
         self.incidence.n_obs()
     }
 
-    pub(crate) fn n_dofs(&self) -> usize {
-        self.layout().n_dofs()
+    /// The coefficients the system solves for.
+    pub(crate) fn unknowns(&self) -> &Unknowns {
+        &self.unknowns
     }
 
     /// Map solve-basis coefficients back to the caller's parametrization: `x ← R·x`.
     fn back_transform(&self, x: &mut [f64]) {
-        for (layout, slopes) in self.layout().terms().iter().zip(&self.slopes) {
-            slopes.back_transform(layout, &mut x[layout.dofs()]);
+        let layout = self.layout();
+        for (term, slopes) in self.slopes.iter().enumerate() {
+            slopes.back_transform(layout.term(term), &mut x[layout.term_dofs(term)]);
         }
     }
 

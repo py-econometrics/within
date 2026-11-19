@@ -1,6 +1,8 @@
 //! One term's column block `D_t = E_t • X_t` of a design, and the operations every kernel reads
 //! it through.
 
+use std::ops::Range;
+
 use super::{Column, LevelSlots, TermIncidence, TermLayout};
 
 /// Term `t`'s block `D_t`: row `i` holds `r(i) = [1?, z_1(i), …, z_v(i)]` in the columns of
@@ -10,6 +12,8 @@ pub(crate) struct TermBlock<'p> {
     incidence: TermIncidence<'p>,
     /// The layout's `n_slopes` columns, in order.
     slopes: &'p [Vec<f64>],
+    /// Its first coefficient in the vector the products read and write.
+    at: usize,
 }
 
 /// A kernel over a block's rows `r(i)`.
@@ -21,11 +25,20 @@ pub(crate) trait RowKernel {
 }
 
 impl<'p> TermBlock<'p> {
-    pub(crate) fn new(incidence: TermIncidence<'p>, slopes: &'p [Vec<f64>]) -> Self {
-        Self { incidence, slopes }
+    pub(crate) fn new(incidence: TermIncidence<'p>, slopes: &'p [Vec<f64>], at: usize) -> Self {
+        Self {
+            incidence,
+            slopes,
+            at,
+        }
     }
 
-    /// Where the block's coefficients sit.
+    /// The block's coefficients in the vector the products read and write.
+    pub(crate) fn dofs(&self) -> Range<usize> {
+        self.at..self.at + self.layout().n_dofs()
+    }
+
+    /// The block's shape: levels and columns.
     pub(crate) fn layout(&self) -> &'p TermLayout {
         self.incidence.layout()
     }

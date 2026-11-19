@@ -7,7 +7,7 @@ mod row_index;
 
 pub(crate) use encoding::FactorEncoding;
 pub use layout::CoefficientLayout;
-pub(crate) use layout::{Column, TermLayout};
+pub(crate) use layout::{Column, TermLayout, Unknowns};
 #[cfg(test)]
 pub(crate) use level_reduction::LEVEL_LEAF;
 pub(crate) use level_reduction::{LevelReduction, LevelSlots, LEVEL_GROUP};

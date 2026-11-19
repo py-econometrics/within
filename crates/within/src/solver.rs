@@ -215,7 +215,7 @@ impl std::fmt::Debug for Solver<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Solver")
             .field("n_obs", &self.design.n_obs())
-            .field("n_dofs", &self.design.n_dofs())
+            .field("n_dofs", &self.design.layout().n_dofs())
             .field("has_weights", &self.design.is_weighted())
             .field("has_preconditioner", &self.preconditioner().is_some())
             .field("has_escalated", &self.has_escalated())
@@ -296,7 +296,7 @@ impl<'a> Solver<'a> {
                     Some(m) => m,
                     None => {
                         identity = IdentityOp {
-                            n: self.design.n_dofs(),
+                            n: self.design.unknowns().len(),
                         };
                         &identity
                     }
@@ -407,7 +407,7 @@ impl<'a> Solver<'a> {
         // Orthogonalize the slope columns (if any) before the preconditioner reads them.
         let design = design.into_design()?.orthogonalize(weights)?;
         let gramian = Gramian::new(&design);
-        let n_dofs = design.n_dofs();
+        let n_dofs = design.unknowns().len();
 
         let slot = match preconditioner.into() {
             PreconditionerInput::Default => {
@@ -502,7 +502,7 @@ impl<'a> Solver<'a> {
 
         let (solutions, build_secs) = self.solve_all(ys, lsmr)?;
 
-        let mut x = Vec::with_capacity(self.design.n_dofs() * n_rhs);
+        let mut x = Vec::with_capacity(self.design.layout().n_dofs() * n_rhs);
         let mut demeaned = Vec::with_capacity(self.design.n_obs() * n_rhs);
         let mut converged = Vec::with_capacity(n_rhs);
         let mut iterations = Vec::with_capacity(n_rhs);
@@ -532,7 +532,7 @@ impl<'a> Solver<'a> {
             // The deferred build is the batch's only setup, so this is zero when it built nothing.
             time_setup: build_secs,
             time_total: t_start.elapsed().as_secs_f64(),
-            n_dofs: self.design.n_dofs(),
+            n_dofs: self.design.layout().n_dofs(),
             n_obs: self.design.n_obs(),
         })
     }
@@ -548,7 +548,7 @@ impl<'a> Solver<'a> {
 
     /// Number of DOFs (coefficients).
     pub fn n_dofs(&self) -> usize {
-        self.design.n_dofs()
+        self.design.layout().n_dofs()
     }
 
     /// Number of observations.
