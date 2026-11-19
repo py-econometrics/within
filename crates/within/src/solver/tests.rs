@@ -261,9 +261,7 @@ fn max_abs_group_mean(design: &OrthogonalDesign<'_>, demeaned: &[f64]) -> f64 {
 
 /// Schwarz built up front, so an aliased solve rests on the local solves.
 fn additive() -> PreconditionerConfig {
-    PreconditionerConfig::Additive {
-        local_solver: Default::default(),
-    }
+    PreconditionerConfig::Schwarz(crate::config::Schwarz::default())
 }
 
 fn solve_tight(solver: &Solver<'_>, y: &[f64]) -> crate::SolveResult {
@@ -342,16 +340,18 @@ fn a_failed_deferred_build_is_kept_and_reported_again() {
     // A zero-tolerance, zero-iteration certificate rejects the signed cross-block deterministically.
     let panel = SharedCovariatePair::new();
     let precond = PreconditionerConfig::Adaptive {
-        local_solver: LocalSolverConfig {
-            scaling: ScalingConfig {
-                tolerance: 0.0,
-                max_iterations: 0,
-                on_failure: ScalingFailure::Error,
-            },
-            ..LocalSolverConfig::default()
-        },
         // Escalates after any single non-vanishing contraction, so the handoff is deterministic.
         stall: crate::Staleness::try_new(1, 0.0).expect("valid staleness"),
+        schwarz: crate::config::Schwarz {
+            local_solver: LocalSolverConfig {
+                scaling: ScalingConfig {
+                    tolerance: 0.0,
+                    max_iterations: 0,
+                    on_failure: ScalingFailure::Error,
+                },
+                ..LocalSolverConfig::default()
+            },
+        },
     };
     let solver = Solver::new(panel.effects(), None, precond).unwrap();
     let unscalable = |r: &Result<crate::SolveResult, WithinError>| {
@@ -440,9 +440,7 @@ fn an_alias_through_a_zero_loading_still_converges() {
         Effect::new(&firm, true, []).unwrap(),
         Effect::new(&year, true, []).unwrap(),
     ];
-    let schwarz = PreconditionerConfig::Additive {
-        local_solver: Default::default(),
-    };
+    let schwarz = PreconditionerConfig::Schwarz(crate::config::Schwarz::default());
     let solver = Solver::new(effects, None, schwarz).expect("solver");
     let out = solve_tight(&solver, &y);
     let group_mean = max_abs_group_mean(&solver.design, &out.demeaned);

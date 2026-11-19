@@ -156,27 +156,31 @@ impl Default for ApproxSchurConfig {
 pub enum PreconditionerConfig {
     /// Identity preconditioner. Solves the unpreconditioned normal equations.
     Off,
-    /// One-level additive Schwarz over factor-pair subdomains.
-    Additive {
-        /// Local solver configuration applied inside each subdomain.
-        local_solver: LocalSolverConfig,
-    },
+    /// Schwarz from construction on.
+    Schwarz(Schwarz),
     /// Diagonal/Jacobi; a zero diagonal takes the pseudo-inverse, pinning that coordinate to 0.
     Diagonal,
-    /// Diagonal first; additive Schwarz is built at, and used from, the first stalled contraction.
+    /// Diagonal first; Schwarz is built at, and used from, the first `stall`.
     Adaptive {
-        /// Local solver configuration for the escalated Schwarz factorization.
-        local_solver: LocalSolverConfig,
-        /// Contraction-stall condition that triggers escalation.
+        /// The contraction stall on the diagonal that hands the solve to Schwarz.
         stall: Staleness,
+        /// The Schwarz the solve moves to.
+        schwarz: Schwarz,
     },
+}
+
+/// One-level additive Schwarz over channel-pair subdomains.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Schwarz {
+    /// Local solver configuration applied inside each subdomain.
+    pub local_solver: LocalSolverConfig,
 }
 
 impl Default for PreconditionerConfig {
     fn default() -> Self {
         Self::Adaptive {
-            local_solver: LocalSolverConfig::default(),
             stall: Staleness::default(),
+            schwarz: Schwarz::default(),
         }
     }
 }
@@ -187,10 +191,8 @@ impl PreconditionerConfig {
         let (first, second) = match self {
             Self::Off => (None, None),
             Self::Diagonal => (Some(Rung::Diagonal), None),
-            Self::Additive { local_solver } => (Some(Rung::Schwarz(local_solver)), None),
-            Self::Adaptive { local_solver, .. } => {
-                (Some(Rung::Diagonal), Some(Rung::Schwarz(local_solver)))
-            }
+            Self::Schwarz(schwarz) => (Some(Rung::Schwarz(schwarz)), None),
+            Self::Adaptive { schwarz, .. } => (Some(Rung::Diagonal), Some(Rung::Schwarz(schwarz))),
         };
         first.into_iter().chain(second)
     }
@@ -206,7 +208,7 @@ impl PreconditionerConfig {
     pub(crate) fn validate(&self) -> Result<(), BuildError> {
         self.rungs().try_for_each(|rung| match rung {
             Rung::Diagonal => Ok(()),
-            Rung::Schwarz(local_solver) => local_solver.validate(),
+            Rung::Schwarz(schwarz) => schwarz.local_solver.validate(),
         })
     }
 }
@@ -215,7 +217,7 @@ impl PreconditionerConfig {
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Rung<'c> {
     Diagonal,
-    Schwarz(&'c LocalSolverConfig),
+    Schwarz(&'c Schwarz),
 }
 
 /// LSMR solver configuration: tolerances and reorthogonalization window.

@@ -175,7 +175,7 @@ Coefficients for unidentified directions are pinned to the **minimal-norm** valu
 
 ```rust
 use ndarray::Array2;
-use within::{solve, LsmrOptions, PreconditionerConfig};
+use within::{solve, LsmrOptions, PreconditionerConfig, Schwarz};
 use within::config::LocalSolverConfig;
 
 let categories = /* Array2<u32> of shape (n_obs, n_factors) */;
@@ -185,11 +185,11 @@ let y: &[f64] = /* response vector */;
 let r = solve(categories.view(), &y, None, &LsmrOptions::default(), None)?;
 assert!(r.converged);
 
-// Tighter tolerance with an explicit additive preconditioner
+// Tighter tolerance with Schwarz built up front
 let lsmr = LsmrOptions { tol: 1e-10, ..LsmrOptions::default() };
-let precond = PreconditionerConfig::Additive {
+let precond = PreconditionerConfig::Schwarz(Schwarz {
     local_solver: LocalSolverConfig::default(),
-};
+});
 let r = solve(categories.view(), &y, None, &lsmr, &precond)?;
 
 // Opt into diagonal/Jacobi preconditioning
@@ -243,7 +243,8 @@ assert_eq!(result.x.len(), 4); // two observed levels in each of two factors
 |---|---|
 | `Design` | Reusable immutable design; build with `Design::from_categories` or `Design::new`, then share via `Solver::new(&design, ...)` or `solve(&design, ...)`. |
 | `LsmrOptions` | `{ tol: f64, maxiter: usize, local_size: Option<usize> }` |
-| `PreconditionerConfig` | `Off` \| `Additive { local_solver: LocalSolverConfig }` \| `Diagonal` (`#[non_exhaustive]`) |
+| `PreconditionerConfig` | `Off` \| `Schwarz(Schwarz)` \| `Diagonal` \| `Adaptive { stall: Staleness, schwarz: Schwarz }` (`#[non_exhaustive]`) |
+| `Schwarz` | `{ local_solver: LocalSolverConfig }` |
 | `LocalSolverConfig` | `{ approx_chol, schur: SchurMode, dense_threshold, scaling }` |
 | `SchurMode` | `Approximate(ApproxSchurConfig)` \| `Exact` |
 | `Preconditioner` | Opaque built handle — reuse via `Solver::new(.., precond)` (owned or `&`) |

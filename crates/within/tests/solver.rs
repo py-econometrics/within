@@ -169,7 +169,7 @@ fn test_solver_properties() {
 
 /// Every non-default field set, so a roundtrip that silently reset one would be caught.
 fn fully_specified_additive() -> PreconditionerConfig {
-    PreconditionerConfig::Additive {
+    PreconditionerConfig::Schwarz(within::Schwarz {
         local_solver: LocalSolverConfig {
             approx_chol: ApproxCholConfig {
                 seed: 41,
@@ -183,7 +183,7 @@ fn fully_specified_additive() -> PreconditionerConfig {
                 on_failure: ScalingFailure::Error,
             },
         },
-    }
+    })
 }
 
 /// A solved ladder hands out whichever rung it reached, so the axis is the two eager variants.

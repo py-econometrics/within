@@ -28,6 +28,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - **BREAKING:** `schwarz_precond::LocalSolver::solve_local(x, threads, stack)` solves in place under a thread budget `Threads` (replacing `allow_inner_parallelism: bool`) with scratch from a caller-owned `MemStack`, and the required `scratch(threads) -> StackReq` replaces `scratch_size()`; `schwarz_precond` re-exports dyn-stack's `MemBuffer`, `MemStack` and `StackReq` (#509). `SubdomainEntry::{core, is_empty, scratch_size, apply_weighted_into_with_scratch, apply_weighted_into_atomic}`, `SubdomainCore::{restrict_weighted, prolongate_weighted_add, prolongate_weighted_add_atomic}`, `BuildError::ScratchSizeTooSmall` and `SolveError::Synchronization` are removed.
 - **BREAKING:** The serialized `Preconditioner` wire format moved v19 → v20; 0.4.0 bytes no longer decode.
 - **BREAKING:** A `Preconditioner` is a built map plus the configuration whose ladder it belongs to: `variant_name()` names the map, so an unescalated `Adaptive` handle reports `"Diagonal"`, and `config()` of an escalated one returns its `Adaptive` configuration. Reusing either resumes its ladder as before. The wire-format fixture moves v22 → v23 (#427).
+- **BREAKING:** The Schwarz settings are one public type, `Schwarz { local_solver }`: `PreconditionerConfig::Additive { local_solver }` is now `PreconditionerConfig::Schwarz(Schwarz { local_solver })`, and `Adaptive { local_solver, stall }` is `Adaptive { stall, schwarz }`. Python's `PreconditionerConfig.Additive` and `.Adaptive` are unchanged (#427).
 
 ### Fixed
 

@@ -216,12 +216,12 @@ fn surplus_component_sampled_matches_exact_reduction() {
             Effect::new(&f, false, [&z[..]]).expect("slope effect"),
             Effect::new(&g, true, []).expect("plain effect"),
         ];
-        let config = PreconditionerConfig::Additive {
+        let config = PreconditionerConfig::Schwarz(within::Schwarz {
             local_solver: within::config::LocalSolverConfig {
                 schur,
                 ..Default::default()
             },
-        };
+        });
         Solver::new(effects, None, config)
             .expect("build")
             .solve(&y, &LsmrOptions::default())

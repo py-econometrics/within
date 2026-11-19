@@ -242,8 +242,8 @@ fn build_map(
 ) -> Result<(Option<Map>, Vec<BuildWarning>), BuildError> {
     Ok(match rung {
         Rung::Diagonal => (Some(Map::Diagonal(diagonal_map(gramian)?)), Vec::new()),
-        Rung::Schwarz(local_solver) => {
-            let (domains, warnings) = build_local_domains(gramian, local_solver)?;
+        Rung::Schwarz(schwarz) => {
+            let (domains, warnings) = build_local_domains(gramian, &schwarz.local_solver)?;
             if domains.is_empty() {
                 return Ok((None, warnings));
             }

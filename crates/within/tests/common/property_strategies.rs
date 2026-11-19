@@ -3,7 +3,7 @@
 
 use ndarray::Array2;
 use proptest::prelude::*;
-use within::config::{LocalSolverConfig, Staleness};
+use within::config::Staleness;
 use within::PreconditionerConfig;
 
 /// Generate a random FE problem: (categories Array2<u32>, y Vec<f64>).
@@ -38,16 +38,14 @@ pub fn random_fe_problem_strategy() -> impl Strategy<Value = (Array2<u32>, Vec<f
 
 /// One-level additive Schwarz, pinned so a test names the rung the ladder would escalate to.
 pub fn additive() -> PreconditionerConfig {
-    PreconditionerConfig::Additive {
-        local_solver: LocalSolverConfig::default(),
-    }
+    PreconditionerConfig::Schwarz(within::Schwarz::default())
 }
 
 /// The diagonal→Schwarz ladder, named rather than reached through `default()`.
 pub fn adaptive() -> PreconditionerConfig {
     PreconditionerConfig::Adaptive {
-        local_solver: LocalSolverConfig::default(),
         stall: Staleness::default(),
+        schwarz: within::Schwarz::default(),
     }
 }
 
