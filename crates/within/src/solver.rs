@@ -20,7 +20,7 @@ use crate::{BuildError, BuildWarning, SolveError, WithinError};
 #[cfg(test)]
 mod tests;
 
-use crate::precond::PrecondSlot;
+use crate::precond::Ladder;
 
 /// Fallible conversion into a [`Design`] for [`Solver::new`]: a categories
 /// matrix (`ArrayView2<u32>`), a list of [`Effect`] terms, a pass-through
@@ -208,7 +208,7 @@ impl BatchSolveResult {
 pub struct Solver<'a> {
     /// `D̃ = D·R` for this solver's weights.
     design: OrthogonalDesign<'a>,
-    slot: PrecondSlot,
+    ladder: Ladder,
 }
 
 impl std::fmt::Debug for Solver<'_> {
@@ -351,26 +351,19 @@ impl<'a> Solver<'a> {
         ys: &[&[f64]],
         lsmr: &LsmrOptions,
     ) -> Result<(Vec<RhsSolution>, f64), WithinError> {
-        let (map, ladder) = match &self.slot {
-            PrecondSlot::Static { map, .. } => (map.as_ref(), None),
-            // A settled ladder never re-probes: its map, or its kept build error, is final.
-            PrecondSlot::Adaptive(a) => match a.built.get() {
-                Some(Ok(_)) => (Some(a.rung()), None),
-                Some(Err(e)) => return Err(e.clone().into()),
-                None => (Some(&a.base), Some(a.as_ref())),
-            },
-        };
-        let stall = ladder.map(|a| &a.ladder().stall as &dyn EscalationPolicy);
-        let passes = ys.iter().map(|&y| Pass::Unstarted(y)).collect();
-        let mut passes = self.rung(passes, map, stall, lsmr)?;
-
+        let gramian = Gramian::new(&self.design);
+        let mut current = self.ladder.current(gramian)?;
+        let mut passes = ys.iter().map(|&y| Pass::Unstarted(y)).collect();
         let mut build_secs = 0.0;
-        if let Some(a) = ladder {
-            if passes.iter().any(|p| matches!(p, Pass::Stalled { .. })) {
-                // Built outside the fan-out, so sibling RHS never race for it.
-                build_secs = a.escalate(Gramian::new(&self.design))?;
-                passes = self.rung(passes, Some(a.rung()), None, lsmr)?;
+        loop {
+            let stall = current.stall.map(|s| s as &dyn EscalationPolicy);
+            passes = self.rung(passes, current.map(), stall, lsmr)?;
+            if !passes.iter().any(|p| matches!(p, Pass::Stalled { .. })) {
+                break;
             }
+            // Built outside the fan-out, so sibling RHS never race for it.
+            build_secs += self.ladder.escalate(gramian, &current)?.as_secs_f64();
+            current = self.ladder.current(gramian)?;
         }
         let solutions = passes
             .into_iter()
@@ -407,44 +400,24 @@ impl<'a> Solver<'a> {
         // Orthogonalize the slope columns (if any) before the preconditioner reads them.
         let design = design.into_design()?.orthogonalize(weights)?;
         let gramian = Gramian::new(&design);
-        let n_dofs = design.unknowns().len();
-
-        let slot = match preconditioner.into() {
-            PreconditionerInput::Default => {
-                PrecondSlot::build(gramian, PreconditionerConfig::default())?
-            }
-            PreconditionerInput::Config(c) => PrecondSlot::build(gramian, c)?,
-            PreconditionerInput::Prebuilt(p) => {
-                if p.nrows() != n_dofs || p.ncols() != n_dofs {
-                    return Err(BuildError::PreconditionerDimensionMismatch {
-                        expected: n_dofs,
-                        actual_rows: p.nrows(),
-                        actual_cols: p.ncols(),
-                    });
-                }
-                PrecondSlot::reuse(gramian, p)?
-            }
+        let ladder = match preconditioner.into() {
+            PreconditionerInput::Default => Ladder::new(gramian, PreconditionerConfig::default())?,
+            PreconditionerInput::Config(c) => Ladder::new(gramian, c)?,
+            PreconditionerInput::Prebuilt(p) => Ladder::resume(gramian, p)?,
         };
-
-        Ok(Self { design, slot })
+        Ok(Self { design, ladder })
     }
 
     /// Non-fatal events from the preconditioner build; a reused pre-built preconditioner
     /// contributes none (its own were reported when built). An Adaptive solver reports its
     /// deferred build's once a solve escalates.
     pub fn warnings(&self) -> &[BuildWarning] {
-        match &self.slot {
-            PrecondSlot::Static { warnings, .. } => warnings,
-            PrecondSlot::Adaptive(a) => a.build().map_or(&[], |b| &b.warnings),
-        }
+        self.ladder.warnings()
     }
 
     /// Whether an [`Adaptive`](crate::PreconditionerConfig::Adaptive) solve has built Schwarz.
     pub fn has_escalated(&self) -> bool {
-        match &self.slot {
-            PrecondSlot::Adaptive(a) => a.schwarz().is_some(),
-            PrecondSlot::Static { .. } => false,
-        }
+        self.ladder.has_escalated()
     }
 
     /// Per-level directions the data cannot identify, shared across all RHS:
@@ -538,12 +511,9 @@ impl<'a> Solver<'a> {
     }
 
     /// Access the preconditioner (for serialization or reuse across solvers).
-    /// Under Adaptive: the Schwarz map once built, otherwise the diagonal base carrying the ladder.
+    /// Under Adaptive: the Schwarz map once built, otherwise the diagonal, which escalates when reused.
     pub fn preconditioner(&self) -> Option<&Preconditioner> {
-        match &self.slot {
-            PrecondSlot::Static { map, .. } => map.as_ref(),
-            PrecondSlot::Adaptive(a) => Some(a.rung()),
-        }
+        self.ladder.preconditioner()
     }
 
     /// Number of DOFs (coefficients).

@@ -337,7 +337,6 @@ impl SharedCovariatePair {
 #[test]
 fn a_failed_deferred_build_is_kept_and_reported_again() {
     use crate::config::{ScalingConfig, ScalingFailure};
-    use crate::precond::PrecondSlot;
     use crate::{BuildError, WithinError};
 
     // A zero-tolerance, zero-iteration certificate rejects the signed cross-block deterministically.
@@ -363,13 +362,6 @@ fn a_failed_deferred_build_is_kept_and_reported_again() {
     };
     let first = solver.solve(&panel.y, None);
     assert!(unscalable(&first), "{first:?}");
-    let PrecondSlot::Adaptive(a) = &solver.slot else {
-        panic!("the ladder")
-    };
-    assert!(matches!(
-        a.built.get(),
-        Some(Err(BuildError::UnscalableComponent { .. }))
-    ));
     assert!(unscalable(&solver.solve(&panel.y, None)));
     assert!(!solver.has_escalated());
 }

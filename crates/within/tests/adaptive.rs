@@ -170,7 +170,7 @@ fn an_unescalated_map_reuses_as_the_ladder(#[values(false, true)] through_wire: 
     let y = common::make_deterministic_y(&crossed_panel());
     let source = Solver::new(crossed_panel(), None, adaptive(eager_stall())).expect("solver");
     let taken = source.preconditioner().expect("a base map").clone();
-    assert_eq!(taken.variant_name(), "Adaptive");
+    assert_eq!(taken.variant_name(), "Diagonal");
     assert_eq!(taken.config(), adaptive(eager_stall()));
     let taken = if through_wire {
         let bytes = postcard::to_stdvec(&taken).expect("serialize");
@@ -207,7 +207,8 @@ fn a_reused_ladder_settles_on_one_term() {
 
     let map = reused.preconditioner().expect("a settled map");
     assert_eq!(map.variant_name(), "Diagonal");
-    assert_eq!(map.config(), PreconditionerConfig::Diagonal);
+    assert_eq!(map.config(), adaptive(eager_stall()));
+    assert!(!reused.has_escalated());
 }
 
 /// The batch builds once, between passes, and every stalled RHS resumes on the map; the build

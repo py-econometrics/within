@@ -181,6 +181,43 @@ impl Default for PreconditionerConfig {
     }
 }
 
+impl PreconditionerConfig {
+    /// The rungs a solve climbs, in order.
+    pub(crate) fn rungs(&self) -> impl Iterator<Item = Rung<'_>> {
+        let (first, second) = match self {
+            Self::Off => (None, None),
+            Self::Diagonal => (Some(Rung::Diagonal), None),
+            Self::Additive { local_solver } => (Some(Rung::Schwarz(local_solver)), None),
+            Self::Adaptive { local_solver, .. } => {
+                (Some(Rung::Diagonal), Some(Rung::Schwarz(local_solver)))
+            }
+        };
+        first.into_iter().chain(second)
+    }
+
+    /// The stall that hands a solve from rung `at` to the next; `None` on a rung never left.
+    pub(crate) fn stall(&self, at: usize) -> Option<&Staleness> {
+        match self {
+            Self::Adaptive { stall, .. } if at == 0 => Some(stall),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), BuildError> {
+        self.rungs().try_for_each(|rung| match rung {
+            Rung::Diagonal => Ok(()),
+            Rung::Schwarz(local_solver) => local_solver.validate(),
+        })
+    }
+}
+
+/// The map one rung of a ladder builds.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Rung<'c> {
+    Diagonal,
+    Schwarz(&'c LocalSolverConfig),
+}
+
 /// LSMR solver configuration: tolerances and reorthogonalization window.
 #[derive(Debug, Clone)]
 pub struct LsmrOptions {

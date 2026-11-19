@@ -1,131 +1,188 @@
-//! The solver's preconditioner slot: a fixed map, or the diagonal→Schwarz ladder that
-//! [`PreconditionerConfig::Adaptive`] builds on a stalled solve.
+//! The solver's preconditioner ladder: the rungs of its configuration, each built at most once,
+//! the first at construction and each later one on a stall of the rung below.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use once_cell::sync::OnceCell;
 
-use crate::config::PreconditionerConfig;
-use crate::precond::{
-    build_adaptive, build_diagonal, build_schwarz, AdaptiveLadder, Preconditioner,
-};
+use crate::config::{PreconditionerConfig, Rung, Staleness};
+use crate::precond::{build_map, Preconditioner};
 use crate::system::Gramian;
 use crate::{BuildError, BuildWarning};
 
-/// The solver's preconditioner: a fixed map, or an adaptive diagonal→Schwarz ladder.
-pub(crate) enum PrecondSlot {
-    /// A single map (`None` = unpreconditioned) built at construction, with its build's warnings.
-    Static {
-        map: Option<Preconditioner>,
-        warnings: Vec<BuildWarning>,
-    },
-    /// Diagonal now, Schwarz built lazily on a stalled contraction.
-    Adaptive(Box<AdaptivePrecond>),
+/// A rung's settled build: its map, or `None` where it has nothing to act on.
+type Built = Result<RungBuild, BuildError>;
+
+struct RungBuild {
+    map: Option<Preconditioner>,
+    warnings: Vec<BuildWarning>,
 }
 
-impl PrecondSlot {
-    /// Resolve a strategy: a fixed map built now, or a diagonal base with Schwarz deferred to a stall.
-    pub(crate) fn build(
+/// The rungs of one configuration on one system, climbed upward only.
+pub(crate) struct Ladder {
+    config: PreconditionerConfig,
+    /// One cell per rung; a design's own build failure settles too, a failed isolation pool retries.
+    built: Vec<OnceCell<Built>>,
+}
+
+/// The rung a solve runs on, and the stall that hands it to the next.
+pub(crate) struct Current<'l> {
+    top: Option<(usize, &'l Preconditioner)>,
+    pub(crate) stall: Option<&'l Staleness>,
+}
+
+impl<'l> Current<'l> {
+    pub(crate) fn map(&self) -> Option<&'l Preconditioner> {
+        self.top.map(|(_, map)| map)
+    }
+}
+
+impl Ladder {
+    /// Build the first rung now; the rest wait for a stall.
+    pub(crate) fn new(
         gramian: Gramian<'_>,
         config: PreconditionerConfig,
     ) -> Result<Self, BuildError> {
-        Ok(match config {
-            PreconditionerConfig::Off => Self::Static {
-                map: None,
-                warnings: Vec::new(),
-            },
-            PreconditionerConfig::Diagonal => Self::Static {
-                map: Some(build_diagonal(gramian)?),
-                warnings: Vec::new(),
-            },
-            PreconditionerConfig::Additive { local_solver } => {
-                let (map, warnings) = build_schwarz(gramian, &local_solver)?;
-                Self::Static { map, warnings }
-            }
-            PreconditionerConfig::Adaptive {
-                local_solver,
-                stall,
-            } => {
-                // Fail before the diagonal pass; `reuse` repeats this for a deserialized ladder.
-                local_solver.validate()?;
-                let base = build_adaptive(gramian, stall, local_solver)?;
-                Self::reuse(gramian, base)?
-            }
-        })
+        // Fail before the first build, so a deferred rung never meets an invalid config.
+        config.validate()?;
+        let ladder = Self::unbuilt(config);
+        if let Some(rung) = ladder.config.rungs().next() {
+            let first = ladder.build(gramian, 0, rung)?;
+            let _ = ladder.built[0].set(Ok(first));
+        }
+        Ok(ladder)
     }
 
-    /// An unescalated ladder resumes, or settles on one term; any other map stays fixed.
-    pub(crate) fn reuse(
-        gramian: Gramian<'_>,
-        preconditioner: Preconditioner,
-    ) -> Result<Self, BuildError> {
-        let Some(ladder) = preconditioner.ladder() else {
-            return Ok(Self::Static {
-                map: Some(preconditioner),
-                warnings: Vec::new(),
+    /// Resume the ladder of a map built elsewhere at the rung it was built on.
+    pub(crate) fn resume(gramian: Gramian<'_>, map: Preconditioner) -> Result<Self, BuildError> {
+        let n = gramian.unknowns().len();
+        if map.nrows() != n || map.ncols() != n {
+            return Err(BuildError::PreconditionerDimensionMismatch {
+                expected: n,
+                actual_rows: map.nrows(),
+                actual_cols: map.ncols(),
             });
-        };
-        // A deserialized ladder skipped `Adaptive`'s build-time check, and a one-term design settles.
-        ladder.escalated.validate()?;
-        Ok(if gramian.layout().n_terms() < 2 {
-            Self::Static {
-                map: Some(preconditioner.settle()),
-                warnings: Vec::new(),
-            }
+        }
+        // A deserialized map skipped its config's construction-time check.
+        map.config.validate()?;
+        let ladder = Self::unbuilt(map.config.clone());
+        let at = map.rung;
+        let _ = ladder.built[at].set(Ok(RungBuild {
+            map: Some(map),
+            warnings: Vec::new(),
+        }));
+        Ok(ladder)
+    }
+
+    fn unbuilt(config: PreconditionerConfig) -> Self {
+        let built = config.rungs().map(|_| OnceCell::new()).collect();
+        Self { config, built }
+    }
+
+    fn build(&self, gramian: Gramian<'_>, at: usize, rung: Rung<'_>) -> Built {
+        let started = Instant::now();
+        let (map, warnings) = if offers(gramian, rung) {
+            build_map(gramian, rung)?
         } else {
-            Self::Adaptive(Box::new(AdaptivePrecond {
-                base: preconditioner,
-                built: OnceCell::new(),
-            }))
+            (None, Vec::new())
+        };
+        Ok(RungBuild {
+            map: map.map(|map| Preconditioner {
+                config: self.config.clone(),
+                rung: at,
+                map,
+                build_duration: started.elapsed(),
+            }),
+            warnings,
         })
     }
-}
 
-/// Diagonal-first strategy holding everything needed to build the Schwarz rung on demand.
-pub(crate) struct AdaptivePrecond {
-    /// Applies the diagonal and carries the ladder, so handing it out keeps the strategy.
-    pub(crate) base: Preconditioner,
-    /// A design's own build failure settles here too; a failed isolation pool retries instead.
-    pub(crate) built: OnceCell<Result<AdaptiveBuild, BuildError>>,
-}
-
-/// Outcome of the deferred build: the Schwarz map, or `None` when no factor-pair target exists.
-pub(crate) struct AdaptiveBuild {
-    pub(crate) schwarz: Option<Preconditioner>,
-    pub(crate) warnings: Vec<BuildWarning>,
-}
-
-impl AdaptivePrecond {
-    pub(crate) fn ladder(&self) -> &AdaptiveLadder {
-        self.base
-            .ladder()
-            .expect("an adaptive slot is built only from a ladder")
+    /// The highest rung with a map.
+    fn top(&self) -> Option<(usize, &Preconditioner)> {
+        self.built
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(at, cell)| match cell.get() {
+                Some(Ok(RungBuild { map: Some(map), .. })) => Some((at, map)),
+                _ => None,
+            })
     }
 
-    pub(crate) fn build(&self) -> Option<&AdaptiveBuild> {
-        self.built.get().and_then(|b| b.as_ref().ok())
+    /// The first rung above `at` this system offers that has not settled without a map.
+    fn next(&self, gramian: Gramian<'_>, at: Option<usize>) -> Option<(usize, Rung<'_>)> {
+        self.config
+            .rungs()
+            .enumerate()
+            .skip(at.map_or(0, |at| at + 1))
+            .filter(|(at, _)| {
+                !matches!(self.built[*at].get(), Some(Ok(RungBuild { map: None, .. })))
+            })
+            .find(|(_, rung)| offers(gramian, *rung))
     }
 
-    pub(crate) fn schwarz(&self) -> Option<&Preconditioner> {
-        self.build().and_then(|b| b.schwarz.as_ref())
+    /// The top map, with the stall that leaves it armed only while a rung above can still be built.
+    pub(crate) fn current(&self, gramian: Gramian<'_>) -> Result<Current<'_>, BuildError> {
+        let top = self.top();
+        let at = top.map(|(at, _)| at);
+        let stall = match (at, self.next(gramian, at)) {
+            (Some(at), Some((next, _))) => {
+                // A settled build failure is final: every later solve reports it.
+                if let Some(Err(e)) = self.built[next].get() {
+                    return Err(e.clone());
+                }
+                self.config.stall(at)
+            }
+            _ => None,
+        };
+        Ok(Current { top, stall })
     }
 
-    /// The rung a solve should run on: the escalated Schwarz map once built, else the diagonal.
-    pub(crate) fn rung(&self) -> &Preconditioner {
-        self.schwarz().unwrap_or(&self.base)
-    }
-
-    /// Build once and return this call's build seconds; every other caller waits for it.
-    pub(crate) fn escalate(&self, gramian: Gramian<'_>) -> Result<f64, BuildError> {
-        let mut build_secs = 0.0;
-        let built = self.built.get_or_try_init(|| {
-            let t_build = Instant::now();
-            let outcome = isolated(|| build_schwarz(gramian, &self.ladder().escalated))?
-                .map(|(schwarz, warnings)| AdaptiveBuild { schwarz, warnings });
-            build_secs = t_build.elapsed().as_secs_f64();
-            Ok(outcome)
+    /// Build the rung above the one `stalled` ran on, once; returns this call's build time.
+    pub(crate) fn escalate(
+        &self,
+        gramian: Gramian<'_>,
+        stalled: &Current<'_>,
+    ) -> Result<Duration, BuildError> {
+        let Some((next, rung)) = self.next(gramian, stalled.top.map(|(at, _)| at)) else {
+            return Ok(Duration::ZERO);
+        };
+        let mut spent = Duration::ZERO;
+        let built = self.built[next].get_or_try_init(|| {
+            let started = Instant::now();
+            let built = isolated(|| self.build(gramian, next, rung))?;
+            spent = started.elapsed();
+            Ok::<_, BuildError>(built)
         })?;
-        built.as_ref().map(|_| build_secs).map_err(Clone::clone)
+        built.as_ref().map(|_| spent).map_err(Clone::clone)
+    }
+
+    /// The map a solve starts on: the highest rung built so far.
+    pub(crate) fn preconditioner(&self) -> Option<&Preconditioner> {
+        self.top().map(|(_, map)| map)
+    }
+
+    /// Whether this solver has built a rung above the one it started on.
+    pub(crate) fn has_escalated(&self) -> bool {
+        let start = self.built.iter().position(|cell| cell.get().is_some());
+        self.top().map(|(at, _)| at) > start
+    }
+
+    /// The warnings of the highest settled build.
+    pub(crate) fn warnings(&self) -> &[BuildWarning] {
+        self.built
+            .iter()
+            .rev()
+            .find_map(|cell| cell.get()?.as_ref().ok())
+            .map_or(&[], |build| &build.warnings)
+    }
+}
+
+/// Whether `rung` can act on this system: Schwarz needs a channel pair, hence two terms.
+fn offers(gramian: Gramian<'_>, rung: Rung<'_>) -> bool {
+    match rung {
+        Rung::Diagonal => true,
+        Rung::Schwarz(_) => gramian.layout().n_terms() >= 2,
     }
 }
 

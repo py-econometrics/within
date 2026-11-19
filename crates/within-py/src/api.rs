@@ -374,7 +374,7 @@ impl PySolver {
     }
 
     /// The preconditioner in use, or ``None`` if unconfigured; picklable and reusable. Under
-    /// ``Adaptive`` it is the Schwarz map once built, else the diagonal base carrying the ladder.
+    /// ``Adaptive`` it is the Schwarz map once built, else the diagonal, which escalates when reused.
     #[getter]
     #[pyo3(name = "preconditioner")]
     fn preconditioner_py(&self) -> PyResult<Option<PyPreconditioner>> {

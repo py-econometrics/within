@@ -402,7 +402,7 @@ class Solver:
         """The preconditioner in use, for serialization or reuse.
 
         Under ``Adaptive`` this is the Schwarz map once built, and before that
-        the diagonal base carrying the ladder, which escalates when reused.
+        the diagonal, which escalates when reused.
         """
         ...
     @property

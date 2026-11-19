@@ -5,9 +5,9 @@ use rayon::prelude::*;
 use schwarz_precond::{Operator, SchwarzPreconditioner, SubdomainEntry};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use crate::config::{LocalSolverConfig, PreconditionerConfig, Staleness};
+use crate::config::{PreconditionerConfig, Rung};
 use crate::system::Gramian;
 use crate::{BuildError, BuildWarning};
 use block_solver::BlockSolver;
@@ -19,20 +19,18 @@ mod ladder;
 mod tests;
 
 pub(crate) use factor_pairs::{build_local_domains, LocalDomain};
-pub(crate) use ladder::PrecondSlot;
+pub(crate) use ladder::Ladder;
 
 /// Concrete additive Schwarz type used in the parent crate.
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct FeSchwarz {
     inner: SchwarzPreconditioner<BlockSolver>,
-    local_solver: LocalSolverConfig,
 }
 
 impl std::fmt::Debug for FeSchwarz {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FeSchwarz")
             .field("n_subdomains", &self.inner.subdomains().len())
-            .field("local_solver", &self.local_solver)
             .finish()
     }
 }
@@ -98,7 +96,6 @@ impl Operator for DiagonalPreconditioner {
 /// `n_dofs` may exceed the span of subdomain indices; an uncovered column resolves to `0`.
 pub(crate) fn build_additive(
     domains: Vec<LocalDomain>,
-    local_solver: &LocalSolverConfig,
     n_dofs: usize,
 ) -> Result<FeSchwarz, BuildError> {
     let entries = domains
@@ -107,7 +104,6 @@ pub(crate) fn build_additive(
         .collect::<Result<Vec<_>, BuildError>>()?;
     Ok(FeSchwarz {
         inner: SchwarzPreconditioner::with_n_dofs(entries, n_dofs),
-        local_solver: local_solver.clone(),
     })
 }
 
@@ -116,70 +112,87 @@ pub(crate) fn build_entry(domain: LocalDomain) -> Result<SubdomainEntry<BlockSol
     SubdomainEntry::try_new(core, solver).map_err(BuildError::Preconditioner)
 }
 
-/// Opaque handle to a pre-built preconditioner; cloning is O(1) via `Arc`.
+/// A built map `M⁻¹` and the configuration whose ladder it is a rung of; cloning is O(1).
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(try_from = "PreconditionerWire")]
 pub struct Preconditioner {
-    inner: Variant,
+    config: PreconditionerConfig,
+    /// Its position among `config`'s rungs.
+    rung: usize,
+    map: Map,
     build_duration: Duration,
 }
 
+/// The map a rung builds.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-enum Variant {
+enum Map {
     // Append only: postcard encodes by declaration order and the fixtures depend on it.
-    Additive(FeSchwarz),
     Diagonal(DiagonalPreconditioner),
-    Adaptive(AdaptiveLadder),
+    Schwarz(FeSchwarz),
 }
 
-/// An unescalated `Adaptive` map: the diagonal plus what a reusing solver needs to escalate.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct AdaptiveLadder {
-    base: DiagonalPreconditioner,
-    pub(crate) stall: Staleness,
-    pub(crate) escalated: LocalSolverConfig,
+impl Map {
+    fn is_built_by(&self, rung: &Rung<'_>) -> bool {
+        matches!(
+            (self, rung),
+            (Self::Diagonal(_), Rung::Diagonal) | (Self::Schwarz(_), Rung::Schwarz(_))
+        )
+    }
+
+    fn operator(&self) -> &dyn Operator {
+        match self {
+            Self::Diagonal(p) => p,
+            Self::Schwarz(p) => p,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct PreconditionerWire {
+    config: PreconditionerConfig,
+    rung: usize,
+    map: Map,
+    build_duration: Duration,
+}
+
+impl TryFrom<PreconditionerWire> for Preconditioner {
+    type Error = String;
+
+    fn try_from(wire: PreconditionerWire) -> Result<Self, String> {
+        let PreconditionerWire {
+            config,
+            rung,
+            map,
+            build_duration,
+        } = wire;
+        if !config
+            .rungs()
+            .nth(rung)
+            .is_some_and(|r| map.is_built_by(&r))
+        {
+            return Err(format!("the map is not rung {rung} of {config:?}"));
+        }
+        Ok(Self {
+            config,
+            rung,
+            map,
+            build_duration,
+        })
+    }
 }
 
 impl Preconditioner {
-    /// Stable display name for the concrete preconditioner variant.
+    /// Stable display name of the map: `"Diagonal"` or `"Additive"`.
     pub fn variant_name(&self) -> &'static str {
-        match &self.inner {
-            Variant::Additive(_) => "Additive",
-            Variant::Diagonal(_) => "Diagonal",
-            Variant::Adaptive(_) => "Adaptive",
+        match self.map {
+            Map::Diagonal(_) => "Diagonal",
+            Map::Schwarz(_) => "Additive",
         }
     }
 
-    /// The ladder a reusing solver resumes, while this map has not escalated.
-    pub(crate) fn ladder(&self) -> Option<&AdaptiveLadder> {
-        match &self.inner {
-            Variant::Adaptive(ladder) => Some(ladder),
-            Variant::Additive(_) | Variant::Diagonal(_) => None,
-        }
-    }
-
-    /// Drop the ladder for a design with no factor pair to escalate to, keeping its diagonal.
-    pub(crate) fn settle(self) -> Self {
-        match self.inner {
-            Variant::Adaptive(ladder) => Self {
-                inner: Variant::Diagonal(ladder.base),
-                ..self
-            },
-            Variant::Additive(_) | Variant::Diagonal(_) => self,
-        }
-    }
-
-    /// The configuration that rebuilds this map.
+    /// The configuration whose ladder this map is a rung of.
     pub fn config(&self) -> PreconditionerConfig {
-        match &self.inner {
-            Variant::Additive(p) => PreconditionerConfig::Additive {
-                local_solver: p.local_solver.clone(),
-            },
-            Variant::Diagonal(_) => PreconditionerConfig::Diagonal,
-            Variant::Adaptive(ladder) => PreconditionerConfig::Adaptive {
-                local_solver: ladder.escalated.clone(),
-                stall: ladder.stall,
-            },
-        }
+        self.config.clone()
     }
 
     // `within` does not re-export `schwarz_precond::Operator`, so these are the only public way.
@@ -204,27 +217,17 @@ impl Preconditioner {
     }
 }
 
-impl Preconditioner {
-    fn operator(&self) -> &dyn Operator {
-        match &self.inner {
-            Variant::Additive(p) => p,
-            Variant::Diagonal(p) => p,
-            Variant::Adaptive(ladder) => &ladder.base,
-        }
-    }
-}
-
 impl Operator for Preconditioner {
     fn nrows(&self) -> usize {
-        self.operator().nrows()
+        self.map.operator().nrows()
     }
 
     fn ncols(&self) -> usize {
-        self.operator().ncols()
+        self.map.operator().ncols()
     }
 
     fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
-        self.operator().apply(x, y)
+        self.map.operator().apply(x, y)
     }
 
     fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
@@ -232,31 +235,21 @@ impl Operator for Preconditioner {
     }
 }
 
-/// Build the diagonal/Jacobi map.
-pub(crate) fn build_diagonal(gramian: Gramian<'_>) -> Result<Preconditioner, BuildError> {
-    let build_started = Instant::now();
-    let diagonal = diagonal_map(gramian)?;
-    Ok(Preconditioner {
-        inner: Variant::Diagonal(diagonal),
-        build_duration: build_started.elapsed(),
-    })
-}
-
-/// Build the diagonal base of an `Adaptive` strategy; the Schwarz rung is left to a stalled solve.
-pub(crate) fn build_adaptive(
+/// Build one rung's map; `None` when it has nothing to act on (Schwarz without a channel pair).
+fn build_map(
     gramian: Gramian<'_>,
-    stall: Staleness,
-    escalated: LocalSolverConfig,
-) -> Result<Preconditioner, BuildError> {
-    let build_started = Instant::now();
-    let base = diagonal_map(gramian)?;
-    Ok(Preconditioner {
-        inner: Variant::Adaptive(AdaptiveLadder {
-            base,
-            stall,
-            escalated,
-        }),
-        build_duration: build_started.elapsed(),
+    rung: Rung<'_>,
+) -> Result<(Option<Map>, Vec<BuildWarning>), BuildError> {
+    Ok(match rung {
+        Rung::Diagonal => (Some(Map::Diagonal(diagonal_map(gramian)?)), Vec::new()),
+        Rung::Schwarz(local_solver) => {
+            let (domains, warnings) = build_local_domains(gramian, local_solver)?;
+            if domains.is_empty() {
+                return Ok((None, warnings));
+            }
+            let schwarz = build_additive(domains, gramian.unknowns().len())?;
+            (Some(Map::Schwarz(schwarz)), warnings)
+        }
     })
 }
 
@@ -278,23 +271,4 @@ fn diagonal_map(gramian: Gramian<'_>) -> Result<DiagonalPreconditioner, BuildErr
     Ok(DiagonalPreconditioner {
         inv_diag: Arc::from(diag),
     })
-}
-
-/// Build the additive Schwarz map plus its warnings; `None` when the design has no factor-pair
-/// subdomain to build on, where plain LSMR is the fallback.
-pub(crate) fn build_schwarz(
-    gramian: Gramian<'_>,
-    local_solver: &LocalSolverConfig,
-) -> Result<(Option<Preconditioner>, Vec<BuildWarning>), BuildError> {
-    let build_started = Instant::now();
-    let (domains, warnings) = build_local_domains(gramian, local_solver)?;
-    if domains.is_empty() {
-        return Ok((None, warnings));
-    }
-    let schwarz = build_additive(domains, local_solver, gramian.unknowns().len())?;
-    let preconditioner = Preconditioner {
-        inner: Variant::Additive(schwarz),
-        build_duration: build_started.elapsed(),
-    };
-    Ok((Some(preconditioner), warnings))
 }
