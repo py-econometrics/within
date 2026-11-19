@@ -1,10 +1,13 @@
 //! Scatter: observation space → coefficient space, `x_t = D_tᵀ (s ⊙ v)`, summed per term in the
 //! order its [`ScatterSplit`] fixes.
 
+use rayon::prelude::*;
+
 use crate::design::LevelSlots;
 use crate::design::{RowKernel, TermBlock};
 
-/// `dst_t = D_tᵀ (scale ⊙ src)` for each of `terms`, into its block of `dst`.
+/// `dst_t = D_tᵀ (scale ⊙ src)` for `terms` in layout order, whose blocks tile `dst`; the blocks
+/// are disjoint, so the terms run concurrently.
 pub(crate) fn scatter(
     terms: &[TermBlock<'_>],
     src: &[f64],
@@ -13,13 +16,21 @@ pub(crate) fn scatter(
 ) {
     debug_assert!(scale.is_none_or(|s| s.len() == src.len()));
     debug_assert!(terms.iter().all(|t| t.levels().len() == src.len()));
+    let mut blocks = Vec::with_capacity(terms.len());
+    let mut rest = dst;
     for t in terms {
-        let block = &mut dst[t.layout().dofs()];
-        match scale {
+        let (block, tail) = std::mem::take(&mut rest).split_at_mut(t.layout().n_dofs());
+        blocks.push(block);
+        rest = tail;
+    }
+    debug_assert!(rest.is_empty());
+    terms
+        .par_iter()
+        .zip(blocks)
+        .for_each(|(t, block)| match scale {
             Some(s) => scatter_block(t, block, &|i| s[i] * src[i]),
             None => scatter_block(t, block, &|i| src[i]),
-        }
-    }
+        });
 }
 
 /// One term's `block = D_tᵀ v`, with `base(i)` the row value of `v`.
