@@ -112,21 +112,21 @@ impl CoefficientLayout {
 
     /// The address of flat index `i`, or `None` if `i >= n_dofs`.
     pub fn address(&self, i: usize) -> Option<CoefficientAddress> {
-        if i >= self.n_dofs() {
-            return None;
+        let mut start = 0;
+        for (term, layout) in self.terms.iter().enumerate() {
+            if i < start + layout.n_dofs() {
+                let (within, n_levels) = (i - start, layout.n_levels());
+                return Some(self.caller_address(CoefficientPosition {
+                    channel: Channel {
+                        term,
+                        column: within / n_levels,
+                    },
+                    level: within % n_levels,
+                }));
+            }
+            start += layout.n_dofs();
         }
-        let term = (0..self.terms.len())
-            .find(|&t| self.term_dofs(t).contains(&i))
-            .expect("i < n_dofs");
-        let within = i - self.term_dofs(term).start;
-        let n_levels = self.terms[term].n_levels();
-        Some(self.caller_address(CoefficientPosition {
-            channel: Channel {
-                term,
-                column: within / n_levels,
-            },
-            level: within % n_levels,
-        }))
+        None
     }
 
     pub(crate) fn term(&self, term: usize) -> &TermLayout {

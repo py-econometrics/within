@@ -30,7 +30,7 @@ impl<'p> Gramian<'p> {
         self.design.unknowns()
     }
 
-    /// `diag(G)` over term `term`'s coefficients, laid out like its `dofs()`. `D̃_tᵀ W D̃_t` is
+    /// `diag(G)` over term `term`'s block, column by column. `D̃_tᵀ W D̃_t` is
     /// diagonal per level: `w_l` on the intercept, `1` on the identified slopes, `0` on the rest.
     fn term_diagonal(&self, term: usize) -> Vec<f64> {
         let layout = self.layout().term(term);
@@ -168,7 +168,8 @@ mod tests {
         let mut entries = vec![Vec::new(); design.unknowns().len()];
         for (t, term) in design.terms().enumerate() {
             for column in 0..term.layout().n_columns() {
-                let block = &mut entries[design.layout().dofs(Channel { term: t, column })];
+                let channel = Channel { term: t, column };
+                let block = &mut entries[design.unknowns().dofs(design.layout(), channel)];
                 let z = term.loading(column);
                 for (obs, &level) in term.levels().iter().enumerate() {
                     let w = design.weights.weight(obs);
@@ -234,7 +235,11 @@ mod tests {
                 .orthogonalize(weights)
                 .unwrap();
             let diag = Gramian::new(&design).diagonal();
-            let block = |term: usize, column| &diag[design.layout().dofs(Channel { term, column })];
+            let block = |term: usize, column| {
+                &diag[design
+                    .unknowns()
+                    .dofs(design.layout(), Channel { term, column })]
+            };
             assert_eq!(block(0, 0), f_sums);
             assert_eq!(block(1, 0), g_sums);
             // A kept orthogonalized slope has unit weighted norm; a dropped one is an exact-zero column.
